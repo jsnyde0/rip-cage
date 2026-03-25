@@ -1,0 +1,45 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Node (if applicable)
+node_modules/
+
+# Go
+vendor/
+
+# Docker
+*.tar
+
+# Test / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Beads (local database)
+.beads/
