@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IMAGE="rip-cage:latest"
+
+usage() {
+  cat <<'EOF'
+Usage: rc <command> [args]
+
+Commands:
+  up <path> [--port PORT] [--env-file FILE]   Start or resume a container
+  ls                                           List rip-cage containers
+  attach <name>                                Attach to container tmux session
+  down <name>                                  Stop a container
+  destroy <name>                               Remove container and volumes
+  test <name>                                  Run safety stack smoke test
+EOF
+  exit 1
+}
+
+# Derive container name from last two path components
+container_name() {
+  local path="$1"
+  local parent
+  parent=$(basename "$(dirname "$path")")
+  local base
+  base=$(basename "$path")
+  echo "${parent}-${base}" | tr -cs 'a-zA-Z0-9_.-' '-' | sed 's/^-//' | sed 's/-$//'
+}
+
+cmd_up() {
+  local path="" port="" env_file=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --port) port="$2"; shift 2 ;;
+      --env-file) env_file="$2"; shift 2 ;;
+      *) path="$1"; shift ;;
+    esac
+  done
+
+  if [[ -z "$path" ]]; then
+    echo "Error: path required. Usage: rc up <path> [--port PORT] [--env-file FILE]" >&2
+    exit 1
+  fi
+
+  path=$(realpath "$path")
+  if [[ ! -d "$path" ]]; then
+    echo "Error: $path does not exist or is not a directory" >&2
+    exit 1
+  fi
+
+  # Check Docker
+  if ! docker info > /dev/null 2>&1; then
+    echo "Error: Docker is not running. Is OrbStack running?" >&2
+    exit 1
+  fi
+
+  # Check image exists
+  if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
+    echo "Error: Image $IMAGE not found. Run: docker buildx build -t rip-cage:latest ~/.claude/rip-cage/" >&2
+    exit 1
+  fi
+
+  local name
+  name=$(container_name "$path")
+
+  # Check for existing container
+  local existing_path
+  existing_path=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$name" 2>/dev/null || true)
+
+  if [[ -n "$existing_path" ]]; then
+    # Container exists
+    if [[ "$existing_path" != "$path" ]]; then
+      # Different path — disambiguate with hash suffix
+      local hash
+      hash=$(echo -n "$path" | shasum | cut -c1-4)
+      name="${name}-${hash}"
+      echo "Warning: container '$( container_name "$path" )' exists for different path. Using: $name"
+    fi
+  fi
+
+  # Check container state
+  local state
+  state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
+
+  if [[ "$state" == "running" ]]; then
+    echo "Container $name is already running. Attaching..."
+    docker exec -it "$name" tmux new-session -A -s rip-cage
+    return
+  elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
+    echo "Resuming stopped container $name..."
+    docker start "$name"
+    if ! docker exec "$name" /usr/local/bin/init-rip-cage.sh; then
+      echo "Error: init failed on resume. Stopping container so next 'rc up' retries." >&2
+      docker stop "$name"
+      exit 1
+    fi
+    docker exec -it "$name" tmux new-session -A -s rip-cage
+    return
+  fi
+
+  # New container
+  echo "Creating container $name for $path..."
+  local run_args=()
+  run_args+=(-d --name "$name")
+  run_args+=(--label "rc.source.path=$path")
+
+  # Workspace mount
+  run_args+=(-v "${path}:/workspace:delegated")
+
+  # OAuth mounts (read-write, skip if missing to avoid Docker creating empty dirs)
+  if [[ -f "${HOME}/.claude.json" ]]; then
+    run_args+=(-v "${HOME}/.claude.json:/home/agent/.claude.json")
+  else
+    echo "Warning: ${HOME}/.claude.json not found — skipping mount"
+  fi
+  if [[ -f "${HOME}/.config/claude-code/auth.json" ]]; then
+    run_args+=(-v "${HOME}/.config/claude-code/auth.json:/home/agent/.config/claude-code/auth.json")
+  else
+    echo "Warning: ${HOME}/.config/claude-code/auth.json not found — skipping mount"
+  fi
+
+  # CLAUDE.md mounts (read-only, only if source exists)
+  if [[ -f "${HOME}/.claude/CLAUDE.md" ]]; then
+    run_args+=(-v "${HOME}/.claude/CLAUDE.md:/home/agent/.rc-context/global-claude.md:ro")
+  fi
+  if [[ -f "${HOME}/CLAUDE.md" ]]; then
+    run_args+=(-v "${HOME}/CLAUDE.md:/home/agent/.rc-context/home-claude.md:ro")
+  fi
+
+  # Forward git identity from host
+  local git_name git_email
+  git_name=$(git config user.name 2>/dev/null || true)
+  git_email=$(git config user.email 2>/dev/null || true)
+  if [[ -n "$git_name" ]]; then
+    run_args+=(-e "GIT_AUTHOR_NAME=${git_name}")
+  fi
+  if [[ -n "$git_email" ]]; then
+    run_args+=(-e "GIT_AUTHOR_EMAIL=${git_email}")
+  fi
+
+  # State volumes
+  run_args+=(-v "rc-state-${name}:/home/agent/.claude-state")
+  run_args+=(-v "rc-history-${name}:/commandhistory")
+
+  # Optional flags
+  if [[ -n "$port" ]]; then
+    run_args+=(-p "${port}:${port}")
+  fi
+  if [[ -n "$env_file" ]]; then
+    run_args+=(--env-file "$env_file")
+  fi
+
+  run_args+=("$IMAGE" sleep infinity)
+
+  docker run "${run_args[@]}"
+  echo "Running init script..."
+  if ! docker exec "$name" /usr/local/bin/init-rip-cage.sh; then
+    echo "Error: init failed. Stopping container so next 'rc up' retries." >&2
+    docker stop "$name"
+    exit 1
+  fi
+  docker exec -it "$name" tmux new-session -A -s rip-cage
+}
+
+cmd_ls() {
+  docker ps -a --filter label=rc.source.path --format "table {{.Names}}\t{{.Status}}\t{{.Label \"rc.source.path\"}}"
+}
+
+cmd_attach() {
+  local name="${1:?Error: name required. Usage: rc attach <name>}"
+  docker exec -it "$name" tmux new-session -A -s rip-cage
+}
+
+cmd_down() {
+  local name="${1:?Error: name required. Usage: rc down <name>}"
+  docker stop "$name"
+  echo "Container $name stopped."
+}
+
+cmd_destroy() {
+  local name="${1:?Error: name required. Usage: rc destroy <name>}"
+  docker rm -f "$name"
+  for vol in "rc-state-${name}" "rc-history-${name}"; do
+    docker volume rm "$vol" 2>/dev/null || echo "Warning: volume $vol not found"
+  done
+  echo "Container $name and volumes destroyed."
+}
+
+cmd_test() {
+  local name="${1:?Error: name required. Usage: rc test <name>}"
+  docker exec "$name" /usr/local/lib/rip-cage/test-safety-stack.sh
+}
+
+# Main dispatch
+case "${1:-}" in
+  up)      shift; cmd_up "$@" ;;
+  ls)      cmd_ls ;;
+  attach)  shift; cmd_attach "$@" ;;
+  down)    shift; cmd_down "$@" ;;
+  destroy) shift; cmd_destroy "$@" ;;
+  test)    shift; cmd_test "$@" ;;
+  *)       usage ;;
+esac
