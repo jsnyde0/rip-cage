@@ -59,10 +59,11 @@ cmd_init() {
     "source=rc-state-${devcontainerId},target=/home/agent/.claude-state,type=volume",
     "source=rc-history-${devcontainerId},target=/commandhistory,type=volume",
     "source=${localEnv:HOME}/.claude.json,target=/home/agent/.claude.json,type=bind",
+    "source=${localEnv:HOME}/.claude/.credentials.json,target=/home/agent/.claude/.credentials.json,type=bind",
     "source=${localEnv:HOME}/.claude/CLAUDE.md,target=/home/agent/.rc-context/global-claude.md,type=bind,readonly",
     "source=${localEnv:HOME}/CLAUDE.md,target=/home/agent/.rc-context/home-claude.md,type=bind,readonly"
   ],
-  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; true'",
+  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096"
   },
@@ -165,16 +166,21 @@ cmd_up() {
   # Workspace mount
   run_args+=(-v "${path}:/workspace:delegated")
 
+  # Extract OAuth credentials from macOS keychain to file (if on macOS)
+  if [[ "$(uname)" == "Darwin" ]]; then
+    security find-generic-password -s "Claude Code-credentials" -w > "${HOME}/.claude/.credentials.json" 2>/dev/null || true
+  fi
+
   # OAuth mounts (read-write, skip if missing to avoid Docker creating empty dirs)
   if [[ -f "${HOME}/.claude.json" ]]; then
     run_args+=(-v "${HOME}/.claude.json:/home/agent/.claude.json")
   else
     echo "Warning: ${HOME}/.claude.json not found — skipping mount"
   fi
-  if [[ -f "${HOME}/.config/claude-code/auth.json" ]]; then
-    run_args+=(-v "${HOME}/.config/claude-code/auth.json:/home/agent/.config/claude-code/auth.json")
+  if [[ -f "${HOME}/.claude/.credentials.json" ]]; then
+    run_args+=(-v "${HOME}/.claude/.credentials.json:/home/agent/.claude/.credentials.json")
   else
-    echo "Warning: ${HOME}/.config/claude-code/auth.json not found — skipping mount"
+    echo "Warning: ${HOME}/.claude/.credentials.json not found — skipping mount (auth may not work)"
   fi
 
   # CLAUDE.md mounts (read-only, only if source exists)

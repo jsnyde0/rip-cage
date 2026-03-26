@@ -3,7 +3,10 @@ set -euo pipefail
 
 echo "[rip-cage] Initializing..."
 
-# 1. Overwrite settings template
+# 1. Fix ownership of bind-mounted dirs (Docker may create them as root)
+sudo chown agent:agent ~/.claude 2>/dev/null || true
+
+# Overwrite settings template
 mkdir -p ~/.claude
 cp /etc/rip-cage/settings.json ~/.claude/settings.json
 echo "[rip-cage] Settings installed"
@@ -57,8 +60,10 @@ fi
 echo "[rip-cage] Claude Code $(claude --version) ready"
 
 # Check auth (warn only, do not fail)
-if [ ! -f ~/.claude.json ] && [ ! -f ~/.config/claude-code/auth.json ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-  echo "[rip-cage] WARNING: No auth found (~/.claude.json and ~/.config/claude-code/auth.json missing, ANTHROPIC_API_KEY not set)" >&2
+if [ -f ~/.claude/.credentials.json ]; then
+  echo "[rip-cage] OAuth credentials found"
+elif [ ! -f ~/.claude.json ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "[rip-cage] WARNING: No auth found (~/.claude/.credentials.json missing, ANTHROPIC_API_KEY not set)" >&2
 fi
 
 # 7. Initialize beads
