@@ -4,9 +4,27 @@ set -euo pipefail
 IMAGE="rip-cage:latest"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+OUTPUT_FORMAT="human"
+DRY_RUN=false
+
+# Output helpers
+json_out() { echo "$1" | jq -c .; }
+json_error() {
+  local msg="$1" code="$2"
+  echo "{\"error\":\"$msg\",\"code\":\"$code\"}" | jq -c . >&1
+  exit 1
+}
+log() {
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    echo "$@" >&2
+  else
+    echo "$@"
+  fi
+}
+
 usage() {
   cat <<'EOF'
-Usage: rc <command> [args]
+Usage: rc [--output json] [--dry-run] <command> [args]
 
 Commands:
   build [docker-args...]                       Build the rip-cage image
@@ -17,13 +35,25 @@ Commands:
   down <name>                                  Stop a container
   destroy <name>                               Remove container and volumes
   test <name>                                  Run safety stack smoke test
+
+Global flags:
+  --output json    Emit machine-readable JSON (must precede subcommand)
+  --dry-run        Preview what would happen without executing
 EOF
   exit 1
 }
 
 cmd_build() {
-  echo "Building $IMAGE from ${SCRIPT_DIR}/Dockerfile..."
-  docker build -t "$IMAGE" "$@" "$SCRIPT_DIR"
+  log "Building $IMAGE from ${SCRIPT_DIR}/Dockerfile..."
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    if docker build -t "$IMAGE" "$@" "$SCRIPT_DIR" >/dev/null 2>&1; then
+      json_out '{"image":"rip-cage:latest","action":"built","status":"success"}'
+    else
+      json_error "Build failed" "BUILD_FAILED"
+    fi
+  else
+    docker build -t "$IMAGE" "$@" "$SCRIPT_DIR"
+  fi
 }
 
 cmd_init() {
@@ -97,6 +127,7 @@ cmd_up() {
   done
 
   if [[ -z "$path" ]]; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "path required. Usage: rc up <path>" "MISSING_ARGUMENT"
     echo "Error: path required. Usage: rc up <path> [--port PORT] [--env-file FILE]" >&2
     exit 1
   fi
@@ -109,15 +140,19 @@ cmd_up() {
 
   # Check Docker
   if ! docker info > /dev/null 2>&1; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Docker is not running" "DOCKER_NOT_RUNNING"
     echo "Error: Docker is not running. Is OrbStack running?" >&2
     exit 1
   fi
 
   # Check image exists
   if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Image $IMAGE not found. Run: rc build" "IMAGE_NOT_FOUND"
     echo "Error: Image $IMAGE not found. Run: rc build" >&2
     exit 1
   fi
+
+  local name_disambiguated=false
 
   local name
   name=$(container_name "$path")
@@ -133,7 +168,8 @@ cmd_up() {
       local hash
       hash=$(echo -n "$path" | shasum | cut -c1-4)
       name="${name}-${hash}"
-      echo "Warning: container '$( container_name "$path" )' exists for different path. Using: $name"
+      name_disambiguated=true
+      log "Warning: container '$( container_name "$path" )' exists for different path. Using: $name"
     fi
   fi
 
@@ -142,23 +178,36 @@ cmd_up() {
   state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
 
   if [[ "$state" == "running" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_out "{\"name\":\"$name\",\"action\":\"attached\",\"source_path\":\"$path\",\"status\":\"running\",\"name_disambiguated\":$name_disambiguated}"
+      return
+    fi
     echo "Container $name is already running. Attaching..."
     docker exec -it "$name" tmux new-session -A -s rip-cage
     return
   elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
-    echo "Resuming stopped container $name..."
+    log "Resuming stopped container $name..."
     docker start "$name"
     if ! docker exec "$name" /usr/local/bin/init-rip-cage.sh; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        docker stop "$name" >/dev/null 2>&1
+        json_out "{\"name\":\"$name\",\"action\":\"resumed\",\"source_path\":\"$path\",\"status\":\"stopped\",\"init\":\"failed\",\"name_disambiguated\":$name_disambiguated}"
+        return
+      fi
       echo "Error: init failed on resume. Stopping container so next 'rc up' retries." >&2
       docker stop "$name"
       exit 1
+    fi
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_out "{\"name\":\"$name\",\"action\":\"resumed\",\"source_path\":\"$path\",\"status\":\"running\",\"init\":\"success\",\"name_disambiguated\":$name_disambiguated}"
+      return
     fi
     docker exec -it "$name" tmux new-session -A -s rip-cage
     return
   fi
 
   # New container
-  echo "Creating container $name for $path..."
+  log "Creating container $name for $path..."
   local run_args=()
   run_args+=(-d --name "$name")
   run_args+=(--label "rc.source.path=$path")
@@ -217,17 +266,31 @@ cmd_up() {
   run_args+=("$IMAGE" sleep infinity)
 
   docker run "${run_args[@]}"
-  echo "Running init script..."
+  log "Running init script..."
   if ! docker exec "$name" /usr/local/bin/init-rip-cage.sh; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      docker stop "$name" >/dev/null 2>&1
+      json_out "{\"name\":\"$name\",\"action\":\"created\",\"source_path\":\"$path\",\"status\":\"stopped\",\"init\":\"failed\",\"name_disambiguated\":$name_disambiguated}"
+      return
+    fi
     echo "Error: init failed. Stopping container so next 'rc up' retries." >&2
     docker stop "$name"
     exit 1
+  fi
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    json_out "{\"name\":\"$name\",\"action\":\"created\",\"source_path\":\"$path\",\"status\":\"running\",\"init\":\"success\",\"name_disambiguated\":$name_disambiguated}"
+    return
   fi
   docker exec -it "$name" tmux new-session -A -s rip-cage
 }
 
 cmd_ls() {
-  docker ps -a --filter label=rc.source.path --format "table {{.Names}}\t{{.Status}}\t{{.Label \"rc.source.path\"}}"
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.Status}}\t{{.Label "rc.source.path"}}' | \
+      jq -Rsn '[inputs | rtrimstr("\n") | split("\t") | {name: .[0], status: .[1], source_path: .[2]}]'
+  else
+    docker ps -a --filter label=rc.source.path --format "table {{.Names}}\t{{.Status}}\t{{.Label \"rc.source.path\"}}"
+  fi
 }
 
 cmd_attach() {
@@ -237,30 +300,85 @@ cmd_attach() {
 
 cmd_down() {
   local name="${1:?Error: name required. Usage: rc down <name>}"
-  docker stop "$name"
-  echo "Container $name stopped."
+  if ! docker stop "$name" >/dev/null 2>&1; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
+    echo "Error: container $name not found or already stopped" >&2; exit 1
+  fi
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    json_out "{\"name\":\"$name\",\"action\":\"stopped\",\"status\":\"exited\"}"
+  else
+    echo "Container $name stopped."
+  fi
 }
 
 cmd_destroy() {
   local name="${1:?Error: name required. Usage: rc destroy <name>}"
-  docker rm -f "$name"
+  if ! docker rm -f "$name" >/dev/null 2>&1; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
+    echo "Error: container $name not found" >&2; exit 1
+  fi
+  local volumes_removed=()
   for vol in "rc-state-${name}" "rc-history-${name}"; do
-    docker volume rm "$vol" 2>/dev/null || echo "Warning: volume $vol not found"
+    if docker volume rm "$vol" 2>/dev/null; then
+      volumes_removed+=("$vol")
+    else
+      log "Warning: volume $vol not found"
+    fi
   done
-  echo "Container $name and volumes destroyed."
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    local vol_json
+    vol_json=$(printf '%s\n' "${volumes_removed[@]}" | jq -R . | jq -sc .)
+    json_out "{\"name\":\"$name\",\"action\":\"destroyed\",\"volumes_removed\":$vol_json}"
+  else
+    echo "Container $name and volumes destroyed."
+  fi
 }
 
 cmd_test() {
   local name="${1:?Error: name required. Usage: rc test <name>}"
-  docker exec "$name" /usr/local/lib/rip-cage/test-safety-stack.sh
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    local output
+    output=$(docker exec "$name" /usr/local/lib/rip-cage/test-safety-stack.sh 2>&1) || true
+    local -A check_names=(
+      [1]="dcg_deny" [2]="block_compound_deny" [3]="settings_auto_mode"
+      [4]="settings_dcg_hook" [5]="settings_block_compound_hook" [6]="claude_version"
+    )
+    local checks="{}" overall="pass"
+    for i in 1 2 3 4 5 6; do
+      if echo "$output" | grep -q "Test $i:.*PASS"; then
+        checks=$(echo "$checks" | jq --arg k "${check_names[$i]}" '. + {($k): "pass"}')
+      else
+        checks=$(echo "$checks" | jq --arg k "${check_names[$i]}" '. + {($k): "fail"}')
+        overall="fail"
+      fi
+    done
+    json_out "{\"name\":\"$name\",\"checks\":$checks,\"overall\":\"$overall\"}"
+  else
+    docker exec "$name" /usr/local/lib/rip-cage/test-safety-stack.sh
+  fi
 }
+
+# Parse global flags
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output)
+      if [[ "${2:-}" == "json" ]]; then
+        OUTPUT_FORMAT="json"; shift 2
+      else
+        echo "Error: --output requires 'json'" >&2; exit 1
+      fi
+      ;;
+    --dry-run) DRY_RUN=true; shift ;;
+    *) break ;;  # first non-flag arg is the subcommand
+  esac
+done
 
 # Main dispatch
 case "${1:-}" in
   build)   shift; cmd_build "$@" ;;
   init)    shift; cmd_init "$@" ;;
   up)      shift; cmd_up "$@" ;;
-  ls)      cmd_ls ;;
+  ls)      shift; cmd_ls "$@" ;;
   attach)  shift; cmd_attach "$@" ;;
   down)    shift; cmd_down "$@" ;;
   destroy) shift; cmd_destroy "$@" ;;
