@@ -77,11 +77,12 @@ echo ""
 echo "-- Dry-run --"
 
 # Test 4: rc up --dry-run (human)
-RESULT=$($RC up "$TEST_DIR/test-project" --dry-run 2>&1)
+# Note: global flags (--dry-run) must precede the subcommand
+RESULT=$($RC --dry-run up "$TEST_DIR/test-project" 2>&1)
 check "rc up --dry-run shows Would" "$RESULT" "Would"
 
 # Test 5: rc up --dry-run --output json
-RESULT=$($RC up "$TEST_DIR/test-project" --dry-run --output json 2>/dev/null)
+RESULT=$($RC --dry-run --output json up "$TEST_DIR/test-project" 2>/dev/null)
 DRY=$(echo "$RESULT" | jq -r .dry_run 2>/dev/null || echo "missing")
 check "rc up --dry-run --output json has dry_run=true" "$DRY" "true"
 
@@ -95,7 +96,7 @@ echo "-- Input hardening --"
 
 # Test 6: Blocked path
 set +e
-RESULT=$($RC up /etc --output json 2>&1)
+RESULT=$($RC --output json up /etc 2>&1)
 EXIT_CODE=$?
 set -e
 check "blocked path returns PATH_INVALID" "$RESULT" "PATH_INVALID"
@@ -115,7 +116,7 @@ echo ""
 echo "-- Full container lifecycle --"
 
 # Test 8: rc up --output json (create)
-RESULT=$($RC up "$TEST_DIR/test-project" --output json 2>/dev/null)
+RESULT=$($RC --output json up "$TEST_DIR/test-project" 2>/dev/null)
 CONTAINER_NAME=$(echo "$RESULT" | jq -r .name 2>/dev/null || echo "")
 ACTION=$(echo "$RESULT" | jq -r .action 2>/dev/null || echo "")
 check "rc up creates container (action=created)" "$ACTION" "created"

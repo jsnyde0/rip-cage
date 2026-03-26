@@ -11,7 +11,7 @@ DRY_RUN=false
 json_out() { echo "$1" | jq -c .; }
 json_error() {
   local msg="$1" code="$2"
-  echo "{\"error\":\"$msg\",\"code\":\"$code\"}" | jq -c . >&1
+  jq -nc --arg error "$msg" --arg code "$code" '{error: $error, code: $code}'
   exit 1
 }
 log() {
@@ -182,8 +182,6 @@ cmd_up() {
     case "$1" in
       --port) port="$2"; shift 2 ;;
       --env-file) env_file="$2"; shift 2 ;;
-      --dry-run) DRY_RUN=true; shift ;;
-      --output) [[ "${2:-}" == "json" ]] && OUTPUT_FORMAT="json"; shift 2 ;;
       *) path="$1"; shift ;;
     esac
   done
@@ -247,7 +245,8 @@ cmd_up() {
     fi
 
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_out "{\"dry_run\":true,\"name\":\"$name\",\"action\":\"$would_action\",\"source_path\":\"$path\",\"name_disambiguated\":$name_disambiguated}"
+      jq -nc --arg name "$name" --arg action "$would_action" --arg source_path "$path" --argjson name_disambiguated "$name_disambiguated" --argjson dry_run true \
+        '{dry_run: $dry_run, name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated}'
     else
       echo "Would ${would_action#would_} container $name for $path"
       echo "Would mount $path -> /workspace"
@@ -258,7 +257,8 @@ cmd_up() {
 
   if [[ "$state" == "running" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_out "{\"name\":\"$name\",\"action\":\"attached\",\"source_path\":\"$path\",\"status\":\"running\",\"name_disambiguated\":$name_disambiguated}"
+      jq -nc --arg name "$name" --arg action "attached" --arg source_path "$path" --arg status "running" --argjson name_disambiguated "$name_disambiguated" \
+        '{name: $name, action: $action, source_path: $source_path, status: $status, name_disambiguated: $name_disambiguated}'
       return
     fi
     echo "Container $name is already running. Attaching..."
@@ -280,7 +280,8 @@ cmd_up() {
     if [[ "$init_ok" == "false" ]]; then
       if [[ "$OUTPUT_FORMAT" == "json" ]]; then
         docker stop "$name" >/dev/null 2>&1
-        json_out "{\"name\":\"$name\",\"action\":\"resumed\",\"source_path\":\"$path\",\"status\":\"stopped\",\"init\":\"failed\",\"name_disambiguated\":$name_disambiguated}"
+        jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
+        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
         return
       fi
       echo "Error: init failed on resume. Stopping container so next 'rc up' retries." >&2
@@ -288,7 +289,8 @@ cmd_up() {
       exit 1
     fi
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_out "{\"name\":\"$name\",\"action\":\"resumed\",\"source_path\":\"$path\",\"status\":\"running\",\"init\":\"success\",\"name_disambiguated\":$name_disambiguated}"
+      jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
+        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
       return
     fi
     docker exec -it "$name" tmux new-session -A -s rip-cage
@@ -369,7 +371,8 @@ cmd_up() {
   if [[ "$init_ok" == "false" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       docker stop "$name" >/dev/null 2>&1
-      json_out "{\"name\":\"$name\",\"action\":\"created\",\"source_path\":\"$path\",\"status\":\"stopped\",\"init\":\"failed\",\"name_disambiguated\":$name_disambiguated}"
+      jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
+        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
       return
     fi
     echo "Error: init failed. Stopping container so next 'rc up' retries." >&2
@@ -377,7 +380,8 @@ cmd_up() {
     exit 1
   fi
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    json_out "{\"name\":\"$name\",\"action\":\"created\",\"source_path\":\"$path\",\"status\":\"running\",\"init\":\"success\",\"name_disambiguated\":$name_disambiguated}"
+    jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
+      '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
     return
   fi
   docker exec -it "$name" tmux new-session -A -s rip-cage
@@ -386,7 +390,7 @@ cmd_up() {
 cmd_ls() {
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.Status}}\t{{.Label "rc.source.path"}}' | \
-      jq -Rsn '[inputs | rtrimstr("\n") | split("\t") | {name: .[0], status: .[1], source_path: .[2]}]'
+      jq -Rsn '[inputs | rtrimstr("\n") | select(length > 0) | split("\t") | {name: .[0], status: .[1], source_path: .[2]}]'
   else
     docker ps -a --filter label=rc.source.path --format "table {{.Names}}\t{{.Status}}\t{{.Label \"rc.source.path\"}}"
   fi
@@ -399,12 +403,20 @@ cmd_attach() {
 
 cmd_down() {
   local name="${1:?Error: name required. Usage: rc down <name>}"
-  if ! docker stop "$name" >/dev/null 2>&1; then
+  local state
+  state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
+  if [[ -z "$state" ]]; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
-    echo "Error: container $name not found or already stopped" >&2; exit 1
+    echo "Error: container $name not found" >&2; exit 1
   fi
+  if [[ "$state" != "running" ]]; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is not running (state: $state)" "CONTAINER_NOT_RUNNING"
+    echo "Error: container $name is not running (state: $state)" >&2; exit 1
+  fi
+  docker stop "$name" >/dev/null 2>&1
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    json_out "{\"name\":\"$name\",\"action\":\"stopped\",\"status\":\"exited\"}"
+    jq -nc --arg name "$name" --arg action "stopped" --arg status "exited" \
+      '{name: $name, action: $action, status: $status}'
   else
     echo "Container $name stopped."
   fi
@@ -421,7 +433,9 @@ cmd_destroy() {
 
   if [[ "$DRY_RUN" == "true" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_out "{\"dry_run\":true,\"name\":\"$name\",\"action\":\"would_destroy\",\"volumes_removed\":[\"rc-state-$name\",\"rc-history-$name\"]}"
+      jq -nc --arg name "$name" --arg action "would_destroy" --argjson dry_run true \
+        --arg vol1 "rc-state-$name" --arg vol2 "rc-history-$name" \
+        '{dry_run: $dry_run, name: $name, action: $action, volumes_removed: [$vol1, $vol2]}'
     else
       echo "Would remove container $name"
       echo "Would remove volumes: rc-state-$name, rc-history-$name"
@@ -449,8 +463,9 @@ cmd_destroy() {
   done
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local vol_json
-    vol_json=$(printf '%s\n' "${volumes_removed[@]}" | jq -R . | jq -sc .)
-    json_out "{\"name\":\"$name\",\"action\":\"destroyed\",\"volumes_removed\":$vol_json}"
+    vol_json=$(printf '%s\n' "${volumes_removed[@]}" | jq -R 'select(length > 0)' | jq -sc .)
+    jq -nc --arg name "$name" --arg action "destroyed" --argjson volumes_removed "$vol_json" \
+      '{name: $name, action: $action, volumes_removed: $volumes_removed}'
   else
     echo "Container $name and volumes destroyed."
   fi
@@ -473,7 +488,8 @@ cmd_test() {
         overall="fail"
       fi
     done
-    json_out "{\"name\":\"$name\",\"checks\":$checks,\"overall\":\"$overall\"}"
+    jq -nc --arg name "$name" --argjson checks "$checks" --arg overall "$overall" \
+      '{name: $name, checks: $checks, overall: $overall}'
   else
     docker exec "$name" /usr/local/lib/rip-cage/test-safety-stack.sh
   fi
