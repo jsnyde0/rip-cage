@@ -243,6 +243,33 @@ The agent user has sudo access scoped to: `apt-get`, `dpkg`, `npm install -g`, `
 
 **What would invalidate this:** Agent needs sudo for commands not in the allow list (e.g., `systemctl`, custom build tools). Add them to the sudoers file as needed.
 
+### D13: Image-based devcontainer with `rc init` scaffolding
+
+**Firmness: FIRM**
+
+**Added:** 2026-03-26 (brainstorming session)
+
+The generated `devcontainer.json` references a pre-built image (`rip-cage:latest`) rather than a Dockerfile path. `rc init <path>` scaffolds `.devcontainer/devcontainer.json` into any target project. `rc build` builds the image locally.
+
+**Rationale:** Rip-cage is intended to be a distributable tool (eventually `brew install rip-cage` or similar). Users won't have the source repo cloned, so devcontainer.json cannot reference a Dockerfile path — it must reference an image. Using a pre-built image also means:
+- No per-project Dockerfile paths to manage
+- `rc init` generates identical config regardless of where rip-cage is installed
+- Migration from local image (`rip-cage:latest`) to registry image (`ghcr.io/jsnyde0/rip-cage:latest`) is a one-line change in `rc`'s template
+- Works on rip-cage's own repo too (build the image first, then `rc init .`)
+
+This merges the previous Phase 1a (devcontainer) and Phase 1b (`rc` CLI) into a single Phase 1, since `rc` is now the entry point for both paths: `rc init` for devcontainer setup, `rc up` for CLI/tmux mode.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **Pre-built image + `rc init`** | Distributable, no source dependency, simple template | Must build image before first use |
+| Dockerfile path in devcontainer.json | No pre-build step | Breaks without source repo, path management headache |
+| Copy Dockerfile into each project | Self-contained per project | N copies to keep in sync, defeats "one image" principle |
+| No `rc init`, manual setup | Less code | Poor UX, error-prone, blocks adoption |
+
+**What would invalidate this:** Per-project Dockerfile customization becomes necessary (e.g., projects need different system deps baked into the image). In that case, consider a layered image approach (project Dockerfile `FROM rip-cage:latest`).
+
 ## Related
 
 - [Rip Cage Design](../2026-03-25-rip-cage-design.md) — full design document
