@@ -266,8 +266,18 @@ cmd_up() {
     return
   elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
     log "Resuming stopped container $name..."
-    docker start "$name"
-    if ! docker exec "$name" /usr/local/bin/init-rip-cage.sh; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      docker start "$name" >/dev/null
+    else
+      docker start "$name"
+    fi
+    local init_ok=true
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      docker exec "$name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || init_ok=false
+    else
+      docker exec "$name" /usr/local/bin/init-rip-cage.sh || init_ok=false
+    fi
+    if [[ "$init_ok" == "false" ]]; then
       if [[ "$OUTPUT_FORMAT" == "json" ]]; then
         docker stop "$name" >/dev/null 2>&1
         json_out "{\"name\":\"$name\",\"action\":\"resumed\",\"source_path\":\"$path\",\"status\":\"stopped\",\"init\":\"failed\",\"name_disambiguated\":$name_disambiguated}"
@@ -344,9 +354,19 @@ cmd_up() {
 
   run_args+=("$IMAGE" sleep infinity)
 
-  docker run "${run_args[@]}"
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    docker run "${run_args[@]}" >/dev/null
+  else
+    docker run "${run_args[@]}"
+  fi
   log "Running init script..."
-  if ! docker exec "$name" /usr/local/bin/init-rip-cage.sh; then
+  local init_ok=true
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    docker exec "$name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || init_ok=false
+  else
+    docker exec "$name" /usr/local/bin/init-rip-cage.sh || init_ok=false
+  fi
+  if [[ "$init_ok" == "false" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       docker stop "$name" >/dev/null 2>&1
       json_out "{\"name\":\"$name\",\"action\":\"created\",\"source_path\":\"$path\",\"status\":\"stopped\",\"init\":\"failed\",\"name_disambiguated\":$name_disambiguated}"
@@ -415,10 +435,16 @@ cmd_destroy() {
   fi
   local volumes_removed=()
   for vol in "rc-state-${name}" "rc-history-${name}"; do
-    if docker volume rm "$vol" 2>/dev/null; then
-      volumes_removed+=("$vol")
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      if docker volume rm "$vol" >/dev/null 2>/dev/null; then
+        volumes_removed+=("$vol")
+      fi
     else
-      log "Warning: volume $vol not found"
+      if docker volume rm "$vol" 2>/dev/null; then
+        volumes_removed+=("$vol")
+      else
+        echo "Warning: volume $vol not found"
+      fi
     fi
   done
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -435,16 +461,15 @@ cmd_test() {
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local output
     output=$(docker exec "$name" /usr/local/lib/rip-cage/test-safety-stack.sh 2>&1) || true
-    local -A check_names=(
-      [1]="dcg_deny" [2]="block_compound_deny" [3]="settings_auto_mode"
-      [4]="settings_dcg_hook" [5]="settings_block_compound_hook" [6]="claude_version"
-    )
+    local check_names="dcg_deny block_compound_deny settings_auto_mode settings_dcg_hook settings_block_compound_hook claude_version"
     local checks="{}" overall="pass"
-    for i in 1 2 3 4 5 6; do
+    local i=0 k
+    for k in $check_names; do
+      i=$((i + 1))
       if echo "$output" | grep -q "Test $i:.*PASS"; then
-        checks=$(echo "$checks" | jq --arg k "${check_names[$i]}" '. + {($k): "pass"}')
+        checks=$(echo "$checks" | jq --arg k "$k" '. + {($k): "pass"}')
       else
-        checks=$(echo "$checks" | jq --arg k "${check_names[$i]}" '. + {($k): "fail"}')
+        checks=$(echo "$checks" | jq --arg k "$k" '. + {($k): "fail"}')
         overall="fail"
       fi
     done
