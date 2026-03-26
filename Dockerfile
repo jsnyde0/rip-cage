@@ -70,4 +70,5 @@ RUN chmod +x /usr/local/bin/init-rip-cage.sh \
 
 USER agent
 WORKDIR /home/agent
+COPY --chown=agent:agent zshrc /home/agent/.zshrc
 CMD ["zsh"]
