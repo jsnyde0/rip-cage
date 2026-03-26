@@ -66,3 +66,15 @@ After modifying the Dockerfile or any file that gets COPY'd into the image:
 ```
 
 For changes to `rc` itself, you can test without rebuilding the image.
+
+## Rules for AI agents calling rc
+
+- Always use `--output json` when parsing output programmatically
+- Always use `--dry-run` before `rc destroy` to confirm the target
+- Use `rc ls --output json` to discover containers before operating on them
+- Container names are derived from paths -- use `rc ls` to get exact names, don't construct them
+- The `name` field in `rc up --output json` is the source of truth; names may include a hash suffix when disambiguation occurs
+- `rc up --output json` does NOT attach to tmux -- use `rc attach` separately
+- `rc attach` has no `--output json` mode -- use `rc ls --output json` to verify container status before calling attach
+- Never call `rc destroy` without confirming with the user first
+- Set `RC_ALLOWED_ROOTS` to colon-separated absolute paths before calling `rc up` or `rc init`

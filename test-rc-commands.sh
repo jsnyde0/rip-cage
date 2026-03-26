@@ -29,7 +29,7 @@ fi
 echo ""
 echo "=== Test 2: rc init creates devcontainer.json ==="
 TEST_DIR=$(mktemp -d)
-"$RC" init "$TEST_DIR"
+RC_ALLOWED_ROOTS="$(dirname "$TEST_DIR")" "$RC" init "$TEST_DIR"
 if [[ -f "$TEST_DIR/.devcontainer/devcontainer.json" ]]; then
   pass "devcontainer.json created"
 else
@@ -63,7 +63,7 @@ fi
 # --- Test 4: rc init refuses to overwrite without --force ---
 echo ""
 echo "=== Test 4: rc init refuses overwrite without --force ==="
-overwrite_output=$("$RC" init "$TEST_DIR" 2>&1 || true)
+overwrite_output=$(RC_ALLOWED_ROOTS="$(dirname "$TEST_DIR")" "$RC" init "$TEST_DIR" 2>&1 || true)
 if echo "$overwrite_output" | grep -qi "exists\|already"; then
   pass "refuses to overwrite"
 else
@@ -73,7 +73,7 @@ fi
 # --- Test 5: rc init --force overwrites ---
 echo ""
 echo "=== Test 5: rc init --force overwrites ==="
-"$RC" init --force "$TEST_DIR"
+RC_ALLOWED_ROOTS="$(dirname "$TEST_DIR")" "$RC" init --force "$TEST_DIR"
 if [[ -f "$TEST_DIR/.devcontainer/devcontainer.json" ]]; then
   pass "devcontainer.json exists after --force"
 else

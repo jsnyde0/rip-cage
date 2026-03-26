@@ -71,6 +71,11 @@ cmd_init() {
     target="."
   fi
 
+  if [[ "$target" != "." ]]; then
+    validate_path "$target"
+    target="$VALIDATED_PATH"
+  fi
+
   local dest="${target}/.devcontainer/devcontainer.json"
 
   if [[ -f "$dest" ]] && [[ "$force" -eq 0 ]]; then
@@ -116,12 +121,69 @@ container_name() {
   echo "${parent}-${base}" | tr -cs 'a-zA-Z0-9_.-' '-' | sed 's/^-//' | sed 's/-$//'
 }
 
+validate_path() {
+  local raw_path="$1"
+
+  # Reject control characters. Null bytes can't survive bash arg passing,
+  # but we check the visible range using POSIX character class.
+  if [[ "$raw_path" =~ [[:cntrl:]] ]]; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Path contains invalid characters" "PATH_INVALID"
+    echo "Error: path contains control characters" >&2
+    exit 1
+  fi
+
+  # Must resolve to existing directory (realpath follows symlinks -- security-critical per ADR)
+  local resolved
+  if ! resolved=$(realpath "$raw_path" 2>/dev/null); then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Path does not exist: $raw_path" "PATH_NOT_FOUND"
+    echo "Error: $raw_path does not exist" >&2
+    exit 1
+  fi
+
+  if [[ ! -d "$resolved" ]]; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Not a directory: $resolved" "PATH_INVALID"
+    echo "Error: $resolved is not a directory" >&2
+    exit 1
+  fi
+
+  # Check RC_ALLOWED_ROOTS is set
+  if [[ -z "${RC_ALLOWED_ROOTS:-}" ]]; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "RC_ALLOWED_ROOTS not set. Export as colon-separated absolute paths." "PATH_INVALID"
+    echo "Error: RC_ALLOWED_ROOTS not set. Example: export RC_ALLOWED_ROOTS=\$HOME/code/personal:\$HOME/code/mapular" >&2
+    exit 1
+  fi
+
+  # Check path is under an allowed root
+  # IMPORTANT: Match exact root OR root/ prefix to prevent /code matching /code-evil.
+  local allowed=false
+  IFS=':' read -ra roots <<< "$RC_ALLOWED_ROOTS"
+  for root in "${roots[@]}"; do
+    local resolved_root
+    resolved_root=$(realpath "$root" 2>/dev/null) || continue
+    if [[ "$resolved" == "$resolved_root" ]] || [[ "$resolved" == "$resolved_root"/* ]]; then
+      allowed=true
+      break
+    fi
+  done
+
+  if [[ "$allowed" == "false" ]]; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Path resolves outside allowed roots" "PATH_INVALID"
+    echo "Error: $resolved is outside allowed roots ($RC_ALLOWED_ROOTS)" >&2
+    exit 1
+  fi
+
+  # Return resolved path via VALIDATED_PATH global
+  VALIDATED_PATH="$resolved"
+}
+
 cmd_up() {
   local path="" port="" env_file=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --port) port="$2"; shift 2 ;;
       --env-file) env_file="$2"; shift 2 ;;
+      --dry-run) DRY_RUN=true; shift ;;
+      --output) [[ "${2:-}" == "json" ]] && OUTPUT_FORMAT="json"; shift 2 ;;
       *) path="$1"; shift ;;
     esac
   done
@@ -132,11 +194,8 @@ cmd_up() {
     exit 1
   fi
 
-  path=$(realpath "$path")
-  if [[ ! -d "$path" ]]; then
-    echo "Error: $path does not exist or is not a directory" >&2
-    exit 1
-  fi
+  validate_path "$path"
+  path="$VALIDATED_PATH"
 
   # Check Docker
   if ! docker info > /dev/null 2>&1; then
@@ -176,6 +235,26 @@ cmd_up() {
   # Check container state
   local state
   state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    local would_action
+    if [[ "$state" == "running" ]]; then
+      would_action="would_attach"
+    elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
+      would_action="would_resume"
+    else
+      would_action="would_create"
+    fi
+
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_out "{\"dry_run\":true,\"name\":\"$name\",\"action\":\"$would_action\",\"source_path\":\"$path\",\"name_disambiguated\":$name_disambiguated}"
+    else
+      echo "Would ${would_action#would_} container $name for $path"
+      echo "Would mount $path -> /workspace"
+      [[ "$would_action" != "would_attach" ]] && echo "Would run init script"
+    fi
+    return 0
+  fi
 
   if [[ "$state" == "running" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -313,6 +392,23 @@ cmd_down() {
 
 cmd_destroy() {
   local name="${1:?Error: name required. Usage: rc destroy <name>}"
+
+  # Verify container exists (for both dry-run and real run)
+  if ! docker inspect "$name" >/dev/null 2>&1; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
+    echo "Error: container $name not found" >&2; exit 1
+  fi
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_out "{\"dry_run\":true,\"name\":\"$name\",\"action\":\"would_destroy\",\"volumes_removed\":[\"rc-state-$name\",\"rc-history-$name\"]}"
+    else
+      echo "Would remove container $name"
+      echo "Would remove volumes: rc-state-$name, rc-history-$name"
+    fi
+    return 0
+  fi
+
   if ! docker rm -f "$name" >/dev/null 2>&1; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
     echo "Error: container $name not found" >&2; exit 1
