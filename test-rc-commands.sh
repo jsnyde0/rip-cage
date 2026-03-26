@@ -4,7 +4,8 @@ set -uo pipefail
 # Test script for rc init and rc build commands
 # Each test prints PASS/FAIL and exits non-zero on first failure
 
-RC="/Users/jonat/code/personal/rip-cage/rc"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+RC="${SCRIPT_DIR}/rc"
 FAILURES=0
 
 pass() { echo "PASS: $1"; }

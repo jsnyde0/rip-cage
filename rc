@@ -114,7 +114,7 @@ cmd_up() {
 
   # Check image exists
   if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
-    echo "Error: Image $IMAGE not found. Run: docker buildx build -t rip-cage:latest ~/.claude/rip-cage/" >&2
+    echo "Error: Image $IMAGE not found. Run: rc build" >&2
     exit 1
   fi
 
