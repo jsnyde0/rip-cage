@@ -2,13 +2,16 @@
 set -euo pipefail
 
 IMAGE="rip-cage:latest"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 usage() {
   cat <<'EOF'
 Usage: rc <command> [args]
 
 Commands:
-  up <path> [--port PORT] [--env-file FILE]   Start or resume a container
+  build [docker-args...]                       Build the rip-cage image
+  init [--force] [path]                        Scaffold .devcontainer/devcontainer.json
+  up <path> [--port PORT] [--env-file FILE]    Start or resume a container
   ls                                           List rip-cage containers
   attach <name>                                Attach to container tmux session
   down <name>                                  Stop a container
@@ -16,6 +19,60 @@ Commands:
   test <name>                                  Run safety stack smoke test
 EOF
   exit 1
+}
+
+cmd_build() {
+  echo "Building $IMAGE from ${SCRIPT_DIR}/Dockerfile..."
+  docker build -t "$IMAGE" "$@" "$SCRIPT_DIR"
+}
+
+cmd_init() {
+  local force=0
+  local target=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force) force=1; shift ;;
+      *) target="$1"; shift ;;
+    esac
+  done
+
+  if [[ -z "$target" ]]; then
+    target="."
+  fi
+
+  local dest="${target}/.devcontainer/devcontainer.json"
+
+  if [[ -f "$dest" ]] && [[ "$force" -eq 0 ]]; then
+    echo "Error: ${dest} already exists. Use --force to overwrite." >&2
+    return 1
+  fi
+
+  mkdir -p "${target}/.devcontainer"
+
+  cat > "$dest" <<'DEVCONTAINER'
+{
+  "name": "Rip Cage",
+  "image": "rip-cage:latest",
+  "remoteUser": "agent",
+  "mounts": [
+    "source=rc-state-${devcontainerId},target=/home/agent/.claude-state,type=volume",
+    "source=rc-history-${devcontainerId},target=/commandhistory,type=volume",
+    "source=${localEnv:HOME}/.claude.json,target=/home/agent/.claude.json,type=bind",
+    "source=${localEnv:HOME}/.claude/CLAUDE.md,target=/home/agent/.rc-context/global-claude.md,type=bind,readonly",
+    "source=${localEnv:HOME}/CLAUDE.md,target=/home/agent/.rc-context/home-claude.md,type=bind,readonly"
+  ],
+  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; true'",
+  "containerEnv": {
+    "NODE_OPTIONS": "--max-old-space-size=4096"
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
+  "workspaceFolder": "/workspace",
+  "postStartCommand": "/usr/local/bin/init-rip-cage.sh"
+}
+DEVCONTAINER
+
+  echo "Created ${dest}"
 }
 
 # Derive container name from last two path components
@@ -194,6 +251,8 @@ cmd_test() {
 
 # Main dispatch
 case "${1:-}" in
+  build)   shift; cmd_build "$@" ;;
+  init)    shift; cmd_init "$@" ;;
   up)      shift; cmd_up "$@" ;;
   ls)      cmd_ls ;;
   attach)  shift; cmd_attach "$@" ;;
