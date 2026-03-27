@@ -424,7 +424,10 @@ resolve_name() {
     return
   fi
   local containers
-  containers=$(docker ps -a --filter label=rc.source.path --format '{{.Names}}')
+  if ! containers=$(docker ps -a --filter label=rc.source.path --format '{{.Names}}'); then
+    echo "Error: failed to list containers (is Docker running?)" >&2
+    return 1
+  fi
   local count
   count=$(echo "$containers" | grep -c . || true)
   if [[ "$count" -eq 0 ]]; then

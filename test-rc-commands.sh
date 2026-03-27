@@ -110,6 +110,25 @@ else
   fail "build command not working: $build_output"
 fi
 
+# --- Test 8: resolve_name surfaces Docker errors ---
+echo ""
+echo "=== Test 8: resolve_name surfaces Docker errors when docker ps fails ==="
+FAKE_DOCKER_DIR=$(mktemp -d)
+cat > "$FAKE_DOCKER_DIR/docker" <<'FAKE'
+#!/usr/bin/env bash
+echo "Cannot connect to the Docker daemon" >&2
+exit 1
+FAKE
+chmod +x "$FAKE_DOCKER_DIR/docker"
+# Call rc down (which calls resolve_name) with the fake docker on PATH
+docker_err_output=$(PATH="$FAKE_DOCKER_DIR:$PATH" "$RC" down 2>&1 || true)
+if echo "$docker_err_output" | grep -q "failed to list containers"; then
+  pass "resolve_name surfaces docker failure message"
+else
+  fail "resolve_name did not surface docker failure: $docker_err_output"
+fi
+rm -rf "$FAKE_DOCKER_DIR"
+
 # --- Cleanup ---
 rm -rf "$TEST_DIR" "$TEST_DIR2"
 
