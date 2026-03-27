@@ -61,7 +61,7 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # Non-root user
 RUN groupadd -g 1000 agent \
     && useradd -m -u 1000 -g agent -s /usr/bin/zsh agent \
-    && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown *" > /etc/sudoers.d/agent \
+    && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state" > /etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent
 
 # Copy rip-cage files
@@ -75,6 +75,10 @@ RUN chmod +x /usr/local/bin/init-rip-cage.sh \
 
 USER agent
 WORKDIR /home/agent
+# Pre-create mount targets so Docker inherits agent ownership on first use.
+# If Docker overrides ownership at mount time, init-rip-cage.sh has scoped
+# sudo chown as a fallback (see sudoers below).
+RUN mkdir -p /home/agent/.claude /home/agent/.claude-state
 COPY --chown=agent:agent zshrc /home/agent/.zshrc
 COPY --chown=agent:agent tmux.conf /home/agent/.tmux.conf
 CMD ["zsh"]
