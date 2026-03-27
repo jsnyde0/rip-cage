@@ -80,7 +80,7 @@ if [ -z "${VSCODE_INJECTION:-}" ] && [ -z "${REMOTE_CONTAINERS:-}" ]; then
   if command -v tmux > /dev/null 2>&1; then
     tmux new-session -d -s rip-cage -c /workspace 2>/dev/null || true
     tmux set-option -t rip-cage remain-on-exit on 2>/dev/null || true
-    tmux set-hook -t rip-cage pane-died 'respawn-pane' 2>/dev/null || true
+    tmux set-hook -t rip-cage pane-died 'respawn-pane -c /workspace' 2>/dev/null || true
     echo "[rip-cage] tmux session 'rip-cage' created (CLI mode)"
   fi
 fi
