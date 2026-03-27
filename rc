@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Bail out if running inside a container — rc is a host-only tool
+if [[ -f /.dockerenv ]]; then
+  echo "Error: rc is a host tool — it manages containers from outside." >&2
+  echo "You're already inside a rip-cage container. Run commands directly here." >&2
+  exit 1
+fi
+
 IMAGE="rip-cage:latest"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -8,7 +15,6 @@ OUTPUT_FORMAT="human"
 DRY_RUN=false
 
 # Output helpers
-json_out() { echo "$1" | jq -c .; }
 json_error() {
   local msg="$1" code="$2"
   jq -nc --arg error "$msg" --arg code "$code" '{error: $error, code: $code}'
@@ -47,7 +53,7 @@ cmd_build() {
   log "Building $IMAGE from ${SCRIPT_DIR}/Dockerfile..."
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     if docker build -t "$IMAGE" "$@" "$SCRIPT_DIR" >/dev/null 2>&1; then
-      json_out '{"image":"rip-cage:latest","action":"built","status":"success"}'
+      jq -nc '{image: "rip-cage:latest", action: "built", status: "success"}'
     else
       json_error "Build failed" "BUILD_FAILED"
     fi
@@ -71,10 +77,13 @@ cmd_init() {
     target="."
   fi
 
-  if [[ "$target" != "." ]]; then
-    validate_path "$target"
-    target="$VALIDATED_PATH"
-  fi
+  # Resolve relative paths (including ".") to absolute before validation
+  target=$(cd "$target" 2>/dev/null && pwd) || {
+    echo "Error: $target does not exist or is not a directory" >&2
+    return 1
+  }
+  validate_path "$target"
+  target="$VALIDATED_PATH"
 
   local dest="${target}/.devcontainer/devcontainer.json"
 
@@ -180,8 +189,8 @@ cmd_up() {
   local path="" port="" env_file=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --port) port="$2"; shift 2 ;;
-      --env-file) env_file="$2"; shift 2 ;;
+      --port) [[ $# -ge 2 ]] || { echo "Error: --port requires a value" >&2; exit 1; }; port="$2"; shift 2 ;;
+      --env-file) [[ $# -ge 2 ]] || { echo "Error: --env-file requires a value" >&2; exit 1; }; env_file="$2"; shift 2 ;;
       *) path="$1"; shift ;;
     esac
   done
@@ -282,7 +291,7 @@ cmd_up() {
         docker stop "$name" >/dev/null 2>&1
         jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
         '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
-        return
+        return 1
       fi
       echo "Error: init failed on resume. Stopping container so next 'rc up' retries." >&2
       docker stop "$name"
@@ -315,12 +324,12 @@ cmd_up() {
   if [[ -f "${HOME}/.claude.json" ]]; then
     run_args+=(-v "${HOME}/.claude.json:/home/agent/.claude.json")
   else
-    echo "Warning: ${HOME}/.claude.json not found — skipping mount"
+    log "Warning: ${HOME}/.claude.json not found — skipping mount"
   fi
   if [[ -f "${HOME}/.claude/.credentials.json" ]]; then
     run_args+=(-v "${HOME}/.claude/.credentials.json:/home/agent/.claude/.credentials.json")
   else
-    echo "Warning: ${HOME}/.claude/.credentials.json not found — skipping mount (auth may not work)"
+    log "Warning: ${HOME}/.claude/.credentials.json not found — skipping mount (auth may not work)"
   fi
 
   # CLAUDE.md mounts (read-only, only if source exists)
@@ -351,13 +360,16 @@ cmd_up() {
     run_args+=(-p "${port}:${port}")
   fi
   if [[ -n "$env_file" ]]; then
+    validate_path "$(dirname "$env_file")"
     run_args+=(--env-file "$env_file")
   fi
 
   run_args+=("$IMAGE" sleep infinity)
 
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    docker run "${run_args[@]}" >/dev/null
+    if ! docker run "${run_args[@]}" >/dev/null 2>&1; then
+      json_error "Failed to create container $name" "DOCKER_ERROR"
+    fi
   else
     docker run "${run_args[@]}"
   fi
@@ -373,7 +385,7 @@ cmd_up() {
       docker stop "$name" >/dev/null 2>&1
       jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
         '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
-      return
+      return 1
     fi
     echo "Error: init failed. Stopping container so next 'rc up' retries." >&2
     docker stop "$name"
@@ -389,26 +401,63 @@ cmd_up() {
 
 cmd_ls() {
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.Status}}\t{{.Label "rc.source.path"}}' | \
-      jq -Rsn '[inputs | rtrimstr("\n") | select(length > 0) | split("\t") | {name: .[0], status: .[1], source_path: .[2]}]'
+    docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "rc.source.path"}}' | \
+      jq -Rsn '[inputs | rtrimstr("\n") | select(length > 0) | split("\t") | {name: .[0], status: .[1], uptime: .[2], source_path: .[3]}]'
   else
     docker ps -a --filter label=rc.source.path --format "table {{.Names}}\t{{.Status}}\t{{.Label \"rc.source.path\"}}"
   fi
 }
 
+resolve_name() {
+  local name="${1:-}"
+  if [[ -n "$name" ]]; then
+    echo "$name"
+    return
+  fi
+  local containers
+  containers=$(docker ps -a --filter label=rc.source.path --format '{{.Names}}')
+  local count
+  count=$(echo "$containers" | grep -c . || true)
+  if [[ "$count" -eq 0 ]]; then
+    echo "Error: no rip-cage containers found." >&2
+    return 1
+  elif [[ "$count" -eq 1 ]]; then
+    echo "$containers"
+    return
+  else
+    echo "Error: multiple containers — specify a name:" >&2
+    echo "$containers" >&2
+    return 1
+  fi
+}
+
 cmd_attach() {
-  local name="${1:?Error: name required. Usage: rc attach <name>}"
+  local name
+  name=$(resolve_name "${1:-}") || exit 1
   docker exec -it "$name" tmux new-session -A -s rip-cage
 }
 
+verify_rc_container() {
+  local name="$1"
+  local label
+  label=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$name" 2>/dev/null || true)
+  if [[ -z "$label" ]]; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is not managed by rc" "CONTAINER_NOT_FOUND"
+    echo "Error: container $name is not managed by rc" >&2
+    exit 1
+  fi
+}
+
 cmd_down() {
-  local name="${1:?Error: name required. Usage: rc down <name>}"
+  local name
+  name=$(resolve_name "${1:-}") || exit 1
   local state
   state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
   if [[ -z "$state" ]]; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
     echo "Error: container $name not found" >&2; exit 1
   fi
+  verify_rc_container "$name"
   if [[ "$state" != "running" ]]; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is not running (state: $state)" "CONTAINER_NOT_RUNNING"
     echo "Error: container $name is not running (state: $state)" >&2; exit 1
@@ -425,11 +474,12 @@ cmd_down() {
 cmd_destroy() {
   local name="${1:?Error: name required. Usage: rc destroy <name>}"
 
-  # Verify container exists (for both dry-run and real run)
+  # Verify container exists and is managed by rc
   if ! docker inspect "$name" >/dev/null 2>&1; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
     echo "Error: container $name not found" >&2; exit 1
   fi
+  verify_rc_container "$name"
 
   if [[ "$DRY_RUN" == "true" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -463,7 +513,11 @@ cmd_destroy() {
   done
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local vol_json
-    vol_json=$(printf '%s\n' "${volumes_removed[@]}" | jq -R 'select(length > 0)' | jq -sc .)
+    if [[ ${#volumes_removed[@]} -eq 0 ]]; then
+      vol_json="[]"
+    else
+      vol_json=$(printf '%s\n' "${volumes_removed[@]}" | jq -R 'select(length > 0)' | jq -sc .)
+    fi
     jq -nc --arg name "$name" --arg action "destroyed" --argjson volumes_removed "$vol_json" \
       '{name: $name, action: $action, volumes_removed: $volumes_removed}'
   else
@@ -473,6 +527,7 @@ cmd_destroy() {
 
 cmd_test() {
   local name="${1:?Error: name required. Usage: rc test <name>}"
+  verify_rc_container "$name"
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local output
     output=$(docker exec "$name" /usr/local/lib/rip-cage/test-safety-stack.sh 2>&1) || true
@@ -509,6 +564,17 @@ while [[ $# -gt 0 ]]; do
     *) break ;;  # first non-flag arg is the subcommand
   esac
 done
+
+# Reject --dry-run on commands that don't support it
+if [[ "$DRY_RUN" == "true" ]]; then
+  case "${1:-}" in
+    up|destroy) ;;  # supported
+    *)
+      echo "Error: --dry-run is only supported for 'up' and 'destroy'" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 # Main dispatch
 case "${1:-}" in

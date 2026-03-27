@@ -118,13 +118,13 @@ fi
 # --- Test 10: --dry-run flag is accepted (parsed without error) ---
 echo ""
 echo "=== Test 10: --dry-run flag is accepted ==="
-dryrun_output=$("$RC" --dry-run ls 2>/dev/null) || true
-# Should not error about unknown flag — just run the command normally for now
-# (--dry-run behavior is for a future bead, but parsing should work)
-if [[ $? -le 1 ]]; then
-  pass "--dry-run flag is accepted without parse error"
+# --dry-run should be rejected for ls (only supported on up/destroy)
+dryrun_exit=0
+dryrun_output=$("$RC" --dry-run ls 2>&1) || dryrun_exit=$?
+if [[ $dryrun_exit -ne 0 ]]; then
+  pass "--dry-run correctly rejected for ls command"
 else
-  fail "--dry-run flag caused parse error"
+  fail "--dry-run should be rejected for ls, but was accepted"
 fi
 
 # --- Cleanup ---
