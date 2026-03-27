@@ -70,15 +70,37 @@ else
   fail "non-existent env-file was NOT rejected"
 fi
 
-# --- Test 4: Dockerfile sudoers does NOT contain npm install ---
+# --- Test 4: Dockerfile sudoers does NOT contain unrestricted chown ---
 echo ""
-echo "-- Test 4: Dockerfile sudoers has no npm install --"
+echo "-- Test 4: Dockerfile sudoers pins chown to exact paths --"
 SUDOERS_LINE=$(grep 'sudoers.d/agent' "$SCRIPT_DIR/Dockerfile")
-if echo "$SUDOERS_LINE" | grep -q 'npm install'; then
-  fail "sudoers still contains npm install"
-  echo "  Line: $SUDOERS_LINE"
+if echo "$SUDOERS_LINE" | grep -q '/usr/bin/chown \*'; then
+  fail "sudoers still contains unrestricted /usr/bin/chown *"
+elif echo "$SUDOERS_LINE" | grep -q '/usr/bin/chown agent'; then
+  pass "sudoers pins chown to exact paths (static check)"
 else
-  pass "sudoers does not contain npm install"
+  fail "sudoers does not contain any chown entry"
+fi
+
+# --- Test 5: Runtime sudoers verification (requires running container) ---
+echo ""
+echo "-- Test 5: runtime sudoers denies unsafe chown (skip if no container) --"
+CONTAINER=$(docker ps --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null | head -1)
+if [[ -z "$CONTAINER" ]]; then
+  echo "  SKIP: no running rip-cage container"
+else
+  # Should be denied: chown on safety-stack binary
+  if docker exec "$CONTAINER" sudo chown agent:agent /usr/local/bin/dcg 2>&1 | grep -qi 'not allowed\|sorry\|permission'; then
+    pass "runtime: sudo chown on /usr/local/bin/dcg denied"
+  else
+    fail "runtime: sudo chown on /usr/local/bin/dcg was NOT denied"
+  fi
+  # Should succeed: chown on allowed path
+  if docker exec "$CONTAINER" sudo chown agent:agent /home/agent/.claude 2>/dev/null; then
+    pass "runtime: sudo chown on /home/agent/.claude allowed"
+  else
+    fail "runtime: sudo chown on /home/agent/.claude denied"
+  fi
 fi
 
 echo ""
