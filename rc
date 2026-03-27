@@ -204,6 +204,16 @@ cmd_up() {
   validate_path "$path"
   path="$VALIDATED_PATH"
 
+  # Validate env-file early (before dry-run exit) to catch symlink bypasses
+  if [[ -n "$env_file" ]]; then
+    local resolved_env
+    resolved_env=$(realpath "$env_file" 2>/dev/null) || {
+      echo "Error: env file not found: $env_file" >&2; exit 1
+    }
+    validate_path "$(dirname "$resolved_env")"
+    env_file="$resolved_env"
+  fi
+
   # Check Docker
   if ! docker info > /dev/null 2>&1; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Docker is not running" "DOCKER_NOT_RUNNING"
@@ -360,7 +370,6 @@ cmd_up() {
     run_args+=(-p "${port}:${port}")
   fi
   if [[ -n "$env_file" ]]; then
-    validate_path "$(dirname "$env_file")"
     run_args+=(--env-file "$env_file")
   fi
 
