@@ -14,6 +14,11 @@ FROM debian:bookworm
 ARG CLAUDE_CODE_VERSION=latest
 ARG BUN_VERSION=latest
 
+# Terminal / locale — needed for Claude Code's TUI to render correctly in tmux
+ENV TERM=xterm-256color
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+
 # System packages
 RUN apt-get update && apt-get install -y \
     curl wget git ssh openssh-client zsh tmux jq sudo \
@@ -71,4 +76,5 @@ RUN chmod +x /usr/local/bin/init-rip-cage.sh \
 USER agent
 WORKDIR /home/agent
 COPY --chown=agent:agent zshrc /home/agent/.zshrc
+COPY --chown=agent:agent tmux.conf /home/agent/.tmux.conf
 CMD ["zsh"]

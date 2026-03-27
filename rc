@@ -37,10 +37,10 @@ Commands:
   init [--force] [path]                        Scaffold .devcontainer/devcontainer.json
   up <path> [--port PORT] [--env-file FILE]    Start or resume a container
   ls                                           List rip-cage containers
-  attach <name>                                Attach to container tmux session
-  down <name>                                  Stop a container
-  destroy <name>                               Remove container and volumes
-  test <name>                                  Run safety stack smoke test
+  attach [name]                                Attach to container tmux session
+  down [name]                                  Stop a container
+  destroy [name]                               Remove container and volumes
+  test [name]                                  Run safety stack smoke test
 
 Global flags:
   --output json    Emit machine-readable JSON (must precede subcommand)
@@ -472,7 +472,8 @@ cmd_down() {
 }
 
 cmd_destroy() {
-  local name="${1:?Error: name required. Usage: rc destroy <name>}"
+  local name
+  name=$(resolve_name "${1:-}") || exit 1
 
   # Verify container exists and is managed by rc
   if ! docker inspect "$name" >/dev/null 2>&1; then
@@ -526,7 +527,8 @@ cmd_destroy() {
 }
 
 cmd_test() {
-  local name="${1:?Error: name required. Usage: rc test <name>}"
+  local name
+  name=$(resolve_name "${1:-}") || exit 1
   verify_rc_container "$name"
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local output

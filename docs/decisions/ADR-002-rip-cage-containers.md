@@ -228,9 +228,11 @@ In bind-mount mode, `/workspace` IS the host filesystem. An agent writing to `.g
 
 **Added:** 2026-03-26 (review finding)
 
-The agent user has sudo access scoped to: `apt-get`, `dpkg`, `npm install -g`, `chown`. Blanket `NOPASSWD:ALL` is replaced with command-specific allowances.
+The agent user has sudo access scoped to: `apt-get`, `dpkg`, `chown`. Blanket `NOPASSWD:ALL` is replaced with command-specific allowances.
 
-**Rationale:** The agent needs sudo for installing project dependencies (`apt-get install`, `npm install -g`). But blanket sudo lets the agent disable its own safety stack (`sudo rm /usr/local/bin/dcg`, `sudo chmod -x block-compound-commands.sh`). Scoping sudo to dependency installation commands preserves the needed capability while preventing safety-stack tampering. The safety stack is the container's internal defense-in-depth layer — it should not be user-modifiable at runtime.
+**Rationale:** The agent needs sudo for installing system packages (`apt-get install`) and fixing bind-mount ownership (`chown`). But blanket sudo lets the agent disable its own safety stack (`sudo rm /usr/local/bin/dcg`, `sudo chmod -x block-compound-commands.sh`). Scoping sudo to specific commands preserves the needed capability while preventing safety-stack tampering. The safety stack is the container's internal defense-in-depth layer — it should not be user-modifiable at runtime.
+
+**Amendment (2026-03-27):** `npm install -g` removed from sudoers. npm lifecycle scripts (`postinstall`) run as root, allowing a malicious package to tamper with the safety stack — the exact vector D12 exists to prevent. Global npm packages should be pre-installed in the Dockerfile. The agent can still `npm install` locally (no sudo) or use `npx`.
 
 **Alternatives considered:**
 
@@ -270,6 +272,68 @@ This merges the previous Phase 1a (devcontainer) and Phase 1b (`rc` CLI) into a 
 
 **What would invalidate this:** Per-project Dockerfile customization becomes necessary (e.g., projects need different system deps baked into the image). In that case, consider a layered image approach (project Dockerfile `FROM rip-cage:latest`).
 
+### D14: Container self-detection in `rc`
+
+**Firmness: FIRM**
+
+**Added:** 2026-03-27 (manual testing)
+
+The `rc` script checks for `/.dockerenv` at startup and exits with a helpful message if running inside a container. This prevents confusing errors when the bind-mounted workspace includes `rc` and a user (or agent) tries to run it inside the container.
+
+**Rationale:** `rc` calls Docker CLI commands to manage containers — it's inherently a host tool. Inside a container, Docker is not installed, so every `rc` command fails with `docker: command not found`. The `/.dockerenv` check is a Docker standard (not rip-cage-specific), so it catches the error regardless of which container the script ends up in.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **`/.dockerenv` check** | Docker standard, catches any container | Could false-positive in non-rip-cage containers |
+| Check `rc.source.path` label | Rip-cage-specific | Requires Docker CLI inside container (the problem we're solving) |
+| `command -v docker` check | Direct capability test | Fails differently if Docker is installed but broken |
+
+**What would invalidate this:** Need to run `rc` inside a container (e.g., nested containers, Docker-in-Docker). In that case, install Docker CLI in the image and remove this guard.
+
+### D15: Auto-select single container for name-required commands
+
+**Firmness: FLEXIBLE**
+
+**Added:** 2026-03-27 (manual testing)
+
+Commands that require a container name (`attach`, `down`, `destroy`, `test`) auto-select when exactly one rip-cage container exists. When zero or multiple exist, they error with a list.
+
+**Rationale:** The common case during development is a single container. Requiring `rc ls` → copy name → `rc test <name>` for every operation is tedious. Auto-select removes this friction without ambiguity risk (multiple containers still require explicit selection). Explicit names still work and are recommended for scripts/orchestrators.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **Auto-select single** | Zero friction in common case, safe | Subtle behavior change |
+| Always require name | Explicit, predictable | Tedious for single-container use |
+| Fuzzy match / partial names | Flexible | Ambiguous, error-prone |
+| `rc default <name>` | Explicit default | Extra state to manage |
+
+**What would invalidate this:** Users frequently run multiple containers and find the auto-select confusing. In that case, revert to always requiring a name.
+
+### D16: TUI rendering — locale, tmux config, synchronized output
+
+**Firmness: FLEXIBLE**
+
+**Added:** 2026-03-27 (manual testing)
+
+The container ships with UTF-8 locale (`LANG=C.UTF-8`), `TERM=xterm-256color`, and a `tmux.conf` that enables true color, UTF-8 overrides, and synchronized output (DEC Mode 2026). This makes Claude Code's TUI render correctly inside tmux in the container.
+
+**Rationale:** Claude Code's TUI uses box-drawing characters, 24-bit color, and emits 4,000-6,700 scroll events/sec during streaming. Without proper terminal settings, the TUI renders as garbled text with severe flickering. The fixes are: (1) UTF-8 locale so Unicode renders correctly, (2) `tmux-256color` terminal type so tmux advertises correct capabilities, (3) RGB terminal feature for true color passthrough, (4) synchronized output so tmux batches rapid scroll events into atomic redraws.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **tmux.conf + locale in image** | Works out of the box, no user config | Opinionated tmux config |
+| Document manual setup | No image changes | Poor UX, users won't do it |
+| Replace tmux with zellij | Better modern TUI support | Less mature, not yet supported by Claude Code |
+| Build tmux from source | Full sync support guaranteed | Adds build complexity, larger image |
+
+**What would invalidate this:** Claude Code stops relying on DEC 2026 for flicker-free rendering (e.g., ships its own frame batching). Or Claude Code ships a built-in terminal multiplexer, making tmux unnecessary.
+
 ## Related
 
 - [Rip Cage Design](../2026-03-25-rip-cage-design.md) — full design document
@@ -280,4 +344,5 @@ This merges the previous Phase 1a (devcontainer) and Phase 1b (`rc` CLI) into a 
 - [Claude Code Devcontainer](https://code.claude.com/docs/en/devcontainer) — Anthropic's reference devcontainer setup
 - [CAAM](https://github.com/Dicklesworthstone/coding_agent_account_manager) — credential manager for multi-account Claude Code; Phase 3 reference for multi-agent credential pooling
 - [Review Fixes Design](../2026-03-26-rip-cage-review-fixes.md) — fixes from 3-pass competitive review
+- [CLI UX + TUI Rendering Design](../2026-03-27-cli-ux-and-tui-rendering.md) — container self-detection, auto-select, tmux respawn, TUI fixes
 - **Competitive landscape:** [ClaudeCage](https://github.com/PACHAKUTlQ/ClaudeCage), [ClaudeBox](https://github.com/RchGrav/claudebox), [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/), [Trail of Bits devcontainer](https://github.com/trailofbits/claude-code-devcontainer), [Spritz](https://github.com/textcortex/spritz)
