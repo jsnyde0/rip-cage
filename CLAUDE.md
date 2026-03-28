@@ -62,10 +62,14 @@ After modifying the Dockerfile or any file that gets COPY'd into the image:
 ```bash
 ./rc build
 ./rc up /path/to/test/project
-./rc test <container-name>    # should be 6/6 PASS
+./rc test <container-name>    # should be 22/22 PASS
 ```
 
 For changes to `rc` itself, you can test without rebuilding the image.
+
+## Roadmap & design docs
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the phased plan, design docs, ADRs, and links to flywheel research repos (local clones at `~/code/personal/flywheel-research/`). Run `git pull` inside a research repo before reading it to get the latest upstream.
 
 ## Rules for AI agents calling rc
 
