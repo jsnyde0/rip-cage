@@ -192,23 +192,25 @@ The Dockerfile is structured to work as both a standalone container (via `rc` CL
 
 **What would invalidate this:** VS Code becomes too heavyweight or devcontainer support regresses. CLI-only workflows prove sufficient for all use cases.
 
-### D10: Beads (bd + Dolt) in the base image
+### D10: Beads (bd) in the base image
 
 **Firmness: FLEXIBLE**
 
-The base image includes the `bd` CLI and Dolt database engine, enabling beads-based issue tracking inside containers. `.beads/` data comes with the project via bind mount (local) or git clone (VPS).
+**Amended 2026-03-27:** Dolt removed per ADR-004 D1. bd remains in the image using `BD_NO_DB=true` (JSONL-only storage). The Go builder stage is kept to compile bd from source.
 
-**Rationale:** Beads is the standard issue tracking tool for this workflow. Without it in the container, agents can't create/close/track issues. The `bd prime` SessionStart hook loads beads context. Dolt is already a dependency (beads backend) and adds ~103MB to the image — acceptable for the capability it provides.
+The base image includes the `bd` CLI, enabling beads-based issue tracking inside containers. `.beads/` data comes with the project via bind mount (local) or git clone (VPS). bd operates in no-db mode — Dolt sync is not available inside containers (no SSH keys/aliases), so JSONL flat-file storage is used instead.
+
+**Rationale:** Beads is the standard issue tracking tool for this workflow. Without it in the container, agents can't create/close/track issues. The `bd prime` SessionStart hook loads beads context. Dolt was removed because it added ~103MB and was non-functional in containers — see ADR-004 D1 for the full rationale.
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **bd + Dolt in image** | Full issue tracking, consistent with host workflow | Adds ~103MB, Dolt is a large binary |
-| Exclude beads (Phase 1) | Smaller image | Agents can't track issues; track on host instead |
-| bd without Dolt (read-only) | Smaller | Can't create/close issues, limited utility |
+| bd + Dolt in image (original) | Full sync capability | 103MB, Dolt unusable in containers |
+| **bd without Dolt (BD_NO_DB=true)** | Same create/close/list workflow, 103MB savings | No `bd dolt push/pull` (already broken) |
+| Exclude beads entirely | Smaller image | Agents can't track issues |
 
-**What would invalidate this:** Beads replaced by a different issue tracking system. Dolt size becomes a problem on constrained VPS instances.
+**What would invalidate this:** Beads replaced by a different issue tracking system. bd publishes pre-built binaries (remove Go builder stage).
 
 ### D11: Deny `.git/hooks` writes in bind-mount mode
 

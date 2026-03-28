@@ -3,6 +3,11 @@ set -euo pipefail
 
 echo "[rip-cage] Initializing..."
 
+# Beads: connect to host's Dolt server instead of starting a new one (ADR-004 D1)
+# The bind-mounted .beads/dolt/ has OS-level locks from the host's server.
+export BEADS_DOLT_SERVER_MODE=1
+export BEADS_DOLT_SERVER_HOST="${BEADS_DOLT_SERVER_HOST:-host.docker.internal}"
+
 # 1. Fix ownership of bind-mounted dirs (Docker may create them as root)
 if [[ ! -L /home/agent/.claude ]]; then
   sudo chown agent:agent /home/agent/.claude 2>/dev/null || true
@@ -70,8 +75,14 @@ elif [ ! -f ~/.claude.json ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
   echo "[rip-cage] WARNING: No auth found (~/.claude/.credentials.json missing, ANTHROPIC_API_KEY not set)" >&2
 fi
 
-# 7. Initialize beads
+# 7. Initialize beads — connect to host's Dolt server via host.docker.internal
 if [ -d /workspace/.beads ]; then
+  export BEADS_DOLT_SERVER_MODE=1
+  export BEADS_DOLT_SERVER_HOST="${BEADS_DOLT_SERVER_HOST:-host.docker.internal}"
+  if [ -f /workspace/.beads/dolt-server.port ]; then
+    export BEADS_DOLT_SERVER_PORT=$(cat /workspace/.beads/dolt-server.port)
+    echo "[rip-cage] Beads: connecting to host Dolt server at ${BEADS_DOLT_SERVER_HOST}:${BEADS_DOLT_SERVER_PORT}"
+  fi
   if bd prime 2>/tmp/bd-prime.log; then
     echo "[rip-cage] Beads initialized"
   else

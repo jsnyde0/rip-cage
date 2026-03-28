@@ -35,7 +35,12 @@ Usage: rc [--output json] [--dry-run] <command> [args]
 Commands:
   build [docker-args...]                       Build the rip-cage image
   init [--force] [path]                        Scaffold .devcontainer/devcontainer.json
-  up <path> [--port PORT] [--env-file FILE]    Start or resume a container
+  up <path> [options]                           Start or resume a container
+    --port PORT         Expose a port
+    --env-file FILE     Load env vars from file
+    --cpus N            CPU limit (default: 2)
+    --memory SIZE       Memory limit (default: 4g)
+    --pids-limit N      PID limit (default: 500)
   ls                                           List rip-cage containers
   attach [name]                                Attach to container tmux session
   down [name]                                  Stop a container
@@ -109,8 +114,11 @@ cmd_init() {
   ],
   "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
-    "NODE_OPTIONS": "--max-old-space-size=4096"
+    "NODE_OPTIONS": "--max-old-space-size=4096",
+    "BEADS_DOLT_SERVER_MODE": "1",
+    "BEADS_DOLT_SERVER_HOST": "host.docker.internal"
   },
+  "runArgs": ["--cpus=2", "--memory=4g", "--memory-swap=4g", "--pids-limit=500"],
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
   "postStartCommand": "/usr/local/bin/init-rip-cage.sh"
@@ -187,10 +195,14 @@ validate_path() {
 
 cmd_up() {
   local path="" port="" env_file=""
+  local rc_cpus="2" rc_memory="4g" rc_pids_limit="500"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --port) [[ $# -ge 2 ]] || { echo "Error: --port requires a value" >&2; exit 1; }; port="$2"; shift 2 ;;
       --env-file) [[ $# -ge 2 ]] || { echo "Error: --env-file requires a value" >&2; exit 1; }; env_file="$2"; shift 2 ;;
+      --cpus) [[ $# -ge 2 ]] || { echo "Error: --cpus requires a value" >&2; exit 1; }; rc_cpus="$2"; shift 2 ;;
+      --memory) [[ $# -ge 2 ]] || { echo "Error: --memory requires a value" >&2; exit 1; }; rc_memory="$2"; shift 2 ;;
+      --pids-limit) [[ $# -ge 2 ]] || { echo "Error: --pids-limit requires a value" >&2; exit 1; }; rc_pids_limit="$2"; shift 2 ;;
       *) path="$1"; shift ;;
     esac
   done
@@ -330,6 +342,27 @@ cmd_up() {
     security find-generic-password -s "Claude Code-credentials" -w > "${HOME}/.claude/.credentials.json" 2>/dev/null || true
   fi
 
+  # D3: Credential health check — warn on expired or soon-to-expire tokens
+  if [[ -s "${HOME}/.claude/.credentials.json" ]] && command -v jq &>/dev/null; then
+    local expiry
+    expiry=$(jq -r '.expiry // .expiresAt // empty' "${HOME}/.claude/.credentials.json" 2>/dev/null || true)
+    if [[ -n "$expiry" ]]; then
+      local expiry_epoch now_epoch
+      expiry_epoch=$(date -jf "%Y-%m-%dT%H:%M:%S" "${expiry%%[.+Z]*}" "+%s" 2>/dev/null || date -d "$expiry" "+%s" 2>/dev/null || true)
+      now_epoch=$(date "+%s")
+      if [[ -n "$expiry_epoch" ]]; then
+        local remaining=$(( expiry_epoch - now_epoch ))
+        if [[ "$remaining" -lt 0 ]]; then
+          echo "Warning: OAuth token is EXPIRED (expired $(( -remaining / 60 )) minutes ago)" >&2
+          echo "  Run 'claude auth login' on the host to refresh, or set ANTHROPIC_API_KEY" >&2
+        elif [[ "$remaining" -lt 600 ]]; then
+          echo "Warning: OAuth token expires in $(( remaining / 60 )) minutes" >&2
+          echo "  Consider running 'claude auth login' on the host to refresh" >&2
+        fi
+      fi
+    fi
+  fi
+
   # OAuth mounts (read-write, skip if missing to avoid Docker creating empty dirs)
   if [[ -f "${HOME}/.claude.json" ]]; then
     run_args+=(-v "${HOME}/.claude.json:/home/agent/.claude.json")
@@ -371,6 +404,17 @@ cmd_up() {
   fi
   if [[ -n "$env_file" ]]; then
     run_args+=(--env-file "$env_file")
+  fi
+
+  # Resource limits (D2)
+  run_args+=(--cpus="$rc_cpus" --memory="$rc_memory" --memory-swap="$rc_memory" --pids-limit="$rc_pids_limit")
+
+  # Beads: connect container's bd to host's Dolt server (avoids database lock conflict)
+  run_args+=(-e "BEADS_DOLT_SERVER_MODE=1")
+  run_args+=(-e "BEADS_DOLT_SERVER_HOST=host.docker.internal")
+  local dolt_port_file="${path}/.beads/dolt-server.port"
+  if [[ -f "$dolt_port_file" ]]; then
+    run_args+=(-e "BEADS_DOLT_SERVER_PORT=$(cat "$dolt_port_file")")
   fi
 
   run_args+=("$IMAGE" sleep infinity)
@@ -545,18 +589,24 @@ cmd_test() {
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local output
     output=$(docker exec "$name" /usr/local/lib/rip-cage/test-safety-stack.sh 2>&1) || true
-    local check_names="dcg_deny block_compound_deny settings_auto_mode settings_dcg_hook settings_block_compound_hook claude_version"
-    local checks="{}" overall="pass"
-    local i=0 k
-    for k in $check_names; do
-      i=$((i + 1))
-      if echo "$output" | grep -q "Test $i:.*PASS"; then
-        checks=$(echo "$checks" | jq --arg k "$k" '. + {($k): "pass"}')
-      else
-        checks=$(echo "$checks" | jq --arg k "$k" '. + {($k): "fail"}')
-        overall="fail"
+    # Parse PASS/FAIL lines into JSON array
+    local checks="[]" overall="pass"
+    while IFS= read -r line; do
+      if [[ "$line" =~ ^(PASS|FAIL)[[:space:]]+\[([0-9]+)\][[:space:]]+(.*) ]]; then
+        local status="${BASH_REMATCH[1],,}"  # lowercase
+        local idx="${BASH_REMATCH[2]}"
+        local desc="${BASH_REMATCH[3]}"
+        local test_name
+        test_name=$(echo "$desc" | sed 's/ — .*//')
+        local detail=""
+        if [[ "$desc" == *" — "* ]]; then
+          detail="${desc#* — }"
+        fi
+        checks=$(echo "$checks" | jq --arg name "$test_name" --arg status "$status" --arg detail "$detail" \
+          '. + [{name: $name, status: $status, detail: $detail}]')
+        [[ "$status" == "fail" ]] && overall="fail"
       fi
-    done
+    done <<< "$output"
     jq -nc --arg name "$name" --argjson checks "$checks" --arg overall "$overall" \
       '{name: $name, checks: $checks, overall: $overall}'
   else

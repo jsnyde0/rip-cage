@@ -44,8 +44,6 @@
       "Bash(bun run lint:*)",
       "Bash(ls:*)",
       "Bash(pwd)",
-      "Bash(head:*)",
-      "Bash(tail:*)",
       "Bash(echo:*)"
     ],
     "deny": [

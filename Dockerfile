@@ -49,7 +49,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
 # DCG (Dangerous Command Guard) — built from source in rust-builder stage
 COPY --from=rust-builder /usr/local/cargo/bin/dcg /usr/local/bin/dcg
 
-# Dolt (storage backend for beads)
+# Dolt (storage backend for beads) — required by bd v0.62.0+
+# Sync (push/pull) won't work without SSH keys, but local ops work fine
 RUN curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | bash
 
 # bd (beads issue tracker)

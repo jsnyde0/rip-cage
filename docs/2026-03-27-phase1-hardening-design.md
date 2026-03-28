@@ -1,7 +1,7 @@
 # Design: Rip Cage Phase 1 Hardening
 
 **Date:** 2026-03-27
-**Status:** Draft
+**Status:** Reviewed
 **Decisions:** [ADR-004](decisions/ADR-004-phase1-hardening.md)
 **Origin:** Phase 1 is feature-complete but has not been tested end-to-end. Several gaps (bloated image, no resource limits, no credential checks, thin test suite, minimal shell config) need fixing before real use.
 
@@ -21,6 +21,8 @@ The rip-cage implementation has all the pieces: `rc` CLI (592 lines bash), Docke
 
 5. **Minimal zshrc.** The container's shell config is bare. Agents benefit from aliases, modern CLI tool detection, and utility functions.
 
+6. **Allowlist includes file-reading commands.** `head:*` and `tail:*` are auto-approved in settings.json, contradicting the ADR-002 D5 amendment that removed `cat`, `grep`, and `find` for reading arbitrary files.
+
 ## Scope
 
 Internal improvements only. No new external tools, no architectural changes, no new commands. All changes are to existing files.
@@ -31,11 +33,9 @@ Internal improvements only. No new external tools, no architectural changes, no 
 
 ### Dockerfile
 
-**Remove Dolt installation.** Dolt is installed as a system binary (~103MB) and used as bd's storage backend. Inside containers, Dolt sync fails (no SSH keys/aliases). bd supports a `no-db` mode that uses JSONL files instead of Dolt, which is sufficient for container-local issue tracking.
+**Keep Dolt in the image.** bd v0.62.0 removed `no-db` mode — Dolt is now the only storage backend. The container's bd connects to the host's Dolt server via `host.docker.internal` (OrbStack/Docker Desktop DNS) instead of starting its own server. This avoids the database lock conflict that occurs when two Dolt processes try to open the same bind-mounted `.beads/dolt/` directory.
 
-Keep the Go builder stage -- bd is still compiled from source (it does not publish pre-built binaries). Remove only the Dolt installation step.
-
-**Expected savings:** ~103MB from the final image.
+Three env vars are set by `rc up` and `init-rip-cage.sh`: `BEADS_DOLT_SERVER_MODE=1` (external server, no auto-start), `BEADS_DOLT_SERVER_HOST=host.docker.internal`, and `BEADS_DOLT_SERVER_PORT` (read dynamically from `.beads/dolt-server.port`).
 
 ### rc script
 
@@ -47,18 +47,21 @@ Keep the Go builder stage -- bd is still compiled from source (it does not publi
 
 These are sane defaults for a single-agent container. They prevent a runaway process from starving the host while leaving enough room for normal development work (builds, test suites, language servers).
 
+Resource limits are set at container creation time. Passing `--cpus`/`--memory`/`--pids-limit` when resuming a stopped container has no effect — destroy and recreate to apply new limits.
+
 **User-overridable flags.** Add `--cpus`, `--memory`, and `--pids-limit` flags to `rc up`. These override the defaults. Parsing follows the existing flag-parsing pattern in `rc` (positional args first, flags after).
 
 **Credential health check before container start.** In `cmd_up`, after extracting OAuth tokens but before `docker run`:
 
-1. Check if `~/.claude/.credentials.json` exists
-2. If it exists, parse the `expiry` field (ISO 8601 timestamp)
-3. If expiry is less than 10 minutes from now, print a warning to stderr
-4. If expiry is in the past, print a stronger warning but do not block (the agent may use `ANTHROPIC_API_KEY` instead)
+1. Check if `~/.claude/.credentials.json` exists and is non-empty (`-s` test — the keychain extraction can produce an empty file on failure)
+2. If it exists, parse the `expiry` or `expiresAt` field (ISO 8601 timestamp)
+3. On macOS, strip timezone and fractional seconds before parsing: `${expiry%%[.+Z]*}` (macOS `date -jf` cannot handle timezone offsets like `+00:00`)
+4. If expiry is less than 10 minutes from now, print a warning to stderr
+5. If expiry is in the past, print a stronger warning but do not block (the agent may use `ANTHROPIC_API_KEY` instead)
 
 This is a warning, not a hard failure. The check uses `jq` and `date`, both available on macOS and in the container.
 
-**Expand `rc test` to 15+ checks.** Replace (or extend) the current 6-test smoke suite with a comprehensive health check. New checks:
+**Expand `rc test` to 25 checks.** Replace (or extend) the current 6-test smoke suite with a comprehensive health check:
 
 | # | Check | How |
 |---|-------|-----|
@@ -68,32 +71,52 @@ This is a warning, not a hard failure. The check uses `jq` and `date`, both avai
 | 4 | `/workspace` is writable | Touch and remove a temp file |
 | 5 | `~/.claude/settings.json` exists | File exists |
 | 6 | `settings.json` is valid JSON | `jq . < settings.json` succeeds |
-| 7 | `settings.json` has auto mode | `jq` query for `permissions.allow` |
-| 8 | DCG denies destructive command | Existing test |
-| 9 | Compound blocker denies chain | Existing test |
-| 10 | Auth present | `~/.claude/.credentials.json` exists OR `ANTHROPIC_API_KEY` is set |
-| 11 | Token not expired | Parse expiry from credentials file |
-| 12 | git available and identity set | `git config user.name` and `user.email` return values |
-| 13 | jq available | `jq --version` |
-| 14 | tmux available | `tmux -V` |
-| 15 | bd available | `bd --version` or `bd help` |
-| 16 | DNS resolution works | `getent hosts github.com` or `dig +short github.com` |
-| 17 | Sufficient disk space | `df /workspace` shows >1GB free |
-| 18 | Python3 available | `python3 --version` |
-| 19 | uv available | `uv --version` |
-| 20 | Node available | `node --version` |
-| 21 | bun available | `bun --version` |
+| 7 | `settings.json` has auto mode | `jq` query for `permissions.defaultMode` |
+| 8 | `settings.json` has DCG hook | `jq` query for hook command path |
+| 9 | `settings.json` has compound blocker hook | `jq` query for hook command path |
+| 10 | `settings.json` denies `.git/hooks` writes | `jq` query for deny rule |
+| 11 | DCG denies destructive command | Pipe test input to DCG binary |
+| 12 | Compound blocker denies chain | Pipe test input to blocker script |
+| 13 | Auth present (non-empty) | `~/.claude/.credentials.json` exists and is non-empty (`-s`), OR `ANTHROPIC_API_KEY` is set |
+| 14 | Token not expired | Parse expiry from credentials file |
+| 15 | git available and identity set | `git config user.name` and `user.email` return values |
+| 16 | claude available | `claude --version` |
+| 17 | jq available | `jq --version` |
+| 18 | tmux available | `tmux -V` |
+| 19 | bd available | `bd --version` |
+| 20 | python3 available | `python3 --version` |
+| 21 | uv available | `uv --version` |
+| 22 | node available | `node --version` |
+| 23 | bun available | `bun --version` |
+| 24 | gh available | `gh --version` |
+| 25 | DNS resolution works | `getent hosts github.com` or equivalent |
+| 26 | Sufficient disk space | `df /workspace` shows >1GB free |
 
-Output format: each check prints `PASS` or `FAIL` with a description. Summary line at the end with pass/fail counts. In `--output json` mode, emit a JSON object with a `checks` array (each entry has `name`, `status`, `detail`).
+Tool availability checks (16-24) use `command -v` as a gate before running the version command, to avoid false-positives where a "command not found" error message is captured as the "version" string.
+
+Output format: each check prints `PASS` or `FAIL` with a description. Summary line at the end with pass/fail counts. In `--output json` mode, emit a JSON object with a `checks` array (each entry has `name`, `status`, `detail`). The output format is parsed by `cmd_test` in `rc` — changes to the format must be coordinated.
+
+### rc init (devcontainer template)
+
+**Add Dolt server env vars and resource limits to devcontainer.json.** The devcontainer path must receive the same hardening as `rc up`:
+
+- Add `"BEADS_DOLT_SERVER_MODE": "1"` and `"BEADS_DOLT_SERVER_HOST": "host.docker.internal"` to `containerEnv`
+- The port is dynamic and must be read at startup by `init-rip-cage.sh`
+- Add `"runArgs": ["--cpus=2", "--memory=4g", "--memory-swap=4g", "--pids-limit=500"]` for resource limit parity.
 
 ### init-rip-cage.sh
 
-**Set bd to no-db mode for the container context.** The `/workspace` directory is a bind mount from the host. We must not modify the host's `.beads/config.yaml`. Instead:
+**Connect bd to host's Dolt server.** The bind-mounted `.beads/dolt/` has OS-level locks held by the host's Dolt server. Instead of starting a new server (which would fail with a lock conflict), the container connects to the host's server:
 
-- Set `BD_NO_DB=true` as an environment variable in the container (via `docker run -e BD_NO_DB=true` in `cmd_up`, or in the init script's environment)
-- If bd does not respect that env var, use `bd --no-db` flag on each invocation, or create a container-local config at `~/.config/beads/config.yaml` with `no-db: true` (bd checks XDG paths before `.beads/`)
+- Set `BEADS_DOLT_SERVER_MODE=1` (external server mode, disables auto-start)
+- Set `BEADS_DOLT_SERVER_HOST=host.docker.internal` (OrbStack/Docker Desktop DNS)
+- Read `BEADS_DOLT_SERVER_PORT` from `.beads/dolt-server.port` (dynamic port, changes each host restart)
 
-This lets bd operate with JSONL storage only. No Dolt binary needed, no sync failures.
+This gives the container full read-write access to beads via the host's Dolt server. Prerequisite: the host must have bd/Dolt running.
+
+### settings.json
+
+**Remove `head:*` and `tail:*` from the allowlist.** These read arbitrary files with the same security profile as `cat`, which was explicitly removed per the ADR-002 D5 amendment. `head ~/.claude/.credentials.json` reads auth tokens just as `cat` would. Consistency requires removing them.
 
 ### zshrc
 
@@ -102,7 +125,7 @@ Expand the minimal zshrc with agent-productive defaults. All aliases are conditi
 ```zsh
 # Modern CLI aliases (conditional)
 command -v eza  &>/dev/null && alias ls='eza'    || \
-command -v lsd  &>/dev/null && alias ls='lsd'
+command -v lsd  &>/dev/null && alias ls='lsd'    || true
 command -v bat  &>/dev/null && alias cat='bat --paging=never'
 command -v rg   &>/dev/null && alias grep='rg'
 
@@ -132,14 +155,16 @@ extract() {
 
 # Terminal type fallback (containers sometimes lack terminfo)
 [[ -z "$TERM" || "$TERM" == "dumb" ]] && export TERM=xterm-256color
-
-# PATH setup for container tools
-export PATH="$HOME/.local/bin:$PATH"
 ```
 
 ### test-safety-stack.sh
 
-The existing 6-test file is either replaced by the expanded test logic in `rc test`, or kept as a subset and extended. The expanded checks (21 items above) are implemented in the `cmd_test` function of the `rc` script, which already supports `--output json`. The standalone `test-safety-stack.sh` may be kept for running inside the container without `rc`.
+The existing 6-test file is either replaced by the expanded test logic in `rc test`, or kept as a subset and extended. The expanded checks (26 items above) are implemented in the `cmd_test` function of the `rc` script, which already supports `--output json`. The standalone `test-safety-stack.sh` may be kept for running inside the container without `rc`.
+
+### Documentation updates
+
+- **CLAUDE.md:** Update the "Container user model" section to reflect current sudoers policy. The `npm install -g *` entry was removed (commit e9fcc85) and `chown *` was narrowed to exact paths (commit f7db60c). The docs still describe the old policy.
+- **ADR-002 D10:** Amend to note that Dolt was removed per ADR-004 D1. Title should change from "bd + Dolt in the base image" to "bd in the base image (Dolt removed per ADR-004)".
 
 ---
 
@@ -147,13 +172,17 @@ The existing 6-test file is either replaced by the expanded test logic in `rc te
 
 **Image ~103MB smaller.** Removing Dolt is pure savings. bd continues to work with JSONL storage.
 
-**Containers have predictable resource usage.** Default limits (2 CPUs, 4GB RAM, 500 PIDs) prevent host starvation. Power users can override.
+**Containers have predictable resource usage.** Default limits (2 CPUs, 4GB RAM, 500 PIDs) prevent host starvation. Both `rc up` and devcontainer paths get the same defaults. Power users can override via flags or by editing the generated devcontainer.json.
 
-**Auth failures detected early.** Token expiry warnings at container start, not opaque errors mid-session.
+**Auth failures detected early.** Token expiry warnings at container start, not opaque errors mid-session. The credential check handles macOS date-parsing edge cases and avoids false-positives from empty credentials files.
 
 **Richer shell experience.** Agents get productive defaults without explicit setup. Conditional aliases mean no errors on missing tools.
 
-**More confidence from expanded health checks.** 21 checks vs 6 means catching missing tools, bad auth, disk pressure, and network issues before the agent starts work.
+**More confidence from expanded health checks.** 26 checks vs 6 means catching missing tools, bad auth, disk pressure, network issues, and — critically — that the safety stack hooks and deny rules are wired correctly in settings.json, not just that the binaries exist.
+
+**Settings are ephemeral.** `init-rip-cage.sh` overwrites `~/.claude/settings.json` on every start. This is intentional — it ensures image upgrades propagate new hooks/settings and prevents agents from weakening their own safety stack. For persistent customization, modify the image's `settings.json` and rebuild.
+
+**Tighter allowlist.** Removing `head:*` and `tail:*` closes a gap where file-reading commands were auto-approved despite the ADR-002 D5 policy.
 
 **No architectural changes.** All changes are within existing files and patterns. No new commands, no new dependencies (Dolt is removed, not added).
 
@@ -162,7 +191,3 @@ The existing 6-test file is either replaced by the expanded test logic in `rc te
 ## Open Questions
 
 1. **Should resource limits be configurable per-project?** A `.rc.yaml` in the project root could override defaults (e.g., a heavy build project might need `--cpus=4 --memory=8g`). Not needed for Phase 1 hardening -- the `rc up` flags handle this -- but worth considering if projects diverge significantly.
-
-2. **Should the credential check be a hard failure or warning?** Current proposal is warning-only because the agent may use `ANTHROPIC_API_KEY` instead of OAuth. But if neither auth method is present, should `rc up` refuse to start? Leaning toward: warn on expired token, hard-fail on no auth at all.
-
-3. **Should the expanded test suite live in `rc test` or stay in `test-safety-stack.sh`?** The `rc test` function already exists and supports `--output json`. Duplicating in a standalone script adds maintenance burden. Proposal: move everything to `rc test`, keep `test-safety-stack.sh` as a thin wrapper that calls `rc test` from inside the container.
