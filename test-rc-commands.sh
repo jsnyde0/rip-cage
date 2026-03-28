@@ -85,7 +85,7 @@ echo ""
 echo "=== Test 6: rc init with no path uses current directory ==="
 TEST_DIR2=$(mktemp -d)
 cd "$TEST_DIR2"
-"$RC" init
+RC_ALLOWED_ROOTS="$(dirname "$TEST_DIR2")" "$RC" init
 if [[ -f "$TEST_DIR2/.devcontainer/devcontainer.json" ]]; then
   pass "devcontainer.json created in current directory"
 else

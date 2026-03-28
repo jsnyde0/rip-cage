@@ -77,7 +77,7 @@ USER agent
 WORKDIR /home/agent
 # Pre-create mount targets so Docker inherits agent ownership on first use.
 # If Docker overrides ownership at mount time, init-rip-cage.sh has scoped
-# sudo chown as a fallback (see sudoers below).
+# sudo chown as a fallback (see sudoers above).
 RUN mkdir -p /home/agent/.claude /home/agent/.claude-state
 COPY --chown=agent:agent zshrc /home/agent/.zshrc
 COPY --chown=agent:agent tmux.conf /home/agent/.tmux.conf

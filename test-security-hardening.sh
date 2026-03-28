@@ -81,6 +81,9 @@ elif echo "$SUDOERS_LINE" | grep -q '/usr/bin/chown agent'; then
 else
   fail "sudoers does not contain any chown entry"
 fi
+if echo "$SUDOERS_LINE" | grep -q 'npm install'; then
+  fail "sudoers still contains npm install"
+fi
 
 # --- Test 5: Runtime sudoers verification (requires running container) ---
 echo ""
@@ -89,17 +92,24 @@ CONTAINER=$(docker ps --filter label=rc.source.path --format '{{.Names}}' 2>/dev
 if [[ -z "$CONTAINER" ]]; then
   echo "  SKIP: no running rip-cage container"
 else
-  # Should be denied: chown on safety-stack binary
-  if docker exec "$CONTAINER" sudo chown agent:agent /usr/local/bin/dcg 2>&1 | grep -qi 'not allowed\|sorry\|permission'; then
-    pass "runtime: sudo chown on /usr/local/bin/dcg denied"
+  CONTAINER_IMAGE=$(docker inspect "$CONTAINER" --format '{{.Image}}' 2>/dev/null)
+  LATEST_IMAGE=$(docker image inspect rip-cage:latest --format '{{.Id}}' 2>/dev/null)
+  echo "  Testing against container: $CONTAINER"
+  if [[ -n "$LATEST_IMAGE" ]] && [[ "$CONTAINER_IMAGE" != "$LATEST_IMAGE" ]]; then
+    echo "  SKIP: container uses stale image (rebuild with: rc destroy && rc up)"
   else
-    fail "runtime: sudo chown on /usr/local/bin/dcg was NOT denied"
-  fi
-  # Should succeed: chown on allowed path
-  if docker exec "$CONTAINER" sudo chown agent:agent /home/agent/.claude 2>/dev/null; then
-    pass "runtime: sudo chown on /home/agent/.claude allowed"
-  else
-    fail "runtime: sudo chown on /home/agent/.claude denied"
+    # Should be denied: chown on safety-stack binary
+    if docker exec "$CONTAINER" sudo chown agent:agent /usr/local/bin/dcg 2>&1 | grep -qi 'not allowed\|sorry\|permission'; then
+      pass "runtime: sudo chown on /usr/local/bin/dcg denied"
+    else
+      fail "runtime: sudo chown on /usr/local/bin/dcg was NOT denied"
+    fi
+    # Should succeed: chown on allowed path
+    if docker exec "$CONTAINER" sudo chown agent:agent /home/agent/.claude 2>/dev/null; then
+      pass "runtime: sudo chown on /home/agent/.claude allowed"
+    else
+      fail "runtime: sudo chown on /home/agent/.claude denied"
+    fi
   fi
 fi
 

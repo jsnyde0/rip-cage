@@ -26,7 +26,7 @@ fi
 # --- Test 2: sudoers pins chown to /home/agent/.claude ---
 echo ""
 echo "-- Test 2: sudoers allows chown for /home/agent/.claude --"
-if echo "$SUDOERS_LINE" | grep -q 'chown agent\\:agent /home/agent/.claude'; then
+if echo "$SUDOERS_LINE" | grep -q 'chown agent\\:agent /home/agent/.claude,'; then
   pass "sudoers allows chown for /home/agent/.claude"
 else
   fail "sudoers missing chown for /home/agent/.claude"

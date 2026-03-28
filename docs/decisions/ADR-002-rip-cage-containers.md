@@ -234,6 +234,8 @@ The agent user has sudo access scoped to: `apt-get`, `dpkg`, `chown`. Blanket `N
 
 **Amendment (2026-03-27):** `npm install -g` removed from sudoers. npm lifecycle scripts (`postinstall`) run as root, allowing a malicious package to tamper with the safety stack — the exact vector D12 exists to prevent. Global npm packages should be pre-installed in the Dockerfile. The agent can still `npm install` locally (no sudo) or use `npx`.
 
+**Amendment (2026-03-27):** `chown` scoped from wildcard (`chown *`) to exact paths: `/home/agent/.claude` and `/home/agent/.claude-state`. Pre-created directories in Dockerfile reduce chown necessity; exact-path sudoers serves as fallback when Docker overrides ownership at mount time. Wildcard `chown *` allowed argument-appending attacks (e.g., `sudo chown agent:agent /home/agent/.claude /usr/local/bin/dcg`). Symlink substitution risk acknowledged for Phase 1 — mitigated by `-L` check in init-rip-cage.sh.
+
 **Alternatives considered:**
 
 | Approach | Pros | Cons |

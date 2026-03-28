@@ -4,7 +4,9 @@ set -euo pipefail
 echo "[rip-cage] Initializing..."
 
 # 1. Fix ownership of bind-mounted dirs (Docker may create them as root)
-sudo chown agent:agent ~/.claude 2>/dev/null || true
+if [[ ! -L /home/agent/.claude ]]; then
+  sudo chown agent:agent /home/agent/.claude 2>/dev/null || true
+fi
 
 # Overwrite settings template
 mkdir -p ~/.claude
@@ -28,7 +30,9 @@ fi
 
 # 3. Restore persistent state from .claude-state volume
 if [ -d /home/agent/.claude-state ]; then
-  sudo chown agent:agent /home/agent/.claude-state
+  if [[ ! -L /home/agent/.claude-state ]]; then
+    sudo chown agent:agent /home/agent/.claude-state 2>/dev/null || true
+  fi
   for dir in projects sessions; do
     mkdir -p /home/agent/.claude-state/$dir
     ln -sfn /home/agent/.claude-state/$dir ~/.claude/$dir
