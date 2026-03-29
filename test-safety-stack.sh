@@ -60,7 +60,28 @@ else
   check "settings.json has auto mode" "fail"
 fi
 
-# 8. DCG denies destructive command
+# 8. settings.json has DCG hook wired
+if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/bin/dcg")' ~/.claude/settings.json >/dev/null 2>&1; then
+  check "settings.json wires DCG hook" "pass"
+else
+  check "settings.json wires DCG hook" "fail"
+fi
+
+# 9. settings.json has compound blocker hook wired
+if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/hooks/block-compound-commands.sh")' ~/.claude/settings.json >/dev/null 2>&1; then
+  check "settings.json wires compound blocker" "pass"
+else
+  check "settings.json wires compound blocker" "fail"
+fi
+
+# 10. settings.json denies .git/hooks writes
+if jq -e '.permissions.deny[] | select(startswith("Write(.git/hooks"))' ~/.claude/settings.json >/dev/null 2>&1; then
+  check "settings.json denies .git/hooks writes" "pass"
+else
+  check "settings.json denies .git/hooks writes" "fail"
+fi
+
+# 11. DCG denies destructive command
 dcg_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | /usr/local/bin/dcg 2>/dev/null || true)
 if echo "$dcg_result" | grep -qE '"permissionDecision".*"deny"'; then
   check "DCG denies destructive command" "pass"
@@ -68,7 +89,7 @@ else
   check "DCG denies destructive command" "fail" "$dcg_result"
 fi
 
-# 9. Compound blocker denies chain
+# 12. Compound blocker denies chain
 compound_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"ls && rm foo"}}' | /usr/local/lib/rip-cage/hooks/block-compound-commands.sh 2>/dev/null || true)
 if echo "$compound_result" | grep -qE '"permissionDecision".*"deny"'; then
   check "Compound blocker denies chain" "pass"
@@ -79,14 +100,14 @@ fi
 echo ""
 echo "-- Auth --"
 
-# 10. Auth present (credentials file OR API key)
+# 13. Auth present (credentials file OR API key)
 if [[ -f ~/.claude/.credentials.json ]] || [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   check "Auth present" "pass" "$([[ -f ~/.claude/.credentials.json ]] && echo "OAuth" || echo "API key")"
 else
   check "Auth present" "fail" "no credentials file and no ANTHROPIC_API_KEY"
 fi
 
-# 11. Token not expired (skip if using API key only)
+# 14. Token not expired (skip if using API key only)
 if [[ -f ~/.claude/.credentials.json ]] && command -v jq &>/dev/null; then
   expiry=$(jq -r '.expiry // .expiresAt // empty' ~/.claude/.credentials.json 2>/dev/null || true)
   if [[ -n "$expiry" ]]; then
@@ -110,7 +131,7 @@ fi
 echo ""
 echo "-- Git --"
 
-# 12. git available and identity set
+# 15. git available and identity set
 git_name=$(git config user.name 2>/dev/null || true)
 git_email=$(git config user.email 2>/dev/null || true)
 if [[ -n "$git_name" ]] && [[ -n "$git_email" ]]; then
@@ -122,8 +143,9 @@ fi
 echo ""
 echo "-- Tools --"
 
-# 13-20. Tool availability checks
+# 16-24. Tool availability checks
 for tool_check in \
+  "claude:claude --version" \
   "jq:jq --version" \
   "tmux:tmux -V" \
   "bd:bd --version" \
@@ -134,18 +156,18 @@ for tool_check in \
   "gh:gh --version"; do
   tool_name="${tool_check%%:*}"
   tool_cmd="${tool_check#*:}"
-  version=$($tool_cmd 2>&1 | head -1 || true)
-  if [[ -n "$version" ]]; then
+  if command -v "$tool_name" &>/dev/null; then
+    version=$($tool_cmd 2>&1 | head -1 || true)
     check "$tool_name available" "pass" "$version"
   else
-    check "$tool_name available" "fail"
+    check "$tool_name available" "fail" "not installed"
   fi
 done
 
 echo ""
 echo "-- Beads (functional) --"
 
-# bd can connect to Dolt and list issues (requires host Dolt server running)
+# 25. bd can connect to Dolt and list issues (requires host Dolt server running)
 if [ -d /workspace/.beads ]; then
   bd_output=$(cd /workspace && bd list 2>&1 || true)
   if echo "$bd_output" | grep -qE "(Total:|No issues found)"; then
@@ -163,14 +185,14 @@ fi
 echo ""
 echo "-- Network & Disk --"
 
-# 21. DNS resolution
+# 26. DNS resolution
 if getent hosts github.com >/dev/null 2>&1 || dig +short github.com >/dev/null 2>&1 || host github.com >/dev/null 2>&1; then
   check "DNS resolution (github.com)" "pass"
 else
   check "DNS resolution (github.com)" "fail"
 fi
 
-# 22. Sufficient disk space (>1GB free on /workspace)
+# 27. Sufficient disk space (>1GB free on /workspace)
 avail_kb=$(df /workspace 2>/dev/null | awk 'NR==2 {print $4}' || echo "0")
 avail_gb=$(( avail_kb / 1048576 ))
 if [[ "$avail_kb" -gt 1048576 ]]; then
