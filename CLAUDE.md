@@ -12,7 +12,7 @@ Host (macOS/Linux)
 ├── settings.json           Claude Code config — auto mode, allowlisted commands, PreToolUse hooks
 ├── hooks/
 │   └── block-compound-commands.sh   Denies &&, ;, || chains. Suggests splitting.
-├── test-safety-stack.sh    6-test smoke test for the safety stack
+├── test-safety-stack.sh    27-check health check for the safety stack
 └── zshrc                   Minimal zshrc for the container agent user
 ```
 
@@ -42,12 +42,11 @@ The allowlist in `settings.json` auto-approves safe commands (git read ops, uv, 
 
 ## Container user model
 
-The container runs as `agent` (uid 1000), not root. Sudo is restricted to:
-- `apt-get`, `dpkg` (install packages)
-- `npm install -g *` (global npm packages)
-- `chown *` (fix bind-mount ownership)
+The container runs as `agent` (uid 1000), not root. Sudo is restricted to exact paths:
+- `/usr/bin/apt-get`, `/usr/bin/dpkg` (install packages)
+- `/bin/chown agent:agent /home/agent/.claude`, `/bin/chown agent:agent /home/agent/.claude-state` (fix bind-mount ownership)
 
-This is defined in the Dockerfile's sudoers config.
+npm global installs do not use sudo (npm is configured with a user-writable prefix). This is defined in the Dockerfile's sudoers config with exact command paths (no wildcards).
 
 ## Key gotchas
 
@@ -62,7 +61,7 @@ After modifying the Dockerfile or any file that gets COPY'd into the image:
 ```bash
 ./rc build
 ./rc up /path/to/test/project
-./rc test <container-name>    # should be 22/22 PASS
+./rc test <container-name>    # should be 27/27 PASS
 ```
 
 For changes to `rc` itself, you can test without rebuilding the image.
