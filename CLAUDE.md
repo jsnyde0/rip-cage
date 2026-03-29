@@ -46,7 +46,7 @@ The container runs as `agent` (uid 1000), not root. Sudo is restricted to exact 
 - `/usr/bin/apt-get`, `/usr/bin/dpkg` (install packages)
 - `/bin/chown agent:agent /home/agent/.claude`, `/bin/chown agent:agent /home/agent/.claude-state` (fix bind-mount ownership)
 
-npm global installs do not use sudo (npm is configured with a user-writable prefix). This is defined in the Dockerfile's sudoers config with exact command paths (no wildcards).
+npm global installs are not available at runtime — no sudo for npm. Global packages must be pre-installed in the Dockerfile. Sudo is defined in the Dockerfile's sudoers config with exact command paths (no wildcards).
 
 ## Key gotchas
 

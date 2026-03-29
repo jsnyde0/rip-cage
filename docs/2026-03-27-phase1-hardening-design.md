@@ -164,13 +164,13 @@ The existing 6-test file is either replaced by the expanded test logic in `rc te
 ### Documentation updates
 
 - **CLAUDE.md:** Update the "Container user model" section to reflect current sudoers policy. The `npm install -g *` entry was removed (commit e9fcc85) and `chown *` was narrowed to exact paths (commit f7db60c). The docs still describe the old policy.
-- **ADR-002 D10:** Amend to note that Dolt was removed per ADR-004 D1. Title should change from "bd + Dolt in the base image" to "bd in the base image (Dolt removed per ADR-004)".
+- **ADR-002 D10:** Amend to reflect host-server connection approach per ADR-004 D1. Container bd connects to host's Dolt server via `host.docker.internal`.
 
 ---
 
 ## Consequences
 
-**Image ~103MB smaller.** Removing Dolt is pure savings. bd continues to work with JSONL storage.
+**Dolt connects to host server.** Container bd delegates Dolt operations to the host's Dolt server via `host.docker.internal`, avoiding database lock conflicts. Dolt is kept in the image as a required dependency for bd v0.62.0+.
 
 **Containers have predictable resource usage.** Default limits (2 CPUs, 4GB RAM, 500 PIDs) prevent host starvation. Both `rc up` and devcontainer paths get the same defaults. Power users can override via flags or by editing the generated devcontainer.json.
 
@@ -184,7 +184,7 @@ The existing 6-test file is either replaced by the expanded test logic in `rc te
 
 **Tighter allowlist.** Removing `head:*` and `tail:*` closes a gap where file-reading commands were auto-approved despite the ADR-002 D5 policy.
 
-**No architectural changes.** All changes are within existing files and patterns. No new commands, no new dependencies (Dolt is removed, not added).
+**No architectural changes.** All changes are within existing files and patterns. No new commands. Dolt is kept (required by bd v0.62.0+).
 
 ---
 

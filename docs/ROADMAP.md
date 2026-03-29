@@ -10,7 +10,7 @@
 Get the existing implementation working end-to-end and solid.
 
 - [ ] Validate Dockerfile builds cleanly
-- [ ] Drop Dolt, use bd no-db mode ([ADR-004 D1](decisions/ADR-004-phase1-hardening.md))
+- [x] Connect container bd to host Dolt server ([ADR-004 D1](decisions/ADR-004-phase1-hardening.md))
 - [ ] Add container resource limits ([ADR-004 D2](decisions/ADR-004-phase1-hardening.md))
 - [ ] Credential health check on start ([ADR-004 D3](decisions/ADR-004-phase1-hardening.md))
 - [ ] Expand `rc test` to 15+ checks ([ADR-004 D4](decisions/ADR-004-phase1-hardening.md))
@@ -77,7 +77,7 @@ Structured multi-agent coordination.
 | Document | What |
 |----------|------|
 | [Flywheel Investigation](2026-03-27-flywheel-investigation.md) | Full analysis of 18 Emanuel ecosystem tools |
-| [Phase 1 Hardening Design](2026-03-27-phase1-hardening-design.md) | Drop Dolt, resource limits, health checks, zshrc |
+| [Phase 1 Hardening Design](2026-03-27-phase1-hardening-design.md) | Host Dolt connection, resource limits, health checks, zshrc |
 | [Ecosystem Tools Design](2026-03-27-ecosystem-tools-design.md) | Build-arg toggles, UBS, tool integration pattern |
 | [Multi-Agent Architecture](2026-03-27-multi-agent-architecture.md) | 3-tier progressive model, coordination, monitoring |
 | [ADR-004](decisions/ADR-004-phase1-hardening.md) | Phase 1 hardening decisions |

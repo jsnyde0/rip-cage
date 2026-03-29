@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bd prime"
+            "command": "test -d /workspace/.beads && bd prime || true"
           }
         ]
       }
@@ -71,7 +71,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bd prime"
+            "command": "test -d /workspace/.beads && bd prime || true"
           }
         ]
       }

@@ -51,7 +51,8 @@ COPY --from=rust-builder /usr/local/cargo/bin/dcg /usr/local/bin/dcg
 
 # Dolt (storage backend for beads) — required by bd v0.62.0+
 # Sync (push/pull) won't work without SSH keys, but local ops work fine
-RUN curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | bash
+ARG DOLT_VERSION=1.84.0
+RUN curl -fsSL https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/install.sh | bash
 
 # bd (beads issue tracker)
 COPY --from=go-builder /go/bin/bd /usr/local/bin/bd

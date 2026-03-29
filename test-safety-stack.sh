@@ -75,7 +75,7 @@ else
 fi
 
 # 10. settings.json denies .git/hooks writes
-if jq -e '.permissions.deny[] | select(startswith("Write(.git/hooks"))' ~/.claude/settings.json >/dev/null 2>&1; then
+if jq -e '.permissions.deny[] | select(startswith("Write(.git/hooks")))' ~/.claude/settings.json >/dev/null 2>&1; then
   check "settings.json denies .git/hooks writes" "pass"
 else
   check "settings.json denies .git/hooks writes" "fail"
@@ -101,14 +101,14 @@ echo ""
 echo "-- Auth --"
 
 # 13. Auth present (credentials file OR API key)
-if [[ -f ~/.claude/.credentials.json ]] || [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-  check "Auth present" "pass" "$([[ -f ~/.claude/.credentials.json ]] && echo "OAuth" || echo "API key")"
+if [[ -s ~/.claude/.credentials.json ]] || [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+  check "Auth present" "pass" "$([[ -s ~/.claude/.credentials.json ]] && echo "OAuth" || echo "API key")"
 else
   check "Auth present" "fail" "no credentials file and no ANTHROPIC_API_KEY"
 fi
 
 # 14. Token not expired (skip if using API key only)
-if [[ -f ~/.claude/.credentials.json ]] && command -v jq &>/dev/null; then
+if [[ -s ~/.claude/.credentials.json ]] && command -v jq &>/dev/null; then
   expiry=$(jq -r '.expiry // .expiresAt // empty' ~/.claude/.credentials.json 2>/dev/null || true)
   if [[ -n "$expiry" ]]; then
     expiry_epoch=$(date -d "$expiry" "+%s" 2>/dev/null || date -jf "%Y-%m-%dT%H:%M:%S" "${expiry%%.*}" "+%s" 2>/dev/null || true)
@@ -171,7 +171,7 @@ echo "-- Beads (functional) --"
 if [ -d /workspace/.beads ]; then
   bd_output=$(cd /workspace && bd list 2>&1 || true)
   if echo "$bd_output" | grep -qE "(Total:|No issues found)"; then
-    issue_count=$(echo "$bd_output" | grep -oP 'Total: \K[0-9]+' || echo "0")
+    issue_count=$(echo "$bd_output" | sed -n 's/.*Total: \([0-9]*\).*/\1/p')
     check "bd connects to Dolt server" "pass" "${issue_count} issues"
   else
     # Extract first line of error for detail

@@ -409,6 +409,9 @@ cmd_up() {
   # Resource limits (D2)
   run_args+=(--cpus="$rc_cpus" --memory="$rc_memory" --memory-swap="$rc_memory" --pids-limit="$rc_pids_limit")
 
+  # Enable host.docker.internal on Linux Docker Engine (no-op on macOS where it exists natively)
+  run_args+=(--add-host=host.docker.internal:host-gateway)
+
   # Beads: connect container's bd to host's Dolt server (avoids database lock conflict)
   run_args+=(-e "BEADS_DOLT_SERVER_MODE=1")
   run_args+=(-e "BEADS_DOLT_SERVER_HOST=host.docker.internal")

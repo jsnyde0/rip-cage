@@ -196,18 +196,18 @@ The Dockerfile is structured to work as both a standalone container (via `rc` CL
 
 **Firmness: FLEXIBLE**
 
-**Amended 2026-03-27:** Dolt removed per ADR-004 D1. bd remains in the image using `BD_NO_DB=true` (JSONL-only storage). The Go builder stage is kept to compile bd from source.
+**Amended 2026-03-27:** Container bd connects to host's Dolt server via `host.docker.internal` (ADR-004 D1). Dolt is kept in the image as a required dependency for bd v0.62.0+.
 
-The base image includes the `bd` CLI, enabling beads-based issue tracking inside containers. `.beads/` data comes with the project via bind mount (local) or git clone (VPS). bd operates in no-db mode — Dolt sync is not available inside containers (no SSH keys/aliases), so JSONL flat-file storage is used instead.
+The base image includes `bd` CLI and Dolt, enabling beads-based issue tracking inside containers. `.beads/` data comes with the project via bind mount (local) or git clone (VPS). The container's bd connects to the host's Dolt server (set via `BEADS_DOLT_SERVER_MODE=1` and `BEADS_DOLT_SERVER_HOST=host.docker.internal`), avoiding database lock conflicts between host and container.
 
-**Rationale:** Beads is the standard issue tracking tool for this workflow. Without it in the container, agents can't create/close/track issues. The `bd prime` SessionStart hook loads beads context. Dolt was removed because it added ~103MB and was non-functional in containers — see ADR-004 D1 for the full rationale.
+**Rationale:** Beads is the standard issue tracking tool for this workflow. Without it in the container, agents can't create/close/track issues. The `bd prime` SessionStart hook loads beads context. Dolt is kept because bd v0.62.0+ requires it as a dependency; the container delegates actual Dolt serving to the host to avoid lock conflicts.
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| bd + Dolt in image (original) | Full sync capability | 103MB, Dolt unusable in containers |
-| **bd without Dolt (BD_NO_DB=true)** | Same create/close/list workflow, 103MB savings | No `bd dolt push/pull` (already broken) |
+| **bd + Dolt, connecting to host server** | Full bd functionality, no lock conflicts | Requires host Dolt server running |
+| bd without Dolt (BD_NO_DB=true) | Smaller image (~103MB savings) | Incompatible with bd v0.62.0+ |
 | Exclude beads entirely | Smaller image | Agents can't track issues |
 
 **What would invalidate this:** Beads replaced by a different issue tracking system. bd publishes pre-built binaries (remove Go builder stage).
