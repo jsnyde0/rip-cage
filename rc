@@ -423,7 +423,11 @@ cmd_up() {
   run_args+=("$IMAGE" sleep infinity)
 
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    if ! docker run "${run_args[@]}" >/dev/null 2>&1; then
+    local docker_stderr
+    if ! docker_stderr=$(docker run "${run_args[@]}" 2>&1 >/dev/null); then
+      if echo "$docker_stderr" | grep -q "is already in use by container"; then
+        json_error "Container name $name is already in use" "NAME_CONFLICT"
+      fi
       json_error "Failed to create container $name" "DOCKER_ERROR"
     fi
   else
@@ -617,6 +621,63 @@ cmd_test() {
   fi
 }
 
+cmd_schema() {
+  cat <<'SCHEMA'
+{
+  "version": "1",
+  "commands": {
+    "up": {
+      "args": [{"name": "path", "type": "path", "required": true}],
+      "flags": {
+        "--output": {"values": ["json"], "default": null},
+        "--dry-run": {"type": "bool", "default": false},
+        "--env-file": {"type": "path", "optional": true},
+        "--port": {"type": "string", "optional": true},
+        "--cpus": {"type": "string", "default": "2"},
+        "--memory": {"type": "string", "default": "4g"},
+        "--pids-limit": {"type": "string", "default": "500"}
+      }
+    },
+    "down": {
+      "args": [{"name": "name", "type": "string", "required": false, "note": "auto-selected if exactly one container exists"}],
+      "flags": {"--output": {"values": ["json"], "default": null}}
+    },
+    "destroy": {
+      "args": [{"name": "name", "type": "string", "required": false}],
+      "flags": {
+        "--output": {"values": ["json"], "default": null},
+        "--dry-run": {"type": "bool", "default": false}
+      }
+    },
+    "ls": {
+      "args": [],
+      "flags": {"--output": {"values": ["json"], "default": null}}
+    },
+    "test": {
+      "args": [{"name": "name", "type": "string", "required": false}],
+      "flags": {"--output": {"values": ["json"], "default": null}}
+    },
+    "attach": {
+      "args": [{"name": "name", "type": "string", "required": false}],
+      "flags": {}
+    },
+    "build": {
+      "args": [],
+      "flags": {"--output": {"values": ["json"], "default": null}}
+    },
+    "init": {
+      "args": [{"name": "path", "type": "path", "required": true}],
+      "flags": {"--force": {"type": "bool", "default": false}}
+    },
+    "schema": {
+      "args": [],
+      "flags": {}
+    }
+  }
+}
+SCHEMA
+}
+
 # Parse global flags
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -643,6 +704,17 @@ if [[ "$DRY_RUN" == "true" ]]; then
   esac
 fi
 
+# Reject --output json on commands that don't support it
+if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+  case "${1:-}" in
+    build|ls|up|down|destroy|test) ;;  # supported
+    init|attach|schema)
+      echo "Error: --output json is not supported for '${1:-}'" >&2
+      exit 1
+      ;;
+  esac
+fi
+
 # Main dispatch
 case "${1:-}" in
   build)   shift; cmd_build "$@" ;;
@@ -653,5 +725,6 @@ case "${1:-}" in
   down)    shift; cmd_down "$@" ;;
   destroy) shift; cmd_destroy "$@" ;;
   test)    shift; cmd_test "$@" ;;
+  schema)  cmd_schema ;;
   *)       usage ;;
 esac
