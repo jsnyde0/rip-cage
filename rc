@@ -338,6 +338,8 @@ cmd_up() {
   run_args+=(-v "${path}:/workspace:delegated")
 
   # Extract OAuth credentials from macOS keychain to file (if on macOS)
+  # Guard: Docker creates a dir at this path if the file didn't exist on a prior failed mount
+  [[ -d "${HOME}/.claude/.credentials.json" ]] && rmdir "${HOME}/.claude/.credentials.json" 2>/dev/null || true
   if [[ "$(uname)" == "Darwin" ]]; then
     security find-generic-password -s "Claude Code-credentials" -w > "${HOME}/.claude/.credentials.json" 2>/dev/null || true
   fi

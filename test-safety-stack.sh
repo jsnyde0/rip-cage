@@ -75,7 +75,7 @@ else
 fi
 
 # 10. settings.json denies .git/hooks writes
-if jq -e '.permissions.deny[] | select(startswith("Write(.git/hooks")))' ~/.claude/settings.json >/dev/null 2>&1; then
+if jq -e '.permissions.deny[] | select(startswith("Write(.git/hooks"))' ~/.claude/settings.json >/dev/null 2>&1; then
   check "settings.json denies .git/hooks writes" "pass"
 else
   check "settings.json denies .git/hooks writes" "fail"
