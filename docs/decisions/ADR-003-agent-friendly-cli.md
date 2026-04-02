@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Date:** 2026-03-26
 **Design:** [Agent-Friendly CLI Design](../2026-03-26-agent-friendly-cli-design.md)
-**Related:** [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md), [Rewrite Your CLI for AI Agents](https://justin.poehnelt.com/posts/rewrite-your-cli-for-ai-agents/)
+**Related:** [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md), [Rewrite Your CLI for AI Agents](https://justin.poehnelt.com/posts/rewrite-your-cli-for-ai-agents/), [Agent DX CLI Scale](https://raw.githubusercontent.com/jpoehnelt/skills/refs/heads/main/agent-dx-cli-scale/SKILL.md)
 
 ## Context
 
@@ -69,24 +69,111 @@ Validate all path arguments against an allowed-roots list. No default roots — 
 
 **What would invalidate this:** Container filesystem isolation becomes strong enough that bind-mounting any host path is safe (unlikely — bind mounts bypass container isolation by design).
 
-### D4: Agent context in AGENTS.md
+### D4: Agent context in CLAUDE.md
 
 **Firmness: FLEXIBLE**
 
-Extend the existing `AGENTS.md` with rules for AI agents invoking `rc` programmatically. Encodes invariants like "always use `--output json`", "always `--dry-run` before `rc destroy`", "don't construct container names, use `rc ls`".
+Add rules for AI agents invoking `rc` programmatically to the project's `CLAUDE.md`. Encodes invariants like "always use `--output json`", "always `--dry-run` before `rc destroy`", "don't construct container names, use `rc ls`".
 
-**Rationale:** The article calls these "agent skills" — structured context that makes implicit knowledge explicit. Rip-cage already ships `AGENTS.md` for in-container agents; extending it for `rc` callers is near-zero effort.
+**Rationale:** The article calls these "agent skills" — structured context that makes implicit knowledge explicit. `CLAUDE.md` is loaded automatically by Claude Code on session start, making it the most reliable delivery path for agent context. Originally planned for `AGENTS.md`, but `CLAUDE.md` proved more effective.
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **Extend AGENTS.md** | Already exists, single source of truth | Mixes in-container and host-side rules |
+| **Project CLAUDE.md** | Auto-loaded by Claude Code, no extra discovery step | Mixes agent rules with project docs |
+| Extend AGENTS.md | Dedicated agent context file | Not auto-loaded; agents must know to look for it |
 | Separate CONTEXT.md | Clean separation | Another file to maintain |
 | `rc --help` improvements | Discoverable | Agents don't read `--help` efficiently |
 | MCP tool descriptions | Native agent context | MCP surface doesn't exist yet |
 
 **What would invalidate this:** MCP surface with tool descriptions replaces the need for file-based agent context.
+
+### D5: `rc schema` for agent-readable command signatures
+
+**Firmness: FLEXIBLE**
+
+Add a `rc schema` subcommand that outputs a machine-readable JSON description of all commands, their arguments, accepted flags, and flag value constraints.
+
+**Rationale:** The [jpoehnelt Agent DX CLI Scale](https://raw.githubusercontent.com/jpoehnelt/skills/refs/heads/main/agent-dx-cli-scale/SKILL.md) scores schema introspection as axis 3 of 7. Without it, `rc` scores ~14/21 (agent-ready). With it, `rc` reaches ~16/21 (agent-first). The schema is static — `rc` has a fixed command set and no runtime reflection is needed. It can be a hardcoded JSON block with a version field, making it cheap to implement and easy to keep in sync.
+
+**Output format:**
+
+```json
+{
+  "version": "1",
+  "commands": {
+    "up": {
+      "args": [{"name": "path", "type": "path", "required": true}],
+      "flags": {
+        "--output": {"values": ["json"], "default": null},
+        "--dry-run": {"type": "bool", "default": false},
+        "--env-file": {"type": "path", "optional": true},
+        "--port": {"type": "string", "optional": true},
+        "--cpus": {"type": "string", "default": "2"},
+        "--memory": {"type": "string", "default": "4g"},
+        "--pids-limit": {"type": "string", "default": "500"}
+      }
+    },
+    "down": {
+      "args": [{"name": "name", "type": "string", "required": false, "note": "auto-selected if exactly one container exists"}],
+      "flags": {
+        "--output": {"values": ["json"], "default": null}
+      }
+    },
+    "destroy": {
+      "args": [{"name": "name", "type": "string", "required": false}],
+      "flags": {
+        "--output": {"values": ["json"], "default": null},
+        "--dry-run": {"type": "bool", "default": false}
+      }
+    },
+    "ls": {
+      "args": [],
+      "flags": {
+        "--output": {"values": ["json"], "default": null}
+      }
+    },
+    "test": {
+      "args": [{"name": "name", "type": "string", "required": false}],
+      "flags": {
+        "--output": {"values": ["json"], "default": null}
+      }
+    },
+    "attach": {
+      "args": [{"name": "name", "type": "string", "required": false}],
+      "flags": {}
+    },
+    "build": {
+      "args": [],
+      "flags": {
+        "--output": {"values": ["json"], "default": null}
+      }
+    },
+    "init": {
+      "args": [{"name": "path", "type": "path", "required": false, "default": "."}],
+      "flags": {
+        "--force": {"type": "bool", "default": false}
+      }
+    },
+    "schema": {
+      "args": [],
+      "flags": {}
+    }
+  }
+}
+```
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **`rc schema`** | Dedicated, discoverable, composable with `--output json` | New subcommand |
+| `rc help --json` | Consistent with `--output json` convention | Overloads `--help` semantics |
+| AGENTS.md only | No code required | File-based, can drift from implementation; not version-aware |
+| MCP tool descriptions | Native agent context | MCP surface doesn't exist yet |
+
+**What would invalidate this:** MCP tool definitions replace runtime schema discovery.
 
 ## Deferred
 

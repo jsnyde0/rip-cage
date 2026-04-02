@@ -135,7 +135,7 @@ container_name() {
   parent=$(basename "$(dirname "$path")")
   local base
   base=$(basename "$path")
-  echo "${parent}-${base}" | tr -cs 'a-zA-Z0-9_.-' '-' | sed 's/^-//' | sed 's/-$//'
+  echo "${parent}-${base}" | tr -cs 'a-zA-Z0-9_.-' '-' | sed 's/^[.-]*//' | sed 's/-$//'
 }
 
 validate_path() {
@@ -244,6 +244,11 @@ cmd_up() {
 
   local name
   name=$(container_name "$path")
+  if [[ -z "$name" ]]; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cannot derive container name from path: $path" "PATH_INVALID"
+    echo "Error: path components produce an empty container name: $path" >&2
+    exit 1
+  fi
 
   # Check for existing container
   local existing_path
@@ -339,7 +344,10 @@ cmd_up() {
 
   # Extract OAuth credentials from macOS keychain to file (if on macOS)
   # Guard: Docker creates a dir at this path if the file didn't exist on a prior failed mount
-  [[ -d "${HOME}/.claude/.credentials.json" ]] && rmdir "${HOME}/.claude/.credentials.json" 2>/dev/null || true
+  if [[ -d "${HOME}/.claude/.credentials.json" ]]; then
+    rmdir "${HOME}/.claude/.credentials.json" 2>/dev/null || \
+      echo "Warning: ${HOME}/.claude/.credentials.json is a non-empty directory artifact — credentials will not be extracted" >&2
+  fi
   if [[ "$(uname)" == "Darwin" ]]; then
     security find-generic-password -s "Claude Code-credentials" -w > "${HOME}/.claude/.credentials.json" 2>/dev/null || true
   fi
@@ -417,7 +425,44 @@ cmd_up() {
   # Beads: connect container's bd to host's Dolt server (avoids database lock conflict)
   run_args+=(-e "BEADS_DOLT_SERVER_MODE=1")
   run_args+=(-e "BEADS_DOLT_SERVER_HOST=host.docker.internal")
-  local dolt_port_file="${path}/.beads/dolt-server.port"
+  local beads_dir="${path}/.beads"
+  # Resolve beads redirect (worktrees share .beads/ via a redirect file)
+  if [[ -f "${beads_dir}/redirect" ]]; then
+    local redirect_target
+    redirect_target=$(cat "${beads_dir}/redirect")
+    # Security: reject absolute paths and control characters in redirect
+    if [[ "$redirect_target" == /* ]] || [[ "$redirect_target" =~ [[:cntrl:]] ]]; then
+      log "Warning: .beads/redirect contains absolute path or control chars — ignoring"
+    else
+      # Redirect is relative to the workspace root (project directory)
+      local resolved_beads
+      resolved_beads=$(realpath "${path}/${redirect_target}" 2>/dev/null || true)
+      if [[ -n "$resolved_beads" && -d "$resolved_beads" ]]; then
+        # Validate resolved path is under an allowed root (ADR-003 D3)
+        local beads_allowed=false
+        IFS=':' read -ra roots <<< "${RC_ALLOWED_ROOTS:-}"
+        for root in "${roots[@]}"; do
+          local resolved_root
+          resolved_root=$(realpath "$root" 2>/dev/null) || continue
+          if [[ "$resolved_beads" == "$resolved_root" ]] || [[ "$resolved_beads" == "$resolved_root"/* ]]; then
+            beads_allowed=true
+            break
+          fi
+        done
+        if [[ "$beads_allowed" == "true" ]]; then
+          log "Beads: resolved redirect → $resolved_beads"
+          beads_dir="$resolved_beads"
+          # Mount the real .beads/ over the worktree's redirect
+          run_args+=(-v "${resolved_beads}:/workspace/.beads:delegated")
+        else
+          log "Warning: .beads/redirect resolves to $resolved_beads which is outside allowed roots — ignoring"
+        fi
+      else
+        log "Warning: .beads/redirect points to $redirect_target but could not resolve"
+      fi
+    fi
+  fi
+  local dolt_port_file="${beads_dir}/dolt-server.port"
   if [[ -f "$dolt_port_file" ]]; then
     run_args+=(-e "BEADS_DOLT_SERVER_PORT=$(cat "$dolt_port_file")")
   fi
@@ -668,7 +713,7 @@ cmd_schema() {
       "flags": {"--output": {"values": ["json"], "default": null}}
     },
     "init": {
-      "args": [{"name": "path", "type": "path", "required": true}],
+      "args": [{"name": "path", "type": "path", "required": false, "default": "."}],
       "flags": {"--force": {"type": "bool", "default": false}}
     },
     "schema": {

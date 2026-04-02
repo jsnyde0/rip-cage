@@ -38,7 +38,7 @@ Make `rc` a **dual-audience CLI** — human-friendly by default, machine-readabl
 
 ### 1. `--output json` Flag
 
-**Applies to:** `rc ls`, `rc up`, `rc down`, `rc destroy`, `rc test`, `rc build`
+**Applies to:** `rc ls`, `rc up`, `rc down`, `rc destroy`, `rc test`, `rc build` (not `rc init` or `rc attach`)
 
 **Behavior:**
 - Default (no flag): current human-readable output, unchanged
@@ -60,7 +60,7 @@ Make `rc` a **dual-audience CLI** — human-friendly by default, machine-readabl
 ]
 ```
 
-Returns `[]` (empty array) when no containers exist. Never returns null.
+Returns `[]` (empty array) when no containers exist. Never returns null. Additional fields (e.g., multi-agent labels per ADR-006 D3) will be added as optional keys — consumers should tolerate unknown fields.
 
 #### `rc up <path> --output json`
 
@@ -104,19 +104,16 @@ Note: when `--output json` is passed, `rc up` must NOT `exec -it` into tmux on *
 ```json
 {
   "name": "personal-myproject",
-  "checks": {
-    "dcg_deny": "pass" | "fail",
-    "block_compound_deny": "pass" | "fail",
-    "settings_auto_mode": "pass" | "fail",
-    "settings_dcg_hook": "pass" | "fail",
-    "settings_block_compound_hook": "pass" | "fail",
-    "claude_version": "pass" | "fail"
-  },
+  "checks": [
+    {"name": "DCG denies rm -rf", "status": "pass", "detail": ""},
+    {"name": "Compound commands blocked", "status": "pass", "detail": ""},
+    ...
+  ],
   "overall": "pass" | "fail"
 }
 ```
 
-Check names correspond to the 6 tests in `test-safety-stack.sh`. If the test script gains new tests, corresponding keys should be added.
+`checks` is an array of objects, each with `name`, `status` (`"pass"` | `"fail"`), and `detail` (extra context, may be empty). The array grows automatically as `test-safety-stack.sh` adds checks (currently 27 per ADR-004 D4) — no schema change needed for new tests.
 
 #### `rc build --output json`
 
@@ -210,7 +207,7 @@ $ RC_ALLOWED_ROOTS=~/code/personal rc up ~/code/personal/../../../etc --output j
 
 ### 4. Agent Context File
 
-Ship a `CONTEXT.md` (or extend existing `AGENTS.md`) with agent-specific rules for invoking `rc`:
+Ship agent-specific rules for invoking `rc` in the project's `CLAUDE.md` (which Claude Code loads automatically on session start). See also: `rc schema` (section 5) for the machine-readable complement to this human-readable guidance.
 
 ```markdown
 ## Rules for AI agents calling `rc`
@@ -225,6 +222,73 @@ Ship a `CONTEXT.md` (or extend existing `AGENTS.md`) with agent-specific rules f
 - `rc attach` has no `--output json` mode — use `rc ls --output json` to verify container status before calling attach
 - Never call `rc destroy` without confirming with the user first
 ```
+
+### 5. `rc schema` Subcommand
+
+**Applies to:** top-level `rc` invocation — `rc schema`
+
+Returns a static JSON document describing all commands, their arguments, and accepted flags. The schema is hardcoded (no runtime reflection needed — `rc` has a fixed command set) with a `version` field so callers can detect changes.
+
+**Output format:**
+
+```json
+{
+  "version": "1",
+  "commands": {
+    "up": {
+      "args": [{"name": "path", "type": "path", "required": true}],
+      "flags": {
+        "--output": {"values": ["json"], "default": null},
+        "--dry-run": {"type": "bool", "default": false},
+        "--env-file": {"type": "path", "optional": true},
+        "--port": {"type": "string", "optional": true},
+        "--cpus": {"type": "string", "default": "2"},
+        "--memory": {"type": "string", "default": "4g"},
+        "--pids-limit": {"type": "string", "default": "500"}
+      }
+    },
+    "down": {
+      "args": [{"name": "name", "type": "string", "required": false, "note": "auto-selected if exactly one container exists"}],
+      "flags": {"--output": {"values": ["json"], "default": null}}
+    },
+    "destroy": {
+      "args": [{"name": "name", "type": "string", "required": false}],
+      "flags": {
+        "--output": {"values": ["json"], "default": null},
+        "--dry-run": {"type": "bool", "default": false}
+      }
+    },
+    "ls": {
+      "args": [],
+      "flags": {"--output": {"values": ["json"], "default": null}}
+    },
+    "test": {
+      "args": [{"name": "name", "type": "string", "required": false}],
+      "flags": {"--output": {"values": ["json"], "default": null}}
+    },
+    "attach": {
+      "args": [{"name": "name", "type": "string", "required": false}],
+      "flags": {}
+    },
+    "build": {
+      "args": [],
+      "flags": {"--output": {"values": ["json"], "default": null}}
+    },
+    "init": {
+      "args": [{"name": "path", "type": "path", "required": false, "default": "."}],
+      "flags": {"--force": {"type": "bool", "default": false}}
+    },
+    "schema": {
+      "args": [],
+      "flags": {}
+    }
+  }
+}
+```
+
+**Rationale:** The [jpoehnelt Agent DX CLI Scale](https://raw.githubusercontent.com/jpoehnelt/skills/refs/heads/main/agent-dx-cli-scale/SKILL.md) axis 3 (Schema Introspection) rewards CLIs that expose their own interface for runtime discovery. Without it, `rc` scores ~14/21 (agent-ready). With it, `rc` reaches ~16/21 (agent-first). An agent can call `rc schema` on first contact to understand what's available without needing to read AGENTS.md or parse `--help` prose.
+
+**Increment the `version` field** any time a command is added, a flag is added/removed, or an arg type changes. Callers can check `version` to detect drift. The schema follows an **additive-only** policy: new fields and commands may appear, but existing fields will not be removed or renamed. Consumers should tolerate unknown keys.
 
 ---
 
@@ -249,9 +313,9 @@ When stdout is not a TTY and `--output json` is not explicitly set, the CLI shou
 
 The `rc` script uses `set -euo pipefail`, which causes immediate exit on any unhandled failure — before a JSON error object can be emitted. In JSON mode, all Docker calls must be wrapped to catch failures and emit structured errors. Options: `trap 'emit_json_error' ERR` global handler, or explicit `if ! docker ...; then json_error ...; fi` per call. The latter is more predictable and recommended.
 
-### Signal handling
+### Signal handling (deferred)
 
-If `rc up` is interrupted (SIGINT/SIGTERM) after `docker run` but before init completes, the container is left in an indeterminate state. Implementation should add `trap` handlers in `cmd_up` to stop partially-created containers on interruption. Expected behavior by stage:
+If `rc up` is interrupted (SIGINT/SIGTERM) after `docker run` but before init completes, the container is left in an indeterminate state. Signal handlers (`trap`) are not yet implemented. The workaround is `rc destroy` + `rc up` to recover cleanly. If implemented, expected behavior by stage:
 
 - **Pre-create:** clean exit, no cleanup needed
 - **Post-create, pre-init:** stop and remove the container
@@ -259,7 +323,7 @@ If `rc up` is interrupted (SIGINT/SIGTERM) after `docker run` but before init co
 
 ### Concurrency
 
-Concurrent `rc up` calls for the same path have a TOCTOU race between `docker inspect` and `docker run`. This is a known limitation. Docker's name conflict error should be caught and mapped to `NAME_CONFLICT` error code. The Phase 3 orchestrator must serialize `rc up` calls per path, or handle `NAME_CONFLICT` as a retriable condition.
+Concurrent `rc up` calls for the same path have a TOCTOU race between `docker inspect` and `docker run`. The window is wider than a simple check-then-act because credential extraction, mount setup, and env-file validation run between the check and the create. This is a known limitation. Docker's name conflict error should be caught and mapped to `NAME_CONFLICT` error code (currently mapped to generic `DOCKER_ERROR`). The Phase 3 orchestrator must serialize `rc up` calls per path, or handle `NAME_CONFLICT` as a retriable condition.
 
 ### Backward compatibility
 
@@ -271,11 +335,15 @@ Concurrent `rc up` calls for the same path have a TOCTOU race between `docker in
 
 ## Phasing
 
-| Phase | Changes | Effort |
-|-------|---------|--------|
-| **P1: JSON output** | `--output json` on `ls`, `up`, `down`, `destroy`, `test`, `build` | Medium |
-| **P2: Dry-run** | `--dry-run` on `up` and `destroy` | Small |
-| **P3: Input hardening** | Path validation with allowed roots | Small |
-| **P4: Agent context** | Update AGENTS.md with `rc` invocation rules | Tiny |
+| Phase | Changes | Effort | Agent DX Score |
+|-------|---------|--------|---------------|
+| **P1: JSON output** | `--output json` on `ls`, `up`, `down`, `destroy`, `test`, `build` | Medium | ~11/21 |
+| **P2: Dry-run** | `--dry-run` on `up` and `destroy` | Small | ~13/21 |
+| **P3: Input hardening** | Path validation with allowed roots | Small | ~14/21 |
+| **P4: Agent context** | Update AGENTS.md with `rc` invocation rules | Tiny | ~14/21 |
+| **P5: Schema** | `rc schema` subcommand | Small | ~16/21 (agent-first) |
+
+Score bands per [jpoehnelt Agent DX CLI Scale](https://raw.githubusercontent.com/jpoehnelt/skills/refs/heads/main/agent-dx-cli-scale/SKILL.md): 11–15 = agent-ready, 16–21 = agent-first.
 
 P1-P3 can be implemented independently. P4 is documentation-only.
+
