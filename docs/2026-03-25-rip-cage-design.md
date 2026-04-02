@@ -228,11 +228,11 @@ Future extensibility: Rust toolchain, Django deps, AA, or other flywheel tools a
 
 ### Container Settings (`settings.json`)
 
-The container has its own `~/.claude/settings.json` baked into the image. Unlike with `--dangerously-skip-permissions` (which bypasses allow/deny lists entirely), **auto mode respects allow/deny lists** — they're checked before the classifier. This means we can have meaningful permission rules inside the container.
+The container has its own `~/.claude/settings.json` baked into the image. Permission mode is `bypassPermissions` (`--dangerously-skip-permissions`) — the container boundary is the safety layer, not the permission classifier. PreToolUse hooks still fire regardless of permission mode, providing in-container guardrails.
 
 Container `settings.json` contains:
-- **Permission mode**: `auto`
-- **Allow list**: narrow, safe patterns (e.g., `Bash(npm test)`, `Bash(uv sync)`) — auto mode drops overly broad rules like `Bash(*)` for safety
+- **Permission mode**: `bypassPermissions` (amended 2026-04-02, was `auto` — see ADR-002 D5)
+- **Allow/deny lists**: retained as documentation of intent, bypassed at runtime
 - **DCG hook** pointing to `/usr/local/bin/dcg` (pre-built binary)
 - **`block-compound-commands.sh`** hook at a container path
 - **`bd prime`** (SessionStart + PreCompact hooks) — beads context loading and recovery after compaction

@@ -9,7 +9,7 @@
 
 The AA (Approval Agent) project addresses the "approval monkey" problem by semantically evaluating commands. But there's a complementary approach: run agents inside containers where the blast radius is inherently limited. The container is the flywheel housing — it holds safety tools together and lets you be bolder with the tool stack inside. ACFS (Jeffrey Emanuel) proves this model works on throwaway Ubuntu VPSes. We want it locally on Mac too.
 
-The ecosystem already has several containerized Claude Code solutions (ClaudeCage, ClaudeBox, Docker Sandboxes, Trail of Bits devcontainer) but none combine hooks-inside-containers, auto mode, and VPS portability.
+The ecosystem already has several containerized Claude Code solutions (ClaudeCage, ClaudeBox, Docker Sandboxes, Trail of Bits devcontainer) but none combine hooks-inside-containers, fully autonomous execution, and VPS portability.
 
 ## Decisions
 
@@ -88,34 +88,38 @@ Containers are persistent (one per working directory). Started with `rc up`, sto
 
 **What would invalidate this:** Need for automatic worktree creation + container pairing for parallel agents. But that's Phase 3.
 
-### D5: Auto mode with phased hooks
+### D5: Bypass permissions with phased hooks
 
 **Firmness: FIRM**
 
-Agents run in Claude Code's **auto mode** (`--permission-mode auto`) inside containers. Auto mode uses a background classifier (Sonnet 4.6) to review actions autonomously, falling back to human prompts only when the classifier blocks repeatedly (3x in a row or 20x total).
+**Amended 2026-04-02:** Changed from auto mode to `bypassPermissions` after e2e validation showed auto mode's classifier prompts defeat the purpose of containerized autonomous execution.
 
-Safety comes from multiple layers: container isolation (hard boundary), hooks (DCG + block-compound return `"deny"`), auto mode classifier (reviews everything else), and human fallback (rare).
+Agents run with `--dangerously-skip-permissions` (`"defaultMode": "bypassPermissions"` in settings.json) inside containers. The permission system is entirely bypassed. Safety comes from the container boundary (hard limit on blast radius) and PreToolUse hooks (DCG + compound command blocker), which fire regardless of permission mode.
 
-Unlike `--dangerously-skip-permissions`, auto mode **respects allow/deny lists** (checked before the classifier) and doesn't bypass the permission system — it replaces human judgment with classifier judgment for most decisions.
+The key insight: **the container is the safety boundary, not the classifier.** If auto mode still requires human approval for edits, you might as well run auto mode on the host — the container adds no value. The whole point of rip-cage is fully autonomous background execution.
+
+Hooks provide two types of in-container safety:
+- **DCG** — blocks destructive commands, returns `"deny"` with explanation. Agent self-corrects.
+- **Compound command blocker** — rejects `&&`/`;`/`||`, returns `"deny"` with instructions to split. Agent self-corrects.
+
+Both are "block and redirect" hooks — they teach the agent to fix its approach without requiring human intervention. This is the correct pattern for autonomous containers.
 
 Phase 1 hooks: DCG (pre-built release binary), `block-compound-commands.sh`, and `bd prime` (beads, on both SessionStart and PreCompact). Host-specific hooks (`restrict-sensitive-paths.sh`, `allow-directory-commands.sh`, `notify.sh`, `block-harvest.sh`) are excluded — they depend on macOS binaries, host paths, or are redundant with container isolation.
 
-**Rationale:** Auto mode is Claude Code's officially recommended alternative to `--dangerously-skip-permissions`. It provides meaningful safety (classifier reviews each action, sees CLAUDE.md context, does NOT see tool results so can't be influenced by malicious file content) without constant human prompts. The container makes this even safer — if the classifier makes a mistake, the blast radius is limited to a container with dev credentials.
+**Rationale:** E2e validation (2026-04-02) confirmed that auto mode's classifier prompts for file edits and other operations, requiring human presence at the terminal. This contradicts rip-cage's core value proposition: launch an agent, walk away, come back to results. `bypassPermissions` eliminates all permission prompts while hooks continue to provide guardrails against destructive commands and compound command abuse.
 
-ACFS uses `--dangerously-skip-permissions` because it predates auto mode and runs on throwaway VPSes where the risk tolerance is higher. For local Mac containers, auto mode is the better fit — you get 99%+ autonomous operation with a real safety net.
+Allow/deny lists in settings.json are bypassed in this mode but retained as documentation of intent. They would re-activate if the devcontainer path (VS Code) uses auto mode instead.
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **Auto mode + phased hooks** | Classifier-based safety, respects allow/deny, human fallback | Requires Sonnet/Opus 4.6, slight latency per action |
-| `--dangerously-skip-permissions` + hooks | Zero latency, zero prompts | Bypasses allow/deny entirely, no classifier safety net |
+| **`bypassPermissions` + hooks** | Zero prompts, hooks still enforce safety, fully autonomous | No classifier safety net (container is the net) |
+| Auto mode + phased hooks | Classifier reviews actions | Still prompts humans — defeats containerized autonomy |
 | Normal permissions + AA | Maximum human control | Still an approval monkey (AA is Phase 2+) |
 | Normal permissions + expanded allow list | No new tools needed | Can't safely allow opaque commands |
 
-**Allow list policy (amended 2026-03-26):** The allow list must be narrow — only commands with no security-relevant side effects. Commands that read arbitrary files (`cat`, `grep`, `find`) or that can embed execution (`find -exec`) must go through the classifier, not the allow list. The allow list is a fast path for known-safe operations (build tools, version checks, git read commands), not a convenience shortcut. Review found `cat:*`, `find:*`, `grep:*` auto-approving auth file reads and arbitrary command execution — removed.
-
-**What would invalidate this:** Auto mode classifier causes too many false positives (blocking legitimate work). In that case, tune allow list to pre-approve known-safe patterns, or fall back to skip-permissions for specific containers.
+**What would invalidate this:** Hooks stop firing under `bypassPermissions` (currently confirmed they do fire). Or container isolation proves insufficient and an additional in-container safety layer is needed beyond hooks.
 
 ### D6: Bind mount default, clone mode as flag
 
@@ -180,7 +184,7 @@ On VPS (Phase 2), credentials are for the disposable environment. Rotate after u
 
 The Dockerfile is structured to work as both a standalone container (via `rc` CLI) and a VS Code devcontainer. Devcontainer is the primary local UX; CLI mode is for headless/VPS use.
 
-**Rationale:** Auto mode occasionally falls back to human prompts (when the classifier blocks repeatedly). In VS Code, these prompts appear naturally in the terminal — the user can respond immediately. In tmux, the user must `rc attach` to see/respond. VS Code also provides extensions, port forwarding, and file editing natively. Anthropic's own [Claude Code devcontainer](https://code.claude.com/docs/en/devcontainer) validates this pattern — same Dockerfile structure (non-root user, build args, postStartCommand, named volumes).
+**Rationale:** VS Code provides extensions, port forwarding, and file editing natively. Anthropic's own [Claude Code devcontainer](https://code.claude.com/docs/en/devcontainer) validates this pattern — same Dockerfile structure (non-root user, build args, postStartCommand, named volumes). With `bypassPermissions` mode (D5, amended 2026-04-02), permission prompts are eliminated entirely, so the original rationale about VS Code making prompts easier to respond to no longer applies. Devcontainer value is now purely about VS Code's development UX, not prompt handling.
 
 **Alternatives considered:**
 
@@ -344,7 +348,7 @@ The container ships with UTF-8 locale (`LANG=C.UTF-8`), `TERM=xterm-256color`, a
 - [ADR-001 Approval Agent](ADR-001-approval-agent-architecture.md) — complementary approach (semantic evaluation); future flywheel tool
 - [AA Design v2](../2026-03-23-approval-agent-design-v2.md) — the guardrails that may run inside containers in Phase 3
 - [ACFS](https://github.com/Dicklesworthstone/agentic_coding_flywheel_setup) — Jeffrey Emanuel's flywheel, inspiration for VPS-based approach
-- [Claude Code Auto Mode](https://code.claude.com/docs/en/permission-modes#eliminate-prompts-with-auto-mode) — official docs on the permission mode we use
+- [Claude Code Permission Modes](https://code.claude.com/docs/en/permission-modes) — official docs; we use `bypassPermissions` (was auto mode, amended 2026-04-02)
 - [Claude Code Devcontainer](https://code.claude.com/docs/en/devcontainer) — Anthropic's reference devcontainer setup
 - [CAAM](https://github.com/Dicklesworthstone/coding_agent_account_manager) — credential manager for multi-account Claude Code; Phase 3 reference for multi-agent credential pooling
 - [Review Fixes Design](../2026-03-26-rip-cage-review-fixes.md) — fixes from 3-pass competitive review

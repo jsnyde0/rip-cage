@@ -50,7 +50,7 @@
       "Write(.git/hooks/*)",
       "Edit(.git/hooks/*)"
     ],
-    "defaultMode": "auto"
+    "defaultMode": "bypassPermissions"
   },
   "skipAutoPermissionPrompt": true,
   "hooks": {
