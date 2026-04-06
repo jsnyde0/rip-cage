@@ -70,23 +70,39 @@ Containers are persistent (one per working directory). Started with `rc up`, sto
 
 **What would invalidate this:** Containers frequently get into bad state requiring destruction. Volume caching turns out to be simple enough to implement.
 
-### D4: Path-based launch, no special flags for worktrees
+### D4: Path-based launch with transparent worktree handling
 
 **Firmness: FIRM**
 
-`rc up <path>` mounts whatever directory you point it at. No `--worktree`, `--repo`, or `--branch` flags. The container doesn't care if it's a repo root, a worktree, or any directory.
+**Amended 2026-04-02:** Added transparent worktree git mount. No user-facing flags — `rc up` detects worktrees and fixes git paths automatically.
 
-**Rationale:** Emerged from brainstorming — worktrees, repo roots, and arbitrary directories are all just paths. The container mounts a path at `/workspace`. Adding worktree-awareness would be unnecessary complexity. Users create worktrees on the host (or inside the container) as they normally would.
+`rc up <path>` mounts whatever directory you point it at. No `--worktree`, `--repo`, or `--branch` flags. When the target is a git worktree (`.git` is a file, not a directory), `rc up` transparently mounts the main repo's `.git/` directory and overrides the `.git` file with container-correct paths. Git works inside the container without user intervention.
+
+**Worktree mount strategy (four mounts):**
+1. Detect: `.git` is a file containing `gitdir: <host-path>` with `/worktrees/` in the path (distinguishes from submodules which use `/modules/`)
+2. Resolve: relative gitdir paths to absolute (Git 2.13+ allows relative); derive main `.git/` directory
+3. Validate: main `.git/` path against `RC_ALLOWED_ROOTS` (ADR-003 D3)
+4. Mount: main `.git/` at `/workspace/.git-main:delegated` (writable), corrected `.git` file at `/workspace/.git:ro`, hooks at `/workspace/.git-main/hooks:ro` (read-only sub-mount prevents container escape — see D11)
+5. Report: `--output json` includes `worktree` metadata; `--dry-run` reports detection results
+6. Cleanup: temp `.git` file removed on `rc destroy`
+
+The corrected `.git` file contains `gitdir: /workspace/.git-main/worktrees/<name>`, which chains to `commondir: ../..` → `/workspace/.git-main/` for objects, refs, and config. The hooks `:ro` sub-mount is critical: under `bypassPermissions` (D5), deny rules are not enforced, so only a physical read-only mount prevents agents from writing host-executable hooks.
+
+See: [Worktree Git Mount Design](../2026-04-02-worktree-git-mount-design.md)
+
+**Rationale:** Emerged from brainstorming — worktrees, repo roots, and arbitrary directories are all just paths. The original design assumed git "just works" with a bind mount, but worktrees have host-absolute paths in their `.git` file that break inside containers. The fix is transparent: `rc up` detects and handles worktrees without any user-facing flags. The pattern mirrors the beads redirect fix (detect pointer file, resolve, validate, mount).
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **Path-based, no flags** | Simplest, most flexible | No worktree-aware features |
-| `--worktree` flag | Explicit intent | Unnecessary — it's just a path |
-| Container-per-worktree (automatic) | Maximum isolation | Over-engineered for Phase 1 |
+| **Path-based, transparent worktree fix** | No flags, git just works, same UX for repos and worktrees | Slightly more complex mount setup |
+| `--worktree` flag | Explicit intent | Unnecessary — detection is reliable |
+| `GIT_DIR` / `GIT_WORK_TREE` env vars | No file manipulation | Global, breaks multi-repo work |
+| Rewrite `.git` file in container | Simple | Modifies host file via bind mount |
+| Mount at host-absolute path | Zero path rewriting | Leaks host structure, fragile |
 
-**What would invalidate this:** Need for automatic worktree creation + container pairing for parallel agents. But that's Phase 3.
+**What would invalidate this:** Git changes worktree `.git` file format. Or submodules (which also use `.git` files) need different handling — test when submodule support is needed.
 
 ### D5: Bypass permissions with phased hooks
 
@@ -221,10 +237,13 @@ The base image includes `bd` CLI and Dolt, enabling beads-based issue tracking i
 **Firmness: FIRM**
 
 **Added:** 2026-03-26 (review finding)
+**Amended 2026-04-02:** Under `bypassPermissions` (D5), deny rules are documentation-only. For worktree containers, `.git-main/hooks/` is protected by a read-only sub-mount (D4). The deny rules in settings.json remain as documentation of intent.
 
 In bind-mount mode, `/workspace` IS the host filesystem. An agent writing to `.git/hooks/` creates scripts that execute on the host with full privileges when the user runs git commands — a container escape via the project's own git hooks. Settings.json denies `Write(.git/hooks/*)` and `Edit(.git/hooks/*)`.
 
-**Rationale:** The design doc's Known Limitations section identified this vector. The Write/Edit tools have no PreToolUse hooks in the container (container boundary is the protection for most paths), but `.git/hooks/` is special — it bridges back to the host via git's hook execution. A deny rule is low-cost defense-in-depth. Clone mode (Phase 2) eliminates this vector entirely since the container filesystem is isolated.
+For worktree containers, the main repo's `.git/` is mounted at `/workspace/.git-main` (D4). The hooks directory is protected by a read-only sub-mount (`-v .../hooks:/workspace/.git-main/hooks:ro`), which provides physical enforcement regardless of permission mode.
+
+**Rationale:** The design doc's Known Limitations section identified this vector. The Write/Edit tools have no PreToolUse hooks in the container (container boundary is the protection for most paths), but `.git/hooks/` is special — it bridges back to the host via git's hook execution. Under `bypassPermissions` mode (D5), deny rules are not enforced by the permission system — they serve as documentation of intent only. For the worktree `.git-main` mount path, a read-only sub-mount is the enforcement mechanism. Clone mode (Phase 2) eliminates this vector entirely since the container filesystem is isolated.
 
 **What would invalidate this:** Legitimate need for agents to modify git hooks inside the container (e.g., setting up pre-commit linting). In that case, use `core.hooksPath` pointing to a container-only directory instead.
 
@@ -351,6 +370,7 @@ The container ships with UTF-8 locale (`LANG=C.UTF-8`), `TERM=xterm-256color`, a
 - [Claude Code Permission Modes](https://code.claude.com/docs/en/permission-modes) — official docs; we use `bypassPermissions` (was auto mode, amended 2026-04-02)
 - [Claude Code Devcontainer](https://code.claude.com/docs/en/devcontainer) — Anthropic's reference devcontainer setup
 - [CAAM](https://github.com/Dicklesworthstone/coding_agent_account_manager) — credential manager for multi-account Claude Code; Phase 3 reference for multi-agent credential pooling
+- [Worktree Git Mount Design](../2026-04-02-worktree-git-mount-design.md) — transparent git worktree support in containers
 - [Review Fixes Design](../2026-03-26-rip-cage-review-fixes.md) — fixes from 3-pass competitive review
 - [CLI UX + TUI Rendering Design](../2026-03-27-cli-ux-and-tui-rendering.md) — container self-detection, auto-select, tmux respawn, TUI fixes
 - **Competitive landscape:** [ClaudeCage](https://github.com/PACHAKUTlQ/ClaudeCage), [ClaudeBox](https://github.com/RchGrav/claudebox), [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/), [Trail of Bits devcontainer](https://github.com/trailofbits/claude-code-devcontainer), [Spritz](https://github.com/textcortex/spritz)
