@@ -201,6 +201,51 @@ else
   check "Disk space >1GB on /workspace" "fail" "${avail_gb}GB free"
 fi
 
+if [[ -d /workspace/.git-main ]]; then
+  echo ""
+  echo "-- Worktree Git --"
+
+  # 28. Git functional: git status exits 0
+  if git -C /workspace status >/dev/null 2>&1; then
+    check "Git functional (git status exits 0)" "pass"
+  else
+    check "Git functional (git status exits 0)" "fail" "git status failed"
+  fi
+
+  # 29. Git pointer valid: /workspace/.git contains gitdir: pointing to an existing path
+  git_file_content=$(cat /workspace/.git 2>/dev/null || true)
+  if [[ "$git_file_content" == gitdir:\ * ]]; then
+    gitdir_path="${git_file_content#gitdir: }"
+    if [[ -e "$gitdir_path" ]]; then
+      check "Git pointer valid (.git contains gitdir: to existing path)" "pass" "$gitdir_path"
+    else
+      check "Git pointer valid (.git contains gitdir: to existing path)" "fail" "path does not exist: $gitdir_path"
+    fi
+  else
+    check "Git pointer valid (.git contains gitdir: to existing path)" "fail" "no gitdir: line in /workspace/.git"
+  fi
+
+  # 30. Worktree correct: git rev-parse --show-toplevel returns /workspace
+  toplevel=$(git -C /workspace rev-parse --show-toplevel 2>/dev/null || true)
+  check "Worktree correct (show-toplevel is /workspace)" "$([[ "$toplevel" == "/workspace" ]] && echo pass || echo fail)" "$toplevel"
+
+  # 31. Hooks protected: /workspace/.git-main/hooks is read-only (write attempt fails)
+  if touch /workspace/.git-main/hooks/.rc-test-write 2>/dev/null; then
+    rm -f /workspace/.git-main/hooks/.rc-test-write
+    check "Hooks protected (read-only mount)" "fail" "write succeeded — hooks are NOT read-only"
+  else
+    check "Hooks protected (read-only mount)" "pass"
+  fi
+
+  # 32. Objects accessible: git log --oneline -1 returns a commit
+  git_log=$(git -C /workspace log --oneline -1 2>/dev/null || true)
+  if [[ -n "$git_log" ]]; then
+    check "Objects accessible (git log --oneline -1)" "pass" "$git_log"
+  else
+    check "Objects accessible (git log --oneline -1)" "fail" "no output from git log"
+  fi
+fi
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed (of $TOTAL) ==="
 [[ "$FAIL" -eq 0 ]] || exit 1
