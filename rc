@@ -266,6 +266,63 @@ cmd_up() {
     fi
   fi
 
+  # Git worktree: fix .git pointer for container (the .git file contains host-absolute paths)
+  local wt_detected=false wt_name="" wt_main_git=""
+  if [[ -f "${path}/.git" ]]; then
+    local gitdir_line
+    gitdir_line=$(cat "${path}/.git")
+    if [[ "$gitdir_line" == gitdir:\ * ]]; then
+      local host_gitdir="${gitdir_line#gitdir: }"
+
+      # Security: reject control characters (clear host_gitdir to prevent fallthrough)
+      if [[ "$host_gitdir" =~ [[:cntrl:]] ]]; then
+        log "Warning: .git file contains control characters — skipping worktree mount"
+        host_gitdir=""
+      # Resolve relative gitdir paths to absolute (Git 2.13+ allows relative)
+      elif [[ "$host_gitdir" != /* ]]; then
+        host_gitdir=$(realpath "${path}/${host_gitdir}" 2>/dev/null)
+        if [[ -z "$host_gitdir" ]]; then
+          log "Warning: worktree .git file points to non-existent relative path — git will not work"
+        fi
+      fi
+
+      # Only handle worktrees, not submodules (.git/modules/<name>)
+      # Note: validate_path() does similar allowed-roots checking — see Security section
+      if [[ -n "$host_gitdir" && "$host_gitdir" == *"/worktrees/"* ]]; then
+        wt_name=$(basename "$host_gitdir")
+        local main_git_dir
+        main_git_dir=$(dirname "$(dirname "$host_gitdir")")
+
+        if [[ -d "$main_git_dir" ]]; then
+          local resolved_git_dir
+          resolved_git_dir=$(realpath "$main_git_dir" 2>/dev/null) || true
+          local git_allowed=false
+          IFS=':' read -ra roots <<< "${RC_ALLOWED_ROOTS:-}"
+          for root in "${roots[@]}"; do
+            local resolved_root
+            resolved_root=$(realpath "$root" 2>/dev/null) || continue
+            if [[ "$resolved_git_dir" == "$resolved_root"/* ]] || [[ "$resolved_git_dir" == "$resolved_root" ]]; then
+              git_allowed=true
+              break
+            fi
+          done
+
+          if [[ "$git_allowed" == "true" ]]; then
+            wt_detected=true
+            wt_main_git="$resolved_git_dir"
+            log "Worktree detected: ${wt_name} (main .git/ at ${wt_main_git})"
+          else
+            log "Warning: worktree's main .git/ at $main_git_dir is outside allowed roots — git will not work"
+          fi
+        else
+          log "Warning: worktree's main .git/ at $main_git_dir does not exist — git will not work"
+        fi
+      elif [[ -n "$host_gitdir" ]]; then
+        log "Skipping non-worktree .git file (submodule or other)"
+      fi
+    fi
+  fi
+
   # Check container state
   local state
   state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
@@ -281,11 +338,22 @@ cmd_up() {
     fi
 
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      jq -nc --arg name "$name" --arg action "$would_action" --arg source_path "$path" --argjson name_disambiguated "$name_disambiguated" --argjson dry_run true \
-        '{dry_run: $dry_run, name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated}'
+      if [[ "$wt_detected" == "true" ]]; then
+        jq -nc --arg name "$name" --arg action "$would_action" --arg source_path "$path" --argjson name_disambiguated "$name_disambiguated" --argjson dry_run true \
+          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" \
+          '{dry_run: $dry_run, name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
+      else
+        jq -nc --arg name "$name" --arg action "$would_action" --arg source_path "$path" --argjson name_disambiguated "$name_disambiguated" --argjson dry_run true \
+          '{dry_run: $dry_run, name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated}'
+      fi
     else
       echo "Would ${would_action#would_} container $name for $path"
       echo "Would mount $path -> /workspace"
+      if [[ "$wt_detected" == "true" ]]; then
+        echo "Would mount worktree main .git/ ($wt_main_git) -> /workspace/.git-main (writable)"
+        echo "Would mount corrected .git pointer -> /workspace/.git:ro"
+        echo "Would mount hooks -> /workspace/.git-main/hooks:ro"
+      fi
       [[ "$would_action" != "would_attach" ]] && echo "Would run init script"
     fi
     return 0
@@ -341,6 +409,17 @@ cmd_up() {
 
   # Workspace mount
   run_args+=(-v "${path}:/workspace:delegated")
+
+  # Git worktree mounts: fix .git pointer so git works inside the container
+  if [[ "$wt_detected" == "true" ]]; then
+    mkdir -p ~/.cache/rc
+    local gitfile="${HOME}/.cache/rc/${name}.gitfile"
+    (umask 077; echo "gitdir: /workspace/.git-main/worktrees/${wt_name}" > "$gitfile")
+    run_args+=(-v "${wt_main_git}:/workspace/.git-main:delegated")
+    run_args+=(-v "${gitfile}:/workspace/.git:ro")
+    run_args+=(-v "${wt_main_git}/hooks:/workspace/.git-main/hooks:ro")
+    log "Worktree: mounted main .git/ and corrected .git pointer for ${wt_name}"
+  fi
 
   # Extract OAuth credentials from macOS keychain to file (if on macOS)
   # Guard: Docker creates a dir at this path if the file didn't exist on a prior failed mount
@@ -499,8 +578,14 @@ cmd_up() {
     exit 1
   fi
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
-      '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
+    if [[ "$wt_detected" == "true" ]]; then
+      jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
+        --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" \
+        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
+    else
+      jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
+        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
+    fi
     return
   fi
   docker exec -it "$name" tmux new-session -A -s rip-cage
@@ -608,6 +693,8 @@ cmd_destroy() {
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
     echo "Error: container $name not found" >&2; exit 1
   fi
+  # Clean up worktree gitfile if it exists
+  rm -f "${HOME}/.cache/rc/${name}.gitfile"
   local volumes_removed=()
   for vol in "rc-state-${name}" "rc-history-${name}"; do
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
