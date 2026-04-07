@@ -267,7 +267,7 @@ cmd_up() {
   fi
 
   # Git worktree: fix .git pointer for container (the .git file contains host-absolute paths)
-  local wt_detected=false wt_name="" wt_main_git=""
+  local wt_detected=false wt_name="" wt_main_git="" wt_error=""
   if [[ -f "${path}/.git" ]]; then
     local gitdir_line
     gitdir_line=$(cat "${path}/.git")
@@ -277,12 +277,14 @@ cmd_up() {
       # Security: reject control characters (clear host_gitdir to prevent fallthrough)
       if [[ "$host_gitdir" =~ [[:cntrl:]] ]]; then
         log "Warning: .git file contains control characters — skipping worktree mount"
+        wt_error="control characters in .git file"
         host_gitdir=""
       # Resolve relative gitdir paths to absolute (Git 2.13+ allows relative)
       elif [[ "$host_gitdir" != /* ]]; then
         host_gitdir=$(realpath "${path}/${host_gitdir}" 2>/dev/null)
         if [[ -z "$host_gitdir" ]]; then
           log "Warning: worktree .git file points to non-existent relative path — git will not work"
+          wt_error="relative gitdir path does not exist"
         fi
       fi
 
@@ -290,32 +292,43 @@ cmd_up() {
       # Note: validate_path() does similar allowed-roots checking — see Security section
       if [[ -n "$host_gitdir" && "$host_gitdir" == *"/worktrees/"* ]]; then
         wt_name=$(basename "$host_gitdir")
-        local main_git_dir
-        main_git_dir=$(dirname "$(dirname "$host_gitdir")")
+        if [[ -z "$wt_name" || "$wt_name" == "." || "$wt_name" == ".." ]]; then
+          log "Warning: invalid worktree name '${wt_name}' — skipping worktree mount"
+          wt_error="invalid worktree name"
+          wt_name=""
+        fi
+        if [[ -n "$wt_name" ]]; then
+          local main_git_dir
+          main_git_dir=$(dirname "$(dirname "$host_gitdir")")
 
-        if [[ -d "$main_git_dir" ]]; then
-          local resolved_git_dir
-          resolved_git_dir=$(realpath "$main_git_dir" 2>/dev/null) || true
-          local git_allowed=false
-          IFS=':' read -ra roots <<< "${RC_ALLOWED_ROOTS:-}"
-          for root in "${roots[@]}"; do
-            local resolved_root
-            resolved_root=$(realpath "$root" 2>/dev/null) || continue
-            if [[ "$resolved_git_dir" == "$resolved_root"/* ]] || [[ "$resolved_git_dir" == "$resolved_root" ]]; then
-              git_allowed=true
-              break
+          if [[ -d "$main_git_dir" ]]; then
+            local resolved_git_dir
+            resolved_git_dir=$(realpath "$main_git_dir" 2>/dev/null) || true
+            local git_allowed=false
+            # Note: duplicates RC_ALLOWED_ROOTS check from validate_path() and beads redirect.
+            # If hardening one, harden all three. See also ~line 522 (beads redirect) and validate_path().
+            IFS=':' read -ra roots <<< "${RC_ALLOWED_ROOTS:-}"
+            for root in "${roots[@]}"; do
+              local resolved_root
+              resolved_root=$(realpath "$root" 2>/dev/null) || continue
+              if [[ "$resolved_git_dir" == "$resolved_root"/* ]] || [[ "$resolved_git_dir" == "$resolved_root" ]]; then
+                git_allowed=true
+                break
+              fi
+            done
+
+            if [[ "$git_allowed" == "true" ]]; then
+              wt_detected=true
+              wt_main_git="$resolved_git_dir"
+              log "Worktree detected: ${wt_name} (main .git/ at ${wt_main_git})"
+            else
+              log "Warning: worktree's main .git/ at $main_git_dir is outside allowed roots — git will not work"
+              wt_error="main .git/ at $main_git_dir is outside allowed roots"
             fi
-          done
-
-          if [[ "$git_allowed" == "true" ]]; then
-            wt_detected=true
-            wt_main_git="$resolved_git_dir"
-            log "Worktree detected: ${wt_name} (main .git/ at ${wt_main_git})"
           else
-            log "Warning: worktree's main .git/ at $main_git_dir is outside allowed roots — git will not work"
+            log "Warning: worktree's main .git/ at $main_git_dir does not exist — git will not work"
+            wt_error="main .git/ at $main_git_dir does not exist"
           fi
-        else
-          log "Warning: worktree's main .git/ at $main_git_dir does not exist — git will not work"
         fi
       elif [[ -n "$host_gitdir" ]]; then
         log "Skipping non-worktree .git file (submodule or other)"
@@ -342,6 +355,10 @@ cmd_up() {
         jq -nc --arg name "$name" --arg action "$would_action" --arg source_path "$path" --argjson name_disambiguated "$name_disambiguated" --argjson dry_run true \
           --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" \
           '{dry_run: $dry_run, name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
+      elif [[ -n "$wt_error" ]]; then
+        jq -nc --arg name "$name" --arg action "$would_action" --arg source_path "$path" --argjson name_disambiguated "$name_disambiguated" --argjson dry_run true \
+          --arg wt_error "$wt_error" \
+          '{dry_run: $dry_run, name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
       else
         jq -nc --arg name "$name" --arg action "$would_action" --arg source_path "$path" --argjson name_disambiguated "$name_disambiguated" --argjson dry_run true \
           '{dry_run: $dry_run, name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated}'
@@ -361,8 +378,18 @@ cmd_up() {
 
   if [[ "$state" == "running" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      jq -nc --arg name "$name" --arg action "attached" --arg source_path "$path" --arg status "running" --argjson name_disambiguated "$name_disambiguated" \
-        '{name: $name, action: $action, source_path: $source_path, status: $status, name_disambiguated: $name_disambiguated}'
+      if [[ "$wt_detected" == "true" ]]; then
+        jq -nc --arg name "$name" --arg action "attached" --arg source_path "$path" --arg status "running" --argjson name_disambiguated "$name_disambiguated" \
+          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" \
+          '{name: $name, action: $action, source_path: $source_path, status: $status, name_disambiguated: $name_disambiguated, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
+      elif [[ -n "$wt_error" ]]; then
+        jq -nc --arg name "$name" --arg action "attached" --arg source_path "$path" --arg status "running" --argjson name_disambiguated "$name_disambiguated" \
+          --arg wt_error "$wt_error" \
+          '{name: $name, action: $action, source_path: $source_path, status: $status, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
+      else
+        jq -nc --arg name "$name" --arg action "attached" --arg source_path "$path" --arg status "running" --argjson name_disambiguated "$name_disambiguated" \
+          '{name: $name, action: $action, source_path: $source_path, status: $status, name_disambiguated: $name_disambiguated}'
+      fi
       return
     fi
     echo "Container $name is already running. Attaching..."
@@ -384,8 +411,18 @@ cmd_up() {
     if [[ "$init_ok" == "false" ]]; then
       if [[ "$OUTPUT_FORMAT" == "json" ]]; then
         docker stop "$name" >/dev/null 2>&1
-        jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
-        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
+        if [[ "$wt_detected" == "true" ]]; then
+          jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
+            --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" \
+            '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
+        elif [[ -n "$wt_error" ]]; then
+          jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
+            --arg wt_error "$wt_error" \
+            '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
+        else
+          jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
+            '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
+        fi
         return 1
       fi
       echo "Error: init failed on resume. Stopping container so next 'rc up' retries." >&2
@@ -393,8 +430,18 @@ cmd_up() {
       exit 1
     fi
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
-        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
+      if [[ "$wt_detected" == "true" ]]; then
+        jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
+          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" \
+          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
+      elif [[ -n "$wt_error" ]]; then
+        jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
+          --arg wt_error "$wt_error" \
+          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
+      else
+        jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
+          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
+      fi
       return
     fi
     docker exec -it "$name" tmux new-session -A -s rip-cage
@@ -518,6 +565,8 @@ cmd_up() {
       resolved_beads=$(realpath "${path}/${redirect_target}" 2>/dev/null || true)
       if [[ -n "$resolved_beads" && -d "$resolved_beads" ]]; then
         # Validate resolved path is under an allowed root (ADR-003 D3)
+        # Note: duplicates RC_ALLOWED_ROOTS check from validate_path() and worktree allowed-roots loop.
+        # If hardening one, harden all three. See also ~line 304 (worktree allowed-roots) and validate_path().
         local beads_allowed=false
         IFS=':' read -ra roots <<< "${RC_ALLOWED_ROOTS:-}"
         for root in "${roots[@]}"; do
@@ -569,8 +618,18 @@ cmd_up() {
   if [[ "$init_ok" == "false" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       docker stop "$name" >/dev/null 2>&1
-      jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
-        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
+      if [[ "$wt_detected" == "true" ]]; then
+        jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
+          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" \
+          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
+      elif [[ -n "$wt_error" ]]; then
+        jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
+          --arg wt_error "$wt_error" \
+          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
+      else
+        jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
+          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
+      fi
       return 1
     fi
     echo "Error: init failed. Stopping container so next 'rc up' retries." >&2
@@ -582,6 +641,10 @@ cmd_up() {
       jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
         --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" \
         '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
+    elif [[ -n "$wt_error" ]]; then
+      jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
+        --arg wt_error "$wt_error" \
+        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
     else
       jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
         '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
