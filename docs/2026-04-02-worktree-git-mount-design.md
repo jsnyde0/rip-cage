@@ -16,7 +16,7 @@ When `rc up` targets a git worktree, git is broken inside the container. All git
 fatal: not a git repository: /Users/jonat/code/mapular/platform/mapular-platform/.git/worktrees/update-demographics
 ```
 
-**This is the primary use case, not an edge case.** Worktrees are the standard workflow for running rip-cage containers — each parallel task gets its own worktree and container. Every container that targets a worktree has broken git without this fix.
+**This is the primary use case, not an edge case.** Worktrees are the standard workflow for running rip-cage containers via `rc up` — each parallel task gets its own worktree and container. Every container that targets a worktree has broken git without this fix. (Note: the devcontainer path via `rc init` does not support worktrees — see Devcontainer Path below.)
 
 **Root cause:** Git worktrees use a `.git` *file* (not directory) containing a pointer to the main repo:
 
@@ -49,6 +49,8 @@ For git to work, it needs:
 1. `.git` file → valid worktree gitdir (has HEAD, index)
 2. Worktree gitdir's `commondir` → main `.git/` (has objects, refs, config)
 
+**Assumption:** `commondir` contains a relative path (`../..`). Git currently always writes relative `commondir` for worktrees. This is not explicitly documented as a guarantee in git-worktree(1), but has been stable across Git versions. If a future Git version changed `commondir` to an absolute host path, the fix chain would break — the mitigation would be an additional file mount overriding `commondir`.
+
 Both links are broken when only the worktree directory is mounted.
 
 ## Goal
@@ -72,6 +74,8 @@ In `rc up`, after resolving the target path, detect worktrees. Both worktrees an
 - Submodules: `gitdir: /path/.git/modules/<name>`
 
 The detection must distinguish between them to avoid silently producing broken git on submodules.
+
+Worktrees-of-worktrees (creating a worktree from a worktree) are handled correctly — the `.git` file always points into the *original* main repo's `.git/worktrees/`, so the detection and path resolution work identically.
 
 ```bash
 if [[ -f "${path}/.git" ]]; then
@@ -141,22 +145,30 @@ The main repo's `.git/` path must be validated against `RC_ALLOWED_ROOTS` (ADR-0
 
 Control character and null byte checks apply to the gitdir content (same as path validation elsewhere in `rc`).
 
-**Hooks protection:** The main `.git/hooks/` directory is mounted read-only via a sub-mount (see Mount Strategy). Under `bypassPermissions` mode, deny rules are documentation-only — the `:ro` mount is the actual enforcement mechanism. This prevents an agent from writing a hook (e.g., `pre-commit`) to `.git-main/hooks/` that would execute on the host with the user's full privileges when they run git commands in the main repo. This extends ADR-002 D11's intent to the `.git-main` mount path.
+**Hooks protection:** The main `.git/hooks/` directory is mounted read-only via a sub-mount (see Mount Strategy). Under `bypassPermissions` mode, deny rules are documentation-only — the `:ro` mount is the actual enforcement mechanism. This prevents an agent from writing a hook (e.g., `pre-commit`) to `.git-main/hooks/` that would execute on the host with the user's full privileges when they run git commands in the main repo. This extends ADR-002 D11's intent to the `.git-main` mount path. Deny rules for `Write(.git-main/hooks/*)` and `Edit(.git-main/hooks/*)` are intentionally omitted from `settings.json` — the `:ro` sub-mount is sufficient, and `.git-main` only exists in worktree containers.
+
+**Known risk — git config modification:** The writable `.git-main` mount allows the agent to modify `.git-main/config` (e.g., changing `remote.origin.url`). This persists after the container is destroyed and affects the host's main repo. Under `bypassPermissions`, neither the classifier nor DCG would flag `git config` commands. This is accepted because: if you trust an agent to commit code, you implicitly trust it not to poison git config. The same risk exists for the `/workspace` bind mount (the agent can modify any tracked file). Hooks are special-cased with `:ro` because they execute with the host user's full privileges — git config does not.
+
+**Path validation reuse:** The allowed-roots check for the main `.git/` path duplicates logic from `validate_path()` in `rc`. During implementation, consider calling `validate_path` directly (requires making it return a status code rather than exiting) or cross-reference it with a comment to ensure future hardening applies to both paths.
 
 ### Temp File Lifecycle
 
-The corrected `.git` file is written to a predictable host path:
+The corrected `.git` file is written to a user-scoped directory:
 ```
-/tmp/rc-<container-name>.gitfile
+~/.cache/rc/<container-name>.gitfile
 ```
 
-- **Created:** during `rc up`, before `docker run`
+Using `~/.cache/rc/` instead of `/tmp/` avoids TOCTOU race conditions — `/tmp` is world-writable, and the predictable filename (`rc-<container-name>.gitfile`) makes the path guessable. A tampered gitfile could redirect git's object store inside the container. The file is created with restrictive permissions (`umask 077`).
+
+- **Created:** during `rc up`, before `docker run` (`mkdir -p ~/.cache/rc`)
 - **Mounted:** as a file bind mount at `/workspace/.git`
 - **Cleaned up:** during `rc destroy` (alongside container and volumes)
 
+**Orphaned gitfiles:** If a container is removed outside of `rc destroy` (e.g., manual `docker rm`), the gitfile is orphaned in `~/.cache/rc/`. This is harmless (small files) but worth noting. A future `rc cleanup` command could detect orphaned gitfiles by checking for containers that no longer exist.
+
 ### Implementation in `rc`
 
-Add a worktree detection block in `cmd_up`, after the beads redirect block and before `docker run`. Detection and validation run before the dry-run exit point so that `--dry-run` can report worktree mounts; the actual mount arguments are only built in the non-dry-run path.
+Add a worktree detection block in `cmd_up`, after path validation and container name derivation, before the dry-run exit point. Detection and validation run before the dry-run exit point so that `--dry-run` can report worktree mounts; the actual mount arguments are only built in the non-dry-run path. (Note: this is *before* the beads redirect block, which runs after dry-run.)
 
 ```bash
 # Git worktree: fix .git pointer for container (the .git file contains host-absolute paths)
@@ -167,15 +179,20 @@ if [[ -f "${path}/.git" ]]; then
   if [[ "$gitdir_line" == gitdir:\ * ]]; then
     local host_gitdir="${gitdir_line#gitdir: }"
 
-    # Security: reject control characters
+    # Security: reject control characters (clear host_gitdir to prevent fallthrough)
     if [[ "$host_gitdir" =~ [[:cntrl:]] ]]; then
       log "Warning: .git file contains control characters — skipping worktree mount"
+      host_gitdir=""
     # Resolve relative gitdir paths to absolute (Git 2.13+ allows relative)
     elif [[ "$host_gitdir" != /* ]]; then
-      host_gitdir=$(realpath "${path}/${host_gitdir}" 2>/dev/null) || true
+      host_gitdir=$(realpath "${path}/${host_gitdir}" 2>/dev/null)
+      if [[ -z "$host_gitdir" ]]; then
+        log "Warning: worktree .git file points to non-existent relative path — git will not work"
+      fi
     fi
 
     # Only handle worktrees, not submodules (.git/modules/<name>)
+    # Note: validate_path() does similar allowed-roots checking — see Security section
     if [[ -n "$host_gitdir" && "$host_gitdir" == *"/worktrees/"* ]]; then
       wt_name=$(basename "$host_gitdir")
       local main_git_dir
@@ -212,11 +229,14 @@ if [[ -f "${path}/.git" ]]; then
 fi
 
 # --- dry-run exit point can go here, with wt_detected/wt_name/wt_main_git available ---
+# Dry-run JSON should include worktree metadata (wt_detected, wt_name, wt_main_git)
+# in the jq template — see JSON Output section.
 
 # Build worktree mount arguments (non-dry-run path only)
 if [[ "$wt_detected" == "true" ]]; then
-  local gitfile="/tmp/rc-${name}.gitfile"
-  echo "gitdir: /workspace/.git-main/worktrees/${wt_name}" > "$gitfile"
+  mkdir -p ~/.cache/rc
+  local gitfile="${HOME}/.cache/rc/${name}.gitfile"
+  (umask 077; echo "gitdir: /workspace/.git-main/worktrees/${wt_name}" > "$gitfile")
 
   # Mount main .git/ (writable for objects/refs), corrected .git file, hooks read-only
   run_args+=(-v "${wt_main_git}:/workspace/.git-main:delegated")
@@ -231,7 +251,7 @@ fi
 Add to the destroy flow:
 ```bash
 # Clean up worktree gitfile if it exists
-rm -f "/tmp/rc-${name}.gitfile"
+rm -f "${HOME}/.cache/rc/${name}.gitfile"
 ```
 
 ### JSON Output
@@ -306,13 +326,23 @@ Container names are derived from the last two path components. Worktree paths li
 
 ### Devcontainer Path
 
-**Known limitation:** Worktree support is CLI-mode only (`rc up`). The devcontainer path (`rc init` + VS Code "Reopen in Container") mounts `localWorkspaceFolder` the same way, so the `.git` file problem likely affects terminal-based git inside devcontainers too. VS Code's own Git extension resolves paths on the host side, but Claude Code uses terminal git. This is untested — devcontainer users targeting worktrees should use `rc up` instead until verified.
+**Structural limitation:** Worktree support is CLI-mode only (`rc up`). The devcontainer path (`rc init` + VS Code "Reopen in Container") uses `workspaceMount` in `devcontainer.json`, which is a single static mount definition. The devcontainer spec does not support conditional mounts or pre-mount scripts that can modify the mount list, so there is no way to dynamically add the `.git-main` and corrected `.git` file mounts when a worktree is detected.
+
+This means `rc init` **does not and cannot** support worktrees without a spec change from VS Code. Terminal-based git (used by Claude Code) will be broken. VS Code's own Git extension resolves paths on the host side and is unaffected. Devcontainer users targeting worktrees must use `rc up` instead.
 
 ### Multi-Agent (ADR-006)
 
 Multiple containers targeting the same worktree share the `.git-main` mount (writable). Git uses lock files for concurrent access (`refs/heads/<branch>.lock`, `index.lock`), so concurrent commits to different branches are safe. Concurrent commits to the same branch may see lock contention surfacing as git errors — this matches standard multi-process git behavior on a single machine.
 
 ADR-006 D5 describes a future `--worktree` flag that **creates** new worktrees per agent. This design **handles** existing worktrees. They compose naturally: D5 creates a worktree → our detection handles it on subsequent `rc up` invocations.
+
+### Container Resume
+
+Worktree mount paths are fixed at container creation time (`docker run`). When a stopped container is resumed via `rc up` (which calls `docker start`), Docker preserves the original mounts. If the main repo's `.git/` directory has moved between stop and resume, the container will have stale mounts pointing to a non-existent host path — git operations will fail. The fix is to destroy and recreate the container (`rc destroy` + `rc up`). This matches how all bind mounts work — it is not worktree-specific.
+
+### UID Mapping
+
+The `.git-main` bind mount inherits the host file ownership. If the host user's uid matches the container's `agent` user (uid 1000), git write operations work. If the host user's uid differs, git writes to `.git-main` (commits, fetches) will fail with permission errors. This is the same limitation that exists for the `/workspace` bind mount and is not a new problem introduced by worktree support. No sudoers change is needed (ADR-002 D12 scopes `chown` to exact paths under `/home/agent/`).
 
 ---
 
@@ -334,6 +364,7 @@ Add conditional worktree checks to the test suite. When `/workspace/.git-main` e
 
 - **Git functional:** `git status` exits 0 inside the container
 - **Git pointer valid:** `/workspace/.git` contains `gitdir:` pointing to an existing path
+- **Worktree correct:** The worktree name extracted from `/workspace/.git`'s `gitdir:` line matches the expected workspace (verify via `git rev-parse --show-toplevel` returning `/workspace`)
 - **Hooks protected:** `/workspace/.git-main/hooks` is read-only (write attempt fails)
 - **Objects accessible:** `git log --oneline -1` returns a commit
 
@@ -371,4 +402,4 @@ Mount `.git/worktrees/<name>/` at the exact host path inside the container (e.g.
 
 Add `Write(.git-main/hooks/*)` and `Edit(.git-main/hooks/*)` to settings.json deny list.
 
-**Rejected:** Under `bypassPermissions` mode (ADR-002 D5), deny rules are not enforced — they're documentation only. A read-only sub-mount physically prevents writes regardless of permission mode.
+**Rejected:** Under `bypassPermissions` mode (ADR-002 D5), deny rules are not enforced — they're documentation only. A read-only sub-mount physically prevents writes regardless of permission mode. Unlike `.git/hooks/*` rules (which exist in `settings.json` as documentation-of-intent per ADR-002 D11), `.git-main/hooks/*` deny rules are omitted entirely since the `.git-main` path only exists in worktree containers and the `:ro` mount is the sole enforcement mechanism.
