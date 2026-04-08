@@ -12,7 +12,7 @@ Host (macOS/Linux)
 ├── settings.json           Claude Code config — auto mode, allowlisted commands, PreToolUse hooks
 ├── hooks/
 │   └── block-compound-commands.sh   Denies &&, ;, || chains. Suggests splitting.
-├── test-safety-stack.sh    27-check health check for the safety stack
+├── test-safety-stack.sh    32-check health check for the safety stack
 └── zshrc                   Minimal zshrc for the container agent user
 ```
 
@@ -80,7 +80,7 @@ After modifying the Dockerfile or any file that gets COPY'd into the image:
 ```bash
 ./rc build
 ./rc up /path/to/test/project
-./rc test <container-name>    # should be 27/27 PASS
+./rc test <container-name>    # should be 32/32 PASS
 ```
 
 For changes to `rc` itself, you can test without rebuilding the image.
