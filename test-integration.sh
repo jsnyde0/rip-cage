@@ -71,5 +71,14 @@ echo "Step 10: Verify persistent state..."
 docker exec "$CONTAINER_NAME" test -L /home/agent/.claude/projects || { echo "FAIL: projects symlink missing"; exit 1; }
 docker exec "$CONTAINER_NAME" test -L /home/agent/.claude/sessions || { echo "FAIL: sessions symlink missing"; exit 1; }
 
+# 11. bd wrapper is a shell script (shebang check — file command not available in container)
+echo "Step 11: Verify bd wrapper is a shell script..."
+BD_SHEBANG=$(docker exec "$CONTAINER_NAME" sh -c 'head -c 2 /usr/local/bin/bd')
+[ "$BD_SHEBANG" = "#!" ] || { echo "FAIL: bd is not a shell script (shebang='$BD_SHEBANG')"; exit 1; }
+
+# 12. bd-real exists and is executable
+echo "Step 12: Verify bd-real exists and is executable..."
+docker exec "$CONTAINER_NAME" test -x /usr/local/bin/bd-real || { echo "FAIL: bd-real not executable or missing"; exit 1; }
+
 echo ""
 echo "=== All integration tests passed ==="

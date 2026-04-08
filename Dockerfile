@@ -55,7 +55,9 @@ ARG DOLT_VERSION=1.84.0
 RUN curl -fsSL https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/install.sh | bash
 
 # bd (beads issue tracker)
-COPY --from=go-builder /go/bin/bd /usr/local/bin/bd
+COPY --from=go-builder /go/bin/bd /usr/local/bin/bd-real
+COPY bd-wrapper.sh /usr/local/bin/bd
+RUN chmod +x /usr/local/bin/bd /usr/local/bin/bd-real
 
 # Claude Code
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}

@@ -53,11 +53,11 @@ else
   check "settings.json is valid JSON" "fail"
 fi
 
-# 7. settings.json has auto mode
-if jq -e '.permissions.defaultMode == "auto"' ~/.claude/settings.json >/dev/null 2>&1; then
-  check "settings.json has auto mode" "pass"
+# 7. settings.json has bypassPermissions mode
+if jq -e '.permissions.defaultMode == "bypassPermissions"' ~/.claude/settings.json >/dev/null 2>&1; then
+  check "settings.json has bypassPermissions mode" "pass"
 else
-  check "settings.json has auto mode" "fail"
+  check "settings.json has bypassPermissions mode" "fail"
 fi
 
 # 8. settings.json has DCG hook wired
@@ -183,16 +183,50 @@ else
 fi
 
 echo ""
+echo "-- Beads Wrapper --"
+
+# 26. bd is a shell script (shebang check — file command not available in container)
+bd_shebang=$(head -c 2 /usr/local/bin/bd 2>/dev/null || true)
+check "bd is a shell script (shebang check)" "$([[ "$bd_shebang" == "#!" ]] && echo pass || echo fail)" "$bd_shebang"
+
+# 27. bd-real exists and is executable
+check "bd-real exists and is executable" "$([[ -x /usr/local/bin/bd-real ]] && echo pass || echo fail)"
+
+# 28. bd dolt start is blocked when BEADS_DOLT_SERVER_MODE=1
+wrapper_block=$(BEADS_DOLT_SERVER_MODE=1 /usr/local/bin/bd dolt start 2>&1 || true)
+if echo "$wrapper_block" | grep -q "BLOCKED"; then
+  check "bd dolt start blocked (BEADS_DOLT_SERVER_MODE=1)" "pass"
+else
+  check "bd dolt start blocked (BEADS_DOLT_SERVER_MODE=1)" "fail" "$wrapper_block"
+fi
+
+# 29. --verbose flag bypass prevented
+wrapper_verbose=$(BEADS_DOLT_SERVER_MODE=1 /usr/local/bin/bd --verbose dolt start 2>&1 || true)
+if echo "$wrapper_verbose" | grep -q "BLOCKED"; then
+  check "bd --verbose dolt start blocked (flag bypass prevented)" "pass"
+else
+  check "bd --verbose dolt start blocked (flag bypass prevented)" "fail" "$wrapper_verbose"
+fi
+
+# 30. bd dolt stop is NOT blocked (ADR-007 D2)
+wrapper_stop=$(BEADS_DOLT_SERVER_MODE=1 /usr/local/bin/bd dolt stop 2>&1 || true)
+if echo "$wrapper_stop" | grep -q "BLOCKED"; then
+  check "bd dolt stop NOT blocked (ADR-007 D2)" "fail" "got BLOCKED unexpectedly"
+else
+  check "bd dolt stop NOT blocked (ADR-007 D2)" "pass"
+fi
+
+echo ""
 echo "-- Network & Disk --"
 
-# 26. DNS resolution
+# 31. DNS resolution
 if getent hosts github.com >/dev/null 2>&1 || dig +short github.com >/dev/null 2>&1 || host github.com >/dev/null 2>&1; then
   check "DNS resolution (github.com)" "pass"
 else
   check "DNS resolution (github.com)" "fail"
 fi
 
-# 27. Sufficient disk space (>1GB free on /workspace)
+# 32. Sufficient disk space (>1GB free on /workspace)
 avail_kb=$(df /workspace 2>/dev/null | awk 'NR==2 {print $4}' || echo "0")
 avail_gb=$(( avail_kb / 1048576 ))
 if [[ "$avail_kb" -gt 1048576 ]]; then
@@ -205,14 +239,14 @@ if [[ -d /workspace/.git-main ]]; then
   echo ""
   echo "-- Worktree Git --"
 
-  # 28. Git functional: git status exits 0
+  # 33. Git functional: git status exits 0
   if git -C /workspace status >/dev/null 2>&1; then
     check "Git functional (git status exits 0)" "pass"
   else
     check "Git functional (git status exits 0)" "fail" "git status failed"
   fi
 
-  # 29. Git pointer valid: /workspace/.git contains gitdir: pointing to an existing path
+  # 34. Git pointer valid: /workspace/.git contains gitdir: pointing to an existing path
   git_file_content=$(cat /workspace/.git 2>/dev/null || true)
   if [[ "$git_file_content" == gitdir:\ * ]]; then
     gitdir_path="${git_file_content#gitdir: }"
@@ -225,11 +259,11 @@ if [[ -d /workspace/.git-main ]]; then
     check "Git pointer valid (.git contains gitdir: to existing path)" "fail" "no gitdir: line in /workspace/.git"
   fi
 
-  # 30. Worktree correct: git rev-parse --show-toplevel returns /workspace
+  # 35. Worktree correct: git rev-parse --show-toplevel returns /workspace
   toplevel=$(git -C /workspace rev-parse --show-toplevel 2>/dev/null || true)
   check "Worktree correct (show-toplevel is /workspace)" "$([[ "$toplevel" == "/workspace" ]] && echo pass || echo fail)" "$toplevel"
 
-  # 31. Hooks protected: /workspace/.git-main/hooks is read-only (write attempt fails)
+  # 36. Hooks protected: /workspace/.git-main/hooks is read-only (write attempt fails)
   if touch /workspace/.git-main/hooks/.rc-test-write 2>/dev/null; then
     rm -f /workspace/.git-main/hooks/.rc-test-write
     check "Hooks protected (read-only mount)" "fail" "write succeeded — hooks are NOT read-only"
@@ -237,7 +271,7 @@ if [[ -d /workspace/.git-main ]]; then
     check "Hooks protected (read-only mount)" "pass"
   fi
 
-  # 32. Objects accessible: git log --oneline -1 returns a commit
+  # 37. Objects accessible: git log --oneline -1 returns a commit
   git_log=$(git -C /workspace log --oneline -1 2>/dev/null || true)
   if [[ -n "$git_log" ]]; then
     check "Objects accessible (git log --oneline -1)" "pass" "$git_log"
