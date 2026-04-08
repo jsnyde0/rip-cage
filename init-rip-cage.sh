@@ -76,13 +76,10 @@ elif [ ! -f ~/.claude.json ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
 fi
 
 # 7. Initialize beads — connect to host's Dolt server via host.docker.internal
+# BEADS_DOLT_SERVER_MODE and BEADS_DOLT_SERVER_HOST are set at top of this script.
+# Port is re-read from .beads/dolt-server.port on every bd invocation by the bd wrapper.
 if [ -d /workspace/.beads ]; then
-  export BEADS_DOLT_SERVER_MODE=1
-  export BEADS_DOLT_SERVER_HOST="${BEADS_DOLT_SERVER_HOST:-host.docker.internal}"
-  if [ -f /workspace/.beads/dolt-server.port ]; then
-    export BEADS_DOLT_SERVER_PORT=$(cat /workspace/.beads/dolt-server.port)
-    echo "[rip-cage] Beads: connecting to host Dolt server at ${BEADS_DOLT_SERVER_HOST}:${BEADS_DOLT_SERVER_PORT}"
-  fi
+  echo "[rip-cage] Beads: connecting to host Dolt server at ${BEADS_DOLT_SERVER_HOST} (port via wrapper)"
   if bd prime 2>/tmp/bd-prime.log; then
     echo "[rip-cage] Beads initialized"
   else
