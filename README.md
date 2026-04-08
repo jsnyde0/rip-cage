@@ -20,12 +20,32 @@ The agent gets a full dev environment — Node, Bun, Python (uv), Go, gh CLI, an
 - Docker (or OrbStack on macOS)
 - Claude Code authenticated on your host (the container borrows your OAuth token)
 
-### Build the image
+### Setup
 
 ```bash
 git clone https://github.com/jsnyde0/rip-cage.git
 cd rip-cage
 ./rc build
+
+# Tell rc which directories it's allowed to sandbox (add to ~/.zshrc):
+export RC_ALLOWED_ROOTS=$HOME/code/personal:$HOME/code/mapular
+```
+
+### Using rip-cage on a project
+
+```bash
+cd /path/to/your/project
+~/path/to/rip-cage/rc up .
+```
+
+That's it — you're in a caged tmux session. Run `claude` and let it rip.
+
+```bash
+# Manage containers:
+rc ls              # list running containers
+rc attach <name>   # re-attach tmux
+rc down <name>     # stop
+rc destroy <name>  # remove container + volumes
 ```
 
 ### Option A: VS Code Dev Container

@@ -22,6 +22,25 @@ Host (macOS/Linux)
 
 Both paths mount the project directory as a bind mount at `/workspace` — file changes sync instantly, no git push needed.
 
+## Quick start (using rip-cage on another repo)
+
+```bash
+# One-time: add to your ~/.zshrc
+export RC_ALLOWED_ROOTS=$HOME/code/personal:$HOME/code/mapular
+
+# From the project (or worktree) you want to sandbox:
+cd ~/code/mapular/platform/mapular-platform
+~/code/personal/rip-cage/rc up .
+
+# Manage containers:
+~/code/personal/rip-cage/rc ls          # list running containers
+~/code/personal/rip-cage/rc attach <name>  # re-attach tmux
+~/code/personal/rip-cage/rc down <name>    # stop
+~/code/personal/rip-cage/rc destroy <name> # remove container + volumes
+```
+
+**Known issue:** Credential bind mounts break if the host rewrites `~/.claude/.credentials.json` (e.g., token refresh by host Claude Code). Symptom: "Not logged in" inside container. Fix: `rc destroy <name>` and `rc up .` again.
+
 ## Auth
 
 OAuth tokens are the primary auth method (not API keys). On macOS, tokens live in the system Keychain under `"Claude Code-credentials"`. The `rc` script extracts them to `~/.claude/.credentials.json` before mounting into the container. On Linux, that file is used directly.
@@ -81,3 +100,50 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the phased plan, design docs, ADRs, a
 - `rc attach` has no `--output json` mode -- use `rc ls --output json` to verify container status before calling attach
 - Never call `rc destroy` without confirming with the user first
 - Set `RC_ALLOWED_ROOTS` to colon-separated absolute paths before calling `rc up` or `rc init`
+
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
+## Beads Issue Tracker
+
+This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+
+### Quick Reference
+
+```bash
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --claim  # Claim work
+bd close <id>         # Complete work
+```
+
+### Rules
+
+- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- Run `bd prime` for detailed command reference and session close protocol
+- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+
+## Session Completion
+
+**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+
+**MANDATORY WORKFLOW:**
+
+1. **File issues for remaining work** - Create issues for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **PUSH TO REMOTE** - This is MANDATORY:
+   ```bash
+   git pull --rebase
+   bd dolt push
+   git push
+   git status  # MUST show "up to date with origin"
+   ```
+5. **Clean up** - Clear stashes, prune remote branches
+6. **Verify** - All changes committed AND pushed
+7. **Hand off** - Provide context for next session
+
+**CRITICAL RULES:**
+- Work is NOT complete until `git push` succeeds
+- NEVER stop before pushing - that leaves work stranded locally
+- NEVER say "ready to push when you are" - YOU must push
+- If push fails, resolve and retry until it succeeds
+<!-- END BEADS INTEGRATION -->
