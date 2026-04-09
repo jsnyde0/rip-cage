@@ -2,7 +2,7 @@
 
 **Status:** Proposed
 **Date:** 2026-04-08
-**Design:** [Beads/Dolt Container Resilience](../2026-04-08-beads-dolt-container-resilience.md)
+**Design:** [Beads/Dolt Container Resilience](../2026-04-08-beads-dolt-container-resilience.md), [Beads no-db Container Support](../2026-04-09-beads-no-db-container-support.md)
 **Related:** [ADR-004 D1](ADR-004-phase1-hardening.md) (host Dolt server connection), [ADR-002 D10](ADR-002-rip-cage-containers.md) (beads in base image)
 
 ## Context
@@ -89,6 +89,31 @@ Consolidate the duplicate `BEADS_DOLT_SERVER_MODE=1` and `BEADS_DOLT_SERVER_HOST
 Also fix the pre-existing bug in test-safety-stack.sh check 7 which asserts `auto` mode instead of `bypassPermissions`.
 
 **Rationale:** Eliminates a misleading code path that suggests the port is set once at init time. With the wrapper, the port is always fresh. Removing it prevents confusion about which mechanism is authoritative. The duplicate export consolidation and test fix are opportunistic cleanups in the same files.
+
+### D5: Respect project's beads storage mode (embedded vs server)
+
+**Firmness: FIRM**
+
+**Added:** 2026-04-09
+
+Do NOT set `BEADS_DOLT_SERVER_MODE=1` for projects using embedded Dolt mode. Read `.beads/metadata.json` `dolt_mode` to determine the storage mode. Only set server env vars when `dolt_mode` is `"server"`, `"owned"`, or `"external"`.
+
+`rc up`, `rc init`, and `init-rip-cage.sh` all read `.beads/metadata.json` (after resolving any redirect) before deciding whether to configure Dolt server connectivity. The check uses `jq -r '.dolt_mode // empty'`.
+
+When `dolt_mode` is `"embedded"` (or absent):
+- No `BEADS_DOLT_SERVER_MODE`, `BEADS_DOLT_SERVER_HOST`, or `BEADS_DOLT_SERVER_PORT` env vars
+- bd uses its in-process Dolt engine on the bind-mounted `.beads/embeddeddolt/` directory
+- The bd wrapper's `dolt start` guard doesn't fire (checks `BEADS_DOLT_SERVER_MODE`)
+- The wrapper's port re-read is harmless (skips if port file absent)
+
+When `dolt_mode` is anything else (`"server"`, `"owned"`, `"external"`):
+- Server env vars are set as before (ADR-007 D1 wrapper handles port refresh)
+
+**Rationale:** On 2026-04-09, `bd ready` inside a container failed for rip-cage (an embedded-mode project) because the unconditional `BEADS_DOLT_SERVER_MODE=1` told bd to look for database "rip_cage" on the host Dolt server — which doesn't exist for embedded projects. Research on bd source code confirmed that `no-db: true` in config.yaml is vestigial (parsed but ignored); the real source of truth is `dolt_mode` in `metadata.json`. Embedded mode uses an in-process Dolt engine; server mode connects to an external Dolt server.
+
+See [design doc](../2026-04-09-beads-no-db-container-support.md) and [ADR-004 D1 amendment](ADR-004-phase1-hardening.md).
+
+**What would invalidate this:** bd changes `metadata.json` format or removes embedded mode. Or bd's server connection gracefully falls back to embedded when the database doesn't exist on the server.
 
 ## Deferred
 

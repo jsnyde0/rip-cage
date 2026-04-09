@@ -13,34 +13,39 @@ Key problems: Dolt is 103MB and unusable in containers (no SSH keys), containers
 
 ## Decisions
 
-### D1: Connect container's bd to host's Dolt server
+### D1: Conditional beads server connection based on storage mode
 
 **Firmness: FIRM**
 
-Keep Dolt in the container image (required dependency for bd v0.62.0+). Configure the container's bd to connect to the host's already-running Dolt server via `host.docker.internal` instead of starting its own server.
+**Amended 2026-04-09:** Made conditional on project's `dolt_mode` in `.beads/metadata.json`. Embedded-mode projects use bd's in-process Dolt engine on the bind mount — no server connection needed. Server-mode projects connect to the host's Dolt server as before. The original decision unconditionally set `BEADS_DOLT_SERVER_MODE=1`, which broke embedded projects. See [design doc](../2026-04-09-beads-no-db-container-support.md).
 
-Three env vars are set by `rc up` (`docker run -e`) and `init-rip-cage.sh`:
-- `BEADS_DOLT_SERVER_MODE=1` — tells bd the server is externally managed (no auto-start)
-- `BEADS_DOLT_SERVER_HOST=host.docker.internal` — OrbStack/Docker Desktop DNS for reaching the host
-- `BEADS_DOLT_SERVER_PORT=<port>` — read dynamically from `.beads/dolt-server.port` at container start
+Keep Dolt in the container image (required dependency for bd's embedded engine). For **server-mode projects** (`dolt_mode: "server"/"owned"/"external"`), configure the container's bd to connect to the host's already-running Dolt server via `host.docker.internal`. For **embedded-mode projects** (`dolt_mode: "embedded"` or absent), do not set server env vars — bd uses its in-process Dolt engine directly on the bind-mounted `.beads/embeddeddolt/`.
 
-**Rationale:** bd v0.62.0 removed the `no-db` (JSONL-only) mode — Dolt is now the only storage backend. The bind-mounted `.beads/dolt/` directory has OS-level locks held by the host's Dolt server, preventing the container from starting its own server (database lock conflict). Connecting to the host's server avoids the lock entirely while giving the container full read-write access to beads.
+`rc up` reads `.beads/metadata.json` (after resolving any redirect) to determine the mode:
+- **Embedded mode** (`dolt_mode` is `"embedded"` or absent): no server env vars — bd uses in-process engine
+- **Server mode** (`dolt_mode` is `"server"`, `"owned"`, or `"external"`): set three env vars — `BEADS_DOLT_SERVER_MODE=1`, `BEADS_DOLT_SERVER_HOST=host.docker.internal`, `BEADS_DOLT_SERVER_PORT=<port>`
 
-This approach was validated empirically: `bd list` returns issues correctly when the three env vars are set. The port is dynamic (changes each time the host's Dolt server starts), so it must be read from the port file at container start time.
+`init-rip-cage.sh` performs the same metadata check and conditionally exports the env vars, ensuring both `rc up` and devcontainer paths behave consistently.
 
-**Prerequisite:** The host must have bd/Dolt running (i.e., you've used `bd` on the host at least once so the Dolt server auto-started). If the host's server is not running, bd inside the container will fail gracefully with a connection error.
+**Rationale:** bd 1.0.0 defaults to embedded Dolt mode — an in-process engine storing data in `.beads/embeddeddolt/`. Setting `BEADS_DOLT_SERVER_MODE=1` overrides this and forces bd to connect to an external server, which fails for embedded projects (the database doesn't exist on the server). For server-mode projects, the host's Dolt server holds locks on `.beads/dolt/`, so the container must connect to the host's server rather than starting its own.
+
+Validated empirically: embedded projects work without server env vars (bd uses in-process engine on bind mount, bidirectional read/write confirmed). Server projects work with the three env vars set. The port is dynamic, handled by the bd wrapper (ADR-007 D1).
+
+Note: `no-db: true` in `.beads/config.yaml` is vestigial — bd parses it but ignores it in storage initialization. The real source of truth is `dolt_mode` in `metadata.json`.
+
+**Prerequisite (server-mode projects only):** The host must have bd/Dolt running. If the host's server is not running, bd inside the container will fail gracefully with a connection error.
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **Connect to host's Dolt server** | Full bd functionality, no lock conflict, dynamic port | Requires host Dolt server running |
-| Remove Dolt, use BD_NO_DB=true | 103MB savings | `no-db` mode removed in bd v0.62.0 — doesn't work |
-| Mount SSH keys for Dolt push/pull | Full remote sync | Security risk, complex key management |
+| **Conditional based on metadata.json dolt_mode** | Both modes work, uses authoritative source | jq dependency in rc (already available) |
+| Unconditional `BEADS_DOLT_SERVER_MODE=1` (original) | Simple, one path | Breaks embedded projects entirely |
+| Check `no-db: true` in config.yaml | Simple grep | Vestigial field — bd ignores it |
+| Remove Dolt from image, force embedded everywhere | 103MB savings | Breaks server-mode projects |
 | Switch to br (Rust beads) | No Dolt dependency | Incompatible with 34 existing repos using bd |
-| Run Dolt SQL server as sidecar | Clean separation | Operational complexity, extra container |
 
-**What would invalidate this:** bd re-adds JSONL-only mode. Or bd adds a client-server mode that doesn't require Dolt installed locally.
+**What would invalidate this:** bd changes `metadata.json` format. Or bd's server connection gracefully falls back to embedded when the database doesn't exist on the server.
 
 ### D2: Default container resource limits, overridable via flags
 

@@ -3,10 +3,21 @@ set -euo pipefail
 
 echo "[rip-cage] Initializing..."
 
-# Beads: connect to host's Dolt server instead of starting a new one (ADR-004 D1)
-# The bind-mounted .beads/dolt/ has OS-level locks from the host's server.
-export BEADS_DOLT_SERVER_MODE=1
-export BEADS_DOLT_SERVER_HOST="${BEADS_DOLT_SERVER_HOST:-host.docker.internal}"
+# Beads: determine storage mode from project's metadata.json
+# Embedded mode (default): bd uses in-process Dolt on the bind mount — no server needed
+# Server mode: connect to host's Dolt server via host.docker.internal
+if [[ -f /workspace/.beads/metadata.json ]]; then
+  _beads_dolt_mode=$(jq -r '.dolt_mode // empty' /workspace/.beads/metadata.json 2>/dev/null || true)
+  if [[ "$_beads_dolt_mode" != "embedded" ]] && [[ -n "$_beads_dolt_mode" ]]; then
+    export BEADS_DOLT_SERVER_MODE=1
+    export BEADS_DOLT_SERVER_HOST="${BEADS_DOLT_SERVER_HOST:-host.docker.internal}"
+    echo "[rip-cage] Beads: server mode (dolt_mode=$_beads_dolt_mode)"
+  else
+    echo "[rip-cage] Beads: embedded mode — no Dolt server connection"
+  fi
+else
+  echo "[rip-cage] Beads: no metadata.json — defaulting to embedded mode"
+fi
 
 # 1. Fix ownership of bind-mounted dirs (Docker may create them as root)
 if [[ ! -L /home/agent/.claude ]]; then
@@ -75,11 +86,18 @@ elif [ ! -f ~/.claude.json ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
   echo "[rip-cage] WARNING: No auth found (~/.claude/.credentials.json missing, ANTHROPIC_API_KEY not set)" >&2
 fi
 
-# 7. Initialize beads — connect to host's Dolt server via host.docker.internal
-# BEADS_DOLT_SERVER_MODE and BEADS_DOLT_SERVER_HOST are set at top of this script.
-# Port is re-read from .beads/dolt-server.port on every bd invocation by the bd wrapper.
+# 7. Initialize beads
+# Storage mode was determined at top of script from metadata.json.
+# For server mode: BEADS_DOLT_SERVER_MODE and HOST are exported; port is re-read by bd wrapper.
+# For embedded mode: no server env vars; bd uses in-process Dolt on the bind mount.
 if [ -d /workspace/.beads ]; then
-  echo "[rip-cage] Beads: connecting to host Dolt server at ${BEADS_DOLT_SERVER_HOST} (port via wrapper)"
+  # Fix bind-mount permissions — host may have 0750, bd expects 0700
+  chmod 700 /workspace/.beads 2>/dev/null || true
+  if [ -n "${BEADS_DOLT_SERVER_MODE:-}" ]; then
+    echo "[rip-cage] Beads: connecting to host Dolt server at ${BEADS_DOLT_SERVER_HOST} (port via wrapper)"
+  else
+    echo "[rip-cage] Beads: using embedded Dolt on bind mount"
+  fi
   if bd prime 2>/tmp/bd-prime.log; then
     echo "[rip-cage] Beads initialized"
   else

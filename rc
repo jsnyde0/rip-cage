@@ -149,7 +149,23 @@ DEVCONTAINER_WITH_HOOKS
   ],
 DEVCONTAINER_NO_HOOKS
     fi
-    cat <<'DEVCONTAINER_FOOTER'
+    # Determine beads mode for containerEnv
+    local init_beads_dir="${target}/.beads"
+    if [[ -f "${init_beads_dir}/redirect" ]]; then
+      local init_redirect
+      init_redirect=$(cat "${init_beads_dir}/redirect" 2>/dev/null || true)
+      if [[ -n "$init_redirect" && "$init_redirect" != /* ]]; then
+        local init_resolved
+        init_resolved=$(realpath "${target}/${init_redirect}" 2>/dev/null || true)
+        [[ -n "$init_resolved" && -d "$init_resolved" ]] && init_beads_dir="$init_resolved"
+      fi
+    fi
+    local init_dolt_mode=""
+    if [[ -f "${init_beads_dir}/metadata.json" ]]; then
+      init_dolt_mode=$(jq -r '.dolt_mode // empty' "${init_beads_dir}/metadata.json" 2>/dev/null || true)
+    fi
+    if [[ "$init_dolt_mode" != "embedded" ]] && [[ -n "$init_dolt_mode" ]]; then
+      cat <<'DEVCONTAINER_FOOTER_SERVER'
   "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096",
@@ -161,7 +177,20 @@ DEVCONTAINER_NO_HOOKS
   "workspaceFolder": "/workspace",
   "postStartCommand": "/usr/local/bin/init-rip-cage.sh"
 }
-DEVCONTAINER_FOOTER
+DEVCONTAINER_FOOTER_SERVER
+    else
+      cat <<'DEVCONTAINER_FOOTER_EMBEDDED'
+  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
+  "containerEnv": {
+    "NODE_OPTIONS": "--max-old-space-size=4096"
+  },
+  "runArgs": ["--cpus=2", "--memory=4g", "--memory-swap=4g", "--pids-limit=500"],
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
+  "workspaceFolder": "/workspace",
+  "postStartCommand": "/usr/local/bin/init-rip-cage.sh"
+}
+DEVCONTAINER_FOOTER_EMBEDDED
+    fi
   } > "$dest"
 
   echo "Created ${dest}"
@@ -610,9 +639,7 @@ cmd_up() {
   # Enable host.docker.internal on Linux Docker Engine (no-op on macOS where it exists natively)
   run_args+=(--add-host=host.docker.internal:host-gateway)
 
-  # Beads: connect container's bd to host's Dolt server (avoids database lock conflict)
-  run_args+=(-e "BEADS_DOLT_SERVER_MODE=1")
-  run_args+=(-e "BEADS_DOLT_SERVER_HOST=host.docker.internal")
+  # Beads: configure container based on project's storage mode (metadata.json dolt_mode)
   local beads_dir="${path}/.beads"
   # Resolve beads redirect (worktrees share .beads/ via a redirect file)
   if [[ -f "${beads_dir}/redirect" ]]; then
@@ -652,9 +679,23 @@ cmd_up() {
       fi
     fi
   fi
-  local dolt_port_file="${beads_dir}/dolt-server.port"
-  if [[ -f "$dolt_port_file" ]]; then
-    run_args+=(-e "BEADS_DOLT_SERVER_PORT=$(cat "$dolt_port_file")")
+  # Determine beads storage mode from metadata.json
+  local beads_dolt_mode=""
+  if [[ -f "${beads_dir}/metadata.json" ]]; then
+    beads_dolt_mode=$(jq -r '.dolt_mode // empty' "${beads_dir}/metadata.json" 2>/dev/null || true)
+  fi
+  if [[ "$beads_dolt_mode" == "embedded" ]] || [[ -z "$beads_dolt_mode" ]]; then
+    # Embedded Dolt or no metadata: let bd use embedded engine on bind mount
+    log "Beads: embedded mode — no Dolt server connection"
+  else
+    # Server/owned/external mode: connect to host's Dolt server
+    run_args+=(-e "BEADS_DOLT_SERVER_MODE=1")
+    run_args+=(-e "BEADS_DOLT_SERVER_HOST=host.docker.internal")
+    local dolt_port_file="${beads_dir}/dolt-server.port"
+    if [[ -f "$dolt_port_file" ]]; then
+      run_args+=(-e "BEADS_DOLT_SERVER_PORT=$(cat "$dolt_port_file")")
+    fi
+    log "Beads: server mode — connecting to host Dolt server"
   fi
 
   run_args+=("$IMAGE" sleep infinity)

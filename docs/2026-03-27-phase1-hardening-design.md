@@ -11,7 +11,7 @@
 
 The rip-cage implementation has all the pieces: `rc` CLI (592 lines bash), Dockerfile, init script, safety stack, and 6-test smoke suite. But the image has never been built end-to-end, and several practical issues would bite on first real use:
 
-1. **Dolt adds 103MB and fails inside containers.** bd's Dolt driver needs SSH keys and host aliases that don't exist in the container. The `bd dolt push/pull` commands fail. bd has a `no-db: true` config option that uses JSONL-only storage, no Dolt needed.
+1. **Dolt adds 103MB and fails inside containers.** bd's Dolt driver needs SSH keys and host aliases that don't exist in the container. The `bd dolt push/pull` commands fail. bd supports `no-db: true` config for JSONL-only storage (no Dolt needed). Note: the original claim that `no-db` mode was removed in bd v0.62.0 was incorrect — bd 1.0.0 fully supports it. See [ADR-004 D1 amendment](decisions/ADR-004-phase1-hardening.md).
 
 2. **No resource limits on containers.** A runaway agent can consume all host CPU, memory, or spawn unlimited processes. There are no `--cpus`, `--memory`, or `--pids-limit` defaults in `cmd_up`.
 
@@ -33,9 +33,9 @@ Internal improvements only. No new external tools, no architectural changes, no 
 
 ### Dockerfile
 
-**Keep Dolt in the image.** bd v0.62.0 removed `no-db` mode — Dolt is now the only storage backend. The container's bd connects to the host's Dolt server via `host.docker.internal` (OrbStack/Docker Desktop DNS) instead of starting its own server. This avoids the database lock conflict that occurs when two Dolt processes try to open the same bind-mounted `.beads/dolt/` directory.
+**Keep Dolt in the image.** Dolt is required by bd's embedded engine. For **embedded-mode projects** (default, `dolt_mode: "embedded"` in `.beads/metadata.json`), bd uses an in-process Dolt engine on the bind-mounted `.beads/embeddeddolt/` — no server connection needed. For **server-mode projects** (`dolt_mode: "server"`), the container's bd connects to the host's Dolt server via `host.docker.internal`. See [ADR-004 D1 amendment](decisions/ADR-004-phase1-hardening.md) and [embedded Dolt container support design](2026-04-09-beads-no-db-container-support.md).
 
-Three env vars are set by `rc up` and `init-rip-cage.sh`: `BEADS_DOLT_SERVER_MODE=1` (external server, no auto-start), `BEADS_DOLT_SERVER_HOST=host.docker.internal`, and `BEADS_DOLT_SERVER_PORT` (read dynamically from `.beads/dolt-server.port`).
+For server-mode projects, three env vars are set by `rc up` and `init-rip-cage.sh`: `BEADS_DOLT_SERVER_MODE=1` (external server, no auto-start), `BEADS_DOLT_SERVER_HOST=host.docker.internal`, and `BEADS_DOLT_SERVER_PORT` (read dynamically from `.beads/dolt-server.port`). These are omitted for embedded-mode projects.
 
 ### rc script
 
@@ -106,13 +106,12 @@ Output format: each check prints `PASS` or `FAIL` with a description. Summary li
 
 ### init-rip-cage.sh
 
-**Connect bd to host's Dolt server.** The bind-mounted `.beads/dolt/` has OS-level locks held by the host's Dolt server. Instead of starting a new server (which would fail with a lock conflict), the container connects to the host's server:
+**Conditional beads configuration based on storage mode.** Read `.beads/metadata.json` to determine `dolt_mode`:
 
-- Set `BEADS_DOLT_SERVER_MODE=1` (external server mode, disables auto-start)
-- Set `BEADS_DOLT_SERVER_HOST=host.docker.internal` (OrbStack/Docker Desktop DNS)
-- Read `BEADS_DOLT_SERVER_PORT` from `.beads/dolt-server.port` (dynamic port, changes each host restart)
+- **Embedded mode** (`dolt_mode: "embedded"` or absent): do not set any server env vars. bd uses its in-process Dolt engine on the bind-mounted `.beads/embeddeddolt/`.
+- **Server mode** (`dolt_mode: "server"/"owned"/"external"`): set `BEADS_DOLT_SERVER_MODE=1` and `BEADS_DOLT_SERVER_HOST=host.docker.internal`. Port is read dynamically by the bd wrapper (ADR-007 D1).
 
-This gives the container full read-write access to beads via the host's Dolt server. Prerequisite: the host must have bd/Dolt running.
+This gives the container full read-write access to beads in both modes. For server-mode projects, the host must have bd/Dolt running.
 
 ### settings.json
 
@@ -170,7 +169,7 @@ The existing 6-test file is either replaced by the expanded test logic in `rc te
 
 ## Consequences
 
-**Dolt connects to host server.** Container bd delegates Dolt operations to the host's Dolt server via `host.docker.internal`, avoiding database lock conflicts. Dolt is kept in the image as a required dependency for bd v0.62.0+.
+**Beads works in both storage modes.** Embedded-mode projects use bd's in-process Dolt engine on the bind mount (no server connection). Server-mode projects connect to the host's Dolt server via `host.docker.internal`. The mode is detected from `.beads/metadata.json` `dolt_mode`. Dolt is kept in the image as a required dependency for bd's embedded engine.
 
 **Containers have predictable resource usage.** Default limits (2 CPUs, 4GB RAM, 500 PIDs) prevent host starvation. Both `rc up` and devcontainer paths get the same defaults. Power users can override via flags or by editing the generated devcontainer.json.
 
