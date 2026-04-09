@@ -376,9 +376,13 @@ cmd_up() {
   fi
 
   # D11: compute git_hooks_ro for JSON output
-  # true when .git/hooks is mounted read-only (bind-mount mode with hooks dir present)
+  # true when .git/hooks is mounted read-only:
+  #   - worktree mode always mounts hooks ro (via .git-main/hooks:ro)
+  #   - bind-mount mode mounts ro when .git/hooks dir exists
   local git_hooks_ro=false
-  if [[ "$wt_detected" != "true" ]] && [[ -d "${path}/.git/hooks" ]]; then
+  if [[ "$wt_detected" == "true" ]]; then
+    git_hooks_ro=true
+  elif [[ -d "${path}/.git/hooks" ]]; then
     git_hooks_ro=true
   fi
 
@@ -399,8 +403,8 @@ cmd_up() {
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       if [[ "$wt_detected" == "true" ]]; then
         jq -nc --arg name "$name" --arg action "$would_action" --arg source_path "$path" --argjson name_disambiguated "$name_disambiguated" --argjson dry_run true \
-          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" \
-          '{dry_run: $dry_run, name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
+          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" --argjson git_hooks_ro "$git_hooks_ro" \
+          '{dry_run: $dry_run, name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
       elif [[ -n "$wt_error" ]]; then
         jq -nc --arg name "$name" --arg action "$would_action" --arg source_path "$path" --argjson name_disambiguated "$name_disambiguated" --argjson dry_run true \
           --arg wt_error "$wt_error" \
@@ -429,8 +433,8 @@ cmd_up() {
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       if [[ "$wt_detected" == "true" ]]; then
         jq -nc --arg name "$name" --arg action "attached" --arg source_path "$path" --arg status "running" --argjson name_disambiguated "$name_disambiguated" \
-          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" \
-          '{name: $name, action: $action, source_path: $source_path, status: $status, name_disambiguated: $name_disambiguated, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
+          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" --argjson git_hooks_ro "$git_hooks_ro" \
+          '{name: $name, action: $action, source_path: $source_path, status: $status, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
       elif [[ -n "$wt_error" ]]; then
         jq -nc --arg name "$name" --arg action "attached" --arg source_path "$path" --arg status "running" --argjson name_disambiguated "$name_disambiguated" \
           --arg wt_error "$wt_error" \
@@ -463,8 +467,8 @@ cmd_up() {
         docker stop "$name" >/dev/null 2>&1
         if [[ "$wt_detected" == "true" ]]; then
           jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
-            --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" \
-            '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
+            --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" --argjson git_hooks_ro "$git_hooks_ro" \
+            '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
         elif [[ -n "$wt_error" ]]; then
           jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
             --arg wt_error "$wt_error" \
@@ -483,8 +487,8 @@ cmd_up() {
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       if [[ "$wt_detected" == "true" ]]; then
         jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
-          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" \
-          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
+          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" --argjson git_hooks_ro "$git_hooks_ro" \
+          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
       elif [[ -n "$wt_error" ]]; then
         jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
           --arg wt_error "$wt_error" \
@@ -678,8 +682,8 @@ cmd_up() {
       docker stop "$name" >/dev/null 2>&1
       if [[ "$wt_detected" == "true" ]]; then
         jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
-          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" \
-          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
+          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" --argjson git_hooks_ro "$git_hooks_ro" \
+          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
       elif [[ -n "$wt_error" ]]; then
         jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
           --arg wt_error "$wt_error" \
@@ -698,8 +702,8 @@ cmd_up() {
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     if [[ "$wt_detected" == "true" ]]; then
       jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
-        --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" \
-        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
+        --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" --argjson git_hooks_ro "$git_hooks_ro" \
+        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
     elif [[ -n "$wt_error" ]]; then
       jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
         --arg wt_error "$wt_error" \

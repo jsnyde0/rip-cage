@@ -122,6 +122,38 @@ check "Relative gitdir paths resolved with realpath" \
 # Test 20: Syntax check passes
 bash -n "$RC_FILE" 2>/dev/null && check "rc script passes bash syntax check" "true" || check "rc script passes bash syntax check" "false"
 
+# --- Tests for bead rip-cage-yha: git_hooks_ro in worktree JSON output ---
+
+# Test 21: git_hooks_ro is true when wt_detected == true (worktrees always mount hooks ro)
+# The logic should be: true when wt_detected==true OR (.git/hooks dir exists in bind-mount mode)
+check "git_hooks_ro set to true when wt_detected is true" \
+  "$(grep -q 'wt_detected.*==.*true.*git_hooks_ro.*true\|git_hooks_ro=true' "$RC_FILE" && \
+     grep -A5 'wt_detected.*==.*true' "$RC_FILE" | grep -q 'git_hooks_ro=true' && echo true || echo false)"
+
+# Test 22: Worktree dry-run JSON includes git_hooks_ro field
+check "Worktree dry-run jq call includes git_hooks_ro arg" \
+  "$(awk '/DRY_RUN.*==.*true/,/return 0/' "$RC_FILE" | grep -q 'git_hooks_ro.*wt_name\|wt_name.*git_hooks_ro' && echo true || echo false)"
+
+# Test 23: Worktree attached (running) JSON includes git_hooks_ro field
+# The jq call for attached worktree spans multiple lines; check that git_hooks_ro
+# appears on the continuation line following the action "attached" jq call with wt_name
+check "Worktree attached jq call includes git_hooks_ro arg" \
+  "$(awk '/action.*attached/{found=1} found && /wt_name.*wt_main_git.*git_hooks_ro/{print "true"; exit} found && /^\s*'"'"'{/{found=0}' "$RC_FILE" | grep -q true && echo true || echo false)"
+
+# Test 24: Count of worktree jq calls that include both wt_name and git_hooks_ro (should be 6)
+wt_jq_with_hooks=$(grep -c 'wt_name.*wt_main_git.*git_hooks_ro\|git_hooks_ro.*wt_name.*wt_main_git' "$RC_FILE" 2>/dev/null) || wt_jq_with_hooks=0
+if [[ "$wt_jq_with_hooks" -ge 6 ]]; then
+  check "All 6 worktree jq calls include git_hooks_ro (dry-run/attached/resumed-fail/resumed-success/created-fail/created-success)" "true"
+else
+  check "All 6 worktree jq calls include git_hooks_ro (found ${wt_jq_with_hooks}/6)" "false"
+fi
+
+# Test 25: git_hooks_ro computation: worktree branch sets it to true
+# Check that the git_hooks_ro=true assignment is reachable when wt_detected==true
+# by verifying the logic block sets true for worktrees
+check "git_hooks_ro logic includes worktree case setting true" \
+  "$(awk '/compute git_hooks_ro/,/Check container state/' "$RC_FILE" | grep -q 'wt_detected.*==.*true' && echo true || echo false)"
+
 echo ""
 echo "Results: ${pass_count} passed, ${fail_count} failed"
 if [[ "$fail_count" -gt 0 ]]; then
