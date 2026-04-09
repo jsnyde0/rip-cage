@@ -238,12 +238,20 @@ The base image includes `bd` CLI and Dolt, enabling beads-based issue tracking i
 
 **Added:** 2026-03-26 (review finding)
 **Amended 2026-04-02:** Under `bypassPermissions` (D5), deny rules are documentation-only. For worktree containers, `.git-main/hooks/` is protected by a read-only sub-mount (D4). The deny rules in settings.json remain as documentation of intent.
+**Amended 2026-04-09:** Extended read-only sub-mount to bind-mount mode. In-container testing confirmed that Python `open()` via Bash tool bypasses settings.json deny rules — physical mount enforcement is required for both paths. See [design doc](../2026-04-09-git-hooks-ro-bind-mount-design.md).
 
 In bind-mount mode, `/workspace` IS the host filesystem. An agent writing to `.git/hooks/` creates scripts that execute on the host with full privileges when the user runs git commands — a container escape via the project's own git hooks. Settings.json denies `Write(.git/hooks/*)` and `Edit(.git/hooks/*)`.
 
-For worktree containers, the main repo's `.git/` is mounted at `/workspace/.git-main` (D4). The hooks directory is protected by a read-only sub-mount (`-v .../hooks:/workspace/.git-main/hooks:ro`), which provides physical enforcement regardless of permission mode.
+**Both bind-mount and worktree modes now use read-only sub-mounts for physical enforcement:**
 
-**Rationale:** The design doc's Known Limitations section identified this vector. The Write/Edit tools have no PreToolUse hooks in the container (container boundary is the protection for most paths), but `.git/hooks/` is special — it bridges back to the host via git's hook execution. Under `bypassPermissions` mode (D5), deny rules are not enforced by the permission system — they serve as documentation of intent only. For the worktree `.git-main` mount path, a read-only sub-mount is the enforcement mechanism. Clone mode (Phase 2) eliminates this vector entirely since the container filesystem is isolated.
+- **Bind-mount mode:** `-v ${path}/.git/hooks:/workspace/.git/hooks:ro` — added after the workspace mount. Only applied when `${path}/.git/hooks` exists (i.e., the project is a git repo). The devcontainer.json template includes an equivalent mount entry.
+- **Worktree mode:** `-v .../hooks:/workspace/.git-main/hooks:ro` — unchanged from D4 amendment.
+
+Docker processes sub-mounts after parent mounts, so the `:ro` overlay on hooks physically prevents modification regardless of permission mode, Python filesystem access, or any other code path. Note: this enforces the *default* hooks path only — `core.hooksPath` redirect is an accepted risk (see design doc).
+
+**Rationale:** The design doc's Known Limitations section identified this vector. The Write/Edit tools have no PreToolUse hooks in the container (container boundary is the protection for most paths), but `.git/hooks/` is special — it bridges back to the host via git's hook execution. Under `bypassPermissions` mode (D5), deny rules are not enforced by the permission system — they serve as documentation of intent only. The read-only sub-mount is the enforcement mechanism for both paths. Clone mode (Phase 2) eliminates this vector entirely since the container filesystem is isolated.
+
+**Accepted risks (container-as-boundary):** In-container testing (2026-04-09) confirmed these vectors are possible but accepted under D5's container-as-boundary principle: (1) command substitution (`$(...)`, backticks), (2) Python `os.system()`/`subprocess` for non-destructive commands, (3) reading container-local files like `/etc/passwd`, (4) `core.hooksPath` redirect via `.git/config` — a multi-step container escape that cannot be blocked without making `.git/config` read-only (which breaks git operations). The container IS the safety boundary, not the in-container classifier. DCG still catches known-destructive patterns (e.g., `rm -rf`) even inside Python strings via content scanning.
 
 **What would invalidate this:** Legitimate need for agents to modify git hooks inside the container (e.g., setting up pre-commit linting). In that case, use `core.hooksPath` pointing to a container-only directory instead.
 

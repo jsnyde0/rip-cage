@@ -167,19 +167,24 @@ done
 echo ""
 echo "-- Beads (functional) --"
 
-# 25. bd can connect to Dolt and list issues (requires host Dolt server running)
+# 25. bd can reach host Dolt server (requires host Dolt server running)
+# Success = bd list works OR server responds with "database not found" (server
+# reachable but this project uses no-db mode / has no Dolt database yet).
+# Failure = connection refused, DNS error, timeout (server truly unreachable).
 if [ -d /workspace/.beads ]; then
   bd_output=$(cd /workspace && bd list 2>&1 || true)
   if echo "$bd_output" | grep -qE "(Total:|No issues found)"; then
     issue_count=$(echo "$bd_output" | sed -n 's/.*Total: \([0-9]*\).*/\1/p')
-    check "bd connects to Dolt server" "pass" "${issue_count} issues"
+    check "bd reaches host Dolt server" "pass" "${issue_count} issues"
+  elif echo "$bd_output" | grep -q "not found on Dolt server"; then
+    # Server responded — connection works, database just doesn't exist for this project
+    check "bd reaches host Dolt server" "pass" "server reachable (no db for this project)"
   else
-    # Extract first line of error for detail
     bd_err=$(echo "$bd_output" | head -1)
-    check "bd connects to Dolt server" "fail" "$bd_err"
+    check "bd reaches host Dolt server" "fail" "$bd_err"
   fi
 else
-  check "bd connects to Dolt server" "pass" "no .beads/ in workspace (skipped)"
+  check "bd reaches host Dolt server" "pass" "no .beads/ in workspace (skipped)"
 fi
 
 echo ""
@@ -235,18 +240,53 @@ else
   check "Disk space >1GB on /workspace" "fail" "${avail_gb}GB free"
 fi
 
+echo ""
+echo "-- Git Hooks Protection --"
+
+# 33. .git/hooks is read-only (write attempt fails)
+# D11: physical enforcement against container escape via bind-mount
+if [[ -d /workspace/.git/hooks ]]; then
+  if touch /workspace/.git/hooks/.rc-test-write 2>/dev/null; then
+    rm -f /workspace/.git/hooks/.rc-test-write
+    check ".git/hooks is read-only (D11)" "fail" "write succeeded — hooks are NOT read-only"
+  else
+    check ".git/hooks is read-only (D11)" "pass"
+  fi
+else
+  check ".git/hooks is read-only (D11)" "pass" "no .git/hooks directory (skipped)"
+fi
+
+# 34. Python write bypass blocked: python3 open() to .git/hooks must fail
+# D11: verifies the ro sub-mount blocks filesystem-level writes, not just tool-level denies
+if [[ -d /workspace/.git/hooks ]]; then
+  python_result=$(python3 -c "open('/workspace/.git/hooks/test-probe', 'w')" 2>&1 || true)
+  if echo "$python_result" | grep -qiE "(Read-only file system|Permission denied|OSError|IOError)"; then
+    check "Python write to .git/hooks blocked (D11)" "pass"
+  else
+    check "Python write to .git/hooks blocked (D11)" "fail" "python3 open() succeeded or unexpected error: $python_result"
+  fi
+else
+  check "Python write to .git/hooks blocked (D11)" "pass" "no .git/hooks directory (skipped)"
+fi
+
+# 35. KNOWN accepted risk: core.hooksPath redirect is a documented accepted risk
+# An agent can redirect git hooks via `git config core.hooksPath` to a writable path.
+# This is accepted: multi-step, deliberate, and consistent with container-as-boundary (D5).
+# See: docs/2026-04-09-git-hooks-ro-bind-mount-design.md — Accepted Risks section.
+check "KNOWN: core.hooksPath redirect is accepted risk (see design doc)" "pass" "documented in D11 design"
+
 if [[ -d /workspace/.git-main ]]; then
   echo ""
   echo "-- Worktree Git --"
 
-  # 33. Git functional: git status exits 0
+  # 36. Git functional: git status exits 0
   if git -C /workspace status >/dev/null 2>&1; then
     check "Git functional (git status exits 0)" "pass"
   else
     check "Git functional (git status exits 0)" "fail" "git status failed"
   fi
 
-  # 34. Git pointer valid: /workspace/.git contains gitdir: pointing to an existing path
+  # 37. Git pointer valid: /workspace/.git contains gitdir: pointing to an existing path
   git_file_content=$(cat /workspace/.git 2>/dev/null || true)
   if [[ "$git_file_content" == gitdir:\ * ]]; then
     gitdir_path="${git_file_content#gitdir: }"
@@ -259,11 +299,11 @@ if [[ -d /workspace/.git-main ]]; then
     check "Git pointer valid (.git contains gitdir: to existing path)" "fail" "no gitdir: line in /workspace/.git"
   fi
 
-  # 35. Worktree correct: git rev-parse --show-toplevel returns /workspace
+  # 38. Worktree correct: git rev-parse --show-toplevel returns /workspace
   toplevel=$(git -C /workspace rev-parse --show-toplevel 2>/dev/null || true)
   check "Worktree correct (show-toplevel is /workspace)" "$([[ "$toplevel" == "/workspace" ]] && echo pass || echo fail)" "$toplevel"
 
-  # 36. Hooks protected: /workspace/.git-main/hooks is read-only (write attempt fails)
+  # 39. Hooks protected: /workspace/.git-main/hooks is read-only (write attempt fails)
   if touch /workspace/.git-main/hooks/.rc-test-write 2>/dev/null; then
     rm -f /workspace/.git-main/hooks/.rc-test-write
     check "Hooks protected (read-only mount)" "fail" "write succeeded — hooks are NOT read-only"
@@ -271,7 +311,7 @@ if [[ -d /workspace/.git-main ]]; then
     check "Hooks protected (read-only mount)" "pass"
   fi
 
-  # 37. Objects accessible: git log --oneline -1 returns a commit
+  # 40. Objects accessible: git log --oneline -1 returns a commit
   git_log=$(git -C /workspace log --oneline -1 2>/dev/null || true)
   if [[ -n "$git_log" ]]; then
     check "Objects accessible (git log --oneline -1)" "pass" "$git_log"

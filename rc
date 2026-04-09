@@ -99,7 +99,42 @@ cmd_init() {
 
   mkdir -p "${target}/.devcontainer"
 
-  cat > "$dest" <<'DEVCONTAINER'
+  # Detect worktree (same logic as cmd_up) to decide whether to add the hooks mount
+  local init_wt_detected=false
+  if [[ -f "${target}/.git" ]]; then
+    local init_gitdir_line
+    init_gitdir_line=$(cat "${target}/.git" 2>/dev/null || true)
+    if [[ "$init_gitdir_line" == gitdir:\ * ]]; then
+      local init_host_gitdir="${init_gitdir_line#gitdir: }"
+      if [[ -n "$init_host_gitdir" && "$init_host_gitdir" == *"/worktrees/"* ]]; then
+        init_wt_detected=true
+      fi
+    fi
+  fi
+
+  # Write devcontainer.json
+  # Split heredoc to allow conditional hooks mount entry (D11)
+  {
+    if [[ "$init_wt_detected" != "true" ]] && [[ -d "${target}/.git/hooks" ]]; then
+      # Regular git repo: include hooks mount (D11) — last item, no trailing comma
+      cat <<'DEVCONTAINER_WITH_HOOKS'
+{
+  "name": "Rip Cage",
+  "image": "rip-cage:latest",
+  "remoteUser": "agent",
+  "mounts": [
+    "source=rc-state-${devcontainerId},target=/home/agent/.claude-state,type=volume",
+    "source=rc-history-${devcontainerId},target=/commandhistory,type=volume",
+    "source=${localEnv:HOME}/.claude.json,target=/home/agent/.claude.json,type=bind",
+    "source=${localEnv:HOME}/.claude/.credentials.json,target=/home/agent/.claude/.credentials.json,type=bind",
+    "source=${localEnv:HOME}/.claude/CLAUDE.md,target=/home/agent/.rc-context/global-claude.md,type=bind,readonly",
+    "source=${localEnv:HOME}/CLAUDE.md,target=/home/agent/.rc-context/home-claude.md,type=bind,readonly",
+    "source=${localWorkspaceFolder}/.git/hooks,target=/workspace/.git/hooks,type=bind,readonly"
+  ],
+DEVCONTAINER_WITH_HOOKS
+    else
+      # Worktree or non-git project: no hooks mount
+      cat <<'DEVCONTAINER_NO_HOOKS'
 {
   "name": "Rip Cage",
   "image": "rip-cage:latest",
@@ -112,6 +147,9 @@ cmd_init() {
     "source=${localEnv:HOME}/.claude/CLAUDE.md,target=/home/agent/.rc-context/global-claude.md,type=bind,readonly",
     "source=${localEnv:HOME}/CLAUDE.md,target=/home/agent/.rc-context/home-claude.md,type=bind,readonly"
   ],
+DEVCONTAINER_NO_HOOKS
+    fi
+    cat <<'DEVCONTAINER_FOOTER'
   "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096",
@@ -123,7 +161,8 @@ cmd_init() {
   "workspaceFolder": "/workspace",
   "postStartCommand": "/usr/local/bin/init-rip-cage.sh"
 }
-DEVCONTAINER
+DEVCONTAINER_FOOTER
+  } > "$dest"
 
   echo "Created ${dest}"
 }
@@ -336,6 +375,13 @@ cmd_up() {
     fi
   fi
 
+  # D11: compute git_hooks_ro for JSON output
+  # true when .git/hooks is mounted read-only (bind-mount mode with hooks dir present)
+  local git_hooks_ro=false
+  if [[ "$wt_detected" != "true" ]] && [[ -d "${path}/.git/hooks" ]]; then
+    git_hooks_ro=true
+  fi
+
   # Check container state
   local state
   state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
@@ -361,7 +407,8 @@ cmd_up() {
           '{dry_run: $dry_run, name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
       else
         jq -nc --arg name "$name" --arg action "$would_action" --arg source_path "$path" --argjson name_disambiguated "$name_disambiguated" --argjson dry_run true \
-          '{dry_run: $dry_run, name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated}'
+          --argjson git_hooks_ro "$git_hooks_ro" \
+          '{dry_run: $dry_run, name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro}'
       fi
     else
       echo "Would ${would_action#would_} container $name for $path"
@@ -370,6 +417,8 @@ cmd_up() {
         echo "Would mount worktree main .git/ ($wt_main_git) -> /workspace/.git-main (writable)"
         echo "Would mount corrected .git pointer -> /workspace/.git:ro"
         echo "Would mount hooks -> /workspace/.git-main/hooks:ro"
+      elif [[ -d "${path}/.git/hooks" ]]; then
+        echo "Would mount .git/hooks -> /workspace/.git/hooks:ro (D11)"
       fi
       [[ "$would_action" != "would_attach" ]] && echo "Would run init script"
     fi
@@ -388,7 +437,8 @@ cmd_up() {
           '{name: $name, action: $action, source_path: $source_path, status: $status, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
       else
         jq -nc --arg name "$name" --arg action "attached" --arg source_path "$path" --arg status "running" --argjson name_disambiguated "$name_disambiguated" \
-          '{name: $name, action: $action, source_path: $source_path, status: $status, name_disambiguated: $name_disambiguated}'
+          --argjson git_hooks_ro "$git_hooks_ro" \
+          '{name: $name, action: $action, source_path: $source_path, status: $status, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro}'
       fi
       return
     fi
@@ -421,7 +471,8 @@ cmd_up() {
             '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
         else
           jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
-            '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
+            --argjson git_hooks_ro "$git_hooks_ro" \
+            '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro}'
         fi
         return 1
       fi
@@ -440,7 +491,8 @@ cmd_up() {
           '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
       else
         jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
-          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
+          --argjson git_hooks_ro "$git_hooks_ro" \
+          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro}'
       fi
       return
     fi
@@ -456,6 +508,12 @@ cmd_up() {
 
   # Workspace mount
   run_args+=(-v "${path}:/workspace:delegated")
+
+  # D11: .git/hooks read-only — physical enforcement against container escape
+  # Worktree mode handles hooks separately (see worktree mount block below)
+  if [[ "$wt_detected" != "true" ]] && [[ -d "${path}/.git/hooks" ]]; then
+    run_args+=(-v "${path}/.git/hooks:/workspace/.git/hooks:ro")
+  fi
 
   # Git worktree mounts: fix .git pointer so git works inside the container
   if [[ "$wt_detected" == "true" ]]; then
@@ -628,7 +686,8 @@ cmd_up() {
           '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
       else
         jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
-          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
+          --argjson git_hooks_ro "$git_hooks_ro" \
+          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro}'
       fi
       return 1
     fi
@@ -647,7 +706,8 @@ cmd_up() {
         '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
     else
       jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
-        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated}'
+        --argjson git_hooks_ro "$git_hooks_ro" \
+        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro}'
     fi
     return
   fi
