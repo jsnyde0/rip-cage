@@ -167,24 +167,18 @@ done
 echo ""
 echo "-- Beads (functional) --"
 
-# 25. bd can reach host Dolt server (requires host Dolt server running)
-# Success = bd list works OR server responds with "database not found" (server
-# reachable but this project uses no-db mode / has no Dolt database yet).
-# Failure = connection refused, DNS error, timeout (server truly unreachable).
+# 25. bd can access beads data (embedded Dolt on bind mount, or host Dolt server)
 if [ -d /workspace/.beads ]; then
   bd_output=$(cd /workspace && bd list 2>&1 || true)
   if echo "$bd_output" | grep -qE "(Total:|No issues found)"; then
     issue_count=$(echo "$bd_output" | sed -n 's/.*Total: \([0-9]*\).*/\1/p')
-    check "bd reaches host Dolt server" "pass" "${issue_count} issues"
-  elif echo "$bd_output" | grep -q "not found on Dolt server"; then
-    # Server responded — connection works, database just doesn't exist for this project
-    check "bd reaches host Dolt server" "pass" "server reachable (no db for this project)"
+    check "bd can access beads data" "pass" "${issue_count} issues"
   else
     bd_err=$(echo "$bd_output" | head -1)
-    check "bd reaches host Dolt server" "fail" "$bd_err"
+    check "bd can access beads data" "fail" "$bd_err"
   fi
 else
-  check "bd reaches host Dolt server" "pass" "no .beads/ in workspace (skipped)"
+  check "bd can access beads data" "pass" "no .beads/ in workspace (skipped)"
 fi
 
 echo ""
