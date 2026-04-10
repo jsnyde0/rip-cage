@@ -86,27 +86,25 @@ Structured multi-agent coordination.
 
 ## Flywheel Research Repos
 
-Local clones of Emanuel's tools at `~/code/personal/flywheel-research/`. These are shallow clones from 2026-03-27 — **run `git pull` inside a repo before investigating it** to get the latest.
+Rip-cage draws on several tools from [Dicklesworthstone's agentic coding flywheel](https://github.com/Dicklesworthstone/agentic_coding_flywheel_setup). The table below lists upstream repos relevant to the roadmap.
 
-Also: ACFS itself is at `~/code/personal/agentic_coding_flywheel_setup/`.
-
-| Local path | Upstream | What |
-|-----------|----------|------|
-| `flywheel-research/ntm/` | `Dicklesworthstone/ntm` | Named Tmux Manager — multi-agent session orchestration |
-| `flywheel-research/simultaneous_launch_button/` | `Dicklesworthstone/simultaneous_launch_button` | SLB — two-person rule for dangerous commands |
-| `flywheel-research/mcp_agent_mail/` | `Dicklesworthstone/mcp_agent_mail` | Agent Mail — inter-agent communication + file reservations |
-| `flywheel-research/coding_agent_account_manager/` | `Dicklesworthstone/coding_agent_account_manager` | CAAM — credential management + rotation |
-| `flywheel-research/coding_agent_session_search/` | `Dicklesworthstone/coding_agent_session_search` | CASS — unified session search |
-| `flywheel-research/cass_memory_system/` | `Dicklesworthstone/cass_memory_system` | CM — procedural memory with confidence decay |
-| `flywheel-research/cross_agent_session_resumer/` | `Dicklesworthstone/cross_agent_session_resumer` | CASR — session portability across providers |
-| `flywheel-research/beads_rust/` | `Dicklesworthstone/beads_rust` | br — Rust beads (JSONL, no Dolt) |
-| `flywheel-research/beads_viewer/` | `Dicklesworthstone/beads_viewer` | bv — graph-aware TUI for beads |
-| `flywheel-research/ultimate_bug_scanner/` | `Dicklesworthstone/ultimate_bug_scanner` | UBS — bug scanner, 9 languages |
-| `flywheel-research/meta_skill/` | `Dicklesworthstone/meta_skill` | ms — knowledge management with semantic search |
-| `flywheel-research/process_triage/` | `Dicklesworthstone/process_triage` | pt — Bayesian zombie process cleanup |
-| `flywheel-research/wezterm_automata/` | `Dicklesworthstone/wezterm_automata` | FrankenTerm — swarm terminal platform |
-| `flywheel-research/system_resource_protection_script/` | `Dicklesworthstone/system_resource_protection_script` | SRPS — workstation resource protection |
-| `flywheel-research/toon_rust/` | `Dicklesworthstone/toon_rust` | TOON — token-optimized notation |
-| `flywheel-research/rano/` | `Dicklesworthstone/rano` | RANO — network observer for AI CLIs |
-| `flywheel-research/post_compact_reminder/` | `Dicklesworthstone/post_compact_reminder` | Post-compact context reminder hook |
-| `flywheel-research/agent_settings_backup_script/` | `Dicklesworthstone/agent_settings_backup_script` | asb — agent config backup (NOT for rip-cage) |
+| Upstream | What |
+|----------|------|
+| `Dicklesworthstone/ntm` | Named Tmux Manager — multi-agent session orchestration |
+| `Dicklesworthstone/simultaneous_launch_button` | SLB — two-person rule for dangerous commands |
+| `Dicklesworthstone/mcp_agent_mail` | Agent Mail — inter-agent communication + file reservations |
+| `Dicklesworthstone/coding_agent_account_manager` | CAAM — credential management + rotation |
+| `Dicklesworthstone/coding_agent_session_search` | CASS — unified session search |
+| `Dicklesworthstone/cass_memory_system` | CM — procedural memory with confidence decay |
+| `Dicklesworthstone/cross_agent_session_resumer` | CASR — session portability across providers |
+| `Dicklesworthstone/beads_rust` | br — Rust beads (JSONL, no Dolt) |
+| `Dicklesworthstone/beads_viewer` | bv — graph-aware TUI for beads |
+| `Dicklesworthstone/ultimate_bug_scanner` | UBS — bug scanner, 9 languages |
+| `Dicklesworthstone/meta_skill` | ms — knowledge management with semantic search |
+| `Dicklesworthstone/process_triage` | pt — Bayesian zombie process cleanup |
+| `Dicklesworthstone/wezterm_automata` | FrankenTerm — swarm terminal platform |
+| `Dicklesworthstone/system_resource_protection_script` | SRPS — workstation resource protection |
+| `Dicklesworthstone/toon_rust` | TOON — token-optimized notation |
+| `Dicklesworthstone/rano` | RANO — network observer for AI CLIs |
+| `Dicklesworthstone/post_compact_reminder` | Post-compact context reminder hook |
+| `Dicklesworthstone/agent_settings_backup_script` | asb — agent config backup (NOT for rip-cage) |

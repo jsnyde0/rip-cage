@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Verification tests for git worktree support in rc (bead rip-cage-tvx)
 
-RC_FILE="/Users/jonat/code/personal/rip-cage/rc"
+RC_FILE="$(cd "$(dirname "$0")" && pwd)/rc"
 
 pass_count=0
 fail_count=0

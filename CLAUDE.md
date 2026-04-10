@@ -22,21 +22,32 @@ Host (macOS/Linux)
 
 Both paths mount the project directory as a bind mount at `/workspace` — file changes sync instantly, no git push needed.
 
+## Installation
+
+```bash
+# One-time setup — symlink rc onto your PATH:
+ln -sf /path/to/rip-cage/rc ~/.local/bin/rc
+
+# Configure allowed roots (directories rc is permitted to mount):
+mkdir -p ~/.config/rip-cage
+cat > ~/.config/rip-cage/rc.conf << 'EOF'
+RC_ALLOWED_ROOTS="${RC_ALLOWED_ROOTS:-$HOME/projects}"
+EOF
+# Edit the line above to list your code directories, colon-separated.
+```
+
 ## Quick start (using rip-cage on another repo)
 
 ```bash
-# One-time: add to your ~/.zshrc
-export RC_ALLOWED_ROOTS=$HOME/code/personal:$HOME/code/mapular
-
 # From the project (or worktree) you want to sandbox:
-cd ~/code/mapular/platform/mapular-platform
-~/code/personal/rip-cage/rc up .
+cd ~/projects/my-app
+rc up .
 
 # Manage containers:
-~/code/personal/rip-cage/rc ls          # list running containers
-~/code/personal/rip-cage/rc attach <name>  # re-attach tmux
-~/code/personal/rip-cage/rc down <name>    # stop
-~/code/personal/rip-cage/rc destroy <name> # remove container + volumes
+rc ls              # list running containers
+rc attach <name>   # re-attach tmux
+rc down <name>     # stop
+rc destroy <name>  # remove container + volumes
 ```
 
 **Known issue:** Credential bind mounts break if the host rewrites `~/.claude/.credentials.json` (e.g., token refresh by host Claude Code). Symptom: "Not logged in" inside container. Fix: `rc destroy <name>` and `rc up .` again.
@@ -87,7 +98,7 @@ For changes to `rc` itself, you can test without rebuilding the image.
 
 ## Roadmap & design docs
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the phased plan, design docs, ADRs, and links to flywheel research repos (local clones at `~/code/personal/flywheel-research/`). Run `git pull` inside a research repo before reading it to get the latest upstream.
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the phased plan, design docs, and ADRs.
 
 ## Rules for AI agents calling rc
 

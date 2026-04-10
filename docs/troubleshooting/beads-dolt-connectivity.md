@@ -25,8 +25,8 @@ docker inspect <container-name> --format '{{range .Config.Env}}{{println .}}{{en
 Destroy and recreate the container — this picks up the current port from the port file:
 
 ```bash
-~/code/personal/rip-cage/rc destroy <container-name>
-~/code/personal/rip-cage/rc up /path/to/project
+rc destroy <container-name>
+rc up /path/to/project
 ```
 
 ## DANGER: Do NOT run `bd dolt start` inside the container
@@ -41,7 +41,7 @@ If the database is corrupted (checksum errors, corrupted journal):
 
 ```bash
 # 1. Stop all containers accessing this .beads/
-~/code/personal/rip-cage/rc down <container-name>
+rc down <container-name>
 
 # 2. Stop the host Dolt server for this repo
 cd /path/to/project

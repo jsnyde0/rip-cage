@@ -9,7 +9,30 @@ if [[ -f /.dockerenv ]]; then
 fi
 
 IMAGE="rip-cage:latest"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Resolve SCRIPT_DIR through symlinks so `rc build` finds the Dockerfile
+# even when rc is invoked via a symlink (e.g., /usr/local/bin/rc -> .../rip-cage/rc)
+_resolve_script_dir() {
+  local source="$0"
+  while [[ -L "$source" ]]; do
+    local dir
+    dir="$(cd "$(dirname "$source")" && pwd)"
+    source="$(readlink "$source")"
+    # If readlink returned a relative path, resolve it against the link's dir
+    [[ "$source" != /* ]] && source="$dir/$source"
+  done
+  cd "$(dirname "$source")" && pwd
+}
+SCRIPT_DIR="$(_resolve_script_dir)"
+
+# Load config file if present (sets defaults for RC_ALLOWED_ROOTS, etc.)
+# Config location: ~/.config/rip-cage/rc.conf or $RC_CONFIG
+_rc_conf="${RC_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/rc.conf}"
+if [[ -f "$_rc_conf" ]]; then
+  # shellcheck source=/dev/null
+  source "$_rc_conf"
+fi
+unset _rc_conf
 
 OUTPUT_FORMAT="human"
 DRY_RUN=false
@@ -48,7 +71,7 @@ Commands:
   test [name]                                  Run safety stack smoke test
 
 Global flags:
-  --output json    Emit machine-readable JSON (must precede subcommand)
+  --output json    Emit machine-readable JSON
   --dry-run        Preview what would happen without executing
 EOF
   exit 1
@@ -980,7 +1003,9 @@ cmd_schema() {
 SCHEMA
 }
 
-# Parse global flags
+# Parse global flags from anywhere in argv
+# Allows: rc --dry-run up ., rc up --dry-run ., rc up . --dry-run
+_remaining=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --output)
@@ -991,9 +1016,11 @@ while [[ $# -gt 0 ]]; do
       fi
       ;;
     --dry-run) DRY_RUN=true; shift ;;
-    *) break ;;  # first non-flag arg is the subcommand
+    *) _remaining+=("$1"); shift ;;
   esac
 done
+set -- "${_remaining[@]+"${_remaining[@]}"}"
+unset _remaining
 
 # Reject --dry-run on commands that don't support it
 if [[ "$DRY_RUN" == "true" ]]; then
