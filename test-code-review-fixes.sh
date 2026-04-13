@@ -25,8 +25,8 @@ fi
 # --- C2: json_out eliminated — verify no json_out calls with interpolation ---
 echo ""
 echo "=== C2: No unsafe json_out with interpolated variables ==="
-# Count json_out calls that contain $ (variable interpolation) in rc, excluding the function definition
-unsafe_count=$(grep 'json_out' "$RC" | grep -v 'json_out()' | grep '\$' | wc -l | tr -d ' ')
+# Count json_out calls (exact name, not _up_json_output) with $ (variable interpolation)
+unsafe_count=$(grep -w 'json_out' "$RC" | grep -v 'json_out()' | grep '\$' | wc -l | tr -d ' ')
 if [[ "$unsafe_count" -eq 0 ]]; then
   pass "No json_out calls with variable interpolation"
 else
