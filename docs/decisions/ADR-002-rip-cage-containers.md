@@ -369,6 +369,29 @@ The container ships with UTF-8 locale (`LANG=C.UTF-8`), `TERM=xterm-256color`, a
 
 **What would invalidate this:** Claude Code stops relying on DEC 2026 for flicker-free rendering (e.g., ships its own frame batching). Or Claude Code ships a built-in terminal multiplexer, making tmux unnecessary.
 
+### D17: Mount host skills and commands read-only
+
+**Firmness: FLEXIBLE**
+
+**Added:** 2026-04-13
+
+Mount `~/.claude/skills/` and `~/.claude/commands/` from the host into the container at `/home/agent/.rc-context/skills` and `/home/agent/.rc-context/commands` (read-only), then symlinked into `~/.claude/` by `init-rip-cage.sh`. This gives the agent inside the container access to the same Claude Code skills and slash commands as the host user.
+
+**Rationale:** Skills and commands are user-authored instruction sets (markdown files, scripts). Without this mount the agent sees an unknown skill error for any `/slash-command` that isn't built into Claude Code. The `:ro` flag preserves the safety-stack model: the container can execute skill logic but cannot modify the host's skill definitions. The `.rc-context/` staging pattern is consistent with how CLAUDE.md files are handled (D6/D9) — raw host files go to staging, init script decides what to link.
+
+**Security posture:** Skills can contain arbitrary instruction text and may reference shell scripts. However, the mount is read-only, user-authored (same trust level as CLAUDE.md), and the agent already has full workspace access. This is distinct from D8 (`.env` mounting refused) because `.env` files contain secrets with external blast radius; skills contain agent instructions with no new secret exposure.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **Read-only bind mount via .rc-context** | Consistent pattern, no secret exposure, live updates | Skills with Python venvs may have host-absolute paths (not usable in container) |
+| Copy into image at build time | No runtime mount needed | Skills change frequently, would require constant rebuilds |
+| Mount `~/.claude/` wholesale | Simpler single mount | Conflicts with init script managing settings.json, projects/, sessions/ inside ~/.claude/ |
+| No skills support | Simplest | Agent loses access to all user skills |
+
+**What would invalidate this:** Skills contain secrets or sensitive data that should not be exposed inside the container. In that case, introduce a skills allowlist in `rc.conf`.
+
 ## Related
 
 - [Rip Cage Design](../2026-03-25-rip-cage-design.md) — full design document

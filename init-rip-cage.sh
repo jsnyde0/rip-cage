@@ -44,7 +44,20 @@ else
   echo "[rip-cage] No home CLAUDE.md (skipped)"
 fi
 
-# 3. Restore persistent state from .claude-state volume
+# 3. Link skills and commands from host (staged via .rc-context/)
+for _rc_asset in skills commands; do
+  if [ -d "/home/agent/.rc-context/${_rc_asset}" ]; then
+    # Remove any real directory that may exist — ln -sfn would nest inside it otherwise
+    if [ -d ~/.claude/"${_rc_asset}" ] && [ ! -L ~/.claude/"${_rc_asset}" ]; then
+      rm -rf ~/.claude/"${_rc_asset}"
+    fi
+    ln -sfn "/home/agent/.rc-context/${_rc_asset}" ~/.claude/"${_rc_asset}"
+    echo "[rip-cage] ${_rc_asset} linked from host"
+  fi
+done
+unset _rc_asset
+
+# 4. Restore persistent state from .claude-state volume
 if [ -d /home/agent/.claude-state ]; then
   if [[ ! -L /home/agent/.claude-state ]]; then
     sudo chown agent:agent /home/agent/.claude-state 2>/dev/null || true
@@ -56,7 +69,7 @@ if [ -d /home/agent/.claude-state ]; then
   done
 fi
 
-# 4. Verify hooks
+# 5. Verify hooks
 if [ ! -x /usr/local/bin/dcg ]; then
   echo "[rip-cage] ERROR: DCG not found or not executable at /usr/local/bin/dcg" >&2
   exit 1
@@ -67,12 +80,12 @@ if [ ! -x /usr/local/lib/rip-cage/hooks/block-compound-commands.sh ]; then
 fi
 echo "[rip-cage] Hooks verified"
 
-# 5. Set git identity
+# 6. Set git identity
 git config --global user.name "${GIT_AUTHOR_NAME:-Rip Cage Agent}"
 git config --global user.email "${GIT_AUTHOR_EMAIL:-agent@rip-cage.local}"
 echo "[rip-cage] Git identity: $(git config user.name) <$(git config user.email)>"
 
-# 6. Verify Claude Code
+# 7. Verify Claude Code
 if ! claude --version > /dev/null 2>&1; then
   echo "[rip-cage] ERROR: claude --version failed" >&2
   exit 1
@@ -86,7 +99,7 @@ elif [ ! -f ~/.claude.json ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
   echo "[rip-cage] WARNING: No auth found (~/.claude/.credentials.json missing, ANTHROPIC_API_KEY not set)" >&2
 fi
 
-# 7. Initialize beads
+# 8. Initialize beads
 # Storage mode was determined at top of script from metadata.json.
 # For server mode: BEADS_DOLT_SERVER_MODE and HOST are exported; port is re-read by bd wrapper.
 # For embedded mode: no server env vars; bd uses in-process Dolt on the bind mount.
@@ -105,7 +118,7 @@ if [ -d /workspace/.beads ]; then
   fi
 fi
 
-# 8. Start tmux (CLI mode only — skip if inside VS Code devcontainer)
+# 9. Start tmux (CLI mode only — skip if inside VS Code devcontainer)
 if [ -z "${VSCODE_INJECTION:-}" ] && [ -z "${REMOTE_CONTAINERS:-}" ]; then
   if command -v tmux > /dev/null 2>&1; then
     tmux new-session -d -s rip-cage -c /workspace 2>/dev/null || true

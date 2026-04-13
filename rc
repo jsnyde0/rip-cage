@@ -193,6 +193,8 @@ cmd_init() {
     "source=${localEnv:HOME}/.claude/.credentials.json,target=/home/agent/.claude/.credentials.json,type=bind",
     "source=${localEnv:HOME}/.claude/CLAUDE.md,target=/home/agent/.rc-context/global-claude.md,type=bind,readonly",
     "source=${localEnv:HOME}/CLAUDE.md,target=/home/agent/.rc-context/home-claude.md,type=bind,readonly",
+    "source=${localEnv:HOME}/.claude/skills,target=/home/agent/.rc-context/skills,type=bind,readonly",
+    "source=${localEnv:HOME}/.claude/commands,target=/home/agent/.rc-context/commands,type=bind,readonly",
     "source=${localWorkspaceFolder}/.git/hooks,target=/workspace/.git/hooks,type=bind,readonly"
   ],
 DEVCONTAINER_WITH_HOOKS
@@ -209,7 +211,9 @@ DEVCONTAINER_WITH_HOOKS
     "source=${localEnv:HOME}/.claude.json,target=/home/agent/.claude.json,type=bind",
     "source=${localEnv:HOME}/.claude/.credentials.json,target=/home/agent/.claude/.credentials.json,type=bind",
     "source=${localEnv:HOME}/.claude/CLAUDE.md,target=/home/agent/.rc-context/global-claude.md,type=bind,readonly",
-    "source=${localEnv:HOME}/CLAUDE.md,target=/home/agent/.rc-context/home-claude.md,type=bind,readonly"
+    "source=${localEnv:HOME}/CLAUDE.md,target=/home/agent/.rc-context/home-claude.md,type=bind,readonly",
+    "source=${localEnv:HOME}/.claude/skills,target=/home/agent/.rc-context/skills,type=bind,readonly",
+    "source=${localEnv:HOME}/.claude/commands,target=/home/agent/.rc-context/commands,type=bind,readonly"
   ],
 DEVCONTAINER_NO_HOOKS
     fi
@@ -230,7 +234,7 @@ DEVCONTAINER_NO_HOOKS
     fi
     if [[ "$init_dolt_mode" != "embedded" ]] && [[ -n "$init_dolt_mode" ]]; then
       cat <<'DEVCONTAINER_FOOTER_SERVER'
-  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
+  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096",
     "BEADS_DOLT_SERVER_MODE": "1",
@@ -244,7 +248,7 @@ DEVCONTAINER_NO_HOOKS
 DEVCONTAINER_FOOTER_SERVER
     else
       cat <<'DEVCONTAINER_FOOTER_EMBEDDED'
-  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
+  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096"
   },
@@ -509,6 +513,15 @@ _up_prepare_docker_mounts() {
       echo "Warning: failed to extract credentials from macOS keychain — auth may not work inside container" >&2
       echo "  Run 'claude auth login' on the host to set up credentials, or set ANTHROPIC_API_KEY" >&2
     fi
+  fi
+
+  # Skills and commands: mount host's ~/.claude/skills and ~/.claude/commands read-only
+  # Staged via .rc-context/ so init-rip-cage.sh can symlink them into ~/.claude/
+  if [[ -d "${HOME}/.claude/skills" ]]; then
+    _UP_RUN_ARGS+=(-v "${HOME}/.claude/skills:/home/agent/.rc-context/skills:ro")
+  fi
+  if [[ -d "${HOME}/.claude/commands" ]]; then
+    _UP_RUN_ARGS+=(-v "${HOME}/.claude/commands:/home/agent/.rc-context/commands:ro")
   fi
 
   # D3: Credential health check — warn on expired or soon-to-expire tokens
@@ -795,6 +808,8 @@ cmd_up() {
       elif [[ -d "${path}/.git/hooks" ]]; then
         echo "Would mount .git/hooks -> /workspace/.git/hooks:ro (D11)"
       fi
+      [[ -d "${HOME}/.claude/skills" ]] && echo "Would mount ~/.claude/skills -> /home/agent/.rc-context/skills:ro"
+      [[ -d "${HOME}/.claude/commands" ]] && echo "Would mount ~/.claude/commands -> /home/agent/.rc-context/commands:ro"
       [[ "$would_action" != "would_attach" ]] && echo "Would run init script"
     fi
     return 0
