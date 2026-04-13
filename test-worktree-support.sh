@@ -41,7 +41,7 @@ check "Distinguishes worktrees from submodules via /worktrees/ path" \
 
 # Test 5: RC_ALLOWED_ROOTS validation for main git dir
 check "Validates main .git/ against RC_ALLOWED_ROOTS" \
-  "$(grep_check 'git_allowed')"
+  "$(grep_check '_path_under_allowed_roots.*resolved_git_dir')"
 
 # Test 6: Sets wt_name from basename of gitdir
 check "Sets wt_name from basename of host_gitdir" \
@@ -130,23 +130,21 @@ check "git_hooks_ro set to true when wt_detected is true" \
   "$(grep -q 'wt_detected.*==.*true.*git_hooks_ro.*true\|git_hooks_ro=true' "$RC_FILE" && \
      grep -A5 'wt_detected.*==.*true' "$RC_FILE" | grep -q 'git_hooks_ro=true' && echo true || echo false)"
 
-# Test 22: Worktree dry-run JSON includes git_hooks_ro field
-check "Worktree dry-run jq call includes git_hooks_ro arg" \
-  "$(awk '/DRY_RUN.*==.*true/,/return 0/' "$RC_FILE" | grep -q 'git_hooks_ro.*wt_name\|wt_name.*git_hooks_ro' && echo true || echo false)"
+# Test 22: _up_json_output helper includes git_hooks_ro for worktree case
+check "Worktree JSON helper includes git_hooks_ro arg" \
+  "$(grep_check 'git_hooks_ro.*wt_name.*wt_main_git')"
 
-# Test 23: Worktree attached (running) JSON includes git_hooks_ro field
-# The jq call for attached worktree spans multiple lines; check that git_hooks_ro
-# appears on the continuation line following the action "attached" jq call with wt_name
-check "Worktree attached jq call includes git_hooks_ro arg" \
-  "$(awk '/action.*attached/{found=1} found && /wt_name.*wt_main_git.*git_hooks_ro/{print "true"; exit} found && /^\s*'"'"'{/{found=0}' "$RC_FILE" | grep -q true && echo true || echo false)"
-
-# Test 24: Count of worktree jq calls that include both wt_name and git_hooks_ro (should be 6)
-wt_jq_with_hooks=$(grep -c 'wt_name.*wt_main_git.*git_hooks_ro\|git_hooks_ro.*wt_name.*wt_main_git' "$RC_FILE" 2>/dev/null) || wt_jq_with_hooks=0
-if [[ "$wt_jq_with_hooks" -ge 6 ]]; then
-  check "All 6 worktree jq calls include git_hooks_ro (dry-run/attached/resumed-fail/resumed-success/created-fail/created-success)" "true"
+# Test 23: All worktree JSON goes through _up_json_output (6 call sites use it)
+wt_json_calls=$(grep -c '_up_json_output' "$RC_FILE" 2>/dev/null) || wt_json_calls=0
+if [[ "$wt_json_calls" -ge 6 ]]; then
+  check "All JSON output goes through _up_json_output helper (${wt_json_calls} calls)" "true"
 else
-  check "All 6 worktree jq calls include git_hooks_ro (found ${wt_jq_with_hooks}/6)" "false"
+  check "All JSON output goes through _up_json_output helper (found ${wt_json_calls}/6)" "false"
 fi
+
+# Test 24: _up_json_output handles non-worktree git_hooks_ro too
+check "Non-worktree JSON also includes git_hooks_ro" \
+  "$(awk '/_up_json_output/,/^}/' "$RC_FILE" | grep -q 'git_hooks_ro.*git_hooks_ro' && echo true || echo false)"
 
 # Test 25: git_hooks_ro computation: worktree branch sets it to true
 # Check that the git_hooks_ro=true assignment is reachable when wt_detected==true
