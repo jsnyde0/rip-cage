@@ -98,7 +98,7 @@ Usage: rc [--output json] [--dry-run] <command> [args]
 Commands:
   build [docker-args...]                       Build the rip-cage image
   init [--force] [path]                        Scaffold .devcontainer/devcontainer.json
-  up <path> [options]                           Start or resume a container
+  up [path] [options]                           Start or resume a container (default: .)
     --port PORT         Expose a port
     --env-file FILE     Load env vars from file
     --cpus N            CPU limit (default: 2)
@@ -709,9 +709,7 @@ cmd_up() {
   done
 
   if [[ -z "$path" ]]; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "path required. Usage: rc up <path>" "MISSING_ARGUMENT"
-    echo "Error: path required. Usage: rc up <path> [--port PORT] [--env-file FILE]" >&2
-    exit 1
+    path="."
   fi
 
   validate_path "$path"
