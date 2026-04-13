@@ -76,15 +76,21 @@ else
   fail "global flags before subcommand failed. Got: $ls_correct"
 fi
 
-# --- Test 7: json_error produces valid JSON with error and code fields ---
+# --- Test 7: rc up with no path defaults to current directory (dry-run) ---
 echo ""
-echo "=== Test 7: --output json up with no path produces JSON error ==="
-up_err=$("$RC" --output json up 2>&1) || true
-if echo "$up_err" | jq -e '.error and .code' >/dev/null 2>&1; then
-  pass "--output json up with no path returns JSON error with code"
+echo "=== Test 7: --output json up with no path defaults to current directory ==="
+# rc up with no path should default to '.' — verify via dry-run (no Docker needed)
+TEST_ALLOWED_DIR=$(mktemp -d)
+cd "$TEST_ALLOWED_DIR"
+up_default=$(RC_ALLOWED_ROOTS="$TEST_ALLOWED_DIR" "$RC" --dry-run --output json up 2>/dev/null) || true
+up_action=$(echo "$up_default" | jq -r '.action // empty' 2>/dev/null || true)
+if [[ "$up_action" == would_* ]]; then
+  pass "--output json up with no path defaults to '.' (dry_run action=$up_action)"
 else
-  fail "--output json up with no path did not return JSON error. Got: $up_err"
+  fail "--output json up with no path did not default to '.'. Got: $up_default"
 fi
+rm -rf "$TEST_ALLOWED_DIR"
+cd "$SCRIPT_DIR"
 
 # --- Test 8: cmd_up Docker-not-running check emits JSON error ---
 echo ""

@@ -59,6 +59,21 @@ if grep -q 'init-rip-cage.sh' "$TEST_DIR/.devcontainer/devcontainer.json"; then
 else
   fail "missing postStartCommand"
 fi
+if grep -q 'rc-context/skills' "$TEST_DIR/.devcontainer/devcontainer.json"; then
+  pass "has skills mount"
+else
+  fail "missing skills mount"
+fi
+if grep -q 'rc-context/commands' "$TEST_DIR/.devcontainer/devcontainer.json"; then
+  pass "has commands mount"
+else
+  fail "missing commands mount"
+fi
+if grep -q 'mkdir -p.*skills.*commands' "$TEST_DIR/.devcontainer/devcontainer.json"; then
+  pass "initializeCommand creates skills/commands dirs"
+else
+  fail "initializeCommand missing mkdir -p for skills/commands"
+fi
 
 # --- Test 4: rc init refuses to overwrite without --force ---
 echo ""
