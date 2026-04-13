@@ -105,7 +105,7 @@ Replace `${BASH_REMATCH[1],,}` at `rc:928` with `$(echo "${BASH_REMATCH[1]}" | t
 
 Add `.github/workflows/release.yml` that triggers on version tags (`v*`):
 - Builds the image
-- Pushes to `ghcr.io/jsnyde0/rip-cage:<version>` and `:latest`
+- Pushes to `ghcr.io/youruser/rip-cage:<version>` and `:latest`
 - Update `rc` to pull from GHCR when image doesn't exist locally (with `--build` flag to force local build)
 
 Depends on: versioning (P1) and CI (P1) being in place.

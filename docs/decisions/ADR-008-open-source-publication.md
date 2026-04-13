@@ -79,7 +79,7 @@ The `rc` script must work with bash 3.2 (macOS default). Any bash 4+ syntax is a
 
 **Firmness: FLEXIBLE**
 
-Publish images to `ghcr.io/jsnyde0/rip-cage:<version>` on tagged releases. Update `rc` to attempt `docker pull` before `docker build` when the local image doesn't exist.
+Publish images to `ghcr.io/youruser/rip-cage:<version>` on tagged releases. Update `rc` to attempt `docker pull` before `docker build` when the local image doesn't exist.
 
 **Rationale:** Building the multi-stage image (Go + Rust + Debian) takes 5-10 minutes on a clean machine. A pre-built image reduces first-use time to ~30 seconds. GHCR is free for public repos and integrates natively with GitHub Actions.
 

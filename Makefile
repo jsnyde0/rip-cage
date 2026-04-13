@@ -2,7 +2,7 @@
 
 PREFIX ?= $(HOME)/.local
 
-BASH_SCRIPTS := rc init-rip-cage.sh hooks/block-compound-commands.sh test-safety-stack.sh
+BASH_SCRIPTS := rc init-rip-cage.sh hooks/block-compound-commands.sh test-safety-stack.sh test-prerequisites.sh
 
 .PHONY: help install uninstall build test lint
 

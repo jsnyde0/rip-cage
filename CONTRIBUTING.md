@@ -62,7 +62,7 @@ After building, spin up a container against any project directory and run the te
 
 ### What the tests check
 
-The test suite (`test-safety-stack.sh`) runs 35-40 checks organized into sections:
+The test suite (`test-safety-stack.sh`) runs 30+ checks organized into sections:
 
 **User & Environment** — verifies the container agent runs as the `agent` user (uid 1000, not root) and that `/workspace` is mounted and writable.
 
@@ -97,7 +97,7 @@ Expected output when everything passes:
 PASS  [1] Container user is agent — agent
 PASS  [2] Not running as root — uid=1000
 ...
-=== Results: 35 passed, 0 failed (of 35) ===
+=== Results: 32 passed, 0 failed (of 32) ===
 ```
 
 ## Making changes
