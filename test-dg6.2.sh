@@ -99,6 +99,9 @@ echo ""
 echo "=== Test 8: rc up accepts valid path under allowed root (fails later at Docker) ==="
 # This should pass validation and fail at Docker check
 valid_err=$(RC_ALLOWED_ROOTS="$(dirname "$test_dir")" "$RC" up "$test_dir" 2>&1) || true
+# Clean up any container that rc may have created before failing
+container_name=$(basename "$(dirname "$test_dir")")-$(basename "$test_dir")
+docker rm -f "$container_name" 2>/dev/null || true
 # Should NOT contain path validation errors
 if echo "$valid_err" | grep -q "outside allowed roots\|RC_ALLOWED_ROOTS not set\|does not exist\|not a directory\|control characters"; then
   fail "rc up rejected valid path. Got: $valid_err"

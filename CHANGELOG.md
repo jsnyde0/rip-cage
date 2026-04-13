@@ -35,4 +35,4 @@ agents safely in full auto mode.
 - `rc.conf` for configuring allowed project roots
 - Container user model: non-root `agent` user with restricted sudo paths
 
-[0.1.0]: https://github.com/youruser/rip-cage/releases/tag/v0.1.0
+[0.1.0]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.1.0

@@ -707,9 +707,15 @@ cmd_up() {
   # Validate env-file early (before dry-run exit) to catch symlink bypasses
   if [[ -n "$env_file" ]]; then
     local resolved_env
+    if [[ ! -e "$env_file" ]]; then
+      echo "Error: env file not found: $env_file" >&2; exit 1
+    fi
     resolved_env=$(realpath "$env_file" 2>/dev/null) || {
       echo "Error: env file not found: $env_file" >&2; exit 1
     }
+    if [[ ! -f "$resolved_env" ]]; then
+      echo "Error: env file is not a regular file: $env_file" >&2; exit 1
+    fi
     validate_path "$(dirname "$resolved_env")"
     env_file="$resolved_env"
   fi

@@ -23,7 +23,7 @@ The agent gets a full dev environment — Node, Bun, Python (uv), Go, gh CLI, an
 ### Setup
 
 ```bash
-git clone https://github.com/youruser/rip-cage.git
+git clone https://github.com/jsnyde0/rip-cage.git
 cd rip-cage
 ./rc build
 
