@@ -298,7 +298,14 @@ validate_path() {
   fi
 
   # Must resolve to existing directory (realpath follows symlinks -- security-critical per ADR)
+  # Explicit existence check first: GNU realpath resolves non-existent paths,
+  # unlike BSD realpath which fails. The -e check covers both platforms.
   local resolved
+  if [[ ! -e "$raw_path" ]]; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Path does not exist: $raw_path" "PATH_NOT_FOUND"
+    echo "Error: $raw_path does not exist" >&2
+    exit 1
+  fi
   if ! resolved=$(realpath "$raw_path" 2>/dev/null); then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Path does not exist: $raw_path" "PATH_NOT_FOUND"
     echo "Error: $raw_path does not exist" >&2
@@ -339,6 +346,7 @@ validate_path() {
 #   $4  status        — e.g. "running", "stopped"  (pass "" to omit)
 #   $5  init          — e.g. "success", "failed"   (pass "" to omit)
 #   $6  dry_run       — non-empty string to include dry_run:true (pass "" to omit)
+# shellcheck disable=SC2016 # jq_filter uses jq variable syntax ($name etc.)
 _up_json_output() {
   local _name="$1" _action="$2" _source_path="$3" _status="${4:-}" _init="${5:-}" _dry_run="${6:-}"
 
@@ -997,10 +1005,9 @@ cmd_test() {
       if [[ "$line" =~ ^(PASS|FAIL)[[:space:]]+\[([0-9]+)\][[:space:]]+(.*) ]]; then
         local status
         status=$(echo "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')  # lowercase (bash 3.2 compat)
-        local idx="${BASH_REMATCH[2]}"
         local desc="${BASH_REMATCH[3]}"
         local test_name
-        test_name=$(echo "$desc" | sed 's/ — .*//')
+        test_name="${desc%% — *}"
         local detail=""
         if [[ "$desc" == *" — "* ]]; then
           detail="${desc#* — }"

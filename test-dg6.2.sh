@@ -48,8 +48,8 @@ fi
 # --- Test 4: validate_path rejects path prefix attack ---
 echo ""
 echo "=== Test 4: rc up rejects path prefix attack ==="
-# Create /tmp/code and /tmp/code-evil to test prefix matching
-code_dir=$(mktemp -d -t code)
+# Create a dir and a sibling with the same prefix + "-evil" to test prefix matching
+code_dir=$(mktemp -d)
 evil_dir="${code_dir}-evil"
 mkdir -p "$evil_dir"
 prefix_err=$(RC_ALLOWED_ROOTS="$code_dir" "$RC" up "$evil_dir" 2>&1) || true
