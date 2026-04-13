@@ -283,7 +283,7 @@ The same image works as a VS Code devcontainer. This is the **primary local inte
 }
 ```
 
-**Image reference evolution:** Phase 1 uses `rip-cage:latest` (locally built). When published, this becomes `ghcr.io/jsnyde0/rip-cage:latest` — a one-line change in `rc`'s template, no per-project updates needed (existing devcontainer.json files would need updating, but new ones get the registry reference automatically).
+**Image reference evolution:** Phase 1 uses `rip-cage:latest` (locally built). When published, this becomes `ghcr.io/youruser/rip-cage:latest` — a one-line change in `rc`'s template, no per-project updates needed (existing devcontainer.json files would need updating, but new ones get the registry reference automatically).
 
 **Volume strategy**: The named volume is at `/home/agent/.claude-state` (not `~/.claude` directly) to avoid shadowing bind-mounted files. The `init-rip-cage.sh` script assembles `~/.claude/` from three sources: baked-in template (settings.json, hooks — always overwritten from image on startup), host context (CLAUDE.md files from `.rc-context/`), and persistent state (session data from `.claude-state/`). See [init-rip-cage.sh Contract](#init-rip-cagesh-contract).
 
@@ -323,10 +323,10 @@ rc build
 rc init /path/to/any-project
 
 # Start a container mounting a path (CLI/tmux mode)
-rc up /Users/jonat/code/mapular/platform/mapular-platform
+rc up ~/projects/my-app
 
 # Start in clone mode (for VPS / background work)
-rc up https://github.com/jsnyde0/mapular-platform --clone
+rc up https://github.com/youruser/your-repo --clone
 
 # List running containers
 rc ls
@@ -352,7 +352,7 @@ rc test mapular-platform
 
 **Future: `rc health`**: For long-running persistent containers, extend `rc ls` or add `rc health <name>` to show container uptime, disk usage, whether Claude Code is running, and Dolt responsiveness. Not Phase 1 — add when persistent containers run long enough to accumulate state issues.
 
-Container naming: derived from the last two path components to avoid collisions. E.g., `~/code/personal/platform` -> `personal-platform`, `~/code/mapular/platform` -> `mapular-platform`. If a container for that name exists, attach to it. **Collision risk**: paths like `~/a/foo/bar` and `~/b/foo/bar` both derive `foo-bar`. If `rc up` detects a container exists for a different source path with the same name, it should warn and use a hash suffix for disambiguation.
+Container naming: derived from the last two path components to avoid collisions. E.g., `~/projects/frontend` -> `projects-frontend`, `~/work/platform` -> `work-platform`. If a container for that name exists, attach to it. **Collision risk**: paths like `~/a/foo/bar` and `~/b/foo/bar` both derive `foo-bar`. If `rc up` detects a container exists for a different source path with the same name, it should warn and use a hash suffix for disambiguation.
 
 ### First Run Experience
 

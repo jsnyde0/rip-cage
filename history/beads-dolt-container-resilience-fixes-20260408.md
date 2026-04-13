@@ -6,7 +6,7 @@ Review passes: 1
 (none)
 
 ## Important
-- **test-bd-wrapper.sh:8** — Hardcoded absolute path `/Users/jonat/code/personal/rip-cage/bd-wrapper.sh` breaks portability. Fix: use `WRAPPER="$(cd "$(dirname "$0")" && pwd)/bd-wrapper.sh"`.
+- **test-bd-wrapper.sh:8** — Hardcoded absolute path to `bd-wrapper.sh` breaks portability. Fix: use `WRAPPER="$(cd "$(dirname "$0")" && pwd)/bd-wrapper.sh"`.
 - **test-bd-wrapper.sh:71-76** — Port re-read "test" is a static grep on source code, not a runtime behavioral test. ADR-007 D3 specifies a functional test: "write a test port, run bd, verify env." Fix: add a test that creates a temp port file, creates a mock bd-real that prints `$BEADS_DOLT_SERVER_PORT`, runs the wrapper, and verifies the exported value matches the file content.
 - **CLAUDE.md:15,83** — Test count says "27-check" and "27/27 PASS" but the suite now has 32+ checks (26-30 added for wrapper, plus renumbered network/disk). Fix: update to reflect current count.
 

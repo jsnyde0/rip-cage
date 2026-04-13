@@ -16,7 +16,7 @@ When `BEADS_DOLT_SERVER_MODE=1` is set, bd ignores the project's embedded mode a
 
 ### Earlier wrong assumption: `no-db: true`
 
-The initial diagnosis pointed to `no-db: true` in `.beads/config.yaml` as the detection mechanism. Research on bd source code (`/Users/jonat/code/mapular/beads`) proved this wrong: `no-db: true` is a vestigial config key that bd parses but never uses in storage initialization. `store_factory.go` lines 41-46 always use Dolt (embedded or server). The actual source of truth is `dolt_mode` in `.beads/metadata.json`.
+The initial diagnosis pointed to `no-db: true` in `.beads/config.yaml` as the detection mechanism. Research on bd source code proved this wrong: `no-db: true` is a vestigial config key that bd parses but never uses in storage initialization. `store_factory.go` lines 41-46 always use Dolt (embedded or server). The actual source of truth is `dolt_mode` in `.beads/metadata.json`.
 
 ### Impact
 

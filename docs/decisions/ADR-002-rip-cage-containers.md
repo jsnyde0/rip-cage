@@ -291,7 +291,7 @@ The generated `devcontainer.json` references a pre-built image (`rip-cage:latest
 **Rationale:** Rip-cage is intended to be a distributable tool (eventually `brew install rip-cage` or similar). Users won't have the source repo cloned, so devcontainer.json cannot reference a Dockerfile path — it must reference an image. Using a pre-built image also means:
 - No per-project Dockerfile paths to manage
 - `rc init` generates identical config regardless of where rip-cage is installed
-- Migration from local image (`rip-cage:latest`) to registry image (`ghcr.io/jsnyde0/rip-cage:latest`) is a one-line change in `rc`'s template
+- Migration from local image (`rip-cage:latest`) to registry image (`ghcr.io/youruser/rip-cage:latest`) is a one-line change in `rc`'s template
 - Works on rip-cage's own repo too (build the image first, then `rc init .`)
 
 This merges the previous Phase 1a (devcontainer) and Phase 1b (`rc` CLI) into a single Phase 1, since `rc` is now the entry point for both paths: `rc init` for devcontainer setup, `rc up` for CLI/tmux mode.

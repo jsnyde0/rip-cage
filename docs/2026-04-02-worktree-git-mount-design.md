@@ -13,7 +13,7 @@
 When `rc up` targets a git worktree, git is broken inside the container. All git operations fail:
 
 ```
-fatal: not a git repository: /Users/jonat/code/mapular/platform/mapular-platform/.git/worktrees/update-demographics
+fatal: not a git repository: ~/projects/my-app/.git/worktrees/update-demographics
 ```
 
 **This is the primary use case, not an edge case.** Worktrees are the standard workflow for running rip-cage containers via `rc up` — each parallel task gets its own worktree and container. Every container that targets a worktree has broken git without this fix. (Note: the devcontainer path via `rc init` does not support worktrees — see Devcontainer Path below.)
@@ -21,7 +21,7 @@ fatal: not a git repository: /Users/jonat/code/mapular/platform/mapular-platform
 **Root cause:** Git worktrees use a `.git` *file* (not directory) containing a pointer to the main repo:
 
 ```
-gitdir: /Users/jonat/code/.../mapular-platform/.git/worktrees/update-demographics
+gitdir: ~/projects/my-app/.git/worktrees/update-demographics
 ```
 
 This host-absolute path doesn't exist inside the container. The container only has the worktree directory mounted at `/workspace` — the main repo's `.git/` is nowhere to be found.
@@ -129,13 +129,13 @@ This fixes the chain:
 
 Given a worktree `.git` file containing:
 ```
-gitdir: /Users/jonat/code/mapular/platform/mapular-platform/.git/worktrees/update-demographics
+gitdir: ~/projects/my-app/.git/worktrees/update-demographics
 ```
 
 Derive:
 - **Worktree name:** `update-demographics` (basename of gitdir path)
-- **Main `.git/` path:** `/Users/jonat/code/mapular/platform/mapular-platform/.git` (strip `/worktrees/<name>`)
-- **Main repo root:** `/Users/jonat/code/mapular/platform/mapular-platform` (parent of `.git/`)
+- **Main `.git/` path:** `~/projects/my-app/.git` (strip `/worktrees/<name>`)
+- **Main repo root:** `~/projects/my-app` (parent of `.git/`)
 
 Relative gitdir paths (allowed since Git 2.13) are resolved to absolute before parsing, using `realpath` relative to the worktree directory. This ensures `RC_ALLOWED_ROOTS` validation works (it requires absolute paths).
 
@@ -262,10 +262,10 @@ When `--output json` is used with `rc up`, include worktree metadata in the resp
 {
   "name": "worktrees-update-demographics",
   "action": "created",
-  "source_path": "/Users/jonat/.../update-demographics",
+  "source_path": "~/projects/my-app/.worktrees/update-demographics",
   "worktree": {
     "name": "update-demographics",
-    "main_git_dir": "/Users/jonat/.../.git"
+    "main_git_dir": "~/projects/my-app/.git"
   }
 }
 ```
@@ -291,7 +291,7 @@ Worktree detection and validation run before the dry-run exit point. The `--dry-
   "action": "would_create",
   "worktree": {
     "name": "update-demographics",
-    "main_git_dir": "/Users/jonat/.../.git"
+    "main_git_dir": "~/projects/my-app/.git"
   }
 }
 ```
@@ -300,7 +300,7 @@ Worktree detection and validation run before the dry-run exit point. The `--dry-
 
 The main repo's `.git/worktrees/<name>/gitdir` file contains the host path back to the worktree:
 ```
-/Users/jonat/code/mapular/platform/mapular-platform/.worktrees/update-demographics/.git
+~/projects/my-app/.worktrees/update-demographics/.git
 ```
 
 This is used by `git worktree list` and garbage collection. Inside the container, this path is invalid, but:
@@ -350,7 +350,7 @@ The `.git-main` bind mount inherits the host file ownership. If the host user's 
 
 ### Manual Verification
 
-1. `rc up ~/code/mapular/platform/mapular-platform/.worktrees/update-demographics`
+1. `rc up ~/projects/my-app/.worktrees/update-demographics`
 2. Inside container: `git status` → should show branch and changes
 3. Inside container: `git log --oneline -5` → should show commit history
 4. Inside container: `git branch` → should list branches
@@ -394,7 +394,7 @@ Modify the bind-mounted `.git` file at container init time.
 
 ### Mount at Host-Absolute Path Inside Container
 
-Mount `.git/worktrees/<name>/` at the exact host path inside the container (e.g., `/Users/jonat/...`).
+Mount `.git/worktrees/<name>/` at the exact host path inside the container (e.g., the host-absolute path).
 
 **Rejected:** Leaks host filesystem structure into the container. Fragile — depends on host paths never changing. Creates confusing non-standard paths inside the container.
 

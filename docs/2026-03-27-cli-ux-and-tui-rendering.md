@@ -166,7 +166,7 @@ The current `--env-file` validation in `rc` validates the *directory* containing
 validate_path "$(dirname "$env_file")"
 ```
 
-This misses symlinks. If `~/code/personal/project/.env` is a symlink to `/etc/shadow`, the directory (`~/code/personal/project/`) passes the allowed-roots check, but Docker reads the symlink target.
+This misses symlinks. If `~/projects/my-app/.env` is a symlink to `/etc/shadow`, the directory (`~/projects/my-app/`) passes the allowed-roots check, but Docker reads the symlink target.
 
 **Fix:** Resolve the full file path with `realpath` and validate the resolved path:
 

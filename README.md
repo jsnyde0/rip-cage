@@ -23,12 +23,12 @@ The agent gets a full dev environment — Node, Bun, Python (uv), Go, gh CLI, an
 ### Setup
 
 ```bash
-git clone https://github.com/jsnyde0/rip-cage.git
+git clone https://github.com/yourusername/rip-cage.git
 cd rip-cage
 ./rc build
 
 # Tell rc which directories it's allowed to sandbox (add to ~/.zshrc):
-export RC_ALLOWED_ROOTS=$HOME/code/personal:$HOME/code/mapular
+export RC_ALLOWED_ROOTS=$HOME/projects
 ```
 
 ### Using rip-cage on a project

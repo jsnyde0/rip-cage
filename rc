@@ -37,6 +37,8 @@ unset _rc_conf
 OUTPUT_FORMAT="human"
 DRY_RUN=false
 
+RC_VERSION="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || echo "unknown")"
+
 # Output helpers
 json_error() {
   local msg="$1" code="$2"
@@ -48,6 +50,44 @@ log() {
     echo "$@" >&2
   else
     echo "$@"
+  fi
+}
+
+# prerequisite_error <tool> <brew-pkg> <apt-pkg>
+# Prints a helpful "not found + how to install" message and exits.
+_prereq_error() {
+  local tool="$1" brew_pkg="$2" apt_pkg="$3"
+  echo "Error: '$tool' is required but not installed." >&2
+  echo "  macOS:  brew install ${brew_pkg}" >&2
+  echo "  Linux:  sudo apt install ${apt_pkg}" >&2
+  exit 1
+}
+
+# check_docker — verifies docker is installed and daemon is running.
+check_docker() {
+  if ! command -v docker &>/dev/null; then
+    echo "Error: 'docker' is required but not installed." >&2
+    echo "  Install Docker Desktop: https://docs.docker.com/get-docker/" >&2
+    exit 1
+  fi
+  if ! docker info &>/dev/null 2>&1; then
+    echo "Error: Docker daemon is not running." >&2
+    echo "  Start Docker Desktop, or run: sudo systemctl start docker" >&2
+    exit 1
+  fi
+}
+
+# check_jq — verifies jq is installed (required for --output json).
+check_jq() {
+  if ! command -v jq &>/dev/null; then
+    _prereq_error "jq" "jq" "jq"
+  fi
+}
+
+# check_tmux — verifies tmux is installed (required for rc up CLI mode).
+check_tmux() {
+  if ! command -v tmux &>/dev/null; then
+    _prereq_error "tmux" "tmux" "tmux"
   fi
 }
 
@@ -73,6 +113,7 @@ Commands:
 Global flags:
   --output json    Emit machine-readable JSON
   --dry-run        Preview what would happen without executing
+  --version, -V    Print version and exit
 EOF
   exit 1
 }
@@ -257,7 +298,7 @@ validate_path() {
   # Check RC_ALLOWED_ROOTS is set
   if [[ -z "${RC_ALLOWED_ROOTS:-}" ]]; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "RC_ALLOWED_ROOTS not set. Export as colon-separated absolute paths." "PATH_INVALID"
-    echo "Error: RC_ALLOWED_ROOTS not set. Example: export RC_ALLOWED_ROOTS=\$HOME/code/personal:\$HOME/code/mapular" >&2
+    echo "Error: RC_ALLOWED_ROOTS not set. Example: export RC_ALLOWED_ROOTS=\$HOME/projects" >&2
     exit 1
   fi
 
@@ -282,6 +323,373 @@ validate_path() {
 
   # Return resolved path via VALIDATED_PATH global
   VALIDATED_PATH="$resolved"
+}
+
+# _up_json_output — emit the standard worktree-aware JSON for rc up responses.
+#
+# Globals read: wt_detected, wt_error, wt_name, wt_main_git, git_hooks_ro, name_disambiguated
+# Parameters:
+#   $1  name          — container name
+#   $2  action        — e.g. "created", "resumed", "attached", "would_create"
+#   $3  source_path   — validated workspace path
+#   $4  status        — e.g. "running", "stopped"  (pass "" to omit)
+#   $5  init          — e.g. "success", "failed"   (pass "" to omit)
+#   $6  dry_run       — non-empty string to include dry_run:true (pass "" to omit)
+_up_json_output() {
+  local _name="$1" _action="$2" _source_path="$3" _status="${4:-}" _init="${5:-}" _dry_run="${6:-}"
+
+  local jq_args=()
+  jq_args+=(--arg name "$_name")
+  jq_args+=(--arg action "$_action")
+  jq_args+=(--arg source_path "$_source_path")
+  jq_args+=(--argjson name_disambiguated "$name_disambiguated")
+
+  local jq_filter='{name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated'
+
+  if [[ -n "$_dry_run" ]]; then
+    jq_args+=(--argjson dry_run true)
+    jq_filter+=', dry_run: $dry_run'
+  fi
+  if [[ -n "$_status" ]]; then
+    jq_args+=(--arg status "$_status")
+    jq_filter+=', status: $status'
+  fi
+  if [[ -n "$_init" ]]; then
+    jq_args+=(--arg init "$_init")
+    jq_filter+=', init: $init'
+  fi
+
+  if [[ "$wt_detected" == "true" ]]; then
+    jq_args+=(--argjson git_hooks_ro "$git_hooks_ro")
+    jq_args+=(--arg wt_name "$wt_name")
+    jq_args+=(--arg wt_main_git "$wt_main_git")
+    jq_filter+=', git_hooks_ro: $git_hooks_ro, worktree: {name: $wt_name, main_git_dir: $wt_main_git}'
+  elif [[ -n "$wt_error" ]]; then
+    jq_args+=(--arg wt_error "$wt_error")
+    jq_filter+=', worktree: {detected: true, error: $wt_error}'
+  else
+    jq_args+=(--argjson git_hooks_ro "$git_hooks_ro")
+    jq_filter+=', git_hooks_ro: $git_hooks_ro'
+  fi
+
+  jq_filter+='}'
+  jq -nc "${jq_args[@]}" "$jq_filter"
+}
+
+# _up_detect_worktree — detect and validate a git worktree at the given path.
+#
+# Sets globals: wt_detected, wt_name, wt_main_git, wt_error
+# Parameter: $1 path — the validated workspace path
+_up_detect_worktree() {
+  local _path="$1"
+  wt_detected=false
+  wt_name=""
+  wt_main_git=""
+  wt_error=""
+
+  if [[ ! -f "${_path}/.git" ]]; then
+    return 0
+  fi
+
+  local gitdir_line
+  gitdir_line=$(cat "${_path}/.git")
+  if [[ "$gitdir_line" != gitdir:\ * ]]; then
+    return 0
+  fi
+
+  local host_gitdir="${gitdir_line#gitdir: }"
+
+  # Security: reject control characters (clear host_gitdir to prevent fallthrough)
+  if [[ "$host_gitdir" =~ [[:cntrl:]] ]]; then
+    log "Warning: .git file contains control characters — skipping worktree mount"
+    wt_error="control characters in .git file"
+    return 0
+  # Resolve relative gitdir paths to absolute (Git 2.13+ allows relative)
+  elif [[ "$host_gitdir" != /* ]]; then
+    host_gitdir=$(realpath "${_path}/${host_gitdir}" 2>/dev/null)
+    if [[ -z "$host_gitdir" ]]; then
+      log "Warning: worktree .git file points to non-existent relative path — git will not work"
+      wt_error="relative gitdir path does not exist"
+      return 0
+    fi
+  fi
+
+  # Only handle worktrees, not submodules (.git/modules/<name>)
+  # Note: validate_path() does similar allowed-roots checking — see Security section
+  if [[ -z "$host_gitdir" || "$host_gitdir" != *"/worktrees/"* ]]; then
+    [[ -n "$host_gitdir" ]] && log "Skipping non-worktree .git file (submodule or other)"
+    return 0
+  fi
+
+  wt_name=$(basename "$host_gitdir")
+  if [[ -z "$wt_name" || "$wt_name" == "." || "$wt_name" == ".." ]]; then
+    log "Warning: invalid worktree name '${wt_name}' — skipping worktree mount"
+    wt_error="invalid worktree name"
+    wt_name=""
+    return 0
+  fi
+
+  local main_git_dir
+  main_git_dir=$(dirname "$(dirname "$host_gitdir")")
+
+  if [[ ! -d "$main_git_dir" ]]; then
+    log "Warning: worktree's main .git/ at $main_git_dir does not exist — git will not work"
+    wt_error="main .git/ at $main_git_dir does not exist"
+    return 0
+  fi
+
+  local resolved_git_dir
+  resolved_git_dir=$(realpath "$main_git_dir" 2>/dev/null) || true
+  local git_allowed=false
+  # Note: duplicates RC_ALLOWED_ROOTS check from validate_path() and beads redirect.
+  # If hardening one, harden all three. See also _up_prepare_environment (beads redirect) and validate_path().
+  IFS=':' read -ra roots <<< "${RC_ALLOWED_ROOTS:-}"
+  for root in "${roots[@]}"; do
+    local resolved_root
+    resolved_root=$(realpath "$root" 2>/dev/null) || continue
+    if [[ "$resolved_git_dir" == "$resolved_root"/* ]] || [[ "$resolved_git_dir" == "$resolved_root" ]]; then
+      git_allowed=true
+      break
+    fi
+  done
+
+  if [[ "$git_allowed" == "true" ]]; then
+    wt_detected=true
+    wt_main_git="$resolved_git_dir"
+    log "Worktree detected: ${wt_name} (main .git/ at ${wt_main_git})"
+  else
+    log "Warning: worktree's main .git/ at $main_git_dir is outside allowed roots — git will not work"
+    wt_error="main .git/ at $main_git_dir is outside allowed roots"
+  fi
+}
+
+# _up_prepare_docker_mounts — build the mount (-v) portion of run_args.
+#
+# Globals read:    wt_detected, wt_name, wt_main_git (set by _up_detect_worktree)
+# Globals written: _UP_RUN_ARGS (appended to)
+# Parameters:
+#   $1  path  — validated workspace path
+#   $2  name  — container name (used for gitfile path)
+_up_prepare_docker_mounts() {
+  local _path="$1" _name="$2"
+
+  # Workspace mount
+  _UP_RUN_ARGS+=(-v "${_path}:/workspace:delegated")
+
+  # D11: .git/hooks read-only — physical enforcement against container escape
+  # Worktree mode handles hooks separately (see worktree mount block below)
+  if [[ "$wt_detected" != "true" ]] && [[ -d "${_path}/.git/hooks" ]]; then
+    _UP_RUN_ARGS+=(-v "${_path}/.git/hooks:/workspace/.git/hooks:ro")
+  fi
+
+  # Git worktree mounts: fix .git pointer so git works inside the container
+  if [[ "$wt_detected" == "true" ]]; then
+    mkdir -p ~/.cache/rc
+    local gitfile="${HOME}/.cache/rc/${_name}.gitfile"
+    (umask 077; echo "gitdir: /workspace/.git-main/worktrees/${wt_name}" > "$gitfile")
+    _UP_RUN_ARGS+=(-v "${wt_main_git}:/workspace/.git-main:delegated")
+    _UP_RUN_ARGS+=(-v "${gitfile}:/workspace/.git:ro")
+    _UP_RUN_ARGS+=(-v "${wt_main_git}/hooks:/workspace/.git-main/hooks:ro")
+    log "Worktree: mounted main .git/ and corrected .git pointer for ${wt_name}"
+  fi
+
+  # Extract OAuth credentials from macOS keychain to file (if on macOS)
+  # Guard: Docker creates a dir at this path if the file didn't exist on a prior failed mount
+  if [[ -d "${HOME}/.claude/.credentials.json" ]]; then
+    rmdir "${HOME}/.claude/.credentials.json" 2>/dev/null || \
+      echo "Warning: ${HOME}/.claude/.credentials.json is a non-empty directory artifact — credentials will not be extracted" >&2
+  fi
+  if [[ "$(uname)" == "Darwin" ]]; then
+    local creds_tmp
+    creds_tmp=$(mktemp) || { echo "Warning: failed to create temp file for credentials extraction" >&2; }
+    if security find-generic-password -s "Claude Code-credentials" -w > "$creds_tmp" 2>/dev/null; then
+      mv "$creds_tmp" "${HOME}/.claude/.credentials.json"
+    else
+      rm -f "$creds_tmp"
+      echo "Warning: failed to extract credentials from macOS keychain — auth may not work inside container" >&2
+      echo "  Run 'claude auth login' on the host to set up credentials, or set ANTHROPIC_API_KEY" >&2
+    fi
+  fi
+
+  # D3: Credential health check — warn on expired or soon-to-expire tokens
+  if [[ -s "${HOME}/.claude/.credentials.json" ]] && command -v jq &>/dev/null; then
+    local expiry
+    expiry=$(jq -r '.expiry // .expiresAt // empty' "${HOME}/.claude/.credentials.json" 2>/dev/null || true)
+    if [[ -n "$expiry" ]]; then
+      local expiry_epoch now_epoch
+      expiry_epoch=$(date -jf "%Y-%m-%dT%H:%M:%S" "${expiry%%[.+Z]*}" "+%s" 2>/dev/null || date -d "$expiry" "+%s" 2>/dev/null || true)
+      now_epoch=$(date "+%s")
+      if [[ -n "$expiry_epoch" ]]; then
+        local remaining=$(( expiry_epoch - now_epoch ))
+        if [[ "$remaining" -lt 0 ]]; then
+          echo "Warning: OAuth token is EXPIRED (expired $(( -remaining / 60 )) minutes ago)" >&2
+          echo "  Run 'claude auth login' on the host to refresh, or set ANTHROPIC_API_KEY" >&2
+        elif [[ "$remaining" -lt 600 ]]; then
+          echo "Warning: OAuth token expires in $(( remaining / 60 )) minutes" >&2
+          echo "  Consider running 'claude auth login' on the host to refresh" >&2
+        fi
+      fi
+    fi
+  fi
+
+  # OAuth mounts (read-write, skip if missing to avoid Docker creating empty dirs)
+  if [[ -f "${HOME}/.claude.json" ]]; then
+    _UP_RUN_ARGS+=(-v "${HOME}/.claude.json:/home/agent/.claude.json")
+  else
+    log "Warning: ${HOME}/.claude.json not found — skipping mount"
+  fi
+  if [[ -f "${HOME}/.claude/.credentials.json" ]]; then
+    _UP_RUN_ARGS+=(-v "${HOME}/.claude/.credentials.json:/home/agent/.claude/.credentials.json")
+  else
+    log "Warning: ${HOME}/.claude/.credentials.json not found — skipping mount (auth may not work)"
+  fi
+
+  # CLAUDE.md mounts (read-only, only if source exists)
+  if [[ -f "${HOME}/.claude/CLAUDE.md" ]]; then
+    _UP_RUN_ARGS+=(-v "${HOME}/.claude/CLAUDE.md:/home/agent/.rc-context/global-claude.md:ro")
+  fi
+  if [[ -f "${HOME}/CLAUDE.md" ]]; then
+    _UP_RUN_ARGS+=(-v "${HOME}/CLAUDE.md:/home/agent/.rc-context/home-claude.md:ro")
+  fi
+
+  # State volumes
+  _UP_RUN_ARGS+=(-v "rc-state-${_name}:/home/agent/.claude-state")
+  _UP_RUN_ARGS+=(-v "rc-history-${_name}:/commandhistory")
+}
+
+# _up_prepare_environment — build the env (-e), resource-limit, and beads portions of run_args.
+#
+# Globals written: _UP_RUN_ARGS (appended to)
+# Parameters:
+#   $1  path          — validated workspace path
+#   $2  port          — optional host port to expose (pass "" to skip)
+#   $3  env_file      — optional path to env file   (pass "" to skip)
+#   $4  rc_cpus       — CPU limit
+#   $5  rc_memory     — memory limit
+#   $6  rc_pids_limit — PID limit
+_up_prepare_environment() {
+  local _path="$1" _port="$2" _env_file="$3" _rc_cpus="$4" _rc_memory="$5" _rc_pids_limit="$6"
+
+  # Forward git identity from host
+  local git_name git_email
+  git_name=$(git config user.name 2>/dev/null || true)
+  git_email=$(git config user.email 2>/dev/null || true)
+  if [[ -n "$git_name" ]]; then
+    _UP_RUN_ARGS+=(-e "GIT_AUTHOR_NAME=${git_name}")
+  fi
+  if [[ -n "$git_email" ]]; then
+    _UP_RUN_ARGS+=(-e "GIT_AUTHOR_EMAIL=${git_email}")
+  fi
+
+  # Optional flags
+  if [[ -n "$_port" ]]; then
+    _UP_RUN_ARGS+=(-p "${_port}:${_port}")
+  fi
+  if [[ -n "$_env_file" ]]; then
+    _UP_RUN_ARGS+=(--env-file "$_env_file")
+  fi
+
+  # Resource limits (D2)
+  _UP_RUN_ARGS+=(--cpus="$_rc_cpus" --memory="$_rc_memory" --memory-swap="$_rc_memory" --pids-limit="$_rc_pids_limit")
+
+  # Enable host.docker.internal on Linux Docker Engine (no-op on macOS where it exists natively)
+  _UP_RUN_ARGS+=(--add-host=host.docker.internal:host-gateway)
+
+  # Beads: configure container based on project's storage mode (metadata.json dolt_mode)
+  local beads_dir="${_path}/.beads"
+  # Resolve beads redirect (worktrees share .beads/ via a redirect file)
+  if [[ -f "${beads_dir}/redirect" ]]; then
+    local redirect_target
+    redirect_target=$(cat "${beads_dir}/redirect")
+    # Security: reject absolute paths and control characters in redirect
+    if [[ "$redirect_target" == /* ]] || [[ "$redirect_target" =~ [[:cntrl:]] ]]; then
+      log "Warning: .beads/redirect contains absolute path or control chars — ignoring"
+    else
+      # Redirect is relative to the workspace root (project directory)
+      local resolved_beads
+      resolved_beads=$(realpath "${_path}/${redirect_target}" 2>/dev/null || true)
+      if [[ -n "$resolved_beads" && -d "$resolved_beads" ]]; then
+        # Validate resolved path is under an allowed root (ADR-003 D3)
+        # Note: duplicates RC_ALLOWED_ROOTS check from validate_path() and worktree allowed-roots loop.
+        # If hardening one, harden all three. See also _up_detect_worktree (worktree allowed-roots) and validate_path().
+        local beads_allowed=false
+        IFS=':' read -ra roots <<< "${RC_ALLOWED_ROOTS:-}"
+        for root in "${roots[@]}"; do
+          local resolved_root
+          resolved_root=$(realpath "$root" 2>/dev/null) || continue
+          if [[ "$resolved_beads" == "$resolved_root" ]] || [[ "$resolved_beads" == "$resolved_root"/* ]]; then
+            beads_allowed=true
+            break
+          fi
+        done
+        if [[ "$beads_allowed" == "true" ]]; then
+          log "Beads: resolved redirect → $resolved_beads"
+          beads_dir="$resolved_beads"
+          # Mount the real .beads/ over the worktree's redirect
+          _UP_RUN_ARGS+=(-v "${resolved_beads}:/workspace/.beads:delegated")
+        else
+          log "Warning: .beads/redirect resolves to $resolved_beads which is outside allowed roots — ignoring"
+        fi
+      else
+        log "Warning: .beads/redirect points to $redirect_target but could not resolve"
+      fi
+    fi
+  fi
+  # Determine beads storage mode from metadata.json
+  local beads_dolt_mode=""
+  if [[ -f "${beads_dir}/metadata.json" ]]; then
+    beads_dolt_mode=$(jq -r '.dolt_mode // empty' "${beads_dir}/metadata.json" 2>/dev/null || true)
+  fi
+  if [[ "$beads_dolt_mode" == "embedded" ]] || [[ -z "$beads_dolt_mode" ]]; then
+    # Embedded Dolt or no metadata: let bd use embedded engine on bind mount
+    log "Beads: embedded mode — no Dolt server connection"
+  else
+    # Server/owned/external mode: connect to host's Dolt server
+    _UP_RUN_ARGS+=(-e "BEADS_DOLT_SERVER_MODE=1")
+    _UP_RUN_ARGS+=(-e "BEADS_DOLT_SERVER_HOST=host.docker.internal")
+    local dolt_port_file="${beads_dir}/dolt-server.port"
+    if [[ -f "$dolt_port_file" ]]; then
+      _UP_RUN_ARGS+=(-e "BEADS_DOLT_SERVER_PORT=$(cat "$dolt_port_file")")
+    fi
+    log "Beads: server mode — connecting to host Dolt server"
+  fi
+}
+
+# _up_start_container — run the container with the prepared _UP_RUN_ARGS.
+#
+# Globals read: _UP_RUN_ARGS, OUTPUT_FORMAT
+# Parameter: $1 name — container name (for error messages)
+_up_start_container() {
+  local _name="$1"
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    local docker_stderr
+    # Note: inside $(...), 2>&1 >/dev/null redirects stderr to the capture pipe first,
+    # then stdout to /dev/null — capturing stderr while suppressing the container ID.
+    if ! docker_stderr=$(docker run "${_UP_RUN_ARGS[@]}" 2>&1 >/dev/null); then
+      if echo "$docker_stderr" | grep -q "is already in use by container"; then
+        json_error "Container name $_name is already in use" "NAME_CONFLICT"
+      fi
+      json_error "Failed to create container $_name" "DOCKER_ERROR"
+    fi
+  else
+    docker run "${_UP_RUN_ARGS[@]}"
+  fi
+}
+
+# _up_init_container — run the in-container init script.
+#
+# Globals read:    OUTPUT_FORMAT
+# Globals written: _UP_INIT_OK (set to "true" or "false")
+# Parameter: $1 name — container name
+_up_init_container() {
+  local _name="$1"
+  _UP_INIT_OK=true
+  log "Running init script..."
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    docker exec "$_name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || _UP_INIT_OK=false
+  else
+    docker exec "$_name" /usr/local/bin/init-rip-cage.sh || _UP_INIT_OK=false
+  fi
 }
 
 cmd_up() {
@@ -358,74 +766,8 @@ cmd_up() {
   fi
 
   # Git worktree: fix .git pointer for container (the .git file contains host-absolute paths)
-  local wt_detected=false wt_name="" wt_main_git="" wt_error=""
-  if [[ -f "${path}/.git" ]]; then
-    local gitdir_line
-    gitdir_line=$(cat "${path}/.git")
-    if [[ "$gitdir_line" == gitdir:\ * ]]; then
-      local host_gitdir="${gitdir_line#gitdir: }"
-
-      # Security: reject control characters (clear host_gitdir to prevent fallthrough)
-      if [[ "$host_gitdir" =~ [[:cntrl:]] ]]; then
-        log "Warning: .git file contains control characters — skipping worktree mount"
-        wt_error="control characters in .git file"
-        host_gitdir=""
-      # Resolve relative gitdir paths to absolute (Git 2.13+ allows relative)
-      elif [[ "$host_gitdir" != /* ]]; then
-        host_gitdir=$(realpath "${path}/${host_gitdir}" 2>/dev/null)
-        if [[ -z "$host_gitdir" ]]; then
-          log "Warning: worktree .git file points to non-existent relative path — git will not work"
-          wt_error="relative gitdir path does not exist"
-        fi
-      fi
-
-      # Only handle worktrees, not submodules (.git/modules/<name>)
-      # Note: validate_path() does similar allowed-roots checking — see Security section
-      if [[ -n "$host_gitdir" && "$host_gitdir" == *"/worktrees/"* ]]; then
-        wt_name=$(basename "$host_gitdir")
-        if [[ -z "$wt_name" || "$wt_name" == "." || "$wt_name" == ".." ]]; then
-          log "Warning: invalid worktree name '${wt_name}' — skipping worktree mount"
-          wt_error="invalid worktree name"
-          wt_name=""
-        fi
-        if [[ -n "$wt_name" ]]; then
-          local main_git_dir
-          main_git_dir=$(dirname "$(dirname "$host_gitdir")")
-
-          if [[ -d "$main_git_dir" ]]; then
-            local resolved_git_dir
-            resolved_git_dir=$(realpath "$main_git_dir" 2>/dev/null) || true
-            local git_allowed=false
-            # Note: duplicates RC_ALLOWED_ROOTS check from validate_path() and beads redirect.
-            # If hardening one, harden all three. See also ~line 522 (beads redirect) and validate_path().
-            IFS=':' read -ra roots <<< "${RC_ALLOWED_ROOTS:-}"
-            for root in "${roots[@]}"; do
-              local resolved_root
-              resolved_root=$(realpath "$root" 2>/dev/null) || continue
-              if [[ "$resolved_git_dir" == "$resolved_root"/* ]] || [[ "$resolved_git_dir" == "$resolved_root" ]]; then
-                git_allowed=true
-                break
-              fi
-            done
-
-            if [[ "$git_allowed" == "true" ]]; then
-              wt_detected=true
-              wt_main_git="$resolved_git_dir"
-              log "Worktree detected: ${wt_name} (main .git/ at ${wt_main_git})"
-            else
-              log "Warning: worktree's main .git/ at $main_git_dir is outside allowed roots — git will not work"
-              wt_error="main .git/ at $main_git_dir is outside allowed roots"
-            fi
-          else
-            log "Warning: worktree's main .git/ at $main_git_dir does not exist — git will not work"
-            wt_error="main .git/ at $main_git_dir does not exist"
-          fi
-        fi
-      elif [[ -n "$host_gitdir" ]]; then
-        log "Skipping non-worktree .git file (submodule or other)"
-      fi
-    fi
-  fi
+  local wt_detected wt_name wt_main_git wt_error
+  _up_detect_worktree "$path"
 
   # D11: compute git_hooks_ro for JSON output
   # true when .git/hooks is mounted read-only:
@@ -453,19 +795,7 @@ cmd_up() {
     fi
 
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      if [[ "$wt_detected" == "true" ]]; then
-        jq -nc --arg name "$name" --arg action "$would_action" --arg source_path "$path" --argjson name_disambiguated "$name_disambiguated" --argjson dry_run true \
-          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" --argjson git_hooks_ro "$git_hooks_ro" \
-          '{dry_run: $dry_run, name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
-      elif [[ -n "$wt_error" ]]; then
-        jq -nc --arg name "$name" --arg action "$would_action" --arg source_path "$path" --argjson name_disambiguated "$name_disambiguated" --argjson dry_run true \
-          --arg wt_error "$wt_error" \
-          '{dry_run: $dry_run, name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
-      else
-        jq -nc --arg name "$name" --arg action "$would_action" --arg source_path "$path" --argjson name_disambiguated "$name_disambiguated" --argjson dry_run true \
-          --argjson git_hooks_ro "$git_hooks_ro" \
-          '{dry_run: $dry_run, name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro}'
-      fi
+      _up_json_output "$name" "$would_action" "$path" "" "" "true"
     else
       echo "Would ${would_action#would_} container $name for $path"
       echo "Would mount $path -> /workspace"
@@ -483,19 +813,7 @@ cmd_up() {
 
   if [[ "$state" == "running" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      if [[ "$wt_detected" == "true" ]]; then
-        jq -nc --arg name "$name" --arg action "attached" --arg source_path "$path" --arg status "running" --argjson name_disambiguated "$name_disambiguated" \
-          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" --argjson git_hooks_ro "$git_hooks_ro" \
-          '{name: $name, action: $action, source_path: $source_path, status: $status, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
-      elif [[ -n "$wt_error" ]]; then
-        jq -nc --arg name "$name" --arg action "attached" --arg source_path "$path" --arg status "running" --argjson name_disambiguated "$name_disambiguated" \
-          --arg wt_error "$wt_error" \
-          '{name: $name, action: $action, source_path: $source_path, status: $status, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
-      else
-        jq -nc --arg name "$name" --arg action "attached" --arg source_path "$path" --arg status "running" --argjson name_disambiguated "$name_disambiguated" \
-          --argjson git_hooks_ro "$git_hooks_ro" \
-          '{name: $name, action: $action, source_path: $source_path, status: $status, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro}'
-      fi
+      _up_json_output "$name" "attached" "$path" "running"
       return
     fi
     echo "Container $name is already running. Attaching..."
@@ -508,28 +826,11 @@ cmd_up() {
     else
       docker start "$name"
     fi
-    local init_ok=true
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      docker exec "$name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || init_ok=false
-    else
-      docker exec "$name" /usr/local/bin/init-rip-cage.sh || init_ok=false
-    fi
-    if [[ "$init_ok" == "false" ]]; then
+    _up_init_container "$name"
+    if [[ "$_UP_INIT_OK" == "false" ]]; then
       if [[ "$OUTPUT_FORMAT" == "json" ]]; then
         docker stop "$name" >/dev/null 2>&1
-        if [[ "$wt_detected" == "true" ]]; then
-          jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
-            --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" --argjson git_hooks_ro "$git_hooks_ro" \
-            '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
-        elif [[ -n "$wt_error" ]]; then
-          jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
-            --arg wt_error "$wt_error" \
-            '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
-        else
-          jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
-            --argjson git_hooks_ro "$git_hooks_ro" \
-            '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro}'
-        fi
+        _up_json_output "$name" "resumed" "$path" "stopped" "failed"
         return 1
       fi
       echo "Error: init failed on resume. Stopping container so next 'rc up' retries." >&2
@@ -537,19 +838,7 @@ cmd_up() {
       exit 1
     fi
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      if [[ "$wt_detected" == "true" ]]; then
-        jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
-          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" --argjson git_hooks_ro "$git_hooks_ro" \
-          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
-      elif [[ -n "$wt_error" ]]; then
-        jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
-          --arg wt_error "$wt_error" \
-          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
-      else
-        jq -nc --arg name "$name" --arg action "resumed" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
-          --argjson git_hooks_ro "$git_hooks_ro" \
-          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro}'
-      fi
+      _up_json_output "$name" "resumed" "$path" "running" "success"
       return
     fi
     docker exec -it "$name" tmux new-session -A -s rip-cage
@@ -558,225 +847,31 @@ cmd_up() {
 
   # New container
   log "Creating container $name for $path..."
-  local run_args=()
-  run_args+=(-d --name "$name")
-  run_args+=(--label "rc.source.path=$path")
+  local _UP_RUN_ARGS=()
+  _UP_RUN_ARGS+=(-d --name "$name")
+  _UP_RUN_ARGS+=(--label "rc.source.path=$path")
 
-  # Workspace mount
-  run_args+=(-v "${path}:/workspace:delegated")
+  _up_prepare_docker_mounts "$path" "$name"
+  _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit"
 
-  # D11: .git/hooks read-only — physical enforcement against container escape
-  # Worktree mode handles hooks separately (see worktree mount block below)
-  if [[ "$wt_detected" != "true" ]] && [[ -d "${path}/.git/hooks" ]]; then
-    run_args+=(-v "${path}/.git/hooks:/workspace/.git/hooks:ro")
-  fi
+  _UP_RUN_ARGS+=("$IMAGE" sleep infinity)
 
-  # Git worktree mounts: fix .git pointer so git works inside the container
-  if [[ "$wt_detected" == "true" ]]; then
-    mkdir -p ~/.cache/rc
-    local gitfile="${HOME}/.cache/rc/${name}.gitfile"
-    (umask 077; echo "gitdir: /workspace/.git-main/worktrees/${wt_name}" > "$gitfile")
-    run_args+=(-v "${wt_main_git}:/workspace/.git-main:delegated")
-    run_args+=(-v "${gitfile}:/workspace/.git:ro")
-    run_args+=(-v "${wt_main_git}/hooks:/workspace/.git-main/hooks:ro")
-    log "Worktree: mounted main .git/ and corrected .git pointer for ${wt_name}"
-  fi
+  _up_start_container "$name"
+  _up_init_container "$name"
 
-  # Extract OAuth credentials from macOS keychain to file (if on macOS)
-  # Guard: Docker creates a dir at this path if the file didn't exist on a prior failed mount
-  if [[ -d "${HOME}/.claude/.credentials.json" ]]; then
-    rmdir "${HOME}/.claude/.credentials.json" 2>/dev/null || \
-      echo "Warning: ${HOME}/.claude/.credentials.json is a non-empty directory artifact — credentials will not be extracted" >&2
-  fi
-  if [[ "$(uname)" == "Darwin" ]]; then
-    security find-generic-password -s "Claude Code-credentials" -w > "${HOME}/.claude/.credentials.json" 2>/dev/null || true
-  fi
-
-  # D3: Credential health check — warn on expired or soon-to-expire tokens
-  if [[ -s "${HOME}/.claude/.credentials.json" ]] && command -v jq &>/dev/null; then
-    local expiry
-    expiry=$(jq -r '.expiry // .expiresAt // empty' "${HOME}/.claude/.credentials.json" 2>/dev/null || true)
-    if [[ -n "$expiry" ]]; then
-      local expiry_epoch now_epoch
-      expiry_epoch=$(date -jf "%Y-%m-%dT%H:%M:%S" "${expiry%%[.+Z]*}" "+%s" 2>/dev/null || date -d "$expiry" "+%s" 2>/dev/null || true)
-      now_epoch=$(date "+%s")
-      if [[ -n "$expiry_epoch" ]]; then
-        local remaining=$(( expiry_epoch - now_epoch ))
-        if [[ "$remaining" -lt 0 ]]; then
-          echo "Warning: OAuth token is EXPIRED (expired $(( -remaining / 60 )) minutes ago)" >&2
-          echo "  Run 'claude auth login' on the host to refresh, or set ANTHROPIC_API_KEY" >&2
-        elif [[ "$remaining" -lt 600 ]]; then
-          echo "Warning: OAuth token expires in $(( remaining / 60 )) minutes" >&2
-          echo "  Consider running 'claude auth login' on the host to refresh" >&2
-        fi
-      fi
-    fi
-  fi
-
-  # OAuth mounts (read-write, skip if missing to avoid Docker creating empty dirs)
-  if [[ -f "${HOME}/.claude.json" ]]; then
-    run_args+=(-v "${HOME}/.claude.json:/home/agent/.claude.json")
-  else
-    log "Warning: ${HOME}/.claude.json not found — skipping mount"
-  fi
-  if [[ -f "${HOME}/.claude/.credentials.json" ]]; then
-    run_args+=(-v "${HOME}/.claude/.credentials.json:/home/agent/.claude/.credentials.json")
-  else
-    log "Warning: ${HOME}/.claude/.credentials.json not found — skipping mount (auth may not work)"
-  fi
-
-  # CLAUDE.md mounts (read-only, only if source exists)
-  if [[ -f "${HOME}/.claude/CLAUDE.md" ]]; then
-    run_args+=(-v "${HOME}/.claude/CLAUDE.md:/home/agent/.rc-context/global-claude.md:ro")
-  fi
-  if [[ -f "${HOME}/CLAUDE.md" ]]; then
-    run_args+=(-v "${HOME}/CLAUDE.md:/home/agent/.rc-context/home-claude.md:ro")
-  fi
-
-  # Forward git identity from host
-  local git_name git_email
-  git_name=$(git config user.name 2>/dev/null || true)
-  git_email=$(git config user.email 2>/dev/null || true)
-  if [[ -n "$git_name" ]]; then
-    run_args+=(-e "GIT_AUTHOR_NAME=${git_name}")
-  fi
-  if [[ -n "$git_email" ]]; then
-    run_args+=(-e "GIT_AUTHOR_EMAIL=${git_email}")
-  fi
-
-  # State volumes
-  run_args+=(-v "rc-state-${name}:/home/agent/.claude-state")
-  run_args+=(-v "rc-history-${name}:/commandhistory")
-
-  # Optional flags
-  if [[ -n "$port" ]]; then
-    run_args+=(-p "${port}:${port}")
-  fi
-  if [[ -n "$env_file" ]]; then
-    run_args+=(--env-file "$env_file")
-  fi
-
-  # Resource limits (D2)
-  run_args+=(--cpus="$rc_cpus" --memory="$rc_memory" --memory-swap="$rc_memory" --pids-limit="$rc_pids_limit")
-
-  # Enable host.docker.internal on Linux Docker Engine (no-op on macOS where it exists natively)
-  run_args+=(--add-host=host.docker.internal:host-gateway)
-
-  # Beads: configure container based on project's storage mode (metadata.json dolt_mode)
-  local beads_dir="${path}/.beads"
-  # Resolve beads redirect (worktrees share .beads/ via a redirect file)
-  if [[ -f "${beads_dir}/redirect" ]]; then
-    local redirect_target
-    redirect_target=$(cat "${beads_dir}/redirect")
-    # Security: reject absolute paths and control characters in redirect
-    if [[ "$redirect_target" == /* ]] || [[ "$redirect_target" =~ [[:cntrl:]] ]]; then
-      log "Warning: .beads/redirect contains absolute path or control chars — ignoring"
-    else
-      # Redirect is relative to the workspace root (project directory)
-      local resolved_beads
-      resolved_beads=$(realpath "${path}/${redirect_target}" 2>/dev/null || true)
-      if [[ -n "$resolved_beads" && -d "$resolved_beads" ]]; then
-        # Validate resolved path is under an allowed root (ADR-003 D3)
-        # Note: duplicates RC_ALLOWED_ROOTS check from validate_path() and worktree allowed-roots loop.
-        # If hardening one, harden all three. See also ~line 304 (worktree allowed-roots) and validate_path().
-        local beads_allowed=false
-        IFS=':' read -ra roots <<< "${RC_ALLOWED_ROOTS:-}"
-        for root in "${roots[@]}"; do
-          local resolved_root
-          resolved_root=$(realpath "$root" 2>/dev/null) || continue
-          if [[ "$resolved_beads" == "$resolved_root" ]] || [[ "$resolved_beads" == "$resolved_root"/* ]]; then
-            beads_allowed=true
-            break
-          fi
-        done
-        if [[ "$beads_allowed" == "true" ]]; then
-          log "Beads: resolved redirect → $resolved_beads"
-          beads_dir="$resolved_beads"
-          # Mount the real .beads/ over the worktree's redirect
-          run_args+=(-v "${resolved_beads}:/workspace/.beads:delegated")
-        else
-          log "Warning: .beads/redirect resolves to $resolved_beads which is outside allowed roots — ignoring"
-        fi
-      else
-        log "Warning: .beads/redirect points to $redirect_target but could not resolve"
-      fi
-    fi
-  fi
-  # Determine beads storage mode from metadata.json
-  local beads_dolt_mode=""
-  if [[ -f "${beads_dir}/metadata.json" ]]; then
-    beads_dolt_mode=$(jq -r '.dolt_mode // empty' "${beads_dir}/metadata.json" 2>/dev/null || true)
-  fi
-  if [[ "$beads_dolt_mode" == "embedded" ]] || [[ -z "$beads_dolt_mode" ]]; then
-    # Embedded Dolt or no metadata: let bd use embedded engine on bind mount
-    log "Beads: embedded mode — no Dolt server connection"
-  else
-    # Server/owned/external mode: connect to host's Dolt server
-    run_args+=(-e "BEADS_DOLT_SERVER_MODE=1")
-    run_args+=(-e "BEADS_DOLT_SERVER_HOST=host.docker.internal")
-    local dolt_port_file="${beads_dir}/dolt-server.port"
-    if [[ -f "$dolt_port_file" ]]; then
-      run_args+=(-e "BEADS_DOLT_SERVER_PORT=$(cat "$dolt_port_file")")
-    fi
-    log "Beads: server mode — connecting to host Dolt server"
-  fi
-
-  run_args+=("$IMAGE" sleep infinity)
-
-  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    local docker_stderr
-    if ! docker_stderr=$(docker run "${run_args[@]}" 2>&1 >/dev/null); then
-      if echo "$docker_stderr" | grep -q "is already in use by container"; then
-        json_error "Container name $name is already in use" "NAME_CONFLICT"
-      fi
-      json_error "Failed to create container $name" "DOCKER_ERROR"
-    fi
-  else
-    docker run "${run_args[@]}"
-  fi
-  log "Running init script..."
-  local init_ok=true
-  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    docker exec "$name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || init_ok=false
-  else
-    docker exec "$name" /usr/local/bin/init-rip-cage.sh || init_ok=false
-  fi
-  if [[ "$init_ok" == "false" ]]; then
+  if [[ "$_UP_INIT_OK" == "false" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       docker stop "$name" >/dev/null 2>&1
-      if [[ "$wt_detected" == "true" ]]; then
-        jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
-          --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" --argjson git_hooks_ro "$git_hooks_ro" \
-          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
-      elif [[ -n "$wt_error" ]]; then
-        jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
-          --arg wt_error "$wt_error" \
-          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
-      else
-        jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "stopped" --arg init "failed" --argjson name_disambiguated "$name_disambiguated" \
-          --argjson git_hooks_ro "$git_hooks_ro" \
-          '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro}'
-      fi
+      _up_json_output "$name" "created" "$path" "stopped" "failed"
       return 1
     fi
     echo "Error: init failed. Stopping container so next 'rc up' retries." >&2
     docker stop "$name"
     exit 1
   fi
+
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    if [[ "$wt_detected" == "true" ]]; then
-      jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
-        --arg wt_name "$wt_name" --arg wt_main_git "$wt_main_git" --argjson git_hooks_ro "$git_hooks_ro" \
-        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro, worktree: {name: $wt_name, main_git_dir: $wt_main_git}}'
-    elif [[ -n "$wt_error" ]]; then
-      jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
-        --arg wt_error "$wt_error" \
-        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, worktree: {detected: true, error: $wt_error}}'
-    else
-      jq -nc --arg name "$name" --arg action "created" --arg source_path "$path" --arg status "running" --arg init "success" --argjson name_disambiguated "$name_disambiguated" \
-        --argjson git_hooks_ro "$git_hooks_ro" \
-        '{name: $name, action: $action, source_path: $source_path, status: $status, init: $init, name_disambiguated: $name_disambiguated, git_hooks_ro: $git_hooks_ro}'
-    fi
+    _up_json_output "$name" "created" "$path" "running" "success"
     return
   fi
   docker exec -it "$name" tmux new-session -A -s rip-cage
@@ -925,7 +1020,8 @@ cmd_test() {
     local checks="[]" overall="pass"
     while IFS= read -r line; do
       if [[ "$line" =~ ^(PASS|FAIL)[[:space:]]+\[([0-9]+)\][[:space:]]+(.*) ]]; then
-        local status="${BASH_REMATCH[1],,}"  # lowercase
+        local status
+        status=$(echo "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')  # lowercase (bash 3.2 compat)
         local idx="${BASH_REMATCH[2]}"
         local desc="${BASH_REMATCH[3]}"
         local test_name
@@ -1016,6 +1112,7 @@ while [[ $# -gt 0 ]]; do
       fi
       ;;
     --dry-run) DRY_RUN=true; shift ;;
+    --version|-V) echo "rc version ${RC_VERSION}"; exit 0 ;;
     *) _remaining+=("$1"); shift ;;
   esac
 done
@@ -1043,6 +1140,22 @@ if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       ;;
   esac
 fi
+
+# Prerequisite checks — only where each tool is actually needed
+# jq: required whenever --output json is in use
+if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+  check_jq
+fi
+
+# tmux: only needed for `rc up` (VS Code / rc init doesn't use tmux)
+case "${1:-}" in
+  up) check_tmux ;;
+esac
+
+# docker: needed for all commands that talk to Docker
+case "${1:-}" in
+  build|up|ls|attach|down|destroy|test) check_docker ;;
+esac
 
 # Main dispatch
 case "${1:-}" in

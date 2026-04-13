@@ -54,7 +54,7 @@ Make `rc` a **dual-audience CLI** — human-friendly by default, machine-readabl
   {
     "name": "personal-myproject",
     "status": "running",
-    "source_path": "/Users/jonat/code/personal/myproject",
+    "source_path": "~/projects/my-app",
     "uptime": "2 hours ago"
   }
 ]
@@ -68,7 +68,7 @@ Returns `[]` (empty array) when no containers exist. Never returns null. Additio
 {
   "name": "personal-myproject",
   "action": "created" | "resumed" | "attached",
-  "source_path": "/Users/jonat/code/personal/myproject",
+  "source_path": "~/projects/my-app",
   "status": "running",
   "init": "success" | "failed",
   "name_disambiguated": false
@@ -155,8 +155,8 @@ This list is illustrative. New error codes will be added as failure modes are di
 ```bash
 # Human mode
 $ rc up ~/code/myproject --dry-run
-Would create container personal-myproject for /Users/jonat/code/personal/myproject
-Would mount /Users/jonat/code/personal/myproject → /workspace
+Would create container personal-myproject for ~/projects/my-app
+Would mount ~/projects/my-app → /workspace
 Would run init script
 
 # Machine mode
@@ -165,7 +165,7 @@ $ rc up ~/code/myproject --dry-run --output json
   "dry_run": true,
   "name": "personal-myproject",
   "action": "would_create",
-  "source_path": "/Users/jonat/code/personal/myproject"
+  "source_path": "~/projects/my-app"
 }
 ```
 
@@ -191,7 +191,7 @@ Would remove volumes: rc-state-mycontainer, rc-history-mycontainer
 
 **Allowed roots:** No default. `RC_ALLOWED_ROOTS` env var (colon-separated absolute paths) **must** be set. If unset, `rc up` and `rc init` exit with an error explaining how to configure it.
 
-Example: `export RC_ALLOWED_ROOTS="$HOME/code/personal:$HOME/code/mapular"`
+Example: `export RC_ALLOWED_ROOTS="$HOME/projects"`
 
 This fail-closed approach avoids shipping opinionated defaults that only work for one user's machine layout.
 
@@ -201,7 +201,7 @@ This fail-closed approach avoids shipping opinionated defaults that only work fo
 $ rc up /etc/shadow
 Error: /etc/shadow is outside allowed roots. Set RC_ALLOWED_ROOTS.
 
-$ RC_ALLOWED_ROOTS=~/code/personal rc up ~/code/personal/../../../etc --output json
+$ RC_ALLOWED_ROOTS=~/projects rc up ~/projects/../../../etc --output json
 {"error": "Path resolves outside allowed roots", "code": "PATH_INVALID", "resolved": "/etc"}
 ```
 

@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Lint — shellcheck all bash scripts
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint (shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Lint rc
+        # rc uses #!/usr/bin/env bash and has one shellcheck source=/dev/null
+        # directive at line 32 for the optional config file.
+        # -x follows sourced files where possible.
+        run: shellcheck -x rc
+
+      - name: Lint init-rip-cage.sh
+        run: shellcheck -x init-rip-cage.sh
+
+      - name: Lint hooks
+        run: shellcheck -x hooks/*.sh
+
+      - name: Lint bd-wrapper.sh
+        run: shellcheck -x bd-wrapper.sh
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Build — verify multi-stage Dockerfile compiles (Go + Rust + Debian)
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build (docker build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        # The multi-stage build compiles the Go beads binary and the Rust DCG
+        # binary before assembling the Debian runtime image.
+        # A successful build confirms the full toolchain works.
+        run: docker build -t rip-cage:ci-test .
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Test (basic) — validate rc CLI without a running container
+  #
+  # These host-only tests require no Docker container and no API key:
+  #   - test-rc-commands.sh    rc init/build CLI surface
+  #   - test-json-output.sh    --output json flag, rc syntax validation
+  #   - test-dg6.2.sh          --dry-run, input hardening, agent context
+  #   - test-code-review-fixes.sh  json_error, input validation helpers
+  #   - test-bd-wrapper.sh     bd-wrapper.sh unit tests
+  #   - test-security-hardening.sh  allowed-roots, symlink traversal checks
+  #   - test-dockerfile-sudoers.sh  Dockerfile sudoers + pre-created dirs
+  #   - test-worktree-support.sh    git worktree detection in rc
+  #
+  # Deferred (require a running rip-cage container):
+  #   - test-agent-cli.sh      full rc up / rc attach / rc destroy flow
+  #   - test-integration.sh    end-to-end container lifecycle
+  #   - test-safety-stack.sh   40+ safety stack checks (runs INSIDE container)
+  #
+  # Integration tests need Docker-in-Docker or a self-hosted runner with Docker.
+  # They are tracked in the backlog (rip-cage-rat follow-up).
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test (host-only, no container)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify rc --version works
+        run: ./rc --version
+
+      - name: test-rc-commands.sh
+        run: bash test-rc-commands.sh
+
+      - name: test-json-output.sh
+        run: bash test-json-output.sh
+
+      - name: test-dg6.2.sh
+        run: bash test-dg6.2.sh
+
+      - name: test-code-review-fixes.sh
+        run: bash test-code-review-fixes.sh
+
+      - name: test-bd-wrapper.sh
+        run: bash test-bd-wrapper.sh
+
+      - name: test-security-hardening.sh
+        run: bash test-security-hardening.sh
+
+      - name: test-dockerfile-sudoers.sh
+        run: bash test-dockerfile-sudoers.sh
+
+      - name: test-worktree-support.sh
+        run: bash test-worktree-support.sh
