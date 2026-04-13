@@ -13,9 +13,10 @@ fail() { echo "FAIL: $1 — got: ${2:-}"; FAILURES=$((FAILURES + 1)); }
 
 # Create temp dirs for fake binaries
 FAKE_BIN=$(mktemp -d)
-SYMLINK_BIN=$(mktemp -d)  # symlink farm for PATH without jq
+SYMLINK_BIN=$(mktemp -d)   # symlink farm for PATH without jq
+SYMLINK_BIN2=$(mktemp -d)  # symlink farm for PATH without tmux
 cleanup() {
-  rm -rf "$FAKE_BIN" "$SYMLINK_BIN"
+  rm -rf "$FAKE_BIN" "$SYMLINK_BIN" "$SYMLINK_BIN2"
 }
 trap cleanup EXIT
 
@@ -53,7 +54,7 @@ _build_nojq_path() {
 }
 
 NOJQ_BIN=$(_build_nojq_path "$SYMLINK_BIN" "jq")
-# tmux is not installed on this host — regular PATH works for tmux tests
+NOTMUX_BIN=$(_build_nojq_path "$SYMLINK_BIN2" "tmux")
 
 # -----------------------------------------------
 # Test 1: Missing jq — rc ls --output json fails with helpful message
@@ -80,8 +81,8 @@ fi
 echo ""
 echo "=== Test 2: Missing tmux gives helpful error for rc up ==="
 
-# tmux is not installed on this host, so regular PATH is sufficient
-output=$(RC_ALLOWED_ROOTS="$HOME" "$RC" up . 2>&1 || true)
+# Use PATH without tmux to ensure the test is reliable even if tmux is installed on the host
+output=$(RC_ALLOWED_ROOTS="$HOME" PATH="$NOTMUX_BIN" "$RC" up . 2>&1 || true)
 if echo "$output" | grep -qi "tmux"; then
   pass "missing tmux: error mentions 'tmux'"
 else
@@ -117,7 +118,8 @@ fi
 echo ""
 echo "=== Test 4: Docker check runs for docker-dependent commands ==="
 
-for cmd in build ls; do
+# build and ls get a clean error; attach/down/destroy/test need an arg but still hit docker check first
+for cmd in build ls attach down destroy test; do
   output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" $cmd 2>&1 || true)
   if echo "$output" | grep -qi "docker"; then
     pass "docker check for 'rc $cmd'"

@@ -270,6 +270,22 @@ container_name() {
   echo "${parent}-${base}" | tr -cs 'a-zA-Z0-9_.-' '-' | sed 's/^[.-]*//' | sed 's/-$//'
 }
 
+# _path_under_allowed_roots RESOLVED_PATH
+# Returns 0 (true) if RESOLVED_PATH is under one of the RC_ALLOWED_ROOTS, 1 otherwise.
+# IMPORTANT: Match exact root OR root/ prefix to prevent /code matching /code-evil.
+_path_under_allowed_roots() {
+  local _resolved="$1"
+  local IFS=':'
+  local root resolved_root
+  for root in ${RC_ALLOWED_ROOTS:-}; do
+    resolved_root=$(realpath "$root" 2>/dev/null) || continue
+    if [[ "$_resolved" == "$resolved_root" ]] || [[ "$_resolved" == "$resolved_root"/* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 validate_path() {
   local raw_path="$1"
 
@@ -303,19 +319,7 @@ validate_path() {
   fi
 
   # Check path is under an allowed root
-  # IMPORTANT: Match exact root OR root/ prefix to prevent /code matching /code-evil.
-  local allowed=false
-  IFS=':' read -ra roots <<< "$RC_ALLOWED_ROOTS"
-  for root in "${roots[@]}"; do
-    local resolved_root
-    resolved_root=$(realpath "$root" 2>/dev/null) || continue
-    if [[ "$resolved" == "$resolved_root" ]] || [[ "$resolved" == "$resolved_root"/* ]]; then
-      allowed=true
-      break
-    fi
-  done
-
-  if [[ "$allowed" == "false" ]]; then
+  if ! _path_under_allowed_roots "$resolved"; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Path resolves outside allowed roots" "PATH_INVALID"
     echo "Error: $resolved is outside allowed roots ($RC_ALLOWED_ROOTS)" >&2
     exit 1
@@ -440,20 +444,8 @@ _up_detect_worktree() {
 
   local resolved_git_dir
   resolved_git_dir=$(realpath "$main_git_dir" 2>/dev/null) || true
-  local git_allowed=false
-  # Note: duplicates RC_ALLOWED_ROOTS check from validate_path() and beads redirect.
-  # If hardening one, harden all three. See also _up_prepare_environment (beads redirect) and validate_path().
-  IFS=':' read -ra roots <<< "${RC_ALLOWED_ROOTS:-}"
-  for root in "${roots[@]}"; do
-    local resolved_root
-    resolved_root=$(realpath "$root" 2>/dev/null) || continue
-    if [[ "$resolved_git_dir" == "$resolved_root"/* ]] || [[ "$resolved_git_dir" == "$resolved_root" ]]; then
-      git_allowed=true
-      break
-    fi
-  done
 
-  if [[ "$git_allowed" == "true" ]]; then
+  if _path_under_allowed_roots "$resolved_git_dir"; then
     wt_detected=true
     wt_main_git="$resolved_git_dir"
     log "Worktree detected: ${wt_name} (main .git/ at ${wt_main_git})"
@@ -501,7 +493,7 @@ _up_prepare_docker_mounts() {
   fi
   if [[ "$(uname)" == "Darwin" ]]; then
     local creds_tmp
-    creds_tmp=$(mktemp) || { echo "Warning: failed to create temp file for credentials extraction" >&2; }
+    creds_tmp=$(mktemp) || { echo "Warning: failed to create temp file for credentials extraction" >&2; return; }
     if security find-generic-password -s "Claude Code-credentials" -w > "$creds_tmp" 2>/dev/null; then
       mv "$creds_tmp" "${HOME}/.claude/.credentials.json"
     else
@@ -610,19 +602,7 @@ _up_prepare_environment() {
       resolved_beads=$(realpath "${_path}/${redirect_target}" 2>/dev/null || true)
       if [[ -n "$resolved_beads" && -d "$resolved_beads" ]]; then
         # Validate resolved path is under an allowed root (ADR-003 D3)
-        # Note: duplicates RC_ALLOWED_ROOTS check from validate_path() and worktree allowed-roots loop.
-        # If hardening one, harden all three. See also _up_detect_worktree (worktree allowed-roots) and validate_path().
-        local beads_allowed=false
-        IFS=':' read -ra roots <<< "${RC_ALLOWED_ROOTS:-}"
-        for root in "${roots[@]}"; do
-          local resolved_root
-          resolved_root=$(realpath "$root" 2>/dev/null) || continue
-          if [[ "$resolved_beads" == "$resolved_root" ]] || [[ "$resolved_beads" == "$resolved_root"/* ]]; then
-            beads_allowed=true
-            break
-          fi
-        done
-        if [[ "$beads_allowed" == "true" ]]; then
+        if _path_under_allowed_roots "$resolved_beads"; then
           log "Beads: resolved redirect → $resolved_beads"
           beads_dir="$resolved_beads"
           # Mount the real .beads/ over the worktree's redirect
@@ -663,8 +643,9 @@ _up_start_container() {
   local _name="$1"
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local docker_stderr
-    # Note: inside $(...), 2>&1 >/dev/null redirects stderr to the capture pipe first,
-    # then stdout to /dev/null — capturing stderr while suppressing the container ID.
+    # Note: inside $(...), redirects are evaluated left-to-right:
+    # 2>&1 copies stderr to the capture pipe (stdout), then >/dev/null discards stdout —
+    # capturing stderr while suppressing the container ID.
     if ! docker_stderr=$(docker run "${_UP_RUN_ARGS[@]}" 2>&1 >/dev/null); then
       if echo "$docker_stderr" | grep -q "is already in use by container"; then
         json_error "Container name $_name is already in use" "NAME_CONFLICT"
@@ -725,13 +706,6 @@ cmd_up() {
     env_file="$resolved_env"
   fi
 
-  # Check Docker
-  if ! docker info > /dev/null 2>&1; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Docker is not running" "DOCKER_NOT_RUNNING"
-    echo "Error: Docker is not running. Is OrbStack running?" >&2
-    exit 1
-  fi
-
   # Check image exists
   if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Image $IMAGE not found. Run: rc build" "IMAGE_NOT_FOUND"
@@ -758,7 +732,8 @@ cmd_up() {
     if [[ "$existing_path" != "$path" ]]; then
       # Different path — disambiguate with hash suffix
       local hash
-      hash=$(echo -n "$path" | shasum | cut -c1-4)
+      hash=$(printf '%s' "$path" | cksum | cut -d' ' -f1)
+      hash=$(printf '%s' "$hash" | tail -c 4)
       name="${name}-${hash}"
       name_disambiguated=true
       log "Warning: container '$( container_name "$path" )' exists for different path. Using: $name"
@@ -1134,7 +1109,7 @@ fi
 if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   case "${1:-}" in
     build|ls|up|down|destroy|test) ;;  # supported
-    init|attach|schema)
+    init|attach|schema|"")
       echo "Error: --output json is not supported for '${1:-}'" >&2
       exit 1
       ;;
@@ -1148,8 +1123,9 @@ if [[ "$OUTPUT_FORMAT" == "json" ]]; then
 fi
 
 # tmux: only needed for `rc up` (VS Code / rc init doesn't use tmux)
+# Skip when --output json: agent callers invoke up programmatically, never need tmux
 case "${1:-}" in
-  up) check_tmux ;;
+  up) [[ "$OUTPUT_FORMAT" == "json" ]] || check_tmux ;;
 esac
 
 # docker: needed for all commands that talk to Docker

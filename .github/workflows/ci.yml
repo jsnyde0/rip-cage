@@ -104,5 +104,8 @@ jobs:
       - name: test-dockerfile-sudoers.sh
         run: bash test-dockerfile-sudoers.sh
 
+      - name: test-prerequisites.sh
+        run: bash test-prerequisites.sh
+
       - name: test-worktree-support.sh
         run: bash test-worktree-support.sh
