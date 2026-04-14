@@ -71,8 +71,12 @@ ownership problem.
 2. Change `rc` to mount directly: `-v "${HOME}/.claude/skills:/home/agent/.claude/skills:ro"`
 3. Remove symlink step from `init-rip-cage.sh`
 
-**Test:** Start a container, run `claude`, invoke `/send-it`. If skills resolve,
-native filesystem discovery works and no MCP server is needed.
+**Automated test (run after spike):**
+```bash
+rc build && rc up /path/to/project
+rc test <container-name>   # test-skills.sh: check 4 must pass (real dir, not symlink)
+```
+Manual validation still required: start `claude` inside the container and invoke `/send-it`.
 
 **Result matters:** If Spike 1 succeeds, proceed to Branch A (trivial, done).
 If Spike 1 fails, the filesystem path is wrong theory — proceed to Spike 2.

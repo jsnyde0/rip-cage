@@ -71,11 +71,13 @@ RUN groupadd -g 1000 agent \
 # Copy rip-cage files
 COPY hooks/ /usr/local/lib/rip-cage/hooks/
 COPY test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
+COPY test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
 COPY settings.json /etc/rip-cage/settings.json
 COPY init-rip-cage.sh /usr/local/bin/init-rip-cage.sh
 RUN chmod +x /usr/local/bin/init-rip-cage.sh \
     /usr/local/lib/rip-cage/hooks/*.sh \
-    /usr/local/lib/rip-cage/test-safety-stack.sh
+    /usr/local/lib/rip-cage/test-safety-stack.sh \
+    /usr/local/lib/rip-cage/test-skills.sh
 
 USER agent
 WORKDIR /home/agent
