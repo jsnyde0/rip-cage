@@ -199,6 +199,35 @@ else
   fail "rc init did not validate path. Got: $init_err"
 fi
 
+# --- Test 17: --output json includes warning field when RC_ALLOWED_ROOTS unset ---
+echo ""
+echo "=== Test 17: rc up --output json includes warning field when RC_ALLOWED_ROOTS unset ==="
+warn_json_dir=$(mktemp -d)
+warn_json_out=$(RC_CONFIG=/dev/null env -u RC_ALLOWED_ROOTS "$RC" --output json up "$warn_json_dir" 2>/dev/null) || true
+if echo "$warn_json_out" | jq -e '.warning' >/dev/null 2>&1; then
+  pass "--output json includes warning field when RC_ALLOWED_ROOTS unset"
+else
+  fail "--output json missing warning field. Got: $warn_json_out"
+fi
+rmdir "$warn_json_dir" 2>/dev/null || true
+
+# --- Test 18: --output json --env-file outside workspace does not fail with 'outside allowed roots' ---
+echo ""
+echo "=== Test 18: rc up with --env-file outside workspace succeeds path validation ==="
+env_ws_dir=$(mktemp -d)
+env_file_dir=$(mktemp -d)
+env_file_path="${env_file_dir}/test.env"
+printf "TEST_VAR=hello\n" > "$env_file_path"
+env_file_err=$(RC_CONFIG=/dev/null env -u RC_ALLOWED_ROOTS "$RC" --output json up "$env_ws_dir" --env-file "$env_file_path" 2>&1) || true
+if echo "$env_file_err" | grep -q "outside allowed roots"; then
+  fail "rc up --env-file got 'outside allowed roots' error. Got: $env_file_err"
+else
+  pass "rc up --env-file outside workspace did not fail with 'outside allowed roots'"
+fi
+rm -f "$env_file_path"
+rmdir "$env_file_dir" 2>/dev/null || true
+rmdir "$env_ws_dir" 2>/dev/null || true
+
 # --- Cleanup ---
 rmdir "$test_dir" 2>/dev/null || true
 

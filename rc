@@ -36,6 +36,7 @@ unset _rc_conf
 
 OUTPUT_FORMAT="human"
 DRY_RUN=false
+RC_VALIDATE_WARNING=""
 
 RC_VERSION="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || echo "unknown")"
 
@@ -329,6 +330,7 @@ validate_path() {
       local _home
       _home="$(realpath "$HOME")"
       local _chosen=""
+      local _input=""
       local _attempts=0
       while [[ $_attempts -lt 3 ]]; do
         _attempts=$((_attempts + 1))
@@ -336,6 +338,7 @@ validate_path() {
         read -r _input
         _chosen="${_input:-$_home}"
         if [[ -d "$_chosen" ]]; then
+          _chosen="$(realpath "$_chosen")"
           break
         else
           printf "rip-cage: '%s' does not exist or is not a directory. Use a full absolute path.\n" "$_chosen" >&2
@@ -352,9 +355,11 @@ validate_path() {
       RC_ALLOWED_ROOTS="$_chosen"
     else
       # Non-interactive (no TTY or --output json): minimum grant for this path only
-      echo "Warning: RC_ALLOWED_ROOTS unset — allowing $resolved only." >&2
+      local _warn_msg="RC_ALLOWED_ROOTS unset — allowing $resolved only."
+      echo "Warning: $_warn_msg" >&2
       echo "Set RC_ALLOWED_ROOTS in ~/.config/rip-cage/rc.conf for permanent access." >&2
       RC_ALLOWED_ROOTS="$resolved"
+      RC_VALIDATE_WARNING="${RC_VALIDATE_WARNING:-}${RC_VALIDATE_WARNING:+ }$_warn_msg"
     fi
   fi
 
@@ -391,6 +396,10 @@ _up_json_output() {
 
   local jq_filter='{name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated'
 
+  if [[ -n "${RC_VALIDATE_WARNING:-}" ]]; then
+    jq_args+=(--arg warning "$RC_VALIDATE_WARNING")
+    jq_filter+=', warning: $warning'
+  fi
   if [[ -n "$_dry_run" ]]; then
     jq_args+=(--argjson dry_run true)
     jq_filter+=', dry_run: $dry_run'
@@ -739,6 +748,23 @@ cmd_up() {
 
   if [[ -z "$path" ]]; then
     path="."
+  fi
+
+  # Non-TTY minimum grant: when RC_ALLOWED_ROOTS is unset and an env-file is provided,
+  # pre-set RC_ALLOWED_ROOTS to cover both the workspace path and the env-file dirname.
+  # This prevents the second validate_path call from seeing a different effective root.
+  if [[ -z "${RC_ALLOWED_ROOTS:-}" ]] && [[ -n "$env_file" ]] && ! ( [[ -t 0 ]] && [[ "$OUTPUT_FORMAT" != "json" ]] ); then
+    local _pre_ws _pre_env_dir
+    _pre_ws=$(realpath "$path" 2>/dev/null) || _pre_ws="$path"
+    if [[ -e "$env_file" ]]; then
+      local _pre_ef
+      _pre_ef=$(realpath "$env_file" 2>/dev/null) || _pre_ef="$env_file"
+      _pre_env_dir=$(dirname "$_pre_ef")
+      RC_ALLOWED_ROOTS="${_pre_ws}:${_pre_env_dir}"
+      RC_VALIDATE_WARNING="RC_ALLOWED_ROOTS unset — allowing $_pre_ws only."
+      echo "Warning: RC_ALLOWED_ROOTS unset — allowing $_pre_ws only." >&2
+      echo "Set RC_ALLOWED_ROOTS in ~/.config/rip-cage/rc.conf for permanent access." >&2
+    fi
   fi
 
   validate_path "$path"

@@ -104,7 +104,7 @@ check_exit "blocked path exits non-zero" "$EXIT_CODE" 1
 
 # Test 7: Missing RC_ALLOWED_ROOTS (non-TTY: warns and continues)
 set +e
-RESULT=$(RC_CONFIG=/dev/null env -u RC_ALLOWED_ROOTS $RC up "$TEST_DIR/test-project" 2>&1)
+RESULT=$(RC_CONFIG=/dev/null env -u RC_ALLOWED_ROOTS "$RC" up "$TEST_DIR/test-project" 2>&1)
 EXIT_CODE=$?
 set -e
 check "missing RC_ALLOWED_ROOTS mentions env var" "$RESULT" "RC_ALLOWED_ROOTS"
