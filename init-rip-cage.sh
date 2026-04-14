@@ -78,6 +78,12 @@ if [ ! -x /usr/local/lib/rip-cage/hooks/block-compound-commands.sh ]; then
   echo "[rip-cage] ERROR: block-compound-commands.sh not found at /usr/local/lib/rip-cage/hooks/block-compound-commands.sh" >&2
   exit 1
 fi
+# Verify python3 (required for skill-server.py MCP shim)
+if ! command -v python3 > /dev/null 2>&1; then
+  echo "[rip-cage] ERROR: python3 not found — skill discovery (skill-server.py) will not work" >&2
+  exit 1
+fi
+echo "[rip-cage] python3 found (skill-server.py will be available)"
 echo "[rip-cage] Hooks verified"
 
 # 6. Set git identity

@@ -70,6 +70,17 @@ The safety stack has two layers, both configured as `PreToolUse` hooks in `setti
 
 The allowlist in `settings.json` auto-approves safe commands (git read ops, uv, npm test, ls, etc.). Everything else requires confirmation. Writing to `.git/hooks/*` is hard-denied.
 
+## Skills in Containers
+
+Skills mounted from the host are discoverable inside containers via a Python MCP shim
+(`skill-server.py`) registered as `mcpServers.meta-skill` in `settings.json`.
+The shim implements the same `list`/`show`/`load` tools as the host `ms` binary.
+
+- Skills that are broken symlinks inside the container (host-only paths) are skipped at startup
+- Upgrade path: when `ms` publishes Linux binaries, swap `command`/`args` in `settings.json`
+  and remove `skill-server.py`; server name `meta-skill` stays unchanged
+- See: `history/2026-04-14-skills-in-containers-design.md` for full design rationale
+
 ## Container user model
 
 The container runs as `agent` (uid 1000), not root. Sudo is restricted to exact paths:

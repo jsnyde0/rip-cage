@@ -53,6 +53,13 @@
     "defaultMode": "bypassPermissions"
   },
   "skipAutoPermissionPrompt": true,
+  "mcpServers": {
+    "meta-skill": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["/usr/local/lib/rip-cage/skill-server.py"]
+    }
+  },
   "hooks": {
     "PreCompact": [
       {
