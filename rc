@@ -854,11 +854,28 @@ cmd_up() {
     env_file="$resolved_env"
   fi
 
-  # Check image exists
+  # Check image exists — auto-build if missing
   if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Image $IMAGE not found. Run: rc build" "IMAGE_NOT_FOUND"
-    echo "Error: Image $IMAGE not found. Run: rc build" >&2
-    exit 1
+    if [[ "$DRY_RUN" == "true" ]]; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        jq -nc '{dry_run: true, would_build: true, message: "would build rip-cage image, then create container"}'
+      else
+        echo "[dry-run] would build rip-cage image, then create container"
+      fi
+      exit 0
+    fi
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      echo '{"status":"building","message":"Building rip-cage image (first run only)"}' >&2
+      if ! docker build -t "$IMAGE" "$SCRIPT_DIR" >&2; then
+        json_error "Build failed" "BUILD_FAILED"
+      fi
+    else
+      log "Building rip-cage image (first run only, takes a few minutes)..."
+      if ! docker build -t "$IMAGE" "$SCRIPT_DIR"; then
+        echo "Error: Image build failed." >&2
+        exit 1
+      fi
+    fi
   fi
 
   local name_disambiguated=false
