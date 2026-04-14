@@ -99,9 +99,9 @@ All 14 test files (13 `test-*.sh` scripts + `test_skill_server.py`) move to `tes
 
 **Firmness: FLEXIBLE**
 
-The README quickstart shows humans exactly two interactions: `rc up .` and `Ctrl-B d`. Container management commands (`ls`, `attach`, `down`, `destroy`) appear in `docs/cli-reference.md`, not the quickstart.
+The README quickstart shows humans exactly two interactions: `rc up .` and `Ctrl-B d`. Container management commands (`ls`, `attach`, `down`, `destroy`) appear in `docs/reference/cli-reference.md`, not the quickstart.
 
-Agent-facing features (`--output json`, `--dry-run`, container naming rules) live in AGENTS.md and `docs/cli-reference.md`.
+Agent-facing features (`--output json`, `--dry-run`, container naming rules) live in AGENTS.md and `docs/reference/cli-reference.md`.
 
 `rc --help` remains comprehensive for both audiences.
 

@@ -24,6 +24,15 @@ Both paths mount the project directory as a bind mount at `/workspace` — file 
 
 > For installation, quickstart, auth, safety stack details, and full CLI reference, see [docs/reference/](docs/reference/).
 
+## Auth flow (for contributors)
+
+If you're modifying auth logic, the flow is:
+1. `rc init`: keychain extraction happens in `initializeCommand` (runs on host)
+2. `rc up`: keychain extraction happens in `cmd_up` before `docker run`
+3. `init-rip-cage.sh`: reads the mounted `.credentials.json` (inside container, no keychain access)
+
+See [docs/reference/auth.md](docs/reference/auth.md) for full details.
+
 ## Skills in Containers
 
 Skills mounted from the host are discoverable inside containers via a Python MCP shim

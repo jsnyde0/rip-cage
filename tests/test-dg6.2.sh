@@ -129,7 +129,7 @@ echo ""
 echo "=== Test 10: rc up --dry-run prints what would happen ==="
 dryrun_dir=$(mktemp -d)
 dryrun_out=$(RC_ALLOWED_ROOTS="$(dirname "$dryrun_dir")" "$RC" --dry-run up "$dryrun_dir" 2>&1) || true
-if echo "$dryrun_out" | grep -q "Would create\|would_create"; then
+if echo "$dryrun_out" | grep -q "Would create\|would_create\|Would build"; then
   pass "--dry-run reports what would happen"
 else
   fail "--dry-run did not report action. Got: $dryrun_out"
@@ -141,7 +141,7 @@ echo ""
 echo "=== Test 11: rc up --dry-run --output json produces JSON ==="
 dryrun_dir2=$(mktemp -d)
 dryrun_json=$(RC_ALLOWED_ROOTS="$(dirname "$dryrun_dir2")" "$RC" --dry-run --output json up "$dryrun_dir2" 2>/dev/null) || true
-if echo "$dryrun_json" | jq -e '.dry_run == true and .action == "would_create"' >/dev/null 2>&1; then
+if echo "$dryrun_json" | jq -e '.dry_run == true and (.action == "would_create" or .action == "would_build_and_create")' >/dev/null 2>&1; then
   pass "--dry-run --output json produces correct JSON"
 else
   fail "--dry-run --output json incorrect. Got: $dryrun_json"

@@ -131,7 +131,7 @@ The image is multi-stage. Changes to earlier stages invalidate the build cache f
 - Follow existing bash conventions in `rc` — local variables, `set -euo pipefail`, quoting.
 - Use `shellcheck` to catch common bash issues.
 - Error messages go to stderr (`>&2`). Normal output goes to stdout.
-- When adding a new `rc` subcommand, add it to the help text and the CLI reference in README.md.
+- When adding a new `rc` subcommand, add it to the help text and the CLI reference in `docs/reference/cli-reference.md`.
 - Keep the `--output json` contract stable — callers depend on the JSON field names.
 
 ## Submitting a pull request

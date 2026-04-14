@@ -858,9 +858,9 @@ cmd_up() {
   if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
     if [[ "$DRY_RUN" == "true" ]]; then
       if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        jq -nc '{dry_run: true, would_build: true, message: "would build rip-cage image, then create container"}'
+        jq -nc '{dry_run: true, would_build: true, action: "would_build_and_create", message: "would build rip-cage image, then create container"}'
       else
-        echo "[dry-run] would build rip-cage image, then create container"
+        echo "Would build rip-cage image and create container"
       fi
       exit 0
     fi

@@ -9,7 +9,7 @@ The rip-cage image is based on `debian:bookworm` with a multi-stage Dockerfile (
 | Claude Code | The agent itself |
 | Node 22 + Bun | JS/TS runtime |
 | Python 3 + uv | Python runtime + package manager |
-| Go | For building Go tools |
+| Go (build stage only) | Compiles bd/beads — not available at runtime |
 | gh CLI | GitHub operations |
 | git | Version control |
 | DCG | Destructive command guard (Rust binary) |
