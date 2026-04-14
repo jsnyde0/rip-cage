@@ -57,29 +57,35 @@ Official docs claim Claude Code discovers skills natively from
 present) contradicts this. Two spikes resolve the ambiguity before building
 anything.
 
-## Spike 1: Direct Bind-Mount (30 min)
+## Spike 1: Native Filesystem Discovery (30 min)
 
-The current staging flow mounts skills at `/home/agent/.rc-context/skills` and
-then symlinks to `~/.claude/skills`. The staging exists because Docker creates
-bind-mount target directories as root when they don't exist. But `~/.claude/`
-is already pre-created as `agent:agent` in the Dockerfile — if we also
-pre-create `~/.claude/skills/`, Docker can bind-mount directly without the
-ownership problem.
+**Hypothesis:** Claude Code discovers skills from `~/.claude/skills/` via native
+filesystem scanning, without any MCP server.
 
-**Change:**
+The current mount method (staging via `.rc-context/` + symlink) is an
+implementation detail that is orthogonal to this hypothesis. Any working mount
+that places `SKILL.md` files at `~/.claude/skills/*/SKILL.md` is sufficient to
+test it. However, pre-creating `~/.claude/skills/` as a real directory in the
+Dockerfile (rather than relying on a symlink) is a worthwhile cleanup regardless
+of spike outcome — it removes an indirection layer. Do both changes together.
+
+**Changes:**
 1. Add to Dockerfile: `RUN mkdir -p /home/agent/.claude/skills /home/agent/.claude/commands`
 2. Change `rc` to mount directly: `-v "${HOME}/.claude/skills:/home/agent/.claude/skills:ro"`
-3. Remove symlink step from `init-rip-cage.sh`
+3. Remove symlink step from `init-rip-cage.sh` (lines 48–57; retain `.rc-context/` only for CLAUDE.md, lines 33–45)
 
 **Automated test (run after spike):**
 ```bash
 rc build && rc up /path/to/project
-rc test <container-name>   # test-skills.sh: check 4 must pass (real dir, not symlink)
+rc test <container-name>
+# test-skills.sh check 4 must pass: confirms real directory (not symlink) — validates mount only
 ```
-Manual validation still required: start `claude` inside the container and invoke `/send-it`.
+**Manual validation required:** Start `claude` inside the container and invoke a
+skill (e.g., `/send-it`). A working invocation means native discovery works.
+A "Unknown skill" error means MCP is required — proceed to Spike 2.
 
-**Result matters:** If Spike 1 succeeds, proceed to Branch A (trivial, done).
-If Spike 1 fails, the filesystem path is wrong theory — proceed to Spike 2.
+**Result matters:** If native discovery works, proceed to Branch A (trivial, done).
+If "Unknown skill" persists despite files present, proceed to Spike 2.
 
 ## Spike 2: MCP Path Validation (30 min)
 
@@ -98,24 +104,30 @@ If Spike 1 fails, confirm that MCP is the required mechanism and that any
 ```
 
 **`skill-probe.sh`** (logs all stdin to `/tmp/ms-probe.log`, echoes valid MCP
-responses just enough to not crash):
+responses just enough to not crash). MCP stdio uses newline-delimited JSON:
 ```bash
 #!/bin/bash
 while IFS= read -r line; do
   echo "$line" >> /tmp/ms-probe.log
-  # Respond to initialize only
+  # Respond to initialize only; echo back the request id
   if echo "$line" | grep -q '"method":"initialize"'; then
-    echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"probe","version":"0.0.1"}}}'
+    req_id=$(echo "$line" | jq -r '.id')
+    echo "{\"jsonrpc\":\"2.0\",\"id\":${req_id},\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"probe\",\"version\":\"0.0.1\"}}}"
   fi
+  # Silently discard notifications (JSON-RPC messages with no "id" field)
 done
 ```
 
-**Test:** Start container, run `claude`, attempt `/send-it`, check
+**Test:** Start container, run `claude`, attempt a skill, check
 `/tmp/ms-probe.log`. If Claude Code sent JSON-RPC to the probe, MCP is
 confirmed as the mechanism.
 
-**Also verifies:** Does the server name need to be `meta-skill` specifically?
-Test with a different name (e.g., `skill-server`) to confirm.
+**Also verifies server name sensitivity — run twice:**
+1. First run: `mcpServers.meta-skill` (name matches host)
+2. Second run: rename key to `mcpServers.skill-server` and repeat
+
+If Claude Code only queries `meta-skill`, the name matters and Branch B must
+use that exact key. If it queries any name, either works.
 
 ---
 
@@ -142,8 +154,8 @@ _UP_RUN_ARGS+=(-v "${HOME}/.claude/skills:/home/agent/.claude/skills:ro")
 Same change for `commands`.
 
 **`init-rip-cage.sh`** — remove symlink steps for skills and commands (lines 48-57).
-The `.rc-context/` pattern is still used for CLAUDE.md files (which don't have
-a pre-created target directory), so retain it for those.
+The `.rc-context/` pattern is still used for CLAUDE.md files (lines 33–45, which
+don't have a pre-created target directory), so retain it for those.
 
 **`settings.json`** — no change. Native filesystem discovery needs no MCP config.
 
@@ -169,14 +181,29 @@ in the image.
   unimplemented tools (`suggest`, `feedback`, etc.)
 - **Long-lived process** — MCP stdio servers start once per session, not per
   invocation; Python startup time is irrelevant
+- **Python3 is pre-installed** — Dockerfile line ~26 (`apt-get install -y ... python3`).
+  No additional install needed; this is a dependency that is already satisfied.
+- **Notifications must be silently discarded** — MCP requires the client to send
+  a `notifications/initialized` notification after `initialize` and before any
+  `tools/list` call. This is a JSON-RPC notification (no `id` field, no response
+  expected). The server must discard messages without an `id` field rather than
+  treating them as unknown requests.
+- **ADR-006 exception** — ADR-006 D6 defers "custom MCP servers inside
+  containers" to Phase 2+. `skill-server.py` is an infrastructure shim (it
+  replaces a missing host binary, not a custom agent tool), and falls within
+  the spirit of D18. ADR-006 D6-deferred is amended to carve out this case.
+- **Crash resilience** — The main read loop must be wrapped in a top-level
+  `try/except` that logs to stderr and continues rather than exiting. An
+  unhandled exception on malformed input must not terminate the server.
 
 ### `skill-server.py` (stdlib only, ~100 lines)
 
 Placed at `/usr/local/lib/rip-cage/skill-server.py` in the image:
 
 ```
-Initialize → tools/list (returns list + show + load + search as tools)
+Initialize → [client sends notifications/initialized, server discards] → tools/list
 tools/call: list   → enumerate ~/.claude/skills/*/SKILL.md, return id/name/description
+                     returns [] (empty array) when no skills are present — not an error
 tools/call: show   → read full SKILL.md for named skill
 tools/call: load   → alias for show
 tools/call: search → substring match over skill names/descriptions
@@ -201,8 +228,13 @@ m = re.match(r'^---\n(.*?)\n---', content, re.DOTALL)
 }
 ```
 
-`settings.json` is already COPY'd into the image and used by init-rip-cage.sh —
-this is the only place the MCP config needs to live. No init script changes.
+`settings.json` is already COPY'd into the image. `init-rip-cage.sh` line 29
+overwrites `~/.claude/settings.json` from `/etc/rip-cage/settings.json` on
+every container start. This is intentional: the MCP server config is static
+(no runtime state in `settings.json` needs to persist across restarts). Any
+session-level settings Claude Code writes to `settings.json` (e.g., granted
+permissions) are reset on restart — a known limitation of the current init
+flow, pre-existing this design and out of scope here.
 
 ### What is NOT implemented (intentional stubs)
 
@@ -231,12 +263,14 @@ RUN curl -L https://github.com/anthropics/ms/releases/download/v${MS_VERSION}/ms
 ```
 Add `mcpServers.meta-skill` to `settings.json` (same structure as Branch B).
 
-**Branch B** (our skill server): swap the command in `settings.json`:
+**Branch B** (our skill server): swap the command and args in `settings.json`,
+and add the binary to the Dockerfile:
 ```json
 "command": "/usr/local/bin/ms",
 "args": ["mcp", "serve"]
 ```
-Remove `skill-server.py`. Settings structure is identical — one field change.
+Remove `skill-server.py`. The Dockerfile addition and two-field settings.json
+swap (command + args) are the full scope of the upgrade.
 
 The upgrade is a Dockerfile + settings change, not an architectural change.
 
@@ -257,7 +291,7 @@ The upgrade is a Dockerfile + settings change, not an architectural change.
 |--------|------|
 | Modify | `Dockerfile` (pre-create `~/.claude/skills` and `~/.claude/commands`) |
 | Modify | `rc` (direct mount, drop `.rc-context/` for skills/commands) |
-| Modify | `init-rip-cage.sh` (remove skills/commands symlink block) |
+| Modify | `init-rip-cage.sh` (remove skills/commands symlink block, lines 48–57) |
 | Update | `docs/decisions/ADR-002-rip-cage-containers.md` (D17 revised, D18 new) |
 
 ### Branch B (MCP server, if Branch A fails)
@@ -267,7 +301,14 @@ The upgrade is a Dockerfile + settings change, not an architectural change.
 | Create | `skill-server.py` |
 | Modify | `Dockerfile` (COPY skill-server.py) |
 | Modify | `settings.json` (add `mcpServers` block) |
+| Modify | `init-rip-cage.sh` (add `command -v python3` warning per ADR-005 D5 point 2) |
+| Modify | `CLAUDE.md` (document skill availability in containers, per ADR-005 D5 point 3) |
 | Update | `docs/decisions/ADR-002-rip-cage-containers.md` (D17 revised, D18 new) |
+| Update | `docs/decisions/ADR-006-multi-agent-architecture.md` (amend D6-deferred carve-out) |
 
-Branch B does not modify `rc` or `init-rip-cage.sh` — skills remain staged
-via `.rc-context/` since the symlink still points the server at the right place.
+Branch B does not modify `rc` — skills remain staged via `.rc-context/` since
+the symlink still points the server at the right place.
+
+**Note on file paths:** These paths assume current repo layout. If ADR-009 D4
+(moving test scripts to `tests/`) lands before this change, adjust the
+Dockerfile COPY source for `test-skills.sh` accordingly.

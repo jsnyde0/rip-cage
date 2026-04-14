@@ -96,6 +96,12 @@ Monitoring observes container state (tmux output, Docker stats, agent activity) 
 - **Kubernetes / cloud orchestration** -- local Docker only; VPS uses plain Docker
 - **CAAM credential pooling** -- single credential per container through Tier 2
 - **Enforced file locking** -- advisory reservations only
-- **Custom MCP servers inside containers** -- base Claude Code only through Phase 1
+- **Custom MCP servers inside containers** -- base Claude Code only through Phase 1.
+  **Exception (2026-04-14):** `skill-server.py` is an infrastructure shim that
+  replaces the unavailable `ms` (meta-skill) binary on Linux. It exposes skill
+  file content only, not custom agent tooling. This is not a Phase 2 agent-tool
+  MCP server — it is a temporary compatibility layer until Anthropic publishes
+  Linux binaries for `ms`. See [ADR-002 D18](ADR-002-rip-cage-containers.md)
+  and [Skills in Containers design](../../history/2026-04-14-skills-in-containers-design.md).
 - **Agent-to-agent direct communication** -- all coordination through Agent Mail or git
 - **Distributed multi-machine fleets** -- each machine runs its own `rc` instance

@@ -438,9 +438,10 @@ JSON-RPC to it, MCP is confirmed.
 as empty-success. Registered in `settings.json` as `mcpServers.meta-skill`
 with `command: python3`.
 
-**Upgrade path:** When `ms` publishes Linux binaries, swap `python3
-skill-server.py` for `/usr/local/bin/ms mcp serve` in `settings.json`. The
-server name and config structure stay identical — one field change.
+**Upgrade path:** When `ms` publishes Linux binaries, add the binary to the
+Dockerfile and swap `command`/`args` in `settings.json` (`python3
+skill-server.py` → `/usr/local/bin/ms mcp serve`). The server name stays
+identical. Scope: one Dockerfile addition plus two settings.json field changes.
 
 **Rationale:** `ms` adds semantic search, ranking, and quality scoring on top
 of basic skill file loading. These UX features have no value for agents inside
