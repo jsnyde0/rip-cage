@@ -25,12 +25,12 @@ fi
 
 # --- Test 2: validate_path rejects when RC_ALLOWED_ROOTS is unset ---
 echo ""
-echo "=== Test 2: rc up fails when RC_ALLOWED_ROOTS is unset ==="
+echo "=== Test 2: rc up warns when RC_ALLOWED_ROOTS is unset ==="
 test_dir=$(mktemp -d)
 unset RC_ALLOWED_ROOTS 2>/dev/null || true
-up_err=$(env -u RC_ALLOWED_ROOTS "$RC" up "$test_dir" 2>&1) || true
+up_err=$(RC_CONFIG=/dev/null env -u RC_ALLOWED_ROOTS "$RC" up "$test_dir" 2>&1) || true
 if echo "$up_err" | grep -q "RC_ALLOWED_ROOTS"; then
-  pass "rc up fails with RC_ALLOWED_ROOTS error when unset"
+  pass "rc up mentions RC_ALLOWED_ROOTS when unset"
 else
   fail "rc up did not mention RC_ALLOWED_ROOTS. Got: $up_err"
 fi
