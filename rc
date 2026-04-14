@@ -265,18 +265,22 @@ DEVCONTAINER_FOOTER_EMBEDDED
   # Resolve skill symlinks in devcontainer.json — same logic as cmd_up.
   # Skills stored as host symlinks become broken inside the container; mount
   # each symlink-target parent at the same absolute path to fix this.
-  if [[ -d "${HOME}/.claude/skills" ]] && command -v jq &>/dev/null; then
-    local _init_extra_mounts
-    _init_extra_mounts=()
-    local _init_tdir
-    while IFS= read -r _init_tdir; do
-      _init_extra_mounts+=("source=${_init_tdir},target=${_init_tdir},type=bind,readonly")
-    done < <(_collect_skill_symlink_parents "${HOME}/.claude/skills")
-    if [[ "${#_init_extra_mounts[@]}" -gt 0 ]]; then
-      local _extra_json
-      _extra_json=$(printf '%s\n' "${_init_extra_mounts[@]}" | jq -R . | jq -s .)
-      jq ".mounts += ${_extra_json}" "$dest" > "${dest}.tmp"
-      mv "${dest}.tmp" "$dest"
+  if [[ -d "${HOME}/.claude/skills" ]]; then
+    if ! command -v jq &>/dev/null; then
+      echo "Warning: jq not found — skill symlink mounts skipped in devcontainer.json (install jq to fix)" >&2
+    else
+      local _init_extra_mounts
+      _init_extra_mounts=()
+      local _init_tdir
+      while IFS= read -r _init_tdir; do
+        _init_extra_mounts+=("source=${_init_tdir},target=${_init_tdir},type=bind,readonly")
+      done < <(_collect_skill_symlink_parents "${HOME}/.claude/skills")
+      if [[ "${#_init_extra_mounts[@]}" -gt 0 ]]; then
+        local _extra_json
+        _extra_json=$(printf '%s\n' "${_init_extra_mounts[@]}" | jq -R . | jq -s .)
+        jq ".mounts += ${_extra_json}" "$dest" > "${dest}.tmp"
+        mv "${dest}.tmp" "$dest"
+      fi
     fi
   fi
 
@@ -535,17 +539,23 @@ _up_detect_worktree() {
 # Output: one resolved parent path per line (deduplicated)
 _collect_skill_symlink_parents() {
   local skills_dir="$1"
-  local entry target tdir seen_it
+  local entry target tdir seen_it d
   local seen_dirs
   seen_dirs=()
   for entry in "${skills_dir}/"*; do
     [[ -L "$entry" ]] || continue
     target=$(realpath "$entry" 2>/dev/null) || continue
     [[ -d "$target" ]] || continue
+    # Security: only mount targets within the user's home directory.
+    # A symlink pointing outside $HOME (e.g. -> /etc) would mount a system
+    # directory into the container — skip it with a warning.
+    if [[ "$target" != "${HOME}/"* ]]; then
+      echo "[rc] Warning: skill symlink '$(basename "$entry")' resolves outside \$HOME ($target) — skipping mount" >&2
+      continue
+    fi
     tdir=$(dirname "$target")
     seen_it=0
-    local d
-    for d in "${seen_dirs[@]:-}"; do
+    for d in "${seen_dirs[@]+"${seen_dirs[@]}"}"; do
       [[ "$d" == "$tdir" ]] && seen_it=1 && break
     done
     if [[ "$seen_it" == 0 ]]; then

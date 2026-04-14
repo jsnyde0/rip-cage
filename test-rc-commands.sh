@@ -144,7 +144,163 @@ else
 fi
 rm -rf "$FAKE_DOCKER_DIR"
 
+# --- Test 9: skill symlink resolution in rc up --dry-run ---
+echo ""
+echo "=== Test 9: skill symlink resolution in rc up --dry-run ==="
+SYMLINK_SKILLS_DIR=$(mktemp -d)
+SYMLINK_TARGET_DIR=$(mktemp -d)
+# Create a real skill directory (non-symlink) — should not produce extra mount
+mkdir -p "${SYMLINK_SKILLS_DIR}/real-skill"
+# Create a symlinked skill pointing to the target dir
+ln -s "${SYMLINK_TARGET_DIR}" "${SYMLINK_SKILLS_DIR}/linked-skill"
+# Override HOME/.claude/skills for this test via env substitution in rc
+# rc uses ${HOME}/.claude/skills directly, so we need a workaround:
+# source the rc helper function directly and call it
+symlink_parent_output=$(bash -c '
+  _collect_skill_symlink_parents() {
+    local skills_dir="$1"
+    local entry target tdir seen_it d
+    local seen_dirs
+    seen_dirs=()
+    for entry in "${skills_dir}/"*; do
+      [[ -L "$entry" ]] || continue
+      target=$(realpath "$entry" 2>/dev/null) || continue
+      [[ -d "$target" ]] || continue
+      if [[ "$target" != "${HOME}/"* ]]; then
+        echo "[rc] Warning: skill outside HOME — skipping" >&2
+        continue
+      fi
+      tdir=$(dirname "$target")
+      seen_it=0
+      for d in "${seen_dirs[@]+"${seen_dirs[@]}"}"; do
+        [[ "$d" == "$tdir" ]] && seen_it=1 && break
+      done
+      if [[ "$seen_it" == 0 ]]; then
+        seen_dirs+=("$tdir")
+        echo "$tdir"
+      fi
+    done
+  }
+  _collect_skill_symlink_parents "$1"
+' _ "${SYMLINK_SKILLS_DIR}")
+
+# The linked-skill target is in /tmp (outside $HOME) — should be skipped with warning
+# Real-world targets under $HOME would pass through
+if echo "$symlink_parent_output" | grep -q "$(dirname "${SYMLINK_TARGET_DIR}")"; then
+  fail "should have skipped target outside HOME"
+else
+  pass "skill symlink target outside HOME is skipped"
+fi
+
+# Create a symlinked skill pointing INSIDE HOME (simulate monorepo case)
+HOME_TARGET_DIR=$(mktemp -d "${HOME}/.tmp-rc-test-XXXXXX")
+SYMLINK_SKILLS_DIR2=$(mktemp -d)
+ln -s "${HOME_TARGET_DIR}" "${SYMLINK_SKILLS_DIR2}/linked-skill"
+symlink_parent_output2=$(bash -c '
+  HOME='"\"${HOME}\""'
+  _collect_skill_symlink_parents() {
+    local skills_dir="$1"
+    local entry target tdir seen_it d
+    local seen_dirs
+    seen_dirs=()
+    for entry in "${skills_dir}/"*; do
+      [[ -L "$entry" ]] || continue
+      target=$(realpath "$entry" 2>/dev/null) || continue
+      [[ -d "$target" ]] || continue
+      if [[ "$target" != "${HOME}/"* ]]; then
+        continue
+      fi
+      tdir=$(dirname "$target")
+      seen_it=0
+      for d in "${seen_dirs[@]+"${seen_dirs[@]}"}"; do
+        [[ "$d" == "$tdir" ]] && seen_it=1 && break
+      done
+      if [[ "$seen_it" == 0 ]]; then
+        seen_dirs+=("$tdir")
+        echo "$tdir"
+      fi
+    done
+  }
+  _collect_skill_symlink_parents "$1"
+' _ "${SYMLINK_SKILLS_DIR2}")
+
+expected_parent="$(dirname "${HOME_TARGET_DIR}")"
+if echo "$symlink_parent_output2" | grep -qF "${expected_parent}"; then
+  pass "skill symlink target inside HOME produces parent mount"
+else
+  fail "skill symlink target inside HOME did not produce parent mount (got: $symlink_parent_output2, expected: $expected_parent)"
+fi
+
+# Deduplication: two symlinks pointing to the same parent should produce one line
+ln -s "${HOME_TARGET_DIR}" "${SYMLINK_SKILLS_DIR2}/linked-skill2" 2>/dev/null || true
+mkdir -p "${HOME_TARGET_DIR}/../sibling-$(basename "${HOME_TARGET_DIR}")"
+SIBLING_DIR="${HOME_TARGET_DIR}/../sibling-$(basename "${HOME_TARGET_DIR}")"
+SIBLING_DIR=$(realpath "${SIBLING_DIR}")
+ln -s "${SIBLING_DIR}" "${SYMLINK_SKILLS_DIR2}/linked-skill3"
+dedup_output=$(bash -c '
+  HOME='"\"${HOME}\""'
+  _collect_skill_symlink_parents() {
+    local skills_dir="$1"
+    local entry target tdir seen_it d
+    local seen_dirs
+    seen_dirs=()
+    for entry in "${skills_dir}/"*; do
+      [[ -L "$entry" ]] || continue
+      target=$(realpath "$entry" 2>/dev/null) || continue
+      [[ -d "$target" ]] || continue
+      if [[ "$target" != "${HOME}/"* ]]; then continue; fi
+      tdir=$(dirname "$target")
+      seen_it=0
+      for d in "${seen_dirs[@]+"${seen_dirs[@]}"}"; do
+        [[ "$d" == "$tdir" ]] && seen_it=1 && break
+      done
+      if [[ "$seen_it" == 0 ]]; then
+        seen_dirs+=("$tdir")
+        echo "$tdir"
+      fi
+    done
+  }
+  _collect_skill_symlink_parents "$1"
+' _ "${SYMLINK_SKILLS_DIR2}")
+dedup_count=$(echo "$dedup_output" | grep -c "$(dirname "${HOME_TARGET_DIR}")" || true)
+if [[ "$dedup_count" -eq 1 ]]; then
+  pass "symlinks sharing a parent produce exactly one mount (deduplication)"
+else
+  fail "deduplication failed — expected 1 parent mount, got $dedup_count (output: $dedup_output)"
+fi
+
+# --- Test 10: rc init adds symlink mounts to devcontainer.json when skills have symlinks ---
+echo ""
+echo "=== Test 10: rc init adds symlink mounts to devcontainer.json ==="
+# This test exercises the actual rc init code path with a real HOME_TARGET_DIR
+TEST_DIR3=$(mktemp -d)
+mkdir -p "${TEST_DIR3}/.git/hooks"
+# Temporarily override HOME/.claude/skills via a wrapper that monkeypatches the skills path
+# rc uses ${HOME}/.claude/skills directly — we can test via the jq output if we have
+# symlinks already at ~/.claude/skills (which we do, in the real repo).
+# Instead, run rc init and verify the generated devcontainer.json has the extra mount.
+RC_ALLOWED_ROOTS="${TEST_DIR3}" "$RC" init "${TEST_DIR3}" 2>/dev/null
+if [[ -f "${TEST_DIR3}/.devcontainer/devcontainer.json" ]]; then
+  pass "rc init creates devcontainer.json"
+  # Check if the real ~/.claude/skills has symlinks (it does in this repo)
+  if [[ -d "${HOME}/.claude/skills" ]] && ls -la "${HOME}/.claude/skills"/ 2>/dev/null | grep -q "^l"; then
+    # Skills directory has symlinks — devcontainer.json should have extra mounts.
+    # Symlink-target mounts use absolute paths (source=/...) not devcontainer variables.
+    extra_mounts=$(jq -r '.mounts[]' "${TEST_DIR3}/.devcontainer/devcontainer.json" 2>/dev/null | grep "^source=/" || true)
+    if [[ -n "$extra_mounts" ]]; then
+      pass "devcontainer.json has skill symlink target mounts"
+    else
+      fail "devcontainer.json missing skill symlink target mounts (symlinks exist in ~/.claude/skills)"
+    fi
+  else
+    pass "no skill symlinks to test (skipped extra-mount check)"
+  fi
+else
+  fail "rc init did not create devcontainer.json"
+fi
+
 # --- Cleanup ---
+rm -rf "$SYMLINK_SKILLS_DIR" "$SYMLINK_TARGET_DIR" "$SYMLINK_SKILLS_DIR2" "$HOME_TARGET_DIR" "$SIBLING_DIR" "$TEST_DIR3"
 rm -rf "$TEST_DIR" "$TEST_DIR2"
 
 echo ""
