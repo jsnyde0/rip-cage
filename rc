@@ -262,6 +262,24 @@ DEVCONTAINER_FOOTER_EMBEDDED
     fi
   } > "$dest"
 
+  # Resolve skill symlinks in devcontainer.json — same logic as cmd_up.
+  # Skills stored as host symlinks become broken inside the container; mount
+  # each symlink-target parent at the same absolute path to fix this.
+  if [[ -d "${HOME}/.claude/skills" ]] && command -v jq &>/dev/null; then
+    local _init_extra_mounts
+    _init_extra_mounts=()
+    local _init_tdir
+    while IFS= read -r _init_tdir; do
+      _init_extra_mounts+=("source=${_init_tdir},target=${_init_tdir},type=bind,readonly")
+    done < <(_collect_skill_symlink_parents "${HOME}/.claude/skills")
+    if [[ "${#_init_extra_mounts[@]}" -gt 0 ]]; then
+      local _extra_json
+      _extra_json=$(printf '%s\n' "${_init_extra_mounts[@]}" | jq -R . | jq -s .)
+      jq ".mounts += ${_extra_json}" "$dest" > "${dest}.tmp"
+      mv "${dest}.tmp" "$dest"
+    fi
+  fi
+
   echo "Created ${dest}"
 }
 
@@ -505,6 +523,38 @@ _up_detect_worktree() {
   fi
 }
 
+# _collect_skill_symlink_parents — print unique parent dirs of skill symlink targets.
+#
+# Skills stored as host symlinks (e.g. pointing to a monorepo) become broken
+# symlinks inside containers because the target paths don't exist. To fix this,
+# we mount each symlink target's parent directory at the same absolute path,
+# so symlinks resolve correctly inside the container.
+#
+# Parameters:
+#   $1  skills_dir — the skills directory to scan (e.g. ~/.claude/skills)
+# Output: one resolved parent path per line (deduplicated)
+_collect_skill_symlink_parents() {
+  local skills_dir="$1"
+  local entry target tdir seen_it
+  local seen_dirs
+  seen_dirs=()
+  for entry in "${skills_dir}/"*; do
+    [[ -L "$entry" ]] || continue
+    target=$(realpath "$entry" 2>/dev/null) || continue
+    [[ -d "$target" ]] || continue
+    tdir=$(dirname "$target")
+    seen_it=0
+    local d
+    for d in "${seen_dirs[@]:-}"; do
+      [[ "$d" == "$tdir" ]] && seen_it=1 && break
+    done
+    if [[ "$seen_it" == 0 ]]; then
+      seen_dirs+=("$tdir")
+      echo "$tdir"
+    fi
+  done
+}
+
 # _up_prepare_docker_mounts — build the mount (-v) portion of run_args.
 #
 # Globals read:    wt_detected, wt_name, wt_main_git (set by _up_detect_worktree)
@@ -557,6 +607,14 @@ _up_prepare_docker_mounts() {
   # Staged via .rc-context/ so init-rip-cage.sh can symlink them into ~/.claude/
   if [[ -d "${HOME}/.claude/skills" ]]; then
     _UP_RUN_ARGS+=(-v "${HOME}/.claude/skills:/home/agent/.rc-context/skills:ro")
+    # Resolve skill symlinks: skills stored as host symlinks (e.g. pointing to a
+    # monorepo) become broken symlinks inside the container because target paths
+    # don't exist there. Mount each unique symlink-target parent at the same
+    # absolute path so those symlinks resolve correctly.
+    local _skill_tdir
+    while IFS= read -r _skill_tdir; do
+      _UP_RUN_ARGS+=(-v "${_skill_tdir}:${_skill_tdir}:ro")
+    done < <(_collect_skill_symlink_parents "${HOME}/.claude/skills")
   fi
   if [[ -d "${HOME}/.claude/commands" ]]; then
     _UP_RUN_ARGS+=(-v "${HOME}/.claude/commands:/home/agent/.rc-context/commands:ro")
@@ -861,7 +919,13 @@ cmd_up() {
       elif [[ -d "${path}/.git/hooks" ]]; then
         echo "Would mount .git/hooks -> /workspace/.git/hooks:ro (D11)"
       fi
-      [[ -d "${HOME}/.claude/skills" ]] && echo "Would mount ~/.claude/skills -> /home/agent/.rc-context/skills:ro"
+      if [[ -d "${HOME}/.claude/skills" ]]; then
+        echo "Would mount ~/.claude/skills -> /home/agent/.rc-context/skills:ro"
+        local _dry_tdir
+        while IFS= read -r _dry_tdir; do
+          echo "Would mount ${_dry_tdir} -> ${_dry_tdir}:ro (skill symlink target)"
+        done < <(_collect_skill_symlink_parents "${HOME}/.claude/skills")
+      fi
       [[ -d "${HOME}/.claude/commands" ]] && echo "Would mount ~/.claude/commands -> /home/agent/.rc-context/commands:ro"
       [[ "$would_action" != "would_attach" ]] && echo "Would run init script"
     fi
