@@ -200,38 +200,22 @@ PYTHON
   fi
 
   # 8. settings.json registers server as "meta-skill" (ADR-002 D18: name matches host)
-  mcp_key=$(jq -r '.mcpServers | keys[0]' "${HOME}/.claude/settings.json" 2>/dev/null || echo "")
-  check "MCP server registered as meta-skill" \
-    "$([[ "${mcp_key}" == "meta-skill" ]] && echo pass || echo fail)" \
-    "${mcp_key:-missing}"
-
-else
-  # -----------------------------------------------------------------------
-  # Branch A: Native filesystem discovery (no MCP server)
-  # -----------------------------------------------------------------------
-  echo "-- Native Filesystem Discovery (Branch A) --"
-  echo "   (no mcpServers in settings.json — relying on Claude Code native discovery)"
-  echo ""
-
-  # 4. ~/.claude/skills/ is a real directory, not a symlink
-  #    Direct bind-mount required for native discovery (staging via symlink is insufficient)
-  if [[ -d "${skills_dir}" ]] && [[ ! -L "${skills_dir}" ]]; then
-    check "~/.claude/skills/ is real directory (not symlink)" "pass"
-  elif [[ -L "${skills_dir}" ]]; then
-    target=$(readlink "${skills_dir}" 2>/dev/null || echo "?")
-    check "~/.claude/skills/ is real directory (not symlink)" "fail" "symlink → ${target}"
+  if jq -e '.mcpServers["meta-skill"]' "${HOME}/.claude/settings.json" >/dev/null 2>&1; then
+    check "MCP server registered as meta-skill" "pass" "meta-skill found in mcpServers"
   else
-    check "~/.claude/skills/ is real directory (not symlink)" "fail" "directory missing"
+    check "MCP server registered as meta-skill" "fail" "meta-skill not found in mcpServers"
   fi
 
-  # Branch A validation note:
-  # Automated testing cannot verify that Claude Code discovers skills from the filesystem —
-  # that requires an interactive Claude Code session. After confirming test 4 passes,
-  # manually validate by starting 'claude' and running a skill (e.g. /send-it).
-  # See: history/2026-04-14-skills-in-containers-design.md — Spike 1
+else
+  # Branch A (native filesystem discovery) is eliminated — Claude Code requires the MCP server.
+  # If we reach here, mcpServers["meta-skill"] is not configured and skill discovery will not work.
+  echo "-- MCP Skill Server (Branch B) -- MISSING CONFIGURATION --"
   echo ""
-  echo "  NOTE: Branch A automated checks are limited. After this test passes, validate"
-  echo "        manually: start 'claude' inside this container and invoke a skill."
+  check "MCP server configured (meta-skill)" "fail" \
+    "mcpServers.meta-skill not configured — skill discovery will not work"
+  check "MCP initialize handshake" "fail" "no MCP server configured"
+  check "MCP tools/list exposes list tool" "fail" "no MCP server configured"
+  check "MCP tools/call list returns skills" "fail" "no MCP server configured"
 fi
 
 echo ""
