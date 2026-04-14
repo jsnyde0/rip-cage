@@ -379,10 +379,12 @@ Mount `~/.claude/skills/` and `~/.claude/commands/` from the host into the
 container read-only. This gives the agent inside the container access to the
 same Claude Code skills and slash commands as the host user.
 
-**Mount path:** Direct bind-mount to `/home/agent/.claude/skills` and
-`/home/agent/.claude/commands`. Dockerfile pre-creates these directories with
-agent ownership to avoid Docker's root-owned-directory problem. The `:ro` flag
-is invariant.
+**Mount path:** `rc` mounts to `/home/agent/.rc-context/skills` and
+`/home/agent/.rc-context/commands` (the `.rc-context/` staging pattern used
+for all host context files). `init-rip-cage.sh` symlinks these to
+`~/.claude/skills` and `~/.claude/commands` so Claude Code finds them at the
+expected path. Dockerfile pre-creates `~/.claude/` with agent ownership.
+The `:ro` flag is invariant.
 
 **Symlink handling:** Skills that are symlinks on the host (e.g., pointing to
 `~/code/mapular/platform/skills/send-it/`) will appear as broken symlinks inside
@@ -435,10 +437,15 @@ as `mcpServers.meta-skill` with `command: python3`.
 
 **Implementation notes:**
 - Stderr for all debug logging (stdout is the protocol channel)
-- ANSI sanitization before JSON-RPC responses (escape codes corrupt JSON)
+- ANSI sanitization for SKILL.md content in `show`/`load` responses (escape codes corrupt JSON)
 - Scan-once startup caching (build in-memory index, serve from memory)
-- Graceful broken symlink handling (skip + stderr log, do not crash)
-- Crash resilience: top-level try/except in main loop, log and continue
+- Broken symlink detection via `path.is_file()` — `Path.resolve()` does not raise on Python 3.11
+- Crash resilience: top-level try/except in main loop, log and continue; exit only on stdin EOF/SIGTERM
+- JSON parse errors on stdin are logged and skipped, never crash the server
+- Wire format matches `ms` exactly (response format probed 2026-04-14; see design doc §"ms Wire Format")
+
+**settings.json merge gap:** The init-time overwrite means project-level `mcpServers`
+entries are lost. Pre-existing limitation, out of scope for this decision.
 
 **Upgrade path:** When `ms` publishes Linux binaries, add the binary to the
 Dockerfile and swap `command`/`args` in `settings.json` (`python3

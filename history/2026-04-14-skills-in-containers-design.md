@@ -38,12 +38,15 @@ The container's `settings.json` (`/etc/rip-cage/settings.json`) has no
 `mcpServers` block. `ms` is not in the container. Skills are mounted but
 invisible.
 
-**What `ms mcp serve` exposes** (probed live):
+**What `ms mcp serve` exposes** (probed live 2026-04-14):
 - Protocol: MCP 2024-11-05, tools-only (no resources, no prompts)
-- 11 tools: `list`, `show`, `load`, `search`, `suggest`, `validate`, `lint`,
-  `index`, `feedback`, `evidence`, `config`
+- 12 tools: `list`, `show`, `load`, `search`, `suggest`, `validate`, `lint`,
+  `index`, `feedback`, `evidence`, `config`, `doctor`
 - Claude Code uses at minimum: `list` (discovery at startup) and `load`/`show`
   (content injection at invocation)
+- `notifications/initialized`: `ms` returns an error response (without `id`);
+  the correct behavior per the MCP spec is to silently discard notifications —
+  our shim does not respond to them
 
 **Why `ms` can't simply be installed in the image:**
 - `ms` is macOS arm64 only
@@ -175,23 +178,47 @@ CI/headless environments. Not viable as a general solution.
   unimplemented tools (`suggest`, `feedback`, etc.)
 - **Long-lived process** — MCP stdio servers start once per session, not per
   invocation; Python startup time is irrelevant
-- **Notifications must be silently discarded** — MCP requires the client to send
-  a `notifications/initialized` notification after `initialize` and before any
-  `tools/list` call. This is a JSON-RPC notification (no `id` field, no response
-  expected). The server must discard messages without an `id` field rather than
-  treating them as unknown requests.
+- **Notifications must be silently discarded** — MCP notifications have no `id`
+  field and require no response. Claude Code sends `notifications/initialized`
+  after `initialize` and may send `notifications/cancelled` or others later.
+  Discard ALL messages without an `id` field; do not respond. Note: `ms` itself
+  returns an error response for notifications (a minor spec deviation); our shim
+  is stricter and correct.
+- **JSON parse errors** — malformed or partial JSON on stdin is logged to stderr
+  and the line is skipped with no response. This is distinct from valid JSON with
+  unexpected fields (handled by notification/stub logic). A partial line or binary
+  garbage on stdin must be caught before the JSON-RPC dispatch logic.
 - **Stderr for debug logs** — stdout is the protocol channel; any debug output
   on stdout corrupts JSON-RPC responses. All logging goes to stderr.
-- **ANSI sanitization** — sanitize any text content before embedding in JSON-RPC
-  responses. Terminal escape codes in SKILL.md content will break JSON parsing.
+- **ANSI sanitization** — strip ANSI escape codes from SKILL.md file content
+  before embedding in `show`/`load` responses. Skill names and description fields
+  from frontmatter are controlled strings and do not require sanitization.
 - **Scan-once caching** — enumerate `~/.claude/skills/*/SKILL.md` at startup,
   build an in-memory index, serve from memory. Avoids per-call filesystem hits.
-- **Broken symlink handling** — skills that are symlinks on host pointing to
-  paths not present in the container will appear as broken symlinks. Skip these
-  gracefully (log to stderr, do not crash).
+  Skills added or removed on the host after the server starts are not visible
+  until the next Claude Code session (which restarts the server). This is
+  acceptable: skill authoring happens on the host, not inside the container.
+- **Broken symlink handling** — `~/.claude/skills/` is itself a symlink
+  (init-rip-cage.sh creates it pointing to `.rc-context/skills/`). Skills inside
+  that directory may be further symlinks (host skills pointing to monorepo paths).
+  After globbing `~/.claude/skills/*/SKILL.md`, check `path.is_file()` for each
+  match. Entries where `is_file()` returns `False` (broken symlinks, dangling
+  paths) are skipped with a stderr log. Do NOT rely on `Path.resolve()` raising
+  an exception — on Python 3.11 (Debian bookworm), `resolve()` succeeds on broken
+  symlinks without raising.
+- **Process exit** — the server exits only on stdin EOF (normal session end) or
+  SIGTERM. All other errors (malformed JSON, tool dispatch failures, broken skill
+  files) are handled within the main loop and logged to stderr. If the server
+  exits unexpectedly, Claude Code marks `meta-skill` as unavailable for the rest
+  of the session — skills become inaccessible with no recovery path short of
+  restarting the Claude Code session. This is a known failure mode.
 - **Crash resilience** — the main read loop must be wrapped in a top-level
   `try/except` that logs to stderr and continues rather than exiting. An
   unhandled exception on malformed input must not terminate the server.
+- **python3 availability** — the `init-rip-cage.sh` check for `command -v python3`
+  must be a hard error (`exit 1`), not a warning. A missing Python3 means skill
+  discovery is completely broken; the container should fail fast rather than
+  silently degrading.
 - **ADR-006 exception** — ADR-006 D6 defers "custom MCP servers inside
   containers" to Phase 2+. `skill-server.py` is an infrastructure shim (it
   replaces a missing host binary, not a custom agent tool), and falls within
@@ -199,15 +226,22 @@ CI/headless environments. Not viable as a general solution.
 
 ### Protocol Flow
 
+`tools/call` is a single MCP method. The tool name is in `params.name`:
+
 ```
-Initialize → [client sends notifications/initialized, server discards] → tools/list
-tools/call: list   → return skills from in-memory index (built at startup)
-                     returns [] (empty array) when no skills are present — not an error
-tools/call: show   → read full SKILL.md for named skill
-tools/call: load   → alias for show
-tools/call: search → substring match over skill names/descriptions (in-memory)
-tools/call: *      → return empty success for all other tools
+Initialize → [client sends notifications/initialized, server silently discards] → tools/list
+
+tools/call  params.name="list"   → return skills from in-memory index (built at startup)
+                                   returns {"count":0,"skills":[]} when no skills — not an error
+tools/call  params.name="show"   → read full SKILL.md for named skill (by id or name)
+tools/call  params.name="load"   → identical to show
+tools/call  params.name="search" → case-insensitive substring match over skill names/descriptions
+tools/call  params.name="*"      → return empty success for all other tools
 ```
+
+Unknown skill name in `show`/`load`: return a success response with `isError: true`
+and a text content block "Skill not found: {name}". This matches `ms` behavior and
+gives the agent actionable feedback.
 
 Frontmatter parsing via regex (no yaml library needed):
 ```python
@@ -217,6 +251,49 @@ m = re.match(r'^---\n(.*?)\n---', content, re.DOTALL)
 
 MCP stdio transport uses newline-delimited JSON (one message per line). Not
 HTTP Content-Length framing.
+
+### ms Wire Format (Probed 2026-04-14)
+
+Responses confirmed by probing `ms mcp serve` live. The shim must match these
+exactly — mismatched format means Claude Code ignores the response.
+
+**`list` response** (`tools/call` with `params.name="list"`):
+```json
+{
+  "content": [{
+    "type": "text",
+    "text": "{\"count\": 2, \"skills\": [{\"id\": \"asana\", \"name\": \"asana\", \"description\": \"...\", \"layer\": \"project\"}]}"
+  }]
+}
+```
+The `text` field contains a JSON-encoded string. Skill `id` = directory name (shim
+uses the directory name as both `id` and `name`). Empty result when no skills:
+`{"count": 0, "skills": []}`.
+
+**`show`/`load` response** (skill found):
+```json
+{
+  "content": [{
+    "type": "text",
+    "text": "{\"content\": \"---\\nname: asana\\n...\\n<full SKILL.md text>\\n\"}"
+  }]
+}
+```
+The `text` field is a JSON-encoded object containing the full SKILL.md as the
+`content` field. Not raw markdown — it is JSON-in-text. The skill is looked up
+by the `id` field (i.e., directory name) from the `list` response.
+
+**`show`/`load` error response** (skill not found):
+```json
+{
+  "content": [{"type": "text", "text": "Skill not found: asana"}],
+  "isError": true
+}
+```
+
+**Tool lookup:** Claude Code calls `show`/`load` with the `id` value from the
+`list` response. The shim uses the skill directory name as the id. Lookup by
+exact id match; optionally also accept name match for robustness.
 
 ### Wired Up in `settings.json`
 
@@ -247,9 +324,13 @@ path doesn't exist in the container's filesystem namespace.
 Two mitigations:
 
 1. **`skill-server.py` handles gracefully (required):** When building the
-   in-memory index at startup, skip any entry where `Path.resolve()` fails or
-   `SKILL.md` is unreadable. Log the skip to stderr. This prevents crashes and
-   gives useful diagnostics.
+   in-memory index at startup, glob `~/.claude/skills/*/SKILL.md` and check
+   `path.is_file()` for each match. Entries where `is_file()` returns `False`
+   (broken symlinks, dangling paths) are skipped with a stderr log. Do not
+   rely on `Path.resolve()` raising an exception — on Python 3.11 it returns
+   a path to a non-existent target without raising, which would silently
+   include broken-symlink skills in the index, then crash or return empty
+   content at `show`/`load` time.
 
 2. **`rc` resolves symlinks before mounting (optional, better UX):** If `rc`
    detects that `~/.claude/skills/<name>` is a symlink, it can mount the
@@ -312,19 +393,26 @@ are all unchanged.
 
 ## File Changes
 
-| Action | File |
-|--------|------|
-| Create | `skill-server.py` |
-| Modify | `Dockerfile` (COPY skill-server.py) |
-| Modify | `settings.json` (add `mcpServers` block) |
-| Modify | `init-rip-cage.sh` (add `command -v python3` warning per ADR-005 D5 point 2) |
-| Modify | `CLAUDE.md` (document skill availability in containers, per ADR-005 D5 point 3) |
-| Update | `docs/decisions/ADR-002-rip-cage-containers.md` (D17 revised, D18 new) |
-| Update | `docs/decisions/ADR-006-multi-agent-architecture.md` (amend D6-deferred carve-out) |
+| Action | File | Notes |
+|--------|------|-------|
+| Create | `skill-server.py` | Placed at `/usr/local/lib/rip-cage/`; COPY'd before `USER agent` directive |
+| Modify | `Dockerfile` | COPY `skill-server.py` to `/usr/local/lib/rip-cage/` alongside existing files (before `USER agent` line 82). Add to the existing `chmod` block if needed — `python3 skill-server.py` does not require the execute bit |
+| Modify | `settings.json` | Add `mcpServers` block |
+| Modify | `init-rip-cage.sh` | Add `command -v python3 \|\| { echo "ERROR: python3 not found ..."; exit 1; }` per ADR-005 D5 point 2. This must be a **hard error** (exit 1) — a missing Python3 means skill discovery is completely broken |
+| Modify | `test-skills.sh` | (1) Check 8: use `jq -e '.mcpServers["meta-skill"]'` instead of `jq -r 'keys[0]'` (robust against future MCP server additions). (2) Branch A fallback: change from silent degradation to `FAIL` with "mcpServers.meta-skill not configured — skill discovery will not work" — Branch A is an eliminated alternative, not a supported path |
+| Modify | `CLAUDE.md` | Document skill availability in containers, per ADR-005 D5 point 3 |
+| Update | `docs/decisions/ADR-002-rip-cage-containers.md` | D17 revised (mount path corrected), D18 updated |
+| Update | `docs/decisions/ADR-006-multi-agent-architecture.md` | D6-deferred carve-out (already done 2026-04-14) |
 
 Branch B does not modify `rc` — symlink resolution is a follow-on improvement
 (tracked separately), not a blocker for initial implementation.
 
+**settings.json merge gap:** The init-time overwrite means any project-level
+`mcpServers` entries are lost. This is a pre-existing limitation. If it becomes
+a real blocker, `init-rip-cage.sh` should merge `mcpServers` from the project's
+settings into the container's settings rather than overwriting.
+
 **Note on file paths:** These paths assume current repo layout. If ADR-009 D4
 (moving test scripts to `tests/`) lands before this change, adjust the
 Dockerfile COPY source for `test-skills.sh` accordingly.
+
