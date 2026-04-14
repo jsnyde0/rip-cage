@@ -10,7 +10,7 @@ The repo works well but the first-user experience has too much friction and the 
 
 1. **Positioning is generic.** "A Docker-based sandbox for running Claude Code agents safely" doesn't tell you *why you'd want this* or *when to reach for it*.
 
-2. **Too many steps to first use.** Clone → `rc build` (5-10 min) → export env var → `rc up .`. Three commands before you see anything work.
+2. **Too many steps to first use.** Clone → `rc build` (5-10 min) → export env var → `rc up`. Three commands before you see anything work.
 
 3. **Too many concepts upfront.** The README presents devcontainers, CLI mode, worktrees, the full CLI reference, auth internals, and the safety stack in one scroll. A new user has to parse all of it to find the happy path.
 

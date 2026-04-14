@@ -109,8 +109,45 @@ Agent-facing features (`--output json`, `--dry-run`, container naming rules) liv
 
 **What would invalidate this:** If users frequently need `destroy` or `ls` in normal flow. Current evidence: the primary user never uses these manually — agents handle container lifecycle.
 
+### D7: Zero-config first run via `rc.conf` auto-generation
+
+**Firmness: FIRM**
+
+When `RC_ALLOWED_ROOTS` is unset and stdin is a TTY, prompt the user once:
+
+```
+rip-cage: no allowed roots configured.
+Allow projects under [$HOME]: 
+```
+
+Default is `$HOME`. User confirms or types a narrower path. Written to
+`~/.config/rip-cage/rc.conf`. Operation continues immediately. One-time only.
+
+When stdin is not a TTY (agent, pipe, `--output json`): auto-allow only the exact
+requested path (minimum grant), warn to stderr, do not write config.
+
+See [zero-config first-run design](../../docs/2026-04-13-zero-config-first-run-design.md).
+
+**Rationale:** The remaining first-run step after D2 (auto-build) is `RC_ALLOWED_ROOTS`
+configuration. The interactive prompt removes it without weakening the security model:
+humans get a guided one-time setup; agents get minimum-grant access unless they've
+configured `RC_ALLOWED_ROOTS` explicitly (which they should). The allowlist model
+(ADR-003 D3) is preserved — this only changes the "unset" default behavior.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Interactive prompt (current)** | User makes explicit choice; rc.conf written once | Adds TTY detection code path |
+| Silent default to `$HOME` | Simpler code | No user awareness; `rc.conf` never created |
+| Keep "must be explicit" | Maximum strictness | Blocks every new user; no practical security gain |
+| Homebrew tap | Eliminates clone+symlink too | Requires versioned releases first |
+
+**What would invalidate this:** If the interactive prompt causes confusion (users not
+understanding what "allowed roots" means). Mitigated by the prompt phrasing ("Allow
+projects under") which conveys meaning without requiring prior knowledge of the term.
+
 ## Deferred
 
 - **GHCR auto-pull** — Pull pre-built image instead of building locally. Depends on GHCR infra being stable (ADR-008 D6). Auto-build is the bridge.
-- **`rc.conf` auto-generation** — Prompt user for allowed roots on first run instead of requiring manual export. Nice UX but adds interactive complexity.
 - **Homebrew tap** — Would eliminate the clone+symlink install step entirely. Requires versioned releases working first.

@@ -52,22 +52,47 @@ Add `--dry-run` to `rc up` and `rc destroy`. Runs all validation, reports what w
 
 ### D3: Input hardening with allowed roots
 
-**Firmness: FIRM**
+**Firmness: FIRM** (allowlist model); **FLEXIBLE** (default behavior)
 
-Validate all path arguments against an allowed-roots list. No default roots — `RC_ALLOWED_ROOTS` env var (colon-separated absolute paths) must be set explicitly. Reject paths with control characters, null bytes, or that resolve (via `realpath`, which follows symlinks — this is security-critical) outside allowed roots.
+Validate all path arguments against an allowed-roots list. Reject paths with control
+characters, null bytes, or that resolve (via `realpath`, which follows symlinks —
+security-critical) outside allowed roots.
 
-**Rationale:** The article emphasizes that "agents make predictable hallucination errors" and the CLI must be the last line of defense. `rc up` takes an arbitrary path and bind-mounts it into a container — an agent hallucinating `/etc` or `~/.ssh` as a project path would expose sensitive host files. Allowed roots constrain the blast radius to known project directories.
+**Default behavior when `RC_ALLOWED_ROOTS` is unset:**
+
+- **Interactive (TTY):** prompt the user once, default `$HOME`, write to
+  `~/.config/rip-cage/rc.conf`. Operation continues immediately. One-time only.
+- **Non-interactive (no TTY, agent, `--output json`):** auto-allow only the exact
+  resolved path requested (minimum necessary grant); warn to stderr; do not write config.
+
+See [zero-config first-run design](../../docs/2026-04-13-zero-config-first-run-design.md).
+
+**Rationale:** The article emphasizes that "agents make predictable hallucination errors"
+and the CLI must be the last line of defense. `rc up` takes an arbitrary path and
+bind-mounts it into a container — an agent hallucinating `/etc` or `~/.ssh` would expose
+sensitive host files. Allowed roots constrain the blast radius to known project
+directories.
+
+The original "must be set explicitly" stance was stricter than necessary for the actual
+threat model (agent hallucinations, not sophisticated adversaries). Industry tools (Docker
+Desktop, Lima, Rancher Desktop) all default to `$HOME` — this matches that standard while
+preserving the allowlist guarantee. Non-TTY minimum grant is stricter than the human
+default, which is appropriate: agents calling `rc` programmatically should have
+`RC_ALLOWED_ROOTS` configured; if they don't, they get minimum viable access only.
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **Allowed roots (allowlist)** | Strong guarantee, simple to reason about | Must configure per-user |
+| **Allowlist + TTY prompt (current)** | Zero friction for humans; minimum grant for agents | Prompt adds code path |
+| No default, explicit required | Maximum strictness | Blocks every new user before first use; no practical security gain against hallucinations |
 | Blocked paths (denylist) | No config needed | Easy to miss sensitive paths, bypassable |
+| Default to `$HOME` silently | Simple | No user awareness; `rc.conf` never written |
 | No validation (trust caller) | Zero effort | Agents will hallucinate paths eventually |
-| Symlink resolution + warning | Catches some attacks | Complex, incomplete |
 
-**What would invalidate this:** Container filesystem isolation becomes strong enough that bind-mounting any host path is safe (unlikely — bind mounts bypass container isolation by design).
+**What would invalidate this:** Container filesystem isolation becomes strong enough that
+bind-mounting any host path is safe (unlikely — bind mounts bypass container isolation by
+design).
 
 ### D4: Agent context in CLAUDE.md
 
