@@ -324,9 +324,38 @@ validate_path() {
 
   # Check RC_ALLOWED_ROOTS is set
   if [[ -z "${RC_ALLOWED_ROOTS:-}" ]]; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "RC_ALLOWED_ROOTS not set. Export as colon-separated absolute paths." "PATH_INVALID"
-    echo "Error: RC_ALLOWED_ROOTS not set. Example: export RC_ALLOWED_ROOTS=\$HOME/projects" >&2
-    exit 1
+    if [[ -t 0 ]] && [[ "$OUTPUT_FORMAT" != "json" ]]; then
+      # Interactive: prompt user, write rc.conf, continue
+      local _home
+      _home="$(realpath "$HOME")"
+      local _chosen=""
+      local _attempts=0
+      while [[ $_attempts -lt 3 ]]; do
+        _attempts=$((_attempts + 1))
+        printf "rip-cage: no allowed roots configured.\nAllow projects under [%s]: " "$_home" >&2
+        read -r _input
+        _chosen="${_input:-$_home}"
+        if [[ -d "$_chosen" ]]; then
+          break
+        else
+          printf "rip-cage: '%s' does not exist or is not a directory. Use a full absolute path.\n" "$_chosen" >&2
+          _chosen=""
+        fi
+      done
+      if [[ -z "$_chosen" ]]; then
+        echo "Error: no valid allowed root provided after 3 attempts" >&2
+        exit 1
+      fi
+      mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage"
+      local _conf="${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/rc.conf"
+      printf 'RC_ALLOWED_ROOTS="${RC_ALLOWED_ROOTS:-%s}"\n' "$_chosen" >> "$_conf"
+      RC_ALLOWED_ROOTS="$_chosen"
+    else
+      # Non-interactive (no TTY or --output json): minimum grant for this path only
+      echo "Warning: RC_ALLOWED_ROOTS unset — allowing $resolved only." >&2
+      echo "Set RC_ALLOWED_ROOTS in ~/.config/rip-cage/rc.conf for permanent access." >&2
+      RC_ALLOWED_ROOTS="$resolved"
+    fi
   fi
 
   # Check path is under an allowed root
