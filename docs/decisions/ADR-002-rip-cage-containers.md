@@ -473,6 +473,83 @@ sufficient and forward-compatible.
 releases. At that point, add it to the Dockerfile (same pattern as DCG) and
 replace the Python server command in `settings.json`.
 
+### D19: Mount host agent definitions read-only
+
+**Firmness: FLEXIBLE**
+
+**Added:** 2026-04-14
+**Design:** [Agents in Containers](../../history/2026-04-14-agents-in-containers-design.md)
+
+Mount `~/.claude/agents/` from the host into the container read-only, using
+the same `.rc-context/` staging pattern as D17 (skills and commands). This
+gives agents inside the container access to the same custom subagent types
+(`implementer`, `reviewer`, `code-reviewer`, etc.) as the host user.
+
+**Mount path:** `rc` mounts to `/home/agent/.rc-context/agents`. `init-rip-cage.sh`
+symlinks this to `~/.claude/agents` so Claude Code finds agent definitions at
+the expected path. The `:ro` flag is invariant.
+
+**Symlink handling:** Agent definitions that are symlinks on the host (all six
+current definitions point into `mapular-platform/.claude/agents/`) require
+their symlink-target parent directory to also be bind-mounted. The existing
+`_collect_skill_symlink_parents` function in `rc` handles this — extend it to
+include the `agents` directory.
+
+**Rationale:** Without this mount, `Agent(subagent_type: "implementer")` silently
+degrades to the generic built-in `Agent`. The degradation is invisible — no
+error, just lost behavioral specialization. This is a high-cost silent failure
+for the multi-agent architecture (ADR-006).
+
+**Security posture:** Agent definitions are `.md` instruction files — behavioral
+prompts, not credentials. Mounting `mapular-platform/.claude/agents/` does not
+expose the repo root, `.env` files, or any secrets. Risk profile is identical
+to D17 (skills). See [design doc §Security Analysis](../../history/2026-04-14-agents-in-containers-design.md).
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **Read-only bind mount via .rc-context** | Same pattern as skills, no new infrastructure | Requires spike to confirm filesystem discovery works (see D20) |
+| Mount `~/.claude/` wholesale | Single mount | Conflicts with init-time settings management |
+| Per-container agents allowlist | Finer-grained exposure control | Extra config burden; low-risk content doesn't warrant it |
+| No agent mounting | Simplest | Silent degradation from specialized → generic agent types |
+
+**What would invalidate this:** Agent definitions contain sensitive instructions
+that should not be visible across projects. In that case, introduce an
+`agents_allowlist` in `rc.conf` (same pattern proposed for skills in D17).
+
+### D20: Agent definition discovery mechanism
+
+**Firmness: EXPLORATORY**
+
+**Added:** 2026-04-14
+**Design:** [Agents in Containers §Discovery Mechanism](../../history/2026-04-14-agents-in-containers-design.md)
+
+The discovery mechanism for agent definitions is unknown as of 2026-04-14.
+Skills require an MCP server (D18, Spike 1 confirmed). Whether agents use
+filesystem discovery or also require MCP is unconfirmed.
+
+**Working hypothesis:** Agent definitions are discovered via direct filesystem
+scanning of `~/.claude/agents/` — not via the `ms` MCP server. Rationale: the
+`Agent` tool's `subagent_type` parameter is resolved at tool-call time (not at
+session startup like skills), making a filesystem lookup more likely than a
+pre-built registry.
+
+**Decision:** Attempt filesystem-only mount (D19) first. Run spike inside a
+container: mount agents, call `Agent(subagent_type: "implementer")`, verify
+the agent respects implementer instructions.
+
+- **If spike passes:** Filesystem discovery confirmed. D20 is closed — no MCP
+  shim needed.
+- **If spike fails:** Extend `skill-server.py` to also serve agent definitions,
+  or wait for `ms` to publish a Linux binary that handles both.
+
+**Rationale:** Proven-first approach avoids building MCP infrastructure that
+may be unnecessary. The spike is low-cost (single container run, one tool call).
+
+**What would invalidate this:** Spike confirms agents also require MCP, or a
+future Claude Code version changes the discovery mechanism.
+
 ## Related
 
 - [Rip Cage Design](../2026-03-25-rip-cage-design.md) — full design document
