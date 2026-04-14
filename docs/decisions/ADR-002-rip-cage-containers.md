@@ -373,24 +373,93 @@ The container ships with UTF-8 locale (`LANG=C.UTF-8`), `TERM=xterm-256color`, a
 
 **Firmness: FLEXIBLE**
 
-**Added:** 2026-04-13
+**Added:** 2026-04-13 | **Revised:** 2026-04-14
 
-Mount `~/.claude/skills/` and `~/.claude/commands/` from the host into the container at `/home/agent/.rc-context/skills` and `/home/agent/.rc-context/commands` (read-only), then symlinked into `~/.claude/` by `init-rip-cage.sh`. This gives the agent inside the container access to the same Claude Code skills and slash commands as the host user.
+Mount `~/.claude/skills/` and `~/.claude/commands/` from the host into the
+container read-only. This gives the agent inside the container access to the
+same Claude Code skills and slash commands as the host user.
 
-**Rationale:** Skills and commands are user-authored instruction sets (markdown files, scripts). Without this mount the agent sees an unknown skill error for any `/slash-command` that isn't built into Claude Code. The `:ro` flag preserves the safety-stack model: the container can execute skill logic but cannot modify the host's skill definitions. The `.rc-context/` staging pattern is consistent with how CLAUDE.md files are handled (D6/D9) — raw host files go to staging, init script decides what to link.
+**Mount path:** Currently staged via `.rc-context/` and symlinked by
+`init-rip-cage.sh`. If Spike 1 of D18 confirms native filesystem discovery
+works, the cleaner path is a direct bind-mount to `/home/agent/.claude/skills`
+(Dockerfile pre-creates the directory with agent ownership to avoid Docker's
+root-owned-directory problem). The `:ro` flag is invariant.
 
-**Security posture:** Skills can contain arbitrary instruction text and may reference shell scripts. However, the mount is read-only, user-authored (same trust level as CLAUDE.md), and the agent already has full workspace access. This is distinct from D8 (`.env` mounting refused) because `.env` files contain secrets with external blast radius; skills contain agent instructions with no new secret exposure.
+**Rationale:** Skills and commands are user-authored instruction sets (markdown
+files, scripts). Without this mount the agent sees an unknown skill error.
+The `:ro` flag preserves the safety-stack model: the container can execute
+skill logic but cannot modify the host's skill definitions.
+
+**Security posture:** Skills can contain arbitrary instruction text and may
+reference shell scripts. However, the mount is read-only, user-authored (same
+trust level as CLAUDE.md), and the agent already has full workspace access.
+This is distinct from D8 (`.env` mounting refused) because `.env` files contain
+secrets with external blast radius; skills contain agent instructions with no
+new secret exposure.
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **Read-only bind mount via .rc-context** | Consistent pattern, no secret exposure, live updates | Skills with Python venvs may have host-absolute paths (not usable in container) |
+| **Read-only bind mount (direct or via .rc-context)** | No secret exposure, live updates from host | Skills with host-absolute paths (e.g. Python venvs) won't work in container |
 | Copy into image at build time | No runtime mount needed | Skills change frequently, would require constant rebuilds |
-| Mount `~/.claude/` wholesale | Simpler single mount | Conflicts with init script managing settings.json, projects/, sessions/ inside ~/.claude/ |
+| Mount `~/.claude/` wholesale | Simpler single mount | Conflicts with init script managing settings.json, projects/, sessions/ |
 | No skills support | Simplest | Agent loses access to all user skills |
 
-**What would invalidate this:** Skills contain secrets or sensitive data that should not be exposed inside the container. In that case, introduce a skills allowlist in `rc.conf`.
+**What would invalidate this:** Skills contain secrets or sensitive data that
+should not be exposed inside the container. In that case, introduce a skills
+allowlist in `rc.conf`.
+
+### D18: Skill discovery mechanism in containers
+
+**Firmness: FLEXIBLE** (branch depends on spike results)
+
+**Added:** 2026-04-14
+**Design:** [Skills in Containers](../../history/2026-04-14-skills-in-containers-design.md)
+
+Skills mounted on disk are not automatically discovered by Claude Code. On the
+host, skill discovery is provided by the `ms` (meta-skill) MCP server from
+Anthropic (`github.com/anthropics/ms`). `ms` is macOS arm64 only and not
+publicly released as of 2026-04-14 — it cannot be installed in the container
+image. Two spikes determine the right fix before any implementation.
+
+**Spike 1 (try first):** Pre-create `~/.claude/skills/` in the Dockerfile
+with agent ownership, then bind-mount the host skills directly to that path
+(no `.rc-context/` staging). If Claude Code's native filesystem watcher picks
+it up, no MCP server is needed — this is a cleanup, not a new component.
+
+**Spike 2 (if Spike 1 fails):** Confirm MCP is the required mechanism by
+adding a minimal logging stub as `mcpServers.meta-skill`. If Claude Code sends
+JSON-RPC to it, MCP is confirmed.
+
+**If MCP is required (Spike 2 path):** Ship a minimal Python MCP server
+(`skill-server.py`) in the image — stdlib only, no pip dependencies. Implements
+`list` and `load`/`show` (the tools Claude Code needs), stubs everything else
+as empty-success. Registered in `settings.json` as `mcpServers.meta-skill`
+with `command: python3`.
+
+**Upgrade path:** When `ms` publishes Linux binaries, swap `python3
+skill-server.py` for `/usr/local/bin/ms mcp serve` in `settings.json`. The
+server name and config structure stay identical — one field change.
+
+**Rationale:** `ms` adds semantic search, ranking, and quality scoring on top
+of basic skill file loading. These UX features have no value for agents inside
+containers that invoke skills by exact name. A minimal implementation is
+sufficient and forward-compatible.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **Native filesystem (Spike 1)** | Zero new components, cleanest | Unverified — may not work without MCP |
+| **Minimal Python MCP server (Spike 2 path)** | Cross-platform, self-contained, no binary dependency | Maintains a skill loading shim until `ms` goes public |
+| Mount `ms` binary from host | Works immediately on macOS | macOS-only, hidden coupling to host tooling, not portable |
+| Build `ms` from source in Dockerfile | Self-contained image | `anthropics/ms` repo is private, source not available |
+| Wait for `ms` Linux releases | No new code | Skills broken in containers until then (unacceptable) |
+
+**What would invalidate this:** `ms` publishes a Linux binary via GitHub
+releases. At that point, add it to the Dockerfile (same pattern as DCG) and
+replace the Python server command in `settings.json`.
 
 ## Related
 
