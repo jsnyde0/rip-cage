@@ -162,49 +162,20 @@ Remove from CLAUDE.md:
 
 The human-vs-agent presentation philosophy is now embedded directly in sections 2 (README: humans see `rc up` + `Ctrl-B d` only) and 4 (AGENTS.md: agent behavioral rules; `docs/reference/cli-reference.md`: technical reference). No separate implementation task.
 
-### 6. `rc auth refresh` — credential hot-swap without container restart
-
-**Current:** Credentials are extracted from the macOS Keychain into `~/.claude/.credentials.json` once during `cmd_up` (lines 598-613). The file is bind-mounted read-write into the container (`-v "${HOME}/.claude/.credentials.json:/home/agent/.claude/.credentials.json"`). When a user switches accounts or refreshes auth on the host, the Keychain updates but the file doesn't — the container sees stale credentials until `rc destroy` + `rc up`.
-
-**Discovery:** The bind mount means the file is live-shared. Updating `~/.claude/.credentials.json` on the host propagates instantly to all running containers. The missing piece is just a convenient command to trigger the keychain-to-file extraction.
-
-**Change:**
-
-1. Extract the keychain-to-file logic (lines 598-613 of `rc`) into a helper function `_extract_credentials`.
-2. Add `cmd_auth_refresh` that calls `_extract_credentials` and reports success/failure.
-3. Update `cmd_up` to call `_extract_credentials` instead of inline code (dedup).
-4. On Linux: print a message explaining that credentials must be updated manually at `~/.claude/.credentials.json`.
-
-```bash
-# User switches account on host:
-claude auth login          # updates macOS Keychain
-rc auth refresh            # extracts to file → bind mount propagates to all containers
-
-# Inside container: Claude Code picks up new credentials on next API call
-```
-
-**Edge cases:**
-- `--output json` mode: emit `{"status": "ok", "credentials_updated": true}` or `{"status": "error", "code": "KEYCHAIN_EXTRACTION_FAILED", ...}`.
-- No running containers: still works — updates the file for next `rc up`.
-- Linux: no keychain to extract from. Print: `"On Linux, update ~/.claude/.credentials.json directly. Running containers will see the change immediately via bind mount."`
-
-**Documentation:** Add a "Switching accounts" section to `docs/reference/auth.md`. Mention in README quickstart as a tip (not a required step).
-
 ## Implementation ordering
 
 The 5 changes have dependencies that constrain ordering:
 
 1. **Tests to `tests/`** (section 3) — first. Pure mechanical refactor, no behavior change. All subsequent work uses the new paths.
 2. **Auto-build** (section 1) — second. Small, isolated `rc` code change. Can be implemented and tested independently.
-3. **`rc auth refresh`** (section 6) — third. Small `rc` refactor (extract helper + new command). Independent of docs work.
-4. **README + CLAUDE.md/AGENTS.md dedup** (sections 2 + 4) — together, fourth. They share content — you can't write `docs/reference/auth.md` without knowing what's removed from README AND CLAUDE.md. Doing them separately risks content in limbo (removed from source but not yet in destination). `docs/reference/auth.md` now also covers the credential hot-swap from section 6.
-5. **Zero-config test isolation fix** — depends on step 1 (test files have new paths).
+3. **README + CLAUDE.md/AGENTS.md dedup** (sections 2 + 4) — together, third. They share content — you can't write `docs/reference/auth.md` without knowing what's removed from README AND CLAUDE.md. Doing them separately risks content in limbo (removed from source but not yet in destination).
+4. **Zero-config test isolation fix** — depends on step 1 (test files have new paths).
 
 ## File changes summary
 
 | Action | Files |
 |--------|-------|
-| **Modify** | `rc` (auto-build logic in `cmd_up`, `_extract_credentials` helper, new `cmd_auth_refresh`), `Dockerfile` (COPY source paths for 2 test files), `README.md` (full rewrite), `CLAUDE.md` (dedup + fix stale content), `Makefile` (test paths), `.github/workflows/ci.yml` (test paths), `CONTRIBUTING.md` (test paths + lint command) |
+| **Modify** | `rc` (auto-build logic in `cmd_up`), `Dockerfile` (COPY source paths for 2 test files), `README.md` (full rewrite), `CLAUDE.md` (dedup + fix stale content), `Makefile` (test paths), `.github/workflows/ci.yml` (test paths), `CONTRIBUTING.md` (test paths + lint command) |
 | **Rewrite** | `AGENTS.md` (currently identical to CLAUDE.md → agent-only rules) |
 | **Move** | 14 test files (`test-*.sh` + `test_skill_server.py`) → `tests/` |
 | **Create** | `docs/reference/cli-reference.md`, `docs/reference/auth.md`, `docs/reference/safety-stack.md`, `docs/reference/devcontainer.md`, `docs/reference/whats-in-the-box.md` |
@@ -212,7 +183,7 @@ The 5 changes have dependencies that constrain ordering:
 
 ## What this does NOT change
 
-- The `rc` CLI itself (beyond auto-build and `auth refresh`) — no other commands added or removed
+- The `rc` CLI itself (beyond auto-build) — no commands added or removed
 - The safety stack — DCG, compound blocker, allowlists stay as-is
 - Container behavior — no runtime changes
 - `--output json` / `--dry-run` semantics — agent-facing features stay (auto-build adds new behavior in these modes, documented above)

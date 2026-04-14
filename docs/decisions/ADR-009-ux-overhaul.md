@@ -147,35 +147,6 @@ configured `RC_ALLOWED_ROOTS` explicitly (which they should). The allowlist mode
 understanding what "allowed roots" means). Mitigated by the prompt phrasing ("Allow
 projects under") which conveys meaning without requiring prior knowledge of the term.
 
-### D8: `rc auth refresh` command for credential hot-swap
-
-**Firmness: FIRM**
-
-Add an `rc auth refresh` command that re-extracts OAuth credentials from the macOS Keychain to `~/.claude/.credentials.json`. Because the credentials file is bind-mounted read-write into containers, the update propagates immediately — no container restart or destroy needed.
-
-```bash
-rc auth refresh   # re-extract credentials from keychain → file → all running containers see it
-```
-
-On Linux (no Keychain), print a message directing the user to update `~/.claude/.credentials.json` directly.
-
-**Use case:** User hits usage limits or switches accounts on the host (`/login` or `claude auth login`). The host Keychain is updated but the bind-mounted file is stale. `rc auth refresh` bridges the gap without destroying the container (and its Claude Code session history).
-
-**Implementation:** Extract the existing keychain-to-file logic from `cmd_up` (lines 598-613 of `rc`) into a shared helper `_extract_credentials`. New `cmd_auth_refresh` calls this helper. `cmd_up` also calls the helper (dedup). The command is ~10 lines.
-
-**Rationale:** Destroying a container just to refresh credentials loses the Claude Code session, which is expensive (context, conversation history). The credentials file is already bind-mounted read-write, so the infrastructure for live updates exists — users just need a command to trigger the keychain re-extraction instead of remembering the `security find-generic-password` incantation.
-
-**Alternatives considered:**
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| **`rc auth refresh`** | Simple, no restart, preserves session | New command to learn |
-| **Inotify/fswatch on keychain** | Fully automatic | Complex, platform-specific, brittle |
-| **Document the `security` command** | No code change | User must remember macOS-specific incantation |
-| **`rc destroy` + `rc up`** | Already works | Destroys session history — the whole problem |
-
-**What would invalidate this:** If Claude Code changes to auto-refresh the credentials file on the host when `/login` runs (making the bind-mounted file always current). Currently `/login` updates the Keychain but not the file.
-
 ## Deferred
 
 - **GHCR auto-pull** — Pull pre-built image instead of building locally. Depends on GHCR infra being stable (ADR-008 D6). Auto-build is the bridge.
