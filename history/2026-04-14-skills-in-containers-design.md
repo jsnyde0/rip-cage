@@ -50,130 +50,124 @@ invisible.
 - The `anthropics/ms` GitHub repo is private — no public Linux releases
 - `ms` is not bundled with the `@anthropic-ai/claude-code` npm package
 
-## Open Question: Is MCP Required?
+---
 
-Official docs claim Claude Code discovers skills natively from
-`~/.claude/skills/` without MCP. The empirical evidence (error despite files
-present) contradicts this. Two spikes resolve the ambiguity before building
-anything.
+## Investigation
 
-## Spike 1: Native Filesystem Discovery (30 min)
+### Spike 1 Result: FAILED — MCP Is Required
 
-**Hypothesis:** Claude Code discovers skills from `~/.claude/skills/` via native
-filesystem scanning, without any MCP server.
+**Hypothesis tested:** Claude Code discovers skills from `~/.claude/skills/`
+via native filesystem scanning, without any MCP server.
 
-The current mount method (staging via `.rc-context/` + symlink) is an
-implementation detail that is orthogonal to this hypothesis. Any working mount
-that places `SKILL.md` files at `~/.claude/skills/*/SKILL.md` is sufficient to
-test it. However, pre-creating `~/.claude/skills/` as a real directory in the
-Dockerfile (rather than relying on a symlink) is a worthwhile cleanup regardless
-of spike outcome — it removes an indirection layer. Do both changes together.
+**Setup:**
+- Mounted host `~/.claude/skills/` directly to `/home/agent/.claude/skills:ro`
+  (no symlinks, no `.rc-context/` staging)
+- Dockerfile pre-created `~/.claude/skills/` and `~/.claude/commands/` with
+  agent ownership
+- Verified files readable inside container:
+  `~/.claude/skills/asana/SKILL.md`, `~/.claude/skills/cass/SKILL.md`, etc.
+- Claude Code v2.1.100 inside container
 
-**Changes:**
-1. Add to Dockerfile: `RUN mkdir -p /home/agent/.claude/skills /home/agent/.claude/commands`
-2. Change `rc` to mount directly: `-v "${HOME}/.claude/skills:/home/agent/.claude/skills:ro"`
-3. Remove symlink step from `init-rip-cage.sh` (lines 48–57; retain `.rc-context/` only for CLAUDE.md, lines 33–45)
+**Result:**
+- `/asana` — **worked** (this skill has a registered MCP server in settings.json)
+- `/send-it` — **"Unknown skill"** (filesystem-only, no MCP server)
 
-**Automated test (run after spike):**
-```bash
-rc build && rc up /path/to/project
-rc test <container-name>
-# test-skills.sh check 4 must pass: confirms real directory (not symlink) — validates mount only
-```
-**Manual validation required:** Start `claude` inside the container and invoke a
-skill (e.g., `/send-it`). A working invocation means native discovery works.
-A "Unknown skill" error means MCP is required — proceed to Spike 2.
+**Conclusion:** Claude Code does NOT discover skills from the filesystem.
+The `ms` MCP server (or equivalent) is the required discovery mechanism.
+Native filesystem discovery is not a viable path.
 
-**Result matters:** If native discovery works, proceed to Branch A (trivial, done).
-If "Unknown skill" persists despite files present, proceed to Spike 2.
+**Incidental finding — symlinks:** Skills that are symlinks on the host
+(e.g., `send-it` → `~/code/mapular/platform/...`) appear as **broken symlinks**
+inside the container because the target paths don't exist there. Any solution
+must either resolve symlinks before mounting, or handle broken symlinks gracefully
+at read time.
 
-## Spike 2: MCP Path Validation (30 min)
+### Simple-Cause Theories: Both Ruled Out
 
-If Spike 1 fails, confirm that MCP is the required mechanism and that any
-`mcpServers` entry (not just `ms` specifically) satisfies Claude Code.
+**CLAUDE_CONFIG_DIR environment variable** (GitHub issue #36172): Setting this
+variable (even to `~/.claude`) is documented to break skill discovery. Ruled out:
+grep of entire repo shows zero matches — Dockerfile, `rc`, `init-rip-cage.sh`,
+and `zshrc` never set `CLAUDE_CONFIG_DIR`.
 
-**Add to `settings.json`** (temporarily, for test):
-```json
-"mcpServers": {
-  "meta-skill": {
-    "type": "stdio",
-    "command": "/usr/local/lib/rip-cage/skill-probe.sh",
-    "args": []
-  }
-}
-```
+**YAML frontmatter multi-line descriptions:** Prettier-reformatted multi-line
+description fields were claimed to cause "Unknown skill." Ruled out: the
+`n8n-workflow` skill uses multi-line YAML (block scalar, 8 physical lines) and
+works fine on the host.
 
-**`skill-probe.sh`** (logs all stdin to `/tmp/ms-probe.log`, echoes valid MCP
-responses just enough to not crash). MCP stdio uses newline-delimited JSON:
-```bash
-#!/bin/bash
-while IFS= read -r line; do
-  echo "$line" >> /tmp/ms-probe.log
-  # Respond to initialize only; echo back the request id
-  if echo "$line" | grep -q '"method":"initialize"'; then
-    req_id=$(echo "$line" | jq -r '.id')
-    echo "{\"jsonrpc\":\"2.0\",\"id\":${req_id},\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"probe\",\"version\":\"0.0.1\"}}}"
-  fi
-  # Silently discard notifications (JSON-RPC messages with no "id" field)
-done
-```
+### Competitive Landscape: Nobody Has Built This
 
-**Test:** Start container, run `claude`, attempt a skill, check
-`/tmp/ms-probe.log`. If Claude Code sent JSON-RPC to the probe, MCP is
-confirmed as the mechanism.
+Four projects analyzed — none are viable replacements:
 
-**Also verifies server name sensitivity — run twice:**
-1. First run: `mcpServers.meta-skill` (name matches host)
-2. Second run: rename key to `mcpServers.skill-server` and repeat
+| Project | Status | Why not |
+|---------|--------|---------|
+| K-Dense-AI/claude-skills-mcp (374★) | Abandoned Apr 2026 | Wrong problem (semantic search, not serving); PyTorch + sentence-transformers (~250MB) |
+| jcc-ne/mcp-skill-server (1★) | v0.1.2, 2mo old | Wrong abstraction (executes skills, not serves them); non-stdlib deps |
+| Dicklesworthstone/meta_skill (148★) | Active, Rust | Full platform (Tantivy, SQLite, Thompson sampling); different skill format; not embeddable |
+| Dicklesworthstone/jeffreysprompts.com (98★) | Active, TypeScript | Web-based curation platform; not container skill serving |
 
-If Claude Code only queries `meta-skill`, the name matters and Branch B must
-use that exact key. If it queries any name, either works.
+Community Docker setups (ClaudeBox 1k+★, Docker MCP Toolkit, Anthropic's own
+devcontainer) all skip skills entirely or don't solve the in-container discovery
+problem. GitHub issue #26254 confirms this is a known, unfixed gap.
+
+**Lessons to steal from Dicklesworthstone/meta_skill:**
+- Use stderr for debug logs — stdout is the protocol channel, mixing them corrupts JSON-RPC
+- ANSI sanitization before JSON-RPC responses — terminal escape codes break JSON parsing
+- Three-layer JSON safety: detect → sanitize → validate
+
+**Lessons from jeffreysprompts.com:**
+- Scan-once caching — enumerate at startup, serve from memory rather than hitting disk per call
+
+**ClaudeBox comparison:**
+
+| Aspect | ClaudeBox | rip-cage |
+|--------|-----------|----------|
+| Skills | Not used. Ship **commands** (`~/.claudebox/commands/*.md`) | Mounts `~/.claude/skills/` from host |
+| MCP | No custom servers. `--mcp-config` flag for external configs | Python MCP shim (selected) |
+| Config | Three-tier merge (user/project/local) via `jq` | Single `settings.json` copy on start |
+| Security | Network-level (`iptables` allowlist) | Command-level (DCG + compound blocker) |
+
+ClaudeBox's key insight: commands (`~/.claude/commands/`) work via native
+filesystem discovery — no MCP server needed. They trade progressive disclosure
+(skills loaded on demand) for simplicity (commands always available). Their
+approach is a viable fallback but has meaningful trade-offs (see Option C below).
 
 ---
 
-## Branch A: Direct Bind-Mount (if Spike 1 succeeds)
+## Decision: Python MCP Shim (Branch B)
 
-**This is a cleanup and simplification, not a new component.**
+Branch A (native filesystem discovery) is eliminated by Spike 1.
 
-### Changes
+Three remaining options:
 
-**Dockerfile** — pre-create mount targets:
-```dockerfile
-RUN mkdir -p /home/agent/.claude /home/agent/.claude-state \
-             /home/agent/.claude/skills /home/agent/.claude/commands
-```
+| Option | Description | Verdict |
+|--------|-------------|---------|
+| **B: Python MCP shim** | ~100 lines stdlib Python, replaces `ms` in-container | **Selected** |
+| C: Skills-to-Commands | Transform SKILL.md → command `.md` files at container start | Fallback |
+| D: Host MCP forwarding | Mount host `ms` socket / use `--mcp-config` to delegate | Ruled out |
 
-**`rc`** — mount directly, remove staging:
-```bash
-# Before:
-_UP_RUN_ARGS+=(-v "${HOME}/.claude/skills:/home/agent/.rc-context/skills:ro")
-# After:
-_UP_RUN_ARGS+=(-v "${HOME}/.claude/skills:/home/agent/.claude/skills:ro")
-```
+**Branch B is selected.** It is self-contained (no host dependency), maintains
+full skill UX (progressive disclosure, `/skill-name` invocation, context loaded
+on demand), has a clean one-command upgrade path when `ms` publishes Linux
+binaries, and the protocol surface is small (3 real tools). The ~100 lines of
+stdlib Python is less maintenance burden than the operational complexity of C or D.
 
-Same change for `commands`.
+**Option C rationale (fallback only):** Commands work via native discovery — zero
+MCP infrastructure needed. But they are always pre-loaded into context, which
+bloats context with 50+ skills and removes progressive disclosure. Loses
+`/slash-command` invocation semantics. Use if MCP protocol compliance proves harder
+than expected.
 
-**`init-rip-cage.sh`** — remove symlink steps for skills and commands (lines 48-57).
-The `.rc-context/` pattern is still used for CLAUDE.md files (lines 33–45, which
-don't have a pre-created target directory), so retain it for those.
-
-**`settings.json`** — no change. Native filesystem discovery needs no MCP config.
-
-### Why this is cleaner
-
-Removes an indirection layer (stage → symlink → file) with no corresponding
-benefit. Skills and commands are regular user files, not sensitive config like
-CLAUDE.md — they don't need the staging ceremony.
+**Option D ruled out:** Couples container to a running host process. Breaks in
+CI/headless environments. Not viable as a general solution.
 
 ---
 
-## Branch B: Container-Native Skill Server (if MCP required)
+## Implementation: skill-server.py
 
-**If Spike 2 confirms MCP is the mechanism**, ship a minimal Python MCP server
-in the image.
+### Design Constraints
 
-### Design constraints (from reviewer)
-
+- **Python3 pre-installed** — Dockerfile line ~26 (`apt-get install -y ... python3`).
+  No additional install needed.
 - **Zero pip dependencies** — Python stdlib only (regex for frontmatter,
   json/sys for MCP protocol)
 - **Server named `meta-skill`** — matches host, eliminates a variable
@@ -181,32 +175,37 @@ in the image.
   unimplemented tools (`suggest`, `feedback`, etc.)
 - **Long-lived process** — MCP stdio servers start once per session, not per
   invocation; Python startup time is irrelevant
-- **Python3 is pre-installed** — Dockerfile line ~26 (`apt-get install -y ... python3`).
-  No additional install needed; this is a dependency that is already satisfied.
 - **Notifications must be silently discarded** — MCP requires the client to send
   a `notifications/initialized` notification after `initialize` and before any
   `tools/list` call. This is a JSON-RPC notification (no `id` field, no response
   expected). The server must discard messages without an `id` field rather than
   treating them as unknown requests.
+- **Stderr for debug logs** — stdout is the protocol channel; any debug output
+  on stdout corrupts JSON-RPC responses. All logging goes to stderr.
+- **ANSI sanitization** — sanitize any text content before embedding in JSON-RPC
+  responses. Terminal escape codes in SKILL.md content will break JSON parsing.
+- **Scan-once caching** — enumerate `~/.claude/skills/*/SKILL.md` at startup,
+  build an in-memory index, serve from memory. Avoids per-call filesystem hits.
+- **Broken symlink handling** — skills that are symlinks on host pointing to
+  paths not present in the container will appear as broken symlinks. Skip these
+  gracefully (log to stderr, do not crash).
+- **Crash resilience** — the main read loop must be wrapped in a top-level
+  `try/except` that logs to stderr and continues rather than exiting. An
+  unhandled exception on malformed input must not terminate the server.
 - **ADR-006 exception** — ADR-006 D6 defers "custom MCP servers inside
   containers" to Phase 2+. `skill-server.py` is an infrastructure shim (it
   replaces a missing host binary, not a custom agent tool), and falls within
   the spirit of D18. ADR-006 D6-deferred is amended to carve out this case.
-- **Crash resilience** — The main read loop must be wrapped in a top-level
-  `try/except` that logs to stderr and continues rather than exiting. An
-  unhandled exception on malformed input must not terminate the server.
 
-### `skill-server.py` (stdlib only, ~100 lines)
-
-Placed at `/usr/local/lib/rip-cage/skill-server.py` in the image:
+### Protocol Flow
 
 ```
 Initialize → [client sends notifications/initialized, server discards] → tools/list
-tools/call: list   → enumerate ~/.claude/skills/*/SKILL.md, return id/name/description
+tools/call: list   → return skills from in-memory index (built at startup)
                      returns [] (empty array) when no skills are present — not an error
 tools/call: show   → read full SKILL.md for named skill
 tools/call: load   → alias for show
-tools/call: search → substring match over skill names/descriptions
+tools/call: search → substring match over skill names/descriptions (in-memory)
 tools/call: *      → return empty success for all other tools
 ```
 
@@ -216,7 +215,10 @@ import re
 m = re.match(r'^---\n(.*?)\n---', content, re.DOTALL)
 ```
 
-### Wired up in `settings.json`
+MCP stdio transport uses newline-delimited JSON (one message per line). Not
+HTTP Content-Length framing.
+
+### Wired Up in `settings.json`
 
 ```json
 "mcpServers": {
@@ -236,12 +238,35 @@ session-level settings Claude Code writes to `settings.json` (e.g., granted
 permissions) are reset on restart — a known limitation of the current init
 flow, pre-existing this design and out of scope here.
 
-### What is NOT implemented (intentional stubs)
+### Symlink Resolution
+
+Skills that are symlinks on the host (e.g., `send-it` → `~/code/mapular/platform/skills/send-it/`)
+will appear as broken symlinks inside the container because the symlink target
+path doesn't exist in the container's filesystem namespace.
+
+Two mitigations:
+
+1. **`skill-server.py` handles gracefully (required):** When building the
+   in-memory index at startup, skip any entry where `Path.resolve()` fails or
+   `SKILL.md` is unreadable. Log the skip to stderr. This prevents crashes and
+   gives useful diagnostics.
+
+2. **`rc` resolves symlinks before mounting (optional, better UX):** If `rc`
+   detects that `~/.claude/skills/<name>` is a symlink, it can mount the
+   resolved target directory instead of the symlink. This makes all skills
+   available regardless of how they're organized on the host. This is a
+   follow-on improvement — not required for initial implementation.
+
+The test script (`test-skills.sh`) validates that at least one skill is readable;
+broken-symlink skills that get skipped will naturally fail this check if they
+happen to be the only skills present.
+
+### What Is NOT Implemented (Intentional Stubs)
 
 - `suggest` — Thompson sampling / bandit-based skill recommendations
 - `feedback`, `evidence` — provenance and ranking data
 - `validate`, `lint` — skill quality checking
-- `index` — pre-indexing for fast search (server reads on-demand instead)
+- `index` — pre-indexing for fast search (server indexes at startup instead)
 - `config` — ms configuration management
 - Semantic/BM25 search (keyword match only)
 
@@ -253,26 +278,26 @@ invoke skills by exact name; they don't need ranking or quality scoring.
 ## Upgrade Path: When `ms` Linux Binary Becomes Available
 
 When `anthropics/ms` publishes Linux binaries (repo is private as of 2026-04-14,
-v0.1.0), both branches converge to the same upgrade:
+v0.1.0), the upgrade is:
 
-**Branch A** (no MCP server): add `ms` to the Dockerfile and wire it up:
+**Dockerfile** (add `ms` binary):
 ```dockerfile
 ARG MS_VERSION=0.1.0
 RUN curl -L https://github.com/anthropics/ms/releases/download/v${MS_VERSION}/ms-linux-aarch64 \
     -o /usr/local/bin/ms && chmod +x /usr/local/bin/ms
 ```
-Add `mcpServers.meta-skill` to `settings.json` (same structure as Branch B).
 
-**Branch B** (our skill server): swap the command and args in `settings.json`,
-and add the binary to the Dockerfile:
+**`settings.json`** (swap command and args — two fields):
 ```json
 "command": "/usr/local/bin/ms",
 "args": ["mcp", "serve"]
 ```
+
 Remove `skill-server.py`. The Dockerfile addition and two-field settings.json
 swap (command + args) are the full scope of the upgrade.
 
-The upgrade is a Dockerfile + settings change, not an architectural change.
+The server name (`meta-skill`), the mount, the init flow, and the test script
+are all unchanged.
 
 ---
 
@@ -283,18 +308,9 @@ The upgrade is a Dockerfile + settings change, not an architectural change.
 - The `rc.conf` allowlist model: unchanged
 - The devcontainer path: same mounts, same init script
 
-## File Changes Summary
+---
 
-### Branch A (direct bind-mount)
-
-| Action | File |
-|--------|------|
-| Modify | `Dockerfile` (pre-create `~/.claude/skills` and `~/.claude/commands`) |
-| Modify | `rc` (direct mount, drop `.rc-context/` for skills/commands) |
-| Modify | `init-rip-cage.sh` (remove skills/commands symlink block, lines 48–57) |
-| Update | `docs/decisions/ADR-002-rip-cage-containers.md` (D17 revised, D18 new) |
-
-### Branch B (MCP server, if Branch A fails)
+## File Changes
 
 | Action | File |
 |--------|------|
@@ -306,8 +322,8 @@ The upgrade is a Dockerfile + settings change, not an architectural change.
 | Update | `docs/decisions/ADR-002-rip-cage-containers.md` (D17 revised, D18 new) |
 | Update | `docs/decisions/ADR-006-multi-agent-architecture.md` (amend D6-deferred carve-out) |
 
-Branch B does not modify `rc` — skills remain staged via `.rc-context/` since
-the symlink still points the server at the right place.
+Branch B does not modify `rc` — symlink resolution is a follow-on improvement
+(tracked separately), not a blocker for initial implementation.
 
 **Note on file paths:** These paths assume current repo layout. If ADR-009 D4
 (moving test scripts to `tests/`) lands before this change, adjust the

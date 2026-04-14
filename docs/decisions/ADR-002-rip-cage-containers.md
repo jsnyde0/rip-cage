@@ -379,11 +379,16 @@ Mount `~/.claude/skills/` and `~/.claude/commands/` from the host into the
 container read-only. This gives the agent inside the container access to the
 same Claude Code skills and slash commands as the host user.
 
-**Mount path:** Currently staged via `.rc-context/` and symlinked by
-`init-rip-cage.sh`. If Spike 1 of D18 confirms native filesystem discovery
-works, the cleaner path is a direct bind-mount to `/home/agent/.claude/skills`
-(Dockerfile pre-creates the directory with agent ownership to avoid Docker's
-root-owned-directory problem). The `:ro` flag is invariant.
+**Mount path:** Direct bind-mount to `/home/agent/.claude/skills` and
+`/home/agent/.claude/commands`. Dockerfile pre-creates these directories with
+agent ownership to avoid Docker's root-owned-directory problem. The `:ro` flag
+is invariant.
+
+**Symlink handling:** Skills that are symlinks on the host (e.g., pointing to
+`~/code/mapular/platform/skills/send-it/`) will appear as broken symlinks inside
+the container. `skill-server.py` (D18) handles this gracefully at read time
+(skips broken symlinks with a stderr log). Full symlink resolution at mount time
+is a follow-on improvement.
 
 **Rationale:** Skills and commands are user-authored instruction sets (markdown
 files, scripts). Without this mount the agent sees an unknown skill error.
@@ -412,31 +417,28 @@ allowlist in `rc.conf`.
 
 ### D18: Skill discovery mechanism in containers
 
-**Firmness: FLEXIBLE** (branch depends on spike results)
+**Firmness: FLEXIBLE**
 
 **Added:** 2026-04-14
 **Design:** [Skills in Containers](../../history/2026-04-14-skills-in-containers-design.md)
 
-Skills mounted on disk are not automatically discovered by Claude Code. On the
-host, skill discovery is provided by the `ms` (meta-skill) MCP server from
-Anthropic (`github.com/anthropics/ms`). `ms` is macOS arm64 only and not
-publicly released as of 2026-04-14 — it cannot be installed in the container
-image. Two spikes determine the right fix before any implementation.
+Skills mounted on disk are not automatically discovered by Claude Code — the
+`ms` (meta-skill) MCP server is the required discovery mechanism (confirmed by
+Spike 1, see design doc). `ms` is macOS arm64 only and not publicly released as
+of 2026-04-14 — it cannot be installed in the container image.
 
-**Spike 1 (try first):** Pre-create `~/.claude/skills/` in the Dockerfile
-with agent ownership, then bind-mount the host skills directly to that path
-(no `.rc-context/` staging). If Claude Code's native filesystem watcher picks
-it up, no MCP server is needed — this is a cleanup, not a new component.
+**Decision:** Ship a minimal Python MCP server (`skill-server.py`) in the image
+— stdlib only, no pip dependencies. Python3 is already pre-installed. Implements
+`list` and `load`/`show` (the tools Claude Code needs), with scan-once startup
+caching. Stubs all other tools as empty-success. Registered in `settings.json`
+as `mcpServers.meta-skill` with `command: python3`.
 
-**Spike 2 (if Spike 1 fails):** Confirm MCP is the required mechanism by
-adding a minimal logging stub as `mcpServers.meta-skill`. If Claude Code sends
-JSON-RPC to it, MCP is confirmed.
-
-**If MCP is required (Spike 2 path):** Ship a minimal Python MCP server
-(`skill-server.py`) in the image — stdlib only, no pip dependencies. Implements
-`list` and `load`/`show` (the tools Claude Code needs), stubs everything else
-as empty-success. Registered in `settings.json` as `mcpServers.meta-skill`
-with `command: python3`.
+**Implementation notes:**
+- Stderr for all debug logging (stdout is the protocol channel)
+- ANSI sanitization before JSON-RPC responses (escape codes corrupt JSON)
+- Scan-once startup caching (build in-memory index, serve from memory)
+- Graceful broken symlink handling (skip + stderr log, do not crash)
+- Crash resilience: top-level try/except in main loop, log and continue
 
 **Upgrade path:** When `ms` publishes Linux binaries, add the binary to the
 Dockerfile and swap `command`/`args` in `settings.json` (`python3
@@ -452,10 +454,12 @@ sufficient and forward-compatible.
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **Native filesystem (Spike 1)** | Zero new components, cleanest | Unverified — may not work without MCP |
-| **Minimal Python MCP server (Spike 2 path)** | Cross-platform, self-contained, no binary dependency | Maintains a skill loading shim until `ms` goes public |
-| Mount `ms` binary from host | Works immediately on macOS | macOS-only, hidden coupling to host tooling, not portable |
-| Build `ms` from source in Dockerfile | Self-contained image | `anthropics/ms` repo is private, source not available |
+| **Minimal Python MCP server** | Self-contained, no host dependency, clean upgrade path | Maintains a skill loading shim until `ms` goes public |
+| Native filesystem discovery | Zero new components | Confirmed not to work (Spike 1 failed — Claude Code requires MCP) |
+| Skills-to-Commands conversion | Zero MCP infrastructure; commands work via native discovery | Loses progressive disclosure; context bloat with 50+ skills; no `/skill-name` invocation |
+| Host MCP forwarding (`--mcp-config`) | No in-container server | Couples to running host process; breaks CI/headless |
+| Mount `ms` binary from host | Works immediately on macOS | macOS-only, hidden host coupling, not portable |
+| Build `ms` from source | Self-contained image | `anthropics/ms` repo is private |
 | Wait for `ms` Linux releases | No new code | Skills broken in containers until then (unacceptable) |
 
 **What would invalidate this:** `ms` publishes a Linux binary via GitHub
