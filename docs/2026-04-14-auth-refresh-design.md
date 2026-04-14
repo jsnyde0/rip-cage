@@ -85,9 +85,54 @@ cmd_auth_refresh() {
 
 Replace the inline extraction code in `cmd_up` with a call to `_extract_credentials`. No behavior change — pure dedup.
 
-### 5. Documentation
+### 5. Documentation updates
 
-Add a "Switching accounts" section to `docs/reference/auth.md` (created by the UX overhaul, ADR-009). If auth.md doesn't exist yet, add a note in README under tips.
+Four places need updating:
+
+**a) `rc --help` (usage function in `rc`, line 95-118)**
+
+Add `auth refresh` to the commands list:
+
+```
+  auth refresh                               Refresh credentials from host keychain
+```
+
+**b) `docs/reference/auth.md` — replace "Known issue" section**
+
+The current text (lines 21-23) says:
+
+> **Known issue:** Credential bind mounts break if the host rewrites `~/.claude/.credentials.json`. Fix: `rc destroy <name>` then `rc up .` again.
+
+Replace with a "Switching accounts" section:
+
+```markdown
+## Switching accounts
+
+When you switch Claude Code accounts or refresh auth on the host, the macOS
+Keychain updates but the file bind-mounted into containers does not. Run:
+
+    rc auth refresh
+
+This re-extracts credentials from the Keychain. All running containers pick up
+the change immediately via bind mount — no restart needed.
+
+On Linux (no Keychain), update `~/.claude/.credentials.json` directly. Running
+containers see the change immediately.
+```
+
+**c) `CLAUDE.md` — update or remove the stale known-issue note**
+
+CLAUDE.md previously had a "Known issue" about credential bind mounts recommending destroy+recreate. If it still exists after the ADR-009 dedup, replace with a one-liner pointing to `rc auth refresh`. If the dedup already removed it, no action needed.
+
+**d) `AGENTS.md` — add agent rule**
+
+Add to the agent behavioral rules:
+
+```
+- Use `rc auth refresh` to update credentials without destroying containers
+```
+
+This tells agents calling `rc` that they don't need to destroy+recreate to fix auth issues.
 
 ## User workflow
 
@@ -110,8 +155,10 @@ rc auth refresh            # extracts to file → bind mount propagates to all c
 
 | Action | Files |
 |--------|-------|
-| **Modify** | `rc` (extract `_extract_credentials` helper, add `cmd_auth_refresh`, update `cmd_up` to use helper, add dispatch case) |
-| **Create** | None (docs/reference/auth.md is created by ADR-009 UX overhaul — this adds a section to it) |
+| **Modify** | `rc` (extract `_extract_credentials` helper, add `cmd_auth_refresh`, update `cmd_up` to use helper, add dispatch case, update `usage()`) |
+| **Modify** | `docs/reference/auth.md` (replace "Known issue" with "Switching accounts" section) |
+| **Modify** | `AGENTS.md` (add `rc auth refresh` to agent behavioral rules) |
+| **Modify** | `CLAUDE.md` (update or remove stale known-issue note, if still present after ADR-009 dedup) |
 
 ## What this does NOT change
 
