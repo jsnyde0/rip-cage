@@ -12,6 +12,7 @@ All logging goes to stderr; stdout is the protocol channel only.
 
 import json
 import re
+import signal
 import sys
 from pathlib import Path
 
@@ -22,7 +23,11 @@ from pathlib import Path
 
 def strip_ansi(text):
     """Strip ANSI escape codes from text (for SKILL.md content only)."""
-    return re.sub(r'\x1b\[[0-9;]*[mGKHF]', '', text)
+    # CSI sequences: ESC [ ... final-byte (covers all standard sequences)
+    # Non-CSI sequences: ESC ( X (charset designations etc.)
+    text = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', text)
+    text = re.sub(r'\x1b\([A-Z]', '', text)
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -35,9 +40,23 @@ def parse_description(content):
     if not m:
         return ''
     frontmatter = m.group(1)
-    for line in frontmatter.splitlines():
+    lines = frontmatter.splitlines()
+    for i, line in enumerate(lines):
         if line.startswith('description:'):
-            return line[len('description:'):].strip()
+            value = line[len('description:'):].strip()
+            # Handle YAML block scalar indicators (>, |, >-, |-) —
+            # collect indented continuation lines and join as description text
+            if value in ('>', '|', '>-', '|-'):
+                collected = []
+                for continuation in lines[i + 1:]:
+                    # Indented lines belong to the block scalar; stop on non-indented
+                    if continuation.startswith(' ') or continuation.startswith('\t'):
+                        collected.append(continuation.strip())
+                    else:
+                        break
+                return ' '.join(collected)
+            # Strip surrounding quotes from values like: description: "My skill"
+            return value.strip('"\'')
     return ''
 
 
@@ -51,7 +70,7 @@ def build_index():
     skills_dir = Path.home() / '.claude' / 'skills'
     try:
         paths = list(skills_dir.glob('*/SKILL.md'))
-    except (FileNotFoundError, PermissionError) as e:
+    except OSError as e:
         print(f'[skill-server] WARN: skills dir not found, starting with 0 skills', file=sys.stderr)
         return index
 
@@ -63,16 +82,18 @@ def build_index():
             continue
         dir_name = path.parent.name
         try:
-            content = path.read_text(encoding='utf-8', errors='replace')
+            raw = path.read_text(encoding='utf-8', errors='replace')
         except Exception as e:
             print(f'[skill-server] WARN: could not read {path}: {e}', file=sys.stderr)
             continue
-        description = parse_description(content)
+        description = parse_description(raw)
+        # Cache ANSI-stripped content at startup (scan-once, serve from memory)
+        content = strip_ansi(raw)
         index[dir_name] = {
             'id': dir_name,
             'name': dir_name,
             'description': description,
-            'path': path,
+            'content': content,
         }
 
     print(f'[skill-server] Loaded {len(index)} skills', file=sys.stderr)
@@ -109,17 +130,17 @@ TOOLS_LIST_RESULT = {
         {
             'name': 'show',
             'description': 'Show full content of a skill',
-            'inputSchema': {'type': 'object', 'properties': {'id': {'type': 'string'}}},
+            'inputSchema': {'type': 'object', 'properties': {'id': {'type': 'string'}}, 'required': ['id']},
         },
         {
             'name': 'load',
             'description': 'Load a skill (alias for show)',
-            'inputSchema': {'type': 'object', 'properties': {'id': {'type': 'string'}}},
+            'inputSchema': {'type': 'object', 'properties': {'id': {'type': 'string'}}, 'required': ['id']},
         },
         {
             'name': 'search',
             'description': 'Search skills by keyword',
-            'inputSchema': {'type': 'object', 'properties': {'query': {'type': 'string'}}},
+            'inputSchema': {'type': 'object', 'properties': {'query': {'type': 'string'}}, 'required': ['query']},
         },
     ]
 }
@@ -141,7 +162,7 @@ def handle_tools_list(req_id, params):
 
 def handle_tools_call(req_id, params, index):
     tool_name = params.get('name', '')
-    arguments = params.get('arguments', {})
+    arguments = params.get('arguments') or {}
 
     if tool_name == 'list':
         skills_list = [
@@ -157,31 +178,16 @@ def handle_tools_call(req_id, params, index):
         return ok(req_id, text_content(payload))
 
     elif tool_name in ('show', 'load'):
-        # Look up by id first, then name
         skill_id = arguments.get('id') or arguments.get('name', '')
         skill = index.get(skill_id)
         if skill is None:
-            # Also try name match
-            for s in index.values():
-                if s['name'] == skill_id:
-                    skill = s
-                    break
-        if skill is None:
             result = {
                 'content': [{'type': 'text', 'text': f'Skill not found: {skill_id}'}],
                 'isError': True,
             }
             return ok(req_id, result)
-        try:
-            content = skill['path'].read_text(encoding='utf-8', errors='replace')
-        except Exception as e:
-            result = {
-                'content': [{'type': 'text', 'text': f'Skill not found: {skill_id}'}],
-                'isError': True,
-            }
-            return ok(req_id, result)
-        content = strip_ansi(content)
-        payload = json.dumps({'content': content})
+        # Serve from cached content (scanned once at startup, no per-call disk reads)
+        payload = json.dumps({'content': skill['content']})
         return ok(req_id, text_content(payload))
 
     elif tool_name == 'search':
@@ -212,7 +218,7 @@ def dispatch(msg, index):
 
     req_id = msg['id']
     method = msg.get('method', '')
-    params = msg.get('params', {})
+    params = msg.get('params') or {}
 
     if method == 'initialize':
         return handle_initialize(req_id, params)
@@ -229,6 +235,7 @@ def dispatch(msg, index):
 # ---------------------------------------------------------------------------
 
 def main():
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     index = build_index()
 
     while True:

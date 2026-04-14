@@ -24,9 +24,23 @@ if [[ ! -L /home/agent/.claude ]]; then
   sudo chown agent:agent /home/agent/.claude 2>/dev/null || true
 fi
 
-# Overwrite settings template
+# Install settings template — merge with project settings if present to preserve
+# project-level mcpServers and hooks (rip-cage fields take precedence otherwise)
 mkdir -p ~/.claude
-cp /etc/rip-cage/settings.json ~/.claude/settings.json
+if [ -f ~/.claude/settings.json ]; then
+  jq -s '
+    .[0] as $project |
+    .[1] as $rip_cage |
+    $rip_cage
+    | .mcpServers = (($project.mcpServers // {}) + ($rip_cage.mcpServers // {}))
+    | .hooks = (($project.hooks // {}) | to_entries
+        + ($rip_cage.hooks // {}) | to_entries | group_by(.key)
+        | map({key: .[0].key, value: (map(.value) | flatten)}) | from_entries)
+  ' ~/.claude/settings.json /etc/rip-cage/settings.json > /tmp/merged-settings.json
+  mv /tmp/merged-settings.json ~/.claude/settings.json
+else
+  cp /etc/rip-cage/settings.json ~/.claude/settings.json
+fi
 echo "[rip-cage] Settings installed"
 
 # 2. Copy CLAUDE.md files (skip if source missing or empty)

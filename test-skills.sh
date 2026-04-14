@@ -1,18 +1,12 @@
 #!/usr/bin/env bash
 # test-skills.sh — validates skill discovery inside rip-cage containers
 #
-# Tests both possible implementations from the 2026-04-14 design:
-#   Branch A: Direct bind-mount to ~/.claude/skills/ (no MCP server needed)
-#   Branch B: Python MCP server at /usr/local/lib/rip-cage/skill-server.py
+# MCP server (skill-server.py) is the only supported skill discovery path.
+# The script checks for mcpServers["meta-skill"] in settings.json and runs the
+# MCP protocol smoke test (initialize → tools/list → tools/call list).
 #
-# The script detects which mode the container is in by checking settings.json
-# for a mcpServers["meta-skill"] entry and runs the appropriate tests.
-#
-# Currently FAILS on an unmodified container:
-#   - Branch A: ~/.claude/skills/ is a symlink, not a real directory
-#   - Branch B: skill-server.py doesn't exist, no mcpServers config
-#
-# Passes after implementation of either branch.
+# If mcpServers["meta-skill"] is not configured, all MCP tests fail with a
+# clear error — there is no fallback filesystem path.
 #
 # Run directly: docker exec <container> /usr/local/lib/rip-cage/test-skills.sh
 # Or via:       rc test <container>  (if called by test-safety-stack.sh)
@@ -44,6 +38,9 @@ skills_dir="${HOME}/.claude/skills"
 check "~/.claude/skills/ exists" "$([[ -d "${skills_dir}" ]] && echo pass || echo fail)"
 
 # 2. At least one SKILL.md present
+# NOTE: find counts broken symlinks as matches, but skill-server.py skips them.
+# This check can pass (find count > 0) while the MCP server serves 0 skills.
+# Use the MCP list response below for the authoritative skill count.
 if [[ -d "${skills_dir}" ]]; then
   skill_count=$(find "${skills_dir}" -name 'SKILL.md' -maxdepth 2 2>/dev/null | wc -l | tr -d ' ')
   check "At least one skill present" "$([[ "${skill_count}" -gt 0 ]] && echo pass || echo fail)" "${skill_count} skill(s)"

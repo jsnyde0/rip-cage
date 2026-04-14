@@ -61,6 +61,7 @@ class TestInitialize(unittest.TestCase):
     def tearDown(self):
         self.proc.terminate()
         self.proc.wait()
+        self.proc.stderr.close()
 
     def test_initialize_returns_correct_server_info(self):
         r = rpc(self.proc, "initialize", {
@@ -88,6 +89,7 @@ class TestNotifications(unittest.TestCase):
     def tearDown(self):
         self.proc.terminate()
         self.proc.wait()
+        self.proc.stderr.close()
 
     def test_notification_gets_no_response(self):
         """notifications/initialized must be silently discarded."""
@@ -108,6 +110,7 @@ class TestToolsList(unittest.TestCase):
     def tearDown(self):
         self.proc.terminate()
         self.proc.wait()
+        self.proc.stderr.close()
 
     def test_tools_list_returns_four_tools(self):
         r = rpc(self.proc, "tools/list", {}, 2)
@@ -138,6 +141,7 @@ class TestToolCallList(unittest.TestCase):
     def tearDown(self):
         self.proc.terminate()
         self.proc.wait()
+        self.proc.stderr.close()
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
@@ -169,6 +173,7 @@ class TestToolCallList(unittest.TestCase):
             self.assertEqual(payload["skills"], [])
             proc.terminate()
             proc.wait()
+            proc.stderr.close()
         finally:
             import shutil
             shutil.rmtree(empty_dir, ignore_errors=True)
@@ -183,6 +188,7 @@ class TestToolCallList(unittest.TestCase):
             self.assertEqual(payload["count"], 0)
             proc.terminate()
             proc.wait()
+            proc.stderr.close()
         finally:
             import shutil
             shutil.rmtree(empty_home, ignore_errors=True)
@@ -201,6 +207,7 @@ class TestToolCallShowLoad(unittest.TestCase):
     def tearDown(self):
         self.proc.terminate()
         self.proc.wait()
+        self.proc.stderr.close()
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
@@ -257,6 +264,7 @@ class TestToolCallSearch(unittest.TestCase):
     def tearDown(self):
         self.proc.terminate()
         self.proc.wait()
+        self.proc.stderr.close()
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
@@ -292,6 +300,7 @@ class TestUnknownTools(unittest.TestCase):
     def tearDown(self):
         self.proc.terminate()
         self.proc.wait()
+        self.proc.stderr.close()
 
     def test_unknown_tool_returns_empty_success(self):
         r = rpc(self.proc, "tools/call", {"name": "suggest", "arguments": {}}, 12)
@@ -324,9 +333,62 @@ class TestBrokenSymlinks(unittest.TestCase):
             self.assertEqual(payload["count"], 0, "Broken symlink skills must be skipped")
             proc.terminate()
             proc.wait()
+            proc.stderr.close()
         finally:
             import shutil
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+class TestMalformedArguments(unittest.TestCase):
+    """Tests for arguments: null in tools/call — must return error, not hang."""
+
+    def setUp(self):
+        self.proc = launch_server()
+
+    def tearDown(self):
+        self.proc.terminate()
+        self.proc.wait()
+        self.proc.stderr.close()
+
+    def test_show_with_null_arguments_returns_error_not_silence(self):
+        """tools/call show with arguments: null must return a response (not hang)."""
+        msg = json.dumps({"jsonrpc": "2.0", "id": 20, "method": "tools/call",
+                          "params": {"name": "show", "arguments": None}})
+        self.proc.stdin.write(msg + "\n")
+        self.proc.stdin.flush()
+        responded = has_response_within(self.proc, timeout=1.0)
+        self.assertTrue(responded, "Server must respond to show with arguments:null (not silence)")
+        line = self.proc.stdout.readline()
+        r = json.loads(line)
+        self.assertEqual(r["id"], 20)
+        # Must have a result (isError) or an error key — not just drop the request
+        self.assertTrue("result" in r or "error" in r, f"Response missing result/error: {r}")
+
+    def test_search_with_null_arguments_returns_response_not_silence(self):
+        """tools/call search with arguments: null must return a response (not hang)."""
+        msg = json.dumps({"jsonrpc": "2.0", "id": 21, "method": "tools/call",
+                          "params": {"name": "search", "arguments": None}})
+        self.proc.stdin.write(msg + "\n")
+        self.proc.stdin.flush()
+        responded = has_response_within(self.proc, timeout=1.0)
+        self.assertTrue(responded, "Server must respond to search with arguments:null (not silence)")
+        line = self.proc.stdout.readline()
+        r = json.loads(line)
+        self.assertEqual(r["id"], 21)
+        self.assertTrue("result" in r or "error" in r, f"Response missing result/error: {r}")
+
+    def test_null_params_in_tools_call_returns_response_not_silence(self):
+        """tools/call with params: null must return a response (not hang)."""
+        msg = json.dumps({"jsonrpc": "2.0", "id": 22, "method": "tools/call",
+                          "params": None})
+        self.proc.stdin.write(msg + "\n")
+        self.proc.stdin.flush()
+        responded = has_response_within(self.proc, timeout=1.0)
+        self.assertTrue(responded, "Server must respond to tools/call with params:null (not silence)")
+        line = self.proc.stdout.readline()
+        r = json.loads(line)
+        self.assertEqual(r["id"], 22)
+        self.assertTrue("result" in r or "error" in r, f"Response missing result/error: {r}")
 
 
 class TestInputHandling(unittest.TestCase):
@@ -336,6 +398,7 @@ class TestInputHandling(unittest.TestCase):
     def tearDown(self):
         self.proc.terminate()
         self.proc.wait()
+        self.proc.stderr.close()
 
     def test_blank_line_gets_no_response(self):
         """Blank lines on stdin must be silently skipped."""
@@ -390,6 +453,7 @@ class TestToolsCallBeforeInitialize(unittest.TestCase):
     def tearDown(self):
         self.proc.terminate()
         self.proc.wait()
+        self.proc.stderr.close()
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
@@ -429,10 +493,13 @@ class TestSmokeTest(unittest.TestCase):
             r = rpc(proc, "tools/call", {"name": "list", "arguments": {}}, 3)
             payload = json.loads(r["result"]["content"][0]["text"])
             count = payload["count"]
+            self.assertGreaterEqual(count, 0, "count must be a non-negative integer")
+            self.assertIsInstance(payload["skills"], list, "skills must be a list")
             print(f"\nOK: {count} skills found")
         finally:
             proc.terminate()
             proc.wait()
+            proc.stderr.close()
 
 
 if __name__ == "__main__":

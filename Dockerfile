@@ -68,13 +68,13 @@ RUN groupadd -g 1000 agent \
     && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state" > /etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent
 
-# Copy rip-cage files
+# Copy rip-cage files — stable files first (fewer cache busts), frequently-edited last
 COPY hooks/ /usr/local/lib/rip-cage/hooks/
 COPY test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
-COPY test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
-COPY skill-server.py /usr/local/lib/rip-cage/skill-server.py
 COPY settings.json /etc/rip-cage/settings.json
 COPY init-rip-cage.sh /usr/local/bin/init-rip-cage.sh
+COPY skill-server.py /usr/local/lib/rip-cage/skill-server.py
+COPY test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
 RUN chmod +x /usr/local/bin/init-rip-cage.sh \
     /usr/local/lib/rip-cage/hooks/*.sh \
     /usr/local/lib/rip-cage/test-safety-stack.sh \
