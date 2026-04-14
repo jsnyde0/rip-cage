@@ -64,12 +64,12 @@ The README contains only:
 4. Worktree workflow (power-user story)
 5. Contributing/License links
 
-Everything else lives in `docs/`:
-- `docs/cli-reference.md` — full command reference, flags, JSON output, agent rules
-- `docs/auth.md` — OAuth, Keychain, Linux, API key fallback
-- `docs/safety-stack.md` — hook config, allowlists, denied commands
-- `docs/devcontainer.md` — VS Code setup via `rc init`
-- `docs/whats-in-the-box.md` — tools table, Dockerfile architecture
+Everything else lives in `docs/reference/`:
+- `docs/reference/cli-reference.md` — full command reference, flags, JSON output
+- `docs/reference/auth.md` — OAuth, Keychain, Linux, API key fallback
+- `docs/reference/safety-stack.md` — hook config, allowlists, denied commands
+- `docs/reference/devcontainer.md` — VS Code setup via `rc init`
+- `docs/reference/whats-in-the-box.md` — tools table, Dockerfile architecture
 
 **Rationale:** The README is the first thing people see. It should answer "what is this and how do I try it" in 30 seconds. Detailed reference material belongs one click away, not on the front page. GitHub renders links to docs/ as clickable — there's no discovery penalty.
 
@@ -79,9 +79,9 @@ Everything else lives in `docs/`:
 
 **Firmness: FIRM**
 
-All 12 `test-*.sh` scripts move to `tests/`. Update `rc test`, `Makefile`, CI workflow, and CONTRIBUTING.md accordingly.
+All 14 test files (13 `test-*.sh` scripts + `test_skill_server.py`) move to `tests/`. Update `Dockerfile` (COPY source paths for 2 test files), `Makefile`, CI workflow, and CONTRIBUTING.md accordingly.
 
-**Rationale:** The repo root currently has 29 files. 12 are tests. Moving them to `tests/` cuts root clutter nearly in half and gives a cleaner first impression on GitHub. This is standard project layout.
+**Rationale:** The repo root currently has 34 items. 14 are tests. Moving them to `tests/` reduces root items to ~20 and gives a cleaner first impression on GitHub. This is standard project layout.
 
 **What would invalidate this:** Nothing — this is pure organization, no behavior change.
 
@@ -91,7 +91,7 @@ All 12 `test-*.sh` scripts move to `tests/`. Update `rc test`, `Makefile`, CI wo
 
 **CLAUDE.md** (for agents working on rip-cage): Keep architecture overview, key gotchas, testing workflow. Remove duplicated quickstart, auth details, safety stack details — link to docs/ and README instead.
 
-**AGENTS.md** (for agents using rip-cage): Keep agent-specific rules (JSON output, `--dry-run`, container naming). Remove everything that duplicates README or CLAUDE.md.
+**AGENTS.md** (for agents using rip-cage): Currently identical to CLAUDE.md — requires a full rewrite, not a trim. New content: agent behavioral rules (JSON output, `--dry-run`, container naming), with links to `docs/reference/cli-reference.md` for technical reference. Agent rules live in AGENTS.md only; CLI reference lives in `docs/reference/cli-reference.md` only — no duplication.
 
 **Rationale:** Three files repeating the same quickstart and safety stack overview means changes require 3 edits. Single-source each piece of information and cross-link.
 
@@ -146,6 +146,35 @@ configured `RC_ALLOWED_ROOTS` explicitly (which they should). The allowlist mode
 **What would invalidate this:** If the interactive prompt causes confusion (users not
 understanding what "allowed roots" means). Mitigated by the prompt phrasing ("Allow
 projects under") which conveys meaning without requiring prior knowledge of the term.
+
+### D8: `rc auth refresh` command for credential hot-swap
+
+**Firmness: FIRM**
+
+Add an `rc auth refresh` command that re-extracts OAuth credentials from the macOS Keychain to `~/.claude/.credentials.json`. Because the credentials file is bind-mounted read-write into containers, the update propagates immediately — no container restart or destroy needed.
+
+```bash
+rc auth refresh   # re-extract credentials from keychain → file → all running containers see it
+```
+
+On Linux (no Keychain), print a message directing the user to update `~/.claude/.credentials.json` directly.
+
+**Use case:** User hits usage limits or switches accounts on the host (`/login` or `claude auth login`). The host Keychain is updated but the bind-mounted file is stale. `rc auth refresh` bridges the gap without destroying the container (and its Claude Code session history).
+
+**Implementation:** Extract the existing keychain-to-file logic from `cmd_up` (lines 598-613 of `rc`) into a shared helper `_extract_credentials`. New `cmd_auth_refresh` calls this helper. `cmd_up` also calls the helper (dedup). The command is ~10 lines.
+
+**Rationale:** Destroying a container just to refresh credentials loses the Claude Code session, which is expensive (context, conversation history). The credentials file is already bind-mounted read-write, so the infrastructure for live updates exists — users just need a command to trigger the keychain re-extraction instead of remembering the `security find-generic-password` incantation.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **`rc auth refresh`** | Simple, no restart, preserves session | New command to learn |
+| **Inotify/fswatch on keychain** | Fully automatic | Complex, platform-specific, brittle |
+| **Document the `security` command** | No code change | User must remember macOS-specific incantation |
+| **`rc destroy` + `rc up`** | Already works | Destroys session history — the whole problem |
+
+**What would invalidate this:** If Claude Code changes to auto-refresh the credentials file on the host when `/login` runs (making the bind-mounted file always current). Currently `/login` updates the Keychain but not the file.
 
 ## Deferred
 
