@@ -12,7 +12,7 @@ Host (macOS/Linux)
 ├── settings.json           Claude Code config — auto mode, allowlisted commands, PreToolUse hooks
 ├── hooks/
 │   └── block-compound-commands.sh   Denies &&, ;, || chains. Suggests splitting.
-├── test-safety-stack.sh    32-check health check for the safety stack
+├── tests/                  Test scripts (test-safety-stack.sh, test-rc-commands.sh, etc.)
 └── zshrc                   Minimal zshrc for the container agent user
 ```
 

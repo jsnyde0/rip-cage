@@ -35,7 +35,7 @@ jobs:
         run: shellcheck -x bd-wrapper.sh
 
       - name: Lint test-prerequisites.sh
-        run: shellcheck -x test-prerequisites.sh
+        run: shellcheck -x tests/test-prerequisites.sh
 
   # ---------------------------------------------------------------------------
   # Job 2: Build — verify multi-stage Dockerfile compiles (Go + Rust + Debian)
@@ -84,28 +84,28 @@ jobs:
         run: ./rc --version
 
       - name: test-rc-commands.sh
-        run: bash test-rc-commands.sh
+        run: bash tests/test-rc-commands.sh
 
       - name: test-json-output.sh
-        run: bash test-json-output.sh
+        run: bash tests/test-json-output.sh
 
       - name: test-dg6.2.sh
-        run: bash test-dg6.2.sh
+        run: bash tests/test-dg6.2.sh
 
       - name: test-code-review-fixes.sh
-        run: bash test-code-review-fixes.sh
+        run: bash tests/test-code-review-fixes.sh
 
       - name: test-bd-wrapper.sh
-        run: bash test-bd-wrapper.sh
+        run: bash tests/test-bd-wrapper.sh
 
       - name: test-security-hardening.sh
-        run: bash test-security-hardening.sh
+        run: bash tests/test-security-hardening.sh
 
       - name: test-dockerfile-sudoers.sh
-        run: bash test-dockerfile-sudoers.sh
+        run: bash tests/test-dockerfile-sudoers.sh
 
       - name: test-prerequisites.sh
-        run: bash test-prerequisites.sh
+        run: bash tests/test-prerequisites.sh
 
       - name: test-worktree-support.sh
-        run: bash test-worktree-support.sh
+        run: bash tests/test-worktree-support.sh

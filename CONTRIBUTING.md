@@ -62,7 +62,7 @@ After building, spin up a container against any project directory and run the te
 
 ### What the tests check
 
-The test suite (`test-safety-stack.sh`) runs 30+ checks organized into sections:
+The test suite (`tests/test-safety-stack.sh`) runs 30+ checks organized into sections:
 
 **User & Environment** — verifies the container agent runs as the `agent` user (uid 1000, not root) and that `/workspace` is mounted and writable.
 
@@ -124,7 +124,7 @@ The image is multi-stage. Changes to earlier stages invalidate the build cache f
 
 ### Test script
 
-`test-safety-stack.sh` runs inside the container. If you add a new safety feature, add a corresponding check to this file.
+`tests/test-safety-stack.sh` runs inside the container. If you add a new safety feature, add a corresponding check to this file.
 
 ## Code style
 
@@ -147,7 +147,7 @@ The image is multi-stage. Changes to earlier stages invalidate the build cache f
 3. **Lint** your bash changes:
 
    ```bash
-   shellcheck rc init-rip-cage.sh hooks/*.sh test-safety-stack.sh
+   shellcheck rc init-rip-cage.sh hooks/*.sh tests/test-safety-stack.sh
    ```
 
 4. **Test** by building the image and running the safety stack checks:
