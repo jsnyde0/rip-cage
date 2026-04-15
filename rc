@@ -274,7 +274,7 @@ DEVCONTAINER_FOOTER_EMBEDDED
       local _init_tdir
       while IFS= read -r _init_tdir; do
         _init_extra_mounts+=("source=${_init_tdir},target=${_init_tdir},type=bind,readonly")
-      done < <(_collect_skill_symlink_parents "${HOME}/.claude/skills")
+      done < <(_collect_symlink_parents "${HOME}/.claude/skills")
       if [[ "${#_init_extra_mounts[@]}" -gt 0 ]]; then
         local _extra_json
         _extra_json=$(printf '%s\n' "${_init_extra_mounts[@]}" | jq -R . | jq -s .)
@@ -527,7 +527,7 @@ _up_detect_worktree() {
   fi
 }
 
-# _collect_skill_symlink_parents — print unique parent dirs of skill symlink targets.
+# _collect_symlink_parents — print unique parent dirs of asset symlink targets.
 #
 # Skills stored as host symlinks (e.g. pointing to a monorepo) become broken
 # symlinks inside containers because the target paths don't exist. To fix this,
@@ -535,22 +535,22 @@ _up_detect_worktree() {
 # so symlinks resolve correctly inside the container.
 #
 # Parameters:
-#   $1  skills_dir — the skills directory to scan (e.g. ~/.claude/skills)
+#   $1  asset_dir — the asset directory to scan (e.g. ~/.claude/skills)
 # Output: one resolved parent path per line (deduplicated)
-_collect_skill_symlink_parents() {
-  local skills_dir="$1"
+_collect_symlink_parents() {
+  local asset_dir="$1"
   local entry target tdir seen_it d
   local seen_dirs
   seen_dirs=()
-  for entry in "${skills_dir}/"*; do
+  for entry in "${asset_dir}/"*; do
     [[ -L "$entry" ]] || continue
     target=$(realpath "$entry" 2>/dev/null) || continue
-    [[ -d "$target" ]] || continue
+    [[ -e "$target" ]] || continue
     # Security: only mount targets within the user's home directory.
     # A symlink pointing outside $HOME (e.g. -> /etc) would mount a system
     # directory into the container — skip it with a warning.
     if [[ "$target" != "${HOME}/"* ]]; then
-      echo "[rc] Warning: skill symlink '$(basename "$entry")' resolves outside \$HOME ($target) — skipping mount" >&2
+      echo "[rc] Warning: asset symlink '$(basename "$entry")' resolves outside \$HOME ($target) — skipping mount" >&2
       continue
     fi
     tdir=$(dirname "$target")
@@ -621,10 +621,10 @@ _up_prepare_docker_mounts() {
     # monorepo) become broken symlinks inside the container because target paths
     # don't exist there. Mount each unique symlink-target parent at the same
     # absolute path so those symlinks resolve correctly.
-    local _skill_tdir
-    while IFS= read -r _skill_tdir; do
-      _UP_RUN_ARGS+=(-v "${_skill_tdir}:${_skill_tdir}:ro")
-    done < <(_collect_skill_symlink_parents "${HOME}/.claude/skills")
+    local _asset_tdir
+    while IFS= read -r _asset_tdir; do
+      _UP_RUN_ARGS+=(-v "${_asset_tdir}:${_asset_tdir}:ro")
+    done < <(_collect_symlink_parents "${HOME}/.claude/skills")
   fi
   if [[ -d "${HOME}/.claude/commands" ]]; then
     _UP_RUN_ARGS+=(-v "${HOME}/.claude/commands:/home/agent/.rc-context/commands:ro")
@@ -951,7 +951,7 @@ cmd_up() {
         local _dry_tdir
         while IFS= read -r _dry_tdir; do
           echo "Would mount ${_dry_tdir} -> ${_dry_tdir}:ro (skill symlink target)"
-        done < <(_collect_skill_symlink_parents "${HOME}/.claude/skills")
+        done < <(_collect_symlink_parents "${HOME}/.claude/skills")
       fi
       [[ -d "${HOME}/.claude/commands" ]] && echo "Would mount ~/.claude/commands -> /home/agent/.rc-context/commands:ro"
       [[ "$would_action" != "would_attach" ]] && echo "Would run init script"

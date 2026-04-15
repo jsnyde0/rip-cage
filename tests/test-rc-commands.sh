@@ -157,17 +157,17 @@ ln -s "${SYMLINK_TARGET_DIR}" "${SYMLINK_SKILLS_DIR}/linked-skill"
 # rc uses ${HOME}/.claude/skills directly, so we need a workaround:
 # source the rc helper function directly and call it
 symlink_parent_output=$(bash -c '
-  _collect_skill_symlink_parents() {
-    local skills_dir="$1"
+  _collect_symlink_parents() {
+    local asset_dir="$1"
     local entry target tdir seen_it d
     local seen_dirs
     seen_dirs=()
-    for entry in "${skills_dir}/"*; do
+    for entry in "${asset_dir}/"*; do
       [[ -L "$entry" ]] || continue
       target=$(realpath "$entry" 2>/dev/null) || continue
-      [[ -d "$target" ]] || continue
+      [[ -e "$target" ]] || continue
       if [[ "$target" != "${HOME}/"* ]]; then
-        echo "[rc] Warning: skill outside HOME — skipping" >&2
+        echo "[rc] Warning: asset outside HOME — skipping" >&2
         continue
       fi
       tdir=$(dirname "$target")
@@ -181,7 +181,7 @@ symlink_parent_output=$(bash -c '
       fi
     done
   }
-  _collect_skill_symlink_parents "$1"
+  _collect_symlink_parents "$1"
 ' _ "${SYMLINK_SKILLS_DIR}")
 
 # The linked-skill target is in /tmp (outside $HOME) — should be skipped with warning
@@ -198,15 +198,15 @@ SYMLINK_SKILLS_DIR2=$(mktemp -d)
 ln -s "${HOME_TARGET_DIR}" "${SYMLINK_SKILLS_DIR2}/linked-skill"
 symlink_parent_output2=$(bash -c '
   HOME='"\"${HOME}\""'
-  _collect_skill_symlink_parents() {
-    local skills_dir="$1"
+  _collect_symlink_parents() {
+    local asset_dir="$1"
     local entry target tdir seen_it d
     local seen_dirs
     seen_dirs=()
-    for entry in "${skills_dir}/"*; do
+    for entry in "${asset_dir}/"*; do
       [[ -L "$entry" ]] || continue
       target=$(realpath "$entry" 2>/dev/null) || continue
-      [[ -d "$target" ]] || continue
+      [[ -e "$target" ]] || continue
       if [[ "$target" != "${HOME}/"* ]]; then
         continue
       fi
@@ -221,7 +221,7 @@ symlink_parent_output2=$(bash -c '
       fi
     done
   }
-  _collect_skill_symlink_parents "$1"
+  _collect_symlink_parents "$1"
 ' _ "${SYMLINK_SKILLS_DIR2}")
 
 expected_parent="$(dirname "${HOME_TARGET_DIR}")"
@@ -239,15 +239,15 @@ SIBLING_DIR=$(realpath "${SIBLING_DIR}")
 ln -s "${SIBLING_DIR}" "${SYMLINK_SKILLS_DIR2}/linked-skill3"
 dedup_output=$(bash -c '
   HOME='"\"${HOME}\""'
-  _collect_skill_symlink_parents() {
-    local skills_dir="$1"
+  _collect_symlink_parents() {
+    local asset_dir="$1"
     local entry target tdir seen_it d
     local seen_dirs
     seen_dirs=()
-    for entry in "${skills_dir}/"*; do
+    for entry in "${asset_dir}/"*; do
       [[ -L "$entry" ]] || continue
       target=$(realpath "$entry" 2>/dev/null) || continue
-      [[ -d "$target" ]] || continue
+      [[ -e "$target" ]] || continue
       if [[ "$target" != "${HOME}/"* ]]; then continue; fi
       tdir=$(dirname "$target")
       seen_it=0
@@ -260,7 +260,7 @@ dedup_output=$(bash -c '
       fi
     done
   }
-  _collect_skill_symlink_parents "$1"
+  _collect_symlink_parents "$1"
 ' _ "${SYMLINK_SKILLS_DIR2}")
 dedup_count=$(echo "$dedup_output" | grep -c "$(dirname "${HOME_TARGET_DIR}")" || true)
 if [[ "$dedup_count" -eq 1 ]]; then
@@ -298,6 +298,82 @@ if [[ -f "${TEST_DIR3}/.devcontainer/devcontainer.json" ]]; then
 else
   fail "rc init did not create devcontainer.json"
 fi
+
+# --- Test 11: _collect_symlink_parents handles file symlinks ---
+echo ""
+echo "=== Test 11: _collect_symlink_parents handles file symlinks ==="
+FILE_SYMLINK_TARGET_DIR=$(mktemp -d "${HOME}/.tmp-rc-file-test-XXXXXX")
+echo "# Test agent" > "${FILE_SYMLINK_TARGET_DIR}/test-agent.md"
+FILE_SYMLINK_AGENTS_DIR=$(mktemp -d)
+ln -s "${FILE_SYMLINK_TARGET_DIR}/test-agent.md" "${FILE_SYMLINK_AGENTS_DIR}/test-agent.md"
+
+# Positive test: [[ -e ]] version (the fix) should return the parent dir
+file_symlink_output=$(bash -c '
+  HOME='"\"${HOME}\""'
+  _collect_symlink_parents() {
+    local asset_dir="$1"
+    local entry target tdir seen_it d
+    local seen_dirs
+    seen_dirs=()
+    for entry in "${asset_dir}/"*; do
+      [[ -L "$entry" ]] || continue
+      target=$(realpath "$entry" 2>/dev/null) || continue
+      [[ -e "$target" ]] || continue
+      if [[ "$target" != "${HOME}/"* ]]; then continue; fi
+      tdir=$(dirname "$target")
+      seen_it=0
+      for d in "${seen_dirs[@]+"${seen_dirs[@]}"}"; do
+        [[ "$d" == "$tdir" ]] && seen_it=1 && break
+      done
+      if [[ "$seen_it" == 0 ]]; then
+        seen_dirs+=("$tdir")
+        echo "$tdir"
+      fi
+    done
+  }
+  _collect_symlink_parents "$1"
+' _ "${FILE_SYMLINK_AGENTS_DIR}")
+
+if echo "$file_symlink_output" | grep -qF "${FILE_SYMLINK_TARGET_DIR}"; then
+  pass "file symlink target parent dir returned with [[ -e ]] fix"
+else
+  fail "file symlink target parent dir NOT returned (got: $file_symlink_output, expected: $FILE_SYMLINK_TARGET_DIR)"
+fi
+
+# Negative test: [[ -d ]] version (the old bug) should return empty for file symlinks
+file_symlink_old_output=$(bash -c '
+  HOME='"\"${HOME}\""'
+  _collect_symlink_parents_old() {
+    local asset_dir="$1"
+    local entry target tdir seen_it d
+    local seen_dirs
+    seen_dirs=()
+    for entry in "${asset_dir}/"*; do
+      [[ -L "$entry" ]] || continue
+      target=$(realpath "$entry" 2>/dev/null) || continue
+      [[ -d "$target" ]] || continue
+      if [[ "$target" != "${HOME}/"* ]]; then continue; fi
+      tdir=$(dirname "$target")
+      seen_it=0
+      for d in "${seen_dirs[@]+"${seen_dirs[@]}"}"; do
+        [[ "$d" == "$tdir" ]] && seen_it=1 && break
+      done
+      if [[ "$seen_it" == 0 ]]; then
+        seen_dirs+=("$tdir")
+        echo "$tdir"
+      fi
+    done
+  }
+  _collect_symlink_parents_old "$1"
+' _ "${FILE_SYMLINK_AGENTS_DIR}")
+
+if [[ -z "$file_symlink_old_output" ]]; then
+  pass "old [[ -d ]] version returns empty for file symlinks (proves fix is needed)"
+else
+  fail "old [[ -d ]] version should return empty for file symlinks (got: $file_symlink_old_output)"
+fi
+
+rm -rf "$FILE_SYMLINK_TARGET_DIR" "$FILE_SYMLINK_AGENTS_DIR"
 
 # --- Cleanup ---
 rm -rf "$SYMLINK_SKILLS_DIR" "$SYMLINK_TARGET_DIR" "$SYMLINK_SKILLS_DIR2" "$HOME_TARGET_DIR" "$SIBLING_DIR" "$TEST_DIR3"
