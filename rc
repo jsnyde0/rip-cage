@@ -653,7 +653,7 @@ _up_prepare_docker_mounts() {
   fi
   if [[ -d "${HOME}/.claude/agents" ]]; then
     _UP_RUN_ARGS+=(-v "${HOME}/.claude/agents:/home/agent/.rc-context/agents:ro")
-    local _asset_tdir
+    _asset_tdir=
     while IFS= read -r _asset_tdir; do
       _UP_RUN_ARGS+=(-v "${_asset_tdir}:${_asset_tdir}:ro")
     done < <(_collect_symlink_parents "${HOME}/.claude/agents")

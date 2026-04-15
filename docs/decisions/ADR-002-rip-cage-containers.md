@@ -492,7 +492,7 @@ the expected path. The `:ro` flag is invariant.
 **Symlink handling:** Agent definitions that are symlinks on the host (all six
 current definitions point into `mapular-platform/.claude/agents/`) require
 their symlink-target parent directory to also be bind-mounted. The existing
-`_collect_skill_symlink_parents` function in `rc` handles this — extend it to
+`_collect_symlink_parents` function in `rc` handles this — extend it to
 include the `agents` directory.
 
 **Rationale:** Without this mount, `Agent(subagent_type: "implementer")` silently
