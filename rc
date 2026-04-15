@@ -613,6 +613,13 @@ _extract_credentials() {
   return 0
 }
 
+cmd_auth() {
+  case "${1:-}" in
+    refresh) shift; cmd_auth_refresh "$@" ;;
+    *) echo "Usage: rc auth refresh" >&2; exit 1 ;;
+  esac
+}
+
 cmd_auth_refresh() {
   if [[ "$(uname)" != "Darwin" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -670,7 +677,7 @@ _up_prepare_docker_mounts() {
   fi
 
   # Extract OAuth credentials from macOS keychain to file (if on macOS)
-  _extract_credentials
+  _extract_credentials || true
 
   # Skills and commands: mount host's ~/.claude/skills and ~/.claude/commands read-only
   # Staged via .rc-context/ so init-rip-cage.sh can symlink them into ~/.claude/
@@ -1312,6 +1319,14 @@ cmd_schema() {
       "args": [{"name": "path", "type": "path", "required": false, "default": "."}],
       "flags": {"--force": {"type": "bool", "default": false}}
     },
+    "auth": {
+      "subcommands": {
+        "refresh": {
+          "args": [],
+          "flags": {"--output": {"values": ["json"], "default": null}}
+        }
+      }
+    },
     "schema": {
       "args": [],
       "flags": {}
@@ -1390,7 +1405,7 @@ case "${1:-}" in
   down)    shift; cmd_down "$@" ;;
   destroy) shift; cmd_destroy "$@" ;;
   test)    shift; cmd_test "$@" ;;
-  auth)    shift; cmd_auth_refresh "$@" ;;
+  auth)    shift; cmd_auth "$@" ;;
   schema)  cmd_schema ;;
   *)       usage ;;
 esac

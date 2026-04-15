@@ -16,6 +16,7 @@ OAuth tokens are the primary auth method. The `rc` script extracts tokens and mo
 |------|------------------------|
 | `rc init` | `initializeCommand` in devcontainer.json (runs on host before container starts) |
 | `rc up` | `cmd_up` function (runs on host before `docker run`) |
+| `rc auth refresh` | `cmd_auth_refresh` → `_extract_credentials` (host-side, updates file for all containers) |
 | `init-rip-cage.sh` | Reads the mounted `.credentials.json` — does NOT extract from Keychain (runs inside container) |
 
 ## Switching accounts

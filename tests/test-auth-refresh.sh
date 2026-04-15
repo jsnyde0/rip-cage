@@ -248,7 +248,7 @@ fi
 # --- Test 9: auth dispatch is in main case statement ---
 echo ""
 echo "=== Test 9: auth dispatch exists in rc script ==="
-if grep -q 'auth).*cmd_auth_refresh' "$RC"; then
+if grep -q 'auth).*cmd_auth ' "$RC"; then
   pass "auth dispatch found in rc"
 else
   fail "auth dispatch not found in rc"
