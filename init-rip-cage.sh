@@ -59,7 +59,7 @@ else
 fi
 
 # 3. Link skills and commands from host (staged via .rc-context/)
-for _rc_asset in skills commands; do
+for _rc_asset in skills commands agents; do
   if [ -d "/home/agent/.rc-context/${_rc_asset}" ]; then
     # Remove any real directory that may exist — ln -sfn would nest inside it otherwise
     if [ -d ~/.claude/"${_rc_asset}" ] && [ ! -L ~/.claude/"${_rc_asset}" ]; then

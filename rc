@@ -196,6 +196,7 @@ cmd_init() {
     "source=${localEnv:HOME}/CLAUDE.md,target=/home/agent/.rc-context/home-claude.md,type=bind,readonly",
     "source=${localEnv:HOME}/.claude/skills,target=/home/agent/.rc-context/skills,type=bind,readonly",
     "source=${localEnv:HOME}/.claude/commands,target=/home/agent/.rc-context/commands,type=bind,readonly",
+    "source=${localEnv:HOME}/.claude/agents,target=/home/agent/.rc-context/agents,type=bind,readonly",
     "source=${localWorkspaceFolder}/.git/hooks,target=/workspace/.git/hooks,type=bind,readonly"
   ],
 DEVCONTAINER_WITH_HOOKS
@@ -214,7 +215,8 @@ DEVCONTAINER_WITH_HOOKS
     "source=${localEnv:HOME}/.claude/CLAUDE.md,target=/home/agent/.rc-context/global-claude.md,type=bind,readonly",
     "source=${localEnv:HOME}/CLAUDE.md,target=/home/agent/.rc-context/home-claude.md,type=bind,readonly",
     "source=${localEnv:HOME}/.claude/skills,target=/home/agent/.rc-context/skills,type=bind,readonly",
-    "source=${localEnv:HOME}/.claude/commands,target=/home/agent/.rc-context/commands,type=bind,readonly"
+    "source=${localEnv:HOME}/.claude/commands,target=/home/agent/.rc-context/commands,type=bind,readonly",
+    "source=${localEnv:HOME}/.claude/agents,target=/home/agent/.rc-context/agents,type=bind,readonly"
   ],
 DEVCONTAINER_NO_HOOKS
     fi
@@ -235,7 +237,7 @@ DEVCONTAINER_NO_HOOKS
     fi
     if [[ "$init_dolt_mode" != "embedded" ]] && [[ -n "$init_dolt_mode" ]]; then
       cat <<'DEVCONTAINER_FOOTER_SERVER'
-  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
+  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096",
     "BEADS_DOLT_SERVER_MODE": "1",
@@ -249,7 +251,7 @@ DEVCONTAINER_NO_HOOKS
 DEVCONTAINER_FOOTER_SERVER
     else
       cat <<'DEVCONTAINER_FOOTER_EMBEDDED'
-  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
+  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096"
   },
@@ -279,6 +281,26 @@ DEVCONTAINER_FOOTER_EMBEDDED
         local _extra_json
         _extra_json=$(printf '%s\n' "${_init_extra_mounts[@]}" | jq -R . | jq -s .)
         jq ".mounts += ${_extra_json}" "$dest" > "${dest}.tmp"
+        mv "${dest}.tmp" "$dest"
+      fi
+    fi
+  fi
+
+  # Resolve agent symlinks in devcontainer.json — same logic as skills above.
+  if [[ -d "${HOME}/.claude/agents" ]]; then
+    if ! command -v jq &>/dev/null; then
+      echo "Warning: jq not found — agent symlink mounts skipped in devcontainer.json (install jq to fix)" >&2
+    else
+      local _init_agent_mounts
+      _init_agent_mounts=()
+      local _init_agent_tdir
+      while IFS= read -r _init_agent_tdir; do
+        _init_agent_mounts+=("source=${_init_agent_tdir},target=${_init_agent_tdir},type=bind,readonly")
+      done < <(_collect_symlink_parents "${HOME}/.claude/agents")
+      if [[ "${#_init_agent_mounts[@]}" -gt 0 ]]; then
+        local _agent_extra_json
+        _agent_extra_json=$(printf '%s\n' "${_init_agent_mounts[@]}" | jq -R . | jq -s .)
+        jq ".mounts += ${_agent_extra_json}" "$dest" > "${dest}.tmp"
         mv "${dest}.tmp" "$dest"
       fi
     fi
@@ -629,6 +651,13 @@ _up_prepare_docker_mounts() {
   if [[ -d "${HOME}/.claude/commands" ]]; then
     _UP_RUN_ARGS+=(-v "${HOME}/.claude/commands:/home/agent/.rc-context/commands:ro")
   fi
+  if [[ -d "${HOME}/.claude/agents" ]]; then
+    _UP_RUN_ARGS+=(-v "${HOME}/.claude/agents:/home/agent/.rc-context/agents:ro")
+    local _asset_tdir
+    while IFS= read -r _asset_tdir; do
+      _UP_RUN_ARGS+=(-v "${_asset_tdir}:${_asset_tdir}:ro")
+    done < <(_collect_symlink_parents "${HOME}/.claude/agents")
+  fi
 
   # D3: Credential health check — warn on expired or soon-to-expire tokens
   if [[ -s "${HOME}/.claude/.credentials.json" ]] && command -v jq &>/dev/null; then
@@ -954,6 +983,13 @@ cmd_up() {
         done < <(_collect_symlink_parents "${HOME}/.claude/skills")
       fi
       [[ -d "${HOME}/.claude/commands" ]] && echo "Would mount ~/.claude/commands -> /home/agent/.rc-context/commands:ro"
+      if [[ -d "${HOME}/.claude/agents" ]]; then
+        echo "Would mount ~/.claude/agents -> /home/agent/.rc-context/agents:ro"
+        local _dry_agent_tdir
+        while IFS= read -r _dry_agent_tdir; do
+          echo "Would mount ${_dry_agent_tdir} -> ${_dry_agent_tdir}:ro (agent symlink target)"
+        done < <(_collect_symlink_parents "${HOME}/.claude/agents")
+      fi
       [[ "$would_action" != "would_attach" ]] && echo "Would run init script"
     fi
     return 0
