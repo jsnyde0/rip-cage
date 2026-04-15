@@ -110,6 +110,7 @@ Commands:
   down [name]                                  Stop a container
   destroy [name]                               Remove container and volumes
   test [name]                                  Run safety stack smoke test
+  auth refresh                                 Refresh credentials from host keychain
 
 Global flags:
   --output json    Emit machine-readable JSON
@@ -587,6 +588,57 @@ _collect_symlink_parents() {
   done
 }
 
+# _extract_credentials — extract OAuth credentials from macOS Keychain to
+# ~/.claude/.credentials.json. No-op on Linux (no Keychain).
+#
+# Returns: 0 on success or on Linux, 1 on macOS extraction failure.
+_extract_credentials() {
+  # Guard: Docker creates a dir at this path if the file didn't exist on a prior failed mount
+  if [[ -d "${HOME}/.claude/.credentials.json" ]]; then
+    rmdir "${HOME}/.claude/.credentials.json" 2>/dev/null || \
+      echo "Warning: ${HOME}/.claude/.credentials.json is a non-empty directory artifact — credentials will not be extracted" >&2
+  fi
+  if [[ "$(uname)" == "Darwin" ]]; then
+    local creds_tmp
+    creds_tmp=$(mktemp) || { echo "Warning: failed to create temp file for credentials extraction" >&2; return 1; }
+    if security find-generic-password -s "Claude Code-credentials" -w > "$creds_tmp" 2>/dev/null; then
+      mv "$creds_tmp" "${HOME}/.claude/.credentials.json"
+    else
+      rm -f "$creds_tmp"
+      echo "Warning: failed to extract credentials from macOS keychain — auth may not work inside container" >&2
+      echo "  Run 'claude auth login' on the host to set up credentials, or set ANTHROPIC_API_KEY" >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
+cmd_auth_refresh() {
+  if [[ "$(uname)" != "Darwin" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      jq -nc '{"status": "ok", "action": "no_op", "message": "On Linux, update ~/.claude/.credentials.json directly."}'
+    else
+      echo "On Linux, update ~/.claude/.credentials.json directly." >&2
+      echo "Running containers will see the change immediately via bind mount." >&2
+    fi
+    return 0
+  fi
+  if _extract_credentials; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      jq -nc '{"status": "ok", "action": "credentials_refreshed", "credentials_updated": true}'
+    else
+      log "Credentials refreshed. Running containers will pick up the change on next API call."
+    fi
+  else
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Failed to extract credentials from macOS Keychain. Run 'claude auth login' first." "KEYCHAIN_EXTRACTION_FAILED"
+    else
+      echo "Error: Failed to extract credentials from macOS Keychain. Run 'claude auth login' first." >&2
+      exit 1
+    fi
+  fi
+}
+
 # _up_prepare_docker_mounts — build the mount (-v) portion of run_args.
 #
 # Globals read:    wt_detected, wt_name, wt_main_git (set by _up_detect_worktree)
@@ -618,22 +670,7 @@ _up_prepare_docker_mounts() {
   fi
 
   # Extract OAuth credentials from macOS keychain to file (if on macOS)
-  # Guard: Docker creates a dir at this path if the file didn't exist on a prior failed mount
-  if [[ -d "${HOME}/.claude/.credentials.json" ]]; then
-    rmdir "${HOME}/.claude/.credentials.json" 2>/dev/null || \
-      echo "Warning: ${HOME}/.claude/.credentials.json is a non-empty directory artifact — credentials will not be extracted" >&2
-  fi
-  if [[ "$(uname)" == "Darwin" ]]; then
-    local creds_tmp
-    creds_tmp=$(mktemp) || { echo "Warning: failed to create temp file for credentials extraction" >&2; return; }
-    if security find-generic-password -s "Claude Code-credentials" -w > "$creds_tmp" 2>/dev/null; then
-      mv "$creds_tmp" "${HOME}/.claude/.credentials.json"
-    else
-      rm -f "$creds_tmp"
-      echo "Warning: failed to extract credentials from macOS keychain — auth may not work inside container" >&2
-      echo "  Run 'claude auth login' on the host to set up credentials, or set ANTHROPIC_API_KEY" >&2
-    fi
-  fi
+  _extract_credentials
 
   # Skills and commands: mount host's ~/.claude/skills and ~/.claude/commands read-only
   # Staged via .rc-context/ so init-rip-cage.sh can symlink them into ~/.claude/
@@ -1318,7 +1355,7 @@ fi
 # Reject --output json on commands that don't support it
 if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   case "${1:-}" in
-    build|ls|up|down|destroy|test) ;;  # supported
+    build|ls|up|down|destroy|test|auth) ;;  # supported
     init|attach|schema|"")
       echo "Error: --output json is not supported for '${1:-}'" >&2
       exit 1
@@ -1353,6 +1390,7 @@ case "${1:-}" in
   down)    shift; cmd_down "$@" ;;
   destroy) shift; cmd_destroy "$@" ;;
   test)    shift; cmd_test "$@" ;;
+  auth)    shift; cmd_auth_refresh "$@" ;;
   schema)  cmd_schema ;;
   *)       usage ;;
 esac
