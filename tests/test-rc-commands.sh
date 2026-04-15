@@ -375,6 +375,53 @@ fi
 
 rm -rf "$FILE_SYMLINK_TARGET_DIR" "$FILE_SYMLINK_AGENTS_DIR"
 
+# --- Test 12: rc init devcontainer.json includes agents bind-mount ---
+echo ""
+echo "=== Test 12: rc init devcontainer.json includes agents entry ==="
+TEST_DIR_T12=$(mktemp -d)
+mkdir -p "${TEST_DIR_T12}/.git/hooks"
+RC_ALLOWED_ROOTS="$TEST_DIR_T12" "$RC" init "$TEST_DIR_T12" 2>/dev/null
+if [[ -f "${TEST_DIR_T12}/.devcontainer/devcontainer.json" ]]; then
+  if jq -r '.mounts[]' "${TEST_DIR_T12}/.devcontainer/devcontainer.json" 2>/dev/null | grep -q 'rc-context/agents'; then
+    pass "devcontainer.json mounts[] contains agents entry"
+  else
+    fail "devcontainer.json mounts[] missing agents entry"
+  fi
+else
+  fail "devcontainer.json not created for Test 12"
+fi
+
+# --- Test 13: rc init initializeCommand includes agents mkdir ---
+echo ""
+echo "=== Test 13: rc init initializeCommand includes agents mkdir ==="
+if [[ -f "${TEST_DIR_T12}/.devcontainer/devcontainer.json" ]]; then
+  if jq -r '.initializeCommand' "${TEST_DIR_T12}/.devcontainer/devcontainer.json" 2>/dev/null | grep -q '.claude/agents'; then
+    pass "initializeCommand includes .claude/agents mkdir"
+  else
+    fail "initializeCommand missing .claude/agents mkdir"
+  fi
+else
+  fail "devcontainer.json not available for Test 13"
+fi
+rm -rf "$TEST_DIR_T12"
+
+# --- Test 14: rc up --dry-run includes agents mount line ---
+echo ""
+echo "=== Test 14: rc up --dry-run includes agents mount line ==="
+if [[ -d "${HOME}/.claude/agents" ]]; then
+  TEST_DIR_T14=$(mktemp -d)
+  mkdir -p "${TEST_DIR_T14}/.git"
+  dry_run_output=$(RC_ALLOWED_ROOTS="$TEST_DIR_T14" "$RC" up --dry-run "$TEST_DIR_T14" 2>&1 || true)
+  if echo "$dry_run_output" | grep -q 'Would mount.*rc-context/agents'; then
+    pass "rc up --dry-run shows agents mount"
+  else
+    fail "rc up --dry-run missing agents mount line"
+  fi
+  rm -rf "$TEST_DIR_T14"
+else
+  pass "rc up --dry-run agents check skipped — ~/.claude/agents not present"
+fi
+
 # --- Cleanup ---
 rm -rf "$SYMLINK_SKILLS_DIR" "$SYMLINK_TARGET_DIR" "$SYMLINK_SKILLS_DIR2" "$HOME_TARGET_DIR" "$SIBLING_DIR" "$TEST_DIR3"
 rm -rf "$TEST_DIR" "$TEST_DIR2"
