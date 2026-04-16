@@ -22,6 +22,11 @@ cd ~/projects/my-app
 rc up .
 ```
 
+**Shell completions (optional):**
+```bash
+rc setup
+```
+
 That's it. On first run, `rc` prompts for allowed directories and builds the image automatically. You're in a caged tmux session — run `claude` and let it rip. Detach with `Ctrl-B d`.
 
 ## What does the cage do?
