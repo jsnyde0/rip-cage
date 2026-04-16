@@ -42,7 +42,7 @@ check "~/.claude/skills/ exists" "$([[ -d "${skills_dir}" ]] && echo pass || ech
 # This check can pass (find count > 0) while the MCP server serves 0 skills.
 # Use the MCP list response below for the authoritative skill count.
 if [[ -d "${skills_dir}" ]]; then
-  skill_count=$(find "${skills_dir}" -name 'SKILL.md' -maxdepth 2 2>/dev/null | wc -l | tr -d ' ')
+  skill_count=$(find -L "${skills_dir}" -name 'SKILL.md' -maxdepth 2 2>/dev/null | wc -l | tr -d ' ')
   check "At least one skill present" "$([[ "${skill_count}" -gt 0 ]] && echo pass || echo fail)" "${skill_count} skill(s)"
 else
   check "At least one skill present" "fail" "skills dir missing"
@@ -51,7 +51,7 @@ fi
 
 # 3. Skill files readable (not root-owned or permission-denied)
 if [[ "${skill_count}" -gt 0 ]]; then
-  first_skill=$(find "${skills_dir}" -name 'SKILL.md' -maxdepth 2 2>/dev/null | head -1)
+  first_skill=$(find -L "${skills_dir}" -name 'SKILL.md' -maxdepth 2 2>/dev/null | head -1)
   if [[ -r "${first_skill}" ]]; then
     skill_name=$(basename "$(dirname "${first_skill}")")
     check "Skill files readable" "pass" "${skill_name}/SKILL.md"
