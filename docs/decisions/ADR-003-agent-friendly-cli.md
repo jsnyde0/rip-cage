@@ -141,7 +141,7 @@ Add a `rc schema` subcommand that outputs a machine-readable JSON description of
       }
     },
     "down": {
-      "args": [{"name": "name", "type": "string", "required": false, "note": "auto-selected if exactly one container exists"}],
+      "args": [{"name": "name", "type": "string", "required": false, "note": "resolved from CWD first, then singleton fallback"}],
       "flags": {
         "--output": {"values": ["json"], "default": null}
       }

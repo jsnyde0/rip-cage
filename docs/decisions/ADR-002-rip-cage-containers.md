@@ -333,20 +333,26 @@ The `rc` script checks for `/.dockerenv` at startup and exits with a helpful mes
 
 **Added:** 2026-03-27 (manual testing)
 
-Commands that require a container name (`attach`, `down`, `destroy`, `test`) auto-select when exactly one rip-cage container exists. When zero or multiple exist, they error with a list.
+Commands that require a container name (`attach`, `down`, `destroy`, `test`) resolve the target container using a two-tier strategy:
 
-**Rationale:** The common case during development is a single container. Requiring `rc ls` → copy name → `rc test <name>` for every operation is tedious. Auto-select removes this friction without ambiguity risk (multiple containers still require explicit selection). Explicit names still work and are recommended for scripts/orchestrators.
+1. **CWD match (primary):** Derive the expected container name from the current working directory (same `container_name()` logic as `rc up`) and check if an rc-managed container with that name exists. This mirrors `rc up`'s default-to-`.` behavior, so `rc down` from a project directory targets that project's container — even when many containers are running.
+2. **Singleton fallback:** If no CWD match, auto-select when exactly one rip-cage container exists. When zero or multiple exist, error with a list.
+
+Explicit names still work and are recommended for scripts/orchestrators.
+
+**Rationale:** `rc up` defaults to the current directory when no path is given. But `rc down` and other commands had no CWD awareness — they required an explicit name whenever multiple containers existed. This asymmetry was confusing: `rc up` "just works" from a project directory but `rc down` doesn't. CWD-first resolution makes all commands behave consistently. The singleton fallback preserves backward compatibility for users with a single container.
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **Auto-select single** | Zero friction in common case, safe | Subtle behavior change |
+| **CWD match + singleton fallback (current)** | Consistent with `rc up`, works in multi-container setups | Slightly more complex resolution logic |
+| Singleton auto-select only (previous) | Simple | Breaks with multiple containers; inconsistent with `rc up` |
 | Always require name | Explicit, predictable | Tedious for single-container use |
 | Fuzzy match / partial names | Flexible | Ambiguous, error-prone |
 | `rc default <name>` | Explicit default | Extra state to manage |
 
-**What would invalidate this:** Users frequently run multiple containers and find the auto-select confusing. In that case, revert to always requiring a name.
+**What would invalidate this:** CWD-based resolution produces surprising results (e.g., hash-suffixed names from `container_name()` collisions). In that case, fall back to explicit names or add `rc default <name>`.
 
 ### D16: TUI rendering — locale, tmux config, synchronized output
 

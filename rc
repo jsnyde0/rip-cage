@@ -1120,6 +1120,25 @@ resolve_name() {
     echo "$name"
     return
   fi
+
+  # Try CWD-based resolution first (same logic as cmd_up):
+  # derive the expected container name from the current directory and check
+  # if a matching rc-managed container exists.
+  local cwd_resolved cwd_candidate
+  cwd_resolved=$(realpath "." 2>/dev/null) || true
+  if [[ -n "$cwd_resolved" ]]; then
+    cwd_candidate=$(container_name "$cwd_resolved")
+    if [[ -n "$cwd_candidate" ]]; then
+      local cwd_label
+      cwd_label=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$cwd_candidate" 2>/dev/null || true)
+      if [[ -n "$cwd_label" ]]; then
+        echo "$cwd_candidate"
+        return
+      fi
+    fi
+  fi
+
+  # Fallback: if no CWD match, use singleton auto-select
   local containers
   if ! containers=$(docker ps -a --filter label=rc.source.path --format '{{.Names}}'); then
     echo "Error: failed to list containers (is Docker running?)" >&2
