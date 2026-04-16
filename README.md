@@ -59,11 +59,15 @@ Spin up as many as you want. Each agent is sandboxed in its own container.
 
 ## More info
 
+**Reference:**
 - [CLI reference](docs/reference/cli-reference.md) — all commands, flags, JSON output
 - [Auth](docs/reference/auth.md) — OAuth, Keychain, API key fallback
 - [Safety stack](docs/reference/safety-stack.md) — hook config, allowlists, denied commands
 - [Dev containers](docs/reference/devcontainer.md) — VS Code setup via `rc init`
 - [What's in the box](docs/reference/whats-in-the-box.md) — tools, Dockerfile layers
+
+**Guides:**
+- [Multi-account rotation](docs/guides/multi-account-rotation.md) — spread rate limits across Claude accounts
 
 ## Contributing
 

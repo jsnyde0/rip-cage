@@ -31,3 +31,30 @@ the change immediately via bind mount — no restart needed.
 
 On Linux (no Keychain), update `~/.claude/.credentials.json` directly. Running
 containers see the change immediately.
+
+## Account rotation
+
+If you run multiple Claude Code accounts (e.g., to spread rate limits across profiles), any tool that rewrites `~/.claude/.credentials.json` on the host will propagate to all running containers instantly via the bind mount. No container restart needed.
+
+The workflow:
+
+1. Agent inside the cage hits a rate limit or auth error
+2. On the host, switch to a different account (update `~/.claude/.credentials.json`)
+3. The agent retries its API call and picks up the new credentials
+
+This works because rip-cage bind-mounts the credentials file read-write. The container sees host-side file changes immediately.
+
+**Tools that can do the switch:**
+
+| Tool | Command | What it does |
+|------|---------|-------------|
+| `rc auth refresh` | `rc auth refresh` | Re-extracts current account from macOS Keychain |
+| [CAAM](https://github.com/jsnyde0/caam) | `caam activate claude <profile>` | Switches between named credential profiles |
+| Manual | Edit `~/.claude/.credentials.json` directly | Works on any platform |
+
+For a step-by-step guide to multi-account rotation with CAAM, see [Multi-account rotation guide](../guides/multi-account-rotation.md).
+
+### Platform notes
+
+- **macOS + OrbStack/Docker Desktop (VirtioFS):** Works reliably. VirtioFS tracks file paths, so atomic file replacements (like CAAM's `mv`) propagate correctly. There is a sub-second window during the atomic swap where the file briefly disappears — Claude Code handles this naturally via retry.
+- **Linux (native Docker):** Single-file bind mounts track inodes, not paths. An atomic `mv` (new inode) will NOT propagate. Use directory-level bind mounts or in-place file writes (`cat > file`) instead.
