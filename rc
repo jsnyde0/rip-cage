@@ -108,7 +108,7 @@ Commands:
   ls                                           List rip-cage containers
   attach [name]                                Attach to container tmux session
   down [name]                                  Stop a container
-  destroy [name]                               Remove container and volumes
+  destroy [-f|--force] [name]                   Remove container and volumes
   test [name]                                  Run safety stack smoke test
   auth refresh                                 Refresh credentials from host keychain
 
@@ -1200,8 +1200,14 @@ cmd_down() {
 }
 
 cmd_destroy() {
-  local name
-  name=$(resolve_name "${1:-}") || exit 1
+  local name="" force=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force|-f) force=1; shift ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+  name=$(resolve_name "$name") || exit 1
 
   # Verify container exists and is managed by rc
   if ! docker inspect "$name" >/dev/null 2>&1; then
@@ -1209,6 +1215,23 @@ cmd_destroy() {
     echo "Error: container $name not found" >&2; exit 1
   fi
   verify_rc_container "$name"
+
+  # Interactive confirmation for destructive operation (skip in JSON/non-TTY/--force)
+  if [[ "$force" -eq 0 ]] && [[ "$DRY_RUN" != "true" ]] && [[ "$OUTPUT_FORMAT" != "json" ]] && [[ -t 0 ]]; then
+    local source_path
+    source_path=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$name" 2>/dev/null || true)
+    echo "This will permanently remove:"
+    echo "  Container:  $name"
+    [[ -n "$source_path" ]] && echo "  Workspace:  $source_path"
+    echo "  Volumes:    rc-state-$name, rc-history-$name"
+    printf "Destroy? [y/N] "
+    local reply
+    read -r reply
+    if [[ "$reply" != [yY] ]]; then
+      echo "Aborted."
+      return 0
+    fi
+  fi
 
   if [[ "$DRY_RUN" == "true" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -1315,7 +1338,8 @@ cmd_schema() {
       "args": [{"name": "name", "type": "string", "required": false}],
       "flags": {
         "--output": {"values": ["json"], "default": null},
-        "--dry-run": {"type": "bool", "default": false}
+        "--dry-run": {"type": "bool", "default": false},
+        "--force": {"type": "bool", "default": false, "aliases": ["-f"], "note": "skip confirmation prompt"}
       }
     },
     "ls": {

@@ -10,7 +10,7 @@
 | `rc ls` | List rip-cage containers |
 | `rc attach [name]` | Attach to a container's tmux session |
 | `rc down [name]` | Stop a container |
-| `rc destroy [name]` | Remove a container and its volumes |
+| `rc destroy [-f] [name]` | Remove a container and its volumes (prompts for confirmation) |
 | `rc test [name]` | Run the safety stack smoke test inside a container |
 
 ## Flags
