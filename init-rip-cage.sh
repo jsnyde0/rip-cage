@@ -24,19 +24,26 @@ if [[ ! -L /home/agent/.claude ]]; then
   sudo chown agent:agent /home/agent/.claude 2>/dev/null || true
 fi
 
-# Install settings template — merge with project settings if present to preserve
-# project-level mcpServers and hooks (rip-cage fields take precedence otherwise)
+# Install settings template — merge with workspace project settings if present to
+# preserve project-level mcpServers and hooks (rip-cage fields take precedence).
+# Source is /workspace/.claude/settings.json, NOT ~/.claude/settings.json, so that
+# re-running init on container resume doesn't re-merge rip-cage settings into
+# themselves (which doubled hooks and caused a jq precedence crash).
 mkdir -p ~/.claude
-if [ -f ~/.claude/settings.json ]; then
+if [ -f /workspace/.claude/settings.json ]; then
   jq -s '
     .[0] as $project |
     .[1] as $rip_cage |
     $rip_cage
     | .mcpServers = (($project.mcpServers // {}) + ($rip_cage.mcpServers // {}))
-    | .hooks = (($project.hooks // {}) | to_entries
-        + ($rip_cage.hooks // {}) | to_entries | group_by(.key)
-        | map({key: .[0].key, value: (map(.value) | flatten)}) | from_entries)
-  ' ~/.claude/settings.json /etc/rip-cage/settings.json > /tmp/merged-settings.json
+    | .hooks = (
+        (($project.hooks // {}) | to_entries) +
+        (($rip_cage.hooks // {}) | to_entries)
+        | group_by(.key)
+        | map({key: .[0].key, value: (map(.value) | flatten)})
+        | from_entries
+      )
+  ' /workspace/.claude/settings.json /etc/rip-cage/settings.json > /tmp/merged-settings.json
   mv /tmp/merged-settings.json ~/.claude/settings.json
 else
   cp /etc/rip-cage/settings.json ~/.claude/settings.json

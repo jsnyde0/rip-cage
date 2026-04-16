@@ -216,5 +216,64 @@ else
 fi
 
 echo ""
+echo "=== Agent Directory Check ==="
+echo ""
+
+agents_dir="${HOME}/.claude/agents"
+
+# 9. ~/.claude/agents/ symlink exists and points to .rc-context/agents
+if [[ -L "${agents_dir}" ]]; then
+  link_target=$(readlink "${agents_dir}")
+  if [[ "${link_target}" == *".rc-context/agents"* ]]; then
+    check "~/.claude/agents symlink points to .rc-context/agents" "pass" "-> ${link_target}"
+  else
+    check "~/.claude/agents symlink points to .rc-context/agents" "fail" "-> ${link_target}"
+  fi
+elif [[ -d "${agents_dir}" ]]; then
+  check "~/.claude/agents symlink points to .rc-context/agents" "fail" "is real dir, not a symlink"
+else
+  check "~/.claude/agents symlink points to .rc-context/agents" "fail" "missing"
+fi
+
+# 10. At least one .md agent file is readable (symlink chain resolves)
+if [[ -d "${agents_dir}" ]]; then
+  agent_count=$(find -L "${agents_dir}" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "${agent_count}" -gt 0 ]]; then
+    first_agent=$(find -L "${agents_dir}" -maxdepth 1 -name '*.md' 2>/dev/null | head -1)
+    if [[ -r "${first_agent}" ]]; then
+      check "Agent .md files readable (symlinks resolve)" "pass" "${agent_count} agent(s), $(basename "${first_agent}") readable"
+    else
+      check "Agent .md files readable (symlinks resolve)" "fail" "$(basename "${first_agent}") unreadable — broken symlink?"
+    fi
+  else
+    check "Agent .md files readable (symlinks resolve)" "fail" "0 .md files in agents dir"
+  fi
+else
+  check "Agent .md files readable (symlinks resolve)" "fail" "agents dir missing"
+fi
+
+echo ""
+echo "=== Settings Merge Idempotency Check ==="
+echo ""
+
+# 11. PreToolUse hooks not doubled (catches the resume re-merge bug)
+# On fresh init: 2 hooks (dcg + block-compound-commands).
+# If init-rip-cage.sh was re-run with the old ~/.claude/settings.json as merge
+# source, hooks would double to 4 on each resume. This test catches that.
+settings_file="${HOME}/.claude/settings.json"
+if [[ -f "${settings_file}" ]]; then
+  pretooluse_count=$(jq '[.hooks.PreToolUse[]?.hooks[]?] | length' "${settings_file}" 2>/dev/null || echo "-1")
+  if [[ "${pretooluse_count}" -eq 2 ]]; then
+    check "PreToolUse hooks not doubled after init" "pass" "${pretooluse_count} hook(s) — expected 2"
+  elif [[ "${pretooluse_count}" -gt 2 ]]; then
+    check "PreToolUse hooks not doubled after init" "fail" "${pretooluse_count} hook(s) — init re-merged and doubled hooks"
+  else
+    check "PreToolUse hooks not doubled after init" "fail" "could not read hook count (${pretooluse_count})"
+  fi
+else
+  check "PreToolUse hooks not doubled after init" "fail" "settings.json missing"
+fi
+
+echo ""
 echo "=== Results: ${PASS} passed, ${FAIL} failed (of ${TOTAL}) ==="
 [[ "${FAIL}" -eq 0 ]] || exit 1
