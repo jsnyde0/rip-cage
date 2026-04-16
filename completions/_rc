@@ -1,0 +1,61 @@
+#compdef rc
+
+_rc() {
+  local curcontext="$curcontext" state line
+  typeset -A opt_args
+
+  local -a subcommands
+  subcommands=(
+    'build:Build the rip-cage image'
+    'init:Scaffold .devcontainer/devcontainer.json'
+    'up:Start or resume a container'
+    'ls:List rip-cage containers'
+    'attach:Attach to container tmux session'
+    'down:Stop a container'
+    'destroy:Remove container and volumes'
+    'test:Run safety stack smoke test'
+    'auth:Auth subcommands (refresh)'
+    'schema:Print machine-readable command schema'
+    'completions:Print shell completion script'
+    'setup:Interactive shell integration setup'
+  )
+
+  _arguments -C \
+    '1: :->subcmd' \
+    '*: :->args'
+
+  case $state in
+    subcmd)
+      _describe 'subcommand' subcommands
+      ;;
+    args)
+      case $line[1] in
+        attach|down|test)
+          local -a containers
+          containers=($(docker ps --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null))
+          _describe 'container' containers
+          ;;
+        destroy)
+          local -a containers
+          containers=($(docker ps -a --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null))
+          _describe 'container' containers
+          ;;
+        up|init)
+          _files -/
+          ;;
+        auth)
+          local -a auth_subcmds
+          auth_subcmds=('refresh:Refresh credentials from host keychain')
+          _describe 'auth subcommand' auth_subcmds
+          ;;
+        completions)
+          local -a shells
+          shells=('zsh:Zsh completion script' 'bash:Bash completion script')
+          _describe 'shell' shells
+          ;;
+      esac
+      ;;
+  esac
+}
+
+_rc

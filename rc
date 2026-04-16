@@ -25,6 +25,18 @@ _resolve_script_dir() {
 }
 SCRIPT_DIR="$(_resolve_script_dir)"
 
+# Fast-path: completions dispatch before rc.conf, VERSION, and global flag parsing
+# Keeps shell startup overhead to ~5-10ms (symlink resolution + cat)
+if [[ "${1:-}" == "completions" ]]; then
+  shift
+  case "${1:-}" in
+    zsh)  cat "${SCRIPT_DIR}/completions/_rc"; exit 0 ;;
+    bash) cat "${SCRIPT_DIR}/completions/rc.bash"; exit 0 ;;
+    "")   echo "Usage: rc completions <shell>" >&2; echo "Shells: zsh, bash" >&2; exit 1 ;;
+    *)    echo "Error: unknown shell '${1}'. Supported: zsh, bash" >&2; exit 1 ;;
+  esac
+fi
+
 # Load config file if present (sets defaults for RC_ALLOWED_ROOTS, etc.)
 # Config location: ~/.config/rip-cage/rc.conf or $RC_CONFIG
 _rc_conf="${RC_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/rc.conf}"
@@ -111,6 +123,9 @@ Commands:
   destroy [-f|--force] [name]                   Remove container and volumes
   test [name]                                  Run safety stack smoke test
   auth refresh                                 Refresh credentials from host keychain
+  schema                                       Print machine-readable command schema
+  completions <shell>                          Print shell completion script (zsh|bash)
+  setup                                        Interactive shell integration setup
 
 Global flags:
   --output json    Emit machine-readable JSON
@@ -1326,6 +1341,15 @@ cmd_test() {
   fi
 }
 
+cmd_completions() {
+  case "${1:-}" in
+    zsh)  cat "${SCRIPT_DIR}/completions/_rc"; exit 0 ;;
+    bash) cat "${SCRIPT_DIR}/completions/rc.bash"; exit 0 ;;
+    "")   echo "Usage: rc completions <shell>" >&2; echo "Shells: zsh, bash" >&2; exit 1 ;;
+    *)    echo "Error: unknown shell '${1}'. Supported: zsh, bash" >&2; exit 1 ;;
+  esac
+}
+
 cmd_schema() {
   cat <<'SCHEMA'
 {
@@ -1386,6 +1410,10 @@ cmd_schema() {
     "schema": {
       "args": [],
       "flags": {}
+    },
+    "completions": {
+      "args": [{"name": "shell", "type": "string", "required": true, "values": ["zsh", "bash"]}],
+      "flags": {}
     }
   }
 }
@@ -1427,7 +1455,7 @@ fi
 if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   case "${1:-}" in
     build|ls|up|down|destroy|test|auth) ;;  # supported
-    init|attach|schema|"")
+    init|attach|schema|completions|setup|"")
       echo "Error: --output json is not supported for '${1:-}'" >&2
       exit 1
       ;;
@@ -1462,6 +1490,7 @@ case "${1:-}" in
   destroy) shift; cmd_destroy "$@" ;;
   test)    shift; cmd_test "$@" ;;
   auth)    shift; cmd_auth "$@" ;;
+  completions) shift; cmd_completions "$@" ;;
   schema)  cmd_schema ;;
   *)       usage ;;
 esac
