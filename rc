@@ -873,6 +873,19 @@ _up_init_container() {
   fi
 }
 
+# _up_attach_tmux — attach to the container's tmux session when a real TTY is
+# present; print a hint instead when called from a non-interactive context
+# (e.g. an agent Bash tool, CI, or pipe). Without the TTY check, docker exec -it
+# exits 1 and makes rc up appear to fail even on a successful container start.
+_up_attach_tmux() {
+  local name="$1"
+  if [[ -t 1 ]]; then
+    docker exec -it "$name" tmux new-session -A -s rip-cage
+  else
+    echo "Container $name is running. Attach with: rc attach $name"
+  fi
+}
+
 cmd_up() {
   local path="" port="" env_file=""
   local rc_cpus="2" rc_memory="4g" rc_pids_limit="500"
@@ -1069,7 +1082,7 @@ cmd_up() {
       _up_json_output "$name" "resumed" "$path" "running" "success"
       return
     fi
-    docker exec -it "$name" tmux new-session -A -s rip-cage
+    _up_attach_tmux "$name"
     return
   fi
 
@@ -1102,7 +1115,7 @@ cmd_up() {
     _up_json_output "$name" "created" "$path" "running" "success"
     return
   fi
-  docker exec -it "$name" tmux new-session -A -s rip-cage
+  _up_attach_tmux "$name"
 }
 
 cmd_ls() {
