@@ -1,15 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Bail out if running inside a container — rc is a host-only tool
-if [[ -f /.dockerenv ]]; then
-  echo "Error: rc is a host tool — it manages containers from outside." >&2
-  echo "You're already inside a rip-cage container. Run commands directly here." >&2
-  exit 1
-fi
-
-IMAGE="rip-cage:latest"
-
 # Resolve SCRIPT_DIR through symlinks so `rc build` finds the Dockerfile
 # even when rc is invoked via a symlink (e.g., /usr/local/bin/rc -> .../rip-cage/rc)
 _resolve_script_dir() {
@@ -25,7 +16,9 @@ _resolve_script_dir() {
 }
 SCRIPT_DIR="$(_resolve_script_dir)"
 
-# Fast-path: completions dispatch before rc.conf, VERSION, and global flag parsing
+# Fast-path: completions dispatch — canonical handler for `rc completions`.
+# Must run before the container guard so shell startup (eval "$(rc completions zsh)")
+# works inside containers and CI. Pure-output command; no Docker dependency.
 # Keeps shell startup overhead to ~5-10ms (symlink resolution + cat)
 if [[ "${1:-}" == "completions" ]]; then
   shift
@@ -36,6 +29,15 @@ if [[ "${1:-}" == "completions" ]]; then
     *)    echo "Error: unknown shell '${1}'. Supported: zsh, bash" >&2; exit 1 ;;
   esac
 fi
+
+# Bail out if running inside a container — rc is a host-only tool
+if [[ -f /.dockerenv ]]; then
+  echo "Error: rc is a host tool — it manages containers from outside." >&2
+  echo "You're already inside a rip-cage container. Run commands directly here." >&2
+  exit 1
+fi
+
+IMAGE="rip-cage:latest"
 
 # Load config file if present (sets defaults for RC_ALLOWED_ROOTS, etc.)
 # Config location: ~/.config/rip-cage/rc.conf or $RC_CONFIG
@@ -1341,14 +1343,10 @@ cmd_test() {
   fi
 }
 
-cmd_completions() {
-  case "${1:-}" in
-    zsh)  cat "${SCRIPT_DIR}/completions/_rc"; exit 0 ;;
-    bash) cat "${SCRIPT_DIR}/completions/rc.bash"; exit 0 ;;
-    "")   echo "Usage: rc completions <shell>" >&2; echo "Shells: zsh, bash" >&2; exit 1 ;;
-    *)    echo "Error: unknown shell '${1}'. Supported: zsh, bash" >&2; exit 1 ;;
-  esac
-}
+# cmd_completions() removed — the fast-path at the top of the script is the
+# canonical handler for `rc completions`. It intercepts every invocation before
+# reaching this dispatch table (and before the container guard), so this
+# function was unreachable dead code.
 
 cmd_setup() {
   # Detect login shell from $SHELL
@@ -1582,7 +1580,8 @@ case "${1:-}" in
   destroy) shift; cmd_destroy "$@" ;;
   test)    shift; cmd_test "$@" ;;
   auth)    shift; cmd_auth "$@" ;;
-  completions) shift; cmd_completions "$@" ;;
+  # completions: handled by fast-path above (before container guard); unreachable here
+  completions) echo "Usage: rc completions <shell>" >&2; echo "Shells: zsh, bash" >&2; exit 1 ;;
   setup)       shift; cmd_setup "$@" ;;
   schema)  cmd_schema ;;
   *)       usage ;;

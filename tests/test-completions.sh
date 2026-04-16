@@ -13,7 +13,7 @@ fail() { echo "FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 # --- Syntax validation ---
 
-if zsh --no-rcs -c "source '${SCRIPT_DIR}/../completions/_rc'" 2>/dev/null; then
+if zsh -c "autoload -Uz compinit && compinit && source '${SCRIPT_DIR}/../completions/_rc'" 2>/dev/null; then
   pass "completions/_rc zsh syntax valid"
 else
   fail "completions/_rc zsh syntax invalid"
@@ -74,6 +74,22 @@ while IFS= read -r cmd; do
 done <<< "$schema_cmds"
 if [[ $missing -eq 0 ]]; then
   pass "subcommand sync: all schema commands present in zsh completions"
+fi
+
+# --- Subcommand sync: bash completions must list all commands in schema ---
+# Extract static subcommand list from the COMPREPLY line in completions/rc.bash
+
+bash_cmds=$(grep 'local subcommands=' "${SCRIPT_DIR}/../completions/rc.bash" | sed 's/.*subcommands="\([^"]*\)".*/\1/' | tr ' ' '\n' | sort)
+
+missing=0
+while IFS= read -r cmd; do
+  if ! echo "$bash_cmds" | grep -qx "$cmd"; then
+    fail "subcommand sync: '$cmd' in schema but missing from bash completions"
+    missing=$((missing + 1))
+  fi
+done <<< "$schema_cmds"
+if [[ $missing -eq 0 ]]; then
+  pass "subcommand sync: all schema commands present in bash completions"
 fi
 
 # --- rc setup idempotency (non-interactive) ---
