@@ -62,6 +62,20 @@ rc up ../worktrees/feature-auth
 
 Spin up as many as you want. Each agent is sandboxed in its own container.
 
+## Who is this for?
+
+Rip cage is **your existing Claude Code workflow, caged** — not a new environment to learn.
+
+`rc up` from any worktree or project folder and everything your agent already uses comes with it:
+
+- Your credentials (OAuth via Keychain, or API key fallback)
+- Your skills (`~/.claude/skills`) and agents (`~/.claude/agents`)
+- Your project's `CLAUDE.md`, hooks, and `.claude/settings.json`
+- Your beads database, git identity, and git worktrees
+- Your Claude Code settings, merged with rip-cage's safety layer
+
+If you're already invested in Claude Code and want to run it with `bypassPermissions` without nuking your machine, rip cage cages your workflow and adds a safety stack. If you're looking for a batteries-included dev environment with pre-built language profiles and a fancy shell, tools like [ClaudeBox](https://github.com/RchGrav/claudebox) may fit better.
+
 ## More info
 
 **Reference:**
