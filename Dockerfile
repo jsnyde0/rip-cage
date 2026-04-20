@@ -23,7 +23,7 @@ ENV LC_ALL=C.UTF-8
 RUN apt-get update && apt-get install -y \
     curl wget git ssh openssh-client zsh tmux jq sudo \
     build-essential pkg-config libicu-dev libzstd-dev \
-    python3 perl ca-certificates gnupg \
+    python3 python3-venv perl ca-certificates gnupg \
     iptables openssl procps \
     && rm -rf /var/lib/apt/lists/*
 

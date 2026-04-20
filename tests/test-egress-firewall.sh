@@ -64,14 +64,13 @@ else
 fi
 
 # Check 2: Proxy listening on :8080
-# Any HTTP response (even 4xx/5xx) means the port is up. curl exits non-zero on
-# 4xx/5xx with -sf, so use -s only and check that we got ANY response.
-# "000" means connection failure (curl transport error) -- treat as not up.
-proxy_response=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:8080/ 2>/dev/null || true)
-if [[ -n "$proxy_response" ]] && [[ "$proxy_response" != "000" ]]; then
-  check "Proxy listening on :8080" "pass" "HTTP $proxy_response"
+# mitmproxy in transparent mode won't respond to a plain HTTP GET to 127.0.0.1:8080
+# (it expects intercepted traffic, not direct proxy-style requests). So we check the
+# socket is in LISTEN state via /proc/net/tcp. 0100007F = 127.0.0.1, 1F90 = 8080, 0A = LISTEN.
+if grep -qE '^\s*[0-9]+:\s+0100007F:1F90\s+[0-9A-F]+:[0-9A-F]+\s+0A' /proc/net/tcp; then
+  check "Proxy listening on 127.0.0.1:8080" "pass"
 else
-  check "Proxy listening on :8080" "fail" "no response from 127.0.0.1:8080"
+  check "Proxy listening on 127.0.0.1:8080" "fail" "no LISTEN socket on 127.0.0.1:8080"
 fi
 
 echo ""

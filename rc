@@ -882,6 +882,14 @@ _up_prepare_environment() {
   if [[ "$_rc_egress" != "off" ]]; then
     _UP_RUN_ARGS+=(--cap-add=NET_ADMIN)
     _UP_RUN_ARGS+=(-l rc.egress=on)
+    # CA trust env vars — mirrored from devcontainer containerEnv so that
+    # non-interactive `docker exec` children (tests, subprocesses) inherit trust.
+    # Interactive shells also get these via .zshrc, but env here is authoritative.
+    _UP_RUN_ARGS+=(-e "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/rip-cage-proxy.crt")
+    _UP_RUN_ARGS+=(-e "CLAUDE_CODE_CERT_STORE=/etc/ssl/certs/ca-certificates.crt")
+    _UP_RUN_ARGS+=(-e "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt")
+    _UP_RUN_ARGS+=(-e "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt")
+    _UP_RUN_ARGS+=(-e "CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt")
   else
     _UP_RUN_ARGS+=(-l rc.egress=off)
   fi
@@ -1128,8 +1136,7 @@ cmd_up() {
       _up_json_output "$name" "attached" "$path" "running"
       return
     fi
-    echo "Container $name is already running. Attaching..."
-    docker exec -it "$name" tmux new-session -A -s rip-cage
+    _up_attach_tmux "$name"
     return
   elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
     log "Resuming stopped container $name..."
