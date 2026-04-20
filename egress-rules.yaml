@@ -43,6 +43,34 @@ rules:
     reason: "interactsh is OAST infrastructure"
     category: oast
 
+  - id: interactsh-oast-pro
+    deny: true
+    match:
+      host_suffix: ".oast.pro"
+    reason: "interactsh alt domain (oast.pro) is OAST infrastructure"
+    category: oast
+
+  - id: interactsh-oast-me
+    deny: true
+    match:
+      host_suffix: ".oast.me"
+    reason: "interactsh alt domain (oast.me) is OAST infrastructure"
+    category: oast
+
+  - id: interactsh-oast-fun
+    deny: true
+    match:
+      host_suffix: ".oast.fun"
+    reason: "interactsh alt domain (oast.fun) is OAST infrastructure"
+    category: oast
+
+  - id: interactsh-oast-site
+    deny: true
+    match:
+      host_suffix: ".oast.site"
+    reason: "interactsh alt domain (oast.site) is OAST infrastructure"
+    category: oast
+
   - id: burp-collaborator
     deny: true
     match:
@@ -50,10 +78,17 @@ rules:
     reason: "Burp Collaborator is OAST infrastructure"
     category: oast
 
-  - id: canarytokens
+  - id: canarytokens-com
     deny: true
     match:
       host: "canarytokens.com"
+    reason: "Canarytokens is OAST infrastructure"
+    category: oast
+
+  - id: canarytokens-org
+    deny: true
+    match:
+      host: "canarytokens.org"
     reason: "Canarytokens is OAST infrastructure"
     category: oast
 
@@ -160,6 +195,20 @@ rules:
     deny: true
     match:
       host_suffix: ".ngrok-free.app"
+    reason: "ngrok tunnels are an exfiltration vector"
+    category: tunnel
+
+  - id: ngrok-app
+    deny: true
+    match:
+      host_suffix: ".ngrok.app"
+    reason: "ngrok tunnels are an exfiltration vector"
+    category: tunnel
+
+  - id: ngrok-dev
+    deny: true
+    match:
+      host_suffix: ".ngrok.dev"
     reason: "ngrok tunnels are an exfiltration vector"
     category: tunnel
 
