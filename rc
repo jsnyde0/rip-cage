@@ -253,8 +253,17 @@ DEVCONTAINER_NO_HOOKS
     if [[ -f "${init_beads_dir}/metadata.json" ]]; then
       init_dolt_mode=$(jq -r '.dolt_mode // empty' "${init_beads_dir}/metadata.json" 2>/dev/null || true)
     fi
+    local init_egress="${RIP_CAGE_EGRESS:-on}"
+    local init_run_args='"--cpus=2", "--memory=4g", "--memory-swap=4g", "--pids-limit=500"'
+    local init_post_start="/usr/local/bin/init-rip-cage.sh"
+    if [[ "$init_egress" != "off" ]]; then
+      init_run_args="${init_run_args}, \"--cap-add=NET_ADMIN\""
+      init_post_start="sudo /usr/local/lib/rip-cage/init-firewall.sh \\&\\& /usr/local/bin/init-rip-cage.sh"
+    fi
     if [[ "$init_dolt_mode" != "embedded" ]] && [[ -n "$init_dolt_mode" ]]; then
-      cat <<'DEVCONTAINER_FOOTER_SERVER'
+      cat <<'DEVCONTAINER_FOOTER_SERVER' | sed \
+        -e "s|\"--cpus=2\", \"--memory=4g\", \"--memory-swap=4g\", \"--pids-limit=500\"|${init_run_args}|" \
+        -e "s|\"postStartCommand\": \"/usr/local/bin/init-rip-cage.sh\"|\"postStartCommand\": \"${init_post_start}\"|"
   "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096",
@@ -268,7 +277,9 @@ DEVCONTAINER_NO_HOOKS
 }
 DEVCONTAINER_FOOTER_SERVER
     else
-      cat <<'DEVCONTAINER_FOOTER_EMBEDDED'
+      cat <<'DEVCONTAINER_FOOTER_EMBEDDED' | sed \
+        -e "s|\"--cpus=2\", \"--memory=4g\", \"--memory-swap=4g\", \"--pids-limit=500\"|${init_run_args}|" \
+        -e "s|\"postStartCommand\": \"/usr/local/bin/init-rip-cage.sh\"|\"postStartCommand\": \"${init_post_start}\"|"
   "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096"
@@ -776,8 +787,9 @@ _up_prepare_docker_mounts() {
 #   $4  rc_cpus       — CPU limit
 #   $5  rc_memory     — memory limit
 #   $6  rc_pids_limit — PID limit
+#   $7  rc_egress     — egress firewall mode ("on" or "off")
 _up_prepare_environment() {
-  local _path="$1" _port="$2" _env_file="$3" _rc_cpus="$4" _rc_memory="$5" _rc_pids_limit="$6"
+  local _path="$1" _port="$2" _env_file="$3" _rc_cpus="$4" _rc_memory="$5" _rc_pids_limit="$6" _rc_egress="${7:-on}"
 
   # Forward git identity from host
   local git_name git_email
@@ -850,6 +862,14 @@ _up_prepare_environment() {
     fi
     log "Beads: server mode — connecting to host Dolt server"
   fi
+
+  # Egress firewall (D6): add NET_ADMIN capability unless escape valve is set
+  if [[ "$_rc_egress" != "off" ]]; then
+    _UP_RUN_ARGS+=(--cap-add=NET_ADMIN)
+    _UP_RUN_ARGS+=(-l rc.egress=on)
+  else
+    _UP_RUN_ARGS+=(-l rc.egress=off)
+  fi
 }
 
 # _up_start_container — run the container with the prepared _UP_RUN_ARGS.
@@ -890,6 +910,22 @@ _up_init_container() {
   fi
 }
 
+# _up_init_firewall -- run the root-phase firewall init inside the container.
+# Called on both create and resume paths (iptables rules do not persist across stop/start).
+# Must run BEFORE _up_init_container (init-rip-cage.sh sources /etc/rip-cage/firewall-env).
+#
+# Globals read: OUTPUT_FORMAT
+# Parameter: $1 name -- container name
+_up_init_firewall() {
+  local _name="$1"
+  log "Running firewall init..."
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    docker exec -u root "$_name" /usr/local/lib/rip-cage/init-firewall.sh >/dev/null 2>&1
+  else
+    docker exec -u root "$_name" /usr/local/lib/rip-cage/init-firewall.sh
+  fi
+}
+
 # _up_attach_tmux — attach to the container's tmux session when a real TTY is
 # present; print a hint instead when called from a non-interactive context
 # (e.g. an agent Bash tool, CI, or pipe). Without the TTY check, docker exec -it
@@ -916,6 +952,7 @@ cmd_up() {
       *) path="$1"; shift ;;
     esac
   done
+  local rc_egress="${RIP_CAGE_EGRESS:-on}"
 
   if [[ -z "$path" ]]; then
     path="."
@@ -1084,6 +1121,9 @@ cmd_up() {
     else
       docker start "$name"
     fi
+    if [[ "$rc_egress" != "off" ]]; then
+      _up_init_firewall "$name"
+    fi
     _up_init_container "$name"
     if [[ "$_UP_INIT_OK" == "false" ]]; then
       if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -1110,11 +1150,14 @@ cmd_up() {
   _UP_RUN_ARGS+=(--label "rc.source.path=$path")
 
   _up_prepare_docker_mounts "$path" "$name"
-  _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit"
+  _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" "$rc_egress"
 
   _UP_RUN_ARGS+=("$IMAGE" sleep infinity)
 
   _up_start_container "$name"
+  if [[ "$rc_egress" != "off" ]]; then
+    _up_init_firewall "$name"
+  fi
   _up_init_container "$name"
 
   if [[ "$_UP_INIT_OK" == "false" ]]; then
@@ -1128,6 +1171,9 @@ cmd_up() {
     exit 1
   fi
 
+  if [[ "$rc_egress" != "off" ]]; then
+    log "egress firewall active (denylist mode)"
+  fi
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     _up_json_output "$name" "created" "$path" "running" "success"
     return
@@ -1137,10 +1183,10 @@ cmd_up() {
 
 cmd_ls() {
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "rc.source.path"}}' | \
-      jq -Rsn '[inputs | rtrimstr("\n") | select(length > 0) | split("\t") | {name: .[0], status: .[1], uptime: .[2], source_path: .[3]}]'
+    docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}' | \
+      jq -Rsn '[inputs | rtrimstr("\n") | select(length > 0) | split("\t") | {name: .[0], status: .[1], uptime: .[2], source_path: .[3], egress: .[4]}]'
   else
-    docker ps -a --filter label=rc.source.path --format "table {{.Names}}\t{{.Status}}\t{{.Label \"rc.source.path\"}}"
+    docker ps -a --filter label=rc.source.path --format "table {{.Names}}\t{{.Status}}\t{{.Label \"rc.egress\"}}\t{{.Label \"rc.source.path\"}}"
   fi
 }
 
