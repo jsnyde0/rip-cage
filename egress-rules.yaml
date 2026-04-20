@@ -1,0 +1,245 @@
+version: 1
+default: allow
+rules:
+  # Webhook receivers
+  - id: discord-webhooks
+    deny: true
+    match:
+      host: "discord.com"
+      path_prefix: "/api/webhooks/"
+      method_in: ["POST", "PUT"]
+    reason: "Discord webhooks are a common exfiltration sink (MITRE T1567.004)"
+    category: webhook-receiver
+
+  - id: slack-hooks
+    deny: true
+    match:
+      host: "hooks.slack.com"
+      method_in: ["POST", "PUT"]
+    reason: "Slack incoming webhooks are a common exfiltration sink"
+    category: webhook-receiver
+
+  - id: telegram-bot
+    deny: true
+    match:
+      host: "api.telegram.org"
+      path_prefix: "/bot"
+      method_in: ["POST", "PUT"]
+    reason: "Telegram bot API is an exfiltration sink"
+    category: webhook-receiver
+
+  - id: webhook-site
+    deny: true
+    match:
+      host: "webhook.site"
+    reason: "webhook.site is an OAST/exfiltration service"
+    category: webhook-receiver
+
+  # OAST / pentest infra
+  - id: interactsh
+    deny: true
+    match:
+      host_suffix: ".interact.sh"
+    reason: "interactsh is OAST infrastructure"
+    category: oast
+
+  - id: burp-collaborator
+    deny: true
+    match:
+      host_suffix: ".burpcollaborator.net"
+    reason: "Burp Collaborator is OAST infrastructure"
+    category: oast
+
+  - id: canarytokens
+    deny: true
+    match:
+      host: "canarytokens.com"
+    reason: "Canarytokens is OAST infrastructure"
+    category: oast
+
+  # Paste services (write operations only - reads allowed per D2 method asymmetry)
+  - id: pastebin-write
+    deny: true
+    match:
+      host: "pastebin.com"
+      path_prefix: "/api/api_post.php"
+      method_in: ["POST", "PUT"]
+    reason: "Pastebin write API is an exfiltration sink"
+    category: paste-service
+
+  - id: paste-ee-write
+    deny: true
+    match:
+      host: "paste.ee"
+      method_in: ["POST", "PUT"]
+    reason: "paste.ee write operations are an exfiltration sink"
+    category: paste-service
+
+  - id: dpaste-write
+    deny: true
+    match:
+      host: "dpaste.com"
+      method_in: ["POST", "PUT"]
+    reason: "dpaste write operations are an exfiltration sink"
+    category: paste-service
+
+  - id: ix-io
+    deny: true
+    match:
+      host: "ix.io"
+      method_in: ["POST", "PUT"]
+    reason: "ix.io is a paste/exfiltration service"
+    category: paste-service
+
+  - id: termbin
+    deny: true
+    match:
+      host: "termbin.com"
+      method_in: ["POST", "PUT"]
+    reason: "termbin is a paste/exfiltration service"
+    category: paste-service
+
+  # Anonymous file drops
+  - id: file-io
+    deny: true
+    match:
+      host: "file.io"
+      method_in: ["POST", "PUT"]
+    reason: "file.io is an anonymous file drop"
+    category: file-drop
+
+  - id: bashupload
+    deny: true
+    match:
+      host: "bashupload.com"
+      method_in: ["POST", "PUT"]
+    reason: "bashupload is an anonymous file drop"
+    category: file-drop
+
+  - id: catbox
+    deny: true
+    match:
+      host: "catbox.moe"
+      method_in: ["POST", "PUT"]
+    reason: "catbox.moe is an anonymous file drop"
+    category: file-drop
+
+  - id: tmpfiles
+    deny: true
+    match:
+      host: "tmpfiles.org"
+      method_in: ["POST", "PUT"]
+    reason: "tmpfiles.org is an anonymous file drop"
+    category: file-drop
+
+  - id: 0x0
+    deny: true
+    match:
+      host: "0x0.st"
+      method_in: ["POST", "PUT"]
+    reason: "0x0.st is an anonymous file drop"
+    category: file-drop
+
+  - id: transfer-sh
+    deny: true
+    match:
+      host: "transfer.sh"
+      method_in: ["POST", "PUT"]
+    reason: "transfer.sh is an anonymous file drop"
+    category: file-drop
+
+  # Tunnels (all methods - tunnel destination is always suspicious)
+  - id: ngrok
+    deny: true
+    match:
+      host_suffix: ".ngrok.io"
+    reason: "ngrok tunnels are an exfiltration vector"
+    category: tunnel
+
+  - id: ngrok-free
+    deny: true
+    match:
+      host_suffix: ".ngrok-free.app"
+    reason: "ngrok tunnels are an exfiltration vector"
+    category: tunnel
+
+  - id: trycloudflare
+    deny: true
+    match:
+      host_suffix: ".trycloudflare.com"
+    reason: "Cloudflare tunnels are an exfiltration vector"
+    category: tunnel
+
+  - id: localhost-run
+    deny: true
+    match:
+      host: "localhost.run"
+    reason: "localhost.run is a tunnel exfiltration vector"
+    category: tunnel
+
+  - id: serveo
+    deny: true
+    match:
+      host: "serveo.net"
+    reason: "serveo.net is a tunnel exfiltration vector"
+    category: tunnel
+
+  - id: localtunnel
+    deny: true
+    match:
+      host_suffix: ".loca.lt"
+    reason: "localtunnel is a tunnel exfiltration vector"
+    category: tunnel
+
+  # Dynamic DNS
+  - id: duckdns
+    deny: true
+    match:
+      host_suffix: ".duckdns.org"
+    reason: "DuckDNS dynamic DNS can mask exfiltration endpoints"
+    category: dynamic-dns
+
+  - id: noip
+    deny: true
+    match:
+      host_suffix: ".noip.com"
+    reason: "No-IP dynamic DNS can mask exfiltration endpoints"
+    category: dynamic-dns
+
+  - id: dynu
+    deny: true
+    match:
+      host_suffix: ".dynu.net"
+    reason: "Dynu dynamic DNS can mask exfiltration endpoints"
+    category: dynamic-dns
+
+  - id: hopto
+    deny: true
+    match:
+      host_suffix: ".hopto.org"
+    reason: "hopto.org dynamic DNS can mask exfiltration endpoints"
+    category: dynamic-dns
+
+  # DoH resolvers (DNS-over-HTTPS)
+  - id: google-doh
+    deny: true
+    match:
+      host: "dns.google"
+      path_prefix: "/dns-query"
+    reason: "DNS-over-HTTPS bypasses container DNS controls"
+    category: doh
+
+  - id: cloudflare-doh
+    deny: true
+    match:
+      host: "cloudflare-dns.com"
+      path_prefix: "/dns-query"
+    reason: "DNS-over-HTTPS bypasses container DNS controls"
+    category: doh
+
+  - id: nextdns-doh
+    deny: true
+    match:
+      host_suffix: ".nextdns.io"
+    reason: "NextDNS DoH bypasses container DNS controls"
+    category: doh

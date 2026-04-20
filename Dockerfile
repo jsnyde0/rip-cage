@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y \
     curl wget git ssh openssh-client zsh tmux jq sudo \
     build-essential pkg-config libicu-dev libzstd-dev \
     python3 perl ca-certificates gnupg \
+    iptables openssl procps \
     && rm -rf /var/lib/apt/lists/*
 
 # uv (Python package manager)
@@ -65,8 +66,16 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # Non-root user
 RUN groupadd -g 1000 agent \
     && useradd -m -u 1000 -g agent -s /usr/bin/zsh agent \
-    && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state" > /etc/sudoers.d/agent \
+    && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state, /usr/local/lib/rip-cage/init-firewall.sh, /usr/sbin/iptables -t nat -L OUTPUT -n, /usr/sbin/iptables -L OUTPUT -n" > /etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent
+
+RUN useradd -r -s /usr/sbin/nologin -M rip-proxy
+
+RUN python3 -m venv /opt/rip-cage-proxy
+RUN /opt/rip-cage-proxy/bin/pip install --no-cache-dir mitmproxy
+RUN ln -sf /opt/rip-cage-proxy/bin/mitmdump /usr/local/bin/mitmdump
+
+RUN mkdir -p /etc/rip-cage/ca
 
 # Copy rip-cage files — stable files first (fewer cache busts), frequently-edited last
 COPY hooks/ /usr/local/lib/rip-cage/hooks/
@@ -75,10 +84,16 @@ COPY settings.json /etc/rip-cage/settings.json
 COPY init-rip-cage.sh /usr/local/bin/init-rip-cage.sh
 COPY skill-server.py /usr/local/lib/rip-cage/skill-server.py
 COPY tests/test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
+COPY egress-rules.yaml /etc/rip-cage/egress-rules.yaml
+COPY rip_cage_egress.py /usr/local/lib/rip-cage/rip_cage_egress.py
+COPY init-firewall.sh /usr/local/lib/rip-cage/init-firewall.sh
+COPY tests/test-egress-firewall.sh /usr/local/lib/rip-cage/test-egress-firewall.sh
 RUN chmod +x /usr/local/bin/init-rip-cage.sh \
     /usr/local/lib/rip-cage/hooks/*.sh \
     /usr/local/lib/rip-cage/test-safety-stack.sh \
-    /usr/local/lib/rip-cage/test-skills.sh
+    /usr/local/lib/rip-cage/test-skills.sh \
+    /usr/local/lib/rip-cage/test-egress-firewall.sh \
+    /usr/local/lib/rip-cage/init-firewall.sh
 
 USER agent
 WORKDIR /home/agent

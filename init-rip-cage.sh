@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Source firewall CA trust vars if firewall init has run (Phase 1 root init).
+# Makes NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, etc. active for this script and for
+# any Claude Code process it spawns.
+if [[ -f /etc/rip-cage/firewall-env ]]; then
+  source /etc/rip-cage/firewall-env
+fi
+
 echo "[rip-cage] Initializing..."
 
 # Beads: determine storage mode from project's metadata.json
@@ -143,6 +150,12 @@ if [ -d /workspace/.beads ]; then
   else
     echo "[rip-cage] WARNING: bd prime failed (non-fatal). See /tmp/bd-prime.log" >&2
   fi
+fi
+
+# Append firewall env vars to agent's .zshrc so interactive shell sessions
+# and tmux panes inherit CA trust on every new shell.
+if [[ -f /etc/rip-cage/firewall-env ]]; then
+  cat /etc/rip-cage/firewall-env >> /home/agent/.zshrc
 fi
 
 # 9. Start tmux (CLI mode only — skip if inside VS Code devcontainer)
