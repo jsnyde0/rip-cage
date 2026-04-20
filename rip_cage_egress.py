@@ -1,5 +1,4 @@
 import json
-import os
 import re
 import socket
 import time
@@ -53,9 +52,12 @@ class EgressFirewall:
             if host_lower != rule_match["host"].lower():
                 return False
 
-        # Host suffix match (e.g. ".ngrok.io" matches "foo.ngrok.io")
+        # Host suffix match (e.g. ".ngrok.io" matches "foo.ngrok.io").
+        # Also match the root domain itself (e.g. ".ngrok.io" matches "ngrok.io")
+        # by comparing host to the suffix with the leading dot stripped.
         if "host_suffix" in rule_match:
-            if not host_lower.endswith(rule_match["host_suffix"].lower()):
+            suffix_lower = rule_match["host_suffix"].lower()
+            if not host_lower.endswith(suffix_lower) and host_lower != suffix_lower.lstrip("."):
                 return False
 
         # Host membership match
@@ -162,7 +164,6 @@ class EgressFirewall:
                 "method": method,
                 "host": host,
                 "path": path[:500],
-                "client_uid": os.getuid(),
                 "container_hostname": socket.gethostname(),
             }
             with log_path.open("a") as f:

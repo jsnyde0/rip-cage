@@ -11,6 +11,20 @@ if [[ ! -f /etc/rip-cage/ca/rip-cage-proxy-ca.pem ]]; then
   chmod 600 /etc/rip-cage/ca/rip-cage-proxy-ca.key
 fi
 
+# Step 1b: Populate mitmproxy confdir with our CA keypair so mitmproxy uses it
+# instead of auto-generating its own (which clients don't trust).
+# mitmproxy-ca.pem = private key + cert concatenated (mitmproxy's expected format).
+# mitmproxy-ca-cert.pem = cert only (for distribution / trust anchoring).
+mkdir -p /etc/rip-cage/mitmproxy
+cat /etc/rip-cage/ca/rip-cage-proxy-ca.key \
+    /etc/rip-cage/ca/rip-cage-proxy-ca.pem \
+    > /etc/rip-cage/mitmproxy/mitmproxy-ca.pem
+cp /etc/rip-cage/ca/rip-cage-proxy-ca.pem \
+   /etc/rip-cage/mitmproxy/mitmproxy-ca-cert.pem
+chmod 600 /etc/rip-cage/mitmproxy/mitmproxy-ca.pem
+chmod 644 /etc/rip-cage/mitmproxy/mitmproxy-ca-cert.pem
+chown -R rip-proxy:rip-proxy /etc/rip-cage/mitmproxy
+
 # Step 2: Install CA cert into system trust store (idempotent -- cp overwrites).
 cp /etc/rip-cage/ca/rip-cage-proxy-ca.pem \
    /usr/local/share/ca-certificates/rip-cage-proxy.crt
@@ -29,6 +43,7 @@ update-ca-certificates --fresh 2>/dev/null
 #     because Let's Encrypt, DigiCert etc. would not be trusted.
 cat > /etc/rip-cage/firewall-env <<'ENVEOF'
 export NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/rip-cage-proxy.crt
+export CLAUDE_CODE_CERT_STORE=/etc/ssl/certs/ca-certificates.crt
 export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 export CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
@@ -54,20 +69,19 @@ fi
 # (normal on first run). set -e would abort without it.
 pkill -u rip-proxy mitmdump 2>/dev/null || true
 
-# Write restart-wrapper to disk to avoid fragile nested shell quoting.
-# This file is written at runtime; it is not COPYd in the Dockerfile.
-cat > /tmp/rip-proxy-start.sh <<'PROXYEOF'
-#!/bin/sh
-while true; do
-  mitmdump --mode transparent --listen-host 127.0.0.1 --listen-port 8080 \
-    --set confdir=/etc/rip-cage/mitmproxy \
-    -s /usr/local/lib/rip-cage/rip_cage_egress.py \
-    2>>/var/log/rip-cage-proxy.log
-  sleep 1
-done
-PROXYEOF
-chmod +x /tmp/rip-proxy-start.sh
-su -s /bin/sh rip-proxy -c 'nohup /tmp/rip-proxy-start.sh >/dev/null 2>&1 &'
+# Pre-create the proxy log so rip-proxy can write to it.
+# (The file is root-owned by default; rip-proxy cannot create it otherwise.)
+touch /var/log/rip-cage-proxy.log
+chown rip-proxy:rip-proxy /var/log/rip-cage-proxy.log
+
+# Pre-create the audit log directory on the workspace bind mount.
+# rip-proxy writes JSONL denial records here; /workspace is owned by agent:agent.
+mkdir -p /workspace/.rip-cage
+chmod 777 /workspace/.rip-cage
+
+# Use the wrapper script baked into the image at build time (root-owned, 755).
+# Do NOT write to /tmp — it is world-writable and replaceable by the agent user.
+su -s /bin/sh rip-proxy -c 'nohup /usr/local/lib/rip-cage/rip-proxy-start.sh >/dev/null 2>&1 &'
 
 # Step 6: Wait for proxy to be ready (up to 10s).
 # mitmproxy transparent mode responds to direct HTTP with a proxy error page (4xx/5xx)
@@ -76,8 +90,8 @@ su -s /bin/sh rip-proxy -c 'nohup /tmp/rip-proxy-start.sh >/dev/null 2>&1 &'
 #   any other exit = port is accepting connections (even 4xx/5xx means 'up')
 count=0
 while [[ $count -lt 20 ]]; do
-  curl -s --max-time 1 http://127.0.0.1:8080/ >/dev/null 2>&1
-  curl_exit=$?
+  curl_exit=0
+  curl -s --max-time 1 http://127.0.0.1:8080/ >/dev/null 2>&1 || curl_exit=$?
   if [[ $curl_exit -ne 7 ]]; then
     break
   fi

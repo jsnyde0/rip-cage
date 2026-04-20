@@ -154,8 +154,11 @@ fi
 
 # Append firewall env vars to agent's .zshrc so interactive shell sessions
 # and tmux panes inherit CA trust on every new shell.
+# Guard is idempotent: skip if already present (avoids growing .zshrc on every resume).
 if [[ -f /etc/rip-cage/firewall-env ]]; then
-  cat /etc/rip-cage/firewall-env >> /home/agent/.zshrc
+  if ! grep -q 'NODE_EXTRA_CA_CERTS' /home/agent/.zshrc 2>/dev/null; then
+    cat /etc/rip-cage/firewall-env >> /home/agent/.zshrc
+  fi
 fi
 
 # 9. Start tmux (CLI mode only — skip if inside VS Code devcontainer)

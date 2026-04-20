@@ -293,6 +293,21 @@ DEVCONTAINER_FOOTER_EMBEDDED
     fi
   } > "$dest"
 
+  # Inject CA trust env vars into containerEnv when egress firewall is on.
+  # VS Code extension host processes do not source .zshrc, so NODE_EXTRA_CA_CERTS
+  # and friends must be in containerEnv to reach the Claude Code VS Code extension.
+  # Paths are fixed and correct when egress is on; harmless when off (files exist).
+  if [[ "$init_egress" != "off" ]] && command -v jq &>/dev/null; then
+    jq '.containerEnv += {
+      "NODE_EXTRA_CA_CERTS": "/usr/local/share/ca-certificates/rip-cage-proxy.crt",
+      "CLAUDE_CODE_CERT_STORE": "/etc/ssl/certs/ca-certificates.crt",
+      "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
+      "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
+      "CURL_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt"
+    }' "$dest" > "${dest}.tmp"
+    mv "${dest}.tmp" "$dest"
+  fi
+
   # Resolve skill symlinks in devcontainer.json — same logic as cmd_up.
   # Skills stored as host symlinks become broken inside the container; mount
   # each symlink-target parent at the same absolute path to fix this.
@@ -915,14 +930,16 @@ _up_init_container() {
 # Must run BEFORE _up_init_container (init-rip-cage.sh sources /etc/rip-cage/firewall-env).
 #
 # Globals read: OUTPUT_FORMAT
+# Globals written: _UP_FIREWALL_OK (set to "true" or "false")
 # Parameter: $1 name -- container name
 _up_init_firewall() {
   local _name="$1"
+  _UP_FIREWALL_OK=true
   log "Running firewall init..."
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    docker exec -u root "$_name" /usr/local/lib/rip-cage/init-firewall.sh >/dev/null 2>&1
+    docker exec -u root "$_name" /usr/local/lib/rip-cage/init-firewall.sh >/dev/null 2>&1 || _UP_FIREWALL_OK=false
   else
-    docker exec -u root "$_name" /usr/local/lib/rip-cage/init-firewall.sh
+    docker exec -u root "$_name" /usr/local/lib/rip-cage/init-firewall.sh || _UP_FIREWALL_OK=false
   fi
 }
 
@@ -1116,6 +1133,15 @@ cmd_up() {
     return
   elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
     log "Resuming stopped container $name..."
+    # On resume, read rc.egress from the container's label rather than the host env.
+    # The container was created with a specific egress setting (and may lack NET_ADMIN
+    # if it was created with egress=off). Using the host env var here could try to run
+    # iptables in a container without the capability, causing init to fail.
+    local _label_egress
+    _label_egress=$(docker inspect --format '{{ index .Config.Labels "rc.egress" }}' "$name" 2>/dev/null || true)
+    if [[ -n "$_label_egress" ]]; then
+      rc_egress="$_label_egress"
+    fi
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       docker start "$name" >/dev/null
     else
@@ -1123,6 +1149,16 @@ cmd_up() {
     fi
     if [[ "$rc_egress" != "off" ]]; then
       _up_init_firewall "$name"
+      if [[ "$_UP_FIREWALL_OK" == "false" ]]; then
+        if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+          docker stop "$name" >/dev/null 2>&1
+          _up_json_output "$name" "resumed" "$path" "stopped" "failed"
+          return 1
+        fi
+        echo "Error: firewall init failed on resume. Stopping container so next 'rc up' retries." >&2
+        docker stop "$name"
+        exit 1
+      fi
     fi
     _up_init_container "$name"
     if [[ "$_UP_INIT_OK" == "false" ]]; then
@@ -1157,6 +1193,16 @@ cmd_up() {
   _up_start_container "$name"
   if [[ "$rc_egress" != "off" ]]; then
     _up_init_firewall "$name"
+    if [[ "$_UP_FIREWALL_OK" == "false" ]]; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        docker stop "$name" >/dev/null 2>&1
+        _up_json_output "$name" "created" "$path" "stopped" "failed"
+        return 1
+      fi
+      echo "Error: firewall init failed. Stopping container so next 'rc up' retries." >&2
+      docker stop "$name"
+      exit 1
+    fi
   fi
   _up_init_container "$name"
 
