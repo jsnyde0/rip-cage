@@ -4,7 +4,7 @@
 **Date:** 2026-04-20
 **Design:** [2026-04-20-egress-firewall-design.md](../2026-04-20-egress-firewall-design.md)
 **Supersedes:** Recommendations in [2026-04-17-egress-firewall-design.md](../2026-04-17-egress-firewall-design.md)
-**Related:** [ADR-004](ADR-004-phase1-hardening.md) (DCG + compound blocker), [ADR-008](ADR-008-open-source-publication.md) (positioning), beads `rip-cage-2py`
+**Related:** [ADR-004](ADR-004-phase1-hardening.md) (DCG + compound blocker), [ADR-008](ADR-008-open-source-publication.md) (positioning), [ADR-013](ADR-013-test-coverage.md) (egress perimeter test expansion), beads `rip-cage-2py`
 
 ## Context
 
@@ -184,6 +184,16 @@ Bind-mount path means the user sees denials from the host without entering the c
 | Denials + sampled allows | • Middle ground | • Complexity not yet justified |
 
 **What would invalidate this:** A real incident where allowed-traffic forensics would have caught a confused-deputy exfil. Revisit then — easy to extend.
+
+## Open: non-HTTP egress scope (raised by ADR-013)
+
+The current design intercepts TCP 80/443 only. Anything else — TCP 22 (git-over-ssh), 25 (smtp), arbitrary high ports, raw UDP — bypasses the proxy entirely and is filtered only by whatever the base Debian image's default iptables posture provides (nothing restrictive today).
+
+This is a deliberate-but-undocumented choice. Git-over-ssh, DNS, and NTP are legitimate agent needs that an HTTP-only proxy can't mediate. Blocking them would require a separate L4 allowlist, which is exactly the per-project config burden ADR-012 D1 rejected.
+
+**Tentative position**: non-HTTP egress remains allowed; denylist scope is HTTP exfil channels. ADR-013's P3 test expansion will assert this explicitly (positive test that `nc -zv github.com 22` succeeds). If that policy changes, a follow-up ADR.
+
+**Documented as accepted risk** pending confirmation: an agent that compiles its own tooling could exfil over raw TCP to any port/IP. DCG + compound blocker + filesystem sandbox make this unlikely but not impossible.
 
 ## Related
 

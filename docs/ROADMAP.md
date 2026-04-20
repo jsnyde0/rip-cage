@@ -1,6 +1,6 @@
 # Rip Cage Roadmap
 
-**Last updated:** 2026-03-27
+**Last updated:** 2026-04-20
 **Philosophy:** Build → test → learn → adjust. This roadmap is directional, not a contract. Expect changes as we gain real experience using the tool.
 
 ---
@@ -17,8 +17,11 @@ Get the existing implementation working end-to-end and solid.
 - [ ] Richer zshrc ([ADR-004 D5](decisions/ADR-004-phase1-hardening.md))
 - [ ] First real agent session in the container
 - [ ] Test devcontainer flow in VS Code
+- [ ] Add `rc test --e2e` lifecycle suite ([ADR-013 D1](decisions/ADR-013-test-coverage.md))
+- [ ] Fix + wire host-side tests via `rc test --host` ([ADR-013 D2](decisions/ADR-013-test-coverage.md))
+- [ ] Expand egress perimeter tests (IPv6, WebSocket, non-HTTP ports) ([ADR-013 D4](decisions/ADR-013-test-coverage.md))
 
-**Design:** [Phase 1 Hardening](2026-03-27-phase1-hardening-design.md)
+**Design:** [Phase 1 Hardening](2026-03-27-phase1-hardening-design.md), [Test Coverage](2026-04-20-test-coverage-design.md)
 
 ## Phase 1b: First Ecosystem Tool
 
