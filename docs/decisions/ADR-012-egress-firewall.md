@@ -1,6 +1,6 @@
 # ADR-012: Network Egress Firewall (L7 TLS-MITM Proxy, Denylist-First)
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-04-20
 **Design:** [2026-04-20-egress-firewall-design.md](../2026-04-20-egress-firewall-design.md)
 **Supersedes:** Recommendations in [2026-04-17-egress-firewall-design.md](../2026-04-17-egress-firewall-design.md)

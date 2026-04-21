@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Verification tests for git worktree support in rc (bead rip-cage-tvx)
 
-RC_FILE="$(cd "$(dirname "$0")" && pwd)/rc"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="${SCRIPT_DIR}/.."
+RC_FILE="${REPO_ROOT}/rc"
 
 pass_count=0
 fail_count=0
@@ -151,6 +153,45 @@ check "Non-worktree JSON also includes git_hooks_ro" \
 # by verifying the logic block sets true for worktrees
 check "git_hooks_ro logic includes worktree case setting true" \
   "$(awk '/compute git_hooks_ro/,/Check container state/' "$RC_FILE" | grep -q 'wt_detected.*==.*true' && echo true || echo false)"
+
+# ADR-007 D6: auto-redirect worktree beads to main repo when no runtime data
+# Test 26: rc has an auto-redirect branch for worktrees without runtime data
+check "Auto-redirects worktree .beads/ when no port file + no dolt dirs" \
+  "$(awk '/Resolve beads redirect/,/Determine beads storage mode/' "$RC_FILE" | grep -q 'wt_detected.*true' && echo true || echo false)"
+
+# Test 27: Auto-redirect only triggers when worktree has NO runtime dolt data
+check "Auto-redirect checks for absence of dolt-server.port" \
+  "$(awk '/Resolve beads redirect/,/Determine beads storage mode/' "$RC_FILE" | grep -q 'dolt-server.port' && echo true || echo false)"
+
+check "Auto-redirect checks for absence of dolt/ dir" \
+  "$(awk '/Resolve beads redirect/,/Determine beads storage mode/' "$RC_FILE" | grep -Eq '! -d .*beads_dir.*/dolt"' && echo true || echo false)"
+
+check "Auto-redirect checks for absence of embeddeddolt/ dir" \
+  "$(awk '/Resolve beads redirect/,/Determine beads storage mode/' "$RC_FILE" | grep -q 'embeddeddolt' && echo true || echo false)"
+
+# Test 28: Auto-redirect validates against RC_ALLOWED_ROOTS (ADR-003 D3)
+check "Auto-redirect validates resolved main beads dir against allowed roots" \
+  "$(awk '/Resolve beads redirect/,/Determine beads storage mode/' "$RC_FILE" | grep -qE '_path_under_allowed_roots.*resolved_main_beads' && echo true || echo false)"
+
+# Test 29: Auto-redirect uses the same mount mechanism as explicit redirect
+check "Auto-redirect mounts main repo .beads/ over /workspace/.beads" \
+  "$(awk '/Resolve beads redirect/,/Determine beads storage mode/' "$RC_FILE" | grep -qE 'resolved_main_beads.*:/workspace/.beads' && echo true || echo false)"
+
+# Test 29b: Auto-redirect applies realpath normalization (symlink safety per ADR-003 D3)
+check "Auto-redirect applies realpath to main_beads_dir" \
+  "$(awk '/Resolve beads redirect/,/Determine beads storage mode/' "$RC_FILE" | grep -qE 'realpath.*main_beads_dir' && echo true || echo false)"
+
+# Test 29c: Auto-redirect logs warning when main repo .beads/ is absent
+check "Auto-redirect warns when main .beads/ not found" \
+  "$(awk '/Resolve beads redirect/,/Determine beads storage mode/' "$RC_FILE" | grep -qE 'Warning.*main repo .beads.*not found' && echo true || echo false)"
+
+# Test 29d: Auto-redirect logs warning when main .beads/ outside allowed roots
+check "Auto-redirect warns when main .beads/ outside allowed roots" \
+  "$(awk '/Resolve beads redirect/,/Determine beads storage mode/' "$RC_FILE" | grep -qE 'Warning.*outside RC_ALLOWED_ROOTS' && echo true || echo false)"
+
+# Test 30: Explicit .beads/redirect still takes precedence (elif branch)
+check "Explicit .beads/redirect has precedence (elif branch for auto)" \
+  "$(grep -q 'elif \[\[ "\$wt_detected" == "true" \]\]' "$RC_FILE" && echo true || echo false)"
 
 echo ""
 echo "Results: ${pass_count} passed, ${fail_count} failed"

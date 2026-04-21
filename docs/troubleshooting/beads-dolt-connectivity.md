@@ -61,7 +61,28 @@ bd list --status=all
 rm -rf .beads/dolt-corrupted
 ```
 
-## Prevention (Planned)
+## Worktree variant: `host.docker.internal:0`
 
-- PreToolUse hook to block `bd dolt start` when `BEADS_DOLT_SERVER_MODE=1`
-- Architectural fix for stale port problem (design in progress)
+A distinct failure mode shows up when `rc up` is run against a **git worktree** of a server-mode beads project:
+
+```
+Error: failed to open database: Dolt server unreachable at host.docker.internal:0: dial tcp 0.250.250.254:0: i/o timeout
+```
+
+The tell is the **port `0`** — it means no port was ever discovered (as opposed to a stale non-zero port). A fresh git worktree inherits the tracked `.beads/` files but not the gitignored `dolt-server.port`, so `rc up` passes no `BEADS_DOLT_SERVER_PORT`, and the wrapper's per-invocation re-read also finds no port file (since both read from the worktree's checkout).
+
+**Fix:** ADR-007 D6 auto-redirects the worktree's `.beads/` to the main repo's `.beads/` when the worktree lacks runtime data. If you are hitting this on a container created before ADR-007 D6 shipped, destroy and recreate:
+
+```bash
+rc destroy <container-name>
+rc up /path/to/worktree
+```
+
+Symptoms in newer containers: the `bd` wrapper emits a multi-line `[bd-wrapper] ERROR: ...` diagnostic to stderr on any db-touching command (ADR-007 D7).
+
+## Prevention (implemented)
+
+- **Wrapper port re-read** — ADR-007 D1: wrapper reads `/workspace/.beads/dolt-server.port` on every invocation
+- **`bd dolt start` guard** — ADR-007 D1: wrapper blocks `bd dolt start` when `BEADS_DOLT_SERVER_MODE=1`
+- **Worktree auto-redirect** — ADR-007 D6: `rc up` mounts main repo's `.beads/` for worktrees lacking runtime data
+- **Loud diagnostic** — ADR-007 D7: wrapper emits actionable error when server mode is set but port is unavailable

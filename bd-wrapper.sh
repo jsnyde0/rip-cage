@@ -15,12 +15,52 @@
 set -euo pipefail
 
 # --- Port re-read (D1: re-read on every invocation) ---
+# Accept only strictly-numeric content to avoid exporting garbage (trailing
+# whitespace, stale lock debris) that would still pass -n but produce an
+# invalid port. If the file content is non-numeric, leave BEADS_DOLT_SERVER_PORT
+# unset so the D7 diagnostic below fires with the right guidance.
 PORT_FILE="/workspace/.beads/dolt-server.port"
 if [[ -f "$PORT_FILE" ]]; then
   port=$(cat "$PORT_FILE" 2>/dev/null || true)
-  if [[ -n "$port" ]]; then
+  port="${port//[[:space:]]/}"  # strip all whitespace
+  if [[ "$port" =~ ^[0-9]+$ ]] && [[ "$port" != "0" ]]; then
     export BEADS_DOLT_SERVER_PORT="$port"
   fi
+fi
+
+# --- Diagnostic: server mode but no usable port (ADR-007 D7) ---
+# If BEADS_DOLT_SERVER_MODE=1 but BEADS_DOLT_SERVER_PORT is missing/0,
+# bd will dial host.docker.internal:0 and fail with a confusing timeout.
+# Emit a clear diagnostic to stderr before invoking bd-real so the caller
+# gets actionable info. Skip for trivially-safe commands that don't need the db.
+# `:-0` default covers unset/empty and literal "0" in a single comparison.
+if [[ "${BEADS_DOLT_SERVER_MODE:-0}" == "1" ]] \
+   && [[ "${BEADS_DOLT_SERVER_PORT:-0}" == "0" ]]; then
+  _bd_first="${1:-}"
+  case "$_bd_first" in
+    --version|-v|--help|-h|help) : ;;  # no-op commands don't need the server
+    *)
+      {
+        echo "[bd-wrapper] ERROR: BEADS_DOLT_SERVER_MODE=1 but no Dolt port is available."
+        echo "[bd-wrapper] Expected: /workspace/.beads/dolt-server.port (read on each call)."
+        if [[ ! -f "$PORT_FILE" ]]; then
+          echo "[bd-wrapper] Cause: port file does NOT exist at $PORT_FILE."
+          echo "[bd-wrapper]   - If this is a git worktree, the .beads/ bind mount is probably"
+          echo "[bd-wrapper]     pointing at the worktree's checkout instead of the main repo's"
+          echo "[bd-wrapper]     .beads/. Recreate the container with a fresh 'rc up' — rip-cage"
+          echo "[bd-wrapper]     auto-redirects worktree .beads/ to the main repo (ADR-007 D6)."
+          echo "[bd-wrapper]   - Otherwise, the host Dolt server isn't running. On the host run:"
+          echo "[bd-wrapper]       cd <project>"
+          echo "[bd-wrapper]       bd dolt start"
+        else
+          echo "[bd-wrapper] Cause: port file is empty, zero, or non-numeric."
+          echo "[bd-wrapper] Fix: on the host, run these in sequence to rewrite the port file:"
+          echo "[bd-wrapper]   bd dolt stop"
+          echo "[bd-wrapper]   bd dolt start"
+        fi
+      } >&2
+      ;;
+  esac
 fi
 
 # --- Block `bd dolt start` when server mode is active (D2) ---

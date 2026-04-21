@@ -1,6 +1,6 @@
 # ADR-003: Agent-Friendly CLI Interface for `rc`
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-03-26
 **Design:** [Agent-Friendly CLI Design](../2026-03-26-agent-friendly-cli-design.md)
 **Related:** [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md), [Rewrite Your CLI for AI Agents](https://justin.poehnelt.com/posts/rewrite-your-cli-for-ai-agents/), [Agent DX CLI Scale](https://raw.githubusercontent.com/jpoehnelt/skills/refs/heads/main/agent-dx-cli-scale/SKILL.md)

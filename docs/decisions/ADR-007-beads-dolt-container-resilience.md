@@ -1,6 +1,6 @@
 # ADR-007: Beads/Dolt Container Resilience
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-04-08
 **Design:** [Beads/Dolt Container Resilience](../2026-04-08-beads-dolt-container-resilience.md), [Beads no-db Container Support](../2026-04-09-beads-no-db-container-support.md)
 **Related:** [ADR-004 D1](ADR-004-phase1-hardening.md) (host Dolt server connection), [ADR-002 D10](ADR-002-rip-cage-containers.md) (beads in base image)
@@ -114,6 +114,66 @@ When `dolt_mode` is anything else (`"server"`, `"owned"`, `"external"`):
 See [design doc](../2026-04-09-beads-no-db-container-support.md) and [ADR-004 D1 amendment](ADR-004-phase1-hardening.md).
 
 **What would invalidate this:** bd changes `metadata.json` format or removes embedded mode. Or bd's server connection gracefully falls back to embedded when the database doesn't exist on the server.
+
+### D6: Auto-redirect worktree `.beads/` to main repo when no runtime data
+
+**Firmness: FIRM**
+
+**Added:** 2026-04-21
+
+When `rc up` mounts a git worktree, auto-mount the main repo's `.beads/` over `/workspace/.beads` if ALL of the following hold:
+
+- A worktree was detected (`wt_detected=true`, `wt_main_git` set)
+- The worktree's `.beads/` has **no** explicit `redirect` file
+- The worktree's `.beads/` has **no** runtime Dolt data: no `dolt-server.port`, no `dolt/` dir, no `embeddeddolt/` dir
+- The main repo's `.beads/` exists and is under `RC_ALLOWED_ROOTS` (ADR-003 D3)
+
+Explicit `.beads/redirect` files still take precedence — the auto-redirect runs in an `elif` branch.
+
+**Rationale:** A fresh git worktree inherits tracked `.beads/` files (`metadata.json`, `config.yaml`, hooks) but **not** the gitignored runtime files (`dolt-server.port`, `dolt/`, etc.). Without this fallback, for a server-mode project:
+- `rc up` passes no `BEADS_DOLT_SERVER_PORT` (port file absent in worktree)
+- The `bd` wrapper's per-invocation re-read also fails (same worktree, same absent file)
+- `bd` inside the container dials `host.docker.internal:0` → confusing timeout
+
+This was flagged as a pre-existing gap in the 2026-04-08 ADR-007 fixes notes ("Devcontainer lacks beads redirect resolution — out of scope"). Reproduced on 2026-04-21 in `worktrees-feat-mp-c34-formula-input-coalesce` (mapular-platform worktree, `dolt_mode=server`).
+
+The auto-redirect uses the same mount mechanism as an explicit `.beads/redirect`, so there's no divergent code path. Nothing is written to the host filesystem at `rc up` time — the mount is ephemeral to the container.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Auto-mount main repo `.beads/`** | No file creation, transparent, reuses existing mount | Implicit behavior; users might be surprised if they wanted a worktree-local beads |
+| Auto-create `.beads/redirect` file on `rc up` | Explicit artifact | Writes to host filesystem at mount time; leaves stray files if container is destroyed |
+| Document as manual step ("create redirect before `rc up`") | No code change | Friction; every worktree hits the footgun once |
+| Fail loud with instructions if port missing | Loud failure | Doesn't fix the problem; adds friction without solving it |
+
+The "worktree-local beads" case is handled by the runtime-data check: if the worktree has its own `dolt/` or `dolt-server.port`, the auto-redirect won't trigger. Embedded-mode worktrees with their own `embeddeddolt/` are also respected.
+
+**What would invalidate this:** bd gains first-class worktree support (e.g., `bd worktree init` that sets up runtime files). Or users start intentionally creating worktree-local beads databases.
+
+### D7: Wrapper diagnostic when server mode is set but port is unavailable
+
+**Firmness: FIRM**
+
+**Added:** 2026-04-21
+
+When the `bd` wrapper detects `BEADS_DOLT_SERVER_MODE=1` but `BEADS_DOLT_SERVER_PORT` is unset/empty/0 after the port file re-read, emit a multi-line diagnostic to stderr identifying:
+
+- The expected port-file path
+- Whether the port file is absent vs. empty/zero
+- Likely cause (worktree missing auto-redirect; host Dolt server not running)
+- The remediation (`rc up` to pick up auto-redirect; `bd dolt start` on host)
+
+The diagnostic is skipped for safe no-op subcommands (`--version`, `-v`, `--help`, `-h`, `help`, `completion`) so discovery flows aren't polluted.
+
+**Rationale:** Before this change, the failure surface was `Dolt server unreachable at host.docker.internal:0: dial tcp 0.250.250.254:0: i/o timeout` — a confusing TCP error with no actionable context. The diagnostic catches the misconfiguration at the wrapper layer (earliest possible point) and translates it into instructions. The D6 auto-redirect should prevent the worktree case from ever hitting this path, but D7 is a cheap defense-in-depth for:
+
+- Containers created before D6 shipped (stale containers)
+- Host Dolt server genuinely not running (legitimate transient state)
+- Edge cases in path resolution we haven't anticipated
+
+**What would invalidate this:** bd itself adopts clearer error messages for unreachable-server scenarios.
 
 ## Deferred
 

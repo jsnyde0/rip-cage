@@ -1,6 +1,6 @@
 # ADR-004: Phase 1 Hardening
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-03-27
 **Design:** [Phase 1 Hardening Design](../2026-03-27-phase1-hardening-design.md)
 **Related:** [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md), [ADR-003 Agent-Friendly CLI](ADR-003-agent-friendly-cli.md)

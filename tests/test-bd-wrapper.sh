@@ -5,7 +5,9 @@ set -euo pipefail
 
 PASS=0
 FAIL=0
-WRAPPER="$(cd "$(dirname "$0")" && pwd)/bd-wrapper.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="${SCRIPT_DIR}/.."
+WRAPPER="${REPO_ROOT}/bd-wrapper.sh"
 
 check() {
   local name="$1" result="$2" detail="${3:-}"
@@ -101,6 +103,30 @@ if [[ "$port_output" == "54321" ]]; then
   check "port re-read runtime: wrapper exports BEADS_DOLT_SERVER_PORT from port file" "pass" "got $port_output"
 else
   check "port re-read runtime: wrapper exports BEADS_DOLT_SERVER_PORT from port file" "fail" "expected 54321, got '$port_output'"
+fi
+
+# 8. ADR-007 D7: server mode + missing port → diagnostic emitted to stderr
+diag_output=$(BEADS_DOLT_SERVER_MODE=1 bash "$WRAPPER" ready 2>&1 1>/dev/null || true)
+if echo "$diag_output" | grep -q "BEADS_DOLT_SERVER_MODE=1 but no Dolt port is available"; then
+  check "D7: diagnostic on missing port in server mode" "pass"
+else
+  check "D7: diagnostic on missing port in server mode" "fail" "no diagnostic in stderr: $diag_output"
+fi
+
+# 9. ADR-007 D7: no diagnostic when port is valid
+diag_ok=$(BEADS_DOLT_SERVER_MODE=1 BEADS_DOLT_SERVER_PORT=54321 bash "$WRAPPER" ready 2>&1 1>/dev/null || true)
+if echo "$diag_ok" | grep -q "no Dolt port is available"; then
+  check "D7: no diagnostic when port valid" "fail" "got diagnostic: $diag_ok"
+else
+  check "D7: no diagnostic when port valid" "pass"
+fi
+
+# 10. ADR-007 D7: no diagnostic for --version (skip safe commands)
+diag_ver=$(BEADS_DOLT_SERVER_MODE=1 bash "$WRAPPER" --version 2>&1 1>/dev/null || true)
+if echo "$diag_ver" | grep -q "no Dolt port is available"; then
+  check "D7: no diagnostic for --version" "fail" "got diagnostic: $diag_ver"
+else
+  check "D7: no diagnostic for --version" "pass"
 fi
 
 echo ""

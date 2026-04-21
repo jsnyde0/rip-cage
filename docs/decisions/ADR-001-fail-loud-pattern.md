@@ -1,6 +1,6 @@
 # ADR-001: Fail-Loud Error Handling
 
-**Status:** accepted
+**Status:** Accepted
 **Date:** 2026-04-21
 
 ## Context
