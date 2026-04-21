@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
+if ! command -v docker > /dev/null 2>&1; then
+  echo "SKIP: Docker not available -- skipping $(basename "$0")"
+  exit 0
+fi
 set -uo pipefail
 
 # Tests for code review fixes (C1, C2, I1, I2, I3, I4)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-RC="${SCRIPT_DIR}/rc"
+REPO_ROOT="${SCRIPT_DIR}/.."
+RC="${REPO_ROOT}/rc"
 FAILURES=0
 PASSES=0
 
@@ -89,6 +94,33 @@ if echo "$down_err" | jq -e '.code == "CONTAINER_NOT_FOUND"' >/dev/null 2>&1; th
   pass "cmd_down returns CONTAINER_NOT_FOUND for missing container"
 else
   fail "cmd_down did not return CONTAINER_NOT_FOUND. Got: $down_err"
+fi
+
+# --- L1: resume path fails loud on missing/invalid rc.egress label (ADR-001) ---
+echo ""
+echo "=== L1: resume fail-loud on missing/unknown rc.egress label ==="
+# Helper must exist and handle all three ADR-001 cases.
+if grep -q '^_up_resolve_resume_egress()' "$RC"; then
+  pass "_up_resolve_resume_egress helper defined"
+else
+  fail "_up_resolve_resume_egress helper missing"
+fi
+if grep -q '"LEGACY_CONTAINER"' "$RC"; then
+  pass "LEGACY_CONTAINER error code present"
+else
+  fail "LEGACY_CONTAINER error code missing"
+fi
+if grep -q '"INVALID_EGRESS_LABEL"' "$RC"; then
+  pass "INVALID_EGRESS_LABEL error code present"
+else
+  fail "INVALID_EGRESS_LABEL error code missing"
+fi
+# Helper must be called from both dry-run and actual resume paths.
+call_count=$(grep -c '_up_resolve_resume_egress "\$name"' "$RC")
+if [[ "$call_count" -ge 2 ]]; then
+  pass "helper called from both dry-run and resume paths ($call_count sites)"
+else
+  fail "helper only called $call_count time(s); expected >=2 (dry-run + resume)"
 fi
 
 # --- Syntax check ---

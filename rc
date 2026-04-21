@@ -860,6 +860,33 @@ _up_prepare_environment() {
         log "Warning: .beads/redirect points to $redirect_target but could not resolve"
       fi
     fi
+  elif [[ "$wt_detected" == "true" ]] \
+    && [[ ! -f "${beads_dir}/dolt-server.port" ]] \
+    && [[ ! -d "${beads_dir}/dolt" ]] \
+    && [[ ! -d "${beads_dir}/embeddeddolt" ]]; then
+    # ADR-007 D6: worktree has no explicit redirect and no runtime Dolt data
+    # (no port file, no server dolt/ dir, no embedded dolt dir). A fresh git
+    # worktree inherits tracked .beads/ files (metadata.json, config.yaml) but
+    # not the gitignored runtime files. Without this fallback, bd inside the
+    # container would connect to host.docker.internal:0 (no port) or try to
+    # use an empty embedded engine. Fix: mount the main repo's .beads/ over
+    # the worktree's .beads/, same mechanism as an explicit redirect.
+    local main_repo_root main_beads_dir resolved_main_beads
+    main_repo_root=$(dirname "$wt_main_git")
+    main_beads_dir="${main_repo_root}/.beads"
+    # Resolve symlinks before the allowed-roots check (ADR-003 D3): a
+    # .beads/ symlink pointing outside allowed roots would pass a string
+    # check while the bind-mount would follow the symlink to the real target.
+    resolved_main_beads=$(realpath "$main_beads_dir" 2>/dev/null || true)
+    if [[ -z "$resolved_main_beads" || ! -d "$resolved_main_beads" ]]; then
+      log "Warning: worktree auto-redirect — main repo .beads/ not found at $main_beads_dir; bd will fail inside the container (see wrapper diagnostic)"
+    elif ! _path_under_allowed_roots "$resolved_main_beads"; then
+      log "Warning: worktree auto-redirect — main repo .beads/ at $resolved_main_beads is outside RC_ALLOWED_ROOTS; refusing to mount (ADR-003 D3)"
+    else
+      log "Beads: worktree has no runtime data — auto-redirecting to main repo .beads/ ($resolved_main_beads)"
+      beads_dir="$resolved_main_beads"
+      _UP_RUN_ARGS+=(-v "${resolved_main_beads}:/workspace/.beads:delegated")
+    fi
   fi
   # Determine beads storage mode from metadata.json
   local beads_dolt_mode=""
@@ -933,6 +960,46 @@ _up_init_container() {
   else
     docker exec "$_name" /usr/local/bin/init-rip-cage.sh || _UP_INIT_OK=false
   fi
+}
+
+# _up_resolve_resume_egress -- read and validate the rc.egress label on resume.
+# Implements ADR-001 fail-loud for three cases:
+#   - docker inspect failure (transient infra or TOCTOU) -> distinct error
+#   - missing label (legacy container predating egress support)
+#   - unrecognized value (anything other than on|off)
+# On success sets _UP_RESUME_EGRESS to "on" or "off"; otherwise exits 1.
+# Parameters: $1 name, $2 path (used in the recreate hint)
+_up_resolve_resume_egress() {
+  local _name="$1" _path="$2"
+  local _label
+  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.egress" }}' "$_name" 2>/dev/null); then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
+    fi
+    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
+    exit 1
+  fi
+  if [[ -z "$_label" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Container $_name predates egress support (no rc.egress label). Run: rc destroy $_name && rc up $_path" "LEGACY_CONTAINER"
+    fi
+    echo "Error: container $_name predates egress support (no rc.egress label)." >&2
+    echo "       Recreate it to pick up current safety features:" >&2
+    echo "         rc destroy $_name" >&2
+    echo "         rc up $_path" >&2
+    exit 1
+  fi
+  if [[ "$_label" != "on" && "$_label" != "off" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Container $_name has unrecognized rc.egress label value: '$_label' (expected on|off). Run: rc destroy $_name && rc up $_path" "INVALID_EGRESS_LABEL"
+    fi
+    echo "Error: container $_name has unrecognized rc.egress label value: '$_label' (expected on|off)." >&2
+    echo "       Recreate it:" >&2
+    echo "         rc destroy $_name" >&2
+    echo "         rc up $_path" >&2
+    exit 1
+  fi
+  _UP_RESUME_EGRESS="$_label"
 }
 
 # _up_init_firewall -- run the root-phase firewall init inside the container.
@@ -1096,6 +1163,9 @@ cmd_up() {
     if [[ "$state" == "running" ]]; then
       would_action="would_attach"
     elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
+      # Surface legacy/invalid-label conditions in dry-run so planners see the
+      # same hard stop the actual resume would hit (ADR-001).
+      _up_resolve_resume_egress "$name" "$path"
       would_action="would_resume"
     else
       would_action="would_create"
@@ -1142,26 +1212,11 @@ cmd_up() {
     return
   elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
     log "Resuming stopped container $name..."
-    # On resume, read rc.egress from the container's label rather than the host env.
-    # The container was created with a specific egress setting (and may lack NET_ADMIN
-    # if it was created with egress=off). Using the host env var here could try to run
-    # iptables in a container without the capability, causing init to fail.
-    # An absent label means the container predates egress support — there is no safe
-    # default (on tries to exec a non-existent script; off silently downgrades safety).
-    # Fail loud (ADR-001) and point the user at the clean fix: destroy and recreate.
-    local _label_egress
-    _label_egress=$(docker inspect --format '{{ index .Config.Labels "rc.egress" }}' "$name" 2>/dev/null || true)
-    if [[ -z "$_label_egress" ]]; then
-      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        json_error "Container $name predates egress support (no rc.egress label). Run: rc destroy $name && rc up $path" "LEGACY_CONTAINER"
-      fi
-      echo "Error: container $name predates egress support (no rc.egress label)." >&2
-      echo "       Recreate it to pick up current safety features:" >&2
-      echo "         rc destroy $name" >&2
-      echo "         rc up $path" >&2
-      exit 1
-    fi
-    rc_egress="$_label_egress"
+    # On resume, source rc.egress from the container's label (the value it was
+    # created with) rather than the host env, which may have drifted. Missing or
+    # unrecognized labels fail loud per ADR-001 — there is no safe default.
+    _up_resolve_resume_egress "$name" "$path"
+    rc_egress="$_UP_RESUME_EGRESS"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       docker start "$name" >/dev/null
     else
