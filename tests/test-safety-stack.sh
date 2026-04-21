@@ -315,5 +315,41 @@ if [[ -d /workspace/.git-main ]]; then
 fi
 
 echo ""
+echo "-- Non-Interactive SSH Posture --"
+
+# SSH_N1. BatchMode=yes is resolved via ssh -G
+ssh_batchmode=$(ssh -G github.com 2>/dev/null | grep -E '^batchmode ' || true)
+check "SSH BatchMode=yes resolved" "$([[ "$ssh_batchmode" == "batchmode yes" ]] && echo pass || echo fail)" "$ssh_batchmode"
+
+# SSH_N2. StrictHostKeyChecking=yes (OpenSSH 9.2 on bookworm may normalize to 'true')
+ssh_strict=$(ssh -G github.com 2>/dev/null | grep -E '^stricthostkeychecking ' || true)
+check "SSH StrictHostKeyChecking=yes resolved" "$(echo "$ssh_strict" | grep -qE '^stricthostkeychecking (yes|true)$' && echo pass || echo fail)" "$ssh_strict"
+
+# SSH_N3. UserKnownHostsFile points to pinned file
+ssh_ukhf=$(ssh -G github.com 2>/dev/null | grep -E '^userknownhostsfile ' || true)
+check "SSH UserKnownHostsFile=/etc/ssh/ssh_known_hosts" "$([[ "$ssh_ukhf" == "userknownhostsfile /etc/ssh/ssh_known_hosts" ]] && echo pass || echo fail)" "$ssh_ukhf"
+
+# SSH_N4. GlobalKnownHostsFile points to pinned file
+ssh_gkhf=$(ssh -G github.com 2>/dev/null | grep -E '^globalknownhostsfile ' || true)
+check "SSH GlobalKnownHostsFile=/etc/ssh/ssh_known_hosts" "$([[ "$ssh_gkhf" == "globalknownhostsfile /etc/ssh/ssh_known_hosts" ]] && echo pass || echo fail)" "$ssh_gkhf"
+
+# SSH_N5. Pinned ED25519 key present in known_hosts
+check "SSH pinned github.com ED25519 key present" "$(grep -q '^github.com ssh-ed25519 ' /etc/ssh/ssh_known_hosts 2>/dev/null && echo pass || echo fail)"
+
+# SSH_N6. Override-resistance: ~/.ssh/config with hostile overrides must not defeat Match final
+# Safety note: set -euo pipefail is active in this file. The || true on ssh -G prevents
+# pipefail from triggering. rm -f never fails. The hostile config is always cleaned up
+# because no command between write and rm can cause a non-true exit.
+mkdir -p ~/.ssh
+printf 'Host github.com\n  StrictHostKeyChecking accept-new\n  BatchMode no\n' > ~/.ssh/config
+ssh_override=$(ssh -G github.com 2>/dev/null | grep -E '^batchmode ' || true)
+check "SSH Match final overrides ~/.ssh/config hostile BatchMode=no" "$([[ "$ssh_override" == "batchmode yes" ]] && echo pass || echo fail)" "$ssh_override"
+rm -f ~/.ssh/config
+
+# SSH_N7. CLAUDE.md push-less text guards (two assertions — both must pass)
+check "CLAUDE.md has no push mandate (git push succeeds)" "$(grep -qF 'git push' /workspace/CLAUDE.md 2>/dev/null && grep -qF 'succeeds' /workspace/CLAUDE.md && echo fail || echo pass)"
+check "CLAUDE.md has no bd dolt push mandate" "$(grep -qF 'bd dolt push' /workspace/CLAUDE.md 2>/dev/null && echo fail || echo pass)"
+
+echo ""
 echo "=== Results: $PASS passed, $FAIL failed (of $TOTAL) ==="
 [[ "$FAIL" -eq 0 ]] || exit 1

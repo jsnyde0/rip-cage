@@ -78,6 +78,9 @@ RUN ln -sf /opt/rip-cage-proxy/bin/mitmdump /usr/local/bin/mitmdump
 RUN mkdir -p /etc/rip-cage/ca
 
 # Copy rip-cage files — stable files first (fewer cache busts), frequently-edited last
+COPY ssh/known_hosts.github /etc/ssh/ssh_known_hosts
+COPY ssh/ssh_config /etc/ssh/ssh_config.d/00-rip-cage.conf
+RUN chmod 0644 /etc/ssh/ssh_known_hosts /etc/ssh/ssh_config.d/00-rip-cage.conf
 COPY hooks/ /usr/local/lib/rip-cage/hooks/
 COPY tests/test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
 COPY settings.json /etc/rip-cage/settings.json

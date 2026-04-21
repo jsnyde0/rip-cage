@@ -1,0 +1,7 @@
+# rip-cage: non-interactive SSH posture. See ADR-014.
+Match final Host *
+    UserKnownHostsFile /etc/ssh/ssh_known_hosts
+    GlobalKnownHostsFile /etc/ssh/ssh_known_hosts
+    StrictHostKeyChecking yes
+    BatchMode yes
+    ConnectTimeout 10

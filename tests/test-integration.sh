@@ -80,5 +80,22 @@ BD_SHEBANG=$(docker exec "$CONTAINER_NAME" sh -c 'head -c 2 /usr/local/bin/bd')
 echo "Step 12: Verify bd-real exists and is executable..."
 docker exec "$CONTAINER_NAME" test -x /usr/local/bin/bd-real || { echo "FAIL: bd-real not executable or missing"; exit 1; }
 
+# 13. Non-interactive SSH: no TTY prompt on first-contact attempt
+# TODO: move to tests/test-e2e-lifecycle.sh when that file is created (ADR-013 D3 P1)
+echo "Step 13: Non-interactive SSH posture (Tier 2)..."
+ssh_output=$(docker exec "$CONTAINER_NAME" sh -c 'ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1' || true)
+if echo "$ssh_output" | grep -q "Are you sure you want to continue connecting"; then
+  echo "FAIL: SSH interactive prompt detected — BatchMode/StrictHostKeyChecking not enforced"
+  exit 1
+fi
+if echo "$ssh_output" | grep -q "Permission denied"; then
+  echo "PASS: Step 13 — got 'Permission denied' (non-interactive failure as expected)"
+elif echo "$ssh_output" | grep -q "Host key verification failed"; then
+  echo "FAIL: Step 13 — host key verification failed (known_hosts may be stale)"
+  exit 1
+else
+  echo "PASS: Step 13 — SSH failed non-interactively (no prompt detected): $ssh_output"
+fi
+
 echo ""
 echo "=== All integration tests passed ==="
