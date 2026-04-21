@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
+if ! command -v docker > /dev/null 2>&1; then
+  echo "SKIP: Docker not available -- skipping $(basename "$0")"
+  exit 0
+fi
 set -uo pipefail
 
 # Tests for --output json flag on the rc CLI
 # These tests validate JSON output without requiring Docker containers.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-RC="${SCRIPT_DIR}/rc"
+REPO_ROOT="${SCRIPT_DIR}/.."
+RC="${REPO_ROOT}/rc"
 FAILURES=0
 
 pass() { echo "PASS: $1"; }

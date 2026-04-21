@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
+if ! command -v docker > /dev/null 2>&1; then
+  echo "SKIP: Docker not available -- skipping $(basename "$0")"
+  exit 0
+fi
 set -uo pipefail
 
 # Tests for bead dg6.2: --dry-run, input hardening, agent context
 # These tests validate behavior WITHOUT requiring Docker containers.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-RC="${SCRIPT_DIR}/rc"
+REPO_ROOT="${SCRIPT_DIR}/.."
+RC="${REPO_ROOT}/rc"
 FAILURES=0
 
 pass() { echo "PASS: $1"; }
@@ -165,7 +170,7 @@ fi
 # --- Test 13: AGENTS.md contains agent rules section ---
 echo ""
 echo "=== Test 13: AGENTS.md contains rc invocation rules ==="
-if grep -q "Rules for AI agents calling rc" "${SCRIPT_DIR}/AGENTS.md"; then
+if grep -q "Rules for AI agents calling rc" "${REPO_ROOT}/AGENTS.md"; then
   pass "AGENTS.md has agent rules section"
 else
   fail "AGENTS.md missing agent rules section"
@@ -174,7 +179,7 @@ fi
 # --- Test 14: AGENTS.md mentions --output json ---
 echo ""
 echo "=== Test 14: AGENTS.md mentions --output json ==="
-if grep -q "\-\-output json" "${SCRIPT_DIR}/AGENTS.md"; then
+if grep -q "\-\-output json" "${REPO_ROOT}/AGENTS.md"; then
   pass "AGENTS.md mentions --output json"
 else
   fail "AGENTS.md does not mention --output json"
@@ -183,7 +188,7 @@ fi
 # --- Test 15: AGENTS.md mentions RC_ALLOWED_ROOTS ---
 echo ""
 echo "=== Test 15: AGENTS.md mentions RC_ALLOWED_ROOTS ==="
-if grep -q "RC_ALLOWED_ROOTS" "${SCRIPT_DIR}/AGENTS.md"; then
+if grep -q "RC_ALLOWED_ROOTS" "${REPO_ROOT}/AGENTS.md"; then
   pass "AGENTS.md mentions RC_ALLOWED_ROOTS"
 else
   fail "AGENTS.md does not mention RC_ALLOWED_ROOTS"

@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
+if ! command -v docker > /dev/null 2>&1; then
+  echo "SKIP: Docker not available -- skipping $(basename "$0")"
+  exit 0
+fi
 set -euo pipefail
 PASS=0; FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-RC="$SCRIPT_DIR/rc"
+REPO_ROOT="${SCRIPT_DIR}/.."
+RC="${REPO_ROOT}/rc"
 
 pass() { echo "PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "FAIL: $1"; FAIL=$((FAIL + 1)); }
@@ -73,7 +78,7 @@ fi
 # --- Test 4: Dockerfile sudoers does NOT contain unrestricted chown ---
 echo ""
 echo "-- Test 4: Dockerfile sudoers pins chown to exact paths --"
-SUDOERS_LINE=$(grep 'sudoers.d/agent' "$SCRIPT_DIR/Dockerfile")
+SUDOERS_LINE=$(grep 'sudoers.d/agent' "${REPO_ROOT}/Dockerfile")
 if echo "$SUDOERS_LINE" | grep -q '/usr/bin/chown \*'; then
   fail "sudoers still contains unrestricted /usr/bin/chown *"
 elif echo "$SUDOERS_LINE" | grep -q '/usr/bin/chown agent'; then

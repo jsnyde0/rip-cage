@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
+if ! command -v docker > /dev/null 2>&1; then
+  echo "SKIP: Docker not available -- skipping $(basename "$0")"
+  exit 0
+fi
 set -euo pipefail
 PASS=0; FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-RC="$SCRIPT_DIR/rc"
+REPO_ROOT="${SCRIPT_DIR}/.."
+RC="${REPO_ROOT}/rc"
 
 # Create isolated temp project directory
 TEST_DIR=$(mktemp -d)
@@ -171,7 +176,7 @@ echo ""
 echo "-- Agent context --"
 
 # Test 15: AGENTS.md has rc invocation rules
-if grep -q "Rules for AI agents calling rc" "$SCRIPT_DIR/AGENTS.md"; then
+if grep -q "Rules for AI agents calling rc" "${REPO_ROOT}/AGENTS.md"; then
   echo "Test: AGENTS.md has agent rules section... PASS"; PASS=$((PASS + 1))
 else
   echo "Test: AGENTS.md has agent rules section... FAIL"; FAIL=$((FAIL + 1))

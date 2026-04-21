@@ -83,41 +83,60 @@ instead of `${SCRIPT_DIR}/../rc`. `test-auth-refresh.sh` has the correct form. T
 
 ### 1. New: `tests/test-e2e-lifecycle.sh` (P1)
 
-Host-run, docker-native. Exercises the real `rc` CLI end-to-end against a disposable scratch directory and a dedicated container name (`rc-e2e-test`). Cleans up volume + container on exit.
+Host-run, docker-native. Exercises the real `rc` CLI end-to-end against a disposable scratch directory and a dedicated container name (`rc-e2e-test`). Supersedes `tests/test-integration.sh` — its unique checks (tool list, CLAUDE.md leak, hook path consistency, bd-real exec bit) fold in here; running two overlapping lifecycle scripts guarantees drift.
 
-**Checks (target: 20–25):**
+**Pre-cleanup (crash-resistance):** before any check runs, `docker rm -f rc-e2e-test` and `docker volume rm rc-state-rc-e2e-test` (both tolerating "no such object") so a prior aborted run doesn't flip the next run into the name-collision code path. `trap CLEANUP EXIT` still handles the happy path.
+
+**Checks (target: 22–28):**
 
 Lifecycle skeleton:
-1. `rc build` succeeds (skipped if `rip-cage:latest` already present and `RC_E2E_REBUILD=0`)
+1. `rc build` succeeds (skipped unless `RC_E2E_REBUILD=1` is set — flag polarity: `=1` means rebuild, default is reuse local image)
 2. Create scratch workspace (`mktemp -d`), seed with `.git` and README
 3. `rc up` headless (no tmux attach) → container running with `rc.egress=on` label
 4. Scratch workspace bind-mounted at `/workspace` (verify via `docker exec ... test -f /workspace/README`)
 5. `/workspace/.rip-cage/` writable by agent
-6. `rc test <name>` returns 0 and reports all three suites pass
-7. `rc ls` shows the container with correct source path
-8. `docker stop <name>` (simulating `rc down`)
-9. `rc up` on the same workspace → resume branch hit, egress mode preserved from label
-10. Volume `rc-state-*` still mounted, contents intact
-11. `rc test` still 59/59 after restart
-12. **Regression guard for 2026-04-20 fix #3**: resume `rc up` runs from non-TTY context without emitting "the input device is not a TTY" (capture stderr, grep)
-13. **Regression guard for 2026-04-20 fix #2**: non-interactive `docker exec <name> env` shows `NODE_EXTRA_CA_CERTS` set
-14. `rc destroy` removes container AND volume (verify with `docker volume ls`)
-15. Second container in separate scratch dir → name collision produces `-XXXX` suffix
+6. **Regression guard for 2026-04-20 fix #1 (python3-venv)**: `docker exec <name> dpkg -s python3-venv` returns ok AND `docker exec <name> python3 -m venv /tmp/venv-probe` creates a working venv. A plain `rc build` is not a guard here — Docker will reuse a cached layer even if the Dockerfile line is deleted.
+7. `rc test <name>` returns 0 and reports all three in-container suites pass
+8. `rc ls` shows the container with the expected source path (assert `realpath`-equal, not literal string match — macOS `mktemp -d` returns `/var/folders/...` which resolves to `/private/var/folders/...`)
+9. Expected tool set present inside the container (absorbed from `test-integration.sh`: `bd`, `ms`, `rg`, `fd`, `git`, `gh`, `jq`, `claude`, etc. — exact list pinned in the script)
+10. No host secrets leaked to `/workspace/CLAUDE.md` or agent home (absorbed from `test-integration.sh`)
+11. Hook path consistency: `settings.json` hook paths all resolve inside the container (absorbed from `test-integration.sh`)
+12. `docker stop <name>` (simulating `rc down`)
+13. `rc up` on the same workspace → resume branch hit, egress mode preserved from label
+14. Volume `rc-state-*` still mounted, contents intact
+15. `rc test` still 59/59 after restart
+16. **Regression guard for 2026-04-20 fix #3 (resume TTY)**: `rc up <path> </dev/null` (stdin from `/dev/null`) against an already-running container returns exit 0 AND does not launch a tmux attach (check via process tree or a state sentinel). Do NOT grep stderr for the docker-CLI wording — that string varies across docker versions.
+17. **Regression guard for 2026-04-20 fix #2 (CA env)**: `docker exec <name> env` shows `NODE_EXTRA_CA_CERTS` set (egress=on path)
+18. `rc destroy` removes container AND volume (verify with `docker volume ls`)
+19. Second container in separate scratch dir → name collision produces `-XXXX` suffix
 
 Egress-off variant:
-16. `RIP_CAGE_EGRESS=off rc up` → label reads `off`, no mitmproxy, no iptables REDIRECT, `test-egress-firewall.sh` runs its 3-check off-mode branch
+20. `RIP_CAGE_EGRESS=off rc up` → label reads `off`, no mitmproxy, no iptables REDIRECT, `test-egress-firewall.sh` runs its 3-check off-mode branch
 
 Failure modes:
-17. `rc up` with no scratch dir → clear error, no partial container
-18. `rc up` with Docker daemon down (mockable via `DOCKER_HOST=tcp://127.0.0.1:1` if feasible) — tolerate skip
+21. `rc up` with no scratch dir → clear error, no partial container
+22. `rc up` with Docker daemon down — run in an isolated subshell (`( DOCKER_HOST=tcp://127.0.0.1:1 rc up ... )`) so the rogue `DOCKER_HOST` never leaks into the rest of the test. Tolerate skip if the subshell pattern proves flaky on some environments.
 
-**Runtime budget:** one full build + two container lifecycles. Expected ~90–180s on a warm cache, 5–8min cold. Image build is the long pole and is skippable.
+**Runtime budget:** one full build + two container lifecycles. **Target** ~90–180s warm cache, 5–8min cold — to be validated empirically on first implementation and revised if off; CI cold-build without a warm buildx cache may be longer because DCG `cargo build --release` dominates. Image build is the long pole and is skippable via the `RC_E2E_REBUILD` default.
 
-**Wiring:** new `rc test --e2e` mode (host-run). `rc test` without flags keeps its current behaviour (in-container 59 checks).
+**Wiring:** new `rc test --e2e` mode (host-run). `rc test` without flags keeps its current behaviour (in-container 59 checks). See §2 for the host-only invariant that applies to both `--e2e` and `--host`.
 
 ### 2. Fix broken host tests + unify entrypoint (P2)
 
-Mechanical fix: `${SCRIPT_DIR}/rc` → `${SCRIPT_DIR}/../rc` and equivalents (`Dockerfile`, `bd-wrapper.sh`, etc.) — `${SCRIPT_DIR}/../`. Do this in one sweep, verify each test passes in isolation, then add `tests/run-host.sh`:
+**Host-only invariant:** `rc` hard-exits with "rc is a host tool" when invoked inside a container (sees `/.dockerenv`). Therefore `rc test --host` is a host-side developer/CI tool only — it will never run from inside an attached rip-cage container, and agents working inside rip-cage cannot invoke it. Document this plainly in §1's wiring note and in the `rc test --host` help text.
+
+**Fix pattern, not a single sed.** The broken tests reference multiple repo-root paths (`rc`, `AGENTS.md`, `Dockerfile`, `bd-wrapper.sh`, `init-rip-cage.sh`, etc.), so `${SCRIPT_DIR}/rc` → `${SCRIPT_DIR}/../rc` is insufficient. Convert each script to:
+
+```bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="${SCRIPT_DIR}/.."
+RC="${REPO_ROOT}/rc"
+# every other repo-root reference derives from REPO_ROOT
+```
+
+**Audit step (mandatory after the path fix).** Path drift was hiding content regressions. Example: `test-rc-commands.sh` Test 1 asserts the word `build` appears in `rc`'s usage output — it doesn't today, so the test will fail the moment it's resurrected. After the mechanical fix, run each resurrected test once, record pass/fail, and for each failure decide: repair the assertion, delete the test as superseded, or document it as a known-failing TODO with a beads issue. Don't wire a test into `run-host.sh` until it passes or is explicitly quarantined.
+
+Then add `tests/run-host.sh`:
 
 ```bash
 #!/usr/bin/env bash
@@ -125,18 +144,22 @@ Mechanical fix: `${SCRIPT_DIR}/rc` → `${SCRIPT_DIR}/../rc` and equivalents (`D
 # Called by `rc test --host` and CI.
 ```
 
-After P2 every host test is either (a) passing, (b) documented as deleted/superseded, or (c) documented as dependent on specific host state (e.g. macOS-only keychain tests). No silent rot.
+**Alternative considered:** bats-core (battle-tested bash testing framework with TAP output, test isolation, setup/teardown, timing, skip flags). Lower churn for the `run-host.sh` path since rip-cage already leans on plain bash for testability and avoids tooling bloat. Revisit bats in a follow-up if the JSON/TAP integration becomes painful; the migration is mechanical.
+
+After P2 every host test is either (a) passing and wired into `run-host.sh`, (b) deleted as superseded, or (c) documented as dependent on specific host state (e.g. macOS-only keychain tests) with a skip-guard. No silent rot.
 
 ### 3. Egress perimeter expansion (P3)
 
+**Blocker.** P3 is sequenced behind a decision on ADR-013 D4 (non-HTTP egress policy). Until D4 is promoted to FIRM (and ADR-012's open section closes in lockstep), the shape of the non-HTTP test below is undecided. P1 and P2 can ship without P3.
+
 Add to `test-egress-firewall.sh`:
 
-- **IPv6 check**: `ip6tables -L OUTPUT -n` — either has matching rules OR IPv6 egress is verified blocked at the interface. Today we suspect the latter (no IPv6 in container), but it's untested.
+- **IPv6 perimeter (active probe, not capability check)**: `curl -6 --max-time 5 https://ipv6.google.com` from inside the container must fail (no route / blocked). A capability check like "does `ip6tables` have rules OR is `/proc/net/if_inet6` empty?" is a tautology today — the container has only `::1` and `init-firewall.sh` has zero `ip6tables` references, so the OR evaluates trivially. The active probe is environment-independent and survives Docker daemon IPv6 changes.
 - **WebSocket denylist**: `curl -N --http1.1 -H 'Upgrade: websocket' -H 'Connection: Upgrade' https://webhook.site/...` — expect 403 with `X-Rip-Cage-Denied`. If mitmproxy doesn't intercept pre-upgrade WebSocket negotiation correctly, this is a real hole.
-- **Non-HTTP outbound ports**: `nc -zv github.com 22` (git-over-ssh) — document expected behaviour (currently allowed, no proxy, direct connect). If expected-allowed, assert it works; if expected-blocked, add iptables rule + test.
+- **Non-HTTP outbound ports (iptables-level, not network probe)**: assert the iptables rule set does not REDIRECT or DROP traffic on ports other than 80/443 (verify via `iptables -t nat -L OUTPUT -n` and `iptables -L OUTPUT -n`). Do NOT use `nc -zv github.com 22` as a positive probe — hosted Docker environments (OrbStack, Docker Desktop forwarding, cloud runners) may block outbound port 22 at the network edge, making the test flaky across developer machines. If a positive network probe is needed for a specific environment, gate it behind `RC_E2E_EXPECT_INTERNET_PORT_22=1` and skip by default.
 - **DNS-over-TLS / DoH**: denylist already lists common DoH resolvers; add a positive test that one denies.
 
-Decision required (captured in ADR update, see below): **are non-HTTP outbound connections in scope?** Today the firewall only intercepts TCP 80/443. Anything on other ports bypasses it entirely. This is a documented accepted risk or a real gap depending on the threat model.
+Policy decision (resolve before P3 lands): **are non-HTTP outbound connections in scope?** Today the firewall only intercepts TCP 80/443. Anything on other ports bypasses it entirely. This is either a documented accepted risk or a real gap depending on the threat model. See ADR-013 D4 and ADR-012's open section; P3 is blocked on promoting D4 to FIRM.
 
 ## Non-goals
 
@@ -146,12 +169,15 @@ Decision required (captured in ADR update, see below): **are non-HTTP outbound c
 
 ## Open questions
 
-1. Where does `test-integration.sh` fit — is it superseded by the new e2e test, or kept as a thinner smoke test?
-2. Should `rc test --e2e` auto-rebuild the image, or strictly reuse the local one? (Leaning: reuse, with `--rebuild` flag.)
-3. CI integration — add GitHub Actions workflow in a follow-up? Requires docker-in-docker or self-hosted runner for the e2e job.
-4. Non-HTTP egress policy (see P3 decision-required note). This needs product input, not just engineering.
+1. CI integration — add GitHub Actions workflow in a follow-up? Requires docker-in-docker or self-hosted runner for the e2e job.
+2. Non-HTTP egress policy (see §3 and ADR-013 D4). Blocks P3 only; P1/P2 proceed regardless. Needs product input, not just engineering.
+
+**Resolved during design review (2026-04-20):**
+- `test-integration.sh` is superseded by `test-e2e-lifecycle.sh` — its unique checks fold in to §1.
+- `rc test --e2e` reuses the local image by default; set `RC_E2E_REBUILD=1` to rebuild.
 
 ## Out of scope for this doc
 
 - Implementation of the tests themselves — this doc is the plan, not the code.
 - Changes to the safety stack or egress rules. Test coverage only.
+

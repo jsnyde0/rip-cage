@@ -5,7 +5,8 @@ set -uo pipefail
 # Uses PATH manipulation to simulate missing tools
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-RC="${SCRIPT_DIR}/rc"
+REPO_ROOT="${SCRIPT_DIR}/.."
+RC="${REPO_ROOT}/rc"
 FAILURES=0
 
 pass() { echo "PASS: $1"; }

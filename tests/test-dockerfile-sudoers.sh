@@ -5,7 +5,8 @@
 set -euo pipefail
 PASS=0; FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DOCKERFILE="$SCRIPT_DIR/Dockerfile"
+REPO_ROOT="${SCRIPT_DIR}/.."
+DOCKERFILE="${REPO_ROOT}/Dockerfile"
 
 pass() { echo "PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "FAIL: $1"; FAIL=$((FAIL + 1)); }
