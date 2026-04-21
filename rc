@@ -1167,6 +1167,18 @@ cmd_up() {
       # same hard stop the actual resume would hit (ADR-001).
       _up_resolve_resume_egress "$name" "$path"
       would_action="would_resume"
+    elif [[ "$state" == "paused" ]]; then
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is paused. Run: docker unpause $name then retry: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+      echo "Error: Container $name is paused. Run: docker unpause $name then retry: rc up $path" >&2; return 1
+    elif [[ "$state" == "restarting" ]]; then
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is restarting. Wait, or run: docker stop $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+      echo "Error: Container $name is restarting. Wait, or run: docker stop $name && rc up $path" >&2; return 1
+    elif [[ "$state" == "removing" ]]; then
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is being removed. Wait, then run: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+      echo "Error: Container $name is being removed. Wait, then run: rc up $path" >&2; return 1
+    elif [[ "$state" == "dead" ]]; then
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is dead. Run: rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+      echo "Error: Container $name is dead. Run: rc destroy $name && rc up $path" >&2; return 1
     else
       would_action="would_create"
     fi
@@ -1252,6 +1264,22 @@ cmd_up() {
     fi
     _up_attach_tmux "$name"
     return
+  elif [[ "$state" == "paused" ]]; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is paused. Run: docker unpause $name then retry: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+    echo "Error: Container $name is paused. Run: docker unpause $name then retry: rc up $path" >&2
+    return 1
+  elif [[ "$state" == "restarting" ]]; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is restarting. Wait, or run: docker stop $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+    echo "Error: Container $name is restarting. Wait, or run: docker stop $name && rc up $path" >&2
+    return 1
+  elif [[ "$state" == "removing" ]]; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is being removed. Wait, then run: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+    echo "Error: Container $name is being removed. Wait, then run: rc up $path" >&2
+    return 1
+  elif [[ "$state" == "dead" ]]; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is dead. Run: rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+    echo "Error: Container $name is dead. Run: rc destroy $name && rc up $path" >&2
+    return 1
   fi
 
   # New container
@@ -1305,9 +1333,10 @@ cmd_up() {
 cmd_ls() {
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}' | \
-      jq -Rsn '[inputs | rtrimstr("\n") | select(length > 0) | split("\t") | {name: .[0], status: .[1], uptime: .[2], source_path: .[3], egress: .[4]}]'
+      jq -Rsn '[inputs | rtrimstr("\n") | split("\n") | .[] | select(length > 0) | split("\t") | {name: .[0], status: .[1], uptime: .[2], source_path: .[3], egress: (.[4] | if . == "" then "legacy" elif (. == "on" or . == "off") then . else "invalid:\(.)" end)}]'
   else
-    docker ps -a --filter label=rc.source.path --format "table {{.Names}}\t{{.Status}}\t{{.Label \"rc.egress\"}}\t{{.Label \"rc.source.path\"}}"
+    { echo -e "NAME\tSTATUS\tSOURCE PATH\tEGRESS"; docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}' | \
+      awk -F'\t' '{egress=$4; if (egress == "") egress="legacy"; else if (egress != "on" && egress != "off") egress="invalid:" egress; print $1"\t"$2"\t"$3"\t"egress}'; }
   fi
 }
 
