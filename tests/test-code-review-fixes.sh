@@ -123,6 +123,99 @@ else
   fail "helper only called $call_count time(s); expected >=2 (dry-run + resume)"
 fi
 
+# --- L2: cmd_up fail-loud on unsupported container states (ADR-001) ---
+echo ""
+echo "=== L2: cmd_up fail-loud on unsupported container states ==="
+
+# Static: CONTAINER_STATE_UNSUPPORTED error code present
+if grep -q '"CONTAINER_STATE_UNSUPPORTED"' "$RC"; then
+  pass "CONTAINER_STATE_UNSUPPORTED error code present in rc"
+else
+  fail "CONTAINER_STATE_UNSUPPORTED error code missing from rc"
+fi
+
+# Static: all four unsupported states have explicit elif branches
+for state in paused restarting removing dead; do
+  if grep -q "\"$state\"" "$RC"; then
+    pass "cmd_up has explicit branch for state: $state"
+  else
+    fail "cmd_up missing explicit branch for state: $state"
+  fi
+done
+
+# Static: CONTAINER_STATE_UNSUPPORTED appears at least 4 times (one per state in real path)
+state_unsupported_count=$(grep -c '"CONTAINER_STATE_UNSUPPORTED"' "$RC" || true)
+if [[ "$state_unsupported_count" -ge 4 ]]; then
+  pass "CONTAINER_STATE_UNSUPPORTED referenced >= 4 times ($state_unsupported_count)"
+else
+  fail "CONTAINER_STATE_UNSUPPORTED only referenced $state_unsupported_count times; expected >= 4"
+fi
+
+# Static: cmd_ls normalizes missing egress to "legacy"
+if grep -q '"legacy"' "$RC"; then
+  pass "cmd_ls normalization: \"legacy\" marker present"
+else
+  fail "cmd_ls normalization: \"legacy\" marker missing"
+fi
+
+# Static: cmd_ls normalizes invalid egress to "invalid:<value>"
+if grep -q '"invalid:' "$RC"; then
+  pass "cmd_ls normalization: \"invalid:\" prefix present"
+else
+  fail "cmd_ls normalization: \"invalid:\" prefix missing"
+fi
+
+# Live tests: require Docker
+if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+  echo ""
+  echo "--- L2 live tests (Docker available) ---"
+
+  # Live L2-a: paused container → CONTAINER_STATE_UNSUPPORTED
+  # rc resolves paths via realpath before comparing. On macOS /tmp → /private/tmp.
+  # We must:
+  #   1. Resolve TEST_PATH_L2 via realpath so labels match what rc sees after resolution.
+  #   2. Derive CNAME_L2 from the resolved path (mirrors container_name() in rc).
+  TEST_PATH_L2_RAW="/tmp/rc-l2-$(date +%s)"
+  mkdir -p "$TEST_PATH_L2_RAW"
+  TEST_PATH_L2=$(realpath "$TEST_PATH_L2_RAW")
+  # Derive the name rc would compute for this path (mirrors container_name() in rc)
+  _l2a_parent=$(basename "$(dirname "$TEST_PATH_L2")")
+  _l2a_base=$(basename "$TEST_PATH_L2")
+  CNAME_L2=$(echo "${_l2a_parent}-${_l2a_base}" | tr -cs 'a-zA-Z0-9_.-' '-' | sed 's/^[.-]*//' | sed 's/-$//')
+  docker run -d --name "$CNAME_L2" \
+    --label rc.source.path="$TEST_PATH_L2" \
+    --label rc.egress=on \
+    alpine sleep 600 >/dev/null 2>&1 || true
+  docker pause "$CNAME_L2" >/dev/null 2>&1 || true
+  # RC_ALLOWED_ROOTS must include TEST_PATH_L2 so path validation passes
+  l2a_result=$(RC_ALLOWED_ROOTS="$TEST_PATH_L2" "$RC" --output json up "$TEST_PATH_L2" 2>&1) || true
+  docker unpause "$CNAME_L2" >/dev/null 2>&1 || true
+  docker rm -f "$CNAME_L2" >/dev/null 2>&1 || true
+  rm -rf "$TEST_PATH_L2_RAW"
+  if echo "$l2a_result" | jq -e '.code == "CONTAINER_STATE_UNSUPPORTED"' >/dev/null 2>&1; then
+    pass "paused container → CONTAINER_STATE_UNSUPPORTED (json)"
+  else
+    fail "paused container did not return CONTAINER_STATE_UNSUPPORTED. Got: $l2a_result"
+  fi
+
+  # Live L2-b: legacy container (no rc.egress label) → egress == "legacy" in ls output
+  TEST_PATH_L2b=$(mktemp -d)
+  CNAME_L2b="rc-l2b-test-$(date +%s)"
+  docker run -d --name "$CNAME_L2b" \
+    --label rc.source.path="$TEST_PATH_L2b" \
+    alpine sleep 600 >/dev/null 2>&1 || true
+  l2b_result=$("$RC" --output json ls 2>/dev/null) || true
+  docker rm -f "$CNAME_L2b" >/dev/null 2>&1 || true
+  rm -rf "$TEST_PATH_L2b"
+  if echo "$l2b_result" | jq -e --arg name "$CNAME_L2b" '.[] | select(.name == $name) | .egress == "legacy"' >/dev/null 2>&1; then
+    pass "legacy container (no rc.egress label) shown as egress=legacy in cmd_ls"
+  else
+    fail "legacy container not shown as egress=legacy. Got: $l2b_result"
+  fi
+else
+  echo "SKIP: Docker daemon not running — skipping L2 live tests"
+fi
+
 # --- Syntax check ---
 echo ""
 echo "=== Syntax check ==="
