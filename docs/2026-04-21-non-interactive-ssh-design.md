@@ -64,7 +64,7 @@ Match final Host *
     ConnectTimeout 10
 ```
 
-`Match final` evaluates after all other config is loaded, so this block gives the system policy last-word precedence over anything the agent might later write into `~/.ssh/config` (or pass via `GIT_SSH_COMMAND` without `-o` overrides). OpenSSH's normal "first value wins" ordering would let a user-file `Host github.com` block override `BatchMode` and `StrictHostKeyChecking` — the TOFU regression ADR-014 D2 rejected. `Match final` prevents that by deferring our settings until last, where they win as the final resolution step. This mirrors the pattern in ADR-002 D11 (move enforcement from defeatable config to authoritative substrate).
+`Match final` applies our block during the final resolution pass, which gives our settings precedence for options **not already set** by user config — notably `UserKnownHostsFile`, `GlobalKnownHostsFile`, and `ConnectTimeout`. OpenSSH's "first value wins" rule applies across all passes including the `Match final` re-evaluation: a user-config `Host github.com` block that sets `BatchMode no` or `StrictHostKeyChecking accept-new` before our system block will **not** be overridden by `Match final`. The incident-case fix (default container with no `~/.ssh/config`) is unaffected — `Match final` is the first place these options get set, so they stick. A container where an agent or user has written a `~/.ssh/config` before SSH runs is not covered by this config-level mechanism; that scenario would require physical enforcement (e.g., a read-only `~/.ssh` bind mount). See ADR-014 D2 for the documented caveat.
 
 `ConnectTimeout 10` bounds failure latency. Note that port 22 is *not* blocked by ADR-012's egress firewall — see the "Interaction with existing ADRs" section — so the TCP handshake to `github.com:22` succeeds, and the timeout only trips against genuinely unreachable hosts. The real non-interactive guarantee comes from `BatchMode=yes` and `StrictHostKeyChecking=yes`.
 
@@ -95,12 +95,12 @@ Every "NEVER stop before pushing" / "If push fails, resolve and retry" clause is
 ### Interaction with existing ADRs
 
 - **ADR-001 (fail-loud):** `BatchMode=yes` converts the "silent hang on prompt" failure into an immediate non-interactive error. Direct compliance.
-- **ADR-002 (blast radius):** No credential material is introduced. `/etc/ssh/ssh_known_hosts` is public data — identical to what GitHub publishes. No mount changes. The `Match final` precedence pattern here mirrors D11's move from defeatable config to authoritative substrate.
+- **ADR-002 (blast radius):** No credential material is introduced. `/etc/ssh/ssh_known_hosts` is public data — identical to what GitHub publishes. No mount changes.
 - **ADR-012 (egress firewall):** ADR-012's L7 proxy intercepts TCP 80/443 only (verified: `init-firewall.sh` REDIRECTs `--dport 443` and `--dport 80`; `egress-rules.yaml` has no port entries). Non-HTTP egress remains allowed in the default posture, so the TCP connection to `github.com:22` succeeds. This design's protections (`BatchMode`, `StrictHostKeyChecking`, pinned `known_hosts`) are therefore the only guards — the firewall does not provide a belt-and-suspenders layer for SSH. If the egress override is in effect (`RIP_CAGE_EGRESS=off` per ADR-012 D6), or if a future bot-identity scenario introduces a host that *is* allowlisted, this design's posture still guarantees non-interactive behavior.
 - **ADR-013 (test-coverage):** Tier 1 asserts land in `tests/test-safety-stack.sh`. Tier 2 asserts target `tests/test-e2e-lifecycle.sh` (to be created per ADR-013 D3 P1); if that file doesn't yet exist when this lands, the Tier 2 assert goes into `tests/test-integration.sh` as a temporary landing spot with a comment flagging the ADR-013 D3 move target.
 - **ADR-014 D1 (push-less cage):** This design supports D1 by ensuring the failure mode of any stray SSH attempt is immediate and observable, not interactive.
 - **ADR-014 D3 (push-less session-close):** Implemented directly by the `CLAUDE.md` rewrite (Design change 4 above). This is what closes the instruction/architecture incoherence ADR-014 named.
-- **ADR-014 Deferred (SSH-agent forwarding escape valve):** If that valve ever lands, a forwarded user's `~/.ssh/config` would normally override our system defaults. The `Match final` fragment preserves the non-interactive posture under that future flag — cheap forward-compatibility.
+- **ADR-014 Deferred (SSH-agent forwarding escape valve):** If that valve ever lands, a forwarded user's `~/.ssh/config` could override `BatchMode` and `StrictHostKeyChecking` in our system fragment (OpenSSH "first value wins" applies even under `Match final` for options the user-config already sets). Real enforcement in that scenario would require a read-only `~/.ssh` bind mount, not config-level precedence.
 
 ## Verification
 
@@ -114,7 +114,7 @@ New test cases, tiered per ADR-013:
 - `ssh -G github.com | grep -E '^globalknownhostsfile /etc/ssh/ssh_known_hosts$'` — confirms pinned global-known-hosts file (symmetry with the user side).
 - `grep -q '^github.com ssh-ed25519 ' /etc/ssh/ssh_known_hosts` — confirms the pinned key is present.
 - **Override-resistance:** plant a hostile `~/.ssh/config` with `Host github.com\n  StrictHostKeyChecking accept-new\n  BatchMode no`, then assert `ssh -G github.com | grep -E '^batchmode yes$'` still holds. This is the regression test for `Match final`; if someone changes the fragment back to `Host *` this test fails loudly.
-- **`CLAUDE.md` push-less:** assert `/workspace/CLAUDE.md` contains neither `"git push" succeeds` nor `bd dolt push` (both are removed by the ADR-014 D3 rewrite). This is a text-level guard against the old mandate being reintroduced.
+- **`CLAUDE.md` push-less (2 check() calls):** (N7a) assert `/workspace/CLAUDE.md` contains no push-mandate regex (`git push.*(succeeds|required|mandatory|must)`); (N7b) assert no `bd dolt push` literal (both are removed by the ADR-014 D3 rewrite). These are text-level guards against the old mandate being reintroduced.
 
 **Tier 2 (integration, requires network):**
 

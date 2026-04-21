@@ -76,6 +76,8 @@ The base image ships a deterministic, non-interactive SSH client posture:
 
 **What would invalidate this:** GitHub rotates its SSH host keys (rare; last rotation was 2023 after the accidental key exposure). A rotation would require a Dockerfile update and image rebuild — acceptable given the frequency.
 
+**Caveat — `Match final` reach limits:** `Match final Host *` does not defeat (a) explicit CLI `-o` flags (command-line beats config), nor (b) user-config values for options the user already set (OpenSSH's "first value wins" applies across all passes including `Match final`). The FIRM posture holds for the default container (no user config, no `-o` override); a future bot-identity or forwarded-agent scenario that requires real enforcement against user/CLI overrides would need a read-only `~/.ssh` bind mount akin to ADR-002 D11.
+
 ### D3: Session-close protocol is push-less at the cage boundary
 
 **Firmness: FIRM**

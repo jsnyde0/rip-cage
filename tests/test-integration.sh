@@ -81,9 +81,11 @@ echo "Step 12: Verify bd-real exists and is executable..."
 docker exec "$CONTAINER_NAME" test -x /usr/local/bin/bd-real || { echo "FAIL: bd-real not executable or missing"; exit 1; }
 
 # 13. Non-interactive SSH: no TTY prompt on first-contact attempt
+# Step 13: exercise system SSH config (no -o overrides) so this test would
+# fail if /etc/ssh/ssh_config.d/00-rip-cage.conf were removed.
 # TODO: move to tests/test-e2e-lifecycle.sh when that file is created (ADR-013 D3 P1)
 echo "Step 13: Non-interactive SSH posture (Tier 2)..."
-ssh_output=$(docker exec "$CONTAINER_NAME" sh -c 'ssh -o BatchMode=yes -o ConnectTimeout=5 -T git@github.com 2>&1' || true)
+ssh_output=$(docker exec "$CONTAINER_NAME" sh -c 'ssh -T git@github.com 2>&1' || true)
 if echo "$ssh_output" | grep -q "Are you sure you want to continue connecting"; then
   echo "FAIL: SSH interactive prompt detected — BatchMode/StrictHostKeyChecking not enforced"
   exit 1

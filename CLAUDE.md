@@ -57,7 +57,7 @@ After modifying the Dockerfile or any file that gets COPY'd into the image:
 ```bash
 ./rc build
 ./rc up /path/to/test/project
-./rc test <container-name>    # should be 32/32 PASS
+./rc test <container-name>    # expect all checks PASS (count grows with new safety-stack additions)
 ```
 
 For changes to `rc` itself, you can test without rebuilding the image.
