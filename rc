@@ -1154,9 +1154,17 @@ cmd_up() {
     git_hooks_ro=true
   fi
 
-  # Check container state
-  local state
-  state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
+  # Check container state — distinguish "container absent" from "inspect failed".
+  # docker inspect exits non-zero with "no such object" when the container does
+  # not exist; it exits 0 when the container exists (even if status is blank).
+  # Use 'if' to capture exit code without triggering set -e on failure.
+  local state _inspect_exit
+  if state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null); then
+    _inspect_exit=0
+  else
+    _inspect_exit=$?
+    state=""
+  fi
 
   if [[ "$DRY_RUN" == "true" ]]; then
     local would_action
@@ -1167,6 +1175,9 @@ cmd_up() {
       # same hard stop the actual resume would hit (ADR-001).
       _up_resolve_resume_egress "$name" "$path"
       would_action="would_resume"
+    elif [[ "$_inspect_exit" -ne 0 ]]; then
+      # docker inspect failed → container is absent; create new.
+      would_action="would_create"
     elif [[ "$state" == "paused" ]]; then
       [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is paused. Run: docker unpause $name then retry: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
       echo "Error: Container $name is paused. Run: docker unpause $name then retry: rc up $path" >&2; return 1
@@ -1180,7 +1191,9 @@ cmd_up() {
       [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is dead. Run: rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
       echo "Error: Container $name is dead. Run: rc destroy $name && rc up $path" >&2; return 1
     else
-      would_action="would_create"
+      # Unrecognized state (allowlist exhausted) — fail loud per ADR-001.
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is in unrecognized state: state=$state. Inspect manually with: docker inspect $name  — if safe, rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+      echo "Error: Container $name is in unrecognized state: state=$state. Inspect manually with: docker inspect $name  — if safe, rc destroy $name && rc up $path" >&2; return 1
     fi
 
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -1264,6 +1277,8 @@ cmd_up() {
     fi
     _up_attach_tmux "$name"
     return
+  elif [[ "$_inspect_exit" -ne 0 ]]; then
+    : # container absent — fall through to "New container" block below
   elif [[ "$state" == "paused" ]]; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is paused. Run: docker unpause $name then retry: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
     echo "Error: Container $name is paused. Run: docker unpause $name then retry: rc up $path" >&2
@@ -1279,6 +1294,11 @@ cmd_up() {
   elif [[ "$state" == "dead" ]]; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is dead. Run: rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
     echo "Error: Container $name is dead. Run: rc destroy $name && rc up $path" >&2
+    return 1
+  else
+    # Unrecognized state (allowlist exhausted) — fail loud per ADR-001.
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is in unrecognized state: state=$state. Inspect manually with: docker inspect $name  — if safe, rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+    echo "Error: Container $name is in unrecognized state: state=$state. Inspect manually with: docker inspect $name  — if safe, rc destroy $name && rc up $path" >&2
     return 1
   fi
 
@@ -1335,8 +1355,8 @@ cmd_ls() {
     docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}' | \
       jq -Rsn '[inputs | rtrimstr("\n") | split("\n") | .[] | select(length > 0) | split("\t") | {name: .[0], status: .[1], uptime: .[2], source_path: .[3], egress: (.[4] | if . == "" then "legacy" elif (. == "on" or . == "off") then . else "invalid:\(.)" end)}]'
   else
-    { echo -e "NAME\tSTATUS\tSOURCE PATH\tEGRESS"; docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}' | \
-      awk -F'\t' '{egress=$4; if (egress == "") egress="legacy"; else if (egress != "on" && egress != "off") egress="invalid:" egress; print $1"\t"$2"\t"$3"\t"egress}'; }
+    { echo -e "NAME\tSTATUS\tEGRESS\tSOURCE PATH"; docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}' | \
+      awk -F'\t' '{egress=$4; if (egress == "") egress="legacy"; else if (egress != "on" && egress != "off") egress="invalid:" egress; print $1"\t"$2"\t"egress"\t"$3}'; }
   fi
 }
 

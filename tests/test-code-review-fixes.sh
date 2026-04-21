@@ -134,32 +134,32 @@ else
   fail "CONTAINER_STATE_UNSUPPORTED error code missing from rc"
 fi
 
-# Static: all four unsupported states have explicit elif branches
+# Static: all four unsupported states have explicit elif branches (scoped to cmd_up)
 for state in paused restarting removing dead; do
-  if grep -q "\"$state\"" "$RC"; then
+  if awk '/^cmd_up\(\)/,/^}/' "$RC" | grep -q "\"$state\""; then
     pass "cmd_up has explicit branch for state: $state"
   else
     fail "cmd_up missing explicit branch for state: $state"
   fi
 done
 
-# Static: CONTAINER_STATE_UNSUPPORTED appears at least 4 times (one per state in real path)
-state_unsupported_count=$(grep -c '"CONTAINER_STATE_UNSUPPORTED"' "$RC" || true)
-if [[ "$state_unsupported_count" -ge 4 ]]; then
-  pass "CONTAINER_STATE_UNSUPPORTED referenced >= 4 times ($state_unsupported_count)"
+# Static: CONTAINER_STATE_UNSUPPORTED appears at least 8 times (four states × two paths: dry-run + real)
+state_unsupported_count=$(awk '/^cmd_up\(\)/,/^}/' "$RC" | grep -c '"CONTAINER_STATE_UNSUPPORTED"' || true)
+if [[ "$state_unsupported_count" -ge 8 ]]; then
+  pass "CONTAINER_STATE_UNSUPPORTED referenced >= 8 times in cmd_up ($state_unsupported_count)"
 else
-  fail "CONTAINER_STATE_UNSUPPORTED only referenced $state_unsupported_count times; expected >= 4"
+  fail "CONTAINER_STATE_UNSUPPORTED only referenced $state_unsupported_count times in cmd_up; expected >= 8 (four states × two paths)"
 fi
 
-# Static: cmd_ls normalizes missing egress to "legacy"
-if grep -q '"legacy"' "$RC"; then
+# Static: cmd_ls normalizes missing egress to "legacy" (scoped to cmd_ls)
+if awk '/^cmd_ls\(\)/,/^}/' "$RC" | grep -q '"legacy"'; then
   pass "cmd_ls normalization: \"legacy\" marker present"
 else
   fail "cmd_ls normalization: \"legacy\" marker missing"
 fi
 
-# Static: cmd_ls normalizes invalid egress to "invalid:<value>"
-if grep -q '"invalid:' "$RC"; then
+# Static: cmd_ls normalizes invalid egress to "invalid:<value>" (scoped to cmd_ls)
+if awk '/^cmd_ls\(\)/,/^}/' "$RC" | grep -q '"invalid:'; then
   pass "cmd_ls normalization: \"invalid:\" prefix present"
 else
   fail "cmd_ls normalization: \"invalid:\" prefix missing"
@@ -182,20 +182,25 @@ if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
   _l2a_parent=$(basename "$(dirname "$TEST_PATH_L2")")
   _l2a_base=$(basename "$TEST_PATH_L2")
   CNAME_L2=$(echo "${_l2a_parent}-${_l2a_base}" | tr -cs 'a-zA-Z0-9_.-' '-' | sed 's/^[.-]*//' | sed 's/-$//')
-  docker run -d --name "$CNAME_L2" \
+  docker rm -f "$CNAME_L2" >/dev/null 2>&1 || true
+  if ! docker run -d --name "$CNAME_L2" \
     --label rc.source.path="$TEST_PATH_L2" \
     --label rc.egress=on \
-    alpine sleep 600 >/dev/null 2>&1 || true
-  docker pause "$CNAME_L2" >/dev/null 2>&1 || true
-  # RC_ALLOWED_ROOTS must include TEST_PATH_L2 so path validation passes
-  l2a_result=$(RC_ALLOWED_ROOTS="$TEST_PATH_L2" "$RC" --output json up "$TEST_PATH_L2" 2>&1) || true
-  docker unpause "$CNAME_L2" >/dev/null 2>&1 || true
-  docker rm -f "$CNAME_L2" >/dev/null 2>&1 || true
-  rm -rf "$TEST_PATH_L2_RAW"
-  if echo "$l2a_result" | jq -e '.code == "CONTAINER_STATE_UNSUPPORTED"' >/dev/null 2>&1; then
-    pass "paused container → CONTAINER_STATE_UNSUPPORTED (json)"
+    alpine sleep 600 >/dev/null 2>&1; then
+    rm -rf "$TEST_PATH_L2_RAW"
+    fail "L2-a: docker run failed — cannot test paused-container path"
   else
-    fail "paused container did not return CONTAINER_STATE_UNSUPPORTED. Got: $l2a_result"
+    docker pause "$CNAME_L2" >/dev/null 2>&1 || true
+    # RC_ALLOWED_ROOTS must include TEST_PATH_L2 so path validation passes
+    l2a_result=$(RC_ALLOWED_ROOTS="$TEST_PATH_L2" "$RC" --output json up "$TEST_PATH_L2" 2>&1) || true
+    docker unpause "$CNAME_L2" >/dev/null 2>&1 || true
+    docker rm -f "$CNAME_L2" >/dev/null 2>&1 || true
+    rm -rf "$TEST_PATH_L2_RAW"
+    if echo "$l2a_result" | jq -e '.code == "CONTAINER_STATE_UNSUPPORTED"' >/dev/null 2>&1; then
+      pass "paused container → CONTAINER_STATE_UNSUPPORTED (json)"
+    else
+      fail "paused container did not return CONTAINER_STATE_UNSUPPORTED. Got: $l2a_result"
+    fi
   fi
 
   # Live L2-b: legacy container (no rc.egress label) → egress == "legacy" in ls output
