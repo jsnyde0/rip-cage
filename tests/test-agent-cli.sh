@@ -108,8 +108,10 @@ check "blocked path returns PATH_INVALID" "$RESULT" "PATH_INVALID"
 check_exit "blocked path exits non-zero" "$EXIT_CODE" 1
 
 # Test 7: Missing RC_ALLOWED_ROOTS (non-TTY: warns and continues)
+# Use --dry-run so the warning is still emitted but no container is created
+# (otherwise Test 8 would observe action=attached instead of action=created).
 set +e
-RESULT=$(RC_CONFIG=/dev/null env -u RC_ALLOWED_ROOTS "$RC" up "$TEST_DIR/test-project" 2>&1)
+RESULT=$(RC_CONFIG=/dev/null env -u RC_ALLOWED_ROOTS "$RC" up --dry-run "$TEST_DIR/test-project" 2>&1)
 EXIT_CODE=$?
 set -e
 check "missing RC_ALLOWED_ROOTS mentions env var" "$RESULT" "RC_ALLOWED_ROOTS"
@@ -176,7 +178,7 @@ echo ""
 echo "-- Agent context --"
 
 # Test 15: AGENTS.md has rc invocation rules
-if grep -q "Rules for AI agents calling rc" "${REPO_ROOT}/AGENTS.md"; then
+if grep -qi "Rules for AI agents calling rc" "${REPO_ROOT}/AGENTS.md"; then
   echo "Test: AGENTS.md has agent rules section... PASS"; PASS=$((PASS + 1))
 else
   echo "Test: AGENTS.md has agent rules section... FAIL"; FAIL=$((FAIL + 1))

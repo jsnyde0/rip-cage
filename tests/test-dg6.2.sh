@@ -170,7 +170,7 @@ fi
 # --- Test 13: AGENTS.md contains agent rules section ---
 echo ""
 echo "=== Test 13: AGENTS.md contains rc invocation rules ==="
-if grep -q "Rules for AI agents calling rc" "${REPO_ROOT}/AGENTS.md"; then
+if grep -qi "Rules for AI agents calling rc" "${REPO_ROOT}/AGENTS.md"; then
   pass "AGENTS.md has agent rules section"
 else
   fail "AGENTS.md missing agent rules section"

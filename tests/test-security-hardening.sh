@@ -107,11 +107,16 @@ else
     if [[ -n "$LATEST_IMAGE" ]] && [[ "$CONTAINER_IMAGE" != "$LATEST_IMAGE" ]]; then
       echo "  SKIP: container uses stale image (rebuild with: rc destroy && rc up)"
     else
-      # Should be denied: chown on safety-stack binary
-      if docker exec "$CONTAINER" sudo chown agent:agent /usr/local/bin/dcg 2>&1 | grep -qi 'not allowed\|sorry\|permission'; then
+      # Should be denied: chown on safety-stack binary.
+      # Denial manifests as either an explicit sudoers rejection or a password
+      # prompt (since the path is outside the NOPASSWD allowlist). Either way
+      # sudo exits non-zero without performing the chown — use -n (non-interactive)
+      # so a password prompt is surfaced as a clean refusal rather than hanging.
+      dcg_out=$(docker exec "$CONTAINER" sudo -n chown agent:agent /usr/local/bin/dcg 2>&1) && dcg_rc=0 || dcg_rc=$?
+      if [[ "$dcg_rc" -ne 0 ]] && echo "$dcg_out" | grep -qi 'not allowed\|sorry\|permission\|password\|terminal'; then
         pass "runtime: sudo chown on /usr/local/bin/dcg denied"
       else
-        fail "runtime: sudo chown on /usr/local/bin/dcg was NOT denied"
+        fail "runtime: sudo chown on /usr/local/bin/dcg was NOT denied (rc=$dcg_rc, out=$dcg_out)"
       fi
       # Should succeed: chown on allowed path
       if docker exec "$CONTAINER" sudo chown agent:agent /home/agent/.claude 2>/dev/null; then

@@ -86,11 +86,14 @@ else
   check "Worktree mounts added after workspace mount" "false"
 fi
 
-# Test 15: Worktree mounts are BEFORE credential extraction (in cmd_up, not devcontainer template)
-# Use the security find-generic-password line inside cmd_up (not the devcontainer heredoc at line ~115)
-wt_line=$(grep -n 'git-main:delegated' "$RC_FILE" | head -1 | cut -d: -f1)
-cred_line=$(grep -n 'security find-generic-password' "$RC_FILE" | tail -1 | cut -d: -f1)
-if [[ -n "$wt_line" && -n "$cred_line" && "$wt_line" -lt "$cred_line" ]]; then
+# Test 15: Worktree mounts are BEFORE credential extraction (call-site order).
+# Credential extraction was refactored into _extract_credentials(); the runtime
+# order is what matters, so check the call-site inside _up_prepare_docker_mounts.
+# Scope to _up_prepare_docker_mounts so we compare the actual call-site ordering.
+mounts_fn=$(awk '/^_up_prepare_docker_mounts\(\)/,/^}/ { print NR": "$0 }' "$RC_FILE")
+wt_line=$(echo "$mounts_fn" | grep 'git-main:delegated' | head -1 | cut -d: -f1)
+cred_call_line=$(echo "$mounts_fn" | grep '_extract_credentials' | head -1 | cut -d: -f1)
+if [[ -n "$wt_line" && -n "$cred_call_line" && "$wt_line" -lt "$cred_call_line" ]]; then
   check "Worktree mounts added before credential extraction" "true"
 else
   check "Worktree mounts added before credential extraction" "false"
