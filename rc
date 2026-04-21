@@ -123,7 +123,9 @@ Commands:
   attach [name]                                Attach to container tmux session
   down [name]                                  Stop a container
   destroy [-f|--force] [name]                   Remove container and volumes
-  test [name]                                  Run safety stack smoke test
+  test [name]                                  Run in-container safety stack tests (59 checks)
+  test --host                                  Run all host-side tests (host-only; not usable inside container)
+  test --e2e                                   Full lifecycle e2e test (slow; RC_E2E_REBUILD=1 to rebuild image)
   auth refresh                                 Refresh credentials from host keychain
   schema                                       Print machine-readable command schema
   completions <shell>                          Print shell completion script (zsh|bash)
@@ -1144,11 +1146,22 @@ cmd_up() {
     # The container was created with a specific egress setting (and may lack NET_ADMIN
     # if it was created with egress=off). Using the host env var here could try to run
     # iptables in a container without the capability, causing init to fail.
+    # An absent label means the container predates egress support — there is no safe
+    # default (on tries to exec a non-existent script; off silently downgrades safety).
+    # Fail loud (ADR-001) and point the user at the clean fix: destroy and recreate.
     local _label_egress
     _label_egress=$(docker inspect --format '{{ index .Config.Labels "rc.egress" }}' "$name" 2>/dev/null || true)
-    if [[ -n "$_label_egress" ]]; then
-      rc_egress="$_label_egress"
+    if [[ -z "$_label_egress" ]]; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        json_error "Container $name predates egress support (no rc.egress label). Run: rc destroy $name && rc up $path" "LEGACY_CONTAINER"
+      fi
+      echo "Error: container $name predates egress support (no rc.egress label)." >&2
+      echo "       Recreate it to pick up current safety features:" >&2
+      echo "         rc destroy $name" >&2
+      echo "         rc up $path" >&2
+      exit 1
     fi
+    rc_egress="$_label_egress"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       docker start "$name" >/dev/null
     else
@@ -1409,6 +1422,19 @@ cmd_destroy() {
 }
 
 cmd_test() {
+  if [[ "${1:-}" == "--host" ]]; then
+    shift
+    exec "${SCRIPT_DIR}/tests/run-host.sh" "$@"
+  fi
+  if [[ "${1:-}" == "--e2e" ]]; then
+    shift
+    local e2e_script="${SCRIPT_DIR}/tests/test-e2e-lifecycle.sh"
+    if [[ ! -f "$e2e_script" ]]; then
+      echo "Error: test-e2e-lifecycle.sh not found (create it via the e2e bead)" >&2
+      exit 1
+    fi
+    exec "$e2e_script" "$@"
+  fi
   local name
   name=$(resolve_name "${1:-}") || exit 1
   verify_rc_container "$name"
