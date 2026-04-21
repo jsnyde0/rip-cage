@@ -22,8 +22,28 @@ Specific behaviors:
 
 - **Legacy containers** (missing `rc.egress` label on resume) — error out with a message pointing to `rc destroy && rc up`. Do not guess the intended egress mode.
 - **Image/script drift** — if an expected script is absent inside the container, surface the underlying `docker exec` error verbatim rather than swallowing it.
-- **Unknown states** — `docker inspect` returning an unexpected status, or a label with an unrecognized value, must abort with a clear message, not default silently.
+- **Unknown states** — `docker inspect` returning an unexpected status, or a label with an unrecognized value, must abort with a clear message, not default silently. This applies to `cmd_up`'s state switch: `paused`, `restarting`, `removing`, and `dead` must fail loud with actionable hints, not fall through to the "create new container" branch where they produce a confusing name-conflict error.
+- **Inventory surfaces name the problem** — listing commands (`cmd_ls`) must annotate containers that would fail loud on resume (missing or invalid `rc.egress` label) rather than rendering a blank column. Operators should not have to probe via `rc up` to discover that a container is legacy.
 - **Errors are actionable** — every fail-loud message includes the concrete command the user should run next.
+
+### Exceptions
+
+The fail-loud rule applies to state/config mismatches that affect safety
+guarantees or execution. It does **not** apply to purely informational
+fields whose degraded value is visibly labeled and cannot be mistaken
+for a real value. The canonical example is `RC_VERSION`: when
+`SCRIPT_DIR/VERSION` is absent (e.g. `git clone && ./rc` during
+development), `RC_VERSION` falls back to the string `"unknown"`. This
+is acceptable because:
+
+1. `RC_VERSION` is not a safety gate — no decision branches on its value.
+2. It is not load-bearing for any ADR-001 scenario (missing label,
+   script drift, unknown state).
+3. The degraded value is explicitly labeled `"unknown"`, not a
+   plausible-looking fake version string.
+
+Adding an informational field to rip-cage does not create a new
+fail-loud obligation; adding a safety-relevant field does.
 
 ## Consequences
 
