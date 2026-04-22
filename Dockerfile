@@ -23,6 +23,7 @@ ARG BUN_VERSION=latest
 ENV TERM=xterm-256color
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
+ENV MISE_TRUSTED_CONFIG_PATHS=/workspace
 
 # System packages
 RUN apt-get update && apt-get install -y \
@@ -36,6 +37,12 @@ RUN apt-get update && apt-get install -y \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && cp /root/.local/bin/uv /usr/local/bin/uv \
     && cp /root/.local/bin/uvx /usr/local/bin/uvx
+
+# Mise (project toolchain provisioner) — see ADR-015
+ARG MISE_VERSION=2026.4.5
+RUN curl -fsSL https://mise.run | MISE_VERSION=v${MISE_VERSION} MISE_INSTALL_PATH=/usr/local/bin/mise sh \
+    && chmod +x /usr/local/bin/mise \
+    && /usr/local/bin/mise --version
 
 # Node 22 LTS
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
@@ -71,7 +78,7 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # Non-root user
 RUN groupadd -g 1000 agent \
     && useradd -m -u 1000 -g agent -s /usr/bin/zsh agent \
-    && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state, /usr/local/lib/rip-cage/init-firewall.sh, /usr/sbin/iptables -t nat -L OUTPUT -n, /usr/sbin/iptables -L OUTPUT -n" > /etc/sudoers.d/agent \
+    && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state, /usr/local/lib/rip-cage/init-firewall.sh, /usr/sbin/iptables -t nat -L OUTPUT -n, /usr/sbin/iptables -L OUTPUT -n, /usr/bin/chown -R agent\:agent /home/agent/.local/share/mise" > /etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent
 
 RUN useradd -r -s /usr/sbin/nologin -M rip-proxy
@@ -113,7 +120,7 @@ WORKDIR /home/agent
 # Pre-create mount targets so Docker inherits agent ownership on first use.
 # If Docker overrides ownership at mount time, init-rip-cage.sh has scoped
 # sudo chown as a fallback (see sudoers above).
-RUN mkdir -p /home/agent/.claude /home/agent/.claude-state
+RUN mkdir -p /home/agent/.claude /home/agent/.claude-state /home/agent/.local/share/mise
 COPY --chown=agent:agent zshrc /home/agent/.zshrc
 COPY --chown=agent:agent tmux.conf /home/agent/.tmux.conf
 CMD ["zsh"]

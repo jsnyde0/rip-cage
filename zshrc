@@ -46,3 +46,6 @@ extract() {
 
 # Terminal type fallback (containers sometimes lack terminfo)
 [[ -z "$TERM" || "$TERM" == "dumb" ]] && export TERM=xterm-256color
+
+# mise (project toolchain). No-op when no tool files are declared.
+eval "$(/usr/local/bin/mise activate zsh)"

@@ -374,6 +374,39 @@ else
 fi
 
 echo ""
+echo "-- Mise (ADR-015) --"
+
+# mise binary installed and executable
+check "mise binary installed" "$([[ -x /usr/local/bin/mise ]] && echo pass || echo fail)"
+
+# mise --version exits 0
+if /usr/local/bin/mise --version >/dev/null 2>&1; then
+  check "mise --version exits 0" "pass" "$(/usr/local/bin/mise --version 2>&1 | head -1)"
+else
+  check "mise --version exits 0" "fail"
+fi
+
+# mise activate hook present in .zshrc
+if grep -q 'mise activate zsh' /home/agent/.zshrc 2>/dev/null; then
+  check "mise activate zsh in .zshrc" "pass"
+else
+  check "mise activate zsh in .zshrc" "fail"
+fi
+
+# MISE_TRUSTED_CONFIG_PATHS env var set to /workspace
+check "MISE_TRUSTED_CONFIG_PATHS=/workspace" "$([[ "${MISE_TRUSTED_CONFIG_PATHS:-}" == "/workspace" ]] && echo pass || echo fail)" "${MISE_TRUSTED_CONFIG_PATHS:-unset}"
+
+# sudoers permits chown of mise cache dir
+if sudo -n -l 2>/dev/null | grep -q 'chown.*agent.*mise'; then
+  check "sudoers permits chown of mise cache dir" "pass"
+else
+  check "sudoers permits chown of mise cache dir" "fail"
+fi
+
+# mise cache dir exists (created by Dockerfile RUN mkdir or volume mount)
+check "mise cache dir exists" "$([[ -d /home/agent/.local/share/mise ]] && echo pass || echo fail)"
+
+echo ""
 echo "-- Version Manifest (rip-cage-7v4) --"
 # Emits pinned-component versions so a future harness failure after an upgrade
 # can be localized by diffing the manifest against a prior run. Always PASS —

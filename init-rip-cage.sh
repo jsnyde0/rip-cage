@@ -119,7 +119,36 @@ git config --global user.name "${GIT_AUTHOR_NAME:-Rip Cage Agent}"
 git config --global user.email "${GIT_AUTHOR_EMAIL:-agent@rip-cage.local}"
 echo "[rip-cage] Git identity: $(git config user.name) <$(git config user.email)>"
 
-# 7. Verify Claude Code
+# 7. Project toolchain provisioning (mise)
+#    No-op unless /workspace declares tools via .tool-versions / .mise.toml / .nvmrc / etc.
+if [ -r /workspace ]; then
+  _toolfiles=(.mise.toml mise.toml .tool-versions .nvmrc .node-version .python-version .ruby-version rust-toolchain.toml go.mod)
+  _found_tool=""
+  for f in "${_toolfiles[@]}"; do
+    if [ -f "/workspace/$f" ]; then _found_tool="$f"; break; fi
+  done
+  if [ -n "$_found_tool" ]; then
+    echo "[rip-cage] Toolchain: detected /workspace/$_found_tool — running mise install"
+    # Ensure cache volume is writable by agent — guard on actual ownership mismatch to
+    # avoid a recursive chown on every boot once the shared cache grows large.
+    if [ ! -L /home/agent/.local/share/mise ] \
+       && [ "$(stat -c %U /home/agent/.local/share/mise 2>/dev/null)" != "agent" ]; then
+      sudo chown -R agent:agent /home/agent/.local/share/mise 2>/dev/null || true
+    fi
+    # Fail-loud on install errors so the agent sees them; but don't block container start —
+    # a broken lockfile shouldn't render the whole cage unusable.
+    if (cd /workspace && mise install 2>&1 | tee /tmp/mise-install.log); then
+      echo "[rip-cage] Toolchain: mise install complete"
+    else
+      echo "[rip-cage] WARNING: mise install failed (see /tmp/mise-install.log). Toolchain may be unavailable." >&2
+    fi
+  else
+    echo "[rip-cage] Toolchain: no tool-version files detected — skipping"
+  fi
+  unset _toolfiles _found_tool
+fi
+
+# 8. Verify Claude Code
 if ! claude --version > /dev/null 2>&1; then
   echo "[rip-cage] ERROR: claude --version failed" >&2
   exit 1
@@ -133,7 +162,7 @@ elif [ ! -f ~/.claude.json ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
   echo "[rip-cage] WARNING: No auth found (~/.claude/.credentials.json missing, ANTHROPIC_API_KEY not set)" >&2
 fi
 
-# 8. Initialize beads
+# 9. Initialize beads
 # Storage mode was determined at top of script from metadata.json.
 # For server mode: BEADS_DOLT_SERVER_MODE and HOST are exported; port is re-read by bd wrapper.
 # For embedded mode: no server env vars; bd uses in-process Dolt on the bind mount.
@@ -161,7 +190,7 @@ if [[ -f /etc/rip-cage/firewall-env ]]; then
   fi
 fi
 
-# 9. Start tmux (CLI mode only — skip if inside VS Code devcontainer)
+# 10. Start tmux (CLI mode only — skip if inside VS Code devcontainer)
 if [ -z "${VSCODE_INJECTION:-}" ] && [ -z "${REMOTE_CONTAINERS:-}" ]; then
   if command -v tmux > /dev/null 2>&1; then
     tmux new-session -d -s rip-cage -c /workspace 2>/dev/null || true
