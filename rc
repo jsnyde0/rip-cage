@@ -1694,10 +1694,49 @@ cmd_test() {
   local name
   name=$(resolve_name "${1:-}") || exit 1
   verify_rc_container "$name"
+
+  # ADR-007 D9: host-side bd connectivity check — discover beads_dir from the
+  # container's /workspace mount source, then invoke _bd_host_preflight in
+  # --test-mode to get a PASS|FAIL [0] beads-host-dolt — <detail> line.
+  local ws_source
+  ws_source=$(docker inspect -f '{{ range .Mounts }}{{ if eq .Destination "/workspace" }}{{ .Source }}{{ end }}{{ end }}' "$name" 2>/dev/null || true)
+  local preflight_beads_dir="" preflight_dolt_mode=""
+  if [[ -n "$ws_source" ]]; then
+    preflight_beads_dir="${ws_source}/.beads"
+    # Apply D6-style worktree auto-redirect sub-path only (rc:916-931):
+    # if beads_dir has no runtime data and ws_source is a git worktree,
+    # resolve to the main repo's .beads/.
+    local wt_git_dir wt_common_git
+    wt_git_dir=$(git -C "$ws_source" rev-parse --git-dir 2>/dev/null || true)
+    wt_common_git=$(git -C "$ws_source" rev-parse --git-common-dir 2>/dev/null || true)
+    if [[ -n "$wt_common_git" ]] && [[ "$wt_common_git" != "$wt_git_dir" ]] \
+       && [[ ! -f "${preflight_beads_dir}/dolt-server.port" ]] \
+       && [[ ! -d "${preflight_beads_dir}/dolt" ]] \
+       && [[ ! -d "${preflight_beads_dir}/embeddeddolt" ]]; then
+      local main_repo_root="${wt_common_git%/.git}"
+      local resolved_worktree_main="${main_repo_root}/.beads"
+      [[ -d "$resolved_worktree_main" ]] && preflight_beads_dir="$resolved_worktree_main"
+    fi
+    if [[ -f "${preflight_beads_dir}/metadata.json" ]]; then
+      preflight_dolt_mode=$(jq -r '.dolt_mode // empty' "${preflight_beads_dir}/metadata.json" 2>/dev/null || true)
+    fi
+  fi
+
+  # Capture the host-side preflight line
+  local preflight_line
+  if [[ -n "$preflight_beads_dir" ]]; then
+    preflight_line=$(_bd_host_preflight "$preflight_beads_dir" "$preflight_dolt_mode" --test-mode 2>/dev/null) || true
+  else
+    preflight_line="PASS [0] beads-host-dolt — workspace mount not found (skipped)"
+  fi
+
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local output
     output=$(docker exec "$name" bash -c \
       '/usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-egress-firewall.sh; /usr/local/lib/rip-cage/test-bd-roundtrip.sh' 2>&1) || true
+    # Prepend host-side preflight line so the parse loop handles it uniformly
+    output="${preflight_line}
+${output}"
     # Parse PASS/FAIL lines into JSON array
     local checks="[]" overall="pass"
     while IFS= read -r line; do
@@ -1719,6 +1758,7 @@ cmd_test() {
     jq -nc --arg name "$name" --argjson checks "$checks" --arg overall "$overall" \
       '{name: $name, checks: $checks, overall: $overall}'
   else
+    echo "$preflight_line"
     docker exec "$name" /usr/local/lib/rip-cage/test-safety-stack.sh
     docker exec "$name" /usr/local/lib/rip-cage/test-skills.sh
     docker exec "$name" /usr/local/lib/rip-cage/test-egress-firewall.sh

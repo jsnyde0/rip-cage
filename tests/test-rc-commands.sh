@@ -427,6 +427,99 @@ else
   pass "rc up --dry-run agents check skipped — ~/.claude/agents not present"
 fi
 
+# --- Test 15: beads-host-dolt in rc test (Tier 3: requires running rc container) ---
+echo ""
+echo "=== Test 15: beads-host-dolt check in rc test (Tier 3) ==="
+# Find a running rc container whose workspace is the rip-cage repo (embedded mode)
+RIPCAGE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+RC_CONTAINER_T15=$(docker ps --filter "label=rc.source.path=${RIPCAGE_ROOT}" --format "{{.Names}}" 2>/dev/null | head -1 || true)
+
+if [[ -z "$RC_CONTAINER_T15" ]]; then
+  echo "SKIP: Test 15 — no running rc container found for ${RIPCAGE_ROOT} (start one with: rc up ${RIPCAGE_ROOT})"
+  pass "beads-host-dolt rc test (skipped — no container)"
+else
+  # JSON mode: embedded project should produce pass with correct name
+  rc_json_out=$("$RC" --output json test "$RC_CONTAINER_T15" 2>/dev/null || true)
+  bd_status=$(echo "$rc_json_out" | jq -r '.checks[] | select(.name=="beads-host-dolt") | .status' 2>/dev/null || true)
+  if [[ "$bd_status" == "pass" ]]; then
+    pass "rc test JSON: beads-host-dolt status is pass"
+  else
+    fail "rc test JSON: beads-host-dolt status expected 'pass', got '${bd_status}' (json: ${rc_json_out})"
+  fi
+
+  bd_detail=$(echo "$rc_json_out" | jq -r '.checks[] | select(.name=="beads-host-dolt") | .detail' 2>/dev/null || true)
+  if [[ "$bd_detail" == "not applicable (embedded mode)" ]]; then
+    pass "rc test JSON: beads-host-dolt detail is 'not applicable (embedded mode)'"
+  else
+    fail "rc test JSON: beads-host-dolt detail expected 'not applicable (embedded mode)', got '${bd_detail}'"
+  fi
+
+  # Text mode: check PASS line present
+  rc_text_out=$("$RC" test "$RC_CONTAINER_T15" 2>/dev/null || true)
+  if echo "$rc_text_out" | grep -q "PASS \[0\] beads-host-dolt"; then
+    pass "rc test text: beads-host-dolt PASS line present"
+  else
+    fail "rc test text: missing 'PASS [0] beads-host-dolt' (output: ${rc_text_out})"
+  fi
+fi
+
+# --- Test 16: beads-host-dolt stale port via bd-preflight-test (no container needed) ---
+echo ""
+echo "=== Test 16: beads-host-dolt stale port via bd-preflight-test ==="
+STALE_BEADS=$(mktemp -d)
+mkdir -p "${STALE_BEADS}/.beads"
+printf '65000\n' > "${STALE_BEADS}/.beads/dolt-server.port"
+stale_out=$("$RC" bd-preflight-test "${STALE_BEADS}/.beads" "server" 2>/dev/null || true)
+if echo "$stale_out" | grep -q "FAIL \[0\] beads-host-dolt"; then
+  pass "bd-preflight-test stale port produces FAIL beads-host-dolt"
+else
+  fail "bd-preflight-test stale port: expected FAIL [0] beads-host-dolt, got: ${stale_out}"
+fi
+if echo "$stale_out" | grep -q "stale port"; then
+  pass "bd-preflight-test stale port detail mentions 'stale port'"
+else
+  fail "bd-preflight-test stale port: detail missing 'stale port' (got: ${stale_out})"
+fi
+rm -rf "$STALE_BEADS"
+
+# --- Test 17: beads-host-dolt corrupt port via bd-preflight-test (no container needed) ---
+echo ""
+echo "=== Test 17: beads-host-dolt corrupt port via bd-preflight-test ==="
+CORRUPT_BEADS=$(mktemp -d)
+mkdir -p "${CORRUPT_BEADS}/.beads"
+printf 'not-a-number\n' > "${CORRUPT_BEADS}/.beads/dolt-server.port"
+corrupt_out=$("$RC" bd-preflight-test "${CORRUPT_BEADS}/.beads" "server" 2>/dev/null || true)
+if echo "$corrupt_out" | grep -q "FAIL \[0\] beads-host-dolt"; then
+  pass "bd-preflight-test corrupt port produces FAIL beads-host-dolt"
+else
+  fail "bd-preflight-test corrupt port: expected FAIL [0] beads-host-dolt, got: ${corrupt_out}"
+fi
+if echo "$corrupt_out" | grep -q "corrupt port file"; then
+  pass "bd-preflight-test corrupt port detail mentions 'corrupt port file'"
+else
+  fail "bd-preflight-test corrupt port: detail missing 'corrupt port file' (got: ${corrupt_out})"
+fi
+rm -rf "$CORRUPT_BEADS"
+
+# --- Test 18: beads-host-dolt port file missing via bd-preflight-test (no container needed) ---
+echo ""
+echo "=== Test 18: beads-host-dolt port file missing via bd-preflight-test ==="
+MISSING_BEADS=$(mktemp -d)
+mkdir -p "${MISSING_BEADS}/.beads"
+# No port file created
+missing_out=$("$RC" bd-preflight-test "${MISSING_BEADS}/.beads" "server" 2>/dev/null || true)
+if echo "$missing_out" | grep -q "FAIL \[0\] beads-host-dolt"; then
+  pass "bd-preflight-test missing port produces FAIL beads-host-dolt"
+else
+  fail "bd-preflight-test missing port: expected FAIL [0] beads-host-dolt, got: ${missing_out}"
+fi
+if echo "$missing_out" | grep -q "port file missing"; then
+  pass "bd-preflight-test missing port detail mentions 'port file missing'"
+else
+  fail "bd-preflight-test missing port: detail missing 'port file missing' (got: ${missing_out})"
+fi
+rm -rf "$MISSING_BEADS"
+
 # --- Cleanup ---
 rm -rf "$SYMLINK_SKILLS_DIR" "$SYMLINK_TARGET_DIR" "$SYMLINK_SKILLS_DIR2" "$HOME_TARGET_DIR" "$SIBLING_DIR" "$TEST_DIR3"
 rm -rf "$TEST_DIR" "$TEST_DIR2"
