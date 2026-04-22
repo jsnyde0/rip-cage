@@ -121,6 +121,13 @@ WORKDIR /home/agent
 # If Docker overrides ownership at mount time, init-rip-cage.sh has scoped
 # sudo chown as a fallback (see sudoers above).
 RUN mkdir -p /home/agent/.claude /home/agent/.claude-state /home/agent/.local/share/mise
+# Mise global config: enable idiomatic version file detection for tools that use
+# .nvmrc (node) and packageManager field in package.json (yarn). Without this,
+# mise's core backends don't detect these files even with legacy_version_file=true.
+# See: ADR-015 D3 (init.rip-cage.sh hooks), Tier 2 test scenarios.
+RUN mkdir -p /home/agent/.config/mise \
+    && printf '[settings]\nidiomatic_version_file_enable_tools = ["node", "yarn"]\n' \
+       > /home/agent/.config/mise/config.toml
 COPY --chown=agent:agent zshrc /home/agent/.zshrc
 COPY --chown=agent:agent tmux.conf /home/agent/.tmux.conf
 CMD ["zsh"]

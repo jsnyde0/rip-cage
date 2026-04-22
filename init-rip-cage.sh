@@ -127,6 +127,19 @@ if [ -r /workspace ]; then
   for f in "${_toolfiles[@]}"; do
     if [ -f "/workspace/$f" ]; then _found_tool="$f"; break; fi
   done
+  # package.json triggers mise only when it declares packageManager or engines.node —
+  # most Node projects without these fields should not incur a mise install.
+  if [ -z "$_found_tool" ] && [ -f /workspace/package.json ]; then
+    if command -v jq > /dev/null 2>&1; then
+      if jq -e '.packageManager or .engines.node' /workspace/package.json > /dev/null 2>&1; then
+        _found_tool="package.json (packageManager/engines.node)"
+      fi
+    else
+      if grep -qE '"(packageManager|engines)"' /workspace/package.json; then
+        _found_tool="package.json (packageManager/engines.node)"
+      fi
+    fi
+  fi
   if [ -n "$_found_tool" ]; then
     echo "[rip-cage] Toolchain: detected /workspace/$_found_tool — running mise install"
     # Ensure cache volume is writable by agent — guard on actual ownership mismatch to

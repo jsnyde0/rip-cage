@@ -89,6 +89,19 @@ if [ -r /workspace ]; then
   for f in "${_toolfiles[@]}"; do
     if [ -f "/workspace/$f" ]; then _found_tool="$f"; break; fi
   done
+  # package.json triggers mise only when it declares packageManager or engines.node —
+  # most Node projects without these fields should not incur a mise install.
+  if [ -z "$_found_tool" ] && [ -f /workspace/package.json ]; then
+    if command -v jq > /dev/null 2>&1; then
+      if jq -e '.packageManager or .engines.node' /workspace/package.json > /dev/null 2>&1; then
+        _found_tool="package.json (packageManager/engines.node)"
+      fi
+    else
+      if grep -qE '"(packageManager|engines)"' /workspace/package.json; then
+        _found_tool="package.json (packageManager/engines.node)"
+      fi
+    fi
+  fi
   if [ -n "$_found_tool" ]; then
     echo "[rip-cage] Toolchain: detected /workspace/$_found_tool — running mise install"
     # Ensure cache volume is writable by agent — guard on actual ownership mismatch to
@@ -111,7 +124,7 @@ if [ -r /workspace ]; then
 fi
 ```
 
-The tool-file list deliberately skips `package.json` (most Node projects without `engines.node` or `packageManager` shouldn't incur an install), but **does** include `.nvmrc` / `.node-version` / the `packageManager` field (via `mise` auto-detect when `.mise.toml` is absent but `package.json` declares it — mise 2024+ reads `packageManager` natively). If the project wants yarn, they add `packageManager` to `package.json` — a two-character edit in a file they already own.
+The tool-file list deliberately skips `package.json` by default (most Node projects without `engines.node` or `packageManager` shouldn't incur an install). After the fixed-file scan, a second check inspects `package.json` specifically for the `packageManager` or `engines.node` fields (using `jq` if available, otherwise falling back to `grep`). If either field is present, `_found_tool` is set and `mise install` runs — mise 2024+ reads `packageManager` natively. If the project wants yarn, they add `packageManager` to `package.json` — a two-character edit in a file they already own.
 
 Go is intentionally different from Node: Go is **not** in the base image, so any `go.mod` correctly triggers a toolchain fetch. Node **is** in the base image, so an unadorned `package.json` (no `engines.node` / no `packageManager` / no `.nvmrc`) is left on the default Node 22 rather than forcing a mise install.
 
