@@ -1,11 +1,20 @@
 # Rip Cage Roadmap
 
-**Last updated:** 2026-04-20
+**Last updated:** 2026-04-22
 **Philosophy:** Build → test → learn → adjust. This roadmap is directional, not a contract. Expect changes as we gain real experience using the tool.
 
 ---
 
 ## Phase 1: Hardening (current)
+
+### Cage host-network awareness (ADR-016)
+
+- [x] Ship `/etc/rip-cage/cage-claude.md` in image; append under fenced markers in init ([ADR-016 D1](decisions/ADR-016-cage-host-network-awareness.md))
+- [x] Preflight probe writes `CAGE_HOST_ADDR` to `/etc/rip-cage/cage-env`; source from `~/.zshrc` ([ADR-016 D2](decisions/ADR-016-cage-host-network-awareness.md))
+- [x] Inject `CAGE_HOST_ADDR` via settings.json `env` block for Claude Code child processes ([ADR-016 D2](decisions/ADR-016-cage-host-network-awareness.md))
+- [x] `rc test` asserts `$CAGE_HOST_ADDR` set + exactly one `begin:rip-cage-topology` marker in `~/.claude/CLAUDE.md`
+
+**Design:** [Cage Host-Network Awareness](2026-04-22-cage-host-network-awareness-design.md)
 
 ### Toolchain provisioning (ADR-015)
 
@@ -99,6 +108,7 @@ Structured multi-agent coordination.
 | [ADR-005](decisions/ADR-005-ecosystem-tools.md) | Ecosystem tools integration decisions |
 | [ADR-006](decisions/ADR-006-multi-agent-architecture.md) | Multi-agent architecture decisions |
 | [ADR-015](decisions/ADR-015-mise-toolchain-provisioning.md) | Project toolchain provisioning via mise |
+| [ADR-016](decisions/ADR-016-cage-host-network-awareness.md) | Cage host-network awareness (CLAUDE.md + preflight probe) |
 
 ## Flywheel Research Repos
 

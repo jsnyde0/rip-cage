@@ -433,6 +433,91 @@ else
 fi
 
 echo ""
+echo "-- Cage Host-Network Awareness (ADR-016) --"
+
+# SKIP_HOST_BRIDGE=1: air-gapped / offline cages. The resolution assertion
+# becomes INFO-only (init still populates CAGE_HOST_ADDR with the literal
+# fallback per ADR-016 D2, so the other assertions remain meaningful).
+SKIP_HOST_BRIDGE="${SKIP_HOST_BRIDGE:-0}"
+
+check_bridge() {
+  local name="$1" result="$2" detail="${3:-}"
+  if [[ "$SKIP_HOST_BRIDGE" == "1" && "$result" != "pass" ]]; then
+    TOTAL=$((TOTAL + 1))
+    echo "INFO  [$TOTAL] $name (host-bridge-skipped)${detail:+ — $detail}"
+  else
+    check "$name" "$result" "$detail"
+  fi
+}
+
+# CAGE_HOST_ADDR populated by preflight probe and sourced into shell.
+# Re-source cage-env in case this script was invoked without an interactive
+# login shell that would have picked up the zshrc append. Fail the test if
+# source itself errors — silent failure would mask a corrupt cage-env.
+if [ -f /etc/rip-cage/cage-env ]; then
+  if ! source /etc/rip-cage/cage-env; then
+    check "cage-env is sourceable" "fail"
+  fi
+fi
+
+if [ -n "${CAGE_HOST_ADDR:-}" ]; then
+  check "CAGE_HOST_ADDR is set" "pass" "$CAGE_HOST_ADDR"
+else
+  check "CAGE_HOST_ADDR is set" "fail" "empty or unset"
+fi
+
+# CAGE_HOST_ADDR must actually resolve — guards against stale cage-env.
+# On air-gapped cages, this legitimately fails; gated on SKIP_HOST_BRIDGE.
+if [ -n "${CAGE_HOST_ADDR:-}" ] && getent hosts "$CAGE_HOST_ADDR" >/dev/null 2>&1; then
+  check_bridge "CAGE_HOST_ADDR resolves" "pass"
+else
+  check_bridge "CAGE_HOST_ADDR resolves" "fail" "${CAGE_HOST_ADDR:-<unset>}"
+fi
+
+# settings.json .env.CAGE_HOST_ADDR MUST match the value written to cage-env
+# on disk — coherency check, catches the silent-jq-skip regression. Reads
+# cage-env's value directly (not the shell's $CAGE_HOST_ADDR) so a stale shell
+# can't mask a disk/settings mismatch.
+if [ -f ~/.claude/settings.json ] && [ -f /etc/rip-cage/cage-env ]; then
+  _disk_val=$(sed -n 's/^export CAGE_HOST_ADDR="\(.*\)"$/\1/p' /etc/rip-cage/cage-env | head -1)
+  _settings_val=$(jq -r '.env.CAGE_HOST_ADDR // empty' ~/.claude/settings.json 2>/dev/null)
+  if [ -n "$_disk_val" ] && [ "$_disk_val" = "$_settings_val" ]; then
+    check "settings.json env.CAGE_HOST_ADDR matches cage-env" "pass"
+  else
+    check "settings.json env.CAGE_HOST_ADDR matches cage-env" "fail" \
+      "disk='$_disk_val' settings='$_settings_val'"
+  fi
+  unset _disk_val _settings_val
+else
+  check "settings.json env.CAGE_HOST_ADDR matches cage-env" "fail" "missing file"
+fi
+
+# Idempotency: exactly one `source /etc/rip-cage/cage-env` line in .zshrc.
+if [ -f /home/agent/.zshrc ]; then
+  _src_count=$(grep -c '/etc/rip-cage/cage-env' /home/agent/.zshrc || true)
+  if [ "$_src_count" = "1" ]; then
+    check ".zshrc sources cage-env exactly once" "pass"
+  else
+    check ".zshrc sources cage-env exactly once" "fail" "count=$_src_count"
+  fi
+  unset _src_count
+fi
+
+# Cage-topology section present exactly once — catches double-append regressions.
+if [ -f ~/.claude/CLAUDE.md ]; then
+  begin_count=$(grep -c 'begin:rip-cage-topology' ~/.claude/CLAUDE.md || true)
+  end_count=$(grep -c 'end:rip-cage-topology' ~/.claude/CLAUDE.md || true)
+  if [ "$begin_count" = "1" ] && [ "$end_count" = "1" ]; then
+    check "Cage topology section present (exactly one marker pair)" "pass"
+  else
+    check "Cage topology section present (exactly one marker pair)" "fail" \
+      "begin=$begin_count end=$end_count"
+  fi
+else
+  check "Cage topology section present (exactly one marker pair)" "fail" "no CLAUDE.md"
+fi
+
+echo ""
 echo "-- Version Manifest (rip-cage-7v4) --"
 # Emits pinned-component versions so a future harness failure after an upgrade
 # can be localized by diffing the manifest against a prior run. Always PASS —

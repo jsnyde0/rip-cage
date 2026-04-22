@@ -58,12 +58,34 @@ fi
 echo "[rip-cage] Settings installed"
 
 # 2. Copy CLAUDE.md files (skip if source missing or empty)
+mkdir -p ~/.claude
 if [ -f /home/agent/.rc-context/global-claude.md ] && [ -s /home/agent/.rc-context/global-claude.md ]; then
-  mkdir -p ~/.claude
   cp /home/agent/.rc-context/global-claude.md ~/.claude/CLAUDE.md
   echo "[rip-cage] Global CLAUDE.md copied"
 else
-  echo "[rip-cage] No global CLAUDE.md (skipped)"
+  # Start with an empty file so the cage-topology append below has something to
+  # write to even when the host did not provide a global CLAUDE.md.
+  : > ~/.claude/CLAUDE.md
+  echo "[rip-cage] No global CLAUDE.md (using empty base)"
+fi
+# Append cage-authored network-topology section under fenced markers (ADR-016 D1).
+# Idempotent: strip any prior cage-topology block before re-appending, so repeat
+# `init-rip-cage.sh` runs across container resume do not stack duplicate sections.
+if [ -f /etc/rip-cage/cage-claude.md ]; then
+  # Anchor marker regex at start-of-line so an agent or skill that quotes the
+  # marker verbatim in unrelated content doesn't trigger the strip.
+  awk '
+    /^<!-- begin:rip-cage-topology -->/ { skip=1; next }
+    /^<!-- end:rip-cage-topology -->/   { skip=0; next }
+    !skip { print }
+  ' ~/.claude/CLAUDE.md > /tmp/claude-md-base
+  # Ensure a trailing blank line between host content and cage section.
+  if [ -s /tmp/claude-md-base ]; then
+    printf '\n' >> /tmp/claude-md-base
+  fi
+  cat /tmp/claude-md-base /etc/rip-cage/cage-claude.md > ~/.claude/CLAUDE.md
+  rm -f /tmp/claude-md-base
+  echo "[rip-cage] Cage-topology section appended to ~/.claude/CLAUDE.md"
 fi
 if [ -f /home/agent/.rc-context/home-claude.md ] && [ -s /home/agent/.rc-context/home-claude.md ]; then
   cp /home/agent/.rc-context/home-claude.md ~/CLAUDE.md
@@ -156,6 +178,57 @@ if [ -r /workspace ]; then
   unset _toolfiles _found_tool
 fi
 
+# 7a. Host-bridge preflight probe (ADR-016 D2).
+# DNS-only probe of well-known host-bridge hostnames. First resolvable wins.
+# If none resolve (air-gapped, unusual runtime), fall back to the literal
+# `host.docker.internal` and log a warning — agents will discover it doesn't
+# resolve when they try to use it. This matches the fallback contract in
+# /etc/rip-cage/cage-claude.md ("set by init; falls back to literal ...").
+# Writes CAGE_HOST_ADDR to /etc/rip-cage/cage-env so every interactive shell,
+# tmux pane, and Claude-Code child process gets a uniform surface.
+_cage_host_addr=""
+_cage_probe_status="resolved"
+for _candidate in host.docker.internal host.orb.internal; do
+  if getent hosts "$_candidate" >/dev/null 2>&1; then
+    _cage_host_addr="$_candidate"
+    break
+  fi
+done
+if [ -z "$_cage_host_addr" ]; then
+  _cage_host_addr="host.docker.internal"
+  _cage_probe_status="fallback-literal"
+  echo "[rip-cage] WARNING: no host bridge resolvable — using literal '$_cage_host_addr' as fallback (host services will be unreachable)" >&2
+else
+  echo "[rip-cage] Host bridge: $_cage_host_addr"
+fi
+# Direct truncate-and-write. /etc/rip-cage/cage-env is pre-created
+# agent-writable by the Dockerfile (so no sudo needed); the parent dir stays
+# root-owned (so mv-rename would fail). The written payload is <50 bytes and
+# init holds a single-writer contract at boot, so a tmp+mv dance isn't worth
+# the added complexity.
+cat > /etc/rip-cage/cage-env <<EOF
+export CAGE_HOST_ADDR="$_cage_host_addr"
+EOF
+export CAGE_HOST_ADDR="$_cage_host_addr"
+# Inject into merged settings.json so Claude-Code-spawned Bash tool calls
+# inherit $CAGE_HOST_ADDR without relying on an interactive shell. Fail-loud
+# (per ADR-001) if jq fails — a silent skip here produces a settings.json
+# that doesn't match cage-env, which the safety-stack test will also catch.
+if [ -f ~/.claude/settings.json ]; then
+  _cage_settings_tmp="$(mktemp /tmp/settings-with-env.XXXXXX)"
+  if jq --arg v "$_cage_host_addr" \
+        '.env = ((.env // {}) + {CAGE_HOST_ADDR: $v})' \
+        ~/.claude/settings.json > "$_cage_settings_tmp"; then
+    mv "$_cage_settings_tmp" ~/.claude/settings.json
+    echo "[rip-cage] CAGE_HOST_ADDR injected into settings.json ($_cage_probe_status)"
+  else
+    rm -f "$_cage_settings_tmp"
+    echo "[rip-cage] WARNING: failed to inject CAGE_HOST_ADDR into settings.json (jq error)" >&2
+  fi
+  unset _cage_settings_tmp
+fi
+unset _cage_host_addr _candidate _cage_probe_status
+
 # 8. Verify Claude Code
 if ! claude --version > /dev/null 2>&1; then
   echo "[rip-cage] ERROR: claude --version failed" >&2
@@ -195,6 +268,19 @@ fi
 if [[ -f /etc/rip-cage/firewall-env ]]; then
   if ! grep -q 'NODE_EXTRA_CA_CERTS' /home/agent/.zshrc 2>/dev/null; then
     cat /etc/rip-cage/firewall-env >> /home/agent/.zshrc
+  fi
+fi
+
+# Same pattern for cage-env (CAGE_HOST_ADDR) so interactive shells and tmux
+# panes inherit the host-bridge hostname (ADR-016 D2). Guard greps for the
+# path of the appended line, not $CAGE_HOST_ADDR — the appended line sources
+# the file and does not contain the variable name, so a variable-name grep
+# would fail on every resume and duplicate the source line indefinitely.
+if [[ -f /etc/rip-cage/cage-env ]]; then
+  if ! grep -q '/etc/rip-cage/cage-env' /home/agent/.zshrc 2>/dev/null; then
+    # Source via file to pick up future re-probes without needing another append.
+    echo '[ -f /etc/rip-cage/cage-env ] && source /etc/rip-cage/cage-env' \
+      >> /home/agent/.zshrc
   fi
 fi
 

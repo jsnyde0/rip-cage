@@ -88,6 +88,11 @@ RUN /opt/rip-cage-proxy/bin/pip install --no-cache-dir mitmproxy PyYAML
 RUN ln -sf /opt/rip-cage-proxy/bin/mitmdump /usr/local/bin/mitmdump
 
 RUN mkdir -p /etc/rip-cage/ca
+# cage-env is populated at container start by the ADR-016 D2 preflight probe.
+# Pre-create it as agent-writable so the probe doesn't need a sudoers entry.
+RUN : > /etc/rip-cage/cage-env \
+    && chown agent:agent /etc/rip-cage/cage-env \
+    && chmod 0644 /etc/rip-cage/cage-env
 
 # Copy rip-cage files — stable files first (fewer cache busts), frequently-edited last
 RUN mkdir -p /etc/ssh/ssh_config.d
@@ -97,6 +102,7 @@ RUN chmod 0644 /etc/ssh/ssh_known_hosts /etc/ssh/ssh_config.d/00-rip-cage.conf
 COPY hooks/ /usr/local/lib/rip-cage/hooks/
 COPY tests/test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
 COPY settings.json /etc/rip-cage/settings.json
+COPY cage-claude.md /etc/rip-cage/cage-claude.md
 COPY init-rip-cage.sh /usr/local/bin/init-rip-cage.sh
 COPY skill-server.py /usr/local/lib/rip-cage/skill-server.py
 COPY tests/test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
