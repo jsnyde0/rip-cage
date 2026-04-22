@@ -947,6 +947,12 @@ _up_prepare_environment() {
       _UP_RUN_ARGS+=(-e "BEADS_DOLT_SERVER_PORT=$(cat "$dolt_port_file")")
     fi
     log "Beads: server mode — connecting to host Dolt server"
+    # ADR-007 D8: host-side pre-flight — warn if port is missing/stale/corrupt.
+    # Must run AFTER D6 worktree auto-redirect (above) so beads_dir is resolved to
+    # the main repo's .beads/ (matching what the container sees).
+    # Warn-not-fail: bd is optional; broken bd state must not block the container
+    # (explicit ADR-001 exception per ADR-007 D8 rationale).
+    _bd_host_preflight "$beads_dir" "$beads_dolt_mode"
   fi
 
   # Egress firewall (D6): add NET_ADMIN capability unless escape valve is set
@@ -1060,6 +1066,105 @@ _up_init_firewall() {
   else
     docker exec -u root "$_name" /usr/local/lib/rip-cage/init-firewall.sh || _UP_FIREWALL_OK=false
   fi
+}
+
+# _probe_tcp HOST PORT — returns 0 if TCP connection succeeds within 1s, non-zero otherwise.
+# Uses bash /dev/tcp — no nc or timeout(1) dependency (macOS bash 3.2 compat).
+_probe_tcp() {
+  local host=$1 port=$2
+  (
+    exec 3<>/dev/tcp/"$host"/"$port"
+  ) 2>/dev/null &
+  local pid=$!
+  ( sleep 1; kill "$pid" 2>/dev/null ) 2>/dev/null &
+  local killer=$!
+  wait "$pid" 2>/dev/null
+  local rc=$?
+  kill "$killer" 2>/dev/null
+  return "$rc"
+}
+
+# _bd_host_preflight BEADS_DIR DOLT_MODE [--test-mode]
+#
+# In normal mode: logs warnings via log(), always returns 0 (warn-and-continue per ADR-007 D8).
+# In --test-mode: emits one PASS|FAIL [0] beads-host-dolt — <detail> line to stdout;
+#                 returns non-zero for cases A/B/C so callers can capture the result.
+#
+# States:
+#   embedded/unset   -> silent (normal) or PASS [0] ... not applicable (test mode)
+#   healthy          -> silent (normal) or PASS [0] ... dolt reachable on 127.0.0.1:<N>
+#   case A (missing) -> warn (normal) or FAIL [0] ... port file missing; run `bd dolt start`
+#   case B (stale)   -> warn (normal) or FAIL [0] ... stale port <N>; run `bd dolt start`
+#   case C (corrupt) -> warn (normal) or FAIL [0] ... corrupt port file; rm + `bd dolt start`
+_bd_host_preflight() {
+  local beads_dir=$1
+  local dolt_mode=$2
+  local test_mode=false
+  [[ "${3:-}" == "--test-mode" ]] && test_mode=true
+
+  # Skip entirely for embedded/unset
+  if [[ "$dolt_mode" == "embedded" ]] || [[ -z "$dolt_mode" ]]; then
+    $test_mode && echo "PASS [0] beads-host-dolt — not applicable (embedded mode)"
+    return 0
+  fi
+
+  local port_file="${beads_dir}/dolt-server.port"
+
+  # Case A: port file missing
+  if [[ ! -f "$port_file" ]]; then
+    if $test_mode; then
+      echo "FAIL [0] beads-host-dolt — port file missing; run \`bd dolt start\`"
+      return 1
+    else
+      log "Warning: beads server-mode enabled but .beads/dolt-server.port is missing.
+  Likely cause: bd server has not been started yet in this project (or has never started successfully).
+  Fix: on the host, run \`bd dolt start\` in $(dirname "$beads_dir")
+  If that fails with \"database locked\", a stale dolt process is holding the lock.
+  Check with: lsof -iTCP -sTCP:LISTEN -P -n | grep dolt
+  Then kill the wedged PID and retry.
+Continuing anyway — bd calls inside the container will fail until resolved."
+      return 0
+    fi
+  fi
+
+  # Read and validate port content
+  local port
+  port=$(cat "$port_file")
+
+  # Case C: corrupt — empty, non-numeric, zero, or out of range
+  if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port <= 0 || port >= 65536 )); then
+    if $test_mode; then
+      echo "FAIL [0] beads-host-dolt — corrupt port file; rm + \`bd dolt start\`"
+      return 1
+    else
+      log "Warning: .beads/dolt-server.port contains invalid content (expected a port number).
+  Likely cause: interrupted write, disk issue, or a non-bd writer touched the file.
+  Fix: on the host, delete the file and re-run \`bd dolt start\` in $(dirname "$beads_dir"):
+    rm ${beads_dir}/dolt-server.port
+    bd dolt start
+Continuing anyway — bd calls inside the container will fail until resolved."
+      return 0
+    fi
+  fi
+
+  # Case B: port present and valid, but nothing listening
+  if ! _probe_tcp "127.0.0.1" "$port"; then
+    if $test_mode; then
+      echo "FAIL [0] beads-host-dolt — stale port ${port}; run \`bd dolt start\`"
+      return 1
+    else
+      log "Warning: .beads/dolt-server.port says port ${port}, but nothing is listening there.
+  Likely cause: the bd server crashed or was killed; the port file is stale.
+  Fix: on the host, run \`bd dolt start\` in $(dirname "$beads_dir")
+  (this will rewrite the port file to the new port).
+Continuing anyway — bd calls inside the container will fail until resolved."
+      return 0
+    fi
+  fi
+
+  # Healthy
+  $test_mode && echo "PASS [0] beads-host-dolt — dolt reachable on 127.0.0.1:${port}"
+  return 0
 }
 
 # _up_attach_tmux — attach to the container's tmux session when a real TTY is
@@ -1823,7 +1928,7 @@ fi
 if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   case "${1:-}" in
     build|ls|up|down|destroy|test|auth) ;;  # supported
-    init|attach|schema|completions|setup|"")
+    init|attach|schema|completions|setup|bd-preflight-test|"")
       echo "Error: --output json is not supported for '${1:-}'" >&2
       exit 1
       ;;
@@ -1862,5 +1967,6 @@ case "${1:-}" in
   completions) echo "Usage: rc completions <shell>" >&2; echo "Shells: zsh, bash" >&2; exit 1 ;;
   setup)       shift; cmd_setup "$@" ;;
   schema)  cmd_schema ;;
+  bd-preflight-test) shift; _bd_host_preflight "${1:-}" "${2:-}" --test-mode ;;
   *)       usage ;;
 esac

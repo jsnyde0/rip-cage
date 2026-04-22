@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-04-08
-**Design:** [Beads/Dolt Container Resilience](../2026-04-08-beads-dolt-container-resilience.md), [Beads no-db Container Support](../2026-04-09-beads-no-db-container-support.md)
+**Design:** [Beads/Dolt Container Resilience](../2026-04-08-beads-dolt-container-resilience.md), [Beads no-db Container Support](../2026-04-09-beads-no-db-container-support.md), [Host-side bd Pre-flight](../2026-04-22-bd-host-preflight-design.md)
 **Related:** [ADR-004 D1](ADR-004-phase1-hardening.md) (host Dolt server connection), [ADR-002 D10](ADR-002-rip-cage-containers.md) (beads in base image)
 
 ## Context
@@ -175,8 +175,63 @@ The diagnostic is skipped for safe no-op subcommands (`--version`, `-v`, `--help
 
 **What would invalidate this:** bd itself adopts clearer error messages for unreachable-server scenarios.
 
+### D8: Host-side bd connectivity pre-flight at `rc up`
+
+**Firmness: FIRM**
+
+**Added:** 2026-04-22
+
+At `rc up`, for server-mode projects, probe the host's Dolt port (`127.0.0.1:<port-from-port-file>`) before handing the container over. Warn (do not block) on three failure states:
+
+- **Port file missing** — bd server never started successfully. Warn with the host-side `bd dolt start` remediation and the `lsof`-for-wedged-dolt escalation.
+- **Port file present but nothing listening** — stale port, dolt crashed or was killed. Warn with the host-side `bd dolt start` remediation.
+- **Port file corrupt** — content fails numeric/range validation (empty, whitespace, non-numeric, or out of range). Warn to delete the file and rerun `bd dolt start`.
+
+Healthy (port file present + listening) passes silently. Embedded-mode (`dolt_mode=embedded` or unset) skips the check entirely. Probe uses a bash-3.2-compatible `/dev/tcp` + background-kill idiom (macOS has no `timeout(1)` by default); no `nc` dependency, runs once per `rc up`.
+
+The warning never blocks container start. bd is optional; users who don't need bd in this session can proceed, and the warning preserves the explicit next action for when they do. **This is a deliberate ADR-001 (fail-loud) exception:** bd is an optional subsystem, and a bd-contract violation must not block containers used for non-bd workflows. A future reader applying ADR-001 mechanically must not "fix" this to fail-loud.
+
+**Rationale:** Before this change, a server-mode contract violation (port file stale or missing) surfaced as a confusing in-container TCP error with a drifting port number, sometimes hours into a session. The 2026-04-21 mapular-platform wedge took ~30 minutes of host-side diagnosis — a problem the host already had all the information to catch at `rc up` time. D7's in-container diagnostic handles the narrow "port env is 0 or empty" case but doesn't catch a set-but-unreachable port, and doesn't fire until the user has already tried to use bd.
+
+Host-side pre-flight is strictly better-positioned: the host can `lsof`, can read the port file directly, can point at the correct `bd dolt start` cwd, and catches the problem at the moment before the broken state is handed over. See [design doc](../2026-04-22-bd-host-preflight-design.md) for the full state decision table, port-file validation rules, and warning text.
+
+**Ordering dependency:** the pre-flight must run after the D6 worktree auto-redirect so that `beads_dir` resolves to the main repo's `.beads/` (matching what the container sees). This is the current integration point in `cmd_up`; future refactors must not move it earlier.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **Host-side pre-flight warn at `rc up`** | Catches all four states before container exists, runs once per creation, targeted remediation text | Adds ~5ms probe latency to `rc up` |
+| Wrapper-level probe on every `bd` call | Can catch mid-session server death | Per-call latency; wrong layer (the broken state already exists) |
+| Block container start on failure | Guarantees contract | bd is optional; would break non-bd users |
+| In-container self-test in `init-rip-cage.sh` | Runs automatically post-start | No access to host-side context (lsof, host paths), duplicates D7's layer |
+| Status quo (D7 only) | No new code | Doesn't catch set-but-unreachable ports, fires too late |
+
+**What would invalidate this:** bd adopts clearer error messages *and* a way to discover the correct port without the port file. Or rip-cage drops server-mode support entirely.
+
+### D9: `rc test` bd-connectivity check
+
+**Firmness: FLEXIBLE**
+
+**Added:** 2026-04-22
+
+Add one host-side check to `rc test` with slug `beads-host-dolt`, invoking the same helper as D8. The helper emits a line in the existing `PASS|FAIL [N] slug — detail` format (with `[0]` signalling host-side, since in-container scripts number from 1); the line is prepended to the `docker exec` output so the existing JSON parser handles it without shape changes. States map to test outcomes:
+
+- Embedded / `dolt_mode` unset → `PASS [0] beads-host-dolt — not applicable (embedded mode)`
+- Server-mode + healthy → `PASS [0] beads-host-dolt — dolt reachable on 127.0.0.1:<N>`
+- Server-mode + port file missing → `FAIL [0] beads-host-dolt — port file missing; run bd dolt start`
+- Server-mode + port file present, port unreachable → `FAIL [0] beads-host-dolt — stale port <N>; run bd dolt start`
+- Server-mode + port file corrupt → `FAIL [0] beads-host-dolt — corrupt port file; rm + bd dolt start`
+- Workspace mount not discoverable → `PASS [0] beads-host-dolt — workspace mount not found (skipped)`
+
+JSON output mode preserves the existing `{name, status, detail}` shape per ADR-003 D1; the state distinction lives in the detail string. `cmd_test` discovers `beads_dir` from a running container via `docker inspect` on the `/workspace` mount source (the local `beads_dir` in `cmd_up` is not in scope here), then applies the same D6 auto-redirect rule so worktree probes match what the container sees.
+
+**Rationale:** `rc test` is the agent-and-human escape hatch for diagnosing a container that's behaving oddly. D8 runs only at creation time; once a container is up, users need a way to re-run the diagnosis on demand — e.g., after restarting the host dolt server and wanting to confirm the fix before attempting bd calls. Adding to `rc test` reuses the existing harness and JSON output contract rather than inventing a new command.
+
+**What would invalidate this:** `rc test` is deprecated in favor of another health mechanism. Or D8 is extended to a watcher that reports continuously, making on-demand redundant.
+
 ## Deferred
 
 - **Upstream bd change for port file fallback** — Would eliminate the need for the wrapper entirely. Monitor bd releases for this capability.
 - **Blocking env var modification** — An agent could `unset BEADS_DOLT_SERVER_MODE` to bypass the wrapper guard. This is low-risk: without the mode flag, `bd dolt start` would try to start on an ephemeral port different from the host's, failing to connect rather than corrupting. Defense-in-depth for this is not worth the complexity.
-- **Health check for host Dolt connectivity** — A startup check that verifies the host server is reachable before `bd prime`. Would improve error messages but doesn't prevent the corruption scenario (which is already handled by the wrapper).
+- **Automatic recovery of wedged dolt state** — D8 diagnoses; the user remediates. The 2026-04-21 incident showed wedged state can have legitimate non-obvious causes (legacy containers), which the tool shouldn't guess at. Revisit if a single wedge pattern becomes dominant.
