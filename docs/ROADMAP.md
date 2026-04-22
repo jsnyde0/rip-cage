@@ -7,6 +7,18 @@
 
 ## Phase 1: Hardening (current)
 
+### Toolchain provisioning (ADR-015)
+
+- [ ] Install mise in runtime stage of Dockerfile ([ADR-015 D1](decisions/ADR-015-mise-toolchain-provisioning.md))
+- [ ] Add `rc-mise-cache` shared named volume to `rc up` + devcontainer mounts ([ADR-015 D2](decisions/ADR-015-mise-toolchain-provisioning.md))
+- [ ] `init-rip-cage.sh` runs `mise install` when workspace declares a toolchain ([ADR-015 D3](decisions/ADR-015-mise-toolchain-provisioning.md))
+- [ ] Set `MISE_TRUSTED_CONFIG_PATHS=/workspace` in image ([ADR-015 D4](decisions/ADR-015-mise-toolchain-provisioning.md))
+- [ ] Tier 1 + Tier 2 test coverage per ADR-013
+
+**Design:** [Toolchain Provisioning](2026-04-22-toolchain-provisioning-design.md)
+
+### Existing Phase 1 items
+
 Get the existing implementation working end-to-end and solid.
 
 - [ ] Validate Dockerfile builds cleanly
@@ -86,6 +98,7 @@ Structured multi-agent coordination.
 | [ADR-004](decisions/ADR-004-phase1-hardening.md) | Phase 1 hardening decisions |
 | [ADR-005](decisions/ADR-005-ecosystem-tools.md) | Ecosystem tools integration decisions |
 | [ADR-006](decisions/ADR-006-multi-agent-architecture.md) | Multi-agent architecture decisions |
+| [ADR-015](decisions/ADR-015-mise-toolchain-provisioning.md) | Project toolchain provisioning via mise |
 
 ## Flywheel Research Repos
 
