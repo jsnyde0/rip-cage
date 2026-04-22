@@ -1,7 +1,12 @@
 # Stage 1: Go builder for beads (bd)
 FROM golang:1.25-bookworm AS go-builder
-RUN apt-get update && apt-get install -y libicu-dev libzstd-dev pkg-config && rm -rf /var/lib/apt/lists/*
-RUN go install github.com/steveyegge/beads/cmd/bd@latest
+ARG BEADS_VERSION=v1.0.2
+RUN apt-get update && apt-get install -y libicu-dev libzstd-dev pkg-config git && rm -rf /var/lib/apt/lists/*
+# Clone + build (not `go install @latest`): upstream's go.mod carries a `replace`
+# directive, which `go install` rejects unless the module is the main module.
+RUN git clone --depth=1 --branch ${BEADS_VERSION} https://github.com/steveyegge/beads.git /src/beads \
+ && cd /src/beads \
+ && go build -o /go/bin/bd ./cmd/bd
 
 # Stage 2: Rust builder for DCG
 FROM rust:bookworm AS rust-builder
