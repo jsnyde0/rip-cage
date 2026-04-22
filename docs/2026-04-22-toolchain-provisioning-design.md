@@ -74,11 +74,11 @@ Mise's "installed toolchains" directory is the expensive part. It's a content-ad
 
 `rc destroy` does **not** delete this volume (`rc-mise-cache` is a host-level cache, not container-scoped — matches the principle `rc destroy` applies to per-container state). A new `rc mise-cache-clear` / `docker volume rm rc-mise-cache` is a manual-only operation; not ADR-worthy.
 
-Ownership: the volume is created on first `rc up` by Docker as root; mise itself runs as `agent` and expects to write there. This mirrors the `~/.claude` + `~/.claude-state` pattern already handled by `init-rip-cage.sh`: a `sudo chown agent:agent /home/agent/.local/share/mise 2>/dev/null || true` in the init script (before mise is invoked) covers the first-boot case. The sudoers entry already permits `chown agent:agent` for known paths — add `/home/agent/.local/share/mise` to that allowlist (Dockerfile:74).
+Ownership: the volume is created on first `rc up` by Docker as root; mise itself runs as `agent` and expects to write there. This mirrors the `~/.claude` + `~/.claude-state` pattern already handled by `init-rip-cage.sh`: a `sudo chown agent:agent /home/agent/.local/share/mise 2>/dev/null || true` in the init script (before mise is invoked) covers the first-boot case. The sudoers entry already permits `chown agent:agent` for known paths — add `/home/agent/.local/share/mise` to that allowlist (Dockerfile:74), matching the existing literal escape form `/usr/bin/chown agent\:agent /home/agent/.local/share/mise`.
 
 **3. `init-rip-cage.sh` hook**
 
-Insert a new step between step 6 (git identity) and step 7 (Claude Code verification). The block is fail-loud in the spirit of ADR-001 for the detection path, but tolerant for the install path:
+Insert a new step between step 6 (git identity) and step 7 (Claude Code verification); renumber subsequent comment headers (existing `# 7`, `# 8`, `# 9` become `# 8`, `# 9`, `# 10`). The block is fail-loud in the spirit of ADR-001 for the detection path, but tolerant for the install path:
 
 ```bash
 # 7. Project toolchain provisioning (mise)
@@ -91,8 +91,10 @@ if [ -r /workspace ]; then
   done
   if [ -n "$_found_tool" ]; then
     echo "[rip-cage] Toolchain: detected /workspace/$_found_tool — running mise install"
-    # Ensure cache volume is writable by agent
-    if [ ! -L /home/agent/.local/share/mise ]; then
+    # Ensure cache volume is writable by agent — guard on actual ownership mismatch to
+    # avoid a recursive chown on every boot once the shared cache grows large.
+    if [ ! -L /home/agent/.local/share/mise ] \
+       && [ "$(stat -c %U /home/agent/.local/share/mise 2>/dev/null)" != "agent" ]; then
       sudo chown -R agent:agent /home/agent/.local/share/mise 2>/dev/null || true
     fi
     # Fail-loud on install errors so the agent sees them; but don't block container start —
@@ -111,20 +113,22 @@ fi
 
 The tool-file list deliberately skips `package.json` (most Node projects without `engines.node` or `packageManager` shouldn't incur an install), but **does** include `.nvmrc` / `.node-version` / the `packageManager` field (via `mise` auto-detect when `.mise.toml` is absent but `package.json` declares it — mise 2024+ reads `packageManager` natively). If the project wants yarn, they add `packageManager` to `package.json` — a two-character edit in a file they already own.
 
+Go is intentionally different from Node: Go is **not** in the base image, so any `go.mod` correctly triggers a toolchain fetch. Node **is** in the base image, so an unadorned `package.json` (no `engines.node` / no `packageManager` / no `.nvmrc`) is left on the default Node 22 rather than forcing a mise install.
+
 The `cd /workspace && mise install` pattern runs in a subshell so it doesn't mutate the init script's CWD.
 
 **4. Trust prompt suppression**
 
 Mise has a security feature: `.mise.toml` files in a workspace are not trusted until the user runs `mise trust`. Inside the cage, this is the wrong default — the agent can't respond to a trust prompt, and the trust boundary already exists at the `rc up` moment (you trusted the project enough to mount it into a bypassPermissions container).
 
-Set `MISE_TRUSTED_CONFIG_PATHS=/workspace` via the Dockerfile `ENV` so `/workspace/**/*.mise.toml` and `/workspace/**/.tool-versions` are pre-trusted inside the cage. This is strictly narrower than `MISE_YES=1` (which would auto-confirm all prompts) and scoped to the bind mount only.
+Set `MISE_TRUSTED_CONFIG_PATHS=/workspace` via the Dockerfile `ENV` so `/workspace/**/.mise.toml` / `/workspace/**/mise.toml` are pre-trusted inside the cage. Other format files (`.tool-versions`, `.nvmrc`, `.python-version`, etc.) cannot declare `[hooks]` and never require mise trust regardless; the env var is strictly about the TOML files. This is narrower than `MISE_YES=1` (which would auto-confirm all prompts) and scoped to the bind mount only.
 
 ### Interaction with existing ADRs
 
 - **ADR-001 (fail-loud):** The detection step is loud (`echo ... detected $_found_tool`). The install step is loud on success *and* failure; failure writes to stderr but does not `exit 1`, so an agent can observe and recover. A hard failure to `exit 1` would mean a broken `packageManager` field crashes the container — worse than the current state where the agent can at least read and fix the file.
 - **ADR-002 (blast radius):** No new credentials. Mise fetches binaries over HTTPS from upstream registries (GitHub Releases, nodejs.org, python.org, etc.) subject to ADR-012. The shared cache volume contains only compiled/packaged binaries, no secrets.
 - **ADR-005 (ecosystem tools):** Mise follows the same build-arg pinning pattern (`ARG MISE_VERSION`) and is stage-3-runtime (not a separate builder stage — mise.run script is small and doesn't need Go/Rust). It is **not** behind a `--with-mise` flag: it's core infrastructure, not an opt-in ecosystem tool. UBS, RANO, CASS are optional analytical tools; mise is how the cage honors the project's own declarations.
-- **ADR-012 (egress allowlist):** Mise needs HTTPS egress to its download endpoints. The relevant domains are already in common use and mostly present in `egress-rules.yaml`: `github.com`, `objects.githubusercontent.com`, `nodejs.org`, `python.org`. A follow-up is required to verify/extend `egress-rules.yaml` for the languages the user intends to use (e.g., `static.rust-lang.org`, `rubygems.org`, `packages.erlang-solutions.com`). This is tracked as a beads issue, not blocking the image change.
+- **ADR-012 (egress allowlist):** No change required. `egress-rules.yaml` is `default: allow` with a curated denylist of exfiltration-oriented hosts (webhook sinks, OAST, tunnels, paste/drop, DoH). Mise's runtime-download endpoints (`nodejs.org`, `static.rust-lang.org`, `python.org`, `rubygems.org`, `objects.githubusercontent.com`, etc.) are not on that denylist and are already permitted. Only if a future mise mirror happens to land on the denylist would egress work be needed.
 - **ADR-013 (tiered tests):** New asserts land at Tier 1 (in-container safety-stack) and Tier 2 (e2e lifecycle) — see Verification below.
 
 ### What mise does *not* do
@@ -141,7 +145,7 @@ Set `MISE_TRUSTED_CONFIG_PATHS=/workspace` via the Dockerfile `ENV` so `/workspa
 - `mise --version` exits 0.
 - `grep -q 'mise activate zsh' /home/agent/.zshrc` — activation hook present.
 - `[ "$MISE_TRUSTED_CONFIG_PATHS" = "/workspace" ]` — trust-path env var set.
-- `sudo -n -l | grep -q 'chown agent:agent /home/agent/.local/share/mise'` — sudoers permits the chown fallback.
+- `sudo -n -l | grep -q 'chown agent:agent /home/agent/.local/share/mise'` — sudoers permits the chown fallback (literal path; confirms the escape landed correctly).
 - Directory existence: `[ -d /home/agent/.local/share/mise ]` (created by the volume mount).
 
 **Tier 2 (e2e lifecycle, lands in `tests/test-e2e-lifecycle.sh` per ADR-013 D1):**
@@ -150,6 +154,7 @@ Set `MISE_TRUSTED_CONFIG_PATHS=/workspace` via the Dockerfile `ENV` so `/workspa
 - `rc up <workspace>` and wait for init to complete.
 - Inside the container: `node --version` returns `v20.18.0` (not the image's default Node 22).
 - Inside the container: `readlink -f $(which node)` points under `/home/agent/.local/share/mise/installs/node/20.18.0/`.
+- Inside the container (interactive login shell path agents actually use): `docker exec <name> zsh -lic 'node --version'` returns `v20.18.0` — confirms `mise activate zsh` is functioning end-to-end, not just that the line exists in `.zshrc`.
 
 **Tier 2 cache-reuse regression:**
 
@@ -165,7 +170,7 @@ Files to add/change:
 - **Edit** `Dockerfile`
   - Add `ARG MISE_VERSION=...` + install block (near the existing `uv` install, Dockerfile:36).
   - Add `ENV MISE_TRUSTED_CONFIG_PATHS=/workspace` near the other `ENV` lines (Dockerfile:23-25).
-  - Extend the sudoers line (Dockerfile:74) to permit `/usr/bin/chown agent:agent /home/agent/.local/share/mise`.
+  - Extend the sudoers line (Dockerfile:74) to permit `/usr/bin/chown agent\:agent /home/agent/.local/share/mise` (note: colon escaped as `\:` to match the existing literal pattern for `.claude` / `.claude-state`; sudoers treats `:` as a separator otherwise).
   - `RUN mkdir -p /home/agent/.local/share/mise` in the "pre-create mount targets" block (Dockerfile:116) so ownership inherits from `USER agent`.
 - **Edit** `zshrc` — append `eval "$(/usr/local/bin/mise activate zsh)"`.
 - **Edit** `init-rip-cage.sh` — insert the toolchain-provisioning block between existing step 6 and step 7.
@@ -173,9 +178,8 @@ Files to add/change:
   - Add `rc-mise-cache` to `_UP_RUN_ARGS` in `cmd_up` (rc:~834).
   - Add `rc-mise-cache` to the devcontainer `mounts[]` array in `cmd_init` (rc:214-215 and 234-235).
   - **Do not** add `rc-mise-cache` to the `destroy` volume-removal list (rc:~1641, ~1655-1660). The cache survives container destruction.
-- **Edit** `tests/test-safety-stack.sh` — add the six Tier 1 checks.
+- **Edit** `tests/test-safety-stack.sh` — add the six Tier 1 checks. If the suite (or `rc test` summary) asserts on a total check count, bump that expected value by six.
 - **Edit** `tests/test-e2e-lifecycle.sh` (or `tests/test-integration.sh` if e2e doesn't exist yet per ADR-013 D1 pending) — add the Tier 2 nvmrc scenario and cache-reuse regression.
-- **New** beads issue — verify/extend `egress-rules.yaml` for runtime-download endpoints (nodejs.org, static.rust-lang.org, etc.) as each language is actually used. Not blocking.
 
 No changes to:
 
@@ -187,7 +191,8 @@ No changes to:
 
 - **`packageManager` detection for Node.** Mise reads `package.json`'s `packageManager` field natively only in recent versions. Pin `MISE_VERSION` to a known-good release and re-verify on bumps. If the pinned version lacks this, projects can add a one-line `.mise.toml` instead — equivalent cost.
 - **First-boot download cost.** A cold `rc-mise-cache` volume + a project declaring Rust 1.82 will block the init step for 1-2 minutes. Acceptable (first time only; shared thereafter). The init output makes the reason visible (`mise install` log streams to terminal).
-- **Egress-rule drift.** A new language the user hasn't used before will hit ADR-012's deny-by-default for its download endpoint and `mise install` will fail. Failure mode is loud (the WARNING line in the init block names the log path). Fix: add the domain to `egress-rules.yaml` and rebuild. Documented.
+- **Proxy-mediated download latency.** All HTTPS egress runs through ADR-012's mitmproxy. Large runtime archives (Rust ~200MB, Node ~30MB) stream through CA-cert termination and incur additional latency + proxy memory on top of raw download time. The 1-2 min estimate above is raw-download baseline; add headroom for the proxy path, and measure on a ≥200MB download before calling the Tier 2 test stable.
+- **First-boot volume ownership.** The named volume `rc-mise-cache` inherits ownership from whatever process first writes to it. Dockerfile pre-creation as `agent` + the init-time guarded chown covers the common case, but a container that crashes after the volume mount and before init runs could leave the volume in an unexpected ownership state. Recovery: `docker volume rm rc-mise-cache`. Mirrors the pattern ADR-007 already acknowledges for `rc-state-*`.
 - **Cache corruption.** A partial download aborted by a container kill could leave `rc-mise-cache` in a bad state. Mise's install is version-keyed per-directory; corruption is localized to that version. Recovery: `docker volume rm rc-mise-cache` (full reset) or `mise uninstall <tool>@<version> && mise install`. Not auto-recovered.
 - **Mise version lag vs upstream.** Mise ships frequently. A pin to `2026.4.5` will go stale. Cadence is similar to `DOLT_VERSION` and `BEADS_VERSION` — bumped on demand or quarterly. No auto-update inside the cage (consistent with ADR-002: the image is the trust boundary).
 - **`bootstrap.sh` escape hatch deferred.** Projects needing `libpq-dev` or `ffmpeg` have no first-class answer yet. They can run `sudo apt-get install` inside the container manually, or add their own layer via a downstream Dockerfile. A future ADR may codify `.rip-cage/bootstrap.sh`; this design explicitly does not (auto-exec risk; YAGNI until there's demand).
@@ -202,3 +207,4 @@ No changes to:
 - **Lazy install via `command_not_found_handler`.** Rejected: surprising latency on first invocation of any tool; no clean way to pick the right version without declarative input anyway.
 - **Mount the host's toolchains.** Rejected: macOS→Linux architecture mismatch; platform coupling defeats the cage.
 - **`MISE_YES=1` blanket auto-confirm.** Rejected: too broad. `MISE_TRUSTED_CONFIG_PATHS=/workspace` is the narrower form and sufficient.
+
