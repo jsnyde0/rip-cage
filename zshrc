@@ -48,4 +48,4 @@ extract() {
 [[ -z "$TERM" || "$TERM" == "dumb" ]] && export TERM=xterm-256color
 
 # mise (project toolchain). No-op when no tool files are declared.
-eval "$(/usr/local/bin/mise activate zsh)"
+command -v /usr/local/bin/mise >/dev/null 2>&1 && eval "$(/usr/local/bin/mise activate zsh)"

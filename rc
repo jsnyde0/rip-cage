@@ -123,7 +123,7 @@ Commands:
   attach [name]                                Attach to container tmux session
   down [name]                                  Stop a container
   destroy [-f|--force] [name]                   Remove container and volumes
-  test [name]                                  Run in-container safety stack tests (59 checks)
+  test [name]                                  Run in-container safety stack tests (61 checks)
   test --host                                  Run all host-side tests (host-only; not usable inside container)
   test --e2e                                   Full lifecycle e2e test (slow; RC_E2E_REBUILD=1 to rebuild image)
   auth refresh                                 Refresh credentials from host keychain

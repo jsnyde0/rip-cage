@@ -4,6 +4,10 @@ PASS=0
 FAIL=0
 TOTAL=0
 
+# SKIP_AUTH=1: auth/beads/git-identity checks become INFO-only (no FAIL contribution).
+# Use in integration tests running without real credentials.
+SKIP_AUTH="${SKIP_AUTH:-0}"
+
 check() {
   local name="$1" result="$2" detail="${3:-}"
   TOTAL=$((TOTAL + 1))
@@ -13,6 +17,18 @@ check() {
   else
     echo "FAIL  [$TOTAL] $name${detail:+ — $detail}"
     FAIL=$((FAIL + 1))
+  fi
+}
+
+# check_auth: like check, but when SKIP_AUTH=1, a failing result is printed as
+# INFO/SKIPPED and does NOT increment FAIL.
+check_auth() {
+  local name="$1" result="$2" detail="${3:-}"
+  if [[ "$SKIP_AUTH" == "1" && "$result" != "pass" ]]; then
+    TOTAL=$((TOTAL + 1))
+    echo "INFO  [$TOTAL] $name (auth-skipped)${detail:+ — $detail}"
+  else
+    check "$name" "$result" "$detail"
   fi
 }
 
@@ -102,9 +118,9 @@ echo "-- Auth --"
 
 # 13. Auth present (credentials file OR API key)
 if [[ -s ~/.claude/.credentials.json ]] || [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-  check "Auth present" "pass" "$([[ -s ~/.claude/.credentials.json ]] && echo "OAuth" || echo "API key")"
+  check_auth "Auth present" "pass" "$([[ -s ~/.claude/.credentials.json ]] && echo "OAuth" || echo "API key")"
 else
-  check "Auth present" "fail" "no credentials file and no ANTHROPIC_API_KEY"
+  check_auth "Auth present" "fail" "no credentials file and no ANTHROPIC_API_KEY"
 fi
 
 # 14. Token not expired (skip if using API key only)
@@ -115,17 +131,17 @@ if [[ -s ~/.claude/.credentials.json ]] && command -v jq &>/dev/null; then
     now_epoch=$(date "+%s")
     if [[ -n "$expiry_epoch" ]] && [[ "$expiry_epoch" -gt "$now_epoch" ]]; then
       remaining=$(( (expiry_epoch - now_epoch) / 60 ))
-      check "Token not expired" "pass" "${remaining}m remaining"
+      check_auth "Token not expired" "pass" "${remaining}m remaining"
     elif [[ -n "$expiry_epoch" ]]; then
-      check "Token not expired" "fail" "expired"
+      check_auth "Token not expired" "fail" "expired"
     else
-      check "Token not expired" "pass" "could not parse expiry (skipped)"
+      check_auth "Token not expired" "pass" "could not parse expiry (skipped)"
     fi
   else
-    check "Token not expired" "pass" "no expiry field (skipped)"
+    check_auth "Token not expired" "pass" "no expiry field (skipped)"
   fi
 else
-  check "Token not expired" "pass" "no credentials file (skipped)"
+  check_auth "Token not expired" "pass" "no credentials file (skipped)"
 fi
 
 echo ""
@@ -135,9 +151,9 @@ echo "-- Git --"
 git_name=$(git config user.name 2>/dev/null || true)
 git_email=$(git config user.email 2>/dev/null || true)
 if [[ -n "$git_name" ]] && [[ -n "$git_email" ]]; then
-  check "git identity set" "pass" "$git_name <$git_email>"
+  check_auth "git identity set" "pass" "$git_name <$git_email>"
 else
-  check "git identity set" "fail" "name='$git_name' email='$git_email'"
+  check_auth "git identity set" "fail" "name='$git_name' email='$git_email'"
 fi
 
 echo ""
@@ -172,13 +188,13 @@ if [ -d /workspace/.beads ]; then
   bd_output=$(cd /workspace && bd list 2>&1 || true)
   if echo "$bd_output" | grep -qE "(Total:|No issues found)"; then
     issue_count=$(echo "$bd_output" | sed -n 's/.*Total: \([0-9]*\).*/\1/p')
-    check "bd can access beads data" "pass" "${issue_count} issues"
+    check_auth "bd can access beads data" "pass" "${issue_count} issues"
   else
     bd_err=$(echo "$bd_output" | head -1)
-    check "bd can access beads data" "fail" "$bd_err"
+    check_auth "bd can access beads data" "fail" "$bd_err"
   fi
 else
-  check "bd can access beads data" "pass" "no .beads/ in workspace (skipped)"
+  check_auth "bd can access beads data" "pass" "no .beads/ in workspace (skipped)"
 fi
 
 echo ""
@@ -405,6 +421,16 @@ fi
 
 # mise cache dir exists (created by Dockerfile RUN mkdir or volume mount)
 check "mise cache dir exists" "$([[ -d /home/agent/.local/share/mise ]] && echo pass || echo fail)"
+
+# mise config.toml exists
+check "mise config.toml exists" "$([[ -f /home/agent/.config/mise/config.toml ]] && echo pass || echo fail)"
+
+# mise config.toml has idiomatic_version_file_enable_tools
+if grep -q 'idiomatic_version_file_enable_tools' /home/agent/.config/mise/config.toml 2>/dev/null; then
+  check "mise config.toml has idiomatic_version_file_enable_tools" "pass"
+else
+  check "mise config.toml has idiomatic_version_file_enable_tools" "fail"
+fi
 
 echo ""
 echo "-- Version Manifest (rip-cage-7v4) --"

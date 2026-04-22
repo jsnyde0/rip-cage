@@ -74,7 +74,7 @@ Mise's "installed toolchains" directory is the expensive part. It's a content-ad
 
 `rc destroy` does **not** delete this volume (`rc-mise-cache` is a host-level cache, not container-scoped — matches the principle `rc destroy` applies to per-container state). A new `rc mise-cache-clear` / `docker volume rm rc-mise-cache` is a manual-only operation; not ADR-worthy.
 
-Ownership: the volume is created on first `rc up` by Docker as root; mise itself runs as `agent` and expects to write there. This mirrors the `~/.claude` + `~/.claude-state` pattern already handled by `init-rip-cage.sh`: a `sudo chown agent:agent /home/agent/.local/share/mise 2>/dev/null || true` in the init script (before mise is invoked) covers the first-boot case. The sudoers entry already permits `chown agent:agent` for known paths — add `/home/agent/.local/share/mise` to that allowlist (Dockerfile:74), matching the existing literal escape form `/usr/bin/chown agent\:agent /home/agent/.local/share/mise`.
+Ownership: the volume is created on first `rc up` by Docker as root; mise itself runs as `agent` and expects to write there. This mirrors the `~/.claude` + `~/.claude-state` pattern already handled by `init-rip-cage.sh`: a `sudo chown -R agent:agent /home/agent/.local/share/mise 2>/dev/null || true` in the init script (before mise is invoked) covers the first-boot case. The sudoers entry already permits `chown -R agent:agent` for known paths — add `/home/agent/.local/share/mise` to that allowlist (Dockerfile:74), matching the existing literal escape form `/usr/bin/chown -R agent\:agent /home/agent/.local/share/mise`.
 
 **3. `init-rip-cage.sh` hook**
 
@@ -158,7 +158,7 @@ Set `MISE_TRUSTED_CONFIG_PATHS=/workspace` via the Dockerfile `ENV` so `/workspa
 - `mise --version` exits 0.
 - `grep -q 'mise activate zsh' /home/agent/.zshrc` — activation hook present.
 - `[ "$MISE_TRUSTED_CONFIG_PATHS" = "/workspace" ]` — trust-path env var set.
-- `sudo -n -l | grep -q 'chown agent:agent /home/agent/.local/share/mise'` — sudoers permits the chown fallback (literal path; confirms the escape landed correctly).
+- `sudo -n -l | grep -q 'chown.*-R.*agent.*mise'` — sudoers permits the recursive chown fallback (matches what test-safety-stack.sh actually uses).
 - Directory existence: `[ -d /home/agent/.local/share/mise ]` (created by the volume mount).
 
 **Tier 2 (e2e lifecycle, lands in `tests/test-e2e-lifecycle.sh` per ADR-013 D1):**

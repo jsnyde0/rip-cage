@@ -45,11 +45,11 @@ docker run -d --name "$CONTAINER_NAME" \
 docker exec "$CONTAINER_NAME" /usr/local/bin/init-rip-cage.sh
 
 # 3. Run safety stack smoke test
-# Note: safety-stack exits 1 when auth/beads checks fail (expected in no-creds test context).
-# Allow non-zero exit here so integration test steps 4-16 still run; the safety-stack
-# output above is still the canonical pass/fail record for structural checks.
+# SKIP_AUTH=1: auth/credentials/git-identity checks become INFO-only so the integration
+# test can run without real credentials while still failing on structural regressions
+# (DCG, compound-blocker, settings.json, mise, bypassPermissions, etc.).
 echo "Step 3: Safety stack smoke test..."
-docker exec "$CONTAINER_NAME" /usr/local/lib/rip-cage/test-safety-stack.sh || true
+docker exec -e SKIP_AUTH=1 "$CONTAINER_NAME" /usr/local/lib/rip-cage/test-safety-stack.sh
 
 # 4. Verify settings.json in place
 echo "Step 4: Verify settings.json..."
@@ -178,7 +178,7 @@ docker run -d --name "$YARN_CONTAINER" \
   rip-cage:latest sleep infinity
 docker exec "$YARN_CONTAINER" /usr/local/bin/init-rip-cage.sh
 
-yarn_ver=$(docker exec "$YARN_CONTAINER" zsh -ic 'cd /workspace && yarn --version' 2>/dev/null | tail -1)
+yarn_ver=$(docker exec "$YARN_CONTAINER" zsh -lic 'cd /workspace && yarn --version' 2>/dev/null | tail -1)
 [ "$yarn_ver" = "1.22.22" ] || { echo "FAIL: yarn version: $yarn_ver (expected 1.22.22)"; exit 1; }
 echo "PASS: Step 16 — yarn --version = $yarn_ver (no npx dance)"
 

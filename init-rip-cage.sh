@@ -129,15 +129,10 @@ if [ -r /workspace ]; then
   done
   # package.json triggers mise only when it declares packageManager or engines.node —
   # most Node projects without these fields should not incur a mise install.
+  # jq is always present (installed in Dockerfile) — no grep fallback needed.
   if [ -z "$_found_tool" ] && [ -f /workspace/package.json ]; then
-    if command -v jq > /dev/null 2>&1; then
-      if jq -e '.packageManager or .engines.node' /workspace/package.json > /dev/null 2>&1; then
-        _found_tool="package.json (packageManager/engines.node)"
-      fi
-    else
-      if grep -qE '"(packageManager|engines)"' /workspace/package.json; then
-        _found_tool="package.json (packageManager/engines.node)"
-      fi
+    if jq -e '.packageManager or .engines.node' /workspace/package.json >/dev/null 2>&1; then
+      _found_tool="package.json (packageManager/engines.node)"
     fi
   fi
   if [ -n "$_found_tool" ]; then
