@@ -1140,7 +1140,7 @@ Continuing anyway — bd calls inside the container will fail until resolved."
       log "Warning: .beads/dolt-server.port contains invalid content (expected a port number).
   Likely cause: interrupted write, disk issue, or a non-bd writer touched the file.
   Fix: on the host, delete the file and re-run \`bd dolt start\` in $(dirname "$beads_dir"):
-    rm ${beads_dir}/dolt-server.port
+    rm "${beads_dir}/dolt-server.port"
     bd dolt start
 Continuing anyway — bd calls inside the container will fail until resolved."
       return 0
@@ -1701,30 +1701,57 @@ cmd_test() {
   local ws_source
   ws_source=$(docker inspect -f '{{ range .Mounts }}{{ if eq .Destination "/workspace" }}{{ .Source }}{{ end }}{{ end }}' "$name" 2>/dev/null || true)
   local preflight_beads_dir="" preflight_dolt_mode=""
+  local preflight_skip_line=""  # if set, skip _bd_host_preflight and use this line
   if [[ -n "$ws_source" ]]; then
     preflight_beads_dir="${ws_source}/.beads"
-    # Apply D6-style worktree auto-redirect sub-path only (rc:916-931):
-    # if beads_dir has no runtime data and ws_source is a git worktree,
-    # resolve to the main repo's .beads/.
-    local wt_git_dir wt_common_git
-    wt_git_dir=$(git -C "$ws_source" rev-parse --git-dir 2>/dev/null || true)
-    wt_common_git=$(git -C "$ws_source" rev-parse --git-common-dir 2>/dev/null || true)
-    if [[ -n "$wt_common_git" ]] && [[ "$wt_common_git" != "$wt_git_dir" ]] \
-       && [[ ! -f "${preflight_beads_dir}/dolt-server.port" ]] \
-       && [[ ! -d "${preflight_beads_dir}/dolt" ]] \
-       && [[ ! -d "${preflight_beads_dir}/embeddeddolt" ]]; then
-      local main_repo_root="${wt_common_git%/.git}"
-      local resolved_worktree_main="${main_repo_root}/.beads"
-      [[ -d "$resolved_worktree_main" ]] && preflight_beads_dir="$resolved_worktree_main"
+    # Mirror D6 semantics (rc:881-931): check for .beads/redirect first,
+    # then fall back to worktree auto-redirect with _path_under_allowed_roots guard.
+    if [[ -f "${preflight_beads_dir}/redirect" ]]; then
+      local redirect_target
+      redirect_target=$(cat "${preflight_beads_dir}/redirect")
+      if [[ "$redirect_target" == /* ]] || [[ "$redirect_target" =~ [[:cntrl:]] ]]; then
+        # Absolute path or control chars — treat as outside allowed roots
+        preflight_skip_line="PASS [0] beads-host-dolt — beads_dir outside allowed roots (skipped)"
+      else
+        local resolved_redirect
+        resolved_redirect=$(realpath "${ws_source}/${redirect_target}" 2>/dev/null || true)
+        if [[ -n "$resolved_redirect" && -d "$resolved_redirect" ]] \
+           && _path_under_allowed_roots "$resolved_redirect"; then
+          preflight_beads_dir="$resolved_redirect"
+        else
+          preflight_skip_line="PASS [0] beads-host-dolt — beads_dir outside allowed roots (skipped)"
+        fi
+      fi
+    elif [[ -f "${ws_source}/.git" ]]; then
+      # Worktree detection: check for auto-redirect condition (D6 semantics)
+      local wt_git_dir wt_common_git
+      wt_git_dir=$(git -C "$ws_source" rev-parse --git-dir 2>/dev/null || true)
+      wt_common_git=$(git -C "$ws_source" rev-parse --git-common-dir 2>/dev/null || true)
+      if [[ -n "$wt_common_git" ]] && [[ "$wt_common_git" != "$wt_git_dir" ]] \
+         && [[ ! -f "${preflight_beads_dir}/dolt-server.port" ]] \
+         && [[ ! -d "${preflight_beads_dir}/dolt" ]] \
+         && [[ ! -d "${preflight_beads_dir}/embeddeddolt" ]]; then
+        local main_repo_root="${wt_common_git%/.git}"
+        local resolved_main_beads
+        resolved_main_beads=$(realpath "${main_repo_root}/.beads" 2>/dev/null || true)
+        if [[ -n "$resolved_main_beads" && -d "$resolved_main_beads" ]] \
+           && _path_under_allowed_roots "$resolved_main_beads"; then
+          preflight_beads_dir="$resolved_main_beads"
+        else
+          preflight_skip_line="PASS [0] beads-host-dolt — beads_dir outside allowed roots (skipped)"
+        fi
+      fi
     fi
-    if [[ -f "${preflight_beads_dir}/metadata.json" ]]; then
+    if [[ -z "$preflight_skip_line" ]] && [[ -f "${preflight_beads_dir}/metadata.json" ]]; then
       preflight_dolt_mode=$(jq -r '.dolt_mode // empty' "${preflight_beads_dir}/metadata.json" 2>/dev/null || true)
     fi
   fi
 
   # Capture the host-side preflight line
   local preflight_line
-  if [[ -n "$preflight_beads_dir" ]]; then
+  if [[ -n "$preflight_skip_line" ]]; then
+    preflight_line="$preflight_skip_line"
+  elif [[ -n "$preflight_beads_dir" ]]; then
     preflight_line=$(_bd_host_preflight "$preflight_beads_dir" "$preflight_dolt_mode" --test-mode 2>/dev/null) || true
   else
     preflight_line="PASS [0] beads-host-dolt — workspace mount not found (skipped)"
@@ -1968,7 +1995,7 @@ fi
 if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   case "${1:-}" in
     build|ls|up|down|destroy|test|auth) ;;  # supported
-    init|attach|schema|completions|setup|bd-preflight-test|"")
+    init|attach|schema|completions|setup|__bd-preflight-test|"")
       echo "Error: --output json is not supported for '${1:-}'" >&2
       exit 1
       ;;
@@ -2007,6 +2034,6 @@ case "${1:-}" in
   completions) echo "Usage: rc completions <shell>" >&2; echo "Shells: zsh, bash" >&2; exit 1 ;;
   setup)       shift; cmd_setup "$@" ;;
   schema)  cmd_schema ;;
-  bd-preflight-test) shift; _bd_host_preflight "${1:-}" "${2:-}" --test-mode ;;
+  __bd-preflight-test) shift; _bd_host_preflight "${1:-}" "${2:-}" --test-mode ;;
   *)       usage ;;
 esac

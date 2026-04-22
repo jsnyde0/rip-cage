@@ -463,60 +463,60 @@ else
   fi
 fi
 
-# --- Test 16: beads-host-dolt stale port via bd-preflight-test (no container needed) ---
+# --- Test 16: beads-host-dolt stale port via __bd-preflight-test (no container needed) ---
 echo ""
-echo "=== Test 16: beads-host-dolt stale port via bd-preflight-test ==="
+echo "=== Test 16: beads-host-dolt stale port via __bd-preflight-test ==="
 STALE_BEADS=$(mktemp -d)
 mkdir -p "${STALE_BEADS}/.beads"
 printf '65000\n' > "${STALE_BEADS}/.beads/dolt-server.port"
-stale_out=$("$RC" bd-preflight-test "${STALE_BEADS}/.beads" "server" 2>/dev/null || true)
+stale_out=$("$RC" __bd-preflight-test "${STALE_BEADS}/.beads" "server" 2>/dev/null || true)
 if echo "$stale_out" | grep -q "FAIL \[0\] beads-host-dolt"; then
-  pass "bd-preflight-test stale port produces FAIL beads-host-dolt"
+  pass "__bd-preflight-test stale port produces FAIL beads-host-dolt"
 else
-  fail "bd-preflight-test stale port: expected FAIL [0] beads-host-dolt, got: ${stale_out}"
+  fail "__bd-preflight-test stale port: expected FAIL [0] beads-host-dolt, got: ${stale_out}"
 fi
 if echo "$stale_out" | grep -q "stale port"; then
-  pass "bd-preflight-test stale port detail mentions 'stale port'"
+  pass "__bd-preflight-test stale port detail mentions 'stale port'"
 else
-  fail "bd-preflight-test stale port: detail missing 'stale port' (got: ${stale_out})"
+  fail "__bd-preflight-test stale port: detail missing 'stale port' (got: ${stale_out})"
 fi
 rm -rf "$STALE_BEADS"
 
-# --- Test 17: beads-host-dolt corrupt port via bd-preflight-test (no container needed) ---
+# --- Test 17: beads-host-dolt corrupt port via __bd-preflight-test (no container needed) ---
 echo ""
-echo "=== Test 17: beads-host-dolt corrupt port via bd-preflight-test ==="
+echo "=== Test 17: beads-host-dolt corrupt port via __bd-preflight-test ==="
 CORRUPT_BEADS=$(mktemp -d)
 mkdir -p "${CORRUPT_BEADS}/.beads"
 printf 'not-a-number\n' > "${CORRUPT_BEADS}/.beads/dolt-server.port"
-corrupt_out=$("$RC" bd-preflight-test "${CORRUPT_BEADS}/.beads" "server" 2>/dev/null || true)
+corrupt_out=$("$RC" __bd-preflight-test "${CORRUPT_BEADS}/.beads" "server" 2>/dev/null || true)
 if echo "$corrupt_out" | grep -q "FAIL \[0\] beads-host-dolt"; then
-  pass "bd-preflight-test corrupt port produces FAIL beads-host-dolt"
+  pass "__bd-preflight-test corrupt port produces FAIL beads-host-dolt"
 else
-  fail "bd-preflight-test corrupt port: expected FAIL [0] beads-host-dolt, got: ${corrupt_out}"
+  fail "__bd-preflight-test corrupt port: expected FAIL [0] beads-host-dolt, got: ${corrupt_out}"
 fi
 if echo "$corrupt_out" | grep -q "corrupt port file"; then
-  pass "bd-preflight-test corrupt port detail mentions 'corrupt port file'"
+  pass "__bd-preflight-test corrupt port detail mentions 'corrupt port file'"
 else
-  fail "bd-preflight-test corrupt port: detail missing 'corrupt port file' (got: ${corrupt_out})"
+  fail "__bd-preflight-test corrupt port: detail missing 'corrupt port file' (got: ${corrupt_out})"
 fi
 rm -rf "$CORRUPT_BEADS"
 
-# --- Test 18: beads-host-dolt port file missing via bd-preflight-test (no container needed) ---
+# --- Test 18: beads-host-dolt port file missing via __bd-preflight-test (no container needed) ---
 echo ""
-echo "=== Test 18: beads-host-dolt port file missing via bd-preflight-test ==="
+echo "=== Test 18: beads-host-dolt port file missing via __bd-preflight-test ==="
 MISSING_BEADS=$(mktemp -d)
 mkdir -p "${MISSING_BEADS}/.beads"
 # No port file created
-missing_out=$("$RC" bd-preflight-test "${MISSING_BEADS}/.beads" "server" 2>/dev/null || true)
+missing_out=$("$RC" __bd-preflight-test "${MISSING_BEADS}/.beads" "server" 2>/dev/null || true)
 if echo "$missing_out" | grep -q "FAIL \[0\] beads-host-dolt"; then
-  pass "bd-preflight-test missing port produces FAIL beads-host-dolt"
+  pass "__bd-preflight-test missing port produces FAIL beads-host-dolt"
 else
-  fail "bd-preflight-test missing port: expected FAIL [0] beads-host-dolt, got: ${missing_out}"
+  fail "__bd-preflight-test missing port: expected FAIL [0] beads-host-dolt, got: ${missing_out}"
 fi
 if echo "$missing_out" | grep -q "port file missing"; then
-  pass "bd-preflight-test missing port detail mentions 'port file missing'"
+  pass "__bd-preflight-test missing port detail mentions 'port file missing'"
 else
-  fail "bd-preflight-test missing port: detail missing 'port file missing' (got: ${missing_out})"
+  fail "__bd-preflight-test missing port: detail missing 'port file missing' (got: ${missing_out})"
 fi
 rm -rf "$MISSING_BEADS"
 

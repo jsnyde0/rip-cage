@@ -215,7 +215,7 @@ Host-side pre-flight is strictly better-positioned: the host can `lsof`, can rea
 
 **Added:** 2026-04-22
 
-Add one host-side check to `rc test` with slug `beads-host-dolt`, invoking the same helper as D8. The helper emits a line in the existing `PASS|FAIL [N] slug — detail` format (with `[0]` signalling host-side, since in-container scripts number from 1); the line is prepended to the `docker exec` output so the existing JSON parser handles it without shape changes. States map to test outcomes:
+Add one host-side check to `rc test` with slug `beads-host-dolt`, invoking the same helper as D8. The helper emits a line in the existing `PASS|FAIL [N] slug — detail` format (with `[0]` as a human-readable marker for host-side checks — in-container scripts number from 1, but this is convention only; the JSON parser discards the numeric group); the line is prepended to the `docker exec` output so the existing JSON parser handles it without shape changes. States map to test outcomes:
 
 - Embedded / `dolt_mode` unset → `PASS [0] beads-host-dolt — not applicable (embedded mode)`
 - Server-mode + healthy → `PASS [0] beads-host-dolt — dolt reachable on 127.0.0.1:<N>`
