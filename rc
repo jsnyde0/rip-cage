@@ -1545,7 +1545,7 @@ cmd_test() {
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local output
     output=$(docker exec "$name" bash -c \
-      '/usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-egress-firewall.sh' 2>&1) || true
+      '/usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-egress-firewall.sh; /usr/local/lib/rip-cage/test-bd-roundtrip.sh' 2>&1) || true
     # Parse PASS/FAIL lines into JSON array
     local checks="[]" overall="pass"
     while IFS= read -r line; do
@@ -1570,6 +1570,7 @@ cmd_test() {
     docker exec "$name" /usr/local/lib/rip-cage/test-safety-stack.sh
     docker exec "$name" /usr/local/lib/rip-cage/test-skills.sh
     docker exec "$name" /usr/local/lib/rip-cage/test-egress-firewall.sh
+    docker exec "$name" /usr/local/lib/rip-cage/test-bd-roundtrip.sh
   fi
 }
 

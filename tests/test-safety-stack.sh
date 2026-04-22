@@ -355,6 +355,43 @@ else
 fi
 check "CLAUDE.md has no bd dolt push mandate" "$(grep -qF 'bd dolt push' /workspace/CLAUDE.md 2>/dev/null && echo fail || echo pass)"
 
+# SSH_N8. ConnectTimeout=10 resolved via ssh -G (rip-cage-it3)
+ssh_ctimeout=$(ssh -G github.com 2>/dev/null | grep -E '^connecttimeout ' || true)
+check "SSH ConnectTimeout=10 resolved" "$([[ "$ssh_ctimeout" == "connecttimeout 10" ]] && echo pass || echo fail)" "$ssh_ctimeout"
+
+# SSH_N9. Pinned github.com ED25519 fingerprint matches SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU
+expected_fp="SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
+actual_fp=$(ssh-keygen -l -f /etc/ssh/ssh_known_hosts 2>/dev/null | awk '$NF=="(ED25519)" && /github\.com/ {print $2}' | head -1)
+check "SSH pinned github.com ED25519 fingerprint matches" "$([[ "$actual_fp" == "$expected_fp" ]] && echo pass || echo fail)" "$actual_fp"
+
+# SSH_N10. /etc/ssh/ssh_config.d/00-rip-cage.conf exists with mode 0644
+ssh_conf="/etc/ssh/ssh_config.d/00-rip-cage.conf"
+if [[ -f "$ssh_conf" ]]; then
+    ssh_conf_mode=$(stat -c '%a' "$ssh_conf" 2>/dev/null || stat -f '%Lp' "$ssh_conf" 2>/dev/null || echo "?")
+    check "SSH config file exists with mode 0644" "$([[ "$ssh_conf_mode" == "644" ]] && echo pass || echo fail)" "mode=$ssh_conf_mode"
+else
+    check "SSH config file exists with mode 0644" "fail" "missing: $ssh_conf"
+fi
+
+echo ""
+echo "-- Version Manifest (rip-cage-7v4) --"
+# Emits pinned-component versions so a future harness failure after an upgrade
+# can be localized by diffing the manifest against a prior run. Always PASS —
+# this is a snapshot, not a gate.
+manifest_tool() {
+    local label="$1" cmd="$2"
+    local out
+    out=$($cmd 2>&1 | head -1 || true)
+    check "manifest: $label" "pass" "${out:-unavailable}"
+}
+manifest_tool "bd" "bd --version"
+manifest_tool "dolt" "dolt version"
+manifest_tool "claude" "claude --version"
+manifest_tool "bun" "bun --version"
+manifest_tool "dcg" "dcg --version"
+manifest_tool "node" "node --version"
+manifest_tool "debian" "cat /etc/debian_version"
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed (of $TOTAL) ==="
 [[ "$FAIL" -eq 0 ]] || exit 1

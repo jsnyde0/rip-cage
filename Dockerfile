@@ -98,11 +98,13 @@ COPY rip_cage_egress.py /usr/local/lib/rip-cage/rip_cage_egress.py
 COPY init-firewall.sh /usr/local/lib/rip-cage/init-firewall.sh
 COPY rip-proxy-start.sh /usr/local/lib/rip-cage/rip-proxy-start.sh
 COPY tests/test-egress-firewall.sh /usr/local/lib/rip-cage/test-egress-firewall.sh
+COPY tests/test-bd-roundtrip.sh /usr/local/lib/rip-cage/test-bd-roundtrip.sh
 RUN chmod +x /usr/local/bin/init-rip-cage.sh \
     /usr/local/lib/rip-cage/hooks/*.sh \
     /usr/local/lib/rip-cage/test-safety-stack.sh \
     /usr/local/lib/rip-cage/test-skills.sh \
     /usr/local/lib/rip-cage/test-egress-firewall.sh \
+    /usr/local/lib/rip-cage/test-bd-roundtrip.sh \
     /usr/local/lib/rip-cage/init-firewall.sh \
     /usr/local/lib/rip-cage/rip-proxy-start.sh
 
