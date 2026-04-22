@@ -220,7 +220,8 @@ cmd_init() {
     "source=${localEnv:HOME}/.claude/skills,target=/home/agent/.rc-context/skills,type=bind,readonly",
     "source=${localEnv:HOME}/.claude/commands,target=/home/agent/.rc-context/commands,type=bind,readonly",
     "source=${localEnv:HOME}/.claude/agents,target=/home/agent/.rc-context/agents,type=bind,readonly",
-    "source=${localWorkspaceFolder}/.git/hooks,target=/workspace/.git/hooks,type=bind,readonly"
+    "source=${localWorkspaceFolder}/.git/hooks,target=/workspace/.git/hooks,type=bind,readonly",
+    "source=rc-mise-cache,target=/home/agent/.local/share/mise,type=volume"
   ],
 DEVCONTAINER_WITH_HOOKS
     else
@@ -239,7 +240,8 @@ DEVCONTAINER_WITH_HOOKS
     "source=${localEnv:HOME}/CLAUDE.md,target=/home/agent/.rc-context/home-claude.md,type=bind,readonly",
     "source=${localEnv:HOME}/.claude/skills,target=/home/agent/.rc-context/skills,type=bind,readonly",
     "source=${localEnv:HOME}/.claude/commands,target=/home/agent/.rc-context/commands,type=bind,readonly",
-    "source=${localEnv:HOME}/.claude/agents,target=/home/agent/.rc-context/agents,type=bind,readonly"
+    "source=${localEnv:HOME}/.claude/agents,target=/home/agent/.rc-context/agents,type=bind,readonly",
+    "source=rc-mise-cache,target=/home/agent/.local/share/mise,type=volume"
   ],
 DEVCONTAINER_NO_HOOKS
     fi
@@ -834,6 +836,7 @@ _up_prepare_docker_mounts() {
   # State volumes
   _UP_RUN_ARGS+=(-v "rc-state-${_name}:/home/agent/.claude-state")
   _UP_RUN_ARGS+=(-v "rc-history-${_name}:/commandhistory")
+  _UP_RUN_ARGS+=(-v "rc-mise-cache:/home/agent/.local/share/mise")
 }
 
 # _up_prepare_environment — build the env (-e), resource-limit, and beads portions of run_args.
