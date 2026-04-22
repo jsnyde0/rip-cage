@@ -94,6 +94,31 @@ Pushing is the human's responsibility at the session boundary, on the host. `bd 
 
 **What would invalidate this:** Adoption of Option 3 (bot identity) would flip this decision: the cage gains push capability, and the protocol goes back to requiring it.
 
+### D4: LFS materialization is host-side, parallel to push
+
+**Firmness: FIRM**
+
+Git LFS blob materialization (`git lfs pull`, `git lfs fetch`, `git lfs checkout`) is the human's responsibility on the host, at session boundaries. The cage:
+
+- Does **not** install or carry a `git-lfs` binary in the image.
+- Does **not** carve out an egress allowlist entry for LFS endpoints.
+- Does **not** mutate the host workspace from `rc up` / `rc init` to materialize blobs.
+- **Does** detect LFS pointer stubs at `rc up` / `rc init` and print an advisory warning naming the exact host-side command (`git -C <path> lfs pull`) and up to 5 stub paths.
+
+**Rationale:** The architectural shape is identical to D1/D3: LFS pull is a network-touching git operation that the cage's credential and egress posture deliberately refuses to provide. Because `/workspace` is a bind mount, any materialization the human performs on the host is immediately visible inside the cage — no container restart, no special plumbing. Auto-running `git lfs pull` from `rc` would cross the host/cage boundary that rip-cage otherwise respects (`rc` is a container-provisioning tool, not a host-side git wrapper); a warning accomplishes the same error-surfacing without that overreach.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **Detect and warn (this decision)** | Zero new network surface; zero new binaries in the image; zero host mutation; keeps `rc` scope tight | Human must run one command once per branch switch involving LFS files |
+| `rc` auto-runs `git lfs pull` on host | Fully automatic | `rc` starts mutating the host workspace; scope creep from container provisioning into git operations |
+| Install `git-lfs` in the image + egress allowlist for LFS endpoints | In-cage autonomy | Permanent egress hole in every container to paper over a one-shot host action; credential surface for authenticated LFS servers |
+| Bind-mount `~/.git/lfs/objects` + in-image `git-lfs` for `git lfs checkout` from host cache | Offline materialization | Still requires `git-lfs` in the image; the bind-mounted workspace already is the cache (once materialized on host, cage sees real files) |
+| Do nothing | No work | Tests/tools that depend on LFS fixtures fail in the cage with cryptic format errors (e.g., "parquet file invalid (footer != PAR1)") and no hint why |
+
+**What would invalidate this:** Adoption of a bot-identity model (see Deferred, Option 3) that also provisioned an LFS token — at that point, autonomous in-cage `git lfs pull` becomes a real option and the calculus changes.
+
 ## Deferred
 
 - **Option 3 — dedicated bot identity via GitHub App.** Mint short-lived installation tokens per session, inject as `GH_TOKEN`, scope by repo-install. Would restore autonomous pushes with a narrow blast radius. Deferred until the session-boundary handoff becomes a real friction point. Keep an eye on the auth-refresh surface (ADR-010) as the natural integration point when the time comes.

@@ -175,6 +175,9 @@ cmd_init() {
   validate_path "$target"
   target="$VALIDATED_PATH"
 
+  # LFS advisory (same as cmd_up — see _check_lfs_stubs).
+  _check_lfs_stubs "$target"
+
   local dest="${target}/.devcontainer/devcontainer.json"
 
   if [[ -f "$dest" ]] && [[ "$force" -eq 0 ]]; then
@@ -633,6 +636,45 @@ _collect_symlink_parents() {
   done
 }
 
+# _check_lfs_stubs <path>
+# If the project uses git-lfs and has unmaterialized pointer stubs in the
+# working tree, print an advisory warning to stderr. rip-cage cannot fetch
+# LFS blobs (ADR-014 egress posture), so materialization is the human's
+# responsibility on the host. Observation-only: never mutates the workspace
+# and never calls `git lfs pull`.
+_check_lfs_stubs() {
+  local path="$1"
+  [[ -d "$path" ]] || return 0
+  # Fast early exit for non-LFS repos: no .gitattributes contains filter=lfs
+  if ! grep -rqI --include='.gitattributes' --exclude-dir='.git' 'filter=lfs' "$path" 2>/dev/null; then
+    return 0
+  fi
+  # Scan working tree for LFS pointer-stub files:
+  #   - size < 200 bytes (real stubs are ~130 bytes)
+  #   - first line is the LFS v1 pointer header
+  local stubs
+  stubs=$(find "$path" -type f -size -200c ! -path '*/.git/*' \
+    -exec grep -l -m1 '^version https://git-lfs.github.com/spec/v1' {} + 2>/dev/null \
+    | head -5)
+  [[ -z "$stubs" ]] && return 0
+
+  {
+    echo ""
+    echo "⚠ LFS pointer stubs detected in $path"
+    echo "  rip-cage cannot fetch LFS blobs from inside the cage (ADR-014)."
+    echo "  Run on the host before working in the cage:"
+    echo "      git -C $path lfs pull"
+    echo "  Files still as stubs (first 5):"
+    local _stub_line _rel
+    while IFS= read -r _stub_line; do
+      [[ -z "$_stub_line" ]] && continue
+      _rel="${_stub_line#"$path"/}"
+      echo "      $_rel"
+    done <<< "$stubs"
+    echo ""
+  } >&2
+}
+
 # _extract_credentials — extract OAuth credentials from macOS Keychain to
 # ~/.claude/.credentials.json. No-op on Linux (no Keychain).
 #
@@ -1071,6 +1113,11 @@ cmd_up() {
 
   validate_path "$path"
   path="$VALIDATED_PATH"
+
+  # LFS advisory: warn if the project uses git-lfs and has unmaterialized
+  # pointer stubs. rip-cage cannot fetch blobs (ADR-014); user must run
+  # `git lfs pull` on the host. Observation-only — does not mutate.
+  _check_lfs_stubs "$path"
 
   # Validate env-file early (before dry-run exit) to catch symlink bypasses
   if [[ -n "$env_file" ]]; then
