@@ -10,6 +10,13 @@ Rip cage wraps your project in a Docker container with a safety stack that inter
 
 **Prerequisites:** Docker (or OrbStack on macOS) and Claude Code authenticated on your host.
 
+For `git push` from inside the cage (ADR-017), your host `ssh-agent` is forwarded by default:
+- **Linux / WSL2**: just have `ssh-agent` running with your keys loaded (the usual `ssh-add ~/.ssh/id_ed25519`).
+- **macOS**: add `UseKeychain yes` and `AddKeysToAgent yes` to `~/.ssh/config`, then run `ssh-add --apple-use-keychain ~/.ssh/id_ed25519` once. Your keys are now reachable via the macOS system agent that OrbStack/Docker Desktop proxies into containers.
+- Don't want forwarding? Pass `--no-forward-ssh` to `rc up` and push from the host.
+
+`rc up` warns loudly if the forwarded agent is empty or unreachable — the warning is also surfaced in every new shell banner and in `rc ls`.
+
 **Install:**
 ```bash
 git clone https://github.com/jsnyde0/rip-cage.git

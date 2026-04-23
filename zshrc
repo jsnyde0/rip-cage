@@ -49,3 +49,18 @@ extract() {
 
 # mise (project toolchain). No-op when no tool files are declared.
 command -v /usr/local/bin/mise >/dev/null 2>&1 && eval "$(/usr/local/bin/mise activate zsh)"
+
+# Rip-cage posture banner: ssh-agent forwarding status (ADR-017 D4). Surfaces
+# the preflight result on every new shell so users see forward-ssh posture on
+# every tmux attach, not just at rc up time (whose stdout is swallowed by the
+# tmux auto-attach).
+if [[ -r /etc/rip-cage/ssh-agent-status ]]; then
+  _rc_ssh_status=$(cat /etc/rip-cage/ssh-agent-status 2>/dev/null)
+  case "$_rc_ssh_status" in
+    ok:*) echo "[rip-cage] ssh-agent: ${_rc_ssh_status#ok:} key(s) loaded — git push works" ;;
+    empty) echo "[rip-cage] ssh-agent: forwarded but EMPTY — push will fail. See ADR-017 D4 for host-side fix." ;;
+    unreachable) echo "[rip-cage] ssh-agent: mounted but UNREACHABLE — push will fail. See ADR-017 D4." ;;
+    disabled) echo "[rip-cage] ssh-agent: forwarding disabled (--no-forward-ssh). Push from host." ;;
+  esac
+  unset _rc_ssh_status
+fi

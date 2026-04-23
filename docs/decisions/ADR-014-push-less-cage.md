@@ -1,6 +1,6 @@
 # ADR-014: The Cage Is Push-Less
 
-**Status:** Accepted
+**Status:** Partially superseded by [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (2026-04-23). D1 (no push credentials) and D3 (push-less session-close) are reversed — ssh-agent forwarding is now on by default. D2 (non-interactive SSH posture) and D4 (LFS pointer detection) remain in force.
 **Date:** 2026-04-21
 **Design:** [Non-interactive SSH posture](../2026-04-21-non-interactive-ssh-design.md)
 **Related:** [ADR-001](ADR-001-fail-loud-pattern.md) (fail-loud), [ADR-002](ADR-002-rip-cage-containers.md) (blast radius, no `~/.ssh` mount), [ADR-010](ADR-010-auth-refresh.md) (auth surface), [ADR-012](ADR-012-egress-firewall.md) (egress allowlist)

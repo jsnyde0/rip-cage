@@ -185,15 +185,21 @@ Bind-mount path means the user sees denials from the host without entering the c
 
 **What would invalidate this:** A real incident where allowed-traffic forensics would have caught a confused-deputy exfil. Revisit then — easy to extend.
 
-## Open: non-HTTP egress scope (raised by ADR-013)
+### D6: Non-HTTP egress stays allowed — accepted risk
 
-The current design intercepts TCP 80/443 only. Anything else — TCP 22 (git-over-ssh), 25 (smtp), arbitrary high ports, raw UDP — bypasses the proxy entirely and is filtered only by whatever the base Debian image's default iptables posture provides (nothing restrictive today).
+**Firmness: FIRM** (promoted 2026-04-23 from the "Open" section that previously held this question, resolving the ADR-013 D4 dependency.)
 
-This is a deliberate-but-undocumented choice. Git-over-ssh, DNS, and NTP are legitimate agent needs that an HTTP-only proxy can't mediate. Blocking them would require a separate L4 allowlist, which is exactly the per-project config burden ADR-012 D1 rejected.
+The firewall intercepts TCP 80/443 only. Anything else — TCP 22 (git-over-ssh), 25 (smtp), arbitrary high ports, raw UDP — bypasses the proxy entirely and is not restricted by iptables. This is a deliberate, accepted risk, not a gap.
 
-**Tentative position**: non-HTTP egress remains allowed; denylist scope is HTTP exfil channels. ADR-013's P3 test expansion will assert this explicitly (positive test that `nc -zv github.com 22` succeeds). If that policy changes, a follow-up ADR.
+**Rationale:** rip-cage's egress firewall applies the same 80/20 denylist approach at L4 that D1 applies at L7. The L7 denylist works because the asymmetry favors it: ~20 obvious exfil hosts (webhook.site, pastebin, transfer.sh, ngrok) can be blocked at zero cost to legitimate traffic. Non-HTTP has no such asymmetry — any port-based or host-based L4 denylist would be either cosmetic (real attackers use any port) or require real infrastructure (SNI sniffing, DNS filtering) for marginal protection above what the rest of the stack already provides.
 
-**Documented as accepted risk** pending confirmation: an agent that compiles its own tooling could exfil over raw TCP to any port/IP. DCG + compound blocker + filesystem sandbox make this unlikely but not impossible.
+The cage is not a firewall product. DCG, the compound-command blocker, the filesystem sandbox, and push-less credential defaults are doing the containment work. The egress firewall's scope is "stop the agent from accidentally hitting a webhook it shouldn't" — a legitimate 80/20 goal that does not require L4 coverage.
+
+Legitimate non-HTTP needs (git-over-ssh, DNS, NTP, package registries on non-standard ports) remain unblocked. An agent that compiles its own tooling could exfil over raw TCP to any port/IP; DCG + compound blocker + filesystem sandbox make that unlikely but not impossible. That is the accepted residual risk, consistent with the project framing: layers, not walls.
+
+**What would invalidate this:** a real incident where non-HTTP exfil was the vector, *and* the rest of the stack failed to contain it. Revisit then with a specific L4 posture proposal, not a blanket default-deny.
+
+**Test assertion (ADR-013 P3):** positive iptables-rule check that no REDIRECT/DROP rule targets ports other than 80/443. Documents the policy in code.
 
 ## Related
 

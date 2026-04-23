@@ -119,6 +119,7 @@ Commands:
     --cpus N            CPU limit (default: 2)
     --memory SIZE       Memory limit (default: 4g)
     --pids-limit N      PID limit (default: 500)
+    --no-forward-ssh    Disable host ssh-agent forwarding (ADR-017)
   ls                                           List rip-cage containers
   attach [name]                                Attach to container tmux session
   down [name]                                  Stop a container
@@ -850,8 +851,9 @@ _up_prepare_docker_mounts() {
 #   $5  rc_memory     — memory limit
 #   $6  rc_pids_limit — PID limit
 #   $7  rc_egress     — egress firewall mode ("on" or "off")
+#   $8  rc_forward_ssh — ssh-agent forwarding ("on" or "off")
 _up_prepare_environment() {
-  local _path="$1" _port="$2" _env_file="$3" _rc_cpus="$4" _rc_memory="$5" _rc_pids_limit="$6" _rc_egress="${7:-on}"
+  local _path="$1" _port="$2" _env_file="$3" _rc_cpus="$4" _rc_memory="$5" _rc_pids_limit="$6" _rc_egress="${7:-on}" _rc_forward_ssh="${8:-on}"
 
   # Forward git identity from host
   local git_name git_email
@@ -973,6 +975,36 @@ _up_prepare_environment() {
   else
     _UP_RUN_ARGS+=(-l rc.egress=off)
   fi
+
+  # ssh-agent forwarding (ADR-017): forward the host ssh-agent socket so the
+  # cage can push using the host's keys. Keys themselves never enter the
+  # container — only signing capability via the forwarded socket. Platform-
+  # specific host-side socket selection (ADR-017 D4):
+  #   - macOS (Docker Desktop / OrbStack): /run/host-services/ssh-auth.sock
+  #     (VM-provided proxy to macOS system/keychain agent). Direct mount of
+  #     an ad-hoc $SSH_AUTH_SOCK does NOT work — launchd-style sockets do
+  #     not survive the VM boundary.
+  #   - Linux / WSL2: $SSH_AUTH_SOCK is a normal AF_UNIX socket; mount it.
+  # If no host socket is resolvable, label as "on" but skip the mount and
+  # emit a warning — preflight in _up_ssh_preflight will surface the
+  # unreachable state.
+  if [[ "$_rc_forward_ssh" != "off" ]]; then
+    local _host_ssh_sock=""
+    if [[ "$(uname)" == "Darwin" ]]; then
+      _host_ssh_sock="/run/host-services/ssh-auth.sock"
+    elif [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+      _host_ssh_sock="$SSH_AUTH_SOCK"
+    fi
+    if [[ -n "$_host_ssh_sock" ]]; then
+      _UP_RUN_ARGS+=(-v "${_host_ssh_sock}:/ssh-agent.sock")
+      _UP_RUN_ARGS+=(-e "SSH_AUTH_SOCK=/ssh-agent.sock")
+    else
+      log "Warning: --forward-ssh requested but no host ssh-agent socket found (SSH_AUTH_SOCK unset). Forwarding will be inert; git push inside the cage will fail. Set SSH_AUTH_SOCK on the host or pass --no-forward-ssh to suppress this warning."
+    fi
+    _UP_RUN_ARGS+=(-l rc.forward-ssh=on)
+  else
+    _UP_RUN_ARGS+=(-l rc.forward-ssh=off)
+  fi
 }
 
 # _up_start_container — run the container with the prepared _UP_RUN_ARGS.
@@ -1051,6 +1083,108 @@ _up_resolve_resume_egress() {
     exit 1
   fi
   _UP_RESUME_EGRESS="$_label"
+}
+
+# _up_resolve_resume_forward_ssh -- read and validate the rc.forward-ssh label on resume.
+# Parallel shape to _up_resolve_resume_egress. ADR-017 D2: resume must preserve
+# the original posture, not silently upgrade/downgrade based on current env.
+# Missing label is treated as "off" (legacy pre-ADR-017 containers predate the
+# label and never had forwarding wired). On success sets _UP_RESUME_FORWARD_SSH
+# to "on" or "off"; fails loud on docker errors or unrecognized values.
+# Parameters: $1 name, $2 path (used in the recreate hint)
+_up_resolve_resume_forward_ssh() {
+  local _name="$1" _path="$2"
+  local _label
+  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.forward-ssh" }}' "$_name" 2>/dev/null); then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
+    fi
+    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
+    exit 1
+  fi
+  if [[ -z "$_label" ]]; then
+    # Legacy container from before ADR-017 — treat as off (no forwarding was
+    # configured when created). Not an error: old containers continue to work
+    # in their original push-less posture.
+    _UP_RESUME_FORWARD_SSH="off"
+    return
+  fi
+  if [[ "$_label" != "on" && "$_label" != "off" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Container $_name has unrecognized rc.forward-ssh label value: '$_label' (expected on|off). Run: rc destroy $_name && rc up $_path" "INVALID_FORWARD_SSH_LABEL"
+    fi
+    echo "Error: container $_name has unrecognized rc.forward-ssh label value: '$_label' (expected on|off)." >&2
+    echo "       Recreate it:" >&2
+    echo "         rc destroy $_name" >&2
+    echo "         rc up $_path" >&2
+    exit 1
+  fi
+  _UP_RESUME_FORWARD_SSH="$_label"
+}
+
+# _up_ssh_preflight -- probe the forwarded ssh-agent and surface status.
+# ADR-017 D4: the visible failure mode for a misconfigured forward is "loud at
+# rc up, visible in every tmux attach, visible in rc ls" — never a silent
+# push-time failure.
+#
+# Three outcomes written to /etc/rip-cage/ssh-agent-status (sentinel read by
+# init-rip-cage.sh for the tmux banner):
+#   ok:N        — agent reachable, N keys loaded
+#   empty       — agent reachable, 0 keys (host-side fix needed)
+#   unreachable — socket mounted but agent did not respond (likely platform mismatch)
+#   disabled    — forwarding explicitly off (--no-forward-ssh)
+# Also echoed to stderr at rc up time.
+# Parameters: $1 name, $2 forward-ssh mode ("on"|"off")
+_up_ssh_preflight() {
+  local _name="$1" _fwd="$2"
+  local _status=""
+  if [[ "$_fwd" == "off" ]]; then
+    _status="disabled"
+  else
+    # ssh-add exits: 0 = ≥1 key, 1 = 0 keys, 2 = cannot contact agent.
+    # Capture stdout+stderr and the real exit code — a `|| true` tail would
+    # clobber $? with 0 and make every case look like "ok" (bug caught during
+    # first end-to-end test).
+    local _out _rc
+    if _out=$(docker exec "$_name" ssh-add -l 2>&1); then
+      _rc=0
+    else
+      _rc=$?
+    fi
+    if [[ $_rc -eq 0 ]]; then
+      local _n
+      _n=$(printf '%s\n' "$_out" | grep -c '^')
+      _status="ok:${_n}"
+    elif [[ $_rc -eq 1 ]]; then
+      _status="empty"
+    else
+      _status="unreachable"
+    fi
+  fi
+  # Write sentinel (used by tmux banner + rc doctor). Best-effort: a failure
+  # here does not break rc up — the stderr warning below still fires.
+  docker exec -u root "$_name" sh -c "mkdir -p /etc/rip-cage && printf '%s\n' '$_status' > /etc/rip-cage/ssh-agent-status" >/dev/null 2>&1 || true
+
+  case "$_status" in
+    ok:*)
+      log "ssh-agent forwarded (${_status#ok:} key(s) loaded)"
+      ;;
+    empty)
+      log "Warning: ssh-agent forwarded but empty (0 keys). Push will fail."
+      if [[ "$(uname)" == "Darwin" ]]; then
+        log "  macOS fix (one-time): add 'UseKeychain yes' and 'AddKeysToAgent yes' to ~/.ssh/config, then run:"
+        log "    ssh-add --apple-use-keychain ~/.ssh/id_ed25519"
+      else
+        log "  Linux fix: ssh-add ~/.ssh/id_ed25519"
+      fi
+      log "  Or pass --no-forward-ssh to suppress forwarding."
+      ;;
+    unreachable)
+      log "Warning: ssh-agent socket mounted but not reachable from inside the cage. Push will fail."
+      log "  This usually means the host socket is behind a VM boundary (e.g. macOS launchd sockets). See ADR-017 D4."
+      ;;
+  esac
+  _UP_SSH_PREFLIGHT_STATUS="$_status"
 }
 
 # _up_init_firewall -- run the root-phase firewall init inside the container.
@@ -1186,6 +1320,7 @@ _up_attach_tmux() {
 cmd_up() {
   local path="" port="" env_file=""
   local rc_cpus="2" rc_memory="4g" rc_pids_limit="500"
+  local rc_forward_ssh="on"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --port) [[ $# -ge 2 ]] || { echo "Error: --port requires a value" >&2; exit 1; }; port="$2"; shift 2 ;;
@@ -1193,6 +1328,7 @@ cmd_up() {
       --cpus) [[ $# -ge 2 ]] || { echo "Error: --cpus requires a value" >&2; exit 1; }; rc_cpus="$2"; shift 2 ;;
       --memory) [[ $# -ge 2 ]] || { echo "Error: --memory requires a value" >&2; exit 1; }; rc_memory="$2"; shift 2 ;;
       --pids-limit) [[ $# -ge 2 ]] || { echo "Error: --pids-limit requires a value" >&2; exit 1; }; rc_pids_limit="$2"; shift 2 ;;
+      --no-forward-ssh) rc_forward_ssh="off"; shift ;;
       *) path="$1"; shift ;;
     esac
   done
@@ -1329,6 +1465,7 @@ cmd_up() {
       # Surface legacy/invalid-label conditions in dry-run so planners see the
       # same hard stop the actual resume would hit (ADR-001).
       _up_resolve_resume_egress "$name" "$path"
+      _up_resolve_resume_forward_ssh "$name" "$path"
       would_action="would_resume"
     elif [[ "$_inspect_exit" -ne 0 ]]; then
       # docker inspect failed → container is absent; create new.
@@ -1397,6 +1534,9 @@ cmd_up() {
     # unrecognized labels fail loud per ADR-001 — there is no safe default.
     _up_resolve_resume_egress "$name" "$path"
     rc_egress="$_UP_RESUME_EGRESS"
+    # ADR-017 D2: forward-ssh posture is label-persisted, same pattern as egress.
+    _up_resolve_resume_forward_ssh "$name" "$path"
+    rc_forward_ssh="$_UP_RESUME_FORWARD_SSH"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       docker start "$name" >/dev/null
     else
@@ -1426,6 +1566,7 @@ cmd_up() {
       docker stop "$name"
       exit 1
     fi
+    _up_ssh_preflight "$name" "$rc_forward_ssh"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       _up_json_output "$name" "resumed" "$path" "running" "success"
       return
@@ -1464,7 +1605,7 @@ cmd_up() {
   _UP_RUN_ARGS+=(--label "rc.source.path=$path")
 
   _up_prepare_docker_mounts "$path" "$name"
-  _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" "$rc_egress"
+  _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" "$rc_egress" "$rc_forward_ssh"
 
   _UP_RUN_ARGS+=("$IMAGE" sleep infinity)
 
@@ -1498,6 +1639,7 @@ cmd_up() {
   if [[ "$rc_egress" != "off" ]]; then
     log "egress firewall active (denylist mode)"
   fi
+  _up_ssh_preflight "$name" "$rc_forward_ssh"
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     _up_json_output "$name" "created" "$path" "running" "success"
     return
@@ -1507,11 +1649,20 @@ cmd_up() {
 
 cmd_ls() {
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}' | \
-      jq -Rsn '[inputs | rtrimstr("\n") | split("\n") | .[] | select(length > 0) | split("\t") | {name: .[0], status: .[1], uptime: .[2], source_path: .[3], egress: (.[4] | if . == "" then "legacy" elif (. == "on" or . == "off") then . else "invalid:\(.)" end)}]'
+    docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}\t{{.Label "rc.forward-ssh"}}' | \
+      jq -Rsn '[inputs | rtrimstr("\n") | split("\n") | .[] | select(length > 0) | split("\t") | {
+        name: .[0],
+        status: .[1],
+        uptime: .[2],
+        source_path: .[3],
+        egress: (.[4] | if . == "" then "legacy" elif (. == "on" or . == "off") then . else "invalid:\(.)" end),
+        forward_ssh: (.[5] | if . == "" then "legacy" elif (. == "on" or . == "off") then . else "invalid:\(.)" end)
+      }]'
   else
-    { echo -e "NAME\tSTATUS\tEGRESS\tSOURCE PATH"; docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}' | \
-      awk -F'\t' '{egress=$4; if (egress == "") egress="legacy"; else if (egress != "on" && egress != "off") egress="invalid:" egress; print $1"\t"$2"\t"egress"\t"$3}'; }
+    { echo -e "NAME\tSTATUS\tEGRESS\tFWD-SSH\tSOURCE PATH"; docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}\t{{.Label "rc.forward-ssh"}}' | \
+      awk -F'\t' '{egress=$4; if (egress == "") egress="legacy"; else if (egress != "on" && egress != "off") egress="invalid:" egress;
+                   fwd=$5;    if (fwd == "")    fwd="legacy";    else if (fwd    != "on" && fwd    != "off") fwd   ="invalid:" fwd;
+                   print $1"\t"$2"\t"egress"\t"fwd"\t"$3}'; }
   fi
 }
 
@@ -1903,7 +2054,8 @@ cmd_schema() {
         "--port": {"type": "string", "optional": true},
         "--cpus": {"type": "string", "default": "2"},
         "--memory": {"type": "string", "default": "4g"},
-        "--pids-limit": {"type": "string", "default": "500"}
+        "--pids-limit": {"type": "string", "default": "500"},
+        "--no-forward-ssh": {"type": "bool", "default": false, "note": "disable host ssh-agent forwarding (ADR-017)"}
       }
     },
     "down": {

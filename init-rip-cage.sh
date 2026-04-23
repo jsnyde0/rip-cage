@@ -31,6 +31,15 @@ if [[ ! -L /home/agent/.claude ]]; then
   sudo chown agent:agent /home/agent/.claude 2>/dev/null || true
 fi
 
+# ADR-017 D1: when ssh-agent forwarding is on, the mounted host socket is
+# owned by the host uid (e.g. 501:67278 on macOS/OrbStack) and is inaccessible
+# to the in-container agent user (uid 1000). Reassign ownership so the agent
+# can sign. This only affects the container's view — the host socket file is
+# untouched on the host side.
+if [[ -S /ssh-agent.sock ]]; then
+  sudo chown agent:agent /ssh-agent.sock 2>/dev/null || true
+fi
+
 # Install settings template — merge with workspace project settings if present to
 # preserve project-level mcpServers and hooks (rip-cage fields take precedence).
 # Source is /workspace/.claude/settings.json, NOT ~/.claude/settings.json, so that

@@ -2,6 +2,19 @@
 
 You're working on **rip-cage**, a Docker-based sandbox for running Claude Code agents with a safety stack (DCG + compound command blocker + PreToolUse hooks) so they can operate with bypassPermissions mode without nuking anything.
 
+## Philosophy — read this before designing anything
+
+The cage **limits blast radius**. It does not prevent all danger, and it is not trying to. See the [README](README.md) — running with `--dangerously-skip-permissions` is never safe; rip-cage doesn't change that.
+
+What this means in practice when you propose changes:
+
+- **Agent autonomy is the product.** The point of the cage is that a human can walk away and let the agent keep working. Any design that forces human intervention on a legitimate operation (credential prompts, TTY dialogs, interactive approvals, "please run this on the host") defeats the purpose.
+- **Layers, not walls.** DCG, compound blocker, filesystem sandbox, egress denylist, push-less defaults — each catches a class of accidents. None of them individually is a security boundary against a motivated attacker, and pretending they are leads to over-strict designs.
+- **80/20, not 100/0.** The L7 egress firewall is a denylist of known-bad exfil hosts, not a whitelist of approved APIs. Same principle for everything else: block the obvious accident, don't gate the legitimate work.
+- **"It's annoying" is a design signal.** If an agent hits something the cage blocks and the right human response is "just turn it off," the default is probably wrong. Revisit the decision.
+
+Containment-flavored language ("the thing inside the cage is not you") has shown up in past ADRs and is a trap — it reads as an adversarial threat model rip-cage is not trying to meet. When in doubt, optimize for autonomous uninterrupted runs over theoretical blast-radius reduction.
+
 ## Architecture
 
 ```
@@ -93,7 +106,7 @@ bd close <id>         # Complete work
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
-4. **Commit locally** - Commit all changes to the local branch. Produce a handoff summary: branch name, number of commits ahead of `origin`, summary of work done, anything still pending.
-5. **Do not push** - Do not run git push or the beads dolt-push command from inside the container. The cage has no outbound push credentials (ADR-014 D1). Pushing is the human's responsibility on the host at the session boundary.
-6. **Hand off** - Provide the handoff summary to the user so they can push from the host.
+4. **Commit locally** - Commit all changes to the local branch
+5. **Push** - `git push` and `bd dolt push`. The cage forwards the host ssh-agent by default (ADR-017), so pushes work from inside the container. If `--no-forward-ssh` was passed at `rc up`, pushes will fail loudly — hand off to the human instead.
+6. **Hand off summary** - Branch name, commits pushed, summary of work, anything still pending.
 <!-- END BEADS INTEGRATION -->
