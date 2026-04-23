@@ -60,6 +60,7 @@ if [[ -r /etc/rip-cage/ssh-agent-status ]]; then
     ok:*) echo "[rip-cage] ssh-agent: ${_rc_ssh_status#ok:} key(s) loaded — git push works" ;;
     empty) echo "[rip-cage] ssh-agent: forwarded but EMPTY — push will fail. See ADR-017 D4 for host-side fix." ;;
     unreachable) echo "[rip-cage] ssh-agent: mounted but UNREACHABLE — push will fail. See ADR-017 D4." ;;
+    no_host_agent) echo "[rip-cage] ssh-agent: NO HOST AGENT available — forwarding inactive. Start ssh-agent on host, or pass --no-forward-ssh to silence." ;;
     disabled) echo "[rip-cage] ssh-agent: forwarding disabled (--no-forward-ssh). Push from host." ;;
   esac
   unset _rc_ssh_status

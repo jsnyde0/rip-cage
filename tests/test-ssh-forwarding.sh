@@ -20,10 +20,17 @@ CONTAINER=""
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
+# Resolve the container name from the workspace label — robust against
+# rc's collision-hash fallback and tr/sed name normalization.
+_resolve_container() {
+  docker ps -a --filter "label=rc.source.path=$(realpath "$TEST_WS" 2>/dev/null || echo "$TEST_WS")" \
+    --format '{{.Names}}' | head -1
+}
+
 cleanup() {
-  if [[ -n "$CONTAINER" ]]; then
-    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-  fi
+  local _c
+  _c=$(_resolve_container 2>/dev/null || true)
+  [[ -n "$_c" ]] && docker rm -f "$_c" >/dev/null 2>&1 || true
   if [[ -n "$TEST_WS" && -d "$TEST_WS" ]]; then
     rm -rf "$TEST_WS"
   fi
@@ -40,16 +47,12 @@ if ! docker image inspect rip-cage:latest >/dev/null 2>&1; then
 fi
 
 TEST_WS=$(mktemp -d)
-# container_name() derives from last two path components; on macOS /tmp is
-# a symlink to /private/tmp, so the realpath has two components already.
-CONTAINER=$(basename "$(dirname "$TEST_WS")")-$(basename "$TEST_WS")
 
 # ---- Test 1: default rc up wires forwarding ----
 echo "=== Test 1: default rc up mounts socket and sets label=on ==="
 RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
 
-# Resolve actual container name (rc may disambiguate; use the label).
-CONTAINER=$(docker ps -a --filter "label=rc.source.path=$(realpath "$TEST_WS")" --format '{{.Names}}' | head -1)
+CONTAINER=$(_resolve_container)
 if [[ -z "$CONTAINER" ]]; then
   fail "container did not come up"
   exit 1
@@ -127,7 +130,7 @@ echo "=== Test 2: --no-forward-ssh disables forwarding ==="
 docker rm -f "$CONTAINER" >/dev/null 2>&1
 
 RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off "$RC" up --no-forward-ssh "$TEST_WS" </dev/null >/dev/null 2>&1 || true
-CONTAINER=$(docker ps -a --filter "label=rc.source.path=$(realpath "$TEST_WS")" --format '{{.Names}}' | head -1)
+CONTAINER=$(_resolve_container)
 
 label=$(docker inspect --format '{{ index .Config.Labels "rc.forward-ssh" }}' "$CONTAINER" 2>/dev/null)
 if [[ "$label" == "off" ]]; then
@@ -173,6 +176,33 @@ if [[ "$status" == "disabled" ]]; then
   pass "resume sentinel still = disabled"
 else
   fail "resume sentinel = '$status' (expected 'disabled')"
+fi
+
+# ---- Test 4: no host agent → label=off, sentinel=no_host_agent ----
+# Regression guard for the "label lies about wiring" issue (review fix list
+# 2026-04-23). When the host has no agent to forward, we must NOT write
+# rc.forward-ssh=on (a subsequent resume would then re-attempt a doomed
+# mount). Exercised only on Linux — on macOS, the OrbStack/Docker-Desktop
+# magic path always resolves, so this case cannot arise.
+if [[ "$(uname)" != "Darwin" ]]; then
+  echo "=== Test 4: no host agent produces label=off, sentinel=no_host_agent ==="
+  docker rm -f "$CONTAINER" >/dev/null 2>&1
+  RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off SSH_AUTH_SOCK="" "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
+  CONTAINER=$(_resolve_container)
+  label=$(docker inspect --format '{{ index .Config.Labels "rc.forward-ssh" }}' "$CONTAINER" 2>/dev/null)
+  if [[ "$label" == "off" ]]; then
+    pass "rc.forward-ssh label = off (no host agent)"
+  else
+    fail "rc.forward-ssh label = '$label' (expected 'off')"
+  fi
+  status=$(docker exec "$CONTAINER" cat /etc/rip-cage/ssh-agent-status 2>/dev/null)
+  if [[ "$status" == "no_host_agent" ]]; then
+    pass "sentinel = no_host_agent"
+  else
+    fail "sentinel = '$status' (expected 'no_host_agent')"
+  fi
+else
+  echo "=== Test 4: skipped (macOS always has a host-services magic path) ==="
 fi
 
 echo

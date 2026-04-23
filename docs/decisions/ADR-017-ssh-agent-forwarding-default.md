@@ -85,11 +85,15 @@ The project-level CLAUDE.md session-close protocol is reverted from ADR-014 D3 (
 | macOS (OrbStack / Docker Desktop) | mount `/run/host-services/ssh-auth.sock`; VM proxies to macOS system agent (keychain-backed) | `ssh-add --apple-use-keychain <key>` run once + `UseKeychain yes`, `AddKeysToAgent yes` in `~/.ssh/config`. An ad-hoc session agent is not reachable — its socket does not survive the VM boundary. |
 | WSL2 | bind-mount `$SSH_AUTH_SOCK` directly | `ssh-agent` running in the WSL side |
 
-**Preflight behavior:** at `rc up`, after the socket is forwarded, probe the agent from inside the container (`ssh-add -l`). Three outcomes:
+**Preflight behavior:** at `rc up`, after the socket is forwarded, probe the agent from inside the container (`timeout 5 ssh-add -l`). Five status values feed the sentinel at `/etc/rip-cage/ssh-agent-status`, read by the shell banner and `rc ls`:
 
-1. Agent reachable, ≥1 key → proceed silently.
-2. Agent reachable, 0 keys → **loud warning** naming the platform-specific fix (Linux: `ssh-add ~/.ssh/<key>`; macOS: keychain snippet above).
-3. Agent unreachable or host `SSH_AUTH_SOCK` unset → **loud warning** that forwarding is wired but not functional; push will fail. `rc up` does not abort — a cage with no push capability is still useful (read-only work, exploration, HTTPS git) — but the warning surfaces as both stderr and a persistent sentinel.
+1. `ok:N` — Agent reachable, N≥1 keys loaded → proceed silently.
+2. `empty` — Agent reachable, 0 keys → **loud warning** naming the platform-specific fix (Linux: `ssh-add ~/.ssh/<key>`; macOS: keychain snippet above).
+3. `unreachable` — Socket mounted but agent did not respond (connection refused or 5s timeout; also covers platform mismatch like a launchd socket surviving the VM boundary) → **loud warning** with platform hint.
+4. `no_host_agent` — Forwarding was on by default but the host provided no agent to forward (e.g. Linux with `SSH_AUTH_SOCK` unset). The label is written as `off` — nothing was wired, so a later resume must not re-attempt a doomed mount. **Loud warning** at create, banner surfaces it on every attach.
+5. `disabled` — User passed `--no-forward-ssh` (or the project-level `RIP_CAGE_FORWARD_SSH=off` env default). Silent at create, banner clarifies on every attach.
+
+`rc up` does not abort on any non-`ok:N` status — a cage with no push capability is still useful (read-only work, exploration, HTTPS git). The guarantee is that the reason is visible at every entry point, never silent.
 
 **Visibility beyond `rc up`:** `rc up` stdout is swallowed by the tmux auto-attach. Preflight results are surfaced in three places so users see them on any path:
 - **stderr at `rc up`** (one-shot, plan-time).
@@ -120,8 +124,8 @@ The project-level CLAUDE.md session-close protocol is reverted from ADR-014 D3 (
 
 ## Implementation notes
 
-- `rc up`: add `--no-forward-ssh` flag, `--label rc.forward-ssh=on|off`. Host-side socket selection: on macOS use `/run/host-services/ssh-auth.sock`; on Linux/WSL2 use `$SSH_AUTH_SOCK`. Mount to `/ssh-agent.sock` inside container and set `SSH_AUTH_SOCK=/ssh-agent.sock`. Skip cleanly with a warning if the source socket is unset/missing.
-- Preflight: after `docker run` / `docker start`, probe `ssh-add -l` inside container. Write result to `/home/agent/.rc-context/ssh-agent-status` (sentinel) and print to stderr. Status values: `ok:N_keys`, `empty`, `unreachable`, `disabled`.
+- `rc up`: add `--no-forward-ssh` flag and `RIP_CAGE_FORWARD_SSH` env var (sibling to `RIP_CAGE_EGRESS`; CLI wins), `--label rc.forward-ssh=on|off`. Host-side socket selection: on macOS use `/run/host-services/ssh-auth.sock`; on Linux/WSL2 use `$SSH_AUTH_SOCK`. Mount to `/ssh-agent.sock` inside container and set `SSH_AUTH_SOCK=/ssh-agent.sock`. If no host socket resolves, write label=off (nothing was wired) and record `_UP_FORWARD_SSH_WIRED=no_host_agent` so the preflight can distinguish the case from explicit opt-out.
+- Preflight: after `docker run` / `docker start`, probe `timeout 5 ssh-add -l` inside container. Write result to `/etc/rip-cage/ssh-agent-status` (sentinel) and print to stderr. Status values: `ok:N_keys`, `empty`, `unreachable`, `no_host_agent`, `disabled`.
 - `rc ls`: surface the forward-ssh posture as a column (on/off/invalid from label) the way egress is surfaced today.
 - `cmd_up` resume path: read `rc.forward-ssh` label, not the current environment, to preserve the original choice.
 - `init-rip-cage.sh`: read the ssh-agent-status sentinel and include it in the tmux welcome banner so users see the posture on every attach.

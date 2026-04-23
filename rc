@@ -985,9 +985,10 @@ _up_prepare_environment() {
   #     an ad-hoc $SSH_AUTH_SOCK does NOT work — launchd-style sockets do
   #     not survive the VM boundary.
   #   - Linux / WSL2: $SSH_AUTH_SOCK is a normal AF_UNIX socket; mount it.
-  # If no host socket is resolvable, label as "on" but skip the mount and
-  # emit a warning — preflight in _up_ssh_preflight will surface the
-  # unreachable state.
+  # If no host socket is resolvable, label as "off" (nothing was wired) and
+  # set _UP_FORWARD_SSH_WIRED=no_host_agent so the preflight can emit a
+  # platform-accurate message instead of claiming the socket is mounted.
+  _UP_FORWARD_SSH_WIRED="off"
   if [[ "$_rc_forward_ssh" != "off" ]]; then
     local _host_ssh_sock=""
     if [[ "$(uname)" == "Darwin" ]]; then
@@ -998,12 +999,16 @@ _up_prepare_environment() {
     if [[ -n "$_host_ssh_sock" ]]; then
       _UP_RUN_ARGS+=(-v "${_host_ssh_sock}:/ssh-agent.sock")
       _UP_RUN_ARGS+=(-e "SSH_AUTH_SOCK=/ssh-agent.sock")
+      _UP_RUN_ARGS+=(-l rc.forward-ssh=on)
+      _UP_FORWARD_SSH_WIRED="on"
     else
-      log "Warning: --forward-ssh requested but no host ssh-agent socket found (SSH_AUTH_SOCK unset). Forwarding will be inert; git push inside the cage will fail. Set SSH_AUTH_SOCK on the host or pass --no-forward-ssh to suppress this warning."
+      log "Warning: ssh-agent forwarding requested but no host agent found (SSH_AUTH_SOCK unset). Proceeding without forwarding; git push inside the cage will fail. Start ssh-agent on the host or pass --no-forward-ssh to suppress this warning."
+      _UP_RUN_ARGS+=(-l rc.forward-ssh=off)
+      _UP_FORWARD_SSH_WIRED="no_host_agent"
     fi
-    _UP_RUN_ARGS+=(-l rc.forward-ssh=on)
   else
     _UP_RUN_ARGS+=(-l rc.forward-ssh=off)
+    _UP_FORWARD_SSH_WIRED="off"
   fi
 }
 
@@ -1127,42 +1132,61 @@ _up_resolve_resume_forward_ssh() {
 # rc up, visible in every tmux attach, visible in rc ls" — never a silent
 # push-time failure.
 #
-# Three outcomes written to /etc/rip-cage/ssh-agent-status (sentinel read by
-# init-rip-cage.sh for the tmux banner):
-#   ok:N        — agent reachable, N keys loaded
-#   empty       — agent reachable, 0 keys (host-side fix needed)
-#   unreachable — socket mounted but agent did not respond (likely platform mismatch)
-#   disabled    — forwarding explicitly off (--no-forward-ssh)
+# Five status values written to /etc/rip-cage/ssh-agent-status (sentinel read
+# by zshrc for the shell banner):
+#   ok:N          — agent reachable, N keys loaded
+#   empty         — agent reachable, 0 keys (host-side fix needed)
+#   unreachable   — socket mounted but agent did not respond (platform mismatch
+#                   or zombie agent; also covers the timeout case)
+#   no_host_agent — forwarding requested but host had no agent to forward
+#                   (distinct from explicit opt-out — see _UP_FORWARD_SSH_WIRED)
+#   disabled      — forwarding explicitly off (--no-forward-ssh)
 # Also echoed to stderr at rc up time.
-# Parameters: $1 name, $2 forward-ssh mode ("on"|"off")
+# Parameters:
+#   $1 name
+#   $2 effective mode, read from either the CLI-derived rc_forward_ssh on
+#      create or the rc.forward-ssh label on resume ("on"|"off"). When "off"
+#      and _UP_FORWARD_SSH_WIRED=="no_host_agent", the preflight surfaces the
+#      no-host-agent case rather than the generic "disabled" message.
 _up_ssh_preflight() {
   local _name="$1" _fwd="$2"
   local _status=""
   if [[ "$_fwd" == "off" ]]; then
-    _status="disabled"
+    if [[ "${_UP_FORWARD_SSH_WIRED:-}" == "no_host_agent" ]]; then
+      _status="no_host_agent"
+    else
+      _status="disabled"
+    fi
   else
     # ssh-add exits: 0 = ≥1 key, 1 = 0 keys, 2 = cannot contact agent.
+    # `timeout 5` converts a pathological agent that accepts but never
+    # responds (timeout exit 124) into the "unreachable" bucket rather than
+    # hanging rc up indefinitely. `coreutils` ships timeout in the base image.
     # Capture stdout+stderr and the real exit code — a `|| true` tail would
-    # clobber $? with 0 and make every case look like "ok" (bug caught during
-    # first end-to-end test).
-    local _out _rc
-    if _out=$(docker exec "$_name" ssh-add -l 2>&1); then
+    # clobber $? with 0 (bug caught during first end-to-end test).
+    local _fingerprints _rc
+    if _fingerprints=$(docker exec "$_name" timeout 5 ssh-add -l 2>/dev/null); then
       _rc=0
     else
       _rc=$?
     fi
     if [[ $_rc -eq 0 ]]; then
+      # `ssh-add -l` prints one fingerprint per key on stdout. Count non-empty
+      # lines only (printf may have appended a trailing newline that grep -c
+      # would count otherwise on an empty capture).
       local _n
-      _n=$(printf '%s\n' "$_out" | grep -c '^')
+      _n=$(printf '%s' "$_fingerprints" | grep -c '^.')
       _status="ok:${_n}"
     elif [[ $_rc -eq 1 ]]; then
       _status="empty"
     else
+      # 2 = cannot contact; 124 = timeout; 125/126/127 = docker-exec/exec failures.
+      # All collapse to "unreachable" — the user-facing story is the same.
       _status="unreachable"
     fi
   fi
-  # Write sentinel (used by tmux banner + rc doctor). Best-effort: a failure
-  # here does not break rc up — the stderr warning below still fires.
+  # Write sentinel (consumed by zshrc banner + rc doctor). Best-effort: a
+  # failure here does not break rc up — the stderr warning below still fires.
   docker exec -u root "$_name" sh -c "mkdir -p /etc/rip-cage && printf '%s\n' '$_status' > /etc/rip-cage/ssh-agent-status" >/dev/null 2>&1 || true
 
   case "$_status" in
@@ -1180,11 +1204,17 @@ _up_ssh_preflight() {
       log "  Or pass --no-forward-ssh to suppress forwarding."
       ;;
     unreachable)
-      log "Warning: ssh-agent socket mounted but not reachable from inside the cage. Push will fail."
-      log "  This usually means the host socket is behind a VM boundary (e.g. macOS launchd sockets). See ADR-017 D4."
+      log "Warning: ssh-agent socket mounted but not reachable from inside the cage (connection refused or timeout). Push will fail."
+      log "  On macOS this usually means the host socket is behind a VM boundary (see ADR-017 D4)."
+      log "  Pass --no-forward-ssh to suppress forwarding."
+      ;;
+    no_host_agent)
+      # Warning already printed from _up_prepare_environment on create;
+      # nothing to echo on resume (the sentinel-driven zshrc banner will
+      # surface it on every shell).
+      :
       ;;
   esac
-  _UP_SSH_PREFLIGHT_STATUS="$_status"
 }
 
 # _up_init_firewall -- run the root-phase firewall init inside the container.
@@ -1320,7 +1350,9 @@ _up_attach_tmux() {
 cmd_up() {
   local path="" port="" env_file=""
   local rc_cpus="2" rc_memory="4g" rc_pids_limit="500"
-  local rc_forward_ssh="on"
+  # Sibling pattern to RIP_CAGE_EGRESS: env provides the project/shell default,
+  # --no-forward-ssh on the CLI always wins.
+  local rc_forward_ssh="${RIP_CAGE_FORWARD_SSH:-on}"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --port) [[ $# -ge 2 ]] || { echo "Error: --port requires a value" >&2; exit 1; }; port="$2"; shift 2 ;;
@@ -1537,6 +1569,10 @@ cmd_up() {
     # ADR-017 D2: forward-ssh posture is label-persisted, same pattern as egress.
     _up_resolve_resume_forward_ssh "$name" "$path"
     rc_forward_ssh="$_UP_RESUME_FORWARD_SSH"
+    # On resume, the socket (or lack thereof) was wired at create time. The
+    # label value is the ground truth for preflight — we don't re-distinguish
+    # user-opt-out from no-host-agent here.
+    _UP_FORWARD_SSH_WIRED="$rc_forward_ssh"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       docker start "$name" >/dev/null
     else
