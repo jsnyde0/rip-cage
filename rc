@@ -655,10 +655,13 @@ _check_lfs_stubs() {
   # Scan working tree for LFS pointer-stub files:
   #   - size < 200 bytes (real stubs are ~130 bytes)
   #   - first line is the LFS v1 pointer header
+  # `|| true`: when no file matches, `grep -l` exits 1, which propagates through
+  # `find -exec ... {} +` and the pipeline under `pipefail`. That's a normal
+  # "no stubs" outcome, not a failure — don't let it kill `set -e` callers.
   local stubs
   stubs=$(find "$path" -type f -size -200c ! -path '*/.git/*' \
     -exec grep -l -m1 '^version https://git-lfs.github.com/spec/v1' {} + 2>/dev/null \
-    | head -5)
+    | head -5) || true
   [[ -z "$stubs" ]] && return 0
 
   {

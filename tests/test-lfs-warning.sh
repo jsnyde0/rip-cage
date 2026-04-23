@@ -110,6 +110,31 @@ else
 fi
 rm -rf "$TEST_DIR"
 
+# --- Test 5: regression — LFS gitattributes + no stubs must NOT kill rc up ---
+# Regression for the silent-exit-1 bug where `find -exec grep -l` returning 1
+# (no match) propagated through `pipefail` and killed `rc up` under `set -e`
+# before the container was created. Symptom: `rc up` exits 1 with no output
+# in any repo that declares filter=lfs but has no pointer stubs.
+echo ""
+echo "=== Test 5: rc up --dry-run exits 0 on LFS repo with no stubs ==="
+TEST_DIR=$(mktemp -d)
+mkdir -p "$TEST_DIR"
+cat > "$TEST_DIR/.gitattributes" <<'EOF'
+*.parquet filter=lfs diff=lfs merge=lfs -text
+EOF
+# Small non-stub files: must exercise the find/grep-l inner branch.
+echo "not-an-lfs-pointer" > "$TEST_DIR/small1.txt"
+echo "also-not-lfs" > "$TEST_DIR/small2.txt"
+parent=$(dirname "$TEST_DIR")
+RC_ALLOWED_ROOTS="$parent" "$RC" --dry-run up "$TEST_DIR" >/dev/null 2>&1
+rc=$?
+if [[ $rc -eq 0 ]]; then
+  pass "rc up --dry-run exited 0"
+else
+  fail "rc up --dry-run exited $rc (expected 0) — silent-exit regression"
+fi
+rm -rf "$TEST_DIR"
+
 echo ""
 if [[ $FAILURES -eq 0 ]]; then
   echo "All LFS warning tests passed."
