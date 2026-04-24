@@ -1,11 +1,31 @@
 # ADR-018: macOS ssh-agent discovery — probe and forward the user's actual agent
 
-**Status:** Accepted
+**Status:** Amended 2026-04-24 (see Amendments)
 **Date:** 2026-04-24
 **Design:** [Design doc](../../history/2026-04-24-macos-ssh-agent-discovery-design.md)
 **Parent:** [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (ssh-agent forwarding default)
 **Amends:** [ADR-017](ADR-017-ssh-agent-forwarding-default.md) D4 (cross-platform reachability). D1, D2, D3 carry over unchanged.
 **Related:** project [CLAUDE.md](../../CLAUDE.md) philosophy section (autonomy over containment, "it's annoying" as a design signal)
+
+## Amendments
+
+### 2026-04-24 — D1's candidate ordering dropped; macOS uses convention path only
+
+Host-side testing on OrbStack + macOS invalidated D1's premise that `$SSH_AUTH_SOCK` is a reachable candidate inside the cage. OrbStack (and Docker Desktop) only proxy **one** AF_UNIX path across the VM boundary: `/run/host-services/ssh-auth.sock`. Arbitrary paths like `/tmp/*.sock` or `/var/folders/.../agent.NNN` bind-mount successfully (no error from `docker run`) but yield `Connection refused` on any `ssh-add -l` inside the container — the socket file entry exists in the VM's view but nothing is listening on the other side.
+
+Consequences:
+- D1's probe, which preferred `$SSH_AUTH_SOCK` as candidate #1 and verified it with host-side `ssh-add -l`, was consistently picking a socket that probed OK from the host but was dead inside the cage. Fresh `rc up` lost push capability.
+- The Gate 1 `[[ -S "$_candidate" ]]` check on candidate #2 always failed on macOS, because `/run/host-services/` doesn't exist on the macOS host filesystem — it only exists in the Docker VM's view. So candidate #2 was never actually selectable via the probe.
+- Net effect: on OrbStack + macOS, the ADR-018 probe loop picked candidate #1 (unreachable) or nothing. The only reason the pre-existing `platform-mapular-gtm` container kept working is that it was created before ADR-018 and is wired to candidate #2 unconditionally.
+
+Revised behavior (implemented 2026-04-24):
+- On macOS, `_resolve_host_ssh_sock` unconditionally returns `/run/host-services/ssh-auth.sock` when forwarding is on. No host-side probing, no candidate list, no backend detection.
+- Reachability is reported by the in-container preflight (`ok:N` / `empty` / `unreachable`) and surfaced in the banner via the existing sentinel files.
+- Linux/WSL2 path is unchanged — `$SSH_AUTH_SOCK` works natively across the docker boundary because there is no VM.
+
+D2 (convention socket as fallback) is effectively promoted to "the only choice on macOS." D3 (preflight names the socket) is unaffected. D4 (rewritten prereq table in ADR-017) remains valid — the user-facing advice ("populate whatever `ssh-add -l` shows") still holds, it just now always routes through the launchd/convention path on macOS.
+
+Test suite updates: Tests 5 & 6 in `tests/test-ssh-forwarding.sh` are Linux-only (they set a custom `$SSH_AUTH_SOCK`, which macOS now ignores). Test 8 (Docker Desktop `/var/folders` guard) was deleted — the guarded code path is gone.
 
 ## Context
 

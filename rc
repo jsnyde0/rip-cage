@@ -844,92 +844,42 @@ _up_prepare_docker_mounts() {
   _UP_RUN_ARGS+=(-v "rc-mise-cache:/home/agent/.local/share/mise")
 }
 
-# _resolve_host_ssh_sock — probe host ssh-agent candidate sockets and pick the best one.
+# _resolve_host_ssh_sock — select the host ssh-agent socket to forward.
 #
 # Parameters:      $1  rc_forward_ssh — "on" or "off"
 # Globals written: _RESOLVE_HOST_SSH_SOCK_RESULT (empty = nothing usable)
 #
 # Logic:
-#   - If rc_forward_ssh == "off": return immediately with empty result (no probing).
-#   - Linux/WSL2: use $SSH_AUTH_SOCK directly (same kernel as Docker, no VM boundary).
-#   - macOS: iterate candidates [$SSH_AUTH_SOCK, /run/host-services/ssh-auth.sock],
-#     validate bind-mountability per Docker backend, then probe with ssh-add -l.
-#     First candidate with keys wins; first reachable candidate is kept as fallback.
+#   - If rc_forward_ssh == "off": return immediately with empty result.
+#   - Linux/WSL2: use $SSH_AUTH_SOCK directly (same kernel as Docker, no VM
+#     boundary). Reachability is checked by the in-container preflight.
+#   - macOS: return /run/host-services/ssh-auth.sock unconditionally. This is
+#     the only path OrbStack and Docker Desktop actually proxy across the VM
+#     boundary — it's a VM-internal path (not visible on the macOS host
+#     filesystem) that docker resolves at bind-mount time. Arbitrary paths
+#     like $SSH_AUTH_SOCK probe OK from a host shell but yield "Connection
+#     refused" inside the cage, so host-side probing was empirically
+#     meaningless and has been removed (ADR-018 amendment, 2026-04-24).
 _resolve_host_ssh_sock() {
   local _rc_forward_ssh="${1:-on}"
   _RESOLVE_HOST_SSH_SOCK_RESULT=""
 
-  # Short-circuit when forwarding is disabled — no probing, no latency.
+  # Short-circuit when forwarding is disabled — no latency added.
   if [[ "$_rc_forward_ssh" == "off" ]]; then
     return
   fi
 
-  if [[ "$(uname)" != "Darwin" ]]; then
-    # Linux / WSL2: $SSH_AUTH_SOCK is a normal AF_UNIX socket on the same kernel
-    # Docker runs on. Any existing socket is bind-mountable directly.
-    # Linux defers reachability check to the in-container preflight (single candidate, no fallback needed).
-    local _candidate="${SSH_AUTH_SOCK:-}"
-    if [[ -n "$_candidate" ]] && [[ -S "$_candidate" ]]; then
-      _RESOLVE_HOST_SSH_SOCK_RESULT="$_candidate"
-    fi
+  if [[ "$(uname)" == "Darwin" ]]; then
+    _RESOLVE_HOST_SSH_SOCK_RESULT="/run/host-services/ssh-auth.sock"
     return
   fi
 
-  # macOS: detect Docker backend for bind-mount validation.
-  local _backend
-  _backend=$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null) || _backend="unknown"
-
-  # Build candidate list: session agent first, then convention socket.
-  local _candidates=()
-  [[ -n "${SSH_AUTH_SOCK:-}" ]] && _candidates+=("${SSH_AUTH_SOCK}")
-  _candidates+=("/run/host-services/ssh-auth.sock")
-
-  local _fallback=""
-  local _candidate
-  for _candidate in "${_candidates[@]}"; do
-    # Gate 1: must exist as a socket.
-    [[ -S "$_candidate" ]] || continue
-
-    # Gate 2: bind-mount validation by backend.
-    # Docker Desktop (context name "desktop-linux" or socket under .docker/run/)
-    # cannot bind-mount paths under /var/folders/ (not in default file-share roots).
-    # OrbStack (socket under .orbstack/run/) passes all paths transparently.
-    # Unknown backends: assume mountable and let docker run fail loudly if not.
-    if [[ "$_backend" == *".docker/run/docker.sock"* ]] || [[ "$_backend" == "desktop-linux" ]]; then
-      if [[ "$_candidate" == /var/folders/* ]]; then
-        continue  # Skip: Docker Desktop cannot bind-mount /var/folders paths by default
-      fi
-    fi
-    # (OrbStack and unknown backends: no filtering — all paths pass)
-
-    # Gate 3: host-side probe using portable background+kill pattern
-    # (timeout(1) is NOT available on macOS by default — mirrors _probe_tcp pattern).
-    local _probe_pid _killer_pid _probe_rc
-    SSH_AUTH_SOCK="$_candidate" ssh-add -l >/dev/null 2>&1 &
-    _probe_pid=$!
-    ( sleep 5; kill "$_probe_pid" 2>/dev/null ) 2>/dev/null &
-    _killer_pid=$!
-    wait "$_probe_pid" 2>/dev/null
-    _probe_rc=$?
-    # SIGTERM the killer (the sleep is still blocking it if probe was fast).
-    # `|| true` on both kill and wait: kill may race with the killer naturally
-    # exiting; wait returns 143 (SIGTERM) for a successfully killed subshell,
-    # which would trip `set -e` if not suppressed.
-    kill "$_killer_pid" 2>/dev/null || true
-    wait "$_killer_pid" 2>/dev/null || true
-
-    if [[ $_probe_rc -eq 0 ]]; then
-      # At least one key loaded — this is the winner.
-      _RESOLVE_HOST_SSH_SOCK_RESULT="$_candidate"
-      return
-    elif [[ $_probe_rc -eq 1 ]]; then
-      # Agent reachable but 0 keys — remember as fallback if no fallback yet.
-      [[ -z "$_fallback" ]] && _fallback="$_candidate"
-    fi
-    # _probe_rc==143 (SIGTERM from killer) or other: unreachable — skip.
-  done
-  # No candidate had keys; use the first reachable one (empty agent) if any.
-  _RESOLVE_HOST_SSH_SOCK_RESULT="$_fallback"
+  # Linux / WSL2: $SSH_AUTH_SOCK is a normal AF_UNIX socket on the same kernel
+  # Docker runs on. Any existing socket is bind-mountable directly.
+  local _candidate="${SSH_AUTH_SOCK:-}"
+  if [[ -n "$_candidate" ]] && [[ -S "$_candidate" ]]; then
+    _RESOLVE_HOST_SSH_SOCK_RESULT="$_candidate"
+  fi
 }
 
 # _up_prepare_environment — build the env (-e), resource-limit, and beads portions of run_args.
