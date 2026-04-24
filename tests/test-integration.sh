@@ -71,9 +71,15 @@ for tool in claude dcg bd uv bun node gh git perl jq tmux zsh; do
   docker exec "$CONTAINER_NAME" which "$tool" > /dev/null 2>&1 || { echo "FAIL: $tool not found"; exit 1; }
 done
 
-# 8. Verify CLAUDE.md skip behavior (no CLAUDE.md mounted)
-echo "Step 8: Verify no CLAUDE.md leaked into container..."
-docker exec "$CONTAINER_NAME" test ! -f /home/agent/.claude/CLAUDE.md || { echo "FAIL: CLAUDE.md should not exist (no mount provided)"; exit 1; }
+# 8. Verify CLAUDE.md contains only cage-topology section (no host content leaked)
+echo "Step 8: Verify CLAUDE.md has cage-topology markers and no host content..."
+docker exec "$CONTAINER_NAME" test -f /home/agent/.claude/CLAUDE.md || { echo "FAIL: CLAUDE.md should exist (cage-topology always created)"; exit 1; }
+BEGIN_COUNT=$(docker exec "$CONTAINER_NAME" grep -c '^<!-- begin:rip-cage-topology -->' /home/agent/.claude/CLAUDE.md)
+[ "$BEGIN_COUNT" = "1" ] || { echo "FAIL: expected exactly 1 begin:rip-cage-topology marker, got $BEGIN_COUNT"; exit 1; }
+END_COUNT=$(docker exec "$CONTAINER_NAME" grep -c '^<!-- end:rip-cage-topology -->' /home/agent/.claude/CLAUDE.md)
+[ "$END_COUNT" = "1" ] || { echo "FAIL: expected exactly 1 end:rip-cage-topology marker, got $END_COUNT"; exit 1; }
+HOST_PREFIX=$(docker exec "$CONTAINER_NAME" sh -c 'awk "/^<!-- begin:rip-cage-topology -->/{exit} {print}" /home/agent/.claude/CLAUDE.md')
+[ -z "$HOST_PREFIX" ] || { echo "FAIL: host content found before cage-topology marker: $HOST_PREFIX"; exit 1; }
 
 # 9. Verify hook paths in settings.json match actual files
 echo "Step 9: Verify hook path consistency..."
