@@ -1,6 +1,6 @@
 # ADR-013: Test Coverage Tiers — In-Container vs E2E vs Host-Script
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-04-20
 **Design:** [2026-04-20-test-coverage-design.md](../2026-04-20-test-coverage-design.md)
 **Related:** [ADR-004](ADR-004-phase1-hardening.md) (rc test origin), [ADR-012](ADR-012-egress-firewall.md) (egress suite)
@@ -60,14 +60,14 @@ The fourth 2026-04-20 change — `test-egress-firewall.sh` check [2] switching f
 
 ### D4: Egress perimeter tests expand to assert the settled non-HTTP policy
 
-**Firmness: FIRM** (promoted 2026-04-23; ADR-012 D6 settled the non-HTTP scope question as "stays allowed, accepted risk". P3 is unblocked.)
+**Firmness: FIRM** (promoted 2026-04-23; ADR-012 D8 settled the non-HTTP scope question as "stays allowed, accepted risk". P3 is unblocked.)
 
 Current egress suite validates the L7 denylist but not the L3/L4 perimeter. P3 adds:
 
 - **IPv6 perimeter (active probe)**: `curl -6 --max-time 5 https://ipv6.google.com` from inside the container must fail. A capability check like "ip6tables rules exist OR IPv6 unavailable" is a tautology today (container has only `::1`, `init-firewall.sh` has no `ip6tables` references) and gives no active guard.
 - **WebSocket denylist** enforcement against a known-denied host.
 - **DNS-over-TLS / DoH** positive denial (rule already exists).
-- **Non-HTTP policy assertion**: positive iptables-rule check that no REDIRECT/DROP rule targets ports other than 80/443. This is the codified form of ADR-012 D6 — "non-HTTP stays allowed" as a test, not prose. Asserted at the iptables-rule level rather than via network probes (probes are flaky across developer environments because hosted Docker may block port 22 at the edge, which would produce a test failure that is not a product regression).
+- **Non-HTTP policy assertion**: positive iptables-rule check that no REDIRECT/DROP rule targets ports other than 80/443. This is the codified form of ADR-012 D8 — "non-HTTP stays allowed" as a test, not prose. Asserted at the iptables-rule level rather than via network probes (probes are flaky across developer environments because hosted Docker may block port 22 at the edge, which would produce a test failure that is not a product regression).
 
 ### D5: CI integration deferred
 
@@ -89,7 +89,7 @@ Roll out in order:
 
 1. Fix host-test path drift + add `rc test --host` wiring (P2 — mechanical, unblocks everything else). Includes the mandatory per-test audit step; do not wire a resurrected test until it passes or is explicitly quarantined.
 2. Write `tests/test-e2e-lifecycle.sh` + `rc test --e2e` (P1 — biggest coverage gain). Supersedes `tests/test-integration.sh`; absorb its unique checks and delete it.
-3. Expand egress suite (P3 — unblocked 2026-04-23; D4 is FIRM, ADR-012 D6 settled the policy).
+3. Expand egress suite (P3 — unblocked 2026-04-23; D4 is FIRM, ADR-012 D8 settled the policy).
 4. CI integration (follow-up ADR).
 
 ## Consequences

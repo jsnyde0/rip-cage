@@ -185,9 +185,9 @@ Bind-mount path means the user sees denials from the host without entering the c
 
 **What would invalidate this:** A real incident where allowed-traffic forensics would have caught a confused-deputy exfil. Revisit then — easy to extend.
 
-### D6: Non-HTTP egress stays allowed — accepted risk
+### D8: Non-HTTP egress stays allowed — accepted risk
 
-**Firmness: FIRM** (promoted 2026-04-23 from the "Open" section that previously held this question, resolving the ADR-013 D4 dependency.)
+**Firmness: FIRM** (promoted 2026-04-23 from the "Open" section that previously held this question, resolving the ADR-013 D4 dependency. User-confirmed 2026-04-24: Option A "non-HTTP stays allowed" per the rip-cage philosophy — blast-radius reduction, not an L4 wall.)
 
 The firewall intercepts TCP 80/443 only. Anything else — TCP 22 (git-over-ssh), 25 (smtp), arbitrary high ports, raw UDP — bypasses the proxy entirely and is not restricted by iptables. This is a deliberate, accepted risk, not a gap.
 
