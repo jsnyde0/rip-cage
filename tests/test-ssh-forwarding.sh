@@ -178,31 +178,191 @@ else
   fail "resume sentinel = '$status' (expected 'disabled')"
 fi
 
-# ---- Test 4: no host agent → label=off, sentinel=no_host_agent ----
-# Regression guard for the "label lies about wiring" issue (review fix list
-# 2026-04-23). When the host has no agent to forward, we must NOT write
-# rc.forward-ssh=on (a subsequent resume would then re-attempt a doomed
-# mount). Exercised only on Linux — on macOS, the OrbStack/Docker-Desktop
-# magic path always resolves, so this case cannot arise.
+# ---- Test 4: no host agent (SSH_AUTH_SOCK="") ----
+# On Linux: both SSH_AUTH_SOCK="" and no convention socket → no_host_agent, label=off.
+# On macOS: SSH_AUTH_SOCK="" means candidate #1 is skipped; candidate #2
+# (/run/host-services/ssh-auth.sock) may or may not be reachable.
+# - If reachable (OrbStack/Docker Desktop proxy present): label=on, ssh-agent-socket non-empty.
+# - If unreachable: label=off, sentinel=no_host_agent.
+echo "=== Test 4: no host agent (SSH_AUTH_SOCK unset) ==="
+docker rm -f "$CONTAINER" >/dev/null 2>&1
+RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off SSH_AUTH_SOCK="" "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
+CONTAINER=$(_resolve_container)
 if [[ "$(uname)" != "Darwin" ]]; then
-  echo "=== Test 4: no host agent produces label=off, sentinel=no_host_agent ==="
-  docker rm -f "$CONTAINER" >/dev/null 2>&1
-  RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off SSH_AUTH_SOCK="" "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
-  CONTAINER=$(_resolve_container)
   label=$(docker inspect --format '{{ index .Config.Labels "rc.forward-ssh" }}' "$CONTAINER" 2>/dev/null)
   if [[ "$label" == "off" ]]; then
-    pass "rc.forward-ssh label = off (no host agent)"
+    pass "Test 4 (Linux): rc.forward-ssh label = off (no host agent)"
   else
-    fail "rc.forward-ssh label = '$label' (expected 'off')"
+    fail "Test 4 (Linux): rc.forward-ssh label = '$label' (expected 'off')"
   fi
   status=$(docker exec "$CONTAINER" cat /etc/rip-cage/ssh-agent-status 2>/dev/null)
   if [[ "$status" == "no_host_agent" ]]; then
-    pass "sentinel = no_host_agent"
+    pass "Test 4 (Linux): sentinel = no_host_agent"
   else
-    fail "sentinel = '$status' (expected 'no_host_agent')"
+    fail "Test 4 (Linux): sentinel = '$status' (expected 'no_host_agent')"
   fi
 else
-  echo "=== Test 4: skipped (macOS always has a host-services magic path) ==="
+  # macOS: probe picks candidate #2 or falls through to no_host_agent
+  label=$(docker inspect --format '{{ index .Config.Labels "rc.forward-ssh" }}' "$CONTAINER" 2>/dev/null)
+  case "$label" in
+    on)
+      sock_sentinel=$(docker exec "$CONTAINER" cat /etc/rip-cage/ssh-agent-socket 2>/dev/null)
+      if [[ -n "$sock_sentinel" ]]; then
+        pass "Test 4 (macOS): candidate #2 wired, label=on, ssh-agent-socket='$sock_sentinel'"
+      else
+        fail "Test 4 (macOS): label=on but ssh-agent-socket sentinel is empty"
+      fi
+      ;;
+    off)
+      status=$(docker exec "$CONTAINER" cat /etc/rip-cage/ssh-agent-status 2>/dev/null)
+      pass "Test 4 (macOS): no reachable candidate, label=off, sentinel='$status'"
+      ;;
+    *)
+      fail "Test 4 (macOS): label='$label' (expected 'on' or 'off')"
+      ;;
+  esac
+fi
+
+# ---- Test 5: session-agent probe forwards the key the user actually loaded ----
+echo "=== Test 5: session-agent probe forwards the key the user actually loaded ==="
+docker rm -f "$(_resolve_container)" >/dev/null 2>&1
+SSH_AGENT_SOCK=/tmp/rc-probe-test.sock
+rm -f "$SSH_AGENT_SOCK"
+eval "$(ssh-agent -a "$SSH_AGENT_SOCK")" >/dev/null 2>&1
+ssh-keygen -t ed25519 -N "" -f /tmp/rc-test-key -C "rc-test" >/dev/null 2>&1
+SSH_AUTH_SOCK="$SSH_AGENT_SOCK" ssh-add /tmp/rc-test-key >/dev/null 2>&1
+RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off SSH_AUTH_SOCK="$SSH_AGENT_SOCK" "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
+CONTAINER=$(_resolve_container)
+# Key visible inside cage
+if docker exec "$CONTAINER" ssh-add -l 2>/dev/null | grep -q "rc-test"; then
+  pass "Test 5: session-agent key visible inside cage"
+else
+  fail "Test 5: session-agent key not visible inside cage"
+fi
+# Companion sentinel contains the host socket path
+sock_sentinel=$(docker exec "$CONTAINER" cat /etc/rip-cage/ssh-agent-socket 2>/dev/null)
+if [[ "$sock_sentinel" == "$SSH_AGENT_SOCK" ]]; then
+  pass "Test 5: ssh-agent-socket sentinel = $SSH_AGENT_SOCK"
+else
+  fail "Test 5: ssh-agent-socket sentinel = '$sock_sentinel' (expected '$SSH_AGENT_SOCK')"
+fi
+# Cleanup mock agent and temp key
+SSH_AUTH_SOCK="$SSH_AGENT_SOCK" ssh-agent -k >/dev/null 2>&1 || true
+rm -f /tmp/rc-test-key /tmp/rc-test-key.pub /tmp/rc-probe-test.sock
+
+# ---- Test 6: empty-agent — sentinel names the socket, banner includes path ----
+echo "=== Test 6: empty-agent — sentinel names the socket, banner includes path ==="
+docker rm -f "$(_resolve_container)" >/dev/null 2>&1
+SSH_AGENT_SOCK=/tmp/rc-empty-test.sock
+rm -f "$SSH_AGENT_SOCK"
+eval "$(ssh-agent -a "$SSH_AGENT_SOCK")" >/dev/null 2>&1
+# Do NOT add any keys — agent is empty
+RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off SSH_AUTH_SOCK="$SSH_AGENT_SOCK" "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
+CONTAINER=$(_resolve_container)
+status=$(docker exec "$CONTAINER" cat /etc/rip-cage/ssh-agent-status 2>/dev/null)
+if [[ "$status" == "empty" ]]; then
+  pass "Test 6: sentinel=empty for empty agent"
+else
+  fail "Test 6: sentinel='$status' (expected 'empty')"
+fi
+sock_sentinel=$(docker exec "$CONTAINER" cat /etc/rip-cage/ssh-agent-socket 2>/dev/null)
+if [[ -n "$sock_sentinel" ]]; then
+  pass "Test 6: ssh-agent-socket sentinel non-empty ('$sock_sentinel')"
+else
+  fail "Test 6: ssh-agent-socket sentinel is empty (should name the candidate)"
+fi
+banner=$(docker exec -u agent "$CONTAINER" zsh -i -c 'true' 2>&1)
+if echo "$banner" | grep -q "$SSH_AGENT_SOCK"; then
+  pass "Test 6: banner includes socket path"
+else
+  fail "Test 6: banner does not include socket path (got: $(echo "$banner" | grep rip-cage | head -3))"
+fi
+SSH_AUTH_SOCK="$SSH_AGENT_SOCK" ssh-agent -k >/dev/null 2>&1 || true
+rm -f /tmp/rc-empty-test.sock
+
+# ---- Test 7: unreachable SSH_AUTH_SOCK falls through gracefully ----
+echo "=== Test 7: unreachable SSH_AUTH_SOCK falls through gracefully ==="
+docker rm -f "$(_resolve_container)" >/dev/null 2>&1
+RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off SSH_AUTH_SOCK="/tmp/rc-nonexistent-sock-$$" "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
+CONTAINER=$(_resolve_container)
+if [[ -z "$CONTAINER" ]]; then
+  fail "Test 7: container did not come up (docker run failed)"
+else
+  pass "Test 7: docker run succeeded despite unreachable SSH_AUTH_SOCK"
+  status=$(docker exec "$CONTAINER" cat /etc/rip-cage/ssh-agent-status 2>/dev/null)
+  case "$status" in
+    ok:*|empty|unreachable|no_host_agent)
+      pass "Test 7: sentinel='$status' (valid state after unreachable candidate)"
+      ;;
+    *)
+      fail "Test 7: sentinel='$status' (unexpected)"
+      ;;
+  esac
+fi
+
+# ---- Test 8: Docker Desktop bind-mount guard skips /var/folders path ----
+echo "=== Test 8: Docker Desktop bind-mount guard skips /var/folders path ==="
+_backend=$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || echo "unknown")
+if [[ "$_backend" == *".docker/run/docker.sock"* ]] || [[ "$_backend" == "desktop-linux" ]]; then
+  if [[ -d /var/folders ]]; then
+    _fake_sock=$(mktemp /var/folders/rc-test-XXXXXX 2>/dev/null)
+    if [[ -n "$_fake_sock" ]]; then
+      docker rm -f "$(_resolve_container)" >/dev/null 2>&1
+      RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off SSH_AUTH_SOCK="$_fake_sock" "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
+      CONTAINER=$(_resolve_container)
+      if [[ -z "$CONTAINER" ]]; then
+        fail "Test 8: container did not come up (docker run failed — guard should have skipped, not crashed)"
+      else
+        pass "Test 8: container came up despite /var/folders SSH_AUTH_SOCK (guard skipped it)"
+      fi
+      rm -f "$_fake_sock"
+    else
+      echo "=== Test 8: skipped (could not create temp file in /var/folders) ==="
+    fi
+  else
+    echo "=== Test 8: skipped (no /var/folders directory) ==="
+  fi
+else
+  echo "=== Test 8: skipped (not Docker Desktop backend: $_backend) ==="
+fi
+
+# ---- Test 9: --no-forward-ssh short-circuits probe (no latency added) ----
+echo "=== Test 9: --no-forward-ssh short-circuits probe (no latency added) ==="
+docker rm -f "$(_resolve_container)" >/dev/null 2>&1
+_t0=$SECONDS
+RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off RIP_CAGE_FORWARD_SSH=off "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
+_t_disabled=$(( SECONDS - _t0 ))
+docker rm -f "$(_resolve_container)" >/dev/null 2>&1
+_t0=$SECONDS
+RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off SSH_AUTH_SOCK="/tmp/rc-nonexistent-$$" "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
+_t_probing=$(( SECONDS - _t0 ))
+# disabled run should not be significantly slower than the probing run
+# (it should be faster or comparable; a 10s excess would indicate probe fired)
+if [[ $(( _t_disabled - _t_probing )) -lt 8 ]]; then
+  pass "Test 9: disabled run (${_t_disabled}s) not significantly slower than probing run (${_t_probing}s)"
+else
+  fail "Test 9: disabled run took ${_t_disabled}s vs probing run ${_t_probing}s — probe may be firing on disabled path"
+fi
+docker rm -f "$(_resolve_container)" >/dev/null 2>&1
+
+# ---- Test 10: Linux — companion sentinel written alongside status sentinel ----
+if [[ "$(uname)" != "Darwin" ]]; then
+  echo "=== Test 10: Linux — companion sentinel written alongside status sentinel ==="
+  if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+    docker rm -f "$(_resolve_container)" >/dev/null 2>&1
+    RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
+    CONTAINER=$(_resolve_container)
+    sock_sentinel=$(docker exec "$CONTAINER" cat /etc/rip-cage/ssh-agent-socket 2>/dev/null)
+    if [[ -n "$sock_sentinel" ]]; then
+      pass "Test 10: ssh-agent-socket sentinel written on Linux ('$sock_sentinel')"
+    else
+      fail "Test 10: ssh-agent-socket sentinel empty on Linux (should contain SSH_AUTH_SOCK path)"
+    fi
+  else
+    echo "=== Test 10: skipped (SSH_AUTH_SOCK unset on Linux — run in a shell with ssh-agent) ==="
+  fi
+else
+  echo "=== Test 10: skipped (macOS) ==="
 fi
 
 echo

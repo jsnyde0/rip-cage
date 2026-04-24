@@ -844,6 +844,91 @@ _up_prepare_docker_mounts() {
   _UP_RUN_ARGS+=(-v "rc-mise-cache:/home/agent/.local/share/mise")
 }
 
+# _resolve_host_ssh_sock — probe host ssh-agent candidate sockets and pick the best one.
+#
+# Globals read:    _rc_forward_ssh (from caller scope)
+# Globals written: _RESOLVE_HOST_SSH_SOCK_RESULT (empty = nothing usable)
+#
+# Logic:
+#   - If _rc_forward_ssh == "off": return immediately with empty result (no probing).
+#   - Linux/WSL2: use $SSH_AUTH_SOCK directly (same kernel as Docker, no VM boundary).
+#   - macOS: iterate candidates [$SSH_AUTH_SOCK, /run/host-services/ssh-auth.sock],
+#     validate bind-mountability per Docker backend, then probe with ssh-add -l.
+#     First candidate with keys wins; first reachable candidate is kept as fallback.
+_resolve_host_ssh_sock() {
+  _RESOLVE_HOST_SSH_SOCK_RESULT=""
+
+  # Short-circuit when forwarding is disabled — no probing, no latency.
+  if [[ "${_rc_forward_ssh:-}" == "off" ]]; then
+    return
+  fi
+
+  if [[ "$(uname)" != "Darwin" ]]; then
+    # Linux / WSL2: $SSH_AUTH_SOCK is a normal AF_UNIX socket on the same kernel
+    # Docker runs on. Any existing socket is bind-mountable directly.
+    local _candidate="${SSH_AUTH_SOCK:-}"
+    if [[ -n "$_candidate" ]] && [[ -S "$_candidate" ]]; then
+      _RESOLVE_HOST_SSH_SOCK_RESULT="$_candidate"
+    fi
+    return
+  fi
+
+  # macOS: detect Docker backend for bind-mount validation.
+  local _backend
+  _backend=$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null) || _backend="unknown"
+
+  # Build candidate list: session agent first, then convention socket.
+  local _candidates=()
+  [[ -n "${SSH_AUTH_SOCK:-}" ]] && _candidates+=("${SSH_AUTH_SOCK}")
+  _candidates+=("/run/host-services/ssh-auth.sock")
+
+  local _fallback=""
+  local _candidate
+  for _candidate in "${_candidates[@]}"; do
+    # Gate 1: must exist as a socket.
+    [[ -S "$_candidate" ]] || continue
+
+    # Gate 2: bind-mount validation by backend.
+    # Docker Desktop (context name "desktop-linux" or socket under .docker/run/)
+    # cannot bind-mount paths under /var/folders/ (not in default file-share roots).
+    # OrbStack (socket under .orbstack/run/) passes all paths transparently.
+    # Unknown backends: assume mountable and let docker run fail loudly if not.
+    if [[ "$_backend" == *".docker/run/docker.sock"* ]] || [[ "$_backend" == "desktop-linux" ]]; then
+      if [[ "$_candidate" == /var/folders/* ]]; then
+        continue  # Skip: Docker Desktop cannot bind-mount /var/folders paths by default
+      fi
+    fi
+    # (OrbStack and unknown backends: no filtering — all paths pass)
+
+    # Gate 3: host-side probe using portable background+kill pattern
+    # (timeout(1) is NOT available on macOS by default — mirrors _probe_tcp pattern).
+    local _probe_pid _killer_pid _probe_rc
+    SSH_AUTH_SOCK="$_candidate" ssh-add -l >/tmp/rc-probe-out 2>&1 &
+    _probe_pid=$!
+    ( sleep 5; kill "$_probe_pid" 2>/dev/null ) 2>/dev/null &
+    _killer_pid=$!
+    wait "$_probe_pid" 2>/dev/null
+    _probe_rc=$?
+    kill "$_killer_pid" 2>/dev/null
+    wait "$_killer_pid" 2>/dev/null
+
+    if [[ $_probe_rc -eq 0 ]]; then
+      # At least one key loaded — this is the winner.
+      _RESOLVE_HOST_SSH_SOCK_RESULT="$_candidate"
+      rm -f /tmp/rc-probe-out
+      return
+    elif [[ $_probe_rc -eq 1 ]]; then
+      # Agent reachable but 0 keys — remember as fallback if no fallback yet.
+      [[ -z "$_fallback" ]] && _fallback="$_candidate"
+    fi
+    # _probe_rc==143 (SIGTERM from killer) or other: unreachable — skip.
+  done
+
+  rm -f /tmp/rc-probe-out
+  # No candidate had keys; use the first reachable one (empty agent) if any.
+  _RESOLVE_HOST_SSH_SOCK_RESULT="$_fallback"
+}
+
 # _up_prepare_environment — build the env (-e), resource-limit, and beads portions of run_args.
 #
 # Globals written: _UP_RUN_ARGS (appended to)
@@ -980,39 +1065,28 @@ _up_prepare_environment() {
     _UP_RUN_ARGS+=(-l rc.egress=off)
   fi
 
-  # ssh-agent forwarding (ADR-017): forward the host ssh-agent socket so the
-  # cage can push using the host's keys. Keys themselves never enter the
-  # container — only signing capability via the forwarded socket. Platform-
-  # specific host-side socket selection (ADR-017 D4):
-  #   - macOS (Docker Desktop / OrbStack): /run/host-services/ssh-auth.sock
-  #     (VM-provided proxy to macOS system/keychain agent). Direct mount of
-  #     an ad-hoc $SSH_AUTH_SOCK does NOT work — launchd-style sockets do
-  #     not survive the VM boundary.
-  #   - Linux / WSL2: $SSH_AUTH_SOCK is a normal AF_UNIX socket; mount it.
-  # If no host socket is resolvable, label as "off" (nothing was wired) and
-  # set _UP_FORWARD_SSH_WIRED=no_host_agent so the preflight can emit a
-  # platform-accurate message instead of claiming the socket is mounted.
-  _UP_FORWARD_SSH_WIRED="off"
+  # ssh-agent forwarding (ADR-017 + ADR-018): forward whichever host ssh-agent
+  # the user actually populates. _resolve_host_ssh_sock() probes candidate
+  # sockets and picks the first one with keys (or the first reachable one as
+  # fallback). Keys themselves never enter the container — only signing
+  # capability via the forwarded socket.
+  _UP_FORWARD_SSH_HOST_SOCK=""
+  _UP_NO_HOST_AGENT=""
   if [[ "$_rc_forward_ssh" != "off" ]]; then
-    local _host_ssh_sock=""
-    if [[ "$(uname)" == "Darwin" ]]; then
-      _host_ssh_sock="/run/host-services/ssh-auth.sock"
-    elif [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
-      _host_ssh_sock="$SSH_AUTH_SOCK"
-    fi
+    _resolve_host_ssh_sock
+    local _host_ssh_sock="$_RESOLVE_HOST_SSH_SOCK_RESULT"
     if [[ -n "$_host_ssh_sock" ]]; then
       _UP_RUN_ARGS+=(-v "${_host_ssh_sock}:/ssh-agent.sock")
       _UP_RUN_ARGS+=(-e "SSH_AUTH_SOCK=/ssh-agent.sock")
       _UP_RUN_ARGS+=(-l rc.forward-ssh=on)
-      _UP_FORWARD_SSH_WIRED="on"
+      _UP_FORWARD_SSH_HOST_SOCK="$_host_ssh_sock"
     else
-      log "Warning: ssh-agent forwarding requested but no host agent found (SSH_AUTH_SOCK unset). Proceeding without forwarding; git push inside the cage will fail. Start ssh-agent on the host or pass --no-forward-ssh to suppress this warning."
+      log "Warning: ssh-agent forwarding requested but no reachable host agent found. Proceeding without forwarding; git push inside the cage will fail. Run 'ssh-add ~/.ssh/<key>' on host or pass --no-forward-ssh to suppress this warning."
       _UP_RUN_ARGS+=(-l rc.forward-ssh=off)
-      _UP_FORWARD_SSH_WIRED="no_host_agent"
+      _UP_NO_HOST_AGENT="1"
     fi
   else
     _UP_RUN_ARGS+=(-l rc.forward-ssh=off)
-    _UP_FORWARD_SSH_WIRED="off"
   fi
 }
 
@@ -1143,20 +1217,20 @@ _up_resolve_resume_forward_ssh() {
 #   unreachable   — socket mounted but agent did not respond (platform mismatch
 #                   or zombie agent; also covers the timeout case)
 #   no_host_agent — forwarding requested but host had no agent to forward
-#                   (distinct from explicit opt-out — see _UP_FORWARD_SSH_WIRED)
+#                   (distinct from explicit opt-out — see _UP_NO_HOST_AGENT)
 #   disabled      — forwarding explicitly off (--no-forward-ssh)
 # Also echoed to stderr at rc up time.
 # Parameters:
 #   $1 name
 #   $2 effective mode, read from either the CLI-derived rc_forward_ssh on
 #      create or the rc.forward-ssh label on resume ("on"|"off"). When "off"
-#      and _UP_FORWARD_SSH_WIRED=="no_host_agent", the preflight surfaces the
-#      no-host-agent case rather than the generic "disabled" message.
+#      and _UP_NO_HOST_AGENT=="1", the preflight surfaces the no-host-agent
+#      case rather than the generic "disabled" message.
 _up_ssh_preflight() {
   local _name="$1" _fwd="$2"
   local _status=""
   if [[ "$_fwd" == "off" ]]; then
-    if [[ "${_UP_FORWARD_SSH_WIRED:-}" == "no_host_agent" ]]; then
+    if [[ "${_UP_NO_HOST_AGENT:-}" == "1" ]]; then
       _status="no_host_agent"
     else
       _status="disabled"
@@ -1195,7 +1269,10 @@ _up_ssh_preflight() {
   # instead of pointing users at an ADR.
   local _host_os="linux"
   [[ "$(uname)" == "Darwin" ]] && _host_os="darwin"
-  docker exec -u root "$_name" sh -c "mkdir -p /etc/rip-cage && printf '%s\n' '$_status' > /etc/rip-cage/ssh-agent-status && printf '%s\n' '$_host_os' > /etc/rip-cage/host-os" >/dev/null 2>&1 || true
+  docker exec -u root "$_name" sh -c "mkdir -p /etc/rip-cage \
+    && printf '%s\n' '$_status' > /etc/rip-cage/ssh-agent-status \
+    && printf '%s\n' '${_UP_FORWARD_SSH_HOST_SOCK:-}' > /etc/rip-cage/ssh-agent-socket \
+    && printf '%s\n' '$_host_os' > /etc/rip-cage/host-os" >/dev/null 2>&1 || true
 
   case "$_status" in
     ok:*)
@@ -1203,17 +1280,12 @@ _up_ssh_preflight() {
       ;;
     empty)
       log "Warning: ssh-agent forwarded but empty (0 keys). Push will fail."
-      if [[ "$(uname)" == "Darwin" ]]; then
-        log "  macOS fix (one-time): add 'UseKeychain yes' and 'AddKeysToAgent yes' to ~/.ssh/config, then run:"
-        log "    ssh-add --apple-use-keychain ~/.ssh/id_ed25519"
-      else
-        log "  Linux fix: ssh-add ~/.ssh/id_ed25519"
-      fi
-      log "  Or pass --no-forward-ssh to suppress forwarding."
+      log "  Host fix: run 'ssh-add ~/.ssh/id_ed25519' on host (socket: ${_UP_FORWARD_SSH_HOST_SOCK:-<unknown>})"
+      log "  Then: rc down && rc up  (or pass --no-forward-ssh to skip forwarding)"
       ;;
     unreachable)
-      log "Warning: ssh-agent socket mounted but not reachable from inside the cage (connection refused or timeout). Push will fail."
-      log "  On macOS this usually means the host socket is behind a VM boundary (see ADR-017 D4)."
+      log "Warning: ssh-agent socket mounted but not reachable from inside the cage. Push will fail."
+      log "  Socket: ${_UP_FORWARD_SSH_HOST_SOCK:-<unknown>} — verify ssh-agent is running on host"
       log "  Pass --no-forward-ssh to suppress forwarding."
       ;;
     no_host_agent)
@@ -1579,8 +1651,9 @@ cmd_up() {
     rc_forward_ssh="$_UP_RESUME_FORWARD_SSH"
     # On resume, the socket (or lack thereof) was wired at create time. The
     # label value is the ground truth for preflight — we don't re-distinguish
-    # user-opt-out from no-host-agent here.
-    _UP_FORWARD_SSH_WIRED="$rc_forward_ssh"
+    # user-opt-out from no-host-agent here. Socket cannot be changed on resume.
+    _UP_FORWARD_SSH_HOST_SOCK=""
+    _UP_NO_HOST_AGENT=""
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       docker start "$name" >/dev/null
     else

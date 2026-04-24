@@ -21,26 +21,31 @@ The concrete incident: a `mapular-gtm` session left 12 commits and bead updates 
 
 **Firmness: FIRM**
 
-`rc up` on macOS no longer hard-codes the forwarded socket path. It iterates a priority-ordered list of host socket candidates, runs `ssh-add -l` against each from the host, and bind-mounts the first one that reports ≥1 key to `/ssh-agent.sock` inside the container.
+`rc up` on macOS no longer hard-codes the forwarded socket path. It iterates a priority-ordered list of host socket candidates, validates each is bind-mountable on the active Docker backend, runs `ssh-add -l` against each from the host, and bind-mounts the first one that reports ≥1 key to `/ssh-agent.sock` inside the container.
 
 Candidates in order:
 1. `$SSH_AUTH_SOCK` (the user's shell/session agent — whatever `ssh-add -l` on host sees)
 2. `/run/host-services/ssh-auth.sock` (Docker Desktop / OrbStack convention proxying to the launchd system agent)
-3. `/private/tmp/com.apple.launchd.*/Listeners` (explicit launchd system agent path, globbed)
 
-If none report keys, the first *reachable* candidate is mounted anyway — the in-container preflight still fires its `empty` warning, but now against a specific, named host socket.
+Expected winners: OrbStack passes `/var/folders/...` through transparently, so candidate #1 wins there. Docker Desktop requires `/var/folders` to be in the user's file-share config and typically isn't, so candidate #2 wins there via the convention socket. Backend is detected via `docker context inspect`; unknown backends assume mountable and let `docker run` fail loudly if not.
+
+If none report keys, the first *reachable and mountable* candidate is mounted anyway — the in-container preflight still fires its `empty` warning, but now against a specific, named host socket.
+
+An earlier draft included a third candidate (`/private/tmp/com.apple.launchd.*/Listeners`) but it was dropped: glob semantics are ambiguous, the exact socket filename varies by launchd label, and candidate #2 already covers the Keychain-backed launchd flow.
 
 **Rationale:**
 
-The invariant this establishes is "what `ssh-add -l` shows on host is what the cage sees." That collapses the user's mental model from "macOS has two agents, one of which only works for passphrase-protected keys, and the cage listens to that one" down to "the cage forwards your agent." The probe is cheap (≤15s worst case across three timeouts; milliseconds in practice), honest (picks what actually has keys rather than hoping a convention has them), and preserves all existing flows (Keychain-backed setups still win when `$SSH_AUTH_SOCK` isn't set, because they're candidate #2).
+The invariant this establishes is "what `ssh-add -l` shows on host is what the cage sees." That collapses the user's mental model from "macOS has two agents, one of which only works for passphrase-protected keys, and the cage listens to that one" down to "the cage forwards your agent." The probe is cheap (≤10s worst case across two timeouts; milliseconds in practice), honest (picks what actually has keys rather than hoping a convention has them), and preserves all existing flows (Keychain-backed setups still win when `$SSH_AUTH_SOCK` isn't set, because they're candidate #2).
 
 Matches the project's 80/20 posture: the common case (passphrase-less keys, session agent populated by shell login) now works without macOS-specific ceremony. The less-common case (Keychain-backed, passphrase-protected) continues to work through the fallback candidate. Nothing about this ADR increases blast radius or changes the threat model — it just picks a better socket.
+
+**Probe must not hang.** `timeout(1)` is not installed by default on macOS. The probe uses the portable bash background-and-kill pattern (same as `_probe_tcp`) to cap each candidate at 5s. When forwarding is disabled (`--no-forward-ssh` or `RIP_CAGE_FORWARD_SSH=off`), the probe is skipped entirely so users who opted out don't pay the 10s worst-case tax.
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **Probe candidate sockets, mount the first with keys (this decision)** | • Works for passphrase-less keys without ceremony • Unified mental model (host agent == cage agent) • Backward compatible via fallback candidate • Cross-backend (OrbStack/Docker Desktop/Colima) uniform | • Implicit selection — requires logging the chosen socket for debuggability • ~15s worst-case probe time • Small new dependency on host-side `ssh-add` execution |
+| **Probe candidate sockets, mount the first with keys (this decision)** | • Works for passphrase-less keys without ceremony • Unified mental model (host agent == cage agent) • Backward compatible via fallback candidate • Cross-backend (OrbStack/Docker Desktop/Colima) uniform | • Implicit selection — requires logging the chosen socket for debuggability • ~10s worst-case probe time (2 candidates × 5s) • Small new dependency on host-side `ssh-add` execution |
 | Require users to set passphrases on all keys | • Preserves current single-path design • Keychain-backed model is technically "better" security posture | • Forces behavior change on thousands of existing dev setups • "It's annoying" signal writ large • Not the cage's job to dictate host key hygiene |
 | Switch macOS to always forward `$SSH_AUTH_SOCK` only (drop the launchd path entirely) | • Simplest code • Perfectly matches Linux/WSL2 semantics | • Regresses users who set up the Keychain-agent path from ADR-017 • Docker Desktop historically cannot bind-mount arbitrary macOS socket paths — only OrbStack reliably passes `/var/folders/...` through |
 | Spawn a persistent cage-side ssh-agent and have the user load keys into it | • Fully predictable | • Loses "keys stay on host" property — violates ADR-017 rationale • Significant new surface (key mounting, lifecycle) |
@@ -69,7 +74,7 @@ No regression is a hard requirement: ADR-017 D4 has been in force since 2026-04-
 
 **Firmness: FIRM**
 
-The sentinel at `/etc/rip-cage/ssh-agent-status` gains a second line (or a companion sentinel) recording the host socket that was actually mounted. Banner text and `rc doctor` output incorporate that path into fix hints:
+A companion sentinel at `/etc/rip-cage/ssh-agent-socket` records the host socket that was actually mounted (single line, empty string if nothing was mounted). The existing status sentinel at `/etc/rip-cage/ssh-agent-status` is unchanged — keeping them in separate files avoids breaking the zshrc `case` matcher, which is already built around single-line sentinels (matching the `host-os` precedent). Banner text and `rc doctor` output read both and incorporate the path into fix hints:
 
 - `empty` → `host agent at <path> is empty — run 'ssh-add ~/.ssh/id_ed25519' on host, then 'rc down && rc up'`
 - `unreachable` → `socket <path> mounted but not responding — check that ssh-agent is running on host`

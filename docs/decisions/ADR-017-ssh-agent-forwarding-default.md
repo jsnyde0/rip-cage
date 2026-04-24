@@ -83,7 +83,7 @@ The project-level CLAUDE.md session-close protocol is reverted from ADR-014 D3 (
 | OS | How it works | Host prereq |
 |---|---|---|
 | Linux | bind-mount `$SSH_AUTH_SOCK` directly | `ssh-agent` running with keys loaded (standard dev setup) |
-| macOS (OrbStack / Docker Desktop) | mount `/run/host-services/ssh-auth.sock`; VM proxies to macOS system agent (keychain-backed) | `ssh-add --apple-use-keychain <key>` run once + `UseKeychain yes`, `AddKeysToAgent yes` in `~/.ssh/config`. An ad-hoc session agent is not reachable — its socket does not survive the VM boundary. |
+| macOS (OrbStack / Docker Desktop) | `rc up` probes `$SSH_AUTH_SOCK` (session agent) then `/run/host-services/ssh-auth.sock` (Keychain-backed launchd agent) and mounts the first one with keys | whatever gives you a populated `$SSH_AUTH_SOCK` on host (typical: `ssh-add ~/.ssh/<key>` in your login shell, or 1Password/Secretive integration, or Keychain-backed launchd agent) |
 | WSL2 | bind-mount `$SSH_AUTH_SOCK` directly | `ssh-agent` running in the WSL side |
 
 **Preflight behavior:** at `rc up`, after the socket is forwarded, probe the agent from inside the container (`timeout 5 ssh-add -l`). Five status values feed the sentinel at `/etc/rip-cage/ssh-agent-status`, read by the shell banner and `rc ls`:
@@ -125,7 +125,7 @@ The project-level CLAUDE.md session-close protocol is reverted from ADR-014 D3 (
 
 ## Implementation notes
 
-- `rc up`: add `--no-forward-ssh` flag and `RIP_CAGE_FORWARD_SSH` env var (sibling to `RIP_CAGE_EGRESS`; CLI wins), `--label rc.forward-ssh=on|off`. Host-side socket selection: on macOS use `/run/host-services/ssh-auth.sock`; on Linux/WSL2 use `$SSH_AUTH_SOCK`. Mount to `/ssh-agent.sock` inside container and set `SSH_AUTH_SOCK=/ssh-agent.sock`. If no host socket resolves, write label=off (nothing was wired) and record `_UP_FORWARD_SSH_WIRED=no_host_agent` so the preflight can distinguish the case from explicit opt-out.
+- `rc up`: add `--no-forward-ssh` flag and `RIP_CAGE_FORWARD_SSH` env var (sibling to `RIP_CAGE_EGRESS`; CLI wins), `--label rc.forward-ssh=on|off`. Host-side socket selection: `_resolve_host_ssh_sock()` probes candidate sockets (see ADR-018) and sets `_UP_FORWARD_SSH_HOST_SOCK` to the chosen path (non-empty = wired, empty = nothing found). When nothing was found, `_UP_NO_HOST_AGENT=1` distinguishes the no-agent case from an explicit opt-out. Mount to `/ssh-agent.sock` inside container and set `SSH_AUTH_SOCK=/ssh-agent.sock`.
 - Preflight: after `docker run` / `docker start`, probe `timeout 5 ssh-add -l` inside container. Write result to `/etc/rip-cage/ssh-agent-status` (sentinel) and print to stderr. Status values: `ok:N_keys`, `empty`, `unreachable`, `no_host_agent`, `disabled`.
 - `rc ls`: surface the forward-ssh posture as a column (on/off/invalid from label) the way egress is surfaced today.
 - `cmd_up` resume path: read `rc.forward-ssh` label, not the current environment, to preserve the original choice.
