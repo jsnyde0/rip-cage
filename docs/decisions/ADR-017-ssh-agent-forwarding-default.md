@@ -1,8 +1,9 @@
 # ADR-017: SSH-Agent Forwarding On By Default — The Cage Can Push
 
-**Status:** Accepted
+**Status:** Accepted (D4 amended by [ADR-018](ADR-018-macos-ssh-agent-discovery.md))
 **Date:** 2026-04-23
 **Supersedes:** [ADR-014](ADR-014-push-less-cage.md) D1 (no outbound push credentials) and D3 (push-less session-close protocol). ADR-014 D2 (non-interactive SSH posture) and D4 (LFS pointer detection) remain in force.
+**Amended by:** [ADR-018](ADR-018-macos-ssh-agent-discovery.md) — D4's macOS host-prereq model is replaced by a host-side probe-and-pick loop. D1, D2, D3 unchanged.
 **Related:** [ADR-002](ADR-002-rip-cage-containers.md) (blast radius), [ADR-012](ADR-012-egress-firewall.md) (egress), project [CLAUDE.md](../../CLAUDE.md) philosophy section
 
 ## Context
