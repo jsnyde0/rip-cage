@@ -56,12 +56,36 @@ command -v /usr/local/bin/mise >/dev/null 2>&1 && eval "$(/usr/local/bin/mise ac
 # tmux auto-attach).
 if [[ -r /etc/rip-cage/ssh-agent-status ]]; then
   _rc_ssh_status=$(cat /etc/rip-cage/ssh-agent-status 2>/dev/null)
+  _rc_host_os=$(cat /etc/rip-cage/host-os 2>/dev/null)
   case "$_rc_ssh_status" in
     ok:*) echo "[rip-cage] ssh-agent: ${_rc_ssh_status#ok:} key(s) loaded — git push works" ;;
-    empty) echo "[rip-cage] ssh-agent: forwarded but EMPTY — push will fail. See ADR-017 D4 for host-side fix." ;;
-    unreachable) echo "[rip-cage] ssh-agent: mounted but UNREACHABLE — push will fail. See ADR-017 D4." ;;
-    no_host_agent) echo "[rip-cage] ssh-agent: NO HOST AGENT available — forwarding inactive. Start ssh-agent on host, or pass --no-forward-ssh to silence." ;;
+    empty)
+      echo "[rip-cage] ssh-agent: forwarded but EMPTY (0 keys) — push will fail."
+      if [[ "$_rc_host_os" == "darwin" ]]; then
+        echo "  Host fix (macOS, one-time): add 'UseKeychain yes' + 'AddKeysToAgent yes' to ~/.ssh/config, then run on host:"
+        echo "    ssh-add --apple-use-keychain ~/.ssh/id_ed25519"
+      else
+        echo "  Host fix: run on host:  ssh-add ~/.ssh/id_ed25519"
+      fi
+      echo "  Then: rc down && rc up  (or pass --no-forward-ssh to skip forwarding)"
+      ;;
+    unreachable)
+      echo "[rip-cage] ssh-agent: mounted but UNREACHABLE — push will fail."
+      if [[ "$_rc_host_os" == "darwin" ]]; then
+        echo "  This usually means the host socket is a launchd session agent, not the system keychain agent."
+        echo "  Host fix (macOS): ensure 'ssh-add --apple-use-keychain ~/.ssh/id_ed25519' was run at least once,"
+        echo "  then 'rc down && rc up' to re-mount /run/host-services/ssh-auth.sock."
+      else
+        echo "  Host fix: verify ssh-agent is running ('ssh-add -l' on host), then 'rc down && rc up'."
+      fi
+      echo "  Or pass --no-forward-ssh to skip forwarding."
+      ;;
+    no_host_agent)
+      echo "[rip-cage] ssh-agent: NO HOST AGENT available — forwarding inactive."
+      echo "  Host fix: start ssh-agent on host ('eval \"\$(ssh-agent -s)\" && ssh-add ~/.ssh/id_ed25519'),"
+      echo "  then 'rc down && rc up'. Or pass --no-forward-ssh to silence."
+      ;;
     disabled) echo "[rip-cage] ssh-agent: forwarding disabled (--no-forward-ssh). Push from host." ;;
   esac
-  unset _rc_ssh_status
+  unset _rc_ssh_status _rc_host_os
 fi

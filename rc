@@ -1191,7 +1191,11 @@ _up_ssh_preflight() {
   fi
   # Write sentinel (consumed by zshrc banner + rc doctor). Best-effort: a
   # failure here does not break rc up — the stderr warning below still fires.
-  docker exec -u root "$_name" sh -c "mkdir -p /etc/rip-cage && printf '%s\n' '$_status' > /etc/rip-cage/ssh-agent-status" >/dev/null 2>&1 || true
+  # Also record host OS so the banner can print the OS-specific fix command
+  # instead of pointing users at an ADR.
+  local _host_os="linux"
+  [[ "$(uname)" == "Darwin" ]] && _host_os="darwin"
+  docker exec -u root "$_name" sh -c "mkdir -p /etc/rip-cage && printf '%s\n' '$_status' > /etc/rip-cage/ssh-agent-status && printf '%s\n' '$_host_os' > /etc/rip-cage/host-os" >/dev/null 2>&1 || true
 
   case "$_status" in
     ok:*)
