@@ -127,6 +127,7 @@ Commands:
   test [name]                                  Run in-container safety stack tests (61 checks)
   test --host                                  Run all host-side tests (host-only; not usable inside container)
   test --e2e                                   Full lifecycle e2e test (slow; RC_E2E_REBUILD=1 to rebuild image)
+  doctor [name]                                Per-container diagnostic — labels + live probes
   auth refresh                                 Refresh credentials from host keychain
   schema                                       Print machine-readable command schema
   completions <shell>                          Print shell completion script (zsh|bash)
@@ -1991,6 +1992,195 @@ ${output}"
 # reaching this dispatch table (and before the container guard), so this
 # function was unreachable dead code.
 
+# cmd_doctor — per-container diagnostic view.
+#
+# Complements `rc ls` (fleet view) with depth for a single container: posture
+# labels (rc.egress, rc.forward-ssh, rc.source.path) plus live probes when the
+# container is running (firewall, ssh-add, beads port, auth creds, skills).
+# Labels are readable whether the container is running or stopped; live probes
+# report "not running, no live probe" when the container is stopped.
+# Resolves via resolve_name (CWD convention — same as rc attach/down/destroy).
+cmd_doctor() {
+  local name
+  name=$(resolve_name "${1:-}") || exit 1
+  if ! docker inspect "$name" >/dev/null 2>&1; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
+    echo "Error: container $name not found" >&2; exit 1
+  fi
+  verify_rc_container "$name"
+
+  # Read state + labels (work on stopped containers too).
+  local state source_path egress_label fwd_ssh_label started_at
+  state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || echo "unknown")
+  source_path=$(docker inspect --format '{{index .Config.Labels "rc.source.path"}}' "$name" 2>/dev/null || true)
+  egress_label=$(docker inspect --format '{{index .Config.Labels "rc.egress"}}' "$name" 2>/dev/null || true)
+  fwd_ssh_label=$(docker inspect --format '{{index .Config.Labels "rc.forward-ssh"}}' "$name" 2>/dev/null || true)
+  started_at=$(docker inspect --format '{{.State.StartedAt}}' "$name" 2>/dev/null || true)
+  [[ -z "$egress_label" ]] && egress_label="legacy"
+  [[ -z "$fwd_ssh_label" ]] && fwd_ssh_label="legacy"
+
+  local running=0
+  [[ "$state" == "running" ]] && running=1
+
+  # Live probes (only when running). Each probe returns a status string and detail.
+  local egress_probe="not running, no live probe"
+  local ssh_probe="not running, no live probe"
+  local beads_probe="not running, no live probe"
+  local auth_probe="not running, no live probe"
+  local skills_probe="not running, no live probe"
+
+  if [[ "$running" -eq 1 ]]; then
+    # Egress probe: if label=on, expect mitmdump running as rip-proxy. If off,
+    # expect no mitmdump. "legacy" containers: just report process state.
+    if docker exec "$name" pgrep -u rip-proxy mitmdump >/dev/null 2>&1; then
+      if [[ "$egress_label" == "off" ]]; then
+        egress_probe="WARN — mitmdump running but label=off"
+      else
+        egress_probe="OK — mitmdump running"
+      fi
+    else
+      if [[ "$egress_label" == "on" ]]; then
+        egress_probe="FAIL — label=on but no mitmdump process"
+      else
+        egress_probe="OK — no mitmdump (expected for egress=off)"
+      fi
+    fi
+
+    # SSH forwarding probe: ssh-add -l (needs SSH_AUTH_SOCK in container env).
+    # Exit 0 = keys listed, 1 = no keys, 2 = agent not reachable.
+    local ssh_out ssh_rc=0
+    ssh_out=$(docker exec "$name" sh -c 'ssh-add -l 2>&1' 2>/dev/null) || ssh_rc=$?
+    case "$ssh_rc" in
+      0)
+        local key_count
+        key_count=$(echo "$ssh_out" | grep -c . || true)
+        ssh_probe="OK — ${key_count} key(s) available via forwarded agent"
+        ;;
+      1)
+        if [[ "$fwd_ssh_label" == "on" ]]; then
+          ssh_probe="WARN — agent reachable but empty (host ssh-add -l?)"
+        else
+          ssh_probe="OK — no agent (forward-ssh=off)"
+        fi
+        ;;
+      *)
+        if [[ "$fwd_ssh_label" == "on" ]]; then
+          ssh_probe="FAIL — label=on but ssh-agent not reachable"
+        else
+          ssh_probe="OK — no agent (forward-ssh=off)"
+        fi
+        ;;
+    esac
+
+    # Beads server probe: look for dolt-server.port + process.
+    local port_file_exists=0 port_val="" dolt_running=0
+    if docker exec "$name" test -f /workspace/.beads/dolt-server.port >/dev/null 2>&1; then
+      port_file_exists=1
+      port_val=$(docker exec "$name" cat /workspace/.beads/dolt-server.port 2>/dev/null | tr -d '[:space:]' || true)
+    fi
+    if docker exec "$name" pgrep -f 'dolt sql-server' >/dev/null 2>&1; then
+      dolt_running=1
+    fi
+    if [[ "$port_file_exists" -eq 1 && "$dolt_running" -eq 1 && -n "$port_val" ]]; then
+      beads_probe="OK — dolt sql-server on port ${port_val}"
+    elif [[ "$port_file_exists" -eq 0 && "$dolt_running" -eq 0 ]]; then
+      beads_probe="INFO — no beads/dolt server (workspace may not use beads)"
+    else
+      beads_probe="WARN — port_file=${port_file_exists} dolt_running=${dolt_running} port='${port_val}'"
+    fi
+
+    # Auth probe: credentials file presence + nonzero.
+    if docker exec "$name" test -s /home/agent/.claude/.credentials.json >/dev/null 2>&1; then
+      auth_probe="OK — ~/.claude/.credentials.json present"
+    elif docker exec "$name" sh -c 'test -n "${ANTHROPIC_API_KEY:-}"' >/dev/null 2>&1; then
+      auth_probe="OK — ANTHROPIC_API_KEY set (no OAuth creds)"
+    else
+      auth_probe="FAIL — no credentials and no ANTHROPIC_API_KEY"
+    fi
+
+    # Skills mount probe: count entries under ~/.claude/skills (symlink to
+    # /home/agent/.rc-context/skills). Report broken symlinks.
+    local skills_count=0 skills_broken=0
+    if docker exec "$name" test -d /home/agent/.claude/skills >/dev/null 2>&1; then
+      skills_count=$(docker exec "$name" sh -c 'ls -1 /home/agent/.claude/skills 2>/dev/null | wc -l' 2>/dev/null | tr -d '[:space:]' || echo 0)
+      skills_broken=$(docker exec "$name" sh -c 'find /home/agent/.claude/skills/ -maxdepth 2 -type l ! -exec test -e {} \; -print 2>/dev/null | wc -l' 2>/dev/null | tr -d '[:space:]' || echo 0)
+      if [[ "$skills_broken" -gt 0 ]]; then
+        skills_probe="WARN — ${skills_count} entries, ${skills_broken} broken symlink(s)"
+      else
+        skills_probe="OK — ${skills_count} skill entries"
+      fi
+    else
+      skills_probe="INFO — no skills mount"
+    fi
+  fi
+
+  # Uptime (humanized) — derive from started_at ISO timestamp.
+  local uptime="—"
+  if [[ "$running" -eq 1 && -n "$started_at" ]]; then
+    local started_epoch now_epoch diff
+    started_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${started_at%%.*}" +%s 2>/dev/null \
+      || date -d "$started_at" +%s 2>/dev/null || echo 0)
+    now_epoch=$(date +%s)
+    if [[ "$started_epoch" -gt 0 ]]; then
+      diff=$((now_epoch - started_epoch))
+      if [[ "$diff" -lt 3600 ]]; then
+        uptime="$((diff / 60))m"
+      elif [[ "$diff" -lt 86400 ]]; then
+        uptime="$((diff / 3600))h $(((diff % 3600) / 60))m"
+      else
+        uptime="$((diff / 86400))d $(((diff % 86400) / 3600))h"
+      fi
+    fi
+  fi
+
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    jq -nc \
+      --arg name "$name" \
+      --arg state "$state" \
+      --arg uptime "$uptime" \
+      --arg source_path "$source_path" \
+      --arg egress_label "$egress_label" \
+      --arg forward_ssh_label "$fwd_ssh_label" \
+      --arg egress_probe "$egress_probe" \
+      --arg ssh_probe "$ssh_probe" \
+      --arg beads_probe "$beads_probe" \
+      --arg auth_probe "$auth_probe" \
+      --arg skills_probe "$skills_probe" \
+      '{
+        name: $name,
+        state: $state,
+        uptime: $uptime,
+        source_path: $source_path,
+        labels: {
+          "rc.egress": $egress_label,
+          "rc.forward-ssh": $forward_ssh_label
+        },
+        probes: {
+          egress: $egress_probe,
+          ssh_forwarding: $ssh_probe,
+          beads_server: $beads_probe,
+          auth: $auth_probe,
+          skills_mount: $skills_probe
+        }
+      }'
+  else
+    echo "Container:  $name"
+    echo "State:      $state${running:+}$([[ $running -eq 1 ]] && echo " (up $uptime)")"
+    echo "Workspace:  ${source_path:-<unset>}"
+    echo ""
+    echo "Labels:"
+    echo "  rc.egress       = $egress_label"
+    echo "  rc.forward-ssh  = $fwd_ssh_label"
+    echo ""
+    echo "Live probes:"
+    echo "  egress         : $egress_probe"
+    echo "  ssh-forwarding : $ssh_probe"
+    echo "  beads-server   : $beads_probe"
+    echo "  auth           : $auth_probe"
+    echo "  skills-mount   : $skills_probe"
+  fi
+}
+
 cmd_setup() {
   # Detect login shell from $SHELL
   local shell_name
@@ -2117,6 +2307,10 @@ cmd_schema() {
       "args": [{"name": "name", "type": "string", "required": false}],
       "flags": {"--output": {"values": ["json"], "default": null}}
     },
+    "doctor": {
+      "args": [{"name": "name", "type": "string", "required": false, "note": "auto-selected via CWD convention or singleton"}],
+      "flags": {"--output": {"values": ["json"], "default": null}}
+    },
     "attach": {
       "args": [{"name": "name", "type": "string", "required": false}],
       "flags": {}
@@ -2188,7 +2382,7 @@ fi
 # Reject --output json on commands that don't support it
 if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   case "${1:-}" in
-    build|ls|up|down|destroy|test|auth) ;;  # supported
+    build|ls|up|down|destroy|test|doctor|auth) ;;  # supported
     init|attach|schema|completions|setup|__bd-preflight-test|"")
       echo "Error: --output json is not supported for '${1:-}'" >&2
       exit 1
@@ -2210,7 +2404,7 @@ esac
 
 # docker: needed for all commands that talk to Docker
 case "${1:-}" in
-  build|up|ls|attach|down|destroy|test) check_docker ;;
+  build|up|ls|attach|down|destroy|test|doctor) check_docker ;;
 esac
 
 # Main dispatch
@@ -2223,6 +2417,7 @@ case "${1:-}" in
   down)    shift; cmd_down "$@" ;;
   destroy) shift; cmd_destroy "$@" ;;
   test)    shift; cmd_test "$@" ;;
+  doctor)  shift; cmd_doctor "$@" ;;
   auth)    shift; cmd_auth "$@" ;;
   # completions: handled by fast-path above (before container guard); unreachable here
   completions) echo "Usage: rc completions <shell>" >&2; echo "Shells: zsh, bash" >&2; exit 1 ;;
