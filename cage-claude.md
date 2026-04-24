@@ -57,4 +57,31 @@ echo "CAGE_HOST_ADDR=$CAGE_HOST_ADDR"
 If a tool *inside* the cage works but your new connection doesn't, the problem
 is almost always (a) wrong hostname (`localhost` instead of `$CAGE_HOST_ADDR`),
 or (b) no published port on the target compose service.
+
+### Troubleshooting: subagent fails fast (0 tokens, ~2s)
+
+If a subagent dispatch (`Agent(subagent_type=...)`) returns after ~2 seconds
+with **0 tool uses and 0 tokens**, the parent model will often narrate this as
+"auth error" or similar — **do not trust that narration**. It is a guess, not a
+diagnosis. Get the real error before theorizing or switching subagent types:
+
+```bash
+claude -p --debug --debug-file /tmp/sub.log \
+  "Use the Agent tool with subagent_type=general-purpose, prompt=\"reply hello\""
+cat /tmp/sub.log | tail -50
+```
+
+Known causes, in order of likelihood:
+
+1. **1M-context beta model + subagent dispatch.** If the parent is on a
+   `[1m]` model variant, subagent spawn can fail opaquely. Try `/model` → a
+   non-1M variant and retry.
+2. **Rate limit / quota ceiling** surfaced as a fast rejection. Check account
+   usage on the host.
+3. **Stale session state** in a long-running conversation. Starting a fresh
+   session often clears it.
+
+The cage itself is almost never the cause — subagent dispatch, custom agent
+mounts, and OAuth all work in a clean rip-cage container. Reproduce against a
+fresh scratch project if you're unsure which layer owns the bug.
 <!-- end:rip-cage-topology -->
