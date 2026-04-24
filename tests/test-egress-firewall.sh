@@ -197,5 +197,74 @@ else
 fi
 
 echo ""
+echo "-- Perimeter (IPv6, WebSocket, non-HTTP, DoH) --"
+
+# Check 14: IPv6 egress blocked (active probe)
+# Tautology guard: do NOT use "ip6tables rules exist OR ::1 only" -- the container
+# has only ::1 and init-firewall.sh has zero ip6tables references, so that OR
+# evaluates trivially. An active curl -6 probe gives a real assertion.
+if ! command -v curl >/dev/null 2>&1; then
+  check "IPv6 egress blocked (active probe)" "fail" "curl unavailable"
+else
+  ipv6_exit=0
+  curl -6 --max-time 5 -s -o /dev/null https://ipv6.google.com > /dev/null 2>&1 || ipv6_exit=$?
+  if [[ "$ipv6_exit" -ne 0 ]]; then
+    check "IPv6 egress blocked (active probe)" "pass" "curl -6 exited $ipv6_exit"
+  else
+    check "IPv6 egress blocked (active probe)" "fail" \
+      "curl -6 exited 0 — IPv6 path is open"
+  fi
+fi
+
+# Check 15a/15b: WebSocket upgrade to denied host returns 403 + X-Rip-Cage-Denied
+# A WebSocket upgrade starts as an HTTP/1.1 request with Upgrade/Connection
+# headers; mitmproxy must intercept pre-upgrade and apply the denylist.
+ws_headers=$(curl -s -D - -o /dev/null \
+  --max-time 10 \
+  --http1.1 \
+  -H "Upgrade: websocket" \
+  -H "Connection: Upgrade" \
+  https://webhook.site/rip-cage-ws-probe 2>/dev/null || true)
+ws_code=$(echo "$ws_headers" | head -1 | grep -oE '[0-9]{3}' | head -1)
+ws_denied=$(echo "$ws_headers" | grep -i 'X-Rip-Cage-Denied' || true)
+if [[ "$ws_code" == "403" ]]; then
+  check "WebSocket upgrade to denied host returns 403" "pass" "HTTP $ws_code"
+else
+  check "WebSocket upgrade to denied host returns 403" "fail" \
+    "HTTP ${ws_code:-unknown} (expected 403)"
+fi
+if [[ -n "$ws_denied" ]]; then
+  check "WebSocket 403 has X-Rip-Cage-Denied header" "pass"
+else
+  check "WebSocket 403 has X-Rip-Cage-Denied header" "fail" "header missing"
+fi
+
+# Check 16: Non-HTTP outbound port iptables policy (ADR-013 D4 = Option A, FIRM)
+# D4 direction: non-HTTP egress stays allowed (blast-radius reduction, not L4 wall).
+# Codify that as "no DROP rule for non-80/443 TCP ports in filter OUTPUT".
+# Rule-level assertion only — do NOT use nc/curl probes for port 22/25 (hosted
+# Docker environments may block those at the edge, producing flaky failures).
+filter_rules=$(sudo iptables -L OUTPUT -n 2>/dev/null || true)
+if echo "$filter_rules" | grep -qE 'DROP.*tcp.*dpt:(22|25|53|587|993|2375|5432|6379)'; then
+  bad_rule=$(echo "$filter_rules" | grep -E 'DROP.*tcp.*dpt:(22|25|53|587|993|2375|5432|6379)' | head -1)
+  check "Non-HTTP TCP ports not DROP'd (D4=allowed)" "fail" "unexpected DROP rule: $bad_rule"
+else
+  check "Non-HTTP TCP ports not DROP'd (D4=allowed)" "pass"
+fi
+
+# Check 17: DNS-over-HTTPS to dns.google denied (denylist)
+# Use the DoH URL form, not 8.8.8.8:443 directly — we assert the L7 denylist,
+# not L3 reachability.
+doh_code=$(curl -s -o /dev/null -w '%{http_code}' \
+  --max-time 10 \
+  "https://dns.google/dns-query?name=example.com&type=A" 2>/dev/null || true)
+if [[ "$doh_code" == "403" ]]; then
+  check "DNS-over-HTTPS to dns.google denied (denylist)" "pass" "HTTP $doh_code"
+else
+  check "DNS-over-HTTPS to dns.google denied (denylist)" "fail" \
+    "HTTP ${doh_code:-000} (expected 403)"
+fi
+
+echo ""
 echo "=== Results: $PASS passed, $FAIL failed (of $TOTAL) ==="
 [[ "$FAIL" -eq 0 ]]
