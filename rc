@@ -846,26 +846,28 @@ _up_prepare_docker_mounts() {
 
 # _resolve_host_ssh_sock — probe host ssh-agent candidate sockets and pick the best one.
 #
-# Globals read:    _rc_forward_ssh (from caller scope)
+# Parameters:      $1  rc_forward_ssh — "on" or "off"
 # Globals written: _RESOLVE_HOST_SSH_SOCK_RESULT (empty = nothing usable)
 #
 # Logic:
-#   - If _rc_forward_ssh == "off": return immediately with empty result (no probing).
+#   - If rc_forward_ssh == "off": return immediately with empty result (no probing).
 #   - Linux/WSL2: use $SSH_AUTH_SOCK directly (same kernel as Docker, no VM boundary).
 #   - macOS: iterate candidates [$SSH_AUTH_SOCK, /run/host-services/ssh-auth.sock],
 #     validate bind-mountability per Docker backend, then probe with ssh-add -l.
 #     First candidate with keys wins; first reachable candidate is kept as fallback.
 _resolve_host_ssh_sock() {
+  local _rc_forward_ssh="${1:-on}"
   _RESOLVE_HOST_SSH_SOCK_RESULT=""
 
   # Short-circuit when forwarding is disabled — no probing, no latency.
-  if [[ "${_rc_forward_ssh:-}" == "off" ]]; then
+  if [[ "$_rc_forward_ssh" == "off" ]]; then
     return
   fi
 
   if [[ "$(uname)" != "Darwin" ]]; then
     # Linux / WSL2: $SSH_AUTH_SOCK is a normal AF_UNIX socket on the same kernel
     # Docker runs on. Any existing socket is bind-mountable directly.
+    # Linux defers reachability check to the in-container preflight (single candidate, no fallback needed).
     local _candidate="${SSH_AUTH_SOCK:-}"
     if [[ -n "$_candidate" ]] && [[ -S "$_candidate" ]]; then
       _RESOLVE_HOST_SSH_SOCK_RESULT="$_candidate"
@@ -903,7 +905,7 @@ _resolve_host_ssh_sock() {
     # Gate 3: host-side probe using portable background+kill pattern
     # (timeout(1) is NOT available on macOS by default — mirrors _probe_tcp pattern).
     local _probe_pid _killer_pid _probe_rc
-    SSH_AUTH_SOCK="$_candidate" ssh-add -l >/tmp/rc-probe-out 2>&1 &
+    SSH_AUTH_SOCK="$_candidate" ssh-add -l >/dev/null 2>&1 &
     _probe_pid=$!
     ( sleep 5; kill "$_probe_pid" 2>/dev/null ) 2>/dev/null &
     _killer_pid=$!
@@ -915,7 +917,6 @@ _resolve_host_ssh_sock() {
     if [[ $_probe_rc -eq 0 ]]; then
       # At least one key loaded — this is the winner.
       _RESOLVE_HOST_SSH_SOCK_RESULT="$_candidate"
-      rm -f /tmp/rc-probe-out
       return
     elif [[ $_probe_rc -eq 1 ]]; then
       # Agent reachable but 0 keys — remember as fallback if no fallback yet.
@@ -923,8 +924,6 @@ _resolve_host_ssh_sock() {
     fi
     # _probe_rc==143 (SIGTERM from killer) or other: unreachable — skip.
   done
-
-  rm -f /tmp/rc-probe-out
   # No candidate had keys; use the first reachable one (empty agent) if any.
   _RESOLVE_HOST_SSH_SOCK_RESULT="$_fallback"
 }
@@ -1073,7 +1072,7 @@ _up_prepare_environment() {
   _UP_FORWARD_SSH_HOST_SOCK=""
   _UP_NO_HOST_AGENT=""
   if [[ "$_rc_forward_ssh" != "off" ]]; then
-    _resolve_host_ssh_sock
+    _resolve_host_ssh_sock "$_rc_forward_ssh"
     local _host_ssh_sock="$_RESOLVE_HOST_SSH_SOCK_RESULT"
     if [[ -n "$_host_ssh_sock" ]]; then
       _UP_RUN_ARGS+=(-v "${_host_ssh_sock}:/ssh-agent.sock")
@@ -1265,14 +1264,14 @@ _up_ssh_preflight() {
   fi
   # Write sentinel (consumed by zshrc banner + rc doctor). Best-effort: a
   # failure here does not break rc up — the stderr warning below still fires.
-  # Also record host OS so the banner can print the OS-specific fix command
-  # instead of pointing users at an ADR.
-  local _host_os="linux"
-  [[ "$(uname)" == "Darwin" ]] && _host_os="darwin"
-  docker exec -u root "$_name" sh -c "mkdir -p /etc/rip-cage \
-    && printf '%s\n' '$_status' > /etc/rip-cage/ssh-agent-status \
-    && printf '%s\n' '${_UP_FORWARD_SSH_HOST_SOCK:-}' > /etc/rip-cage/ssh-agent-socket \
-    && printf '%s\n' '$_host_os' > /etc/rip-cage/host-os" >/dev/null 2>&1 || true
+  # Values are passed via -e env vars to avoid shell injection from paths
+  # containing single-quotes (e.g. /tmp/a'b would break the sh -c string).
+  docker exec -u root \
+    -e RC_STATUS="$_status" \
+    -e RC_SOCK="${_UP_FORWARD_SSH_HOST_SOCK:-}" \
+    "$_name" sh -c 'mkdir -p /etc/rip-cage \
+    && printf "%s\n" "$RC_STATUS" > /etc/rip-cage/ssh-agent-status \
+    && printf "%s\n" "$RC_SOCK" > /etc/rip-cage/ssh-agent-socket' >/dev/null 2>&1 || true
 
   case "$_status" in
     ok:*)
@@ -1652,7 +1651,11 @@ cmd_up() {
     # On resume, the socket (or lack thereof) was wired at create time. The
     # label value is the ground truth for preflight — we don't re-distinguish
     # user-opt-out from no-host-agent here. Socket cannot be changed on resume.
-    _UP_FORWARD_SSH_HOST_SOCK=""
+    # Recover the original source path from the existing bind mount so the
+    # sentinel stays honest after rc down && rc up (ADR-018 D3 FIRM).
+    _UP_FORWARD_SSH_HOST_SOCK=$(docker inspect \
+      --format '{{ range .Mounts }}{{ if eq .Destination "/ssh-agent.sock" }}{{ .Source }}{{ end }}{{ end }}' \
+      "$name" 2>/dev/null || true)
     _UP_NO_HOST_AGENT=""
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       docker start "$name" >/dev/null
@@ -2125,8 +2128,12 @@ cmd_doctor() {
 
     # SSH forwarding probe: ssh-add -l (needs SSH_AUTH_SOCK in container env).
     # Exit 0 = keys listed, 1 = no keys, 2 = agent not reachable.
+    # Read companion sentinel to include the mounted socket path in hints
+    # (ADR-018 D3 FIRM: rc doctor incorporates the path into fix hints).
     local ssh_out ssh_rc=0
     ssh_out=$(docker exec "$name" sh -c 'ssh-add -l 2>&1' 2>/dev/null) || ssh_rc=$?
+    local _doctor_sock
+    _doctor_sock=$(docker exec "$name" cat /etc/rip-cage/ssh-agent-socket 2>/dev/null || true)
     case "$ssh_rc" in
       0)
         local key_count
@@ -2135,14 +2142,14 @@ cmd_doctor() {
         ;;
       1)
         if [[ "$fwd_ssh_label" == "on" ]]; then
-          ssh_probe="WARN — agent reachable but empty (host ssh-add -l?)"
+          ssh_probe="WARN — agent reachable but empty (host ssh-add -l? socket: ${_doctor_sock:-<unknown>})"
         else
           ssh_probe="OK — no agent (forward-ssh=off)"
         fi
         ;;
       *)
         if [[ "$fwd_ssh_label" == "on" ]]; then
-          ssh_probe="FAIL — label=on but ssh-agent not reachable"
+          ssh_probe="FAIL — label=on but ssh-agent not reachable (socket: ${_doctor_sock:-<unknown>})"
         else
           ssh_probe="OK — no agent (forward-ssh=off)"
         fi

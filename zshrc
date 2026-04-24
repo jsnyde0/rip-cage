@@ -56,7 +56,6 @@ command -v /usr/local/bin/mise >/dev/null 2>&1 && eval "$(/usr/local/bin/mise ac
 # tmux auto-attach).
 if [[ -r /etc/rip-cage/ssh-agent-status ]]; then
   _rc_ssh_status=$(cat /etc/rip-cage/ssh-agent-status 2>/dev/null)
-  _rc_host_os=$(cat /etc/rip-cage/host-os 2>/dev/null)
   _rc_ssh_socket=$(cat /etc/rip-cage/ssh-agent-socket 2>/dev/null)
   case "$_rc_ssh_status" in
     ok:*) echo "[rip-cage] ssh-agent: ${_rc_ssh_status#ok:} key(s) loaded — git push works" ;;
@@ -75,9 +74,9 @@ if [[ -r /etc/rip-cage/ssh-agent-status ]]; then
     no_host_agent)
       echo "[rip-cage] ssh-agent: NO HOST AGENT available — forwarding inactive."
       echo "  Host fix: start ssh-agent on host ('eval \"\$(ssh-agent -s)\" && ssh-add ~/.ssh/id_ed25519'),"
-      echo "  then 'rc down && rc up'. Or pass --no-forward-ssh to silence."
+      echo "  then 'rc destroy && rc up'. Or pass --no-forward-ssh to silence."
       ;;
     disabled) echo "[rip-cage] ssh-agent: forwarding disabled (--no-forward-ssh). Push from host." ;;
   esac
-  unset _rc_ssh_status _rc_host_os _rc_ssh_socket
+  unset _rc_ssh_status _rc_ssh_socket
 fi
