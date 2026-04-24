@@ -64,6 +64,10 @@ The shim implements the same `list`/`show`/`load` tools as the host `ms` binary.
 - The `container_name()` function in `rc` derives names from the last two path components. Collisions get a 4-char hash suffix.
 - `sleep infinity` is the container entrypoint for CLI mode — tmux is started by `init-rip-cage.sh`, not the Dockerfile.
 
+## Harness inventory
+
+See [`.claude/harness.md`](.claude/harness.md) for the catalog of verification mechanisms in this repo (shell syntax checks, shellcheck, tiered test suites, `rc test` / `rc test --e2e` / `rc doctor`, egress probes, ADRs). Consult it when picking a feedback loop for a task.
+
 ## Testing changes
 
 After modifying the Dockerfile or any file that gets COPY'd into the image:
