@@ -223,7 +223,8 @@ cmd_init() {
     "source=${localEnv:HOME}/.claude/commands,target=/home/agent/.rc-context/commands,type=bind,readonly",
     "source=${localEnv:HOME}/.claude/agents,target=/home/agent/.rc-context/agents,type=bind,readonly",
     "source=${localWorkspaceFolder}/.git/hooks,target=/workspace/.git/hooks,type=bind,readonly",
-    "source=rc-mise-cache,target=/home/agent/.local/share/mise,type=volume"
+    "source=rc-mise-cache,target=/home/agent/.local/share/mise,type=volume",
+    "source=${localEnv:HOME}/.pi/agent,target=/pi-agent,type=bind"
   ],
 DEVCONTAINER_WITH_HOOKS
     else
@@ -243,7 +244,8 @@ DEVCONTAINER_WITH_HOOKS
     "source=${localEnv:HOME}/.claude/skills,target=/home/agent/.rc-context/skills,type=bind,readonly",
     "source=${localEnv:HOME}/.claude/commands,target=/home/agent/.rc-context/commands,type=bind,readonly",
     "source=${localEnv:HOME}/.claude/agents,target=/home/agent/.rc-context/agents,type=bind,readonly",
-    "source=rc-mise-cache,target=/home/agent/.local/share/mise,type=volume"
+    "source=rc-mise-cache,target=/home/agent/.local/share/mise,type=volume",
+    "source=${localEnv:HOME}/.pi/agent,target=/pi-agent,type=bind"
   ],
 DEVCONTAINER_NO_HOOKS
     fi
@@ -314,6 +316,37 @@ DEVCONTAINER_FOOTER_EMBEDDED
       "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
       "CURL_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt"
     }' "$dest" > "${dest}.tmp"
+    mv "${dest}.tmp" "$dest"
+  fi
+
+  # Pi env vars in containerEnv — static values safe here (not secrets)
+  if command -v jq &>/dev/null; then
+    jq '.containerEnv += {
+      "PI_CODING_AGENT_DIR": "/pi-agent",
+      "CAGE_HOST_ADDR": "${localEnv:CAGE_HOST_ADDR}"
+    }' "$dest" > "${dest}.tmp"
+    mv "${dest}.tmp" "$dest"
+  fi
+
+  # Write .devcontainer/.env-pi for provider API key passthrough (gitignored by .env.* rule)
+  # The file is regenerated on each rc init invocation; an empty file is harmless to --env-file.
+  local _pi_envfile="${target}/.devcontainer/.env-pi"
+  local _pi_var
+  : > "$_pi_envfile"
+  for _pi_var in ANTHROPIC_API_KEY AZURE_OPENAI_API_KEY OPENAI_API_KEY GEMINI_API_KEY \
+                 MISTRAL_API_KEY GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY \
+                 OPENROUTER_API_KEY AI_GATEWAY_API_KEY ZAI_API_KEY OPENCODE_API_KEY \
+                 KIMI_API_KEY MINIMAX_API_KEY MINIMAX_CN_API_KEY \
+                 PI_SKIP_VERSION_CHECK PI_CACHE_RETENTION; do
+    if [[ -n "${!_pi_var:-}" ]]; then
+      printf '%s=%s\n' "$_pi_var" "${!_pi_var}" >> "$_pi_envfile"
+    fi
+  done
+  unset _pi_var
+  # Inject --env-file into runArgs via jq
+  if command -v jq &>/dev/null; then
+    jq '.runArgs += ["--env-file", "${localWorkspaceFolder}/.devcontainer/.env-pi"]' \
+      "$dest" > "${dest}.tmp"
     mv "${dest}.tmp" "$dest"
   fi
 
@@ -829,6 +862,36 @@ _up_prepare_docker_mounts() {
   else
     log "Warning: ${HOME}/.claude/.credentials.json not found — skipping mount (auth may not work)"
   fi
+
+  # Pi state mount — single bind, PI_CODING_AGENT_DIR redirect (ADR-019 D1 FIRM)
+  if [[ -d "${HOME}/.pi/agent" ]]; then
+    _UP_RUN_ARGS+=(-v "${HOME}/.pi/agent:/pi-agent")
+    _UP_RUN_ARGS+=(-e PI_CODING_AGENT_DIR=/pi-agent)
+  else
+    log "Warning: ${HOME}/.pi/agent not found — pi mount skipped (pi will fail on first request)"
+  fi
+
+  # CAGE_HOST_ADDR explicit pass-through for non-interactive pi -p runs
+  # Docker silently omits this if not set on host — acceptable (init script sets it interactively)
+  _UP_RUN_ARGS+=(-e "CAGE_HOST_ADDR")
+
+  # Provider env-var passthrough (ADR-019 D5 FLEXIBLE — fixed list, skip empty values)
+  # PI_PACKAGE_DIR excluded: host dev path, breaks pi startup in cage
+  local _pi_env_vars
+  local _pi_var
+  _pi_env_vars=(
+    ANTHROPIC_API_KEY AZURE_OPENAI_API_KEY OPENAI_API_KEY GEMINI_API_KEY
+    MISTRAL_API_KEY GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY
+    OPENROUTER_API_KEY AI_GATEWAY_API_KEY ZAI_API_KEY OPENCODE_API_KEY
+    KIMI_API_KEY MINIMAX_API_KEY MINIMAX_CN_API_KEY
+    PI_SKIP_VERSION_CHECK PI_CACHE_RETENTION
+  )
+  for _pi_var in "${_pi_env_vars[@]}"; do
+    if [[ -n "${!_pi_var:-}" ]]; then
+      _UP_RUN_ARGS+=(-e "${_pi_var}=${!_pi_var}")
+    fi
+  done
+  unset _pi_env_vars _pi_var
 
   # CLAUDE.md mounts (read-only, only if source exists)
   if [[ -f "${HOME}/.claude/CLAUDE.md" ]]; then
