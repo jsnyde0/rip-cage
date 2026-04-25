@@ -275,7 +275,7 @@ DEVCONTAINER_NO_HOOKS
       cat <<'DEVCONTAINER_FOOTER_SERVER' | sed \
         -e "s|\"--cpus=2\", \"--memory=4g\", \"--memory-swap=4g\", \"--pids-limit=500\"|${init_run_args}|" \
         -e "s|\"postStartCommand\": \"/usr/local/bin/init-rip-cage.sh\"|\"postStartCommand\": \"${init_post_start}\"|"
-  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
+  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" 2>/dev/null; mkdir -p \"${HOME}/.pi/agent\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096",
     "BEADS_DOLT_SERVER_MODE": "1",
@@ -291,7 +291,7 @@ DEVCONTAINER_FOOTER_SERVER
       cat <<'DEVCONTAINER_FOOTER_EMBEDDED' | sed \
         -e "s|\"--cpus=2\", \"--memory=4g\", \"--memory-swap=4g\", \"--pids-limit=500\"|${init_run_args}|" \
         -e "s|\"postStartCommand\": \"/usr/local/bin/init-rip-cage.sh\"|\"postStartCommand\": \"${init_post_start}\"|"
-  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
+  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" 2>/dev/null; mkdir -p \"${HOME}/.pi/agent\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096"
   },
@@ -328,7 +328,8 @@ DEVCONTAINER_FOOTER_EMBEDDED
     mv "${dest}.tmp" "$dest"
   fi
 
-  # Write .devcontainer/.env-pi for provider API key passthrough (gitignored by .env.* rule)
+  # Write .devcontainer/.env-pi for provider API key passthrough (gitignored by **/.env-pi rule;
+  # note: .env.* glob does NOT match .env-pi — the explicit rule in .gitignore covers it).
   # The file is regenerated on each rc init invocation; an empty file is harmless to --env-file.
   local _pi_envfile="${target}/.devcontainer/.env-pi"
   local _pi_var
@@ -871,9 +872,10 @@ _up_prepare_docker_mounts() {
     log "Warning: ${HOME}/.pi/agent not found — pi mount skipped (pi will fail on first request)"
   fi
 
-  # CAGE_HOST_ADDR explicit pass-through for non-interactive pi -p runs
-  # Docker silently omits this if not set on host — acceptable (init script sets it interactively)
-  _UP_RUN_ARGS+=(-e "CAGE_HOST_ADDR")
+  # CAGE_HOST_ADDR explicit pass-through for non-interactive pi -p runs.
+  # Resolve on the host side so the value is never empty inside the container.
+  # host.docker.internal is the default (works on Docker Desktop/macOS/Linux with host-gateway).
+  _UP_RUN_ARGS+=(-e "CAGE_HOST_ADDR=${CAGE_HOST_ADDR:-host.docker.internal}")
 
   # Provider env-var passthrough (ADR-019 D5 FLEXIBLE — fixed list, skip empty values)
   # PI_PACKAGE_DIR excluded: host dev path, breaks pi startup in cage

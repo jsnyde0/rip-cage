@@ -262,14 +262,18 @@ RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
   RIP_CAGE_EGRESS=off "$RC" up "$_aws1" </dev/null >/dev/null 2>&1 || true
 _ac1_name=$(docker ps -a --filter "label=rc.source.path=$(realpath "$_aws1")" \
   --format '{{.Names}}' 2>/dev/null | head -1)
-_ac1_log=$(docker logs "$_ac1_name" 2>&1 || true)
-if ! echo "$_ac1_log" | grep -q 'WARNING: No auth'; then
-  check "auth-warn case 1: Claude API key set → no WARNING" "pass"
+if [[ -z "$_ac1_name" ]]; then
+  check "auth-warn case 1: Claude API key set → no WARNING" "fail" "container did not start"
 else
-  check "auth-warn case 1: Claude API key set → no WARNING" "fail" "(container=$_ac1_name)"
+  _ac1_log=$(docker logs "$_ac1_name" 2>&1 || true)
+  if ! echo "$_ac1_log" | grep -q 'WARNING: No auth'; then
+    check "auth-warn case 1: Claude API key set → no WARNING" "pass"
+  else
+    check "auth-warn case 1: Claude API key set → no WARNING" "fail" "(container=$_ac1_name)"
+  fi
+  docker rm -f "$_ac1_name" > /dev/null 2>&1 || true
+  docker volume rm "rc-state-${_ac1_name}" > /dev/null 2>&1 || true
 fi
-docker rm -f "$_ac1_name" > /dev/null 2>&1 || true
-docker volume rm "rc-state-${_ac1_name}" > /dev/null 2>&1 || true
 
 # Case 2: Pi auth present, no Claude env auth → warn depends on host credential file state.
 # Note: Claude warn-line intentionally present per ADR-019 D2 — pi auth uses its own /login UI.
@@ -282,24 +286,28 @@ RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
   RIP_CAGE_EGRESS=off "$RC" up "$_aws2" </dev/null >/dev/null 2>&1 || true
 _ac2_name=$(docker ps -a --filter "label=rc.source.path=$(realpath "$_aws2")" \
   --format '{{.Names}}' 2>/dev/null | head -1)
-_ac2_log=$(docker logs "$_ac2_name" 2>&1 || true)
-if [ "$_host_has_claude_auth" -gt 0 ]; then
-  # Host creds auto-mounted → no warn expected (D2: pi auth doesn't add a warn either)
-  if ! echo "$_ac2_log" | grep -q 'WARNING: No auth'; then
-    check "auth-warn case 2: pi auth + host Claude creds → no WARNING (host creds dominate)" "pass"
-  else
-    check "auth-warn case 2: pi auth + host Claude creds → no WARNING (host creds dominate)" "fail" "(container=$_ac2_name)"
-  fi
+if [[ -z "$_ac2_name" ]]; then
+  check "auth-warn case 2" "fail" "container did not start"
 else
-  # No host creds → warn expected; pi auth alone does NOT suppress Claude warn (D2 FIRM)
-  if echo "$_ac2_log" | grep -q 'WARNING: No auth'; then
-    check "auth-warn case 2: pi auth only, no Claude auth → WARNING present (intentional per D2)" "pass"
+  _ac2_log=$(docker logs "$_ac2_name" 2>&1 || true)
+  if [ "$_host_has_claude_auth" -gt 0 ]; then
+    # Host creds auto-mounted → no warn expected (D2: pi auth doesn't add a warn either)
+    if ! echo "$_ac2_log" | grep -q 'WARNING: No auth'; then
+      check "auth-warn case 2: pi auth + host Claude creds → no WARNING (host creds dominate)" "pass"
+    else
+      check "auth-warn case 2: pi auth + host Claude creds → no WARNING (host creds dominate)" "fail" "(container=$_ac2_name)"
+    fi
   else
-    check "auth-warn case 2: pi auth only, no Claude auth → WARNING present (intentional per D2)" "fail" "(container=$_ac2_name)"
+    # No host creds → warn expected; pi auth alone does NOT suppress Claude warn (D2 FIRM)
+    if echo "$_ac2_log" | grep -q 'WARNING: No auth'; then
+      check "auth-warn case 2: pi auth only, no Claude auth → WARNING present (intentional per D2)" "pass"
+    else
+      check "auth-warn case 2: pi auth only, no Claude auth → WARNING present (intentional per D2)" "fail" "(container=$_ac2_name)"
+    fi
   fi
+  docker rm -f "$_ac2_name" > /dev/null 2>&1 || true
+  docker volume rm "rc-state-${_ac2_name}" > /dev/null 2>&1 || true
 fi
-docker rm -f "$_ac2_name" > /dev/null 2>&1 || true
-docker volume rm "rc-state-${_ac2_name}" > /dev/null 2>&1 || true
 
 # Case 3: Neither Claude env auth nor pi auth → warn depends on host credential file state.
 _aws3="${AUTH_TMP}/rc-auth/case3"
@@ -309,22 +317,26 @@ RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
   RIP_CAGE_EGRESS=off "$RC" up "$_aws3" </dev/null >/dev/null 2>&1 || true
 _ac3_name=$(docker ps -a --filter "label=rc.source.path=$(realpath "$_aws3")" \
   --format '{{.Names}}' 2>/dev/null | head -1)
-_ac3_log=$(docker logs "$_ac3_name" 2>&1 || true)
-if [ "$_host_has_claude_auth" -gt 0 ]; then
-  if ! echo "$_ac3_log" | grep -q 'WARNING: No auth'; then
-    check "auth-warn case 3: no env auth, host Claude creds present → no WARNING" "pass"
-  else
-    check "auth-warn case 3: no env auth, host Claude creds present → no WARNING" "fail" "(container=$_ac3_name)"
-  fi
+if [[ -z "$_ac3_name" ]]; then
+  check "auth-warn case 3" "fail" "container did not start"
 else
-  if echo "$_ac3_log" | grep -q 'WARNING: No auth'; then
-    check "auth-warn case 3: neither Claude nor pi auth → WARNING" "pass"
+  _ac3_log=$(docker logs "$_ac3_name" 2>&1 || true)
+  if [ "$_host_has_claude_auth" -gt 0 ]; then
+    if ! echo "$_ac3_log" | grep -q 'WARNING: No auth'; then
+      check "auth-warn case 3: no env auth, host Claude creds present → no WARNING" "pass"
+    else
+      check "auth-warn case 3: no env auth, host Claude creds present → no WARNING" "fail" "(container=$_ac3_name)"
+    fi
   else
-    check "auth-warn case 3: neither Claude nor pi auth → WARNING" "fail" "(container=$_ac3_name)"
+    if echo "$_ac3_log" | grep -q 'WARNING: No auth'; then
+      check "auth-warn case 3: neither Claude nor pi auth → WARNING" "pass"
+    else
+      check "auth-warn case 3: neither Claude nor pi auth → WARNING" "fail" "(container=$_ac3_name)"
+    fi
   fi
+  docker rm -f "$_ac3_name" > /dev/null 2>&1 || true
+  docker volume rm "rc-state-${_ac3_name}" > /dev/null 2>&1 || true
 fi
-docker rm -f "$_ac3_name" > /dev/null 2>&1 || true
-docker volume rm "rc-state-${_ac3_name}" > /dev/null 2>&1 || true
 
 # Case 4: Both Claude API key and pi auth → no 'WARNING: No auth'.
 _aws4="${AUTH_TMP}/rc-auth/case4"
@@ -335,14 +347,18 @@ RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
   RIP_CAGE_EGRESS=off "$RC" up "$_aws4" </dev/null >/dev/null 2>&1 || true
 _ac4_name=$(docker ps -a --filter "label=rc.source.path=$(realpath "$_aws4")" \
   --format '{{.Names}}' 2>/dev/null | head -1)
-_ac4_log=$(docker logs "$_ac4_name" 2>&1 || true)
-if ! echo "$_ac4_log" | grep -q 'WARNING: No auth'; then
-  check "auth-warn case 4: Claude API key + pi auth → no WARNING" "pass"
+if [[ -z "$_ac4_name" ]]; then
+  check "auth-warn case 4: Claude API key + pi auth → no WARNING" "fail" "container did not start"
 else
-  check "auth-warn case 4: Claude API key + pi auth → no WARNING" "fail" "(container=$_ac4_name)"
+  _ac4_log=$(docker logs "$_ac4_name" 2>&1 || true)
+  if ! echo "$_ac4_log" | grep -q 'WARNING: No auth'; then
+    check "auth-warn case 4: Claude API key + pi auth → no WARNING" "pass"
+  else
+    check "auth-warn case 4: Claude API key + pi auth → no WARNING" "fail" "(container=$_ac4_name)"
+  fi
+  docker rm -f "$_ac4_name" > /dev/null 2>&1 || true
+  docker volume rm "rc-state-${_ac4_name}" > /dev/null 2>&1 || true
 fi
-docker rm -f "$_ac4_name" > /dev/null 2>&1 || true
-docker volume rm "rc-state-${_ac4_name}" > /dev/null 2>&1 || true
 
 # Restore RC_ALLOWED_ROOTS to the primary e2e root (subsequent checks use E2E_TMP_RESOLVED).
 export RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}"

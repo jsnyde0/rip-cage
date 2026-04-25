@@ -51,9 +51,13 @@ echo "CAGE_HOST_ADDR=$CAGE_HOST_ADDR"
 
 ### Precedents inside the cage that already use this bridge
 
+- Beads Dolt server (ADR-007): `BEADS_DOLT_SERVER_HOST=host.docker.internal`
+- Firewall CA trust (ADR-012): proxy endpoint lives on the host
+
+### Notable pi state paths
+
 - Pi auth (ADR-019 D1): `/pi-agent/auth.json` is the auth credential file (`PI_CODING_AGENT_DIR=/pi-agent`)
 - Pi extensions: `/pi-agent/extensions/` — global pi extensions directory
-- Firewall CA trust (ADR-012): proxy endpoint lives on the host
 
 If a tool *inside* the cage works but your new connection doesn't, the problem
 is almost always (a) wrong hostname (`localhost` instead of `$CAGE_HOST_ADDR`),

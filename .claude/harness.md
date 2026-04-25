@@ -78,6 +78,10 @@ The repo splits tests into three tiers. See `tests/run-host.sh` for the canonica
 | Shell completions | `test-completions.sh` |
 | LFS warning (ADR regression) | `test-lfs-warning.sh` |
 | Security hardening | `test-security-hardening.sh` |
+| Pi install / image presence (ADR-019) | `test-pi-install.sh` |
+| Pi auth bind-mount + env vars (ADR-019 D1/D5) | `test-pi-auth-mount.sh` |
+| Pi AGENTS.md injection + idempotency (ADR-019 D3) | `test-pi-cage-context.sh` |
+| Pi end-to-end `pi -p` smoke (ADR-019) | `test-pi-e2e.sh` (skips when no host auth) |
 
 All follow the same PASS/FAIL/TOTAL convention; grep for `FAIL` in output.
 

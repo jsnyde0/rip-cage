@@ -98,7 +98,8 @@ echo "=== Test 4: idempotency — second init run leaves exactly one pi topology
 
 docker exec "$CONTAINER" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || true
 
-count=$(docker exec "$CONTAINER" grep -c 'begin:rip-cage-topology-pi' /pi-agent/AGENTS.md 2>/dev/null || echo "0")
+count=$(docker exec "$CONTAINER" grep -c 'begin:rip-cage-topology-pi' /pi-agent/AGENTS.md 2>/dev/null)
+[[ -z "$count" ]] && count=0
 if [[ "$count" -eq 1 ]]; then
   pass "Test 4: exactly one begin:rip-cage-topology-pi block after second init"
 else
@@ -109,7 +110,8 @@ fi
 echo ""
 echo "=== Test 5: Claude CLAUDE.md markers untouched after pi init ==="
 
-claude_count=$(docker exec "$CONTAINER" grep -c 'begin:rip-cage-topology$' /home/agent/.claude/CLAUDE.md 2>/dev/null || echo "0")
+claude_count=$(docker exec "$CONTAINER" grep -c 'begin:rip-cage-topology -->' /home/agent/.claude/CLAUDE.md 2>/dev/null)
+[[ -z "$claude_count" ]] && claude_count=0
 if [[ "$claude_count" -eq 1 ]]; then
   pass "Test 5: exactly one begin:rip-cage-topology (unsuffixed) in CLAUDE.md — no drift"
 else
@@ -117,7 +119,8 @@ else
 fi
 
 # Also confirm the pi marker is NOT present in CLAUDE.md
-pi_in_claude=$(docker exec "$CONTAINER" grep -c 'begin:rip-cage-topology-pi' /home/agent/.claude/CLAUDE.md 2>/dev/null || echo "0")
+pi_in_claude=$(docker exec "$CONTAINER" grep -c 'begin:rip-cage-topology-pi -->' /home/agent/.claude/CLAUDE.md 2>/dev/null)
+[[ -z "$pi_in_claude" ]] && pi_in_claude=0
 if [[ "$pi_in_claude" -eq 0 ]]; then
   pass "Test 5b: pi marker absent from CLAUDE.md (no cross-contamination)"
 else
@@ -137,7 +140,8 @@ else
   fail "Test 6: user content lost after re-init"
 fi
 
-count=$(docker exec "$CONTAINER" grep -c 'begin:rip-cage-topology-pi' /pi-agent/AGENTS.md 2>/dev/null || echo "0")
+count=$(docker exec "$CONTAINER" grep -c 'begin:rip-cage-topology-pi' /pi-agent/AGENTS.md 2>/dev/null)
+[[ -z "$count" ]] && count=0
 if [[ "$count" -eq 1 ]]; then
   pass "Test 6b: still exactly one pi topology block after re-init with user content"
 else
@@ -170,7 +174,7 @@ if [[ -z "$CONTAINER2" ]]; then
   fail "Test 7: container2 did not come up"
 else
   # Re-run init explicitly and capture exit code + output
-  init_output=$(docker exec "$CONTAINER2" /usr/local/bin/init-rip-cage.sh 2>&1) || true
+  init_output=$(docker exec "$CONTAINER2" /usr/local/bin/init-rip-cage.sh 2>&1)
   init_exit=$?
   if [[ $init_exit -eq 0 ]]; then
     pass "Test 7: init exits 0 even when pi mount was not wired"
@@ -182,6 +186,12 @@ else
     fail "Test 7b: init logged AGENTS.md error despite mount-absent case" "$(echo "$init_output" | grep -i 'AGENTS.md')"
   else
     pass "Test 7b: no AGENTS.md error in init output"
+  fi
+  # Assert the mount-absent guard actually held: AGENTS.md must NOT exist in /pi-agent
+  if ! docker exec "$CONTAINER2" test -f /pi-agent/AGENTS.md; then
+    pass "Test 7c: /pi-agent/AGENTS.md not created when mount was skipped"
+  else
+    fail "Test 7c" "AGENTS.md should not exist when mount was skipped but Guard 1 let the block run"
   fi
 fi
 

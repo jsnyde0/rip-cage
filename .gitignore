@@ -18,6 +18,8 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+# .env-pi is not matched by .env.* (glob requires a dot after .env); add explicit rule
+**/.env-pi
 
 # Logs
 *.log

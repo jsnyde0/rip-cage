@@ -61,12 +61,11 @@ cleanup() {
   # Clean up test workspace dirs
   [[ -n "$TEST_WS" && -d "$TEST_WS" ]] && rm -rf "$TEST_WS"
   [[ -n "${TEST_WS2:-}" && -d "${TEST_WS2}" ]] && rm -rf "$TEST_WS2"
-  # Restore ~/.pi/agent state
+  # Restore ~/.pi/agent state — atomic mv-swap to avoid losing data on cp failure
   if [[ "$PI_AGENT_EXISTED" == "true" && -n "$PI_AGENT_BACKUP" ]]; then
-    rm -rf "$PI_AGENT_DIR"
-    mkdir -p "$PI_AGENT_DIR"
-    cp -a "$PI_AGENT_BACKUP/." "$PI_AGENT_DIR/"
-    rm -rf "$PI_AGENT_BACKUP"
+    mv "$PI_AGENT_DIR" "${PI_AGENT_DIR}.evicting"
+    mv "$PI_AGENT_BACKUP" "$PI_AGENT_DIR"
+    rm -rf "${PI_AGENT_DIR}.evicting"
   elif [[ "$PI_AGENT_EXISTED" == "false" ]]; then
     # We created ~/.pi/agent for the test — remove it (unless it still exists as the
     # real user's directory). Check that it only contains our test file before deleting.
@@ -142,11 +141,11 @@ fi
 echo ""
 echo "=== Test 4: CAGE_HOST_ADDR present in container env ==="
 
-cage_env=$(docker exec "$CONTAINER" env 2>/dev/null | grep '^CAGE_HOST_ADDR=' || true)
-if [[ -n "$cage_env" ]]; then
-  pass "CAGE_HOST_ADDR present in container env ('$cage_env')"
+cage_addr_line=$(docker exec "$CONTAINER" env 2>/dev/null | grep '^CAGE_HOST_ADDR=' || true)
+if [[ "${cage_addr_line#CAGE_HOST_ADDR=}" != "" ]]; then
+  pass "CAGE_HOST_ADDR present and non-empty in container env ('$cage_addr_line')"
 else
-  fail "CAGE_HOST_ADDR not set in container env (non-interactive pi -p will fail)"
+  fail "CAGE_HOST_ADDR not set or empty in container env (non-interactive pi -p will fail)" "$cage_addr_line"
 fi
 
 # ================================================================

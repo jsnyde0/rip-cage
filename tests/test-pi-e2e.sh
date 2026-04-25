@@ -30,7 +30,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Step 1: Skip if no host auth.json
+# Step 1: Skip if rip-cage image not built
+if ! docker image inspect rip-cage:latest >/dev/null 2>&1; then
+  echo "[skip] rip-cage:latest not built — run ./rc build first"
+  exit 0
+fi
+
+# Step 1b: Skip if no host auth.json
 if [[ ! -f "${HOME}/.pi/agent/auth.json" ]]; then
   echo "[skip] no pi auth on host; run 'pi /login' first"
   exit 0

@@ -105,8 +105,11 @@ if [ -f /etc/rip-cage/cage-claude.md ]; then
   echo "[rip-cage] Cage-topology section appended to ~/.claude/CLAUDE.md"
 fi
 # Append cage-authored topology block to /pi-agent/AGENTS.md (ADR-019 D3 FIRM)
-# Guard 1: skip silently if pi mount is absent (host dir was missing at rc up time)
-if [ -d /pi-agent ] && [ -f /etc/rip-cage/cage-pi.md ]; then
+# Guard 1: skip silently if pi mount is absent (host dir was missing at rc up time).
+# Use PI_CODING_AGENT_DIR (exported by _up_prepare_docker_mounts only when host dir
+# exists) — /pi-agent is pre-created in the Dockerfile so [ -d /pi-agent ] is always
+# true, making it an unreliable mount-presence signal.
+if [ "${PI_CODING_AGENT_DIR:-}" = "/pi-agent" ] && [ -f /etc/rip-cage/cage-pi.md ]; then
   # Guard 2: create AGENTS.md if it doesn't exist yet
   if [ ! -f /pi-agent/AGENTS.md ]; then
     : > /pi-agent/AGENTS.md
@@ -274,7 +277,7 @@ if ! claude --version > /dev/null 2>&1; then
 fi
 echo "[rip-cage] Claude Code $(claude --version) ready"
 
-# 8b. Pi verify
+# 9. Pi verify
 if command -v pi >/dev/null 2>&1; then
     echo "[rip-cage] pi $(pi --version) ready"
 else
@@ -289,7 +292,7 @@ elif [ ! -f ~/.claude.json ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
   echo "[rip-cage] WARNING: No auth found (~/.claude/.credentials.json missing, ANTHROPIC_API_KEY not set)" >&2
 fi
 
-# 9. Initialize beads
+# 10. Initialize beads
 # Storage mode was determined at top of script from metadata.json.
 # For server mode: BEADS_DOLT_SERVER_MODE and HOST are exported; port is re-read by bd wrapper.
 # For embedded mode: no server env vars; bd uses in-process Dolt on the bind mount.
@@ -330,7 +333,7 @@ if [[ -f /etc/rip-cage/cage-env ]]; then
   fi
 fi
 
-# 10. Start tmux (CLI mode only — skip if inside VS Code devcontainer)
+# 11. Start tmux (CLI mode only — skip if inside VS Code devcontainer)
 if [ -z "${VSCODE_INJECTION:-}" ] && [ -z "${REMOTE_CONTAINERS:-}" ]; then
   if command -v tmux > /dev/null 2>&1; then
     tmux new-session -d -s rip-cage -c /workspace 2>/dev/null || true
