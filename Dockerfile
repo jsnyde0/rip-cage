@@ -17,6 +17,7 @@ RUN cargo install --git https://github.com/Dicklesworthstone/destructive_command
 FROM debian:bookworm
 
 ARG CLAUDE_CODE_VERSION=latest
+ARG PI_VERSION=latest
 ARG BUN_VERSION=latest
 
 # Terminal / locale — needed for Claude Code's TUI to render correctly in tmux
@@ -75,6 +76,9 @@ RUN chmod +x /usr/local/bin/bd /usr/local/bin/bd-real
 # Claude Code
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
+# Pi coding agent
+RUN npm install -g @mariozechner/pi-coding-agent@${PI_VERSION}
+
 # Non-root user
 RUN groupadd -g 1000 agent \
     && useradd -m -u 1000 -g agent -s /usr/bin/zsh agent \
@@ -93,6 +97,12 @@ RUN mkdir -p /etc/rip-cage/ca
 RUN : > /etc/rip-cage/cage-env \
     && chown agent:agent /etc/rip-cage/cage-env \
     && chmod 0644 /etc/rip-cage/cage-env
+
+# Pre-create /pi-agent bind-mount target as agent:agent (before USER agent).
+# Docker creates bind-mount parent dirs as root; pre-creating here avoids the
+# ownership trap that would break pi's proper-lockfile token refresh (ADR-019 D1).
+RUN mkdir -p /pi-agent \
+    && chown agent:agent /pi-agent
 
 # Copy rip-cage files — stable files first (fewer cache busts), frequently-edited last
 RUN mkdir -p /etc/ssh/ssh_config.d
