@@ -7,6 +7,7 @@ The rip-cage image is based on `debian:bookworm` with a multi-stage Dockerfile (
 | Tool | Purpose |
 |------|---------|
 | Claude Code | The agent itself |
+| pi-coding-agent | Multi-provider coding agent (Anthropic, OpenAI/Codex, Gemini, and more); installed version: see `pi --version` inside cage |
 | Node 22 + Bun | JS/TS runtime |
 | Python 3 + uv | Python runtime + package manager |
 | Go (build stage only) | Compiles bd/beads — not available at runtime |

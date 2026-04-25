@@ -83,6 +83,8 @@ Rip cage is **your existing Claude Code workflow, caged** — not a new environm
 
 If you're already invested in Claude Code and want to run it with `bypassPermissions` without nuking your machine, rip cage cages your workflow and adds a safety stack. If you're looking for a batteries-included dev environment with pre-built language profiles and a fancy shell, tools like [ClaudeBox](https://github.com/RchGrav/claudebox) may fit better.
 
+Pi (`@mariozechner/pi-coding-agent`) is also supported in the same image alongside Claude Code. If you have a ChatGPT Plus/Pro subscription, pi's Codex OAuth flow lets you run OpenAI Codex from inside the cage without an API key. Pi also supports Anthropic, Gemini, Groq, Cerebras, and more. See [Auth → Pi auth](docs/reference/auth.md#pi-auth) for setup and TOS notes.
+
 ## More info
 
 **Reference:**
