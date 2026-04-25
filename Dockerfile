@@ -113,6 +113,7 @@ COPY hooks/ /usr/local/lib/rip-cage/hooks/
 COPY tests/test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
 COPY settings.json /etc/rip-cage/settings.json
 COPY cage-claude.md /etc/rip-cage/cage-claude.md
+COPY cage-pi.md /etc/rip-cage/cage-pi.md
 COPY init-rip-cage.sh /usr/local/bin/init-rip-cage.sh
 COPY skill-server.py /usr/local/lib/rip-cage/skill-server.py
 COPY tests/test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
