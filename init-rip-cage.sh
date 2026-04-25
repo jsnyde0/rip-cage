@@ -253,6 +253,14 @@ if ! claude --version > /dev/null 2>&1; then
 fi
 echo "[rip-cage] Claude Code $(claude --version) ready"
 
+# 8b. Pi verify
+if command -v pi >/dev/null 2>&1; then
+    echo "[rip-cage] pi $(pi --version) ready"
+else
+    echo "[rip-cage] FATAL: pi not found in image" >&2
+    exit 1
+fi
+
 # Check auth (warn only, do not fail)
 if [ -f ~/.claude/.credentials.json ]; then
   echo "[rip-cage] OAuth credentials found"

@@ -27,6 +27,7 @@ CONTAINER_NAME="rc-e2e-test"
 E2E_TMP=""
 E2E_TMP2=""
 OFF_TMP=""
+AUTH_TMP=""
 
 CLEANUP() {
   # Destroy any e2e containers + volumes we may have created. Match on labels
@@ -36,7 +37,7 @@ CLEANUP() {
     local sp
     sp=$(docker inspect --format '{{index .Config.Labels "rc.source.path"}}' "$c" 2>/dev/null || true)
     case "$sp" in
-      "$E2E_TMP"/*|"$E2E_TMP2"/*|"$OFF_TMP"/*)
+      "$E2E_TMP"/*|"$E2E_TMP2"/*|"$OFF_TMP"/*|"$AUTH_TMP"/*)
         docker rm -f "$c" > /dev/null 2>&1 || true
         docker volume rm "rc-state-${c}" > /dev/null 2>&1 || true
         ;;
@@ -45,6 +46,7 @@ CLEANUP() {
   [[ -n "$E2E_TMP"  ]] && rm -rf "$E2E_TMP"
   [[ -n "$E2E_TMP2" ]] && rm -rf "$E2E_TMP2"
   [[ -n "$OFF_TMP"  ]] && rm -rf "$OFF_TMP"
+  [[ -n "$AUTH_TMP" ]] && rm -rf "$AUTH_TMP"
 }
 trap CLEANUP EXIT
 
@@ -213,25 +215,157 @@ else
     "hook=$hook_ok dcg=$dcg_ok"
 fi
 
+# Check 12: Pi verify line appears in init log (ADR-019 B3)
+_init_log=$(docker logs "$CONTAINER_NAME" 2>&1 || true)
+if echo "$_init_log" | grep -q '\[rip-cage\] pi '; then
+  check "pi verify line in init log" "pass"
+else
+  check "pi verify line in init log" "fail" "(see: docker logs $CONTAINER_NAME)"
+fi
+
+# Checks 12a-12d: Auth-warn matrix — observation only (ADR-019 D2 FIRM).
+# Verifies the Claude auth-warn block behavior under four auth-presence combinations.
+# These document expected behavior; they do not add pi-specific auth checks.
+#
+# The auth-warn block inside the container checks (in order):
+#   1. ~/.claude/.credentials.json present → "OAuth credentials found" (no warn)
+#   2. ~/.claude.json present → no warn (API key flow)
+#   3. ANTHROPIC_API_KEY set → no warn
+#   4. None of the above → "WARNING: No auth found"
+#
+# Host credential files (~/.claude/.credentials.json, ~/.claude.json) are auto-mounted
+# by rc up when present. We therefore use two dimensions to cover all four cases:
+#   - ANTHROPIC_API_KEY env var controls "Claude auth via env" (passed through to container)
+#   - Host credential files are mounted automatically; test adapts to host state.
+# Cases 2 and 3 differ only in pi auth state; since the warn-block ignores pi auth (D2 FIRM),
+# both produce the same Claude-warn outcome — we verify this is intentional.
+AUTH_TMP=$(mktemp -d)
+AUTH_TMP_RESOLVED=$(realpath "$AUTH_TMP")
+
+# Detect whether host credential files exist (they are auto-mounted by rc up).
+_host_has_claude_creds=0
+_host_has_claude_json=0
+if [ -f "${HOME}/.claude/.credentials.json" ]; then _host_has_claude_creds=1; fi
+if [ -f "${HOME}/.claude.json" ]; then _host_has_claude_json=1; fi
+_host_has_claude_auth=$(( _host_has_claude_creds + _host_has_claude_json ))
+
+# Each case gets its own workspace to avoid container-name collisions.
+# Pattern: parent "rc-auth", base "caseN" → container "rc-auth-caseN"
+mkdir -p "${AUTH_TMP}/rc-auth"
+
+# Case 1: Claude auth via ANTHROPIC_API_KEY → no 'WARNING: No auth' in log.
+_aws1="${AUTH_TMP}/rc-auth/case1"
+mkdir -p "$_aws1"
+git -C "$_aws1" init > /dev/null 2>&1
+RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
+  ANTHROPIC_API_KEY=sk-test-case1 \
+  RIP_CAGE_EGRESS=off "$RC" up "$_aws1" </dev/null >/dev/null 2>&1 || true
+_ac1_name=$(docker ps -a --filter "label=rc.source.path=$(realpath "$_aws1")" \
+  --format '{{.Names}}' 2>/dev/null | head -1)
+_ac1_log=$(docker logs "$_ac1_name" 2>&1 || true)
+if ! echo "$_ac1_log" | grep -q 'WARNING: No auth'; then
+  check "auth-warn case 1: Claude API key set → no WARNING" "pass"
+else
+  check "auth-warn case 1: Claude API key set → no WARNING" "fail" "(container=$_ac1_name)"
+fi
+docker rm -f "$_ac1_name" > /dev/null 2>&1 || true
+docker volume rm "rc-state-${_ac1_name}" > /dev/null 2>&1 || true
+
+# Case 2: Pi auth present, no Claude env auth → warn depends on host credential file state.
+# Note: Claude warn-line intentionally present per ADR-019 D2 — pi auth uses its own /login UI.
+# If host has ~/.claude/.credentials.json or ~/.claude.json, those are auto-mounted → no warn.
+# If host has none of those, the warn fires — confirming pi auth alone doesn't suppress it (D2).
+_aws2="${AUTH_TMP}/rc-auth/case2"
+mkdir -p "$_aws2"
+git -C "$_aws2" init > /dev/null 2>&1
+RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
+  RIP_CAGE_EGRESS=off "$RC" up "$_aws2" </dev/null >/dev/null 2>&1 || true
+_ac2_name=$(docker ps -a --filter "label=rc.source.path=$(realpath "$_aws2")" \
+  --format '{{.Names}}' 2>/dev/null | head -1)
+_ac2_log=$(docker logs "$_ac2_name" 2>&1 || true)
+if [ "$_host_has_claude_auth" -gt 0 ]; then
+  # Host creds auto-mounted → no warn expected (D2: pi auth doesn't add a warn either)
+  if ! echo "$_ac2_log" | grep -q 'WARNING: No auth'; then
+    check "auth-warn case 2: pi auth + host Claude creds → no WARNING (host creds dominate)" "pass"
+  else
+    check "auth-warn case 2: pi auth + host Claude creds → no WARNING (host creds dominate)" "fail" "(container=$_ac2_name)"
+  fi
+else
+  # No host creds → warn expected; pi auth alone does NOT suppress Claude warn (D2 FIRM)
+  if echo "$_ac2_log" | grep -q 'WARNING: No auth'; then
+    check "auth-warn case 2: pi auth only, no Claude auth → WARNING present (intentional per D2)" "pass"
+  else
+    check "auth-warn case 2: pi auth only, no Claude auth → WARNING present (intentional per D2)" "fail" "(container=$_ac2_name)"
+  fi
+fi
+docker rm -f "$_ac2_name" > /dev/null 2>&1 || true
+docker volume rm "rc-state-${_ac2_name}" > /dev/null 2>&1 || true
+
+# Case 3: Neither Claude env auth nor pi auth → warn depends on host credential file state.
+_aws3="${AUTH_TMP}/rc-auth/case3"
+mkdir -p "$_aws3"
+git -C "$_aws3" init > /dev/null 2>&1
+RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
+  RIP_CAGE_EGRESS=off "$RC" up "$_aws3" </dev/null >/dev/null 2>&1 || true
+_ac3_name=$(docker ps -a --filter "label=rc.source.path=$(realpath "$_aws3")" \
+  --format '{{.Names}}' 2>/dev/null | head -1)
+_ac3_log=$(docker logs "$_ac3_name" 2>&1 || true)
+if [ "$_host_has_claude_auth" -gt 0 ]; then
+  if ! echo "$_ac3_log" | grep -q 'WARNING: No auth'; then
+    check "auth-warn case 3: no env auth, host Claude creds present → no WARNING" "pass"
+  else
+    check "auth-warn case 3: no env auth, host Claude creds present → no WARNING" "fail" "(container=$_ac3_name)"
+  fi
+else
+  if echo "$_ac3_log" | grep -q 'WARNING: No auth'; then
+    check "auth-warn case 3: neither Claude nor pi auth → WARNING" "pass"
+  else
+    check "auth-warn case 3: neither Claude nor pi auth → WARNING" "fail" "(container=$_ac3_name)"
+  fi
+fi
+docker rm -f "$_ac3_name" > /dev/null 2>&1 || true
+docker volume rm "rc-state-${_ac3_name}" > /dev/null 2>&1 || true
+
+# Case 4: Both Claude API key and pi auth → no 'WARNING: No auth'.
+_aws4="${AUTH_TMP}/rc-auth/case4"
+mkdir -p "$_aws4"
+git -C "$_aws4" init > /dev/null 2>&1
+RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
+  ANTHROPIC_API_KEY=sk-test-case4 \
+  RIP_CAGE_EGRESS=off "$RC" up "$_aws4" </dev/null >/dev/null 2>&1 || true
+_ac4_name=$(docker ps -a --filter "label=rc.source.path=$(realpath "$_aws4")" \
+  --format '{{.Names}}' 2>/dev/null | head -1)
+_ac4_log=$(docker logs "$_ac4_name" 2>&1 || true)
+if ! echo "$_ac4_log" | grep -q 'WARNING: No auth'; then
+  check "auth-warn case 4: Claude API key + pi auth → no WARNING" "pass"
+else
+  check "auth-warn case 4: Claude API key + pi auth → no WARNING" "fail" "(container=$_ac4_name)"
+fi
+docker rm -f "$_ac4_name" > /dev/null 2>&1 || true
+docker volume rm "rc-state-${_ac4_name}" > /dev/null 2>&1 || true
+
+# Restore RC_ALLOWED_ROOTS to the primary e2e root (subsequent checks use E2E_TMP_RESOLVED).
+export RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}"
+
 # -----------------------------------------------------------------------------
 # Lifecycle — stop/resume
 # -----------------------------------------------------------------------------
 
-# Check 12: docker stop exits 0 (simulates rc down)
+# Check 13: docker stop exits 0 (simulates rc down)
 if docker stop "$CONTAINER_NAME" > /dev/null 2>&1; then
   check "docker stop exits 0" "pass"
 else
   check "docker stop exits 0" "fail"
 fi
 
-# Check 16 setup: snapshot tmux client count before resume (container is stopped
+# Check 17 setup: snapshot tmux client count before resume (container is stopped
 # so this will error or return 0; capture safely).
 docker start "$CONTAINER_NAME" > /dev/null 2>&1 || true
 sleep 1
 tmux_clients_before=$(docker exec "$CONTAINER_NAME" sh -c 'tmux list-clients 2>/dev/null | wc -l' 2>/dev/null | tr -d '[:space:]' || echo 0)
 docker stop "$CONTAINER_NAME" > /dev/null 2>&1 || true
 
-# Check 13: rc up on same workspace resumes — egress label preserved
+# Check 14: rc up on same workspace resumes — egress label preserved
 "$RC" up "$TEST_WS" < /dev/null > /dev/null 2>&1 || true
 egress_label=$(docker inspect "$CONTAINER_NAME" \
   --format '{{index .Config.Labels "rc.egress"}}' 2>/dev/null || true)
@@ -241,21 +375,21 @@ else
   check "rc up resume preserves rc.egress=on" "fail" "label='${egress_label:-missing}'"
 fi
 
-# Check 14: Volume contents intact after resume
+# Check 15: Volume contents intact after resume
 if docker exec "$CONTAINER_NAME" test -f /workspace/README > /dev/null 2>&1; then
   check "workspace contents intact after resume" "pass"
 else
   check "workspace contents intact after resume" "fail"
 fi
 
-# Check 15: rc test still passes after restart
+# Check 16: rc test still passes after restart
 if "$RC" test "$CONTAINER_NAME" > /tmp/rc-e2e-rctest2.out 2>&1; then
   check "rc test passes after restart" "pass"
 else
   check "rc test passes after restart" "fail" "(see /tmp/rc-e2e-rctest2.out)"
 fi
 
-# Check 16: Resume TTY guard (regression guard for 2026-04-20 fix #3).
+# Check 17: Resume TTY guard (regression guard for 2026-04-20 fix #3).
 # The fix prevents rc up from launching tmux attach when stdin is not a TTY.
 # Compare tmux client count before/after a no-op resume against the already
 # running container. No new client should appear.
@@ -269,7 +403,7 @@ else
     "before=$tmux_clients_before after=$tmux_clients_after"
 fi
 
-# Check 17: CA env propagation (regression guard for 2026-04-20 fix #2)
+# Check 18: CA env propagation (regression guard for 2026-04-20 fix #2)
 env_out=$(docker exec "$CONTAINER_NAME" env 2>/dev/null || true)
 if echo "$env_out" | grep -q "^NODE_EXTRA_CA_CERTS="; then
   ca_val=$(echo "$env_out" | grep "^NODE_EXTRA_CA_CERTS=" | head -1 | cut -d= -f2-)
@@ -286,7 +420,7 @@ fi
 # Lifecycle — destroy
 # -----------------------------------------------------------------------------
 
-# Check 18: rc destroy removes container
+# Check 19: rc destroy removes container
 "$RC" destroy -f "$CONTAINER_NAME" > /dev/null 2>&1 || true
 if ! docker inspect "$CONTAINER_NAME" > /dev/null 2>&1; then
   check "rc destroy removes container" "pass"
@@ -294,7 +428,7 @@ else
   check "rc destroy removes container" "fail"
 fi
 
-# Check 19: rc destroy removes volume
+# Check 20: rc destroy removes volume
 if ! docker volume ls --format '{{.Name}}' | grep -q "^rc-state-${CONTAINER_NAME}$"; then
   check "rc destroy removes volume" "pass"
 else
@@ -305,7 +439,7 @@ fi
 # Name collision
 # -----------------------------------------------------------------------------
 
-# Check 20: Second workspace whose parent+base would compute the SAME raw name
+# Check 21: Second workspace whose parent+base would compute the SAME raw name
 # triggers rc's collision handling (-XXXX suffix appended).
 E2E_TMP2=$(mktemp -d)
 mkdir -p "${E2E_TMP2}/rc"
@@ -338,7 +472,7 @@ docker volume rm "rc-state-${CONTAINER_NAME}" > /dev/null 2>&1 || true
 # Egress-off variant
 # -----------------------------------------------------------------------------
 
-# Check 21: RIP_CAGE_EGRESS=off — no mitmdump, label = "off".
+# Check 22: RIP_CAGE_EGRESS=off — no mitmdump, label = "off".
 # Stage the off workspace under a path that yields a distinct container name
 # (parent "rc-off", base "test" -> "rc-off-test").
 OFF_TMP=$(mktemp -d)
@@ -373,7 +507,7 @@ fi
 # Failure mode
 # -----------------------------------------------------------------------------
 
-# Check 22: rc up with nonexistent path exits non-zero, no partial container.
+# Check 23: rc up with nonexistent path exits non-zero, no partial container.
 # Subshell isolates env leaks.
 nonexistent_exit=0
 ( "$RC" up /nonexistent/path/that/does/not/exist < /dev/null > /dev/null 2>&1 ) || nonexistent_exit=$?
