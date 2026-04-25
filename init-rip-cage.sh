@@ -31,13 +31,21 @@ if [[ ! -L /home/agent/.claude ]]; then
   sudo chown agent:agent /home/agent/.claude 2>/dev/null || true
 fi
 
-# ADR-017 D1: when ssh-agent forwarding is on, the mounted host socket is
-# owned by the host uid (e.g. 501:67278 on macOS/OrbStack) and is inaccessible
-# to the in-container agent user (uid 1000). Reassign ownership so the agent
-# can sign. This only affects the container's view — the host socket file is
-# untouched on the host side.
+# ADR-017 D1 / ADR-018 2026-04-25: when ssh-agent forwarding is on, the
+# mounted host socket arrives owned by the host uid (e.g. 501:67278 on
+# macOS/OrbStack) and is inaccessible to the in-container agent user
+# (uid 1000). Reassign ownership so the agent can sign. This only affects
+# the container's view — the host socket file is untouched on the host side.
+# Sudoers grants this exact command (Dockerfile NOPASSWD list); fail loud if
+# the grant has drifted, since silent failure here was the original 2026-04-25
+# bug (agent user permanently locked out of the proxied socket on macOS).
 if [[ -S /ssh-agent.sock ]]; then
-  sudo chown agent:agent /ssh-agent.sock 2>/dev/null || true
+  if ! sudo -n chown agent:agent /ssh-agent.sock 2>/tmp/rc-chown-err; then
+    echo "[rip-cage] WARNING: failed to chown /ssh-agent.sock — agent user will not reach host ssh-agent." >&2
+    echo "[rip-cage]   sudo error: $(cat /tmp/rc-chown-err 2>/dev/null)" >&2
+    echo "[rip-cage]   Likely cause: stale image without sudoers grant. Rebuild with './rc build'." >&2
+  fi
+  rm -f /tmp/rc-chown-err
 fi
 
 # Install settings template — merge with workspace project settings if present to

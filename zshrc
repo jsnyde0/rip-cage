@@ -62,13 +62,32 @@ if [[ -r /etc/rip-cage/ssh-agent-status ]]; then
     empty)
       echo "[rip-cage] ssh-agent: forwarded but EMPTY (0 keys) — push will fail."
       echo "  Host agent: ${_rc_ssh_socket:-<unknown>} has no keys loaded."
-      echo "  Fix: run 'ssh-add ~/.ssh/id_ed25519' on host, then 'rc down && rc up'"
-      echo "  Or pass --no-forward-ssh to skip forwarding."
+      if [[ "$_rc_ssh_socket" == "/run/host-services/ssh-auth.sock" ]]; then
+        # macOS via OrbStack/Docker Desktop — only the launchd agent is proxied
+        # across the VM boundary, NOT the user's shell session agent. Adding keys
+        # to the session agent (default 'ssh-add') is invisible to the cage.
+        echo "  Fix (macOS): SSH_AUTH_SOCK=\$(launchctl getenv SSH_AUTH_SOCK) ssh-add ~/.ssh/id_ed25519"
+        echo "  This populates the launchd agent the OrbStack/Docker Desktop proxy actually forwards."
+        echo "  Then: rc down && rc up. Or pass --no-forward-ssh to skip forwarding."
+      else
+        echo "  Fix: run 'ssh-add ~/.ssh/id_ed25519' on host, then 'rc down && rc up'"
+        echo "  Or pass --no-forward-ssh to skip forwarding."
+      fi
       ;;
     unreachable)
       echo "[rip-cage] ssh-agent: socket UNREACHABLE — push will fail."
       echo "  Socket: ${_rc_ssh_socket:-<unknown>} mounted but not responding."
-      echo "  Fix: verify ssh-agent is running on host ('ssh-add -l'), then 'rc down && rc up'"
+      if [[ "$_rc_ssh_socket" == "/run/host-services/ssh-auth.sock" ]]; then
+        # The most common cause on macOS is a permission mismatch on the mounted
+        # socket (host uid != container agent uid). init-rip-cage.sh chown'd it
+        # at start; if this still trips, the image likely predates the sudoers
+        # entry and needs a rebuild.
+        echo "  Likely cause: cage agent user cannot reach the host-forwarded socket."
+        echo "  Fix: ./rc build && rc down && rc up (rebuild picks up sudoers chown grant)."
+        echo "  If that fails: verify host ssh-agent is running ('ssh-add -l' on host)."
+      else
+        echo "  Fix: verify ssh-agent is running on host ('ssh-add -l'), then 'rc down && rc up'"
+      fi
       echo "  Or pass --no-forward-ssh to skip forwarding."
       ;;
     no_host_agent)

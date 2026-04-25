@@ -1233,12 +1233,24 @@ _up_ssh_preflight() {
       ;;
     empty)
       log "Warning: ssh-agent forwarded but empty (0 keys). Push will fail."
-      log "  Host fix: run 'ssh-add ~/.ssh/id_ed25519' on host (socket: ${_UP_FORWARD_SSH_HOST_SOCK:-<unknown>})"
-      log "  Then: rc down && rc up  (or pass --no-forward-ssh to skip forwarding)"
+      if [[ "${_UP_FORWARD_SSH_HOST_SOCK:-}" == "/run/host-services/ssh-auth.sock" ]]; then
+        # macOS via OrbStack/Docker Desktop: only the launchd agent is proxied
+        # across the VM boundary. Default 'ssh-add' adds to the user's session
+        # agent and is invisible to the cage.
+        log "  Host fix (macOS): SSH_AUTH_SOCK=\$(launchctl getenv SSH_AUTH_SOCK) ssh-add ~/.ssh/id_ed25519"
+        log "  Then: rc down && rc up  (or pass --no-forward-ssh to skip forwarding)"
+      else
+        log "  Host fix: run 'ssh-add ~/.ssh/id_ed25519' on host (socket: ${_UP_FORWARD_SSH_HOST_SOCK:-<unknown>})"
+        log "  Then: rc down && rc up  (or pass --no-forward-ssh to skip forwarding)"
+      fi
       ;;
     unreachable)
       log "Warning: ssh-agent socket mounted but not reachable from inside the cage. Push will fail."
       log "  Socket: ${_UP_FORWARD_SSH_HOST_SOCK:-<unknown>} — verify ssh-agent is running on host"
+      if [[ "${_UP_FORWARD_SSH_HOST_SOCK:-}" == "/run/host-services/ssh-auth.sock" ]]; then
+        log "  Common cause on macOS: stale image without sudoers entry to chown the mounted socket."
+        log "  Fix: ./rc build && rc down && rc up"
+      fi
       log "  Pass --no-forward-ssh to suppress forwarding."
       ;;
     no_host_agent)

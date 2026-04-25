@@ -1,6 +1,6 @@
 # ADR-018: macOS ssh-agent discovery — probe and forward the user's actual agent
 
-**Status:** Amended 2026-04-24 (see Amendments)
+**Status:** Amended 2026-04-25 (see Amendments)
 **Date:** 2026-04-24
 **Design:** [Design doc](../../history/2026-04-24-macos-ssh-agent-discovery-design.md)
 **Parent:** [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (ssh-agent forwarding default)
@@ -8,6 +8,22 @@
 **Related:** project [CLAUDE.md](../../CLAUDE.md) philosophy section (autonomy over containment, "it's annoying" as a design signal)
 
 ## Amendments
+
+### 2026-04-25 — sudoers grant for `/ssh-agent.sock` chown; macOS "empty" guidance targets launchd
+
+Two coupled bugs surfaced in dogfooding after the 2026-04-24 amendment landed:
+
+**Bug 1 — `unreachable` masquerading for permission-denied.** The OrbStack proxy at `/run/host-services/ssh-auth.sock` exposes the bind-mounted socket inside the container with `uid=<host-uid>:gid=<orbstack-internal-gid>` mode `0660` (e.g. `501:67278` on a typical macOS host). The cage's `agent` user (uid 1000) is neither owner nor group → `Permission denied` on connect → `ssh-add` exits 2 → preflight reports `unreachable`. `init-rip-cage.sh` already attempts `sudo chown agent:agent /ssh-agent.sock` for exactly this reason, but the sudoers NOPASSWD list omitted the command, so the chown silently failed (it ran with `2>/dev/null || true`). The result was a fresh `rc up` on macOS that always reported "socket UNREACHABLE" even when the host agent was alive — and the banner pointed users at "verify ssh-agent on host," which was actively wrong (the host agent was fine; the cage couldn't reach it).
+
+Fix: add `/usr/bin/chown agent\:agent /ssh-agent.sock` to the sudoers grant in the Dockerfile. This is the same pattern as the existing `/home/agent/.claude` and `/home/agent/.claude-state` entries — narrow path, fixed target ownership, idempotent, no escalation surface beyond what the cage already trusts itself with.
+
+**Bug 2 — "empty" guidance pointed at the wrong agent.** Once chown works and the cage reaches the proxy, the next failure mode is the launchd agent itself being empty. The pre-2026-04-25 banner said `Fix: run 'ssh-add ~/.ssh/id_ed25519' on host`. On macOS that adds keys to the user's *session* agent (`/var/folders/.../agent.NNN`), which the cage cannot reach (per the 2026-04-24 amendment, only the launchd path is proxied across the VM boundary). Users following the banner saw their host `ssh-add -l` show keys, but the cage stayed empty.
+
+Fix: when the recorded socket path is `/run/host-services/ssh-auth.sock`, the banner and `rc up` warning surface the launchd-targeted form: `SSH_AUTH_SOCK=$(launchctl getenv SSH_AUTH_SOCK) ssh-add ~/.ssh/id_ed25519`. This populates the agent the proxy actually forwards. Passphrase-less keys work — `--apple-use-keychain` is no longer required (it never was, but the original ADR-017 D4 prereq table implied it).
+
+**Why the 2026-04-24 amendment didn't catch this:** the amendment was correct that only `/run/host-services/ssh-auth.sock` is proxied, but its testing happened against a pre-existing container where the chown had already taken effect at create time *before* the sudoers entry was tightened in a later refactor. Fresh `rc up` regressed silently. The 2026-04-25 fix restores the invariant the original ADR-017 D1 quietly assumed: agent user can reach the forwarded socket.
+
+Test additions (`tests/test-ssh-forwarding.sh`): a sudoers regression guard that asserts `sudo -n -l` includes the chown grant, run as part of Test 1.
 
 ### 2026-04-24 — D1's candidate ordering dropped; macOS uses convention path only
 

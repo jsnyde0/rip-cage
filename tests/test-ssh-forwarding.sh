@@ -108,6 +108,18 @@ else
   fi
 fi
 
+# Sudoers regression guard (ADR-018 2026-04-25 amendment): the chown grant
+# for /ssh-agent.sock must be present, otherwise init-rip-cage.sh's chown
+# silently fails and the agent user hits permission-denied on macOS where
+# the host-forwarded socket arrives owned by host-uid:host-gid.
+# sudo -l displays the sudoers entry verbatim, including the `\:` escape used
+# in the Dockerfile heredoc. Match either form (literal colon or \:).
+if docker exec -u agent "$CONTAINER" sudo -n -l 2>/dev/null | grep -E -q 'chown agent\\?:agent /ssh-agent\.sock'; then
+  pass "sudoers grants chown agent:agent /ssh-agent.sock"
+else
+  fail "sudoers missing chown agent:agent /ssh-agent.sock — agent user will be locked out of host-forwarded socket on macOS"
+fi
+
 # Banner: fresh shell should print the ssh-agent line.
 banner=$(docker exec -u agent "$CONTAINER" zsh -i -c 'true' 2>&1 | head -1)
 if echo "$banner" | grep -q '\[rip-cage\] ssh-agent:'; then
