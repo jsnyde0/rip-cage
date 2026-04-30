@@ -41,16 +41,17 @@ This rules out the simpler `bind-mount ~/.ssh:ro` shape. Read-only is not a secu
 
 **Alternatives considered:**
 
-| Approach | Pros | Cons |
-|---|---|---|
-| **Strict allowlist mount (this decision)** | Preserves ADR-017 D1; cage sees no private bytes; minimum necessary surface | Translation step (~80 LOC); pubkey-allowlist bookkeeping; assumes pubkeys exist as files under `~/.ssh/` on host (see Limitation below) |
-| Bind-mount `~/.ssh:ro` whole | Trivial (one line) | Private keys readable inside cage; structural property of ADR-017 D1 lost |
-| Generate config-only, no pubkey mount | Smaller surface | `IdentitiesOnly yes` cannot filter the agent without the matching pubkey file; identity selection breaks |
-| Source pubkeys from `ssh-add -L` (synthesize cage `.pub` files from forwarded agent's enumerated identities) | Works for 1Password / Secure Enclave / agent-forwarded-from-another-host setups where no `.pub` files exist on the rip-cage host; agent socket is by-definition a complete pubkey source; collapses D4's "allowlist + degraded fallback" to "agent IS the allowlist" | Identity matching becomes fingerprint/comment-based instead of filename-based, so the rules-file `<keyname>` from D3 needs a fingerprint or comment lookup against `ssh-add -L` output; more LOC; a layer of indirection at debug time |
-| In-cage agent (load keys into a cage-local ssh-agent) | Fully predictable | Private key material crosses boundary; significantly worse posture |
-| Per-project `.cage/ssh-config` checked into each repo | Deterministic; no host-state coupling; no inference | Forces every project author to ship the file; doesn't auto-cover repos cloned with host aliases on host; doesn't help `bd dolt push` (daemon, not per-project ssh consumer); regresses the "your existing setup carries over via `rc up`" property |
+| Alternative | Rejected because |
+|---|---|
+| Bind-mount `~/.ssh:ro` whole | `direct:` ADR-017 D1 stakes "private keys never cross the boundary" as the structural property; read-only mount still makes bytes readable — the invariant is structural, not access-control-level |
+| Generate config-only, no pubkey mount | `reasoned:` `IdentitiesOnly yes` cannot filter the forwarded agent without a matching pubkey file on disk; without the pubkey, `IdentitiesOnly yes` is inert and SSH falls back to first-key-wins — the exact bug this design fixes |
+| Source pubkeys from `ssh-add -L` (synthesize cage `.pub` files from forwarded agent's identities) | `reasoned:` Identity matching becomes fingerprint/comment-based instead of filename-based; rules-file `<keyname>` → agent-identity matching then requires a fingerprint or comment lookup against `ssh-add -L` output; adds indirection at debug time. Revisit if 1Password/Secure Enclave users hit the pubkey-file gap in dogfooding. |
+| In-cage agent (load keys into a cage-local ssh-agent) | `direct:` ADR-017 D1 prohibits private key material crossing the container boundary |
+| Per-project `.cage/ssh-config` checked into each repo | `reasoned:` Forces every project author to ship the file; doesn't cover repos cloned with host aliases; doesn't help `bd dolt push` (daemon, not per-project ssh consumer); regresses "your existing setup carries over via `rc up`" |
 
 **What would invalidate this:** evidence that strict allowlist generation is so brittle in practice that users are routinely turning it off via `--no-ssh-config`. At that point, revisit per-project files or whole-`~/.ssh:ro` with a different threat model. Separately, if real users hit the "no pubkey files on disk" gap (1Password agent, Secure Enclave, forwarded from another host — see Limitation), promote the `ssh-add -L`-as-source alternative from rejected to chosen and rework D4's mount semantics.
+
+**Invalidation check (mechanical, optional):** In `tests/test-ssh-config.sh`, after `rc up`, verify `docker exec "$container" find /home/agent/.ssh -maxdepth 1 -type f | grep -vE '\.pub$|/config$|/known_hosts$'` returns empty. Non-empty output means a private key crossed the container boundary and D1 is violated.
 
 **Limitation (host-filesystem pubkey dependency).** This decision assumes the host has `<name>.pub` files under `~/.ssh/` for every key the user wants the cage to use. That holds for the dogfooding setup (`~/.ssh/id_ed25519_personal.pub`, `id_ed25519_work.pub`). It does **not** hold for: 1Password SSH agent (pubkeys live in the vault, not on disk), macOS Secure Enclave / Secretive (keys never touch disk by design), agent forwarded from a remote workstation where pubkey files exist on a third machine, and users who `ssh-add`'d a key then deleted the file. In those configurations the forwarded agent works perfectly but D4's mount finds nothing and lands the user in the "user-config-block missing-pubkey" warn-and-degrade branch — strictly worse than today, since the fallback is "first-key-wins" with a confusing warning. Captured here rather than fixed in v1: switching to `ssh-add -L` as the canonical pubkey source is a single-decision pivot (see alternative in the table above) but reshapes D4 enough that we want dogfooding signal first.
 
@@ -79,15 +80,16 @@ The transform is idempotent — running twice with identical input produces iden
 
 **Alternatives considered:**
 
-| Approach | Pros | Cons |
-|---|---|---|
-| **Translate at `rc up`, stable path, every-up re-run (this decision)** | Host file untouched; failures debuggable via marked comments; no resume staleness; no tempfile GC | New bash/awk function in `rc` (~80 LOC); unit tests |
-| Translate at `rc up`, tempfile, create-only | Smaller (no re-run logic) | Resume staleness on host-config edits; tempfile GC risks broken mount |
-| Bind-mount host config directly | Trivial | Parse errors on macOS-only directives; broken IdentityFile paths; ADR-014 D2 defeated by per-Host user values |
-| Generate cage config from scratch (ignore host config) | Predictable | Loses user's per-host preferences; defeats the goal |
-| `docker cp` injection on `docker start` rather than bind mount | Same staleness fix, no host-side path | More moving parts; harder to introspect from host |
+| Alternative | Rejected because |
+|---|---|
+| Translate at `rc up`, tempfile, create-only | `reasoned:` Resume staleness — host config edits don't propagate; tempfile GC risks a broken bind-mount on the next container start |
+| Bind-mount host config directly | `direct:` ADR-014 D2's non-interactive SSH posture can be defeated by per-Host user values; macOS-only directives (`UseKeychain`) error on Debian openssh-client; `IdentityFile` paths resolve to host-only paths |
+| Generate cage config from scratch (ignore host config) | `reasoned:` Loses user's per-host preferences; defeats the goal of "your existing setup carries over via `rc up`" |
+| `docker cp` injection on `docker start` rather than bind mount | `reasoned:` More moving parts; harder to introspect from host; identical staleness fix with no advantage over the bind-mount + stable-path approach |
 
 **What would invalidate this:** the translation set grows past ~8 transforms or starts requiring real ssh_config grammar parsing. At that point, vendor a small Python helper using a real parser.
+
+**Invalidation check (mechanical, optional):** In `tests/test-ssh-config.sh`, run the translation against a fixture `~/.ssh/config` containing `UseKeychain yes` and verify (a) the translated output leads with `IgnoreUnknown UseKeychain,...` and (b) `ssh -G github.com` inside the cage returns no fatal-directive errors. If the `IgnoreUnknown` shim is absent, Debian openssh-client will error on macOS-only directives and transform 2 is broken.
 
 ### D3: github.com identity pin uses a four-layer priority list with no built-in inference defaults
 
@@ -121,14 +123,15 @@ This explicitly *does not* generalize to other hosts (bitbucket, gitlab, interna
 
 **Alternatives considered:**
 
-| Approach | Pros | Cons |
-|---|---|---|
-| **Four-layer priority, rules-file, no built-in defaults (this decision)** | Open-source-honest; explicit override; honest unset state; one-time user-side setup | Users with no rules file and no explicit pin get layer-4 unset on first try |
-| Four-layer priority with hardcoded `~/code/mapular`/`~/code/personal` defaults | "Just works" for the dogfooding user | One user's layout shipped as project default; bad open-source posture |
-| Always require explicit pin (no rules file) | Predictable; no convention encoded | Annoying; "it's annoying" signal writ large |
-| Random/first key wins (today's behavior) | Zero new code | The bug we're fixing |
+| Alternative | Rejected because |
+|---|---|
+| Four-layer priority with hardcoded `~/code/mapular`/`~/code/personal` defaults | `reasoned:` One user's directory layout shipped as project default; bad open-source posture for an open-source project |
+| Always require explicit pin (no rules file) | `reasoned:` CLAUDE.md: "'It's annoying' is a design signal"; forcing explicit pin for every project is the kind of friction the cage is designed to avoid |
+| Random/first key wins (today's behavior) | `direct:` The confirmed bug — `mapular-gtm` cage auth'd as `jsnyde0`, pushing to wrong identity |
 
 **What would invalidate this:** the rules-file format proves insufficient (users want regex, env-var interpolation, conditional rules). Promote to YAML/TOML in a follow-up.
+
+**Invalidation check (mechanical, optional):** `grep -n "code/mapular\|code/personal" rc | wc -l` must return 0. Any non-zero result means a hardcoded user path was added to `rc`, violating the "no built-in inference defaults" rule. (Runnable now against current source.)
 
 ### D4: Allowlist pubkey mount; explicit-pin missing-pubkey aborts; `IdentitiesOnly yes` is load-bearing
 
@@ -153,13 +156,14 @@ Abort message follows ADR-001 actionability: `Error: --github-identity=id_ed2551
 
 **Alternatives considered:**
 
-| Approach | Pros | Cons |
-|---|---|---|
-| **Allowlist + abort on explicit pin (this decision)** | `IdentitiesOnly yes` always meaningful for explicit pins; ADR-001 actionability preserved | One more abort condition at `rc up` |
-| Allowlist + warn-and-degrade always | Doesn't gate startup | Silently regresses to first-key-wins on the very keys the user explicitly named — defeats the design |
-| Mount whole `~/.ssh:ro` to guarantee pubkeys are always present | Simpler | Violates D1 (private keys cross boundary) |
+| Alternative | Rejected because |
+|---|---|
+| Warn-and-degrade always (never abort) | `direct:` ADR-001: fail-loud + actionable; silently regressing to first-key-wins on explicitly-named keys defeats the design — the user named a key, we must honor it or stop |
+| Mount whole `~/.ssh:ro` to guarantee pubkeys always present | `direct:` D1 prohibits — private keys cross the container boundary |
 
 **What would invalidate this:** users routinely hitting the explicit-pin abort and finding it more annoying than helpful. Then degrade-with-loud-warning becomes the right call. Unlikely — users hit this at exactly the moment they typo'd a key name, which is exactly when loud is right.
+
+**Invalidation check (mechanical, optional):** In `tests/test-ssh-config.sh`, run `rc up <staging-path> --github-identity=nonexistent_key_xyz_abc` and assert exit code non-zero with an actionable message containing the key name. If it exits 0 or silently degrades to first-key-wins, D4's abort-on-missing-pubkey rule is broken.
 
 ### D5: Sentinels feed banner + `rc ls`; first-shell echo closes devcontainer visibility gap
 
@@ -178,7 +182,15 @@ The zshrc ssh-agent banner block reads both. `rc ls` gains a `GH-IDENTITY` colum
 
 **Rationale:** Consistent with ADR-018 D3 — separate single-line sentinels keep the zshrc `case` matchers simple and avoid multi-line parsing. The first-shell echo is the smallest change that makes routing *visible* on the devcontainer entry path even before *routing* is implemented there — visibility-without-correctness is strictly better than the current silent-and-wrong baseline, and it does not block this ADR on the larger `rip-cage-akd` scope.
 
+**Alternatives considered:**
+
+| Alternative | Rejected because |
+|---|---|
+| tmux banner only (no first-shell echo) | `reasoned:` devcontainer entry path (`rc init` → VS Code "Reopen in Container") never shows the tmux banner — visibility would be rc-up-attached only, leaving devcontainer users with no identity routing feedback on any entry path |
+
 **What would invalidate this:** if a future ADR consolidates rip-cage sentinels into one structured file (yaml/json), this and ADR-018 D3 are migrated together. Not in scope here.
+
+**Invalidation check (mechanical, optional):** After `rc up`, `docker exec "$container" stat -c "%U %a" /etc/rip-cage/github-identity /etc/rip-cage/ssh-config-source` must output `root 644` for both files. Missing files or non-root ownership means D5's root-preflight write path regressed.
 
 ### D6: github.com identity preflight in cage; greeting probe primary; cache shipped in v1
 
@@ -218,15 +230,16 @@ If github.com is unreachable (egress firewall, no network), the sentinel records
 
 **Alternatives considered:**
 
-| Approach | Pros | Cons |
-|---|---|---|
-| **Greeting probe primary, cache in v1, gh-api in `rc doctor` (this decision)** | Cheap; no new deps in critical path; cache makes mismatch detection real | Greeting format theoretical-fragile; one more file to maintain (cache) |
-| `gh api user` as primary | Format versioned and contractual | Conflates OAuth and SSH identity questions; adds gh-auth dependency to rc-up critical path |
-| Run both probes, treat conflict as third state | Most informative | More LOC in critical path; two-axis state matrix complicates banner |
-| No preflight, surface only on first push failure | Zero code | Misleading-error class survives; the bug we're fixing |
-| Defer cache, ship "report-only" v1 | Smaller v1 | Dependent decision (mismatch detection) is non-shippable; D6 collapses to a logging change |
+| Alternative | Rejected because |
+|---|---|
+| `gh api user` as primary | `reasoned:` Answers "which OAuth identity is `gh` auth'd as?" — a different question from "which SSH identity does GitHub see?"; the two can disagree; conflates two distinct identity questions and adds gh-auth dependency to the rc-up critical path |
+| Run both probes, treat conflict as third state | `reasoned:` More LOC in critical path; two-axis state matrix complicates banner; the SSH vs OAuth conflict is better surfaced in `rc doctor` (deferred bead) than as a third banner state on every `rc up` |
+| No preflight, surface only on first push failure | `direct:` ADR-001 fail-loud; user finds out via a misleading "Repository not found" downstream error rather than a clear identity mismatch — the exact silent-failure class this design closes |
+| Defer cache, ship "report-only" v1 | `reasoned:` Without a `<keyname> → <github-user>` cache, mismatch detection (expected vs resolved) is non-shippable; D6 collapses to logging and the dependent match/mismatch/unset state machine cannot ship |
 
 **What would invalidate this:** GitHub deprecates the SSH greeting format. Switch to `gh api user` as primary and demote the greeting to fallback.
+
+**Invalidation check (mechanical, optional):** After `rc up` with a resolved identity, `jq -e 'keys | length > 0' ~/.cache/rip-cage/identity-map.json` must exit 0. An absent or empty cache means the cold-cache populate-then-compare step was dropped and first `rc up` with correct config will show `unset` instead of `match`.
 
 ### D7: `--no-ssh-config` opt-out; `--no-forward-ssh` implies `--no-ssh-config` by default
 
@@ -246,13 +259,14 @@ Use cases for opting out:
 
 **Alternatives considered:**
 
-| Approach | Pros | Cons |
-|---|---|---|
-| **`--no-forward-ssh` implies `--no-ssh-config`, override with `--ssh-config` (this decision)** | Common-case (containment) is one flag; existing precedent at `rc:1097-1107` | One implicit relationship to document |
-| Independent flags, no implication | Most explicit | Discoverability footgun: containment-seeker reaches for one flag, gets confusing half-state |
-| New `--no-ssh` alias toggling both | Atomic | Yet-another-flag; doesn't reduce existing flag count |
+| Alternative | Rejected because |
+|---|---|
+| Independent flags, no implication | `reasoned:` Containment user reaches for `--no-forward-ssh`, ends up with a cage that has config + pubkey mounts but no agent — confusing half-state ("I asked for no SSH, why are my pubkeys mounted?"); discoverability footgun |
+| New `--no-ssh` alias toggling both atomically | `reasoned:` Yet-another-flag; doesn't reduce the existing flag count and doesn't address the discoverability gap for users who already know `--no-forward-ssh` |
 
 **What would invalidate this:** telemetry showing nobody opts out, or that the implication chain confuses more than it helps. Then drop the flag or the chain as dead surface.
+
+**Invalidation check (mechanical, optional):** `rc up <path> --no-forward-ssh` then `docker inspect "$container" --format '{{index .Config.Labels "rc.ssh-config"}}'` must print `off`. Also verify no ssh-config bind-mount appears in `docker inspect "$container" --format '{{json .Mounts}}'`. If the label is missing or the mount is present, the implication chain is broken.
 
 ## Consequences
 
