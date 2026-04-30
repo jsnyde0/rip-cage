@@ -4,6 +4,7 @@
 **Date:** 2026-04-27
 **Design:** [Design doc](../design/2026-04-27-ssh-identity-routing-design.md)
 **Builds on:** [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (forward-by-default), [ADR-018](ADR-018-macos-ssh-agent-discovery.md) (probe-and-pick agent)
+**Amends:** [ADR-017](ADR-017-ssh-agent-forwarding-default.md) D2 — `--no-forward-ssh` extended to imply `--no-ssh-config` by default; D1, D3 unchanged.
 **Related:** [ADR-001](ADR-001-fail-loud-pattern.md) (loud + actionable failure), [ADR-014](ADR-014-push-less-cage.md) D2 (non-interactive SSH posture), project [CLAUDE.md](../../CLAUDE.md) philosophy section (autonomy over containment, "it's annoying" as a design signal)
 
 ## Context
@@ -108,7 +109,7 @@ Rules-file format is one rule per line, glob + key basename, no parser:
 ~/code/personal/*   id_ed25519_personal
 ```
 
-Empty lines and `#`-comments skipped. Bash `[[ "$path" == $pattern ]]` glob semantics, no regex, no `~` expansion in patterns.
+Empty lines and `#`-comments skipped. Bash `[[ "$path" == $pattern ]]` glob semantics, no regex. Patterns are tilde-expanded (`~` → `$HOME`) before matching so that `~/code/mapular/*` works as expected.
 
 When a layer matches, `rc` appends a synthetic `Host github.com / IdentityFile /home/agent/.ssh/<name> / IdentitiesOnly yes / User git` block to the translated config and persists `rc.github-identity=<name>` as a label. The chosen layer is recorded in `/etc/rip-cage/ssh-config-source`.
 
@@ -192,6 +193,10 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=10 git@github.com 2>&1
 GitHub's SSH greeting (`Hi <user>!`) names the authenticated user. The preflight extracts it, writes to `/etc/rip-cage/github-identity`, and compares against the expected username (looked up from `rc.github-identity` label via a `<keyname> → <github-user>` cache at `~/.cache/rip-cage/identity-map.json`).
 
 **Cache is shipped in v1, not deferred.** Without the cache, the preflight can only report "resolved as <user>" with no expectation to compare against — `match`/`mismatch` detection collapses to "report-only," which is strictly worse than today. Cache TTL: 24h. Refresh on `rc auth refresh`. Lives on the host (not in the container) so multiple cages share resolved identities.
+
+**Cold-cache behavior (populate-then-compare).** On first `rc up` for a given keyname, the cache has no `<keyname> → <github-user>` entry. The preflight writes the greeting result to the cache *before* comparing, so a correctly-configured first run produces `match`, not `unset`. The `unset` state applies only when no pin was resolved at all (layer 4 — no `Host github.com` block synthesized, no `rc.github-identity` label).
+
+**Host-config-carries-over path.** When source is `host-config` (user's own `Host github.com` block carried over by D2, no `rc.github-identity` label written), the label-based cache comparison is skipped — the user's block is authoritative by design. The greeting probe still runs; the resolved identity is written to `/etc/rip-cage/github-identity` and shown in the banner. No `unset` prefix — routing is explicitly configured in the user's host config.
 
 **Greeting probe is primary; `gh api user` is a parallel diagnostic.** The greeting answers the SSH-side question this design is about — "which SSH identity does GitHub see?" — directly. `gh api user --jq .login` answers a different question — "which OAuth identity is `gh` auth'd as?" — using the host's forwarded Claude Code credentials. The two can disagree (gh OAuth'd as `personal`, SSH key for `work`), and the disagreement is information, not noise. `rc doctor` (deferred bead) runs both and surfaces conflicts; v1 ships only the greeting probe in the rc-up critical path.
 

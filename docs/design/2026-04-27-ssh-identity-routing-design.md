@@ -132,7 +132,7 @@ The rules file format is intentionally minimal — one rule per line, glob-patte
 ~/dev/clients/*     id_ed25519_client
 ```
 
-Empty lines and `#`-prefixed comments are skipped. Glob matching uses bash `[[ "$path" == $pattern ]]` semantics, evaluated against the literal `rc.source.path` (already a stored label, verified `rc:1756`). No regex, no `~` expansion in the pattern (use `$HOME` or full paths).
+Empty lines and `#`-prefixed comments are skipped. Glob matching uses bash `[[ "$path" == $pattern ]]` semantics, evaluated against the literal `rc.source.path` (already a stored label, verified `rc:1756`). No regex. Patterns are tilde-expanded (`~` → `$HOME`) before matching, so `~/code/mapular/*` works as expected (`${pattern/#~/$HOME}` applied before the `[[` test).
 
 **Layered-resolution rationale.** Layer 1 is the explicit override for fully-deterministic single-shot use. Layer 2 keeps resume idempotent — once a container is labeled, it stays labeled, and the resolution doesn't drift between sessions. Layer 3 is the user-declared convention; it costs the user a one-time three-line file and gives them ergonomic per-cage routing. Layer 4 is the honest "we don't know, ask the human" failure mode — the design ships **no `mapular`/`personal` defaults baked into `rc`**, because hardcoding one user's directory layout into open-source code is the wrong trade.
 
@@ -175,7 +175,7 @@ The tmux banner (zshrc ssh-agent block) reads both and adds one line per running
 
 ```
 ssh-agent: 3 keys loaded (host: /var/folders/.../agent.NNNN)
-github.com: jonatan-mapular  (rules-file: ~/code/mapular/*)
+github.com: jonatan-mapular  (source: rules-file)
 ```
 
 Banner colorization mirrors ADR-018 D3: green if the resolved identity matches the expected label (or no expectation), yellow if `unset`, red if `mismatch` or `unreachable`.
@@ -289,5 +289,5 @@ New tests in `tests/test-ssh-config.sh` (mirrors `test-ssh-forwarding.sh` shape)
 - **Devcontainer routing parity is deferred.** `rc init` (devcontainer path) does not run config translation; only the visibility surface (D5 first-shell echo) is closed in v1. Devcontainer translation tracked in `rip-cage-akd`. Until that lands, devcontainer users see correct *status* on attach but get no actual *routing* — they'd hit the original bug, just visibly.
 - **`Match` blocks are not deeply parsed.** Translation is line-by-line. `Match host`, `Match user`, `Match localnetwork` blocks pass through unchanged (path rewrite + ADR-014 D2 override still apply), but `Match exec` is stripped (D2 transform 4). Adequate for today's host configs; revisit if `Match`-based routing becomes common.
 - **`--github-identity` accepts key basename only.** Username (`jonatan-mapular`) is more user-friendly but requires the cache to be populated; basename is unambiguous from first run. Future enhancement once cache is reliable.
-- **Rules file format is intentionally minimal.** No regex, no `~` expansion in patterns, no env-var interpolation. If users hit this limit, promote to YAML/TOML in a follow-up.
+- **Rules file format is intentionally minimal.** No regex, no env-var interpolation; `~` in patterns is expanded to `$HOME` before matching. If users hit this limit, promote to YAML/TOML in a follow-up.
 - **Pubkey-on-host-filesystem dependency.** D4's allowlist mount sources pubkeys from `~/.ssh/<name>.pub` on the host. This works for the dogfooding setup but breaks for: 1Password SSH agent (pubkeys in vault, not on disk), macOS Secure Enclave / Secretive (keys never touch disk by design), ssh-agent forwarded from a remote workstation (pubkey files exist on a third machine), and users who `ssh-add`'d a key and then deleted the file. In all those cases the forwarded agent has the keys and signing works, but the pubkey allowlist mount finds nothing — the cage falls into the "user-config-block missing-pubkey" warn-and-degrade branch, which is silently first-key-wins under a yellow warning. The `ssh-add -L`-as-source alternative (called out under D1) fixes this cleanly but reshapes D4 enough to want dogfooding signal first. If someone hits this with a real workflow, that's the trigger to swap.
