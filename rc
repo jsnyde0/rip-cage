@@ -1935,14 +1935,14 @@ _up_github_identity_preflight() {
     local _file="$1" _content="$2"
     if [[ -n "${RC_PREFLIGHT_SENTINEL_DIR:-}" ]]; then
       # Test-mode: write locally so tests can inspect
-      printf '%s\n' "$_content" > "${RC_PREFLIGHT_SENTINEL_DIR}/${_file}"
+      printf '%b\n' "$_content" > "${RC_PREFLIGHT_SENTINEL_DIR}/${_file}"
     else
       # Real container: write as root via docker exec + tee
       docker exec -u root \
         -e RC_CONTENT="$_content" \
         "$_name" sh -c \
         'mkdir -p /etc/rip-cage \
-        && printf "%s\n" "$RC_CONTENT" > /etc/rip-cage/'"$_file"' \
+        && printf "%b\n" "$RC_CONTENT" > /etc/rip-cage/'"$_file"' \
         && chmod 644 /etc/rip-cage/'"$_file" >/dev/null 2>&1 || true
     fi
   }
@@ -2580,20 +2580,22 @@ cmd_up() {
 
 cmd_ls() {
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}\t{{.Label "rc.forward-ssh"}}' | \
+    docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}\t{{.Label "rc.forward-ssh"}}\t{{.Label "rc.github-identity"}}' | \
       jq -Rsn '[inputs | rtrimstr("\n") | split("\n") | .[] | select(length > 0) | split("\t") | {
         name: .[0],
         status: .[1],
         uptime: .[2],
         source_path: .[3],
         egress: (.[4] | if . == "" then "legacy" elif (. == "on" or . == "off") then . else "invalid:\(.)" end),
-        forward_ssh: (.[5] | if . == "" then "legacy" elif (. == "on" or . == "off") then . else "invalid:\(.)" end)
+        forward_ssh: (.[5] | if . == "" then "legacy" elif (. == "on" or . == "off") then . else "invalid:\(.)" end),
+        gh_identity: (.[6] | if . == "" then null else . end)
       }]'
   else
-    { echo -e "NAME\tSTATUS\tEGRESS\tFWD-SSH\tSOURCE PATH"; docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}\t{{.Label "rc.forward-ssh"}}' | \
+    { echo -e "NAME\tSTATUS\tEGRESS\tFWD-SSH\tGH-IDENTITY\tSOURCE PATH"; docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}\t{{.Label "rc.forward-ssh"}}\t{{.Label "rc.github-identity"}}' | \
       awk -F'\t' '{egress=$4; if (egress == "") egress="legacy"; else if (egress != "on" && egress != "off") egress="invalid:" egress;
                    fwd=$5;    if (fwd == "")    fwd="legacy";    else if (fwd    != "on" && fwd    != "off") fwd   ="invalid:" fwd;
-                   print $1"\t"$2"\t"egress"\t"fwd"\t"$3}'; }
+                   ghi=$6;    if (ghi == "")    ghi="\342\200\224";
+                   print $1"\t"$2"\t"egress"\t"fwd"\t"ghi"\t"$3}'; }
   fi
 }
 

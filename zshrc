@@ -99,3 +99,49 @@ if [[ -r /etc/rip-cage/ssh-agent-status ]]; then
   esac
   unset _rc_ssh_status _rc_ssh_socket
 fi
+
+# Rip-cage posture banner: github.com identity routing status (ADR-020 D5).
+# Reads /etc/rip-cage/github-identity and /etc/rip-cage/ssh-config-source
+# (written by the in-cage preflight at rc up time) and emits a colorized
+# one-liner so users see identity routing posture on every tmux attach.
+# Skip silently if the sentinel is absent (--no-ssh-config, pre-P4 image).
+# Test-mode: RC_SENTINEL_DIR overrides /etc/rip-cage (same pattern as preflight).
+_rc_gi_dir="${RC_SENTINEL_DIR:-/etc/rip-cage}"
+if [[ -r "${_rc_gi_dir}/github-identity" ]]; then
+  _rc_gi=$(head -1 "${_rc_gi_dir}/github-identity" 2>/dev/null)
+  _rc_gi_src=$(cat "${_rc_gi_dir}/ssh-config-source" 2>/dev/null || echo "")
+  # Helpers: parse expected= and greeting= from subsequent lines
+  _rc_gi_expected=$(grep '^expected=' "${_rc_gi_dir}/github-identity" 2>/dev/null | head -1 | sed 's/^expected=//')
+  _rc_gi_greeting=$(grep '^greeting=' "${_rc_gi_dir}/github-identity" 2>/dev/null | head -1 | sed 's/^greeting=//')
+  case "$_rc_gi" in
+    disabled)
+      # --no-ssh-config: no routing, no noise
+      ;;
+    match)
+      # Green: resolved and confirmed
+      printf "\033[32m[rip-cage] github.com: %s (source: %s)\033[0m\n" \
+        "${_rc_gi_expected:-${_rc_gi_greeting}}" "${_rc_gi_src}"
+      ;;
+    unset)
+      # Yellow: no pin, pushes may go to wrong account
+      printf "\033[33m[rip-cage] github.com: unset — pushes will go to %s\033[0m\n" \
+        "${_rc_gi_greeting}"
+      ;;
+    mismatch)
+      # Red: expected differs from actual
+      printf "\033[31m[rip-cage] github.com: MISMATCH — expected %s, greeting %s\033[0m\n" \
+        "${_rc_gi_expected}" "${_rc_gi_greeting}"
+      ;;
+    unreachable)
+      # Yellow: network unreachable
+      printf "\033[33m[rip-cage] github.com: unreachable (skipping pubkey check)\033[0m\n"
+      ;;
+    *)
+      # Bare username: host-config branch (user's own Host github.com block)
+      printf "\033[32m[rip-cage] github.com: %s (source: %s)\033[0m\n" \
+        "${_rc_gi}" "${_rc_gi_src}"
+      ;;
+  esac
+  unset _rc_gi _rc_gi_src _rc_gi_expected _rc_gi_greeting
+fi
+unset _rc_gi_dir
