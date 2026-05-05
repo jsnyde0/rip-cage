@@ -1224,6 +1224,136 @@ _up_resolve_resume_forward_ssh() {
   _UP_RESUME_FORWARD_SSH="$_label"
 }
 
+# _tsc_process_file -- internal helper for _translate_ssh_config.
+# Reads lines from $1 (file path), applies transforms 2-5, outputs to stdout.
+# $2 is the effective ssh home dir (e.g., ~/.ssh, or $HOME/.ssh).
+# Recursive include inlining calls this function again on include targets.
+_tsc_process_file() {
+  local _tsc_file="$1" _tsc_ssh_home="$2"
+  local _tsc_line _tsc_indent _tsc_kw _tsc_kwlc _tsc_path _tsc_bn _tsc_lstr _tsc_lstr_lc
+
+  while IFS= read -r _tsc_line || [[ -n "$_tsc_line" ]]; do
+    # Strip leading whitespace to get keyword; lowercase for matching
+    _tsc_lstr="${_tsc_line#"${_tsc_line%%[![:space:]]*}"}"
+    _tsc_kw="${_tsc_lstr%%[[:space:]]*}"
+    _tsc_kwlc=$(printf '%s' "$_tsc_kw" | tr 'A-Z' 'a-z')
+    _tsc_indent="${_tsc_line%%[! ]*}"
+
+    case "$_tsc_kwlc" in
+      # Transform 4: host-only directives → strip
+      proxycommand|proxyjump|controlmaster|controlpath|identityagent)
+        printf '%s# rip-cage: stripped (host-only)\n' "$_tsc_indent"
+        continue
+        ;;
+      # Match exec is special — keyword is 'match'; only 'Match exec' is host-only
+      match)
+        _tsc_lstr_lc=$(printf '%s' "$_tsc_lstr" | tr 'A-Z' 'a-z')
+        if [[ "$_tsc_lstr_lc" =~ ^match[[:space:]]+exec([[:space:]]|$) ]]; then
+          printf '%s# rip-cage: stripped (host-only)\n' "$_tsc_indent"
+          continue
+        fi
+        ;;
+      # Transform 5: ADR-014 D2 overrides
+      batchmode)
+        printf '%sBatchMode yes # rip-cage: overridden (ADR-014 D2)\n' "$_tsc_indent"
+        continue
+        ;;
+      stricthostkeychecking)
+        printf '%sStrictHostKeyChecking yes # rip-cage: overridden (ADR-014 D2)\n' "$_tsc_indent"
+        continue
+        ;;
+      userknownhostsfile)
+        printf '%sUserKnownHostsFile /etc/ssh/ssh_known_hosts # rip-cage: overridden (ADR-014 D2)\n' "$_tsc_indent"
+        continue
+        ;;
+      globalknownhostsfile)
+        printf '%sGlobalKnownHostsFile /etc/ssh/ssh_known_hosts # rip-cage: overridden (ADR-014 D2)\n' "$_tsc_indent"
+        continue
+        ;;
+      # Transform 2: IdentityFile path rewrite
+      identityfile)
+        # Extract path portion: strip "IdentityFile" keyword + leading spaces
+        _tsc_path="${_tsc_lstr#"${_tsc_kw}"}"
+        _tsc_path="${_tsc_path#"${_tsc_path%%[![:space:]]*}"}"
+        # Tilde-expand
+        _tsc_path="${_tsc_path/#~/$HOME}"
+        _tsc_bn=$(basename "$_tsc_path")
+        printf '%sIdentityFile /home/agent/.ssh/%s\n' "$_tsc_indent" "$_tsc_bn"
+        continue
+        ;;
+      # Transform 3: Include directives
+      include)
+        _tsc_path="${_tsc_lstr#"${_tsc_kw}"}"
+        _tsc_path="${_tsc_path#"${_tsc_path%%[![:space:]]*}"}"
+        # Tilde-expand
+        _tsc_path="${_tsc_path/#~/$HOME}"
+        # In-home include → inline; out-of-home → strip
+        if [[ "$_tsc_path" == "${_tsc_ssh_home}/"* ]]; then
+          if [[ -f "$_tsc_path" ]]; then
+            _tsc_process_file "$_tsc_path" "$_tsc_ssh_home"
+          fi
+          # Absent in-home include → silently skip
+        else
+          printf '%s# rip-cage: stripped (Include outside ~/.ssh/)\n' "$_tsc_indent"
+        fi
+        continue
+        ;;
+    esac
+
+    # Default: pass through unchanged
+    printf '%s\n' "$_tsc_line"
+  done < "$_tsc_file"
+}
+
+# _translate_ssh_config -- ADR-020 D2 host-config translation engine.
+# Applies six transforms to produce a cage-compatible SSH config:
+#   1. IgnoreUnknown header (macOS directives shim)
+#   2. IdentityFile path rewrite: ~/.ssh/<n> → /home/agent/.ssh/<n>
+#   3. Include: in-home → inline recursively; out-of-home → strip with comment
+#   4. Host-only directives strip: Match exec, ProxyCommand, ProxyJump, ControlMaster,
+#      ControlPath, IdentityAgent → # rip-cage: stripped (host-only)
+#   5. ADR-014 D2 overrides: BatchMode/StrictHostKeyChecking/UserKnownHostsFile/GlobalKnownHostsFile
+#   6. github.com synthesis: if key_basename non-empty and no Host github.com → append synth block
+# Parameters:
+#   $1 host_config_path    — path to host's ~/.ssh/config (may be absent)
+#   $2 output_path         — idempotent write destination (parent dir must exist)
+#   $3 resolved_key_basename — key basename for github.com synthesis (may be empty)
+_translate_ssh_config() {
+  local _hcfg="$1" _out="$2" _key_bn="$3"
+  local _ssh_home="${HOME}/.ssh"
+
+  # Check if Host github.com already present in raw input
+  local _has_github=false
+  if [[ -f "$_hcfg" ]]; then
+    local _scan_line
+    while IFS= read -r _scan_line; do
+      if [[ "$_scan_line" =~ ^[[:space:]]*[Hh][Oo][Ss][Tt][[:space:]]+github\.com([[:space:]]|$) ]]; then
+        _has_github=true
+        break
+      fi
+    done < "$_hcfg"
+  fi
+
+  # Build output
+  {
+    # Transform 1: IgnoreUnknown header
+    printf 'IgnoreUnknown UseKeychain,AddKeysToAgent\n'
+
+    # Apply transforms 2-5 to host config lines (if file exists)
+    if [[ -f "$_hcfg" ]]; then
+      _tsc_process_file "$_hcfg" "$_ssh_home"
+    fi
+
+    # Transform 6: github.com synthesis
+    if [[ -n "$_key_bn" && "$_has_github" == "false" ]]; then
+      printf '\nHost github.com\n'
+      printf '  User git\n'
+      printf '  IdentityFile /home/agent/.ssh/%s\n' "$_key_bn"
+      printf '  IdentitiesOnly yes\n'
+    fi
+  } > "$_out"
+}
+
 # _parse_identity_rules -- parse ~/.config/rip-cage/identity-rules (or $RIP_CAGE_IDENTITY_RULES).
 # Returns (via stdout) the key basename for the first glob line that matches $2 (project path).
 # Skips blank lines and '#'-prefixed comments. Tilde-expands glob patterns before matching.
@@ -1789,7 +1919,10 @@ cmd_up() {
     rc_forward_ssh="$_UP_RESUME_FORWARD_SSH"
     # ADR-020 D3: github-identity label is immutable on resume; CLI override is an error.
     _up_resolve_resume_github_identity "$name" "$path" "$rc_github_identity_flag"
-    # (result available in _UP_RESUME_GITHUB_IDENTITY but not used until D2/D4 bead)
+    # ADR-020 D2: translate host SSH config → cage-compatible config (idempotent, re-run on resume).
+    local _rc_ssh_cache_dir="${HOME}/.cache/rip-cage/${name}"
+    mkdir -p "$_rc_ssh_cache_dir"
+    _translate_ssh_config "${HOME}/.ssh/config" "${_rc_ssh_cache_dir}/ssh-config" "$_UP_RESUME_GITHUB_IDENTITY"
     # On resume, the socket (or lack thereof) was wired at create time. The
     # label value is the ground truth for preflight — we don't re-distinguish
     # user-opt-out from no-host-agent here. Socket cannot be changed on resume.
@@ -1873,6 +2006,11 @@ cmd_up() {
   if [[ -n "$_resolved_github_identity" ]]; then
     _UP_RUN_ARGS+=(--label "rc.github-identity=$_resolved_github_identity")
   fi
+
+  # ADR-020 D2: translate host SSH config → cage-compatible config (idempotent write).
+  local _rc_ssh_cache_dir="${HOME}/.cache/rip-cage/${name}"
+  mkdir -p "$_rc_ssh_cache_dir"
+  _translate_ssh_config "${HOME}/.ssh/config" "${_rc_ssh_cache_dir}/ssh-config" "$_resolved_github_identity"
 
   _up_prepare_docker_mounts "$path" "$name"
   _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" "$rc_egress" "$rc_forward_ssh"
