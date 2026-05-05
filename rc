@@ -760,6 +760,9 @@ cmd_auth_refresh() {
     return 0
   fi
   if _extract_credentials; then
+    # ADR-020 D6: refresh the identity-map cache timestamp so 24h TTL resets.
+    # This prevents a cache miss on the next rc up immediately after auth refresh.
+    _identity_cache_touch_all
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       jq -nc '{"status": "ok", "action": "credentials_refreshed", "credentials_updated": true}'
     else
@@ -1630,6 +1633,45 @@ _resolve_github_identity() {
   return 0
 }
 
+# _host_config_has_github -- return 0 if host ~/.ssh/config has a Host github.com block.
+# Uses the same scan logic as _translate_ssh_config to be consistent.
+_host_config_has_github() {
+  local _hcfg="${HOME}/.ssh/config"
+  [[ -f "$_hcfg" ]] || return 1
+  local _scan_line
+  while IFS= read -r _scan_line; do
+    if [[ "$_scan_line" =~ ^[[:space:]]*[Hh][Oo][Ss][Tt][[:space:]]+github\.com([[:space:]]|$) ]]; then
+      return 0
+    fi
+  done < "$_hcfg"
+  return 1
+}
+
+# _resolve_github_identity_source -- determine the source layer for the resolved identity.
+# Must be called AFTER _resolve_github_identity and _up_resolve_resume_github_identity.
+# Sets _UP_GITHUB_IDENTITY_SOURCE global.
+# Parameters:
+#   $1 cli_flag           — --github-identity= value (layer 1)
+#   $2 resume_label       — _UP_RESUME_GITHUB_IDENTITY value (layer 2, resume only; empty on create)
+#   $3 rules_file_result  — result from _parse_identity_rules (layer 3; empty if no match)
+#   $4 rc_ssh_config      — "off" → disabled
+_resolve_github_identity_source() {
+  local _cli_flag="$1" _resume_label="$2" _rules_result="$3" _posture="$4"
+  if [[ "$_posture" == "off" ]]; then
+    _UP_GITHUB_IDENTITY_SOURCE="disabled"
+  elif [[ -n "$_cli_flag" ]]; then
+    _UP_GITHUB_IDENTITY_SOURCE="cli-flag"
+  elif [[ -n "$_resume_label" ]]; then
+    _UP_GITHUB_IDENTITY_SOURCE="label"
+  elif [[ -n "$_rules_result" ]]; then
+    _UP_GITHUB_IDENTITY_SOURCE="rules-file"
+  elif _host_config_has_github; then
+    _UP_GITHUB_IDENTITY_SOURCE="host-config"
+  else
+    _UP_GITHUB_IDENTITY_SOURCE="none"
+  fi
+}
+
 # _up_resolve_resume_github_identity -- handle label-vs-CLI conflict on resume.
 # ADR-020 D3: resume must preserve the existing rc.github-identity label; a CLI
 # override on resume is an error (silent relabeling is a silent-fallback, ADR-001).
@@ -1756,6 +1798,237 @@ _up_ssh_preflight() {
       :
       ;;
   esac
+}
+
+# ---------------------------------------------------------------------------
+# Identity-map cache: ~/.cache/rip-cage/identity-map.json
+# JSON shape: {"<keyname>": {"github_username": "<user>", "ts": "<ISO8601>"}, ...}
+# TTL: 24 hours. Shared across all containers on the host.
+# ---------------------------------------------------------------------------
+
+# _identity_cache_file -- return the path to the cache file.
+# Respects HOME for test isolation.
+_identity_cache_file() {
+  echo "${HOME}/.cache/rip-cage/identity-map.json"
+}
+
+# _identity_cache_read KEYNAME
+# Prints the github_username from the cache if the entry exists AND is not stale
+# (younger than 24h). Prints empty string if absent or stale.
+_identity_cache_read() {
+  local _key="$1"
+  local _cache_file
+  _cache_file=$(_identity_cache_file)
+  [[ -f "$_cache_file" ]] || return 0
+
+  local _ts _username
+  _username=$(jq -r --arg k "$_key" '.[$k].github_username // empty' "$_cache_file" 2>/dev/null)
+  _ts=$(jq -r --arg k "$_key" '.[$k].ts // empty' "$_cache_file" 2>/dev/null)
+  [[ -n "$_username" ]] || return 0
+  [[ -n "$_ts" ]] || return 0
+
+  # Check TTL: parse ts, compare to now. Both date commands (BSD/GNU) support
+  # ISO-8601 with -j/-d. We use a portable approach: convert to epoch seconds.
+  local _entry_epoch _now_epoch _age_seconds
+  # macOS BSD date: -j -f format
+  if date -j >/dev/null 2>&1; then
+    _entry_epoch=$(date -j -f '%Y-%m-%dT%H:%M:%SZ' "$_ts" '+%s' 2>/dev/null) || _entry_epoch=0
+  else
+    _entry_epoch=$(date -d "$_ts" '+%s' 2>/dev/null) || _entry_epoch=0
+  fi
+  _now_epoch=$(date '+%s' 2>/dev/null) || _now_epoch=0
+  _age_seconds=$(( _now_epoch - _entry_epoch ))
+
+  # 24h = 86400 seconds
+  if [[ "$_age_seconds" -lt 86400 ]]; then
+    echo "$_username"
+  fi
+  # else: stale — print nothing (caller treats as cold cache)
+}
+
+# _identity_cache_write KEYNAME USERNAME
+# Upserts the entry for KEYNAME with USERNAME and current timestamp.
+# Creates cache dir and file if absent. Mode 644 (world-readable, not sensitive).
+_identity_cache_write() {
+  local _key="$1" _username="$2"
+  local _cache_file
+  _cache_file=$(_identity_cache_file)
+  mkdir -p "$(dirname "$_cache_file")"
+
+  local _ts
+  _ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
+
+  # Merge: read existing JSON (or start with empty object), set key, write back.
+  local _existing="{}"
+  if [[ -f "$_cache_file" ]]; then
+    _existing=$(cat "$_cache_file" 2>/dev/null) || _existing="{}"
+    # Validate it's actually JSON — if not, start fresh
+    jq -e '.' <<<"$_existing" >/dev/null 2>&1 || _existing="{}"
+  fi
+  local _updated
+  _updated=$(jq -n \
+    --argjson existing "$_existing" \
+    --arg key "$_key" \
+    --arg user "$_username" \
+    --arg ts "$_ts" \
+    '$existing + {($key): {"github_username": $user, "ts": $ts}}') || return 0
+  printf '%s\n' "$_updated" > "$_cache_file"
+  chmod 644 "$_cache_file" 2>/dev/null || true
+}
+
+# _identity_cache_touch_all
+# Update ts for every entry in the cache to now (rc auth refresh).
+# Preserves github_username values unchanged.
+_identity_cache_touch_all() {
+  local _cache_file
+  _cache_file=$(_identity_cache_file)
+  [[ -f "$_cache_file" ]] || return 0
+
+  local _existing _ts _updated
+  _existing=$(cat "$_cache_file" 2>/dev/null) || return 0
+  jq -e '.' <<<"$_existing" >/dev/null 2>&1 || return 0
+
+  _ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
+  _updated=$(jq -n \
+    --argjson existing "$_existing" \
+    --arg ts "$_ts" \
+    'reduce ($existing | to_entries[]) as $e ({}; . + {($e.key): ($e.value + {"ts": $ts})})') || return 0
+  printf '%s\n' "$_updated" > "$_cache_file"
+  chmod 644 "$_cache_file" 2>/dev/null || true
+}
+
+# _up_github_identity_preflight -- probe github.com inside the container and
+# write /etc/rip-cage/github-identity + /etc/rip-cage/ssh-config-source sentinels.
+# ADR-020 D5+D6.
+#
+# Run AFTER the container is started (so docker exec works), BEFORE init-rip-cage.sh
+# reads the sentinels. Never aborts rc up (all outcomes exit 0).
+#
+# Sentinel semantics for github-identity:
+#   "disabled"                     — rc.ssh-config=off; probe skipped
+#   "unreachable\n"                — github.com not reachable from cage
+#   "unset\ngreeting=<user>"       — no pin resolved (layer-4 fallback)
+#   "match\nexpected=<X>\ngreeting=<X>"   — probe agrees with expected
+#   "mismatch\nexpected=<X>\ngreeting=<Y>" — probe differs from expected
+#   "<greeting-user>"              — source=host-config (no label compare)
+#
+# Sentinel semantics for ssh-config-source:
+#   One of: disabled, cli-flag, label, rules-file, host-config, none
+#
+# Test-mode: if RC_PREFLIGHT_SENTINEL_DIR is set, sentinels are written
+# to that directory instead of inside the container. This allows unit tests
+# to inspect sentinel content without a running container.
+#
+# Parameters:
+#   $1 name        — container name
+#   $2 key_basename — resolved key basename (may be empty for layer-4 / disabled)
+#   $3 source_layer — one of: cli-flag, label, rules-file, host-config, none, disabled
+_up_github_identity_preflight() {
+  local _name="$1"
+  local _key_basename="$2"
+  local _source_layer="$3"
+
+  # Helper: write a sentinel (test-mode or real container).
+  # $1 = filename (github-identity or ssh-config-source)
+  # $2 = content (single or multi-line)
+  _write_sentinel() {
+    local _file="$1" _content="$2"
+    if [[ -n "${RC_PREFLIGHT_SENTINEL_DIR:-}" ]]; then
+      # Test-mode: write locally so tests can inspect
+      printf '%s\n' "$_content" > "${RC_PREFLIGHT_SENTINEL_DIR}/${_file}"
+    else
+      # Real container: write as root via docker exec + tee
+      docker exec -u root \
+        -e RC_CONTENT="$_content" \
+        "$_name" sh -c \
+        'mkdir -p /etc/rip-cage \
+        && printf "%s\n" "$RC_CONTENT" > /etc/rip-cage/'"$_file"' \
+        && chmod 644 /etc/rip-cage/'"$_file" >/dev/null 2>&1 || true
+    fi
+  }
+
+  # Disabled: rc.ssh-config=off — write disabled sentinels, skip probe
+  if [[ "$_source_layer" == "disabled" ]]; then
+    _write_sentinel "github-identity" "disabled"
+    _write_sentinel "ssh-config-source" "disabled"
+    return 0
+  fi
+
+  # Always write the source layer sentinel first
+  _write_sentinel "ssh-config-source" "$_source_layer"
+
+  # No-identity layer-4 (none): probe but don't compare
+  if [[ "$_source_layer" == "none" ]]; then
+    # Probe for visibility even though no pin was set
+    local _greeting _probe_rc=0
+    _greeting=$(docker exec "$_name" ssh -T \
+      -o BatchMode=yes \
+      -o ConnectTimeout=5 \
+      git@github.com 2>&1) || _probe_rc=$?
+    local _greeting_user=""
+    _greeting_user=$(printf '%s' "$_greeting" | grep -oE 'Hi [^!]+!' | sed 's/^Hi //; s/!$//') || true
+    if [[ "$_probe_rc" -ne 0 ]] && [[ -z "$_greeting_user" ]]; then
+      _write_sentinel "github-identity" "unreachable"
+    else
+      _write_sentinel "github-identity" "unset\ngreeting=${_greeting_user}"
+    fi
+    return 0
+  fi
+
+  # host-config branch: user's own Host github.com block carried over — no label compare.
+  # Just probe and record greeting. No cache write needed (no expected value to compare).
+  if [[ "$_source_layer" == "host-config" ]]; then
+    local _greeting _probe_rc=0
+    _greeting=$(docker exec "$_name" ssh -T \
+      -o BatchMode=yes \
+      -o ConnectTimeout=5 \
+      git@github.com 2>&1) || _probe_rc=$?
+    local _greeting_user=""
+    _greeting_user=$(printf '%s' "$_greeting" | grep -oE 'Hi [^!]+!' | sed 's/^Hi //; s/!$//') || true
+    if [[ "$_probe_rc" -ne 0 ]] && [[ -z "$_greeting_user" ]]; then
+      _write_sentinel "github-identity" "unreachable"
+    else
+      _write_sentinel "github-identity" "${_greeting_user}"
+    fi
+    return 0
+  fi
+
+  # Layers 1-3 (cli-flag, label, rules-file): we have an expected keyname.
+  # Probe greeting, use/populate cache, compare.
+
+  # 1. Probe greeting
+  local _greeting _probe_rc=0
+  _greeting=$(docker exec "$_name" ssh -T \
+    -o BatchMode=yes \
+    -o ConnectTimeout=5 \
+    git@github.com 2>&1) || _probe_rc=$?
+  local _greeting_user=""
+  _greeting_user=$(printf '%s' "$_greeting" | grep -oE 'Hi [^!]+!' | sed 's/^Hi //; s/!$//') || true
+
+  # Unreachable: no cache write, write unreachable sentinel
+  if [[ "$_probe_rc" -ne 0 ]] && [[ -z "$_greeting_user" ]]; then
+    _write_sentinel "github-identity" "unreachable"
+    return 0
+  fi
+
+  # 2. Cache lookup (or cold-populate)
+  local _expected_user=""
+  if [[ -n "$_key_basename" ]]; then
+    _expected_user=$(_identity_cache_read "$_key_basename")
+    if [[ -z "$_expected_user" ]]; then
+      # Cold or stale: populate from greeting, then compare with self → match
+      _identity_cache_write "$_key_basename" "$_greeting_user"
+      _expected_user="$_greeting_user"
+    fi
+  fi
+
+  # 3. Compare and write sentinel
+  if [[ "$_greeting_user" == "$_expected_user" ]]; then
+    _write_sentinel "github-identity" "match\nexpected=${_expected_user}\ngreeting=${_greeting_user}"
+  else
+    _write_sentinel "github-identity" "mismatch\nexpected=${_expected_user}\ngreeting=${_greeting_user}"
+  fi
+  return 0
 }
 
 # _up_init_firewall -- run the root-phase firewall init inside the container.
@@ -2181,6 +2454,12 @@ cmd_up() {
       exit 1
     fi
     _up_ssh_preflight "$name" "$rc_forward_ssh"
+    # ADR-020 D5+D6: github.com identity preflight — probe greeting inside cage,
+    # write /etc/rip-cage/github-identity and /etc/rip-cage/ssh-config-source.
+    # On resume, the resolved identity is from the container label (layer 2).
+    # Source layer: disabled if posture=off; else label if label present; else rules/host-config/none.
+    _resolve_github_identity_source "$rc_github_identity_flag" "${_UP_RESUME_GITHUB_IDENTITY:-}" "" "$rc_ssh_config"
+    _up_github_identity_preflight "$name" "${_UP_RESUME_GITHUB_IDENTITY:-}" "$_UP_GITHUB_IDENTITY_SOURCE"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       _up_json_output "$name" "resumed" "$path" "running" "success"
       return
@@ -2225,6 +2504,13 @@ cmd_up() {
   if [[ -n "$_resolved_github_identity" ]]; then
     _UP_RUN_ARGS+=(--label "rc.github-identity=$_resolved_github_identity")
   fi
+  # Determine source layer for preflight sentinel (create path: no label, so layer 2 empty).
+  # _rules_file_result is empty when CLI provided the key; non-empty only when rules-file matched.
+  local _rules_file_result_for_source=""
+  if [[ -z "$rc_github_identity_flag" ]] && [[ -n "$_resolved_github_identity" ]]; then
+    _rules_file_result_for_source="$_resolved_github_identity"
+  fi
+  _resolve_github_identity_source "$rc_github_identity_flag" "" "$_rules_file_result_for_source" "$rc_ssh_config"
 
   # ADR-020 D2+D7: translate host SSH config and mount pubkeys (or skip if posture=off).
   local _rc_ssh_cache_dir="${HOME}/.cache/rip-cage/${name}"
@@ -2282,6 +2568,9 @@ cmd_up() {
     log "egress firewall active (denylist mode)"
   fi
   _up_ssh_preflight "$name" "$rc_forward_ssh"
+  # ADR-020 D5+D6: github.com identity preflight — probe greeting inside cage,
+  # write /etc/rip-cage/github-identity and /etc/rip-cage/ssh-config-source.
+  _up_github_identity_preflight "$name" "$_resolved_github_identity" "$_UP_GITHUB_IDENTITY_SOURCE"
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     _up_json_output "$name" "created" "$path" "running" "success"
     return
