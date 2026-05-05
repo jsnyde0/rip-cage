@@ -120,6 +120,7 @@ Commands:
     --memory SIZE       Memory limit (default: 4g)
     --pids-limit N      PID limit (default: 500)
     --no-forward-ssh    Disable host ssh-agent forwarding (ADR-017)
+    --github-identity=KEY  Pin github.com to KEY basename (e.g. id_ed25519_work) (ADR-020 D3)
   ls                                           List rip-cage containers
   attach [name]                                Attach to container tmux session
   down [name]                                  Stop a container
@@ -1223,6 +1224,108 @@ _up_resolve_resume_forward_ssh() {
   _UP_RESUME_FORWARD_SSH="$_label"
 }
 
+# _parse_identity_rules -- parse ~/.config/rip-cage/identity-rules (or $RIP_CAGE_IDENTITY_RULES).
+# Returns (via stdout) the key basename for the first glob line that matches $2 (project path).
+# Skips blank lines and '#'-prefixed comments. Tilde-expands glob patterns before matching.
+# Parameters: $1 rules_file path, $2 project_path to match against
+# Returns: key basename (stdout) or empty if no match or file absent.
+_parse_identity_rules() {
+  local _rules_file="$1" _project_path="$2"
+  local _line _pattern _key _expanded
+
+  if [[ ! -f "$_rules_file" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    # Skip blank lines and comments
+    [[ -z "$_line" || "$_line" == \#* ]] && continue
+
+    # Split on whitespace into pattern and key; skip malformed lines
+    _pattern="${_line%%[[:space:]]*}"
+    _key="${_line##*[[:space:]]}"
+    [[ -z "$_pattern" || -z "$_key" || "$_pattern" == "$_key" ]] && continue
+
+    # Tilde-expand the pattern
+    _expanded="${_pattern/#~/$HOME}"
+
+    # Glob match (bash extended glob semantics via [[)
+    # shellcheck disable=SC2053
+    if [[ "$_project_path" == $_expanded ]]; then
+      echo "$_key"
+      return 0
+    fi
+  done < "$_rules_file"
+
+  return 0
+}
+
+# _resolve_github_identity -- four-layer ADR-020 D3 resolver.
+# Priority: CLI flag (1) → container label on resume (2) → rules-file glob (3) → empty (4).
+# Parameters:
+#   $1 cli_flag      — value of --github-identity=KEY (or empty)
+#   $2 container_name — existing container name for label lookup (or empty for new containers)
+#   $3 project_path  — workspace path for rules-file matching
+#   $4 rules_file    — path to identity rules file (default: ~/.config/rip-cage/identity-rules)
+# Returns: key basename (stdout) or empty string (layer 4).
+# Layer 2 (label lookup) is intentionally NOT performed here on create paths — the caller
+# passes empty container_name when creating a new container. Resume label handling is done
+# by _up_resolve_resume_github_identity separately.
+_resolve_github_identity() {
+  local _cli_flag="$1" _container_name="$2" _project_path="$3"
+  local _rules_file="${4:-${RIP_CAGE_IDENTITY_RULES:-${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/identity-rules}}"
+  local _result=""
+
+  # Layer 1: CLI flag wins
+  if [[ -n "$_cli_flag" ]]; then
+    echo "$_cli_flag"
+    return 0
+  fi
+
+  # Layer 2: existing container label (resume only — caller provides name)
+  if [[ -n "$_container_name" ]]; then
+    _result=$(docker inspect --format '{{ index .Config.Labels "rc.github-identity" }}' "$_container_name" 2>/dev/null || true)
+    if [[ -n "$_result" ]]; then
+      echo "$_result"
+      return 0
+    fi
+  fi
+
+  # Layer 3: rules-file glob match
+  _result=$(_parse_identity_rules "$_rules_file" "$_project_path")
+  if [[ -n "$_result" ]]; then
+    echo "$_result"
+    return 0
+  fi
+
+  # Layer 4: unset (empty) — no synthesized github.com block
+  return 0
+}
+
+# _up_resolve_resume_github_identity -- handle label-vs-CLI conflict on resume.
+# ADR-020 D3: resume must preserve the existing rc.github-identity label; a CLI
+# override on resume is an error (silent relabeling is a silent-fallback, ADR-001).
+# Sets _UP_RESUME_GITHUB_IDENTITY on success.
+# Parameters: $1 name, $2 path (for recreate hint), $3 cli_flag (may be empty)
+_up_resolve_resume_github_identity() {
+  local _name="$1" _path="$2" _cli_flag="$3"
+  local _existing_label
+  _existing_label=$(docker inspect --format '{{ index .Config.Labels "rc.github-identity" }}' "$_name" 2>/dev/null || true)
+
+  if [[ -n "$_cli_flag" && -n "$_existing_label" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Container $_name already labeled rc.github-identity=$_existing_label. Run: rc destroy $_name && rc up --github-identity=$_cli_flag $_path" "GITHUB_IDENTITY_LABEL_CONFLICT"
+    fi
+    echo "Error: container $_name already labeled rc.github-identity=$_existing_label." >&2
+    echo "       To change the identity, recreate the container:" >&2
+    echo "         rc destroy $_name" >&2
+    echo "         rc up --github-identity=$_cli_flag $_path" >&2
+    exit 1
+  fi
+
+  _UP_RESUME_GITHUB_IDENTITY="$_existing_label"
+}
+
 # _up_ssh_preflight -- probe the forwarded ssh-agent and surface status.
 # ADR-017 D4: the visible failure mode for a misconfigured forward is "loud at
 # rc up, visible in every tmux attach, visible in rc ls" — never a silent
@@ -1463,6 +1566,9 @@ cmd_up() {
   # Sibling pattern to RIP_CAGE_EGRESS: env provides the project/shell default,
   # --no-forward-ssh on the CLI always wins.
   local rc_forward_ssh="${RIP_CAGE_FORWARD_SSH:-on}"
+  # ADR-020 D3: --github-identity=<keyname> CLI flag (layer 1 of four-layer resolver).
+  # Also accepts RIP_CAGE_GITHUB_IDENTITY env var as the layer-1 source.
+  local rc_github_identity_flag="${RIP_CAGE_GITHUB_IDENTITY:-}"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --port) [[ $# -ge 2 ]] || { echo "Error: --port requires a value" >&2; exit 1; }; port="$2"; shift 2 ;;
@@ -1471,6 +1577,7 @@ cmd_up() {
       --memory) [[ $# -ge 2 ]] || { echo "Error: --memory requires a value" >&2; exit 1; }; rc_memory="$2"; shift 2 ;;
       --pids-limit) [[ $# -ge 2 ]] || { echo "Error: --pids-limit requires a value" >&2; exit 1; }; rc_pids_limit="$2"; shift 2 ;;
       --no-forward-ssh) rc_forward_ssh="off"; shift ;;
+      --github-identity=*) rc_github_identity_flag="${1#--github-identity=}"; shift ;;
       *) path="$1"; shift ;;
     esac
   done
@@ -1608,6 +1715,7 @@ cmd_up() {
       # same hard stop the actual resume would hit (ADR-001).
       _up_resolve_resume_egress "$name" "$path"
       _up_resolve_resume_forward_ssh "$name" "$path"
+      _up_resolve_resume_github_identity "$name" "$path" "$rc_github_identity_flag"
       would_action="would_resume"
     elif [[ "$_inspect_exit" -ne 0 ]]; then
       # docker inspect failed → container is absent; create new.
@@ -1679,6 +1787,9 @@ cmd_up() {
     # ADR-017 D2: forward-ssh posture is label-persisted, same pattern as egress.
     _up_resolve_resume_forward_ssh "$name" "$path"
     rc_forward_ssh="$_UP_RESUME_FORWARD_SSH"
+    # ADR-020 D3: github-identity label is immutable on resume; CLI override is an error.
+    _up_resolve_resume_github_identity "$name" "$path" "$rc_github_identity_flag"
+    # (result available in _UP_RESUME_GITHUB_IDENTITY but not used until D2/D4 bead)
     # On resume, the socket (or lack thereof) was wired at create time. The
     # label value is the ground truth for preflight — we don't re-distinguish
     # user-opt-out from no-host-agent here. Socket cannot be changed on resume.
@@ -1754,6 +1865,14 @@ cmd_up() {
   local _UP_RUN_ARGS=()
   _UP_RUN_ARGS+=(-d --name "$name")
   _UP_RUN_ARGS+=(--label "rc.source.path=$path")
+
+  # ADR-020 D3: resolve github.com identity (four-layer: CLI → label → rules → unset).
+  # On create, container_name is empty (no existing label yet); layer 2 is skipped.
+  local _resolved_github_identity
+  _resolved_github_identity=$(_resolve_github_identity "$rc_github_identity_flag" "" "$path")
+  if [[ -n "$_resolved_github_identity" ]]; then
+    _UP_RUN_ARGS+=(--label "rc.github-identity=$_resolved_github_identity")
+  fi
 
   _up_prepare_docker_mounts "$path" "$name"
   _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" "$rc_egress" "$rc_forward_ssh"
@@ -2462,6 +2581,10 @@ cmd_schema() {
 }
 SCHEMA
 }
+
+# When sourced (e.g., by tests), skip dispatch — expose functions only.
+# BASH_SOURCE[0] is the script file; $0 is the invoking shell when sourced.
+[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
 
 # Parse global flags from anywhere in argv
 # Allows: rc --dry-run up ., rc up --dry-run ., rc up . --dry-run
