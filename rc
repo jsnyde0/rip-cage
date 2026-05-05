@@ -1354,6 +1354,204 @@ _translate_ssh_config() {
   } > "$_out"
 }
 
+# _derive_pubkey_allowlist -- parse a translated SSH config and emit one <basename>.pub per line
+# for each IdentityFile directive found. Used to build the pubkey mount allowlist (ADR-020 D1).
+# Duplicates are collapsed (each basename appears once).
+# Parameter: $1 translated_config_path — path to the translated ssh-config file
+# Returns: newline-separated list of <basename>.pub filenames (stdout), empty if none.
+_derive_pubkey_allowlist() {
+  local _cfg="$1"
+  local _line _kw _kw_lc _path _bn _seen_list
+
+  if [[ ! -f "$_cfg" ]]; then
+    return 0
+  fi
+
+  _seen_list=""
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    # Strip leading whitespace
+    local _lstr="${_line#"${_line%%[![:space:]]*}"}"
+    _kw="${_lstr%%[[:space:]]*}"
+    _kw_lc=$(printf '%s' "$_kw" | tr 'A-Z' 'a-z')
+    if [[ "$_kw_lc" == "identityfile" ]]; then
+      _path="${_lstr#"${_kw}"}"
+      _path="${_path#"${_path%%[![:space:]]*}"}"
+      _bn=$(basename "$_path")
+      # Append .pub if not already a .pub filename
+      if [[ "$_bn" != *.pub ]]; then
+        _bn="${_bn}.pub"
+      fi
+      # Dedup: only emit if not yet seen (bash 3.2 compatible — no associative arrays)
+      if [[ ":${_seen_list}:" != *":${_bn}:"* ]]; then
+        _seen_list="${_seen_list}:${_bn}"
+        printf '%s\n' "$_bn"
+      fi
+    fi
+  done < "$_cfg"
+}
+
+# _assert_pubkey_exists_or_die -- enforce that a pubkey file exists on the host for an explicit pin.
+# ADR-020 D4: explicit pin (layers 1-3) + missing .pub → abort non-zero with actionable error.
+# For user-config-derived keys, use _build_ssh_mount_args' warn-and-skip path instead.
+# Parameters:
+#   $1 key_basename  — key basename WITHOUT .pub extension (e.g. id_ed25519_work)
+#   $2 source_label  — human-readable source for the error message (e.g. "explicit", "rules-file")
+# Returns: 0 if ~/.ssh/<key_basename>.pub exists; exits 1 with actionable error otherwise.
+_assert_pubkey_exists_or_die() {
+  local _kb="$1" _src="${2:-explicit}"
+  local _pub_path="${HOME}/.ssh/${_kb}.pub"
+  if [[ ! -f "$_pub_path" ]]; then
+    echo "Error: ${_src} identity '${_kb}' selected, but ~/.ssh/${_kb}.pub does not exist on host." >&2
+    echo "       Generate the key (ssh-keygen) or correct your identity rules." >&2
+    return 1
+  fi
+}
+
+# _build_ssh_mount_args -- compose --mount args for the SSH config + pubkey allowlist.
+# ADR-020 D1: mounts translated config, each .pub from allowlist (warn+skip if missing),
+# and known_hosts (skip silently if absent).
+# This function uses the "user-config" behavior for missing pubkeys: warn+skip, never abort.
+# For explicit-pin pubkeys, call _assert_pubkey_exists_or_die before calling this function.
+#
+# Globals read: HOME
+# Parameters:
+#   $1 translated_config  — path to the translated ssh-config file
+#   $2 container_name     — used for the cache dir path component
+#   $3 array_nameref      — name of caller's array to append mount args to
+# Side effects: writes warning to stderr for each missing .pub file; does not abort.
+_build_ssh_mount_args() {
+  local _cfg="$1" _cname="$2" _arr_name="$3"
+  local _ssh_dir="${HOME}/.ssh"
+  local _pub_bn _pub_path
+
+  # Mount translated config → /home/agent/.ssh/config (read-only)
+  eval "${_arr_name}+=(\"--mount type=bind,src=${_cfg},dst=/home/agent/.ssh/config,ro\")"
+
+  # Mount each .pub from the allowlist (warn+skip if missing)
+  while IFS= read -r _pub_bn; do
+    [[ -z "$_pub_bn" ]] && continue
+    _pub_path="${_ssh_dir}/${_pub_bn}"
+    if [[ -f "$_pub_path" ]]; then
+      eval "${_arr_name}+=(\"--mount type=bind,src=${_pub_path},dst=/home/agent/.ssh/${_pub_bn},ro\")"
+    else
+      echo "Warning: identity pubkey ${HOME}/.ssh/${_pub_bn} not found on host — skipping mount." >&2
+    fi
+  done < <(_derive_pubkey_allowlist "$_cfg")
+
+  # Mount known_hosts (skip silently if absent — non-fatal per spec)
+  if [[ -f "${_ssh_dir}/known_hosts" ]]; then
+    eval "${_arr_name}+=(\"--mount type=bind,src=${_ssh_dir}/known_hosts,dst=/home/agent/.ssh/known_hosts,ro\")"
+  fi
+}
+
+# _build_ssh_mount_args_with_posture -- wrapper around _build_ssh_mount_args that respects posture.
+# When posture=off, no mounts are added. When posture=on, delegates to _build_ssh_mount_args.
+# Parameters:
+#   $1 translated_config  — path to the translated ssh-config file
+#   $2 container_name     — container name (for _build_ssh_mount_args)
+#   $3 array_nameref      — name of caller's array to append mount args to
+#   $4 posture            — "on" or "off"
+_build_ssh_mount_args_with_posture() {
+  local _cfg="$1" _cname="$2" _arr_name="$3" _posture="$4"
+  if [[ "$_posture" == "on" ]]; then
+    _build_ssh_mount_args "$_cfg" "$_cname" "$_arr_name"
+  fi
+  # posture=off → no mounts added
+}
+
+# _resolve_ssh_config_posture -- determine the ssh-config posture from CLI flags.
+# ADR-020 D7: --no-forward-ssh implies --no-ssh-config unless --ssh-config is explicitly set.
+# Parameters:
+#   $1 no_ssh_config_flag  — "off" if --no-ssh-config was passed, else ""
+#   $2 ssh_config_flag     — "on" if --ssh-config was passed, else ""
+#   $3 rc_forward_ssh      — current forward-ssh value ("on" or "off")
+# Returns: "on" or "off" (stdout).
+_resolve_ssh_config_posture() {
+  local _no_ssh_config="$1" _ssh_config_explicit="$2" _fwd_ssh="$3"
+
+  # Explicit --no-ssh-config always wins
+  if [[ "$_no_ssh_config" == "off" ]]; then
+    printf 'off'
+    return 0
+  fi
+
+  # Explicit --ssh-config always wins (even if --no-forward-ssh is set)
+  if [[ "$_ssh_config_explicit" == "on" ]]; then
+    printf 'on'
+    return 0
+  fi
+
+  # Implication chain: --no-forward-ssh without --ssh-config → --no-ssh-config
+  if [[ "$_fwd_ssh" == "off" ]]; then
+    printf 'off'
+    return 0
+  fi
+
+  # Default: on
+  printf 'on'
+}
+
+# _ssh_config_label_args -- append --label rc.ssh-config=<posture> to an array.
+# Parameters:
+#   $1 posture       — "on" or "off"
+#   $2 array_nameref — name of caller's array to append to
+_ssh_config_label_args() {
+  local _posture="$1" _arr_name="$2"
+  eval "${_arr_name}+=(\"rc.ssh-config=${_posture}\")"
+}
+
+# _up_resolve_resume_ssh_config -- read and validate the rc.ssh-config label on resume.
+# ADR-020 D7: posture is label-persisted on create; resume reads label as ground truth.
+# Missing label: treat as "on" (legacy containers predate this label; enable by default).
+# Unrecognized value → fail loud per ADR-001.
+# On success sets _UP_RESUME_SSH_CONFIG to "on" or "off".
+# Parameters:
+#   $1 name          — container name
+#   $2 path          — workspace path (for recreate hint)
+#   $3 cli_flag      — "--ssh-config" or "--no-ssh-config" if user passed one, else ""
+_up_resolve_resume_ssh_config() {
+  local _name="$1" _path="$2" _cli_flag="${3:-}"
+  local _label
+  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.ssh-config" }}' "$_name" 2>/dev/null); then
+    if [[ "${OUTPUT_FORMAT:-}" == "json" ]]; then
+      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
+    fi
+    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
+    exit 1
+  fi
+
+  if [[ -z "$_label" ]]; then
+    # Legacy container predating rc.ssh-config label → treat as on (default posture)
+    _UP_RESUME_SSH_CONFIG="on"
+    return
+  fi
+
+  if [[ "$_label" != "on" && "$_label" != "off" ]]; then
+    if [[ "${OUTPUT_FORMAT:-}" == "json" ]]; then
+      json_error "Container $_name has unrecognized rc.ssh-config label value: '$_label' (expected on|off). Run: rc destroy $_name && rc up $_path" "INVALID_SSH_CONFIG_LABEL"
+    fi
+    echo "Error: container $_name has unrecognized rc.ssh-config label value: '$_label' (expected on|off)." >&2
+    echo "       Recreate it:" >&2
+    echo "         rc destroy $_name" >&2
+    echo "         rc up $_path" >&2
+    exit 1
+  fi
+
+  # Conflict: user passed a conflicting CLI flag at resume → fail loud (mirrors P1 pattern)
+  if [[ -n "$_cli_flag" && "$_cli_flag" != "$_label" ]]; then
+    if [[ "${OUTPUT_FORMAT:-}" == "json" ]]; then
+      json_error "Container $_name already has rc.ssh-config=$_label. Run: rc destroy $_name && rc up $_path to change posture." "SSH_CONFIG_LABEL_CONFLICT"
+    fi
+    echo "Error: container $_name already has rc.ssh-config=$_label; conflicting flag '$_cli_flag' passed." >&2
+    echo "       To change posture, recreate the container:" >&2
+    echo "         rc destroy $_name" >&2
+    echo "         rc up $_path" >&2
+    exit 1
+  fi
+
+  _UP_RESUME_SSH_CONFIG="$_label"
+}
+
 # _parse_identity_rules -- parse ~/.config/rip-cage/identity-rules (or $RIP_CAGE_IDENTITY_RULES).
 # Returns (via stdout) the key basename for the first glob line that matches $2 (project path).
 # Skips blank lines and '#'-prefixed comments. Tilde-expands glob patterns before matching.
@@ -1699,6 +1897,9 @@ cmd_up() {
   # ADR-020 D3: --github-identity=<keyname> CLI flag (layer 1 of four-layer resolver).
   # Also accepts RIP_CAGE_GITHUB_IDENTITY env var as the layer-1 source.
   local rc_github_identity_flag="${RIP_CAGE_GITHUB_IDENTITY:-}"
+  # ADR-020 D7: --no-ssh-config / --ssh-config opt-out/in flags.
+  # Empty = not explicitly set (implication chain applies).
+  local rc_no_ssh_config_flag="" rc_ssh_config_explicit_flag=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --port) [[ $# -ge 2 ]] || { echo "Error: --port requires a value" >&2; exit 1; }; port="$2"; shift 2 ;;
@@ -1707,11 +1908,17 @@ cmd_up() {
       --memory) [[ $# -ge 2 ]] || { echo "Error: --memory requires a value" >&2; exit 1; }; rc_memory="$2"; shift 2 ;;
       --pids-limit) [[ $# -ge 2 ]] || { echo "Error: --pids-limit requires a value" >&2; exit 1; }; rc_pids_limit="$2"; shift 2 ;;
       --no-forward-ssh) rc_forward_ssh="off"; shift ;;
+      --no-ssh-config) rc_no_ssh_config_flag="off"; shift ;;
+      --ssh-config) rc_ssh_config_explicit_flag="on"; shift ;;
       --github-identity=*) rc_github_identity_flag="${1#--github-identity=}"; shift ;;
       *) path="$1"; shift ;;
     esac
   done
   local rc_egress="${RIP_CAGE_EGRESS:-on}"
+
+  # ADR-020 D7: resolve ssh-config posture from flags + implication chain.
+  local rc_ssh_config
+  rc_ssh_config=$(_resolve_ssh_config_posture "$rc_no_ssh_config_flag" "$rc_ssh_config_explicit_flag" "$rc_forward_ssh")
 
   if [[ -z "$path" ]]; then
     path="."
@@ -1919,10 +2126,22 @@ cmd_up() {
     rc_forward_ssh="$_UP_RESUME_FORWARD_SSH"
     # ADR-020 D3: github-identity label is immutable on resume; CLI override is an error.
     _up_resolve_resume_github_identity "$name" "$path" "$rc_github_identity_flag"
+    # ADR-020 D7: read ssh-config posture label from the container (immutable on resume).
+    local _resume_ssh_config_cli_flag=""
+    if [[ -n "$rc_no_ssh_config_flag" ]]; then
+      _resume_ssh_config_cli_flag="off"
+    elif [[ -n "$rc_ssh_config_explicit_flag" ]]; then
+      _resume_ssh_config_cli_flag="on"
+    fi
+    _up_resolve_resume_ssh_config "$name" "$path" "$_resume_ssh_config_cli_flag"
+    rc_ssh_config="$_UP_RESUME_SSH_CONFIG"
     # ADR-020 D2: translate host SSH config → cage-compatible config (idempotent, re-run on resume).
+    # Skip when posture=off (no translated config mounted, nothing to update).
     local _rc_ssh_cache_dir="${HOME}/.cache/rip-cage/${name}"
     mkdir -p "$_rc_ssh_cache_dir"
-    _translate_ssh_config "${HOME}/.ssh/config" "${_rc_ssh_cache_dir}/ssh-config" "$_UP_RESUME_GITHUB_IDENTITY"
+    if [[ "$rc_ssh_config" == "on" ]]; then
+      _translate_ssh_config "${HOME}/.ssh/config" "${_rc_ssh_cache_dir}/ssh-config" "$_UP_RESUME_GITHUB_IDENTITY"
+    fi
     # On resume, the socket (or lack thereof) was wired at create time. The
     # label value is the ground truth for preflight — we don't re-distinguish
     # user-opt-out from no-host-agent here. Socket cannot be changed on resume.
@@ -2007,13 +2226,28 @@ cmd_up() {
     _UP_RUN_ARGS+=(--label "rc.github-identity=$_resolved_github_identity")
   fi
 
-  # ADR-020 D2: translate host SSH config → cage-compatible config (idempotent write).
+  # ADR-020 D2+D7: translate host SSH config and mount pubkeys (or skip if posture=off).
   local _rc_ssh_cache_dir="${HOME}/.cache/rip-cage/${name}"
+  local _rc_ssh_cfg="${_rc_ssh_cache_dir}/ssh-config"
   mkdir -p "$_rc_ssh_cache_dir"
-  _translate_ssh_config "${HOME}/.ssh/config" "${_rc_ssh_cache_dir}/ssh-config" "$_resolved_github_identity"
+  if [[ "$rc_ssh_config" == "on" ]]; then
+    _translate_ssh_config "${HOME}/.ssh/config" "$_rc_ssh_cfg" "$_resolved_github_identity"
+    # ADR-020 D4: explicit pin (layers 1-3) + missing .pub → abort loud.
+    if [[ -n "$_resolved_github_identity" ]]; then
+      local _pin_source="explicit"
+      _assert_pubkey_exists_or_die "$_resolved_github_identity" "$_pin_source" || exit 1
+    fi
+  fi
+  # Persist posture as container label (D7).
+  _UP_RUN_ARGS+=(--label "rc.ssh-config=${rc_ssh_config}")
 
   _up_prepare_docker_mounts "$path" "$name"
   _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" "$rc_egress" "$rc_forward_ssh"
+
+  # ADR-020 D1+D7: mount translated config + pubkeys when posture=on (after run-args are initialized).
+  if [[ "$rc_ssh_config" == "on" ]]; then
+    _build_ssh_mount_args_with_posture "$_rc_ssh_cfg" "$name" _UP_RUN_ARGS "on"
+  fi
 
   _UP_RUN_ARGS+=("$IMAGE" sleep infinity)
 
