@@ -1428,14 +1428,14 @@ _build_ssh_mount_args() {
   local _pub_bn _pub_path
 
   # Mount translated config → /home/agent/.ssh/config (read-only)
-  eval "${_arr_name}+=(\"--mount type=bind,src=${_cfg},dst=/home/agent/.ssh/config,ro\")"
+  eval "${_arr_name}+=(\"--mount\" \"type=bind,src=${_cfg},dst=/home/agent/.ssh/config,ro\")"
 
   # Mount each .pub from the allowlist (warn+skip if missing)
   while IFS= read -r _pub_bn; do
     [[ -z "$_pub_bn" ]] && continue
     _pub_path="${_ssh_dir}/${_pub_bn}"
     if [[ -f "$_pub_path" ]]; then
-      eval "${_arr_name}+=(\"--mount type=bind,src=${_pub_path},dst=/home/agent/.ssh/${_pub_bn},ro\")"
+      eval "${_arr_name}+=(\"--mount\" \"type=bind,src=${_pub_path},dst=/home/agent/.ssh/${_pub_bn},ro\")"
     else
       echo "Warning: identity pubkey ${HOME}/.ssh/${_pub_bn} not found on host — skipping mount." >&2
     fi
@@ -1443,7 +1443,7 @@ _build_ssh_mount_args() {
 
   # Mount known_hosts (skip silently if absent — non-fatal per spec)
   if [[ -f "${_ssh_dir}/known_hosts" ]]; then
-    eval "${_arr_name}+=(\"--mount type=bind,src=${_ssh_dir}/known_hosts,dst=/home/agent/.ssh/known_hosts,ro\")"
+    eval "${_arr_name}+=(\"--mount\" \"type=bind,src=${_ssh_dir}/known_hosts,dst=/home/agent/.ssh/known_hosts,ro\")"
   fi
 }
 
