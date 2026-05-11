@@ -351,8 +351,10 @@ _rc_gi_dir="${RC_SENTINEL_DIR:-/etc/rip-cage}"
 if [ -r "${_rc_gi_dir}/github-identity" ]; then
   _rc_gi=$(head -1 "${_rc_gi_dir}/github-identity" 2>/dev/null)
   _rc_gi_src=$(cat "${_rc_gi_dir}/ssh-config-source" 2>/dev/null || true)
-  _rc_gi_expected=$(grep '^expected=' "${_rc_gi_dir}/github-identity" 2>/dev/null | head -1 | sed 's/^expected=//')
-  _rc_gi_greeting=$(grep '^greeting=' "${_rc_gi_dir}/github-identity" 2>/dev/null | head -1 | sed 's/^greeting=//')
+  # `|| true` because sentinels for status=unreachable/disabled lack expected=/greeting=
+  # lines; without it, grep exit=1 + pipefail + set -e aborts init before the case below.
+  _rc_gi_expected=$(grep '^expected=' "${_rc_gi_dir}/github-identity" 2>/dev/null | head -1 | sed 's/^expected=//' || true)
+  _rc_gi_greeting=$(grep '^greeting=' "${_rc_gi_dir}/github-identity" 2>/dev/null | head -1 | sed 's/^greeting=//' || true)
   case "$_rc_gi" in
     disabled)  : ;;
     match)     echo "[rip-cage] github.com: ${_rc_gi_expected:-${_rc_gi_greeting}} (source: ${_rc_gi_src})" ;;

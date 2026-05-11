@@ -72,11 +72,15 @@ run_zshrc_gi_banner() {
 
 # Helper: run the github-identity echo block from init-rip-cage.sh in isolation.
 # The block uses RC_SENTINEL_DIR env override.
+# `set -euo pipefail` matches the real init-rip-cage.sh context so an internal
+# pipeline failure (e.g. grep '^expected=' on a status-only sentinel) reproduces
+# as an aborted block instead of being silently masked. See rip-cage-9eg.
 run_init_gi_echo() {
   local gi_content="$1" src_content="$2"
   seed_sentinels "$gi_content" "$src_content"
 
   bash -c "
+    set -euo pipefail
     RC_SENTINEL_DIR='${SENTINEL_DIR}'
     $(sed -n '/# github-identity first-shell echo/,/^fi$/p' "${INIT_SCRIPT}")
   " 2>&1
@@ -399,6 +403,7 @@ echo "--- C3: missing sentinel → no output ---"
 clear_sentinels
 
 C3_OUTPUT=$(bash -c "
+  set -euo pipefail
   RC_SENTINEL_DIR='${SENTINEL_DIR}'
   $(sed -n '/# github-identity first-shell echo/,/^fi$/p' "${INIT_SCRIPT}")
 " 2>&1)
@@ -407,6 +412,49 @@ if echo "$C3_OUTPUT" | grep -q "github.com:"; then
   fail "C3: init-rip-cage.sh should skip when sentinel missing — got: $(echo "$C3_OUTPUT" | head -3)"
 else
   pass "C3: no output when sentinel missing in init-rip-cage.sh"
+fi
+
+# C4 (rip-cage-9eg regression): status-only sentinel (unreachable/disabled) must
+# not abort the init block. Real-world bug: grep '^expected=' returns 1 when the
+# preflight wrote only the status line; pipefail + errexit aborted init *before*
+# the case statement that handles 'unreachable'. Symptom: rc up reports
+# "init failed on resume" on every offline resume. Helper now runs with
+# `set -euo pipefail` so this regression actually surfaces in the test.
+echo "--- C4 (rip-cage-9eg): status-only 'unreachable' sentinel doesn't abort init ---"
+
+C4_OUTPUT=$(run_init_gi_echo "unreachable" "none")
+C4_RC=$?
+
+if [[ "$C4_RC" -eq 0 ]]; then
+  pass "C4: init block exits 0 on status-only 'unreachable' sentinel"
+else
+  fail "C4: init block exited $C4_RC on 'unreachable' — got: $(echo "$C4_OUTPUT" | head -3)"
+fi
+
+if echo "$C4_OUTPUT" | grep -q "unreachable"; then
+  pass "C4: 'unreachable' line present (case branch reached)"
+else
+  fail "C4: missing 'unreachable' line — block aborted before case? Got: $(echo "$C4_OUTPUT" | head -3)"
+fi
+
+# C5 (rip-cage-9eg regression): same guarantee for 'disabled' status, which also
+# has no expected=/greeting= lines. The case body for 'disabled' is a no-op (`:`),
+# so we assert exit 0 and that no github.com line is emitted.
+echo "--- C5 (rip-cage-9eg): status-only 'disabled' sentinel doesn't abort init ---"
+
+C5_OUTPUT=$(run_init_gi_echo "disabled" "none")
+C5_RC=$?
+
+if [[ "$C5_RC" -eq 0 ]]; then
+  pass "C5: init block exits 0 on status-only 'disabled' sentinel"
+else
+  fail "C5: init block exited $C5_RC on 'disabled' — got: $(echo "$C5_OUTPUT" | head -3)"
+fi
+
+if echo "$C5_OUTPUT" | grep -q "github.com:"; then
+  fail "C5: 'disabled' should emit no github.com line — got: $(echo "$C5_OUTPUT" | head -3)"
+else
+  pass "C5: no github.com line on 'disabled' (case branch is no-op)"
 fi
 
 # ---------------------------------------------------------------------------
