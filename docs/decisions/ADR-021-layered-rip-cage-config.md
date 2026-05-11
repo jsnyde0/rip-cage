@@ -3,22 +3,21 @@
 **Status:** Proposed
 **Date:** 2026-05-11
 **Beads:** `rip-cage-uzp` (this ADR), `rip-cage-o4z` (loader implementation), `rip-cage-b0c` (first user: SSH host+key allowlist)
-**Related:** [ADR-014](ADR-014-push-less-cage.md) D2 (non-interactive SSH posture — partially superseded by the SSH allowlist that this substrate enables), [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (forward-by-default), [ADR-020](ADR-020-ssh-identity-routing.md) (ssh identity routing — coexists), project [CLAUDE.md](../../CLAUDE.md) philosophy section ("agent autonomy is the product", "layers, not walls", "'It's annoying' is a design signal")
+**Related:** [ADR-001](ADR-001-fail-loud-pattern.md) (fail-loud + narrow exception scope — informs D3), [ADR-014](ADR-014-push-less-cage.md) D2 (non-interactive SSH posture — `Match final` reach limits caveat at line 79 anticipated CLI `-o` bypass), [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (forward-by-default — the capability the SSH allowlist scopes), [ADR-020](ADR-020-ssh-identity-routing.md) (ssh identity routing — coexists; shares `~/.config/rip-cage/` namespace), project [CLAUDE.md](../../CLAUDE.md) philosophy section ("agent autonomy is the product", "layers, not walls", "'It's annoying' is a design signal")
 
 ## Context
 
 Rip-cage's posture today is fixed at image-build / `rc up` time, with a few escape hatches via CLI flags (`--no-forward-ssh`, `--no-egress`, `--github-identity`, `--no-ssh-config`) and one rules file (`~/.config/rip-cage/identity-rules`). Per-project differences in trust posture have nowhere to live except the user's shell history.
 
-A concrete trigger: 2026-05-11 the agent in `~/code/personal/kinky-bubbles` needed to SSH to `switch@switch.berlin` for legitimate prod-DB diagnosis. The ssh-agent forward (ADR-017) gave it the key. The mounted `~/.ssh/known_hosts` (ADR-020 D1) gave it the host pin. The agent worked around ADR-014 D2's `known_hosts` rewrite trivially with `-o UserKnownHostsFile=...`. The bypass wasn't a security hole — the agent used capabilities the user already provisioned — but it exposed two structural gaps:
+A concrete trigger: 2026-05-11 the agent in `~/code/personal/kinky-bubbles` needed to SSH to `switch@switch.berlin` for legitimate prod-DB diagnosis. The ssh-agent forward (ADR-017) gave it the key; the mounted `~/.ssh/known_hosts` (ADR-020 D1) gave it the host pin. The agent worked around ADR-014 D2's `known_hosts` rewrite trivially with `-o UserKnownHostsFile=...`. **This bypass is not a discovery** — ADR-014 D2's caveat at line 79 explicitly documents that `Match final Host *` does not defeat (a) explicit CLI `-o` flags, nor (b) per-Host user-config values. ADR-014 D2 was scoped honestly to the default container; the bypass is the `-o` reach limit that ADR-014 D2 already named.
 
-1. **The `known_hosts` rewrite is theater.** It looks restrictive but isn't, because the real capability is the forwarded ssh-agent (the keys), not the address book. Fixing this needs to scope the *capability*, not the pin file. (See bead `rip-cage-b0c`.)
-2. **There's no place for "this project is allowed to SSH to switch.berlin" to live.** The right answer isn't an env var (per-shell, undiscoverable, not committed) and it isn't a CLI flag (one-shot, easy to forget, no project memory). It's a tracked per-project file that anyone reading the repo can see, that the agent can edit, and that `git log` makes auditable.
+What the trigger does expose is a different gap: **there is nowhere for "this project is allowed to SSH to switch.berlin" to live.** The right answer isn't an env var (per-shell, undiscoverable, not committed) and it isn't a CLI flag (one-shot, easy to forget, no project memory). It's a tracked per-project file that anyone reading the repo can see, that the agent can edit, and that `git log` makes auditable. The downstream consumer (`rip-cage-b0c` SSH host+key allowlist) is what will actually replace ADR-014 D2's `known_hosts` rewrite with capability scoping; per ADR-011 (ADRs reflect target architecture), that bead will edit ADR-014 D2 in place. **This substrate ADR alone does not modify ADR-014.**
 
-The pattern is the same one CLAUDE.md uses: a global file (`~/.claude/CLAUDE.md` / `~/CLAUDE.md`) sets the user's defaults across all projects, and a per-project file (`<project>/CLAUDE.md`) adds project-specific context. Both apply. The agent reads both. The project file is committed.
+The pattern is the same one CLAUDE.md uses: a global file (`~/.claude/CLAUDE.md` / `~/CLAUDE.md`) sets defaults across all projects, and a per-project file (`<project>/CLAUDE.md`) adds project-specific context. Both apply. The agent reads both. The project file is committed.
 
-This ADR introduces the equivalent primitive for cage *posture*: `.rip-cage.yaml`. The first downstream user is the SSH host+key allowlist (`rip-cage-b0c`). Other plausible users — egress allow/deny overrides, skill mount opt-outs, resource limits, per-project DCG additions — are out of scope here but shape the schema.
+This ADR introduces the equivalent primitive for cage *posture*: `.rip-cage.yaml`. The first downstream consumer is the SSH host+key allowlist (`rip-cage-b0c`). Other plausible consumers — egress overrides, skill mount opt-outs, resource limits, per-project DCG additions — are out of scope here but shape the schema.
 
-This ADR is the **substrate**. It does not change cage behavior on its own. The loader (`rip-cage-o4z`) implements it; the SSH allowlist (`rip-cage-b0c`) is the proof-of-concept first user.
+This ADR is the **substrate**. By itself it changes no cage behavior beyond informational output (D3 warnings, D4 inspector command, D5 first-run hint). The loader (`rip-cage-o4z`) implements it; the SSH allowlist (`rip-cage-b0c`) is the proof-of-concept first consumer.
 
 ## Decisions
 
@@ -26,30 +25,32 @@ This ADR is the **substrate**. It does not change cage behavior on its own. The 
 
 **Firmness: FIRM**
 
-Global file lives at `~/.config/rip-cage/config.yaml`. Project file lives at `<project-root>/.rip-cage.yaml` (dotfile at the workspace root, alongside `.gitignore` / `.editorconfig`). Project file is **tracked in git** by default (i.e., not added to `.gitignore` by `rc init`).
+Global file lives at `~/.config/rip-cage/config.yaml`. Project file lives at `<project-root>/.rip-cage.yaml` (dotfile at the workspace root, alongside `.gitignore` / `.editorconfig`). Project file is **tracked in git** by default.
 
 | File | Path | Scope | Tracked in git? |
 |---|---|---|---|
 | Global | `~/.config/rip-cage/config.yaml` | All projects on this host | N/A (host config) |
 | Project | `<project-root>/.rip-cage.yaml` | This project only | **Yes** (committed) |
 
-Both are optional. Both absent → identical behavior to today (D5).
+Both are optional. Both absent → behavior contract per D5.
 
 **Rationale:**
-- **Global path matches existing convention.** ADR-020 already uses `~/.config/rip-cage/identity-rules`. Putting global cage config under `~/.config/rip-cage/` keeps host-side rip-cage state in one place. XDG-compliant; standard in 2026.
-- **Project path matches "tracked config at repo root" convention** users already understand from `.gitignore`, `.editorconfig`, `.dockerignore`, `.gitattributes`. Dot-prefix keeps repo tree clean. YAML is the right format (multi-key nested structure, comments, broad parser support, `yq` is already in the user's CLI inventory per `~/.claude/CLAUDE.md`).
-- **Tracked-by-default is load-bearing.** The whole point of the project file is that *the team* (and future-you, and future agents) can see what posture this project runs under. Untracked = back to env-var failure mode where one user's local override is invisible to everyone else.
-- **Asymmetric paths (`~/.config/...` vs `.rip-cage.yaml`) is intentional.** Users edit the project file often (visible in tree, looked at when reviewing PRs), the global file rarely (set once, forget). Both being dotfiles in their respective homes would be aesthetically symmetric but worse: `~/.rip-cage.yaml` clutters $HOME and conflicts with the existing `~/.config/rip-cage/` namespace.
+- **Global path co-locates with ADR-020's host-side namespace.** ADR-020 D3 illustrates the rules file at `~/.config/rip-cage/identity-rules` (D3 example, ADR-020:111). That path is illustrative inside ADR-020 D3 rather than a separately decided contract, but co-locating new global cage state under the same namespace keeps host-side rip-cage files in one place. XDG-compliant.
+- **Project path matches "tracked config at repo root" convention** users already understand from `.gitignore`, `.editorconfig`, `.dockerignore`, `.gitattributes`. Dot-prefix keeps repo tree clean. YAML wins on multi-key nested structure, comments, and broad parser support; `yq` is in the user's documented host CLI set (see also D-impl notes for the loader-bead dependency contract).
+- **Tracked-by-default is load-bearing for team repos.** The project file is the place "the team" (and future-you, and future agents) sees what posture this project runs under. Untracked = back to env-var failure mode where one user's local override is invisible to teammates and to PR reviewers.
+  - **Solo/personal repo asymmetry acknowledged.** For solo `~/code/personal/...` repos (the kinky-bubbles trigger context), "team-shared" is not a benefit; the audit-trail (`git log .rip-cage.yaml`) is the residual warrant. The decision is "track by default" not "track always" — see `--gitignore-config` opt-in alternative below.
+- **Asymmetric paths (`~/.config/...` vs `.rip-cage.yaml`) is about edit frequency.** Project files are looked at often (in tree, in PR review); global is set once and forgotten. Project as a workspace-root dotfile matches `.gitignore`/`.editorconfig` ergonomics; global as a `~/.config/` file matches `~/.config/rip-cage/identity-rules`.
 
 **Alternatives considered:**
 
 | Alternative | Rejected because |
 |---|---|
-| Single file at `~/.config/rip-cage/config.yaml`, no per-project override | `direct:` Defeats the trigger — there's nowhere for "kinky-bubbles is allowed to SSH to switch.berlin" to live without leaking that posture into every other project on the host |
-| `.rip-cage/` directory at project root with multiple files (`ssh.yaml`, `egress.yaml`, etc.) | `reasoned:` Premature factoring; today the file would have ~5–15 lines for the typical project. One file is easier to author, easier to diff, easier for `yq` consumers. Revisit if the file grows past ~100 lines in real projects. |
-| Project file gitignored by default (user opts into committing) | `direct:` Defeats the audit trail and team-shared-posture goal. The whole reason this isn't an env var is that it should be visible. |
-| Global path at `~/.rip-cage.yaml` (dotfile in $HOME) | `reasoned:` Conflicts with the existing `~/.config/rip-cage/` namespace from ADR-020; clutters $HOME; XDG is the standard for new tools in 2026 |
-| TOML or JSON instead of YAML | `reasoned:` YAML wins on comments + nested structure + broad familiarity for ops/config use cases. JSON has no comments. TOML's nested tables get awkward for the merge semantics this design requires. `yq` is already a documented host CLI tool. |
+| **Per-project locality discarded** — single global file with per-project keys (e.g. `projects: {kinky-bubbles: {ssh: {...}}}`) | `direct:` Defeats the trigger — switch.berlin allowance for kinky-bubbles ends up in the user's home file, not the project's repo. Lost: in-tree visibility, per-PR review, team shareability. The actual axis being decided is "where does per-project posture live?" — encoding it as keys in a global file regresses on every D1 warrant above. |
+| **Project file gitignored by default** (user opts into committing) | `direct:` Defeats the audit trail and team-shared-posture goal. Whole reason this isn't an env var is that it should be visible. |
+| **Tracked by default with `rc init --gitignore-config` opt-in** | `reasoned:` Ergonomically appealing for solo/personal repos and forks, but adds an init-time decision the user has to make per project, and the opt-in produces an untracked-on-purpose file that teammates can't audit. Revisit if dogfooding shows the solo case is common enough that the friction warrants the flag. |
+| **`.rip-cage/` directory at project root** with multiple files (`ssh.yaml`, `egress.yaml`, etc.) | `reasoned:` Premature factoring; today the file is ~5–15 lines for the typical project. Single file is easier to author, easier to diff, easier for `yq` consumers. Revisit if file grows past ~100 lines in real projects. |
+| **Global at `~/.rip-cage.yaml`** (dotfile in `$HOME`) | `reasoned:` Clutters `$HOME` and lives outside the existing `~/.config/rip-cage/` namespace from ADR-020. (Note: would *not* technically conflict with `~/.config/rip-cage/` files on disk; the rejection is about namespace coherence and home-dir hygiene, not collision.) |
+| **TOML or JSON instead of YAML** | `reasoned:` YAML wins on comments + nested structure + familiarity for ops/config use. JSON has no comments. TOML's nested tables get awkward for the merge semantics of D2. |
 
 **What would invalidate this:** The project file repeatedly grows past ~100 lines or develops natural sub-domains (SSH, egress, skills) that a directory split would clarify. At that point, promote `.rip-cage.yaml` to `.rip-cage/config.yaml` with optional per-domain files.
 
@@ -61,18 +62,19 @@ Both are optional. Both absent → identical behavior to today (D5).
 
 Both files load on every `rc up` / `rc init`. The merged result is the effective config. Merge follows three rules, applied per field declared in the schema:
 
-| Field type | Examples | Merge rule |
-|---|---|---|
-| **Additive list** (capability grants — adding more "allowed things") | `ssh.allowed_hosts`, `egress.allow`, `skills.extra_mounts` | **Union** — global ∪ project, deduplicated, order-preserving (global first, then project additions) |
-| **Selection list** (subsetting an existing capability) | `ssh.allowed_keys` | **Project replaces if present, else inherit global** |
-| **Scalar** | `resources.memory_mb`, `version` | **Project replaces global if present** |
+| Field type | Examples | Merge rule | Capability direction |
+|---|---|---|---|
+| **Additive list** (capability grant — adding more "allowed things") | `ssh.allowed_hosts`, `egress.allow`, `skills.extra_mounts` | **Union** — global ∪ project, deduplicated, order-preserving (global first, then project additions) | Project EXPANDS what's granted; cannot contract |
+| **Selection list** (subsetting an existing capability) | `ssh.allowed_keys` | **Project replaces if explicitly present, else inherit global**. Three-state: key absent ⇒ inherit global; key present + non-empty ⇒ subset selection; key present + empty list (`[]`) ⇒ explicit zero-out (project replaces global with empty set) | Project CAN narrow a global capability; this is intentional |
+| **Scalar** | `resources.memory_mb`, `version` | **Project replaces global if present** | Project replaces; direction is field-specific |
 
-Each schema field declares its merge type explicitly in the loader's schema definition. There is no inference (e.g., "all lists are additive"). Misclassifying a field is a versioned schema change, not a silent semantic shift.
+Each schema field declares its merge type explicitly in the loader's schema definition. There is no inference. Misclassifying a field is a versioned schema change, not a silent semantic shift.
 
-Concrete example (the SSH allowlist, the first downstream user):
+Concrete example (the SSH allowlist, the first downstream consumer):
 
 ```yaml
 # ~/.config/rip-cage/config.yaml — global
+version: 1
 ssh:
   allowed_keys:                   # selection list
     - id_ed25519_personal
@@ -83,16 +85,18 @@ ssh:
 
 ```yaml
 # ~/code/personal/kinky-bubbles/.rip-cage.yaml — project, committed
+version: 1
 ssh:
   allowed_hosts:                  # additive → final = [github.com, switch.berlin]
     - switch.berlin
-  allowed_keys:                   # selection → project replaces → final = [id_ed25519_personal]
+  allowed_keys:                   # selection (subset) → project replaces → final = [id_ed25519_personal]
     - id_ed25519_personal
 ```
 
 Effective config the loader hands to the cage:
 
 ```yaml
+version: 1
 ssh:
   allowed_keys: [id_ed25519_personal]
   allowed_hosts: [github.com, switch.berlin]
@@ -100,13 +104,13 @@ ssh:
 
 **Rationale:**
 
-The two list-merge modes correspond to two different intents that often share a YAML key shape but mean different things:
+The two list-merge modes correspond to two different intents that share YAML key shape but mean different things:
 
-- **Additive (capability grant):** "On top of what's globally allowed, this project also allows X." Negating is impossible by design — you cannot un-grant a global capability from a project file. (Want to deny in one project? Don't grant it globally.) This matches the philosophy: project files *expand* trust, never silently *contract* it. The global file is the host's choice; the project file is the workspace's request.
-- **Selection (subsetting):** "Of the globally available set, this project uses only this subset." Replace semantics are right because intent is restrictive: kinky-bubbles wants only the personal key forwarded, even though the global config makes both available. Union would be wrong — the project would inherit the work key it explicitly excluded.
+- **Additive (capability grant):** "On top of what's globally allowed, this project also allows X." Cannot un-grant a global capability — that's the point. Want to deny in one project? Don't grant it globally.
+- **Selection (subsetting):** "Of the globally available set, this project uses only this subset." Replace semantics are intentional: kinky-bubbles wants only the personal key forwarded, even though the global config makes both available. Union would defeat the user's narrowing intent. The three-state rule (absent / non-empty / empty list) gives the user the full control surface — including explicit zero-out — without inventing magic syntax.
 - **Scalar:** Replace is the only semantics that makes sense.
 
-The "no inference" rule (each field declares its type in schema) prevents the worst failure mode: a user reading a YAML file and guessing wrong about merge behavior. The `rc config show` output from D4 makes the resolved values inspectable.
+**Note on selection-list capability direction:** Selection-list project overrides DO contract a global capability. This is deliberate — that's what selection lists are for. The "additive lists only expand" property does not generalize to selection lists, which has consequences for D3's version-drift behavior (see D3 below).
 
 **Alternatives considered:**
 
@@ -114,33 +118,55 @@ The "no inference" rule (each field declares its type in schema) prevents the wo
 |---|---|
 | Project always replaces global (simple, no per-field rules) | `reasoned:` Forces project files to redeclare global allowed_keys, allowed_hosts, etc., every time. Defeats the "global = my defaults across all projects" mental model — global becomes write-only state nobody benefits from |
 | All lists union by default; opt-in replace via `_replace: true` marker | `reasoned:` Magic-key syntax is harder to read than declared schema. A user reading the project YAML can't tell from the syntax which fields union vs replace. Schema-declared per-field type makes `rc config show` provenance comprehensible. |
-| Project additive-only (no scalar overrides allowed) | `reasoned:` Unblocks the SSH case but blocks future scalar overrides (resource limits, timeouts) without this design having to be revisited |
-| Three files (global, project, user-local-untracked) like git config | `reasoned:` Each layer needs a real use case; user-local-untracked invites hidden state that's invisible to teammates and to PR reviewers — the exact failure mode this ADR avoids. Revisit if a real use case emerges. |
+| Project additive-only (no scalar overrides allowed) | `reasoned:` Unblocks the SSH case but blocks future scalar overrides (resource limits, timeouts) without revisiting this ADR |
+| Three files (global, project, user-local-untracked) like git config | `reasoned:` Each layer needs a real use case; user-local-untracked invites hidden state invisible to teammates and to PR reviewers — the exact failure mode this ADR avoids. Revisit if a real use case emerges. |
 
 **What would invalidate this:** A schema field is genuinely ambiguous between additive and selection semantics, and users disagree about which one they want. At that point, split the field into two (`allowed_x_extra` additive + `allowed_x_only` selection) rather than introducing per-call merge-mode flags.
 
-**Invalidation check (mechanical, optional):** `rc config show --json` produces effective config; for any additive-list field, asserting `(global_field ∪ project_field) == effective_field` and for any selection-list field asserting `(project_field if present else global_field) == effective_field` should hold for all fixtures in `tests/test-config-loader.sh`.
+**Invalidation check (mechanical, runnable in `rip-cage-o4z`'s test suite, not in this ADR's substrate):** `rc config show --json` produces effective config; for any additive-list field, `(global_field ∪ project_field) == effective_field` must hold. For any selection-list field: project absent ⇒ effective == global; project present + non-empty ⇒ effective == project; project present + `[]` ⇒ effective == `[]`. These are the loader bead's contract test cases.
 
-### D3: Schema versioning — `version: 1` required; unknown-higher-version warns and falls back to defaults
+### D3: Schema versioning — `version: 1` per file; unknown-higher-version warns; missing-version warns once-per-invocation
 
 **Firmness: FIRM**
 
-Both files declare `version: <integer>` at the top level. The loader knows the set of versions it supports (initially `{1}`).
+Each file independently declares `version: <integer>` at the top level. The loader knows the set of supported versions (initially `{1}`).
 
 | Condition | Behavior |
 |---|---|
-| `version` field absent | Treat as `version: 1` (current). Warn loud once: `'<file>' has no 'version:' field; assuming version 1. Add 'version: 1' to silence.` |
+| `version` field absent | Treat as `version: 1`. Warn loud once per `rc up` invocation per file (no persisted "already warned" state — each `rc up` re-warns until the user adds the field): `'<file>' has no 'version:' field; assuming version 1. Add 'version: 1' to silence.` |
 | `version` matches a supported version | Load normally. |
-| `version` higher than highest supported | Warn loud, **skip that file entirely** (load defaults / other layer only): `'<file>' declares version: N but rc supports up to version: M. Skipping this file. Run 'rc --version' and consider upgrading.` |
+| `version` higher than highest supported | Warn loud, **skip that file's contents** (load defaults / other layer only): `'<file>' declares version: N but rc supports up to version: M. Skipping this file. Run 'rc --version' and consider upgrading.` |
 | `version` lower than supported (deprecated past schema) | Warn loud, attempt load with documented compat shim if one exists, else skip with actionable upgrade message. Not relevant in v1 (no deprecated versions exist). |
 
-**`rc up` does not abort on schema mismatch.** A user with rc v1.5 opening a project whose `.rip-cage.yaml` was written by a teammate using rc v2.0 is a normal team-coordination case, not a fatal error. The project file gets skipped; the cage runs with global + defaults. The user gets a clear upgrade message. This matches "agent autonomy is the product" — don't block the cage on host-vs-project version drift.
+**Per-file independence:** Both files declare their own version. A user with global `version: 1` and project `version: 2` (because the teammate who wrote the project file is on a newer rc) sees the project file skipped with a warning; the global file still loads.
+
+**Warn-once-per-invocation semantics:** "Once" is per `rc up` call. There is no persisted "already warned" sentinel — each invocation re-warns until the user adds the version field. This is intentional: persisted suppression risks a user thinking they fixed the warning when they actually just hit the suppression cache.
+
+**`rc up` does not abort on unknown-higher-version skip BY DEFAULT.** A user with rc v1.5 opening a project whose `.rip-cage.yaml` was written by a teammate using rc v2.0 is a normal team-coordination case, not a fatal error. The project file gets skipped; the cage runs with global + defaults.
+
+**This default behavior is at tension with ADR-001 for selection-list fields whose silent degradation expands capability beyond user intent — see "ADR-001 reconciliation" below.** Resolution path is decision-pending (this ADR will be amended once the user resolves the Raise surfaced in review).
+
+**ADR-001 reconciliation (PENDING USER DECISION — see review record in bead `--notes`):**
+
+The warn-and-skip default contradicts ADR-001's fail-loud rule for selection-list fields that scope DOWN a global capability. Concrete failure mode: user writes a project file declaring `version: 99` and `ssh.allowed_keys: [id_ed25519_personal]` (intent: only personal key forwarded). Loader skips the file silently → cage forwards BOTH keys per global → user believes they have a narrower posture than they have. This is exactly the ADR-001:13 failure mode ("user believes they have the firewall").
+
+For additive-list fields (`ssh.allowed_hosts`), version-skip yields LESS capability than user intended (project's intended additions dropped) — ADR-001's failure direction is inverted; skip is safe.
+
+For scalar fields, direction is field-specific.
+
+The pending decision is which of these resolutions to adopt:
+
+- **Option A (strict ADR-001):** Version-skip aborts loud for any file. Cost: team-coordination friction (one teammate's rc upgrade blocks others until they upgrade).
+- **Option B (field-type-conditional):** Loader inspects which fields the skipped file declares; if any selection-list field is present, abort loud. If only additive/scalar fields are present, warn-and-skip. Cost: per-field-class branching in the loader; the loader needs to do partial parsing of a file whose schema version it doesn't understand.
+- **Option C (warn-and-skip always; schema constrained):** Schema constraint forbids any selection-list field whose default is broader than any plausible user-intended value. SSH allowed_keys would need to default to `[]` (no keys forwarded) rather than "all forwarded," which breaks today's behavior and conflicts with ADR-017's forward-by-default. Likely unworkable without an additional ADR amending ADR-017.
+
+**Pending Option-X resolution, the loader bead (`rip-cage-o4z`) MUST default to Option A (abort loud)** as the conservative ADR-001-compliant behavior. The substrate ADR will be amended in place once the user picks.
 
 **Rationale:**
 
 - **Required version field forces every file to declare its assumed schema.** Without this, a v2 schema change (e.g., renaming `ssh.allowed_hosts` to `ssh.hosts.allow`) silently misinterprets v1 files written under the old name.
-- **Higher-than-supported warns rather than aborts** because of the team-coordination case above. The cost of warning is negligible; the cost of aborting is "user can't work in this project until they upgrade rc," which is exactly the friction the philosophy says to avoid.
-- **Absent-version-defaults-to-1** for ergonomic ramp: early users won't have to remember to add the field to a 5-line config. The one-time warning makes the field discoverable.
+- **Per-file version field** because the two files can be authored under different rc versions (global = your machine; project = whichever teammate wrote it last).
+- **Absent-version-defaults-to-1** for ergonomic ramp; the per-invocation warning makes the field discoverable without locking out users with empty/minimal early files.
 - **No compat shims yet** because there's nothing to shim — v1 is the only version. Capturing the shape of how schema evolution works now (rather than retrofitting later) is what this decision is for.
 
 **Alternatives considered:**
@@ -148,19 +174,19 @@ Both files declare `version: <integer>` at the top level. The loader knows the s
 | Alternative | Rejected because |
 |---|---|
 | No version field; assume schema is whatever rc supports | `direct:` First breaking schema change silently misinterprets old files. The whole reason for versioning is that schema *will* evolve. |
-| Higher-version aborts loud | `reasoned:` Forces team to coordinate rc upgrades atomically; first teammate to push a v2 file blocks everyone else. ADR-001 fail-loud is for things rc detects that should never happen; schema version drift is normal and recoverable. |
-| Higher-version best-effort loads with warning | `reasoned:` Best-effort loading silently drops fields the loader doesn't know about; downstream consumers (SSH allowlist) see partial config and behave inconsistently. Skipping the file entirely is honest: "I cannot reason about this file; here are the defaults." |
+| Higher-version best-effort loads with warning | `reasoned:` Best-effort loading silently drops fields the loader doesn't know about; downstream consumers see partial config and behave inconsistently. Skipping the file's contents is honest: "I cannot reason about this file; here are the defaults." |
 | Absent-version aborts (force users to declare) | `reasoned:` Friction tax on the 80% case. Soft-default-with-loud-warning gets the same long-term behavior with better ramp. |
+| Persisted "already warned" suppression | `reasoned:` Risks user thinking the warning is fixed when it's actually suppressed. Re-warning per invocation is mildly annoying; that's intentional discoverability. |
 
 **What would invalidate this:** A real v1→v2 migration where the soft-default-with-warning is harmful (e.g., a security-sensitive field changes meaning). At that point, that specific field gets compat handling and the rest of the file still works.
 
-**Invalidation check (mechanical, optional):** Fixture `tests/fixtures/config-future-version.yaml` declares `version: 99`; `rc config show` on that fixture must (a) exit 0, (b) not include any field from the fixture in the effective config, (c) print the upgrade-message warning to stderr. If exit non-zero or the fields appear in effective config, D3 is broken.
+**Invalidation check (mechanical, runnable in `rip-cage-o4z`'s test suite):** Fixture `tests/fixtures/config-future-version.yaml` declares `version: 99`; under whichever Option (A/B/C) is chosen, `rc config show` on that fixture must produce the chosen behavior (A: exit non-zero with actionable error; B: exit non-zero only if selection-list field present, else exit 0 with skip warning; C: exit 0 with skip warning regardless).
 
 ### D4: `rc config show` prints effective merged config with provenance
 
 **Firmness: FIRM**
 
-`rc config show` (and `rc config show --json`) prints the effective merged config. Each field is annotated with provenance — where the value came from (`global`, `project`, `default`, or `union(global,project)` for additive lists).
+`rc config show` (and `rc config show --json`) prints the effective merged config. Each leaf field is annotated with provenance — where the value came from (`global`, `project`, `default`, or `union(global,project)` for additive lists).
 
 YAML-with-comments output for human reading:
 
@@ -175,6 +201,8 @@ ssh:
     - switch.berlin               # from project
 ```
 
+For nested-map fields and lists-of-maps (plausible v1+ schema growth: `egress.rules: [{host, port}]`, `dcg.rules: [{pattern, action}]`), provenance is annotated **at the field level** (one comment per containing key, naming the source layers) rather than per-element. Per-element provenance for nested structures is deferred to the loader bead (`rip-cage-o4z`) to specify; the substrate ADR commits only to field-level provenance for nested types.
+
 JSON output (`--json`) embeds provenance as a parallel structure for machine consumers:
 
 ```json
@@ -188,13 +216,11 @@ JSON output (`--json`) embeds provenance as a parallel structure for machine con
 }
 ```
 
-The command works without any project file (shows global + defaults), without a global file (shows project + defaults), and with neither (shows pure defaults). It runs entirely host-side; no container required.
+The command works without any project file (shows global + defaults), without a global file (shows project + defaults), and with neither (shows pure defaults). Runs entirely host-side; no container required.
 
 **Rationale:**
 
-The two-layer-with-per-field-merge-rules design from D2 is *nontrivial*. Without an effective-config view, a user staring at a project file that doesn't behave as expected has to mentally execute the merge against the global file plus the schema's per-field rules. That's exactly the failure mode this design replaces (vs env vars). `rc config show` makes the merged result inspectable in one command, with provenance — so a confused user (or agent) can see *why* a value resolved as it did, not just *what* it resolved to.
-
-The JSON form lets `rc doctor`, hooks, and downstream tooling consume the effective config without re-implementing the loader.
+The two-layer-with-per-field-merge-rules design from D2 is *nontrivial*. Without an effective-config view, a user staring at a project file that doesn't behave as expected has to mentally execute the merge against the global file plus the schema's per-field rules. `rc config show` makes the merged result inspectable in one command, with provenance — so a confused user (or agent) can see *why* a value resolved as it did, not just *what* it resolved to. JSON form lets `rc doctor`, hooks, and downstream tooling consume the effective config without re-implementing the loader.
 
 **Alternatives considered:**
 
@@ -206,67 +232,80 @@ The JSON form lets `rc doctor`, hooks, and downstream tooling consume the effect
 
 **What would invalidate this:** Telemetry showing nobody runs `rc config show` and `rc config get <key>` is what users actually want. Pivot, keep the JSON output for tooling.
 
-**Invalidation check (mechanical, optional):** With both files present and an additive-list field that has values in each, `rc config show --json | jq '.provenance["ssh.allowed_hosts"]'` must return an array containing both `"global"` and `"project"`. If it returns a single string or omits one source, D4's union-provenance is broken.
+**Invalidation check (mechanical, runnable in `rip-cage-o4z`'s test suite):** With both files present and an additive-list field that has values in each, `rc config show --json | jq '.provenance["ssh.allowed_hosts"]'` must return an array containing both `"global"` and `"project"`.
 
-### D5: Both files absent ⇒ behavior is byte-identical to today
+### D5: Both files absent ⇒ no behavior change in cage posture; informational output is the substrate's only side-effect
 
 **Firmness: FIRM**
 
-When neither `~/.config/rip-cage/config.yaml` nor `<project>/.rip-cage.yaml` exists, `rc up` / `rc init` behave **byte-identically** to the current implementation (pre-loader). No new mounts, no new flags applied, no new sentinels written, no new banner content. The loader runs and produces an "all defaults" effective config that downstream consumers (SSH allowlist, future egress, etc.) interpret the same way they'd interpret no-config-loader-at-all.
+Regression contract has two parts:
 
-This decision is the **regression contract** for everything else in the substrate.
+1. **Cage posture unchanged.** When neither `~/.config/rip-cage/config.yaml` nor `<project>/.rip-cage.yaml` exists, `rc up` / `rc init` produce **identical effective cage state**: same mounts, same flags applied, same defaults, same labels, same sentinels. No new env vars injected, no new `--mount` arguments, no new `docker exec` invocations, no new container labels. Downstream consumers (SSH allowlist, future egress, etc.) interpret the empty/default effective config the same way they'd interpret no-loader-at-all.
+
+2. **Substrate-only informational output is in scope.** The substrate DOES introduce these net-new informational outputs even when both files are absent or when a file is malformed:
+   - First-run hint when a `.rip-cage.yaml` is detected for the first time per container (one-time per `rc.config-loaded` label).
+   - `rc config show` is a new top-level command (only emits when invoked).
+   - Schema-version-absent warnings (per D3, only when a file exists).
+   - Schema-version-mismatch warnings (per D3, only when a file exists).
+
+Net-new stdout/stderr text is not a regression in the sense this contract cares about: it changes what the user *sees*, not what the cage *does*. The byte-identical claim from earlier drafts is replaced with this scoped contract.
 
 **Rationale:**
 
-- **Backward compatibility for existing users.** Anyone running rip-cage today should be able to upgrade and notice nothing.
-- **Forces downstream consumers (SSH allowlist, etc.) to handle the empty/default case explicitly.** Each consumer's bead must include a "no .rip-cage.yaml present → behavior unchanged" test case. That test is what catches accidental coupling between loader presence and behavior change.
-- **Makes the loader truly substrate.** The substrate ships first, alone, with no behavior change. Downstream beads opt in field by field.
+- **Backward compatibility for existing users.** Anyone running rip-cage today should be able to upgrade and notice no posture change.
+- **Forces downstream consumers (SSH allowlist, etc.) to handle the empty/default case explicitly.** Each consumer's bead must include a "no .rip-cage.yaml present → posture unchanged" test case. That test catches accidental coupling between loader presence and behavior change.
+- **Informational output is in scope** because hiding the substrate's existence (e.g., suppressing the first-run hint) defeats discoverability. The substrate is opt-in by adding a config file; users who don't add one see at most the one-time hint when they do.
 
 **Alternatives considered:**
 
 | Alternative | Rejected because |
 |---|---|
 | Loader applies "sensible defaults" even when no file present (e.g., default `ssh.allowed_hosts: [github.com]` immediately tightens posture) | `direct:` Violates the regression contract; existing users see surprise behavior change on rc upgrade. The right time to tighten defaults is when a downstream consumer ships, not when the substrate ships. |
-| Loader prints a one-time "no config found, here are your defaults" hint | `reasoned:` Adds noise for the 80% case who never need a config file. Defaults should be silent. `rc config show` is the discoverable entry point for users who care. |
+| Strict byte-identical contract (no new stdout/stderr at all) | `reasoned:` Forbids the first-run hint and the version warnings, which are the substrate's discoverability surface. Hiding the substrate makes it harder to use, not safer. |
+| Loader prints a one-time "no config found, here are your defaults" hint even when both absent | `reasoned:` Adds noise for the 80% case who never need a config file. Defaults should be silent. `rc config show` is the discoverable entry point for users who care. |
 
-**What would invalidate this:** A future ADR explicitly decides to ship a tightening default in the substrate itself (rather than in a consumer bead). At that point, this decision is amended, not silently broken.
+**What would invalidate this:** A future ADR explicitly decides to ship a tightening default in the substrate itself. At that point, this decision is amended, not silently broken.
 
-**Invalidation check (mechanical, optional):** With both config files absent, `tests/test-e2e-lifecycle.sh` (full count today) must produce the same PASS/FAIL count as it did before the loader landed. A delta means D5 is broken.
+**Invalidation check (mechanical, runnable):** With both config files absent, `tests/test-e2e-lifecycle.sh` (full count today) must produce the same PASS/FAIL count and the same emitted mounts/labels/sentinels as it did before the loader landed. A delta in mounts, labels, or sentinels means the cage-posture-unchanged half of D5 is broken. (Stdout/stderr deltas from the substrate's informational output are explicitly in-scope per the contract.)
 
 ## Consequences
 
 **Positive:**
 - Per-project cage posture is a tracked, diff-able, auditable artifact at the workspace root — visible in PR reviews, in `git log`, and to teammates / future agents.
-- Agents can self-configure: hit a wall, edit `.rip-cage.yaml`, commit, ask the user to recreate the cage. No hidden env var required.
+- Agents can self-configure: hit a wall, edit `.rip-cage.yaml`, commit, re-run `rc up` (or `rc destroy && rc up` for fields that require recreate — see Implementation notes). No hidden env var.
 - Global file collapses repeated user preferences to one place across all projects.
-- The substrate unblocks downstream work (SSH allowlist `rip-cage-b0c`, future egress overrides, future skill mount opt-outs, future resource limits) without each consumer re-inventing config plumbing.
+- The substrate unblocks downstream work (`rip-cage-b0c` SSH allowlist, future egress overrides, future skill mount opt-outs, future resource limits) without each consumer re-inventing config plumbing.
 - `rc config show` makes the merge model inspectable, so the per-field-type rules don't become a debugging trap.
-- D5's regression contract means existing users see zero behavior change on upgrade.
+- D5's regression contract means existing users see no posture change on upgrade.
 
 **Negative:**
 - New surface area: one schema, one loader, one CLI subcommand (`rc config show`), one new convention file at every project root that opts in.
-- Schema versioning means schema evolution requires deliberate version bumps, not silent additions. (This is also positive — see D3 rationale.)
-- YAML adds a parser dependency surface. `yq` is already a documented host CLI; loader uses it (or vendors a small parse-on-host shim).
-- Two layers means `rc config show` is now part of the debugging vocabulary; users who don't know it exists will be confused by merged behavior. Mitigation: surface it in the next-step output of `rc up` when a config file is loaded for the first time.
+- Schema versioning means schema evolution requires deliberate version bumps. (Also positive — see D3 rationale.)
+- YAML adds a parser dependency surface (see Implementation notes for `yq` pinning).
+- D3's ADR-001 reconciliation is decision-pending at substrate-ship time. Loader bead defaults to Option A (abort loud on version-skip) until resolved.
+- Two layers means `rc config show` is part of the debugging vocabulary; users who don't know it exists will be confused by merged behavior. Mitigation: D5's first-run hint surfaces it.
 
 **Neutral:**
 - Loader adds host-side cost on every `rc up` (parse two YAML files, merge, write effective config). Cost: ~50ms with `yq`, well below `docker start`.
-- The asymmetry between global path (`~/.config/rip-cage/config.yaml`) and project path (`.rip-cage.yaml`) requires a one-line explanation in docs. That's the cost of matching established conventions on both ends.
+- The asymmetry between global path (`~/.config/rip-cage/config.yaml`) and project path (`.rip-cage.yaml`) requires a one-line explanation in docs.
 
 ## Implementation notes
 
-- **Schema definition** lives in the loader (initially as a bash associative array or a small declarative file). For each field: name, type (scalar / additive-list / selection-list), default value. The schema is the single source of truth for merge behavior.
+- **Schema definition** lives in the loader (initially as a bash associative array or a small declarative file). For each field: name, type (scalar / additive-list / selection-list), default value, **version-strict marker** (used by D3's Option B if chosen). Schema is the single source of truth for merge behavior.
 - **Loader contract:** `_load_effective_config()` returns the merged config in a consumable form (JSON to stdout via `yq -o=json`, or as exported env vars for bash consumers — TBD in the loader bead).
-- **`rc config show`:** new top-level subcommand. `rc config show` (YAML+comments), `rc config show --json` (JSON+provenance), `rc config show <key>` (single field).
-- **First-run hint:** when `rc up` loads a `.rip-cage.yaml` for the first time on a given container (detected via label `rc.config-loaded=<sha256>`), print `Loaded .rip-cage.yaml ([N fields applied]). Run 'rc config show' to inspect.`
-- **Schema version field:** the loader rejects/skips files with unsupported version per D3 *before* attempting to merge. Provenance for skipped files is recorded so `rc config show` can surface "this layer was skipped due to version mismatch."
-- **Test fixtures:** `tests/fixtures/config-*.yaml` covering the matrix in D2 (additive, selection, scalar, mixed), plus D3 (missing version, unsupported version) and D5 (both absent).
+- **`yq` dependency pinning:** Loader requires `yq` on host. If absent, `rc up` emits an actionable error per ADR-001: `Error: yq not found on PATH. Install yq (brew install yq | apt-get install yq) to use .rip-cage.yaml. Run rc with no .rip-cage.yaml present to keep today's behavior.` Loader does NOT silently degrade to "skip config" on missing parser — that would silently nullify a user-authored capability scoping (the same failure class as D3's Option A).
+- **`rc config show`:** new top-level subcommand. `rc config show` (YAML+comments), `rc config show --json` (JSON+provenance), `rc config show <key>` (single field, deferred bead).
+- **Container recreate vs `rc up`:** Most fields apply on `rc up` (resume re-runs the loader and re-translates downstream artifacts). Capability-changing fields that affect docker-create-time mounts or args (e.g., `ssh.allowed_keys` filtering the forwarded ssh-agent socket; `egress.allow` modifying iptables at create) require `rc destroy && rc up`. Each consumer bead documents which of its fields are recreate-required vs resume-applicable. Loader prints `Effective config changed since last rc up; some fields require 'rc destroy && rc up' to apply (see <field-list>).` when it detects a change against the `rc.config-loaded=<sha256>` label.
+- **First-run hint:** when `rc up` loads a `.rip-cage.yaml` for the first time on a given container (detected via label `rc.config-loaded=<sha256>`), print `Loaded .rip-cage.yaml ([N fields applied]). Run 'rc config show' to inspect.` Subsequent `rc up` calls with the same content sha256 do not re-print.
+- **Loader state location:** `rc.config-loaded=<sha256>` lives as a container label (host-side, queryable via `docker inspect`), matching ADR-020's `rc.github-identity` label pattern. "Skipped layer" diagnostics live in `rc config show` output (computed fresh each invocation), not in a sentinel — sentinel pattern from ADR-020 D5 is reserved for state that needs to be readable from inside the cage's first-shell echo.
+- **Schema version field:** the loader rejects/skips files with unsupported version per D3 (Option A default; revisit per the pending Raise) **before** attempting to merge. Provenance for skipped files is recorded so `rc config show` can surface "this layer was skipped due to version mismatch" rather than silently omitting it.
+- **Test fixtures:** `tests/fixtures/config-*.yaml` covering the matrix in D2 (additive, selection three-state, scalar, mixed), plus D3 (missing version, unsupported version, version skew between layers) and D5 (both absent posture-unchanged check).
 - **Docs:** new reference page at `docs/reference/config.md`. README gets a one-paragraph mention with link.
-- **Downstream consumer template (for SSH allowlist and future):** each consumer bead must include (a) the schema fields it owns + their merge types, (b) a "both files absent → behavior unchanged" regression test (D5 contract), (c) a "global + project both contribute" integration test that validates the merge rule for that consumer's fields.
+- **Downstream consumer template (for SSH allowlist `rip-cage-b0c` and future):** each consumer bead must include (a) the schema fields it owns + their merge types + version-strict markers, (b) a "both files absent → posture unchanged" regression test (D5 contract), (c) a "global + project both contribute" integration test that validates the merge rule for that consumer's fields, (d) explicit declaration of which fields are recreate-required vs resume-applicable.
 
 ## Carries over from prior ADRs
 
-- **ADR-001** fail-loud-and-actionable applies to schema validation errors and to consumer-level errors (e.g., `ssh.allowed_keys` references a key the user doesn't have). It does NOT apply to schema version drift (D3) — that's a recoverable state, not an unrecoverable one.
-- **ADR-014 D2** (non-interactive SSH posture) is partially superseded by the SSH allowlist (`rip-cage-b0c`) which uses this substrate. That bead either updates ADR-014 D2 in place (per the project's ADR-edit-in-place convention) or documents in its design notes why the override is replaced by the allowlist mechanism.
-- **ADR-020** (ssh identity routing) coexists. Identity routing remains keyed by `~/.config/rip-cage/identity-rules` and CLI flags / labels; the SSH allowlist that this substrate enables is orthogonal (one is "which key for which github account?", the other is "which hosts and keys can the cage reach at all?"). They share the same `~/.config/rip-cage/` namespace by D1.
+- **ADR-001** fail-loud-and-actionable applies to schema validation errors and to consumer-level errors (e.g., `ssh.allowed_keys` references a key the user doesn't have). Its application to D3's version-drift behavior is **decision-pending** — the loader bead defaults to fail-loud-abort (Option A) until the user resolves the Raise surfaced in review.
+- **ADR-014 D2** (non-interactive SSH posture) is **not modified by this substrate**. The downstream `rip-cage-b0c` (SSH allowlist) bead will edit ADR-014 D2 in place per ADR-011 when shipped, replacing the `known_hosts` rewrite with capability-scoped allowlists. ADR-014 D2's caveat at line 79 (CLI `-o` reach limit) remains accurate as-stated for the default container.
+- **ADR-020** (ssh identity routing) coexists. Identity routing remains keyed by `~/.config/rip-cage/identity-rules` and CLI flags / labels; the SSH allowlist enabled by this substrate is orthogonal (one is "which key for which github account?", the other is "which hosts and keys can the cage reach at all?"). Both share the `~/.config/rip-cage/` namespace by D1.
 - **ADR-017** (ssh-agent forwarding) is the capability that the SSH allowlist consumer scopes. This substrate is what makes per-project scoping expressible.
