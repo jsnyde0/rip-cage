@@ -142,25 +142,19 @@ Each file independently declares `version: <integer>` at the top level. The load
 
 **Warn-once-per-invocation semantics:** "Once" is per `rc up` call. There is no persisted "already warned" sentinel — each invocation re-warns until the user adds the version field. This is intentional: persisted suppression risks a user thinking they fixed the warning when they actually just hit the suppression cache.
 
-**`rc up` does not abort on unknown-higher-version skip BY DEFAULT.** A user with rc v1.5 opening a project whose `.rip-cage.yaml` was written by a teammate using rc v2.0 is a normal team-coordination case, not a fatal error. The project file gets skipped; the cage runs with global + defaults.
+**Unknown-higher-version handling is field-type-conditional (resolved 2026-05-11):**
 
-**This default behavior is at tension with ADR-001 for selection-list fields whose silent degradation expands capability beyond user intent — see "ADR-001 reconciliation" below.** Resolution path is decision-pending (this ADR will be amended once the user resolves the Raise surfaced in review).
+When a file declares an unsupported version, the loader does a partial parse to enumerate which fields the file uses, classified against the loader's schema:
 
-**ADR-001 reconciliation (PENDING USER DECISION — see review record in bead `--notes`):**
+- **If the unknown-version file declares any selection-list field** (e.g. `ssh.allowed_keys`): `rc up` aborts loud per ADR-001. Silent skip would silently expand capability beyond user intent (the user's narrowing of a globally-available set is dropped) — exactly the ADR-001:13 failure mode ("user believes they have the firewall"). Error message: `Error: '<file>' declares version: N (rc supports up to M) AND uses selection-list field(s) [<names>]. Skipping the file would silently expand capability beyond your declared intent. Upgrade rc, or remove the selection-list field(s) and pin to a supported version.`
+- **If the unknown-version file declares only additive-list fields and/or scalars whose defaults are ≤ user intent** (e.g. `ssh.allowed_hosts`): warn loud, skip the file's contents, load defaults / other layer only. `'<file>' declares version: N but rc supports up to M. Skipping this file (no selection-list fields detected — capability degradation is in the safer direction). Run 'rc --version' and consider upgrading.`
+- **Loader's partial-parse contract:** detecting selection-list-field presence in an unknown-version file requires only field-name enumeration (e.g. `yq 'keys' <file>`), not value interpretation. The schema's name → field-type mapping is the loader's source of truth; misclassification is impossible because field names that don't appear in the schema are reported separately as "unknown fields."
 
-The warn-and-skip default contradicts ADR-001's fail-loud rule for selection-list fields that scope DOWN a global capability. Concrete failure mode: user writes a project file declaring `version: 99` and `ssh.allowed_keys: [id_ed25519_personal]` (intent: only personal key forwarded). Loader skips the file silently → cage forwards BOTH keys per global → user believes they have a narrower posture than they have. This is exactly the ADR-001:13 failure mode ("user believes they have the firewall").
+**Why this resolution.** ADR-001's fail-loud rule applies to safety-relevant state mismatches (line 31). Selection-list scope-down IS safety-relevant — the user explicitly narrowed a capability, and silent expansion violates user intent in the firewall-direction. Additive-list capability-grants are NOT safety-relevant in the same direction — silent drop of a user-intended addition leaves the cage with less capability than declared, which is the conservative direction. The two failure directions justify two different responses; ADR-001's exception clause (informational fields) is a different distinction (informational vs decision-affecting), not the right axis here. The field-type-conditional rule honors ADR-001's spirit (fail-loud where user intent could be silently broken) without paying its tax on the additive-list case where the failure direction is inverted.
 
-For additive-list fields (`ssh.allowed_hosts`), version-skip yields LESS capability than user intended (project's intended additions dropped) — ADR-001's failure direction is inverted; skip is safe.
+**Cost acknowledged:** Loader does a partial parse of unknown-version files to detect selection-list fields. This is ~5 lines of `yq` invocation; the schema's selection-list set is small and stable.
 
-For scalar fields, direction is field-specific.
-
-The pending decision is which of these resolutions to adopt:
-
-- **Option A (strict ADR-001):** Version-skip aborts loud for any file. Cost: team-coordination friction (one teammate's rc upgrade blocks others until they upgrade).
-- **Option B (field-type-conditional):** Loader inspects which fields the skipped file declares; if any selection-list field is present, abort loud. If only additive/scalar fields are present, warn-and-skip. Cost: per-field-class branching in the loader; the loader needs to do partial parsing of a file whose schema version it doesn't understand.
-- **Option C (warn-and-skip always; schema constrained):** Schema constraint forbids any selection-list field whose default is broader than any plausible user-intended value. SSH allowed_keys would need to default to `[]` (no keys forwarded) rather than "all forwarded," which breaks today's behavior and conflicts with ADR-017's forward-by-default. Likely unworkable without an additional ADR amending ADR-017.
-
-**Pending Option-X resolution, the loader bead (`rip-cage-o4z`) MUST default to Option A (abort loud)** as the conservative ADR-001-compliant behavior. The substrate ADR will be amended in place once the user picks.
+**`rc up` does not abort on unknown-higher-version skip when no selection-list field is present.** Team-coordination case (one teammate on newer rc) still works for additive-only/scalar-only files.
 
 **Rationale:**
 
@@ -180,7 +174,7 @@ The pending decision is which of these resolutions to adopt:
 
 **What would invalidate this:** A real v1→v2 migration where the soft-default-with-warning is harmful (e.g., a security-sensitive field changes meaning). At that point, that specific field gets compat handling and the rest of the file still works.
 
-**Invalidation check (mechanical, runnable in `rip-cage-o4z`'s test suite):** Fixture `tests/fixtures/config-future-version.yaml` declares `version: 99`; under whichever Option (A/B/C) is chosen, `rc config show` on that fixture must produce the chosen behavior (A: exit non-zero with actionable error; B: exit non-zero only if selection-list field present, else exit 0 with skip warning; C: exit 0 with skip warning regardless).
+**Invalidation check (mechanical, runnable in `rip-cage-o4z`'s test suite):** Two fixtures: (a) `config-future-version-with-selection.yaml` declares `version: 99` and `ssh.allowed_keys: [...]` — `rc up` must exit non-zero with an error naming the selection-list field. (b) `config-future-version-additive-only.yaml` declares `version: 99` and `ssh.allowed_hosts: [...]` (additive only) — `rc up` must exit 0 with a warning, and the effective config must omit the file's contents (i.e. `allowed_hosts` resolves to defaults / global only).
 
 ### D4: `rc config show` prints effective merged config with provenance
 
@@ -282,7 +276,7 @@ Net-new stdout/stderr text is not a regression in the sense this contract cares 
 - New surface area: one schema, one loader, one CLI subcommand (`rc config show`), one new convention file at every project root that opts in.
 - Schema versioning means schema evolution requires deliberate version bumps. (Also positive — see D3 rationale.)
 - YAML adds a parser dependency surface (see Implementation notes for `yq` pinning).
-- D3's ADR-001 reconciliation is decision-pending at substrate-ship time. Loader bead defaults to Option A (abort loud on version-skip) until resolved.
+- D3's field-type-conditional version-drift rule adds loader complexity (partial parse of unknown-version files to enumerate field names against the schema's selection-list set). ~5 lines of `yq`; cost is real but bounded.
 - Two layers means `rc config show` is part of the debugging vocabulary; users who don't know it exists will be confused by merged behavior. Mitigation: D5's first-run hint surfaces it.
 
 **Neutral:**
@@ -298,14 +292,14 @@ Net-new stdout/stderr text is not a regression in the sense this contract cares 
 - **Container recreate vs `rc up`:** Most fields apply on `rc up` (resume re-runs the loader and re-translates downstream artifacts). Capability-changing fields that affect docker-create-time mounts or args (e.g., `ssh.allowed_keys` filtering the forwarded ssh-agent socket; `egress.allow` modifying iptables at create) require `rc destroy && rc up`. Each consumer bead documents which of its fields are recreate-required vs resume-applicable. Loader prints `Effective config changed since last rc up; some fields require 'rc destroy && rc up' to apply (see <field-list>).` when it detects a change against the `rc.config-loaded=<sha256>` label.
 - **First-run hint:** when `rc up` loads a `.rip-cage.yaml` for the first time on a given container (detected via label `rc.config-loaded=<sha256>`), print `Loaded .rip-cage.yaml ([N fields applied]). Run 'rc config show' to inspect.` Subsequent `rc up` calls with the same content sha256 do not re-print.
 - **Loader state location:** `rc.config-loaded=<sha256>` lives as a container label (host-side, queryable via `docker inspect`), matching ADR-020's `rc.github-identity` label pattern. "Skipped layer" diagnostics live in `rc config show` output (computed fresh each invocation), not in a sentinel — sentinel pattern from ADR-020 D5 is reserved for state that needs to be readable from inside the cage's first-shell echo.
-- **Schema version field:** the loader rejects/skips files with unsupported version per D3 (Option A default; revisit per the pending Raise) **before** attempting to merge. Provenance for skipped files is recorded so `rc config show` can surface "this layer was skipped due to version mismatch" rather than silently omitting it.
+- **Schema version field:** the loader applies D3's field-type-conditional rule **before** attempting to merge. Partial parse: enumerate top-level field names in the unknown-version file (`yq 'keys' <file>`); cross-reference against schema's selection-list set; if intersection non-empty → abort loud with the specific field names; else → warn and skip the file's contents. Provenance for skipped files is recorded so `rc config show` can surface "this layer was skipped due to version mismatch" rather than silently omitting it.
 - **Test fixtures:** `tests/fixtures/config-*.yaml` covering the matrix in D2 (additive, selection three-state, scalar, mixed), plus D3 (missing version, unsupported version, version skew between layers) and D5 (both absent posture-unchanged check).
 - **Docs:** new reference page at `docs/reference/config.md`. README gets a one-paragraph mention with link.
 - **Downstream consumer template (for SSH allowlist `rip-cage-b0c` and future):** each consumer bead must include (a) the schema fields it owns + their merge types + version-strict markers, (b) a "both files absent → posture unchanged" regression test (D5 contract), (c) a "global + project both contribute" integration test that validates the merge rule for that consumer's fields, (d) explicit declaration of which fields are recreate-required vs resume-applicable.
 
 ## Carries over from prior ADRs
 
-- **ADR-001** fail-loud-and-actionable applies to schema validation errors and to consumer-level errors (e.g., `ssh.allowed_keys` references a key the user doesn't have). Its application to D3's version-drift behavior is **decision-pending** — the loader bead defaults to fail-loud-abort (Option A) until the user resolves the Raise surfaced in review.
+- **ADR-001** fail-loud-and-actionable applies to schema validation errors and to consumer-level errors (e.g., `ssh.allowed_keys` references a key the user doesn't have). Its application to D3's version-drift behavior is **field-type-conditional**: selection-list fields trigger fail-loud-abort (silent skip would silently expand capability past user intent — ADR-001:13 failure mode); additive-list and scalar fields warn-and-skip (silent skip yields LESS capability, not more — ADR-001's failure direction is inverted).
 - **ADR-014 D2** (non-interactive SSH posture) is **not modified by this substrate**. The downstream `rip-cage-b0c` (SSH allowlist) bead will edit ADR-014 D2 in place per ADR-011 when shipped, replacing the `known_hosts` rewrite with capability-scoped allowlists. ADR-014 D2's caveat at line 79 (CLI `-o` reach limit) remains accurate as-stated for the default container.
 - **ADR-020** (ssh identity routing) coexists. Identity routing remains keyed by `~/.config/rip-cage/identity-rules` and CLI flags / labels; the SSH allowlist enabled by this substrate is orthogonal (one is "which key for which github account?", the other is "which hosts and keys can the cage reach at all?"). Both share the `~/.config/rip-cage/` namespace by D1.
 - **ADR-017** (ssh-agent forwarding) is the capability that the SSH allowlist consumer scopes. This substrate is what makes per-project scoping expressible.
