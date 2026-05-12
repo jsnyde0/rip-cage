@@ -224,6 +224,8 @@ cmd_init() {
     "source=rc-history-${devcontainerId},target=/commandhistory,type=volume",
     "source=${localEnv:HOME}/.claude.json,target=/home/agent/.claude.json,type=bind",
     "source=${localEnv:HOME}/.claude/.credentials.json,target=/home/agent/.claude/.credentials.json,type=bind",
+    "source=${localEnv:HOME}/.claude/projects,target=/home/agent/.claude/projects,type=bind",
+    "source=${localEnv:HOME}/.claude/sessions,target=/home/agent/.claude/sessions,type=bind",
     "source=${localEnv:HOME}/.claude/CLAUDE.md,target=/home/agent/.rc-context/global-claude.md,type=bind,readonly",
     "source=${localEnv:HOME}/CLAUDE.md,target=/home/agent/.rc-context/home-claude.md,type=bind,readonly",
     "source=${localEnv:HOME}/.claude/skills,target=/home/agent/.rc-context/skills,type=bind,readonly",
@@ -246,6 +248,8 @@ DEVCONTAINER_WITH_HOOKS
     "source=rc-history-${devcontainerId},target=/commandhistory,type=volume",
     "source=${localEnv:HOME}/.claude.json,target=/home/agent/.claude.json,type=bind",
     "source=${localEnv:HOME}/.claude/.credentials.json,target=/home/agent/.claude/.credentials.json,type=bind",
+    "source=${localEnv:HOME}/.claude/projects,target=/home/agent/.claude/projects,type=bind",
+    "source=${localEnv:HOME}/.claude/sessions,target=/home/agent/.claude/sessions,type=bind",
     "source=${localEnv:HOME}/.claude/CLAUDE.md,target=/home/agent/.rc-context/global-claude.md,type=bind,readonly",
     "source=${localEnv:HOME}/CLAUDE.md,target=/home/agent/.rc-context/home-claude.md,type=bind,readonly",
     "source=${localEnv:HOME}/.claude/skills,target=/home/agent/.rc-context/skills,type=bind,readonly",
@@ -282,7 +286,7 @@ DEVCONTAINER_NO_HOOKS
       cat <<'DEVCONTAINER_FOOTER_SERVER' | sed \
         -e "s|\"--cpus=2\", \"--memory=4g\", \"--memory-swap=4g\", \"--pids-limit=500\"|${init_run_args}|" \
         -e "s|\"postStartCommand\": \"/usr/local/bin/init-rip-cage.sh\"|\"postStartCommand\": \"${init_post_start}\"|"
-  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" 2>/dev/null; mkdir -p \"${HOME}/.pi/agent\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
+  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" \"${HOME}/.claude/projects\" \"${HOME}/.claude/sessions\" 2>/dev/null; mkdir -p \"${HOME}/.pi/agent\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096",
     "BEADS_DOLT_SERVER_MODE": "1",
@@ -298,7 +302,7 @@ DEVCONTAINER_FOOTER_SERVER
       cat <<'DEVCONTAINER_FOOTER_EMBEDDED' | sed \
         -e "s|\"--cpus=2\", \"--memory=4g\", \"--memory-swap=4g\", \"--pids-limit=500\"|${init_run_args}|" \
         -e "s|\"postStartCommand\": \"/usr/local/bin/init-rip-cage.sh\"|\"postStartCommand\": \"${init_post_start}\"|"
-  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" 2>/dev/null; mkdir -p \"${HOME}/.pi/agent\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
+  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" \"${HOME}/.claude/projects\" \"${HOME}/.claude/sessions\" 2>/dev/null; mkdir -p \"${HOME}/.pi/agent\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096"
   },
@@ -332,6 +336,20 @@ DEVCONTAINER_FOOTER_EMBEDDED
       "PI_CODING_AGENT_DIR": "/pi-agent",
       "CAGE_HOST_ADDR": "${localEnv:CAGE_HOST_ADDR}"
     }' "$dest" > "${dest}.tmp"
+    mv "${dest}.tmp" "$dest"
+  fi
+
+  # Host project key for Claude session unification (rip-cage-dn2).
+  # Computed at init time from the absolute project path; init-rip-cage.sh
+  # uses this to symlink ~/.claude/projects/-workspace → host key inside the
+  # container, so sessions land in one folder on the host regardless of origin.
+  if command -v jq &>/dev/null; then
+    local _init_host_project_key
+    _init_host_project_key=$(printf '%s' "$target" | tr '/.' '-')
+    mkdir -p "${HOME}/.claude/projects/${_init_host_project_key}"
+    jq --arg k "$_init_host_project_key" \
+      '.containerEnv += {"RC_HOST_PROJECT_KEY": $k}' \
+      "$dest" > "${dest}.tmp"
     mv "${dest}.tmp" "$dest"
   fi
 
@@ -920,6 +938,19 @@ _up_prepare_docker_mounts() {
   if [[ -f "${HOME}/CLAUDE.md" ]]; then
     _UP_RUN_ARGS+=(-v "${HOME}/CLAUDE.md:/home/agent/.rc-context/home-claude.md:ro")
   fi
+
+  # Claude session persistence to host (rip-cage-dn2)
+  # Bind-mount host ~/.claude/projects and ~/.claude/sessions so JSONL session
+  # logs survive container destroy and are visible to host tools (cass etc.).
+  # The -workspace project key is unified with the host's encoded path key
+  # inside init-rip-cage.sh, using RC_HOST_PROJECT_KEY below.
+  mkdir -p "${HOME}/.claude/projects" "${HOME}/.claude/sessions"
+  _UP_RUN_ARGS+=(-v "${HOME}/.claude/projects:/home/agent/.claude/projects")
+  _UP_RUN_ARGS+=(-v "${HOME}/.claude/sessions:/home/agent/.claude/sessions")
+  local _host_project_key
+  _host_project_key=$(printf '%s' "$_path" | tr '/.' '-')
+  mkdir -p "${HOME}/.claude/projects/${_host_project_key}"
+  _UP_RUN_ARGS+=(-e "RC_HOST_PROJECT_KEY=${_host_project_key}")
 
   # State volumes
   _UP_RUN_ARGS+=(-v "rc-state-${_name}:/home/agent/.claude-state")
@@ -2396,6 +2427,11 @@ cmd_up() {
           echo "Would mount ${_dry_agent_tdir} -> ${_dry_agent_tdir}:ro (agent symlink target)"
         done < <(_collect_symlink_parents "${HOME}/.claude/agents")
       fi
+      echo "Would mount ~/.claude/projects -> /home/agent/.claude/projects (sessions persist to host, rip-cage-dn2)"
+      echo "Would mount ~/.claude/sessions -> /home/agent/.claude/sessions"
+      local _dry_host_key
+      _dry_host_key=$(printf '%s' "$path" | tr '/.' '-')
+      echo "Would set RC_HOST_PROJECT_KEY=${_dry_host_key} (unifies -workspace sessions with host project key)"
       [[ "$would_action" != "would_attach" ]] && echo "Would run init script"
     fi
     return 0

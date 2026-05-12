@@ -148,15 +148,44 @@ for _rc_asset in skills commands agents; do
 done
 unset _rc_asset
 
-# 4. Restore persistent state from .claude-state volume
-if [ -d /home/agent/.claude-state ]; then
+# 4. Claude session persistence (rip-cage-dn2)
+# Preferred path: ~/.claude/projects and ~/.claude/sessions are bind-mounted
+# from the host, so sessions are visible to host tools (cass) and survive
+# container destroy. Inside the container, Claude Code keys sessions by
+# /workspace, so we symlink ~/.claude/projects/-workspace to the host's
+# encoded project key (passed in via RC_HOST_PROJECT_KEY) to unify history
+# with sessions started outside the cage.
+#
+# Legacy fallback: when no bind mount is present (e.g. older `rc up` from
+# a pre-dn2 binary), fall back to the .claude-state Docker volume.
+_is_mountpoint() {
+  # mountpoint(1) isn't guaranteed installed; /proc/mounts is.
+  awk -v p="$1" '$2 == p { found=1; exit } END { exit !found }' /proc/mounts
+}
+
+if _is_mountpoint /home/agent/.claude/projects; then
+  echo "[rip-cage] Sessions persisted to host (~/.claude/projects bind-mounted)"
+  if [ -n "${RC_HOST_PROJECT_KEY:-}" ]; then
+    mkdir -p "/home/agent/.claude/projects/${RC_HOST_PROJECT_KEY}"
+    # Symlink the container-side key (-workspace) to the host-side key so all
+    # sessions for this project land in the same folder on the host.
+    if [ ! -e /home/agent/.claude/projects/-workspace ] || [ -L /home/agent/.claude/projects/-workspace ]; then
+      ln -sfn "${RC_HOST_PROJECT_KEY}" /home/agent/.claude/projects/-workspace
+      echo "[rip-cage] Linked -workspace → ${RC_HOST_PROJECT_KEY}"
+    else
+      echo "[rip-cage] Warning: /home/agent/.claude/projects/-workspace exists as a real directory — leaving alone to avoid clobbering data" >&2
+    fi
+  else
+    echo "[rip-cage] Warning: RC_HOST_PROJECT_KEY unset — sessions will land under -workspace/ on host (not unified with host project key)" >&2
+  fi
+elif [ -d /home/agent/.claude-state ]; then
   if [[ ! -L /home/agent/.claude-state ]]; then
     sudo chown agent:agent /home/agent/.claude-state 2>/dev/null || true
   fi
   for dir in projects sessions; do
     mkdir -p /home/agent/.claude-state/$dir
     ln -sfn /home/agent/.claude-state/$dir ~/.claude/$dir
-    echo "[rip-cage] Linked persistent $dir"
+    echo "[rip-cage] Linked persistent $dir (legacy volume mode — sessions NOT on host)"
   done
 fi
 
