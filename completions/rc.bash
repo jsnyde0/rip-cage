@@ -6,7 +6,7 @@ _rc_complete() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local subcommands="build init up ls attach down destroy test auth schema completions setup"
+  local subcommands="build init up ls attach down destroy test auth config schema completions setup"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "$subcommands" -- "$cur") )
@@ -29,6 +29,9 @@ _rc_complete() {
       ;;
     auth)
       COMPREPLY=( $(compgen -W "refresh" -- "$cur") )
+      ;;
+    config)
+      COMPREPLY=( $(compgen -W "show" -- "$cur") )
       ;;
     completions)
       COMPREPLY=( $(compgen -W "zsh bash" -- "$cur") )

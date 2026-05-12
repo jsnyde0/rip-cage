@@ -12,6 +12,7 @@
 | `rc down [name]` | Stop a container |
 | `rc destroy [-f] [name]` | Remove a container and its volumes (prompts for confirmation) |
 | `rc test [name]` | Run the safety stack smoke test inside a container |
+| `rc config show [--json]` | Print effective `.rip-cage.yaml` config with provenance ([details](config.md)) |
 
 ## Flags
 

@@ -1,0 +1,6 @@
+version: 1
+ssh:
+  allowed_keys:
+    - id_ed25519_personal
+  allowed_hosts:
+    - switch.berlin

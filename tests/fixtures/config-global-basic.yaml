@@ -1,0 +1,7 @@
+version: 1
+ssh:
+  allowed_keys:
+    - id_ed25519_personal
+    - id_ed25519_work
+  allowed_hosts:
+    - github.com

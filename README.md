@@ -91,6 +91,7 @@ Pi (`@mariozechner/pi-coding-agent`) is also supported in the same image alongsi
 - [CLI reference](docs/reference/cli-reference.md) — all commands, flags, JSON output
 - [Auth](docs/reference/auth.md) — OAuth, Keychain, API key fallback
 - [SSH identity routing](docs/reference/ssh-routing.md) — `--github-identity`, rules file, banner states
+- [Layered config (`.rip-cage.yaml`)](docs/reference/config.md) — global + per-project posture, `rc config show`
 - [Safety stack](docs/reference/safety-stack.md) — hook config, allowlists, denied commands
 - [Dev containers](docs/reference/devcontainer.md) — VS Code setup via `rc init`
 - [What's in the box](docs/reference/whats-in-the-box.md) — tools, Dockerfile layers

@@ -15,6 +15,7 @@ _rc() {
     'destroy:Remove container and volumes'
     'test:Run safety stack smoke test'
     'auth:Auth subcommands (refresh)'
+    'config:Inspect effective .rip-cage.yaml config'
     'schema:Print machine-readable command schema'
     'completions:Print shell completion script'
     'setup:Interactive shell integration setup'
@@ -47,6 +48,11 @@ _rc() {
           local -a auth_subcmds
           auth_subcmds=('refresh:Refresh credentials from host keychain')
           _describe 'auth subcommand' auth_subcmds
+          ;;
+        config)
+          local -a config_subcmds
+          config_subcmds=('show:Print effective merged config (add --json for machine output)')
+          _describe 'config subcommand' config_subcmds
           ;;
         completions)
           local -a shells
