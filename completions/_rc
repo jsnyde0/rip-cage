@@ -14,6 +14,7 @@ _rc() {
     'down:Stop a container'
     'destroy:Remove container and volumes'
     'test:Run safety stack smoke test'
+    'doctor:Per-container diagnostic — labels + live probes'
     'auth:Auth subcommands (refresh)'
     'config:Inspect effective .rip-cage.yaml config'
     'schema:Print machine-readable command schema'
@@ -36,7 +37,7 @@ _rc() {
           containers=($(docker ps --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null))
           _describe 'container' containers
           ;;
-        destroy)
+        destroy|doctor)
           local -a containers
           containers=($(docker ps -a --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null))
           _describe 'container' containers
