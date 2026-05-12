@@ -179,6 +179,11 @@ cmd_init() {
   validate_path "$target"
   target="$VALIDATED_PATH"
 
+  # ADR-021 D3 + ADR-001: validate .rip-cage.yaml posture BEFORE scaffolding
+  # devcontainer.json. Symmetric with cmd_up — same abort contract on
+  # selection-list+future-version and yq-missing-with-config-present.
+  _config_validate_or_abort "$target"
+
   # LFS advisory (same as cmd_up — see _check_lfs_stubs).
   _check_lfs_stubs "$target"
 
@@ -2226,6 +2231,13 @@ cmd_up() {
   validate_path "$path"
   path="$VALIDATED_PATH"
 
+  # ADR-021 D3 + ADR-001: validate .rip-cage.yaml posture BEFORE any docker
+  # side-effects. Aborts loud on selection-list+future-version (silent skip
+  # would silently expand capability past user intent — ADR-001:13) or on
+  # yq-missing-with-config-present (no silent degradation per ADR-021
+  # implementation notes). No config file ⇒ silent no-op (D5).
+  _config_validate_or_abort "$path"
+
   # LFS advisory: warn if the project uses git-lfs and has unmaterialized
   # pointer stubs. rip-cage cannot fetch blobs (ADR-014); user must run
   # `git lfs pull` on the host. Observation-only — does not mutate.
@@ -2539,12 +2551,13 @@ cmd_up() {
   _UP_RUN_ARGS+=(--label "rc.ssh-config=${rc_ssh_config}")
 
   # ADR-021 D5: persist effective .rip-cage.yaml content sha as a container
-  # label. Empty value when yq is absent OR loader errored — the absence of a
-  # config file is itself a valid state and yields a deterministic sha (sha of
-  # all-defaults effective config). Substrate-only: no posture change here.
-  if command -v yq &>/dev/null; then
+  # label — but ONLY when at least one config file exists. D5 forbids new
+  # labels in the both-absent case (cage posture must be byte-identical to
+  # pre-loader). _config_validate_or_abort upstream guarantees that if any
+  # file is present, yq + D3 validation already passed.
+  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
     local _rc_config_sha
-    _rc_config_sha=$(_config_label_value "$path" 2>/dev/null || echo "")
+    _rc_config_sha=$(_config_label_value "$path")
     if [[ -n "$_rc_config_sha" ]]; then
       _UP_RUN_ARGS+=(--label "rc.config-loaded=${_rc_config_sha}")
     fi
@@ -3592,9 +3605,42 @@ _config_format_yaml() {
   done < <(_config_schema_lines)
 }
 
+# Substrate validation step (ADR-021 D3 + ADR-001 fail-loud contract).
+# Called from cmd_up / cmd_init BEFORE any container-state side-effects so a
+# malformed or selection-list-future-version config aborts the whole command.
+#
+# Behavior:
+#   - No config file present (neither layer)        → return 0 (D5: no posture
+#                                                     change beyond informational)
+#   - Any config file present + yq missing on PATH  → exit 1 with ADR-001
+#                                                     actionable error
+#   - Any config file present + _load_effective_config returns non-zero
+#     (D3 selection-list + future-version)          → exit 1 (loader already
+#                                                     emitted the error to stderr)
+#
+# Idempotent: safe to call multiple times per invocation. Cheap (single yq +
+# single jq pipeline; comparable to `rc config show` cost ~50ms).
+_config_validate_or_abort() {
+  local workspace="$1"
+  local global_path project_path
+  global_path=$(_config_global_path)
+  project_path=$(_config_project_path "$workspace")
+  if [[ ! -f "$global_path" && ! -f "$project_path" ]]; then
+    return 0
+  fi
+  _config_check_yq
+  if ! _load_effective_config "$workspace" >/dev/null; then
+    exit 1
+  fi
+  return 0
+}
+
 # Compute the rc.config-loaded label value for a workspace. Returns the
 # sha256 from _load_effective_config (cheap to call; same value used by
-# `rc config show`). Empty string on loader error.
+# `rc config show`). Empty string on loader error — but callers MUST first
+# pass through _config_validate_or_abort, which converts the loader-error
+# case into a hard exit, so reaching the empty-string branch here implies
+# yq-absent + no-config-file (substrate is silent in that case).
 _config_label_value() {
   local workspace="$1"
   local result

@@ -23,6 +23,13 @@
 #     T15 only project present ⇒ global absent, layers.global = null
 #   yq dependency:
 #     T16 yq missing on PATH ⇒ rc config show fails loud per ADR-001
+#   D3 abort propagation through the substrate validation step:
+#     T17 _config_validate_or_abort exits non-zero on selection-list+future-version
+#         (covers ADR-021:177 invalidation check; the rc up / rc init contract)
+#     T18 _config_validate_or_abort returns 0 silently when neither file exists
+#         (D5 regression contract — substrate must not abort in the both-absent case)
+#     T19 _config_validate_or_abort exits non-zero when a config file exists but
+#         yq is missing (ADR-021 implementation notes: no silent degradation)
 #
 # Tests do NOT require docker — pure host-side loader logic only.
 # Container label / first-run hint behavior is covered by e2e tests.
@@ -360,6 +367,77 @@ test_t16_yq_missing_fails_loud() {
 }
 
 # ---------------------------------------------------------------------------
+# D3 abort propagation through the substrate validation step
+# (ADR-021:177 invalidation check; the rc up / rc init contract)
+# ---------------------------------------------------------------------------
+#
+# Direct tests of _config_validate_or_abort — the central gate that cmd_up
+# and cmd_init both call. We source rc to pick up the function, then
+# invoke it in subshells so abort=exit doesn't take down the test harness.
+
+# Source rc functions in a way that doesn't trigger top-level dispatch.
+_source_rc_for_validate_tests() {
+  # rc has a sourced-vs-invoked guard: BASH_SOURCE != 0 short-circuits.
+  # shellcheck disable=SC1090
+  source "$RC"
+}
+
+test_t17_validate_aborts_on_selection_list_future_version() {
+  setup_sandbox "" "config-project-future-version-with-selection.yaml"
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    bash -c "source '$RC'; _config_validate_or_abort '$TEST_WS'" 2>"$stderr_file" \
+    || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] \
+     && grep -q "selection-list field(s) \[ssh.allowed_keys\]" "$stderr_file"; then
+    pass "T17 _config_validate_or_abort exits non-zero on selection-list+future-version"
+  else
+    fail "T17 expected non-zero exit + selection-list error, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+test_t18_validate_silent_no_config() {
+  setup_sandbox "" ""
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    bash -c "source '$RC'; _config_validate_or_abort '$TEST_WS'" 2>"$stderr_file" \
+    || exit_code=$?
+  local stderr_content
+  stderr_content=$(cat "$stderr_file")
+  if [[ "$exit_code" -eq 0 && -z "$stderr_content" ]]; then
+    pass "T18 _config_validate_or_abort silent when neither file exists (D5 regression)"
+  else
+    fail "T18 expected exit=0 + empty stderr, exit=$exit_code stderr=$stderr_content"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+test_t19_validate_yq_missing_with_config_aborts() {
+  setup_sandbox "" "config-project-basic.yaml"
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    PATH="/usr/bin:/bin" \
+    bash -c "source '$RC'; _config_validate_or_abort '$TEST_WS'" 2>"$stderr_file" \
+    || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -q "yq not found on PATH" "$stderr_file"; then
+    pass "T19 _config_validate_or_abort fails loud when yq missing + config present"
+  else
+    fail "T19 expected non-zero + yq error, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -380,6 +458,9 @@ test_t13_both_absent_defaults
 test_t14_only_global
 test_t15_only_project
 test_t16_yq_missing_fails_loud
+test_t17_validate_aborts_on_selection_list_future_version
+test_t18_validate_silent_no_config
+test_t19_validate_yq_missing_with_config_aborts
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then
