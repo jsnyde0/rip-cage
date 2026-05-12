@@ -1282,6 +1282,72 @@ _up_resolve_resume_forward_ssh() {
   _UP_RESUME_FORWARD_SSH="$_label"
 }
 
+# _up_resolve_resume_ssh_key_filter -- read and validate the rc.ssh-key-filter
+# label on resume; abort loud if current effective config's ssh.allowed_keys
+# state (null vs non-null) differs from the label.
+#
+# ADR-022: ssh.allowed_keys toggling between null and non-null is a mount-shape
+# change (the /etc/rip-cage/ssh-allowed-keys bind mount appears or disappears).
+# Mounts are immutable on resume, so silently re-reading effective config would
+# leave init-rip-cage.sh consulting a stale sentinel (or missing one). Force
+# rc destroy && rc up to apply the change. Mirrors _up_resolve_resume_ssh_config.
+#
+# Missing label is treated as "off" (legacy pre-ADR-022 containers predate the
+# label and never had filtering wired). Sets _UP_RESUME_SSH_KEY_FILTER on success.
+# Parameters: $1 name, $2 path
+_up_resolve_resume_ssh_key_filter() {
+  local _name="$1" _path="$2"
+  local _label
+  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.ssh-key-filter" }}' "$_name" 2>/dev/null); then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
+    fi
+    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
+    exit 1
+  fi
+  if [[ -z "$_label" ]]; then
+    _UP_RESUME_SSH_KEY_FILTER="off"
+  elif [[ "$_label" != "on" && "$_label" != "off" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Container $_name has unrecognized rc.ssh-key-filter label value: '$_label' (expected on|off). Run: rc destroy $_name && rc up $_path" "INVALID_SSH_KEY_FILTER_LABEL"
+    fi
+    echo "Error: container $_name has unrecognized rc.ssh-key-filter label value: '$_label' (expected on|off)." >&2
+    echo "       Recreate it:" >&2
+    echo "         rc destroy $_name" >&2
+    echo "         rc up $_path" >&2
+    exit 1
+  else
+    _UP_RESUME_SSH_KEY_FILTER="$_label"
+  fi
+
+  # Compute current effective ssh.allowed_keys state from on-disk config.
+  # null → "off" (no filtering); [] or [...] → "on" (filtering active).
+  local _eff_result _eff_keys _current
+  _eff_result=$(_load_effective_config "$_path" 2>/dev/null || true)
+  if [[ -z "$_eff_result" ]]; then
+    _current="off"
+  else
+    _eff_keys=$(jq -c '.config.ssh.allowed_keys' <<<"$_eff_result" 2>/dev/null || echo "null")
+    if [[ "$_eff_keys" == "null" ]]; then
+      _current="off"
+    else
+      _current="on"
+    fi
+  fi
+
+  if [[ "$_UP_RESUME_SSH_KEY_FILTER" != "$_current" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Container $_name was created with rc.ssh-key-filter=${_UP_RESUME_SSH_KEY_FILTER} but current effective config has ssh.allowed_keys filter=${_current}. Mount shape is immutable on resume — run: rc destroy $_name && rc up $_path to apply the change." "SSH_KEY_FILTER_MOUNT_SHAPE_CHANGED"
+    fi
+    echo "Error: container $_name was created with rc.ssh-key-filter=${_UP_RESUME_SSH_KEY_FILTER} but current effective config has ssh.allowed_keys filter=${_current}." >&2
+    echo "       The /etc/rip-cage/ssh-allowed-keys bind mount is wired at create time; toggling ssh.allowed_keys between null and non-null requires recreating the container." >&2
+    echo "       Run:" >&2
+    echo "         rc destroy $_name" >&2
+    echo "         rc up $_path" >&2
+    exit 1
+  fi
+}
+
 # _tsc_process_file -- internal helper for _translate_ssh_config.
 # Reads lines from $1 (file path), applies transforms 2-5, outputs to stdout.
 # $2 is the effective ssh home dir (e.g., ~/.ssh, or $HOME/.ssh).
@@ -2663,7 +2729,9 @@ cmd_up() {
     fi
     # ADR-022 D3: refresh filtered known_hosts cache and ssh-allowed-keys sentinel
     # on resume (bind-mount content updates propagate live). Mount shape is immutable
-    # on resume — if ssh.allowed_keys was toggled since create, user must rc destroy.
+    # on resume — if ssh.allowed_keys was toggled between null and non-null since
+    # create, the rc.ssh-key-filter label resolver below aborts loud.
+    _up_resolve_resume_ssh_key_filter "$name" "$path"
     _UP_SSH_FILTER_ACTIVE="false"
     _up_resolve_ssh_allowlists "$path" "$_rc_ssh_cache_dir"
     # On resume, the socket (or lack thereof) was wired at create time. The
@@ -2792,6 +2860,16 @@ cmd_up() {
   fi
   # Persist posture as container label (D7).
   _UP_RUN_ARGS+=(--label "rc.ssh-config=${rc_ssh_config}")
+
+  # ADR-022: persist ssh-key-filter posture as a container label so resume can
+  # detect ssh.allowed_keys mount-shape transitions (null ↔ non-null) and abort
+  # loud rather than silently filter against a stale sentinel. Mirrors the
+  # rc.forward-ssh / rc.ssh-config / rc.github-identity label-lock pattern.
+  if [[ "${_UP_SSH_FILTER_ACTIVE:-false}" == "true" ]]; then
+    _UP_RUN_ARGS+=(--label "rc.ssh-key-filter=on")
+  else
+    _UP_RUN_ARGS+=(--label "rc.ssh-key-filter=off")
+  fi
 
   # ADR-021 D5: persist effective .rip-cage.yaml content sha as a container
   # label — but ONLY when at least one config file exists. D5 forbids new

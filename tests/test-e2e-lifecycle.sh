@@ -536,6 +536,59 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# ADR-022 D4 invalidation: in-cage SSH bypass-attempt closed structurally
+# (rip-cage-jxy F2)
+#
+# Two checks against the original CONTAINER_NAME container (created at Check 3
+# with no .rip-cage.yaml — schema defaults: allowed_hosts=[], allowed_keys=null).
+# The filtered known_hosts cache must therefore be empty, and `ssh -o
+# UserKnownHostsFile=...` overrides cannot widen the cage's host trust.
+# -----------------------------------------------------------------------------
+
+# Check 24: in-cage /home/agent/.ssh/known_hosts byte-equals the host-side
+# filtered cache file (proves the cage sees the filtered file, not the raw
+# host ~/.ssh/known_hosts that the 2026-05-11 bypass exploited).
+host_cache="${HOME}/.cache/rip-cage/${CONTAINER_NAME}/known_hosts"
+in_cage_kh=$(docker exec "$CONTAINER_NAME" cat /home/agent/.ssh/known_hosts 2>/dev/null || true)
+host_kh=""
+if [[ -f "$host_cache" ]]; then
+  host_kh=$(cat "$host_cache")
+fi
+if [[ -f "$host_cache" && "$in_cage_kh" == "$host_kh" ]]; then
+  check "in-cage known_hosts equals host-side filtered cache (ADR-022 D4)" "pass"
+else
+  check "in-cage known_hosts equals host-side filtered cache (ADR-022 D4)" "fail" \
+    "host_cache=${host_cache} in_cage_bytes=${#in_cage_kh} host_bytes=${#host_kh}"
+fi
+
+# Check 25: in-cage known_hosts is empty (no .rip-cage.yaml → schema default
+# allowed_hosts=[] → empty filtered file). Even if the user passes
+# `-o UserKnownHostsFile=/home/agent/.ssh/known_hosts` the file is empty.
+if [[ -z "$in_cage_kh" ]]; then
+  check "in-cage known_hosts is empty with no .rip-cage.yaml (bypass closed)" "pass"
+else
+  check "in-cage known_hosts is empty with no .rip-cage.yaml (bypass closed)" "fail" \
+    "expected empty, got $(wc -l <<<"$in_cage_kh") line(s)"
+fi
+
+# Check 26: ssh probe with the bypass override exits non-zero. Use TEST-NET-3
+# (RFC 5737) IP 203.0.113.99 — guaranteed non-routable, no external dependency.
+# ConnectTimeout=2 keeps the test fast. Any non-zero exit is a pass: connection
+# refused / timeout / host key verification failed all prove the bypass cannot
+# yield a successful SSH session via the override.
+ssh_exit=0
+docker exec "$CONTAINER_NAME" ssh -T -o BatchMode=yes -o ConnectTimeout=2 \
+  -o UserKnownHostsFile=/home/agent/.ssh/known_hosts \
+  agent@203.0.113.99 > /tmp/rc-e2e-ssh-bypass.out 2>&1 || ssh_exit=$?
+if [[ "$ssh_exit" -ne 0 ]]; then
+  check "ssh -o UserKnownHostsFile bypass attempt exits non-zero (ADR-022 D4)" "pass" \
+    "exit=$ssh_exit"
+else
+  check "ssh -o UserKnownHostsFile bypass attempt exits non-zero (ADR-022 D4)" "fail" \
+    "ssh succeeded against TEST-NET-3 (impossible — see /tmp/rc-e2e-ssh-bypass.out)"
+fi
+
+# -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 

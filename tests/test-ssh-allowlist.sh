@@ -17,8 +17,13 @@
 #   C13  D3 version-drift abort — _config_validate_or_abort exits non-zero
 #   C14  transform-5 update — UserKnownHostsFile/GlobalKnownHostsFile NOT rewritten;
 #        BatchMode/StrictHostKeyChecking still overridden
+#   C15-C18  cmd_up integration — _up_resolve_ssh_allowlists writes cache + sentinel
+#   C19  D3 invalidation (docker-conditional) — ssh-agent-filter installed in image
+#   C20-C22  Resume mount-shape guard (rip-cage-jxy F5) — _up_resolve_resume_ssh_key_filter
+#            aborts on null↔non-null toggle of ssh.allowed_keys; same-state passes
 #
-# Tests do NOT require docker — pure host-side function testing.
+# Tests do NOT require docker for C1-C18 + C20-C22 (C20-C22 stub `docker inspect`
+# via PATH shim). C19 requires docker + rip-cage:latest.
 # ADRs: ADR-022 (SSH allowlist), ADR-021 (layered config), ADR-014 D2 (non-interactive posture)
 
 set -uo pipefail
@@ -30,7 +35,7 @@ FAILURES=0
 TEST_HOME=""
 TEST_WS=""
 CACHE_DIR=""
-TOTAL=18
+TOTAL=19
 
 pass() { echo "PASS C$1: $2"; }
 fail() { echo "FAIL C$1: $2 — $3"; FAILURES=$((FAILURES + 1)); }
@@ -619,6 +624,130 @@ if command -v docker >/dev/null 2>&1 && docker image inspect rip-cage:latest >/d
 else
   echo "SKIP C19: docker or rip-cage:latest image not available (run ./rc build first)"
 fi
+
+# ---------------------------------------------------------------------------
+# C20  Resume mount-shape guard (rip-cage-jxy F5)
+#      _up_resolve_resume_ssh_key_filter aborts when ssh.allowed_keys was
+#      toggled between null and non-null since the container was created.
+#      Stubs `docker inspect` via a $PATH shim so no real docker is required.
+# ---------------------------------------------------------------------------
+setup_sandbox "" "config-project-allowed-keys-one.yaml"  # current effective: keys non-null → "on"
+
+# Stub docker that returns "off" for the rc.ssh-key-filter label query.
+# This simulates a container that was created BEFORE allowed_keys was set,
+# while the on-disk .rip-cage.yaml now has allowed_keys: [...] → mismatch → abort.
+_c20_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-c20-stub-XXXXXX")
+cat > "${_c20_stub_dir}/docker" <<'STUB'
+#!/usr/bin/env bash
+# Stub: respond to `docker inspect --format ... rc-c20-test` with "off".
+case " $* " in
+  *" inspect "*"rc.ssh-key-filter"*) echo "off"; exit 0 ;;
+  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "${_c20_stub_dir}/docker"
+
+set +e
+PATH="${_c20_stub_dir}:$PATH" \
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
+  source '$RC' 2>/dev/null
+  _up_resolve_resume_ssh_key_filter 'rc-c20-test' '$TEST_WS'
+" >/tmp/rc-c20-out 2>/tmp/rc-c20-err
+_c20_exit=$?
+set -e
+
+_c20_ok=true _c20_reason=""
+if [[ "$_c20_exit" -eq 0 ]]; then
+  _c20_ok=false; _c20_reason="resolver returned 0 (should abort on mount-shape mismatch)"
+fi
+if ! grep -q "rc.ssh-key-filter=off" /tmp/rc-c20-err 2>/dev/null; then
+  _c20_ok=false; _c20_reason="${_c20_reason:+$_c20_reason; }error message did not name the original label value"
+fi
+if ! grep -q "rc destroy" /tmp/rc-c20-err 2>/dev/null; then
+  _c20_ok=false; _c20_reason="${_c20_reason:+$_c20_reason; }error message did not include actionable rc destroy hint"
+fi
+
+rm -rf "${_c20_stub_dir}" /tmp/rc-c20-out /tmp/rc-c20-err
+
+if [[ "$_c20_ok" == "true" ]]; then
+  pass 20 "resume mount-shape guard aborts loud when ssh.allowed_keys toggled (off → on)"
+else
+  fail 20 "resume mount-shape guard" "$_c20_reason"
+fi
+teardown_sandbox
+
+# Inverse case: container created with allowed_keys → on; current config null → off.
+# Stub docker to return "on" for the label; current effective config is null (no .rip-cage.yaml).
+setup_sandbox "" ""
+
+_c20b_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-c20b-stub-XXXXXX")
+cat > "${_c20b_stub_dir}/docker" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" inspect "*"rc.ssh-key-filter"*) echo "on"; exit 0 ;;
+  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "${_c20b_stub_dir}/docker"
+
+set +e
+PATH="${_c20b_stub_dir}:$PATH" \
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
+  source '$RC' 2>/dev/null
+  _up_resolve_resume_ssh_key_filter 'rc-c20b-test' '$TEST_WS'
+" >/tmp/rc-c20b-out 2>/tmp/rc-c20b-err
+_c20b_exit=$?
+set -e
+
+_c20b_ok=true _c20b_reason=""
+if [[ "$_c20b_exit" -eq 0 ]]; then
+  _c20b_ok=false; _c20b_reason="resolver returned 0 (should abort on on→off transition)"
+fi
+if ! grep -q "rc.ssh-key-filter=on" /tmp/rc-c20b-err 2>/dev/null; then
+  _c20b_ok=false; _c20b_reason="${_c20b_reason:+$_c20b_reason; }error did not name the original label value"
+fi
+
+rm -rf "${_c20b_stub_dir}" /tmp/rc-c20b-out /tmp/rc-c20b-err
+
+TOTAL=$((TOTAL + 1))
+if [[ "$_c20b_ok" == "true" ]]; then
+  pass 21 "resume mount-shape guard aborts loud when ssh.allowed_keys toggled (on → off)"
+else
+  fail 21 "resume mount-shape guard inverse" "$_c20b_reason"
+fi
+teardown_sandbox
+
+# Same-state case: label and current effective config agree → resolver returns 0.
+setup_sandbox "" "config-project-allowed-keys-one.yaml"  # current effective: on (same-state)
+
+_c20c_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-c20c-stub-XXXXXX")
+cat > "${_c20c_stub_dir}/docker" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" inspect "*"rc.ssh-key-filter"*) echo "on"; exit 0 ;;
+  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "${_c20c_stub_dir}/docker"
+
+set +e
+PATH="${_c20c_stub_dir}:$PATH" \
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
+  source '$RC' 2>/dev/null
+  _up_resolve_resume_ssh_key_filter 'rc-c20c-test' '$TEST_WS'
+" >/tmp/rc-c20c-out 2>/tmp/rc-c20c-err
+_c20c_exit=$?
+set -e
+
+rm -rf "${_c20c_stub_dir}" /tmp/rc-c20c-out /tmp/rc-c20c-err
+
+TOTAL=$((TOTAL + 1))
+if [[ "$_c20c_exit" -eq 0 ]]; then
+  pass 22 "resume mount-shape guard returns 0 when label matches current effective config"
+else
+  fail 22 "resume mount-shape guard same-state" "expected exit 0, got $_c20c_exit"
+fi
+teardown_sandbox
 
 # ---------------------------------------------------------------------------
 # Summary
