@@ -215,12 +215,14 @@ else
     "hook=$hook_ok dcg=$dcg_ok"
 fi
 
-# Check 12: Pi verify line appears in init log (ADR-019 B3)
-_init_log=$(docker logs "$CONTAINER_NAME" 2>&1 || true)
-if echo "$_init_log" | grep -q '\[rip-cage\] pi '; then
+# Check 12: Pi verify line appears in init log (ADR-019 B3).
+# init-rip-cage.sh runs via `docker exec` (sleep infinity is the entrypoint),
+# so its output goes to the rc up stdout — captured at /tmp/rc-e2e-up.out by
+# check 3 — not into `docker logs`. (rip-cage-nb2)
+if grep -q '\[rip-cage\] pi ' /tmp/rc-e2e-up.out; then
   check "pi verify line in init log" "pass"
 else
-  check "pi verify line in init log" "fail" "(see: docker logs $CONTAINER_NAME)"
+  check "pi verify line in init log" "fail" "(see: /tmp/rc-e2e-up.out)"
 fi
 
 # Checks 12a-12d: Auth-warn matrix — observation only (ADR-019 D2 FIRM).
