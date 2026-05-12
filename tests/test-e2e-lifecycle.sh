@@ -435,6 +435,53 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# ADR-022 D5 invalidation: ssh-bypass hook denies CLI-override class
+# (rip-cage-nww — runs while CONTAINER_NAME is alive, before destroy below)
+#
+# These probe the in-cage hook directly with the verified bypass shape.
+# Mount-layer narrowing (D4) is exercised by checks 24/25 below; the CLI-flag
+# bypass class lives at the PreToolUse hook layer (D5).
+# -----------------------------------------------------------------------------
+
+# Check 18a: hook denies the verified bypass shape (writable /tmp + accept-new
+# — exactly what the 2026-05-12 verified bypass used).
+sshbypass_result=$(docker exec "$CONTAINER_NAME" bash -c "echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts_bypass git@gitlab.com\"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh" 2>/dev/null || true)
+if echo "$sshbypass_result" | grep -qE '"permissionDecision".*"deny"'; then
+  check "ssh-bypass hook denies UserKnownHostsFile+accept-new shape (ADR-022 D5)" "pass"
+else
+  check "ssh-bypass hook denies UserKnownHostsFile+accept-new shape (ADR-022 D5)" "fail" \
+    "$sshbypass_result"
+fi
+
+# Check 18b: refusal message names .rip-cage.yaml + rc config init (the
+# self-recovery path the agent should take instead of working around).
+if echo "$sshbypass_result" | grep -q '\.rip-cage\.yaml' && echo "$sshbypass_result" | grep -q 'rc config init'; then
+  check "ssh-bypass refusal message names .rip-cage.yaml + rc config init" "pass"
+else
+  check "ssh-bypass refusal message names .rip-cage.yaml + rc config init" "fail" \
+    "$sshbypass_result"
+fi
+
+# Check 18c: hook also catches /usr/bin/ssh direct path (basename match, not
+# PATH lookup — agents trying to evade by absolute-pathing don't escape).
+sshbypass_direct=$(docker exec "$CONTAINER_NAME" bash -c "echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"/usr/bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/tmp/x host\"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh" 2>/dev/null || true)
+if echo "$sshbypass_direct" | grep -qE '"permissionDecision".*"deny"'; then
+  check "ssh-bypass hook catches /usr/bin/ssh direct path call (ADR-022 D5)" "pass"
+else
+  check "ssh-bypass hook catches /usr/bin/ssh direct path call (ADR-022 D5)" "fail" \
+    "$sshbypass_direct"
+fi
+
+# Check 18d: legitimate ssh (no override flags) is NOT blocked.
+sshbypass_legit=$(docker exec "$CONTAINER_NAME" bash -c "echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ssh -T git@github.com\"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh" 2>/dev/null || true)
+if [[ -z "$sshbypass_legit" ]]; then
+  check "ssh-bypass hook allows legitimate ssh (no override flags)" "pass"
+else
+  check "ssh-bypass hook allows legitimate ssh (no override flags)" "fail" \
+    "$sshbypass_legit"
+fi
+
+# -----------------------------------------------------------------------------
 # Lifecycle — destroy
 # -----------------------------------------------------------------------------
 
@@ -571,23 +618,6 @@ if [[ -z "$in_cage_kh" ]]; then
 else
   check "in-cage known_hosts is empty with no .rip-cage.yaml (bypass closed)" "fail" \
     "expected empty, got $(wc -l <<<"$in_cage_kh") line(s)"
-fi
-
-# Check 26: ssh probe with the bypass override exits non-zero. Use TEST-NET-3
-# (RFC 5737) IP 203.0.113.99 — guaranteed non-routable, no external dependency.
-# ConnectTimeout=2 keeps the test fast. Any non-zero exit is a pass: connection
-# refused / timeout / host key verification failed all prove the bypass cannot
-# yield a successful SSH session via the override.
-ssh_exit=0
-docker exec "$CONTAINER_NAME" ssh -T -o BatchMode=yes -o ConnectTimeout=2 \
-  -o UserKnownHostsFile=/home/agent/.ssh/known_hosts \
-  agent@203.0.113.99 > /tmp/rc-e2e-ssh-bypass.out 2>&1 || ssh_exit=$?
-if [[ "$ssh_exit" -ne 0 ]]; then
-  check "ssh -o UserKnownHostsFile bypass attempt exits non-zero (ADR-022 D4)" "pass" \
-    "exit=$ssh_exit"
-else
-  check "ssh -o UserKnownHostsFile bypass attempt exits non-zero (ADR-022 D4)" "fail" \
-    "ssh succeeded against TEST-NET-3 (impossible — see /tmp/rc-e2e-ssh-bypass.out)"
 fi
 
 # -----------------------------------------------------------------------------

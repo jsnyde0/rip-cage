@@ -90,6 +90,13 @@ else
   check "settings.json wires compound blocker" "fail"
 fi
 
+# 9b. settings.json has ssh-bypass blocker hook wired (ADR-022 D5)
+if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh")' ~/.claude/settings.json >/dev/null 2>&1; then
+  check "settings.json wires ssh-bypass blocker" "pass"
+else
+  check "settings.json wires ssh-bypass blocker" "fail"
+fi
+
 # 10. settings.json denies .git/hooks writes
 if jq -e '.permissions.deny[] | select(startswith("Write(.git/hooks"))' ~/.claude/settings.json >/dev/null 2>&1; then
   check "settings.json denies .git/hooks writes" "pass"
@@ -111,6 +118,37 @@ if echo "$compound_result" | grep -qE '"permissionDecision".*"deny"'; then
   check "Compound blocker denies chain" "pass"
 else
   check "Compound blocker denies chain" "fail" "$compound_result"
+fi
+
+# 12b. ssh-bypass blocker denies the verified bypass shape (ADR-022 D5)
+sshbypass_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/x git@gitlab.com"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh 2>/dev/null || true)
+if echo "$sshbypass_result" | grep -qE '"permissionDecision".*"deny"'; then
+  check "ssh-bypass blocker denies UserKnownHostsFile+accept-new" "pass"
+else
+  check "ssh-bypass blocker denies UserKnownHostsFile+accept-new" "fail" "$sshbypass_result"
+fi
+
+# 12c. ssh-bypass refusal message points at .rip-cage.yaml + rc config init
+if echo "$sshbypass_result" | grep -q '\.rip-cage\.yaml' && echo "$sshbypass_result" | grep -q 'rc config init'; then
+  check "ssh-bypass refusal message names .rip-cage.yaml + rc config init" "pass"
+else
+  check "ssh-bypass refusal message names .rip-cage.yaml + rc config init" "fail" "$sshbypass_result"
+fi
+
+# 12d. ssh-bypass blocker catches /usr/bin/ssh direct path call
+sshbypass_direct=$(echo '{"tool_name":"Bash","tool_input":{"command":"/usr/bin/ssh -o StrictHostKeyChecking=no host"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh 2>/dev/null || true)
+if echo "$sshbypass_direct" | grep -qE '"permissionDecision".*"deny"'; then
+  check "ssh-bypass blocker catches /usr/bin/ssh direct path" "pass"
+else
+  check "ssh-bypass blocker catches /usr/bin/ssh direct path" "fail" "$sshbypass_direct"
+fi
+
+# 12e. ssh-bypass blocker does NOT block legitimate ssh
+sshbypass_legit=$(echo '{"tool_name":"Bash","tool_input":{"command":"ssh git@github.com"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh 2>/dev/null || true)
+if [[ -z "$sshbypass_legit" ]]; then
+  check "ssh-bypass blocker allows legitimate ssh (no override flags)" "pass"
+else
+  check "ssh-bypass blocker allows legitimate ssh (no override flags)" "fail" "$sshbypass_legit"
 fi
 
 echo ""

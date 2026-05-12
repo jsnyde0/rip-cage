@@ -257,21 +257,25 @@ echo "=== Settings Merge Idempotency Check ==="
 echo ""
 
 # 11. PreToolUse hooks not doubled (catches the resume re-merge bug)
-# On fresh init: 2 hooks (dcg + block-compound-commands).
+# On fresh init: 3 hooks (dcg + block-compound-commands + block-ssh-bypass).
+# Source of truth: /etc/rip-cage/settings.json shipped with the image.
 # If init-rip-cage.sh was re-run with the old ~/.claude/settings.json as merge
-# source, hooks would double to 4 on each resume. This test catches that.
+# source, hooks would double on each resume. This test catches that by counting
+# against the shipped baseline rather than a hardcoded number.
 settings_file="${HOME}/.claude/settings.json"
-if [[ -f "${settings_file}" ]]; then
+shipped_file="/etc/rip-cage/settings.json"
+if [[ -f "${settings_file}" && -f "${shipped_file}" ]]; then
   pretooluse_count=$(jq '[.hooks.PreToolUse[]?.hooks[]?] | length' "${settings_file}" 2>/dev/null || echo "-1")
-  if [[ "${pretooluse_count}" -eq 2 ]]; then
-    check "PreToolUse hooks not doubled after init" "pass" "${pretooluse_count} hook(s) — expected 2"
-  elif [[ "${pretooluse_count}" -gt 2 ]]; then
-    check "PreToolUse hooks not doubled after init" "fail" "${pretooluse_count} hook(s) — init re-merged and doubled hooks"
+  expected_count=$(jq '[.hooks.PreToolUse[]?.hooks[]?] | length' "${shipped_file}" 2>/dev/null || echo "-1")
+  if [[ "${pretooluse_count}" -eq "${expected_count}" ]]; then
+    check "PreToolUse hooks not doubled after init" "pass" "${pretooluse_count} hook(s) — matches shipped baseline"
+  elif [[ "${pretooluse_count}" -gt "${expected_count}" ]]; then
+    check "PreToolUse hooks not doubled after init" "fail" "${pretooluse_count} hook(s) — init re-merged and doubled hooks (expected ${expected_count})"
   else
-    check "PreToolUse hooks not doubled after init" "fail" "could not read hook count (${pretooluse_count})"
+    check "PreToolUse hooks not doubled after init" "fail" "could not read hook count (${pretooluse_count}/${expected_count})"
   fi
 else
-  check "PreToolUse hooks not doubled after init" "fail" "settings.json missing"
+  check "PreToolUse hooks not doubled after init" "fail" "settings.json or shipped baseline missing"
 fi
 
 echo ""

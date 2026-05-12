@@ -1,6 +1,6 @@
 # ADR-022: SSH host + key allowlist as the first `.rip-cage.yaml` consumer
 
-**Status:** Accepted — pending implementation (`rip-cage-b0c`)
+**Status:** Accepted — D1–D4 shipped (`rip-cage-b0c`); D5 hook-layer added 2026-05-12 (`rip-cage-nww`) closing the OpenSSH CLI-override class
 **Date:** 2026-05-12
 **Design:** [Design doc](../design/2026-05-12-ssh-allowlist-design.md)
 **Builds on:** [ADR-021](ADR-021-layered-rip-cage-config.md) (`.rip-cage.yaml` substrate), [ADR-020](ADR-020-ssh-identity-routing.md) (config translation, pubkey mount), [ADR-018](ADR-018-macos-ssh-agent-discovery.md) (host-side socket discovery), [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (forward-by-default)
@@ -115,39 +115,94 @@ This deliberately tightens behavior on rc upgrade for users who currently SSH to
 
 **Invalidation check (mechanical, runnable post-implementation):** `docker run --rm <rip-cage-image> apt list --installed 2>/dev/null | grep -q ssh-agent-filter` exits 0. Missing package means the agent half regressed to today's full-forward behavior.
 
-### D4: Two arrows compose multiplicatively; ADR-014 D2 caveat is fulfilled
+### D4: Two arrows compose multiplicatively at the mount layer
 
 **Firmness: FIRM**
 
 The cage's effective SSH reach is the intersection of the two filters:
-- `allowed_hosts` × `(image-baked github.com floor)` = which destinations are trusted.
+- `allowed_hosts` × `(image-baked github.com floor)` = which destinations are trusted on the system path.
 - `allowed_keys` × `(host agent contents)` = which credentials are offered.
 
-A connection succeeds only if both filters pass. Either filter on its own narrows the cage; both together narrow it further. The `-o UserKnownHostsFile=...` bypass is closed structurally because the file inside the cage is the filtered file — there is no other known_hosts to point at.
+A connection through the system path (`~/.ssh/known_hosts` + `/etc/ssh/ssh_known_hosts` + the forwarded ssh-agent) succeeds only if both filters pass. Either filter on its own narrows the cage; both together narrow it further.
 
-This fulfills ADR-014 D2's line-79 caveat ("a future ... forwarded-agent scenario that requires real enforcement against user/CLI overrides would need a read-only `~/.ssh` bind mount akin to ADR-002 D11"). Per ADR-011, the caveat in ADR-014 D2 is edited in place to reference this ADR rather than call the gap open.
+**Mount-layer scope — explicit limit (edit in place 2026-05-12, rip-cage-nww).** The mount-layer filter narrows the system-path known_hosts surface but does **not**, by itself, defeat command-line `-o` overrides. OpenSSH semantics: command-line `-o UserKnownHostsFile=<writable-path>` combined with `-o StrictHostKeyChecking=accept-new` walks past the system file (CLI -o always wins over `Match final` in `/etc/ssh/ssh_config`); openssh writes the new host key to whatever path the caller supplies, treats accept-new as carte blanche, and the forwarded ssh-agent (ADR-017 default) signs whatever the destination requests. Verified 2026-05-12 in `personal-kinky-bubbles` (no `.rip-cage.yaml`): `ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts_bypass git@gitlab.com` reached publickey-auth (failed there only because the forwarded key wasn't trusted by gitlab — would have succeeded against `switch.berlin` per the original 2026-05-11 transcript). Earlier wording in this decision claiming the bypass was "structurally closed" by the mount alone was an overclaim; it is corrected here per ADR-011.
 
-**Rationale:** Multiplicative composition is the simplest model that's also the strictest — neither arrow can silently widen the other. ADR-014 D2's caveat correctly identified the architectural shape the fix needed; this ADR delivers it.
+The CLI-flag bypass is closed at the **PreToolUse hook layer** — see D5. Mount layer + hook layer compose: mount-layer enforcement is the floor (cannot be widened by anything inside the cage); hook-layer enforcement closes the OpenSSH-CLI override path that sits above it.
 
-**What would invalidate this:** evidence of an in-cage attack vector that bypasses both filters (e.g. a child process that re-mounts paths). Cage user namespace + read-only mounts make this implausible without root, and root is not given to the agent user. Re-evaluate if cage privilege model changes.
+This still fulfills ADR-014 D2's line-79 caveat ("a future ... forwarded-agent scenario that requires real enforcement against user/CLI overrides would need a read-only `~/.ssh` bind mount akin to ADR-002 D11") — the read-only filtered mount provides the floor; the hook layer in D5 provides the CLI-override enforcement the caveat asked for. Per ADR-011, the caveat in ADR-014 D2 is edited in place to reference this ADR (D4 + D5 together) rather than call the gap open.
 
-**Invalidation check (mechanical, runnable post-implementation):** In `tests/test-e2e-lifecycle.sh` checks 24–26, with no `.rip-cage.yaml` present, the in-cage `/home/agent/.ssh/known_hosts` byte-equals the host-side filtered cache (proof the cage sees the filtered file, not the raw mount), is empty (schema default `allowed_hosts=[]`), and `ssh -T -o BatchMode=yes -o ConnectTimeout=2 -o UserKnownHostsFile=/home/agent/.ssh/known_hosts agent@203.0.113.99` (TEST-NET-3, guaranteed non-routable) exits non-zero. Any non-zero exit (connection refused / timeout / host-key-verification) proves the bypass cannot yield a successful SSH session via the override. The 2026-05-11 bypass is closed.
+**Rationale:** Multiplicative composition at the mount layer is the simplest enforceable model — neither arrow can silently widen the other through any in-cage code path. The hook layer in D5 extends this to also defeat the CLI-override class. Calling out the mount-layer scope honestly here matters: future agents reading the ADR should not infer the mount alone closes CLI-flag classes it doesn't, and reviewers of mount-layer changes should know which classes still rely on D5.
+
+**What would invalidate this:** evidence of an in-cage attack vector that bypasses both the mount-layer filter AND the hook layer (e.g. a child process that re-mounts paths via root, or a hook-bypass shape the detector misses). Cage user namespace + read-only mounts make root-level remount implausible without root, and root is not given to the agent user. Hook-detection gaps are tracked in D5.
+
+**Invalidation check (mechanical, runnable post-implementation):** In `tests/test-e2e-lifecycle.sh` checks 24–25, with no `.rip-cage.yaml` present, the in-cage `/home/agent/.ssh/known_hosts` byte-equals the host-side filtered cache (proof the cage sees the filtered file, not the raw mount) and is empty (schema default `allowed_hosts=[]`). The CLI-override class is covered by D5's invalidation check (Check 26).
+
+### D5: PreToolUse hook closes the OpenSSH CLI-override bypass class
+
+**Firmness: FIRM**
+
+A rip-cage-specific PreToolUse Bash hook (`hooks/block-ssh-bypass.sh`) runs before every Bash tool call alongside the existing `block-compound-commands.sh` and the upstream `dcg` binary. The hook denies any ssh-family invocation (`ssh`, `scp`, `sftp`, `/usr/bin/ssh` direct path, `rsync -e ssh`) carrying any of:
+
+- `-o UserKnownHostsFile=<anything>` (the verified writable-path bypass)
+- `-o GlobalKnownHostsFile=<anything>`
+- `-o StrictHostKeyChecking=(no|accept-new|off)`
+
+Detection runs a single perl regex pass over the command (after stripping single-quoted bodies and heredocs only — double-quoted bodies are kept so legitimate `rsync -e "ssh -o ..."` idioms are caught). Identification of ssh-family commands uses basename-of-token match so `/usr/bin/ssh` and PATH-resolved `ssh` are treated identically.
+
+**Refusal message — load-bearing.** The deny message names the offending flag, then surfaces the legitimate path (per CLAUDE.md "'It's annoying' is a design signal" — block, but make self-recovery friction-free):
+
+```
+Blocked ssh-family command: -o UserKnownHostsFile defeats the cage host arrow.
+OpenSSH CLI -o always overrides /etc/ssh/ssh_config Match final, and the
+forwarded ssh-agent (ADR-017 default) will sign for whatever host the override
+accepts. To let the cage reach a host legitimately:
+  - Add to .rip-cage.yaml at the workspace root:
+        version: 1
+        ssh:
+          allowed_hosts: [<host>]
+  - Or run on the host: rc config init  (bootstraps from git remotes — rip-cage-97n)
+  - Then on the host:   rc destroy <cage> && rc up <workspace>
+To override this single command (requires human-on-keyboard): dcg allow-once <code>
+```
+
+This composes with `rip-cage-97n` (closed): `rc config init` is exactly the path the refusal message points at. Together: the hook blocks the bypass shape, and the agent (or human) can self-recover without hand-authoring YAML.
+
+**Rationale:** Per CLAUDE.md ("layers, not walls" + "80/20, not 100/0"), the hook layer is the right place to close this class. The mount layer (D4) is the floor and is unbypassable from inside the cage; the hook layer enforces against the OpenSSH-CLI shape that sits above it. Together they cover the (1) accidental wrong-host class fully. The (2) forwarded-agent oracle abuse class — a hostile in-cage process that connects to a host the agent already trusts and asks the agent to sign — remains a documented limitation that `ssh.allowed_keys` narrows; this ADR does not claim to close it.
+
+**Layer choice: rip-cage-specific hook, NOT extending the upstream `dcg` `remote.ssh` pack.** `dcg` is a generic command classifier that does not know about `.rip-cage.yaml` or `rc config init`. The refusal message must reference rip-cage's own concepts to be actionable. Keeping the SSH-bypass hook in `hooks/` parallel to `block-compound-commands.sh` lets the message stay rip-cage-native and keeps `dcg` free of project-specific coupling. Both hooks run; either can deny.
+
+**Quote-stripping tradeoff.** Single-quoted bodies are stripped (truly literal); double-quoted bodies are kept (preserves `rsync -e "ssh -o ..."` detection). False positives from `echo "ssh -o ..."` are guarded by the basename-of-token check: `"ssh` does not match `^ssh$`. Determined evasion via `bash -c '...single-quoted...'` is in the same documented-limitation class as oracle abuse — the hook is for blast-radius reduction, not adversarial isolation.
+
+**Alternatives considered:**
+
+| Alternative | Rejected because |
+|---|---|
+| Outbound port-22 firewall (block all SSH from the cage) | `direct:` Defeats `git push` to allowed hosts. Per CLAUDE.md ("agent autonomy is the product"), gating the legitimate path defeats the cage's purpose. |
+| `ssh` wrapper shim earlier in PATH that filters argv | `reasoned:` Bypassable via `/usr/bin/ssh` direct path; not load-bearing. The PreToolUse hook sees argv before any program runs and is not bypassable by absolute-pathing. |
+| Extend the upstream `dcg` `remote.ssh` pack | `reasoned:` `dcg` doesn't know about `.rip-cage.yaml` or `rc config init`; the actionable refusal message has to live in a rip-cage-owned hook. |
+| `dcg allow-once` as the only escape (no in-message hint) | `direct:` Per CLAUDE.md "'It's annoying' is a design signal" — agents must be able to self-recover by reading the message, not by guessing. The message names both `.rip-cage.yaml` (the durable fix) and `dcg allow-once` (the one-shot human-on-keyboard escape). |
+
+**What would invalidate this:** the hook-detection regex misses a real bypass shape used in practice (e.g. a future OpenSSH option that disables host-key verification under a different name). Add the new pattern to the hook; this is detection-rule maintenance, not architectural change.
+
+**Invalidation check (mechanical, runnable post-implementation):** `tests/test-e2e-lifecycle.sh` Check 26 series invokes the hook with the verified bypass shape (`-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts_bypass git@gitlab.com`) plus `/usr/bin/ssh` direct-path variant; both must return `permissionDecision: deny` with a message naming `.rip-cage.yaml` and `rc config init`. A legitimate `ssh -T git@github.com` (no override flags) must be allowed (empty hook output). `tests/test-safety-stack.sh` checks 12b–12e cover the same matrix at unit level.
 
 ## Consequences
 
 **Positive:**
-- The 2026-05-11 `-o UserKnownHostsFile` bypass is structurally closed — the file inside the cage is the filtered file, period.
+- The 2026-05-11 / 2026-05-12 `-o UserKnownHostsFile` + `accept-new` bypass is closed by the combination of mount-layer narrowing (D4) and PreToolUse hook (D5). The mount layer narrows the system-path known_hosts; the hook denies the OpenSSH CLI-override shape that walks past it.
 - `.rip-cage.yaml` gets a real first consumer; the layered config substrate proves itself in a non-trivial use case.
 - ADR-014 D2's predicted enforcement gap is filled; the caveat collapses to a one-line cross-reference.
 - The "your existing workflow, caged" positioning holds: today's pushes keep working with no config authoring. Tightening further is opt-in.
-- Two new mount-layer enforcement surfaces (filtered known_hosts; filtered agent socket) that no `-o` flag can defeat.
+- Two new mount-layer enforcement surfaces (filtered known_hosts; filtered agent socket) that no in-cage code path can re-mount, plus a PreToolUse hook layer that catches the OpenSSH CLI-override class above them.
 - Scope reduction in ADR-020: D2 transform 5 narrows from defending four directives to defending two.
+- The hook's refusal message composes with `rip-cage-97n` (`rc config init`) so agents can self-recover from a legitimate-but-blocked attempt without hand-authoring YAML.
 
 **Negative:**
 - One new Debian package in the runtime image (`ssh-agent-filter` is small, ~30 KB).
 - One new sentinel file (`/etc/rip-cage/ssh-allowed-keys`), one new background process inside the cage when `allowed_keys` is set (`ssh-agent-filter`), one new host-side cache file (`~/.cache/rip-cage/<container>/known_hosts`).
 - Behavior change on rc upgrade for users who currently SSH to non-github.com hosts via the cage — they need a one-line `~/.config/rip-cage/config.yaml` or `.rip-cage.yaml`. Mitigation: `rip-cage-97n` ergonomics bead.
 - Hashed `known_hosts` entries with wildcard `allowed_hosts` patterns can't be auto-resolved; a warning + `ssh-keyscan` recipe is the ergonomics seam.
+- D5 hook adds detection-rule maintenance surface: future OpenSSH options that disable host-key verification under a different name need to be added to the hook regex. Tracked as detection-rule maintenance, not architectural change.
 
 **Neutral:**
 - ~50 LOC bash agent-launcher + ~70 LOC bash known-hosts filter + ~80 LOC tests. Net ~200 LOC delta. Comparable to ADR-020 implementation.
@@ -156,6 +211,7 @@ This fulfills ADR-014 D2's line-79 caveat ("a future ... forwarded-agent scenari
 ## Implementation notes
 
 - **`rc`** (host-side): add `_resolve_ssh_allowlists` (calls o4z `_load_effective_config`, aborts loud on D3 version drift via the existing central gate); add `_filter_known_hosts` (awk + openssl HMAC, idempotent, writes to `~/.cache/rip-cage/<container>/known_hosts`); edit `_build_ssh_mount_args` to bind-mount the filtered file (replacing the wholesale `~/.ssh/known_hosts` source) and to mount the upstream agent socket as `/ssh-agent-upstream.sock` when `allowed_keys` is set; edit `_tsc_process_file` transform 5 to drop the `UserKnownHostsFile`/`GlobalKnownHostsFile` rewrites (keep `BatchMode`/`StrictHostKeyChecking`).
+- **D5 hook** (`hooks/block-ssh-bypass.sh`, added 2026-05-12 by `rip-cage-nww`): bash + perl, ~80 lines. Registered as a third PreToolUse Bash matcher in `settings.json` (after `dcg` and `block-compound-commands.sh`). Auto-copied into the image via the existing `COPY hooks/` directive; auto-chmodded by the existing `chmod +x .../hooks/*.sh` line. No Dockerfile changes required.
 - **`Dockerfile`**: add `ssh-agent-filter` to the apt-get install list in the runtime stage.
 - **Resume mount-shape guard** (added 2026-05-12 by `rip-cage-jxy`): the `/etc/rip-cage/ssh-allowed-keys` bind mount is wired only when `ssh.allowed_keys` is non-null at create time. Toggling the field between null and non-null after create is a mount-shape change, not just a content change. To prevent silent divergence between displayed config and in-cage filter behavior, `cmd_up` persists `--label rc.ssh-key-filter=on|off` at create and `_up_resolve_resume_ssh_key_filter` aborts loud on resume when the label disagrees with the current effective config (`SSH_KEY_FILTER_MOUNT_SHAPE_CHANGED`). User remediation: `rc destroy <name> && rc up <path>`. Mirrors the `rc.forward-ssh` / `rc.ssh-config` / `rc.github-identity` label-lock pattern. ADR-021 D5's sha-drift hint still fires for any config change, but this guard is the enforcement.
 - **`init-rip-cage.sh`**: add an `ssh-agent-filter` launcher block that reads `/etc/rip-cage/ssh-allowed-keys`. If empty/absent, fall back to today's chown-and-use path; if present, run `ssh-agent-filter` from `/tmp/rip-cage-filter/` with upstream `SSH_AUTH_SOCK=/ssh-agent-upstream.sock`, parse the `SSH_AUTH_SOCK='…'` line it prints, and `sudo ln -sfT <parsed-sock> /ssh-agent.sock` so consumers find the filtered socket at the expected path. PID file at `/tmp/rip-cage.afssh.pid` (legacy filename retained for backward compat with diagnostic scripts).

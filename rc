@@ -1726,8 +1726,11 @@ _build_ssh_mount_args() {
 
   # ADR-022 D3: mount the filtered known_hosts cache (not raw ~/.ssh/known_hosts).
   # The filtered file is at ~/.cache/rip-cage/<container>/known_hosts.
-  # Always mount it (even when empty) so there is no raw ~/.ssh/known_hosts visible inside
-  # the cage — the -o UserKnownHostsFile bypass is structurally closed.
+  # Always mount it (even when empty) so the host arrow surface visible inside the cage
+  # is the filtered file. NB: this narrows the system-path known_hosts but does NOT,
+  # by itself, defeat `ssh -o UserKnownHostsFile=/tmp/anything -o StrictHostKeyChecking=accept-new`.
+  # OpenSSH CLI -o always wins over Match final blocks. The CLI-flag bypass is closed
+  # at the PreToolUse hook layer (hooks/block-ssh-bypass.sh, ADR-022 D5), not here.
   # ADR-001 fail-loud: always emit the mount. _up_resolve_ssh_allowlists is the
   # contract for populating these files (always writes the known_hosts cache;
   # always writes the sentinel when filtering is active). If a future code path
