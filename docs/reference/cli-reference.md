@@ -13,6 +13,7 @@
 | `rc destroy [-f] [name]` | Remove a container and its volumes (prompts for confirmation) |
 | `rc test [name]` | Run the safety stack smoke test inside a container |
 | `rc config show [--json]` | Print effective `.rip-cage.yaml` config with provenance ([details](config.md)) |
+| `rc config init [--yes] [--force]` | Bootstrap a starter `.rip-cage.yaml` from `git remote -v` + `ssh -G` ([details](config.md)) |
 
 ## Flags
 

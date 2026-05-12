@@ -78,7 +78,7 @@ When neither layer declares `ssh.allowed_keys`:
 
 **Rationale:** The two arrows compose multiplicatively. Locking the host arrow alone closes the 2026-05-11 bypass at the source — the only host trust visible inside the cage is what the user explicitly authorizes via `allowed_hosts` (plus the github.com floor). Keeping the key arrow fully open by default preserves the "your existing workflow, caged" promise: today's pushes keep working without any `.rip-cage.yaml` authoring. Users who want to narrow further opt in by listing `allowed_keys`.
 
-This deliberately tightens behavior on rc upgrade for users who currently SSH to non-github.com hosts via the cage. ADR-021 line 257 anticipated this — "the right time to tighten defaults is when a downstream consumer ships." Mitigation: the follow-up bead `rip-cage-97n` will detect SSH-using projects at `rc init` and offer interactive `.rip-cage.yaml` bootstrap.
+This deliberately tightens behavior on rc upgrade for users who currently SSH to non-github.com hosts via the cage. ADR-021 line 257 anticipated this — "the right time to tighten defaults is when a downstream consumer ships." Mitigation: `rc config init` (rip-cage-97n) inspects `git remote -v` + `ssh -G <host>` (with an `ssh-add -L` comment-and-basename fallback) and writes a starter `.rip-cage.yaml` interactively. `rc up` prints a 1-line tip pointing at the wizard whenever a workspace lacks a project-level config but has at least one SSH remote, so the upgrade-tighten path is discoverable from the dominant CLI surface (not just `rc init` / VS Code).
 
 **Alternatives considered:**
 

@@ -24,5 +24,6 @@ bash "${SCRIPT_DIR}/test-pi-install.sh"
 bash "${SCRIPT_DIR}/test-pi-auth-mount.sh"
 bash "${SCRIPT_DIR}/test-pi-cage-context.sh"
 bash "${SCRIPT_DIR}/test-pi-e2e.sh"
+bash "${SCRIPT_DIR}/test-config-init.sh"
 
 echo "=== run-host.sh complete ==="
