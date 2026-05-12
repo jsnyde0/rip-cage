@@ -153,7 +153,11 @@ RULES_FILE="${TMPDIR_TEST}/identity-rules"
 # ===========================================================================
 _translate_ssh_config "${SSH_DIR}/config-full" "$TRANSLATED" ""
 
-_bad_paths=$(grep -v '^\s*#' "$TRANSLATED" | grep '~/.ssh/' || true)
+# Check that IdentityFile directives have their tilde paths rewritten.
+# ADR-022 D4: UserKnownHostsFile/GlobalKnownHostsFile are now passed through unchanged
+# (they may still contain tilde/absolute paths — that is correct new behavior).
+# We only check that IdentityFile lines do NOT contain tilde paths.
+_id_tilde_paths=$(grep -v '^\s*#' "$TRANSLATED" | grep -i '^\s*IdentityFile' | grep '~/.ssh/' || true)
 _id_paths=$(grep -v '^\s*#' "$TRANSLATED" | grep -i '^\s*IdentityFile' || true)
 _all_agent_paths=true
 while IFS= read -r _line; do
@@ -162,11 +166,11 @@ while IFS= read -r _line; do
   [[ "$_p" != /home/agent/.ssh/* ]] && _all_agent_paths=false
 done <<< "$_id_paths"
 
-if [[ -z "$_bad_paths" && "$_all_agent_paths" == "true" ]]; then
-  _pass 1 "path rewrite: tilde paths → /home/agent/.ssh/<basename>"
+if [[ -z "$_id_tilde_paths" && "$_all_agent_paths" == "true" ]]; then
+  _pass 1 "path rewrite: IdentityFile tilde paths → /home/agent/.ssh/<basename>"
 else
   _reason=""
-  [[ -n "$_bad_paths" ]] && _reason="tilde paths remain"
+  [[ -n "$_id_tilde_paths" ]] && _reason="IdentityFile tilde paths remain: ${_id_tilde_paths}"
   [[ "$_all_agent_paths" == "false" ]] && _reason="${_reason:+$_reason; }IdentityFile not /home/agent/.ssh/"
   _fail 1 "path rewrite" "$_reason"
 fi
@@ -239,21 +243,29 @@ else
 fi
 
 # ===========================================================================
-# CHECK 5/17: Transform — ADR-014 D2 directive override
+# CHECK 5/17: Transform — ADR-014 D2 directive override (transform 5)
 # ---------------------------------------------------------------------------
 # The full fixture has `BatchMode no` and `StrictHostKeyChecking accept-new`
 # inside Host blocks. These must be overridden to `BatchMode yes` and
 # `StrictHostKeyChecking yes` with a `# rip-cage: overridden (ADR-014 D2)`
 # annotation. Without this, the cage gets interactive SSH prompts.
+#
+# ADR-022 D4 invalidation check: UserKnownHostsFile/GlobalKnownHostsFile must
+# NOT be rewritten to /etc/ssh/ssh_known_hosts. Those rewrites were bypassable
+# theater (-o flag beats config); they were removed in favor of mount-layer
+# filtering (_filter_known_hosts). The directives should pass through unchanged.
 # ===========================================================================
 _batchmode_no=$(grep -v '^\s*#' "$TRANSLATED" | grep -i '^\s*BatchMode\s*no' || true)
 _batchmode_yes=$(grep -v '^\s*#' "$TRANSLATED" | grep -i '^\s*BatchMode\s*yes' || true)
 _strict_bad=$(grep -v '^\s*#' "$TRANSLATED" | grep -i '^\s*StrictHostKeyChecking\s*accept-new' || true)
 _strict_ok=$(grep -v '^\s*#' "$TRANSLATED" | grep -i '^\s*StrictHostKeyChecking\s*yes' || true)
 _d2_comment=$(grep "# rip-cage: overridden (ADR-014 D2)" "$TRANSLATED" || true)
+# ADR-022 D4: these rewrites must be ABSENT (they pass through unchanged now)
+_ukh_rewrite=$(grep -v '^\s*#' "$TRANSLATED" | grep -i '^\s*UserKnownHostsFile.*\/etc\/ssh\/ssh_known_hosts' || true)
+_gkh_rewrite=$(grep -v '^\s*#' "$TRANSLATED" | grep -i '^\s*GlobalKnownHostsFile.*\/etc\/ssh\/ssh_known_hosts' || true)
 
-if [[ -z "$_batchmode_no" && -n "$_batchmode_yes" && -z "$_strict_bad" && -n "$_strict_ok" && -n "$_d2_comment" ]]; then
-  _pass 5 "ADR-014 D2 override: BatchMode yes, StrictHostKeyChecking yes, annotation present"
+if [[ -z "$_batchmode_no" && -n "$_batchmode_yes" && -z "$_strict_bad" && -n "$_strict_ok" && -n "$_d2_comment" && -z "$_ukh_rewrite" && -z "$_gkh_rewrite" ]]; then
+  _pass 5 "ADR-014 D2 override: BatchMode/StrictHostKeyChecking yes; UserKnownHostsFile/GlobalKnownHostsFile NOT rewritten to /etc/ssh/ssh_known_hosts (ADR-022 D4)"
 else
   _reason=""
   [[ -n "$_batchmode_no" ]] && _reason="BatchMode no still active"
@@ -261,6 +273,8 @@ else
   [[ -n "$_strict_bad" ]] && _reason="${_reason:+$_reason; }StrictHostKeyChecking accept-new still active"
   [[ -z "$_strict_ok" ]] && _reason="${_reason:+$_reason; }StrictHostKeyChecking yes absent"
   [[ -z "$_d2_comment" ]] && _reason="${_reason:+$_reason; }ADR-014 D2 annotation absent"
+  [[ -n "$_ukh_rewrite" ]] && _reason="${_reason:+$_reason; }UserKnownHostsFile still rewritten to /etc/ssh (ADR-022 D4)"
+  [[ -n "$_gkh_rewrite" ]] && _reason="${_reason:+$_reason; }GlobalKnownHostsFile still rewritten to /etc/ssh (ADR-022 D4)"
   _fail 5 "ADR-014 D2 directive override" "$_reason"
 fi
 

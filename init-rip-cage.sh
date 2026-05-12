@@ -36,17 +36,85 @@ fi
 # macOS/OrbStack) and is inaccessible to the in-container agent user
 # (uid 1000). Reassign ownership so the agent can sign. This only affects
 # the container's view — the host socket file is untouched on the host side.
-# Sudoers grants this exact command (Dockerfile NOPASSWD list); fail loud if
-# the grant has drifted, since silent failure here was the original 2026-04-25
-# bug (agent user permanently locked out of the proxied socket on macOS).
-if [[ -S /ssh-agent.sock ]]; then
-  if ! sudo -n chown agent:agent /ssh-agent.sock 2>/tmp/rc-chown-err; then
-    echo "[rip-cage] WARNING: failed to chown /ssh-agent.sock — agent user will not reach host ssh-agent." >&2
-    echo "[rip-cage]   sudo error: $(cat /tmp/rc-chown-err 2>/dev/null)" >&2
-    echo "[rip-cage]   Likely cause: stale image without sudoers grant. Rebuild with './rc build'." >&2
+#
+# ADR-022 D3: Two paths depending on /etc/rip-cage/ssh-allowed-keys sentinel.
+#   Sentinel absent         → no key filtering (today's full-forward path)
+#                             chown the upstream socket and use it as /ssh-agent.sock
+#   Sentinel present, empty → zero-out: afssh with no --comment flags (forward nothing)
+#   Sentinel present, N lines → filter: afssh with --comment for each non-comment line
+#
+# The upstream socket is always mounted as /ssh-agent-upstream.sock when any
+# filtering is active. When filtering is absent, rc up mounts it directly as
+# /ssh-agent.sock (today's path), so /ssh-agent-upstream.sock may not exist.
+_rc_allowed_keys_sentinel="/etc/rip-cage/ssh-allowed-keys"
+if [[ -f "$_rc_allowed_keys_sentinel" ]]; then
+  # Key filtering active (present file = filtering requested, even if empty = zero-out).
+  # The upstream socket was mounted as /ssh-agent-upstream.sock by rc up.
+  # Note: the daemon is `ssh-agent-filter`, not `afssh`. afssh is a one-shot
+  # ssh wrapper that starts the filter then runs `ssh -A` once and dies.
+  # ssh-agent-filter forks, picks `$PWD/agent.<PID>` as its socket path, and
+  # prints SSH_AUTH_SOCK / SSH_AGENT_PID to stdout (like ssh-agent does).
+  # We cd to an agent-owned tmpdir, parse the printed path, then symlink
+  # /ssh-agent.sock → that path so the cage's SSH_AUTH_SOCK contract holds.
+  _rc_filter_args=()
+  while IFS= read -r _rc_key_comment || [[ -n "$_rc_key_comment" ]]; do
+    # Skip blank lines and comment lines
+    [[ -z "$_rc_key_comment" || "$_rc_key_comment" == '#'* ]] && continue
+    _rc_filter_args+=("--comment" "$_rc_key_comment")
+  done < "$_rc_allowed_keys_sentinel"
+
+  if [[ -S /ssh-agent-upstream.sock ]]; then
+    if ! sudo -n chown agent:agent /ssh-agent-upstream.sock 2>/tmp/rc-chown-err; then
+      echo "[rip-cage] WARNING: failed to chown /ssh-agent-upstream.sock — ssh-agent-filter cannot reach host ssh-agent." >&2
+      echo "[rip-cage]   sudo error: $(cat /tmp/rc-chown-err 2>/dev/null)" >&2
+    fi
+    rm -f /tmp/rc-chown-err
+
+    mkdir -p /tmp/rip-cage-filter
+    pushd /tmp/rip-cage-filter >/dev/null
+    _rc_filter_out=$(SSH_AUTH_SOCK=/ssh-agent-upstream.sock ssh-agent-filter "${_rc_filter_args[@]+"${_rc_filter_args[@]}"}" 2>/tmp/rc-filter-err)
+    _rc_filter_rc=$?
+    popd >/dev/null
+
+    if [[ $_rc_filter_rc -ne 0 ]]; then
+      echo "[rip-cage] WARNING: ssh-agent-filter failed (rc=$_rc_filter_rc):" >&2
+      cat /tmp/rc-filter-err >&2 2>/dev/null
+    else
+      _rc_filter_sock=$(printf '%s\n' "$_rc_filter_out" | sed -nE "s/^SSH_AUTH_SOCK='([^']+)'.*/\1/p")
+      _rc_filter_pid=$(printf '%s\n' "$_rc_filter_out" | sed -nE "s/^SSH_AGENT_PID='([0-9]+)'.*/\1/p")
+      if [[ -z "$_rc_filter_sock" || -z "$_rc_filter_pid" ]]; then
+        echo "[rip-cage] WARNING: could not parse ssh-agent-filter output:" >&2
+        printf '%s\n' "$_rc_filter_out" >&2
+      elif ! sudo -n ln -sfT "$_rc_filter_sock" /ssh-agent.sock 2>/tmp/rc-ln-err; then
+        echo "[rip-cage] WARNING: failed to symlink /ssh-agent.sock → $_rc_filter_sock" >&2
+        cat /tmp/rc-ln-err >&2 2>/dev/null
+      else
+        echo "$_rc_filter_pid" > /tmp/rip-cage.afssh.pid
+        if [[ ${#_rc_filter_args[@]} -eq 0 ]]; then
+          echo "[rip-cage] SSH key filter: zero-out (ssh-agent-filter PID=$_rc_filter_pid, forwarding no keys)"
+        else
+          echo "[rip-cage] SSH key filter: ssh-agent-filter PID=$_rc_filter_pid (${#_rc_filter_args[@]} --comment flags)"
+        fi
+      fi
+      rm -f /tmp/rc-ln-err /tmp/rc-filter-err
+    fi
+    unset _rc_filter_out _rc_filter_rc _rc_filter_sock _rc_filter_pid
+  else
+    echo "[rip-cage] WARNING: ssh-allowed-keys sentinel present but /ssh-agent-upstream.sock absent — key filtering skipped." >&2
   fi
-  rm -f /tmp/rc-chown-err
+  unset _rc_filter_args
+else
+  # No key filtering: upstream socket was mounted directly as /ssh-agent.sock.
+  if [[ -S /ssh-agent.sock ]]; then
+    if ! sudo -n chown agent:agent /ssh-agent.sock 2>/tmp/rc-chown-err; then
+      echo "[rip-cage] WARNING: failed to chown /ssh-agent.sock — agent user will not reach host ssh-agent." >&2
+      echo "[rip-cage]   sudo error: $(cat /tmp/rc-chown-err 2>/dev/null)" >&2
+      echo "[rip-cage]   Likely cause: stale image without sudoers grant. Rebuild with './rc build'." >&2
+    fi
+    rm -f /tmp/rc-chown-err
+  fi
 fi
+unset _rc_allowed_keys_sentinel
 
 # Install settings template — merge with workspace project settings if present to
 # preserve project-level mcpServers and hooks (rip-cage fields take precedence).
