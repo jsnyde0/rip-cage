@@ -134,9 +134,15 @@ else
   fail "CONTAINER_STATE_UNSUPPORTED error code missing from rc"
 fi
 
+# Capture function slices once. Avoids `awk … | grep -q …` under `set -o pipefail`:
+# grep -q closes the pipe on first match → awk dies with SIGPIPE (141) → pipefail
+# treats the whole pipeline as failed even though the pattern was found.
+cmd_up_slice=$(awk '/^cmd_up\(\)/,/^}/' "$RC")
+cmd_ls_slice=$(awk '/^cmd_ls\(\)/,/^}/' "$RC")
+
 # Static: all four unsupported states have explicit elif branches (scoped to cmd_up)
 for state in paused restarting removing dead; do
-  if awk '/^cmd_up\(\)/,/^}/' "$RC" | grep -q "\"$state\""; then
+  if grep -q "\"$state\"" <<<"$cmd_up_slice"; then
     pass "cmd_up has explicit branch for state: $state"
   else
     fail "cmd_up missing explicit branch for state: $state"
@@ -144,7 +150,7 @@ for state in paused restarting removing dead; do
 done
 
 # Static: CONTAINER_STATE_UNSUPPORTED appears at least 8 times (four states × two paths: dry-run + real)
-state_unsupported_count=$(awk '/^cmd_up\(\)/,/^}/' "$RC" | grep -c '"CONTAINER_STATE_UNSUPPORTED"' || true)
+state_unsupported_count=$(grep -c '"CONTAINER_STATE_UNSUPPORTED"' <<<"$cmd_up_slice" || true)
 if [[ "$state_unsupported_count" -ge 8 ]]; then
   pass "CONTAINER_STATE_UNSUPPORTED referenced >= 8 times in cmd_up ($state_unsupported_count)"
 else
@@ -152,14 +158,14 @@ else
 fi
 
 # Static: cmd_ls normalizes missing egress to "legacy" (scoped to cmd_ls)
-if awk '/^cmd_ls\(\)/,/^}/' "$RC" | grep -q '"legacy"'; then
+if grep -q '"legacy"' <<<"$cmd_ls_slice"; then
   pass "cmd_ls normalization: \"legacy\" marker present"
 else
   fail "cmd_ls normalization: \"legacy\" marker missing"
 fi
 
 # Static: cmd_ls normalizes invalid egress to "invalid:<value>" (scoped to cmd_ls)
-if awk '/^cmd_ls\(\)/,/^}/' "$RC" | grep -q '"invalid:'; then
+if grep -q '"invalid:' <<<"$cmd_ls_slice"; then
   pass "cmd_ls normalization: \"invalid:\" prefix present"
 else
   fail "cmd_ls normalization: \"invalid:\" prefix missing"
