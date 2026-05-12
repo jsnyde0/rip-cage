@@ -170,7 +170,8 @@ if _is_mountpoint /home/agent/.claude/projects; then
     # Symlink the container-side key (-workspace) to the host-side key so all
     # sessions for this project land in the same folder on the host.
     if [ ! -e /home/agent/.claude/projects/-workspace ] || [ -L /home/agent/.claude/projects/-workspace ]; then
-      ln -sfn "${RC_HOST_PROJECT_KEY}" /home/agent/.claude/projects/-workspace
+      # `--` terminator: RC_HOST_PROJECT_KEY starts with `-` (encoded "/")
+      ln -sfn -- "${RC_HOST_PROJECT_KEY}" /home/agent/.claude/projects/-workspace
       echo "[rip-cage] Linked -workspace → ${RC_HOST_PROJECT_KEY}"
     else
       echo "[rip-cage] Warning: /home/agent/.claude/projects/-workspace exists as a real directory — leaving alone to avoid clobbering data" >&2
