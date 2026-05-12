@@ -4384,7 +4384,10 @@ SCHEMA
 
 # When sourced (e.g., by tests), skip dispatch — expose functions only.
 # BASH_SOURCE[0] is the script file; $0 is the invoking shell when sourced.
-[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
+# When piped via `bash -s --` (test-auth-refresh.sh's run_rc, to bypass the
+# /.dockerenv guard) BASH_SOURCE is empty — that's NOT sourced, so we fall
+# through to dispatch instead of trying to `return` at top-level.
+[[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
 
 # Parse global flags from anywhere in argv
 # Allows: rc --dry-run up ., rc up --dry-run ., rc up . --dry-run
