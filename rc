@@ -760,10 +760,28 @@ _extract_credentials() {
       echo "Warning: ${HOME}/.claude/.credentials.json is a non-empty directory artifact — credentials will not be extracted" >&2
   fi
   if [[ "$(uname)" == "Darwin" ]]; then
-    local creds_tmp
+    local creds_tmp creds_target
+    creds_target="${HOME}/.claude/.credentials.json"
     creds_tmp=$(mktemp) || { echo "Warning: failed to create temp file for credentials extraction" >&2; return 1; }
     if security find-generic-password -s "Claude Code-credentials" -w > "$creds_tmp" 2>/dev/null; then
-      mv "$creds_tmp" "${HOME}/.claude/.credentials.json"
+      # Write in place (truncate+write) to preserve the inode. Docker's single-file
+      # bind mount on macOS tracks the original inode; mv (atomic rename) allocates
+      # a new inode and silently breaks every already-mounted container's view of
+      # this file. A non-atomic ~1 KB JSON write window is acceptable here.
+      if [[ ! -e "$creds_target" ]]; then
+        ( umask 077; : > "$creds_target" ) || {
+          rm -f "$creds_tmp"
+          echo "Warning: failed to create $creds_target" >&2
+          return 1
+        }
+      fi
+      if ! cat "$creds_tmp" > "$creds_target"; then
+        rm -f "$creds_tmp"
+        echo "Warning: failed to write credentials to $creds_target" >&2
+        return 1
+      fi
+      chmod 600 "$creds_target" 2>/dev/null || true
+      rm -f "$creds_tmp"
     else
       rm -f "$creds_tmp"
       echo "Warning: failed to extract credentials from macOS keychain — auth may not work inside container" >&2

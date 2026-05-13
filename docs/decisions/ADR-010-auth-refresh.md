@@ -9,7 +9,7 @@
 
 Rip-cage bind-mounts `~/.claude/.credentials.json` read-write into containers. This file is extracted from the macOS Keychain during `rc up`. When a user switches accounts or refreshes auth on the host, the Keychain updates but the file does not — containers see stale credentials.
 
-The current workaround is `rc destroy` + `rc up`, which destroys the Claude Code session (conversation history, context). This is disproportionate — the credentials file just needs re-extracting from the Keychain, and the bind mount propagates the update to all running containers instantly.
+The current workaround is `rc destroy` + `rc up`, which destroys the Claude Code session (conversation history, context). This is disproportionate — the credentials file just needs re-extracting from the Keychain, and the bind mount propagates the update to all running containers instantly *provided the file's inode is preserved* — see D4.
 
 ## Decisions
 
@@ -55,6 +55,26 @@ Route `rc auth <subcommand>` through `cmd_auth`. Initially only `refresh` is imp
 **Rationale:** `rc auth-refresh` (hyphenated top-level) would work but doesn't compose. `rc auth refresh` is more natural and extensible.
 
 **What would invalidate this:** If no other `auth` subcommands ever materialize. Low cost either way — the namespace routing is ~5 lines.
+
+### D4: Write credentials in place (preserve inode)
+
+**Firmness: FIRM**
+
+`_extract_credentials` must write `~/.claude/.credentials.json` **in place** (truncate + write the existing file) rather than via atomic rename (`mv tmp target`). The credential extraction flow:
+
+```
+( umask 077; : > "$target" )   # create with 600 perms if absent — no-op if exists
+cat "$creds_tmp" > "$target"   # truncate-and-write: preserves the original inode
+chmod 600 "$target"            # belt-and-suspenders perms enforcement
+```
+
+**Rationale:** Docker's single-file bind mount on macOS (Docker Desktop and OrbStack alike) tracks the *inode* of the source file at `docker run` time, not the path. `mv tmp target` is an atomic rename that allocates a new inode and unlinks the old one — instantly invalidating the bind mount in every already-running container. Symptom: `stat` returns `ENOENT` inside the container, `ls -la` shows `-?????????`, Claude Code reports "Not logged in - please run /login" even after `rc auth refresh`. Truncate-and-write keeps the inode stable, so live containers see the new content immediately via the existing bind mount — which is the entire premise of this ADR.
+
+The trade-off is a sub-millisecond non-atomic write window for a ~1 KB JSON file read infrequently by Claude. Acceptable: a partial read fails fast and Claude retries on the next API call.
+
+**Validation:** With the fix, on macOS `stat -f %i ~/.claude/.credentials.json` returns the same inode before and after `rc auth refresh`, and running containers' bind-mounted view of the file updates in lockstep (matching `mtime`, new token contents readable). With `mv`, the host inode changes and every pre-existing container's mount goes stale at that instant.
+
+**What would invalidate this:** If Docker's macOS bind-mount semantics change to track by path rather than inode (e.g., a future Docker Desktop release using a different file-sharing backend), the atomic-rename pattern would become safe again. Unlikely soon; the inode-tracking behavior is consistent across Docker Desktop's `gRPC FUSE`/`virtiofs` modes and OrbStack as of 2026-05.
 
 ## Deferred
 
