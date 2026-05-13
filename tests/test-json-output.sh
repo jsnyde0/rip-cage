@@ -97,19 +97,24 @@ fi
 rm -rf "$TEST_ALLOWED_DIR"
 cd "$SCRIPT_DIR"
 
-# --- Test 8: cmd_up Docker-not-running check emits JSON error ---
+# --- Test 8: check_docker surfaces JSON error when daemon is unreachable ---
 echo ""
-echo "=== Test 8: cmd_up Docker-not-running emits JSON error ==="
-# If Docker IS running, this test is not applicable; skip it
-if ! docker info > /dev/null 2>&1; then
+echo "=== Test 8: check_docker emits DOCKER_DAEMON_UNREACHABLE in JSON ==="
+# Codes emitted by check_docker (rip-cage-3t1):
+#   DOCKER_NOT_INSTALLED       — docker CLI absent
+#   DOCKER_DAEMON_UNREACHABLE  — daemon not responsive (down OR wedged)
+# Use `rc doctor --host` (which is bounded by RC_DOCKER_PREFLIGHT_TIMEOUT) as
+# the precondition probe — a direct `docker info` here would hang against a
+# wedged daemon, defeating the very class of bug this test guards against.
+if ! "$RC" --output json doctor --host >/dev/null 2>&1; then
   up_docker_err=$("$RC" --output json up /tmp 2>&1) || true
-  if echo "$up_docker_err" | jq -e '.code == "DOCKER_NOT_RUNNING"' >/dev/null 2>&1; then
-    pass "Docker-not-running returns JSON error with DOCKER_NOT_RUNNING code"
+  if echo "$up_docker_err" | jq -e '.code == "DOCKER_DAEMON_UNREACHABLE"' >/dev/null 2>&1; then
+    pass "daemon-unreachable returns JSON error with DOCKER_DAEMON_UNREACHABLE code"
   else
-    fail "Docker-not-running did not return correct JSON error. Got: $up_docker_err"
+    fail "daemon-unreachable did not return correct JSON error. Got: $up_docker_err"
   fi
 else
-  echo "SKIP: Docker is running, cannot test DOCKER_NOT_RUNNING path"
+  echo "SKIP: Docker is running, cannot test DOCKER_DAEMON_UNREACHABLE path"
 fi
 
 # --- Test 9: log function sends to stderr in JSON mode ---

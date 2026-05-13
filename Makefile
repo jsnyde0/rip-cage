@@ -2,7 +2,7 @@
 
 PREFIX ?= $(HOME)/.local
 
-BASH_SCRIPTS := rc init-rip-cage.sh hooks/block-compound-commands.sh bd-wrapper.sh tests/test-prerequisites.sh
+BASH_SCRIPTS := rc init-rip-cage.sh hooks/block-compound-commands.sh bd-wrapper.sh tests/test-prerequisites.sh tests/test-docker-daemon-hang.sh
 
 .PHONY: help install uninstall build test lint
 
@@ -29,5 +29,6 @@ lint: ## Run shellcheck on bash scripts
 
 test: ## Run host-only test scripts (no container required)
 	bash tests/test-prerequisites.sh
+	bash tests/test-docker-daemon-hang.sh
 	bash tests/test-rc-commands.sh
 	bash tests/test-json-output.sh

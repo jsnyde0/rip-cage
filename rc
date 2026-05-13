@@ -78,18 +78,92 @@ _prereq_error() {
   exit 1
 }
 
-# check_docker — verifies docker is installed and daemon is running.
+# _run_with_timeout SECS CMD... — run CMD with a hard timeout, in seconds.
+# macOS bash 3.2 compatible (no `timeout(1)` / `gtimeout` host dependency —
+# coreutils is not in the BSD base, see _probe_tcp for the same constraint).
+# Returns 124 on timeout (matches GNU coreutils `timeout` convention).
+# stdout/stderr of CMD pass through; safe to use inside command substitution.
+_run_with_timeout() {
+  local secs=$1; shift
+  "$@" &
+  local pid=$!
+  local elapsed=0
+  local limit=$(( secs * 10 ))
+  while (( elapsed < limit )); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      local rc=0
+      wait "$pid" 2>/dev/null || rc=$?
+      return "$rc"
+    fi
+    sleep 0.1
+    elapsed=$(( elapsed + 1 ))
+  done
+  kill -TERM "$pid" 2>/dev/null || true
+  sleep 0.2
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  return 124
+}
+
+# _docker_call SECS DOCKER_ARGS... — invoke `docker DOCKER_ARGS...` with a
+# bounded timeout (B per-call defense in depth). On timeout, fails loud with
+# DOCKER_DAEMON_UNREACHABLE so an agent or human sees a clear error rather than
+# a hung tmux session. Honors OUTPUT_FORMAT. stdout passes through.
+#
+# When NOT to use: long-running by design (image pulls, interactive sessions,
+# in-container test scripts). Leave those alone.
+_docker_call() {
+  local secs=$1; shift
+  local _rc=0
+  _run_with_timeout "$secs" docker "$@" || _rc=$?
+  if [[ "$_rc" -eq 124 ]]; then
+    local _msg="Docker call timed out after ${secs}s: 'docker $*'. Daemon may have wedged mid-call. Try: 'orb restart' (OrbStack) or restart Docker Desktop."
+    if [[ "${OUTPUT_FORMAT:-human}" == "json" ]]; then
+      json_error "$_msg" "DOCKER_DAEMON_UNREACHABLE"
+    fi
+    echo "Error: $_msg" >&2
+    exit 1
+  fi
+  return "$_rc"
+}
+
+# check_docker — verifies docker is installed and the daemon is responsive.
+#
+# A wedged daemon (e.g. OrbStack VM stuck mid-boot — socket file present but
+# the process never replies) used to hang every rc subcommand forever because
+# `docker info` had no bounded wait. The preflight now caps that at
+# RC_DOCKER_PREFLIGHT_TIMEOUT seconds (default 3) and surfaces a structured
+# DOCKER_DAEMON_UNREACHABLE error.
+#
+# ADR-001 explicitly excludes "transient infrastructure errors" from its
+# fail-loud remit, but a clear actionable error is still the right behavior
+# (a silent hang would be the worst possible UX).
 check_docker() {
   if ! command -v docker &>/dev/null; then
+    if [[ "${OUTPUT_FORMAT:-human}" == "json" ]]; then
+      json_error "docker is required but not installed. Install Docker Desktop: https://docs.docker.com/get-docker/" "DOCKER_NOT_INSTALLED"
+    fi
     echo "Error: 'docker' is required but not installed." >&2
     echo "  Install Docker Desktop: https://docs.docker.com/get-docker/" >&2
     exit 1
   fi
-  if ! docker info &>/dev/null 2>&1; then
-    echo "Error: Docker daemon is not running." >&2
-    echo "  Start Docker Desktop, or run: sudo systemctl start docker" >&2
-    exit 1
+  local _preflight_timeout="${RC_DOCKER_PREFLIGHT_TIMEOUT:-3}"
+  local _info_rc=0
+  _run_with_timeout "$_preflight_timeout" docker info >/dev/null 2>&1 || _info_rc=$?
+  if [[ "$_info_rc" -eq 0 ]]; then
+    return 0
   fi
+  local _msg
+  if [[ "$_info_rc" -eq 124 ]]; then
+    _msg="Docker daemon is unresponsive (no reply within ${_preflight_timeout}s). The daemon process may be alive but wedged. Try: 'orb restart' (OrbStack) or restart Docker Desktop, then retry. (Override the wait via RC_DOCKER_PREFLIGHT_TIMEOUT.)"
+  else
+    _msg="Docker daemon is not reachable (docker info exited $_info_rc). Start Docker Desktop / OrbStack, or run: sudo systemctl start docker"
+  fi
+  if [[ "${OUTPUT_FORMAT:-human}" == "json" ]]; then
+    json_error "$_msg" "DOCKER_DAEMON_UNREACHABLE"
+  fi
+  echo "Error: $_msg" >&2
+  exit 1
 }
 
 # check_jq — verifies jq is installed (required for --output json).
@@ -130,6 +204,7 @@ Commands:
   test --host                                  Run all host-side tests (host-only; not usable inside container)
   test --e2e                                   Full lifecycle e2e test (slow; RC_E2E_REBUILD=1 to rebuild image)
   doctor [name]                                Per-container diagnostic — labels + live probes
+  doctor --host                                Daemon-liveness probe (no container required)
   auth refresh                                 Refresh credentials from host keychain
   config show [--json]                         Print effective .rip-cage.yaml config (ADR-021)
   schema                                       Print machine-readable command schema
@@ -2996,8 +3071,9 @@ cmd_up() {
 }
 
 cmd_ls() {
+  local _ls_timeout="${RC_DOCKER_CALL_TIMEOUT:-15}"
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}\t{{.Label "rc.forward-ssh"}}\t{{.Label "rc.github-identity"}}' | \
+    _docker_call "$_ls_timeout" ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}\t{{.Label "rc.forward-ssh"}}\t{{.Label "rc.github-identity"}}' | \
       jq -Rsn '[inputs | rtrimstr("\n") | split("\n") | .[] | select(length > 0) | split("\t") | {
         name: .[0],
         status: .[1],
@@ -3008,7 +3084,7 @@ cmd_ls() {
         gh_identity: (.[6] | if . == "" then null else . end)
       }]'
   else
-    { echo -e "NAME\tSTATUS\tEGRESS\tFWD-SSH\tGH-IDENTITY\tSOURCE PATH"; docker ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}\t{{.Label "rc.forward-ssh"}}\t{{.Label "rc.github-identity"}}' | \
+    { echo -e "NAME\tSTATUS\tEGRESS\tFWD-SSH\tGH-IDENTITY\tSOURCE PATH"; _docker_call "$_ls_timeout" ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}\t{{.Label "rc.forward-ssh"}}\t{{.Label "rc.github-identity"}}' | \
       awk -F'\t' '{egress=$4; if (egress == "") egress="legacy"; else if (egress != "on" && egress != "off") egress="invalid:" egress;
                    fwd=$5;    if (fwd == "")    fwd="legacy";    else if (fwd    != "on" && fwd    != "off") fwd   ="invalid:" fwd;
                    ghi=$6;    if (ghi == "")    ghi="\342\200\224";
@@ -3026,13 +3102,14 @@ resolve_name() {
   # Try CWD-based resolution first (same logic as cmd_up):
   # derive the expected container name from the current directory and check
   # if a matching rc-managed container exists.
+  local _resolve_timeout="${RC_DOCKER_CALL_TIMEOUT:-15}"
   local cwd_resolved cwd_candidate
   cwd_resolved=$(realpath "." 2>/dev/null) || true
   if [[ -n "$cwd_resolved" ]]; then
     cwd_candidate=$(container_name "$cwd_resolved")
     if [[ -n "$cwd_candidate" ]]; then
       local cwd_label
-      cwd_label=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$cwd_candidate" 2>/dev/null || true)
+      cwd_label=$(_docker_call "$_resolve_timeout" inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$cwd_candidate" 2>/dev/null || true)
       if [[ -n "$cwd_label" ]]; then
         echo "$cwd_candidate"
         return
@@ -3042,7 +3119,7 @@ resolve_name() {
 
   # Fallback: if no CWD match, use singleton auto-select
   local containers
-  if ! containers=$(docker ps -a --filter label=rc.source.path --format '{{.Names}}'); then
+  if ! containers=$(_docker_call "$_resolve_timeout" ps -a --filter label=rc.source.path --format '{{.Names}}'); then
     echo "Error: failed to list containers (is Docker running?)" >&2
     return 1
   fi
@@ -3081,8 +3158,9 @@ verify_rc_container() {
 cmd_down() {
   local name
   name=$(resolve_name "${1:-}") || exit 1
+  local _down_timeout="${RC_DOCKER_CALL_TIMEOUT:-15}"
   local state
-  state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
+  state=$(_docker_call "$_down_timeout" inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
   if [[ -z "$state" ]]; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
     echo "Error: container $name not found" >&2; exit 1
@@ -3092,7 +3170,9 @@ cmd_down() {
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is not running (state: $state)" "CONTAINER_NOT_RUNNING"
     echo "Error: container $name is not running (state: $state)" >&2; exit 1
   fi
-  docker stop "$name" >/dev/null 2>&1
+  # `docker stop` defaults to a 10s grace period before SIGKILL; bound the
+  # outer wait at 30s (2× grace + slack) so a wedged daemon doesn't hang us.
+  _docker_call 30 stop "$name" >/dev/null 2>&1
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     jq -nc --arg name "$name" --arg action "stopped" --arg status "exited" \
       '{name: $name, action: $action, status: $status}'
@@ -3111,8 +3191,10 @@ cmd_destroy() {
   done
   name=$(resolve_name "$name") || exit 1
 
+  local _destroy_timeout="${RC_DOCKER_CALL_TIMEOUT:-15}"
+
   # Verify container exists and is managed by rc
-  if ! docker inspect "$name" >/dev/null 2>&1; then
+  if ! _docker_call "$_destroy_timeout" inspect "$name" >/dev/null 2>&1; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
     echo "Error: container $name not found" >&2; exit 1
   fi
@@ -3121,7 +3203,7 @@ cmd_destroy() {
   # Interactive confirmation for destructive operation (skip in JSON/non-TTY/--force)
   if [[ "$force" -eq 0 ]] && [[ "$DRY_RUN" != "true" ]] && [[ "$OUTPUT_FORMAT" != "json" ]] && [[ -t 0 ]]; then
     local source_path
-    source_path=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$name" 2>/dev/null || true)
+    source_path=$(_docker_call "$_destroy_timeout" inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$name" 2>/dev/null || true)
     echo "This will permanently remove:"
     echo "  Container:  $name"
     [[ -n "$source_path" ]] && echo "  Workspace:  $source_path"
@@ -3147,7 +3229,8 @@ cmd_destroy() {
     return 0
   fi
 
-  if ! docker rm -f "$name" >/dev/null 2>&1; then
+  # `docker rm -f` runs SIGKILL after a brief grace; 30s outer cap is generous.
+  if ! _docker_call 30 rm -f "$name" >/dev/null 2>&1; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
     echo "Error: container $name not found" >&2; exit 1
   fi
@@ -3424,6 +3507,56 @@ ${output}"
 # reaching this dispatch table (and before the container guard), so this
 # function was unreachable dead code.
 
+# _doctor_host — daemon-level diagnostic (no container required).
+#
+# Reports docker daemon reachability with the same timeout the preflight uses.
+# Intentionally bypasses check_docker (the dispatcher skips it for `rc doctor
+# --host`), because the whole point of this mode is to tell the user *why*
+# everything else is failing — exiting silently from the preflight would defeat
+# the purpose.
+_doctor_host() {
+  local _t="${RC_DOCKER_PREFLIGHT_TIMEOUT:-3}"
+  local _docker_path _docker_installed=1
+  if ! _docker_path=$(command -v docker 2>/dev/null); then
+    _docker_installed=0
+  fi
+  local _rc=0 _daemon_status
+  if [[ "$_docker_installed" -eq 0 ]]; then
+    _rc=127
+    _daemon_status="FAIL — docker CLI not installed"
+  else
+    _run_with_timeout "$_t" docker info >/dev/null 2>&1 || _rc=$?
+    if [[ "$_rc" -eq 0 ]]; then
+      _daemon_status="OK — daemon reachable within ${_t}s"
+    elif [[ "$_rc" -eq 124 ]]; then
+      _daemon_status="FAIL — daemon unresponsive (no reply within ${_t}s; likely wedged)"
+    else
+      _daemon_status="FAIL — docker info exited $_rc"
+    fi
+  fi
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    jq -nc \
+      --arg scope "host" \
+      --arg daemon "$_daemon_status" \
+      --argjson rc "$_rc" \
+      --argjson timeout "$_t" \
+      --arg docker_path "${_docker_path:-}" \
+      '{scope: $scope, daemon: $daemon, docker_info_rc: $rc, timeout_seconds: $timeout, docker_path: $docker_path}'
+  else
+    printf "Scope:        host (daemon liveness)\n"
+    printf "Docker path:  %s\n" "${_docker_path:-<not installed>}"
+    printf "Daemon:       %s\n" "$_daemon_status"
+    if [[ "$_docker_installed" -eq 0 ]]; then
+      printf "\nRemedy: install Docker Desktop or OrbStack — https://docs.docker.com/get-docker/\n"
+    elif [[ "$_rc" -ne 0 ]]; then
+      printf "\nRemedy: 'orb restart' (OrbStack) or restart Docker Desktop, then retry.\n"
+    fi
+  fi
+  if [[ "$_rc" -ne 0 ]]; then
+    exit 1
+  fi
+}
+
 # cmd_doctor — per-container diagnostic view.
 #
 # Complements `rc ls` (fleet view) with depth for a single container: posture
@@ -3432,7 +3565,14 @@ ${output}"
 # Labels are readable whether the container is running or stopped; live probes
 # report "not running, no live probe" when the container is stopped.
 # Resolves via resolve_name (CWD convention — same as rc attach/down/destroy).
+#
+# `rc doctor --host` is a separate mode (no container, daemon liveness only)
+# and is dispatched here so the existing JSON/help wiring is shared.
 cmd_doctor() {
+  if [[ "${1:-}" == "--host" ]]; then
+    _doctor_host
+    return
+  fi
   local name
   name=$(resolve_name "${1:-}") || exit 1
   if ! docker inspect "$name" >/dev/null 2>&1; then
@@ -4726,9 +4866,16 @@ case "${1:-}" in
   up) [[ "$OUTPUT_FORMAT" == "json" ]] || check_tmux ;;
 esac
 
-# docker: needed for all commands that talk to Docker
+# docker: needed for all commands that talk to Docker.
+# `rc doctor --host` is the one exception: its job is to *diagnose* a wedged
+# daemon, so the preflight (which would itself fail loud) must be skipped.
 case "${1:-}" in
-  build|up|ls|attach|down|destroy|reload|test|doctor) check_docker ;;
+  build|up|ls|attach|down|destroy|reload|test) check_docker ;;
+  doctor)
+    if [[ "${2:-}" != "--host" ]]; then
+      check_docker
+    fi
+    ;;
 esac
 
 # Main dispatch
