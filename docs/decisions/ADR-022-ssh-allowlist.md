@@ -1,10 +1,10 @@
 # ADR-022: SSH host + key allowlist as the first `.rip-cage.yaml` consumer
 
-**Status:** Accepted — D1–D4 shipped (`rip-cage-b0c`); D5 hook-layer added 2026-05-12 (`rip-cage-nww`) closing the OpenSSH CLI-override class
+**Status:** Accepted — D1–D4 shipped (`rip-cage-b0c`); D5 hook-layer added 2026-05-12 (`rip-cage-nww`) closing the OpenSSH CLI-override class; D4 mount-path corrected 2026-05-13 (`rip-cage-g2q`) so the filtered cache is actually read by ssh
 **Date:** 2026-05-12
 **Design:** [Design doc](../design/2026-05-12-ssh-allowlist-design.md)
 **Builds on:** [ADR-021](ADR-021-layered-rip-cage-config.md) (`.rip-cage.yaml` substrate), [ADR-020](ADR-020-ssh-identity-routing.md) (config translation, pubkey mount), [ADR-018](ADR-018-macos-ssh-agent-discovery.md) (host-side socket discovery), [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (forward-by-default)
-**Edits in place per [ADR-011](ADR-011-adrs-reflect-target-architecture.md):** ADR-014 D2 caveat (line 79), ADR-020 D1 (mount description), ADR-020 D2 transform 5
+**Edits in place per [ADR-011](ADR-011-adrs-reflect-target-architecture.md):** ADR-014 D2 caveat (line 79), ADR-014 D2 directive list (dual-file `UserKnownHostsFile`, 2026-05-13), ADR-020 D1 (mount description), ADR-020 D2 transform 5
 **Related:** [ADR-001](ADR-001-fail-loud-pattern.md) (loud + actionable failure), project [CLAUDE.md](../../CLAUDE.md) philosophy section ("layers, not walls"; "80/20, not 100/0")
 
 ## Context

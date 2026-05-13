@@ -1,6 +1,11 @@
-# rip-cage: non-interactive SSH posture. See ADR-014.
+# rip-cage: non-interactive SSH posture. See ADR-014 D2 + ADR-022 D4.
+# UserKnownHostsFile reads BOTH paths so ssh.allowed_hosts is actually
+# load-bearing: the filtered user-path file carries entries selected by
+# allowed_hosts (mounted RO from ~/.cache/rip-cage/<cname>/known_hosts),
+# and the system-path file remains the image-baked github.com floor.
+# Single-file form (pre-rip-cage-g2q) silently made allowed_hosts a no-op.
 Match final Host *
-    UserKnownHostsFile /etc/ssh/ssh_known_hosts
+    UserKnownHostsFile /home/agent/.ssh/known_hosts /etc/ssh/ssh_known_hosts
     GlobalKnownHostsFile /etc/ssh/ssh_known_hosts
     StrictHostKeyChecking yes
     BatchMode yes

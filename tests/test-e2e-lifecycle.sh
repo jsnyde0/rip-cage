@@ -482,6 +482,67 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# ADR-022 D4 invalidation: in-cage SSH host-trust surface (rip-cage-jxy F2)
+#
+# Runs while CONTAINER_NAME is still alive (before destroy below). Schema
+# defaults (no .rip-cage.yaml): allowed_hosts=[], allowed_keys=null.
+# Pre-rip-cage-g2q, Checks 18e/18f lived after destroy and silently empty-
+# passed against a dead container; they were moved here so they actually
+# exercise in-cage state.
+# -----------------------------------------------------------------------------
+
+# Check 18e: in-cage /home/agent/.ssh/known_hosts byte-equals the host-side
+# filtered cache file (proves the cage sees the filtered file, not the raw
+# host ~/.ssh/known_hosts that the 2026-05-11 bypass exploited).
+host_cache="${HOME}/.cache/rip-cage/${CONTAINER_NAME}/known_hosts"
+in_cage_kh=$(docker exec "$CONTAINER_NAME" cat /home/agent/.ssh/known_hosts 2>/dev/null || true)
+host_kh=""
+if [[ -f "$host_cache" ]]; then
+  host_kh=$(cat "$host_cache")
+fi
+if [[ "$host_kh" == "$in_cage_kh" ]]; then
+  check "in-cage known_hosts equals host-side filtered cache (ADR-022 D4)" "pass"
+else
+  check "in-cage known_hosts equals host-side filtered cache (ADR-022 D4)" "fail" \
+    "host_cache=${host_cache} in_cage_bytes=${#in_cage_kh} host_bytes=${#host_kh}"
+fi
+
+# Check 18f: in-cage known_hosts is empty (no .rip-cage.yaml → schema default
+# allowed_hosts=[] → empty filtered file). Even if the user passes
+# `-o UserKnownHostsFile=/home/agent/.ssh/known_hosts` the file is empty.
+if [[ -z "$in_cage_kh" ]]; then
+  check "in-cage known_hosts is empty with no .rip-cage.yaml (bypass closed)" "pass"
+else
+  check "in-cage known_hosts is empty with no .rip-cage.yaml (bypass closed)" "fail" \
+    "expected empty, got $(wc -l <<<"$in_cage_kh") line(s)"
+fi
+
+# Check 18g: ssh effective config inside the cage actually reads the filtered
+# user-path known_hosts file (regression guard for rip-cage-g2q). Pre-fix,
+# /etc/ssh/ssh_config.d/00-rip-cage.conf forced UserKnownHostsFile to only
+# /etc/ssh/ssh_known_hosts, so the filtered cache mounted at ~/.ssh/known_hosts
+# was never consulted — ssh.allowed_hosts was silently a no-op for any host
+# other than the image-baked github.com pins. Per ADR-022 D4, effective reach
+# must be: filtered user file (allowed_hosts) UNION system file (github floor).
+ssh_g_kh=$(docker exec "$CONTAINER_NAME" ssh -G example.com 2>/dev/null | awk '/^userknownhostsfile/ {sub(/^userknownhostsfile[[:space:]]+/, ""); print; exit}' || true)
+if echo "$ssh_g_kh" | grep -q "/home/agent/.ssh/known_hosts"; then
+  check "ssh effective config reads filtered known_hosts (ADR-022 D4 / rip-cage-g2q)" "pass"
+else
+  check "ssh effective config reads filtered known_hosts (ADR-022 D4 / rip-cage-g2q)" "fail" \
+    "userknownhostsfile=${ssh_g_kh}"
+fi
+
+# Check 18h: github floor still reachable — ssh -G must also include the
+# system path so the image-baked github.com pins remain the floor when
+# allowed_hosts is empty or absent.
+if echo "$ssh_g_kh" | grep -q "/etc/ssh/ssh_known_hosts"; then
+  check "ssh effective config preserves /etc/ssh/ssh_known_hosts floor (ADR-014 D2)" "pass"
+else
+  check "ssh effective config preserves /etc/ssh/ssh_known_hosts floor (ADR-014 D2)" "fail" \
+    "userknownhostsfile=${ssh_g_kh}"
+fi
+
+# -----------------------------------------------------------------------------
 # Lifecycle — destroy
 # -----------------------------------------------------------------------------
 
@@ -582,42 +643,6 @@ if [[ "$nonexistent_exit" -ne 0 && "$partial" -eq 0 ]]; then
 else
   check "rc up nonexistent path -- exit non-zero, no partial container" "fail" \
     "exit=$nonexistent_exit partial_containers=$partial"
-fi
-
-# -----------------------------------------------------------------------------
-# ADR-022 D4 invalidation: in-cage SSH bypass-attempt closed structurally
-# (rip-cage-jxy F2)
-#
-# Two checks against the original CONTAINER_NAME container (created at Check 3
-# with no .rip-cage.yaml — schema defaults: allowed_hosts=[], allowed_keys=null).
-# The filtered known_hosts cache must therefore be empty, and `ssh -o
-# UserKnownHostsFile=...` overrides cannot widen the cage's host trust.
-# -----------------------------------------------------------------------------
-
-# Check 24: in-cage /home/agent/.ssh/known_hosts byte-equals the host-side
-# filtered cache file (proves the cage sees the filtered file, not the raw
-# host ~/.ssh/known_hosts that the 2026-05-11 bypass exploited).
-host_cache="${HOME}/.cache/rip-cage/${CONTAINER_NAME}/known_hosts"
-in_cage_kh=$(docker exec "$CONTAINER_NAME" cat /home/agent/.ssh/known_hosts 2>/dev/null || true)
-host_kh=""
-if [[ -f "$host_cache" ]]; then
-  host_kh=$(cat "$host_cache")
-fi
-if [[ -f "$host_cache" && "$in_cage_kh" == "$host_kh" ]]; then
-  check "in-cage known_hosts equals host-side filtered cache (ADR-022 D4)" "pass"
-else
-  check "in-cage known_hosts equals host-side filtered cache (ADR-022 D4)" "fail" \
-    "host_cache=${host_cache} in_cage_bytes=${#in_cage_kh} host_bytes=${#host_kh}"
-fi
-
-# Check 25: in-cage known_hosts is empty (no .rip-cage.yaml → schema default
-# allowed_hosts=[] → empty filtered file). Even if the user passes
-# `-o UserKnownHostsFile=/home/agent/.ssh/known_hosts` the file is empty.
-if [[ -z "$in_cage_kh" ]]; then
-  check "in-cage known_hosts is empty with no .rip-cage.yaml (bypass closed)" "pass"
-else
-  check "in-cage known_hosts is empty with no .rip-cage.yaml (bypass closed)" "fail" \
-    "expected empty, got $(wc -l <<<"$in_cage_kh") line(s)"
 fi
 
 # -----------------------------------------------------------------------------

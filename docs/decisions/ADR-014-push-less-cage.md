@@ -56,8 +56,8 @@ Read-only outbound traffic (git `clone`/`fetch` over HTTPS, `gh` read APIs, `npm
 The base image ships a deterministic, non-interactive SSH client posture:
 
 - `/etc/ssh/ssh_known_hosts` contains pinned host keys for `github.com` (from GitHub's published `api.github.com/meta` `ssh_keys`, baked at image build time).
-- `/etc/ssh/ssh_config` sets system-wide defaults:
-  - `UserKnownHostsFile /etc/ssh/ssh_known_hosts`
+- `/etc/ssh/ssh_config.d/00-rip-cage.conf` sets system-wide defaults:
+  - `UserKnownHostsFile /home/agent/.ssh/known_hosts /etc/ssh/ssh_known_hosts` — dual-file form per [ADR-022](ADR-022-ssh-allowlist.md) D4. The user-path file is the read-only filtered cache (entries selected by `ssh.allowed_hosts`); the system-path file is the image-baked github.com floor. Edited in place 2026-05-13 per ADR-011: the original single-file form silently made `ssh.allowed_hosts` a no-op for any host outside the github floor (rip-cage-g2q).
   - `GlobalKnownHostsFile /etc/ssh/ssh_known_hosts`
   - `StrictHostKeyChecking yes`
   - `BatchMode yes`
