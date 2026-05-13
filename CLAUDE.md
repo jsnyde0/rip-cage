@@ -64,6 +64,16 @@ The shim implements the same `list`/`show`/`load` tools as the host `ms` binary.
 - The `container_name()` function in `rc` derives names from the last two path components. Collisions get a 4-char hash suffix.
 - `sleep infinity` is the container entrypoint for CLI mode — tmux is started by `init-rip-cage.sh`, not the Dockerfile.
 
+## When you need a new SSH host trust inside the cage
+
+If you hit a wall like `Host key verification failed` for some host (e.g. a non-github mirror), the cage is enforcing `ssh.allowed_hosts` from `.rip-cage.yaml`. To unblock:
+
+1. Edit `.rip-cage.yaml` in the workspace (it's writable inside the cage) to add the host under `ssh.allowed_hosts`.
+2. Ask the human to run on the host: `rc reload <cage>` — this hot-reloads the allowlist without tearing down tmux or losing in-flight context (rip-cage-ocn / [ADR-022](docs/decisions/ADR-022-ssh-allowlist.md) D6).
+3. Retry the failing operation. No restart, no reattach.
+
+`rc reload` is host-side only and not on the cage's PATH by design — the human is the approval step. You cannot self-grant; surface the request and wait for the human to apply.
+
 ## Harness inventory
 
 See [`.claude/harness.md`](.claude/harness.md) for the catalog of verification mechanisms in this repo (shell syntax checks, shellcheck, tiered test suites, `rc test` / `rc test --e2e` / `rc doctor`, egress probes, ADRs). Consult it when picking a feedback loop for a task.

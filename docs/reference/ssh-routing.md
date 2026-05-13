@@ -175,3 +175,30 @@ After a successful `rc up` with ssh-config enabled, `/home/agent/.ssh/` contains
 **No private key material is present.** The forwarded ssh-agent handles all signing; the cage only needs the pub key files so that `IdentitiesOnly yes` can filter the agent down to the correct identity. This is the load-bearing structural invariant from ADR-017 D1.
 
 If `--no-ssh-config` was passed (or implied by `--no-forward-ssh`), the directory exists but contains none of the above mounts.
+
+---
+
+## `rc reload`
+
+Hot-reload `.rip-cage.yaml` allowlist changes without recreating the container (rip-cage-ocn / [ADR-022](../decisions/ADR-022-ssh-allowlist.md) D6).
+
+**Today: `ssh.allowed_hosts` content changes only.** Anything else refuses loud and tells you to `rc destroy && rc up`.
+
+```bash
+# Add a host: edit .rip-cage.yaml, then on the host:
+rc reload my-cage
+# Preview without applying:
+rc reload my-cage --dry-run
+```
+
+**What it does:** re-runs the `_filter_known_hosts` pipeline against your host `~/.ssh/known_hosts` and rewrites `~/.cache/rip-cage/<cname>/known_hosts` in place. The bind mount inside the cage (`/home/agent/.ssh/known_hosts`) reflects the new content on the next SSH call. No `docker exec`, no daemon restart, no tmux interruption.
+
+**Exit codes:**
+- `0` — applied (or no-op when live matches the applied-config snapshot)
+- `1` — refuse-loud: a non-reload-eligible field changed (e.g. `ssh.allowed_keys`, `egress`, `ports`, `identity`, `env_file`). The error names the path. Run `rc destroy && rc up`.
+- `2` — container not running. The verb "reload" promises the cage sees the change now; reloading a stopped cage would be misleading. Run `rc up` first.
+- `3` — concurrent reload in progress (another `rc reload` holds the lock dir at `~/.cache/rip-cage/<cname>/.reload.lock.d`).
+
+**Security boundary:** `rc reload` is host-side only. The `rc` binary is not on the cage PATH, and the docker socket is not mounted into the cage. The agent inside can edit `.rip-cage.yaml` (it's writable) but cannot run `rc reload` itself — the human running the command on the host is the approval step. No in-cage hook is needed (and was deliberately rejected: see [ADR-022](../decisions/ADR-022-ssh-allowlist.md) D6 alternatives).
+
+**Drift hint:** `rc up` resume compares the live effective config against the applied-config snapshot at `~/.cache/rip-cage/<cname>/config-applied.json`. When only `ssh.allowed_hosts` differs, the hint points at `rc reload`. When any other field differs, the hint points at `rc destroy && rc up`.

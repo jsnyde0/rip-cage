@@ -125,6 +125,7 @@ Commands:
   attach [name]                                Attach to container tmux session
   down [name]                                  Stop a container
   destroy [-f|--force] [name]                   Remove container and volumes
+  reload [name] [--dry-run]                     Hot-reload .rip-cage.yaml allowlist changes (ssh.allowed_hosts)
   test [name]                                  Run in-container safety stack tests (61 checks)
   test --host                                  Run all host-side tests (host-only; not usable inside container)
   test --e2e                                   Full lifecycle e2e test (slow; RC_E2E_REBUILD=1 to rebuild image)
@@ -2807,6 +2808,23 @@ cmd_up() {
     # Source layer: disabled if posture=off; else label if label present; else rules/host-config/none.
     _resolve_github_identity_source "$rc_github_identity_flag" "${_UP_RESUME_GITHUB_IDENTITY:-}" "" "$rc_ssh_config"
     _up_github_identity_preflight "$name" "${_UP_RESUME_GITHUB_IDENTITY:-}" "$_UP_GITHUB_IDENTITY_SOURCE"
+    # ADR-022 D6 / rip-cage-ocn: resume already re-applied ssh.allowed_hosts
+    # (via _up_resolve_ssh_allowlists above). Merge live reload-eligible paths
+    # into the applied-config snapshot so the drift hint doesn't keep nagging.
+    # Non-eligible paths in the snapshot are preserved (they're locked to
+    # container labels / mount shape; live drift in those still earns a hint).
+    if command -v yq &>/dev/null; then
+      local _ocn_applied _ocn_result _ocn_live
+      if _ocn_applied=$(_config_read_applied "$name" 2>/dev/null); then
+        if _ocn_result=$(_load_effective_config "$path" 2>/dev/null); then
+          _ocn_live=$(jq -c '.config' <<<"$_ocn_result")
+          local _ocn_merged
+          _ocn_merged=$(jq -nc --argjson a "$_ocn_applied" --argjson live "$_ocn_live" \
+            '$a | .ssh.allowed_hosts = ($live.ssh.allowed_hosts // [])')
+          _config_write_applied "$name" "$_ocn_merged"
+        fi
+      fi
+    fi
     _config_emit_hint "$path" "$name"
     _config_init_emit_tip "$path"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -2951,6 +2969,23 @@ cmd_up() {
   # ADR-020 D5+D6: github.com identity preflight — probe greeting inside cage,
   # write /etc/rip-cage/github-identity and /etc/rip-cage/ssh-config-source.
   _up_github_identity_preflight "$name" "$_resolved_github_identity" "$_UP_GITHUB_IDENTITY_SOURCE"
+  # ADR-022 D6 / rip-cage-ocn: write applied-config snapshot so future
+  # `rc reload` invocations can diff against create-time intent and
+  # `_config_emit_hint` can suppress false-positive drift after a reload.
+  # Best-effort: do nothing if yq absent or no config files (sha-only hint
+  # path is still correct in that case).
+  if command -v yq &>/dev/null; then
+    local _ocn_result _ocn_cfg
+    if _ocn_result=$(_load_effective_config "$path" 2>/dev/null); then
+      local _ocn_g _ocn_p
+      _ocn_g=$(jq -r '.layers.global' <<<"$_ocn_result")
+      _ocn_p=$(jq -r '.layers.project' <<<"$_ocn_result")
+      if [[ "$_ocn_g" != "null" || "$_ocn_p" != "null" ]]; then
+        _ocn_cfg=$(jq -c '.config' <<<"$_ocn_result")
+        _config_write_applied "$name" "$_ocn_cfg"
+      fi
+    fi
+  fi
   _config_emit_hint "$path" "$name"
   _config_init_emit_tip "$path"
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -3144,6 +3179,128 @@ cmd_destroy() {
   else
     echo "Container $name and volumes destroyed."
   fi
+}
+
+# cmd_reload — host-side hot-reload of .rip-cage.yaml allowlist changes
+# (rip-cage-ocn / ADR-022 D6). Today: ssh.allowed_hosts content only. Refuses
+# loud on anything else (allowed_keys content/mount-shape, egress, ports,
+# identity, env_file). Exit codes:
+#   0 — applied (or no-op when live matches snapshot)
+#   1 — refuse-loud (non-reload-eligible field changed)
+#   2 — container not running (`reload` promises the cage sees the change now)
+#   3 — concurrent reload in progress (flock unavailable)
+cmd_reload() {
+  local name="" dry_run=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run) dry_run=1; shift ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+  # Honor global --dry-run too (stripped by the top-level argv pre-parser).
+  if [[ "${DRY_RUN:-false}" == "true" ]]; then
+    dry_run=1
+  fi
+  name=$(resolve_name "$name") || exit 1
+
+  if ! docker inspect "$name" >/dev/null 2>&1; then
+    echo "Error: container $name not found" >&2; exit 1
+  fi
+  verify_rc_container "$name"
+
+  local state
+  state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
+  if [[ "$state" != "running" ]]; then
+    echo "Error: container $name is not running (state: $state). Use 'rc up' to start it." >&2
+    exit 2
+  fi
+
+  # Workspace path comes from the container label (set by cmd_up create-time).
+  local workspace
+  workspace=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$name" 2>/dev/null || true)
+  if [[ -z "$workspace" || ! -d "$workspace" ]]; then
+    echo "Error: cannot resolve workspace for $name (rc.source.path label missing or path gone)." >&2
+    exit 1
+  fi
+
+  # Validate live config loudly (same gate cmd_up uses).
+  _config_validate_or_abort "$workspace"
+
+  local cache_dir="${HOME}/.cache/rip-cage/${name}"
+  local lock_dir="${cache_dir}/.reload.lock.d"
+  mkdir -p "$cache_dir"
+
+  # mkdir is atomic on POSIX filesystems — portable lock primitive that
+  # serializes concurrent `rc reload` invocations without depending on
+  # `flock` (not present on macOS by default). Released via EXIT trap.
+  # Exit 3 lets script callers branch on contention without parsing stderr.
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    echo "Error: another rc reload is in progress (lock: $lock_dir). Try again in a moment." >&2
+    exit 3
+  fi
+  trap "rmdir '$lock_dir' 2>/dev/null" EXIT
+
+  # Load live effective config + applied snapshot.
+  local live_result live_cfg
+  live_result=$(_load_effective_config "$workspace") || {
+    echo "Error: failed to load effective config from $workspace" >&2; exit 1; }
+  live_cfg=$(jq -c '.config' <<<"$live_result")
+
+  local applied_cfg
+  if ! applied_cfg=$(_config_read_applied "$name" 2>/dev/null); then
+    echo "Error: container $name predates rc reload support (no applied-config snapshot)." >&2
+    echo "       Run: rc destroy $name && rc up   (to rebaseline)." >&2
+    exit 1
+  fi
+
+  # Compute differing JSON paths (e.g. "ssh.allowed_hosts", "egress.mode").
+  local diff_paths
+  diff_paths=$(_config_diff_paths "$live_cfg" "$applied_cfg" 2>/dev/null || true)
+
+  if [[ -z "$diff_paths" ]]; then
+    log "No changes since last apply — nothing to reload."
+    return 0
+  fi
+
+  # Refuse loud on any non-reload-eligible path.
+  if ! printf '%s\n' "$diff_paths" | _config_paths_all_reload_eligible; then
+    echo "Error: 'rc reload' only handles reload-eligible field changes today (${_RC_RELOAD_ELIGIBLE_PATHS})." >&2
+    echo "       Detected differing paths:" >&2
+    while IFS= read -r p; do [[ -n "$p" ]] && echo "         - $p" >&2; done <<<"$diff_paths"
+    echo "       Run: rc destroy $name && rc up   (to apply non-reload-eligible fields)." >&2
+    exit 1
+  fi
+
+  # Print diff summary (counts for allowed_hosts; the v1 reload-eligible field).
+  local live_hosts applied_hosts added removed
+  live_hosts=$(jq -r '.ssh.allowed_hosts // [] | .[]' <<<"$live_cfg" | sort -u)
+  applied_hosts=$(jq -r '.ssh.allowed_hosts // [] | .[]' <<<"$applied_cfg" | sort -u)
+  added=$(comm -23 <(echo "$live_hosts") <(echo "$applied_hosts") | grep -c . || true)
+  removed=$(comm -13 <(echo "$live_hosts") <(echo "$applied_hosts") | grep -c . || true)
+  log "Diff: ssh.allowed_hosts — ${added} added, ${removed} removed."
+  if [[ -n "$live_hosts" || -n "$applied_hosts" ]]; then
+    local h
+    while IFS= read -r h; do [[ -n "$h" ]] && log "  + $h"; done < <(comm -23 <(echo "$live_hosts") <(echo "$applied_hosts"))
+    while IFS= read -r h; do [[ -n "$h" ]] && log "  - $h"; done < <(comm -13 <(echo "$live_hosts") <(echo "$applied_hosts"))
+  fi
+
+  if [[ "$dry_run" -eq 1 ]]; then
+    log "(--dry-run: cache file NOT mutated, snapshot NOT updated.)"
+    return 0
+  fi
+
+  # Apply: re-filter known_hosts in-place per rip-cage-rx8 (truncate + write,
+  # never mv). The bind mount inside the cage points at the cache file by
+  # inode, so the agent sees the new content on the next ssh call. No docker
+  # exec, no daemon restart.
+  local allowed_hosts_str
+  allowed_hosts_str=$(jq -r '.ssh.allowed_hosts // [] | join(" ")' <<<"$live_cfg")
+  _filter_known_hosts "$allowed_hosts_str" "${HOME}/.ssh/known_hosts" "${cache_dir}/known_hosts"
+
+  # Update snapshot to live (so subsequent emit_hint suppresses the warning).
+  _config_write_applied "$name" "$live_cfg"
+
+  log "Reloaded $name (ssh.allowed_hosts: ${added} added, ${removed} removed)."
 }
 
 cmd_test() {
@@ -3993,11 +4150,87 @@ _config_label_value() {
   jq -r '.sha256' <<<"$result"
 }
 
-# First-run / drift hint emitter (D5 informational output).
-# Called from cmd_up after container exists. Compares the container's
-# rc.config-loaded label against the current effective config sha; emits a
-# one-time hint when a config file is loaded for the first time, or a drift
-# warning when the existing label disagrees with the current sha.
+# Reload-eligible JSON path set (rip-cage-ocn / ADR-022 D6).
+# Paths listed here can be mutated by `rc reload` without container recreation.
+# Anything else triggers refuse-loud (exit 1) at reload time and a recreate
+# hint from _config_emit_hint when label/snapshot drift is detected.
+_RC_RELOAD_ELIGIBLE_PATHS='ssh.allowed_hosts'
+
+# Path to the per-container "applied config" snapshot. Written at cmd_up
+# create-time, resume-time (after _up_resolve_ssh_allowlists), and after
+# cmd_reload. Compared against live effective config by both cmd_reload
+# (to decide what changed) and _config_emit_hint (to suppress false-positive
+# drift hints once a reload has been applied — labels are immutable post-create
+# so a sha-only check would warn forever).
+_config_applied_path() {
+  local cname="$1"
+  echo "${HOME}/.cache/rip-cage/${cname}/config-applied.json"
+}
+
+# Write the snapshot. Caller passes the effective-config JSON object as $2
+# (the {ssh:{...}, egress:..., etc.} subtree — same shape as `.config` from
+# _load_effective_config). Truncate-then-write to preserve inode (rip-cage-rx8
+# recipe: never mv-into-place, the parent dir is not bind-mounted but we keep
+# the same semantics for consistency with the known_hosts cache neighbour).
+_config_write_applied() {
+  local cname="$1" cfg_json="$2"
+  local path
+  path=$(_config_applied_path "$cname")
+  mkdir -p "$(dirname "$path")"
+  : > "$path"
+  printf '%s\n' "$cfg_json" > "$path"
+}
+
+# Read snapshot. Echoes JSON to stdout if file exists, empty otherwise.
+_config_read_applied() {
+  local cname="$1" path
+  path=$(_config_applied_path "$cname")
+  [[ -f "$path" ]] || return 1
+  cat "$path"
+}
+
+# Diff two effective-config JSON objects ($1 = live, $2 = applied snapshot).
+# Echoes one differing JSON path per line in dot-form (e.g. `ssh.allowed_hosts`,
+# `egress.mode`). Arrays compared as whole values (no per-element recursion) —
+# `.ssh.allowed_hosts` going from [a] → [a,b] is one path, not two.
+# The `all(type == "string")` filter discards paths with array-index ints, so
+# array contents stay opaque from the diff's perspective.
+_config_diff_paths() {
+  local live="$1" applied="$2"
+  jq -nr --argjson a "$live" --argjson b "$applied" '
+    def leafpaths: [paths(type != "object")] | map(select(all(type == "string"))) | unique;
+    (($a | leafpaths) + ($b | leafpaths))
+    | unique
+    | map(. as $p | select( ($a | getpath($p)) != ($b | getpath($p)) ))
+    | .[]
+    | join(".")
+  '
+}
+
+# Predicate: returns 0 if every line on stdin is a reload-eligible path, 1 if
+# any line is non-eligible. Empty input → 0 (nothing differs is trivially OK).
+_config_paths_all_reload_eligible() {
+  local line eligible_set="|${_RC_RELOAD_ELIGIBLE_PATHS}|"
+  # space-separated tokens → pipe-delimited for substring containment check
+  eligible_set=" ${_RC_RELOAD_ELIGIBLE_PATHS} "
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ " ${_RC_RELOAD_ELIGIBLE_PATHS} " != *" ${line} "* ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+# First-run / drift hint emitter (D5 informational output, extended for ocn).
+# Called from cmd_up after container exists. Strategy:
+#   1) If the per-container "applied config" snapshot exists (post-rip-cage-ocn
+#      containers, including any container that has gone through cmd_up resume
+#      since the snapshot was introduced), diff live vs snapshot. Reload-eligible
+#      diffs → suggest `rc reload`; non-eligible → suggest `rc destroy && rc up`;
+#      no diff → silent.
+#   2) Else (legacy container without snapshot), fall back to the original
+#      label-sha comparison (rc.config-loaded label).
 #
 # No-ops silently when yq is absent (substrate must not break existing flows
 # for users without yq) or when neither config file exists (per D5).
@@ -4012,8 +4245,31 @@ _config_emit_hint() {
   if [[ "$g_layer" == "null" && "$p_layer" == "null" ]]; then
     return 0
   fi
-  local current_sha existing_label
+  local current_sha live_cfg
   current_sha=$(jq -r '.sha256' <<<"$result")
+  live_cfg=$(jq -c '.config' <<<"$result")
+
+  local applied_cfg
+  if applied_cfg=$(_config_read_applied "$container_name" 2>/dev/null); then
+    # Snapshot-aware path (rip-cage-ocn).
+    local diff_paths
+    diff_paths=$(_config_diff_paths "$live_cfg" "$applied_cfg" 2>/dev/null || true)
+    if [[ -z "$diff_paths" ]]; then
+      return 0  # silent — cage state matches live config
+    fi
+    if printf '%s\n' "$diff_paths" | _config_paths_all_reload_eligible; then
+      log "Notice: .rip-cage.yaml has reload-eligible changes since last apply:"
+      while IFS= read -r p; do [[ -n "$p" ]] && log "  - $p"; done <<<"$diff_paths"
+      log "  Run: rc reload ${container_name}"
+    else
+      log "Notice: .rip-cage.yaml has changes since this container was created (paths: $(echo "$diff_paths" | tr '\n' ',' | sed 's/,$//'))."
+      log "  Some fields require 'rc destroy ${container_name} && rc up' to take effect (see 'rc config show')."
+    fi
+    return 0
+  fi
+
+  # Legacy fallback: no snapshot file. Use label sha comparison (pre-ocn behavior).
+  local existing_label
   existing_label=$(docker inspect --format '{{ index .Config.Labels "rc.config-loaded" }}' "$container_name" 2>/dev/null || true)
   if [[ -z "$existing_label" ]]; then
     log "Loaded .rip-cage.yaml (sha256:${current_sha:0:12}). Run 'rc config show' to inspect."
@@ -4346,6 +4602,12 @@ cmd_schema() {
         "--force": {"type": "bool", "default": false, "aliases": ["-f"], "note": "skip confirmation prompt"}
       }
     },
+    "reload": {
+      "args": [{"name": "name", "type": "string", "required": false, "note": "auto-selected via CWD or singleton"}],
+      "flags": {
+        "--dry-run": {"type": "bool", "default": false, "note": "print diff without mutating cache/snapshot"}
+      }
+    },
     "ls": {
       "args": [],
       "flags": {"--output": {"values": ["json"], "default": null}}
@@ -4433,9 +4695,9 @@ unset _remaining
 # Reject --dry-run on commands that don't support it
 if [[ "$DRY_RUN" == "true" ]]; then
   case "${1:-}" in
-    up|destroy) ;;  # supported
+    up|destroy|reload) ;;  # supported
     *)
-      echo "Error: --dry-run is only supported for 'up' and 'destroy'" >&2
+      echo "Error: --dry-run is only supported for 'up', 'destroy', and 'reload'" >&2
       exit 1
       ;;
   esac
@@ -4466,7 +4728,7 @@ esac
 
 # docker: needed for all commands that talk to Docker
 case "${1:-}" in
-  build|up|ls|attach|down|destroy|test|doctor) check_docker ;;
+  build|up|ls|attach|down|destroy|reload|test|doctor) check_docker ;;
 esac
 
 # Main dispatch
@@ -4478,6 +4740,7 @@ case "${1:-}" in
   attach)  shift; cmd_attach "$@" ;;
   down)    shift; cmd_down "$@" ;;
   destroy) shift; cmd_destroy "$@" ;;
+  reload)  shift; cmd_reload "$@" ;;
   test)    shift; cmd_test "$@" ;;
   doctor)  shift; cmd_doctor "$@" ;;
   auth)    shift; cmd_auth "$@" ;;

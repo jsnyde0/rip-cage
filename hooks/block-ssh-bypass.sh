@@ -72,7 +72,8 @@ REASON=$(echo "$COMMAND" | perl -e '
   $msg   .= "        ssh:\n";
   $msg   .= "          allowed_hosts: [<host>]\n";
   $msg   .= "  - Or run on the host: rc config init  (bootstraps from git remotes)\n";
-  $msg   .= "  - Then on the host:   rc destroy <cage> && rc up <workspace>\n";
+  $msg   .= "  - Then on the host (ssh.allowed_hosts only): rc reload <cage>\n";
+  $msg   .= "    (or for other fields: rc destroy <cage> && rc up <workspace>)\n";
   $msg   .= "To override this single command (requires human-on-keyboard): dcg allow-once <code>\n";
   $msg   .= "See ADR-022 (SSH allowlist).";
   print $msg;

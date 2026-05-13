@@ -55,10 +55,10 @@ Workflow: cage agent edits `.rip-cage.yaml` and surfaces a request to the human 
 
 Host-side. Re-uses existing primitives:
 
-1. **Acquire reload lock** — `flock -n ~/.cache/rip-cage/<cname>/.reload.lock` to serialize against concurrent `rc reload` and against `rc up` resume's filter-refresh path. On non-acquisition, exit 3 with a message naming the lock file.
-2. **Validate** — read effective config (workspace `.rip-cage.yaml` + user/global), compute JSON-path diff against the effective config as recorded by the `rc.config-loaded=<sha>` label's witness (the workspace + user config files at create-time, recoverable by re-loading them). Use the JSON-path diff, **not** label comparison, because labels only carry mount-shape state. If any differing path is not `.ssh.allowed_hosts`, refuse loud with the path name + remediation.
+1. **Acquire reload lock** — `mkdir ~/.cache/rip-cage/<cname>/.reload.lock.d` (atomic on POSIX) to serialize against concurrent `rc reload`. Released via `trap rmdir EXIT`. Chosen over `flock` for macOS portability (no native flock binary). `rc up` resume's filter-refresh path is not lock-protected today — the race is benign (same content written). On non-acquisition, exit 3 with a message naming the lock dir.
+2. **Validate** — read effective config (workspace `.rip-cage.yaml` + user/global), compute JSON-path diff against the per-container "applied-config snapshot" at `~/.cache/rip-cage/<cname>/config-applied.json` (written by `cmd_up` at create-time, refreshed by `cmd_up` resume for reload-eligible paths, and rewritten by `rc reload` after a successful apply). Use the JSON-path diff, **not** label comparison, because the `rc.config-loaded` label only carries the create-time sha and is immutable. If any differing path is not `.ssh.allowed_hosts`, refuse loud with the path name + remediation. Legacy containers without a snapshot are told to `rc destroy && rc up` to rebaseline.
 3. **Re-filter** — call existing `_filter_known_hosts` (rc:1560) against the host's `~/.ssh/known_hosts`, write result to `~/.cache/rip-cage/<cname>/known_hosts` **in-place** per rip-cage-rx8 recipe: truncate + write the same inode, never `mv`-into-place. Bind mount points at the host path by inode, so mv would break the cage's view of the file. (Verified: `_filter_known_hosts` at rc:1577 already uses `: > "$_output"` truncate; existing code is rx8-correct.)
-4. **Mark reload-applied** — write/touch `~/.cache/rip-cage/<cname>/.reload-applied` (a sidecar timestamp file) so `_config_emit_hint` on subsequent `rc up` resume can distinguish "sha drift, no reload applied" (recreate needed) from "sha drift, reload applied, drift is reload-eligible" (no warning).
+4. **Update snapshot** — rewrite `~/.cache/rip-cage/<cname>/config-applied.json` to the live effective-config JSON. `_config_emit_hint` consults this snapshot on subsequent `rc up` invocations: live == snapshot → silent; reload-eligible-only delta → hint "run `rc reload`"; any non-eligible delta → hint "run `rc destroy && rc up`".
 5. **Propagate** — none needed. The bind mount inside the cage (`/home/agent/.ssh/known_hosts`, RO) reflects the new content on the next SSH call. No `docker exec`, no daemon restart, no tmux interruption.
 
 Output: yaml diff (effective config before/after) and a one-line summary ("reloaded; 2 hosts added, 0 removed"). Exit codes: `0` (applied or no-op), `1` (refuse-loud — field changed that reload cannot handle), `2` (cage not running), `3` (concurrent reload in progress).
@@ -67,7 +67,7 @@ Output: yaml diff (effective config before/after) and a one-line summary ("reloa
 
 Container labels (`rc.config-loaded=<sha>`) are immutable after creation. After `rc reload` succeeds, the label's sha is permanently stale relative to the live effective config. Without intervention, every subsequent `rc up` resume would emit a false-positive "config changed, recreate needed" hint.
 
-Fix: `_config_emit_hint` (rc:4004) becomes path-aware. Compare the live effective config to the create-time config (re-loaded from the same workspace's labeled files). If the only differing paths are reload-eligible (`.ssh.allowed_hosts` today; future reload-eligible fields enumerate alongside), AND the `.reload-applied` sidecar exists, suppress the hint. If reload-eligible paths differ but the sidecar is absent, emit a *different* hint pointing at `rc reload` rather than `rc destroy && rc up`. Sidecar is host-side, never visible inside the cage, not a security primitive.
+Fix: `cmd_up` writes a per-container "applied-config snapshot" at `~/.cache/rip-cage/<cname>/config-applied.json` (effective-config JSON) on create. `cmd_up` resume merges reload-eligible paths from live into the snapshot (since resume re-applies `allowed_hosts` content via `_up_resolve_ssh_allowlists`). `rc reload` rewrites the snapshot to the new live config after a successful apply. `_config_emit_hint` then diffs live vs snapshot: empty → silent; reload-eligible-only → hint at `rc reload`; non-eligible → hint at `rc destroy && rc up`. Legacy containers (created before ocn) lack the snapshot and fall back to the original sha-label comparison.
 
 ### Stopped-cage handling
 
@@ -85,7 +85,7 @@ Design picks exit 2 (refuse) for stopped cages even though writing the cache whi
 - **`--dry-run`**: change `allowed_hosts`, run with `--dry-run` → prints diff, does NOT modify cache file (inode + mtime unchanged), does NOT write sidecar.
 - **Stopped cage**: `rc reload <cage>` on a stopped cage → exits 2 with "container not running; use `rc up`" message.
 - **Inode preservation**: after `rc reload`, the cache file's inode equals what it was before reload (rx8 regression guard).
-- **Concurrent reload**: two `rc reload` invocations in parallel — the second exits 3 within ~1s while the first holds `flock`.
+- **Concurrent reload**: two `rc reload` invocations in parallel — the second exits 3 while the first holds the lock dir.
 - **Drift-hint (post-reload, allowed_hosts only)**: edit yaml + `rc reload` + `rc up` resume → resume emits NO drift warning (sidecar suppresses the false positive).
 - **Drift-hint (post-reload, non-eligible delta)**: edit yaml to change egress mode → `rc up` resume STILL emits the recreate-needed warning (sidecar doesn't mask real drift).
 - **Cache file mode + ownership** preserved across reload (0644, host user).

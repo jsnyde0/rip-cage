@@ -142,12 +142,13 @@ Per-file independence: a global `version: 1` and a project `version: 99` are eva
 
 ## First-run hint and drift notice
 
-When `rc up` first creates a container, it stamps a `rc.config-loaded=<sha256>` label using the canonical sha of the effective config. Subsequent `rc up` invocations compare this label to the current sha:
+When `rc up` first creates a container, it stamps a `rc.config-loaded=<sha256>` label using the canonical sha of the effective config AND writes a per-container snapshot at `~/.cache/rip-cage/<cname>/config-applied.json`. Subsequent `rc up` invocations diff the live effective config against the snapshot:
 
-- **First-run** (label not yet set): one-time `Loaded .rip-cage.yaml (sha256:<prefix>). Run 'rc config show' to inspect.`
-- **Drift** (sha changed since container was created): `Notice: .rip-cage.yaml has changed since this container was created (label=..., current=...). Some fields may require 'rc destroy && rc up' to take effect.`
+- **First-run** (no snapshot yet): one-time `Loaded .rip-cage.yaml (sha256:<prefix>). Run 'rc config show' to inspect.`
+- **Reload-eligible drift** (only `ssh.allowed_hosts` differs from snapshot): `Notice: .rip-cage.yaml has reload-eligible changes since last apply: ... Run: rc reload <cname>`
+- **Non-eligible drift** (egress, ports, identity, env_file, or `ssh.allowed_keys` differs): `Notice: .rip-cage.yaml has changes since this container was created (paths: ...). Some fields require 'rc destroy <cname> && rc up' to take effect.`
 
-Most fields apply on resume; capability-changing fields that affect docker-create-time mounts/args (e.g., `ssh.allowed_keys` — once shipped) require `rc destroy && rc up`. Each consumer documents which of its fields are recreate-required vs resume-applicable.
+Most fields apply on resume; capability-changing fields that affect docker-create-time mounts/args (e.g., `ssh.allowed_keys`) require `rc destroy && rc up`. Pure-content allowlist edits to `ssh.allowed_hosts` apply via `rc reload` ([ADR-022](../decisions/ADR-022-ssh-allowlist.md) D6) without recreating the container. Each consumer documents which of its fields are reload-eligible vs recreate-required vs resume-applicable.
 
 ---
 

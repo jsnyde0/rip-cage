@@ -11,6 +11,7 @@
 | `rc attach [name]` | Attach to a container's tmux session |
 | `rc down [name]` | Stop a container |
 | `rc destroy [-f] [name]` | Remove a container and its volumes (prompts for confirmation) |
+| `rc reload [name] [--dry-run]` | Hot-reload `ssh.allowed_hosts` from `.rip-cage.yaml` without recreating the container ([details](ssh-routing.md#rc-reload)) |
 | `rc test [name]` | Run the safety stack smoke test inside a container |
 | `rc config show [--json]` | Print effective `.rip-cage.yaml` config with provenance ([details](config.md)) |
 | `rc config init [--yes] [--force]` | Bootstrap a starter `.rip-cage.yaml` from `git remote -v` + `ssh -G` ([details](config.md)) |
@@ -20,7 +21,7 @@
 | Flag | Description |
 |------|-------------|
 | `--output json` | Machine-readable JSON output (human messages go to stderr) |
-| `--dry-run` | Preview what would happen without executing (supported for `up` and `destroy`) |
+| `--dry-run` | Preview what would happen without executing (supported for `up`, `destroy`, and `reload`) |
 | `--version` | Print version |
 
 ## JSON output
@@ -29,7 +30,7 @@ When `--output json` is set, structured output goes to stdout. Human-readable me
 
 ## Container resolution
 
-Commands that target a container (`attach`, `down`, `destroy`, `test`) resolve the name in order:
+Commands that target a container (`attach`, `down`, `destroy`, `reload`, `test`) resolve the name in order:
 
 1. **Explicit name** — if you pass a name, it's used directly
 2. **CWD match** — derives the expected name from your current directory (same logic as `rc up`) and checks if that container exists

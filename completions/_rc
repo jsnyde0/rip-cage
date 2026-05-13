@@ -13,6 +13,7 @@ _rc() {
     'attach:Attach to container tmux session'
     'down:Stop a container'
     'destroy:Remove container and volumes'
+    'reload:Hot-reload .rip-cage.yaml allowlist changes'
     'test:Run safety stack smoke test'
     'doctor:Per-container diagnostic — labels + live probes'
     'auth:Auth subcommands (refresh)'
@@ -32,7 +33,7 @@ _rc() {
       ;;
     args)
       case $line[1] in
-        attach|down|test)
+        attach|down|test|reload)
           local -a containers
           containers=($(docker ps --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null))
           _describe 'container' containers
