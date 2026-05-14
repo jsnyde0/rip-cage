@@ -5,6 +5,7 @@ set -euo pipefail
 # Makes NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, etc. active for this script and for
 # any Claude Code process it spawns.
 if [[ -f /etc/rip-cage/firewall-env ]]; then
+  # shellcheck source=/dev/null
   source /etc/rip-cage/firewall-env
 fi
 
