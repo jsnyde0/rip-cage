@@ -288,7 +288,7 @@ The agent user has sudo access scoped to: `apt-get`, `dpkg`, `chown`. Blanket `N
 
 The generated `devcontainer.json` references a pre-built image (`rip-cage:latest`) rather than a Dockerfile path. `rc init <path>` scaffolds `.devcontainer/devcontainer.json` into any target project. `rc build` builds the image locally.
 
-**Rationale:** Rip-cage is intended to be a distributable tool (eventually `brew install rip-cage` or similar). Users won't have the source repo cloned, so devcontainer.json cannot reference a Dockerfile path — it must reference an image. Using a pre-built image also means:
+**Rationale:** Rip-cage is a distributable tool — as of v0.2.0 it ships via `brew install jsnyde0/rip-cage/rip-cage` with the Docker image pulled from `ghcr.io/jsnyde0/rip-cage` on first `rc up`. Users won't have the source repo cloned, so devcontainer.json cannot reference a Dockerfile path — it must reference an image. Using a pre-built image also means:
 - No per-project Dockerfile paths to manage
 - `rc init` generates identical config regardless of where rip-cage is installed
 - Migration from local image (`rip-cage:latest`) to registry image (`ghcr.io/youruser/rip-cage:latest`) is a one-line change in `rc`'s template

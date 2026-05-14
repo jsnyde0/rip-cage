@@ -9,7 +9,7 @@
 
 The `rc` CLI manages multiple containers but offers no tab completion. Users must type container names exactly, often after running `rc ls` to see what's available. As rip-cage prepares for public release, this friction hurts first-run experience — especially since comparable tools (docker, gh, kubectl) all provide completions out of the box.
 
-The install method (`git clone` + `ln -sf`) means there's no package manager to handle completion setup automatically.
+As of v0.2.0, the primary install is `brew install jsnyde0/rip-cage/rip-cage`, and the Homebrew formula installs zsh+bash completion files automatically via `zsh_completion.install` / `bash_completion.install` (ADR-008 D8). The from-source install (`git clone` + `make install`) still has no package manager to wire completions — that's the audience `rc setup` (D2 below) is for.
 
 ## Decisions
 
@@ -51,7 +51,7 @@ rc setup — shell integration
   Add shell completions? [y/N]
 ```
 
-**Rationale:** rip-cage's install path (git clone) is identical to fzf's, and fzf's interactive-consent model is the gold standard for tools that need to modify dotfiles. The `eval` pattern (vs. writing a file to fpath) means completions auto-update when the user pulls new changes — no re-running setup. Default-no (`[y/N]`) is deliberate: a security tool should never default to modifying your shell config.
+**Rationale:** For from-source users, the install path (git clone) is identical to fzf's, and fzf's interactive-consent model is the gold standard for tools that need to modify dotfiles. The `eval` pattern (vs. writing a file to fpath) means completions auto-update when the user pulls new changes — no re-running setup. Default-no (`[y/N]`) is deliberate: a security tool should never default to modifying your shell config. Brew users get completions via the formula (ADR-008 D8) and never see `rc setup`.
 
 **Alternatives considered:**
 
@@ -62,7 +62,7 @@ rc setup — shell integration
 | **`rc completions --install` (auto-place file)** | One command | Must guess fpath dir, may need sudo, harder to undo |
 | **Only document manual steps** | No code | High friction, completion adoption will be near zero |
 
-**What would invalidate this:** If rip-cage moves to a Homebrew-only distribution model, `rc setup` becomes unnecessary (brew handles it). Keep the subcommand but `rc setup` could be removed.
+**What would invalidate this:** With the v0.2.0 Homebrew formula bundling completions, `rc setup` is now only the from-source path. If from-source usage drops to ~zero (i.e., contributors are also the only non-brew users), `rc setup` could be retired.
 
 ### D3: Default-deny consent for dotfile changes
 

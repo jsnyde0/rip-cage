@@ -17,10 +17,18 @@ For `git push` from inside the cage (ADR-017), your host `ssh-agent` is forwarde
 
 `rc up` warns loudly if the forwarded agent is empty or unreachable — the warning is also surfaced in every new shell banner and in `rc ls`.
 
-**Install:**
+**Install (recommended):**
+```bash
+brew install jsnyde0/rip-cage/rip-cage
+```
+
+This pulls in `jq` and `tmux`, drops `rc` on your PATH, and installs zsh/bash completions automatically. macOS and Linux (via Linuxbrew/WSL2).
+
+**From source:**
 ```bash
 git clone https://github.com/jsnyde0/rip-cage.git
-ln -sf "$(pwd)/rip-cage/rc" ~/.local/bin/rc
+cd rip-cage && make install      # symlinks rc to ~/.local/bin/rc
+rc setup                         # optional: enable shell completions
 ```
 
 **Use:**
@@ -29,12 +37,7 @@ cd ~/projects/my-app
 rc up .
 ```
 
-**Shell completions (optional):**
-```bash
-rc setup
-```
-
-That's it. On first run, `rc` prompts for allowed directories and builds the image automatically. You're in a caged tmux session — run `claude` and let it rip. Detach with `Ctrl-B d`.
+That's it. On first run, `rc` prompts for allowed directories and pulls the pre-built image from GHCR (~30s, with local-build fallback if GHCR is unreachable). You're in a caged tmux session — run `claude` and let it rip. Detach with `Ctrl-B d`.
 
 ## What does the cage do?
 

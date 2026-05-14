@@ -28,12 +28,16 @@ apt-get install jq tmux shellcheck
 
 ## Getting the code
 
+End users install with `brew install jsnyde0/rip-cage/rip-cage` (see README). For development, clone the repo:
+
 ```bash
 git clone https://github.com/jsnyde0/rip-cage.git
 cd rip-cage
 ```
 
 ## Building the image
+
+End users get the pre-built image from GHCR on first `rc up` (~30s). Contributors who modify the `Dockerfile`, `init-rip-cage.sh`, or anything that bakes into the image must rebuild locally — `rc up` only pulls; `rc build` always builds from source.
 
 The Docker image is multi-stage (Go → Rust → Debian runtime) and takes 5-10 minutes on a clean machine:
 
@@ -48,7 +52,12 @@ Pass extra arguments directly to `docker build` if needed:
 ./rc build --progress=plain
 ```
 
-The built image is tagged `rip-cage:latest` locally.
+The built image is tagged `rip-cage:latest` locally. To bypass the GHCR pull and always build locally during development:
+
+```bash
+export RIP_CAGE_IMAGE_REGISTRY=""    # empty = opt out of pull-first
+./rc up /path/to/test/project
+```
 
 ## Running the safety stack tests
 

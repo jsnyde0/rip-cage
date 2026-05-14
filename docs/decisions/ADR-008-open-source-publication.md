@@ -79,23 +79,47 @@ The `rc` script must work with bash 3.2 (macOS default). Any bash 4+ syntax is a
 
 **Firmness: FLEXIBLE**
 
-Publish images to `ghcr.io/youruser/rip-cage:<version>` on tagged releases. Update `rc` to attempt `docker pull` before `docker build` when the local image doesn't exist.
+**Implemented at v0.2.0.** Publish images to `ghcr.io/jsnyde0/rip-cage:<version>` on tagged releases (multi-arch: `linux/amd64,linux/arm64`). `rc up`'s auto-build branch tries `docker pull "${RIP_CAGE_IMAGE_REGISTRY}:${RC_VERSION}"` (default registry `ghcr.io/jsnyde0/rip-cage`) and retags the pulled image to `rip-cage:latest`. On pull failure (offline, unauthenticated, missing tag), falls back to local `docker build`. `RIP_CAGE_IMAGE_REGISTRY=""` (explicit empty) opts out of the pull entirely — useful for local dev. `rc build` (the explicit command) is unchanged and always builds locally.
 
 **Rationale:** Building the multi-stage image (Go + Rust + Debian) takes 5-10 minutes on a clean machine. A pre-built image reduces first-use time to ~30 seconds. GHCR is free for public repos and integrates natively with GitHub Actions.
 
-**What would invalidate this:** If the image size becomes unmanageable (>2GB) or if users need to customize the build (e.g., different base image). In that case, provide a `--build` flag instead of auto-pulling.
+**Release-ceremony note:** GHCR packages default to private on first push. The release-ceremony checklist includes a one-time human action to set the `rip-cage` package's visibility to Public on github.com.
 
-### D7: Makefile is optional, not required
+**What would invalidate this:** If the image size becomes unmanageable (>2GB) or if users need to customize the build (e.g., different base image). In that case, the existing `RIP_CAGE_IMAGE_REGISTRY=""` opt-out and explicit `rc build` already provide escape hatches; no further design change needed.
+
+### D7: Install methods — Homebrew is primary, from-source is supported
 
 **Firmness: FLEXIBLE**
 
-A Makefile with `install`, `uninstall`, `build`, `test`, `lint` targets is nice-to-have. The primary installation method remains the symlink (`ln -sf .../rc ~/.local/bin/rc`).
+**Updated at v0.2.0** (was: "Makefile is optional, not required"). The primary installation method is `brew install jsnyde0/rip-cage/rip-cage`. The Makefile + symlink path (`git clone … && make install`) is retained as the "From source" install for contributors and users without Homebrew.
 
-**Rationale:** The single-file CLI design is a feature — `rc` is one bash script with no build step. A Makefile adds convenience but shouldn't replace the direct symlink. Power users prefer the symlink; the Makefile helps casual contributors.
+**Rationale:** The single-file CLI design is still a feature — `rc` is one bash script. Homebrew packages it without changing that design (the formula installs the repo to `libexec/` and symlinks `bin/rc`, and `rc`'s `_resolve_script_dir` follows the symlink). Brew handles upgrades, completion install, and the `jq` + `tmux` dependencies automatically — the friction wins from real-world install testing outweigh the "power users prefer symlinks" framing.
+
+**Alternatives considered:** See D8 for the Homebrew packaging shape (single-repo tap vs separate tap vs homebrew-core).
+
+### D8: Homebrew tap shape — single-repo tap
+
+**Firmness: FLEXIBLE**
+
+**Added at v0.2.0.** Ship the Homebrew formula at `Formula/rip-cage.rb` **in this repo** (single-repo tap pattern). Users install via `brew install jsnyde0/rip-cage/rip-cage`. The post-tag sha256 update is handled by `scripts/update-formula-sha.sh` (idempotent, retries up to 2 min for tarball availability); wrapping this in a GH Action on tag push is deferred but trivial.
+
+**Rationale:** One repo, one PR per release, no separate `homebrew-rip-cage` to keep in sync. Single-repo tap is the modern Homebrew pattern for single-formula projects (officially blessed since 2018). The whole formula is ~30 lines.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons | Rejected (warrant) |
+|----------|------|------|--------------------|
+| **Single-repo tap (chosen)** | One repo; minimal infra; modern HB pattern | `brew tap` URL is the same repo (slightly weird) | — |
+| Separate `homebrew-rip-cage` tap repo | "Canonical" 2010s pattern; clean separation | Two repos to keep in sync; release ceremony spans both | `reasoned:` overhead beats benefit for a single-formula project |
+| homebrew-core submission | Brew users get it for free (`brew install rip-cage`) | Strict review; usage threshold (~75 GH stars); slow merge | `external:` HB-core docs require sustained usage; revisit at v1.0 if there's demand |
+| npm wrapper | Familiar for JS devs; ClaudeBox precedent | Node dependency for a bash tool is jarring | `reasoned:` doesn't fit the audience (Claude Code users mostly have docker + brew already) |
+| curl-pipe-bash installer | Zero deps; works on any *nix | Divisive ("don't pipe curl to bash"); no upgrade story | `reasoned:` brew + git-clone covers everyone willing |
+
+**What would invalidate this:** Formula needs to grow to multiple variants (rc-stable, rc-edge, rc-experimental), or homebrew-core submission becomes viable (project has clear traction and a stable API). Revisit then — separate tap or homebrew-core become the right shapes at that scale.
 
 ## Deferred
 
-- **Homebrew formula** — Requires a tap repo and versioned releases working first. Evaluate after v0.1.0 is tagged and GHCR publishing is stable.
-- **Multi-platform images** — `linux/arm64` (Apple Silicon native) would benefit M1/M2 users. Defer until there's demand — Docker Desktop handles architecture translation.
+- **GH Action for auto-sha256 bump** — `scripts/update-formula-sha.sh` is the load-bearing piece; wrapping it in CI that fires on tag push (and either auto-commits or opens a PR) is a small follow-up. Shrinks the post-tag broken-`brew install` window from "however long the human takes" to "CI runtime."
+- **DinD-based end-to-end `brew install` smoke test in CI** — would catch formula regressions automatically but requires Docker-in-Homebrew. Manual smoke check at release ceremony covers it for now.
 - **Git history rewrite** — Personal data in old commits is not a security risk (paths, not credentials). The cost of force-pushing outweighs the benefit.
 - **Windows support** — `rc` is bash; WSL2 works but is untested. Not a launch blocker.

@@ -39,6 +39,11 @@ fi
 
 IMAGE="rip-cage:latest"
 
+# GHCR registry for pre-built images (ADR-008 D6, implemented at v0.2.0).
+# `${VAR-default}` (no colon) honors explicit empty as "skip pull, build locally" —
+# useful for local Dockerfile dev. Unset uses the default.
+RIP_CAGE_IMAGE_REGISTRY="${RIP_CAGE_IMAGE_REGISTRY-ghcr.io/jsnyde0/rip-cage}"
+
 # Load config file if present (sets defaults for RC_ALLOWED_ROOTS, etc.)
 # Config location: ~/.config/rip-cage/rc.conf or $RC_CONFIG
 _rc_conf="${RC_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/rc.conf}"
@@ -230,6 +235,46 @@ cmd_build() {
   else
     docker build -t "$IMAGE" "$@" "$SCRIPT_DIR"
   fi
+}
+
+# _pull_or_build — auto-provision the rip-cage image, pulling from GHCR when
+# RIP_CAGE_IMAGE_REGISTRY is set (default ghcr.io/jsnyde0/rip-cage), falling
+# back to local docker build on pull failure. Used by cmd_up's auto-build
+# branch. Explicit `rc build` (cmd_build) is unchanged and always builds.
+# ADR-008 D6.
+_pull_or_build() {
+  if [[ -z "${RIP_CAGE_IMAGE_REGISTRY}" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      echo '{"status":"building","reason":"registry_opt_out","message":"Building rip-cage image locally (RIP_CAGE_IMAGE_REGISTRY unset)"}' >&2
+    else
+      log "Building rip-cage image locally (RIP_CAGE_IMAGE_REGISTRY unset, takes a few minutes)..."
+    fi
+    docker build -t "$IMAGE" "$SCRIPT_DIR"
+    return $?
+  fi
+  local pull_ref="${RIP_CAGE_IMAGE_REGISTRY}:${RC_VERSION}"
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    jq -nc --arg image "$pull_ref" '{status:"pulling", image:$image, message:"Pulling pre-built image from GHCR (first run only, ~30s)"}' >&2
+  else
+    log "Pulling ${pull_ref} (first run only, ~30s)..."
+  fi
+  if docker pull "${pull_ref}" >&2; then
+    if docker tag "${pull_ref}" "$IMAGE" >&2; then
+      return 0
+    fi
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      echo '{"status":"building","reason":"retag_failed","message":"Pulled image but retag failed - falling back to local build"}' >&2
+    else
+      log "Pulled image but retag failed - falling back to local build..."
+    fi
+  else
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      echo '{"status":"building","reason":"pull_failed","message":"Pull failed (image unavailable, offline, or auth required) - building locally"}' >&2
+    else
+      log "Pull failed (image unavailable, offline, or auth required) - building locally (this takes a few minutes)..."
+    fi
+  fi
+  docker build -t "$IMAGE" "$SCRIPT_DIR"
 }
 
 cmd_init() {
@@ -2641,25 +2686,31 @@ cmd_up() {
     env_file="$resolved_env"
   fi
 
-  # Check image exists — auto-build if missing
+  # Check image exists — pull from GHCR (with local-build fallback) if missing.
+  # See _pull_or_build / ADR-008 D6.
   if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
     if [[ "$DRY_RUN" == "true" ]]; then
       if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        jq -nc '{dry_run: true, would_build: true, action: "would_build_and_create", message: "would build rip-cage image, then create container"}'
+        if [[ -n "${RIP_CAGE_IMAGE_REGISTRY}" ]]; then
+          jq -nc --arg image "${RIP_CAGE_IMAGE_REGISTRY}:${RC_VERSION}" \
+            '{dry_run: true, would_pull: true, would_build_on_fail: true, image: $image, action: "would_pull_and_create"}'
+        else
+          jq -nc '{dry_run: true, would_build: true, action: "would_build_and_create", message: "would build rip-cage image, then create container"}'
+        fi
       else
-        echo "Would build rip-cage image and create container"
+        if [[ -n "${RIP_CAGE_IMAGE_REGISTRY}" ]]; then
+          echo "Would pull ${RIP_CAGE_IMAGE_REGISTRY}:${RC_VERSION} (with local-build fallback) and create container"
+        else
+          echo "Would build rip-cage image and create container"
+        fi
       fi
       exit 0
     fi
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      echo '{"status":"building","message":"Building rip-cage image (first run only)"}' >&2
-      if ! docker build -t "$IMAGE" "$SCRIPT_DIR" >&2; then
-        json_error "Build failed" "BUILD_FAILED"
-      fi
-    else
-      log "Building rip-cage image (first run only, takes a few minutes)..."
-      if ! docker build -t "$IMAGE" "$SCRIPT_DIR"; then
-        echo "Error: Image build failed." >&2
+    if ! _pull_or_build; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        json_error "Image provisioning failed (pull and build both failed)" "BUILD_FAILED"
+      else
+        echo "Error: Image provisioning failed (pull and build both failed)." >&2
         exit 1
       fi
     fi

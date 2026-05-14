@@ -109,3 +109,6 @@ jobs:
 
       - name: test-worktree-support.sh
         run: bash tests/test-worktree-support.sh
+
+      - name: test-pull-first.sh
+        run: bash tests/test-pull-first.sh
