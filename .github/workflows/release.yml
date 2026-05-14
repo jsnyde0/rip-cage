@@ -35,7 +35,7 @@ jobs:
         run: shellcheck -x bd-wrapper.sh
 
       - name: Lint test-prerequisites.sh
-        run: shellcheck -x test-prerequisites.sh
+        run: shellcheck -x tests/test-prerequisites.sh
 
   # ---------------------------------------------------------------------------
   # Job 2: Build — verify multi-stage Dockerfile compiles (Go + Rust + Debian)
