@@ -4,7 +4,7 @@ class RipCage < Formula
   url "https://github.com/jsnyde0/rip-cage/archive/refs/tags/v0.2.0.tar.gz"
   # PLACEHOLDER — updated post-tag by scripts/update-formula-sha.sh.
   # See "Release ceremony" in docs/decisions/ADR-008-open-source-publication.md D6/D8.
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "99b403633fa430a6d7bf5292c62bcb1224c5ea95f9e259bfa1edcd3542970662"
   license "MIT"
 
   head "https://github.com/jsnyde0/rip-cage.git", branch: "main"
