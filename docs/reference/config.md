@@ -87,6 +87,43 @@ Discovery: `rc up` prints a 1-line tip pointing at this command whenever a works
 
 ---
 
+## `mounts.symlinks.*` — host-side symlink follow
+
+When rip-cage-managed dotfile mount roots (currently only `~/.pi/agent`, which maps to `/pi-agent` inside the cage) contain absolute symlinks that would dangle inside the container, the `mounts.symlinks` group controls how they are handled.
+
+Default posture: follow the symlink, mount its target at the same absolute path inside the cage, read-write. This is intentional per rip-cage's philosophy: "agent autonomy is the product; it's annoying = design signal."
+
+```yaml
+# .rip-cage.yaml or ~/.config/rip-cage/config.yaml
+mounts:
+  symlinks:
+    on_dangling: follow   # follow | warn | skip | error
+    scope: file           # file | parent
+    mode: rw              # rw | ro
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `mounts.symlinks.on_dangling` | enum-scalar | `follow` | What to do when an absolute symlink in a managed dotfile root would dangle inside the cage. `follow` silently adds a second bind mount at the host-target path. `warn` same as `follow` but always logs loudly. `skip` logs a warning and continues without the second mount. `error` aborts `rc up` loud with a remediation message. |
+| `mounts.symlinks.scope` | enum-scalar | `file` | Whether to mount the symlink's resolved target file (`file`) or its containing directory (`parent`). `file` is recommended for dotfiles with a few absolute-symlinked config entries; `parent` for cases where the entire containing directory is needed. |
+| `mounts.symlinks.mode` | enum-scalar | `rw` | Read-write (`rw`) or read-only (`ro`) for the second bind mount. Default `rw` is intentional for dotpi users who edit canonical files from the cage. Use `ro` if the cage should treat dotfiles as read-only from the project. |
+
+All fields are `selection_list` type in the schema (per ADR-021 D2): unknown values abort loud. Each field is a scalar.
+
+**Merge behavior:** project file replaces global when explicitly present (per ADR-021 D2 scalar/selection-list rule).
+
+**What gets scanned:** Only host paths mapping to rip-cage-managed dotfile mounts. Currently: `~/.pi/agent`. `/workspace` is **never** scanned, regardless of config (D2 FIRM whitelist).
+
+**Mount expansion log:** Every resolved symlink emits one `[rip-cage] follow-symlink: <link> → <target> (<mode>)` line to stderr unconditionally (per ADR-001 D1 — mount-surface expansion is never silent).
+
+**Collision protection:** Targets that resolve to Debian FHS reserved top-level paths (`/bin`, `/boot`, `/dev`, `/etc`, `/home`, `/lib`, `/opt`, `/proc`, `/root`, `/run`, `/sbin`, `/sys`, `/usr`, `/var`, `/tmp`, `/workspace`, `/pi-agent`, `/ssh-agent.sock`) abort `rc up` loud.
+
+**Mount-shape label-lock:** At create time, `rc up` computes and persists a `rc.symlink-follow-fingerprint=<sha256>` container label. On `rc up` resume, if the fingerprint differs (symlink set or `mode` changed), `rc up` aborts with a "destroy and re-up" remediation. This is a host-state-derived label (distinct from config-derived labels like `rc.config-loaded`) — its value changes when host state changes, even with identical `.rip-cage.yaml` content.
+
+**`rc reload` behavior:** `mounts.symlinks.*` changes are mount-shape changes and are **not** reload-eligible. `rc reload` refuses loud with a "destroy and re-up" hint when these fields differ from the applied-config snapshot.
+
+---
+
 ## Per-field-type merge rules
 
 The schema declares each field's merge type; the loader applies the matching rule.

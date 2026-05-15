@@ -438,6 +438,136 @@ test_t19_validate_yq_missing_with_config_aborts() {
 }
 
 # ---------------------------------------------------------------------------
+# mounts.symlinks.* config group (acceptance 13, 14, 15 — bead rip-cage-c1p.2)
+# T20: default emission with mounts.symlinks default config (follow/file/rw)
+# T21: mounts.symlinks.on_dangling=invalid aborts loud per ADR-021 D3
+# T22: mounts.symlinks.mode=invalid aborts loud per ADR-021 D3
+# T23: future-version YAML with mounts.symlinks.* selection-list field aborts
+# ---------------------------------------------------------------------------
+
+test_t20_mounts_symlinks_default_emission() {
+  # T16 (bead): mounts.symlinks.* defaults: follow/file/rw emitted with no config
+  setup_sandbox "" ""
+  local out on_dangling scope mode
+  out=$(run_rc_config "show --json")
+  on_dangling=$(jq -r '.config.mounts.symlinks.on_dangling // "MISSING"' <<<"$out")
+  scope=$(jq -r '.config.mounts.symlinks.scope // "MISSING"' <<<"$out")
+  mode=$(jq -r '.config.mounts.symlinks.mode // "MISSING"' <<<"$out")
+  if [[ "$on_dangling" == "follow" && "$scope" == "file" && "$mode" == "rw" ]]; then
+    pass "T20 mounts.symlinks.* defaults: on_dangling=follow scope=file mode=rw"
+  else
+    fail "T20 expected follow/file/rw defaults, got on_dangling=$on_dangling scope=$scope mode=$mode"
+  fi
+  teardown_sandbox
+}
+
+test_t21_mounts_symlinks_on_dangling_invalid_aborts() {
+  # T17 (bead): mounts.symlinks.on_dangling=invalid aborts loud per ADR-021 D3
+  setup_sandbox "" "config-project-mounts-symlinks-unknown-enum.yaml"
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  out=$(run_rc_config "show --json" "$stderr_file") || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]]; then
+    pass "T21 mounts.symlinks.on_dangling=invalid aborts loud per ADR-021 D3"
+  else
+    fail "T21 expected non-zero exit for invalid on_dangling, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+test_t22_mounts_symlinks_mode_invalid_aborts() {
+  # T18 (bead): mounts.symlinks.mode=invalid aborts loud per ADR-021 D3
+  setup_sandbox "" ""
+  # Create inline config with invalid mode value
+  cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
+version: 1
+mounts:
+  symlinks:
+    on_dangling: follow
+    scope: file
+    mode: invalid_mode
+YAML
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  out=$(run_rc_config "show --json" "$stderr_file") || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]]; then
+    pass "T22 mounts.symlinks.mode=invalid aborts loud per ADR-021 D3"
+  else
+    fail "T22 expected non-zero exit for invalid mode, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  # Don't call teardown_sandbox here — setup_sandbox wasn't called
+  [[ -n "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME"
+  TEST_HOME=""
+  TEST_WS=""
+}
+
+test_t23_mounts_symlinks_with_project_default_fixture() {
+  # T15 variant: mounts.symlinks fixture loads and produces nested config
+  setup_sandbox "" "config-project-mounts-symlinks-default.yaml"
+  local out on_dangling scope mode prov
+  out=$(run_rc_config "show --json")
+  on_dangling=$(jq -r '.config.mounts.symlinks.on_dangling // "MISSING"' <<<"$out")
+  scope=$(jq -r '.config.mounts.symlinks.scope // "MISSING"' <<<"$out")
+  mode=$(jq -r '.config.mounts.symlinks.mode // "MISSING"' <<<"$out")
+  prov=$(jq -r '.provenance["mounts.symlinks.on_dangling"] // "MISSING"' <<<"$out")
+  if [[ "$on_dangling" == "follow" && "$scope" == "file" && "$mode" == "rw" && "$prov" == "project" ]]; then
+    pass "T23 mounts.symlinks default fixture: follow/file/rw from project"
+  else
+    fail "T23 expected follow/file/rw prov=project, got on_dangling=$on_dangling scope=$scope mode=$mode prov=$prov"
+  fi
+  teardown_sandbox
+}
+
+test_t24_mounts_symlinks_ro_fixture() {
+  # mounts.symlinks.mode=ro fixture loads correctly
+  setup_sandbox "" "config-project-mounts-symlinks-ro.yaml"
+  local out mode prov
+  out=$(run_rc_config "show --json")
+  mode=$(jq -r '.config.mounts.symlinks.mode // "MISSING"' <<<"$out")
+  prov=$(jq -r '.provenance["mounts.symlinks.mode"] // "MISSING"' <<<"$out")
+  if [[ "$mode" == "ro" && "$prov" == "project" ]]; then
+    pass "T24 mounts.symlinks.mode=ro fixture: mode=ro from project"
+  else
+    fail "T24 expected mode=ro prov=project, got mode=$mode prov=$prov"
+  fi
+  teardown_sandbox
+}
+
+test_t25_mounts_symlinks_parent_fixture() {
+  # mounts.symlinks.scope=parent fixture loads correctly
+  setup_sandbox "" "config-project-mounts-symlinks-parent.yaml"
+  local out scope
+  out=$(run_rc_config "show --json")
+  scope=$(jq -r '.config.mounts.symlinks.scope // "MISSING"' <<<"$out")
+  if [[ "$scope" == "parent" ]]; then
+    pass "T25 mounts.symlinks.scope=parent fixture: scope=parent from project"
+  else
+    fail "T25 expected scope=parent, got scope=$scope"
+  fi
+  teardown_sandbox
+}
+
+test_t26_config_show_mounts_symlinks_nested_yaml() {
+  # acc 2: rc config show renders mounts.symlinks.* as nested YAML group
+  setup_sandbox "" "config-project-mounts-symlinks-default.yaml"
+  local out
+  out=$(run_rc_config "show")
+  if echo "$out" | grep -q "^mounts:" \
+     && echo "$out" | grep -q "  symlinks:" \
+     && echo "$out" | grep -q "    on_dangling:"; then
+    pass "T26 rc config show renders mounts.symlinks.* as nested YAML group"
+  else
+    fail "T26 expected nested YAML group, got:
+$out"
+  fi
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -461,6 +591,13 @@ test_t16_yq_missing_fails_loud
 test_t17_validate_aborts_on_selection_list_future_version
 test_t18_validate_silent_no_config
 test_t19_validate_yq_missing_with_config_aborts
+test_t20_mounts_symlinks_default_emission
+test_t21_mounts_symlinks_on_dangling_invalid_aborts
+test_t22_mounts_symlinks_mode_invalid_aborts
+test_t23_mounts_symlinks_with_project_default_fixture
+test_t24_mounts_symlinks_ro_fixture
+test_t25_mounts_symlinks_parent_fixture
+test_t26_config_show_mounts_symlinks_nested_yaml
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

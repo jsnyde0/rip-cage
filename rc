@@ -829,6 +829,81 @@ _collect_symlink_parents() {
   done
 }
 
+# _collect_dangling_symlinks — find absolute symlinks in a host root that
+# would be dangling inside the cage (i.e. their targets are not under the
+# root path itself).
+#
+# NEW HELPER — distinct from _collect_symlink_parents (rc:794-830) which returns
+# parent dirs of asset symlink targets. This helper enumerates (link, target)
+# tuples for use in the symlink-follow mount synthesis (rip-cage-c1p.2).
+# The existing helper has 6 callers and its semantics MUST NOT be modified.
+#
+# Parameters:
+#   $1  root — the host directory to scan (e.g. ~/.pi/agent)
+# Output: lines of "<absolute-link-path>|<readlink-f-resolved-target>"
+#         for each absolute symlink found under root.
+# Errors: exits non-zero (ADR-001 D1) when readlink -f fails.
+_collect_dangling_symlinks() {
+  local root="$1"
+  [[ -d "$root" ]] || return 0
+  # Resolve root itself (handles macOS /var → /private/var etc.) for the
+  # in-root comparison below. Use realpath if available, fall back to readlink -f.
+  local resolved_root
+  resolved_root=$(readlink -f "$root" 2>/dev/null || printf '%s' "$root")
+  local link target
+  while IFS= read -r link; do
+    [[ -z "$link" ]] && continue
+    # Only process absolute symlinks (i.e., symlinks whose *value* is absolute)
+    local link_val
+    link_val=$(readlink "$link" 2>/dev/null) || {
+      echo "Error: failed to read symlink '$link'" >&2
+      return 1
+    }
+    # Skip relative symlinks — they resolve relative to the link's dir
+    # and typically work inside the cage if the parent dir is mounted.
+    [[ "$link_val" != /* ]] && continue
+    # Resolve the absolute target via readlink -f
+    target=$(readlink -f "$link" 2>/dev/null)
+    if [[ -z "$target" ]]; then
+      echo "Error: symlink at '$link' could not be resolved (broken symlink chain). Set mounts.symlinks.on_dangling=skip in .rip-cage.yaml to unblock." >&2
+      return 1
+    fi
+    # Skip if target is under the root itself (not dangling from cage POV).
+    # Compare against resolved_root to handle OS symlink normalization
+    # (e.g., macOS /var/folders → /private/var/folders).
+    if [[ "$target" == "${resolved_root}/"* || "$target" == "$resolved_root" ]]; then
+      continue
+    fi
+    printf '%s|%s\n' "$link" "$target"
+  done < <(find "$root" -maxdepth 1 -type l 2>/dev/null)
+}
+
+# _symlink_follow_fingerprint — compute sha256 fingerprint over sorted
+# "<link> → <target> (<mode>)" lines plus a policy header, for the
+# symlink-follow mount set. Used for the rc.symlink-follow-fingerprint
+# label-lock (D4).
+# Parameters:
+#   $1  pi_root    — host path of the pi agent dir (or "" if absent)
+#   $2  mode       — ro|rw
+#   $3  on_dangling — follow|skip|warn|error (default: follow)
+#   $4  scope      — file|parent (default: file)
+# Output: sha256 hex string on stdout (always; empty set hashes to a fixed value)
+_symlink_follow_fingerprint() {
+  local pi_root="$1" mode="$2" on_dangling="${3:-follow}" scope="${4:-file}"
+  # Prepend a policy header so that policy changes produce a different
+  # fingerprint even when the scanned symlink set is identical.
+  local lines="policy: on_dangling=${on_dangling}, scope=${scope}, mode=${mode}"$'\n'
+  if [[ -d "$pi_root" ]]; then
+    local link target
+    while IFS='|' read -r link target; do
+      [[ -z "$link" ]] && continue
+      lines+="${link} → ${target} (${mode})"$'\n'
+    done < <(_collect_dangling_symlinks "$pi_root" 2>/dev/null || true)
+  fi
+  # Sort for stability, then hash
+  printf '%s' "$lines" | sort | shasum -a 256 | awk '{print $1}'
+}
+
 # _check_lfs_stubs <path>
 # If the project uses git-lfs and has unmaterialized pointer stubs in the
 # working tree, print an advisory warning to stderr. rip-cage cannot fetch
@@ -1039,6 +1114,120 @@ _up_prepare_docker_mounts() {
   else
     log "Warning: ${HOME}/.claude/.credentials.json not found — skipping mount (auth may not work)"
   fi
+
+  # Symlink-follow mount synthesis (rip-cage-c1p.2 / D1-D4 FIRM).
+  # Whitelist of rip-cage-managed dotfile mount roots to scan for absolute
+  # symlinks that would be dangling inside the cage. /workspace is NEVER on
+  # this list (D2 FIRM: whitelist not blacklist). Currently only ~/.pi/agent.
+  # Per D3: second bind mount at host-target path (mirror), not sanitized.
+  # Per ADR-001 D1: mount expansions always log to stderr.
+  local _SFL_SCAN_ROOTS=()
+  if [[ -d "${HOME}/.pi/agent" ]]; then
+    _SFL_SCAN_ROOTS+=("${HOME}/.pi/agent")
+  fi
+
+  # Debian FHS reserved top-level paths + cage-reserved paths that must never
+  # be mounted over. Collision against any of these triggers abort loud.
+  local _SFL_RESERVED_CAGE_PATHS=(
+    /bin /boot /dev /etc /home /lib /opt /proc /root /run /sbin /sys
+    /usr /var /tmp /workspace /pi-agent /ssh-agent.sock
+  )
+
+  # Load effective config for symlinks settings (D5: skip if no config files).
+  local _sfl_on_dangling="follow" _sfl_scope="file" _sfl_mode="rw"
+  local _sfl_cfg_result
+  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "${_path}")" ]]; then
+    if _sfl_cfg_result=$(_load_effective_config "${_path}" 2>/dev/null); then
+      _sfl_on_dangling=$(jq -r '.config.mounts.symlinks.on_dangling // "follow"' <<<"$_sfl_cfg_result")
+      _sfl_scope=$(jq -r '.config.mounts.symlinks.scope // "file"' <<<"$_sfl_cfg_result")
+      _sfl_mode=$(jq -r '.config.mounts.symlinks.mode // "rw"' <<<"$_sfl_cfg_result")
+    fi
+  fi
+
+  local _sfl_root _sfl_link _sfl_target
+  for _sfl_root in "${_SFL_SCAN_ROOTS[@]+"${_SFL_SCAN_ROOTS[@]}"}"; do
+    while IFS='|' read -r _sfl_link _sfl_target; do
+      [[ -z "$_sfl_link" ]] && continue
+
+      # Collision check: target must not be in the FHS reserved set.
+      # The target comes from readlink -f (canonical). On macOS, /etc → /private/etc,
+      # so we also resolve each reserved path via readlink -f for matching.
+      # HOWEVER: /var → /private/var on macOS, which would falsely match temp paths
+      # under /private/var/folders/. We therefore only resolve /etc, /usr, /bin,
+      # /sbin, /lib, /opt, /proc, /root, /run, /sys, /boot, /dev, /home (not /var or /tmp).
+      local _sfl_reserved=0
+      local _sfl_rp _sfl_rp_canonical
+      for _sfl_rp in "${_SFL_RESERVED_CAGE_PATHS[@]}"; do
+        # Resolve symlinks for stable FHS paths (not /var or /tmp which may point to
+        # user-writable dirs on macOS and cause false positives).
+        case "$_sfl_rp" in
+          /var|/tmp) _sfl_rp_canonical="$_sfl_rp" ;;
+          *) _sfl_rp_canonical=$(readlink -f "$_sfl_rp" 2>/dev/null || printf '%s' "$_sfl_rp") ;;
+        esac
+        if [[ "$_sfl_target" == "$_sfl_rp" || "$_sfl_target" == "${_sfl_rp}/"* \
+           || "$_sfl_target" == "$_sfl_rp_canonical" || "$_sfl_target" == "${_sfl_rp_canonical}/"* ]]; then
+          _sfl_reserved=1
+          break
+        fi
+      done
+      if [[ "$_sfl_reserved" -eq 1 ]]; then
+        echo "[rip-cage] Error: symlink at '${_sfl_link}' resolves to reserved cage path '${_sfl_target}'; refuse to mount. Remove the symlink or set mounts.symlinks.on_dangling=skip to unblock." >&2
+        exit 1
+      fi
+
+      # Also check against already-planned bind-mount targets.
+      local _sfl_collision=0
+      local _sfl_arg
+      for _sfl_arg in "${_UP_RUN_ARGS[@]+"${_UP_RUN_ARGS[@]}"}"; do
+        # -v args look like: source:dest[:opts]
+        if [[ "$_sfl_arg" == /* ]]; then
+          local _sfl_dest
+          _sfl_dest="${_sfl_arg#*/}"
+          _sfl_dest="/${_sfl_dest%%:*}"
+          if [[ "$_sfl_target" == "$_sfl_dest" || "$_sfl_target" == "${_sfl_dest}/"* ]]; then
+            _sfl_collision=1
+            break
+          fi
+        fi
+      done
+      if [[ "$_sfl_collision" -eq 1 ]]; then
+        echo "[rip-cage] Warning: symlink at '${_sfl_link}' → '${_sfl_target}' collides with existing mount; skipping." >&2
+        continue
+      fi
+
+      # Determine mount source based on scope.
+      local _sfl_mount_src
+      if [[ "$_sfl_scope" == "parent" ]]; then
+        _sfl_mount_src=$(dirname "$_sfl_target")
+      else
+        _sfl_mount_src="$_sfl_target"
+      fi
+
+      # Mount spec (mode).
+      local _sfl_mode_suffix=""
+      [[ "$_sfl_mode" == "ro" ]] && _sfl_mode_suffix=":ro"
+
+      case "$_sfl_on_dangling" in
+        follow|warn)
+          # Always log per ADR-001 D1 (unconditional mount-expansion log).
+          echo "[rip-cage] follow-symlink: ${_sfl_link} → ${_sfl_target} (${_sfl_mode})" >&2
+          _UP_RUN_ARGS+=(-v "${_sfl_mount_src}:${_sfl_mount_src}${_sfl_mode_suffix}")
+          ;;
+        skip)
+          echo "[rip-cage] Warning: dangling symlink at '${_sfl_link}' → '${_sfl_target}'; skipping mount (mounts.symlinks.on_dangling=skip)." >&2
+          ;;
+        error)
+          echo "[rip-cage] Error: dangling symlink at '${_sfl_link}' targets '${_sfl_target}'; set mounts.symlinks.on_dangling=follow or skip in .rip-cage.yaml to unblock." >&2
+          exit 1
+          ;;
+      esac
+    done < <(_collect_dangling_symlinks "$_sfl_root")
+  done
+  unset _SFL_SCAN_ROOTS _SFL_RESERVED_CAGE_PATHS
+  unset _sfl_on_dangling _sfl_scope _sfl_mode _sfl_cfg_result
+  unset _sfl_root _sfl_link _sfl_target
+  unset _sfl_reserved _sfl_rp _sfl_collision _sfl_arg _sfl_dest
+  unset _sfl_mount_src _sfl_mode_suffix
 
   # Pi state mount — single bind, PI_CODING_AGENT_DIR redirect (ADR-019 D1 FIRM)
   if [[ -d "${HOME}/.pi/agent" ]]; then
@@ -1484,6 +1673,56 @@ _up_resolve_resume_ssh_key_filter() {
     echo "       Run:" >&2
     echo "         rc destroy $_name" >&2
     echo "         rc up $_path" >&2
+    exit 1
+  fi
+}
+
+# _up_resolve_resume_symlink_fingerprint -- compare the rc.symlink-follow-fingerprint
+# label on the existing container against the current host state. Abort loud if
+# mismatch (mount-shape change — requires destroy and re-up per D4 FIRM).
+# Missing label (pre-c1p.2 container) is treated as "no dangling symlinks at
+# create time"; if current state also has none, no mismatch.
+# Parameters: $1 name, $2 path
+_up_resolve_resume_symlink_fingerprint() {
+  local _name="$1" _path="$2"
+  local _stored_fp
+  _stored_fp=$(docker inspect --format '{{ index .Config.Labels "rc.symlink-follow-fingerprint" }}' "$_name" 2>/dev/null || true)
+
+  # Compute current fingerprint — include mode, on_dangling, and scope so that
+  # policy changes (not just symlink-set changes) produce fingerprint drift.
+  local _sfl_cur_mode="rw" _sfl_cur_on_dangling="follow" _sfl_cur_scope="file"
+  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "${_path}")" ]]; then
+    if command -v yq &>/dev/null; then
+      local _sfl_cur_cfg
+      if _sfl_cur_cfg=$(_load_effective_config "${_path}" 2>/dev/null); then
+        _sfl_cur_mode=$(jq -r '.config.mounts.symlinks.mode // "rw"' <<<"$_sfl_cur_cfg")
+        _sfl_cur_on_dangling=$(jq -r '.config.mounts.symlinks.on_dangling // "follow"' <<<"$_sfl_cur_cfg")
+        _sfl_cur_scope=$(jq -r '.config.mounts.symlinks.scope // "file"' <<<"$_sfl_cur_cfg")
+      fi
+    fi
+  fi
+  local _current_fp
+  _current_fp=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_cur_mode" "$_sfl_cur_on_dangling" "$_sfl_cur_scope")
+
+  # Missing label: pre-c1p.2 container. Only block if current state has
+  # dangling symlinks (non-trivial fingerprint would mean a new second mount
+  # that was never wired into the container).
+  if [[ -z "$_stored_fp" ]]; then
+    local _empty_fp
+    _empty_fp=$(_symlink_follow_fingerprint "" "rw" "follow" "file")  # empty set fp
+    if [[ "$_current_fp" == "$_empty_fp" ]]; then
+      return 0  # Both empty — no mismatch
+    fi
+    echo "Error: container $_name predates symlink-follow mount support (no rc.symlink-follow-fingerprint label)." >&2
+    echo "       Current host has dangling symlinks that would require a second bind mount not wired into this container." >&2
+    echo "       Run: rc destroy $_name && rc up ${_path}" >&2
+    exit 1
+  fi
+
+  if [[ "$_stored_fp" != "$_current_fp" ]]; then
+    echo "Error: container $_name was created with rc.symlink-follow-fingerprint=${_stored_fp} but current host state has fingerprint=${_current_fp}." >&2
+    echo "       Mount shape (symlink-follow second bind mounts) is immutable on resume — destroy and re-up to apply mount-shape changes." >&2
+    echo "       Run: rc destroy $_name && rc up ${_path}" >&2
     exit 1
   fi
 }
@@ -2841,6 +3080,10 @@ cmd_up() {
   fi
 
   if [[ "$state" == "running" ]]; then
+    # rip-cage-c1p.2 D4: fingerprint label-lock applies to running containers too.
+    # A policy change (on_dangling, scope, mode) must block resume regardless of
+    # whether the container is stopped or running — the mount shape is immutable.
+    _up_resolve_resume_symlink_fingerprint "$name" "$path"
     _config_emit_hint "$path" "$name"
     _config_init_emit_tip "$path"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -2882,6 +3125,9 @@ cmd_up() {
     # on resume — if ssh.allowed_keys was toggled between null and non-null since
     # create, the rc.ssh-key-filter label resolver below aborts loud.
     _up_resolve_resume_ssh_key_filter "$name" "$path"
+    # rip-cage-c1p.2 D4: symlink-follow fingerprint label-lock — abort loud if
+    # the dangling-symlink set (or mode) changed since create time.
+    _up_resolve_resume_symlink_fingerprint "$name" "$path"
     _UP_SSH_FILTER_ACTIVE="false"
     _up_resolve_ssh_allowlists "$path" "$_rc_ssh_cache_dir"
     # On resume, the socket (or lack thereof) was wired at create time. The
@@ -3051,6 +3297,28 @@ cmd_up() {
       _UP_RUN_ARGS+=(--label "rc.config-loaded=${_rc_config_sha}")
     fi
   fi
+
+  # rip-cage-c1p.2 D4: persist symlink-follow fingerprint as a container label
+  # so resume can detect mount-shape drift and abort loud. Computed from sorted
+  # "<link> → <target> (<mode>)" lines plus a policy header (on_dangling, scope)
+  # so that policy changes also produce fingerprint drift.
+  # Emitted unconditionally so the label is always present for resume checks.
+  # Follows rc.ssh-key-filter precedent (ADR-022 / rip-cage-jxy).
+  local _sfl_mode_for_fp="rw" _sfl_on_dangling_for_fp="follow" _sfl_scope_for_fp="file"
+  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
+    if command -v yq &>/dev/null; then
+      local _sfl_fp_cfg
+      if _sfl_fp_cfg=$(_load_effective_config "$path" 2>/dev/null); then
+        _sfl_mode_for_fp=$(jq -r '.config.mounts.symlinks.mode // "rw"' <<<"$_sfl_fp_cfg")
+        _sfl_on_dangling_for_fp=$(jq -r '.config.mounts.symlinks.on_dangling // "follow"' <<<"$_sfl_fp_cfg")
+        _sfl_scope_for_fp=$(jq -r '.config.mounts.symlinks.scope // "file"' <<<"$_sfl_fp_cfg")
+      fi
+    fi
+  fi
+  local _sfl_fingerprint
+  _sfl_fingerprint=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_mode_for_fp" "$_sfl_on_dangling_for_fp" "$_sfl_scope_for_fp")
+  _UP_RUN_ARGS+=(--label "rc.symlink-follow-fingerprint=${_sfl_fingerprint}")
+  unset _sfl_mode_for_fp _sfl_on_dangling_for_fp _sfl_scope_for_fp _sfl_fp_cfg _sfl_fingerprint
 
   _up_prepare_docker_mounts "$path" "$name"
   _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" "$rc_egress" "$rc_forward_ssh"
@@ -3915,8 +4183,13 @@ cmd_setup() {
 # ============================================================================
 
 # Schema — single source of truth for field types and defaults.
-# Format: <dotted_key>|<type>|<default_json>
+# Format: <dotted_key>|<type>|<default_json>[|allowed_values_csv]
 # Types: scalar | additive_list | selection_list
+#
+# selection_list fields with a 4th column of allowed_values are enum-scalars:
+# the field stores a single string value constrained to the allowed set.
+# Unknown enum values abort loud per ADR-021 D3 (same abort path as
+# selection-list + future-version conflict).
 #
 # Schema additions are versioned changes — bump RC_CONFIG_SUPPORTED_VERSION_MAX
 # below when adding fields that v1 files cannot represent.
@@ -3925,6 +4198,9 @@ _config_schema_lines() {
 version|scalar|1
 ssh.allowed_keys|selection_list|null
 ssh.allowed_hosts|additive_list|[]
+mounts.symlinks.on_dangling|selection_list|"follow"|follow,warn,skip,error
+mounts.symlinks.scope|selection_list|"file"|file,parent
+mounts.symlinks.mode|selection_list|"rw"|ro,rw
 EOF
 }
 
@@ -4058,6 +4334,31 @@ _config_load_layer() {
   if [[ -z "$json" || "$json" == "null" ]]; then
     echo "{}"; return 0
   fi
+
+  # Enum-scalar validation: for selection_list fields with allowed_values (4th
+  # schema column), check that the field's value in this layer is in the set.
+  # Unknown enum values abort loud per ADR-021 D3.
+  local _ev_key _ev_type _ev_default _ev_allowed
+  while IFS='|' read -r _ev_key _ev_type _ev_default _ev_allowed; do
+    [[ -z "$_ev_key" || -z "$_ev_allowed" ]] && continue
+    [[ "$_ev_type" != "selection_list" ]] && continue
+    local _ev_path_arr _ev_val
+    _ev_path_arr=$(jq -nc --arg k "$_ev_key" '$k | split(".")')
+    _ev_val=$(jq -r --argjson p "$_ev_path_arr" 'getpath($p) // "___RC_ABSENT___"' <<<"$json" 2>/dev/null || echo "___RC_ABSENT___")
+    [[ "$_ev_val" == "___RC_ABSENT___" || "$_ev_val" == "null" ]] && continue
+    # Check against allowed values
+    local _ev_ok=0
+    local _ev_a
+    IFS=',' read -ra _ev_parts <<< "$_ev_allowed"
+    for _ev_a in "${_ev_parts[@]}"; do
+      [[ "$_ev_val" == "$_ev_a" ]] && _ev_ok=1 && break
+    done
+    if [[ "$_ev_ok" -eq 0 ]]; then
+      echo "Error: '$file' has invalid value '${_ev_val}' for field '${_ev_key}'. Allowed values: ${_ev_allowed}." >&2
+      return 1
+    fi
+  done < <(_config_schema_lines)
+
   echo "$json"
 }
 
@@ -4066,8 +4367,8 @@ _config_load_layer() {
 _config_merge() {
   local global="$1" project="$2"
   local effective='{}'
-  local key type default
-  while IFS='|' read -r key type default; do
+  local key type default _allowed
+  while IFS='|' read -r key type default _allowed; do
     [[ -z "$key" ]] && continue
     local g_val p_val merged path_arr
     path_arr=$(jq -nc --arg k "$key" '$k | split(".")')
@@ -4116,8 +4417,8 @@ _config_merge() {
 _config_provenance() {
   local global="$1" project="$2"
   local prov='{}'
-  local key type default
-  while IFS='|' read -r key type default; do
+  local key type default _allowed
+  while IFS='|' read -r key type default _allowed; do
     [[ -z "$key" ]] && continue
     local g_val p_val src path_arr
     path_arr=$(jq -nc --arg k "$key" '$k | split(".")')
@@ -4210,18 +4511,27 @@ _config_format_yaml() {
   echo "#"
 
   # Group keys by top-level prefix so output looks like nested YAML.
-  local prev_top=""
-  local key type default
-  while IFS='|' read -r key type default; do
+  # Supports up to 3-level nesting (e.g. mounts.symlinks.on_dangling).
+  local prev_top="" prev_mid=""
+  local key type default _allowed
+  while IFS='|' read -r key type default _allowed; do
     [[ -z "$key" ]] && continue
-    local top leaf
-    if [[ "$key" == *.* ]]; then
-      top="${key%%.*}"
-      leaf="${key#*.}"
+    # Split key into parts: top, mid (optional), leaf
+    local top="" mid="" leaf=""
+    local _parts _nparts
+    IFS='.' read -ra _parts <<< "$key"
+    _nparts=${#_parts[@]}
+    if [[ $_nparts -eq 1 ]]; then
+      leaf="${_parts[0]}"
+    elif [[ $_nparts -eq 2 ]]; then
+      top="${_parts[0]}"
+      leaf="${_parts[1]}"
     else
-      top=""
-      leaf="$key"
+      top="${_parts[0]}"
+      mid="${_parts[1]}"
+      leaf="${_parts[2]}"
     fi
+
     local src
     src=$(jq -c --arg k "$key" '.provenance[$k]' <<<"$result")
     local val
@@ -4236,13 +4546,23 @@ _config_format_yaml() {
       src_text="from $(jq -r . <<<"$src")"
     fi
 
+    # Emit group headers when top-level or mid-level changes.
     if [[ -n "$top" && "$top" != "$prev_top" ]]; then
       echo "${top}:"
       prev_top="$top"
+      prev_mid=""  # reset mid tracking when top changes
+    fi
+    if [[ -n "$mid" && ( "$mid" != "$prev_mid" || "$top" != "$prev_top" ) ]]; then
+      echo "  ${mid}:"
+      prev_mid="$mid"
     fi
 
     local indent=""
-    [[ -n "$top" ]] && indent="  "
+    if [[ -n "$mid" ]]; then
+      indent="    "
+    elif [[ -n "$top" ]]; then
+      indent="  "
+    fi
 
     case "$type" in
       additive_list)
@@ -4281,8 +4601,15 @@ _config_format_yaml() {
         fi
         ;;
       selection_list)
+        # Enum-scalar variant: value is a JSON string (not array) when _allowed is set.
+        # Render as scalar. Array variant (legacy: allowed_keys) renders as list.
         if [[ "$val" == "null" ]]; then
           echo "${indent}${leaf}: null               # ${src_text}"
+        elif [[ -n "$_allowed" ]]; then
+          # Enum scalar — render as plain scalar value
+          local v_text
+          v_text=$(jq -r '.' <<<"$val")
+          echo "${indent}${leaf}: ${v_text}               # ${src_text}"
         elif [[ "$val" == "[]" ]]; then
           echo "${indent}${leaf}: []                 # ${src_text} (explicit zero-out)"
         else

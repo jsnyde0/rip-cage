@@ -228,19 +228,50 @@ The two-layer-with-per-field-merge-rules design from D2 is *nontrivial*. Without
 
 **Invalidation check (mechanical, runnable in `rip-cage-o4z`'s test suite):** With both files present and an additive-list field that has values in each, `rc config show --json | jq '.provenance["ssh.allowed_hosts"]'` must return an array containing both `"global"` and `"project"`.
 
+### D4a: `mounts.symlinks.*` field group — host-side symlink follow (added in rip-cage-c1p.2)
+
+**Firmness: FIRM** (inherited from D1-D3 schema framework)
+
+Three enum-scalar fields (selection_list type) for controlling how absolute symlinks in rip-cage-managed dotfile mount roots are resolved at `rc up` time:
+
+| Field | Type | Default | Allowed values |
+|---|---|---|---|
+| `mounts.symlinks.on_dangling` | selection_list (enum scalar) | `"follow"` | `follow`, `warn`, `skip`, `error` |
+| `mounts.symlinks.scope` | selection_list (enum scalar) | `"file"` | `file`, `parent` |
+| `mounts.symlinks.mode` | selection_list (enum scalar) | `"rw"` | `ro`, `rw` |
+
+**Merge semantics:** per D2 selection-list rule (project replaces global if present; absent = inherit global or use default). Each field is a single-value scalar, not a list — the "selection_list" type here indicates enum-scalar semantics: unknown values abort loud per D3.
+
+**Schema version:** stays at 1. Unknown enum values already abort loud via the selection-list abort path (D3). Future new `on_dangling` or `scope` values that break backward compatibility require a version bump.
+
+**Whitelist:** The scan roots set is hardcoded — currently `{~/.pi/agent}` (the host path mapping to `/pi-agent`). `/workspace` is **never** on the scan whitelist. This is a positive-allow list, not a deny-list.
+
+**ADR-019 D1 alignment:** The existing `~/.pi/agent:/pi-agent` rw bind mount is preserved unchanged. The new second bind mount (at host-target path) is **additional**, not a replacement.
+
+**`rc reload` eligibility:** `mounts.symlinks.*` fields are NOT reload-eligible. `rc reload` refuses loud when any of these fields diverge from the applied-config snapshot.
+
+**rc.symlink-follow-fingerprint label:** A `rc.symlink-follow-fingerprint=<sha256>` container label is persisted at create time and verified on resume. This is a **host-state-derived** label (see D5 clarification below) — its value depends on the host's symlink state, not config content alone.
+
 ### D5: Both files absent ⇒ no behavior change in cage posture; informational output is the substrate's only side-effect
 
 **Firmness: FIRM**
 
 Regression contract has two parts:
 
-1. **Cage posture unchanged.** When neither `~/.config/rip-cage/config.yaml` nor `<project>/.rip-cage.yaml` exists, `rc up` / `rc init` produce **identical effective cage state**: same mounts, same flags applied, same defaults, same labels, same sentinels. No new env vars injected, no new `--mount` arguments, no new `docker exec` invocations, no new container labels. Downstream consumers (SSH allowlist, future egress, etc.) interpret the empty/default effective config the same way they'd interpret no-loader-at-all.
+1. **Config-derived cage posture unchanged.** When neither `~/.config/rip-cage/config.yaml` nor `<project>/.rip-cage.yaml` exists, `rc up` / `rc init` produce **identical config-derived cage state**: same mounts, same flags applied, same defaults, same config-derived labels, same sentinels. No new env vars injected, no new `--mount` arguments, no new `docker exec` invocations, no new config-derived container labels. Downstream consumers (SSH allowlist, future egress, etc.) interpret the empty/default effective config the same way they'd interpret no-loader-at-all.
+
+   **Clarification (rip-cage-c1p.2):** D5's "identical effective cage state" applies specifically to **config-derived emissions** — labels, mounts, and sentinels whose values come from the effective `.rip-cage.yaml` config. **Host-state-derived emissions** are a distinct emission class: their values depend on the host's runtime state (e.g. which symlinks exist under `~/.pi/agent`), not on config content. The `rc.symlink-follow-fingerprint` label is a host-state-derived emission — it will differ between two `rc up` runs with identical config (or both-absent config) if the host's symlink state differs. This is expected and correct behavior.
+
+   **Documented-to-vary set (host-state-derived emissions):** `{rc.symlink-follow-fingerprint}`
+
+   The invariant for D5 is therefore: with both config files absent, the set of `rc.*` labels must be byte-identical between runs EXCEPT for the documented-to-vary set. The ADR-021 D5 invariant test asserts this: compare all `rc.*` labels between a "no dangling symlinks" run and a "with dangling symlinks" run — only `rc.symlink-follow-fingerprint` should differ.
 
 2. **Substrate-only informational output is in scope.** The substrate DOES introduce these net-new informational outputs even when both files are absent or when a file is malformed:
    - First-run hint when a `.rip-cage.yaml` is detected for the first time per container (one-time per `rc.config-loaded` label).
    - `rc config show` is a new top-level command (only emits when invoked).
    - Schema-version-absent warnings (per D3, only when a file exists).
    - Schema-version-mismatch warnings (per D3, only when a file exists).
+   - Mount-expansion log lines emitted per `[rip-cage] follow-symlink: ...` (per ADR-001 D1 unconditional-log rule; these are stderr lines, not posture changes).
 
 Net-new stdout/stderr text is not a regression in the sense this contract cares about: it changes what the user *sees*, not what the cage *does*. The byte-identical claim from earlier drafts is replaced with this scoped contract.
 
@@ -249,6 +280,7 @@ Net-new stdout/stderr text is not a regression in the sense this contract cares 
 - **Backward compatibility for existing users.** Anyone running rip-cage today should be able to upgrade and notice no posture change.
 - **Forces downstream consumers (SSH allowlist, etc.) to handle the empty/default case explicitly.** Each consumer's bead must include a "no .rip-cage.yaml present → posture unchanged" test case. That test catches accidental coupling between loader presence and behavior change.
 - **Informational output is in scope** because hiding the substrate's existence (e.g., suppressing the first-run hint) defeats discoverability. The substrate is opt-in by adding a config file; users who don't add one see at most the one-time hint when they do.
+- **Host-state-derived emissions are outside the config-derived invariant scope.** The `rc.symlink-follow-fingerprint` label exists to prevent mount-shape drift on resume; its value correctly varies with host state. Treating it as a regression would require either (a) not emitting it when configs are absent (violating D4 label-lock safety) or (b) requiring the host have no symlinks (too restrictive). The cleaner model is to enumerate the documented-to-vary set explicitly.
 
 **Alternatives considered:**
 
@@ -257,10 +289,11 @@ Net-new stdout/stderr text is not a regression in the sense this contract cares 
 | Loader applies "sensible defaults" even when no file present (e.g., default `ssh.allowed_hosts: [github.com]` immediately tightens posture) | `direct:` Violates the regression contract; existing users see surprise behavior change on rc upgrade. The right time to tighten defaults is when a downstream consumer ships, not when the substrate ships. |
 | Strict byte-identical contract (no new stdout/stderr at all) | `reasoned:` Forbids the first-run hint and the version warnings, which are the substrate's discoverability surface. Hiding the substrate makes it harder to use, not safer. |
 | Loader prints a one-time "no config found, here are your defaults" hint even when both absent | `reasoned:` Adds noise for the 80% case who never need a config file. Defaults should be silent. `rc config show` is the discoverable entry point for users who care. |
+| Treat rc.symlink-follow-fingerprint as config-derived and suppress it when configs absent | `reasoned:` Would break D4a's label-lock safety on resume; the label must always be present so resume can detect drift even when the user subsequently adds config. |
 
 **What would invalidate this:** A future ADR explicitly decides to ship a tightening default in the substrate itself. At that point, this decision is amended, not silently broken.
 
-**Invalidation check (mechanical, runnable):** With both config files absent, `tests/test-e2e-lifecycle.sh` (full count today) must produce the same PASS/FAIL count and the same emitted mounts/labels/sentinels as it did before the loader landed. A delta in mounts, labels, or sentinels means the cage-posture-unchanged half of D5 is broken. (Stdout/stderr deltas from the substrate's informational output are explicitly in-scope per the contract.)
+**Invalidation check (mechanical, runnable):** With both config files absent, `tests/test-e2e-lifecycle.sh` (full count today) must produce the same PASS/FAIL count and the same **config-derived** emitted mounts/labels/sentinels as it did before the loader landed. A delta in config-derived mounts, labels, or sentinels means the cage-posture-unchanged half of D5 is broken. Deltas in host-state-derived emissions (the documented-to-vary set `{rc.symlink-follow-fingerprint}`) are explicitly **in-scope** per the D5 clarification above. (Stdout/stderr deltas from the substrate's informational output are also explicitly in-scope per the contract.)
 
 ## Consequences
 

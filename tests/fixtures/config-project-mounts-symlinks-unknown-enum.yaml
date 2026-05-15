@@ -1,0 +1,6 @@
+version: 1
+mounts:
+  symlinks:
+    on_dangling: bogus_value
+    scope: file
+    mode: rw
