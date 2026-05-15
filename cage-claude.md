@@ -58,6 +58,8 @@ If a tool *inside* the cage works but your new connection doesn't, the problem
 is almost always (a) wrong hostname (`localhost` instead of `$CAGE_HOST_ADDR`),
 or (b) no published port on the target compose service.
 
+For pi-specific cage topology, see /etc/rip-cage/cage-pi.md
+
 ### Troubleshooting: subagent fails fast (0 tokens, ~2s)
 
 If a subagent dispatch (`Agent(subagent_type=...)`) returns after ~2 seconds

@@ -173,29 +173,11 @@ if [ -f /etc/rip-cage/cage-claude.md ]; then
   rm -f /tmp/claude-md-base
   echo "[rip-cage] Cage-topology section appended to ~/.claude/CLAUDE.md"
 fi
-# Append cage-authored topology block to /pi-agent/AGENTS.md (ADR-019 D3 FIRM)
-# Guard 1: skip silently if pi mount is absent (host dir was missing at rc up time).
-# Use PI_CODING_AGENT_DIR (exported by _up_prepare_docker_mounts only when host dir
-# exists) — /pi-agent is pre-created in the Dockerfile so [ -d /pi-agent ] is always
-# true, making it an unreliable mount-presence signal.
-if [ "${PI_CODING_AGENT_DIR:-}" = "/pi-agent" ] && [ -f /etc/rip-cage/cage-pi.md ]; then
-  # Guard 2: create AGENTS.md if it doesn't exist yet
-  if [ ! -f /pi-agent/AGENTS.md ]; then
-    : > /pi-agent/AGENTS.md
-    echo "[rip-cage] Created /pi-agent/AGENTS.md"
-  fi
-  # Guard 3: strip any prior pi topology block, then re-append (idempotent)
-  awk '
-    /^<!-- begin:rip-cage-topology-pi -->/ { skip=1; next }
-    /^<!-- end:rip-cage-topology-pi -->/   { skip=0; next }
-    !skip { print }
-  ' /pi-agent/AGENTS.md > /tmp/agents-md-base
-  if [ -s /tmp/agents-md-base ]; then
-    printf '\n' >> /tmp/agents-md-base
-  fi
-  cat /tmp/agents-md-base /etc/rip-cage/cage-pi.md > /pi-agent/AGENTS.md
-  rm -f /tmp/agents-md-base
-  echo "[rip-cage] Cage-topology section appended to /pi-agent/AGENTS.md"
+# ADR-019 D3 (post-c1p.1): cage-topology for pi is surfaced via reference in
+# ~/.claude/CLAUDE.md (cage-owned path) rather than appended to /pi-agent/AGENTS.md
+# (host-bind-mounted path). This preserves the user's canonical dotpi file intact.
+if [ "${PI_CODING_AGENT_DIR:-}" = "/pi-agent" ]; then
+  echo "[rip-cage] Cage-pi topology available at /etc/rip-cage/cage-pi.md (not appended to /pi-agent/AGENTS.md — host abstraction preserved)"
 fi
 if [ -f /home/agent/.rc-context/home-claude.md ] && [ -s /home/agent/.rc-context/home-claude.md ]; then
   cp /home/agent/.rc-context/home-claude.md ~/CLAUDE.md

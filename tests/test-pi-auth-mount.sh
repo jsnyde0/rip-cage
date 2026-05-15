@@ -81,11 +81,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ---- Set up fake ~/.pi/agent/auth.json ----
+# ---- Set up fake ~/.pi/agent/auth.json and AGENTS.md ----
 mkdir -p "$PI_AGENT_DIR"
 printf '{"fake":true}\n' > "$PI_AGENT_DIR/auth.json"
+# Create a known AGENTS.md so we can assert init never mutates it
+AGENTS_MD_PATH="${PI_AGENT_DIR}/AGENTS.md"
+AGENTS_MD_SENTINEL="# Pi auth-mount test sentinel — must not be modified by init"
+printf '%s\n' "$AGENTS_MD_SENTINEL" > "$AGENTS_MD_PATH"
 
 TEST_WS=$(mktemp -d)
+
+# Capture AGENTS.md state before rc up for later comparison
+AGENTS_CONTENT_BEFORE=$(cat "$AGENTS_MD_PATH")
+AGENTS_MTIME_BEFORE=$(stat -f '%m' "$AGENTS_MD_PATH" 2>/dev/null || stat -c '%Y' "$AGENTS_MD_PATH" 2>/dev/null || true)
 
 # ================================================================
 # Test 1: pi bind mount — /pi-agent/auth.json visible in container
@@ -244,6 +252,30 @@ fi
 
 # Restore for cleanup trap
 mv "${PI_AGENT_DIR}.bak-test" "$PI_AGENT_DIR"
+
+# ================================================================
+# Test 7: /pi-agent/AGENTS.md content + mtime unchanged after rc up
+# (init must not mutate host-bind-mounted dotfiles — ADR-019 D3)
+# ================================================================
+echo ""
+echo "=== Test 7: /pi-agent/AGENTS.md content + mtime unchanged after rc up ==="
+
+AGENTS_CONTENT_AFTER=$(cat "$AGENTS_MD_PATH")
+AGENTS_MTIME_AFTER=$(stat -f '%m' "$AGENTS_MD_PATH" 2>/dev/null || stat -c '%Y' "$AGENTS_MD_PATH" 2>/dev/null || true)
+
+if [[ "$AGENTS_CONTENT_AFTER" == "$AGENTS_CONTENT_BEFORE" ]]; then
+  pass "Test 7a: /pi-agent/AGENTS.md content unchanged after rc up"
+else
+  fail "Test 7a: /pi-agent/AGENTS.md content was mutated by init" \
+    "before='$AGENTS_CONTENT_BEFORE' after='$AGENTS_CONTENT_AFTER'"
+fi
+
+if [[ "$AGENTS_MTIME_AFTER" == "$AGENTS_MTIME_BEFORE" ]]; then
+  pass "Test 7b: /pi-agent/AGENTS.md mtime unchanged after rc up"
+else
+  fail "Test 7b: /pi-agent/AGENTS.md mtime changed (file was written)" \
+    "before=$AGENTS_MTIME_BEFORE after=$AGENTS_MTIME_AFTER"
+fi
 
 # ================================================================
 # Summary

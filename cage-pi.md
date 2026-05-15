@@ -1,4 +1,13 @@
 <!-- begin:rip-cage-topology-pi -->
+## Rip-Cage Topology for Pi (cage-authored)
+
+> **Discovery**: This file lives at `/etc/rip-cage/cage-pi.md` inside every
+> rip-cage container and is surfaced via a reference in `~/.claude/CLAUDE.md`
+> (inside the `<!-- begin:rip-cage-topology -->` fence). It is never appended
+> to `/pi-agent/AGENTS.md` — that file is host-owned and rip-cage does not
+> mutate it (ADR-019 D3). Pi agents can read this file directly at its known
+> path or follow the reference in `~/.claude/CLAUDE.md`.
+
 ## Rip-Cage Network Topology (cage-authored)
 
 You are running inside a **rip-cage** Docker container on the user's host (macOS

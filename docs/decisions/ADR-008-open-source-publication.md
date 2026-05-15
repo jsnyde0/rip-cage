@@ -97,20 +97,27 @@ The `rc` script must work with bash 3.2 (macOS default). Any bash 4+ syntax is a
 
 **Alternatives considered:** See D8 for the Homebrew packaging shape (single-repo tap vs separate tap vs homebrew-core).
 
-### D8: Homebrew tap shape — single-repo tap
+### D8: Homebrew tap shape — separate tap repo
 
 **Firmness: FLEXIBLE**
 
-**Added at v0.2.0.** Ship the Homebrew formula at `Formula/rip-cage.rb` **in this repo** (single-repo tap pattern). Users install via `brew install jsnyde0/rip-cage/rip-cage`. The post-tag sha256 update is handled by `scripts/update-formula-sha.sh` (idempotent, retries up to 2 min for tarball availability); wrapping this in a GH Action on tag push is deferred but trivial.
+**Added at v0.2.0. Revised to separate tap repo after smoke-test showed single-repo pattern doesn't work with Homebrew's naming convention.**
 
-**Rationale:** One repo, one PR per release, no separate `homebrew-rip-cage` to keep in sync. Single-repo tap is the modern Homebrew pattern for single-formula projects (officially blessed since 2018). The whole formula is ~30 lines.
+The Homebrew formula lives in [`jsnyde0/homebrew-rip-cage`](https://github.com/jsnyde0/homebrew-rip-cage) (the standard Homebrew tap pattern). Users install via `brew install jsnyde0/rip-cage/rip-cage`. A canonical copy of the formula is kept at `Formula/rip-cage.rb` in this repo — `scripts/update-formula-sha.sh` patches it post-tag and auto-syncs to the tap repo if cloned as a sibling.
+
+**Rationale:** Homebrew's `brew tap user/name` hardcodes a clone of `github.com/user/homebrew-name`. The `homebrew-` prefix is not optional. A "single-repo tap" only works if the project repo itself is named `homebrew-*`, which is awkward. The separate tap repo is the universal pattern (used by `gh`, GoReleaser, etc.) and the only one that makes `brew install user/tap/formula` work without a manual `brew tap ... URL` step.
+
+**Release ceremony (tap sync):**
+1. Tag → GHCR publish (existing)
+2. `scripts/update-formula-sha.sh` patches `Formula/rip-cage.rb` in this repo and copies to `../homebrew-rip-cage/` if present
+3. Commit + push both repos
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons | Rejected (warrant) |
 |----------|------|------|--------------------|
-| **Single-repo tap (chosen)** | One repo; minimal infra; modern HB pattern | `brew tap` URL is the same repo (slightly weird) | — |
-| Separate `homebrew-rip-cage` tap repo | "Canonical" 2010s pattern; clean separation | Two repos to keep in sync; release ceremony spans both | `reasoned:` overhead beats benefit for a single-formula project |
+| **Separate `homebrew-rip-cage` tap repo (chosen)** | Standard pattern; `brew install` works out of the box | Two repos to keep in sync (mitigated by script) | — |
+| Single-repo tap | One repo | Doesn't work — Homebrew prepends `homebrew-` to repo name, so `brew tap jsnyde0/rip-cage` looks for `homebrew-rip-cage` | `tested:` smoke-test on Mac Mini confirmed this fails |
 | homebrew-core submission | Brew users get it for free (`brew install rip-cage`) | Strict review; usage threshold (~75 GH stars); slow merge | `external:` HB-core docs require sustained usage; revisit at v1.0 if there's demand |
 | npm wrapper | Familiar for JS devs; ClaudeBox precedent | Node dependency for a bash tool is jarring | `reasoned:` doesn't fit the audience (Claude Code users mostly have docker + brew already) |
 | curl-pipe-bash installer | Zero deps; works on any *nix | Divisive ("don't pipe curl to bash"); no upgrade story | `reasoned:` brew + git-clone covers everyone willing |

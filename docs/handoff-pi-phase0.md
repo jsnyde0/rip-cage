@@ -94,12 +94,12 @@ File these as children of a parent "Phase 0: pi-coding-agent support" bead. Prio
   - neither → warning logged
   - both → warn-free
 
-### B4 — Cage-topology context for pi (`cage-pi.md`)
+### B4 — Cage-topology context for pi (`cage-pi.md`) — sidecar-via-reference posture (updated)
 
-- **Files**: new `cage-pi.md` at repo root (parallel to `cage-claude.md`); `Dockerfile` line 105 area to `COPY cage-pi.md /etc/rip-cage/cage-pi.md`; `init-rip-cage.sh` to handle the AGENTS.md append.
-- **Why**: pi's CLAUDE.md equivalent is `AGENTS.md` (per pi-mono README — pi loads `AGENTS.md` files). The cage's network-topology section needs to be appended to `~/.pi/AGENTS.md` (or wherever pi resolves its global agent context) the same way `cage-claude.md` is appended to `~/.claude/CLAUDE.md`. Verify pi's actual global AGENTS.md location by reading `/Users/jonat/code/personal/pi-mono/packages/coding-agent/docs/settings.md` — do not guess.
-- **Change**: Replicate the `awk` strip-and-append pattern from `init-rip-cage.sh` lines 91–106, but for pi's AGENTS.md file. Use distinct fence markers (`<!-- begin:rip-cage-topology-pi -->`).
-- **Verification**: Test that runs `rc up`, then inside the container reads pi's AGENTS.md location and asserts the cage-topology block is present and correctly fenced. Also test idempotency (run init twice, only one block present).
+- **Files**: `cage-pi.md` (repo root, `COPY`'d to `/etc/rip-cage/cage-pi.md` in image); `cage-claude.md` (reference line added inside topology fence); `init-rip-cage.sh` (AGENTS.md append block removed).
+- **Why**: `cage-pi.md` contains pi-specific cage topology and is image-baked at `/etc/rip-cage/cage-pi.md`. It is surfaced to agents via a reference line inside the `<!-- begin:rip-cage-topology -->` fence in `~/.claude/CLAUDE.md` (a cage-owned file). This approach does NOT append anything to `/pi-agent/AGENTS.md`.
+- **Updated posture (ADR-019 D3 evolution)**: The original design appended a fenced block to `/pi-agent/AGENTS.md` using the same `awk` strip-and-replace pattern as `cage-claude.md`. This was changed because `/pi-agent/` is bind-mounted from the host's `~/.pi/agent/` — a path that users commonly manage via dotpi (a dotfiles manager with canonical symlinks). Init-side appends were observed to propagate cage-internal content to the user's canonical dotpi repo, leaking across all their machines. The fix: cage metadata belongs in cage-owned paths only. `/pi-agent/AGENTS.md` is not touched; `~/.claude/CLAUDE.md` (cage-owned) carries the reference instead.
+- **Verification**: `tests/test-pi-cage-context.sh` asserts: (1) `/pi-agent/AGENTS.md` content and mtime unchanged after `rc up`; (2) `~/.claude/CLAUDE.md` contains `/etc/rip-cage/cage-pi.md` inside the topology fence; (3) `/etc/rip-cage/cage-pi.md` is readable inside the cage; (4) exactly one `begin:rip-cage-topology` marker in CLAUDE.md; (5) no `begin:rip-cage-topology-pi` marker in CLAUDE.md.
 
 ### B5 — Documentation
 

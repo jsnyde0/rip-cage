@@ -72,24 +72,45 @@ Prior art surveyed before designing:
 - Pi hides auth failures behind silent retries (it currently does not).
 - User testing shows the Codex-OAuth-only flow fails confusingly without a pre-flight check. In that case, narrow the check to "no `auth.json` AND no `OPENAI_API_KEY` AND no `ANTHROPIC_API_KEY`" rather than the full provider matrix.
 
-### D3: Cage-topology context appended to `/pi-agent/AGENTS.md`
+### D3: Cage-topology metadata lives in cage-owned paths only; init never mutates host-bind-mounted dotfiles
 
 **Firmness: FIRM**
 
-A new `cage-pi.md` at the repo root (parallel to `cage-claude.md`) is `COPY`'d into the image at `/etc/rip-cage/cage-pi.md`. `init-rip-cage.sh` strips any existing fenced cage-topology block from `/pi-agent/AGENTS.md` and re-appends the current one, using the same `awk` strip-and-append pattern as the existing Claude path (lines 91-106). Fence markers: `<!-- begin:rip-cage-topology-pi -->` / `<!-- end:rip-cage-topology-pi -->`.
+A `cage-pi.md` at the repo root (parallel to `cage-claude.md`) is `COPY`'d into the image at `/etc/rip-cage/cage-pi.md`. This is a cage-owned path — image-baked, never written by init.
 
-Pi's `loadProjectContextFiles()` (pi-mono `src/core/resource-loader.ts:58-100`) loads the global `agentDir` (i.e. `/pi-agent/AGENTS.md`) first, then walks ancestors from cwd looking for `AGENTS.md` *or* `CLAUDE.md`, concatenating all matches. The cage-topology block lives **only** in the global file (not in any project-scoped `AGENTS.md` / `CLAUDE.md`), so no duplication.
+Cage-topology is surfaced to agents via a reference line inside the `<!-- begin:rip-cage-topology -->` fence in `~/.claude/CLAUDE.md` (the cage-owned Claude Code context file, maintained by init from `cage-claude.md`). The reference line reads:
+
+```
+For pi-specific cage topology, see /etc/rip-cage/cage-pi.md
+```
+
+`init-rip-cage.sh` does **not** append any content to `/pi-agent/AGENTS.md`. `/pi-agent/` is bind-mounted from the host's `~/.pi/agent/` directory (ADR-019 D1). When the user manages that directory via dotpi (a dotfiles manager that symlinks to a canonical file), init-side writes propagate across every machine using dotpi. Treating a host-bind-mounted dotfile as a writable surface for cage-owned metadata is therefore unsafe. Init logs a discovery message when the pi mount is present but writes nothing.
 
 **Rationale:**
 
-- Mirrors the cage-claude.md design — same trust model, same idempotency story, same fence-based replace-in-place strategy.
-- Pi sees the cage-topology block once, reliably, without us needing to know which projects exist.
-- The `awk` pattern is already battle-tested via cage-claude.md.
+- Cage-owned metadata belongs in cage-owned paths. `/etc/rip-cage/` (image-baked) and `~/.claude/CLAUDE.md` (written from cage-claude.md by init) are both cage-owned. `/pi-agent/AGENTS.md` (bind-mounted from `~/.pi/agent/`) is host-owned.
+- A user managing `~/.pi/agent/AGENTS.md` via dotpi gets that file symlinked to a canonical dotpi repo entry. Init-side appends write to the symlink target, propagating cage internals to every machine in the dotpi repo. This was observed as a real failure mode.
+- The reference approach gives pi agents equivalent discoverability: the cage-authored CLAUDE.md (loaded by Claude Code) contains the path; pi agents can read `/etc/rip-cage/cage-pi.md` directly. The path is stable and documented.
+- `cage-pi.md` retains its fenced `<!-- begin:rip-cage-topology-pi -->` markers for grep-ability by tests and agents, but those markers live inside the image-baked file, not in any host file.
+
+**Alternatives considered:**
+
+| Approach | Verdict |
+|---|---|
+| Append to `/pi-agent/AGENTS.md` with `awk` strip-and-replace (original D3) | Rejected — mutates host-bind-mounted dotfile; unsafe with dotpi |
+| Per-cage copy of `AGENTS.md` (not a bind mount) | Would lose user's real pi global context; breaks pi workflows |
+| Reference in `~/.claude/CLAUDE.md` only (this decision) | Cage-owned path; discovered via Claude Code's auto-loaded CLAUDE.md; no host mutation |
 
 **What would invalidate this:**
 
-- Pi changes its AGENTS.md resolution algorithm to ignore `agentDir`. Detected by the idempotency test (B4 verification).
-- The project also wants to inject project-scoped context. Different feature, different bead.
+- Pi's context discovery for AGENTS.md stops relying on `~/.claude/CLAUDE.md` references entirely (e.g., pi drops CLAUDE.md scanning). At that point, add a cage-owned `~/.pi/agent/AGENTS.md`-equivalent at a path that is NOT bind-mounted from the host.
+- The project wants to inject project-scoped pi context. Different feature, different bead.
+
+**Canonical refs:**
+
+- ADR-011 D1 (in-place rule — this decision edited in place, no supersession chain)
+- ADR-016 D1 (fence convention for `~/.claude/CLAUDE.md` topology appends)
+- `cage-claude.md`, `cage-pi.md`, `init-rip-cage.sh` (implementation locus)
 
 ### D4: Pi runs without DCG / compound-blocker enforcement in Phase 0
 
