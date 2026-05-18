@@ -148,4 +148,11 @@ RUN mkdir -p /home/agent/.config/mise \
        > /home/agent/.config/mise/config.toml
 COPY --chown=agent:agent zshrc /home/agent/.zshrc
 COPY --chown=agent:agent tmux.conf /home/agent/.tmux.conf
+
+# Version label — baked in at build time so rc up can detect stale local images.
+# Placed last so version bumps don't invalidate upstream layer cache.
+# ADR-008 D6.
+ARG RC_VERSION=""
+LABEL org.opencontainers.image.version="${RC_VERSION}"
+
 CMD ["zsh"]

@@ -227,14 +227,36 @@ EOF
 cmd_build() {
   log "Building $IMAGE from ${SCRIPT_DIR}/Dockerfile..."
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    if docker build -t "$IMAGE" "$@" "$SCRIPT_DIR" >/dev/null 2>&1; then
+    if docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" "$@" "$SCRIPT_DIR" >/dev/null 2>&1; then
       jq -nc '{image: "rip-cage:latest", action: "built", status: "success"}'
     else
       json_error "Build failed" "BUILD_FAILED"
     fi
   else
-    docker build -t "$IMAGE" "$@" "$SCRIPT_DIR"
+    docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" "$@" "$SCRIPT_DIR"
   fi
+}
+
+# _image_is_current — returns 0 if local rip-cage:latest carries an
+# org.opencontainers.image.version label that matches RC_VERSION.
+# Returns 1 (stale) if the label is missing, empty, or mismatched.
+# When RC_VERSION is "unknown" (VERSION file absent / malformed checkout),
+# returns 0 unconditionally — we can't meaningfully compare, so we skip
+# the staleness check rather than silently re-provisioning every run.
+# ADR-008 D6.
+_image_is_current() {
+  # Cannot compare without a known version — treat as current.
+  if [[ "$RC_VERSION" == "unknown" ]]; then
+    return 0
+  fi
+  local label
+  label=$(docker image inspect "$IMAGE" \
+    --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null) || return 1
+  # docker returns "<no value>" when label key is absent
+  if [[ "$label" == "<no value>" || -z "$label" ]]; then
+    return 1
+  fi
+  [[ "$label" == "$RC_VERSION" ]]
 }
 
 # _pull_or_build — auto-provision the rip-cage image, pulling from GHCR when
@@ -249,7 +271,7 @@ _pull_or_build() {
     else
       log "Building rip-cage image locally (RIP_CAGE_IMAGE_REGISTRY unset, takes a few minutes)..."
     fi
-    docker build -t "$IMAGE" "$SCRIPT_DIR"
+    docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" "$SCRIPT_DIR"
     return $?
   fi
   local pull_ref="${RIP_CAGE_IMAGE_REGISTRY}:${RC_VERSION}"
@@ -274,7 +296,7 @@ _pull_or_build() {
       log "Pull failed (image unavailable, offline, or auth required) - building locally (this takes a few minutes)..."
     fi
   fi
-  docker build -t "$IMAGE" "$SCRIPT_DIR"
+  docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" "$SCRIPT_DIR"
 }
 
 cmd_init() {
@@ -2926,9 +2948,10 @@ cmd_up() {
     env_file="$resolved_env"
   fi
 
-  # Check image exists — pull from GHCR (with local-build fallback) if missing.
-  # See _pull_or_build / ADR-008 D6.
-  if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
+  # Check image exists and is current — pull from GHCR (with local-build
+  # fallback) if missing or version label mismatches RC_VERSION (stale).
+  # See _image_is_current / _pull_or_build / ADR-008 D6.
+  if ! docker image inspect "$IMAGE" > /dev/null 2>&1 || ! _image_is_current; then
     if [[ "$DRY_RUN" == "true" ]]; then
       if [[ "$OUTPUT_FORMAT" == "json" ]]; then
         if [[ -n "${RIP_CAGE_IMAGE_REGISTRY}" ]]; then

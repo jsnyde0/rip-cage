@@ -416,11 +416,36 @@ echo "=== Test 14: rc up --dry-run includes agents mount line ==="
 if [[ -d "${HOME}/.claude/agents" ]]; then
   TEST_DIR_T14=$(mktemp -d)
   mkdir -p "${TEST_DIR_T14}/.git"
-  dry_run_output=$(RC_ALLOWED_ROOTS="$TEST_DIR_T14" "$RC" up --dry-run "$TEST_DIR_T14" 2>&1 || true)
-  if echo "$dry_run_output" | grep -q 'Would mount.*rc-context/agents'; then
-    pass "rc up --dry-run shows agents mount"
+
+  # rc up now checks the version label — ensure local image is current so the
+  # test reaches the "Would mount" dry-run lines (not the stale-image early exit).
+  RC_VER_T14=$("${REPO_ROOT}/rc" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  CURRENT_IMAGE_T14=$(docker image inspect rip-cage:latest --format '{{.Id}}' 2>/dev/null || true)
+  STUB_IMAGE_T14=$(docker build -q - <<STUB_EOF
+FROM scratch
+LABEL org.opencontainers.image.version="${RC_VER_T14}"
+STUB_EOF
+)
+  if [[ -z "$STUB_IMAGE_T14" ]]; then
+    fail "Test 14 setup: stub image build failed — cannot test agents mount"
   else
-    fail "rc up --dry-run missing agents mount line"
+    docker tag "$STUB_IMAGE_T14" rip-cage:latest >/dev/null 2>&1
+
+    dry_run_output=$(RC_ALLOWED_ROOTS="$TEST_DIR_T14" "$RC" up --dry-run "$TEST_DIR_T14" 2>&1 || true)
+
+    # Restore original image
+    if [[ -n "$CURRENT_IMAGE_T14" ]]; then
+      docker tag "$CURRENT_IMAGE_T14" rip-cage:latest >/dev/null 2>&1
+    else
+      docker rmi rip-cage:latest >/dev/null 2>&1 || true
+    fi
+    docker rmi "$STUB_IMAGE_T14" >/dev/null 2>&1 || true
+
+    if echo "$dry_run_output" | grep -q 'Would mount.*rc-context/agents'; then
+      pass "rc up --dry-run shows agents mount"
+    else
+      fail "rc up --dry-run missing agents mount line"
+    fi
   fi
   rm -rf "$TEST_DIR_T14"
 else
@@ -519,6 +544,118 @@ else
   fail "__bd-preflight-test missing port: detail missing 'port file missing' (got: ${missing_out})"
 fi
 rm -rf "$MISSING_BEADS"
+
+# --- Test 19: stale local image triggers re-provisioning in rc up --dry-run ---
+echo ""
+echo "=== Test 19: stale local image triggers re-provisioning ==="
+# Build a minimal stub image with NO version label (simulates pre-GHCR local build)
+STALE_IMAGE_ID=$(docker build -q - <<'STALE_DOCKERFILE'
+FROM scratch
+LABEL description="stub image for stale-label test"
+STALE_DOCKERFILE
+)
+if [[ -z "$STALE_IMAGE_ID" ]]; then
+  fail "Test 19 setup: could not build stub image"
+else
+  # Tag the stub as rip-cage:latest, saving any existing image first
+  ORIGINAL_IMAGE_ID=$(docker image inspect rip-cage:latest --format '{{.Id}}' 2>/dev/null || true)
+  docker tag "$STALE_IMAGE_ID" rip-cage:latest >/dev/null 2>&1
+
+  TEST_DIR_T19=$(mktemp -d)
+  mkdir -p "${TEST_DIR_T19}/.git"
+  stale_dry_run_output=$(RIP_CAGE_IMAGE_REGISTRY="" RC_ALLOWED_ROOTS="$TEST_DIR_T19" \
+    "$RC" up --dry-run "$TEST_DIR_T19" 2>&1 || true)
+
+  # Restore original image (or remove the stub tag if there was no prior image)
+  if [[ -n "$ORIGINAL_IMAGE_ID" ]]; then
+    docker tag "$ORIGINAL_IMAGE_ID" rip-cage:latest >/dev/null 2>&1
+  else
+    docker rmi rip-cage:latest >/dev/null 2>&1 || true
+  fi
+  docker rmi "$STALE_IMAGE_ID" >/dev/null 2>&1 || true
+  rm -rf "$TEST_DIR_T19"
+
+  # A stale image should route through _pull_or_build, not skip it.
+  # With RIP_CAGE_IMAGE_REGISTRY="" the dry-run message is "would build".
+  if echo "$stale_dry_run_output" | grep -qi "would build\|would pull"; then
+    pass "stale image (missing version label) triggers re-provisioning"
+  else
+    fail "stale image did NOT trigger re-provisioning (output: $stale_dry_run_output)"
+  fi
+fi
+
+# --- Test 20: RC_VERSION="unknown" treats image as current (skip stale check) ---
+echo ""
+echo "=== Test 20: RC_VERSION=unknown skips staleness check ==="
+# When VERSION file is absent, RC_VERSION="unknown". An image with no matching
+# label should still be treated as current (not stale) so rc up doesn't
+# silently re-provision every time on a malformed checkout.
+#
+# Strategy: tag a stub image (no version label) as rip-cage:latest, then
+# invoke rc up --dry-run with RC_VERSION overridden to "unknown" via a wrapper
+# and RIP_CAGE_IMAGE_REGISTRY="" so if re-provision fires the message is "build".
+# The dry-run output must NOT contain "would build" or "would pull" — it must
+# reach the normal dry-run lines.
+STUB_IMAGE_T20=$(docker build -q - <<'STUB_DOCKERFILE_T20'
+FROM scratch
+LABEL description="stub image for unknown-version test"
+STUB_DOCKERFILE_T20
+)
+if [[ -z "$STUB_IMAGE_T20" ]]; then
+  fail "Test 20 setup: could not build stub image"
+else
+  ORIGINAL_IMAGE_T20=$(docker image inspect rip-cage:latest --format '{{.Id}}' 2>/dev/null || true)
+  docker tag "$STUB_IMAGE_T20" rip-cage:latest >/dev/null 2>&1
+
+  TEST_DIR_T20=$(mktemp -d)
+  mkdir -p "${TEST_DIR_T20}/.git"
+
+  # Inject RC_VERSION=unknown via a temporary VERSION-less wrapper script
+  WRAPPER_DIR_T20=$(mktemp -d)
+  cat > "${WRAPPER_DIR_T20}/rc_wrapper.sh" <<'WRAPPER_SCRIPT'
+#!/usr/bin/env bash
+# Strip the real VERSION file from SCRIPT_DIR lookup by pointing to a temp dir
+TMPSCRIPTDIR=$(mktemp -d)
+cp "$1" "${TMPSCRIPTDIR}/rc"
+chmod +x "${TMPSCRIPTDIR}/rc"
+# Remove VERSION so RC_VERSION resolves to "unknown"
+shift
+RC_ALLOWED_ROOTS="$RC_ALLOWED_ROOTS" RIP_CAGE_IMAGE_REGISTRY="" \
+  bash -c "export SCRIPT_DIR=\"${TMPSCRIPTDIR}\"; source \"${TMPSCRIPTDIR}/rc\" 2>/dev/null || true; RC_VERSION=unknown \"${TMPSCRIPTDIR}/rc\" $*"
+WRAPPER_SCRIPT
+
+  # Simpler approach: use env override — rc reads VERSION via SCRIPT_DIR at sourcing time,
+  # but we can override RC_VERSION in the environment after the fact only if the script
+  # allows it.  Since rc sets RC_VERSION unconditionally from the file, the cleanest
+  # approach is to temporarily rename the VERSION file and call rc normally.
+  REPO_VERSION_FILE="${REPO_ROOT}/VERSION"
+  BACKUP_VERSION_FILE="${REPO_ROOT}/VERSION.t20bak"
+  mv "$REPO_VERSION_FILE" "$BACKUP_VERSION_FILE" 2>/dev/null || true
+
+  unknown_dry_run_output=$(RIP_CAGE_IMAGE_REGISTRY="" RC_ALLOWED_ROOTS="$TEST_DIR_T20" \
+    "$RC" up --dry-run "$TEST_DIR_T20" 2>&1 || true)
+
+  # Restore VERSION file
+  mv "$BACKUP_VERSION_FILE" "$REPO_VERSION_FILE" 2>/dev/null || true
+  rm -rf "$WRAPPER_DIR_T20"
+
+  # Restore original image
+  if [[ -n "$ORIGINAL_IMAGE_T20" ]]; then
+    docker tag "$ORIGINAL_IMAGE_T20" rip-cage:latest >/dev/null 2>&1
+  else
+    docker rmi rip-cage:latest >/dev/null 2>&1 || true
+  fi
+  docker rmi "$STUB_IMAGE_T20" >/dev/null 2>&1 || true
+  rm -rf "$TEST_DIR_T20"
+
+  # When RC_VERSION is "unknown", staleness check must be skipped — dry-run
+  # should NOT show "would build" / "would pull" (re-provisioning messages).
+  if echo "$unknown_dry_run_output" | grep -qi "would build\|would pull"; then
+    fail "RC_VERSION=unknown should skip stale check but triggered re-provisioning (output: $unknown_dry_run_output)"
+  else
+    pass "RC_VERSION=unknown skips staleness check (image treated as current)"
+  fi
+fi
 
 # --- Cleanup ---
 rm -rf "$SYMLINK_SKILLS_DIR" "$SYMLINK_TARGET_DIR" "$SYMLINK_SKILLS_DIR2" "$HOME_TARGET_DIR" "$SIBLING_DIR" "$TEST_DIR3"
