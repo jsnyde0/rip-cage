@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Docs: "Running multiple agents" section in `docs/reference/cli-reference.md` covering both supported shapes today — `Ctrl-b c` for windows inside one cage, and `rc up <other-path>` for separate cages — and explicitly names the second-terminal `rc up <same-path>` mirroring behavior so it isn't a surprise. README quickstart links to the new section from the worktree workflow. Forward-pointer to the v0.3 picker UX work.
+
 ## [0.2.0] - 2026-05-14
 
 Super-easy install: rip-cage now ships via Homebrew, and first-run pulls a pre-built image from GHCR instead of building locally.

@@ -72,6 +72,8 @@ rc up ../worktrees/feature-auth
 
 Spin up as many as you want. Each agent is sandboxed in its own container.
 
+For running more than one agent inside a *single* cage (or a note on what happens when you `rc up` the same path from a second terminal), see [Running multiple agents](docs/reference/cli-reference.md#running-multiple-agents).
+
 ## Who is this for?
 
 Rip cage is **your existing Claude Code workflow, caged** — not a new environment to learn.

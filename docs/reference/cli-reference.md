@@ -41,3 +41,13 @@ This means `rc down` from a project directory targets that project's container, 
 ## Container naming
 
 Container names are derived from the last two path components of the project directory. When collisions occur, a 4-character hash suffix is appended. Use `rc ls --output json` to discover exact container names — do not construct them manually.
+
+## Running multiple agents
+
+A cage starts a single tmux session named `rip-cage` and attaches it. Two shapes are supported today for running more than one agent at a time:
+
+**Multiple windows in one cage (one tmux session, multiple windows).** From inside an attached cage, press `Ctrl-b c` to create a new tmux window, then run `claude` (or `pi`, etc.) in it. `Ctrl-b n` / `Ctrl-b p` switch between windows; `Ctrl-b 0..9` jumps directly. The windows share the same workspace bind mount, credentials, and tmux session — useful when you want a second agent slot inside the same cage without a separate terminal on the host.
+
+**Multiple cages (one per workspace).** `rc up <other-path>` from a second host terminal starts an independent cage on a different project path. Each cage has its own container, its own tmux session, and its own state. This is the right shape when you want full isolation between agents — e.g. one cage per git worktree (see [Quick start → The worktree workflow](../../README.md#the-worktree-workflow)).
+
+**Heads up — second-terminal `rc up <same-path>` mirrors.** Today, opening a second terminal on the host and running `rc up` against a path that already has a running cage attaches the *same* tmux session as the first terminal. Both terminals see the same active window in lockstep; this is not a fresh agent slot. Use one of the two shapes above instead. A picker UX that lets `rc up` spawn or attach a separate session inside the same cage is planned for v0.3.
