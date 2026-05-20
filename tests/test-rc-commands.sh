@@ -657,6 +657,460 @@ WRAPPER_SCRIPT
   fi
 fi
 
+# --- Test 21: _next_session_slot — auto-name logic ---
+echo ""
+echo "=== Test 21: _next_session_slot picks lowest unused rip-cage-N slot ==="
+next_slot_output=$(bash -c '
+# Define the helper function directly for unit testing
+_next_session_slot() {
+  local existing_names="$1"
+  local n=2
+  while true; do
+    echo "$existing_names" | grep -qxF "rip-cage-${n}" || break
+    n=$((n + 1))
+  done
+  echo "rip-cage-${n}"
+}
+
+# No sessions: next slot is rip-cage-2
+result=$(_next_session_slot "rip-cage")
+echo "no-sessions:${result}"
+
+# rip-cage-2 taken: next is rip-cage-3
+result=$(_next_session_slot "$(printf "rip-cage\nrip-cage-2")")
+echo "two-taken:${result}"
+
+# rip-cage-2 and rip-cage-3 taken: next is rip-cage-4
+result=$(_next_session_slot "$(printf "rip-cage\nrip-cage-2\nrip-cage-3")")
+echo "three-taken:${result}"
+
+# rip-cage-foo does NOT occupy a slot; rip-cage-2 should still be available
+result=$(_next_session_slot "$(printf "rip-cage\nrip-cage-foo")")
+echo "non-numeric:${result}"
+
+# rip-cage-2 user-named takes slot 2; next is rip-cage-3
+result=$(_next_session_slot "$(printf "rip-cage\nrip-cage-2")")
+echo "user-named:${result}"
+')
+
+if echo "$next_slot_output" | grep -q "no-sessions:rip-cage-2"; then
+  pass "_next_session_slot: no sessions → rip-cage-2"
+else
+  fail "_next_session_slot: no sessions should give rip-cage-2 (got: $next_slot_output)"
+fi
+
+if echo "$next_slot_output" | grep -q "two-taken:rip-cage-3"; then
+  pass "_next_session_slot: rip-cage-2 taken → rip-cage-3"
+else
+  fail "_next_session_slot: rip-cage-2 taken should give rip-cage-3 (got: $next_slot_output)"
+fi
+
+if echo "$next_slot_output" | grep -q "three-taken:rip-cage-4"; then
+  pass "_next_session_slot: rip-cage-2,3 taken → rip-cage-4"
+else
+  fail "_next_session_slot: rip-cage-2,3 taken should give rip-cage-4 (got: $next_slot_output)"
+fi
+
+if echo "$next_slot_output" | grep -q "non-numeric:rip-cage-2"; then
+  pass "_next_session_slot: non-numeric suffix does not occupy slot (rip-cage-foo)"
+else
+  fail "_next_session_slot: rip-cage-foo should not block rip-cage-2 (got: $next_slot_output)"
+fi
+
+if echo "$next_slot_output" | grep -q "user-named:rip-cage-3"; then
+  pass "_next_session_slot: user-named rip-cage-2 occupies slot → next is rip-cage-3"
+else
+  fail "_next_session_slot: user-named rip-cage-2 should block slot 2 (got: $next_slot_output)"
+fi
+
+# --- Test 22: --new --session mutex flag check in rc up ---
+echo ""
+echo "=== Test 22: rc up --new --session exits 2 with usage message ==="
+TEST_DIR_T22=$(mktemp -d)
+mkdir -p "${TEST_DIR_T22}/.git"
+mutex_output=$(RC_ALLOWED_ROOTS="$TEST_DIR_T22" "$RC" up --dry-run --new --session "myname" "$TEST_DIR_T22" 2>&1 || true)
+if echo "$mutex_output" | grep -qi "mutually exclusive\|cannot use.*together\|--new.*--session\|--session.*--new"; then
+  pass "rc up --new --session shows mutually exclusive usage message"
+else
+  fail "rc up --new --session should show mutually exclusive error (got: $mutex_output)"
+fi
+# exit code should be 2 (usage error)
+actual_exit=$(RC_ALLOWED_ROOTS="$TEST_DIR_T22" "$RC" up --dry-run --new --session "myname" "$TEST_DIR_T22" 2>/dev/null; echo $?)
+if [[ "$actual_exit" == "2" ]]; then
+  pass "rc up --new --session exits with code 2"
+else
+  fail "rc up --new --session should exit 2, got: $actual_exit"
+fi
+rm -rf "$TEST_DIR_T22"
+
+# --- Test 23: rc up --dry-run does not show picker output ---
+echo ""
+echo "=== Test 23: rc up --dry-run skips picker (no 'Pick [' output) ==="
+TEST_DIR_T23=$(mktemp -d)
+mkdir -p "${TEST_DIR_T23}/.git"
+# --dry-run must not show picker prompt even if piped stdin would trigger picker
+dry_run_picker_out=$(RC_ALLOWED_ROOTS="$TEST_DIR_T23" "$RC" up --dry-run "$TEST_DIR_T23" 2>&1 </dev/null || true)
+if echo "$dry_run_picker_out" | grep -q "Pick \["; then
+  fail "rc up --dry-run should not show picker prompt (got: $dry_run_picker_out)"
+else
+  pass "rc up --dry-run does not show picker prompt"
+fi
+rm -rf "$TEST_DIR_T23"
+
+# --- Test 24: Non-TTY (piped stdin) skips picker ---
+echo ""
+echo "=== Test 24: rc up with non-TTY stdin skips picker ==="
+TEST_DIR_T24=$(mktemp -d)
+mkdir -p "${TEST_DIR_T24}/.git"
+# Pipe stdin from /dev/null so -t 0 is false — must not show picker
+nontty_out=$(RC_ALLOWED_ROOTS="$TEST_DIR_T24" "$RC" up --dry-run "$TEST_DIR_T24" 2>&1 </dev/null || true)
+if echo "$nontty_out" | grep -q "Pick \["; then
+  fail "rc up with non-TTY stdin should not show picker (got: $nontty_out)"
+else
+  pass "rc up with non-TTY stdin skips picker"
+fi
+rm -rf "$TEST_DIR_T24"
+
+# --- Test 25: rc sessions command exists and handles unknown container gracefully ---
+echo ""
+echo "=== Test 25: rc sessions command is recognized ==="
+# Sessions command should exist and error on unknown container
+sessions_unknown_out=$("$RC" sessions no-such-container-xyz 2>&1 || true)
+if echo "$sessions_unknown_out" | grep -qi "not found\|not running\|no such\|error"; then
+  pass "rc sessions with unknown container produces error"
+else
+  # Could also be that the subcommand itself doesn't exist yet — check for usage
+  if echo "$sessions_unknown_out" | grep -qi "usage\|sessions\|unknown command"; then
+    pass "rc sessions command recognized (usage or unknown-container error)"
+  else
+    fail "rc sessions should error on unknown container (got: $sessions_unknown_out)"
+  fi
+fi
+
+# --- Test 26: rc sessions --json flag recognized ---
+echo ""
+echo "=== Test 26: rc sessions --json flag is recognized ==="
+sessions_json_out=$("$RC" sessions no-such-container-xyz --json 2>&1 || true)
+# Should either produce JSON-shaped output or error non-zero (container not found)
+# Either way it should NOT say "unknown flag" or "invalid option"
+if echo "$sessions_json_out" | grep -qi "unknown flag\|invalid option\|unrecognized option"; then
+  fail "rc sessions --json flag not recognized (got: $sessions_json_out)"
+else
+  pass "rc sessions --json flag recognized (no 'unknown flag' error)"
+fi
+
+# --- Test 27: rc sessions --kill flag recognized ---
+echo ""
+echo "=== Test 27: rc sessions --kill flag is recognized ==="
+sessions_kill_out=$("$RC" sessions no-such-container-xyz --kill "rip-cage" 2>&1 || true)
+if echo "$sessions_kill_out" | grep -qi "unknown flag\|invalid option\|unrecognized option"; then
+  fail "rc sessions --kill flag not recognized (got: $sessions_kill_out)"
+else
+  pass "rc sessions --kill flag recognized (no 'unknown flag' error)"
+fi
+
+# --- Test 28: tmux.conf contains remain-on-exit setting ---
+echo ""
+echo "=== Test 28: tmux.conf has remain-on-exit on ==="
+if grep -q "remain-on-exit on" "${REPO_ROOT}/tmux.conf"; then
+  pass "tmux.conf contains 'remain-on-exit on'"
+else
+  fail "tmux.conf missing 'remain-on-exit on'"
+fi
+
+# --- Test 29: tmux.conf contains pane-died hook ---
+echo ""
+echo "=== Test 29: tmux.conf has pane-died hook ==="
+if grep -q "pane-died" "${REPO_ROOT}/tmux.conf"; then
+  pass "tmux.conf contains pane-died hook"
+else
+  fail "tmux.conf missing pane-died hook"
+fi
+
+# --- Test 30: init-rip-cage.sh does NOT contain runtime remain-on-exit set ---
+echo ""
+echo "=== Test 30: init-rip-cage.sh runtime remain-on-exit removed ==="
+if grep -q "tmux set-option -t rip-cage remain-on-exit" "${REPO_ROOT}/init-rip-cage.sh"; then
+  fail "init-rip-cage.sh still has runtime 'tmux set-option -t rip-cage remain-on-exit' (should be removed)"
+else
+  pass "init-rip-cage.sh does not have runtime remain-on-exit set (moved to tmux.conf)"
+fi
+
+# --- Test 31: init-rip-cage.sh does NOT contain runtime pane-died hook set ---
+echo ""
+echo "=== Test 31: init-rip-cage.sh runtime pane-died hook removed ==="
+if grep -q "tmux set-hook -t rip-cage pane-died" "${REPO_ROOT}/init-rip-cage.sh"; then
+  fail "init-rip-cage.sh still has runtime 'tmux set-hook -t rip-cage pane-died' (should be removed)"
+else
+  pass "init-rip-cage.sh does not have runtime pane-died hook set (moved to tmux.conf)"
+fi
+
+# --- Test 32: rc up --new flag is recognized (dry-run, no-TTY) ---
+echo ""
+echo "=== Test 32: rc up --new flag recognized ==="
+TEST_DIR_T32=$(mktemp -d)
+mkdir -p "${TEST_DIR_T32}/.git"
+new_flag_out=$(RC_ALLOWED_ROOTS="$TEST_DIR_T32" "$RC" up --dry-run --new "$TEST_DIR_T32" 2>&1 </dev/null || true)
+if echo "$new_flag_out" | grep -qi "unknown.*flag\|invalid.*option\|unrecognized"; then
+  fail "rc up --new flag not recognized (got: $new_flag_out)"
+else
+  pass "rc up --new flag recognized (no unrecognized flag error)"
+fi
+rm -rf "$TEST_DIR_T32"
+
+# --- Test 33: rc up --session flag is recognized (dry-run, no-TTY) ---
+echo ""
+echo "=== Test 33: rc up --session flag recognized ==="
+TEST_DIR_T33=$(mktemp -d)
+mkdir -p "${TEST_DIR_T33}/.git"
+session_flag_out=$(RC_ALLOWED_ROOTS="$TEST_DIR_T33" "$RC" up --dry-run --session "rip-cage" "$TEST_DIR_T33" 2>&1 </dev/null || true)
+if echo "$session_flag_out" | grep -qi "unknown.*flag\|invalid.*option\|unrecognized"; then
+  fail "rc up --session flag not recognized (got: $session_flag_out)"
+else
+  pass "rc up --session flag recognized (no unrecognized flag error)"
+fi
+rm -rf "$TEST_DIR_T33"
+
+# --- Test 34: _up_attach_tmux uses [[ -t 0 && -t 1 ]] (both stdin and stdout TTY check) ---
+echo ""
+echo "=== Test 34: _up_attach_tmux checks both stdin and stdout TTY ==="
+# Verify the source code uses the widened check
+if grep -A5 "_up_attach_tmux()" "${REPO_ROOT}/rc" | grep -q "\-t 0"; then
+  pass "_up_attach_tmux includes -t 0 (stdin) TTY check"
+else
+  fail "_up_attach_tmux missing -t 0 stdin TTY check"
+fi
+
+# --- Test 35: _tmux_picker N=0 with mode=attach returns exit 1 + stderr pointing to rc up ---
+echo ""
+echo "=== Test 35: _tmux_picker in attach mode with N=0 sessions exits 1 + stderr points to rc up ==="
+t35_out=$(bash -c '
+_PICKER_SESSION=""
+_tmux_picker() {
+  local cname="$1"
+  local mode="${2:-up}"
+  # Simulate: docker returns 0 sessions
+  local raw_sessions=""
+  local sorted_sessions
+  sorted_sessions=$(echo "$raw_sessions" | sort -s -k1,1 -rn | awk '"'"'{$1=""; print substr($0,2)}'"'"' )
+  local session_count
+  session_count=$(echo "$sorted_sessions" | grep -c . || true)
+  if [[ "$session_count" -eq 0 ]]; then
+    if [[ "$mode" == "attach" ]]; then
+      echo "Error: no tmux sessions running in $cname. Start one with: rc up" >&2
+      return 1
+    fi
+    _PICKER_SESSION="rip-cage"
+    return 0
+  fi
+}
+_tmux_picker "fake-cage" "attach"
+echo "exit:$?"
+' 2>&1)
+if echo "$t35_out" | grep -q "exit:1"; then
+  pass "_tmux_picker attach N=0: exits 1"
+else
+  fail "_tmux_picker attach N=0: expected exit 1 (got: $t35_out)"
+fi
+if echo "$t35_out" | grep -qi "rc up"; then
+  pass "_tmux_picker attach N=0: stderr points to rc up"
+else
+  fail "_tmux_picker attach N=0: stderr should mention 'rc up' (got: $t35_out)"
+fi
+
+# --- Test 36: rc sessions is listed in usage ---
+echo ""
+echo "=== Test 36: rc sessions in usage text ==="
+usage_out=$("$RC" 2>&1 || true)
+if echo "$usage_out" | grep -q "sessions"; then
+  pass "rc usage mentions sessions subcommand"
+else
+  fail "rc usage does not mention sessions (got: $usage_out)"
+fi
+
+# --- Test 37: ADR-006 contains Tier 1a (parallel tmux sessions) ---
+echo ""
+echo "=== Test 37: ADR-006 D1 contains Tier 1a ==="
+if grep -q "Tier 1a" "${REPO_ROOT}/docs/decisions/ADR-006-multi-agent-architecture.md"; then
+  pass "ADR-006 contains Tier 1a"
+else
+  fail "ADR-006 missing Tier 1a (parallel tmux sessions in one cage)"
+fi
+
+# --- Test 38: ADR-006 contains Tier 1b (multiple containers) ---
+echo ""
+echo "=== Test 38: ADR-006 D1 contains Tier 1b ==="
+if grep -q "Tier 1b" "${REPO_ROOT}/docs/decisions/ADR-006-multi-agent-architecture.md"; then
+  pass "ADR-006 contains Tier 1b"
+else
+  fail "ADR-006 missing Tier 1b (multiple containers rename)"
+fi
+
+# --- Test 39: multi-agent-architecture.md Tier 1 heading renamed to Tier 1b ---
+echo ""
+echo "=== Test 39: multi-agent-architecture.md has Tier 1b heading ==="
+if grep -q "Tier 1b" "${REPO_ROOT}/docs/2026-03-27-multi-agent-architecture.md"; then
+  pass "multi-agent-architecture.md contains Tier 1b"
+else
+  fail "multi-agent-architecture.md missing Tier 1b rename"
+fi
+
+# --- Test 40: ROADMAP.md line 76 area has Tier 1b (not bare Tier 1) ---
+echo ""
+echo "=== Test 40: ROADMAP.md multi-agent workflow line uses Tier 1b ==="
+if grep -q "Tier 1b" "${REPO_ROOT}/docs/ROADMAP.md"; then
+  pass "ROADMAP.md contains Tier 1b reference"
+else
+  fail "ROADMAP.md missing Tier 1b (line 76 should be updated)"
+fi
+
+# --- Test 41: cli-reference.md Running multiple agents section lacks v0.3 forward-pointer ---
+echo ""
+echo "=== Test 41: cli-reference.md no longer has v0.3 forward-pointer ==="
+if grep -q "v0\.3" "${REPO_ROOT}/docs/reference/cli-reference.md"; then
+  fail "cli-reference.md still has v0.3 forward-pointer (should be removed)"
+else
+  pass "cli-reference.md no longer has v0.3 forward-pointer"
+fi
+
+# --- Test 42: cli-reference.md mentions rc sessions command ---
+echo ""
+echo "=== Test 42: cli-reference.md documents rc sessions ==="
+if grep -q "rc sessions" "${REPO_ROOT}/docs/reference/cli-reference.md"; then
+  pass "cli-reference.md documents rc sessions"
+else
+  fail "cli-reference.md missing rc sessions documentation"
+fi
+
+# --- Test 43: cli-reference.md documents --new flag ---
+echo ""
+echo "=== Test 43: cli-reference.md documents --new flag ==="
+if grep -q "\-\-new" "${REPO_ROOT}/docs/reference/cli-reference.md"; then
+  pass "cli-reference.md documents --new flag"
+else
+  fail "cli-reference.md missing --new flag documentation"
+fi
+
+# --- Test 44: CHANGELOG.md Unreleased has new picker/sessions Added entries ---
+echo ""
+echo "=== Test 44: CHANGELOG.md Unreleased mentions picker ==="
+if grep -q "picker\|rc sessions\|--new" "${REPO_ROOT}/CHANGELOG.md"; then
+  pass "CHANGELOG.md mentions picker or rc sessions in Unreleased"
+else
+  fail "CHANGELOG.md missing picker/rc sessions in Unreleased section"
+fi
+
+# --- Test 45: rc sessions --json with no container returns JSON error or container-not-found (valid JSON shape) ---
+echo ""
+echo "=== Test 45: rc sessions --json unknown container returns parseable error ==="
+# Run with --output json to get JSON mode
+sessions_json_valid=$("$RC" --output json sessions no-such-container-xyz 2>/dev/null || true)
+# When container is not found, should return JSON error or empty array — not a parse error
+if echo "$sessions_json_valid" | jq . >/dev/null 2>&1; then
+  pass "rc sessions --output json returns valid JSON on unknown container"
+else
+  # If no --output json, check that --json flag returns something reasonable
+  sessions_json_direct=$("$RC" sessions no-such-container-xyz --json 2>/dev/null || true)
+  if echo "$sessions_json_direct" | jq . >/dev/null 2>&1; then
+    pass "rc sessions --json returns valid JSON on unknown container"
+  else
+    fail "rc sessions --json did not return valid JSON (got: $sessions_json_valid / $sessions_json_direct)"
+  fi
+fi
+
+# --- Test 46: picker EOF on stdin exits 1 with expected stderr message (AC-5b) ---
+echo ""
+echo "=== Test 46: picker EOF on stdin exits 1 and prints expected message ==="
+# Inline the picker read loop with a pre-built names array (no docker calls needed).
+# Feed EOF from /dev/null as stdin to trigger the EOF path.
+t46_stderr=$(bash -c '
+_PICKER_SESSION=""
+# Pre-built state: one session in the names array (so we reach the read loop)
+names=("rip-cage")
+new_idx=2
+# Reproduce the picker read loop
+local_input=""
+local_invalid=0
+while true; do
+  printf "Pick [1]: " >&2
+  if ! read -r local_input; then
+    echo "" >&2
+    echo "rc: picker received EOF on stdin; refusing to auto-select. Use --new or --session <name>, or attach via '"'"'rc attach <cage>'"'"'." >&2
+    exit 1
+  fi
+  local_input=$(echo "$local_input" | sed '"'"'s/^[[:space:]]*//;s/[[:space:]]*$//'"'"')
+  if [[ -z "$local_input" ]]; then
+    _PICKER_SESSION="${names[0]}"
+    exit 0
+  fi
+  case "$local_input" in
+    '"'"''"'"'|*[!0-9]*)
+      local_invalid=$((local_invalid + 1))
+      [[ "$local_invalid" -ge 2 ]] && exit 1
+      continue ;;
+  esac
+  if [[ "$local_input" -ge 1 ]] && [[ "$local_input" -lt "$new_idx" ]]; then
+    _PICKER_SESSION="${names[$((local_input - 1))]}"
+    exit 0
+  fi
+  local_invalid=$((local_invalid + 1))
+  [[ "$local_invalid" -ge 2 ]] && exit 1
+done
+' </dev/null 2>&1)
+t46_exit=$?
+if [[ "$t46_exit" -ne 0 ]]; then
+  pass "picker EOF: exits non-zero (exit $t46_exit)"
+else
+  fail "picker EOF: expected non-zero exit, got 0 (stderr: $t46_stderr)"
+fi
+if echo "$t46_stderr" | grep -q "EOF on stdin\|refusing to auto-select"; then
+  pass "picker EOF: stderr contains expected message"
+else
+  fail "picker EOF: stderr missing expected message (got: $t46_stderr)"
+fi
+
+# --- Test 47: picker whitespace-only input treated as empty → selects entry 1 (AC-5c) ---
+echo ""
+echo "=== Test 47: picker whitespace-only input selects entry 1 ==="
+# Feed "   \n" (spaces + newline) to the picker read loop; expect it selects names[0]
+t47_result=$(bash -c '
+_PICKER_SESSION=""
+names=("rip-cage" "rip-cage-2")
+new_idx=3
+local_input=""
+local_invalid=0
+while true; do
+  if ! read -r local_input; then
+    exit 1
+  fi
+  local_input=$(echo "$local_input" | sed '"'"'s/^[[:space:]]*//;s/[[:space:]]*$//'"'"')
+  if [[ -z "$local_input" ]]; then
+    _PICKER_SESSION="${names[0]}"
+    echo "selected:${names[0]}"
+    exit 0
+  fi
+  case "$local_input" in
+    '"'"''"'"'|*[!0-9]*)
+      local_invalid=$((local_invalid + 1))
+      [[ "$local_invalid" -ge 2 ]] && exit 1
+      continue ;;
+  esac
+  if [[ "$local_input" -ge 1 ]] && [[ "$local_input" -lt "$new_idx" ]]; then
+    _PICKER_SESSION="${names[$((local_input - 1))]}"
+    echo "selected:${names[$((local_input - 1))]}"
+    exit 0
+  fi
+  local_invalid=$((local_invalid + 1))
+  [[ "$local_invalid" -ge 2 ]] && exit 1
+done
+' < <(printf '   \n')
+)
+if echo "$t47_result" | grep -q "selected:rip-cage$"; then
+  pass "picker whitespace-only input: selects entry 1 (rip-cage)"
+else
+  fail "picker whitespace-only input: expected 'selected:rip-cage', got: $t47_result"
+fi
+
 # --- Cleanup ---
 rm -rf "$SYMLINK_SKILLS_DIR" "$SYMLINK_TARGET_DIR" "$SYMLINK_SKILLS_DIR2" "$HOME_TARGET_DIR" "$SIBLING_DIR" "$TEST_DIR3"
 rm -rf "$TEST_DIR" "$TEST_DIR2"

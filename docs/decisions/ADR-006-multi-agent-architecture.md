@@ -16,11 +16,12 @@ Rip-cage Phase 1 runs one agent per container. The flywheel investigation of Ema
 **Firmness: FIRM**
 
 Multi-agent support is delivered in three tiers, each independently useful:
-- Tier 1: Multiple containers, shared bind mount, git coordination (already works)
+- Tier 1a: Parallel tmux sessions in one cage (multiple agents sharing the same container, workspace, and credentials — lightest-weight shape)
+- Tier 1b: Multiple containers, shared bind mount, git coordination (already works — use when full container isolation or per-cage `.rip-cage.yaml` differences matter)
 - Tier 2: Swarm grouping with `rc swarm`, broadcast, lifecycle management
 - Tier 3: Agent Mail for structured coordination, SLB for peer approval, dashboard
 
-**Rationale:** NTM and ACFS both evolved incrementally. Big-bang multi-agent systems are brittle -- each tier should be usable on its own before the next is built. Tier 1 covers most real use cases (2 agents on different parts of the same repo). Tier 2 adds convenience. Tier 3 adds coordination for overlapping work.
+**Rationale:** NTM and ACFS both evolved incrementally. Big-bang multi-agent systems are brittle -- each tier should be usable on its own before the next is built. Tier 1a is the lighter-weight choice when agents share workspace, credentials, and container lifecycle but want independent terminals; Tier 1b remains the choice when full isolation (or per-cage `.rip-cage.yaml` differences) matters. Together Tier 1a and Tier 1b cover most real use cases (2 agents on different parts of the same repo). Tier 2 adds convenience. Tier 3 adds coordination for overlapping work.
 
 **What would invalidate this:** If a use case requires Tier 3 coordination from day one (e.g., 5+ agents on tightly coupled code). In practice, start with fewer agents and looser coupling.
 

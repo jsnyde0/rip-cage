@@ -73,7 +73,7 @@ Enable basic multi-agent workflows.
 - [ ] `rc up --label` support
 - [ ] `rc ls` filtering by label
 - [ ] Optional `bv` (beads viewer) and `cm` (CASS memory) tools
-- [ ] Document Tier 1 multi-agent workflow (shared bind mount + git)
+- [ ] Document Tier 1b multi-agent workflow (shared bind mount + git)
 
 **Design:** [Multi-Agent Architecture](2026-03-27-multi-agent-architecture.md)
 

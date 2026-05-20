@@ -9,7 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Docs: "Running multiple agents" section in `docs/reference/cli-reference.md` covering both supported shapes today — `Ctrl-b c` for windows inside one cage, and `rc up <other-path>` for separate cages — and explicitly names the second-terminal `rc up <same-path>` mirroring behavior so it isn't a surprise. README quickstart links to the new section from the worktree workflow. Forward-pointer to the v0.3 picker UX work.
+- Docs: "Running multiple agents" section in `docs/reference/cli-reference.md` documenting the picker UX, `--new` / `--session` flags, `rc sessions` subcommand, and the two still-valid alternatives (`Ctrl-b c` windows in one cage, `rc up <other-path>` for separate cages). README quickstart links to the new section from the worktree workflow.
+- Session picker on `rc up <path>` and `rc attach <cage>`: when one or more tmux sessions already exist in the cage, a numbered list is shown (sorted by most-recently-attached) with a `[new] new session` option. Empty input (Enter) reattaches the most-recently-used session; no picker on the first `rc up` (N=0, current behavior preserved).
+- `rc up --new`: skip picker and always create a new auto-named session (`rip-cage-2`, `rip-cage-3`, …).
+- `rc up --session NAME`: attach session `NAME` if it exists; create and attach it otherwise.
+- `rc sessions <cage>`: list active tmux sessions (name, attached-client count, idle time). `--json` for machine-readable output; `--kill NAME` to kill a session (refuses on last session unless `--force` is given).
+
+### Changed
+
+- ADR-006 D1 evolved in place: current Tier 1 (multiple containers) renamed to Tier 1b; new Tier 1a (parallel tmux sessions in one cage) added. One-paragraph rationale explains when to choose 1a vs 1b. Cascade applied to `docs/2026-03-27-multi-agent-architecture.md` and `docs/ROADMAP.md`.
+- `tmux.conf` gains `remain-on-exit on` and `pane-died 'respawn-pane -c /workspace'` as build-time global settings (moved from `init-rip-cage.sh` runtime stanzas so all sessions — including picker-spawned ones — benefit).
 
 ## [0.2.0] - 2026-05-14
 

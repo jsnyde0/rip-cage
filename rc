@@ -200,8 +200,14 @@ Commands:
     --pids-limit N      PID limit (default: 500)
     --no-forward-ssh    Disable host ssh-agent forwarding (ADR-017)
     --github-identity=KEY  Pin github.com to KEY basename (e.g. id_ed25519_work) (ADR-020 D3)
+    --new               Skip picker; always create a new auto-named session (rip-cage-N)
+    --session NAME      Attach session NAME if it exists; create it otherwise
+  sessions <cage> [options]                    List or kill tmux sessions in a cage
+    --json              JSON array output (name, attached, idle_seconds)
+    --kill NAME         Kill the named session (refuses if it is the last session)
+    --force             Override last-session refusal with --kill
   ls                                           List rip-cage containers
-  attach [name]                                Attach to container tmux session
+  attach [name]                                Attach to container tmux session (with picker)
   down [name]                                  Stop a container
   destroy [-f|--force] [name]                   Remove container and volumes
   reload [name] [--dry-run]                     Hot-reload .rip-cage.yaml allowlist changes (ssh.allowed_hosts)
@@ -2851,16 +2857,230 @@ Continuing anyway — bd calls inside the container will fail until resolved."
   return 0
 }
 
-# _up_attach_tmux — attach to the container's tmux session when a real TTY is
-# present; print a hint instead when called from a non-interactive context
-# (e.g. an agent Bash tool, CI, or pipe). Without the TTY check, docker exec -it
-# exits 1 and makes rc up appear to fail even on a successful container start.
+# _next_session_slot — given a newline-separated list of existing tmux session
+# names, return the name rip-cage-N where N is the lowest integer >= 2 that is
+# not already occupied.  Names that do not exactly match rip-cage-<decimal-N>
+# (e.g. rip-cage-foo, rip-cage itself, custom names) are ignored by the slot
+# scanner — they do not block any slot.
+_next_session_slot() {
+  local existing_names="$1"
+  local n=2
+  while true; do
+    echo "$existing_names" | grep -qxF "rip-cage-${n}" || break
+    n=$((n + 1))
+  done
+  echo "rip-cage-${n}"
+}
+
+# _tmux_picker — render a numbered session picker in the current terminal.
+# Args: $1 = container name, $2 = mode ("up"|"attach")
+# Returns via _PICKER_SESSION: the session name chosen, or "" if [new] was picked.
+# Exits 130 on Ctrl-C, exits 1 on EOF or persistent invalid input.
+_PICKER_SESSION=""
+_tmux_picker() {
+  local cname="$1"
+  local mode="${2:-up}"
+
+  # Build sorted session list: sort by session_last_attached descending (never-
+  # attached sessions report 0 and sort to the bottom; ties preserve list order).
+  local raw_sessions
+  raw_sessions=$(docker exec "$cname" tmux list-sessions -F '#{session_last_attached} #{session_name}' 2>/dev/null || true)
+
+  # Sort descending by attach time; never-attached (0) go to bottom.
+  local sorted_sessions
+  sorted_sessions=$(echo "$raw_sessions" | sort -s -k1,1 -rn | awk '{$1=""; print substr($0,2)}' )
+
+  local session_count
+  session_count=$(echo "$sorted_sessions" | grep -c . || true)
+
+  if [[ "$session_count" -eq 0 ]]; then
+    if [[ "$mode" == "attach" ]]; then
+      echo "Error: no tmux sessions running in $cname. Start one with: rc up" >&2
+      return 1
+    fi
+    # N=0: no picker; create default session below
+    _PICKER_SESSION="rip-cage"
+    return 0
+  fi
+
+  # Build display list with index, name, and last-attach time
+  local entries=()
+  local names=()
+  local idx=1
+  local raw_line
+  while IFS= read -r raw_line; do
+    [[ -z "$raw_line" ]] && continue
+    local sname="$raw_line"
+    # Look up last_attached for display
+    local ts
+    ts=$(docker exec "$cname" tmux display-message -p -t "$sname" '#{session_last_attached}' 2>/dev/null || echo "0")
+    local display_time
+    if [[ "$ts" == "0" ]] || [[ -z "$ts" ]]; then
+      display_time="never"
+    else
+      local now age_s
+      now=$(date +%s)
+      age_s=$(( now - ts ))
+      if [[ "$age_s" -lt 60 ]]; then
+        display_time="${age_s}s ago"
+      elif [[ "$age_s" -lt 3600 ]]; then
+        display_time="$(( age_s / 60 ))m ago"
+      else
+        display_time="$(( age_s / 3600 ))h ago"
+      fi
+    fi
+    entries+=("  ${idx}) ${sname} (last attached: ${display_time})")
+    names+=("$sname")
+    idx=$((idx + 1))
+  done <<EOF
+$sorted_sessions
+EOF
+
+  local new_idx="$idx"
+  entries+=("  ${new_idx}) [new] new session")
+
+  # Display picker
+  local e
+  for e in "${entries[@]}"; do
+    echo "$e" >&2
+  done
+  echo "" >&2
+
+  local input choice invalid_count=0
+  while true; do
+    printf "Pick [1]: " >&2
+    if ! read -r input; then
+      # EOF on stdin — AC-5(b): refuse to auto-select, exit 1
+      echo "" >&2
+      echo "rc: picker received EOF on stdin; refusing to auto-select. Use --new or --session <name>, or attach via 'rc attach <cage>'." >&2
+      return 1
+    fi
+
+    # Strip leading/trailing whitespace
+    input=$(echo "$input" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+    # Empty input = select entry 1
+    if [[ -z "$input" ]]; then
+      if [[ "${#names[@]}" -gt 0 ]]; then
+        _PICKER_SESSION="${names[0]}"
+        return 0
+      fi
+      _PICKER_SESSION=""
+      return 0
+    fi
+
+    # Validate numeric
+    case "$input" in
+      ''|*[!0-9]*)
+        invalid_count=$((invalid_count + 1))
+        if [[ "$invalid_count" -ge 2 ]]; then
+          echo "Error: invalid input. Exiting." >&2
+          return 1
+        fi
+        echo "Invalid selection. Try again." >&2
+        continue
+        ;;
+    esac
+
+    choice="$input"
+
+    if [[ "$choice" -ge 1 ]] && [[ "$choice" -lt "$new_idx" ]]; then
+      _PICKER_SESSION="${names[$((choice - 1))]}"
+      return 0
+    elif [[ "$choice" -eq "$new_idx" ]]; then
+      # [new] selected
+      _PICKER_SESSION=""
+      return 0
+    else
+      invalid_count=$((invalid_count + 1))
+      if [[ "$invalid_count" -ge 2 ]]; then
+        echo "Error: invalid selection. Exiting." >&2
+        return 1
+      fi
+      echo "Invalid selection. Try again." >&2
+    fi
+  done
+}
+
+# _up_attach_tmux — attach to a container's tmux session when a real TTY is
+# present on both stdin AND stdout; print a hint instead when called from a
+# non-interactive context (e.g. an agent Bash tool, CI, or pipe).
+# Args: $1=container-name $2=session-name (default: rip-cage)
 _up_attach_tmux() {
   local name="$1"
-  if [[ -t 1 ]]; then
-    docker exec -it "$name" tmux new-session -A -s rip-cage
+  local session="${2:-rip-cage}"
+  if [[ -t 0 && -t 1 ]]; then
+    docker exec -it "$name" tmux attach-session -t "$session"
   else
     echo "Container $name is running. Attach with: rc attach $name"
+  fi
+}
+
+# _up_attach_tmux_new — create a new auto-named session and attach.
+# Args: $1=container-name
+_up_attach_tmux_new() {
+  local name="$1"
+  local existing
+  existing=$(docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+  local new_session
+  new_session=$(_next_session_slot "$existing")
+  if ! docker exec "$name" tmux new-session -d -s "$new_session" -c /workspace 2>/dev/null; then
+    echo "Error: could not create session $new_session — it may already exist (concurrent --new race). Retry." >&2
+    return 1
+  fi
+  if [[ -t 0 && -t 1 ]]; then
+    docker exec -it "$name" tmux attach-session -t "$new_session"
+  else
+    echo "Container $name is running. Session $new_session created. Attach with: rc attach $name"
+  fi
+}
+
+# _up_attach_tmux_picker — show picker when sessions exist, or create default.
+# Args: $1=container-name, $2=mode ("up"|"attach")
+_up_attach_tmux_picker() {
+  local name="$1"
+  local mode="${2:-up}"
+
+  # Count existing sessions
+  local existing
+  existing=$(docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+  local count
+  count=$(echo "$existing" | grep -c . || true)
+
+  if [[ "$count" -eq 0 ]]; then
+    if [[ "$mode" == "attach" ]]; then
+      echo "Error: no tmux sessions running in $name. Start one with: rc up" >&2
+      return 1
+    fi
+    # N=0: create default session and attach
+    docker exec "$name" tmux new-session -d -s rip-cage -c /workspace 2>/dev/null || true
+    if [[ -t 0 && -t 1 ]]; then
+      docker exec -it "$name" tmux attach-session -t rip-cage
+    else
+      echo "Container $name is running. Attach with: rc attach $name"
+    fi
+    return
+  fi
+
+  if [[ -t 0 && -t 1 ]]; then
+    # Show picker
+    if _tmux_picker "$name" "$mode"; then
+      if [[ -z "$_PICKER_SESSION" ]]; then
+        # [new] selected
+        _up_attach_tmux_new "$name"
+      else
+        docker exec -it "$name" tmux attach-session -t "$_PICKER_SESSION"
+      fi
+    else
+      return 1
+    fi
+  else
+    # Non-TTY: attach existing rip-cage session or first available
+    local default_session="rip-cage"
+    if ! echo "$existing" | grep -qxF "rip-cage"; then
+      default_session=$(echo "$existing" | head -1)
+    fi
+    docker exec -i "$name" tmux attach-session -t "$default_session"
   fi
 }
 
@@ -2876,6 +3096,9 @@ cmd_up() {
   # ADR-020 D7: --no-ssh-config / --ssh-config opt-out/in flags.
   # Empty = not explicitly set (implication chain applies).
   local rc_no_ssh_config_flag="" rc_ssh_config_explicit_flag=""
+  # Multi-session flags: --new skips picker and creates new auto-named session;
+  # --session <name> attaches named session or creates it.  Mutually exclusive.
+  local rc_up_new_session="" rc_up_session_name=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --port) [[ $# -ge 2 ]] || { echo "Error: --port requires a value" >&2; exit 1; }; port="$2"; shift 2 ;;
@@ -2887,9 +3110,16 @@ cmd_up() {
       --no-ssh-config) rc_no_ssh_config_flag="off"; shift ;;
       --ssh-config) rc_ssh_config_explicit_flag="on"; shift ;;
       --github-identity=*) rc_github_identity_flag="${1#--github-identity=}"; shift ;;
+      --new) rc_up_new_session="true"; shift ;;
+      --session) [[ $# -ge 2 ]] || { echo "Error: --session requires a value" >&2; exit 1; }; rc_up_session_name="$2"; shift 2 ;;
       *) path="$1"; shift ;;
     esac
   done
+  # --new and --session are mutually exclusive
+  if [[ -n "$rc_up_new_session" ]] && [[ -n "$rc_up_session_name" ]]; then
+    echo "Error: --new and --session are mutually exclusive. Use one or the other." >&2
+    exit 2
+  fi
   local rc_egress="${RIP_CAGE_EGRESS:-on}"
 
   # ADR-020 D7: resolve ssh-config posture from flags + implication chain.
@@ -3113,7 +3343,17 @@ cmd_up() {
       _up_json_output "$name" "attached" "$path" "running"
       return
     fi
-    _up_attach_tmux "$name"
+    if [[ -n "$rc_up_new_session" ]]; then
+      _up_attach_tmux_new "$name"
+    elif [[ -n "$rc_up_session_name" ]]; then
+      # --session: create if not exists, then attach
+      if ! docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -qxF "$rc_up_session_name"; then
+        docker exec "$name" tmux new-session -d -s "$rc_up_session_name" -c /workspace 2>/dev/null || true
+      fi
+      _up_attach_tmux "$name" "$rc_up_session_name"
+    else
+      _up_attach_tmux_picker "$name" "up"
+    fi
     return
   elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
     log "Resuming stopped container $name..."
@@ -3227,7 +3467,16 @@ cmd_up() {
       _up_json_output "$name" "resumed" "$path" "running" "success"
       return
     fi
-    _up_attach_tmux "$name"
+    if [[ -n "$rc_up_new_session" ]]; then
+      _up_attach_tmux_new "$name"
+    elif [[ -n "$rc_up_session_name" ]]; then
+      if ! docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -qxF "$rc_up_session_name"; then
+        docker exec "$name" tmux new-session -d -s "$rc_up_session_name" -c /workspace 2>/dev/null || true
+      fi
+      _up_attach_tmux "$name" "$rc_up_session_name"
+    else
+      _up_attach_tmux_picker "$name" "up"
+    fi
     return
   elif [[ "$_inspect_exit" -ne 0 ]]; then
     : # container absent — fall through to "New container" block below
@@ -3410,7 +3659,17 @@ cmd_up() {
     _up_json_output "$name" "created" "$path" "running" "success"
     return
   fi
-  _up_attach_tmux "$name"
+  if [[ -n "$rc_up_new_session" ]]; then
+    _up_attach_tmux_new "$name"
+  elif [[ -n "$rc_up_session_name" ]]; then
+    if ! docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -qxF "$rc_up_session_name"; then
+      docker exec "$name" tmux new-session -d -s "$rc_up_session_name" -c /workspace 2>/dev/null || true
+    fi
+    _up_attach_tmux "$name" "$rc_up_session_name"
+  else
+    # New container: init created rip-cage session; attach directly (N=1 or N=0 handled by picker)
+    _up_attach_tmux_picker "$name" "up"
+  fi
 }
 
 cmd_ls() {
@@ -3432,6 +3691,101 @@ cmd_ls() {
                    fwd=$5;    if (fwd == "")    fwd="legacy";    else if (fwd    != "on" && fwd    != "off") fwd   ="invalid:" fwd;
                    ghi=$6;    if (ghi == "")    ghi="\342\200\224";
                    print $1"\t"$2"\t"egress"\t"fwd"\t"ghi"\t"$3}'; }
+  fi
+}
+
+cmd_sessions() {
+  local cname="${1:-}"
+  shift || true
+  local do_json="" do_kill="" do_force="" kill_name=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json)  do_json="true"; shift ;;
+      --kill)  [[ $# -ge 2 ]] || { echo "Error: --kill requires a session name" >&2; exit 1; }
+               do_kill="true"; kill_name="$2"; shift 2 ;;
+      --force) do_force="true"; shift ;;
+      *) echo "Error: unknown option for sessions: $1" >&2; exit 1 ;;
+    esac
+  done
+
+  # Resolve container name
+  if [[ -z "$cname" ]]; then
+    cname=$(resolve_name "") || exit 1
+  fi
+
+  # Verify container is running
+  local state
+  state=$(docker inspect --format '{{.State.Status}}' "$cname" 2>/dev/null || true)
+  if [[ "$state" != "running" ]]; then
+    echo "Error: container $cname is not running" >&2
+    exit 1
+  fi
+
+  # Get session list
+  local session_data
+  session_data=$(docker exec "$cname" tmux list-sessions -F '#{session_name} #{session_attached} #{session_activity}' 2>/dev/null || true)
+
+  if [[ -n "$do_kill" ]]; then
+    # Verify session exists
+    if ! echo "$session_data" | awk '{print $1}' | grep -qxF "$kill_name"; then
+      echo "Error: session '$kill_name' does not exist in container $cname" >&2
+      exit 1
+    fi
+    # Count sessions
+    local session_count
+    session_count=$(echo "$session_data" | grep -c . || true)
+    if [[ "$session_count" -le 1 ]] && [[ -z "$do_force" ]]; then
+      echo "Error: '$kill_name' is the only remaining session. Killing it would leave the cage with no sessions." >&2
+      echo "Use --force to override (container stays running on its sleep infinity entrypoint)." >&2
+      exit 1
+    fi
+    docker exec "$cname" tmux kill-session -t "$kill_name" 2>/dev/null
+    return 0
+  fi
+
+  if [[ -n "$do_json" ]] || [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    # JSON array output: name, attached (int), idle_seconds (int)
+    local now
+    now=$(date +%s)
+    local json_out="["
+    local first="true"
+    local sname sattached sactivity
+    while read -r sname sattached sactivity; do
+      [[ -z "$sname" ]] && continue
+      local idle_secs=$(( now - sactivity ))
+      [[ "$idle_secs" -lt 0 ]] && idle_secs=0
+      if [[ "$first" == "true" ]]; then
+        json_out="${json_out}{\"name\":\"${sname}\",\"attached\":${sattached},\"idle_seconds\":${idle_secs}}"
+        first="false"
+      else
+        json_out="${json_out},{\"name\":\"${sname}\",\"attached\":${sattached},\"idle_seconds\":${idle_secs}}"
+      fi
+    done <<EOF
+$session_data
+EOF
+    json_out="${json_out}]"
+    echo "$json_out"
+  else
+    # Human output: name attached idle
+    local now
+    now=$(date +%s)
+    local sname sattached sactivity
+    while read -r sname sattached sactivity; do
+      [[ -z "$sname" ]] && continue
+      local idle_secs=$(( now - sactivity ))
+      [[ "$idle_secs" -lt 0 ]] && idle_secs=0
+      local idle_fmt
+      if [[ "$idle_secs" -lt 60 ]]; then
+        idle_fmt="${idle_secs}s"
+      elif [[ "$idle_secs" -lt 3600 ]]; then
+        idle_fmt="$(( idle_secs / 60 ))m"
+      else
+        idle_fmt="$(( idle_secs / 3600 ))h"
+      fi
+      echo "$sname $sattached $idle_fmt"
+    done <<EOF
+$session_data
+EOF
   fi
 }
 
@@ -3484,7 +3838,14 @@ resolve_name() {
 cmd_attach() {
   local name
   name=$(resolve_name "${1:-}") || exit 1
-  docker exec -it "$name" tmux new-session -A -s rip-cage
+  # Verify the container is running (attach doesn't provision)
+  local state
+  state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
+  if [[ "$state" != "running" ]]; then
+    echo "Error: container $name is not running. Start it with: rc up" >&2
+    exit 1
+  fi
+  _up_attach_tmux_picker "$name" "attach"
 }
 
 verify_rc_container() {
@@ -5251,7 +5612,7 @@ fi
 # Reject --output json on commands that don't support it
 if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   case "${1:-}" in
-    build|ls|up|down|destroy|test|doctor|auth) ;;  # supported
+    build|ls|up|sessions|down|destroy|test|doctor|auth) ;;  # supported
     init|attach|schema|completions|setup|config|__bd-preflight-test|"")
       echo "Error: --output json is not supported for '${1:-}' (use 'rc config show --json' for config JSON)" >&2
       exit 1
@@ -5265,17 +5626,17 @@ if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   check_jq
 fi
 
-# tmux: only needed for `rc up` (VS Code / rc init doesn't use tmux)
+# tmux: only needed for `rc up`, `rc attach`, `rc sessions` (VS Code / rc init doesn't use tmux)
 # Skip when --output json: agent callers invoke up programmatically, never need tmux
 case "${1:-}" in
-  up) [[ "$OUTPUT_FORMAT" == "json" ]] || check_tmux ;;
+  up|attach|sessions) [[ "$OUTPUT_FORMAT" == "json" ]] || check_tmux ;;
 esac
 
 # docker: needed for all commands that talk to Docker.
 # `rc doctor --host` is the one exception: its job is to *diagnose* a wedged
 # daemon, so the preflight (which would itself fail loud) must be skipped.
 case "${1:-}" in
-  build|up|ls|attach|down|destroy|reload|test) check_docker ;;
+  build|up|ls|attach|sessions|down|destroy|reload|test) check_docker ;;
   doctor)
     if [[ "${2:-}" != "--host" ]]; then
       check_docker
@@ -5285,18 +5646,19 @@ esac
 
 # Main dispatch
 case "${1:-}" in
-  build)   shift; cmd_build "$@" ;;
-  init)    shift; cmd_init "$@" ;;
-  up)      shift; cmd_up "$@" ;;
-  ls)      shift; cmd_ls "$@" ;;
-  attach)  shift; cmd_attach "$@" ;;
-  down)    shift; cmd_down "$@" ;;
-  destroy) shift; cmd_destroy "$@" ;;
-  reload)  shift; cmd_reload "$@" ;;
-  test)    shift; cmd_test "$@" ;;
-  doctor)  shift; cmd_doctor "$@" ;;
-  auth)    shift; cmd_auth "$@" ;;
-  config)  shift; cmd_config "$@" ;;
+  build)    shift; cmd_build "$@" ;;
+  init)     shift; cmd_init "$@" ;;
+  up)       shift; cmd_up "$@" ;;
+  sessions) shift; cmd_sessions "$@" ;;
+  ls)       shift; cmd_ls "$@" ;;
+  attach)   shift; cmd_attach "$@" ;;
+  down)     shift; cmd_down "$@" ;;
+  destroy)  shift; cmd_destroy "$@" ;;
+  reload)   shift; cmd_reload "$@" ;;
+  test)     shift; cmd_test "$@" ;;
+  doctor)   shift; cmd_doctor "$@" ;;
+  auth)     shift; cmd_auth "$@" ;;
+  config)   shift; cmd_config "$@" ;;
   # completions: handled by fast-path above (before container guard); unreachable here
   completions) echo "Usage: rc completions <shell>" >&2; echo "Shells: zsh, bash" >&2; exit 1 ;;
   setup)       shift; cmd_setup "$@" ;;

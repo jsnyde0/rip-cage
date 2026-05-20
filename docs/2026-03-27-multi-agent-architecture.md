@@ -18,7 +18,13 @@ Multi-agent matters because it unlocks parallel feature work, agent specializati
 
 ## Multi-Agent Models (Three Tiers)
 
-### Tier 1: Multiple Containers, Shared Bind Mount
+### Tier 1a: Parallel tmux Sessions in One Cage
+
+**Lightest-weight shape.** Run `rc up <path>` and select `[new]` from the session picker, or pass `--new`. Each selection spawns a separate tmux session inside the same container. Agents share workspace, credentials, and container lifecycle but operate in independent terminals.
+
+Use Tier 1a when agents share everything and you just want parallel terminal slots. Use Tier 1b when you need full container isolation or per-cage `.rip-cage.yaml` differences.
+
+### Tier 1b: Multiple Containers, Shared Bind Mount
 
 **Already works.** Run `rc up <path>` twice with different labels. Both containers see the same `/workspace` via bind mount. Agents coordinate through git: each works on a branch, commits, and the other sees the changes on pull.
 
@@ -28,7 +34,7 @@ What is needed from Phase 1 to support this cleanly:
 - `rc ls --output json` must surface these labels for filtering
 - Container naming already handles disambiguation via hash suffix when multiple containers target the same path
 
-Tier 1 is sufficient for 2 agents doing independent work on the same repo (e.g., one on frontend, one on backend).
+Tier 1b is sufficient for 2 agents doing independent work on the same repo (e.g., one on frontend, one on backend).
 
 ### Tier 2: Swarm Grouping
 
@@ -113,7 +119,7 @@ Worktree isolation is a per-agent opt-in (`rc up --worktree`), not the default. 
 
 Progressive monitoring across tiers:
 
-**Tier 1:** `rc ls --output json` shows all containers with labels, status, uptime. Sufficient for manual oversight.
+**Tier 1b:** `rc ls --output json` shows all containers with labels, status, uptime. **Tier 1a:** `rc sessions <cage>` lists active tmux sessions inside a single cage. Both sufficient for manual oversight.
 
 **Tier 2:** `rc status <swarm>` adds agent state detection. Patterns from FrankenTerm: parse tmux pane output to classify agents as Active (producing output), Thinking (waiting for API response), Stuck (no output for N minutes), or Idle (at prompt). JSON output for programmatic consumption.
 
@@ -128,7 +134,7 @@ Design principle: **passive observation by default**. Monitoring reads container
 - **Kubernetes / cloud orchestration** -- rip-cage is local-first. VPS support (Phase 2) uses plain Docker, not K8s.
 - **Distributed agent fleets** -- multi-machine coordination is out of scope. Each machine runs its own `rc` instance.
 - **Custom MCP servers inside containers** -- Phase 1 uses base Claude Code. MCP servers are a Phase 3 addition.
-- **CAAM credential pooling** -- single credential per container is sufficient through Tier 2. Credential rotation across a pool of accounts is Tier 3 at earliest.
+- **CAAM credential pooling** -- single credential per container is sufficient through Tier 1b/2. Credential rotation across a pool of accounts is Tier 3 at earliest.
 - **Enforced file locking** -- advisory reservations only. No FUSE, no mandatory locks.
 - **Agent-to-agent direct communication** -- all coordination goes through Agent Mail or git. No direct container-to-container channels.
 
@@ -136,4 +142,4 @@ Design principle: **passive observation by default**. Monitoring reads container
 
 ## Summary
 
-The multi-agent architecture is progressive: Tier 1 (already works), Tier 2 (swarm grouping), Tier 3 (coordinated agents). Each tier is independently useful. The key Phase 1 constraint is: add container labels for identity, preserve multi-container-per-path naming, keep safety stacks independent, and keep shared bind mount as the default coordination substrate. Everything else can be added incrementally.
+The multi-agent architecture is progressive: Tier 1a (parallel tmux sessions in one cage, lightest-weight), Tier 1b (multiple containers, already works), Tier 2 (swarm grouping), Tier 3 (coordinated agents). Each tier is independently useful. The key Phase 1 constraint is: add container labels for identity, preserve multi-container-per-path naming, keep safety stacks independent, and keep shared bind mount as the default coordination substrate. Everything else can be added incrementally.
