@@ -568,6 +568,75 @@ $out"
 }
 
 # ---------------------------------------------------------------------------
+# mounts.denylist + mounts.allow_risky schema fields (ADR-023, rip-cage-3gu.1)
+# T27: mounts.denylist parses from global config layer
+# T28: mounts.denylist parses from project config layer
+# T29: mounts.denylist merges additively across layers (global + project = union)
+# T30: mounts.allow_risky parses (selection_list semantics)
+# ---------------------------------------------------------------------------
+
+test_t27_mounts_denylist_from_global() {
+  # mounts.denylist (additive_list) parses from global config layer
+  setup_sandbox "config-global-with-denylist.yaml" ""
+  local out denylist prov
+  out=$(run_rc_config "show --json")
+  denylist=$(jq -c '.config.mounts.denylist' <<<"$out")
+  prov=$(jq -r '.provenance["mounts.denylist"]' <<<"$out")
+  if [[ "$denylist" == '[".aws",".ssh"]' && "$prov" == "global" ]]; then
+    pass "T27 mounts.denylist parses from global config layer"
+  else
+    fail "T27 expected denylist=[.aws,.ssh] prov=global, got denylist=$denylist prov=$prov"
+  fi
+  teardown_sandbox
+}
+
+test_t28_mounts_denylist_from_project() {
+  # mounts.denylist (additive_list) parses from project config layer
+  setup_sandbox "" "config-project-with-denylist.yaml"
+  local out denylist prov
+  out=$(run_rc_config "show --json")
+  denylist=$(jq -c '.config.mounts.denylist' <<<"$out")
+  prov=$(jq -r '.provenance["mounts.denylist"]' <<<"$out")
+  if [[ "$denylist" == '[".env"]' && "$prov" == "project" ]]; then
+    pass "T28 mounts.denylist parses from project config layer"
+  else
+    fail "T28 expected denylist=[.env] prov=project, got denylist=$denylist prov=$prov"
+  fi
+  teardown_sandbox
+}
+
+test_t29_mounts_denylist_additive_merge() {
+  # mounts.denylist merges additively across layers
+  # global: [.aws, .ssh], project: [.env] → effective: [.aws, .ssh, .env]
+  setup_sandbox "config-global-with-denylist.yaml" "config-project-with-denylist.yaml"
+  local out denylist prov
+  out=$(run_rc_config "show --json")
+  denylist=$(jq -c '.config.mounts.denylist' <<<"$out")
+  prov=$(jq -c '.provenance["mounts.denylist"]' <<<"$out")
+  if [[ "$denylist" == '[".aws",".ssh",".env"]' ]]; then
+    pass "T29 mounts.denylist additive merge: global [.aws,.ssh] + project [.env] = [.aws,.ssh,.env]"
+  else
+    fail "T29 expected [.aws,.ssh,.env], got: $denylist (prov=$prov)"
+  fi
+  teardown_sandbox
+}
+
+test_t30_mounts_allow_risky_selection_list() {
+  # mounts.allow_risky (selection_list) parses; project replaces global when present
+  setup_sandbox "" "config-project-with-allow-risky.yaml"
+  local out allow_risky prov
+  out=$(run_rc_config "show --json")
+  allow_risky=$(jq -c '.config.mounts.allow_risky' <<<"$out")
+  prov=$(jq -r '.provenance["mounts.allow_risky"]' <<<"$out")
+  if [[ "$allow_risky" == '["/home/user/.aws/credentials"]' && "$prov" == "project" ]]; then
+    pass "T30 mounts.allow_risky selection_list parses from project"
+  else
+    fail "T30 expected allow_risky=[/home/user/.aws/credentials] prov=project, got allow_risky=$allow_risky prov=$prov"
+  fi
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -598,6 +667,10 @@ test_t23_mounts_symlinks_with_project_default_fixture
 test_t24_mounts_symlinks_ro_fixture
 test_t25_mounts_symlinks_parent_fixture
 test_t26_config_show_mounts_symlinks_nested_yaml
+test_t27_mounts_denylist_from_global
+test_t28_mounts_denylist_from_project
+test_t29_mounts_denylist_additive_merge
+test_t30_mounts_allow_risky_selection_list
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

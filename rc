@@ -688,6 +688,80 @@ validate_path() {
   VALIDATED_PATH="$resolved"
 }
 
+# _check_secret_path_denylist <resolved-path> [workspace]
+#
+# Returns 0 (deny) when any component of RESOLVED_PATH (split on '/') exactly
+# equals a pattern in the effective mounts.denylist AND the path is NOT present
+# in mounts.allow_risky AND NOT present in RC_ALLOW_RISKY_MOUNT array.
+# Returns 1 (allow) otherwise.
+#
+# Matching is component-equals, NOT substring — per ADR-023 D4.
+# WORKSPACE defaults to '.' (current directory) when not supplied.
+#
+# Globals read (optional):
+#   RC_ALLOW_RISKY_MOUNT  — bash array of literal resolved paths to allow
+#                           despite denylist match (populated by --allow-risky-mount)
+_check_secret_path_denylist() {
+  local resolved_path="$1"
+  local workspace="${2:-.}"
+
+  # Load effective config for denylist + allow_risky.
+  local eff_json
+  if ! eff_json=$(_load_effective_config "$workspace" 2>/dev/null); then
+    # Config load failed (e.g. yq missing) — fail open (allow).
+    return 1
+  fi
+
+  # Extract effective denylist as newline-separated patterns.
+  local denylist_json
+  denylist_json=$(jq -r '.config.mounts.denylist // [] | .[]' <<<"$eff_json" 2>/dev/null)
+
+  # Empty denylist → allow.
+  if [[ -z "$denylist_json" ]]; then
+    return 1
+  fi
+
+  # Check RC_ALLOW_RISKY_MOUNT (in-process array bypass).
+  if [[ -n "${RC_ALLOW_RISKY_MOUNT+set}" ]] && (( ${#RC_ALLOW_RISKY_MOUNT[@]} > 0 )); then
+    local arm_entry
+    for arm_entry in "${RC_ALLOW_RISKY_MOUNT[@]}"; do
+      if [[ "$arm_entry" == "$resolved_path" ]]; then
+        return 1
+      fi
+    done
+  fi
+
+  # Check mounts.allow_risky (config bypass).
+  local allow_risky_list
+  allow_risky_list=$(jq -r '.config.mounts.allow_risky // [] | .[]' <<<"$eff_json" 2>/dev/null)
+  if [[ -n "$allow_risky_list" ]]; then
+    local ar_entry
+    while IFS= read -r ar_entry; do
+      [[ -z "$ar_entry" ]] && continue
+      if [[ "$ar_entry" == "$resolved_path" ]]; then
+        return 1
+      fi
+    done <<<"$allow_risky_list"
+  fi
+
+  # Component-equals matching: split resolved path on '/' and check each component.
+  local pattern
+  while IFS= read -r pattern; do
+    [[ -z "$pattern" ]] && continue
+    # Split path on '/' and check each component.
+    local component
+    local IFS='/'
+    for component in $resolved_path; do
+      [[ -z "$component" ]] && continue
+      if [[ "$component" == "$pattern" ]]; then
+        return 0
+      fi
+    done
+  done <<<"$denylist_json"
+
+  return 1
+}
+
 # _up_json_output — emit the standard worktree-aware JSON for rc up responses.
 #
 # Globals read: wt_detected, wt_error, wt_name, wt_main_git, git_hooks_ro, name_disambiguated
@@ -3099,6 +3173,10 @@ cmd_up() {
   # Multi-session flags: --new skips picker and creates new auto-named session;
   # --session <name> attaches named session or creates it.  Mutually exclusive.
   local rc_up_new_session="" rc_up_session_name=""
+  # ADR-023 D6: per-invocation denylist bypass. Repeatable flag; each value is
+  # appended to the RC_ALLOW_RISKY_MOUNT array. Matched literally against the
+  # realpath-resolved input path (no re-realpath of the flag arg).
+  RC_ALLOW_RISKY_MOUNT=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --port) [[ $# -ge 2 ]] || { echo "Error: --port requires a value" >&2; exit 1; }; port="$2"; shift 2 ;;
@@ -3112,6 +3190,7 @@ cmd_up() {
       --github-identity=*) rc_github_identity_flag="${1#--github-identity=}"; shift ;;
       --new) rc_up_new_session="true"; shift ;;
       --session) [[ $# -ge 2 ]] || { echo "Error: --session requires a value" >&2; exit 1; }; rc_up_session_name="$2"; shift 2 ;;
+      --allow-risky-mount) [[ $# -ge 2 ]] || { echo "Error: --allow-risky-mount requires a value" >&2; exit 1; }; RC_ALLOW_RISKY_MOUNT+=("$2"); shift 2 ;;
       *) path="$1"; shift ;;
     esac
   done
@@ -4582,6 +4661,8 @@ _config_schema_lines() {
 version|scalar|1
 ssh.allowed_keys|selection_list|null
 ssh.allowed_hosts|additive_list|[]
+mounts.denylist|additive_list|[]
+mounts.allow_risky|selection_list|null
 mounts.symlinks.on_dangling|selection_list|"follow"|follow,warn,skip,error
 mounts.symlinks.scope|selection_list|"file"|file,parent
 mounts.symlinks.mode|selection_list|"rw"|ro,rw
