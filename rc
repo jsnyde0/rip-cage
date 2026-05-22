@@ -762,6 +762,56 @@ _check_secret_path_denylist() {
   return 1
 }
 
+# _secret_path_denylist_matched_pattern <resolved-path> [workspace]
+#
+# If _check_secret_path_denylist would deny RESOLVED_PATH, emit the first
+# matching pattern on stdout. If no match, emit nothing and return 1.
+# Used by call sites that need the pattern name for the D6 error message.
+#
+# WORKSPACE defaults to '.' when not supplied.
+_secret_path_denylist_matched_pattern() {
+  local resolved_path="$1"
+  local workspace="${2:-.}"
+
+  local eff_json
+  if ! eff_json=$(_load_effective_config "$workspace" 2>/dev/null); then
+    return 1
+  fi
+
+  local denylist_json
+  denylist_json=$(jq -r '.config.mounts.denylist // [] | .[]' <<<"$eff_json" 2>/dev/null)
+  [[ -z "$denylist_json" ]] && return 1
+
+  local pattern
+  while IFS= read -r pattern; do
+    [[ -z "$pattern" ]] && continue
+    local component
+    local IFS='/'
+    for component in $resolved_path; do
+      [[ -z "$component" ]] && continue
+      if [[ "$component" == "$pattern" ]]; then
+        printf '%s' "$pattern"
+        return 0
+      fi
+    done
+  done <<<"$denylist_json"
+
+  return 1
+}
+
+# _emit_denylist_denial <resolved-path> <matched-pattern>
+#
+# Print the ADR-023 D6 error message to stderr. Does not exit — caller must exit.
+_emit_denylist_denial() {
+  local _rpath="$1" _pattern="$2"
+  echo "Error: refusing to mount ${_rpath} — matched secret-path denylist pattern '${_pattern}'." >&2
+  echo "  Override (one-shot):   rc up --allow-risky-mount ${_rpath} ..." >&2
+  echo "  Override (persistent): add to .rip-cage.yaml under mounts.allow_risky:" >&2
+  echo "                           mounts:" >&2
+  echo "                             allow_risky:" >&2
+  echo "                               - ${_rpath}" >&2
+}
+
 # _up_json_output — emit the standard worktree-aware JSON for rc up responses.
 #
 # Globals read: wt_detected, wt_error, wt_name, wt_main_git, git_hooks_ro, name_disambiguated
@@ -1168,8 +1218,16 @@ _up_prepare_docker_mounts() {
     # monorepo) become broken symlinks inside the container because target paths
     # don't exist there. Mount each unique symlink-target parent at the same
     # absolute path so those symlinks resolve correctly.
+    # ADR-023 D6 warn-and-skip: denied symlink-target parents are skipped with a
+    # stderr warning; rc up continues (best-effort decoration surface).
     local _asset_tdir
     while IFS= read -r _asset_tdir; do
+      if _check_secret_path_denylist "$_asset_tdir" "$_path"; then
+        local _skill_pat
+        _skill_pat=$(_secret_path_denylist_matched_pattern "$_asset_tdir" "$_path" 2>/dev/null || true)
+        echo "Warning: skipping skill symlink mount ${_asset_tdir} — matched secret-path denylist pattern '${_skill_pat:-<unknown>}'" >&2
+        continue
+      fi
       _UP_RUN_ARGS+=(-v "${_asset_tdir}:${_asset_tdir}:ro")
     done < <(_collect_symlink_parents "${HOME}/.claude/skills")
   fi
@@ -1178,9 +1236,15 @@ _up_prepare_docker_mounts() {
   fi
   if [[ -d "${HOME}/.claude/agents" ]]; then
     _UP_RUN_ARGS+=(-v "${HOME}/.claude/agents:/home/agent/.rc-context/agents:ro")
-    _asset_tdir=
-    while IFS= read -r _asset_tdir; do
-      _UP_RUN_ARGS+=(-v "${_asset_tdir}:${_asset_tdir}:ro")
+    local _agent_tdir
+    while IFS= read -r _agent_tdir; do
+      if _check_secret_path_denylist "$_agent_tdir" "$_path"; then
+        local _agent_pat
+        _agent_pat=$(_secret_path_denylist_matched_pattern "$_agent_tdir" "$_path" 2>/dev/null || true)
+        echo "Warning: skipping agent symlink mount ${_agent_tdir} — matched secret-path denylist pattern '${_agent_pat:-<unknown>}'" >&2
+        continue
+      fi
+      _UP_RUN_ARGS+=(-v "${_agent_tdir}:${_agent_tdir}:ro")
     done < <(_collect_symlink_parents "${HOME}/.claude/agents")
   fi
 
@@ -1483,6 +1547,13 @@ _up_prepare_environment() {
       if [[ -n "$resolved_beads" && -d "$resolved_beads" ]]; then
         # Validate resolved path is under an allowed root (ADR-003 D3)
         if _path_under_allowed_roots "$resolved_beads"; then
+          # ADR-023 D6: denylist check on .beads/redirect resolved target.
+          if _check_secret_path_denylist "$resolved_beads" "$_path"; then
+            local _beads_pat
+            _beads_pat=$(_secret_path_denylist_matched_pattern "$resolved_beads" "$_path" 2>/dev/null || true)
+            _emit_denylist_denial "$resolved_beads" "${_beads_pat:-<unknown>}"
+            exit 1
+          fi
           log "Beads: resolved redirect → $resolved_beads"
           beads_dir="$resolved_beads"
           # Mount the real .beads/ over the worktree's redirect
@@ -3236,6 +3307,17 @@ cmd_up() {
   # implementation notes). No config file ⇒ silent no-op (D5).
   _config_validate_or_abort "$path"
 
+  # ADR-023 D6 / ADR-014 D2 preflight: fail loud when the global config file is
+  # absent. The denylist matcher fails open on _load_effective_config error, so
+  # the matcher MUST NOT be reached without a valid global config. This preflight
+  # is the hard stop that enforces that invariant.
+  local _global_cfg
+  _global_cfg=$(_config_global_path)
+  if [[ ! -f "$_global_cfg" ]]; then
+    echo "Error: rip-cage global config not found at ${_global_cfg}. Run 'rc install' (or 'rc config init') to seed the default denylist." >&2
+    exit 1
+  fi
+
   # LFS advisory: warn if the project uses git-lfs and has unmaterialized
   # pointer stubs. rip-cage cannot fetch blobs (ADR-014); user must run
   # `git lfs pull` on the host. Observation-only — does not mutate.
@@ -3254,6 +3336,15 @@ cmd_up() {
       echo "Error: env file is not a regular file: $env_file" >&2; exit 1
     fi
     validate_path "$(dirname "$resolved_env")"
+    # ADR-023 D6: denylist check — env-file surface (FIRM insertion-point discipline:
+    # inside env-file branch only, after realpath, NOT at top of validate_path).
+    if _check_secret_path_denylist "$resolved_env" "$path"; then
+      # _check_secret_path_denylist returns 0 when the path is DENIED.
+      local _denied_pattern
+      _denied_pattern=$(_secret_path_denylist_matched_pattern "$resolved_env" "$path")
+      _emit_denylist_denial "$resolved_env" "${_denied_pattern:-<unknown>}"
+      exit 1
+    fi
     env_file="$resolved_env"
   fi
 
@@ -3390,6 +3481,12 @@ cmd_up() {
         echo "Would mount ~/.claude/skills -> /home/agent/.rc-context/skills:ro"
         local _dry_tdir
         while IFS= read -r _dry_tdir; do
+          if _check_secret_path_denylist "$_dry_tdir" "$path"; then
+            local _dry_skill_pat
+            _dry_skill_pat=$(_secret_path_denylist_matched_pattern "$_dry_tdir" "$path" 2>/dev/null || true)
+            echo "Warning: skipping skill symlink mount ${_dry_tdir} — matched secret-path denylist pattern '${_dry_skill_pat:-<unknown>}'" >&2
+            continue
+          fi
           echo "Would mount ${_dry_tdir} -> ${_dry_tdir}:ro (skill symlink target)"
         done < <(_collect_symlink_parents "${HOME}/.claude/skills")
       fi
@@ -3398,6 +3495,12 @@ cmd_up() {
         echo "Would mount ~/.claude/agents -> /home/agent/.rc-context/agents:ro"
         local _dry_agent_tdir
         while IFS= read -r _dry_agent_tdir; do
+          if _check_secret_path_denylist "$_dry_agent_tdir" "$path"; then
+            local _dry_agent_pat
+            _dry_agent_pat=$(_secret_path_denylist_matched_pattern "$_dry_agent_tdir" "$path" 2>/dev/null || true)
+            echo "Warning: skipping agent symlink mount ${_dry_agent_tdir} — matched secret-path denylist pattern '${_dry_agent_pat:-<unknown>}'" >&2
+            continue
+          fi
           echo "Would mount ${_dry_agent_tdir} -> ${_dry_agent_tdir}:ro (agent symlink target)"
         done < <(_collect_symlink_parents "${HOME}/.claude/agents")
       fi
@@ -5559,6 +5662,93 @@ cmd_config_init() {
   echo "Wrote $_cfg"
 }
 
+# cmd_install -- seed ~/.config/rip-cage/config.yaml with the default 16-pattern
+# mounts.denylist.  Idempotent: no-op when file already matches the proposal
+# (unless --force). Respects RC_CONFIG_GLOBAL override.
+#
+# Flags:
+#   --yes / -y    Skip confirmation prompt; required when stdin is not a TTY.
+#   --force       Overwrite even when the existing file matches the proposal.
+cmd_install() {
+  local _yes=0 _force=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes|-y) _yes=1; shift ;;
+      --force)  _force=1; shift ;;
+      -*)
+        echo "Error: unknown flag '$1' (rc install supports --yes, --force)" >&2
+        exit 1 ;;
+      *)
+        echo "Error: unexpected argument '$1' (rc install takes no positional args)" >&2
+        exit 1 ;;
+    esac
+  done
+
+  local _cfg
+  _cfg=$(_config_global_path)
+
+  # Build proposal
+  local _proposed
+  _proposed=$(cat <<'YAML'
+version: 1
+mounts:
+  denylist:
+    - .ssh
+    - .gnupg
+    - .gpg
+    - .aws
+    - .azure
+    - .gcloud
+    - .kube
+    - .docker
+    - credentials
+    - .netrc
+    - .npmrc
+    - .pypirc
+    - id_rsa
+    - id_ed25519
+    - private_key
+    - .secret
+  allow_risky: null
+YAML
+)
+
+  if [[ -f "$_cfg" ]]; then
+    if diff -q "$_cfg" <(printf '%s\n' "$_proposed") >/dev/null 2>&1; then
+      if [[ "$_force" -eq 0 ]]; then
+        echo "rc install: $_cfg already matches the proposal; nothing to do."
+        exit 0
+      fi
+    else
+      echo "Existing $_cfg differs from proposed. Diff (current → proposed):"
+      diff -u "$_cfg" <(printf '%s\n' "$_proposed") || true
+    fi
+  else
+    echo "Proposed $_cfg:"
+    echo "----"
+    printf '%s\n' "$_proposed"
+    echo "----"
+  fi
+
+  if [[ "$_yes" -eq 0 ]]; then
+    if [[ ! -t 0 ]]; then
+      echo "Error: stdin is not a TTY; pass --yes to write non-interactively." >&2
+      exit 1
+    fi
+    local _ans
+    printf 'Write %s? [y/N] ' "$_cfg"
+    read -r _ans
+    case "$_ans" in
+      y|Y|yes|YES) ;;
+      *) echo "Aborted."; exit 0 ;;
+    esac
+  fi
+
+  mkdir -p "$(dirname "$_cfg")"
+  printf '%s\n' "$_proposed" > "$_cfg"
+  echo "Wrote $_cfg"
+}
+
 cmd_schema() {
   cat <<'SCHEMA'
 {
@@ -5742,6 +5932,7 @@ case "${1:-}" in
   config)   shift; cmd_config "$@" ;;
   # completions: handled by fast-path above (before container guard); unreachable here
   completions) echo "Usage: rc completions <shell>" >&2; echo "Shells: zsh, bash" >&2; exit 1 ;;
+  install)     shift; cmd_install "$@" ;;
   setup)       shift; cmd_setup "$@" ;;
   schema)  cmd_schema ;;
   __bd-preflight-test) shift; _bd_host_preflight "${1:-}" "${2:-}" --test-mode ;;

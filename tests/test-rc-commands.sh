@@ -431,7 +431,11 @@ STUB_EOF
   else
     docker tag "$STUB_IMAGE_T14" rip-cage:latest >/dev/null 2>&1
 
-    dry_run_output=$(RC_ALLOWED_ROOTS="$TEST_DIR_T14" "$RC" up --dry-run "$TEST_DIR_T14" 2>&1 || true)
+    # ADR-023: rc up requires a global config. Provide a minimal one via RC_CONFIG_GLOBAL.
+    T14_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t14-cfg-XXXXXX.yaml")
+    printf 'version: 1\nmounts:\n  denylist: []\n' > "$T14_GLOBAL_CFG"
+    dry_run_output=$(RC_ALLOWED_ROOTS="$TEST_DIR_T14" RC_CONFIG_GLOBAL="$T14_GLOBAL_CFG" "$RC" up --dry-run "$TEST_DIR_T14" 2>&1 || true)
+    rm -f "$T14_GLOBAL_CFG"
 
     # Restore original image
     if [[ -n "$CURRENT_IMAGE_T14" ]]; then
@@ -563,8 +567,12 @@ else
 
   TEST_DIR_T19=$(mktemp -d)
   mkdir -p "${TEST_DIR_T19}/.git"
-  stale_dry_run_output=$(RIP_CAGE_IMAGE_REGISTRY="" RC_ALLOWED_ROOTS="$TEST_DIR_T19" \
+  # ADR-023: rc up requires a global config. Provide a minimal one via RC_CONFIG_GLOBAL.
+  T19_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t19-cfg-XXXXXX.yaml")
+  printf 'version: 1\nmounts:\n  denylist: []\n' > "$T19_GLOBAL_CFG"
+  stale_dry_run_output=$(RIP_CAGE_IMAGE_REGISTRY="" RC_ALLOWED_ROOTS="$TEST_DIR_T19" RC_CONFIG_GLOBAL="$T19_GLOBAL_CFG" \
     "$RC" up --dry-run "$TEST_DIR_T19" 2>&1 || true)
+  rm -f "$T19_GLOBAL_CFG"
 
   # Restore original image (or remove the stub tag if there was no prior image)
   if [[ -n "$ORIGINAL_IMAGE_ID" ]]; then
