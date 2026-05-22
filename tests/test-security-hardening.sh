@@ -25,12 +25,20 @@ echo "FOO=bar" > "$OUTSIDE_DIR/secrets.env"
 # Create a symlink inside allowed roots pointing to the outside file
 ln -s "$OUTSIDE_DIR/secrets.env" "$PROJECT_DIR/.env"
 
+GLOBAL_CONFIG_DIR=$(mktemp -d)
+cat > "$GLOBAL_CONFIG_DIR/config.yaml" <<'YAML'
+mounts:
+  denylist: []
+  allow_risky: null
+YAML
+
 cleanup() {
-  rm -rf "$ALLOWED_DIR" "$OUTSIDE_DIR"
+  rm -rf "$ALLOWED_DIR" "$OUTSIDE_DIR" "$GLOBAL_CONFIG_DIR"
 }
 trap cleanup EXIT
 
 export RC_ALLOWED_ROOTS="$ALLOWED_DIR"
+export RC_CONFIG_GLOBAL="$GLOBAL_CONFIG_DIR/config.yaml"
 
 echo "=== Security Hardening Tests ==="
 echo ""

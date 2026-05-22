@@ -7,6 +7,22 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# ADR-023 secret-path denylist (rip-cage-3gu.2): rc up requires a global
+# config file at $RC_CONFIG_GLOBAL or ~/.config/rip-cage/config.yaml.
+# Provide a default empty-denylist fixture for the suite so tests don't all
+# need to set RC_CONFIG_GLOBAL individually. Tests that verify the
+# missing-config preflight (e.g. test-secret-path-denylist.sh case j) override
+# this with their own local export.
+_RUN_HOST_CFG_DIR=$(mktemp -d)
+cat > "${_RUN_HOST_CFG_DIR}/config.yaml" <<'YAML'
+version: 1
+mounts:
+  denylist: []
+  allow_risky: null
+YAML
+trap 'rm -rf "${_RUN_HOST_CFG_DIR}"' EXIT
+export RC_CONFIG_GLOBAL="${RC_CONFIG_GLOBAL:-${_RUN_HOST_CFG_DIR}/config.yaml}"
+
 # Uncomment each line below after the audit step confirms pass or skip-guard:
 bash "${SCRIPT_DIR}/test-rc-commands.sh"
 bash "${SCRIPT_DIR}/test-worktree-support.sh"
