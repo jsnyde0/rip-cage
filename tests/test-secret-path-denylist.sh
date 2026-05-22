@@ -382,16 +382,225 @@ test_k_rc_install_writes_16_patterns() {
 }
 
 # ---------------------------------------------------------------------------
+# (e) Workspace mount structurally exempted from denylist check
+#
+# Even when the workspace path contains a component matching the denylist
+# (e.g. ~/.aws/<fixture>/), rc up must NOT fire _check_secret_path_denylist
+# on the workspace path itself.  The denylist only applies to non-workspace
+# mount surfaces (--env-file, beads redirect, skill symlink targets).
+#
+# This falsifies the implementer-error class of inserting the denylist check
+# at the top of validate_path (which also validates workspace paths) instead
+# of inside the env-file / skill-symlink branches.
+# ---------------------------------------------------------------------------
+test_e_workspace_structurally_exempted() {
+  setup_sandbox
+  write_default_global_config
+
+  # Create a workspace whose path contains a denylist component (.aws).
+  local aws_workspace="${TEST_TMPDIR}/.aws/my-project"
+  mkdir -p "$aws_workspace"
+
+  local stderr_out
+  local exit_code=0
+  stderr_out=$(
+    HOME="$TEST_HOME" \
+    XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
+    RC_ALLOWED_ROOTS="${TEST_TMPDIR}" \
+    bash "$RC" up --dry-run "$aws_workspace" 2>&1 >/dev/null
+  ) || exit_code=$?
+
+  # Workspace path must NOT trigger denylist.  The invocation should succeed
+  # (exit 0) and stderr must NOT contain the denylist denial message.
+  if [[ "$exit_code" -eq 0 ]] \
+     && ! printf '%s' "$stderr_out" | grep -q "matched secret-path denylist pattern"; then
+    pass "(e) workspace under .aws/ path not denied by denylist (exit=0)"
+  else
+    fail "(e) workspace path should not trigger denylist; got exit=$exit_code stderr=${stderr_out:-(empty)}"
+  fi
+
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# (g) Project .rip-cage.yaml with mounts.denylist: [my-secret-pattern] is
+# respected additively on top of global defaults.
+#
+# Subtest A: --env-file path containing my-secret-pattern component → denied.
+# Subtest B: --env-file path containing .aws component → STILL denied (global
+#            default not lost when project has its own denylist entry).
+# ---------------------------------------------------------------------------
+test_g_project_additive_denylist() {
+  setup_sandbox
+  write_default_global_config
+
+  # Project config adds my-secret-pattern on top of global defaults.
+  cat > "${TEST_WS}/.rip-cage.yaml" <<YAML
+version: 1
+mounts:
+  denylist:
+    - my-secret-pattern
+YAML
+
+  # --- Subtest A: project pattern blocks path with my-secret-pattern component ---
+  local project_dir="${TEST_TMPDIR}/my-secret-pattern"
+  local env_path_a="${project_dir}/envfile.env"
+  mkdir -p "$project_dir"
+  touch "$env_path_a"
+
+  local stderr_a
+  local exit_a=0
+  stderr_a=$(
+    HOME="$TEST_HOME" \
+    XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_ALLOWED_ROOTS="${TEST_TMPDIR}" \
+    bash "$RC" up --dry-run \
+      --env-file "$env_path_a" \
+      "$TEST_WS" 2>&1 >/dev/null
+  ) || exit_a=$?
+
+  if [[ "$exit_a" -ne 0 ]] \
+     && printf '%s' "$stderr_a" | grep -q "matched secret-path denylist pattern"; then
+    pass "(g-A) project denylist pattern 'my-secret-pattern' blocks --env-file path (exit=$exit_a)"
+  else
+    fail "(g-A) expected project pattern to block path; got exit=$exit_a stderr=$stderr_a"
+  fi
+
+  # --- Subtest B: global .aws pattern still blocked (project doesn't shadow global) ---
+  mkdir -p "${TEST_TMPDIR}/.aws"
+  touch "${TEST_TMPDIR}/.aws/creds"
+
+  local stderr_b
+  local exit_b=0
+  stderr_b=$(
+    HOME="$TEST_HOME" \
+    XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_ALLOWED_ROOTS="${TEST_TMPDIR}" \
+    bash "$RC" up --dry-run \
+      --env-file "${TEST_TMPDIR}/.aws/creds" \
+      "$TEST_WS" 2>&1 >/dev/null
+  ) || exit_b=$?
+
+  if [[ "$exit_b" -ne 0 ]] \
+     && printf '%s' "$stderr_b" | grep -q "matched secret-path denylist pattern"; then
+    pass "(g-B) global .aws pattern still denied when project has its own denylist (exit=$exit_b)"
+  else
+    fail "(g-B) expected global .aws pattern to remain effective; got exit=$exit_b stderr=$stderr_b"
+  fi
+
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# (h) rc config show surfaces mounts.denylist with provenance
+#
+# Verifies that the existing generic provenance loop in cmd_config_show
+# automatically surfaces mounts.denylist once it is declared in the schema
+# (slot .1 declared it as additive_list).
+#
+# Setup: global config with [.aws, .ssh] + project config with [.env].
+# Expected effective denylist: [.aws, .ssh, .env] (additive union).
+# Expected provenance: output shows "union(global, project)" or per-element
+# labels (global / project) for individual items.
+# ---------------------------------------------------------------------------
+test_h_config_show_denylist_provenance() {
+  setup_sandbox
+
+  # Global: .aws and .ssh
+  cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<YAML
+version: 1
+mounts:
+  denylist:
+    - .aws
+    - .ssh
+YAML
+
+  # Project: .env (additive on top)
+  cat > "${TEST_WS}/.rip-cage.yaml" <<YAML
+version: 1
+mounts:
+  denylist:
+    - .env
+YAML
+
+  local stdout_out
+  local exit_code=0
+  stdout_out=$(
+    HOME="$TEST_HOME" \
+    XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
+    bash -c "cd '${TEST_WS}' && bash '${RC}' config show" 2>/dev/null
+  ) || exit_code=$?
+
+  # Must: surface mounts.denylist key
+  local has_denylist_key=0
+  printf '%s' "$stdout_out" | grep -q "denylist" && has_denylist_key=1
+
+  # Must: show merged effective value contains .aws, .ssh, and .env
+  local has_aws=0 has_ssh=0 has_env=0
+  printf '%s' "$stdout_out" | grep -q "\.aws" && has_aws=1
+  printf '%s' "$stdout_out" | grep -q "\.ssh" && has_ssh=1
+  printf '%s' "$stdout_out" | grep -q "\.env" && has_env=1
+
+  # Must: show provenance information (global, project, or union)
+  local has_provenance=0
+  printf '%s' "$stdout_out" | grep -qE "global|project|union" && has_provenance=1
+
+  if [[ "$exit_code" -eq 0 \
+     && "$has_denylist_key" -eq 1 \
+     && "$has_aws" -eq 1 \
+     && "$has_ssh" -eq 1 \
+     && "$has_env" -eq 1 \
+     && "$has_provenance" -eq 1 ]]; then
+    pass "(h) rc config show surfaces mounts.denylist with provenance (all 3 patterns present)"
+  else
+    fail "(h) rc config show missing denylist/patterns/provenance; exit=$exit_code key=$has_denylist_key aws=$has_aws ssh=$has_ssh env=$has_env prov=$has_provenance"
+  fi
+
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# (i) shellcheck rc exits clean
+#
+# Runs shellcheck against the rc script and asserts exit 0 (no warnings or
+# errors).  Any shellcheck finding introduced by slots .1 or .2 must be fixed
+# in rc before this test can pass (per bead .3 zero-rc-touch contract: if new
+# warnings surface here, surface them rather than fixing inline, since that
+# would breach the zero-rc-touch scope).
+# ---------------------------------------------------------------------------
+test_i_shellcheck_rc_clean() {
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    pass "(i) shellcheck not installed — skip (not required in this env)"
+    return
+  fi
+
+  local exit_code=0
+  shellcheck "$RC" || exit_code=$?
+
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "(i) shellcheck rc exits 0 (no warnings)"
+  else
+    fail "(i) shellcheck rc exited $exit_code — new warnings in rc from slots .1/.2?"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
-echo "=== test-secret-path-denylist.sh — ADR-023 denylist plumbing (rip-cage-3gu.2) ==="
+echo "=== test-secret-path-denylist.sh — ADR-023 denylist plumbing (rip-cage-3gu.2/.3) ==="
 test_a_envfile_aws_denied
 test_b_envfile_symlink_resolved_and_blocked
 test_bprime_skill_symlink_aws_target_skipped
 test_c_allow_risky_mount_flag_bypass
 test_d_allow_risky_yaml_bypass
+test_e_workspace_structurally_exempted
 test_f_dotenv_path_allowed
+test_g_project_additive_denylist
+test_h_config_show_denylist_provenance
+test_i_shellcheck_rc_clean
 test_j_missing_global_config_fails_loud
 test_k_rc_install_writes_16_patterns
 

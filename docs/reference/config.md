@@ -87,6 +87,98 @@ Discovery: `rc up` prints a 1-line tip pointing at this command whenever a works
 
 ---
 
+## `mounts.denylist` and `mounts.allow_risky` — secret-path denylist
+
+Rip-cage blocks `rc up` from mounting paths that match a set of secret-path patterns (e.g. `.aws`, `.ssh`, `credentials`). This is the **secret-path denylist** ([ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md)).
+
+### Fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `mounts.denylist` | additive_list | 16 patterns (see below) | Path-component patterns. If any component of a non-workspace mount surface path exactly equals a pattern, `rc up` aborts with a fail-loud error. Project adds patterns on top of global; cannot remove global patterns. |
+| `mounts.allow_risky` | selection_list | null | List of resolved (realpath) paths explicitly allowed to bypass the denylist. Project replaces global if present; empty list `[]` zero-outs global entries. |
+
+### Default 16 patterns
+
+The default denylist is seeded by `rc install` into `~/.config/rip-cage/config.yaml`:
+
+```
+.ssh, .gnupg, .gpg, .aws, .azure, .gcloud, .kube, .docker,
+credentials, .netrc, .npmrc, .pypirc, id_rsa, id_ed25519, private_key, .secret
+```
+
+Note: `.env` is **not** in the defaults — mounting a project's own `.env` as `--env-file` is a common legitimate workflow. Add `.env` project-by-project if needed.
+
+### What the denylist applies to
+
+The denylist applies to **non-workspace** mount surfaces only:
+- `--env-file <path>` passed to `rc up`
+- `.beads/redirect` resolved target directory
+- Skill/agent symlink targets collected from `~/.claude/skills/` and `~/.claude/agents/`
+
+The workspace path (`rc up <path>`) is **never** checked — it is already validated by ADR-003 D3's allowed-roots gate.
+
+### Additive project config
+
+```yaml
+# ~/.config/rip-cage/config.yaml — global (sets the floor)
+version: 1
+mounts:
+  denylist:
+    - .ssh
+    - .aws
+    # ... (full 16-pattern default list installed by `rc install`)
+```
+
+```yaml
+# <project>/.rip-cage.yaml — additive project extensions
+version: 1
+mounts:
+  denylist:
+    - .env           # add .env for this project only
+    - my-secrets-dir
+```
+
+Effective denylist = global ∪ project (deduplicated, global first).
+
+### Bypassing the denylist
+
+One-shot bypass (this invocation only):
+```bash
+rc up --allow-risky-mount /path/to/allowed-file --env-file /path/to/allowed-file <workspace>
+```
+
+Persistent bypass for a project:
+```yaml
+# <project>/.rip-cage.yaml
+version: 1
+mounts:
+  allow_risky:
+    - /Users/alice/.aws/my-tools-credentials  # resolved (realpath) path
+```
+
+Both forms require the **resolved (realpath)** form of the path — `rc up` shows the resolved path in the error message so you can copy-paste it.
+
+### Verifying active denylist
+
+```bash
+rc config show          # shows effective denylist with per-pattern provenance
+```
+
+Example output with both global and project patterns:
+```
+mounts:
+  denylist:                   # union(global, project)
+    - .aws                 # global
+    - .ssh                 # global
+    - .env                 # project
+  allow_risky: null               # from default
+```
+
+Cross-reference: [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md) for full design rationale, pattern semantics, and failure-mode contract.
+
+---
+
 ## `mounts.symlinks.*` — host-side symlink follow
 
 When rip-cage-managed dotfile mount roots (currently only `~/.pi/agent`, which maps to `/pi-agent` inside the cage) contain absolute symlinks that would dangle inside the container, the `mounts.symlinks` group controls how they are handled.

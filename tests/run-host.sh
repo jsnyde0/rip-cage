@@ -43,5 +43,6 @@ bash "${SCRIPT_DIR}/test-pi-auth-mount.sh"
 bash "${SCRIPT_DIR}/test-pi-cage-context.sh"
 bash "${SCRIPT_DIR}/test-pi-e2e.sh"
 bash "${SCRIPT_DIR}/test-config-init.sh"
+bash "${SCRIPT_DIR}/test-secret-path-denylist.sh"  # tests/test-secret-path-denylist.sh
 
 echo "=== run-host.sh complete ==="

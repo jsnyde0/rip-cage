@@ -31,6 +31,10 @@ These commands are listed in the `permissions.allow` array in `settings.json` (a
 
 Writing to `.git/hooks/*` is denied via `Write(.git/hooks/*)` and `Edit(.git/hooks/*)` entries in `settings.json`'s `permissions.deny` array. This prevents the agent from modifying git hooks. These deny rules are enforced regardless of `bypassPermissions` mode.
 
+## Secret-path denylist
+
+A host-side pattern denylist runs at `rc up` time, before the container exists, on every non-workspace mount surface that accepts an arbitrary host path argument. Currently covered: `--env-file` source path, `.beads/redirect` resolved target directory, and skill/agent symlink targets resolved from `~/.claude/skills/` and `~/.claude/agents/`. If any path component matches a default pattern (`.ssh`, `.aws`, `.gnupg`, `credentials`, and 12 more), `rc up` aborts with a fail-loud error naming the matched path, the matched pattern, and the escape hatches (`--allow-risky-mount` for a one-shot bypass, `mounts.allow_risky` in `.rip-cage.yaml` for a persistent per-project allow). The workspace path is never checked — it is validated by the allowed-roots gate from ADR-003, not the denylist. Projects can add custom patterns to the global floor via `.rip-cage.yaml`; they cannot remove global defaults (additive semantics). See [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md) and [`docs/reference/config.md`](config.md#mountsdenylist-and-mountsallow_risky----secret-path-denylist) for full details and escape-hatch usage.
+
 ## Running the safety tests
 
 After starting a container, verify the safety stack:

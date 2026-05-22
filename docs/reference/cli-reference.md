@@ -25,6 +25,26 @@
 | `--dry-run` | Preview what would happen without executing (supported for `up`, `destroy`, and `reload`) |
 | `--version` | Print version |
 
+### `rc up` — denylist and `--allow-risky-mount`
+
+`rc up` runs a secret-path denylist check on every non-workspace mount surface (e.g. `--env-file`) before starting the container. If the path matches a default pattern (`.aws`, `.ssh`, `credentials`, etc.), `rc up` aborts with a fail-loud error naming the matched path, the matched pattern, and the available escape hatches.
+
+| Flag | Description |
+|------|-------------|
+| `--allow-risky-mount <resolved-path>` | One-shot bypass: allow the named path to pass the denylist check for this invocation only. Accepts the **resolved (realpath)** form of the path — copy it from the error message. May be repeated for multiple paths. |
+
+Example:
+```bash
+# Allow a specific credential path for this invocation only
+rc up --allow-risky-mount /Users/alice/.aws/my-tools-creds \
+      --env-file /Users/alice/.aws/my-tools-creds \
+      /path/to/project
+```
+
+For a persistent per-project allow, use `mounts.allow_risky` in `.rip-cage.yaml`. To add custom patterns on top of the global defaults, use `mounts.denylist` in `.rip-cage.yaml`. Run `rc config show` to see the effective denylist with provenance.
+
+See [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md) and [`docs/reference/config.md`](config.md#mountsdenylist-and-mountsallow_risky----secret-path-denylist) for the full denylist design.
+
 ## JSON output
 
 When `--output json` is set, structured output goes to stdout. Human-readable messages (progress, warnings) go to stderr. Error responses include `"error"` and `"code"` fields.
