@@ -1,10 +1,10 @@
 class RipCage < Formula
   desc "Docker sandbox for Claude Code agents with a safety stack"
   homepage "https://github.com/jsnyde0/rip-cage"
-  url "https://github.com/jsnyde0/rip-cage/archive/refs/tags/v0.2.0.tar.gz"
+  url "https://github.com/jsnyde0/rip-cage/archive/refs/tags/v0.3.0.tar.gz"
   # PLACEHOLDER — updated post-tag by scripts/update-formula-sha.sh.
   # See "Release ceremony" in docs/decisions/ADR-008-open-source-publication.md D6/D8.
-  sha256 "99b403633fa430a6d7bf5292c62bcb1224c5ea95f9e259bfa1edcd3542970662"
+  sha256 "721196c318c0797b98310e00fcdc2f3ef11d367a36460a00568f971b04397469"
   license "MIT"
 
   head "https://github.com/jsnyde0/rip-cage.git", branch: "main"
