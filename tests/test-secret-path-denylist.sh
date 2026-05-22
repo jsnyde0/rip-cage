@@ -17,6 +17,13 @@
 
 set -uo pipefail
 
+# Run-host.sh exports RC_CONFIG_GLOBAL pointing to an empty-denylist fixture for
+# the suite (see tests/run-host.sh). Each test in this file builds its own
+# sandbox config under XDG_CONFIG_HOME and (where needed) sets RC_CONFIG_GLOBAL
+# explicitly. Unset the inherited value so XDG_CONFIG_HOME resolves correctly
+# for cases that don't override RC_CONFIG_GLOBAL.
+unset RC_CONFIG_GLOBAL
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RC="${SCRIPT_DIR}/../rc"
 FAILURES=0
