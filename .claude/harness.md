@@ -188,6 +188,8 @@ When no existing mechanism fits, build one of these:
 - **Docker bind-mount parent dirs are created as root.** `init-rip-cage.sh` starts with `sudo chown agent:agent ~/.claude` to fix this; don't remove that line without replacing it.
 - **ADR-numbered assertions** appear in test output (e.g. `[ADR-013 D1]`). Grep those IDs in `docs/decisions/` for context when a test fails.
 - **SKIP_AUTH=1** downgrades auth-related failures in `test-safety-stack.sh` to INFO — use in CI/integration contexts where real credentials aren't available.
+- **Driver-level fixtures in `tests/run-host.sh`** when `rc` adds a preflight that all `rc` invocations need. Pattern (ADR-023 example): `mktemp -d` a benign config, export via `:- default` (so per-test overrides work), `trap rm EXIT` cleanup. Per-file overrides via `unset RC_CONFIG_GLOBAL` at file top opt out. Adding only per-test fixtures misses tests added later. See commits `c3dc555` (driver default) and `0bd9ebc` (per-file unset).
+- **Tests that print `FAIL` must `exit 1`** — not just print prose. Standard shape: maintain `FAILURES=0`, increment on `fail()`, end with `[[ $FAILURES -eq 0 ]] || exit 1`. Without this, `run-host.sh`'s `set -e` doesn't propagate; you get silent-red conditions like the pre-existing `test-code-review-fixes.sh` C2 false-positive that drifted unchecked from commit `cb8c23d` until rip-cage-3gu re-ran the full suite.
 
 ---
 
