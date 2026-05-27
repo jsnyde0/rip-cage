@@ -799,6 +799,84 @@ _secret_path_denylist_matched_pattern() {
   return 1
 }
 
+# _check_workspace_config_base_url <workspace-path>
+#
+# ADR-024 D1 workspace-trust validator (rip-cage-hhh.5).
+# Parses <workspace>/.claude/settings.json (if present) and checks whether
+# any provider base-URL env var is SET in the env block.
+#
+# Policy: if ANTHROPIC_BASE_URL, OPENAI_BASE_URL, ANTHROPIC_API_URL, or
+# OPENAI_API_BASE appear in the settings.json env block at all, refuse
+# (set => refuse unless --allow-config-override).  The legitimate default is
+# for these keys to be unset; the cage's egress layer is what controls where
+# the agent talks.  Any non-empty setting is suspicious enough to refuse.
+#
+# Returns 0 if the workspace settings are HOSTILE (caller should refuse).
+# Returns 1 if the workspace settings are OK.
+#
+# Sets WS_CONFIG_HOSTILE_KEY and WS_CONFIG_HOSTILE_VAL on hostile detection.
+WS_CONFIG_HOSTILE_KEY=""
+WS_CONFIG_HOSTILE_VAL=""
+_check_workspace_config_base_url() {
+  local _ws="$1"
+  local _settings="${_ws}/.claude/settings.json"
+  WS_CONFIG_HOSTILE_KEY=""
+  WS_CONFIG_HOSTILE_VAL=""
+
+  # No settings.json → ok
+  [[ -f "$_settings" ]] || return 1
+
+  # Keys to check (provider base-URL env vars):
+  local _hostile_keys=(
+    ANTHROPIC_BASE_URL
+    OPENAI_BASE_URL
+    ANTHROPIC_API_URL
+    OPENAI_API_BASE
+  )
+
+  local _key _val
+  for _key in "${_hostile_keys[@]}"; do
+    _val=$(jq -r --arg k "$_key" '.env[$k] // empty' "$_settings" 2>/dev/null)
+    if [[ -n "$_val" ]]; then
+      WS_CONFIG_HOSTILE_KEY="$_key"
+      WS_CONFIG_HOSTILE_VAL="$_val"
+      return 0  # hostile
+    fi
+  done
+
+  return 1  # ok
+}
+
+# _emit_workspace_config_base_url_error <key> <value>
+#
+# Print the ADR-024 D1 / ADR-001 fail-loud error message to stderr.
+# Does not exit — caller must exit.
+_emit_workspace_config_base_url_error() {
+  local _key="$1" _val="$2"
+  echo "Error: workspace .claude/settings.json sets ${_key}=${_val}" >&2
+  echo "  This redirects all agent traffic to a non-official host, bypassing the egress firewall." >&2
+  echo "  Hostile base-URL redirect is a documented prompt-injection attack vector (ADR-024 D1)." >&2
+  echo "" >&2
+  echo "  To allow this for this invocation (emit a warning instead):" >&2
+  echo "    rc up --allow-config-override ..." >&2
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    jq -nc --arg error "workspace .claude/settings.json sets ${_key}=${_val} — hostile base-URL redirect detected (ADR-024 D1)" \
+           --arg code "WORKSPACE_CONFIG_BASE_URL_REDIRECT" \
+           --arg key "$_key" \
+           --arg val "$_val" \
+           '{error: $error, code: $code, key: $key, value: $val}'
+  fi
+}
+
+# _emit_workspace_config_base_url_warning <key> <value>
+#
+# Print the --allow-config-override warning to stderr (warn but proceed).
+_emit_workspace_config_base_url_warning() {
+  local _key="$1" _val="$2"
+  echo "Warning: --allow-config-override: workspace .claude/settings.json sets ${_key}=${_val}" >&2
+  echo "  Proceeding despite hostile base-URL redirect. Agent traffic may be routed to a non-official host." >&2
+}
+
 # _emit_denylist_denial <resolved-path> <matched-pattern>
 #
 # Print the ADR-023 D6 error message to stderr. Does not exit — caller must exit.
@@ -3446,6 +3524,9 @@ cmd_up() {
   # appended to the RC_ALLOW_RISKY_MOUNT array. Matched literally against the
   # realpath-resolved input path (no re-realpath of the flag arg).
   RC_ALLOW_RISKY_MOUNT=()
+  # ADR-024 D1 / rip-cage-hhh.5: per-invocation bypass for workspace base-URL redirect check.
+  # When set, validator emits a warning instead of refusing.
+  local rc_allow_config_override=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --port) [[ $# -ge 2 ]] || { echo "Error: --port requires a value" >&2; exit 1; }; port="$2"; shift 2 ;;
@@ -3460,6 +3541,7 @@ cmd_up() {
       --new) rc_up_new_session="true"; shift ;;
       --session) [[ $# -ge 2 ]] || { echo "Error: --session requires a value" >&2; exit 1; }; rc_up_session_name="$2"; shift 2 ;;
       --allow-risky-mount) [[ $# -ge 2 ]] || { echo "Error: --allow-risky-mount requires a value" >&2; exit 1; }; RC_ALLOW_RISKY_MOUNT+=("$2"); shift 2 ;;
+      --allow-config-override) rc_allow_config_override="true"; shift ;;
       *) path="$1"; shift ;;
     esac
   done
@@ -3544,6 +3626,19 @@ cmd_up() {
       exit 1
     fi
     env_file="$resolved_env"
+  fi
+
+  # ADR-024 D1 / rip-cage-hhh.5: workspace-trust preflight — refuse hostile
+  # base-URL redirect in workspace .claude/settings.json BEFORE container start.
+  if _check_workspace_config_base_url "$path"; then
+    # Returns 0 = hostile (base-URL key is set)
+    if [[ -n "$rc_allow_config_override" ]]; then
+      # --allow-config-override: warn and proceed (per-invocation escape hatch)
+      _emit_workspace_config_base_url_warning "$WS_CONFIG_HOSTILE_KEY" "$WS_CONFIG_HOSTILE_VAL"
+    else
+      _emit_workspace_config_base_url_error "$WS_CONFIG_HOSTILE_KEY" "$WS_CONFIG_HOSTILE_VAL"
+      exit 1
+    fi
   fi
 
   # Check image exists and is current — pull from GHCR (with local-build

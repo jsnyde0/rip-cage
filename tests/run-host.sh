@@ -44,6 +44,7 @@ bash "${SCRIPT_DIR}/test-pi-cage-context.sh"
 bash "${SCRIPT_DIR}/test-pi-e2e.sh"
 bash "${SCRIPT_DIR}/test-config-init.sh"
 bash "${SCRIPT_DIR}/test-secret-path-denylist.sh"  # tests/test-secret-path-denylist.sh
+bash "${SCRIPT_DIR}/test-workspace-trust.sh"       # rip-cage-hhh.5: workspace base-URL redirect validator
 bash "${SCRIPT_DIR}/test-egress-rules-gen.sh"      # rip-cage-hhh.2: per-cage egress-rules generation
 uv run --with pytest --with pyyaml python -m pytest "${SCRIPT_DIR}/test_egress_proxy.py" -v  # rip-cage-hhh.3: egress proxy enforcement rewrite
 uv run --with pytest --with dnspython --with pyyaml python -m pytest "${SCRIPT_DIR}/test_dns_decide.py" -v  # rip-cage-hhh.8: DNS resolver sidecar decision logic
