@@ -1,4 +1,84 @@
 #!/usr/bin/env bash
+
+# ---------------------------------------------------------------------------
+# Helper functions (always defined -- used by both exec and source/test paths).
+# ---------------------------------------------------------------------------
+
+# _get_tcp22_allowed_ips RULES_FILE
+# Reads the egress-rules.yaml at RULES_FILE, checks the mode field.
+# If mode=block: resolves each entry in allowed_hosts to IPv4 addresses and writes
+# one IP per line to stdout. If mode is absent (legacy) or observe, writes nothing.
+# Used at firewall-setup time to build the TCP-22 per-destination allowlist.
+# IP churn is accepted and documented: resolution happens at firewall-setup time
+# (rc up / rc reload); a host's IP changing requires rc reload to re-resolve.
+_get_tcp22_allowed_ips() {
+  local rules_file="${1:-/etc/rip-cage/egress-rules.yaml}"
+  [[ ! -f "$rules_file" ]] && return 0
+
+  # Read mode from the YAML file. Use grep/awk for portability (no yq/python needed).
+  local mode
+  mode=$(grep -m1 '^mode:' "$rules_file" 2>/dev/null | awk '{print $2}' | tr -d '"' | tr -d "'")
+
+  # TCP-22 scoping only engages in block mode. Legacy (null/absent) and observe
+  # leave TCP-22 as-is (ADR-012 D8 non-regression contract / ADR-021 D5).
+  [[ "$mode" != "block" ]] && return 0
+
+  # Read allowed_hosts from the YAML (simple YAML list parser: lines starting with "  - ")
+  local hosts_section=0
+  local host _ips
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^allowed_hosts: ]]; then
+      hosts_section=1
+      continue
+    fi
+    # Stop reading at the next top-level key (unindented non-empty non-comment line)
+    if [[ $hosts_section -eq 1 && "$line" =~ ^[a-zA-Z] ]]; then
+      hosts_section=0
+      break
+    fi
+    if [[ $hosts_section -eq 1 && "$line" =~ ^[[:space:]]*-[[:space:]]*(.*) ]]; then
+      host="${BASH_REMATCH[1]}"
+      # Resolve hostname to IPs. Try getent first (Debian containers), then host(1),
+      # then python3 socket. Silently skip if all fail. Each resolver may fail with
+      # exit 0 but empty output (e.g. getent on macOS); check output not exit code.
+      _ips=$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | sort -u)
+      if [[ -z "$_ips" ]]; then
+        _ips=$(host -t A "$host" 2>/dev/null | awk '/has address/{print $NF}' | sort -u)
+      fi
+      if [[ -z "$_ips" ]]; then
+        _ips=$(python3 -c "
+import socket, sys
+try:
+  for a in socket.getaddrinfo(sys.argv[1], None, socket.AF_INET):
+    print(a[4][0])
+except Exception:
+  pass
+" "$host" 2>/dev/null | sort -u)
+      fi
+      [[ -n "$_ips" ]] && printf '%s\n' "$_ips"
+    fi
+  done < "$rules_file"
+}
+
+# _read_egress_mode RULES_FILE
+# Reads the mode field from an egress-rules.yaml file.
+# Prints "block", "observe", or "legacy" to stdout.
+_read_egress_mode() {
+  local rules_file="${1:-/etc/rip-cage/egress-rules.yaml}"
+  [[ ! -f "$rules_file" ]] && { printf 'legacy\n'; return 0; }
+
+  local mode
+  mode=$(grep -m1 '^mode:' "$rules_file" 2>/dev/null | awk '{print $2}' | tr -d '"' | tr -d "'")
+
+  case "${mode:-}" in
+    block|observe) printf '%s\n' "$mode" ;;
+    *) printf 'legacy\n' ;;
+  esac
+}
+
+# When sourced (e.g., by tests), skip execution -- expose functions only.
+[[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
+
 set -euo pipefail
 
 # Step 1: Generate CA keypair if not present (idempotent -- skip if cert exists).
@@ -79,6 +159,36 @@ if ! iptables -t nat -C OUTPUT -p tcp --dport 53 \
     -m owner ! --uid-owner "$RIP_PROXY_UID" -j REDIRECT --to-port 5300
 fi
 
+# Step 4c: TCP-22 IP allowlist (ADR-012 D8 evolved).
+# When mode=block: resolve network.allowed_hosts to IPs; ACCEPT TCP-22 to those IPs;
+# DROP TCP-22 to all other destinations. Fires BEFORE ssh-agent forwarding is
+# consulted (network-layer block), closing the git-push exfil channel.
+# When mode is legacy/null or observe: leave TCP-22 as-is (non-regression contract
+# per ADR-021 D5 -- existing/unconfigured cages keep working).
+# Resolution happens here (in-container, as root) via _get_tcp22_allowed_ips.
+# IP churn is accepted: a host's IP changing requires rc reload to re-resolve.
+_EGRESS_RULES=/etc/rip-cage/egress-rules.yaml
+_TCP22_MODE=$(_read_egress_mode "$_EGRESS_RULES")
+if [[ "$_TCP22_MODE" == "block" ]]; then
+  # Remove any existing TCP-22 DROP/ACCEPT rules from prior runs (idempotent reload).
+  # iptables -D returns non-zero if rule not found; iterate until all cleared.
+  while iptables -D OUTPUT -p tcp --dport 22 -j DROP 2>/dev/null; do :; done
+  while iptables -D OUTPUT -p tcp --dport 22 -j ACCEPT 2>/dev/null; do :; done
+
+  # Add per-IP ACCEPT rules for whitelisted hosts (ACCEPT rules must come before DROP).
+  while IFS= read -r _tcp22_ip; do
+    [[ -z "$_tcp22_ip" ]] && continue
+    if ! iptables -C OUTPUT -p tcp --dport 22 -d "$_tcp22_ip" -j ACCEPT 2>/dev/null; then
+      iptables -A OUTPUT -p tcp --dport 22 -d "$_tcp22_ip" -j ACCEPT
+    fi
+  done < <(_get_tcp22_allowed_ips "$_EGRESS_RULES")
+
+  # DROP all other TCP-22 (non-whitelisted destinations).
+  if ! iptables -C OUTPUT -p tcp --dport 22 -j DROP 2>/dev/null; then
+    iptables -A OUTPUT -p tcp --dport 22 -j DROP
+  fi
+fi
+
 # Step 5: Start mitmproxy as rip-proxy user.
 # || true is REQUIRED on this line: pkill returns exit 1 when no process found
 # (normal on first run). set -e would abort without it.
@@ -99,7 +209,7 @@ mkdir -p /workspace/.rip-cage
 chmod 777 /workspace/.rip-cage
 
 # Use the wrapper scripts baked into the image at build time (root-owned, 755).
-# Do NOT write to /tmp — it is world-writable and replaceable by the agent user.
+# Do NOT write to /tmp -- it is world-writable and replaceable by the agent user.
 su -s /bin/sh rip-proxy -c 'nohup /usr/local/lib/rip-cage/rip-proxy-start.sh >/dev/null 2>&1 &'
 su -s /bin/sh rip-proxy -c 'nohup /usr/local/lib/rip-cage/rip-dns-start.sh >/dev/null 2>&1 &'
 
@@ -123,5 +233,15 @@ if [[ $count -ge 20 ]]; then
   exit 1
 fi
 
+# Step 7: Print mode-aware startup banner.
+# Read mode from the generated egress-rules.yaml (set by rc up / rc reload).
+# mode=block   -> "block mode"    (whitelist enforced, TCP-22 scoped)
+# mode=observe -> "observe mode"  (traffic logged, nothing blocked)
+# absent       -> "legacy (deny-list) mode" (pre-evolution posture)
 RULE_COUNT=$(/opt/rip-cage-proxy/bin/python -c "import yaml; d=yaml.safe_load(open('/etc/rip-cage/egress-rules.yaml')); print(len(d['rules']))")
-echo "egress firewall active ($RULE_COUNT rules, deny-list mode)"
+_BANNER_MODE=$(_read_egress_mode /etc/rip-cage/egress-rules.yaml)
+case "$_BANNER_MODE" in
+  block)   echo "egress firewall active ($RULE_COUNT rules, block mode)" ;;
+  observe) echo "egress firewall active ($RULE_COUNT rules, observe mode)" ;;
+  *)       echo "egress firewall active ($RULE_COUNT rules, legacy (deny-list) mode)" ;;
+esac

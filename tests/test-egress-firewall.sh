@@ -239,17 +239,41 @@ else
   check "WebSocket 403 has X-Rip-Cage-Denied header" "fail" "header missing"
 fi
 
-# Check 16: Non-HTTP outbound port iptables policy (ADR-013 D4 = Option A, FIRM)
-# D4 direction: non-HTTP egress stays allowed (blast-radius reduction, not L4 wall).
-# Codify that as "no DROP rule for non-80/443 TCP ports in filter OUTPUT".
-# Rule-level assertion only — do NOT use nc/curl probes for port 22/25 (hosted
-# Docker environments may block those at the edge, producing flaky failures).
+# Check 16: Non-HTTP outbound port iptables policy (ADR-013 D4, evolved per ADR-012 D8).
+# D4 direction: non-HTTP egress stays allowed EXCEPT TCP-22 in block mode (ADR-012 D8
+# evolved: TCP-22 scoped to network.allowed_hosts when mode=block).
+# Rule-level assertion — do NOT use nc/curl probes for port 22/25 (flaky in hosted Docker).
 filter_rules=$(sudo iptables -L OUTPUT -n 2>/dev/null || true)
-if echo "$filter_rules" | grep -qE 'DROP.*tcp.*dpt:(22|25|53|587|993|2375|5432|6379)'; then
-  bad_rule=$(echo "$filter_rules" | grep -E 'DROP.*tcp.*dpt:(22|25|53|587|993|2375|5432|6379)' | head -1)
-  check "Non-HTTP TCP ports not DROP'd (D4=allowed)" "fail" "unexpected DROP rule: $bad_rule"
+# TCP-22 is allowed as a DROP target in block mode (ADR-012 D8): exclude it from
+# the check when block-mode is active (mode=block in egress-rules.yaml).
+_egress_mode=$(grep -m1 '^mode:' /etc/rip-cage/egress-rules.yaml 2>/dev/null | awk '{print $2}' || true)
+if [[ "$_egress_mode" == "block" ]]; then
+  # In block mode, TCP-22 DROP is expected. Only check other non-HTTP ports.
+  if echo "$filter_rules" | grep -qE 'DROP.*tcp.*dpt:(25|587|993|2375|5432|6379)'; then
+    bad_rule=$(echo "$filter_rules" | grep -E 'DROP.*tcp.*dpt:(25|587|993|2375|5432|6379)' | head -1)
+    check "Non-HTTP TCP ports not DROP'd (D4, excl TCP-22 in block mode)" "fail" "unexpected DROP rule: $bad_rule"
+  else
+    check "Non-HTTP TCP ports not DROP'd (D4, excl TCP-22 in block mode)" "pass"
+  fi
 else
-  check "Non-HTTP TCP ports not DROP'd (D4=allowed)" "pass"
+  # Legacy/observe mode: TCP-22 should not be DROP'd either.
+  if echo "$filter_rules" | grep -qE 'DROP.*tcp.*dpt:(22|25|53|587|993|2375|5432|6379)'; then
+    bad_rule=$(echo "$filter_rules" | grep -E 'DROP.*tcp.*dpt:(22|25|53|587|993|2375|5432|6379)' | head -1)
+    check "Non-HTTP TCP ports not DROP'd (D4=allowed)" "fail" "unexpected DROP rule: $bad_rule"
+  else
+    check "Non-HTTP TCP ports not DROP'd (D4=allowed)" "pass"
+  fi
+fi
+
+# Check 16b: TCP-22 IP allowlist in block mode (ADR-012 D8 evolved).
+# In block mode, we expect: ACCEPT rules for whitelisted IPs + DROP rule for TCP-22.
+# In legacy/observe mode, no TCP-22 rules expected.
+if [[ "$_egress_mode" == "block" ]]; then
+  if echo "$filter_rules" | grep -qE 'DROP.*tcp.*dpt:22'; then
+    check "TCP-22 DROP rule present (block mode, ADR-012 D8 evolved)" "pass"
+  else
+    check "TCP-22 DROP rule present (block mode, ADR-012 D8 evolved)" "fail" "no TCP-22 DROP rule in block mode"
+  fi
 fi
 
 # Check 17: DNS-over-HTTPS to dns.google denied (denylist)

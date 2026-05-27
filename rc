@@ -3047,6 +3047,42 @@ _up_resolve_egress_rules() {
   _generate_egress_rules_file "$_eff_config" "${SCRIPT_DIR}/egress-rules.yaml" > "$_rules_path"
 }
 
+# _up_reload_tcp22_allowlist -- re-apply the TCP-22 IP allowlist inside a running container.
+# (rip-cage-hhh.4 / ADR-012 D8 evolved)
+#
+# Called by cmd_reload after regenerating the egress-rules file when network.* fields change.
+# Sources init-firewall.sh inside the container to call _get_tcp22_allowed_ips and apply
+# the iptables TCP-22 ACCEPT/DROP rules. This re-resolves hostnames to IPs in-container
+# (where the DNS sidecar is active and whitelisted apexes like github.com resolve correctly).
+#
+# Skips silently if egress is off (rc.egress=off label) or if mode is not block.
+#
+# Parameter: $1 name -- container name
+_up_reload_tcp22_allowlist() {
+  local _name="$1"
+  # Use docker exec to source init-firewall.sh (which defines _get_tcp22_allowed_ips
+  # and _read_egress_mode) then apply the TCP-22 allowlist. The inline script is
+  # functionally equivalent to Step 4c of init-firewall.sh, re-run after a reload.
+  docker exec -u root "$_name" bash -c '
+    source /usr/local/lib/rip-cage/init-firewall.sh
+    _EGRESS_RULES=/etc/rip-cage/egress-rules.yaml
+    _TCP22_MODE=$(_read_egress_mode "$_EGRESS_RULES")
+    if [[ "$_TCP22_MODE" == "block" ]]; then
+      while iptables -D OUTPUT -p tcp --dport 22 -j DROP 2>/dev/null; do :; done
+      while iptables -D OUTPUT -p tcp --dport 22 -j ACCEPT 2>/dev/null; do :; done
+      while IFS= read -r _tcp22_ip; do
+        [[ -z "$_tcp22_ip" ]] && continue
+        if ! iptables -C OUTPUT -p tcp --dport 22 -d "$_tcp22_ip" -j ACCEPT 2>/dev/null; then
+          iptables -A OUTPUT -p tcp --dport 22 -d "$_tcp22_ip" -j ACCEPT
+        fi
+      done < <(_get_tcp22_allowed_ips "$_EGRESS_RULES")
+      if ! iptables -C OUTPUT -p tcp --dport 22 -j DROP 2>/dev/null; then
+        iptables -A OUTPUT -p tcp --dport 22 -j DROP
+      fi
+    fi
+  ' 2>/dev/null || true
+}
+
 # _up_init_firewall -- run the root-phase firewall init inside the container.
 # Called on both create and resume paths (iptables rules do not persist across stop/start).
 # Must run BEFORE _up_init_container (init-rip-cage.sh sources /etc/rip-cage/firewall-env).
@@ -4428,18 +4464,34 @@ cmd_reload() {
     exit 1
   fi
 
-  # Print diff summary (counts for allowed_hosts; the v1 reload-eligible field).
+  # Print diff summary for all reload-eligible paths (generalized beyond ssh.allowed_hosts).
+  # For list fields (allowed_hosts), show per-entry +/- diff. For scalar fields, show
+  # the changed value. This covers network.* additions alongside ssh.allowed_hosts.
+  local _diff_p _live_v _applied_v _live_list _applied_list _l_added _l_removed _h
+  while IFS= read -r _diff_p; do
+    [[ -z "$_diff_p" ]] && continue
+    _live_v=$(jq -r --arg p "$_diff_p" 'getpath($p | split("."))' <<<"$live_cfg" 2>/dev/null || true)
+    _applied_v=$(jq -r --arg p "$_diff_p" 'getpath($p | split("."))' <<<"$applied_cfg" 2>/dev/null || true)
+    # Check if the live value is an array (list field like allowed_hosts)
+    if jq -e --arg p "$_diff_p" 'getpath($p | split(".")) | type == "array"' <<<"$live_cfg" >/dev/null 2>&1; then
+      _live_list=$(jq -r --arg p "$_diff_p" 'getpath($p | split(".")) | .[]' <<<"$live_cfg" 2>/dev/null | sort -u)
+      _applied_list=$(jq -r --arg p "$_diff_p" 'getpath($p | split(".")) // [] | .[]' <<<"$applied_cfg" 2>/dev/null | sort -u)
+      _l_added=$(comm -23 <(printf '%s\n' "$_live_list") <(printf '%s\n' "$_applied_list") | grep -c . || true)
+      _l_removed=$(comm -13 <(printf '%s\n' "$_live_list") <(printf '%s\n' "$_applied_list") | grep -c . || true)
+      log "Diff: ${_diff_p} -- ${_l_added} added, ${_l_removed} removed."
+      while IFS= read -r _h; do [[ -n "$_h" ]] && log "  + $_h"; done < <(comm -23 <(printf '%s\n' "$_live_list") <(printf '%s\n' "$_applied_list"))
+      while IFS= read -r _h; do [[ -n "$_h" ]] && log "  - $_h"; done < <(comm -13 <(printf '%s\n' "$_live_list") <(printf '%s\n' "$_applied_list"))
+    else
+      log "Diff: ${_diff_p}: '${_applied_v}' -> '${_live_v}'"
+    fi
+  done <<<"$diff_paths"
+
+  # For backward compat with C1 assertion: track ssh.allowed_hosts counts for the final log line.
   local live_hosts applied_hosts added removed
   live_hosts=$(jq -r '.ssh.allowed_hosts // [] | .[]' <<<"$live_cfg" | sort -u)
   applied_hosts=$(jq -r '.ssh.allowed_hosts // [] | .[]' <<<"$applied_cfg" | sort -u)
-  added=$(comm -23 <(echo "$live_hosts") <(echo "$applied_hosts") | grep -c . || true)
-  removed=$(comm -13 <(echo "$live_hosts") <(echo "$applied_hosts") | grep -c . || true)
-  log "Diff: ssh.allowed_hosts — ${added} added, ${removed} removed."
-  if [[ -n "$live_hosts" || -n "$applied_hosts" ]]; then
-    local h
-    while IFS= read -r h; do [[ -n "$h" ]] && log "  + $h"; done < <(comm -23 <(echo "$live_hosts") <(echo "$applied_hosts"))
-    while IFS= read -r h; do [[ -n "$h" ]] && log "  - $h"; done < <(comm -13 <(echo "$live_hosts") <(echo "$applied_hosts"))
-  fi
+  added=$(comm -23 <(printf '%s\n' "$live_hosts") <(printf '%s\n' "$applied_hosts") | grep -c . || true)
+  removed=$(comm -13 <(printf '%s\n' "$live_hosts") <(printf '%s\n' "$applied_hosts") | grep -c . || true)
 
   if [[ "$dry_run" -eq 1 ]]; then
     log "(--dry-run: cache file NOT mutated, snapshot NOT updated.)"
@@ -4461,6 +4513,10 @@ cmd_reload() {
   _reload_egress_label=$(docker inspect --format '{{index .Config.Labels "rc.egress"}}' "$name" 2>/dev/null || true)
   if [[ "$_reload_egress_label" != "off" ]]; then
     _up_resolve_egress_rules "$workspace" "$cache_dir"
+    # rip-cage-hhh.4: re-apply TCP-22 IP allowlist inside the container after
+    # network.* change. Re-resolves hostnames to IPs in-container (where the DNS
+    # sidecar is active). Skips silently if mode is not block.
+    _up_reload_tcp22_allowlist "$name"
   fi
 
   # Update snapshot to live (so subsequent emit_hint suppresses the warning).
