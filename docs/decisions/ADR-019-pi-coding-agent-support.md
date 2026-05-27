@@ -112,27 +112,39 @@ For pi-specific cage topology, see /etc/rip-cage/cage-pi.md
 - ADR-016 D1 (fence convention for `~/.claude/CLAUDE.md` topology appends)
 - `cage-claude.md`, `cage-pi.md`, `init-rip-cage.sh` (implementation locus)
 
-### D4: Pi runs without DCG / compound-blocker enforcement in Phase 0
+### D4: Pi must have on-device-harm protection equivalent to Claude Code's DCG + compound-blocker surface (Phase 1 promoted)
 
-**Firmness: FIRM** (for Phase 0 scope only)
+**Firmness: FIRM (goal). Mechanism FLEXIBLE pending pi-hook research bead.**
 
-DCG and the compound-command blocker are wired to Claude Code via Claude's PreToolUse hooks (`init-rip-cage.sh` lines 51-75 merging `settings.json`). Pi has a different extension API (`pi.on("tool_call", ...)`) and no Claude-Code-style hook config. Phase 0 does **not** add a pi extension. Pi running in the cage relies on:
+**Evolved 2026-05-27 per [ADR-024](ADR-024-prompt-injection-threat-model.md).** The pre-evolution decision deferred Phase 1 (DCG-on-pi extension) as a "learning project" while pi ran in the cage without command-level enforcement. Phase 0's deferral was acceptable under the "agent not adversarial" framing. Under ADR-024 D1's prompt-injection threat class, on-device-harm is named as a first-class harm axis (ADR-024 D2); pi's lack of DCG / compound-blocker is now an under-covered axis, no longer acceptable as a phase-0 gap. Phase 1 is promoted from "deferred learning project" to required.
 
-- Container isolation (non-root user, `--cap-drop=ALL`, `--no-new-privileges`)
-- L7 egress denylist firewall (ADR-012)
-- Filesystem sandbox (workspace bind mount; nothing else from host writable)
+**Current decision (goal — FIRM):** pi cages must have on-device-harm protection equivalent to Claude Code's DCG + compound-blocker active surface. Specifically, pi cages must refuse the same destructive-command class (per DCG) and the same chaining-bypass class (per compound-blocker) that Claude Code cages refuse.
 
-This is documented prominently in `docs/reference/auth.md` under "Pi safety model" with the verbatim line: **"Inside the cage, pi runs without command-level DCG / compound-blocker enforcement. Container isolation, non-root user, and the egress firewall remain active."**
+**Current decision (mechanism — FLEXIBLE):** the specific extension shape for pi's hook surface is open. Pi uses a different agent runtime / hook config than Claude Code's PreToolUse hooks. A pi-hook research bead (filed alongside the epic that evolves this decision) determines the mechanism — plausible shapes: extend `hooks/block-compound-commands.sh` to pi's PreToolUse equivalent if pi has one; OR a pi-side bash wrapper that intercepts shell invocations; OR a pi-MCP-server shim that DCG-checks pi tool calls before forwarding; OR the original D8 Phase 1 extension shape (`pi.on("tool_call", ...)` calling the `dcg` Rust binary).
+
+Until the research bead determines the mechanism and the impl bead delivers it, **pi cages must not be shipped to users as a finalized configuration.** The transient gap is acceptable for the design-and-research bead set; it is not acceptable for a released-to-users pi cage under the new threat model.
+
+This evolves D8 of this ADR as well: D8's "Phase 1 deferred as learning project" reasoning is retired; the work is required, the mechanism research is split off.
 
 **Rationale:**
 
-- Phase 0 unlocks the substrate. Phase 1 (D8) builds the extension. Shipping both at once would (a) delay Phase 0 unnecessarily and (b) eliminate a deliberate learning opportunity.
-- Pi-in-cage with no DCG is still strictly safer than pi-on-host with no cage. The transient gap is real but bounded.
-- Matches the project's 80/20 posture (CLAUDE.md philosophy section): block obvious accidents at the layers we have, don't gate the legitimate work pending a perfect fix.
+- ADR-024 D2 names on-device-harm as one of two harm axes the cage covers. The pre-evolution carve-out for pi left that axis uncovered for pi cages specifically — asymmetric coverage with no threat-model justification.
+- The mechanism research is the right way to handle "pi's hook surface differs from Claude Code's" without locking the design prematurely. FIRM on the goal + FLEXIBLE on the mechanism is the rigor-correct shape per ADR-008 D1.
+- The user's learning-project rationale from the pre-evolution D8 is preserved at the implementation layer — the research bead and impl bead are where the learning happens; the threat-model commitment is what changes.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **Promote Phase 1; goal-FIRM + mechanism-FLEXIBLE (this decision)** | Honest about what's known vs unknown; addresses ADR-024 D2 symmetry | More substrate work (research bead + impl bead) |
+| Keep Phase 0 deferral | Smaller scope | `direct:` rejected — ADR-024 D2 admits on-device-harm; pi cages cannot remain asymmetrically uncovered |
+| FIRM-bind the mechanism (e.g., "extend block-compound-commands.sh") | Tighter | `reasoned:` rejected — premature; pi's hook surface may not support it; locking the mechanism without research is the failure mode reviewer S-2/S-3 flagged during the brainstorm |
+| Defer Phase 1 indefinitely with documented gap | Easiest | `reasoned:` rejected — the gap is now load-bearing for ADR-024 D2 coverage; can't be left as documented residual |
 
 **What would invalidate this:**
 
-- Pi-in-cage demonstrates a class of accident in normal use that container-level mitigations don't catch (e.g. accidental writes to mounted dotfiles). At that point, accelerate D8.
+- Pi's runtime architecture admits no usable hook surface (no PreToolUse equivalent, no wrapper point, no MCP gate). At that point the goal stands but requires a different layer (e.g., container-level seccomp profile) the current design doesn't scope. Research bead reports this as a structural finding if it surfaces.
+- Pi-in-cage demonstrates a class of accident in normal use that container-level mitigations DO catch (contradicting the threat-model assumption). Unlikely but would re-open the deferral question.
 
 ### D5: Provider env vars are passed through unconditionally
 

