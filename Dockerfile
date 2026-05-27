@@ -89,7 +89,7 @@ RUN groupadd -g 1000 agent \
 RUN useradd -r -s /usr/sbin/nologin -M rip-proxy
 
 RUN python3 -m venv /opt/rip-cage-proxy
-RUN /opt/rip-cage-proxy/bin/pip install --no-cache-dir mitmproxy PyYAML
+RUN /opt/rip-cage-proxy/bin/pip install --no-cache-dir mitmproxy PyYAML dnspython
 RUN ln -sf /opt/rip-cage-proxy/bin/mitmdump /usr/local/bin/mitmdump
 
 RUN mkdir -p /etc/rip-cage/ca
@@ -120,8 +120,10 @@ COPY skill-server.py /usr/local/lib/rip-cage/skill-server.py
 COPY tests/test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
 COPY egress-rules.yaml /etc/rip-cage/egress-rules.yaml
 COPY rip_cage_egress.py /usr/local/lib/rip-cage/rip_cage_egress.py
+COPY rip_cage_dns.py /usr/local/lib/rip-cage/rip_cage_dns.py
 COPY init-firewall.sh /usr/local/lib/rip-cage/init-firewall.sh
 COPY rip-proxy-start.sh /usr/local/lib/rip-cage/rip-proxy-start.sh
+COPY rip-dns-start.sh /usr/local/lib/rip-cage/rip-dns-start.sh
 COPY tests/test-egress-firewall.sh /usr/local/lib/rip-cage/test-egress-firewall.sh
 COPY tests/test-bd-roundtrip.sh /usr/local/lib/rip-cage/test-bd-roundtrip.sh
 RUN chmod +x /usr/local/bin/init-rip-cage.sh \
@@ -131,7 +133,8 @@ RUN chmod +x /usr/local/bin/init-rip-cage.sh \
     /usr/local/lib/rip-cage/test-egress-firewall.sh \
     /usr/local/lib/rip-cage/test-bd-roundtrip.sh \
     /usr/local/lib/rip-cage/init-firewall.sh \
-    /usr/local/lib/rip-cage/rip-proxy-start.sh
+    /usr/local/lib/rip-cage/rip-proxy-start.sh \
+    /usr/local/lib/rip-cage/rip-dns-start.sh
 
 USER agent
 WORKDIR /home/agent

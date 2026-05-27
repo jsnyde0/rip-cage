@@ -64,6 +64,21 @@ if ! iptables -C OUTPUT -p udp --dport 443 -j DROP 2>/dev/null; then
   iptables -A OUTPUT -p udp --dport 443 -j DROP
 fi
 
+# Step 4b: REDIRECT DNS (UDP+TCP port 53) to DNS resolver sidecar on :5300.
+# ADR-012 D9: transparent port-53 REDIRECT so dig @8.8.8.8 / nslookup / ping / host
+# are all captured regardless of the upstream resolver the caller names.
+# rip-proxy UID is excluded to avoid a loop when the sidecar makes its own upstream queries.
+if ! iptables -t nat -C OUTPUT -p udp --dport 53 \
+     -m owner ! --uid-owner "$RIP_PROXY_UID" -j REDIRECT --to-port 5300 2>/dev/null; then
+  iptables -t nat -A OUTPUT -p udp --dport 53 \
+    -m owner ! --uid-owner "$RIP_PROXY_UID" -j REDIRECT --to-port 5300
+fi
+if ! iptables -t nat -C OUTPUT -p tcp --dport 53 \
+     -m owner ! --uid-owner "$RIP_PROXY_UID" -j REDIRECT --to-port 5300 2>/dev/null; then
+  iptables -t nat -A OUTPUT -p tcp --dport 53 \
+    -m owner ! --uid-owner "$RIP_PROXY_UID" -j REDIRECT --to-port 5300
+fi
+
 # Step 5: Start mitmproxy as rip-proxy user.
 # || true is REQUIRED on this line: pkill returns exit 1 when no process found
 # (normal on first run). set -e would abort without it.
@@ -74,14 +89,19 @@ pkill -u rip-proxy mitmdump 2>/dev/null || true
 touch /var/log/rip-cage-proxy.log
 chown rip-proxy:rip-proxy /var/log/rip-cage-proxy.log
 
+# Pre-create the DNS sidecar log so rip-proxy can write to it.
+touch /var/log/rip-cage-dns.log
+chown rip-proxy:rip-proxy /var/log/rip-cage-dns.log
+
 # Pre-create the audit log directory on the workspace bind mount.
 # rip-proxy writes JSONL denial records here; /workspace is owned by agent:agent.
 mkdir -p /workspace/.rip-cage
 chmod 777 /workspace/.rip-cage
 
-# Use the wrapper script baked into the image at build time (root-owned, 755).
+# Use the wrapper scripts baked into the image at build time (root-owned, 755).
 # Do NOT write to /tmp — it is world-writable and replaceable by the agent user.
 su -s /bin/sh rip-proxy -c 'nohup /usr/local/lib/rip-cage/rip-proxy-start.sh >/dev/null 2>&1 &'
+su -s /bin/sh rip-proxy -c 'nohup /usr/local/lib/rip-cage/rip-dns-start.sh >/dev/null 2>&1 &'
 
 # Step 6: Wait for proxy to be ready (up to 10s).
 # mitmproxy transparent mode responds to direct HTTP with a proxy error page (4xx/5xx)
