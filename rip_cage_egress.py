@@ -172,6 +172,41 @@ def _make_block_or_observe(
     )
 
 
+def _make_write_gate_denial(
+    action: str,
+    host: str,
+    path: str,
+    method: str,
+) -> DecisionResult:
+    """Build a deny or would-block result for a write-gate violation.
+
+    Used when a write method (POST/PUT/DELETE/PATCH) targets a host that is in
+    allowed_hosts but NOT in writable_hosts (and writable_hosts is non-empty).
+    """
+    target = f"{host}{path}" if path and path != "/" else host
+    fix_command = (
+        f"Add {host!r} to network.writable_hosts in .rip-cage.yaml to allow write methods"
+    )
+    return DecisionResult(
+        action=action,
+        rule_id="write-method-not-writable",
+        in_allowed_hosts=True,
+        pattern="writable_hosts",
+        target=target,
+        why=(
+            f"Write method {method!r} is not allowed to {host!r}: "
+            f"host is in allowed_hosts but not in writable_hosts"
+        ),
+        fix_command=fix_command,
+        config_file=".rip-cage.yaml",
+        config_path="network.writable_hosts",
+    )
+
+
+# Write methods that are gated by writable_hosts.
+_WRITE_METHODS = frozenset({"POST", "PUT", "DELETE", "PATCH"})
+
+
 def decide(
     host: str,
     method: str,
@@ -290,20 +325,35 @@ def decide(
     allowed_hosts = rules_doc.get("allowed_hosts") or []
     in_allowed = any(_host_matches_allowed(host, entry) for entry in allowed_hosts)
 
-    if in_allowed:
-        return _make_allow(host, in_allowed_hosts=True)
+    if not in_allowed:
+        # Not whitelisted — default-deny
+        effective_action = "would-block" if mode == "observe" else "deny"
+        return _make_block_or_observe(
+            action=effective_action,
+            rule_id="not-whitelisted",
+            host=host,
+            path=path,
+            why_text=f"Host {host!r} is not in the allowed_hosts whitelist",
+            pattern_text="allowed_hosts",
+            in_allowed_hosts=False,
+        )
 
-    # Not whitelisted — default-deny
-    effective_action = "would-block" if mode == "observe" else "deny"
-    return _make_block_or_observe(
-        action=effective_action,
-        rule_id="not-whitelisted",
-        host=host,
-        path=path,
-        why_text=f"Host {host!r} is not in the allowed_hosts whitelist",
-        pattern_text="allowed_hosts",
-        in_allowed_hosts=False,
-    )
+    # Phase 3: Write-method gate (only when writable_hosts is non-empty)
+    # If writable_hosts is empty (the default), no write gating is applied —
+    # preserving the autonomy default (all methods flow freely to allowed hosts).
+    writable_hosts = rules_doc.get("writable_hosts") or []
+    if writable_hosts and method in _WRITE_METHODS:
+        in_writable = any(_host_matches_allowed(host, entry) for entry in writable_hosts)
+        if not in_writable:
+            effective_action = "would-block" if mode == "observe" else "deny"
+            return _make_write_gate_denial(
+                action=effective_action,
+                host=host,
+                path=path,
+                method=method,
+            )
+
+    return _make_allow(host, in_allowed_hosts=True)
 
 
 # ---------------------------------------------------------------------------

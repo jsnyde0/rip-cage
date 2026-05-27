@@ -472,5 +472,237 @@ class TestModeNormalization(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# rip-cage-hhh.9 — Method-axis writable_hosts gating
+# ---------------------------------------------------------------------------
+
+def _block_doc_with_writable(allowed_hosts, writable_hosts, ioc_rules=None):
+    """Build a rules doc with mode=block and explicit writable_hosts."""
+    return {
+        "version": 2,
+        "mode": "block",
+        "allowed_hosts": allowed_hosts,
+        "writable_hosts": writable_hosts,
+        "rules": ioc_rules or [],
+    }
+
+
+def _observe_doc_with_writable(allowed_hosts, writable_hosts, ioc_rules=None):
+    """Build a rules doc with mode=observe and explicit writable_hosts."""
+    return {
+        "version": 2,
+        "mode": "observe",
+        "allowed_hosts": allowed_hosts,
+        "writable_hosts": writable_hosts,
+        "rules": ioc_rules or [],
+    }
+
+
+class TestWritableHostsGating(unittest.TestCase):
+    """Tests for method-axis write gating via network.writable_hosts."""
+
+    # (a) empty writable_hosts => POST to allowed host is ALLOWED (no gating)
+    def test_empty_writable_hosts_post_to_allowed_is_allowed(self):
+        """Empty writable_hosts means no write gating — POST to whitelisted host is allowed."""
+        doc = _block_doc_with_writable(
+            allowed_hosts=["api.github.com"],
+            writable_hosts=[],
+        )
+        result = decide("api.github.com", "POST", "/repos", doc)
+        self.assertEqual(
+            result.action, "allow",
+            "Empty writable_hosts must not gate writes — POST to allowed host must be ALLOWED",
+        )
+
+    # (b) non-empty writable_hosts => POST to allowed-but-not-writable host is DENIED
+    def test_post_to_allowed_but_not_writable_is_denied(self):
+        """Non-empty writable_hosts: POST to host in allowed_hosts but NOT in writable_hosts is DENIED."""
+        doc = _block_doc_with_writable(
+            allowed_hosts=["api.github.com", "registry.npmjs.org"],
+            writable_hosts=["registry.npmjs.org"],  # github is NOT writable
+        )
+        result = decide("api.github.com", "POST", "/repos", doc)
+        self.assertEqual(
+            result.action, "deny",
+            "POST to allowed-but-not-writable host must be DENIED when writable_hosts is non-empty",
+        )
+
+    # (c) non-empty writable_hosts => POST to writable host is ALLOWED
+    def test_post_to_writable_host_is_allowed(self):
+        """Non-empty writable_hosts: POST to a host in writable_hosts is ALLOWED."""
+        doc = _block_doc_with_writable(
+            allowed_hosts=["api.github.com", "registry.npmjs.org"],
+            writable_hosts=["registry.npmjs.org"],
+        )
+        result = decide("registry.npmjs.org", "POST", "/pkg", doc)
+        self.assertEqual(
+            result.action, "allow",
+            "POST to a host in writable_hosts must be ALLOWED",
+        )
+
+    # (d) GET to allowed-but-not-writable host is ALLOWED (GET never gated)
+    def test_get_to_non_writable_allowed_host_is_allowed(self):
+        """GET is never gated by writable_hosts — only write methods are."""
+        doc = _block_doc_with_writable(
+            allowed_hosts=["api.github.com"],
+            writable_hosts=["registry.npmjs.org"],  # github is NOT writable
+        )
+        result = decide("api.github.com", "GET", "/repos", doc)
+        self.assertEqual(
+            result.action, "allow",
+            "GET to a non-writable allowed host must always be ALLOWED (GET is never write-gated)",
+        )
+
+    # Also check HEAD and OPTIONS are not gated
+    def test_head_to_non_writable_allowed_host_is_allowed(self):
+        """HEAD is never gated by writable_hosts."""
+        doc = _block_doc_with_writable(
+            allowed_hosts=["api.github.com"],
+            writable_hosts=[],
+        )
+        result = decide("api.github.com", "HEAD", "/", doc)
+        self.assertEqual(result.action, "allow")
+
+    def test_options_to_non_writable_allowed_host_is_allowed(self):
+        """OPTIONS is never gated by writable_hosts."""
+        doc = _block_doc_with_writable(
+            allowed_hosts=["api.github.com"],
+            writable_hosts=[],
+        )
+        result = decide("api.github.com", "OPTIONS", "/", doc)
+        self.assertEqual(result.action, "allow")
+
+    # Write method variants (PUT, DELETE, PATCH) are also gated
+    def test_put_to_non_writable_allowed_host_is_denied(self):
+        """PUT is a write method and must be gated."""
+        doc = _block_doc_with_writable(
+            allowed_hosts=["api.github.com"],
+            writable_hosts=["registry.npmjs.org"],
+        )
+        result = decide("api.github.com", "PUT", "/something", doc)
+        self.assertEqual(result.action, "deny")
+
+    def test_delete_to_non_writable_allowed_host_is_denied(self):
+        """DELETE is a write method and must be gated."""
+        doc = _block_doc_with_writable(
+            allowed_hosts=["api.github.com"],
+            writable_hosts=["registry.npmjs.org"],
+        )
+        result = decide("api.github.com", "DELETE", "/something", doc)
+        self.assertEqual(result.action, "deny")
+
+    def test_patch_to_non_writable_allowed_host_is_denied(self):
+        """PATCH is a write method and must be gated."""
+        doc = _block_doc_with_writable(
+            allowed_hosts=["api.github.com"],
+            writable_hosts=["registry.npmjs.org"],
+        )
+        result = decide("api.github.com", "PATCH", "/something", doc)
+        self.assertEqual(result.action, "deny")
+
+    # (e) observe mode => write to non-writable host is would-block (not blocked)
+    def test_observe_mode_write_to_non_writable_is_would_block(self):
+        """Observe mode: write-gate triggers would-block, not deny."""
+        doc = _observe_doc_with_writable(
+            allowed_hosts=["api.github.com"],
+            writable_hosts=["registry.npmjs.org"],
+        )
+        result = decide("api.github.com", "POST", "/repos", doc)
+        self.assertEqual(
+            result.action, "would-block",
+            "Observe mode write-gate must return would-block, not deny",
+        )
+
+    # (f) write-gate denial carries six structured fields with config_path=network.writable_hosts
+    def test_write_gate_denial_carries_structured_fields(self):
+        """Write-gate denial must carry all six structured fields."""
+        doc = _block_doc_with_writable(
+            allowed_hosts=["api.github.com"],
+            writable_hosts=["registry.npmjs.org"],
+        )
+        result = decide("api.github.com", "POST", "/repos", doc)
+        self.assertEqual(result.action, "deny")
+        required_fields = {"pattern", "target", "why", "fix_command", "config_file", "config_path"}
+        for field in required_fields:
+            self.assertTrue(hasattr(result, field),
+                            f"Write-gate denial missing structured field: {field}")
+            self.assertIsNotNone(getattr(result, field),
+                                 f"Structured field {field!r} must not be None on write-gate denial")
+
+    def test_write_gate_denial_config_path_is_writable_hosts(self):
+        """Write-gate denial config_path must be network.writable_hosts."""
+        doc = _block_doc_with_writable(
+            allowed_hosts=["api.github.com"],
+            writable_hosts=["registry.npmjs.org"],
+        )
+        result = decide("api.github.com", "POST", "/repos", doc)
+        self.assertEqual(result.action, "deny")
+        self.assertEqual(
+            result.config_path, "network.writable_hosts",
+            f"Write-gate denial config_path must be 'network.writable_hosts', got: {result.config_path!r}",
+        )
+
+    def test_write_gate_denial_why_explains_write_method(self):
+        """Write-gate denial why field must explain it's a write-method-to-non-writable-host."""
+        doc = _block_doc_with_writable(
+            allowed_hosts=["api.github.com"],
+            writable_hosts=["registry.npmjs.org"],
+        )
+        result = decide("api.github.com", "POST", "/repos", doc)
+        self.assertIn("write", result.why.lower(),
+                      f"Write-gate why must mention 'write', got: {result.why!r}")
+
+    def test_write_gate_denial_fix_command_mentions_writable_hosts(self):
+        """Write-gate denial fix_command should mention network.writable_hosts."""
+        doc = _block_doc_with_writable(
+            allowed_hosts=["api.github.com"],
+            writable_hosts=["registry.npmjs.org"],
+        )
+        result = decide("api.github.com", "POST", "/repos", doc)
+        self.assertIn("writable_hosts", result.fix_command,
+                      f"Write-gate fix_command must mention 'writable_hosts', got: {result.fix_command!r}")
+
+    # (g) IOC floor still denies a writable host that matches an IOC rule
+    def test_ioc_floor_denies_even_writable_host(self):
+        """IOC floor wins over everything — even a writable host is denied if IOC-matched."""
+        doc = _block_doc_with_writable(
+            allowed_hosts=["webhook.site"],
+            writable_hosts=["webhook.site"],  # explicitly marked writable
+            ioc_rules=[IOC_WEBHOOK_SITE],
+        )
+        result = decide("webhook.site", "POST", "/hook", doc)
+        self.assertEqual(
+            result.action, "deny",
+            "IOC floor must deny even if host is in writable_hosts",
+        )
+
+    # Subdomain matching for writable_hosts (same semantics as allowed_hosts)
+    def test_writable_hosts_subdomain_matching(self):
+        """writable_hosts uses same exact-or-subdomain matching as allowed_hosts."""
+        doc = _block_doc_with_writable(
+            allowed_hosts=["github.com"],
+            writable_hosts=["github.com"],  # apex entry covers subdomains
+        )
+        result = decide("api.github.com", "POST", "/repos", doc)
+        self.assertEqual(
+            result.action, "allow",
+            "Subdomain of writable host must be ALLOWED for write methods",
+        )
+
+    # Legacy mode: no write gating (only block/observe modes)
+    def test_legacy_mode_no_write_gating(self):
+        """Legacy mode must NOT gate write methods even if writable_hosts would be set."""
+        doc = {
+            "version": 1,
+            "rules": [],  # no deny rules
+            # no mode key -> legacy
+        }
+        result = decide("api.github.com", "POST", "/repos", doc)
+        self.assertEqual(
+            result.action, "allow",
+            "Legacy mode must not apply write gating",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
