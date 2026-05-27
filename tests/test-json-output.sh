@@ -149,6 +149,57 @@ else
   fail "--dry-run should be rejected for ls, but was accepted"
 fi
 
+# --- Test 11: --output json ls includes 'mode' field (rip-cage-hhh.6 D2) ---
+echo ""
+echo "=== Test 11: --output json ls includes mode field ==="
+# rc ls returns an array; even when empty, the jq schema check applies to elements if any exist.
+# We check that the schema emits a mode field. With no containers the array may be empty,
+# so we verify either: array is empty (acceptable) OR every element has a mode key.
+ls11_output=$("$RC" --output json ls 2>/dev/null) || true
+if echo "$ls11_output" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  ls11_count=$(echo "$ls11_output" | jq 'length' 2>/dev/null || echo 0)
+  if [[ "$ls11_count" -eq 0 ]]; then
+    pass "ls --output json mode key: no containers, schema not yet testable (structural check deferred)"
+  else
+    # At least one container: verify all have mode key
+    if echo "$ls11_output" | jq -e 'all(has("mode"))' >/dev/null 2>&1; then
+      pass "ls --output json: all containers have mode key"
+    else
+      fail "ls --output json: missing mode key in one or more container objects. Got: $ls11_output"
+    fi
+  fi
+else
+  fail "ls --output json: did not return a JSON array. Got: $ls11_output"
+fi
+
+# --- Test 12: --output json doctor includes 'egress' object (rip-cage-hhh.6 D1) ---
+echo ""
+echo "=== Test 12: --output json doctor includes egress object with required keys ==="
+# rc doctor requires a running or stopped rc-managed container.
+# Use rc ls to find the first available container name, if any.
+_doctor_test_name=$(
+  "$RC" --output json ls 2>/dev/null | jq -r '.[0].name // empty' 2>/dev/null || true
+)
+if [[ -n "$_doctor_test_name" ]]; then
+  doctor12_output=$("$RC" --output json doctor "$_doctor_test_name" 2>/dev/null) || true
+  if echo "$doctor12_output" | jq -e 'has("egress")' >/dev/null 2>&1; then
+    # Check required sub-keys
+    _egress_keys_ok=true
+    for _k in mode allowed_hosts recent_blocks config_override_state ssh_allowed_hosts; do
+      if ! echo "$doctor12_output" | jq -e ".egress | has(\"$_k\")" >/dev/null 2>&1; then
+        _egress_keys_ok=false
+        fail "doctor --output json: egress object missing key: $_k. Got: $doctor12_output"
+        break
+      fi
+    done
+    [[ "$_egress_keys_ok" == "true" ]] && pass "doctor --output json: egress object has all required keys"
+  else
+    fail "doctor --output json: no egress key in output. Got: $doctor12_output"
+  fi
+else
+  echo "SKIP: no rc-managed containers found — doctor egress-object test deferred (H-tier)"
+fi
+
 # --- Cleanup ---
 echo ""
 echo "=== Results ==="
