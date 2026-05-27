@@ -2885,6 +2885,168 @@ _up_github_identity_preflight() {
   return 0
 }
 
+# _EGRESS_BASELINE_HOSTS — pre-loaded whitelist for new cages.
+# Baseline ∪ user network.allowed_hosts = effective allowed_hosts in the rules file.
+# D10 NOTE: this list is baked at rc up / rc reload time. The pipeline does NOT
+# watch .rip-cage.yaml for changes; an in-cage edit does not hot-apply. This is
+# by design — see ADR-012 D1 and ADR-022 D6 extended pattern.
+_EGRESS_BASELINE_HOSTS=(
+  # LLM provider APIs
+  "api.anthropic.com"
+  "api.openai.com"
+  "api.cohere.ai"
+  "generativelanguage.googleapis.com"
+  # GitHub / GitLab / Codeberg (code hosting + APIs)
+  "github.com"
+  "api.github.com"
+  "raw.githubusercontent.com"
+  "objects.githubusercontent.com"
+  "codeload.github.com"
+  "gitlab.com"
+  "codeberg.org"
+  # Package registries
+  "registry.npmjs.org"
+  "pypi.org"
+  "files.pythonhosted.org"
+  "rubygems.org"
+  "crates.io"
+  "static.crates.io"
+  "pkg.go.dev"
+  "sum.golang.org"
+  "proxy.golang.org"
+  "registry-1.docker.io"
+  "auth.docker.io"
+  "index.docker.io"
+  "maven.org"
+  "repo.maven.apache.org"
+  "jcenter.bintray.com"
+  "dl.cloudsmith.io"
+  # Common doc / CDN
+  "docs.anthropic.com"
+  "cdn.anthropic.com"
+  "fonts.googleapis.com"
+  "fonts.gstatic.com"
+)
+
+# _generate_egress_rules_file — generate a per-cage egress-rules YAML from effective config.
+#
+# Takes the effective-config JSON object (the .config subtree from _load_effective_config,
+# or a schema-defaults object when no config files are present) as $1.
+#
+# Emits to stdout the YAML file to be mounted at /etc/rip-cage/egress-rules.yaml.
+#
+# Format (extends current egress-rules.yaml shape — D1 backward compat):
+#   version: 2
+#   mode: observe|block         # present only when network.mode is non-null
+#   allowed_hosts: [...]        # baseline ∪ user network.allowed_hosts (for sibling B/C)
+#   writable_hosts: [...]       # user network.writable_hosts (for sibling B)
+#   rules:                      # IOC denylist floor — non-overridable; same ~35 entries
+#     - id: ...                 # as the original static egress-rules.yaml
+#       deny: true
+#       ...
+#
+# The current proxy (rip_cage_egress.py) reads only 'rules', so existing behavior is
+# preserved for legacy cages. Sibling B (rip-cage-hhh.3) will add enforcement of
+# allowed_hosts/writable_hosts/mode. The IOC floor (deny:true rules) is always emitted
+# regardless of mode so denylist enforcement never gaps during the B rollout.
+#
+# Parameters:
+#   $1  cfg_json  — effective config JSON object (network.* subtree read here)
+#
+# D10 contract: called ONLY at rc up / rc reload. No file-watch. An in-cage write
+# to .rip-cage.yaml does not hot-apply — the pipeline regenerates only when rc up
+# or rc reload runs on the host side.
+_generate_egress_rules_file() {
+  local _cfg_json
+  _cfg_json="${1}"
+  [[ -z "$_cfg_json" ]] && _cfg_json="{}"
+  # Second arg: path to the IOC rules file. Defaults to egress-rules.yaml
+  # co-located with this script. Callers may pass an explicit path to make the
+  # function testable without depending on SCRIPT_DIR resolution in sourced contexts.
+  local _ioc_rules_file="${2:-${SCRIPT_DIR}/egress-rules.yaml}"
+
+  # Extract network.* fields from the effective config.
+  local _mode _allowed_hosts_json _writable_hosts_json
+  _mode=$(jq -r '.network.mode // "null"' <<<"$_cfg_json" 2>/dev/null) || _mode="null"
+  _allowed_hosts_json=$(jq -c '.network.allowed_hosts // []' <<<"$_cfg_json" 2>/dev/null) || _allowed_hosts_json="[]"
+  _writable_hosts_json=$(jq -c '.network.writable_hosts // []' <<<"$_cfg_json" 2>/dev/null) || _writable_hosts_json="[]"
+
+  # Merge baseline ∪ user allowed_hosts (order: baseline first, then user additions).
+  local _merged_hosts_json
+  _merged_hosts_json=$(jq -cn \
+    --argjson baseline "$(printf '%s\n' "${_EGRESS_BASELINE_HOSTS[@]}" | jq -R . | jq -sc .)" \
+    --argjson user "$_allowed_hosts_json" \
+    '($baseline + $user) | unique' 2>/dev/null) || _merged_hosts_json="[]"
+
+  # Emit YAML header.
+  printf 'version: 2\n'
+
+  # mode: emit only when network.mode is non-null (null = legacy denylist posture).
+  if [[ "$_mode" != "null" && -n "$_mode" ]]; then
+    printf 'mode: %s\n' "$_mode"
+  fi
+
+  # allowed_hosts: baseline ∪ user (for sibling B/C to enforce whitelist).
+  printf 'allowed_hosts:\n'
+  jq -r '.[]' <<<"$_merged_hosts_json" 2>/dev/null | while IFS= read -r _h; do
+    printf '  - %s\n' "$_h"
+  done
+
+  # writable_hosts: subset of allowed_hosts that may receive write (POST/PUT) requests.
+  printf 'writable_hosts:\n'
+  jq -r '.[]' <<<"$_writable_hosts_json" 2>/dev/null | while IFS= read -r _wh; do
+    printf '  - %s\n' "$_wh"
+  done
+
+  # IOC denylist floor — always emitted, non-overridable by user config.
+  # Read from the IOC rules file (_ioc_rules_file, see parameter above) so
+  # maintainers edit one place; the generator picks up the current rules at
+  # rc up / rc reload time without any secondary copy to drift.
+  if [[ ! -f "$_ioc_rules_file" ]]; then
+    echo "Error: egress-rules.yaml not found at ${_ioc_rules_file}" >&2
+    return 1
+  fi
+  # Extract the 'rules:' section: print from the first 'rules:' line to EOF
+  # (the canonical file contains only the rules: block after the header).
+  # We prepend the 'rules:' key and emit the entries directly; this preserves
+  # comments, formatting, and YAML structure verbatim.
+  awk '/^rules:/{found=1} found{print}' "$_ioc_rules_file"
+}
+
+# _up_resolve_egress_rules -- generate the per-cage egress-rules file from effective
+# config and write it to the per-container cache directory.
+#
+# The file is later mounted at /etc/rip-cage/egress-rules.yaml (same path as the
+# image-baked static file), so the proxy and DNS sidecar read the unchanged path.
+# Only the source (generated-per-cage vs image-baked) and content/format change.
+#
+# Globals written: (none)
+# Parameters:
+#   $1  workspace   — project directory (for _load_effective_config)
+#   $2  cache_dir   — per-container cache dir (egress-rules.yaml written here)
+_up_resolve_egress_rules() {
+  local _workspace="$1" _cache_dir="$2"
+
+  # Read effective config (both layers merged). Fall back to schema defaults when
+  # no config files are present (D5 regression contract: existing cages continue
+  # to work with network.mode=null -> legacy denylist posture).
+  local _eff_result _eff_config
+  _eff_result=$(_load_effective_config "$_workspace" 2>/dev/null) || true
+  if [[ -n "$_eff_result" ]]; then
+    _eff_config=$(jq -c '.config' <<<"$_eff_result")
+  else
+    # No config files present: schema defaults (network.mode=null = legacy posture).
+    _eff_config='{"network":{"allowed_hosts":[],"writable_hosts":[],"mode":null}}'
+  fi
+
+  # Generate the rules file and write to cache (truncate-then-write to preserve inode
+  # in case the file is already bind-mounted; same recipe as known_hosts cache).
+  local _rules_path="${_cache_dir}/egress-rules.yaml"
+  mkdir -p "$_cache_dir"
+  : > "$_rules_path"
+  _generate_egress_rules_file "$_eff_config" "${SCRIPT_DIR}/egress-rules.yaml" > "$_rules_path"
+}
+
 # _up_init_firewall -- run the root-phase firewall init inside the container.
 # Called on both create and resume paths (iptables rules do not persist across stop/start).
 # Must run BEFORE _up_init_container (init-rip-cage.sh sources /etc/rip-cage/firewall-env).
@@ -3575,6 +3737,13 @@ cmd_up() {
     _up_resolve_resume_symlink_fingerprint "$name" "$path"
     _UP_SSH_FILTER_ACTIVE="false"
     _up_resolve_ssh_allowlists "$path" "$_rc_ssh_cache_dir"
+    # rip-cage-hhh.2: regenerate egress-rules on resume (truncate-then-write;
+    # bind mount already exists from create time — inode preserved, agent sees
+    # updated content on the next proxy reload without container restart).
+    # D10: regenerated ONLY here and at rc up create / rc reload. No file-watch.
+    if [[ "$rc_egress" != "off" ]]; then
+      _up_resolve_egress_rules "$path" "$_rc_ssh_cache_dir"
+    fi
     # On resume, the socket (or lack thereof) was wired at create time. The
     # label value is the ground truth for preflight — we don't re-distinguish
     # user-opt-out from no-host-agent here. Socket cannot be changed on resume.
@@ -3718,6 +3887,14 @@ cmd_up() {
   _UP_SSH_FILTER_ACTIVE="false"
   _up_resolve_ssh_allowlists "$path" "$_rc_ssh_cache_dir"
 
+  # rip-cage-hhh.2: generate per-cage egress-rules file from effective config.
+  # Writes to cache dir; mounted below at /etc/rip-cage/egress-rules.yaml.
+  # D10: regenerated ONLY here (rc up create) and in resume path / rc reload.
+  # No file-watch — an in-cage write to .rip-cage.yaml does NOT hot-apply.
+  if [[ "$rc_egress" != "off" ]]; then
+    _up_resolve_egress_rules "$path" "$_rc_ssh_cache_dir"
+  fi
+
   if [[ "$rc_ssh_config" == "on" ]]; then
     _translate_ssh_config "${HOME}/.ssh/config" "$_rc_ssh_cfg" "$_resolved_github_identity"
     # ADR-020 D4: explicit pin (layers 1-3) + missing .pub → abort loud.
@@ -3780,6 +3957,14 @@ cmd_up() {
   # ADR-020 D1+D7: mount translated config + pubkeys when posture=on (after run-args are initialized).
   if [[ "$rc_ssh_config" == "on" ]]; then
     _build_ssh_mount_args_with_posture "$_rc_ssh_cfg" "$name" _UP_RUN_ARGS "on"
+  fi
+
+  # rip-cage-hhh.2: mount generated egress-rules file over the image-baked static file.
+  # The proxy (rip_cage_egress.py) reads /etc/rip-cage/egress-rules.yaml unchanged;
+  # only the source (generated vs image-baked) and format change.
+  if [[ "$rc_egress" != "off" ]]; then
+    local _egress_rules_cache="${_rc_ssh_cache_dir}/egress-rules.yaml"
+    _UP_RUN_ARGS+=(--mount "type=bind,src=${_egress_rules_cache},dst=/etc/rip-cage/egress-rules.yaml,ro")
   fi
 
   _UP_RUN_ARGS+=("$IMAGE" sleep infinity)
@@ -4268,6 +4453,15 @@ cmd_reload() {
   local allowed_hosts_str
   allowed_hosts_str=$(jq -r '.ssh.allowed_hosts // [] | join(" ")' <<<"$live_cfg")
   _filter_known_hosts "$allowed_hosts_str" "${HOME}/.ssh/known_hosts" "${cache_dir}/known_hosts"
+
+  # rip-cage-hhh.2: also regenerate egress-rules on reload (D10 contract: regenerates
+  # ONLY at rc up / rc reload; not by watching the YAML file). Skip when egress was
+  # disabled at create time (rc.egress=off label), matching the cmd_up create/resume guard.
+  local _reload_egress_label
+  _reload_egress_label=$(docker inspect --format '{{index .Config.Labels "rc.egress"}}' "$name" 2>/dev/null || true)
+  if [[ "$_reload_egress_label" != "off" ]]; then
+    _up_resolve_egress_rules "$workspace" "$cache_dir"
+  fi
 
   # Update snapshot to live (so subsequent emit_hint suppresses the warning).
   _config_write_applied "$name" "$live_cfg"
@@ -5263,7 +5457,9 @@ _config_label_value() {
 # Paths listed here can be mutated by `rc reload` without container recreation.
 # Anything else triggers refuse-loud (exit 1) at reload time and a recreate
 # hint from _config_emit_hint when label/snapshot drift is detected.
-_RC_RELOAD_ELIGIBLE_PATHS='ssh.allowed_hosts'
+# rip-cage-hhh.2: network.* fields added as reload-eligible — rc reload regenerates
+# the egress-rules file when these change (D10: regeneration ONLY at rc up / rc reload).
+_RC_RELOAD_ELIGIBLE_PATHS='ssh.allowed_hosts network.allowed_hosts network.writable_hosts network.mode'
 
 # Path to the per-container "applied config" snapshot. Written at cmd_up
 # create-time, resume-time (after _up_resolve_ssh_allowlists), and after
