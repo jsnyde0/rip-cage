@@ -4769,6 +4769,9 @@ mounts.allow_risky|selection_list|null
 mounts.symlinks.on_dangling|selection_list|"follow"|follow,warn,skip,error
 mounts.symlinks.scope|selection_list|"file"|file,parent
 mounts.symlinks.mode|selection_list|"rw"|ro,rw
+network.allowed_hosts|additive_list|[]
+network.writable_hosts|additive_list|[]
+network.mode|selection_list|null|observe,block
 EOF
 }
 
@@ -5047,6 +5050,21 @@ _load_effective_config() {
   local effective provenance sha
   effective=$(_config_merge "$global_json" "$project_json")
   provenance=$(_config_provenance "$global_json" "$project_json")
+
+  # Cross-field constraint: network.writable_hosts ⊆ network.allowed_hosts
+  # Validate on effective (merged) config so both layers are considered.
+  local _wh_violations
+  _wh_violations=$(jq -r '
+    (.network.allowed_hosts // []) as $allowed |
+    (.network.writable_hosts // []) as $writable |
+    $writable[] | select(. as $h | ($allowed | any(. == $h)) | not)
+  ' <<<"$effective" 2>/dev/null || true)
+  if [[ -n "$_wh_violations" ]]; then
+    echo "Error: network.writable_hosts contains host(s) not in network.allowed_hosts: $(echo "$_wh_violations" | tr '\n' ' ')" >&2
+    echo "  Every writable_hosts entry must also appear in allowed_hosts." >&2
+    return 1
+  fi
+
   # Canonical-form hash so equivalent reordering doesn't churn the label.
   sha=$(jq -cS '.' <<<"$effective" | shasum -a 256 | awk '{print $1}')
 

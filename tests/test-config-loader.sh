@@ -637,6 +637,155 @@ test_t30_mounts_allow_risky_selection_list() {
 }
 
 # ---------------------------------------------------------------------------
+# network.* config fields (ADR-021, rip-cage-hhh.1)
+# T31: network.allowed_hosts parses from global config layer (additive_list)
+# T32: network.allowed_hosts merges additively across layers (global + project = union)
+# T33: v1 config with no network.* fields parses unchanged with empty defaults
+# T34: network.mode selection_list parses (observe/block); project replaces global
+# T35: absent network.mode resolves to null/default (not a third mode value string)
+# T36: network.writable_hosts ⊆ network.allowed_hosts validation — violation aborts
+# T37: network.writable_hosts merges additively across layers
+# T38: network.mode invalid value aborts loud per ADR-021 D3
+# ---------------------------------------------------------------------------
+
+test_t31_network_allowed_hosts_from_global() {
+  setup_sandbox "config-global-with-network.yaml" ""
+  local out hosts prov
+  out=$(run_rc_config "show --json")
+  hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
+  prov=$(jq -r '.provenance["network.allowed_hosts"]' <<<"$out")
+  if [[ "$hosts" == '["api.github.com","pypi.org"]' && "$prov" == "global" ]]; then
+    pass "T31 network.allowed_hosts parses from global config layer"
+  else
+    fail "T31 expected hosts=[api.github.com,pypi.org] prov=global, got hosts=$hosts prov=$prov"
+  fi
+  teardown_sandbox
+}
+
+test_t32_network_allowed_hosts_additive_merge() {
+  # global: [api.github.com, pypi.org], project: [registry.npmjs.org]
+  # effective: [api.github.com, pypi.org, registry.npmjs.org]
+  setup_sandbox "config-global-with-network.yaml" "config-project-with-network.yaml"
+  local out hosts prov
+  out=$(run_rc_config "show --json")
+  hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
+  prov=$(jq -c '.provenance["network.allowed_hosts"]' <<<"$out")
+  if [[ "$hosts" == '["api.github.com","pypi.org","registry.npmjs.org"]' ]]; then
+    pass "T32 network.allowed_hosts additive merge: global + project = union"
+  else
+    fail "T32 expected [api.github.com,pypi.org,registry.npmjs.org], got: $hosts (prov=$prov)"
+  fi
+  teardown_sandbox
+}
+
+test_t33_v1_config_no_network_parses_unchanged() {
+  # Existing v1 config with no network.* → empty defaults, no error
+  setup_sandbox "config-global-basic.yaml" "config-project-basic.yaml"
+  local out hosts writable mode
+  out=$(run_rc_config "show --json")
+  hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
+  writable=$(jq -c '.config.network.writable_hosts' <<<"$out")
+  mode=$(jq -r '.config.network.mode' <<<"$out")
+  # ssh fields still present
+  local ssh_hosts
+  ssh_hosts=$(jq -c '.config.ssh.allowed_hosts' <<<"$out")
+  if [[ "$hosts" == '[]' && "$writable" == '[]' && "$mode" == "null" \
+        && "$ssh_hosts" == '["github.com","switch.berlin"]' ]]; then
+    pass "T33 v1 config with no network.* parses unchanged, empty defaults"
+  else
+    fail "T33 expected empty network defaults + ssh unchanged, got hosts=$hosts writable=$writable mode=$mode ssh_hosts=$ssh_hosts"
+  fi
+  teardown_sandbox
+}
+
+test_t34_network_mode_selection_list() {
+  # network.mode from global (block); check it parses and provenance is global
+  setup_sandbox "config-global-with-network.yaml" ""
+  local out mode prov
+  out=$(run_rc_config "show --json")
+  mode=$(jq -r '.config.network.mode' <<<"$out")
+  prov=$(jq -r '.provenance["network.mode"]' <<<"$out")
+  if [[ "$mode" == "block" && "$prov" == "global" ]]; then
+    pass "T34 network.mode=block parses from global, prov=global"
+  else
+    fail "T34 expected mode=block prov=global, got mode=$mode prov=$prov"
+  fi
+  teardown_sandbox
+}
+
+test_t35_absent_network_mode_is_null_not_enum() {
+  # network.mode absent from all configs → null (not "legacy" or any string value)
+  setup_sandbox "" ""
+  local out mode prov
+  out=$(run_rc_config "show --json")
+  mode=$(jq -r '.config.network.mode' <<<"$out")
+  prov=$(jq -r '.provenance["network.mode"]' <<<"$out")
+  # mode must be null (JSON null), not any string like "legacy", "off", etc.
+  if [[ "$mode" == "null" && "$prov" == "default" ]]; then
+    pass "T35 absent network.mode resolves to null (default), not a third mode string"
+  else
+    fail "T35 expected mode=null prov=default, got mode=$mode prov=$prov"
+  fi
+  teardown_sandbox
+}
+
+test_t36_network_writable_not_subset_aborts() {
+  # network.writable_hosts contains host not in network.allowed_hosts → abort loud
+  setup_sandbox "" "config-project-network-writable-violation.yaml"
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -q "writable_hosts" "$stderr_file"; then
+    pass "T36 network.writable_hosts not subset of allowed_hosts → abort loud"
+  else
+    fail "T36 expected non-zero exit + writable_hosts error, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+test_t37_network_writable_hosts_additive_merge() {
+  # global: writable=[api.github.com], project: writable=[] (zero-out for project)
+  # This tests additive merge — global [api.github.com] + project [] = [api.github.com]
+  setup_sandbox "config-global-with-network.yaml" "config-project-with-network.yaml"
+  local out writable prov
+  out=$(run_rc_config "show --json")
+  writable=$(jq -c '.config.network.writable_hosts' <<<"$out")
+  prov=$(jq -c '.provenance["network.writable_hosts"]' <<<"$out")
+  # global has [api.github.com], project has [] → additive union = [api.github.com]
+  if [[ "$writable" == '["api.github.com"]' ]]; then
+    pass "T37 network.writable_hosts additive merge: global [api.github.com] + project [] = [api.github.com]"
+  else
+    fail "T37 expected writable=[api.github.com], got: $writable (prov=$prov)"
+  fi
+  teardown_sandbox
+}
+
+test_t38_network_mode_invalid_aborts() {
+  # network.mode with invalid value aborts loud
+  setup_sandbox "" ""
+  cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
+version: 1
+network:
+  mode: turbo_firewall
+YAML
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]]; then
+    pass "T38 network.mode=invalid aborts loud per ADR-021 D3"
+  else
+    fail "T38 expected non-zero exit for invalid network.mode, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  [[ -n "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME"
+  TEST_HOME=""
+  TEST_WS=""
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -671,6 +820,14 @@ test_t27_mounts_denylist_from_global
 test_t28_mounts_denylist_from_project
 test_t29_mounts_denylist_additive_merge
 test_t30_mounts_allow_risky_selection_list
+test_t31_network_allowed_hosts_from_global
+test_t32_network_allowed_hosts_additive_merge
+test_t33_v1_config_no_network_parses_unchanged
+test_t34_network_mode_selection_list
+test_t35_absent_network_mode_is_null_not_enum
+test_t36_network_writable_not_subset_aborts
+test_t37_network_writable_hosts_additive_merge
+test_t38_network_mode_invalid_aborts
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

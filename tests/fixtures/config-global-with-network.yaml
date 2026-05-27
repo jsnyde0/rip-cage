@@ -1,0 +1,8 @@
+version: 1
+network:
+  allowed_hosts:
+    - api.github.com
+    - pypi.org
+  writable_hosts:
+    - api.github.com
+  mode: block

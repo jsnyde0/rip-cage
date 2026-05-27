@@ -1,0 +1,5 @@
+version: 1
+network:
+  allowed_hosts:
+    - registry.npmjs.org
+  writable_hosts: []
