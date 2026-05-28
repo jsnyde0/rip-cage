@@ -314,15 +314,15 @@ echo "=== B1: GET non-whitelisted host ==="
 
 if [[ "$block_running" == "$BLOCK_CAGE" ]]; then
   RAND_SUFFIX=$(date +%s)
-  # FIX2: inject a resolvable domain into /etc/hosts (TEST-NET-3 IP 203.0.113.1)
-  # so curl reaches the proxy (which intercepts 443) and gets the proxy's 403,
-  # rather than failing at DNS (HTTP 000) before the proxy can be exercised.
-  B1_PROBE_DOMAIN="not-allowed-b1.test"
-  docker exec -u root "$BLOCK_CAGE" sh -c "echo '203.0.113.1 ${B1_PROBE_DOMAIN}' >> /etc/hosts" \
-    > /dev/null 2>&1 || true
+  # FIX4: use a real IANA-reserved domain (example.com) that is NOT in this cage's
+  # allowed_hosts. A fake /etc/hosts → TEST-NET IP fails the transparent-HTTPS
+  # handshake (mitmproxy fetches the upstream cert, which an unroutable IP can't
+  # serve → curl 000). A real reachable host lets the TLS handshake complete so
+  # the request hook can return the 403. example.com is reserved for docs (RFC 2606).
+  B1_PROBE_DOMAIN="example.com"
   b1_code=$(docker exec "$BLOCK_CAGE" curl -s -o /tmp/rc-sec-b1.out -w '%{http_code}' \
     --max-time 10 \
-    "http://${B1_PROBE_DOMAIN}/?k=secret" 2>/dev/null || true)
+    "https://${B1_PROBE_DOMAIN}/?k=secret" 2>/dev/null || true)
   b1_body=$(docker exec "$BLOCK_CAGE" cat /tmp/rc-sec-b1.out 2>/dev/null || true)
 
   b1_struct_err=$(_assert_structured_fields "$b1_body" 2>&1 || true)
@@ -736,10 +736,12 @@ if [[ "$block_running" == "$BLOCK_CAGE" ]]; then
   # Confirm the rules file exists before the in-cage write
   docker exec "$BLOCK_CAGE" test -f /etc/rip-cage/egress-rules.yaml > /dev/null 2>&1 || true
 
-  # In-cage: append a new host to .rip-cage.yaml
+  # In-cage: append a new host to .rip-cage.yaml. FIX4: use a real IANA-reserved
+  # domain (example.org) so the still-blocked verification can complete a
+  # transparent-HTTPS handshake and observe the 403.
   docker exec "$BLOCK_CAGE" bash -c "
 cat >> /workspace/.rip-cage.yaml <<YAML
-  - attacker-in-cage-added.evil
+  - example.org
 YAML" > /dev/null 2>&1 || true
 
   # Wait a moment (D10: no file-watch → change should NOT propagate)
@@ -748,24 +750,19 @@ YAML" > /dev/null 2>&1 || true
   # Read egress-rules.yaml again — should be UNCHANGED
   b7_after=$(docker exec "$BLOCK_CAGE" cat /etc/rip-cage/egress-rules.yaml 2>/dev/null || true)
 
-  if echo "$b7_after" | grep -q "attacker-in-cage-added.evil"; then
+  if echo "$b7_after" | grep -q "example.org"; then
     check "B7 In-cage .rip-cage.yaml write does NOT change effective config (D10)" "fail" \
-      "attacker-in-cage-added.evil appeared in /etc/rip-cage/egress-rules.yaml — hot-reload fired unexpectedly"
+      "example.org appeared in /etc/rip-cage/egress-rules.yaml — hot-reload fired unexpectedly"
   else
     check "B7 In-cage .rip-cage.yaml write does NOT change effective config (D10)" "pass" \
       "egress-rules.yaml unchanged after in-cage write"
   fi
 
-  # FIX2: inject attacker-in-cage-added.evil → 203.0.113.1 into /etc/hosts so
-  # curl resolves → proxy intercepts 443 → returns 403 (not DNS-fail 000).
-  docker exec -u root "$BLOCK_CAGE" sh -c \
-    "echo '203.0.113.1 attacker-in-cage-added.evil' >> /etc/hosts" \
-    > /dev/null 2>&1 || true
-
-  # Verify the attacker host is still blocked after the in-cage write
+  # Verify the host is still blocked after the in-cage write (D10: effective
+  # config unchanged until host-side rc reload).
   b7_code=$(docker exec "$BLOCK_CAGE" curl -s -o /dev/null -w '%{http_code}' \
     --max-time 8 \
-    "http://attacker-in-cage-added.evil/" 2>/dev/null || true)
+    "https://example.org/" 2>/dev/null || true)
   if [[ "$b7_code" == "403" ]]; then
     check "B7 New host blocked after in-cage write (D10 confirmed)" "pass" "HTTP $b7_code"
   else
@@ -791,20 +788,15 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "=== B8: Host-agent repair cycle (D11) ==="
 
-# FIX2: use a stable domain (not RAND_SUFFIX) so we can pre-inject /etc/hosts.
-B8_HOST="newly-needed-b8.test"
+# FIX4: use a real IANA-reserved domain (example.net) not in the cage's
+# allowed_hosts so the transparent-HTTPS handshake completes and the 403 is observed.
+B8_HOST="example.net"
 
 if [[ "$block_running" == "$BLOCK_CAGE" ]]; then
-  # FIX2: inject B8_HOST → 203.0.113.1 so curl resolves → proxy intercepts →
-  # returns 403 (not DNS-fail 000).
-  docker exec -u root "$BLOCK_CAGE" sh -c \
-    "echo '203.0.113.1 ${B8_HOST}' >> /etc/hosts" \
-    > /dev/null 2>&1 || true
-
   # Step 1: curl → blocked, capture 403 JSON body
   b8_code=$(docker exec "$BLOCK_CAGE" curl -s -o /tmp/rc-sec-b8.out -w '%{http_code}' \
     --max-time 10 \
-    "http://${B8_HOST}/path/data" 2>/dev/null || true)
+    "https://${B8_HOST}/path/data" 2>/dev/null || true)
   b8_body=$(docker exec "$BLOCK_CAGE" cat /tmp/rc-sec-b8.out 2>/dev/null || true)
 
   if [[ "$b8_code" == "403" ]]; then
@@ -860,12 +852,12 @@ if [[ "$block_running" == "$BLOCK_CAGE" ]]; then
       "exit=$b8_reload_exit; out: ${b8_reload_out:0:200}"
   fi
 
-  # Step 5: retry curl → should succeed (not our 403)
-  # Since B8_HOST doesn't actually exist, curl may get NXDOMAIN or connection refused
-  # from the internet — but it should NOT be our 403 (whitelist block lifted).
+  # Step 5: retry curl → should succeed (not our 403). example.net is a real host,
+  # so once the allowlist add + reload lifts the block the proxy forwards upstream
+  # and the response is whatever example.net returns — never our rip-cage 403.
   b8_retry_code=$(docker exec "$BLOCK_CAGE" curl -s -o /tmp/rc-sec-b8-retry.out -w '%{http_code}' \
     --max-time 10 \
-    "http://${B8_HOST}/path/data" 2>/dev/null || true)
+    "https://${B8_HOST}/path/data" 2>/dev/null || true)
   b8_retry_body=$(docker exec "$BLOCK_CAGE" cat /tmp/rc-sec-b8-retry.out 2>/dev/null || true)
   b8_retry_blocked_by=$(echo "$b8_retry_body" | python3 -c \
     "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('blocked_by',''))" \
@@ -903,11 +895,15 @@ echo ""
 echo "=== B9: promote observe→block transition ==="
 
 if [[ "$obs_running" == "$OBS_CAGE" ]]; then
-  # First: curl some hosts (observe mode — they should succeed but be logged)
+  # First: curl hosts in observe mode. FIX4: example.net is NOT in this cage's
+  # allowed_hosts, so observe mode logs a real would-block event for it (the
+  # allowed hosts example.com/httpbin.org pass clean and generate no would-block).
   docker exec "$OBS_CAGE" curl -s --max-time 10 -o /dev/null \
     "https://example.com/" > /dev/null 2>&1 || true
   docker exec "$OBS_CAGE" curl -s --max-time 10 -o /dev/null \
     "https://httpbin.org/get" > /dev/null 2>&1 || true
+  docker exec "$OBS_CAGE" curl -s --max-time 10 -o /dev/null \
+    "https://example.net/" > /dev/null 2>&1 || true
 
   # Wait for would-block events to appear in the log
   sleep 2
@@ -964,12 +960,13 @@ JSONL
       "newly-observed-b9.test not in .rip-cage.yaml after promote"
   fi
 
-  # (a) never-touched.test NOT in allowed_hosts
-  if grep -q "never-touched.test" "${OBS_WS}/.rip-cage.yaml" 2>/dev/null; then
-    check "B9 (a) never-touched.test excluded from promoted hosts" "fail" \
-      "never-touched.test appeared in .rip-cage.yaml — should not be promoted"
+  # (a) example.org (never curled) NOT in allowed_hosts. FIX4: example.org is the
+  # never-touched host — a real domain we never request, so promote must exclude it.
+  if grep -q "example.org" "${OBS_WS}/.rip-cage.yaml" 2>/dev/null; then
+    check "B9 (a) never-touched host excluded from promoted hosts" "fail" \
+      "example.org appeared in .rip-cage.yaml — should not be promoted"
   else
-    check "B9 (a) never-touched.test excluded from promoted hosts" "pass"
+    check "B9 (a) never-touched host excluded from promoted hosts" "pass"
   fi
 
   # (b) mode flipped to block
@@ -1009,20 +1006,17 @@ print('not-found')
       "mode=${b9_mode} (expected block)"
   fi
 
-  # (d) request to never-touched.test now blocks (mode is block, not in allowed_hosts)
-  # FIX2: inject never-touched.test → 203.0.113.1 so curl resolves → proxy
-  # intercepts 443 → returns 403 (not DNS-fail 000).
-  docker exec -u root "$OBS_CAGE" sh -c \
-    "echo '203.0.113.1 never-touched.test' >> /etc/hosts" \
-    > /dev/null 2>&1 || true
+  # (d) request to example.org (never-touched) now blocks (mode is block, not in
+  # allowed_hosts). FIX4: real reachable host so the transparent-HTTPS handshake
+  # completes and the 403 is observed.
   b9_d_code=$(docker exec "$OBS_CAGE" curl -s -o /dev/null -w '%{http_code}' \
     --max-time 8 \
-    "http://never-touched.test/" 2>/dev/null || true)
+    "https://example.org/" 2>/dev/null || true)
   if [[ "$b9_d_code" == "403" ]]; then
-    check "B9 (d) never-touched.test blocked after promote (mode=block)" "pass"
+    check "B9 (d) never-touched host blocked after promote (mode=block)" "pass"
   else
-    check "B9 (d) never-touched.test blocked after promote (mode=block)" "fail" \
-      "HTTP $b9_d_code (expected 403 — never-touched.test not in allowed_hosts)"
+    check "B9 (d) never-touched host blocked after promote (mode=block)" "fail" \
+      "HTTP $b9_d_code (expected 403 — example.org not in allowed_hosts)"
   fi
 else
   for _n in a b c d e f g h; do
@@ -1126,6 +1120,20 @@ echo ""
 echo "=== O1: Observe mode — curl lands would-block in HTTP log ==="
 
 if [[ "$obs_running" == "$OBS_CAGE" ]]; then
+  # FIX4: B9 promoted OBS_CAGE observe→block, so re-establish observe mode before
+  # the O-probes (which require observe). Rewrite the config back to observe and
+  # reload — this bounces the proxy/DNS sidecars so they pick up observe mode.
+  cat > "${OBS_WS}/.rip-cage.yaml" <<'YAML'
+version: 1
+network:
+  mode: observe
+  allowed_hosts:
+    - api.anthropic.com
+    - example.com
+    - httpbin.org
+YAML
+  "$RC" reload "$OBS_CAGE" > /dev/null 2>&1 || true
+
   # FIX2: use a stable domain and inject /etc/hosts so the observe-mode proxy
   # sees the request (not a DNS-fail 000). In observe mode, the proxy lets it
   # through (no 403) but logs a would-block event.

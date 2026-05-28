@@ -52,6 +52,15 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# npm resilience: cap per-request stall at 90s (npm default is 5 min) so a flaky
+# registry fails fast instead of hanging the build for ~80 min across many
+# transitive deps. Outer retry loops (below) absorb transient EIDLETIMEOUTs.
+# Written to /root/.npmrc — inherited by every npm install in this stage.
+RUN npm config set fetch-timeout 90000 \
+    && npm config set fetch-retries 1 \
+    && npm config set fetch-retry-mintimeout 5000 \
+    && npm config set fetch-retry-maxtimeout 20000
+
 # Bun
 RUN npm install -g bun@${BUN_VERSION}
 
@@ -75,11 +84,19 @@ COPY --from=go-builder /go/bin/bd /usr/local/bin/bd-real
 COPY bd-wrapper.sh /usr/local/bin/bd
 RUN chmod +x /usr/local/bin/bd /usr/local/bin/bd-real
 
-# Claude Code
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+# Claude Code — bounded retry loop survives transient registry flakiness.
+RUN for i in 1 2 3; do \
+      npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && break; \
+      [ "$i" = 3 ] && exit 1; \
+      echo "claude-code npm install failed (attempt $i/3); retrying in 10s" && sleep 10; \
+    done
 
-# Pi coding agent
-RUN npm install -g @mariozechner/pi-coding-agent@${PI_VERSION}
+# Pi coding agent — bounded retry loop survives transient registry flakiness.
+RUN for i in 1 2 3; do \
+      npm install -g @mariozechner/pi-coding-agent@${PI_VERSION} && break; \
+      [ "$i" = 3 ] && exit 1; \
+      echo "pi-coding-agent npm install failed (attempt $i/3); retrying in 10s" && sleep 10; \
+    done
 
 # Non-root user
 RUN groupadd -g 1000 agent \

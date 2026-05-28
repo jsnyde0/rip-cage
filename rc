@@ -3175,6 +3175,44 @@ _up_reload_tcp22_allowlist() {
   ' 2>/dev/null || true
 }
 
+# _up_reload_egress_proxy -- bounce the egress proxy + DNS sidecar inside a running
+# container so they re-read the regenerated /etc/rip-cage/egress-rules.yaml.
+# (rip-cage-hhh.4 / ADR-012 D9)
+#
+# Both sidecars load their rules ONCE at process startup — by design, not by watching
+# the YAML file (D10: effective config changes only at rc up / rc reload). cmd_reload
+# regenerates egress-rules.yaml and the bind-mount shows the new content in-container,
+# but the running mitmdump / DNS resolver still hold the stale rules_doc cached at
+# startup. Killing the inner process lets the restart-loop wrappers (rip-proxy-start.sh
+# / rip-dns-start.sh) relaunch it with fresh rules. The wrapper scripts' argv is the
+# .sh path (not "mitmdump" / "rip_cage_dns.py"), so the -f patterns never match the
+# wrappers — they survive to perform the relaunch.
+#
+# Caller guards on the rc.egress label (skips when egress=off).
+# Parameter: $1 name -- container name
+_up_reload_egress_proxy() {
+  local _name="$1"
+  docker exec -u root "$_name" sh -c '
+    _rip_bounce() {
+      pkill -u rip-proxy -f "$1" 2>/dev/null || true
+      # Wait for the old process to exit (max ~5s).
+      _i=0
+      while [ "$_i" -lt 25 ] && pgrep -u rip-proxy -f "$1" >/dev/null 2>&1; do
+        _i=$((_i+1)); sleep 0.2
+      done
+      # Wait for the restart-loop wrapper to relaunch it (max ~10s).
+      _i=0
+      while [ "$_i" -lt 50 ] && ! pgrep -u rip-proxy -f "$1" >/dev/null 2>&1; do
+        _i=$((_i+1)); sleep 0.2
+      done
+    }
+    _rip_bounce mitmdump
+    _rip_bounce rip_cage_dns.py
+    # Settle: allow mitmdump to bind :8080 and the DNS resolver to bind :5300.
+    sleep 1
+  ' 2>/dev/null || true
+}
+
 # _up_init_firewall -- run the root-phase firewall init inside the container.
 # Called on both create and resume paths (iptables rules do not persist across stop/start).
 # Must run BEFORE _up_init_container (init-rip-cage.sh sources /etc/rip-cage/firewall-env).
@@ -4720,6 +4758,10 @@ cmd_reload() {
     # network.* change. Re-resolves hostnames to IPs in-container (where the DNS
     # sidecar is active). Skips silently if mode is not block.
     _up_reload_tcp22_allowlist "$name"
+    # rip-cage-hhh.4 / ADR-012 D9: bounce the egress proxy + DNS sidecar so they
+    # re-read the regenerated egress-rules.yaml. Without this, allowlist/mode
+    # changes never reach the running mitmdump (it caches rules at startup).
+    _up_reload_egress_proxy "$name"
   fi
 
   # Update snapshot to live (so subsequent emit_hint suppresses the warning).

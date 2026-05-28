@@ -414,7 +414,21 @@ try:
                 self._deny(flow, err_result)
 
         def _build_denial_body(self, result: DecisionResult) -> bytes:
-            """Build the 403 response body: JSON + human-readable fallback."""
+            """Build the 403 response body as valid JSON (Content-Type: application/json).
+
+            The human-readable text lives in the `message` field so the body stays
+            parseable by `jq` / the D11 host-agent repair loop. Emitting trailing
+            non-JSON text would contradict the declared Content-Type and break field
+            extraction.
+            """
+            human_message = (
+                f"Blocked by rip-cage egress firewall.\n"
+                f"Rule: {result.rule_id}\n"
+                f"Why: {result.why}\n"
+                f"Fix: {result.fix_command}\n"
+                f"Config: {result.config_file} @ {result.config_path}\n"
+                f"Docs: https://github.com/jsnyde0/rip-cage/blob/main/docs/reference/egress-firewall.md"
+            )
             structured = {
                 "blocked_by": "rip-cage egress firewall",
                 "rule_id": result.rule_id,
@@ -424,18 +438,9 @@ try:
                 "fix_command": result.fix_command,
                 "config_file": result.config_file,
                 "config_path": result.config_path,
+                "message": human_message,
             }
-            json_part = json.dumps(structured, indent=2)
-            human_part = (
-                f"\n\n---\n"
-                f"Blocked by rip-cage egress firewall.\n"
-                f"Rule: {result.rule_id}\n"
-                f"Why: {result.why}\n"
-                f"Fix: {result.fix_command}\n"
-                f"Config: {result.config_file} @ {result.config_path}\n"
-                f"Docs: https://github.com/jsnyde0/rip-cage/blob/main/docs/reference/egress-firewall.md\n"
-            )
-            return (json_part + human_part).encode()
+            return json.dumps(structured, indent=2).encode()
 
         def _deny(self, flow: _http.HTTPFlow, result: DecisionResult) -> None:
             body = self._build_denial_body(result)
