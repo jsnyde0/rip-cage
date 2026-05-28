@@ -83,6 +83,21 @@ jobs:
       - name: Verify rc --version works
         run: ./rc --version
 
+      # ADR-023 D6 preflight: `rc up` aborts when the global denylist config is
+      # absent. tests/run-host.sh seeds this for local runs (its driver-level
+      # fixture); CI invokes test files individually, so it must provision the
+      # same way. Seed the default-path config once so every test step below —
+      # current and future — clears the preflight.
+      - name: Seed global denylist config (ADR-023 preflight)
+        run: |
+          mkdir -p ~/.config/rip-cage
+          cat > ~/.config/rip-cage/config.yaml <<'YAML'
+          version: 1
+          mounts:
+            denylist: []
+            allow_risky: null
+          YAML
+
       - name: test-rc-commands.sh
         run: bash tests/test-rc-commands.sh
 

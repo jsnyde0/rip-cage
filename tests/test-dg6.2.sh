@@ -16,19 +16,6 @@ FAILURES=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
-# ADR-023 D6 preflight fixture: `rc up` aborts loud when the global denylist
-# config is absent (rc:3648). Seed one and point RC_CONFIG_GLOBAL at it so the
-# `rc up` flows below reach the behavior under test instead of the preflight.
-# (CI has no ~/.config/rip-cage/config.yaml; local dev usually does.)
-GLOBAL_CFG=$(mktemp)
-cat > "$GLOBAL_CFG" <<'YAML'
-version: 1
-mounts:
-  denylist: []
-  allow_risky: null
-YAML
-export RC_CONFIG_GLOBAL="$GLOBAL_CFG"
-
 # --- Test 1: rc script is valid bash ---
 echo "=== Test 1: rc script is valid bash ==="
 if bash -n "$RC" 2>&1; then
@@ -248,7 +235,6 @@ rmdir "$env_ws_dir" 2>/dev/null || true
 
 # --- Cleanup ---
 rmdir "$test_dir" 2>/dev/null || true
-rm -f "$GLOBAL_CFG" 2>/dev/null || true
 
 echo ""
 echo "=== Results ==="
