@@ -217,6 +217,7 @@ Commands:
   test [name]                                  Run in-container safety stack tests (61 checks)
   test --host                                  Run all host-side tests (host-only; not usable inside container)
   test --e2e                                   Full lifecycle e2e test (slow; RC_E2E_REBUILD=1 to rebuild image)
+  test --e2e-security                          Injection-exfil integration probes (slow; real cages; RC_E2E_REBUILD=1 to rebuild)
   doctor [name]                                Per-container diagnostic — labels + live probes
   doctor --host                                Daemon-liveness probe (no container required)
   auth refresh                                 Refresh credentials from host keychain
@@ -4194,29 +4195,108 @@ cmd_up() {
   fi
 }
 
+# _rc_ls_mode_from_source_path -- derive the CURRENT egress mode from the source
+# workspace's .rip-cage.yaml (the live source of truth post-promote/reload).
+#
+# Docker labels are stamped at create time (immutable); this helper reads the
+# file that rc reload rewrites, so it reflects the actual running mode instead
+# of the stale create-time label.
+#
+# Parameter: $1 source_path -- path to the cage's workspace (rc.source.path label value)
+# Prints:    "block" | "observe" | "off" | "legacy" (absent file or absent/null network.mode)
+#
+# Falls back to "legacy" on any error (no-op for pre-hhh workspaces).
+_rc_ls_mode_from_source_path() {
+  local src_path="$1"
+  local yaml_file="${src_path}/.rip-cage.yaml"
+  if [[ ! -f "$yaml_file" ]]; then
+    echo "legacy"
+    return
+  fi
+  local mode
+  if ! command -v yq &>/dev/null; then
+    echo "legacy"
+    return
+  fi
+  mode=$(yq '.network.mode // "legacy"' "$yaml_file" 2>/dev/null | tr -d '"' | tr -d "'" || echo "legacy")
+  mode="${mode:-legacy}"
+  if [[ "$mode" == "null" || "$mode" == "~" ]]; then
+    mode="legacy"
+  fi
+  echo "$mode"
+}
+
 cmd_ls() {
   local _ls_timeout="${RC_DOCKER_CALL_TIMEOUT:-15}"
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    # rip-cage-hhh.6 D3: rc.egress.mode label added at column [7]
-    _docker_call "$_ls_timeout" ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}\t{{.Label "rc.forward-ssh"}}\t{{.Label "rc.github-identity"}}\t{{.Label "rc.egress.mode"}}' | \
-      jq -Rsn '[inputs | rtrimstr("\n") | split("\n") | .[] | select(length > 0) | split("\t") | {
-        name: .[0],
-        status: .[1],
-        uptime: .[2],
-        source_path: .[3],
-        egress: (.[4] | if . == "" then "legacy" elif (. == "on" or . == "off") then . else "invalid:\(.)" end),
-        forward_ssh: (.[5] | if . == "" then "legacy" elif (. == "on" or . == "off") then . else "invalid:\(.)" end),
-        gh_identity: (.[6] | if . == "" then null else . end),
-        mode: (.[7] | if . == "" then "-" else . end)
-      }]'
+    # rip-cage-hhh FIX1: mode derived from source path's .rip-cage.yaml (live),
+    # not the immutable rc.egress.mode label. Include rc.source.path in format
+    # and compute mode per-row via _rc_ls_mode_from_source_path.
+    local _ls_raw _ls_json
+    _ls_raw=$(_docker_call "$_ls_timeout" ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}\t{{.Label "rc.forward-ssh"}}\t{{.Label "rc.github-identity"}}' 2>/dev/null || true)
+    _ls_json="["
+    local _ls_first="true"
+    while IFS=$'\t' read -r _ls_name _ls_status _ls_uptime _ls_src _ls_egress _ls_fwdssh _ls_ghi; do
+      [[ -z "$_ls_name" ]] && continue
+      local _ls_mode
+      _ls_mode=$(_rc_ls_mode_from_source_path "$_ls_src")
+      local _ls_egress_norm _ls_fwdssh_norm
+      if [[ "$_ls_egress" == "" ]]; then _ls_egress_norm="legacy"
+      elif [[ "$_ls_egress" == "on" || "$_ls_egress" == "off" ]]; then _ls_egress_norm="$_ls_egress"
+      else _ls_egress_norm="invalid:${_ls_egress}"; fi
+      if [[ "$_ls_fwdssh" == "" ]]; then _ls_fwdssh_norm="legacy"
+      elif [[ "$_ls_fwdssh" == "on" || "$_ls_fwdssh" == "off" ]]; then _ls_fwdssh_norm="$_ls_fwdssh"
+      else _ls_fwdssh_norm="invalid:${_ls_fwdssh}"; fi
+      local _ls_entry
+      _ls_entry=$(jq -nc \
+        --arg name "$_ls_name" \
+        --arg status "$_ls_status" \
+        --arg uptime "$_ls_uptime" \
+        --arg source_path "$_ls_src" \
+        --arg egress "$_ls_egress_norm" \
+        --arg forward_ssh "$_ls_fwdssh_norm" \
+        --arg mode "$_ls_mode" \
+        '{name:$name, status:$status, uptime:$uptime, source_path:$source_path, egress:$egress, forward_ssh:$forward_ssh, gh_identity:null, mode:$mode}' \
+        2>/dev/null || true)
+      if [[ -n "$_ls_entry" ]]; then
+        if [[ "$_ls_ghi" != "" ]]; then
+          _ls_entry=$(echo "$_ls_entry" | jq --arg ghi "$_ls_ghi" '.gh_identity=$ghi' 2>/dev/null || echo "$_ls_entry")
+        fi
+        if [[ "$_ls_first" == "true" ]]; then
+          _ls_json="${_ls_json}${_ls_entry}"
+          _ls_first="false"
+        else
+          _ls_json="${_ls_json},${_ls_entry}"
+        fi
+      fi
+    done <<EOF
+${_ls_raw}
+EOF
+    _ls_json="${_ls_json}]"
+    echo "$_ls_json"
   else
-    # rip-cage-hhh.6 D3: MODE column added; rc.egress.mode label at field [7]
-    { echo -e "NAME\tSTATUS\tEGRESS\tMODE\tFWD-SSH\tGH-IDENTITY\tSOURCE PATH"; _docker_call "$_ls_timeout" ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}\t{{.Label "rc.forward-ssh"}}\t{{.Label "rc.github-identity"}}\t{{.Label "rc.egress.mode"}}' | \
-      awk -F'\t' '{egress=$4; if (egress == "") egress="legacy"; else if (egress != "on" && egress != "off") egress="invalid:" egress;
-                   fwd=$5;    if (fwd == "")    fwd="legacy";    else if (fwd    != "on" && fwd    != "off") fwd   ="invalid:" fwd;
-                   ghi=$6;    if (ghi == "")    ghi="\342\200\224";
-                   mode=$7;   if (mode == "")   mode="-";
-                   print $1"\t"$2"\t"egress"\t"mode"\t"fwd"\t"ghi"\t"$3}'; }
+    # rip-cage-hhh FIX1: MODE column derived from source path's .rip-cage.yaml (live),
+    # not the immutable rc.egress.mode label. Build per-row with a while-read loop.
+    echo -e "NAME\tSTATUS\tEGRESS\tMODE\tFWD-SSH\tGH-IDENTITY\tSOURCE PATH"
+    local _ls_raw_txt
+    _ls_raw_txt=$(_docker_call "$_ls_timeout" ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}\t{{.Label "rc.forward-ssh"}}\t{{.Label "rc.github-identity"}}' 2>/dev/null || true)
+    while IFS=$'\t' read -r _ls_name _ls_uptime _ls_src _ls_egress _ls_fwdssh _ls_ghi; do
+      [[ -z "$_ls_name" ]] && continue
+      local _ls_mode _ls_egress_out _ls_fwdssh_out _ls_ghi_out
+      _ls_mode=$(_rc_ls_mode_from_source_path "$_ls_src")
+      if [[ "$_ls_egress" == "" ]]; then _ls_egress_out="legacy"
+      elif [[ "$_ls_egress" == "on" || "$_ls_egress" == "off" ]]; then _ls_egress_out="$_ls_egress"
+      else _ls_egress_out="invalid:${_ls_egress}"; fi
+      if [[ "$_ls_fwdssh" == "" ]]; then _ls_fwdssh_out="legacy"
+      elif [[ "$_ls_fwdssh" == "on" || "$_ls_fwdssh" == "off" ]]; then _ls_fwdssh_out="$_ls_fwdssh"
+      else _ls_fwdssh_out="invalid:${_ls_fwdssh}"; fi
+      if [[ "$_ls_ghi" == "" ]]; then _ls_ghi_out=$'\342\200\224'
+      else _ls_ghi_out="$_ls_ghi"; fi
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$_ls_name" "$_ls_uptime" "$_ls_egress_out" "$_ls_mode" "$_ls_fwdssh_out" "$_ls_ghi_out" "$_ls_src"
+    done <<EOF
+${_ls_raw_txt}
+EOF
   fi
 }
 
@@ -5038,6 +5118,15 @@ cmd_test() {
     fi
     exec "$e2e_script" "$@"
   fi
+  if [[ "${1:-}" == "--e2e-security" ]]; then
+    shift
+    local sec_script="${SCRIPT_DIR}/tests/test-security-model-injection.sh"
+    if [[ ! -f "$sec_script" ]]; then
+      echo "Error: test-security-model-injection.sh not found" >&2
+      exit 1
+    fi
+    exec "$sec_script" "$@"
+  fi
   local name
   name=$(resolve_name "${1:-}") || exit 1
   verify_rc_container "$name"
@@ -5244,9 +5333,11 @@ cmd_doctor() {
   local beads_probe="not running, no live probe"
   local auth_probe="not running, no live probe"
   local skills_probe="not running, no live probe"
-  # rip-cage-hhh.6 D2: egress section — values resolved from live container when running,
-  # otherwise defaulted to label values / empty arrays.
-  local _egress_live_mode="$egress_mode_label"
+  # rip-cage-hhh FIX1: egress mode — derived from source path's .rip-cage.yaml
+  # (current, post-promote/reload) rather than the immutable create-time label.
+  # Overridden below by the live rules file when the container is running.
+  local _egress_live_mode
+  _egress_live_mode=$(_rc_ls_mode_from_source_path "$source_path")
   local _egress_allowed_hosts_json="[]"
   local _egress_recent_blocks_json="[]"
   local _egress_ssh_allowed_hosts_json="[]"

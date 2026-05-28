@@ -32,6 +32,7 @@ RUN apt-get update && apt-get install -y \
     build-essential pkg-config libicu-dev libzstd-dev \
     python3 python3-venv perl ca-certificates gnupg \
     iptables openssl procps xxd \
+    dnsutils \
     ssh-agent-filter \
     && rm -rf /var/lib/apt/lists/*
 
