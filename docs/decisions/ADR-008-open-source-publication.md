@@ -53,7 +53,7 @@ Use semantic versioning (major.minor.patch). Start at `0.1.0` to signal "usable 
 | `git describe --tags` | Automatic | Breaks in tarballs, CI needs git history |
 | Hardcoded in `rc` | No extra file | Easy to forget updating |
 
-### D4: CI pipeline — lint and build first, integration tests later
+### D4: CI pipeline — lint and build first, integration tests later (revised 2026-05-28)
 
 **Firmness: FLEXIBLE**
 
@@ -63,9 +63,19 @@ Start with a GitHub Actions workflow that runs:
 
 Integration tests (`rc test`) require Docker-in-Docker or a self-hosted runner. Defer this to a follow-up rather than blocking the initial release.
 
-**Rationale:** Shellcheck + build catches the majority of contribution errors (syntax, Dockerfile issues) without the complexity of DinD. Integration tests are valuable but shouldn't block the first public release.
+**Local==CI by construction (added 2026-05-28, rip-cage-wn4).** Every CI validation surface must be invoked through a repo-pinned artifact that a developer runs identically locally — a pinned tool container image and/or the canonical test driver — never a CI-only re-implementation. Concretely: do not `apt-get install` a tool inside a workflow (the version drifts from local dev), and do not hand-maintain a parallel test list or fixture in workflow YAML (it drifts from the canonical driver). The lint gate runs `make lint` (which runs the pinned `koalaman/shellcheck:v0.11.0` image) in both `ci.yml` and `release.yml`; the host-test gate runs `tests/run-host.sh --host-only` (one driver, denylist-default classification). `make lint` doubles as the pre-tag gate. The strictness bar (fail-on-info, no `--severity`) is revisitable; the local==CI invariant is the durable part.
 
-**What would invalidate this:** If shellcheck + build proves insufficient to catch real contribution breakage. In that case, invest in DinD or a self-hosted runner.
+**Rationale:** Shellcheck + build catches the majority of contribution errors (syntax, Dockerfile issues) without the complexity of DinD. Integration tests are valuable but shouldn't block the first public release. The local==CI invariant was added because CI-only validation surfaces silently diverge from local dev and the gap bites only after a tag is public: the v0.4.x release burned **three tags** when CI's apt-installed shellcheck 0.9.0 emitted info findings that local 0.11.0 did not, surfacing only on tag push when the formula sha was already pinned.
+
+**Alternatives considered:**
+
+| Option | Rejected because |
+|---|---|
+| Keep CI-only tool installs + parallel test lists | `reasoned:` two sources of truth guarantee eventual drift; the failure surfaces post-tag where it is most expensive to fix |
+| Shared fixture file (CI + driver both source it), but keep CI's own test list | `direct:` rip-cage-wn4 — fixes fixture drift but leaves the test-list drift live; CI's inline list was already stale (missing pytest/firewall/config-init host tests) |
+| Loosen the lint bar to `--severity=warning` instead of pinning | `reasoned:` lowers signal without closing divergence; warnings would still differ across versions. The burned tags were a *version* problem, not a *strictness* problem |
+
+**What would invalidate this:** (a) If shellcheck + build proves insufficient to catch real contribution breakage — invest in DinD or a self-hosted runner. (b) If a `make lint` / `apt-get install ... shellcheck` reappears in a workflow, or a second test-list/fixture is added outside `tests/run-host.sh`, the invariant has been violated — that is the regression cue.
 
 ### D5: Bash 3.2 compatibility is a hard requirement
 
