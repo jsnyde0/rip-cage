@@ -7,18 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-28
+
+Prompt-injection security upgrade. The egress layer flips from a denylist of known-bad hosts to a default-deny host allowlist, DNS becomes a first-class exfil surface, SSH is scoped into the allowlist, and a workspace-trust validator refuses hostile config at cage start. Threat model canonicalized in ADR-024.
+
 ### Added
 
-- Docs: "Running multiple agents" section in `docs/reference/cli-reference.md` documenting the picker UX, `--new` / `--session` flags, `rc sessions` subcommand, and the two still-valid alternatives (`Ctrl-b c` windows in one cage, `rc up <other-path>` for separate cages). README quickstart links to the new section from the worktree workflow.
-- Session picker on `rc up <path>` and `rc attach <cage>`: when one or more tmux sessions already exist in the cage, a numbered list is shown (sorted by most-recently-attached) with a `[new] new session` option. Empty input (Enter) reattaches the most-recently-used session; no picker on the first `rc up` (N=0, current behavior preserved).
-- `rc up --new`: skip picker and always create a new auto-named session (`rip-cage-2`, `rip-cage-3`, …).
-- `rc up --session NAME`: attach session `NAME` if it exists; create and attach it otherwise.
-- `rc sessions <cage>`: list active tmux sessions (name, attached-client count, idle time). `--json` for machine-readable output; `--kill NAME` to kill a session (refuses on last session unless `--force` is given).
+- Default-deny egress: `network.allowed_hosts` whitelist with `observe` / `block` / `legacy` / `off` modes (ADR-012 D1 evolved). A non-allowlisted HTTP(S) host is refused with a structured 6-field stderr body (pattern, target, why, fix_command, config_file, config_path) that the in-cage agent can read and act on.
+- `network.writable_hosts` — method-axis write-gating: a host can be read-only (GET/HEAD pass) while POST/PUT/etc. are refused (ADR-012 D6).
+- DNS-exfil resolver sidecar: a transparent port-53 REDIRECT routes `dig` / `nslookup` / `ping` / `host` through an in-cage Python resolver that refuses subdomain-encoded exfil shapes (over-long labels or high per-second cardinality) against non-allowlisted apexes. Mode-aware like the HTTP layer (ADR-012 D9).
+- SSH scoped into the egress allowlist: TCP-22 to non-allowlisted hosts is refused, closing the git-mirror exfil path (ADR-012 D8 evolved).
+- QUIC / HTTP3 blocked (UDP-443 DROP) so traffic can't slip past the inspecting proxy.
+- Workspace-trust validator: `rc up` refuses to start when `.claude/settings.json` redirects `ANTHROPIC_BASE_URL` to a non-trusted host, naming the key and value; `--allow-config-override` is the escape hatch (ADR-024).
+- Agent-first allowlist CLI: `rc allowlist add` / `remove`, `rc doctor` egress sections, an `rc ls` mode column, and `rc promote --from-observed` to lift observed would-block hosts into the allowlist.
+- ADR-024 — prompt-injection threat model (named exfil and on-device-harm vectors).
 
 ### Changed
 
-- ADR-006 D1 evolved in place: current Tier 1 (multiple containers) renamed to Tier 1b; new Tier 1a (parallel tmux sessions in one cage) added. One-paragraph rationale explains when to choose 1a vs 1b. Cascade applied to `docs/2026-03-27-multi-agent-architecture.md` and `docs/ROADMAP.md`.
-- `tmux.conf` gains `remain-on-exit on` and `pane-died 'respawn-pane -c /workspace'` as build-time global settings (moved from `init-rip-cage.sh` runtime stanzas so all sessions — including picker-spawned ones — benefit).
+- `rc reload` now bounces the egress proxy and DNS sidecar so allowlist/mode changes reach the running processes (both cache their rules at startup). Previously a host added inside the cage and reloaded stayed blocked until teardown — an autonomy bug this release fixes.
+- Build resilience: npm per-request timeout capped at 90 s plus bounded retry loops around the Claude Code and pi installs, so a flaky registry fails in minutes instead of stalling a build for up to ~80.
+
+### Known limitations
+
+- pi cages get container isolation and the egress firewall, but not yet the command-level DCG / compound-blocker enforcement that Claude Code cages get. On-device-harm parity for pi is still in research; see "Pi safety model" in `docs/reference/auth.md`.
+
+## [0.3.0] - 2026-05-22
+
+### Added
+
+- Secret-path denylist: host-side validation refuses mounting secret-heavy paths (e.g. `~/.aws`, `~/.ssh`) by default; `--allow-risky-mount` is the escape hatch (ADR-023). Closes the most common accidental-mount miss without proxy infrastructure.
+- `rc install` command for first-time setup.
+- Multi-session picker on `rc up <path>` and `rc attach <cage>`: when one or more tmux sessions already exist, a numbered list is shown (most-recently-attached first) with a `[new] new session` option. Enter reattaches the most-recent; no picker on the first `rc up`. `rc up --new` always creates a new auto-named session; `rc up --session NAME` attaches or creates by name; `rc sessions <cage>` lists active sessions (`--json`, `--kill NAME`, `--force`).
+- `mounts.symlinks.*` config + host-side symlink resolution.
+
+### Changed
+
+- ADR-006 D1 evolved in place: Tier 1 (multiple containers) renamed Tier 1b; new Tier 1a (parallel tmux sessions in one cage) added. Cascade applied to `docs/2026-03-27-multi-agent-architecture.md` and `docs/ROADMAP.md`.
+- `tmux.conf` gains `remain-on-exit on` and `pane-died 'respawn-pane -c /workspace'` as build-time globals (moved from `init-rip-cage.sh` runtime stanzas so picker-spawned sessions benefit).
+- pi cage-topology written to cage-owned paths (stopped writing to `/pi-agent/AGENTS.md`).
 
 ## [0.2.0] - 2026-05-14
 
@@ -78,5 +104,7 @@ agents safely in full auto mode.
 - `rc.conf` for configuring allowed project roots
 - Container user model: non-root `agent` user with restricted sudo paths
 
+[0.4.0]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.4.0
+[0.3.0]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.3.0
 [0.2.0]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.2.0
 [0.1.0]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.1.0
