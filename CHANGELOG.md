@@ -7,11 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-05-28
+
+### Fixed
+
+- `rc` is now clean under the release CI's shellcheck (0.9.0). v0.4.2 is the first release of the prompt-injection security upgrade that ships a pre-built multi-arch GHCR image. v0.4.0 and v0.4.1 install identically via Homebrew but fall back to a local image build on first `rc up` (their release CI lint failed, so no image was published — SC2116 in v0.4.0, then SC2015 in v0.4.1 surfaced by the older CI shellcheck).
+
 ## [0.4.1] - 2026-05-28
 
 ### Fixed
 
-- Removed a useless `echo` subshell in the `rc allowlist promote` path (`shellcheck` SC2116) that failed the release CI lint gate and blocked the v0.4.0 pre-built GHCR image from publishing. v0.4.1 is the first release of the prompt-injection security upgrade that ships a pre-built multi-arch image; v0.4.0 installs identically via Homebrew but falls back to a local image build on first `rc up`.
+- Removed a useless `echo` subshell in the `rc allowlist promote` path (`shellcheck` SC2116).
 
 ## [0.4.0] - 2026-05-28
 
@@ -110,6 +116,7 @@ agents safely in full auto mode.
 - `rc.conf` for configuring allowed project roots
 - Container user model: non-root `agent` user with restricted sudo paths
 
+[0.4.2]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.4.2
 [0.4.1]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.4.1
 [0.4.0]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.4.0
 [0.3.0]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.3.0

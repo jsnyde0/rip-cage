@@ -4929,8 +4929,12 @@ _allowlist_add() {
 _allowlist_read_observed_hosts() {
   local http_log="${1:-}" dns_log="${2:-}"
   {
-    [[ -f "$http_log" ]] && jq -r 'select(.event == "deny" or .event == "would-block") | .host' "$http_log" 2>/dev/null || true
-    [[ -f "$dns_log" ]] && jq -r 'select(.event == "deny" or .event == "would-block") | .host' "$dns_log" 2>/dev/null || true
+    if [[ -f "$http_log" ]]; then
+      jq -r 'select(.event == "deny" or .event == "would-block") | .host' "$http_log" 2>/dev/null || true
+    fi
+    if [[ -f "$dns_log" ]]; then
+      jq -r 'select(.event == "deny" or .event == "would-block") | .host' "$dns_log" 2>/dev/null || true
+    fi
   } | grep -v '^$' | grep -v '^null$' | sort -u
 }
 
