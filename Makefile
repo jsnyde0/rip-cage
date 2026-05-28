@@ -2,7 +2,7 @@
 
 PREFIX ?= $(HOME)/.local
 
-BASH_SCRIPTS := rc init-rip-cage.sh hooks/block-compound-commands.sh bd-wrapper.sh tests/test-prerequisites.sh tests/test-docker-daemon-hang.sh
+BASH_SCRIPTS := rc init-rip-cage.sh hooks/*.sh bd-wrapper.sh tests/test-prerequisites.sh tests/test-docker-daemon-hang.sh
 
 .PHONY: help install uninstall build test lint
 
@@ -24,8 +24,8 @@ uninstall: ## Remove the rc symlink from $(PREFIX)/bin
 build: ## Build the rip-cage Docker image
 	./rc build
 
-lint: ## Run shellcheck on bash scripts
-	shellcheck $(BASH_SCRIPTS)
+lint: ## Run shellcheck on bash scripts (pinned docker image — matches CI)
+	docker run --rm -v "$(CURDIR):/mnt" -w /mnt koalaman/shellcheck:v0.11.0 -x $(BASH_SCRIPTS)
 
 test: ## Run host-only test scripts (no container required)
 	bash tests/test-prerequisites.sh

@@ -14,13 +14,14 @@ Feedback mechanisms available in this repo. The agent picks what fits the task; 
 - **Useful when:** you've edited `rc`, `init-rip-cage.sh`, a hook, or any `tests/*.sh` — run before anything else
 - **Less useful when:** logic bugs (it only validates parsing)
 
-### `make lint` → `shellcheck rc init-rip-cage.sh hooks/block-compound-commands.sh bd-wrapper.sh tests/test-prerequisites.sh`
-- **What it is:** shellcheck on the canonical bash scripts list from the Makefile
-- **Speed:** ~2-5s
+### `make lint` — pinned shellcheck via Docker
+- **What it is:** `make lint` runs `koalaman/shellcheck:v0.11.0` via Docker against the canonical `BASH_SCRIPTS` list (`rc init-rip-cage.sh hooks/*.sh bd-wrapper.sh tests/test-prerequisites.sh tests/test-docker-daemon-hang.sh`). This is the single lint source of truth — CI mirrors it exactly.
+- **Speed:** ~5-15s (Docker pull is cached after first run)
 - **Catches:** quoting bugs, unused variables, SC2086 word-splitting, unsafe `cd` patterns, missing `-r` on `read`
-- **Useful when:** touching any listed script — `rc` is large (~2400 lines) so shellcheck finds real bugs
-- **Less useful when:** editing a test script NOT in `BASH_SCRIPTS` (lint won't cover it — consider running `shellcheck` directly on the file)
-- **Note:** shellcheck is not repo-pinned; teammates need it installed (`brew install shellcheck`)
+- **Useful when:** touching any listed script — `rc` is large (~2400 lines) so shellcheck finds real bugs; run `make lint` before tagging a release
+- **Less useful when:** editing a test script NOT in `BASH_SCRIPTS` (lint won't cover it — consider running shellcheck directly on the file)
+- **Fail-on-info is intentional:** no `--severity` flag is passed, so info-level findings fail lint. This is the correct bar — the 3 burned v0.4.x tags came from version divergence (local 0.11.0 vs CI 0.9.0), not from the strictness level. With the pinned image, `make lint` passing locally is a reliable pre-tag gate.
+- **CI mirrors `make lint`:** both ci.yml and release.yml lint jobs run `make lint` (a single step, no `apt-get install shellcheck`). Local == CI by construction.
 
 ### `jq` on JSON files (`settings.json`, `devcontainer.json`, `.beads/metadata.json`)
 - **What it is:** JSON validator / structural query tool
@@ -44,11 +45,17 @@ The repo splits tests into three tiers. See `tests/run-host.sh` for the canonica
 - **Less useful when:** touching anything that runs *inside* the container
 
 ### `bash tests/run-host.sh` — full host suite
-- **What it is:** all host-side tests (12 scripts: rc commands, worktree, security-hardening, json, prerequisites, dockerfile-sudoers, bd-wrapper, agent-cli, code-review-fixes, dg6.2, auth-refresh, completions)
-- **Speed:** ~1-3min depending on docker image state
-- **Catches:** broader regressions than `make test` — auth refresh flow, worktree detection, dg6.2 regression guards, completion output shape
+- **What it is:** all tests in the ordered list (host-only + container-needing). Runs every script in `tests/run-host.sh` including NEEDS_CONTAINER tests (test-agent-cli, test-pi-*).
+- **Speed:** ~1-3min for host-only tests; longer if container tests run (requires pre-built image)
+- **Catches:** broader regressions than `make test` — auth refresh flow, worktree detection, dg6.2 regression guards, completion output shape, egress rules, allowlist, reload, config-init, etc.
 - **Useful when:** before committing a change that touches `rc`, the init script, or shell integration
 - **Less useful when:** you're iterating rapidly on one area — pick the specific script instead
+
+### `bash tests/run-host.sh --host-only` — CI mode (no container required)
+- **What it is:** same as above but skips the NEEDS_CONTAINER denylist (test-agent-cli, test-pi-e2e, test-pi-install, test-pi-auth-mount, test-pi-cage-context). Everything else runs. Prints `SKIP (needs container): <name>` per skipped test.
+- **Speed:** ~1-3min (no docker image needed)
+- **Safe-failure design:** newly-added tests run by default (not silently dropped); if a new test actually needs a container it fails loudly in CI → author adds it to NEEDS_CONTAINER.
+- **Useful when:** local quick validation, CI, or any context where a live cage isn't available
 
 ### `./rc test <container-name>` — in-container safety stack (61 checks)
 - **What it is:** runs `tests/test-safety-stack.sh` inside a running rip-cage container

@@ -11,7 +11,7 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Job 1: Lint — shellcheck all bash scripts
+  # Job 1: Lint — shellcheck all bash scripts (pinned via make lint)
   # ---------------------------------------------------------------------------
   lint:
     name: Lint (shellcheck)
@@ -19,23 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install shellcheck
-        run: sudo apt-get install -y shellcheck
-
-      - name: Lint rc
-        run: shellcheck -x rc
-
-      - name: Lint init-rip-cage.sh
-        run: shellcheck -x init-rip-cage.sh
-
-      - name: Lint hooks
-        run: shellcheck -x hooks/*.sh
-
-      - name: Lint bd-wrapper.sh
-        run: shellcheck -x bd-wrapper.sh
-
-      - name: Lint test-prerequisites.sh
-        run: shellcheck -x tests/test-prerequisites.sh
+      - name: Lint (pinned shellcheck via make lint)
+        # make lint runs koalaman/shellcheck:v0.11.0 via docker — same image
+        # and file list used locally, so CI and local dev never diverge.
+        # ubuntu-latest has docker pre-installed.
+        run: make lint
 
   # ---------------------------------------------------------------------------
   # Job 2: Build — verify multi-stage Dockerfile compiles (Go + Rust + Debian)
