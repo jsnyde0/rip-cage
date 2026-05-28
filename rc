@@ -5135,7 +5135,7 @@ _allowlist_promote() {
   done
 
   # Write updated YAML using yq: set network.allowed_hosts and network.mode.
-  yq -r ".network.allowed_hosts = $(echo "$new_hosts_json") | .network.mode = \"block\"" "$yaml_file" > "$tmp_file"
+  yq -r ".network.allowed_hosts = ${new_hosts_json} | .network.mode = \"block\"" "$yaml_file" > "$tmp_file"
   cp "$tmp_file" "$yaml_file"
   rm -f "$tmp_file"
 

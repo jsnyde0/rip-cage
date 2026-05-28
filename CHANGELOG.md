@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-28
+
+### Fixed
+
+- Removed a useless `echo` subshell in the `rc allowlist promote` path (`shellcheck` SC2116) that failed the release CI lint gate and blocked the v0.4.0 pre-built GHCR image from publishing. v0.4.1 is the first release of the prompt-injection security upgrade that ships a pre-built multi-arch image; v0.4.0 installs identically via Homebrew but falls back to a local image build on first `rc up`.
+
 ## [0.4.0] - 2026-05-28
 
 Prompt-injection security upgrade. The egress layer flips from a denylist of known-bad hosts to a default-deny host allowlist, DNS becomes a first-class exfil surface, SSH is scoped into the allowlist, and a workspace-trust validator refuses hostile config at cage start. Threat model canonicalized in ADR-024.
@@ -104,6 +110,7 @@ agents safely in full auto mode.
 - `rc.conf` for configuring allowed project roots
 - Container user model: non-root `agent` user with restricted sudo paths
 
+[0.4.1]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.4.1
 [0.4.0]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.4.0
 [0.3.0]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.3.0
 [0.2.0]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.2.0
