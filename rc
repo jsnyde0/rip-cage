@@ -1121,9 +1121,12 @@ _collect_dangling_symlinks() {
 #   $2  mode       — ro|rw
 #   $3  on_dangling — follow|skip|warn|error (default: follow)
 #   $4  scope      — file|parent (default: file)
+#   $5  workspace  — workspace path for denylist check (default: ".")
+#                    ADR-023 D2 FIRM: fingerprint reflects post-denylist mount set.
+#                    Denylist-skipped targets are silently excluded from the hash.
 # Output: sha256 hex string on stdout (always; empty set hashes to a fixed value)
 _symlink_follow_fingerprint() {
-  local pi_root="$1" mode="$2" on_dangling="${3:-follow}" scope="${4:-file}"
+  local pi_root="$1" mode="$2" on_dangling="${3:-follow}" scope="${4:-file}" workspace="${5:-.}"
   # Prepend a policy header so that policy changes produce a different
   # fingerprint even when the scanned symlink set is identical.
   local lines="policy: on_dangling=${on_dangling}, scope=${scope}, mode=${mode}"$'\n'
@@ -1131,6 +1134,11 @@ _symlink_follow_fingerprint() {
     local link target
     while IFS='|' read -r link target; do
       [[ -z "$link" ]] && continue
+      # ADR-023 D2 FIRM: exclude denylist-skipped targets from the hash.
+      # Silent skip here — the warning belongs at the mount site (Surface 1 only).
+      if _check_secret_path_denylist "$target" "$workspace" 2>/dev/null; then
+        continue
+      fi
       lines+="${link} → ${target} (${mode})"$'\n'
     done < <(_collect_dangling_symlinks "$pi_root" 2>/dev/null || true)
   fi
@@ -1449,6 +1457,16 @@ _up_prepare_docker_mounts() {
         _sfl_mount_src=$(dirname "$_sfl_target")
       else
         _sfl_mount_src="$_sfl_target"
+      fi
+
+      # ADR-023 D5/D6 incidental-tier: check resolved target against secret-path denylist.
+      # Mirrors the skill/agent symlink-parent loops (rc:1307-1314, rc:1323-1330).
+      # Warn-and-skip (not fail-loud) — dangling dotfile symlinks are incidental surfaces.
+      if _check_secret_path_denylist "$_sfl_target" "$_path"; then
+        local _sfl_denied_pat
+        _sfl_denied_pat=$(_secret_path_denylist_matched_pattern "$_sfl_target" "$_path" 2>/dev/null || true)
+        echo "Warning: skipping symlink-follow mount ${_sfl_target} — matched secret-path denylist pattern '${_sfl_denied_pat:-<unknown>}'" >&2
+        continue
       fi
 
       # Mount spec (mode).
@@ -1957,14 +1975,14 @@ _up_resolve_resume_symlink_fingerprint() {
     fi
   fi
   local _current_fp
-  _current_fp=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_cur_mode" "$_sfl_cur_on_dangling" "$_sfl_cur_scope")
+  _current_fp=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_cur_mode" "$_sfl_cur_on_dangling" "$_sfl_cur_scope" "$_path")
 
   # Missing label: pre-c1p.2 container. Only block if current state has
   # dangling symlinks (non-trivial fingerprint would mean a new second mount
   # that was never wired into the container).
   if [[ -z "$_stored_fp" ]]; then
     local _empty_fp
-    _empty_fp=$(_symlink_follow_fingerprint "" "rw" "follow" "file")  # empty set fp
+    _empty_fp=$(_symlink_follow_fingerprint "" "rw" "follow" "file" ".")  # empty set fp
     if [[ "$_current_fp" == "$_empty_fp" ]]; then
       return 0  # Both empty — no mismatch
     fi
@@ -4140,7 +4158,7 @@ cmd_up() {
     fi
   fi
   local _sfl_fingerprint
-  _sfl_fingerprint=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_mode_for_fp" "$_sfl_on_dangling_for_fp" "$_sfl_scope_for_fp")
+  _sfl_fingerprint=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_mode_for_fp" "$_sfl_on_dangling_for_fp" "$_sfl_scope_for_fp" "$path")
   _UP_RUN_ARGS+=(--label "rc.symlink-follow-fingerprint=${_sfl_fingerprint}")
   unset _sfl_mode_for_fp _sfl_on_dangling_for_fp _sfl_scope_for_fp _sfl_fp_cfg _sfl_fingerprint
 

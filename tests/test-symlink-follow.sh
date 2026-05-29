@@ -782,15 +782,24 @@ test_s19_fingerprint_lock_fires_for_running_container() {
   pi_agent="${test_home}/.pi/agent"
   mkdir -p "$stub_dir" "${test_home}/.ssh" "$pi_agent"
 
+  # Write a benign global config (no denylist patterns) so rc up preflight passes.
+  mkdir -p "${test_home}/.config/rip-cage"
+  cat > "${test_home}/.config/rip-cage/config.yaml" <<'YAML'
+version: 1
+mounts:
+  denylist: []
+YAML
+
   # Create a dangling symlink in the fake pi/agent dir
   local fake_target="${test_home}/dotpi-fake/AGENTS.md"
   mkdir -p "$(dirname "$fake_target")"
   ln -sf "$fake_target" "${pi_agent}/AGENTS.md"
   # target does not exist → dangling
 
-  # Compute the fingerprint as it would have been at create time: follow policy
+  # Compute the fingerprint as it would have been at create time: follow policy.
+  # Pass workspace so fingerprint matches what cmd_up would compute (D2 FIRM).
   local stored_fp
-  stored_fp=$(HOME="$test_home" bash -c "source '$RC'; _symlink_follow_fingerprint '${pi_agent}' 'rw' 'follow' 'file'")
+  stored_fp=$(HOME="$test_home" XDG_CONFIG_HOME="${test_home}/.config" bash -c "source '$RC'; _symlink_follow_fingerprint '${pi_agent}' 'rw' 'follow' 'file' '$ws_real'")
 
   # Create the docker stub. rc.source.path must match VALIDATED_PATH (realpath of ws).
   make_docker_stub_fingerprint "$stub_dir" "$cname" "running" "$ws_real" "$stored_fp"
@@ -805,6 +814,7 @@ YAML
 
   local out exit_code=0
   out=$(PATH="${stub_dir}:$PATH" HOME="$test_home" XDG_CONFIG_HOME="${test_home}/.config" \
+    RC_CONFIG_GLOBAL="${test_home}/.config/rip-cage/config.yaml" \
     RC_ALLOWED_ROOTS="$(dirname "$ws_real")" \
     "$RC" up "$ws" 2>&1) || exit_code=$?
 
@@ -921,6 +931,222 @@ test_s_adr019_pi_mount_preserved() {
 }
 
 # ---------------------------------------------------------------------------
+# S20: Denylist gating — dangling symlink with .aws-class target → skipped + warn
+# ADR-023 D5/D6 (incidental surface: warn-and-skip, not fail-loud).
+# Acceptance #1, #3: check runs against readlink -f resolved target.
+# ---------------------------------------------------------------------------
+# write_denylist_config writes the 16 default patterns to a test config dir.
+write_denylist_config() {
+  local config_dir="$1"
+  mkdir -p "$config_dir"
+  cat > "${config_dir}/config.yaml" <<'YAML'
+version: 1
+mounts:
+  denylist:
+    - .ssh
+    - .gnupg
+    - .gpg
+    - .aws
+    - .azure
+    - .gcloud
+    - .kube
+    - .docker
+    - credentials
+    - .netrc
+    - .npmrc
+    - .pypirc
+    - id_rsa
+    - id_ed25519
+    - private_key
+    - .secret
+YAML
+}
+
+test_s20_denylist_blocks_aws_symlink_target() {
+  setup_sandbox
+  # Create a target under .aws (matches default denylist pattern)
+  local aws_dir="${TEST_HOME}/.aws"
+  mkdir -p "$aws_dir"
+  echo "key=secret" > "${aws_dir}/credentials"
+  local norm_target
+  norm_target=$(readlink -f "${aws_dir}/credentials" 2>/dev/null || echo "${aws_dir}/credentials")
+
+  # Symlink from pi/agent into the .aws directory
+  ln -sf "$norm_target" "${TEST_HOME}/.pi/agent/AGENTS.md"
+
+  local ws="${TEST_HOME}/workspace"
+  mkdir -p "$ws"
+
+  # Write global denylist config
+  write_denylist_config "${TEST_HOME}/.config/rip-cage"
+
+  local out exit_code=0
+  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
+    source '$RC'
+    _UP_RUN_ARGS=()
+    wt_detected=false
+    _up_prepare_docker_mounts '$ws' 'testcage'
+    source '/tmp/rc-sfl-mount-print-helper.sh'; _print_mounts
+  " 2>&1) || exit_code=$?
+
+  local has_target_mount has_denylist_warning
+  has_target_mount=$(echo "$out" | grep "MOUNT:" | grep -c "${norm_target}" || true)
+  has_denylist_warning=$(echo "$out" | grep -c "matched secret-path denylist pattern" || true)
+
+  if [[ "$exit_code" -eq 0 && "$has_target_mount" -eq 0 && "$has_denylist_warning" -gt 0 ]]; then
+    pass "20" "denylist blocks .aws symlink target: not mounted, warn emitted"
+  else
+    fail "20" "denylist .aws symlink gate" "exit=$exit_code has_mount=$has_target_mount has_warn=$has_denylist_warning out=$out"
+  fi
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# S21: Denylist — non-matching symlink target mounts normally (no regression)
+# Acceptance #2: targets NOT on denylist still get mounted (c1p.2 follow behavior intact).
+# ---------------------------------------------------------------------------
+test_s21_denylist_allows_non_matching_target() {
+  setup_sandbox
+  # Create a target NOT under any denylist component
+  local safe_dir="${TEST_HOME}/safe-data"
+  mkdir -p "$safe_dir"
+  echo "safe" > "${safe_dir}/AGENTS.md"
+  local norm_target
+  norm_target=$(readlink -f "${safe_dir}/AGENTS.md" 2>/dev/null || echo "${safe_dir}/AGENTS.md")
+
+  ln -sf "$norm_target" "${TEST_HOME}/.pi/agent/AGENTS.md"
+
+  local ws="${TEST_HOME}/workspace"
+  mkdir -p "$ws"
+
+  # Write global denylist config (default 16 patterns — none match "safe-data")
+  write_denylist_config "${TEST_HOME}/.config/rip-cage"
+
+  local out exit_code=0
+  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
+    source '$RC'
+    _UP_RUN_ARGS=()
+    wt_detected=false
+    _up_prepare_docker_mounts '$ws' 'testcage'
+    source '/tmp/rc-sfl-mount-print-helper.sh'; _print_mounts
+  " 2>&1) || exit_code=$?
+
+  local has_target_mount has_denylist_warning
+  has_target_mount=$(echo "$out" | grep "MOUNT:" | grep -c "${norm_target}" || true)
+  has_denylist_warning=$(echo "$out" | grep -c "matched secret-path denylist pattern" || true)
+
+  if [[ "$exit_code" -eq 0 && "$has_target_mount" -gt 0 && "$has_denylist_warning" -eq 0 ]]; then
+    pass "21" "denylist allows non-matching symlink target: mounted, no warning"
+  else
+    fail "21" "non-matching symlink target mount regression" "exit=$exit_code has_mount=$has_target_mount has_warn=$has_denylist_warning out=$out"
+  fi
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# S22: Fingerprint excludes denylist-skipped targets (acceptance #4, D2 FIRM).
+# With denylist active, the skipped target is NOT in the fingerprint hash.
+# Flipping denylist to skip a previously-included target → different fingerprint.
+# ---------------------------------------------------------------------------
+test_s22_fingerprint_excludes_denylisted_targets() {
+  setup_sandbox
+
+  # Create two distinct targets: one matching denylist (.aws), one safe
+  local aws_dir="${TEST_HOME}/.aws"
+  mkdir -p "$aws_dir"
+  echo "secret" > "${aws_dir}/creds"
+  local aws_target
+  aws_target=$(readlink -f "${aws_dir}/creds" 2>/dev/null || echo "${aws_dir}/creds")
+
+  local safe_dir="${TEST_HOME}/safe"
+  mkdir -p "$safe_dir"
+  echo "safe" > "${safe_dir}/AGENTS.md"
+  local safe_target
+  safe_target=$(readlink -f "${safe_dir}/AGENTS.md" 2>/dev/null || echo "${safe_dir}/AGENTS.md")
+
+  # Link both from pi/agent
+  ln -sf "$aws_target" "${TEST_HOME}/.pi/agent/aws-link.md"
+  ln -sf "$safe_target" "${TEST_HOME}/.pi/agent/safe-link.md"
+
+  # Write global config with .aws in denylist (blocks aws_target)
+  write_denylist_config "${TEST_HOME}/.config/rip-cage"
+
+  # Fingerprint WITH denylist (aws_target excluded)
+  local fp_with_denylist
+  fp_with_denylist=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
+    source '$RC'
+    _symlink_follow_fingerprint '${TEST_HOME}/.pi/agent' 'rw' 'follow' 'file' '$TEST_HOME/workspace'
+  ")
+
+  # Write global config with NO denylist (both targets included)
+  cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
+version: 1
+mounts:
+  denylist: []
+YAML
+
+  local fp_without_denylist
+  fp_without_denylist=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
+    source '$RC'
+    _symlink_follow_fingerprint '${TEST_HOME}/.pi/agent' 'rw' 'follow' 'file' '$TEST_HOME/workspace'
+  ")
+
+  # The fingerprints must differ (denylist changes what's included in the hash)
+  if [[ "$fp_with_denylist" != "$fp_without_denylist" && -n "$fp_with_denylist" && -n "$fp_without_denylist" ]]; then
+    pass "22" "fingerprint differs when denylist excludes a target (denylist changes fp)"
+  else
+    fail "22" "fingerprint should differ with vs without denylist" "with_denylist=$fp_with_denylist without_denylist=$fp_without_denylist"
+  fi
+
+  # Also verify: flipping denylist to skip a previously-included target → drift
+  # Scenario: create-time had no denylist (both targets in fp), now .aws is denied
+  # The stored create-time fp = fp_without_denylist; current resume fp = fp_with_denylist
+  # They differ → drift detection fires
+  if [[ "$fp_without_denylist" != "$fp_with_denylist" ]]; then
+    pass "22b" "fingerprint drift: flipping denylist changes fp (resume would detect drift)"
+  else
+    fail "22b" "stored vs current fp should differ when denylist changes" "stored=$fp_without_denylist current=$fp_with_denylist"
+  fi
+
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# S23: Fingerprint denylist-gate is silent (no warning from fingerprint fn itself)
+# Acceptance: warning fires once at mount site (Surface 1), not during hash computation.
+# ---------------------------------------------------------------------------
+test_s23_fingerprint_gate_is_silent() {
+  setup_sandbox
+
+  local aws_dir="${TEST_HOME}/.aws"
+  mkdir -p "$aws_dir"
+  echo "secret" > "${aws_dir}/creds"
+  local aws_target
+  aws_target=$(readlink -f "${aws_dir}/creds" 2>/dev/null || echo "${aws_dir}/creds")
+  ln -sf "$aws_target" "${TEST_HOME}/.pi/agent/aws-link.md"
+
+  local ws="${TEST_HOME}/workspace"
+  mkdir -p "$ws"
+  write_denylist_config "${TEST_HOME}/.config/rip-cage"
+
+  # Capture stderr from _symlink_follow_fingerprint invocation
+  local fp_stderr
+  fp_stderr=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
+    source '$RC'
+    _symlink_follow_fingerprint '${TEST_HOME}/.pi/agent' 'rw' 'follow' 'file' '$ws'
+  " 2>&1 1>/dev/null)
+
+  # No warning should come from the fingerprint function itself
+  if ! echo "$fp_stderr" | grep -q "matched secret-path denylist pattern"; then
+    pass "23" "fingerprint function is silent (no denylist warning from hash computation)"
+  else
+    fail "23" "fingerprint function should not emit denylist warning" "stderr=$fp_stderr"
+  fi
+
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 echo "=== test-symlink-follow.sh — mounts.symlinks.* config + rc up synthesis ==="
@@ -945,6 +1171,10 @@ test_s17_d5_label_invariant
 test_s18_cage_claude_md_unchanged
 test_s_schema_regression
 test_s_adr019_pi_mount_preserved
+test_s20_denylist_blocks_aws_symlink_target
+test_s21_denylist_allows_non_matching_target
+test_s22_fingerprint_excludes_denylisted_targets
+test_s23_fingerprint_gate_is_silent
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then
