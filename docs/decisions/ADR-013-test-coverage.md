@@ -1,9 +1,9 @@
 # ADR-013: Test Coverage Tiers — In-Container vs E2E vs Host-Script
 
-**Status:** Accepted
+**Status:** Accepted (revised 2026-05-29 — D5 implemented; D6 added: host-only CI tier determinism)
 **Date:** 2026-04-20
 **Design:** [2026-04-20-test-coverage-design.md](../2026-04-20-test-coverage-design.md)
-**Related:** [ADR-004](ADR-004-phase1-hardening.md) (rc test origin), [ADR-012](ADR-012-egress-firewall.md) (egress suite)
+**Related:** [ADR-004](ADR-004-phase1-hardening.md) (rc test origin), [ADR-012](ADR-012-egress-firewall.md) (egress suite), [ADR-001](ADR-001-fail-loud-pattern.md) (fail-loud; D6 image-absence rule), [ADR-008](ADR-008-open-source-publication.md) (D4 local==CI; D5/D6 build on it)
 
 ## Context
 
@@ -69,13 +69,44 @@ Current egress suite validates the L7 denylist but not the L3/L4 perimeter. P3 a
 - **DNS-over-TLS / DoH** positive denial (rule already exists).
 - **Non-HTTP policy assertion**: positive iptables-rule check that no REDIRECT/DROP rule targets ports other than 80/443. This is the codified form of ADR-012 D8 — "non-HTTP stays allowed" as a test, not prose. Asserted at the iptables-rule level rather than via network probes (probes are flaky across developer environments because hosted Docker may block port 22 at the edge, which would produce a test failure that is not a product regression).
 
-### D5: CI integration deferred
+### D5: CI runs lint + build + the host-only test tier (implemented)
 
-**Firmness: PROPOSED**
+**Firmness: FIRM** (was PROPOSED; implemented + promoted 2026-05-29 — CI is live and green on `main`)
 
-A GitHub Actions workflow running `rc test --e2e` on every PR is the obvious next step, but requires either docker-in-docker or a self-hosted runner. Deferring to a follow-up ADR once the e2e test is stable locally.
+`.github/workflows/ci.yml` runs three jobs on every push / PR to `main`:
 
-**Rationale:** shipping the test locally first gives us a read on flakiness, runtime, and Docker cache behaviour before committing to CI infrastructure.
+1. **Lint** — `make lint` (pinned `koalaman/shellcheck:v0.11.0`; ADR-008 D4 local==CI by construction).
+2. **Build** — `docker build` of the multi-stage image (Go beads + Rust DCG + Debian runtime), proving the toolchain compiles.
+3. **Test (host-only)** — `bash tests/run-host.sh --host-only` on `ubuntu-latest`.
+
+The `rc test --e2e` lifecycle tier (D1/D3) stays OUT of CI: it needs a live container, which `ubuntu-latest` cannot provide deterministically (docker-in-docker / self-hosted runner is still the prerequisite, now tracked as backlog rip-cage-rat). The "follow-up ADR" this decision originally deferred to is folded here in-place rather than spun out, per ADR-011 D1.
+
+**Rationale:** shipping the host-only tier in CI first gives a real gate on the cross-platform (GNU-Linux) and image-absent behaviour that the maintainer's macOS box masks — without paying for DinD infrastructure. The constraints this imposes on the host-only tier are codified in D6.
+
+### D6: The `--host-only` CI tier must be deterministic and self-contained
+
+**Firmness: FLEXIBLE** (added 2026-05-29; warrant: three latent violations surfaced the moment D5's CI went live — rip-cage-ozt)
+
+The `bash tests/run-host.sh --host-only` job is the "no container" tier. On a fresh CI runner it MUST be deterministic:
+
+- **No live container creation, no Docker Hub pull, no real `docker build`.** A host-only test that needs to exercise a build/run code path uses a fake-`docker` PATH shim (returns instantly) rather than provisioning anything. A test with a few genuinely container-needing blocks gates those blocks behind `RC_HOST_ONLY` (exported by `--host-only`) and prints a visible `SKIP (host-only): …`; file-level container tests use the NEEDS_CONTAINER denylist (D2). Live `docker run <public-image>` (e.g. `alpine`) is forbidden in this tier — Docker Hub anonymous rate limits make it flaky (it passes one run and fails the next).
+- **Image-absence-safe.** CI starts with no `rip-cage:latest`. `rc` paths reachable host-only must not provision the image before they actually need it (ADR-001 fail-loud; the `cmd_up` reorder determines container state *before* pull/build, so an unsupported-state container fails fast with no 500MB pull or ~7-min build, and no `{"status":"pulling"}` stderr preamble corrupting `--output json`).
+- **Run-all-accumulate driver contract.** `run-host.sh` runs every test (`if ! bash "$test_file"`), accumulates failures, reports them all, and exits non-zero if any failed. It MUST NOT abort at the first failing test (`set -e` propagation at the driver loop) — abort-at-first hides the failure tail and forces one-failure-per-CI-cycle debugging (the rip-cage-ozt thrashing root cause).
+
+Live-container assertions are not lost: the full `run-host.sh` (no flag) runs them locally with a container present, and a future DinD / self-hosted job (rip-cage-rat) can run them in CI.
+
+**Rationale:** the maintainer's environment — macOS + BSD coreutils + `rip-cage:latest` always present + warm Docker cache — masks these failures by construction; a fresh Linux CI runner (GNU coreutils + no image + cold cache + Docker Hub rate limits) does not. Determinism in the host-only tier is what makes CI a trustworthy gate rather than a flaky one. The cross-platform divergence checklist lives in `.claude/harness.md` ("Local-vs-CI divergence checklist").
+
+**Alternatives considered:**
+
+| Approach | Rejected because |
+|---|---|
+| Run live-container integration in the host-only CI job | `reasoned:` contradicts the "no container" tier definition; `direct:` `docker run alpine` flaked in rip-cage-ozt CI run 26628167292 (Docker Hub anon rate limit) |
+| Authenticate / pre-pull from Docker Hub so live runs are reliable in CI | `reasoned:` adds CI secrets + maintenance, duplicates the build job's work, and still puts container work in the wrong tier |
+| Keep `set -e` abort-at-first-failure (simpler driver) | `direct:` caused ~5 red cycles in rip-cage-ozt — each surfaced only one failure, hiding the rest of the tail behind it |
+| Move mixed host/container test files wholesale into NEEDS_CONTAINER | `reasoned:` drops their static grep/source-introspection checks from CI; sub-test `RC_HOST_ONLY` gating preserves those while skipping only the live blocks |
+
+**What would invalidate this:** a docker-in-docker or self-hosted CI runner lands (rip-cage-rat) — then live-container assertions can run in a dedicated CI job and the "no live container" rule relaxes *for that job*, not for the host-only tier; OR an authenticated pull-through Docker Hub cache removes the rate-limit flakiness (weakens the no-live-`docker run` rationale, though the tier-name and image-absence arguments stand independently).
 
 ## Trade-offs accepted
 
@@ -90,7 +121,7 @@ Roll out in order:
 1. Fix host-test path drift + add `rc test --host` wiring (P2 — mechanical, unblocks everything else). Includes the mandatory per-test audit step; do not wire a resurrected test until it passes or is explicitly quarantined.
 2. Write `tests/test-e2e-lifecycle.sh` + `rc test --e2e` (P1 — biggest coverage gain). Supersedes `tests/test-integration.sh`; absorb its unique checks and delete it.
 3. Expand egress suite (P3 — unblocked 2026-04-23; D4 is FIRM, ADR-012 D8 settled the policy).
-4. CI integration (follow-up ADR).
+4. CI integration — DONE (D5, 2026-05-29): lint + build + host-only test on `ubuntu-latest`, green on `main`. Host-only tier determinism codified in D6. Live-container CI (DinD / self-hosted) remains backlog (rip-cage-rat).
 
 ## Consequences
 
@@ -102,3 +133,12 @@ Roll out in order:
 **Negative:**
 - Slower pre-PR cycle for contributors who opt into `--e2e`
 - One-time churn to fix the 10 broken host tests
+
+## canonical_refs
+
+- [ADR-001](ADR-001-fail-loud-pattern.md) (fail-loud) — D6's image-absence-safe rule; `cmd_up` fails loud on unsupported container state *before* provisioning the image.
+- [ADR-008](ADR-008-open-source-publication.md) D4 (local==CI by construction) — D5's pinned `make lint`; D6 extends the same local==CI principle from lint to the host-test tier.
+- [ADR-012](ADR-012-egress-firewall.md) (egress firewall) — the egress suite runs inside the host-only tier.
+- [ADR-023](ADR-023-secret-path-mount-denylist.md) (secret-path denylist / RC_CONFIG_GLOBAL) — `run-host.sh`'s driver-level config fixture the host-only tier depends on.
+- bead rip-cage-ozt — the CI-green episode that surfaced D6's invariant (three latent violations: a real build to check a log line, a live `docker run alpine`, and `set -e` abort-at-first-failure).
+- bead rip-cage-wn4 — established the single-driver + pinned-lint local==CI baseline D5/D6 build on.
