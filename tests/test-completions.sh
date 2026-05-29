@@ -13,11 +13,19 @@ fail() { echo "FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 # --- Syntax validation ---
 
-if zsh -c "autoload -Uz compinit && compinit && source '${SCRIPT_DIR}/../completions/_rc'" 2>/dev/null; then
+# compinit -i: ignore insecure directories/files instead of failing. CI runners
+# (and any non-root checkout with group-writable fpath dirs) trip compinit's
+# compaudit security check, which made this assertion fail on Linux while passing
+# on macOS — a false negative unrelated to the _rc file's actual syntax. -d points
+# the dump at a writable temp file. Capture stderr so a REAL syntax error in _rc
+# still surfaces (-i only relaxes the security audit, not parsing).
+_zcd_dir=$(mktemp -d)
+if _zsh_compinit_err=$(zsh -c "autoload -Uz compinit && compinit -i -d '${_zcd_dir}/zcompdump' && source '${SCRIPT_DIR}/../completions/_rc'" 2>&1); then
   pass "completions/_rc zsh syntax valid"
 else
-  fail "completions/_rc zsh syntax invalid"
+  fail "completions/_rc zsh syntax invalid — zsh: ${_zsh_compinit_err}"
 fi
+rm -rf "$_zcd_dir"
 
 if bash -c "source '${SCRIPT_DIR}/../completions/rc.bash'" 2>/dev/null; then
   pass "completions/rc.bash bash syntax valid"

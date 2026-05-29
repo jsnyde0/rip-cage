@@ -24,6 +24,12 @@ if [[ "${1:-}" == "--host-only" ]]; then
   export RC_HOST_ONLY=1
 fi
 
+# Accumulate failures across ALL test files rather than aborting at the first
+# one (set -e would otherwise stop the suite at the first failing test, hiding
+# the rest — a thrashing trap for CI where each red cycle costs ~12min). The
+# driver runs every test, collects the failures, and exits non-zero at the end.
+FAILED_TESTS=()
+
 # Tests that REQUIRE a running rip-cage container or live API key.
 # Each entry carries a one-line comment explaining why.
 NEEDS_CONTAINER=(
@@ -55,7 +61,10 @@ run_test() {
     echo "SKIP (needs container): $(basename "$test_file")"
     return 0
   fi
-  bash "$test_file"
+  # `if !` keeps set -e from aborting the suite; record the failure and continue.
+  if ! bash "$test_file"; then
+    FAILED_TESTS+=("$(basename "$test_file")")
+  fi
 }
 
 run_pytest() {
@@ -68,7 +77,9 @@ run_pytest() {
     echo "SKIP (needs container): $(basename "$test_file")"
     return 0
   fi
-  uv run "$@"
+  if ! uv run "$@"; then
+    FAILED_TESTS+=("$(basename "$test_file")")
+  fi
 }
 
 # ADR-023 secret-path denylist (rip-cage-3gu.2): rc up requires a global
@@ -118,3 +129,12 @@ run_test "${SCRIPT_DIR}/test-rc-allowlist.sh"          # rip-cage-hhh.6: rc allo
 run_test "${SCRIPT_DIR}/test-ls-mode-source.sh"        # rip-cage-hhh.6: rc ls/doctor mode read from source .rip-cage.yaml not stale label
 
 echo "=== run-host.sh complete ==="
+
+if [[ ${#FAILED_TESTS[@]} -gt 0 ]]; then
+  echo ""
+  echo "=== ${#FAILED_TESTS[@]} TEST FILE(S) FAILED ==="
+  for _ft in "${FAILED_TESTS[@]}"; do
+    echo "  FAILED: ${_ft}"
+  done
+  exit 1
+fi
