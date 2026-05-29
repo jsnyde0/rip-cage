@@ -21,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOST_ONLY_MODE=false
 if [[ "${1:-}" == "--host-only" ]]; then
   HOST_ONLY_MODE=true
+  export RC_HOST_ONLY=1
 fi
 
 # Tests that REQUIRE a running rip-cage container or live API key.

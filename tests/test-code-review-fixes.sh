@@ -179,8 +179,13 @@ else
   fail "cmd_ls normalization: \"invalid:\" prefix missing"
 fi
 
-# Live tests: require Docker
-if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+# Live tests: require Docker and must not run under host-only CI mode
+# (alpine pull would be subject to Docker Hub anonymous rate limits in CI)
+if [[ -n "${RC_HOST_ONLY:-}" ]]; then
+  echo ""
+  echo "SKIP (host-only): L2-a live paused-container check (needs a live container; runs via full run-host.sh / container tier)"
+  echo "SKIP (host-only): L2-b live legacy-container egress check (needs a live container; runs via full run-host.sh / container tier)"
+elif command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
   echo ""
   echo "--- L2 live tests (Docker available) ---"
 
