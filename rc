@@ -3695,33 +3695,11 @@ cmd_up() {
 
   # Check image exists and is current — pull from GHCR (with local-build
   # fallback) if missing or version label mismatches RC_VERSION (stale).
+  # Provisioning fires only on the new-container (absent) path; see below.
   # See _image_is_current / _pull_or_build / ADR-008 D6.
+  local _image_absent=false
   if ! docker image inspect "$IMAGE" > /dev/null 2>&1 || ! _image_is_current; then
-    if [[ "$DRY_RUN" == "true" ]]; then
-      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        if [[ -n "${RIP_CAGE_IMAGE_REGISTRY}" ]]; then
-          jq -nc --arg image "${RIP_CAGE_IMAGE_REGISTRY}:${RC_VERSION}" \
-            '{dry_run: true, would_pull: true, would_build_on_fail: true, image: $image, action: "would_pull_and_create"}'
-        else
-          jq -nc '{dry_run: true, would_build: true, action: "would_build_and_create", message: "would build rip-cage image, then create container"}'
-        fi
-      else
-        if [[ -n "${RIP_CAGE_IMAGE_REGISTRY}" ]]; then
-          echo "Would pull ${RIP_CAGE_IMAGE_REGISTRY}:${RC_VERSION} (with local-build fallback) and create container"
-        else
-          echo "Would build rip-cage image and create container"
-        fi
-      fi
-      exit 0
-    fi
-    if ! _pull_or_build; then
-      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        json_error "Image provisioning failed (pull and build both failed)" "BUILD_FAILED"
-      else
-        echo "Error: Image provisioning failed (pull and build both failed)." >&2
-        exit 1
-      fi
-    fi
+    _image_absent=true
   fi
 
   local name_disambiguated=false
@@ -3811,9 +3789,28 @@ cmd_up() {
     fi
 
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      _up_json_output "$name" "$would_action" "$path" "" "" "true"
+      if [[ "$would_action" == "would_create" ]] && [[ "$_image_absent" == "true" ]]; then
+        # Image absent on new-container path — emit pull/build intent in old format
+        # so test-pull-first.sh assertions (would_pull / would_build fields) stay green.
+        if [[ -n "${RIP_CAGE_IMAGE_REGISTRY}" ]]; then
+          jq -nc --arg image "${RIP_CAGE_IMAGE_REGISTRY}:${RC_VERSION}" \
+            '{dry_run: true, would_pull: true, would_build_on_fail: true, image: $image, action: "would_pull_and_create"}'
+        else
+          jq -nc '{dry_run: true, would_build: true, action: "would_build_and_create", message: "would build rip-cage image, then create container"}'
+        fi
+      else
+        _up_json_output "$name" "$would_action" "$path" "" "" "true"
+      fi
     else
       echo "Would ${would_action#would_} container $name for $path"
+      # Image absent on new-container path — surface pull/build intent (test-pull-first.sh Tests 3+4).
+      if [[ "$would_action" == "would_create" ]] && [[ "$_image_absent" == "true" ]]; then
+        if [[ -n "${RIP_CAGE_IMAGE_REGISTRY}" ]]; then
+          echo "Would pull ${RIP_CAGE_IMAGE_REGISTRY}:${RC_VERSION} (with local-build fallback) and create container"
+        else
+          echo "Would build rip-cage image and create container"
+        fi
+      fi
       echo "Would mount $path -> /workspace"
       if [[ "$wt_detected" == "true" ]]; then
         echo "Would mount worktree main .git/ ($wt_main_git) -> /workspace/.git-main (writable)"
@@ -4037,7 +4034,20 @@ cmd_up() {
     return 1
   fi
 
-  # New container
+  # New container — provision image now if absent/stale (ADR-008 D6).
+  # All other state paths (running/exited/paused/dead/etc.) never need a fresh image
+  # and must NOT trigger a pull/build (ADR-001: fail fast, no wasteful side-effects).
+  if [[ "$_image_absent" == "true" ]]; then
+    if ! _pull_or_build; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        json_error "Image provisioning failed (pull and build both failed)" "BUILD_FAILED"
+      else
+        echo "Error: Image provisioning failed (pull and build both failed)." >&2
+        exit 1
+      fi
+    fi
+  fi
+
   log "Creating container $name for $path..."
   local _UP_RUN_ARGS=()
   _UP_RUN_ARGS+=(-d --name "$name")

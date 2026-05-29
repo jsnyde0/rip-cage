@@ -37,6 +37,11 @@ case "${1:-}" in
     fi
     exit 0
     ;;
+  inspect)
+    # Container absent — simulate "no such object" so state-check falls through
+    # to the new-container path (where _pull_or_build fires after the reorder).
+    exit 1
+    ;;
   *)
     exit 0
     ;;

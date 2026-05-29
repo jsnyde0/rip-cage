@@ -206,7 +206,9 @@ if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
   else
     docker pause "$CNAME_L2" >/dev/null 2>&1 || true
     # RC_ALLOWED_ROOTS must include TEST_PATH_L2 so path validation passes
-    l2a_result=$(RC_ALLOWED_ROOTS="$TEST_PATH_L2" "$RC" --output json up "$TEST_PATH_L2" 2>&1) || true
+    # Capture stdout only — CONTAINER_STATE_UNSUPPORTED JSON is on stdout (json_error rc:65).
+    # 2>/dev/null avoids any stderr progress preamble (e.g. pulling) from polluting the assertion.
+    l2a_result=$(RC_ALLOWED_ROOTS="$TEST_PATH_L2" "$RC" --output json up "$TEST_PATH_L2" 2>/dev/null) || true
     docker unpause "$CNAME_L2" >/dev/null 2>&1 || true
     docker rm -f "$CNAME_L2" >/dev/null 2>&1 || true
     rm -rf "$TEST_PATH_L2_RAW"
