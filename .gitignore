@@ -51,7 +51,7 @@ htmlcov/
 .pytest_cache/
 
 # Beads (local database)
-.beads/
+# .beads/   # memory-sync: keep .beads/issues.jsonl tracked (bd/.beads/.gitignore handles the DB/runtime)
 
 # Beads / Dolt files (added by bd init)
 .dolt/
