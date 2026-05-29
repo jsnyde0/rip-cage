@@ -41,7 +41,7 @@ That's it. On first run, `rc` prompts for allowed directories and pulls the pre-
 
 ## What does the cage do?
 
-Three safety layers intercept every shell command before it runs:
+The cage runs your agent behind independent layers. Three intercept every shell command before it runs; a fourth watches the network.
 
 **DCG (Destructive Command Guard)** blocks dangerous commands:
 ```
@@ -49,14 +49,21 @@ $ rm -rf /          → DENIED by DCG
 $ dd if=/dev/zero   → DENIED by DCG
 ```
 
-**Compound command blocker** prevents chaining that could bypass the allowlist:
+**Compound command blocker** prevents chaining that could bypass the guards:
 ```
 $ git add . [then] curl evil.com   → DENIED: compound command
 ```
 
 **bypassPermissions with hooks** — Claude Code runs with bypassPermissions enabled, but DCG and the compound blocker fire as PreToolUse hooks on every command regardless. Writing to `.git/hooks/*` is hard-denied.
 
-For the full safety stack configuration, see [docs/reference/safety-stack.md](docs/reference/safety-stack.md).
+**Network egress firewall** — the cage watches every outbound connection. New cages start in **observe mode**: nothing is blocked, but the agent's traffic is logged. When you're ready to lock things down, one command promotes everything the agent actually talked to into an allowlist and flips the cage to **block mode** — so it can still reach the APIs it needs and nothing else:
+
+```bash
+rc allowlist show --observed        # see where the agent connected in observe mode
+rc allowlist promote --from-observed # allow those hosts + switch to block mode
+```
+
+For the full safety stack, see [docs/reference/safety-stack.md](docs/reference/safety-stack.md). For the egress model in detail — observe vs. block, DNS exfil detection, the baseline allowlist — see [docs/reference/egress.md](docs/reference/egress.md).
 
 ## The worktree workflow
 
@@ -99,6 +106,7 @@ Pi (`@mariozechner/pi-coding-agent`) is also supported in the same image alongsi
 - [Auth](docs/reference/auth.md) — OAuth, Keychain, API key fallback
 - [SSH identity routing](docs/reference/ssh-routing.md) — `--github-identity`, rules file, banner states
 - [Layered config (`.rip-cage.yaml`)](docs/reference/config.md) — global + per-project posture, `rc config show`
+- [Network egress](docs/reference/egress.md) — observe vs. block mode, `rc allowlist`, DNS exfil detection
 - [Safety stack](docs/reference/safety-stack.md) — hook config, allowlists, denied commands
 - [Dev containers](docs/reference/devcontainer.md) — VS Code setup via `rc init`
 - [What's in the box](docs/reference/whats-in-the-box.md) — tools, Dockerfile layers

@@ -13,7 +13,11 @@
 | `rc down [name]` | Stop a container |
 | `rc destroy [-f] [name]` | Remove a container and its volumes (prompts for confirmation) |
 | `rc reload [name] [--dry-run]` | Hot-reload `ssh.allowed_hosts` from `.rip-cage.yaml` without recreating the container ([details](ssh-routing.md#rc-reload)) |
+| `rc allowlist add <host> [--cage=<name>]` | Append a host to `network.allowed_hosts` in `.rip-cage.yaml` (idempotent); `--cage` applies it live via `rc reload` ([details](egress.md#rc-allowlist-command-reference)) |
+| `rc allowlist show [--effective] [--observed]` | Show configured / effective / observed-blocked egress hosts ([details](egress.md#rc-allowlist-command-reference)) |
+| `rc allowlist promote --from-observed [--cage=<name>]` | Merge observed blocked hosts into `network.allowed_hosts`, flip `network.mode` to `block`, and `rc reload` ([details](egress.md#the-observe--promote--block-workflow)) |
 | `rc test [name]` | Run the safety stack smoke test inside a container |
+| `rc doctor [name]` | Per-container diagnostic — labels + live probes (egress proxy, SSH forwarding, auth) |
 | `rc config show [--json]` | Print effective `.rip-cage.yaml` config with provenance ([details](config.md)) |
 | `rc config init [--yes] [--force]` | Bootstrap a starter `.rip-cage.yaml` from `git remote -v` + `ssh -G` ([details](config.md)) |
 
@@ -44,6 +48,29 @@ rc up --allow-risky-mount /Users/alice/.aws/my-tools-creds \
 For a persistent per-project allow, use `mounts.allow_risky` in `.rip-cage.yaml`. To add custom patterns on top of the global defaults, use `mounts.denylist` in `.rip-cage.yaml`. Run `rc config show` to see the effective denylist with provenance.
 
 See [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md) and [`docs/reference/config.md`](config.md#mountsdenylist-and-mountsallow_risky----secret-path-denylist) for the full denylist design.
+
+### `rc allowlist` — egress allowlist
+
+Manage the network egress allowlist (`network.allowed_hosts` / `network.mode` in `.rip-cage.yaml`). New cages start in **observe mode** (log, don't block); `show --observed` lists what the agent reached, and `promote --from-observed` merges it into the allowlist and flips to **block mode**.
+
+`add` and `promote` are **host-only** (they mutate effective config via `rc reload`); `show` is read-only and works inside the cage too.
+
+| Subcommand | Description |
+|------|-------------|
+| `add <host> [--cage=<name>]` | Append `<host>` to `network.allowed_hosts` (idempotent). With `--cage`, runs `rc reload` to apply live. Supports `--output json`. |
+| `show [--effective] [--observed]` | Default: configured `network.allowed_hosts`. `--effective`: merged allowlist with provenance. `--observed`: hosts blocked / would-block in the egress logs. |
+| `promote --from-observed [--cage=<name>]` | Merge observed blocked hosts into `network.allowed_hosts`, set `network.mode: block`, emit a diff, and `rc reload` when `--cage` is given. |
+
+```bash
+# Add one host and apply it live
+rc allowlist add api.deepseek.com --cage my-cage
+
+# See what the agent reached in observe mode, then lock down
+rc allowlist show --observed --cage my-cage
+rc allowlist promote --from-observed --cage my-cage
+```
+
+See [`docs/reference/egress.md`](egress.md) and [ADR-012](../decisions/ADR-012-egress-firewall.md) for the full egress model.
 
 ## JSON output
 

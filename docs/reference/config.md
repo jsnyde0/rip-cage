@@ -1,6 +1,6 @@
 # Layered `.rip-cage.yaml` config
 
-Rip cage reads two optional YAML files on every `rc up` / `rc init` and merges them into one **effective config**. The result is what downstream consumers (SSH allowlist, future egress overrides, etc.) see.
+Rip cage reads two optional YAML files on every `rc up` / `rc init` and merges them into one **effective config**. The result is what downstream consumers (SSH allowlist, egress firewall, etc.) see.
 
 | File | Path | Scope | Tracked in git? |
 |---|---|---|---|
@@ -176,6 +176,40 @@ mounts:
 ```
 
 Cross-reference: [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md) for full design rationale, pattern semantics, and failure-mode contract.
+
+---
+
+## `network.*` — egress firewall
+
+Rip-cage's network egress firewall reads `network.*` to decide what outbound traffic the cage permits. It's enabled by default on `rc up` ([ADR-012](../decisions/ADR-012-egress-firewall.md)). New cages start in **observe mode** (log, don't block); you promote the observed traffic into an allowlist and flip to **block mode**. See [egress.md](egress.md) for the observe → promote → block workflow and the `rc allowlist` commands that edit these fields for you.
+
+### Fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `network.mode` | scalar | unset (legacy) | `observe` (log all outbound destinations, block nothing — default for new cages) or `block` (enforce the allowlist). Absence means legacy behavior — cages created before egress shipped run the old denylist with no `network.mode`; non-regression per [ADR-021](../decisions/ADR-021-layered-rip-cage-config.md) D5. |
+| `network.allowed_hosts` | additive_list | `[]` | Domains allowed for HTTP/HTTPS egress, and the destinations reachable on TCP-22 (git-over-ssh). Effective allowlist = baseline ∪ global ∪ project. Project EXPANDS; cannot contract. The agent inside the cage cannot mutate this — edits apply via the host-only `rc reload`. |
+| `network.writable_hosts` | additive_list | `[]` | Domains allowed for POST / write-method egress (the method-axis gate). FLEXIBLE firmness. Effective = global ∪ project union. |
+
+There is also an **IOC floor** — a curated denylist of known exfil sinks — that is always enforced and **cannot be overridden** by `network.allowed_hosts`. The project allowlist can broaden but never shrink below this floor.
+
+### Example
+
+```yaml
+# <project>/.rip-cage.yaml
+version: 1
+network:
+  mode: block
+  allowed_hosts:
+    - api.deepseek.com        # added by `rc allowlist promote`
+    - files.example-cdn.net
+  writable_hosts:
+    - api.deepseek.com        # POST allowed only to this host
+```
+
+`network.allowed_hosts` follows the **additive-list** merge rule (global ∪ project, deduplicated, global first — same as `ssh.allowed_hosts`). Edits to `network.allowed_hosts` are reload-eligible via `rc reload`; changing `network.mode` likewise applies via `rc reload`. Use `rc allowlist add` / `rc allowlist promote` (host-only) rather than hand-editing.
+
+Cross-reference: [egress.md](egress.md) for the workflow, modes, DNS exfil detection, and baseline allowlist; [ADR-012](../decisions/ADR-012-egress-firewall.md) for full design rationale.
 
 ---
 

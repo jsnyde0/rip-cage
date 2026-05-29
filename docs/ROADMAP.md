@@ -1,11 +1,39 @@
 # Rip Cage Roadmap
 
-**Last updated:** 2026-04-22
+**Last updated:** 2026-05-29
 **Philosophy:** Build → test → learn → adjust. This roadmap is directional, not a contract. Expect changes as we gain real experience using the tool.
 
 ---
 
 ## Phase 1: Hardening (current)
+
+### Network egress firewall + observe mode (ADR-012) — shipped 2026-05-27 (v0.4.0)
+
+- [x] `network.*` config schema + writable-subset validation ([ADR-012](decisions/ADR-012-egress-firewall.md))
+- [x] Per-cage egress-rules pipeline — generate + mount at `rc up` / `rc reload`
+- [x] Default-deny whitelist with `observe` / `block` / legacy modes + structured stderr
+- [x] `network.allowed_hosts`; method-axis `writable_hosts` write-gating ([ADR-012 D6](decisions/ADR-012-egress-firewall.md))
+- [x] DNS-exfil resolver sidecar + transparent port-53 REDIRECT ([ADR-012 D9](decisions/ADR-012-egress-firewall.md))
+- [x] `rc allowlist add/show/promote` agent-first CLI; `rc doctor` egress sections; `rc ls` mode column
+- [x] Workspace-trust validator — refuse hostile base-URL redirect at cage start
+- [x] Injection-exfil integration harness (`rc test --e2e-security`)
+
+### SSH host + key allowlist + hot-reload (ADR-022) — shipped 2026-05-12/13
+
+- [x] `ssh.allowed_hosts` (additive_list) + `ssh.allowed_keys` (selection_list) schema ([ADR-022 D1](decisions/ADR-022-ssh-allowlist.md))
+- [x] ssh-agent-filter (agent half) + bash/openssl host half make the allowlist load-bearing
+- [x] Hook-layer guard closes the OpenSSH CLI-override bypass class
+- [x] `rc reload <cage>` host-side hot-reload for `allowed_hosts` content changes ([ADR-022 D6](decisions/ADR-022-ssh-allowlist.md))
+
+### Secret-path mount denylist (ADR-023) — shipped 2026-05-13 (v0.3.0)
+
+- [x] `mounts.denylist` schema + realpath-first matcher ([ADR-023](decisions/ADR-023-secret-path-mount-denylist.md))
+- [x] `mounts.allow_risky` config bypass + `rc up --allow-risky-mount` one-shot override
+- [x] Host-side preflight validation on `--env-file` / `.beads` redirect; `rc install`
+
+### Prompt-injection threat model (ADR-024) — landed 2026-05-22
+
+- [x] Name the threat class: a non-adversarial agent following hostile instructions in content ([ADR-024](decisions/ADR-024-prompt-injection-threat-model.md))
 
 ### Cage host-network awareness (ADR-016)
 
@@ -30,7 +58,7 @@
 
 Get the existing implementation working end-to-end and solid.
 
-- [ ] Validate Dockerfile builds cleanly
+- [x] Validate Dockerfile builds cleanly (CI builds + publishes the image per release)
 - [x] Connect container bd to host Dolt server ([ADR-004 D1](decisions/ADR-004-phase1-hardening.md))
 - [ ] Add container resource limits ([ADR-004 D2](decisions/ADR-004-phase1-hardening.md))
 - [ ] Credential health check on start ([ADR-004 D3](decisions/ADR-004-phase1-hardening.md))
@@ -38,9 +66,9 @@ Get the existing implementation working end-to-end and solid.
 - [ ] Richer zshrc ([ADR-004 D5](decisions/ADR-004-phase1-hardening.md))
 - [ ] First real agent session in the container
 - [ ] Test devcontainer flow in VS Code
-- [ ] Add `rc test --e2e` lifecycle suite ([ADR-013 D1](decisions/ADR-013-test-coverage.md))
-- [ ] Fix + wire host-side tests via `rc test --host` ([ADR-013 D2](decisions/ADR-013-test-coverage.md))
-- [ ] Expand egress perimeter tests (IPv6, WebSocket, non-HTTP ports) ([ADR-013 D4](decisions/ADR-013-test-coverage.md))
+- [x] Add `rc test --e2e` lifecycle suite ([ADR-013 D1](decisions/ADR-013-test-coverage.md))
+- [x] Fix + wire host-side tests via `rc test --host`; CI = lint+build+host-only ([ADR-013 D2](decisions/ADR-013-test-coverage.md), [D5/D6](decisions/ADR-013-test-coverage.md))
+- [x] Expand egress perimeter tests (IPv6, WebSocket, non-HTTP ports, DoH) ([ADR-013 D4](decisions/ADR-013-test-coverage.md))
 
 **Design:** [Phase 1 Hardening](2026-03-27-phase1-hardening-design.md), [Test Coverage](2026-04-20-test-coverage-design.md)
 
@@ -109,6 +137,10 @@ Structured multi-agent coordination.
 | [ADR-006](decisions/ADR-006-multi-agent-architecture.md) | Multi-agent architecture decisions |
 | [ADR-015](decisions/ADR-015-mise-toolchain-provisioning.md) | Project toolchain provisioning via mise |
 | [ADR-016](decisions/ADR-016-cage-host-network-awareness.md) | Cage host-network awareness (CLAUDE.md + preflight probe) |
+| [ADR-012](decisions/ADR-012-egress-firewall.md) | Network egress firewall — L7 proxy, observe/block modes, DNS exfil heuristic |
+| [ADR-022](decisions/ADR-022-ssh-allowlist.md) | SSH host + key allowlist; `rc reload` hot-reload |
+| [ADR-023](decisions/ADR-023-secret-path-mount-denylist.md) | Secret-path mount denylist; `--allow-risky-mount` override |
+| [ADR-024](decisions/ADR-024-prompt-injection-threat-model.md) | Prompt-injection threat model |
 
 ## Flywheel Research Repos
 
