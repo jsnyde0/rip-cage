@@ -161,12 +161,12 @@ make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Snapshot matches live (allowed_hosts=[switch.berlin])
 write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"writable_hosts":[],"mode":null}}'
 echo "switch.berlin ssh-ed25519 AAAA" > "${CACHE_DIR}/known_hosts"
-c2_pre_mtime=$(stat -f %m "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -c %Y "${CACHE_DIR}/known_hosts")
+c2_pre_mtime=$(stat -c %Y "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %m "${CACHE_DIR}/known_hosts")
 sleep 1  # ensure measurable mtime delta if mutation happens
 
 c2_out=$(run_rc reload "$CNAME" 2>&1)
 c2_exit=$?
-c2_post_mtime=$(stat -f %m "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -c %Y "${CACHE_DIR}/known_hosts")
+c2_post_mtime=$(stat -c %Y "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %m "${CACHE_DIR}/known_hosts")
 c2_ok=true c2_reason=""
 [[ "$c2_exit" -ne 0 ]] && c2_ok=false && c2_reason="exit $c2_exit"
 [[ "$c2_post_mtime" -ne "$c2_pre_mtime" ]] && c2_ok=false && c2_reason="${c2_reason:+$c2_reason; }cache file was rewritten"
@@ -243,13 +243,13 @@ setup_sandbox "config-project-allowed-hosts-only.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"writable_hosts":[],"mode":null}}'
 : > "${CACHE_DIR}/known_hosts"
-c6_pre_kh_mtime=$(stat -f %m "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -c %Y "${CACHE_DIR}/known_hosts")
+c6_pre_kh_mtime=$(stat -c %Y "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %m "${CACHE_DIR}/known_hosts")
 c6_pre_snap_sum=$(shasum "${CACHE_DIR}/config-applied.json" | awk '{print $1}')
 sleep 1
 
 c6_out=$(run_rc reload "$CNAME" --dry-run 2>&1)
 c6_exit=$?
-c6_post_kh_mtime=$(stat -f %m "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -c %Y "${CACHE_DIR}/known_hosts")
+c6_post_kh_mtime=$(stat -c %Y "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %m "${CACHE_DIR}/known_hosts")
 c6_post_snap_sum=$(shasum "${CACHE_DIR}/config-applied.json" | awk '{print $1}')
 c6_ok=true c6_reason=""
 [[ "$c6_exit" -ne 0 ]] && c6_ok=false && c6_reason="exit $c6_exit"
@@ -287,11 +287,11 @@ setup_sandbox "config-project-allowed-hosts-only.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"writable_hosts":[],"mode":null}}'
 : > "${CACHE_DIR}/known_hosts"
-c8_pre_inode=$(stat -f %i "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -c %i "${CACHE_DIR}/known_hosts")
+c8_pre_inode=$(stat -c %i "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %i "${CACHE_DIR}/known_hosts")
 
 run_rc reload "$CNAME" >/dev/null 2>&1
 c8_exit=$?
-c8_post_inode=$(stat -f %i "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -c %i "${CACHE_DIR}/known_hosts")
+c8_post_inode=$(stat -c %i "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %i "${CACHE_DIR}/known_hosts")
 c8_ok=true c8_reason=""
 [[ "$c8_exit" -ne 0 ]] && c8_ok=false && c8_reason="exit $c8_exit"
 [[ "$c8_pre_inode" != "$c8_post_inode" ]] && c8_ok=false && c8_reason="${c8_reason:+$c8_reason; }inode changed ($c8_pre_inode → $c8_post_inode)"
@@ -385,11 +385,11 @@ make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"writable_hosts":[],"mode":null}}'
 : > "${CACHE_DIR}/known_hosts"
 chmod 0644 "${CACHE_DIR}/known_hosts"
-c12_pre_mode=$(stat -f %Mp%Lp "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -c %a "${CACHE_DIR}/known_hosts")
+c12_pre_mode=$(stat -c %a "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %Mp%Lp "${CACHE_DIR}/known_hosts")
 
 run_rc reload "$CNAME" >/dev/null 2>&1
 c12_exit=$?
-c12_post_mode=$(stat -f %Mp%Lp "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -c %a "${CACHE_DIR}/known_hosts")
+c12_post_mode=$(stat -c %a "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %Mp%Lp "${CACHE_DIR}/known_hosts")
 c12_ok=true c12_reason=""
 [[ "$c12_exit" -ne 0 ]] && c12_ok=false && c12_reason="exit $c12_exit"
 # Don't compare exact form (macOS stat uses 100644, GNU uses 644). Just confirm same.

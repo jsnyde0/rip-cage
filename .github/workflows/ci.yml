@@ -65,6 +65,19 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
 
+      # Host-test runtime deps (not validation tools — analogous to uv above).
+      # zsh: test-completions.sh generates + runs zsh completions.
+      # yq (mikefarah v4): rc's allowlist/config/egress commands parse YAML with
+      #   v4 dot-notation; ubuntu-latest ships neither. Matches the host
+      #   prerequisite a developer already has (brew install yq on macOS).
+      - name: Install host-test deps (zsh, mikefarah yq v4)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh
+          sudo curl -fsSL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
       - name: Verify rc --version works
         run: ./rc --version
 

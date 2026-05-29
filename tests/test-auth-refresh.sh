@@ -258,8 +258,11 @@ fi
 echo ""
 echo "=== Test 10: _up_prepare_docker_mounts calls _extract_credentials ==="
 if grep -q '_extract_credentials' "$RC"; then
-  # Verify it's called inside _up_prepare_docker_mounts (check between function start and next function)
-  if sed -n '/_up_prepare_docker_mounts()/,/^[a-z_]*().*{/p' "$RC" | grep -q '_extract_credentials'; then
+  # Verify it's called inside _up_prepare_docker_mounts (function body = start to the
+  # column-0 closing brace). Use /^}/ — the portable convention used elsewhere in this
+  # file — not a next-function-def pattern, which GNU sed (CI) and BSD sed (macOS) range
+  # differently, masking the call on Linux.
+  if sed -n '/_up_prepare_docker_mounts()/,/^}/p' "$RC" | grep -q '_extract_credentials'; then
     pass "_up_prepare_docker_mounts calls _extract_credentials"
   else
     fail "_up_prepare_docker_mounts does not call _extract_credentials"

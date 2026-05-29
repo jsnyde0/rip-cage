@@ -256,7 +256,7 @@ WS_C10="$ws"
 # Reuses C10's workspace; same ssh stub absent so detection produces same YAML.
 # ---------------------------------------------------------------------------
 ws="$WS_C10"
-mtime_before=$(stat -f %m "${ws}/.rip-cage.yaml" 2>/dev/null || stat -c %Y "${ws}/.rip-cage.yaml")
+mtime_before=$(stat -c %Y "${ws}/.rip-cage.yaml" 2>/dev/null || stat -f %m "${ws}/.rip-cage.yaml")
 sleep 1
 stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-cfginit-stub-XXXXXX")
 cat > "${stub_dir}/ssh" <<'STUB'
@@ -265,7 +265,7 @@ exit 0
 STUB
 chmod +x "${stub_dir}/ssh"
 out=$(cd "$ws" && PATH="${stub_dir}:$PATH" HOME="$TEST_HOME" "$RC" config init --yes 2>&1)
-mtime_after=$(stat -f %m "${ws}/.rip-cage.yaml" 2>/dev/null || stat -c %Y "${ws}/.rip-cage.yaml")
+mtime_after=$(stat -c %Y "${ws}/.rip-cage.yaml" 2>/dev/null || stat -f %m "${ws}/.rip-cage.yaml")
 if echo "$out" | grep -q "already matches" && [[ "$mtime_before" == "$mtime_after" ]]; then
   pass 11 "re-run with same proposal → 'already matches', file unchanged"
 else
