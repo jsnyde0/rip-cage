@@ -126,9 +126,21 @@ fi
 # --- Test 9: log function sends to stderr in JSON mode ---
 echo ""
 echo "=== Test 9: log sends to stderr in JSON mode ==="
-# For cmd_build, in JSON mode the log message should go to stderr
-# We capture stderr separately
-build_stderr=$("$RC" --output json build 2>&1 1>/dev/null) || true
+# For cmd_build, in JSON mode the log message should go to stderr.
+# Use a fake docker shim that returns immediately so this test completes in <5s
+# even in CI where no image cache exists. rc's cmd_build emits `log "Building…"`
+# to stderr BEFORE calling docker build, so the fake shim is sufficient to
+# prevent the real 7-minute build while still exercising the log path.
+_T9_FAKE_BIN=$(mktemp -d)
+_t9_cleanup() { rm -rf "$_T9_FAKE_BIN"; }
+trap '_t9_cleanup' EXIT
+cat > "$_T9_FAKE_BIN/docker" <<'FAKEEOF'
+#!/usr/bin/env bash
+# Fake docker: accept any args and exit 0 immediately.
+exit 0
+FAKEEOF
+chmod +x "$_T9_FAKE_BIN/docker"
+build_stderr=$(PATH="$_T9_FAKE_BIN:$PATH" "$RC" --output json build 2>&1 1>/dev/null) || true
 # In JSON mode, "Building..." should appear on stderr
 if echo "$build_stderr" | grep -q "Building"; then
   pass "log message goes to stderr in JSON mode"
@@ -136,6 +148,8 @@ else
   # Docker may not be running, so build may fail, but the log should still appear
   fail "log message not found on stderr in JSON mode. stderr: $build_stderr"
 fi
+_t9_cleanup
+trap - EXIT
 
 # --- Test 10: --dry-run flag is accepted (parsed without error) ---
 echo ""

@@ -258,11 +258,12 @@ fi
 echo ""
 echo "=== Test 10: _up_prepare_docker_mounts calls _extract_credentials ==="
 if grep -q '_extract_credentials' "$RC"; then
-  # Verify it's called inside _up_prepare_docker_mounts (function body = start to the
-  # column-0 closing brace). Use /^}/ — the portable convention used elsewhere in this
-  # file — not a next-function-def pattern, which GNU sed (CI) and BSD sed (macOS) range
-  # differently, masking the call on Linux.
-  if sed -n '/_up_prepare_docker_mounts()/,/^}/p' "$RC" | grep -q '_extract_credentials'; then
+  # Verify it's called inside _up_prepare_docker_mounts using awk — avoids the
+  # GNU sed broken-pipe issue under set -o pipefail: when grep -q closes the pipe
+  # early, GNU sed exits 141 (SIGPIPE), causing the pipeline to return 141 with
+  # pipefail even when the match was found. awk reads the whole body without a
+  # downstream reader that can close early, so no broken-pipe race.
+  if awk '/_up_prepare_docker_mounts\(\)/{in_fn=1} in_fn && /^\}/{in_fn=0} in_fn && /_extract_credentials/{found=1} END{exit !found}' "$RC"; then
     pass "_up_prepare_docker_mounts calls _extract_credentials"
   else
     fail "_up_prepare_docker_mounts does not call _extract_credentials"
