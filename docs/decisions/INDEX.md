@@ -8,7 +8,7 @@ When a decision evolves, edit the ADR in place and update this row. Drift betwee
 
 ## By topic
 
-- **Safety / fail-loud:** [001](ADR-001-fail-loud-pattern.md), [004](ADR-004-phase1-hardening.md), [023](ADR-023-secret-path-mount-denylist.md), [024](ADR-024-prompt-injection-threat-model.md)
+- **Safety / fail-loud:** [001](ADR-001-fail-loud-pattern.md), [004](ADR-004-phase1-hardening.md), [023](ADR-023-secret-path-mount-denylist.md), [024](ADR-024-prompt-injection-threat-model.md), [025](ADR-025-host-adoptable-dcg-policy.md)
 - **Containers / cage model:** [002](ADR-002-rip-cage-containers.md), [016](ADR-016-cage-host-network-awareness.md)
 - **CLI / UX:** [003](ADR-003-agent-friendly-cli.md), [009](ADR-009-ux-overhaul.md), [011](ADR-011-shell-completions.md)
 - **Testing / CI:** [013](ADR-013-test-coverage.md)
@@ -50,3 +50,4 @@ When a decision evolves, edit the ADR in place and update this row. Drift betwee
 | [022](ADR-022-ssh-allowlist.md) | SSH Host + Key Allowlist | ssh | Accepted (evolved) | ssh-agent-filter (agent half) + bash/openssl (host half); `rc reload` for content changes |
 | [023](ADR-023-secret-path-mount-denylist.md) | Secret-Path Mount Denylist | safety | Proposed | Default-on pattern denylist for `--env-file` / `.beads` redirect; realpath-first validation |
 | [024](ADR-024-prompt-injection-threat-model.md) | Prompt-Injection Threat Model | threat-model | Accepted | Names the threat class: a non-adversarial agent following hostile instructions in content |
+| [025](ADR-025-host-adoptable-dcg-policy.md) | Host-Adoptable DCG Policy Layer | safety | Proposed | Additive-only DCG policy via `.rip-cage.yaml`; baked core floor uncrossable; CWD-anchor wrapper + pinned DCG_CONFIG close the `/workspace/.dcg.toml` self-disable hole |
