@@ -31,6 +31,12 @@ fi
 if [[ ! -L /home/agent/.claude ]]; then
   sudo chown agent:agent /home/agent/.claude 2>/dev/null || true
 fi
+# Pi config dir is container-local (ADR-019 D1 evolved). The image bakes it as
+# agent:agent, but Docker may override ownership at mount time if auth.json is
+# sub-mounted. Chown top-level only (not -R) to preserve sub-mount ownership.
+if [[ ! -L /home/agent/.pi/agent ]]; then
+  sudo chown agent:agent /home/agent/.pi/agent 2>/dev/null || true
+fi
 
 # ADR-017 D1 / ADR-018 2026-04-25: when ssh-agent forwarding is on, the
 # mounted host socket arrives owned by the host uid (e.g. 501:67278 on
@@ -173,11 +179,12 @@ if [ -f /etc/rip-cage/cage-claude.md ]; then
   rm -f /tmp/claude-md-base
   echo "[rip-cage] Cage-topology section appended to ~/.claude/CLAUDE.md"
 fi
-# ADR-019 D3 (post-c1p.1): cage-topology for pi is surfaced via reference in
-# ~/.claude/CLAUDE.md (cage-owned path) rather than appended to /pi-agent/AGENTS.md
-# (host-bind-mounted path). This preserves the user's canonical dotpi file intact.
-if [ "${PI_CODING_AGENT_DIR:-}" = "/pi-agent" ]; then
-  echo "[rip-cage] Cage-pi topology available at /etc/rip-cage/cage-pi.md (not appended to /pi-agent/AGENTS.md — host abstraction preserved)"
+# ADR-019 D3 (post-c1p.1/hhh.12): cage-topology for pi is surfaced via reference in
+# ~/.claude/CLAUDE.md (cage-owned path) rather than appended to host AGENTS.md.
+# Post-hhh.12: PI_CODING_AGENT_DIR points to container-local /home/agent/.pi/agent.
+# This preserves the user's canonical dotpi files intact on the host.
+if [ "${PI_CODING_AGENT_DIR:-}" = "/home/agent/.pi/agent" ]; then
+  echo "[rip-cage] Cage-pi topology available at /etc/rip-cage/cage-pi.md (not appended to host AGENTS.md — container-local pi dir preserves host dotpi files intact)"
 fi
 if [ -f /home/agent/.rc-context/home-claude.md ] && [ -s /home/agent/.rc-context/home-claude.md ]; then
   cp /home/agent/.rc-context/home-claude.md ~/CLAUDE.md

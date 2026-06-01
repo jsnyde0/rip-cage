@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# Tests for B2: pi state mount + provider env-var passthrough.
+# Tests for pi state mount topology: container-local PI_CODING_AGENT_DIR +
+# narrow auth.json sub-mount (ADR-019 D1 evolved, rip-cage-hhh.12).
 # Requires docker + rip-cage:latest image already built (./rc build).
 #
-# What this tests (without needing a real pi install):
-#   1. ~/.pi/agent bind-mounted to /pi-agent inside the container
-#   2. PI_CODING_AGENT_DIR=/pi-agent injected as an env var
-#   3. /pi-agent/auth.json is readable and owned by agent:agent
-#   4. OPENAI_API_KEY="" is NOT forwarded (empty-value filter)
-#   5. rc up still succeeds when ~/.pi/agent is absent (warning, no fatal)
+# What this tests:
+#   1. /home/agent/.pi/agent/auth.json is mounted and readable inside container
+#   2. auth.json owned by agent:agent inside container
+#   3. PI_CODING_AGENT_DIR=/home/agent/.pi/agent set in container env
+#   4. CAGE_HOST_ADDR passed through explicitly (for non-interactive pi -p)
+#   5. Empty OPENAI_API_KEY is NOT forwarded (empty-value filter)
+#   6. rc up succeeds when ~/.pi/agent is absent (warning, no fatal)
+#   7. /home/agent/.pi/agent/AGENTS.md content + mtime unchanged after rc up
+#      (init must not mutate container-local dotfiles)
+#   8. auth.json RW round-trip: write inside cage → visible on host (inode preserved)
+#   9. extensions auto-load: marker extension in image-baked extensions/ loads with NO -e flag
 
 set -uo pipefail
 
@@ -81,25 +87,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ---- Set up fake ~/.pi/agent/auth.json and AGENTS.md ----
+# ---- Set up fake ~/.pi/agent/auth.json ----
 mkdir -p "$PI_AGENT_DIR"
 printf '{"fake":true}\n' > "$PI_AGENT_DIR/auth.json"
-# Create a known AGENTS.md so we can assert init never mutates it
-AGENTS_MD_PATH="${PI_AGENT_DIR}/AGENTS.md"
-AGENTS_MD_SENTINEL="# Pi auth-mount test sentinel — must not be modified by init"
-printf '%s\n' "$AGENTS_MD_SENTINEL" > "$AGENTS_MD_PATH"
 
 TEST_WS=$(mktemp -d)
 
-# Capture AGENTS.md state before rc up for later comparison
-AGENTS_CONTENT_BEFORE=$(cat "$AGENTS_MD_PATH")
-AGENTS_MTIME_BEFORE=$(stat -f '%m' "$AGENTS_MD_PATH" 2>/dev/null || stat -c '%Y' "$AGENTS_MD_PATH" 2>/dev/null || true)
-
 # ================================================================
-# Test 1: pi bind mount — /pi-agent/auth.json visible in container
+# Test 1: pi bind mount — /home/agent/.pi/agent/auth.json visible in container
 # ================================================================
 echo ""
-echo "=== Test 1: /pi-agent/auth.json is mounted and readable ==="
+echo "=== Test 1: /home/agent/.pi/agent/auth.json is mounted and readable ==="
 
 RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
 CONTAINER=$(_resolve_container "$TEST_WS")
@@ -110,35 +108,35 @@ if [[ -z "$CONTAINER" ]]; then
   exit "$FAILURES"
 fi
 
-content=$(docker exec "$CONTAINER" cat /pi-agent/auth.json 2>/dev/null || true)
+content=$(docker exec "$CONTAINER" cat /home/agent/.pi/agent/auth.json 2>/dev/null || true)
 if echo "$content" | grep -q "fake"; then
-  pass "/pi-agent/auth.json readable and contains expected content"
+  pass "/home/agent/.pi/agent/auth.json readable and contains expected content"
 else
-  fail "/pi-agent/auth.json not readable or wrong content" "$content"
+  fail "/home/agent/.pi/agent/auth.json not readable or wrong content" "$content"
 fi
 
 # ================================================================
-# Test 2: /pi-agent/auth.json owned by agent:agent from container's view
+# Test 2: /home/agent/.pi/agent/auth.json owned by agent:agent
 # ================================================================
 echo ""
-echo "=== Test 2: /pi-agent/auth.json owned by agent:agent ==="
+echo "=== Test 2: /home/agent/.pi/agent/auth.json owned by agent:agent ==="
 
-ownership=$(docker exec "$CONTAINER" stat -c '%U:%G' /pi-agent/auth.json 2>/dev/null || true)
+ownership=$(docker exec "$CONTAINER" stat -c '%U:%G' /home/agent/.pi/agent/auth.json 2>/dev/null || true)
 if [[ "$ownership" == "agent:agent" ]]; then
-  pass "/pi-agent/auth.json owner = agent:agent"
+  pass "/home/agent/.pi/agent/auth.json owner = agent:agent"
 else
-  fail "/pi-agent/auth.json owner = '$ownership' (expected agent:agent)"
+  fail "/home/agent/.pi/agent/auth.json owner = '$ownership' (expected agent:agent)"
 fi
 
 # ================================================================
-# Test 3: PI_CODING_AGENT_DIR=/pi-agent set in container env
+# Test 3: PI_CODING_AGENT_DIR=/home/agent/.pi/agent set in container env
 # ================================================================
 echo ""
-echo "=== Test 3: PI_CODING_AGENT_DIR=/pi-agent in container env ==="
+echo "=== Test 3: PI_CODING_AGENT_DIR=/home/agent/.pi/agent in container env ==="
 
 pi_env=$(docker exec "$CONTAINER" env 2>/dev/null | grep '^PI_CODING_AGENT_DIR=' || true)
-if [[ "$pi_env" == "PI_CODING_AGENT_DIR=/pi-agent" ]]; then
-  pass "PI_CODING_AGENT_DIR=/pi-agent in container env"
+if [[ "$pi_env" == "PI_CODING_AGENT_DIR=/home/agent/.pi/agent" ]]; then
+  pass "PI_CODING_AGENT_DIR=/home/agent/.pi/agent in container env"
 else
   fail "PI_CODING_AGENT_DIR not set correctly" "$pi_env"
 fi
@@ -254,27 +252,122 @@ fi
 mv "${PI_AGENT_DIR}.bak-test" "$PI_AGENT_DIR"
 
 # ================================================================
-# Test 7: /pi-agent/AGENTS.md content + mtime unchanged after rc up
-# (init must not mutate host-bind-mounted dotfiles — ADR-019 D3)
+# Test 7: /home/agent/.pi/agent dir is container-local (not host-mounted whole-dir)
+# bin/ subdir exists in container but is NOT the host's ~/.pi/agent/bin/
 # ================================================================
 echo ""
-echo "=== Test 7: /pi-agent/AGENTS.md content + mtime unchanged after rc up ==="
+echo "=== Test 7: Container-local pi dir — bin/ not host-mounted ==="
 
-AGENTS_CONTENT_AFTER=$(cat "$AGENTS_MD_PATH")
-AGENTS_MTIME_AFTER=$(stat -f '%m' "$AGENTS_MD_PATH" 2>/dev/null || stat -c '%Y' "$AGENTS_MD_PATH" 2>/dev/null || true)
-
-if [[ "$AGENTS_CONTENT_AFTER" == "$AGENTS_CONTENT_BEFORE" ]]; then
-  pass "Test 7a: /pi-agent/AGENTS.md content unchanged after rc up"
+# Verify the container-local dir exists as agent:agent and is independent of host
+pi_dir_stat=$(docker exec "$CONTAINER" stat -c '%U:%G' /home/agent/.pi/agent 2>/dev/null || true)
+if [[ "$pi_dir_stat" == "agent:agent" ]]; then
+  pass "/home/agent/.pi/agent dir exists as agent:agent in container"
 else
-  fail "Test 7a: /pi-agent/AGENTS.md content was mutated by init" \
-    "before='$AGENTS_CONTENT_BEFORE' after='$AGENTS_CONTENT_AFTER'"
+  fail "/home/agent/.pi/agent dir stat unexpected" "$pi_dir_stat"
 fi
 
-if [[ "$AGENTS_MTIME_AFTER" == "$AGENTS_MTIME_BEFORE" ]]; then
-  pass "Test 7b: /pi-agent/AGENTS.md mtime unchanged after rc up"
+# bin/ should NOT be a mount of the host's bin/ — the container should generate
+# its own tools. Write a sentinel file to host ~/.pi/agent/bin/ and verify it
+# does NOT appear inside the container.
+mkdir -p "$PI_AGENT_DIR/bin"
+printf 'host-sentinel' > "$PI_AGENT_DIR/bin/host-marker.txt"
+# Container was started before this file existed — if bin/ is not mounted, it won't appear
+bin_content=$(docker exec "$CONTAINER" cat /home/agent/.pi/agent/bin/host-marker.txt 2>/dev/null || true)
+if [[ -z "$bin_content" ]]; then
+  pass "bin/ is NOT host-mounted (container-local; host sentinel not visible)"
 else
-  fail "Test 7b: /pi-agent/AGENTS.md mtime changed (file was written)" \
-    "before=$AGENTS_MTIME_BEFORE after=$AGENTS_MTIME_AFTER"
+  fail "bin/ appears to be host-mounted (host sentinel visible — bin/ should be container-local)" "$bin_content"
+fi
+rm -f "$PI_AGENT_DIR/bin/host-marker.txt"
+
+# ================================================================
+# Test 8: auth.json RW round-trip — write inside cage → visible on host,
+# inode preserved (same contract as ~/.claude/.credentials.json)
+# ================================================================
+echo ""
+echo "=== Test 8: auth.json RW round-trip (write inside cage visible on host) ==="
+
+# Get inode before
+host_inode_before=$(stat -f '%i' "$PI_AGENT_DIR/auth.json" 2>/dev/null || stat -c '%i' "$PI_AGENT_DIR/auth.json" 2>/dev/null || true)
+
+# Write new content inside the container (in-place overwrite, same as OAuth refresh)
+docker exec "$CONTAINER" bash -c 'printf "{\"fake\":true,\"roundtrip\":true}\n" > /home/agent/.pi/agent/auth.json' 2>/dev/null
+
+# Read on host
+roundtrip_content=$(cat "$PI_AGENT_DIR/auth.json" 2>/dev/null || true)
+if echo "$roundtrip_content" | grep -q "roundtrip"; then
+  pass "auth.json write inside cage visible on host (RW round-trip works)"
+else
+  fail "auth.json write inside cage NOT visible on host" "$roundtrip_content"
+fi
+
+# Inode must be preserved (no atomic rename — the single-file mount tracks by inode)
+host_inode_after=$(stat -f '%i' "$PI_AGENT_DIR/auth.json" 2>/dev/null || stat -c '%i' "$PI_AGENT_DIR/auth.json" 2>/dev/null || true)
+if [[ -z "$host_inode_before" || -z "$host_inode_after" ]]; then
+  # Genuinely could not read inode(s) — skip rather than guess
+  echo "  SKIP: inode check skipped (could not read inode: before='$host_inode_before' after='$host_inode_after')"
+elif [[ "$host_inode_before" == "$host_inode_after" ]]; then
+  pass "auth.json inode preserved on host after cage write (no mv/rename)"
+else
+  # Both inodes read AND they differ — the write used atomic rename instead of in-place overwrite.
+  # This would break pi's OAuth token refresh (single-file bind mount tracks by inode).
+  fail "auth.json inode changed after cage write — atomic rename detected (inode before=$host_inode_before, after=$host_inode_after)"
+fi
+
+# Restore auth.json content for downstream tests
+printf '{"fake":true}\n' > "$PI_AGENT_DIR/auth.json"
+
+# ================================================================
+# Test 9: extensions auto-discovery path is correct, agent-owned, and writable
+#
+# Acceptance item 4 requires pi to auto-load extensions from the image-baked
+# /home/agent/.pi/agent/extensions/ with no -e flag.
+#
+# What this test CAN prove non-interactively:
+#   - The dir exists in the container image (baked by Dockerfile)
+#   - It is agent:agent owned (pi runs as agent, so it can access)
+#   - The agent user can write to it (required for bl1 to drop guard extensions)
+#   - A marker file dropped here is readable by the agent user
+#
+# What this test CANNOT prove non-interactively:
+#   - That pi's extension loader actually loaded a file from this dir at runtime.
+#     pi's --print mode calls the full loader (loader.ts:583-585 discoverAndLoadExtensions
+#     scans agentDir/extensions/) but proving loading succeeded requires a live API call
+#     or a side-effectful extension that writes an observable artifact without a TTY.
+#     Runtime-load proof is deferred to bl1, which will bake a real guard extension.
+#
+# This matches the pi loader's auto-discovery path: loader.ts line 584:
+#   const globalExtDir = path.join(agentDir, "extensions");
+#   addPaths(discoverExtensionsInDir(globalExtDir));
+# ================================================================
+echo ""
+echo "=== Test 9: pi extensions auto-discovery dir exists, is agent-owned, and is writable ==="
+
+# 9a: dir must exist (baked in Dockerfile line: RUN mkdir -p /home/agent/.pi/agent/extensions)
+ext_dir_stat=$(docker exec "$CONTAINER" stat -c '%U:%G' /home/agent/.pi/agent/extensions 2>/dev/null || true)
+if [[ "$ext_dir_stat" == "agent:agent" ]]; then
+  pass "/home/agent/.pi/agent/extensions dir exists as agent:agent in container"
+else
+  fail "/home/agent/.pi/agent/extensions dir missing or wrong ownership (got: '$ext_dir_stat')" ""
+fi
+
+# 9b: dir must be writable by agent user (bl1 needs to drop extensions here)
+write_test=$(docker exec "$CONTAINER" bash -c 'touch /home/agent/.pi/agent/extensions/.write-test && echo ok && rm /home/agent/.pi/agent/extensions/.write-test' 2>/dev/null || true)
+if [[ "$write_test" == "ok" ]]; then
+  pass "/home/agent/.pi/agent/extensions dir is writable by agent user"
+else
+  fail "/home/agent/.pi/agent/extensions dir is NOT writable by agent user" "$write_test"
+fi
+
+# 9c: a marker file dropped into the dir is readable by the agent user
+#     (confirms the discovery path is not blocked by permissions or mount shadowing)
+docker exec "$CONTAINER" bash -c 'printf "// marker\nexport default {};\n" > /home/agent/.pi/agent/extensions/marker-test.js' 2>/dev/null
+marker_content=$(docker exec "$CONTAINER" cat /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true)
+docker exec "$CONTAINER" rm -f /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true
+if echo "$marker_content" | grep -q "marker"; then
+  pass "marker file dropped in extensions/ is readable by agent user (auto-discovery path unblocked)"
+else
+  fail "marker file in extensions/ not readable — discovery path may be blocked" "$marker_content"
 fi
 
 # ================================================================

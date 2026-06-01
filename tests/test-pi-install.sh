@@ -2,7 +2,8 @@
 set -uo pipefail
 
 # Test that pi-coding-agent is installed in the rip-cage:latest image
-# and that /pi-agent mount point is pre-created with agent:agent ownership.
+# and that /home/agent/.pi/agent is pre-created with agent:agent ownership
+# (ADR-019 D1 evolved: container-local cage-owned dir, rip-cage-hhh.12).
 
 FAILURES=0
 
@@ -37,16 +38,29 @@ else
 fi
 
 # -----------------------------------------------
-# Test 3: /pi-agent is owned by agent:agent
+# Test 3: /home/agent/.pi/agent is owned by agent:agent (container-local dir)
 # -----------------------------------------------
 echo ""
-echo "=== Test 3: /pi-agent owned by agent:agent ==="
+echo "=== Test 3: /home/agent/.pi/agent owned by agent:agent ==="
 
-ownership=$(docker run --rm "$IMAGE" stat -c '%U:%G' /pi-agent 2>&1 || true)
+ownership=$(docker run --rm "$IMAGE" stat -c '%U:%G' /home/agent/.pi/agent 2>&1 || true)
 if [[ "$ownership" == "agent:agent" ]]; then
-  pass "/pi-agent ownership is agent:agent"
+  pass "/home/agent/.pi/agent ownership is agent:agent"
 else
-  fail "/pi-agent should be owned by agent:agent" "$ownership"
+  fail "/home/agent/.pi/agent should be owned by agent:agent" "$ownership"
+fi
+
+# -----------------------------------------------
+# Test 4: /home/agent/.pi/agent/extensions dir exists (cage-owned auto-discovery path)
+# -----------------------------------------------
+echo ""
+echo "=== Test 4: /home/agent/.pi/agent/extensions exists ==="
+
+ext_stat=$(docker run --rm "$IMAGE" stat -c '%U:%G' /home/agent/.pi/agent/extensions 2>&1 || true)
+if [[ "$ext_stat" == "agent:agent" ]]; then
+  pass "/home/agent/.pi/agent/extensions exists and is agent:agent"
+else
+  fail "/home/agent/.pi/agent/extensions should exist and be agent:agent" "$ext_stat"
 fi
 
 # -----------------------------------------------

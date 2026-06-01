@@ -386,7 +386,7 @@ cmd_init() {
     "source=${localEnv:HOME}/.claude/agents,target=/home/agent/.rc-context/agents,type=bind,readonly",
     "source=${localWorkspaceFolder}/.git/hooks,target=/workspace/.git/hooks,type=bind,readonly",
     "source=rc-mise-cache,target=/home/agent/.local/share/mise,type=volume",
-    "source=${localEnv:HOME}/.pi/agent,target=/pi-agent,type=bind"
+    "source=${localEnv:HOME}/.pi/agent/auth.json,target=/home/agent/.pi/agent/auth.json,type=bind"
   ],
 DEVCONTAINER_WITH_HOOKS
     else
@@ -409,7 +409,7 @@ DEVCONTAINER_WITH_HOOKS
     "source=${localEnv:HOME}/.claude/commands,target=/home/agent/.rc-context/commands,type=bind,readonly",
     "source=${localEnv:HOME}/.claude/agents,target=/home/agent/.rc-context/agents,type=bind,readonly",
     "source=rc-mise-cache,target=/home/agent/.local/share/mise,type=volume",
-    "source=${localEnv:HOME}/.pi/agent,target=/pi-agent,type=bind"
+    "source=${localEnv:HOME}/.pi/agent/auth.json,target=/home/agent/.pi/agent/auth.json,type=bind"
   ],
 DEVCONTAINER_NO_HOOKS
     fi
@@ -486,7 +486,7 @@ DEVCONTAINER_FOOTER_EMBEDDED
   # Pi env vars in containerEnv — static values safe here (not secrets)
   if command -v jq &>/dev/null; then
     jq '.containerEnv += {
-      "PI_CODING_AGENT_DIR": "/pi-agent",
+      "PI_CODING_AGENT_DIR": "/home/agent/.pi/agent",
       "CAGE_HOST_ADDR": "${localEnv:CAGE_HOST_ADDR}"
     }' "$dest" > "${dest}.tmp"
     mv "${dest}.tmp" "$dest"
@@ -1374,7 +1374,11 @@ _up_prepare_docker_mounts() {
   # Symlink-follow mount synthesis (rip-cage-c1p.2 / D1-D4 FIRM).
   # Whitelist of rip-cage-managed dotfile mount roots to scan for absolute
   # symlinks that would be dangling inside the cage. /workspace is NEVER on
-  # this list (D2 FIRM: whitelist not blacklist). Currently only ~/.pi/agent.
+  # this list (D2 FIRM: whitelist not blacklist).
+  # Post-hhh.12: narrow auth.json sub-mount. Scanner root is still ~/.pi/agent
+  # (the dir containing the sub-mounted file) so the scanner can detect if
+  # auth.json itself is a symlink (dotpi-managed state) — if so, the symlink-follow
+  # machinery adds the second mount for the resolved target, exactly as before.
   # Per D3: second bind mount at host-target path (mirror), not sanitized.
   # Per ADR-001 D1: mount expansions always log to stderr.
   local _SFL_SCAN_ROOTS=()
@@ -1386,7 +1390,7 @@ _up_prepare_docker_mounts() {
   # be mounted over. Collision against any of these triggers abort loud.
   local _SFL_RESERVED_CAGE_PATHS=(
     /bin /boot /dev /etc /home /lib /opt /proc /root /run /sbin /sys
-    /usr /var /tmp /workspace /pi-agent /ssh-agent.sock
+    /usr /var /tmp /workspace /ssh-agent.sock
   )
 
   # Load effective config for symlinks settings (D5: skip if no config files).
@@ -1495,12 +1499,20 @@ _up_prepare_docker_mounts() {
   unset _sfl_reserved _sfl_rp _sfl_collision _sfl_arg _sfl_dest
   unset _sfl_mount_src _sfl_mode_suffix
 
-  # Pi state mount — single bind, PI_CODING_AGENT_DIR redirect (ADR-019 D1 FIRM)
-  if [[ -d "${HOME}/.pi/agent" ]]; then
-    _UP_RUN_ARGS+=(-v "${HOME}/.pi/agent:/pi-agent")
-    _UP_RUN_ARGS+=(-e PI_CODING_AGENT_DIR=/pi-agent)
+  # Pi state: container-local cage-owned dir + narrow durable sub-mounts (ADR-019 D1 evolved).
+  # PI_CODING_AGENT_DIR points to the container-local dir; only auth.json is
+  # bind-mounted from the host (RW, skip-if-missing to avoid Docker creating a
+  # root-owned empty dir at the file path — mirrors ~/.claude/.credentials.json pattern).
+  # bin/ is intentionally NOT mounted: host macOS binaries (fd/rg) don't work in Linux;
+  # the container regenerates them on first pi run.
+  # PI_CODING_AGENT_DIR: explicit set equals pi's own default (config.ts getAgentDir()
+  # returns join(homedir(), ".pi", "agent") when the env var is unset), so a pi-less
+  # cage behaves identically — the explicit set just makes the value visible in `env`.
+  _UP_RUN_ARGS+=(-e PI_CODING_AGENT_DIR=/home/agent/.pi/agent)
+  if [[ -f "${HOME}/.pi/agent/auth.json" ]]; then
+    _UP_RUN_ARGS+=(-v "${HOME}/.pi/agent/auth.json:/home/agent/.pi/agent/auth.json")
   else
-    log "Warning: ${HOME}/.pi/agent not found — pi mount skipped (pi will fail on first request)"
+    log "Warning: ${HOME}/.pi/agent/auth.json not found — pi auth mount skipped (pi will require re-auth on first request)"
   fi
 
   # CAGE_HOST_ADDR explicit pass-through for non-interactive pi -p runs.

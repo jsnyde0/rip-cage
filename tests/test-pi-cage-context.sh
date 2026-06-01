@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Tests for ADR-019 D3 (post-c1p.1 evolution): cage-pi topology surfaced via
-# reference in ~/.claude/CLAUDE.md rather than appended to /pi-agent/AGENTS.md.
+# reference in ~/.claude/CLAUDE.md rather than appended to host AGENTS.md.
+# Post-hhh.12: container-local PI_CODING_AGENT_DIR (/home/agent/.pi/agent).
 #
 # Contract under test:
-#   - Host /pi-agent/AGENTS.md is NEVER mutated by init (content + mtime unchanged)
+#   - Host ~/.pi/agent/AGENTS.md is NEVER mutated by init (content + mtime unchanged)
 #   - Cage ~/.claude/CLAUDE.md contains the literal string /etc/rip-cage/cage-pi.md
 #     inside the <!-- begin:rip-cage-topology --> fence
 #   - /etc/rip-cage/cage-pi.md is readable inside the cage
-#   - init exits 0 when pi mount is absent
+#   - init exits 0 when pi auth mount is absent
 #
 # Requires docker + the rip-cage image already built (./rc build).
 
@@ -62,7 +63,7 @@ if ! docker image inspect rip-cage:latest >/dev/null 2>&1; then
   exit 0
 fi
 
-# ---- Set up a fake /pi-agent/AGENTS.md so the pi mount is present ----
+# ---- Set up fake ~/.pi/agent state (auth.json + AGENTS.md) ----
 PI_AGENT_DIR="${HOME}/.pi/agent"
 PI_AGENT_BACKUP=""
 PI_AGENT_EXISTED=false
@@ -112,24 +113,24 @@ if [[ -z "$CONTAINER" ]]; then
   exit 1
 fi
 
-# ---- Test 1: Host /pi-agent/AGENTS.md content + mtime unchanged after rc up ----
+# ---- Test 1: Host ~/.pi/agent/AGENTS.md content + mtime unchanged after rc up ----
 echo ""
-echo "=== Test 1: Host /pi-agent/AGENTS.md content + mtime unchanged after rc up ==="
+echo "=== Test 1: Host ~/.pi/agent/AGENTS.md content + mtime unchanged after rc up ==="
 
 AGENTS_CONTENT_AFTER=$(cat "$AGENTS_MD_PATH")
 AGENTS_MTIME_AFTER=$(stat -f '%m' "$AGENTS_MD_PATH" 2>/dev/null || stat -c '%Y' "$AGENTS_MD_PATH" 2>/dev/null || true)
 
 if [[ "$AGENTS_CONTENT_AFTER" == "$AGENTS_CONTENT_BEFORE" ]]; then
-  pass "Test 1a: /pi-agent/AGENTS.md content unchanged after rc up"
+  pass "Test 1a: ~/.pi/agent/AGENTS.md content unchanged after rc up"
 else
-  fail "Test 1a: /pi-agent/AGENTS.md content was mutated by init" \
+  fail "Test 1a: ~/.pi/agent/AGENTS.md content was mutated by init" \
     "before='$AGENTS_CONTENT_BEFORE' after='$AGENTS_CONTENT_AFTER'"
 fi
 
 if [[ "$AGENTS_MTIME_AFTER" == "$AGENTS_MTIME_BEFORE" ]]; then
-  pass "Test 1b: /pi-agent/AGENTS.md mtime unchanged after rc up"
+  pass "Test 1b: ~/.pi/agent/AGENTS.md mtime unchanged after rc up"
 else
-  fail "Test 1b: /pi-agent/AGENTS.md mtime changed (file was written)" \
+  fail "Test 1b: ~/.pi/agent/AGENTS.md mtime changed (file was written)" \
     "before=$AGENTS_MTIME_BEFORE after=$AGENTS_MTIME_AFTER"
 fi
 
@@ -193,13 +194,13 @@ else
   fail "Test 5: pi-topology fence marker found in CLAUDE.md — should be reference-only" "$pi_in_claude"
 fi
 
-# ---- Test 6: init log line emitted when PI_CODING_AGENT_DIR=/pi-agent ----
+# ---- Test 6: init log line emitted when PI_CODING_AGENT_DIR=/home/agent/.pi/agent ----
 echo ""
-echo "=== Test 6: init log line mentions cage-pi.md when PI_CODING_AGENT_DIR=/pi-agent ==="
+echo "=== Test 6: init log line mentions cage-pi.md when PI_CODING_AGENT_DIR=/home/agent/.pi/agent ==="
 
-init_log_output=$(docker exec "$CONTAINER" bash -c "PI_CODING_AGENT_DIR=/pi-agent /usr/local/bin/init-rip-cage.sh 2>&1" || true)
+init_log_output=$(docker exec "$CONTAINER" bash -c "PI_CODING_AGENT_DIR=/home/agent/.pi/agent /usr/local/bin/init-rip-cage.sh 2>&1" || true)
 if echo "$init_log_output" | grep -q '/etc/rip-cage/cage-pi.md'; then
-  pass "Test 6: init log line mentions /etc/rip-cage/cage-pi.md when PI_CODING_AGENT_DIR=/pi-agent"
+  pass "Test 6: init log line mentions /etc/rip-cage/cage-pi.md when PI_CODING_AGENT_DIR=/home/agent/.pi/agent"
 else
   fail "Test 6: init log line missing cage-pi.md reference" "$init_log_output"
 fi
@@ -235,12 +236,12 @@ else
     fail "Test 7: init exited $init_exit (expected 0)" "$init_exit"
   fi
 
-  # 7b: /pi-agent/AGENTS.md must NOT exist when mount was skipped
-  # (init must not create it when the pi mount is absent)
-  if ! docker exec "$CONTAINER2" test -f /pi-agent/AGENTS.md; then
-    pass "Test 7b: /pi-agent/AGENTS.md not created when pi mount was skipped"
+  # 7b: /home/agent/.pi/agent/AGENTS.md must NOT exist when auth mount was skipped
+  # (init must not create host files when the auth.json sub-mount is absent)
+  if ! docker exec "$CONTAINER2" test -f /home/agent/.pi/agent/AGENTS.md; then
+    pass "Test 7b: /home/agent/.pi/agent/AGENTS.md not created when auth mount was skipped"
   else
-    fail "Test 7b: /pi-agent/AGENTS.md exists but mount was skipped — init wrote to it"
+    fail "Test 7b: /home/agent/.pi/agent/AGENTS.md exists but mount was skipped — init wrote to it"
   fi
 
   # 7c: /etc/rip-cage/cage-pi.md must still be readable (it's image-baked)
@@ -251,8 +252,8 @@ else
   fi
 
   # 7d: Negative case — init log line must NOT be emitted when PI_CODING_AGENT_DIR is unset
-  # ($CONTAINER2 has no /pi-agent mount, so PI_CODING_AGENT_DIR is not set)
-  init_log_output2=$(docker exec "$CONTAINER2" bash -c "/usr/local/bin/init-rip-cage.sh 2>&1" || true)
+  # (PI_CODING_AGENT_DIR unset means pi support is not active)
+  init_log_output2=$(docker exec "$CONTAINER2" bash -c "unset PI_CODING_AGENT_DIR; /usr/local/bin/init-rip-cage.sh 2>&1" || true)
   if echo "$init_log_output2" | grep -q '/etc/rip-cage/cage-pi.md'; then
     fail "Test 7d: init log line emitted on no-pi-mount container (guard should suppress it)" "$init_log_output2"
   else

@@ -101,7 +101,7 @@ RUN for i in 1 2 3; do \
 # Non-root user
 RUN groupadd -g 1000 agent \
     && useradd -m -u 1000 -g agent -s /usr/bin/zsh agent \
-    && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state, /usr/bin/chown agent\:agent /ssh-agent.sock, /usr/bin/chown agent\:agent /ssh-agent-upstream.sock, /usr/bin/ln -sfT /tmp/rip-cage-filter/agent.* /ssh-agent.sock, /usr/local/lib/rip-cage/init-firewall.sh, /usr/sbin/iptables -t nat -L OUTPUT -n, /usr/sbin/iptables -L OUTPUT -n, /usr/bin/chown -R agent\:agent /home/agent/.local/share/mise" > /etc/sudoers.d/agent \
+    && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state, /usr/bin/chown agent\:agent /home/agent/.pi/agent, /usr/bin/chown agent\:agent /ssh-agent.sock, /usr/bin/chown agent\:agent /ssh-agent-upstream.sock, /usr/bin/ln -sfT /tmp/rip-cage-filter/agent.* /ssh-agent.sock, /usr/local/lib/rip-cage/init-firewall.sh, /usr/sbin/iptables -t nat -L OUTPUT -n, /usr/sbin/iptables -L OUTPUT -n, /usr/bin/chown -R agent\:agent /home/agent/.local/share/mise" > /etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent
 
 RUN useradd -r -s /usr/sbin/nologin -M rip-proxy
@@ -116,12 +116,6 @@ RUN mkdir -p /etc/rip-cage/ca
 RUN : > /etc/rip-cage/cage-env \
     && chown agent:agent /etc/rip-cage/cage-env \
     && chmod 0644 /etc/rip-cage/cage-env
-
-# Pre-create /pi-agent bind-mount target as agent:agent (before USER agent).
-# Docker creates bind-mount parent dirs as root; pre-creating here avoids the
-# ownership trap that would break pi's proper-lockfile token refresh (ADR-019 D1).
-RUN mkdir -p /pi-agent \
-    && chown agent:agent /pi-agent
 
 # Copy rip-cage files — stable files first (fewer cache busts), frequently-edited last
 RUN mkdir -p /etc/ssh/ssh_config.d
@@ -160,6 +154,12 @@ WORKDIR /home/agent
 # If Docker overrides ownership at mount time, init-rip-cage.sh has scoped
 # sudo chown as a fallback (see sudoers above).
 RUN mkdir -p /home/agent/.claude /home/agent/.claude-state /home/agent/.local/share/mise
+# Pi config dir: container-local cage-owned path (ADR-019 D1 evolved, rip-cage-hhh.12).
+# Only durable state (auth.json) is bind-mounted from the host; everything else
+# (bin/, sessions/) is container-local and agent-owned. The extensions/ subdir is the
+# auto-discovery path for cage-installed pi guard extensions (prerequisite for rip-cage-bl1).
+# Must be created after USER agent so ownership is agent:agent without chown.
+RUN mkdir -p /home/agent/.pi/agent/extensions
 # Mise global config: enable idiomatic version file detection for tools that use
 # .nvmrc (node) and packageManager field in package.json (yarn). Without this,
 # mise's core backends don't detect these files even with legacy_version_file=true.

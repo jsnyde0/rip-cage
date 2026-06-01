@@ -28,7 +28,7 @@
 # Tests S17 requires Docker (conditional).
 # S18 is a static git-diff check.
 #
-# ADRs: ADR-001 D1 (fail-loud), ADR-019 D1 (/pi-agent mount preserved),
+# ADRs: ADR-001 D1 (fail-loud), ADR-019 D1 (auth.json sub-mount preserved, hhh.12),
 #       ADR-021 D2/D3/D5 (schema/merge/versioning), ADR-022 D6 (rc reload)
 
 set -uo pipefail
@@ -898,13 +898,15 @@ test_s_schema_regression() {
 }
 
 # ---------------------------------------------------------------------------
-# ADR-019 D1 alignment: /pi-agent mount unchanged
-# Assert the existing pi state mount is still present after our additions
+# ADR-019 D1 alignment: auth.json narrow sub-mount present (hhh.12 evolved topology)
+# Assert the pi auth.json bind mount is wired after our symlink-follow additions
 # ---------------------------------------------------------------------------
 test_s_adr019_pi_mount_preserved() {
   setup_sandbox
   local ws="${TEST_HOME}/workspace"
   mkdir -p "$ws"
+  # Create auth.json so the skip-if-missing guard passes
+  printf '{"fake":true}\n' > "${TEST_HOME}/.pi/agent/auth.json"
 
   local out exit_code=0
   out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
@@ -915,17 +917,14 @@ test_s_adr019_pi_mount_preserved() {
     source "/tmp/rc-sfl-mount-print-helper.sh"; _print_mounts
   " 2>&1) || exit_code=$?
 
-  # /pi-agent mount should still be present (check both original and resolved path)
-  local pi_dir="${TEST_HOME}/.pi/agent"
-  local norm_pi
-  norm_pi=$(readlink -f "$pi_dir" 2>/dev/null || echo "$pi_dir")
+  # auth.json sub-mount should be present (ADR-019 D1 evolved: narrow sub-mount)
   local has_pi_mount
-  has_pi_mount=$(echo "$out" | grep "MOUNT:" | grep -c "\.pi/agent:/pi-agent" || true)
+  has_pi_mount=$(echo "$out" | grep "MOUNT:" | grep -c "\.pi/agent/auth\.json:/home/agent/\.pi/agent/auth\.json" || true)
 
   if [[ "$has_pi_mount" -gt 0 ]]; then
-    pass "adr019" "ADR-019 D1: /pi-agent bind mount preserved after symlink-follow additions"
+    pass "adr019" "ADR-019 D1 (evolved): auth.json narrow sub-mount present after symlink-follow additions"
   else
-    fail "adr019" "/pi-agent mount not found in run args" "output: $(echo "$out" | grep "MOUNT:" | head -10)"
+    fail "adr019" "auth.json sub-mount not found in run args" "output: $(echo "$out" | grep "MOUNT:" | head -10)"
   fi
   teardown_sandbox
 }
