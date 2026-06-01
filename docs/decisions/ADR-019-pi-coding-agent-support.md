@@ -1,7 +1,7 @@
 # ADR-019: pi-coding-agent support — Phase 0
 
 **Status:** Proposed
-**Date:** 2026-04-25
+**Date:** 2026-04-25 (D1 revised 2026-06-01)
 **Design:** [Design doc](../../history/2026-04-25-pi-coding-agent-phase0-design.md)
 **Related:** [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md), [ADR-006 Multi-Agent Architecture](ADR-006-multi-agent-architecture.md), [ADR-010 Auth Refresh](ADR-010-auth-refresh.md), project [CLAUDE.md](../../CLAUDE.md) philosophy section
 **Supersedes (in part):** the original Phase 0 handoff doc (`docs/handoff-pi-phase0.md`) — that doc's B2 mount strategy and B3 auth-warn matrix are revised here based on prior-art research.
@@ -27,32 +27,43 @@ Prior art surveyed before designing:
 
 ## Decisions
 
-### D1: Single bind mount of `~/.pi/agent` with `PI_CODING_AGENT_DIR` env var
+### D1: Container-local cage-owned pi config dir with narrow durable sub-mounts
 
-**Firmness: FIRM**
+**Firmness: FIRM** *(revised 2026-06-01 — evolved from the original "single bind mount of the whole `~/.pi/agent`"; the original is preserved in git history and as the rejected first row of the Alternatives table below. Triggered per this decision's own invalidation clause once D4 made a cage-owned pi extension path required.)*
 
-`rc up` mounts the host's `${HOME}/.pi/agent` directory as a single bind to `/pi-agent` (read-write) inside the container, and exports `PI_CODING_AGENT_DIR=/pi-agent`. Pi's `getAgentDir()` (pi-mono `src/config.ts:208-263`) honors this env var ahead of `~/.pi/agent`, so all pi state — `auth.json`, `sessions/`, `settings.json`, `AGENTS.md`, `extensions/`, `themes/`, `prompts/`, `tools/`, `bin/`, `models.json`, debug logs — resolves to a single, host-owned location with no per-file mounts.
+`rc up` gives pi a **container-local, cage-owned** config dir — image-baked at `/home/agent/.pi/agent` (owned `agent:agent`, pre-created in the image after `USER agent` so Docker doesn't auto-create a root-owned parent) — and exports `PI_CODING_AGENT_DIR` pointing at it. Only **durable user state** is bind-mounted from the host into subpaths of that dir:
+
+- `auth.json` — **read-write** (required). Pi rewrites it in place on automatic OAuth token refresh (pi-mono `core/auth-storage.ts:151-153`, refresh path `:440`, triggered by `getApiKey` when the token is expired `:476-481`), exactly like Claude Code's `.credentials.json` — so a read-only mount would EROFS and silently drop auth.
+- `sessions/` — read-write, **optional** (resume history; losing it is annoying, not fatal).
+
+All **cage-config** paths resolve to the cage-owned dir and are baked or container-regenerated, never sourced from the host: chiefly `extensions/` (the guard-extension target), plus `settings.json`, `models.json`, `prompts/`, `themes/`, `keybindings.json`. `bin/` (fd/rg) is container-regenerated and **must not** be host-mounted — host macOS binaries are the wrong platform for the Linux container.
+
+This mirrors the existing `~/.claude` pattern (image-baked agent-owned dir + narrow RW credential sub-mount + init `chown` + cage-installed config files), and gives the pi guard extension (D4 / Phase 1) a cage-owned `extensions/` auto-discovery path (pi-mono `core/extensions/loader.ts:583-585`) that loads by default with **no `-e` flag**, that the host mount cannot pollute, and that the caged agent cannot strip via the workspace.
 
 **Rationale:**
 
-- Avoids HOME-resolution and UID-mapping headaches that would arise from per-file mounts under `/home/agent/.pi/agent/...`.
-- Future pi state additions (new dirs, new files) "just work" without rip-cage changes.
-- Matches the pattern proven by pi-less-yolo, which has been running this shape for months.
-- One mount, one env var — minimal surface for B2.
+- **D4 (FIRM) now requires** DCG-equivalent enforcement on pi, and **D3 (FIRM) forbids** writing cage-owned metadata into host-bind-mounted dotfiles. The guard extension is cage-owned metadata; under the old whole-dir mount its only home was `/pi-agent/extensions/` — a host-mounted path D3 prohibits. A container-local dir is the topology that satisfies D3 + D4 together; this evolution *advances* D3 rather than contradicting it.
+- Pi resolves its entire dir from one env var and **never builds or clobbers the dir as a tree** — each subsystem lazily `mkdir`s its own subpath (pi-mono `config.ts:209-263`), so a split dir (container-local + sub-mounts) is safe; there is no first-run routine that overwrites the tree.
+- Durable state is minimal — only `auth.json` must persist. Narrow sub-mounts keep host pi state unexposed and not wholesale-writable, which is **strictly safer** than the old whole-dir RW mount.
+- The per-file UID/HOME complexity the original D1 avoided is already a **solved problem** — `~/.claude` runs this exact shape (image-baked agent-owned parent + skip-if-missing mount guards + init `chown` + sudoers-scoped `chown`).
+
+**Counter-argument to the original rationale (FIRM-path requirement):** The original D1 rested on three pillars — (a) avoid per-file UID/HOME complexity, (b) future pi state "just works", (c) one mount = minimal surface. **(a)** is moot: the `~/.claude` pattern already solves per-file mounts cleanly, so the complexity is solved, not incurred. **(b)**'s future-proofing is now the *harm*: auto-picking-up `extensions/` from the host mount is precisely the D3 violation, and it forecloses the D4-required cage-owned guard path. **(c)** inverts: a whole-dir RW mount of host pi state is *more* attack/pollution surface, not less, than a narrow `auth.json` sub-mount. The original rationale no longer holds because **the invalidation condition D1 itself named has materialized** (a rip-cage-internal extension must now ship at a cage-owned path), and the Phase-0 "doesn't justify it" caveat has lapsed — we are past Phase 0.
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **Single mount + `PI_CODING_AGENT_DIR` (this decision)** | One mount; future-proof; matches pi-less-yolo | Whole `~/.pi/agent` is writable from cage (incl. `extensions/`) |
-| Per-file mounts at `/home/agent/.pi/agent/...` (handoff doc original plan) | Selective; mirrors Claude per-file pattern | More mounts; UID/HOME complexity; doesn't pick up new state automatically |
-| Mount at `~/.pi/agent` inside container (no env var) | No env var | Requires HOME=`/home/agent` to align; more constraints |
+| **Container-local dir + narrow durable sub-mounts (this decision)** | Cage-owned `extensions/` for the D4 guard; satisfies D3; host pi state unexposed; mirrors proven `~/.claude` shape | A few mounts + image-baked parent + init `chown` (`reasoned:` already-solved pattern — `~/.claude` runs it today) |
+| Single mount of the whole `~/.pi/agent` (the prior D1) | One mount; future-proof; matches pi-less-yolo | `reasoned:` `extensions/` would live on the host-writable mount → violates D3 (FIRM) and forecloses the D4-required (FIRM) cage-owned guard path; host pi state wholesale-writable from the cage |
+| Keep the whole-dir mount, load the guard via the `-e` flag | No topology change | `reasoned:` pi is launched interactively (no cage-controlled launch line to attach `-e` to); a shell-wrapper `-e` is bypassable (`command pi` / absolute path) and not default-loaded — strictly weaker than Claude Code's cage-installed-config parity |
+| Per-file mounts with no container-local dir (handoff doc original) | Selective | `direct:` UID/HOME complexity without the image-baked agent-owned parent dir; Docker auto-creates missing mount parents as root |
 
 **What would invalidate this:**
 
+- Pi changes extension discovery so `<agentDir>/extensions/` is no longer auto-scanned without a flag → would force back to an explicit-load mechanism for the guard.
+- Pi consolidates config + durable state into a single artifact that doesn't tolerate a split dir (e.g., one sqlite spanning auth + settings + sessions) → re-widen the persist set or revisit the topology.
 - Pi removes or renames `PI_CODING_AGENT_DIR` (low risk — long-standing config knob).
-- A future need to scope `extensions/` separately (e.g., ship a rip-cage-internal extension at a different path). At that point the mount can be split into `auth.json` + `sessions/` + a repo-internal extensions mount, but Phase 0 doesn't justify it.
-- Multi-cage usage (ADR-006 D2) produces noticeable `proper-lockfile` contention on `~/.pi/agent/auth.json` token refresh. At that point, switch to per-cage `auth.json` copies with periodic sync.
+- Multi-cage usage (ADR-006 D2) produces noticeable `proper-lockfile` contention on the host-mounted `auth.json` token refresh → switch to per-cage `auth.json` copies with periodic sync. (Carried over from the original D1.)
 
 ### D2: No pi-specific auth-warn at container start
 
