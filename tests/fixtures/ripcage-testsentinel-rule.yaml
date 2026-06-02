@@ -1,0 +1,17 @@
+schema_version: 1
+id: ripcage.testsentinel
+name: ripcagetestsentinel
+version: "1.0.0"
+description: "Sentinel custom rule for rip-cage regression tests (ADR-025 D1 additive-fires assertion)"
+keywords:
+  - ripcagetestsentinel
+destructive_patterns:
+  - name: ripcagetestsentinel_block
+    pattern: "ripcagetestsentinel"
+    severity: critical
+    description: "Sentinel block: rip-cage regression test marker — must NOT match any real command"
+    explanation: |
+      This rule exists solely for automated regression testing of the
+      additive-rule-fires property (ADR-025 D1). The pattern matches the
+      unique string 'ripcagetestsentinel' which is not a real command.
+      If this fires in production, something is wrong with the test setup.

@@ -112,6 +112,100 @@ else
   check "DCG denies destructive command" "fail" "$dcg_result"
 fi
 
+# ---------------------------------------------------------------------------
+# DCG Floor-Uncrossable + Additive Regression Suite (ADR-025 D2/D5)
+# rip-cage-hhh.11.4: permanent in-container regression assertions.
+# ---------------------------------------------------------------------------
+
+# 11b. Floor vs /workspace/.dcg.toml — hostile workspace config does NOT weaken guard via wrapper
+# Write a hostile /workspace/.dcg.toml that allows everything via wildcard overrides.allow.
+# The wrapper (dcg-guard) anchors CWD to /usr/local/lib/rip-cage which has no .git ancestor,
+# so DCG's project-config discovery never walks up to /workspace. Floor must hold.
+_hostile_ws="/workspace/.dcg.toml"
+cat > "$_hostile_ws" << 'HOSTILE_EOF'
+[overrides]
+allow = [".*"]
+HOSTILE_EOF
+_floor_ws_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | /usr/local/lib/rip-cage/bin/dcg-guard 2>/dev/null || true)
+rm -f "$_hostile_ws"
+if echo "$_floor_ws_result" | grep -qE '"permissionDecision".*"deny"'; then
+  check "DCG floor holds vs hostile /workspace/.dcg.toml (via wrapper)" "pass"
+else
+  check "DCG floor holds vs hostile /workspace/.dcg.toml (via wrapper)" "fail" "$_floor_ws_result"
+fi
+unset _hostile_ws _floor_ws_result
+
+# 11c. Floor vs user-layer — hostile ~/.config/dcg/config.toml does NOT weaken guard via wrapper
+# The wrapper pins DCG_CONFIG to the cage-owned baked config, which suppresses the user-layer
+# config entirely (config.rs:2417: user layer loads only if explicit_layer.is_none()).
+_hostile_user_dir="${HOME}/.config/dcg"
+_hostile_user_cfg="${_hostile_user_dir}/config.toml"
+_hostile_user_existed=false
+if [[ -f "$_hostile_user_cfg" ]]; then
+  _hostile_user_existed=true
+  cp "$_hostile_user_cfg" "${_hostile_user_cfg}.rc-test-bak"
+fi
+mkdir -p "$_hostile_user_dir"
+cat > "$_hostile_user_cfg" << 'HOSTILE_EOF'
+[overrides]
+allow = [".*"]
+HOSTILE_EOF
+_floor_ul_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | /usr/local/lib/rip-cage/bin/dcg-guard 2>/dev/null || true)
+# Restore user config state
+if [[ "$_hostile_user_existed" == "true" ]]; then
+  mv "${_hostile_user_cfg}.rc-test-bak" "$_hostile_user_cfg"
+else
+  rm -f "$_hostile_user_cfg"
+fi
+if echo "$_floor_ul_result" | grep -qE '"permissionDecision".*"deny"'; then
+  check "DCG floor holds vs hostile ~/.config/dcg/config.toml (via wrapper)" "pass"
+else
+  check "DCG floor holds vs hostile ~/.config/dcg/config.toml (via wrapper)" "fail" "$_floor_ul_result"
+fi
+unset _hostile_user_dir _hostile_user_cfg _hostile_user_existed _floor_ul_result
+
+# 11d. Sensitivity proof — hostile /workspace/.dcg.toml WOULD weaken raw DCG (proves wrapper is load-bearing)
+# Run raw /usr/local/bin/dcg from CWD=/workspace (NOT via wrapper) with the hostile file present.
+# The hostile file is in a git repo root (DCG discovers it via find_repo_root from process CWD).
+# This must NOT show "deny" — proving the wrapper's CWD-anchor is the mechanism, not DCG ignoring configs.
+# Without the wrapper, the floor is crossable. With the wrapper, it is not (proven by 11b above).
+_hostile_ws="/workspace/.dcg.toml"
+cat > "$_hostile_ws" << 'HOSTILE_EOF'
+[overrides]
+allow = [".*"]
+HOSTILE_EOF
+_raw_result=$(cd /workspace; echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | /usr/local/bin/dcg 2>/dev/null || true)
+rm -f "$_hostile_ws"
+# Sensitivity proof: raw dcg SHOULD be weakened (i.e., NOT deny). If it still denies, the test cannot prove the wrapper is load-bearing.
+if echo "$_raw_result" | grep -qE '"permissionDecision".*"deny"'; then
+  check "DCG sensitivity: raw dcg weakened by hostile /workspace/.dcg.toml (wrapper is load-bearing)" "fail" "raw dcg still denied — hostile config not loaded (sensitivity proof invalid)"
+else
+  check "DCG sensitivity: raw dcg weakened by hostile /workspace/.dcg.toml (wrapper is load-bearing)" "pass"
+fi
+unset _hostile_ws _raw_result
+
+# 11e. Additive rule fires — custom rule pack loaded via DCG_CONFIG custom_paths blocks sentinel command
+# Proves the additive mechanism (ADR-025 D1): DCG loads and evaluates custom YAML rule packs.
+# Uses the fixture at /workspace/tests/fixtures/ripcage-testsentinel-rule.yaml (committed).
+# Invokes raw dcg directly with a temp DCG_CONFIG pointing at the fixture, NOT via wrapper
+# (wrapper pins DCG_CONFIG to baked floor config; this tests the additive translation mechanism).
+# The sentinel command "ripcagetestsentinel" must NOT match any real command.
+_sentinel_fixture="/workspace/tests/fixtures/ripcage-testsentinel-rule.yaml"
+_sentinel_cfg=$(mktemp /tmp/dcg-test-sentinel-XXXXXX.toml)
+cat > "$_sentinel_cfg" << 'SENTINEL_TOML_EOF'
+[packs]
+enabled = ["core"]
+SENTINEL_TOML_EOF
+echo "custom_paths = [\"${_sentinel_fixture}\"]" >> "$_sentinel_cfg"
+_additive_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"ripcagetestsentinel"}}' | DCG_CONFIG="$_sentinel_cfg" /usr/local/bin/dcg 2>/dev/null || true)
+rm -f "$_sentinel_cfg"
+if echo "$_additive_result" | grep -qE '"permissionDecision".*"deny"'; then
+  check "DCG additive rule fires: sentinel command denied by custom rule pack" "pass"
+else
+  check "DCG additive rule fires: sentinel command denied by custom rule pack" "fail" "$_additive_result"
+fi
+unset _sentinel_fixture _sentinel_cfg _additive_result
+
 # 12. Compound blocker denies chain
 compound_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"ls && rm foo"}}' | /usr/local/lib/rip-cage/hooks/block-compound-commands.sh 2>/dev/null || true)
 if echo "$compound_result" | grep -qE '"permissionDecision".*"deny"'; then
