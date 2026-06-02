@@ -1,0 +1,25 @@
+#!/bin/sh
+# dcg-guard — Rip Cage DCG floor wrapper (ADR-025 D3)
+#
+# Closes the DCG self-disable hole by:
+#   1. cd to a root-owned, .git-free directory so DCG's project-config
+#      discovery (config.rs:2399 → find_repo_root 255-266) never walks up
+#      to /workspace and never finds an agent-written /workspace/.dcg.toml.
+#   2. Pinning DCG_CONFIG to the cage-owned baked config, which suppresses
+#      the agent-writable user-layer ~/.config/dcg/config.toml entirely
+#      (config.rs:2417 — user layer loads only if explicit_layer.is_none()).
+#   3. Stripping DCG_* override env vars that could weaken policy.
+#   4. exec-ing the pinned dcg binary with stdin passed through.
+#
+# This wrapper is baked at a root-owned path; the agent cannot overwrite it.
+# NEVER invoke /usr/local/bin/dcg directly from PreToolUse — always use this.
+
+cd /usr/local/lib/rip-cage
+
+export DCG_CONFIG=/usr/local/lib/rip-cage/dcg/config.toml
+unset DCG_PACKS
+unset DCG_DISABLE
+unset DCG_POLICY_DEFAULT_MODE
+unset DCG_CUSTOM_PATHS
+
+exec /usr/local/bin/dcg "$@"

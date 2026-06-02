@@ -89,7 +89,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/bin/dcg"
+            "command": "/usr/local/lib/rip-cage/bin/dcg-guard"
           }
         ]
       },

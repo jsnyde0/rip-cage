@@ -123,6 +123,8 @@ COPY ssh/known_hosts.github /etc/ssh/ssh_known_hosts
 COPY ssh/ssh_config /etc/ssh/ssh_config.d/00-rip-cage.conf
 RUN chmod 0644 /etc/ssh/ssh_known_hosts /etc/ssh/ssh_config.d/00-rip-cage.conf
 COPY hooks/ /usr/local/lib/rip-cage/hooks/
+COPY dcg/dcg-guard /usr/local/lib/rip-cage/bin/dcg-guard
+COPY dcg/default-config.toml /usr/local/lib/rip-cage/dcg/config.toml
 COPY tests/test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
 COPY settings.json /etc/rip-cage/settings.json
 COPY cage-claude.md /etc/rip-cage/cage-claude.md
@@ -139,6 +141,7 @@ COPY rip-dns-start.sh /usr/local/lib/rip-cage/rip-dns-start.sh
 COPY tests/test-egress-firewall.sh /usr/local/lib/rip-cage/test-egress-firewall.sh
 COPY tests/test-bd-roundtrip.sh /usr/local/lib/rip-cage/test-bd-roundtrip.sh
 RUN chmod +x /usr/local/bin/init-rip-cage.sh \
+    /usr/local/lib/rip-cage/bin/dcg-guard \
     /usr/local/lib/rip-cage/hooks/*.sh \
     /usr/local/lib/rip-cage/test-safety-stack.sh \
     /usr/local/lib/rip-cage/test-skills.sh \

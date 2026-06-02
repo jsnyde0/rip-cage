@@ -1,0 +1,15 @@
+# Rip Cage baked DCG floor config (ADR-025 D5)
+#
+# This file is the cage-owned pinned DCG_CONFIG. Its sole job is to parse
+# successfully so that DCG_CONFIG is non-None, which suppresses the
+# agent-writable user-layer ~/.config/dcg/config.toml entirely
+# (config.rs:2417 — user layer loads only if explicit_layer.is_none()).
+#
+# The `core` pack is force-enabled by DCG regardless of this file
+# (config.rs:946-947). Additional packs and custom rules injected via
+# .rip-cage.yaml dcg.* fields are merged into a runtime copy of this file
+# by `rc up` / init-rip-cage.sh. DO NOT DELETE — a missing or malformed
+# DCG_CONFIG silently re-opens the user-layer config hole (ADR-025 D5).
+
+[packs]
+enabled = ["core"]

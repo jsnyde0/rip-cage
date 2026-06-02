@@ -253,6 +253,21 @@ if [ ! -x /usr/local/bin/dcg ]; then
   echo "[rip-cage] ERROR: DCG not found or not executable at /usr/local/bin/dcg" >&2
   exit 1
 fi
+# Verify dcg-guard wrapper (ADR-025 D3): must exist, be executable, and DCG_CONFIG must parse.
+# A missing/malformed DCG_CONFIG silently re-opens the user-layer config hole (ADR-025 D5).
+if [ ! -x /usr/local/lib/rip-cage/bin/dcg-guard ]; then
+  echo "[rip-cage] ERROR: dcg-guard wrapper not found or not executable at /usr/local/lib/rip-cage/bin/dcg-guard" >&2
+  exit 1
+fi
+if [ ! -f /usr/local/lib/rip-cage/dcg/config.toml ]; then
+  echo "[rip-cage] ERROR: baked DCG_CONFIG not found at /usr/local/lib/rip-cage/dcg/config.toml — user-layer config hole remains open" >&2
+  exit 1
+fi
+if ! python3 -c "import tomllib; tomllib.load(open('/usr/local/lib/rip-cage/dcg/config.toml','rb'))" 2>/dev/null; then
+  echo "[rip-cage] ERROR: pinned DCG_CONFIG at /usr/local/lib/rip-cage/dcg/config.toml is malformed TOML — a bad config silently re-opens the user-layer config hole; refusing to start (ADR-025 D5 fail-closed)" >&2
+  exit 1
+fi
+echo "[rip-cage] dcg-guard wrapper verified (CWD-anchor + pinned DCG_CONFIG active)"
 if [ ! -x /usr/local/lib/rip-cage/hooks/block-compound-commands.sh ]; then
   echo "[rip-cage] ERROR: block-compound-commands.sh not found at /usr/local/lib/rip-cage/hooks/block-compound-commands.sh" >&2
   exit 1

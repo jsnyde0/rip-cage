@@ -76,8 +76,8 @@ else
   check "settings.json has bypassPermissions mode" "fail"
 fi
 
-# 8. settings.json has DCG hook wired
-if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/bin/dcg")' ~/.claude/settings.json >/dev/null 2>&1; then
+# 8. settings.json has DCG hook wired (via wrapper, ADR-025 D3/D4)
+if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/bin/dcg-guard")' ~/.claude/settings.json >/dev/null 2>&1; then
   check "settings.json wires DCG hook" "pass"
 else
   check "settings.json wires DCG hook" "fail"
@@ -104,8 +104,8 @@ else
   check "settings.json denies .git/hooks writes" "fail"
 fi
 
-# 11. DCG denies destructive command
-dcg_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | /usr/local/bin/dcg 2>/dev/null || true)
+# 11. DCG denies destructive command (via wrapper, ADR-025 D3)
+dcg_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | /usr/local/lib/rip-cage/bin/dcg-guard 2>/dev/null || true)
 if echo "$dcg_result" | grep -qE '"permissionDecision".*"deny"'; then
   check "DCG denies destructive command" "pass"
 else
