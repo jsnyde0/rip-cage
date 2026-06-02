@@ -3266,16 +3266,58 @@ _up_resolve_dcg_config() {
   done | sed 's/, $//')
 
   # Build custom_paths lines: resolve workspace-relative globs to /workspace paths.
+  # ADR-023 D7 realpath-first convention: normalize .. components lexically and
+  # reject any entry whose resolved container path escapes /workspace/.
+  # This runs on the HOST where /workspace does not exist, so we normalize the
+  # conceptual container path (/workspace/<glob>) purely via string manipulation
+  # (no realpath against host filesystem).
   local _custom_paths_toml=""
   while IFS= read -r _glob; do
     [[ -z "$_glob" ]] && continue
-    # Convert workspace-relative glob to cage-absolute /workspace path.
-    # The glob is as written in .rip-cage.yaml (e.g. ".rip-cage/dcg-rules/*.yaml").
-    # Inside the cage, /workspace is the mount point for the project directory.
-    # We emit the path as written, prefixed with /workspace/.
-    # Trailing glob components are preserved so DCG can expand them at runtime.
-    local _cage_path="/workspace/${_glob}"
-    _custom_paths_toml="${_custom_paths_toml}\"${_cage_path}\", "
+    # Lexically normalize /workspace/<glob> by resolving .. components.
+    # Builds a stack of path components; ".." pops the top (bash 3.2-compat:
+    # uses slice-to-trim rather than negative-index unset).
+    local _raw_path="/workspace/${_glob}"
+    local _norm_path=""
+    local _oldIFS="$IFS"
+    IFS="/"
+    local _parts=()
+    read -ra _parts <<< "$_raw_path"
+    IFS="$_oldIFS"
+    local _stack=() _slen=0 _c
+    for _c in "${_parts[@]}"; do
+      case "$_c" in
+        ""|".")  ;;
+        "..")
+          if [[ $_slen -gt 0 ]]; then
+            _stack=("${_stack[@]:0:$((_slen - 1))}")
+            _slen=$((_slen - 1))
+          fi
+          ;;
+        *)
+          _stack[_slen]="$_c"
+          _slen=$((_slen + 1))
+          ;;
+      esac
+    done
+    # Reconstruct normalized path from stack.
+    _norm_path="/"
+    local _i
+    for (( _i = 0; _i < _slen; _i++ )); do
+      _norm_path="${_norm_path}${_stack[$_i]}/"
+    done
+    _norm_path="${_norm_path%/}"  # strip trailing /
+
+    # Warn-and-skip if the normalized path escapes /workspace (ADR-023 D6 incidental tier).
+    if [[ "$_norm_path" != /workspace/* && "$_norm_path" != "/workspace" ]]; then
+      echo "[rc] Warning: dcg.custom_rule_paths entry '${_glob}' escapes /workspace after .. normalization (normalized: '${_norm_path}') — skipping" >&2
+      continue
+    fi
+
+    # Emit the normalized path (realpath-first, ADR-023 D7): a non-escaping
+    # interior ".." (e.g. a/../b) is collapsed to /workspace/b rather than
+    # handed to DCG raw, so the path DCG loads matches the path we vetted.
+    _custom_paths_toml="${_custom_paths_toml}\"${_norm_path}\", "
   done <<<"$_dcg_paths"
   _custom_paths_toml="${_custom_paths_toml%, }"  # strip trailing ", "
 

@@ -320,6 +320,92 @@ fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
+# C9  Traversal rejection — ../.. in custom_rule_paths escaping /workspace
+#     Entry must be SKIPPED (not appear in config) and a loud warning emitted.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== C9: dcg.custom_rule_paths with ../.. traversal → skipped with loud warning ==="
+
+setup_sandbox "" "config-project-dcg-traversal-paths.yaml"
+
+HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  bash -c "source '${RC}' 2>/dev/null; _up_resolve_dcg_config '${TEST_WS}' '${CACHE_DIR}'" \
+  2>/tmp/rc-dcg-c9-err > /tmp/rc-dcg-c9-out
+_c9_exit=$?
+
+_c9_ok=true _c9_reason=""
+if [[ "$_c9_exit" -ne 0 ]]; then
+  _c9_ok=false; _c9_reason="function exited non-zero ($_c9_exit) — traversal should warn-and-skip, not fail"
+fi
+# The escaping path must NOT appear in the generated config.
+if [[ -f "${CACHE_DIR}/dcg-config.toml" ]]; then
+  if grep -qF '../../etc/passwd' "${CACHE_DIR}/dcg-config.toml"; then
+    _c9_ok=false; _c9_reason="${_c9_reason:+$_c9_reason; }escaping path leaked into dcg-config.toml"
+  fi
+  if grep -qF '/workspace/../../etc/passwd' "${CACHE_DIR}/dcg-config.toml"; then
+    _c9_ok=false; _c9_reason="${_c9_reason:+$_c9_reason; }resolved escaping path leaked into dcg-config.toml"
+  fi
+fi
+# A loud warning must appear on stderr naming the offending entry and the escape.
+if ! grep -q 'escapes /workspace\|outside /workspace' /tmp/rc-dcg-c9-err 2>/dev/null; then
+  _c9_ok=false; _c9_reason="${_c9_reason:+$_c9_reason; }no loud warning emitted on stderr (want message mentioning /workspace escape)"
+fi
+rm -f /tmp/rc-dcg-c9-out /tmp/rc-dcg-c9-err
+
+if [[ "$_c9_ok" == "true" ]]; then
+  pass 9 "custom_rule_paths ../.. traversal: skipped with loud warning, not leaked into config"
+else
+  fail 9 "custom_rule_paths traversal rejection" "$_c9_reason"
+fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# C10 Regression guard — mixed entry: bad traversal skipped, good glob kept
+#     The valid workspace-relative glob must still produce /workspace path;
+#     the traversal entry must not appear. (C5 happy path + C9 in one fixture.)
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== C10: mixed custom_rule_paths (traversal + valid glob) → only valid glob in config ==="
+
+setup_sandbox "" "config-project-dcg-mixed-paths.yaml"
+mkdir -p "${TEST_WS}/.rip-cage/dcg-rules"
+echo "# test rule" > "${TEST_WS}/.rip-cage/dcg-rules/test-rule.yaml"
+
+HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  bash -c "source '${RC}' 2>/dev/null; _up_resolve_dcg_config '${TEST_WS}' '${CACHE_DIR}'" \
+  2>/tmp/rc-dcg-c10-err > /tmp/rc-dcg-c10-out
+_c10_exit=$?
+
+_c10_ok=true _c10_reason=""
+if [[ "$_c10_exit" -ne 0 ]]; then
+  _c10_ok=false; _c10_reason="function exited non-zero ($_c10_exit)"
+fi
+if [[ ! -f "${CACHE_DIR}/dcg-config.toml" ]]; then
+  _c10_ok=false; _c10_reason="${_c10_reason:+$_c10_reason; }dcg-config.toml not written"
+else
+  # Valid glob must appear.
+  if ! grep -qF '/workspace/.rip-cage/dcg-rules/' "${CACHE_DIR}/dcg-config.toml"; then
+    _c10_ok=false; _c10_reason="${_c10_reason:+$_c10_reason; }valid /workspace glob path not in generated config"
+  fi
+  # Traversal entry must NOT appear (in any form).
+  if grep -qF 'etc/passwd' "${CACHE_DIR}/dcg-config.toml"; then
+    _c10_ok=false; _c10_reason="${_c10_reason:+$_c10_reason; }traversal entry leaked into dcg-config.toml"
+  fi
+fi
+# Loud warning must be emitted.
+if ! grep -q 'escapes /workspace\|outside /workspace' /tmp/rc-dcg-c10-err 2>/dev/null; then
+  _c10_ok=false; _c10_reason="${_c10_reason:+$_c10_reason; }no loud warning emitted for the traversal entry"
+fi
+rm -f /tmp/rc-dcg-c10-out /tmp/rc-dcg-c10-err
+
+if [[ "$_c10_ok" == "true" ]]; then
+  pass 10 "mixed paths: traversal skipped with warning, valid glob preserved"
+else
+  fail 10 "mixed custom_rule_paths: traversal skipped + valid glob kept" "$_c10_reason"
+fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""

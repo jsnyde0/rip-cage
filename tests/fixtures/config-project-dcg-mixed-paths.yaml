@@ -1,0 +1,5 @@
+version: 1
+dcg:
+  custom_rule_paths:
+    - ../../etc/passwd
+    - .rip-cage/dcg-rules/*.yaml
