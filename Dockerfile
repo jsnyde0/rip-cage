@@ -140,6 +140,7 @@ COPY rip-proxy-start.sh /usr/local/lib/rip-cage/rip-proxy-start.sh
 COPY rip-dns-start.sh /usr/local/lib/rip-cage/rip-dns-start.sh
 COPY tests/test-egress-firewall.sh /usr/local/lib/rip-cage/test-egress-firewall.sh
 COPY tests/test-bd-roundtrip.sh /usr/local/lib/rip-cage/test-bd-roundtrip.sh
+COPY tests/test-pi-dcg-gate.sh /usr/local/lib/rip-cage/test-pi-dcg-gate.sh
 RUN chmod +x /usr/local/bin/init-rip-cage.sh \
     /usr/local/lib/rip-cage/bin/dcg-guard \
     /usr/local/lib/rip-cage/hooks/*.sh \
@@ -147,6 +148,7 @@ RUN chmod +x /usr/local/bin/init-rip-cage.sh \
     /usr/local/lib/rip-cage/test-skills.sh \
     /usr/local/lib/rip-cage/test-egress-firewall.sh \
     /usr/local/lib/rip-cage/test-bd-roundtrip.sh \
+    /usr/local/lib/rip-cage/test-pi-dcg-gate.sh \
     /usr/local/lib/rip-cage/init-firewall.sh \
     /usr/local/lib/rip-cage/rip-proxy-start.sh \
     /usr/local/lib/rip-cage/rip-dns-start.sh
@@ -172,6 +174,10 @@ RUN mkdir -p /home/agent/.config/mise \
        > /home/agent/.config/mise/config.toml
 COPY --chown=agent:agent zshrc /home/agent/.zshrc
 COPY --chown=agent:agent tmux.conf /home/agent/.tmux.conf
+# Pi DCG gate extension (rip-cage-bl1): baked into cage-owned container-local extensions dir.
+# Auto-discovered by pi (extensions/*.ts glob, no -e flag needed, loader.ts:583-585).
+# NOT under the host-mounted auth.json sub-mount — cage-owned, agent-owned, host-clean.
+COPY --chown=agent:agent pi/dcg-gate.ts /home/agent/.pi/agent/extensions/dcg-gate.ts
 
 # Version label — baked in at build time so rc up can detect stale local images.
 # Placed last so version bumps don't invalidate upstream layer cache.

@@ -5480,7 +5480,7 @@ cmd_test() {
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local output
     output=$(docker exec "$name" bash -c \
-      '/usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-egress-firewall.sh; /usr/local/lib/rip-cage/test-bd-roundtrip.sh' 2>&1) || true
+      '/usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-egress-firewall.sh; /usr/local/lib/rip-cage/test-bd-roundtrip.sh; /usr/local/lib/rip-cage/test-pi-dcg-gate.sh' 2>&1) || true
     # Prepend host-side preflight line so the parse loop handles it uniformly
     output="${preflight_line}
 ${output}"
@@ -5510,6 +5510,7 @@ ${output}"
     docker exec "$name" /usr/local/lib/rip-cage/test-skills.sh
     docker exec "$name" /usr/local/lib/rip-cage/test-egress-firewall.sh
     docker exec "$name" /usr/local/lib/rip-cage/test-bd-roundtrip.sh
+    docker exec "$name" /usr/local/lib/rip-cage/test-pi-dcg-gate.sh
   fi
 }
 

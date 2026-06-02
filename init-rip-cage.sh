@@ -279,6 +279,20 @@ if ! command -v python3 > /dev/null 2>&1; then
 fi
 echo "[rip-cage] python3 found (skill-server.py will be available)"
 echo "[rip-cage] Hooks verified"
+# 5b. Verify pi-cage guard (dcg-gate.ts extension) — fail-loud if pi is active (ADR-001)
+# PI_CODING_AGENT_DIR=/home/agent/.pi/agent is set by rc up when pi auth is mounted
+# (rip-cage-hhh.12). If pi is active but the guard is missing, pi would launch unguarded.
+if [ "${PI_CODING_AGENT_DIR:-}" = "/home/agent/.pi/agent" ]; then
+  if [ ! -f /home/agent/.pi/agent/extensions/dcg-gate.ts ]; then
+    echo "[rip-cage] ERROR: pi-cage guard extension missing at /home/agent/.pi/agent/extensions/dcg-gate.ts — pi cage would launch unguarded (rip-cage-bl1)" >&2
+    exit 1
+  fi
+  if [ ! -x /usr/local/lib/rip-cage/bin/dcg-guard ]; then
+    echo "[rip-cage] ERROR: dcg-guard wrapper missing — pi-cage guard cannot function (rip-cage-bl1)" >&2
+    exit 1
+  fi
+  echo "[rip-cage] pi-cage guard verified (dcg-gate.ts + dcg-guard both present)"
+fi
 
 # 6. Set git identity
 git config --global user.name "${GIT_AUTHOR_NAME:-Rip Cage Agent}"
