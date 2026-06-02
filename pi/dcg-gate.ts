@@ -36,7 +36,22 @@ const COMPOUND_SCRIPT = "/usr/local/lib/rip-cage/hooks/block-compound-commands.s
 
 /**
  * Extract a command string from a tool input, if present.
- * Returns undefined if the input has no "command" field or it is not a string.
+ *
+ * Field coverage rationale (F3, rip-cage-bl1 repair):
+ *   - "command": pi's built-in bash tool (bash.ts:34 bashSchema) AND all known exec-capable
+ *     extension tools (ssh.ts, sandbox.ts) replace/override the built-in bash tool and use the
+ *     same BashToolInput schema — field "command" covers all real exec-capable tools in pi v0.70.2.
+ *   - pi has no MCP server bridge (no MCP packages found in pi-mono); CustomToolCallEvent
+ *     (types.ts:799) carries input: Record<string, unknown> for any extension-registered tool.
+ *
+ * Known acceptable gap: a custom extension that registers a NEW exec-capable tool (not
+ * replacing "bash") with a different field name (e.g. "script", "cmd") would pass through
+ * unguarded here. This gap is acceptable per the rip-cage 80/20 philosophy — we block the
+ * obvious accident (all pi built-in and known exec tools), do not false-positive on non-command
+ * strings in other custom tools. The live-fire proof (F2) uses the non-bash tool name path
+ * to verify the tool_name="bash" pinning guards it.
+ *
+ * Returns undefined if the input has no "command" field or it is not a non-empty string.
  */
 function extractCommand(input: Record<string, unknown>): string | undefined {
 	const cmd = input?.command;

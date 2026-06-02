@@ -63,29 +63,33 @@ if [[ -f "$DCG_GATE" ]]; then
 fi
 
 # 1c. Extension calls dcg-guard wrapper, not raw dcg
+# Grep for the const assignment (code), not merely the string appearing in header comments.
+# Strips // and block-comment (* prefix) lines before matching.
 if [[ -f "$DCG_GATE" ]]; then
-  if grep -q 'dcg-guard' "$DCG_GATE" 2>/dev/null; then
+  if grep -v '^\s*//' "$DCG_GATE" 2>/dev/null | grep -v '^\s*\*' | grep -q 'DCG_GUARD\s*=.*dcg-guard'; then
     check "dcg-gate.ts invokes dcg-guard (not raw dcg)" "pass"
   else
-    check "dcg-gate.ts invokes dcg-guard (not raw dcg)" "fail" "dcg-guard not found in extension source"
+    check "dcg-gate.ts invokes dcg-guard (not raw dcg)" "fail" "DCG_GUARD const assignment with dcg-guard path not found in non-comment code"
   fi
 fi
 
-# 1d. Extension pins tool_name to "bash" in dcg envelope
+# 1d. Extension pins tool_name to "bash" in dcg envelope (call site, not comment)
+# Grep for the actual object property: tool_name: "bash" (not a comment mention).
 if [[ -f "$DCG_GATE" ]]; then
-  if grep -q '"bash"' "$DCG_GATE" 2>/dev/null; then
+  if grep -v '^\s*//' "$DCG_GATE" 2>/dev/null | grep -v '^\s*\*' | grep -q 'tool_name.*"bash"'; then
     check "dcg-gate.ts pins tool_name to bash in dcg envelope" "pass"
   else
-    check "dcg-gate.ts pins tool_name to bash in dcg envelope" "fail" "tool_name bash pinning not found in source"
+    check "dcg-gate.ts pins tool_name to bash in dcg envelope" "fail" "tool_name:\"bash\" property not found in non-comment code"
   fi
 fi
 
-# 1e. Extension reads permissionDecision (not exit code)
+# 1e. Extension reads permissionDecision from JSON (call site, not comment)
+# Grep for the actual comparison expression: permissionDecision === (only in code, not comments).
 if [[ -f "$DCG_GATE" ]]; then
-  if grep -q 'permissionDecision' "$DCG_GATE" 2>/dev/null; then
+  if grep -v '^\s*//' "$DCG_GATE" 2>/dev/null | grep -v '^\s*\*' | grep -q 'permissionDecision\s*==='; then
     check "dcg-gate.ts reads permissionDecision from stdout JSON" "pass"
   else
-    check "dcg-gate.ts reads permissionDecision from stdout JSON" "fail" "permissionDecision not found in source"
+    check "dcg-gate.ts reads permissionDecision from stdout JSON" "fail" "permissionDecision === comparison not found in non-comment code"
   fi
 fi
 

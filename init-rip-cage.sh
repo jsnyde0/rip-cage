@@ -279,9 +279,11 @@ if ! command -v python3 > /dev/null 2>&1; then
 fi
 echo "[rip-cage] python3 found (skill-server.py will be available)"
 echo "[rip-cage] Hooks verified"
-# 5b. Verify pi-cage guard (dcg-gate.ts extension) — fail-loud if pi is active (ADR-001)
-# PI_CODING_AGENT_DIR=/home/agent/.pi/agent is set by rc up when pi auth is mounted
-# (rip-cage-hhh.12). If pi is active but the guard is missing, pi would launch unguarded.
+# 5b. Verify pi-cage guard (dcg-gate.ts extension) — fail-loud (ADR-001)
+# PI_CODING_AGENT_DIR=/home/agent/.pi/agent is set unconditionally by rc up for ALL cages
+# (rc:1511), not only when pi auth is mounted. The guard is baked into every image, so
+# the presence check always runs and verifies both dcg-gate.ts (cage-owned auto-discovery
+# path) and dcg-guard (the wrapper binary it delegates to) are present.
 if [ "${PI_CODING_AGENT_DIR:-}" = "/home/agent/.pi/agent" ]; then
   if [ ! -f /home/agent/.pi/agent/extensions/dcg-gate.ts ]; then
     echo "[rip-cage] ERROR: pi-cage guard extension missing at /home/agent/.pi/agent/extensions/dcg-gate.ts — pi cage would launch unguarded (rip-cage-bl1)" >&2
