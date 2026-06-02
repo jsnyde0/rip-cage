@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-02
+
+Security-layer expansion. The destructive-command guard becomes host-extensible without weakening its baked-in floor, the pi-coding-agent reaches guard parity with Claude Code, and the pi credential mount tightens to a container-local layout.
+
+### Added
+
+- **Host-adoptable DCG policy** — a project's `.rip-cage.yaml` can now add destructive-command rules above the baked-in guard floor via `dcg.*` fields. The additive layer is read-only and floor-uncrossable: host config can only tighten the guard, never disable or downgrade a baked rule (ADR-025). The cage routes through a CWD-anchoring `dcg-guard` wrapper that neutralizes the agent-writable `/workspace/.dcg.toml` self-disable hole.
+- **pi-coding-agent DCG + compound-command parity** — pi cages now block the same destructive commands (`rm -rf`, `git reset --hard`, force-push, …) and chained commands (`&&`, `;`, `||`) that Claude Code cages do, via an image-baked `dcg-gate.ts` extension auto-loaded from a cage-owned path (ADR-019 D8).
+
+### Changed
+
+- **pi config is now container-local** — the pi agent directory lives at `/home/agent/.pi/agent` inside the cage; only `auth.json` bind-mounts (read-write) from the host, replacing the whole-directory mount (ADR-019 D1).
+
+### Security
+
+- Secret-path mount denylist now also covers the symlink-follow mount surface (its 5th surface; ADR-023).
+- `dcg.custom_rule_paths` entries are sanitized against `../` path traversal before use.
+
+### Fixed
+
+- CI now reports every failing test instead of aborting at the first, and runs through a single test driver against a pinned `shellcheck` image so local lint == CI lint by construction (no more divergence-burned tags).
+
 ## [0.4.2] - 2026-05-28
 
 ### Fixed
