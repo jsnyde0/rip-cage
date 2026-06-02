@@ -127,6 +127,7 @@ run_test "${SCRIPT_DIR}/test-firewall-tcp22.sh"        # rip-cage-hhh.4: TCP-22 
 run_test "${SCRIPT_DIR}/test-rc-reload.sh"             # rip-cage-hhh.4: rc reload snapshot format + diff generalization
 run_test "${SCRIPT_DIR}/test-rc-allowlist.sh"          # rip-cage-hhh.6: rc allowlist add/show/promote + D10 host-side guard
 run_test "${SCRIPT_DIR}/test-ls-mode-source.sh"        # rip-cage-hhh.6: rc ls/doctor mode read from source .rip-cage.yaml not stale label
+run_test "${SCRIPT_DIR}/test-dcg-policy.sh"            # rip-cage-hhh.11.2: DCG host-adoptable policy (ADR-025 D1/D5)
 
 echo "=== run-host.sh complete ==="
 

@@ -1,0 +1,4 @@
+version: 1
+dcg:
+  custom_rule_paths:
+    - .rip-cage/dcg-rules/*.yaml

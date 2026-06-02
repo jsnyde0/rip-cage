@@ -213,6 +213,63 @@ Cross-reference: [egress.md](egress.md) for the workflow, modes, DNS exfil detec
 
 ---
 
+## `dcg.*` — destructive-command guard policy
+
+Rip-cage's DCG (destructive_command_guard) binary is baked into the image and enforces a hard `core` pack floor that cannot be lowered. The `dcg.*` fields let you **additively** enable extra built-in DCG packs and load custom YAML rule packs from the workspace — without touching the `core` floor or rebuilding the image.
+
+See [ADR-025](../decisions/ADR-025-host-adoptable-dcg-policy.md) for full design rationale.
+
+### Fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `dcg.packs` | additive_list | `[]` | Extra built-in DCG pack names to enable on top of `core`. `core` is always present and cannot be removed. Project EXPANDS; cannot contract. |
+| `dcg.custom_rule_paths` | additive_list | `[]` | Workspace-relative glob patterns pointing at custom YAML rule pack files (e.g. `.rip-cage/dcg-rules/*.yaml`). Resolved at `rc up` time to cage-absolute `/workspace/*` paths in the generated DCG config. Project EXPANDS; cannot contract. |
+
+### How it works
+
+At `rc up`, the effective `dcg.*` (global∪project, union-merged per additive_list semantics) is translated into a merged DCG TOML config file that is bind-mounted **read-only** over the wrapper's pinned config path (`/usr/local/lib/rip-cage/dcg/config.toml`). The generated config always contains `core` in the enabled list — additive only, never subtractive.
+
+**Fail-closed (ADR-025 D5):** If the translated config fails to parse, `rc up` refuses to launch the container and exits non-zero with an actionable message. Fix your `dcg.*` fields and retry.
+
+**Safe-by-default:** With no `dcg.*` configured, no extra mount is added — the baked image default stays in effect and behavior is unchanged.
+
+### Example
+
+```yaml
+# ~/.config/rip-cage/config.yaml — global: enable net pack everywhere
+version: 1
+dcg:
+  packs:
+    - net
+
+# <project>/.rip-cage.yaml — project: add custom rules for this project
+version: 1
+dcg:
+  packs:
+    - filesystem   # additional built-in pack
+  custom_rule_paths:
+    - .rip-cage/dcg-rules/*.yaml   # workspace-relative glob
+```
+
+Effective policy (global ∪ project): `core` + `net` + `filesystem` + custom rules from `.rip-cage/dcg-rules/*.yaml`.
+
+### Custom rule pack format
+
+Custom rule files are YAML files in DCG's rule-pack format. Place them in your project under a workspace-relative path and reference them via `dcg.custom_rule_paths`. Inside the cage, they are accessible at `/workspace/<your-path>`.
+
+DCG loads the custom rule packs at runtime when the cage starts; any DCG-format YAML that passes DCG's own parse is valid.
+
+### Notes
+
+- The `core` pack (`core.filesystem` + `core.git`) is **always** enabled; it cannot be disabled or downgraded via `dcg.*` config.
+- `dcg.*` fields are **not** reload-eligible via `rc reload` — they affect container-create-time mounts. Change requires `rc destroy <name>` then `rc up`.
+- Both Claude Code's PreToolUse hook and pi's `dcg-gate.ts` extension route through the same wrapper and see the same merged config.
+
+Cross-reference: [ADR-025](../decisions/ADR-025-host-adoptable-dcg-policy.md) for the full design; [ADR-004](../decisions/ADR-004-phase1-hardening.md) for the DCG baseline.
+
+---
+
 ## `mounts.symlinks.*` — host-side symlink follow
 
 When rip-cage-managed dotfile mount roots (currently only `~/.pi/agent`, which maps to `/pi-agent` inside the cage) contain absolute symlinks that would dangle inside the container, the `mounts.symlinks` group controls how they are handled.
