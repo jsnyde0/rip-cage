@@ -29,6 +29,8 @@ Users supply extra DCG policy — enable additional packs and/or add custom YAML
 
 At `rc up` / init, the merged additive policy is **translated** into a single cage-owned DCG config file, mounted read-only, that `DCG_CONFIG` points at (D3).
 
+**Scope limitation (known, accepted):** translation runs on the `rc up` (CLI/headless) path only. The `rc init` → VS Code "Reopen in Container" devcontainer path uses a static `devcontainer.json` and does **not** translate custom `dcg.*` — devcontainer users get the baked core floor but not their additive host policy. The **floor is intact on both paths** (the baked default config + wrapper ship in the image); only the additive feature is absent on the devcontainer path. Not pursued (deprioritized 2026-06-02 — devcontainer adoption is not a priority surface).
+
 Schema example:
 
 ```yaml
