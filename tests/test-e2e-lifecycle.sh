@@ -28,6 +28,7 @@ E2E_TMP=""
 E2E_TMP2=""
 OFF_TMP=""
 AUTH_TMP=""
+DCG_TMP=""
 
 CLEANUP() {
   # Destroy any e2e containers + volumes we may have created. Match on labels
@@ -37,7 +38,7 @@ CLEANUP() {
     local sp
     sp=$(docker inspect --format '{{index .Config.Labels "rc.source.path"}}' "$c" 2>/dev/null || true)
     case "$sp" in
-      "$E2E_TMP"/*|"$E2E_TMP2"/*|"$OFF_TMP"/*|"$AUTH_TMP"/*)
+      "$E2E_TMP"/*|"$E2E_TMP2"/*|"$OFF_TMP"/*|"$AUTH_TMP"/*|"$DCG_TMP"/*)
         docker rm -f "$c" > /dev/null 2>&1 || true
         docker volume rm "rc-state-${c}" > /dev/null 2>&1 || true
         ;;
@@ -47,6 +48,7 @@ CLEANUP() {
   [[ -n "$E2E_TMP2" ]] && rm -rf "$E2E_TMP2"
   [[ -n "$OFF_TMP"  ]] && rm -rf "$OFF_TMP"
   [[ -n "$AUTH_TMP" ]] && rm -rf "$AUTH_TMP"
+  [[ -n "$DCG_TMP"  ]] && rm -rf "$DCG_TMP"
 }
 trap CLEANUP EXIT
 
@@ -644,6 +646,117 @@ else
   check "rc up nonexistent path -- exit non-zero, no partial container" "fail" \
     "exit=$nonexistent_exit partial_containers=$partial"
 fi
+
+# -----------------------------------------------------------------------------
+# DCG custom-rule integration chain (ADR-025 D1 / rip-cage-hhh.13)
+#
+# Exercises the full chain: .rip-cage.yaml dcg.custom_rule_paths → rc up
+# translate → docker RO-mount over /usr/local/lib/rip-cage/dcg/config.toml
+# → dcg-guard wrapper denies a command the custom rule covers.
+#
+# Uses a dedicated fixture cage so this check is independent of CONTAINER_NAME
+# (which is brought up without a dcg fixture). RIP_CAGE_EGRESS=off keeps it fast.
+#
+# The sentinel command is "ripcagetestsentinel" — a string that is not a real
+# command and is not matched by any DCG core pack. A deny proves the custom
+# rule fired (not a core rule). An allow of a benign command proves the chain
+# is functional (not stuck in fail-closed mode).
+# -----------------------------------------------------------------------------
+
+# Check 24 setup: create fixture workspace under a dedicated staging root.
+DCG_TMP=$(mktemp -d)
+mkdir -p "${DCG_TMP}/rc-dcg"
+_dcg_ws="${DCG_TMP}/rc-dcg/e2e-test"
+mkdir -p "$_dcg_ws"
+git -C "$_dcg_ws" init > /dev/null 2>&1
+
+# Write .rip-cage.yaml with dcg.custom_rule_paths pointing at workspace rule pack.
+cat > "${_dcg_ws}/.rip-cage.yaml" << 'RIPCAGEYAML'
+version: 1
+dcg:
+  custom_rule_paths:
+    - .rip-cage/dcg-rules/*.yaml
+RIPCAGEYAML
+
+# Write the sentinel rule pack YAML.
+# Schema: DCG v0.4.0 custom rule pack format (confirmed empirically — see
+# tests/fixtures/ripcage-testsentinel-rule.yaml and rip-cage-hhh.13 report).
+mkdir -p "${_dcg_ws}/.rip-cage/dcg-rules"
+cat > "${_dcg_ws}/.rip-cage/dcg-rules/ripcage-e2e-sentinel.yaml" << 'RULEFILE'
+schema_version: 1
+id: ripcage.testsentinel
+name: ripcagetestsentinel
+version: "1.0.0"
+description: "Sentinel custom rule for rip-cage E2E regression tests (ADR-025 D1 / rip-cage-hhh.13)"
+keywords:
+  - ripcagetestsentinel
+destructive_patterns:
+  - name: ripcagetestsentinel_block
+    pattern: "ripcagetestsentinel"
+    severity: critical
+    description: "Sentinel block: rip-cage E2E regression test marker -- must NOT match any real command"
+    explanation: "This rule exists solely for E2E regression testing of the rc up -> RO-mount -> dcg-guard chain (rip-cage-hhh.13)."
+RULEFILE
+
+DCG_TMP_RESOLVED=$(realpath "$DCG_TMP")
+_dcg_ws_resolved=$(realpath "$_dcg_ws")
+RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${OFF_TMP_RESOLVED}:${DCG_TMP_RESOLVED}" \
+  RIP_CAGE_EGRESS=off "$RC" up "$_dcg_ws" < /dev/null > /tmp/rc-e2e-dcg-up.out 2>&1 || true
+_dcg_container=$(docker ps -a --filter "label=rc.source.path=${_dcg_ws_resolved}" \
+  --format '{{.Names}}' 2>/dev/null | head -1)
+
+# Check 24: DCG fixture cage started with custom rule config.
+if [[ -n "$_dcg_container" ]]; then
+  check "DCG custom-rule fixture cage started (rip-cage-hhh.13)" "pass" "$_dcg_container"
+else
+  check "DCG custom-rule fixture cage started (rip-cage-hhh.13)" "fail" \
+    "container not found -- rc up may have failed (see /tmp/rc-e2e-dcg-up.out)"
+fi
+
+# Check 25: dcg-guard DENIES the sentinel command via the mounted custom config.
+# The dcg-guard wrapper: cd /usr/local/lib/rip-cage, sets DCG_CONFIG, strips
+# DCG_* overrides, then exec /usr/local/bin/dcg "$@".
+# As a PreToolUse hook, it reads {"tool_name":"Bash","tool_input":{"command":"<cmd>"}}
+# from stdin and outputs JSON with permissionDecision: "deny" on block.
+_dcg_deny_result=""
+_dcg_deny_stderr=""
+if [[ -n "$_dcg_container" ]]; then
+  _dcg_deny_result=$(docker exec "$_dcg_container" bash -c \
+    'echo "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ripcagetestsentinel --e2e-test\"}}" | /usr/local/lib/rip-cage/bin/dcg-guard' \
+    2>/tmp/rc-e2e-dcg-deny.err)
+  _dcg_deny_stderr=$(cat /tmp/rc-e2e-dcg-deny.err 2>/dev/null)
+fi
+if echo "$_dcg_deny_result" | grep -qE '"permissionDecision".*"deny"'; then
+  check "DCG custom rule fires via rc-up->RO-mount->dcg-guard chain (rip-cage-hhh.13)" "pass"
+else
+  # Distinguish a broken chain (RO-mount missing) from a genuine allow, so a
+  # future chain regression is diagnosable rather than reading as "got empty".
+  _dcg_mount_state="config.toml present"
+  if [[ -n "$_dcg_container" ]]; then
+    docker exec "$_dcg_container" test -f /usr/local/lib/rip-cage/dcg/config.toml > /dev/null 2>&1 \
+      || _dcg_mount_state="config.toml MISSING at mount dst (RO-mount chain broken)"
+  fi
+  check "DCG custom rule fires via rc-up->RO-mount->dcg-guard chain (rip-cage-hhh.13)" "fail" \
+    "expected deny, got: ${_dcg_deny_result:-<empty>}; ${_dcg_mount_state}; stderr: ${_dcg_deny_stderr:-<none>}"
+fi
+
+# Check 26: dcg-guard ALLOWS a benign command (proves chain functional, not fail-closed).
+_dcg_allow_result="no-output-expected"
+if [[ -n "$_dcg_container" ]]; then
+  _dcg_allow_result=$(docker exec "$_dcg_container" bash -c \
+    'echo "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls -la /tmp\"}}" | /usr/local/lib/rip-cage/bin/dcg-guard' \
+    2>/dev/null)
+fi
+if [[ -z "$_dcg_allow_result" ]]; then
+  check "DCG allows benign command (chain not fail-closed) (rip-cage-hhh.13)" "pass"
+else
+  check "DCG allows benign command (chain not fail-closed) (rip-cage-hhh.13)" "fail" \
+    "expected empty (allow), got: ${_dcg_allow_result}"
+fi
+
+# Cleanup DCG fixture container.
+[[ -n "$_dcg_container" ]] && docker rm -f "$_dcg_container" > /dev/null 2>&1 || true
+[[ -n "$_dcg_container" ]] && docker volume rm "rc-state-${_dcg_container}" > /dev/null 2>&1 || true
 
 # -----------------------------------------------------------------------------
 # Summary
