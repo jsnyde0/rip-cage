@@ -1,7 +1,7 @@
 # ADR-019: pi-coding-agent support — Phase 0
 
 **Status:** Proposed
-**Date:** 2026-04-25 (D1 revised 2026-06-01)
+**Date:** 2026-04-25 (D1 revised 2026-06-01; D4 evolved 2026-05-27; D8 revised 2026-06-02 — Phase 1 shipped)
 **Design:** [Design doc](../../history/2026-04-25-pi-coding-agent-phase0-design.md)
 **Related:** [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md), [ADR-006 Multi-Agent Architecture](ADR-006-multi-agent-architecture.md), [ADR-010 Auth Refresh](ADR-010-auth-refresh.md), project [CLAUDE.md](../../CLAUDE.md) philosophy section
 **Supersedes (in part):** the original Phase 0 handoff doc (`docs/handoff-pi-phase0.md`) — that doc's B2 mount strategy and B3 auth-warn matrix are revised here based on prior-art research.
@@ -13,7 +13,7 @@ Rip-cage today supports one harness: Claude Code. Pi (`@mariozechner/pi-coding-a
 1. Use the user's existing **OpenAI Codex (ChatGPT Plus/Pro)** subscription from inside the cage.
 2. Establish the substrate for a future learning project: building a pi extension (`pi.on("tool_call", ...)`) that calls rip-cage's existing `dcg` Rust binary, achieving DCG-equivalent enforcement on pi's bash tool calls.
 
-Phase 0 is "pi runs cleanly in the cage." Phase 1 (DCG-on-pi extension) is deliberately scoped out — see D8.
+Phase 0 is "pi runs cleanly in the cage." Phase 1 (DCG-on-pi extension) was scoped out of Phase 0, later promoted to required (D4, 2026-05-27 per ADR-024), and has now shipped (D8, rip-cage-bl1).
 
 Prior art surveyed before designing:
 
@@ -131,6 +131,8 @@ For pi-specific cage topology, see /etc/rip-cage/cage-pi.md
 
 **Current decision (goal — FIRM):** pi cages must have on-device-harm protection equivalent to Claude Code's DCG + compound-blocker active surface. Specifically, pi cages must refuse the same destructive-command class (per DCG) and the same chaining-bypass class (per compound-blocker) that Claude Code cages refuse.
 
+**Equivalence axis (FIRM, added 2026-06-02 per rip-cage-bl1):** "equivalent enforcement" means **loaded-by-default + active**, NOT **tamper-proof**. Claude Code's own DCG hook lives in an agent-writable `settings.json`; the parity bar for pi is therefore "the guard is loaded by default via a cage-owned path and actively enforces," not "the guard is unstrippable by the caged agent." This is consistent with D7 (rejects adversarial in-container hardening) and the layers-not-walls philosophy (CLAUDE.md) — a future agent must NOT over-invest in making the pi extension tamper-resistant beyond the cage-owned-path + auto-load default that D1/D8 already provide. Closing the multi-tool bypass and the workspace-config self-disable hole (ADR-025 D3/D4) is in-scope; defeating a motivated in-cage attacker is not.
+
 **Current decision (mechanism — FLEXIBLE):** the specific extension shape for pi's hook surface is open. Pi uses a different agent runtime / hook config than Claude Code's PreToolUse hooks. A pi-hook research bead (filed alongside the epic that evolves this decision) determines the mechanism — plausible shapes: extend `hooks/block-compound-commands.sh` to pi's PreToolUse equivalent if pi has one; OR a pi-side bash wrapper that intercepts shell invocations; OR a pi-MCP-server shim that DCG-checks pi tool calls before forwarding; OR the original D8 Phase 1 extension shape (`pi.on("tool_call", ...)` calling the `dcg` Rust binary).
 
 Until the research bead determines the mechanism and the impl bead delivers it, **pi cages must not be shipped to users as a finalized configuration.** The transient gap is acceptable for the design-and-research bead set; it is not acceptable for a released-to-users pi cage under the new threat model.
@@ -227,28 +229,30 @@ Documented in `docs/reference/auth.md` under "Why rip-cage doesn't ship paranoid
 
 - A demonstrated class of bug where a misbehaving agent reads credential files via a child process that bypasses pi's tool layer, and where fs-vault-style preload would have blocked it. So far this is hypothetical.
 
-### D8: Phase 1 (DCG-on-pi extension) deferred — designated as user's learning project
+### D8: Phase 1 (DCG-on-pi extension) — SHIPPED (rip-cage-bl1)
 
-**Firmness: FLEXIBLE**
+**Firmness: FLEXIBLE** *(revised 2026-06-02 — Phase 1 shipped; the original "deferred as user's learning project" framing is retired and preserved in git history. D4's threat-model promotion (2026-05-27, ADR-024) made the work required; rip-cage-1m7 researched the mechanism and rip-cage-bl1 delivered it.)*
 
-Phase 1 — a pi extension at `extensions/pi/dcg-gate.ts` (or similar) that registers `pi.on("tool_call", ...)` and spawns the existing `dcg` Rust binary as a subprocess to validate every bash command — is **not** filed as Phase 0 beads. Reference template: pi-mono `examples/extensions/permission-gate.ts` (regex blocker; 30 lines) plus the subprocess pattern from `examples/extensions/sandbox/index.ts:134-199`.
+Phase 1 shipped as `pi/dcg-gate.ts` — a pi extension that registers `pi.on("tool_call", ...)` and, for every exec-capable tool call, forwards the command to the existing `dcg` binary (via the CWD-anchor wrapper `/usr/local/lib/rip-cage/bin/dcg-guard`, ADR-025 D3/D4) and the compound-command blocker, blocking via `{ block, reason }`. Reference template: pi-mono `examples/extensions/permission-gate.ts` plus the subprocess pattern from `examples/extensions/sandbox/index.ts`.
 
-Three things must hold for Phase 1 to land:
+All three landing conditions hold, with condition 2's mechanism **superseded before implementation**:
 
-1. The extension is checked into the rip-cage repo (not the user's personal `~/.pi/agent/extensions/`), distributed with the cage, version-controlled with the rest of the safety stack.
-2. It's wired in via either `pi -e <path>` in `init-rip-cage.sh` or via a `settings.json` `extensions` entry — not via host-side `~/.pi/agent/extensions/` mount.
-3. It calls the same `dcg` binary the Claude Code PreToolUse hook calls, so policy stays in one place.
+1. ✅ The extension is checked into the rip-cage repo (`pi/dcg-gate.ts`) and image-baked — distributed with the cage and version-controlled with the rest of the safety stack, not the user's personal `~/.pi/agent/extensions/`.
+2. ✅ It is wired in by **auto-discovery from the cage-owned container-local `<agentDir>/extensions/` dir — no `-e` flag, no `settings.json` entry.** This supersedes the original "`pi -e <path>` or a `settings.json` extensions entry" mechanism: pi is launched interactively (no cage-controlled launch line to attach `-e` to), and D1's container-local cage-owned topology (revised 2026-06-01) gives pi an `extensions/` auto-scan path (pi-mono `core/extensions/loader.ts`) that loads by default, the host mount cannot pollute, and the caged agent cannot strip via the workspace. See D1.
+3. ✅ It calls the same `dcg` binary (through the shared `dcg-guard` wrapper) the Claude Code PreToolUse hook calls, so policy stays in one place (ADR-025).
 
-**Rationale:**
+**Implementation specifics (rip-cage-bl1):** the dcg stdin envelope pins `tool_name:"bash"` regardless of the originating pi tool name (else dcg's tool-name filter returns no-command and fails OPEN); the decision is read from dcg stdout JSON `hookSpecificOutput.permissionDecision` (not exit code); the guard fails OPEN on internal error (agent not wedged) and fails CLOSED-loud on a genuine deny (readable reason naming rule + safe alternative); a fail-loud init presence check refuses to launch pi unguarded; `tests/test-pi-dcg-gate.sh` regression-guards parity in both `rc test` branches. Live LOAD+FIRE verified in a real authed pi cage. **Known acceptable gap:** exec-capable tools that expose their command under a non-`command` field name pass unguarded — pi v0.70.2 ships only the `bash` exec tool (field `command`) and has no MCP bridge, so `command`-field extraction is the 80/20 parity bar, not a hole (tracked in code + bead; would broaden on a pi exec-surface change).
 
-- The extension is sized right for a learning project — small, well-defined, with reference implementations.
-- Splitting Phase 0 from Phase 1 keeps the Phase 0 bead set tight and gives the user the satisfying part of the work (the actual safety layer) without an agent doing it for them.
-- The transient safety gap (D4) is bounded by how long Phase 1 takes.
+**Rationale (retained):**
+
+- The extension was sized right and delivered the actual safety layer rather than an open-ended deferral.
+- Splitting research (rip-cage-1m7) from implementation (rip-cage-bl1) kept the mechanism decision honest (FLEXIBLE per D4) without locking it prematurely.
 
 **What would invalidate this:**
 
-- D4's "what would invalidate" condition triggers (real-world accident class that container-level mitigations miss). At that point, accelerate to a non-learning-project implementation.
-- The user later prefers to defer Phase 1 indefinitely. Reasonable; the gap is documented; pi-in-cage remains the safer-than-host default.
+- Pi changes extension auto-discovery so `<agentDir>/extensions/` is no longer auto-scanned without a flag (see D1's invalidation clause) → re-wire the load mechanism.
+- A richer pi exec-tool surface emerges (MCP bridge, custom exec tools with non-`command` fields) that the `command`-field extraction misses → broaden extraction.
+- DCG version bump changes the stdin protocol or the `is_supported_shell_tool` allowlist → re-verify the `tool_name:"bash"` pin (ADR-025 D3/D5 coupling).
 
 ## Deferred (out of Phase 0 scope; file as separate beads)
 
