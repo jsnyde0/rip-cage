@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-03
+
+Smoother first run. A fresh `brew install` no longer needs a separate setup step before the first cage starts.
+
+### Changed
+
+- First `rc up` now **auto-seeds** the default secret-path denylist config instead of failing loud and directing the user to run `rc install`. Previously a new machine hit a chain of setup stops — and the sharp one was self-inflicted: rc told you to run `rc install`, which is exactly what made the next `rc up` fail on a missing `yq`. The seeded default only ever *adds* blocking (never widens capability), so it satisfies the "a valid config must exist before the mount matcher runs" invariant rather than bypassing it; seeding runs *before* config validation so the `yq` check still covers it (ADR-023 D6 evolved). `rc install` / `rc config init` remain for re-seeding and customization.
+
+### Added
+
+- `yq` is now a declared Homebrew dependency. It is required to parse rip-cage config, but `brew install rip-cage` previously didn't pull it, so the first `rc up` after a config existed failed on a missing parser.
+- `rc doctor --host` now reports `yq` presence and global-config presence, surfacing fresh-device prerequisites up front instead of one failed `rc up` at a time.
+
+### Fixed
+
+- The `yq`-missing error no longer misleadingly references `.rip-cage.yaml`; it names `yq` as a rip-cage config dependency with install instructions.
+
 ## [0.5.0] - 2026-06-02
 
 Security-layer expansion. The destructive-command guard becomes host-extensible without weakening its baked-in floor, the pi-coding-agent reaches guard parity with Claude Code, and the pi credential mount tightens to a container-local layout.
@@ -138,6 +155,8 @@ agents safely in full auto mode.
 - `rc.conf` for configuring allowed project roots
 - Container user model: non-root `agent` user with restricted sudo paths
 
+[0.5.1]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.5.1
+[0.5.0]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.5.0
 [0.4.2]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.4.2
 [0.4.1]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.4.1
 [0.4.0]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.4.0
