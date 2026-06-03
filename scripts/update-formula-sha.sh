@@ -45,7 +45,11 @@ if [[ -z "$sha256" || "$sha256" == "$zero_sha" ]]; then
   exit 1
 fi
 
-# Patch the formula. Match any 64-hex-char sha256 line (placeholder or prior real value).
+# Patch the formula: bump BOTH the url tag and the sha256 to the current VERSION.
+# They must move together — patching sha256 only against a stale url ships a
+# formula whose tarball fails checksum verification, breaking `brew install`
+# every release (rip-cage-ndz; cost a manual two-repo url fix on v0.5.0 + v0.5.1).
+sed -i.bak -E "s|(/archive/refs/tags/)v[0-9]+\.[0-9]+\.[0-9]+(\.tar\.gz)|\1v${version}\2|" "$FORMULA"
 sed -i.bak -E "s|sha256 \"[a-f0-9]{64}\"|sha256 \"${sha256}\"|" "$FORMULA"
 rm -f "${FORMULA}.bak"
 
