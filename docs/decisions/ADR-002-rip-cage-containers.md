@@ -110,19 +110,21 @@ See: [Worktree Git Mount Design](../2026-04-02-worktree-git-mount-design.md)
 
 **Amended 2026-04-02:** Changed from auto mode to `bypassPermissions` after e2e validation showed auto mode's classifier prompts defeat the purpose of containerized autonomous execution.
 
-Agents run with `--dangerously-skip-permissions` (`"defaultMode": "bypassPermissions"` in settings.json) inside containers. The permission system is entirely bypassed. Safety comes from the container boundary (hard limit on blast radius) and PreToolUse hooks (DCG + compound command blocker), which fire regardless of permission mode.
+**Amended 2026-06-03 (rip-cage-4r8):** Removed the compound-command blocker from the in-container hook set. **Counter-argument to its original inclusion:** it was kept to teach the agent away from "compound command abuse," but its real protected surface was permission-allowlist bypass (Claude Code prefix-matches only the *first* command) — and under `bypassPermissions` the allowlist does not gate commands at all, so that surface is moot. The destructive-command class it was imagined to backstop is in fact fully covered by DCG *regardless of chaining*: DCG's rules are unanchored regexes matched over the whole command string (verified live in a cage 2026-06-03 — `echo hi && rm -rf ~`, `ls; rm -rf /important`, and `git status && git reset --hard HEAD~5` all DENY). The only other command-string guard, `block-ssh-bypass.sh`, is likewise chaining-robust (whole-command scan) and SSH is additionally network-backstopped (ADR-012 D8). So the compound blocker imposed real friction (it fired repeatedly on benign read-only commands) for no *unique* protection — a net loss under "it's annoying is a design signal" and "layers not walls / optimize for uninterrupted runs over theoretical blast-radius." DCG + `block-ssh-bypass.sh` remain the command-string guards.
+
+Agents run with `--dangerously-skip-permissions` (`"defaultMode": "bypassPermissions"` in settings.json) inside containers. The permission system is entirely bypassed. Safety comes from the container boundary (hard limit on blast radius) and PreToolUse hooks (DCG + `block-ssh-bypass.sh`), which fire regardless of permission mode.
 
 The key insight: **the container is the safety boundary, not the classifier.** If auto mode still requires human approval for edits, you might as well run auto mode on the host — the container adds no value. The whole point of rip-cage is fully autonomous background execution.
 
 Hooks provide two types of in-container safety:
-- **DCG** — blocks destructive commands, returns `"deny"` with explanation. Agent self-corrects.
-- **Compound command blocker** — rejects `&&`/`;`/`||`, returns `"deny"` with instructions to split. Agent self-corrects.
+- **DCG** — blocks destructive commands, returns `"deny"` with explanation. Agent self-corrects. Matches over the whole command string, so chaining (`&&`/`;`/`||`) does not evade it.
+- **ssh-bypass blocker** (`block-ssh-bypass.sh`) — denies ssh-family flags that defeat the cage host arrow (`-o UserKnownHostsFile`, `StrictHostKeyChecking=no/accept-new`), whole-command. (A compound-command blocker was part of this set until 2026-06-03 — see the amendment above for why it was removed.)
 
 Both are "block and redirect" hooks — they teach the agent to fix its approach without requiring human intervention. This is the correct pattern for autonomous containers.
 
-Phase 1 hooks: DCG (pre-built release binary), `block-compound-commands.sh`, and `bd prime` (beads, on both SessionStart and PreCompact). Host-specific hooks (`restrict-sensitive-paths.sh`, `allow-directory-commands.sh`, `notify.sh`, `block-harvest.sh`) are excluded — they depend on macOS binaries, host paths, or are redundant with container isolation.
+Phase 1 hooks: DCG (pre-built release binary), `block-ssh-bypass.sh`, and `bd prime` (beads, on both SessionStart and PreCompact). Host-specific hooks (`restrict-sensitive-paths.sh`, `allow-directory-commands.sh`, `notify.sh`, `block-harvest.sh`) are excluded — they depend on macOS binaries, host paths, or are redundant with container isolation.
 
-**Rationale:** E2e validation (2026-04-02) confirmed that auto mode's classifier prompts for file edits and other operations, requiring human presence at the terminal. This contradicts rip-cage's core value proposition: launch an agent, walk away, come back to results. `bypassPermissions` eliminates all permission prompts while hooks continue to provide guardrails against destructive commands and compound command abuse.
+**Rationale:** E2e validation (2026-04-02) confirmed that auto mode's classifier prompts for file edits and other operations, requiring human presence at the terminal. This contradicts rip-cage's core value proposition: launch an agent, walk away, come back to results. `bypassPermissions` eliminates all permission prompts while hooks continue to provide guardrails against destructive commands and ssh host-arrow bypass.
 
 Allow/deny lists in settings.json are bypassed in this mode but retained as documentation of intent. They would re-activate if the devcontainer path (VS Code) uses auto mode instead.
 
