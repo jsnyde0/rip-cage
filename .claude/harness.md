@@ -147,6 +147,14 @@ All follow the same PASS/FAIL/TOTAL convention; grep for `FAIL` in output.
 - **Catches:** rules file not loaded, proxy misconfigured, rule regex bugs
 - **Useful when:** editing `egress-rules.yaml`, `rip_cage_egress.py`, or `rip-proxy-start.sh`
 
+### Real-hardware / remote-cage verification over SSH
+- **What it is:** driving rip-cage on a real remote host (e.g. a fresh Mac mini via `ssh mac-mini`) to verify behavior the maintainer box masks — fresh-device cold-start UX, multi-arch GHCR image pull, `brew install` end-to-end. The local box always has a warm image + warm config; only a clean remote host proves the cold path. (Validated rip-cage-j86 / wo9, 2026-06-03.)
+- **OrbStack PATH gotcha:** `docker` (and `~/.orbstack/bin`, `/usr/local/bin/docker`) are on PATH only in a **login** shell. A non-login `ssh host "docker ..."` finds `/opt/homebrew/bin` (so `orb` resolves) but NOT `docker`. Wrap every rc/docker command: `ssh mac-mini "zsh -lc '<cmd>'"`.
+- **`rc up` over non-TTY ssh does NOT hang:** the attach helpers (`_up_attach_tmux` etc., rc ~3692-3768) are TTY-guarded (`[[ -t 0 && -t 1 ]]`). Non-TTY prints "Attach with: rc attach" and exits 0; the container (`sleep infinity`) persists. Drive in-cage work afterward via `docker exec -u agent -w /workspace <container> ...`.
+- **Patched-rc without a release:** rc is a single bash script — overwrite the brew Cellar `libexec/rc` in place (siblings Dockerfile/hooks/pi/init stay intact, `_resolve_script_dir` still resolves) to test a patched rc on a real device before tagging. Restore with `brew upgrade` to the clean official build.
+- **pi guard smoketest over docker exec:** a bare "run X" `pi -p` prompt yields EMPTY output when the guard blocks (pi emits no final text) — the block is invisible. Use a REPORT-style prompt: "run X, then tell me verbatim whether it ran or was blocked and paste the exact message." Same authed LOAD+FIRE altitude as the `pi -p` cell above, reached remotely.
+- **Gotcha:** a prompt that itself contains `&&` / `;` / `||` trips the *local* compound hook before it ever reaches the remote shell — Write it to a `/workspace` file and feed via `pi -p "$(cat ...)"` (see bd memory `compound-hook-fires-on-remote-bound-operators`).
+
 ---
 
 ## Tools & CLIs
