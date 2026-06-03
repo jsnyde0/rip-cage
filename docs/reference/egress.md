@@ -1,6 +1,6 @@
 # Network egress firewall
 
-Rip cage watches every outbound connection the agent makes and decides what's allowed to leave. This is a **network-layer** control — distinct from the command-level guards (DCG, compound-command blocker) that gate what the agent runs in the shell. It's enabled by default on `rc up`; `RIP_CAGE_EGRESS=off` disables it entirely. Under the hood: an L7 TLS-MITM proxy (mitmproxy) intercepts HTTP/HTTPS, a DNS resolver sidecar inspects port-53 queries, and iptables refuses TCP-22 to hosts that aren't on the allowlist. See [ADR-012](../decisions/ADR-012-egress-firewall.md) for the full rationale.
+Rip cage watches every outbound connection the agent makes and decides what's allowed to leave. This is a **network-layer** control — distinct from the command-level guard (DCG) that gates what the agent runs in the shell. It's enabled by default on `rc up`; `RIP_CAGE_EGRESS=off` disables it entirely. Under the hood: an L7 TLS-MITM proxy (mitmproxy) intercepts HTTP/HTTPS, a DNS resolver sidecar inspects port-53 queries, and iptables refuses TCP-22 to hosts that aren't on the allowlist. See [ADR-012](../decisions/ADR-012-egress-firewall.md) for the full rationale.
 
 ---
 

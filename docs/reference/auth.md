@@ -86,11 +86,9 @@ Pi supports a wide range of providers: Anthropic (Claude), OpenAI (including Cod
 
 ### Pi safety model
 
-Inside the cage, pi runs without command-level DCG / compound-blocker enforcement. Container isolation, non-root user, and the egress firewall remain active.
+Inside the cage, pi enforces the same destructive-command guard (DCG) as Claude Code, via an image-baked `dcg-gate.ts` extension that auto-loads from a cage-owned path and forwards bash tool calls to the shared `dcg` binary (ADR-019 D8; shipped in rip-cage-bl1). Container isolation, non-root user (`agent`, uid 1000), `--cap-drop=ALL --no-new-privileges`, and the L7 egress firewall (ADR-012) are also active.
 
-DCG and the compound-command blocker are wired to Claude Code via Claude's PreToolUse hook config. Pi has a different extension API (`pi.on("tool_call", ...)`) and Phase 0 does not add a pi extension. The safety stack for pi in Phase 0 is: container isolation, non-root user (`agent`, uid 1000), `--cap-drop=ALL --no-new-privileges`, and the L7 egress denylist firewall (ADR-012).
-
-Phase 1 will add a pi extension that calls dcg for bash-tool enforcement; see the [design doc](../../history/2026-04-25-pi-coding-agent-phase0-design.md).
+There is no compound-command blocker on pi or Claude Code — it was removed 2026-06-03 because DCG matches over the whole command string regardless of `&&`/`;`/`||` chaining, which made the blocker redundant for destructive-command containment (ADR-002 D5).
 
 ### Why rip-cage doesn't ship paranoid mode
 

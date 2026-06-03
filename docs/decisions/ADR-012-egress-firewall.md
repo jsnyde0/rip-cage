@@ -206,7 +206,7 @@ Under ADR-024 D1's threat model, the 80/20 cut shifts: the asymmetry that made "
 
 HTTP/3 block is mechanical: any policy that doesn't address QUIC is bypassable by every modern HTTP client. Per production-pattern research, "block UDP/443 outbound to force HTTP/2 fallback" is the standard cheap mitigation.
 
-Other non-HTTP (SMTP, arbitrary ports) remains out of scope. Same reasoning as the pre-evolution stance: rip-cage is not a firewall product; DCG + compound-blocker + container isolation + filesystem sandbox cover those vectors with sufficient defense-in-depth for the named threat model. An agent that compiles its own tooling to exfil over raw TCP to a high port is still the accepted residual risk.
+Other non-HTTP (SMTP, arbitrary ports) remains out of scope. Same reasoning as the pre-evolution stance: rip-cage is not a firewall product; DCG + container isolation + filesystem sandbox cover those vectors with sufficient defense-in-depth for the named threat model. An agent that compiles its own tooling to exfil over raw TCP to a high port is still the accepted residual risk.
 
 **Alternatives considered:**
 
