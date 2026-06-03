@@ -6049,8 +6049,17 @@ _config_ensure_global_seeded() {
   if [[ -f "$_path" ]]; then
     return 0
   fi
-  mkdir -p "$(dirname "$_path")"
-  _config_default_global_yaml > "$_path"
+  # Fail-loud, self-enforcing presence guarantee (ADR-001): do NOT rely on the
+  # caller's `set -e`. The denylist matcher fails open without a valid config, so
+  # a silent seed-failure here would re-open the very hole this seeding closes.
+  if ! mkdir -p "$(dirname "$_path")"; then
+    echo "Error: failed to create config directory for ${_path}." >&2
+    exit 1
+  fi
+  if ! _config_default_global_yaml > "$_path" || [[ ! -s "$_path" ]]; then
+    echo "Error: failed to seed default secret-path denylist at ${_path}. The denylist matcher fails open without a valid config; refusing to continue (ADR-023 D6 / ADR-001)." >&2
+    exit 1
+  fi
   echo "rip-cage: seeded default secret-path denylist at ${_path} (first run; run 'rc config show' to view, or edit to customize)." >&2
 }
 

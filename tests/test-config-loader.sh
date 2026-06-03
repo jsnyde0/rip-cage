@@ -30,6 +30,8 @@
 #         (D5 regression contract — substrate must not abort in the both-absent case)
 #     T19 _config_validate_or_abort exits non-zero when a config file exists but
 #         yq is missing (ADR-021 implementation notes: no silent degradation)
+#     T39 _config_validate_or_abort: global config present + yq absent ⇒ non-zero
+#         exit AND stderr names "rip-cage config dependency" (rip-cage-j86 review)
 #
 # Tests do NOT require docker — pure host-side loader logic only.
 # Container label / first-run hint behavior is covered by e2e tests.
@@ -786,6 +788,30 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
+# T39: yq absent + GLOBAL config present ⇒ fail-loud with dependency message
+# (rip-cage-j86 review: acceptance bullet "yq absent + config present → accurate
+# message naming yq as a rip-cage config dependency")
+# ---------------------------------------------------------------------------
+
+test_t39_validate_yq_missing_with_global_config_emits_dependency_message() {
+  setup_sandbox "config-global-basic.yaml" ""
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    PATH="/usr/bin:/bin" \
+    bash -c "source '$RC'; _config_validate_or_abort '$TEST_WS'" 2>"$stderr_file" \
+    || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -q "rip-cage config dependency" "$stderr_file"; then
+    pass "T39 yq absent + global config present ⇒ non-zero exit + 'rip-cage config dependency' in stderr"
+  else
+    fail "T39 expected non-zero exit + 'rip-cage config dependency' message, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -828,6 +854,7 @@ test_t35_absent_network_mode_is_null_not_enum
 test_t36_network_writable_not_subset_aborts
 test_t37_network_writable_hosts_additive_merge
 test_t38_network_mode_invalid_aborts
+test_t39_validate_yq_missing_with_global_config_emits_dependency_message
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then
