@@ -82,9 +82,10 @@ HOST_PREFIX=$(docker exec "$CONTAINER_NAME" sh -c 'awk "/^<!-- begin:rip-cage-to
 [ -z "$HOST_PREFIX" ] || { echo "FAIL: host content found before cage-topology marker: $HOST_PREFIX"; exit 1; }
 
 # 9. Verify hook paths in settings.json match actual files
+# NOTE: block-compound-commands.sh removed in rip-cage-4r8 — DCG is chaining-robust.
 echo "Step 9: Verify hook path consistency..."
 docker exec "$CONTAINER_NAME" test -x /usr/local/bin/dcg
-docker exec "$CONTAINER_NAME" test -x /usr/local/lib/rip-cage/hooks/block-compound-commands.sh
+docker exec "$CONTAINER_NAME" test -x /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh
 
 # 10. Verify persistent state symlinks (from init step 3)
 echo "Step 10: Verify persistent state..."

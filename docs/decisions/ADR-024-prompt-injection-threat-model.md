@@ -58,8 +58,8 @@ Layer mapping (informative — load-bearing decisions live in their own ADRs):
 
 | Layer | Exfil axis | On-device-harm axis |
 |---|---|---|
-| DCG (ADR-004) | weak (curl is not destructive) | strong |
-| Compound-blocker (ADR-004) | weak | strong |
+| DCG (ADR-004) — chaining-robust (unanchored whole-command regex) | weak (curl is not destructive) | strong |
+| ~~Compound-blocker~~ (removed rip-cage-4r8; see ADR-002 D5 — DCG is chaining-robust) | n/a | n/a |
 | Mount denylist (ADR-023) | strong (creds not in cage) | strong (host files not reachable) |
 | Egress firewall (ADR-012, evolved) | strong (network-layer block) | n/a |
 | ssh-agent scope (ADR-017, evolved) | strong (cannot mirror to attacker repo) | n/a |

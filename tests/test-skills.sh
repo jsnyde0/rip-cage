@@ -257,7 +257,7 @@ echo "=== Settings Merge Idempotency Check ==="
 echo ""
 
 # 11. PreToolUse hooks not doubled (catches the resume re-merge bug)
-# On fresh init: 3 hooks (dcg + block-compound-commands + block-ssh-bypass).
+# On fresh init: 2 hooks (dcg + block-ssh-bypass). Compound blocker removed rip-cage-4r8.
 # Source of truth: /etc/rip-cage/settings.json shipped with the image.
 # If init-rip-cage.sh was re-run with the old ~/.claude/settings.json as merge
 # source, hooks would double on each resume. This test catches that by counting

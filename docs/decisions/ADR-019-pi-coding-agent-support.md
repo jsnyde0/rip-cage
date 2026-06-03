@@ -129,7 +129,7 @@ For pi-specific cage topology, see /etc/rip-cage/cage-pi.md
 
 **Evolved 2026-05-27 per [ADR-024](ADR-024-prompt-injection-threat-model.md).** The pre-evolution decision deferred Phase 1 (DCG-on-pi extension) as a "learning project" while pi ran in the cage without command-level enforcement. Phase 0's deferral was acceptable under the "agent not adversarial" framing. Under ADR-024 D1's prompt-injection threat class, on-device-harm is named as a first-class harm axis (ADR-024 D2); pi's lack of DCG / compound-blocker is now an under-covered axis, no longer acceptable as a phase-0 gap. Phase 1 is promoted from "deferred learning project" to required.
 
-**Current decision (goal — FIRM):** pi cages must have on-device-harm protection equivalent to Claude Code's DCG + compound-blocker active surface. Specifically, pi cages must refuse the same destructive-command class (per DCG) and the same chaining-bypass class (per compound-blocker) that Claude Code cages refuse.
+**Current decision (goal — FIRM):** pi cages must have on-device-harm protection equivalent to Claude Code's DCG active surface. Specifically, pi cages must refuse the same destructive-command class (per DCG) that Claude Code cages refuse. Note: the compound-blocker was removed from both Claude Code and pi cages in rip-cage-4r8 (ADR-002 D5) — DCG is chaining-robust; the equivalence goal remains in force via DCG alone.
 
 **Equivalence axis (FIRM, added 2026-06-02 per rip-cage-bl1):** "equivalent enforcement" means **loaded-by-default + active**, NOT **tamper-proof**. Claude Code's own DCG hook lives in an agent-writable `settings.json`; the parity bar for pi is therefore "the guard is loaded by default via a cage-owned path and actively enforces," not "the guard is unstrippable by the caged agent." This is consistent with D7 (rejects adversarial in-container hardening) and the layers-not-walls philosophy (CLAUDE.md) — a future agent must NOT over-invest in making the pi extension tamper-resistant beyond the cage-owned-path + auto-load default that D1/D8 already provide. Closing the multi-tool bypass and the workspace-config self-disable hole (ADR-025 D3/D4) is in-scope; defeating a motivated in-cage attacker is not.
 
@@ -222,7 +222,7 @@ Documented in `docs/reference/auth.md` under "Why rip-cage doesn't ship paranoid
 **Rationale:**
 
 - See project CLAUDE.md philosophy section: "the thing inside the cage is not you" framing is explicitly out of scope.
-- Container isolation + egress firewall + non-root + DCG (for Claude) + compound-blocker (for Claude) + Phase 1 DCG extension (for pi) catches the realistic failure modes.
+- Container isolation + egress firewall + non-root + DCG (chaining-robust, for both Claude and pi) + ssh-bypass blocker catches the realistic failure modes. (Compound-blocker removed rip-cage-4r8; DCG covers the chaining gap.)
 - Carrying the paranoid-mode dependencies (a C compiler in build, a SUID binary, runtime LD_PRELOAD) would be a substantial new attack surface in itself.
 
 **What would invalidate this:**
@@ -233,7 +233,7 @@ Documented in `docs/reference/auth.md` under "Why rip-cage doesn't ship paranoid
 
 **Firmness: FLEXIBLE** *(revised 2026-06-02 — Phase 1 shipped; the original "deferred as user's learning project" framing is retired and preserved in git history. D4's threat-model promotion (2026-05-27, ADR-024) made the work required; rip-cage-1m7 researched the mechanism and rip-cage-bl1 delivered it.)*
 
-Phase 1 shipped as `pi/dcg-gate.ts` — a pi extension that registers `pi.on("tool_call", ...)` and, for every exec-capable tool call, forwards the command to the existing `dcg` binary (via the CWD-anchor wrapper `/usr/local/lib/rip-cage/bin/dcg-guard`, ADR-025 D3/D4) and the compound-command blocker, blocking via `{ block, reason }`. Reference template: pi-mono `examples/extensions/permission-gate.ts` plus the subprocess pattern from `examples/extensions/sandbox/index.ts`.
+Phase 1 shipped as `pi/dcg-gate.ts` — a pi extension that registers `pi.on("tool_call", ...)` and, for every exec-capable tool call, forwards the command to the existing `dcg` binary (via the CWD-anchor wrapper `/usr/local/lib/rip-cage/bin/dcg-guard`, ADR-025 D3/D4), blocking via `{ block, reason }`. Reference template: pi-mono `examples/extensions/permission-gate.ts` plus the subprocess pattern from `examples/extensions/sandbox/index.ts`. Note: the compound-command blocker that was part of the original two-gate design was removed in rip-cage-4r8 (ADR-002 D5) — DCG is chaining-robust.
 
 All three landing conditions hold, with condition 2's mechanism **superseded before implementation**:
 

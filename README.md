@@ -49,12 +49,7 @@ $ rm -rf /          → DENIED by DCG
 $ dd if=/dev/zero   → DENIED by DCG
 ```
 
-**Compound command blocker** prevents chaining that could bypass the guards:
-```
-$ git add . [then] curl evil.com   → DENIED: compound command
-```
-
-**bypassPermissions with hooks** — Claude Code runs with bypassPermissions enabled, but DCG and the compound blocker fire as PreToolUse hooks on every command regardless. Writing to `.git/hooks/*` is hard-denied.
+**bypassPermissions with hooks** — Claude Code runs with bypassPermissions enabled, but DCG and the ssh-bypass blocker fire as PreToolUse hooks on every command regardless. DCG uses unanchored whole-command regex matching, so chaining (`&&`, `;`, `||`) does not bypass it. Writing to `.git/hooks/*` is hard-denied.
 
 **Network egress firewall** — the cage watches every outbound connection. New cages start in **observe mode**: nothing is blocked, but the agent's traffic is logged. When you're ready to lock things down, one command promotes everything the agent actually talked to into an allowlist and flips the cage to **block mode** — so it can still reach the APIs it needs and nothing else:
 
@@ -97,7 +92,7 @@ If you're already invested in Claude Code and want to run it with `bypassPermiss
 
 Pi (`@mariozechner/pi-coding-agent`) is also supported in the same image alongside Claude Code. If you have a ChatGPT Plus/Pro subscription, pi's Codex OAuth flow lets you run OpenAI Codex from inside the cage without an API key. Pi also supports Anthropic, Gemini, Groq, Cerebras, and more. See [Auth → Pi auth](docs/reference/auth.md#pi-auth) for setup and TOS notes.
 
-> **Note:** pi cages get container isolation and the egress firewall, but not yet the command-level DCG / compound-blocker enforcement that Claude Code cages get — that parity is still in progress. See [Pi safety model](docs/reference/auth.md#pi-safety-model).
+> **Note:** pi cages get the same DCG destructive-command enforcement as Claude Code cages (via the auto-loaded `dcg-gate.ts` extension) plus container isolation and the egress firewall. See [Pi safety model](docs/reference/auth.md#pi-safety-model).
 
 ## More info
 

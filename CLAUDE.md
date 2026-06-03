@@ -1,6 +1,6 @@
 # Rip Cage — Agent Context
 
-You're working on **rip-cage**, a Docker-based sandbox for running Claude Code agents with a safety stack (DCG + compound command blocker + PreToolUse hooks) so they can operate with bypassPermissions mode without nuking anything.
+You're working on **rip-cage**, a Docker-based sandbox for running Claude Code agents with a safety stack (DCG + ssh-bypass blocker + PreToolUse hooks) so they can operate with bypassPermissions mode without nuking anything.
 
 ## Philosophy — read this before designing anything
 
@@ -9,7 +9,7 @@ The cage **limits blast radius**. It does not prevent all danger, and it is not 
 What this means in practice when you propose changes:
 
 - **Agent autonomy is the product.** The point of the cage is that a human can walk away and let the agent keep working. Any design that forces human intervention on a legitimate operation (credential prompts, TTY dialogs, interactive approvals, "please run this on the host") defeats the purpose.
-- **Layers, not walls.** DCG, compound blocker, filesystem sandbox, egress denylist, push-less defaults — each catches a class of accidents. None of them individually is a security boundary against a motivated attacker, and pretending they are leads to over-strict designs.
+- **Layers, not walls.** DCG, ssh-bypass blocker, filesystem sandbox, egress denylist, push-less defaults — each catches a class of accidents. None of them individually is a security boundary against a motivated attacker, and pretending they are leads to over-strict designs.
 - **80/20, not 100/0.** The L7 egress firewall is a denylist of known-bad exfil hosts, not a whitelist of approved APIs. Same principle for everything else: block the obvious accident, don't gate the legitimate work.
 - **"It's annoying" is a design signal.** If an agent hits something the cage blocks and the right human response is "just turn it off," the default is probably wrong. Revisit the decision.
 
@@ -24,7 +24,7 @@ Host (macOS/Linux)
 ├── init-rip-cage.sh        Runs inside the container on start. Sets up auth, settings, hooks, git identity, beads
 ├── settings.json           Claude Code config — bypassPermissions, PreToolUse hooks
 ├── hooks/
-│   └── block-compound-commands.sh   Denies &&, ;, || chains. Suggests splitting.
+│   └── block-ssh-bypass.sh          Denies ssh/scp/sftp with host-key-override flags.
 ├── tests/                  Test scripts (test-safety-stack.sh, test-rc-commands.sh, etc.)
 └── zshrc                   Minimal zshrc for the container agent user
 ```

@@ -214,7 +214,7 @@ Commands:
   allowlist add <host> [--cage=<name>]         Append host to network.allowed_hosts (idempotent; --output json)
   allowlist show [--effective] [--observed]    Show configured/effective/observed blocked hosts
   allowlist promote --from-observed [--cage]   Merge observed blocked hosts + flip mode=block + rc reload
-  test [name]                                  Run in-container safety stack tests (61 checks)
+  test [name]                                  Run in-container safety stack tests
   test --host                                  Run all host-side tests (host-only; not usable inside container)
   test --e2e                                   Full lifecycle e2e test (slow; RC_E2E_REBUILD=1 to rebuild image)
   test --e2e-security                          Injection-exfil integration probes (slow; real cages; RC_E2E_REBUILD=1 to rebuild)

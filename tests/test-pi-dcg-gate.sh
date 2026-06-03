@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-pi-dcg-gate.sh — Regression suite for pi-cage DCG + compound-blocker parity (rip-cage-bl1)
+# test-pi-dcg-gate.sh — Regression suite for pi-cage DCG parity (rip-cage-bl1)
 #
 # Tests that the dcg-gate.ts extension:
 #   - Exists at the cage-owned auto-discovery path
@@ -7,10 +7,13 @@
 #     don't cause dcg to fail open)
 #   - Blocks destructive DCG core-pack class commands
 #   - Allows safe commands (rm -rf /tmp/..., push --force-with-lease, checkout -b)
-#   - Blocks compound commands (&&, ;, ||)
 #   - Does NOT block single legitimate commands
 #
-# This test exercises the guard LOGIC (via the underlying dcg-guard + compound-check scripts
+# NOTE: compound-blocker section removed in rip-cage-4r8. DCG is chaining-robust
+# (unanchored whole-command regex matching); see rip-cage-4r8 regression tests in
+# test-safety-stack.sh (checks 11f/11g/11h) for the chaining-robustness assertions.
+#
+# This test exercises the guard LOGIC (via the underlying dcg-guard script
 # it delegates to) rather than pi itself — a headless pi session with auth is deferred to
 # the e2e harness. The structural + delegation tests here are the regression guard (acceptance #7).
 #
@@ -197,57 +200,6 @@ if echo "$dcg_no_eval" | grep -qE '"permissionDecision".*"deny"'; then
 else
   check "DCG pinning: unknown tool_name mcp_exec fails open without pinning (sensitivity proof)" "pass" \
     "mcp_exec NOT evaluated by dcg — confirms dcg-gate MUST pin to bash for MCP tools"
-fi
-
-# -----------------------------------------------------------------------
-# 5. Compound-command blocker delegation
-# -----------------------------------------------------------------------
-echo ""
-echo "-- Compound-command blocker --"
-
-COMPOUND_SCRIPT="/usr/local/lib/rip-cage/hooks/block-compound-commands.sh"
-if [[ ! -x "$COMPOUND_SCRIPT" ]]; then
-  check "compound blocker script present" "fail" "missing: $COMPOUND_SCRIPT"
-fi
-
-# 5a. && chain denied
-cmp_and=$(printf '{"tool_name":"Bash","tool_input":{"command":"ls /tmp && rm -rf /"}}' | "$COMPOUND_SCRIPT" 2>/dev/null || true)
-if echo "$cmp_and" | grep -qE '"permissionDecision".*"deny"'; then
-  check "Compound gate: && chain denied" "pass"
-else
-  check "Compound gate: && chain denied" "fail" "$cmp_and"
-fi
-
-# 5b. ; chain denied (single ; not ;;)
-cmp_semi=$(printf '{"tool_name":"Bash","tool_input":{"command":"ls /tmp; rm -rf /"}}' | "$COMPOUND_SCRIPT" 2>/dev/null || true)
-if echo "$cmp_semi" | grep -qE '"permissionDecision".*"deny"'; then
-  check "Compound gate: ; chain denied" "pass"
-else
-  check "Compound gate: ; chain denied" "fail" "$cmp_semi"
-fi
-
-# 5c. || chain denied
-cmp_or=$(printf '{"tool_name":"Bash","tool_input":{"command":"false || rm -rf /"}}' | "$COMPOUND_SCRIPT" 2>/dev/null || true)
-if echo "$cmp_or" | grep -qE '"permissionDecision".*"deny"'; then
-  check "Compound gate: || chain denied" "pass"
-else
-  check "Compound gate: || chain denied" "fail" "$cmp_or"
-fi
-
-# 5d. Quoted ; does NOT trigger (quote-aware)
-cmp_quoted=$(printf '{"tool_name":"Bash","tool_input":{"command":"echo \"hello;world\""}}' | "$COMPOUND_SCRIPT" 2>/dev/null || true)
-if [[ -z "$cmp_quoted" ]]; then
-  check "Compound gate: quoted ; not blocked (quote-aware)" "pass"
-else
-  check "Compound gate: quoted ; not blocked (quote-aware)" "fail" "$cmp_quoted"
-fi
-
-# 5e. Single legitimate command allowed
-cmp_legit=$(printf '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | "$COMPOUND_SCRIPT" 2>/dev/null || true)
-if [[ -z "$cmp_legit" ]]; then
-  check "Compound gate: single git status allowed" "pass"
-else
-  check "Compound gate: single git status allowed" "fail" "$cmp_legit"
 fi
 
 # -----------------------------------------------------------------------

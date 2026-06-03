@@ -75,11 +75,9 @@ The test suite (`tests/test-safety-stack.sh`) runs 30+ checks organized into sec
 
 **User & Environment** — verifies the container agent runs as the `agent` user (uid 1000, not root) and that `/workspace` is mounted and writable.
 
-**Settings & Safety Stack** — verifies `settings.json` is present, valid JSON, has `bypassPermissions` mode, and has all hooks wired: DCG, compound command blocker, and the `.git/hooks` write deny rule.
+**Settings & Safety Stack** — verifies `settings.json` is present, valid JSON, has `bypassPermissions` mode, and has all hooks wired: DCG, ssh-bypass blocker, and the `.git/hooks` write deny rule.
 
-**DCG functional** — sends a destructive command through DCG and confirms it returns a `deny` decision.
-
-**Compound blocker functional** — sends a `&&`-chained command through the compound blocker and confirms denial.
+**DCG functional** — sends a destructive command (plain and chained via `&&`/`;`) through DCG and confirms it returns a `deny` decision. DCG is chaining-robust (unanchored whole-command regexes); the compound-command blocker was removed in rip-cage 0.6.0 as its only real purpose was permission-allowlist bypass, which is moot under `bypassPermissions`.
 
 **Auth** — verifies OAuth credentials or API key is present and (if OAuth) the token is not expired.
 
@@ -106,7 +104,7 @@ Expected output when everything passes:
 PASS  [1] Container user is agent — agent
 PASS  [2] Not running as root — uid=1000
 ...
-=== Results: 32 passed, 0 failed (of 32) ===
+=== Results: N passed, 0 failed (of N) ===
 ```
 
 ## Making changes
@@ -129,7 +127,7 @@ The image is multi-stage. Changes to earlier stages invalidate the build cache f
 
 ### Hooks and settings
 
-`hooks/block-compound-commands.sh` and `settings.json` are security-critical. Changes to either require careful review. Any change that weakens the safety stack must include an explicit rationale.
+`hooks/block-ssh-bypass.sh` and `settings.json` are security-critical. Changes to either require careful review. Any change that weakens the safety stack must include an explicit rationale.
 
 ### Test script
 

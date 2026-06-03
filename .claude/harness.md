@@ -65,10 +65,10 @@ The repo splits tests into three tiers. See `tests/run-host.sh` for the canonica
 > - **No live containers / no Docker Hub pulls / no real builds in the host-only tier.** `docker run alpine` is flaky in CI (Docker Hub anon rate limits — passes one run, fails the next). Gate live-container sub-tests behind `RC_HOST_ONLY`. Never run a real `rc build`/`docker run` just to assert a log line — use a fake-docker PATH shim (test-json-output T9: 3.8s vs 7min).
 > - **compaudit on non-root checkout.** Bare `compinit` trips CI's insecure-directory check (group-writable fpath); macOS passes. Use `compinit -i` + a temp `-d` dumpfile, and capture stderr so a real syntax error still surfaces. (test-completions)
 
-### `./rc test <container-name>` — in-container safety stack (61 checks)
+### `./rc test <container-name>` — in-container safety stack
 - **What it is:** runs `tests/test-safety-stack.sh` inside a running rip-cage container
 - **Speed:** ~10-20s (needs a running container)
-- **Catches:** DCG present, compound blocker active, Claude Code settings wired, git identity set, beads initialized, skills mounted, egress rules loaded, CAGE_HOST_ADDR injected, CLAUDE.md topology markers
+- **Catches:** DCG present (chaining-robust), ssh-bypass blocker active, Claude Code settings wired, git identity set, beads initialized, skills mounted, egress rules loaded, CAGE_HOST_ADDR injected, CLAUDE.md topology markers. Note: compound-command blocker removed in rip-cage-4r8; DCG regression tests 11f/11g/11h lock in chaining-robustness.
 - **Useful when:** after `rc up`, or after changes to `Dockerfile`, `init-rip-cage.sh`, `settings.json`, `hooks/`, `egress-rules.yaml`
 - **Less useful when:** the container failed to start — use `rc doctor` instead
 - **Prereq:** working container. Env var `SKIP_AUTH=1` turns auth/beads/git-identity FAILs into INFO for integration runs
@@ -97,7 +97,7 @@ The repo splits tests into three tiers. See `tests/run-host.sh` for the canonica
 | Pi auth bind-mount + env vars (ADR-019 D1/D5) | `test-pi-auth-mount.sh` |
 | Pi AGENTS.md injection + idempotency (ADR-019 D3) | `test-pi-cage-context.sh` |
 | Pi end-to-end `pi -p` smoke (ADR-019) | `test-pi-e2e.sh` (skips when no host auth) |
-| Pi DCG + compound-blocker parity (ADR-019 D4, rip-cage-bl1) | `test-pi-dcg-gate.sh` (auth-free: structural + dcg-binary-via-wrapper + compound; wired into both `rc test` branches, conditional on pi present) |
+| Pi DCG parity (ADR-019 D4, rip-cage-bl1) | `test-pi-dcg-gate.sh` (auth-free: structural + dcg-binary-via-wrapper; wired into both `rc test` branches, conditional on pi present). Compound-blocker section removed rip-cage-4r8; chaining-robustness locked in test-safety-stack.sh 11f/11g/11h. |
 
 All follow the same PASS/FAIL/TOTAL convention; grep for `FAIL` in output.
 
@@ -171,7 +171,7 @@ All follow the same PASS/FAIL/TOTAL convention; grep for `FAIL` in output.
 - **Host preflight:** `_bd_host_preflight` inside `rc` validates host-side dolt connectivity; runs as part of `rc test`
 
 ### Global tools assumed present (not pinned)
-- `shellcheck`, `jq`, `docker`, `tmux`, `git`, `perl` (used by compound-blocker hook)
+- `shellcheck`, `jq`, `docker`, `tmux`, `git`, `perl` (used by block-ssh-bypass.sh)
 - Teammates without these installed will get prerequisite failures from `test-prerequisites.sh`
 
 ---
@@ -212,7 +212,7 @@ When no existing mechanism fits, build one of these:
 
 ## Conventions worth knowing
 
-- **Compound commands are blocked** by `hooks/block-compound-commands.sh` (active in this session too — see the hook error if you try `&&`/`;`/`||` in a single Bash call). Split commands into separate tool calls.
+- **Compound commands are no longer blocked** by a PreToolUse hook (removed in rip-cage-4r8 — DCG is chaining-robust). However, the local Bash environment in this repo's hooks still runs via the global Claude Code session; if you have a compound blocker active on the host (outside the cage), you may still need to split commands in your own session.
 - **`rc` is host-only.** It detects `/.dockerenv` and exits. Tests that orchestrate containers must run from the host.
 - **Container-name derivation** uses `parent/basename` of the workspace path. Collisions get a 4-char hash suffix. E2E tests depend on this — stage workspaces carefully to get a deterministic name.
 - **`.devcontainer/` and `.vscode/` are gitignored** — they're per-project scaffold from `rc init`. Don't commit.

@@ -207,14 +207,15 @@ else
 fi
 
 # Check 11: Hook path consistency
-hook_ok=0; dcg_ok=0
-docker exec "$CONTAINER_NAME" test -x /usr/local/lib/rip-cage/hooks/block-compound-commands.sh > /dev/null 2>&1 && hook_ok=1
+# NOTE: block-compound-commands.sh removed in rip-cage-4r8 — DCG is chaining-robust.
+ssh_hook_ok=0; dcg_ok=0
+docker exec "$CONTAINER_NAME" test -x /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh > /dev/null 2>&1 && ssh_hook_ok=1
 docker exec "$CONTAINER_NAME" test -x /usr/local/bin/dcg > /dev/null 2>&1 && dcg_ok=1
-if [[ "$hook_ok" -eq 1 && "$dcg_ok" -eq 1 ]]; then
-  check "hook path consistency (block-compound-commands.sh + dcg)" "pass"
+if [[ "$ssh_hook_ok" -eq 1 && "$dcg_ok" -eq 1 ]]; then
+  check "hook path consistency (block-ssh-bypass.sh + dcg)" "pass"
 else
-  check "hook path consistency (block-compound-commands.sh + dcg)" "fail" \
-    "hook=$hook_ok dcg=$dcg_ok"
+  check "hook path consistency (block-ssh-bypass.sh + dcg)" "fail" \
+    "ssh_hook=$ssh_hook_ok dcg=$dcg_ok"
 fi
 
 # Check 12: Pi verify line appears in init log (ADR-019 B3).

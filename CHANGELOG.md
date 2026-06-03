@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Compound-command blocker** (`hooks/block-compound-commands.sh`) removed from the in-container safety stack (both Claude Code `settings.json` and pi `dcg-gate.ts`). The blocker's only real protection was permission-allowlist bypass (Claude Code prefix-matches only the first command in a chain), which is moot under `bypassPermissions` — the cage default since rip-cage 0.4.x. The destructive-command class is fully covered by DCG regardless of chaining: DCG rules are unanchored whole-command regexes, verified live against `echo hi && rm -rf ~`, `ls; rm -rf /important`, and `git status && git reset --hard HEAD~5` — all DENY. `block-ssh-bypass.sh` is likewise chaining-robust. Regression tests 11f/11g/11h in `test-safety-stack.sh` lock in DCG and ssh-bypass chaining-robustness. See ADR-002 D5.
+
 ## [0.5.1] - 2026-06-03
 
 Smoother first run. A fresh `brew install` no longer needs a separate setup step before the first cage starts.

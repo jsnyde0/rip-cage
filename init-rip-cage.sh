@@ -268,10 +268,7 @@ if ! python3 -c "import tomllib; tomllib.load(open('/usr/local/lib/rip-cage/dcg/
   exit 1
 fi
 echo "[rip-cage] dcg-guard wrapper verified (CWD-anchor + pinned DCG_CONFIG active)"
-if [ ! -x /usr/local/lib/rip-cage/hooks/block-compound-commands.sh ]; then
-  echo "[rip-cage] ERROR: block-compound-commands.sh not found at /usr/local/lib/rip-cage/hooks/block-compound-commands.sh" >&2
-  exit 1
-fi
+# NOTE: compound blocker removed in rip-cage-4r8 — DCG is chaining-robust.
 # Verify python3 (required for skill-server.py MCP shim)
 if ! command -v python3 > /dev/null 2>&1; then
   echo "[rip-cage] ERROR: python3 not found — skill discovery (skill-server.py) will not work" >&2

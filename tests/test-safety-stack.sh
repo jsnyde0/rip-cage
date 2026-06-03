@@ -83,19 +83,14 @@ else
   check "settings.json wires DCG hook" "fail"
 fi
 
-# 9. settings.json has compound blocker hook wired
-if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/hooks/block-compound-commands.sh")' ~/.claude/settings.json >/dev/null 2>&1; then
-  check "settings.json wires compound blocker" "pass"
-else
-  check "settings.json wires compound blocker" "fail"
-fi
-
-# 9b. settings.json has ssh-bypass blocker hook wired (ADR-022 D5)
+# 9. settings.json has ssh-bypass blocker hook wired (ADR-022 D5)
+# NOTE: compound blocker removed in rip-cage-4r8 — DCG is chaining-robust (see 11f/11g).
 if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh")' ~/.claude/settings.json >/dev/null 2>&1; then
   check "settings.json wires ssh-bypass blocker" "pass"
 else
   check "settings.json wires ssh-bypass blocker" "fail"
 fi
+
 
 # 10. settings.json denies .git/hooks writes
 if jq -e '.permissions.deny[] | select(startswith("Write(.git/hooks"))' ~/.claude/settings.json >/dev/null 2>&1; then
@@ -206,15 +201,56 @@ else
 fi
 unset _sentinel_fixture _sentinel_cfg _additive_result
 
-# 12. Compound blocker denies chain
-compound_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"ls && rm foo"}}' | /usr/local/lib/rip-cage/hooks/block-compound-commands.sh 2>/dev/null || true)
-if echo "$compound_result" | grep -qE '"permissionDecision".*"deny"'; then
-  check "Compound blocker denies chain" "pass"
-else
-  check "Compound blocker denies chain" "fail" "$compound_result"
-fi
+# ---------------------------------------------------------------------------
+# DCG Chaining-Robustness Regression Suite (rip-cage-4r8)
+# Locks in that DCG denies destructive commands REGARDLESS of operator chaining.
+# DCG uses unanchored whole-command regex matching, so && and ; do not bypass it.
+# A future DCG version bump that anchors patterns would fail these loud.
+# ---------------------------------------------------------------------------
 
-# 12b. ssh-bypass blocker denies the verified bypass shape (ADR-022 D5)
+# 11f. DCG denies destructive command after && (chaining-robust)
+# Build JSON payload in a temp file — avoids literal && in a shell command string
+# (the local compound-blocker hook in active sessions scans raw Bash tool input,
+# not test-script shell lines, but writing to a file is the safe portable pattern).
+_dcg_chain_and_payload=$(mktemp /tmp/dcg-chain-and-XXXXXX.json)
+printf '{"tool_name":"Bash","tool_input":{"command":"echo hi && rm -rf ~"}}' > "$_dcg_chain_and_payload"
+_dcg_chain_and=$(cat "$_dcg_chain_and_payload" | /usr/local/lib/rip-cage/bin/dcg-guard 2>/dev/null || true)
+rm -f "$_dcg_chain_and_payload"
+if echo "$_dcg_chain_and" | grep -qE '"permissionDecision".*"deny"'; then
+  check "DCG chaining-robust: denies destructive after && (rip-cage-4r8)" "pass"
+else
+  check "DCG chaining-robust: denies destructive after && (rip-cage-4r8)" "fail" "$_dcg_chain_and"
+fi
+unset _dcg_chain_and_payload _dcg_chain_and
+
+# 11g. DCG denies destructive command after ; (chaining-robust)
+_dcg_chain_semi_payload=$(mktemp /tmp/dcg-chain-semi-XXXXXX.json)
+printf '{"tool_name":"Bash","tool_input":{"command":"ls; rm -rf /important"}}' > "$_dcg_chain_semi_payload"
+_dcg_chain_semi=$(cat "$_dcg_chain_semi_payload" | /usr/local/lib/rip-cage/bin/dcg-guard 2>/dev/null || true)
+rm -f "$_dcg_chain_semi_payload"
+if echo "$_dcg_chain_semi" | grep -qE '"permissionDecision".*"deny"'; then
+  check "DCG chaining-robust: denies destructive after ; (rip-cage-4r8)" "pass"
+else
+  check "DCG chaining-robust: denies destructive after ; (rip-cage-4r8)" "fail" "$_dcg_chain_semi"
+fi
+unset _dcg_chain_semi_payload _dcg_chain_semi
+
+# 11h. block-ssh-bypass denies chained ssh-bypass after && (chaining-robust)
+# Verifies block-ssh-bypass.sh scans the whole command string, not just the first command.
+_ssh_chain_payload=$(mktemp /tmp/ssh-chain-XXXXXX.json)
+printf '{"tool_name":"Bash","tool_input":{"command":"echo x && ssh -o StrictHostKeyChecking=no host"}}' > "$_ssh_chain_payload"
+_ssh_chain=$(cat "$_ssh_chain_payload" | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh 2>/dev/null || true)
+rm -f "$_ssh_chain_payload"
+if echo "$_ssh_chain" | grep -qE '"permissionDecision".*"deny"'; then
+  check "ssh-bypass chaining-robust: denies chained ssh-bypass (rip-cage-4r8)" "pass"
+else
+  check "ssh-bypass chaining-robust: denies chained ssh-bypass (rip-cage-4r8)" "fail" "$_ssh_chain"
+fi
+unset _ssh_chain_payload _ssh_chain
+
+# 12. ssh-bypass blocker denies the verified bypass shape (ADR-022 D5)
+# NOTE: compound blocker (formerly check 12) removed in rip-cage-4r8. DCG chaining-robustness
+# is regression-tested at 11f/11g. ssh-bypass chaining robustness at 11h.
 sshbypass_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/x git@gitlab.com"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh 2>/dev/null || true)
 if echo "$sshbypass_result" | grep -qE '"permissionDecision".*"deny"'; then
   check "ssh-bypass blocker denies UserKnownHostsFile+accept-new" "pass"
@@ -222,14 +258,14 @@ else
   check "ssh-bypass blocker denies UserKnownHostsFile+accept-new" "fail" "$sshbypass_result"
 fi
 
-# 12c. ssh-bypass refusal message points at .rip-cage.yaml + rc config init
+# 12b. ssh-bypass refusal message points at .rip-cage.yaml + rc config init
 if echo "$sshbypass_result" | grep -q '\.rip-cage\.yaml' && echo "$sshbypass_result" | grep -q 'rc config init'; then
   check "ssh-bypass refusal message names .rip-cage.yaml + rc config init" "pass"
 else
   check "ssh-bypass refusal message names .rip-cage.yaml + rc config init" "fail" "$sshbypass_result"
 fi
 
-# 12d. ssh-bypass blocker catches /usr/bin/ssh direct path call
+# 12c. ssh-bypass blocker catches /usr/bin/ssh direct path call
 sshbypass_direct=$(echo '{"tool_name":"Bash","tool_input":{"command":"/usr/bin/ssh -o StrictHostKeyChecking=no host"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh 2>/dev/null || true)
 if echo "$sshbypass_direct" | grep -qE '"permissionDecision".*"deny"'; then
   check "ssh-bypass blocker catches /usr/bin/ssh direct path" "pass"
@@ -237,7 +273,7 @@ else
   check "ssh-bypass blocker catches /usr/bin/ssh direct path" "fail" "$sshbypass_direct"
 fi
 
-# 12e. ssh-bypass blocker does NOT block legitimate ssh
+# 12d. ssh-bypass blocker does NOT block legitimate ssh
 sshbypass_legit=$(echo '{"tool_name":"Bash","tool_input":{"command":"ssh git@github.com"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh 2>/dev/null || true)
 if [[ -z "$sshbypass_legit" ]]; then
   check "ssh-bypass blocker allows legitimate ssh (no override flags)" "pass"

@@ -1,11 +1,11 @@
 /**
- * dcg-gate.ts — Rip Cage pi-cage DCG + compound-blocker guard (rip-cage-bl1)
+ * dcg-gate.ts — Rip Cage pi-cage DCG guard (rip-cage-bl1; compound-blocker removed rip-cage-4r8)
  *
- * Brings pi cages to DCG + compound-command parity with Claude Code cages.
+ * Brings pi cages to DCG parity with Claude Code cages.
  * Fires for EVERY pi tool call (not just "bash"), closing the multi-tool bypass
  * that a name-"bash"-only override would leave open.
  *
- * Two-gate design:
+ * Single-gate design (compound-blocker removed in rip-cage-4r8 — DCG is chaining-robust):
  *   1. DCG destructive-command guard — delegated to dcg-guard wrapper
  *      (/usr/local/lib/rip-cage/bin/dcg-guard, ADR-025 D3+D4 FIRM).
  *      The envelope always uses tool_name="bash" (a value in dcg's
@@ -14,25 +14,23 @@
  *      and silently FAILS OPEN for MCP/custom exec tools.
  *      Decision is read from dcg stdout JSON hookSpecificOutput.permissionDecision,
  *      NOT the exit code.
+ *      DCG rules are unanchored whole-command regexes, so chaining (&&, ;, ||)
+ *      does NOT bypass them — verified live 2026-06-03 (rip-cage-4r8).
  *
- *   2. Compound-command blocker — delegated to block-compound-commands.sh
- *      (/usr/local/lib/rip-cage/hooks/block-compound-commands.sh).
- *      Quote-aware &&, ;, || detection; strips quoted strings before scanning.
- *
- * On any deny → { block: true, reason } (agent receives readable refusal).
+ * On deny → { block: true, reason } (agent receives readable refusal).
  * On guard internal error → fail OPEN (undefined); logs to stderr — never wedge the agent.
  *
  * ADR refs: ADR-024 D2 (on-device-harm symmetry), ADR-019 D4 (goal-FIRM),
- *           ADR-025 D3/D4 (dcg-guard wrapper, FIRM), ADR-001 (fail-loud).
+ *           ADR-025 D3/D4 (dcg-guard wrapper, FIRM), ADR-001 (fail-loud),
+ *           ADR-002 D5 (compound-blocker removal rationale).
  */
 
 import { spawnSync } from "node:child_process";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
-// Paths to the cage-owned, root-owned (agent-unwritable) guard scripts.
-// These are baked into the image; the agent cannot modify or delete them.
+// Path to the cage-owned, root-owned (agent-unwritable) DCG guard wrapper.
+// Baked into the image; the agent cannot modify or delete it.
 const DCG_GUARD = "/usr/local/lib/rip-cage/bin/dcg-guard";
-const COMPOUND_SCRIPT = "/usr/local/lib/rip-cage/hooks/block-compound-commands.sh";
 
 /**
  * Extract a command string from a tool input, if present.
@@ -118,58 +116,6 @@ function callDcgGuard(command: string): { decision: "deny"; reason: string } | {
 	return { decision: "allow" };
 }
 
-/**
- * Call the compound-command blocker script.
- * Envelope uses tool_name="Bash" (matching block-compound-commands.sh expectations).
- *
- * Returns { decision: "deny", reason } | { decision: "allow" } | { decision: "error", message }
- */
-function callCompoundBlocker(command: string): { decision: "deny"; reason: string } | { decision: "allow" } | { decision: "error"; message: string } {
-	const envelope = JSON.stringify({
-		tool_name: "Bash",
-		tool_input: { command },
-	});
-
-	let result: ReturnType<typeof spawnSync>;
-	try {
-		result = spawnSync(COMPOUND_SCRIPT, [], {
-			input: envelope,
-			encoding: "utf8",
-			timeout: 3000,
-		});
-	} catch (err) {
-		return { decision: "error", message: `compound-blocker spawn failed: ${err instanceof Error ? err.message : String(err)}` };
-	}
-
-	if (result.error) {
-		return { decision: "error", message: `compound-blocker error: ${result.error.message}` };
-	}
-
-	const stdout = result.stdout ?? "";
-	if (!stdout.trim()) {
-		// No output → allow (not compound)
-		return { decision: "allow" };
-	}
-
-	let parsed: Record<string, unknown>;
-	try {
-		parsed = JSON.parse(stdout);
-	} catch {
-		return { decision: "allow" };
-	}
-
-	const hookOutput = parsed?.hookSpecificOutput as Record<string, unknown> | undefined;
-	const permissionDecision = hookOutput?.permissionDecision;
-
-	if (permissionDecision === "deny") {
-		const reason = (hookOutput?.permissionDecisionReason as string | undefined)
-			?? "Command blocked: compound commands (&&, ;, ||) are not allowed";
-		return { decision: "deny", reason };
-	}
-
-	return { decision: "allow" };
-}
-
 export default function (pi: ExtensionAPI) {
 	pi.on("tool_call", async (event) => {
 		const ev = event as { toolName: string; input: Record<string, unknown> };
@@ -181,10 +127,12 @@ export default function (pi: ExtensionAPI) {
 			return undefined;
 		}
 
-		// Gate 1: DCG destructive-command guard
+		// DCG destructive-command guard
 		// CRITICAL: always pass tool_name="bash" to dcg regardless of ev.toolName —
 		// otherwise dcg's is_supported_shell_tool filter returns no-command and silently
 		// FAILS OPEN for MCP/custom tool names not in dcg's allowlist.
+		// DCG uses unanchored whole-command regexes — chaining (&&, ;, ||) does NOT bypass
+		// it; a compound-blocker is therefore not needed here (rip-cage-4r8 / ADR-002 D5).
 		const dcgResult = callDcgGuard(command);
 		if (dcgResult.decision === "deny") {
 			return { block: true, reason: dcgResult.reason };
@@ -192,17 +140,6 @@ export default function (pi: ExtensionAPI) {
 		if (dcgResult.decision === "error") {
 			// Fail open: log but don't block the agent
 			console.error(`[rip-cage dcg-gate] dcg-guard internal error (failing open): ${dcgResult.message}`);
-			return undefined;
-		}
-
-		// Gate 2: Compound-command blocker
-		const compoundResult = callCompoundBlocker(command);
-		if (compoundResult.decision === "deny") {
-			return { block: true, reason: compoundResult.reason };
-		}
-		if (compoundResult.decision === "error") {
-			// Fail open: log but don't block the agent
-			console.error(`[rip-cage dcg-gate] compound-blocker internal error (failing open): ${compoundResult.message}`);
 			return undefined;
 		}
 

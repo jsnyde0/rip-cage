@@ -6,12 +6,14 @@ The safety stack intercepts every shell command via Claude Code's hook system in
 
 Two hooks run before every Bash command:
 
-1. **DCG** (`/usr/local/bin/dcg`) — Rust binary, built from source in the Dockerfile. Blocks destructive commands like `rm -rf`, `dd if=/dev/zero`, filesystem formatting, etc.
-2. **Compound command blocker** (`hooks/block-compound-commands.sh`) — Perl-based detection of `&&`, `;`, `||` outside quotes and heredocs. Prevents permission bypass via command chaining.
+1. **DCG** (`/usr/local/lib/rip-cage/bin/dcg-guard`) — Rust binary, built from source in the Dockerfile. Blocks destructive commands like `rm -rf`, `dd if=/dev/zero`, filesystem formatting, etc. DCG rules use unanchored whole-command regex matching, so operator chaining (`&&`, `;`, `||`) does **not** bypass them — verified live 2026-06-03.
+2. **SSH-bypass blocker** (`hooks/block-ssh-bypass.sh`) — Perl-based detection of `ssh`/`scp`/`sftp` invocations with host-key-override flags (`-o StrictHostKeyChecking=no`, `-o UserKnownHostsFile=...`). Also whole-command (chaining-robust). See ADR-022.
+
+> **Why no compound-command blocker?** A `block-compound-commands.sh` hook existed until rip-cage 0.6.0 (removed in rip-cage-4r8). Its only real purpose was permission-allowlist bypass — Claude Code prefix-matches only the *first* command, so an allowlisted `git add` followed by `&& rm -rf` could bypass the allowlist. Under `bypassPermissions` (the cage default) the allowlist does not gate commands at all, making that protection moot. The destructive-command class is fully covered by DCG regardless of chaining. See ADR-002 D5 for the full rationale.
 
 ## bypassPermissions
 
-Claude Code runs with `bypassPermissions` enabled in `settings.json`. This means the permission allowlist doesn't gate commands — but DCG and the compound blocker still fire as PreToolUse hooks on every command regardless. The hooks provide the actual safety layer.
+Claude Code runs with `bypassPermissions` enabled in `settings.json`. This means the permission allowlist doesn't gate commands — but DCG and the ssh-bypass blocker still fire as PreToolUse hooks on every command regardless. The hooks provide the actual safety layer.
 
 The `deny` entries in `settings.json` (e.g., `Write(.git/hooks/*)`, `Edit(.git/hooks/*)`) are enforced independently of `bypassPermissions` — they fire as part of the permissions system and block matching tool calls even in bypass mode.
 
@@ -40,5 +42,5 @@ A host-side pattern denylist runs at `rc up` time, before the container exists, 
 After starting a container, verify the safety stack:
 
 ```bash
-rc test <container-name>    # should be 32/32 PASS
+rc test <container-name>    # all checks PASS (count grows with safety-stack additions)
 ```
