@@ -318,26 +318,43 @@ test_f_dotenv_path_allowed() {
 # ---------------------------------------------------------------------------
 # (j) missing ~/.config/rip-cage/config.yaml → rc up fails loud naming rc install
 # ---------------------------------------------------------------------------
-test_j_missing_global_config_fails_loud() {
+test_j_missing_global_config_auto_seeds() {
+  # rip-cage-j86: the old hard-stop (exit 1 + "Run rc install") is replaced by
+  # auto-seed. Missing global config is seeded silently on first rc up; the
+  # seeded file must exist after the invocation and a notice must appear in stderr.
   setup_sandbox
   # Do NOT write global config — it's absent
 
+  local cfg_path="${TEST_HOME}/.config/rip-cage/config.yaml"
   local stderr_out
   local exit_code=0
   stderr_out=$(
     HOME="$TEST_HOME" \
     XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
+    RC_CONFIG_GLOBAL="$cfg_path" \
     RC_ALLOWED_ROOTS="${TEST_WS}" \
     bash "$RC" up --dry-run "$TEST_WS" 2>&1 >/dev/null
   ) || exit_code=$?
 
-  if [[ "$exit_code" -ne 0 ]] \
-     && printf '%s' "$stderr_out" | grep -q "rc install"; then
-    pass "(j) missing global config fails loud naming rc install (exit=$exit_code)"
-  else
-    fail "(j) expected exit non-zero + stderr naming 'rc install'; got exit=$exit_code stderr=$stderr_out"
+  # Must NOT emit the old hard-stop error naming "rc install"
+  if printf '%s' "$stderr_out" | grep -q "Error: rip-cage global config not found"; then
+    fail "(j) old hard-stop error still present (should be auto-seeded now); got exit=$exit_code stderr=$stderr_out"
+    teardown_sandbox
+    return
   fi
+  # Config must have been created by the auto-seed
+  if [[ ! -f "$cfg_path" ]]; then
+    fail "(j) auto-seed: global config not created at $cfg_path; exit=$exit_code stderr=$stderr_out"
+    teardown_sandbox
+    return
+  fi
+  # Seeding notice must appear in stderr
+  if ! printf '%s' "$stderr_out" | grep -q "seeded default"; then
+    fail "(j) auto-seed: no seeding notice in stderr; exit=$exit_code stderr=$stderr_out"
+    teardown_sandbox
+    return
+  fi
+  pass "(j) missing global config auto-seeded: config present, notice emitted, old hard-stop gone (exit=$exit_code)"
 
   teardown_sandbox
 }
@@ -608,7 +625,7 @@ test_f_dotenv_path_allowed
 test_g_project_additive_denylist
 test_h_config_show_denylist_provenance
 test_i_shellcheck_rc_clean
-test_j_missing_global_config_fails_loud
+test_j_missing_global_config_auto_seeds
 test_k_rc_install_writes_16_patterns
 
 echo ""

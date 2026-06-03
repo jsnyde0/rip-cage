@@ -11,6 +11,7 @@ class RipCage < Formula
 
   depends_on "jq"
   depends_on "tmux"
+  depends_on "yq"
 
   def caveats
     <<~EOS

@@ -3842,23 +3842,20 @@ cmd_up() {
   validate_path "$path"
   path="$VALIDATED_PATH"
 
+  # rip-cage-j86 / ADR-023 D6 evolution: auto-seed the global config on first run
+  # BEFORE _config_validate_or_abort so the yq-presence check inside the
+  # validator covers the freshly-seeded config. Seeding is the safe direction —
+  # it only adds blocking, never widens capability (denylist-only config). The
+  # old hard-stop that required a separate `rc install` step is removed; seeding
+  # guarantees the file is present before the validator runs.
+  _config_ensure_global_seeded
+
   # ADR-021 D3 + ADR-001: validate .rip-cage.yaml posture BEFORE any docker
   # side-effects. Aborts loud on selection-list+future-version (silent skip
   # would silently expand capability past user intent — ADR-001:13) or on
   # yq-missing-with-config-present (no silent degradation per ADR-021
   # implementation notes). No config file ⇒ silent no-op (D5).
   _config_validate_or_abort "$path"
-
-  # ADR-023 D6 / ADR-014 D2 preflight: fail loud when the global config file is
-  # absent. The denylist matcher fails open on _load_effective_config error, so
-  # the matcher MUST NOT be reached without a valid global config. This preflight
-  # is the hard stop that enforces that invariant.
-  local _global_cfg
-  _global_cfg=$(_config_global_path)
-  if [[ ! -f "$_global_cfg" ]]; then
-    echo "Error: rip-cage global config not found at ${_global_cfg}. Run 'rc install' (or 'rc config init') to seed the default denylist." >&2
-    exit 1
-  fi
 
   # LFS advisory: warn if the project uses git-lfs and has unmaterialized
   # pointer stubs. rip-cage cannot fetch blobs (ADR-014); user must run
@@ -5546,6 +5543,22 @@ _doctor_host() {
       _daemon_status="FAIL — docker info exited $_rc"
     fi
   fi
+  # rip-cage-j86: prerequisite checks — yq and global config (non-fatal; surface
+  # fresh-device gaps at once instead of discovering them one rc up at a time).
+  local _yq_path _yq_status
+  if _yq_path=$(command -v yq 2>/dev/null); then
+    _yq_status="OK — ${_yq_path}"
+  else
+    _yq_status="WARNING — yq not found on PATH (install: brew install yq | apt-get install yq)"
+  fi
+  local _global_cfg_path _global_cfg_status
+  _global_cfg_path=$(_config_global_path)
+  if [[ -f "$_global_cfg_path" ]]; then
+    _global_cfg_status="OK — ${_global_cfg_path}"
+  else
+    _global_cfg_status="WARNING — not found at ${_global_cfg_path} (first rc up will auto-seed)"
+  fi
+
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     jq -nc \
       --arg scope "host" \
@@ -5553,11 +5566,15 @@ _doctor_host() {
       --argjson rc "$_rc" \
       --argjson timeout "$_t" \
       --arg docker_path "${_docker_path:-}" \
-      '{scope: $scope, daemon: $daemon, docker_info_rc: $rc, timeout_seconds: $timeout, docker_path: $docker_path}'
+      --arg yq "$_yq_status" \
+      --arg global_config "$_global_cfg_status" \
+      '{scope: $scope, daemon: $daemon, docker_info_rc: $rc, timeout_seconds: $timeout, docker_path: $docker_path, yq: $yq, global_config: $global_config}'
   else
     printf "Scope:        host (daemon liveness)\n"
     printf "Docker path:  %s\n" "${_docker_path:-<not installed>}"
     printf "Daemon:       %s\n" "$_daemon_status"
+    printf "yq:           %s\n" "$_yq_status"
+    printf "Global config: %s\n" "$_global_cfg_status"
     if [[ "$_docker_installed" -eq 0 ]]; then
       printf "\nRemedy: install Docker Desktop or OrbStack — https://docs.docker.com/get-docker/\n"
     elif [[ "$_rc" -ne 0 ]]; then
@@ -5982,14 +5999,59 @@ _config_schema_field_type() {
 # silently nullify a user-authored capability scoping.
 _config_check_yq() {
   if ! command -v yq &>/dev/null; then
-    echo "Error: yq not found on PATH. Install yq (brew install yq | apt-get install yq) to use .rip-cage.yaml." >&2
-    echo "  Run rc with no .rip-cage.yaml present to keep today's behavior." >&2
+    echo "Error: yq not found on PATH. yq is a rip-cage config dependency — install it: brew install yq (macOS) | apt-get install yq (Debian/Ubuntu)." >&2
     exit 1
   fi
 }
 
 _config_global_path() {
   echo "${RC_CONFIG_GLOBAL:-${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/config.yaml}"
+}
+
+# Returns the canonical default secret-path denylist YAML (single source of
+# truth). Used by both cmd_install (interactive seed) and
+# _config_ensure_global_seeded (auto-seed on first rc up — rip-cage-j86).
+_config_default_global_yaml() {
+  cat <<'YAML'
+version: 1
+mounts:
+  denylist:
+    - .ssh
+    - .gnupg
+    - .gpg
+    - .aws
+    - .azure
+    - .gcloud
+    - .kube
+    - .docker
+    - credentials
+    - .netrc
+    - .npmrc
+    - .pypirc
+    - id_rsa
+    - id_ed25519
+    - private_key
+    - .secret
+  allow_risky: null
+YAML
+}
+
+# Auto-seed the global config on first run (rip-cage-j86 / ADR-023 D6 evolution).
+# If the file already exists: silent no-op (idempotent — returns 0 immediately).
+# If absent: mkdir -p its directory, write the default denylist YAML, and emit a
+# one-line stderr notice so the user knows what happened.
+# ORDERING IS LOAD-BEARING: call this BEFORE _config_validate_or_abort in cmd_up
+# so the yq-presence check inside the validator covers the freshly-seeded config.
+# Seeding is the safe direction — it only adds blocking, never widens capability.
+_config_ensure_global_seeded() {
+  local _path
+  _path=$(_config_global_path)
+  if [[ -f "$_path" ]]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$_path")"
+  _config_default_global_yaml > "$_path"
+  echo "rip-cage: seeded default secret-path denylist at ${_path} (first run; run 'rc config show' to view, or edit to customize)." >&2
 }
 
 _config_project_path() {
@@ -6896,31 +6958,9 @@ cmd_install() {
   local _cfg
   _cfg=$(_config_global_path)
 
-  # Build proposal
+  # Build proposal from single-source helper (rip-cage-j86: shared with auto-seed).
   local _proposed
-  _proposed=$(cat <<'YAML'
-version: 1
-mounts:
-  denylist:
-    - .ssh
-    - .gnupg
-    - .gpg
-    - .aws
-    - .azure
-    - .gcloud
-    - .kube
-    - .docker
-    - credentials
-    - .netrc
-    - .npmrc
-    - .pypirc
-    - id_rsa
-    - id_ed25519
-    - private_key
-    - .secret
-  allow_risky: null
-YAML
-)
+  _proposed=$(_config_default_global_yaml)
 
   if [[ -f "$_cfg" ]]; then
     if diff -q "$_cfg" <(printf '%s\n' "$_proposed") >/dev/null 2>&1; then

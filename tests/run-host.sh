@@ -128,6 +128,7 @@ run_test "${SCRIPT_DIR}/test-rc-reload.sh"             # rip-cage-hhh.4: rc relo
 run_test "${SCRIPT_DIR}/test-rc-allowlist.sh"          # rip-cage-hhh.6: rc allowlist add/show/promote + D10 host-side guard
 run_test "${SCRIPT_DIR}/test-ls-mode-source.sh"        # rip-cage-hhh.6: rc ls/doctor mode read from source .rip-cage.yaml not stale label
 run_test "${SCRIPT_DIR}/test-dcg-policy.sh"            # rip-cage-hhh.11.2: DCG host-adoptable policy (ADR-025 D1/D5)
+run_test "${SCRIPT_DIR}/test-auto-seed.sh"             # rip-cage-j86: rc up auto-seeds global config on first run
 
 echo "=== run-host.sh complete ==="
 
