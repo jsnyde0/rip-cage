@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-03-25
 **Design:** [Rip Cage Design](../2026-03-25-rip-cage-design.md)
-**Related:** [ADR-001 Approval Agent](ADR-001-approval-agent-architecture.md), [ACFS](https://github.com/Dicklesworthstone/agentic_coding_flywheel_setup)
+**Related:** [ACFS](https://github.com/Dicklesworthstone/agentic_coding_flywheel_setup)
 
 ## Context
 
@@ -138,6 +138,8 @@ Allow/deny lists in settings.json are bypassed in this mode but retained as docu
 | Normal permissions + expanded allow list | No new tools needed | Can't safely allow opaque commands |
 
 **What would invalidate this:** Hooks stop firing under `bypassPermissions` (currently confirmed they do fire). Or container isolation proves insufficient and an additional in-container safety layer is needed beyond hooks.
+
+**Amended 2026-06-04 (rip-cage-2uv) — hook-registration glue is agent-writable (documented limitation, not hardened):** The PreToolUse hook *scripts* and the DCG binary are root-owned and read-only to the agent (`/usr/local/lib/rip-cage/…`), so they cannot be edited from inside the cage. Their *registration*, however, lives in the agent-owned `~/.claude/settings.json` — so an agent could disable DCG / `block-ssh-bypass.sh` by editing that file (whether confused — "to make X work" — or following injected instructions). This is **accepted as a documented limitation, not hardened**, consistent with ADR-019 D4's equivalence axis ("loaded-by-default + active, NOT tamper-proof") and ADR-019 D7 (rejects adversarial in-container hardening). Rationale: (a) the command-hook layer is a default-on *accident* guardrail, not an adversarial boundary (CLAUDE.md "layers, not walls"); (b) the other containment layers are independent of `settings.json` — the egress firewall (mitmproxy + iptables, ADR-012) operates at the network layer and the filesystem/container boundary at the Docker layer, neither gated by `settings.json` — so disabling the command hooks removes neither network nor filesystem containment; (c) defeating the command-hook layer *for harm* requires a motivated adversarial agent, explicitly out of scope per [ADR-024](ADR-024-prompt-injection-threat-model.md). The chmod-`settings.json`-read-only option was rejected primarily on the equivalence axis (we do not over-invest in tamper-resistance beyond loaded-by-default), and secondarily because Claude Code is expected to write `settings.json` at runtime, so a read-only mount would risk breaking it.
 
 ### D6: Bind mount default, clone mode as flag
 
@@ -561,7 +563,7 @@ future Claude Code version changes the discovery mechanism.
 ## Related
 
 - [Rip Cage Design](../2026-03-25-rip-cage-design.md) — full design document
-- [ADR-001 Approval Agent](ADR-001-approval-agent-architecture.md) — complementary approach (semantic evaluation); future flywheel tool
+- Approval Agent (separate project) — complementary approach (semantic evaluation); future flywheel tool
 - [ADR-024 Prompt-Injection Threat Model](ADR-024-prompt-injection-threat-model.md) — expands the threat model the D5 bypassPermissions+hooks framing rests on; "accident" now includes a non-adversarial agent following injected hostile instructions
 - [AA Design v2](../2026-03-23-approval-agent-design-v2.md) — the guardrails that may run inside containers in Phase 3
 - [ACFS](https://github.com/Dicklesworthstone/agentic_coding_flywheel_setup) — Jeffrey Emanuel's flywheel, inspiration for VPS-based approach
