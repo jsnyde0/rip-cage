@@ -5,11 +5,20 @@ All notable changes to rip-cage will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.3] - 2026-06-04
 
 ### Added
 
 - **pi cold-start verified + fixed**: `rc up` seeds `~/.pi/agent/auth.json` with `{}` when absent so a first-run in-cage `pi /login` persists across rebuilds without re-login (rip-cage-wo9). Persistence verified against pi source (`auth.json` is written in place via `writeFileSync`, so a single-file bind mount round-trips to the host) and unit-tested in `tests/test-pi-cold-start-seed.sh` (cold / empty-dir / idempotent / dangling-symlink cases). The auth-present path was previously confirmed on real Apple Silicon hardware (v0.5.0).
+
+### Fixed
+
+- **`rc test` portability**: the DCG additive-rule safety check baked its sentinel fixture into the image instead of reading it from `/workspace`, so `rc test <container>` no longer spuriously fails in any cage that isn't the rip-cage repo's own (rip-cage-16t).
+- **e2e auth-warn coverage**: the auth-warn checks asserted against empty `docker logs` (init output goes to `rc up` stdout), so the "no warning" branches passed trivially; they now assert on real captured init output, and a deterministic no-auth case exercises the "WARNING present" branch (rip-cage-igm, rip-cage-f4i).
+
+### Documentation
+
+- Documented the hook-layer enforceability limitation in ADR-002 D5: PreToolUse hook *registration* lives in agent-writable `~/.claude/settings.json`, so the command-hook layer is loaded-by-default, not tamper-proof; the network (egress) and filesystem/container layers are independent of it (rip-cage-2uv). Doc-hygiene: removed dead ADR-001 links and the stale "push-less defaults" claim (rip-cage-pr0).
 
 ## [0.5.2] - 2026-06-03
 
