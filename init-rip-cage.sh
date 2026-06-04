@@ -395,7 +395,10 @@ echo "[rip-cage] Claude Code $(claude --version) ready"
 
 # 9. Pi verify
 if command -v pi >/dev/null 2>&1; then
-    echo "[rip-cage] pi $(pi --version) ready"
+    # pi --version writes the version to stderr, not stdout (pi 0.73.x), so a bare
+    # $(pi --version) captures nothing and renders a double-space. Capture via 2>&1
+    # so the version shows (rip-cage-igm).
+    echo "[rip-cage] pi $(pi --version 2>&1) ready"
 else
     echo "[rip-cage] FATAL: pi not found in image" >&2
     exit 1

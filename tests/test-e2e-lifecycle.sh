@@ -260,18 +260,25 @@ mkdir -p "${AUTH_TMP}/rc-auth"
 
 # Case 1: Claude auth via ANTHROPIC_API_KEY → no 'WARNING: No auth' in log.
 _aws1="${AUTH_TMP}/rc-auth/case1"
+_ac1_out="${AUTH_TMP}/case1-up.out"
 mkdir -p "$_aws1"
 git -C "$_aws1" init > /dev/null 2>&1
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
   ANTHROPIC_API_KEY=sk-test-case1 \
-  RIP_CAGE_EGRESS=off "$RC" up "$_aws1" </dev/null >/dev/null 2>&1 || true
+  RIP_CAGE_EGRESS=off "$RC" up "$_aws1" </dev/null >"$_ac1_out" 2>&1 || true
 _ac1_name=$(docker ps -a --filter "label=rc.source.path=$(realpath "$_aws1")" \
   --format '{{.Names}}' 2>/dev/null | head -1)
 if [[ -z "$_ac1_name" ]]; then
   check "auth-warn case 1: Claude API key set → no WARNING" "fail" "container did not start"
 else
-  _ac1_log=$(docker logs "$_ac1_name" 2>&1 || true)
-  if ! echo "$_ac1_log" | grep -q 'WARNING: No auth'; then
+  # init runs via docker exec (PID 1 is sleep infinity) so its output reaches rc up
+  # stdout, NOT docker logs. Assert on the captured rc up stdout, and gate on an init
+  # sentinel so an empty capture fails loud instead of trivially passing the
+  # absence-of-WARNING check on an empty string (rip-cage-igm).
+  _ac1_log=$(cat "$_ac1_out" 2>/dev/null || true)
+  if ! printf '%s\n' "$_ac1_log" | grep -q '\[rip-cage\] pi '; then
+    check "auth-warn case 1: Claude API key set → no WARNING" "fail" "init output not captured (see $_ac1_out)"
+  elif ! printf '%s\n' "$_ac1_log" | grep -q 'WARNING: No auth'; then
     check "auth-warn case 1: Claude API key set → no WARNING" "pass"
   else
     check "auth-warn case 1: Claude API key set → no WARNING" "fail" "(container=$_ac1_name)"
@@ -285,26 +292,30 @@ fi
 # If host has ~/.claude/.credentials.json or ~/.claude.json, those are auto-mounted → no warn.
 # If host has none of those, the warn fires — confirming pi auth alone doesn't suppress it (D2).
 _aws2="${AUTH_TMP}/rc-auth/case2"
+_ac2_out="${AUTH_TMP}/case2-up.out"
 mkdir -p "$_aws2"
 git -C "$_aws2" init > /dev/null 2>&1
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
-  RIP_CAGE_EGRESS=off "$RC" up "$_aws2" </dev/null >/dev/null 2>&1 || true
+  RIP_CAGE_EGRESS=off "$RC" up "$_aws2" </dev/null >"$_ac2_out" 2>&1 || true
 _ac2_name=$(docker ps -a --filter "label=rc.source.path=$(realpath "$_aws2")" \
   --format '{{.Names}}' 2>/dev/null | head -1)
 if [[ -z "$_ac2_name" ]]; then
   check "auth-warn case 2" "fail" "container did not start"
 else
-  _ac2_log=$(docker logs "$_ac2_name" 2>&1 || true)
-  if [ "$_host_has_claude_auth" -gt 0 ]; then
+  # See case 1: assert on captured rc up stdout, gated on an init sentinel (rip-cage-igm).
+  _ac2_log=$(cat "$_ac2_out" 2>/dev/null || true)
+  if ! printf '%s\n' "$_ac2_log" | grep -q '\[rip-cage\] pi '; then
+    check "auth-warn case 2" "fail" "init output not captured (see $_ac2_out)"
+  elif [ "$_host_has_claude_auth" -gt 0 ]; then
     # Host creds auto-mounted → no warn expected (D2: pi auth doesn't add a warn either)
-    if ! echo "$_ac2_log" | grep -q 'WARNING: No auth'; then
+    if ! printf '%s\n' "$_ac2_log" | grep -q 'WARNING: No auth'; then
       check "auth-warn case 2: pi auth + host Claude creds → no WARNING (host creds dominate)" "pass"
     else
       check "auth-warn case 2: pi auth + host Claude creds → no WARNING (host creds dominate)" "fail" "(container=$_ac2_name)"
     fi
   else
     # No host creds → warn expected; pi auth alone does NOT suppress Claude warn (D2 FIRM)
-    if echo "$_ac2_log" | grep -q 'WARNING: No auth'; then
+    if printf '%s\n' "$_ac2_log" | grep -q 'WARNING: No auth'; then
       check "auth-warn case 2: pi auth only, no Claude auth → WARNING present (intentional per D2)" "pass"
     else
       check "auth-warn case 2: pi auth only, no Claude auth → WARNING present (intentional per D2)" "fail" "(container=$_ac2_name)"
@@ -316,24 +327,28 @@ fi
 
 # Case 3: Neither Claude env auth nor pi auth → warn depends on host credential file state.
 _aws3="${AUTH_TMP}/rc-auth/case3"
+_ac3_out="${AUTH_TMP}/case3-up.out"
 mkdir -p "$_aws3"
 git -C "$_aws3" init > /dev/null 2>&1
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
-  RIP_CAGE_EGRESS=off "$RC" up "$_aws3" </dev/null >/dev/null 2>&1 || true
+  RIP_CAGE_EGRESS=off "$RC" up "$_aws3" </dev/null >"$_ac3_out" 2>&1 || true
 _ac3_name=$(docker ps -a --filter "label=rc.source.path=$(realpath "$_aws3")" \
   --format '{{.Names}}' 2>/dev/null | head -1)
 if [[ -z "$_ac3_name" ]]; then
   check "auth-warn case 3" "fail" "container did not start"
 else
-  _ac3_log=$(docker logs "$_ac3_name" 2>&1 || true)
-  if [ "$_host_has_claude_auth" -gt 0 ]; then
-    if ! echo "$_ac3_log" | grep -q 'WARNING: No auth'; then
+  # See case 1: assert on captured rc up stdout, gated on an init sentinel (rip-cage-igm).
+  _ac3_log=$(cat "$_ac3_out" 2>/dev/null || true)
+  if ! printf '%s\n' "$_ac3_log" | grep -q '\[rip-cage\] pi '; then
+    check "auth-warn case 3" "fail" "init output not captured (see $_ac3_out)"
+  elif [ "$_host_has_claude_auth" -gt 0 ]; then
+    if ! printf '%s\n' "$_ac3_log" | grep -q 'WARNING: No auth'; then
       check "auth-warn case 3: no env auth, host Claude creds present → no WARNING" "pass"
     else
       check "auth-warn case 3: no env auth, host Claude creds present → no WARNING" "fail" "(container=$_ac3_name)"
     fi
   else
-    if echo "$_ac3_log" | grep -q 'WARNING: No auth'; then
+    if printf '%s\n' "$_ac3_log" | grep -q 'WARNING: No auth'; then
       check "auth-warn case 3: neither Claude nor pi auth → WARNING" "pass"
     else
       check "auth-warn case 3: neither Claude nor pi auth → WARNING" "fail" "(container=$_ac3_name)"
@@ -345,18 +360,22 @@ fi
 
 # Case 4: Both Claude API key and pi auth → no 'WARNING: No auth'.
 _aws4="${AUTH_TMP}/rc-auth/case4"
+_ac4_out="${AUTH_TMP}/case4-up.out"
 mkdir -p "$_aws4"
 git -C "$_aws4" init > /dev/null 2>&1
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
   ANTHROPIC_API_KEY=sk-test-case4 \
-  RIP_CAGE_EGRESS=off "$RC" up "$_aws4" </dev/null >/dev/null 2>&1 || true
+  RIP_CAGE_EGRESS=off "$RC" up "$_aws4" </dev/null >"$_ac4_out" 2>&1 || true
 _ac4_name=$(docker ps -a --filter "label=rc.source.path=$(realpath "$_aws4")" \
   --format '{{.Names}}' 2>/dev/null | head -1)
 if [[ -z "$_ac4_name" ]]; then
   check "auth-warn case 4: Claude API key + pi auth → no WARNING" "fail" "container did not start"
 else
-  _ac4_log=$(docker logs "$_ac4_name" 2>&1 || true)
-  if ! echo "$_ac4_log" | grep -q 'WARNING: No auth'; then
+  # See case 1: assert on captured rc up stdout, gated on an init sentinel (rip-cage-igm).
+  _ac4_log=$(cat "$_ac4_out" 2>/dev/null || true)
+  if ! printf '%s\n' "$_ac4_log" | grep -q '\[rip-cage\] pi '; then
+    check "auth-warn case 4: Claude API key + pi auth → no WARNING" "fail" "init output not captured (see $_ac4_out)"
+  elif ! printf '%s\n' "$_ac4_log" | grep -q 'WARNING: No auth'; then
     check "auth-warn case 4: Claude API key + pi auth → no WARNING" "pass"
   else
     check "auth-warn case 4: Claude API key + pi auth → no WARNING" "fail" "(container=$_ac4_name)"
