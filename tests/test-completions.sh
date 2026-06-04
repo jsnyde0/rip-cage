@@ -105,7 +105,12 @@ fi
 tmpdir=$(mktemp -d)
 echo 'eval "$(rc completions zsh)"' > "${tmpdir}/.zshrc"
 
-if SHELL=/bin/zsh HOME="$tmpdir" "$RC" setup 2>&1 | grep -q "already configured"; then
+# Capture output to a var first, then grep — piping `rc setup` straight into
+# `grep -q` SIGPIPEs rc setup (it prints "already configured" then "To reload…")
+# the moment grep matches, and under `set -o pipefail` that 141 flips this check
+# to a spurious FAIL (flaky). Capturing reads rc setup to completion. (rip-cage-kd7)
+_idem_out=$(SHELL=/bin/zsh HOME="$tmpdir" "$RC" setup 2>&1 || true)
+if printf '%s\n' "$_idem_out" | grep -q "already configured"; then
   pass "rc setup idempotency: skips when eval line present"
 else
   fail "rc setup idempotency: did not detect existing eval line"
