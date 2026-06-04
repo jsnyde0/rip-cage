@@ -126,6 +126,10 @@ COPY hooks/ /usr/local/lib/rip-cage/hooks/
 COPY dcg/dcg-guard /usr/local/lib/rip-cage/bin/dcg-guard
 COPY dcg/default-config.toml /usr/local/lib/rip-cage/dcg/config.toml
 COPY tests/test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
+# Sentinel fixture for the DCG additive-rule-fires check (ADR-025 D1). Baked into the
+# image so `rc test <cage>` check 11e is portable across ALL cages, not only the
+# rip-cage repo's own workspace (rip-cage-16t).
+COPY tests/fixtures/ripcage-testsentinel-rule.yaml /usr/local/lib/rip-cage/dcg/fixtures/ripcage-testsentinel-rule.yaml
 COPY settings.json /etc/rip-cage/settings.json
 COPY cage-claude.md /etc/rip-cage/cage-claude.md
 COPY cage-pi.md /etc/rip-cage/cage-pi.md

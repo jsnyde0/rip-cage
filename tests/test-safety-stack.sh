@@ -181,11 +181,17 @@ unset _hostile_ws _raw_result
 
 # 11e. Additive rule fires — custom rule pack loaded via DCG_CONFIG custom_paths blocks sentinel command
 # Proves the additive mechanism (ADR-025 D1): DCG loads and evaluates custom YAML rule packs.
-# Uses the fixture at /workspace/tests/fixtures/ripcage-testsentinel-rule.yaml (committed).
+# Fixture resolution (rip-cage-16t): prefer the image-baked copy so this check is portable
+# across ALL cages; fall back to the repo workspace path for dev runs from a rip-cage
+# checkout. test-safety-stack.sh is baked into the image and runs inside any cage via
+# `rc test`, so a /workspace-only fixture path fails everywhere except this repo's own cage.
 # Invokes raw dcg directly with a temp DCG_CONFIG pointing at the fixture, NOT via wrapper
 # (wrapper pins DCG_CONFIG to baked floor config; this tests the additive translation mechanism).
 # The sentinel command "ripcagetestsentinel" must NOT match any real command.
-_sentinel_fixture="/workspace/tests/fixtures/ripcage-testsentinel-rule.yaml"
+_sentinel_fixture="/usr/local/lib/rip-cage/dcg/fixtures/ripcage-testsentinel-rule.yaml"
+if [ ! -f "$_sentinel_fixture" ]; then
+  _sentinel_fixture="/workspace/tests/fixtures/ripcage-testsentinel-rule.yaml"
+fi
 _sentinel_cfg=$(mktemp /tmp/dcg-test-sentinel-XXXXXX.toml)
 cat > "$_sentinel_cfg" << 'SENTINEL_TOML_EOF'
 [packs]
@@ -197,7 +203,7 @@ rm -f "$_sentinel_cfg"
 if echo "$_additive_result" | grep -qE '"permissionDecision".*"deny"'; then
   check "DCG additive rule fires: sentinel command denied by custom rule pack" "pass"
 else
-  check "DCG additive rule fires: sentinel command denied by custom rule pack" "fail" "$_additive_result"
+  check "DCG additive rule fires: sentinel command denied by custom rule pack" "fail" "fixture=$_sentinel_fixture result=$_additive_result"
 fi
 unset _sentinel_fixture _sentinel_cfg _additive_result
 
