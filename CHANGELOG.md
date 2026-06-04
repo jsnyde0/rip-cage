@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **pi cold-start verified + fixed**: `rc up` seeds `~/.pi/agent/auth.json` with `{}` when absent so a first-run in-cage `pi /login` persists across rebuilds without re-login (rip-cage-wo9). Persistence verified against pi source (`auth.json` is written in place via `writeFileSync`, so a single-file bind mount round-trips to the host) and unit-tested in `tests/test-pi-cold-start-seed.sh` (cold / empty-dir / idempotent / dangling-symlink cases). The auth-present path was previously confirmed on real Apple Silicon hardware (v0.5.0).
+
 ## [0.5.2] - 2026-06-03
 
 ### Removed

@@ -439,7 +439,7 @@ DEVCONTAINER_NO_HOOKS
       cat <<'DEVCONTAINER_FOOTER_SERVER' | sed \
         -e "s|\"--cpus=2\", \"--memory=4g\", \"--memory-swap=4g\", \"--pids-limit=500\"|${init_run_args}|" \
         -e "s|\"postStartCommand\": \"/usr/local/bin/init-rip-cage.sh\"|\"postStartCommand\": \"${init_post_start}\"|"
-  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" \"${HOME}/.claude/projects\" \"${HOME}/.claude/sessions\" 2>/dev/null; mkdir -p \"${HOME}/.pi/agent\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
+  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" \"${HOME}/.claude/projects\" \"${HOME}/.claude/sessions\" 2>/dev/null; mkdir -p \"${HOME}/.pi/agent\" 2>/dev/null; [ -e \"${HOME}/.pi/agent/auth.json\" ] || [ -L \"${HOME}/.pi/agent/auth.json\" ] || echo {} > \"${HOME}/.pi/agent/auth.json\"; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096",
     "BEADS_DOLT_SERVER_MODE": "1",
@@ -455,7 +455,7 @@ DEVCONTAINER_FOOTER_SERVER
       cat <<'DEVCONTAINER_FOOTER_EMBEDDED' | sed \
         -e "s|\"--cpus=2\", \"--memory=4g\", \"--memory-swap=4g\", \"--pids-limit=500\"|${init_run_args}|" \
         -e "s|\"postStartCommand\": \"/usr/local/bin/init-rip-cage.sh\"|\"postStartCommand\": \"${init_post_start}\"|"
-  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" \"${HOME}/.claude/projects\" \"${HOME}/.claude/sessions\" 2>/dev/null; mkdir -p \"${HOME}/.pi/agent\" 2>/dev/null; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
+  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" \"${HOME}/.claude/projects\" \"${HOME}/.claude/sessions\" 2>/dev/null; mkdir -p \"${HOME}/.pi/agent\" 2>/dev/null; [ -e \"${HOME}/.pi/agent/auth.json\" ] || [ -L \"${HOME}/.pi/agent/auth.json\" ] || echo {} > \"${HOME}/.pi/agent/auth.json\"; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096"
   },
@@ -1501,18 +1501,20 @@ _up_prepare_docker_mounts() {
 
   # Pi state: container-local cage-owned dir + narrow durable sub-mounts (ADR-019 D1 evolved).
   # PI_CODING_AGENT_DIR points to the container-local dir; only auth.json is
-  # bind-mounted from the host (RW, skip-if-missing to avoid Docker creating a
-  # root-owned empty dir at the file path — mirrors ~/.claude/.credentials.json pattern).
-  # bin/ is intentionally NOT mounted: host macOS binaries (fd/rg) don't work in Linux;
-  # the container regenerates them on first pi run.
+  # bind-mounted from the host (RW, cold-start-seeded so first-run pi /login persists —
+  # rip-cage-wo9 / ADR-019 D1).  bin/ is intentionally NOT mounted: host macOS binaries
+  # (fd/rg) don't work in Linux; the container regenerates them on first pi run.
   # PI_CODING_AGENT_DIR: explicit set equals pi's own default (config.ts getAgentDir()
   # returns join(homedir(), ".pi", "agent") when the env var is unset), so a pi-less
   # cage behaves identically — the explicit set just makes the value visible in `env`.
+  # Seed an empty auth.json when absent so the bind mount below always fires (normal path).
+  # A dangling symlink is left to the symlink-follow machinery (D1).
+  _ensure_pi_auth_seed
   _UP_RUN_ARGS+=(-e PI_CODING_AGENT_DIR=/home/agent/.pi/agent)
   if [[ -f "${HOME}/.pi/agent/auth.json" ]]; then
     _UP_RUN_ARGS+=(-v "${HOME}/.pi/agent/auth.json:/home/agent/.pi/agent/auth.json")
   else
-    log "Warning: ${HOME}/.pi/agent/auth.json not found — pi auth mount skipped (pi will require re-auth on first request)"
+    log "Warning: ${HOME}/.pi/agent/auth.json not mounted (absent and could not be seeded, or a dangling symlink) — pi will require login on first request."
   fi
 
   # CAGE_HOST_ADDR explicit pass-through for non-interactive pi -p runs.
@@ -6061,6 +6063,38 @@ _config_ensure_global_seeded() {
     exit 1
   fi
   echo "rip-cage: seeded default secret-path denylist at ${_path} (first run; run 'rc config show' to view, or edit to customize)." >&2
+}
+
+# _ensure_pi_auth_seed — cold-start seeding for pi auth (rip-cage-wo9 / ADR-019 D1).
+# Creates ~/.pi/agent/auth.json containing '{}' when it is absent so that an
+# in-cage 'pi /login' persists across rc destroy/up cycles via the single-file
+# bind mount.  The check is:
+#   - if the path does NOT exist as a regular file AND is NOT a symlink: seed it.
+#   - a (possibly dangling) symlink is left to the symlink-follow machinery (D1).
+#   - an existing regular file (even empty) is never overwritten (idempotent).
+# Seeding is transparent to _symlink_follow_fingerprint: the function hashes only
+# symlinks; a seeded regular file adds no symlink, so fingerprint is unchanged.
+# Honors ${HOME} — override it to make the function testable.
+_ensure_pi_auth_seed() {
+  local _auth_path="${HOME}/.pi/agent/auth.json"
+  # A symlink at the path (even dangling) is dotpi-managed state — leave it alone.
+  if [[ -L "$_auth_path" ]]; then
+    return 0
+  fi
+  # A regular file already exists — idempotent no-op.
+  if [[ -e "$_auth_path" ]]; then
+    return 0
+  fi
+  # Path absent — seed it.
+  if ! mkdir -p "$(dirname "$_auth_path")"; then
+    echo "rip-cage: Warning: could not create ${HOME}/.pi/agent/ — pi auth mount may be skipped." >&2
+    return 0
+  fi
+  if ! printf '{}' > "$_auth_path"; then
+    echo "rip-cage: Warning: could not seed ${_auth_path} — pi auth mount may be skipped." >&2
+    return 0
+  fi
+  echo "rip-cage: Seeded empty ${HOME}/.pi/agent/auth.json for first-run pi login persistence (rip-cage-wo9)." >&2
 }
 
 _config_project_path() {

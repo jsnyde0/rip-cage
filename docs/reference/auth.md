@@ -65,9 +65,19 @@ Pi (`@mariozechner/pi-coding-agent`) is also supported alongside Claude Code in 
 
 ### Auth file location
 
-Pi stores credentials at `~/.pi/agent/auth.json` on the host (mode `0o600`, plain JSON, auto-refreshed via `proper-lockfile`). Inside the cage, `rc up` mounts the whole `~/.pi/agent/` directory read-write at `/pi-agent` and sets `PI_CODING_AGENT_DIR=/pi-agent`. Pi's `getAgentDir()` honors this env var ahead of `~/.pi/agent`, so all pi state — `auth.json`, `sessions/`, `settings.json`, `AGENTS.md`, `extensions/`, and more — resolves through the single bind mount (ADR-019 D1).
+Pi stores credentials at `~/.pi/agent/auth.json` on the host (mode `0o600`, plain JSON, auto-refreshed via `proper-lockfile`). Inside the cage, `rc up` bind-mounts `~/.pi/agent/auth.json` read-write at `/home/agent/.pi/agent/auth.json` and sets `PI_CODING_AGENT_DIR=/home/agent/.pi/agent` (ADR-019 D1).
 
-If `~/.pi/agent` doesn't exist on the host, `rc up` skips the mount and logs a non-fatal warning. Pi will surface auth guidance on first request via its own `/login` UI — rip-cage does not add a startup check (ADR-019 D2).
+### First-time pi setup
+
+On a fresh machine where `~/.pi/agent/auth.json` does not exist, `rc up` automatically seeds an empty `{}` file before binding it, so the bind mount always fires. Then, inside the cage, run:
+
+    pi /login
+
+Complete the OAuth or API-key flow as prompted. Pi writes credentials in place to `/home/agent/.pi/agent/auth.json`, which is the bind-mounted host file — so the credentials persist back to `~/.pi/agent/auth.json` on the host immediately. On the next `rc destroy` + `rc up`, the same file is mounted and pi is already authenticated. No re-login is required across rebuilds.
+
+If seeding fails (e.g., the host has a dotpi-managed symlink at that path, or a permissions error), `rc up` logs a warning and skips the mount — pi will surface auth guidance on first request via its own `/login` UI (ADR-019 D2).
+
+Rip-cage does not add a startup auth-check for pi (ADR-019 D2): startup banners get banner-blind fast, and pi's own `/login` prompt is the right surface for "you're not authed."
 
 ### Supported providers
 
