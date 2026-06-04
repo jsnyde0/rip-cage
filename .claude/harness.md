@@ -136,11 +136,18 @@ All follow the same PASS/FAIL/TOTAL convention; grep for `FAIL` in output.
 
 ### Headless pi dispatch inside the cage (`pi -p`) — guard LOAD+FIRE proof
 - **What it is:** the pi analog of the Claude dispatch above. pi ships in the image; a non-interactive `pi -p "<prompt>"` fires the auto-loaded `dcg-gate.ts` extension (baked at the cage-owned container-local `<agentDir>/extensions/`, no `-e` flag). This is the *only* mechanism that proves the guard actually LOADS and FIRES under pi — structural tests (`test-pi-dcg-gate.sh`) prove the extension is baked + correct + that the dcg binary denies via the wrapper, but cannot prove pi runs it.
-- **Command:** `docker exec -w /workspace <container> pi --provider <p> -p "<prompt that attempts a destructive or compound command>"`
-- **Catches:** guard auto-load (does the baked extension run on pi startup), DCG deny path, compound-block path, fail-loud reason surfacing. Read `tool_execution_end isError=true` + the deny reason in the JSON; on a compound hit the model typically splits and retries.
+- **Command:** `docker exec -w /workspace <container> pi --provider <p> -p "<prompt that attempts a destructive command>"`
+- **Catches:** guard auto-load (does the baked extension run on pi startup), DCG deny path, fail-loud reason surfacing. Read `tool_execution_end isError=true` + the deny reason in the JSON.
 - **Gotcha:** counts against the mounted pi `auth.json` (rip-cage-hhh.12 bind-mounts host `~/.pi/agent/auth.json` RW). **Confirm `ls ~/.pi/agent/auth.json` on the host before blaming a missing token — the cage HAS auth.** (rip-cage-bl1: the live-fire proof was twice deferred as "needs auth" when auth was present the whole time.)
 - **Two verification altitudes — do not conflate:** `test-pi-dcg-gate.sh` (in `rc test`, auth-free) vs. live LOAD+FIRE (this cell, authed, e2e/manual tier). `rc test` green does NOT prove the guard fires under pi. Keep live-fire out of the always-run regression — it needs auth and a real pi run.
 - **See also:** `cage-claude.md` "Troubleshooting: subagent fails fast" section — codified runbook for the specific *"0 tool uses, ~2s"* pattern (auth-error narration is usually wrong; real cause is typically 1M-beta model + subagent, rate limit, or stale session).
+
+### Direct guard probe — `dcg-guard` / `block-ssh-bypass.sh` over a JSON envelope
+- **What it is:** pipe a PreToolUse envelope straight into the guard binary/script and read `permissionDecision` back. No agent, no model, no auth, no tmux session. `printf '{"tool_name":"Bash","tool_input":{"command":"echo hi && rm -rf ~"}}' | /usr/local/lib/rip-cage/bin/dcg-guard` → `deny`. Same shape for `hooks/block-ssh-bypass.sh`.
+- **Speed:** sub-second.
+- **Catches:** "does DCG actually block command X (including chained / substring-hidden X)" — the question, not whether an agent will *choose* to run it. The cheapest rung of the guard-verification ladder below `pi -p` / `claude -p` LOAD+FIRE.
+- **Useful when:** auditing whether a guard layer is load-bearing before relaxing it (rip-cage-4r8); checking chaining-robustness after a `DCG_VERSION` bump; reproducing a deny decision in isolation. Same assertion shape `test-safety-stack.sh` checks 11f/11g/11h commit as regression.
+- **Less useful when:** you need to prove the guard auto-LOADS under the agent runtime (extension/hook wiring) — that needs `pi -p` / `claude -p` (authed). This probe tests the engine, not the wiring (see `rip-cage-guard-engine-vs-policy-split`).
 
 ### Egress firewall probes
 - **What it is:** `test-egress-firewall.sh` contains ready-to-copy curl/nc probes for denylisted hosts
