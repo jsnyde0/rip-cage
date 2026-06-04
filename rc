@@ -1191,8 +1191,20 @@ _check_lfs_stubs() {
 # _extract_credentials — extract OAuth credentials from macOS Keychain to
 # ~/.claude/.credentials.json. No-op on Linux (no Keychain).
 #
+# Test seam: set RC_SKIP_KEYCHAIN_EXTRACTION=1 to bypass the macOS keychain
+# extraction entirely (used by e2e tests that need a deterministic no-auth cage).
+# Affects BOTH `rc up` and `rc auth refresh` (both call this fn). Default-off;
+# when set it warns loudly (below) so an accidental shell `export` surfaces
+# instead of silently starting a no-credentials cage. DO NOT export in a real shell.
+#
 # Returns: 0 on success or on Linux, 1 on macOS extraction failure.
 _extract_credentials() {
+  # Test seam: skip keychain extraction when explicitly requested. Warn loudly so
+  # an accidental export surfaces instead of silently producing a no-auth cage.
+  if [[ "${RC_SKIP_KEYCHAIN_EXTRACTION:-0}" == "1" ]]; then
+    echo "Warning: RC_SKIP_KEYCHAIN_EXTRACTION=1 — skipping macOS keychain extraction (test seam); cage starts with whatever credentials already exist, possibly none." >&2
+    return 0
+  fi
   # Guard: Docker creates a dir at this path if the file didn't exist on a prior failed mount
   if [[ -d "${HOME}/.claude/.credentials.json" ]]; then
     rmdir "${HOME}/.claude/.credentials.json" 2>/dev/null || \

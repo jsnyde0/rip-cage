@@ -291,6 +291,14 @@ fi
 # Note: Claude warn-line intentionally present per ADR-019 D2 — pi auth uses its own /login UI.
 # If host has ~/.claude/.credentials.json or ~/.claude.json, those are auto-mounted → no warn.
 # If host has none of those, the warn fires — confirming pi auth alone doesn't suppress it (D2).
+#
+# EQUIVALENCE NOTE (rip-cage-f4i): Case 2 is behaviorally identical to case 3 — the rc up
+# invocation is the same and the warn-block inside the cage checks ONLY Claude auth state
+# (credentials.json / .claude.json / ANTHROPIC_API_KEY).  Pi auth presence does not affect
+# the Claude warn-block outcome (ADR-019 D2 FIRM).  The duplication is intentional: case 2
+# documents that "pi auth is present but still gets a Claude warning" is the EXPECTED behavior,
+# not a regression.  Any future change to the warn-block that suppresses Claude warnings for
+# pi-authed cages would break case 2 but not case 3, surfacing the ADR-019 D2 violation.
 _aws2="${AUTH_TMP}/rc-auth/case2"
 _ac2_out="${AUTH_TMP}/case2-up.out"
 mkdir -p "$_aws2"
@@ -383,6 +391,47 @@ else
   docker rm -f "$_ac4_name" > /dev/null 2>&1 || true
   docker volume rm "rc-state-${_ac4_name}" > /dev/null 2>&1 || true
 fi
+
+# Case 5: No Claude auth at all (no keychain, no env, no host cred files) → WARNING present.
+# Uses RC_SKIP_KEYCHAIN_EXTRACTION=1 (test seam in rc) to prevent macOS keychain extraction,
+# plus a temp HOME with no ~/.claude/.credentials.json and no ~/.claude.json.  With ANTHROPIC_API_KEY
+# unset and no host cred files, the in-cage auth-warn block MUST emit "WARNING: No auth found".
+# This is the deterministic no-auth branch that was previously gated by _host_has_claude_auth==0
+# and therefore never executed on a normal dev host (rip-cage-f4i).
+#
+# IMPORTANT: The temp HOME means rc up will create fresh config dirs under it (including the
+# global denylist seed).  The workspace is still inside AUTH_TMP (covered by RC_ALLOWED_ROOTS).
+# The wo9 pi-seed creates <tmphome>/.pi/agent/auth.json — that is expected and fine.
+_aws5="${AUTH_TMP}/rc-auth/case5"
+_ac5_out="${AUTH_TMP}/case5-up.out"
+_ac5_home=$(mktemp -d)
+mkdir -p "$_aws5"
+git -C "$_aws5" init > /dev/null 2>&1
+HOME="$_ac5_home" \
+  RC_SKIP_KEYCHAIN_EXTRACTION=1 \
+  ANTHROPIC_API_KEY="" \
+  RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
+  RIP_CAGE_EGRESS=off \
+  "$RC" up "$_aws5" </dev/null >"$_ac5_out" 2>&1 || true
+_ac5_name=$(docker ps -a --filter "label=rc.source.path=$(realpath "$_aws5")" \
+  --format '{{.Names}}' 2>/dev/null | head -1)
+if [[ -z "$_ac5_name" ]]; then
+  check "auth-warn case 5: no Claude auth → WARNING present (rip-cage-f4i)" "fail" "container did not start (see $_ac5_out)"
+else
+  # Assert on captured rc up stdout, gated on an init sentinel so an empty capture
+  # fails loud instead of trivially passing the absence-of-WARNING check (rip-cage-igm).
+  _ac5_log=$(cat "$_ac5_out" 2>/dev/null || true)
+  if ! printf '%s\n' "$_ac5_log" | grep -q '\[rip-cage\] pi '; then
+    check "auth-warn case 5: no Claude auth → WARNING present (rip-cage-f4i)" "fail" "init output not captured (see $_ac5_out)"
+  elif printf '%s\n' "$_ac5_log" | grep -q 'WARNING: No auth'; then
+    check "auth-warn case 5: no Claude auth → WARNING present (rip-cage-f4i)" "pass"
+  else
+    check "auth-warn case 5: no Claude auth → WARNING present (rip-cage-f4i)" "fail" "(container=$_ac5_name)"
+  fi
+  docker rm -f "$_ac5_name" > /dev/null 2>&1 || true
+  docker volume rm "rc-state-${_ac5_name}" > /dev/null 2>&1 || true
+fi
+rm -rf "$_ac5_home"
 
 # Restore RC_ALLOWED_ROOTS to the primary e2e root (subsequent checks use E2E_TMP_RESOLVED).
 export RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}"
