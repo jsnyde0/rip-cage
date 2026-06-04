@@ -19,7 +19,7 @@ That framing did not encode a third reality: **a non-adversarial agent following
 
 Three rounds of research during the brainstorm that produced this ADR confirmed:
 
-- Documented Claude Code attack vectors include DNS subdomain exfil via auto-approved `ping`/`dig` (research-agent cited CVE-2025-55284; identifier to verify) and project-file `ANTHROPIC_BASE_URL` redirect (CVE-2025-59536 per Check Point Research source).
+- Documented Claude Code attack vectors include DNS subdomain exfil via auto-approved `ping`/`dig` (a documented exfil *technique* — a ~100 bytes/query covert channel — with no CVE assigned to the DNS-specific class; the adjacent allowlist-bypass network-exfil flaw is [CVE-2025-55284](https://nvd.nist.gov/vuln/detail/CVE-2025-55284), Claude Code < 1.0.4) and the project-file `ANTHROPIC_BASE_URL` redirect that fires API requests with the key before the trust prompt ([CVE-2026-21852](https://nvd.nist.gov/vuln/detail/CVE-2026-21852), Claude Code < 2.0.65, per Check Point Research's "Caught in the Hook" disclosure; note [CVE-2025-59536](https://nvd.nist.gov/vuln/detail/CVE-2025-59536) in the same disclosure is the *separate* startup-trust RCE, not this base-URL redirect).
 - Peer agent sandboxes (Anthropic devcontainer, OpenAI Codex sandbox, StepSecurity harden-runner, Cursor agent sandboxing, Vercel Sandbox) all encode prompt-injection-driven exfil as an explicit concern in their egress designs — rip-cage was the outlier in not naming it.
 - Simon Willison's "lethal trifecta" (private data access + untrusted content + external comms) and Meta's Nov 2025 "Agents Rule of Two" both frame the threat as a first-class concern for agentic systems.
 

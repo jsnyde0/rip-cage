@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Date:** 2026-05-22 (revised 2026-05-29 — D5/D6 two-tier failure mode; 2026-06-03 — D6 absent-config auto-seed, rip-cage-j86)
 **Builds on:** [ADR-003](ADR-003-agent-friendly-cli.md) (D3 allowed-roots path validation — composition layer), [ADR-021](ADR-021-layered-rip-cage-config.md) (D1+D2 config substrate this ADR consumes), [ADR-022](ADR-022-ssh-allowlist.md) (D4+D5 two-layer precedent — explicitly contrasted in D3 below)
-**Related:** [ADR-001](ADR-001-fail-loud-pattern.md) (fail-loud + actionable error), [ADR-010](ADR-010-auth-refresh.md) (OAuth credential mount — scope OUT), [ADR-014](ADR-014-push-less-cage.md) (D2 non-interactive fail-loud posture — failure mode discipline), [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (SSH-agent forwarding — scope OUT), [ADR-020](ADR-020-ssh-identity-routing.md) (SSH identity routing, known_hosts mount — scope OUT), project [CLAUDE.md](../../CLAUDE.md) philosophy section ("layers, not walls", "80/20, not 100/0")
+**Related:** [ADR-001](ADR-001-fail-loud-pattern.md) (fail-loud + actionable error), [ADR-010](ADR-010-auth-refresh.md) (OAuth credential mount — scope OUT), [ADR-014](ADR-014-push-less-cage.md) (D2 non-interactive fail-loud posture — failure mode discipline), [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (SSH-agent forwarding — scope OUT), [ADR-020](ADR-020-ssh-identity-routing.md) (SSH identity routing, known_hosts mount — scope OUT), [ADR-024](ADR-024-prompt-injection-threat-model.md) (prompt-injection threat model — the secret-path mount accident this ADR closes is one exfil vector under that model), project [CLAUDE.md](../../CLAUDE.md) philosophy section ("layers, not walls", "80/20, not 100/0")
 
 ## Context
 

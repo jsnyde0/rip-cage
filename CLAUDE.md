@@ -9,9 +9,10 @@ The cage **limits blast radius**. It does not prevent all danger, and it is not 
 What this means in practice when you propose changes:
 
 - **Agent autonomy is the product.** The point of the cage is that a human can walk away and let the agent keep working. Any design that forces human intervention on a legitimate operation (credential prompts, TTY dialogs, interactive approvals, "please run this on the host") defeats the purpose.
-- **Layers, not walls.** DCG, ssh-bypass blocker, filesystem sandbox, egress denylist, push-less defaults — each catches a class of accidents. None of them individually is a security boundary against a motivated attacker, and pretending they are leads to over-strict designs.
-- **80/20, not 100/0.** The L7 egress firewall is a denylist of known-bad exfil hosts, not a whitelist of approved APIs. Same principle for everything else: block the obvious accident, don't gate the legitimate work.
+- **Layers, not walls.** DCG, ssh-bypass blocker, filesystem sandbox, egress whitelist, push-less defaults — each catches a class of accidents. None of them individually is a security boundary against a motivated attacker, and pretending they are leads to over-strict designs.
+- **80/20, not 100/0.** The L7 egress firewall defaults to a host whitelist, but new cages ship in observe-mode so it learns real traffic before it blocks anything. Same principle everywhere else: block the obvious accident, don't gate the legitimate work.
 - **"It's annoying" is a design signal.** If an agent hits something the cage blocks and the right human response is "just turn it off," the default is probably wrong. Revisit the decision.
+- **The threat model includes prompt-injection.** Per [ADR-024](docs/decisions/ADR-024-prompt-injection-threat-model.md), "accident" now also covers a non-adversarial agent following hostile instructions injected via fetched READMEs, web pages, MCP output, or workspace files — not just honest mistakes. The egress whitelist, DNS inspection, ssh destination-scoping, and workspace-trust validator are the layers that target it. A motivated *adversarial* agent remains explicitly out of scope.
 
 Containment-flavored language ("the thing inside the cage is not you") has shown up in past ADRs and is a trap — it reads as an adversarial threat model rip-cage is not trying to meet. When in doubt, optimize for autonomous uninterrupted runs over theoretical blast-radius reduction.
 

