@@ -39,6 +39,8 @@ rc up .
 
 That's it. On first run, `rc` prompts for allowed directories and pulls the pre-built image from GHCR (~30s, with local-build fallback if GHCR is unreachable). You're in a caged tmux session — run `claude` and let it rip. Detach with `Ctrl-B d`.
 
+New to rip cage? The [Getting Started guide](docs/guides/getting-started.md) walks through a first run on a throwaway project, what `rc up` actually does, and the handful of commands you'll use day to day.
+
 ## What does the cage do?
 
 The cage runs your agent behind independent layers. Three intercept every shell command before it runs; a fourth watches the network.
@@ -107,6 +109,7 @@ Pi (`@mariozechner/pi-coding-agent`) is also supported in the same image alongsi
 - [What's in the box](docs/reference/whats-in-the-box.md) — tools, Dockerfile layers
 
 **Guides:**
+- [Getting started](docs/guides/getting-started.md) — your first caged session, end to end
 - [Multi-account rotation](docs/guides/multi-account-rotation.md) — spread rate limits across Claude accounts
 
 ## Contributing
