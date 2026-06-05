@@ -1,0 +1,7 @@
+version: 1
+tools:
+  - name: missing-version-pin-tool
+    archetype: TOOL
+    # version_pin intentionally omitted — validator must reject this
+    egress: []
+    mounts: []

@@ -15,9 +15,13 @@
 #   ABSENT/EMPTY
 #     M8  absent manifest yields the default stack (D8 regression contract)
 #     M9  empty manifest (zero-byte) yields the default stack
+#   HOSTILE (continued)
+#     M11 missing version_pin aborts non-zero + names 'version_pin' (all archetypes)
 #   HOST-ONLY
-#     M10 loader reads the host path only — assert path resolves to ~/.config/rip-cage/tools.yaml,
-#         NOT a /workspace path (ADR-024 D1: agent-inaccessible)
+#     M10  loader path resolves to host config dir (XDG_CONFIG_HOME / ~/.config)
+#     M10b loader path does not reference /workspace (path-derivation assertion)
+#     M10c XDG_CONFIG_HOME redirect is honored — proves the override mechanism
+#          (host-side-only: env not forwarded into cage, ADR-005 D7 FIRM / ADR-024 D1)
 #
 # Tests do NOT require docker — pure host-side loader logic only.
 #
@@ -101,17 +105,19 @@ test_m2_shell_integration_archetype_parses() {
   stderr_file=$(mktemp)
   exit_code=0
   out=$(run_manifest_load "$stderr_file") || exit_code=$?
-  local name archetype shell_init
+  local name archetype version_pin shell_init
   name=$(jq -r '.tools[] | select(.archetype == "SHELL-INTEGRATION") | .name' <<<"$out" 2>/dev/null | head -1)
   archetype=$(jq -r '.tools[] | select(.archetype == "SHELL-INTEGRATION") | .archetype' <<<"$out" 2>/dev/null | head -1)
+  version_pin=$(jq -r '.tools[] | select(.archetype == "SHELL-INTEGRATION") | .version_pin' <<<"$out" 2>/dev/null | head -1)
   shell_init=$(jq -r '.tools[] | select(.archetype == "SHELL-INTEGRATION") | .shell_init' <<<"$out" 2>/dev/null | head -1)
   if [[ "$exit_code" -eq 0 \
         && -n "$name" \
         && "$archetype" == "SHELL-INTEGRATION" \
+        && -n "$version_pin" \
         && -n "$shell_init" ]]; then
-    pass "M2 SHELL-INTEGRATION archetype parses: name=$name shell_init present"
+    pass "M2 SHELL-INTEGRATION archetype parses: name=$name version_pin=$version_pin shell_init present"
   else
-    fail "M2 SHELL-INTEGRATION archetype parse failed: exit=$exit_code name=$name archetype=$archetype shell_init=$shell_init stderr=$(cat "$stderr_file")"
+    fail "M2 SHELL-INTEGRATION archetype parse failed: exit=$exit_code name=$name archetype=$archetype version_pin=$version_pin shell_init=$shell_init stderr=$(cat "$stderr_file")"
   fi
   rm -f "$stderr_file"
   teardown_manifest_sandbox
@@ -126,21 +132,23 @@ test_m3_daemon_archetype_parses() {
   stderr_file=$(mktemp)
   exit_code=0
   out=$(run_manifest_load "$stderr_file") || exit_code=$?
-  local name archetype start health state_dir
+  local name archetype version_pin start health state_dir
   name=$(jq -r '.tools[] | select(.archetype == "IN-CAGE-DAEMON") | .name' <<<"$out" 2>/dev/null | head -1)
   archetype=$(jq -r '.tools[] | select(.archetype == "IN-CAGE-DAEMON") | .archetype' <<<"$out" 2>/dev/null | head -1)
+  version_pin=$(jq -r '.tools[] | select(.archetype == "IN-CAGE-DAEMON") | .version_pin' <<<"$out" 2>/dev/null | head -1)
   start=$(jq -r '.tools[] | select(.archetype == "IN-CAGE-DAEMON") | .start' <<<"$out" 2>/dev/null | head -1)
   health=$(jq -r '.tools[] | select(.archetype == "IN-CAGE-DAEMON") | .health' <<<"$out" 2>/dev/null | head -1)
   state_dir=$(jq -r '.tools[] | select(.archetype == "IN-CAGE-DAEMON") | .state_dir' <<<"$out" 2>/dev/null | head -1)
   if [[ "$exit_code" -eq 0 \
         && -n "$name" \
         && "$archetype" == "IN-CAGE-DAEMON" \
+        && -n "$version_pin" \
         && -n "$start" \
         && -n "$health" \
         && -n "$state_dir" ]]; then
-    pass "M3 IN-CAGE-DAEMON archetype parses: name=$name start/health/state_dir present"
+    pass "M3 IN-CAGE-DAEMON archetype parses: name=$name version_pin=$version_pin start/health/state_dir present"
   else
-    fail "M3 IN-CAGE-DAEMON archetype parse failed: exit=$exit_code name=$name archetype=$archetype start=$start health=$health state_dir=$state_dir stderr=$(cat "$stderr_file")"
+    fail "M3 IN-CAGE-DAEMON archetype parse failed: exit=$exit_code name=$name archetype=$archetype version_pin=$version_pin start=$start health=$health state_dir=$state_dir stderr=$(cat "$stderr_file")"
   fi
   rm -f "$stderr_file"
   teardown_manifest_sandbox
@@ -270,28 +278,91 @@ test_m9_empty_manifest_yields_defaults() {
 }
 
 # ---------------------------------------------------------------------------
-# M10 — loader reads host path ONLY; assert the path is ~/.config/rip-cage/tools.yaml
-# NOT a /workspace path (ADR-024 D1: manifest must be agent-inaccessible)
-# This test does NOT rely on running outside a cage — it asserts the PATH itself.
+# M10 — loader reads host path ONLY; assert the path resolves to the host
+# config dir (XDG_CONFIG_HOME / ~/.config) never a /workspace path.
+# The host-only FIRM property (ADR-005 D7) rests on rc running host-side
+# (not copied into the image, env not forwarded into the cage), NOT on the
+# path being unconditionally fixed.  These tests exercise the path-derivation
+# logic in the host process.
 # ---------------------------------------------------------------------------
 test_m10_loader_reads_host_path_only() {
   setup_manifest_sandbox ""
   local manifest_path
   manifest_path=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     bash -c "source '${RC}'; _manifest_global_path")
-  # Must resolve to the host config dir, never /workspace
+  # Must resolve to the sandbox host config dir
   local expected_path="${TEST_HOME}/.config/rip-cage/tools.yaml"
   if [[ "$manifest_path" == "$expected_path" ]]; then
-    pass "M10 loader path is host-only (${manifest_path})"
+    pass "M10 loader path resolves to host config dir (${manifest_path})"
   else
     fail "M10 expected path=${expected_path}, got=${manifest_path}"
   fi
-  # Extra: path must NOT contain /workspace
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# M10b — loader path does not reference /workspace
+# Asserts the path returned by _manifest_global_path does not reference
+# /workspace.  This is a path-derivation assertion — it does not by itself
+# prove agent-inaccessibility; that property rests on rc running host-side
+# (not copied into the image, env not forwarded into the cage).
+# ---------------------------------------------------------------------------
+test_m10b_loader_path_not_workspace() {
+  setup_manifest_sandbox ""
+  local manifest_path
+  manifest_path=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    bash -c "source '${RC}'; _manifest_global_path")
   if [[ "$manifest_path" != */workspace/* ]]; then
-    pass "M10b loader path does not reference /workspace (agent-inaccessible invariant)"
+    pass "M10b loader path does not reference /workspace"
   else
-    fail "M10b loader path references /workspace — violates ADR-024 D1 agent-inaccessible invariant"
+    fail "M10b loader path references /workspace — violates host-only path expectation"
   fi
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# M10c — XDG_CONFIG_HOME redirect is honored (host-side operator override)
+# Proves that the loader follows XDG_CONFIG_HOME when set — this is a
+# legitimate host-side test/operator override mechanism.  Agent-inaccessibility
+# is preserved because RC_MANIFEST_GLOBAL and XDG_CONFIG_HOME are host-side
+# env vars: rc runs on the host and neither env var is forwarded into the
+# container (ADR-005 D7 FIRM property).
+# ---------------------------------------------------------------------------
+test_m10c_xdg_config_home_redirect_honored() {
+  local alt_config_dir
+  alt_config_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-manifest-xdg-test-XXXXXX")
+  mkdir -p "${alt_config_dir}/rip-cage"
+  local expected_path="${alt_config_dir}/rip-cage/tools.yaml"
+  local manifest_path
+  # Override XDG_CONFIG_HOME to a different directory; HOME is unrelated
+  manifest_path=$(HOME="/tmp" XDG_CONFIG_HOME="${alt_config_dir}" \
+    bash -c "source '${RC}'; _manifest_global_path")
+  if [[ "$manifest_path" == "$expected_path" ]]; then
+    pass "M10c XDG_CONFIG_HOME redirect followed: path=${manifest_path}"
+  else
+    fail "M10c expected XDG redirect path=${expected_path}, got=${manifest_path}"
+  fi
+  rm -rf "$alt_config_dir"
+}
+
+# ---------------------------------------------------------------------------
+# M11 — missing version_pin aborts non-zero + names 'version_pin' field
+# version_pin is documented-required for all three archetypes (see comment
+# block ~rc:6089-6091).  A TOOL/SHELL-INTEGRATION/IN-CAGE-DAEMON entry with
+# no version_pin must be rejected by the validator (fail-closed contract).
+# ---------------------------------------------------------------------------
+test_m11_missing_version_pin_aborts() {
+  setup_manifest_sandbox "manifest-hostile-missing-version-pin.yaml"
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_manifest_load "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "version_pin" "$stderr_file"; then
+    pass "M11 missing 'version_pin' field aborts non-zero + names 'version_pin'"
+  else
+    fail "M11 expected non-zero exit + 'version_pin' in error, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
   teardown_manifest_sandbox
 }
 
@@ -310,6 +381,9 @@ test_m7_tool_missing_egress_aborts
 test_m8_absent_manifest_yields_defaults
 test_m9_empty_manifest_yields_defaults
 test_m10_loader_reads_host_path_only
+test_m10b_loader_path_not_workspace
+test_m10c_xdg_config_home_redirect_honored
+test_m11_missing_version_pin_aborts
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

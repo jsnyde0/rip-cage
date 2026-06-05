@@ -6097,6 +6097,13 @@ _config_ensure_global_seeded() {
 # Returns the path to the host-side tool manifest.
 # Honors RC_MANIFEST_GLOBAL env override (for testing); falls back to
 # XDG_CONFIG_HOME / ~/.config/rip-cage/tools.yaml (ADR-021 D1).
+#
+# RC_MANIFEST_GLOBAL and XDG_CONFIG_HOME are host-side test/operator overrides.
+# The agent-inaccessible invariant (ADR-005 D7 FIRM, ADR-024 D1) does NOT rest
+# on this path being unconditionally fixed — it rests on rc running host-side
+# (rc is not copied into the container image; neither env var is forwarded into
+# the cage).  Tests that redirect these vars to a temp dir exercise the
+# path-derivation logic correctly without breaking the security property.
 _manifest_global_path() {
   echo "${RC_MANIFEST_GLOBAL:-${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/tools.yaml}"
 }
@@ -6250,6 +6257,14 @@ _manifest_validate() {
         ;;
     esac
 
+    # 'version_pin' is required on every entry (all three archetypes — ADR-005 D3)
+    local version_pin
+    version_pin=$(jq -r '.version_pin // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+    if [[ "$version_pin" == "___RC_ABSENT___" || -z "$version_pin" ]]; then
+      echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'version_pin' is missing (all archetypes require a version_pin; use \"bundled\" for image-bundled tools)." >&2
+      return 1
+    fi
+
     # Archetype-specific required field checks
     case "$archetype" in
       TOOL)
@@ -6315,6 +6330,11 @@ _manifest_validate() {
 # If the manifest is absent or empty, emits the default manifest as JSON.
 # On validation failure, exits non-zero with a field-naming error on stderr.
 # Does NOT fall back to "ignore bad entries" — fail-closed (ADR-001).
+#
+# Host-only: this function runs on the host process only.  The agent-inaccessible
+# invariant (ADR-005 D7 FIRM, ADR-024 D1) is enforced by rc running host-side
+# (not copied into the image; RC_MANIFEST_GLOBAL / XDG_CONFIG_HOME are not
+# forwarded into the container), NOT by the path being unconditionally fixed.
 _manifest_load() {
   local manifest_path
   manifest_path=$(_manifest_global_path)
