@@ -235,16 +235,37 @@ EOF
 }
 
 cmd_build() {
-  log "Building $IMAGE from ${SCRIPT_DIR}/Dockerfile..."
+  # Ensure the manifest is seeded (first-run: writes defaults to ~/.config/rip-cage/tools.yaml).
+  _manifest_ensure_seeded
+
+  # Resolve the Dockerfile to use: original when all tools are bundled (D8),
+  # or a temp Dockerfile with extra manifest-generated RUN steps for non-bundled tools.
+  local _dockerfile _tmp_dockerfile
+  _dockerfile=""
+  _tmp_dockerfile=""
+  _dockerfile=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/Dockerfile") || {
+    echo "Error: failed to resolve Dockerfile from manifest." >&2
+    return 1
+  }
+  # Track a temp file for cleanup (empty means original was used).
+  if [[ "$_dockerfile" != "${SCRIPT_DIR}/Dockerfile" ]]; then
+    _tmp_dockerfile="$_dockerfile"
+  fi
+
+  log "Building $IMAGE from ${_dockerfile}..."
+  local _build_ok=0
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    if docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" "$@" "$SCRIPT_DIR" >/dev/null 2>&1; then
+    if docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_dockerfile" "$@" "$SCRIPT_DIR" >/dev/null 2>&1; then
       jq -nc '{image: "rip-cage:latest", action: "built", status: "success"}'
     else
+      [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
       json_error "Build failed" "BUILD_FAILED"
     fi
   else
-    docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" "$@" "$SCRIPT_DIR"
+    docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_dockerfile" "$@" "$SCRIPT_DIR" || _build_ok=$?
   fi
+  [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
+  return "$_build_ok"
 }
 
 # _image_is_current — returns 0 if local rip-cage:latest carries an
@@ -274,6 +295,12 @@ _image_is_current() {
 # back to local docker build on pull failure. Used by cmd_up's auto-build
 # branch. Explicit `rc build` (cmd_build) is unchanged and always builds.
 # ADR-008 D6.
+#
+# Manifest integration (rip-cage-4c5.2): the local-build fallback resolves the
+# Dockerfile through _manifest_build_dockerfile_path so that any manifest-defined
+# non-bundled TOOL entries are baked in.  The pull path is unaffected (the pulled
+# image is a pre-built release image; manifest-driven tools require an explicit
+# `rc build`).
 _pull_or_build() {
   if [[ -z "${RIP_CAGE_IMAGE_REGISTRY}" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -281,8 +308,20 @@ _pull_or_build() {
     else
       log "Building rip-cage image locally (RIP_CAGE_IMAGE_REGISTRY unset, takes a few minutes)..."
     fi
-    docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" "$SCRIPT_DIR"
-    return $?
+    local _pob_dockerfile _pob_tmp
+    _pob_dockerfile=""
+    _pob_tmp=""
+    _pob_dockerfile=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/Dockerfile") || {
+      echo "Error: failed to resolve Dockerfile from manifest." >&2
+      return 1
+    }
+    if [[ "$_pob_dockerfile" != "${SCRIPT_DIR}/Dockerfile" ]]; then
+      _pob_tmp="$_pob_dockerfile"
+    fi
+    local _pob_exit=0
+    docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_pob_dockerfile" "$SCRIPT_DIR" || _pob_exit=$?
+    [[ -n "$_pob_tmp" ]] && rm -f "$_pob_tmp"
+    return $_pob_exit
   fi
   local pull_ref="${RIP_CAGE_IMAGE_REGISTRY}:${RC_VERSION}"
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -306,7 +345,20 @@ _pull_or_build() {
       log "Pull failed (image unavailable, offline, or auth required) - building locally (this takes a few minutes)..."
     fi
   fi
-  docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" "$SCRIPT_DIR"
+  local _pob_dockerfile _pob_tmp
+  _pob_dockerfile=""
+  _pob_tmp=""
+  _pob_dockerfile=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/Dockerfile") || {
+    echo "Error: failed to resolve Dockerfile from manifest." >&2
+    return 1
+  }
+  if [[ "$_pob_dockerfile" != "${SCRIPT_DIR}/Dockerfile" ]]; then
+    _pob_tmp="$_pob_dockerfile"
+  fi
+  local _pob_exit=0
+  docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_pob_dockerfile" "$SCRIPT_DIR" || _pob_exit=$?
+  [[ -n "$_pob_tmp" ]] && rm -f "$_pob_tmp"
+  return $_pob_exit
 }
 
 cmd_init() {
@@ -6377,8 +6429,129 @@ _manifest_load() {
   echo "$json"
 }
 
+# _manifest_generate_extra_dockerfile_steps
+# Read the host manifest and emit Dockerfile RUN instructions for every TOOL
+# entry that carries an `install_cmd` field (non-bundled tools).  Entries with
+# `version_pin: "bundled"` and no `install_cmd` are baked by the existing
+# Dockerfile stages — no RUN step is generated for them.
+#
+# This is the mechanism that lets rc build add arbitrary tool binaries to the
+# image from the manifest (ADR-005 D1 FIRM: install = build-time).
+#
+# D8 byte-for-byte contract: when the default manifest is in effect (all tools
+# have version_pin "bundled" / no install_cmd), this function emits NOTHING.
+# rc build then uses the original Dockerfile unchanged — the build is
+# bit-for-bit identical to the pre-manifest image.
+#
+# D4 reconciliation (ADR-005 D4 FIRM --with flags): the manifest IS the
+# build-time tool-selection surface.  Per-cage --with/--only/--skip selection
+# is DEFERRED (Open-decision 8); it will layer on top of this mechanism later.
+# This function does not implement selection.
+#
+# Mechanism choice (recorded for siblings):
+#   rc build appends extra RUN steps to a temp copy of the Dockerfile when
+#   non-bundled tools are present.  The original Dockerfile is NEVER modified.
+#   For the default (bundled-only) manifest this function outputs nothing and
+#   rc build uses the original Dockerfile directly — satisfying D8.
+#
+# Output: zero or more lines of the form:
+#   RUN <install_cmd>
+# one per non-bundled TOOL entry that has an install_cmd field.
+# Only TOOL archetype entries are processed here (SHELL-INTEGRATION and
+# IN-CAGE-DAEMON wiring is siblings .4/.5 — but their binary baking uses the
+# same install_cmd mechanism if they carry the field).
+_manifest_generate_extra_dockerfile_steps() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  # Walk TOOL-archetype entries that have a non-empty install_cmd field.
+  local count idx
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local steps=""
+  for (( idx=0; idx<count; idx++ )); do
+    local entry archetype install_cmd
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
+    install_cmd=$(jq -r '.install_cmd // ""' <<<"$entry" 2>/dev/null)
+    # Skip entries with no install_cmd (bundled tools; Dockerfile handles them).
+    if [[ -z "$install_cmd" ]]; then
+      continue
+    fi
+    local name
+    name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+    steps+="RUN # manifest TOOL: ${name} (${archetype})"$'\n'
+    steps+="RUN apt-get update && ${install_cmd} && rm -rf /var/lib/apt/lists/*"$'\n'
+  done
+
+  # Strip trailing newline for clean output; caller appends to Dockerfile.
+  if [[ -n "$steps" ]]; then
+    printf '%s' "${steps%$'\n'}"
+  fi
+}
+
+# _manifest_build_dockerfile_path
+# Returns the path to the Dockerfile that rc build should use.
+# If the manifest has non-bundled tools (extra steps to add), writes a temp
+# Dockerfile that includes the original plus the extra RUN steps, and prints
+# its path.  If all tools are bundled, prints the original Dockerfile path.
+# The caller is responsible for cleaning up any temp file created.
+#
+# Insertion point: extra steps are injected BEFORE the "# Non-root user" block
+# (i.e. before `USER agent`) so apt-get install runs as root.  This is the
+# correct point in the multi-stage runtime stage for root-level tool installs.
+_manifest_build_dockerfile_path() {
+  local orig_dockerfile="${1:-${SCRIPT_DIR}/Dockerfile}"
+
+  local extra_steps
+  if ! extra_steps=$(_manifest_generate_extra_dockerfile_steps); then
+    return 1
+  fi
+
+  if [[ -z "$extra_steps" ]]; then
+    # Default/bundled-only manifest — use the original Dockerfile unchanged (D8).
+    echo "$orig_dockerfile"
+    return 0
+  fi
+
+  # Non-bundled tools present — generate a temp Dockerfile.
+  local tmp_dockerfile
+  tmp_dockerfile=$(mktemp "${TMPDIR:-/tmp}/rip-cage-Dockerfile-XXXXXX")
+
+  # Inject extra steps before the "# Non-root user" block so they run as root.
+  # The sentinel is the exact comment line from the Dockerfile; if absent (future
+  # refactor), fall back to appending — less correct but still builds.
+  local sentinel="# Non-root user"
+  local tmp_inject
+  tmp_inject=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
+  printf '\n# --- manifest-generated install steps (rip-cage-4c5.2) ---\n%s\n' "$extra_steps" > "$tmp_inject"
+
+  if grep -qF "$sentinel" "$orig_dockerfile"; then
+    # Write lines before the sentinel, inject the block, then the rest.
+    # Use line numbers: find the first sentinel line and split there.
+    local sentinel_line
+    sentinel_line=$(grep -nF "$sentinel" "$orig_dockerfile" | head -1 | cut -d: -f1)
+    head -n "$((sentinel_line - 1))" "$orig_dockerfile" > "$tmp_dockerfile"
+    cat "$tmp_inject" >> "$tmp_dockerfile"
+    tail -n "+${sentinel_line}" "$orig_dockerfile" >> "$tmp_dockerfile"
+  else
+    # Fallback: append at end (tools will run as USER agent — may fail for apt-get)
+    cat "$orig_dockerfile" > "$tmp_dockerfile"
+    cat "$tmp_inject" >> "$tmp_dockerfile"
+  fi
+  rm -f "$tmp_inject"
+
+  echo "$tmp_dockerfile"
+}
+
 # =============================================================================
 # End tool manifest schema + host-only loader (rip-cage-4c5.1)
+# + TOOL install-step generation (rip-cage-4c5.2)
 # =============================================================================
 
 # _ensure_pi_auth_seed — cold-start seeding for pi auth (rip-cage-wo9 / ADR-019 D1).

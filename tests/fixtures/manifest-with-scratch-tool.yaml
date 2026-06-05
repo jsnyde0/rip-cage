@@ -1,0 +1,12 @@
+version: 1
+tools:
+  # Test fixture: a scratch TOOL entry with a real apt-get install command.
+  # Used by tests/test-manifest-tool.sh (rip-cage-4c5.2) counterfactual build proof.
+  # ripgrep is chosen because it is small, fast to install, and not in the
+  # default rip-cage Dockerfile — its presence/absence is purely manifest-driven.
+  - name: ripgrep
+    archetype: TOOL
+    version_pin: "14.1.1"
+    install_cmd: "apt-get install -y ripgrep"
+    egress: []
+    mounts: []
