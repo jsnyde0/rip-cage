@@ -144,9 +144,9 @@ When a tool publishes pre-built binaries for linux/arm64 and linux/amd64, downlo
 
 ### D7: Tool composability is a declarative, host-only manifest with three archetypes
 
-**Firmness: EXPLORATORY** (added 2026-06-05)
+**Firmness: storage-location FIRM (host-only `~/.config/rip-cage/`); schema/format EXPLORATORY** (added 2026-06-05; storage-location resolved 2026-06-05)
 
-A declarative manifest — editable only from the host, consumed by `rc build` at build time, with the current bundled stack as its defaults — lets users add tools without forking the Dockerfile. It generalizes D3 (`versions.env` pinning) and D5 (the 4-point integration pattern) from a maintainer checklist into a user-facing composition surface. Each entry is one of three **archetypes**, defined by integration surface, that other beads and contributors reference as a constraint:
+A declarative manifest — stored **host-side under `~/.config/rip-cage/`, agent-inaccessible**, consumed by `rc build` at build time, with the current bundled stack as its defaults — lets users add tools without forking the Dockerfile. It generalizes D3 (`versions.env` pinning) and D5 (the 4-point integration pattern) from a maintainer checklist into a user-facing composition surface. Each entry is one of three **archetypes**, defined by integration surface, that other beads and contributors reference as a constraint:
 
 - **TOOL** — agent-invoked; integration is just reachability (binary on PATH) + declared egress + declared mounts. ~75% of a real ecosystem (ACFS phases 7–10).
 - **SHELL-INTEGRATION** — integrates via a shell rc `eval` line (atuin, zoxide); one `shell_init` field.
@@ -154,7 +154,9 @@ A declarative manifest — editable only from the host, consumed by `rc build` a
 
 Tools are **installed at build time** (consistent with D1 — no runtime download/plugin); a daemon archetype's process is merely **started at init**, the same lifecycle rip-cage already uses for the egress proxy, ssh-agent-filter, and tmux. "Install = build-time, start = init-time" — D1 forbids runtime *installation*, not daemons that run.
 
-**Rationale:** Editing the Dockerfile per tool forks the image per project and offers no shared default set or selection. A manifest decouples *what tools exist* from *how they install* (the ACFS pattern: manifest → generated install steps → selection), and the archetype enum keeps the integration surface finite and reviewable. Host-only authoring keeps the agent from self-granting tools (the `rc build` step is the human approval point, mirroring `rc reload` for the egress allowlist).
+**Rationale:** Editing the Dockerfile per tool forks the image per project and offers no shared default set or selection. A manifest decouples *what tools exist* from *how they install* (the ACFS pattern: manifest → generated install steps → selection), and the archetype enum keeps the integration surface finite and reviewable.
+
+**Storage location is host-only by construction (FIRM).** The security property D7 requires — *no agent-authored tool reaches a built cage unreviewed* — comes from the agent being unable to reach the manifest file at all, **not** from the `rc build` step acting as a review gate. The egress/ssh-allowlist precedent (`.rip-cage.yaml`, workspace-resident, agent-writable) is safe because **application** is host-gated: an in-cage edit does nothing until a human runs `rc reload`/`rc up` (`rc` lines 3016–3017, 3082–3084). That gate is weaker for a tool manifest: `rc build` is routine and less-scrutinized than the deliberate `rc reload`, and a tool entry installs an **arbitrary binary on PATH** — a larger blast radius than one egress host (which still sits behind the IOC floor and the proxy regardless, ADR-012 D1). Putting the manifest host-side under `~/.config/rip-cage/` (alongside the existing global config home, ADR-021 D1) gives "only the human controls which tools a cage may contain" structurally, and needs zero net-new build-time diff-review tooling. **Accepted cost:** tool *definitions* are per-host-global, not per-project git-tracked — which binaries a machine's cages may contain is an operator/host concern, not a per-repo one. Per-cage *selection* (which subset of defined tools a given project gets) is deferred (an open decision on the epic, bead `rip-cage-4c5`) and is the place a workspace-visible, git-tracked, bounded knob can live later — selection cannot introduce a new binary, so it carries no pre-stage risk even when agent-writable.
 
 **Alternatives considered:**
 
@@ -164,8 +166,10 @@ Tools are **installed at build time** (consistent with D1 — no runtime downloa
 | Runtime install-on-`up` / plugin loader | `reasoned:` an agent or injected workspace content that can trigger runtime install can expand its own capability surface; violates D1 FIRM. |
 | Single "binary on PATH" archetype | `direct:` ~25% of a real ecosystem (ACFS phases 7–10) needs more than PATH — shell-init and daemon lifecycle have no expression in a PATH-only model. |
 | Full ACFS-style rich schema (systemd units, cloud-cred injection, cross-host sync) | `reasoned:` violates rip-cage's 80/20; most fields serve cross-cage or cloud cases ruled out by D8 — ship the three the in-cage grain needs. |
+| Manifest in workspace `.rip-cage.yaml`, agent-writable, gated only by host-run `rc build` (egress-config precedent) | `reasoned:` a prompt-injected agent can pre-stage a malicious tool entry and wait for a routine `rc build` to bake it; `rc build` is less-scrutinized than the deliberate `rc reload`, and a tool installs an arbitrary binary (bigger blast radius than one egress host). Per-project git-tracking does not outweigh the pre-stage hole. |
+| Manifest in workspace, plus net-new `rc build` diff-review tooling to close the pre-stage hole | `reasoned:` recovers safety but only by building a whole human-in-the-loop diff-review surface; host-side storage gets the same "only the human controls it" property for free. Diff-review tooling is mooted by host-only storage. |
 
-**What would invalidate this:** a common, legitimate tool fitting none of the three archetypes (and not a deferred cloud-CLI case), or a validated need to add tools to an already-running cage without rebuild (which would reopen D1).
+**What would invalidate this:** a common, legitimate tool fitting none of the three archetypes (and not a deferred cloud-CLI case); a validated need to add tools to an already-running cage without rebuild (which would reopen D1); or a validated need for tool *definitions* to be per-project and travel with the repo (which would reopen the storage-location choice and require the diff-review tooling the host-only decision moots).
 
 ### D8: The manifest composes within ONE cage and never reaches across cages
 
@@ -230,7 +234,7 @@ A missing or broken safety interceptor (DCG, ssh-blocker, egress proxy) must ref
 - [ADR-006 Multi-Agent Architecture](ADR-006-multi-agent-architecture.md) — Tier 1a many-agents-in-one-cage, the planned-not-shipped prerequisite for the in-cage daemon archetype (D7, D8).
 - [ADR-012 Network Egress Firewall](ADR-012-egress-firewall.md) — declared egress unions into the allowlist but stays under the non-overridable IOC floor (D7, D9).
 - [ADR-019 pi-coding-agent Support](ADR-019-pi-coding-agent-support.md) — D1 container-local cage-owned paths + narrow durable sub-mount, the pattern for daemon state-dir placement (D7).
-- [ADR-021 Layered rip-cage Config](ADR-021-layered-rip-cage-config.md) — additive-list merge semantics and no-config regression contract the manifest mirrors (D7).
+- [ADR-021 Layered rip-cage Config](ADR-021-layered-rip-cage-config.md) — D1 `~/.config/rip-cage/` host-side config home (where the host-only manifest lives); additive-list/selection-list merge semantics and no-config regression contract the manifest mirrors (D7).
 - [ADR-023 Secret-Path Mount Denylist](ADR-023-secret-path-mount-denylist.md) — manifest-declared mounts subject to the denylist floor (D9).
 - [ADR-024 Prompt-Injection Threat Model](ADR-024-prompt-injection-threat-model.md) — warrants host-only authoring (the pre-staged-manifest vector) and the in-cage-only invariant (D7, D8, D9).
 - [ADR-025 Host-Adoptable DCG Policy Layer](ADR-025-host-adoptable-dcg-policy.md) — D2 baked DCG floor is uncrossable (the manifest can't weaken it); D5 validate-by-parsing (D9, D10).
