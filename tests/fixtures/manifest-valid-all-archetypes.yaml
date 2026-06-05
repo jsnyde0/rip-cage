@@ -1,0 +1,19 @@
+version: 1
+tools:
+  - name: example-tool
+    archetype: TOOL
+    version_pin: "1.2.3"
+    egress: []
+    mounts: []
+
+  - name: example-shell-integration
+    archetype: SHELL-INTEGRATION
+    version_pin: "2.0.0"
+    shell_init: 'eval "$(example-shell-integration init zsh)"'
+
+  - name: example-daemon
+    archetype: IN-CAGE-DAEMON
+    version_pin: "0.1.0"
+    start: "/usr/local/bin/example-daemon serve --port 9999"
+    health: "curl -sf http://127.0.0.1:9999/health"
+    state_dir: "/var/run/example-daemon"

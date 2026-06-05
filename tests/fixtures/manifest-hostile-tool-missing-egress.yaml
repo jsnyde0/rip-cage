@@ -1,0 +1,6 @@
+version: 1
+tools:
+  - name: tool-no-egress
+    archetype: TOOL
+    version_pin: "1.0.0"
+    mounts: []

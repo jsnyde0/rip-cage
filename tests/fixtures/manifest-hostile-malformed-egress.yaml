@@ -1,0 +1,7 @@
+version: 1
+tools:
+  - name: bad-egress-tool
+    archetype: TOOL
+    version_pin: "1.0.0"
+    egress: "not-a-list"
+    mounts: []

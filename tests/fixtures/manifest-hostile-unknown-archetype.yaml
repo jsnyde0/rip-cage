@@ -1,0 +1,6 @@
+version: 1
+tools:
+  - name: bad-tool
+    archetype: CLOUD-SERVICE
+    version_pin: "1.0.0"
+    egress: []

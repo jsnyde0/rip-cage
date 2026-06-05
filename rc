@@ -6077,6 +6077,290 @@ _config_ensure_global_seeded() {
   echo "rip-cage: seeded default secret-path denylist at ${_path} (first run; run 'rc config show' to view, or edit to customize)." >&2
 }
 
+# =============================================================================
+# Tool manifest schema + host-only loader (rip-cage-4c5.1)
+#
+# ADR-005 D7/D8 — schema format crystallized here; storage host-only (FIRM).
+# ADR-021 D1   — manifest lives at ~/.config/rip-cage/tools.yaml (host config home).
+# ADR-024 D1   — host-only = agent-inaccessible (prompt-injection threat model).
+# ADR-001      — strict-parse, fail-closed; validator is independent of consumer.
+#
+# Three archetypes (ADR-005 D2):
+#   TOOL             — binary on PATH; required fields: name, archetype, egress (list), mounts (list), version_pin
+#   SHELL-INTEGRATION — shell rc eval line; required: name, archetype, shell_init, version_pin
+#   IN-CAGE-DAEMON   — localhost service; required: name, archetype, start, health, state_dir, version_pin
+#                       optional: mcp_fragment
+#
+# Default manifest = current bundled stack (D8: no-manifest cage is byte-for-byte today's image).
+# =============================================================================
+
+# Returns the path to the host-side tool manifest.
+# Honors RC_MANIFEST_GLOBAL env override (for testing); falls back to
+# XDG_CONFIG_HOME / ~/.config/rip-cage/tools.yaml (ADR-021 D1).
+_manifest_global_path() {
+  echo "${RC_MANIFEST_GLOBAL:-${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/tools.yaml}"
+}
+
+# The default tool manifest — the current bundled stack (ADR-005 D8).
+# Any cage with an absent or empty manifest gets this content, so the cage
+# behaves identically to a pre-manifest rip-cage image.
+_manifest_default_yaml() {
+  cat <<'YAML'
+version: 1
+tools:
+  - name: beads
+    archetype: TOOL
+    version_pin: "bundled"
+    egress:
+      - api.github.com
+    mounts: []
+
+  - name: dolt
+    archetype: TOOL
+    version_pin: "bundled"
+    egress:
+      - doltremoteapi.dolthub.com
+    mounts: []
+
+  - name: gh
+    archetype: TOOL
+    version_pin: "bundled"
+    egress:
+      - api.github.com
+      - github.com
+    mounts: []
+
+  - name: claude
+    archetype: TOOL
+    version_pin: "bundled"
+    egress:
+      - api.anthropic.com
+      - statsig.anthropic.com
+      - statsig.com
+    mounts: []
+
+  - name: pi
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts: []
+
+  - name: dcg
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts: []
+YAML
+}
+
+# Auto-seed the manifest on first run. Mirrors _config_ensure_global_seeded.
+# If the file already exists: silent no-op (idempotent — returns 0 immediately).
+# If absent: mkdir -p its directory, write the default manifest YAML, emit a
+# one-line stderr notice.
+_manifest_ensure_seeded() {
+  local _path
+  _path=$(_manifest_global_path)
+  if [[ -f "$_path" ]]; then
+    return 0
+  fi
+  if ! mkdir -p "$(dirname "$_path")"; then
+    echo "Error: failed to create manifest directory for ${_path}." >&2
+    exit 1
+  fi
+  if ! _manifest_default_yaml > "$_path" || [[ ! -s "$_path" ]]; then
+    echo "Error: failed to seed default tool manifest at ${_path}." >&2
+    exit 1
+  fi
+  echo "rip-cage: seeded default tool manifest at ${_path} (first run; edit to add tools)." >&2
+}
+
+# _manifest_validate FILE
+# Strict-parse, fail-closed validator for a manifest YAML file.
+# Validates ALL tool entries. On the first violation, prints a field-naming
+# error to stderr and returns non-zero. Does NOT use a fail-open consumer.
+# (validate-config-by-parsing-not-by-running-fail-open-consumer — ADR-001)
+_manifest_validate() {
+  local file="$1"
+
+  # yq required (same policy as config loader — no silent degradation ADR-001).
+  if ! command -v yq &>/dev/null; then
+    echo "Error: yq not found on PATH. yq is a rip-cage manifest dependency — install it: brew install yq (macOS) | apt-get install yq (Debian/Ubuntu)." >&2
+    return 1
+  fi
+
+  local json
+  if ! json=$(yq -o=json '.' "$file" 2>/dev/null); then
+    echo "Error: manifest '${file}' failed to parse as YAML." >&2
+    return 1
+  fi
+
+  # Empty / null file → treat as "use defaults" (caller handles; validator passes empty)
+  if [[ -z "$json" || "$json" == "null" ]]; then
+    return 0
+  fi
+
+  # version field check (must be numeric scalar, if present)
+  local version
+  version=$(jq -r '.version // "MISSING"' <<<"$json" 2>/dev/null)
+  if [[ "$version" != "MISSING" && ! "$version" =~ ^[0-9]+$ ]]; then
+    echo "Error: manifest '${file}' has invalid 'version' field: '${version}' (must be a positive integer)." >&2
+    return 1
+  fi
+
+  # tools must be a list (if present)
+  local tools_type
+  tools_type=$(jq -r 'if has("tools") then (.tools | type) else "absent" end' <<<"$json" 2>/dev/null)
+  if [[ "$tools_type" != "absent" && "$tools_type" != "array" ]]; then
+    echo "Error: manifest '${file}' field 'tools' must be a list, got: ${tools_type}." >&2
+    return 1
+  fi
+
+  # Per-entry validation: walk each entry
+  local count idx
+  count=$(jq '.tools | length' <<<"$json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  for (( idx=0; idx<count; idx++ )); do
+    local entry
+    entry=$(jq -c ".tools[${idx}]" <<<"$json" 2>/dev/null)
+
+    # 'name' is required on every entry
+    local name
+    name=$(jq -r '.name // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+    if [[ "$name" == "___RC_ABSENT___" || -z "$name" ]]; then
+      echo "Error: manifest '${file}' tools[${idx}]: required field 'name' is missing." >&2
+      return 1
+    fi
+
+    # 'archetype' is required and must be one of the three valid values
+    local archetype
+    archetype=$(jq -r '.archetype // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+    if [[ "$archetype" == "___RC_ABSENT___" || -z "$archetype" ]]; then
+      echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'archetype' is missing." >&2
+      return 1
+    fi
+    case "$archetype" in
+      TOOL|SHELL-INTEGRATION|IN-CAGE-DAEMON)
+        ;;
+      *)
+        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): unknown 'archetype' value '${archetype}'. Allowed: TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON." >&2
+        return 1
+        ;;
+    esac
+
+    # Archetype-specific required field checks
+    case "$archetype" in
+      TOOL)
+        # 'egress' required and must be a list
+        local egress_type
+        egress_type=$(jq -r 'if has("egress") then (.egress | type) else "absent" end' <<<"$entry" 2>/dev/null)
+        if [[ "$egress_type" == "absent" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'egress' is missing (TOOL archetype requires egress declaration, even if empty: egress: [])." >&2
+          return 1
+        fi
+        if [[ "$egress_type" != "array" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'egress' must be a list, got: ${egress_type}." >&2
+          return 1
+        fi
+        # 'mounts' required and must be a list
+        local mounts_type
+        mounts_type=$(jq -r 'if has("mounts") then (.mounts | type) else "absent" end' <<<"$entry" 2>/dev/null)
+        if [[ "$mounts_type" == "absent" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'mounts' is missing (TOOL archetype requires mounts declaration, even if empty: mounts: [])." >&2
+          return 1
+        fi
+        if [[ "$mounts_type" != "array" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'mounts' must be a list, got: ${mounts_type}." >&2
+          return 1
+        fi
+        ;;
+      SHELL-INTEGRATION)
+        # 'shell_init' required
+        local shell_init
+        shell_init=$(jq -r '.shell_init // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        if [[ "$shell_init" == "___RC_ABSENT___" || -z "$shell_init" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'shell_init' is missing (SHELL-INTEGRATION archetype)." >&2
+          return 1
+        fi
+        ;;
+      IN-CAGE-DAEMON)
+        # 'start', 'health', 'state_dir' required
+        local daemon_start daemon_health daemon_state_dir
+        daemon_start=$(jq -r '.start // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        daemon_health=$(jq -r '.health // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        daemon_state_dir=$(jq -r '.state_dir // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        if [[ "$daemon_start" == "___RC_ABSENT___" || -z "$daemon_start" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'start' is missing (IN-CAGE-DAEMON archetype)." >&2
+          return 1
+        fi
+        if [[ "$daemon_health" == "___RC_ABSENT___" || -z "$daemon_health" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'health' is missing (IN-CAGE-DAEMON archetype)." >&2
+          return 1
+        fi
+        if [[ "$daemon_state_dir" == "___RC_ABSENT___" || -z "$daemon_state_dir" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'state_dir' is missing (IN-CAGE-DAEMON archetype)." >&2
+          return 1
+        fi
+        ;;
+    esac
+  done
+
+  return 0
+}
+
+# _manifest_load
+# Load and validate the host-side tool manifest. Returns JSON on stdout.
+# If the manifest is absent or empty, emits the default manifest as JSON.
+# On validation failure, exits non-zero with a field-naming error on stderr.
+# Does NOT fall back to "ignore bad entries" — fail-closed (ADR-001).
+_manifest_load() {
+  local manifest_path
+  manifest_path=$(_manifest_global_path)
+
+  # Absent or empty manifest → return the default stack (D8 regression contract).
+  if [[ ! -f "$manifest_path" || ! -s "$manifest_path" ]]; then
+    local default_json
+    if ! default_json=$(yq -o=json '.' <(  _manifest_default_yaml) 2>/dev/null); then
+      echo "Error: failed to parse internal default manifest." >&2
+      return 1
+    fi
+    echo "$default_json"
+    return 0
+  fi
+
+  # Validate the manifest strictly before exposing any content.
+  if ! _manifest_validate "$manifest_path"; then
+    return 1
+  fi
+
+  # Parse + emit as JSON.
+  local json
+  if ! json=$(yq -o=json '.' "$manifest_path" 2>/dev/null); then
+    echo "Error: manifest '${manifest_path}' failed to parse as YAML." >&2
+    return 1
+  fi
+
+  # Empty/null manifest after YAML parse (e.g. file with only comments)
+  # → return defaults (D8).
+  if [[ -z "$json" || "$json" == "null" ]]; then
+    local default_json
+    if ! default_json=$(yq -o=json '.' <(_manifest_default_yaml) 2>/dev/null); then
+      echo "Error: failed to parse internal default manifest." >&2
+      return 1
+    fi
+    echo "$default_json"
+    return 0
+  fi
+
+  echo "$json"
+}
+
+# =============================================================================
+# End tool manifest schema + host-only loader (rip-cage-4c5.1)
+# =============================================================================
+
 # _ensure_pi_auth_seed — cold-start seeding for pi auth (rip-cage-wo9 / ADR-019 D1).
 # Creates ~/.pi/agent/auth.json containing '{}' when it is absent so that an
 # in-cage 'pi /login' persists across rc destroy/up cycles via the single-file
