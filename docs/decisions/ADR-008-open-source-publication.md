@@ -121,8 +121,9 @@ The Homebrew formula lives in [`jsnyde0/homebrew-rip-cage`](https://github.com/j
 
 **Release ceremony (tap sync):**
 1. Tag → GHCR publish (existing)
-2. `scripts/update-formula-sha.sh` patches `Formula/rip-cage.rb` in this repo and copies to `../homebrew-rip-cage/` if present
-3. Commit + push both repos
+2. `scripts/update-formula-sha.sh` patches `Formula/rip-cage.rb` in this repo and copies to `../homebrew-rip-cage/` if present. **The versioned tarball `url` tag and the `sha256` MUST be patched together** — a stale `url` against a fresh `sha256` ships a formula whose tarball fails checksum and breaks `brew install` for every user on that release. This shipped broken on **v0.5.0 and v0.5.1** before the script was fixed (`rip-cage-ndz`, commit 49992c1) to `sed` the `url` tag from `VERSION` alongside the `sha256`.
+3. **Verify end-to-end with `brew fetch jsnyde0/rip-cage/rip-cage` before pushing** — it downloads the real tarball and checks the `sha256`, which is the actual breakage point. Eyeballing the formula diff is not sufficient (it cannot catch a url/sha mismatch against the published tarball). Cross-check with `curl -sL <url> | shasum -a 256` against the pinned sha.
+4. Commit + push both repos
 
 **Alternatives considered:**
 
@@ -138,7 +139,7 @@ The Homebrew formula lives in [`jsnyde0/homebrew-rip-cage`](https://github.com/j
 
 ## Deferred
 
-- **GH Action for auto-sha256 bump** — `scripts/update-formula-sha.sh` is the load-bearing piece; wrapping it in CI that fires on tag push (and either auto-commits or opens a PR) is a small follow-up. Shrinks the post-tag broken-`brew install` window from "however long the human takes" to "CI runtime."
+- **GH Action for auto-sha256 bump** — `scripts/update-formula-sha.sh` is the load-bearing piece; wrapping it in CI that fires on tag push (and either auto-commits or opens a PR) is a small follow-up. Shrinks the post-tag broken-`brew install` window from "however long the human takes" to "CI runtime." Any such automation must also absorb the **`brew fetch` verification gate** (ceremony step 3) — currently verifier-only knowledge, not in the script — so it fails the bump rather than pushing a checksum-broken formula unattended.
 - **DinD-based end-to-end `brew install` smoke test in CI** — would catch formula regressions automatically but requires Docker-in-Homebrew. Manual smoke check at release ceremony covers it for now.
 - **Git history rewrite** — Personal data in old commits is not a security risk (paths, not credentials). The cost of force-pushing outweighs the benefit.
 - **Windows support** — `rc` is bash; WSL2 works but is untested. Not a launch blocker.
