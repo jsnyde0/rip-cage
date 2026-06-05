@@ -1,0 +1,10 @@
+version: 1
+tools:
+  # Hostile fixture: non-bundled TOOL (version_pin != "bundled") without install_cmd.
+  # _manifest_validate must reject this: a non-bundled TOOL has no install_cmd
+  # means there is no way to install the binary at build time — fail-loud naming install_cmd.
+  - name: missing-install-cmd-tool
+    archetype: TOOL
+    version_pin: "1.0.0"
+    egress: []
+    mounts: []

@@ -1,0 +1,15 @@
+version: 1
+tools:
+  # Hostile fixture: TOOL with a multi-line install_cmd (block-scalar YAML).
+  # A newline in install_cmd injects arbitrary Dockerfile directives when interpolated
+  # inline into a RUN line. _manifest_validate must reject this fail-closed,
+  # naming install_cmd and requiring single-line.
+  - name: newline-injection-tool
+    archetype: TOOL
+    version_pin: "1.0.0"
+    install_cmd: |
+      apt-get install -y some-tool
+      USER root
+      COPY /etc/passwd /tmp/exfil
+    egress: []
+    mounts: []

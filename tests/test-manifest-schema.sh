@@ -346,6 +346,93 @@ test_m10c_xdg_config_home_redirect_honored() {
 }
 
 # ---------------------------------------------------------------------------
+# M12a — non-bundled TOOL with install_cmd parses (valid pairing)
+# A TOOL entry with version_pin != "bundled" MUST have an install_cmd.
+# When install_cmd is present and single-line, validation must succeed.
+# ---------------------------------------------------------------------------
+test_m12a_non_bundled_tool_with_install_cmd_parses() {
+  setup_manifest_sandbox "manifest-valid-non-bundled-with-install-cmd.yaml"
+  local stderr_file out exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  out=$(run_manifest_load "$stderr_file") || exit_code=$?
+  local name install_cmd
+  name=$(jq -r '.tools[] | select(.archetype == "TOOL") | .name' <<<"$out" 2>/dev/null | head -1)
+  install_cmd=$(jq -r '.tools[] | select(.archetype == "TOOL") | .install_cmd' <<<"$out" 2>/dev/null | head -1)
+  if [[ "$exit_code" -eq 0 && -n "$name" && -n "$install_cmd" ]]; then
+    pass "M12a non-bundled TOOL with install_cmd parses: name=$name install_cmd=$install_cmd"
+  else
+    fail "M12a non-bundled TOOL with install_cmd should parse. exit=$exit_code name=$name install_cmd=$install_cmd stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# M12b — non-bundled TOOL WITHOUT install_cmd is rejected naming install_cmd
+# A TOOL entry with version_pin != "bundled" that lacks install_cmd must be
+# rejected fail-loud, with the error naming the 'install_cmd' field.
+# Without install_cmd the binary has no way to reach the image at build time.
+# ---------------------------------------------------------------------------
+test_m12b_non_bundled_tool_missing_install_cmd_rejected() {
+  setup_manifest_sandbox "manifest-hostile-non-bundled-missing-install-cmd.yaml"
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_manifest_load "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "install_cmd" "$stderr_file"; then
+    pass "M12b non-bundled TOOL missing install_cmd rejected non-zero + names 'install_cmd'"
+  else
+    fail "M12b expected non-zero exit + 'install_cmd' in error. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# M12c — bundled TOOL WITH install_cmd is rejected naming install_cmd
+# A TOOL entry with version_pin == "bundled" must NOT have an install_cmd.
+# bundled = already baked by the Dockerfile; an install_cmd is contradictory
+# and must be rejected fail-loud naming 'install_cmd'.
+# ---------------------------------------------------------------------------
+test_m12c_bundled_tool_with_install_cmd_rejected() {
+  setup_manifest_sandbox "manifest-hostile-bundled-with-install-cmd.yaml"
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_manifest_load "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "install_cmd" "$stderr_file"; then
+    pass "M12c bundled TOOL with install_cmd rejected non-zero + names 'install_cmd'"
+  else
+    fail "M12c expected non-zero exit + 'install_cmd' in error. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# M13 — install_cmd with a newline (block-scalar YAML) is rejected naming install_cmd
+# A YAML block-scalar install_cmd survives yq parsing with literal newlines,
+# which injects arbitrary Dockerfile directives (USER root, COPY, FROM) into
+# the generated RUN line.  Fail-closed at LOAD — error names 'install_cmd'
+# and says single-line-required.
+# ---------------------------------------------------------------------------
+test_m13_newline_in_install_cmd_rejected() {
+  setup_manifest_sandbox "manifest-hostile-newline-in-install-cmd.yaml"
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_manifest_load "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "install_cmd" "$stderr_file"; then
+    pass "M13 newline in install_cmd rejected non-zero + names 'install_cmd'"
+  else
+    fail "M13 expected non-zero exit + 'install_cmd' in error. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # M11 — missing version_pin aborts non-zero + names 'version_pin' field
 # version_pin is documented-required for all three archetypes (see comment
 # block ~rc:6089-6091).  A TOOL/SHELL-INTEGRATION/IN-CAGE-DAEMON entry with
@@ -384,6 +471,10 @@ test_m10_loader_reads_host_path_only
 test_m10b_loader_path_not_workspace
 test_m10c_xdg_config_home_redirect_honored
 test_m11_missing_version_pin_aborts
+test_m12a_non_bundled_tool_with_install_cmd_parses
+test_m12b_non_bundled_tool_missing_install_cmd_rejected
+test_m12c_bundled_tool_with_install_cmd_rejected
+test_m13_newline_in_install_cmd_rejected
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

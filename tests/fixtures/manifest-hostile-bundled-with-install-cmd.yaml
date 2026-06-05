@@ -1,0 +1,11 @@
+version: 1
+tools:
+  # Hostile fixture: bundled TOOL (version_pin = "bundled") with an install_cmd.
+  # _manifest_validate must reject this: bundled = already baked in Dockerfile;
+  # an install_cmd on a bundled entry is contradictory — fail-loud naming install_cmd.
+  - name: bundled-with-install-cmd-tool
+    archetype: TOOL
+    version_pin: "bundled"
+    install_cmd: "apt-get install -y some-tool"
+    egress: []
+    mounts: []

@@ -6342,6 +6342,29 @@ _manifest_validate() {
           echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'mounts' must be a list, got: ${mounts_type}." >&2
           return 1
         fi
+        # 'install_cmd' coupling with version_pin:
+        #   version_pin == "bundled"  → MUST NOT have install_cmd (bundled = baked by Dockerfile)
+        #   version_pin != "bundled"  → MUST have a non-empty single-line install_cmd
+        # Newlines in install_cmd are rejected regardless (newline-injection defense — fix 2).
+        local install_cmd_raw
+        install_cmd_raw=$(jq -r '.install_cmd // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        if [[ "$version_pin" == "bundled" ]]; then
+          if [[ "$install_cmd_raw" != "___RC_ABSENT___" && -n "$install_cmd_raw" ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'install_cmd' must not be set when version_pin is \"bundled\" (bundled tools are baked by the Dockerfile; install_cmd is contradictory)." >&2
+            return 1
+          fi
+        else
+          # Non-bundled: install_cmd required and must be non-empty
+          if [[ "$install_cmd_raw" == "___RC_ABSENT___" || -z "$install_cmd_raw" ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'install_cmd' is missing (non-bundled TOOL entries must have an install_cmd so the binary can be baked into the image at build time)." >&2
+            return 1
+          fi
+          # install_cmd must be a single line — newlines inject arbitrary Dockerfile directives.
+          if [[ "$install_cmd_raw" == *$'\n'* ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'install_cmd' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
+            return 1
+          fi
+        fi
         ;;
       SHELL-INTEGRATION)
         # 'shell_init' required
@@ -6541,6 +6564,7 @@ _manifest_build_dockerfile_path() {
     tail -n "+${sentinel_line}" "$orig_dockerfile" >> "$tmp_dockerfile"
   else
     # Fallback: append at end (tools will run as USER agent — may fail for apt-get)
+    echo "rip-cage: Warning: '# Non-root user' sentinel not found in Dockerfile — appending manifest install steps at end (they will run as USER agent and apt-get may fail). Dockerfile may need the sentinel restored." >&2
     cat "$orig_dockerfile" > "$tmp_dockerfile"
     cat "$tmp_inject" >> "$tmp_dockerfile"
   fi

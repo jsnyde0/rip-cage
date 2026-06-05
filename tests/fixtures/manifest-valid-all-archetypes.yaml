@@ -3,6 +3,7 @@ tools:
   - name: example-tool
     archetype: TOOL
     version_pin: "1.2.3"
+    install_cmd: "apt-get install -y example-tool=1.2.3"
     egress: []
     mounts: []
 

@@ -1,0 +1,10 @@
+version: 1
+tools:
+  # Valid fixture: non-bundled TOOL with a proper single-line install_cmd.
+  # _manifest_validate must accept this.
+  - name: valid-non-bundled-tool
+    archetype: TOOL
+    version_pin: "2.0.0"
+    install_cmd: "apt-get install -y jq"
+    egress: []
+    mounts: []
