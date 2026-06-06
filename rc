@@ -6599,44 +6599,63 @@ _manifest_build_dockerfile_path() {
     return 1
   fi
 
-  if [[ -z "$extra_steps" && -z "$shell_init_steps" ]]; then
+  local daemon_config_steps
+  if ! daemon_config_steps=$(_manifest_generate_daemon_config_dockerfile_steps); then
+    return 1
+  fi
+
+  local daemon_mcp_steps
+  if ! daemon_mcp_steps=$(_manifest_generate_daemon_mcp_dockerfile_steps); then
+    return 1
+  fi
+
+  if [[ -z "$extra_steps" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" ]]; then
     # Default/bundled-only manifest — use the original Dockerfile unchanged (D8).
     echo "$orig_dockerfile"
     return 0
   fi
 
-  # Non-bundled tools and/or SHELL-INTEGRATION entries present — generate a temp Dockerfile.
+  # Non-bundled tools and/or SHELL-INTEGRATION/IN-CAGE-DAEMON entries present — generate a temp Dockerfile.
   local tmp_dockerfile
   tmp_dockerfile=$(mktemp "${TMPDIR:-/tmp}/rip-cage-Dockerfile-XXXXXX")
 
-  # Two injection points:
-  #   1. TOOL install steps → before "# Non-root user" (root-level apt-get installs)
+  # Three injection points:
+  #   1. TOOL install steps + IN-CAGE-DAEMON config bake + MCP fragment merge
+  #      → before "# Non-root user" (root-level operations: apt-get, file writes to /etc/rip-cage/)
   #   2. SHELL-INTEGRATION shell_init steps → after "COPY zshrc /home/agent/.zshrc"
   #      (USER agent context; appends to the agent-owned .zshrc)
 
   # Start with the original Dockerfile; we'll build it up in sections.
   cp "$orig_dockerfile" "$tmp_dockerfile"
 
-  # --- TOOL install steps: inject before "# Non-root user" sentinel ---
-  if [[ -n "$extra_steps" ]]; then
+  # --- TOOL install steps + daemon config bake + MCP merge: inject before "# Non-root user" sentinel ---
+  # All three run as root. Combine into one injection so the sentinel search is performed once.
+  local root_steps=""
+  [[ -n "$extra_steps" ]] && root_steps+="${extra_steps}"$'\n'
+  [[ -n "$daemon_config_steps" ]] && root_steps+="${daemon_config_steps}"$'\n'
+  [[ -n "$daemon_mcp_steps" ]] && root_steps+="${daemon_mcp_steps}"$'\n'
+  # Strip trailing newline
+  root_steps="${root_steps%$'\n'}"
+
+  if [[ -n "$root_steps" ]]; then
     local sentinel_tool="# Non-root user"
-    local tmp_inject_tool
-    tmp_inject_tool=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
-    printf '\n# --- manifest-generated install steps (rip-cage-4c5.2) ---\n%s\n' "$extra_steps" > "$tmp_inject_tool"
+    local tmp_inject_root
+    tmp_inject_root=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
+    printf '\n# --- manifest-generated root steps (rip-cage-4c5.2/.5) ---\n%s\n' "$root_steps" > "$tmp_inject_root"
 
     if grep -qF "$sentinel_tool" "$tmp_dockerfile"; then
       local sentinel_line_tool base_dockerfile
       sentinel_line_tool=$(grep -nF "$sentinel_tool" "$tmp_dockerfile" | head -1 | cut -d: -f1)
       base_dockerfile=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
       head -n "$((sentinel_line_tool - 1))" "$tmp_dockerfile" > "$base_dockerfile"
-      cat "$tmp_inject_tool" >> "$base_dockerfile"
+      cat "$tmp_inject_root" >> "$base_dockerfile"
       tail -n "+${sentinel_line_tool}" "$tmp_dockerfile" >> "$base_dockerfile"
       mv "$base_dockerfile" "$tmp_dockerfile"
     else
-      echo "rip-cage: Warning: '# Non-root user' sentinel not found in Dockerfile — appending manifest install steps at end (they will run as USER agent and apt-get may fail). Dockerfile may need the sentinel restored." >&2
-      cat "$tmp_inject_tool" >> "$tmp_dockerfile"
+      echo "rip-cage: Warning: '# Non-root user' sentinel not found in Dockerfile — appending manifest root steps at end (they will run as USER agent and may fail). Dockerfile may need the sentinel restored." >&2
+      cat "$tmp_inject_root" >> "$tmp_dockerfile"
     fi
-    rm -f "$tmp_inject_tool"
+    rm -f "$tmp_inject_root"
   fi
 
   # --- SHELL-INTEGRATION shell_init steps: inject after "COPY zshrc" sentinel ---
@@ -6740,10 +6759,174 @@ _manifest_generate_shell_init_zshrc_steps() {
   fi
 }
 
+# _manifest_generate_daemon_config_dockerfile_steps
+# Read the host manifest and emit a Dockerfile RUN step that bakes the
+# runtime config (start/health/state_dir/mcp_fragment) for every IN-CAGE-DAEMON
+# entry into /etc/rip-cage/daemon-config.json at BUILD time.
+#
+# Mechanism: the manifest is host-only (not mounted into the cage), so the
+# daemon's runtime config must be known at build time (ADR-005 D7:
+# install=build-time, start=init-time). This generator base64-encodes the JSON
+# config and emits a Dockerfile RUN step that decodes + writes it.
+# init-rip-cage.sh reads /etc/rip-cage/daemon-config.json at startup to start
+# each daemon via the ssh-agent-filter-precedent (fork + PID-file + fail-warn).
+#
+# D8 byte-for-byte contract: when the default manifest is in effect (no
+# IN-CAGE-DAEMON entries), this function emits NOTHING.
+#
+# State-dir persistence decision (ADR-019 D1):
+#   Container-local, following the extensions/ precedent.  Daemon state is
+#   cage-lifetime; auth.json is the only bind-mount-durable item.  If a user
+#   needs durable daemon state they should set state_dir to a /workspace path.
+#   The init block creates state_dir with `mkdir -p` using the value from the
+#   baked config.
+#
+# Strict-parse discipline: config fields are extracted with jq strict mode;
+# _manifest_validate already ensured required fields are present at load time.
+_manifest_generate_daemon_config_dockerfile_steps() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count idx
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  # Build JSON array of daemon entries for baking.
+  local daemon_entries="[]"
+  local has_daemons=0
+  for (( idx=0; idx<count; idx++ )); do
+    local entry archetype
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
+    if [[ "$archetype" != "IN-CAGE-DAEMON" ]]; then
+      continue
+    fi
+    has_daemons=1
+
+    local name daemon_start daemon_health daemon_state_dir mcp_fragment
+    name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+    daemon_start=$(jq -r '.start // ""' <<<"$entry" 2>/dev/null)
+    daemon_health=$(jq -r '.health // ""' <<<"$entry" 2>/dev/null)
+    daemon_state_dir=$(jq -r '.state_dir // ""' <<<"$entry" 2>/dev/null)
+    mcp_fragment=$(jq -c '.mcp_fragment // null' <<<"$entry" 2>/dev/null)
+
+    # Validate mcp_fragment is valid JSON if present (fail-closed, ADR-025 D5).
+    if [[ "$mcp_fragment" != "null" && -n "$mcp_fragment" ]]; then
+      if ! echo "$mcp_fragment" | jq '.' >/dev/null 2>&1; then
+        echo "Error: manifest IN-CAGE-DAEMON entry '${name}': 'mcp_fragment' is not valid JSON." >&2
+        return 1
+      fi
+    fi
+
+    # Append to daemon_entries JSON array.
+    local daemon_obj
+    daemon_obj=$(jq -cn \
+      --arg n "$name" \
+      --arg s "$daemon_start" \
+      --arg h "$daemon_health" \
+      --arg d "$daemon_state_dir" \
+      --argjson m "${mcp_fragment:-null}" \
+      '{name:$n, start:$s, health:$h, state_dir:$d, mcp_fragment:$m}')
+    daemon_entries=$(jq -c ". + [$daemon_obj]" <<<"$daemon_entries" 2>/dev/null)
+  done
+
+  if [[ "$has_daemons" -eq 0 ]]; then
+    # No IN-CAGE-DAEMON entries — emit nothing (D8 short-circuit).
+    return 0
+  fi
+
+  # Build the full config JSON and base64-encode it for Dockerfile injection.
+  local config_json b64_config
+  config_json=$(jq -c '{daemons:'"$daemon_entries"'}' <<<"null" 2>/dev/null) || config_json="{\"daemons\":${daemon_entries}}"
+  b64_config=$(printf '%s' "$config_json" | base64 | tr -d '\n')
+
+  # Emit a Dockerfile RUN step (as root, before USER agent sentinel).
+  # The step: decodes + writes /etc/rip-cage/daemon-config.json.
+  # init-rip-cage.sh reads this file at startup to start each daemon.
+  local step=""
+  step+="RUN # manifest IN-CAGE-DAEMON config bake (rip-cage-4c5.5)"$'\n'
+  step+="RUN echo '${b64_config}' | base64 -d > /etc/rip-cage/daemon-config.json && chmod 0644 /etc/rip-cage/daemon-config.json"
+
+  printf '%s' "$step"
+}
+
+# _manifest_generate_daemon_mcp_dockerfile_steps
+# Read the host manifest and emit a Dockerfile RUN step that merges the
+# mcp_fragment of every IN-CAGE-DAEMON entry into /etc/rip-cage/settings.json
+# mcpServers at BUILD time, so an in-cage agent discovers the daemon's MCP server.
+#
+# D8 byte-for-byte contract: when no daemon has an mcp_fragment, emits NOTHING.
+#
+# Merge semantics: for each daemon with a non-null mcp_fragment, merge
+# {name: mcp_fragment} into the existing mcpServers object in settings.json.
+# Uses jq to patch settings.json in-place (atomic temp-file write).
+_manifest_generate_daemon_mcp_dockerfile_steps() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count idx
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local steps=""
+  local has_mcp=0
+  for (( idx=0; idx<count; idx++ )); do
+    local entry archetype
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
+    if [[ "$archetype" != "IN-CAGE-DAEMON" ]]; then
+      continue
+    fi
+
+    local name mcp_fragment
+    name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+    mcp_fragment=$(jq -c '.mcp_fragment // null' <<<"$entry" 2>/dev/null)
+
+    if [[ "$mcp_fragment" == "null" || -z "$mcp_fragment" ]]; then
+      continue
+    fi
+
+    # Validate mcp_fragment is valid JSON (fail-closed, ADR-025 D5).
+    if ! echo "$mcp_fragment" | jq '.' >/dev/null 2>&1; then
+      echo "Error: manifest IN-CAGE-DAEMON entry '${name}': 'mcp_fragment' is not valid JSON." >&2
+      return 1
+    fi
+
+    has_mcp=1
+
+    # Base64-encode the fragment for safe Dockerfile injection.
+    local b64_fragment
+    b64_fragment=$(printf '%s' "$mcp_fragment" | base64 | tr -d '\n')
+
+    # Emit a Dockerfile RUN step that merges the fragment into settings.json.
+    # Uses jq to atomically patch mcpServers (temp-file swap).
+    steps+="RUN # manifest IN-CAGE-DAEMON MCP fragment: ${name} (rip-cage-4c5.5)"$'\n'
+    steps+="RUN _frag=\$(echo '${b64_fragment}' | base64 -d) && jq --argjson frag \"\$_frag\" --arg name '${name}' '.mcpServers[\$name] = \$frag' /etc/rip-cage/settings.json > /tmp/settings-tmp.json && mv /tmp/settings-tmp.json /etc/rip-cage/settings.json"$'\n'
+  done
+
+  if [[ "$has_mcp" -eq 0 ]]; then
+    return 0
+  fi
+
+  # Strip trailing newline for clean output.
+  if [[ -n "$steps" ]]; then
+    printf '%s' "${steps%$'\n'}"
+  fi
+}
+
 # =============================================================================
 # End tool manifest schema + host-only loader (rip-cage-4c5.1)
 # + TOOL install-step generation (rip-cage-4c5.2)
 # + SHELL-INTEGRATION shell_init baking (rip-cage-4c5.4)
+# + IN-CAGE-DAEMON config bake + MCP fragment (rip-cage-4c5.5)
 # =============================================================================
 
 # =============================================================================

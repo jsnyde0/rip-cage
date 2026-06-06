@@ -1,0 +1,8 @@
+version: 1
+tools:
+  - name: broken-test-daemon
+    archetype: IN-CAGE-DAEMON
+    version_pin: "0.1.0"
+    start: "/usr/bin/false-command-does-not-exist --start"
+    health: "curl -sf http://127.0.0.1:17844/"
+    state_dir: "/var/lib/rip-cage-daemon/broken-test-daemon"

@@ -460,6 +460,93 @@ if [ -z "${VSCODE_INJECTION:-}" ] && [ -z "${REMOTE_CONTAINERS:-}" ]; then
   fi
 fi
 
+# 12. IN-CAGE DAEMON lifecycle block (rip-cage-4c5.5)
+#
+# Read the baked daemon config from /etc/rip-cage/daemon-config.json (written at
+# build time by _manifest_generate_daemon_config_dockerfile_steps in rc).
+# For each daemon entry:
+#   1. Create state_dir (container-local, ADR-019 D1 extensions pattern).
+#   2. Idempotency: if PID file exists and process is alive, SKIP (true no-op —
+#      NOT kill-and-restart, which would false-green a "one binder" idempotency
+#      check; assert PID is UNCHANGED between first and second init run).
+#   3. Start the daemon's `start` command in the background.
+#   4. Run the `health` check with a timeout (bd memory rip-cage-validate-hung-daemon).
+#   5. FAIL-WARN on health failure — cage still starts (ADR-005 D10 / ADR-001
+#      asymmetry: safety floor fails-closed, user daemon fails-warn).
+#
+# Supervisor model: init-script-start (NOT host-exec), mirroring the
+# ssh-agent-filter fork+PID-parse+fail-warn pattern (init-rip-cage.sh:60-103).
+# PID file: /tmp/rip-cage-daemon-<name>.pid (transient, cage-lifetime).
+_rc_daemon_config="/etc/rip-cage/daemon-config.json"
+if [[ -f "$_rc_daemon_config" ]] && command -v jq >/dev/null 2>&1; then
+  _rc_daemon_count=$(jq '.daemons | length' "$_rc_daemon_config" 2>/dev/null || echo "0")
+  for (( _rc_di=0; _rc_di<_rc_daemon_count; _rc_di++ )); do
+    _rc_daemon_entry=$(jq -c ".daemons[${_rc_di}]" "$_rc_daemon_config" 2>/dev/null)
+    _rc_daemon_name=$(jq -r '.name // "unknown"' <<<"$_rc_daemon_entry" 2>/dev/null)
+    _rc_daemon_start=$(jq -r '.start // ""' <<<"$_rc_daemon_entry" 2>/dev/null)
+    _rc_daemon_health=$(jq -r '.health // ""' <<<"$_rc_daemon_entry" 2>/dev/null)
+    _rc_daemon_state_dir=$(jq -r '.state_dir // ""' <<<"$_rc_daemon_entry" 2>/dev/null)
+    _rc_daemon_pidfile="/tmp/rip-cage-daemon-${_rc_daemon_name}.pid"
+
+    if [[ -z "$_rc_daemon_start" || -z "$_rc_daemon_health" ]]; then
+      echo "[rip-cage] WARNING: daemon '${_rc_daemon_name}' missing start or health — skipping." >&2
+      continue
+    fi
+
+    # Create state_dir (container-local; mkdir -p is idempotent).
+    if [[ -n "$_rc_daemon_state_dir" ]]; then
+      mkdir -p "$_rc_daemon_state_dir" 2>/dev/null || true
+    fi
+
+    # Idempotency: if PID file exists and the process is still running, skip.
+    # This is a TRUE no-op (PID unchanged) — not kill-and-restart.
+    if [[ -f "$_rc_daemon_pidfile" ]]; then
+      _rc_existing_pid=$(cat "$_rc_daemon_pidfile" 2>/dev/null || echo "")
+      if [[ -n "$_rc_existing_pid" ]] && kill -0 "$_rc_existing_pid" 2>/dev/null; then
+        echo "[rip-cage] daemon '${_rc_daemon_name}' already running (PID=$_rc_existing_pid) — skipping (idempotent no-op)"
+        unset _rc_existing_pid
+        continue
+      fi
+      # Stale PID file (process gone) — remove and restart.
+      rm -f "$_rc_daemon_pidfile"
+      unset _rc_existing_pid
+    fi
+
+    # Start daemon in background; capture PID.
+    # Use eval to handle the start command string correctly (may have flags/args).
+    eval "$_rc_daemon_start" >/tmp/rip-cage-daemon-"${_rc_daemon_name}".log 2>&1 &
+    _rc_daemon_pid=$!
+
+    # Write PID file immediately so the idempotency guard is set before we check health.
+    echo "$_rc_daemon_pid" > "$_rc_daemon_pidfile"
+    echo "[rip-cage] daemon '${_rc_daemon_name}' started (PID=$_rc_daemon_pid)"
+
+    # Health check with timeout (bd memory rip-cage-validate-hung-daemon):
+    # A wedged daemon must NOT hang the init script. Use `timeout` (coreutils).
+    # Retry a few times to allow the daemon a moment to bind its port.
+    _rc_daemon_health_ok=0
+    for _rc_health_attempt in 1 2 3; do
+      sleep 1
+      if timeout 5 bash -c "$_rc_daemon_health" >/dev/null 2>&1; then
+        _rc_daemon_health_ok=1
+        break
+      fi
+    done
+
+    if [[ "$_rc_daemon_health_ok" -eq 1 ]]; then
+      echo "[rip-cage] daemon '${_rc_daemon_name}' health OK (PID=$_rc_daemon_pid)"
+    else
+      # FAIL-WARN: cage still starts — do NOT abort (ADR-005 D10 / ADR-001 asymmetry).
+      echo "[rip-cage] WARNING: daemon '${_rc_daemon_name}' health check FAILED (PID=$_rc_daemon_pid) — cage continues without it." >&2
+    fi
+
+    unset _rc_daemon_health_ok _rc_health_attempt _rc_daemon_pid
+    unset _rc_daemon_entry _rc_daemon_name _rc_daemon_start _rc_daemon_health _rc_daemon_state_dir _rc_daemon_pidfile
+  done
+  unset _rc_di _rc_daemon_count
+fi
+unset _rc_daemon_config
+
 # github-identity first-shell echo (ADR-020 D5). Reads the sentinels written by
 # the in-cage preflight and emits a one-line identity status so devcontainer
 # users (who never see the tmux banner) see routing posture on first attach.
