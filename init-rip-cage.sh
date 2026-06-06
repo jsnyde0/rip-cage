@@ -518,7 +518,10 @@ if [[ -f "$_rc_daemon_config" ]] && command -v jq >/dev/null 2>&1; then
     _rc_daemon_pid=$!
 
     # Write PID file immediately so the idempotency guard is set before we check health.
-    echo "$_rc_daemon_pid" > "$_rc_daemon_pidfile"
+    # Guard with || true: PID write failure (e.g. /tmp full) must NOT abort init
+    # under set -e — a user daemon failing to write its PID file is fail-WARN,
+    # not fail-CLOSED (ADR-005 D10 / ADR-001 asymmetry).
+    echo "$_rc_daemon_pid" > "$_rc_daemon_pidfile" 2>/dev/null || true
     echo "[rip-cage] daemon '${_rc_daemon_name}' started (PID=$_rc_daemon_pid)"
 
     # Health check with timeout (bd memory rip-cage-validate-hung-daemon):

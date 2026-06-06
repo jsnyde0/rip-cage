@@ -428,13 +428,14 @@ skip_if_not_e2e() {
 test_t2a_health_passes_positive_sentinel() {
   if skip_if_not_e2e "T2a daemon health passes (positive sentinel)"; then return 0; fi
 
-  # This test requires a pre-built cage image with manifest-with-trivial-daemon-mcp.yaml.
+  # This test requires a cage image built with manifest-with-trivial-daemon-mcp.yaml.
+  # rc build always tags its output as rip-cage:latest (IMAGE var in rc).
   # The fixture daemon is python3 -m http.server on port 17843.
   # Health check: curl -sf http://127.0.0.1:17843/
   # Positive sentinel: daemon must RESPOND (not merely absence-of-error).
 
   local container_name="rc-daemon-test-t2a-$$"
-  local image_name="rip-cage-daemon-test:t2a-$$"
+  local image_name="rip-cage:latest"
   local workspace
   workspace=$(mktemp -d "${TMPDIR:-/tmp}/rc-daemon-e2e-XXXXXX")
   local manifest_home
@@ -458,7 +459,6 @@ test_t2a_health_passes_positive_sentinel() {
        --entrypoint /usr/local/bin/init-rip-cage.sh \
        "$image_name" >/dev/null 2>&1; then
     fail "T2a Could not start cage container with daemon image"
-    docker rmi "$image_name" 2>/dev/null || true
     rm -rf "$workspace" "$manifest_home"
     return
   fi
@@ -480,7 +480,6 @@ test_t2a_health_passes_positive_sentinel() {
   fi
 
   docker stop "$container_name" 2>/dev/null || true
-  docker rmi "$image_name" 2>/dev/null || true
   rm -rf "$workspace" "$manifest_home"
 }
 
@@ -488,7 +487,7 @@ test_t2b_broken_daemon_cage_still_starts() {
   if skip_if_not_e2e "T2b broken daemon → cage still starts (fail-warn)"; then return 0; fi
 
   local container_name="rc-daemon-test-t2b-$$"
-  local image_name="rip-cage-daemon-test:t2b-$$"
+  local image_name="rip-cage:latest"
   local workspace
   workspace=$(mktemp -d "${TMPDIR:-/tmp}/rc-daemon-e2e-XXXXXX")
   local manifest_home
@@ -521,7 +520,6 @@ test_t2b_broken_daemon_cage_still_starts() {
     fail "T2b Broken daemon: cage started but no WARNING logged. output='${init_out}'"
   fi
 
-  docker rmi "$image_name" 2>/dev/null || true
   rm -rf "$workspace" "$manifest_home"
 }
 
@@ -529,7 +527,7 @@ test_t2c_init_idempotency_pid_unchanged() {
   if skip_if_not_e2e "T2c init idempotency: PID unchanged on re-run"; then return 0; fi
 
   local container_name="rc-daemon-test-t2c-$$"
-  local image_name="rip-cage-daemon-test:t2c-$$"
+  local image_name="rip-cage:latest"
   local workspace
   workspace=$(mktemp -d "${TMPDIR:-/tmp}/rc-daemon-e2e-XXXXXX")
   local manifest_home
@@ -564,7 +562,6 @@ test_t2c_init_idempotency_pid_unchanged() {
     fail "T2c Could not capture daemon PID after first init (PID file absent or daemon not started)"
     docker stop "$container_name" 2>/dev/null || true
     docker rm "$container_name" 2>/dev/null || true
-    docker rmi "$image_name" 2>/dev/null || true
     rm -rf "$workspace" "$manifest_home"
     return
   fi
@@ -588,7 +585,6 @@ test_t2c_init_idempotency_pid_unchanged() {
 
   docker stop "$container_name" 2>/dev/null || true
   docker rm "$container_name" 2>/dev/null || true
-  docker rmi "$image_name" 2>/dev/null || true
   rm -rf "$workspace" "$manifest_home"
 }
 
@@ -596,7 +592,7 @@ test_t2d_state_dir_placement() {
   if skip_if_not_e2e "T2d state-dir placement (container-local, ADR-019 D1)"; then return 0; fi
 
   local container_name="rc-daemon-test-t2d-$$"
-  local image_name="rip-cage-daemon-test:t2d-$$"
+  local image_name="rip-cage:latest"
   local workspace
   workspace=$(mktemp -d "${TMPDIR:-/tmp}/rc-daemon-e2e-XXXXXX")
   local manifest_home
@@ -634,7 +630,6 @@ test_t2d_state_dir_placement() {
 
   docker stop "$container_name" 2>/dev/null || true
   docker rm "$container_name" 2>/dev/null || true
-  docker rmi "$image_name" 2>/dev/null || true
   rm -rf "$workspace" "$manifest_home"
 }
 
@@ -642,7 +637,7 @@ test_t2e_mcp_fragment_discoverable() {
   if skip_if_not_e2e "T2e MCP fragment discoverable in settings.json"; then return 0; fi
 
   local container_name="rc-daemon-test-t2e-$$"
-  local image_name="rip-cage-daemon-test:t2e-$$"
+  local image_name="rip-cage:latest"
   local workspace
   workspace=$(mktemp -d "${TMPDIR:-/tmp}/rc-daemon-e2e-XXXXXX")
   local manifest_home
@@ -670,7 +665,6 @@ test_t2e_mcp_fragment_discoverable() {
     fail "T2e MCP fragment: 'trivial-test-daemon' NOT in settings.json mcpServers. keys='${mcp_check}'"
   fi
 
-  docker rmi "$image_name" 2>/dev/null || true
   rm -rf "$workspace" "$manifest_home"
 }
 
