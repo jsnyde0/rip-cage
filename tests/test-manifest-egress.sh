@@ -126,6 +126,32 @@ test_e1_ioc_build_fails_loud() {
 }
 
 # ---------------------------------------------------------------------------
+# E1b — IOC check fires for SHELL-INTEGRATION archetype (Fix 2 / rip-cage-4c5.3)
+#
+# A SHELL-INTEGRATION entry with egress: webhook.site must also fail rc build
+# loud naming the host. The IOC check must cover ALL archetypes with egress:
+# fields, not just TOOL and IN-CAGE-DAEMON.
+# ---------------------------------------------------------------------------
+test_e1b_shell_integration_ioc_check() {
+  setup_manifest_sandbox "manifest-hostile-ioc-egress-shell-integration.yaml"
+  local out exit_code
+  exit_code=0
+  out=$(run_rc_build) || exit_code=$?
+
+  local ioc_named
+  ioc_named=$(grep -E "IOC.*webhook\.site|webhook\.site.*IOC|manifest.*webhook\.site.*denylist|egress.*webhook\.site.*denied|denylist.*webhook\.site" <<<"$out" | head -1)
+
+  if [[ "$exit_code" -ne 0 ]] && [[ -n "$ioc_named" ]]; then
+    pass "E1b SHELL-INTEGRATION IOC check fires: exit=$exit_code, names IOC host 'webhook.site'"
+  elif [[ "$exit_code" -eq 0 ]]; then
+    fail "E1b SHELL-INTEGRATION IOC check did NOT fire (exit=0) — archetype skip still active. output='${out:0:300}'"
+  else
+    fail "E1b exited non-zero (exit=$exit_code) but error does NOT name 'webhook.site' as IOC host. output='${out:0:500}'"
+  fi
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # E2 — IOC-declaration UP fails loud (host-only, no Docker needed)
 #
 # Same fixture: rc up must refuse BEFORE creating any Docker container.
@@ -204,7 +230,8 @@ test_e4_declared_host_reachable() {
     echo "SKIP (NEEDS_CONTAINER): E4 declared-host allow-probe — set RC_E2E=1 to run"
     return 0
   fi
-  echo "TODO: E4 declared host reachable (e2e)"
+  echo "SKIP (NOT YET IMPLEMENTED — owned by rip-cage-4c5.8): E4 declared-host allow-probe"
+  FAILURES=$((FAILURES + 1))
 }
 
 # ---------------------------------------------------------------------------
@@ -222,7 +249,8 @@ test_e5_undeclared_host_blocked() {
     echo "SKIP (NEEDS_CONTAINER): E5 undeclared-host deny-probe — set RC_E2E=1 to run"
     return 0
   fi
-  echo "TODO: E5 undeclared host blocked (e2e)"
+  echo "SKIP (NOT YET IMPLEMENTED — owned by rip-cage-4c5.8): E5 undeclared-host deny-probe"
+  FAILURES=$((FAILURES + 1))
 }
 
 # ---------------------------------------------------------------------------
@@ -236,7 +264,27 @@ test_e6_ioc_blocked_at_proxy() {
     echo "SKIP (NEEDS_CONTAINER): E6 IOC-host-proxy backstop — set RC_E2E=1 to run"
     return 0
   fi
-  echo "TODO: E6 IOC host blocked at runtime proxy (e2e)"
+  echo "SKIP (NOT YET IMPLEMENTED — owned by rip-cage-4c5.8): E6 IOC-host-proxy backstop"
+  FAILURES=$((FAILURES + 1))
+}
+
+# ---------------------------------------------------------------------------
+# E7 — IOC check fires on rc reload (NEEDS_CONTAINER, RC_E2E=1)
+#
+# Fix 4 (rip-cage-4c5.3): a manifest edited between rc up and rc reload to add
+# an IOC host must cause rc reload to exit non-zero naming the host.
+#
+# rc reload requires a running container (it calls `docker inspect` early), so
+# this test is container-gated — cannot be exercised host-side without a live cage.
+# The non-e2e path correctly reflects this constraint.
+# ---------------------------------------------------------------------------
+test_e7_reload_ioc_check() {
+  if [[ "${RC_E2E:-}" != "1" ]]; then
+    echo "SKIP (NEEDS_CONTAINER): E7 reload IOC check — rc reload requires a running cage; set RC_E2E=1 to run"
+    return 0
+  fi
+  echo "SKIP (NOT YET IMPLEMENTED — owned by rip-cage-4c5.8): E7 reload IOC check (NEEDS_CONTAINER)"
+  FAILURES=$((FAILURES + 1))
 }
 
 # ---------------------------------------------------------------------------
@@ -251,6 +299,7 @@ echo "=== test-manifest-egress.sh — manifest egress+mounts floor (rip-cage-4c5
 echo ""
 echo "--- PRIMARY: Host-only IOC build/up fails-loud + mount denylist ---"
 test_e1_ioc_build_fails_loud
+test_e1b_shell_integration_ioc_check
 test_e2_ioc_up_fails_loud
 test_e3_denylisted_mount_refused
 
@@ -259,6 +308,7 @@ echo "--- REGRESSION: E2E egress allow/deny/proxy probes (NEEDS_CONTAINER) ---"
 test_e4_declared_host_reachable
 test_e5_undeclared_host_blocked
 test_e6_ioc_blocked_at_proxy
+test_e7_reload_ioc_check
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

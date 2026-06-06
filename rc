@@ -3228,10 +3228,10 @@ _up_resolve_egress_rules() {
   fi
 
   # rip-cage-4c5.3: union manifest-declared egress hosts into network.allowed_hosts.
-  # Each manifest TOOL/IN-CAGE-DAEMON entry's egress: list contributes to the
-  # cage allowlist (ADR-005 D3 / ADR-024 D1: explicit declaration, host-reviewable).
-  # The IOC check (cmd_build / cmd_up pre-flight) already rejected IOC hosts,
-  # so we can safely add these here without re-checking.
+  # Any archetype entry's egress: list contributes to the cage allowlist
+  # (ADR-005 D3 / ADR-024 D1: explicit declaration, host-reviewable).
+  # The IOC check fires in cmd_build, cmd_up, AND cmd_reload (before this union),
+  # so IOC hosts are rejected at all egress-regeneration entry points.
   local _manifest_hosts_json
   _manifest_hosts_json=$(_manifest_egress_hosts_json 2>/dev/null) || _manifest_hosts_json="[]"
   if [[ -n "$_manifest_hosts_json" ]] && [[ "$_manifest_hosts_json" != "[]" ]]; then
@@ -5098,6 +5098,12 @@ cmd_reload() {
   local _reload_egress_label
   _reload_egress_label=$(docker inspect --format '{{index .Config.Labels "rc.egress"}}' "$name" 2>/dev/null || true)
   if [[ "$_reload_egress_label" != "off" ]]; then
+    # rip-cage-4c5.3 Fix 4: IOC check fires on EVERY egress-regeneration path
+    # (build, up, AND reload). A manifest edited between rc up and rc reload to add
+    # an IOC host must fail loud here, naming the offending host.
+    if ! _manifest_check_ioc_egress "${SCRIPT_DIR}/egress-rules.yaml"; then
+      exit 1
+    fi
     _up_resolve_egress_rules "$workspace" "$cache_dir"
     # rip-cage-hhh.4: re-apply TCP-22 IP allowlist inside the container after
     # network.* change. Re-resolves hostnames to IPs in-container (where the DNS
@@ -6683,22 +6689,35 @@ _manifest_check_ioc_egress() {
   fi
 
   # Build two arrays: exact deny hosts and deny host_suffixes.
+  # Fail-CLOSED: if jq fails or returns empty when _ioc_json was non-empty, refuse
+  # rather than defaulting to an empty denylist (fail-open is a security regression).
   local _deny_hosts_json _deny_suffixes_json
-  _deny_hosts_json=$(jq -c '[.[] | select(.deny == true) | .match.host // empty]' <<<"$_ioc_json" 2>/dev/null) || _deny_hosts_json="[]"
-  _deny_suffixes_json=$(jq -c '[.[] | select(.deny == true) | .match.host_suffix // empty]' <<<"$_ioc_json" 2>/dev/null) || _deny_suffixes_json="[]"
+  if ! _deny_hosts_json=$(jq -c '[.[] | select(.deny == true) | .match.host // empty]' <<<"$_ioc_json" 2>/dev/null); then
+    echo "Error: failed to parse IOC denylist from egress-rules.yaml — refusing to build/up" >&2
+    return 1
+  fi
+  if [[ -z "$_deny_hosts_json" ]]; then
+    echo "Error: failed to parse IOC denylist from egress-rules.yaml — refusing to build/up" >&2
+    return 1
+  fi
+  if ! _deny_suffixes_json=$(jq -c '[.[] | select(.deny == true) | .match.host_suffix // empty]' <<<"$_ioc_json" 2>/dev/null); then
+    echo "Error: failed to parse IOC denylist from egress-rules.yaml — refusing to build/up" >&2
+    return 1
+  fi
+  if [[ -z "$_deny_suffixes_json" ]]; then
+    echo "Error: failed to parse IOC denylist from egress-rules.yaml — refusing to build/up" >&2
+    return 1
+  fi
 
   # Walk every tool entry that has egress: declarations.
+  # No archetype filter here — the IOC check covers ANY entry that declares egress:
+  # (TOOL, IN-CAGE-DAEMON, SHELL-INTEGRATION, etc.). Entries without egress: simply
+  # contribute nothing (egress_count == 0 → skip). This matches the union in
+  # _manifest_egress_hosts_json which also iterates all entries regardless of archetype.
   local idx
   for (( idx=0; idx<count; idx++ )); do
-    local entry archetype egress_count eidx
+    local entry egress_count eidx
     entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
-    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
-
-    # Only TOOL and IN-CAGE-DAEMON archetypes declare egress.
-    case "$archetype" in
-      TOOL|IN-CAGE-DAEMON) ;;
-      *) continue ;;
-    esac
 
     egress_count=$(jq '.egress | length' <<<"$entry" 2>/dev/null)
     [[ -z "$egress_count" || "$egress_count" -eq 0 ]] && continue

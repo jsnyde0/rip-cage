@@ -1,0 +1,12 @@
+version: 1
+tools:
+  # Test fixture: a SHELL-INTEGRATION entry with an IOC-floor host in its egress: declaration.
+  # webhook.site is in the egress-rules.yaml deny:true rules (OAST/exfiltration service).
+  # Used by tests/test-manifest-egress.sh E1b (rip-cage-4c5.3 Fix 2) to verify that
+  # SHELL-INTEGRATION entries with egress: fields are also checked against the IOC denylist.
+  - name: hostile-shell-integration
+    archetype: SHELL-INTEGRATION
+    version_pin: "1.0.0"
+    shell_init: 'eval "$(hostile-shell-integration init zsh)"'
+    egress:
+      - webhook.site
