@@ -301,6 +301,59 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
+# T1d4 — Strict-parse rejects invalid state_dir values (R3: fail-closed path
+#         safety guard — a typo like "/ var" would word-split into
+#         "chown -R agent:agent / var", chowning root; reject at load time).
+#         Tests: non-absolute, whitespace, shell metacharacters.
+# ---------------------------------------------------------------------------
+test_t1d4_strict_parse_rejects_invalid_state_dir() {
+  local _name _state_dir _label _stderr_file _exit_code _err_output
+
+  # Sub-test helper
+  check_invalid_state_dir() {
+    _name="$1"
+    _state_dir="$2"
+    _label="$3"
+
+    setup_manifest_sandbox
+    cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<YAML
+version: 1
+tools:
+  - name: ${_name}
+    archetype: IN-CAGE-DAEMON
+    version_pin: "0.1.0"
+    start: "/usr/bin/python3 -m http.server 9996"
+    health: "curl -sf http://127.0.0.1:9996/"
+    state_dir: "${_state_dir}"
+YAML
+    _stderr_file=$(mktemp)
+    _exit_code=0
+    HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+      bash -c "source '${RC}'; _manifest_validate '${TEST_HOME}/.config/rip-cage/tools.yaml'" \
+      2>"$_stderr_file" || _exit_code=$?
+
+    _err_output=$(cat "$_stderr_file")
+    if [[ "$_exit_code" -ne 0 ]] && echo "$_err_output" | grep -qi "state_dir"; then
+      pass "T1d4 Strict-parse rejects invalid state_dir (${_label}): exits non-zero and names state_dir"
+    else
+      fail "T1d4 Strict-parse should reject invalid state_dir (${_label}). exit=${_exit_code} stderr='${_err_output}'"
+    fi
+    rm -f "$_stderr_file"
+    teardown_manifest_sandbox
+  }
+
+  # Non-absolute path (no leading /)
+  check_invalid_state_dir "bad-rel" "var/lib/rip-cage-daemon/x" "relative path"
+  # Whitespace (word-split risk: "/ var" → chown / var)
+  check_invalid_state_dir "bad-ws" "/ var/lib/rip-cage-daemon/x" "whitespace in path"
+  # Shell metacharacter ($) — use a variable to hold the literal string, avoiding SC2016
+  local _meta_dollar="/var/lib/rip-cage-daemon/\$(id)"
+  check_invalid_state_dir "bad-meta-dollar" "$_meta_dollar" "shell metachar dollar"
+  # Shell metacharacter (;)
+  check_invalid_state_dir "bad-meta-semi" '/var/lib/rip-cage-daemon/x;rm -rf /' "shell metachar semicolon"
+}
+
+# ---------------------------------------------------------------------------
 # T1e — MCP fragment: WITH mcp_fragment → step merges mcpServers into settings.json
 # ---------------------------------------------------------------------------
 test_t1e_with_mcp_fragment_step_present() {
@@ -387,6 +440,64 @@ test_t1f_build_dockerfile_path_with_daemon() {
 }
 
 # ---------------------------------------------------------------------------
+# T1f2 — Daemon-config bake step POSITION regression (rip-cage-4c5.9 fix).
+#         The daemon-config bake step must appear AFTER the
+#         "COPY settings.json /etc/rip-cage/settings.json" line AND BEFORE
+#         the "USER agent" line in the generated Dockerfile.
+#         A regression that re-splices daemon steps before "# Non-root user"
+#         (the exact bug fixed in 4c5.9) would still green T1f but fail here.
+# ---------------------------------------------------------------------------
+test_t1f2_daemon_config_step_position() {
+  setup_manifest_sandbox "manifest-with-trivial-daemon.yaml"
+  local stderr_file dockerfile_path exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  dockerfile_path=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    bash -c "source '${RC}'; _manifest_build_dockerfile_path '${REPO_ROOT}/Dockerfile'" \
+    2>"$stderr_file") || exit_code=$?
+
+  if [[ "$exit_code" -ne 0 ]]; then
+    fail "T1f2 _manifest_build_dockerfile_path failed. exit=${exit_code} stderr=$(cat "$stderr_file")"
+    rm -f "$stderr_file"
+    teardown_manifest_sandbox
+    return
+  fi
+
+  if [[ "$dockerfile_path" == "${REPO_ROOT}/Dockerfile" ]]; then
+    fail "T1f2 _manifest_build_dockerfile_path returned original Dockerfile (expected temp with daemon step)"
+    rm -f "$stderr_file"
+    teardown_manifest_sandbox
+    return
+  fi
+
+  # Extract line numbers for the three sentinels
+  local copy_settings_line daemon_config_line user_agent_line
+  copy_settings_line=$(grep -n "COPY settings.json /etc/rip-cage/settings.json" "$dockerfile_path" | head -1 | cut -d: -f1)
+  daemon_config_line=$(grep -n "daemon-config.json" "$dockerfile_path" | head -1 | cut -d: -f1)
+  user_agent_line=$(grep -n "^USER agent" "$dockerfile_path" | head -1 | cut -d: -f1)
+
+  # All three must be present
+  if [[ -z "$copy_settings_line" ]] || [[ -z "$daemon_config_line" ]] || [[ -z "$user_agent_line" ]]; then
+    fail "T1f2 Position check: could not find all sentinels in generated Dockerfile. copy_settings=${copy_settings_line} daemon_config=${daemon_config_line} user_agent=${user_agent_line}"
+    [[ "$dockerfile_path" != "${REPO_ROOT}/Dockerfile" ]] && rm -f "$dockerfile_path"
+    rm -f "$stderr_file"
+    teardown_manifest_sandbox
+    return
+  fi
+
+  # POSITION assertion: daemon-config step must be AFTER COPY settings.json AND BEFORE USER agent
+  if [[ "$daemon_config_line" -gt "$copy_settings_line" ]] && [[ "$daemon_config_line" -lt "$user_agent_line" ]]; then
+    pass "T1f2 Daemon-config bake step position correct: line ${daemon_config_line} is after COPY settings.json (line ${copy_settings_line}) and before USER agent (line ${user_agent_line})"
+  else
+    fail "T1f2 Daemon-config bake step WRONG POSITION: daemon_config_line=${daemon_config_line}, copy_settings_line=${copy_settings_line}, user_agent_line=${user_agent_line}. Expected: copy_settings < daemon_config < user_agent. A regression to pre-4c5.9 injection point would place daemon-config before COPY settings.json."
+  fi
+
+  [[ "$dockerfile_path" != "${REPO_ROOT}/Dockerfile" ]] && rm -f "$dockerfile_path"
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # T1g — D8 invariant: DEFAULT manifest → _manifest_build_dockerfile_path returns
 #        the ORIGINAL Dockerfile path unchanged.
 # ---------------------------------------------------------------------------
@@ -448,12 +559,19 @@ test_t2a_health_passes_positive_sentinel() {
   cp "${FIXTURES}/manifest-with-trivial-daemon-mcp.yaml" \
      "${manifest_home}/.config/rip-cage/tools.yaml"
 
+  # Cleanup helper — called on every exit path (R4: container leak fix).
+  t2a_cleanup() {
+    docker stop "$container_name" 2>/dev/null || true
+    docker rm "$container_name" 2>/dev/null || true
+    rm -rf "$workspace" "$manifest_home"
+  }
+
   # Build image with daemon manifest
   local build_out
   if ! build_out=$(HOME="$manifest_home" XDG_CONFIG_HOME="${manifest_home}/.config" \
        "${REPO_ROOT}/rc" build 2>&1); then
     fail "T2a Could not build cage image with daemon manifest: ${build_out}"
-    rm -rf "$workspace" "$manifest_home"
+    t2a_cleanup
     return
   fi
 
@@ -463,12 +581,20 @@ test_t2a_health_passes_positive_sentinel() {
        -v "${workspace}:/workspace" \
        "$image_name" sleep infinity >/dev/null 2>&1; then
     fail "T2a Could not start cage container with daemon image"
-    rm -rf "$workspace" "$manifest_home"
+    t2a_cleanup
     return
   fi
 
-  # Run init inside the running container
-  docker exec "$container_name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || true
+  # Run init inside the running container.
+  # R2: capture exit code + stderr; fail loud on non-zero (do not swallow init failures).
+  local init_out init_rc
+  init_rc=0
+  init_out=$(docker exec "$container_name" /usr/local/bin/init-rip-cage.sh 2>&1) || init_rc=$?
+  if [[ "$init_rc" -ne 0 ]]; then
+    fail "T2a init-rip-cage.sh exited ${init_rc} — daemon cage init failed. output='${init_out}'"
+    t2a_cleanup
+    return
+  fi
 
   # Wait briefly for daemon to bind its port after init
   sleep 2
@@ -488,9 +614,7 @@ test_t2a_health_passes_positive_sentinel() {
     fail "T2a Daemon health: daemon did NOT respond (health_rc=${health_rc}, out='${health_out}'). A daemon that never started must NOT green this test."
   fi
 
-  docker stop "$container_name" 2>/dev/null || true
-  docker rm "$container_name" 2>/dev/null || true
-  rm -rf "$workspace" "$manifest_home"
+  t2a_cleanup
 }
 
 test_t2b_broken_daemon_cage_still_starts() {
@@ -546,18 +670,29 @@ test_t2c_init_idempotency_pid_unchanged() {
   cp "${FIXTURES}/manifest-with-trivial-daemon-mcp.yaml" \
      "${manifest_home}/.config/rip-cage/tools.yaml"
 
+  # Cleanup helper — called on every exit path (R4: container leak fix).
+  t2c_cleanup() {
+    docker stop "$container_name" 2>/dev/null || true
+    docker rm "$container_name" 2>/dev/null || true
+    rm -rf "$workspace" "$manifest_home"
+  }
+
   local build_out
   if ! build_out=$(HOME="$manifest_home" XDG_CONFIG_HOME="${manifest_home}/.config" \
        "${REPO_ROOT}/rc" build 2>&1); then
     fail "T2c Could not build cage image: ${build_out}"
-    rm -rf "$workspace" "$manifest_home"
+    t2c_cleanup
     return
   fi
 
   # Start a persistent container
-  docker run -d --name "$container_name" \
-    -v "${workspace}:/workspace" \
-    "$image_name" sleep infinity >/dev/null 2>&1 || true
+  if ! docker run -d --name "$container_name" \
+       -v "${workspace}:/workspace" \
+       "$image_name" sleep infinity >/dev/null 2>&1; then
+    fail "T2c Could not start container"
+    t2c_cleanup
+    return
+  fi
 
   # Run init-rip-cage.sh FIRST time
   docker exec "$container_name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || true
@@ -570,9 +705,7 @@ test_t2c_init_idempotency_pid_unchanged() {
 
   if [[ -z "$pid1" ]]; then
     fail "T2c Could not capture daemon PID after first init (PID file absent or daemon not started)"
-    docker stop "$container_name" 2>/dev/null || true
-    docker rm "$container_name" 2>/dev/null || true
-    rm -rf "$workspace" "$manifest_home"
+    t2c_cleanup
     return
   fi
 
@@ -593,9 +726,7 @@ test_t2c_init_idempotency_pid_unchanged() {
     fail "T2c Init idempotency: PID CHANGED between first (${pid1}) and second (${pid2}) init — this is kill-and-restart masquerading as idempotent, not a true no-op"
   fi
 
-  docker stop "$container_name" 2>/dev/null || true
-  docker rm "$container_name" 2>/dev/null || true
-  rm -rf "$workspace" "$manifest_home"
+  t2c_cleanup
 }
 
 test_t2d_state_dir_placement() {
@@ -611,18 +742,29 @@ test_t2d_state_dir_placement() {
   cp "${FIXTURES}/manifest-with-trivial-daemon-mcp.yaml" \
      "${manifest_home}/.config/rip-cage/tools.yaml"
 
+  # Cleanup helper — called on every exit path (R4: container leak fix).
+  t2d_cleanup() {
+    docker stop "$container_name" 2>/dev/null || true
+    docker rm "$container_name" 2>/dev/null || true
+    rm -rf "$workspace" "$manifest_home"
+  }
+
   local build_out
   if ! build_out=$(HOME="$manifest_home" XDG_CONFIG_HOME="${manifest_home}/.config" \
        "${REPO_ROOT}/rc" build 2>&1); then
     fail "T2d Could not build cage image: ${build_out}"
-    rm -rf "$workspace" "$manifest_home"
+    t2d_cleanup
     return
   fi
 
   # Start a persistent container, run init, then check state-dir
-  docker run -d --name "$container_name" \
-    -v "${workspace}:/workspace" \
-    "$image_name" sleep infinity >/dev/null 2>&1 || true
+  if ! docker run -d --name "$container_name" \
+       -v "${workspace}:/workspace" \
+       "$image_name" sleep infinity >/dev/null 2>&1; then
+    fail "T2d Could not start container"
+    t2d_cleanup
+    return
+  fi
 
   docker exec "$container_name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || true
   sleep 2
@@ -638,9 +780,7 @@ test_t2d_state_dir_placement() {
     fail "T2d State-dir not found at /var/lib/rip-cage-daemon/trivial-test-daemon. Expected container-local path per ADR-019 D1."
   fi
 
-  docker stop "$container_name" 2>/dev/null || true
-  docker rm "$container_name" 2>/dev/null || true
-  rm -rf "$workspace" "$manifest_home"
+  t2d_cleanup
 }
 
 test_t2e_mcp_fragment_discoverable() {
@@ -690,9 +830,11 @@ test_t1c_counterfactual_delta
 test_t1d_strict_parse_rejects_missing_start_field
 test_t1d2_strict_parse_rejects_missing_health_field
 test_t1d3_strict_parse_rejects_missing_state_dir_field
+test_t1d4_strict_parse_rejects_invalid_state_dir
 test_t1e_with_mcp_fragment_step_present
 test_t1e2_without_mcp_fragment_no_step
 test_t1f_build_dockerfile_path_with_daemon
+test_t1f2_daemon_config_step_position
 test_t1g_d8_default_manifest_original_dockerfile
 
 # T2 e2e tests (NEEDS_CONTAINER / RC_E2E=1)

@@ -6451,6 +6451,23 @@ _manifest_validate() {
           echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'state_dir' is missing (IN-CAGE-DAEMON archetype)." >&2
           return 1
         fi
+        # R3: fail-closed state_dir path safety guard (ADR-001).
+        # state_dir is used in a Dockerfile RUN: mkdir -p <state_dir> && chown -R agent:agent <state_dir>
+        # A typo like "/ var" word-splits into "chown -R agent:agent / var" — chowning root.
+        # Reject at load if state_dir is not an absolute path token: must start with '/',
+        # must contain no whitespace, and must contain no shell metacharacters.
+        if [[ "$daemon_state_dir" != /* ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'state_dir' must be an absolute path (starting with '/'); got '${daemon_state_dir}'." >&2
+          return 1
+        fi
+        if [[ "$daemon_state_dir" =~ [[:space:]] ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'state_dir' must not contain whitespace (word-split injection risk); got '${daemon_state_dir}'." >&2
+          return 1
+        fi
+        if [[ "$daemon_state_dir" =~ [\$\`\;\|\&\>\<\(\)\\] ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'state_dir' must not contain shell metacharacters (\$\`;&|><()\\); got '${daemon_state_dir}'." >&2
+          return 1
+        fi
         ;;
     esac
   done
@@ -6894,10 +6911,13 @@ _manifest_generate_daemon_config_dockerfile_steps() {
   step+="RUN echo '${b64_config}' | base64 -d > /etc/rip-cage/daemon-config.json && chmod 0644 /etc/rip-cage/daemon-config.json"
 
   # Pre-create each daemon's state_dir with agent ownership at image build time.
+  # R3: state_dir values are quoted in the RUN line as defense-in-depth — the
+  # validator already rejected non-absolute/whitespace/metachar values at load,
+  # but quoting ensures no word-split even if a future code path bypasses validation.
   if [[ "${#state_dirs[@]}" -gt 0 ]]; then
     local mkdir_args=""
     for sd in "${state_dirs[@]}"; do
-      mkdir_args+=" ${sd}"
+      mkdir_args+=" \"${sd}\""
     done
     step+=$'\n'"RUN mkdir -p${mkdir_args} && chown -R agent:agent${mkdir_args}"
   fi
