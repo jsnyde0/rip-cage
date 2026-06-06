@@ -1,0 +1,15 @@
+version: 1
+tools:
+  # Test fixture: a SHELL-INTEGRATION entry for e2e test (T2).
+  # Used by tests/test-manifest-shell.sh (rip-cage-4c5.4) to verify that
+  # the eval line baked into /home/agent/.zshrc fires in an interactive shell
+  # (zsh -lic) but NOT in a non-interactive shell (zsh -c).
+  #
+  # shell_init sets an alias __rc_shell_hook_fired so that `zsh -lic` can
+  # detect it fired. The alias itself requires no external binary.
+  # This is a synthetic test signal, not a real tool; it proves the
+  # .zshrc eval-line baking mechanism works end-to-end.
+  - name: rc-shell-hook-test
+    archetype: SHELL-INTEGRATION
+    version_pin: "test-only"
+    shell_init: 'alias __rc_shell_hook_fired=true'

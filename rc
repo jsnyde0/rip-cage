@@ -6586,46 +6586,153 @@ _manifest_build_dockerfile_path() {
     return 1
   fi
 
-  if [[ -z "$extra_steps" ]]; then
+  local shell_init_steps
+  if ! shell_init_steps=$(_manifest_generate_shell_init_zshrc_steps); then
+    return 1
+  fi
+
+  if [[ -z "$extra_steps" && -z "$shell_init_steps" ]]; then
     # Default/bundled-only manifest — use the original Dockerfile unchanged (D8).
     echo "$orig_dockerfile"
     return 0
   fi
 
-  # Non-bundled tools present — generate a temp Dockerfile.
+  # Non-bundled tools and/or SHELL-INTEGRATION entries present — generate a temp Dockerfile.
   local tmp_dockerfile
   tmp_dockerfile=$(mktemp "${TMPDIR:-/tmp}/rip-cage-Dockerfile-XXXXXX")
 
-  # Inject extra steps before the "# Non-root user" block so they run as root.
-  # The sentinel is the exact comment line from the Dockerfile; if absent (future
-  # refactor), fall back to appending — less correct but still builds.
-  local sentinel="# Non-root user"
-  local tmp_inject
-  tmp_inject=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
-  printf '\n# --- manifest-generated install steps (rip-cage-4c5.2) ---\n%s\n' "$extra_steps" > "$tmp_inject"
+  # Two injection points:
+  #   1. TOOL install steps → before "# Non-root user" (root-level apt-get installs)
+  #   2. SHELL-INTEGRATION shell_init steps → after "COPY zshrc /home/agent/.zshrc"
+  #      (USER agent context; appends to the agent-owned .zshrc)
 
-  if grep -qF "$sentinel" "$orig_dockerfile"; then
-    # Write lines before the sentinel, inject the block, then the rest.
-    # Use line numbers: find the first sentinel line and split there.
-    local sentinel_line
-    sentinel_line=$(grep -nF "$sentinel" "$orig_dockerfile" | head -1 | cut -d: -f1)
-    head -n "$((sentinel_line - 1))" "$orig_dockerfile" > "$tmp_dockerfile"
-    cat "$tmp_inject" >> "$tmp_dockerfile"
-    tail -n "+${sentinel_line}" "$orig_dockerfile" >> "$tmp_dockerfile"
-  else
-    # Fallback: append at end (tools will run as USER agent — may fail for apt-get)
-    echo "rip-cage: Warning: '# Non-root user' sentinel not found in Dockerfile — appending manifest install steps at end (they will run as USER agent and apt-get may fail). Dockerfile may need the sentinel restored." >&2
-    cat "$orig_dockerfile" > "$tmp_dockerfile"
-    cat "$tmp_inject" >> "$tmp_dockerfile"
+  # Start with the original Dockerfile; we'll build it up in sections.
+  cp "$orig_dockerfile" "$tmp_dockerfile"
+
+  # --- TOOL install steps: inject before "# Non-root user" sentinel ---
+  if [[ -n "$extra_steps" ]]; then
+    local sentinel_tool="# Non-root user"
+    local tmp_inject_tool
+    tmp_inject_tool=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
+    printf '\n# --- manifest-generated install steps (rip-cage-4c5.2) ---\n%s\n' "$extra_steps" > "$tmp_inject_tool"
+
+    if grep -qF "$sentinel_tool" "$tmp_dockerfile"; then
+      local sentinel_line_tool base_dockerfile
+      sentinel_line_tool=$(grep -nF "$sentinel_tool" "$tmp_dockerfile" | head -1 | cut -d: -f1)
+      base_dockerfile=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
+      head -n "$((sentinel_line_tool - 1))" "$tmp_dockerfile" > "$base_dockerfile"
+      cat "$tmp_inject_tool" >> "$base_dockerfile"
+      tail -n "+${sentinel_line_tool}" "$tmp_dockerfile" >> "$base_dockerfile"
+      mv "$base_dockerfile" "$tmp_dockerfile"
+    else
+      echo "rip-cage: Warning: '# Non-root user' sentinel not found in Dockerfile — appending manifest install steps at end (they will run as USER agent and apt-get may fail). Dockerfile may need the sentinel restored." >&2
+      cat "$tmp_inject_tool" >> "$tmp_dockerfile"
+    fi
+    rm -f "$tmp_inject_tool"
   fi
-  rm -f "$tmp_inject"
+
+  # --- SHELL-INTEGRATION shell_init steps: inject after "COPY zshrc" sentinel ---
+  if [[ -n "$shell_init_steps" ]]; then
+    local sentinel_zshrc="COPY --chown=agent:agent zshrc /home/agent/.zshrc"
+    local tmp_inject_shell
+    tmp_inject_shell=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
+    printf '\n# --- manifest-generated shell_init steps (rip-cage-4c5.4) ---\n%s\n' "$shell_init_steps" > "$tmp_inject_shell"
+
+    if grep -qF "$sentinel_zshrc" "$tmp_dockerfile"; then
+      local sentinel_line_zshrc base_dockerfile2
+      sentinel_line_zshrc=$(grep -nF "$sentinel_zshrc" "$tmp_dockerfile" | head -1 | cut -d: -f1)
+      base_dockerfile2=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
+      head -n "${sentinel_line_zshrc}" "$tmp_dockerfile" > "$base_dockerfile2"
+      cat "$tmp_inject_shell" >> "$base_dockerfile2"
+      tail -n "+$((sentinel_line_zshrc + 1))" "$tmp_dockerfile" >> "$base_dockerfile2"
+      mv "$base_dockerfile2" "$tmp_dockerfile"
+    else
+      # Fallback: append at end (USER agent context should still be correct)
+      echo "rip-cage: Warning: 'COPY zshrc' sentinel not found in Dockerfile — appending manifest shell_init steps at end." >&2
+      cat "$tmp_inject_shell" >> "$tmp_dockerfile"
+    fi
+    rm -f "$tmp_inject_shell"
+  fi
 
   echo "$tmp_dockerfile"
+}
+
+# _manifest_generate_shell_init_zshrc_steps
+# Read the host manifest and emit Dockerfile RUN instructions for every
+# SHELL-INTEGRATION entry, appending its shell_init eval line to
+# /home/agent/.zshrc at build time.
+#
+# Mechanism: bake at BUILD time via a Dockerfile RUN step that appends the
+# eval line to .zshrc using printf.  This is consistent with ADR-005 D7
+# (install = build-time) and keeps this function parallel-safe with cmd_up
+# (C3 / rip-cage-4c5.3 owns the cmd_up site; this function does NOT touch it).
+#
+# Injection safety: shell_init is validated to be a single line (no embedded
+# newlines) before it is baked into a RUN step and a .zshrc echo.  The manifest
+# is host-only (lower risk) but we do not bake unvalidated input.
+#
+# D8 byte-for-byte contract: when the default manifest is in effect (no
+# SHELL-INTEGRATION entries), this function emits NOTHING.
+#
+# Output: zero or more Dockerfile RUN steps of the form:
+#   RUN printf '\n# manifest SHELL-INTEGRATION: <name>\neval "..."\n' >> /home/agent/.zshrc
+# one per SHELL-INTEGRATION entry.
+_manifest_generate_shell_init_zshrc_steps() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count idx
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local steps=""
+  for (( idx=0; idx<count; idx++ )); do
+    local entry archetype
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
+    if [[ "$archetype" != "SHELL-INTEGRATION" ]]; then
+      continue
+    fi
+
+    local name shell_init
+    name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+    shell_init=$(jq -r '.shell_init // ""' <<<"$entry" 2>/dev/null)
+
+    if [[ -z "$shell_init" ]]; then
+      echo "Error: manifest SHELL-INTEGRATION entry '${name}' has empty shell_init — skipping." >&2
+      return 1
+    fi
+
+    # Injection safety: shell_init must be a single line.
+    # Multi-line shell_init could inject arbitrary Dockerfile directives when
+    # baked into a RUN step.
+    if [[ "$shell_init" == *$'\n'* ]]; then
+      echo "Error: manifest SHELL-INTEGRATION entry '${name}': field 'shell_init' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
+      return 1
+    fi
+
+    # Emit a Dockerfile RUN step that appends the eval line to .zshrc.
+    # We use printf to safely handle any shell metacharacters in the eval line.
+    # The eval line is single-quoted in jq output; we embed it via a heredoc-style
+    # printf to avoid escaping issues in the Dockerfile RUN context.
+    steps+="RUN # manifest SHELL-INTEGRATION: ${name}"$'\n'
+    steps+="RUN printf '\\\\n# rip-cage manifest SHELL-INTEGRATION: ${name}\\\\n${shell_init}\\\\n' >> /home/agent/.zshrc"$'\n'
+  done
+
+  # Strip trailing newline for clean output; caller appends to Dockerfile.
+  if [[ -n "$steps" ]]; then
+    printf '%s' "${steps%$'\n'}"
+  fi
 }
 
 # =============================================================================
 # End tool manifest schema + host-only loader (rip-cage-4c5.1)
 # + TOOL install-step generation (rip-cage-4c5.2)
+# + SHELL-INTEGRATION shell_init baking (rip-cage-4c5.4)
 # =============================================================================
 
 # =============================================================================

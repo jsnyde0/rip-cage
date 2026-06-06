@@ -1,0 +1,15 @@
+version: 1
+tools:
+  # Test fixture: a SHELL-INTEGRATION entry for host-tier test (T1).
+  # Used by tests/test-manifest-shell.sh (rip-cage-4c5.4) to verify that
+  # _manifest_generate_shell_init_zshrc_steps emits a Dockerfile RUN step
+  # baking the eval line into /home/agent/.zshrc.
+  #
+  # Note: 'fake-tool' binary is NOT expected to exist — this fixture is used
+  # only for host-tier tests (T1) that check generated Dockerfile steps, not
+  # runtime behavior. The e2e fixture (manifest-e2e-shell-integration.yaml)
+  # pairs a TOOL entry that installs a real binary.
+  - name: fake-tool
+    archetype: SHELL-INTEGRATION
+    version_pin: "1.0.0"
+    shell_init: 'eval "$(fake-tool init zsh)"'
