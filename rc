@@ -6620,28 +6620,26 @@ _manifest_build_dockerfile_path() {
   tmp_dockerfile=$(mktemp "${TMPDIR:-/tmp}/rip-cage-Dockerfile-XXXXXX")
 
   # Three injection points:
-  #   1. TOOL install steps + IN-CAGE-DAEMON config bake + MCP fragment merge
-  #      → before "# Non-root user" (root-level operations: apt-get, file writes to /etc/rip-cage/)
-  #   2. SHELL-INTEGRATION shell_init steps → after "COPY zshrc /home/agent/.zshrc"
+  #   1. TOOL install steps (extra_steps: apt-get / binary installs)
+  #      → before "# Non-root user" (root context; no /etc/rip-cage dependency).
+  #   2. IN-CAGE-DAEMON config bake + MCP fragment merge (daemon_config_steps + daemon_mcp_steps)
+  #      → after "COPY settings.json /etc/rip-cage/settings.json" (still root context,
+  #        but MUST be after /etc/rip-cage is created at Dockerfile:113 and settings.json
+  #        is COPY'd at Dockerfile:133; writing to /etc/rip-cage/ before mkdir-p fails with
+  #        "Directory nonexistent" — rip-cage-4c5.9 fix).
+  #   3. SHELL-INTEGRATION shell_init steps → after "COPY zshrc /home/agent/.zshrc"
   #      (USER agent context; appends to the agent-owned .zshrc)
 
   # Start with the original Dockerfile; we'll build it up in sections.
   cp "$orig_dockerfile" "$tmp_dockerfile"
 
-  # --- TOOL install steps + daemon config bake + MCP merge: inject before "# Non-root user" sentinel ---
-  # All three run as root. Combine into one injection so the sentinel search is performed once.
-  local root_steps=""
-  [[ -n "$extra_steps" ]] && root_steps+="${extra_steps}"$'\n'
-  [[ -n "$daemon_config_steps" ]] && root_steps+="${daemon_config_steps}"$'\n'
-  [[ -n "$daemon_mcp_steps" ]] && root_steps+="${daemon_mcp_steps}"$'\n'
-  # Strip trailing newline
-  root_steps="${root_steps%$'\n'}"
-
-  if [[ -n "$root_steps" ]]; then
+  # --- TOOL install steps: inject before "# Non-root user" sentinel ---
+  # extra_steps (apt-get / binary installs) have no /etc/rip-cage dependency and run as root.
+  if [[ -n "$extra_steps" ]]; then
     local sentinel_tool="# Non-root user"
     local tmp_inject_root
     tmp_inject_root=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
-    printf '\n# --- manifest-generated root steps (rip-cage-4c5.2/.5) ---\n%s\n' "$root_steps" > "$tmp_inject_root"
+    printf '\n# --- manifest-generated tool install steps (rip-cage-4c5.2) ---\n%s\n' "$extra_steps" > "$tmp_inject_root"
 
     if grep -qF "$sentinel_tool" "$tmp_dockerfile"; then
       local sentinel_line_tool base_dockerfile
@@ -6652,10 +6650,43 @@ _manifest_build_dockerfile_path() {
       tail -n "+${sentinel_line_tool}" "$tmp_dockerfile" >> "$base_dockerfile"
       mv "$base_dockerfile" "$tmp_dockerfile"
     else
-      echo "rip-cage: Warning: '# Non-root user' sentinel not found in Dockerfile — appending manifest root steps at end (they will run as USER agent and may fail). Dockerfile may need the sentinel restored." >&2
+      echo "rip-cage: Warning: '# Non-root user' sentinel not found in Dockerfile — appending manifest tool install steps at end (they will run as USER agent and may fail). Dockerfile may need the sentinel restored." >&2
       cat "$tmp_inject_root" >> "$tmp_dockerfile"
     fi
     rm -f "$tmp_inject_root"
+  fi
+
+  # --- IN-CAGE-DAEMON config bake + MCP merge: inject AFTER "COPY settings.json" sentinel ---
+  # These steps write to /etc/rip-cage/daemon-config.json and patch /etc/rip-cage/settings.json.
+  # /etc/rip-cage is created at Dockerfile:113 (mkdir -p) and settings.json is COPY'd at
+  # Dockerfile:133 — both AFTER the "# Non-root user" sentinel at Dockerfile:101. Injecting
+  # daemon steps before "# Non-root user" fails with "Directory nonexistent". Instead, inject
+  # AFTER the settings.json COPY so both prereqs are satisfied, while still in root context
+  # (USER agent only appears at Dockerfile:160 — rip-cage-4c5.9 fix).
+  local daemon_root_steps=""
+  [[ -n "$daemon_config_steps" ]] && daemon_root_steps+="${daemon_config_steps}"$'\n'
+  [[ -n "$daemon_mcp_steps" ]] && daemon_root_steps+="${daemon_mcp_steps}"$'\n'
+  daemon_root_steps="${daemon_root_steps%$'\n'}"
+
+  if [[ -n "$daemon_root_steps" ]]; then
+    local sentinel_settings="COPY settings.json /etc/rip-cage/settings.json"
+    local tmp_inject_daemon
+    tmp_inject_daemon=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
+    printf '\n# --- manifest-generated daemon config steps (rip-cage-4c5.5/.9) ---\n%s\n' "$daemon_root_steps" > "$tmp_inject_daemon"
+
+    if grep -qF "$sentinel_settings" "$tmp_dockerfile"; then
+      local sentinel_line_settings base_dockerfile_d
+      sentinel_line_settings=$(grep -nF "$sentinel_settings" "$tmp_dockerfile" | head -1 | cut -d: -f1)
+      base_dockerfile_d=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
+      head -n "${sentinel_line_settings}" "$tmp_dockerfile" > "$base_dockerfile_d"
+      cat "$tmp_inject_daemon" >> "$base_dockerfile_d"
+      tail -n "+$((sentinel_line_settings + 1))" "$tmp_dockerfile" >> "$base_dockerfile_d"
+      mv "$base_dockerfile_d" "$tmp_dockerfile"
+    else
+      echo "rip-cage: Warning: 'COPY settings.json' sentinel not found in Dockerfile — appending daemon config steps at end (may fail if /etc/rip-cage does not exist). Dockerfile may need the sentinel restored." >&2
+      cat "$tmp_inject_daemon" >> "$tmp_dockerfile"
+    fi
+    rm -f "$tmp_inject_daemon"
   fi
 
   # --- SHELL-INTEGRATION shell_init steps: inject after "COPY zshrc" sentinel ---
@@ -6798,6 +6829,7 @@ _manifest_generate_daemon_config_dockerfile_steps() {
   # Build JSON array of daemon entries for baking.
   local daemon_entries="[]"
   local has_daemons=0
+  local state_dirs=()
   for (( idx=0; idx<count; idx++ )); do
     local entry archetype
     entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
@@ -6822,6 +6854,13 @@ _manifest_generate_daemon_config_dockerfile_steps() {
       fi
     fi
 
+    # Collect state_dir for Dockerfile pre-creation (must be agent-writable at runtime;
+    # root creates it at build time so agent doesn't need write access to the parent —
+    # rip-cage-4c5.9 fix for /var/lib/rip-cage-daemon/ permission denied).
+    if [[ -n "$daemon_state_dir" ]]; then
+      state_dirs+=("$daemon_state_dir")
+    fi
+
     # Append to daemon_entries JSON array.
     local daemon_obj
     daemon_obj=$(jq -cn \
@@ -6844,12 +6883,24 @@ _manifest_generate_daemon_config_dockerfile_steps() {
   config_json=$(jq -c '{daemons:'"$daemon_entries"'}' <<<"null" 2>/dev/null) || config_json="{\"daemons\":${daemon_entries}}"
   b64_config=$(printf '%s' "$config_json" | base64 | tr -d '\n')
 
-  # Emit a Dockerfile RUN step (as root, before USER agent sentinel).
-  # The step: decodes + writes /etc/rip-cage/daemon-config.json.
-  # init-rip-cage.sh reads this file at startup to start each daemon.
+  # Emit Dockerfile RUN steps (as root, AFTER settings.json COPY at Dockerfile:133).
+  # Step 1: decode + write /etc/rip-cage/daemon-config.json.
+  # Step 2: pre-create state_dir(s) with agent:agent ownership so init-rip-cage.sh
+  #         (running as USER agent) can start the daemon without needing write access
+  #         to the parent directory (rip-cage-4c5.9 fix).
+  # init-rip-cage.sh reads daemon-config.json at startup to start each daemon.
   local step=""
   step+="RUN # manifest IN-CAGE-DAEMON config bake (rip-cage-4c5.5)"$'\n'
   step+="RUN echo '${b64_config}' | base64 -d > /etc/rip-cage/daemon-config.json && chmod 0644 /etc/rip-cage/daemon-config.json"
+
+  # Pre-create each daemon's state_dir with agent ownership at image build time.
+  if [[ "${#state_dirs[@]}" -gt 0 ]]; then
+    local mkdir_args=""
+    for sd in "${state_dirs[@]}"; do
+      mkdir_args+=" ${sd}"
+    done
+    step+=$'\n'"RUN mkdir -p${mkdir_args} && chown -R agent:agent${mkdir_args}"
+  fi
 
   printf '%s' "$step"
 }

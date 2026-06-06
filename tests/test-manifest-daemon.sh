@@ -433,6 +433,10 @@ test_t2a_health_passes_positive_sentinel() {
   # The fixture daemon is python3 -m http.server on port 17843.
   # Health check: curl -sf http://127.0.0.1:17843/
   # Positive sentinel: daemon must RESPOND (not merely absence-of-error).
+  #
+  # Pattern: start with sleep infinity (not --entrypoint init-rip-cage.sh) so the
+  # container stays alive after init completes, then run init via docker exec.
+  # This matches the T2c/T2d pattern — the container must be alive when we probe it.
 
   local container_name="rc-daemon-test-t2a-$$"
   local image_name="rip-cage:latest"
@@ -453,25 +457,30 @@ test_t2a_health_passes_positive_sentinel() {
     return
   fi
 
-  # Start the cage (headless)
-  if ! docker run --rm -d --name "$container_name" \
+  # Start a persistent container (sleep infinity keeps it alive after init completes;
+  # --entrypoint init-rip-cage.sh would exit the container, killing background daemons).
+  if ! docker run -d --name "$container_name" \
        -v "${workspace}:/workspace" \
-       --entrypoint /usr/local/bin/init-rip-cage.sh \
-       "$image_name" >/dev/null 2>&1; then
+       "$image_name" sleep infinity >/dev/null 2>&1; then
     fail "T2a Could not start cage container with daemon image"
     rm -rf "$workspace" "$manifest_home"
     return
   fi
 
-  # Wait briefly for daemon to start
-  sleep 3
+  # Run init inside the running container
+  docker exec "$container_name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || true
+
+  # Wait briefly for daemon to bind its port after init
+  sleep 2
 
   # POSITIVE SENTINEL: The daemon must RESPOND to a request.
-  # curl -sf returns non-zero on failure; we check for an actual HTTP response.
+  # curl without -f so we get the response body; non-zero exit means no connection.
+  # curl -s (silent) but without -f so 4xx/5xx don't trigger exit code 22.
+  # We check health_rc=0 AND non-empty response body as the positive sentinel.
   local health_out health_rc
   health_rc=0
   health_out=$(docker exec "$container_name" \
-    timeout 5 curl -sf http://127.0.0.1:17843/ 2>&1) || health_rc=$?
+    timeout 5 curl -s http://127.0.0.1:17843/ 2>&1) || health_rc=$?
 
   if [[ "$health_rc" -eq 0 ]] && [[ -n "$health_out" ]]; then
     pass "T2a Daemon health positive sentinel: daemon responded (HTTP response received)"
@@ -480,6 +489,7 @@ test_t2a_health_passes_positive_sentinel() {
   fi
 
   docker stop "$container_name" 2>/dev/null || true
+  docker rm "$container_name" 2>/dev/null || true
   rm -rf "$workspace" "$manifest_home"
 }
 
