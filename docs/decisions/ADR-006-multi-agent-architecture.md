@@ -1,6 +1,6 @@
 # ADR-006: Multi-Agent Architecture (Directional)
 
-**Status:** Proposed
+**Status:** Proposed (revised 2026-06-06 — D7 specs Tier 1a as mechanical session levers)
 **Date:** 2026-03-27
 **Design:** [Multi-Agent Architecture](../2026-03-27-multi-agent-architecture.md)
 **Related:** [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md), [Flywheel Investigation](../2026-03-27-flywheel-investigation.md)
@@ -92,6 +92,37 @@ Monitoring observes container state (tmux output, Docker stats, agent activity) 
 
 **What would invalidate this:** If stuck agents are common enough that manual intervention becomes a bottleneck. In that case, add a conservative auto-intervention policy (e.g., pause after 30 minutes of no output, with notification).
 
+### D7: Tier 1a = mechanical session levers; orchestration lives in the consumer
+
+**Firmness: FLEXIBLE** (specializes ADR-002's FIRM containment boundary; the lever *shapes* may shift under implementation)
+
+Tier 1a (D1) is delivered as a thin set of mechanical levers over the cage's tmux, holding **no orchestration intelligence**:
+
+- `rc agent <cage> --name=<handle> -- <command>` — open a tmux window named `<handle>`, run `<command>` verbatim, return. rip-cage does **not** know or decide which agent binary runs, cold-start vs resume, or any session semantics — the caller supplies all of that in `<command>` (e.g. `pi --session <id>` performs a resume; rip-cage never grows a "session" or "resume" concept).
+- `rc sessions <cage> [--output json]` — enumerate in-cage agent windows with status (running / exited), agent-parseable per ADR-003.
+- `rc kill <cage> <handle>` — terminate one window by handle.
+- `rc attach <cage> [--window=<handle>]` — connect a human to one window; **secondary** (standalone use), since the primary watch/engage surface for the factory consumer is external (the cmux cockpit, dotpi ADR-003 two-plane model).
+
+All orchestration intelligence — *which* agents to spawn, *when*, recursion across the ready-frontier, *when* to surface a human — lives in the consumer (e.g. the dotpi factory + cmux cockpit), never in rip-cage. rip-cage stays the containment layer.
+
+Identity has two distinct layers: the **caller handle** (`--name`, targets kill/attach/resume; per-window within one container) and ADR-006 D3's per-container Docker labels (coarser grain). The handle complements D3, it does not replace it. OSC terminal-title auto-naming was evaluated and rejected as a name source (see Alternatives).
+
+**Concurrency is agent-specific, not a lever property.** The levers run any command; whether two agents *coexist* in one cage depends on the agent's own config-write safety. Validated 2026-06-06: `pi` is concurrency-safe (it file-locks its auth/config writes — pi-mono `core/auth-storage.ts` `withLock`), so the dotpi pi-orchestrator path works today. Claude Code is **not** safe concurrently (it rewrites the shared `~/.claude.json` non-atomically; a second instance startup-loops on config-not-found) — the Claude path is gated on per-session config isolation (bead `rip-cage-p1p`).
+
+**Rationale:** The point of Tier 1a within the larger self-driving factory (dotpi) is that rip-cage is a *composable asset* — a containment layer the factory orchestrates from outside, not an orchestration engine. Keeping rip-cage to mechanical levers (mechanism, not policy — the Unix / CLI-over-MCP split) lets the factory's spawn-policy, recursion model, and human-engagement surface (cmux's two-plane cockpit) compose *on top* without rip-cage duplicating cmux or growing intelligence it must then keep in sync. The arbitrary-`-- <command>` shape is the purest expression: the caller owns binary choice, resume, and session identity entirely.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **Mechanical levers, orchestration in consumer** (chosen) | rip-cage stays containment; factory + cmux compose on top; mechanism-not-policy | `reasoned:` requires a capable consumer (the factory) to be useful for AFK runs — acceptable, that is the target use |
+| rip-cage owns spawn+watch+engage UX (mini-orchestrator) | self-contained for standalone humans | `reasoned:` duplicates cmux's cockpit and grows intelligence rip-cage must keep in sync with the factory; contradicts the composable-asset/containment boundary (ADR-002) |
+| `rc agent` launches a configured agent *type* (not arbitrary command) | ergonomic common case | `reasoned:` forces rip-cage to hold a "default agent" + resume policy — a sliver of orchestration intelligence; the arbitrary-command form keeps it zero-policy and was chosen explicitly |
+| OSC terminal-title auto-naming (cmux-style) as the name source | "free" descriptive names | `direct:` live probe 2026-06-06 — claude emits **no** OSC title in-cage; pi emits only a generic `π - agent`, not a task description. Low value; explicit `--name` is simpler and deterministic |
+| Window auto-closes on agent exit (clean list) | `rc sessions` trivially reflects the live set | `direct:` the cage runs `remain-on-exit on`; exited windows linger. Reporting status (running/exited) is more honest and suits the consumer's exit-and-resume model (it can *see* an orchestrator exited) — chosen over forcing close-on-exit |
+
+**What would invalidate this:** If a standalone (no-factory) human use case becomes primary and no external cockpit is present, rip-cage might need to absorb a thin watch/engage UX after all (promote `rc attach`/`rc sessions` from secondary, possibly add light monitoring per D6). Or if a consumer needs rip-cage to *remember* how to relaunch an agent (restart a crashed agent without the factory re-supplying the command), or to spawn-by-agent-type — either pushes a sliver of orchestration into rip-cage, contradicting the boundary. Signal: repeated requests for `rc` to "remember" an agent's launch command or to spawn by type rather than being handed the command.
+
 ## Deferred
 
 - **Kubernetes / cloud orchestration** -- local Docker only; VPS uses plain Docker
@@ -106,3 +137,13 @@ Monitoring observes container state (tmux output, Docker stats, agent activity) 
   and [Skills in Containers design](../../history/2026-04-14-skills-in-containers-design.md).
 - **Agent-to-agent direct communication** -- all coordination through Agent Mail or git
 - **Distributed multi-machine fleets** -- each machine runs its own `rc` instance
+
+## canonical_refs
+
+- [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md) — the containment boundary D7 specializes (rip-cage limits blast radius; it is not an orchestration engine).
+- [ADR-003 Agent-Friendly CLI](ADR-003-agent-friendly-cli.md) — `rc sessions --output json` machine-parseable contract (D7 lever).
+- [ADR-019 pi-coding-agent Support](ADR-019-pi-coding-agent-support.md) — pi is the concurrency-safe in-cage agent (validated 2026-06-06); the arbitrary-command lever must work for pi.
+- [ADR-005 Ecosystem Tools](ADR-005-ecosystem-tools.md) — D7–D10 composable tool manifest; agent_mail (in-cage daemon) is the Tier 3 coordination layer that composes with Tier 1a.
+- bead `rip-cage-p1p` — concurrent-Claude `~/.claude.json` clobber; gates the Claude (not pi) concurrency path under D7.
+- bead `rip-cage-4c5` — composable tool manifest / agent_mail in-cage coordination harness (Tier 3 sibling).
+- Consumer (cross-repo): dotpi `ADR-003` (factory two-plane model — orchestrators in the cage, cmux cockpit outside) + `dotpi-3bi` (self-driving bead factory) — the orchestration intelligence D7 deliberately keeps OUT of rip-cage lives here.

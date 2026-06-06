@@ -31,7 +31,7 @@ When a decision evolves, edit the ADR in place and update this row. Drift betwee
 | [003](ADR-003-agent-friendly-cli.md) | Agent-Friendly CLI Interface | cli-ux | Accepted | Structured JSON output, dry-run, allowed-roots validation, agent context in CLAUDE.md |
 | [004](ADR-004-phase1-hardening.md) | Phase 1 Hardening | safety | Accepted | Conditional Dolt server, resource limits, credential health check, expanded test suite |
 | [005](ADR-005-ecosystem-tools.md) | Ecosystem Tools Integration | toolchain | Proposed (revised 2026-06-05) | Build-arg toggles + pinned versions; D7–D10 add composable host-only tool manifest (3 archetypes, in-cage-only, floor-untouchable, fail-warn daemons) |
-| [006](ADR-006-multi-agent-architecture.md) | Multi-Agent Architecture | multi-agent | Proposed | Progressive tiers: shared bind mount → git coordination → swarm → Agent Mail |
+| [006](ADR-006-multi-agent-architecture.md) | Multi-Agent Architecture | multi-agent | Proposed (revised 2026-06-06) | Progressive tiers; D7 specs Tier 1a as mechanical session levers (`rc agent`/`sessions`/`kill`/`attach`), orchestration lives in the consumer; concurrency is agent-specific (pi safe, claude gated on rip-cage-p1p) |
 | [007](ADR-007-beads-dolt-container-resilience.md) | Beads/Dolt Container Resilience | beads | Accepted | bd wrapper for dynamic port refresh + server-start guard; worktree auto-redirect |
 | [008](ADR-008-open-source-publication.md) | Open-Source Publication | release/oss | Proposed | MIT license, scrub personal data, semver, CI lint+build, bash 3.2 compat; D4 local==CI |
 | [009](ADR-009-ux-overhaul.md) | UX Overhaul | cli-ux | Proposed | Harm-reduction positioning, auto-build on first up, focused README |
