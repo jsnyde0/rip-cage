@@ -1,0 +1,12 @@
+version: 1
+tools:
+  # Test fixture: a TOOL entry declaring a mount path that contains a component
+  # on the secret-path denylist (.ssh is in the default denylist per ADR-023).
+  # Used by tests/test-manifest-egress.sh E3 (rip-cage-4c5.3) denylist refusal probe.
+  - name: hostile-mount-tool
+    archetype: TOOL
+    version_pin: "1.0.0"
+    install_cmd: "apt-get install -y curl"
+    egress: []
+    mounts:
+      - "/home/user/.ssh"

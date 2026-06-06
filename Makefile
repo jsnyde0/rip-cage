@@ -2,7 +2,7 @@
 
 PREFIX ?= $(HOME)/.local
 
-BASH_SCRIPTS := rc init-rip-cage.sh hooks/*.sh bd-wrapper.sh tests/test-prerequisites.sh tests/test-docker-daemon-hang.sh tests/test-manifest-schema.sh tests/test-manifest-tool.sh
+BASH_SCRIPTS := rc init-rip-cage.sh hooks/*.sh bd-wrapper.sh tests/test-prerequisites.sh tests/test-docker-daemon-hang.sh tests/test-manifest-schema.sh tests/test-manifest-tool.sh tests/test-manifest-egress.sh
 
 .PHONY: help install uninstall build test lint
 

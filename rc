@@ -238,6 +238,16 @@ cmd_build() {
   # Ensure the manifest is seeded (first-run: writes defaults to ~/.config/rip-cage/tools.yaml).
   _manifest_ensure_seeded
 
+  # rip-cage-4c5.3: IOC pre-build check — reject any manifest egress: entry naming
+  # a host on the IOC denylist BEFORE any Docker call (ADR-005 D3 / ADR-012 D1).
+  # Fires fail-loud, naming the offending host, so the human knows what to fix.
+  if ! _manifest_check_ioc_egress "${SCRIPT_DIR}/egress-rules.yaml"; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Manifest declares an IOC-denylisted egress host — rc build refused (ADR-005 D3 / ADR-012 D1)" "MANIFEST_IOC_EGRESS_DENIED"
+    fi
+    return 1
+  fi
+
   # Resolve the Dockerfile to use: original when all tools are bundled (D8),
   # or a temp Dockerfile with extra manifest-generated RUN steps for non-bundled tools.
   local _dockerfile _tmp_dockerfile
@@ -3217,6 +3227,19 @@ _up_resolve_egress_rules() {
     _eff_config='{"network":{"allowed_hosts":[],"writable_hosts":[],"mode":null}}'
   fi
 
+  # rip-cage-4c5.3: union manifest-declared egress hosts into network.allowed_hosts.
+  # Each manifest TOOL/IN-CAGE-DAEMON entry's egress: list contributes to the
+  # cage allowlist (ADR-005 D3 / ADR-024 D1: explicit declaration, host-reviewable).
+  # The IOC check (cmd_build / cmd_up pre-flight) already rejected IOC hosts,
+  # so we can safely add these here without re-checking.
+  local _manifest_hosts_json
+  _manifest_hosts_json=$(_manifest_egress_hosts_json 2>/dev/null) || _manifest_hosts_json="[]"
+  if [[ -n "$_manifest_hosts_json" ]] && [[ "$_manifest_hosts_json" != "[]" ]]; then
+    _eff_config=$(jq -c --argjson manifest_hosts "$_manifest_hosts_json" \
+      '.network.allowed_hosts = ((.network.allowed_hosts // []) + $manifest_hosts | unique)' \
+      <<<"$_eff_config" 2>/dev/null) || true
+  fi
+
   # Capture resolved network.mode for label stamping (rip-cage-hhh.6 D3).
   # "legacy" = mode absent / null (denylist-only posture, no mode field in rules).
   local _resolved_mode
@@ -3964,6 +3987,27 @@ cmd_up() {
       _emit_workspace_config_base_url_error "$WS_CONFIG_HOSTILE_KEY" "$WS_CONFIG_HOSTILE_VAL"
       exit 1
     fi
+  fi
+
+  # rip-cage-4c5.3: manifest IOC egress check — BEFORE any Docker call.
+  # Reject any manifest egress: entry naming a host on the IOC denylist.
+  # Fires loudly naming the offending host (ADR-005 D3 / ADR-012 D1).
+  _manifest_ensure_seeded
+  if ! _manifest_check_ioc_egress "${SCRIPT_DIR}/egress-rules.yaml"; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Manifest declares an IOC-denylisted egress host — rc up refused (ADR-005 D3 / ADR-012 D1)" "MANIFEST_IOC_EGRESS_DENIED"
+    fi
+    exit 1
+  fi
+
+  # rip-cage-4c5.3: manifest mounts denylist check — BEFORE any Docker call.
+  # Reject any manifest mounts: entry that targets a denylisted secret path.
+  # Realpath-first, fail-loud (ADR-023 D1/D6).
+  if ! _manifest_check_mounts_denylist "$path"; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Manifest declares a mount that matches the secret-path denylist — rc up refused (ADR-023 D1/D6)" "MANIFEST_MOUNT_DENYLIST_DENIED"
+    fi
+    exit 1
   fi
 
   # Check image exists and is current — pull from GHCR (with local-build
@@ -6576,6 +6620,203 @@ _manifest_build_dockerfile_path() {
 # =============================================================================
 # End tool manifest schema + host-only loader (rip-cage-4c5.1)
 # + TOOL install-step generation (rip-cage-4c5.2)
+# =============================================================================
+
+# =============================================================================
+# Manifest egress+mounts floor (rip-cage-4c5.3)
+#
+# Wire declared egress: hosts into the allowlist union and check them against
+# the IOC denylist (ADR-005 D3 / ADR-012 D1).  Check declared mounts: paths
+# against the secret-path denylist (ADR-023 D1/D6).
+# =============================================================================
+
+# _manifest_check_ioc_egress — ADR-005 D3 / ADR-012 D1 / rip-cage-4c5.3
+#
+# Parse the manifest's egress: declarations for every TOOL and IN-CAGE-DAEMON
+# entry and reject any host that matches a deny:true rule in egress-rules.yaml.
+#
+# Matching is performed with a real YAML parser (yq + jq), not fragile grep.
+# Two matching modes per IOC rule:
+#   match.host        — exact hostname match (e.g. "webhook.site")
+#   match.host_suffix — suffix match (e.g. ".ngrok.io" matches "foo.ngrok.io")
+#
+# Fail-closed: on any match, print an error to stderr naming the offending host
+# and return non-zero.  Absence of yq is an error (same policy as manifest
+# loader and config validator).
+#
+# Parameters:
+#   $1  ioc_rules_file  — path to egress-rules.yaml (default: SCRIPT_DIR)
+#
+# The check fires BEFORE any Docker call in both cmd_build and cmd_up so it is
+# testable without a working Docker daemon.
+_manifest_check_ioc_egress() {
+  local _ioc_rules_file="${1:-${SCRIPT_DIR}/egress-rules.yaml}"
+
+  if ! command -v yq &>/dev/null; then
+    echo "Error: yq not found — required for manifest IOC egress check (install: brew install yq)." >&2
+    return 1
+  fi
+
+  if [[ ! -f "$_ioc_rules_file" ]]; then
+    echo "Error: IOC rules file not found at ${_ioc_rules_file}" >&2
+    return 1
+  fi
+
+  # Load manifest (fail-closed if invalid).
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  # Extract IOC denylist: hosts (exact) and host_suffixes from deny:true rules.
+  # Use yq to parse the YAML, jq to filter.
+  local _ioc_json
+  if ! _ioc_json=$(yq -o=json '.rules // []' "$_ioc_rules_file" 2>/dev/null); then
+    echo "Error: failed to parse IOC rules file ${_ioc_rules_file}" >&2
+    return 1
+  fi
+
+  # Build two arrays: exact deny hosts and deny host_suffixes.
+  local _deny_hosts_json _deny_suffixes_json
+  _deny_hosts_json=$(jq -c '[.[] | select(.deny == true) | .match.host // empty]' <<<"$_ioc_json" 2>/dev/null) || _deny_hosts_json="[]"
+  _deny_suffixes_json=$(jq -c '[.[] | select(.deny == true) | .match.host_suffix // empty]' <<<"$_ioc_json" 2>/dev/null) || _deny_suffixes_json="[]"
+
+  # Walk every tool entry that has egress: declarations.
+  local idx
+  for (( idx=0; idx<count; idx++ )); do
+    local entry archetype egress_count eidx
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
+
+    # Only TOOL and IN-CAGE-DAEMON archetypes declare egress.
+    case "$archetype" in
+      TOOL|IN-CAGE-DAEMON) ;;
+      *) continue ;;
+    esac
+
+    egress_count=$(jq '.egress | length' <<<"$entry" 2>/dev/null)
+    [[ -z "$egress_count" || "$egress_count" -eq 0 ]] && continue
+
+    local tool_name
+    tool_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+
+    for (( eidx=0; eidx<egress_count; eidx++ )); do
+      local egress_host
+      egress_host=$(jq -r ".egress[${eidx}]" <<<"$entry" 2>/dev/null)
+      [[ -z "$egress_host" ]] && continue
+
+      # Check exact host match.
+      local exact_match
+      exact_match=$(jq -r --arg h "$egress_host" '.[] | select(. == $h)' <<<"$_deny_hosts_json" 2>/dev/null)
+      if [[ -n "$exact_match" ]]; then
+        echo "Error: manifest tool '${tool_name}' declares egress host '${egress_host}' which is on the IOC denylist (egress-rules.yaml deny:true). Remove this host from the manifest egress: declaration. (ADR-005 D3 / ADR-012 D1)" >&2
+        return 1
+      fi
+
+      # Check suffix match: egress_host ends with a deny host_suffix.
+      # jq idiom: `. as $sfx | $h | endswith($sfx)` — binds current array element to
+      # $sfx, then tests whether the egress host ends with that suffix.
+      local suffix_match
+      suffix_match=$(jq -r --arg h "$egress_host" '.[] | select(. as $sfx | $h | endswith($sfx))' <<<"$_deny_suffixes_json" 2>/dev/null)
+      if [[ -n "$suffix_match" ]]; then
+        echo "Error: manifest tool '${tool_name}' declares egress host '${egress_host}' which matches IOC denylist suffix '${suffix_match}' (egress-rules.yaml deny:true). Remove this host from the manifest egress: declaration. (ADR-005 D3 / ADR-012 D1)" >&2
+        return 1
+      fi
+    done
+  done
+
+  return 0
+}
+
+# _manifest_check_mounts_denylist — ADR-023 D1/D6 / rip-cage-4c5.3
+#
+# Check every manifest mounts: path declaration against the secret-path
+# denylist.  Resolves each path with realpath before matching (fail-loud on
+# a denylisted target, ADR-023 D6 FIRM).
+#
+# Fires BEFORE any Docker call in cmd_up so it is testable without a running
+# container.
+#
+# Parameters:
+#   $1  workspace  — workspace path (for _load_effective_config / denylist)
+_manifest_check_mounts_denylist() {
+  local _workspace="${1:-.}"
+
+  # Load manifest (fail-closed if invalid).
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local idx
+  for (( idx=0; idx<count; idx++ )); do
+    local entry mounts_count midx
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+
+    mounts_count=$(jq '.mounts | length' <<<"$entry" 2>/dev/null)
+    [[ -z "$mounts_count" || "$mounts_count" -eq 0 ]] && continue
+
+    local tool_name
+    tool_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+
+    for (( midx=0; midx<mounts_count; midx++ )); do
+      local mount_path resolved_path
+      mount_path=$(jq -r ".mounts[${midx}]" <<<"$entry" 2>/dev/null)
+      [[ -z "$mount_path" ]] && continue
+
+      # Realpath-first: resolve before matching (ADR-023 D6).
+      resolved_path=$(realpath "$mount_path" 2>/dev/null) || resolved_path="$mount_path"
+
+      # Check against the denylist.
+      if _check_secret_path_denylist "$resolved_path" "$_workspace"; then
+        local _denied_pattern
+        _denied_pattern=$(_secret_path_denylist_matched_pattern "$resolved_path" "$_workspace" 2>/dev/null || true)
+        echo "Error: manifest-declared mount for tool '${tool_name}': '${resolved_path}' matched secret-path denylist pattern '${_denied_pattern:-<unknown>}'. Remove this path from the manifest mounts: declaration or add to mounts.allow_risky in .rip-cage.yaml. (ADR-023 D1/D6)" >&2
+        return 1
+      fi
+    done
+  done
+
+  return 0
+}
+
+# _manifest_egress_hosts_json — collect all egress: hosts declared across all
+# manifest entries into a JSON array.  Used by _up_resolve_egress_rules to
+# union manifest-declared hosts into the cage allowlist (ADR-005 D3).
+#
+# Returns a JSON array of strings on stdout (may be empty: []).
+_manifest_egress_hosts_json() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load 2>/dev/null); then
+    echo "[]"
+    return 0
+  fi
+
+  local count
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    echo "[]"
+    return 0
+  fi
+
+  # Collect all egress hosts from all entries (deduplicated).
+  jq -c '[.tools[].egress // [] | .[]] | unique' <<<"$manifest_json" 2>/dev/null || echo "[]"
+}
+
+# =============================================================================
+# End manifest egress+mounts floor (rip-cage-4c5.3)
 # =============================================================================
 
 # _ensure_pi_auth_seed — cold-start seeding for pi auth (rip-cage-wo9 / ADR-019 D1).

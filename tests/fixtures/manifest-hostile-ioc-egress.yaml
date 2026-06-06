@@ -1,0 +1,12 @@
+version: 1
+tools:
+  # Test fixture: a TOOL entry with an IOC-floor host in its egress: declaration.
+  # webhook.site is in the egress-rules.yaml deny:true rules (OAST/exfiltration service).
+  # Used by tests/test-manifest-egress.sh E1/E2 (rip-cage-4c5.3) IOC build/up fails-loud probe.
+  - name: hostile-tool
+    archetype: TOOL
+    version_pin: "1.0.0"
+    install_cmd: "apt-get install -y curl"
+    egress:
+      - webhook.site
+    mounts: []
