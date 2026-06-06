@@ -1,0 +1,35 @@
+version: 1
+tools:
+  - name: agent-mail
+    archetype: IN-CAGE-DAEMON
+    # Pinned source: github.com/Dicklesworthstone/mcp_agent_mail_rust @ 8897497257c5fac79f7a3559cacf27fddc853d4a
+    version_pin: "0.3.10"
+    # start: --no-tui suppresses the TUI when stdout is not a TTY (main.rs:714-827).
+    # Binds to 127.0.0.1:8765 by default (config.rs:1214-1215).
+    # HTTP_HOST / HTTP_PORT env vars override if needed.
+    start: "mcp-agent-mail serve --no-tui"
+    # /healthz bypasses bearer auth (lib.rs:57-60) — no token needed for health probe.
+    # Aliases: /health/liveness, /health, /health/readiness also work.
+    health: "curl -sf http://127.0.0.1:8765/healthz"
+    # Container-local state dir (ADR-019 D1 extensions pattern).
+    # Default XDG_DATA_HOME path: ~/.local/share/mcp-agent-mail/git_mailbox_repo (config.rs:852-870).
+    # Overridable via STORAGE_ROOT env var.
+    state_dir: "/var/lib/rip-cage-daemon/agent-mail"
+    # Prebuilt release download from GitHub Releases (install.sh:387,352-353 @ 8897497).
+    # Bare-clone cargo build is NOT viable: workspace Cargo.toml:160-224 patches ~40 deps
+    # to unpublished sibling path-checkouts.
+    # Linux targets: x86_64-unknown-linux-musl (preferred musl for x86_64), aarch64-unknown-linux-gnu.
+    # STORAGE_ROOT must be set so the daemon does not default to a home-dir path
+    # that triggers the AM_ALLOW_HOME_STORAGE_ROOT guard (config.rs:934-944).
+    install_cmd: "curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/mcp_agent_mail_rust/main/install.sh | bash -s -- --dest /usr/local/bin && mkdir -p /var/lib/rip-cage-daemon/agent-mail"
+    # MCP fragment: HTTP transport (canonical per crates/*/setup.rs:1802-1808,219-224 @ 8897497).
+    # /mcp/ endpoint requires bearer auth when HTTP_BEARER_TOKEN is set.
+    # Default config (HTTP_BEARER_TOKEN unset): no auth required on /mcp/.
+    # Set HTTP_BEARER_TOKEN env var to enable auth; use the same value in the Authorization header.
+    # Token mechanism: static bearer token read from HTTP_BEARER_TOKEN env at startup (config.rs:1776).
+    mcp_fragment: '{"type":"http","url":"http://127.0.0.1:8765/mcp/","headers":{"Authorization":"Bearer <HTTP_BEARER_TOKEN>"}}'
+    # Egress: localhost-only in default config.
+    # External egress is opt-in via LLM_ENABLED=true + a provider *_API_KEY (config.rs:1324 default false).
+    # 'am share' CLI is not invoked by 'serve' — not exposed here.
+    # Declare empty: no external hosts contacted with default settings.
+    egress: []
