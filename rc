@@ -6417,11 +6417,19 @@ _manifest_validate() {
         fi
         ;;
       SHELL-INTEGRATION)
-        # 'shell_init' required
+        # 'shell_init' required and must be a single line.
+        # Newlines in shell_init are rejected here (fail-closed at load) — mirrors the
+        # install_cmd newline guard above.  A defense-in-depth check also lives at the
+        # generation site (_manifest_generate_shell_init_zshrc_steps).
         local shell_init
         shell_init=$(jq -r '.shell_init // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
         if [[ "$shell_init" == "___RC_ABSENT___" || -z "$shell_init" ]]; then
           echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'shell_init' is missing (SHELL-INTEGRATION archetype)." >&2
+          return 1
+        fi
+        # shell_init must be a single line — newlines inject arbitrary Dockerfile directives.
+        if [[ "$shell_init" == *$'\n'* ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'shell_init' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
           return 1
         fi
         ;;
@@ -6716,11 +6724,14 @@ _manifest_generate_shell_init_zshrc_steps() {
     fi
 
     # Emit a Dockerfile RUN step that appends the eval line to .zshrc.
-    # We use printf to safely handle any shell metacharacters in the eval line.
-    # The eval line is single-quoted in jq output; we embed it via a heredoc-style
-    # printf to avoid escaping issues in the Dockerfile RUN context.
+    # Quote-safe mechanism: base64-encode shell_init so the Dockerfile RUN step
+    # is safe against ANY single-line content (single-quotes, double-quotes, $, parens, etc.).
+    # base64 output is quote/newline-safe by construction.
+    # The generated step decodes at build time and appends to .zshrc.
+    local b64_shell_init
+    b64_shell_init=$(printf '%s' "$shell_init" | base64 | tr -d '\n')
     steps+="RUN # manifest SHELL-INTEGRATION: ${name}"$'\n'
-    steps+="RUN printf '\\\\n# rip-cage manifest SHELL-INTEGRATION: ${name}\\\\n${shell_init}\\\\n' >> /home/agent/.zshrc"$'\n'
+    steps+="RUN printf '\\\\n# rip-cage manifest SHELL-INTEGRATION: ${name}\\\\n' >> /home/agent/.zshrc && echo '${b64_shell_init}' | base64 -d >> /home/agent/.zshrc && echo >> /home/agent/.zshrc"$'\n'
   done
 
   # Strip trailing newline for clean output; caller appends to Dockerfile.

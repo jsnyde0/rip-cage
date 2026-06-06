@@ -73,14 +73,20 @@ test_t1a_with_shell_integration_steps_present() {
   stderr_file=$(mktemp)
   exit_code=0
   out=$(run_manifest_generate_shell_init_steps "$stderr_file") || exit_code=$?
-  # Positive sentinel: the generated step must contain the eval line.
+  # Positive sentinel: the generated step must encode the eval line via base64.
+  # With base64-safe baking (Fix 1), the raw eval string is not embedded verbatim;
+  # instead we verify that the base64 payload in the step decodes to the expected line.
   # SC2016 intentional: we want the literal string 'eval "$(fake-tool init zsh)"' for grep.
   # shellcheck disable=SC2016
   local expected_eval='eval "$(fake-tool init zsh)"'
-  if [[ "$exit_code" -eq 0 ]] && echo "$out" | grep -qF "$expected_eval"; then
-    pass "T1a WITH SHELL-INTEGRATION: generated steps contain eval line ('${expected_eval}')"
+  # Extract the base64 payload from the step (single-quoted echo arg before '| base64 -d')
+  local b64_payload decoded
+  b64_payload=$(echo "$out" | grep -o "'[A-Za-z0-9+/=]*'" | tr -d "'" | head -1)
+  decoded=$(echo "$b64_payload" | base64 -d 2>/dev/null) || true
+  if [[ "$exit_code" -eq 0 ]] && echo "$out" | grep -q "base64" && [[ "$decoded" == "$expected_eval" ]]; then
+    pass "T1a WITH SHELL-INTEGRATION: generated steps encode eval line via base64 (decodes to '${expected_eval}')"
   else
-    fail "T1a WITH SHELL-INTEGRATION: expected eval line in output. exit=${exit_code} stdout='${out}' stderr=$(cat "$stderr_file")"
+    fail "T1a WITH SHELL-INTEGRATION: expected base64-encoded eval line in output. exit=${exit_code} decoded='${decoded}' expected='${expected_eval}' stdout='${out}' stderr=$(cat "$stderr_file")"
   fi
   rm -f "$stderr_file"
   teardown_manifest_sandbox
@@ -108,9 +114,24 @@ test_t1b_with_shell_integration_zshrc_append_run_step() {
 
 # ---------------------------------------------------------------------------
 # T1c — WITHOUT SHELL-INTEGRATION entry: generated steps are empty
-# Gated on T1a/T1b confirming WITH-entry is non-empty (positive sentinel).
+# Gated on an inline positive sentinel proving the WITH-entry generator
+# actually produces output before asserting the WITHOUT case is empty.
+# (Mirrors T1d discipline — per rip-cage-test-fail-prose-without-exit-silent-red)
 # ---------------------------------------------------------------------------
 test_t1c_without_shell_integration_no_steps() {
+  # Positive sentinel first: WITH-entry must produce non-empty output.
+  # This ensures a generator that always returns empty cannot false-green the absence half.
+  local out_with
+  setup_manifest_sandbox "manifest-with-shell-integration.yaml"
+  out_with=$(run_manifest_generate_shell_init_steps 2>/dev/null)
+  teardown_manifest_sandbox
+
+  if [[ -z "$out_with" ]]; then
+    fail "T1c SENTINEL FAILED: WITH-entry generator produced empty output — cannot assert absence on WITHOUT side"
+    return
+  fi
+
+  # Now assert the WITHOUT-entry case is empty.
   setup_manifest_sandbox
   local stderr_file out exit_code
   stderr_file=$(mktemp)
@@ -190,6 +211,91 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
+# T1e2 — Fix 1: Quote-safe bake: shell_init containing a single-quote must
+# produce a well-formed RUN step (not break the printf quoting context).
+# Uses base64 encoding — the generated step must decode back to the original
+# shell_init line exactly.
+# ---------------------------------------------------------------------------
+test_t1e2_single_quote_in_shell_init_produces_valid_run_step() {
+  setup_manifest_sandbox
+  # shell_init contains a single-quote (the it's pattern common in atuin/zoxide comments)
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<'YAML'
+version: 1
+tools:
+  - name: quoted-tool
+    archetype: SHELL-INTEGRATION
+    version_pin: "1.0.0"
+    shell_init: "eval \"$(quoted-tool init zsh)\" # it's here"
+YAML
+  local stderr_file out exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  out=$(run_manifest_generate_shell_init_steps "$stderr_file") || exit_code=$?
+
+  if [[ "$exit_code" -ne 0 ]]; then
+    fail "T1e2 Single-quote bake: generator failed (exit=${exit_code}). stderr=$(cat "$stderr_file")"
+    rm -f "$stderr_file"
+    teardown_manifest_sandbox
+    return
+  fi
+
+  # The RUN step must NOT contain a bare single-quoted printf with the literal ' embedded
+  # (which would break the Dockerfile RUN step). Check that the generated step is well-formed:
+  # for base64 approach: must contain 'base64 -d' and the step must be syntactically parseable.
+  if ! echo "$out" | grep -q "base64"; then
+    fail "T1e2 Single-quote bake: generated step does not use base64 encoding (single-quote-unsafe). out='${out}'"
+    rm -f "$stderr_file"
+    teardown_manifest_sandbox
+    return
+  fi
+
+  # Verify the base64 payload decodes back to the original shell_init line
+  local b64_payload decoded
+  # Extract the base64 payload from the RUN step (between 'echo ' and ' | base64')
+  b64_payload=$(echo "$out" | grep -o "'[A-Za-z0-9+/=]*'" | tr -d "'" | head -1)
+  decoded=$(echo "$b64_payload" | base64 -d 2>/dev/null) || true
+
+  if [[ "$decoded" == *"quoted-tool init zsh"* ]] && [[ "$decoded" == *"it's here"* ]]; then
+    pass "T1e2 Single-quote in shell_init: generates base64-encoded RUN step that decodes back to original line"
+  else
+    fail "T1e2 Single-quote bake: decoded payload does not match original. decoded='${decoded}'"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# T1e3 — Fix 2: Validator rejects multi-line shell_init at LOAD time
+# (fail-closed at validation, not deferred to the generation site).
+# ---------------------------------------------------------------------------
+test_t1e3_validator_rejects_multiline_shell_init() {
+  setup_manifest_sandbox
+  # A manifest with a literal newline embedded in shell_init (YAML block scalar)
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<'YAML'
+version: 1
+tools:
+  - name: multiline-shell
+    archetype: SHELL-INTEGRATION
+    version_pin: "1.0.0"
+    shell_init: "line one\nline two"
+YAML
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  # Invoke _manifest_validate via _manifest_load (which calls validate internally)
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    bash -c "source '${RC}'; _manifest_load" >/dev/null 2>"$stderr_file" || exit_code=$?
+
+  if [[ "$exit_code" -ne 0 ]]; then
+    pass "T1e3 Validator rejects multi-line shell_init at load time (fail-closed)"
+  else
+    fail "T1e3 Validator should reject multi-line shell_init at load time but returned 0. stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # T1f — _manifest_build_dockerfile_path incorporates shell_init steps
 # When both TOOL and SHELL-INTEGRATION entries exist, the generated temp
 # Dockerfile contains both the install RUN step AND the .zshrc append step.
@@ -209,18 +315,26 @@ test_t1f_build_dockerfile_path_includes_shell_init() {
     return
   fi
 
-  # SC2016 intentional: we want the literal string 'eval "$(fake-tool init zsh)"' for grep.
-  # shellcheck disable=SC2016
-  local expected_eval='eval "$(fake-tool init zsh)"'
+  # With base64-safe baking (Fix 1), the eval line is embedded as a base64 payload.
+  # Check the temp Dockerfile contains: a base64 -d step AND references /home/agent/.zshrc.
+  # Also verify the base64 payload decodes to include the expected tool name.
   if [[ "$dockerfile_path" == "${REPO_ROOT}/Dockerfile" ]]; then
     # If original returned, the step was not baked — this is a failure for SHELL-INTEGRATION
     fail "T1f _manifest_build_dockerfile_path returned original Dockerfile (expected temp with .zshrc step). path='${dockerfile_path}'"
-  elif grep -qF "$expected_eval" "$dockerfile_path" && grep -q "/home/agent/.zshrc" "$dockerfile_path"; then
-    pass "T1f _manifest_build_dockerfile_path temp Dockerfile contains .zshrc eval-line step"
+  elif grep -q "base64" "$dockerfile_path" && grep -q "/home/agent/.zshrc" "$dockerfile_path"; then
+    # Verify the base64 payload decodes to include the expected eval line
+    local b64_payload decoded
+    b64_payload=$(grep "base64 -d" "$dockerfile_path" | grep -o "'[A-Za-z0-9+/=]*'" | tr -d "'" | head -1)
+    decoded=$(echo "$b64_payload" | base64 -d 2>/dev/null) || true
+    if [[ "$decoded" == *"fake-tool"* ]]; then
+      pass "T1f _manifest_build_dockerfile_path temp Dockerfile contains base64-encoded .zshrc eval-line step (decodes to fake-tool eval)"
+    else
+      fail "T1f _manifest_build_dockerfile_path: base64 payload does not decode to expected eval. decoded='${decoded}'"
+    fi
     # Cleanup temp file
     [[ "$dockerfile_path" != "${REPO_ROOT}/Dockerfile" ]] && rm -f "$dockerfile_path"
   else
-    fail "T1f _manifest_build_dockerfile_path: temp Dockerfile missing eval line or .zshrc reference. path='${dockerfile_path}' content=$(cat "$dockerfile_path" | grep -A2 -B2 zshrc || echo '(no zshrc line)')"
+    fail "T1f _manifest_build_dockerfile_path: temp Dockerfile missing base64 step or .zshrc reference. path='${dockerfile_path}' content=$(grep -A2 -B2 zshrc "$dockerfile_path" || echo '(no zshrc line)')"
     [[ "$dockerfile_path" != "${REPO_ROOT}/Dockerfile" ]] && rm -f "$dockerfile_path"
   fi
   rm -f "$stderr_file"
@@ -359,6 +473,8 @@ test_t1b_with_shell_integration_zshrc_append_run_step
 test_t1c_without_shell_integration_no_steps
 test_t1d_counterfactual_delta
 test_t1e_newline_injection_rejected
+test_t1e2_single_quote_in_shell_init_produces_valid_run_step
+test_t1e3_validator_rejects_multiline_shell_init
 test_t1f_build_dockerfile_path_includes_shell_init
 
 echo ""
