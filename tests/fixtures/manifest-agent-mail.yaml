@@ -15,13 +15,15 @@ tools:
     # Default XDG_DATA_HOME path: ~/.local/share/mcp-agent-mail/git_mailbox_repo (config.rs:852-870).
     # Overridable via STORAGE_ROOT env var.
     state_dir: "/var/lib/rip-cage-daemon/agent-mail"
-    # Prebuilt release download from GitHub Releases (install.sh:387,352-353 @ 8897497).
-    # Bare-clone cargo build is NOT viable: workspace Cargo.toml:160-224 patches ~40 deps
-    # to unpublished sibling path-checkouts.
-    # Linux targets: x86_64-unknown-linux-musl (preferred musl for x86_64), aarch64-unknown-linux-gnu.
-    # STORAGE_ROOT must be set so the daemon does not default to a home-dir path
-    # that triggers the AM_ALLOW_HOME_STORAGE_ROOT guard (config.rs:934-944).
-    install_cmd: "curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/mcp_agent_mail_rust/main/install.sh | bash -s -- --dest /usr/local/bin && mkdir -p /var/lib/rip-cage-daemon/agent-mail"
+    # Prebuilt release download: pinned v0.3.10 binary from GitHub Releases.
+    # Direct asset URL — does NOT call install.sh (which has a cargo-build fallback
+    # on download failure that is NOT viable: workspace Cargo.toml:160-224 patches
+    # ~40 deps to unpublished sibling path-checkouts via [patch.crates-io]).
+    # Targets: aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu.
+    # Asset URL pattern: releases/download/v0.3.10/mcp-agent-mail-<target>.tar.xz
+    # sha256 verified before extraction (sha256sum -c).
+    # Both mcp-agent-mail and am binaries are extracted from the archive.
+    install_cmd: "ARCH=$(uname -m) && TARGET=$([ \"$ARCH\" = \"aarch64\" ] && echo \"aarch64-unknown-linux-gnu\" || echo \"x86_64-unknown-linux-gnu\") && curl -fsSL \"https://github.com/Dicklesworthstone/mcp_agent_mail_rust/releases/download/v0.3.10/mcp-agent-mail-${TARGET}.tar.xz\" -o \"/tmp/mcp-agent-mail-${TARGET}.tar.xz\" && curl -fsSL \"https://github.com/Dicklesworthstone/mcp_agent_mail_rust/releases/download/v0.3.10/mcp-agent-mail-${TARGET}.tar.xz.sha256\" -o \"/tmp/mcp-agent-mail-${TARGET}.tar.xz.sha256\" && (cd /tmp && sha256sum -c \"mcp-agent-mail-${TARGET}.tar.xz.sha256\") && tar -xJf \"/tmp/mcp-agent-mail-${TARGET}.tar.xz\" -C /tmp && install -m 755 /tmp/mcp-agent-mail /usr/local/bin/mcp-agent-mail && install -m 755 /tmp/am /usr/local/bin/am && mkdir -p /var/lib/rip-cage-daemon/agent-mail && rm -f \"/tmp/mcp-agent-mail-${TARGET}.tar.xz\" \"/tmp/mcp-agent-mail-${TARGET}.tar.xz.sha256\" /tmp/mcp-agent-mail /tmp/am"
     # MCP fragment: HTTP transport (canonical per crates/*/setup.rs:1802-1808,219-224 @ 8897497).
     # /mcp/ endpoint requires bearer auth when HTTP_BEARER_TOKEN is set.
     # Default config (HTTP_BEARER_TOKEN unset): no auth required on /mcp/.

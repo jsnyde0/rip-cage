@@ -72,11 +72,26 @@ Release artifact pattern: `https://github.com/Dicklesworthstone/mcp_agent_mail_r
 
 Source: `crates/*/setup.rs:1802-1808, 219-224` (pinned @ 8897497).
 
-The `/mcp/` endpoint requires the bearer token **when `HTTP_BEARER_TOKEN` is set.**
-Default config (`HTTP_BEARER_TOKEN` unset): no auth required on `/mcp/` (`lib.rs:10041`).
-Token mechanism: static bearer token read from `HTTP_BEARER_TOKEN` env at server startup
-(`config.rs:1776`). If you configure a token, use the same value in the manifest's
-`Authorization` header and in the `HTTP_BEARER_TOKEN` env var passed at start.
+**Bearer token is a LITERAL baked value, NOT a substituted template variable.**
+The `<HTTP_BEARER_TOKEN>` placeholder in the manifest header is a documentation
+convention. The fixture ships this value verbatim. If you leave it as-is, the
+Authorization header will send the literal string `Bearer <HTTP_BEARER_TOKEN>`.
+
+**Supported / default path: no bearer token.**
+- `HTTP_BEARER_TOKEN` unset → the daemon's `/mcp/` endpoint requires NO auth.
+- The fixture as shipped uses no token. Delete the `Authorization` header from
+  the manifest's `headers` field, OR leave it as-is — the server ignores an
+  unrecognized bearer value when `HTTP_BEARER_TOKEN` is not set.
+
+**Setting a token (operator-only opt-in):**
+If you want to protect `/mcp/` with a token:
+1. Set `HTTP_BEARER_TOKEN=<your-secret>` in the daemon's environment.
+2. Edit the manifest's `mcp_fragment` `Authorization` header to use the SAME
+   literal value: `"Bearer <your-secret>"`.
+3. Run `rc build` to bake the updated manifest into the image.
+
+Token mechanism: static bearer token read from `HTTP_BEARER_TOKEN` env at server
+startup (`config.rs:1776`).
 
 **`egress: []`**
 
