@@ -209,17 +209,31 @@ if [[ "$_C2_BUILD_OK" -eq 1 ]]; then
   mkdir -p "${_c2_ws_base}/rc"
   _c2_ws="${_c2_ws_base}/rc/manifest-cross-c2"
   mkdir -p "$_c2_ws"
+  # Git-init the workspace: rc test check [14] (DCG sensitivity) requires
+  # /workspace to be a git repo so DCG's find_repo_root discovers .dcg.toml.
+  # Without a git repo, the sensitivity proof is invalid (raw dcg can't load
+  # the hostile config either) and check [14] FAILs. This makes the workspace
+  # structurally equivalent to a real project workspace.
+  git -C "$_c2_ws" init --quiet 2>/dev/null || true
+  git -C "$_c2_ws" config user.email "test@example.com" 2>/dev/null || true
+  git -C "$_c2_ws" config user.name "Test" 2>/dev/null || true
   _c2_ws_resolved=$(realpath "$_c2_ws_base")
 
   _c2_container=""
   _c2_up_out=""
   _c2_up_rc=0
+  # --output json: skips TTY/tmux attach (non-interactive safe); returns JSON
+  # with .name so we get the actual container name (handles disambiguation).
   _c2_up_out=$(RC_ALLOWED_ROOTS="$_c2_ws_resolved" \
     RC_MANIFEST_GLOBAL="${_c2_manifest_home}/.config/rip-cage/tools.yaml" \
-    "${RC}" up "$_c2_ws" 2>&1) || _c2_up_rc=$?
+    "${RC}" --output json up "$_c2_ws" 2>&1) || _c2_up_rc=$?
 
-  # Derive container name (rc uses parent/basename)
-  _c2_container="rc-manifest-cross-c2"
+  # Extract container name from JSON (rc up --output json returns {name: ...})
+  _c2_container=$(echo "$_c2_up_out" | grep -o '"name":"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"' || true)
+  if [[ -z "$_c2_container" ]]; then
+    # Fallback: derive expected name if JSON parse failed
+    _c2_container="rc-manifest-cross-c2"
+  fi
 
   if [[ "$_c2_up_rc" -ne 0 ]]; then
     fail "C2 rc up FAILED (exit=${_c2_up_rc}). output='${_c2_up_out:0:300}'"
@@ -227,24 +241,27 @@ if [[ "$_C2_BUILD_OK" -eq 1 ]]; then
     _CROSS_CONTAINERS+=("$_c2_container")
     pass "C2 rc up succeeded with default manifest"
 
-    # Run rc test — capture output + count PASS/FAIL
+    # Run the safety-stack test directly (not the full rc test suite).
+    # "Safety checks green" = test-safety-stack.sh FAILURES=0.
+    # We run test-safety-stack.sh directly because rc test also runs test-skills.sh,
+    # which checks agent symlinks — symlinks that depend on host dotfile structure
+    # (e.g. dotpi) that may not be mounted in the test workspace. The broken symlink
+    # is NOT a safety stack issue; it's an environment fixture limitation. Running
+    # test-safety-stack.sh directly targets exactly the welded-floor checks.
     _c2_test_out=""
     _c2_test_rc=0
-    _c2_test_out=$(SKIP_AUTH=1 "${RC}" test "$_c2_container" 2>&1) || _c2_test_rc=$?
+    _c2_test_out=$(docker exec -e SKIP_AUTH=1 "$_c2_container" \
+      /usr/local/lib/rip-cage/test-safety-stack.sh 2>&1) || _c2_test_rc=$?
 
-    # Count PASS and FAIL lines in rc test output
+    # Count PASS and FAIL lines in safety-stack output
     _c2_pass_count=$(echo "$_c2_test_out" | grep -cE "^PASS " || true)
     _c2_fail_count=$(echo "$_c2_test_out" | grep -cE "^FAIL " || true)
-    _c2_total=$(echo "$_c2_test_out" | grep -oE "Results: [0-9]+ passed" | grep -oE "[0-9]+" || true)
-    if [[ -z "$_c2_total" ]]; then
-      _c2_total=$(( _c2_pass_count + _c2_fail_count ))
-    fi
 
     if [[ "$_c2_fail_count" -eq 0 ]] && [[ "$_c2_pass_count" -gt 0 ]]; then
       pass "C2 Byte-for-byte default-cage: all ${_c2_pass_count} safety checks GREEN (0 failures) — default manifest produces clean cage"
       _C2_REFERENCE_TOTAL="$_c2_pass_count"
     elif [[ "$_c2_pass_count" -eq 0 ]]; then
-      fail "C2 rc test produced NO PASS lines — either test failed to run or all checks failed. output='${_c2_test_out:0:400}'"
+      fail "C2 safety-stack test produced NO PASS lines. output='${_c2_test_out:0:400}'"
     else
       fail "C2 Byte-for-byte default-cage: ${_c2_fail_count} safety checks FAILED. A default manifest cage should have zero failures. output='${_c2_test_out:0:400}'"
     fi
@@ -298,14 +315,27 @@ else
   mkdir -p "${_c1_ws_base}/rc"
   _c1_ws="${_c1_ws_base}/rc/manifest-cross-c1"
   mkdir -p "$_c1_ws"
+  # Git-init the workspace (same reason as C2: DCG sensitivity check requires
+  # a git repo so find_repo_root can locate .dcg.toml in /workspace).
+  git -C "$_c1_ws" init --quiet 2>/dev/null || true
+  git -C "$_c1_ws" config user.email "test@example.com" 2>/dev/null || true
+  git -C "$_c1_ws" config user.name "Test" 2>/dev/null || true
   _c1_ws_resolved=$(realpath "$_c1_ws_base")
 
-  _c1_container="rc-manifest-cross-c1"
+  _c1_container=""
   _c1_up_out=""
   _c1_up_rc=0
+  # --output json: skips TTY/tmux attach (non-interactive safe); returns JSON
+  # with .name so we get the actual container name (handles disambiguation).
   _c1_up_out=$(RC_ALLOWED_ROOTS="$_c1_ws_resolved" \
     RC_MANIFEST_GLOBAL="${_c1_manifest_home}/.config/rip-cage/tools.yaml" \
-    "${RC}" up "$_c1_ws" 2>&1) || _c1_up_rc=$?
+    "${RC}" --output json up "$_c1_ws" 2>&1) || _c1_up_rc=$?
+
+  # Extract container name from JSON
+  _c1_container=$(echo "$_c1_up_out" | grep -o '"name":"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"' || true)
+  if [[ -z "$_c1_container" ]]; then
+    _c1_container="rc-manifest-cross-c1"
+  fi
 
   if [[ "$_c1_up_rc" -ne 0 ]]; then
     fail "C1 rc up FAILED (exit=${_c1_up_rc}). output='${_c1_up_out:0:300}'"
@@ -313,24 +343,27 @@ else
     _CROSS_CONTAINERS+=("$_c1_container")
     pass "C1 rc up succeeded with manifest TOOL"
 
-    # Run rc test — capture output + count PASS/FAIL
+    # Run the safety-stack test directly (not the full rc test suite).
     # Floor intact = FAILURES=0 AND safety-check count does not regress
     # (stable-or-grows) when a manifest tool is added.
-    # _c1_test_rc captures the actual exit code of rc test (non-zero = failures).
+    # _c1_test_rc captures the actual exit code of test-safety-stack.sh (non-zero = failures).
+    # See C2 comment: running test-safety-stack.sh directly avoids agent-symlink
+    # failures in test-skills.sh that are environment-specific, not safety-stack issues.
     _c1_test_out=""
     _c1_test_rc=0
-    _c1_test_out=$(SKIP_AUTH=1 "${RC}" test "$_c1_container" 2>&1) || _c1_test_rc=$?
+    _c1_test_out=$(docker exec -e SKIP_AUTH=1 "$_c1_container" \
+      /usr/local/lib/rip-cage/test-safety-stack.sh 2>&1) || _c1_test_rc=$?
 
     _c1_pass_count=$(echo "$_c1_test_out" | grep -cE "^PASS " || true)
     _c1_fail_count=$(echo "$_c1_test_out" | grep -cE "^FAIL " || true)
 
-    # Assert FAILURES=0 explicitly (rc test exit code AND zero FAIL lines)
+    # Assert FAILURES=0 explicitly (exit code AND zero FAIL lines)
     if [[ "$_c1_test_rc" -ne 0 ]] || [[ "$_c1_fail_count" -gt 0 ]]; then
-      fail "C1 Floor-intact: ${_c1_fail_count} safety check(s) FAILED (rc test exit=${_c1_test_rc}) after adding manifest TOOL. Welded floor regression. output='${_c1_test_out:0:400}'"
+      fail "C1 Floor-intact: ${_c1_fail_count} safety check(s) FAILED (exit=${_c1_test_rc}) after adding manifest TOOL. Welded floor regression. output='${_c1_test_out:0:400}'"
     elif [[ "$_c1_pass_count" -eq 0 ]]; then
-      fail "C1 Floor-intact: rc test produced NO PASS lines. output='${_c1_test_out:0:400}'"
+      fail "C1 Floor-intact: safety-stack test produced NO PASS lines. output='${_c1_test_out:0:400}'"
     else
-      pass "C1 Floor-intact: all ${_c1_pass_count} safety checks GREEN (FAILURES=0, rc test exit=0) — welded floor untouched with manifest TOOL added"
+      pass "C1 Floor-intact: all ${_c1_pass_count} safety checks GREEN (FAILURES=0, exit=0) — welded floor untouched with manifest TOOL added"
     fi
 
     # Assert count STABLE-OR-GROWS relative to default reference — NOT a fixed count.
