@@ -16,11 +16,15 @@ tools:
   - name: agent-mail
     archetype: IN-CAGE-DAEMON
     version_pin: "0.3.10"
-    start: "mcp-agent-mail serve --no-tui"
+    start: "STORAGE_ROOT=/var/lib/rip-cage-daemon/agent-mail mcp-agent-mail serve --no-tui"
     health: "curl -sf http://127.0.0.1:8765/healthz"
     state_dir: "/var/lib/rip-cage-daemon/agent-mail"
-    install_cmd: "curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/mcp_agent_mail_rust/main/install.sh | bash -s -- --dest /usr/local/bin && mkdir -p /var/lib/rip-cage-daemon/agent-mail"
-    mcp_fragment: '{"type":"http","url":"http://127.0.0.1:8765/mcp/","headers":{"Authorization":"Bearer <HTTP_BEARER_TOKEN>"}}'
+    install_cmd: "<see tests/fixtures/manifest-agent-mail.yaml for the full pinned-release install_cmd>"
+    mcp_fragment:
+      type: http
+      url: "http://127.0.0.1:8765/mcp/"
+      headers:
+        Authorization: "Bearer <HTTP_BEARER_TOKEN>"
     egress: []
 ```
 
@@ -28,10 +32,17 @@ See `tests/fixtures/manifest-agent-mail.yaml` for the full annotated fixture.
 
 ### Field notes (all grounded in pinned source @ 8897497)
 
-**`start: "mcp-agent-mail serve --no-tui"`**
+**`start: "STORAGE_ROOT=/var/lib/rip-cage-daemon/agent-mail mcp-agent-mail serve --no-tui"`**
 
 `--no-tui` suppresses the interactive TUI when stdout is not a TTY
 (`main.rs:714-827`). Required for headless cage operation.
+
+`STORAGE_ROOT` pins the storage directory to `state_dir`. Without it, agent_mail
+defaults to `~/.local/share/mcp-agent-mail` (XDG, `config.rs:852-870`), which does
+not exist in the cage (the parent `/home/agent/.local/share/` is not created by the
+init machinery). The `start` env-assignment prefix is evaluated by `eval "$start"`
+in `init-rip-cage.sh`, so the `STORAGE_ROOT=...` prefix works. The value must match
+`state_dir` exactly so the pre-created, correctly-owned directory is used.
 
 **`health: "curl -sf http://127.0.0.1:8765/healthz"`**
 
@@ -44,7 +55,9 @@ Default binding: `127.0.0.1:8765` (`config.rs:1214-1215`). Overridable via
 
 Container-local path (ADR-019 D1 extensions pattern). Default XDG path would be
 `~/.local/share/mcp-agent-mail/git_mailbox_repo` (`config.rs:852-870`).
-The cage-managed state_dir overrides this via the `STORAGE_ROOT` env var.
+The `start` field pins agent_mail to this dir via `STORAGE_ROOT` — the `state_dir`
+value and the `STORAGE_ROOT` value must match (the init machinery creates and chowns
+`state_dir` before launching the daemon).
 Wipe on `rc destroy` is correct semantics — mailboxes are cage-lifetime.
 
 **`install_cmd`**
@@ -62,15 +75,23 @@ Release artifact pattern: `https://github.com/Dicklesworthstone/mcp_agent_mail_r
 
 **`mcp_fragment` (HTTP transport — canonical)**
 
-```json
-{
-  "type": "http",
-  "url": "http://127.0.0.1:8765/mcp/",
-  "headers": { "Authorization": "Bearer <HTTP_BEARER_TOKEN>" }
-}
+```yaml
+mcp_fragment:
+  type: http
+  url: "http://127.0.0.1:8765/mcp/"
+  headers:
+    Authorization: "Bearer <HTTP_BEARER_TOKEN>"
 ```
 
 Source: `crates/*/setup.rs:1802-1808, 219-224` (pinned @ 8897497).
+
+**Must be a nested YAML object, NOT a quoted JSON string.**
+When `mcp_fragment` is declared as a YAML string (e.g.
+`mcp_fragment: '{"type":"http",...}'`), `yq -o=json` converts it to a JSON string
+value. The `jq --argjson frag` baking step then writes a string into
+`settings.json`, so `.mcpServers["agent-mail"].type` reads as empty at runtime.
+Declaring it as a YAML mapping (nested dict) ensures `yq` produces a real JSON
+object, and the baked `settings.json` entry has a proper `type` field.
 
 **Bearer token is a LITERAL baked value, NOT a substituted template variable.**
 The `<HTTP_BEARER_TOKEN>` placeholder in the manifest header is a documentation

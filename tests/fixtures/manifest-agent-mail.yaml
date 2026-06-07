@@ -7,7 +7,11 @@ tools:
     # start: --no-tui suppresses the TUI when stdout is not a TTY (main.rs:714-827).
     # Binds to 127.0.0.1:8765 by default (config.rs:1214-1215).
     # HTTP_HOST / HTTP_PORT env vars override if needed.
-    start: "mcp-agent-mail serve --no-tui"
+    # STORAGE_ROOT pins the storage dir to state_dir (config.rs:852-870).
+    # Without STORAGE_ROOT, agent_mail defaults to ~/.local/share/mcp-agent-mail (XDG)
+    # which does not exist in the cage (parent dir not created by init machinery).
+    # Must match state_dir exactly so the pre-created dir is used.
+    start: "STORAGE_ROOT=/var/lib/rip-cage-daemon/agent-mail mcp-agent-mail serve --no-tui"
     # /healthz bypasses bearer auth (lib.rs:57-60) — no token needed for health probe.
     # Aliases: /health/liveness, /health, /health/readiness also work.
     health: "curl -sf http://127.0.0.1:8765/healthz"
@@ -29,7 +33,14 @@ tools:
     # Default config (HTTP_BEARER_TOKEN unset): no auth required on /mcp/.
     # Set HTTP_BEARER_TOKEN env var to enable auth; use the same value in the Authorization header.
     # Token mechanism: static bearer token read from HTTP_BEARER_TOKEN env at startup (config.rs:1776).
-    mcp_fragment: '{"type":"http","url":"http://127.0.0.1:8765/mcp/","headers":{"Authorization":"Bearer <HTTP_BEARER_TOKEN>"}}'
+    # Declared as a nested YAML object (NOT a quoted JSON string) so that yq → jq baking
+    # produces a real JSON object in settings.json mcpServers (string form would bake as a
+    # JSON string value, leaving .mcpServers["agent-mail"].type empty at runtime).
+    mcp_fragment:
+      type: http
+      url: "http://127.0.0.1:8765/mcp/"
+      headers:
+        Authorization: "Bearer <HTTP_BEARER_TOKEN>"
     # Egress: localhost-only in default config.
     # External egress is opt-in via LLM_ENABLED=true + a provider *_API_KEY (config.rs:1324 default false).
     # 'am share' CLI is not invoked by 'serve' — not exposed here.

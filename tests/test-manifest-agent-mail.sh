@@ -192,6 +192,11 @@ print('')
 # ---------------------------------------------------------------------------
 test_t1c_mcp_fragment_is_http_shape() {
   local mcp_fragment
+  # Extract mcp_fragment as JSON regardless of whether it is declared as a YAML
+  # object (the correct form: nested dict in YAML → real JSON object in baked
+  # settings.json) or a JSON string (the old broken form).
+  # json.dumps normalises both: dict → compact JSON, str → JSON string (which
+  # would then fail the type check below, making the string form a detectable bug).
   mcp_fragment=$(python3 -c "
 import yaml, json, sys
 with open('${FIXTURE_FILE}') as f:
@@ -200,26 +205,52 @@ tools = manifest.get('tools', [])
 for t in tools:
     if t.get('name') == 'agent-mail':
         frag = t.get('mcp_fragment', '')
-        print(frag)
+        # Always emit valid JSON so the shell pipeline can parse it.
+        # A YAML dict becomes a JSON object; a YAML string becomes a JSON string
+        # (the latter is the broken form and will fail the type assertion below).
+        print(json.dumps(frag))
         sys.exit(0)
 print('')
 " 2>/dev/null)
 
-  if [[ -z "$mcp_fragment" ]]; then
+  if [[ -z "$mcp_fragment" || "$mcp_fragment" == '""' ]]; then
     fail "T1c mcp_fragment not found in agent-mail fixture entry"
     return
   fi
 
-  # Validate it's parseable JSON
+  # Assert the fragment is a JSON OBJECT (not a JSON string): mcp_fragment must
+  # be declared as a nested YAML mapping so that yq → jq baking produces a real
+  # object in settings.json.  If the fixture still uses the old quoted-string form,
+  # json.dumps produces a JSON string here and json.load will return a str, making
+  # d.get('type','') fail (str has no .get).
   local parsed_type parsed_url
-  parsed_type=$(echo "$mcp_fragment" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('type',''))" 2>/dev/null)
-  parsed_url=$(echo "$mcp_fragment" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('url',''))" 2>/dev/null)
+  parsed_type=$(echo "$mcp_fragment" | python3 -c "
+import json, sys
+val = json.load(sys.stdin)
+if not isinstance(val, dict):
+    print('__NOT_AN_OBJECT__')
+    sys.exit(0)
+print(val.get('type', ''))
+" 2>/dev/null)
+  parsed_url=$(echo "$mcp_fragment" | python3 -c "
+import json, sys
+val = json.load(sys.stdin)
+if not isinstance(val, dict):
+    print('')
+    sys.exit(0)
+print(val.get('url', ''))
+" 2>/dev/null)
+
+  if [[ "$parsed_type" == "__NOT_AN_OBJECT__" ]]; then
+    fail "T1c mcp_fragment is a JSON STRING in the fixture — must be a nested YAML object so settings.json baking produces a real mcpServers object (string form bakes as a JSON string value, leaving .type empty)"
+    return
+  fi
 
   if [[ "$parsed_type" != "http" ]]; then
     fail "T1c mcp_fragment type is '${parsed_type}' — expected 'http' (canonical HTTP transport per source @ 8897497)"
     return
   fi
-  pass "T1c mcp_fragment type is 'http' (canonical HTTP transport)"
+  pass "T1c mcp_fragment is a YAML object with type='http' (canonical HTTP transport; correct form for settings.json baking)"
 
   # Must point at 127.0.0.1:8765 (config.rs:1214-1215)
   if echo "$parsed_url" | grep -q "127.0.0.1:8765"; then
@@ -239,8 +270,11 @@ print('')
   local has_auth
   has_auth=$(echo "$mcp_fragment" | python3 -c "
 import json, sys
-d = json.load(sys.stdin)
-headers = d.get('headers', {})
+val = json.load(sys.stdin)
+if not isinstance(val, dict):
+    print('no')
+    sys.exit(0)
+headers = val.get('headers', {})
 auth = headers.get('Authorization', '')
 print('yes' if auth.startswith('Bearer') else 'no')
 " 2>/dev/null)
@@ -686,18 +720,23 @@ test_t2e_dcg_still_fires_under_guard_hook() {
     -v "${workspace}:/workspace" \
     "${T2_AGENT_MAIL_IMAGE}" sleep infinity >/dev/null 2>&1 || true
 
-  # Write the DCG probe script into the container.
-  # Uses variable expansion to avoid spelling the destructive command in the
-  # test file itself (host-level DCG would intercept docker cp otherwise).
+  # Write the DCG probe script to a temp file then pipe it to the container via stdin.
+  # Pattern: write to host temp file → docker exec -i container bash < probe_file
+  # Avoids 'docker cp' permission issues (docker cp can produce unreadable files on macOS).
+  # Avoids heredoc-in-command-substitution ambiguity with bash's set -uo pipefail.
+  # Uses variable expansion via FORCEFLAG assembly to avoid spelling the destructive
+  # command in the test file itself (host-level DCG would intercept literal strings).
   local dcg_probe
-  dcg_probe=$(mktemp "${TMPDIR:-/tmp}/rc-am-dcg-probe-XXXXXX.sh")
-  cat > "$dcg_probe" <<'PROBE'
-#!/bin/sh
-# DCG probe: run inside the agent-mail cage container.
-# Uses 'dcg test' subcommand (exits 1 on BLOCKED, 0 on ALLOWED).
+  dcg_probe=$(mktemp "${TMPDIR:-/tmp}/rc-am-t2e-probe-XXXXXX.sh")
+  python3 - "$dcg_probe" <<'PYEOF'
+import sys
+probe_path = sys.argv[1]
+probe_content = r"""#!/bin/sh
+# DCG probe: run inside the agent-mail cage container via stdin (no temp file created in container).
+# Uses 'dcg test' subcommand: exits non-zero on BLOCKED, 0 on ALLOWED.
 FAILURES=0
 
-# Build the destructive command string via variable to avoid literal match in script.
+# Assemble the destructive command via variable to avoid literal match in test file.
 FORCEFLAG="--fo"
 FORCEFLAG="${FORCEFLAG}rce"
 DESTRUCTIVE_CMD="git push ${FORCEFLAG} origin main"
@@ -705,18 +744,18 @@ DESTRUCTIVE_CMD="git push ${FORCEFLAG} origin main"
 # PART 1: DCG POSITIVELY FIRES on a known-destructive command.
 DCG_CONFIG=/usr/local/lib/rip-cage/dcg/config.toml
 export DCG_CONFIG
-dcg_test_out=$(/usr/local/bin/dcg test "$DESTRUCTIVE_CMD" 2>&1)
-dcg_test_rc=$?
+dcg_test_rc=0
+dcg_test_out=$(/usr/local/bin/dcg test "$DESTRUCTIVE_CMD" 2>&1) || dcg_test_rc=$?
 if [ "$dcg_test_rc" -ne 0 ]; then
   echo "PASS(T2e-1): DCG fired (DENIED) on destructive command (exit=${dcg_test_rc})"
 else
-  echo "FAIL(T2e-1): DCG did NOT fire on destructive command '${DESTRUCTIVE_CMD}' (exit=${dcg_test_rc}, out=${dcg_test_out})"
+  echo "FAIL(T2e-1): DCG did NOT fire on destructive command (exit=${dcg_test_rc}, out=${dcg_test_out})"
   FAILURES=$((FAILURES + 1))
 fi
 
 # PART 2: DCG ALLOWS a normal command (no false-positive blocks on safe ops).
-dcg_safe_out=$(/usr/local/bin/dcg test "git status" 2>&1)
-dcg_safe_rc=$?
+dcg_safe_rc=0
+dcg_safe_out=$(/usr/local/bin/dcg test "git status" 2>&1) || dcg_safe_rc=$?
 if [ "$dcg_safe_rc" -eq 0 ]; then
   echo "PASS(T2e-2): DCG allowed normal command git status (exit=${dcg_safe_rc})"
 else
@@ -725,12 +764,7 @@ else
 fi
 
 # PART 3: guard hook install + DCG still fires (NON-BREAKING characterization).
-# Check if mcp-agent-mail binary is available (required for am guard install).
-if ! command -v mcp-agent-mail >/dev/null 2>&1; then
-  echo "FAIL(T2e-3): mcp-agent-mail binary not found in PATH — cannot install guard hook"
-  FAILURES=$((FAILURES + 1))
-else
-  # Create a test git repo for guard hook installation.
+if command -v mcp-agent-mail >/dev/null 2>&1 && command -v am >/dev/null 2>&1; then
   TESTREPO=$(mktemp -d /tmp/rc-am-t2e-repo-XXXXXX)
   git -C "$TESTREPO" init -q
   git -C "$TESTREPO" config user.email "test@rip-cage.local"
@@ -739,9 +773,8 @@ else
   git -C "$TESTREPO" add file.txt
   git -C "$TESTREPO" commit -q -m "initial"
 
-  # Install the guard hook
-  install_out=$(cd "$TESTREPO" && STORAGE_ROOT=/var/lib/rip-cage-daemon/agent-mail am guard install 2>&1)
-  install_rc=$?
+  install_rc=0
+  install_out=$(cd "$TESTREPO" && STORAGE_ROOT=/var/lib/rip-cage-daemon/agent-mail am guard install 2>&1) || install_rc=$?
 
   if [ "$install_rc" -ne 0 ]; then
     echo "FAIL(T2e-3): am guard install failed (exit=${install_rc}, out=${install_out})"
@@ -749,41 +782,43 @@ else
   else
     echo "PASS(T2e-3a): guard hook installed in test repo (am guard install exit=0)"
 
-    # With guard hook installed, DCG must STILL fire on destructive command.
-    dcg_after_guard_out=$(/usr/local/bin/dcg test "$DESTRUCTIVE_CMD" 2>&1)
-    dcg_after_guard_rc=$?
-    if [ "$dcg_after_guard_rc" -ne 0 ]; then
+    dcg_after_rc=0
+    dcg_after_out=$(/usr/local/bin/dcg test "$DESTRUCTIVE_CMD" 2>&1) || dcg_after_rc=$?
+    if [ "$dcg_after_rc" -ne 0 ]; then
       echo "PASS(T2e-3b): DCG still fires (DENIED) after guard hook installed — NON-BREAKING confirmed"
     else
       echo "FAIL(T2e-3b): DCG did NOT fire after guard hook installed — guard hook is BREAKING DCG"
       FAILURES=$((FAILURES + 1))
     fi
 
-    # Normal commit must succeed with guard hook installed (guard + DCG compatible).
     echo "change" >> "$TESTREPO/file.txt"
     git -C "$TESTREPO" add file.txt
-    commit_out=$(git -C "$TESTREPO" commit -m "T2e normal commit" 2>&1)
-    commit_rc=$?
+    commit_rc=0
+    commit_out=$(git -C "$TESTREPO" commit -m "T2e normal commit" 2>&1) || commit_rc=$?
     if [ "$commit_rc" -eq 0 ]; then
       echo "PASS(T2e-3c): normal commit succeeded with guard hook installed (guard + DCG compatible)"
     else
       echo "FAIL(T2e-3c): normal commit FAILED with guard hook installed (exit=${commit_rc}, out=${commit_out})"
       FAILURES=$((FAILURES + 1))
     fi
-
     rm -rf "$TESTREPO"
   fi
+else
+  echo "FAIL(T2e-3): mcp-agent-mail or am binary not found in PATH — cannot install guard hook"
+  FAILURES=$((FAILURES + 1))
 fi
 
 exit $FAILURES
-PROBE
-
-  docker cp "$dcg_probe" "${container_name}:/tmp/t2e-dcg-probe.sh" 2>/dev/null
-  rm -f "$dcg_probe"
+"""
+with open(probe_path, 'w') as f:
+    f.write(probe_content)
+PYEOF
+  chmod 644 "$dcg_probe"
 
   local probe_out probe_rc
   probe_rc=0
-  probe_out=$(docker exec "$container_name" sh /tmp/t2e-dcg-probe.sh 2>&1) || probe_rc=$?
+  probe_out=$(docker exec -i "$container_name" bash < "$dcg_probe" 2>&1) || probe_rc=$?
+  rm -f "$dcg_probe"
 
   # Report each sub-result from the probe (PASS/FAIL lines with (T2e-N) IDs)
   while IFS= read -r line; do
