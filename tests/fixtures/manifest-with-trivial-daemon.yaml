@@ -3,6 +3,10 @@ tools:
   - name: trivial-test-daemon
     archetype: IN-CAGE-DAEMON
     version_pin: "0.1.0"
-    start: "python3 -m http.server 17843 --directory /var/lib/rip-cage-daemon/trivial-test-daemon"
+    # --bind 127.0.0.1: matches agent_mail archetype (loopback-only).
+    # This is the discriminating property for ADR-005 D8 no-cross-cage:
+    # loopback is per-network-namespace, so a loopback-bound daemon in cage A
+    # is structurally unreachable from cage B (even via cage A's bridge IP).
+    start: "python3 -m http.server 17843 --bind 127.0.0.1 --directory /var/lib/rip-cage-daemon/trivial-test-daemon"
     health: "curl -sf http://127.0.0.1:17843/"
     state_dir: "/var/lib/rip-cage-daemon/trivial-test-daemon"
