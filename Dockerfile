@@ -14,7 +14,7 @@ ARG DCG_VERSION=0.4.0
 RUN cargo install --git https://github.com/Dicklesworthstone/destructive_command_guard --tag v${DCG_VERSION} destructive_command_guard
 
 # Stage 3: Runtime
-FROM debian:bookworm
+FROM debian:trixie
 
 ARG CLAUDE_CODE_VERSION=latest
 ARG PI_VERSION=latest
@@ -80,6 +80,15 @@ ARG DOLT_VERSION=1.84.0
 RUN curl -fsSL https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/install.sh | bash
 
 # bd (beads issue tracker)
+# bd-real is compiled in the golang:bookworm builder and links against libicu72.
+# trixie ships libicu76 (different SONAME). Create compat symlinks so bd-real
+# loads correctly on trixie at runtime. ICU API is stable across minor versions;
+# this is the standard approach for forward-compatibility shims.
+RUN ICU_DIR=$(dirname "$(find /usr/lib -name 'libicui18n.so.76' | head -1)") \
+    && ln -sf "${ICU_DIR}/libicui18n.so.76" "${ICU_DIR}/libicui18n.so.72" \
+    && ln -sf "${ICU_DIR}/libicuuc.so.76" "${ICU_DIR}/libicuuc.so.72" \
+    && ln -sf "${ICU_DIR}/libicudata.so.76" "${ICU_DIR}/libicudata.so.72" \
+    && ldconfig
 COPY --from=go-builder /go/bin/bd /usr/local/bin/bd-real
 COPY bd-wrapper.sh /usr/local/bin/bd
 RUN chmod +x /usr/local/bin/bd /usr/local/bin/bd-real
