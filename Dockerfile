@@ -1,5 +1,5 @@
 # Stage 1: Go builder for beads (bd)
-FROM golang:1.25-bookworm AS go-builder
+FROM golang:1.25-trixie AS go-builder
 ARG BEADS_VERSION=v1.0.2
 RUN apt-get update && apt-get install -y libicu-dev libzstd-dev pkg-config git && rm -rf /var/lib/apt/lists/*
 # Clone + build (not `go install @latest`): upstream's go.mod carries a `replace`
@@ -9,8 +9,9 @@ RUN git clone --depth=1 --branch ${BEADS_VERSION} https://github.com/steveyegge/
  && go build -o /go/bin/bd ./cmd/bd
 
 # Stage 2: Rust builder for DCG
-FROM rust:bookworm AS rust-builder
+FROM rust:1-slim-trixie AS rust-builder
 ARG DCG_VERSION=0.4.0
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 RUN cargo install --git https://github.com/Dicklesworthstone/destructive_command_guard --tag v${DCG_VERSION} destructive_command_guard
 
 # Stage 3: Runtime
@@ -34,7 +35,9 @@ RUN apt-get update && apt-get install -y \
     iptables openssl procps xxd \
     dnsutils \
     ssh-agent-filter \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --set iptables /usr/sbin/iptables-legacy \
+    && update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
 
 # uv (Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
@@ -80,15 +83,8 @@ ARG DOLT_VERSION=1.84.0
 RUN curl -fsSL https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/install.sh | bash
 
 # bd (beads issue tracker)
-# bd-real is compiled in the golang:bookworm builder and links against libicu72.
-# trixie ships libicu76 (different SONAME). Create compat symlinks so bd-real
-# loads correctly on trixie at runtime. ICU API is stable across minor versions;
-# this is the standard approach for forward-compatibility shims.
-RUN ICU_DIR=$(dirname "$(find /usr/lib -name 'libicui18n.so.76' | head -1)") \
-    && ln -sf "${ICU_DIR}/libicui18n.so.76" "${ICU_DIR}/libicui18n.so.72" \
-    && ln -sf "${ICU_DIR}/libicuuc.so.76" "${ICU_DIR}/libicuuc.so.72" \
-    && ln -sf "${ICU_DIR}/libicudata.so.76" "${ICU_DIR}/libicudata.so.72" \
-    && ldconfig
+# bd-real is compiled in the golang:1.25-trixie builder, which links against
+# the same ICU76 that trixie's runtime ships — no soname shim needed.
 COPY --from=go-builder /go/bin/bd /usr/local/bin/bd-real
 COPY bd-wrapper.sh /usr/local/bin/bd
 RUN chmod +x /usr/local/bin/bd /usr/local/bin/bd-real
