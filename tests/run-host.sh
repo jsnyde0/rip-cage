@@ -88,15 +88,38 @@ run_pytest() {
 # need to set RC_CONFIG_GLOBAL individually. Tests that verify the
 # missing-config preflight (e.g. test-secret-path-denylist.sh case j) override
 # this with their own local export.
+#
+# rip-cage-4c5.8: driver-level manifest fixture (analogous to the config fixture
+# above). Seeds a benign empty tools.yaml so any rc invocation that derives its
+# manifest path from XDG_CONFIG_HOME (the default path) reads a known-safe default
+# (empty file = bundled-only default stack, D8 contract) rather than the developer's
+# real ~/.config/rip-cage/tools.yaml. Both fixtures share a single driver temp dir
+# and a unified EXIT trap.
+#
+# ISOLATION: RC_MANIFEST_GLOBAL is NOT exported at the driver level because it has
+# higher priority than XDG_CONFIG_HOME in _manifest_global_path(), and exporting
+# it would override the per-test sandbox HOME/XDG_CONFIG_HOME used by test-manifest-
+# schema.sh, test-manifest-tool.sh, etc. Those tests correctly isolate their
+# fixture loading via explicit HOME+XDG_CONFIG_HOME in subprocess calls. The
+# driver fixture works through XDG_CONFIG_HOME (exported below) which those tests
+# then override per-call. New tests that invoke rc without a sandboxed HOME/XDG
+# inherit the driver XDG_CONFIG_HOME and thus the empty tools.yaml.
 _RUN_HOST_CFG_DIR=$(mktemp -d)
-cat > "${_RUN_HOST_CFG_DIR}/config.yaml" <<'YAML'
+mkdir -p "${_RUN_HOST_CFG_DIR}/rip-cage"
+cat > "${_RUN_HOST_CFG_DIR}/rip-cage/config.yaml" <<'YAML'
 version: 1
 mounts:
   denylist: []
   allow_risky: null
 YAML
+# Empty tools.yaml: seeded once at driver level; zero-byte = default bundled stack.
+touch "${_RUN_HOST_CFG_DIR}/rip-cage/tools.yaml"
 trap 'rm -rf "${_RUN_HOST_CFG_DIR}"' EXIT
-export RC_CONFIG_GLOBAL="${RC_CONFIG_GLOBAL:-${_RUN_HOST_CFG_DIR}/config.yaml}"
+export RC_CONFIG_GLOBAL="${RC_CONFIG_GLOBAL:-${_RUN_HOST_CFG_DIR}/rip-cage/config.yaml}"
+# XDG_CONFIG_HOME: default to driver temp dir so rc invocations without an explicit
+# HOME/XDG sandbox read from the driver fixture. Tests that set HOME+XDG_CONFIG_HOME
+# explicitly in their subprocess calls (all test-manifest-*.sh) override this.
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${_RUN_HOST_CFG_DIR}}"
 
 # Uncomment each line below after the audit step confirms pass or skip-guard:
 run_test "${SCRIPT_DIR}/test-rc-commands.sh"
@@ -133,7 +156,12 @@ run_test "${SCRIPT_DIR}/test-pi-cold-start-seed.sh"   # rip-cage-wo9: rc up seed
 run_test "${SCRIPT_DIR}/test-manifest-schema.sh"       # rip-cage-4c5.1: tool manifest schema/loader (host-only)
 # NOTE: T1 cases are host-only; T2 (NEEDS_CONTAINER) self-skips via RC_E2E gate.
 # The e2e-tier wiring + driver-level fixture for T2 is rip-cage-4c5.8's job.
-run_test "${SCRIPT_DIR}/test-manifest-tool.sh"         # rip-cage-4c5.2: TOOL install-step generation (host-only T1)
+run_test "${SCRIPT_DIR}/test-manifest-tool.sh"         # rip-cage-4c5.2: TOOL install-step generation (host-only T1); e2e self-skips via RC_E2E gate
+run_test "${SCRIPT_DIR}/test-manifest-egress.sh"       # rip-cage-4c5.3: egress+mounts floor (host-only E1/E1b/E2/E3); e2e self-skips via RC_E2E gate
+run_test "${SCRIPT_DIR}/test-manifest-shell.sh"        # rip-cage-4c5.4: SHELL-INTEGRATION shell_init baking (host-only T1); e2e self-skips via RC_E2E gate
+run_test "${SCRIPT_DIR}/test-manifest-daemon.sh"       # rip-cage-4c5.5: IN-CAGE-DAEMON lifecycle (host-only T1); e2e self-skips via RC_E2E gate
+run_test "${SCRIPT_DIR}/test-manifest-agent-mail.sh"   # rip-cage-4c5.6: agent_mail daemon fixture (host-only T1); e2e self-skips via RC_E2E gate; T2d auth-gated
+run_test "${SCRIPT_DIR}/test-manifest-cross.sh"        # rip-cage-4c5.8: cross-cutting integration regressions (H1/H2 always; C1/C2/C3 self-skip via RC_E2E gate)
 
 echo "=== run-host.sh complete ==="
 
