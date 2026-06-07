@@ -27,7 +27,7 @@ When a decision evolves, edit the ADR in place and update this row. Drift betwee
 | ADR | Title | Scope | Status | Summary |
 |---|---|---|---|---|
 | [001](ADR-001-fail-loud-pattern.md) | Fail-Loud Error Handling | safety | Accepted | Silent fallbacks in the safety harness downgrade guarantees; fail loud with actionable remedies |
-| [002](ADR-002-rip-cage-containers.md) | Rip Cage Containers | containers | Accepted | Docker sandbox for Claude Code agents — OrbStack, persistent containers, bypassPermissions |
+| [002](ADR-002-rip-cage-containers.md) | Rip Cage Containers | containers | Accepted (D2a provisional) | Docker sandbox for Claude Code agents — OrbStack, persistent containers, bypassPermissions; D2a base = debian:trixie (glibc 2.41, legacy-iptables pin), provisional spike |
 | [003](ADR-003-agent-friendly-cli.md) | Agent-Friendly CLI Interface | cli-ux | Accepted | Structured JSON output, dry-run, allowed-roots validation, agent context in CLAUDE.md |
 | [004](ADR-004-phase1-hardening.md) | Phase 1 Hardening | safety | Accepted | Conditional Dolt server, resource limits, credential health check, expanded test suite |
 | [005](ADR-005-ecosystem-tools.md) | Ecosystem Tools Integration | toolchain | Proposed (revised 2026-06-05) | Build-arg toggles + pinned versions; D7–D10 add composable host-only tool manifest (3 archetypes, in-cage-only, floor-untouchable, fail-warn daemons) |
@@ -37,7 +37,7 @@ When a decision evolves, edit the ADR in place and update this row. Drift betwee
 | [009](ADR-009-ux-overhaul.md) | UX Overhaul | cli-ux | Proposed | Harm-reduction positioning, auto-build on first up, focused README |
 | [010](ADR-010-auth-refresh.md) | Credential Hot-Swap (`rc auth refresh`) | auth | Proposed | Re-extract OAuth from Keychain; in-place credential write preserves inode |
 | [011](ADR-011-shell-completions.md) | Shell Completions for `rc` | cli-ux | Proposed | `rc completions` + `rc setup`; default-deny consent for shell integration |
-| [012](ADR-012-egress-firewall.md) | Network Egress Firewall | egress/network | Accepted (evolved) | L7 TLS-MITM proxy + default-deny whitelist; observe-mode-first; DNS exfil heuristic |
+| [012](ADR-012-egress-firewall.md) | Network Egress Firewall | egress/network | Accepted (evolved) | L7 TLS-MITM proxy + default-deny whitelist; observe-mode-first; DNS exfil heuristic; D10 legacy-iptables backend is safety-critical on trixie |
 | [013](ADR-013-test-coverage.md) | Test Coverage Tiers | testing | Accepted (revised 2026-05-29) | In-container / e2e / host-only tiers; CI = lint+build+host-only; D6 host-only determinism |
 | [014](ADR-014-push-less-cage.md) | The Cage Is Push-Less | ssh | Partially superseded | D1/D3 reversed by ADR-017; D2 non-interactive SSH posture + D4 LFS detection remain |
 | [015](ADR-015-mise-toolchain-provisioning.md) | Project Toolchain Provisioning | toolchain | Accepted | Mise as invisible plumbing; shared cache volume; auto-install at init |

@@ -171,6 +171,8 @@ Tools are **installed at build time** (consistent with D1 — no runtime downloa
 
 **What would invalidate this:** a common, legitimate tool fitting none of the three archetypes (and not a deferred cloud-CLI case); a validated need to add tools to an already-running cage without rebuild (which would reopen D1); or a validated need for tool *definitions* to be per-project and travel with the repo (which would reopen the storage-location choice and require the diff-review tooling the host-only decision moots).
 
+**Clarification — agent_mail ships as DOCS + TEST FIXTURE only, NOT in the seeded default manifest (FLEXIBLE; user-decided 2026-06-06).** The in-cage-daemon worked example (agent_mail) is *not* seeded into the default manifest. Seeding a third-party daemon by default would (a) break the D8 byte-for-byte default-image invariant (it would add a daemon to every default build), and (b) put a third-party github reference + pinned commit into the shipped default config — threat-model-cleaner to keep out (ADR-024). So the worked example ships as reference documentation (`docs/reference/agent-mail-daemon.md`) and test fixtures (`tests/fixtures/manifest-agent-mail.yaml`), exercised by the harness, never as a seeded default. The default manifest's defaults remain the existing bundled stack (D2: UBS + core).
+
 ### D8: The manifest composes within ONE cage and never reaches across cages
 
 **Firmness: FIRM** (added 2026-06-05)
@@ -190,6 +192,8 @@ Everything a manifest tool does happens inside one cage's isolation boundary: no
 
 **What would invalidate this:** a validated need for cross-cage agent coordination — at which point it is designed deliberately as its own ADR, not absorbed into the manifest.
 
+**Clarification — what "byte-for-byte" scopes (FLEXIBLE).** The D8 byte-for-byte default-image invariant means "manifest-unchanged → no Dockerfile delta → no image change *from the manifest*." It is a statement about the *manifest's contribution* to the image, not absolute image immutability across intentional base changes. A deliberate base-image bump (ADR-002 D2a, debian:trixie) changes the image independently of the manifest; that does not violate D8, because the manifest contributed nothing to the change. The invariant the manifest owes is: an unchanged manifest must not, by itself, alter the built image.
+
 ### D9: The manifest affects tool *availability* only — never the welded safety floor
 
 **Firmness: FIRM** (added 2026-06-05)
@@ -208,6 +212,8 @@ The manifest can install tools, declare their egress (which unions into the allo
 | Make DCG a swappable "enforcement slot" with a startup conformance probe | `reasoned:` premature generalization — one immature guard, one implementation; welding-by-identity (current init fail-loud) suffices until a second implementation exists. |
 
 **What would invalidate this:** a second mature command-guard implementation appearing (would justify a conformance-slot model for the enforcement layer only — still not arbitrary manifest hook registration).
+
+**Clarification — agent-invoked runtime hooks are OUT of D9's scope (FLEXIBLE).** D9 constrains the **manifest infrastructure**: the manifest cannot register or alter lifecycle interceptors. It does **not** forbid a tool — once made available — from installing its *own* hooks at runtime via its own mechanism. The two are different actors: D9 governs what the *composition surface* may register; it says nothing about what an available tool, *invoked by the agent*, then does. Worked example: agent_mail's `am guard install` MCP tool installs a git pre-commit hook into the workspace `.git/hooks/`. That is an agent-invoked workspace hook, bounded by the cage's other layers — not a D9 contradiction. It was verified non-breaking against DCG (pinned source @ 8897497 + the T2e runtime probe in `tests/test-manifest-agent-mail.sh`): the guard hook writes only to the target repo's `.git/hooks/`, reads only env + JSON, and performs no DCG-config write, no PATH-shadow, and no workspace `.dcg.toml` write — DCG fires before AND after the guard install. See `docs/reference/agent-mail-daemon.md`. A reader should not misread agent_mail's guard hook as weakening the D9 invariant.
 
 ### D10: Safety interceptors fail-closed; user daemons fail-warn
 

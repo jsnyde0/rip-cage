@@ -252,6 +252,25 @@ The contract is a custom heuristic (subdomain-length, per-apex cardinality) that
 
 **Test assertion:** `dig <long-encoded-label>.attacker.com` from inside a block-mode cage is refused at the resolver; the same query against a whitelisted apex resolves; in observe mode the query resolves but a "would-have-blocked" record lands in the JSONL egress log.
 
+### D10: The egress firewall depends on the legacy iptables backend
+
+**Firmness: FLEXIBLE**
+
+**Added 2026-06-07 (rip-cage-4c5.10).** This is an implementation-dependency of the FIRM egress decisions above (D2, D6, D8): the iptables REDIRECT/DROP rules that implement them **require the legacy iptables backend**. Debian trixie and later default to the nft backend (`iptables-nft`), which would **silently no-op** the legacy-style rules applied by `init-firewall.sh` — leaving egress wide open. That is a **fail-OPEN safety regression**: the structural rule-installation appears to succeed while the rules never actually filter.
+
+**Current decision:** the Dockerfile pins `update-alternatives --set iptables /usr/sbin/iptables-legacy` (and the ip6tables equivalent). **This line is safety-critical** — it is the dependency that makes every D2/D6/D8 rule actually apply on the trixie base (ADR-002 D2a).
+
+**Rationale:** Discovered during the trixie base bump (`rip-cage-4c5.10`): without the pin, `tests/test-egress-firewall.sh` passes its structural checks while the rules silently do not apply — the worst kind of failure for a safety layer, because the test green-lights a disarmed firewall. With the pin, the egress test is 18/18 on trixie (REDIRECT present, UDP-DROP present, denylist blocks, agent cannot flush).
+
+**Alternatives considered:**
+
+| Approach | Rejection |
+|---|---|
+| Migrate `init-firewall.sh` to nftables now | `reasoned:` larger change, out of scope for the base-bump spike; the legacy pin is the minimal safe fix that restores the FIRM behavior on trixie. |
+| Leave the nft default in place | `direct:` the egress test would silently no-op — fail-open; rejected. |
+
+**What would invalidate this:** the egress firewall is reimplemented natively on nftables (then the legacy pin can be dropped); OR a future base removes iptables-legacy availability, forcing the nft migration.
+
 ## Related
 
 - [Design doc: 2026-04-20 egress firewall](../2026-04-20-egress-firewall-design.md) — full architecture and implementation notes
@@ -262,4 +281,5 @@ The contract is a custom heuristic (subdomain-length, per-apex cardinality) that
 - [MITRE T1567.004](https://attack.mitre.org/techniques/T1567/004/) — Exfiltration over Webhook
 - [ADR-024: Prompt-injection threat model](ADR-024-prompt-injection-threat-model.md) D1 (threat class), D4 (DNS as first-class egress surface — D9 is its mechanism home)
 - [ADR-001: Fail-loud pattern](ADR-001-fail-loud-pattern.md) — fail-closed resolver posture (D9)
+- [ADR-002: Rip Cage Containers](ADR-002-rip-cage-containers.md) D2a — the debian:trixie base whose nft default makes the legacy-iptables pin safety-critical (D10)
 - [MITRE T1071.004](https://attack.mitre.org/techniques/T1071/004/) — DNS as C2/exfil channel (D9 grounding)
