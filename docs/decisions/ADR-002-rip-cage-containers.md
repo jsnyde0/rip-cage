@@ -52,13 +52,15 @@ A single "rip-cage" Docker image with Python/uv, Bun/Node, git, tmux, Claude Cod
 
 **What would invalidate this:** Projects require wildly different system deps (e.g., CUDA, system libraries). Image size becomes a problem on VPS with limited disk.
 
-#### D2a: Base-image selection — debian:trixie (revised 2026-06-07)
+#### D2a: Base-image selection — debian:trixie (revised 2026-06-08)
 
-**Firmness: EXPLORATORY / PROVISIONAL**
+**Firmness: FLEXIBLE** (was EXPLORATORY / PROVISIONAL until the 2026-06-08 forward evaluation below)
 
 The runtime base is **debian:trixie** (glibc 2.41); the builder stages are **golang:1.25-trixie** and **rust:1-slim-trixie**, so bd-real and DCG compile against trixie's libicu76 — no ICU soname shim is needed. The iptables backend is pinned to LEGACY via `update-alternatives --set iptables /usr/sbin/iptables-legacy` (Dockerfile ~line 40; this pin is safety-critical — see ADR-012 D10).
 
-This was a user-authorized spike (bead `rip-cage-4c5.10`) — "may revert or pick an alternative." It is **provisional**: kept only as long as no smaller/cleaner glibc ≥ 2.38 base displaces it and no future base/package bump breaks a safety-stack component.
+**Origin (2026-06-07):** trixie entered as a user-authorized spike (bead `rip-cage-4c5.10`) forced by agent_mail's glibc floor — "may revert or pick an alternative."
+
+**Forward evaluation + confirmation (2026-06-08):** rather than treat trixie as an accidental landing spot, the base was deliberately re-evaluated against the field (debian:bookworm, ubuntu:24.04 LTS, ubuntu:26.04 LTS, Debian 14 forky, Wolfi) before committing. User (jsnyde0) confirmed **trixie as the forward base.** Decision basis: it is already migrated and the full safety stack is verified green on it (zero further cost); the marginal extra free-support runway of Ubuntu 24.04 (~1 yr) does not justify re-verifying the whole stack on a fresh base; and Ubuntu 26.04 — despite the newest glibc and longest support tail — defaults to Rust reimplementations of `sudo` (sudo-rs) and coreutils (uutils), a behavioral-compatibility risk for the sudo-dependent `init-rip-cage.sh` and exactly the silent-default-change class that caused the nft firewall regression. Firmness raised EXPLORATORY → FLEXIBLE on the strength of this deliberate field evaluation (not just the forced spike).
 
 **Rationale:** A manifest-declared in-cage daemon (agent_mail, `rip-cage-4c5.6`) ships only prebuilt binaries requiring glibc ≥ 2.38; bookworm has 2.36, trixie has 2.41. The composable tool manifest (ADR-005 D7) is only useful if such tools can actually run inside the cage — a base too old to load their binaries makes the whole archetype dead on arrival.
 
@@ -66,11 +68,15 @@ This was a user-authorized spike (bead `rip-cage-4c5.10`) — "may revert or pic
 
 | Approach | Rejection |
 |---|---|
-| Keep bookworm + per-tool glibc compat shims | `reasoned:` per-tool C++ ABI hazard — ICU 72→76 spans 4 major releases; a shim is fragile and does not generalize to the next tool. |
+| Keep bookworm + per-tool glibc compat shims | `reasoned:` per-tool C++ ABI hazard — ICU 72→76 spans 4 major releases; a shim is fragile and does not generalize to the next tool. Also disqualified outright: bookworm's glibc 2.36 < the 2.38 floor. |
 | Pin an older agent_mail release built against glibc 2.36 | `reasoned:` recent agent_mail releases target newer CI glibc; pinning backward abandons the pinned 8897497 commit the manifest fixture references. |
 | Build agent_mail from source in-cage | `direct:` non-viable — the workspace patches ~40 deps to unpublished sibling path-checkouts (`Cargo.toml:160-224`); a clean in-cage source build is not reproducible. |
+| ubuntu:24.04 LTS (glibc 2.39) | `reasoned:` (2026-06-08) viable and ~1 yr longer free support, keeps GNU userland — but switching costs a full safety-stack re-verification for marginal runway when trixie is already proven. Solves none of the forward iptables risk (shared Debian-family firewall model). The pick only if starting fresh. |
+| ubuntu:26.04 LTS (glibc 2.42) | `reasoned:` (2026-06-08) best raw runway (support ~2031, ESM ~2041) but defaults to sudo-rs + uutils rust-coreutils — a compatibility risk for the sudo-dependent init and the same silent-default-swap class as the nft regression. Would need classic sudo/coreutils explicitly installed before it is "least-surprise." |
+| Wolfi (Chainguard, glibc, rolling) | `reasoned:` (2026-06-08) sudo/tmux/zsh confirmed present, but no apt, no Debian update-alternatives legacy/nft machinery (firewall pin unproven), and a rolling model with no multi-year support guarantee — a from-scratch Dockerfile + firewall re-validation for a security sandbox. Not worth it now. |
+| Debian 14 "forky" | `direct:` not released — active testing branch, expected mid-2027, and testing gets no timely security updates. Revisit in 2027. |
 
-**What would invalidate this:** a trixie package or default breaks a safety-stack component on a future base/package bump that the legacy-iptables pin or the ICU alignment does not cover; OR a smaller/cleaner Debian (or slim) base that also provides glibc ≥ 2.38 is found. **Spike evaluation (2026-06-07):** on trixie, `rc test` is 76/76, the egress firewall is 18/18, and the daemon e2e is green — no safety-stack regression observed.
+**What would invalidate this:** a trixie package or default breaks a safety-stack component on a future base/package bump that the legacy-iptables pin or the ICU alignment does not cover; OR a smaller/cleaner Debian (or slim) base that also provides glibc ≥ 2.38 is found. **Forward risk (base-independent, tracked as `rip-cage-fft`):** on very new host kernels (6.18+) the legacy iptables `x_tables` interface may be absent, silently no-op'ing the legacy pin and re-opening the egress firewall fail-OPEN — this affects any Debian-family base and is the likely trigger for an eventual nft-backend firewall migration + effect-based startup self-test, independent of the base choice. **Spike evaluation (2026-06-07):** on trixie, `rc test` is 76/76, the egress firewall is 18/18, and the daemon e2e is green — no safety-stack regression observed.
 
 ### D3: Persistent containers with manual lifecycle
 
