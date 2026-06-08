@@ -39,6 +39,7 @@ NEEDS_CONTAINER=(
   "test-pi-auth-mount.sh"    # calls rc up to create a live container; inspects container env + mounts
   "test-pi-cage-context.sh"  # calls rc up to create a live container; inspects CLAUDE.md inside cage
   "test-claude-concurrency.sh" # requires a live rip-cage container with Claude auth (ANTHROPIC_API_KEY or OAuth)
+  "test-multi-agent-levers.sh" # requires a live rip-cage container; exercises rc agent lever + two-pi concurrency
 )
 
 # Helper: check if a given test basename is in NEEDS_CONTAINER.
@@ -164,6 +165,7 @@ run_test "${SCRIPT_DIR}/test-manifest-daemon.sh"       # rip-cage-4c5.5: IN-CAGE
 run_test "${SCRIPT_DIR}/test-manifest-agent-mail.sh"   # rip-cage-4c5.6: agent_mail daemon fixture (host-only T1); e2e self-skips via RC_E2E gate; T2d auth-gated
 run_test "${SCRIPT_DIR}/test-manifest-cross.sh"        # rip-cage-4c5.8: cross-cutting integration regressions (H1/H2 always; C1/C2/C3 self-skip via RC_E2E gate)
 run_test "${SCRIPT_DIR}/test-claude-concurrency.sh"    # rip-cage-p1p: per-session Claude config isolation (NEEDS_CONTAINER; self-skips if no running cage)
+run_test "${SCRIPT_DIR}/test-multi-agent-levers.sh"    # rip-cage-tlm: Tier 1a rc agent lever + two-pi concurrency (NEEDS_CONTAINER; self-skips if no running cage)
 
 echo "=== run-host.sh complete ==="
 
