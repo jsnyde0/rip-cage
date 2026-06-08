@@ -32,6 +32,10 @@ if [[ -n "${RC_P1P_JSON_BASE:-}" ]]; then
 elif [[ -f "${CLAUDE_BASE}/.claude.json.seed" ]]; then
   CLAUDE_JSON_BASE="${CLAUDE_BASE}/.claude.json.seed"
 else
+  # No snapshot present (init never took one, or it was removed). Falling back to the
+  # live virtiofs mount, whose handle may be broken if the host rewrote ~/.claude.json —
+  # this is the exact R4 failure mode, so make the fallback observable rather than silent.
+  echo "[claude-wrapper] WARNING: no ~/.claude/.claude.json.seed snapshot found; seeding from the live ~/.claude.json mount (may be ENOENT/empty if the host rewrote it — R4, rip-cage-p1p)" >&2
   CLAUDE_JSON_BASE="${HOME}/.claude.json"
 fi
 
