@@ -22,8 +22,18 @@ set -euo pipefail
 REAL_CLAUDE=/usr/bin/claude
 SESSIONS_BASE="${HOME}/.claude-sessions"
 CLAUDE_BASE="${HOME}/.claude"
-# RC_P1P_JSON_BASE overrides the seeding source — test-hook only, not for production use.
-CLAUDE_JSON_BASE="${RC_P1P_JSON_BASE:-${HOME}/.claude.json}"
+# Seed source resolution (R4 — rip-cage-p1p):
+#   1. RC_P1P_JSON_BASE       — test-hook override (test fixtures only)
+#   2. ~/.claude/.claude.json.seed — stable container-local snapshot (taken at init time,
+#                               decoupled from the virtiofs mount that breaks on host writes)
+#   3. ~/.claude.json          — live mount fallback (mount may be broken if host rewrote it)
+if [[ -n "${RC_P1P_JSON_BASE:-}" ]]; then
+  CLAUDE_JSON_BASE="$RC_P1P_JSON_BASE"
+elif [[ -f "${CLAUDE_BASE}/.claude.json.seed" ]]; then
+  CLAUDE_JSON_BASE="${CLAUDE_BASE}/.claude.json.seed"
+else
+  CLAUDE_JSON_BASE="${HOME}/.claude.json"
+fi
 
 # ---------------------------------------------------------------------------
 # Resolve the config dir handle
@@ -52,6 +62,9 @@ if [[ ! -f "${SESSION_DIR}/.claude.json" ]]; then
   # Class 1 — symlink shared read-mostly inputs from ~/.claude
   # Each symlink is created with -sfn so re-runs are idempotent.
   # Only create if the source exists (skip gracefully if not present yet).
+  # NOTE: mcp-needs-auth-cache.json is intentionally EXCLUDED — Claude writes it
+  # per-config-dir, so it is a single-writer surface, not a shared input (R2, rip-cage-p1p).
+  # Each session gets its own (Claude creates it on demand).
   for _asset in \
     .credentials.json \
     settings.json \
@@ -59,8 +72,7 @@ if [[ ! -f "${SESSION_DIR}/.claude.json" ]]; then
     skills \
     commands \
     agents \
-    cache \
-    mcp-needs-auth-cache.json
+    cache
   do
     if [[ -e "${CLAUDE_BASE}/${_asset}" || -L "${CLAUDE_BASE}/${_asset}" ]]; then
       ln -sfn "${CLAUDE_BASE}/${_asset}" "${SESSION_DIR}/${_asset}"

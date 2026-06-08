@@ -4,7 +4,9 @@
 # Verifies per-session Claude config isolation (rip-cage-p1p):
 #   1. Concurrent-race proof   — two claude -p runs with distinct CLAUDE_CONFIG_DIR
 #   2. Isolation proof         — distinct .claude.json files; shared .credentials.json symlink
-#   3. MCP-carryover proof     — seed-by-copy preserves base .claude.json content
+#   3a. MCP-carryover proof    — real set-equality: seeded session MCP set == base snapshot set (non-empty)
+#   3b. MCP-sentinel supplement — deterministic: an injected sentinel survives seed-by-copy
+#   3c. R4 regression guard    — snapshot-seeded despite broken live ~/.claude.json mount
 #   4. No-leftover guard       — no session-written files leaked into shared ~/.claude root
 #   5. Single-agent no-regression — one-agent claude -p succeeds; auth-bootstrap intact
 #   6. Git-author proof        — detached tmux session sets GIT_AUTHOR_NAME=<handle>
@@ -92,6 +94,9 @@ cexec rm -rf /home/agent/.claude-sessions/conctest-a
 cexec rm -rf /home/agent/.claude-sessions/conctest-b
 cexec rm -rf /home/agent/.claude-sessions/conctest-shared
 cexec rm -rf /home/agent/.claude-sessions/conctest-singleagent
+cexec rm -rf /home/agent/.claude-sessions/conctest-mcp-setequal
+cexec rm -rf /home/agent/.claude-sessions/conctest-mcp-sentinel
+cexec rm -rf /home/agent/.claude-sessions/conctest-r4-guard
 
 # Snapshot the shared root BEFORE any claude runs (needed for step 4)
 BEFORE_FILES=$(_shared_root_files)
@@ -225,23 +230,82 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 3: MCP-carryover proof (Fix 2 — deterministic sentinel injection)
-# Design F3.1: seed-by-copy MUST carry mcpServers from the base; an empty seed
-# drops them (verified live 2026-06-08 — isolated 'claude mcp list' lost
-# mcp-agent-mail / context7 / asana / posthog).
+# Step 3a: MCP-carryover proof — real set-equality vs base snapshot (PRIMARY)
+# The snapshot ~/.claude/.claude.json.seed (taken at init time while the mount
+# was intact) carries mcpServers + oauthAccount. A session seeded from it must
+# carry the same content as the snapshot.
 #
-# We MANUFACTURE the precondition: create a CONTAINER-NATIVE fixture file (not
-# the bind-mounted host ~/.claude.json) with a sentinel mcpServers entry, then
-# invoke the wrapper with RC_P1P_JSON_BASE pointing at the fixture. Verify the
-# sentinel survives in the seeded session dir's .claude.json.
-#
-# RC_P1P_JSON_BASE is a test-hook env var that overrides CLAUDE_JSON_BASE in the
-# wrapper — production use never sets it. This avoids writing to the host-mounted
-# ~/.claude.json (bind mounts from the host; modifying it would affect the user's
-# live config).
+# The 4 claude.ai connectors in this env are account-managed and flow through
+# oauthAccount (not mcpServers, which may legitimately be empty). So:
+#   - mcpServers: set-equality between snapshot and session (may both be empty)
+#   - oauthAccount: must be present and non-null in BOTH snapshot and session
+#     (this is the non-vacuous carryover signal — if absent, seed failed to carry
+#     the connectors that power the actual claude.ai MCP servers)
+# Non-vacuous: if oauthAccount is absent in the snapshot → FAIL.
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== Step 3: MCP-carryover proof (sentinel injection via RC_P1P_JSON_BASE) ==="
+echo "=== Step 3a: MCP-carryover proof (set-equality vs base snapshot) ==="
+
+MCP_SEED_DIR=/home/agent/.claude-sessions/conctest-mcp-setequal
+
+# Positive sentinel: the snapshot must exist and be non-empty
+_seed_exists=$(cexec bash -c "[ -f /home/agent/.claude/.claude.json.seed ] && [ -s /home/agent/.claude/.claude.json.seed ] && echo yes || echo no")
+if [[ "$_seed_exists" != "yes" ]]; then
+  fail "Step 3a: ~/.claude/.claude.json.seed is absent or empty — R4 snapshot was not taken at init time (prerequisite for set-equality test)" ""
+else
+  # Non-vacuous check: oauthAccount must be present in the snapshot (it carries the connectors)
+  _base_oauth=$(cexec bash -c "jq -r 'if .oauthAccount then \"present\" else \"absent\" end' /home/agent/.claude/.claude.json.seed 2>/dev/null" || echo "jq-failed")
+  if [[ "$_base_oauth" != "present" ]]; then
+    fail "Step 3a: snapshot ~/.claude/.claude.json.seed has no oauthAccount — snapshot did not carry account-managed connectors" \
+      "oauthAccount: $(cexec bash -c "jq '.oauthAccount // \"null\"' /home/agent/.claude/.claude.json.seed 2>/dev/null" || echo 'jq-failed')"
+  else
+    # Read MCP server keys from the snapshot (may be empty in this env — that's OK)
+    _base_mcp_keys=$(cexec bash -c "jq -r '(.mcpServers // {}) | keys | sort | .[]' /home/agent/.claude/.claude.json.seed 2>/dev/null" || true)
+    echo "  Base snapshot: oauthAccount=present, mcpServers keys: [$(echo "$_base_mcp_keys" | tr '\n' ' ' | sed 's/ $//'  )]"
+
+    # Seed a fresh session using the wrapper WITHOUT RC_P1P_JSON_BASE override,
+    # so it uses the snapshot (R4 path — ~/.claude/.claude.json.seed).
+    cexec rm -rf "$MCP_SEED_DIR"
+    docker exec \
+      -e CLAUDE_CONFIG_DIR="$MCP_SEED_DIR" \
+      "$CONTAINER" \
+      /usr/local/bin/claude --version >/dev/null 2>&1 || true
+
+    # Assert oauthAccount is present in the seeded session
+    _session_oauth=$(cexec bash -c "jq -r 'if .oauthAccount then \"present\" else \"absent\" end' '${MCP_SEED_DIR}/.claude.json' 2>/dev/null" || echo "jq-failed")
+    # Assert mcpServers set-equality
+    _session_mcp_keys=$(cexec bash -c "jq -r '(.mcpServers // {}) | keys | sort | .[]' '${MCP_SEED_DIR}/.claude.json' 2>/dev/null" || true)
+
+    echo "  Session: oauthAccount=$_session_oauth, mcpServers keys: [$(echo "$_session_mcp_keys" | tr '\n' ' ' | sed 's/ $//')]"
+
+    _3a_ok=true
+    if [[ "$_session_oauth" != "present" ]]; then
+      fail "Step 3a: seeded session .claude.json has no oauthAccount — seed-by-copy dropped account connectors" \
+        "session file: ${MCP_SEED_DIR}/.claude.json"
+      _3a_ok=false
+    fi
+    if [[ "$_base_mcp_keys" != "$_session_mcp_keys" ]]; then
+      fail "Step 3a: seeded session mcpServers keys differ from base snapshot" \
+        "base: [$(echo "$_base_mcp_keys" | tr '\n' ',')] | session: [$(echo "$_session_mcp_keys" | tr '\n' ',')]"
+      _3a_ok=false
+    fi
+    if [[ "$_3a_ok" == "true" ]]; then
+      pass "Step 3a: seeded session carries oauthAccount (non-empty) and mcpServers == base snapshot"
+    fi
+  fi
+fi
+
+# Cleanup
+cexec rm -rf "$MCP_SEED_DIR"
+
+# ---------------------------------------------------------------------------
+# Step 3b: MCP-sentinel supplement (deterministic copy proof — kept from 169e102)
+# Injects a custom sentinel server into a fixture, seeds a session from it via
+# RC_P1P_JSON_BASE, and asserts the sentinel survives. Proves copy-preserves-an-
+# arbitrary-server regardless of ambient state; complements 3a's real-connector proof.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Step 3b: MCP-carryover supplement (sentinel injection via RC_P1P_JSON_BASE) ==="
 
 MCP_SENTINEL_KEY="p1p-sentinel-mcp"
 MCP_SENTINEL_DIR=/home/agent/.claude-sessions/conctest-mcp-sentinel
@@ -249,10 +313,7 @@ MCP_FIXTURE=/tmp/p1p-mcp-fixture.json
 
 # Create the fixture: start from a minimal valid .claude.json, inject the sentinel.
 # We use a container-native temp file (not the bind-mounted ~/.claude.json) to avoid
-# writing through to the host's live config. The fixture only needs to be a valid JSON
-# object with the sentinel mcpServers entry to test that copy-preserves-mcpServers.
-# If the session dirs from step 1 exist, we can use conctest-a's .claude.json as the
-# base for the fixture (it's a container-native copy already).
+# writing through to the host's live config.
 cexec bash -c "
   if [ -f /home/agent/.claude-sessions/conctest-a/.claude.json ]; then
     cp /home/agent/.claude-sessions/conctest-a/.claude.json $MCP_FIXTURE
@@ -267,7 +328,7 @@ cexec bash -c "
 # Positive confirmation: the sentinel must be in the fixture before we seed
 _sentinel_in_fixture=$(cexec bash -c "jq -r '.mcpServers | keys[] | select(. == \"$MCP_SENTINEL_KEY\")' $MCP_FIXTURE 2>/dev/null" || true)
 if [[ "$_sentinel_in_fixture" != "$MCP_SENTINEL_KEY" ]]; then
-  fail "MCP-carryover: sentinel injection into fixture failed" ""
+  fail "Step 3b: sentinel injection into fixture failed" ""
 else
   # Seed a fresh session dir with RC_P1P_JSON_BASE pointing at the fixture
   cexec rm -rf "$MCP_SENTINEL_DIR"
@@ -280,9 +341,9 @@ else
   # Assert the sentinel survived the copy into the session dir
   _sentinel_in_session=$(cexec bash -c "jq -r '.mcpServers | keys[] | select(. == \"$MCP_SENTINEL_KEY\")' '${MCP_SENTINEL_DIR}/.claude.json' 2>/dev/null" || true)
   if [[ "$_sentinel_in_session" == "$MCP_SENTINEL_KEY" ]]; then
-    pass "MCP-carryover: sentinel '$MCP_SENTINEL_KEY' survived seed-by-copy into session dir"
+    pass "Step 3b: sentinel '$MCP_SENTINEL_KEY' survived seed-by-copy into session dir"
   else
-    fail "MCP-carryover: sentinel '$MCP_SENTINEL_KEY' NOT in seeded session .claude.json — seed-by-copy broken" \
+    fail "Step 3b: sentinel '$MCP_SENTINEL_KEY' NOT in seeded session .claude.json — seed-by-copy broken" \
       "session mcpServers keys: $(cexec bash -c "jq -r '(.mcpServers // {}) | keys[]' '${MCP_SENTINEL_DIR}/.claude.json' 2>/dev/null" || echo 'jq-failed')"
   fi
 fi
@@ -290,6 +351,97 @@ fi
 # Cleanup
 cexec rm -rf "$MCP_SENTINEL_DIR"
 cexec rm -f "$MCP_FIXTURE"
+
+# ---------------------------------------------------------------------------
+# Step 3c: R4 regression guard — snapshot-seeded despite broken live mount
+# Proves the fix: when the live ~/.claude.json is unavailable (simulates the
+# broken virtiofs mount handle), the wrapper seeds from ~/.claude/.claude.json.seed
+# and NOT from the broken live path, producing a non-empty session .claude.json
+# that carries the same MCP server set as the snapshot.
+#
+# Simulation: override the wrapper's fallback with a non-existent path via
+# RC_P1P_JSON_BASE=/nonexistent/path — this bypasses both the snapshot and the
+# live mount in the precedence chain... WAIT — that hits RC_P1P_JSON_BASE first,
+# which in the wrapper is test-hook-highest-priority, not the snapshot path.
+#
+# Correct simulation: the wrapper now resolves: RC_P1P_JSON_BASE > snapshot > live.
+# To simulate "live mount broken, snapshot present": we set NO RC_P1P_JSON_BASE
+# override (so wrapper uses snapshot) and confirm the session is non-empty with
+# correct servers. The R4 fix is that the wrapper's DEFAULT production path now
+# uses the snapshot, not the live mount.
+#
+# To prove the snapshot is the source (not the live mount): temporarily override
+# the live mount path only by ensuring the snapshot differs from what the live
+# mount would give (inject a guard key into the snapshot, seed, assert guard key
+# present — if the live mount were used, the guard key would be absent).
+#
+# Gated on: snapshot present and non-empty (positive sentinel).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Step 3c: R4 regression guard (snapshot-seeded despite absent live mount) ==="
+
+R4_GUARD_DIR=/home/agent/.claude-sessions/conctest-r4-guard
+R4_GUARD_SNAPSHOT=/tmp/p1p-r4-snapshot-fixture.json
+R4_GUARD_KEY="p1p-r4-guard-key"
+
+# Gate: snapshot must exist and be non-empty
+_r4_seed_ok=$(cexec bash -c "[ -f /home/agent/.claude/.claude.json.seed ] && [ -s /home/agent/.claude/.claude.json.seed ] && echo yes || echo no")
+if [[ "$_r4_seed_ok" != "yes" ]]; then
+  fail "Step 3c: ~/.claude/.claude.json.seed absent/empty — R4 regression guard cannot run (snapshot prerequisite not met)" ""
+else
+  # Save a clean backup of the snapshot FIRST (before any modification).
+  # Then inject the guard key into the REAL snapshot.
+  # Seeding WITHOUT RC_P1P_JSON_BASE → wrapper uses the real snapshot path.
+  # Guard key present in session ⟹ snapshot was used (not the live mount).
+  # Restore the clean backup to the snapshot at the end.
+  R4_ORIGINAL_BACKUP=/tmp/p1p-r4-original-backup.json
+  cexec cp /home/agent/.claude/.claude.json.seed "$R4_ORIGINAL_BACKUP"
+  cexec bash -c "
+    jq '.mcpServers[\"$R4_GUARD_KEY\"] = {\"type\": \"stdio\", \"command\": \"echo\", \"args\": [\"r4-guard\"]}' \
+      $R4_ORIGINAL_BACKUP > ${R4_GUARD_SNAPSHOT}
+    cp ${R4_GUARD_SNAPSHOT} /home/agent/.claude/.claude.json.seed
+  "
+
+  # Positive sentinel: guard key must be in the modified snapshot
+  _guard_in_snapshot=$(cexec bash -c "jq -r '.mcpServers | keys[] | select(. == \"$R4_GUARD_KEY\")' /home/agent/.claude/.claude.json.seed 2>/dev/null" || true)
+  if [[ "$_guard_in_snapshot" != "$R4_GUARD_KEY" ]]; then
+    fail "Step 3c: guard key injection into snapshot failed — cannot run R4 guard" ""
+    # Restore original before continuing
+    cexec cp "$R4_ORIGINAL_BACKUP" /home/agent/.claude/.claude.json.seed
+  else
+    # Seed a fresh session with NO RC_P1P_JSON_BASE override.
+    # The wrapper resolves: snapshot (~/.claude/.claude.json.seed) takes precedence
+    # over the live mount. Guard key present ⟹ snapshot was used.
+    cexec rm -rf "$R4_GUARD_DIR"
+    docker exec \
+      -e CLAUDE_CONFIG_DIR="$R4_GUARD_DIR" \
+      "$CONTAINER" \
+      /usr/local/bin/claude --version >/dev/null 2>&1 || true
+
+    # Assert: session .claude.json exists and is non-empty
+    _r4_session_nonempty=$(cexec bash -c "[ -s '${R4_GUARD_DIR}/.claude.json' ] && echo yes || echo no")
+    if [[ "$_r4_session_nonempty" != "yes" ]]; then
+      fail "Step 3c: R4 guard — session .claude.json is absent or empty (seeding failed entirely)" ""
+    else
+      # Assert: guard key is present (proves snapshot was the seed source)
+      _guard_in_session=$(cexec bash -c "jq -r '.mcpServers | keys[] | select(. == \"$R4_GUARD_KEY\")' '${R4_GUARD_DIR}/.claude.json' 2>/dev/null" || true)
+      if [[ "$_guard_in_session" == "$R4_GUARD_KEY" ]]; then
+        pass "Step 3c: R4 regression guard — session seeded from snapshot (guard key present), not live mount"
+      else
+        fail "Step 3c: R4 guard — guard key '$R4_GUARD_KEY' absent from session .claude.json; wrapper may have fallen to live mount or empty seed" \
+          "session keys: $(cexec bash -c "jq -r '(.mcpServers // {}) | keys[]' '${R4_GUARD_DIR}/.claude.json' 2>/dev/null" || echo 'jq-failed')"
+      fi
+    fi
+
+    # Restore the original clean snapshot (without guard key)
+    cexec cp "$R4_ORIGINAL_BACKUP" /home/agent/.claude/.claude.json.seed
+  fi
+fi
+
+# Cleanup
+cexec rm -rf "$R4_GUARD_DIR"
+cexec rm -f "$R4_GUARD_SNAPSHOT"
+cexec rm -f "${R4_ORIGINAL_BACKUP:-/tmp/p1p-r4-original-backup-missing.json}"
 
 # ---------------------------------------------------------------------------
 # Step 4: No-leftover-in-shared-root guard

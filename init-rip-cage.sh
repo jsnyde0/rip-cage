@@ -411,6 +411,23 @@ elif [ ! -f ~/.claude.json ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
   echo "[rip-cage] WARNING: No auth found (~/.claude/.credentials.json missing, ANTHROPIC_API_KEY not set)" >&2
 fi
 
+# R4: Snapshot ~/.claude.json → ~/.claude/.claude.json.seed (rip-cage-p1p)
+# ~/.claude.json is a single-file virtiofs bind mount. An atomic temp+rename
+# rewrite on the host (any Claude run on the host) BREAKS the container's mount
+# handle — the container then sees ENOENT while the host file is intact.
+# The wrapper's cp from the live mount then copies nothing → empty seed → drops
+# MCP/oauthAccount. Fix: snapshot ONCE here, while the mount is intact at init
+# time; the wrapper seeds from this container-local copy instead of the live mount.
+#
+# Guard: only snapshot if ~/.claude.json is a readable, non-empty file.
+# Don't clobber a good existing seed with a broken/empty read.
+if [ -f ~/.claude.json ] && [ -s ~/.claude.json ]; then
+  cp ~/.claude.json ~/.claude/.claude.json.seed
+  echo "[rip-cage] Snapshotted ~/.claude.json → ~/.claude/.claude.json.seed (R4 stable seed)"
+else
+  echo "[rip-cage] NOTE: ~/.claude.json not readable/non-empty at init time — R4 seed not taken (wrapper will fall back)" >&2
+fi
+
 # 10. Initialize beads
 # Storage mode was determined at top of script from metadata.json.
 # For server mode: BEADS_DOLT_SERVER_MODE and HOST are exported; port is re-read by bd wrapper.
