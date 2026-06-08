@@ -37,6 +37,56 @@ import yaml
 RULES_PATH = "/etc/rip-cage/egress-rules.yaml"
 LOG_PATH = "/workspace/.rip-cage/egress.log"
 
+# ---------------------------------------------------------------------------
+# Self-test endpoint constants (rip-cage-fft).
+#
+# SELFTEST_HOSTNAME is the reserved hostname used by the startup guard in
+# init-firewall.sh to verify the proxy is ON-PATH.  The guard curls this host
+# pinned to a guaranteed-unroutable RFC5737 address (192.0.2.1), so only an
+# on-path proxy can return a response.
+#
+# The endpoint is handled BEFORE any allow/deny/mode evaluation (invariant I3):
+# it does not depend on egress-rules.yaml content and behaves identically in
+# block, legacy, and observe modes.
+# ---------------------------------------------------------------------------
+SELFTEST_HOSTNAME = "selftest.rip-cage.internal"
+SELFTEST_MARKER_HEADER = "X-Rip-Cage-Selftest"
+SELFTEST_MARKER_VALUE = "on-path"
+
+
+@dataclass
+class SelftestResponse:
+    """Minimal response object returned by handle_selftest_request().
+
+    Attributes:
+        status_code: HTTP status code (always 200).
+        headers: dict of response headers (always includes the marker header).
+    """
+    status_code: int
+    headers: Dict[str, str]
+
+
+def handle_selftest_request(hostname: str) -> Optional["SelftestResponse"]:
+    """Return a locally-generated marker response for the self-test hostname.
+
+    Returns a SelftestResponse if hostname matches SELFTEST_HOSTNAME, or
+    None if the hostname is not the self-test host.
+
+    This function has NO mitmproxy dependency and is fully unit-testable.
+
+    Invariants:
+      - (I1) Response is generated locally, no upstream round-trip.
+      - (I3) Does not depend on egress-rules.yaml; takes no rules_doc argument.
+      - Mode-independent: called before any allow/deny/mode evaluation.
+    """
+    if not hostname or hostname.lower() != SELFTEST_HOSTNAME.lower():
+        return None
+    return SelftestResponse(
+        status_code=200,
+        headers={SELFTEST_MARKER_HEADER: SELFTEST_MARKER_VALUE},
+    )
+
+
 # The six structured fields that every denial/would-block must carry.
 # These names are the contract for the integration harness and host-agent repair cycle.
 STRUCTURED_FIELD_NAMES = [
@@ -383,12 +433,29 @@ try:
         def request(self, flow: _http.HTTPFlow) -> None:
             """
             Evaluate egress rules pre-upstream (before connecting to the real server).
-            Wrapped entirely in try/except: any unexpected error denies the request
-            (fail-closed) rather than crashing the proxy or allowing traffic through.
+            The self-test endpoint short-circuit runs ABOVE the try/except so that
+            a future exception in the block-below cannot convert the marker into a
+            DENY (which would cause the startup guard to classify BYPASSED on a
+            healthy firewall — a false alarm).  All other rule evaluation is wrapped
+            in try/except for fail-closed protection.
             """
+            # --- Self-test endpoint (I1, I3): handled BEFORE allow/deny/mode logic
+            # AND before the try/except block.  Returns the distinctive marker locally
+            # without any upstream fetch.  Mode-independent: behaves identically in
+            # block/legacy/observe.  Kept above try/except so an exception in rule
+            # evaluation cannot swallow the marker (false BYPASSED on a healthy cage).
+            host = flow.request.pretty_host or flow.request.host or ""
+            selftest_resp = handle_selftest_request(host)
+            if selftest_resp is not None:
+                flow.response = _http.Response.make(
+                    selftest_resp.status_code,
+                    b"rip-cage selftest: proxy is on-path",
+                    selftest_resp.headers,
+                )
+                return
+
             try:
                 method = flow.request.method or ""
-                host = flow.request.pretty_host or flow.request.host or ""
                 path = flow.request.path or ""
 
                 result = decide(host, method, path, self.rules_doc)

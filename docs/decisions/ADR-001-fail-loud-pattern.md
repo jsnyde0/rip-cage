@@ -63,3 +63,4 @@ fail-loud obligation; adding a safety-relevant field does.
 
 - Mapular ADR-001 (fail-loud data handling) — origin of the pattern.
 - ADR-012 (egress firewall) — the feature whose first legacy-container upgrade motivated writing this down.
+- **Effect-not-presence startup verification** is this pattern's runtime form, and it now recurs at two layers: ADR-012 D11 (egress — refuse-to-start if the proxy isn't actually on-path) and ADR-025 D5 (DCG config — validate by strict parse, not by running a fail-open consumer). A safety layer that *appears* installed but doesn't enforce is the silent-downgrade this ADR forbids; verify the effect at startup, not just the presence.

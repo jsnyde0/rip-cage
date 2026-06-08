@@ -7,6 +7,7 @@
 while true; do
   mitmdump --mode transparent --listen-host 127.0.0.1 --listen-port 8080 \
     --set confdir=/etc/rip-cage/mitmproxy \
+    --set connection_strategy=lazy \
     -s /usr/local/lib/rip-cage/rip_cage_egress.py \
     2>>/var/log/rip-cage-proxy.log
   sleep 1
