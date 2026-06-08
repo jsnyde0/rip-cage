@@ -94,6 +94,14 @@ For changes to `rc` itself, you can test without rebuilding the image.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the phased plan, design docs, and ADRs.
 
+## Beads read-authority (don't trust `issues.jsonl` for live state)
+
+`bd show` / `bd list` are the **authoritative** read — they hit the embedded Dolt store (`.beads/embeddeddolt/`, per `.beads/metadata.json`). `.beads/issues.jsonl` is a **lagging derived export**: it is NOT rewritten on `bd update`/`create`/`close`, so a direct file read can silently return stale bead state (this burned two fresh-context review rounds — rip-cage-u7f).
+
+- **Reading a bead** (subagents, reviewers, hooks, humans): use `bd show <id>` / `bd show <id> --json`, never a `grep` of `issues.jsonl`. Subagent and reviewer briefs must pass `bd show` output (or instruct the agent to run `bd show`), not point at the file.
+- **When a file reader genuinely needs current data**, flush it first: `bd export --all -o .beads/issues.jsonl` (writes to the file — `bd export` alone goes to stdout — and includes the `bd remember` memories, so it won't trip the shrink guard).
+- Auto-export (`export.auto`) is intentionally **off** here: its scope excludes memories, so it shrink-guard-fails on every write against rip-cage's memory-bearing export. See `.beads/config.yaml` for the full rationale.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
 ## Beads Issue Tracker
 

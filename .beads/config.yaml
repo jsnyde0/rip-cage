@@ -8,12 +8,31 @@
 # Example: issue-prefix: "myproject" creates issues like "myproject-1", "myproject-2", etc.
 # issue-prefix: ""
 
-# Use no-db mode: JSONL-only, no Dolt database
-# When true, bd will use .beads/issues.jsonl as the source of truth
-no-db: true
+# no-db mode (JSONL-only, no Dolt DB). This flag is VESTIGIAL — bd parses but IGNORES it
+# (per ADR-007 D5, FIRM). The real storage-mode source of truth is `dolt_mode` in
+# .beads/metadata.json, which is "embedded" here (an in-process Dolt engine at
+# .beads/embeddeddolt/). `bd show`/`bd list` read that store and are authoritative;
+# .beads/issues.jsonl is a lagging derived export (see the auto-export note below).
+# Set to false purely to drop the cosmetic contradiction (it read `true` while embedded
+# Dolt is live) — the value has no functional effect either way. (rip-cage-u7f)
+no-db: false
 
 # Enable JSON output by default
 # json: false
+
+# Auto-export (export.auto) is intentionally LEFT OFF here. rip-cage-u7f investigated it:
+# auto-export's scope hard-excludes bd-remember memories, and rip-cage's committed
+# issues.jsonl contains 25 memories, so auto-export trips the "shrink guard" (refuses to
+# overwrite a fuller file with a thinner one) on every write — a warning on every bd
+# command with no benefit. The export.include-memories key only affects MANUAL `bd export`,
+# not the auto-export path, so it can't rescue auto-export here.
+#
+# Consequence: .beads/issues.jsonl is a LAGGING derived export, not live state.
+#   - Authoritative read: `bd show` / `bd list` (they read the embedded Dolt store).
+#   - Manual flush when a file reader genuinely needs current data:
+#       bd export --all -o .beads/issues.jsonl
+#   - Subagent/reviewer briefs are standardized on `bd show` (never raw issues.jsonl).
+# See the rip-cage CLAUDE.md "Beads Issue Tracker" section and ~/.claude/skills/adversarial-review.
 
 # Feedback title formatting for mutating commands (create/update/close/dep/edit)
 # 0 = hide titles, N > 0 = truncate to N characters
