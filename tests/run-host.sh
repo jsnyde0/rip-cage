@@ -38,6 +38,7 @@ NEEDS_CONTAINER=(
   "test-pi-install.sh"       # runs docker run --rm rip-cage:latest; requires a pre-built rip-cage image
   "test-pi-auth-mount.sh"    # calls rc up to create a live container; inspects container env + mounts
   "test-pi-cage-context.sh"  # calls rc up to create a live container; inspects CLAUDE.md inside cage
+  "test-claude-concurrency.sh" # requires a live rip-cage container with Claude auth (ANTHROPIC_API_KEY or OAuth)
 )
 
 # Helper: check if a given test basename is in NEEDS_CONTAINER.
@@ -162,6 +163,7 @@ run_test "${SCRIPT_DIR}/test-manifest-shell.sh"        # rip-cage-4c5.4: SHELL-I
 run_test "${SCRIPT_DIR}/test-manifest-daemon.sh"       # rip-cage-4c5.5: IN-CAGE-DAEMON lifecycle (host-only T1); e2e self-skips via RC_E2E gate
 run_test "${SCRIPT_DIR}/test-manifest-agent-mail.sh"   # rip-cage-4c5.6: agent_mail daemon fixture (host-only T1); e2e self-skips via RC_E2E gate; T2d auth-gated
 run_test "${SCRIPT_DIR}/test-manifest-cross.sh"        # rip-cage-4c5.8: cross-cutting integration regressions (H1/H2 always; C1/C2/C3 self-skip via RC_E2E gate)
+run_test "${SCRIPT_DIR}/test-claude-concurrency.sh"    # rip-cage-p1p: per-session Claude config isolation (NEEDS_CONTAINER; self-skips if no running cage)
 
 echo "=== run-host.sh complete ==="
 

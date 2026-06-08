@@ -103,6 +103,14 @@ RUN for i in 1 2 3; do \
       echo "pi-coding-agent npm install failed (attempt $i/3); retrying in 10s" && sleep 10; \
     done
 
+# Per-session Claude config isolation (rip-cage-p1p).
+# This wrapper is placed at /usr/local/bin/claude which precedes /usr/bin/claude on PATH.
+# It resolves CLAUDE_CONFIG_DIR (seeding the session dir if absent) then exec-s the real
+# claude binary at /usr/bin/claude. Both the interactive (tmux) and headless (docker exec)
+# paths are covered; see claude-session-wrapper.sh for full logic.
+COPY claude-session-wrapper.sh /usr/local/bin/claude
+RUN chmod +x /usr/local/bin/claude
+
 # Non-root user
 RUN groupadd -g 1000 agent \
     && useradd -m -u 1000 -g agent -s /usr/bin/zsh agent \
