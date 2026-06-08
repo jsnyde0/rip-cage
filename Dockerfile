@@ -149,6 +149,7 @@ COPY cage-pi.md /etc/rip-cage/cage-pi.md
 COPY init-rip-cage.sh /usr/local/bin/init-rip-cage.sh
 COPY skill-server.py /usr/local/lib/rip-cage/skill-server.py
 COPY tests/test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
+COPY tests/_agent-readability.sh /usr/local/lib/rip-cage/_agent-readability.sh
 COPY egress-rules.yaml /etc/rip-cage/egress-rules.yaml
 COPY rip_cage_egress.py /usr/local/lib/rip-cage/rip_cage_egress.py
 COPY rip_cage_dns.py /usr/local/lib/rip-cage/rip_cage_dns.py

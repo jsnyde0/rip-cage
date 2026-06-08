@@ -12,6 +12,15 @@
 # Or via:       rc test <container>  (if called by test-safety-stack.sh)
 
 set -euo pipefail
+
+# Source agent-readability classification helpers.
+# The helper lives next to this script; resolve relative to BASH_SOURCE so this
+# works whether invoked as a path or via `docker exec ... /path/test-skills.sh`.
+_TS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+# shellcheck source=./_agent-readability.sh
+# shellcheck disable=SC1091
+source "${_TS_DIR}/_agent-readability.sh"
+
 PASS=0
 FAIL=0
 TOTAL=0
@@ -235,19 +244,24 @@ else
   check "~/.claude/agents symlink points to .rc-context/agents" "fail" "missing"
 fi
 
-# 10. At least one .md agent file is readable (symlink chain resolves)
-if [[ -d "${agents_dir}" ]]; then
-  agent_count=$(find -L "${agents_dir}" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
-  if [[ "${agent_count}" -gt 0 ]]; then
-    first_agent=$(find -L "${agents_dir}" -maxdepth 1 -name '*.md' 2>/dev/null | head -1)
-    if [[ -r "${first_agent}" ]]; then
-      check "Agent .md files readable (symlinks resolve)" "pass" "${agent_count} agent(s), $(basename "${first_agent}") readable"
-    else
-      check "Agent .md files readable (symlinks resolve)" "fail" "$(basename "${first_agent}") unreadable — broken symlink?"
-    fi
-  else
-    check "Agent .md files readable (symlinks resolve)" "fail" "0 .md files in agents dir"
-  fi
+# 10. Agent .md files readable — classify ALL *.md entries:
+#   readable  → counts toward PASS (symlink chain resolves)
+#   hostonly  → broken symlink with target outside cage resident roots → SKIP (not FAIL)
+#   corrupt   → broken symlink with target inside cage resident roots, or
+#               unreadable non-symlink file → FAIL
+#
+# Cage resident roots default to /workspace (bind-mount) + realpath of the agents
+# staging dir (the physical dir behind the ~/.claude/agents symlink).
+# Override via RC_CAGE_ROOTS (colon-separated) for testing.
+# Override via RC_AGENTS_DIR for testing.
+_check_agents_dir="${RC_AGENTS_DIR:-${agents_dir}}"
+if [[ -d "${_check_agents_dir}" ]]; then
+  # Determine cage resident roots
+  _default_staging=$(realpath "${_check_agents_dir}" 2>/dev/null || echo "${_check_agents_dir}")
+  _cage_roots="${RC_CAGE_ROOTS:-/workspace:${_default_staging}}"
+
+  # Classify and report — _CAD_READABLE, _CAD_HOSTONLY, _CAD_CORRUPT set as side-effects
+  _report_agents_classification "${_check_agents_dir}" "${_cage_roots}"
 else
   check "Agent .md files readable (symlinks resolve)" "fail" "agents dir missing"
 fi
