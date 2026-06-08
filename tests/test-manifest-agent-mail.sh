@@ -615,7 +615,7 @@ test_t2c_mcp_fragment_discoverable_in_settings() {
 # ---------------------------------------------------------------------------
 # T2d — Sequential send→read round-trip: two dispatches in one cage namespace.
 # Dispatch A sends a message via agent_mail MCP; dispatch B reads it back.
-# Requires: agent auth (credentials.json) available for mounting into cage.
+# Requires: agent auth (~/.claude/.credentials.json, leading dot) available for mounting into cage.
 # CHECK-CAPABILITY-BEFORE-BLOCKED: check for auth file BEFORE attempting;
 # if not available, LOUD-FAIL with named reason (not silent-pass).
 # When RC_E2E is unset, self-skips cleanly (exit 0 close-state).
@@ -624,13 +624,13 @@ test_t2d_sequential_send_read_roundtrip() {
   if skip_if_not_e2e "T2d sequential send/read round-trip (two headless dispatches)"; then return 0; fi
 
   # CHECK-CAPABILITY-BEFORE-BLOCKED: verify auth credentials are available.
-  # The cage's headless claude dispatch requires a mounted credentials.json.
+  # The cage's headless claude dispatch requires a mounted .credentials.json (leading dot).
   # Without auth, dispatches cannot call the agent_mail MCP tool.
-  local creds_file="${HOME}/.claude/credentials.json"
+  local creds_file="${HOME}/.claude/.credentials.json"
   if [[ ! -f "$creds_file" ]]; then
     # LOUD-FAIL: this is a forcing function — missing auth is a REAL gap, not a skip.
     # C7's cage-tier run MUST have auth configured. This failure surfaces the gap.
-    fail "T2d CAPABILITY BLOCKED: ${creds_file} not found. Sequential send/read requires authenticated headless dispatch. This MUST be resolved before C7 cage-tier run. Provide credentials.json for the test environment."
+    fail "T2d CAPABILITY BLOCKED: ${creds_file} not found. Sequential send/read requires authenticated headless dispatch. This MUST be resolved before C7 cage-tier run. Provide ~/.claude/.credentials.json (canonical path, leading dot — see rc/init-rip-cage.sh) for the test environment; if present but stale, run 'rc auth refresh'."
     return
   fi
 
@@ -645,7 +645,7 @@ test_t2d_sequential_send_read_roundtrip() {
 
   docker run -d --name "$container_name" \
     -v "${workspace}:/workspace" \
-    -v "${creds_file}:/home/agent/.claude/credentials.json:ro" \
+    -v "${creds_file}:/home/agent/.claude/.credentials.json:ro" \
     "${T2_AGENT_MAIL_IMAGE}" sleep infinity >/dev/null 2>&1 || true
 
   docker exec "$container_name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || true
