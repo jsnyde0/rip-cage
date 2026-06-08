@@ -225,40 +225,71 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 3: MCP-carryover proof
-# The session .claude.json is a COPY of the base — not empty.
-# Verify by comparing a stable non-empty field (userID) from base vs session.
-# If base has mcpServers, also verify they appear in the session.
+# Step 3: MCP-carryover proof (Fix 2 — deterministic sentinel injection)
+# Design F3.1: seed-by-copy MUST carry mcpServers from the base; an empty seed
+# drops them (verified live 2026-06-08 — isolated 'claude mcp list' lost
+# mcp-agent-mail / context7 / asana / posthog).
+#
+# We MANUFACTURE the precondition: create a CONTAINER-NATIVE fixture file (not
+# the bind-mounted host ~/.claude.json) with a sentinel mcpServers entry, then
+# invoke the wrapper with RC_P1P_JSON_BASE pointing at the fixture. Verify the
+# sentinel survives in the seeded session dir's .claude.json.
+#
+# RC_P1P_JSON_BASE is a test-hook env var that overrides CLAUDE_JSON_BASE in the
+# wrapper — production use never sets it. This avoids writing to the host-mounted
+# ~/.claude.json (bind mounts from the host; modifying it would affect the user's
+# live config).
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== Step 3: MCP-carryover proof (seed-by-copy) ==="
+echo "=== Step 3: MCP-carryover proof (sentinel injection via RC_P1P_JSON_BASE) ==="
 
-BASE_USER_ID=$(cexec bash -c 'jq -r ".userID // empty" /home/agent/.claude.json 2>/dev/null' || true)
-SESSION_USER_ID=$(cexec bash -c 'jq -r ".userID // empty" /home/agent/.claude-sessions/conctest-a/.claude.json 2>/dev/null' || true)
+MCP_SENTINEL_KEY="p1p-sentinel-mcp"
+MCP_SENTINEL_DIR=/home/agent/.claude-sessions/conctest-mcp-sentinel
+MCP_FIXTURE=/tmp/p1p-mcp-fixture.json
 
-if [[ -n "$BASE_USER_ID" && "$BASE_USER_ID" == "$SESSION_USER_ID" ]]; then
-  pass "Session .claude.json is a copy of base (userID matches: $BASE_USER_ID)"
+# Create the fixture: start from a minimal valid .claude.json, inject the sentinel.
+# We use a container-native temp file (not the bind-mounted ~/.claude.json) to avoid
+# writing through to the host's live config. The fixture only needs to be a valid JSON
+# object with the sentinel mcpServers entry to test that copy-preserves-mcpServers.
+# If the session dirs from step 1 exist, we can use conctest-a's .claude.json as the
+# base for the fixture (it's a container-native copy already).
+cexec bash -c "
+  if [ -f /home/agent/.claude-sessions/conctest-a/.claude.json ]; then
+    cp /home/agent/.claude-sessions/conctest-a/.claude.json $MCP_FIXTURE
+  else
+    echo '{}' > $MCP_FIXTURE
+  fi
+  jq '.mcpServers[\"$MCP_SENTINEL_KEY\"] = {\"type\": \"stdio\", \"command\": \"echo\", \"args\": [\"sentinel\"]}' \
+    $MCP_FIXTURE > ${MCP_FIXTURE}.tmp
+  mv ${MCP_FIXTURE}.tmp $MCP_FIXTURE
+"
+
+# Positive confirmation: the sentinel must be in the fixture before we seed
+_sentinel_in_fixture=$(cexec bash -c "jq -r '.mcpServers | keys[] | select(. == \"$MCP_SENTINEL_KEY\")' $MCP_FIXTURE 2>/dev/null" || true)
+if [[ "$_sentinel_in_fixture" != "$MCP_SENTINEL_KEY" ]]; then
+  fail "MCP-carryover: sentinel injection into fixture failed" ""
 else
-  fail "Session .claude.json does NOT match base — seed-by-copy broken" "base_userID='$BASE_USER_ID' session_userID='$SESSION_USER_ID'"
+  # Seed a fresh session dir with RC_P1P_JSON_BASE pointing at the fixture
+  cexec rm -rf "$MCP_SENTINEL_DIR"
+  docker exec \
+    -e CLAUDE_CONFIG_DIR="$MCP_SENTINEL_DIR" \
+    -e RC_P1P_JSON_BASE="$MCP_FIXTURE" \
+    "$CONTAINER" \
+    /usr/local/bin/claude --version >/dev/null 2>&1 || true
+
+  # Assert the sentinel survived the copy into the session dir
+  _sentinel_in_session=$(cexec bash -c "jq -r '.mcpServers | keys[] | select(. == \"$MCP_SENTINEL_KEY\")' '${MCP_SENTINEL_DIR}/.claude.json' 2>/dev/null" || true)
+  if [[ "$_sentinel_in_session" == "$MCP_SENTINEL_KEY" ]]; then
+    pass "MCP-carryover: sentinel '$MCP_SENTINEL_KEY' survived seed-by-copy into session dir"
+  else
+    fail "MCP-carryover: sentinel '$MCP_SENTINEL_KEY' NOT in seeded session .claude.json — seed-by-copy broken" \
+      "session mcpServers keys: $(cexec bash -c "jq -r '(.mcpServers // {}) | keys[]' '${MCP_SENTINEL_DIR}/.claude.json' 2>/dev/null" || echo 'jq-failed')"
+  fi
 fi
 
-# If base has mcpServers, verify they appear in the session
-BASE_MCP_KEYS=$(cexec bash -c 'jq -r "(.mcpServers // {}) | keys[]" /home/agent/.claude.json 2>/dev/null' | sort | tr '\n' ',' | sed 's/,$//' || true)
-SESSION_MCP_KEYS=$(cexec bash -c 'jq -r "(.mcpServers // {}) | keys[]" /home/agent/.claude-sessions/conctest-a/.claude.json 2>/dev/null' | sort | tr '\n' ',' | sed 's/,$//' || true)
-if [[ -n "$BASE_MCP_KEYS" ]]; then
-  if [[ "$BASE_MCP_KEYS" == "$SESSION_MCP_KEYS" ]]; then
-    pass "Session .claude.json preserves base mcpServers: $BASE_MCP_KEYS"
-  else
-    fail "Session .claude.json mcpServers differ from base" "base='$BASE_MCP_KEYS' session='$SESSION_MCP_KEYS'"
-  fi
-else
-  # No mcpServers in base — verify that an empty session also has none (consistent copy)
-  if [[ -z "$SESSION_MCP_KEYS" ]]; then
-    pass "Base has no mcpServers; session copy also has none (consistent empty copy)"
-  else
-    fail "Session .claude.json has unexpected mcpServers not in base" "session='$SESSION_MCP_KEYS'"
-  fi
-fi
+# Cleanup
+cexec rm -rf "$MCP_SENTINEL_DIR"
+cexec rm -f "$MCP_FIXTURE"
 
 # ---------------------------------------------------------------------------
 # Step 4: No-leftover-in-shared-root guard
@@ -322,7 +353,8 @@ rm -f "$OUT_SINGLE"
 # ---------------------------------------------------------------------------
 # Step 6: Git-author proof
 # In a detached named tmux session, the zshrc snippet sets GIT_AUTHOR_NAME=<handle>
-# Drive a git commit via tmux send-keys; read result via git log -1 (deterministic)
+# Drive a git commit via tmux send-keys; POLL until the commit appears (max 15s),
+# then read git log -1 deterministically — no bare sleeps (Fix 3).
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Step 6: Git-author proof ==="
@@ -348,16 +380,49 @@ cexec bash -c "
 cexec tmux kill-session -t "$GIT_SESSION" 2>/dev/null || true
 cexec tmux new-session -d -s "$GIT_SESSION" -c "$GIT_TEST_DIR"
 
-# Wait a moment for the session to initialize and zshrc to source
-sleep 2
+# Poll until the tmux pane is ready (session shell initialized, zshrc sourced).
+# Sentinel: a shell prompt visible in the pane within 10s.
+_git_s_waited=0
+while [[ $_git_s_waited -lt 10 ]]; do
+  _pane_content=$(cexec tmux capture-pane -p -t "$GIT_SESSION" 2>/dev/null || true)
+  if [[ -n "$_pane_content" ]]; then
+    break
+  fi
+  sleep 1
+  _git_s_waited=$((_git_s_waited + 1))
+done
+# One extra second for zshrc to finish sourcing after the pane appears
+sleep 1
 
-# Send a git commit command; GIT_AUTHOR_NAME should be set by zshrc snippet to session name
-cexec tmux send-keys -t "$GIT_SESSION" "git commit -m 'test-commit-from-agent'" Enter
+# Send a git commit command; GIT_AUTHOR_NAME should be set by zshrc snippet to session name.
+# Append a sentinel marker so we can detect completion without relying on timing.
+cexec tmux send-keys -t "$GIT_SESSION" "git commit -m 'test-commit-from-agent'; echo GIT_COMMIT_DONE_$$" Enter
 
-# Wait for the commit to complete (deterministic — we're not waiting for interactive claude)
-sleep 3
+# Poll (up to 15s) until the sentinel appears in the pane OR the commit lands in git log.
+# Using the tmux-pane sentinel (GIT_COMMIT_DONE) as the primary signal.
+_commit_landed=false
+_git_c_waited=0
+while [[ $_git_c_waited -lt 15 ]]; do
+  sleep 1
+  _git_c_waited=$((_git_c_waited + 1))
+  _pane_after=$(cexec tmux capture-pane -p -t "$GIT_SESSION" 2>/dev/null || true)
+  if echo "$_pane_after" | grep -q "GIT_COMMIT_DONE_$$"; then
+    _commit_landed=true
+    break
+  fi
+  # Also check git log directly as a fallback
+  _log_count=$(cexec bash -c "cd $GIT_TEST_DIR && git log --oneline 2>/dev/null | wc -l" 2>/dev/null || echo "0")
+  if [[ "$_log_count" -ge 1 ]]; then
+    _commit_landed=true
+    break
+  fi
+done
 
-# Read git log to verify author name (deterministic file read, no timing sensitivity)
+if [[ "$_commit_landed" != "true" ]]; then
+  fail "Git-author: commit sentinel not detected within 15s — tmux send-keys or zshrc setup failed" ""
+fi
+
+# Read git log to verify author name (deterministic file read, commit is confirmed present)
 GIT_LOG=$(cexec bash -c "cd $GIT_TEST_DIR && git log -1 --format='%an|%ae' 2>/dev/null" || echo "git-log-failed")
 
 AUTHOR_NAME=$(echo "$GIT_LOG" | cut -d'|' -f1)
@@ -384,54 +449,103 @@ cexec tmux kill-session -t "$GIT_SESSION" 2>/dev/null || true
 cexec rm -rf "$GIT_TEST_DIR"
 
 # ---------------------------------------------------------------------------
-# NEGATIVE CONTROL: State that triggers the bug — .claude.json absent + backup present
-# This deterministically reproduces the exact failure mode that p1p fixes.
-# Expected result: claude exits non-zero and outputs "Claude configuration file
-# not found" (or similar — the exact clobber-loop error).
+# NEGATIVE CONTROL (Fix 1 — real concurrent shared-config): Two concurrent
+# claude -p processes both pointed at ONE SHARED config dir (bypassing the wrapper
+# so isolation is NOT applied). The non-atomic .claude.json rewrite means at least
+# one process must experience the clobber (non-zero exit, config-not-found message,
+# or missing/empty .claude.json after the run).
+#
+# The shared dir is seeded with a backups/ entry (the documented sticky-miss trigger:
+# .claude.json absent + backup present = loop). Both processes use the REAL /usr/bin/claude
+# binary — NOT the wrapper, which would fix the dir.
+#
+# Hard assertion: if BOTH processes exit 0 AND neither output contains the error AND
+# the shared .claude.json is intact, the harness CANNOT detect the race — FAILURES++.
+# There is NO soft-pass branch. (Fix 1)
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== NEGATIVE CONTROL: Reproduce the clobber-loop bug (absent .claude.json + backup present) ==="
+echo "=== NEGATIVE CONTROL: Two concurrent /usr/bin/claude -p on ONE shared config dir (must show clobber) ==="
 
-OUT_NEG=$(mktemp)
-
-# Set up a config dir with the exact bug trigger state:
-#   - backups/ dir exists (Claude has run before)
-#   - .claude.json is ABSENT (simulates the non-atomic write window)
-# This is the precise condition that causes "Claude configuration file not found" loop.
-BUGSTATE_DIR=/home/agent/.claude-sessions/conctest-bugstate
-cexec rm -rf "$BUGSTATE_DIR"
+SHARED_DIR=/home/agent/.claude-sessions/conctest-shared
+cexec rm -rf "$SHARED_DIR"
 cexec bash -c "
-  mkdir -p ${BUGSTATE_DIR}/backups
-  # Use a timestamp-format backup name (matches Claude's actual backup naming: .claude.json.backup.<epoch_ms>)
-  cp /home/agent/.claude.json '${BUGSTATE_DIR}/backups/.claude.json.backup.1780000000000'
-  ln -sfn /home/agent/.claude/.credentials.json ${BUGSTATE_DIR}/.credentials.json
-  # .claude.json deliberately NOT present — this is the bug trigger state
+  set -e
+  mkdir -p ${SHARED_DIR}/backups
+  # .claude.json is ABSENT — this is the exact bug trigger state.
+  # A backup IS present (the documented sticky-miss condition):
+  # when Claude finds a backup but no .claude.json, it loops with
+  # 'configuration file not found' instead of recreating the file.
+  cp /home/agent/.claude.json '${SHARED_DIR}/backups/.claude.json.backup.1780000000000'
+  ln -sfn /home/agent/.claude/.credentials.json ${SHARED_DIR}/.credentials.json
 "
 
-# Run the REAL claude binary directly (bypassing the wrapper) against this buggy dir.
-# The wrapper would seed the dir and fix the bug — we need raw claude to see the broken state.
-NEG_EXIT=0
+OUT_NEG_X=$(mktemp)
+OUT_NEG_Y=$(mktemp)
+
+# Background BOTH against the SAME shared dir — real binary, no wrapper isolation.
 docker exec \
-  -e CLAUDE_CONFIG_DIR="$BUGSTATE_DIR" \
+  -e CLAUDE_CONFIG_DIR="$SHARED_DIR" \
   "$CONTAINER" \
-  timeout 20 /usr/bin/claude -p "print OK" \
-  >"$OUT_NEG" 2>&1 || NEG_EXIT=$?
+  timeout 30 /usr/bin/claude -p "print the word READY and nothing else" \
+  >"$OUT_NEG_X" 2>&1 &
+PID_NEG_X=$!
 
-echo "  Bug-state control exit: $NEG_EXIT"
-echo "  Bug-state output (first 3 lines): $(head -3 "$OUT_NEG")"
+docker exec \
+  -e CLAUDE_CONFIG_DIR="$SHARED_DIR" \
+  "$CONTAINER" \
+  timeout 30 /usr/bin/claude -p "print the word READY and nothing else" \
+  >"$OUT_NEG_Y" 2>&1 &
+PID_NEG_Y=$!
 
-# The harness is valid if this negative control fires: non-zero exit OR config-not-found message
-if [[ $NEG_EXIT -ne 0 ]] || grep -q 'configuration file not found\|Claude configuration file\|restore manually' "$OUT_NEG"; then
-  pass "NEGATIVE CONTROL: absent .claude.json + backup = failure (harness can detect the clobber bug)"
-else
-  # If neither fired — this means Claude recovered gracefully without the error message.
-  # That would mean the bug is already fixed upstream. Emit a note but not a hard fail.
-  echo "  NOTE: Negative control did not reproduce the clobber error. Claude may have handled absent .claude.json gracefully."
-  echo "  This is acceptable if a future Claude version makes .claude.json writes atomic (D1 invalidation condition)."
-  pass "NEGATIVE CONTROL: absent .claude.json + backup = graceful recovery (bug may be fixed upstream)"
+NEG_EXIT_X=0
+NEG_EXIT_Y=0
+wait $PID_NEG_X || NEG_EXIT_X=$?
+wait $PID_NEG_Y || NEG_EXIT_Y=$?
+
+echo "  Shared-dir process X exit: $NEG_EXIT_X"
+echo "  Shared-dir process Y exit: $NEG_EXIT_Y"
+echo "  Process X output (first 3 lines):"
+head -3 "$OUT_NEG_X" | sed 's/^/    /'
+echo "  Process Y output (first 3 lines):"
+head -3 "$OUT_NEG_Y" | sed 's/^/    /'
+
+# Detect clobber evidence in either process
+NEG_CLOBBER=false
+if [[ $NEG_EXIT_X -ne 0 ]]; then
+  NEG_CLOBBER=true
+  echo "  Evidence: process X exited $NEG_EXIT_X (non-zero)"
+fi
+if [[ $NEG_EXIT_Y -ne 0 ]]; then
+  NEG_CLOBBER=true
+  echo "  Evidence: process Y exited $NEG_EXIT_Y (non-zero)"
+fi
+if grep -qi 'configuration file not found\|Claude configuration file\|restore manually' "$OUT_NEG_X" 2>/dev/null; then
+  NEG_CLOBBER=true
+  echo "  Evidence: process X output contains config-not-found message"
+fi
+if grep -qi 'configuration file not found\|Claude configuration file\|restore manually' "$OUT_NEG_Y" 2>/dev/null; then
+  NEG_CLOBBER=true
+  echo "  Evidence: process Y output contains config-not-found message"
+fi
+# Also check if shared .claude.json ended up missing or empty
+if ! cexec test -f "${SHARED_DIR}/.claude.json" 2>/dev/null; then
+  NEG_CLOBBER=true
+  echo "  Evidence: shared .claude.json is missing after concurrent run"
+elif cexec bash -c "[ ! -s '${SHARED_DIR}/.claude.json' ]" 2>/dev/null; then
+  NEG_CLOBBER=true
+  echo "  Evidence: shared .claude.json is empty/truncated after concurrent run"
 fi
 
-rm -f "$OUT_NEG"
+if [[ "$NEG_CLOBBER" == "true" ]]; then
+  pass "NEGATIVE CONTROL: clobber detected on shared config dir — harness CAN detect the race bug"
+else
+  # BOTH processes completed cleanly on ONE shared dir — the harness cannot detect the bug.
+  # This is a HARD FAILURE: no soft-pass. The harness is vacuous for the race.
+  fail "NEGATIVE CONTROL: both processes greened over ONE shared config dir — harness CANNOT detect the clobber race" \
+    "X_exit=$NEG_EXIT_X Y_exit=$NEG_EXIT_Y — fix the control"
+fi
+
+rm -f "$OUT_NEG_X" "$OUT_NEG_Y"
 
 # ---------------------------------------------------------------------------
 # Summary

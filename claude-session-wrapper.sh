@@ -22,7 +22,8 @@ set -euo pipefail
 REAL_CLAUDE=/usr/bin/claude
 SESSIONS_BASE="${HOME}/.claude-sessions"
 CLAUDE_BASE="${HOME}/.claude"
-CLAUDE_JSON_BASE="${HOME}/.claude.json"
+# RC_P1P_JSON_BASE overrides the seeding source — test-hook only, not for production use.
+CLAUDE_JSON_BASE="${RC_P1P_JSON_BASE:-${HOME}/.claude.json}"
 
 # ---------------------------------------------------------------------------
 # Resolve the config dir handle
