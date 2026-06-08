@@ -1,6 +1,6 @@
 # ADR-006: Multi-Agent Architecture (Directional)
 
-**Status:** Proposed (revised 2026-06-06 — D7 specs Tier 1a as mechanical session levers)
+**Status:** Proposed (revised 2026-06-08 — D7 Tier 1a = mechanical session levers; session granularity + presence-only status)
 **Date:** 2026-03-27
 **Design:** [Multi-Agent Architecture](../2026-03-27-multi-agent-architecture.md)
 **Related:** [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md), [Flywheel Investigation](../2026-03-27-flywheel-investigation.md)
@@ -98,14 +98,16 @@ Monitoring observes container state (tmux output, Docker stats, agent activity) 
 
 Tier 1a (D1) is delivered as a thin set of mechanical levers over the cage's tmux, holding **no orchestration intelligence**:
 
-- `rc agent <cage> --name=<handle> -- <command>` — open a tmux window named `<handle>`, run `<command>` verbatim, return. rip-cage does **not** know or decide which agent binary runs, cold-start vs resume, or any session semantics — the caller supplies all of that in `<command>` (e.g. `pi --session <id>` performs a resume; rip-cage never grows a "session" or "resume" concept).
-- `rc sessions <cage> [--output json]` — enumerate in-cage agent windows with status (running / exited), agent-parseable per ADR-003.
-- `rc kill <cage> <handle>` — terminate one window by handle.
-- `rc attach <cage> [--window=<handle>]` — connect a human to one window; **secondary** (standalone use), since the primary watch/engage surface for the factory consumer is external (the cmux cockpit, dotpi ADR-003 two-plane model).
+Each agent is one tmux **session** in the cage (granularity decided 2026-06-08 — reuses the existing session-level surface rather than building a parallel window-level one; see Alternatives). The handle is the session name.
+
+- `rc agent <cage> --name=<handle> -- <command>` — **the one new lever**: create a tmux session named `<handle>` running `<command>` verbatim, return (`tmux new-session -d -s <handle> -c /workspace <command>`). rip-cage does **not** know or decide which agent binary runs, cold-start vs resume, or any session semantics — the caller supplies all of that in `<command>` (e.g. `pi --session <id>` performs a resume; rip-cage never grows a "session" or "resume" concept). Refuses loudly on a duplicate handle.
+- `rc sessions <cage> [--json]` — **reused as-is** (`rc:4686`): enumerate in-cage agent sessions by handle, with `attached`/`idle_seconds`, agent-parseable per ADR-003. Status = **presence** (the session is listed); there is no running/exited field — `tmux.conf:26`'s `pane-died 'respawn-pane'` resurrects any exited pane as a fresh shell, so "exited" is not tmux-observable, and agent *completion* is the consumer's signal (agent_end hook + events plane), not rip-cage's.
+- `rc sessions <cage> --kill <handle>` — **reused as-is** (`rc:4693`): terminate one session by handle (last-session refusal + `--force`). No separate `rc kill` subcommand — that would duplicate this.
+- `rc attach <cage>` — **reused as-is** (`rc:4827`): connect a human via the session picker; **secondary** (standalone use), since the primary watch/engage surface for the factory consumer is external (the cmux cockpit, dotpi ADR-003 two-plane model). A non-picker `--session=<handle>` direct target is an optional later add.
 
 All orchestration intelligence — *which* agents to spawn, *when*, recursion across the ready-frontier, *when* to surface a human — lives in the consumer (e.g. the dotpi factory + cmux cockpit), never in rip-cage. rip-cage stays the containment layer.
 
-Identity has two distinct layers: the **caller handle** (`--name`, targets kill/attach/resume; per-window within one container) and ADR-006 D3's per-container Docker labels (coarser grain). The handle complements D3, it does not replace it. OSC terminal-title auto-naming was evaluated and rejected as a name source (see Alternatives).
+Identity has two distinct layers: the **caller handle** (`--name`, targets kill/attach/resume; the per-session name within one container) and ADR-006 D3's per-container Docker labels (coarser grain). The handle complements D3, it does not replace it. OSC terminal-title auto-naming was evaluated and rejected as a name source (see Alternatives).
 
 **Concurrency is agent-specific, not a lever property.** The levers run any command; whether two agents *coexist* in one cage depends on the agent's own config-write safety. Validated 2026-06-06: `pi` is concurrency-safe (it file-locks its auth/config writes — pi-mono `core/auth-storage.ts` `withLock`), so the dotpi pi-orchestrator path works today. Claude Code is **not** safe concurrently (it rewrites the shared `~/.claude.json` non-atomically; a second instance startup-loops on config-not-found) — the Claude path is gated on per-session config isolation (bead `rip-cage-p1p`).
 
@@ -119,7 +121,8 @@ Identity has two distinct layers: the **caller handle** (`--name`, targets kill/
 | rip-cage owns spawn+watch+engage UX (mini-orchestrator) | self-contained for standalone humans | `reasoned:` duplicates cmux's cockpit and grows intelligence rip-cage must keep in sync with the factory; contradicts the composable-asset/containment boundary (ADR-002) |
 | `rc agent` launches a configured agent *type* (not arbitrary command) | ergonomic common case | `reasoned:` forces rip-cage to hold a "default agent" + resume policy — a sliver of orchestration intelligence; the arbitrary-command form keeps it zero-policy and was chosen explicitly |
 | OSC terminal-title auto-naming (cmux-style) as the name source | "free" descriptive names | `direct:` live probe 2026-06-06 — claude emits **no** OSC title in-cage; pi emits only a generic `π - agent`, not a task description. Low value; explicit `--name` is simpler and deterministic |
-| Window auto-closes on agent exit (clean list) | `rc sessions` trivially reflects the live set | `direct:` the cage runs `remain-on-exit on`; exited windows linger. Reporting status (running/exited) is more honest and suits the consumer's exit-and-resume model (it can *see* an orchestrator exited) — chosen over forcing close-on-exit |
+| One window per agent inside a single tmux session (cmux-tab style) | single attached view shows all agents at once | `reasoned:` collides with the existing session-level `rc sessions`/`--kill`/picker (`rc:4686/4693/4827`) and needs a parallel window-level surface; the single-view payoff is not load-bearing (the factory is headless, watching via cmux+events not tmux). Session granularity reuses the built surface — chosen 2026-06-08 |
+| Report running/exited status in `rc sessions` | consumer can *see* an orchestrator exited | `direct:` `tmux.conf:25-26` runs `remain-on-exit on` **with** `pane-died 'respawn-pane'`, so an exited pane is auto-resurrected as a fresh shell — "exited" is not tmux-observable. Presence-only is the honest signal; agent completion is the consumer's (agent_end hook + events plane). Corrected 2026-06-08 (the earlier "exited windows linger" claim ignored the respawn-pane hook) |
 
 **What would invalidate this:** If a standalone (no-factory) human use case becomes primary and no external cockpit is present, rip-cage might need to absorb a thin watch/engage UX after all (promote `rc attach`/`rc sessions` from secondary, possibly add light monitoring per D6). Or if a consumer needs rip-cage to *remember* how to relaunch an agent (restart a crashed agent without the factory re-supplying the command), or to spawn-by-agent-type — either pushes a sliver of orchestration into rip-cage, contradicting the boundary. Signal: repeated requests for `rc` to "remember" an agent's launch command or to spawn by type rather than being handed the command.
 
