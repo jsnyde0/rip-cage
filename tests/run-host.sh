@@ -41,6 +41,11 @@ NEEDS_CONTAINER=(
   "test-claude-concurrency.sh" # requires a live rip-cage container with Claude auth (ANTHROPIC_API_KEY or OAuth)
   "test-multi-agent-levers.sh" # requires a live rip-cage container; exercises rc agent lever + two-pi concurrency
   "test-agent-mail-concurrent.sh" # requires RC_E2E=1 + pi auth + agent_mail fixture image; proves two concurrent pi agents coordinate via am CLI
+  "test-ssh-forwarding.sh"    # ADR-017/018 live-cage ssh-agent socket mount/label/sentinels; self-skips without docker (rip-cage-b6ia)
+  "test-ssh-resolver.sh"      # Tests 6-10 spin up live cages; Tests 1-5 are host unit tests of _parse_identity_rules/_resolve_github_identity, already covered by test-ssh-config.sh checks 10-13 — whole file denylisted, no unique host coverage lost under --host-only (rip-cage-b6ia)
+  "test-session-persistence.sh" # Phase 3 calls rc up + docker exec for dn2 projects/sessions persist-to-host (rip-cage-b6ia)
+  "test-pi-dcg-gate.sh"       # asserts in-cage pi dcg-gate.ts + dcg-guard paths; \`command -v pi\` would vacuously skip on host (rip-cage-b6ia)
+  "test-skills.sh"            # live meta-skill MCP handshake + cage-path/settings assertions inside a container (rip-cage-b6ia)
 )
 
 # Helper: check if a given test basename is in NEEDS_CONTAINER.
@@ -176,6 +181,23 @@ run_test "${SCRIPT_DIR}/test-agent-readability.sh"     # rip-cage-7wc: host-side
 run_test "${SCRIPT_DIR}/test-agent-mail-concurrent.sh" # rip-cage-swv: two concurrent pi agents coordinate via am CLI (NEEDS_CONTAINER + RC_E2E)
 run_test "${SCRIPT_DIR}/test-ssh-config.sh"            # rip-cage-b0a: SSH config translation checks incl. ADR-022 D4 inverse assertion (host-side; no container needed)
 run_test "${SCRIPT_DIR}/test-allowed-roots-bypass.sh"  # rip-cage-36j: RC_ALLOWED_ROOTS bypass regression net (symlink/redirect cases)
+
+# rip-cage-b6ia: previously-dark test files, audited 2026-06-09 and wired.
+# Host-tier (run on every invocation):
+run_test "${SCRIPT_DIR}/test-ssh-preflight.sh"        # ADR-020 identity-preflight cache (cold/warm/mismatch/TTL/JSON shape)
+run_test "${SCRIPT_DIR}/test-ssh-visibility.sh"       # ADR-020 D5 visibility surfaces (zshrc/init banner, rc ls GH-IDENTITY col) + 9eg regression
+run_test "${SCRIPT_DIR}/test-bd-host-preflight.sh"    # _bd_host_preflight dolt-server preflight helper (host-only)
+run_test "${SCRIPT_DIR}/test-lfs-warning.sh"          # rc --dry-run up LFS pointer-stub scan + silent-exit-1 regression
+run_test "${SCRIPT_DIR}/test-ssh-allowlist.sh"        # ADR-022 known_hosts filter + hashed-host HMAC + resume mount-shape guard (EXIT-trap fixed)
+run_test "${SCRIPT_DIR}/test-denylist-matching.sh"    # _check_secret_path_denylist component-match (unsets RC_CONFIG_GLOBAL per driver-fixture trap)
+run_test "${SCRIPT_DIR}/test-symlink-follow.sh"       # symlink-follow scanner + fingerprint + denylist gating (unsets RC_CONFIG_GLOBAL)
+run_test "${SCRIPT_DIR}/test-config-loader.sh"        # layered config additive/select merge + provenance matrix (unsets RC_CONFIG_GLOBAL)
+# Container-tier (NEEDS_CONTAINER above; self-skip under --host-only, run on full invocation):
+run_test "${SCRIPT_DIR}/test-ssh-forwarding.sh"       # ADR-017/018 live ssh-agent forwarding
+run_test "${SCRIPT_DIR}/test-ssh-resolver.sh"         # github-identity resolver; Tests 6-10 spin up cages
+run_test "${SCRIPT_DIR}/test-session-persistence.sh"  # dn2 projects/sessions persist-to-host (Phase 3 container)
+run_test "${SCRIPT_DIR}/test-pi-dcg-gate.sh"          # in-cage pi dcg-gate.ts structural + exec-field parity
+run_test "${SCRIPT_DIR}/test-skills.sh"               # meta-skill MCP handshake + cage-path/settings inside cage
 
 echo "=== run-host.sh complete ==="
 

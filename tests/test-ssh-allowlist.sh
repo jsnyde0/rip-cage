@@ -42,6 +42,7 @@ fail() { echo "FAIL C$1: $2 — $3"; FAILURES=$((FAILURES + 1)); }
 
 cleanup() {
   [[ -n "${TEST_HOME:-}" && -d "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME"
+  return 0
 }
 trap cleanup EXIT
 

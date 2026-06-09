@@ -85,7 +85,7 @@ The repo splits tests into three tiers. See `tests/run-host.sh` for the canonica
 ### Targeted test scripts — pick by area
 | Area touched | Script |
 |---|---|
-| Docker image build, sudoers, entrypoint | `test-dockerfile-sudoers.sh`, `test-integration.sh` |
+| Docker image build, sudoers, entrypoint | `test-dockerfile-sudoers.sh`, `test-e2e-lifecycle.sh` (entrypoint/lifecycle/mise provisioning — absorbed test-integration.sh, deleted rip-cage-b6ia) |
 | Auth refresh / credential flow | `test-auth-refresh.sh` |
 | Beads (bd wrapper, host preflight, roundtrip) | `test-bd-wrapper.sh`, `test-bd-host-preflight.sh`, `test-bd-roundtrip.sh` |
 | Skills mount / MCP shim | `test-skills.sh` + `test_skill_server.py` (pytest — only python test) |
