@@ -16,8 +16,12 @@
 #     T2a — cm --version exits 0 (non-empty version string).
 #     T2b — cm context "<task>" --json returns parseable JSON (pipe to jq).
 #     T2c — Round-trip: cm playbook add (clearly-marked test entry) then re-read
-#           via cm playbook list reflects the write in the mounted store.
+#           via cm playbook list reflects the write in the mounted store (PASS
+#           emitted only after FULL round-trip: add + list-confirm + host-store-confirm).
 #     T2d — Binary ownership: /usr/local/bin/cm is root-owned and NOT agent-writable.
+#     T2e — Egress: cm context + playbook ops open ZERO external TCP connections
+#           (snapshot /proc/net/tcp+tcp6 ESTABLISHED before/after; diff must be empty
+#           after filtering loopback — ADR-005 D8).
 #
 # =============================================================================
 # Gating (adversarial-review F5):
@@ -236,7 +240,8 @@ fi
 # The entry content includes a clearly-marked test sentinel so the assertion
 # is exact and unambiguous.
 # ---------------------------------------------------------------------------
-_SENTINEL="rip-cage-l0u2-test-probe-$(date +%s)"
+# F3: sentinel uses date+PID+RANDOM to prevent parallel-run collisions.
+_SENTINEL="rip-cage-l0u2-test-probe-$(date +%s)-$$-${RANDOM}"
 _add_rc=0
 _add_out=$(docker exec "$T2_CONTAINER_NAME" \
   /usr/local/bin/cm playbook add "${_SENTINEL}" --category=observation 2>&1) || _add_rc=$?
@@ -244,7 +249,8 @@ _add_out=$(docker exec "$T2_CONTAINER_NAME" \
 if [[ "$_add_rc" -ne 0 ]]; then
   fail "T2c cm playbook add FAILED: exit=${_add_rc} out='${_add_out:0:200}'"
 else
-  pass "T2c cm playbook add exited 0 (entry: '${_SENTINEL}')"
+  # F2: do NOT emit PASS yet — wait for the full round-trip to complete.
+  # A no-op add that exits 0 must not produce any T2c PASS.
 
   # Re-read: list the playbook and check the sentinel is present.
   _list_out=""
@@ -254,26 +260,32 @@ else
 
   if [[ "$_list_rc" -ne 0 ]]; then
     fail "T2c cm playbook list FAILED: exit=${_list_rc} out='${_list_out:0:200}'"
-  elif echo "$_list_out" | grep -qF "$_SENTINEL"; then
-    pass "T2c Round-trip: cm playbook list reflects the added entry (sentinel found in list output)"
   else
-    # Also check the raw playbook.yaml in the mounted store (belt-and-suspenders).
-    _yaml_rc=0
-    _yaml_contains=$(docker exec "$T2_CONTAINER_NAME" \
-      grep -c "${_SENTINEL}" /home/agent/.cass-memory/playbook.yaml 2>&1) || _yaml_rc=$?
-    if [[ "$_yaml_rc" -eq 0 ]] && [[ "${_yaml_contains:-0}" -gt 0 ]]; then
-      pass "T2c Round-trip: sentinel present in playbook.yaml (list output may use short display)"
+    # Check that sentinel appears in list output OR in raw playbook.yaml.
+    _list_confirmed=0
+    if echo "$_list_out" | grep -qF "$_SENTINEL"; then
+      _list_confirmed=1
     else
-      fail "T2c Round-trip FAILED: sentinel '${_SENTINEL}' NOT found in cm playbook list output nor in playbook.yaml. List output: '${_list_out:0:300}'"
+      # Belt-and-suspenders: check the raw playbook.yaml in the mounted store.
+      _yaml_rc=0
+      _yaml_contains=$(docker exec "$T2_CONTAINER_NAME" \
+        grep -c "${_SENTINEL}" /home/agent/.cass-memory/playbook.yaml 2>&1) || _yaml_rc=$?
+      if [[ "$_yaml_rc" -eq 0 ]] && [[ "${_yaml_contains:-0}" -gt 0 ]]; then
+        _list_confirmed=1
+      fi
     fi
-  fi
 
-  # Verify the write landed in the TEMP store (not a container-local store).
-  # The temp store is mounted at /home/agent/.cass-memory; check via the host path.
-  if grep -qF "$_SENTINEL" "${T2_TEMP_STORE}/playbook.yaml" 2>/dev/null; then
-    pass "T2c Store isolation: write landed in the throwaway temp store (not container-local)"
-  else
-    fail "T2c Store isolation FAILED: sentinel not found in host temp store ${T2_TEMP_STORE}/playbook.yaml — write may have gone to container-local storage (mount broken)"
+    if [[ "$_list_confirmed" -eq 0 ]]; then
+      fail "T2c Round-trip FAILED: sentinel '${_SENTINEL}' NOT found in cm playbook list output nor in playbook.yaml. List output: '${_list_out:0:300}'"
+    else
+      # Also verify the write landed in the TEMP store (not a container-local store).
+      if grep -qF "$_SENTINEL" "${T2_TEMP_STORE}/playbook.yaml" 2>/dev/null; then
+        # F2: all sub-checks passed — emit the single combined T2c PASS.
+        pass "T2c Round-trip confirmed: playbook add + list-reflect + host-store write all passed (sentinel: '${_SENTINEL}')"
+      else
+        fail "T2c Store isolation FAILED: sentinel not found in host temp store ${T2_TEMP_STORE}/playbook.yaml — write may have gone to container-local storage (mount broken)"
+      fi
+    fi
   fi
 fi
 
@@ -323,6 +335,93 @@ else
   else
     fail "T2d Agent-user write to /usr/local/bin/cm SUCCEEDED — binary is agent-writable (should be root-only)"
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# T2e — Egress assertion: cm context + playbook ops open ZERO external TCP
+# connections (ADR-005 D8: cm contributes no egress).
+#
+# Method: snapshot ESTABLISHED TCP connections inside the container
+# (via /proc/net/tcp + /proc/net/tcp6, which list connections in the
+# container's network namespace) BEFORE the cm ops, run the ops, snapshot
+# AFTER, then diff. Any new non-loopback remote address in the after-snapshot
+# is a hard FAIL.
+#
+# /proc/net/tcp format (hex): col 2 = local_addr:port, col 3 = remote_addr:port
+# State 01 = ESTABLISHED. Loopback (127.0.0.1) is 7F000001 in hex; we also
+# filter 00000000 (0.0.0.0 — wildcard, not a real connection) and the IPv6
+# loopback (00000000000000000000000001000000 = ::1).
+#
+# Why this is NOT vacuous:
+#   - We run the cm ops DURING the observation window (between snapshots).
+#   - If cm opened any external TCP connection, a new ESTABLISHED row with a
+#     non-loopback remote address would appear in /proc/net/tcp[6] and the diff
+#     would be non-empty, causing FAIL.
+#   - We filter loopback only; all other addresses (including RFC1918 / cloud
+#     IPs) would show up as new rows and fail the assertion.
+# ---------------------------------------------------------------------------
+
+# Helper: extract ESTABLISHED remote addresses from /proc/net/tcp[6],
+# excluding loopback (7F000001 = 127.0.0.1) and zero (00000000) entries.
+_tcp_established_remotes() {
+  # Reads /proc/net/tcp and /proc/net/tcp6 inside the container.
+  # State column (col 4) = 01 for ESTABLISHED; remote addr is col 3.
+  docker exec "$T2_CONTAINER_NAME" /bin/bash -c '
+    for f in /proc/net/tcp /proc/net/tcp6; do
+      [ -f "$f" ] || continue
+      awk "NR>1 && \$4==\"01\" {print \$3}" "$f"
+    done
+  ' 2>/dev/null | sort -u
+}
+
+echo ""
+echo "--- T2e: Egress assertion (cm ops open zero external TCP connections) ---"
+
+# Before snapshot.
+_egress_before=$(_tcp_established_remotes)
+
+# Run the cm ops that would trigger egress if cm phoned home.
+_egress_ctx_rc=0
+docker exec "$T2_CONTAINER_NAME" \
+  /usr/local/bin/cm context "rip-cage-l0u2 egress probe task" --json >/dev/null 2>&1 || _egress_ctx_rc=$?
+
+_egress_add_rc=0
+docker exec "$T2_CONTAINER_NAME" \
+  /usr/local/bin/cm playbook add "rip-cage-l0u2-egress-probe-sentinel" --category=observation >/dev/null 2>&1 || _egress_add_rc=$?
+
+_egress_list_rc=0
+docker exec "$T2_CONTAINER_NAME" \
+  /usr/local/bin/cm playbook list >/dev/null 2>&1 || _egress_list_rc=$?
+
+# After snapshot.
+_egress_after=$(_tcp_established_remotes)
+
+# Diff: find addresses in after that were not in before.
+# Filter out pure loopback hex representations:
+#   7F000001 = 127.0.0.1 (IPv4 loopback, little-endian)
+#   00000000 = 0.0.0.0 (wildcard, not a real connection)
+#   00000000000000000000000001000000 = ::1 (IPv6 loopback)
+_new_connections=""
+while IFS= read -r _addr; do
+  [[ -z "$_addr" ]] && continue
+  # Strip port (format ADDR:PORT)
+  _remote_ip="${_addr%%:*}"
+  # Skip all-zeros (wildcard) and known loopback representations.
+  [[ "$_remote_ip" == "00000000" ]] && continue
+  [[ "$_remote_ip" == "7F000001" ]] && continue
+  # IPv6 loopback variants
+  [[ "$_remote_ip" == "00000000000000000000000001000000" ]] && continue
+  [[ "$_remote_ip" == "00000000000000000000000000000001" ]] && continue
+  # Check if this address was already present before the cm ops.
+  if ! echo "$_egress_before" | grep -qxF "$_addr"; then
+    _new_connections="${_new_connections}${_addr} "
+  fi
+done <<< "$_egress_after"
+
+if [[ -z "${_new_connections// /}" ]]; then
+  pass "T2e cm ops opened ZERO external TCP connections (egress-before=${_egress_ctx_rc:-0}, add=${_egress_add_rc:-0}, list=${_egress_list_rc:-0})"
+else
+  fail "T2e EGRESS VIOLATION: cm ops opened new external TCP connections: '${_new_connections}' — cm must not phone home (ADR-005 D8)"
 fi
 
 # ---------------------------------------------------------------------------
