@@ -84,7 +84,7 @@ cm playbook list
 - After discovering something worth preserving: `cm playbook add --category=observation "..."`.
 - After confirming a behavioral calibration: `cm playbook add --category=calibration "..."`.
 
-**Security note (ADR-024 D1):** the RW bind mount means in-cage cm writes back to the host
+**Security note (ADR-024 D5):** the RW bind mount means in-cage cm writes back to the host
 L2A store. This is the intended behaviour — in-cage L2A participation is the point. Operators
 opt in by having a host cm store. See `docs/reference/cm.md` for the full threat note.
 
