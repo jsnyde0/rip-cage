@@ -1593,7 +1593,7 @@ _up_prepare_docker_mounts() {
   fi
 
   # cm (cass-memory) L2A store: RW bind mount so in-cage cm context/playbook commands
-  # read and write the same store as the host (rip-cage-l0u2.2 / ADR-024 D1).
+  # read and write the same store as the host (rip-cage-l0u2.2 / ADR-024 D5).
   # Host path resolved via cm's own precedence: CASS_MEMORY_HOME → XDG_DATA_HOME/cass-memory
   # → ~/.cass-memory.  In-cage target is deterministic: /home/agent/.cass-memory (the cage
   # sets neither CASS_MEMORY_HOME nor XDG_DATA_HOME, so in-cage cm resolves to that default).
@@ -1603,25 +1603,19 @@ _up_prepare_docker_mounts() {
   # in by HAVING a host cm store (absent store → skip, no seed). CLAUDE.md "layers not walls /
   # operator opt-in" framing applies: the agent can read/write the store but is subject to the
   # cage's blast-radius controls for any harm beyond the store itself.
-  local _cm_host_path _cm_host_resolved
-  if _cm_host_path=$(_resolve_cass_memory_host_path 2>/dev/null) && [[ -d "$_cm_host_path" ]]; then
-    # ADR-023 D7 FIRM: denylist matching must run against the realpath-resolved target
-    # so a CASS_MEMORY_HOME symlink into a denylisted dir is caught (same mechanism
-    # as env-file, beads-dir, and symlink-follow mounts — resolve first, then check).
-    _cm_host_resolved=$(realpath "$_cm_host_path" 2>/dev/null) || _cm_host_resolved="$_cm_host_path"
-    # ADR-023 D6: denylist check — fail-loud (managed mount, not incidental surface).
-    if _check_secret_path_denylist "$_cm_host_resolved" "$_path"; then
-      local _cm_denied_pat
-      _cm_denied_pat=$(_secret_path_denylist_matched_pattern "$_cm_host_resolved" "$_path" 2>/dev/null || true)
-      _emit_denylist_denial "$_cm_host_resolved" "${_cm_denied_pat:-<unknown>}"
-      exit 1
-    fi
-    echo "[rip-cage] cm store: mounting ${_cm_host_resolved} → /home/agent/.cass-memory (rw)" >&2
-    _UP_RUN_ARGS+=(-v "${_cm_host_resolved}:/home/agent/.cass-memory")
+  # Resolve + realpath + denylist via _cm_build_mount_arg (extracted for testability, rip-cage-l0u2.5).
+  local _cm_mount_resolved _cm_build_rc=0
+  _cm_mount_resolved=$(_cm_build_mount_arg "$_path") || _cm_build_rc=$?
+  if [[ "$_cm_build_rc" -eq 2 ]]; then
+    # Denial message already emitted to stderr by _cm_build_mount_arg.
+    exit 1
+  elif [[ "$_cm_build_rc" -eq 0 ]] && [[ -n "$_cm_mount_resolved" ]]; then
+    echo "[rip-cage] cm store: mounting ${_cm_mount_resolved} → /home/agent/.cass-memory (rw)" >&2
+    _UP_RUN_ARGS+=(-v "${_cm_mount_resolved}:/home/agent/.cass-memory")
   else
-    log "Warning: cm store not found at resolved host path (${_cm_host_path:-<unresolved>}) — cm mount skipped (in-cage cm will use container-local storage)"
+    log "Warning: cm store not found at resolved host path — cm mount skipped (in-cage cm will use container-local storage)"
   fi
-  unset _cm_host_path _cm_host_resolved
+  unset _cm_mount_resolved _cm_build_rc
 
   # CAGE_HOST_ADDR explicit pass-through for non-interactive pi -p runs.
   # Resolve on the host side so the value is never empty inside the container.
@@ -7350,6 +7344,48 @@ _resolve_cass_memory_host_path() {
   fi
   printf '%s' "$_cm_path"
   [[ -d "$_cm_path" ]]
+}
+
+# _cm_build_mount_arg <workspace_path> — resolve + realpath + denylist-check the cm host path.
+#
+# Extracted from _up_prepare_docker_mounts for testability (rip-cage-l0u2.5 F4).
+# This is the authoritative path through which the cm mount arg is constructed;
+# _up_prepare_docker_mounts CALLS this function (not a bypass copy).
+#
+# ADR-023 D7 FIRM: realpath is applied before the denylist check so a symlink
+# CASS_MEMORY_HOME into a denylisted dir is caught.
+#
+# Parameters:
+#   $1  workspace_path — passed to _check_secret_path_denylist as the workspace root
+#
+# Stdout:  realpath-resolved host cm store path (only when returning 0)
+# Stderr:  warning/error messages (denial message, skip warnings)
+# Returns: 0  — path resolved, realpathed, and allowed; echoes path to stdout
+#          1  — no store directory found (skip; no mount); nothing on stdout
+#          2  — path denied by denylist; denial message on stderr; nothing on stdout
+_cm_build_mount_arg() {
+  local _workspace_path="$1"
+  local _cm_raw_path _cm_resolved
+
+  # Resolve via cm's own precedence (CASS_MEMORY_HOME → XDG_DATA_HOME/cass-memory → ~/.cass-memory).
+  if ! _cm_raw_path=$(_resolve_cass_memory_host_path 2>/dev/null) || [[ ! -d "$_cm_raw_path" ]]; then
+    return 1  # no store found; caller will skip the mount
+  fi
+
+  # ADR-023 D7 FIRM: realpath first, then denylist — same mechanism as env-file,
+  # beads-dir, and symlink-follow mounts.
+  _cm_resolved=$(realpath "$_cm_raw_path" 2>/dev/null) || _cm_resolved="$_cm_raw_path"
+
+  # ADR-023 D6: denylist check — fail-loud (managed mount, not incidental surface).
+  if _check_secret_path_denylist "$_cm_resolved" "$_workspace_path"; then
+    local _cm_denied_pat
+    _cm_denied_pat=$(_secret_path_denylist_matched_pattern "$_cm_resolved" "$_workspace_path" 2>/dev/null || true)
+    _emit_denylist_denial "$_cm_resolved" "${_cm_denied_pat:-<unknown>}"
+    return 2  # denied; caller must abort
+  fi
+
+  printf '%s' "$_cm_resolved"
+  return 0
 }
 
 _config_project_path() {

@@ -130,6 +130,12 @@ fi
 #   T3f — denylist check REJECTS a path whose component matches the denylist
 #   T3g — denylist check REJECTS the realpath of a symlink into a denylisted dir
 #         (the ADR-023 D7 FIRM requirement: symlink bypass cannot skip the check)
+#   T3h — _cm_build_mount_arg: symlink CASS_MEMORY_HOME → denylisted dir is DENIED
+#         (wiring test: if rc's realpath line is removed, T3h goes RED because the
+#         neutral symlink name passes the denylist, but the resolved .ssh path fails;
+#         without realpath the check sees the neutral name → ALLOW → T3h FAIL)
+#   T3i — _cm_build_mount_arg: symlink CASS_MEMORY_HOME → safe dir emits the
+#         realpath-canonical path, not the raw symlink path (mount arg uses realpath)
 #
 # Why T3 is not vacuous:
 #   - T3a/T3b/T3c directly call _resolve_cass_memory_host_path; if that function
@@ -140,6 +146,11 @@ fi
 #     directly on the realpath-resolved path (matching F3's code exactly).
 #   - T3f directly exercises _check_secret_path_denylist with a denylisted config;
 #     if denylist matching is broken, T3f FAILS.
+#   - T3h/T3i drive _cm_build_mount_arg — the ACTUAL helper called by
+#     _up_prepare_docker_mounts (rip-cage-l0u2.5 refactor).  If the realpath line
+#     is removed from _cm_build_mount_arg, T3h goes RED (neutral symlink name
+#     bypasses denylist → ALLOW instead of DENY).  T3i goes RED if the mount arg
+#     uses the symlink path instead of the resolved canonical path.
 # =============================================================================
 
 echo ""
@@ -298,6 +309,67 @@ YAML
     pass "T3g symlink-to-denylisted-dir: realpath='${_t3g_resolved}' DENIED by denylist (ADR-023 D7 FIRM)"
   else
     fail "T3g symlink-to-denylisted-dir: realpath='${_t3g_resolved}' INCORRECTLY ALLOWED — denylist symlink bypass (ADR-023 D7 FIRM violated)"
+  fi
+
+  # -------------------------------------------------------------------------
+  # T3h — WIRING TEST (rip-cage-l0u2.5 F4): _cm_build_mount_arg denies a
+  # CASS_MEMORY_HOME symlink that resolves to a denylisted path.
+  #
+  # This is the regression net for rc's realpath wiring.  If the realpath line
+  # is removed from _cm_build_mount_arg, the helper receives the neutral symlink
+  # path (no .ssh component → denylist check passes → ALLOW → returns 0).
+  # With realpath in place: symlink resolves to the .ssh dir → denylist check
+  # fires → returns 2 (DENY).
+  #
+  # Proof discipline: after this test is green, a revert of the realpath line
+  # in _cm_build_mount_arg must make T3h go RED.  (See commit message for
+  # revert→RED / restore→GREEN evidence captured at implementation time.)
+  # -------------------------------------------------------------------------
+  # Reuse _T3_REAL_SSH (.ssh dir) and a fresh neutral-named symlink from T3g's
+  # setup.  _T3_REAL_SSH is ${_T3_TMP}/.ssh, which matches the denylist.
+  _T3H_SYMLINK="${_T3_TMP}/neutral-cm-store-h"
+  ln -sf "$_T3_REAL_SSH" "$_T3H_SYMLINK"
+  _t3h_out=""
+  _t3h_rc=0
+  _t3h_out=$(CASS_MEMORY_HOME="$_T3H_SYMLINK" \
+    RC_CONFIG_GLOBAL="${_T3_CFG_DIR}/rip-cage/config.yaml" \
+    _cm_build_mount_arg "$_T3_WS" 2>/dev/null) || _t3h_rc=$?
+  # Expected: return code 2 (denied), nothing on stdout.
+  if [[ "$_t3h_rc" -eq 2 ]]; then
+    pass "T3h _cm_build_mount_arg: symlink→denylisted-dir DENIED (rc=${_t3h_rc}) — realpath wiring correct (ADR-023 D7 FIRM)"
+  elif [[ "$_t3h_rc" -eq 0 ]]; then
+    fail "T3h _cm_build_mount_arg: symlink→denylisted-dir INCORRECTLY ALLOWED (rc=0, out='${_t3h_out}') — realpath missing from _cm_build_mount_arg (ADR-023 D7 FIRM violated)"
+  else
+    fail "T3h _cm_build_mount_arg: unexpected rc=${_t3h_rc} (expected 2=DENY) — out='${_t3h_out}'"
+  fi
+
+  # -------------------------------------------------------------------------
+  # T3i — WIRING TEST: _cm_build_mount_arg echoes the realpath-canonical path
+  # (not the raw symlink) for a symlink CASS_MEMORY_HOME to a safe store.
+  #
+  # If realpath is removed from _cm_build_mount_arg, the helper would echo the
+  # symlink path (e.g. /tmp/.../symlink-safe-store), not the canonical resolved
+  # path (e.g. /private/tmp/.../safe-store on macOS).  T3i asserts the canonical
+  # path is used — reverting realpath flips T3i to RED (on systems where
+  # realpath changes the path, e.g. macOS /tmp → /private/tmp).
+  # -------------------------------------------------------------------------
+  _T3I_REAL_DIR="${_T3_TMP}/safe-store-i"
+  mkdir -p "$_T3I_REAL_DIR"
+  _T3I_SYMLINK="${_T3_TMP}/symlink-safe-store-i"
+  ln -s "$_T3I_REAL_DIR" "$_T3I_SYMLINK"
+  _T3I_REAL_CANON=$(realpath "$_T3I_REAL_DIR" 2>/dev/null) || _T3I_REAL_CANON="$_T3I_REAL_DIR"
+  _t3i_out=""
+  _t3i_rc=0
+  _t3i_out=$(CASS_MEMORY_HOME="$_T3I_SYMLINK" \
+    RC_CONFIG_GLOBAL="${_T3_CFG_DIR}/rip-cage/config.yaml" \
+    _cm_build_mount_arg "$_T3_WS" 2>/dev/null) || _t3i_rc=$?
+  # Expected: return code 0, stdout = canonical realpath of _T3I_REAL_DIR.
+  if [[ "$_t3i_rc" -eq 0 ]] && [[ "$_t3i_out" == "$_T3I_REAL_CANON" ]]; then
+    pass "T3i _cm_build_mount_arg: symlink store → canonical realpath echoed ('${_t3i_out}') — mount arg uses resolved path"
+  elif [[ "$_t3i_rc" -ne 0 ]]; then
+    fail "T3i _cm_build_mount_arg: unexpected failure rc=${_t3i_rc} — out='${_t3i_out}'"
+  else
+    fail "T3i _cm_build_mount_arg: echoed '${_t3i_out}' but expected canonical '${_T3I_REAL_CANON}' — realpath not applied to mount arg"
   fi
 
 fi  # end: source rc block
