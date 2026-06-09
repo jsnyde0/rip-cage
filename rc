@@ -1599,10 +1599,16 @@ _up_prepare_docker_mounts() {
   # sets neither CASS_MEMORY_HOME nor XDG_DATA_HOME, so in-cage cm resolves to that default).
   # Plain -v (not a symlink-follow scan root) to avoid resume-fingerprint coupling (rip-cage-6uz).
   # ADR-024 D1: RW mount accepted — in-cage L2A participation is the point; non-adversarial
-  # threat model; operator opts in by having a host cm store.
-  _ensure_cass_memory_seed
+  # threat model; operator opts in by HAVING a host cm store (absent store → skip, no seed).
   local _cm_host_path
   if _cm_host_path=$(_resolve_cass_memory_host_path 2>/dev/null) && [[ -d "$_cm_host_path" ]]; then
+    # ADR-023 D6: denylist check — fail-loud (managed mount, not incidental surface).
+    if _check_secret_path_denylist "$_cm_host_path" "$_path"; then
+      local _cm_denied_pat
+      _cm_denied_pat=$(_secret_path_denylist_matched_pattern "$_cm_host_path" "$_path" 2>/dev/null || true)
+      _emit_denylist_denial "$_cm_host_path" "${_cm_denied_pat:-<unknown>}"
+      exit 1
+    fi
     echo "[rip-cage] cm store: mounting ${_cm_host_path} → /home/agent/.cass-memory (rw)" >&2
     _UP_RUN_ARGS+=(-v "${_cm_host_path}:/home/agent/.cass-memory")
   else
@@ -7320,11 +7326,12 @@ _ensure_pi_auth_seed() {
 }
 
 # _resolve_cass_memory_host_path — resolve the host cm store path by cm's own precedence:
-#   1. $CASS_MEMORY_HOME (if set and the dir exists)
-#   2. $XDG_DATA_HOME/cass-memory (if XDG_DATA_HOME is set and that dir exists)
+#   1. $CASS_MEMORY_HOME (if set)
+#   2. $XDG_DATA_HOME/cass-memory (if XDG_DATA_HOME is set)
 #   3. ~/.cass-memory (default)
-# Writes the resolved path to stdout. Returns 0 if the path exists, 1 if not.
-# This mirrors cm's src/utils.ts:1071-1085 store resolution (rip-cage-l0u2.2).
+# Writes the resolved path to stdout. Returns 0 if the resolved path exists (is a dir), 1 if not.
+# The path is returned regardless of existence — existence only affects the return code,
+# mirroring cm's src/utils.ts:1071-1085 store resolution (rip-cage-l0u2.2).
 _resolve_cass_memory_host_path() {
   local _cm_path
   if [[ -n "${CASS_MEMORY_HOME:-}" ]]; then
@@ -7336,27 +7343,6 @@ _resolve_cass_memory_host_path() {
   fi
   printf '%s' "$_cm_path"
   [[ -d "$_cm_path" ]]
-}
-
-# _ensure_cass_memory_seed — create the host cm store dir if absent (rip-cage-l0u2.2).
-# Modeled on _ensure_pi_auth_seed (idempotent, warn-only on failure).
-# Resolves the host path via _resolve_cass_memory_host_path.
-_ensure_cass_memory_seed() {
-  local _cm_path
-  _cm_path=$(_resolve_cass_memory_host_path 2>/dev/null || true)
-  if [[ -z "$_cm_path" ]]; then
-    return 0
-  fi
-  # Dir already exists — idempotent no-op.
-  if [[ -d "$_cm_path" ]]; then
-    return 0
-  fi
-  # Path absent — seed it (mkdir -p, warn on failure).
-  if ! mkdir -p "$_cm_path"; then
-    echo "rip-cage: Warning: could not create ${_cm_path} — cm store mount will be skipped." >&2
-    return 0
-  fi
-  echo "rip-cage: Seeded empty cm store dir at ${_cm_path} for cm playbook persistence (rip-cage-l0u2.2)." >&2
 }
 
 _config_project_path() {

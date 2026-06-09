@@ -12,8 +12,8 @@ Tier 2A (L2A) observation/calibration store as the host agent.
 `rc up` resolves the host cm store path using cm's own precedence
 (mirroring `src/utils.ts` store resolution):
 
-1. `$CASS_MEMORY_HOME` — if set and the directory exists
-2. `$XDG_DATA_HOME/cass-memory` — if `XDG_DATA_HOME` is set and that directory exists
+1. `$CASS_MEMORY_HOME` — if set (path used regardless of existence; existence gates whether the mount fires)
+2. `$XDG_DATA_HOME/cass-memory` — if `XDG_DATA_HOME` is set (same existence semantics)
 3. `~/.cass-memory` — the default fallback
 
 The resolved path is mounted at `/home/agent/.cass-memory` (read-write). The cage sets
