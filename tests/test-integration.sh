@@ -87,10 +87,20 @@ echo "Step 9: Verify hook path consistency..."
 docker exec "$CONTAINER_NAME" test -x /usr/local/bin/dcg
 docker exec "$CONTAINER_NAME" test -x /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh
 
-# 10. Verify persistent state symlinks (from init step 3)
+# 10. Verify persistent state wiring (init-rip-cage.sh step 4, rip-cage-dn2)
+# projects/sessions must be wired for persistence: either a symlink (legacy
+# .claude-state volume mode) OR a host bind-mountpoint (dn2 preferred path).
+# A plain directory means no persistence wiring and must fail — so this is not
+# weakened to a trivial `test -d`. The mountpoint probe mirrors
+# init-rip-cage.sh _is_mountpoint (awk over /proc/mounts).
 echo "Step 10: Verify persistent state..."
-docker exec "$CONTAINER_NAME" test -L /home/agent/.claude/projects || { echo "FAIL: projects symlink missing"; exit 1; }
-docker exec "$CONTAINER_NAME" test -L /home/agent/.claude/sessions || { echo "FAIL: sessions symlink missing"; exit 1; }
+for _persist in projects sessions; do
+  docker exec "$CONTAINER_NAME" sh -c '
+    p="$1"
+    if [ -L "$p" ]; then exit 0; fi
+    awk -v x="$p" "\$2 == x { f=1 } END { exit !f }" /proc/mounts
+  ' _ "/home/agent/.claude/$_persist" || { echo "FAIL: $_persist not wired for persistence (neither symlink nor bind-mountpoint)"; exit 1; }
+done
 
 # 11. bd wrapper is a shell script (shebang check — file command not available in container)
 echo "Step 11: Verify bd wrapper is a shell script..."
