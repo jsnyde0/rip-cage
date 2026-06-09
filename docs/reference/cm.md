@@ -1,6 +1,6 @@
 # cm — Host L2A Store in the Cage
 
-`cm` is the **cass-memory CLI** (`github.com/gastownhall/cass-memory`). When the operator's
+`cm` is the **cass-memory CLI** (`github.com/Dicklesworthstone/cass_memory_system`). When the operator's
 host has a cm store, rip-cage bind-mounts it read-write into the cage at
 `/home/agent/.cass-memory` so the in-cage agent can read from and write to the **same**
 Tier 2A (L2A) observation/calibration store as the host agent.
@@ -52,7 +52,7 @@ this surface so in-cage Claude Code agents discover it automatically.
 
 ---
 
-## Security note (ADR-024 D1)
+## Security note (ADR-024 D5)
 
 The cm mount is **read-write**. This means a prompt-injected in-cage agent can read from
 and write to the host L2A store — injecting or modifying observations and calibrations that
@@ -60,9 +60,16 @@ would influence future agent sessions on the host.
 
 **This risk is accepted** for the following reasons:
 
-- The rip-cage threat model is **non-adversarial** (ADR-024 D1): it targets accident and
-  prompt-injection from non-adversarial fetched content, not a motivated attacker operating
-  inside the cage.
+- ADR-024 D5 ("injection-affected agent is still trying to do its job") is the load-bearing
+  rationale: the cage's "layers not walls" philosophy is coherent precisely because an
+  honest (or injection-affected) agent does not coordinate across layers to find a bypass —
+  it surfaces refusals and acts in good faith. D1 only admits prompt-injection as a threat
+  class in scope; D5 is what actually permits accepting the RW-mount risk.
+- The rip-cage threat model covers **non-adversarial** agents (ADR-024 D5): an
+  injection-affected agent following hostile instructions is still "trying to do its job"
+  and subject to cage controls; it is not coordinating to route around them.
+- CLAUDE.md "layers not walls / operator opt-in": the operator opts in by having a host
+  cm store; absent store → skip, no seed.
 - In-cage L2A participation is the **point** of the mount. Preventing writes would defeat it.
 - The operator opts in by having a host cm store. If no store exists, the mount is skipped.
 

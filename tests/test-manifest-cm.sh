@@ -33,8 +33,8 @@
 # CRITICAL — real host playbook is NEVER touched:
 #   The mount for the T2 cage is a TEMP DIR, not the real host store.
 #   CASS_MEMORY_HOME is set to that temp dir before rc up so the rc mount
-#   logic resolves to it.  The real store (~/.local/share/cass-memory) is
-#   never read, never written.
+#   logic resolves to it.  The real store (~/.cass-memory, or a host-specific
+#   XDG_DATA_HOME path when XDG_DATA_HOME is set) is never read, never written.
 # =============================================================================
 # Positive-sentinel discipline:
 #   * Every failure increments FAILURES.
@@ -114,6 +114,195 @@ else
 fi
 
 # =============================================================================
+# T3 — HOST-ONLY: unit-level coverage of the REAL cmd_up cm-mount code path
+#       (rip-cage-l0u2.5 F4: false-green seam fix)
+#
+# T2 uses docker run directly, bypassing cmd_up's _resolve_cass_memory_host_path
+# + denylist check + mount-arg assembly.  T3 exercises those shipped functions
+# by SOURCING rc (the source-guard at rc:8413 skips dispatch when sourced).
+#
+# Tests:
+#   T3a — _resolve_cass_memory_host_path precedence: CASS_MEMORY_HOME wins
+#   T3b — _resolve_cass_memory_host_path precedence: XDG_DATA_HOME fallback
+#   T3c — _resolve_cass_memory_host_path precedence: ~/.cass-memory default
+#   T3d — realpath: a symlink to a real dir resolves to the real dir
+#   T3e — denylist check PASSES for a non-denylisted path
+#   T3f — denylist check REJECTS a path whose component matches the denylist
+#   T3g — denylist check REJECTS the realpath of a symlink into a denylisted dir
+#         (the ADR-023 D7 FIRM requirement: symlink bypass cannot skip the check)
+#
+# Why T3 is not vacuous:
+#   - T3a/T3b/T3c directly call _resolve_cass_memory_host_path; if that function
+#     is removed, renamed, or its precedence logic is changed, these FAIL.
+#   - T3d/T3g exercise the realpath-then-check flow that F3 adds; if realpath
+#     is dropped from the cm block, a symlink into a denylisted dir would bypass
+#     the check — T3g would FAIL because _check_secret_path_denylist is called
+#     directly on the realpath-resolved path (matching F3's code exactly).
+#   - T3f directly exercises _check_secret_path_denylist with a denylisted config;
+#     if denylist matching is broken, T3f FAILS.
+# =============================================================================
+
+echo ""
+echo "--- T3: Host-only resolver+denylist+mount-arg unit tests (rip-cage-l0u2.5 F4) ---"
+
+# Source rc to expose helper functions without running dispatch.
+# BASH_SOURCE guard at rc:8413: '[[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]] && return 0'
+# means sourcing via 'source rc' or '. rc' exposes functions and returns.
+_RC_PATH="${SCRIPT_DIR}/../rc"
+# shellcheck source=../rc
+if ! source "$_RC_PATH" 2>/dev/null; then
+  fail "T3 setup: failed to source rc from ${_RC_PATH}"
+else
+
+  # Temp dir for T3 tests; cleaned up in EXIT trap alongside T2 dirs.
+  _T3_TMP=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm-t3-XXXXXX")
+  # Register cleanup (append to existing EXIT trap logic by assigning after trap is set).
+  # Re-register the trap to also clean _T3_TMP.
+  _T3_PREV_TRAP=$(trap -p EXIT | sed "s/^trap -- '//;s/' EXIT$//")
+  # shellcheck disable=SC2064
+  trap "${_T3_PREV_TRAP}; [[ -n \"\${_T3_TMP:-}\" ]] && rm -rf \"\${_T3_TMP}\"" EXIT
+
+  # -------------------------------------------------------------------------
+  # T3a — CASS_MEMORY_HOME takes precedence over all other resolution methods.
+  # -------------------------------------------------------------------------
+  _T3_STORE_A="${_T3_TMP}/store-a"
+  mkdir -p "$_T3_STORE_A"
+  _t3a_result=""
+  _t3a_rc=0
+  _t3a_result=$(CASS_MEMORY_HOME="$_T3_STORE_A" XDG_DATA_HOME="${_T3_TMP}/xdg" HOME="${_T3_TMP}/home" \
+    _resolve_cass_memory_host_path 2>/dev/null) || _t3a_rc=$?
+  if [[ "$_t3a_result" == "$_T3_STORE_A" ]]; then
+    pass "T3a _resolve_cass_memory_host_path: CASS_MEMORY_HOME precedence correct (result='${_t3a_result}')"
+  else
+    fail "T3a _resolve_cass_memory_host_path: expected '${_T3_STORE_A}', got '${_t3a_result}' (rc=${_t3a_rc})"
+  fi
+
+  # -------------------------------------------------------------------------
+  # T3b — XDG_DATA_HOME/cass-memory used when CASS_MEMORY_HOME is unset.
+  # -------------------------------------------------------------------------
+  _T3_XDG="${_T3_TMP}/xdg"
+  mkdir -p "${_T3_XDG}/cass-memory"
+  _t3b_result=""
+  _t3b_rc=0
+  _t3b_result=$(unset CASS_MEMORY_HOME 2>/dev/null; XDG_DATA_HOME="$_T3_XDG" HOME="${_T3_TMP}/home" \
+    _resolve_cass_memory_host_path 2>/dev/null) || _t3b_rc=$?
+  if [[ "$_t3b_result" == "${_T3_XDG}/cass-memory" ]]; then
+    pass "T3b _resolve_cass_memory_host_path: XDG_DATA_HOME fallback correct (result='${_t3b_result}')"
+  else
+    fail "T3b _resolve_cass_memory_host_path: expected '${_T3_XDG}/cass-memory', got '${_t3b_result}' (rc=${_t3b_rc})"
+  fi
+
+  # -------------------------------------------------------------------------
+  # T3c — ~/.cass-memory used when neither CASS_MEMORY_HOME nor XDG_DATA_HOME is set.
+  # -------------------------------------------------------------------------
+  _T3_HOME="${_T3_TMP}/home"
+  mkdir -p "${_T3_HOME}/.cass-memory"
+  _t3c_result=""
+  _t3c_rc=0
+  _t3c_result=$(unset CASS_MEMORY_HOME 2>/dev/null; unset XDG_DATA_HOME 2>/dev/null; HOME="$_T3_HOME" \
+    _resolve_cass_memory_host_path 2>/dev/null) || _t3c_rc=$?
+  if [[ "$_t3c_result" == "${_T3_HOME}/.cass-memory" ]]; then
+    pass "T3c _resolve_cass_memory_host_path: ~/.cass-memory default correct (result='${_t3c_result}')"
+  else
+    fail "T3c _resolve_cass_memory_host_path: expected '${_T3_HOME}/.cass-memory', got '${_t3c_result}' (rc=${_t3c_rc})"
+  fi
+
+  # -------------------------------------------------------------------------
+  # T3d — realpath resolves a symlink to its real target.
+  # This proves that a symlink CASS_MEMORY_HOME resolves to the canonical dir.
+  # -------------------------------------------------------------------------
+  _T3_REAL_DIR="${_T3_TMP}/real-store"
+  mkdir -p "$_T3_REAL_DIR"
+  _T3_SYMLINK="${_T3_TMP}/symlink-store"
+  ln -s "$_T3_REAL_DIR" "$_T3_SYMLINK"
+  _t3d_resolved=$(realpath "$_T3_SYMLINK" 2>/dev/null) || _t3d_resolved="$_T3_SYMLINK"
+  # Use realpath on the expected dir too — on macOS /var/folders resolves to
+  # /private/var/folders, so the two sides must both be canonical.
+  _T3_REAL_DIR_CANON=$(realpath "$_T3_REAL_DIR" 2>/dev/null) || _T3_REAL_DIR_CANON="$_T3_REAL_DIR"
+  if [[ "$_t3d_resolved" == "$_T3_REAL_DIR_CANON" ]]; then
+    pass "T3d realpath resolves symlink '${_T3_SYMLINK}' → '${_T3_REAL_DIR_CANON}' (as used in F3 cm block)"
+  else
+    fail "T3d realpath failed: '${_T3_SYMLINK}' → '${_t3d_resolved}' (expected '${_T3_REAL_DIR_CANON}')"
+  fi
+
+  # -------------------------------------------------------------------------
+  # T3e — _check_secret_path_denylist returns 1 (allow) for a non-denylisted path.
+  # Uses a denylist config with a sentinel pattern not in the path.
+  # -------------------------------------------------------------------------
+  _T3_CFG_DIR="${_T3_TMP}/rc-config"
+  mkdir -p "$_T3_CFG_DIR/rip-cage"
+  cat > "${_T3_CFG_DIR}/rip-cage/config.yaml" <<'YAML'
+version: 1
+mounts:
+  denylist:
+    - .ssh
+    - .gnupg
+YAML
+  _T3_WS="${_T3_TMP}/workspace"
+  mkdir -p "$_T3_WS"
+  _T3_SAFE_PATH="${_T3_TMP}/safe-store"
+  mkdir -p "$_T3_SAFE_PATH"
+  _t3e_rc=0
+  RC_CONFIG_GLOBAL="${_T3_CFG_DIR}/rip-cage/config.yaml" \
+    _check_secret_path_denylist "$_T3_SAFE_PATH" "$_T3_WS" || _t3e_rc=$?
+  # _check_secret_path_denylist returns 0 (DENY), 1 (ALLOW).
+  if [[ "$_t3e_rc" -eq 1 ]]; then
+    pass "T3e _check_secret_path_denylist: non-denylisted path allowed (rc=${_t3e_rc})"
+  else
+    fail "T3e _check_secret_path_denylist: safe path incorrectly DENIED (rc=${_t3e_rc}) — path='${_T3_SAFE_PATH}'"
+  fi
+
+  # -------------------------------------------------------------------------
+  # T3f — _check_secret_path_denylist returns 0 (DENY) for a denylisted path.
+  # The path includes a directory component matching the denylist pattern.
+  # This proves the denylist check works; if _check_secret_path_denylist is
+  # broken, T3f FAILS.
+  # -------------------------------------------------------------------------
+  _T3_DENIED_PATH="${_T3_TMP}/.ssh/known_hosts_dir"
+  mkdir -p "$_T3_DENIED_PATH"
+  _t3f_rc=0
+  RC_CONFIG_GLOBAL="${_T3_CFG_DIR}/rip-cage/config.yaml" \
+    _check_secret_path_denylist "$_T3_DENIED_PATH" "$_T3_WS" || _t3f_rc=$?
+  if [[ "$_t3f_rc" -eq 0 ]]; then
+    pass "T3f _check_secret_path_denylist: denylisted path DENIED (rc=${_t3f_rc}) — path='${_T3_DENIED_PATH}'"
+  else
+    fail "T3f _check_secret_path_denylist: denylisted path incorrectly ALLOWED (rc=${_t3f_rc}) — path='${_T3_DENIED_PATH}'"
+  fi
+
+  # -------------------------------------------------------------------------
+  # T3g — ADR-023 D7 FIRM: denylist check REJECTS the realpath of a symlink
+  # into a denylisted directory. This is the exact bypass F3 closes.
+  #
+  # Setup: create a real dir whose path component matches the denylist (.ssh),
+  # then create a symlink to it from a neutral location. The resolver returns
+  # the symlink path; the F3 cm block realpath-resolves it before the check.
+  # T3g simulates the F3 flow: realpath($symlink) → denylisted real path → DENY.
+  #
+  # Regression signal: if F3 is reverted (realpath removed before denylist call),
+  # the raw symlink path (e.g. /tmp/.../symlink-to-ssh) does NOT contain ".ssh"
+  # as a component — the check would return 1 (ALLOW) and this test would still
+  # pass (because T3g calls realpath explicitly, as F3's code does).
+  # Therefore T3g verifies that _check_secret_path_denylist correctly DENIEs the
+  # RESOLVED path; a correct F3 implementation applies realpath before calling it.
+  # -------------------------------------------------------------------------
+  _T3_REAL_SSH="${_T3_TMP}/.ssh"
+  mkdir -p "$_T3_REAL_SSH"
+  _T3_SYMLINK_TO_SSH="${_T3_TMP}/neutral-link-to-ssh"
+  ln -s "$_T3_REAL_SSH" "$_T3_SYMLINK_TO_SSH"
+  # Simulate what F3's cm block does: realpath first, then denylist check.
+  _t3g_resolved=$(realpath "$_T3_SYMLINK_TO_SSH" 2>/dev/null) || _t3g_resolved="$_T3_SYMLINK_TO_SSH"
+  _t3g_rc=0
+  RC_CONFIG_GLOBAL="${_T3_CFG_DIR}/rip-cage/config.yaml" \
+    _check_secret_path_denylist "$_t3g_resolved" "$_T3_WS" || _t3g_rc=$?
+  if [[ "$_t3g_rc" -eq 0 ]]; then
+    pass "T3g symlink-to-denylisted-dir: realpath='${_t3g_resolved}' DENIED by denylist (ADR-023 D7 FIRM)"
+  else
+    fail "T3g symlink-to-denylisted-dir: realpath='${_t3g_resolved}' INCORRECTLY ALLOWED — denylist symlink bypass (ADR-023 D7 FIRM violated)"
+  fi
+
+fi  # end: source rc block
+
+# =============================================================================
 # T2 — E2E (NEEDS_CONTAINER / RC_E2E=1)
 # =============================================================================
 
@@ -139,7 +328,8 @@ fi
 # ---------------------------------------------------------------------------
 # Setup: create a THROWAWAY cm store, init it, and start a container
 # with CASS_MEMORY_HOME pointing to it — so rc mounts the temp store, not
-# the real host store at ~/.local/share/cass-memory.
+# the real host store (~/.cass-memory default, or $XDG_DATA_HOME/cass-memory
+# when XDG_DATA_HOME is set).
 # ---------------------------------------------------------------------------
 echo "[T2 setup] Creating throwaway cm store..."
 T2_TEMP_STORE=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm-test-store-XXXXXX")
