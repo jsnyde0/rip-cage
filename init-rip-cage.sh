@@ -425,6 +425,15 @@ else
     exit 1
 fi
 
+# cm (cass-memory) — ADR-005 D5 four-point integration detection (rip-cage-l0u2.2).
+# Decouples init from the Dockerfile: cm may or may not be present depending on
+# the image build.  Only emit status; no failure if absent (warn-only per ADR-001).
+if command -v cm >/dev/null 2>&1; then
+  echo "[rip-cage] cm (cass-memory) found — L2A store available at /home/agent/.cass-memory"
+else
+  echo "[rip-cage] cm not found in image — in-cage L2A playbook unavailable (non-fatal)"
+fi
+
 # Check auth (warn only, do not fail)
 if [ -f ~/.claude/.credentials.json ]; then
   echo "[rip-cage] OAuth credentials found"
