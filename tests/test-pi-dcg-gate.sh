@@ -190,15 +190,23 @@ else
   check "DCG pinning: tool_name=bash (lowercase) evaluated and denied destructive" "fail" "$dcg_pin_bash"
 fi
 
-# 4b. Verify dcg FAILS OPEN on unknown tool name (proves pinning is load-bearing)
-# A MCP tool name that is NOT in dcg's is_supported_shell_tool → no-command → allow
+# 4b. Diagnostic: which regime does dcg apply to an UNKNOWN (non-bash) tool_name?
+# BOTH regimes are SAFE — neither is a guard-correctness regression, so both PASS:
+#   - fail-open (allow): dcg does not evaluate mcp_exec → the gate's tool_name→bash
+#     pinning is what catches the destructive command. Pinning is load-bearing.
+#   - deny: dcg's own is_supported_shell_tool allowlist now covers mcp_exec (or it is
+#     conservative on unknown tools) → dcg catches it directly; pinning is then
+#     belt-and-suspenders.
+# A later dcg hardening that lands the deny regime must NOT read as a regression —
+# the prior version of this check FAILed on the deny (safer) outcome, an inverted
+# safety polarity fixed in rip-cage-16c. The real "pinning works" assertion is 4a
+# (tool_name=bash → destructive denied); 4b only reports dcg's raw regime.
 dcg_no_eval=$(printf '{"tool_name":"mcp_exec","tool_input":{"command":"rm -rf /"}}' | "$DCG_GUARD" 2>/dev/null || true)
 if echo "$dcg_no_eval" | grep -qE '"permissionDecision".*"deny"'; then
-  # dcg denied it — unexpected, but not a regression (conservative)
-  check "DCG pinning: unknown tool_name mcp_exec fails open without pinning (sensitivity proof)" "fail" \
-    "dcg denied mcp_exec — sensitivity proof inconclusive (dcg may have extended allowlist)"
+  check "DCG pinning: dcg directly guards unknown tool_name mcp_exec (belt-and-suspenders)" "pass" \
+    "dcg denied mcp_exec — dcg allowlist/conservatism covers the unknown tool; no regression, gate pinning still applies"
 else
-  check "DCG pinning: unknown tool_name mcp_exec fails open without pinning (sensitivity proof)" "pass" \
+  check "DCG pinning: dcg fails open on unknown tool_name mcp_exec (gate pinning load-bearing)" "pass" \
     "mcp_exec NOT evaluated by dcg — confirms dcg-gate MUST pin to bash for MCP tools"
 fi
 
