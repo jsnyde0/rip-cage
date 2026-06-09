@@ -40,6 +40,7 @@ NEEDS_CONTAINER=(
   "test-pi-cage-context.sh"  # calls rc up to create a live container; inspects CLAUDE.md inside cage
   "test-claude-concurrency.sh" # requires a live rip-cage container with Claude auth (ANTHROPIC_API_KEY or OAuth)
   "test-multi-agent-levers.sh" # requires a live rip-cage container; exercises rc agent lever + two-pi concurrency
+  "test-agent-mail-concurrent.sh" # requires RC_E2E=1 + pi auth + agent_mail fixture image; proves two concurrent pi agents coordinate via am CLI
 )
 
 # Helper: check if a given test basename is in NEEDS_CONTAINER.
@@ -171,6 +172,7 @@ run_test "${SCRIPT_DIR}/test-selftest-mode-gating.sh"  # rip-cage-fft: mode-gati
 run_pytest "${SCRIPT_DIR}/test_selftest_endpoint.py" --with pytest --with pyyaml python -m pytest "${SCRIPT_DIR}/test_selftest_endpoint.py" -v  # rip-cage-fft: proxy reserved endpoint unit tests
 run_test "${SCRIPT_DIR}/test-selftest-integration.sh"  # rip-cage-fft: container integration tests (init-firewall.sh → curl → iptables → proxy end-to-end)
 run_test "${SCRIPT_DIR}/test-agent-readability.sh"     # rip-cage-7wc: host-side fixture tests for agent *.md readability classification
+run_test "${SCRIPT_DIR}/test-agent-mail-concurrent.sh" # rip-cage-swv: two concurrent pi agents coordinate via am CLI (NEEDS_CONTAINER + RC_E2E)
 
 echo "=== run-host.sh complete ==="
 

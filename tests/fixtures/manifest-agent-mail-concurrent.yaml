@@ -1,0 +1,29 @@
+version: 1
+tools:
+  - name: agent-mail
+    archetype: IN-CAGE-DAEMON
+    # Pinned source: github.com/Dicklesworthstone/mcp_agent_mail_rust @ 8897497257c5fac79f7a3559cacf27fddc853d4a
+    version_pin: "0.3.10"
+    # Concurrent-demo variant: am serve-http --no-auth so the CLI commands
+    # (am mail send / am mail inbox) work without bearer-token enforcement.
+    # The shared manifest-agent-mail.yaml uses mcp-agent-mail serve --no-tui for
+    # the T2d sequential MCP-client demo; this concurrent variant (swv) needs the
+    # CLI path, hence the separate fixture (fixture-isolation per swv bead design).
+    # --no-auth: disables bearer-token enforcement so `am mail send/inbox` CLI
+    # commands (which call the daemon via HTTP /mcp/session) work without auth.
+    # Without --no-auth, mutating tools return JSON-RPC -32002 Forbidden even when
+    # HTTP_BEARER_TOKEN is unset (rip-cage-swv discovery: mcp-agent-mail serve uses
+    # contact-enforcement gating at the MCP session level; am serve-http --no-auth
+    # uses the same /mcp/ endpoint but removes this gate).
+    start: "STORAGE_ROOT=/var/lib/rip-cage-daemon/agent-mail am serve-http --no-auth --no-tui"
+    # /healthz bypasses bearer auth (lib.rs:57-60) — no token needed for health probe.
+    health: "curl -sf http://127.0.0.1:8765/healthz"
+    state_dir: "/var/lib/rip-cage-daemon/agent-mail"
+    # Prebuilt release download: pinned v0.3.10 binary from GitHub Releases.
+    install_cmd: "ARCH=$(uname -m) && TARGET=$([ \"$ARCH\" = \"aarch64\" ] && echo \"aarch64-unknown-linux-gnu\" || echo \"x86_64-unknown-linux-gnu\") && curl -fsSL \"https://github.com/Dicklesworthstone/mcp_agent_mail_rust/releases/download/v0.3.10/mcp-agent-mail-${TARGET}.tar.xz\" -o \"/tmp/mcp-agent-mail-${TARGET}.tar.xz\" && curl -fsSL \"https://github.com/Dicklesworthstone/mcp_agent_mail_rust/releases/download/v0.3.10/mcp-agent-mail-${TARGET}.tar.xz.sha256\" -o \"/tmp/mcp-agent-mail-${TARGET}.tar.xz.sha256\" && (cd /tmp && sha256sum -c \"mcp-agent-mail-${TARGET}.tar.xz.sha256\") && tar -xJf \"/tmp/mcp-agent-mail-${TARGET}.tar.xz\" -C /tmp && install -m 755 /tmp/mcp-agent-mail /usr/local/bin/mcp-agent-mail && install -m 755 /tmp/am /usr/local/bin/am && mkdir -p /var/lib/rip-cage-daemon/agent-mail && rm -f \"/tmp/mcp-agent-mail-${TARGET}.tar.xz\" \"/tmp/mcp-agent-mail-${TARGET}.tar.xz.sha256\" /tmp/mcp-agent-mail /tmp/am"
+    mcp_fragment:
+      type: http
+      url: "http://127.0.0.1:8765/mcp/"
+      headers:
+        Authorization: "Bearer <HTTP_BEARER_TOKEN>"
+    egress: []
