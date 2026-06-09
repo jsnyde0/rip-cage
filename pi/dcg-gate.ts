@@ -38,15 +38,17 @@ const DCG_GUARD = "/usr/local/lib/rip-cage/bin/dcg-guard";
  * Field coverage rationale (F3, rip-cage-bl1 repair):
  *   - "command": pi's built-in bash tool (bash.ts:34 bashSchema) AND all known exec-capable
  *     extension tools (ssh.ts, sandbox.ts) replace/override the built-in bash tool and use the
- *     same BashToolInput schema — field "command" covers all real exec-capable tools in pi v0.70.2.
+ *     same BashToolInput schema — field "command" covers all real exec-capable tools in the
+ *     current pi install (PI_VERSION=latest, ADR-019 D8).
  *   - pi has no MCP server bridge (no MCP packages found in pi-mono); CustomToolCallEvent
  *     (types.ts:799) carries input: Record<string, unknown> for any extension-registered tool.
  *
  * Known acceptable gap: a custom extension that registers a NEW exec-capable tool (not
  * replacing "bash") with a different field name (e.g. "script", "cmd") would pass through
- * unguarded here. This gap is acceptable per the rip-cage 80/20 philosophy — we block the
- * obvious accident (all pi built-in and known exec tools), do not false-positive on non-command
- * strings in other custom tools. The live-fire proof (F2) uses the non-bash tool name path
+ * unguarded here. This gap is bounded by the guard-parity re-verify check in
+ * tests/test-pi-dcg-gate.sh (section 5, rip-cage-9yg0), which fires FAIL in rc test when
+ * a non-"command" exec field appears in the installed pi dist — catching drift before it
+ * reaches a running cage. The live-fire proof (F2) uses the non-bash tool name path
  * to verify the tool_name="bash" pinning guards it.
  *
  * Returns undefined if the input has no "command" field or it is not a non-empty string.
