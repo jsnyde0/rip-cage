@@ -3,7 +3,7 @@
 #
 # Exercises cross-slot observable behaviors of P1-P5:
 #   P1 = github.com identity resolver       (test-ssh-resolver.sh)
-#   P2 = host-config translation engine     (test-ssh-translator.sh)
+#   P2 = host-config translation engine     (test-ssh-config.sh checks 1-6)
 #   P3 = pubkey allowlist mount             (test-ssh-mount.sh)
 #   P4 = in-cage preflight + sentinels      (test-ssh-preflight.sh)
 #   P5 = visibility surfaces                (test-ssh-visibility.sh)

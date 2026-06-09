@@ -173,6 +173,7 @@ run_pytest "${SCRIPT_DIR}/test_selftest_endpoint.py" --with pytest --with pyyaml
 run_test "${SCRIPT_DIR}/test-selftest-integration.sh"  # rip-cage-fft: container integration tests (init-firewall.sh → curl → iptables → proxy end-to-end)
 run_test "${SCRIPT_DIR}/test-agent-readability.sh"     # rip-cage-7wc: host-side fixture tests for agent *.md readability classification
 run_test "${SCRIPT_DIR}/test-agent-mail-concurrent.sh" # rip-cage-swv: two concurrent pi agents coordinate via am CLI (NEEDS_CONTAINER + RC_E2E)
+run_test "${SCRIPT_DIR}/test-ssh-config.sh"            # rip-cage-b0a: SSH config translation checks incl. ADR-022 D4 inverse assertion (host-side; no container needed)
 
 echo "=== run-host.sh complete ==="
 

@@ -35,7 +35,7 @@ cleanup() {
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# Source rc to get function definitions (same pattern as test-ssh-translator.sh)
+# Source rc to get function definitions
 # ---------------------------------------------------------------------------
 _source_rc_functions() {
   set +e
