@@ -32,13 +32,13 @@ Each optional tool gets a `ARG INCLUDE_<TOOL>=true|false` in the Dockerfile. Too
 
 **What would invalidate this:** Tool set changes so frequently that rebuilding the image becomes a bottleneck. In that case, consider a volume-mounted tool directory with version-locked binaries.
 
-### D2: UBS is the only external tool included by default
+### D2: UBS and cm are the bundled-default external tools
 
-**Firmness: FLEXIBLE**
+**Firmness: FLEXIBLE** (revised 2026-06-09 — cm added as a second bundled default, rip-cage-l0u2)
 
-UBS (Ultimate Bug Scanner) ships in the default image (`INCLUDE_UBS=true`). All other tools default to false.
+UBS (Ultimate Bug Scanner) ships in the default image (`INCLUDE_UBS=true`). As of the rip-cage-l0u2 epic, **cm (CASSMS / CASS memory system) is also bundled by default** — built from source and baked unconditionally via a Dockerfile builder stage (there is no `INCLUDE_CM` toggle today; see the leanness alternative below). All other evaluated tools (bv, RANO, CASS) remain default-false / not bundled.
 
-**Rationale:** UBS has the highest value-to-cost ratio of any tool evaluated. It is a 3MB bash script (no compilation), catches bugs across 9 languages in <5s, and directly improves auto-mode safety by gating commits. Every other tool is either larger (bv: 50-100MB), requires setup (CM: host-side playbook), or serves a narrower use case (RANO: network debugging, CASS: session search). The default image should be opinionated toward safety — UBS is the one tool that makes every agent session safer.
+**Rationale:** UBS has the highest value-to-cost ratio of any tool evaluated. It is a 3MB bash script (no compilation), catches bugs across 9 languages in <5s, and directly improves auto-mode safety by gating commits. cm earns a default slot for a different reason: it is the in-cage binding for the L2A decaying-memory layer (`cm context` / `cm playbook add`, per CLAUDE.md "Substrate orientation"), so an agent inside a cage participates in the same procedural-memory substrate the host session uses. cm's hot path is **zero-egress** (keyword-only retrieval; semantic search is opt-in and off by default) and its store is a host-controlled RW mount (ADR-024 D5 accepted, ADR-023 denylist-checked), so it adds memory-continuity value without an egress or injection cost the default should refuse. The earlier "CM requires setup (host-side playbook)" cost — originally cited as a reason to keep cm opt-in — is now paid by the rip-cage-l0u2 mount mechanism rather than by the operator. Other tools remain opt-in: bv is larger (50-100MB), RANO/CASS serve narrower use cases.
 
 **Alternatives considered:**
 
@@ -48,8 +48,9 @@ UBS (Ultimate Bug Scanner) ships in the default image (`INCLUDE_UBS=true`). All 
 | UBS + RANO | Safety + observability | RANO adds 8MB and complexity for a tool most users won't need immediately |
 | All tools default | Feature-rich out of the box | ~200MB larger, longer build, tools users don't need |
 | No external tools default | Smallest image | Misses the highest-value addition |
+| cm opt-in only (`INCLUDE_CM`, default false) | Leaner default; cm-less cages skip the Bun build stage | `reasoned:` the L2A binding is high-value-per-byte for the default agent workflow and cm is zero-egress keyword-only; an unused store simply isn't mounted (the mount gates on host-store existence). A toggle purely for build leanness is a possible refinement, filed-adjacent to the arch-adaptiveness work, but carries no current demand. |
 
-**What would invalidate this:** Another tool proves higher value-to-cost than UBS for the default use case (e.g., a lighter bug scanner, or a tool that prevents a class of errors UBS misses).
+**What would invalidate this:** Another tool proves higher value-to-cost than UBS for the default use case (e.g., a lighter bug scanner). cm's bundled-default status specifically would be revisited if (a) the Bun cross-compile materially slows the default build, (b) a lean/cm-free default is demanded (→ add the `INCLUDE_CM` toggle), or (c) cm's hot path stops being zero-egress (e.g. semantic search becomes default-on).
 
 ### D3: Tool versions are pinned via build args with a manifest file
 
@@ -125,11 +126,13 @@ The init script uses runtime detection (`command -v tool`), not build args, so i
 
 ### D6: Prefer pre-built binaries from GitHub releases over source compilation
 
-**Firmness: FLEXIBLE**
+**Firmness: FLEXIBLE** (revised 2026-06-09 — cm is the first realized from-source-fallback instance, rip-cage-l0u2)
 
 When a tool publishes pre-built binaries for linux/arm64 and linux/amd64, download those in the Dockerfile rather than compiling from source. Fall back to source compilation only when pre-built binaries are unavailable for the target architecture.
 
 **Rationale:** Pre-built binaries make builds faster (no Rust/Go toolchain needed for that tool), produce smaller builder stages (no source tree or build cache), and reduce the chance of build failures from upstream dependency changes. The Dockerfile already compiles DCG and bd from source — adding more source builds increases build time and fragility. For tools like RANO and CASS that publish releases, downloading a binary is a single `curl` command.
+
+**Realized instance (cm, rip-cage-l0u2):** cm is the first tool to exercise the from-source fallback. cm is a Bun-compiled single binary whose upstream ships macos-x64/arm64, linux-x64, windows-x64 — but **no linux-arm64 release**, the architecture cages run on Apple Silicon. The fallback is a dedicated `cm-builder` Dockerfile stage that cross-compiles via `bun build src/cm.ts --compile --target=bun-linux-arm64 --outfile cm` (Bun's `--compile` cross-compiles from any host arch; no x64 emulation / Rosetta, contrast rip-cage-oc8); the runtime stage COPYs only the binary, keeping the Bun/node build toolchain out of the runtime layer (the beads/DCG builder-stage pattern). **Known limitation:** the `--target` is currently hardcoded to `bun-linux-arm64`, so an amd64 build host would produce a wrong-arch binary — making it arch-adaptive is tracked as rip-cage-ywek.
 
 **Alternatives considered:**
 
