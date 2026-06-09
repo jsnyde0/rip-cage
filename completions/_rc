@@ -21,6 +21,8 @@ _rc() {
     'schema:Print machine-readable command schema'
     'completions:Print shell completion script'
     'setup:Interactive shell integration setup'
+    'agent:Launch or manage a named tmux agent session in a container'
+    'sessions:List or kill tmux sessions in a container'
   )
 
   _arguments -C \

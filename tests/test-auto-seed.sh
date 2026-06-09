@@ -100,7 +100,8 @@ test_s1_fresh_state_auto_seeds() {
 # ---------------------------------------------------------------------------
 test_s2_idempotent() {
   setup_sandbox
-  # Pre-create the config dir and write a sentinel config file
+  # Pre-create the config dir and write sentinel config AND tool-manifest files
+  # so the second run finds BOTH present and is genuinely silent (no re-seed of either).
   mkdir -p "${TEST_HOME}/.config/rip-cage"
   local cfg_path="${TEST_HOME}/.config/rip-cage/config.yaml"
   cat > "$cfg_path" <<'YAML'
@@ -109,8 +110,16 @@ mounts:
   denylist: []
   allow_risky: null
 YAML
+  # Pre-seed tools.yaml so _manifest_ensure_seeded finds it and returns silently.
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<'YAML'
+version: 1
+tools: []
+YAML
+  local tools_path="${TEST_HOME}/.config/rip-cage/tools.yaml"
   local original_mtime
   original_mtime=$(stat -f '%m' "$cfg_path" 2>/dev/null || stat -c '%Y' "$cfg_path" 2>/dev/null)
+  local original_tools_mtime
+  original_tools_mtime=$(stat -f '%m' "$tools_path" 2>/dev/null || stat -c '%Y' "$tools_path" 2>/dev/null)
 
   local stderr_out
   stderr_out=$(
@@ -122,6 +131,8 @@ YAML
 
   local new_mtime
   new_mtime=$(stat -f '%m' "$cfg_path" 2>/dev/null || stat -c '%Y' "$cfg_path" 2>/dev/null)
+  local new_tools_mtime
+  new_tools_mtime=$(stat -f '%m' "$tools_path" 2>/dev/null || stat -c '%Y' "$tools_path" 2>/dev/null)
 
   if printf '%s' "$stderr_out" | grep -q "seeded default"; then
     fail "S2 idempotent: seeding notice emitted on second run (should be silent) (stderr=$stderr_out)"
@@ -129,11 +140,16 @@ YAML
     return
   fi
   if [[ "$original_mtime" != "$new_mtime" ]]; then
-    fail "S2 idempotent: config file was rewritten (mtime changed)"
+    fail "S2 idempotent: config.yaml was rewritten (mtime changed)"
     teardown_sandbox
     return
   fi
-  pass "S2 idempotent: no notice, no rewrite on second run"
+  if [[ "$original_tools_mtime" != "$new_tools_mtime" ]]; then
+    fail "S2 idempotent: tools.yaml was rewritten (mtime changed)"
+    teardown_sandbox
+    return
+  fi
+  pass "S2 idempotent: no notice, no rewrite of config.yaml or tools.yaml on second run"
 
   teardown_sandbox
 }

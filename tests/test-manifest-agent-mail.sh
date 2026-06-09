@@ -126,7 +126,7 @@ test_t1a_fixture_validates_strict_parse() {
 # ---------------------------------------------------------------------------
 test_t1b_install_cmd_is_prebuilt_download() {
   local install_cmd version_pin
-  install_cmd=$(python3 -c "
+  install_cmd=$(uv run --with pyyaml python -c "
 import yaml, sys
 with open('${FIXTURE_FILE}') as f:
     manifest = yaml.safe_load(f)
@@ -136,9 +136,9 @@ for t in tools:
         print(t.get('install_cmd', ''))
         sys.exit(0)
 print('')
-" 2>/dev/null)
+")
 
-  version_pin=$(python3 -c "
+  version_pin=$(uv run --with pyyaml python -c "
 import yaml, sys
 with open('${FIXTURE_FILE}') as f:
     manifest = yaml.safe_load(f)
@@ -148,7 +148,7 @@ for t in tools:
         print(t.get('version_pin', ''))
         sys.exit(0)
 print('')
-" 2>/dev/null)
+")
 
   if [[ -z "$install_cmd" ]]; then
     fail "T1b Could not extract install_cmd from fixture (agent-mail entry not found or install_cmd empty)"
@@ -197,7 +197,7 @@ test_t1c_mcp_fragment_is_http_shape() {
   # settings.json) or a JSON string (the old broken form).
   # json.dumps normalises both: dict → compact JSON, str → JSON string (which
   # would then fail the type check below, making the string form a detectable bug).
-  mcp_fragment=$(python3 -c "
+  mcp_fragment=$(uv run --with pyyaml python -c "
 import yaml, json, sys
 with open('${FIXTURE_FILE}') as f:
     manifest = yaml.safe_load(f)
@@ -211,7 +211,7 @@ for t in tools:
         print(json.dumps(frag))
         sys.exit(0)
 print('')
-" 2>/dev/null)
+")
 
   if [[ -z "$mcp_fragment" || "$mcp_fragment" == '""' ]]; then
     fail "T1c mcp_fragment not found in agent-mail fixture entry"
@@ -224,22 +224,22 @@ print('')
   # json.dumps produces a JSON string here and json.load will return a str, making
   # d.get('type','') fail (str has no .get).
   local parsed_type parsed_url
-  parsed_type=$(echo "$mcp_fragment" | python3 -c "
+  parsed_type=$(echo "$mcp_fragment" | uv run --with pyyaml python -c "
 import json, sys
 val = json.load(sys.stdin)
 if not isinstance(val, dict):
     print('__NOT_AN_OBJECT__')
     sys.exit(0)
 print(val.get('type', ''))
-" 2>/dev/null)
-  parsed_url=$(echo "$mcp_fragment" | python3 -c "
+")
+  parsed_url=$(echo "$mcp_fragment" | uv run --with pyyaml python -c "
 import json, sys
 val = json.load(sys.stdin)
 if not isinstance(val, dict):
     print('')
     sys.exit(0)
 print(val.get('url', ''))
-" 2>/dev/null)
+")
 
   if [[ "$parsed_type" == "__NOT_AN_OBJECT__" ]]; then
     fail "T1c mcp_fragment is a JSON STRING in the fixture — must be a nested YAML object so settings.json baking produces a real mcpServers object (string form bakes as a JSON string value, leaving .type empty)"
@@ -268,7 +268,7 @@ print(val.get('url', ''))
 
   # Must have Authorization header with Bearer token placeholder
   local has_auth
-  has_auth=$(echo "$mcp_fragment" | python3 -c "
+  has_auth=$(echo "$mcp_fragment" | uv run --with pyyaml python -c "
 import json, sys
 val = json.load(sys.stdin)
 if not isinstance(val, dict):
@@ -277,7 +277,7 @@ if not isinstance(val, dict):
 headers = val.get('headers', {})
 auth = headers.get('Authorization', '')
 print('yes' if auth.startswith('Bearer') else 'no')
-" 2>/dev/null)
+")
 
   if [[ "$has_auth" == "yes" ]]; then
     pass "T1c mcp_fragment headers include Authorization Bearer token"
@@ -294,7 +294,7 @@ print('yes' if auth.startswith('Bearer') else 'no')
 # ---------------------------------------------------------------------------
 test_t1d_declared_egress_is_empty_or_localhost() {
   local egress_field
-  egress_field=$(python3 -c "
+  egress_field=$(uv run --with pyyaml python -c "
 import yaml, json, sys
 with open('${FIXTURE_FILE}') as f:
     manifest = yaml.safe_load(f)
@@ -305,7 +305,7 @@ for t in tools:
         print(json.dumps(egress))
         sys.exit(0)
 print('NOT_PRESENT')
-" 2>/dev/null)
+")
 
   if [[ -z "$egress_field" || "$egress_field" == "NOT_PRESENT" ]]; then
     fail "T1d egress field not found or could not read fixture (agent-mail entry missing?)"
@@ -314,7 +314,7 @@ print('NOT_PRESENT')
 
   # Check that egress is null or empty array (no external hosts)
   local egress_has_external
-  egress_has_external=$(echo "$egress_field" | python3 -c "
+  egress_has_external=$(echo "$egress_field" | uv run --with pyyaml python -c "
 import json, sys
 val = json.load(sys.stdin)
 if val is None or val == []:
@@ -323,7 +323,7 @@ else:
     # Check for any non-localhost entries
     external = [h for h in val if not h.startswith('localhost') and not h.startswith('127.')]
     print('yes' if external else 'no')
-" 2>/dev/null)
+")
 
   if [[ "$egress_has_external" == "no" ]]; then
     pass "T1d Declared egress is empty/localhost-only (correct: default LLM_ENABLED=false, no API keys)"
@@ -728,7 +728,7 @@ test_t2e_dcg_still_fires_under_guard_hook() {
   # command in the test file itself (host-level DCG would intercept literal strings).
   local dcg_probe
   dcg_probe=$(mktemp "${TMPDIR:-/tmp}/rc-am-t2e-probe-XXXXXX.sh")
-  python3 - "$dcg_probe" <<'PYEOF'
+  uv run python - "$dcg_probe" <<'PYEOF'
 import sys
 probe_path = sys.argv[1]
 probe_content = r"""#!/bin/sh

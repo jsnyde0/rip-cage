@@ -6,7 +6,7 @@ _rc_complete() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local subcommands="build init up ls attach down destroy reload test doctor auth config schema completions setup"
+  local subcommands="build init up ls attach down destroy reload test doctor auth config schema completions setup agent sessions"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "$subcommands" -- "$cur") )
