@@ -35,7 +35,7 @@ _rc() {
       ;;
     args)
       case $line[1] in
-        attach|down|test|reload)
+        attach|down|test|reload|agent|sessions)
           local -a containers
           containers=($(docker ps --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null))
           _describe 'container' containers

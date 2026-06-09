@@ -14,7 +14,7 @@ _rc_complete() {
   fi
 
   case "$prev" in
-    attach|down|test|reload)
+    attach|down|test|reload|agent|sessions)
       local containers
       containers=$(docker ps --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null)
       COMPREPLY=( $(compgen -W "$containers" -- "$cur") )
