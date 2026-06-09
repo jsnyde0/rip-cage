@@ -150,7 +150,7 @@ A declarative manifest — stored **host-side under `~/.config/rip-cage/`, agent
 
 - **TOOL** — agent-invoked; integration is just reachability (binary on PATH) + declared egress + declared mounts. ~75% of a real ecosystem (ACFS phases 7–10).
 - **SHELL-INTEGRATION** — integrates via a shell rc `eval` line (atuin, zoxide); one `shell_init` field.
-- **IN-CAGE DAEMON** — a long-running localhost service other in-cage agents talk to (e.g. agent_mail); needs `start` + `health` + a state-dir placement + an optional MCP-registration fragment.
+- **IN-CAGE DAEMON** — a long-running localhost service other in-cage agents talk to (e.g. agent_mail); needs `start` + `health` + a state-dir placement + an optional MCP-registration fragment. The `mcp_fragment` is the reach mechanism for **MCP-capable agents only** (Claude Code) — it is *not* how every in-cage agent reaches the daemon. **Bash-only agents (pi, no MCP bridge) reach the same daemon via the daemon's own CLI over their bash tool**, not via MCP (ADR-019 D9; agent_mail's `am mail` CLI is the worked example). A daemon that wants to serve bash-only agents must ship a CLI; `mcp_fragment` alone reaches only MCP clients.
 
 Tools are **installed at build time** (consistent with D1 — no runtime download/plugin); a daemon archetype's process is merely **started at init**, the same lifecycle rip-cage already uses for the egress proxy, ssh-agent-filter, and tmux. "Install = build-time, start = init-time" — D1 forbids runtime *installation*, not daemons that run.
 
@@ -239,7 +239,7 @@ A missing or broken safety interceptor (DCG, ssh-blocker, egress proxy) must ref
 - [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md) — base image + bypassPermissions/hooks model the manifest composes on top of (D7, D9).
 - [ADR-006 Multi-Agent Architecture](ADR-006-multi-agent-architecture.md) — Tier 1a many-agents-in-one-cage, the planned-not-shipped prerequisite for the in-cage daemon archetype (D7, D8).
 - [ADR-012 Network Egress Firewall](ADR-012-egress-firewall.md) — declared egress unions into the allowlist but stays under the non-overridable IOC floor (D7, D9).
-- [ADR-019 pi-coding-agent Support](ADR-019-pi-coding-agent-support.md) — D1 container-local cage-owned paths + narrow durable sub-mount, the pattern for daemon state-dir placement (D7).
+- [ADR-019 pi-coding-agent Support](ADR-019-pi-coding-agent-support.md) — D1 container-local cage-owned paths + narrow durable sub-mount, the pattern for daemon state-dir placement (D7); D9 bash-only agents reach the daemon via its CLI over bash, not the `mcp_fragment` (the agent-side counterpart to D7's archetype, reconciled into D7 wording).
 - [ADR-021 Layered rip-cage Config](ADR-021-layered-rip-cage-config.md) — D1 `~/.config/rip-cage/` host-side config home (where the host-only manifest lives); additive-list/selection-list merge semantics and no-config regression contract the manifest mirrors (D7).
 - [ADR-023 Secret-Path Mount Denylist](ADR-023-secret-path-mount-denylist.md) — manifest-declared mounts subject to the denylist floor (D9).
 - [ADR-024 Prompt-Injection Threat Model](ADR-024-prompt-injection-threat-model.md) — warrants host-only authoring (the pre-staged-manifest vector) and the in-cage-only invariant (D7, D8, D9).
