@@ -591,6 +591,7 @@ future Claude Code version changes the discovery mechanism.
 - [Rip Cage Design](../2026-03-25-rip-cage-design.md) — full design document
 - Approval Agent (separate project) — complementary approach (semantic evaluation); future flywheel tool
 - [ADR-024 Prompt-Injection Threat Model](ADR-024-prompt-injection-threat-model.md) — expands the threat model the D5 bypassPermissions+hooks framing rests on; "accident" now includes a non-adversarial agent following injected hostile instructions
+- [ADR-026 Containment + Delegated Mediation](ADR-026-containment-mediation-identity.md) — the network-composition extension of the container-as-boundary identity: D5's boundary holds *inward* (containment); content mediation (L7 policy, credential injection) is delegated *outward* to a composed mediator. The container stays self-contained for containment; composition is opt-in.
 - [AA Design v2](../2026-03-23-approval-agent-design-v2.md) — the guardrails that may run inside containers in Phase 3
 - [ACFS](https://github.com/Dicklesworthstone/agentic_coding_flywheel_setup) — Jeffrey Emanuel's flywheel, inspiration for VPS-based approach
 - [Claude Code Permission Modes](https://code.claude.com/docs/en/permission-modes) — official docs; we use `bypassPermissions` (was auto mode, amended 2026-04-02)

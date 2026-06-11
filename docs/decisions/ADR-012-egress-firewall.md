@@ -4,7 +4,9 @@
 **Date:** 2026-04-20
 **Design:** [2026-04-20-egress-firewall-design.md](../2026-04-20-egress-firewall-design.md)
 **Supersedes:** Recommendations in [2026-04-17-egress-firewall-design.md](../2026-04-17-egress-firewall-design.md)
-**Related:** [ADR-004](ADR-004-phase1-hardening.md) (DCG + compound blocker), [ADR-008](ADR-008-open-source-publication.md) (positioning), [ADR-013](ADR-013-test-coverage.md) (egress perimeter test expansion), beads `rip-cage-2py`
+**Related:** [ADR-004](ADR-004-phase1-hardening.md) (DCG + compound blocker), [ADR-008](ADR-008-open-source-publication.md) (positioning), [ADR-013](ADR-013-test-coverage.md) (egress perimeter test expansion), [ADR-026](ADR-026-containment-mediation-identity.md) (re-homes the L7 layer as delegated mediation), beads `rip-cage-2py`, `rip-cage-ta1o`
+
+> **⚠ Evolving per [ADR-026](ADR-026-containment-mediation-identity.md) (2026-06-11) — read before treating D2/D4 as current.** ADR-026 re-homes this ADR's L7 TLS-MITM content layer as *mediation* delegated to a composed external mediator (e.g. clawpatrol). rip-cage's egress becomes a **pure destination router** (reads SNI/host, allows/denies the destination, does not terminate TLS). Affected: **D2** (method/path rules → removed), **D4** (uniform MITM → dropped standalone), **D5** (in-container router stays; "nothing on host" admits a composed mediator), **D6** (kill-switch reframed router-not-proxy), **D9** (DNS guard retained + gains forward-to-specialist seam). The in-place rewrite of each decision lands with the implementation (bead `rip-cage-ta1o`); until then the decision bodies below describe *shipped* state, and ADR-026 carries the decided direction.
 
 ## Context
 
@@ -51,7 +53,7 @@ The agent inside the cage **cannot** mutate `network.allowed_hosts` (the file is
 
 ### D2: L7 TLS-MITM proxy over L3/L4 iptables-only
 
-**Firmness: FIRM**
+**Firmness: FIRM** — *→ evolving per [ADR-026](ADR-026-containment-mediation-identity.md) D1/D2: method/path L7 rules are mediation (delegated); egress becomes a pure destination router. Counter-argument: the GET/POST split this rests on was already rejected as leaky in D1's own alternatives table, and its only enforcement is the whole TLS-termination stack ADR-026 sheds. In-place rewrite lands with `rip-cage-ta1o`.*
 
 Intercept HTTPS at layer 7 via a transparent TLS-terminating proxy. Rules match on `(method, host, path)` tuples, not IPs.
 
@@ -99,7 +101,7 @@ Actively maintained, HTTP/2 native, Python addon API for the rule engine, docume
 
 ### D4: Uniform MITM — no Anthropic carve-out
 
-**Firmness: FIRM**
+**Firmness: FIRM** — *→ evolving per [ADR-026](ADR-026-containment-mediation-identity.md) D1: standalone egress no longer terminates TLS (pure router). Standalone loses content-visibility into the Anthropic API; the threat it guarded (`ANTHROPIC_BASE_URL` redirect, CVE-2026-21852) stays covered by destination-control, and content-visibility returns when a mediator is composed. In-place rewrite lands with `rip-cage-ta1o`.*
 
 All HTTPS traffic is MITM'd uniformly, including `api.anthropic.com`. No pass-through tunnels, no hardcoded Anthropic domain list. Install the proxy CA via `NODE_EXTRA_CA_CERTS` — the officially-supported mechanism for enterprise TLS-inspection proxies.
 
@@ -123,7 +125,7 @@ Positioning consequence: "rip-cage uses the same mechanism enterprise TLS-inspec
 
 ### D5: Proxy runs inside the container, not on the host
 
-**Firmness: FIRM**
+**Firmness: FIRM** — *→ refined per [ADR-026](ADR-026-containment-mediation-identity.md) D3: the destination router + DNS force-through stay in-container (this decision's in-container principle holds); the "self-contained, nothing on host" framing now admits an external mediator the chokepoint forwards to — composition is opt-in coupling, not a default.*
 
 mitmproxy, its rule addon, and the CA material live inside the container. Host networking is untouched.
 
@@ -144,7 +146,7 @@ Keeps the isolation boundary intact — container is self-contained, no host-net
 
 ### D6: Default-on, single binary override
 
-**Firmness: FIRM**
+**Firmness: FIRM** — *→ reframed per [ADR-026](ADR-026-containment-mediation-identity.md): `RIP_CAGE_EGRESS=off` disables iptables + the destination router (there is no content-proxy to disable once D2/D4 land). Default-on, single-binary-override semantics are unchanged.*
 
 Firewall is enabled by default on `rc up`. `RIP_CAGE_EGRESS=off` disables iptables rules and proxy entirely. No per-rule exemptions, no finer-grained knobs.
 
@@ -223,7 +225,7 @@ Other non-HTTP (SMTP, arbitrary ports) remains out of scope. Same reasoning as t
 
 ### D9: DNS inspected by a Python resolver sidecar (transparent port-53 REDIRECT)
 
-**Firmness: FIRM**
+**Firmness: FIRM** — *→ retained + extended per [ADR-026](ADR-026-containment-mediation-identity.md) D2: this guard stays rip-cage's (boundary-defense, low-drift, separable from the TLS stack — it covers a channel a host-allowlist can't see, and clawpatrol's `dnsvip` confirms a composed mediator doesn't cover it either). It gains a forward-to-specialist seam: the built-in heuristic is the default; power users forward to NextDNS / Umbrella / dnsdist / Zeek.*
 
 **Added 2026-05-27 per [ADR-024](ADR-024-prompt-injection-threat-model.md) D4.** ADR-024 D4 names DNS as a first-class egress/exfil surface; this decision is its mechanism home. DNS exfil is the canonical hole the HTTP egress layer (D1–D8) cannot see: an injection-affected agent encodes data into subdomain labels (`<base32-secret>.attacker.com`) or fans out high-cardinality queries against one apex. The data leaves in the *query itself* — resolution succeeds before any HTTP connection is attempted, so the host whitelist and block mode (which gate the subsequent TCP/HTTP connection) never fire. ~100 bytes/query, near-undetectable without DNS-layer inspection; documented as a Claude Code vector (auto-approved `ping`/`dig`).
 

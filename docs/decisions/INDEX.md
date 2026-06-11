@@ -9,10 +9,11 @@ When a decision evolves, edit the ADR in place and update this row. Drift betwee
 ## By topic
 
 - **Safety / fail-loud:** [001](ADR-001-fail-loud-pattern.md), [004](ADR-004-phase1-hardening.md), [023](ADR-023-secret-path-mount-denylist.md), [024](ADR-024-prompt-injection-threat-model.md), [025](ADR-025-host-adoptable-dcg-policy.md)
-- **Containers / cage model:** [002](ADR-002-rip-cage-containers.md), [016](ADR-016-cage-host-network-awareness.md)
+- **Containers / cage model:** [002](ADR-002-rip-cage-containers.md), [016](ADR-016-cage-host-network-awareness.md), [026](ADR-026-containment-mediation-identity.md)
 - **CLI / UX:** [003](ADR-003-agent-friendly-cli.md), [009](ADR-009-ux-overhaul.md), [011](ADR-011-shell-completions.md)
 - **Testing / CI:** [013](ADR-013-test-coverage.md)
-- **Egress / network:** [012](ADR-012-egress-firewall.md)
+- **Egress / network:** [012](ADR-012-egress-firewall.md), [026](ADR-026-containment-mediation-identity.md)
+- **Composition / mediators:** [026](ADR-026-containment-mediation-identity.md), [005](ADR-005-ecosystem-tools.md), [006](ADR-006-multi-agent-architecture.md)
 - **SSH / identity:** [014](ADR-014-push-less-cage.md), [017](ADR-017-ssh-agent-forwarding-default.md), [018](ADR-018-macos-ssh-agent-discovery.md), [020](ADR-020-ssh-identity-routing.md), [022](ADR-022-ssh-allowlist.md)
 - **Auth / credentials:** [010](ADR-010-auth-refresh.md)
 - **Config substrate:** [021](ADR-021-layered-rip-cage-config.md), [016](ADR-016-cage-host-network-awareness.md)
@@ -37,7 +38,7 @@ When a decision evolves, edit the ADR in place and update this row. Drift betwee
 | [009](ADR-009-ux-overhaul.md) | UX Overhaul | cli-ux | Proposed | Harm-reduction positioning, auto-build on first up, focused README |
 | [010](ADR-010-auth-refresh.md) | Credential Hot-Swap (`rc auth refresh`) | auth | Proposed | Re-extract OAuth from Keychain; in-place credential write preserves inode |
 | [011](ADR-011-shell-completions.md) | Shell Completions for `rc` | cli-ux | Proposed | `rc completions` + `rc setup`; default-deny consent for shell integration |
-| [012](ADR-012-egress-firewall.md) | Network Egress Firewall | egress/network | Accepted (evolved) | L7 TLS-MITM proxy + default-deny whitelist; observe-mode-first; DNS exfil heuristic; D10 legacy-iptables backend is safety-critical on trixie |
+| [012](ADR-012-egress-firewall.md) | Network Egress Firewall | egress/network | Accepted (evolving per 026) | L7 TLS-MITM proxy + default-deny whitelist; observe-mode-first; DNS exfil heuristic; D10 legacy-iptables backend is safety-critical on trixie. **D2/D4/D5/D6/D9 evolving per ADR-026** — egress → pure destination router, L7 content layer delegated to a composed mediator |
 | [013](ADR-013-test-coverage.md) | Test Coverage Tiers | testing | Accepted (revised 2026-05-29) | In-container / e2e / host-only tiers; CI = lint+build+host-only; D6 host-only determinism |
 | [014](ADR-014-push-less-cage.md) | The Cage Is Push-Less | ssh | Partially superseded | D1/D3 reversed by ADR-017; D2 non-interactive SSH posture + D4 LFS detection remain |
 | [015](ADR-015-mise-toolchain-provisioning.md) | Project Toolchain Provisioning | toolchain | Accepted | Mise as invisible plumbing; shared cache volume; auto-install at init |
@@ -51,3 +52,4 @@ When a decision evolves, edit the ADR in place and update this row. Drift betwee
 | [023](ADR-023-secret-path-mount-denylist.md) | Secret-Path Mount Denylist | safety | Proposed | Default-on pattern denylist for `--env-file` / `.beads` redirect; realpath-first validation |
 | [024](ADR-024-prompt-injection-threat-model.md) | Prompt-Injection Threat Model | threat-model | Accepted | Names the threat class: a non-adversarial agent following hostile instructions in content |
 | [025](ADR-025-host-adoptable-dcg-policy.md) | Host-Adoptable DCG Policy Layer | safety | Proposed | Additive-only DCG policy via `.rip-cage.yaml`; baked core floor uncrossable; CWD-anchor wrapper + pinned DCG_CONFIG close the `/workspace/.dcg.toml` self-disable hole |
+| [026](ADR-026-containment-mediation-identity.md) | Containment + Delegated Mediation Seam | containers / egress | Accepted | rip-cage = containment (controls WHERE traffic goes + guarantees the chokepoint), delegates mediation (WHAT is said — L7 policy, credential injection) to a composed external mediator (e.g. clawpatrol); layers sorted by maintenance drift-rate; standalone = accident-containment, exfil-grade needs composition; tool-agnostic seam + reference recipe, bundles nothing (D5 EXPLORATORY pending Linux-container validation) |
