@@ -1,6 +1,6 @@
 # ADR-005: Ecosystem Tools Integration
 
-**Status:** Proposed (revised 2026-06-05 — D7–D10 add the composable host-only tool manifest)
+**Status:** Proposed (revised 2026-06-10 — D11 adds the agent-first composability surface [generic builder stage + fail-closed validator + authoring skill]; D2 demotes cm from bundled-default to manifest worked example; D6 generalizes the from-source fallback into D11's generic stage. Prior: revised 2026-06-05 — D7–D10 add the composable host-only tool manifest)
 **Date:** 2026-03-27
 **Design:** [Ecosystem Tools Design](../2026-03-27-ecosystem-tools-design.md)
 **Related:** [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md), [Flywheel Investigation](../2026-03-27-flywheel-investigation.md)
@@ -32,25 +32,27 @@ Each optional tool gets a `ARG INCLUDE_<TOOL>=true|false` in the Dockerfile. Too
 
 **What would invalidate this:** Tool set changes so frequently that rebuilding the image becomes a bottleneck. In that case, consider a volume-mounted tool directory with version-locked binaries.
 
-### D2: UBS and cm are the bundled-default external tools
+### D2: UBS is the sole bundled-default external tool; the bundled bar is "integral to operating the cage"
 
-**Firmness: FLEXIBLE** (revised 2026-06-09 — cm added as a second bundled default, rip-cage-l0u2)
+**Firmness: FLEXIBLE** (revised 2026-06-10 — cm DEMOTED from bundled default back to the manifest worked example, rip-cage-l0u2 reframe; reverts the 2026-06-09 cm-as-default revision)
 
-UBS (Ultimate Bug Scanner) ships in the default image (`INCLUDE_UBS=true`). As of the rip-cage-l0u2 epic, **cm (CASSMS / CASS memory system) is also bundled by default** — built from source and baked unconditionally via a Dockerfile builder stage (there is no `INCLUDE_CM` toggle today; see the leanness alternative below). All other evaluated tools (bv, RANO, CASS) remain default-false / not bundled.
+UBS (Ultimate Bug Scanner) ships in the default image (`INCLUDE_UBS=true`). **cm (CASSMS / CASS memory system) is NOT bundled** — it is the *worked example* of the host-only tool manifest (D7, D11), provisioned opt-in like any user tool, never baked unconditionally. All other evaluated tools (bv, RANO, CASS) likewise remain not bundled.
 
-**Rationale:** UBS has the highest value-to-cost ratio of any tool evaluated. It is a 3MB bash script (no compilation), catches bugs across 9 languages in <5s, and directly improves auto-mode safety by gating commits. cm earns a default slot for a different reason: it is the in-cage binding for the L2A decaying-memory layer (`cm context` / `cm playbook add`, per CLAUDE.md "Substrate orientation"), so an agent inside a cage participates in the same procedural-memory substrate the host session uses. cm's hot path is **zero-egress** (keyword-only retrieval; semantic search is opt-in and off by default) and its store is a host-controlled RW mount (ADR-024 D5 accepted, ADR-023 denylist-checked), so it adds memory-continuity value without an egress or injection cost the default should refuse. The earlier "CM requires setup (host-side playbook)" cost — originally cited as a reason to keep cm opt-in — is now paid by the rip-cage-l0u2 mount mechanism rather than by the operator. Other tools remain opt-in: bv is larger (50-100MB), RANO/CASS serve narrower use cases.
+The bundled-default bar is **"integral to operating the cage."** The safety stack (DCG, ssh-blocker, egress proxy), auth, and the task tracker (bd) are baked into the image because the cage's *own operation* depends on them — they are cage infrastructure, not ecosystem tools toggled by D1–D6. UBS earns the one ecosystem-tool default slot because its value-to-cost is exceptional (a 3MB bash script, no compilation, catches bugs across 9 languages in <5s, directly improves auto-mode safety by gating commits). Everything an agent merely *uses* rather than something the cage *operates with* — cm included — goes through the manifest.
+
+**Rationale:** UBS has the highest value-to-cost ratio of any tool evaluated, and gating commits is close enough to a safety function to justify baking. cm's brief default slot (added 2026-06-09 under rip-cage-l0u2) was reverted on reframe: bundling a niche memory tool by default contradicts rip-cage's composability posture. rip-cage ships the *mechanism* to add any tool (D7) with cm as the worked example a user opts into — not first-class support for one specific tool. Most users won't use cm (it's niche), so baking it into every image is exactly the bespoke-per-tool integration the manifest exists to avoid. The manifest + the authoring skill (D11) make opt-in cheap, so demotion costs the cm user little while keeping the default lean and tool-agnostic.
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **UBS only** | Lean default, clear value proposition | Users must opt-in to other tools |
-| UBS + RANO | Safety + observability | RANO adds 8MB and complexity for a tool most users won't need immediately |
-| All tools default | Feature-rich out of the box | ~200MB larger, longer build, tools users don't need |
-| No external tools default | Smallest image | Misses the highest-value addition |
-| cm opt-in only (`INCLUDE_CM`, default false) | Leaner default; cm-less cages skip the Bun build stage | `reasoned:` the L2A binding is high-value-per-byte for the default agent workflow and cm is zero-egress keyword-only; an unused store simply isn't mounted (the mount gates on host-store existence). A toggle purely for build leanness is a possible refinement, filed-adjacent to the arch-adaptiveness work, but carries no current demand. |
+| **UBS only (cm via manifest)** | Lean, tool-agnostic default; cm is the manifest's worked example | cm users opt in rather than getting it for free |
+| Keep cm bundled by default (the 2026-06-09 position) | cm user gets memory-continuity with zero setup | `reasoned:` baking one niche tool is the bespoke per-tool integration the manifest (D7/D11) exists to replace; contradicts "ship the mechanism, not specific tools"; most users won't use cm. |
+| UBS + RANO | Safety + observability | `reasoned:` RANO adds 8MB and complexity for a tool most users won't need immediately; it belongs in the manifest, not the default. |
+| All tools default | Feature-rich out of the box | `reasoned:` ~200MB larger, longer build, and ships tools users don't need — the opposite of the lean, tool-agnostic default. |
+| No external tools default | Smallest image | `reasoned:` misses the highest-value addition (UBS), whose value-to-cost clears the bundled bar. |
 
-**What would invalidate this:** Another tool proves higher value-to-cost than UBS for the default use case (e.g., a lighter bug scanner). cm's bundled-default status specifically would be revisited if (a) the Bun cross-compile materially slows the default build, (b) a lean/cm-free default is demanded (→ add the `INCLUDE_CM` toggle), or (c) cm's hot path stops being zero-egress (e.g. semantic search becomes default-on).
+**What would invalidate this:** An ecosystem tool proving higher value-to-cost than UBS for the default use case (e.g. a lighter bug scanner). cm specifically would re-cross the bundled bar only if it became integral to the cage's *operation* rather than the agent's workflow — e.g. rip-cage itself coming to depend on cm for substrate — at which point it is cage infrastructure, not an ecosystem tool.
 
 ### D3: Tool versions are pinned via build args with a manifest file
 
@@ -132,18 +134,18 @@ When a tool publishes pre-built binaries for linux/arm64 and linux/amd64, downlo
 
 **Rationale:** Pre-built binaries make builds faster (no Rust/Go toolchain needed for that tool), produce smaller builder stages (no source tree or build cache), and reduce the chance of build failures from upstream dependency changes. The Dockerfile already compiles DCG and bd from source — adding more source builds increases build time and fragility. For tools like RANO and CASS that publish releases, downloading a binary is a single `curl` command.
 
-**Realized instance (cm, rip-cage-l0u2):** cm is the first tool to exercise the from-source fallback. cm is a Bun-compiled single binary whose upstream ships macos-x64/arm64, linux-x64, windows-x64 — but **no linux-arm64 release**, the architecture cages run on Apple Silicon. The fallback is a dedicated `cm-builder` Dockerfile stage that cross-compiles via `bun build src/cm.ts --compile --target=bun-linux-arm64 --outfile cm` (Bun's `--compile` cross-compiles from any host arch; no x64 emulation / Rosetta, contrast rip-cage-oc8); the runtime stage COPYs only the binary, keeping the Bun/node build toolchain out of the runtime layer (the beads/DCG builder-stage pattern). **Known limitation:** the `--target` is currently hardcoded to `bun-linux-arm64`, so an amd64 build host would produce a wrong-arch binary — making it arch-adaptive is tracked as rip-cage-ywek.
+**Realized instance (cm, rip-cage-l0u2) — being generalized into a manifest-driven generic builder stage (D11):** cm was the first tool to exercise the from-source fallback. cm is a Bun-compiled single binary whose upstream ships macos-x64/arm64, linux-x64, windows-x64 — but **no linux-arm64 release**, the architecture cages run on Apple Silicon. The first cut was a dedicated `cm-builder` Dockerfile stage that cross-compiles via `bun build src/cm.ts --compile --target=bun-linux-arm64 --outfile cm` (Bun's `--compile` cross-compiles from any host arch; no x64 emulation / Rosetta, contrast rip-cage-oc8); the runtime stage COPYs only the binary, keeping the Bun/node build toolchain out of the runtime layer (the beads/DCG builder-stage pattern). That hand-written stage is a *worked example*, not the final shape: D11 generalizes "fall back to source" from a maintainer hand-coding one stage per tool into a single **manifest-driven generic builder stage** (declared builder image + host-side build script + output path, run isolated). Because the generic stage targets the build platform, it is **arch-adaptive by construction** — which is *slated to* subsume the cm-specific arch-hardcode limitation tracked as rip-cage-ywek. Note the subsumption is not yet realized: the `cm-builder` stage in the Dockerfile still carries the hand-pinned `--target=bun-linux-arm64`; it is removed only when cm is moved onto the generic stage (the cm-demotion work, rip-cage-buuo.5).
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
 | **Pre-built binaries preferred** | Fast builds, small stages, simple | Trust upstream build, no local patching |
-| Always compile from source | Full control, can patch | Slow builds, large builder stages, toolchain deps |
-| Vendor binaries in repo | No network dependency at build time | Bloats repo, manual updates |
-| Nix or Guix for all tools | Reproducible, declarative | Heavy dependency, unfamiliar tooling |
+| Always compile from source | Full control, can patch | `reasoned:` slow builds, large builder stages, toolchain deps for every tool — the prebuilt path avoids this for the common case. |
+| Vendor binaries in repo | No network dependency at build time | `reasoned:` bloats the repo and makes updates manual; the from-source builder stage gives reproducibility without vendoring. |
+| Nix or Guix for all tools | Reproducible, declarative | `reasoned:` heavy dependency and unfamiliar tooling — over-engineered relative to "prefer prebuilt, else one generic builder stage." |
 
-**What would invalidate this:** Need to patch tools locally (e.g., rip-cage-specific modifications). In that case, fork the tool and compile from source in the builder stage.
+**What would invalidate this:** Need to patch tools locally (e.g., rip-cage-specific modifications) — fork the tool and compile from source. Separately, the **generic builder stage** mechanism this decision now folds in (D11) should be reconsidered if a from-source tool's build cannot be expressed as "builder image + script + output" (e.g. it needs the host filesystem or cross-stage interdependence), at which point the builder mechanism is *extended*, not abandoned.
 
 ### D7: Tool composability is a declarative, host-only manifest with three archetypes
 
@@ -236,18 +238,47 @@ A missing or broken safety interceptor (DCG, ssh-blocker, egress proxy) must ref
 
 **What would invalidate this:** a user with a workflow that genuinely cannot proceed without a specific daemon, wanting to opt that daemon into fail-closed — which would make the policy per-tool-configurable rather than a fixed asymmetry.
 
+### D11: Tool fitting is agent-authorable host-side, build-validated, via one generic from-source builder stage
+
+**Firmness: asymmetric across the three mechanisms** (added 2026-06-10) — mechanism 2 (the validator) is **FIRM**: it is the enforcement arm of D9 (FIRM), and is not skippable. Mechanism 1 (the generic builder stage) is **FLEXIBLE**: the "builder image + script + output" shape may iterate. Mechanism 3 (the host-side authoring skill) is **EXPLORATORY**: an unproven UX that will move. The FIRM/FLEXIBLE/EXPLORATORY split matters because lumping all three as EXPLORATORY would wrongly imply the safety validator is optional.
+
+Three mechanisms turn D7's host-only manifest into an **agent-first composability surface** — so that adding any tool is a manifest entry a user (or their agent) writes, never bespoke rip-cage support for a named tool. cm is the worked example throughout.
+
+1. **One generic builder stage, not per-tool Dockerfile edits.** A from-source manifest entry declares a builder base image, a host-side build script, and an output binary path. `rc build` runs that script in a *single isolated builder stage* (no host access; the beads/DCG builder-stage isolation pattern) and copies only the artifact into the runtime image. rip-cage interprets **no** build logic — the per-tool build intelligence lives in the script, not a build DSL. This generalizes D6's "fall back to source" from a maintainer hand-coding a stage per tool into a declarative, arch-adaptive mechanism (the stage targets the build platform; once cm is moved onto it — the demotion work, rip-cage-buuo.5 — the hand-pinned `--target` hardcode tracked as rip-cage-ywek goes away). **Implementation note:** the manifest subsystem already exists in `rc` (parse/validate/load, Dockerfile-step generation, the three archetypes), but its only build affordance today is a single-line prebuilt `install_cmd` emitted as one runtime-stage `RUN`; the from-source *builder stage* is the net-new mechanism this decision adds.
+
+2. **A fail-closed validator enforces the safety contract on every tool, regardless of who authored it.** At build, rip-cage asserts: the provisioned binary is root-owned and not agent-writable; declared egress unions under the non-overridable IOC floor (ADR-012); declared mounts pass the realpath + ADR-023 denylist; the build script ran isolated. A violation **fails the build** (ADR-001 fail-loud; D10 safety-side asymmetry). This is the enforcement arm of D9's availability-only invariant — "adding a tool" can never become "weakening the cage," even when an agent drafted the entry. Guidance is advisory; the validator is not. **Implementation note:** the egress-under-IOC and mount-denylist checks already exist (`_manifest_check_ioc_egress`, `_manifest_check_mounts_denylist`) and strict-parse validation exists (`_manifest_validate`); the assertions this decision *adds* are the **binary root-owned / not-agent-writable** check and the **build-script isolation** check for the from-source path — neither exists today.
+
+3. **A repo-shipped skill lets a user's *host-side* agent author entries for human review.** rip-cage is agent-first (installed and configured via agents), so the composability UX is a skill the user points their own host-side agent at: it reads the target tool's source, drafts a manifest entry + build script as **human-reviewable host files** under `~/.config/rip-cage/`, and the human approves before `rc build`. This does **not** weaken D7's FIRM host-only property: the *in-cage* agent still cannot reach the manifest; a host-side agent under the user's supervision drafts it exactly as the user would, and human review + the validator are the gates. cm is the skill's worked example — no prebuilt linux-arm64, so it exercises the from-source path.
+
+**Rationale:** encoding every tool's source build as a declarative schema either stays too rigid or balloons into a build DSL — "figure out how to build *this* tool for Linux" is open-ended, per-tool judgment an agent does well and a schema does badly. Moving that to a skill-guided host-side agent keeps rip-cage thin (one generic stage + a validator) while making any tool fittable. The validator is what keeps agent-authoring safe.
+
+**Counter-argument / residual risk (named, accepted):** an agent-authored build script fetches and compiles arbitrary upstream source at build time — more trust than a pinned prebuilt download. It is mitigated (a builder stage with no host *filesystem* access, validated root-owned output, a human-reviewed script), but two honest limits remain: (1) **stage isolation is filesystem isolation, not network isolation** — a Docker `RUN` in the builder stage reaches the internet by default, so a malicious build script could exfiltrate *during* the build even while producing a valid root-owned binary, and the validator inspects the build *output*, not the script's runtime behavior; restricting build-time egress is a possible hardening, but until it ships, (2) **human review of the build script is the actual load-bearing mitigation**, not the stage isolation. This is precisely why the skill produces reviewable host files and never a runtime injection. "Compile arbitrary source" stays a real supply-chain surface that human review carries.
+
+**Alternatives considered:**
+
+| Approach | Rejection |
+|---|---|
+| Declarative build fields `rc` interprets (a build DSL) | `reasoned:` every tool's build differs (build tool, deps, flags, arch); a generic schema is either too rigid or balloons — the open-ended part belongs to an agent, not a schema. |
+| Agent hand-edits the monolithic Dockerfile to add a stage | `reasoned:` no clean seam, fragile, edits conflict; the single generic builder stage gives one bounded, uniform seam parameterized by the manifest. |
+| Let the *in-cage* agent author the manifest directly | `reasoned:` reopens D7's pre-stage hole — the manifest must stay in-cage-agent-inaccessible; only a host-side agent under user supervision may draft it. |
+| Trust the skill's guidance without a build-time validator | `direct:` guidance is advisory; ADR-024's threat model requires enforcement — the validator is the non-advisory gate (D9/D10). |
+| Bundle popular tools instead of generalizing (per-tool support) | `reasoned:` contradicts the composability posture (D2) — rip-cage ships the mechanism, not curated tool support; bundling scales with tool count, the manifest does not. |
+
+**What would invalidate this:** a from-source tool whose build genuinely cannot be expressed as "builder image + script + output" (e.g. needs the host filesystem, or multi-stage interdependence) — which would *extend* the builder mechanism, not abandon it; or the validator's contract proving insufficient against a real injected-tool vector — which would harden the contract, not drop the gate.
+
 ## canonical_refs
 
-- [ADR-001 Fail-Loud Error Handling](ADR-001-fail-loud-pattern.md) — D10 safety-interceptor fail-closed.
+- [ADR-001 Fail-Loud Error Handling](ADR-001-fail-loud-pattern.md) — D10 safety-interceptor fail-closed; D11 fail-closed tool validator.
 - [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md) — base image + bypassPermissions/hooks model the manifest composes on top of (D7, D9).
 - [ADR-006 Multi-Agent Architecture](ADR-006-multi-agent-architecture.md) — Tier 1a many-agents-in-one-cage, the planned-not-shipped prerequisite for the in-cage daemon archetype (D7, D8).
 - [ADR-012 Network Egress Firewall](ADR-012-egress-firewall.md) — declared egress unions into the allowlist but stays under the non-overridable IOC floor (D7, D9).
 - [ADR-019 pi-coding-agent Support](ADR-019-pi-coding-agent-support.md) — D1 container-local cage-owned paths + narrow durable sub-mount, the pattern for daemon state-dir placement (D7); D9 bash-only agents reach the daemon via its CLI over bash, not the `mcp_fragment` (the agent-side counterpart to D7's archetype, reconciled into D7 wording).
 - [ADR-021 Layered rip-cage Config](ADR-021-layered-rip-cage-config.md) — D1 `~/.config/rip-cage/` host-side config home (where the host-only manifest lives); additive-list/selection-list merge semantics and no-config regression contract the manifest mirrors (D7).
 - [ADR-023 Secret-Path Mount Denylist](ADR-023-secret-path-mount-denylist.md) — manifest-declared mounts subject to the denylist floor (D9).
-- [ADR-024 Prompt-Injection Threat Model](ADR-024-prompt-injection-threat-model.md) — warrants host-only authoring (the pre-staged-manifest vector) and the in-cage-only invariant (D7, D8, D9).
+- [ADR-024 Prompt-Injection Threat Model](ADR-024-prompt-injection-threat-model.md) — warrants host-only authoring (the pre-staged-manifest vector) and the in-cage-only invariant (D7, D8, D9); the agent-authoring path (D11) stays safe because only a host-side agent under user review may draft entries and the validator enforces the contract.
 - [ADR-025 Host-Adoptable DCG Policy Layer](ADR-025-host-adoptable-dcg-policy.md) — D2 baked DCG floor is uncrossable (the manifest can't weaken it); D5 validate-by-parsing (D9, D10).
-- bead `rip-cage-4c5` — the composable-tool-manifest epic carrying the full design, the EXPLORATORY manifest schema/location open decisions, and the per-archetype harness target.
+- bead `rip-cage-4c5` — the composable-tool-manifest *design* epic (closed); the manifest subsystem it specced is now implemented in `rc` (`_manifest_*` functions).
+- bead `rip-cage-buuo` — the D11 *implementation* epic: generic from-source builder stage, the binary-ownership + build-isolation validator additions, the mounts consumer, the host-side authoring skill, and the cm demotion (subsumes rip-cage-ywek).
 
 ## Related
 
