@@ -9,6 +9,16 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
+# Multi-arch publish (ADR-008 D6, post-v0.2.0). Apple Silicon is a primary
+# rip-cage audience (ADR-008 D5 names macOS / bash 3.2 explicitly); shipping
+# only linux/amd64 would force Rosetta on M1/M2 and defeat the <90s first-run
+# target. Previously this built both arches on one amd64 runner with QEMU
+# emulating arm64 — compiling the Go (beads) + Rust (DCG) builder stages under
+# emulation took ~1.5h per tag. We now build each arch NATIVELY on its own
+# runner in parallel (GitHub's free arm64 hosted runners), push each by digest,
+# and stitch a manifest list at the end. No emulation; ~native build time per
+# arch plus a fast merge. type=gha cache makes repeat tags near-instant.
+
 jobs:
   # ---------------------------------------------------------------------------
   # Job 1: Lint — shellcheck all bash scripts (pinned via make lint)
@@ -22,39 +32,25 @@ jobs:
       - name: Lint (pinned shellcheck via make lint)
         # make lint runs koalaman/shellcheck:v0.11.0 via docker — same image
         # and file list used locally, so CI and local dev never diverge.
-        # ubuntu-latest has docker pre-installed.
         run: make lint
 
   # ---------------------------------------------------------------------------
-  # Job 2: Build — verify multi-stage Dockerfile compiles (Go + Rust + Debian)
+  # Job 2: Prepare — verify VERSION matches the tag and export it.
+  # ADR-008 D3: VERSION file is the single source of truth; tag and file must
+  # agree or the release is invalid. The version feeds RC_VERSION (baked into
+  # the image label, mount-shape image-version-lock) and the manifest tags.
   # ---------------------------------------------------------------------------
-  build:
-    name: Build (docker build)
+  prepare:
+    name: Verify version
     runs-on: ubuntu-latest
+    needs: lint
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: docker build -t rip-cage:release-test .
-
-  # ---------------------------------------------------------------------------
-  # Job 3: Release — build and push Docker image to GHCR on version tags
-  # Requires lint and build to pass first (ADR-008 D4)
-  # ---------------------------------------------------------------------------
-  release:
-    name: Build and push Docker image
-    runs-on: ubuntu-latest
-    needs: [lint, build]
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Verify VERSION matches tag
-        # ADR-008 D3: VERSION file is the single source of truth.
-        # The git tag and VERSION file must agree; if they diverge the release is invalid.
+      - name: Verify VERSION matches tag and extract
+        id: version
         run: |
           tag_version="${GITHUB_REF_NAME#v}"
           file_version="$(cat VERSION)"
@@ -63,15 +59,33 @@ jobs:
             exit 1
           fi
           echo "VERSION matches tag: $file_version"
+          echo "version=$file_version" >> "$GITHUB_OUTPUT"
 
-      # Multi-arch publish (ADR-008 D6, post-v0.2.0). Apple Silicon is a primary
-      # rip-cage audience (ADR-008 D5 names macOS / bash 3.2 explicitly); shipping
-      # only linux/amd64 would force Rosetta on M1/M2 and defeat the <90s
-      # first-run target. QEMU + buildx emulates arm64 on the amd64 runner.
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: linux/amd64,linux/arm64
+  # ---------------------------------------------------------------------------
+  # Job 3: Build — one native runner per arch, build + push BY DIGEST (no tag).
+  # The standalone amd64 smoke-build job is folded in here: a failing build
+  # fails the gate exactly as before, and this build is a strict superset (it
+  # also bakes RC_VERSION and pushes the layers). lint + prepare gate it.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    needs: prepare
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Set up Docker buildx
         uses: docker/setup-buildx-action@v3
@@ -83,25 +97,87 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      # GHCR-public-visibility one-time ceremony note:
-      # After the first successful push to a NEW package, GHCR defaults the
-      # package's visibility to PRIVATE. Set it to Public at:
-      #   https://github.com/users/jsnyde0/packages/container/rip-cage/settings
-      # Until that's done, unauthenticated `docker pull` from end users fails
-      # silently and falls back to local build — defeating ADR-008 D6's
-      # first-run-fast promise.
-      - name: Build and push (multi-arch)
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          platforms: ${{ matrix.platform }}
           build-args: |
-            RC_VERSION=${{ steps.version.outputs.version }}
+            RC_VERSION=${{ needs.prepare.outputs.version }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Job 4: Merge — assemble the per-arch digests into one tagged manifest list
+  # and push :version + :latest. This is the only step that creates the
+  # user-visible tags.
+  #
+  # GHCR-public-visibility one-time ceremony note:
+  # After the first successful push to a NEW package, GHCR defaults the
+  # package's visibility to PRIVATE. Set it to Public at:
+  #   https://github.com/users/jsnyde0/packages/container/rip-cage/settings
+  # Until that's done, unauthenticated `docker pull` from end users fails
+  # silently and falls back to local build — defeating ADR-008 D6's
+  # first-run-fast promise.
+  # ---------------------------------------------------------------------------
+  merge:
+    name: Merge manifests and push tags
+    runs-on: ubuntu-latest
+    needs: [prepare, build]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Docker buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifest list
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          version="${{ needs.prepare.outputs.version }}"
+          # SC2046: word-splitting is intentional — printf emits one
+          # name@sha256:<digest> reference per file, each a separate arg.
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            -t "${REGISTRY}/${IMAGE_NAME}:${version}" \
+            -t "${REGISTRY}/${IMAGE_NAME}:latest" \
+            $(printf "${REGISTRY}/${IMAGE_NAME}@sha256:%s " *)
+
+      - name: Inspect manifest
+        # Informational only — the manifest is already published by the step
+        # above (imagetools create validates the digest refs before writing).
+        # A transient GHCR read here must NOT fail an otherwise-successful
+        # release, so this step is non-fatal.
+        continue-on-error: true
+        run: |
+          docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${{ needs.prepare.outputs.version }}"
