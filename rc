@@ -263,10 +263,34 @@ cmd_build() {
     _tmp_dockerfile="$_dockerfile"
   fi
 
+  # rip-cage-buuo.3: build-isolation assertion — BEFORE docker build.
+  # Assert that the generated builder stages do not bind-mount host paths.
+  # Only applies when a manifest-generated Dockerfile was produced (non-bundled tools).
+  # The original (unmodified) Dockerfile has no rc-builder-* stages, so this check
+  # is a no-op when all tools are bundled (no temp Dockerfile → skipped).
+  if [[ -n "$_tmp_dockerfile" ]]; then
+    if ! _manifest_check_build_isolation "$_tmp_dockerfile"; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        json_error "Manifest builder stage violates build-isolation invariant — rc build refused (ADR-005 D9 / ADR-024 build-isolation)" "MANIFEST_BUILD_ISOLATION_VIOLATED"
+      fi
+      [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
+      return 1
+    fi
+  fi
+
   log "Building $IMAGE from ${_dockerfile}..."
   local _build_ok=0
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     if docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_dockerfile" "$@" "$SCRIPT_DIR" >/dev/null 2>&1; then
+      # rip-cage-buuo.3: binary-root-owned assertion — AFTER successful docker build.
+      # Inspect the actual installed binary in the built image.
+      if ! _manifest_check_binary_root_owned "$IMAGE"; then
+        [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
+        # Untag the violating image so a subsequent `rc up` / `docker run rip-cage:latest`
+        # cannot use the tainted build. Fail-closed: remove before aborting (ADR-001).
+        docker image rm "$IMAGE" 2>/dev/null || true
+        json_error "Manifest tool binary is not root-owned or is agent-writable — safety floor violated (ADR-005 D9 / ADR-024 binary-root-owned)" "MANIFEST_BINARY_NOT_ROOT_OWNED"
+      fi
       jq -nc '{image: "rip-cage:latest", action: "built", status: "success"}'
     else
       [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
@@ -274,6 +298,16 @@ cmd_build() {
     fi
   else
     docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_dockerfile" "$@" "$SCRIPT_DIR" || _build_ok=$?
+    # rip-cage-buuo.3: binary-root-owned assertion — AFTER successful docker build.
+    if [[ "$_build_ok" -eq 0 ]]; then
+      if ! _manifest_check_binary_root_owned "$IMAGE"; then
+        [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
+        # Untag the violating image so a subsequent `rc up` / `docker run rip-cage:latest`
+        # cannot use the tainted build. Fail-closed: remove before aborting (ADR-001).
+        docker image rm "$IMAGE" 2>/dev/null || true
+        return 1
+      fi
+    fi
   fi
   [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
   return "$_build_ok"
@@ -1660,6 +1694,26 @@ _up_prepare_docker_mounts() {
   _host_project_key=$(printf '%s' "$_path" | tr '/.' '-')
   mkdir -p "${HOME}/.claude/projects/${_host_project_key}"
   _UP_RUN_ARGS+=(-e "RC_HOST_PROJECT_KEY=${_host_project_key}")
+
+  # Manifest-declared data mounts (rip-cage-buuo.1 / ADR-005 D7, D9).
+  # Turn each manifest tool's mounts: [{host, dest}, ...] entry into -v args.
+  # _manifest_build_mount_args emits "host:dest" lines (no -v prefix); we add
+  # -v as a separate array element for the two-element docker run form, matching
+  # the hardcoded cm mount pattern (e.g. rc:1614).
+  # The denylist pre-check at cmd_up already fired (rc:4048); this consumer runs
+  # after that gate so denylist denials here are impossible in normal flow.
+  local _mba_out _mba_rc=0
+  _mba_out=$(_manifest_build_mount_args "$_path") || _mba_rc=$?
+  if [[ "$_mba_rc" -ne 0 ]]; then
+    echo "[rip-cage] Error: manifest mount denied by denylist — rc up refused. (ADR-023 D1/D6)" >&2
+    exit 1
+  fi
+  local _mba_line
+  while IFS= read -r _mba_line; do
+    [[ -z "$_mba_line" ]] && continue
+    _UP_RUN_ARGS+=(-v "$_mba_line")
+  done <<<"$_mba_out"
+  unset _mba_line _mba_out _mba_rc
 
   # State volumes
   _UP_RUN_ARGS+=(-v "rc-state-${_name}:/home/agent/.claude-state")
@@ -6476,19 +6530,91 @@ _manifest_validate() {
           echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'mounts' must be a list, got: ${mounts_type}." >&2
           return 1
         fi
-        # 'install_cmd' coupling with version_pin:
-        #   version_pin == "bundled"  → MUST NOT have install_cmd (bundled = baked by Dockerfile)
-        #   version_pin != "bundled"  → MUST have a non-empty single-line install_cmd
+        # Each mounts[] element must be an object {host, dest} (rip-cage-buuo.1).
+        # Scalar strings (old shape) are rejected fail-loud.
+        local mounts_count_for_val midx_val
+        mounts_count_for_val=$(jq '.mounts | length' <<<"$entry" 2>/dev/null)
+        for (( midx_val=0; midx_val<mounts_count_for_val; midx_val++ )); do
+          local mount_element mount_elem_type
+          mount_element=$(jq -c ".mounts[${midx_val}]" <<<"$entry" 2>/dev/null)
+          mount_elem_type=$(jq -r 'type' <<<"$mount_element" 2>/dev/null)
+          if [[ "$mount_elem_type" != "object" ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): mounts[${midx_val}] must be an object with 'host' and 'dest' fields, got: ${mount_elem_type} (use {host: \"/path/on/host\", dest: \"/path/in/cage\"})." >&2
+            return 1
+          fi
+          # 'host' is required and must be non-empty
+          local mount_host
+          mount_host=$(jq -r '.host // "___RC_ABSENT___"' <<<"$mount_element" 2>/dev/null)
+          if [[ "$mount_host" == "___RC_ABSENT___" || -z "$mount_host" ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): mounts[${midx_val}]: required field 'host' is missing or empty (must be the host-side directory path to mount)." >&2
+            return 1
+          fi
+          # 'dest' is required and must be non-empty
+          local mount_dest
+          mount_dest=$(jq -r '.dest // "___RC_ABSENT___"' <<<"$mount_element" 2>/dev/null)
+          if [[ "$mount_dest" == "___RC_ABSENT___" || -z "$mount_dest" ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): mounts[${midx_val}]: required field 'dest' is missing or empty (must be the in-cage destination path)." >&2
+            return 1
+          fi
+        done
+        # 'install_cmd' / 'build_source' coupling with version_pin:
+        #   version_pin == "bundled"  → MUST NOT have install_cmd or build_source
+        #   version_pin != "bundled"  → MUST have EITHER install_cmd (single-line) OR build_source
+        #                               (builder_image + build_script + output_path); not both.
+        # build_source is the from-source path (rip-cage-buuo.2 ADR-005 D6/D11).
         # Newlines in install_cmd are rejected regardless (newline-injection defense — fix 2).
-        local install_cmd_raw
+        local install_cmd_raw build_source_raw
         install_cmd_raw=$(jq -r '.install_cmd // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        build_source_raw=$(jq -r 'if has("build_source") and (.build_source | type) == "object" then "present" else "___RC_ABSENT___" end' <<<"$entry" 2>/dev/null)
         if [[ "$version_pin" == "bundled" ]]; then
           if [[ "$install_cmd_raw" != "___RC_ABSENT___" && -n "$install_cmd_raw" ]]; then
             echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'install_cmd' must not be set when version_pin is \"bundled\" (bundled tools are baked by the Dockerfile; install_cmd is contradictory)." >&2
             return 1
           fi
+          if [[ "$build_source_raw" == "present" ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source' must not be set when version_pin is \"bundled\" (bundled tools are baked by the Dockerfile; build_source is contradictory)." >&2
+            return 1
+          fi
+        elif [[ "$build_source_raw" == "present" ]]; then
+          # From-source path: build_source present — install_cmd must NOT also be set.
+          if [[ "$install_cmd_raw" != "___RC_ABSENT___" && -n "$install_cmd_raw" ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): fields 'install_cmd' and 'build_source' are mutually exclusive (use build_source for from-source builds; install_cmd for prebuilt package installs)." >&2
+            return 1
+          fi
+          # Validate build_source sub-fields: builder_image, build_script, output_path (all required).
+          local bs_builder_image bs_build_script bs_output_path
+          bs_builder_image=$(jq -r '.build_source.builder_image // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+          bs_build_script=$(jq -r '.build_source.build_script // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+          bs_output_path=$(jq -r '.build_source.output_path // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+          if [[ "$bs_builder_image" == "___RC_ABSENT___" || -z "$bs_builder_image" ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'build_source.builder_image' is missing (from-source TOOL entries must declare the Docker builder image)." >&2
+            return 1
+          fi
+          # builder_image must be a single line — newlines inject arbitrary Dockerfile directives (ADR-024).
+          if [[ "$bs_builder_image" == *$'\n'* ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.builder_image' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
+            return 1
+          fi
+          if [[ "$bs_build_script" == "___RC_ABSENT___" || -z "$bs_build_script" ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'build_source.build_script' is missing (from-source TOOL entries must declare the host-side build script path)." >&2
+            return 1
+          fi
+          # build_script must be a single line — newlines inject arbitrary Dockerfile directives (ADR-024).
+          if [[ "$bs_build_script" == *$'\n'* ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.build_script' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
+            return 1
+          fi
+          if [[ "$bs_output_path" == "___RC_ABSENT___" || -z "$bs_output_path" ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'build_source.output_path' is missing (from-source TOOL entries must declare the output binary path inside the builder stage)." >&2
+            return 1
+          fi
+          # output_path must be a single line — newlines inject arbitrary Dockerfile directives (ADR-024).
+          if [[ "$bs_output_path" == *$'\n'* ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.output_path' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
+            return 1
+          fi
         else
-          # Non-bundled: install_cmd required and must be non-empty
+          # Non-bundled, no build_source: install_cmd required and must be non-empty
           if [[ "$install_cmd_raw" == "___RC_ABSENT___" || -z "$install_cmd_raw" ]]; then
             echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'install_cmd' is missing (non-bundled TOOL entries must have an install_cmd so the binary can be baked into the image at build time)." >&2
             return 1
@@ -6648,7 +6774,7 @@ _manifest_generate_extra_dockerfile_steps() {
     return 1
   fi
 
-  # Walk TOOL-archetype entries that have a non-empty install_cmd field.
+  # Walk TOOL-archetype entries that have a non-empty install_cmd field OR a build_source.
   local count idx
   count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
   if [[ -z "$count" || "$count" -eq 0 ]]; then
@@ -6657,23 +6783,104 @@ _manifest_generate_extra_dockerfile_steps() {
 
   local steps=""
   for (( idx=0; idx<count; idx++ )); do
-    local entry archetype install_cmd
+    local entry archetype install_cmd build_source_present
     entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
     archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
     install_cmd=$(jq -r '.install_cmd // ""' <<<"$entry" 2>/dev/null)
-    # Skip entries with no install_cmd (bundled tools; Dockerfile handles them).
-    if [[ -z "$install_cmd" ]]; then
-      continue
-    fi
+    build_source_present=$(jq -r 'if has("build_source") and (.build_source | type) == "object" then "yes" else "no" end' <<<"$entry" 2>/dev/null)
+
     local name
     name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
-    steps+="RUN # manifest TOOL: ${name} (${archetype})"$'\n'
-    steps+="RUN apt-get update && ${install_cmd} && rm -rf /var/lib/apt/lists/*"$'\n'
+
+    if [[ "$build_source_present" == "yes" ]]; then
+      # From-source path (rip-cage-buuo.2): emit a COPY --from the isolated builder stage
+      # into the runtime stage.  The builder stage itself is emitted by
+      # _manifest_generate_source_builder_stages and injected before the runtime FROM.
+      local bs_output_path bs_runtime_dest stage_name
+      bs_output_path=$(jq -r '.build_source.output_path // ""' <<<"$entry" 2>/dev/null)
+      # Derive runtime destination: same as output_path (basename in /usr/local/bin).
+      bs_runtime_dest="/usr/local/bin/$(basename "${bs_output_path}")"
+      # Stage name must be safe for Docker AS label: lowercase alphanumeric + hyphens.
+      stage_name="rc-builder-$(echo "${name}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/-$//')"
+      steps+="# manifest from-source TOOL: ${name} (copy artifact from isolated builder stage)"$'\n'
+      steps+="COPY --from=${stage_name} ${bs_output_path} ${bs_runtime_dest}"$'\n'
+    elif [[ -n "$install_cmd" ]]; then
+      # Prebuilt install path: emit a RUN apt-get / install step in the runtime stage.
+      steps+="RUN # manifest TOOL: ${name} (${archetype})"$'\n'
+      steps+="RUN apt-get update && ${install_cmd} && rm -rf /var/lib/apt/lists/*"$'\n'
+    fi
+    # Entries with no install_cmd and no build_source are bundled; skip.
   done
 
   # Strip trailing newline for clean output; caller appends to Dockerfile.
   if [[ -n "$steps" ]]; then
     printf '%s' "${steps%$'\n'}"
+  fi
+}
+
+# _manifest_generate_source_builder_stages
+# Read the host manifest and emit Dockerfile FROM ... AS rc-builder-<name> stages
+# for every TOOL entry that carries a build_source field (from-source build path).
+# Each stage: FROM <builder_image> AS rc-builder-<name>
+#             COPY <build_script> /rc-build/build.sh
+#             RUN sh /rc-build/build.sh
+#
+# These stages are prepended before the runtime FROM (Stage 4) so the build
+# toolchain stays in an isolated layer and is NOT copied into the runtime image.
+#
+# Arch-adaptive by construction: the stage targets the BUILD platform (no
+# --platform or --target flags), so arm64 and amd64 each produce a native binary
+# (ADR-005 D6/D11, rip-cage-buuo.2 acceptance criterion).
+#
+# D8 byte-for-byte contract: when the manifest has no from-source entries, this
+# function emits NOTHING — rc build uses the original Dockerfile unchanged.
+#
+# Output: zero or more multi-line Dockerfile stage blocks, one per from-source entry.
+_manifest_generate_source_builder_stages() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count idx
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local stages=""
+  for (( idx=0; idx<count; idx++ )); do
+    local entry build_source_present
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    build_source_present=$(jq -r 'if has("build_source") and (.build_source | type) == "object" then "yes" else "no" end' <<<"$entry" 2>/dev/null)
+    if [[ "$build_source_present" != "yes" ]]; then
+      continue
+    fi
+
+    local name bs_builder_image bs_build_script stage_name
+    name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+    bs_builder_image=$(jq -r '.build_source.builder_image // ""' <<<"$entry" 2>/dev/null)
+    bs_build_script=$(jq -r '.build_source.build_script // ""' <<<"$entry" 2>/dev/null)
+
+    if [[ -z "$bs_builder_image" || -z "$bs_build_script" ]]; then
+      echo "Error: manifest from-source TOOL '${name}': build_source.builder_image or build_source.build_script is empty." >&2
+      return 1
+    fi
+
+    # Stage name: lowercase alphanumeric + hyphens, no trailing hyphen.
+    stage_name="rc-builder-$(echo "${name}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/-$//')"
+
+    # Emit the isolated builder stage.
+    # The build script is COPY'd in; rip-cage does not interpret its contents.
+    # No host mount in this stage — pure Dockerfile isolation (ADR-002).
+    stages+="# manifest from-source builder stage: ${name} (rip-cage-buuo.2)"$'\n'
+    stages+="FROM ${bs_builder_image} AS ${stage_name}"$'\n'
+    stages+="COPY ${bs_build_script} /rc-build/build.sh"$'\n'
+    stages+="RUN sh /rc-build/build.sh"$'\n'
+  done
+
+  if [[ -n "$stages" ]]; then
+    printf '%s' "${stages%$'\n'}"
   fi
 }
 
@@ -6684,14 +6891,31 @@ _manifest_generate_extra_dockerfile_steps() {
 # its path.  If all tools are bundled, prints the original Dockerfile path.
 # The caller is responsible for cleaning up any temp file created.
 #
-# Insertion point: extra steps are injected BEFORE the "# Non-root user" block
-# (i.e. before `USER agent`) so apt-get install runs as root.  This is the
-# correct point in the multi-stage runtime stage for root-level tool installs.
+# Injection points:
+#   0. From-source builder stages (source_builder_stages)
+#      → BEFORE the "# Stage 4: Runtime" sentinel (before FROM debian:trixie).
+#      These are isolated builder stages that keep build toolchains OUT of the
+#      runtime image (ADR-002 multi-stage; rip-cage-buuo.2 D6/D11).
+#   1. TOOL install steps (extra_steps: apt-get / binary installs; also COPY --from
+#      for from-source tools) → before "# Non-root user" (root context; no /etc/rip-cage
+#      dependency).
+#   2. IN-CAGE-DAEMON config bake + MCP fragment merge (daemon_config_steps + daemon_mcp_steps)
+#      → after "COPY settings.json /etc/rip-cage/settings.json" (still root context,
+#        but MUST be after /etc/rip-cage is created at Dockerfile:113 and settings.json
+#        is COPY'd at Dockerfile:133; writing to /etc/rip-cage/ before mkdir-p fails with
+#        "Directory nonexistent" — rip-cage-4c5.9 fix).
+#   3. SHELL-INTEGRATION shell_init steps → after "COPY zshrc /home/agent/.zshrc"
+#      (USER agent context; appends to the agent-owned .zshrc)
 _manifest_build_dockerfile_path() {
   local orig_dockerfile="${1:-${SCRIPT_DIR}/Dockerfile}"
 
   local extra_steps
   if ! extra_steps=$(_manifest_generate_extra_dockerfile_steps); then
+    return 1
+  fi
+
+  local source_builder_stages
+  if ! source_builder_stages=$(_manifest_generate_source_builder_stages); then
     return 1
   fi
 
@@ -6710,7 +6934,7 @@ _manifest_build_dockerfile_path() {
     return 1
   fi
 
-  if [[ -z "$extra_steps" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" ]]; then
+  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" ]]; then
     # Default/bundled-only manifest — use the original Dockerfile unchanged (D8).
     echo "$orig_dockerfile"
     return 0
@@ -6720,22 +6944,37 @@ _manifest_build_dockerfile_path() {
   local tmp_dockerfile
   tmp_dockerfile=$(mktemp "${TMPDIR:-/tmp}/rip-cage-Dockerfile-XXXXXX")
 
-  # Three injection points:
-  #   1. TOOL install steps (extra_steps: apt-get / binary installs)
-  #      → before "# Non-root user" (root context; no /etc/rip-cage dependency).
-  #   2. IN-CAGE-DAEMON config bake + MCP fragment merge (daemon_config_steps + daemon_mcp_steps)
-  #      → after "COPY settings.json /etc/rip-cage/settings.json" (still root context,
-  #        but MUST be after /etc/rip-cage is created at Dockerfile:113 and settings.json
-  #        is COPY'd at Dockerfile:133; writing to /etc/rip-cage/ before mkdir-p fails with
-  #        "Directory nonexistent" — rip-cage-4c5.9 fix).
-  #   3. SHELL-INTEGRATION shell_init steps → after "COPY zshrc /home/agent/.zshrc"
-  #      (USER agent context; appends to the agent-owned .zshrc)
-
   # Start with the original Dockerfile; we'll build it up in sections.
   cp "$orig_dockerfile" "$tmp_dockerfile"
 
+  # --- From-source builder stages: inject BEFORE "# Stage 4: Runtime" sentinel ---
+  # These are isolated FROM ... AS rc-builder-<name> stages. They must appear before
+  # the runtime FROM so Docker multi-stage COPY --from can reference them.
+  # The build toolchain stays in the builder layer and does NOT leak into runtime.
+  if [[ -n "$source_builder_stages" ]]; then
+    local sentinel_runtime="# Stage 4: Runtime"
+    local tmp_inject_builders
+    tmp_inject_builders=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
+    printf '\n# --- manifest-generated from-source builder stages (rip-cage-buuo.2) ---\n%s\n' "$source_builder_stages" > "$tmp_inject_builders"
+
+    if grep -qF "$sentinel_runtime" "$tmp_dockerfile"; then
+      local sentinel_line_runtime base_dockerfile_s
+      sentinel_line_runtime=$(grep -nF "$sentinel_runtime" "$tmp_dockerfile" | head -1 | cut -d: -f1)
+      base_dockerfile_s=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
+      head -n "$((sentinel_line_runtime - 1))" "$tmp_dockerfile" > "$base_dockerfile_s"
+      cat "$tmp_inject_builders" >> "$base_dockerfile_s"
+      tail -n "+${sentinel_line_runtime}" "$tmp_dockerfile" >> "$base_dockerfile_s"
+      mv "$base_dockerfile_s" "$tmp_dockerfile"
+    else
+      echo "rip-cage: Warning: '# Stage 4: Runtime' sentinel not found in Dockerfile — appending from-source builder stages before end of file. Dockerfile may need the sentinel restored." >&2
+      cat "$tmp_inject_builders" >> "$tmp_dockerfile"
+    fi
+    rm -f "$tmp_inject_builders"
+  fi
+
   # --- TOOL install steps: inject before "# Non-root user" sentinel ---
-  # extra_steps (apt-get / binary installs) have no /etc/rip-cage dependency and run as root.
+  # extra_steps includes: apt-get / binary installs (prebuilt path) and COPY --from
+  # (from-source path). Both run as root in the runtime stage; no /etc/rip-cage dependency.
   if [[ -n "$extra_steps" ]]; then
     local sentinel_tool="# Non-root user"
     local tmp_inject_root
@@ -7248,8 +7487,9 @@ _manifest_check_mounts_denylist() {
 
     for (( midx=0; midx<mounts_count; midx++ )); do
       local mount_path resolved_path
-      mount_path=$(jq -r ".mounts[${midx}]" <<<"$entry" 2>/dev/null)
-      [[ -z "$mount_path" ]] && continue
+      # Read .host field from the {host, dest} object (rip-cage-buuo.1).
+      mount_path=$(jq -r ".mounts[${midx}].host" <<<"$entry" 2>/dev/null)
+      [[ -z "$mount_path" || "$mount_path" == "null" ]] && continue
 
       # Realpath-first: resolve before matching (ADR-023 D6).
       resolved_path=$(realpath "$mount_path" 2>/dev/null) || resolved_path="$mount_path"
@@ -7290,8 +7530,286 @@ _manifest_egress_hosts_json() {
   jq -c '[.tools[].egress // [] | .[]] | unique' <<<"$manifest_json" 2>/dev/null || echo "[]"
 }
 
+# _manifest_build_mount_args — build the -v docker run args for all manifest
+# mounts: entries (rip-cage-buuo.1).
+#
+# For each tool entry in the manifest:
+#   - Iterates over mounts[] entries (objects {host, dest}).
+#   - Skips entries whose .host dir does not exist on the host (skip-if-missing).
+#   - Applies realpath to resolve the host path (ADR-023 D6 FIRM).
+#   - Checks against the secret-path denylist (ADR-023 D1/D6 FIRM) — fail-loud.
+#   - Emits "-v <resolved_host>:<dest>" to stdout (one per line).
+#
+# The caller (_up_prepare_docker_mounts) collects these into _UP_RUN_ARGS.
+#
+# Mounts DIRECTORIES only — never a single-file bind (host-atomic-rename tripwire).
+#
+# Parameters:
+#   $1  workspace — passed to _check_secret_path_denylist as the workspace root
+#
+# Stdout: zero or more "-v <host>:<dest>" lines (one per mount)
+# Stderr: skip/error messages
+# Returns: 0 on success, 1 on denylist-denied mount (fail-loud).
+_manifest_build_mount_args() {
+  local _workspace="${1:-.}"
+
+  # Load manifest (fail-closed if invalid).
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local idx
+  for (( idx=0; idx<count; idx++ )); do
+    local entry mounts_count midx
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+
+    mounts_count=$(jq '.mounts | length' <<<"$entry" 2>/dev/null)
+    [[ -z "$mounts_count" || "$mounts_count" -eq 0 ]] && continue
+
+    local tool_name
+    tool_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+
+    for (( midx=0; midx<mounts_count; midx++ )); do
+      local mount_host mount_dest
+      mount_host=$(jq -r ".mounts[${midx}].host" <<<"$entry" 2>/dev/null)
+      mount_dest=$(jq -r ".mounts[${midx}].dest" <<<"$entry" 2>/dev/null)
+
+      # Skip entries with missing/null host or dest (validator should have caught these,
+      # but be defensive at the consumer level).
+      [[ -z "$mount_host" || "$mount_host" == "null" ]] && continue
+      [[ -z "$mount_dest" || "$mount_dest" == "null" ]] && continue
+
+      # Skip-if-host-missing: if the host path does not exist, skip this mount.
+      # This allows tools to declare mounts for optional data dirs — if the dir
+      # doesn't exist on the host, no mount is added (no error).
+      if [[ ! -d "$mount_host" ]]; then
+        echo "manifest mount for '${tool_name}': host dir '${mount_host}' not found — skipping (skip-if-host-missing)" >&2
+        continue
+      fi
+
+      # Realpath-first: resolve before denylist check (ADR-023 D6 FIRM).
+      local resolved_host
+      resolved_host=$(realpath "$mount_host" 2>/dev/null) || resolved_host="$mount_host"
+
+      # ADR-023 D1/D6: denylist check — fail-loud for manifest-managed mounts.
+      if _check_secret_path_denylist "$resolved_host" "$_workspace"; then
+        local _denied_pattern
+        _denied_pattern=$(_secret_path_denylist_matched_pattern "$resolved_host" "$_workspace" 2>/dev/null || true)
+        echo "Error: manifest-declared mount for tool '${tool_name}': '${resolved_host}' matched secret-path denylist pattern '${_denied_pattern:-<unknown>}'. Remove this path from the manifest mounts: declaration or add to mounts.allow_risky in .rip-cage.yaml. (ADR-023 D1/D6)" >&2
+        return 1
+      fi
+
+      # Emit host:dest (caller adds -v as a separate array element — two-element form).
+      echo "${resolved_host}:${mount_dest}"
+    done
+  done
+
+  return 0
+}
+
+# _manifest_check_build_isolation — ADR-005 D9 / ADR-024 / rip-cage-buuo.3
+#
+# Assert that the generated Dockerfile's builder stages cannot reach the host.
+# Specifically: within any rc-builder-* stage, there must be NO:
+#   - RUN --mount=type=bind with an absolute src= path (host-path leak)
+#   - VOLUME directive (host-path leak via Docker volume mount)
+#
+# The builder stage today uses only COPY <build_script> /rc-build/build.sh
+# (copies from the build context, NOT a host bind mount) and RUN sh /rc-build/build.sh
+# (runs inside the isolated layer). This assertion guards against a future
+# manifest/codegen path that would BREAK that isolation (ADR-002 multi-stage).
+#
+# Fires BEFORE docker build — static analysis of the generated Dockerfile.
+#
+# Parameters:
+#   $1  dockerfile_path — path to the generated Dockerfile to inspect
+#
+# Returns: 0 if isolated clean, 1 with fail-loud error if a host-access path found.
+_manifest_check_build_isolation() {
+  local _dockerfile="${1:-}"
+
+  if [[ -z "$_dockerfile" || ! -f "$_dockerfile" ]]; then
+    # No manifest-generated Dockerfile (all bundled, D8) — nothing to check.
+    return 0
+  fi
+
+  # Track whether we are inside an rc-builder-* stage so we check only
+  # the isolated builder stages, not the runtime stage.
+  local _in_builder_stage=0
+  local _stage_name=""
+  local _line_no=0
+  local _violation=0
+
+  while IFS= read -r _line; do
+    _line_no=$(( _line_no + 1 ))
+
+    # Detect stage transitions: "FROM ... AS <name>"
+    if [[ "$_line" =~ ^[[:space:]]*FROM[[:space:]] ]]; then
+      local _as_label
+      # Extract the AS label if present (case-insensitive AS).
+      _as_label=$(printf '%s' "$_line" | grep -oiE 'AS [a-z0-9_-]+' | awk '{print $2}' | tr '[:upper:]' '[:lower:]' || true)
+      if [[ "$_as_label" == rc-builder-* ]]; then
+        _in_builder_stage=1
+        _stage_name="$_as_label"
+      else
+        _in_builder_stage=0
+        _stage_name=""
+      fi
+      continue
+    fi
+
+    [[ "$_in_builder_stage" -eq 0 ]] && continue
+
+    # Check for RUN --mount=type=bind with an absolute src= path (host-path leak).
+    # Pattern: RUN --mount=type=bind,src=/ or RUN --mount=type=bind,...,src=/...
+    # An absolute src= means the build daemon is binding a HOST path into the build step.
+    if [[ "$_line" =~ ^[[:space:]]*RUN[[:space:]].*--mount=type=bind ]]; then
+      # Extract src= value.
+      local _src_val
+      _src_val=$(printf '%s' "$_line" | grep -oE 'src=[^, ]+' | head -1 | cut -d= -f2 || true)
+      if [[ "$_src_val" == /* ]]; then
+        echo "Error: manifest builder stage '${_stage_name}' (line ${_line_no}) contains RUN --mount=type=bind,src=${_src_val} — absolute host path in builder stage violates build-isolation invariant (ADR-005 D9 / ADR-024 build-isolation). Builder stages must not bind-mount host paths." >&2
+        _violation=1
+      fi
+    fi
+
+    # Check for RUN --mount=type=ssh (injects host SSH agent socket into build step).
+    # This gives the builder stage direct access to the host SSH agent — a host-resource
+    # access vector that violates build-isolation (ADR-005 D9 / ADR-024).
+    if [[ "$_line" =~ ^[[:space:]]*RUN[[:space:]].*--mount=type=ssh ]]; then
+      echo "Error: manifest builder stage '${_stage_name}' (line ${_line_no}) contains RUN --mount=type=ssh — SSH agent socket injection in a builder stage violates build-isolation invariant (ADR-005 D9 / ADR-024 build-isolation). Builder stages must not access host resources." >&2
+      _violation=1
+    fi
+
+    # Check for RUN --mount=type=secret (exposes host build secrets into build step).
+    # This gives the builder stage access to host secrets (API keys, credentials, etc.) —
+    # a host-resource access vector that violates build-isolation (ADR-005 D9 / ADR-024).
+    if [[ "$_line" =~ ^[[:space:]]*RUN[[:space:]].*--mount=type=secret ]]; then
+      echo "Error: manifest builder stage '${_stage_name}' (line ${_line_no}) contains RUN --mount=type=secret — host secret injection in a builder stage violates build-isolation invariant (ADR-005 D9 / ADR-024 build-isolation). Builder stages must not access host resources." >&2
+      _violation=1
+    fi
+
+    # Check for VOLUME directive inside a builder stage (host-volume access path).
+    if [[ "$_line" =~ ^[[:space:]]*VOLUME[[:space:]] ]]; then
+      echo "Error: manifest builder stage '${_stage_name}' (line ${_line_no}) contains a VOLUME directive — VOLUME in a builder stage introduces host-path access (ADR-005 D9 / ADR-024 build-isolation). Builder stages must be fully isolated." >&2
+      _violation=1
+    fi
+  done < "$_dockerfile"
+
+  [[ "$_violation" -eq 0 ]]
+}
+
+# _manifest_check_binary_root_owned — ADR-005 D9 / ADR-024 / rip-cage-buuo.3
+#
+# EFFECT-based assertion: for every from-source (build_source) TOOL entry in the
+# manifest, inspect the ACTUAL installed binary in the already-built image using
+# `docker run --rm <image> stat -c '%U %a' <runtime-path>`. Rejects any binary
+# that is NOT owned by root OR that is writable by the agent user (group-write or
+# other-write bit set).
+#
+# An agent-writable binary is an ADR-005 D9 / ADR-024 violation: a prompt-injected
+# agent could rewrite its own tool binary and escape the safety stack.
+#
+# This check fires AFTER docker build (it requires the image to exist).
+# Only from-source (build_source) entries are checked because their runtime binary
+# path is declarative (known from output_path). The install_cmd path uses apt-get
+# which installs to system-managed paths; those binaries inherit root ownership
+# from the package manager and are out of scope for this per-entry check.
+#
+# Parameters:
+#   $1  image_tag  — Docker image tag to inspect (e.g. "rip-cage:latest")
+#
+# Stdout: (none)
+# Stderr: error messages on violation
+# Returns: 0 if all binaries are root-owned and not agent-writable, 1 on violation.
+_manifest_check_binary_root_owned() {
+  local _image_tag="${1:-rip-cage:latest}"
+
+  # Load manifest (fail-closed if invalid).
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local _violation=0
+  local idx
+  for (( idx=0; idx<count; idx++ )); do
+    local entry build_source_present
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    build_source_present=$(jq -r 'if has("build_source") and (.build_source | type) == "object" then "yes" else "no" end' <<<"$entry" 2>/dev/null)
+    [[ "$build_source_present" != "yes" ]] && continue
+
+    local tool_name bs_output_path runtime_path
+    tool_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+    bs_output_path=$(jq -r '.build_source.output_path // ""' <<<"$entry" 2>/dev/null)
+    if [[ -z "$bs_output_path" ]]; then
+      echo "Error: manifest from-source tool '${tool_name}': build_source.output_path is empty — cannot verify binary ownership." >&2
+      _violation=1
+      continue
+    fi
+
+    # Runtime path: /usr/local/bin/<basename of output_path> (same derivation as codegen).
+    runtime_path="/usr/local/bin/$(basename "${bs_output_path}")"
+
+    # Effect-based check: inspect the actual binary inside the built image.
+    # stat -c '%U %a' prints: owner_name octal_mode (e.g. "root 755")
+    local stat_out
+    if ! stat_out=$(docker run --rm "$_image_tag" stat -c '%U %a' "$runtime_path" 2>/dev/null); then
+      echo "Error: manifest binary-root-owned check for tool '${tool_name}': could not stat '${runtime_path}' inside image '${_image_tag}' — binary may be absent or image not built. (ADR-005 D9 / ADR-024 binary-root-owned)" >&2
+      _violation=1
+      continue
+    fi
+
+    local stat_owner stat_mode
+    stat_owner=$(awk '{print $1}' <<<"$stat_out")
+    stat_mode=$(awk '{print $2}' <<<"$stat_out")
+
+    # Owner MUST be root.
+    if [[ "$stat_owner" != "root" ]]; then
+      echo "Error: manifest tool '${tool_name}' binary at '${runtime_path}' is owned by '${stat_owner}' (not root). An agent-writable binary violates the safety floor — an injected agent could rewrite its own tool. (ADR-005 D9 / ADR-024 binary-root-owned)" >&2
+      _violation=1
+    fi
+
+    # Mode: group-write (bit 4 of 3-digit octal) or other-write (bit 1 of 3-digit octal)
+    # must NOT be set. Extract the group and other permission digits.
+    # For a 3-digit octal "XYZ": Y = group digit, Z = other digit.
+    # Write bit in each digit: 2 = w, 3 = wx, 6 = rw, 7 = rwx.
+    # Normalize to exactly 3 digits (drop leading digits like "0" prefix if stat gives 4).
+    local mode_3
+    mode_3="${stat_mode: -3}"  # last 3 chars
+    local group_digit other_digit
+    group_digit="${mode_3:1:1}"
+    other_digit="${mode_3:2:1}"
+
+    local writable=0
+    case "$group_digit" in 2|3|6|7) writable=1 ;; esac
+    case "$other_digit" in 2|3|6|7) writable=1 ;; esac
+
+    if [[ "$writable" -eq 1 ]]; then
+      echo "Error: manifest tool '${tool_name}' binary at '${runtime_path}' has mode '${stat_mode}' which is group/other-writable. The agent user could overwrite this binary, violating the safety floor. (ADR-005 D9 / ADR-024 binary-root-owned)" >&2
+      _violation=1
+    fi
+  done
+
+  [[ "$_violation" -eq 0 ]]
+}
+
 # =============================================================================
 # End manifest egress+mounts floor (rip-cage-4c5.3)
+# End manifest binary-ownership + build-isolation assertions (rip-cage-buuo.3)
 # =============================================================================
 
 # _ensure_pi_auth_seed — cold-start seeding for pi auth (rip-cage-wo9 / ADR-019 D1).

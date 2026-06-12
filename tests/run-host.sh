@@ -171,6 +171,9 @@ run_test "${SCRIPT_DIR}/test-manifest-daemon.sh"       # rip-cage-4c5.5: IN-CAGE
 run_test "${SCRIPT_DIR}/test-manifest-agent-mail.sh"   # rip-cage-4c5.6: agent_mail daemon fixture (host-only T1); e2e self-skips via RC_E2E gate; T2d auth-gated
 run_test "${SCRIPT_DIR}/test-manifest-cross.sh"        # rip-cage-4c5.8: cross-cutting integration regressions (H1/H2 always; C1/C2/C3 self-skip via RC_E2E gate)
 run_test "${SCRIPT_DIR}/test-manifest-cm.sh"           # rip-cage-l0u2.4: cm binary + mount e2e proof (T1a always; T2a-T2d self-skip via RC_E2E gate)
+run_test "${SCRIPT_DIR}/test-manifest-mounts.sh"      # rip-cage-buuo.1: manifest mounts schema + consumer (host-only MV1/MH*/MD1/MC*; ME1 self-skips via RC_E2E gate)
+run_test "${SCRIPT_DIR}/test-manifest-source.sh"      # rip-cage-buuo.2: from-source builder stage schema + codegen (host-only S1-S10; SE1 self-skips via RC_E2E gate)
+run_test "${SCRIPT_DIR}/test-manifest-security.sh"   # rip-cage-buuo.3: binary-root-owned + build-isolation assertions (host-only B1a-d/BI1a-h; BE1-BE2 self-skip via RC_E2E gate)
 run_test "${SCRIPT_DIR}/test-claude-concurrency.sh"    # rip-cage-p1p: per-session Claude config isolation (NEEDS_CONTAINER; self-skips if no running cage)
 run_test "${SCRIPT_DIR}/test-multi-agent-levers.sh"    # rip-cage-tlm: Tier 1a rc agent lever + two-pi concurrency (NEEDS_CONTAINER; self-skips if no running cage)
 run_test "${SCRIPT_DIR}/test-selftest-classifier.sh"   # rip-cage-fft: pure classifier unit tests (no live firewall needed)

@@ -1,0 +1,674 @@
+#!/usr/bin/env bash
+# Host-side + e2e tests for manifest binary-root-owned and build-isolation assertions (rip-cage-buuo.3).
+# ADR-005 D9 (binary-ownership safety floor), D11 (mechanism 2 FIRM enforcement arm),
+# ADR-001 (fail-loud), ADR-024 (agent-authoring threat model).
+#
+# Two assertions added to the build path:
+#
+#   Assertion 1 (binary-root-owned): A provisioned from-source tool binary, at its
+#   runtime path in the built image, must be owned by root and NOT writable by
+#   the agent user. Check fires AFTER docker build using docker run stat.
+#
+#   Assertion 2 (build-isolation): The generated builder stages must NOT bind-mount
+#   host paths (RUN --mount=type=bind,src=<absolute> or VOLUME in an rc-builder-* stage).
+#   Check fires BEFORE docker build — static analysis of the generated Dockerfile.
+#
+# Test tiers:
+#
+#   B1a (host-only) — Unit: _manifest_check_binary_root_owned function accepts
+#        a mock stat output of "root 755" (root-owned, not agent-writable). [PASS]
+#
+#   B1b (host-only) — Unit: _manifest_check_binary_root_owned function rejects
+#        a mock stat output of "agent 777" (agent-owned, world-writable). [FAIL-LOUD]
+#
+#   B1c (host-only) — Unit: _manifest_check_binary_root_owned function rejects
+#        mode "755" that is root-owned but then is overridden by agent ownership. [FAIL-LOUD]
+#
+#   B1d (host-only) — Unit: _manifest_check_binary_root_owned function rejects
+#        mode "775" (group-writable even if root-owned). [FAIL-LOUD]
+#
+#   BI1a (host-only) — Unit: _manifest_check_build_isolation accepts a clean
+#        generated Dockerfile with rc-builder-* stage using only COPY + RUN. [PASS]
+#
+#   BI1b (host-only) — Unit: _manifest_check_build_isolation rejects a Dockerfile
+#        with RUN --mount=type=bind,src=/host/path in an rc-builder-* stage. [FAIL-LOUD]
+#
+#   BI1c (host-only) — Unit: _manifest_check_build_isolation rejects a Dockerfile
+#        with a VOLUME directive in an rc-builder-* stage. [FAIL-LOUD]
+#
+#   BI1d (host-only) — Unit: _manifest_check_build_isolation accepts a Dockerfile
+#        with RUN --mount=type=bind,src=/host/path OUTSIDE an rc-builder-* stage
+#        (runtime stage, not a builder stage). [PASS — only builder stages are checked]
+#
+#   BI1e (host-only) — Unit: _manifest_check_build_isolation is a no-op for the
+#        original (non-generated) Dockerfile (no rc-builder-* stages). [PASS]
+#
+#   BE1 (e2e, RC_E2E=1) — Real build: a well-formed from-source tool
+#        (build-hello-from-source.sh — chmod 755) passes the binary-root-owned
+#        assertion. [GREEN at RC_E2E — DEFERRED]
+#
+#   BE2 (e2e, RC_E2E=1) — Crafted-bad: a from-source tool that chmods output 777
+#        (build-hello-agent-writable.sh) causes the binary-root-owned assertion
+#        to REJECT with a fail-loud error. Reverting the assertion turns it GREEN,
+#        proving the assertion is load-bearing. [RC_E2E-DEFERRED — the falsifiable
+#        real-build proof. Runs with RC_E2E=1 only.]
+#
+# EXPLICIT SKIP: BE1 and BE2 require a real docker build. They are gated behind
+# RC_E2E=1. The host-side unit tests (B1a-B1d, BI1a-BI1h) cover the assertion LOGIC;
+# BE2 is the falsifiable real-build crafted-bad→RED proof and is intentionally
+# deferred to the consolidated RC_E2E gate (as stated in the bead's ADDENDUM).
+# Do NOT claim BE2 green from host-side tests alone — that is the gated-RC_E2E
+# false-green tripwire (rip-cage-test-fail-prose-without-exit-silent-red).
+#
+# Positive-sentinel discipline: every failure increments FAILURES.
+# Script ends with exit-propagation shape: [[ $FAILURES -eq 0 ]] || exit 1
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="${SCRIPT_DIR}/.."
+RC="${REPO_ROOT}/rc"
+FIXTURES="${SCRIPT_DIR}/fixtures"
+FAILURES=0
+TEST_HOME=""
+
+pass() { echo "PASS: $1"; }
+fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
+
+# shellcheck disable=SC2329  # invoked indirectly via trap
+cleanup() {
+  [[ -n "${TEST_HOME:-}" && -d "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME"
+}
+trap cleanup EXIT
+
+# Build a sandbox HOME for manifest tests.
+setup_manifest_sandbox() {
+  local fixture="${1:-}"
+  TEST_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-manifest-security-test-XXXXXX")
+  mkdir -p "${TEST_HOME}/.config/rip-cage"
+  if [[ -n "$fixture" ]]; then
+    cp "${FIXTURES}/${fixture}" "${TEST_HOME}/.config/rip-cage/tools.yaml"
+  fi
+}
+
+teardown_manifest_sandbox() {
+  [[ -n "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME"
+  TEST_HOME=""
+}
+
+# Run _manifest_check_binary_root_owned in the sandbox with a mock docker.
+# The mock docker command intercepts "docker run --rm <image> stat -c '%U %a' <path>"
+# and outputs $MOCK_STAT_OUTPUT instead.
+run_check_binary_root_owned_with_mock() {
+  local fixture="$1"
+  local mock_stat_output="$2"
+  local stderr_file="${3:-/dev/null}"
+
+  setup_manifest_sandbox "$fixture"
+
+  # Create a mock docker that outputs the desired stat result.
+  local mock_bin_dir
+  mock_bin_dir="${TEST_HOME}/mock-bin"
+  mkdir -p "$mock_bin_dir"
+  # Write the mock docker script using a heredoc.
+  # MOCK_OUTPUT is expanded; the rest of the script body is literal (single-quoted heredoc).
+  local mock_docker_script
+  mock_docker_script="${mock_bin_dir}/docker"
+  # shellcheck disable=SC2016  # $1 and $@ are intentional literal text in the generated script
+  cat > "$mock_docker_script" <<MOCK_SCRIPT
+#!/bin/sh
+# Mock docker for binary-root-owned unit tests (rip-cage-buuo.3)
+if [ "\$1" = "run" ]; then
+  echo "${mock_stat_output}"
+  exit 0
+fi
+exec /usr/bin/docker "\$@"
+MOCK_SCRIPT
+  chmod +x "$mock_docker_script"
+
+  local exit_code=0
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" PATH="${mock_bin_dir}:$PATH" \
+    bash -c "source '${RC}'; _manifest_check_binary_root_owned 'rip-cage:test'" 2>"$stderr_file" || exit_code=$?
+
+  teardown_manifest_sandbox
+  return "$exit_code"
+}
+
+# Run _manifest_check_build_isolation with a crafted Dockerfile string.
+run_check_build_isolation_with_dockerfile() {
+  local dockerfile_content="$1"
+  local stderr_file="${2:-/dev/null}"
+  local tmp_df
+  tmp_df=$(mktemp "${TMPDIR:-/tmp}/rc-test-isolation-XXXXXX")
+  printf '%s\n' "$dockerfile_content" > "$tmp_df"
+  local exit_code=0
+  bash -c "source '${RC}'; _manifest_check_build_isolation '${tmp_df}'" 2>"$stderr_file" || exit_code=$?
+  rm -f "$tmp_df"
+  return "$exit_code"
+}
+
+# ---------------------------------------------------------------------------
+# B1a — Mock stat "root 755": root-owned, not agent-writable → PASS
+# ---------------------------------------------------------------------------
+test_b1a_root_755_accepted() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_check_binary_root_owned_with_mock "manifest-with-from-source-tool.yaml" "root 755" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "B1a mock stat 'root 755' accepted (root-owned, not agent-writable)"
+  else
+    fail "B1a mock stat 'root 755' should pass. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# B1b — Mock stat "agent 777": agent-owned, world-writable → REJECT
+# ---------------------------------------------------------------------------
+test_b1b_agent_777_rejected() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_check_binary_root_owned_with_mock "manifest-with-from-source-tool.yaml" "agent 777" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "ADR-005 D9\|binary-root-owned\|agent-writable\|not root\|owned by" "$stderr_file"; then
+    pass "B1b mock stat 'agent 777' rejected non-zero + error names the invariant"
+  else
+    fail "B1b mock stat 'agent 777' should be rejected with ADR-005 D9 error. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# B1c — Mock stat "agent 755": agent-owned (even if mode is fine) → REJECT
+# An agent-owned binary can be overwritten via sudo or direct write. Fail-loud.
+# ---------------------------------------------------------------------------
+test_b1c_agent_owned_rejected() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_check_binary_root_owned_with_mock "manifest-with-from-source-tool.yaml" "agent 755" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "ADR-005 D9\|binary-root-owned\|agent-writable\|not root\|owned by" "$stderr_file"; then
+    pass "B1c mock stat 'agent 755' rejected non-zero + error names the invariant (owner check)"
+  else
+    fail "B1c mock stat 'agent 755' should be rejected (agent ownership violates invariant). exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# B1d — Mock stat "root 775": root-owned but group-writable → REJECT
+# group-write bit set means the agent (member of agent group) could overwrite.
+# ---------------------------------------------------------------------------
+test_b1d_root_775_group_writable_rejected() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_check_binary_root_owned_with_mock "manifest-with-from-source-tool.yaml" "root 775" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "ADR-005 D9\|binary-root-owned\|agent-writable\|group.*writable\|mode" "$stderr_file"; then
+    pass "B1d mock stat 'root 775' rejected non-zero + error names the invariant (group-writable)"
+  else
+    fail "B1d mock stat 'root 775' should be rejected (group-write bit). exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# BI1a — Clean builder Dockerfile with only COPY + RUN → PASS
+# ---------------------------------------------------------------------------
+test_bi1a_clean_builder_stage_accepted() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  local clean_dockerfile
+  clean_dockerfile=$(cat <<'DOCKERFILE'
+# Stage 1: go-builder
+FROM golang:1.25-trixie AS go-builder
+RUN echo "building"
+
+# manifest from-source builder stage: hello-from-source (rip-cage-buuo.2)
+FROM alpine:3.19 AS rc-builder-hello-from-source
+COPY tests/fixtures/build-hello-from-source.sh /rc-build/build.sh
+RUN sh /rc-build/build.sh
+
+# Stage 4: Runtime
+FROM debian:trixie
+COPY --from=rc-builder-hello-from-source /usr/local/bin/hello-from-source /usr/local/bin/hello-from-source
+RUN useradd -m -u 1000 -g agent agent
+DOCKERFILE
+)
+  run_check_build_isolation_with_dockerfile "$clean_dockerfile" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "BI1a clean builder stage (COPY+RUN only) accepted — build-isolation clean"
+  else
+    fail "BI1a clean builder stage should pass isolation check. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# BI1b — Builder stage with RUN --mount=type=bind,src=/absolute/host/path → REJECT
+# ---------------------------------------------------------------------------
+test_bi1b_bind_mount_host_path_rejected() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  local hostile_dockerfile
+  hostile_dockerfile=$(cat <<'DOCKERFILE'
+# manifest from-source builder stage: evil-tool
+FROM alpine:3.19 AS rc-builder-evil-tool
+COPY tests/fixtures/build-hello-from-source.sh /rc-build/build.sh
+RUN --mount=type=bind,src=/etc/passwd,dst=/etc/passwd-host sh /rc-build/build.sh
+
+# Stage 4: Runtime
+FROM debian:trixie
+COPY --from=rc-builder-evil-tool /usr/local/bin/hello-from-source /usr/local/bin/hello-from-source
+DOCKERFILE
+)
+  run_check_build_isolation_with_dockerfile "$hostile_dockerfile" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "build-isolation\|bind.*mount\|host path\|ADR-005 D9\|ADR-024" "$stderr_file"; then
+    pass "BI1b RUN --mount=type=bind,src=/absolute/path in builder stage rejected + names invariant"
+  else
+    fail "BI1b hostile bind-mount should be rejected. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# BI1c — Builder stage with VOLUME directive → REJECT
+# ---------------------------------------------------------------------------
+test_bi1c_volume_in_builder_rejected() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  local hostile_dockerfile
+  hostile_dockerfile=$(cat <<'DOCKERFILE'
+# manifest from-source builder stage: evil-tool
+FROM alpine:3.19 AS rc-builder-evil-tool
+COPY tests/fixtures/build-hello-from-source.sh /rc-build/build.sh
+VOLUME /host-secret
+RUN sh /rc-build/build.sh
+
+# Stage 4: Runtime
+FROM debian:trixie
+COPY --from=rc-builder-evil-tool /usr/local/bin/hello-from-source /usr/local/bin/hello-from-source
+DOCKERFILE
+)
+  run_check_build_isolation_with_dockerfile "$hostile_dockerfile" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "build-isolation\|VOLUME\|ADR-005 D9\|ADR-024" "$stderr_file"; then
+    pass "BI1c VOLUME in builder stage rejected + names invariant"
+  else
+    fail "BI1c VOLUME in builder stage should be rejected. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# BI1d — RUN --mount=type=bind,src=/absolute/path OUTSIDE builder stage → PASS
+# The runtime stage can use bind mounts (e.g. for SSH keys); only builder
+# stages are scoped for build-isolation.
+# ---------------------------------------------------------------------------
+test_bi1d_bind_mount_outside_builder_accepted() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  local runtime_bind_dockerfile
+  runtime_bind_dockerfile=$(cat <<'DOCKERFILE'
+# manifest from-source builder stage: hello-from-source (clean)
+FROM alpine:3.19 AS rc-builder-hello-from-source
+COPY tests/fixtures/build-hello-from-source.sh /rc-build/build.sh
+RUN sh /rc-build/build.sh
+
+# Stage 4: Runtime — bind mount here is fine (not a builder stage)
+FROM debian:trixie
+COPY --from=rc-builder-hello-from-source /usr/local/bin/hello-from-source /usr/local/bin/hello-from-source
+RUN --mount=type=bind,src=/etc/hosts,dst=/etc/hosts-copy cat /etc/hosts-copy
+DOCKERFILE
+)
+  run_check_build_isolation_with_dockerfile "$runtime_bind_dockerfile" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "BI1d RUN --mount=type=bind outside builder stage (in runtime) is accepted"
+  else
+    fail "BI1d bind mount in runtime stage should NOT be flagged. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# BI1e — Original Dockerfile (no rc-builder-* stages) → no-op PASS
+# _manifest_check_build_isolation is called with the original Dockerfile path
+# (not a generated temp file); the function must pass cleanly (no builder stages).
+# ---------------------------------------------------------------------------
+test_bi1e_original_dockerfile_noop() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  # The original Dockerfile has no rc-builder-* stages.
+  bash -c "source '${RC}'; _manifest_check_build_isolation '${REPO_ROOT}/Dockerfile'" 2>"$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "BI1e original Dockerfile (no rc-builder-* stages) passes isolation check (no-op)"
+  else
+    fail "BI1e original Dockerfile should pass isolation check cleanly. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# BI1f — Empty/absent Dockerfile path → no-op PASS
+# When all tools are bundled, _manifest_build_dockerfile_path returns the
+# original path. If called with an empty string, the function should no-op.
+# Defensive guard test: cmd_build never triggers _manifest_check_build_isolation
+# with an empty arg (it gates on non-empty tmp Dockerfile), but the guard is
+# still exercised here for belt-and-suspenders coverage.
+# ---------------------------------------------------------------------------
+test_bi1f_empty_path_noop() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  bash -c "source '${RC}'; _manifest_check_build_isolation ''" 2>"$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "BI1f empty dockerfile path is a no-op (no builder stages to check)"
+  else
+    fail "BI1f empty dockerfile path should be no-op. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# BI1g — Builder stage with RUN --mount=type=ssh → REJECT
+# --mount=type=ssh injects the host SSH agent socket into the build step,
+# giving the builder stage direct access to the host SSH agent (host-resource
+# access vector). Must be rejected fail-loud naming the vector.
+# ---------------------------------------------------------------------------
+test_bi1g_ssh_mount_in_builder_rejected() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  local hostile_dockerfile
+  hostile_dockerfile=$(cat <<'DOCKERFILE'
+# manifest from-source builder stage: evil-tool
+FROM alpine:3.19 AS rc-builder-evil-tool
+COPY tests/fixtures/build-hello-from-source.sh /rc-build/build.sh
+RUN --mount=type=ssh sh /rc-build/build.sh
+
+# Stage: Runtime
+FROM debian:trixie
+COPY --from=rc-builder-evil-tool /usr/local/bin/hello-from-source /usr/local/bin/hello-from-source
+DOCKERFILE
+)
+  run_check_build_isolation_with_dockerfile "$hostile_dockerfile" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "build-isolation\|ssh\|ADR-005 D9\|ADR-024" "$stderr_file"; then
+    pass "BI1g RUN --mount=type=ssh in builder stage rejected + names invariant"
+  else
+    fail "BI1g RUN --mount=type=ssh in builder stage should be rejected. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# BI1h — Builder stage with RUN --mount=type=secret → REJECT
+# --mount=type=secret exposes host build secrets (e.g. API keys, credentials)
+# into the build step, giving the builder stage access to host secrets
+# (host-resource access vector). Must be rejected fail-loud naming the vector.
+# ---------------------------------------------------------------------------
+test_bi1h_secret_mount_in_builder_rejected() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  local hostile_dockerfile
+  hostile_dockerfile=$(cat <<'DOCKERFILE'
+# manifest from-source builder stage: evil-tool
+FROM alpine:3.19 AS rc-builder-evil-tool
+COPY tests/fixtures/build-hello-from-source.sh /rc-build/build.sh
+RUN --mount=type=secret,id=mytoken sh /rc-build/build.sh
+
+# Stage: Runtime
+FROM debian:trixie
+COPY --from=rc-builder-evil-tool /usr/local/bin/hello-from-source /usr/local/bin/hello-from-source
+DOCKERFILE
+)
+  run_check_build_isolation_with_dockerfile "$hostile_dockerfile" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "build-isolation\|secret\|ADR-005 D9\|ADR-024" "$stderr_file"; then
+    pass "BI1h RUN --mount=type=secret in builder stage rejected + names invariant"
+  else
+    fail "BI1h RUN --mount=type=secret in builder stage should be rejected. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# BE1 — E2E: Real build with compliant from-source tool passes binary-root-owned
+# (RC_E2E=1 only — intentionally deferred to consolidated RC_E2E gate)
+# ---------------------------------------------------------------------------
+test_be1_real_build_compliant_tool_passes() {
+  if [[ "${RC_E2E:-}" != "1" ]]; then
+    echo "SKIP (RC_E2E gated): BE1 real docker build compliant tool — set RC_E2E=1 to run"
+    echo "  [RC_E2E-deferred] BE1 would build with manifest-with-from-source-tool.yaml (chmod 755 output)"
+    echo "  and assert _manifest_check_binary_root_owned passes (root-owned, 755 → not agent-writable)."
+    return 0
+  fi
+
+  echo "BE1 RC_E2E=1: real build with manifest-with-from-source-tool.yaml (chmod 755) — expect PASS ..."
+
+  local be1_fixture="${FIXTURES}/manifest-with-from-source-tool.yaml"
+  local be1_image="rip-cage:be1-test"
+
+  # Save rip-cage:latest for restore.
+  local be1_saved_tag="rip-cage:be1-saved-$(date +%s)"
+  local be1_had_latest=0
+  if docker image inspect rip-cage:latest >/dev/null 2>&1; then
+    docker tag rip-cage:latest "$be1_saved_tag" 2>/dev/null && be1_had_latest=1
+  fi
+
+  # shellcheck disable=SC2329
+  _be1_cleanup() {
+    docker image rm "$be1_image" 2>/dev/null || true
+    if [[ "$be1_had_latest" -eq 1 ]]; then
+      docker tag "$be1_saved_tag" rip-cage:latest 2>/dev/null || true
+    else
+      docker image rm rip-cage:latest 2>/dev/null || true
+    fi
+    docker image rm "$be1_saved_tag" 2>/dev/null || true
+  }
+  trap _be1_cleanup RETURN
+
+  # rc build with the compliant fixture (chmod 755 output).
+  local build_out build_rc=0
+  build_out=$(RC_MANIFEST_GLOBAL="$be1_fixture" \
+    "${RC}" build 2>&1) || build_rc=$?
+
+  if [[ "$build_rc" -ne 0 ]]; then
+    fail "BE1 rc build with compliant fixture failed (exit=${build_rc}): ${build_out:0:400}"
+    return
+  fi
+
+  # Tag for assertions.
+  docker tag rip-cage:latest "$be1_image" 2>/dev/null || true
+
+  # Effect assertion: stat the binary inside the built image — must be root-owned, mode 755.
+  local runtime_path="/usr/local/bin/hello-from-source"
+  local stat_out stat_rc=0
+  stat_out=$(docker run --rm "$be1_image" stat -c '%U %a' "$runtime_path" 2>&1) || stat_rc=$?
+
+  if [[ "$stat_rc" -ne 0 ]]; then
+    fail "BE1 could not stat binary '${runtime_path}' in built image. stat_rc=${stat_rc} out='${stat_out}'"
+    return
+  fi
+
+  local stat_owner stat_mode
+  stat_owner=$(awk '{print $1}' <<<"$stat_out")
+  stat_mode=$(awk '{print $2}' <<<"$stat_out")
+
+  if [[ "$stat_owner" == "root" && "$stat_mode" == "755" ]]; then
+    pass "BE1 compliant build PASSES binary-root-owned check: owner=${stat_owner} mode=${stat_mode} (root-owned, not agent-writable)"
+  else
+    fail "BE1 expected root 755 on binary, got owner='${stat_owner}' mode='${stat_mode}' — binary-root-owned check would reject this"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# BE2 — E2E: Crafted-bad fixture (agent-writable binary) causes binary-root-owned
+# assertion to REJECT with fail-loud error. Reverting the assertion turns it GREEN.
+#
+# EXPLICIT SKIP: This is the RC_E2E-gated falsifiable proof. The host-side unit
+# tests (B1b, B1d) prove the assertion LOGIC using mock stat; BE2 proves the
+# assertion fires against a REAL built image. They are different altitudes.
+# "host-side B1b GREEN" does NOT claim "BE2 GREEN" — gated-RC_E2E false-green tripwire.
+# ---------------------------------------------------------------------------
+test_be2_crafted_bad_agent_writable_rejected() {
+  if [[ "${RC_E2E:-}" != "1" ]]; then
+    echo "SKIP (RC_E2E gated): BE2 crafted-bad agent-writable binary → must be RED on real build"
+    echo "  [RC_E2E-deferred] To verify: set RC_E2E=1, then:"
+    echo "    1. Install manifest-hostile-agent-writable-binary.yaml as the global tools.yaml"
+    echo "    2. rc build — must FAIL with ADR-005 D9 binary-root-owned error"
+    echo "    3. Revert _manifest_check_binary_root_owned from rc and rc build — must PASS"
+    echo "    4. That RED→GREEN transition proves the assertion is load-bearing."
+    echo "  Fixture: tests/fixtures/manifest-hostile-agent-writable-binary.yaml"
+    echo "  Build script: tests/fixtures/build-hello-agent-writable.sh (chmod 777 output)"
+    return 0
+  fi
+
+  echo "BE2 RC_E2E=1: crafted-bad agent-writable binary (chmod 777) — must REJECT with ADR-005 D9 error ..."
+
+  local be2_fixture="${FIXTURES}/manifest-hostile-agent-writable-binary.yaml"
+  local be2_image="rip-cage:be2-test"
+
+  # Save rip-cage:latest for restore.
+  local be2_saved_tag="rip-cage:be2-saved-$(date +%s)"
+  local be2_had_latest=0
+  if docker image inspect rip-cage:latest >/dev/null 2>&1; then
+    docker tag rip-cage:latest "$be2_saved_tag" 2>/dev/null && be2_had_latest=1
+  fi
+
+  # shellcheck disable=SC2329
+  _be2_cleanup() {
+    # Ensure no violating image is left tagged as rip-cage:latest.
+    docker image rm rip-cage:latest 2>/dev/null || true
+    if [[ "$be2_had_latest" -eq 1 ]]; then
+      docker tag "$be2_saved_tag" rip-cage:latest 2>/dev/null || true
+    fi
+    docker image rm "$be2_saved_tag" 2>/dev/null || true
+    docker image rm "$be2_image" 2>/dev/null || true
+  }
+  trap _be2_cleanup RETURN
+
+  # -----------------------------------------------------------------------
+  # Step 1: rc build with hostile fixture — must FAIL (binary-root-owned check fires)
+  # -----------------------------------------------------------------------
+  local be2_step1_out be2_step1_rc=0
+  be2_step1_out=$(RC_MANIFEST_GLOBAL="$be2_fixture" \
+    "${RC}" build 2>&1) || be2_step1_rc=$?
+
+  # The build must fail with the ADR-005 D9 binary-root-owned error.
+  local be2_error_signal
+  be2_error_signal=$(grep -iE "ADR-005 D9|binary-root-owned|agent-writable|owned by.*not root|not root" <<<"$be2_step1_out" | head -1)
+
+  if [[ "$be2_step1_rc" -ne 0 ]] && [[ -n "$be2_error_signal" ]]; then
+    pass "BE2 step1: hostile build REJECTED with ADR-005 D9 binary-root-owned error (exit=${be2_step1_rc}): '${be2_error_signal}'"
+  elif [[ "$be2_step1_rc" -eq 0 ]]; then
+    fail "BE2 step1: hostile build SUCCEEDED (exit=0) — binary-root-owned assertion did NOT fire. Build allowed an agent-writable binary. out='${be2_step1_out:0:300}'"
+    return
+  else
+    fail "BE2 step1: build failed (exit=${be2_step1_rc}) but error message missing ADR-005 D9 signal. out='${be2_step1_out:0:400}'"
+    return
+  fi
+
+  # -----------------------------------------------------------------------
+  # F1 fix: After step 1 failure, rip-cage:latest must NOT be tagged to the
+  # violating image. cmd_build calls `docker image rm "$IMAGE"` on violation.
+  # -----------------------------------------------------------------------
+  if ! docker image inspect rip-cage:latest >/dev/null 2>&1; then
+    pass "BE2 F1: after binary-root-owned rejection, rip-cage:latest is NOT tagged to the violating image"
+  else
+    # It might have been restored by a previous test; check if it's the violating build.
+    # The violating image should have been untagged — if latest exists, it must be our saved one.
+    local latest_id saved_id
+    latest_id=$(docker image inspect rip-cage:latest --format '{{.Id}}' 2>/dev/null)
+    saved_id=$(docker image inspect "$be2_saved_tag" --format '{{.Id}}' 2>/dev/null)
+    if [[ -n "$be2_saved_tag" ]] && [[ "$latest_id" == "$saved_id" ]]; then
+      pass "BE2 F1: rip-cage:latest after rejection is the pre-test saved image (not the violating build)"
+    else
+      fail "BE2 F1: rip-cage:latest still tagged after binary-root-owned rejection (violating image not untagged)"
+    fi
+  fi
+
+  # -----------------------------------------------------------------------
+  # Step 2: FALSIFIABILITY PROOF — disable the assertion, same build must PASS.
+  # We override _manifest_check_binary_root_owned by sourcing rc in a subshell
+  # and redefining the function to always return 0. This tests without modifying
+  # any production file.
+  # -----------------------------------------------------------------------
+  echo "BE2 falsifiability: disabling _manifest_check_binary_root_owned (override in subshell) — same hostile build must PASS ..."
+
+  local be2_repo_root
+  be2_repo_root="$(cd "$(dirname "${RC}")" && pwd)"
+
+  local be2_step2_out be2_step2_rc=0
+  be2_step2_out=$(
+    export RC_MANIFEST_GLOBAL="$be2_fixture"
+    # Source rc. When rc is sourced (not executed), $0 is the shell name, so
+    # _resolve_script_dir returns the wrong dir. Override SCRIPT_DIR explicitly.
+    # shellcheck disable=SC1090
+    source "${RC}"
+    SCRIPT_DIR="$be2_repo_root"
+    # Override the binary-root-owned check to always succeed (disabled).
+    # This proves the check is the load-bearing discriminator.
+    _manifest_check_binary_root_owned() { return 0; }
+    OUTPUT_FORMAT=""
+    cmd_build
+  ) || be2_step2_rc=$?
+
+  if [[ "$be2_step2_rc" -eq 0 ]]; then
+    pass "BE2 falsifiability: with _manifest_check_binary_root_owned DISABLED, hostile build PASSES — assertion is load-bearing (RED→GREEN proven)"
+  else
+    fail "BE2 falsifiability: expected build to pass with assertion disabled, but exit=${be2_step2_rc}. out='${be2_step2_out:0:300}'"
+  fi
+
+  # Verify the production assertion is still in place (assertion active in rc on disk).
+  if grep -q "_manifest_check_binary_root_owned" "${RC}"; then
+    pass "BE2 assertion-active: _manifest_check_binary_root_owned is PRESENT in rc (production assertion active)"
+  else
+    fail "BE2 assertion-active: _manifest_check_binary_root_owned NOT FOUND in rc — production assertion removed!"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Run all tests
+# ---------------------------------------------------------------------------
+
+if [[ "${1:-}" == "--e2e" ]]; then
+  export RC_E2E=1
+fi
+
+echo "=== test-manifest-security.sh — binary-root-owned + build-isolation assertions (rip-cage-buuo.3) ==="
+echo ""
+echo "--- B1a-B1d: Unit tests for _manifest_check_binary_root_owned (mock stat) ---"
+test_b1a_root_755_accepted
+test_b1b_agent_777_rejected
+test_b1c_agent_owned_rejected
+test_b1d_root_775_group_writable_rejected
+
+echo ""
+echo "--- BI1a-BI1h: Unit tests for _manifest_check_build_isolation (crafted Dockerfiles) ---"
+test_bi1a_clean_builder_stage_accepted
+test_bi1b_bind_mount_host_path_rejected
+test_bi1c_volume_in_builder_rejected
+test_bi1d_bind_mount_outside_builder_accepted
+test_bi1e_original_dockerfile_noop
+test_bi1f_empty_path_noop
+test_bi1g_ssh_mount_in_builder_rejected
+test_bi1h_secret_mount_in_builder_rejected
+
+echo ""
+echo "--- BE1-BE2: E2E (RC_E2E gated — real-build falsifiable proof) ---"
+test_be1_real_build_compliant_tool_passes
+test_be2_crafted_bad_agent_writable_rejected
+
+echo ""
+if [[ "$FAILURES" -eq 0 ]]; then
+  echo "All tests passed."
+  exit 0
+else
+  echo "${FAILURES} test(s) failed."
+  exit 1
+fi

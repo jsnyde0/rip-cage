@@ -1,0 +1,12 @@
+version: 1
+tools:
+  # Hostile fixture: from-source TOOL missing build_source.build_script.
+  # _manifest_validate must reject this naming 'build_script'.
+  - name: missing-build-script-tool
+    archetype: TOOL
+    version_pin: "1.0.0"
+    egress: []
+    mounts: []
+    build_source:
+      builder_image: "alpine:3.19"
+      output_path: "/usr/local/bin/hello-from-source"

@@ -1,0 +1,14 @@
+version: 1
+tools:
+  # Hostile fixture: bundled TOOL (version_pin = "bundled") with a build_source block.
+  # _manifest_validate must reject this: bundled = already baked in Dockerfile;
+  # a build_source on a bundled entry is contradictory — fail-loud naming build_source.
+  - name: bundled-with-build-source-tool
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts: []
+    build_source:
+      builder_image: "alpine:3.19"
+      build_script: "tests/fixtures/build-hello-from-source.sh"
+      output_path: "/usr/local/bin/hello-from-source"

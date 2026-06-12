@@ -1,0 +1,10 @@
+version: 1
+tools:
+  # Test fixture: a TOOL entry with a mount object missing the 'dest' field.
+  # Used by tests/test-manifest-mounts.sh MH3.
+  - name: mount-missing-dest-tool
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - host: "/tmp/tool-data"

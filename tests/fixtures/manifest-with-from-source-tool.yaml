@@ -1,0 +1,16 @@
+version: 1
+tools:
+  # Test fixture: a from-source TOOL entry. Used by tests/test-manifest-source.sh
+  # (rip-cage-buuo.2) to verify the from-source schema + codegen.
+  # Uses alpine:3.19 as the builder image (tiny, no arch lock) and a simple
+  # build script that produces /usr/local/bin/hello-from-source.
+  # No install_cmd — from-source entries declare build_source instead.
+  - name: hello-from-source
+    archetype: TOOL
+    version_pin: "1.0.0"
+    egress: []
+    mounts: []
+    build_source:
+      builder_image: "alpine:3.19"
+      build_script: "tests/fixtures/build-hello-from-source.sh"
+      output_path: "/usr/local/bin/hello-from-source"
