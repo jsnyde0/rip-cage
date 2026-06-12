@@ -633,6 +633,134 @@ test_be2_crafted_bad_agent_writable_rejected() {
 }
 
 # ---------------------------------------------------------------------------
+# BE3 — E2E: _pull_or_build auto-build path (rc up without prior rc build) enforces
+# D11 validators. A crafted-bad from-source tool (agent-writable binary) provisioned
+# via _pull_or_build (RIP_CAGE_IMAGE_REGISTRY unset → local build) must be REJECTED
+# with the ADR-005 D9 fail-loud error and leave NO tainted rip-cage:latest.
+#
+# This tests the F1 fix from rip-cage-buuo.6: _pull_or_build previously called
+# docker build WITHOUT the D11 validators. After the fix, both build branches in
+# _pull_or_build wire _manifest_check_build_isolation (pre-build) and
+# _manifest_check_binary_root_owned (post-build) with the same semantics as cmd_build.
+#
+# RC_E2E=1 required (real docker build).
+# ---------------------------------------------------------------------------
+test_be3_pull_or_build_auto_build_path_rejects_hostile() {
+  if [[ "${RC_E2E:-}" != "1" ]]; then
+    echo "SKIP (RC_E2E gated): BE3 _pull_or_build auto-build path D11 enforcement — set RC_E2E=1 to run"
+    echo "  [RC_E2E-deferred] BE3 would invoke _pull_or_build with RIP_CAGE_IMAGE_REGISTRY='' and"
+    echo "  manifest-hostile-agent-writable-binary.yaml — expect REJECTION with ADR-005 D9 error,"
+    echo "  no tainted rip-cage:latest. The F1 fix wires both D11 validators into _pull_or_build."
+    echo "  Fixture: tests/fixtures/manifest-hostile-agent-writable-binary.yaml"
+    return 0
+  fi
+
+  echo "BE3 RC_E2E=1: _pull_or_build auto-build path with hostile fixture — must REJECT with D11 error ..."
+
+  local be3_fixture="${FIXTURES}/manifest-hostile-agent-writable-binary.yaml"
+
+  # Save rip-cage:latest for restore.
+  local be3_saved_tag="rip-cage:be3-saved-$(date +%s)"
+  local be3_had_latest=0
+  if docker image inspect rip-cage:latest >/dev/null 2>&1; then
+    docker tag rip-cage:latest "$be3_saved_tag" 2>/dev/null && be3_had_latest=1
+  fi
+
+  # shellcheck disable=SC2329
+  _be3_cleanup() {
+    docker image rm rip-cage:latest 2>/dev/null || true
+    if [[ "$be3_had_latest" -eq 1 ]]; then
+      docker tag "$be3_saved_tag" rip-cage:latest 2>/dev/null || true
+    fi
+    docker image rm "$be3_saved_tag" 2>/dev/null || true
+  }
+  trap _be3_cleanup RETURN
+
+  # Remove rip-cage:latest so _pull_or_build must build (not skip).
+  docker image rm rip-cage:latest 2>/dev/null || true
+
+  # Invoke _pull_or_build directly in a subshell with RIP_CAGE_IMAGE_REGISTRY=''
+  # (forces the local-build branch, bypassing pull). Use RC_MANIFEST_GLOBAL to inject
+  # the hostile fixture.
+  local be3_repo_root
+  be3_repo_root="$(cd "$(dirname "${RC}")" && pwd)"
+
+  # Invoke _pull_or_build in an isolated subprocess, capturing all output to a file.
+  # docker BuildKit writes progress to stderr; the D11 error from _manifest_check_binary_root_owned
+  # also goes to stderr. We capture everything to a temp file and scan it for the D11 signal.
+  local be3_out_file be3_rc=0
+  be3_out_file=$(mktemp)
+  (
+    export RC_MANIFEST_GLOBAL="$be3_fixture"
+    export RIP_CAGE_IMAGE_REGISTRY=""
+    # Source rc in subshell; override SCRIPT_DIR for sourced-context correctness.
+    # shellcheck disable=SC1090
+    source "${RC}"
+    SCRIPT_DIR="$be3_repo_root"
+    OUTPUT_FORMAT=""
+    _pull_or_build
+  ) >"$be3_out_file" 2>&1 || be3_rc=$?
+  local be3_combined
+  be3_combined=$(cat "$be3_out_file")
+  rm -f "$be3_out_file"
+
+  # The call must FAIL (non-zero) with the ADR-005 D9 binary-root-owned error.
+  local be3_error_signal
+  be3_error_signal=$(grep -iE "ADR-005 D9|binary-root-owned|agent-writable|owned by.*not root|not root" <<<"$be3_combined" | head -1)
+
+  if [[ "$be3_rc" -ne 0 ]] && [[ -n "$be3_error_signal" ]]; then
+    pass "BE3 step1: _pull_or_build auto-build REJECTED with ADR-005 D9 error (exit=${be3_rc}): '${be3_error_signal}'"
+  elif [[ "$be3_rc" -eq 0 ]]; then
+    fail "BE3 step1: _pull_or_build auto-build SUCCEEDED (exit=0) — D11 validators NOT wired (F1 bypass still present). out='${be3_combined:0:300}'"
+    return
+  else
+    fail "BE3 step1: _pull_or_build failed (exit=${be3_rc}) but missing ADR-005 D9 signal. combined='${be3_combined: -500}'"
+    return
+  fi
+
+  # After rejection, rip-cage:latest must NOT be tagged to the violating image.
+  if ! docker image inspect rip-cage:latest >/dev/null 2>&1; then
+    pass "BE3 F1: after D11 rejection, rip-cage:latest is NOT tagged to the violating image"
+  else
+    local be3_latest_id be3_saved_id
+    be3_latest_id=$(docker image inspect rip-cage:latest --format '{{.Id}}' 2>/dev/null)
+    be3_saved_id=$(docker image inspect "$be3_saved_tag" --format '{{.Id}}' 2>/dev/null)
+    if [[ -n "$be3_saved_tag" ]] && [[ "$be3_latest_id" == "$be3_saved_id" ]]; then
+      pass "BE3 F1: rip-cage:latest after rejection is the pre-test saved image (not the violating build)"
+    else
+      fail "BE3 F1: rip-cage:latest still tagged after D11 rejection (violating image not untagged)"
+    fi
+  fi
+
+  # -----------------------------------------------------------------------
+  # Falsifiability: also verify _pull_or_build passes with a COMPLIANT fixture.
+  # -----------------------------------------------------------------------
+  local be3_good_fixture="${FIXTURES}/manifest-with-from-source-tool.yaml"
+  docker image rm rip-cage:latest 2>/dev/null || true
+
+  local be3_good_out_file be3_good_rc=0
+  be3_good_out_file=$(mktemp)
+  (
+    export RC_MANIFEST_GLOBAL="$be3_good_fixture"
+    export RIP_CAGE_IMAGE_REGISTRY=""
+    # shellcheck disable=SC1090
+    source "${RC}"
+    SCRIPT_DIR="$be3_repo_root"
+    OUTPUT_FORMAT=""
+    _pull_or_build
+  ) >"$be3_good_out_file" 2>&1 || be3_good_rc=$?
+  local be3_good_out
+  be3_good_out=$(cat "$be3_good_out_file")
+  rm -f "$be3_good_out_file"
+
+  if [[ "$be3_good_rc" -eq 0 ]]; then
+    pass "BE3 compliant: _pull_or_build auto-build PASSES with compliant fixture (root-owned, 755)"
+  else
+    fail "BE3 compliant: _pull_or_build with compliant fixture failed (exit=${be3_good_rc}). out='${be3_good_out:0:300}'"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -660,9 +788,13 @@ test_bi1g_ssh_mount_in_builder_rejected
 test_bi1h_secret_mount_in_builder_rejected
 
 echo ""
-echo "--- BE1-BE2: E2E (RC_E2E gated — real-build falsifiable proof) ---"
+echo "--- BE1-BE2: E2E (RC_E2E gated — real-build falsifiable proof via cmd_build) ---"
 test_be1_real_build_compliant_tool_passes
 test_be2_crafted_bad_agent_writable_rejected
+
+echo ""
+echo "--- BE3: E2E (RC_E2E gated — D11 enforcement on _pull_or_build auto-build path; rip-cage-buuo.6 F1) ---"
+test_be3_pull_or_build_auto_build_path_rejects_hostile
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

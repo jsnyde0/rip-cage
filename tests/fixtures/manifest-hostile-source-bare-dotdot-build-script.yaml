@@ -1,0 +1,15 @@
+version: 1
+tools:
+  # HOSTILE test fixture — rip-cage-buuo.6 minor fix: bare ".." path-scope check.
+  # build_script is exactly ".." (no slashes) — this escapes the build context just
+  # like "../" but slips the original guard which only caught "../"*, *"/../"*, *"/.."
+  # _manifest_validate must REJECT this before docker build can fail opaquely.
+  - name: hostile-bare-dotdot-script
+    archetype: TOOL
+    version_pin: "1.0.0"
+    egress: []
+    mounts: []
+    build_source:
+      builder_image: "alpine:3.19"
+      build_script: ".."
+      output_path: "/usr/local/bin/hostile-bare-dotdot-script"

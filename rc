@@ -346,6 +346,52 @@ _image_is_current() {
 # non-bundled TOOL entries are baked in.  The pull path is unaffected (the pulled
 # image is a pre-built release image; manifest-driven tools require an explicit
 # `rc build`).
+# _pull_or_build_local — shared from-source local build helper for _pull_or_build.
+# Resolves the Dockerfile, runs BOTH D11 validators (build-isolation pre-build and
+# binary-root-owned post-build) with the same fail-closed semantics as cmd_build,
+# then returns the build exit code.
+# rip-cage-buuo.6 F1: wires the ADR-005 D11 FIRM validators into the auto-build path
+# so that `rc up` without a prior `rc build` never bypasses D9/D11 enforcement.
+_pull_or_build_local() {
+  local _pob_dockerfile _pob_tmp
+  _pob_dockerfile=""
+  _pob_tmp=""
+  _pob_dockerfile=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/Dockerfile") || {
+    echo "Error: failed to resolve Dockerfile from manifest." >&2
+    return 1
+  }
+  if [[ "$_pob_dockerfile" != "${SCRIPT_DIR}/Dockerfile" ]]; then
+    _pob_tmp="$_pob_dockerfile"
+  fi
+
+  # rip-cage-buuo.6 F1: build-isolation assertion — BEFORE docker build.
+  # Same semantics as cmd_build: only fires when a manifest-generated Dockerfile
+  # was produced (non-bundled tools; _pob_tmp non-empty).
+  if [[ -n "$_pob_tmp" ]]; then
+    if ! _manifest_check_build_isolation "$_pob_tmp"; then
+      echo "Error: Manifest builder stage violates build-isolation invariant — rc up auto-build refused (ADR-005 D9 / ADR-024 build-isolation)" >&2
+      [[ -n "$_pob_tmp" ]] && rm -f "$_pob_tmp"
+      return 1
+    fi
+  fi
+
+  local _pob_exit=0
+  docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_pob_dockerfile" "$SCRIPT_DIR" || _pob_exit=$?
+
+  # rip-cage-buuo.6 F1: binary-root-owned assertion — AFTER docker build.
+  # Same semantics as cmd_build: untag tainted image on failure (fail-closed, ADR-001).
+  if [[ "$_pob_exit" -eq 0 ]]; then
+    if ! _manifest_check_binary_root_owned "$IMAGE"; then
+      [[ -n "$_pob_tmp" ]] && rm -f "$_pob_tmp"
+      docker image rm "$IMAGE" 2>/dev/null || true
+      return 1
+    fi
+  fi
+
+  [[ -n "$_pob_tmp" ]] && rm -f "$_pob_tmp"
+  return "$_pob_exit"
+}
+
 _pull_or_build() {
   if [[ -z "${RIP_CAGE_IMAGE_REGISTRY}" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -353,20 +399,8 @@ _pull_or_build() {
     else
       log "Building rip-cage image locally (RIP_CAGE_IMAGE_REGISTRY unset, takes a few minutes)..."
     fi
-    local _pob_dockerfile _pob_tmp
-    _pob_dockerfile=""
-    _pob_tmp=""
-    _pob_dockerfile=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/Dockerfile") || {
-      echo "Error: failed to resolve Dockerfile from manifest." >&2
-      return 1
-    }
-    if [[ "$_pob_dockerfile" != "${SCRIPT_DIR}/Dockerfile" ]]; then
-      _pob_tmp="$_pob_dockerfile"
-    fi
-    local _pob_exit=0
-    docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_pob_dockerfile" "$SCRIPT_DIR" || _pob_exit=$?
-    [[ -n "$_pob_tmp" ]] && rm -f "$_pob_tmp"
-    return $_pob_exit
+    _pull_or_build_local
+    return $?
   fi
   local pull_ref="${RIP_CAGE_IMAGE_REGISTRY}:${RC_VERSION}"
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -390,20 +424,8 @@ _pull_or_build() {
       log "Pull failed (image unavailable, offline, or auth required) - building locally (this takes a few minutes)..."
     fi
   fi
-  local _pob_dockerfile _pob_tmp
-  _pob_dockerfile=""
-  _pob_tmp=""
-  _pob_dockerfile=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/Dockerfile") || {
-    echo "Error: failed to resolve Dockerfile from manifest." >&2
-    return 1
-  }
-  if [[ "$_pob_dockerfile" != "${SCRIPT_DIR}/Dockerfile" ]]; then
-    _pob_tmp="$_pob_dockerfile"
-  fi
-  local _pob_exit=0
-  docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_pob_dockerfile" "$SCRIPT_DIR" || _pob_exit=$?
-  [[ -n "$_pob_tmp" ]] && rm -f "$_pob_tmp"
-  return $_pob_exit
+  _pull_or_build_local
+  return $?
 }
 
 cmd_init() {
@@ -6576,6 +6598,21 @@ _manifest_validate() {
           # build_script must be a single line — newlines inject arbitrary Dockerfile directives (ADR-024).
           if [[ "$bs_build_script" == *$'\n'* ]]; then
             echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.build_script' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
+            return 1
+          fi
+          # build_script must be a relative path that does NOT escape the build context (SCRIPT_DIR /
+          # repo root). An absolute path or a ../-escape is rejected fail-loud (ADR-001):
+          #   - Docker would fail with an opaque "forbidden path outside build context" error; the
+          #     validator must catch it FIRST with a named error (rip-cage-buuo.6 F2).
+          if [[ "${bs_build_script:0:1}" == "/" ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.build_script' must be a relative path within the build context (repo root) — absolute paths are outside the Docker build context and will be rejected by docker build (ADR-001 fail-loud; rip-cage-buuo.6 F2). Got: '${bs_build_script}'." >&2
+            return 1
+          fi
+          # Reject ../ traversal: any path starting with "../" or containing "/../" or ending with "/..",
+          # and also the bare ".." path (no slashes) — all escape the build context (repo root).
+          # Check each variant explicitly.
+          if [[ "$bs_build_script" == ".." ]] || [[ "$bs_build_script" == "../"* ]] || [[ "$bs_build_script" == *"/../"* ]] || [[ "$bs_build_script" == *"/.." ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.build_script' must not escape the build context — '../' traversal resolves outside the repo root and will be rejected by docker build (ADR-001 fail-loud; rip-cage-buuo.6 F2). Got: '${bs_build_script}'." >&2
             return 1
           fi
           if [[ "$bs_output_path" == "___RC_ABSENT___" || -z "$bs_output_path" ]]; then

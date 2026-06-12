@@ -375,6 +375,69 @@ test_s12_newline_in_builder_image_rejected() {
 }
 
 # ---------------------------------------------------------------------------
+# S13 — Absolute build_script is rejected fail-loud (path-scope check — rip-cage-buuo.6 F2)
+# An absolute build_script (/absolute/path/build.sh) is outside the build context
+# (SCRIPT_DIR). Docker would reject it with an opaque "forbidden path" error;
+# the validator must catch it FIRST with a named, fail-closed error (ADR-001).
+# ---------------------------------------------------------------------------
+test_s13_absolute_build_script_rejected() {
+  setup_manifest_sandbox "manifest-hostile-source-absolute-build-script.yaml"
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_manifest_validate "${TEST_HOME}/.config/rip-cage/tools.yaml" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "build_script\|build context\|outside.*context\|absolute" "$stderr_file"; then
+    pass "S13 absolute build_script rejected non-zero + names the path-scope violation"
+  else
+    fail "S13 expected non-zero exit + path-scope error for absolute build_script. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# S14 — ../ escaping build_script is rejected fail-loud (path-scope check — rip-cage-buuo.6 F2)
+# A build_script starting with ../ resolves outside the build context (repo root).
+# Docker would reject it with an opaque "forbidden path" error;
+# the validator must catch it FIRST with a named, fail-closed error (ADR-001).
+# ---------------------------------------------------------------------------
+test_s14_escape_build_script_rejected() {
+  setup_manifest_sandbox "manifest-hostile-source-escape-build-script.yaml"
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_manifest_validate "${TEST_HOME}/.config/rip-cage/tools.yaml" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "build_script\|build context\|outside.*context\|escape\|\.\./" "$stderr_file"; then
+    pass "S14 ../-escaping build_script rejected non-zero + names the path-scope violation"
+  else
+    fail "S14 expected non-zero exit + path-scope error for ../ build_script. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# S15 — Bare ".." build_script is rejected fail-loud (path-scope check — rip-cage-buuo.6 minor fix)
+# A build_script of exactly ".." (no slashes) escapes the build context just like
+# "../..." but slips a guard that only matches "../"*, *"/../"*, *"/.."  The
+# validator must also catch the bare ".." case and reject fail-loud (ADR-001).
+# ---------------------------------------------------------------------------
+test_s15_bare_dotdot_build_script_rejected() {
+  setup_manifest_sandbox "manifest-hostile-source-bare-dotdot-build-script.yaml"
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_manifest_validate "${TEST_HOME}/.config/rip-cage/tools.yaml" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "build_script\|build context\|outside.*context\|escape\|\.\." "$stderr_file"; then
+    pass "S15 bare '..' build_script rejected non-zero + names the path-scope violation"
+  else
+    fail "S15 expected non-zero exit + path-scope error for bare '..' build_script. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # SE1 — E2E: Real docker build proves binary present in runtime, toolchain absent
 # (RC_E2E=1 only; intentionally deferred to consolidated RC_E2E gate after sibling .3)
 # ---------------------------------------------------------------------------
@@ -502,6 +565,12 @@ test_s11_bundled_with_build_source_rejected
 echo ""
 echo "--- S12: Newline-injection guard on build_source sub-fields (F2/ADR-024) ---"
 test_s12_newline_in_builder_image_rejected
+
+echo ""
+echo "--- S13-S15: Path-scope guard on build_script (F2/rip-cage-buuo.6 — must be within build context) ---"
+test_s13_absolute_build_script_rejected
+test_s14_escape_build_script_rejected
+test_s15_bare_dotdot_build_script_rejected
 
 echo ""
 echo "--- SE1: E2E real-build (RC_E2E gated) ---"

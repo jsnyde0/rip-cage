@@ -105,9 +105,11 @@ Field rules:
 - `builder_image` — the Docker image used for the isolated build stage. Must match the
   runtime stage's libc to avoid compat issues (e.g., `debian:trixie` matches rip-cage's
   runtime stage).
-- `build_script` — path to a host-side shell script (relative to the repo root or an
-  absolute path). The script runs INSIDE the isolated builder stage, NOT on the host.
-  It must install deps, clone/checkout at the pinned ref, and compile to `output_path`.
+- `build_script` — path to a shell script, RELATIVE to the repo root (build context).
+  Absolute paths and `../` escapes are REJECTED by the validator (ADR-001 fail-loud;
+  the path must be within the build context or docker build will fail). The script runs
+  INSIDE the isolated builder stage, NOT on the host. It must install deps,
+  clone/checkout at the pinned ref, and compile to `output_path`.
 - `output_path` — the binary's location inside the builder stage after the build script
   runs. The rip-cage generic builder copies this to the runtime stage.
 - The build script MUST be arch-adaptive: do NOT hardcode `--target <arch>`. Let the

@@ -177,7 +177,7 @@ WORKDIR /home/agent
 # Pre-create mount targets so Docker inherits agent ownership on first use.
 # If Docker overrides ownership at mount time, init-rip-cage.sh has scoped
 # sudo chown as a fallback (see sudoers above).
-RUN mkdir -p /home/agent/.claude /home/agent/.claude-state /home/agent/.local/share/mise /home/agent/.cass-memory
+RUN mkdir -p /home/agent/.claude /home/agent/.claude-state /home/agent/.local/share/mise
 # Pi config dir: container-local cage-owned path (ADR-019 D1 evolved, rip-cage-hhh.12).
 # Only durable state (auth.json) is bind-mounted from the host; everything else
 # (bin/, sessions/) is container-local and agent-owned. The extensions/ subdir is the
