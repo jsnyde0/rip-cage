@@ -5,6 +5,39 @@ All notable changes to rip-cage will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-06-12
+
+This release rolls up everything user-facing since 0.5.3 — including the work tagged as 0.6.0, which never got its own changelog entry. Two big themes: **agent-first tool composability** (the cage now bakes in host-defined tools through a declarative, fail-closed manifest instead of hardcoded Dockerfile stages) and **concurrency** (`rc up` cages now run multiple Claude and multi-agent sessions side by side). The base OS also moves to Debian 13 trixie.
+
+### Added
+
+- **Declarative host-only tool manifest** — `rc build` now bakes host-defined tools into the cage from a manifest under `~/.config/rip-cage`, instead of every tool being a hand-wired Dockerfile stage (ADR-005 D7–D11, epic rip-cage-4c5 + rip-cage-buuo). Three tool archetypes are supported: plain `TOOL` binaries, `SHELL-INTEGRATION` tools that bake an eval line into `.zshrc` at build time, and `IN-CAGE-DAEMON` tools with full lifecycle plumbing. Each tool carries a per-tool egress declaration that the firewall floor enforces, and a `mounts[]` field that mounts host paths (with `~` / `$HOME` expansion) into the cage at `rc up`. The manifest is host-only by design — a host-side agent under human supervision can draft entries, but the in-cage agent can never reach or modify it (ADR-024, ADR-005 D7).
+- **From-source tool builds** — a manifest entry can declare a `build_source` (builder image + host-side build script + output path) and rip-cage generates one isolated builder stage that COPYs out only the artifact, keeping the build toolchain out of the runtime image. Arch-adaptive (no hardcoded `--platform`), so it builds native-arch on Apple Silicon and amd64 alike (rip-cage-buuo.2).
+- **Fail-closed manifest validator** — every build path that can produce a from-source tool (both `rc build` and the `rc up` auto-build path) now runs build-isolation assertions (no bind/VOLUME/ssh/secret leakage into the build) before the build and a binary-root-owned check after it, untagging any tainted image. A non-compliant tool is rejected loud, not silently shipped (ADR-005 D11 FIRM; rip-cage-buuo.1/.3/.6).
+- **Tool-authoring skill** — a repo-shipped skill (`rip-cage-tool-manifest-author`) lets a host-side agent, pointed at a target tool, draft a manifest entry (and build script for the from-source case) as human-reviewable files. The human approves before `rc build`; the validator enforces the safety contract (ADR-005 D11 mechanism 3; rip-cage-buuo.4).
+- **`am` / agent_mail as the worked-example in-cage daemon** — agent_mail ships as the real `IN-CAGE-DAEMON` worked example (docs + fixture, not a seeded default). Bash-only agents (pi) reach it through its own `am` CLI over their bash tool (`am mail send` / `am mail inbox` / `am mail read`, `am agents register`), and MCP-capable agents (Claude) reach it via an `mcp_fragment` — canonicalized as ADR-019 D9: in-cage daemons are reached by CLI-over-bash for bash-only agents, never via an MCP bridge (rip-cage-gucm, rip-cage-swv).
+- **`cm` (cass-memory) as an opt-in manifest tool** — the cass-memory CLI is available in cages that opt in via a from-source manifest entry. The host L2A memory store mounts read-write into the cage, `cm context` / `cm playbook add` operations round-trip back to the host store, and the in-cage binary makes zero external network connections. `cm` started this release as a hardcoded Dockerfile stage (rip-cage-l0u2) and is now re-expressed purely through the generic manifest mechanism — the default cage no longer bakes it in (ADR-005 D2/D6).
+- **Per-session Claude config isolation** — `rc up` cages now support multiple concurrent `claude` sessions. A wrapper resolves `CLAUDE_CONFIG_DIR` per tmux session and seeds each session its own config dir (shared inputs symlinked, `.claude.json` seeded from a stable container-local snapshot taken at init), fixing the non-atomic `.claude.json` write that previously dropped a second concurrent agent into a "configuration file not found" loop. Interactive sessions also get their git author identity from the session handle (rip-cage-p1p, ADR-006 D7).
+- **`rc agent` multi-agent lever** — `rc agent <cage> --name=<handle> -- <command>` spawns a named tmux session running a command verbatim inside a running cage (Tier 1a parallel agents in one cage). Argv is passed through intact, a duplicate `--name` is refused without clobbering the existing session, and existing `rc sessions` / `--kill` / `rc attach` manage the spawned agents (no new kill surface). Combined with the per-session isolation above, `rc agent --name -- claude` gets config isolation for free (rip-cage-tlm, ADR-006 D7).
+- **Egress firewall startup self-test** — the cage now verifies the egress firewall is *actually enforcing* (not merely that rules are present) and refuses to start on a confident fail-open. It probes a guaranteed-unroutable address through a locally-generated marker, so a kernel or backend change that silently no-ops the traffic REDIRECT is caught at startup instead of leaving the cage open with every status light green. Enforced in `block`/`legacy` modes; ambiguous results warn-and-proceed so it never false-alarms (rip-cage-fft, ADR-012 D11).
+- **Getting Started guide** — `docs/guides/getting-started.md`: a throwaway-first first-run walkthrough covering what `rc up` does, the cage denying destructive commands, and the daily-loop command table. Linked from the README quick start.
+- **ADR-024 D6 — MCP posture**: CLI-over-bash is the blessed in-cage integration path; third-party / user-added MCP servers remain allowed-but-unsupported (in-cage MCP egress is already caught by the firewall, so the only named residual is host-placed MCP). No MCP trust machinery is built (rip-cage-b4c).
+- **`rc agent` / `rc sessions` shell completion** — both commands now complete running-container names in bash and zsh.
+
+### Changed
+
+- **Base OS bumped Debian 12 bookworm → Debian 13 trixie** (glibc 2.41). Both the Go (beads) and Rust (DCG) builder stages move to trixie too, so they compile against the same ICU 76 / glibc the runtime ships — removing a four-major-version ICU ABI shim (ADR-002 D2a).
+- **Default cage no longer bakes in `cm`** — the cass-memory builder stage and runtime COPY are gone; a no-manifest cage is the previous default image minus cm. cm is now opt-in via the manifest (see Added).
+
+### Fixed
+
+- **Egress firewall stays enforcing on trixie** — Debian 13 defaults `iptables` to the nft backend, which would silently no-op the firewall's nat REDIRECT rules and fail *open*. rip-cage now pins the legacy backend at build time (`update-alternatives --set iptables iptables-legacy`), keeping the firewall armed; the startup self-test above is the backstop if this pin ever fails (ADR-012 D10).
+
+### Documentation
+
+- ADR-005 evolved through D7–D11: host-only manifest, generic from-source builder stage, fail-closed validator (with the FIRM clause that the validator must be wired into *every* build path, not just `rc build`), and the agent-first authoring skill. ADR-019 D9 (bash-only agents reach in-cage daemons via CLI over bash). ADR-024 D6 (MCP posture). ADR-006 D7 (Tier 1a session-granularity multi-agent levers + presence-only status). ADR-002 D2a (trixie forward base) and ADR-012 D10/D11 (iptables-legacy pin + effect-based egress self-test).
+- Reference docs added/updated for the tool manifest, agent-mail daemon (`am` CLI surface + `serve-http` mode), and `cm` (opt-in-via-manifest mount mechanics).
+
 ## [0.5.3] - 2026-06-04
 
 ### Added
@@ -174,6 +207,9 @@ agents safely in full auto mode.
 - `rc.conf` for configuring allowed project roots
 - Container user model: non-root `agent` user with restricted sudo paths
 
+[0.7.0]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.7.0
+[0.6.0]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.6.0
+[0.5.3]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.5.3
 [0.5.2]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.5.2
 [0.5.1]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.5.1
 [0.5.0]: https://github.com/jsnyde0/rip-cage/releases/tag/v0.5.0
