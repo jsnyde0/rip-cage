@@ -14,25 +14,8 @@ ARG DCG_VERSION=0.4.0
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 RUN cargo install --git https://github.com/Dicklesworthstone/destructive_command_guard --tag v${DCG_VERSION} destructive_command_guard
 
-# Stage 3: Bun builder for cm (CASS Memory System CLI)
-# No upstream linux-arm64 release; build from source via Bun cross-compile.
-# Separate stage keeps Bun/node/build deps OUT of the runtime layer.
-FROM debian:trixie AS cm-builder
-ARG CM_REF=2e63e9b
-ARG BUN_VERSION=1.3.14
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl ca-certificates unzip nodejs \
-    && rm -rf /var/lib/apt/lists/*
-# Install Bun (pinned version)
-RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v${BUN_VERSION}"
-# Clone at pinned ref, install deps (postinstall needs node on PATH), cross-compile
-RUN git clone https://github.com/Dicklesworthstone/cass_memory_system.git /src/cm \
-    && cd /src/cm \
-    && git checkout ${CM_REF} \
-    && bun install --frozen-lockfile \
-    && bun build src/cm.ts --compile --target=bun-linux-arm64 --outfile /usr/local/bin/cm
-
-# Stage 4: Runtime
+# Stage 3: Runtime (previously Stage 4; cm-builder removed in rip-cage-buuo.5 — cm is opt-in via manifest ADR-005 D2/D6)
+# Stage 4: Runtime — sentinel for manifest from-source builder stage injection (rip-cage-buuo.2)
 FROM debian:trixie
 
 ARG CLAUDE_CODE_VERSION=latest
@@ -94,9 +77,6 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
 
 # DCG (Dangerous Command Guard) — built from source in rust-builder stage
 COPY --from=rust-builder /usr/local/cargo/bin/dcg /usr/local/bin/dcg
-
-# cm (CASS Memory System CLI) — built from source in cm-builder stage (no linux-arm64 release)
-COPY --from=cm-builder /usr/local/bin/cm /usr/local/bin/cm
 
 # Dolt (storage backend for beads) — required by bd v0.62.0+
 # Sync (push/pull) won't work without SSH keys, but local ops work fine

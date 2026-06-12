@@ -1,0 +1,45 @@
+version: 1
+# cm (CASS Memory System CLI) — manifest worked example for rip-cage-buuo.5
+#
+# This manifest entry provisions cm as an opt-in tool via the rip-cage manifest
+# mechanism (ADR-005 D2/D6/D11). Copy this to ~/.config/rip-cage/tools.yaml
+# (the host manifest path per ADR-005 D7) to add cm to your cage builds.
+#
+# ADR-005 D5 four-point opt-in pattern:
+#   1. build_source — builds cm from source in an isolated stage (arch-adaptive)
+#   2. egress: []   — cm opens zero external connections (pure local storage)
+#   3. mounts       — RW bind mount for the host cm store (opt-in by having a store)
+#   4. (detection)  — agents discover cm via `command -v cm` inside the cage
+#
+# mounts.host path — ~/  and $HOME expansion supported:
+#   The rc mount consumer expands a leading ~/  or $HOME/ prefix to the host's
+#   $HOME at rc-up time (rip-cage-buuo.5 fix).  The ~/.cass-memory entry below
+#   works as-is for the default cm store location — no per-user editing needed.
+#
+#   If you use CASS_MEMORY_HOME or XDG_DATA_HOME to point cm to a non-default
+#   location, update this entry's mounts.host to that absolute path.
+#   The mount is RW (Docker default for -v host:dest; cm needs write access).
+#
+#   Security: the ADR-023 denylist check runs AFTER tilde expansion — a mount
+#   like  host: "~/.ssh"  would still be rejected.  Only safe paths pass through.
+#
+# Arch-adaptive build (rip-cage-ywek subsumed):
+#   The build script does NOT hardcode --target; bun compiles a native binary
+#   for the build-host architecture (arm64 on arm64, amd64 on amd64).
+tools:
+  - name: cm
+    archetype: TOOL
+    # Pin to the commit ref used by the original Dockerfile cm-builder stage.
+    version_pin: "2e63e9b"
+    egress: []
+    # RW mount for the host cm store (opt-in: skip-if-missing if the dir is absent).
+    # ~/  is expanded to $HOME at rc-up time (rip-cage-buuo.5) — no editing needed
+    # for the default ~/.cass-memory location.
+    mounts:
+      - host: "~/.cass-memory"
+        dest: "/home/agent/.cass-memory"
+    build_source:
+      # debian:trixie matches the runtime stage — same libc, no compat issues.
+      builder_image: "debian:trixie"
+      build_script: "tests/fixtures/build-cm-from-source.sh"
+      output_path: "/usr/local/bin/cm"

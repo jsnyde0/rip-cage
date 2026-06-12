@@ -7,27 +7,64 @@ Tier 2A (L2A) observation/calibration store as the host agent.
 
 ---
 
+## Image availability (opt-in via manifest — ADR-005 D2/D6)
+
+**cm is NOT baked into the default `rip-cage:latest` image.** It is provisioned as an
+opt-in tool via the rip-cage manifest mechanism (ADR-005 D2/D6/D11, rip-cage-buuo.5).
+
+To add cm to your cage, copy the worked-example manifest entry from
+`tests/fixtures/manifest-cm-example.yaml` into your host manifest
+(`~/.config/rip-cage/tools.yaml` — the ADR-005 D7 host manifest path):
+
+```yaml
+# In ~/.config/rip-cage/tools.yaml
+version: 1
+tools:
+  - name: cm
+    archetype: TOOL
+    version_pin: "2e63e9b"
+    egress: []
+    mounts:
+      # ~/.cass-memory works as-is — rc expands ~/ to $HOME at rc-up time.
+      - host: "~/.cass-memory"
+        dest: "/home/agent/.cass-memory"
+    build_source:
+      builder_image: "debian:trixie"
+      build_script: "tests/fixtures/build-cm-from-source.sh"
+      output_path: "/usr/local/bin/cm"
+```
+
+Then rebuild your image: `rc build`. The `build_source` entry compiles cm from source in
+an isolated Dockerfile stage (arch-adaptive — no hardcoded `--target` flag; arm64 and amd64
+both produce a native binary).
+
+**ADR-005 D5 four-point opt-in pattern:**
+1. `build_source` — builds cm from source in an isolated stage (arch-adaptive)
+2. `egress: []` — cm opens zero external connections (pure local storage)
+3. `mounts` — RW bind mount for the host cm store (see note below)
+4. Detection — agents discover cm via `command -v cm` inside the cage
+
+---
+
 ## Mount mechanics
 
-`rc up` resolves the host cm store path using cm's own precedence
-(mirroring `src/utils.ts` store resolution):
+The manifest `mounts` entry binds the host cm store RW at `/home/agent/.cass-memory`.
+Docker's default for `-v host:dest` is read-write; the generic mount consumer
+(`_manifest_build_mount_args`) inherits this default — no explicit `:rw` suffix needed.
 
-1. `$CASS_MEMORY_HOME` — if set (path used regardless of existence; existence gates whether the mount fires)
-2. `$XDG_DATA_HOME/cass-memory` — if `XDG_DATA_HOME` is set (same existence semantics)
-3. `~/.cass-memory` — the default fallback
+**Tilde and `$HOME` expansion (rip-cage-buuo.5):**
+The rc mount consumer expands a leading `~/` or `$HOME/` (and `${HOME}/`) prefix to the
+host's `$HOME` before the existence check and ADR-023 denylist run. The `~/.cass-memory`
+entry in the cm manifest example works out of the box — no per-user absolute-path editing
+required. The ADR-023 denylist check runs **after** expansion, so `~/.ssh` and similar
+patterns are still rejected by the denylist (expansion does not bypass security).
 
-The resolved path is mounted at `/home/agent/.cass-memory` (read-write). The cage sets
-neither `CASS_MEMORY_HOME` nor `XDG_DATA_HOME`, so in-cage `cm` resolves to the default
-`~/.cass-memory = /home/agent/.cass-memory` — the mount target.
+If you use `CASS_MEMORY_HOME` or `XDG_DATA_HOME` to point cm to a non-default location,
+update the manifest entry's `mounts.host` to that absolute path.
 
-**If the host store does not exist:** `rc up` logs a warning and skips the mount. In-cage
-`cm` then reads/writes a container-local store (lost on `rc destroy`). No crash.
-
-**If the host store is present:** `rc up` logs the mount expansion to stderr:
-
-```
-[rip-cage] cm store: mounting /path/to/host/cass-memory → /home/agent/.cass-memory (rw)
-```
+**If the host store does not exist:** the manifest mount consumer skips the mount silently
+(skip-if-missing). In-cage `cm` then reads/writes a container-local store (lost on
+`rc destroy`). No crash.
 
 ---
 
@@ -48,7 +85,7 @@ cm playbook list
 ```
 
 The cage's `~/.claude/CLAUDE.md` (appended from `/etc/rip-cage/cage-claude.md`) documents
-this surface so in-cage Claude Code agents discover it automatically.
+this surface so in-cage Claude Code agents discover it automatically (when cm is installed).
 
 ---
 
@@ -69,23 +106,11 @@ would influence future agent sessions on the host.
   injection-affected agent following hostile instructions is still "trying to do its job"
   and subject to cage controls; it is not coordinating to route around them.
 - CLAUDE.md "layers not walls / operator opt-in": the operator opts in by having a host
-  cm store; absent store → skip, no seed.
+  cm store AND a manifest entry; absent either → no mount.
 - In-cage L2A participation is the **point** of the mount. Preventing writes would defeat it.
-- The operator opts in by having a host cm store. If no store exists, the mount is skipped.
 
 **Operator mitigation options:**
-- Run with no host cm store to skip the mount entirely (in-cage L2A is container-local only).
+- Do not include the cm manifest entry to skip cm entirely.
+- Use no host cm store — the mount is skipped silently (skip-if-missing).
 - Periodically audit `cm playbook list` on the host for anomalous entries after cage sessions.
 - If you need read-only in-cage access, file a rip-cage issue — the current design is RW.
-
----
-
-## Image availability
-
-`cm` is compiled into the image from source via the `cm-builder` Dockerfile stage
-(rip-cage-l0u2.1). It is available at `/usr/local/bin/cm` in every cage built from
-`rip-cage:latest`. No manifest entry is required — it is a baked tool, not an
-IN-CAGE-DAEMON archetype.
-
-`init-rip-cage.sh` detects cm via `command -v cm` (ADR-005 D5 pattern) and logs its
-availability at startup.

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Host-side + e2e tests for cm (CASS Memory System CLI) inside a rip-cage (rip-cage-l0u2.4).
-# Validates that .1 (cm binary built into image) + .2 (host store mounted RW) compose correctly.
+# Host-side + e2e tests for cm (CASS Memory System CLI) as a manifest worked example.
+# Updated for rip-cage-buuo.5: cm is demoted from a baked default to an opt-in
+# manifest entry. The default image must NOT contain cm; cm is provisioned via the
+# generic from-source manifest mechanism (ADR-005 D2/D6/D11).
 #
 # ADR-013 D11 (test tiers — e2e/host-gated, not CI host-only).
 # ADR-005 D8 (no egress — cm contributes zero egress).
@@ -11,36 +13,48 @@
 #
 #   T1  (host-only, runs always):
 #     T1a — rip-cage:latest image is present (pre-check; if absent, T2 self-skip).
+#     T1b — default rip-cage:latest image does NOT contain cm binary.
+#           (ADR-005 D8 invariant: default build is cm-free)
+#
+#   T3  (host-only, cm manifest example static checks):
+#     T3a — cm manifest example fixture exists at tests/fixtures/manifest-cm-example.yaml.
+#     T3b — cm manifest build script exists at tests/fixtures/build-cm-from-source.sh.
+#     T3c — cm manifest example is valid YAML (parseable by rc _manifest_validate).
+#     T3d — cm manifest example contains a from-source entry for 'cm' with
+#           build_source.builder_image, build_source.build_script, build_source.output_path.
+#     T3e — build script does NOT hardcode a --target arch flag (arch-adaptive requirement,
+#           subsuming rip-cage-ywek: bun build auto-detects target arch without --target).
+#     T3f — cm manifest example has a mounts entry pointing to ~/.cass-memory.
 #
 #   T2  (e2e, NEEDS_CONTAINER / RC_E2E=1):
-#     T2a — cm --version exits 0 (non-empty version string).
+#     T2a — cm provisioned via manifest: cm --version exits 0 (non-empty version string).
 #     T2b — cm context "<task>" --json returns parseable JSON (pipe to jq).
 #     T2c — Round-trip: cm playbook add (clearly-marked test entry) then re-read
 #           via cm playbook list reflects the write in the mounted store (PASS
 #           emitted only after FULL round-trip: add + list-confirm + host-store-confirm).
-#     T2d — Binary ownership: /usr/local/bin/cm is root-owned and NOT agent-writable.
+#     T2d — Binary ownership: /usr/local/bin/cm is root-owned and NOT agent-writable
+#           (buuo.3 assertion passes for manifest-provisioned cm).
 #     T2e — Egress: cm context + playbook ops open ZERO external TCP connections
 #           (snapshot /proc/net/tcp+tcp6 ESTABLISHED before/after; diff must be empty
 #           after filtering loopback — ADR-005 D8).
 #
 # =============================================================================
-# Gating (adversarial-review F5):
-#   NO CAGE / arm64 cage cannot be built  → SKIP with named reason.
-#   cm binary MISSING or broken in image  → FAIL (not skip): a .1 regression
-#     must surface as a failure, never be masked as a clean skip.
+# Gating:
+#   NO CAGE  → self-skip with named reason.
+#   T2: build must be triggered with RC_MANIFEST_GLOBAL pointing to the cm example
+#       manifest so the built image contains cm (opt-in, not default).
 # =============================================================================
 #
 # CRITICAL — real host playbook is NEVER touched:
-#   The mount for the T2 cage is a TEMP DIR, not the real host store.
-#   CASS_MEMORY_HOME is set to that temp dir before rc up so the rc mount
-#   logic resolves to it.  The real store (~/.cass-memory, or a host-specific
-#   XDG_DATA_HOME path when XDG_DATA_HOME is set) is never read, never written.
+#   T2 creates a throwaway HOME with .cass-memory inside it. HOME is set to this
+#   throwaway dir when calling rc up, so ~/  expands to the throwaway, and the
+#   manifest consumer mounts the throwaway store — never the real host store.
+#   The mount goes through the real manifest consumer (_manifest_build_mount_args
+#   + _manifest_expand_mount_host), not a direct "docker run -v" bypass.
 # =============================================================================
 # Positive-sentinel discipline:
 #   * Every failure increments FAILURES.
 #   * Script ends with [[ $FAILURES -eq 0 ]] || exit 1.
-#   * cm context round-trip gated on a POSITIVE sentinel (cm --version rc=0)
-#     before deeper assertions.
 # =============================================================================
 
 set -uo pipefail
@@ -50,10 +64,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 FAILURES=0
 
-# Temp store for the e2e cage; allocated in T2 setup, removed in cleanup.
-T2_TEMP_STORE=""
+# T2 state — allocated in T2 setup, removed in cleanup.
+# T2_HOME: temp HOME directory containing .cass-memory (the throwaway store).
+#   The cm manifest declares host: "~/.cass-memory"; rc up expands ~ to T2_HOME,
+#   so the mount goes through the real manifest consumer (not a direct -v).
+T2_HOME=""
 T2_CONTAINER_NAME=""
-T2_WORKSPACE=""
+T2_WORKSPACE_BASE=""  # parent of workspace (for RC_ALLOWED_ROOTS)
+T2_WORKSPACE=""       # the actual workspace dir passed to rc up
+T2_WS_RESOLVED=""     # realpath of T2_WORKSPACE_BASE for RC_ALLOWED_ROOTS
 
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
@@ -63,15 +82,16 @@ cleanup() {
   if [[ -n "${T2_CONTAINER_NAME:-}" ]]; then
     docker stop "$T2_CONTAINER_NAME" >/dev/null 2>&1 || true
     docker rm "$T2_CONTAINER_NAME" >/dev/null 2>&1 || true
+    docker volume rm "rc-state-${T2_CONTAINER_NAME}" >/dev/null 2>&1 || true
     T2_CONTAINER_NAME=""
   fi
-  if [[ -n "${T2_WORKSPACE:-}" && -d "${T2_WORKSPACE:-}" ]]; then
-    rm -rf "$T2_WORKSPACE"
-    T2_WORKSPACE=""
+  if [[ -n "${T2_WORKSPACE_BASE:-}" && -d "${T2_WORKSPACE_BASE:-}" ]]; then
+    rm -rf "$T2_WORKSPACE_BASE"
+    T2_WORKSPACE_BASE=""
   fi
-  if [[ -n "${T2_TEMP_STORE:-}" && -d "${T2_TEMP_STORE:-}" ]]; then
-    rm -rf "$T2_TEMP_STORE"
-    T2_TEMP_STORE=""
+  if [[ -n "${T2_HOME:-}" && -d "${T2_HOME:-}" ]]; then
+    rm -rf "$T2_HOME"
+    T2_HOME=""
   fi
 }
 trap cleanup EXIT
@@ -95,7 +115,7 @@ skip_if_not_e2e() {
 # T1 — HOST-ONLY CHECKS (always run)
 # =============================================================================
 
-echo "=== test-manifest-cm.sh — cm binary + mount e2e proof (rip-cage-l0u2.4) ==="
+echo "=== test-manifest-cm.sh — cm as manifest worked example (rip-cage-buuo.5) ==="
 echo ""
 echo "--- T1: Host checks (no container needed) ---"
 
@@ -113,275 +133,137 @@ else
   echo "SKIP (T1a): rip-cage:latest not built — run ./rc build first (T2 tests will self-skip)"
 fi
 
+# ---------------------------------------------------------------------------
+# T1b — Default image must NOT contain cm binary (ADR-005 D8 invariant).
+# A default build (no manifest) is byte-equivalent to pre-cm; cm is opt-in.
+# This is a FAIL if the image exists but contains cm.
+# ---------------------------------------------------------------------------
+if [[ "$_IMAGE_PRESENT" -eq 1 ]]; then
+  _cm_absent_rc=0
+  docker run --rm rip-cage:latest bash -c 'command -v cm' >/dev/null 2>&1 || _cm_absent_rc=$?
+  if [[ "$_cm_absent_rc" -ne 0 ]]; then
+    pass "T1b default rip-cage:latest image has NO cm binary (opt-in via manifest, not baked — ADR-005 D8)"
+  else
+    fail "T1b default rip-cage:latest image CONTAINS cm binary — cm must be opt-in via manifest, not baked (ADR-005 D8 violated)"
+  fi
+fi
+
 # =============================================================================
-# T3 — HOST-ONLY: unit-level coverage of the REAL cmd_up cm-mount code path
-#       (rip-cage-l0u2.5 F4: false-green seam fix)
-#
-# T2 uses docker run directly, bypassing cmd_up's _resolve_cass_memory_host_path
-# + denylist check + mount-arg assembly.  T3 exercises those shipped functions
-# by SOURCING rc (the source-guard at rc:8413 skips dispatch when sourced).
-#
-# Tests:
-#   T3a — _resolve_cass_memory_host_path precedence: CASS_MEMORY_HOME wins
-#   T3b — _resolve_cass_memory_host_path precedence: XDG_DATA_HOME fallback
-#   T3c — _resolve_cass_memory_host_path precedence: ~/.cass-memory default
-#   T3d — realpath: a symlink to a real dir resolves to the real dir
-#   T3e — denylist check PASSES for a non-denylisted path
-#   T3f — denylist check REJECTS a path whose component matches the denylist
-#   T3g — denylist check REJECTS the realpath of a symlink into a denylisted dir
-#         (the ADR-023 D7 FIRM requirement: symlink bypass cannot skip the check)
-#   T3h — _cm_build_mount_arg: symlink CASS_MEMORY_HOME → denylisted dir is DENIED
-#         (wiring test: if rc's realpath line is removed, T3h goes RED because the
-#         neutral symlink name passes the denylist, but the resolved .ssh path fails;
-#         without realpath the check sees the neutral name → ALLOW → T3h FAIL)
-#   T3i — _cm_build_mount_arg: symlink CASS_MEMORY_HOME → safe dir emits the
-#         realpath-canonical path, not the raw symlink path (mount arg uses realpath)
-#
-# Why T3 is not vacuous:
-#   - T3a/T3b/T3c directly call _resolve_cass_memory_host_path; if that function
-#     is removed, renamed, or its precedence logic is changed, these FAIL.
-#   - T3d/T3g exercise the realpath-then-check flow that F3 adds; if realpath
-#     is dropped from the cm block, a symlink into a denylisted dir would bypass
-#     the check — T3g would FAIL because _check_secret_path_denylist is called
-#     directly on the realpath-resolved path (matching F3's code exactly).
-#   - T3f directly exercises _check_secret_path_denylist with a denylisted config;
-#     if denylist matching is broken, T3f FAILS.
-#   - T3h/T3i drive _cm_build_mount_arg — the ACTUAL helper called by
-#     _up_prepare_docker_mounts (rip-cage-l0u2.5 refactor).  If the realpath line
-#     is removed from _cm_build_mount_arg, T3h goes RED (neutral symlink name
-#     bypasses denylist → ALLOW instead of DENY).  T3i goes RED if the mount arg
-#     uses the symlink path instead of the resolved canonical path.
+# T3 — HOST-ONLY: static checks for the cm manifest example + build script
 # =============================================================================
 
 echo ""
-echo "--- T3: Host-only resolver+denylist+mount-arg unit tests (rip-cage-l0u2.5 F4) ---"
+echo "--- T3: cm manifest example static checks (host-only) ---"
 
-# Source rc to expose helper functions without running dispatch.
-# BASH_SOURCE guard at rc:8413: '[[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]] && return 0'
-# means sourcing via 'source rc' or '. rc' exposes functions and returns.
+_CM_MANIFEST="${SCRIPT_DIR}/../tests/fixtures/manifest-cm-example.yaml"
+_CM_BUILD_SCRIPT="${SCRIPT_DIR}/../tests/fixtures/build-cm-from-source.sh"
+
+# ---------------------------------------------------------------------------
+# T3a — cm manifest example exists.
+# ---------------------------------------------------------------------------
+if [[ -f "$_CM_MANIFEST" ]]; then
+  pass "T3a cm manifest example exists at tests/fixtures/manifest-cm-example.yaml"
+else
+  fail "T3a cm manifest example MISSING: tests/fixtures/manifest-cm-example.yaml not found"
+fi
+
+# ---------------------------------------------------------------------------
+# T3b — cm build script exists.
+# ---------------------------------------------------------------------------
+if [[ -f "$_CM_BUILD_SCRIPT" ]]; then
+  pass "T3b cm build script exists at tests/fixtures/build-cm-from-source.sh"
+else
+  fail "T3b cm build script MISSING: tests/fixtures/build-cm-from-source.sh not found"
+fi
+
+# ---------------------------------------------------------------------------
+# T3c — cm manifest example is valid YAML (parseable) and passes rc _manifest_validate.
+# Source rc to expose validator function.
+# ---------------------------------------------------------------------------
 _RC_PATH="${SCRIPT_DIR}/../rc"
+_T3_SOURCE_OK=0
 # shellcheck source=../rc
 if ! source "$_RC_PATH" 2>/dev/null; then
-  fail "T3 setup: failed to source rc from ${_RC_PATH}"
+  fail "T3c setup: failed to source rc from ${_RC_PATH}"
+  _T3_SOURCE_OK=0
 else
+  _T3_SOURCE_OK=1
+fi
 
-  # Temp dir for T3 tests; cleaned up in EXIT trap alongside T2 dirs.
-  _T3_TMP=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm-t3-XXXXXX")
-  # Register cleanup (append to existing EXIT trap logic by assigning after trap is set).
-  # Re-register the trap to also clean _T3_TMP.
-  _T3_PREV_TRAP=$(trap -p EXIT | sed "s/^trap -- '//;s/' EXIT$//")
-  # shellcheck disable=SC2064
-  trap "${_T3_PREV_TRAP}; [[ -n \"\${_T3_TMP:-}\" ]] && rm -rf \"\${_T3_TMP}\"" EXIT
-
-  # -------------------------------------------------------------------------
-  # T3a — CASS_MEMORY_HOME takes precedence over all other resolution methods.
-  # -------------------------------------------------------------------------
-  _T3_STORE_A="${_T3_TMP}/store-a"
-  mkdir -p "$_T3_STORE_A"
-  _t3a_result=""
-  _t3a_rc=0
-  _t3a_result=$(CASS_MEMORY_HOME="$_T3_STORE_A" XDG_DATA_HOME="${_T3_TMP}/xdg" HOME="${_T3_TMP}/home" \
-    _resolve_cass_memory_host_path 2>/dev/null) || _t3a_rc=$?
-  if [[ "$_t3a_result" == "$_T3_STORE_A" ]]; then
-    pass "T3a _resolve_cass_memory_host_path: CASS_MEMORY_HOME precedence correct (result='${_t3a_result}')"
-  else
-    fail "T3a _resolve_cass_memory_host_path: expected '${_T3_STORE_A}', got '${_t3a_result}' (rc=${_t3a_rc})"
-  fi
-
-  # -------------------------------------------------------------------------
-  # T3b — XDG_DATA_HOME/cass-memory used when CASS_MEMORY_HOME is unset.
-  # -------------------------------------------------------------------------
-  _T3_XDG="${_T3_TMP}/xdg"
-  mkdir -p "${_T3_XDG}/cass-memory"
-  _t3b_result=""
-  _t3b_rc=0
-  _t3b_result=$(unset CASS_MEMORY_HOME 2>/dev/null; XDG_DATA_HOME="$_T3_XDG" HOME="${_T3_TMP}/home" \
-    _resolve_cass_memory_host_path 2>/dev/null) || _t3b_rc=$?
-  if [[ "$_t3b_result" == "${_T3_XDG}/cass-memory" ]]; then
-    pass "T3b _resolve_cass_memory_host_path: XDG_DATA_HOME fallback correct (result='${_t3b_result}')"
-  else
-    fail "T3b _resolve_cass_memory_host_path: expected '${_T3_XDG}/cass-memory', got '${_t3b_result}' (rc=${_t3b_rc})"
-  fi
-
-  # -------------------------------------------------------------------------
-  # T3c — ~/.cass-memory used when neither CASS_MEMORY_HOME nor XDG_DATA_HOME is set.
-  # -------------------------------------------------------------------------
-  _T3_HOME="${_T3_TMP}/home"
-  mkdir -p "${_T3_HOME}/.cass-memory"
-  _t3c_result=""
+if [[ "$_T3_SOURCE_OK" -eq 1 ]] && [[ -f "$_CM_MANIFEST" ]]; then
   _t3c_rc=0
-  _t3c_result=$(unset CASS_MEMORY_HOME 2>/dev/null; unset XDG_DATA_HOME 2>/dev/null; HOME="$_T3_HOME" \
-    _resolve_cass_memory_host_path 2>/dev/null) || _t3c_rc=$?
-  if [[ "$_t3c_result" == "${_T3_HOME}/.cass-memory" ]]; then
-    pass "T3c _resolve_cass_memory_host_path: ~/.cass-memory default correct (result='${_t3c_result}')"
+  _t3c_out=$(_manifest_validate "$_CM_MANIFEST" 2>&1) || _t3c_rc=$?
+  if [[ "$_t3c_rc" -eq 0 ]]; then
+    pass "T3c cm manifest example passes _manifest_validate (valid schema)"
   else
-    fail "T3c _resolve_cass_memory_host_path: expected '${_T3_HOME}/.cass-memory', got '${_t3c_result}' (rc=${_t3c_rc})"
+    fail "T3c cm manifest example FAILS _manifest_validate: ${_t3c_out}"
   fi
+elif [[ "$_T3_SOURCE_OK" -eq 1 ]]; then
+  fail "T3c cm manifest example missing — cannot validate (T3a already failed)"
+fi
 
-  # -------------------------------------------------------------------------
-  # T3d — realpath resolves a symlink to its real target.
-  # This proves that a symlink CASS_MEMORY_HOME resolves to the canonical dir.
-  # -------------------------------------------------------------------------
-  _T3_REAL_DIR="${_T3_TMP}/real-store"
-  mkdir -p "$_T3_REAL_DIR"
-  _T3_SYMLINK="${_T3_TMP}/symlink-store"
-  ln -s "$_T3_REAL_DIR" "$_T3_SYMLINK"
-  _t3d_resolved=$(realpath "$_T3_SYMLINK" 2>/dev/null) || _t3d_resolved="$_T3_SYMLINK"
-  # Use realpath on the expected dir too — on macOS /var/folders resolves to
-  # /private/var/folders, so the two sides must both be canonical.
-  _T3_REAL_DIR_CANON=$(realpath "$_T3_REAL_DIR" 2>/dev/null) || _T3_REAL_DIR_CANON="$_T3_REAL_DIR"
-  if [[ "$_t3d_resolved" == "$_T3_REAL_DIR_CANON" ]]; then
-    pass "T3d realpath resolves symlink '${_T3_SYMLINK}' → '${_T3_REAL_DIR_CANON}' (as used in F3 cm block)"
+# ---------------------------------------------------------------------------
+# T3d — cm manifest entry has required from-source fields.
+# ---------------------------------------------------------------------------
+if [[ -f "$_CM_MANIFEST" ]]; then
+  _t3d_ok=1
+  _t3d_entry=""
+  _t3d_entry=$(yq -o=json '.tools[] | select(.name == "cm")' "$_CM_MANIFEST" 2>/dev/null) || _t3d_ok=0
+
+  if [[ "$_t3d_ok" -eq 0 ]] || [[ -z "$_t3d_entry" ]]; then
+    fail "T3d cm manifest: no 'cm' tool entry found in manifest-cm-example.yaml"
   else
-    fail "T3d realpath failed: '${_T3_SYMLINK}' → '${_t3d_resolved}' (expected '${_T3_REAL_DIR_CANON}')"
-  fi
+    _t3d_bi=$(jq -r '.build_source.builder_image // "MISSING"' <<<"$_t3d_entry" 2>/dev/null)
+    _t3d_bs=$(jq -r '.build_source.build_script // "MISSING"' <<<"$_t3d_entry" 2>/dev/null)
+    _t3d_op=$(jq -r '.build_source.output_path // "MISSING"' <<<"$_t3d_entry" 2>/dev/null)
 
-  # -------------------------------------------------------------------------
-  # T3e — _check_secret_path_denylist returns 1 (allow) for a non-denylisted path.
-  # Uses a denylist config with a sentinel pattern not in the path.
-  # -------------------------------------------------------------------------
-  _T3_CFG_DIR="${_T3_TMP}/rc-config"
-  mkdir -p "$_T3_CFG_DIR/rip-cage"
-  cat > "${_T3_CFG_DIR}/rip-cage/config.yaml" <<'YAML'
-version: 1
-mounts:
-  denylist:
-    - .ssh
-    - .gnupg
-YAML
-  _T3_WS="${_T3_TMP}/workspace"
-  mkdir -p "$_T3_WS"
-  _T3_SAFE_PATH="${_T3_TMP}/safe-store"
-  mkdir -p "$_T3_SAFE_PATH"
-  _t3e_rc=0
-  RC_CONFIG_GLOBAL="${_T3_CFG_DIR}/rip-cage/config.yaml" \
-    _check_secret_path_denylist "$_T3_SAFE_PATH" "$_T3_WS" || _t3e_rc=$?
-  # _check_secret_path_denylist returns 0 (DENY), 1 (ALLOW).
-  if [[ "$_t3e_rc" -eq 1 ]]; then
-    pass "T3e _check_secret_path_denylist: non-denylisted path allowed (rc=${_t3e_rc})"
+    if [[ "$_t3d_bi" != "MISSING" ]] && [[ -n "$_t3d_bi" ]] \
+      && [[ "$_t3d_bs" != "MISSING" ]] && [[ -n "$_t3d_bs" ]] \
+      && [[ "$_t3d_op" != "MISSING" ]] && [[ -n "$_t3d_op" ]]; then
+      pass "T3d cm manifest has from-source fields (builder_image='${_t3d_bi}', build_script='${_t3d_bs}', output_path='${_t3d_op}')"
+    else
+      fail "T3d cm manifest missing from-source field(s): builder_image='${_t3d_bi}', build_script='${_t3d_bs}', output_path='${_t3d_op}'"
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# T3e — Build script does NOT hardcode --target arch flag (arch-adaptive).
+# The Dockerfile cm-builder stage hardcoded --target=bun-linux-arm64 (rip-cage-ywek).
+# The manifest build script must be arch-adaptive — it detects arch at build time.
+# Assert: no '--target=bun-linux-' literal in the build script.
+# ---------------------------------------------------------------------------
+if [[ -f "$_CM_BUILD_SCRIPT" ]]; then
+  if grep -qF -- '--target=bun-linux-' "$_CM_BUILD_SCRIPT" 2>/dev/null; then
+    fail "T3e cm build script contains hardcoded --target=bun-linux-<arch> flag — must be arch-adaptive (rip-cage-ywek)"
   else
-    fail "T3e _check_secret_path_denylist: safe path incorrectly DENIED (rc=${_t3e_rc}) — path='${_T3_SAFE_PATH}'"
+    pass "T3e cm build script has no hardcoded --target arch flag — arch-adaptive (rip-cage-ywek subsumed)"
   fi
+fi
 
-  # -------------------------------------------------------------------------
-  # T3f — _check_secret_path_denylist returns 0 (DENY) for a denylisted path.
-  # The path includes a directory component matching the denylist pattern.
-  # This proves the denylist check works; if _check_secret_path_denylist is
-  # broken, T3f FAILS.
-  # -------------------------------------------------------------------------
-  _T3_DENIED_PATH="${_T3_TMP}/.ssh/known_hosts_dir"
-  mkdir -p "$_T3_DENIED_PATH"
-  _t3f_rc=0
-  RC_CONFIG_GLOBAL="${_T3_CFG_DIR}/rip-cage/config.yaml" \
-    _check_secret_path_denylist "$_T3_DENIED_PATH" "$_T3_WS" || _t3f_rc=$?
-  if [[ "$_t3f_rc" -eq 0 ]]; then
-    pass "T3f _check_secret_path_denylist: denylisted path DENIED (rc=${_t3f_rc}) — path='${_T3_DENIED_PATH}'"
+# ---------------------------------------------------------------------------
+# T3f — cm manifest has a mounts entry for ~/.cass-memory → /home/agent/.cass-memory.
+# This provides the RW store mount via the generic mechanism (buuo.1).
+# ---------------------------------------------------------------------------
+if [[ -f "$_CM_MANIFEST" ]]; then
+  _t3f_host=$(yq -o=json '.tools[] | select(.name == "cm") | .mounts[] | select(.dest == "/home/agent/.cass-memory") | .host' "$_CM_MANIFEST" 2>/dev/null | tr -d '"')
+  if [[ -n "$_t3f_host" ]]; then
+    pass "T3f cm manifest has mount: host='${_t3f_host}' → dest='/home/agent/.cass-memory' (RW store mount via generic mechanism)"
   else
-    fail "T3f _check_secret_path_denylist: denylisted path incorrectly ALLOWED (rc=${_t3f_rc}) — path='${_T3_DENIED_PATH}'"
+    fail "T3f cm manifest missing mounts entry for /home/agent/.cass-memory — cm store mount not declared"
   fi
-
-  # -------------------------------------------------------------------------
-  # T3g — ADR-023 D7 FIRM: denylist check REJECTS the realpath of a symlink
-  # into a denylisted directory. This is the exact bypass F3 closes.
-  #
-  # Setup: create a real dir whose path component matches the denylist (.ssh),
-  # then create a symlink to it from a neutral location. The resolver returns
-  # the symlink path; the F3 cm block realpath-resolves it before the check.
-  # T3g simulates the F3 flow: realpath($symlink) → denylisted real path → DENY.
-  #
-  # Regression signal: if F3 is reverted (realpath removed before denylist call),
-  # the raw symlink path (e.g. /tmp/.../symlink-to-ssh) does NOT contain ".ssh"
-  # as a component — the check would return 1 (ALLOW) and this test would still
-  # pass (because T3g calls realpath explicitly, as F3's code does).
-  # Therefore T3g verifies that _check_secret_path_denylist correctly DENIEs the
-  # RESOLVED path; a correct F3 implementation applies realpath before calling it.
-  # -------------------------------------------------------------------------
-  _T3_REAL_SSH="${_T3_TMP}/.ssh"
-  mkdir -p "$_T3_REAL_SSH"
-  _T3_SYMLINK_TO_SSH="${_T3_TMP}/neutral-link-to-ssh"
-  ln -s "$_T3_REAL_SSH" "$_T3_SYMLINK_TO_SSH"
-  # Simulate what F3's cm block does: realpath first, then denylist check.
-  _t3g_resolved=$(realpath "$_T3_SYMLINK_TO_SSH" 2>/dev/null) || _t3g_resolved="$_T3_SYMLINK_TO_SSH"
-  _t3g_rc=0
-  RC_CONFIG_GLOBAL="${_T3_CFG_DIR}/rip-cage/config.yaml" \
-    _check_secret_path_denylist "$_t3g_resolved" "$_T3_WS" || _t3g_rc=$?
-  if [[ "$_t3g_rc" -eq 0 ]]; then
-    pass "T3g symlink-to-denylisted-dir: realpath='${_t3g_resolved}' DENIED by denylist (ADR-023 D7 FIRM)"
-  else
-    fail "T3g symlink-to-denylisted-dir: realpath='${_t3g_resolved}' INCORRECTLY ALLOWED — denylist symlink bypass (ADR-023 D7 FIRM violated)"
-  fi
-
-  # -------------------------------------------------------------------------
-  # T3h — WIRING TEST (rip-cage-l0u2.5 F4): _cm_build_mount_arg denies a
-  # CASS_MEMORY_HOME symlink that resolves to a denylisted path.
-  #
-  # This is the regression net for rc's realpath wiring.  If the realpath line
-  # is removed from _cm_build_mount_arg, the helper receives the neutral symlink
-  # path (no .ssh component → denylist check passes → ALLOW → returns 0).
-  # With realpath in place: symlink resolves to the .ssh dir → denylist check
-  # fires → returns 2 (DENY).
-  #
-  # Proof discipline: after this test is green, a revert of the realpath line
-  # in _cm_build_mount_arg must make T3h go RED.  (See commit message for
-  # revert→RED / restore→GREEN evidence captured at implementation time.)
-  # -------------------------------------------------------------------------
-  # Reuse _T3_REAL_SSH (.ssh dir) and a fresh neutral-named symlink from T3g's
-  # setup.  _T3_REAL_SSH is ${_T3_TMP}/.ssh, which matches the denylist.
-  _T3H_SYMLINK="${_T3_TMP}/neutral-cm-store-h"
-  ln -sf "$_T3_REAL_SSH" "$_T3H_SYMLINK"
-  _t3h_out=""
-  _t3h_rc=0
-  _t3h_out=$(CASS_MEMORY_HOME="$_T3H_SYMLINK" \
-    RC_CONFIG_GLOBAL="${_T3_CFG_DIR}/rip-cage/config.yaml" \
-    _cm_build_mount_arg "$_T3_WS" 2>/dev/null) || _t3h_rc=$?
-  # Expected: return code 2 (denied), nothing on stdout.
-  if [[ "$_t3h_rc" -eq 2 ]]; then
-    pass "T3h _cm_build_mount_arg: symlink→denylisted-dir DENIED (rc=${_t3h_rc}) — realpath wiring correct (ADR-023 D7 FIRM)"
-  elif [[ "$_t3h_rc" -eq 0 ]]; then
-    fail "T3h _cm_build_mount_arg: symlink→denylisted-dir INCORRECTLY ALLOWED (rc=0, out='${_t3h_out}') — realpath missing from _cm_build_mount_arg (ADR-023 D7 FIRM violated)"
-  else
-    fail "T3h _cm_build_mount_arg: unexpected rc=${_t3h_rc} (expected 2=DENY) — out='${_t3h_out}'"
-  fi
-
-  # -------------------------------------------------------------------------
-  # T3i — WIRING TEST: _cm_build_mount_arg echoes the realpath-canonical path
-  # (not the raw symlink) for a symlink CASS_MEMORY_HOME to a safe store.
-  #
-  # If realpath is removed from _cm_build_mount_arg, the helper would echo the
-  # symlink path (e.g. /tmp/.../symlink-safe-store), not the canonical resolved
-  # path (e.g. /private/tmp/.../safe-store on macOS).  T3i asserts the canonical
-  # path is used — reverting realpath flips T3i to RED (on systems where
-  # realpath changes the path, e.g. macOS /tmp → /private/tmp).
-  # -------------------------------------------------------------------------
-  _T3I_REAL_DIR="${_T3_TMP}/safe-store-i"
-  mkdir -p "$_T3I_REAL_DIR"
-  _T3I_SYMLINK="${_T3_TMP}/symlink-safe-store-i"
-  ln -s "$_T3I_REAL_DIR" "$_T3I_SYMLINK"
-  _T3I_REAL_CANON=$(realpath "$_T3I_REAL_DIR" 2>/dev/null) || _T3I_REAL_CANON="$_T3I_REAL_DIR"
-  _t3i_out=""
-  _t3i_rc=0
-  _t3i_out=$(CASS_MEMORY_HOME="$_T3I_SYMLINK" \
-    RC_CONFIG_GLOBAL="${_T3_CFG_DIR}/rip-cage/config.yaml" \
-    _cm_build_mount_arg "$_T3_WS" 2>/dev/null) || _t3i_rc=$?
-  # Expected: return code 0, stdout = canonical realpath of _T3I_REAL_DIR.
-  if [[ "$_t3i_rc" -eq 0 ]] && [[ "$_t3i_out" == "$_T3I_REAL_CANON" ]]; then
-    pass "T3i _cm_build_mount_arg: symlink store → canonical realpath echoed ('${_t3i_out}') — mount arg uses resolved path"
-  elif [[ "$_t3i_rc" -ne 0 ]]; then
-    fail "T3i _cm_build_mount_arg: unexpected failure rc=${_t3i_rc} — out='${_t3i_out}'"
-  else
-    fail "T3i _cm_build_mount_arg: echoed '${_t3i_out}' but expected canonical '${_T3I_REAL_CANON}' — realpath not applied to mount arg"
-  fi
-
-fi  # end: source rc block
+fi
 
 # =============================================================================
 # T2 — E2E (NEEDS_CONTAINER / RC_E2E=1)
+# These tests require a REAL rc build with RC_MANIFEST_GLOBAL pointing to the
+# cm manifest example, then verify cm is functional inside the cage.
 # =============================================================================
 
 echo ""
 echo "--- T2: E2E cm assertions (NEEDS_CONTAINER / RC_E2E=1) ---"
 
-if skip_if_not_e2e "T2a-T2d cm assertions"; then
+if skip_if_not_e2e "T2a-T2e cm via manifest assertions"; then
   echo ""
   echo "Results: FAILURES=${FAILURES}"
   [[ $FAILURES -eq 0 ]] || exit 1
@@ -398,56 +280,104 @@ if [[ "$_IMAGE_PRESENT" -eq 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Setup: create a THROWAWAY cm store, init it, and start a container
-# with CASS_MEMORY_HOME pointing to it — so rc mounts the temp store, not
-# the real host store (~/.cass-memory default, or $XDG_DATA_HOME/cass-memory
-# when XDG_DATA_HOME is set).
+# Setup: build a cm-enabled image, create a THROWAWAY HOME with .cass-memory,
+# then start the container through rc up with RC_MANIFEST_GLOBAL pointing to
+# the cm manifest example.
+#
+# This exercises the REAL manifest consumer (_manifest_build_mount_args +
+# _manifest_expand_mount_host). The cm manifest declares:
+#   mounts: [{host: "~/.cass-memory", dest: "/home/agent/.cass-memory"}]
+# rc up expands ~ → T2_HOME, so the mount comes from the manifest consumer —
+# NOT from a direct "docker run -v" bypass (rip-cage-buuo.5 false-green fix).
+#
+# NOTE: rc build hardcodes IMAGE="rip-cage:latest" — this overwrites the default
+# image. A clean rebuild (./rc build) after this test restores the default.
 # ---------------------------------------------------------------------------
-echo "[T2 setup] Creating throwaway cm store..."
-T2_TEMP_STORE=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm-test-store-XXXXXX")
+
+# Build a cm-enabled image via rc build with RC_MANIFEST_GLOBAL.
+echo "[T2 setup] Building cm-enabled rip-cage:latest via rc build + cm manifest..."
+_build_home=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm-t2-build-home-XXXXXX")
+mkdir -p "${_build_home}/.config/rip-cage"
+_build_rc=0
+_build_out=$(HOME="$_build_home" XDG_CONFIG_HOME="${_build_home}/.config" \
+  RC_MANIFEST_GLOBAL="${REPO_ROOT}/tests/fixtures/manifest-cm-example.yaml" \
+  "${REPO_ROOT}/rc" build 2>&1) || _build_rc=$?
+rm -rf "$_build_home"
+
+if [[ "$_build_rc" -ne 0 ]]; then
+  fail "T2 setup FAIL: rc build with cm manifest failed (exit=${_build_rc}). Last 10 lines: $(echo "$_build_out" | tail -10)"
+  echo ""
+  echo "Results: FAILURES=${FAILURES}"
+  exit 1
+fi
+echo "[T2 setup] cm-enabled image built"
+
+# Verify cm is in the newly built image (early gate before proceeding).
+_cm_check_rc=0
+docker run --rm rip-cage:latest /bin/bash -c 'command -v cm' >/dev/null 2>&1 || _cm_check_rc=$?
+if [[ "$_cm_check_rc" -ne 0 ]]; then
+  fail "T2 setup FAIL: cm NOT found in rip-cage:latest after build with cm manifest — image build did not include cm"
+  echo ""
+  echo "Results: FAILURES=${FAILURES}"
+  exit 1
+fi
+echo "[T2 setup] cm binary verified in rip-cage:latest"
+
+# Create a throwaway HOME with .cass-memory store inside.
+# ~ expands to T2_HOME at rc-up time, so ~/.cass-memory = T2_HOME/.cass-memory.
+echo "[T2 setup] Creating throwaway HOME with .cass-memory store..."
+T2_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm-t2-home-XXXXXX")
+mkdir -p "${T2_HOME}/.cass-memory"
+mkdir -p "${T2_HOME}/.config/rip-cage"
 
 # Seed a minimal valid playbook inside the temp store via cm init.
-# Run cm directly from the image so we don't depend on a host cm install.
 _seed_rc=0
 docker run --rm \
-  -e "CASS_MEMORY_HOME=/tmp/seed-store" \
-  -v "${T2_TEMP_STORE}:/tmp/seed-store" \
+  -v "${T2_HOME}/.cass-memory:/tmp/seed-store" \
   rip-cage:latest \
   /bin/bash -c "CASS_MEMORY_HOME=/tmp/seed-store cm init --no-interactive" >/dev/null 2>&1 || _seed_rc=$?
 
 if [[ "$_seed_rc" -ne 0 ]]; then
-  # cm init failed — this is a .1 regression (cm is broken in the image), FAIL not skip.
-  fail "T2 setup FAIL: cm init in throwaway store failed (exit=${_seed_rc}) — .1 regression: cm binary is broken in rip-cage:latest"
+  fail "T2 setup FAIL: cm init in throwaway store failed (exit=${_seed_rc})"
   echo ""
   echo "Results: FAILURES=${FAILURES}"
   exit 1
 fi
-echo "[T2 setup] Throwaway store seeded at ${T2_TEMP_STORE}"
+echo "[T2 setup] Throwaway store seeded at ${T2_HOME}/.cass-memory"
 
-# Create a workspace directory for the container.
-T2_WORKSPACE=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm-e2e-ws-XXXXXX")
-T2_CONTAINER_NAME="rc-cm-t2-$$"
+# Build a workspace for rc up. Container name = parent-base of workspace path.
+# We put it at T2_WORKSPACE_BASE/rc/cm-t2 so name derives to "rc-cm-t2".
+T2_WORKSPACE_BASE=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm-t2-ws-XXXXXX")
+mkdir -p "${T2_WORKSPACE_BASE}/rc"
+T2_WORKSPACE="${T2_WORKSPACE_BASE}/rc/cm-t2"
+mkdir -p "$T2_WORKSPACE"
+T2_CONTAINER_NAME="rc-cm-t2"
 
-# Start the container with the temp store mounted at /home/agent/.cass-memory.
-# We do NOT use rc up to avoid the CASS_MEMORY_HOME env-selection logic in rc
-# (which would pick the host's real store). Instead we docker run directly,
-# mounting the temp store explicitly. The in-cage cm resolves to
-# /home/agent/.cass-memory (the default) — it sees the temp store.
-echo "[T2 setup] Starting test container ${T2_CONTAINER_NAME} with throwaway store..."
-_start_rc=0
-docker run -d --name "$T2_CONTAINER_NAME" \
-  -v "${T2_WORKSPACE}:/workspace" \
-  -v "${T2_TEMP_STORE}:/home/agent/.cass-memory" \
-  rip-cage:latest \
-  sleep infinity >/dev/null 2>&1 || _start_rc=$?
+# Compute the RC_ALLOWED_ROOTS base (the parent of "rc").
+T2_WS_RESOLVED=$(realpath "$T2_WORKSPACE_BASE" 2>/dev/null) || T2_WS_RESOLVED="$T2_WORKSPACE_BASE"
 
-if [[ "$_start_rc" -ne 0 ]]; then
-  fail "T2 setup FAIL: docker run failed (exit=${_start_rc}) — cannot start test container"
+# Start the container through rc up with:
+#   HOME=T2_HOME        — so ~/  expands to T2_HOME (containing .cass-memory)
+#   RC_MANIFEST_GLOBAL  — the cm example manifest declaring ~/.cass-memory mount
+# rc up is non-TTY; it exits non-zero from the tmux-attach step even when the
+# container starts successfully. We capture output, ignore the exit code, and
+# check container state directly (ME1 pattern from test-manifest-mounts.sh).
+echo "[T2 setup] Starting container ${T2_CONTAINER_NAME} via rc up (manifest consumer path)..."
+HOME="$T2_HOME" XDG_CONFIG_HOME="${T2_HOME}/.config" \
+  RC_MANIFEST_GLOBAL="${REPO_ROOT}/tests/fixtures/manifest-cm-example.yaml" \
+  RC_ALLOWED_ROOTS="$T2_WS_RESOLVED" \
+  "${REPO_ROOT}/rc" up "$T2_WORKSPACE" >"${T2_WORKSPACE_BASE}/rc-up.log" 2>&1 || true
+_up_out=$(cat "${T2_WORKSPACE_BASE}/rc-up.log" 2>/dev/null || true)
+
+# Confirm the container is actually running.
+_container_state=$(docker inspect "$T2_CONTAINER_NAME" --format '{{.State.Status}}' 2>/dev/null || true)
+if [[ "$_container_state" != "running" ]]; then
+  fail "T2 setup FAIL: container '${T2_CONTAINER_NAME}' is not running after rc up (state='${_container_state}'). rc up output: ${_up_out:0:500}"
   echo ""
   echo "Results: FAILURES=${FAILURES}"
   exit 1
 fi
-echo "[T2 setup] Container started"
+echo "[T2 setup] Container ${T2_CONTAINER_NAME} running (via rc up / manifest consumer)"
 
 # ---------------------------------------------------------------------------
 # T2a — cm --version exits 0 (non-empty version string).
@@ -461,7 +391,7 @@ _version_out=$(docker exec "$T2_CONTAINER_NAME" \
 if [[ "$_version_rc" -eq 0 ]] && [[ -n "$_version_out" ]]; then
   pass "T2a cm --version exits 0, version='${_version_out}'"
 else
-  fail "T2a cm --version FAILED: exit=${_version_rc} out='${_version_out}' — .1 regression: cm binary broken in rip-cage:latest"
+  fail "T2a cm --version FAILED: exit=${_version_rc} out='${_version_out}' — cm binary broken or missing in rip-cage:latest (was image built with the cm manifest?)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -471,7 +401,7 @@ fi
 _ctx_out=""
 _ctx_rc=0
 _ctx_out=$(docker exec "$T2_CONTAINER_NAME" \
-  /usr/local/bin/cm context "test rip-cage-l0u2 proof task" --json 2>&1) || _ctx_rc=$?
+  /usr/local/bin/cm context "test rip-cage-buuo.5 proof task" --json 2>&1) || _ctx_rc=$?
 
 if [[ "$_ctx_rc" -ne 0 ]]; then
   fail "T2b cm context --json exited ${_ctx_rc}: '${_ctx_out:0:200}'"
@@ -499,11 +429,8 @@ fi
 # ---------------------------------------------------------------------------
 # T2c — Round-trip: cm playbook add (test entry) inside the cage, then
 # cm playbook list reflects the write in the mounted store.
-# The entry content includes a clearly-marked test sentinel so the assertion
-# is exact and unambiguous.
 # ---------------------------------------------------------------------------
-# F3: sentinel uses date+PID+RANDOM to prevent parallel-run collisions.
-_SENTINEL="rip-cage-l0u2-test-probe-$(date +%s)-$$-${RANDOM}"
+_SENTINEL="rip-cage-buuo5-test-probe-$(date +%s)-$$-${RANDOM}"
 _add_rc=0
 _add_out=$(docker exec "$T2_CONTAINER_NAME" \
   /usr/local/bin/cm playbook add "${_SENTINEL}" --category=observation 2>&1) || _add_rc=$?
@@ -511,9 +438,6 @@ _add_out=$(docker exec "$T2_CONTAINER_NAME" \
 if [[ "$_add_rc" -ne 0 ]]; then
   fail "T2c cm playbook add FAILED: exit=${_add_rc} out='${_add_out:0:200}'"
 else
-  # F2: do NOT emit PASS yet — wait for the full round-trip to complete.
-  # A no-op add that exits 0 must not produce any T2c PASS.
-
   # Re-read: list the playbook and check the sentinel is present.
   _list_out=""
   _list_rc=0
@@ -523,12 +447,10 @@ else
   if [[ "$_list_rc" -ne 0 ]]; then
     fail "T2c cm playbook list FAILED: exit=${_list_rc} out='${_list_out:0:200}'"
   else
-    # Check that sentinel appears in list output OR in raw playbook.yaml.
     _list_confirmed=0
     if echo "$_list_out" | grep -qF "$_SENTINEL"; then
       _list_confirmed=1
     else
-      # Belt-and-suspenders: check the raw playbook.yaml in the mounted store.
       _yaml_rc=0
       _yaml_contains=$(docker exec "$T2_CONTAINER_NAME" \
         grep -c "${_SENTINEL}" /home/agent/.cass-memory/playbook.yaml 2>&1) || _yaml_rc=$?
@@ -540,12 +462,14 @@ else
     if [[ "$_list_confirmed" -eq 0 ]]; then
       fail "T2c Round-trip FAILED: sentinel '${_SENTINEL}' NOT found in cm playbook list output nor in playbook.yaml. List output: '${_list_out:0:300}'"
     else
-      # Also verify the write landed in the TEMP store (not a container-local store).
-      if grep -qF "$_SENTINEL" "${T2_TEMP_STORE}/playbook.yaml" 2>/dev/null; then
-        # F2: all sub-checks passed — emit the single combined T2c PASS.
-        pass "T2c Round-trip confirmed: playbook add + list-reflect + host-store write all passed (sentinel: '${_SENTINEL}')"
+      # Host-store confirm: the sentinel must appear in the host-side store
+      # (the throwaway .cass-memory dir inside T2_HOME). This proves the write
+      # went through the manifest-consumer mount, NOT container-local storage.
+      _host_store_yaml="${T2_HOME}/.cass-memory/playbook.yaml"
+      if grep -qF "$_SENTINEL" "$_host_store_yaml" 2>/dev/null; then
+        pass "T2c Round-trip confirmed: playbook add + list-reflect + host-store write all passed (sentinel: '${_SENTINEL}'; mount via manifest consumer)"
       else
-        fail "T2c Store isolation FAILED: sentinel not found in host temp store ${T2_TEMP_STORE}/playbook.yaml — write may have gone to container-local storage (mount broken)"
+        fail "T2c Store isolation FAILED: sentinel not found in host temp store ${_host_store_yaml} — write may have gone to container-local storage (manifest mount broken or bypassed)"
       fi
     fi
   fi
@@ -553,8 +477,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # T2d — Binary ownership: /usr/local/bin/cm is root-owned and NOT agent-writable.
-# Asserts the non-agent-writable-provisioning property from acceptance criterion (1).
-# stat output: "root root" owner/group, permissions not rw for others.
+# The buuo.3 root-owned assertion must pass for manifest-provisioned cm.
 # ---------------------------------------------------------------------------
 _stat_out=""
 _stat_rc=0
@@ -568,18 +491,12 @@ else
   _group=$(echo "$_stat_out" | awk '{print $2}')
   _perms=$(echo "$_stat_out" | awk '{print $3}')
 
-  # Assert owner is root.
   if [[ "$_owner" == "root" ]]; then
     pass "T2d /usr/local/bin/cm is root-owned (owner='${_owner}', group='${_group}', perms='${_perms}')"
   else
     fail "T2d /usr/local/bin/cm is NOT root-owned: owner='${_owner}' (expected 'root')"
   fi
 
-  # Assert not writable by agent user: permissions string format -rwxr-xr-x
-  # The 'others' (world) write bit is position 9 (index 8, 0-based); group write at 5.
-  # Agent runs as 'agent' user (not root, not group owner if group=root).
-  # For -rwxr-xr-x: group bits = r-x (no write), others = r-x (no write).
-  # Reject if group-write (pos 5) or world-write (pos 8) is set.
   _group_write="${_perms:5:1}"
   _other_write="${_perms:8:1}"
   if [[ "$_group_write" != "w" ]] && [[ "$_other_write" != "w" ]]; then
@@ -588,7 +505,6 @@ else
     fail "T2d /usr/local/bin/cm IS writable by non-root: perms='${_perms}' (group_write='${_group_write}', other_write='${_other_write}')"
   fi
 
-  # Belt-and-suspenders: attempt a write as the agent user and assert it fails.
   _write_attempt_rc=0
   docker exec --user agent "$T2_CONTAINER_NAME" \
     /bin/bash -c "echo 'x' >> /usr/local/bin/cm" >/dev/null 2>&1 || _write_attempt_rc=$?
@@ -602,32 +518,9 @@ fi
 # ---------------------------------------------------------------------------
 # T2e — Egress assertion: cm context + playbook ops open ZERO external TCP
 # connections (ADR-005 D8: cm contributes no egress).
-#
-# Method: snapshot ESTABLISHED TCP connections inside the container
-# (via /proc/net/tcp + /proc/net/tcp6, which list connections in the
-# container's network namespace) BEFORE the cm ops, run the ops, snapshot
-# AFTER, then diff. Any new non-loopback remote address in the after-snapshot
-# is a hard FAIL.
-#
-# /proc/net/tcp format (hex): col 2 = local_addr:port, col 3 = remote_addr:port
-# State 01 = ESTABLISHED. Loopback (127.0.0.1) is 7F000001 in hex; we also
-# filter 00000000 (0.0.0.0 — wildcard, not a real connection) and the IPv6
-# loopback (00000000000000000000000001000000 = ::1).
-#
-# Why this is NOT vacuous:
-#   - We run the cm ops DURING the observation window (between snapshots).
-#   - If cm opened any external TCP connection, a new ESTABLISHED row with a
-#     non-loopback remote address would appear in /proc/net/tcp[6] and the diff
-#     would be non-empty, causing FAIL.
-#   - We filter loopback only; all other addresses (including RFC1918 / cloud
-#     IPs) would show up as new rows and fail the assertion.
 # ---------------------------------------------------------------------------
 
-# Helper: extract ESTABLISHED remote addresses from /proc/net/tcp[6],
-# excluding loopback (7F000001 = 127.0.0.1) and zero (00000000) entries.
 _tcp_established_remotes() {
-  # Reads /proc/net/tcp and /proc/net/tcp6 inside the container.
-  # State column (col 4) = 01 for ESTABLISHED; remote addr is col 3.
   docker exec "$T2_CONTAINER_NAME" /bin/bash -c '
     for f in /proc/net/tcp /proc/net/tcp6; do
       [ -f "$f" ] || continue
@@ -639,42 +532,30 @@ _tcp_established_remotes() {
 echo ""
 echo "--- T2e: Egress assertion (cm ops open zero external TCP connections) ---"
 
-# Before snapshot.
 _egress_before=$(_tcp_established_remotes)
 
-# Run the cm ops that would trigger egress if cm phoned home.
 _egress_ctx_rc=0
 docker exec "$T2_CONTAINER_NAME" \
-  /usr/local/bin/cm context "rip-cage-l0u2 egress probe task" --json >/dev/null 2>&1 || _egress_ctx_rc=$?
+  /usr/local/bin/cm context "rip-cage-buuo5 egress probe task" --json >/dev/null 2>&1 || _egress_ctx_rc=$?
 
 _egress_add_rc=0
 docker exec "$T2_CONTAINER_NAME" \
-  /usr/local/bin/cm playbook add "rip-cage-l0u2-egress-probe-sentinel" --category=observation >/dev/null 2>&1 || _egress_add_rc=$?
+  /usr/local/bin/cm playbook add "rip-cage-buuo5-egress-probe-sentinel" --category=observation >/dev/null 2>&1 || _egress_add_rc=$?
 
 _egress_list_rc=0
 docker exec "$T2_CONTAINER_NAME" \
   /usr/local/bin/cm playbook list >/dev/null 2>&1 || _egress_list_rc=$?
 
-# After snapshot.
 _egress_after=$(_tcp_established_remotes)
 
-# Diff: find addresses in after that were not in before.
-# Filter out pure loopback hex representations:
-#   7F000001 = 127.0.0.1 (IPv4 loopback, little-endian)
-#   00000000 = 0.0.0.0 (wildcard, not a real connection)
-#   00000000000000000000000001000000 = ::1 (IPv6 loopback)
 _new_connections=""
 while IFS= read -r _addr; do
   [[ -z "$_addr" ]] && continue
-  # Strip port (format ADDR:PORT)
   _remote_ip="${_addr%%:*}"
-  # Skip all-zeros (wildcard) and known loopback representations.
   [[ "$_remote_ip" == "00000000" ]] && continue
   [[ "$_remote_ip" == "7F000001" ]] && continue
-  # IPv6 loopback variants
   [[ "$_remote_ip" == "00000000000000000000000001000000" ]] && continue
   [[ "$_remote_ip" == "00000000000000000000000000000001" ]] && continue
-  # Check if this address was already present before the cm ops.
   if ! echo "$_egress_before" | grep -qxF "$_addr"; then
     _new_connections="${_new_connections}${_addr} "
   fi
@@ -686,16 +567,10 @@ else
   fail "T2e EGRESS VIOLATION: cm ops opened new external TCP connections: '${_new_connections}' — cm must not phone home (ADR-005 D8)"
 fi
 
-# ---------------------------------------------------------------------------
-# Cleanup note: the temp store cleanup happens in the EXIT trap.
-# We confirm the real store was never touched by asserting the sentinel is
-# NOT in the real store path. We test only by checking the temp store path
-# differs from the known real store location. The real store was never
-# mounted into this container.
-# ---------------------------------------------------------------------------
 echo ""
-echo "[T2] Temp store: ${T2_TEMP_STORE} (will be removed on exit)"
-echo "[T2] Real store NOT touched: container mounted throwaway store only"
+echo "[T2] Throwaway HOME: ${T2_HOME} (will be removed on exit)"
+echo "[T2] Store: ${T2_HOME}/.cass-memory (will be removed on exit)"
+echo "[T2] Real store NOT touched: container mounted throwaway store via manifest consumer"
 
 echo ""
 echo "Results: FAILURES=${FAILURES}"

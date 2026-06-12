@@ -279,6 +279,64 @@ test_md1_denylisted_host_in_object_shape_rejected() {
 }
 
 # ---------------------------------------------------------------------------
+# MD2 — SECURITY: tilde-expanded path that resolves to a DENYLISTED location
+#        is STILL REJECTED (expansion feeds the denylist; does NOT bypass it).
+#
+# rip-cage-buuo.5: after the ~/  and $HOME expansion fix, a manifest entry of
+# the form  host: "~/.ssh"  must be rejected by the denylist — the expansion
+# resolves to $HOME/.ssh which matches the ".ssh" denylist pattern.  This test
+# is the security tripwire proving the expansion does NOT shortcut the denylist
+# check.
+#
+# ADR-023 FIRM: fail-open regression here is a security defect.
+# ---------------------------------------------------------------------------
+test_md2_tilde_expanded_denylisted_path_rejected() {
+  # Build a manifest with a tilde-based host that expands to ~/.ssh.
+  # We create a real ~/.ssh directory inside TEST_HOME so the expansion
+  # produces an existing path (otherwise skip-if-missing would fire instead
+  # of the denylist, making this test vacuous).
+  setup_manifest_sandbox
+  local ssh_dir="${TEST_HOME}/.ssh"
+  mkdir -p "$ssh_dir"
+
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" << 'YAML'
+version: 1
+tools:
+  - name: hostile-tilde-tool
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - host: "~/.ssh"
+        dest: "/home/agent/ssh-data"
+YAML
+
+  local tmpdir out exit_code
+  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/rc-up-md2-test-XXXXXX")
+  exit_code=0
+  # Run rc up: the tilde expands to $TEST_HOME/.ssh (which is denylisted).
+  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
+    RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
+    RC_ALLOWED_ROOTS="$tmpdir" \
+    "${RC}" up "$tmpdir" 2>&1) || exit_code=$?
+
+  # Specific EFFECT sentinel: denylist-refusal message must be present.
+  local denied_signal
+  denied_signal=$(grep -iE "manifest.*(mount|declared).*(denylist|denied|refusing)|denylist.*(manifest|declared).*mount" <<<"$out" | head -1)
+
+  if [[ "$exit_code" -ne 0 ]] && [[ -n "$denied_signal" ]]; then
+    pass "MD2 SECURITY: tilde-expanded ~/.ssh REJECTED by denylist (expansion feeds denylist, not bypasses it — exit=$exit_code)"
+  elif [[ "$exit_code" -eq 0 ]]; then
+    fail "MD2 SECURITY FAIL: denylist check did NOT fire for ~-expanded denylisted path (exit=0) — tilde expansion bypassed the denylist. output='${out:0:300}'"
+  else
+    fail "MD2 SECURITY: exited non-zero (exit=$exit_code) but denylist-refusal message NOT present (may be a different failure). output='${out:0:500}'"
+  fi
+  rm -rf "$tmpdir"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # MC1 — Consumer: valid {host, dest} mount emits "-v host:dest" arg
 #
 # Tests _manifest_build_mount_args directly: with a manifest declaring a
@@ -581,6 +639,7 @@ test_mh5_empty_dest_rejected
 echo ""
 echo "--- DENYLIST EFFECT tests ---"
 test_md1_denylisted_host_in_object_shape_rejected
+test_md2_tilde_expanded_denylisted_path_rejected
 
 echo ""
 echo "--- CONSUMER tests ---"

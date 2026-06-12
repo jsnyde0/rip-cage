@@ -1626,31 +1626,6 @@ _up_prepare_docker_mounts() {
     log "Warning: ${HOME}/.pi/agent/auth.json not mounted (absent and could not be seeded, or a dangling symlink) — pi will require login on first request."
   fi
 
-  # cm (cass-memory) L2A store: RW bind mount so in-cage cm context/playbook commands
-  # read and write the same store as the host (rip-cage-l0u2.2 / ADR-024 D5).
-  # Host path resolved via cm's own precedence: CASS_MEMORY_HOME → XDG_DATA_HOME/cass-memory
-  # → ~/.cass-memory.  In-cage target is deterministic: /home/agent/.cass-memory (the cage
-  # sets neither CASS_MEMORY_HOME nor XDG_DATA_HOME, so in-cage cm resolves to that default).
-  # Plain -v (not a symlink-follow scan root) to avoid resume-fingerprint coupling (rip-cage-6uz).
-  # ADR-024 D5: RW mount accepted — injection-affected agent is still "trying to do its job"
-  # (D5 is the non-adversarial basis); in-cage L2A participation is the point; operator opts
-  # in by HAVING a host cm store (absent store → skip, no seed). CLAUDE.md "layers not walls /
-  # operator opt-in" framing applies: the agent can read/write the store but is subject to the
-  # cage's blast-radius controls for any harm beyond the store itself.
-  # Resolve + realpath + denylist via _cm_build_mount_arg (extracted for testability, rip-cage-l0u2.5).
-  local _cm_mount_resolved _cm_build_rc=0
-  _cm_mount_resolved=$(_cm_build_mount_arg "$_path") || _cm_build_rc=$?
-  if [[ "$_cm_build_rc" -eq 2 ]]; then
-    # Denial message already emitted to stderr by _cm_build_mount_arg.
-    exit 1
-  elif [[ "$_cm_build_rc" -eq 0 ]] && [[ -n "$_cm_mount_resolved" ]]; then
-    echo "[rip-cage] cm store: mounting ${_cm_mount_resolved} → /home/agent/.cass-memory (rw)" >&2
-    _UP_RUN_ARGS+=(-v "${_cm_mount_resolved}:/home/agent/.cass-memory")
-  else
-    log "Warning: cm store not found at resolved host path — cm mount skipped (in-cage cm will use container-local storage)"
-  fi
-  unset _cm_mount_resolved _cm_build_rc
-
   # CAGE_HOST_ADDR explicit pass-through for non-interactive pi -p runs.
   # Resolve on the host side so the value is never empty inside the container.
   # host.docker.internal is the default (works on Docker Desktop/macOS/Linux with host-gateway).
@@ -1698,8 +1673,7 @@ _up_prepare_docker_mounts() {
   # Manifest-declared data mounts (rip-cage-buuo.1 / ADR-005 D7, D9).
   # Turn each manifest tool's mounts: [{host, dest}, ...] entry into -v args.
   # _manifest_build_mount_args emits "host:dest" lines (no -v prefix); we add
-  # -v as a separate array element for the two-element docker run form, matching
-  # the hardcoded cm mount pattern (e.g. rc:1614).
+  # -v as a separate array element for the two-element docker run form.
   # The denylist pre-check at cmd_up already fired (rc:4048); this consumer runs
   # after that gate so denylist denials here are impossible in normal flow.
   local _mba_out _mba_rc=0
@@ -7448,6 +7422,66 @@ _manifest_check_ioc_egress() {
   return 0
 }
 
+# _manifest_expand_mount_host — expand leading ~/ and $HOME/${HOME} in a mount host path.
+#
+# SAFE expansion: only a LEADING ~/ prefix and the literal strings $HOME and ${HOME}
+# are expanded to $HOME.  No arbitrary ${ANYVAR} interpolation is performed to avoid
+# injection / info-leak surfaces.
+#
+# The expansion is applied BEFORE realpath + ADR-023 denylist so those mechanisms
+# always operate on resolved paths (security fully preserved).
+#
+# Parameters:
+#   $1  raw_path — the host path value as read from the manifest (may contain ~/ or $HOME)
+#
+# Returns: expanded path on stdout (unchanged if no known prefix is found)
+_manifest_expand_mount_host() {
+  local raw_path="${1:-}"
+  local home_dir="${HOME:-}"
+
+  # Expand leading ~/ to $HOME/
+  # Use quoted '~/' pattern in both the test and the strip to avoid tilde
+  # special-casing in bash parameter expansion (${var#~/} would expand ~
+  # before stripping; '~/' is the literal two-char prefix we want).
+  # shellcheck disable=SC2088  # intentional: comparing against literal ~/
+  if [[ "$raw_path" == '~/'* ]]; then
+    echo "${home_dir}/${raw_path#'~/'}"
+    return 0
+  fi
+
+  # Expand leading $HOME/ or ${HOME}/ to the literal $HOME value.
+  # Single-quoted patterns are intentional: we want to compare raw_path against
+  # the *literal* strings "$HOME/" and "${HOME}/" as a user might write them in
+  # a manifest, not against the shell-expanded value of $HOME.
+  # shellcheck disable=SC2016  # intentional: literal $HOME/ pattern comparison
+  if [[ "$raw_path" == '$HOME/'* ]]; then
+    # shellcheck disable=SC2016  # intentional: strip literal $HOME/ prefix
+    echo "${home_dir}/${raw_path#'$HOME/'}"
+    return 0
+  fi
+  # shellcheck disable=SC2016  # intentional: literal ${HOME}/ pattern comparison
+  if [[ "$raw_path" == '${HOME}/'* ]]; then
+    # shellcheck disable=SC2016  # intentional: strip literal ${HOME}/ prefix
+    echo "${home_dir}/${raw_path#'${HOME}/'}"
+    return 0
+  fi
+
+  # Exact match: $HOME or ${HOME} alone (no trailing slash)
+  # shellcheck disable=SC2016  # intentional: comparing against literal $HOME
+  if [[ "$raw_path" == '$HOME' ]]; then
+    echo "${home_dir}"
+    return 0
+  fi
+  # shellcheck disable=SC2016  # intentional: comparing against literal ${HOME}
+  if [[ "$raw_path" == '${HOME}' ]]; then
+    echo "${home_dir}"
+    return 0
+  fi
+
+  # No known prefix — return unchanged.
+  echo "$raw_path"
+}
+
 # _manifest_check_mounts_denylist — ADR-023 D1/D6 / rip-cage-4c5.3
 #
 # Check every manifest mounts: path declaration against the secret-path
@@ -7486,13 +7520,16 @@ _manifest_check_mounts_denylist() {
     tool_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
 
     for (( midx=0; midx<mounts_count; midx++ )); do
-      local mount_path resolved_path
+      local mount_path expanded_path resolved_path
       # Read .host field from the {host, dest} object (rip-cage-buuo.1).
       mount_path=$(jq -r ".mounts[${midx}].host" <<<"$entry" 2>/dev/null)
       [[ -z "$mount_path" || "$mount_path" == "null" ]] && continue
 
+      # Expand ~/  and $HOME/${HOME} before realpath (rip-cage-buuo.5).
+      expanded_path=$(_manifest_expand_mount_host "$mount_path")
+
       # Realpath-first: resolve before matching (ADR-023 D6).
-      resolved_path=$(realpath "$mount_path" 2>/dev/null) || resolved_path="$mount_path"
+      resolved_path=$(realpath "$expanded_path" 2>/dev/null) || resolved_path="$expanded_path"
 
       # Check against the denylist.
       if _check_secret_path_denylist "$resolved_path" "$_workspace"; then
@@ -7577,7 +7614,7 @@ _manifest_build_mount_args() {
     tool_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
 
     for (( midx=0; midx<mounts_count; midx++ )); do
-      local mount_host mount_dest
+      local mount_host mount_dest expanded_host
       mount_host=$(jq -r ".mounts[${midx}].host" <<<"$entry" 2>/dev/null)
       mount_dest=$(jq -r ".mounts[${midx}].dest" <<<"$entry" 2>/dev/null)
 
@@ -7586,17 +7623,22 @@ _manifest_build_mount_args() {
       [[ -z "$mount_host" || "$mount_host" == "null" ]] && continue
       [[ -z "$mount_dest" || "$mount_dest" == "null" ]] && continue
 
+      # Expand ~/  and $HOME/${HOME} before existence check (rip-cage-buuo.5).
+      # bash does NOT tilde-expand variables, so "~/.foo" in a manifest literal
+      # would fail [[ -d ]] without this step.
+      expanded_host=$(_manifest_expand_mount_host "$mount_host")
+
       # Skip-if-host-missing: if the host path does not exist, skip this mount.
       # This allows tools to declare mounts for optional data dirs — if the dir
       # doesn't exist on the host, no mount is added (no error).
-      if [[ ! -d "$mount_host" ]]; then
+      if [[ ! -d "$expanded_host" ]]; then
         echo "manifest mount for '${tool_name}': host dir '${mount_host}' not found — skipping (skip-if-host-missing)" >&2
         continue
       fi
 
       # Realpath-first: resolve before denylist check (ADR-023 D6 FIRM).
       local resolved_host
-      resolved_host=$(realpath "$mount_host" 2>/dev/null) || resolved_host="$mount_host"
+      resolved_host=$(realpath "$expanded_host" 2>/dev/null) || resolved_host="$expanded_host"
 
       # ADR-023 D1/D6: denylist check — fail-loud for manifest-managed mounts.
       if _check_secret_path_denylist "$resolved_host" "$_workspace"; then
@@ -7842,68 +7884,6 @@ _ensure_pi_auth_seed() {
     return 0
   fi
   echo "rip-cage: Seeded empty ${HOME}/.pi/agent/auth.json for first-run pi login persistence (rip-cage-wo9)." >&2
-}
-
-# _resolve_cass_memory_host_path — resolve the host cm store path by cm's own precedence:
-#   1. $CASS_MEMORY_HOME (if set)
-#   2. $XDG_DATA_HOME/cass-memory (if XDG_DATA_HOME is set)
-#   3. ~/.cass-memory (default)
-# Writes the resolved path to stdout. Returns 0 if the resolved path exists (is a dir), 1 if not.
-# The path is returned regardless of existence — existence only affects the return code,
-# mirroring cm's src/utils.ts:1071-1085 store resolution (rip-cage-l0u2.2).
-_resolve_cass_memory_host_path() {
-  local _cm_path
-  if [[ -n "${CASS_MEMORY_HOME:-}" ]]; then
-    _cm_path="${CASS_MEMORY_HOME}"
-  elif [[ -n "${XDG_DATA_HOME:-}" ]]; then
-    _cm_path="${XDG_DATA_HOME}/cass-memory"
-  else
-    _cm_path="${HOME}/.cass-memory"
-  fi
-  printf '%s' "$_cm_path"
-  [[ -d "$_cm_path" ]]
-}
-
-# _cm_build_mount_arg <workspace_path> — resolve + realpath + denylist-check the cm host path.
-#
-# Extracted from _up_prepare_docker_mounts for testability (rip-cage-l0u2.5 F4).
-# This is the authoritative path through which the cm mount arg is constructed;
-# _up_prepare_docker_mounts CALLS this function (not a bypass copy).
-#
-# ADR-023 D7 FIRM: realpath is applied before the denylist check so a symlink
-# CASS_MEMORY_HOME into a denylisted dir is caught.
-#
-# Parameters:
-#   $1  workspace_path — passed to _check_secret_path_denylist as the workspace root
-#
-# Stdout:  realpath-resolved host cm store path (only when returning 0)
-# Stderr:  warning/error messages (denial message, skip warnings)
-# Returns: 0  — path resolved, realpathed, and allowed; echoes path to stdout
-#          1  — no store directory found (skip; no mount); nothing on stdout
-#          2  — path denied by denylist; denial message on stderr; nothing on stdout
-_cm_build_mount_arg() {
-  local _workspace_path="$1"
-  local _cm_raw_path _cm_resolved
-
-  # Resolve via cm's own precedence (CASS_MEMORY_HOME → XDG_DATA_HOME/cass-memory → ~/.cass-memory).
-  if ! _cm_raw_path=$(_resolve_cass_memory_host_path 2>/dev/null) || [[ ! -d "$_cm_raw_path" ]]; then
-    return 1  # no store found; caller will skip the mount
-  fi
-
-  # ADR-023 D7 FIRM: realpath first, then denylist — same mechanism as env-file,
-  # beads-dir, and symlink-follow mounts.
-  _cm_resolved=$(realpath "$_cm_raw_path" 2>/dev/null) || _cm_resolved="$_cm_raw_path"
-
-  # ADR-023 D6: denylist check — fail-loud (managed mount, not incidental surface).
-  if _check_secret_path_denylist "$_cm_resolved" "$_workspace_path"; then
-    local _cm_denied_pat
-    _cm_denied_pat=$(_secret_path_denylist_matched_pattern "$_cm_resolved" "$_workspace_path" 2>/dev/null || true)
-    _emit_denylist_denial "$_cm_resolved" "${_cm_denied_pat:-<unknown>}"
-    return 2  # denied; caller must abort
-  fi
-
-  printf '%s' "$_cm_resolved"
-  return 0
 }
 
 _config_project_path() {

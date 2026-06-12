@@ -60,11 +60,16 @@ or (b) no published port on the target compose service.
 
 For pi-specific cage topology, see /etc/rip-cage/cage-pi.md
 
-### cm (cass-memory) — L2A playbook store
+### cm (cass-memory) — L2A playbook store (opt-in)
 
 `cm` is the **cass-memory CLI** for reading and writing the host's L2A (Tier 2A) observation
-and calibration store. When the host has a cm store, it is bind-mounted RW at
-`/home/agent/.cass-memory` so in-cage `cm` reads and writes the same store as the host agent.
+and calibration store. **cm is NOT baked into the default cage image** — it is opt-in via the
+rip-cage manifest mechanism (ADR-005 D2/D6, rip-cage-buuo.5). If `command -v cm` is absent,
+the operator has not included it in their manifest.
+
+When cm IS provisioned via manifest:
+- The host cm store is bind-mounted RW at `/home/agent/.cass-memory`
+- In-cage `cm` reads and writes the same store as the host agent
 
 ```bash
 # Query for context relevant to a task or topic
@@ -86,7 +91,7 @@ cm playbook list
 
 **Security note (ADR-024 D5):** the RW bind mount means in-cage cm writes back to the host
 L2A store. This is the intended behaviour — in-cage L2A participation is the point. Operators
-opt in by having a host cm store. See `docs/reference/cm.md` for the full threat note.
+opt in by having a cm manifest entry AND a host cm store. See `docs/reference/cm.md` for details.
 
 ### Troubleshooting: subagent fails fast (0 tokens, ~2s)
 
