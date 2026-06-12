@@ -454,7 +454,8 @@ test_be1_real_build_compliant_tool_passes() {
   local be1_image="rip-cage:be1-test"
 
   # Save rip-cage:latest for restore.
-  local be1_saved_tag="rip-cage:be1-saved-$(date +%s)"
+  local be1_saved_tag
+  be1_saved_tag="rip-cage:be1-saved-$(date +%s)"
   local be1_had_latest=0
   if docker image inspect rip-cage:latest >/dev/null 2>&1; then
     docker tag rip-cage:latest "$be1_saved_tag" 2>/dev/null && be1_had_latest=1
@@ -534,7 +535,8 @@ test_be2_crafted_bad_agent_writable_rejected() {
   local be2_image="rip-cage:be2-test"
 
   # Save rip-cage:latest for restore.
-  local be2_saved_tag="rip-cage:be2-saved-$(date +%s)"
+  local be2_saved_tag
+  be2_saved_tag="rip-cage:be2-saved-$(date +%s)"
   local be2_had_latest=0
   if docker image inspect rip-cage:latest >/dev/null 2>&1; then
     docker tag rip-cage:latest "$be2_saved_tag" 2>/dev/null && be2_had_latest=1
@@ -605,6 +607,7 @@ test_be2_crafted_bad_agent_writable_rejected() {
 
   local be2_step2_out be2_step2_rc=0
   be2_step2_out=$(
+    # shellcheck disable=SC2030  # intentional: per-case env override scoped to subshell
     export RC_MANIFEST_GLOBAL="$be2_fixture"
     # Source rc. When rc is sourced (not executed), $0 is the shell name, so
     # _resolve_script_dir returns the wrong dir. Override SCRIPT_DIR explicitly.
@@ -613,8 +616,10 @@ test_be2_crafted_bad_agent_writable_rejected() {
     SCRIPT_DIR="$be2_repo_root"
     # Override the binary-root-owned check to always succeed (disabled).
     # This proves the check is the load-bearing discriminator.
+    # shellcheck disable=SC2329  # invoked indirectly by cmd_build in this subshell
     _manifest_check_binary_root_owned() { return 0; }
-    OUTPUT_FORMAT=""
+    # shellcheck disable=SC2030  # intentional: per-case env override scoped to subshell
+    export OUTPUT_FORMAT=""
     cmd_build
   ) || be2_step2_rc=$?
 
@@ -660,7 +665,8 @@ test_be3_pull_or_build_auto_build_path_rejects_hostile() {
   local be3_fixture="${FIXTURES}/manifest-hostile-agent-writable-binary.yaml"
 
   # Save rip-cage:latest for restore.
-  local be3_saved_tag="rip-cage:be3-saved-$(date +%s)"
+  local be3_saved_tag
+  be3_saved_tag="rip-cage:be3-saved-$(date +%s)"
   local be3_had_latest=0
   if docker image inspect rip-cage:latest >/dev/null 2>&1; then
     docker tag rip-cage:latest "$be3_saved_tag" 2>/dev/null && be3_had_latest=1
@@ -691,13 +697,16 @@ test_be3_pull_or_build_auto_build_path_rejects_hostile() {
   local be3_out_file be3_rc=0
   be3_out_file=$(mktemp)
   (
+    # shellcheck disable=SC2030,SC2031  # intentional: per-case env override scoped to subshell
     export RC_MANIFEST_GLOBAL="$be3_fixture"
+    # shellcheck disable=SC2030  # intentional: per-case env override scoped to subshell
     export RIP_CAGE_IMAGE_REGISTRY=""
     # Source rc in subshell; override SCRIPT_DIR for sourced-context correctness.
     # shellcheck disable=SC1090
     source "${RC}"
     SCRIPT_DIR="$be3_repo_root"
-    OUTPUT_FORMAT=""
+    # shellcheck disable=SC2030,SC2031  # intentional: per-case env override scoped to subshell
+    export OUTPUT_FORMAT=""
     _pull_or_build
   ) >"$be3_out_file" 2>&1 || be3_rc=$?
   local be3_combined
@@ -741,12 +750,15 @@ test_be3_pull_or_build_auto_build_path_rejects_hostile() {
   local be3_good_out_file be3_good_rc=0
   be3_good_out_file=$(mktemp)
   (
+    # shellcheck disable=SC2031  # intentional: per-case env override scoped to subshell
     export RC_MANIFEST_GLOBAL="$be3_good_fixture"
+    # shellcheck disable=SC2031  # intentional: per-case env override scoped to subshell
     export RIP_CAGE_IMAGE_REGISTRY=""
     # shellcheck disable=SC1090
     source "${RC}"
     SCRIPT_DIR="$be3_repo_root"
-    OUTPUT_FORMAT=""
+    # shellcheck disable=SC2031  # intentional: per-case env override scoped to subshell
+    export OUTPUT_FORMAT=""
     _pull_or_build
   ) >"$be3_good_out_file" 2>&1 || be3_good_rc=$?
   local be3_good_out
