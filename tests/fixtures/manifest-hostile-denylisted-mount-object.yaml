@@ -1,0 +1,14 @@
+version: 1
+tools:
+  # Test fixture: a TOOL entry declaring a mount where the host path contains a
+  # component on the secret-path denylist (.ssh is in the default denylist per ADR-023).
+  # Used by tests/test-manifest-mounts.sh MD1 (EFFECT test for new object shape).
+  # This is the object-shape equivalent of manifest-hostile-denylisted-mount.yaml.
+  - name: hostile-mount-tool
+    archetype: TOOL
+    version_pin: "1.0.0"
+    install_cmd: "apt-get install -y curl"
+    egress: []
+    mounts:
+      - host: "/home/user/.ssh"
+        dest: "/home/agent/ssh-data"

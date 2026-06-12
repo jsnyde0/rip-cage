@@ -552,43 +552,80 @@ rm -rf "$MISSING_BEADS"
 # --- Test 19: stale local image triggers re-provisioning in rc up --dry-run ---
 echo ""
 echo "=== Test 19: stale local image triggers re-provisioning ==="
-# Build a minimal stub image with NO version label (simulates pre-GHCR local build)
-STALE_IMAGE_ID=$(docker build -q - <<'STALE_DOCKERFILE'
-FROM scratch
+# Build a REAL tagged image (not FROM scratch — that digest is not inspectable under
+# containerd/io.containerd.snapshotter.v1 on Docker 29.4.0, causing docker tag to
+# silently no-op). We use alpine with a clearly stale version label so _image_is_current
+# returns non-current and the "would build" re-provision path fires.
+T19_STALE_TAG="rip-cage:stale-test-t19"
+docker build -q -t "$T19_STALE_TAG" - <<'STALE_DOCKERFILE' >/dev/null 2>&1
+FROM alpine:3.19
+LABEL org.opencontainers.image.version="stale-test-0.0.0"
 LABEL description="stub image for stale-label test"
 STALE_DOCKERFILE
-)
-if [[ -z "$STALE_IMAGE_ID" ]]; then
-  fail "Test 19 setup: could not build stub image"
+T19_BUILD_EXIT=$?
+if [[ $T19_BUILD_EXIT -ne 0 ]]; then
+  fail "Test 19 setup: could not build stale stub image (exit $T19_BUILD_EXIT)"
 else
-  # Tag the stub as rip-cage:latest, saving any existing image first
+  # Save the original rip-cage:latest reference before swapping
   ORIGINAL_IMAGE_ID=$(docker image inspect rip-cage:latest --format '{{.Id}}' 2>/dev/null || true)
-  docker tag "$STALE_IMAGE_ID" rip-cage:latest >/dev/null 2>&1
 
-  TEST_DIR_T19=$(mktemp -d)
-  mkdir -p "${TEST_DIR_T19}/.git"
-  # ADR-023: rc up requires a global config. Provide a minimal one via RC_CONFIG_GLOBAL.
-  T19_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t19-cfg-XXXXXX.yaml")
-  printf 'version: 1\nmounts:\n  denylist: []\n' > "$T19_GLOBAL_CFG"
-  stale_dry_run_output=$(RIP_CAGE_IMAGE_REGISTRY="" RC_ALLOWED_ROOTS="$TEST_DIR_T19" RC_CONFIG_GLOBAL="$T19_GLOBAL_CFG" \
-    "$RC" up --dry-run "$TEST_DIR_T19" 2>&1 || true)
-  rm -f "$T19_GLOBAL_CFG"
+  # Crash-safe cleanup: restore rip-cage:latest even if interrupted mid-test.
+  # Idempotent: safe when ORIGINAL_IMAGE_ID is empty (removes the stub tag).
+  # Cleared after the normal-path restore so it does not fire spuriously.
+  trap '
+    if [[ -n "${ORIGINAL_IMAGE_ID:-}" ]]; then
+      docker tag "$ORIGINAL_IMAGE_ID" rip-cage:latest >/dev/null 2>&1 || true
+    else
+      docker rmi rip-cage:latest >/dev/null 2>&1 || true
+    fi
+    docker rmi "${T19_STALE_TAG:-}" >/dev/null 2>&1 || true
+  ' EXIT INT TERM
 
-  # Restore original image (or remove the stub tag if there was no prior image)
-  if [[ -n "$ORIGINAL_IMAGE_ID" ]]; then
-    docker tag "$ORIGINAL_IMAGE_ID" rip-cage:latest >/dev/null 2>&1
+  docker tag "$T19_STALE_TAG" rip-cage:latest >/dev/null 2>&1
+
+  # POSITIVE SENTINEL: verify the swap actually landed — the installed label must differ
+  # from RC_VERSION so _image_is_current returns false and the staleness path fires.
+  T19_CURRENT_RC_VERSION=$(cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo "unknown")
+  T19_INSTALLED_LABEL=$(docker image inspect rip-cage:latest \
+    --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null || true)
+  if [[ "$T19_INSTALLED_LABEL" == "$T19_CURRENT_RC_VERSION" ]]; then
+    fail "Test 19 sentinel: stale fixture was not installed (label=${T19_INSTALLED_LABEL} == RC_VERSION=${T19_CURRENT_RC_VERSION}); swap may have silently no-oped"
+    # Still restore before continuing; then disarm the crash-safe trap.
+    if [[ -n "$ORIGINAL_IMAGE_ID" ]]; then
+      docker tag "$ORIGINAL_IMAGE_ID" rip-cage:latest >/dev/null 2>&1
+    else
+      docker rmi rip-cage:latest >/dev/null 2>&1 || true
+    fi
+    docker rmi "$T19_STALE_TAG" >/dev/null 2>&1 || true
+    trap - EXIT INT TERM
   else
-    docker rmi rip-cage:latest >/dev/null 2>&1 || true
-  fi
-  docker rmi "$STALE_IMAGE_ID" >/dev/null 2>&1 || true
-  rm -rf "$TEST_DIR_T19"
+    TEST_DIR_T19=$(mktemp -d)
+    mkdir -p "${TEST_DIR_T19}/.git"
+    # ADR-023: rc up requires a global config. Provide a minimal one via RC_CONFIG_GLOBAL.
+    T19_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t19-cfg-XXXXXX.yaml")
+    printf 'version: 1\nmounts:\n  denylist: []\n' > "$T19_GLOBAL_CFG"
+    stale_dry_run_output=$(RIP_CAGE_IMAGE_REGISTRY="" RC_ALLOWED_ROOTS="$TEST_DIR_T19" RC_CONFIG_GLOBAL="$T19_GLOBAL_CFG" \
+      "$RC" up --dry-run "$TEST_DIR_T19" 2>&1 || true)
+    rm -f "$T19_GLOBAL_CFG"
 
-  # A stale image should route through _pull_or_build, not skip it.
-  # With RIP_CAGE_IMAGE_REGISTRY="" the dry-run message is "would build".
-  if echo "$stale_dry_run_output" | grep -qi "would build\|would pull"; then
-    pass "stale image (missing version label) triggers re-provisioning"
-  else
-    fail "stale image did NOT trigger re-provisioning (output: $stale_dry_run_output)"
+    # Restore original image (or remove the stub tag if there was no prior image)
+    if [[ -n "$ORIGINAL_IMAGE_ID" ]]; then
+      docker tag "$ORIGINAL_IMAGE_ID" rip-cage:latest >/dev/null 2>&1
+    else
+      docker rmi rip-cage:latest >/dev/null 2>&1 || true
+    fi
+    docker rmi "$T19_STALE_TAG" >/dev/null 2>&1 || true
+    rm -rf "$TEST_DIR_T19"
+    # Normal-path restore complete — disarm the crash-safe trap.
+    trap - EXIT INT TERM
+
+    # POSITIVE ASSERTION: a stale image must route through _pull_or_build.
+    # With RIP_CAGE_IMAGE_REGISTRY="" the dry-run message is "would build".
+    if echo "$stale_dry_run_output" | grep -qi "would build\|would pull"; then
+      pass "stale image (mismatched version label) triggers re-provisioning (sentinel: installed=${T19_INSTALLED_LABEL}, rc=${T19_CURRENT_RC_VERSION})"
+    else
+      fail "stale image did NOT trigger re-provisioning (output: $stale_dry_run_output)"
+    fi
   fi
 fi
 
@@ -600,52 +637,58 @@ echo "=== Test 20: RC_VERSION=unknown skips staleness check ==="
 # silently re-provision every time on a malformed checkout.
 #
 # Strategy: tag a stub image (no version label) as rip-cage:latest, then
-# invoke rc up --dry-run with RC_VERSION overridden to "unknown" via a wrapper
+# invoke rc up --dry-run with VERSION file temporarily renamed (so RC_VERSION="unknown")
 # and RIP_CAGE_IMAGE_REGISTRY="" so if re-provision fires the message is "build".
 # The dry-run output must NOT contain "would build" or "would pull" — it must
-# reach the normal dry-run lines.
-STUB_IMAGE_T20=$(docker build -q - <<'STUB_DOCKERFILE_T20'
-FROM scratch
+# reach the normal dry-run lines ("Would create container..." / "Would mount...").
+#
+# NOTE: FROM scratch stubs are NOT inspectable under containerd (Docker 29.4.0,
+# io.containerd.snapshotter.v1), so docker tag silently no-ops with a digest-only image.
+# We use alpine with no version label (but a real -t tag) to get an inspectable image
+# whose label is missing so _image_is_current would return stale — but RC_VERSION=unknown
+# bypasses the check, so the staleness path still must NOT fire.
+T20_STUB_TAG="rip-cage:stub-t20"
+docker build -q -t "$T20_STUB_TAG" - <<'STUB_DOCKERFILE_T20' >/dev/null 2>&1
+FROM alpine:3.19
 LABEL description="stub image for unknown-version test"
 STUB_DOCKERFILE_T20
-)
-if [[ -z "$STUB_IMAGE_T20" ]]; then
-  fail "Test 20 setup: could not build stub image"
+T20_BUILD_EXIT=$?
+if [[ $T20_BUILD_EXIT -ne 0 ]]; then
+  fail "Test 20 setup: could not build stub image (exit $T20_BUILD_EXIT)"
 else
   ORIGINAL_IMAGE_T20=$(docker image inspect rip-cage:latest --format '{{.Id}}' 2>/dev/null || true)
-  docker tag "$STUB_IMAGE_T20" rip-cage:latest >/dev/null 2>&1
+
+  # Crash-safe cleanup: restore rip-cage:latest and VERSION file even if interrupted.
+  # Idempotent: BACKUP_VERSION_FILE restore is a no-op when the backup does not exist.
+  # Cleared after the normal-path restore so it does not fire spuriously.
+  REPO_VERSION_FILE="${REPO_ROOT}/VERSION"
+  BACKUP_VERSION_FILE="${REPO_ROOT}/VERSION.t20bak"
+  trap '
+    [[ -f "${BACKUP_VERSION_FILE:-}" ]] && mv "$BACKUP_VERSION_FILE" "$REPO_VERSION_FILE" 2>/dev/null || true
+    if [[ -n "${ORIGINAL_IMAGE_T20:-}" ]]; then
+      docker tag "$ORIGINAL_IMAGE_T20" rip-cage:latest >/dev/null 2>&1 || true
+    else
+      docker rmi rip-cage:latest >/dev/null 2>&1 || true
+    fi
+    docker rmi "${T20_STUB_TAG:-}" >/dev/null 2>&1 || true
+  ' EXIT INT TERM
+
+  docker tag "$T20_STUB_TAG" rip-cage:latest >/dev/null 2>&1
 
   TEST_DIR_T20=$(mktemp -d)
   mkdir -p "${TEST_DIR_T20}/.git"
 
-  # Inject RC_VERSION=unknown via a temporary VERSION-less wrapper script
-  WRAPPER_DIR_T20=$(mktemp -d)
-  cat > "${WRAPPER_DIR_T20}/rc_wrapper.sh" <<'WRAPPER_SCRIPT'
-#!/usr/bin/env bash
-# Strip the real VERSION file from SCRIPT_DIR lookup by pointing to a temp dir
-TMPSCRIPTDIR=$(mktemp -d)
-cp "$1" "${TMPSCRIPTDIR}/rc"
-chmod +x "${TMPSCRIPTDIR}/rc"
-# Remove VERSION so RC_VERSION resolves to "unknown"
-shift
-RC_ALLOWED_ROOTS="$RC_ALLOWED_ROOTS" RIP_CAGE_IMAGE_REGISTRY="" \
-  bash -c "export SCRIPT_DIR=\"${TMPSCRIPTDIR}\"; source \"${TMPSCRIPTDIR}/rc\" 2>/dev/null || true; RC_VERSION=unknown \"${TMPSCRIPTDIR}/rc\" $*"
-WRAPPER_SCRIPT
-
-  # Simpler approach: use env override — rc reads VERSION via SCRIPT_DIR at sourcing time,
-  # but we can override RC_VERSION in the environment after the fact only if the script
-  # allows it.  Since rc sets RC_VERSION unconditionally from the file, the cleanest
-  # approach is to temporarily rename the VERSION file and call rc normally.
-  REPO_VERSION_FILE="${REPO_ROOT}/VERSION"
-  BACKUP_VERSION_FILE="${REPO_ROOT}/VERSION.t20bak"
+  # Use rename of the VERSION file so rc reads RC_VERSION="unknown".
   mv "$REPO_VERSION_FILE" "$BACKUP_VERSION_FILE" 2>/dev/null || true
 
-  unknown_dry_run_output=$(RIP_CAGE_IMAGE_REGISTRY="" RC_ALLOWED_ROOTS="$TEST_DIR_T20" \
+  T20_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t20-cfg-XXXXXX.yaml")
+  printf 'version: 1\nmounts:\n  denylist: []\n' > "$T20_GLOBAL_CFG"
+  unknown_dry_run_output=$(RIP_CAGE_IMAGE_REGISTRY="" RC_ALLOWED_ROOTS="$TEST_DIR_T20" RC_CONFIG_GLOBAL="$T20_GLOBAL_CFG" \
     "$RC" up --dry-run "$TEST_DIR_T20" 2>&1 || true)
+  rm -f "$T20_GLOBAL_CFG"
 
-  # Restore VERSION file
+  # Restore VERSION file before assertions (so any fail() calls don't leave repo damaged)
   mv "$BACKUP_VERSION_FILE" "$REPO_VERSION_FILE" 2>/dev/null || true
-  rm -rf "$WRAPPER_DIR_T20"
 
   # Restore original image
   if [[ -n "$ORIGINAL_IMAGE_T20" ]]; then
@@ -653,15 +696,24 @@ WRAPPER_SCRIPT
   else
     docker rmi rip-cage:latest >/dev/null 2>&1 || true
   fi
-  docker rmi "$STUB_IMAGE_T20" >/dev/null 2>&1 || true
+  docker rmi "$T20_STUB_TAG" >/dev/null 2>&1 || true
   rm -rf "$TEST_DIR_T20"
+  # Normal-path restore complete — disarm the crash-safe trap.
+  trap - EXIT INT TERM
 
   # When RC_VERSION is "unknown", staleness check must be skipped — dry-run
   # should NOT show "would build" / "would pull" (re-provisioning messages).
   if echo "$unknown_dry_run_output" | grep -qi "would build\|would pull"; then
     fail "RC_VERSION=unknown should skip stale check but triggered re-provisioning (output: $unknown_dry_run_output)"
   else
-    pass "RC_VERSION=unknown skips staleness check (image treated as current)"
+    # POSITIVE-BRANCH SENTINEL: the ELSE branch must be REACHED (not vacuously green from a
+    # swap failure). Confirm the output contains normal dry-run lines — "Would create" or
+    # "Would mount" — which only appear when the staleness skip path was actually taken.
+    if echo "$unknown_dry_run_output" | grep -qi "Would create\|Would mount\|Would start"; then
+      pass "RC_VERSION=unknown skips staleness check — normal dry-run lines observed (branch confirmed reached)"
+    else
+      fail "RC_VERSION=unknown ELSE branch reached but normal dry-run output missing — swap may have silently no-oped or dry-run path broken (output: $unknown_dry_run_output)"
+    fi
   fi
 fi
 

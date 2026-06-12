@@ -1,0 +1,10 @@
+version: 1
+tools:
+  # Test fixture: a TOOL entry with a scalar string mount (old shape — should be rejected).
+  # Used by tests/test-manifest-mounts.sh MH1.
+  - name: scalar-mount-tool
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - "/tmp/tool-data"

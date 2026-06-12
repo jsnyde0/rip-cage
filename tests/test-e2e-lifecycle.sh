@@ -29,6 +29,7 @@ E2E_TMP2=""
 OFF_TMP=""
 AUTH_TMP=""
 DCG_TMP=""
+MISE_TMP=""
 
 CLEANUP() {
   # Destroy any e2e containers + volumes we may have created. Match on labels
@@ -38,7 +39,7 @@ CLEANUP() {
     local sp
     sp=$(docker inspect --format '{{index .Config.Labels "rc.source.path"}}' "$c" 2>/dev/null || true)
     case "$sp" in
-      "$E2E_TMP"/*|"$E2E_TMP2"/*|"$OFF_TMP"/*|"$AUTH_TMP"/*|"$DCG_TMP"/*)
+      "$E2E_TMP"/*|"$E2E_TMP2"/*|"$OFF_TMP"/*|"$AUTH_TMP"/*|"$DCG_TMP"/*|"$MISE_TMP"/*)
         docker rm -f "$c" > /dev/null 2>&1 || true
         docker volume rm "rc-state-${c}" > /dev/null 2>&1 || true
         ;;
@@ -49,6 +50,8 @@ CLEANUP() {
   [[ -n "$OFF_TMP"  ]] && rm -rf "$OFF_TMP"
   [[ -n "$AUTH_TMP" ]] && rm -rf "$AUTH_TMP"
   [[ -n "$DCG_TMP"  ]] && rm -rf "$DCG_TMP"
+  [[ -n "$MISE_TMP" ]] && rm -rf "$MISE_TMP"
+  # NOTE: do NOT remove rc-mise-cache — it is host-scoped (ADR-015 D2)
 }
 trap CLEANUP EXIT
 
@@ -826,6 +829,118 @@ fi
 # Cleanup DCG fixture container.
 [[ -n "$_dcg_container" ]] && docker rm -f "$_dcg_container" > /dev/null 2>&1 || true
 [[ -n "$_dcg_container" ]] && docker volume rm "rc-state-${_dcg_container}" > /dev/null 2>&1 || true
+
+# -----------------------------------------------------------------------------
+# Mise toolchain provisioning (ADR-015 D3, ported from test-integration.sh 14-16)
+#
+# Each sub-test spins up a dedicated cage so the workspace's tool-version files
+# (not the main TEST_WS) drive mise.  RIP_CAGE_EGRESS=off keeps them fast.
+# The rc-mise-cache volume is host-scoped (ADR-015 D2) — not cleaned up here.
+# -----------------------------------------------------------------------------
+
+MISE_TMP=$(mktemp -d)
+MISE_TMP_RESOLVED=$(realpath "$MISE_TMP")
+mkdir -p "${MISE_TMP}/rc-mise"
+
+# Check 27: mise provisions node version declared in .nvmrc (ADR-015 D3)
+_nvmrc_ws="${MISE_TMP}/rc-mise/nvmrc-test"
+mkdir -p "$_nvmrc_ws"
+printf '20.18.0\n' > "${_nvmrc_ws}/.nvmrc"
+git -C "$_nvmrc_ws" init > /dev/null 2>&1
+RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${OFF_TMP_RESOLVED}:${DCG_TMP_RESOLVED}:${MISE_TMP_RESOLVED}" \
+  RIP_CAGE_EGRESS=off "$RC" up "$_nvmrc_ws" < /dev/null > /tmp/rc-e2e-mise-nvmrc-up.out 2>&1 || true
+_nvmrc_resolved=$(realpath "$_nvmrc_ws")
+_nvmrc_container=$(docker ps -a --filter "label=rc.source.path=${_nvmrc_resolved}" \
+  --format '{{.Names}}' 2>/dev/null | head -1)
+
+if [[ -z "$_nvmrc_container" ]]; then
+  check "mise: .nvmrc=20.18.0 → node v20.18.0 provisioned (ADR-015 D3)" "fail" \
+    "container did not start (see /tmp/rc-e2e-mise-nvmrc-up.out)"
+  check "mise: node binary path under mise installs dir" "fail" "no container"
+else
+  node_ver=$(docker exec "$_nvmrc_container" zsh -lic 'cd /workspace && node --version' 2>/dev/null | tail -1)
+  if [[ "$node_ver" == "v20.18.0" ]]; then
+    check "mise: .nvmrc=20.18.0 → node v20.18.0 provisioned (ADR-015 D3)" "pass" \
+      "node --version=$node_ver"
+  else
+    check "mise: .nvmrc=20.18.0 → node v20.18.0 provisioned (ADR-015 D3)" "fail" \
+      "expected v20.18.0, got '${node_ver:-<empty>}'"
+  fi
+
+  node_path=$(docker exec "$_nvmrc_container" zsh -lic 'cd /workspace && readlink -f $(which node)' 2>/dev/null | tail -1)
+  if echo "$node_path" | grep -q '/mise/installs/node/20.18.0/'; then
+    check "mise: node binary path under mise installs dir" "pass" "$node_path"
+  else
+    check "mise: node binary path under mise installs dir" "fail" \
+      "path='${node_path:-<empty>}'"
+  fi
+fi
+
+# Check 28: mise cache reuse — re-run mise install against the same workspace on
+# a fresh container; cache hit should be fast (<5000ms). Warn-only on slow hit.
+docker rm -f "$_nvmrc_container" > /dev/null 2>&1 || true
+docker volume rm "rc-state-${_nvmrc_container}" > /dev/null 2>&1 || true
+
+_cache_ws="${MISE_TMP}/rc-mise/cache-test"
+mkdir -p "$_cache_ws"
+printf '20.18.0\n' > "${_cache_ws}/.nvmrc"
+git -C "$_cache_ws" init > /dev/null 2>&1
+RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${OFF_TMP_RESOLVED}:${DCG_TMP_RESOLVED}:${MISE_TMP_RESOLVED}" \
+  RIP_CAGE_EGRESS=off "$RC" up "$_cache_ws" < /dev/null > /tmp/rc-e2e-mise-cache-up.out 2>&1 || true
+_cache_resolved=$(realpath "$_cache_ws")
+_cache_container=$(docker ps -a --filter "label=rc.source.path=${_cache_resolved}" \
+  --format '{{.Names}}' 2>/dev/null | head -1)
+
+if [[ -z "$_cache_container" ]]; then
+  check "mise: cache reuse — second install fast (<5000ms) (ADR-015 D2)" "fail" \
+    "container did not start (see /tmp/rc-e2e-mise-cache-up.out)"
+else
+  mise_elapsed=$(docker exec "$_cache_container" bash -c \
+    'start=$(date +%s%3N); cd /workspace && mise install >/dev/null 2>&1; end=$(date +%s%3N); echo $((end - start))' 2>/dev/null || echo "9999")
+  if [[ "$mise_elapsed" -lt 5000 ]]; then
+    check "mise: cache reuse — second install fast (<5000ms) (ADR-015 D2)" "pass" \
+      "elapsed=${mise_elapsed}ms"
+  else
+    # Warn-only: cache volumes may not be present in all CI environments.
+    check "mise: cache reuse — second install fast (<5000ms) (ADR-015 D2)" "pass" \
+      "WARN: slow cache hit ${mise_elapsed}ms (>5000ms threshold; cache volume may be absent)"
+  fi
+  docker rm -f "$_cache_container" > /dev/null 2>&1 || true
+  docker volume rm "rc-state-${_cache_container}" > /dev/null 2>&1 || true
+fi
+
+# Check 29: mise provisions yarn via packageManager field in package.json (ADR-015 D3)
+_yarn_ws="${MISE_TMP}/rc-mise/yarn-test"
+mkdir -p "$_yarn_ws"
+cat > "${_yarn_ws}/package.json" << 'PKGJSON'
+{
+  "name": "test-yarn-project",
+  "version": "1.0.0",
+  "packageManager": "yarn@1.22.22"
+}
+PKGJSON
+git -C "$_yarn_ws" init > /dev/null 2>&1
+RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${OFF_TMP_RESOLVED}:${DCG_TMP_RESOLVED}:${MISE_TMP_RESOLVED}" \
+  RIP_CAGE_EGRESS=off "$RC" up "$_yarn_ws" < /dev/null > /tmp/rc-e2e-mise-yarn-up.out 2>&1 || true
+_yarn_resolved=$(realpath "$_yarn_ws")
+_yarn_container=$(docker ps -a --filter "label=rc.source.path=${_yarn_resolved}" \
+  --format '{{.Names}}' 2>/dev/null | head -1)
+
+if [[ -z "$_yarn_container" ]]; then
+  check "mise: packageManager=yarn@1.22.22 → yarn 1.22.22 provisioned (ADR-015 D3)" "fail" \
+    "container did not start (see /tmp/rc-e2e-mise-yarn-up.out)"
+else
+  yarn_ver=$(docker exec "$_yarn_container" zsh -lic 'cd /workspace && yarn --version' 2>/dev/null | tail -1)
+  if [[ "$yarn_ver" == "1.22.22" ]]; then
+    check "mise: packageManager=yarn@1.22.22 → yarn 1.22.22 provisioned (ADR-015 D3)" "pass" \
+      "yarn --version=$yarn_ver"
+  else
+    check "mise: packageManager=yarn@1.22.22 → yarn 1.22.22 provisioned (ADR-015 D3)" "fail" \
+      "expected 1.22.22, got '${yarn_ver:-<empty>}'"
+  fi
+  docker rm -f "$_yarn_container" > /dev/null 2>&1 || true
+  docker volume rm "rc-state-${_yarn_container}" > /dev/null 2>&1 || true
+fi
 
 # -----------------------------------------------------------------------------
 # Summary

@@ -1,0 +1,12 @@
+version: 1
+tools:
+  # Hostile fixture: from-source TOOL missing build_source.output_path.
+  # _manifest_validate must reject this naming 'output_path'.
+  - name: missing-output-path-tool
+    archetype: TOOL
+    version_pin: "1.0.0"
+    egress: []
+    mounts: []
+    build_source:
+      builder_image: "alpine:3.19"
+      build_script: "tests/fixtures/build-hello-from-source.sh"

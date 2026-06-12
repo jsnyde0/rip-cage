@@ -190,16 +190,163 @@ else
   check "DCG pinning: tool_name=bash (lowercase) evaluated and denied destructive" "fail" "$dcg_pin_bash"
 fi
 
-# 4b. Verify dcg FAILS OPEN on unknown tool name (proves pinning is load-bearing)
-# A MCP tool name that is NOT in dcg's is_supported_shell_tool → no-command → allow
+# 4b. Diagnostic: which regime does dcg apply to an UNKNOWN (non-bash) tool_name?
+# BOTH regimes are SAFE — neither is a guard-correctness regression, so both PASS:
+#   - fail-open (allow): dcg does not evaluate mcp_exec → the gate's tool_name→bash
+#     pinning is what catches the destructive command. Pinning is load-bearing.
+#   - deny: dcg's own is_supported_shell_tool allowlist now covers mcp_exec (or it is
+#     conservative on unknown tools) → dcg catches it directly; pinning is then
+#     belt-and-suspenders.
+# A later dcg hardening that lands the deny regime must NOT read as a regression —
+# the prior version of this check FAILed on the deny (safer) outcome, an inverted
+# safety polarity fixed in rip-cage-16c. The real "pinning works" assertion is 4a
+# (tool_name=bash → destructive denied); 4b only reports dcg's raw regime.
 dcg_no_eval=$(printf '{"tool_name":"mcp_exec","tool_input":{"command":"rm -rf /"}}' | "$DCG_GUARD" 2>/dev/null || true)
 if echo "$dcg_no_eval" | grep -qE '"permissionDecision".*"deny"'; then
-  # dcg denied it — unexpected, but not a regression (conservative)
-  check "DCG pinning: unknown tool_name mcp_exec fails open without pinning (sensitivity proof)" "fail" \
-    "dcg denied mcp_exec — sensitivity proof inconclusive (dcg may have extended allowlist)"
+  check "DCG pinning: dcg directly guards unknown tool_name mcp_exec (belt-and-suspenders)" "pass" \
+    "dcg denied mcp_exec — dcg allowlist/conservatism covers the unknown tool; no regression, gate pinning still applies"
 else
-  check "DCG pinning: unknown tool_name mcp_exec fails open without pinning (sensitivity proof)" "pass" \
+  check "DCG pinning: dcg fails open on unknown tool_name mcp_exec (gate pinning load-bearing)" "pass" \
     "mcp_exec NOT evaluated by dcg — confirms dcg-gate MUST pin to bash for MCP tools"
+fi
+
+# -----------------------------------------------------------------------
+# 5. Guard-parity re-verify check (rip-cage-9yg0)
+#
+# PI_VERSION=latest means pi can bump on any rebuild. The dcg-gate's
+# extractCommand reads ONLY the "command" field. If a future pi release
+# adds an exec-capable tool with a different field name (e.g. "script",
+# "cmd"), it would pass UNGUARDED.
+#
+# This check fires on REAL exec-surface drift (content/schema parity check —
+# Option 1), NOT on every harmless version bump. It is FAIL altitude because
+# it is a true safety-parity assertion, not a soft warning.
+#
+# False-green protection: the positive sentinel (5a) asserts the known schema
+# IS FOUND first. If the dist path moves or the schema is renamed, 5a FAILS
+# LOUD — the check cannot pass vacuously by absence-against-empty-source.
+# -----------------------------------------------------------------------
+echo ""
+echo "-- Guard-parity re-verify check (exec-field coverage, rip-cage-9yg0) --"
+
+PI_DIST_BASH="/usr/lib/node_modules/@mariozechner/pi-coding-agent/dist/core/tools/bash.js"
+PI_DIST_INDEX="/usr/lib/node_modules/@mariozechner/pi-coding-agent/dist/core/tools/index.js"
+
+# 5a. POSITIVE SENTINEL: bash.js exists at the stable dist path AND contains
+#     bashSchema with the "command:" field.
+#     MUST pass before 5b/5c are meaningful — proves the check has a real target.
+#     If this FAILs, 5b/5c are vacuous (absence-against-empty-source would
+#     trivially "pass" a missing file). We only advance to 5b/5c if 5a passes.
+SENTINEL_OK=false
+if [[ ! -f "$PI_DIST_BASH" ]]; then
+  check "guard-parity [5a] positive sentinel: bash.js exists at dist path" "fail" \
+    "missing: $PI_DIST_BASH — dist path moved? re-verify dcg-gate exec-field coverage"
+elif ! grep -q 'bashSchema' "$PI_DIST_BASH" 2>/dev/null; then
+  check "guard-parity [5a] positive sentinel: bashSchema found in bash.js" "fail" \
+    "bashSchema not found in $PI_DIST_BASH — schema renamed? re-verify dcg-gate exec-field coverage"
+elif ! grep -q 'command:.*Type\.String\|command: Type\.String' "$PI_DIST_BASH" 2>/dev/null; then
+  check "guard-parity [5a] positive sentinel: bashSchema uses field 'command'" "fail" \
+    "field 'command: Type.String' not found in $PI_DIST_BASH — field renamed? dcg-gate extractCommand must be updated"
+else
+  check "guard-parity [5a] positive sentinel: bash.js has bashSchema with command field" "pass" \
+    "confirmed: command: Type.String present in bashSchema"
+  SENTINEL_OK=true
+fi
+
+if [[ "$SENTINEL_OK" == "true" ]]; then
+  # 5b. DRIFT CHECK: no alternative exec-field name appears in schema context in bash.js.
+  #     If pi adds an exec-capable tool using "script" or "cmd" as the shell-command field,
+  #     dcg-gate's extractCommand would miss it (silent guard bypass).
+  #     We check for the typebox schema-definition pattern: <fieldname>: Type.String(
+  #     Non-exec fields (e.g. "path", "content") legitimately use Type.String — we target
+  #     only the names that would represent an alternative bash-exec input field.
+  DRIFT_FOUND=false
+  DRIFT_DETAIL=""
+  for alt_field in "script" "cmd" "command_string" "shell_command" "run" "exec"; do
+    if grep -qE "^\s+${alt_field}:\s+Type\.String" "$PI_DIST_BASH" 2>/dev/null; then
+      DRIFT_FOUND=true
+      DRIFT_DETAIL="field '${alt_field}: Type.String' found in bash.js — dcg-gate extractCommand does not read '${alt_field}'; re-verify coverage"
+      break
+    fi
+  done
+  if [[ "$DRIFT_FOUND" == "true" ]]; then
+    check "guard-parity [5b] no alternative exec-field name in bashSchema" "fail" "$DRIFT_DETAIL"
+  else
+    check "guard-parity [5b] no alternative exec-field name in bashSchema" "pass" \
+      "no script/cmd/run/exec schema fields found in bash.js"
+  fi
+
+  # 5c. COVERAGE COMPLETENESS: allToolNames in index.js includes "bash" (positive sentinel)
+  #     and does not include any new tool name that could be exec-capable beyond the known set.
+  #     Known non-exec tools: read, edit, write, grep, find, ls. If a new name appears
+  #     (e.g. "execute", "shell", "run"), it warrants re-verifying its schema.
+  #     This catches the case where a brand-new exec tool is ADDED alongside bash.
+  if [[ ! -f "$PI_DIST_INDEX" ]]; then
+    check "guard-parity [5c] allToolNames index.js exists" "fail" \
+      "missing: $PI_DIST_INDEX"
+  else
+    # Extract allToolNames content and check for unexpected tool names.
+    # allToolNames = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"])
+    KNOWN_TOOLS="read bash edit write grep find ls"
+    UNEXPECTED=""
+    # Extract the Set literal from allToolNames assignment.
+    # NOTE: grep only the line(s) containing 'allToolNames' and 'new Set'; if the Set
+    # spans multiple lines we may capture only the opener — the parse-yield check below
+    # catches that by failing closed (zero names → FAIL, no vacuous pass).
+    TOOLNAMES_LINE=$(grep 'allToolNames' "$PI_DIST_INDEX" 2>/dev/null | grep 'new Set' | head -1)
+    if [[ -z "$TOOLNAMES_LINE" ]]; then
+      check "guard-parity [5c] allToolNames definition found in index.js" "fail" \
+        "allToolNames Set definition not found in $PI_DIST_INDEX — re-verify dcg-gate exec-field coverage"
+    else
+      # Extract tool name strings from the Set literal into an array.
+      PARSED_NAMES=()
+      while IFS= read -r tool_name; do
+        PARSED_NAMES+=("$tool_name")
+      done < <(echo "$TOOLNAMES_LINE" | grep -oE '"[a-z_-]+"' | tr -d '"')
+
+      # Positive sentinel (parsed-set check, NOT a whole-file grep):
+      # The extracted set must be non-empty AND must contain "bash".
+      # If parsing yields zero names the Set format changed (multi-line, etc.) — fail-closed
+      # to force re-verify rather than passing vacuously.
+      PARSED_HAS_BASH=false
+      for pn in "${PARSED_NAMES[@]+"${PARSED_NAMES[@]}"}"; do
+        if [[ "$pn" == "bash" ]]; then
+          PARSED_HAS_BASH=true
+          break
+        fi
+      done
+
+      if [[ "${#PARSED_NAMES[@]}" -eq 0 ]]; then
+        check "guard-parity [5c] allToolNames parse yielded tool names (sentinel)" "fail" \
+          "allToolNames parse yielded no tools — pi dist format changed (multi-line Set?); re-verify dcg-gate exec-field coverage and update the parser"
+      elif [[ "$PARSED_HAS_BASH" == "false" ]]; then
+        check "guard-parity [5c] allToolNames parsed set contains 'bash' (sentinel)" "fail" \
+          "allToolNames parse yielded no 'bash' — pi dist format changed; re-verify dcg-gate exec-field coverage and update the parser"
+      else
+        # Sentinel passed — now check for unexpected tool names.
+        for pn in "${PARSED_NAMES[@]}"; do
+          found_in_known=false
+          for known in $KNOWN_TOOLS; do
+            if [[ "$pn" == "$known" ]]; then
+              found_in_known=true
+              break
+            fi
+          done
+          if [[ "$found_in_known" == "false" ]]; then
+            UNEXPECTED="${UNEXPECTED}${pn} "
+          fi
+        done
+
+        if [[ -n "$UNEXPECTED" ]]; then
+          check "guard-parity [5c] no unexpected tools in allToolNames" "fail" \
+            "unexpected tool(s): ${UNEXPECTED}— new exec-capable tool? re-verify dcg-gate extractCommand covers its command field"
+        else
+          check "guard-parity [5c] allToolNames contains only known tool set" "pass" \
+            "tools: ${PARSED_NAMES[*]}"
+        fi
+      fi
+    fi
+  fi
 fi
 
 # -----------------------------------------------------------------------

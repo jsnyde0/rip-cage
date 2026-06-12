@@ -14,12 +14,13 @@ ARG DCG_VERSION=0.4.0
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 RUN cargo install --git https://github.com/Dicklesworthstone/destructive_command_guard --tag v${DCG_VERSION} destructive_command_guard
 
-# Stage 3: Runtime
+# Stage 3: Runtime (previously Stage 4; cm-builder removed in rip-cage-buuo.5 — cm is opt-in via manifest ADR-005 D2/D6)
+# Stage 4: Runtime — sentinel for manifest from-source builder stage injection (rip-cage-buuo.2)
 FROM debian:trixie
 
 ARG CLAUDE_CODE_VERSION=latest
 ARG PI_VERSION=latest
-ARG BUN_VERSION=latest
+ARG BUN_VERSION=1.3.14
 
 # Terminal / locale — needed for Claude Code's TUI to render correctly in tmux
 ENV TERM=xterm-256color
@@ -103,6 +104,14 @@ RUN for i in 1 2 3; do \
       echo "pi-coding-agent npm install failed (attempt $i/3); retrying in 10s" && sleep 10; \
     done
 
+# Per-session Claude config isolation (rip-cage-p1p).
+# This wrapper is placed at /usr/local/bin/claude which precedes /usr/bin/claude on PATH.
+# It resolves CLAUDE_CONFIG_DIR (seeding the session dir if absent) then exec-s the real
+# claude binary at /usr/bin/claude. Both the interactive (tmux) and headless (docker exec)
+# paths are covered; see claude-session-wrapper.sh for full logic.
+COPY claude-session-wrapper.sh /usr/local/bin/claude
+RUN chmod +x /usr/local/bin/claude
+
 # Non-root user
 RUN groupadd -g 1000 agent \
     && useradd -m -u 1000 -g agent -s /usr/bin/zsh agent \
@@ -141,6 +150,7 @@ COPY cage-pi.md /etc/rip-cage/cage-pi.md
 COPY init-rip-cage.sh /usr/local/bin/init-rip-cage.sh
 COPY skill-server.py /usr/local/lib/rip-cage/skill-server.py
 COPY tests/test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
+COPY tests/_agent-readability.sh /usr/local/lib/rip-cage/_agent-readability.sh
 COPY egress-rules.yaml /etc/rip-cage/egress-rules.yaml
 COPY rip_cage_egress.py /usr/local/lib/rip-cage/rip_cage_egress.py
 COPY rip_cage_dns.py /usr/local/lib/rip-cage/rip_cage_dns.py

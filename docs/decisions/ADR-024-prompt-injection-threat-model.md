@@ -1,13 +1,14 @@
 # ADR-024: Prompt-Injection-Driven Harm as First-Class Threat Class
 
-**Status:** Accepted
+**Status:** Accepted (revised 2026-06-09 — D6 added: MCP posture)
 **Date:** 2026-05-27
-**Design:** Brainstorm-converged epic — bead created from `/tmp/brainstorm/pi-security-model-design.md` (filed alongside this ADR).
+**Design:** Brainstorm-converged epic — bead created from `/tmp/brainstorm/pi-security-model-design.md` (filed alongside this ADR). D6 added 2026-06-09 (rip-cage-b4c).
 **Related:**
-- [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md) (D5 framing referenced — container as safety boundary; threat model expansion here updates the rationale that decision rests on)
-- [ADR-012 Network Egress Firewall](ADR-012-egress-firewall.md) (D1 and D8 evolved in place under this threat model)
+- [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md) (D5 framing referenced — container as safety boundary; threat model expansion here updates the rationale that decision rests on; D18 meta-skill MCP shim is the sanctioned in-cage MCP server per D6)
+- [ADR-005 Ecosystem Tools](ADR-005-ecosystem-tools.md) (D7 IN-CAGE-DAEMON archetype — `mcp_fragment` reaches MCP-capable agents only; the integration-side counterpart to D6's posture)
+- [ADR-012 Network Egress Firewall](ADR-012-egress-firewall.md) (D1 and D8 evolved in place under this threat model; the network-layer firewall is what makes in-cage MCP egress already-contained per D6)
 - [ADR-017 SSH-Agent Forwarding](ADR-017-ssh-agent-forwarding-default.md) (D1 evolved in place — scope collapses into network allowlist under this threat model)
-- [ADR-019 Pi-Coding-Agent Support](ADR-019-pi-coding-agent-support.md) (D4 evolved in place — Phase 1 promoted to required under this threat model)
+- [ADR-019 Pi-Coding-Agent Support](ADR-019-pi-coding-agent-support.md) (D4 evolved in place — Phase 1 promoted to required under this threat model; D9 CLI-over-MCP for bash-only agents — the integration-side counterpart to D6's posture)
 - [ADR-023 Secret-Path Mount Denylist](ADR-023-secret-path-mount-denylist.md) (mount-side accident closure under this threat model)
 - Project [CLAUDE.md](../../CLAUDE.md) philosophy section ("layers not walls / 80/20 / autonomy is the product / annoying is a design signal") — preserved by this ADR; the philosophy's surface grows to admit the new threat class.
 
@@ -115,6 +116,36 @@ This assumption is what distinguishes D1's threat class from "adversarial agent"
 **Rationale:** without this assumption, "layers not walls" collapses; every layer would need to be a wall (because the agent would otherwise bypass it), and the cage would have to satisfy a much harder design problem. The assumption is load-bearing for the existing philosophy AND for D1's admissibility.
 
 **What would invalidate this:** evidence that injection-affected agents in practice do coordinate-across-layers to bypass (e.g., a prompt-injected agent that, when egress is blocked, switches to writing exfil data into a git commit that the user later pushes). At that point, the line between "injection-affected" and "adversarial" effectively collapses for that vector, and either the threat model or the layer set needs to harden.
+
+### D6: MCP posture — CLI-over-bash is the blessed integration path; third-party MCP servers are allowed-but-unsupported (acknowledged residual risk)
+
+**Firmness: FLEXIBLE** *(added 2026-06-09, rip-cage-b4c — retires the MCP-server-trust research bead via its "acknowledged-residual-risk" option.)*
+
+Rip-cage's **blessed** way for an in-cage agent to reach a service or tool is **CLI-over-bash** — invoking the service's own command-line interface over the agent's bash tool, not loading it as an MCP server. This is the integration-side counterpart to [ADR-019 D9](ADR-019-pi-coding-agent-support.md) (bash-only agents reach in-cage daemons via the daemon's CLI) and [ADR-005 D7](ADR-005-ecosystem-tools.md) (a daemon's optional `mcp_fragment` reaches MCP-capable agents *only*); here it is elevated from "how bash-only agents cope" to "the preferred path for *all* agents," because it is agent-agnostic (works for pi, which has no MCP client, and for Claude) and rides the cage's existing bash + egress controls rather than MCP's separate process/declaration surface.
+
+Consequences of the posture:
+
+- **Third-party / user-added MCP servers are NOT a blessed surface.** They remain *allowed but unsupported*. An agent (or user) that loads one accepts the MCP hostile-input vectors already named in D3 (tool-declaration injection, tool-result injection) and — for **host-placed** MCP only — possible out-of-proxy egress. Rip-cage does not certify, sandbox, or gate them.
+- **In-cage MCP egress is already contained, so the residual exposure is narrow.** A MCP server running *inside* the cage has its network egress intercepted by the L7 egress firewall (ADR-012) like any other process — the firewall is network-layer and process-agnostic, so MCP-origin traffic is not special. The genuinely-uncovered case is therefore only **host-side MCP placement** (e.g. a `host.docker.internal` shim), which originates outside the cage's network namespace and so escapes the cage firewall. That narrow gap is the acknowledged residual risk.
+- **The `meta-skill` skill-server (`skill-server.py`) is the one *sanctioned* in-cage MCP server and is out of scope of this posture.** It is a harness-internal skill-discovery shim with **no network egress** (it reads mounted skill files), transient by design — slated for replacement when the official `ms` tool ships Linux binaries ([ADR-002 D18](ADR-002-rip-cage-containers.md)). It is not a third-party trust surface and is not what "MCP not blessed" refers to.
+- **No MCP trust machinery is built at this time** — deliberately no MCP allowlist analogous to `network.allowed_hosts`, no per-server / per-tool trust, no nested MCP sandboxing.
+
+**Rationale:** the scary part of an untrusted MCP server is covert exfil, and the cage's network-layer firewall already neutralizes that for anything running inside the cage. The remaining hole (host-placed MCP) is not reachable by anything rip-cage ships today. Building a trust system for a surface that is (a) already firewall-covered in its common placement and (b) not used as a blessed path would be over-engineering against the cage's stated threat model (D4 #2 agent-not-adversarial; CLAUDE.md "layers not walls / 80/20 / autonomy is the product"). CLI-over-bash gives the same capability through a path the cage already governs.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **Declare CLI-first posture; third-party MCP allowed-but-unsupported (this decision)** | Zero new code; closes the open research item; consistent with the just-landed CLI-over-MCP integration decisions; rides existing egress controls | Names a residual risk (host-placed MCP) it does not close; relies on users not treating MCP as a supported surface |
+| Same posture **plus** close the host-side out-of-proxy egress gap now | Turns the named residual into a mitigated one | `reasoned:` rejected for now — no host-placed MCP server runs in any cage today, so the gap is not reachable by anything shipped; deferred behind revisit-trigger 1 rather than built speculatively |
+| Full MCP trust model — MCP allowlist + per-server/per-tool trust + nested sandboxing | MCP becomes a first-class governed surface | `reasoned:` over-engineered against the threat model — in-cage MCP egress is already firewall-caught, so most of the machinery defends a surface the network layer already covers; `direct:` CLAUDE.md philosophy ("layers not walls / 80/20-not-100/0") treats this kind of wall-building as the over-strict failure mode |
+
+**What would invalidate this** (revisit triggers):
+
+1. Rip-cage decides to **support host-placed MCP servers** as a blessed surface → then the host-side out-of-proxy egress gap must be closed (it is currently the named residual).
+2. A concrete need arises to run an **untrusted third-party MCP server as a first-class / blessed surface** — at which point per-server trust becomes worth its cost.
+3. **pi (or another bash-only agent) gains a native MCP client** — MCP becomes a default reach path again, and "CLI-first" stops being the universal answer (the D8 guard-parity tripwire in ADR-019 watches for exactly this pin moving).
+4. The threat model shifts to admit an **adversarial** (not merely injection-affected) agent (D4 #2 narrows) — a hostile agent could use an MCP server as a deliberate exfil channel, which CLI-first does not prevent.
 
 ## Consequences
 

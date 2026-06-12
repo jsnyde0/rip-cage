@@ -1,7 +1,7 @@
 # ADR-019: pi-coding-agent support — Phase 0
 
 **Status:** Proposed
-**Date:** 2026-04-25 (D1 revised 2026-06-01; D4 evolved 2026-05-27; D8 revised 2026-06-02 — Phase 1 shipped)
+**Date:** 2026-04-25 (D1 revised 2026-06-01; D4 evolved 2026-05-27; D8 revised 2026-06-02 — Phase 1 shipped; D8 revised again 2026-06-09 — PI_VERSION=latest + guard-parity tripwire wired; D9 added 2026-06-09 — bash-only agents reach in-cage daemons via CLI, not MCP)
 **Design:** [Design doc](../../history/2026-04-25-pi-coding-agent-phase0-design.md)
 **Related:** [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md), [ADR-006 Multi-Agent Architecture](ADR-006-multi-agent-architecture.md), [ADR-010 Auth Refresh](ADR-010-auth-refresh.md), project [CLAUDE.md](../../CLAUDE.md) philosophy section
 **Supersedes (in part):** the original Phase 0 handoff doc (`docs/handoff-pi-phase0.md`) — that doc's B2 mount strategy and B3 auth-warn matrix are revised here based on prior-art research.
@@ -232,9 +232,9 @@ Documented in `docs/reference/auth.md` under "Why rip-cage doesn't ship paranoid
 
 - A demonstrated class of bug where a misbehaving agent reads credential files via a child process that bypasses pi's tool layer, and where fs-vault-style preload would have blocked it. So far this is hypothetical.
 
-### D8: Phase 1 (DCG-on-pi extension) — SHIPPED (rip-cage-bl1)
+### D8: Phase 1 (DCG-on-pi extension) — SHIPPED (rip-cage-bl1); PI_VERSION=latest with guard-parity tripwire (rip-cage-9yg0)
 
-**Firmness: FLEXIBLE** *(revised 2026-06-02 — Phase 1 shipped; the original "deferred as user's learning project" framing is retired and preserved in git history. D4's threat-model promotion (2026-05-27, ADR-024) made the work required; rip-cage-1m7 researched the mechanism and rip-cage-bl1 delivered it.)*
+**Firmness: FLEXIBLE** *(revised 2026-06-02 — Phase 1 shipped; the original "deferred as user's learning project" framing is retired and preserved in git history. D4's threat-model promotion (2026-05-27, ADR-024) made the work required; rip-cage-1m7 researched the mechanism and rip-cage-bl1 delivered it. Revised again 2026-06-09 — PI_VERSION=latest (user wants fresh pi; pinning explicitly rejected); guard-parity tripwire added (rip-cage-9yg0) as the bump-safety mechanism.)*
 
 Phase 1 shipped as `pi/dcg-gate.ts` — a pi extension that registers `pi.on("tool_call", ...)` and, for every exec-capable tool call, forwards the command to the existing `dcg` binary (via the CWD-anchor wrapper `/usr/local/lib/rip-cage/bin/dcg-guard`, ADR-025 D3/D4), blocking via `{ block, reason }`. Reference template: pi-mono `examples/extensions/permission-gate.ts` plus the subprocess pattern from `examples/extensions/sandbox/index.ts`. Note: the compound-command blocker that was part of the original two-gate design was removed in rip-cage-4r8 (ADR-002 D5) — DCG is chaining-robust.
 
@@ -244,18 +244,61 @@ All three landing conditions hold, with condition 2's mechanism **superseded bef
 2. ✅ It is wired in by **auto-discovery from the cage-owned container-local `<agentDir>/extensions/` dir — no `-e` flag, no `settings.json` entry.** This supersedes the original "`pi -e <path>` or a `settings.json` extensions entry" mechanism: pi is launched interactively (no cage-controlled launch line to attach `-e` to), and D1's container-local cage-owned topology (revised 2026-06-01) gives pi an `extensions/` auto-scan path (pi-mono `core/extensions/loader.ts`) that loads by default, the host mount cannot pollute, and the caged agent cannot strip via the workspace. See D1.
 3. ✅ It calls the same `dcg` binary (through the shared `dcg-guard` wrapper) the Claude Code PreToolUse hook calls, so policy stays in one place (ADR-025).
 
-**Implementation specifics (rip-cage-bl1):** the dcg stdin envelope pins `tool_name:"bash"` regardless of the originating pi tool name (else dcg's tool-name filter returns no-command and fails OPEN); the decision is read from dcg stdout JSON `hookSpecificOutput.permissionDecision` (not exit code); the guard fails OPEN on internal error (agent not wedged) and fails CLOSED-loud on a genuine deny (readable reason naming rule + safe alternative); a fail-loud init presence check refuses to launch pi unguarded; `tests/test-pi-dcg-gate.sh` regression-guards parity in both `rc test` branches. Live LOAD+FIRE verified in a real authed pi cage. **Known acceptable gap:** exec-capable tools that expose their command under a non-`command` field name pass unguarded — pi v0.70.2 ships only the `bash` exec tool (field `command`) and has no MCP bridge, so `command`-field extraction is the 80/20 parity bar, not a hole (tracked in code + bead; would broaden on a pi exec-surface change).
+**Implementation specifics (rip-cage-bl1):** the dcg stdin envelope pins `tool_name:"bash"` regardless of the originating pi tool name (else dcg's tool-name filter returns no-command and fails OPEN); the decision is read from dcg stdout JSON `hookSpecificOutput.permissionDecision` (not exit code); the guard fails OPEN on internal error (agent not wedged) and fails CLOSED-loud on a genuine deny (readable reason naming rule + safe alternative); a fail-loud init presence check refuses to launch pi unguarded; `tests/test-pi-dcg-gate.sh` regression-guards parity in both `rc test` branches. Live LOAD+FIRE verified in a real authed pi cage.
+
+**PI_VERSION=latest + guard-parity tripwire (rip-cage-9yg0):** pi is installed at `latest` (`Dockerfile ARG PI_VERSION=latest`) — pinning to a specific version is explicitly rejected (user wants fresh pi). The "known acceptable gap" from the original rip-cage-bl1 shipping note (exec-capable tools that use a non-`command` field pass unguarded) is bounded by a **guard-parity re-verify check** in `tests/test-pi-dcg-gate.sh` (section 5, checks 5a/5b/5c). The check is a content/schema parity check (Option 1 — FAIL altitude, not a soft WARN): it locates the installed pi dist at the stable npm path (`/usr/lib/node_modules/@mariozechner/pi-coding-agent/dist/core/tools/bash.js`), asserts `bashSchema` is found with a `command: Type.String` field (positive sentinel — the check cannot false-green if the dist path moves), and then asserts no alternative exec-field names (`script`, `cmd`, etc.) appear in schema position in the dist. A parallel check on `allToolNames` in `index.js` catches newly-registered exec-capable tools not in the known set. The check fires ONLY on real exec-surface drift (not on harmless version bumps), making it the 80/20 bump-safety mechanism for `PI_VERSION=latest`. When the check fires FAIL, the corrective action is: re-read the pi dist exec-tool schemas, update `extractCommand` in `pi/dcg-gate.ts` to cover the new field, and re-verify before the next cage build.
 
 **Rationale (retained):**
 
 - The extension was sized right and delivered the actual safety layer rather than an open-ended deferral.
 - Splitting research (rip-cage-1m7) from implementation (rip-cage-bl1) kept the mechanism decision honest (FLEXIBLE per D4) without locking it prematurely.
+- `PI_VERSION=latest` with a content-based tripwire is the right balance: agents get fresh pi, and exec-surface drift is caught before it reaches a running cage (the check runs in `rc test`, which every cage validation uses).
 
 **What would invalidate this:**
 
 - Pi changes extension auto-discovery so `<agentDir>/extensions/` is no longer auto-scanned without a flag (see D1's invalidation clause) → re-wire the load mechanism.
-- A richer pi exec-tool surface emerges (MCP bridge, custom exec tools with non-`command` fields) that the `command`-field extraction misses → broaden extraction.
+- A richer pi exec-tool surface emerges (MCP bridge, custom exec tools with non-`command` fields) — this is exactly what the guard-parity tripwire detects; it will FAIL in `rc test` when it happens → broaden `extractCommand` and re-verify.
+- Pi moves its dist layout so `dist/core/tools/bash.js` is no longer the installed path → the 5a positive sentinel FAILS LOUD; update the dist path constant in `test-pi-dcg-gate.sh` (section 5).
+- Pi renames `bashSchema` or changes the field name → 5a FAILS LOUD; update `extractCommand` in `pi/dcg-gate.ts`.
 - DCG version bump changes the stdin protocol or the `is_supported_shell_tool` allowlist → re-verify the `tool_name:"bash"` pin (ADR-025 D3/D5 coupling).
+
+### D9: Bash-only agents reach in-cage daemons via the daemon's own CLI over bash, not via MCP
+
+**Firmness: FLEXIBLE** *(added 2026-06-09, rip-cage-swv; promoted from the swv design via `/compound`.)*
+
+A bash-only agent (pi ships only the `bash` exec tool and has **no MCP bridge** as of the current `latest` install — D8 above; pi docs `usage.md` "intentionally does not include built-in MCP"; the guard-parity tripwire in D8 catches if this changes) reaches an in-cage daemon (ADR-005 D7 IN-CAGE-DAEMON archetype, e.g. agent_mail) by invoking the **daemon's own CLI over its bash tool** — never via an MCP client. agent_mail's `am mail send` / `am mail inbox` / `am mail read` (the `am` CLI proxies to the daemon's `/mcp/` endpoint under the hood) is the worked example: pi runs `am ...` in bash, no MCP client in the loop. This is rip-cage's adoption of the pi/Zechner "No MCP — build CLI tools with READMEs" stance for *agent-to-in-cage-service* integration.
+
+This is the agent-side counterpart to ADR-005 D7's daemon archetype: D7's optional `mcp_fragment` registers the daemon with **MCP-capable** agents (Claude Code), which is the reach mechanism for *those* agents; it is **not** the reach mechanism for bash-only agents. Both agent classes talk to the same daemon over the same `/mcp/` endpoint — Claude via its MCP client, pi via the daemon's CLI. (Reconciled into ADR-005 D7's archetype wording, in place, same change-set.)
+
+**Rationale:**
+
+- It is the **only** path for pi today — pi has no MCP client to register a daemon with (D8). Framing this as a deliberate decision (not an accident of pi's surface) prevents the recurring mis-derivation: the *first* swv design assumed "pi drives agent_mail MCP," was adversarially REJECTED on the no-MCP-bridge fact, and only then found the CLI path. Canonicalizing it stops the next daemon-integration from re-assuming MCP and re-failing.
+- It matches the broader CLI-over-MCP design default (`~/.claude/skills/design-claude-extension`): a CLI + short discovery doc avoids MCP's always-loaded per-tool schema overhead, and any bash-capable agent already knows how to run a CLI.
+- The daemon needs no per-agent integration work for bash-only agents — shipping a CLI serves pi, humans, scripts, and any future bash-only agent uniformly.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **Daemon CLI over bash (this decision)** | Only path that works for pi today; zero per-agent integration; CLI serves humans + scripts + any bash agent; matches the CLI-over-MCP default | Agent must discover the CLI surface (README / `--help`); no schema-typed results (acceptable — the agent reads the CLI like any tool) |
+| Build/adopt an MCP bridge for pi (e.g. `pi-mcp-extension` / `pi-mcp-adapter`) | Typed MCP tools in pi | `direct:` pi has no MCP bridge (D8; pi `usage.md` "intentionally does not include built-in MCP"); surveyed community bridges are immature (1-star/2-days) or target a renamed/different pi line (`@earendil-works` `^0.74`) vs our `@mariozechner` line at `latest`; reintroduces the MCP schema-overhead the CLI default avoids — over-engineering for a need the CLI already meets |
+| Native pi typed tool via `pi.registerTool()` wrapping the daemon | pi-native typed surface; we already bake a pi `-e` extension for DCG | `reasoned:` more code than calling an already-shipped CLI over bash; reserve for a future case where a typed surface is genuinely wanted, not the default reach |
+| Support only MCP-capable agents (Claude) talking to in-cage daemons | Simplest; one reach mechanism | `reasoned:` defeats pi multi-agent coordination — the entire point of ADR-006 D7 Tier 1a + rip-cage-swv; leaves pi asymmetrically unable to use in-cage daemons with no threat-model justification |
+
+**What would invalidate this:**
+
+- Pi ships a built-in MCP client / bridge → MCP becomes an *option* for pi (though the CLI-over-bash path may still be preferred on token-cost grounds; re-evaluate, don't auto-switch).
+- An in-cage daemon ships **no** CLI (MCP-only surface) → a bash-only agent then needs a thin CLI shim or the `pi.registerTool()` path; D9's "use the daemon's CLI" assumes one exists (agent_mail's does).
+- pi's exec surface gains non-`bash` tool types that change how it reaches external processes → re-verify the bash-tool assumption (couples to D8's `command`-field note).
+
+**Canonical refs:**
+
+- ADR-005 D7 (IN-CAGE-DAEMON archetype + `mcp_fragment`; its agent-reach wording is reconciled here, in place)
+- ADR-006 D7 (Tier 1a many-agents-in-one-cage — the coordination D9 enables for pi)
+- ADR-019 D8 (pi has only the `bash` exec tool / no MCP bridge — the load-bearing premise)
+- bead `rip-cage-swv` (worked example: concurrent two-pi agent_mail round-trip over `am` CLI; the rejected-MCP-first-design history)
+- `docs/reference/agent-mail-daemon.md` (the `am` CLI message surface + `am serve-http --no-auth` daemon mode)
+- Mario Zechner, "What if you don't need MCP at all?" — the CLI-over-MCP stance this adopts
 
 ## Deferred (out of Phase 0 scope; file as separate beads)
 

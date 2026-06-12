@@ -8,6 +8,124 @@ commit `8897497257c5fac79f7a3559cacf27fddc853d4a` (workspace version 0.3.10)
 
 ---
 
+## Two Reach Paths
+
+Agent_mail is an in-cage daemon (ADR-005 D7 IN-CAGE-DAEMON archetype). Two classes of
+in-cage agent reach it, by different mechanisms:
+
+| Agent class | Reach mechanism | Config requirement |
+|---|---|---|
+| **MCP-capable** (Claude Code) | MCP client via `mcp_fragment` → `/mcp/` endpoint | `mcp_fragment` in manifest; daemon can run either `mcp-agent-mail serve` or `am serve-http` |
+| **Bash-only** (pi — no MCP bridge) | `am` CLI over bash tool | Daemon **must** run in `am serve-http --no-auth` mode (see below) |
+
+This is rip-cage's application of ADR-019 D9: *bash-only agents reach in-cage daemons via the
+daemon's own CLI over bash, not MCP.* The `mcp_fragment` in the manifest is the reach mechanism
+for MCP-capable agents only; pi (and any other bash-only agent) drives `am ...` commands directly.
+Cross-reference: ADR-005 D7 (IN-CAGE-DAEMON archetype), ADR-019 D9 (bash-only CLI-over-bash
+pattern; the rejected-MCP-first history is documented there).
+
+---
+
+## `am` CLI Message Surface
+
+The `am` CLI is the reach mechanism for **bash-only agents** (pi and any agent with only a bash
+tool). No MCP client is needed — the CLI proxies to the daemon's `/mcp/` endpoint internally.
+
+**Flag surface — verified against built binary (`tests/test-agent-mail-concurrent.sh`, PRECONDITION
+4 flag check, lines 209–241; also cross-referenced in the test's header comment block):**
+
+### Send a message
+
+```bash
+am mail send \
+  --project <path>        \  # workspace/project path (scopes the mailbox)
+  --from    <agent-name>  \  # sender's registered agent name
+  --to      <agent-name>  \  # recipient's registered agent name
+  --subject <subject>     \
+  --body    <body>
+```
+
+Returns JSON with an `"id"` field on success.
+
+### Read the inbox
+
+```bash
+am mail inbox \
+  --project       <path>       \  # workspace/project path
+  --agent         <agent-name> \  # whose inbox to read
+  --include-bodies             \  # include message bodies in the response
+  --json                          # output as JSON array
+```
+
+Returns a JSON array of message objects. Each object has a **`body_md`** field for the message
+body (verified: `tests/test-agent-mail-concurrent.sh` line 514 `m.get('body_md','')`).
+
+**Important:** a "Contact request" message lands in the inbox automatically when a new agent is
+registered or first contacted. Agents polling for real messages should filter it out
+(`subject` contains `"Contact request"` — see test line 515).
+
+### Register an agent in a project
+
+```bash
+am agents register \
+  --project <path>   \  # workspace/project path
+  --program <prog>   \  # agent program (e.g. pi)
+  --model   <model>  \  # model name (e.g. claude-sonnet)
+  --json                # optional: output JSON (includes "name" field)
+```
+
+Agent names are **auto-generated** (adjective+noun, wordlist-validated). Do not hardcode a name —
+read it from the `"name"` field of the JSON output. Names for different registrations in the same
+project will be distinct.
+
+---
+
+## Daemon Mode — the -32002 Gotcha
+
+Two daemon start modes ship with agent_mail. **Which one you run determines whether bash-CLI
+calls work:**
+
+### `mcp-agent-mail serve --no-tui` (MCP-client path — original fixture)
+
+```yaml
+start: "STORAGE_ROOT=/var/lib/rip-cage-daemon/agent-mail mcp-agent-mail serve --no-tui"
+```
+
+Fixture: `tests/fixtures/manifest-agent-mail.yaml`
+
+This is the canonical mode for **MCP-capable agents only** (Claude Code). It serves the `/mcp/`
+endpoint and exposes the MCP tool surface.
+
+**Known limitation:** mutating `am` CLI calls (`am mail send`, etc.) routed through this daemon
+return **JSON-RPC `-32002 Forbidden`** — contact-enforcement gating operates at the MCP session
+level, and CLI calls that do not carry a proper MCP session context hit the gate. This is not a
+config error; it is by design in `mcp-agent-mail serve`.
+
+### `am serve-http --no-auth --no-tui` (CLI-friendly mode — concurrent fixture)
+
+```yaml
+start: "STORAGE_ROOT=/var/lib/rip-cage-daemon/agent-mail am serve-http --no-auth --no-tui"
+```
+
+Fixture: `tests/fixtures/manifest-agent-mail-concurrent.yaml`
+
+This mode serves the same `/mcp/` endpoint (same URL, same health probe) but **removes the
+contact-enforcement gate** — `--no-auth` disables bearer-token enforcement so `am mail send` /
+`am mail inbox` CLI calls work without a Forbidden error.
+
+**Use `am serve-http --no-auth` when:**
+- Pi (or any bash-only agent) needs to drive agent_mail via `am` CLI commands.
+- A multi-agent cage mixes Claude Code (MCP path) and pi (CLI path) talking to the same daemon.
+
+**Use `mcp-agent-mail serve` when:**
+- Only MCP-capable agents (Claude Code) will use the daemon via the `mcp_fragment`.
+- The bash CLI path is not needed.
+
+The health probe (`curl -sf http://127.0.0.1:8765/healthz`) works identically in both modes —
+health endpoints bypass bearer auth regardless (`lib.rs:57-60`).
+
+---
+
 ## Manifest Entry Shape
 
 ```yaml

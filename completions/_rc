@@ -21,6 +21,8 @@ _rc() {
     'schema:Print machine-readable command schema'
     'completions:Print shell completion script'
     'setup:Interactive shell integration setup'
+    'agent:Launch or manage a named tmux agent session in a container'
+    'sessions:List or kill tmux sessions in a container'
   )
 
   _arguments -C \
@@ -33,7 +35,7 @@ _rc() {
       ;;
     args)
       case $line[1] in
-        attach|down|test|reload)
+        attach|down|test|reload|agent|sessions)
           local -a containers
           containers=($(docker ps --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null))
           _describe 'container' containers

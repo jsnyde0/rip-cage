@@ -17,6 +17,14 @@
 
 set -uo pipefail
 
+# tests/run-host.sh exports RC_CONFIG_GLOBAL pointing to an empty-denylist fixture
+# for the whole suite. RC_CONFIG_GLOBAL takes precedence over XDG_CONFIG_HOME in
+# _config_global_path (rc:6207-6208), so a subshell that builds its own denylist
+# config under XDG_CONFIG_HOME gets silently shadowed — M1/M2/M7 turn vacuously
+# green or false-red. Unset here so per-call XDG sandboxes resolve correctly.
+# Mirror of the fix in tests/test-secret-path-denylist.sh (see run-host.sh:102-109).
+unset RC_CONFIG_GLOBAL
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RC="${SCRIPT_DIR}/../rc"
 FAILURES=0

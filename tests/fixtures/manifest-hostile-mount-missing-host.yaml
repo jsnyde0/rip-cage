@@ -1,0 +1,10 @@
+version: 1
+tools:
+  # Test fixture: a TOOL entry with a mount object missing the 'host' field.
+  # Used by tests/test-manifest-mounts.sh MH2.
+  - name: mount-missing-host-tool
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - dest: "/home/agent/tool-data"

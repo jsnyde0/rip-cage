@@ -1,0 +1,11 @@
+version: 1
+tools:
+  # Test fixture: a TOOL entry with a valid {host, dest} mount object.
+  # Used by tests/test-manifest-mounts.sh MV1.
+  - name: tool-with-mount
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - host: "/tmp/tool-data"
+        dest: "/home/agent/tool-data"

@@ -1,0 +1,11 @@
+version: 1
+tools:
+  # Test fixture: a TOOL entry with a mount object with an empty 'host' value.
+  # Used by tests/test-manifest-mounts.sh MH4.
+  - name: mount-empty-host-tool
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - host: ""
+        dest: "/home/agent/tool-data"

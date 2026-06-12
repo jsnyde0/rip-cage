@@ -216,7 +216,8 @@ test_e2_ioc_up_fails_loud() {
 # any docker call.  The error message must name the manifest-declared path.
 #
 # Uses fixture manifest-hostile-denylisted-mount.yaml which declares
-# mounts: [/home/user/.ssh] — ".ssh" is in the default denylist (ADR-023).
+# mounts: [{host: /home/user/.ssh, dest: /home/agent/ssh-data}]
+# — ".ssh" is in the default denylist (ADR-023).
 #
 # The test relies on the specific error format produced by
 # _manifest_check_mounts_denylist: "manifest-declared mount ... denylist ...".

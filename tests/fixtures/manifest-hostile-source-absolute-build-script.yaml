@@ -1,0 +1,14 @@
+version: 1
+tools:
+  # HOSTILE test fixture — rip-cage-buuo.6 F2 path-scope check.
+  # build_script is an absolute path (/absolute/path/build.sh).
+  # _manifest_validate must REJECT this before docker build can fail opaquely.
+  - name: hostile-absolute-script
+    archetype: TOOL
+    version_pin: "1.0.0"
+    egress: []
+    mounts: []
+    build_source:
+      builder_image: "alpine:3.19"
+      build_script: "/absolute/path/to/build.sh"
+      output_path: "/usr/local/bin/hostile-absolute-script"

@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "rip_cage",
+  "project_id": "0b58abcf-3025-4c94-bfac-4f2c8fd1d649"
+}
