@@ -10,7 +10,8 @@ _rc() {
     'init:Scaffold .devcontainer/devcontainer.json'
     'up:Start or resume a container'
     'ls:List rip-cage containers'
-    'attach:Attach to container tmux session'
+    'attach:Attach to container (multiplexer-aware)'
+    'exec:Run a one-off command in the container'
     'down:Stop a container'
     'destroy:Remove container and volumes'
     'reload:Hot-reload .rip-cage.yaml allowlist changes'
@@ -35,7 +36,7 @@ _rc() {
       ;;
     args)
       case $line[1] in
-        attach|down|test|reload|agent|sessions)
+        attach|exec|down|test|reload|agent|sessions)
           local -a containers
           containers=($(docker ps --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null))
           _describe 'container' containers

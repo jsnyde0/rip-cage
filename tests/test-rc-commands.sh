@@ -1171,6 +1171,81 @@ else
   fail "picker whitespace-only input: expected 'selected:rip-cage', got: $t47_result"
 fi
 
+# --- Test 48: rc exec is listed in usage ---
+echo ""
+echo "=== Test 48: rc exec in usage text ==="
+usage_t48=$("$RC" 2>&1 || true)
+if echo "$usage_t48" | grep -q "^  exec"; then
+  pass "rc usage mentions exec subcommand"
+else
+  fail "rc usage does not mention exec subcommand"
+fi
+
+# --- Test 49: rc exec is listed in rc schema ---
+echo ""
+echo "=== Test 49: rc exec in rc schema ==="
+schema_t49=$("$RC" schema 2>/dev/null || true)
+if echo "$schema_t49" | jq -e '.commands | has("exec")' >/dev/null 2>&1; then
+  pass "rc schema contains exec command"
+else
+  fail "rc schema does not contain exec command (got: $schema_t49)"
+fi
+
+# --- Test 50: rc exec --output json is in the json allowlist (no 'not supported' error) ---
+echo ""
+echo "=== Test 50: rc exec --output json is in the json allowlist ==="
+# rc exec must exist and --output json must not be rejected by the allowlist guard
+# (if exec doesn't exist yet, it falls through to usage with exit 1 — the key test is
+#  that it does NOT print the "not supported for 'exec'" allowlist rejection message)
+exec_json_t50=$("$RC" --output json exec no-such-container-xyz -- echo hi 2>&1 || true)
+if echo "$exec_json_t50" | grep -q "not supported for 'exec'"; then
+  fail "rc exec --output json wrongly rejected by allowlist guard"
+else
+  # Also confirm the command is recognized (not falling through to usage unknown-cmd)
+  if echo "$exec_json_t50" | jq -e '.code // empty' >/dev/null 2>&1; then
+    pass "rc exec --output json: recognized command, JSON error shape returned (not in usage)"
+  else
+    # It may print usage if exec doesn't exist — that's a FAIL
+    if echo "$exec_json_t50" | grep -q "^  exec "; then
+      fail "rc exec not yet implemented — falls through to usage"
+    else
+      pass "rc exec --output json is in json allowlist (not rejected)"
+    fi
+  fi
+fi
+
+# --- Test 51: rc exec -- separator is parsed ---
+echo ""
+echo "=== Test 51: rc exec command is dispatched (not treated as unknown) ==="
+# Verify rc exec is dispatched (not a usage-fallthrough). With no such container, it should
+# produce an error about the container (not just "usage"). Best proxy: output must NOT be
+# the general usage text (which starts with "Usage: rc").
+exec_t51=$("$RC" exec no-such-container-xyz -- echo hi 2>&1 || true)
+if echo "$exec_t51" | grep -q "^Usage: rc"; then
+  fail "rc exec falls through to usage (command not dispatched)"
+else
+  pass "rc exec dispatched (no usage fallthrough)"
+fi
+
+# --- Test 52: check_tmux source-gating — verify check_tmux is not called unconditionally for all up invocations ---
+echo ""
+echo "=== Test 52: check_tmux gating — verify dispatch gate is multiplexer-aware ==="
+# Strategy: the dispatch gate for check_tmux must guard on the configured multiplexer value.
+# Before implementation the gate was:
+#   up|attach|sessions|agent) [[ "$OUTPUT_FORMAT" == "json" ]] || check_tmux ;;
+# After implementation the check_tmux call must be guarded by a multiplexer variable check,
+# not called unconditionally for all 'up' invocations.
+# We assert: the line calling check_tmux (not the function def, not comments) ALSO references
+# a multiplexer variable or calls a multiplexer-reading helper.
+# "multiplexer" substring in the dispatch section (not just inside "check_tmux" word itself).
+t52_gate_section=$(awk '/^# Prerequisite checks/,/^# Main dispatch/' "$RC")
+if echo "$t52_gate_section" | grep -q "check_tmux" && \
+   echo "$t52_gate_section" | grep -q "session.multiplexer\|_rc_mux_check\|multiplexer.*tmux\|tmux.*multiplexer"; then
+  pass "check_tmux dispatch gate is multiplexer-aware (multiplexer variable referenced in prereq section)"
+else
+  fail "check_tmux dispatch gate not multiplexer-aware — gate section lacks multiplexer reference alongside check_tmux"
+fi
+
 # --- Cleanup ---
 rm -rf "$SYMLINK_SKILLS_DIR" "$SYMLINK_TARGET_DIR" "$SYMLINK_SKILLS_DIR2" "$HOME_TARGET_DIR" "$SIBLING_DIR" "$TEST_DIR3"
 rm -rf "$TEST_DIR" "$TEST_DIR2"

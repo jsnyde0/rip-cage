@@ -16,8 +16,10 @@ fail() { echo "FAIL: $1 — got: ${2:-}"; FAILURES=$((FAILURES + 1)); }
 FAKE_BIN=$(mktemp -d)
 SYMLINK_BIN=$(mktemp -d)   # symlink farm for PATH without jq
 SYMLINK_BIN2=$(mktemp -d)  # symlink farm for PATH without tmux
+T2_WKSP=""                 # initialized here so cleanup() can safely remove it
 cleanup() {
   rm -rf "$FAKE_BIN" "$SYMLINK_BIN" "$SYMLINK_BIN2"
+  [[ -n "$T2_WKSP" ]] && rm -rf "$T2_WKSP"
 }
 trap cleanup EXIT
 
@@ -77,13 +79,22 @@ else
 fi
 
 # -----------------------------------------------
-# Test 2: Missing tmux — rc up fails with helpful message
+# Test 2: Missing tmux — rc up fails with helpful message when multiplexer=tmux
 # -----------------------------------------------
 echo ""
-echo "=== Test 2: Missing tmux gives helpful error for rc up ==="
+echo "=== Test 2: Missing tmux gives helpful error for rc up (multiplexer=tmux) ==="
 
+# rip-cage-1f59.2: check_tmux is only called when session.multiplexer=tmux.
+# Create a workspace with an explicit tmux multiplexer config so check_tmux fires.
+T2_WKSP=$(mktemp -d)
+T2_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-prereq-t2-XXXXXX.yaml")
+mkdir -p "${T2_WKSP}/.git"
+printf 'version: 1\nsession:\n  multiplexer: tmux\nmounts:\n  denylist: []\n' > "${T2_WKSP}/.rip-cage.yaml"
+printf 'version: 1\nmounts:\n  denylist: []\n' > "$T2_GLOBAL_CFG"
 # Use PATH without tmux to ensure the test is reliable even if tmux is installed on the host
-output=$(RC_ALLOWED_ROOTS="$HOME" PATH="$NOTMUX_BIN" "$RC" up . 2>&1 || true)
+output=$(RC_ALLOWED_ROOTS="$T2_WKSP" RC_CONFIG_GLOBAL="$T2_GLOBAL_CFG" PATH="$NOTMUX_BIN" \
+  "$RC" up "$T2_WKSP" 2>&1 || true)
+rm -f "$T2_GLOBAL_CFG"
 if echo "$output" | grep -qi "tmux"; then
   pass "missing tmux: error mentions 'tmux'"
 else

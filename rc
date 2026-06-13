@@ -208,7 +208,8 @@ Commands:
     --kill NAME         Kill the named session (refuses if it is the last session)
     --force             Override last-session refusal with --kill
   ls                                           List rip-cage containers
-  attach [name]                                Attach to container tmux session (with picker)
+  attach [name]                                Attach to container (multiplexer-aware; plain shell under none)
+  exec <cage> -- <cmd...>                      Run a one-off command in the container (non-interactive safe)
   down [name]                                  Stop a container
   destroy [-f|--force] [name]                   Remove container and volumes
   reload [name] [--dry-run]                     Hot-reload .rip-cage.yaml allowlist changes (ssh.allowed_hosts)
@@ -4260,17 +4261,40 @@ cmd_up() {
       _up_json_output "$name" "attached" "$path" "running"
       return
     fi
-    if [[ -n "$rc_up_new_session" ]]; then
-      _up_attach_tmux_new "$name"
-    elif [[ -n "$rc_up_session_name" ]]; then
-      # --session: create if not exists, then attach
-      if ! docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -qxF "$rc_up_session_name"; then
-        docker exec "$name" tmux new-session -d -s "$rc_up_session_name" -c /workspace 2>/dev/null || true
-      fi
-      _up_attach_tmux "$name" "$rc_up_session_name"
-    else
-      _up_attach_tmux_picker "$name" "up"
-    fi
+    # rip-cage-1f59.2: read multiplexer from the container label (immutable on running cage).
+    local _up_run_mux
+    _up_run_mux=$(_container_multiplexer "$name")
+    case "$_up_run_mux" in
+      tmux)
+        if [[ -n "$rc_up_new_session" ]]; then
+          _up_attach_tmux_new "$name"
+        elif [[ -n "$rc_up_session_name" ]]; then
+          # --session: create if not exists, then attach
+          if ! docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -qxF "$rc_up_session_name"; then
+            docker exec "$name" tmux new-session -d -s "$rc_up_session_name" -c /workspace 2>/dev/null || true
+          fi
+          _up_attach_tmux "$name" "$rc_up_session_name"
+        else
+          _up_attach_tmux_picker "$name" "up"
+        fi
+        ;;
+      none)
+        [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
+          echo "warning: --new/--session ignored under multiplexer=none" >&2
+        if [[ -t 0 && -t 1 ]]; then
+          docker exec -it "$name" zsh
+        else
+          echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
+        fi
+        ;;
+      herdr)
+        echo "Error: herdr multiplexer client not yet implemented (pending rip-cage-1f59.5)." >&2
+        echo "To exec into the container: rc exec $name -- zsh" >&2
+        ;;
+      *)
+        echo "Error: unrecognized multiplexer '${_up_run_mux}' on container $name." >&2
+        ;;
+    esac
     return
   elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
     log "Resuming stopped container $name..."
@@ -4391,16 +4415,39 @@ cmd_up() {
       _up_json_output "$name" "resumed" "$path" "running" "success"
       return
     fi
-    if [[ -n "$rc_up_new_session" ]]; then
-      _up_attach_tmux_new "$name"
-    elif [[ -n "$rc_up_session_name" ]]; then
-      if ! docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -qxF "$rc_up_session_name"; then
-        docker exec "$name" tmux new-session -d -s "$rc_up_session_name" -c /workspace 2>/dev/null || true
-      fi
-      _up_attach_tmux "$name" "$rc_up_session_name"
-    else
-      _up_attach_tmux_picker "$name" "up"
-    fi
+    # rip-cage-1f59.2: read multiplexer from the container label (resumed cage label is immutable).
+    local _up_resume_mux
+    _up_resume_mux=$(_container_multiplexer "$name")
+    case "$_up_resume_mux" in
+      tmux)
+        if [[ -n "$rc_up_new_session" ]]; then
+          _up_attach_tmux_new "$name"
+        elif [[ -n "$rc_up_session_name" ]]; then
+          if ! docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -qxF "$rc_up_session_name"; then
+            docker exec "$name" tmux new-session -d -s "$rc_up_session_name" -c /workspace 2>/dev/null || true
+          fi
+          _up_attach_tmux "$name" "$rc_up_session_name"
+        else
+          _up_attach_tmux_picker "$name" "up"
+        fi
+        ;;
+      none)
+        [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
+          echo "warning: --new/--session ignored under multiplexer=none" >&2
+        if [[ -t 0 && -t 1 ]]; then
+          docker exec -it "$name" zsh
+        else
+          echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
+        fi
+        ;;
+      herdr)
+        echo "Error: herdr multiplexer client not yet implemented (pending rip-cage-1f59.5)." >&2
+        echo "To exec into the container: rc exec $name -- zsh" >&2
+        ;;
+      *)
+        echo "Error: unrecognized multiplexer '${_up_resume_mux}' on container $name." >&2
+        ;;
+    esac
     return
   elif [[ "$_inspect_exit" -ne 0 ]]; then
     : # container absent — fall through to "New container" block below
@@ -4565,7 +4612,9 @@ cmd_up() {
   _UP_RUN_ARGS+=(-e "RC_MULTIPLEXER=${_rc_multiplexer}")
   _UP_RUN_ARGS+=(--label "rc.session.multiplexer=${_rc_multiplexer}")
   log "session.multiplexer: ${_rc_multiplexer}"
-  unset _rc_multiplexer _mux_eff_result
+  # rip-cage-1f59.2: _rc_multiplexer intentionally NOT unset here — used by the new-container
+  # attach block below. It is unset after that block (after _config_init_emit_tip).
+  unset _mux_eff_result
 
   _up_prepare_docker_mounts "$path" "$name"
   _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" "$rc_egress" "$rc_forward_ssh"
@@ -4660,17 +4709,39 @@ cmd_up() {
     _up_json_output "$name" "created" "$path" "running" "success"
     return
   fi
-  if [[ -n "$rc_up_new_session" ]]; then
-    _up_attach_tmux_new "$name"
-  elif [[ -n "$rc_up_session_name" ]]; then
-    if ! docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -qxF "$rc_up_session_name"; then
-      docker exec "$name" tmux new-session -d -s "$rc_up_session_name" -c /workspace 2>/dev/null || true
-    fi
-    _up_attach_tmux "$name" "$rc_up_session_name"
-  else
-    # New container: init created rip-cage session; attach directly (N=1 or N=0 handled by picker)
-    _up_attach_tmux_picker "$name" "up"
-  fi
+  # rip-cage-1f59.2: dispatch on the configured multiplexer (new container — value still in _rc_multiplexer).
+  case "${_rc_multiplexer:-none}" in
+    tmux)
+      if [[ -n "$rc_up_new_session" ]]; then
+        _up_attach_tmux_new "$name"
+      elif [[ -n "$rc_up_session_name" ]]; then
+        if ! docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -qxF "$rc_up_session_name"; then
+          docker exec "$name" tmux new-session -d -s "$rc_up_session_name" -c /workspace 2>/dev/null || true
+        fi
+        _up_attach_tmux "$name" "$rc_up_session_name"
+      else
+        # New container: init created rip-cage session; attach directly (N=1 or N=0 handled by picker)
+        _up_attach_tmux_picker "$name" "up"
+      fi
+      ;;
+    none)
+      [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
+        echo "warning: --new/--session ignored under multiplexer=none" >&2
+      if [[ -t 0 && -t 1 ]]; then
+        docker exec -it "$name" zsh
+      else
+        echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
+      fi
+      ;;
+    herdr)
+      echo "Error: herdr multiplexer client not yet implemented (pending rip-cage-1f59.5)." >&2
+      echo "To exec into the container: rc exec $name -- zsh" >&2
+      ;;
+    *)
+      echo "Error: unrecognized multiplexer '${_rc_multiplexer:-none}' for container $name." >&2
+      ;;
+  esac
+  unset _rc_multiplexer
 }
 
 # _rc_ls_mode_from_source_path -- derive the CURRENT egress mode from the source
@@ -4977,6 +5048,16 @@ resolve_name() {
   fi
 }
 
+# _container_multiplexer — read the rc.session.multiplexer label from a running container.
+# Defaults to "none" when the label is absent (pre-1f59.1 cages or label not set).
+# Args: $1 = container name
+_container_multiplexer() {
+  local _cname="$1"
+  local _mux
+  _mux=$(docker inspect --format '{{ index .Config.Labels "rc.session.multiplexer" }}' "$_cname" 2>/dev/null || true)
+  echo "${_mux:-none}"
+}
+
 cmd_attach() {
   local name
   name=$(resolve_name "${1:-}") || exit 1
@@ -4987,7 +5068,115 @@ cmd_attach() {
     echo "Error: container $name is not running. Start it with: rc up" >&2
     exit 1
   fi
-  _up_attach_tmux_picker "$name" "attach"
+  # rip-cage-1f59.2: dispatch attach on the configured multiplexer (label on container).
+  local _attach_mux
+  _attach_mux=$(_container_multiplexer "$name")
+  case "$_attach_mux" in
+    tmux)
+      _up_attach_tmux_picker "$name" "attach"
+      ;;
+    none)
+      # Plain shell: no multiplexer — attach directly into a new zsh session.
+      # TTY-guard mirrors the tmux attach helpers: interactive only when TTY present.
+      if [[ -t 0 && -t 1 ]]; then
+        docker exec -it "$name" zsh
+      else
+        echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
+      fi
+      ;;
+    herdr)
+      # rip-cage-1f59.5 (herdr-manifest child) will wire the herdr client here.
+      echo "Error: herdr multiplexer client not yet implemented (pending rip-cage-1f59.5)." >&2
+      echo "To attach now, run: rc exec $name -- zsh" >&2
+      exit 1
+      ;;
+    *)
+      echo "Error: unrecognized multiplexer value '${_attach_mux}' on container $name. Inspect with: docker inspect $name" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# cmd_exec — run a one-off command in the container (non-interactive, propagates exit status).
+# Usage: rc exec <cage> -- <cmd...>
+# Unlike rc attach, this is safe to call from scripts (no TTY guard — docker exec -i always).
+# With a TTY (stdin+stdout both TTY), passes -t for interactive use.
+# With --output json, emits {name, command, exit_code, status}.
+cmd_exec() {
+  local name_arg="" sep_found=""
+  local exec_cmd=()
+
+  # Parse: rc exec <cage> -- <cmd...>
+  # The -- separator is required to delimit the cage name from the command.
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--" ]]; then
+      sep_found="true"
+      shift
+      exec_cmd=("$@")
+      break
+    fi
+    if [[ -z "$name_arg" ]]; then
+      name_arg="$1"
+      shift
+    else
+      echo "Error: unexpected argument '$1' before '--' separator. Usage: rc exec <cage> -- <cmd...>" >&2
+      exit 1
+    fi
+  done
+
+  if [[ -z "$sep_found" ]]; then
+    echo "Error: 'rc exec' requires a '--' separator. Usage: rc exec <cage> -- <cmd...>" >&2
+    exit 1
+  fi
+
+  if [[ "${#exec_cmd[@]}" -eq 0 ]]; then
+    echo "Error: 'rc exec' requires a command after '--'. Usage: rc exec <cage> -- <cmd...>" >&2
+    exit 1
+  fi
+
+  local name
+  name=$(resolve_name "${name_arg:-}") || exit 1
+
+  # Verify the container is running
+  local state
+  state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
+  if [[ "$state" != "running" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Container $name is not running. Start it with: rc up" "CONTAINER_NOT_RUNNING"
+    fi
+    echo "Error: container $name is not running. Start it with: rc up" >&2
+    exit 1
+  fi
+
+  # Run the command via docker exec, propagating its exit code.
+  # Non-TTY: always works (no [[ -t 0 && -t 1 ]] guard).
+  # With a TTY: pass -t for interactive use.
+  local docker_exec_flags=(-i)
+  if [[ -t 0 && -t 1 ]]; then
+    docker_exec_flags+=(-t)
+  fi
+
+  local exec_exit=0
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    # ADR-003 D1: in JSON mode stdout carries ONLY the JSON envelope.
+    # Route the wrapped command's stdout to stderr so a human still sees it,
+    # while the JSON channel (stdout) stays clean.
+    docker exec "${docker_exec_flags[@]}" "$name" "${exec_cmd[@]}" >&2 || exec_exit=$?
+  else
+    docker exec "${docker_exec_flags[@]}" "$name" "${exec_cmd[@]}" || exec_exit=$?
+  fi
+
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    local _cmd_str
+    _cmd_str=$(printf '%s ' "${exec_cmd[@]}" | sed 's/ $//')
+    jq -nc \
+      --arg name "$name" \
+      --arg command "$_cmd_str" \
+      --argjson exit_code "$exec_exit" \
+      --arg status "$([ "$exec_exit" -eq 0 ] && echo "success" || echo "error")" \
+      '{name: $name, command: $command, exit_code: $exit_code, status: $status}'
+  fi
+  return "$exec_exit"
 }
 
 verify_rc_container() {
@@ -8955,6 +9144,13 @@ cmd_schema() {
       "args": [{"name": "name", "type": "string", "required": false}],
       "flags": {}
     },
+    "exec": {
+      "args": [{"name": "cage", "type": "string", "required": false, "note": "auto-selected if exactly one container exists"}],
+      "flags": {
+        "--output": {"values": ["json"], "default": null}
+      },
+      "variadic_trailing": {"separator": "--", "note": "command to run verbatim inside the container (word boundaries preserved)"}
+    },
     "build": {
       "args": [],
       "flags": {"--output": {"values": ["json"], "default": null}}
@@ -9037,7 +9233,7 @@ fi
 # Reject --output json on commands that don't support it
 if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   case "${1:-}" in
-    build|ls|up|sessions|agent|down|destroy|test|doctor|auth) ;;  # supported
+    build|ls|up|sessions|agent|down|destroy|test|doctor|auth|exec) ;;  # supported
     init|attach|schema|completions|setup|config|__bd-preflight-test|"")
       echo "Error: --output json is not supported for '${1:-}' (use 'rc config show --json' for config JSON)" >&2
       exit 1
@@ -9051,17 +9247,46 @@ if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   check_jq
 fi
 
-# tmux: only needed for `rc up`, `rc attach`, `rc sessions` (VS Code / rc init doesn't use tmux)
-# Skip when --output json: agent callers invoke up programmatically, never need tmux
-case "${1:-}" in
-  up|attach|sessions|agent) [[ "$OUTPUT_FORMAT" == "json" ]] || check_tmux ;;
-esac
+# tmux: only needed when the configured multiplexer is "tmux".
+# rip-cage-1f59.2: gate check_tmux on the resolved multiplexer value.
+#   - For `up`: read session.multiplexer from the workspace config (defaulting to "none").
+#   - For `attach`/`exec`: multiplexer is read from the container label at command runtime;
+#     check_tmux is skipped here (the label-read happens inside cmd_attach/cmd_exec).
+#   - For `sessions`/`agent`: still gated as before (they require tmux).
+# Skip all checks when --output json: agent callers invoke programmatically.
+if [[ "$OUTPUT_FORMAT" != "json" ]]; then
+  case "${1:-}" in
+    up)
+      # Peek at session.multiplexer from the workspace config.
+      # The workspace path is the first non-flag arg after 'up' — parse it here minimally.
+      _gate_mux="none"
+      _gate_path="."
+      for _gate_arg in "${@:2}"; do
+        case "$_gate_arg" in
+          --*) ;;  # skip flags
+          *)  _gate_path="$_gate_arg"; break ;;
+        esac
+      done
+      if command -v yq &>/dev/null; then
+        _gate_eff=""
+        if _gate_eff=$(_load_effective_config "$_gate_path" 2>/dev/null); then
+          _gate_mux=$(jq -r '.config.session.multiplexer // "none"' <<<"$_gate_eff")
+        fi
+      fi
+      unset _gate_eff _gate_path _gate_arg
+      [[ "$_gate_mux" == "tmux" ]] && check_tmux
+      unset _gate_mux
+      ;;
+    sessions|agent) check_tmux ;;
+    # attach and exec: multiplexer read from container label at runtime — no preflight here.
+  esac
+fi
 
 # docker: needed for all commands that talk to Docker.
 # `rc doctor --host` is the one exception: its job is to *diagnose* a wedged
 # daemon, so the preflight (which would itself fail loud) must be skipped.
 case "${1:-}" in
-  build|up|ls|attach|sessions|agent|down|destroy|reload|test) check_docker ;;
+  build|up|ls|attach|exec|sessions|agent|down|destroy|reload|test) check_docker ;;
   doctor)
     if [[ "${2:-}" != "--host" ]]; then
       check_docker
@@ -9078,6 +9303,7 @@ case "${1:-}" in
   sessions) shift; cmd_sessions "$@" ;;
   ls)       shift; cmd_ls "$@" ;;
   attach)   shift; cmd_attach "$@" ;;
+  exec)     shift; cmd_exec "$@" ;;
   down)     shift; cmd_down "$@" ;;
   destroy)  shift; cmd_destroy "$@" ;;
   reload)    shift; cmd_reload "$@" ;;
