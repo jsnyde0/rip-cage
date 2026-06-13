@@ -10,7 +10,6 @@ class RipCage < Formula
   head "https://github.com/jsnyde0/rip-cage.git", branch: "main"
 
   depends_on "jq"
-  depends_on "tmux"
   depends_on "yq"
 
   def caveats

@@ -496,8 +496,22 @@ case "$_rc_mux" in
     fi
     ;;
   herdr)
-    # Stub: herdr server start is wired in rip-cage-1f59.5 (herdr manifest child).
-    echo "[rip-cage] session.multiplexer=herdr: herdr server start not yet implemented (stub)" >&2
+    # Start herdr headless server (rip-cage-1f59.5).
+    # herdr server: runs the event loop without a real terminal, listens on a unix socket
+    # at ~/.config/herdr/herdr.sock (config_dir = $HOME/.config/herdr per config/io.rs).
+    # The server persists across client disconnects; agents reattach via 'herdr' CLI.
+    # HERDR_SESSION env var selects the named session (default: "default").
+    # Bash-CLI control surface (ADR-019 D9): herdr pane/workspace/tab/wait commands
+    # over the local unix socket (HERDR_ENV=1 set in managed panes).
+    if command -v herdr > /dev/null 2>&1; then
+      mkdir -p "${HOME}/.config/herdr" 2>/dev/null || true
+      herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 &
+      _herdr_pid=$!
+      echo "[rip-cage] session.multiplexer=herdr: server started (PID=${_herdr_pid})"
+      unset _herdr_pid
+    else
+      echo "[rip-cage] WARNING: session.multiplexer=herdr but herdr not found on PATH — no server started" >&2
+    fi
     ;;
   *)
     # Unrecognised value — fail loud per ADR-001.
