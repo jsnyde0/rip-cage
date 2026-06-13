@@ -143,7 +143,7 @@ Identity has two distinct layers: the **per-session handle** (the multiplexer's 
 ## canonical_refs
 
 - [ADR-002 Rip Cage Containers](ADR-002-rip-cage-containers.md) — the containment boundary D7 specializes (rip-cage limits blast radius; it is not an orchestration engine).
-- [ADR-003 Agent-Friendly CLI](ADR-003-agent-friendly-cli.md) — `rc sessions --output json` machine-parseable contract (D7 lever).
+- [ADR-003 Agent-Friendly CLI](ADR-003-agent-friendly-cli.md) — `--output json` machine-parseable contract + `rc schema` introspection; `rc exec` is the D7 box-entry lever (re-decided 2026-06-13, rip-cage-1f59: `rc sessions` removed; see ADR-021 D6 for the in-cage multiplexer as the Tier-1a lever).
 - [ADR-019 pi-coding-agent Support](ADR-019-pi-coding-agent-support.md) — pi is the concurrency-safe in-cage agent (validated 2026-06-06); the arbitrary-command lever must work for pi.
 - [ADR-005 Ecosystem Tools](ADR-005-ecosystem-tools.md) — D7–D10 composable tool manifest; agent_mail (in-cage daemon) is the Tier 3 coordination layer that composes with Tier 1a.
 - bead `rip-cage-p1p` — concurrent-Claude `~/.claude.json` clobber; **delivers** the Claude (not pi) concurrency path under D7 (shipped + closed 2026-06-08).

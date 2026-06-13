@@ -122,7 +122,7 @@ Add a `rc schema` subcommand that outputs a machine-readable JSON description of
 
 **Rationale:** The [jpoehnelt Agent DX CLI Scale](https://raw.githubusercontent.com/jpoehnelt/skills/refs/heads/main/agent-dx-cli-scale/SKILL.md) scores schema introspection as axis 3 of 7. Without it, `rc` scores ~14/21 (agent-ready). With it, `rc` reaches ~16/21 (agent-first). The schema is static per release — `rc` has a fixed command set within a release and no runtime reflection is needed. It can be a hardcoded JSON block with a version field, making it cheap to implement and easy to keep in sync. The set does evolve *across* releases (e.g. `rc agent`/`rc sessions` added in rip-cage-tlm, then removed and `rc exec` + multiplexer-aware `rc attach` added in rip-cage-1f59); the hardcoded block is the source of truth and is updated in lockstep with the CLI surface.
 
-**Output format:**
+**Output format** (illustrative — `rc schema` is the authoritative source of truth; the set evolves across releases):
 
 ```json
 {
@@ -169,6 +169,12 @@ Add a `rc schema` subcommand that outputs a machine-readable JSON description of
       "args": [{"name": "name", "type": "string", "required": false}],
       "flags": {}
     },
+    "exec": {
+      "args": [{"name": "name", "type": "string", "required": true}, {"name": "cmd", "type": "string[]", "required": true, "note": "passed after --"}],
+      "flags": {
+        "--output": {"values": ["json"], "default": null}
+      }
+    },
     "build": {
       "args": [],
       "flags": {
@@ -180,6 +186,32 @@ Add a `rc schema` subcommand that outputs a machine-readable JSON description of
       "flags": {
         "--force": {"type": "bool", "default": false}
       }
+    },
+    "doctor": {
+      "args": [{"name": "name", "type": "string", "required": false}],
+      "flags": {
+        "--output": {"values": ["json"], "default": null}
+      }
+    },
+    "auth": {
+      "args": [],
+      "flags": {}
+    },
+    "config": {
+      "args": [],
+      "flags": {}
+    },
+    "completions": {
+      "args": [],
+      "flags": {}
+    },
+    "setup": {
+      "args": [],
+      "flags": {}
+    },
+    "reload": {
+      "args": [{"name": "name", "type": "string", "required": false}],
+      "flags": {}
     },
     "schema": {
       "args": [],

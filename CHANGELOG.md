@@ -5,6 +5,12 @@ All notable changes to rip-cage will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+- **`rc agent` and `rc sessions`** — both commands were removed in epic rip-cage-1f59 (2026-06-13). They are no longer in the command dispatch, `--help`, schema, or completions. The in-cage multiplexer (`session.multiplexer: none | tmux | herdr`, ADR-021 D6) is the successor for spawning, listing, and supervising agent sessions inside a cage. `rc exec` (`rc exec <cage> -- <cmd>`) is the rip-cage box-entry replacement for running an arbitrary command inside a running cage (ADR-006 D7 re-decision). See ADR-006 D7 for the full rationale.
+
 ## [0.7.0] - 2026-06-12
 
 This release rolls up everything user-facing since 0.5.3 — including the work tagged as 0.6.0, which never got its own changelog entry. Two big themes: **agent-first tool composability** (the cage now bakes in host-defined tools through a declarative, fail-closed manifest instead of hardcoded Dockerfile stages) and **concurrency** (`rc up` cages now run multiple Claude and multi-agent sessions side by side). The base OS also moves to Debian 13 trixie.

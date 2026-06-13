@@ -177,7 +177,7 @@ All follow the same PASS/FAIL/TOTAL convention; grep for `FAIL` in output.
 ## Tools & CLIs
 
 ### `rc` (this repo's CLI) — host-only
-- **Subcommands:** `build init up ls attach down destroy test doctor auth schema completions setup`
+- **Subcommands:** `build init up ls attach down destroy test doctor auth config schema completions setup exec reload`
 - **Invariant:** hard-exits if `/.dockerenv` is present. It will never run inside a cage.
 - **Schema:** `rc schema` prints a machine-readable command schema for agent consumption.
 - **JSON mode:** `rc --output json <cmd>` for most commands.

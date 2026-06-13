@@ -373,13 +373,14 @@ docker exec "$CONTAINER_NAME" tmux kill-session -t mail-b 2>/dev/null || true
 
 B_PROMPT_CONTENT=$(docker exec "$CONTAINER_NAME" cat "$PROMPT_B_PATH" 2>/dev/null)
 
-"$RC" agent "$CONTAINER_NAME" --name=mail-b -- pi --provider openrouter --model anthropic/claude-3.5-haiku -p "$B_PROMPT_CONTENT"
+# rc agent was retired in rip-cage-1f59 (ADR-006 D7). Use docker exec + tmux directly.
+docker exec "$CONTAINER_NAME" tmux new-session -d -s mail-b -c /workspace pi --provider openrouter --model anthropic/claude-3.5-haiku -p "$B_PROMPT_CONTENT"
 EXIT_B=$?
 
 if [[ $EXIT_B -eq 0 ]]; then
-  pass "Step 1: rc agent --name=mail-b spawned (exit 0)"
+  pass "Step 1: tmux new-session mail-b spawned (exit 0)"
 else
-  fail "Step 1: rc agent --name=mail-b failed" "exit=${EXIT_B}"
+  fail "Step 1: tmux new-session mail-b failed" "exit=${EXIT_B}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -442,13 +443,14 @@ echo "=== Step 3: Spawn agent A (${AGENT_A_NAME}) to send sentinel ==="
 
 A_PROMPT_CONTENT=$(docker exec "$CONTAINER_NAME" cat "$PROMPT_A_PATH" 2>/dev/null)
 
-"$RC" agent "$CONTAINER_NAME" --name=mail-a -- pi --provider openrouter --model anthropic/claude-3.5-haiku -p "$A_PROMPT_CONTENT"
+# rc agent was retired in rip-cage-1f59 (ADR-006 D7). Use docker exec + tmux directly.
+docker exec "$CONTAINER_NAME" tmux new-session -d -s mail-a -c /workspace pi --provider openrouter --model anthropic/claude-3.5-haiku -p "$A_PROMPT_CONTENT"
 EXIT_A=$?
 
 if [[ $EXIT_A -eq 0 ]]; then
-  pass "Step 3: rc agent --name=mail-a spawned (exit 0)"
+  pass "Step 3: tmux new-session mail-a spawned (exit 0)"
 else
-  fail "Step 3: rc agent --name=mail-a failed" "exit=${EXIT_A}"
+  fail "Step 3: tmux new-session mail-a failed" "exit=${EXIT_A}"
 fi
 
 # ---------------------------------------------------------------------------
