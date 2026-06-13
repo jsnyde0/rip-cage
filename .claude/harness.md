@@ -101,6 +101,7 @@ The repo splits tests into three tiers. See `tests/run-host.sh` for the canonica
 | Pi AGENTS.md injection + idempotency (ADR-019 D3) | `test-pi-cage-context.sh` |
 | Pi end-to-end `pi -p` smoke (ADR-019) | `test-pi-e2e.sh` (skips when no host auth) |
 | Pi DCG parity (ADR-019 D4, rip-cage-bl1) | `test-pi-dcg-gate.sh` (auth-free: structural + dcg-binary-via-wrapper; wired into both `rc test` branches, conditional on pi present). Compound-blocker section removed rip-cage-4r8; chaining-robustness locked in test-safety-stack.sh 11f/11g/11h. |
+| In-cage multiplexer lifecycle (`session.multiplexer: none\|tmux\|herdr`, ADR-021 D6 / ADR-006 D7) | `test-multiplexer-lifecycle.sh` — **NEEDS_CONTAINER, gated `RC_E2E=1`** (self-skips visibly otherwise). Parameterized over the multiplexer value: asserts default-`none` plain-shell + **no** mux server (enumerated procs), two independent `rc exec`/`rc attach` terminals (close-one-leaves-other), `tmux` detach/reattach survival, `rc agent`/`rc sessions` retirement across dispatch/help/schema/completions/json-allowlist, and config-isolation under each mux (herdr **gating** via `HERDR_SESSION`). herdr blocked/working/done status-view is skip-with-log. This is the integration Signal for the multiplexer-decouple epic; it REPLACED `test-multi-agent-levers.sh` (rip-cage-1f59.8). Spins+tears-down 3 scratch cages (cleanup trap uses realpath-resolved labels). |
 
 All follow the same PASS/FAIL/TOTAL convention; grep for `FAIL` in output.
 
