@@ -22,7 +22,7 @@ For `git push` from inside the cage (ADR-017), your host `ssh-agent` is forwarde
 brew install jsnyde0/rip-cage/rip-cage
 ```
 
-This pulls in `jq` and `tmux`, drops `rc` on your PATH, and installs zsh/bash completions automatically. macOS and Linux (via Linuxbrew/WSL2).
+This pulls in `jq`, drops `rc` on your PATH, and installs zsh/bash completions automatically. macOS and Linux (via Linuxbrew/WSL2).
 
 **From source:**
 ```bash
@@ -37,7 +37,7 @@ cd ~/projects/my-app
 rc up .
 ```
 
-That's it. On first run, `rc` prompts for allowed directories and pulls the pre-built image from GHCR (~30s, with local-build fallback if GHCR is unreachable). You're in a caged tmux session — run `claude` and let it rip. Detach with `Ctrl-B d`.
+That's it. On first run, `rc` prompts for allowed directories and pulls the pre-built image from GHCR (~30s, with local-build fallback if GHCR is unreachable). You're in a caged shell — run `claude` and let it rip.
 
 New to rip cage? The [Getting Started guide](docs/guides/getting-started.md) walks through a first run on a throwaway project, what `rc up` actually does, and the handful of commands you'll use day to day.
 

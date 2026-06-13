@@ -1049,13 +1049,21 @@ else
   pass "cli-reference.md no longer has v0.3 forward-pointer"
 fi
 
-# --- Test 42: cli-reference.md mentions rc sessions command ---
+# --- Test 42: cli-reference.md does NOT mention rc sessions (retired rip-cage-1f59.6) ---
+# NON-VACUOUS: would fail if rc sessions were still present as a live command in cli-reference.md.
+# Inverted from "presence → pass" to "absence → pass" per debt note from rip-cage-1f59.3.
 echo ""
-echo "=== Test 42: cli-reference.md documents rc sessions ==="
+echo "=== Test 42: cli-reference.md does NOT document rc sessions (retired) ==="
 if grep -q "rc sessions" "${REPO_ROOT}/docs/reference/cli-reference.md"; then
-  pass "cli-reference.md documents rc sessions"
+  fail "cli-reference.md still mentions rc sessions as a live command (should be retired per rip-cage-1f59.6)"
 else
-  fail "cli-reference.md missing rc sessions documentation"
+  pass "cli-reference.md does not mention rc sessions (correctly retired)"
+fi
+# Also assert rc agent is absent from cli-reference.md
+if grep -q "rc agent" "${REPO_ROOT}/docs/reference/cli-reference.md"; then
+  fail "cli-reference.md still mentions rc agent as a live command (should be retired per rip-cage-1f59.6)"
+else
+  pass "cli-reference.md does not mention rc agent (correctly retired)"
 fi
 
 # --- Test 43: cli-reference.md documents --new flag ---

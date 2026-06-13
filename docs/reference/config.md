@@ -87,6 +87,33 @@ Discovery: `rc up` prints a 1-line tip pointing at this command whenever a works
 
 ---
 
+## `session.multiplexer` — in-cage multiplexer
+
+Controls which terminal multiplexer (if any) the cage runs inside. Mirrors [ADR-021 D6](../decisions/ADR-021-layered-rip-cage-config.md#d6-sessionmultiplexer-field--in-cage-multiplexer-selection-added-2026-06-13-rip-cage-1f59).
+
+| Field | Type | Default | Allowed values |
+|---|---|---|---|
+| `session.multiplexer` | selection_list (enum scalar) | `none` | `none`, `tmux`, `herdr` |
+
+**`none` (default):** `rc up` / `rc attach` drops into a plain interactive shell. Closing the window ends the process — normal terminal semantics, no surprising persistence.
+
+**`tmux`:** `rc up` starts a tmux session in the cage (or picks from existing sessions). `rc attach` connects to the running tmux session. Closing the window detaches; the agent keeps running. Good for long autonomous runs where you want to reattach.
+
+**`herdr`:** `rc up` / `rc attach` opens the herdr supervisor view. Herdr is installed via the rip-cage tool manifest (no separate Homebrew dependency).
+
+**Merge semantics:** selection_list — project replaces global if present; absent → inherit global or use default `none`. Unknown values abort loud (same path as other enum-scalar fields).
+
+```yaml
+# <project>/.rip-cage.yaml
+version: 1
+session:
+  multiplexer: tmux   # or: none, herdr
+```
+
+Run `rc config show` to see the effective value with provenance.
+
+---
+
 ## `mounts.denylist` and `mounts.allow_risky` — secret-path denylist
 
 Rip-cage blocks `rc up` from mounting paths that match a set of secret-path patterns (e.g. `.aws`, `.ssh`, `credentials`). This is the **secret-path denylist** ([ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md)).

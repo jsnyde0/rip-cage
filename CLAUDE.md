@@ -20,7 +20,7 @@ Containment-flavored language ("the thing inside the cage is not you") has shown
 
 ```
 Host (macOS/Linux)
-├── rc                      CLI entrypoint (bash). All commands: build, init, up, ls, attach, down, destroy, test
+├── rc                      CLI entrypoint (bash). Commands: build, init, up, ls, attach, exec, down, destroy, reload, allowlist, test, doctor, auth, config, schema, completions, setup
 ├── Dockerfile              Multi-stage: Go (beads) → Rust (DCG) → Debian runtime
 ├── init-rip-cage.sh        Runs inside the container on start. Sets up auth, settings, hooks, git identity, beads
 ├── settings.json           Claude Code config — bypassPermissions, PreToolUse hooks
@@ -32,7 +32,7 @@ Host (macOS/Linux)
 
 **Two usage paths:**
 - `rc init` → VS Code "Reopen in Container" (generates `.devcontainer/devcontainer.json`)
-- `rc up` → CLI/headless mode (creates container, runs init, attaches tmux)
+- `rc up` → CLI/headless mode (creates container, runs init, attaches — behavior depends on `session.multiplexer` config: plain shell under `none` (default), tmux attach under `tmux`, herdr supervisor view under `herdr`)
 
 Both paths mount the project directory as a bind mount at `/workspace` — file changes sync instantly, no git push needed.
 
@@ -63,14 +63,14 @@ The shim implements the same `list`/`show`/`load` tools as the host `ms` binary.
 - Docker creates parent dirs for bind mounts as root. That's why `init-rip-cage.sh` starts with `sudo chown agent:agent ~/.claude`.
 - `.devcontainer/` and `.vscode/` are gitignored — they're generated per-project by `rc init`.
 - The `container_name()` function in `rc` derives names from the last two path components. Collisions get a 4-char hash suffix.
-- `sleep infinity` is the container entrypoint for CLI mode — tmux is started by `init-rip-cage.sh`, not the Dockerfile.
+- `sleep infinity` is the container entrypoint for CLI mode. The multiplexer (if configured) is started by `init-rip-cage.sh` at first attach, not the Dockerfile. With `session.multiplexer: none` (default), no multiplexer is started.
 
 ## When you need a new SSH host trust inside the cage
 
 If you hit a wall like `Host key verification failed` for some host (e.g. a non-github mirror), the cage is enforcing `ssh.allowed_hosts` from `.rip-cage.yaml`. To unblock:
 
 1. Edit `.rip-cage.yaml` in the workspace (it's writable inside the cage) to add the host under `ssh.allowed_hosts`.
-2. Ask the human to run on the host: `rc reload <cage>` — this hot-reloads the allowlist without tearing down tmux or losing in-flight context (rip-cage-ocn / [ADR-022](docs/decisions/ADR-022-ssh-allowlist.md) D6).
+2. Ask the human to run on the host: `rc reload <cage>` — this hot-reloads the allowlist without tearing down the running session or losing in-flight context (rip-cage-ocn / [ADR-022](docs/decisions/ADR-022-ssh-allowlist.md) D6).
 3. Retry the failing operation. No restart, no reattach.
 
 `rc reload` is host-side only and not on the cage's PATH by design — the human is the approval step. You cannot self-grant; surface the request and wait for the human to apply.

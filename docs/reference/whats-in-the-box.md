@@ -15,7 +15,7 @@ The rip-cage image is based on `debian:bookworm` with a multi-stage Dockerfile (
 | git | Version control |
 | DCG | Destructive command guard (Rust binary) |
 | Dolt + bd | Issue tracking (beads) |
-| tmux | Session persistence for CLI mode |
+| tmux | Session persistence when `session.multiplexer: tmux` is configured (optional — not the default) |
 | zsh | Shell with sensible defaults |
 
 ## Container user model

@@ -7,9 +7,9 @@
 | `rc build [docker-args...]` | Build the rip-cage Docker image |
 | `rc init [--force] [path]` | Scaffold `.devcontainer/devcontainer.json` for VS Code |
 | `rc up <path> [--port PORT] [--env-file FILE] [--new] [--session NAME]` | Start or resume a container |
-| `rc sessions <cage> [--json] [--kill NAME [--force]]` | List or kill tmux sessions in a cage |
 | `rc ls` | List rip-cage containers |
-| `rc attach [name]` | Attach to a container's tmux session (with picker) |
+| `rc attach [name]` | Attach to a running container (multiplexer-neutral — plain shell under `none`, tmux attach under `tmux`, supervisor view under `herdr`) |
+| `rc exec <cage> -- <cmd...>` | Run a one-off command in a running container non-interactively (safe for CI and scripts); supports `--output json` |
 | `rc down [name]` | Stop a container |
 | `rc destroy [-f] [name]` | Remove a container and its volumes (prompts for confirmation) |
 | `rc reload [name] [--dry-run]` | Hot-reload `ssh.allowed_hosts` from `.rip-cage.yaml` without recreating the container ([details](ssh-routing.md#rc-reload)) |
@@ -90,15 +90,46 @@ This means `rc down` from a project directory targets that project's container, 
 
 Container names are derived from the last two path components of the project directory. When collisions occur, a 4-character hash suffix is appended. Use `rc ls --output json` to discover exact container names — do not construct them manually.
 
+## `rc attach` — multiplexer-neutral attach
+
+`rc attach [name]` attaches to a running container. Its behavior depends on the `session.multiplexer` config field ([details](config.md#sessionmultiplexer--in-cage-multiplexer)):
+
+| `session.multiplexer` | `rc attach` behavior |
+|---|---|
+| `none` (default) | Drops into a plain interactive shell; closing the window ends the process |
+| `tmux` | Attaches the tmux session (with a session picker when multiple sessions exist) |
+| `herdr` | Opens the herdr supervisor view |
+
+## `rc exec` — one-off commands
+
+```
+rc exec <cage> -- <cmd...>
+rc --output json exec <cage> -- <cmd...>
+```
+
+Runs a single command inside a running cage non-interactively. The `--` separator is required. Safe for CI pipelines, scripts, and host-side automation — does not open a TTY or attach a session.
+
+```bash
+# Run a test suite inside the cage
+rc exec my-cage -- pytest tests/
+
+# Get structured output from a command
+rc --output json exec my-cage -- cat /workspace/VERSION
+```
+
+`rc exec` is **container resolution**-aware (auto-selects the cage if only one is running).
+
 ## Running multiple agents
 
-A cage supports multiple independent tmux sessions. `rc up <path>` shows a numbered picker when one or more sessions already exist, letting you attach an existing session or spawn a new one. The first `rc up` on a fresh cage creates a session named `rip-cage` and attaches it directly (no picker — current behavior preserved).
+When `session.multiplexer` is set to `tmux`, a cage supports multiple independent tmux sessions. `rc up <path>` shows a numbered picker when one or more sessions already exist, letting you attach an existing session or spawn a new one. The first `rc up` on a fresh cage creates a session named `rip-cage` and attaches it directly (no picker — current behavior preserved).
 
-### Session picker
+With the default `session.multiplexer: none`, each `rc up` connects a single shell process — multiple agents means multiple cages (one per workspace path).
+
+### Session picker (tmux multiplexer only)
 
 When `rc up <path>` finds one or more existing sessions, it renders a numbered list sorted by most-recently-attached first, with a `[new] new session` entry at the bottom. Pressing **Enter** (empty input) attaches the most-recently-attached session. Type a number to select. `rc attach <cage>` uses the same picker.
 
-On a cage with no sessions (e.g. after `rc sessions <cage> --kill --force`), `rc up` creates and attaches `rip-cage` with no picker.
+On a cage with no sessions, `rc up` creates and attaches `rip-cage` with no picker.
 
 ### `rc up` session flags
 
@@ -112,21 +143,8 @@ On a cage with no sessions (e.g. after `rc sessions <cage> --kill --force`), `rc
 
 Non-TTY invocations (CI, devcontainer `initializeCommand`, piped stdin) skip the picker entirely and fall back to attaching `rip-cage` if it exists or creating it.
 
-### `rc sessions <cage>`
-
-List, inspect, and clean up sessions inside a running cage.
-
-```
-rc sessions <cage>                       # list sessions: name  attached-count  idle-time
-rc sessions <cage> --json                # JSON array: [{name, attached, idle_seconds}, …]
-rc sessions <cage> --kill NAME           # kill named session (refuses if it is the last one)
-rc sessions <cage> --kill NAME --force   # override last-session refusal
-```
-
-After a `--force` kill of the last session the container stays running on its `sleep infinity` entrypoint. The next `rc up` hits the N=0 path and creates `rip-cage`.
-
 ### Other shapes still supported
 
-**Multiple windows in one cage (one tmux session, multiple windows).** From inside an attached cage, press `Ctrl-b c` to create a new tmux window, then run `claude` (or `pi`, etc.) in it. `Ctrl-b n` / `Ctrl-b p` switch between windows; `Ctrl-b 0..9` jumps directly. The windows share the same workspace bind mount, credentials, and tmux session — useful when you want a second agent slot without a separate terminal on the host.
+**Multiple windows in one cage (tmux multiplexer, one session, multiple windows).** From inside an attached cage with `session.multiplexer: tmux`, press `Ctrl-b c` to create a new tmux window, then run `claude` (or `pi`, etc.) in it. `Ctrl-b n` / `Ctrl-b p` switch between windows; `Ctrl-b 0..9` jumps directly. The windows share the same workspace bind mount, credentials, and tmux session — useful when you want a second agent slot without a separate terminal on the host.
 
-**Multiple cages (one per workspace).** `rc up <other-path>` from a second host terminal starts an independent cage on a different project path. Each cage has its own container, sessions, and state. This is the right shape when you want full container isolation between agents — e.g. one cage per git worktree (see [Quick start → The worktree workflow](../../README.md#the-worktree-workflow)).
+**Multiple cages (one per workspace).** `rc up <other-path>` from a second host terminal starts an independent cage on a different project path. Each cage has its own container and state. This is the right shape when you want full container isolation between agents — e.g. one cage per git worktree (see [Quick start → The worktree workflow](../../README.md#the-worktree-workflow)).
