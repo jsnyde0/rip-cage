@@ -5,10 +5,11 @@
 # Resolves CLAUDE_CONFIG_DIR and seeds the session dir before exec-ing the real
 # Claude binary at /usr/bin/claude.
 #
-# Resolution precedence (D4):
+# Resolution precedence (D4, updated rip-cage-1f59.4 — multiplexer-agnostic):
 #   1. Explicit CLAUDE_CONFIG_DIR env var — use as-is.
 #   2. Inside tmux ($TMUX set) — derive handle from session name.
-#   3. Else — use ~/.claude-sessions/default (headless / no-tmux fallback).
+#   3. Inside herdr ($HERDR_SESSION set) — derive handle from HERDR_SESSION env var.
+#   4. Else — use ~/.claude-sessions/default (headless / no-multiplexer fallback).
 #
 # Seeding (D3):
 #   Class 1 — symlink shared read-mostly inputs from ~/.claude.
@@ -40,7 +41,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Resolve the config dir handle
+# Resolve the config dir handle (multiplexer-agnostic, rip-cage-1f59.4)
 # ---------------------------------------------------------------------------
 if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
   # Case 1: caller set it explicitly — use it directly
@@ -49,8 +50,12 @@ elif [[ -n "${TMUX:-}" ]]; then
   # Case 2: inside a tmux session — derive handle from session name
   HANDLE=$(tmux display-message -p '#S' 2>/dev/null || echo "default")
   SESSION_DIR="${SESSIONS_BASE}/${HANDLE}"
+elif [[ -n "${HERDR_SESSION:-}" ]]; then
+  # Case 3: inside a herdr session — derive handle from HERDR_SESSION env var
+  # (herdr src/session.rs: SESSION_ENV_VAR="HERDR_SESSION"; set for named sessions)
+  SESSION_DIR="${SESSIONS_BASE}/${HERDR_SESSION}"
 else
-  # Case 3: no tmux, no explicit env — headless/no-context fallback
+  # Case 4: no multiplexer identity — headless/no-context fallback
   SESSION_DIR="${SESSIONS_BASE}/default"
 fi
 

@@ -700,6 +700,153 @@ fi
 rm -f "$OUT_NEG_X" "$OUT_NEG_Y"
 
 # ---------------------------------------------------------------------------
+# Step 7: Multiplexer-agnostic config-dir derivation proof (rip-cage-1f59.4)
+#
+# Unit-tests the wrapper's three-way derivation logic by seeding sessions
+# via the identity env vars directly (no full cage up required):
+#
+#   7a. none (no multiplexer identity) → CLAUDE_CONFIG_DIR = ~/.claude-sessions/default
+#   7b. tmux ($TMUX set)              → CLAUDE_CONFIG_DIR = ~/.claude-sessions/<tmux-session>
+#   7c. herdr ($HERDR_SESSION set)    → CLAUDE_CONFIG_DIR = ~/.claude-sessions/<HERDR_SESSION>
+#       GATING: must PASS, not skip (D7 RESOLVED by rip-cage-1f59.5: HERDR_SESSION confirmed)
+#
+# Method: invoke the wrapper via --version (cheap, triggers seeding) with the
+# identity env vars manipulated, then read the seeded session dirs to confirm.
+# Cleanup stale test dirs first.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Step 7: Multiplexer-agnostic config-dir derivation (none/tmux/herdr) ==="
+
+MUX_TEST_BASE=/home/agent/.claude-sessions
+
+# Cleanup stale derivation test dirs
+cexec rm -rf "${MUX_TEST_BASE}/mux-test-default"
+cexec rm -rf "${MUX_TEST_BASE}/mux-test-tmux-session"
+cexec rm -rf "${MUX_TEST_BASE}/mux-test-herdr-session"
+
+# --- 7a: none (no multiplexer identity) → default fallback ---
+# Unset TMUX and HERDR_SESSION; unset CLAUDE_CONFIG_DIR so wrapper derives.
+# The wrapper's else-branch writes to ~/.claude-sessions/default.
+# We give it a unique seeded dir name by using a pre-created empty dir trick:
+# Simply seed via --version and confirm ~/.claude-sessions/default is populated.
+#
+# Note: 'default' is the shared fallback — we must clean it up before and
+# check for the .claude.json presence after (idempotent seeding means if it
+# already exists we just confirm presence).
+cexec rm -rf "${MUX_TEST_BASE}/default"
+docker exec -u agent \
+  -e TMUX="" \
+  -e HERDR_SESSION="" \
+  "$CONTAINER" \
+  /usr/local/bin/claude --version >/dev/null 2>&1 || true
+
+if cexec test -f "${MUX_TEST_BASE}/default/.claude.json"; then
+  pass "Step 7a: none multiplexer → CLAUDE_CONFIG_DIR=~/.claude-sessions/default (seeded)"
+else
+  fail "Step 7a: none multiplexer — ~/.claude-sessions/default/.claude.json not found (wrapper fallback broken)"
+fi
+
+# --- 7b: tmux ($TMUX set) → per-session isolation ---
+# We can't create a real tmux socket from docker exec alone, but we can test
+# the wrapper by pointing $TMUX at a fake socket path and $RC_P1P_TMUX_HANDLE
+# override... or: use docker exec into the tmux session already running in the cage.
+#
+# Better approach: check if a tmux session is running; if so, exec into it.
+# The git-author step (Step 6) already validated the tmux+zshrc path.
+# Here we verify the wrapper's derivation directly by noting Step 6 proved
+# the tmux session sets CLAUDE_CONFIG_DIR to ~/.claude-sessions/<session-handle>.
+# Cross-check: conctest-gitauth session dir should have been set by zshrc.
+#
+# Since Step 6 may have cleaned up, re-create a test tmux session and invoke
+# the wrapper from inside it, then check the derived config dir.
+MUX_TMUX_SESSION="mux-test-tmux"
+cexec tmux kill-session -t "$MUX_TMUX_SESSION" 2>/dev/null || true
+cexec tmux new-session -d -s "$MUX_TMUX_SESSION" 2>/dev/null || true
+
+# Wait for the session to be ready (max 5s)
+_mux_tmux_ready=false
+_mux_tmux_waited=0
+while [[ $_mux_tmux_waited -lt 5 ]]; do
+  _tmux_pane=$(cexec tmux capture-pane -p -t "$MUX_TMUX_SESSION" 2>/dev/null || true)
+  if [[ -n "$_tmux_pane" ]]; then
+    _mux_tmux_ready=true
+    break
+  fi
+  sleep 1
+  _mux_tmux_waited=$((_mux_tmux_waited + 1))
+done
+
+if [[ "$_mux_tmux_ready" != "true" ]]; then
+  fail "Step 7b: tmux session '$MUX_TMUX_SESSION' not ready within 5s — cannot test tmux derivation"
+else
+  # Invoke wrapper from inside tmux session (TMUX env will be set by tmux)
+  # Send claude --version and check the resulting session dir
+  cexec rm -rf "${MUX_TEST_BASE}/${MUX_TMUX_SESSION}"
+  cexec tmux send-keys -t "$MUX_TMUX_SESSION" "/usr/local/bin/claude --version > /dev/null 2>&1; echo MUX_TMUX_DONE_$$" Enter
+
+  # Poll for the sentinel (max 10s)
+  _mux_tmux_done=false
+  _mux_tmux_c=0
+  while [[ $_mux_tmux_c -lt 10 ]]; do
+    sleep 1
+    _mux_tmux_c=$((_mux_tmux_c + 1))
+    _tmux_pane_after=$(cexec tmux capture-pane -p -t "$MUX_TMUX_SESSION" 2>/dev/null || true)
+    if echo "$_tmux_pane_after" | grep -q "MUX_TMUX_DONE_$$"; then
+      _mux_tmux_done=true
+      break
+    fi
+  done
+
+  if [[ "$_mux_tmux_done" != "true" ]]; then
+    fail "Step 7b: tmux session sentinel not detected within 10s"
+  elif cexec test -f "${MUX_TEST_BASE}/${MUX_TMUX_SESSION}/.claude.json"; then
+    pass "Step 7b: tmux multiplexer → CLAUDE_CONFIG_DIR=~/.claude-sessions/${MUX_TMUX_SESSION} (seeded from tmux session name)"
+  else
+    fail "Step 7b: tmux multiplexer — ~/.claude-sessions/${MUX_TMUX_SESSION}/.claude.json not found (wrapper tmux-branch broken)"
+  fi
+fi
+
+cexec tmux kill-session -t "$MUX_TMUX_SESSION" 2>/dev/null || true
+cexec rm -rf "${MUX_TEST_BASE}/${MUX_TMUX_SESSION}"
+
+# --- 7c: herdr ($HERDR_SESSION set) → per-session isolation (GATING) ---
+# D7 RESOLVED by rip-cage-1f59.5: HERDR_SESSION is wrapper-readable per-session env.
+# Invoke the wrapper with HERDR_SESSION set (and TMUX unset) and confirm the
+# session dir is derived from HERDR_SESSION, NOT the 'default' fallback.
+HERDR_TEST_SESSION="mux-test-herdr-session"
+cexec rm -rf "${MUX_TEST_BASE}/${HERDR_TEST_SESSION}"
+docker exec -u agent \
+  -e TMUX="" \
+  -e HERDR_SESSION="$HERDR_TEST_SESSION" \
+  "$CONTAINER" \
+  /usr/local/bin/claude --version >/dev/null 2>&1 || true
+
+if cexec test -f "${MUX_TEST_BASE}/${HERDR_TEST_SESSION}/.claude.json"; then
+  pass "Step 7c (GATING): herdr multiplexer → CLAUDE_CONFIG_DIR=~/.claude-sessions/${HERDR_TEST_SESSION} (derived from HERDR_SESSION)"
+else
+  fail "Step 7c (GATING): herdr multiplexer — ~/.claude-sessions/${HERDR_TEST_SESSION}/.claude.json not found (wrapper herdr-branch broken or HERDR_SESSION not honoured)"
+fi
+
+# Verify: the herdr-derived dir is NOT the same as the 'default' dir
+# (different inodes confirm per-session isolation, not fallback-to-default)
+if cexec test -f "${MUX_TEST_BASE}/${HERDR_TEST_SESSION}/.claude.json" && \
+   cexec test -f "${MUX_TEST_BASE}/default/.claude.json"; then
+  _herdr_inode=$(cexec stat -c '%i' "${MUX_TEST_BASE}/${HERDR_TEST_SESSION}/.claude.json" 2>/dev/null || echo "missing-herdr")
+  _default_inode=$(cexec stat -c '%i' "${MUX_TEST_BASE}/default/.claude.json" 2>/dev/null || echo "missing-default")
+  if [[ "$_herdr_inode" != "$_default_inode" && "$_herdr_inode" != "missing-herdr" && "$_default_inode" != "missing-default" ]]; then
+    pass "Step 7c: herdr session dir is isolated from default dir (different inodes: ${_herdr_inode} vs ${_default_inode})"
+  else
+    fail "Step 7c (GATING): herdr session dir has same inode as default — NOT isolated (fell back to default instead of per-HERDR_SESSION dir)"
+  fi
+else
+  fail "Step 7c (GATING): cannot run the herdr-vs-default inode isolation proof — one of the .claude.json files is absent (herdr or default dir not seeded); the gating isolation check must not silently skip"
+fi
+
+# Cleanup step 7 dirs
+cexec rm -rf "${MUX_TEST_BASE}/mux-test-default"
+cexec rm -rf "${MUX_TEST_BASE}/${HERDR_TEST_SESSION}"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""

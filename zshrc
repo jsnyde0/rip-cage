@@ -147,15 +147,18 @@ fi
 unset _rc_gi_dir
 
 # rip-cage-p1p: Per-session Claude config isolation + per-agent git author.
-# In a named tmux session, derive the session handle and:
+# Multiplexer-agnostic (rip-cage-1f59.4): derive the session handle from
+# whichever multiplexer is active (tmux or herdr) and:
 #   (a) Set CLAUDE_CONFIG_DIR so the claude wrapper picks up the right session dir.
 #       (The wrapper also derives this, but setting it here ensures any direct
-#        claude invocation in this shell inherits it without relying on tmux query.)
+#        claude invocation in this shell inherits it without relying on a runtime query.)
 #   (b) Set GIT_AUTHOR_NAME / GIT_COMMITTER_NAME = session handle so git log
 #       attributes commits to the agent session (D5). Email stays unchanged.
 #
-# Only fires when $TMUX is set (interactive tmux session); headless docker exec
-# callers must pass CLAUDE_CONFIG_DIR explicitly (named limitation per D5).
+# Three-way logic (mirrors claude-session-wrapper.sh resolution precedence):
+#   - tmux ($TMUX set): derive from tmux session name
+#   - herdr ($HERDR_SESSION set): derive from HERDR_SESSION env var
+#   - else (none/headless): no override — wrapper uses 'default' fallback
 if [[ -n "${TMUX:-}" ]]; then
   _rc_session_handle=$(tmux display-message -p '#S' 2>/dev/null || true)
   if [[ -n "$_rc_session_handle" ]]; then
@@ -164,4 +167,10 @@ if [[ -n "${TMUX:-}" ]]; then
     export GIT_COMMITTER_NAME="$_rc_session_handle"
   fi
   unset _rc_session_handle
+elif [[ -n "${HERDR_SESSION:-}" ]]; then
+  # herdr session: derive config dir from HERDR_SESSION env var
+  # (herdr src/session.rs: SESSION_ENV_VAR="HERDR_SESSION"; set for named sessions)
+  export CLAUDE_CONFIG_DIR="${HOME}/.claude-sessions/${HERDR_SESSION}"
+  export GIT_AUTHOR_NAME="${HERDR_SESSION}"
+  export GIT_COMMITTER_NAME="${HERDR_SESSION}"
 fi
