@@ -295,6 +295,31 @@ Net-new stdout/stderr text is not a regression in the sense this contract cares 
 
 **Invalidation check (mechanical, runnable):** With both config files absent, `tests/test-e2e-lifecycle.sh` (full count today) must produce the same PASS/FAIL count and the same **config-derived** emitted mounts/labels/sentinels as it did before the loader landed. A delta in config-derived mounts, labels, or sentinels means the cage-posture-unchanged half of D5 is broken. Deltas in host-state-derived emissions (the documented-to-vary set `{rc.symlink-follow-fingerprint}`) are explicitly **in-scope** per the D5 clarification above. (Stdout/stderr deltas from the substrate's informational output are also explicitly in-scope per the contract.)
 
+### D6: `session.multiplexer` field — in-cage multiplexer selection (added 2026-06-13, rip-cage-1f59)
+
+**Firmness: FIRM** (inherited from D1-D3 schema framework)
+
+One enum-scalar field (selection_list type) selecting which terminal multiplexer the cage runs inside, or none:
+
+| Field | Type | Default | Allowed values |
+|---|---|---|---|
+| `session.multiplexer` | selection_list (enum scalar) | `"none"` | `none`, `tmux`, `herdr` |
+
+**Merge semantics:** per D2 selection-list rule (project replaces global if present; absent ⇒ inherit global or use default). Single-value scalar — the "selection_list" type here indicates enum-scalar semantics: unknown values abort loud per D3 (same path as D4a's `mounts.symlinks.*`).
+
+**Schema version:** stays at 1. Unknown enum values already abort loud via the selection-list abort path (D3). A future multiplexer needing sub-keys (not a bare enum value) would grow this into a field group like `mounts.symlinks.*` (D4a) and may require a version bump.
+
+**Rationale:** makes the in-cage multiplexer a swappable composed component rather than a hardcoded coupling — the config-layer expression of ADR-006 D7's re-decision (the multiplexer owns session orchestration; rip-cage owns the box) and the process-layer sibling of the pluggable egress mediator (ADR-026) and tool manifest (ADR-005 D11). Default `none` = normal terminal semantics, imposing no surprising persistence on newcomers (ADR-009 D1); persistence + the supervisor view are opt-in by choosing `tmux` or `herdr`.
+
+**Alternatives considered:**
+
+| Alternative | Rejected because |
+|---|---|
+| Keep tmux hardcoded (no field) | `reasoned:` the coupling rip-cage-1f59 removes; welds one multiplexer into the box and forces tmux as a hard Homebrew dependency |
+| Default `tmux` (batteries-included persistence) | `reasoned:` imposes "survives window close" semantics on users who expect plain Claude Code (documented confusion); persistence should be opt-in, not the surprising default |
+
+**What would invalidate this:** a multiplexer whose configuration cannot be expressed as a single enum value (needs per-multiplexer sub-keys) — then this grows into a field group (D4a shape); it is not abandoned.
+
 ## Consequences
 
 **Positive:**

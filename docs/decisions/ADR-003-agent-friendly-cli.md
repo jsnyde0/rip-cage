@@ -17,7 +17,7 @@ Justin Poehnelt's article "You Need to Rewrite Your CLI for AI Agents" (Mar 2026
 
 **Firmness: FIRM**
 
-Add `--output json` to all commands that return data or confirm actions (`ls`, `up`, `down`, `destroy`, `test`, `build`). Human-readable output remains the default. JSON goes to stdout; human messages go to stderr in JSON mode.
+Add `--output json` to all commands that return data or confirm actions (`ls`, `up`, `down`, `destroy`, `test`, `build`, `exec`). Human-readable output remains the default. JSON goes to stdout; human messages go to stderr in JSON mode. The command *set* evolves with the CLI surface — the contract (new data/confirm commands honor `--output json`; `rc schema` describes them — D5) is what's FIRM, not a frozen list. (Evolution 2026-06-13, rip-cage-1f59: `rc exec` + multiplexer-aware `rc attach` added; `rc agent`/`rc sessions` removed — see ADR-006 D7.)
 
 **Rationale:** This is the single highest-value change. An orchestrator needs to enumerate containers (`rc ls`), parse results of operations (`rc up`), and check health (`rc test`) without regex parsing. The article identifies this as step 1 for retrofitting any CLI.
 
@@ -120,7 +120,7 @@ Add rules for AI agents invoking `rc` programmatically to the project's `CLAUDE.
 
 Add a `rc schema` subcommand that outputs a machine-readable JSON description of all commands, their arguments, accepted flags, and flag value constraints.
 
-**Rationale:** The [jpoehnelt Agent DX CLI Scale](https://raw.githubusercontent.com/jpoehnelt/skills/refs/heads/main/agent-dx-cli-scale/SKILL.md) scores schema introspection as axis 3 of 7. Without it, `rc` scores ~14/21 (agent-ready). With it, `rc` reaches ~16/21 (agent-first). The schema is static — `rc` has a fixed command set and no runtime reflection is needed. It can be a hardcoded JSON block with a version field, making it cheap to implement and easy to keep in sync.
+**Rationale:** The [jpoehnelt Agent DX CLI Scale](https://raw.githubusercontent.com/jpoehnelt/skills/refs/heads/main/agent-dx-cli-scale/SKILL.md) scores schema introspection as axis 3 of 7. Without it, `rc` scores ~14/21 (agent-ready). With it, `rc` reaches ~16/21 (agent-first). The schema is static per release — `rc` has a fixed command set within a release and no runtime reflection is needed. It can be a hardcoded JSON block with a version field, making it cheap to implement and easy to keep in sync. The set does evolve *across* releases (e.g. `rc agent`/`rc sessions` added in rip-cage-tlm, then removed and `rc exec` + multiplexer-aware `rc attach` added in rip-cage-1f59); the hardcoded block is the source of truth and is updated in lockstep with the CLI surface.
 
 **Output format:**
 
