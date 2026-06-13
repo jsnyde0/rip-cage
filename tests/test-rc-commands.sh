@@ -831,42 +831,58 @@ else
 fi
 rm -rf "$TEST_DIR_T24"
 
-# --- Test 25: rc sessions command exists and handles unknown container gracefully ---
+# --- Test 25: rc sessions is retired — absent from rc schema (rip-cage-1f59.3) ---
+# NON-VACUOUS: would fail if cmd_sessions were still present in rc schema.
+# A still-present cmd_sessions would appear in 'rc schema | jq .commands' keys.
+# A docker error on an unknown container also exits non-zero, so exit-code alone
+# is vacuous — absence-from-schema is the discriminating assertion.
 echo ""
-echo "=== Test 25: rc sessions command is recognized ==="
-# Sessions command should exist and error on unknown container
-sessions_unknown_out=$("$RC" sessions no-such-container-xyz 2>&1 || true)
-if echo "$sessions_unknown_out" | grep -qi "not found\|not running\|no such\|error"; then
-  pass "rc sessions with unknown container produces error"
+echo "=== Test 25: rc sessions absent from rc schema (retired rip-cage-1f59.3) ==="
+schema_t25=$("$RC" schema 2>/dev/null || true)
+if echo "$schema_t25" | jq -e '.commands | has("sessions")' >/dev/null 2>&1; then
+  fail "rc schema still contains sessions key (should be retired per rip-cage-1f59.3)"
 else
-  # Could also be that the subcommand itself doesn't exist yet — check for usage
-  if echo "$sessions_unknown_out" | grep -qi "usage\|sessions\|unknown command"; then
-    pass "rc sessions command recognized (usage or unknown-container error)"
-  else
-    fail "rc sessions should error on unknown container (got: $sessions_unknown_out)"
-  fi
+  pass "rc schema does not contain sessions key (correctly retired)"
+fi
+# Paired exit-code check: retirement also means non-zero on invocation
+sessions_exit_t25=0
+"$RC" sessions no-such-container-xyz >/dev/null 2>&1 || sessions_exit_t25=$?
+if [[ "$sessions_exit_t25" -ne 0 ]]; then
+  pass "rc sessions invocation exits non-zero (unknown command)"
+else
+  fail "rc sessions should exit non-zero (command was retired), got exit 0"
 fi
 
-# --- Test 26: rc sessions --json flag recognized ---
+# --- Test 26: rc agent is retired — absent from rc schema (rip-cage-1f59.3) ---
+# NON-VACUOUS: would fail if cmd_agent were still present in rc schema.
+# This is new coverage — rc agent retirement was not previously tested at all.
 echo ""
-echo "=== Test 26: rc sessions --json flag is recognized ==="
-sessions_json_out=$("$RC" sessions no-such-container-xyz --json 2>&1 || true)
-# Should either produce JSON-shaped output or error non-zero (container not found)
-# Either way it should NOT say "unknown flag" or "invalid option"
-if echo "$sessions_json_out" | grep -qi "unknown flag\|invalid option\|unrecognized option"; then
-  fail "rc sessions --json flag not recognized (got: $sessions_json_out)"
+echo "=== Test 26: rc agent absent from rc schema (retired rip-cage-1f59.3) ==="
+schema_t26=$("$RC" schema 2>/dev/null || true)
+if echo "$schema_t26" | jq -e '.commands | has("agent")' >/dev/null 2>&1; then
+  fail "rc schema still contains agent key (should be retired per rip-cage-1f59.3)"
 else
-  pass "rc sessions --json flag recognized (no 'unknown flag' error)"
+  pass "rc schema does not contain agent key (correctly retired)"
+fi
+# Paired exit-code check
+agent_exit_t26=0
+"$RC" agent no-such-container-xyz >/dev/null 2>&1 || agent_exit_t26=$?
+if [[ "$agent_exit_t26" -ne 0 ]]; then
+  pass "rc agent invocation exits non-zero (unknown command)"
+else
+  fail "rc agent should exit non-zero (command was retired), got exit 0"
 fi
 
-# --- Test 27: rc sessions --kill flag recognized ---
+# --- Test 27: rc agent is retired — absent from rc --help (rip-cage-1f59.3) ---
+# NON-VACUOUS: would fail if cmd_agent were still listed in the usage heredoc.
+# Symmetric with test 36 (which covers sessions absence from --help).
 echo ""
-echo "=== Test 27: rc sessions --kill flag is recognized ==="
-sessions_kill_out=$("$RC" sessions no-such-container-xyz --kill "rip-cage" 2>&1 || true)
-if echo "$sessions_kill_out" | grep -qi "unknown flag\|invalid option\|unrecognized option"; then
-  fail "rc sessions --kill flag not recognized (got: $sessions_kill_out)"
+echo "=== Test 27: rc agent absent from rc --help (retired rip-cage-1f59.3) ==="
+usage_t27=$("$RC" 2>&1 || true)
+if echo "$usage_t27" | grep -q "^  agent"; then
+  fail "rc usage still mentions agent subcommand (should be removed per rip-cage-1f59.3)"
 else
-  pass "rc sessions --kill flag recognized (no 'unknown flag' error)"
+  pass "rc usage does not mention agent subcommand (correctly retired)"
 fi
 
 # --- Test 28: tmux.conf contains remain-on-exit setting ---
@@ -978,14 +994,14 @@ else
   fail "_tmux_picker attach N=0: stderr should mention 'rc up' (got: $t35_out)"
 fi
 
-# --- Test 36: rc sessions is listed in usage ---
+# --- Test 36: rc sessions is NOT listed in usage (rip-cage-1f59.3: sessions retired) ---
 echo ""
 echo "=== Test 36: rc sessions in usage text ==="
 usage_out=$("$RC" 2>&1 || true)
-if echo "$usage_out" | grep -q "sessions"; then
-  pass "rc usage mentions sessions subcommand"
+if echo "$usage_out" | grep -q "^  sessions"; then
+  fail "rc usage still mentions sessions subcommand (should be removed per rip-cage-1f59.3)"
 else
-  fail "rc usage does not mention sessions (got: $usage_out)"
+  pass "rc usage does not mention sessions subcommand (correctly retired)"
 fi
 
 # --- Test 37: ADR-006 contains Tier 1a (parallel tmux sessions) ---
@@ -1060,22 +1076,46 @@ else
   fail "CHANGELOG.md missing picker/rc sessions in Unreleased section"
 fi
 
-# --- Test 45: rc sessions --json with no container returns JSON error or container-not-found (valid JSON shape) ---
+# --- Test 45: rc agent and rc sessions absent from both completion files (rip-cage-1f59.3) ---
+# NON-VACUOUS: would fail if completions/rc.bash or completions/_rc still listed
+# agent or sessions as subcommands. A still-present command would appear as a
+# literal token in the completion arrays — absence is the discriminating assertion.
 echo ""
-echo "=== Test 45: rc sessions --json unknown container returns parseable error ==="
-# Run with --output json to get JSON mode
-sessions_json_valid=$("$RC" --output json sessions no-such-container-xyz 2>/dev/null || true)
-# When container is not found, should return JSON error or empty array — not a parse error
-if echo "$sessions_json_valid" | jq . >/dev/null 2>&1; then
-  pass "rc sessions --output json returns valid JSON on unknown container"
+echo "=== Test 45: rc agent and rc sessions absent from completion files (rip-cage-1f59.3) ==="
+BASH_COMP="${REPO_ROOT}/completions/rc.bash"
+ZSH_COMP="${REPO_ROOT}/completions/_rc"
+t45_fail=0
+if grep -q "\bsessions\b" "$BASH_COMP" 2>/dev/null; then
+  fail "completions/rc.bash still contains 'sessions' token (should be retired)"
+  t45_fail=1
 else
-  # If no --output json, check that --json flag returns something reasonable
-  sessions_json_direct=$("$RC" sessions no-such-container-xyz --json 2>/dev/null || true)
-  if echo "$sessions_json_direct" | jq . >/dev/null 2>&1; then
-    pass "rc sessions --json returns valid JSON on unknown container"
-  else
-    fail "rc sessions --json did not return valid JSON (got: $sessions_json_valid / $sessions_json_direct)"
-  fi
+  pass "completions/rc.bash does not contain 'sessions' token (correctly retired)"
+fi
+if grep -q "\bagent\b" "$BASH_COMP" 2>/dev/null; then
+  fail "completions/rc.bash still contains 'agent' token (should be retired)"
+  t45_fail=1
+else
+  pass "completions/rc.bash does not contain 'agent' token (correctly retired)"
+fi
+if grep -q "\bsessions\b" "$ZSH_COMP" 2>/dev/null; then
+  fail "completions/_rc still contains 'sessions' token (should be retired)"
+  t45_fail=1
+else
+  pass "completions/_rc does not contain 'sessions' token (correctly retired)"
+fi
+if grep -q "\bagent\b" "$ZSH_COMP" 2>/dev/null; then
+  fail "completions/_rc still contains 'agent' token (should be retired)"
+  t45_fail=1
+else
+  pass "completions/_rc does not contain 'agent' token (correctly retired)"
+fi
+# Paired exit-code: --output json on a retired command must not return exit 0
+sessions_json_exit_t45=0
+"$RC" --output json sessions no-such-container-xyz >/dev/null 2>&1 || sessions_json_exit_t45=$?
+if [[ "$sessions_json_exit_t45" -ne 0 ]]; then
+  pass "rc sessions --output json: unknown-command, non-zero exit"
+else
+  fail "rc sessions --output json: expected non-zero exit (command was retired), got exit 0"
 fi
 
 # --- Test 46: picker EOF on stdin exits 1 with expected stderr message (AC-5b) ---

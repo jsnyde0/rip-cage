@@ -202,11 +202,6 @@ Commands:
     --github-identity=KEY  Pin github.com to KEY basename (e.g. id_ed25519_work) (ADR-020 D3)
     --new               Skip picker; always create a new auto-named session (rip-cage-N)
     --session NAME      Attach session NAME if it exists; create it otherwise
-  agent <cage> --name=<handle> -- <command...>  Start a named tmux session running command verbatim
-  sessions <cage> [options]                    List or kill tmux sessions in a cage
-    --json              JSON array output (name, attached, idle_seconds)
-    --kill NAME         Kill the named session (refuses if it is the last session)
-    --force             Override last-session refusal with --kill
   ls                                           List rip-cage containers
   attach [name]                                Attach to container (multiplexer-aware; plain shell under none)
   exec <cage> -- <cmd...>                      Run a one-off command in the container (non-interactive safe)
@@ -4849,158 +4844,6 @@ EOF
   fi
 }
 
-cmd_sessions() {
-  local cname="${1:-}"
-  shift || true
-  local do_json="" do_kill="" do_force="" kill_name=""
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --json)  do_json="true"; shift ;;
-      --kill)  [[ $# -ge 2 ]] || { echo "Error: --kill requires a session name" >&2; exit 1; }
-               do_kill="true"; kill_name="$2"; shift 2 ;;
-      --force) do_force="true"; shift ;;
-      *) echo "Error: unknown option for sessions: $1" >&2; exit 1 ;;
-    esac
-  done
-
-  # Resolve container name
-  if [[ -z "$cname" ]]; then
-    cname=$(resolve_name "") || exit 1
-  fi
-
-  # Verify container is running
-  local state
-  state=$(docker inspect --format '{{.State.Status}}' "$cname" 2>/dev/null || true)
-  if [[ "$state" != "running" ]]; then
-    echo "Error: container $cname is not running" >&2
-    exit 1
-  fi
-
-  # Get session list
-  local session_data
-  session_data=$(docker exec "$cname" tmux list-sessions -F '#{session_name} #{session_attached} #{session_activity}' 2>/dev/null || true)
-
-  if [[ -n "$do_kill" ]]; then
-    # Verify session exists
-    if ! echo "$session_data" | awk '{print $1}' | grep -qxF "$kill_name"; then
-      echo "Error: session '$kill_name' does not exist in container $cname" >&2
-      exit 1
-    fi
-    # Count sessions
-    local session_count
-    session_count=$(echo "$session_data" | grep -c . || true)
-    if [[ "$session_count" -le 1 ]] && [[ -z "$do_force" ]]; then
-      echo "Error: '$kill_name' is the only remaining session. Killing it would leave the cage with no sessions." >&2
-      echo "Use --force to override (container stays running on its sleep infinity entrypoint)." >&2
-      exit 1
-    fi
-    docker exec "$cname" tmux kill-session -t "$kill_name" 2>/dev/null
-    return 0
-  fi
-
-  if [[ -n "$do_json" ]] || [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    # JSON array output: name, attached (int), idle_seconds (int)
-    local now
-    now=$(date +%s)
-    local json_out="["
-    local first="true"
-    local sname sattached sactivity
-    while read -r sname sattached sactivity; do
-      [[ -z "$sname" ]] && continue
-      local idle_secs=$(( now - sactivity ))
-      [[ "$idle_secs" -lt 0 ]] && idle_secs=0
-      if [[ "$first" == "true" ]]; then
-        json_out="${json_out}{\"name\":\"${sname}\",\"attached\":${sattached},\"idle_seconds\":${idle_secs}}"
-        first="false"
-      else
-        json_out="${json_out},{\"name\":\"${sname}\",\"attached\":${sattached},\"idle_seconds\":${idle_secs}}"
-      fi
-    done <<EOF
-$session_data
-EOF
-    json_out="${json_out}]"
-    echo "$json_out"
-  else
-    # Human output: name attached idle
-    local now
-    now=$(date +%s)
-    local sname sattached sactivity
-    while read -r sname sattached sactivity; do
-      [[ -z "$sname" ]] && continue
-      local idle_secs=$(( now - sactivity ))
-      [[ "$idle_secs" -lt 0 ]] && idle_secs=0
-      local idle_fmt
-      if [[ "$idle_secs" -lt 60 ]]; then
-        idle_fmt="${idle_secs}s"
-      elif [[ "$idle_secs" -lt 3600 ]]; then
-        idle_fmt="$(( idle_secs / 60 ))m"
-      else
-        idle_fmt="$(( idle_secs / 3600 ))h"
-      fi
-      echo "$sname $sattached $idle_fmt"
-    done <<EOF
-$session_data
-EOF
-  fi
-}
-
-cmd_agent() {
-  local cname="${1:-}"
-  shift || true
-  local handle=""
-  local cmd_args=()
-  local parsing_cmd=false
-
-  while [[ $# -gt 0 ]]; do
-    if [[ "$parsing_cmd" == "true" ]]; then
-      cmd_args+=("$1")
-      shift
-      continue
-    fi
-    case "$1" in
-      --name=*) handle="${1#--name=}"; shift ;;
-      --name)   [[ $# -ge 2 ]] || { echo "Error: --name requires a value" >&2; exit 1; }
-                handle="$2"; shift 2 ;;
-      --)       parsing_cmd=true; shift ;;
-      *) echo "Error: unknown option for agent: $1" >&2; exit 1 ;;
-    esac
-  done
-
-  if [[ -z "$handle" ]]; then
-    echo "Error: --name=<handle> is required" >&2
-    exit 1
-  fi
-  if [[ ${#cmd_args[@]} -eq 0 ]]; then
-    echo "Error: a command is required after --" >&2
-    exit 1
-  fi
-
-  # Resolve container name
-  if [[ -z "$cname" ]]; then
-    cname=$(resolve_name "") || exit 1
-  fi
-
-  # Verify container is running
-  local state
-  state=$(docker inspect --format '{{.State.Status}}' "$cname" 2>/dev/null || true)
-  if [[ "$state" != "running" ]]; then
-    echo "Error: container $cname is not running" >&2
-    exit 1
-  fi
-
-  # Spawn a new detached tmux session running the given command verbatim.
-  # Do NOT redirect stderr — tmux's "duplicate session: <name>" error must be surfaced.
-  if ! docker exec "$cname" tmux new-session -d -s "$handle" -c /workspace "${cmd_args[@]}"; then
-    echo "Error: failed to create agent session '$handle' in container $cname" >&2
-    exit 1
-  fi
-
-  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    echo "{\"session\":\"${handle}\",\"container\":\"${cname}\"}"
-  else
-    echo "Agent session '$handle' started in container $cname"
-  fi
-}
 
 resolve_name() {
   local name="${1:-}"
@@ -9112,22 +8955,6 @@ cmd_schema() {
         "--dry-run": {"type": "bool", "default": false, "note": "print diff without mutating cache/snapshot"}
       }
     },
-    "agent": {
-      "args": [{"name": "cage", "type": "string", "required": false, "note": "auto-selected if exactly one container exists"}],
-      "flags": {
-        "--name": {"type": "string", "required": true, "note": "tmux session handle (must be unique within the cage)"},
-        "--output": {"values": ["json"], "default": null}
-      },
-      "variadic_trailing": {"separator": "--", "note": "command to run verbatim as the session program (word boundaries preserved)"}
-    },
-    "sessions": {
-      "args": [{"name": "cage", "type": "string", "required": false, "note": "auto-selected if exactly one container exists"}],
-      "flags": {
-        "--json": {"type": "bool", "default": false, "note": "JSON array: [{name, attached, idle_seconds}]"},
-        "--kill": {"type": "string", "optional": true, "note": "kill the named session (refuses if it is the last session)"},
-        "--force": {"type": "bool", "default": false, "note": "override last-session refusal with --kill"}
-      }
-    },
     "ls": {
       "args": [],
       "flags": {"--output": {"values": ["json"], "default": null}}
@@ -9233,7 +9060,7 @@ fi
 # Reject --output json on commands that don't support it
 if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   case "${1:-}" in
-    build|ls|up|sessions|agent|down|destroy|test|doctor|auth|exec) ;;  # supported
+    build|ls|up|down|destroy|test|doctor|auth|exec) ;;  # supported
     init|attach|schema|completions|setup|config|__bd-preflight-test|"")
       echo "Error: --output json is not supported for '${1:-}' (use 'rc config show --json' for config JSON)" >&2
       exit 1
@@ -9252,7 +9079,6 @@ fi
 #   - For `up`: read session.multiplexer from the workspace config (defaulting to "none").
 #   - For `attach`/`exec`: multiplexer is read from the container label at command runtime;
 #     check_tmux is skipped here (the label-read happens inside cmd_attach/cmd_exec).
-#   - For `sessions`/`agent`: still gated as before (they require tmux).
 # Skip all checks when --output json: agent callers invoke programmatically.
 if [[ "$OUTPUT_FORMAT" != "json" ]]; then
   case "${1:-}" in
@@ -9277,7 +9103,6 @@ if [[ "$OUTPUT_FORMAT" != "json" ]]; then
       [[ "$_gate_mux" == "tmux" ]] && check_tmux
       unset _gate_mux
       ;;
-    sessions|agent) check_tmux ;;
     # attach and exec: multiplexer read from container label at runtime — no preflight here.
   esac
 fi
@@ -9286,7 +9111,7 @@ fi
 # `rc doctor --host` is the one exception: its job is to *diagnose* a wedged
 # daemon, so the preflight (which would itself fail loud) must be skipped.
 case "${1:-}" in
-  build|up|ls|attach|exec|sessions|agent|down|destroy|reload|test) check_docker ;;
+  build|up|ls|attach|exec|down|destroy|reload|test) check_docker ;;
   doctor)
     if [[ "${2:-}" != "--host" ]]; then
       check_docker
@@ -9299,8 +9124,6 @@ case "${1:-}" in
   build)    shift; cmd_build "$@" ;;
   init)     shift; cmd_init "$@" ;;
   up)       shift; cmd_up "$@" ;;
-  agent)    shift; cmd_agent "$@" ;;
-  sessions) shift; cmd_sessions "$@" ;;
   ls)       shift; cmd_ls "$@" ;;
   attach)   shift; cmd_attach "$@" ;;
   exec)     shift; cmd_exec "$@" ;;
