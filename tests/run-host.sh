@@ -39,7 +39,7 @@ NEEDS_CONTAINER=(
   "test-pi-auth-mount.sh"    # calls rc up to create a live container; inspects container env + mounts
   "test-pi-cage-context.sh"  # calls rc up to create a live container; inspects CLAUDE.md inside cage
   "test-claude-concurrency.sh" # requires a live rip-cage container with Claude auth (ANTHROPIC_API_KEY or OAuth)
-  "test-multi-agent-levers.sh" # requires a live rip-cage container; exercises rc agent lever + two-pi concurrency
+  "test-multiplexer-lifecycle.sh" # requires a live rip-cage container; exercises multiplexer lifecycle (none/tmux/herdr) + retirement + config-isolation (rip-cage-1f59.8)
   "test-agent-mail-concurrent.sh" # requires RC_E2E=1 + pi auth + agent_mail fixture image; proves two concurrent pi agents coordinate via am CLI
   "test-ssh-forwarding.sh"    # ADR-017/018 live-cage ssh-agent socket mount/label/sentinels; self-skips without docker (rip-cage-b6ia)
   "test-ssh-resolver.sh"      # Tests 6-10 spin up live cages; Tests 1-5 are host unit tests of _parse_identity_rules/_resolve_github_identity, already covered by test-ssh-config.sh checks 10-13 — whole file denylisted, no unique host coverage lost under --host-only (rip-cage-b6ia)
@@ -176,7 +176,7 @@ run_test "${SCRIPT_DIR}/test-manifest-source.sh"      # rip-cage-buuo.2: from-so
 run_test "${SCRIPT_DIR}/test-manifest-security.sh"   # rip-cage-buuo.3: binary-root-owned + build-isolation assertions (host-only B1a-d/BI1a-h; BE1-BE2 self-skip via RC_E2E gate)
 run_test "${SCRIPT_DIR}/test-skill-manifest-author.sh" # rip-cage-buuo.4: repo-shipped skill — skill well-formed + cm worked example passes _manifest_validate (SA1-SA7 host-only)
 run_test "${SCRIPT_DIR}/test-claude-concurrency.sh"    # rip-cage-p1p: per-session Claude config isolation (NEEDS_CONTAINER; self-skips if no running cage)
-run_test "${SCRIPT_DIR}/test-multi-agent-levers.sh"    # rip-cage-tlm: Tier 1a rc agent lever + two-pi concurrency (NEEDS_CONTAINER; self-skips if no running cage)
+run_test "${SCRIPT_DIR}/test-multiplexer-lifecycle.sh"  # rip-cage-1f59.8: multiplexer lifecycle (none/tmux/herdr) + retirement + config-isolation (NEEDS_CONTAINER; self-skips without RC_E2E=1)
 run_test "${SCRIPT_DIR}/test-selftest-classifier.sh"   # rip-cage-fft: pure classifier unit tests (no live firewall needed)
 run_test "${SCRIPT_DIR}/test-selftest-mode-gating.sh"  # rip-cage-fft: mode-gating tests via curl PATH-shim (no production hook)
 run_pytest "${SCRIPT_DIR}/test_selftest_endpoint.py" --with pytest --with pyyaml python -m pytest "${SCRIPT_DIR}/test_selftest_endpoint.py" -v  # rip-cage-fft: proxy reserved endpoint unit tests
