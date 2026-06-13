@@ -4283,8 +4283,13 @@ cmd_up() {
         fi
         ;;
       herdr)
-        echo "Error: herdr multiplexer client not yet implemented (pending rip-cage-1f59.5)." >&2
-        echo "To exec into the container: rc exec $name -- zsh" >&2
+        [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
+          echo "warning: --new/--session ignored under multiplexer=herdr" >&2
+        if [[ -t 0 && -t 1 ]]; then
+          docker exec -it "$name" herdr
+        else
+          echo "Container $name is running (multiplexer=herdr). Attach with: rc attach $name" >&2
+        fi
         ;;
       *)
         echo "Error: unrecognized multiplexer '${_up_run_mux}' on container $name." >&2
@@ -4436,8 +4441,13 @@ cmd_up() {
         fi
         ;;
       herdr)
-        echo "Error: herdr multiplexer client not yet implemented (pending rip-cage-1f59.5)." >&2
-        echo "To exec into the container: rc exec $name -- zsh" >&2
+        [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
+          echo "warning: --new/--session ignored under multiplexer=herdr" >&2
+        if [[ -t 0 && -t 1 ]]; then
+          docker exec -it "$name" herdr
+        else
+          echo "Container $name is running (multiplexer=herdr). Attach with: rc attach $name" >&2
+        fi
         ;;
       *)
         echo "Error: unrecognized multiplexer '${_up_resume_mux}' on container $name." >&2
@@ -4729,8 +4739,13 @@ cmd_up() {
       fi
       ;;
     herdr)
-      echo "Error: herdr multiplexer client not yet implemented (pending rip-cage-1f59.5)." >&2
-      echo "To exec into the container: rc exec $name -- zsh" >&2
+      [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
+        echo "warning: --new/--session ignored under multiplexer=herdr" >&2
+      if [[ -t 0 && -t 1 ]]; then
+        docker exec -it "$name" herdr
+      else
+        echo "Container $name is running (multiplexer=herdr). Attach with: rc attach $name" >&2
+      fi
       ;;
     *)
       echo "Error: unrecognized multiplexer '${_rc_multiplexer:-none}' for container $name." >&2
@@ -4928,10 +4943,13 @@ cmd_attach() {
       fi
       ;;
     herdr)
-      # rip-cage-1f59.5 (herdr-manifest child) will wire the herdr client here.
-      echo "Error: herdr multiplexer client not yet implemented (pending rip-cage-1f59.5)." >&2
-      echo "To attach now, run: rc exec $name -- zsh" >&2
-      exit 1
+      # Dispatch into the running herdr server via the herdr CLI (ADR-019 D9).
+      # herdr (bare) opens the TUI client; server started at cage init by init-rip-cage.sh.
+      if [[ -t 0 && -t 1 ]]; then
+        docker exec -it "$name" herdr
+      else
+        echo "Container $name is running (multiplexer=herdr). Attach with: rc attach $name" >&2
+      fi
       ;;
     *)
       echo "Error: unrecognized multiplexer value '${_attach_mux}' on container $name. Inspect with: docker inspect $name" >&2
