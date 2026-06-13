@@ -473,13 +473,39 @@ if [[ -f /etc/rip-cage/cage-env ]]; then
   fi
 fi
 
-# 11. Start tmux (CLI mode only — skip if inside VS Code devcontainer)
-if [ -z "${VSCODE_INJECTION:-}" ] && [ -z "${REMOTE_CONTAINERS:-}" ]; then
-  if command -v tmux > /dev/null 2>&1; then
-    tmux new-session -d -s rip-cage -c /workspace 2>/dev/null || true
-    echo "[rip-cage] tmux session 'rip-cage' created (CLI mode)"
-  fi
-fi
+# 11. Multiplexer-server lifecycle (rip-cage-1f59.1 / ADR-021 D6)
+# RC_MULTIPLEXER is threaded in by cmd_up via -e RC_MULTIPLEXER=<value>.
+# Valid values: none | tmux | herdr  (default: none)
+# An unrecognised value from rc is caught by _config_validate_or_abort before
+# launch (ADR-001 fail-loud); any residual invalid value here fails loud too.
+_rc_mux="${RC_MULTIPLEXER:-none}"
+case "$_rc_mux" in
+  none)
+    # No multiplexer server — plain terminal semantics.
+    echo "[rip-cage] session.multiplexer=none: no multiplexer server started"
+    ;;
+  tmux)
+    # Start tmux server + rip-cage session (CLI mode only — skip inside VS Code devcontainer).
+    if [ -z "${VSCODE_INJECTION:-}" ] && [ -z "${REMOTE_CONTAINERS:-}" ]; then
+      if command -v tmux > /dev/null 2>&1; then
+        tmux new-session -d -s rip-cage -c /workspace 2>/dev/null || true
+        echo "[rip-cage] session.multiplexer=tmux: session 'rip-cage' created"
+      else
+        echo "[rip-cage] WARNING: session.multiplexer=tmux but tmux not found on PATH — no session started" >&2
+      fi
+    fi
+    ;;
+  herdr)
+    # Stub: herdr server start is wired in rip-cage-1f59.5 (herdr manifest child).
+    echo "[rip-cage] session.multiplexer=herdr: herdr server start not yet implemented (stub)" >&2
+    ;;
+  *)
+    # Unrecognised value — fail loud per ADR-001.
+    echo "[rip-cage] ERROR: unrecognised RC_MULTIPLEXER value '${_rc_mux}' — aborting init" >&2
+    exit 1
+    ;;
+esac
+unset _rc_mux
 
 # 12. IN-CAGE DAEMON lifecycle block (rip-cage-4c5.5)
 #

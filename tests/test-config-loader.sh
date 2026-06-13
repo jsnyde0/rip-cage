@@ -821,6 +821,58 @@ test_t39_validate_yq_missing_with_global_config_emits_dependency_message() {
 }
 
 # ---------------------------------------------------------------------------
+# session.multiplexer config field (ADR-021 D6, rip-cage-1f59.1)
+# T40: session.multiplexer absent ⇒ default "none"
+# T41: session.multiplexer: tmux ⇒ parses as tmux, prov=project
+# T42: session.multiplexer: invalid value ⇒ aborts loud per ADR-001
+# ---------------------------------------------------------------------------
+
+test_t40_session_multiplexer_default_none() {
+  # When session.multiplexer is absent, it defaults to "none"
+  setup_sandbox "" ""
+  local out mux
+  out=$(run_rc_config "show --json")
+  mux=$(jq -r '.config.session.multiplexer // "MISSING"' <<<"$out")
+  if [[ "$mux" == "none" ]]; then
+    pass "T40 session.multiplexer absent ⇒ default 'none'"
+  else
+    fail "T40 expected 'none' default, got: $mux"
+  fi
+  teardown_sandbox
+}
+
+test_t41_session_multiplexer_tmux_parses() {
+  # session.multiplexer: tmux parses correctly with project provenance
+  setup_sandbox "" "config-project-multiplexer-tmux.yaml"
+  local out mux prov
+  out=$(run_rc_config "show --json")
+  mux=$(jq -r '.config.session.multiplexer' <<<"$out")
+  prov=$(jq -r '.provenance["session.multiplexer"]' <<<"$out")
+  if [[ "$mux" == "tmux" && "$prov" == "project" ]]; then
+    pass "T41 session.multiplexer=tmux parses from project, prov=project"
+  else
+    fail "T41 expected mux=tmux prov=project, got mux=$mux prov=$prov"
+  fi
+  teardown_sandbox
+}
+
+test_t42_session_multiplexer_invalid_aborts() {
+  # session.multiplexer: zellij (invalid) ⇒ aborts loud per ADR-001 / ADR-021 D3
+  setup_sandbox "" "config-project-multiplexer-invalid.yaml"
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]]; then
+    pass "T42 session.multiplexer=invalid aborts loud per ADR-021 D3"
+  else
+    fail "T42 expected non-zero exit for invalid session.multiplexer, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -864,6 +916,9 @@ test_t36_network_writable_not_subset_aborts
 test_t37_network_writable_hosts_additive_merge
 test_t38_network_mode_invalid_aborts
 test_t39_validate_yq_missing_with_global_config_emits_dependency_message
+test_t40_session_multiplexer_default_none
+test_t41_session_multiplexer_tmux_parses
+test_t42_session_multiplexer_invalid_aborts
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

@@ -4548,6 +4548,25 @@ cmd_up() {
   _UP_RUN_ARGS+=(--label "rc.symlink-follow-fingerprint=${_sfl_fingerprint}")
   unset _sfl_mode_for_fp _sfl_on_dangling_for_fp _sfl_scope_for_fp _sfl_fp_cfg _sfl_fingerprint
 
+  # rip-cage-1f59.1: resolve session.multiplexer from effective config (ADR-021 D6).
+  # Defaults to "none" when unset. Invalid enum values are already caught by
+  # _config_validate_or_abort (upstream) per ADR-001 fail-loud contract.
+  # Threaded into the container as RC_MULTIPLEXER env var (read by init-rip-cage.sh)
+  # and stamped as rc.session.multiplexer label (for attach helpers + rc ls).
+  local _rc_multiplexer="none"
+  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
+    if command -v yq &>/dev/null; then
+      local _mux_eff_result
+      if _mux_eff_result=$(_load_effective_config "$path" 2>/dev/null); then
+        _rc_multiplexer=$(jq -r '.config.session.multiplexer // "none"' <<<"$_mux_eff_result")
+      fi
+    fi
+  fi
+  _UP_RUN_ARGS+=(-e "RC_MULTIPLEXER=${_rc_multiplexer}")
+  _UP_RUN_ARGS+=(--label "rc.session.multiplexer=${_rc_multiplexer}")
+  log "session.multiplexer: ${_rc_multiplexer}"
+  unset _rc_multiplexer _mux_eff_result
+
   _up_prepare_docker_mounts "$path" "$name"
   _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" "$rc_egress" "$rc_forward_ssh"
 
@@ -6228,6 +6247,7 @@ network.writable_hosts|additive_list|[]
 network.mode|selection_list|null|observe,block
 dcg.packs|additive_list|[]
 dcg.custom_rule_paths|additive_list|[]
+session.multiplexer|selection_list|"none"|none,tmux,herdr
 EOF
 }
 
