@@ -13,7 +13,11 @@
 #   (d) config-isolation — reuse p1p probe (test-claude-concurrency.sh, READ-only)
 #                          green under none+tmux; gating under herdr (now installable).
 #   herdr spawn — herdr server starts + a herdr session is reachable.
-#   herdr status-view — skip-with-log if not readily exercisable; NEVER silent.
+#   herdr status-view — semantic render assertion (rip-cage-w621.9 / ADR-006 D8):
+#               drives pi THROUGH herdr agent start, polls herdr agent list for
+#               agent_status=working + screen_detection_skipped=true (integration
+#               path, NOT process-detection fallback). RC_E2E+openrouter-auth-gated;
+#               visible SKIP when auth absent. Gap is CLOSED (was skip-with-log).
 #
 # Conventions:
 #   - FAILURES counter + [[ $FAILURES -eq 0 ]] || exit 1 at end (no prose-only red).
@@ -560,11 +564,124 @@ if [[ "$HERDR_STARTED" == "true" ]]; then
     fi
   fi
 
-  # herdr status-view semantics (blocked/working/done): skip-with-log if not
-  # readily exercisable in test env (requires herdr CLI interaction), but emit
-  # a visible SKIP line — NEVER silent.
-  skip "herdr status-view semantics not readily exercisable in headless test env" \
-    "blocked/working/done STATUS-VIEW requires interactive herdr session — verify manually"
+  # herdr status-view semantics — semantic render assertion (rip-cage-w621.9)
+  #
+  # Post-ADR-006-D8, the semantic status-view IS observable headlessly:
+  # A3 (rip-cage-w621.3) proved 'herdr agent list' reports agent_status=working
+  # with screen_detection_skipped=true (integration path, NOT process-detection)
+  # during a live pi run in a D8-initialised cage.
+  #
+  # Assertion strategy:
+  #   1. Check openrouter auth in the cage (stable static-key provider).
+  #      If absent → visible SKIP (not a false-pass, not a hang).
+  #   2. Drive a brief pi agent THROUGH herdr: 'herdr agent start -- pi ...'
+  #   3. Poll 'herdr agent list' (JSON) for agent_status=working AND
+  #      screen_detection_skipped=true (the integration path marker).
+  #
+  # Regression guard: without D8 (integration not installed), herdr falls back
+  # to process-detection and reports agent_status=idle regardless of the pi
+  # state (screen_detection_skipped is absent or false). The assertion
+  # FAILS on process-detection-only — a plain idle from process-detection
+  # does NOT satisfy either condition (working OR screen_detection_skipped=true).
+  #
+  # Provider pin: openrouter (static API key, stable) — the cage-default
+  # openai-codex OAuth token is invalidated within hours of issuance.
+  # Same rationale as test-multiplexer-agent-e2e.sh header.
+
+  echo ""
+  echo "--- (herdr) status-view render assertion (rip-cage-w621.9 / ADR-006 D8) ---"
+
+  # Check openrouter auth in the cage (pi's auth.json, mounted by rc up per ADR-019 D5)
+  _HERDR_OR_KEY=$(docker exec "$HERDR_CAGE" python3 -c "
+import json, sys
+try:
+    with open('/home/agent/.pi/agent/auth.json') as f:
+        data = json.load(f)
+    entry = data.get('openrouter', {})
+    key = entry.get('key', '')
+    print('yes' if key else 'no')
+except Exception:
+    print('no')
+" 2>/dev/null || echo "no")
+
+  if [[ "$_HERDR_OR_KEY" != "yes" ]]; then
+    skip "(herdr) status-view render: openrouter auth absent in cage pi auth.json" \
+      "This assertion pins --provider openrouter (stable key). Run 'pi /login openrouter' or set OPENROUTER_API_KEY. SKIP (not a false-pass) — without auth pi exits immediately and herdr never reports working."
+  else
+    pass "(herdr) status-view precondition: openrouter API key present in cage"
+
+    # Drive a brief pi agent THROUGH the herdr surface.
+    # The multi-step prompt forces >=3 tool calls so the LLM+tool round-trip
+    # takes enough wall time (5-30s) for the polling window to catch working state.
+    _HERDR_START_OUT=$(docker exec -u agent "$HERDR_CAGE" herdr agent start \
+      status-view-probe \
+      --cwd /workspace \
+      -- pi \
+        --provider openrouter \
+        --model anthropic/claude-3.5-haiku \
+        -p "Write the word hello to /workspace/sv-hello.txt using your write tool. Then write the word world to /workspace/sv-world.txt using your write tool. Then write the word done to /workspace/sv-done.txt using your write tool." \
+      2>&1 || true)
+
+    echo "  herdr agent start output: ${_HERDR_START_OUT}"
+
+    # Poll herdr agent list for agent_status=working + screen_detection_skipped=true
+    # Max poll: 60s (LLM round-trip takes 5-30s; first poll right after start)
+    _HERDR_WORKING=false
+    _HERDR_INTEGRATION_PATH=false
+    _HERDR_POLL_ELAPSED=0
+    _HERDR_POLL_INTERVAL=2
+    _HERDR_POLL_TIMEOUT=60
+    _HERDR_LAST_LIST=""
+
+    while [[ $_HERDR_POLL_ELAPSED -lt $_HERDR_POLL_TIMEOUT ]]; do
+      _HERDR_LAST_LIST=$(docker exec -u agent "$HERDR_CAGE" herdr agent list 2>/dev/null || echo '{}')
+
+      # Extract agent_status and screen_detection_skipped from the JSON array
+      _HERDR_STATUS_CHECK=$(echo "$_HERDR_LAST_LIST" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    agents = data.get('result', {}).get('agents', [])
+    for a in agents:
+        status = a.get('agent_status', '')
+        sds = a.get('screen_detection_skipped', False)
+        print('agent_status=' + str(status))
+        print('screen_detection_skipped=' + str(sds))
+        if status == 'working' and sds is True:
+            print('integration_working=yes')
+            sys.exit(0)
+    print('integration_working=no')
+except Exception as e:
+    print('integration_working=error:' + str(e))
+" 2>/dev/null || echo "integration_working=parse_error")
+
+      echo "  [t=${_HERDR_POLL_ELAPSED}s] herdr agent list check: ${_HERDR_STATUS_CHECK}"
+
+      if echo "$_HERDR_STATUS_CHECK" | grep -q "integration_working=yes"; then
+        _HERDR_WORKING=true
+        _HERDR_INTEGRATION_PATH=true
+        break
+      fi
+
+      sleep $_HERDR_POLL_INTERVAL
+      _HERDR_POLL_ELAPSED=$((_HERDR_POLL_ELAPSED + _HERDR_POLL_INTERVAL))
+    done
+
+    echo "  Final herdr agent list JSON: ${_HERDR_LAST_LIST}"
+
+    if [[ "$_HERDR_WORKING" == "true" ]] && [[ "$_HERDR_INTEGRATION_PATH" == "true" ]]; then
+      pass "(herdr) status-view: herdr agent list reports agent_status=working + screen_detection_skipped=true (semantic integration path, ADR-006 D8)"
+    else
+      fail "(herdr) status-view: semantic render NOT observed within ${_HERDR_POLL_TIMEOUT}s" \
+        "Expected agent_status=working AND screen_detection_skipped=true. Got: ${_HERDR_LAST_LIST}. Regression: if integration absent (D8 missing), herdr falls back to process-detection and shows idle (screen_detection_skipped absent), NEVER working via integration — this assertion fires RED."
+    fi
+
+    # Cleanup: the pi agent will self-complete; pane is ephemeral in herdr
+    unset _HERDR_START_OUT _HERDR_STATUS_CHECK _HERDR_LAST_LIST
+    unset _HERDR_WORKING _HERDR_INTEGRATION_PATH
+    unset _HERDR_POLL_ELAPSED _HERDR_POLL_INTERVAL _HERDR_POLL_TIMEOUT
+  fi
+  unset _HERDR_OR_KEY
 
 else
   fail "(herdr) skipping herdr spawn assertions — herdr cage did not start"
