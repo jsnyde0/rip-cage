@@ -146,7 +146,7 @@ _classify_agents_dir() {
       hostonly) _CAD_HOSTONLY=$((_CAD_HOSTONLY + 1)) ;;
       corrupt)  _CAD_CORRUPT=$((_CAD_CORRUPT + 1)) ;;
     esac
-  done < <(find "$agents_dir" -maxdepth 1 -name '*.md' 2>/dev/null)
+  done < <(find -L "$agents_dir" -maxdepth 1 -name '*.md' 2>/dev/null)
 }
 
 # _report_agents_classification AGENTS_DIR CAGE_ROOTS
@@ -198,5 +198,5 @@ _report_agents_classification() {
       check "Agent .md file corrupt [${_c}]: $(basename "$_f")" "fail" \
         "broken symlink with target inside cage roots (or unreadable file)"
     fi
-  done < <(find "$agents_dir" -maxdepth 1 -name '*.md' 2>/dev/null)
+  done < <(find -L "$agents_dir" -maxdepth 1 -name '*.md' 2>/dev/null)
 }
