@@ -773,6 +773,467 @@ test_be3_pull_or_build_auto_build_path_rejects_hostile() {
 }
 
 # ---------------------------------------------------------------------------
+# B2a — Mock stat "root 755" for prebuilt entry WITH binary_path: PASS
+# A prebuilt install_cmd TOOL entry that declares binary_path and the binary
+# is root-owned 755 must pass.
+# ---------------------------------------------------------------------------
+test_b2a_prebuilt_root_755_accepted() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_check_binary_root_owned_with_mock "manifest-prebuilt-with-binary-path.yaml" "root 755" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "B2a prebuilt mock stat 'root 755' accepted (root-owned, not agent-writable)"
+  else
+    fail "B2a prebuilt mock stat 'root 755' should pass. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# B2b — Mock stat "agent 777" for prebuilt entry WITH binary_path: REJECT
+# ---------------------------------------------------------------------------
+test_b2b_prebuilt_agent_777_rejected() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_check_binary_root_owned_with_mock "manifest-prebuilt-with-binary-path.yaml" "agent 777" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "ADR-005 D9\|binary-root-owned\|agent-writable\|not root\|owned by" "$stderr_file"; then
+    pass "B2b prebuilt mock stat 'agent 777' rejected non-zero + error names the invariant"
+  else
+    fail "B2b prebuilt mock stat 'agent 777' should be rejected with ADR-005 D9 error. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# B2c — Mock stat "agent 755" for prebuilt entry WITH binary_path: REJECT (bad owner)
+# ---------------------------------------------------------------------------
+test_b2c_prebuilt_agent_owned_rejected() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_check_binary_root_owned_with_mock "manifest-prebuilt-with-binary-path.yaml" "agent 755" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "ADR-005 D9\|binary-root-owned\|agent-writable\|not root\|owned by" "$stderr_file"; then
+    pass "B2c prebuilt mock stat 'agent 755' rejected non-zero + error names the invariant (owner check)"
+  else
+    fail "B2c prebuilt mock stat 'agent 755' should be rejected (agent ownership). exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# B2d — Mock stat "root 775" for prebuilt entry WITH binary_path: REJECT (group-writable)
+# ---------------------------------------------------------------------------
+test_b2d_prebuilt_root_775_group_writable_rejected() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_check_binary_root_owned_with_mock "manifest-prebuilt-with-binary-path.yaml" "root 775" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "ADR-005 D9\|binary-root-owned\|agent-writable\|group.*writable\|mode" "$stderr_file"; then
+    pass "B2d prebuilt mock stat 'root 775' rejected non-zero + error names the invariant (group-writable)"
+  else
+    fail "B2d prebuilt mock stat 'root 775' should be rejected (group-write bit). exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# B2e — Prebuilt entry WITHOUT binary_path is NOT checked (skipped, builds clean)
+# A prebuilt install_cmd TOOL entry with no binary_path declared must be skipped
+# entirely — the validator must not fire for it (no docker stat call, exit 0).
+# ---------------------------------------------------------------------------
+test_b2e_prebuilt_no_binary_path_skipped() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  # Use a fixture with a prebuilt install_cmd but NO binary_path.
+  # We use a mock docker that always returns "agent 777" — if the validator fires
+  # for this entry, it would fail. If it's correctly skipped, it passes.
+  run_check_binary_root_owned_with_mock "manifest-valid-non-bundled-with-install-cmd.yaml" "agent 777" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "B2e prebuilt entry WITHOUT binary_path is skipped (not checked by binary-root-owned)"
+  else
+    fail "B2e prebuilt without binary_path should be skipped (not trigger binary check). exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# B2f — Prebuilt entry with binary_path as a LIST: all paths are checked.
+# When binary_path is a list, each declared path must be checked.
+# Mock returns "root 755" — should PASS for all paths.
+# ---------------------------------------------------------------------------
+test_b2f_prebuilt_binary_path_list_accepted() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_check_binary_root_owned_with_mock "manifest-prebuilt-with-binary-path-list.yaml" "root 755" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "B2f prebuilt binary_path as list, mock 'root 755' accepted for all paths"
+  else
+    fail "B2f prebuilt binary_path list with 'root 755' should pass. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# Schema validation tests for binary_path field (rip-cage-ryn6)
+#
+# BS1a — binary_path as string accepted
+# BS1b — binary_path as list of strings accepted
+# BS1c — binary_path as empty string rejected
+# BS1d — binary_path as multiline string rejected
+# BS1e — binary_path as relative path (no leading /) rejected
+# ---------------------------------------------------------------------------
+
+# Helper: run _manifest_validate on inline YAML content and return exit code.
+run_schema_validate_inline() {
+  local yaml_content="$1"
+  local stderr_file="${2:-/dev/null}"
+  local tmp_yaml
+  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-manifest-XXXXXX.yaml")
+  printf '%s\n' "$yaml_content" > "$tmp_yaml"
+
+  local exit_code=0
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_MANIFEST_GLOBAL="$tmp_yaml" \
+    bash -c "source '${RC}'; _manifest_validate '${tmp_yaml}'" 2>"$stderr_file" || exit_code=$?
+
+  rm -f "$tmp_yaml"
+  return "$exit_code"
+}
+
+# BS1a — binary_path as single-line absolute string accepted
+test_bs1a_binary_path_string_accepted() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  setup_manifest_sandbox ""
+
+  local yaml_content
+  yaml_content=$(cat <<'YAML'
+version: 1
+tools:
+  - name: test-prebuilt
+    archetype: TOOL
+    version_pin: "1.0.0"
+    install_cmd: "curl -fsSL https://example.com/tool -o /usr/local/bin/mytool && chmod 755 /usr/local/bin/mytool"
+    binary_path: "/usr/local/bin/mytool"
+    egress: []
+    mounts: []
+YAML
+)
+
+  run_schema_validate_inline "$yaml_content" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "BS1a binary_path as absolute string accepted by schema validator"
+  else
+    fail "BS1a binary_path as absolute string should be accepted. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  teardown_manifest_sandbox
+  rm -f "$stderr_file"
+}
+
+# BS1b — binary_path as list of absolute strings accepted
+test_bs1b_binary_path_list_accepted() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  setup_manifest_sandbox ""
+
+  local yaml_content
+  yaml_content=$(cat <<'YAML'
+version: 1
+tools:
+  - name: test-prebuilt-multi
+    archetype: TOOL
+    version_pin: "1.0.0"
+    install_cmd: "install -m 755 /tmp/tool1 /usr/local/bin/tool1 && install -m 755 /tmp/tool2 /usr/local/bin/tool2"
+    binary_path:
+      - "/usr/local/bin/tool1"
+      - "/usr/local/bin/tool2"
+    egress: []
+    mounts: []
+YAML
+)
+
+  run_schema_validate_inline "$yaml_content" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "BS1b binary_path as list of absolute strings accepted by schema validator"
+  else
+    fail "BS1b binary_path as list of absolute strings should be accepted. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  teardown_manifest_sandbox
+  rm -f "$stderr_file"
+}
+
+# BS1c — binary_path as empty string rejected
+test_bs1c_binary_path_empty_rejected() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  setup_manifest_sandbox ""
+
+  local yaml_content
+  yaml_content=$(cat <<'YAML'
+version: 1
+tools:
+  - name: test-prebuilt-empty
+    archetype: TOOL
+    version_pin: "1.0.0"
+    install_cmd: "curl -fsSL https://example.com/tool -o /usr/local/bin/mytool && chmod 755 /usr/local/bin/mytool"
+    binary_path: ""
+    egress: []
+    mounts: []
+YAML
+)
+
+  run_schema_validate_inline "$yaml_content" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "binary_path\|empty\|non-empty" "$stderr_file"; then
+    pass "BS1c binary_path as empty string rejected with error naming binary_path"
+  else
+    fail "BS1c binary_path empty string should be rejected. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  teardown_manifest_sandbox
+  rm -f "$stderr_file"
+}
+
+# BS1d — binary_path with embedded newline rejected (multiline)
+test_bs1d_binary_path_multiline_rejected() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  setup_manifest_sandbox ""
+
+  # Use printf to embed a real newline in the YAML value.
+  local tmp_yaml
+  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-schema-XXXXXX.yaml")
+  printf 'version: 1\ntools:\n  - name: test-prebuilt-newline\n    archetype: TOOL\n    version_pin: "1.0.0"\n    install_cmd: "apt-get install -y jq"\n    binary_path: "/usr/local/bin/tool1\\n/usr/local/bin/tool2"\n    egress: []\n    mounts: []\n' > "$tmp_yaml"
+
+  local exit_code2=0
+  bash -c "source '${RC}'; _manifest_validate '${tmp_yaml}'" 2>"$stderr_file" || exit_code2=$?
+  rm -f "$tmp_yaml"
+
+  if [[ "$exit_code2" -ne 0 ]] && grep -qi "binary_path\|single.line\|newline" "$stderr_file"; then
+    pass "BS1d binary_path with embedded newline rejected with error naming binary_path"
+  else
+    fail "BS1d binary_path multiline should be rejected. exit=$exit_code2 stderr=$(cat "$stderr_file")"
+  fi
+  teardown_manifest_sandbox
+  rm -f "$stderr_file"
+}
+
+# BS1e — binary_path as relative path (no leading slash) rejected
+test_bs1e_binary_path_relative_rejected() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  setup_manifest_sandbox ""
+
+  local yaml_content
+  yaml_content=$(cat <<'YAML'
+version: 1
+tools:
+  - name: test-prebuilt-relpath
+    archetype: TOOL
+    version_pin: "1.0.0"
+    install_cmd: "apt-get install -y jq"
+    binary_path: "usr/local/bin/jq"
+    egress: []
+    mounts: []
+YAML
+)
+
+  run_schema_validate_inline "$yaml_content" "$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "binary_path\|absolute\|leading slash\|must start" "$stderr_file"; then
+    pass "BS1e binary_path relative path rejected with error naming binary_path"
+  else
+    fail "BS1e binary_path relative path should be rejected. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  teardown_manifest_sandbox
+  rm -f "$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# BE4 — E2E: Real build with compliant PREBUILT fixture (install_cmd + binary_path)
+# passes binary-root-owned assertion. (RC_E2E=1 only)
+# ---------------------------------------------------------------------------
+test_be4_real_build_compliant_prebuilt_passes() {
+  if [[ "${RC_E2E:-}" != "1" ]]; then
+    echo "SKIP (RC_E2E gated): BE4 real docker build compliant PREBUILT tool — set RC_E2E=1 to run"
+    echo "  [RC_E2E-deferred] BE4 would build with manifest-prebuilt-compliant.yaml (install_cmd"
+    echo "  that installs root-owned 755 binary + declares binary_path) and assert"
+    echo "  _manifest_check_binary_root_owned passes."
+    return 0
+  fi
+
+  echo "BE4 RC_E2E=1: real build with manifest-prebuilt-compliant.yaml (root-owned 755) — expect PASS ..."
+
+  local be4_fixture="${FIXTURES}/manifest-prebuilt-compliant.yaml"
+  local be4_image="rip-cage:be4-test"
+
+  local be4_saved_tag
+  be4_saved_tag="rip-cage:be4-saved-$(date +%s)"
+  local be4_had_latest=0
+  if docker image inspect rip-cage:latest >/dev/null 2>&1; then
+    docker tag rip-cage:latest "$be4_saved_tag" 2>/dev/null && be4_had_latest=1
+  fi
+
+  # shellcheck disable=SC2329
+  _be4_cleanup() {
+    docker image rm "$be4_image" 2>/dev/null || true
+    if [[ "$be4_had_latest" -eq 1 ]]; then
+      docker tag "$be4_saved_tag" rip-cage:latest 2>/dev/null || true
+    else
+      docker image rm rip-cage:latest 2>/dev/null || true
+    fi
+    docker image rm "$be4_saved_tag" 2>/dev/null || true
+  }
+  trap _be4_cleanup RETURN
+
+  local build_out build_rc=0
+  build_out=$(RC_MANIFEST_GLOBAL="$be4_fixture" \
+    "${RC}" build 2>&1) || build_rc=$?
+
+  if [[ "$build_rc" -ne 0 ]]; then
+    fail "BE4 rc build with compliant prebuilt fixture failed (exit=${build_rc}): ${build_out:0:400}"
+    return
+  fi
+
+  docker tag rip-cage:latest "$be4_image" 2>/dev/null || true
+
+  # Effect assertion: stat the binary inside the built image — must be root-owned, mode 755.
+  local runtime_path="/usr/local/bin/hello-prebuilt"
+  local stat_out stat_rc=0
+  stat_out=$(docker run --rm "$be4_image" stat -c '%U %a' "$runtime_path" 2>&1) || stat_rc=$?
+
+  if [[ "$stat_rc" -ne 0 ]]; then
+    fail "BE4 could not stat binary '${runtime_path}' in built image. stat_rc=${stat_rc} out='${stat_out}'"
+    return
+  fi
+
+  local stat_owner stat_mode
+  stat_owner=$(awk '{print $1}' <<<"$stat_out")
+  stat_mode=$(awk '{print $2}' <<<"$stat_out")
+
+  if [[ "$stat_owner" == "root" && "$stat_mode" == "755" ]]; then
+    pass "BE4 compliant PREBUILT build PASSES binary-root-owned check: owner=${stat_owner} mode=${stat_mode}"
+  else
+    fail "BE4 expected root 755 on prebuilt binary, got owner='${stat_owner}' mode='${stat_mode}'"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# BE5 — E2E: Crafted-bad PREBUILT fixture (install_cmd with chmod 777 + binary_path)
+# causes binary-root-owned assertion to REJECT with fail-loud error.
+# Falsifiability: reverting the prebuilt coverage turns it GREEN, proving load-bearing.
+# (RC_E2E=1 only)
+# ---------------------------------------------------------------------------
+test_be5_crafted_bad_prebuilt_rejected() {
+  if [[ "${RC_E2E:-}" != "1" ]]; then
+    echo "SKIP (RC_E2E gated): BE5 crafted-bad PREBUILT agent-writable binary → must be RED on real build"
+    echo "  [RC_E2E-deferred] BE5 would build with manifest-prebuilt-hostile.yaml (install_cmd"
+    echo "  that chmods the binary 777 + declares binary_path) and assert REJECTION."
+    echo "  Reverting the prebuilt coverage in _manifest_check_binary_root_owned turns it GREEN."
+    echo "  Fixture: tests/fixtures/manifest-prebuilt-hostile.yaml"
+    return 0
+  fi
+
+  echo "BE5 RC_E2E=1: crafted-bad PREBUILT (chmod 777 on declared binary) — must REJECT with ADR-005 D9 error ..."
+
+  local be5_fixture="${FIXTURES}/manifest-prebuilt-hostile.yaml"
+
+  local be5_saved_tag
+  be5_saved_tag="rip-cage:be5-saved-$(date +%s)"
+  local be5_had_latest=0
+  if docker image inspect rip-cage:latest >/dev/null 2>&1; then
+    docker tag rip-cage:latest "$be5_saved_tag" 2>/dev/null && be5_had_latest=1
+  fi
+
+  # shellcheck disable=SC2329
+  _be5_cleanup() {
+    docker image rm rip-cage:latest 2>/dev/null || true
+    if [[ "$be5_had_latest" -eq 1 ]]; then
+      docker tag "$be5_saved_tag" rip-cage:latest 2>/dev/null || true
+    fi
+    docker image rm "$be5_saved_tag" 2>/dev/null || true
+  }
+  trap _be5_cleanup RETURN
+
+  # -----------------------------------------------------------------------
+  # Step 1: rc build with hostile prebuilt fixture — must FAIL
+  # -----------------------------------------------------------------------
+  local be5_step1_out be5_step1_rc=0
+  be5_step1_out=$(RC_MANIFEST_GLOBAL="$be5_fixture" \
+    "${RC}" build 2>&1) || be5_step1_rc=$?
+
+  local be5_error_signal
+  be5_error_signal=$(grep -iE "ADR-005 D9|binary-root-owned|agent-writable|owned by.*not root|not root" <<<"$be5_step1_out" | head -1)
+
+  if [[ "$be5_step1_rc" -ne 0 ]] && [[ -n "$be5_error_signal" ]]; then
+    pass "BE5 step1: hostile PREBUILT build REJECTED with ADR-005 D9 binary-root-owned error (exit=${be5_step1_rc}): '${be5_error_signal}'"
+  elif [[ "$be5_step1_rc" -eq 0 ]]; then
+    fail "BE5 step1: hostile PREBUILT build SUCCEEDED (exit=0) — prebuilt binary-root-owned coverage NOT wired. out='${be5_step1_out:0:300}'"
+    return
+  else
+    fail "BE5 step1: build failed (exit=${be5_step1_rc}) but error message missing ADR-005 D9 signal. out='${be5_step1_out:0:400}'"
+    return
+  fi
+
+  # -----------------------------------------------------------------------
+  # F1 fix: After step 1 failure, rip-cage:latest must NOT be tagged to violating image.
+  # -----------------------------------------------------------------------
+  if ! docker image inspect rip-cage:latest >/dev/null 2>&1; then
+    pass "BE5 F1: after binary-root-owned rejection, rip-cage:latest is NOT tagged to the violating image"
+  else
+    local be5_latest_id be5_saved_id
+    be5_latest_id=$(docker image inspect rip-cage:latest --format '{{.Id}}' 2>/dev/null)
+    be5_saved_id=$(docker image inspect "$be5_saved_tag" --format '{{.Id}}' 2>/dev/null)
+    if [[ -n "$be5_saved_tag" ]] && [[ "$be5_latest_id" == "$be5_saved_id" ]]; then
+      pass "BE5 F1: rip-cage:latest after rejection is the pre-test saved image (not the violating build)"
+    else
+      fail "BE5 F1: rip-cage:latest still tagged after binary-root-owned rejection (violating image not untagged)"
+    fi
+  fi
+
+  # -----------------------------------------------------------------------
+  # Step 2: FALSIFIABILITY PROOF — disable the prebuilt branch of assertion,
+  # same build must PASS (RED→GREEN).
+  # We override _manifest_check_binary_root_owned by redefining it in a subshell.
+  # -----------------------------------------------------------------------
+  echo "BE5 falsifiability: disabling _manifest_check_binary_root_owned — hostile PREBUILT build must PASS ..."
+
+  local be5_repo_root
+  be5_repo_root="$(cd "$(dirname "${RC}")" && pwd)"
+
+  local be5_step2_out be5_step2_rc=0
+  be5_step2_out=$(
+    # shellcheck disable=SC2030
+    export RC_MANIFEST_GLOBAL="$be5_fixture"
+    # shellcheck disable=SC1090
+    source "${RC}"
+    SCRIPT_DIR="$be5_repo_root"
+    # shellcheck disable=SC2329
+    _manifest_check_binary_root_owned() { return 0; }
+    # shellcheck disable=SC2030
+    export OUTPUT_FORMAT=""
+    cmd_build
+  ) || be5_step2_rc=$?
+
+  if [[ "$be5_step2_rc" -eq 0 ]]; then
+    pass "BE5 falsifiability: with _manifest_check_binary_root_owned DISABLED, hostile PREBUILT build PASSES — assertion is load-bearing (RED→GREEN proven)"
+  else
+    fail "BE5 falsifiability: expected build to pass with assertion disabled, but exit=${be5_step2_rc}. out='${be5_step2_out:0:300}'"
+  fi
+
+  if grep -q "_manifest_check_binary_root_owned" "${RC}"; then
+    pass "BE5 assertion-active: _manifest_check_binary_root_owned is PRESENT in rc (production assertion active)"
+  else
+    fail "BE5 assertion-active: _manifest_check_binary_root_owned NOT FOUND in rc — production assertion removed!"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -782,11 +1243,28 @@ fi
 
 echo "=== test-manifest-security.sh — binary-root-owned + build-isolation assertions (rip-cage-buuo.3) ==="
 echo ""
-echo "--- B1a-B1d: Unit tests for _manifest_check_binary_root_owned (mock stat) ---"
+echo "--- B1a-B1d: Unit tests for _manifest_check_binary_root_owned (mock stat, from-source) ---"
 test_b1a_root_755_accepted
 test_b1b_agent_777_rejected
 test_b1c_agent_owned_rejected
 test_b1d_root_775_group_writable_rejected
+
+echo ""
+echo "--- B2a-B2f: Unit tests for _manifest_check_binary_root_owned (mock stat, prebuilt binary_path; rip-cage-ryn6) ---"
+test_b2a_prebuilt_root_755_accepted
+test_b2b_prebuilt_agent_777_rejected
+test_b2c_prebuilt_agent_owned_rejected
+test_b2d_prebuilt_root_775_group_writable_rejected
+test_b2e_prebuilt_no_binary_path_skipped
+test_b2f_prebuilt_binary_path_list_accepted
+
+echo ""
+echo "--- BS1a-BS1e: Schema validation unit tests for binary_path field (rip-cage-ryn6) ---"
+test_bs1a_binary_path_string_accepted
+test_bs1b_binary_path_list_accepted
+test_bs1c_binary_path_empty_rejected
+test_bs1d_binary_path_multiline_rejected
+test_bs1e_binary_path_relative_rejected
 
 echo ""
 echo "--- BI1a-BI1h: Unit tests for _manifest_check_build_isolation (crafted Dockerfiles) ---"
@@ -800,13 +1278,18 @@ test_bi1g_ssh_mount_in_builder_rejected
 test_bi1h_secret_mount_in_builder_rejected
 
 echo ""
-echo "--- BE1-BE2: E2E (RC_E2E gated — real-build falsifiable proof via cmd_build) ---"
+echo "--- BE1-BE2: E2E (RC_E2E gated — real-build falsifiable proof via cmd_build, from-source) ---"
 test_be1_real_build_compliant_tool_passes
 test_be2_crafted_bad_agent_writable_rejected
 
 echo ""
 echo "--- BE3: E2E (RC_E2E gated — D11 enforcement on _pull_or_build auto-build path; rip-cage-buuo.6 F1) ---"
 test_be3_pull_or_build_auto_build_path_rejects_hostile
+
+echo ""
+echo "--- BE4-BE5: E2E (RC_E2E gated — prebuilt binary_path coverage; rip-cage-ryn6) ---"
+test_be4_real_build_compliant_prebuilt_passes
+test_be5_crafted_bad_prebuilt_rejected
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

@@ -1,0 +1,15 @@
+version: 1
+tools:
+  # COMPLIANT prebuilt test fixture — rip-cage-ryn6 binary-root-owned extension.
+  # This prebuilt tool installs a root-owned 755 binary and declares binary_path.
+  # _manifest_check_binary_root_owned must PASS for this fixture.
+  # Used by tests/test-manifest-security.sh (BE4 — RC_E2E gated).
+  # The install_cmd writes a tiny shell script and installs it with root ownership
+  # (default during docker build — RUN steps execute as root unless USER is changed).
+  - name: hello-prebuilt
+    archetype: TOOL
+    version_pin: "1.0.0"
+    install_cmd: "printf '#!/bin/sh\\necho hello-prebuilt\\n' > /usr/local/bin/hello-prebuilt && chmod 755 /usr/local/bin/hello-prebuilt"
+    binary_path: "/usr/local/bin/hello-prebuilt"
+    egress: []
+    mounts: []

@@ -6723,6 +6723,64 @@ _manifest_validate() {
             return 1
           fi
         fi
+        # Validate optional 'binary_path' field (rip-cage-ryn6).
+        # binary_path may be a string OR a list of strings. When present, each entry
+        # must be a non-empty, single-line absolute path. When absent, valid (un-checked
+        # by binary-root-owned assertion — deliberate 80/20 boundary per ADR-024 D11).
+        # Format-validated for ANY TOOL entry that carries the field; only CONSUMED by the
+        # binary-root-owned assertion for install_cmd (prebuilt) entries — from-source entries
+        # are checked via build_source.output_path and ignore a stray binary_path at runtime.
+        local binary_path_raw binary_path_type
+        binary_path_raw=$(jq -r 'if has("binary_path") then "present" else "absent" end' <<<"$entry" 2>/dev/null)
+        if [[ "$binary_path_raw" == "present" ]]; then
+          binary_path_type=$(jq -r '.binary_path | type' <<<"$entry" 2>/dev/null)
+          if [[ "$binary_path_type" == "string" ]]; then
+            # Single string — validate non-empty, single-line, absolute.
+            local bp_val
+            bp_val=$(jq -r '.binary_path' <<<"$entry" 2>/dev/null)
+            if [[ -z "$bp_val" ]]; then
+              echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'binary_path' must be a non-empty absolute path (got empty string)." >&2
+              return 1
+            fi
+            if [[ "$bp_val" == *$'\n'* ]]; then
+              echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'binary_path' must be a single-line absolute path (newlines are not allowed; single-line-required)." >&2
+              return 1
+            fi
+            if [[ "${bp_val:0:1}" != "/" ]]; then
+              echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'binary_path' must be an absolute path starting with '/' (got: '${bp_val}')." >&2
+              return 1
+            fi
+          elif [[ "$binary_path_type" == "array" ]]; then
+            # List of strings — validate each entry.
+            local bp_count bp_i
+            bp_count=$(jq '.binary_path | length' <<<"$entry" 2>/dev/null)
+            for (( bp_i=0; bp_i<bp_count; bp_i++ )); do
+              local bp_elem_type bp_elem_val
+              bp_elem_type=$(jq -r ".binary_path[${bp_i}] | type" <<<"$entry" 2>/dev/null)
+              if [[ "$bp_elem_type" != "string" ]]; then
+                echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'binary_path[${bp_i}]' must be a string (got: ${bp_elem_type})." >&2
+                return 1
+              fi
+              bp_elem_val=$(jq -r ".binary_path[${bp_i}]" <<<"$entry" 2>/dev/null)
+              if [[ -z "$bp_elem_val" ]]; then
+                echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'binary_path[${bp_i}]' must be a non-empty absolute path (got empty string)." >&2
+                return 1
+              fi
+              if [[ "$bp_elem_val" == *$'\n'* ]]; then
+                echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'binary_path[${bp_i}]' must be a single-line absolute path (newlines are not allowed; single-line-required)." >&2
+                return 1
+              fi
+              if [[ "${bp_elem_val:0:1}" != "/" ]]; then
+                echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'binary_path[${bp_i}]' must be an absolute path starting with '/' (got: '${bp_elem_val}')." >&2
+                return 1
+              fi
+            done
+          else
+            # Neither string nor array — reject.
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'binary_path' must be a string or a list of strings (got: ${binary_path_type})." >&2
+            return 1
+          fi
+        fi
         ;;
       SHELL-INTEGRATION)
         # 'shell_init' required and must be a single line.
@@ -7872,22 +7930,28 @@ _manifest_check_build_isolation() {
   [[ "$_violation" -eq 0 ]]
 }
 
-# _manifest_check_binary_root_owned — ADR-005 D9 / ADR-024 / rip-cage-buuo.3
+# _manifest_check_binary_root_owned — ADR-005 D9 / ADR-024 / rip-cage-buuo.3 / rip-cage-ryn6
 #
-# EFFECT-based assertion: for every from-source (build_source) TOOL entry in the
-# manifest, inspect the ACTUAL installed binary in the already-built image using
-# `docker run --rm <image> stat -c '%U %a' <runtime-path>`. Rejects any binary
-# that is NOT owned by root OR that is writable by the agent user (group-write or
-# other-write bit set).
+# EFFECT-based assertion: for every TOOL entry in the manifest that declares a
+# checkable binary path, inspect the ACTUAL installed binary in the already-built
+# image using `docker run --rm <image> stat -c '%U %a' <runtime-path>`. Rejects
+# any binary that is NOT owned by root OR that is writable by the agent user
+# (group-write or other-write bit set).
 #
 # An agent-writable binary is an ADR-005 D9 / ADR-024 violation: a prompt-injected
 # agent could rewrite its own tool binary and escape the safety stack.
 #
 # This check fires AFTER docker build (it requires the image to exist).
-# Only from-source (build_source) entries are checked because their runtime binary
-# path is declarative (known from output_path). The install_cmd path uses apt-get
-# which installs to system-managed paths; those binaries inherit root ownership
-# from the package manager and are out of scope for this per-entry check.
+# Two entry types are checked:
+#
+#   1. From-source (build_source) entries: runtime path is derived from
+#      /usr/local/bin/<basename of build_source.output_path> (same derivation
+#      as the Dockerfile codegen).
+#
+#   2. Prebuilt (install_cmd) entries that declare an optional 'binary_path'
+#      field (rip-cage-ryn6): each declared path is checked directly as-is.
+#      Prebuilt entries WITHOUT binary_path are skipped (the deliberate 80/20
+#      boundary — package-manager installs have no author-chosen path).
 #
 # Parameters:
 #   $1  image_tag  — Docker image tag to inspect (e.g. "rip-cage:latest")
@@ -7910,33 +7974,20 @@ _manifest_check_binary_root_owned() {
     return 0
   fi
 
-  local _violation=0
-  local idx
-  for (( idx=0; idx<count; idx++ )); do
-    local entry build_source_present
-    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
-    build_source_present=$(jq -r 'if has("build_source") and (.build_source | type) == "object" then "yes" else "no" end' <<<"$entry" 2>/dev/null)
-    [[ "$build_source_present" != "yes" ]] && continue
-
-    local tool_name bs_output_path runtime_path
-    tool_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
-    bs_output_path=$(jq -r '.build_source.output_path // ""' <<<"$entry" 2>/dev/null)
-    if [[ -z "$bs_output_path" ]]; then
-      echo "Error: manifest from-source tool '${tool_name}': build_source.output_path is empty — cannot verify binary ownership." >&2
-      _violation=1
-      continue
-    fi
-
-    # Runtime path: /usr/local/bin/<basename of output_path> (same derivation as codegen).
-    runtime_path="/usr/local/bin/$(basename "${bs_output_path}")"
+  # Helper: check one binary path inside the image (owner + mode).
+  # _check_one_path <tool_name> <runtime_path>
+  # Uses _image_tag and _violation from outer scope.
+  _check_one_binary_path() {
+    local _tool_name="$1"
+    local _runtime_path="$2"
 
     # Effect-based check: inspect the actual binary inside the built image.
     # stat -c '%U %a' prints: owner_name octal_mode (e.g. "root 755")
     local stat_out
-    if ! stat_out=$(docker run --rm "$_image_tag" stat -c '%U %a' "$runtime_path" 2>/dev/null); then
-      echo "Error: manifest binary-root-owned check for tool '${tool_name}': could not stat '${runtime_path}' inside image '${_image_tag}' — binary may be absent or image not built. (ADR-005 D9 / ADR-024 binary-root-owned)" >&2
+    if ! stat_out=$(docker run --rm "$_image_tag" stat -c '%U %a' "$_runtime_path" 2>/dev/null); then
+      echo "Error: manifest binary-root-owned check for tool '${_tool_name}': could not stat '${_runtime_path}' inside image '${_image_tag}' — binary may be absent or image not built. (ADR-005 D9 / ADR-024 binary-root-owned)" >&2
       _violation=1
-      continue
+      return
     fi
 
     local stat_owner stat_mode
@@ -7945,7 +7996,7 @@ _manifest_check_binary_root_owned() {
 
     # Owner MUST be root.
     if [[ "$stat_owner" != "root" ]]; then
-      echo "Error: manifest tool '${tool_name}' binary at '${runtime_path}' is owned by '${stat_owner}' (not root). An agent-writable binary violates the safety floor — an injected agent could rewrite its own tool. (ADR-005 D9 / ADR-024 binary-root-owned)" >&2
+      echo "Error: manifest tool '${_tool_name}' binary at '${_runtime_path}' is owned by '${stat_owner}' (not root). An agent-writable binary violates the safety floor — an injected agent could rewrite its own tool. (ADR-005 D9 / ADR-024 binary-root-owned)" >&2
       _violation=1
     fi
 
@@ -7965,9 +8016,57 @@ _manifest_check_binary_root_owned() {
     case "$other_digit" in 2|3|6|7) writable=1 ;; esac
 
     if [[ "$writable" -eq 1 ]]; then
-      echo "Error: manifest tool '${tool_name}' binary at '${runtime_path}' has mode '${stat_mode}' which is group/other-writable. The agent user could overwrite this binary, violating the safety floor. (ADR-005 D9 / ADR-024 binary-root-owned)" >&2
+      echo "Error: manifest tool '${_tool_name}' binary at '${_runtime_path}' has mode '${stat_mode}' which is group/other-writable. The agent user could overwrite this binary, violating the safety floor. (ADR-005 D9 / ADR-024 binary-root-owned)" >&2
       _violation=1
     fi
+  }
+
+  local _violation=0
+  local idx
+  for (( idx=0; idx<count; idx++ )); do
+    local entry
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+
+    local tool_name
+    tool_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+
+    # --- From-source (build_source) entries ---
+    local build_source_present
+    build_source_present=$(jq -r 'if has("build_source") and (.build_source | type) == "object" then "yes" else "no" end' <<<"$entry" 2>/dev/null)
+    if [[ "$build_source_present" == "yes" ]]; then
+      local bs_output_path runtime_path
+      bs_output_path=$(jq -r '.build_source.output_path // ""' <<<"$entry" 2>/dev/null)
+      if [[ -z "$bs_output_path" ]]; then
+        echo "Error: manifest from-source tool '${tool_name}': build_source.output_path is empty — cannot verify binary ownership." >&2
+        _violation=1
+        continue
+      fi
+      # Runtime path: /usr/local/bin/<basename of output_path> (same derivation as codegen).
+      runtime_path="/usr/local/bin/$(basename "${bs_output_path}")"
+      _check_one_binary_path "$tool_name" "$runtime_path"
+      continue
+    fi
+
+    # --- Prebuilt (install_cmd) entries with declared binary_path (rip-cage-ryn6) ---
+    local binary_path_present binary_path_type
+    binary_path_present=$(jq -r 'if has("binary_path") then "yes" else "no" end' <<<"$entry" 2>/dev/null)
+    [[ "$binary_path_present" != "yes" ]] && continue
+
+    binary_path_type=$(jq -r '.binary_path | type' <<<"$entry" 2>/dev/null)
+    if [[ "$binary_path_type" == "string" ]]; then
+      local bp_path
+      bp_path=$(jq -r '.binary_path' <<<"$entry" 2>/dev/null)
+      _check_one_binary_path "$tool_name" "$bp_path"
+    elif [[ "$binary_path_type" == "array" ]]; then
+      local bp_count bp_i
+      bp_count=$(jq '.binary_path | length' <<<"$entry" 2>/dev/null)
+      for (( bp_i=0; bp_i<bp_count; bp_i++ )); do
+        local bp_path_item
+        bp_path_item=$(jq -r ".binary_path[${bp_i}]" <<<"$entry" 2>/dev/null)
+        _check_one_binary_path "$tool_name" "$bp_path_item"
+      done
+    fi
+    # Non-string/non-array binary_path is caught by schema validator; skip here.
   done
 
   [[ "$_violation" -eq 0 ]]

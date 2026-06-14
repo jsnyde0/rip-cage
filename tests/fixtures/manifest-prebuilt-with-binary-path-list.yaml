@@ -1,0 +1,15 @@
+version: 1
+tools:
+  # Test fixture: a prebuilt TOOL entry with binary_path as a list of strings.
+  # Used by tests/test-manifest-security.sh (B2f — rip-cage-ryn6) to verify
+  # binary-root-owned check handles multiple declared binary paths.
+  # Modeled after manifest-agent-mail.yaml which installs two binaries.
+  - name: hello-prebuilt-multi
+    archetype: TOOL
+    version_pin: "1.0.0"
+    install_cmd: "printf '#!/bin/sh\\necho hello-prebuilt-a\\n' > /usr/local/bin/hello-prebuilt-a && chmod 755 /usr/local/bin/hello-prebuilt-a && printf '#!/bin/sh\\necho hello-prebuilt-b\\n' > /usr/local/bin/hello-prebuilt-b && chmod 755 /usr/local/bin/hello-prebuilt-b"
+    binary_path:
+      - "/usr/local/bin/hello-prebuilt-a"
+      - "/usr/local/bin/hello-prebuilt-b"
+    egress: []
+    mounts: []

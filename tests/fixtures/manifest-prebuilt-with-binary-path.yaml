@@ -1,0 +1,13 @@
+version: 1
+tools:
+  # Test fixture: a prebuilt TOOL entry with a declared binary_path.
+  # Used by tests/test-manifest-security.sh (B2a-B2d — rip-cage-ryn6) to verify
+  # binary-root-owned check on prebuilt entries with declared binary_path.
+  # The binary_path is declared as a string; validator uses this path directly.
+  - name: hello-prebuilt
+    archetype: TOOL
+    version_pin: "1.0.0"
+    install_cmd: "printf '#!/bin/sh\\necho hello-prebuilt\\n' > /usr/local/bin/hello-prebuilt && chmod 755 /usr/local/bin/hello-prebuilt"
+    binary_path: "/usr/local/bin/hello-prebuilt"
+    egress: []
+    mounts: []

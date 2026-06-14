@@ -1,8 +1,10 @@
 # Design: Rip Cage Ecosystem Tools Integration
 
 **Date:** 2026-03-27
-**Status:** Draft
+**Status:** Draft — partially superseded (see note)
 **Decisions:** [ADR-005](decisions/ADR-005-ecosystem-tools.md)
+
+> **Superseded note (2026-06-14, rip-cage-hqvk):** this is the original 2026-03-27 design snapshot. The build-arg customization layer it describes — per-tool `INCLUDE_<TOOL>` toggles, a repo-root `versions.env`, and `rc build --with/--full/--minimal` flags — was **not built**. The host-only tool manifest ([ADR-005 D7–D11](decisions/ADR-005-ecosystem-tools.md)) is the realized tool-inclusion + version-pin surface; bundled-tool versions ship as hardcoded Dockerfile `ARG` defaults. Read the `INCLUDE_`, `versions.env`, and `--with` sections below as historical intent, not current behavior — ADR-005's realized-mechanism notes are authoritative.
 
 ## Problem
 

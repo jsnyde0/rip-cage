@@ -76,11 +76,13 @@ Get the existing implementation working end-to-end and solid.
 
 Add UBS (bug scanner) as the first external tool. Validates the integration pattern.
 
-- [ ] Implement build-arg toggle pattern in Dockerfile ([ADR-005 D1](decisions/ADR-005-ecosystem-tools.md))
-- [ ] Add UBS as default tool ([ADR-005 D2](decisions/ADR-005-ecosystem-tools.md))
-- [ ] `rc build --with` / `--minimal` flags ([ADR-005 D4](decisions/ADR-005-ecosystem-tools.md))
-- [ ] Version pinning via `versions.env` ([ADR-005 D3](decisions/ADR-005-ecosystem-tools.md))
-- [ ] Standard 4-point integration pattern proven ([ADR-005 D5](decisions/ADR-005-ecosystem-tools.md))
+> **Superseded (2026-06-14, rip-cage-hqvk):** the build-arg customization layer this phase originally planned — per-tool `INCLUDE_<TOOL>` toggles, `versions.env`, `--with` flags — was never built. The host-only tool manifest ([ADR-005 D7–D11](decisions/ADR-005-ecosystem-tools.md)) is the realized tool-inclusion + version-pin surface. The items below are kept for history with their realized status.
+
+- [x] Build-time (not runtime) tool inclusion — realized via the host-only manifest, not per-tool build-arg toggles ([ADR-005 D1](decisions/ADR-005-ecosystem-tools.md))
+- [x] Add UBS as default tool — baked unconditionally ([ADR-005 D2](decisions/ADR-005-ecosystem-tools.md))
+- [ ] Per-cage tool selection (the `--with` role) — **deferred** onto the manifest (Open-decision 8 / rip-cage-4c5) ([ADR-005 D4](decisions/ADR-005-ecosystem-tools.md))
+- [x] Version pinning — bundled tools as hardcoded Dockerfile `ARG` defaults, user tools via manifest `version_pin`; no `versions.env` ([ADR-005 D3](decisions/ADR-005-ecosystem-tools.md))
+- [x] Standard integration pattern — generalized into the manifest archetypes ([ADR-005 D5](decisions/ADR-005-ecosystem-tools.md))
 
 **Design:** [Ecosystem Tools](2026-03-27-ecosystem-tools-design.md)
 
