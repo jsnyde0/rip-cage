@@ -474,9 +474,78 @@ test_t2c_herdr_server_starts_with_multiplexer() {
   rm -rf "$workspace"
 }
 
+# ---------------------------------------------------------------------------
+# T2d — ADR-006 D8: init-rip-cage.sh auto-installs bundled agent integrations
+# via herdr's public CLI after starting the herdr server (rip-cage-zshp).
+#
+# Verification: start a cage with RC_MULTIPLEXER=herdr, run init, then confirm
+# 'herdr integration status' shows pi AND claude as installed — WITHOUT any
+# manual 'herdr integration install' call. This proves D8's auto-install fires
+# from init-rip-cage.sh for every bundled agent present on PATH.
+#
+# Boundary: we do NOT call 'herdr integration install' ourselves — the cage init
+# must do it. If it does not, status shows "not installed" and the test FAILs.
+# ---------------------------------------------------------------------------
+test_t2d_herdr_integrations_auto_installed_by_init() {
+  if skip_if_not_e2e "T2d herdr integrations auto-installed by init (ADR-006 D8)"; then return 0; fi
+
+  if ! _t2_build_herdr_image; then
+    fail "T2d Image build failed — see [T2 setup] FAIL output above"
+    return
+  fi
+
+  local container_name="rc-herdr-t2d-$$"
+  local workspace
+  workspace=$(mktemp -d "${TMPDIR:-/tmp}/rc-herdr-e2e-XXXXXX")
+
+  # Start container with RC_MULTIPLEXER=herdr — NO manual integration install
+  docker run -d --name "$container_name" \
+    -e RC_MULTIPLEXER=herdr \
+    -v "${workspace}:/workspace" \
+    rip-cage:latest sleep infinity >/dev/null 2>&1 || true
+
+  # Run init — this is the ONLY thing that should install the integrations
+  docker exec "$container_name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || true
+
+  # Wait for herdr server to be ready (it backgrounds; give it a moment to accept connections)
+  local _w
+  for _w in 1 2 3 4 5; do
+    sleep 1
+    if docker exec "$container_name" test -S /home/agent/.config/herdr/herdr.sock 2>/dev/null; then
+      break
+    fi
+  done
+  unset _w
+
+  # Check integration status — NO manual 'herdr integration install' was called
+  local status_out
+  status_out=$(docker exec -u agent "$container_name" herdr integration status 2>&1 || true)
+  echo "  herdr integration status:"
+  echo "$status_out" | while IFS= read -r line; do echo "    $line"; done
+
+  # pi must show as installed (not "not installed")
+  if echo "$status_out" | grep -qE '^pi: *(current|outdated|installed)'; then
+    pass "T2d (ADR-006 D8) pi integration auto-installed by init (no manual install)"
+  else
+    fail "T2d (ADR-006 D8) pi integration NOT auto-installed — init-rip-cage.sh missing 'herdr integration install pi'"
+  fi
+
+  # claude must show as installed (not "not installed")
+  if echo "$status_out" | grep -qE '^claude: *(current|outdated|installed)'; then
+    pass "T2d (ADR-006 D8) claude integration auto-installed by init (no manual install)"
+  else
+    fail "T2d (ADR-006 D8) claude integration NOT auto-installed — init-rip-cage.sh missing 'herdr integration install claude'"
+  fi
+
+  docker stop "$container_name" >/dev/null 2>&1 || true
+  docker rm "$container_name" >/dev/null 2>&1 || true
+  rm -rf "$workspace"
+}
+
 test_t2a_herdr_binary_installed
 test_t2b_herdr_binary_root_owned
 test_t2c_herdr_server_starts_with_multiplexer
+test_t2d_herdr_integrations_auto_installed_by_init
 
 echo ""
 echo "Results: FAILURES=${FAILURES}"

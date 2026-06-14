@@ -509,6 +509,30 @@ case "$_rc_mux" in
       _herdr_pid=$!
       echo "[rip-cage] session.multiplexer=herdr: server started (PID=${_herdr_pid})"
       unset _herdr_pid
+      # ADR-006 D8: install each bundled coding-agent's herdr integration via
+      # herdr's PUBLIC CLI — looping over agents present on PATH (pi, claude, …).
+      # herdr integration install writes to the agent's own config dir (no server
+      # contact needed — runs fine immediately after the server backgrounds).
+      # Fail-LOUD on install error (ADR-001) but do NOT abort cage init — log a
+      # WARNING and continue (autonomy is the product; one agent's integration
+      # failing must not dark-cage the whole multiplexer surface).
+      # Boundary: use herdr's public CLI only — do NOT hand-place internal files.
+      _herdr_agents="pi claude"
+      for _herdr_agent in $_herdr_agents; do
+        if command -v "${_herdr_agent}" > /dev/null 2>&1; then
+          _herdr_install_out=$(herdr integration install "${_herdr_agent}" 2>&1)
+          _herdr_install_rc=$?
+          if [ "${_herdr_install_rc}" -eq 0 ]; then
+            echo "[rip-cage] session.multiplexer=herdr: integration installed for ${_herdr_agent}: ${_herdr_install_out}"
+          else
+            echo "[rip-cage] WARNING: herdr integration install ${_herdr_agent} failed (exit=${_herdr_install_rc}): ${_herdr_install_out}" >&2
+          fi
+          unset _herdr_install_out _herdr_install_rc
+        else
+          echo "[rip-cage] session.multiplexer=herdr: ${_herdr_agent} not on PATH — skipping integration install"
+        fi
+      done
+      unset _herdr_agents _herdr_agent
     else
       echo "[rip-cage] WARNING: session.multiplexer=herdr but herdr not found on PATH — no server started" >&2
     fi
