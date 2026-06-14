@@ -125,6 +125,27 @@ Identity has two distinct layers: the **per-session handle** (the multiplexer's 
 
 **What would invalidate this (post-re-decision):** If box-only proves to leave a UX gap the composition seam can't fill — i.e. users genuinely cannot run multi-agent workflows without bespoke per-multiplexer knowledge that rip-cage could cheaply have abstracted behind a thin adapter. Signal: repeated requests for an `rc`-native "spawn/list agent" verb that behaves identically across multiplexers, such that the box-only boundary reads as friction rather than clean composition. (The *prior* invalidation predicate — standalone-human-primary + no cockpit present — was **tripped** by the default-`none` path and resolved by making the multiplexer the composable cockpit per the re-decision note above; it no longer applies as written.)
 
+### D8: The cage completes the multiplexer's supervision surface via the tool's public integration CLI (added 2026-06-14)
+
+**Firmness: FLEXIBLE** (refines D7's "multiplexer owns supervise" with the composition *locus*; the specific CLI verb and bundled-agent set may shift as herdr's surface or the shipped agents evolve).
+
+When `session.multiplexer: herdr` brings up the herdr server (`init-rip-cage.sh`), the cage **also installs each bundled coding-agent's herdr integration** via herdr's public `herdr integration install <agent>` CLI — looping over the agents present on PATH (pi, claude, …). Starting the server *without* the integrations ships a **half-built supervision surface**: herdr falls back to process-detection (the pane reads `idle` always) and never renders the semantic working/blocked/done states that are its supervise value-add (D7) and the autonomy value prop (an operator who walks away sees no agent state).
+
+**Boundary principle (the reusable, cross-cutting part):** rip-cage is the *composition layer*; it wires tool↔tool integrations **only through each tool's public CLI/API, never by hand-placing another tool's internal files.** The cage calls `herdr integration install pi` (public) and lets herdr own where its extension lands; it does **not** copy herdr's `herdr-agent-state.ts` into pi's extension dir itself. Coupling stays at the stable public-API seam each tool designed for integrators — composition, not enmeshing — and each tool still does one thing (herdr supervises, pi/claude do agent work, the integration reports state; the cage composes them). This principle governs any future tool↔tool wiring the cage performs.
+
+**Rationale:** `direct:` rip-cage-w621.3 (composed-cage validation, child A3) found the shipped herdr cage semantically dark — `init` runs `herdr server` but no `integration install`, so `herdr agent list` showed only process-detection `idle`; the `working` state was observable only after a manual `herdr integration install pi`. `reasoned:` completing a surface the cage half-built, via the tool's public CLI, is the same category as `init`'s existing auth / settings.json / hooks wiring — the agent-as-installer pattern the cage *is*. herdr exposes `integration install <agent>` (12 agents) precisely for an integrator; consuming that seam is the unix-composable path.
+
+**Alternatives considered:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **Cage auto-installs each present agent's integration via the public CLI** (chosen 2026-06-14) | supervisor view renders semantic states by default; generalizes over bundled agents; coupling at the public seam | `reasoned:` cage runs one more public-CLI call at herdr-server-start — negligible vs the dark-supervisor cost |
+| Leave integrations opt-in (status quo: server only) | zero extra init work | `direct:` rip-cage-w621.3 / rip-cage-zshp — ships herdr's headline supervise feature dark by default; defeats D7 + the autonomy value prop; forces the human to hand-wire two tools the cage already bundled |
+| Hand-place herdr's extension file into the agent's extension dir | no dependency on herdr's CLI surface | `reasoned:` reaches past both tools' public surfaces → enmeshing; brittle to herdr's internal format/path; the exact coupling the boundary principle forbids |
+| Hardcode `herdr integration install pi` only | simplest one-liner | `direct:` the cage bundles pi **and** claude — pi-specific doesn't generalize; claude-through-herdr would stay dark. Loop over present agents instead |
+
+**What would invalidate this:** if herdr makes `integration install` implicit on `agent start` (the server auto-wires integrations), the cage's explicit install becomes redundant — drop it. Or if a bundled agent's integration-install proves to have a harmful init-time side-effect (blocks/slows cage start, or writes outside the agent's own config), gate it behind agent-active detection rather than install-for-all-present.
+
 ## Deferred
 
 - **Kubernetes / cloud orchestration** -- local Docker only; VPS uses plain Docker
@@ -152,3 +173,5 @@ Identity has two distinct layers: the **per-session handle** (the multiplexer's 
 - [ADR-021 Layered rip-cage Config](ADR-021-layered-rip-cage-config.md) — D6 `session.multiplexer` enum, the config-layer expression of this re-decision.
 - [ADR-026 Containment + Delegated Mediation](ADR-026-containment-mediation-identity.md) — the composability posture (rip-cage as composable substrate) this extends to the process/session layer.
 - Consumer (cross-repo): dotpi `ADR-003` (factory two-plane model — orchestrators in the cage, cmux cockpit outside) + `dotpi-3bi` (self-driving bead factory) — the orchestration intelligence D7 deliberately keeps OUT of rip-cage lives here.
+- bead `rip-cage-w621.3` — composed-cage validation (child A3) that surfaced the dark-supervisor gap D8 closes; `rip-cage-zshp` — the integration-not-auto-installed bug D8 canonicalizes the fix for.
+- herdr `integration install <agent>` — the public composition CLI D8's boundary principle consumes (12 agents: pi, omp, claude, codex, …); `herdr integration status --outdated-only` for freshness.
