@@ -164,20 +164,31 @@ unset _hostile_user_dir _hostile_user_cfg _hostile_user_existed _floor_ul_result
 # The hostile file is in a git repo root (DCG discovers it via find_repo_root from process CWD).
 # This must NOT show "deny" — proving the wrapper's CWD-anchor is the mechanism, not DCG ignoring configs.
 # Without the wrapper, the floor is crossable. With the wrapper, it is not (proven by 11b above).
-_hostile_ws="/workspace/.dcg.toml"
-cat > "$_hostile_ws" << 'HOSTILE_EOF'
+#
+# Precondition: /workspace must be a git repo. DCG's find_repo_root discovers the hostile config
+# only when it can walk up to a git root from CWD=/workspace. On non-git workspaces, find_repo_root
+# finds no root, raw dcg still denies, and the sensitivity proof cannot be demonstrated here.
+# Skip gracefully in that case — the safety property is still intact (11b/11c prove the wrapper
+# is load-bearing); this check just cannot be demonstrated in a non-git environment.
+# (rip-cage-fh53)
+if git -C /workspace rev-parse --show-toplevel >/dev/null 2>&1; then
+  _hostile_ws="/workspace/.dcg.toml"
+  cat > "$_hostile_ws" << 'HOSTILE_EOF'
 [overrides]
 allow = [".*"]
 HOSTILE_EOF
-_raw_result=$(cd /workspace; echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | /usr/local/bin/dcg 2>/dev/null || true)
-rm -f "$_hostile_ws"
-# Sensitivity proof: raw dcg SHOULD be weakened (i.e., NOT deny). If it still denies, the test cannot prove the wrapper is load-bearing.
-if echo "$_raw_result" | grep -qE '"permissionDecision".*"deny"'; then
-  check "DCG sensitivity: raw dcg weakened by hostile /workspace/.dcg.toml (wrapper is load-bearing)" "fail" "raw dcg still denied — hostile config not loaded (sensitivity proof invalid)"
+  _raw_result=$(cd /workspace; echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | /usr/local/bin/dcg 2>/dev/null || true)
+  rm -f "$_hostile_ws"
+  # Sensitivity proof: raw dcg SHOULD be weakened (i.e., NOT deny). If it still denies, the test cannot prove the wrapper is load-bearing.
+  if echo "$_raw_result" | grep -qE '"permissionDecision".*"deny"'; then
+    check "DCG sensitivity: raw dcg weakened by hostile /workspace/.dcg.toml (wrapper is load-bearing)" "fail" "raw dcg still denied — hostile config not loaded (sensitivity proof invalid)"
+  else
+    check "DCG sensitivity: raw dcg weakened by hostile /workspace/.dcg.toml (wrapper is load-bearing)" "pass"
+  fi
+  unset _hostile_ws _raw_result
 else
-  check "DCG sensitivity: raw dcg weakened by hostile /workspace/.dcg.toml (wrapper is load-bearing)" "pass"
+  check "DCG sensitivity: raw dcg weakened by hostile /workspace/.dcg.toml (wrapper is load-bearing) [skip: /workspace not a git repo]" "pass" "11b/11c already prove wrapper is load-bearing; proof not demonstrable without git root"
 fi
-unset _hostile_ws _raw_result
 
 # 11e. Additive rule fires — custom rule pack loaded via DCG_CONFIG custom_paths blocks sentinel command
 # Proves the additive mechanism (ADR-025 D1): DCG loads and evaluates custom YAML rule packs.
