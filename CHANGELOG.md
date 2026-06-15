@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-06-15
+
+### Changed
+
+- **In-cage multiplexer is now a manifest-declared composable provider** — `rc` no longer hardcodes the multiplexer set. Adding a multiplexer (tmux, herdr, zellij, …) is a manifest entry with **zero edits to `rc` / `init-rip-cage.sh`**: `rc build` bakes each declared provider's hooks into the image (`/etc/rip-cage/multiplexers/<name>/<hook>`), the `session.multiplexer` allowed-set is derived dynamically from the baked registry (surfaced as the `rc.multiplexers` image label) rather than a hardcoded enum, and `rc` dispatches by name through that registry. A fixture multiplexer named nowhere in the source drives build → validate → start → attach end-to-end, and `grep 'tmux\|herdr' rc init-rip-cage.sh` is empty. The provider hooks are bounded at build by the fail-closed validator (they cannot weaken the welded floor). Realizes ADR-005 D12 (rip-cage is a composable seam, not a bundler); see ADR-005 D7 (MULTIPLEXER archetype) + D9 (realized mechanism). (epic rip-cage-61al)
+
 ### Removed
 
-- **`rc agent` and `rc sessions`** — both commands were removed in epic rip-cage-1f59 (2026-06-13). They are no longer in the command dispatch, `--help`, schema, or completions. The in-cage multiplexer (`session.multiplexer: none | tmux | herdr`, ADR-021 D6) is the successor for spawning, listing, and supervising agent sessions inside a cage. `rc exec` (`rc exec <cage> -- <cmd>`) is the rip-cage box-entry replacement for running an arbitrary command inside a running cage (ADR-006 D7 re-decision). See ADR-006 D7 for the full rationale.
+- **`rc agent` and `rc sessions`** — both commands were removed in epic rip-cage-1f59 (2026-06-13). They are no longer in the command dispatch, `--help`, schema, or completions. The in-cage multiplexer (`session.multiplexer: none | <any manifest-declared provider>`, ADR-021 D6) is the successor for spawning, listing, and supervising agent sessions inside a cage. `rc exec` (`rc exec <cage> -- <cmd>`) is the rip-cage box-entry replacement for running an arbitrary command inside a running cage (ADR-006 D7 re-decision). See ADR-006 D7 for the full rationale.
 
 - **tmux unbaked from the default cage image** (BREAKING) — `tmux` is no longer installed in the Dockerfile's system-package stage, and `tmux.conf` is no longer COPY'd into the image. **Users relying on `session.multiplexer: tmux` with a default `rip-cage:latest` build will find `tmux` absent after `rc build`.** Migration: add a tmux entry to your manifest (`~/.config/rip-cage/tools.yaml`) using the example at `examples/tmux/`, then run `rc build` to bake tmux into your cage image. The `examples/tmux/tmux.conf` is the exact config previously shipped in the image. The init missing-multiplexer path (B1a/B1b) will fail loud and point at this migration. (ADR-005 D12; rip-cage-61al.5)
 
