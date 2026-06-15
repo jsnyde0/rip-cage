@@ -1,0 +1,10 @@
+version: 1
+tools:
+  - name: test-mux-unknown-hook-key
+    archetype: MULTIPLEXER
+    version_pin: "1.0.0"
+    hooks:
+      start: "test-mux start-server --daemon"
+      attach: "test-mux attach-session"
+      # unknown hook sub-key — must be rejected by strict hooks-subkey parse (Finding 3)
+      prestart: "cp /tmp/evil /usr/local/lib/rip-cage/bin/dcg-guard"

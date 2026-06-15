@@ -6572,10 +6572,10 @@ _manifest_validate() {
       return 1
     fi
     case "$archetype" in
-      TOOL|SHELL-INTEGRATION|IN-CAGE-DAEMON)
+      TOOL|SHELL-INTEGRATION|IN-CAGE-DAEMON|MULTIPLEXER)
         ;;
       *)
-        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): unknown 'archetype' value '${archetype}'. Allowed: TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON." >&2
+        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): unknown 'archetype' value '${archetype}'. Allowed: TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON, MULTIPLEXER." >&2
         return 1
         ;;
     esac
@@ -6834,6 +6834,164 @@ _manifest_validate() {
           echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'state_dir' must not contain shell metacharacters (\$\`;&|><()\\); got '${daemon_state_dir}'." >&2
           return 1
         fi
+        ;;
+      MULTIPLEXER)
+        # MULTIPLEXER archetype: provider hook contract (ADR-005 D9/D11, rip-cage-61al.1).
+        # Required: hooks.start, hooks.attach
+        # Optional: hooks.exec, hooks.new_session, hooks.teardown
+        # Strict-parse: unknown top-level fields rejected (ADR-025 D5).
+        # Hook-bounds check: each hook command is statically asserted to not weaken the
+        # safety floor (ADR-005 D10/D11, ADR-001 fail-loud). Parse, never run.
+
+        # Strict-parse: reject unknown/extra top-level fields on MULTIPLEXER entries.
+        # Known fields: name, archetype, version_pin, hooks
+        local mux_known_fields mux_entry_keys mux_unknown_key
+        mux_known_fields="name archetype version_pin hooks"
+        mux_entry_keys=$(jq -r 'keys[]' <<<"$entry" 2>/dev/null)
+        while IFS= read -r mux_unknown_key; do
+          [[ -z "$mux_unknown_key" ]] && continue
+          local mux_is_known=0
+          local mux_known_chk
+          for mux_known_chk in $mux_known_fields; do
+            if [[ "$mux_unknown_key" == "$mux_known_chk" ]]; then
+              mux_is_known=1
+              break
+            fi
+          done
+          if [[ "$mux_is_known" -eq 0 ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): MULTIPLEXER entry has unknown field '${mux_unknown_key}' (strict-parse — only name/archetype/version_pin/hooks are allowed; ADR-025 D5)." >&2
+            return 1
+          fi
+        done <<<"$mux_entry_keys"
+
+        # 'hooks' block is required
+        local hooks_type
+        hooks_type=$(jq -r 'if has("hooks") then (.hooks | type) else "absent" end' <<<"$entry" 2>/dev/null)
+        if [[ "$hooks_type" == "absent" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'hooks' is missing (MULTIPLEXER archetype)." >&2
+          return 1
+        fi
+        if [[ "$hooks_type" != "object" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'hooks' must be an object, got: ${hooks_type} (MULTIPLEXER archetype)." >&2
+          return 1
+        fi
+
+        # Required hooks: start and attach
+        local mux_start mux_attach
+        mux_start=$(jq -r '.hooks.start // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        mux_attach=$(jq -r '.hooks.attach // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        if [[ "$mux_start" == "___RC_ABSENT___" || -z "$mux_start" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'hooks.start' is missing (MULTIPLEXER archetype — start hook is required)." >&2
+          return 1
+        fi
+        if [[ "$mux_attach" == "___RC_ABSENT___" || -z "$mux_attach" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'hooks.attach' is missing (MULTIPLEXER archetype — attach hook is required)." >&2
+          return 1
+        fi
+
+        # Optional hooks: exec, new_session, teardown (absent = no-op / generic fallback)
+        local mux_exec mux_new_session mux_teardown
+        mux_exec=$(jq -r '.hooks.exec // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        mux_new_session=$(jq -r '.hooks.new_session // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        mux_teardown=$(jq -r '.hooks.teardown // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+
+        # Strict-parse: reject unknown keys INSIDE the hooks object (Finding 3 / ADR-025 D5).
+        # Known hook sub-keys: start, attach, exec, new_session, teardown.
+        # An unrecognized hook key escapes both the required-hooks check and the bounds
+        # iterator — a command hiding under an unknown key is never inspected. Fail-closed.
+        local mux_known_hooks mux_hooks_keys mux_hook_key
+        mux_known_hooks="start attach exec new_session teardown"
+        mux_hooks_keys=$(jq -r '.hooks | keys[]' <<<"$entry" 2>/dev/null)
+        while IFS= read -r mux_hook_key; do
+          [[ -z "$mux_hook_key" ]] && continue
+          local mux_hook_is_known=0
+          local mux_known_hook_chk
+          for mux_known_hook_chk in $mux_known_hooks; do
+            if [[ "$mux_hook_key" == "$mux_known_hook_chk" ]]; then
+              mux_hook_is_known=1
+              break
+            fi
+          done
+          if [[ "$mux_hook_is_known" -eq 0 ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): MULTIPLEXER entry has unknown hook key '${mux_hook_key}' inside 'hooks' (strict-parse — only start/attach/exec/new_session/teardown are allowed; ADR-025 D5, ADR-005 D10/D11)." >&2
+            return 1
+          fi
+        done <<<"$mux_hooks_keys"
+
+        # Hook-bounds check (M7, ADR-005 D10/D11, ADR-001 fail-loud).
+        # Each hook command string is STATICALLY parsed (NEVER executed) to assert it
+        # does NOT weaken the safety floor. This is the fail-closed check.
+        # validate-config-by-parsing-not-by-running-fail-open-consumer.
+        #
+        # Forbidden patterns (floor-weakening):
+        #   1. Writes to DCG global config: ~/.config/dcg/config.toml or
+        #      any path matching */.config/dcg/config.toml or /root/.config/dcg*
+        #   2. Writes to workspace DCG config: .dcg.toml (any path ending in .dcg.toml)
+        #   3. PATH-shadows a safety binary: copies a file to /usr/local/bin/dcg,
+        #      /usr/local/bin/dcg-policy, /usr/local/bin/block-ssh-bypass, or
+        #      prepends a PATH entry that shadows one of these names (PATH=...:$PATH
+        #      where the prepended dir contains dcg/dcg-policy/block-ssh-bypass).
+        #      Static check: reject any hook that sets PATH= (PATH manipulation is
+        #      the mechanism; legitimate muxers do not need PATH overrides in hooks).
+        #   3b. Direct write to safety binary paths — includes the real in-image paths:
+        #      /usr/local/lib/rip-cage/bin/dcg-guard (DCG guard wrapper, policy enforcer)
+        #      /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh (ssh-bypass blocker)
+        #      as well as /usr/local/bin/{dcg,dcg-policy,block-ssh-bypass} (Finding 1).
+        #   4. Lifecycle-interceptor registration — hook modifies the Claude Code settings
+        #      file (/etc/rip-cage/settings.json) or references the hook lifecycle keys
+        #      PreToolUse / PostToolUse (Finding 2, M7 requirement).
+        local mux_hook_name mux_hook_cmd
+        for mux_hook_name in start attach exec new_session teardown; do
+          case "$mux_hook_name" in
+            start)  mux_hook_cmd="$mux_start" ;;
+            attach) mux_hook_cmd="$mux_attach" ;;
+            exec)   mux_hook_cmd="$mux_exec" ;;
+            new_session) mux_hook_cmd="$mux_new_session" ;;
+            teardown) mux_hook_cmd="$mux_teardown" ;;
+          esac
+          [[ "$mux_hook_cmd" == "___RC_ABSENT___" || -z "$mux_hook_cmd" ]] && continue
+
+          # Pattern 1: DCG global config write — matches /.config/dcg/ path patterns
+          # including ~, $HOME, /home/*, /root variants.
+          if echo "$mux_hook_cmd" | grep -qE '\.config/dcg/'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${mux_hook_name}' references '.config/dcg/' path, which is the DCG safety floor config (floor-weakening write; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
+            return 1
+          fi
+
+          # Pattern 2: Workspace DCG config write — any path ending in .dcg.toml
+          if echo "$mux_hook_cmd" | grep -qE '\.dcg\.toml'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${mux_hook_name}' references '.dcg.toml', which is the workspace DCG config (floor-weakening write; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
+            return 1
+          fi
+
+          # Pattern 3: PATH manipulation — hook sets PATH= which can shadow safety binaries.
+          # Legitimate multiplexer hooks (start, attach, exec) do not need PATH overrides;
+          # any PATH= in a hook command is a floor-weakening signal (static reject).
+          if echo "$mux_hook_cmd" | grep -qE 'PATH='; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${mux_hook_name}' sets PATH=, which can PATH-shadow safety binaries (dcg, dcg-policy, block-ssh-bypass) and weakens the safety floor (floor-weakening; ADR-005 D10/D11, ADR-001 fail-loud). Remove PATH manipulation from hook commands." >&2
+            return 1
+          fi
+
+          # Pattern 3b: Direct write to safety binary paths — all in-image locations.
+          # Covers /usr/local/lib/rip-cage/bin/dcg-guard (the policy-enforcing wrapper),
+          # /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh (ssh-bypass blocker),
+          # and the /usr/local/bin / /usr/bin paths for dcg, dcg-policy, block-ssh-bypass.
+          if echo "$mux_hook_cmd" | grep -qE '/(usr/local/lib/rip-cage/(bin|hooks)|usr/local/bin|usr/bin)/(dcg-guard|dcg|dcg-policy|block-ssh-bypass(\.sh)?)'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${mux_hook_name}' writes to a safety binary path (/usr/local/lib/rip-cage/bin/dcg-guard or similar), which would replace a safety floor binary (floor-weakening; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
+            return 1
+          fi
+
+          # Pattern 4: Lifecycle-interceptor registration (M7, Finding 2).
+          # A multiplexer hook must NOT modify the Claude Code settings file or reference
+          # lifecycle hook registration keys. These strings have no legitimate place in a
+          # multiplexer start/attach hook; any reference is a floor-weakening signal.
+          # Matches: /etc/rip-cage/ (settings dir), settings.json (the lifecycle config),
+          # PreToolUse, PostToolUse (the hook-registration keys in the settings schema).
+          if echo "$mux_hook_cmd" | grep -qE '/etc/rip-cage/|settings\.json|PreToolUse|PostToolUse'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${mux_hook_name}' references lifecycle-interceptor targets (/etc/rip-cage/, settings.json, PreToolUse, or PostToolUse), which can register hooks that weaken the safety floor (floor-weakening lifecycle-interceptor; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
+            return 1
+          fi
+        done
         ;;
     esac
   done

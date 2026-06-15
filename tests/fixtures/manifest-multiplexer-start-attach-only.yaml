@@ -1,0 +1,8 @@
+version: 1
+tools:
+  - name: test-mux-minimal
+    archetype: MULTIPLEXER
+    version_pin: "2.0.0"
+    hooks:
+      start: "test-mux start-server"
+      attach: "test-mux attach"

@@ -1,0 +1,11 @@
+version: 1
+tools:
+  - name: test-mux
+    archetype: MULTIPLEXER
+    version_pin: "1.0.0"
+    hooks:
+      start: "test-mux start-server --daemon"
+      attach: "test-mux attach-session"
+      exec: "test-mux exec-in-session"
+      new_session: "test-mux new-session"
+      teardown: "test-mux stop-server"

@@ -1,0 +1,9 @@
+version: 1
+tools:
+  - name: test-mux-unknown-field
+    archetype: MULTIPLEXER
+    version_pin: "1.0.0"
+    hooks:
+      start: "test-mux start-server"
+      attach: "test-mux attach"
+    unknown_extra_field: "this should fail strict-parse for MULTIPLEXER"

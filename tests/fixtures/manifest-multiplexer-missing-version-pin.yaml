@@ -1,0 +1,8 @@
+version: 1
+tools:
+  - name: test-mux-no-pin
+    archetype: MULTIPLEXER
+    # version_pin intentionally omitted — validator must reject this (ADR-005 D3)
+    hooks:
+      start: "test-mux start-server"
+      attach: "test-mux attach"
