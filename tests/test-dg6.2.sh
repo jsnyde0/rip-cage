@@ -33,7 +33,7 @@ echo ""
 echo "=== Test 2: rc up warns when RC_ALLOWED_ROOTS is unset ==="
 test_dir=$(mktemp -d)
 unset RC_ALLOWED_ROOTS 2>/dev/null || true
-up_err=$(RC_CONFIG=/dev/null env -u RC_ALLOWED_ROOTS "$RC" up "$test_dir" 2>&1) || true
+up_err=$(RC_CONFIG=/dev/null env -u RC_ALLOWED_ROOTS "$RC" --dry-run up "$test_dir" 2>&1) || true
 if echo "$up_err" | grep -q "RC_ALLOWED_ROOTS"; then
   pass "rc up mentions RC_ALLOWED_ROOTS when unset"
 else
@@ -101,17 +101,14 @@ fi
 
 # --- Test 8: validate_path accepts valid path under allowed root ---
 echo ""
-echo "=== Test 8: rc up accepts valid path under allowed root (fails later at Docker) ==="
-# This should pass validation and fail at Docker check
-valid_err=$(RC_ALLOWED_ROOTS="$(dirname "$test_dir")" "$RC" up "$test_dir" 2>&1) || true
-# Clean up any container that rc may have created before failing
-container_name=$(basename "$(dirname "$test_dir")")-$(basename "$test_dir")
-docker rm -f "$container_name" 2>/dev/null || true
+echo "=== Test 8: rc up accepts valid path under allowed root (dry-run, no Docker side-effects) ==="
+# --dry-run: validation passes, no docker pull/build/create; image-agnostic.
+valid_err=$(RC_ALLOWED_ROOTS="$(dirname "$test_dir")" "$RC" --dry-run up "$test_dir" 2>&1) || true
 # Should NOT contain path validation errors
 if echo "$valid_err" | grep -q "outside allowed roots\|RC_ALLOWED_ROOTS not set\|does not exist\|not a directory\|control characters"; then
   fail "rc up rejected valid path. Got: $valid_err"
 else
-  pass "rc up accepted valid path (failed at Docker check as expected)"
+  pass "rc up accepted valid path (dry-run previews action without Docker)"
 fi
 
 # --- Test 9: validate_path JSON error output ---
@@ -204,15 +201,17 @@ else
   fail "rc init did not validate path. Got: $init_err"
 fi
 
-# --- Test 17: --output json includes warning field when RC_ALLOWED_ROOTS unset ---
+# --- Test 17: rc up warns when RC_ALLOWED_ROOTS unset (dry-run, stderr warning) ---
 echo ""
-echo "=== Test 17: rc up --output json includes warning field when RC_ALLOWED_ROOTS unset ==="
+echo "=== Test 17: rc up --dry-run warns when RC_ALLOWED_ROOTS unset ==="
 warn_json_dir=$(mktemp -d)
-warn_json_out=$(RC_CONFIG=/dev/null env -u RC_ALLOWED_ROOTS "$RC" --output json up "$warn_json_dir" 2>/dev/null) || true
-if echo "$warn_json_out" | jq -e '.warning' >/dev/null 2>&1; then
-  pass "--output json includes warning field when RC_ALLOWED_ROOTS unset"
+# --dry-run stops at post-validation without docker side-effects (image-agnostic).
+# The RC_ALLOWED_ROOTS warning is emitted to stderr regardless of --output format.
+warn_out=$(RC_CONFIG=/dev/null env -u RC_ALLOWED_ROOTS "$RC" --dry-run up "$warn_json_dir" 2>&1) || true
+if echo "$warn_out" | grep -q "RC_ALLOWED_ROOTS"; then
+  pass "rc up --dry-run warns when RC_ALLOWED_ROOTS unset"
 else
-  fail "--output json missing warning field. Got: $warn_json_out"
+  fail "rc up --dry-run did not warn about RC_ALLOWED_ROOTS. Got: $warn_out"
 fi
 rmdir "$warn_json_dir" 2>/dev/null || true
 

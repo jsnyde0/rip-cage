@@ -27,8 +27,13 @@ pass() { echo "PASS C$1: $2"; }
 fail() { echo "FAIL C$1: $2 — $3"; FAILURES=$((FAILURES + 1)); }
 
 # Source rc to get access to internal functions.
+# rc starts with `set -euo pipefail` (rc:2); sourcing leaks `set -e` into this
+# shell, overriding the intentional omission of -e at the top of this file.
+# Re-assert `set +e` immediately after so bare non-zero commands in C6+ do not
+# abort the suite (especially on Python 3.11+ hosts where tomllib is present).
 # shellcheck disable=SC1090
 source "$RC" 2>/dev/null
+set +e
 
 # Build sandbox with optional config files. Sets TEST_HOME, TEST_WS, CACHE_DIR.
 TEST_HOME=""

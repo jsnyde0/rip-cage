@@ -8811,11 +8811,14 @@ _config_format_yaml() {
         fi
         ;;
       selection_list)
-        # Enum-scalar variant: value is a JSON string (not array) when _allowed is set.
-        # Render as scalar. Array variant (legacy: allowed_keys) renders as list.
+        # Enum-scalar variant: value is a JSON string (not array).
+        # Render as scalar. Array variant (e.g. allowed_keys) renders as list.
+        # Note: _allowed is the 4th schema column; some scalar selection_list fields
+        # (e.g. session.multiplexer) have no static 4th column yet are still string
+        # scalars — detect via JSON type, not _allowed presence.
         if [[ "$val" == "null" ]]; then
           echo "${indent}${leaf}: null               # ${src_text}"
-        elif [[ -n "$_allowed" ]]; then
+        elif [[ -n "$_allowed" ]] || jq -e 'type == "string"' <<<"$val" >/dev/null 2>&1; then
           # Enum scalar — render as plain scalar value
           local v_text
           v_text=$(jq -r '.' <<<"$val")

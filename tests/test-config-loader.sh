@@ -57,10 +57,34 @@ TEST_HOME=""
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
+_NO_YQ_BINDIR=""
+
 cleanup() {
   [[ -n "${TEST_HOME:-}" && -d "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME"
+  [[ -n "${_NO_YQ_BINDIR:-}" && -d "${_NO_YQ_BINDIR:-}" ]] && rm -rf "$_NO_YQ_BINDIR"
 }
 trap cleanup EXIT
+
+# _make_no_yq_path: return a PATH string that includes essential tools but NOT yq.
+# Creates a temp bindir (once; cached in _NO_YQ_BINDIR) with symlinks to needed tools
+# from their real locations, deliberately omitting yq — so `command -v yq` fails
+# regardless of where the system installed yq (e.g. /usr/bin/yq on ubuntu-latest).
+_make_no_yq_path() {
+  if [[ -z "${_NO_YQ_BINDIR:-}" ]]; then
+    _NO_YQ_BINDIR=$(mktemp -d)
+    local tool loc
+    # Symlink all tools rc may call from within config commands (except yq).
+    for tool in bash sh env cat grep sed awk sort uniq cut tr wc head tail find \
+                xargs mktemp realpath readlink rm mkdir cp mv chmod touch printf tee \
+                date id uname pwd ls jq python3 dirname basename stat file \
+                docker git curl wget; do
+      loc=$(command -v "$tool" 2>/dev/null) || continue
+      ln -sf "$loc" "${_NO_YQ_BINDIR}/${tool}" 2>/dev/null || true
+    done
+    # Deliberately do NOT symlink yq — that's the whole point.
+  fi
+  echo "$_NO_YQ_BINDIR"
+}
 
 # Build a sandbox HOME with optional global config + a workspace dir with
 # optional project config. Sets globals: TEST_HOME, TEST_WS.
@@ -360,12 +384,15 @@ test_t15_only_project() {
 
 test_t16_yq_missing_fails_loud() {
   setup_sandbox "" "config-project-basic.yaml"
-  local stderr_file exit_code
+  local stderr_file exit_code no_yq_path
   stderr_file=$(mktemp)
   exit_code=0
-  # Run with PATH that excludes yq.
+  # Run with a sanitized PATH that has the tools rc needs but NOT yq,
+  # so `command -v yq` fails regardless of where the system installed yq
+  # (e.g. /usr/bin/yq on ubuntu-latest, /usr/local/bin/yq on macOS).
+  no_yq_path=$(_make_no_yq_path)
   HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    PATH="/usr/bin:/bin" \
+    PATH="$no_yq_path" \
     bash -c "cd '$TEST_WS' && '$RC' config show" 2>"$stderr_file" >/dev/null \
     || exit_code=$?
   if [[ "$exit_code" -ne 0 ]] && grep -q "yq not found on PATH" "$stderr_file"; then
@@ -432,11 +459,12 @@ test_t18_validate_silent_no_config() {
 
 test_t19_validate_yq_missing_with_config_aborts() {
   setup_sandbox "" "config-project-basic.yaml"
-  local stderr_file exit_code
+  local stderr_file exit_code no_yq_path
   stderr_file=$(mktemp)
   exit_code=0
+  no_yq_path=$(_make_no_yq_path)
   HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    PATH="/usr/bin:/bin" \
+    PATH="$no_yq_path" \
     bash -c "source '$RC'; _config_validate_or_abort '$TEST_WS'" 2>"$stderr_file" \
     || exit_code=$?
   if [[ "$exit_code" -ne 0 ]] && grep -q "yq not found on PATH" "$stderr_file"; then
@@ -804,11 +832,12 @@ YAML
 
 test_t39_validate_yq_missing_with_global_config_emits_dependency_message() {
   setup_sandbox "config-global-basic.yaml" ""
-  local stderr_file exit_code
+  local stderr_file exit_code no_yq_path
   stderr_file=$(mktemp)
   exit_code=0
+  no_yq_path=$(_make_no_yq_path)
   HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    PATH="/usr/bin:/bin" \
+    PATH="$no_yq_path" \
     bash -c "source '$RC'; _config_validate_or_abort '$TEST_WS'" 2>"$stderr_file" \
     || exit_code=$?
   if [[ "$exit_code" -ne 0 ]] && grep -q "rip-cage config dependency" "$stderr_file"; then
