@@ -57,10 +57,13 @@ cleanup() {
 trap cleanup EXIT
 
 setup_sandbox() {
-  # Root fixtures OUTSIDE all rc-reserved prefixes (/tmp, /var, /home, /usr, ...).
-  # SCRIPT_DIR (the tests/ dir) is under the repo root, which is never in the
-  # reserved list, so symlink targets land on a path rc permits on both macOS and Linux.
-  TEST_HOME=$(mktemp -d "${SCRIPT_DIR}/rc-symlink-test-XXXXXX")
+  # Fixtures live in the default temp dir. On macOS this resolves to
+  # /var/folders/... (i.e. /private/var/...), which rc's symlink-reserved-path
+  # check deliberately does NOT canonicalize (rc:1543), so the targets are
+  # permitted. On a Linux host this test is NOT run under --host-only: every
+  # writable top-level (/home, /tmp, /var) is in rc's FHS-reserved set, leaving
+  # no non-reserved scratch dir — see the NEEDS_CONTAINER entry in run-host.sh.
+  TEST_HOME=$(mktemp -d)
   mkdir -p "${TEST_HOME}/.pi/agent"
 }
 
@@ -690,7 +693,7 @@ STUB
 
 test_s16_rc_reload_refuses_mounts_symlinks_change() {
   local test_home stub_dir ws cname cache_dir
-  test_home=$(mktemp -d "${SCRIPT_DIR}/rc-sfl-reload-XXXXXX")
+  test_home=$(mktemp -d)
   ws="${test_home}/workspace"
   cname="rc-sfl-reload-test"
   cache_dir="${test_home}/.cache/rip-cage/${cname}"
@@ -778,7 +781,7 @@ STUB
 
 test_s19_fingerprint_lock_fires_for_running_container() {
   local test_home stub_dir ws ws_real cname pi_agent
-  test_home=$(mktemp -d "${SCRIPT_DIR}/rc-sfl-fp-lock-XXXXXX")
+  test_home=$(mktemp -d)
   # Use a deterministic workspace path so container_name() produces a predictable name.
   # container_name() uses last two path components: parent-base.
   # Must use realpath for ws_real so stub rc.source.path label matches VALIDATED_PATH.

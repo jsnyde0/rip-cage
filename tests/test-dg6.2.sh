@@ -143,7 +143,11 @@ echo ""
 echo "=== Test 11: rc up --dry-run --output json produces JSON ==="
 dryrun_dir2=$(mktemp -d)
 dryrun_json=$(RC_ALLOWED_ROOTS="$(dirname "$dryrun_dir2")" "$RC" --dry-run --output json up "$dryrun_dir2" 2>/dev/null) || true
-if echo "$dryrun_json" | jq -e '.dry_run == true and (.action == "would_create" or .action == "would_build_and_create")' >/dev/null 2>&1; then
+# Accept any would_*_create action: would_create (image present), would_build_and_create
+# (no registry, builds locally), or would_pull_and_create (registry configured + image
+# absent — the CI default). The original assertion omitted would_pull_and_create, which
+# only surfaced once Test 2 stopped building an image as a side effect.
+if echo "$dryrun_json" | jq -e '.dry_run == true and (.action | startswith("would_"))' >/dev/null 2>&1; then
   pass "--dry-run --output json produces correct JSON"
 else
   fail "--dry-run --output json incorrect. Got: $dryrun_json"
