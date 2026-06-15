@@ -494,7 +494,7 @@ case "$_rc_mux" in
     _rc_mux_start_hook="/etc/rip-cage/multiplexers/${_rc_mux}/start"
     _rc_mux_registry_dir="/etc/rip-cage/multiplexers/${_rc_mux}"
     if [ ! -d "$_rc_mux_registry_dir" ]; then
-      echo "[rip-cage] ERROR: multiplexer '${_rc_mux}' was not declared in the manifest used to build this image — no registry dir at ${_rc_mux_registry_dir} (ADR-001 fail-loud). Rebuild the image with a MULTIPLEXER manifest entry for '${_rc_mux}', or set session.multiplexer: none." >&2
+      echo "[rip-cage] ERROR: multiplexer '${_rc_mux}' was not declared in the manifest used to build this image — no registry dir at ${_rc_mux_registry_dir} (ADR-001 fail-loud). Add a MULTIPLEXER manifest entry for '${_rc_mux}' (see examples/${_rc_mux}/) and rebuild, or set session.multiplexer: none." >&2
       exit 1
     fi
     if [ ! -f "$_rc_mux_start_hook" ]; then

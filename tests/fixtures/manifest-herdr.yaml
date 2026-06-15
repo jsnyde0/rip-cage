@@ -7,7 +7,7 @@ tools:
     # Targets: herdr-linux-x86_64 (amd64), herdr-linux-aarch64 (arm64).
     # Asset URL pattern: releases/download/v<version>/herdr-linux-<arch>
     # Binary placed at /usr/local/bin/herdr via 'install -m 755' (root-owned, ADR-005 D9).
-    # Server start is wired in init-rip-cage.sh (herdr branch, RC_MULTIPLEXER=herdr).
+    # Server start is dispatched via the baked MULTIPLEXER registry in init-rip-cage.sh (RC_MULTIPLEXER=herdr).
     # herdr CLI provides bash-CLI-over-bash control surface (SKILL.md: HERDR_ENV=1 env var
     # is set by herdr in managed panes; herdr pane/workspace/tab/wait CLIs over unix socket).
     version_pin: "0.6.10"

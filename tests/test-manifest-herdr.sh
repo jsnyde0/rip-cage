@@ -2,10 +2,10 @@
 # Host-side + e2e tests for herdr TOOL manifest fixture (rip-cage-1f59.5).
 # herdr: github.com/ogulcancelik/herdr — agent-aware terminal multiplexer.
 # Distribution: prebuilt release binaries (herdr-linux-x86_64, herdr-linux-aarch64).
-# Archetype: TOOL (binary on PATH; server start wired in init-rip-cage.sh herdr branch).
+# Archetype: TOOL (binary on PATH; server start dispatched via the baked MULTIPLEXER registry).
 #
 # ADR-005 D7 (TOOL archetype: binary install + egress declaration).
-# ADR-006 D6 (session.multiplexer: tmux drops as hard dep; herdr is opt-in via manifest).
+# ADR-021 D6 (session.multiplexer: tmux drops as hard dep; herdr is opt-in via manifest).
 #
 # =============================================================================
 # Test tiers
@@ -20,13 +20,13 @@
 #     T1d — install_cmd uses 'install -m 755' or chown root to place binary root-owned.
 #     T1e — Strict-parse rejects a TOOL entry missing install_cmd (missing-field guard).
 #     T1f — Default seed manifest does NOT contain a herdr entry (regression guard, ADR-005 D12).
-#     T1g — Formula/rip-cage.rb does NOT contain 'depends_on "tmux"' (ADR-006 D6).
+#     T1g — Formula/rip-cage.rb does NOT contain 'depends_on "tmux"' (ADR-021 D6).
 #
 #   T2  (e2e, NEEDS_CONTAINER / RC_E2E=1):
 #     T2a — rc build with herdr manifest installs herdr binary in cage.
 #     T2b — herdr binary is root-owned and NOT agent-writable (ADR-005 D9).
-#     T2c — init-rip-cage.sh herdr branch starts the herdr server process when
-#           RC_MULTIPLEXER=herdr; pgrep shows herdr server running.
+#     T2c — init-rip-cage.sh starts the herdr server process via the baked
+#           MULTIPLEXER registry when RC_MULTIPLEXER=herdr; pgrep shows herdr running.
 #
 # =============================================================================
 # Positive-sentinel discipline:
@@ -41,6 +41,10 @@ REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 FIXTURES="${SCRIPT_DIR}/fixtures"
 FIXTURE_FILE="${FIXTURES}/manifest-herdr.yaml"
+# T2 build fixture: two-entry fixture (herdr-bin TOOL + herdr MULTIPLEXER).
+# The TOOL-only fixture (manifest-herdr.yaml) does not bake the MULTIPLEXER registry,
+# so init-rip-cage.sh registry dispatch would exit 1 — T2c/T2d must use this fixture.
+T2_FIXTURE_FILE="${FIXTURES}/manifest-herdr-multiplexer.yaml"
 FAILURES=0
 TEST_HOME=""
 
@@ -265,7 +269,7 @@ test_t1f_default_seed_does_not_contain_herdr() {
 }
 
 # ---------------------------------------------------------------------------
-# T1g — Formula/rip-cage.rb does NOT contain 'depends_on "tmux"' (ADR-006 D6).
+# T1g — Formula/rip-cage.rb does NOT contain 'depends_on "tmux"' (ADR-021 D6).
 # tmux becomes optional/manifest-installed, not a hard Homebrew dependency.
 # ---------------------------------------------------------------------------
 test_t1g_formula_no_tmux_dep() {
@@ -279,9 +283,9 @@ test_t1g_formula_no_tmux_dep() {
   tmux_dep_count=$(grep -c 'depends_on "tmux"' "$formula_file" 2>/dev/null || true)
 
   if [[ "${tmux_dep_count}" -eq 0 ]]; then
-    pass "T1g Formula/rip-cage.rb has no 'depends_on \"tmux\"' (tmux is optional — ADR-006 D6)"
+    pass "T1g Formula/rip-cage.rb has no 'depends_on \"tmux\"' (tmux is optional — ADR-021 D6)"
   else
-    fail "T1g Formula/rip-cage.rb still has 'depends_on \"tmux\"' (${tmux_dep_count} occurrence(s)) — must be removed (ADR-006 D6)"
+    fail "T1g Formula/rip-cage.rb still has 'depends_on \"tmux\"' (${tmux_dep_count} occurrence(s)) — must be removed (ADR-021 D6)"
   fi
 }
 
@@ -313,11 +317,15 @@ _t2_build_herdr_image() {
 
   T2_BUILD_MANIFEST_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-herdr-e2e-home-XXXXXX")
   mkdir -p "${T2_BUILD_MANIFEST_HOME}/.config/rip-cage"
-  cp "${FIXTURE_FILE}" "${T2_BUILD_MANIFEST_HOME}/.config/rip-cage/tools.yaml"
+  # Use the two-entry fixture: herdr-bin TOOL (installs binary) + herdr MULTIPLEXER
+  # (bakes start/attach hooks into /etc/rip-cage/multiplexers/herdr/).
+  # The TOOL-only fixture (manifest-herdr.yaml) does not bake the registry, so
+  # init-rip-cage.sh registry dispatch (ADR-005 D12) would exit 1 at T2c/T2d.
+  cp "${T2_FIXTURE_FILE}" "${T2_BUILD_MANIFEST_HOME}/.config/rip-cage/tools.yaml"
 
   local build_out build_rc
   build_rc=0
-  echo "[T2 setup] Building cage image with herdr manifest (downloads prebuilt binary — may take ~1min)..."
+  echo "[T2 setup] Building cage image with herdr two-entry manifest (TOOL+MULTIPLEXER, downloads prebuilt binary — may take ~1min)..."
   build_out=$(HOME="$T2_BUILD_MANIFEST_HOME" \
     XDG_CONFIG_HOME="${T2_BUILD_MANIFEST_HOME}/.config" \
     "${REPO_ROOT}/rc" build 2>&1) || build_rc=$?
@@ -414,8 +422,8 @@ test_t2b_herdr_binary_root_owned() {
 }
 
 # ---------------------------------------------------------------------------
-# T2c — init-rip-cage.sh herdr branch starts the herdr server when
-# RC_MULTIPLEXER=herdr. pgrep inside the container shows herdr running.
+# T2c — init-rip-cage.sh starts the herdr server via the baked MULTIPLEXER
+# registry when RC_MULTIPLEXER=herdr. pgrep inside the container shows herdr running.
 # This is the critical RC_E2E proof that herdr actually starts (not just installed).
 # ---------------------------------------------------------------------------
 test_t2c_herdr_server_starts_with_multiplexer() {

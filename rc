@@ -8546,7 +8546,7 @@ _config_load_layer() {
     done
     if [[ "$_ev_ok" -eq 0 ]]; then
       if [[ "$_ev_key" == "session.multiplexer" ]]; then
-        echo "Error: '$file' has invalid value '${_ev_val}' for field '${_ev_key}'. '${_ev_val}' is not in the baked multiplexer registry (allowed: ${_ev_allowed}). Add the provider to your manifest and run \`rc build\` to bake it." >&2
+        echo "Error: '$file' has invalid value '${_ev_val}' for field '${_ev_key}'. '${_ev_val}' is not in the baked multiplexer registry (allowed: ${_ev_allowed}). Add the provider to your manifest and run \`rc build\` to bake it (see examples/ for provider definitions)." >&2
       else
         echo "Error: '$file' has invalid value '${_ev_val}' for field '${_ev_key}'. Allowed values: ${_ev_allowed}." >&2
       fi
