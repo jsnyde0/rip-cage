@@ -947,14 +947,18 @@ else
 fi
 rm -rf "$TEST_DIR_T33"
 
-# --- Test 34: _up_attach_tmux uses [[ -t 0 && -t 1 ]] (both stdin and stdout TTY check) ---
+# --- Test 34: registry dispatch uses [[ -t 0 && -t 1 ]] TTY guard (rip-cage-61al.3) ---
 echo ""
-echo "=== Test 34: _up_attach_tmux checks both stdin and stdout TTY ==="
-# Verify the source code uses the widened check
-if grep -A5 "_up_attach_tmux()" "${REPO_ROOT}/rc" | grep -q "\-t 0"; then
-  pass "_up_attach_tmux includes -t 0 (stdin) TTY check"
+echo "=== Test 34: registry dispatch checks both stdin and stdout TTY ==="
+# After rip-cage-61al.3 removed _up_attach_tmux, the TTY guard lives in the *)
+# branch of the registry dispatch case statements in cmd_up (running / resumed /
+# new-container paths). Verify the source still enforces both TTY checks via
+# the dispatch invocation pattern "docker exec -it" gated on "-t 0 && -t 1".
+# We grep for the combined pattern across all three dispatch sites.
+if grep -c '\-t 0 && \-t 1' "${REPO_ROOT}/rc" | grep -qE '^[1-9]'; then
+  pass "registry dispatch includes [[ -t 0 && -t 1 ]] TTY guard (stdin+stdout)"
 else
-  fail "_up_attach_tmux missing -t 0 stdin TTY check"
+  fail "registry dispatch missing [[ -t 0 && -t 1 ]] TTY guard — both stdin and stdout must be checked"
 fi
 
 # --- Test 35: _tmux_picker N=0 with mode=attach returns exit 1 + stderr pointing to rc up ---
@@ -1275,23 +1279,32 @@ else
   pass "rc exec dispatched (no usage fallthrough)"
 fi
 
-# --- Test 52: check_tmux source-gating — verify check_tmux is not called unconditionally for all up invocations ---
+# --- Test 52: mux prereq checks delegated to baked hooks (rip-cage-61al.3) ---
 echo ""
-echo "=== Test 52: check_tmux gating — verify dispatch gate is multiplexer-aware ==="
-# Strategy: the dispatch gate for check_tmux must guard on the configured multiplexer value.
-# Before implementation the gate was:
-#   up|attach|sessions|agent) [[ "$OUTPUT_FORMAT" == "json" ]] || check_tmux ;;
-# After implementation the check_tmux call must be guarded by a multiplexer variable check,
-# not called unconditionally for all 'up' invocations.
-# We assert: the line calling check_tmux (not the function def, not comments) ALSO references
-# a multiplexer variable or calls a multiplexer-reading helper.
-# "multiplexer" substring in the dispatch section (not just inside "check_tmux" word itself).
+echo "=== Test 52: multiplexer prereq checks delegated to baked provider hooks ==="
+# After rip-cage-61al.3, check_tmux was removed. The prerequisite section now
+# delegates mux binary checks to the baked provider hooks (registry dispatch).
+# Assert: (a) check_tmux does NOT appear in the prereq section (removed),
+#         (b) the prereq section references "baked" hooks for mux prereqs (comment
+#             or code — verifying the design intent is present in source).
 t52_gate_section=$(awk '/^# Prerequisite checks/,/^# Main dispatch/' "$RC")
-if echo "$t52_gate_section" | grep -q "check_tmux" && \
-   echo "$t52_gate_section" | grep -q "session.multiplexer\|_rc_mux_check\|multiplexer.*tmux\|tmux.*multiplexer"; then
-  pass "check_tmux dispatch gate is multiplexer-aware (multiplexer variable referenced in prereq section)"
+t52_no_check_tmux=false
+t52_has_hooks_comment=false
+if ! echo "$t52_gate_section" | grep -q 'check_tmux'; then
+  t52_no_check_tmux=true
+fi
+if echo "$t52_gate_section" | grep -qi 'baked\|hook\|provider\|registry'; then
+  t52_has_hooks_comment=true
+fi
+if [[ "$t52_no_check_tmux" == "true" ]]; then
+  pass "check_tmux not present in prereq section (correctly removed — mux prereqs are hook responsibility)"
 else
-  fail "check_tmux dispatch gate not multiplexer-aware — gate section lacks multiplexer reference alongside check_tmux"
+  fail "check_tmux still present in prereq section — should be removed (mux prereqs delegated to baked hooks per rip-cage-61al.3)"
+fi
+if [[ "$t52_has_hooks_comment" == "true" ]]; then
+  pass "prereq section references baked/hook/provider/registry (design intent documented)"
+else
+  fail "prereq section lacks reference to baked hooks — add a comment explaining mux prereqs are hook responsibility"
 fi
 
 # --- Cleanup ---

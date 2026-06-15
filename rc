@@ -113,7 +113,7 @@ _run_with_timeout() {
 # _docker_call SECS DOCKER_ARGS... — invoke `docker DOCKER_ARGS...` with a
 # bounded timeout (B per-call defense in depth). On timeout, fails loud with
 # DOCKER_DAEMON_UNREACHABLE so an agent or human sees a clear error rather than
-# a hung tmux session. Honors OUTPUT_FORMAT. stdout passes through.
+# a hung interactive session. Honors OUTPUT_FORMAT. stdout passes through.
 #
 # When NOT to use: long-running by design (image pulls, interactive sessions,
 # in-container test scripts). Leave those alone.
@@ -178,13 +178,6 @@ check_jq() {
   fi
 }
 
-# check_tmux — verifies tmux is installed (required for rc up CLI mode).
-check_tmux() {
-  if ! command -v tmux &>/dev/null; then
-    _prereq_error "tmux" "tmux" "tmux"
-  fi
-}
-
 usage() {
   cat <<'EOF'
 Usage: rc [--output json] [--dry-run] <command> [args]
@@ -200,8 +193,8 @@ Commands:
     --pids-limit N      PID limit (default: 500)
     --no-forward-ssh    Disable host ssh-agent forwarding (ADR-017)
     --github-identity=KEY  Pin github.com to KEY basename (e.g. id_ed25519_work) (ADR-020 D3)
-    --new               Skip picker; always create a new auto-named session (rip-cage-N)
-    --session NAME      Attach session NAME if it exists; create it otherwise
+    --new               Always start a new multiplexer session (auto-named; invokes new_session hook)
+    --session NAME      Forward NAME to the multiplexer attach hook as $1
   ls                                           List rip-cage containers
   attach [name]                                Attach to container (multiplexer-aware; plain shell under none)
   exec <cage> -- <cmd...>                      Run a one-off command in the container (non-interactive safe)
@@ -2812,8 +2805,8 @@ _up_resolve_resume_github_identity() {
 
 # _up_ssh_preflight -- probe the forwarded ssh-agent and surface status.
 # ADR-017 D4: the visible failure mode for a misconfigured forward is "loud at
-# rc up, visible in every tmux attach, visible in rc ls" — never a silent
-# push-time failure.
+# rc up, visible in every multiplexer attach, visible in rc ls" — never a
+# silent push-time failure.
 #
 # Five status values written to /etc/rip-cage/ssh-agent-status (sentinel read
 # by zshrc for the shell banner):
@@ -3701,233 +3694,6 @@ Continuing anyway — bd calls inside the container will fail until resolved."
   return 0
 }
 
-# _next_session_slot — given a newline-separated list of existing tmux session
-# names, return the name rip-cage-N where N is the lowest integer >= 2 that is
-# not already occupied.  Names that do not exactly match rip-cage-<decimal-N>
-# (e.g. rip-cage-foo, rip-cage itself, custom names) are ignored by the slot
-# scanner — they do not block any slot.
-_next_session_slot() {
-  local existing_names="$1"
-  local n=2
-  while true; do
-    echo "$existing_names" | grep -qxF "rip-cage-${n}" || break
-    n=$((n + 1))
-  done
-  echo "rip-cage-${n}"
-}
-
-# _tmux_picker — render a numbered session picker in the current terminal.
-# Args: $1 = container name, $2 = mode ("up"|"attach")
-# Returns via _PICKER_SESSION: the session name chosen, or "" if [new] was picked.
-# Exits 130 on Ctrl-C, exits 1 on EOF or persistent invalid input.
-_PICKER_SESSION=""
-_tmux_picker() {
-  local cname="$1"
-  local mode="${2:-up}"
-
-  # Build sorted session list: sort by session_last_attached descending (never-
-  # attached sessions report 0 and sort to the bottom; ties preserve list order).
-  local raw_sessions
-  raw_sessions=$(docker exec "$cname" tmux list-sessions -F '#{session_last_attached} #{session_name}' 2>/dev/null || true)
-
-  # Sort descending by attach time; never-attached (0) go to bottom.
-  local sorted_sessions
-  sorted_sessions=$(echo "$raw_sessions" | sort -s -k1,1 -rn | awk '{$1=""; print substr($0,2)}' )
-
-  local session_count
-  session_count=$(echo "$sorted_sessions" | grep -c . || true)
-
-  if [[ "$session_count" -eq 0 ]]; then
-    if [[ "$mode" == "attach" ]]; then
-      echo "Error: no tmux sessions running in $cname. Start one with: rc up" >&2
-      return 1
-    fi
-    # N=0: no picker; create default session below
-    _PICKER_SESSION="rip-cage"
-    return 0
-  fi
-
-  # Build display list with index, name, and last-attach time
-  local entries=()
-  local names=()
-  local idx=1
-  local raw_line
-  while IFS= read -r raw_line; do
-    [[ -z "$raw_line" ]] && continue
-    local sname="$raw_line"
-    # Look up last_attached for display
-    local ts
-    ts=$(docker exec "$cname" tmux display-message -p -t "$sname" '#{session_last_attached}' 2>/dev/null || echo "0")
-    local display_time
-    if [[ "$ts" == "0" ]] || [[ -z "$ts" ]]; then
-      display_time="never"
-    else
-      local now age_s
-      now=$(date +%s)
-      age_s=$(( now - ts ))
-      if [[ "$age_s" -lt 60 ]]; then
-        display_time="${age_s}s ago"
-      elif [[ "$age_s" -lt 3600 ]]; then
-        display_time="$(( age_s / 60 ))m ago"
-      else
-        display_time="$(( age_s / 3600 ))h ago"
-      fi
-    fi
-    entries+=("  ${idx}) ${sname} (last attached: ${display_time})")
-    names+=("$sname")
-    idx=$((idx + 1))
-  done <<EOF
-$sorted_sessions
-EOF
-
-  local new_idx="$idx"
-  entries+=("  ${new_idx}) [new] new session")
-
-  # Display picker
-  local e
-  for e in "${entries[@]}"; do
-    echo "$e" >&2
-  done
-  echo "" >&2
-
-  local input choice invalid_count=0
-  while true; do
-    printf "Pick [1]: " >&2
-    if ! read -r input; then
-      # EOF on stdin — AC-5(b): refuse to auto-select, exit 1
-      echo "" >&2
-      echo "rc: picker received EOF on stdin; refusing to auto-select. Use --new or --session <name>, or attach via 'rc attach <cage>'." >&2
-      return 1
-    fi
-
-    # Strip leading/trailing whitespace
-    input=$(echo "$input" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-
-    # Empty input = select entry 1
-    if [[ -z "$input" ]]; then
-      if [[ "${#names[@]}" -gt 0 ]]; then
-        _PICKER_SESSION="${names[0]}"
-        return 0
-      fi
-      _PICKER_SESSION=""
-      return 0
-    fi
-
-    # Validate numeric
-    case "$input" in
-      ''|*[!0-9]*)
-        invalid_count=$((invalid_count + 1))
-        if [[ "$invalid_count" -ge 2 ]]; then
-          echo "Error: invalid input. Exiting." >&2
-          return 1
-        fi
-        echo "Invalid selection. Try again." >&2
-        continue
-        ;;
-    esac
-
-    choice="$input"
-
-    if [[ "$choice" -ge 1 ]] && [[ "$choice" -lt "$new_idx" ]]; then
-      _PICKER_SESSION="${names[$((choice - 1))]}"
-      return 0
-    elif [[ "$choice" -eq "$new_idx" ]]; then
-      # [new] selected
-      _PICKER_SESSION=""
-      return 0
-    else
-      invalid_count=$((invalid_count + 1))
-      if [[ "$invalid_count" -ge 2 ]]; then
-        echo "Error: invalid selection. Exiting." >&2
-        return 1
-      fi
-      echo "Invalid selection. Try again." >&2
-    fi
-  done
-}
-
-# _up_attach_tmux — attach to a container's tmux session when a real TTY is
-# present on both stdin AND stdout; print a hint instead when called from a
-# non-interactive context (e.g. an agent Bash tool, CI, or pipe).
-# Args: $1=container-name $2=session-name (default: rip-cage)
-_up_attach_tmux() {
-  local name="$1"
-  local session="${2:-rip-cage}"
-  if [[ -t 0 && -t 1 ]]; then
-    docker exec -it "$name" tmux attach-session -t "$session"
-  else
-    echo "Container $name is running. Attach with: rc attach $name"
-  fi
-}
-
-# _up_attach_tmux_new — create a new auto-named session and attach.
-# Args: $1=container-name
-_up_attach_tmux_new() {
-  local name="$1"
-  local existing
-  existing=$(docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
-  local new_session
-  new_session=$(_next_session_slot "$existing")
-  if ! docker exec "$name" tmux new-session -d -s "$new_session" -c /workspace 2>/dev/null; then
-    echo "Error: could not create session $new_session — it may already exist (concurrent --new race). Retry." >&2
-    return 1
-  fi
-  if [[ -t 0 && -t 1 ]]; then
-    docker exec -it "$name" tmux attach-session -t "$new_session"
-  else
-    echo "Container $name is running. Session $new_session created. Attach with: rc attach $name"
-  fi
-}
-
-# _up_attach_tmux_picker — show picker when sessions exist, or create default.
-# Args: $1=container-name, $2=mode ("up"|"attach")
-_up_attach_tmux_picker() {
-  local name="$1"
-  local mode="${2:-up}"
-
-  # Count existing sessions
-  local existing
-  existing=$(docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
-  local count
-  count=$(echo "$existing" | grep -c . || true)
-
-  if [[ "$count" -eq 0 ]]; then
-    if [[ "$mode" == "attach" ]]; then
-      echo "Error: no tmux sessions running in $name. Start one with: rc up" >&2
-      return 1
-    fi
-    # N=0: create default session and attach
-    docker exec "$name" tmux new-session -d -s rip-cage -c /workspace 2>/dev/null || true
-    if [[ -t 0 && -t 1 ]]; then
-      docker exec -it "$name" tmux attach-session -t rip-cage
-    else
-      echo "Container $name is running. Attach with: rc attach $name"
-    fi
-    return
-  fi
-
-  if [[ -t 0 && -t 1 ]]; then
-    # Show picker
-    if _tmux_picker "$name" "$mode"; then
-      if [[ -z "$_PICKER_SESSION" ]]; then
-        # [new] selected
-        _up_attach_tmux_new "$name"
-      else
-        docker exec -it "$name" tmux attach-session -t "$_PICKER_SESSION"
-      fi
-    else
-      return 1
-    fi
-  else
-    # Non-TTY: attach existing rip-cage session or first available
-    local default_session="rip-cage"
-    if ! echo "$existing" | grep -qxF "rip-cage"; then
-      default_session=$(echo "$existing" | head -1)
-    fi
-    docker exec -i "$name" tmux attach-session -t "$default_session"
-  fi
-}
-
 cmd_up() {
   local path="" port="" env_file=""
   local rc_cpus="2" rc_memory="4g" rc_pids_limit="500"
@@ -3940,8 +3706,8 @@ cmd_up() {
   # ADR-020 D7: --no-ssh-config / --ssh-config opt-out/in flags.
   # Empty = not explicitly set (implication chain applies).
   local rc_no_ssh_config_flag="" rc_ssh_config_explicit_flag=""
-  # Multi-session flags: --new skips picker and creates new auto-named session;
-  # --session <name> attaches named session or creates it.  Mutually exclusive.
+  # Multi-session flags: --new calls the new_session hook for a new auto-named session;
+  # --session <name> forwards NAME to the attach hook.  Mutually exclusive.
   local rc_up_new_session="" rc_up_session_name=""
   # ADR-023 D6: per-invocation denylist bypass. Repeatable flag; each value is
   # appended to the RC_ALLOW_RISKY_MOUNT array. Matched literally against the
@@ -4256,23 +4022,12 @@ cmd_up() {
       _up_json_output "$name" "attached" "$path" "running"
       return
     fi
-    # rip-cage-1f59.2: read multiplexer from the container label (immutable on running cage).
+    # rip-cage-1f59.2 / rip-cage-61al.3: dispatch on the multiplexer label via the baked registry.
+    # No hardcoded mux names — any declared-in-manifest provider is dispatched through
+    # _rc_mux_resolve_hook_path (ADR-005 D12 FIRM).
     local _up_run_mux
     _up_run_mux=$(_container_multiplexer "$name")
     case "$_up_run_mux" in
-      tmux)
-        if [[ -n "$rc_up_new_session" ]]; then
-          _up_attach_tmux_new "$name"
-        elif [[ -n "$rc_up_session_name" ]]; then
-          # --session: create if not exists, then attach
-          if ! docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -qxF "$rc_up_session_name"; then
-            docker exec "$name" tmux new-session -d -s "$rc_up_session_name" -c /workspace 2>/dev/null || true
-          fi
-          _up_attach_tmux "$name" "$rc_up_session_name"
-        else
-          _up_attach_tmux_picker "$name" "up"
-        fi
-        ;;
       none)
         [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
           echo "warning: --new/--session ignored under multiplexer=none" >&2
@@ -4282,17 +4037,30 @@ cmd_up() {
           echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
         fi
         ;;
-      herdr)
-        [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
-          echo "warning: --new/--session ignored under multiplexer=herdr" >&2
-        if [[ -t 0 && -t 1 ]]; then
-          docker exec -it "$name" herdr
-        else
-          echo "Container $name is running (multiplexer=herdr). Attach with: rc attach $name" >&2
-        fi
-        ;;
       *)
-        echo "Error: unrecognized multiplexer '${_up_run_mux}' on container $name." >&2
+        # Registry dispatch: resolve the hook path from the baked registry and invoke it.
+        # Fails loud if the mux was not declared in the manifest used to build this image
+        # (ADR-001 fail-loud; ADR-005 D12 — no hardcoded optional-mux names in rc).
+        local _up_run_hook_path
+        if [[ -n "$rc_up_new_session" ]]; then
+          _up_run_hook_path=$(_rc_mux_resolve_hook_path "$_up_run_mux" "new_session" "$name") || return 1
+          if [[ -z "$_up_run_hook_path" ]]; then
+            echo "warning: multiplexer '${_up_run_mux}' has no new_session hook — falling back to attach" >&2
+            _up_run_hook_path=$(_rc_mux_resolve_hook_path "$_up_run_mux" "attach" "$name") || return 1
+          fi
+        else
+          _up_run_hook_path=$(_rc_mux_resolve_hook_path "$_up_run_mux" "attach" "$name") || return 1
+        fi
+        if [[ -z "$_up_run_hook_path" ]]; then
+          echo "Error: multiplexer '${_up_run_mux}' has no attach hook in registry for cage '$name'." >&2
+          return 1
+        fi
+        if [[ -t 0 && -t 1 ]]; then
+          # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
+          docker exec -it "$name" sh "$_up_run_hook_path" "${rc_up_session_name:-}"
+        else
+          echo "Container $name is running (multiplexer=${_up_run_mux}). Attach with: rc attach $name" >&2
+        fi
         ;;
     esac
     return
@@ -4415,22 +4183,10 @@ cmd_up() {
       _up_json_output "$name" "resumed" "$path" "running" "success"
       return
     fi
-    # rip-cage-1f59.2: read multiplexer from the container label (resumed cage label is immutable).
+    # rip-cage-1f59.2 / rip-cage-61al.3: dispatch via baked registry (resumed cage label is immutable).
     local _up_resume_mux
     _up_resume_mux=$(_container_multiplexer "$name")
     case "$_up_resume_mux" in
-      tmux)
-        if [[ -n "$rc_up_new_session" ]]; then
-          _up_attach_tmux_new "$name"
-        elif [[ -n "$rc_up_session_name" ]]; then
-          if ! docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -qxF "$rc_up_session_name"; then
-            docker exec "$name" tmux new-session -d -s "$rc_up_session_name" -c /workspace 2>/dev/null || true
-          fi
-          _up_attach_tmux "$name" "$rc_up_session_name"
-        else
-          _up_attach_tmux_picker "$name" "up"
-        fi
-        ;;
       none)
         [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
           echo "warning: --new/--session ignored under multiplexer=none" >&2
@@ -4440,17 +4196,27 @@ cmd_up() {
           echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
         fi
         ;;
-      herdr)
-        [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
-          echo "warning: --new/--session ignored under multiplexer=herdr" >&2
-        if [[ -t 0 && -t 1 ]]; then
-          docker exec -it "$name" herdr
-        else
-          echo "Container $name is running (multiplexer=herdr). Attach with: rc attach $name" >&2
-        fi
-        ;;
       *)
-        echo "Error: unrecognized multiplexer '${_up_resume_mux}' on container $name." >&2
+        local _up_resume_hook_path
+        if [[ -n "$rc_up_new_session" ]]; then
+          _up_resume_hook_path=$(_rc_mux_resolve_hook_path "$_up_resume_mux" "new_session" "$name") || return 1
+          if [[ -z "$_up_resume_hook_path" ]]; then
+            echo "warning: multiplexer '${_up_resume_mux}' has no new_session hook — falling back to attach" >&2
+            _up_resume_hook_path=$(_rc_mux_resolve_hook_path "$_up_resume_mux" "attach" "$name") || return 1
+          fi
+        else
+          _up_resume_hook_path=$(_rc_mux_resolve_hook_path "$_up_resume_mux" "attach" "$name") || return 1
+        fi
+        if [[ -z "$_up_resume_hook_path" ]]; then
+          echo "Error: multiplexer '${_up_resume_mux}' has no attach hook in registry for cage '$name'." >&2
+          return 1
+        fi
+        if [[ -t 0 && -t 1 ]]; then
+          # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
+          docker exec -it "$name" sh "$_up_resume_hook_path" "${rc_up_session_name:-}"
+        else
+          echo "Container $name is running (multiplexer=${_up_resume_mux}). Attach with: rc attach $name" >&2
+        fi
         ;;
     esac
     return
@@ -4714,21 +4480,8 @@ cmd_up() {
     _up_json_output "$name" "created" "$path" "running" "success"
     return
   fi
-  # rip-cage-1f59.2: dispatch on the configured multiplexer (new container — value still in _rc_multiplexer).
+  # rip-cage-1f59.2 / rip-cage-61al.3: dispatch via baked registry (new container — value still in _rc_multiplexer).
   case "${_rc_multiplexer:-none}" in
-    tmux)
-      if [[ -n "$rc_up_new_session" ]]; then
-        _up_attach_tmux_new "$name"
-      elif [[ -n "$rc_up_session_name" ]]; then
-        if ! docker exec "$name" tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -qxF "$rc_up_session_name"; then
-          docker exec "$name" tmux new-session -d -s "$rc_up_session_name" -c /workspace 2>/dev/null || true
-        fi
-        _up_attach_tmux "$name" "$rc_up_session_name"
-      else
-        # New container: init created rip-cage session; attach directly (N=1 or N=0 handled by picker)
-        _up_attach_tmux_picker "$name" "up"
-      fi
-      ;;
     none)
       [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
         echo "warning: --new/--session ignored under multiplexer=none" >&2
@@ -4738,17 +4491,28 @@ cmd_up() {
         echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
       fi
       ;;
-    herdr)
-      [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
-        echo "warning: --new/--session ignored under multiplexer=herdr" >&2
-      if [[ -t 0 && -t 1 ]]; then
-        docker exec -it "$name" herdr
-      else
-        echo "Container $name is running (multiplexer=herdr). Attach with: rc attach $name" >&2
-      fi
-      ;;
     *)
-      echo "Error: unrecognized multiplexer '${_rc_multiplexer:-none}' for container $name." >&2
+      local _up_new_hook_path
+      if [[ -n "$rc_up_new_session" ]]; then
+        _up_new_hook_path=$(_rc_mux_resolve_hook_path "${_rc_multiplexer:-none}" "new_session" "$name") || { unset _rc_multiplexer; return 1; }
+        if [[ -z "$_up_new_hook_path" ]]; then
+          echo "warning: multiplexer '${_rc_multiplexer:-none}' has no new_session hook — falling back to attach" >&2
+          _up_new_hook_path=$(_rc_mux_resolve_hook_path "${_rc_multiplexer:-none}" "attach" "$name") || { unset _rc_multiplexer; return 1; }
+        fi
+      else
+        _up_new_hook_path=$(_rc_mux_resolve_hook_path "${_rc_multiplexer:-none}" "attach" "$name") || { unset _rc_multiplexer; return 1; }
+      fi
+      if [[ -z "$_up_new_hook_path" ]]; then
+        echo "Error: multiplexer '${_rc_multiplexer:-none}' has no attach hook in registry for cage '$name'." >&2
+        unset _rc_multiplexer
+        return 1
+      fi
+      if [[ -t 0 && -t 1 ]]; then
+        # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
+        docker exec -it "$name" sh "$_up_new_hook_path" "${rc_up_session_name:-}"
+      else
+        echo "Container $name is running (multiplexer=${_rc_multiplexer:-none}). Attach with: rc attach $name" >&2
+      fi
       ;;
   esac
   unset _rc_multiplexer
@@ -4926,34 +4690,33 @@ cmd_attach() {
     echo "Error: container $name is not running. Start it with: rc up" >&2
     exit 1
   fi
-  # rip-cage-1f59.2: dispatch attach on the configured multiplexer (label on container).
+  # rip-cage-1f59.2 / rip-cage-61al.3: dispatch attach via baked registry (ADR-005 D12 FIRM).
   local _attach_mux
   _attach_mux=$(_container_multiplexer "$name")
   case "$_attach_mux" in
-    tmux)
-      _up_attach_tmux_picker "$name" "attach"
-      ;;
     none)
       # Plain shell: no multiplexer — attach directly into a new zsh session.
-      # TTY-guard mirrors the tmux attach helpers: interactive only when TTY present.
+      # TTY-guard: interactive only when TTY present.
       if [[ -t 0 && -t 1 ]]; then
         docker exec -it "$name" zsh
       else
         echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
       fi
       ;;
-    herdr)
-      # Dispatch into the running herdr server via the herdr CLI (ADR-019 D9).
-      # herdr (bare) opens the TUI client; server started at cage init by init-rip-cage.sh.
-      if [[ -t 0 && -t 1 ]]; then
-        docker exec -it "$name" herdr
-      else
-        echo "Container $name is running (multiplexer=herdr). Attach with: rc attach $name" >&2
-      fi
-      ;;
     *)
-      echo "Error: unrecognized multiplexer value '${_attach_mux}' on container $name. Inspect with: docker inspect $name" >&2
-      exit 1
+      # Registry dispatch: resolve the attach hook from the baked registry and invoke it.
+      # Fails loud (ADR-001) if the mux was not declared in the manifest at build time.
+      local _attach_hook_path
+      _attach_hook_path=$(_rc_mux_resolve_hook_path "$_attach_mux" "attach" "$name") || exit 1
+      if [[ -z "$_attach_hook_path" ]]; then
+        echo "Error: multiplexer '${_attach_mux}' has no attach hook in registry for cage '$name'. Inspect with: docker inspect $name" >&2
+        exit 1
+      fi
+      if [[ -t 0 && -t 1 ]]; then
+        docker exec -it "$name" sh "$_attach_hook_path"
+      else
+        echo "Container $name is running (multiplexer=${_attach_mux}). Attach with: rc attach $name" >&2
+      fi
       ;;
   esac
 }
@@ -6469,7 +6232,7 @@ tools:
     # Pinned release: github.com/ogulcancelik/herdr v0.6.10
     # Agent-aware terminal multiplexer (blocked/working/done view).
     # Prebuilt binaries: herdr-linux-x86_64, herdr-linux-aarch64.
-    # Server start is wired in init-rip-cage.sh (herdr branch, RC_MULTIPLEXER=herdr).
+    # Server start is wired in init-rip-cage.sh via the baked multiplexer 'start' hook.
     # Bash-CLI control surface: herdr pane/workspace/tab/wait over unix socket (HERDR_ENV=1).
     version_pin: "0.6.10"
     # SHA-256 checksums sourced from GitHub API release asset digest field (ogulcancelik/herdr v0.6.10)
@@ -7795,8 +7558,8 @@ _manifest_generate_multiplexer_registry_steps() {
 
 # _manifest_generate_multiplexer_label
 # Read the host manifest and emit a Dockerfile LABEL line enumerating all
-# MULTIPLEXER-archetype tool names, e.g.:
-#   LABEL rc.multiplexers="tmux,herdr"
+# MULTIPLEXER-archetype tool names declared in the manifest, e.g.:
+#   LABEL rc.multiplexers="<name1>,<name2>"
 #
 # This label is frozen in the image at build time so B2 (host-side config
 # validator) can read it via `docker inspect` WITHOUT re-reading the host
@@ -7851,7 +7614,7 @@ _manifest_generate_multiplexer_label() {
 #
 #   _rc_mux_resolve_hook_path <name> <hook_name> [<cage_name>]
 #
-#   name:       multiplexer name (e.g. "tmux", "herdr")
+#   name:       multiplexer name (e.g. the name declared in the manifest's MULTIPLEXER entry)
 #   hook_name:  hook to resolve (start|attach|exec|new_session|teardown)
 #   cage_name:  (optional) running container name for host-side callers (e.g. rc attach).
 #               When provided, existence is checked INSIDE the cage via
@@ -9684,38 +9447,9 @@ if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   check_jq
 fi
 
-# tmux: only needed when the configured multiplexer is "tmux".
-# rip-cage-1f59.2: gate check_tmux on the resolved multiplexer value.
-#   - For `up`: read session.multiplexer from the workspace config (defaulting to "none").
-#   - For `attach`/`exec`: multiplexer is read from the container label at command runtime;
-#     check_tmux is skipped here (the label-read happens inside cmd_attach/cmd_exec).
-# Skip all checks when --output json: agent callers invoke programmatically.
-if [[ "$OUTPUT_FORMAT" != "json" ]]; then
-  case "${1:-}" in
-    up)
-      # Peek at session.multiplexer from the workspace config.
-      # The workspace path is the first non-flag arg after 'up' — parse it here minimally.
-      _gate_mux="none"
-      _gate_path="."
-      for _gate_arg in "${@:2}"; do
-        case "$_gate_arg" in
-          --*) ;;  # skip flags
-          *)  _gate_path="$_gate_arg"; break ;;
-        esac
-      done
-      if command -v yq &>/dev/null; then
-        _gate_eff=""
-        if _gate_eff=$(_load_effective_config "$_gate_path" 2>/dev/null); then
-          _gate_mux=$(jq -r '.config.session.multiplexer // "none"' <<<"$_gate_eff")
-        fi
-      fi
-      unset _gate_eff _gate_path _gate_arg
-      [[ "$_gate_mux" == "tmux" ]] && check_tmux
-      unset _gate_mux
-      ;;
-    # attach and exec: multiplexer read from container label at runtime — no preflight here.
-  esac
-fi
+# Multiplexer binary prerequisites are checked by the baked provider hooks at
+# runtime (rip-cage-61al.3 / ADR-005 D12). No host-side binary-presence check
+# is performed here — the hook's own fail-loud handles any missing dependency.
 
 # docker: needed for all commands that talk to Docker.
 # `rc doctor --host` is the one exception: its job is to *diagnose* a wedged

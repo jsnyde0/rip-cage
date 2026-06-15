@@ -1,0 +1,50 @@
+version: 1
+tools:
+  # herdr multiplexer provider — copy these entries into your tools.yaml to enable
+  # the herdr agent supervisor in rip-cage. After adding, run: rc build
+  #
+  # Two entries are required:
+  #   1. herdr-bin (TOOL): installs the herdr binary into the image at build time.
+  #   2. herdr (MULTIPLEXER): bakes start/attach hooks into the registry for dispatch.
+  #
+  # herdr is a headless agent-supervisor with a unix-socket control surface.
+  # ADR-019 D9: attach goes through 'herdr' CLI (TUI client over the socket).
+  # ADR-006 D8: semantic status integration for pi/claude agents.
+  #
+  # Usage:
+  #   1. Append these two entries to ~/.config/rip-cage/tools.yaml.
+  #   2. Set session.multiplexer: herdr in your .rip-cage.yaml.
+  #   3. rc build  — installs herdr binary + bakes hooks into /etc/rip-cage/multiplexers/herdr/
+  #   4. rc up     — starts cage; init-rip-cage.sh runs the 'start' hook.
+  #   5. rc attach — dispatches through the 'attach' hook (herdr TUI).
+  #
+  # See examples/compose-rc-with-herdr.md for a full setup walkthrough.
+
+  # TOOL entry: installs the herdr binary at image build time.
+  - name: herdr-bin
+    archetype: TOOL
+    # Pinned release: github.com/ogulcancelik/herdr v0.6.10
+    # Prebuilt binaries: herdr-linux-x86_64, herdr-linux-aarch64.
+    # SHA-256 checksums sourced from GitHub API release asset digest field.
+    version_pin: "v0.6.10"
+    install_cmd: "ARCH=$(uname -m) && if [ \"$ARCH\" = \"aarch64\" ]; then TARGET=aarch64; EXPECTED_SHA=b3144a41df364f0541bbbdfe840fa61dbd67daf6e313ee317fe495d2ccf4927a; else TARGET=x86_64; EXPECTED_SHA=78d298d5a1ef076b4607e8e3c92d98f5de9f0cb30daf31aa910a1a6e9abb4fa1; fi && curl -fsSL \"https://github.com/ogulcancelik/herdr/releases/download/v0.6.10/herdr-linux-${TARGET}\" -o /tmp/herdr && echo \"${EXPECTED_SHA}  /tmp/herdr\" | sha256sum -c - && install -m 755 /tmp/herdr /usr/local/bin/herdr && rm -f /tmp/herdr"
+    # herdr opens no external connections at runtime (unix socket only, localhost).
+    # The download happens at image build time only; no runtime egress needed.
+    egress:
+      - github.com
+    mounts: []
+
+  # MULTIPLEXER entry: bakes start/attach hooks into /etc/rip-cage/multiplexers/herdr/.
+  - name: herdr
+    archetype: MULTIPLEXER
+    # herdr binary was installed by the herdr-bin TOOL entry above.
+    version_pin: "bundled"
+    hooks:
+      # start: called by init-rip-cage.sh at cage first-boot (in-container).
+      # Starts the herdr server in the background. Logs to /tmp/rip-cage-mux-herdr.log.
+      # ADR-006 D8: installs coding-agent integrations (pi, claude) via herdr's public CLI.
+      # The integration-install loop runs for any agents present on PATH.
+      start: "mkdir -p \"${HOME}/.config/herdr\" && herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 & echo \"[rip-cage] herdr server started (PID=$!)\" && sleep 1 && for _agent in pi claude; do if command -v \"${_agent}\" > /dev/null 2>&1; then _out=$(herdr integration install \"${_agent}\" 2>&1); _rc=$?; if [ \"$_rc\" -eq 0 ]; then echo \"[rip-cage] herdr integration installed: ${_agent}\"; else echo \"[rip-cage] WARNING: herdr integration install ${_agent} failed (exit=${_rc}): ${_out}\" >&2; fi; fi; done"
+      # attach: called by rc attach / rc up (ADR-019 D9 control surface).
+      # Opens the herdr TUI client; the server was started by 'start'.
+      attach: "herdr"

@@ -1,0 +1,31 @@
+version: 1
+tools:
+  # tmux multiplexer provider — copy this entry into your tools.yaml to enable
+  # tmux session management in rip-cage. After adding, run: rc build
+  #
+  # Usage:
+  #   1. Add this tool entry to ~/.config/rip-cage/tools.yaml (or project tools.yaml).
+  #   2. Set session.multiplexer: tmux in your .rip-cage.yaml.
+  #   3. rc build  — bakes the hooks into /etc/rip-cage/multiplexers/tmux/
+  #   4. rc up     — starts the cage; init-rip-cage.sh runs the 'start' hook.
+  #   5. rc attach — dispatches through the 'attach' hook.
+  #
+  # See also: examples/compose-rc-with-herdr.md for the herdr provider.
+  - name: tmux
+    archetype: MULTIPLEXER
+    # tmux ships in the Debian slim base image — no install needed.
+    version_pin: "bundled"
+    hooks:
+      # start: called by init-rip-cage.sh at cage first-boot (in-container).
+      # Creates a background tmux session named 'rip-cage' rooted at /workspace.
+      # The 2>/dev/null || true absorbs "duplicate session" if init runs twice
+      # (idempotent by design).
+      start: "tmux new-session -d -s rip-cage -c /workspace 2>/dev/null || true"
+      # attach: called by rc attach / rc up when a running cage has mux=tmux.
+      # Tries to attach to the named session (rc --session NAME forwarded as $1,
+      # defaults to 'rip-cage' when no arg is given); creates it first if absent.
+      # Note: runs as a standalone script via 'sh <hook> [name]' — no rc context.
+      attach: "_s=${1:-rip-cage}; tmux attach-session -t \"$_s\" 2>/dev/null || (tmux new-session -d -s \"$_s\" -c /workspace && tmux attach-session -t \"$_s\")"
+      # new_session: called by rc up --new to open an additional session.
+      # Finds the lowest unused rip-cage-N slot and attaches.
+      new_session: "NEW=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | awk 'BEGIN{n=2} /^rip-cage-[0-9]+$/{x=substr($0,10)+0; if(x>=n) n=x+1} END{print \"rip-cage-\" n}') && tmux new-session -d -s \"$NEW\" -c /workspace && tmux attach-session -t \"$NEW\""

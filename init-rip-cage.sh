@@ -342,7 +342,7 @@ fi
 # resolve when they try to use it. This matches the fallback contract in
 # /etc/rip-cage/cage-claude.md ("set by init; falls back to literal ...").
 # Writes CAGE_HOST_ADDR to /etc/rip-cage/cage-env so every interactive shell,
-# tmux pane, and Claude-Code child process gets a uniform surface.
+# multiplexer pane, and Claude-Code child process gets a uniform surface.
 _cage_host_addr=""
 _cage_probe_status="resolved"
 for _candidate in host.docker.internal host.orb.internal; do
@@ -452,7 +452,7 @@ if [ -d /workspace/.beads ]; then
 fi
 
 # Append firewall env vars to agent's .zshrc so interactive shell sessions
-# and tmux panes inherit CA trust on every new shell.
+# and multiplexer panes inherit CA trust on every new shell.
 # Guard is idempotent: skip if already present (avoids growing .zshrc on every resume).
 if [[ -f /etc/rip-cage/firewall-env ]]; then
   if ! grep -q 'NODE_EXTRA_CA_CERTS' /home/agent/.zshrc 2>/dev/null; then
@@ -460,7 +460,7 @@ if [[ -f /etc/rip-cage/firewall-env ]]; then
   fi
 fi
 
-# Same pattern for cage-env (CAGE_HOST_ADDR) so interactive shells and tmux
+# Same pattern for cage-env (CAGE_HOST_ADDR) so interactive shells and multiplexer
 # panes inherit the host-bridge hostname (ADR-016 D2). Guard greps for the
 # path of the appended line, not $CAGE_HOST_ADDR — the appended line sources
 # the file and does not contain the variable name, so a variable-name grep
@@ -473,9 +473,11 @@ if [[ -f /etc/rip-cage/cage-env ]]; then
   fi
 fi
 
-# 11. Multiplexer-server lifecycle (rip-cage-1f59.1 / ADR-021 D6)
+# 11. Multiplexer-server lifecycle (rip-cage-1f59.1 / ADR-021 D6 / rip-cage-61al.3)
 # RC_MULTIPLEXER is threaded in by cmd_up via -e RC_MULTIPLEXER=<value>.
-# Valid values: none | tmux | herdr  (default: none)
+# Valid values: none, or any multiplexer name declared in the manifest (default: none).
+# Dispatch routes through the baked registry at /etc/rip-cage/multiplexers/<name>/start
+# (ADR-005 D12 FIRM — no hardcoded optional-mux names in rc or init-rip-cage.sh).
 # An unrecognised value from rc is caught by _config_validate_or_abort before
 # launch (ADR-001 fail-loud); any residual invalid value here fails loud too.
 _rc_mux="${RC_MULTIPLEXER:-none}"
@@ -484,63 +486,28 @@ case "$_rc_mux" in
     # No multiplexer server — plain terminal semantics.
     echo "[rip-cage] session.multiplexer=none: no multiplexer server started"
     ;;
-  tmux)
-    # Start tmux server + rip-cage session (CLI mode only — skip inside VS Code devcontainer).
-    if [ -z "${VSCODE_INJECTION:-}" ] && [ -z "${REMOTE_CONTAINERS:-}" ]; then
-      if command -v tmux > /dev/null 2>&1; then
-        tmux new-session -d -s rip-cage -c /workspace 2>/dev/null || true
-        echo "[rip-cage] session.multiplexer=tmux: session 'rip-cage' created"
-      else
-        echo "[rip-cage] WARNING: session.multiplexer=tmux but tmux not found on PATH — no session started" >&2
-      fi
-    fi
-    ;;
-  herdr)
-    # Start herdr headless server (rip-cage-1f59.5).
-    # herdr server: runs the event loop without a real terminal, listens on a unix socket
-    # at ~/.config/herdr/herdr.sock (config_dir = $HOME/.config/herdr per config/io.rs).
-    # The server persists across client disconnects; agents reattach via 'herdr' CLI.
-    # HERDR_SESSION env var selects the named session (default: "default").
-    # Bash-CLI control surface (ADR-019 D9): herdr pane/workspace/tab/wait commands
-    # over the local unix socket (HERDR_ENV=1 set in managed panes).
-    if command -v herdr > /dev/null 2>&1; then
-      mkdir -p "${HOME}/.config/herdr" 2>/dev/null || true
-      herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 &
-      _herdr_pid=$!
-      echo "[rip-cage] session.multiplexer=herdr: server started (PID=${_herdr_pid})"
-      unset _herdr_pid
-      # ADR-006 D8: install each bundled coding-agent's herdr integration via
-      # herdr's PUBLIC CLI — looping over agents present on PATH (pi, claude, …).
-      # herdr integration install writes to the agent's own config dir (no server
-      # contact needed — runs fine immediately after the server backgrounds).
-      # Fail-LOUD on install error (ADR-001) but do NOT abort cage init — log a
-      # WARNING and continue (autonomy is the product; one agent's integration
-      # failing must not dark-cage the whole multiplexer surface).
-      # Boundary: use herdr's public CLI only — do NOT hand-place internal files.
-      _herdr_agents="pi claude"
-      for _herdr_agent in $_herdr_agents; do
-        if command -v "${_herdr_agent}" > /dev/null 2>&1; then
-          _herdr_install_out=$(herdr integration install "${_herdr_agent}" 2>&1)
-          _herdr_install_rc=$?
-          if [ "${_herdr_install_rc}" -eq 0 ]; then
-            echo "[rip-cage] session.multiplexer=herdr: integration installed for ${_herdr_agent}: ${_herdr_install_out}"
-          else
-            echo "[rip-cage] WARNING: herdr integration install ${_herdr_agent} failed (exit=${_herdr_install_rc}): ${_herdr_install_out}" >&2
-          fi
-          unset _herdr_install_out _herdr_install_rc
-        else
-          echo "[rip-cage] session.multiplexer=herdr: ${_herdr_agent} not on PATH — skipping integration install"
-        fi
-      done
-      unset _herdr_agents _herdr_agent
-    else
-      echo "[rip-cage] WARNING: session.multiplexer=herdr but herdr not found on PATH — no server started" >&2
-    fi
-    ;;
   *)
-    # Unrecognised value — fail loud per ADR-001.
-    echo "[rip-cage] ERROR: unrecognised RC_MULTIPLEXER value '${_rc_mux}' — aborting init" >&2
-    exit 1
+    # Registry dispatch: run the baked 'start' hook for the declared multiplexer.
+    # The hook was written to /etc/rip-cage/multiplexers/<name>/start at rc build time
+    # from the MULTIPLEXER-archetype manifest entry. If the registry dir is absent,
+    # the multiplexer was not declared in the manifest at build time — fail loud (ADR-001).
+    _rc_mux_start_hook="/etc/rip-cage/multiplexers/${_rc_mux}/start"
+    _rc_mux_registry_dir="/etc/rip-cage/multiplexers/${_rc_mux}"
+    if [ ! -d "$_rc_mux_registry_dir" ]; then
+      echo "[rip-cage] ERROR: multiplexer '${_rc_mux}' was not declared in the manifest used to build this image — no registry dir at ${_rc_mux_registry_dir} (ADR-001 fail-loud). Rebuild the image with a MULTIPLEXER manifest entry for '${_rc_mux}', or set session.multiplexer: none." >&2
+      exit 1
+    fi
+    if [ ! -f "$_rc_mux_start_hook" ]; then
+      echo "[rip-cage] ERROR: multiplexer '${_rc_mux}' has no 'start' hook at ${_rc_mux_start_hook} — the manifest entry must declare hooks.start (ADR-001 fail-loud)." >&2
+      exit 1
+    fi
+    # CLI mode only — skip inside VS Code devcontainer (multiplexer not needed there).
+    if [ -z "${VSCODE_INJECTION:-}" ] && [ -z "${REMOTE_CONTAINERS:-}" ]; then
+      echo "[rip-cage] session.multiplexer=${_rc_mux}: running start hook..."
+      sh "$_rc_mux_start_hook"
+      echo "[rip-cage] session.multiplexer=${_rc_mux}: start hook completed"
+    fi
+    unset _rc_mux_start_hook _rc_mux_registry_dir
     ;;
 esac
 unset _rc_mux
@@ -637,7 +604,7 @@ unset _rc_daemon_config
 
 # github-identity first-shell echo (ADR-020 D5). Reads the sentinels written by
 # the in-cage preflight and emits a one-line identity status so devcontainer
-# users (who never see the tmux banner) see routing posture on first attach.
+# users (who never see the multiplexer banner) see routing posture on first attach.
 # Test-mode: RC_SENTINEL_DIR overrides /etc/rip-cage.
 _rc_gi_dir="${RC_SENTINEL_DIR:-/etc/rip-cage}"
 if [ -r "${_rc_gi_dir}/github-identity" ]; then

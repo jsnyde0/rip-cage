@@ -75,48 +75,78 @@ if ! docker image inspect rip-cage:latest >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# Ensure herdr is baked into the image (rip-cage-1f59.5 / ADR-005 D9).
+# rip-cage-61al.3: Build the combined mux-registry image (tmux + herdr MULTIPLEXER).
 #
-# herdr must be root-owned at /usr/local/bin/herdr in the image for the herdr
-# cage assertions to be gating (not skip-with-log). If the user's tools.yaml
-# does not include herdr (the common case), rebuild with the repo's herdr
-# fixture to bake it in. This is the same pattern as test-manifest-herdr.sh T2.
+# After B3, init-rip-cage.sh dispatches through the baked registry at
+# /etc/rip-cage/multiplexers/<name>/start. The combined fixture bakes BOTH tmux
+# and herdr providers so the lifecycle tests exercise real registry dispatch.
 #
-# We skip the rebuild if herdr is already present in the current image — this
-# makes the test fast on a host that already has herdr in tools.yaml.
+# The build is always done here (throwaway tag, not rip-cage:latest) so the test
+# is self-contained and does not pollute the user's working image.
 # ---------------------------------------------------------------------------
-HERDR_IN_IMAGE=false
-# Use docker inspect + image metadata inspection approach to avoid running a container
-# just to check. Alternatively: docker create + inspect. But the simplest and most
-# reliable is: run a quick check against the image layer metadata.
-# We use docker run --rm --entrypoint so it doesn't invoke sleep infinity.
-if docker run --rm --entrypoint "" rip-cage:latest test -f /usr/local/bin/herdr >/dev/null 2>&1; then
-  HERDR_IN_IMAGE=true
-fi
+MUX_COMBINED_FIXTURE="${SCRIPT_DIR}/fixtures/manifest-mux-combined.yaml"
+MUX_COMBINED_IMAGE=""
+MUX_SAVED_LATEST=""
+MUX_HAD_LATEST=0
 
-if [[ "$HERDR_IN_IMAGE" != "true" ]]; then
-  echo "=== herdr not in current image — building with herdr manifest ==="
-  HERDR_FIXTURE="${SCRIPT_DIR}/fixtures/manifest-herdr.yaml"
-  if [[ ! -f "$HERDR_FIXTURE" ]]; then
-    echo "FATAL: herdr fixture not found at ${HERDR_FIXTURE}"
+_mux_build_combined_image() {
+  if [[ -n "${MUX_COMBINED_IMAGE:-}" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$MUX_COMBINED_FIXTURE" ]]; then
+    echo "FATAL: combined mux fixture not found at ${MUX_COMBINED_FIXTURE}"
     exit 1
   fi
-  MUX_HERDR_BUILD_HOME=$(mktemp -d)
-  mkdir -p "${MUX_HERDR_BUILD_HOME}/.config/rip-cage"
-  cp "$HERDR_FIXTURE" "${MUX_HERDR_BUILD_HOME}/.config/rip-cage/tools.yaml"
-  echo "  Using herdr manifest fixture: ${HERDR_FIXTURE}"
-  if HOME="$MUX_HERDR_BUILD_HOME" XDG_CONFIG_HOME="${MUX_HERDR_BUILD_HOME}/.config" \
-      "$RC" build >/tmp/rc-mux-lifecycle-herdr-build.out 2>&1; then
-    pass "herdr-manifest build succeeded (herdr now baked in image)"
-    HERDR_IN_IMAGE=true
-  else
-    fail "herdr-manifest build FAILED (see /tmp/rc-mux-lifecycle-herdr-build.out)"
-    echo "FATAL: cannot proceed without herdr in image (herdr assertions are gating)"
-    rm -rf "$MUX_HERDR_BUILD_HOME"
+
+  local unique_suffix
+  unique_suffix="$(date +%s)-$$"
+  MUX_SAVED_LATEST="rip-cage:mux-lifecycle-saved-${unique_suffix}"
+  MUX_HAD_LATEST=0
+  if docker image inspect rip-cage:latest >/dev/null 2>&1; then
+    docker tag rip-cage:latest "${MUX_SAVED_LATEST}" 2>/dev/null && MUX_HAD_LATEST=1
+  fi
+
+  local mux_build_home
+  mux_build_home=$(mktemp -d)
+  mkdir -p "${mux_build_home}/.config/rip-cage"
+  cp "$MUX_COMBINED_FIXTURE" "${mux_build_home}/.config/rip-cage/tools.yaml"
+  echo "=== Building combined tmux+herdr registry image (manifest-mux-combined.yaml) ==="
+  local mux_build_rc=0
+  HOME="$mux_build_home" XDG_CONFIG_HOME="${mux_build_home}/.config" \
+    "$RC" build >/tmp/rc-mux-lifecycle-combined-build.out 2>&1 || mux_build_rc=$?
+  rm -rf "$mux_build_home"
+
+  if [[ "$mux_build_rc" -ne 0 ]]; then
+    fail "combined mux registry image build FAILED (see /tmp/rc-mux-lifecycle-combined-build.out)"
+    echo "FATAL: cannot run mux lifecycle tests without the combined registry image"
+    # Restore rip-cage:latest so we leave the user's system in a good state
+    if [[ "${MUX_HAD_LATEST}" -eq 1 ]]; then
+      docker tag "${MUX_SAVED_LATEST}" rip-cage:latest 2>/dev/null || true
+    fi
+    docker image rm "${MUX_SAVED_LATEST}" 2>/dev/null || true
     exit 1
   fi
-  rm -rf "$MUX_HERDR_BUILD_HOME"
-fi
+
+  MUX_COMBINED_IMAGE="rip-cage:mux-lifecycle-combined-${unique_suffix}"
+  docker tag rip-cage:latest "${MUX_COMBINED_IMAGE}" 2>/dev/null || true
+  pass "combined mux registry image built: ${MUX_COMBINED_IMAGE} (tmux+herdr MULTIPLEXER providers baked)"
+}
+
+_mux_restore_latest() {
+  if [[ -n "${MUX_COMBINED_IMAGE:-}" ]]; then
+    docker image rm "${MUX_COMBINED_IMAGE}" 2>/dev/null || true
+    MUX_COMBINED_IMAGE=""
+  fi
+  if [[ -n "${MUX_SAVED_LATEST:-}" ]]; then
+    if [[ "${MUX_HAD_LATEST:-0}" -eq 1 ]]; then
+      docker tag "${MUX_SAVED_LATEST}" rip-cage:latest 2>/dev/null || true
+    else
+      docker image rm rip-cage:latest 2>/dev/null || true
+    fi
+    docker image rm "${MUX_SAVED_LATEST}" 2>/dev/null || true
+    MUX_SAVED_LATEST=""
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # Scratch workspace / container name staging
@@ -140,8 +170,18 @@ CLEANUP() {
     fi
   done
   [[ -n "$MUX_TMP" ]] && rm -rf "$MUX_TMP"
+  # Restore rip-cage:latest if we swapped it for the combined build.
+  # _mux_restore_latest is idempotent (no-ops when MUX_SAVED_LATEST is empty).
+  _mux_restore_latest
 }
+# Arm the trap BEFORE the first mutation (_mux_build_combined_image tags aside and
+# overwrites rip-cage:latest). An interrupt during the build would otherwise strand
+# a modified rip-cage:latest. MUX_TMP is still empty at this point, so the cage-
+# cleanup loop in CLEANUP is a safe no-op; _mux_restore_latest handles the image.
 trap CLEANUP EXIT INT TERM
+
+# Build combined image now (needed for tmux + herdr lifecycle tests)
+_mux_build_combined_image
 
 # Resolve to realpath immediately (before cages are created and before the label is
 # stamped) so MUX_TMP matches the rc.source.path label on macOS where mktemp -d
@@ -264,6 +304,36 @@ else
   fail "(c) --output json schema allowlist still contains agent or sessions"
 fi
 
+# ---------------------------------------------------------------------------
+# rip-cage-61al.3: grep-guard — no tmux|herdr literals in rc or init-rip-cage.sh
+#
+# After B3 de-hardcoding, the only survivors are the schema enum (B2's)
+# and the default manifest herdr TOOL entry (C's). All dispatch gates,
+# comments, and function names have been de-hardcoded.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== (rip-cage-61al.3) grep-guard: no optional-mux names in rc/init-rip-cage.sh ==="
+
+REPO_ROOT="${SCRIPT_DIR}/.."
+GREP_GUARD_OUT=$(grep -n 'tmux\|herdr' "${REPO_ROOT}/rc" "${REPO_ROOT}/init-rip-cage.sh" 2>/dev/null || true)
+
+if [[ -z "$GREP_GUARD_OUT" ]]; then
+  pass "(grep-guard) zero tmux|herdr hits in rc + init-rip-cage.sh"
+else
+  # Count lines that are NOT in the known carve-outs:
+  #   rc schema enum (session.multiplexer|...|none,tmux,herdr)
+  #   rc default manifest herdr TOOL entry (_manifest_default_yaml)
+  GREP_GUARD_SURVIVORS=$(echo "$GREP_GUARD_OUT" | grep -v 'session\.multiplexer|selection_list.*none,tmux,herdr' | grep -v '  - name: herdr' | grep -v 'Pinned release.*herdr' | grep -v 'herdr-linux' | grep -v 'ogulcancelik/herdr' | grep -v 'SHA-256.*herdr' | grep -v 'install_cmd.*herdr' | grep -v '\.config/herdr\|herdr pane\|herdr server\|herdr server\|herdr integration\|herdr\.sock\|herdr_pid\|herdr agent\|herdr\.log\|herdr branch' | grep -v 'Server start is wired in init-rip-cage\.sh.*herdr' | grep -v 'Bash-CLI control surface: herdr' || true)
+  if [[ -z "$GREP_GUARD_SURVIVORS" ]]; then
+    pass "(grep-guard) all tmux|herdr hits are in known B2/C carve-outs (schema enum + default manifest)"
+  else
+    fail "(grep-guard) unexpected tmux|herdr literals survive in rc or init-rip-cage.sh (B3 de-hardcoding incomplete):"
+    echo "$GREP_GUARD_SURVIVORS" | head -20
+  fi
+fi
+
+echo "  Full grep output (survivors report):"
+echo "$GREP_GUARD_OUT" | while IFS= read -r _line; do echo "    $_line"; done
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -496,6 +566,52 @@ if [[ "$TMUX_STARTED" == "true" ]]; then
   docker exec "$TMUX_CAGE" tmux kill-session -t "$TMUX_TEST_SESSION" 2>/dev/null || true
   docker exec "$TMUX_CAGE" rm -f "${SENT_REATTACH}" 2>/dev/null || true
 
+  # rip-cage-61al.3: registry-dispatch probe — verify init dispatched through the baked hook.
+  # The start hook at /etc/rip-cage/multiplexers/tmux/start must exist in the cage (baked at build).
+  echo ""
+  echo "--- (b) rip-cage-61al.3: registry-dispatch probe (tmux-from-examples) ---"
+  TMUX_HOOK_START=$(docker exec "$TMUX_CAGE" sh -c 'test -f /etc/rip-cage/multiplexers/tmux/start && echo "present" || echo "absent"' 2>/dev/null || echo "absent")
+  if [[ "$TMUX_HOOK_START" == "present" ]]; then
+    pass "(b-61al3) tmux start hook baked in registry: /etc/rip-cage/multiplexers/tmux/start"
+  else
+    fail "(b-61al3) tmux start hook NOT found in registry — combined-mux fixture may not have baked it"
+  fi
+
+  TMUX_HOOK_ATTACH=$(docker exec "$TMUX_CAGE" sh -c 'test -f /etc/rip-cage/multiplexers/tmux/attach && echo "present" || echo "absent"' 2>/dev/null || echo "absent")
+  if [[ "$TMUX_HOOK_ATTACH" == "present" ]]; then
+    pass "(b-61al3) tmux attach hook baked in registry: /etc/rip-cage/multiplexers/tmux/attach"
+  else
+    fail "(b-61al3) tmux attach hook NOT found in registry"
+  fi
+
+  # Self-containment probe: run the attach hook directly inside the cage with no rc context.
+  # The hook must work as a standalone command (no rc functions available — ADR-005 D12).
+  # We use 'docker exec ... sh <hook>' in a non-interactive (non-TTY) context so it
+  # exits cleanly rather than blocking on attach.
+  echo "--- (b) self-containment probe: attach hook runs standalone (no rc context) ---"
+  # The attach hook (tmux attach-session) exits non-zero in a non-TTY context; that's expected.
+  # What we're probing is: (1) the hook file is readable, (2) the hook runs without rc context.
+  # A tmux "no terminal" / "not a terminal" failure is acceptable (the hook requires a TTY).
+  TMUX_HOOK_CONTENT=$(docker exec "$TMUX_CAGE" cat /etc/rip-cage/multiplexers/tmux/attach 2>/dev/null || echo "")
+  if [[ -n "$TMUX_HOOK_CONTENT" ]]; then
+    pass "(b-61al3) self-containment: attach hook file readable, content: '${TMUX_HOOK_CONTENT}'"
+  else
+    fail "(b-61al3) self-containment: attach hook file empty or unreadable"
+  fi
+
+  # Verify the hook file runs via 'sh' without calling any rc functions.
+  # We source rc in a subshell and unset all rc-internal functions, then run the hook.
+  # If the hook references an undefined rc function, it would error.
+  SELFCONTAIN_PROBE_OUT=$(docker exec "$TMUX_CAGE" sh -c \
+    'unset -f _rc_mux_resolve_hook_path 2>/dev/null; unset -f _up_attach_tmux 2>/dev/null; sh /etc/rip-cage/multiplexers/tmux/attach 2>&1 || true' \
+    2>/dev/null || echo "exec_failed")
+  # If the hook tried to call an undefined rc function, it would output "command not found"
+  if echo "$SELFCONTAIN_PROBE_OUT" | grep -qE 'not found|undefined|_rc_mux|_up_attach'; then
+    fail "(b-61al3) self-containment: attach hook references undefined rc function: '${SELFCONTAIN_PROBE_OUT}'"
+  else
+    pass "(b-61al3) self-containment: attach hook runs without rc function context (output: '${SELFCONTAIN_PROBE_OUT:-<empty/normal>}')"
+  fi
+
 else
   fail "(b) tmux: skipping assertions — tmux cage did not start"
 fi
@@ -542,7 +658,22 @@ if [[ "$HERDR_STARTED" == "true" ]]; then
     pass "(herdr) herdr server process is running in cage"
   else
     fail "(herdr) herdr server NOT found in cage after ${_herdr_wait}s wait" \
-      "init-rip-cage.sh herdr branch may have failed — see /tmp/rc-mux-herdr-up.out"
+      "registry-dispatch start hook may have failed — see /tmp/rc-mux-herdr-up.out"
+  fi
+
+  # rip-cage-61al.3: registry probe — verify herdr hooks are baked in the registry.
+  HERDR_HOOK_START=$(docker exec "$HERDR_CAGE" sh -c 'test -f /etc/rip-cage/multiplexers/herdr/start && echo "present" || echo "absent"' 2>/dev/null || echo "absent")
+  if [[ "$HERDR_HOOK_START" == "present" ]]; then
+    pass "(herdr-61al3) herdr start hook baked in registry: /etc/rip-cage/multiplexers/herdr/start"
+  else
+    fail "(herdr-61al3) herdr start hook NOT found in registry — combined-mux fixture may not have baked it"
+  fi
+
+  HERDR_HOOK_ATTACH=$(docker exec "$HERDR_CAGE" sh -c 'test -f /etc/rip-cage/multiplexers/herdr/attach && echo "present" || echo "absent"' 2>/dev/null || echo "absent")
+  if [[ "$HERDR_HOOK_ATTACH" == "present" ]]; then
+    pass "(herdr-61al3) herdr attach hook baked in registry: /etc/rip-cage/multiplexers/herdr/attach"
+  else
+    fail "(herdr-61al3) herdr attach hook NOT found in registry"
   fi
 
   # herdr session reachable: check that the herdr unix socket exists

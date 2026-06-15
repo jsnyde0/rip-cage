@@ -1,0 +1,27 @@
+version: 1
+tools:
+  # Combined fixture: tmux + herdr MULTIPLEXER providers for lifecycle testing.
+  # Used by test-multiplexer-lifecycle.sh (rip-cage-61al.3).
+  #
+  # tmux is bundled in the base image (Debian slim) — no install needed.
+  - name: tmux
+    archetype: MULTIPLEXER
+    version_pin: "bundled"
+    hooks:
+      start: "tmux new-session -d -s rip-cage -c /workspace 2>/dev/null || true"
+      attach: "tmux attach-session -t rip-cage 2>/dev/null || (tmux new-session -d -s rip-cage -c /workspace && tmux attach-session -t rip-cage)"
+      new_session: "NEW=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | awk 'BEGIN{n=2} /^rip-cage-[0-9]+$/{x=substr($0,10)+0; if(x>=n) n=x+1} END{print \"rip-cage-\" n}') && tmux new-session -d -s \"$NEW\" -c /workspace && tmux attach-session -t \"$NEW\""
+  # herdr: TOOL entry installs the binary; MULTIPLEXER entry provides dispatch hooks.
+  - name: herdr-bin
+    archetype: TOOL
+    version_pin: "v0.6.10"
+    install_cmd: "ARCH=$(uname -m) && if [ \"$ARCH\" = \"aarch64\" ]; then TARGET=aarch64; EXPECTED_SHA=b3144a41df364f0541bbbdfe840fa61dbd67daf6e313ee317fe495d2ccf4927a; else TARGET=x86_64; EXPECTED_SHA=78d298d5a1ef076b4607e8e3c92d98f5de9f0cb30daf31aa910a1a6e9abb4fa1; fi && curl -fsSL \"https://github.com/ogulcancelik/herdr/releases/download/v0.6.10/herdr-linux-${TARGET}\" -o /tmp/herdr && echo \"${EXPECTED_SHA}  /tmp/herdr\" | sha256sum -c - && install -m 755 /tmp/herdr /usr/local/bin/herdr && rm -f /tmp/herdr"
+    egress:
+      - github.com
+    mounts: []
+  - name: herdr
+    archetype: MULTIPLEXER
+    version_pin: "bundled"
+    hooks:
+      start: "mkdir -p \"${HOME}/.config/herdr\" && herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 & echo \"[rip-cage] herdr server started (PID=$!)\" && sleep 1 && for _agent in pi claude; do if command -v \"${_agent}\" > /dev/null 2>&1; then _out=$(herdr integration install \"${_agent}\" 2>&1); _rc=$?; if [ \"$_rc\" -eq 0 ]; then echo \"[rip-cage] herdr integration installed: ${_agent}\"; else echo \"[rip-cage] WARNING: herdr integration install ${_agent} failed\" >&2; fi; fi; done"
+      attach: "herdr"

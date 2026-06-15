@@ -1,0 +1,21 @@
+version: 1
+tools:
+  # Fixture: herdr binary installer + MULTIPLEXER provider for rip-cage-61al.3 registry-dispatch test.
+  # Two entries: the TOOL entry installs the binary; the MULTIPLEXER entry provides dispatch hooks.
+  # Used by test-multiplexer-lifecycle.sh.
+  #
+  # TOOL entry: installs the herdr binary into the image.
+  - name: herdr-bin
+    archetype: TOOL
+    version_pin: "v0.6.10"
+    install_cmd: "ARCH=$(uname -m) && if [ \"$ARCH\" = \"aarch64\" ]; then TARGET=aarch64; EXPECTED_SHA=b3144a41df364f0541bbbdfe840fa61dbd67daf6e313ee317fe495d2ccf4927a; else TARGET=x86_64; EXPECTED_SHA=78d298d5a1ef076b4607e8e3c92d98f5de9f0cb30daf31aa910a1a6e9abb4fa1; fi && curl -fsSL \"https://github.com/ogulcancelik/herdr/releases/download/v0.6.10/herdr-linux-${TARGET}\" -o /tmp/herdr && echo \"${EXPECTED_SHA}  /tmp/herdr\" | sha256sum -c - && install -m 755 /tmp/herdr /usr/local/bin/herdr && rm -f /tmp/herdr"
+    egress:
+      - github.com
+    mounts: []
+  # MULTIPLEXER entry: bakes start/attach hooks into /etc/rip-cage/multiplexers/herdr/.
+  - name: herdr
+    archetype: MULTIPLEXER
+    version_pin: "bundled"
+    hooks:
+      start: "mkdir -p \"${HOME}/.config/herdr\" && herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 & echo \"[rip-cage] herdr server started (PID=$!)\" && sleep 1 && for _agent in pi claude; do if command -v \"${_agent}\" > /dev/null 2>&1; then _out=$(herdr integration install \"${_agent}\" 2>&1); _rc=$?; if [ \"$_rc\" -eq 0 ]; then echo \"[rip-cage] herdr integration installed: ${_agent}\"; else echo \"[rip-cage] WARNING: herdr integration install ${_agent} failed\" >&2; fi; fi; done"
+      attach: "herdr"
