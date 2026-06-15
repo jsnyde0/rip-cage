@@ -6843,6 +6843,16 @@ _manifest_validate() {
         # Hook-bounds check: each hook command is statically asserted to not weaken the
         # safety floor (ADR-005 D10/D11, ADR-001 fail-loud). Parse, never run.
 
+        # Name format check: MULTIPLEXER names are used as directory components under
+        # /etc/rip-cage/multiplexers/<name>/ in the image. Only [a-z0-9_-] is safe —
+        # quotes, backticks, spaces, slashes, or other metacharacters produce malformed
+        # Dockerfile RUN/echo steps that fail docker build with an opaque syntax error.
+        # Fail loud here with a clear message (ADR-001) rather than letting docker fail later.
+        if [[ ! "$name" =~ ^[a-z0-9_-]+$ ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): MULTIPLEXER name '${name}' contains characters outside [a-z0-9_-] — names are used as directory components in the image registry (/etc/rip-cage/multiplexers/<name>) and must be lowercase alphanumeric, hyphens, or underscores only (ADR-001 fail-loud; name-format check)." >&2
+          return 1
+        fi
+
         # Strict-parse: reject unknown/extra top-level fields on MULTIPLEXER entries.
         # Known fields: name, archetype, version_pin, hooks
         local mux_known_fields mux_entry_keys mux_unknown_key
@@ -7248,13 +7258,23 @@ _manifest_build_dockerfile_path() {
     return 1
   fi
 
-  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" ]]; then
+  local mux_registry_steps
+  if ! mux_registry_steps=$(_manifest_generate_multiplexer_registry_steps); then
+    return 1
+  fi
+
+  local mux_label
+  if ! mux_label=$(_manifest_generate_multiplexer_label); then
+    return 1
+  fi
+
+  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" && -z "$mux_registry_steps" && -z "$mux_label" ]]; then
     # Default/bundled-only manifest — use the original Dockerfile unchanged (D8).
     echo "$orig_dockerfile"
     return 0
   fi
 
-  # Non-bundled tools and/or SHELL-INTEGRATION/IN-CAGE-DAEMON entries present — generate a temp Dockerfile.
+  # Non-bundled tools and/or SHELL-INTEGRATION/IN-CAGE-DAEMON/MULTIPLEXER entries present — generate a temp Dockerfile.
   local tmp_dockerfile
   tmp_dockerfile=$(mktemp "${TMPDIR:-/tmp}/rip-cage-Dockerfile-XXXXXX")
 
@@ -7364,6 +7384,55 @@ _manifest_build_dockerfile_path() {
       cat "$tmp_inject_shell" >> "$tmp_dockerfile"
     fi
     rm -f "$tmp_inject_shell"
+  fi
+
+  # --- MULTIPLEXER registry bake: inject AFTER "COPY settings.json" sentinel ---
+  # Same injection site as IN-CAGE-DAEMON config steps (root context; /etc/rip-cage exists).
+  # These steps create /etc/rip-cage/multiplexers/<name>/ and write one file per declared hook.
+  if [[ -n "$mux_registry_steps" ]]; then
+    local sentinel_settings_mux="COPY settings.json /etc/rip-cage/settings.json"
+    local tmp_inject_mux
+    tmp_inject_mux=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
+    printf '\n# --- manifest-generated MULTIPLEXER registry bake (rip-cage-61al.2) ---\n%s\n' "$mux_registry_steps" > "$tmp_inject_mux"
+
+    if grep -qF "$sentinel_settings_mux" "$tmp_dockerfile"; then
+      local sentinel_line_settings_mux base_dockerfile_mux
+      sentinel_line_settings_mux=$(grep -nF "$sentinel_settings_mux" "$tmp_dockerfile" | head -1 | cut -d: -f1)
+      base_dockerfile_mux=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
+      head -n "${sentinel_line_settings_mux}" "$tmp_dockerfile" > "$base_dockerfile_mux"
+      cat "$tmp_inject_mux" >> "$base_dockerfile_mux"
+      tail -n "+$((sentinel_line_settings_mux + 1))" "$tmp_dockerfile" >> "$base_dockerfile_mux"
+      mv "$base_dockerfile_mux" "$tmp_dockerfile"
+    else
+      echo "rip-cage: Warning: 'COPY settings.json' sentinel not found in Dockerfile — appending MULTIPLEXER registry bake steps at end (may fail if /etc/rip-cage does not exist). Dockerfile may need the sentinel restored." >&2
+      cat "$tmp_inject_mux" >> "$tmp_dockerfile"
+    fi
+    rm -f "$tmp_inject_mux"
+  fi
+
+  # --- MULTIPLEXER image label: inject AFTER existing LABEL line ---
+  # The rc.multiplexers label is placed alongside the existing
+  # org.opencontainers.image.version label so it is frozen in the image at build time.
+  # B2 reads it host-side via `docker inspect` without re-reading the manifest.
+  if [[ -n "$mux_label" ]]; then
+    local sentinel_label="LABEL org.opencontainers.image.version"
+    local tmp_inject_label
+    tmp_inject_label=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
+    printf '\n# manifest-generated MULTIPLEXER registry label (rip-cage-61al.2)\n%s\n' "$mux_label" > "$tmp_inject_label"
+
+    if grep -qF "$sentinel_label" "$tmp_dockerfile"; then
+      local sentinel_line_label base_dockerfile_label
+      sentinel_line_label=$(grep -nF "$sentinel_label" "$tmp_dockerfile" | head -1 | cut -d: -f1)
+      base_dockerfile_label=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
+      head -n "${sentinel_line_label}" "$tmp_dockerfile" > "$base_dockerfile_label"
+      cat "$tmp_inject_label" >> "$base_dockerfile_label"
+      tail -n "+$((sentinel_line_label + 1))" "$tmp_dockerfile" >> "$base_dockerfile_label"
+      mv "$base_dockerfile_label" "$tmp_dockerfile"
+    else
+      echo "rip-cage: Warning: 'LABEL org.opencontainers.image.version' sentinel not found in Dockerfile — appending MULTIPLEXER label at end." >&2
+      cat "$tmp_inject_label" >> "$tmp_dockerfile"
+    fi
+    rm -f "$tmp_inject_label"
   fi
 
   echo "$tmp_dockerfile"
@@ -7630,11 +7699,260 @@ _manifest_generate_daemon_mcp_dockerfile_steps() {
   fi
 }
 
+# _manifest_generate_multiplexer_registry_steps
+# Read the host manifest and emit Dockerfile RUN steps that bake each
+# MULTIPLEXER-archetype tool's declared hook command strings into
+# /etc/rip-cage/multiplexers/<name>/<hook> in the image at BUILD time.
+#
+# Mechanism: for each MULTIPLEXER entry, mkdir the registry dir and use
+# base64-encoded hook commands (safe against any shell metachar) decoded at
+# Dockerfile-RUN time into one file per declared hook.  Only DECLARED hooks
+# are written; optional hooks absent from the manifest produce no file.
+#
+# Injection point: same as IN-CAGE-DAEMON config steps — after
+# "COPY settings.json /etc/rip-cage/settings.json" (root context;
+# /etc/rip-cage already exists at Dockerfile:127).
+#
+# D8 byte-for-byte contract: when the manifest has no MULTIPLEXER entries,
+# this function emits NOTHING.
+#
+# ADR-005 D9 (hooks = availability-payload, FIRM)
+# ADR-005 D12 (composable seam — registry IS the mechanism)
+# rip-cage-61al.2
+_manifest_generate_multiplexer_registry_steps() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count idx
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local steps=""
+  local has_multiplexers=0
+
+  for (( idx=0; idx<count; idx++ )); do
+    local entry archetype
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
+    if [[ "$archetype" != "MULTIPLEXER" ]]; then
+      continue
+    fi
+    has_multiplexers=1
+
+    local name
+    name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+
+    # Sanitize name for use as a directory component (defense-in-depth guard).
+    # _manifest_validate enforces the full [a-z0-9_-] format check before this
+    # function is called, so any name reaching here should already be safe.
+    # This guard catches internal callers that bypass the validator.
+    if [[ "$name" == *"/"* || "$name" == *" "* ]]; then
+      echo "Error: manifest MULTIPLEXER entry '${name}': name contains slash or space — cannot use as registry dir name." >&2
+      return 1
+    fi
+
+    local registry_dir="/etc/rip-cage/multiplexers/${name}"
+
+    # Start the step block for this mux entry.
+    steps+="RUN # manifest MULTIPLEXER registry bake: ${name} (rip-cage-61al.2)"$'\n'
+    steps+="RUN mkdir -p '${registry_dir}'"$'\n'
+
+    # Write each declared hook as a file under the registry dir.
+    # Use base64 encoding (same approach as daemon config bake) to handle any
+    # shell metachar in the hook command string safely.
+    # Only write files for hooks that are actually declared.
+    local hook_name hook_cmd b64_cmd
+    for hook_name in start attach exec new_session teardown; do
+      hook_cmd=$(jq -r ".hooks.${hook_name} // \"___RC_ABSENT___\"" <<<"$entry" 2>/dev/null)
+      [[ "$hook_cmd" == "___RC_ABSENT___" || -z "$hook_cmd" ]] && continue
+
+      # Injection safety: hook_cmd must be a single line (already validated by
+      # _manifest_validate, but guard here too — multi-line could inject Dockerfile directives).
+      if [[ "$hook_cmd" == *$'\n'* ]]; then
+        echo "Error: manifest MULTIPLEXER entry '${name}': hook '${hook_name}' contains newline — single-line required." >&2
+        return 1
+      fi
+
+      b64_cmd=$(printf '%s' "$hook_cmd" | base64 | tr -d '\n')
+      steps+="RUN echo '${b64_cmd}' | base64 -d > '${registry_dir}/${hook_name}' && chmod 0755 '${registry_dir}/${hook_name}'"$'\n'
+    done
+  done
+
+  if [[ "$has_multiplexers" -eq 0 ]]; then
+    # No MULTIPLEXER entries — emit nothing (D8 short-circuit).
+    return 0
+  fi
+
+  # Strip trailing newline for clean output; caller appends to Dockerfile.
+  if [[ -n "$steps" ]]; then
+    printf '%s' "${steps%$'\n'}"
+  fi
+}
+
+# _manifest_generate_multiplexer_label
+# Read the host manifest and emit a Dockerfile LABEL line enumerating all
+# MULTIPLEXER-archetype tool names, e.g.:
+#   LABEL rc.multiplexers="tmux,herdr"
+#
+# This label is frozen in the image at build time so B2 (host-side config
+# validator) can read it via `docker inspect` WITHOUT re-reading the host
+# manifest at runtime — preserving the no-image-vs-host-drift invariant.
+#
+# D8 byte-for-byte contract: when the manifest has no MULTIPLEXER entries,
+# this function emits NOTHING.
+#
+# rip-cage-61al.2
+_manifest_generate_multiplexer_label() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count idx
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local mux_names=""
+  for (( idx=0; idx<count; idx++ )); do
+    local entry archetype name
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
+    if [[ "$archetype" != "MULTIPLEXER" ]]; then
+      continue
+    fi
+    name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+    if [[ -n "$mux_names" ]]; then
+      mux_names+=",$name"
+    else
+      mux_names="$name"
+    fi
+  done
+
+  if [[ -z "$mux_names" ]]; then
+    # No MULTIPLEXER entries — emit nothing.
+    return 0
+  fi
+
+  printf 'LABEL rc.multiplexers="%s"' "$mux_names"
+}
+
+# _rc_mux_resolve_hook_path
+# Resolve a baked multiplexer hook to its in-container path under the registry.
+# Prints the resolved in-container path on stdout (even when called from the host).
+#
+# =============================================================================
+# Contract (shapes B1b — read before calling):
+#
+#   _rc_mux_resolve_hook_path <name> <hook_name> [<cage_name>]
+#
+#   name:       multiplexer name (e.g. "tmux", "herdr")
+#   hook_name:  hook to resolve (start|attach|exec|new_session|teardown)
+#   cage_name:  (optional) running container name for host-side callers (e.g. rc attach).
+#               When provided, existence is checked INSIDE the cage via
+#               `docker exec <cage_name> test ...`.
+#               When omitted, the LOCAL filesystem is checked (in-container callers).
+#
+#   The resolved path is ALWAYS an in-container path:
+#     /etc/rip-cage/multiplexers/<name>/<hook_name>
+#   Host-side callers (cage_name present) should invoke the hook via docker exec.
+#
+# Behavior:
+#   - Registry dir missing → fail loud (ADR-001), exit non-zero, name the fix.
+#     NEVER silently fall through to a default.
+#   - Registry dir exists, hook file ABSENT → echo empty string, exit 0.
+#     Documented no-op: caller provides fallback (optional hook not declared).
+#   - Registry dir exists, hook file present → echo in-container path, exit 0.
+#
+# Test override (in-container / local-filesystem branch only):
+#   Set RC_MUX_REGISTRY_ROOT env var (or use the legacy 3rd positional arg when
+#   cage_name is not a running container name) to override the local registry root.
+#   This lets host-tier unit tests point at a fake temp-dir registry without Docker.
+#   The public positional contract is <name> <hook> [<cage_name>]; the env var
+#   override applies only when cage_name is absent.
+#
+# rip-cage-61al.2 (contract revised by B1b fix bead)
+# =============================================================================
+_rc_mux_resolve_hook_path() {
+  local _rmrh_name="${1:-}"
+  local _rmrh_hook="${2:-}"
+  local _rmrh_cage="${3:-}"
+
+  if [[ -z "$_rmrh_name" ]]; then
+    echo "Error: _rc_mux_resolve_hook_path: multiplexer name is required." >&2
+    return 1
+  fi
+  if [[ -z "$_rmrh_hook" ]]; then
+    echo "Error: _rc_mux_resolve_hook_path: hook name is required." >&2
+    return 1
+  fi
+
+  # The in-container path is always the canonical form; callers use docker exec to invoke it.
+  local _rmrh_registry_in_container="/etc/rip-cage/multiplexers"
+  local _rmrh_dir_in_container="${_rmrh_registry_in_container}/${_rmrh_name}"
+  local _rmrh_hook_path_in_container="${_rmrh_dir_in_container}/${_rmrh_hook}"
+
+  if [[ -n "$_rmrh_cage" ]]; then
+    # -------------------------------------------------------------------------
+    # HOST-SIDE CALLER: cage_name provided — existence-check via docker exec.
+    # -------------------------------------------------------------------------
+
+    # Fail loud if the registry dir for this name is absent inside the cage (ADR-001).
+    if ! docker exec "${_rmrh_cage}" test -d "${_rmrh_dir_in_container}" 2>/dev/null; then
+      echo "Error: no baked multiplexer registry for '${_rmrh_name}' in cage '${_rmrh_cage}' at ${_rmrh_dir_in_container} — multiplexer was not declared in the manifest used to build this image (ADR-001 fail-loud). Check \`docker inspect ${_rmrh_cage} --format '{{ index .Config.Labels \"rc.multiplexers\" }}'\` and the manifest used during rc build." >&2
+      return 1
+    fi
+
+    # Optional hook absent → return empty string (documented no-op).
+    if ! docker exec "${_rmrh_cage}" test -f "${_rmrh_hook_path_in_container}" 2>/dev/null; then
+      return 0
+    fi
+
+    printf '%s' "${_rmrh_hook_path_in_container}"
+
+  else
+    # -------------------------------------------------------------------------
+    # IN-CONTAINER CALLER (or host-tier unit test with local root override):
+    # cage_name omitted — check the LOCAL filesystem.
+    # The local registry root defaults to /etc/rip-cage/multiplexers but can be
+    # overridden via RC_MUX_REGISTRY_ROOT env var for host-tier unit tests.
+    # -------------------------------------------------------------------------
+    local _rmrh_local_root="${RC_MUX_REGISTRY_ROOT:-/etc/rip-cage/multiplexers}"
+    local _rmrh_local_dir="${_rmrh_local_root}/${_rmrh_name}"
+    local _rmrh_local_hook_path="${_rmrh_local_dir}/${_rmrh_hook}"
+
+    # Fail loud if no baked registry dir for this name (ADR-001).
+    if [[ ! -d "$_rmrh_local_dir" ]]; then
+      echo "Error: no baked multiplexer registry for '${_rmrh_name}' at ${_rmrh_local_dir} — multiplexer was not declared in the manifest used to build this image (ADR-001 fail-loud). Check rc.multiplexers image label and the manifest used during rc build." >&2
+      return 1
+    fi
+
+    # Optional hook absent → return empty string (no-op; caller provides fallback).
+    if [[ ! -f "$_rmrh_local_hook_path" ]]; then
+      return 0
+    fi
+
+    # In-container callers: return the canonical in-container path.
+    # (When RC_MUX_REGISTRY_ROOT is set, the local path IS the hook path for tests.)
+    if [[ -n "${RC_MUX_REGISTRY_ROOT:-}" ]]; then
+      printf '%s' "$_rmrh_local_hook_path"
+    else
+      printf '%s' "${_rmrh_hook_path_in_container}"
+    fi
+  fi
+}
+
 # =============================================================================
 # End tool manifest schema + host-only loader (rip-cage-4c5.1)
 # + TOOL install-step generation (rip-cage-4c5.2)
 # + SHELL-INTEGRATION shell_init baking (rip-cage-4c5.4)
 # + IN-CAGE-DAEMON config bake + MCP fragment (rip-cage-4c5.5)
+# + MULTIPLEXER registry bake + image label + reference reader (rip-cage-61al.2)
 # =============================================================================
 
 # =============================================================================

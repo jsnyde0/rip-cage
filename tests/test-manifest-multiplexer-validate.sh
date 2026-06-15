@@ -406,6 +406,31 @@ test_t1m_unknown_hook_subkey_fails() {
   teardown_manifest_sandbox
 }
 
+# ---------------------------------------------------------------------------
+# T1n — MULTIPLEXER name with chars outside [a-z0-9_-] FAILS validation.
+# A name like "bad'name" (quote) or "bad name" (space) must be rejected with
+# a clear error naming the bad name — not silently accepted and then failing
+# docker build with an opaque Dockerfile syntax error (ADR-001 fail-loud).
+# ---------------------------------------------------------------------------
+test_t1n_bad_name_format_fails() {
+  local fixture_path="${FIXTURES}/manifest-multiplexer-bad-name.yaml"
+  local stderr_file out exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  setup_manifest_sandbox "manifest-multiplexer-bad-name.yaml"
+  out=$(run_manifest_validate "$fixture_path" "$stderr_file") || exit_code=$?
+  local err_output
+  err_output=$(cat "$stderr_file")
+  # Must fail AND name the offending name in the error
+  if [[ "$exit_code" -ne 0 ]] && echo "$err_output" | grep -qiE "bad.name|name-format|a-z0-9_-"; then
+    pass "T1n MULTIPLEXER name with invalid chars fails validation and names the bad name"
+  else
+    fail "T1n expected non-zero exit + naming bad name or format rule. exit=${exit_code} stderr='${err_output}' stdout='${out}'"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
 # Run T1 tests
 test_t1a_valid_fixture_validates
 test_t1b_start_attach_only_validates
@@ -420,6 +445,7 @@ test_t1j_hook_writes_dcg_guard_fails
 test_t1k_hook_writes_ssh_blocker_fails
 test_t1l_hook_lifecycle_interceptor_fails
 test_t1m_unknown_hook_subkey_fails
+test_t1n_bad_name_format_fails
 
 echo ""
 echo "Results: FAILURES=${FAILURES}"

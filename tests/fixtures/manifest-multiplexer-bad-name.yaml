@@ -1,0 +1,8 @@
+version: 1
+tools:
+  - name: "bad'name"
+    archetype: MULTIPLEXER
+    version_pin: "1.0.0"
+    hooks:
+      start: "bad-mux start"
+      attach: "bad-mux attach"
