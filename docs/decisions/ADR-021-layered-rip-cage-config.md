@@ -295,7 +295,7 @@ Net-new stdout/stderr text is not a regression in the sense this contract cares 
 
 **Invalidation check (mechanical, runnable):** With both config files absent, `tests/test-e2e-lifecycle.sh` (full count today) must produce the same PASS/FAIL count and the same **config-derived** emitted mounts/labels/sentinels as it did before the loader landed. A delta in config-derived mounts, labels, or sentinels means the cage-posture-unchanged half of D5 is broken. Deltas in host-state-derived emissions (the documented-to-vary set `{rc.symlink-follow-fingerprint}`) are explicitly **in-scope** per the D5 clarification above. (Stdout/stderr deltas from the substrate's informational output are also explicitly in-scope per the contract.)
 
-### D6: `session.multiplexer` field — in-cage multiplexer selection (added 2026-06-13, rip-cage-1f59)
+### D6: `session.multiplexer` field — in-cage multiplexer selection (added 2026-06-13, rip-cage-1f59; revised 2026-06-15, rip-cage-61al — allowed-set is manifest-derived, not a fixed enum)
 
 **Firmness: FIRM** (inherited from D1-D3 schema framework)
 
@@ -303,13 +303,17 @@ One enum-scalar field (selection_list type) selecting which terminal multiplexer
 
 | Field | Type | Default | Allowed values |
 |---|---|---|---|
-| `session.multiplexer` | selection_list (enum scalar) | `"none"` | `none`, `tmux`, `herdr` |
+| `session.multiplexer` | selection_list (enum scalar) | `"none"` | `none` + any manifest-declared multiplexer provider (validated against the baked registry, **not** a fixed `tmux`/`herdr` enum) |
 
-**Merge semantics:** per D2 selection-list rule (project replaces global if present; absent ⇒ inherit global or use default). Single-value scalar — the "selection_list" type here indicates enum-scalar semantics: unknown values abort loud per D3 (same path as D4a's `mounts.symlinks.*`).
+**Allowed-set is open and substrate-derived (revised 2026-06-15, rip-cage-61al):** the valid values are `none` plus whatever multiplexer providers the tool manifest declares and `rc build` bakes into the image (read host-side from the `rc.multiplexers` image label, with a pre-build fallback to the manifest's MULTIPLEXER entries). A selected-but-not-baked name fails loud at config-validate, naming the fix (`add the provider to your manifest and rc build`). Adding a multiplexer (e.g. `zellij`) is a manifest entry with **zero `rc` edits** — `tmux` and `herdr` are no longer special-cased in `rc` source; they ship as `examples/` provider definitions (ADR-005 D12 consequence 2).
+
+**Merge semantics:** per D2 selection-list rule (project replaces global if present; absent ⇒ inherit global or use default). Single-value scalar — the "selection_list" type here indicates enum-scalar semantics: an unknown value (not `none`, not in the baked registry) aborts loud per D3 (same path as D4a's `mounts.symlinks.*`), but the *accepted* set is derived dynamically, not hardcoded.
 
 **Schema version:** stays at 1. Unknown enum values already abort loud via the selection-list abort path (D3). A future multiplexer needing sub-keys (not a bare enum value) would grow this into a field group like `mounts.symlinks.*` (D4a) and may require a version bump.
 
-**Rationale:** makes the in-cage multiplexer a swappable composed component rather than a hardcoded coupling — the config-layer expression of ADR-006 D7's re-decision (the multiplexer owns session orchestration; rip-cage owns the box) and the process-layer sibling of the pluggable egress mediator (ADR-026) and tool manifest (ADR-005 D11). Default `none` = normal terminal semantics, imposing no surprising persistence on newcomers (ADR-009 D1); persistence + the supervisor view are opt-in by choosing `tmux` or `herdr`.
+**Rationale:** makes the in-cage multiplexer a swappable composed component rather than a hardcoded coupling — the config-layer expression of ADR-006 D7's re-decision (the multiplexer owns session orchestration; rip-cage owns the box) and the process-layer sibling of the pluggable egress mediator (ADR-026) and tool manifest (ADR-005 D11). Default `none` = normal terminal semantics, imposing no surprising persistence on newcomers (ADR-009 D1); persistence + the supervisor view are opt-in by choosing a multiplexer provider (e.g. the `examples/tmux` or `examples/herdr` providers).
+
+**Why the allowed-set evolved from a literal enum (revised 2026-06-15):** the original `none, tmux, herdr` listing was a 2026-06-13 snapshot of the then-available multiplexers, and it *contradicted this decision's own rationale* — D6 declares the multiplexer "a swappable composed component rather than a hardcoded coupling," yet a literal three-value enum hardcodes exactly the set it claims is swappable. ADR-005 D12 (FIRM) since made the composable-seam principle explicit: `rc` source must never name a specific optional tool, and adding a multiplexer is a manifest entry with zero `rc` edits. Deriving the allowed-set from the baked registry *completes* D6's stated intent rather than reversing it; the firmness stays FIRM because the open-substrate-derived set is the composable-seam invariant at the config layer, not a loosening of validation (an unbaked name still fails loud).
 
 **Alternatives considered:**
 
@@ -317,8 +321,9 @@ One enum-scalar field (selection_list type) selecting which terminal multiplexer
 |---|---|
 | Keep tmux hardcoded (no field) | `reasoned:` the coupling rip-cage-1f59 removes; welds one multiplexer into the box and forces tmux as a hard Homebrew dependency |
 | Default `tmux` (batteries-included persistence) | `reasoned:` imposes "survives window close" semantics on users who expect plain Claude Code (documented confusion); persistence should be opt-in, not the surprising default |
+| Keep the literal `none, tmux, herdr` enum (validate against a fixed known set) | `reasoned:` contradicts D6's own swappable-component rationale and ADR-005 D12 (FIRM composable seam); forces an `rc`-source edit per new multiplexer; the set is now derived from the manifest/baked registry (rip-cage-61al) |
 
-**What would invalidate this:** a multiplexer whose configuration cannot be expressed as a single enum value (needs per-multiplexer sub-keys) — then this grows into a field group (D4a shape); it is not abandoned.
+**What would invalidate this:** (a) a multiplexer whose configuration cannot be expressed as a single enum value (needs per-multiplexer sub-keys) — then this grows into a field group (D4a shape); it is not abandoned. (b) A validated need to constrain the selectable set *below* "whatever the manifest bakes" — that would reintroduce a list, but derived from policy, not from hardcoded tool names in `rc`.
 
 ## Consequences
 

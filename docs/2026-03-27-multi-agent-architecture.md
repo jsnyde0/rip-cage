@@ -121,7 +121,7 @@ Progressive monitoring across tiers:
 
 **Tier 1b:** `rc ls --output json` shows all containers with labels, status, uptime. **Tier 1a:** `rc sessions <cage>` lists active tmux sessions inside a single cage. Both sufficient for manual oversight.
 
-> **Note (2026-06-13):** `rc sessions` was removed in epic rip-cage-1f59. Per ADR-006 D7 re-decision, the Tier-1a mechanical lever is now the in-cage multiplexer (`session.multiplexer: none | tmux | herdr`, ADR-021 D6) — `tmux ls` / `herdr agent list` are the multiplexer-native surfaces, not a rip-cage command. `rc agent` was also removed; `rc exec` is the rip-cage box-entry lever for running an arbitrary command inside a cage.
+> **Note (2026-06-13):** `rc sessions` was removed in epic rip-cage-1f59. Per ADR-006 D7 re-decision, the Tier-1a mechanical lever is now the in-cage multiplexer (`session.multiplexer: none | <any manifest-declared provider>`, ADR-021 D6 — the set is manifest-derived, not a fixed enum, per ADR-005 D12; `tmux` / `herdr` ship as `examples/` providers) — e.g. `tmux ls` / `herdr agent list` are multiplexer-native surfaces, not a rip-cage command. `rc agent` was also removed; `rc exec` is the rip-cage box-entry lever for running an arbitrary command inside a cage.
 
 **Tier 2:** `rc status <swarm>` adds agent state detection. Patterns from FrankenTerm: parse tmux pane output to classify agents as Active (producing output), Thinking (waiting for API response), Stuck (no output for N minutes), or Idle (at prompt). JSON output for programmatic consumption.
 
