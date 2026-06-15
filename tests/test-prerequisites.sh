@@ -15,10 +15,9 @@ fail() { echo "FAIL: $1 — got: ${2:-}"; FAILURES=$((FAILURES + 1)); }
 # Create temp dirs for fake binaries
 FAKE_BIN=$(mktemp -d)
 SYMLINK_BIN=$(mktemp -d)   # symlink farm for PATH without jq
-SYMLINK_BIN2=$(mktemp -d)  # symlink farm for PATH without tmux
 T2_WKSP=""                 # initialized here so cleanup() can safely remove it
 cleanup() {
-  rm -rf "$FAKE_BIN" "$SYMLINK_BIN" "$SYMLINK_BIN2"
+  rm -rf "$FAKE_BIN" "$SYMLINK_BIN"
   [[ -n "$T2_WKSP" ]] && rm -rf "$T2_WKSP"
 }
 trap cleanup EXIT
@@ -57,7 +56,6 @@ _build_nojq_path() {
 }
 
 NOJQ_BIN=$(_build_nojq_path "$SYMLINK_BIN" "jq")
-NOTMUX_BIN=$(_build_nojq_path "$SYMLINK_BIN2" "tmux")
 
 # -----------------------------------------------
 # Test 1: Missing jq — rc ls --output json fails with helpful message
@@ -79,31 +77,42 @@ else
 fi
 
 # -----------------------------------------------
-# Test 2: Missing tmux — rc up fails with helpful message when multiplexer=tmux
+# Test 2: session.multiplexer=tmux without manifest declaration fails loud.
+# rip-cage-61al.4: tmux is now manifest/registry-derived, not a static enum.
+# Without a MULTIPLEXER entry in the manifest, tmux fails at config-validate
+# with a fix-naming message (ADR-001 fail-loud).
+#
+# Isolation (rip-cage-61al.4 review, Finding 2):
+#   RC_MUX_INSPECT_IMAGE is pinned to a nonexistent tag so _config_mux_derive_allowed_set
+#   takes the image-absent path deterministically (not the host's rip-cage:latest label).
+#   RC_MANIFEST_GLOBAL is pinned to a controlled empty manifest (no MULTIPLEXER entries)
+#   so the manifest fallback does not read the developer's real ~/.config/rip-cage/tools.yaml.
 # -----------------------------------------------
 echo ""
-echo "=== Test 2: Missing tmux gives helpful error for rc up (multiplexer=tmux) ==="
+echo "=== Test 2: session.multiplexer=tmux without manifest declaration fails loud ==="
 
-# rip-cage-1f59.2: check_tmux is only called when session.multiplexer=tmux.
-# Create a workspace with an explicit tmux multiplexer config so check_tmux fires.
 T2_WKSP=$(mktemp -d)
 T2_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-prereq-t2-XXXXXX.yaml")
+T2_MANIFEST=$(mktemp "${TMPDIR:-/tmp}/rc-prereq-t2-manifest-XXXXXX.yaml")
 mkdir -p "${T2_WKSP}/.git"
 printf 'version: 1\nsession:\n  multiplexer: tmux\nmounts:\n  denylist: []\n' > "${T2_WKSP}/.rip-cage.yaml"
 printf 'version: 1\nmounts:\n  denylist: []\n' > "$T2_GLOBAL_CFG"
-# Use PATH without tmux to ensure the test is reliable even if tmux is installed on the host
-output=$(RC_ALLOWED_ROOTS="$T2_WKSP" RC_CONFIG_GLOBAL="$T2_GLOBAL_CFG" PATH="$NOTMUX_BIN" \
+# Empty manifest: no tools / no MULTIPLEXER entries.
+printf 'version: 1\ntools: []\n' > "$T2_MANIFEST"
+output=$(RC_ALLOWED_ROOTS="$T2_WKSP" RC_CONFIG_GLOBAL="$T2_GLOBAL_CFG" \
+  RC_MUX_INSPECT_IMAGE="rip-cage:nonexistent-isolation-prereq-t2" \
+  RC_MANIFEST_GLOBAL="$T2_MANIFEST" \
   "$RC" up "$T2_WKSP" 2>&1 || true)
-rm -f "$T2_GLOBAL_CFG"
+rm -f "$T2_GLOBAL_CFG" "$T2_MANIFEST"
 if echo "$output" | grep -qi "tmux"; then
-  pass "missing tmux: error mentions 'tmux'"
+  pass "missing tmux manifest entry: error mentions 'tmux'"
 else
-  fail "missing tmux: error should mention 'tmux'" "$output"
+  fail "missing tmux manifest entry: error should mention 'tmux'" "$output"
 fi
-if echo "$output" | grep -qi "install"; then
-  pass "missing tmux: error mentions 'install'"
+if echo "$output" | grep -q "rc build"; then
+  pass "missing tmux manifest entry: error names the fix ('rc build')"
 else
-  fail "missing tmux: error should give install instructions" "$output"
+  fail "missing tmux manifest entry: error should name the fix 'rc build'" "$output"
 fi
 
 # -----------------------------------------------

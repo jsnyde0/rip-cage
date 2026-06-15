@@ -842,14 +842,26 @@ test_t40_session_multiplexer_default_none() {
 }
 
 test_t41_session_multiplexer_tmux_parses() {
-  # session.multiplexer: tmux parses correctly with project provenance
+  # session.multiplexer: tmux parses correctly with project provenance.
+  # rip-cage-61al.4: tmux is now dynamic (manifest/registry-derived), not static.
+  # Must declare tmux as a MULTIPLEXER in the manifest for config-validate to accept it.
+  #
+  # RC_MUX_INSPECT_IMAGE is pinned to a nonexistent tag so _config_mux_derive_allowed_set
+  # deterministically takes the image-absent path → manifest-enumeration fallback.
+  # Without this pin, the test would read the host's rip-cage:latest label, making
+  # the result host-state-dependent (rip-cage-61al.4 review, Finding 2).
   setup_sandbox "" "config-project-multiplexer-tmux.yaml"
+  # Seed a tools.yaml with tmux as a MULTIPLEXER so the manifest-enumeration
+  # fallback accepts it (pre-build path; no real image needed for this test).
+  cp "${FIXTURES}/manifest-tmux-provider.yaml" "${TEST_HOME}/.config/rip-cage/tools.yaml"
   local out mux prov
-  out=$(run_rc_config "show --json")
+  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_MUX_INSPECT_IMAGE="rip-cage:nonexistent-isolation-t41" \
+    bash -c "cd '$TEST_WS' && '$RC' config show --json")
   mux=$(jq -r '.config.session.multiplexer' <<<"$out")
   prov=$(jq -r '.provenance["session.multiplexer"]' <<<"$out")
   if [[ "$mux" == "tmux" && "$prov" == "project" ]]; then
-    pass "T41 session.multiplexer=tmux parses from project, prov=project"
+    pass "T41 session.multiplexer=tmux parses from project, prov=project (tmux declared in manifest)"
   else
     fail "T41 expected mux=tmux prov=project, got mux=$mux prov=$prov"
   fi
