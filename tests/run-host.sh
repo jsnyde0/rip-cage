@@ -47,6 +47,7 @@ NEEDS_CONTAINER=(
   "test-pi-dcg-gate.sh"       # asserts in-cage pi dcg-gate.ts + dcg-guard paths; \`command -v pi\` would vacuously skip on host (rip-cage-b6ia)
   "test-skills.sh"            # live meta-skill MCP handshake + cage-path/settings assertions inside a container (rip-cage-b6ia)
   "test-multiplexer-agent-e2e.sh" # requires RC_E2E=1 + pi auth; proves pi agent does real work THROUGH the tmux attach surface with >=2 distinct tool invocations (rip-cage-w621.7)
+  "test-multiplexer-composable.sh" # E1 tier builds + runs a cage; G1 host-only grep-guards run always (rip-cage-61al.8)
 )
 
 # Helper: check if a given test basename is in NEEDS_CONTAINER.
@@ -179,6 +180,7 @@ run_test "${SCRIPT_DIR}/test-manifest-security.sh"   # rip-cage-buuo.3: binary-r
 run_test "${SCRIPT_DIR}/test-manifest-multiplexer-validate.sh" # rip-cage-61al.1: MULTIPLEXER archetype validation (T1a-T1m host-only)
 run_test "${SCRIPT_DIR}/test-multiplexer-registry-bake.sh"     # rip-cage-61al.2: MULTIPLEXER registry bake + label + reference reader (T1a-T1g host-only; T2a-T2e self-skip via RC_E2E gate)
 run_test "${SCRIPT_DIR}/test-multiplexer-config-dynamic.sh"    # rip-cage-61al.4: dynamic session.multiplexer schema + config-validate (T1a-T1e host-only; T2a-T2c self-skip via RC_E2E gate)
+run_test "${SCRIPT_DIR}/test-multiplexer-composable.sh"        # rip-cage-61al.8: composability integration harness — live fakemux e2e + exhaustive grep-guard (G1 host-only; E1a-E1g self-skip via RC_E2E gate)
 run_test "${SCRIPT_DIR}/test-skill-manifest-author.sh" # rip-cage-buuo.4: repo-shipped skill — skill well-formed + cm worked example passes _manifest_validate (SA1-SA7 host-only)
 run_test "${SCRIPT_DIR}/test-claude-concurrency.sh"    # rip-cage-p1p: per-session Claude config isolation (NEEDS_CONTAINER; self-skips if no running cage)
 run_test "${SCRIPT_DIR}/test-multiplexer-lifecycle.sh"  # rip-cage-1f59.8: multiplexer lifecycle (none/tmux/herdr) + retirement + config-isolation (NEEDS_CONTAINER; self-skips without RC_E2E=1)

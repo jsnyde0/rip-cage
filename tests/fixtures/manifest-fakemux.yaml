@@ -1,0 +1,28 @@
+version: 1
+tools:
+  # Composability integration fixture: fakemux MULTIPLEXER provider.
+  # Used by tests/test-multiplexer-composable.sh (rip-cage-61al.8).
+  #
+  # 'fakemux' is a name that appears NOWHERE in rc or init-rip-cage.sh —
+  # this is intentional and load-bearing: the test proves "zero rc edits"
+  # by using a name the core source has never heard of.
+  #
+  # Hook design:
+  #   start  — writes /tmp/fakemux-started sentinel (observable headlessly
+  #             via docker exec after container init). Self-contained: only
+  #             requires touch + echo, no external binaries.
+  #   attach — echoes a unique marker ('fakemux-attach-marker') and writes
+  #             /tmp/fakemux-attached sentinel. Proves attach dispatch routes
+  #             through the baked hook, not a hardcoded rc branch.
+  #
+  # Validator compliance:
+  #   - No PATH= manipulation (passes hook-bounds validator D10/D11).
+  #   - No /etc/rip-cage/, settings.json, PreToolUse, PostToolUse references.
+  #   - Lowercase alphanumeric + hyphens only (name format check).
+  #   - version_pin present (bundled — no install step needed; pure hook bake).
+  - name: fakemux
+    archetype: MULTIPLEXER
+    version_pin: "test-1.0"
+    hooks:
+      start: "touch /tmp/fakemux-started && echo '[fakemux] start hook ran: sentinel at /tmp/fakemux-started'"
+      attach: "echo 'fakemux-attach-marker' && touch /tmp/fakemux-attached"
