@@ -84,6 +84,45 @@ if [[ ! -f "$PI_AUTH_FILE" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# PRECONDITION 1b (LOUD-FAIL): openrouter auth must be present in auth.json
+#
+# This test pins --provider openrouter (static API key) to avoid the volatile
+# OAuth token of the cage-default provider (openai-codex). Without usable
+# openrouter auth the test would silently TIME OUT after 180s with no clear
+# reason — a DP4 violation (silent harm). Instead: gate here and LOUD-FAIL.
+#
+# Pi reads openrouter credentials from ~/.pi/agent/auth.json (the openrouter
+# entry's "key" field) OR from the OPENROUTER_API_KEY env var (which rc up
+# passes through from the host per ADR-019 D5). We check auth.json because
+# OPENROUTER_API_KEY may not be set as a host env var; auth.json is the
+# primary credential store that pi uses for openrouter.
+#
+# Key-presence check (not a liveness probe) is the gate — a non-empty key in
+# auth.json is sufficient: if the key is revoked the test will fail at runtime
+# with a clear LLM auth error in the pane output, not a silent timeout.
+# ---------------------------------------------------------------------------
+
+# Extract openrouter key from auth.json (never print the value)
+_OPENROUTER_KEY_PRESENT=$(python3 -c "
+import json, sys
+try:
+    with open('${PI_AUTH_FILE}') as f:
+        data = json.load(f)
+    entry = data.get('openrouter', {})
+    key = entry.get('key', '')
+    print('yes' if key else 'no')
+except Exception as e:
+    print('no')
+" 2>/dev/null || echo "no")
+
+if [[ "$_OPENROUTER_KEY_PRESENT" != "yes" ]]; then
+  fail "PRECONDITION: openrouter auth missing or empty in ${PI_AUTH_FILE}" \
+    "This test pins --provider openrouter (stable key auth). Run 'pi /login openrouter' or set OPENROUTER_API_KEY. LOUD-FAIL per DP4 — without this the test would silently time out (180s)."
+  exit $FAILURES
+fi
+pass "PRECONDITION: openrouter API key present in ${PI_AUTH_FILE}"
+
+# ---------------------------------------------------------------------------
 # PRECONDITION 2 (LOUD-FAIL): fixture file must exist
 # ---------------------------------------------------------------------------
 if [[ ! -f "$FIXTURE_FILE" ]]; then

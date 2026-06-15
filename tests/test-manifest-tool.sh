@@ -88,7 +88,12 @@ test_t1a_with_scratch_tool_steps_present() {
 }
 
 # ---------------------------------------------------------------------------
-# T1b — WITHOUT scratch TOOL entry: generated steps are empty (no extra RUN)
+# T1b — Default manifest (no user tools.yaml): generated steps are herdr-only.
+# herdr is the one default TOOL entry that carries an install_cmd (version-pinned
+# GitHub download, commit 90de322). The 5 bundled tools (beads/dolt/gh/claude/pi/dcg)
+# have no install_cmd and are baked by the Dockerfile — they generate no extra steps.
+# This test asserts: exit=0, output contains herdr's install marker, output does NOT
+# contain the scratch tool's ripgrep install (that would signal a wrong manifest).
 # ---------------------------------------------------------------------------
 test_t1b_without_scratch_tool_no_steps() {
   setup_manifest_sandbox
@@ -96,56 +101,70 @@ test_t1b_without_scratch_tool_no_steps() {
   stderr_file=$(mktemp)
   exit_code=0
   out=$(run_manifest_generate_steps "$stderr_file") || exit_code=$?
-  # Default manifest = all bundled; no extra steps should be generated.
-  if [[ "$exit_code" -eq 0 ]] && [[ -z "$out" || "$out" == $'\n' ]]; then
-    pass "T1b WITHOUT scratch TOOL (default manifest): no extra Dockerfile steps generated"
+  # Default manifest seeds herdr (install_cmd present) → exactly herdr's RUN step is generated.
+  # The scratch tool (ripgrep) must NOT appear — that would mean the wrong manifest is in effect.
+  if [[ "$exit_code" -eq 0 ]] && echo "$out" | grep -q "herdr" && ! echo "$out" | grep -q "apt-get install -y ripgrep"; then
+    pass "T1b default manifest: generates herdr steps (non-empty) and does NOT contain scratch tool's ripgrep install"
   else
-    fail "T1b WITHOUT scratch TOOL (default manifest): expected empty output. exit=$exit_code stdout='$out' stderr=$(cat "$stderr_file")"
+    fail "T1b default manifest: expected herdr steps only. exit=$exit_code stdout='$out' stderr=$(cat "$stderr_file")"
   fi
   rm -f "$stderr_file"
   teardown_manifest_sandbox
 }
 
 # ---------------------------------------------------------------------------
-# T1c — Counterfactual delta: WITH entry produces non-empty steps, WITHOUT is empty
+# T1c — Counterfactual delta: WITH scratch-tool entry adds ripgrep steps; WITHOUT does not.
 # The delta between the two outputs is the proof of manifest-driven provenance.
 # A hand-edited Dockerfile would produce identical outputs regardless of manifest.
+# Reframed: WITH output CONTAINS "apt-get install -y ripgrep" (scratch tool's install_cmd);
+# WITHOUT (default) does NOT. Both outputs are non-empty (default has herdr steps), but
+# the ripgrep step is only present when the scratch tool is explicitly in the manifest.
 # ---------------------------------------------------------------------------
 test_t1c_counterfactual_steps_differ() {
-  # WITHOUT (default/bundled)
+  # WITHOUT (default/bundled — herdr is present, but NOT ripgrep)
   setup_manifest_sandbox
   local out_without
   out_without=$(run_manifest_generate_steps 2>/dev/null)
   teardown_manifest_sandbox
 
-  # WITH scratch tool
+  # WITH scratch tool (ripgrep added)
   setup_manifest_sandbox "manifest-with-scratch-tool.yaml"
   local out_with
   out_with=$(run_manifest_generate_steps 2>/dev/null)
   teardown_manifest_sandbox
 
-  if [[ "$out_with" != "$out_without" ]] && [[ -n "$out_with" ]] && [[ -z "$out_without" || "$out_without" == $'\n' ]]; then
-    pass "T1c Counterfactual delta: WITH entry has steps, WITHOUT entry is empty (delta proves manifest-driven provenance)"
+  # Delta: WITH contains scratch tool's ripgrep install; WITHOUT does not.
+  # This proves that the ripgrep step is entirely manifest-driven provenance.
+  if echo "$out_with" | grep -q "apt-get install -y ripgrep" && ! echo "$out_without" | grep -q "apt-get install -y ripgrep"; then
+    pass "T1c Counterfactual delta: WITH entry adds ripgrep install step, WITHOUT does not (delta proves manifest-driven provenance)"
   else
     fail "T1c Counterfactual delta mismatch. WITH='$out_with' WITHOUT='$out_without'"
   fi
 }
 
 # ---------------------------------------------------------------------------
-# T1d — D8 default manifest: no extra steps generated for bundled-only manifest
-# (Corollary: rc build with default manifest does NOT generate a temp Dockerfile)
+# T1d — D8 default manifest: bundled-only tools (beads/dolt/gh/claude/pi/dcg) produce
+# zero extra steps; herdr (the one default TOOL with install_cmd) produces exactly its
+# own steps and no others. This validates the per-entry generation logic: entries with
+# version_pin "bundled" and no install_cmd contribute nothing; herdr's pinned install_cmd
+# drives exactly one RUN block in the default manifest output.
 # ---------------------------------------------------------------------------
 test_t1d_default_manifest_bundled_only_no_extra_steps() {
-  # Use the manifest default (no file) and also the explicit default yaml
+  # Use the manifest default (no file) — falls back to _manifest_default_yaml in rc
   setup_manifest_sandbox
   local out exit_code stderr_file
   stderr_file=$(mktemp)
   exit_code=0
   out=$(run_manifest_generate_steps "$stderr_file") || exit_code=$?
-  if [[ "$exit_code" -eq 0 ]] && [[ -z "$out" || "$out" == $'\n' ]]; then
-    pass "T1d D8 default manifest (no file): bundled-only tools produce zero extra steps"
+  # Assert: herdr's step is present (non-bundled default tool with install_cmd)
+  # AND none of the bundled-only tools (beads/dolt/gh/claude/pi/dcg) appear in steps.
+  # This proves the bundled tools contribute zero extra steps while herdr's install_cmd fires.
+  if [[ "$exit_code" -eq 0 ]] \
+     && echo "$out" | grep -q "herdr" \
+     && ! echo "$out" | grep -qE "manifest TOOL: (beads|dolt|gh|claude|pi|dcg) "; then
+    pass "T1d D8 default manifest: bundled tools (beads/dolt/gh/claude/pi/dcg) produce zero steps; herdr's install_cmd generates its own step"
   else
-    fail "T1d D8 default manifest: expected empty extra steps. exit=$exit_code out='$out' stderr=$(cat "$stderr_file")"
+    fail "T1d D8 default manifest: unexpected extra steps. exit=$exit_code out='$out' stderr=$(cat "$stderr_file")"
   fi
   rm -f "$stderr_file"
   teardown_manifest_sandbox
