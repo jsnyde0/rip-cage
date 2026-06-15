@@ -1,19 +1,36 @@
 version: 1
 tools:
-  # tmux multiplexer provider — copy this entry into your tools.yaml to enable
+  # tmux multiplexer provider — copy BOTH entries into your tools.yaml to enable
   # tmux session management in rip-cage. After adding, run: rc build
   #
+  # Two entries are required:
+  #   1. tmux-bin (TOOL): installs the tmux binary into the image at build time.
+  #   2. tmux (MULTIPLEXER): bakes start/attach hooks into the registry for dispatch.
+  #
   # Usage:
-  #   1. Add this tool entry to ~/.config/rip-cage/tools.yaml (or project tools.yaml).
+  #   1. Append these two entries to ~/.config/rip-cage/tools.yaml.
   #   2. Set session.multiplexer: tmux in your .rip-cage.yaml.
-  #   3. rc build  — bakes the hooks into /etc/rip-cage/multiplexers/tmux/
+  #   3. rc build  — installs tmux binary + bakes hooks into /etc/rip-cage/multiplexers/tmux/
   #   4. rc up     — starts the cage; init-rip-cage.sh runs the 'start' hook.
   #   5. rc attach — dispatches through the 'attach' hook.
   #
-  # See also: examples/compose-rc-with-herdr.md for the herdr provider.
+  # See also: examples/herdr/manifest-fragment.yaml for the herdr provider (same two-entry pattern).
+
+  # TOOL entry: installs the tmux binary at image build time via apt.
+  # tmux is in the Debian repos (Debian trixie: tmux 3.4). The install_cmd is
+  # the package-install step only; rc build wraps it with apt-get update and
+  # list cleanup automatically when generating the Dockerfile RUN step.
+  - name: tmux-bin
+    archetype: TOOL
+    version_pin: "3.4-debian"
+    install_cmd: "apt-get install -y --no-install-recommends tmux"
+    egress: []
+    mounts: []
+
+  # MULTIPLEXER entry: bakes start/attach hooks into /etc/rip-cage/multiplexers/tmux/.
+  # tmux binary is installed by the tmux-bin TOOL entry above.
   - name: tmux
     archetype: MULTIPLEXER
-    # tmux ships in the Debian slim base image — no install needed.
     version_pin: "bundled"
     hooks:
       # start: called by init-rip-cage.sh at cage first-boot (in-container).

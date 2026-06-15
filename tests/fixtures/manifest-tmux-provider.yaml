@@ -1,7 +1,15 @@
 version: 1
 tools:
-  # Fixture: tmux MULTIPLEXER provider for rip-cage-61al.3 registry-dispatch test.
+  # Fixture: tmux TOOL + MULTIPLEXER provider for rip-cage-61al.3 registry-dispatch test.
   # Used by test-multiplexer-lifecycle.sh to build a tmux-from-examples cage.
+  # Two entries: the TOOL entry installs the binary; the MULTIPLEXER entry provides hooks.
+  # tmux is no longer baked in the base image (ADR-005 D12).
+  - name: tmux-bin
+    archetype: TOOL
+    version_pin: "3.4-debian"
+    install_cmd: "apt-get install -y --no-install-recommends tmux"
+    egress: []
+    mounts: []
   - name: tmux
     archetype: MULTIPLEXER
     version_pin: "bundled"

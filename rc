@@ -6307,23 +6307,6 @@ tools:
     version_pin: "bundled"
     egress: []
     mounts: []
-
-  - name: herdr
-    archetype: TOOL
-    # Pinned release: github.com/ogulcancelik/herdr v0.6.10
-    # Agent-aware terminal multiplexer (blocked/working/done view).
-    # Prebuilt binaries: herdr-linux-x86_64, herdr-linux-aarch64.
-    # Server start is wired in init-rip-cage.sh via the baked multiplexer 'start' hook.
-    # Bash-CLI control surface: herdr pane/workspace/tab/wait over unix socket (HERDR_ENV=1).
-    version_pin: "0.6.10"
-    # SHA-256 checksums sourced from GitHub API release asset digest field (ogulcancelik/herdr v0.6.10)
-    # and cross-verified by downloading each asset and running sha256sum locally.
-    # x86_64:  78d298d5a1ef076b4607e8e3c92d98f5de9f0cb30daf31aa910a1a6e9abb4fa1
-    # aarch64: b3144a41df364f0541bbbdfe840fa61dbd67daf6e313ee317fe495d2ccf4927a
-    install_cmd: "ARCH=$(uname -m) && if [ \"$ARCH\" = \"aarch64\" ]; then TARGET=aarch64; EXPECTED_SHA=b3144a41df364f0541bbbdfe840fa61dbd67daf6e313ee317fe495d2ccf4927a; else TARGET=x86_64; EXPECTED_SHA=78d298d5a1ef076b4607e8e3c92d98f5de9f0cb30daf31aa910a1a6e9abb4fa1; fi && curl -fsSL \"https://github.com/ogulcancelik/herdr/releases/download/v0.6.10/herdr-linux-${TARGET}\" -o /tmp/herdr && echo \"${EXPECTED_SHA}  /tmp/herdr\" | sha256sum -c - && install -m 755 /tmp/herdr /usr/local/bin/herdr && rm -f /tmp/herdr"
-    egress:
-      - github.com
-    mounts: []
 YAML
 }
 

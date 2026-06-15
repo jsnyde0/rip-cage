@@ -88,11 +88,11 @@ test_t1a_with_scratch_tool_steps_present() {
 }
 
 # ---------------------------------------------------------------------------
-# T1b — Default manifest (no user tools.yaml): generated steps are herdr-only.
-# herdr is the one default TOOL entry that carries an install_cmd (version-pinned
-# GitHub download, commit 90de322). The 5 bundled tools (beads/dolt/gh/claude/pi/dcg)
-# have no install_cmd and are baked by the Dockerfile — they generate no extra steps.
-# This test asserts: exit=0, output contains herdr's install marker, output does NOT
+# T1b — Default manifest (no user tools.yaml): generated steps are empty (zero steps).
+# The default manifest is core-only (beads/dolt/gh/claude/pi/dcg), all with
+# version_pin "bundled" and no install_cmd — they are baked by the Dockerfile.
+# No extra TOOL entries means no extra install steps.
+# This test asserts: exit=0, output is empty (no install steps generated), output does NOT
 # contain the scratch tool's ripgrep install (that would signal a wrong manifest).
 # ---------------------------------------------------------------------------
 test_t1b_without_scratch_tool_no_steps() {
@@ -101,12 +101,13 @@ test_t1b_without_scratch_tool_no_steps() {
   stderr_file=$(mktemp)
   exit_code=0
   out=$(run_manifest_generate_steps "$stderr_file") || exit_code=$?
-  # Default manifest seeds herdr (install_cmd present) → exactly herdr's RUN step is generated.
+  # Default manifest = core-only bundled tools → zero extra steps (empty output).
   # The scratch tool (ripgrep) must NOT appear — that would mean the wrong manifest is in effect.
-  if [[ "$exit_code" -eq 0 ]] && echo "$out" | grep -q "herdr" && ! echo "$out" | grep -q "apt-get install -y ripgrep"; then
-    pass "T1b default manifest: generates herdr steps (non-empty) and does NOT contain scratch tool's ripgrep install"
+  # herdr must NOT appear — herdr is no longer seeded in the default manifest (ADR-005 D12).
+  if [[ "$exit_code" -eq 0 ]] && [[ -z "$out" ]] && ! echo "$out" | grep -q "apt-get install -y ripgrep"; then
+    pass "T1b default manifest: generates zero steps (bundled-only, no install_cmd tools) and does NOT contain scratch tool's ripgrep install"
   else
-    fail "T1b default manifest: expected herdr steps only. exit=$exit_code stdout='$out' stderr=$(cat "$stderr_file")"
+    fail "T1b default manifest: expected zero steps (empty output). exit=$exit_code stdout='$out' stderr=$(cat "$stderr_file")"
   fi
   rm -f "$stderr_file"
   teardown_manifest_sandbox
@@ -117,11 +118,11 @@ test_t1b_without_scratch_tool_no_steps() {
 # The delta between the two outputs is the proof of manifest-driven provenance.
 # A hand-edited Dockerfile would produce identical outputs regardless of manifest.
 # Reframed: WITH output CONTAINS "apt-get install -y ripgrep" (scratch tool's install_cmd);
-# WITHOUT (default) does NOT. Both outputs are non-empty (default has herdr steps), but
-# the ripgrep step is only present when the scratch tool is explicitly in the manifest.
+# WITHOUT (default) does NOT. Default is core-only bundled tools → zero extra steps (empty),
+# and the ripgrep step is only present when the scratch tool is explicitly in the manifest.
 # ---------------------------------------------------------------------------
 test_t1c_counterfactual_steps_differ() {
-  # WITHOUT (default/bundled — herdr is present, but NOT ripgrep)
+  # WITHOUT (default/bundled — core-only tools; NOT ripgrep, NOT herdr, NOT tmux)
   setup_manifest_sandbox
   local out_without
   out_without=$(run_manifest_generate_steps 2>/dev/null)
@@ -144,10 +145,9 @@ test_t1c_counterfactual_steps_differ() {
 
 # ---------------------------------------------------------------------------
 # T1d — D8 default manifest: bundled-only tools (beads/dolt/gh/claude/pi/dcg) produce
-# zero extra steps; herdr (the one default TOOL with install_cmd) produces exactly its
-# own steps and no others. This validates the per-entry generation logic: entries with
-# version_pin "bundled" and no install_cmd contribute nothing; herdr's pinned install_cmd
-# drives exactly one RUN block in the default manifest output.
+# zero extra steps. The default manifest is core-only (ADR-005 D12) — all entries have
+# version_pin "bundled" and no install_cmd. This validates that the default manifest
+# generates ZERO install steps (empty output), and no multiplexer/herdr steps appear.
 # ---------------------------------------------------------------------------
 test_t1d_default_manifest_bundled_only_no_extra_steps() {
   # Use the manifest default (no file) — falls back to _manifest_default_yaml in rc
@@ -156,15 +156,14 @@ test_t1d_default_manifest_bundled_only_no_extra_steps() {
   stderr_file=$(mktemp)
   exit_code=0
   out=$(run_manifest_generate_steps "$stderr_file") || exit_code=$?
-  # Assert: herdr's step is present (non-bundled default tool with install_cmd)
-  # AND none of the bundled-only tools (beads/dolt/gh/claude/pi/dcg) appear in steps.
-  # This proves the bundled tools contribute zero extra steps while herdr's install_cmd fires.
+  # Assert: ALL tools are bundled (beads/dolt/gh/claude/pi/dcg) → zero extra steps (empty output).
+  # Neither herdr nor any other non-bundled tool appears in the default manifest (ADR-005 D12).
   if [[ "$exit_code" -eq 0 ]] \
-     && echo "$out" | grep -q "herdr" \
-     && ! echo "$out" | grep -qE "manifest TOOL: (beads|dolt|gh|claude|pi|dcg) "; then
-    pass "T1d D8 default manifest: bundled tools (beads/dolt/gh/claude/pi/dcg) produce zero steps; herdr's install_cmd generates its own step"
+     && [[ -z "$out" ]] \
+     && ! echo "$out" | grep -qE "herdr|manifest TOOL: (beads|dolt|gh|claude|pi|dcg) "; then
+    pass "T1d D8 default manifest: ALL bundled tools (beads/dolt/gh/claude/pi/dcg) produce zero extra steps; default is core-only (ADR-005 D12)"
   else
-    fail "T1d D8 default manifest: unexpected extra steps. exit=$exit_code out='$out' stderr=$(cat "$stderr_file")"
+    fail "T1d D8 default manifest: expected zero steps (empty output — core-only default). exit=$exit_code out='$out' stderr=$(cat "$stderr_file")"
   fi
   rm -f "$stderr_file"
   teardown_manifest_sandbox
@@ -263,6 +262,158 @@ test_t2_counterfactual_two_builds() {
 }
 
 # ---------------------------------------------------------------------------
+# T3 — RC_E2E: Default cage has no multiplexer binaries (tmux absent, herdr absent).
+#
+# Builds a fresh default cage image from the default manifest (no user tools.yaml).
+# Probes the image with `command -v tmux` and `command -v herdr` — both must fail.
+# This is the real counterfactual proof that cannot be satisfied by a host-tier
+# codegen test alone (gated-e2e false-green family: T1d proves codegen, T3 proves image).
+#
+# Realizes ADR-005 D12 consequences 2 & 3: tmux and herdr are no longer bundled;
+# the default cage ships minimal (core tools only).
+#
+# Run with: bash tests/test-manifest-tool.sh --e2e
+# ---------------------------------------------------------------------------
+test_t3_default_cage_has_no_mux_binaries() {
+  if [[ "${RC_E2E:-}" != "1" && "${RUN_E2E:-}" != "1" ]]; then
+    echo "SKIP (NEEDS_CONTAINER / RC_E2E): T3 default-cage tmux+herdr absent — set RC_E2E=1 to run"
+    return 0
+  fi
+
+  local image_default="rip-cage-test-default-nomux:t3"
+  local _t3_home_default=""
+
+  # Cleanup: remove image + temp dir on exit/interrupt (crash-safe)
+  # shellcheck disable=SC2329
+  _t3_cleanup() {
+    docker rmi "$image_default" >/dev/null 2>&1 || true
+    [[ -n "${_t3_home_default:-}" ]] && rm -rf "$_t3_home_default"
+  }
+  trap _t3_cleanup RETURN
+
+  # Build default cage — no user manifest, falls back to _manifest_default_yaml (core-only)
+  _t3_home_default=$(mktemp -d "${TMPDIR:-/tmp}/rc-t3-default-XXXXXX")
+  mkdir -p "${_t3_home_default}/.config/rip-cage"
+  # Intentionally do NOT copy any manifest — use default (bundled-only, no tmux, no herdr)
+
+  echo "T3: Building default cage image (no manifest, core-only)..."
+  if ! HOME="$_t3_home_default" XDG_CONFIG_HOME="${_t3_home_default}/.config" \
+       "${RC}" build -t "$image_default"; then
+    fail "T3 Default cage build failed"
+    return
+  fi
+
+  # Probe: tmux absent in default image
+  local tmux_probe_exit
+  tmux_probe_exit=0
+  docker run --rm "$image_default" sh -c 'command -v tmux' >/dev/null 2>&1 || tmux_probe_exit=$?
+  if [[ "$tmux_probe_exit" -ne 0 ]]; then
+    pass "T3a tmux binary ABSENT in default cage image (ADR-005 D12: tmux unbaked, opt-in via manifest)"
+  else
+    fail "T3a tmux binary FOUND in default cage image — tmux must not be bundled (ADR-005 D12)"
+  fi
+
+  # Probe: herdr absent in default image
+  local herdr_probe_exit
+  herdr_probe_exit=0
+  docker run --rm "$image_default" sh -c 'command -v herdr' >/dev/null 2>&1 || herdr_probe_exit=$?
+  if [[ "$herdr_probe_exit" -ne 0 ]]; then
+    pass "T3b herdr binary ABSENT in default cage image (ADR-005 D12: herdr removed from default manifest)"
+  else
+    fail "T3b herdr binary FOUND in default cage image — herdr must not be in default manifest (ADR-005 D12)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# T4 — RC_E2E: examples/tmux manifest-fragment.yaml is a complete migration target.
+#
+# Proves that the two-entry examples/tmux/manifest-fragment.yaml (tmux-bin TOOL +
+# tmux MULTIPLEXER) produces a cage image in which:
+#   T4a — the tmux binary IS present (the TOOL entry installs it via apt)
+#   T4b — the MULTIPLEXER registry hooks ARE baked (start/attach/new_session)
+#
+# RED-before-GREEN: T3 already proves that the DEFAULT cage (no manifest) has NO
+# tmux binary (the unbaked state). T4 is the GREEN half — it proves that following
+# the CHANGELOG migration path (add examples/tmux + rc build) DOES yield a working
+# tmux binary. Without the TOOL entry in examples/tmux (the pre-fix state), a user
+# would get the MULTIPLEXER hooks baked but no binary → start hook fails with
+# "tmux: command not found". T4 closes that gap.
+#
+# Run with: bash tests/test-manifest-tool.sh --e2e
+# ---------------------------------------------------------------------------
+test_t4_examples_tmux_is_complete_migration_target() {
+  if [[ "${RC_E2E:-}" != "1" && "${RUN_E2E:-}" != "1" ]]; then
+    echo "SKIP (NEEDS_CONTAINER / RC_E2E): T4 examples/tmux migration target — set RC_E2E=1 to run"
+    return 0
+  fi
+
+  local examples_tmux_fixture="${REPO_ROOT}/examples/tmux/manifest-fragment.yaml"
+  if [[ ! -f "$examples_tmux_fixture" ]]; then
+    fail "T4 examples/tmux/manifest-fragment.yaml not found at expected path"
+    return
+  fi
+
+  local image_tmux="rip-cage-test-examples-tmux:t4"
+  local _t4_home=""
+
+  # Cleanup: remove image + temp dir on exit/interrupt (crash-safe)
+  # shellcheck disable=SC2329
+  _t4_cleanup() {
+    docker rmi "$image_tmux" >/dev/null 2>&1 || true
+    [[ -n "${_t4_home:-}" ]] && rm -rf "$_t4_home"
+  }
+  trap _t4_cleanup RETURN
+
+  # Build from examples/tmux/manifest-fragment.yaml (the migration target)
+  _t4_home=$(mktemp -d "${TMPDIR:-/tmp}/rc-t4-tmux-XXXXXX")
+  mkdir -p "${_t4_home}/.config/rip-cage"
+  cp "$examples_tmux_fixture" "${_t4_home}/.config/rip-cage/tools.yaml"
+
+  echo "T4: Building cage image from examples/tmux/manifest-fragment.yaml (two-entry: tmux-bin TOOL + tmux MULTIPLEXER)..."
+  if ! HOME="$_t4_home" XDG_CONFIG_HOME="${_t4_home}/.config" \
+       "${RC}" build -t "$image_tmux"; then
+    fail "T4 Build from examples/tmux failed"
+    return
+  fi
+
+  # T4a: tmux binary IS present (TOOL entry installs it)
+  local tmux_path
+  tmux_path=$(docker run --rm "$image_tmux" sh -c 'command -v tmux' 2>&1) || true
+  if echo "$tmux_path" | grep -q "tmux"; then
+    pass "T4a tmux binary present in examples/tmux cage image (path: ${tmux_path})"
+  else
+    fail "T4a tmux binary NOT found in examples/tmux cage — TOOL entry install_cmd failed. probe='${tmux_path}'"
+  fi
+
+  # T4a+: tmux --version works (positive sentinel)
+  local version_out version_rc
+  version_rc=0
+  version_out=$(docker run --rm "$image_tmux" tmux -V 2>&1) || version_rc=$?
+  if [[ "$version_rc" -eq 0 ]]; then
+    pass "T4a tmux -V exits 0 in cage: '${version_out}'"
+  else
+    fail "T4a tmux -V failed: exit=${version_rc} out='${version_out}'"
+  fi
+
+  # T4b: MULTIPLEXER registry hooks are baked (start and attach scripts present)
+  local start_hook_exit attach_hook_exit
+  start_hook_exit=0
+  attach_hook_exit=0
+  docker run --rm "$image_tmux" test -f /etc/rip-cage/multiplexers/tmux/start >/dev/null 2>&1 || start_hook_exit=$?
+  docker run --rm "$image_tmux" test -f /etc/rip-cage/multiplexers/tmux/attach >/dev/null 2>&1 || attach_hook_exit=$?
+  if [[ "$start_hook_exit" -eq 0 ]]; then
+    pass "T4b tmux registry 'start' hook baked at /etc/rip-cage/multiplexers/tmux/start"
+  else
+    fail "T4b tmux registry 'start' hook MISSING — MULTIPLEXER bake did not run"
+  fi
+  if [[ "$attach_hook_exit" -eq 0 ]]; then
+    pass "T4b tmux registry 'attach' hook baked at /etc/rip-cage/multiplexers/tmux/attach"
+  else
+    fail "T4b tmux registry 'attach' hook MISSING — MULTIPLEXER bake did not run"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -282,6 +433,14 @@ test_t1d_default_manifest_bundled_only_no_extra_steps
 echo ""
 echo "--- T2: E2E counterfactual two-scratch-build (NEEDS_CONTAINER) ---"
 test_t2_counterfactual_two_builds
+
+echo ""
+echo "--- T3: E2E default cage has no multiplexer binaries (NEEDS_CONTAINER / RC_E2E=1) ---"
+test_t3_default_cage_has_no_mux_binaries
+
+echo ""
+echo "--- T4: RC_E2E examples/tmux is a complete migration target (NEEDS_CONTAINER / RC_E2E=1) ---"
+test_t4_examples_tmux_is_complete_migration_target
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

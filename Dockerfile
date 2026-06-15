@@ -22,7 +22,7 @@ ARG CLAUDE_CODE_VERSION=latest
 ARG PI_VERSION=latest
 ARG BUN_VERSION=1.3.14
 
-# Terminal / locale — needed for Claude Code's TUI to render correctly in tmux
+# Terminal / locale — needed for Claude Code's TUI to render correctly in a terminal multiplexer
 ENV TERM=xterm-256color
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
@@ -30,7 +30,7 @@ ENV MISE_TRUSTED_CONFIG_PATHS=/workspace
 
 # System packages
 RUN apt-get update && apt-get install -y \
-    curl wget git ssh openssh-client zsh tmux jq sudo \
+    curl wget git ssh openssh-client zsh jq sudo \
     build-essential pkg-config libicu-dev libzstd-dev \
     python3 python3-venv perl ca-certificates gnupg \
     iptables openssl procps xxd \
@@ -192,7 +192,6 @@ RUN mkdir -p /home/agent/.config/mise \
     && printf '[settings]\nidiomatic_version_file_enable_tools = ["node", "yarn"]\n' \
        > /home/agent/.config/mise/config.toml
 COPY --chown=agent:agent zshrc /home/agent/.zshrc
-COPY --chown=agent:agent tmux.conf /home/agent/.tmux.conf
 # Pi DCG gate extension (rip-cage-bl1): baked into cage-owned container-local extensions dir.
 # Auto-discovered by pi (extensions/*.ts glob, no -e flag needed, loader.ts:583-585).
 # NOT under the host-mounted auth.json sub-mount — cage-owned, agent-owned, host-clean.

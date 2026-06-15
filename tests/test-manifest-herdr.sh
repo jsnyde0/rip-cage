@@ -19,7 +19,7 @@
 #     T1c — install_cmd is arch-adaptive (references uname -m, not hardcoded arch).
 #     T1d — install_cmd uses 'install -m 755' or chown root to place binary root-owned.
 #     T1e — Strict-parse rejects a TOOL entry missing install_cmd (missing-field guard).
-#     T1f — Default seed manifest contains a herdr entry.
+#     T1f — Default seed manifest does NOT contain a herdr entry (regression guard, ADR-005 D12).
 #     T1g — Formula/rip-cage.rb does NOT contain 'depends_on "tmux"' (ADR-006 D6).
 #
 #   T2  (e2e, NEEDS_CONTAINER / RC_E2E=1):
@@ -233,20 +233,23 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# T1f — Default seed manifest contains a herdr TOOL entry.
-# _manifest_default_yaml must include herdr for all users who seed the manifest.
+# T1f — Default seed manifest does NOT contain a herdr entry (regression guard).
+# herdr was removed from _manifest_default_yaml (ADR-005 D12: composable seam,
+# default ships minimal/core-only). This is the inverse of the previous assertion —
+# it guards the regression direction: herdr must not silently re-enter the default.
+# Users who want herdr add it via their own manifest entry (see examples/herdr/).
 # ---------------------------------------------------------------------------
-test_t1f_default_seed_contains_herdr() {
+test_t1f_default_seed_does_not_contain_herdr() {
   local seed_out
   seed_out=$(bash -c "source '${RC}'; _manifest_default_yaml" 2>/dev/null)
 
-  if echo "$seed_out" | grep -q "name: herdr"; then
-    pass "T1f _manifest_default_yaml seed contains 'name: herdr' entry"
+  if ! echo "$seed_out" | grep -q "name: herdr"; then
+    pass "T1f _manifest_default_yaml seed does NOT contain 'name: herdr' (ADR-005 D12: default is core-only)"
   else
-    fail "T1f _manifest_default_yaml seed does NOT contain 'name: herdr' — herdr must be in the seeded default manifest (acceptance criteria)"
+    fail "T1f _manifest_default_yaml seed CONTAINS 'name: herdr' — herdr must NOT be in the seeded default manifest (ADR-005 D12 regression)"
   fi
 
-  # Also verify the herdr entry in the seed validates
+  # Also verify the default seed itself still validates (core-only is valid)
   local seed_file seed_validate_rc
   seed_file=$(mktemp)
   bash -c "source '${RC}'; _manifest_default_yaml" > "$seed_file" 2>/dev/null
@@ -255,9 +258,9 @@ test_t1f_default_seed_contains_herdr() {
   rm -f "$seed_file"
 
   if [[ "$seed_validate_rc" -eq 0 ]]; then
-    pass "T1f Default seed manifest (including herdr entry) passes _manifest_validate"
+    pass "T1f Default seed manifest (core-only, no herdr) passes _manifest_validate"
   else
-    fail "T1f Default seed manifest FAILS _manifest_validate (seed is invalid after herdr entry added)"
+    fail "T1f Default seed manifest FAILS _manifest_validate (core-only seed is invalid)"
   fi
 }
 
@@ -288,7 +291,7 @@ test_t1b_install_cmd_is_prebuilt_download
 test_t1c_install_cmd_arch_adaptive
 test_t1d_install_cmd_root_owned_binary
 test_t1e_strict_parse_rejects_missing_install_cmd
-test_t1f_default_seed_contains_herdr
+test_t1f_default_seed_does_not_contain_herdr
 test_t1g_formula_no_tmux_dep
 
 echo ""

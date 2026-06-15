@@ -3,7 +3,14 @@ tools:
   # Combined fixture: tmux + herdr MULTIPLEXER providers for lifecycle testing.
   # Used by test-multiplexer-lifecycle.sh (rip-cage-61al.3).
   #
-  # tmux is bundled in the base image (Debian slim) — no install needed.
+  # Two entries for tmux: the TOOL entry installs the binary; the MULTIPLEXER entry
+  # provides dispatch hooks. tmux is no longer baked in the base image (ADR-005 D12).
+  - name: tmux-bin
+    archetype: TOOL
+    version_pin: "3.4-debian"
+    install_cmd: "apt-get install -y --no-install-recommends tmux"
+    egress: []
+    mounts: []
   - name: tmux
     archetype: MULTIPLEXER
     version_pin: "bundled"

@@ -321,8 +321,12 @@ if [[ -z "$GREP_GUARD_OUT" ]]; then
   pass "(grep-guard) zero tmux|herdr hits in rc + init-rip-cage.sh"
 else
   # Count lines that are NOT in the known carve-outs:
-  #   rc schema enum (session.multiplexer|...|none,tmux,herdr)
-  #   rc default manifest herdr TOOL entry (_manifest_default_yaml)
+  #   rc schema enum (session.multiplexer|...|none,tmux,herdr) — if still present
+  # Note: rc is now fully clean — the default manifest no longer seeds herdr, and
+  # all dispatch/default carve-outs have been de-hardcoded. The zero-hits fast path
+  # above handles the common case. The survivor filter below is retained as a
+  # forward-compatible safety net for any future schema-enum literals that may
+  # reappear, but the carve-out path is dead at this revision.
   GREP_GUARD_SURVIVORS=$(echo "$GREP_GUARD_OUT" | grep -v 'session\.multiplexer|selection_list.*none,tmux,herdr' | grep -v '  - name: herdr' | grep -v 'Pinned release.*herdr' | grep -v 'herdr-linux' | grep -v 'ogulcancelik/herdr' | grep -v 'SHA-256.*herdr' | grep -v 'install_cmd.*herdr' | grep -v '\.config/herdr\|herdr pane\|herdr server\|herdr server\|herdr integration\|herdr\.sock\|herdr_pid\|herdr agent\|herdr\.log\|herdr branch' | grep -v 'Server start is wired in init-rip-cage\.sh.*herdr' | grep -v 'Bash-CLI control surface: herdr' || true)
   if [[ -z "$GREP_GUARD_SURVIVORS" ]]; then
     pass "(grep-guard) all tmux|herdr hits are in known B2/C carve-outs (schema enum + default manifest)"
