@@ -116,10 +116,14 @@ version: 1
 tools: []
 YAML
   local tools_path="${TEST_HOME}/.config/rip-cage/tools.yaml"
-  local original_mtime
-  original_mtime=$(stat -f '%m' "$cfg_path" 2>/dev/null || stat -c '%Y' "$cfg_path" 2>/dev/null)
-  local original_tools_mtime
-  original_tools_mtime=$(stat -f '%m' "$tools_path" 2>/dev/null || stat -c '%Y' "$tools_path" 2>/dev/null)
+  # Idempotency invariant = CONTENT unchanged, not mtime. mtime is a fragile
+  # proxy: it is second-granularity (stat %m/%Y) and a no-op re-stat or any
+  # benign touch can flip it, producing a flaky failure on slower CI runners
+  # while passing on a fast dev box. Compare the file bytes instead — the true
+  # invariant is "the second run does not change the seeded files."
+  local original_cfg original_tools
+  original_cfg=$(cat "$cfg_path")
+  original_tools=$(cat "$tools_path")
 
   local stderr_out
   stderr_out=$(
@@ -129,23 +133,18 @@ YAML
     bash "$RC" up --dry-run "$TEST_WS" 2>&1 >/dev/null
   ) || true
 
-  local new_mtime
-  new_mtime=$(stat -f '%m' "$cfg_path" 2>/dev/null || stat -c '%Y' "$cfg_path" 2>/dev/null)
-  local new_tools_mtime
-  new_tools_mtime=$(stat -f '%m' "$tools_path" 2>/dev/null || stat -c '%Y' "$tools_path" 2>/dev/null)
-
   if printf '%s' "$stderr_out" | grep -q "seeded default"; then
     fail "S2 idempotent: seeding notice emitted on second run (should be silent) (stderr=$stderr_out)"
     teardown_sandbox
     return
   fi
-  if [[ "$original_mtime" != "$new_mtime" ]]; then
-    fail "S2 idempotent: config.yaml was rewritten (mtime changed)"
+  if [[ "$original_cfg" != "$(cat "$cfg_path")" ]]; then
+    fail "S2 idempotent: config.yaml content changed on second run"
     teardown_sandbox
     return
   fi
-  if [[ "$original_tools_mtime" != "$new_tools_mtime" ]]; then
-    fail "S2 idempotent: tools.yaml was rewritten (mtime changed)"
+  if [[ "$original_tools" != "$(cat "$tools_path")" ]]; then
+    fail "S2 idempotent: tools.yaml content changed on second run"
     teardown_sandbox
     return
   fi
