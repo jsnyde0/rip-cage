@@ -31,10 +31,11 @@ pass() { echo "PASS C$1: $2"; }
 fail() { echo "FAIL C$1: $2 — $3"; FAILURES=$((FAILURES + 1)); }
 
 # Source rc to get access to internal functions.
-# rc starts with `set -euo pipefail` (rc:2); sourcing leaks `set -e` into this
-# shell, overriding the intentional omission of -e at the top of this file.
-# Re-assert `set +e` immediately after so bare non-zero commands in C6+ do not
-# abort the suite (especially on Python 3.11+ hosts where tomllib is present).
+# As of rip-cage-k2d5, rc guards its `set -euo pipefail` behind a sourced-vs-invoked
+# check, so sourcing no longer forces `set -e` onto this shell. The `set +e` below is
+# kept defensively (belt-and-suspenders) so bare non-zero commands in C6+ do not abort
+# the suite even if that guard ever regresses (especially on Python 3.11+ hosts where
+# tomllib is present and C6 actually runs the parse).
 # shellcheck disable=SC1090
 source "$RC" 2>/dev/null
 set +e

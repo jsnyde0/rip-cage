@@ -11,12 +11,12 @@
 #              is (b1) + the predicate-sync check (d) + the full regression suite.
 #   (c) Piped-exec: bash -s -- < rc (BASH_SOURCE empty) treated as INVOKED.
 #       Discriminating oracle: if piped-exec were WRONGLY classified as sourced,
-#       rc:9487's `return 0` would fire at the top level of a non-sourced script
+#       rc:9494's `return 0` would fire at the top level of a non-sourced script
 #       and bash would emit "return: can only `return' from a function or sourced
 #       script" to stderr. The ABSENCE of that error on stderr is the load-bearing
 #       proof that piped-exec is correctly classified as INVOKED, not sourced.
 #   (d) Predicate-sync: the guard predicate at rc:5 is textually identical to the
-#       dispatch-skip predicate at rc:9487. Drift between the two is the regression
+#       dispatch-skip predicate at rc:9494. Drift between the two is the regression
 #       this fix must not introduce (acceptance criterion 4).
 #
 # All assertions are discriminating positive controls — none is vacuous.
@@ -102,7 +102,7 @@ echo ""
 # (c) Piped-exec: bash -s -- < rc (BASH_SOURCE empty) treated as INVOKED.
 #
 # Discriminating oracle: if the piped-exec path were WRONGLY classified as
-# sourced, then rc:9487's `return 0` would execute at the top level of a
+# sourced, then rc:9494's `return 0` would execute at the top level of a
 # non-sourced (piped) script. Bash emits the error:
 #   "bash: line N: return: can only `return' from a function or sourced script"
 # to stderr in that case. The ABSENCE of "can only" / "return" on stderr is
@@ -135,13 +135,13 @@ echo ""
 
 # ---------------------------------------------------------------------------
 # (d) Predicate-sync: the guard predicate at rc:2 (header) must be textually
-#     identical to the dispatch-skip predicate at rc:9487. If they drift apart,
+#     identical to the dispatch-skip predicate at rc:9494. If they drift apart,
 #     the sourced-vs-invoked classification could diverge between the two sites.
 #
 #     We extract the common substring from each line and assert both are present.
 #     The canonical substring is: [[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]]
 # ---------------------------------------------------------------------------
-echo "=== (d) Predicate-sync: rc:2 guard identical to rc:9487 dispatch-skip ==="
+echo "=== (d) Predicate-sync: rc:2 guard identical to rc:9494 dispatch-skip ==="
 
 # shellcheck disable=SC2016  # single quotes intentional: we want the literal string for grep -F
 PREDICATE='[[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]]'
@@ -150,7 +150,7 @@ PREDICATE='[[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]]'
 predicate_count=$(grep -cF "$PREDICATE" "$RC")
 
 if [[ "$predicate_count" -ge 2 ]]; then
-  pass "(d)" "canonical predicate appears in both the rc:2 guard and rc:9487 dispatch-skip (count=${predicate_count})"
+  pass "(d)" "canonical predicate appears in both the rc:2 guard and rc:9494 dispatch-skip (count=${predicate_count})"
 else
   fail "(d)" "canonical predicate does not appear in both guard sites (count=${predicate_count})" \
     "expected >=2 occurrences of: ${PREDICATE}"
