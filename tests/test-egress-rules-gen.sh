@@ -14,6 +14,8 @@
 #   G9  generation function is pure: same config in -> same file out (idempotent)
 #   G10 IOC floor cannot be removed by user's allowed_hosts (floor always present)
 #   G11 baseline hosts present even when user adds their own allowed_hosts
+#   G12 IOC floor read from the passed rules file (not a hardcoded heredoc)
+#   G13 dns_forward_to emitted iff network.dns.forward_to set (rip-cage-ta1o.2 DNS seam)
 #
 # Tests do NOT require docker — pure host-side function logic only.
 # The function _generate_egress_rules_file takes effective config JSON on stdin
@@ -57,6 +59,9 @@ BLOCK_CFG='{"ssh":{"allowed_hosts":[],"allowed_keys":null},"network":{"allowed_h
 
 # Config with null mode (legacy posture).
 LEGACY_CFG='{"ssh":{"allowed_hosts":[],"allowed_keys":null},"network":{"allowed_hosts":[],"mode":null},"mounts":{"denylist":[]}}'
+
+# Config with a DNS forward-to-specialist upstream set (rip-cage-ta1o.2).
+DNS_FWD_CFG='{"ssh":{"allowed_hosts":[],"allowed_keys":null},"network":{"allowed_hosts":["api.example.com"],"mode":"block","dns":{"forward_to":"192.0.2.1:5353"}},"mounts":{"denylist":[]}}'
 
 echo "=== test-egress-rules-gen.sh — per-cage egress rules generation ==="
 
@@ -248,6 +253,31 @@ YAML
   fi
 }
 
+# G13: dns_forward_to emitted when network.dns.forward_to is set; absent otherwise
+# (rip-cage-ta1o.2: DNS forward-to-specialist seam). Verifies the rc -> egress-rules.yaml
+# generation path that test_dns_seam.py's sidecar-read tests cannot exercise.
+test_g13a_dns_forward_to_emitted_when_set() {
+  local out
+  out=$(gen_rules "$DNS_FWD_CFG")
+  if echo "$out" | grep -q "^dns_forward_to:" && echo "$out" | grep -q "192.0.2.1:5353"; then
+    pass "G13a dns_forward_to emitted with configured upstream when network.dns.forward_to set"
+  else
+    fail "G13a expected 'dns_forward_to: 192.0.2.1:5353' in generated file; got:
+$out"
+  fi
+}
+
+test_g13b_dns_forward_to_absent_when_unset() {
+  local out
+  out=$(gen_rules "$BLOCK_CFG")
+  if ! echo "$out" | grep -q "^dns_forward_to:"; then
+    pass "G13b dns_forward_to NOT emitted when network.dns.forward_to absent (sidecar defaults to 8.8.8.8)"
+  else
+    fail "G13b dns_forward_to: must NOT appear when forward_to is unset; found it in:
+$out"
+  fi
+}
+
 # Run all tests
 test_g1_baseline_whitelist_present
 test_g2_ioc_floor_present
@@ -261,6 +291,8 @@ test_g9_idempotent
 test_g10_ioc_floor_not_overridable
 test_g11_baseline_preserved_with_user_hosts
 test_g12_rules_read_from_canonical_egress_rules_yaml
+test_g13a_dns_forward_to_emitted_when_set
+test_g13b_dns_forward_to_absent_when_unset
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

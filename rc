@@ -3211,9 +3211,10 @@ _generate_egress_rules_file() {
 
   # Extract network.* fields from the effective config.
   # Note: writable_hosts was removed in rip-cage-ta1o.1 (method-asymmetry deleted).
-  local _mode _allowed_hosts_json
+  local _mode _allowed_hosts_json _dns_forward_to
   _mode=$(jq -r '.network.mode // "null"' <<<"$_cfg_json" 2>/dev/null) || _mode="null"
   _allowed_hosts_json=$(jq -c '.network.allowed_hosts // []' <<<"$_cfg_json" 2>/dev/null) || _allowed_hosts_json="[]"
+  _dns_forward_to=$(jq -r '(.network.dns.forward_to // "null")' <<<"$_cfg_json" 2>/dev/null) || _dns_forward_to="null"
 
   # Merge baseline ∪ user allowed_hosts (order: baseline first, then user additions).
   local _merged_hosts_json
@@ -3239,6 +3240,15 @@ _generate_egress_rules_file() {
   # Note: writable_hosts was removed in rip-cage-ta1o.1 (method-asymmetry / write-gate
   # deleted). decide() in rip_cage_egress.py ignores writable_hosts; it is no longer
   # emitted in the generated rules file.
+
+  # dns_forward_to: emit only when network.dns.forward_to is non-null.
+  # The DNS sidecar reads this field from the rules doc to route clean queries
+  # to a configured external DNS specialist instead of the hardcoded 8.8.8.8.
+  # This is the forward-to-specialist seam (ADR-012 D9, rip-cage-ta1o.2).
+  # Field name 'dns_forward_to' (underscore) matches what rip_cage_dns.py reads.
+  if [[ "$_dns_forward_to" != "null" && -n "$_dns_forward_to" ]]; then
+    printf 'dns_forward_to: %s\n' "$_dns_forward_to"
+  fi
 
   # IOC denylist floor — always emitted, non-overridable by user config.
   # Read from the IOC rules file (_ioc_rules_file, see parameter above) so
@@ -3279,7 +3289,8 @@ _up_resolve_egress_rules() {
   else
     # No config files present: schema defaults (network.mode=null = legacy posture).
     # Note: writable_hosts removed in rip-cage-ta1o.1.
-    _eff_config='{"network":{"allowed_hosts":[],"mode":null}}'
+    # network.dns.forward_to=null = default 8.8.8.8 upstream (rip-cage-ta1o.2).
+    _eff_config='{"network":{"allowed_hosts":[],"mode":null,"dns":{"forward_to":null}}}'
   fi
 
   # rip-cage-4c5.3: union manifest-declared egress hosts into network.allowed_hosts.
@@ -6054,6 +6065,7 @@ mounts.symlinks.scope|selection_list|"file"|file,parent
 mounts.symlinks.mode|selection_list|"rw"|ro,rw
 network.allowed_hosts|additive_list|[]
 network.mode|selection_list|null|observe,block
+network.dns.forward_to|scalar|null
 dcg.packs|additive_list|[]
 dcg.custom_rule_paths|additive_list|[]
 session.multiplexer|selection_list|"none"

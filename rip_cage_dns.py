@@ -332,7 +332,10 @@ try:
     import dns.rdatatype
     import dns.resolver
 
-    # Default upstream DNS resolver (system-configured)
+    # Default upstream DNS resolver.
+    # When network.dns.forward_to is NOT set in the rules doc, clean queries
+    # are forwarded here. This constant is the fallback only; the actual
+    # upstream is resolved per-query from the rules doc via _resolve_upstream().
     _UPSTREAM_DNS = "8.8.8.8"
     _UPSTREAM_PORT = 53
 
@@ -384,9 +387,66 @@ try:
         except Exception:
             pass  # Never let logging failure affect DNS operation
 
-    def _forward_query(request: "dns.message.Message") -> "dns.message.Message":
-        """Forward a DNS query to the upstream resolver and return the response."""
-        response = dns.query.udp(request, _UPSTREAM_DNS, port=_UPSTREAM_PORT, timeout=5)
+    def _resolve_upstream(rules_doc: Optional[Dict]) -> tuple:
+        """
+        Resolve the upstream DNS address from the rules doc.
+
+        Reads network.dns.forward_to (stored as 'dns_forward_to' in the rules
+        YAML) and parses it as host or host:port. Falls back to the module
+        defaults (_UPSTREAM_DNS / _UPSTREAM_PORT) when the field is absent.
+
+        This is the forward-to-specialist seam (ADR-012 D9, rip-cage-ta1o.2):
+        a tool-agnostic configurable upstream address — NOT a named product
+        (ADR-005 D12). The field holds a bare address; callers compose any
+        external DNS specialist or local forwarder by pointing forward_to at
+        its address.
+
+        Returns: (host: str, port: int)
+        """
+        if rules_doc is None:
+            return (_UPSTREAM_DNS, _UPSTREAM_PORT)
+        raw = rules_doc.get("dns_forward_to")
+        if not raw:
+            return (_UPSTREAM_DNS, _UPSTREAM_PORT)
+        raw_str = str(raw).strip()
+        if not raw_str:
+            return (_UPSTREAM_DNS, _UPSTREAM_PORT)
+        # Parse host:port — handle IPv6 addresses wrapped in brackets too.
+        if raw_str.startswith("["):
+            # IPv6 bracket form: [::1]:5353
+            bracket_end = raw_str.find("]")
+            if bracket_end == -1:
+                return (raw_str, _UPSTREAM_PORT)
+            host = raw_str[1:bracket_end]
+            rest = raw_str[bracket_end + 1:]
+            if rest.startswith(":"):
+                try:
+                    port = int(rest[1:])
+                except ValueError:
+                    port = _UPSTREAM_PORT
+            else:
+                port = _UPSTREAM_PORT
+            return (host, port)
+        # Non-IPv6: split on last colon (host:port form)
+        if ":" in raw_str:
+            parts = raw_str.rsplit(":", 1)
+            try:
+                port = int(parts[1])
+                return (parts[0], port)
+            except ValueError:
+                # Not a valid port — treat the whole string as a hostname
+                return (raw_str, _UPSTREAM_PORT)
+        return (raw_str, _UPSTREAM_PORT)
+
+    def _forward_query(request: "dns.message.Message",
+                       upstream_host: str = _UPSTREAM_DNS,
+                       upstream_port: int = _UPSTREAM_PORT) -> "dns.message.Message":
+        """Forward a DNS query to the upstream resolver and return the response.
+
+        upstream_host and upstream_port default to the module-level constants
+        but are overridable so _handle_dns_query can pass the forward_to value.
+        """
+        response = dns.query.udp(request, upstream_host, port=upstream_port, timeout=5)
         return response
 
     def _make_refused_response(request: "dns.message.Message") -> bytes:
@@ -402,10 +462,14 @@ try:
         except Exception:
             return b""  # Malformed query — drop
 
+        # Resolve the upstream address once per query (reads dns_forward_to from
+        # rules_doc if present; falls back to _UPSTREAM_DNS/_UPSTREAM_PORT).
+        upstream_host, upstream_port = _resolve_upstream(rules_doc)
+
         # Only handle standard queries
         if request.opcode() != dns.opcode.QUERY:
             try:
-                return _forward_query(request).to_wire()
+                return _forward_query(request, upstream_host, upstream_port).to_wire()
             except Exception:
                 return _make_refused_response(request)
 
@@ -429,9 +493,9 @@ try:
         elif result.action == "would-block":
             _log_dns_event("would-block", result)
             # Observe mode: fall through and forward the query
-        # allow or would-block: forward upstream
+        # allow or would-block: forward upstream (using configured or default upstream)
         try:
-            upstream_response = _forward_query(request)
+            upstream_response = _forward_query(request, upstream_host, upstream_port)
             return upstream_response.to_wire()
         except Exception as exc:
             # Fail-closed on upstream errors: return REFUSED
