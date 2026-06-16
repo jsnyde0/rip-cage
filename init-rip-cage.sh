@@ -510,6 +510,106 @@ case "$_rc_mux" in
 esac
 unset _rc_mux
 
+# 11b. Egress-mediator lifecycle (rip-cage-ta1o.5.7 / ADR-026 D5)
+#
+# RC_MEDIATOR is threaded in by cmd_up via -e RC_MEDIATOR=<value> ONLY when a
+# real mediator is selected (network.egress.mediator != none). When absent/unset,
+# no mediator is started — existing cages with no mediator config are byte-identical
+# to today.
+#
+# ORDERING GUARANTEE (load-bearing per ADR-026 D5):
+# This section runs AFTER init-firewall.sh has installed the uid-exemption for the
+# mediator's run_as_uid. init-firewall.sh is run as a root docker-exec step by
+# cmd_up BEFORE _up_init_container calls this script — so by the time we reach here,
+# the iptables RETURN rule exempting the mediator uid is already in place. This is
+# what allows the mediator's own re-originated egress to bypass the router without
+# looping back.
+#
+# Dispatch routes through the baked registry at /etc/rip-cage/mediators/<name>/start
+# and /etc/rip-cage/mediators/<name>/run_as_uid.
+# ADR-005 D12 FIRM: no hardcoded mediator names here; everything drives off RC_MEDIATOR
+# + the baked registry files (zero rc/init-rip-cage.sh edits to add a new mediator).
+if [ -n "${RC_MEDIATOR:-}" ]; then
+  _rc_med="${RC_MEDIATOR}"
+  _rc_med_registry_dir="/etc/rip-cage/mediators/${_rc_med}"
+  _rc_med_start_hook="${_rc_med_registry_dir}/start"
+  _rc_med_uid_file="${_rc_med_registry_dir}/run_as_uid"
+  _rc_med_health_hook="${_rc_med_registry_dir}/health_check"
+  _rc_med_teardown_hook="${_rc_med_registry_dir}/teardown"
+
+  if [ ! -d "$_rc_med_registry_dir" ]; then
+    echo "[rip-cage] ERROR: egress mediator '${_rc_med}' was not declared in the manifest used to build this image — no registry dir at ${_rc_med_registry_dir} (ADR-001 fail-loud). Add a MEDIATOR manifest entry for '${_rc_med}' (see examples/) and rebuild, or set network.egress.mediator: none." >&2
+    exit 1
+  fi
+  if [ ! -f "$_rc_med_start_hook" ]; then
+    echo "[rip-cage] ERROR: egress mediator '${_rc_med}' has no 'start' hook at ${_rc_med_start_hook} — the manifest entry must declare hooks.start (ADR-001 fail-loud)." >&2
+    exit 1
+  fi
+  if [ ! -f "$_rc_med_uid_file" ]; then
+    echo "[rip-cage] ERROR: egress mediator '${_rc_med}' has no 'run_as_uid' file at ${_rc_med_uid_file} — required for uid-exemption loop prevention (ADR-026 D5)." >&2
+    exit 1
+  fi
+
+  _rc_med_run_as_uid=$(cat "$_rc_med_uid_file")
+  # Fail-closed uid validation (ADR-001 / ADR-026 D5): refuse to start the mediator
+  # as root. An empty, whitespace-only, "0", or "root" uid would cause su to run the
+  # mediator as root, voiding the uid-exemption loop-prevention rationale.
+  _rc_med_run_as_uid=$(printf '%s' "$_rc_med_run_as_uid" | tr -d '[:space:]')
+  if [ -z "$_rc_med_run_as_uid" ]; then
+    echo "[rip-cage] ERROR: egress mediator '${_rc_med}' run_as_uid file is empty — refusing to start mediator (would run as root, voiding uid-exemption loop-prevention; ADR-001 fail-closed; ADR-026 D5). Fix: write a valid non-root uid to ${_rc_med_uid_file}." >&2
+    exit 1
+  fi
+  if [ "$_rc_med_run_as_uid" = "0" ] || [ "$_rc_med_run_as_uid" = "root" ]; then
+    echo "[rip-cage] ERROR: egress mediator '${_rc_med}' run_as_uid='${_rc_med_run_as_uid}' is root — refusing to start mediator as root (uid-exemption loop-prevention requires a non-root uid; ADR-001 fail-closed; ADR-026 D5). Fix: write a valid non-root uid to ${_rc_med_uid_file}." >&2
+    exit 1
+  fi
+  echo "[rip-cage] network.egress.mediator=${_rc_med}: starting mediator as uid '${_rc_med_run_as_uid}'..."
+  su -s /bin/sh "$_rc_med_run_as_uid" -c "$_rc_med_start_hook" &
+  _rc_med_pid=$!
+  echo "[rip-cage] network.egress.mediator=${_rc_med}: start hook launched (pid=${_rc_med_pid})"
+
+  # Optional health_check: if present, poll it to gate readiness before proceeding.
+  if [ -f "$_rc_med_health_hook" ]; then
+    echo "[rip-cage] network.egress.mediator=${_rc_med}: running health_check..."
+    _rc_med_health_ok=0
+    _rc_med_health_attempts=0
+    # Initial sleep before first poll: give the background process time to bind
+    # before the first check fires (mirrors the daemon lifecycle block ~L665-671;
+    # without this, attempt 1 always fails for any non-instant startup — ADR-005 D10).
+    sleep 1
+    while [ "$_rc_med_health_attempts" -lt 10 ]; do
+      _rc_med_health_attempts=$((_rc_med_health_attempts + 1))
+      if su -s /bin/sh "$_rc_med_run_as_uid" -c "$_rc_med_health_hook" 2>/dev/null; then
+        _rc_med_health_ok=1
+        break
+      fi
+      sleep 1
+    done
+    if [ "$_rc_med_health_ok" -eq 1 ]; then
+      echo "[rip-cage] network.egress.mediator=${_rc_med}: health_check PASSED"
+    else
+      echo "[rip-cage] WARN: egress mediator '${_rc_med}' health_check failed after ${_rc_med_health_attempts} attempts — mediator may not be ready (cage continues per ADR-005 D10)" >&2
+    fi
+    unset _rc_med_health_ok _rc_med_health_attempts
+  fi
+
+  # Optional teardown: if present, register it on EXIT so the mediator is cleaned up.
+  if [ -f "$_rc_med_teardown_hook" ]; then
+    # Bake the path and uid into the trap string via double-quoted expansion so that
+    # unset-ing the variables below does NOT cause the trap to fire with empty args.
+    # (Single-quoted trap would defer expansion to EXIT time, after the variables are
+    # unset — causing teardown to silently not run. ADR-001 Finding 1 fix.)
+    # shellcheck disable=SC2064
+    trap "su -s /bin/sh '${_rc_med_run_as_uid}' -c '${_rc_med_teardown_hook}' 2>/dev/null || true" EXIT
+    echo "[rip-cage] network.egress.mediator=${_rc_med}: teardown hook registered (on EXIT)"
+  fi
+
+  unset _rc_med _rc_med_registry_dir _rc_med_start_hook _rc_med_uid_file
+  unset _rc_med_health_hook _rc_med_teardown_hook _rc_med_run_as_uid _rc_med_pid
+else
+  echo "[rip-cage] network.egress.mediator=none: no egress mediator started"
+fi
+
 # 12. IN-CAGE DAEMON lifecycle block (rip-cage-4c5.5)
 #
 # Read the baked daemon config from /etc/rip-cage/daemon-config.json (written at

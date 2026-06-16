@@ -4405,6 +4405,43 @@ cmd_up() {
   # attach block below. It is unset after that block (after _config_init_emit_tip).
   unset _mux_eff_result
 
+  # rip-cage-ta1o.5.7: resolve network.egress.mediator from effective config (ADR-026 D5).
+  # Defaults to "none" when unset. Invalid values caught by _config_validate_or_abort (ADR-001).
+  # When a real mediator is selected, thread it into the container as RC_MEDIATOR so
+  # init-rip-cage.sh can dispatch its baked start hook. When none, emit nothing — existing
+  # cages with no mediator config remain byte-identical to today (no regression).
+  # ADR-005 D12 FIRM: no mediator name is ever hardcoded here; dispatch is entirely driven
+  # by the config value + baked registry files under /etc/rip-cage/mediators/<name>/.
+  local _rc_mediator="none"
+  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
+    if command -v yq &>/dev/null; then
+      local _med_eff_result
+      if _med_eff_result=$(_load_effective_config "$path" 2>/dev/null); then
+        _rc_mediator=$(jq -r '.config.network.egress.mediator // "none"' <<<"$_med_eff_result")
+      fi
+      unset _med_eff_result
+    fi
+  fi
+  if [[ "$_rc_mediator" != "none" ]]; then
+    # ADR-001 fail-closed: a mediator requires the egress router to be on.
+    # With egress=off, no iptables uid-exemption is installed and there is no
+    # router to forward traffic to the mediator — the combination is incoherent
+    # and non-functional. Reject loud rather than silently starting an
+    # incoherent cage (Finding 3 / ADR-026 D5).
+    if [[ "$rc_egress" == "off" ]]; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        json_error "network.egress.mediator='${_rc_mediator}' requires egress to be on — with egress=off, no iptables uid-exemption is installed and there is no egress router to forward to the mediator. Set network.egress.mediator: none or enable egress (remove RIP_CAGE_EGRESS=off). (ADR-001 fail-closed; ADR-026 D5)" "MEDIATOR_REQUIRES_EGRESS"
+      fi
+      echo "Error: network.egress.mediator='${_rc_mediator}' requires egress to be on — with egress=off, no iptables uid-exemption is installed and there is no egress router to forward to the mediator. Set network.egress.mediator: none or enable egress (ADR-001 fail-closed; ADR-026 D5)." >&2
+      exit 1
+    fi
+    _UP_RUN_ARGS+=(-e "RC_MEDIATOR=${_rc_mediator}")
+    log "network.egress.mediator: ${_rc_mediator}"
+  else
+    log "network.egress.mediator: none (no mediator env threaded)"
+  fi
+  unset _rc_mediator
+
   _up_prepare_docker_mounts "$path" "$name"
   _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" "$rc_egress" "$rc_forward_ssh"
 
