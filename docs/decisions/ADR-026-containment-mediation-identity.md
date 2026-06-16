@@ -1,8 +1,8 @@
 # ADR-026: Rip-Cage Identity — Containment Layer + Delegated Mediation Seam
 
-**Status:** Accepted
+**Status:** Accepted (D5 revised 2026-06-16)
 **Date:** 2026-06-11
-**Design:** bead `rip-cage-ta1o` (full decision narrative, verdict:pass) ; competitor investigated from source: github.com/denoland/clawpatrol
+**Design:** bead `rip-cage-ta1o` (full decision narrative, verdict:pass) ; competitor investigated from source: github.com/denoland/clawpatrol (reclassified to *alternative appliance* — D5)
 
 ## Context
 
@@ -88,15 +88,27 @@ rip-cage builds **no** credential injection and **no** content policy. ssh-agent
 
 **What would invalidate this:** if a single-mechanism, genuinely low-drift injection covering the dominant secret (the Anthropic OAuth token) emerges that does NOT pull in per-service maintenance, the no-mediation line *for that one secret* could be revisited.
 
-### D5: Composition shape — tool-agnostic seam + reference recipe; bundle nothing
+### D5: Composition shape — a composable-provider mediator seam (isomorphic to the session-multiplexer seam); bundle nothing
 
-**Firmness: EXPLORATORY**
+**Firmness: EXPLORATORY** (revised 2026-06-16)
 
-rip-cage exposes the chokepoint's upstream as a **tool-agnostic seam** (expose a forward target, like exposing a proxy interface — not embed a proxy) and ships a **reference recipe**. It bundles and orchestrates **nothing**.
+rip-cage exposes egress mediation as a **composable provider seam**, built isomorphic to the session-multiplexer seam (ADR-005 D12, ADR-006 D7–D8, ADR-021 D6): rip-cage owns the *interface*, blesses *no* mediator, and `none` ships by default. The shape, mapped element-for-element from the multiplexer pattern:
 
-**Rationale:** the **agent is the installer** — a coding agent can stand up the mediator and align with its user on the OAuth/credential steps, so "the mediator is hard to set up" largely dissolves. Owning the recipe (stable) not an orchestrator (couples rip-cage to one mediator's lifecycle, recreating the monolith) keeps maintenance on the right side. EXPLORATORY because the production-path validation is open (see below).
+- **Selection config:** `network.egress.mediator` (default `none`). The allowed-set is `none` + whatever MEDIATOR providers the tool manifest declares and `rc build` bakes (read host-side from an `rc.mediators` image label, with a manifest fallback) — **not a fixed enum**. Directly mirrors `session.multiplexer` (ADR-021 D6). `none` = the built-in destination router + DNS heuristic only (the accident-containment tier, D6); no mediator in the path.
+- **Provider archetype:** a new **MEDIATOR** tool-manifest archetype. Its hooks (`start` the proxy at cage init; optional `health_check` / `teardown`) bake to `/etc/rip-cage/mediators/<name>/<hook>`, on the same footing as the MULTIPLEXER archetype (ADR-005 D7) and bounded by the D11 fail-closed validator. Adding a mediator (mitmproxy, iron-proxy, a future one) is a manifest entry with **zero `rc` edits** (ADR-005 D12).
+- **Handoff seam:** rip-cage's HTTP/TLS router gains `network.http.forward_to` — the HTTP analog of the DNS `forward_to` seam shipped in ta1o.2 (ADR-012 D9). On ALLOW (after destination policy), the router connects to the mediator's listen address instead of the origin, conveying the original destination via a standard handoff (SOCKS5 / HTTP CONNECT). The mediator MITM-terminates, applies L7 policy + injection, and re-originates to the real upstream.
 
-**Open validation (why EXPLORATORY):** a spike (bead `rip-cage-ta1o`) proved a clawpatrol gateway stands up headless and injects a credential end-to-end (placeholder→real, httpbin echo) — but the *gateway-setup + injection* half is platform-agnostic, while the *container-side routing attach* (userspace-WireGuard inside the cage) ran on a macOS **host** as proof-of-mechanism, NOT inside a Linux container (the production path). The userspace-WG client is portable Go with no kernel deps, so the risk is low; validating the attach inside a real Linux cage is the gating step before this rises to FIRM.
+**Responsibility split** (mirrors ADR-006 D7's box-entry-vs-spawn cut): rip-cage owns force-through + the destination floor + the `forward_to` handoff; the mediator owns L7 content policy + credential injection; egress *policy* (allowlist content, what triggers human review) stays in the consumer.
+
+**The push-vs-pull asymmetry — and why the floor is uncrossable.** A multiplexer is *pull-side* availability-payload: the agent runs *inside* it, and ADR-005 D9 was careful it can never be a policy interceptor. An egress mediator is the **opposite — push-side**: it sits in the traffic path and rewrites (mediation *is* push-side, D1). The binding consequence: rip-cage's destination allow/deny + the non-overridable IOC floor (ADR-012 D6) run **before** forward, so the mediator only ever receives already-allowed traffic. The mediator may **add** restriction (L7, injection) but can **never subtract** from the floor — additive-only, the same uncrossable-floor discipline as the IOC denylist (ADR-012 D6) and host-adoptable DCG (ADR-025). The D11 validator enforces this on MEDIATOR hooks: a manifest-authored or prompt-injected mediator entry must not declare a hook that disables force-through, bypasses the IOC floor, or PATH-shadows a safety binary. The mediator runs as a **sidecar in its own network namespace** so its own upstream egress is not re-captured by the cage's REDIRECT (loop prevention).
+
+**Reference providers, not blessed defaults** (ADR-005 D12): mitmproxy is the **first reference provider** (the validation target — transparent intake + a small injection addon), iron-proxy the **recommended adopt** (GA, Apache-2.0; OOTB transparent intake + placeholder→secret injection + default-deny). Both ship as `examples/` provider definitions + recipes, never special-cased in `rc`.
+
+**clawpatrol reclassified — alternative appliance, not reference mediator** (revised 2026-06-16; read from source at commit `124cb3d`). clawpatrol cannot plug into the `forward_to` seam: its gateway has **no plain-TCP / transparent-proxy ingress** — off-host traffic enters only through its own WireGuard netstack from an enrolled, operator-approved device, and credential injection scopes to the WG-peer identity (the loopback `:8443` listener is the dashboard/join surface, not the inject path). It is a vertically-integrated L3-router **appliance** — the "let the mediator own capture too" approach D3 already rejects — so you run it *instead of* rip-cage (optionally with rip-cage as a redundant outer shell), not *downstream of* it. Its injection-MITM core is MIT-licensed and cleanly extractable (moderate effort) into a composable micro-mediator should we ever choose to own one; that is a future option, not a dependency of this seam.
+
+**Rationale:** the **agent is the installer** (setup cost dissolves); owning the *provider interface* (stable) not an orchestrator (couples rip-cage to one mediator's lifecycle, recreating the monolith) keeps maintenance on the right side; and reusing the proven multiplexer-provider pattern means the seam inherits a dogfooded, isomorphic shape rather than inventing a second composition-interface to maintain. EXPLORATORY because the seam is not yet built or validated end-to-end.
+
+**Open validation (why EXPLORATORY, retargeted 2026-06-16):** the prior `composition-seam.md` HTTP attach ("Option A WireGuard / Option B socat") was **doc-only prose** — a BYO-tunnel set up by the agent inside the cage, with no rip-cage forwarding code behind it; only the DNS `forward_to` seam was real. Building `network.http.forward_to` is what makes the seam real. The EXPLORATORY→FIRM lift is now gated on the **mitmproxy in-cage E4 validation** — a Linux cage forwards forced-through egress to a co-located mitmproxy sidecar that injects a placeholder→real credential, proven by `httpbin.org/headers` echoing the real secret though the agent sent only a placeholder — **not** the prior clawpatrol macOS-host spike (now moot, since clawpatrol is not a `forward_to` mediator).
 
 **Alternatives considered:**
 
@@ -104,8 +116,10 @@ rip-cage exposes the chokepoint's upstream as a **tool-agnostic seam** (expose a
 |---|---|
 | Turnkey `rc up --with-cp` orchestration | `reasoned:` (causal) embedding one mediator's lifecycle couples rip-cage to that mediator and locks out alternatives, recreating the monolith this reshape backs out of. |
 | Seam-only, no reference recipe | `reasoned:` leaves the weak user at the mediator's onboarding cliff with no help, defeating the agent-as-installer value that makes "compose, don't build" livable. |
+| Invent a bespoke mediator seam (not the multiplexer provider pattern) | `reasoned:` forks a second composition-interface shape to maintain; the multiplexer provider pattern (ADR-005 D12 / ADR-021 D6) is already dogfooded and isomorphic — reuse it. |
+| Keep clawpatrol as the reference recipe target | `direct:` (clawpatrol source @`124cb3d`: gateway WG-tunnel-only ingress, no transparent-proxy port, injection scoped to WG-peer identity) — it cannot receive forwarded traffic from an external chokepoint; it is an alternative appliance, not a downstream mediator. |
 
-**What would invalidate this:** if the Linux-container attach turns out to need a human at any step other than the deliberate device-approval gate, the agent-as-installer premise weakens toward needing some orchestration after all — and "seam + recipe is enough" would not hold.
+**What would invalidate this:** if `network.http.forward_to` + a co-located mediator sidecar cannot achieve E4 in a Linux cage without a human at any step beyond the deliberate credential/OAuth setup, the forward_to-seam composition is unsound and "seam + recipe is enough" would not hold — reconsider whether exfil-grade composition needs the appliance (run-instead-of) model after all.
 
 ### D6: Tiering — standalone is accident-containment; exfil-grade requires composition
 
@@ -129,21 +143,24 @@ ADR-012's L7 TLS-MITM direction is the layer this ADR re-homes as *mediation*. T
 
 - **D2** (L7 method/path rules) → removed; egress becomes a pure **destination router** (read SNI/host, allow/deny the destination). Method/path policy is delegated mediation (D1).
 - **D4** (uniform TLS-MITM incl. Anthropic API) → standalone egress no longer terminates TLS. Consequence: standalone loses *content-visibility* into the Anthropic API; the actual threat it guarded (`ANTHROPIC_BASE_URL` redirect, CVE-2026-21852) remains covered by **destination-control** (a redirected base URL points at a non-allowlisted host the router blocks). Content-visibility returns when a mediator is composed.
-- **D5** (proxy in container, "nothing on host") → the destination router + DNS force-through stay **in-container**; the "self-contained" framing now admits an external mediator the chokepoint forwards to (composition is opt-in coupling, not a default).
+- **D5** (proxy in container, "nothing on host") → the destination router + DNS force-through stay **in-container**; the "self-contained" framing now admits an external mediator the chokepoint forwards to via the `network.http.forward_to` handoff seam (ADR-026 D5; composition is opt-in coupling, not a default).
 - **D6** (`RIP_CAGE_EGRESS=off`) → reframed: the switch disables iptables + the router (there is no content-proxy to disable).
 - **D9** (DNS exfil sidecar) → **retained** as containment (D2 tie-break) AND gains a forward-to-specialist seam (built-in low-drift heuristic is the default; power users forward to NextDNS / Umbrella / dnsdist / Zeek).
 
 ## canonical_refs
 
 - [ADR-002](ADR-002-rip-cage-containers.md) — container-as-boundary identity (this ADR is the network-composition extension; ADR-002 D5 holds the boundary inward, this delegates mediation outward)
-- [ADR-005](ADR-005-ecosystem-tools.md) D7–D10 — composable host-only tool manifest (the seam pattern D5 aligns with)
-- [ADR-006](ADR-006-multi-agent-architecture.md) D7 — rip-cage as a composable asset, orchestration external (the orchestration-layer cousin of this network-layer cut)
+- [ADR-005](ADR-005-ecosystem-tools.md) D7–D10 — composable host-only tool manifest (the seam pattern D5 aligns with) ; D11 — fail-closed validator bounding MEDIATOR hooks (D5) ; D12 — composable-seam-not-bundler, the multiplexer-provider pattern D5 is isomorphic to
+- [ADR-006](ADR-006-multi-agent-architecture.md) D7 — rip-cage as a composable asset, orchestration external (the orchestration-layer cousin of this network-layer cut; box-entry-vs-spawn split mirrored by D5's responsibility split) ; D8 — wire tool↔tool only through public CLIs (D5 forwards via the mediator's public listen interface)
 - [ADR-009](ADR-009-ux-overhaul.md) D1 — harm-reduction positioning (D1, D6)
-- [ADR-012](ADR-012-egress-firewall.md) D2/D4/D5/D6/D9 — the egress decisions this ADR re-homes (see Consequences)
+- [ADR-012](ADR-012-egress-firewall.md) D2/D4/D5/D6/D9 — the egress decisions this ADR re-homes (see Consequences) ; D6 — the non-overridable IOC floor the mediator may add to but never subtract from (D5 push-side asymmetry) ; D9 — the DNS `forward_to` seam D5's `network.http.forward_to` is the HTTP analog of
+- [ADR-021](ADR-021-layered-rip-cage-config.md) D6 — `session.multiplexer` config shape (default none, manifest-derived allowed-set, not a fixed enum) that `network.egress.mediator` (D5) directly mirrors
 - [ADR-017](ADR-017-ssh-agent-forwarding-default.md) — ssh-agent forwarding unchanged standalone (D4)
 - [ADR-022](ADR-022-ssh-allowlist.md) D5 — ssh-bypass hook as a destination-allowlist defender (D2 tie-break)
 - [ADR-024](ADR-024-prompt-injection-threat-model.md) D2 (credential-exfil axis — standalone gap, D4) ; D4 (motivated adversary out of scope — D3 framing) ; D5 (cross-layer-coordination assumption — D1 invalidation)
 - [ADR-025](ADR-025-host-adoptable-dcg-policy.md) — DCG as a low-drift owned guard via wrapping (precedent for the D2 tie-break)
 - bead `rip-cage-ta1o` — converged design + adversarial-review record (verdict:pass)
 - bead `rip-cage-4c5` — wpu/herdr composable-tool-manifest epic (the pluggability direction this is the network-layer sibling of)
-- External: github.com/denoland/clawpatrol — reference mediator (read from source: `cmd/clawpatrol/dnsvip/dnsvip.go` routing-only; `internal/config/plugins/credentials/bearer_token.go` injection mechanism; `site/doc/security-model.md` tunnel-bypass admission)
+- External: github.com/denoland/clawpatrol — **alternative appliance** (D5; read from source @`124cb3d`: gateway WG-tunnel-only ingress with no transparent-proxy port, `cmd/clawpatrol/tailscale.go` loopback `:8443` is the dashboard/join surface not the inject path, injection scoped to WG-peer identity — cannot plug into the `forward_to` seam; MIT-licensed injection core in `internal/config/plugins/credentials/bearer_token.go` is extractable into a micro-mediator if ever wanted)
+- External: github.com/ironsh/iron-proxy — recommended adopt reference mediator (D5; GA, Apache-2.0, transparent intake + OOTB placeholder→secret injection)
+- External: mitmproxy — first reference provider / validation target (D5; transparent intake + small injection addon)
