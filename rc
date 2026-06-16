@@ -6069,6 +6069,7 @@ network.dns.forward_to|scalar|null
 dcg.packs|additive_list|[]
 dcg.custom_rule_paths|additive_list|[]
 session.multiplexer|selection_list|"none"
+network.egress.mediator|selection_list|"none"
 EOF
 }
 
@@ -6156,6 +6157,78 @@ _config_mux_derive_allowed_set() {
       fi
     done
     baked_set="$mux_names"
+  fi
+
+  # Step 3: Always include 'none'; prepend to the derived set.
+  if [[ -n "$baked_set" ]]; then
+    echo "none,${baked_set}"
+  else
+    echo "none"
+  fi
+}
+
+# _config_mediator_derive_allowed_set
+#
+# Derives the allowed value set for network.egress.mediator dynamically from the
+# baked registry — NOT a static enum (ADR-005 D12).
+#
+# Resolution order (isomorphic to _config_mux_derive_allowed_set):
+#   1. Check whether the image EXISTS (docker image inspect). If it exists, the
+#      rc.mediators label is the SOLE authoritative source — even an empty
+#      label means "no mediators baked", so the allowed set is "none" only.
+#   2. Only when the image is GENUINELY ABSENT (docker not available or image
+#      not found) fall back to enumerating MEDIATOR entries in the resolved
+#      manifest. Same source of truth as the build, evaluated pre-bake.
+#      NOT a fail-open: only names present in the manifest are accepted.
+#   3. 'none' is always included regardless of the registry contents.
+#
+# Outputs a comma-separated allowed-set string (CSV), e.g. "none,my-proxy".
+# Always exits 0 (returns empty string on derivation failure, treated by
+# the caller as allowed-set = "none" only — still validated, still loud).
+#
+# ADR-005 D12: the function MUST NOT name specific optional mediators;
+# it enumerates whatever the baked registry or manifest declares.
+#
+# rip-cage-ta1o.5.1
+_config_mediator_derive_allowed_set() {
+  local image="${RC_MEDIATOR_INSPECT_IMAGE:-rip-cage:latest}"
+
+  # Step 1: If image EXISTS, the label is authoritative (even when empty).
+  # Empty label = no mediators baked = allowed set is "none" only.
+  if command -v docker >/dev/null 2>&1 && docker image inspect "$image" >/dev/null 2>&1; then
+    local label_val
+    label_val=$(docker inspect --format '{{ index .Config.Labels "rc.mediators" }}' "$image" 2>/dev/null || true)
+    if [[ -n "$label_val" ]]; then
+      echo "none,${label_val}"
+    else
+      echo "none"
+    fi
+    return 0
+  fi
+
+  # Step 2: Image is genuinely ABSENT (pre-build path) — manifest-enumeration fallback.
+  local baked_set=""
+  local manifest_json
+  if manifest_json=$(_manifest_load 2>/dev/null); then
+    local count idx mediator_names=""
+    count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null || echo "0")
+    for (( idx=0; idx<count; idx++ )); do
+      local entry archetype name
+      entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+      archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
+      if [[ "$archetype" != "MEDIATOR" ]]; then
+        continue
+      fi
+      name=$(jq -r '.name // ""' <<<"$entry" 2>/dev/null)
+      if [[ -n "$name" ]]; then
+        if [[ -n "$mediator_names" ]]; then
+          mediator_names+=",${name}"
+        else
+          mediator_names="$name"
+        fi
+      fi
+    done
+    baked_set="$mediator_names"
   fi
 
   # Step 3: Always include 'none'; prepend to the derived set.
@@ -6407,10 +6480,10 @@ _manifest_validate() {
       return 1
     fi
     case "$archetype" in
-      TOOL|SHELL-INTEGRATION|IN-CAGE-DAEMON|MULTIPLEXER)
+      TOOL|SHELL-INTEGRATION|IN-CAGE-DAEMON|MULTIPLEXER|MEDIATOR)
         ;;
       *)
-        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): unknown 'archetype' value '${archetype}'. Allowed: TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON, MULTIPLEXER." >&2
+        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): unknown 'archetype' value '${archetype}'. Allowed: TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON, MULTIPLEXER, MEDIATOR." >&2
         return 1
         ;;
     esac
@@ -6838,6 +6911,141 @@ _manifest_validate() {
           fi
         done
         ;;
+      MEDIATOR)
+        # MEDIATOR archetype: co-located proxy hook contract (ADR-026 D5, rip-cage-ta1o.5.1).
+        # Isomorphic to MULTIPLEXER but for the egress-mediator seam.
+        # Required: hooks.start (launch the proxy at cage init)
+        # Optional: hooks.health_check, hooks.teardown
+        # Required: run_as_uid (dedicated non-root uid for co-located-process topology)
+        # Strict-parse: unknown top-level fields rejected (ADR-025 D5).
+        # Hook-bounds check: reuses the same floor-weakening patterns as MULTIPLEXER.
+
+        # Name format check: MEDIATOR names are used as directory components under
+        # /etc/rip-cage/mediators/<name>/ in the image. Only [a-z0-9_-] is safe.
+        if [[ ! "$name" =~ ^[a-z0-9_-]+$ ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): MEDIATOR name '${name}' contains characters outside [a-z0-9_-] — names are used as directory components in the image registry (/etc/rip-cage/mediators/<name>) and must be lowercase alphanumeric, hyphens, or underscores only (ADR-001 fail-loud; name-format check)." >&2
+          return 1
+        fi
+
+        # Strict-parse: reject unknown/extra top-level fields on MEDIATOR entries.
+        # Known fields: name, archetype, version_pin, run_as_uid, hooks
+        local med_known_fields med_entry_keys med_unknown_key
+        med_known_fields="name archetype version_pin run_as_uid hooks"
+        med_entry_keys=$(jq -r 'keys[]' <<<"$entry" 2>/dev/null)
+        while IFS= read -r med_unknown_key; do
+          [[ -z "$med_unknown_key" ]] && continue
+          local med_is_known=0
+          local med_known_chk
+          for med_known_chk in $med_known_fields; do
+            if [[ "$med_unknown_key" == "$med_known_chk" ]]; then
+              med_is_known=1
+              break
+            fi
+          done
+          if [[ "$med_is_known" -eq 0 ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): MEDIATOR entry has unknown field '${med_unknown_key}' (strict-parse — only name/archetype/version_pin/run_as_uid/hooks are allowed; ADR-025 D5)." >&2
+            return 1
+          fi
+        done <<<"$med_entry_keys"
+
+        # 'run_as_uid' is required (co-located-process topology, ADR-026 D5).
+        # The start hook must support launching the mediator under a dedicated non-root uid.
+        local med_run_as_uid
+        med_run_as_uid=$(jq -r '.run_as_uid // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        if [[ "$med_run_as_uid" == "___RC_ABSENT___" || -z "$med_run_as_uid" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'run_as_uid' is missing (MEDIATOR archetype — the mediator must run under a dedicated non-root uid for loop prevention; ADR-026 D5)." >&2
+          return 1
+        fi
+
+        # 'hooks' block is required
+        local med_hooks_type
+        med_hooks_type=$(jq -r 'if has("hooks") then (.hooks | type) else "absent" end' <<<"$entry" 2>/dev/null)
+        if [[ "$med_hooks_type" == "absent" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'hooks' is missing (MEDIATOR archetype)." >&2
+          return 1
+        fi
+        if [[ "$med_hooks_type" != "object" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'hooks' must be an object, got: ${med_hooks_type} (MEDIATOR archetype)." >&2
+          return 1
+        fi
+
+        # Required hook: start
+        local med_start
+        med_start=$(jq -r '.hooks.start // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        if [[ "$med_start" == "___RC_ABSENT___" || -z "$med_start" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'hooks.start' is missing (MEDIATOR archetype — start hook is required to launch the mediator at cage init)." >&2
+          return 1
+        fi
+
+        # Optional hooks: health_check, teardown (absent = no-op / generic fallback)
+        local med_health_check med_teardown
+        med_health_check=$(jq -r '.hooks.health_check // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        med_teardown=$(jq -r '.hooks.teardown // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+
+        # Strict-parse: reject unknown keys INSIDE the hooks object (ADR-025 D5).
+        # Known hook sub-keys: start, health_check, teardown.
+        local med_known_hooks med_hooks_keys med_hook_key
+        med_known_hooks="start health_check teardown"
+        med_hooks_keys=$(jq -r '.hooks | keys[]' <<<"$entry" 2>/dev/null)
+        while IFS= read -r med_hook_key; do
+          [[ -z "$med_hook_key" ]] && continue
+          local med_hook_is_known=0
+          local med_known_hook_chk
+          for med_known_hook_chk in $med_known_hooks; do
+            if [[ "$med_hook_key" == "$med_known_hook_chk" ]]; then
+              med_hook_is_known=1
+              break
+            fi
+          done
+          if [[ "$med_hook_is_known" -eq 0 ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): MEDIATOR entry has unknown hook key '${med_hook_key}' inside 'hooks' (strict-parse — only start/health_check/teardown are allowed; ADR-025 D5, ADR-026 D5)." >&2
+            return 1
+          fi
+        done <<<"$med_hooks_keys"
+
+        # Hook-bounds check (ADR-005 D10/D11, ADR-001 fail-loud).
+        # Reuses the same floor-weakening patterns as MULTIPLEXER hooks.
+        # Each hook command string is STATICALLY parsed (NEVER executed).
+        local med_hook_name med_hook_cmd
+        for med_hook_name in start health_check teardown; do
+          case "$med_hook_name" in
+            start)        med_hook_cmd="$med_start" ;;
+            health_check) med_hook_cmd="$med_health_check" ;;
+            teardown)     med_hook_cmd="$med_teardown" ;;
+          esac
+          [[ "$med_hook_cmd" == "___RC_ABSENT___" || -z "$med_hook_cmd" ]] && continue
+
+          # Pattern 1: DCG global config write
+          if echo "$med_hook_cmd" | grep -qE '\.config/dcg/'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' references '.config/dcg/' path, which is the DCG safety floor config (floor-weakening write; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
+            return 1
+          fi
+
+          # Pattern 2: Workspace DCG config write
+          if echo "$med_hook_cmd" | grep -qE '\.dcg\.toml'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' references '.dcg.toml', which is the workspace DCG config (floor-weakening write; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
+            return 1
+          fi
+
+          # Pattern 3: PATH manipulation
+          if echo "$med_hook_cmd" | grep -qE 'PATH='; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' sets PATH=, which can PATH-shadow safety binaries and weakens the safety floor (floor-weakening; ADR-005 D10/D11, ADR-001 fail-loud). Remove PATH manipulation from hook commands." >&2
+            return 1
+          fi
+
+          # Pattern 3b: Direct write to safety binary paths
+          if echo "$med_hook_cmd" | grep -qE '/(usr/local/lib/rip-cage/(bin|hooks)|usr/local/bin|usr/bin)/(dcg-guard|dcg|dcg-policy|block-ssh-bypass(\.sh)?)'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' writes to a safety binary path, which would replace a safety floor binary (floor-weakening; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
+            return 1
+          fi
+
+          # Pattern 4: Lifecycle-interceptor registration
+          if echo "$med_hook_cmd" | grep -qE '/etc/rip-cage/|settings\.json|PreToolUse|PostToolUse'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' references lifecycle-interceptor targets (/etc/rip-cage/, settings.json, PreToolUse, or PostToolUse), which can register hooks that weaken the safety floor (floor-weakening lifecycle-interceptor; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
+            return 1
+          fi
+        done
+        ;;
     esac
   done
 
@@ -7103,13 +7311,23 @@ _manifest_build_dockerfile_path() {
     return 1
   fi
 
-  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" && -z "$mux_registry_steps" && -z "$mux_label" ]]; then
+  local mediator_registry_steps
+  if ! mediator_registry_steps=$(_manifest_generate_mediator_registry_steps); then
+    return 1
+  fi
+
+  local mediator_label
+  if ! mediator_label=$(_manifest_generate_mediator_label); then
+    return 1
+  fi
+
+  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" && -z "$mux_registry_steps" && -z "$mux_label" && -z "$mediator_registry_steps" && -z "$mediator_label" ]]; then
     # Default/bundled-only manifest — use the original Dockerfile unchanged (D8).
     echo "$orig_dockerfile"
     return 0
   fi
 
-  # Non-bundled tools and/or SHELL-INTEGRATION/IN-CAGE-DAEMON/MULTIPLEXER entries present — generate a temp Dockerfile.
+  # Non-bundled tools and/or SHELL-INTEGRATION/IN-CAGE-DAEMON/MULTIPLEXER/MEDIATOR entries present — generate a temp Dockerfile.
   local tmp_dockerfile
   tmp_dockerfile=$(mktemp "${TMPDIR:-/tmp}/rip-cage-Dockerfile-XXXXXX")
 
@@ -7268,6 +7486,54 @@ _manifest_build_dockerfile_path() {
       cat "$tmp_inject_label" >> "$tmp_dockerfile"
     fi
     rm -f "$tmp_inject_label"
+  fi
+
+  # --- MEDIATOR registry bake: inject AFTER "COPY settings.json" sentinel ---
+  # Same injection site as MULTIPLEXER registry steps (root context; /etc/rip-cage exists).
+  # These steps create /etc/rip-cage/mediators/<name>/ and write one file per declared hook.
+  if [[ -n "$mediator_registry_steps" ]]; then
+    local sentinel_settings_med="COPY settings.json /etc/rip-cage/settings.json"
+    local tmp_inject_med
+    tmp_inject_med=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
+    printf '\n# --- manifest-generated MEDIATOR registry bake (rip-cage-ta1o.5.1) ---\n%s\n' "$mediator_registry_steps" > "$tmp_inject_med"
+
+    if grep -qF "$sentinel_settings_med" "$tmp_dockerfile"; then
+      local sentinel_line_settings_med base_dockerfile_med
+      sentinel_line_settings_med=$(grep -nF "$sentinel_settings_med" "$tmp_dockerfile" | head -1 | cut -d: -f1)
+      base_dockerfile_med=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
+      head -n "${sentinel_line_settings_med}" "$tmp_dockerfile" > "$base_dockerfile_med"
+      cat "$tmp_inject_med" >> "$base_dockerfile_med"
+      tail -n "+$((sentinel_line_settings_med + 1))" "$tmp_dockerfile" >> "$base_dockerfile_med"
+      mv "$base_dockerfile_med" "$tmp_dockerfile"
+    else
+      echo "rip-cage: Warning: 'COPY settings.json' sentinel not found in Dockerfile — appending MEDIATOR registry bake steps at end (may fail if /etc/rip-cage does not exist). Dockerfile may need the sentinel restored." >&2
+      cat "$tmp_inject_med" >> "$tmp_dockerfile"
+    fi
+    rm -f "$tmp_inject_med"
+  fi
+
+  # --- MEDIATOR image label: inject AFTER existing LABEL line ---
+  # The rc.mediators label is placed alongside other image labels so it is
+  # frozen in the image at build time (isomorphic to rc.multiplexers handling).
+  if [[ -n "$mediator_label" ]]; then
+    local sentinel_label_med="LABEL org.opencontainers.image.version"
+    local tmp_inject_label_med
+    tmp_inject_label_med=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
+    printf '\n# manifest-generated MEDIATOR registry label (rip-cage-ta1o.5.1)\n%s\n' "$mediator_label" > "$tmp_inject_label_med"
+
+    if grep -qF "$sentinel_label_med" "$tmp_dockerfile"; then
+      local sentinel_line_label_med base_dockerfile_label_med
+      sentinel_line_label_med=$(grep -nF "$sentinel_label_med" "$tmp_dockerfile" | head -1 | cut -d: -f1)
+      base_dockerfile_label_med=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
+      head -n "${sentinel_line_label_med}" "$tmp_dockerfile" > "$base_dockerfile_label_med"
+      cat "$tmp_inject_label_med" >> "$base_dockerfile_label_med"
+      tail -n "+$((sentinel_line_label_med + 1))" "$tmp_dockerfile" >> "$base_dockerfile_label_med"
+      mv "$base_dockerfile_label_med" "$tmp_dockerfile"
+    else
+      echo "rip-cage: Warning: 'LABEL org.opencontainers.image.version' sentinel not found in Dockerfile — appending MEDIATOR label at end." >&2
+      cat "$tmp_inject_label_med" >> "$tmp_dockerfile"
+    fi
+    rm -f "$tmp_inject_label_med"
   fi
 
   echo "$tmp_dockerfile"
@@ -7675,6 +7941,149 @@ _manifest_generate_multiplexer_label() {
   fi
 
   printf 'LABEL rc.multiplexers="%s"' "$mux_names"
+}
+
+# _manifest_generate_mediator_registry_steps
+# Read the host manifest and emit Dockerfile RUN steps that bake each
+# MEDIATOR-archetype tool's declared hook command strings into
+# /etc/rip-cage/mediators/<name>/<hook> in the image at BUILD time.
+#
+# Isomorphic to _manifest_generate_multiplexer_registry_steps but for the
+# egress-mediator seam (ADR-026 D5, rip-cage-ta1o.5.1).
+#
+# Mechanism: for each MEDIATOR entry, mkdir the registry dir and use
+# base64-encoded hook commands decoded at Dockerfile-RUN time into one file
+# per declared hook. Only DECLARED hooks are written.
+#
+# D8 byte-for-byte contract: when the manifest has no MEDIATOR entries,
+# this function emits NOTHING.
+#
+# ADR-005 D12 (composable seam — registry IS the mechanism)
+# rip-cage-ta1o.5.1
+_manifest_generate_mediator_registry_steps() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count idx
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local steps=""
+  local has_mediators=0
+
+  for (( idx=0; idx<count; idx++ )); do
+    local entry archetype
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
+    if [[ "$archetype" != "MEDIATOR" ]]; then
+      continue
+    fi
+    has_mediators=1
+
+    local name
+    name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+
+    # Sanitize name for use as a directory component (defense-in-depth guard).
+    if [[ "$name" == *"/"* || "$name" == *" "* ]]; then
+      echo "Error: manifest MEDIATOR entry '${name}': name contains slash or space — cannot use as registry dir name." >&2
+      return 1
+    fi
+
+    local registry_dir="/etc/rip-cage/mediators/${name}"
+
+    steps+="RUN # manifest MEDIATOR registry bake: ${name} (rip-cage-ta1o.5.1)"$'\n'
+    steps+="RUN mkdir -p '${registry_dir}'"$'\n'
+
+    # Bake run_as_uid into the registry so it's readable from the image without
+    # re-reading the host manifest — preserves the no-image-vs-host-drift invariant
+    # (ADR-026 D5). Child .2 (router forward) reads this to (a) install the
+    # iptables egress uid-exemption and (b) drop privileges in the start hook.
+    local med_run_as_uid
+    med_run_as_uid=$(jq -r '.run_as_uid // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+    if [[ "$med_run_as_uid" != "___RC_ABSENT___" && -n "$med_run_as_uid" ]]; then
+      steps+="RUN printf '%s' '${med_run_as_uid}' > '${registry_dir}/run_as_uid'"$'\n'
+    fi
+
+    # Write each declared hook as a file under the registry dir.
+    local hook_name hook_cmd b64_cmd
+    for hook_name in start health_check teardown; do
+      hook_cmd=$(jq -r ".hooks.${hook_name} // \"___RC_ABSENT___\"" <<<"$entry" 2>/dev/null)
+      [[ "$hook_cmd" == "___RC_ABSENT___" || -z "$hook_cmd" ]] && continue
+
+      # Injection safety: hook_cmd must be a single line.
+      if [[ "$hook_cmd" == *$'\n'* ]]; then
+        echo "Error: manifest MEDIATOR entry '${name}': hook '${hook_name}' contains newline — single-line required." >&2
+        return 1
+      fi
+
+      b64_cmd=$(printf '%s' "$hook_cmd" | base64 | tr -d '\n')
+      steps+="RUN echo '${b64_cmd}' | base64 -d > '${registry_dir}/${hook_name}' && chmod 0755 '${registry_dir}/${hook_name}'"$'\n'
+    done
+  done
+
+  if [[ "$has_mediators" -eq 0 ]]; then
+    # No MEDIATOR entries — emit nothing (D8 short-circuit).
+    return 0
+  fi
+
+  # Strip trailing newline for clean output; caller appends to Dockerfile.
+  if [[ -n "$steps" ]]; then
+    printf '%s' "${steps%$'\n'}"
+  fi
+}
+
+# _manifest_generate_mediator_label
+# Read the host manifest and emit a Dockerfile LABEL line enumerating all
+# MEDIATOR-archetype tool names declared in the manifest, e.g.:
+#   LABEL rc.mediators="<name1>,<name2>"
+#
+# This label is frozen in the image at build time so the host-side config
+# validator can read it via `docker inspect` WITHOUT re-reading the host
+# manifest at runtime — preserving the no-image-vs-host-drift invariant.
+# Isomorphic to _manifest_generate_multiplexer_label (ADR-026 D5).
+#
+# D8 byte-for-byte contract: when the manifest has no MEDIATOR entries,
+# this function emits NOTHING.
+#
+# rip-cage-ta1o.5.1
+_manifest_generate_mediator_label() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count idx
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local mediator_names=""
+  for (( idx=0; idx<count; idx++ )); do
+    local entry archetype name
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
+    if [[ "$archetype" != "MEDIATOR" ]]; then
+      continue
+    fi
+    name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+    if [[ -n "$mediator_names" ]]; then
+      mediator_names+=",$name"
+    else
+      mediator_names="$name"
+    fi
+  done
+
+  if [[ -z "$mediator_names" ]]; then
+    # No MEDIATOR entries — emit nothing.
+    return 0
+  fi
+
+  printf 'LABEL rc.mediators="%s"' "$mediator_names"
 }
 
 # _rc_mux_resolve_hook_path
@@ -8527,10 +8936,11 @@ _config_load_layer() {
   # schema column), check that the field's value in this layer is in the set.
   # Unknown enum values abort loud per ADR-021 D3.
   #
-  # session.multiplexer is a special case: its allowed set derives dynamically
-  # from the baked registry (rc.multiplexers image label) via
-  # _config_mux_derive_allowed_set — not a static 4th column (rip-cage-61al.4,
-  # ADR-005 D12). The 4th column for session.multiplexer is intentionally absent
+  # session.multiplexer and network.egress.mediator are special cases: their
+  # allowed sets derive dynamically from the baked registry (rc.multiplexers /
+  # rc.mediators image labels) via _config_mux_derive_allowed_set /
+  # _config_mediator_derive_allowed_set — not a static 4th column (rip-cage-61al.4,
+  # ADR-005 D12). The 4th column for these fields is intentionally absent
   # from _config_schema_lines(); the dynamic derivation runs instead.
   local _ev_key _ev_type _ev_default _ev_allowed
   while IFS='|' read -r _ev_key _ev_type _ev_default _ev_allowed; do
@@ -8539,6 +8949,10 @@ _config_load_layer() {
     # Dynamic derivation for session.multiplexer (4th column intentionally absent).
     if [[ "$_ev_key" == "session.multiplexer" && -z "$_ev_allowed" ]]; then
       _ev_allowed=$(_config_mux_derive_allowed_set)
+    fi
+    # Dynamic derivation for network.egress.mediator (4th column intentionally absent).
+    if [[ "$_ev_key" == "network.egress.mediator" && -z "$_ev_allowed" ]]; then
+      _ev_allowed=$(_config_mediator_derive_allowed_set)
     fi
     [[ -z "$_ev_allowed" ]] && continue
     local _ev_path_arr _ev_val
@@ -8555,6 +8969,8 @@ _config_load_layer() {
     if [[ "$_ev_ok" -eq 0 ]]; then
       if [[ "$_ev_key" == "session.multiplexer" ]]; then
         echo "Error: '$file' has invalid value '${_ev_val}' for field '${_ev_key}'. '${_ev_val}' is not in the baked multiplexer registry (allowed: ${_ev_allowed}). Add the provider to your manifest and run \`rc build\` to bake it (see examples/ for provider definitions)." >&2
+      elif [[ "$_ev_key" == "network.egress.mediator" ]]; then
+        echo "Error: '$file' has invalid value '${_ev_val}' for field '${_ev_key}'. '${_ev_val}' is not in the baked mediator registry (allowed: ${_ev_allowed}). Add the provider to your manifest and run \`rc build\` to bake it (see examples/ for provider definitions)." >&2
       else
         echo "Error: '$file' has invalid value '${_ev_val}' for field '${_ev_key}'. Allowed values: ${_ev_allowed}." >&2
       fi

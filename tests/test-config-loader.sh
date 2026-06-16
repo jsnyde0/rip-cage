@@ -918,6 +918,68 @@ test_t42_session_multiplexer_invalid_aborts() {
 }
 
 # ---------------------------------------------------------------------------
+# network.egress.mediator config field (ADR-026 D5, rip-cage-ta1o.5.1)
+# T43: network.egress.mediator absent ⇒ default "none"
+# T44: network.egress.mediator: my-proxy ⇒ parses as my-proxy, prov=project
+#      (manifest declares "my-proxy" as MEDIATOR; image-absent path → manifest fallback)
+# T45: network.egress.mediator: unknown-mediator ⇒ aborts loud per ADR-001
+# ---------------------------------------------------------------------------
+
+test_t43_network_egress_mediator_default_none() {
+  # When network.egress.mediator is absent, it defaults to "none"
+  setup_sandbox "" ""
+  local out mediator
+  out=$(run_rc_config "show --json")
+  mediator=$(jq -r '.config.network.egress.mediator // "MISSING"' <<<"$out")
+  if [[ "$mediator" == "none" ]]; then
+    pass "T43 network.egress.mediator absent ⇒ default 'none'"
+  else
+    fail "T43 expected 'none' default, got: $mediator"
+  fi
+  teardown_sandbox
+}
+
+test_t44_network_egress_mediator_declared_parses() {
+  # network.egress.mediator: my-proxy parses correctly with project provenance.
+  # Isomorphic to T41 (session.multiplexer=tmux).
+  # RC_MEDIATOR_INSPECT_IMAGE is pinned to a nonexistent tag so
+  # _config_mediator_derive_allowed_set deterministically takes the image-absent
+  # path → manifest-enumeration fallback.
+  setup_sandbox "" "config-project-mediator-myproxy.yaml"
+  # Seed a tools.yaml with my-proxy as a MEDIATOR so the manifest-enumeration
+  # fallback accepts it (pre-build path; no real image needed for this test).
+  cp "${FIXTURES}/manifest-mediator-provider.yaml" "${TEST_HOME}/.config/rip-cage/tools.yaml"
+  local out mediator prov
+  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_MEDIATOR_INSPECT_IMAGE="rip-cage:nonexistent-isolation-t44" \
+    bash -c "cd '$TEST_WS' && '$RC' config show --json")
+  mediator=$(jq -r '.config.network.egress.mediator' <<<"$out")
+  prov=$(jq -r '.provenance["network.egress.mediator"]' <<<"$out")
+  if [[ "$mediator" == "my-proxy" && "$prov" == "project" ]]; then
+    pass "T44 network.egress.mediator=my-proxy parses from project, prov=project (my-proxy declared in manifest)"
+  else
+    fail "T44 expected mediator=my-proxy prov=project, got mediator=$mediator prov=$prov"
+  fi
+  teardown_sandbox
+}
+
+test_t45_network_egress_mediator_invalid_aborts() {
+  # network.egress.mediator: unknown-mediator-not-in-manifest ⇒ aborts loud per ADR-001
+  setup_sandbox "" "config-project-mediator-invalid.yaml"
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]]; then
+    pass "T45 network.egress.mediator=unknown aborts loud per ADR-021 D3"
+  else
+    fail "T45 expected non-zero exit for invalid network.egress.mediator, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -964,6 +1026,9 @@ test_t39_validate_yq_missing_with_global_config_emits_dependency_message
 test_t40_session_multiplexer_default_none
 test_t41_session_multiplexer_tmux_parses
 test_t42_session_multiplexer_invalid_aborts
+test_t43_network_egress_mediator_default_none
+test_t44_network_egress_mediator_declared_parses
+test_t45_network_egress_mediator_invalid_aborts
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

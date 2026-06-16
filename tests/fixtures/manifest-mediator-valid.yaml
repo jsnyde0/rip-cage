@@ -1,0 +1,10 @@
+version: 1
+tools:
+  - name: test-mediator
+    archetype: MEDIATOR
+    version_pin: "1.0.0"
+    run_as_uid: "rip-mediator"
+    hooks:
+      start: "test-mediator start --listen 127.0.0.1:8080"
+      health_check: "test-mediator health"
+      teardown: "test-mediator stop"
