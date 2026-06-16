@@ -13,7 +13,7 @@ When a decision evolves, edit the ADR in place and update this row. Drift betwee
 - **CLI / UX:** [003](ADR-003-agent-friendly-cli.md), [009](ADR-009-ux-overhaul.md), [011](ADR-011-shell-completions.md)
 - **Testing / CI:** [013](ADR-013-test-coverage.md)
 - **Egress / network:** [012](ADR-012-egress-firewall.md), [026](ADR-026-containment-mediation-identity.md)
-- **Composition / mediators:** [026](ADR-026-containment-mediation-identity.md), [005](ADR-005-ecosystem-tools.md), [006](ADR-006-multi-agent-architecture.md)
+- **Composition / mediators:** [026](ADR-026-containment-mediation-identity.md), [005](ADR-005-ecosystem-tools.md), [006](ADR-006-multi-agent-architecture.md), [027](ADR-027-agent-substrate-projection.md)
 - **SSH / identity:** [014](ADR-014-push-less-cage.md), [017](ADR-017-ssh-agent-forwarding-default.md), [018](ADR-018-macos-ssh-agent-discovery.md), [020](ADR-020-ssh-identity-routing.md), [022](ADR-022-ssh-allowlist.md)
 - **Auth / credentials:** [010](ADR-010-auth-refresh.md)
 - **Config substrate:** [021](ADR-021-layered-rip-cage-config.md), [016](ADR-016-cage-host-network-awareness.md)
@@ -21,7 +21,7 @@ When a decision evolves, edit the ADR in place and update this row. Drift betwee
 - **Toolchain provisioning:** [005](ADR-005-ecosystem-tools.md), [015](ADR-015-mise-toolchain-provisioning.md)
 - **Release / open-source:** [008](ADR-008-open-source-publication.md)
 - **Multi-agent:** [006](ADR-006-multi-agent-architecture.md)
-- **pi-coding-agent:** [019](ADR-019-pi-coding-agent-support.md)
+- **pi-coding-agent:** [019](ADR-019-pi-coding-agent-support.md), [027](ADR-027-agent-substrate-projection.md)
 
 ## All ADRs
 
@@ -53,3 +53,4 @@ When a decision evolves, edit the ADR in place and update this row. Drift betwee
 | [024](ADR-024-prompt-injection-threat-model.md) | Prompt-Injection Threat Model | threat-model | Accepted | Names the threat class: a non-adversarial agent following hostile instructions in content |
 | [025](ADR-025-host-adoptable-dcg-policy.md) | Host-Adoptable DCG Policy Layer | safety | Proposed | Additive-only DCG policy via `.rip-cage.yaml`; baked core floor uncrossable; CWD-anchor wrapper + pinned DCG_CONFIG close the `/workspace/.dcg.toml` self-disable hole |
 | [026](ADR-026-containment-mediation-identity.md) | Containment + Delegated Mediation Seam | containers / egress | Accepted (D5 revised 2026-06-16) | rip-cage = containment (controls WHERE traffic goes + guarantees the chokepoint), delegates mediation (WHAT is said — L7 policy, credential injection) to a composed external mediator; layers sorted by maintenance drift-rate; standalone = accident-containment, exfil-grade needs composition. **D5: mediation is a composable-provider seam isomorphic to the session-multiplexer pattern** — `network.egress.mediator` (default none, manifest-derived allowed-set) + a MEDIATOR archetype + the `network.http.forward_to` handoff; push-side so the floor is uncrossable; bundles nothing (mitmproxy = validation target, iron-proxy = recommended adopt; clawpatrol reclassified to alternative appliance — WG-only ingress can't plug the seam). D5 EXPLORATORY pending the mitmproxy in-cage E4 validation |
+| [027](ADR-027-agent-substrate-projection.md) | Agent-Substrate Projection into the Cage | pi-agent / composition | Proposed (D1 FIRM 2026-06-16) | What host agent-substrate is admissible into a cage and how it's projected. **D1 (FIRM): admission rests on containment + read-only host-ownership, not on excluding executable code** — skills (incl. scripts), prompts, roles, AND extensions are admissible read-only; config/credentials/runtime-state stay cage-owned; generalizes ADR-019 D1 ("auth.json + read-only host-owned substrate"). D2 (FLEXIBLE): pi instruction-content + the `subagent` extension projected as bundled-agent cage-infra, manifest-derived loop (D12-clean), symmetric with CC — acknowledged interim debt. D3 (EXPLORATORY): composable CONTENT-MOUNT archetype + fail-closed floor-protection validator carries all agents' substrate incl. extensions (isomorphic to mux/mediator seams). Sibling: rip-cage-olen (agent-writable guard) |
