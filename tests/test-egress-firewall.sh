@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# test-egress-firewall.sh — in-cage egress checks (rip-cage-ta1o.1: pure destination router).
+#
+# Adapted for the pure SNI destination router:
+#   - No TLS decryption, no CA, no per-host leaf cert.
+#   - Destination denial = TCP reset / connection refused (not HTTP 403 body).
+#   - Cert-absence assertion: no rip-cage CA in system trust store.
+#   - Anthropic API: real upstream cert presented (not intercepted by MITM).
+#   - IOC-floor denial: connection-level, not HTTP-level.
 set -euo pipefail
 PASS=0
 FAIL=0
@@ -16,20 +24,20 @@ check() {
   fi
 }
 
-echo "=== Egress Firewall Checks ==="
+echo "=== Egress Firewall Checks (pure destination router) ==="
 echo ""
 
 # Check egress-off state (positive assertions when firewall is disabled).
-# Design doc specifies: no iptables rules, no proxy, direct HTTPS works.
+# Design doc specifies: no iptables rules, no router, direct HTTPS works.
 if [[ ! -f /etc/rip-cage/firewall-env ]]; then
   echo "-- Firewall is disabled (RIP_CAGE_EGRESS=off) --"
   echo ""
 
-  # Egress-off check A: no mitmdump process running
-  if pgrep -u rip-proxy mitmdump >/dev/null 2>/dev/null; then
-    check "No mitmdump process (egress-off)" "fail" "mitmdump running unexpectedly"
+  # Egress-off check A: no router process running
+  if pgrep -u rip-proxy python3 >/dev/null 2>/dev/null; then
+    check "No router process (egress-off)" "fail" "python3 router running unexpectedly"
   else
-    check "No mitmdump process (egress-off)" "pass"
+    check "No router process (egress-off)" "pass"
   fi
 
   # Egress-off check B: no REDIRECT rule in nat OUTPUT chain
@@ -39,14 +47,14 @@ if [[ ! -f /etc/rip-cage/firewall-env ]]; then
     check "No iptables REDIRECT rule (egress-off)" "pass"
   fi
 
-  # Egress-off check C: direct HTTPS to Anthropic API works (no proxy intercept)
+  # Egress-off check C: direct HTTPS to Anthropic API works (no router)
   direct_code=$(curl -s -o /dev/null -w '%{http_code}' \
     --max-time 10 \
     https://api.anthropic.com/v1/models 2>/dev/null || true)
   if [[ "$direct_code" == "401" ]] || [[ "$direct_code" == "200" ]] || [[ "$direct_code" == "403" ]]; then
-    check "Direct HTTPS works without proxy (egress-off)" "pass" "HTTP $direct_code"
+    check "Direct HTTPS works without router (egress-off)" "pass" "HTTP $direct_code"
   else
-    check "Direct HTTPS works without proxy (egress-off)" "fail" "HTTP $direct_code (expected 401/200/403)"
+    check "Direct HTTPS works without router (egress-off)" "fail" "HTTP $direct_code (expected 401/200/403)"
   fi
 
   echo ""
@@ -54,92 +62,90 @@ if [[ ! -f /etc/rip-cage/firewall-env ]]; then
   exit "$(( FAIL > 0 ? 1 : 0 ))"
 fi
 
-echo "-- Proxy --"
+echo "-- Router Process --"
 
-# Check 1: Proxy process running as rip-proxy user
-if pgrep -u rip-proxy mitmdump >/dev/null 2>/dev/null; then
-  check "mitmproxy process running (rip-proxy user)" "pass"
+# Check 1: Router process running as rip-proxy user
+if pgrep -u rip-proxy python3 >/dev/null 2>/dev/null; then
+  check "SNI router process running (rip-proxy user)" "pass"
 else
-  check "mitmproxy process running (rip-proxy user)" "fail" "no mitmdump process for rip-proxy"
+  check "SNI router process running (rip-proxy user)" "fail" "no python3 router process for rip-proxy"
 fi
 
-# Check 2: Proxy listening on :8080
-# mitmproxy in transparent mode won't respond to a plain HTTP GET to 127.0.0.1:8080
-# (it expects intercepted traffic, not direct proxy-style requests). So we check the
-# socket is in LISTEN state via /proc/net/tcp. 0100007F = 127.0.0.1, 1F90 = 8080, 0A = LISTEN.
+# Check 2: Router listening on :8080
+# Check the socket is in LISTEN state via /proc/net/tcp.
+# 0100007F = 127.0.0.1, 1F90 = 8080, 0A = LISTEN.
 if grep -qE '^\s*[0-9]+:\s+0100007F:1F90\s+[0-9A-F]+:[0-9A-F]+\s+0A' /proc/net/tcp; then
-  check "Proxy listening on 127.0.0.1:8080" "pass"
+  check "Router listening on 127.0.0.1:8080" "pass"
 else
-  check "Proxy listening on 127.0.0.1:8080" "fail" "no LISTEN socket on 127.0.0.1:8080"
+  check "Router listening on 127.0.0.1:8080" "fail" "no LISTEN socket on 127.0.0.1:8080"
 fi
 
 echo ""
-echo "-- CA Trust --"
+echo "-- Cert Absence (no MITM CA) --"
 
-# Check 3: Proxy CA cert installed in system trust store
+# Check 3: NO rip-cage CA cert in system trust store (pure router has no CA)
+# Acceptance #2: assert cert ABSENCE — proves MITM is actually gone.
 if [[ -f /usr/local/share/ca-certificates/rip-cage-proxy.crt ]]; then
-  check "Proxy CA cert installed" "pass"
+  check "No rip-cage CA cert in system trust store (MITM absent)" "fail" \
+    "rip-cage-proxy.crt found — CA still present, MITM not fully removed"
 else
-  check "Proxy CA cert installed" "fail" "missing /usr/local/share/ca-certificates/rip-cage-proxy.crt"
+  check "No rip-cage CA cert in system trust store (MITM absent)" "pass"
 fi
 
-# Check 4: CA cert verifiable against system bundle
-if openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt \
-     /usr/local/share/ca-certificates/rip-cage-proxy.crt >/dev/null 2>/dev/null; then
-  check "CA cert in system bundle" "pass"
+# Check 4: /etc/rip-cage/ca directory should not exist or be empty (no CA keypair)
+if [[ -d /etc/rip-cage/ca ]] && ls /etc/rip-cage/ca/rip-cage-proxy-ca.* 2>/dev/null | grep -q .; then
+  check "No CA keypair present (/etc/rip-cage/ca empty)" "fail" \
+    "CA keypair files found in /etc/rip-cage/ca — MITM CA still present"
 else
-  check "CA cert in system bundle" "fail" "openssl verify failed"
+  check "No CA keypair present (/etc/rip-cage/ca empty)" "pass"
 fi
 
-# Check 5: NODE_EXTRA_CA_CERTS is set in environment
-if [[ -n "${NODE_EXTRA_CA_CERTS:-}" ]]; then
-  check "NODE_EXTRA_CA_CERTS is set" "pass" "$NODE_EXTRA_CA_CERTS"
+# Check 5: NO mitmproxy confdir
+if [[ -d /etc/rip-cage/mitmproxy ]]; then
+  check "No mitmproxy confdir (pure router)" "fail" \
+    "/etc/rip-cage/mitmproxy exists — mitmproxy remnant"
 else
-  check "NODE_EXTRA_CA_CERTS is set" "fail" "env var not exported (was init-rip-cage.sh run after init-firewall.sh?)"
+  check "No mitmproxy confdir (pure router)" "pass"
 fi
 
-# Check 6: Anthropic API reachable through MITM proxy (D4 regression guard)
-# 401 = auth required (valid HTTP response, TLS succeeded through proxy)
-# 200 or 403 = also fine
-# 000 = curl transport error (TLS failure or connection timeout -- proxy broke TLS)
+echo ""
+echo "-- Destination Routing (allowed host transparency) --"
+
+# Check 6: Allowed host — real upstream cert presented (not intercepted).
+# In block mode the Anthropic API must be in allowed_hosts; in legacy mode it passes freely.
+# The pure router passes TLS bytes unchanged, so the upstream cert is real.
+# We check curl can complete TLS using the SYSTEM CA bundle (not a custom CA).
+# 401 = auth required (valid HTTP response, real TLS succeeded); 200/403 also fine.
+_egress_mode=$(grep -m1 '^mode:' /etc/rip-cage/egress-rules.yaml 2>/dev/null | awk '{print $2}' || true)
 anthropic_code=$(curl -s -o /dev/null -w '%{http_code}' \
   --max-time 10 \
-  --cacert /etc/ssl/certs/ca-certificates.crt \
   https://api.anthropic.com/v1/models 2>/dev/null || true)
 if [[ "$anthropic_code" == "401" ]] || [[ "$anthropic_code" == "200" ]] || [[ "$anthropic_code" == "403" ]]; then
-  check "Anthropic API reachable via MITM (D4)" "pass" "HTTP $anthropic_code"
+  check "Anthropic API reachable via router (real cert, no MITM)" "pass" "HTTP $anthropic_code"
 else
-  check "Anthropic API reachable via MITM (D4)" "fail" "HTTP $anthropic_code (expected 401/200/403; 000 = TLS error)"
+  check "Anthropic API reachable via router (real cert, no MITM)" "fail" \
+    "HTTP $anthropic_code (expected 401/200/403; 000 = connection refused by router or network)"
 fi
 
 echo ""
-echo "-- Denylist Enforcement --"
+echo "-- Denylist Enforcement (destination-level) --"
 
-# Check 7: Known-denied POST returns 403
-denied_code=$(curl -s -o /dev/null -w '%{http_code}' \
+# Check 7: Known-denied IOC host — connection refused/reset (not HTTP 403)
+# Pure router: destination denial = TCP RST, curl exits non-zero with exit code
+# 7 (CURLE_COULDNT_CONNECT) or similar — not 403.
+denied_exit=0
+curl -s -o /dev/null -w '%{http_code}' \
   --max-time 10 \
-  -X POST \
-  https://webhook.site/test-rip-cage-probe 2>/dev/null || true)
-if [[ "$denied_code" == "403" ]]; then
-  check "Known-denied POST blocked (webhook.site)" "pass" "HTTP 403"
+  https://webhook.site/test-rip-cage-probe 2>/dev/null || denied_exit=$?
+if [[ "$denied_exit" -ne 0 ]]; then
+  check "Known-denied host refused at destination level (webhook.site)" "pass" "curl exit=$denied_exit"
 else
-  check "Known-denied POST blocked (webhook.site)" "fail" "HTTP $denied_code (expected 403)"
+  check "Known-denied host refused at destination level (webhook.site)" "fail" \
+    "curl exit=0 — destination not denied (expected non-zero exit)"
 fi
 
-# Check 8: Denial response has X-Rip-Cage-Denied header
-denied_header=$(curl -s -D - -o /dev/null \
-  --max-time 10 \
-  -X POST \
-  https://webhook.site/test-rip-cage-probe 2>/dev/null | grep -i 'X-Rip-Cage-Denied' || true)
-if [[ -n "$denied_header" ]]; then
-  check "403 response has X-Rip-Cage-Denied header" "pass" "$denied_header"
-else
-  check "403 response has X-Rip-Cage-Denied header" "fail" "header missing"
-fi
-
-# Check 9: Known-allowed GET succeeds (method asymmetry -- reads allowed)
-# 403 is also accepted: GitHub API returns 403 on rate limit (not a rip-cage denial
-# -- use absence of X-Rip-Cage-Denied header to confirm proxy didn't block it).
+# Check 8: Known-allowed GET succeeds
+# 403 is also accepted: server-side auth failure, not router denial.
 allowed_code=$(curl -s -o /dev/null -w '%{http_code}' \
   --max-time 10 \
   https://api.github.com/ 2>/dev/null || true)
@@ -149,11 +155,24 @@ else
   check "Known-allowed GET succeeds (api.github.com)" "fail" "HTTP $allowed_code (expected 200/30x/403)"
 fi
 
+# Check 9: Method symmetry — POST to allowed host is not blocked (no write-gate)
+# Pure router: POST = GET for destination purposes. POST to an allowed host must succeed.
+post_exit=0
+post_code=$(curl -s -o /dev/null -w '%{http_code}' \
+  --max-time 10 \
+  -X POST \
+  https://api.github.com/ 2>/dev/null) || post_exit=$?
+if [[ "$post_code" =~ ^(200|201|301|302|403|404|405|422)$ ]]; then
+  check "Method symmetry: POST to allowed host succeeds (no write-gate)" "pass" "HTTP $post_code"
+else
+  check "Method symmetry: POST to allowed host succeeds (no write-gate)" "fail" \
+    "HTTP $post_code exit=$post_exit (expected non-connection-refused response)"
+fi
+
 echo ""
 echo "-- iptables Rules --"
 
 # Check 10: REDIRECT rule present in nat OUTPUT chain
-# Agent has sudo permission for 'iptables -t nat -L OUTPUT -n' (set in Bead 1 sudoers).
 if sudo iptables -t nat -L OUTPUT -n 2>/dev/null | grep -q REDIRECT; then
   check "iptables REDIRECT rule present" "pass"
 else
@@ -161,8 +180,6 @@ else
 fi
 
 # Check 11: UDP DROP rule present for port 443 (HTTP/3 block)
-# Grep for 'udp' specifically to distinguish from a TCP DROP (which would also match
-# "DROP.*dpt:443" but would not block QUIC/HTTP3).
 if sudo iptables -L OUTPUT -n 2>/dev/null | grep -q "udp.*dpt:443"; then
   check "iptables UDP DROP rule for port 443 present" "pass"
 else
@@ -170,11 +187,8 @@ else
 fi
 
 # Check 12: Agent cannot modify iptables rules without sudo (ADR-002 D12)
-# Run iptables -F WITHOUT sudo -- should fail with "Operation not permitted"
-# Note: if this check somehow passes (iptables flushed), checks 10 and 11 above
-# already ran and their pass/fail results are already recorded.
 if iptables -t nat -F OUTPUT 2>/dev/null; then
-  check "Agent cannot flush iptables rules (D12)" "fail" "iptables -F succeeded as agent -- REDIRECT rule is now gone"
+  check "Agent cannot flush iptables rules (D12)" "fail" "iptables -F succeeded as agent — REDIRECT rule is now gone"
 else
   check "Agent cannot flush iptables rules (D12)" "pass" "iptables -F denied as expected"
 fi
@@ -182,7 +196,7 @@ fi
 echo ""
 echo "-- Audit Log --"
 
-# Check 13: JSONL log entry written for the denied request from Check 7
+# Check 13: JSONL log entry written for the denied connection from Check 7
 if [[ -f /workspace/.rip-cage/egress.log ]]; then
   last_entry=$(tail -1 /workspace/.rip-cage/egress.log 2>/dev/null || true)
   if python3 -c "import json, sys; d=json.loads(sys.argv[1]); assert 'rule_id' in d and 'timestamp' in d" \
@@ -197,12 +211,9 @@ else
 fi
 
 echo ""
-echo "-- Perimeter (IPv6, WebSocket, non-HTTP, DoH) --"
+echo "-- Perimeter (IPv6, QUIC) --"
 
 # Check 14: IPv6 egress blocked (active probe)
-# Tautology guard: do NOT use "ip6tables rules exist OR ::1 only" -- the container
-# has only ::1 and init-firewall.sh has zero ip6tables references, so that OR
-# evaluates trivially. An active curl -6 probe gives a real assertion.
 if ! command -v curl >/dev/null 2>&1; then
   check "IPv6 egress blocked (active probe)" "fail" "curl unavailable"
 else
@@ -216,39 +227,9 @@ else
   fi
 fi
 
-# Check 15a/15b: WebSocket upgrade to denied host returns 403 + X-Rip-Cage-Denied
-# A WebSocket upgrade starts as an HTTP/1.1 request with Upgrade/Connection
-# headers; mitmproxy must intercept pre-upgrade and apply the denylist.
-ws_headers=$(curl -s -D - -o /dev/null \
-  --max-time 10 \
-  --http1.1 \
-  -H "Upgrade: websocket" \
-  -H "Connection: Upgrade" \
-  https://webhook.site/rip-cage-ws-probe 2>/dev/null || true)
-ws_code=$(echo "$ws_headers" | head -1 | grep -oE '[0-9]{3}' | head -1)
-ws_denied=$(echo "$ws_headers" | grep -i 'X-Rip-Cage-Denied' || true)
-if [[ "$ws_code" == "403" ]]; then
-  check "WebSocket upgrade to denied host returns 403" "pass" "HTTP $ws_code"
-else
-  check "WebSocket upgrade to denied host returns 403" "fail" \
-    "HTTP ${ws_code:-unknown} (expected 403)"
-fi
-if [[ -n "$ws_denied" ]]; then
-  check "WebSocket 403 has X-Rip-Cage-Denied header" "pass"
-else
-  check "WebSocket 403 has X-Rip-Cage-Denied header" "fail" "header missing"
-fi
-
-# Check 16: Non-HTTP outbound port iptables policy (ADR-013 D4, evolved per ADR-012 D8).
-# D4 direction: non-HTTP egress stays allowed EXCEPT TCP-22 in block mode (ADR-012 D8
-# evolved: TCP-22 scoped to network.allowed_hosts when mode=block).
-# Rule-level assertion — do NOT use nc/curl probes for port 22/25 (flaky in hosted Docker).
+# Check 15: Non-HTTP TCP ports not DROP'd (D4 policy)
 filter_rules=$(sudo iptables -L OUTPUT -n 2>/dev/null || true)
-# TCP-22 is allowed as a DROP target in block mode (ADR-012 D8): exclude it from
-# the check when block-mode is active (mode=block in egress-rules.yaml).
-_egress_mode=$(grep -m1 '^mode:' /etc/rip-cage/egress-rules.yaml 2>/dev/null | awk '{print $2}' || true)
 if [[ "$_egress_mode" == "block" ]]; then
-  # In block mode, TCP-22 DROP is expected. Only check other non-HTTP ports.
   if echo "$filter_rules" | grep -qE 'DROP.*tcp.*dpt:(25|587|993|2375|5432|6379)'; then
     bad_rule=$(echo "$filter_rules" | grep -E 'DROP.*tcp.*dpt:(25|587|993|2375|5432|6379)' | head -1)
     check "Non-HTTP TCP ports not DROP'd (D4, excl TCP-22 in block mode)" "fail" "unexpected DROP rule: $bad_rule"
@@ -256,7 +237,6 @@ if [[ "$_egress_mode" == "block" ]]; then
     check "Non-HTTP TCP ports not DROP'd (D4, excl TCP-22 in block mode)" "pass"
   fi
 else
-  # Legacy/observe mode: TCP-22 should not be DROP'd either.
   if echo "$filter_rules" | grep -qE 'DROP.*tcp.*dpt:(22|25|53|587|993|2375|5432|6379)'; then
     bad_rule=$(echo "$filter_rules" | grep -E 'DROP.*tcp.*dpt:(22|25|53|587|993|2375|5432|6379)' | head -1)
     check "Non-HTTP TCP ports not DROP'd (D4=allowed)" "fail" "unexpected DROP rule: $bad_rule"
@@ -265,9 +245,7 @@ else
   fi
 fi
 
-# Check 16b: TCP-22 IP allowlist in block mode (ADR-012 D8 evolved).
-# In block mode, we expect: ACCEPT rules for whitelisted IPs + DROP rule for TCP-22.
-# In legacy/observe mode, no TCP-22 rules expected.
+# Check 15b: TCP-22 IP allowlist in block mode (ADR-012 D8 evolved).
 if [[ "$_egress_mode" == "block" ]]; then
   if echo "$filter_rules" | grep -qE 'DROP.*tcp.*dpt:22'; then
     check "TCP-22 DROP rule present (block mode, ADR-012 D8 evolved)" "pass"
@@ -276,17 +254,21 @@ if [[ "$_egress_mode" == "block" ]]; then
   fi
 fi
 
-# Check 17: DNS-over-HTTPS to dns.google denied (denylist)
-# Use the DoH URL form, not 8.8.8.8:443 directly — we assert the L7 denylist,
-# not L3 reachability.
-doh_code=$(curl -s -o /dev/null -w '%{http_code}' \
-  --max-time 10 \
-  "https://dns.google/dns-query?name=example.com&type=A" 2>/dev/null || true)
-if [[ "$doh_code" == "403" ]]; then
-  check "DNS-over-HTTPS to dns.google denied (denylist)" "pass" "HTTP $doh_code"
-else
-  check "DNS-over-HTTPS to dns.google denied (denylist)" "fail" \
-    "HTTP ${doh_code:-000} (expected 403)"
+# Check 16: DoH denial — dns.google denied in block mode (default-deny since not in allowed_hosts)
+# In legacy mode: checked via IOC rule (nextdns-doh host_suffix; dns.google/cloudflare removed from floor).
+# In block mode: dns.google is not in allowed_hosts → destination denied by default-deny.
+# In either case, expect connection refused (TCP RST), not HTTP.
+if [[ "$_egress_mode" == "block" ]]; then
+  doh_exit=0
+  curl -s -o /dev/null -w '%{http_code}' \
+    --max-time 10 \
+    "https://dns.google/dns-query?name=example.com&type=A" 2>/dev/null || doh_exit=$?
+  if [[ "$doh_exit" -ne 0 ]]; then
+    check "DoH to dns.google denied (block mode, default-deny)" "pass" "curl exit=$doh_exit"
+  else
+    check "DoH to dns.google denied (block mode, default-deny)" "fail" \
+      "curl exit=0 — dns.google not denied (expected connection refused)"
+  fi
 fi
 
 echo ""

@@ -23,6 +23,7 @@ from rip_cage_egress import (
     SELFTEST_HOSTNAME,
     SELFTEST_MARKER_HEADER,
     SELFTEST_MARKER_VALUE,
+    SELFTEST_TLS_MARKER,
     handle_selftest_request,
 )
 
@@ -121,7 +122,6 @@ class TestSelftestEndpoint(unittest.TestCase):
             "version": 2,
             "mode": "block",
             "allowed_hosts": ["api.anthropic.com"],
-            "writable_hosts": [],
             "rules": [],
         }
         result = decide("evil.example.com", "GET", "/", doc)
@@ -135,7 +135,6 @@ class TestSelftestEndpoint(unittest.TestCase):
             "version": 2,
             "mode": "block",
             "allowed_hosts": ["api.anthropic.com"],
-            "writable_hosts": [],
             "rules": [],
         }
         result = decide("api.anthropic.com", "GET", "/v1/messages", doc)
@@ -160,6 +159,45 @@ class TestSelftestConstants(unittest.TestCase):
         """SELFTEST_MARKER_VALUE must be 'on-path'."""
         self.assertEqual(SELFTEST_MARKER_VALUE, "on-path",
                          f"Expected 'on-path', got {SELFTEST_MARKER_VALUE!r}")
+
+
+class TestTlsSelftestMarker(unittest.TestCase):
+    """Verify the port-443 on-path TLS selftest marker (F5 — rip-cage-ta1o.1 fix).
+
+    The router sends SELFTEST_TLS_MARKER (a distinctive plaintext byte sequence)
+    before closing a port-443 connection whose SNI matches the selftest hostname.
+    This lets the startup selftest prove the port-443 REDIRECT is also working,
+    without requiring a full TLS handshake.
+    """
+
+    def test_selftest_tls_marker_is_bytes(self):
+        """SELFTEST_TLS_MARKER must be a bytes object."""
+        self.assertIsInstance(SELFTEST_TLS_MARKER, bytes,
+                              "SELFTEST_TLS_MARKER must be bytes, not str")
+
+    def test_selftest_tls_marker_contains_distinctive_string(self):
+        """SELFTEST_TLS_MARKER must contain the distinctive 'rip-cage-selftest:443:on-path' string."""
+        self.assertIn(b"rip-cage-selftest:443:on-path", SELFTEST_TLS_MARKER,
+                      "SELFTEST_TLS_MARKER must contain 'rip-cage-selftest:443:on-path'")
+
+    def test_selftest_tls_marker_ends_with_crlf(self):
+        """SELFTEST_TLS_MARKER must end with CRLF (shell-readable line delimiter)."""
+        self.assertTrue(SELFTEST_TLS_MARKER.endswith(b"\r\n"),
+                        "SELFTEST_TLS_MARKER must end with \\r\\n for shell-readable parsing")
+
+    def test_selftest_tls_marker_is_not_valid_tls(self):
+        """SELFTEST_TLS_MARKER must not start with TLS record byte 0x16.
+
+        The marker is intentionally not a valid TLS record so the startup probe
+        can detect it without a TLS library.
+        """
+        self.assertNotEqual(SELFTEST_TLS_MARKER[0:1], b"\x16",
+                            "SELFTEST_TLS_MARKER must not start with 0x16 (TLS record byte)")
+
+    def test_selftest_tls_marker_is_short(self):
+        """SELFTEST_TLS_MARKER must be short (< 256 bytes) for fast startup probing."""
+        self.assertLess(len(SELFTEST_TLS_MARKER), 256,
+                        f"SELFTEST_TLS_MARKER too long: {len(SELFTEST_TLS_MARKER)} bytes")
 
 
 if __name__ == "__main__":

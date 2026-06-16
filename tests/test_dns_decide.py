@@ -44,7 +44,6 @@ def _block_doc(allowed_hosts):
         "version": 2,
         "mode": "block",
         "allowed_hosts": allowed_hosts,
-        "writable_hosts": [],
         "rules": [],
     }
 
@@ -55,7 +54,6 @@ def _observe_doc(allowed_hosts):
         "version": 2,
         "mode": "observe",
         "allowed_hosts": allowed_hosts,
-        "writable_hosts": [],
         "rules": [],
     }
 

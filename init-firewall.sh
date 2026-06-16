@@ -77,20 +77,20 @@ _read_egress_mode() {
 }
 
 # _classify_selftest_probe CURL_EXIT HTTP_CODE MARKER_PRESENT
-# Pure classifier for the startup egress self-test (rip-cage-fft).
+# Pure classifier for the startup egress self-test (rip-cage-fft / rip-cage-ta1o.1).
 # Inputs:
 #   CURL_EXIT     — curl exit code
 #   HTTP_CODE     — HTTP status code (string, e.g. "200", "403", "000")
 #   MARKER_PRESENT — marker header value if present, empty string if absent
 # Output (stdout): ENFORCED | BYPASSED | INCONCLUSIVE
 #
-# Classification logic:
+# Classification logic (pure-router version):
 #   Marker present (non-empty MARKER_PRESENT)          => ENFORCED
-#     The proxy generated the marker locally (I1); this is the confident on-path signal.
+#     The router generated the marker locally (I1); this is the confident on-path signal.
 #   Any definite response (non-000 http_code, no marker) => BYPASSED
-#     The direct path produced a real response — not our proxy, bypass confirmed.
+#     The direct path produced a real response — not our router, bypass confirmed.
 #   Exit 28 (timeout) or 7 (conn-refused), 000 http_code => BYPASSED
-#     The probe dead-ended at the unroutable IP (I2); a working proxy would have
+#     The probe dead-ended at the unroutable IP (I2); a working router would have
 #     returned the marker (I1), so this is a confident bypass, not ambiguity.
 #   Exit 6 (DNS resolution failed)                      => INCONCLUSIVE
 #     --resolve should make DNS irrelevant, but DNS sidecar absence or curl
@@ -99,15 +99,16 @@ _read_egress_mode() {
 #     Genuinely ambiguous: something is on the path but produced no response.
 #     Warn-and-proceed (never-false-alarm requirement).
 #
-# INCONCLUSIVE is near-empty by construction (I1+I2 invariants): the ENFORCED
-# path cannot time out (answered locally by the already-up proxy, no round-trip),
-# so residual INCONCLUSIVE covers only edge-case curl/env anomalies.
+# Note: TLS error exit codes (35/51/58/59/60/77/83) are no longer expected
+# since the pure router does NOT terminate TLS — the probe uses plain HTTP (port 80).
+# They remain mapped to BYPASSED (a real bypass would give a TLS error from the
+# remote host), but should not occur in practice.
 _classify_selftest_probe() {
   local curl_exit="$1"
   local http_code="$2"
   local marker_present="$3"
 
-  # Marker present => proxy is on-path (confident positive signal, I1)
+  # Marker present => router is on-path (confident positive signal, I1)
   if [[ -n "$marker_present" ]]; then
     printf 'ENFORCED\n'
     return 0
@@ -123,7 +124,7 @@ _classify_selftest_probe() {
   case "$curl_exit" in
     28|7)
       # Timeout (28) or connection refused (7) against the unroutable target:
-      # a working proxy would have intercepted the connection and returned the marker.
+      # a working router would have intercepted the connection and returned the marker.
       # No intercept => BYPASSED (confident, per I2: unroutable target dead-ends).
       printf 'BYPASSED\n'
       ;;
@@ -137,20 +138,10 @@ _classify_selftest_probe() {
       printf 'INCONCLUSIVE\n'
       ;;
     35|51|58|59|60|77|83)
-      # TLS/cert-handshake failure codes: curl could not establish a trusted TLS
-      # session with the proxy. This is AMBIGUOUS — the rip-cage CA may have failed
-      # to install (e.g. update-ca-certificates not yet run, or a timing issue),
-      # not necessarily a bypass. A working proxy with a missing CA would produce
-      # exactly this outcome, so mapping to BYPASSED would false-alarm a healthy-but-
-      # degraded cage. Never-false-alarm contract wins: INCONCLUSIVE (warn-and-proceed).
-      #   35  SSL connect error (generic TLS handshake failure)
-      #   51  peer certificate / fingerprint mismatch
-      #   58  local client certificate problem
-      #   59  couldn't use specified SSL cipher
-      #   60  SSL peer certificate or SSH remote key was not OK (CA verify failed)
-      #   77  problem with CA cert / cert bundle
-      #   83  issuer check failed (TLS certificate chain validation)
-      printf 'INCONCLUSIVE\n'
+      # TLS/cert-handshake failure codes: these should not occur with plain HTTP
+      # selftest probe, but map to BYPASSED defensively (a real bypass to 192.0.2.1
+      # would not produce a TLS response).
+      printf 'BYPASSED\n'
       ;;
     *)
       # Any other curl error against the unroutable target: the direct path failed
@@ -162,7 +153,12 @@ _classify_selftest_probe() {
 }
 
 # _run_startup_selftest RULES_FILE
-# Runs the startup EFFECT self-test guard (rip-cage-fft).
+# Runs the startup EFFECT self-test guard (rip-cage-fft / rip-cage-ta1o.1).
+#
+# Pure-router version:
+#   The probe uses plain HTTP (port 80), NOT HTTPS. The pure router intercepts
+#   plain-HTTP requests and returns the marker locally for the selftest hostname,
+#   without any TLS handshake or CA involvement.
 #
 # Mode-awareness:
 #   - observe mode: skip (logs "skipped: observe mode", exits 0)
@@ -170,29 +166,19 @@ _classify_selftest_probe() {
 #   - block mode or legacy mode: run probe; BYPASSED => exit non-zero (refuse to start)
 #
 # Probe mechanism:
-#   Curls the reserved self-test hostname over HTTPS, pinned to the RFC 5737
-#   reserved (guaranteed-unroutable) address 192.0.2.1 via --resolve (no DNS/sidecar
-#   involved; --resolve pre-pins the IP before TLS/TCP).
-#   Uses HTTPS (port 443) to exercise the same interception path real traffic uses.
-#   The system CA bundle (updated by update-ca-certificates in Step 2) trusts the
-#   MITM cert, so no special --cacert flag is needed.
+#   Curls the reserved self-test hostname over plain HTTP (port 80), pinned to the
+#   RFC 5737 reserved (guaranteed-unroutable) address 192.0.2.1 via --resolve
+#   (no DNS/sidecar involved; --resolve pre-pins the IP before TCP connect).
+#   Uses HTTP (not HTTPS) since the pure router cannot decrypt TLS.
 #
 #   WHY 192.0.2.1 works (invariant I2 preserved):
-#   mitmproxy is started with --set connection_strategy=lazy (rip-proxy-start.sh),
-#   which defers the upstream TCP connect until AFTER the request() hook runs.
-#   In lazy mode the proxy completes the client-side TLS handshake (minting a cert
-#   for the SNI from the rip-cage CA) without contacting 192.0.2.1 at all; the
-#   request() hook fires, sees the self-test hostname, returns the marker locally,
-#   and mitmproxy never attempts an upstream connect. Sub-ms, zero internet round-trip.
-#
-#   If the REDIRECT is absent (proxy bypassed), curl's connection to 192.0.2.1:443
-#   goes nowhere (RFC 5737 IP is unroutable by design) and times out (curl exit 28).
-#   A working proxy can NEVER produce this outcome — it would return the marker
-#   locally — so a timeout here is a CONFIDENT bypass signal (I2 holds).
-#
-#   This restores invariant I2 (no external-host dependency): the probe dead-ends
-#   at the guaranteed-unroutable IP when bypassed, not at a real host that might
-#   be temporarily unreachable (which would false-alarm against a healthy cage).
+#   The router intercepts plain-HTTP connections and responds to the selftest
+#   hostname locally, before attempting any upstream connect. So the marker is
+#   returned locally (I1).  When the REDIRECT is absent, curl's TCP connection
+#   to this IP goes nowhere (RFC 5737 IP is unroutable by design) and times out
+#   (curl exit 28). A working router can NEVER produce this outcome — it would
+#   return the marker locally — so a timeout here is a CONFIDENT bypass signal
+#   (I2 holds).
 #
 # NO production test hook: testability is achieved via a curl PATH-shim (a fake
 # curl on PATH returning canned output) and by controlling the rules file / mode.
@@ -219,16 +205,14 @@ _run_startup_selftest() {
   # block or legacy: run the probe
   local selftest_host="selftest.rip-cage.internal"
   # RFC 5737 reserved address — guaranteed unroutable by IANA assignment.
-  # With connection_strategy=lazy in rip-proxy-start.sh, the proxy completes the
-  # client-side TLS handshake and fires the request() hook WITHOUT first contacting
-  # this IP, so the marker is returned locally (I1).  When the REDIRECT is absent,
-  # curl's TCP connection to this IP goes nowhere and times out (I2: confident bypass).
-  # No external-host dependency: false-alarm on "real host temporarily down" is
-  # structurally impossible (the host is unroutable, not just down).
+  # The router intercepts the plain-HTTP request and responds locally (I1).
+  # When the REDIRECT is absent, curl's TCP connection to this IP times out (I2).
   local probe_ip="192.0.2.1"
-  local probe_url="https://${selftest_host}/"
+  # Plain HTTP (port 80) — the pure router handles HTTP natively.
+  # No TLS, no CA, no cert needed.
+  local probe_url="http://${selftest_host}/"
   local marker_header="x-rip-cage-selftest"
-  local probe_timeout=5  # seconds; proxy answers locally (<1ms), so 5s is generous
+  local probe_timeout=5  # seconds; router answers locally (<1ms), so 5s is generous
 
   # Real probe: curl with --resolve to pin IP, --max-time for the unroutable case.
   # Capture http_code via -w '%{http_code}' and write headers to a temp file
@@ -239,7 +223,7 @@ _run_startup_selftest() {
   local curl_exit=0
   local http_code
   http_code=$(curl -s \
-    --resolve "${selftest_host}:443:${probe_ip}" \
+    --resolve "${selftest_host}:80:${probe_ip}" \
     --max-time "${probe_timeout}" \
     -D "${tmpfile}" \
     -o /dev/null \
@@ -257,26 +241,143 @@ _run_startup_selftest() {
 
   case "$classification" in
     ENFORCED)
-      echo "rip-cage selftest: ENFORCED — proxy is on-path, egress firewall active"
-      return 0
+      echo "rip-cage selftest: port 80 ENFORCED — router is on-path for HTTP"
       ;;
     BYPASSED)
-      echo "ERROR: rip-cage selftest: BYPASSED — egress proxy is NOT on-path (silent fail-open detected)" >&2
-      echo "ERROR: The iptables REDIRECT rule may have silently no-op'd." >&2
+      echo "ERROR: rip-cage selftest: port 80 BYPASSED — egress router is NOT on-path (silent fail-open detected)" >&2
+      echo "ERROR: The iptables REDIRECT rule (port 80) may have silently no-op'd." >&2
       echo "ERROR: Likely cause: legacy x_tables interface absent on this kernel (6.18+) or iptables backend no-op." >&2
       echo "ERROR: Refusing to start cage in blocking posture with unenforceable firewall." >&2
       return 1
       ;;
     INCONCLUSIVE)
-      echo "WARNING: rip-cage selftest: INCONCLUSIVE — probe result ambiguous; warn-and-proceed (cage starts)" >&2
+      echo "WARNING: rip-cage selftest: port 80 INCONCLUSIVE — probe result ambiguous; warn-and-proceed (cage starts)" >&2
       echo "WARNING: This may indicate a curl/sidecar anomaly. Monitor egress.log for unexpected traffic." >&2
-      return 0
+      # Don't return here — also run the port-443 probe for completeness.
       ;;
     *)
-      echo "WARNING: rip-cage selftest: unrecognized classification '$classification'; warn-and-proceed" >&2
-      return 0
+      echo "WARNING: rip-cage selftest: port 80 unrecognized classification '$classification'; warn-and-proceed" >&2
       ;;
   esac
+
+  # --- Port-443 on-path proof (F5 — rip-cage-ta1o.1 adversarial review) ---
+  # Port 443 (HTTPS/TLS) is the dominant exfil path. A broken iptables REDIRECT
+  # that drops the port-443 half while keeping port-80 would pass the port-80 probe.
+  # Verify the router is also on-path for port 443 by sending a TLS-shaped connection
+  # (with SNI=selftest.rip-cage.internal) and checking for the distinctive marker bytes
+  # the router sends before closing (SELFTEST_TLS_MARKER from rip_cage_egress.py).
+  #
+  # Probe uses bash /dev/tcp or nc (both available in the image) pinned to probe_ip
+  # via an iptables REDIRECT (which is what we're testing). The router sees the SNI,
+  # recognises the selftest hostname, sends SELFTEST_TLS_MARKER, then closes.
+  #
+  # On bypass (REDIRECT missing): the connection to 192.0.2.1:443 goes to the
+  # unroutable IP and times out — the marker is never received (BYPASSED).
+  #
+  # We use bash /dev/tcp for the probe (no dependency on nc). But /dev/tcp cannot
+  # set a timeout; we use a subshell with `read -t`.
+  local tls_probe_marker="rip-cage-selftest:443:on-path"
+  local tls_probe_result=""
+  local tls_classification
+
+  # Attempt: open TCP to probe_ip:443 (REDIRECT will rewrite to 127.0.0.1:8080),
+  # send a minimal TLS ClientHello-shaped payload with the selftest SNI, and read
+  # the first line the router sends back.
+  # We build a minimal TLS ClientHello bytes as a Python one-liner (python3 is in image).
+  # The ClientHello includes SNI=selftest.rip-cage.internal so the router can extract it.
+  local tls443_out tls443_exit
+  tls443_out=""
+  tls443_exit=0
+  tls443_out=$(python3 -c "
+import socket, struct, sys, time
+
+HOST = '${probe_ip}'
+PORT = 443
+TIMEOUT = ${probe_timeout}
+SNI = b'${selftest_host}'
+
+# Build minimal TLS 1.0 ClientHello with SNI extension
+# SNI extension
+sni_name = SNI
+sni_ext = (
+    b'\\x00\\x00'  # extension type: SNI (0x0000)
+    + struct.pack('!H', len(sni_name) + 5)  # extension data length
+    + struct.pack('!H', len(sni_name) + 3)  # SNI list length
+    + b'\\x00'  # name type: host_name
+    + struct.pack('!H', len(sni_name))
+    + sni_name
+)
+# Random (32 bytes)
+random_bytes = b'\\x00' * 32
+# ClientHello body
+ch_body = (
+    b'\\x03\\x03'  # TLS version 1.2
+    + random_bytes
+    + b'\\x00'  # session id length 0
+    + b'\\x00\\x02'  # cipher suite length 2
+    + b'\\xc0\\x2b'  # TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+    + b'\\x01\\x00'  # compression methods: 1, null
+    + struct.pack('!H', len(sni_ext) + 4)  # extensions total length
+    + sni_ext
+)
+# Handshake header: type=ClientHello(1) + length(3)
+hs = b'\\x01' + struct.pack('!I', len(ch_body))[1:] + ch_body
+# TLS record: ContentType=Handshake(0x16) + TLS1.0(0x0301) + length
+record = b'\\x16\\x03\\x01' + struct.pack('!H', len(hs)) + hs
+
+try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(TIMEOUT)
+    s.connect((HOST, PORT))
+    s.sendall(record)
+    # Read first bytes the router sends back
+    data = s.recv(256)
+    s.close()
+    sys.stdout.buffer.write(data)
+except Exception as e:
+    sys.stderr.write(str(e) + '\\n')
+    sys.exit(1)
+" 2>/dev/null) || tls443_exit=$?
+
+  if echo "$tls443_out" | grep -q "$tls_probe_marker"; then
+    tls_classification="ENFORCED"
+  elif [[ $tls443_exit -ne 0 ]]; then
+    # Connection failed (timeout / refused): could be bypass or transient error.
+    # Classify as BYPASSED — a working router would have sent the marker.
+    tls_classification="BYPASSED"
+  elif [[ -z "$tls443_out" ]]; then
+    # Connected but no bytes received — router may be in RST mode. Treat as INCONCLUSIVE.
+    tls_classification="INCONCLUSIVE"
+  else
+    # Got bytes but not the marker — something else on path. BYPASSED.
+    tls_classification="BYPASSED"
+  fi
+
+  case "$tls_classification" in
+    ENFORCED)
+      echo "rip-cage selftest: port 443 ENFORCED — router is on-path for HTTPS/TLS"
+      ;;
+    BYPASSED)
+      echo "ERROR: rip-cage selftest: port 443 BYPASSED — egress router is NOT on-path for HTTPS (silent fail-open detected)" >&2
+      echo "ERROR: The iptables REDIRECT rule (port 443) may have silently no-op'd." >&2
+      echo "ERROR: Refusing to start cage in blocking posture with unenforceable firewall." >&2
+      return 1
+      ;;
+    INCONCLUSIVE)
+      echo "WARNING: rip-cage selftest: port 443 INCONCLUSIVE — probe result ambiguous; warn-and-proceed" >&2
+      ;;
+    *)
+      echo "WARNING: rip-cage selftest: port 443 unrecognized classification '$tls_classification'; warn-and-proceed" >&2
+      ;;
+  esac
+
+  # Both probes passed (or were inconclusive — never-false-alarm requirement).
+  if [[ "$classification" == "ENFORCED" && "$tls_classification" == "ENFORCED" ]]; then
+    echo "rip-cage selftest: ENFORCED — router is on-path for both port 80 and port 443"
+  elif [[ "$classification" != "ENFORCED" || "$tls_classification" != "ENFORCED" ]]; then
+    echo "WARNING: rip-cage selftest: one or both probes inconclusive; cage starts (warn-and-proceed)" >&2
+  fi
+  return 0
 }
 
 # When sourced (e.g., by tests), skip execution -- expose functions only.
@@ -284,55 +385,7 @@ _run_startup_selftest() {
 
 set -euo pipefail
 
-# Step 1: Generate CA keypair if not present (idempotent -- skip if cert exists).
-if [[ ! -f /etc/rip-cage/ca/rip-cage-proxy-ca.pem ]]; then
-  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-    -keyout /etc/rip-cage/ca/rip-cage-proxy-ca.key \
-    -out /etc/rip-cage/ca/rip-cage-proxy-ca.pem \
-    -subj "/CN=rip-cage-proxy-CA/O=rip-cage" \
-    2>/dev/null
-  chmod 600 /etc/rip-cage/ca/rip-cage-proxy-ca.key
-fi
-
-# Step 1b: Populate mitmproxy confdir with our CA keypair so mitmproxy uses it
-# instead of auto-generating its own (which clients don't trust).
-# mitmproxy-ca.pem = private key + cert concatenated (mitmproxy's expected format).
-# mitmproxy-ca-cert.pem = cert only (for distribution / trust anchoring).
-mkdir -p /etc/rip-cage/mitmproxy
-cat /etc/rip-cage/ca/rip-cage-proxy-ca.key \
-    /etc/rip-cage/ca/rip-cage-proxy-ca.pem \
-    > /etc/rip-cage/mitmproxy/mitmproxy-ca.pem
-cp /etc/rip-cage/ca/rip-cage-proxy-ca.pem \
-   /etc/rip-cage/mitmproxy/mitmproxy-ca-cert.pem
-chmod 600 /etc/rip-cage/mitmproxy/mitmproxy-ca.pem
-chmod 644 /etc/rip-cage/mitmproxy/mitmproxy-ca-cert.pem
-chown -R rip-proxy:rip-proxy /etc/rip-cage/mitmproxy
-
-# Step 2: Install CA cert into system trust store (idempotent -- cp overwrites).
-cp /etc/rip-cage/ca/rip-cage-proxy-ca.pem \
-   /usr/local/share/ca-certificates/rip-cage-proxy.crt
-update-ca-certificates --fresh 2>/dev/null
-
-# Step 3: Write env file for CA trust vars (idempotent -- overwrite on every run).
-#
-# CRITICAL distinction from design doc "CA cert trust" section:
-#   NODE_EXTRA_CA_CERTS points to the proxy CA cert ONLY.
-#     Node APPENDS this to its built-in store. Correct -- do not point to the
-#     combined bundle (that would load system CAs twice, wrong semantics).
-#   SSL_CERT_FILE, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE point to the COMBINED
-#     system bundle (/etc/ssl/certs/ca-certificates.crt).
-#     These vars REPLACE the default trust store, so they MUST include all system
-#     CAs. Pointing them to the proxy CA cert alone breaks all Python/curl HTTPS
-#     because Let's Encrypt, DigiCert etc. would not be trusted.
-cat > /etc/rip-cage/firewall-env <<'ENVEOF'
-export NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/rip-cage-proxy.crt
-export CLAUDE_CODE_CERT_STORE=/etc/ssl/certs/ca-certificates.crt
-export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
-export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
-export CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
-ENVEOF
-
-# Step 4: Apply iptables rules (idempotent -- check with -C before -A).
+# Step 1: Apply iptables rules (idempotent -- check with -C before -A).
 # REDIRECT: intercept TCP 80+443 from non-rip-proxy UIDs to :8080.
 # rip-proxy's own re-originated traffic is excluded to prevent an infinite loop.
 RIP_PROXY_UID=$(id -u rip-proxy)
@@ -347,7 +400,7 @@ if ! iptables -C OUTPUT -p udp --dport 443 -j DROP 2>/dev/null; then
   iptables -A OUTPUT -p udp --dport 443 -j DROP
 fi
 
-# Step 4b: REDIRECT DNS (UDP+TCP port 53) to DNS resolver sidecar on :5300.
+# Step 1b: REDIRECT DNS (UDP+TCP port 53) to DNS resolver sidecar on :5300.
 # ADR-012 D9: transparent port-53 REDIRECT so dig @8.8.8.8 / nslookup / ping / host
 # are all captured regardless of the upstream resolver the caller names.
 # rip-proxy UID is excluded to avoid a loop when the sidecar makes its own upstream queries.
@@ -362,7 +415,7 @@ if ! iptables -t nat -C OUTPUT -p tcp --dport 53 \
     -m owner ! --uid-owner "$RIP_PROXY_UID" -j REDIRECT --to-port 5300
 fi
 
-# Step 4c: TCP-22 IP allowlist (ADR-012 D8 evolved).
+# Step 1c: TCP-22 IP allowlist (ADR-012 D8 evolved).
 # When mode=block: resolve network.allowed_hosts to IPs; ACCEPT TCP-22 to those IPs;
 # DROP TCP-22 to all other destinations. Fires BEFORE ssh-agent forwarding is
 # consulted (network-layer block), closing the git-push exfil channel.
@@ -392,12 +445,12 @@ if [[ "$_TCP22_MODE" == "block" ]]; then
   fi
 fi
 
-# Step 5: Start mitmproxy as rip-proxy user.
+# Step 2: Start the SNI destination router as rip-proxy user.
 # || true is REQUIRED on this line: pkill returns exit 1 when no process found
 # (normal on first run). set -e would abort without it.
-pkill -u rip-proxy mitmdump 2>/dev/null || true
+pkill -u rip-proxy python3 2>/dev/null || true
 
-# Pre-create the proxy log so rip-proxy can write to it.
+# Pre-create the router log so rip-proxy can write to it.
 # (The file is root-owned by default; rip-proxy cannot create it otherwise.)
 touch /var/log/rip-cage-proxy.log
 chown rip-proxy:rip-proxy /var/log/rip-cage-proxy.log
@@ -419,45 +472,45 @@ chmod 777 /workspace/.rip-cage
 su -s /bin/sh rip-proxy -c 'nohup sh /usr/local/lib/rip-cage/rip-proxy-start.sh >/dev/null 2>&1 &'
 su -s /bin/sh rip-proxy -c 'nohup sh /usr/local/lib/rip-cage/rip-dns-start.sh >/dev/null 2>&1 &'
 
-# Step 6: Wait for proxy to be ready (up to 10s).
-# mitmproxy transparent mode responds to direct HTTP with a proxy error page (4xx/5xx)
-# rather than 200. Check curl exit code, not HTTP status:
-#   exit 7 = connection refused (proxy not up yet -- keep waiting)
-#   any other exit = port is accepting connections (even 4xx/5xx means 'up')
+# Step 3: Wait for router to be ready (up to 10s).
+# The SNI router accepts connections on :8080. Check the socket is in LISTEN state.
 count=0
 while [[ $count -lt 20 ]]; do
-  curl_exit=0
-  curl -s --max-time 1 http://127.0.0.1:8080/ >/dev/null 2>&1 || curl_exit=$?
-  if [[ $curl_exit -ne 7 ]]; then
+  # Check if :8080 is listening (0100007F = 127.0.0.1, 1F90 = 8080, 0A = LISTEN)
+  if grep -qE '^\s*[0-9]+:\s+0100007F:1F90\s+[0-9A-F]+:[0-9A-F]+\s+0A' /proc/net/tcp 2>/dev/null; then
     break
   fi
   sleep 0.5
   count=$((count + 1))
 done
 if [[ $count -ge 20 ]]; then
-  echo "ERROR: mitmproxy did not start within 10s" >&2
+  echo "ERROR: rip-cage SNI router did not start within 10s" >&2
   exit 1
 fi
 
-# Step 7: EFFECT-based startup self-test (rip-cage-fft).
-# Verifies the proxy is actually ON-PATH by curling the reserved self-test endpoint
-# pinned to 192.0.2.1 (RFC 5737 guaranteed-unroutable; see _run_startup_selftest).
-# The proxy is started with connection_strategy=lazy (rip-proxy-start.sh), so the
-# request() hook fires locally before any upstream contact with 192.0.2.1.
-# Must run AFTER the CA-install (Step 2) and mitmproxy-readiness gate (Step 6).
+# Step 4: EFFECT-based startup self-test (rip-cage-fft / rip-cage-ta1o.1).
+# Verifies the router is actually ON-PATH by curling the reserved self-test
+# endpoint over plain HTTP, pinned to 192.0.2.1 (RFC 5737 guaranteed-unroutable).
+# The router handles the HTTP request locally (no upstream contact with 192.0.2.1).
+# Must run AFTER the router-readiness gate (Step 3).
 # Skips in observe mode and when egress is off.
-# Refuses to start (exit 1) if proxy is not on-path in a blocking posture.
+# Refuses to start (exit 1) if router is not on-path in a blocking posture.
 _run_startup_selftest /etc/rip-cage/egress-rules.yaml
 
-# Step 8: Print mode-aware startup banner.
-# Read mode from the generated egress-rules.yaml (set by rc up / rc reload).
-# mode=block   -> "block mode"    (whitelist enforced, TCP-22 scoped)
-# mode=observe -> "observe mode"  (traffic logged, nothing blocked)
-# absent       -> "legacy (deny-list) mode" (pre-evolution posture)
+# Step 5: Write firewall-env (no CA vars needed — pure router has no CA).
+# The env file signals that egress is active (checked by test-egress-firewall.sh).
+# CA-related env vars (NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, etc.) are NOT set:
+# the pure router does not intercept TLS, so no custom CA is needed or present.
+cat > /etc/rip-cage/firewall-env <<'ENVEOF'
+# rip-cage egress router active (pure destination router, no TLS MITM)
+# No CA vars needed: TLS traffic passes through unmodified.
+ENVEOF
+
+# Step 6: Print mode-aware startup banner.
 RULE_COUNT=$(/opt/rip-cage-proxy/bin/python -c "import yaml; d=yaml.safe_load(open('/etc/rip-cage/egress-rules.yaml')); print(len(d['rules']))")
 _BANNER_MODE=$(_read_egress_mode /etc/rip-cage/egress-rules.yaml)
 case "$_BANNER_MODE" in
-  block)   echo "egress firewall active ($RULE_COUNT rules, block mode)" ;;
-  observe) echo "egress firewall active ($RULE_COUNT rules, observe mode)" ;;
-  *)       echo "egress firewall active ($RULE_COUNT rules, legacy (deny-list) mode)" ;;
+  block)   echo "egress firewall active ($RULE_COUNT rules, block mode, pure destination router)" ;;
+  observe) echo "egress firewall active ($RULE_COUNT rules, observe mode, pure destination router)" ;;
+  *)       echo "egress firewall active ($RULE_COUNT rules, legacy (deny-list) mode, pure destination router)" ;;
 esac

@@ -451,14 +451,12 @@ if [ -d /workspace/.beads ]; then
   fi
 fi
 
-# Append firewall env vars to agent's .zshrc so interactive shell sessions
-# and multiplexer panes inherit CA trust on every new shell.
-# Guard is idempotent: skip if already present (avoids growing .zshrc on every resume).
-if [[ -f /etc/rip-cage/firewall-env ]]; then
-  if ! grep -q 'NODE_EXTRA_CA_CERTS' /home/agent/.zshrc 2>/dev/null; then
-    cat /etc/rip-cage/firewall-env >> /home/agent/.zshrc
-  fi
-fi
+# NOTE: firewall-env (written by init-firewall.sh) is now comment-only — the pure SNI
+# router (rip-cage-ta1o.1) does not set CA vars (NODE_EXTRA_CA_CERTS etc.) because it
+# does not terminate TLS. The old "cat firewall-env >> .zshrc" append was removed because
+# it carried no load-bearing env vars and the idempotency guard (grep 'NODE_EXTRA_CA_CERTS')
+# would never match, causing .zshrc to grow on every rc up / resume (F4 fix, rip-cage-ta1o.1).
+# cage-env (CAGE_HOST_ADDR) is still sourced below.
 
 # Same pattern for cage-env (CAGE_HOST_ADDR) so interactive shells and multiplexer
 # panes inherit the host-bridge hostname (ADR-016 D2). Guard greps for the

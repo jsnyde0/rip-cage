@@ -51,7 +51,7 @@ Consolidate the 12 host-side scripts behind `tests/run-host.sh` and expose it as
 Three product fixes from 2026-04-20 get explicit assertions in `test-e2e-lifecycle.sh`:
 
 1. **python3-venv present**: `docker exec <name> dpkg -s python3-venv` + `docker exec <name> python3 -m venv /tmp/venv-probe` succeed. A plain `rc build` is not a guard here — Docker will reuse a cached apt layer even if the Dockerfile line is deleted, so the regression ships silently on warm cache.
-2. **CA env propagation**: `docker exec <name> env | grep NODE_EXTRA_CA_CERTS` succeeds when egress=on.
+2. **CA env absence** (updated per `rip-cage-ta1o.1`): the pure SNI router terminates no TLS and installs no rip-cage CA, so `docker exec <name> env | grep NODE_EXTRA_CA_CERTS` returns NOTHING when egress=on, and no `rip-cage-proxy.crt` exists in the trust store. (Pre-`rip-cage-ta1o.1` this asserted the opposite — that the var was *present* — under the TLS-MITM design; the assertion inverted when the CA was removed.)
 3. **Resume TTY guard**: `rc up <path> </dev/null` against an already-running container returns exit 0 and does not launch `tmux attach` (verified via process tree or state sentinel, NOT by grepping stderr for a docker-CLI error string — that wording drifts across docker versions).
 
 The fourth 2026-04-20 change — `test-egress-firewall.sh` check [2] switching from curl-probe to `/proc/net/tcp` LISTEN parse — is a **test-correctness fix, not a product regression guard**. It is exercised whenever the e2e test runs `rc test`, which in turn runs the in-container egress suite. No separate assertion is added or claimed here. D3 covers three product fixes; the test-correctness fix is self-covering.

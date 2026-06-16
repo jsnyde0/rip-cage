@@ -121,8 +121,9 @@ RUN groupadd -g 1000 agent \
 RUN useradd -r -s /usr/sbin/nologin -M rip-proxy
 
 RUN python3 -m venv /opt/rip-cage-proxy
-RUN /opt/rip-cage-proxy/bin/pip install --no-cache-dir mitmproxy PyYAML dnspython
-RUN ln -sf /opt/rip-cage-proxy/bin/mitmdump /usr/local/bin/mitmdump
+# Pure SNI destination router (rip-cage-ta1o.1): only PyYAML + dnspython needed.
+# mitmproxy removed — no TLS decryption, no CA, no per-host cert.
+RUN /opt/rip-cage-proxy/bin/pip install --no-cache-dir PyYAML dnspython
 
 RUN mkdir -p /etc/rip-cage/ca
 # cage-env is populated at container start by the ADR-016 D2 preflight probe.
@@ -153,6 +154,7 @@ COPY tests/test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
 COPY tests/_agent-readability.sh /usr/local/lib/rip-cage/_agent-readability.sh
 COPY egress-rules.yaml /etc/rip-cage/egress-rules.yaml
 COPY rip_cage_egress.py /usr/local/lib/rip-cage/rip_cage_egress.py
+COPY rip_cage_router.py /usr/local/lib/rip-cage/rip_cage_router.py
 COPY rip_cage_dns.py /usr/local/lib/rip-cage/rip_cage_dns.py
 COPY init-firewall.sh /usr/local/lib/rip-cage/init-firewall.sh
 COPY rip-proxy-start.sh /usr/local/lib/rip-cage/rip-proxy-start.sh

@@ -9,7 +9,7 @@
 #   G4  mode=observe emitted when config has network.mode=observe
 #   G5  mode=block emitted when config has network.mode=block
 #   G6  null network.mode (legacy) emits legacy-mode file (mode absent/null)
-#   G7  writable_hosts emitted in generated file
+#   G7  writable_hosts NOT emitted in generated file (removed in rip-cage-ta1o.1)
 #   G8  generated file is valid YAML parseable by python yaml/yq
 #   G9  generation function is pure: same config in -> same file out (idempotent)
 #   G10 IOC floor cannot be removed by user's allowed_hosts (floor always present)
@@ -46,16 +46,17 @@ gen_rules() {
 }
 
 # Minimal empty-network config (no network.* set).
-EMPTY_CFG='{"ssh":{"allowed_hosts":[],"allowed_keys":null},"network":{"allowed_hosts":[],"writable_hosts":[],"mode":null},"mounts":{"denylist":[]}}'
+# Note: writable_hosts removed from all test configs (rip-cage-ta1o.1: write-gate deleted).
+EMPTY_CFG='{"ssh":{"allowed_hosts":[],"allowed_keys":null},"network":{"allowed_hosts":[],"mode":null},"mounts":{"denylist":[]}}'
 
 # Config with observe mode and some allowed_hosts.
-OBSERVE_CFG='{"ssh":{"allowed_hosts":[],"allowed_keys":null},"network":{"allowed_hosts":["custom.example.com"],"writable_hosts":[],"mode":"observe"},"mounts":{"denylist":[]}}'
+OBSERVE_CFG='{"ssh":{"allowed_hosts":[],"allowed_keys":null},"network":{"allowed_hosts":["custom.example.com"],"mode":"observe"},"mounts":{"denylist":[]}}'
 
-# Config with block mode and writable_hosts.
-BLOCK_CFG='{"ssh":{"allowed_hosts":[],"allowed_keys":null},"network":{"allowed_hosts":["api.example.com"],"writable_hosts":["api.example.com"],"mode":"block"},"mounts":{"denylist":[]}}'
+# Config with block mode (writable_hosts removed in rip-cage-ta1o.1).
+BLOCK_CFG='{"ssh":{"allowed_hosts":[],"allowed_keys":null},"network":{"allowed_hosts":["api.example.com"],"mode":"block"},"mounts":{"denylist":[]}}'
 
 # Config with null mode (legacy posture).
-LEGACY_CFG='{"ssh":{"allowed_hosts":[],"allowed_keys":null},"network":{"allowed_hosts":[],"writable_hosts":[],"mode":null},"mounts":{"denylist":[]}}'
+LEGACY_CFG='{"ssh":{"allowed_hosts":[],"allowed_keys":null},"network":{"allowed_hosts":[],"mode":null},"mounts":{"denylist":[]}}'
 
 echo "=== test-egress-rules-gen.sh — per-cage egress rules generation ==="
 
@@ -73,16 +74,20 @@ $out"
   fi
 }
 
-# G2: IOC denylist floor present (known-bad hosts from original egress-rules.yaml)
+# G2: IOC denylist floor present (known-bad hosts from egress-rules.yaml class-b rules)
+# Note: discord.com was removed from the IOC floor in rip-cage-ta1o.1 IOC audit
+# (class-a path_prefix rules dropped; discord.com has legitimate uses, belongs in
+# mediator-layer policy per egress-rules.yaml preamble). G2 uses class-b hosts
+# that ARE still in the floor: webhook.site (OAST) and .ngrok.io (tunnels).
 test_g2_ioc_floor_present() {
   local out
   out=$(gen_rules "$EMPTY_CFG")
-  # IOC floor must contain at least one well-known exfil sink
+  # IOC floor must contain at least one pure-exfil OAST host and one tunnel host
   if echo "$out" | grep -q "webhook.site" \
-     && echo "$out" | grep -q "discord.com"; then
-    pass "G2 IOC denylist floor present (webhook.site, discord.com)"
+     && echo "$out" | grep -q "ngrok"; then
+    pass "G2 IOC denylist floor present (webhook.site, ngrok tunnels)"
   else
-    fail "G2 expected IOC denylist floor entries, got:
+    fail "G2 expected IOC denylist floor entries (webhook.site + ngrok), got:
 $out"
   fi
 }
@@ -141,14 +146,17 @@ $out"
   fi
 }
 
-# G7: writable_hosts emitted in generated file
-test_g7_writable_hosts_emitted() {
+# G7: writable_hosts NOT emitted in generated file (rip-cage-ta1o.1: write-gate removed)
+# The method-asymmetry axis (writable_hosts) was removed in rip-cage-ta1o.1.
+# The generator must NOT emit a writable_hosts: section.
+# api.example.com should still appear in allowed_hosts (it's in BLOCK_CFG.network.allowed_hosts).
+test_g7_writable_hosts_not_emitted() {
   local out
   out=$(gen_rules "$BLOCK_CFG")
-  if echo "$out" | grep -q "api.example.com"; then
-    pass "G7 writable_hosts emitted in generated file"
+  if ! echo "$out" | grep -q "^writable_hosts:"; then
+    pass "G7 writable_hosts NOT emitted in generated file (write-gate removed, rip-cage-ta1o.1)"
   else
-    fail "G7 expected writable_hosts entry (api.example.com) in generated file, got:
+    fail "G7 writable_hosts: section must NOT appear in generated file; found it in:
 $out"
   fi
 }
@@ -180,11 +188,11 @@ test_g9_idempotent() {
 }
 
 # G10: IOC floor cannot be removed by user's allowed_hosts
-# Even if a user adds discord.com to allowed_hosts, the IOC denylist rule stays
+# Even if a user adds webhook.site to allowed_hosts, the IOC denylist deny:true rule stays.
 test_g10_ioc_floor_not_overridable() {
   # Construct config where user "allows" a known-IOC host
   local cfg_with_ioc
-  cfg_with_ioc='{"network":{"allowed_hosts":["discord.com","webhook.site"],"writable_hosts":[],"mode":"block"},"mounts":{"denylist":[]}}'
+  cfg_with_ioc='{"network":{"allowed_hosts":["discord.com","webhook.site"],"mode":"block"},"mounts":{"denylist":[]}}'
   local out
   out=$(gen_rules "$cfg_with_ioc")
   # The IOC denylist deny:true rule for these hosts must still be present
@@ -247,7 +255,7 @@ test_g3_user_allowed_hosts_merged
 test_g4_mode_observe
 test_g5_mode_block
 test_g6_legacy_null_mode
-test_g7_writable_hosts_emitted
+test_g7_writable_hosts_not_emitted
 test_g8_valid_yaml
 test_g9_idempotent
 test_g10_ioc_floor_not_overridable

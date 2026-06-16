@@ -88,7 +88,6 @@ The allowlist lives in `.rip-cage.yaml` under `network.*`:
 |---|---|
 | `network.mode` | `observe` or `block`. Absent = legacy. |
 | `network.allowed_hosts` | Additive list of domains allowed for HTTP/HTTPS (and reachable on TCP-22). |
-| `network.writable_hosts` | Additive list gating POST / write-method egress (FLEXIBLE). |
 
 `rc allowlist add` and `promote` edit these fields for you. For the schema (types, defaults, merge semantics), see [config.md → `network.*`](config.md#network----egress-firewall).
 
@@ -127,7 +126,7 @@ JSONL audit logs live inside the workspace (visible from the host without enteri
 ## Disabling and diagnosing
 
 - **Kill switch:** `RIP_CAGE_EGRESS=off rc up <path>` starts the cage with the proxy and iptables rules disabled entirely. One name to grep for; no per-rule knobs.
-- **Diagnose:** `rc doctor <name>` reports the egress label, live mode, and whether the proxy process (`mitmdump`) is actually running.
+- **Diagnose:** `rc doctor <name>` reports the egress label, live mode, and whether the egress router process (`rip_cage_router.py`) is actually running.
 
 ---
 

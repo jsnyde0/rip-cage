@@ -89,7 +89,7 @@ cleanup_t_dir() {
 trap cleanup_t_dir EXIT
 
 # Write fixture for block mode with localhost
-printf 'version: 2\nmode: block\nallowed_hosts:\n  - localhost\n  - github.com\nwritable_hosts: []\nrules: []\n' \
+printf 'version: 2\nmode: block\nallowed_hosts:\n  - localhost\n  - github.com\nrules: []\n' \
   > "${_T_DIR}/rules-block.yaml"
 
 # T5: block mode + localhost -> 127.0.0.1 in output
@@ -120,7 +120,7 @@ else
 fi
 
 # Write fixture for observe mode
-printf 'version: 2\nmode: observe\nallowed_hosts:\n  - localhost\nwritable_hosts: []\nrules: []\n' \
+printf 'version: 2\nmode: observe\nallowed_hosts:\n  - localhost\nrules: []\n' \
   > "${_T_DIR}/rules-observe.yaml"
 
 # T7: observe mode -> empty output (TCP-22 DROP only in block mode)

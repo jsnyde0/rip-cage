@@ -682,8 +682,8 @@ test_t30_mounts_allow_risky_selection_list() {
 # T33: v1 config with no network.* fields parses unchanged with empty defaults
 # T34: network.mode selection_list parses (observe/block); project replaces global
 # T35: absent network.mode resolves to null/default (not a third mode value string)
-# T36: network.writable_hosts ⊆ network.allowed_hosts validation — violation aborts
-# T37: network.writable_hosts merges additively across layers
+# T36: network.writable_hosts in config file is silently ignored (field removed in rip-cage-ta1o.1)
+# T37: network.writable_hosts absent from effective config (field removed in rip-cage-ta1o.1)
 # T38: network.mode invalid value aborts loud per ADR-021 D3
 # ---------------------------------------------------------------------------
 
@@ -718,21 +718,22 @@ test_t32_network_allowed_hosts_additive_merge() {
 }
 
 test_t33_v1_config_no_network_parses_unchanged() {
-  # Existing v1 config with no network.* → empty defaults, no error
+  # Existing v1 config with no network.* → empty defaults, no error.
+  # Note: writable_hosts removed from schema in rip-cage-ta1o.1 (write-gate deleted).
+  # The field is no longer in the effective config output.
   setup_sandbox "config-global-basic.yaml" "config-project-basic.yaml"
-  local out hosts writable mode
+  local out hosts mode
   out=$(run_rc_config "show --json")
   hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
-  writable=$(jq -c '.config.network.writable_hosts' <<<"$out")
   mode=$(jq -r '.config.network.mode' <<<"$out")
   # ssh fields still present
   local ssh_hosts
   ssh_hosts=$(jq -c '.config.ssh.allowed_hosts' <<<"$out")
-  if [[ "$hosts" == '[]' && "$writable" == '[]' && "$mode" == "null" \
+  if [[ "$hosts" == '[]' && "$mode" == "null" \
         && "$ssh_hosts" == '["github.com","switch.berlin"]' ]]; then
     pass "T33 v1 config with no network.* parses unchanged, empty defaults"
   else
-    fail "T33 expected empty network defaults + ssh unchanged, got hosts=$hosts writable=$writable mode=$mode ssh_hosts=$ssh_hosts"
+    fail "T33 expected empty network defaults (allowed_hosts=[], mode=null) + ssh unchanged, got hosts=$hosts mode=$mode ssh_hosts=$ssh_hosts"
   fi
   teardown_sandbox
 }
@@ -768,35 +769,38 @@ test_t35_absent_network_mode_is_null_not_enum() {
   teardown_sandbox
 }
 
-test_t36_network_writable_not_subset_aborts() {
-  # network.writable_hosts contains host not in network.allowed_hosts → abort loud
+test_t36_network_writable_hosts_unknown_field_ignored() {
+  # rip-cage-ta1o.1: network.writable_hosts removed from schema (write-gate deleted).
+  # A config file that still has network.writable_hosts should be silently accepted
+  # (unknown fields in YAML files are not an error — the loader only reads schema keys).
+  # The old test asserted abort-loud; that constraint is gone.
   setup_sandbox "" "config-project-network-writable-violation.yaml"
-  local stderr_file exit_code
-  stderr_file=$(mktemp)
+  local out exit_code
   exit_code=0
-  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
-  if [[ "$exit_code" -ne 0 ]] && grep -q "writable_hosts" "$stderr_file"; then
-    pass "T36 network.writable_hosts not subset of allowed_hosts → abort loud"
+  out=$(run_rc_config "show --json") || exit_code=$?
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "T36 config with writable_hosts (removed field) is accepted silently (write-gate deleted, rip-cage-ta1o.1)"
   else
-    fail "T36 expected non-zero exit + writable_hosts error, exit=$exit_code stderr=$(cat "$stderr_file")"
+    fail "T36 expected exit 0 (writable_hosts is now an unknown/ignored field), got exit=$exit_code"
   fi
-  rm -f "$stderr_file"
   teardown_sandbox
 }
 
-test_t37_network_writable_hosts_additive_merge() {
-  # global: writable=[api.github.com], project: writable=[] (zero-out for project)
-  # This tests additive merge — global [api.github.com] + project [] = [api.github.com]
+test_t37_network_writable_hosts_removed_from_schema() {
+  # rip-cage-ta1o.1: network.writable_hosts removed from schema (write-gate deleted).
+  # The effective config no longer contains network.writable_hosts at all.
+  # This test verifies the field is absent from the effective config output,
+  # replacing the old T37 which tested additive merge of a now-removed field.
   setup_sandbox "config-global-with-network.yaml" "config-project-with-network.yaml"
-  local out writable prov
+  local out
   out=$(run_rc_config "show --json")
-  writable=$(jq -c '.config.network.writable_hosts' <<<"$out")
-  prov=$(jq -c '.provenance["network.writable_hosts"]' <<<"$out")
-  # global has [api.github.com], project has [] → additive union = [api.github.com]
-  if [[ "$writable" == '["api.github.com"]' ]]; then
-    pass "T37 network.writable_hosts additive merge: global [api.github.com] + project [] = [api.github.com]"
+  # The field must not appear in the effective config
+  if ! echo "$out" | jq -e '.config.network | has("writable_hosts")' >/dev/null 2>&1; then
+    pass "T37 network.writable_hosts absent from effective config (removed in rip-cage-ta1o.1)"
   else
-    fail "T37 expected writable=[api.github.com], got: $writable (prov=$prov)"
+    local writable
+    writable=$(jq -c '.config.network.writable_hosts' <<<"$out")
+    fail "T37 network.writable_hosts unexpectedly present in effective config: $writable"
   fi
   teardown_sandbox
 }
@@ -954,7 +958,7 @@ test_t33_v1_config_no_network_parses_unchanged
 test_t34_network_mode_selection_list
 test_t35_absent_network_mode_is_null_not_enum
 test_t36_network_writable_not_subset_aborts
-test_t37_network_writable_hosts_additive_merge
+test_t37_network_writable_hosts_removed_from_schema
 test_t38_network_mode_invalid_aborts
 test_t39_validate_yq_missing_with_global_config_emits_dependency_message
 test_t40_session_multiplexer_default_none

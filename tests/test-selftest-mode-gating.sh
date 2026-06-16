@@ -22,11 +22,12 @@
 #     NOT a production hook.
 #
 # Curl shim contract:
-#   The real curl call in _run_startup_selftest uses:
-#     curl -s --resolve HOST:443:192.0.2.1 --max-time N -D TMPFILE -o /dev/null -w '%{http_code}' URL
-#   (HTTPS probe over port 443, pinned to 192.0.2.1 (RFC5737 unroutable) via --resolve
-#   so DNS/sidecar is not involved.  The proxy uses connection_strategy=lazy so the
-#   request() hook fires before the upstream connect; with REDIRECT present the marker
+#   The real curl call in _run_startup_selftest uses (rip-cage-ta1o.1 pure router):
+#     curl -s --resolve HOST:80:192.0.2.1 --max-time N -D TMPFILE -o /dev/null -w '%{http_code}' URL
+#   (plain HTTP probe over port 80, pinned to 192.0.2.1 (RFC5737 unroutable) via --resolve
+#   so DNS/sidecar is not involved.  The pure SNI router recognises the selftest hostname
+#   and serves the marker LOCALLY (returns before any upstream connect) — the pure-router
+#   equivalent of mitmproxy's old connection_strategy=lazy.  With REDIRECT present the marker
 #   is returned locally.  With REDIRECT absent, curl times out on the unroutable IP.)
 #   The shim writes the requested -D header file (with or without marker) and prints
 #   the http_code to stdout, then exits with the requested exit code.
@@ -291,9 +292,10 @@ fi
 #      NOT a routable IP like 1.1.1.1 (using a routable IP reintroduces a false-alarm
 #      risk when the external host is temporarily unreachable).
 #
-# Also verifies rip-proxy-start.sh has connection_strategy=lazy (the proxy setting
-# that allows the request() hook to fire before upstream contact, making the
-# unroutable target work for interception without an upstream TCP connect).
+# Also verifies the pure SNI router (rip_cage_router.py) serves the selftest host
+# LOCALLY before any upstream connect — the pure-router equivalent of mitmproxy's
+# old connection_strategy=lazy, which is what makes interception of the unroutable
+# target work without an upstream TCP connect (invariant I1).
 # -------------------------------------------------------------------
 MG8_ARG_LOG="${TMPDIR_TEST}/curl-args-mg8.txt"
 cat > "${FAKE_CURL_DIR}/curl" <<SHIM2
@@ -341,12 +343,19 @@ else
   pass "MG8b: probe does not use routable 1.1.1.1 (invariant I2 holds)"
 fi
 
-# Verify rip-proxy-start.sh uses connection_strategy=lazy (required for unroutable target).
-if grep -q "connection_strategy=lazy" "${SCRIPT_DIR}/../rip-proxy-start.sh"; then
-  pass "MG8c: rip-proxy-start.sh sets connection_strategy=lazy (required for I1 with unroutable IP)"
+# Verify the pure SNI router serves the selftest host locally before any upstream
+# connect (the pure-router equivalent of mitmproxy's connection_strategy=lazy; I1).
+# The router must (a) recognise SELFTEST_HOSTNAME and (b) do so before the upstream
+# connect() call — proven structurally by the selftest short-circuit appearing
+# before the first socket connect in rip_cage_router.py.
+_router_py="${SCRIPT_DIR}/../rip_cage_router.py"
+_selftest_line=$(grep -n "SELFTEST_HOSTNAME" "$_router_py" | grep -v "^.*import" | head -1 | cut -d: -f1)
+_connect_line=$(grep -n "\.connect(" "$_router_py" | head -1 | cut -d: -f1)
+if [[ -n "$_selftest_line" && -n "$_connect_line" && "$_selftest_line" -lt "$_connect_line" ]]; then
+  pass "MG8c: router serves selftest host locally before upstream connect (I1, pure-router equivalent of lazy)"
 else
-  fail "MG8c: rip-proxy-start.sh sets connection_strategy=lazy (required for I1 with unroutable IP)" \
-       "connection_strategy=lazy not found in rip-proxy-start.sh"
+  fail "MG8c: router serves selftest host locally before upstream connect (I1, pure-router equivalent of lazy)" \
+       "selftest short-circuit (line ${_selftest_line:-none}) must precede upstream connect (line ${_connect_line:-none}) in rip_cage_router.py"
 fi
 
 # Restore the original curl shim for any tests that follow.

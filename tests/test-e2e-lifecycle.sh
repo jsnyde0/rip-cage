@@ -495,17 +495,20 @@ else
     "before=$tmux_clients_before after=$tmux_clients_after"
 fi
 
-# Check 18: CA env propagation (regression guard for 2026-04-20 fix #2)
+# Check 18: CA ABSENCE guard (pure SNI router has no CA — rip-cage-ta1o.1 regression guard)
+# The pure destination router does NOT terminate TLS — no CA cert, no NODE_EXTRA_CA_CERTS.
+# Asserts absence of rip-cage CA infrastructure (the old mitmproxy MITM path is gone).
 env_out=$(docker exec "$CONTAINER_NAME" env 2>/dev/null || true)
-if echo "$env_out" | grep -q "^NODE_EXTRA_CA_CERTS="; then
-  ca_val=$(echo "$env_out" | grep "^NODE_EXTRA_CA_CERTS=" | head -1 | cut -d= -f2-)
-  if [[ "$ca_val" == "/usr/local/share/ca-certificates/rip-cage-proxy.crt" ]]; then
-    check "NODE_EXTRA_CA_CERTS propagated (egress=on path)" "pass"
-  else
-    check "NODE_EXTRA_CA_CERTS propagated (egress=on path)" "fail" "value='$ca_val'"
-  fi
+ca_cert_present=0
+if docker exec "$CONTAINER_NAME" test -f /usr/local/share/ca-certificates/rip-cage-proxy.crt 2>/dev/null; then
+  ca_cert_present=1
+fi
+node_ca_set=$(echo "$env_out" | grep "^NODE_EXTRA_CA_CERTS=" | head -1 | cut -d= -f2- || true)
+if [[ -z "$node_ca_set" && "$ca_cert_present" -eq 0 ]]; then
+  check "CA absent: no NODE_EXTRA_CA_CERTS, no rip-cage-proxy.crt (pure SNI router, no MITM)" "pass"
 else
-  check "NODE_EXTRA_CA_CERTS propagated (egress=on path)" "fail" "env var missing"
+  check "CA absent: no NODE_EXTRA_CA_CERTS, no rip-cage-proxy.crt (pure SNI router, no MITM)" "fail" \
+    "NODE_EXTRA_CA_CERTS='${node_ca_set:-<unset>}' rip-cage-proxy.crt_present=$ca_cert_present"
 fi
 
 # -----------------------------------------------------------------------------
@@ -689,15 +692,22 @@ off_container=$(docker ps -a --filter "label=rc.source.path=${off_resolved}" \
   --format '{{.Names}}' 2>/dev/null | head -1)
 off_label=$(docker inspect "$off_container" \
   --format '{{index .Config.Labels "rc.egress"}}' 2>/dev/null || true)
-no_mitm=0
+# Check 22: RIP_CAGE_EGRESS=off — label=off, SNI router NOT running (pure router replaces mitmdump)
+# The rip_cage_router.py SNI router runs as rip-proxy user. When egress=off, init-firewall.sh
+# is skipped and the router must NOT be running. Replaces the vacuous "no mitmdump" check:
+# mitmdump was always absent after rip-cage-ta1o.1; the meaningful assertion is that the
+# SNI router (rip_cage_router.py / python3 process owned by rip-proxy) is NOT running.
+no_sni_router=0
 if [[ -n "$off_container" ]]; then
-  docker exec "$off_container" pgrep -u rip-proxy mitmdump > /dev/null 2>&1 || no_mitm=1
+  # pgrep -u rip-proxy python3 returns exit 0 if any python3 runs as rip-proxy, non-zero if none.
+  # no_sni_router=1 means NO python3 process owned by rip-proxy (router is not running).
+  docker exec "$off_container" pgrep -u rip-proxy python3 > /dev/null 2>&1 || no_sni_router=1
 fi
-if [[ "$off_label" == "off" && "$no_mitm" -eq 1 ]]; then
-  check "RIP_CAGE_EGRESS=off -- label=off, no mitmdump" "pass"
+if [[ "$off_label" == "off" && "$no_sni_router" -eq 1 ]]; then
+  check "RIP_CAGE_EGRESS=off -- label=off, SNI router not running (rip-cage-ta1o.1)" "pass"
 else
-  check "RIP_CAGE_EGRESS=off -- label=off, no mitmdump" "fail" \
-    "container='${off_container:-<none>}' label='${off_label:-missing}' no_mitm=$no_mitm"
+  check "RIP_CAGE_EGRESS=off -- label=off, SNI router not running (rip-cage-ta1o.1)" "fail" \
+    "container='${off_container:-<none>}' label='${off_label:-missing}' no_sni_router=$no_sni_router"
 fi
 # Cleanup off container.
 [[ -n "$off_container" ]] && docker rm -f "$off_container" > /dev/null 2>&1 || true

@@ -10,13 +10,15 @@
 #   C5  curl exit 7 (conn-refused) against unroutable target => BYPASSED
 #   C6  curl exit 6 (DNS fail / name-not-resolved) => INCONCLUSIVE
 #   C7  http_code=000, curl_exit=0 (edge case, genuine ambiguity) => INCONCLUSIVE
-#   C8  curl TLS/cert-handshake exit codes (35, 51, 58, 59, 60, 77, 83) => INCONCLUSIVE
-#       These indicate "couldn't establish a trusted TLS session with the proxy",
-#       which is AMBIGUOUS (e.g. the rip-cage CA failed to install), NOT a confident
-#       bypass signal. Never-false-alarm wins: map to INCONCLUSIVE not BYPASSED.
+#   C8  curl TLS/cert-handshake exit codes (35, 51, 58, 59, 60, 77, 83) => BYPASSED
+#       Post rip-cage-ta1o.1 (pure SNI router): there is NO rip-cage CA and the
+#       selftest probe is plain HTTP on port 80 — so a TLS-handshake failure can
+#       no longer be the benign "CA failed to install" case. With no CA excuse,
+#       a TLS error is anomalous and maps to BYPASSED defensively (fail-closed:
+#       refuse to start rather than warn-and-proceed).
 #
 # INCONCLUSIVE is near-empty by construction (per design invariants I1+I2).
-# C6, C7, and C8 represent the residual cases that cannot be confidently classified.
+# C6 and C7 represent the residual cases that cannot be confidently classified.
 #
 # Usage: bash tests/test-selftest-classifier.sh
 
@@ -115,26 +117,28 @@ else
 fi
 
 # -------------------------------------------------------------------
-# C8: TLS/cert-handshake curl exit codes => INCONCLUSIVE
+# C8: TLS/cert-handshake curl exit codes => BYPASSED
 #
-# These codes indicate "couldn't establish a trusted TLS session with the proxy"
-# which is AMBIGUOUS — e.g. the rip-cage CA failed to install, not necessarily a
-# bypass. Never-false-alarm contract requires INCONCLUSIVE (warn-and-proceed).
+# Post rip-cage-ta1o.1 (pure SNI router): no rip-cage CA, no TLS termination, and
+# the selftest probe is plain HTTP on port 80. A TLS-handshake failure can no longer
+# be the benign "CA failed to install" case — with no CA excuse it is anomalous, so
+# it maps to BYPASSED defensively (fail-closed: refuse to start). Matches
+# init-firewall.sh _classify_selftest_probe (35|51|58|59|60|77|83 => BYPASSED).
 #
 #   35  SSL connect error (generic TLS handshake failure)
 #   51  peer certificate/fingerprint mismatch
 #   58  local client certificate problem
 #   59  couldn't use specified SSL cipher
-#   60  SSL peer certificate or SSH remote key was not OK (CA verify failed)
+#   60  SSL peer certificate or SSH remote key was not OK
 #   77  problem with CA cert / cert bundle
 #   83  issuer check failed (TLS certificate chain validation)
 # -------------------------------------------------------------------
 for tls_code in 35 51 58 59 60 77 83; do
   result=$(_classify_selftest_probe "$tls_code" 000 "")
-  if [[ "$result" == "INCONCLUSIVE" ]]; then
-    pass "C8-exit${tls_code}: TLS-handshake failure (exit=${tls_code}, 000, no-marker) => INCONCLUSIVE"
+  if [[ "$result" == "BYPASSED" ]]; then
+    pass "C8-exit${tls_code}: TLS-handshake failure (exit=${tls_code}, 000, no-marker) => BYPASSED"
   else
-    fail "C8-exit${tls_code}: TLS-handshake failure (exit=${tls_code}, 000, no-marker) => INCONCLUSIVE" "got: $result"
+    fail "C8-exit${tls_code}: TLS-handshake failure (exit=${tls_code}, 000, no-marker) => BYPASSED" "got: $result"
   fi
 done
 

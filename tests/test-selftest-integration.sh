@@ -97,9 +97,11 @@ mkdir -p "${IT1_WS}/.rip-cage"
 
 # Start a throwaway container with:
 # - the updated init-firewall.sh mounted (tests latest code without full rebuild)
-# - the updated rip_cage_egress.py mounted (proxy addon with selftest endpoint)
-# - the updated rip-proxy-start.sh mounted (must have connection_strategy=lazy so
-#   the probe to the unroutable 192.0.2.1 is intercepted before upstream contact)
+# - the updated rip_cage_egress.py mounted (the decide() rule engine + selftest endpoint)
+# - the updated rip-proxy-start.sh mounted (launches the pure SNI router, which serves
+#   the selftest host locally before any upstream connect — the pure-router equivalent
+#   of mitmproxy's old connection_strategy=lazy, so the probe to the unroutable 192.0.2.1
+#   is intercepted before upstream contact)
 # - NET_ADMIN capability (required for iptables)
 # The container runs sleep infinity; we exec init-firewall.sh as root to
 # simulate the production startup path.

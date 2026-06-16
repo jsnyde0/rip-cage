@@ -216,7 +216,6 @@ Rip-cage's network egress firewall reads `network.*` to decide what outbound tra
 |---|---|---|---|
 | `network.mode` | scalar | unset (legacy) | `observe` (log all outbound destinations, block nothing — default for new cages) or `block` (enforce the allowlist). Absence means legacy behavior — cages created before egress shipped run the old denylist with no `network.mode`; non-regression per [ADR-021](../decisions/ADR-021-layered-rip-cage-config.md) D5. |
 | `network.allowed_hosts` | additive_list | `[]` | Domains allowed for HTTP/HTTPS egress, and the destinations reachable on TCP-22 (git-over-ssh). Effective allowlist = baseline ∪ global ∪ project. Project EXPANDS; cannot contract. The agent inside the cage cannot mutate this — edits apply via the host-only `rc reload`. |
-| `network.writable_hosts` | additive_list | `[]` | Domains allowed for POST / write-method egress (the method-axis gate). FLEXIBLE firmness. Effective = global ∪ project union. |
 
 There is also an **IOC floor** — a curated denylist of known exfil sinks — that is always enforced and **cannot be overridden** by `network.allowed_hosts`. The project allowlist can broaden but never shrink below this floor.
 
@@ -230,8 +229,6 @@ network:
   allowed_hosts:
     - api.deepseek.com        # added by `rc allowlist promote`
     - files.example-cdn.net
-  writable_hosts:
-    - api.deepseek.com        # POST allowed only to this host
 ```
 
 `network.allowed_hosts` follows the **additive-list** merge rule (global ∪ project, deduplicated, global first — same as `ssh.allowed_hosts`). Edits to `network.allowed_hosts` are reload-eligible via `rc reload`; changing `network.mode` likewise applies via `rc reload`. Use `rc allowlist add` / `rc allowlist promote` (host-only) rather than hand-editing.

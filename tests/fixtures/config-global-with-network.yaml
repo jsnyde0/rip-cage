@@ -3,6 +3,5 @@ network:
   allowed_hosts:
     - api.github.com
     - pypi.org
-  writable_hosts:
-    - api.github.com
   mode: block
+  # Note: writable_hosts removed in rip-cage-ta1o.1 (write-gate deleted)

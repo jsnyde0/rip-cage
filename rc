@@ -581,20 +581,11 @@ DEVCONTAINER_FOOTER_EMBEDDED
     fi
   } > "$dest"
 
-  # Inject CA trust env vars into containerEnv when egress firewall is on.
-  # VS Code extension host processes do not source .zshrc, so NODE_EXTRA_CA_CERTS
-  # and friends must be in containerEnv to reach the Claude Code VS Code extension.
-  # Paths are fixed and correct when egress is on; harmless when off (files exist).
-  if [[ "$init_egress" != "off" ]] && command -v jq &>/dev/null; then
-    jq '.containerEnv += {
-      "NODE_EXTRA_CA_CERTS": "/usr/local/share/ca-certificates/rip-cage-proxy.crt",
-      "CLAUDE_CODE_CERT_STORE": "/etc/ssl/certs/ca-certificates.crt",
-      "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
-      "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
-      "CURL_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt"
-    }' "$dest" > "${dest}.tmp"
-    mv "${dest}.tmp" "$dest"
-  fi
+  # No CA trust env vars in containerEnv (rip-cage-ta1o.1): the pure SNI router does
+  # NOT terminate TLS and installs no rip-cage CA. VS Code extension-host processes
+  # validate the REAL upstream cert via the default system trust store; a
+  # NODE_EXTRA_CA_CERTS pointing at a rip-cage CA would target a nonexistent file
+  # (ADR-012 D4).
 
   # Pi env vars in containerEnv — static values safe here (not secrets)
   if command -v jq &>/dev/null; then
@@ -1880,14 +1871,10 @@ _up_prepare_environment() {
   if [[ "$_rc_egress" != "off" ]]; then
     _UP_RUN_ARGS+=(--cap-add=NET_ADMIN)
     _UP_RUN_ARGS+=(-l rc.egress=on)
-    # CA trust env vars — mirrored from devcontainer containerEnv so that
-    # non-interactive `docker exec` children (tests, subprocesses) inherit trust.
-    # Interactive shells also get these via .zshrc, but env here is authoritative.
-    _UP_RUN_ARGS+=(-e "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/rip-cage-proxy.crt")
-    _UP_RUN_ARGS+=(-e "CLAUDE_CODE_CERT_STORE=/etc/ssl/certs/ca-certificates.crt")
-    _UP_RUN_ARGS+=(-e "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt")
-    _UP_RUN_ARGS+=(-e "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt")
-    _UP_RUN_ARGS+=(-e "CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt")
+    # No CA trust env vars (rip-cage-ta1o.1): the pure SNI router does NOT terminate
+    # TLS and installs no rip-cage CA, so clients validate the REAL upstream cert via
+    # the default system trust store. NODE_EXTRA_CA_CERTS / *_CA_BUNDLE pointing at a
+    # rip-cage CA would target a nonexistent file (ADR-012 D4).
   else
     _UP_RUN_ARGS+=(-l rc.egress=off)
   fi
@@ -3196,17 +3183,16 @@ _EGRESS_BASELINE_HOSTS=(
 # Format (extends current egress-rules.yaml shape — D1 backward compat):
 #   version: 2
 #   mode: observe|block         # present only when network.mode is non-null
-#   allowed_hosts: [...]        # baseline ∪ user network.allowed_hosts (for sibling B/C)
-#   writable_hosts: [...]       # user network.writable_hosts (for sibling B)
+#   allowed_hosts: [...]        # baseline ∪ user network.allowed_hosts
 #   rules:                      # IOC denylist floor — non-overridable; same ~35 entries
+#                               # Note: writable_hosts removed in rip-cage-ta1o.1
 #     - id: ...                 # as the original static egress-rules.yaml
 #       deny: true
 #       ...
 #
-# The current proxy (rip_cage_egress.py) reads only 'rules', so existing behavior is
-# preserved for legacy cages. Sibling B (rip-cage-hhh.3) will add enforcement of
-# allowed_hosts/writable_hosts/mode. The IOC floor (deny:true rules) is always emitted
-# regardless of mode so denylist enforcement never gaps during the B rollout.
+# rip_cage_egress.py enforces allowed_hosts/mode via decide(). The IOC floor
+# (deny:true rules) is always emitted regardless of mode.
+# Note: writable_hosts removed in rip-cage-ta1o.1 (method-asymmetry/write-gate deleted).
 #
 # Parameters:
 #   $1  cfg_json  — effective config JSON object (network.* subtree read here)
@@ -3224,10 +3210,10 @@ _generate_egress_rules_file() {
   local _ioc_rules_file="${2:-${SCRIPT_DIR}/egress-rules.yaml}"
 
   # Extract network.* fields from the effective config.
-  local _mode _allowed_hosts_json _writable_hosts_json
+  # Note: writable_hosts was removed in rip-cage-ta1o.1 (method-asymmetry deleted).
+  local _mode _allowed_hosts_json
   _mode=$(jq -r '.network.mode // "null"' <<<"$_cfg_json" 2>/dev/null) || _mode="null"
   _allowed_hosts_json=$(jq -c '.network.allowed_hosts // []' <<<"$_cfg_json" 2>/dev/null) || _allowed_hosts_json="[]"
-  _writable_hosts_json=$(jq -c '.network.writable_hosts // []' <<<"$_cfg_json" 2>/dev/null) || _writable_hosts_json="[]"
 
   # Merge baseline ∪ user allowed_hosts (order: baseline first, then user additions).
   local _merged_hosts_json
@@ -3250,11 +3236,9 @@ _generate_egress_rules_file() {
     printf '  - %s\n' "$_h"
   done
 
-  # writable_hosts: subset of allowed_hosts that may receive write (POST/PUT) requests.
-  printf 'writable_hosts:\n'
-  jq -r '.[]' <<<"$_writable_hosts_json" 2>/dev/null | while IFS= read -r _wh; do
-    printf '  - %s\n' "$_wh"
-  done
+  # Note: writable_hosts was removed in rip-cage-ta1o.1 (method-asymmetry / write-gate
+  # deleted). decide() in rip_cage_egress.py ignores writable_hosts; it is no longer
+  # emitted in the generated rules file.
 
   # IOC denylist floor — always emitted, non-overridable by user config.
   # Read from the IOC rules file (_ioc_rules_file, see parameter above) so
@@ -3294,7 +3278,8 @@ _up_resolve_egress_rules() {
     _eff_config=$(jq -c '.config' <<<"$_eff_result")
   else
     # No config files present: schema defaults (network.mode=null = legacy posture).
-    _eff_config='{"network":{"allowed_hosts":[],"writable_hosts":[],"mode":null}}'
+    # Note: writable_hosts removed in rip-cage-ta1o.1.
+    _eff_config='{"network":{"allowed_hosts":[],"mode":null}}'
   fi
 
   # rip-cage-4c5.3: union manifest-declared egress hosts into network.allowed_hosts.
@@ -3558,10 +3543,10 @@ _up_reload_tcp22_allowlist() {
 # Both sidecars load their rules ONCE at process startup — by design, not by watching
 # the YAML file (D10: effective config changes only at rc up / rc reload). cmd_reload
 # regenerates egress-rules.yaml and the bind-mount shows the new content in-container,
-# but the running mitmdump / DNS resolver still hold the stale rules_doc cached at
+# but the running router / DNS resolver still hold the stale rules_doc cached at
 # startup. Killing the inner process lets the restart-loop wrappers (rip-proxy-start.sh
 # / rip-dns-start.sh) relaunch it with fresh rules. The wrapper scripts' argv is the
-# .sh path (not "mitmdump" / "rip_cage_dns.py"), so the -f patterns never match the
+# .sh path (not "rip_cage_router.py" / "rip_cage_dns.py"), so the -f patterns never match the
 # wrappers — they survive to perform the relaunch.
 #
 # Caller guards on the rc.egress label (skips when egress=off).
@@ -3582,9 +3567,9 @@ _up_reload_egress_proxy() {
         _i=$((_i+1)); sleep 0.2
       done
     }
-    _rip_bounce mitmdump
+    _rip_bounce rip_cage_router.py
     _rip_bounce rip_cage_dns.py
-    # Settle: allow mitmdump to bind :8080 and the DNS resolver to bind :5300.
+    # Settle: allow the router to bind :8080 and the DNS resolver to bind :5300.
     sleep 1
   ' 2>/dev/null || true
 }
@@ -5089,7 +5074,7 @@ cmd_reload() {
     _up_reload_tcp22_allowlist "$name"
     # rip-cage-hhh.4 / ADR-012 D9: bounce the egress proxy + DNS sidecar so they
     # re-read the regenerated egress-rules.yaml. Without this, allowlist/mode
-    # changes never reach the running mitmdump (it caches rules at startup).
+    # changes never reach the running router (it caches rules at startup).
     _up_reload_egress_proxy "$name"
   fi
 
@@ -5739,19 +5724,19 @@ cmd_doctor() {
   local _egress_ssh_allowed_hosts_json="[]"
 
   if [[ "$running" -eq 1 ]]; then
-    # Egress probe: if label=on, expect mitmdump running as rip-proxy. If off,
-    # expect no mitmdump. "legacy" containers: just report process state.
-    if docker exec "$name" pgrep -u rip-proxy mitmdump >/dev/null 2>&1; then
+    # Egress probe: if label=on, expect the SNI router running as rip-proxy. If off,
+    # expect no router. "legacy" containers: just report process state.
+    if docker exec "$name" pgrep -u rip-proxy -f rip_cage_router.py >/dev/null 2>&1; then
       if [[ "$egress_label" == "off" ]]; then
-        egress_probe="WARN — mitmdump running but label=off"
+        egress_probe="WARN — egress router running but label=off"
       else
-        egress_probe="OK — mitmdump running"
+        egress_probe="OK — egress router running"
       fi
     else
       if [[ "$egress_label" == "on" ]]; then
-        egress_probe="FAIL — label=on but no mitmdump process"
+        egress_probe="FAIL — label=on but no egress router process"
       else
-        egress_probe="OK — no mitmdump (expected for egress=off)"
+        egress_probe="OK — no egress router (expected for egress=off)"
       fi
     fi
 
@@ -6068,7 +6053,6 @@ mounts.symlinks.on_dangling|selection_list|"follow"|follow,warn,skip,error
 mounts.symlinks.scope|selection_list|"file"|file,parent
 mounts.symlinks.mode|selection_list|"rw"|ro,rw
 network.allowed_hosts|additive_list|[]
-network.writable_hosts|additive_list|[]
 network.mode|selection_list|null|observe,block
 dcg.packs|additive_list|[]
 dcg.custom_rule_paths|additive_list|[]
@@ -8687,19 +8671,8 @@ _load_effective_config() {
   effective=$(_config_merge "$global_json" "$project_json")
   provenance=$(_config_provenance "$global_json" "$project_json")
 
-  # Cross-field constraint: network.writable_hosts ⊆ network.allowed_hosts
-  # Validate on effective (merged) config so both layers are considered.
-  local _wh_violations
-  _wh_violations=$(jq -r '
-    (.network.allowed_hosts // []) as $allowed |
-    (.network.writable_hosts // []) as $writable |
-    $writable[] | select(. as $h | ($allowed | any(. == $h)) | not)
-  ' <<<"$effective" 2>/dev/null || true)
-  if [[ -n "$_wh_violations" ]]; then
-    echo "Error: network.writable_hosts contains host(s) not in network.allowed_hosts: $(echo "$_wh_violations" | tr '\n' ' ')" >&2
-    echo "  Every writable_hosts entry must also appear in allowed_hosts." >&2
-    return 1
-  fi
+  # Note: network.writable_hosts cross-field constraint removed in rip-cage-ta1o.1
+  # (method-asymmetry / write-gate fully deleted; writable_hosts is no longer a live config field).
 
   # Canonical-form hash so equivalent reordering doesn't churn the label.
   sha=$(jq -cS '.' <<<"$effective" | shasum -a 256 | awk '{print $1}')
@@ -8904,7 +8877,7 @@ _config_label_value() {
 # hint from _config_emit_hint when label/snapshot drift is detected.
 # rip-cage-hhh.2: network.* fields added as reload-eligible — rc reload regenerates
 # the egress-rules file when these change (D10: regeneration ONLY at rc up / rc reload).
-_RC_RELOAD_ELIGIBLE_PATHS='ssh.allowed_hosts network.allowed_hosts network.writable_hosts network.mode'
+_RC_RELOAD_ELIGIBLE_PATHS='ssh.allowed_hosts network.allowed_hosts network.mode'
 
 # Path to the per-container "applied config" snapshot. Written at cmd_up
 # create-time, resume-time (after _up_resolve_ssh_allowlists), and after
