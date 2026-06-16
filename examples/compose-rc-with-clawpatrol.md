@@ -9,7 +9,7 @@ This recipe shows how to attach [clawpatrol](https://github.com/denoland/clawpat
 
 **Important notes:**
 
-- This recipe describes the **Linux-cage production path** (the validated-in-production path). A macOS-host path requires a signed system-extension app and GUI approval — agent-hostile; macOS host composition is dev-only per [ADR-026 D9](../docs/decisions/ADR-026-containment-mediation-identity.md).
+- This recipe describes the **Linux-cage production path** (the supported path). A macOS-host path requires a signed system-extension app and GUI approval — agent-hostile, so macOS-host composition is dev-only; the Linux container is the production path per [ADR-026 D5](../docs/decisions/ADR-026-containment-mediation-identity.md) (its open-validation note: the spike's routing-attach ran on a macOS host as proof-of-mechanism; Linux-cage validation is bead `rip-cage-ta1o.4`).
 - The gateway-setup and credential-injection steps have been validated headlessly end-to-end (a spike confirmed: agent sent no auth header; httpbin.org/headers echoed back the real injected token). The **container-side routing attach** on Linux is proof-of-mechanism (spike ran on macOS); end-to-end Linux-cage validation is tracked in bead `rip-cage-ta1o.4`.
 - If exact flags differ from what's shown here, consult the upstream source at [github.com/denoland/clawpatrol](https://github.com/denoland/clawpatrol) and note any discrepancy as `<!-- verify against upstream -->`.
 - This file lives under `examples/` per [ADR-005 D12](../docs/decisions/ADR-005-ecosystem-tools.md) — rip-cage bundles nothing; this is a copyable recipe, not a baked integration.

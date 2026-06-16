@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Egress reshaped from a TLS-MITM proxy into a pure SNI destination router** (epic rip-cage-ta1o; [ADR-026](docs/decisions/ADR-026-containment-mediation-identity.md), [ADR-012](docs/decisions/ADR-012-egress-firewall.md) D2/D4/D5/D6). HTTP/HTTPS egress no longer terminates TLS or installs a rip-cage CA — the router reads the SNI in the clear, allow/denies the **destination host**, and splices the still-sealed bytes through. The agent now sees the **real upstream certificate**; no `NODE_EXTRA_CA_CERTS` / rip-cage CA is installed. Force-through (iptables capture + startup on-path selftest), destination allow/deny, the IOC floor, and the DNS sidecar all carry over. Content-layer enforcement (method/path, credential injection) is delegated to a **composed external mediator** — see the new `docs/reference/composition-seam.md` + `examples/compose-rc-with-clawpatrol.md`. (rip-cage-ta1o.1/.3)
+- **DNS resolver gains a `network.dns.forward_to` forward-to-specialist seam** — clean queries (those the built-in exfil heuristic passes) can forward to a configurable upstream resolver (NextDNS / Umbrella / dnsdist / Zeek / a local forwarder) instead of the default `8.8.8.8`. Tool-agnostic (a configurable address, not a blessed product). The built-in heuristic and port-53 force-through are unchanged. (rip-cage-ta1o.2; [ADR-012](docs/decisions/ADR-012-egress-firewall.md) D9)
+
+### Removed
+
+- **`network.writable_hosts` method-axis write-gate** — removed with the TLS-MITM stack it depended on (a pure SNI router can't see HTTP method/path). A `writable_hosts:` block in `.rip-cage.yaml` is now silently ignored. Method-asymmetry was leaky theater (GET still leaks via DNS / URL-query / allowlisted-API abuse) and is superseded by destination-only routing; per-request method/path policy returns when an external mediator is composed. (rip-cage-ta1o.1; [ADR-012](docs/decisions/ADR-012-egress-firewall.md) D2)
+
 ## [0.8.0] - 2026-06-15
 
 ### Changed

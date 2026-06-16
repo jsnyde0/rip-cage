@@ -216,6 +216,7 @@ Rip-cage's network egress firewall reads `network.*` to decide what outbound tra
 |---|---|---|---|
 | `network.mode` | scalar | unset (legacy) | `observe` (log all outbound destinations, block nothing — default for new cages) or `block` (enforce the allowlist). Absence means legacy behavior — cages created before egress shipped run the old denylist with no `network.mode`; non-regression per [ADR-021](../decisions/ADR-021-layered-rip-cage-config.md) D5. |
 | `network.allowed_hosts` | additive_list | `[]` | Domains allowed for HTTP/HTTPS egress, and the destinations reachable on TCP-22 (git-over-ssh). Effective allowlist = baseline ∪ global ∪ project. Project EXPANDS; cannot contract. The agent inside the cage cannot mutate this — edits apply via the host-only `rc reload`. |
+| `network.dns.forward_to` | scalar | unset (→ `8.8.8.8`) | Upstream resolver the DNS sidecar forwards **clean** queries to (`host` or `host:port`). The built-in exfil heuristic always runs first regardless; this only changes where queries that pass it go — point it at a DNS-exfil specialist (NextDNS / Cisco Umbrella / dnsdist / Zeek / a local forwarder). Tool-agnostic (a configurable address, not a blessed product — ADR-005 D12). Reload-eligible via `rc reload`. |
 
 There is also an **IOC floor** — a curated denylist of known exfil sinks — that is always enforced and **cannot be overridden** by `network.allowed_hosts`. The project allowlist can broaden but never shrink below this floor.
 
@@ -229,6 +230,8 @@ network:
   allowed_hosts:
     - api.deepseek.com        # added by `rc allowlist promote`
     - files.example-cdn.net
+  dns:
+    forward_to: "192.0.2.1:5353"   # optional: forward clean DNS queries to a specialist
 ```
 
 `network.allowed_hosts` follows the **additive-list** merge rule (global ∪ project, deduplicated, global first — same as `ssh.allowed_hosts`). Edits to `network.allowed_hosts` are reload-eligible via `rc reload`; changing `network.mode` likewise applies via `rc reload`. Use `rc allowlist add` / `rc allowlist promote` (host-only) rather than hand-editing.
