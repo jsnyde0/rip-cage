@@ -74,6 +74,10 @@ BUFFER_SIZE = 65536
 CONNECT_TIMEOUT = 10   # seconds to connect to upstream
 SPLICE_TIMEOUT = 300   # seconds of inactivity before closing a proxied connection
 
+# Default port for the HTTP mediator when http_forward_to omits a port.
+# This matches the well-known HTTP proxy port convention.
+_MEDIATOR_DEFAULT_PORT = 8888
+
 # SO_ORIGINAL_DST: recovers the pre-REDIRECT destination from the kernel.
 # Linux-only: netfilter sets this on REDIRECT'd connections.
 SO_ORIGINAL_DST = 80
@@ -97,6 +101,107 @@ def _load_rules() -> dict:
     except Exception as exc:
         logging.error("rip-cage router: failed to load rules: %s — fail-closed", exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# HTTP CONNECT forward seam (rip-cage-ta1o.5.2, ADR-026 D5)
+# ---------------------------------------------------------------------------
+def _resolve_upstream(rules_doc: Optional[dict]) -> Optional[Tuple[str, int]]:
+    """Resolve the HTTP mediator address from the rules doc.
+
+    Reads 'http_forward_to' (stored in the rules YAML) and parses it as
+    host or host:port. Returns None when the field is absent or null, which
+    means origin-splice (byte-identical to today's behavior).
+
+    This is the HTTP forward-to seam (ADR-026 D5, rip-cage-ta1o.5.2):
+    a tool-agnostic configurable mediator address — NOT a named product.
+    The field holds a bare address; callers compose any co-located mediator
+    by pointing http_forward_to at its listen address.
+
+    Returns: (host: str, port: int) or None
+    """
+    if rules_doc is None:
+        return None
+    raw = rules_doc.get("http_forward_to")
+    if not raw:
+        return None
+    raw_str = str(raw).strip()
+    if not raw_str:
+        return None
+    # Parse host:port — handle IPv6 addresses wrapped in brackets.
+    if raw_str.startswith("["):
+        # IPv6 bracket form: [::1]:8888
+        bracket_end = raw_str.find("]")
+        if bracket_end == -1:
+            return (raw_str, _MEDIATOR_DEFAULT_PORT)
+        host = raw_str[1:bracket_end]
+        rest = raw_str[bracket_end + 1:]
+        if rest.startswith(":"):
+            try:
+                port = int(rest[1:])
+            except ValueError:
+                port = _MEDIATOR_DEFAULT_PORT
+        else:
+            port = _MEDIATOR_DEFAULT_PORT
+        return (host, port)
+    # Non-IPv6: split on last colon (host:port form)
+    if ":" in raw_str:
+        parts = raw_str.rsplit(":", 1)
+        try:
+            port = int(parts[1])
+            return (parts[0], port)
+        except ValueError:
+            # Not a valid port — treat the whole string as a hostname
+            return (raw_str, _MEDIATOR_DEFAULT_PORT)
+    return (raw_str, _MEDIATOR_DEFAULT_PORT)
+
+
+def _connect_via_mediator(
+    mediator_host: str,
+    mediator_port: int,
+    orig_host: str,
+    orig_port: int,
+) -> socket.socket:
+    """Open a TCP connection to the mediator via HTTP CONNECT.
+
+    Sends CONNECT <orig_host>:<orig_port> HTTP/1.1 and awaits 200.
+    Returns the connected socket ready for traffic splicing.
+
+    Raises OSError on failure (caller handles it).
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(CONNECT_TIMEOUT)
+    sock.connect((mediator_host, mediator_port))
+
+    # Send HTTP CONNECT request
+    connect_req = (
+        f"CONNECT {orig_host}:{orig_port} HTTP/1.1\r\n"
+        f"Host: {orig_host}:{orig_port}\r\n"
+        f"\r\n"
+    )
+    sock.sendall(connect_req.encode("latin-1"))
+
+    # Read response until \r\n\r\n (end of HTTP headers)
+    resp = b""
+    while b"\r\n\r\n" not in resp:
+        chunk = sock.recv(BUFFER_SIZE)
+        if not chunk:
+            sock.close()
+            raise OSError("Mediator closed connection before sending 200")
+        resp += chunk
+        if len(resp) > 8192:
+            sock.close()
+            raise OSError("Mediator response too large — aborting")
+
+    # Verify the mediator accepted the CONNECT
+    first_line = resp.split(b"\r\n", 1)[0].decode("latin-1", errors="replace")
+    parts = first_line.split(None, 2)
+    if len(parts) < 2 or parts[1] != "200":
+        sock.close()
+        raise OSError(f"Mediator rejected CONNECT: {first_line!r}")
+
+    sock.settimeout(None)
+    return sock
 
 
 # ---------------------------------------------------------------------------
@@ -367,18 +472,38 @@ def _handle_connection(conn: socket.socket, addr: Tuple, rules_doc: Optional[dic
             _log_observe(host or "", result)
             # Observe mode: fall through to forward
 
-        # Allow: connect to original destination and splice
+        # Allow: connect to original destination and splice.
+        # If http_forward_to is configured, use the HTTP CONNECT handoff to the
+        # mediator (ADR-026 D5). Otherwise, origin-splice directly (default).
         if not orig_dst:
             # No original destination available — cannot forward
             logging.warning("rip-cage router: no SO_ORIGINAL_DST for %s", addr)
             return
 
         upstream_ip, upstream_port = orig_dst
+        # Resolve the mediator address (None = origin-splice, the default).
+        mediator = _resolve_upstream(rules_doc)
+
         try:
-            upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            upstream.settimeout(CONNECT_TIMEOUT)
-            upstream.connect((upstream_ip, upstream_port))
-            upstream.settimeout(None)
+            if mediator is not None:
+                # HTTP CONNECT forward seam (rip-cage-ta1o.5.2, ADR-026 D5).
+                # Open to mediator, send CONNECT <orig-dst-host>:<port>, await 200,
+                # then replay the buffered first_chunk and splice both ways.
+                mediator_host, mediator_port = mediator
+                # Use the SNI hostname (host) as the CONNECT target when available;
+                # fall back to the orig_dst IP if no hostname was extracted.
+                connect_target_host = host if host else upstream_ip
+                upstream = _connect_via_mediator(
+                    mediator_host, mediator_port,
+                    connect_target_host, upstream_port,
+                )
+            else:
+                # Origin-splice: direct TCP connection to the original destination.
+                # Byte-identical to today's behavior when http_forward_to is null.
+                upstream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                upstream.settimeout(CONNECT_TIMEOUT)
+                upstream.connect((upstream_ip, upstream_port))
+                upstream.settimeout(None)
         except OSError as exc:
             logging.debug("rip-cage router: upstream connect failed %s:%d: %s",
                          upstream_ip, upstream_port, exc)

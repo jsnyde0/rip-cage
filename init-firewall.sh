@@ -394,6 +394,38 @@ if ! iptables -t nat -C OUTPUT -p tcp -m multiport --dports 443,80 \
   iptables -t nat -A OUTPUT -p tcp -m multiport --dports 443,80 \
     -m owner ! --uid-owner "$RIP_PROXY_UID" -j REDIRECT --to-port 8080
 fi
+
+# Step 1a: Loop-prevention uid-exemptions for co-located mediators (ADR-026 D5).
+# Each baked mediator has a dedicated uid stored at:
+#   /etc/rip-cage/mediators/<name>/run_as_uid
+# The mediator's already-allowed re-originated egress must not be re-REDIRECTed
+# back into the router (infinite loop). We add an iptables OUTPUT RETURN rule
+# per mediator uid — the same mechanism applied above to rip-proxy's own uid,
+# but expressed as an ACCEPT/RETURN before the REDIRECT chain fires.
+# The floor was enforced at the router before forwarding; this exemption does NOT
+# widen the destination floor — it only stops looping on already-allowed traffic.
+_MEDIATOR_REGISTRY_DIR=/etc/rip-cage/mediators
+if [[ -d "$_MEDIATOR_REGISTRY_DIR" ]]; then
+  for _med_uid_file in "${_MEDIATOR_REGISTRY_DIR}"/*/run_as_uid; do
+    [[ -f "$_med_uid_file" ]] || continue
+    _med_uid_name=$(cat "$_med_uid_file" 2>/dev/null || true)
+    [[ -z "$_med_uid_name" ]] && continue
+    # Resolve uid name to numeric uid. Skip silently if the user doesn't exist yet.
+    _med_numeric_uid=$(id -u "$_med_uid_name" 2>/dev/null || true)
+    [[ -z "$_med_numeric_uid" ]] && continue
+    # Add RETURN rule for the mediator's uid before the REDIRECT rule fires.
+    # This exempts the mediator's TCP 80+443 egress from being re-intercepted.
+    # Flush-before-rebuild (mirrors TCP-22 idempotency discipline): delete any
+    # existing RETURN rules for this uid first, then re-insert at position 1.
+    # A plain -C check is NOT sufficient — it matches anywhere in the chain, so
+    # on reload a REDIRECT could be appended between runs, leaving the RETURN
+    # after the REDIRECT and silently re-enabling the loop.
+    while iptables -t nat -D OUTPUT -p tcp -m multiport --dports 443,80 \
+          -m owner --uid-owner "$_med_numeric_uid" -j RETURN 2>/dev/null; do :; done
+    iptables -t nat -I OUTPUT 1 -p tcp -m multiport --dports 443,80 \
+      -m owner --uid-owner "$_med_numeric_uid" -j RETURN
+  done
+fi
 # DROP: block UDP port 443 (HTTP/3/QUIC) to force HTTP/2 fallback.
 # Applies to all UIDs including rip-proxy. HTTP clients fall back to TCP automatically.
 if ! iptables -C OUTPUT -p udp --dport 443 -j DROP 2>/dev/null; then

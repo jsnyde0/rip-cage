@@ -3211,10 +3211,11 @@ _generate_egress_rules_file() {
 
   # Extract network.* fields from the effective config.
   # Note: writable_hosts was removed in rip-cage-ta1o.1 (method-asymmetry deleted).
-  local _mode _allowed_hosts_json _dns_forward_to
+  local _mode _allowed_hosts_json _dns_forward_to _http_forward_to
   _mode=$(jq -r '.network.mode // "null"' <<<"$_cfg_json" 2>/dev/null) || _mode="null"
   _allowed_hosts_json=$(jq -c '.network.allowed_hosts // []' <<<"$_cfg_json" 2>/dev/null) || _allowed_hosts_json="[]"
   _dns_forward_to=$(jq -r '(.network.dns.forward_to // "null")' <<<"$_cfg_json" 2>/dev/null) || _dns_forward_to="null"
+  _http_forward_to=$(jq -r '(.network.http.forward_to // "null")' <<<"$_cfg_json" 2>/dev/null) || _http_forward_to="null"
 
   # Merge baseline ∪ user allowed_hosts (order: baseline first, then user additions).
   local _merged_hosts_json
@@ -3248,6 +3249,15 @@ _generate_egress_rules_file() {
   # Field name 'dns_forward_to' (underscore) matches what rip_cage_dns.py reads.
   if [[ "$_dns_forward_to" != "null" && -n "$_dns_forward_to" ]]; then
     printf 'dns_forward_to: %s\n' "$_dns_forward_to"
+  fi
+
+  # http_forward_to: emit only when network.http.forward_to is non-null.
+  # The SNI router reads this field from the rules doc to forward allowed traffic
+  # to a co-located HTTP mediator via HTTP CONNECT instead of origin-splicing.
+  # This is the HTTP forward-to seam (ADR-026 D5, rip-cage-ta1o.5.2).
+  # Field name 'http_forward_to' (underscore) matches what rip_cage_router.py reads.
+  if [[ "$_http_forward_to" != "null" && -n "$_http_forward_to" ]]; then
+    printf 'http_forward_to: %s\n' "$_http_forward_to"
   fi
 
   # IOC denylist floor — always emitted, non-overridable by user config.
@@ -6066,6 +6076,7 @@ mounts.symlinks.mode|selection_list|"rw"|ro,rw
 network.allowed_hosts|additive_list|[]
 network.mode|selection_list|null|observe,block
 network.dns.forward_to|scalar|null
+network.http.forward_to|scalar|null
 dcg.packs|additive_list|[]
 dcg.custom_rule_paths|additive_list|[]
 session.multiplexer|selection_list|"none"

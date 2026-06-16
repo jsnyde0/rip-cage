@@ -16,6 +16,7 @@
 #   G11 baseline hosts present even when user adds their own allowed_hosts
 #   G12 IOC floor read from the passed rules file (not a hardcoded heredoc)
 #   G13 dns_forward_to emitted iff network.dns.forward_to set (rip-cage-ta1o.2 DNS seam)
+#   G14 http_forward_to emitted iff network.http.forward_to set (rip-cage-ta1o.5.2 HTTP seam)
 #
 # Tests do NOT require docker — pure host-side function logic only.
 # The function _generate_egress_rules_file takes effective config JSON on stdin
@@ -62,6 +63,9 @@ LEGACY_CFG='{"ssh":{"allowed_hosts":[],"allowed_keys":null},"network":{"allowed_
 
 # Config with a DNS forward-to-specialist upstream set (rip-cage-ta1o.2).
 DNS_FWD_CFG='{"ssh":{"allowed_hosts":[],"allowed_keys":null},"network":{"allowed_hosts":["api.example.com"],"mode":"block","dns":{"forward_to":"192.0.2.1:5353"}},"mounts":{"denylist":[]}}'
+
+# Config with an HTTP forward-to mediator set (rip-cage-ta1o.5.2).
+HTTP_FWD_CFG='{"ssh":{"allowed_hosts":[],"allowed_keys":null},"network":{"allowed_hosts":["api.example.com"],"mode":"block","http":{"forward_to":"127.0.0.1:9000"}},"mounts":{"denylist":[]}}'
 
 echo "=== test-egress-rules-gen.sh — per-cage egress rules generation ==="
 
@@ -278,6 +282,31 @@ $out"
   fi
 }
 
+# G14: http_forward_to emitted when network.http.forward_to is set; absent otherwise
+# (rip-cage-ta1o.5.2: HTTP forward-to-mediator seam). Verifies the rc -> egress-rules.yaml
+# generation path that rip_cage_router.py's read tests cannot exercise.
+test_g14a_http_forward_to_emitted_when_set() {
+  local out
+  out=$(gen_rules "$HTTP_FWD_CFG")
+  if echo "$out" | grep -q "^http_forward_to:" && echo "$out" | grep -q "127.0.0.1:9000"; then
+    pass "G14a http_forward_to emitted with configured mediator when network.http.forward_to set"
+  else
+    fail "G14a expected 'http_forward_to: 127.0.0.1:9000' in generated file; got:
+$out"
+  fi
+}
+
+test_g14b_http_forward_to_absent_when_unset() {
+  local out
+  out=$(gen_rules "$BLOCK_CFG")
+  if ! echo "$out" | grep -q "^http_forward_to:"; then
+    pass "G14b http_forward_to NOT emitted when network.http.forward_to absent (router defaults to origin-splice)"
+  else
+    fail "G14b http_forward_to: must NOT appear when forward_to is unset; found it in:
+$out"
+  fi
+}
+
 # Run all tests
 test_g1_baseline_whitelist_present
 test_g2_ioc_floor_present
@@ -293,6 +322,8 @@ test_g11_baseline_preserved_with_user_hosts
 test_g12_rules_read_from_canonical_egress_rules_yaml
 test_g13a_dns_forward_to_emitted_when_set
 test_g13b_dns_forward_to_absent_when_unset
+test_g14a_http_forward_to_emitted_when_set
+test_g14b_http_forward_to_absent_when_unset
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

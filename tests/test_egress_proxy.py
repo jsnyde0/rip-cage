@@ -22,8 +22,13 @@ Removed from this file (rip-cage-ta1o.1):
   - TestWritableHostsGating: method-asymmetry / writable_hosts write-gate is DELETED.
     POST to an allowlisted host behaves identically to GET. See TestMethodSymmetry.
 """
+import socket
+import struct
 import sys
+import threading
+import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 # Import the module under test. The pure decide() function is importable
@@ -31,7 +36,13 @@ from pathlib import Path
 try:
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from rip_cage_egress import decide, DecisionResult, STRUCTURED_FIELD_NAMES
-    from rip_cage_router import _extract_http_host
+    import rip_cage_router
+    from rip_cage_router import (
+        _extract_http_host,
+        _resolve_upstream,
+        _handle_connection,
+        _connect_via_mediator,
+    )
 except ImportError as e:
     # Provide a helpful message if the import fails for a different reason
     print(f"Import error: {e}", file=sys.stderr)
@@ -675,6 +686,552 @@ class TestNoSniIpLiteralHandling(unittest.TestCase):
         # doesn't match any IOC rule — the IP just isn't in allowed_hosts.
         self.assertEqual(result.rule_id, "not-whitelisted",
                          "IP literal denial should come from not-whitelisted, not an IOC rule")
+
+
+# ---------------------------------------------------------------------------
+# rip-cage-ta1o.5.2 — HTTP CONNECT forward seam
+#
+# Tests for:
+#   (a) _resolve_upstream() reads http_forward_to from rules doc
+#   (b) CONNECT-speaking echo mediator integration probe
+#   (c) Floor-before-forward: denied dst never reaches mediator (count=0)
+#   (d) null http_forward_to = origin-splice (no mediator)
+#   (e) Startup/observe parity: covered by existing tests
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: _resolve_upstream()
+# ---------------------------------------------------------------------------
+class TestResolveUpstream(unittest.TestCase):
+    """Unit tests for _resolve_upstream() — reads http_forward_to from rules doc."""
+
+    def test_null_doc_returns_none(self):
+        """_resolve_upstream(None) returns None (origin-splice, no mediator)."""
+        result = _resolve_upstream(None)
+        self.assertIsNone(result, "_resolve_upstream(None) must return None")
+
+    def test_missing_http_forward_to_returns_none(self):
+        """Rules doc without http_forward_to returns None."""
+        doc = {"version": 2, "mode": "block", "allowed_hosts": [], "rules": []}
+        result = _resolve_upstream(doc)
+        self.assertIsNone(result)
+
+    def test_host_only_returns_tuple_with_default_port(self):
+        """http_forward_to='127.0.0.1' returns ('127.0.0.1', 8888) with default port."""
+        doc = {"version": 2, "rules": [], "http_forward_to": "127.0.0.1"}
+        host, port = _resolve_upstream(doc)
+        self.assertEqual(host, "127.0.0.1")
+        self.assertIsInstance(port, int)
+        self.assertGreater(port, 0)
+
+    def test_host_colon_port_returns_parsed_tuple(self):
+        """http_forward_to='127.0.0.1:9000' returns ('127.0.0.1', 9000)."""
+        doc = {"version": 2, "rules": [], "http_forward_to": "127.0.0.1:9000"}
+        host, port = _resolve_upstream(doc)
+        self.assertEqual(host, "127.0.0.1")
+        self.assertEqual(port, 9000)
+
+    def test_empty_string_returns_none(self):
+        """http_forward_to='' returns None."""
+        doc = {"version": 2, "rules": [], "http_forward_to": ""}
+        result = _resolve_upstream(doc)
+        self.assertIsNone(result)
+
+    def test_explicit_null_returns_none(self):
+        """http_forward_to=None in doc returns None."""
+        doc = {"version": 2, "rules": [], "http_forward_to": None}
+        result = _resolve_upstream(doc)
+        self.assertIsNone(result)
+
+
+# ---------------------------------------------------------------------------
+# Integration probe: CONNECT-speaking echo mediator
+#
+# This class stands up a minimal TCP server that:
+#   - Receives an HTTP CONNECT request and records the target
+#   - Replies 200 Connection established
+#   - Then echoes all subsequent bytes back (echo mediator)
+#   - Counts total connections received
+#
+# We then build a router-like CONNECT handoff path and verify:
+#   (a) The CONNECT target matches the original destination
+#   (b) The first_chunk (ClientHello) is replayed AFTER the 200
+#   (c) The deny path never reaches the mediator (count=0)
+#   (d) Null http_forward_to → no mediator contact at all
+# ---------------------------------------------------------------------------
+
+def _start_echo_mediator(port: int, stop_event: threading.Event):
+    """Minimal CONNECT-speaking echo server for testing.
+
+    Listens on 127.0.0.1:<port>. For each connection:
+      - Reads the CONNECT request line
+      - Records the target in the global list
+      - Sends 200
+      - Echoes all subsequent data
+    """
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port))
+    srv.listen(5)
+    srv.settimeout(0.5)
+
+    while not stop_event.is_set():
+        try:
+            conn, _ = srv.accept()
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        try:
+            # Read CONNECT request (read until \r\n\r\n)
+            buf = b""
+            conn.settimeout(2.0)
+            while b"\r\n\r\n" not in buf:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+            # Parse target from "CONNECT host:port HTTP/1.1\r\n..."
+            first_line = buf.split(b"\r\n")[0].decode("latin-1", errors="replace")
+            parts = first_line.split()
+            if len(parts) >= 2 and parts[0].upper() == "CONNECT":
+                _MEDIATOR_CONNECT_TARGETS.append(parts[1])
+            # Reply 200
+            conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            # Echo all remaining data back
+            conn.settimeout(0.5)
+            while not stop_event.is_set():
+                try:
+                    data = conn.recv(4096)
+                    if not data:
+                        break
+                    conn.sendall(data)
+                except socket.timeout:
+                    break
+                except OSError:
+                    break
+        except OSError:
+            pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    srv.close()
+
+
+# Global mutable state for the echo mediator integration test
+_MEDIATOR_CONNECT_TARGETS = []
+_MEDIATOR_CONNECTION_COUNT = 0
+
+
+def _start_counting_echo_mediator(port: int, stop_event: threading.Event):
+    """Like _start_echo_mediator, but also counts every inbound connection."""
+    global _MEDIATOR_CONNECTION_COUNT
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port))
+    srv.listen(5)
+    srv.settimeout(0.5)
+
+    while not stop_event.is_set():
+        try:
+            conn, _ = srv.accept()
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        _MEDIATOR_CONNECTION_COUNT += 1
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+    srv.close()
+
+
+def _do_connect_handoff(mediator_host: str, mediator_port: int,
+                        orig_host: str, orig_port: int,
+                        first_chunk: bytes) -> socket.socket:
+    """Perform the HTTP CONNECT handoff to a mediator.
+
+    Opens a TCP connection to the mediator, sends CONNECT <orig_host>:<orig_port>,
+    awaits 200, replays first_chunk, and returns the connected socket.
+
+    Raises OSError or AssertionError on failure.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(3.0)
+    sock.connect((mediator_host, mediator_port))
+
+    # Send CONNECT request
+    connect_req = f"CONNECT {orig_host}:{orig_port} HTTP/1.1\r\nHost: {orig_host}:{orig_port}\r\n\r\n"
+    sock.sendall(connect_req.encode())
+
+    # Read 200 response
+    resp = b""
+    while b"\r\n\r\n" not in resp:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise OSError("Mediator closed connection before 200")
+        resp += chunk
+
+    assert b"200" in resp, f"Expected 200 from mediator, got: {resp[:200]!r}"
+
+    # Replay first_chunk (simulates the router replaying the buffered ClientHello)
+    if first_chunk:
+        sock.sendall(first_chunk)
+
+    return sock
+
+
+def _run_handle_connection_via_socketpair(
+    rules_doc: dict,
+    fake_orig_dst,  # (host, port) that _get_original_dst should return
+    first_chunk: bytes,
+) -> socket.socket:
+    """Drive _handle_connection through the real routing code using a socketpair.
+
+    Creates a socketpair, writes first_chunk to the client end, patches
+    _get_original_dst to return fake_orig_dst, then runs _handle_connection
+    in a thread.  Returns the client-end socket so the caller can read any
+    response (e.g. RST/close detection) and assert on mediator state.
+
+    The caller is responsible for closing the returned socket.
+    """
+    client_sock, router_sock = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    # Write the first chunk so the router can recv it
+    client_sock.sendall(first_chunk)
+
+    def run():
+        with unittest.mock.patch.object(
+            rip_cage_router, "_get_original_dst", return_value=fake_orig_dst
+        ):
+            _handle_connection(router_sock, ("127.0.0.1", 99999), rules_doc)
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    return client_sock, t
+
+
+class TestHttpConnectForwardSeam(unittest.TestCase):
+    """Integration probe: HTTP CONNECT forward seam (rip-cage-ta1o.5.2).
+
+    All tests that exercise the floor-before-forward invariant or the
+    _connect_via_mediator path drive the REAL _handle_connection via
+    _run_handle_connection_via_socketpair.  The _do_connect_handoff
+    test-local reimplementation is REMOVED from the allow path so the
+    tests cannot pass without the production routing code running.
+    """
+
+    def setUp(self):
+        global _MEDIATOR_CONNECT_TARGETS, _MEDIATOR_CONNECTION_COUNT
+        _MEDIATOR_CONNECT_TARGETS = []
+        _MEDIATOR_CONNECTION_COUNT = 0
+        self._stop = threading.Event()
+
+    def tearDown(self):
+        self._stop.set()
+        time.sleep(0.15)
+
+    def _find_free_port(self) -> int:
+        """Bind to port 0 and return the OS-assigned port."""
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    # (a) ALLOWED connection → real _handle_connection → real _connect_via_mediator
+    #     CONNECT target == real original destination; first_chunk replayed through mediator.
+    def test_allowed_connection_reaches_mediator_with_correct_connect_target(self):
+        """(a) On ALLOW, real _handle_connection → _connect_via_mediator; CONNECT target correct.
+
+        Drives the PRODUCTION _handle_connection (with _get_original_dst patched)
+        and the PRODUCTION _connect_via_mediator.  The test-local _do_connect_handoff
+        is NOT used here — if the production routing code is bypassed this test fails.
+
+        Uses plain HTTP (port 80) so _extract_http_host("api.github.com") drives the
+        decision and CONNECT target.  The router reads Host: api.github.com, ALLOWS it,
+        opens CONNECT to the echo mediator, replays first_chunk, and splices both ways.
+        """
+        med_port = self._find_free_port()
+        t = threading.Thread(target=_start_echo_mediator,
+                             args=(med_port, self._stop), daemon=True)
+        t.start()
+        time.sleep(0.05)  # let mediator start
+
+        orig_host = "api.github.com"
+        orig_port = 80
+        # Plain HTTP request so _extract_http_host extracts the correct host.
+        first_chunk = f"GET /repos HTTP/1.1\r\nHost: {orig_host}\r\nConnection: keep-alive\r\n\r\n".encode()
+
+        # Rules doc: api.github.com ALLOWED; mediator at med_port.
+        rules_doc = _block_doc(allowed_hosts=[orig_host])
+        rules_doc["http_forward_to"] = f"127.0.0.1:{med_port}"
+
+        # Drive the REAL router via _handle_connection.
+        # fake_orig_dst port 80 → plain-HTTP path; IP is the orig destination.
+        client_sock, handler_thread = _run_handle_connection_via_socketpair(
+            rules_doc,
+            fake_orig_dst=("10.0.0.1", orig_port),
+            first_chunk=first_chunk,
+        )
+        try:
+            # The router splices first_chunk to the mediator, which echoes it back.
+            client_sock.settimeout(3.0)
+            echoed = b""
+            try:
+                while len(echoed) < len(first_chunk):
+                    chunk = client_sock.recv(4096)
+                    if not chunk:
+                        break
+                    echoed += chunk
+            except socket.timeout:
+                pass
+        finally:
+            client_sock.close()
+
+        handler_thread.join(timeout=3.0)
+
+        # The CONNECT target must match the SNI/Host extracted by the router.
+        # _extract_http_host returns "api.github.com" from the Host header.
+        # The router uses this as the CONNECT target host.
+        self.assertEqual(len(_MEDIATOR_CONNECT_TARGETS), 1,
+                         f"Expected 1 CONNECT via _handle_connection, got: {_MEDIATOR_CONNECT_TARGETS}")
+        connect_target = _MEDIATOR_CONNECT_TARGETS[0]
+        self.assertEqual(connect_target, f"{orig_host}:{orig_port}",
+                         f"CONNECT target mismatch: {connect_target!r}")
+        # first_chunk was spliced through the mediator and echoed back.
+        self.assertEqual(echoed, first_chunk,
+                         "first_chunk must be replayed through _connect_via_mediator and echoed back")
+
+    # (b) Floor-before-forward: denied dst → real _handle_connection RSTs before
+    #     reaching mediator.  Positive control: allowed dst DOES reach mediator (count ≥ 1).
+    #     Without the positive control the count==0 assertion is vacuous (dead mediator).
+    def test_denied_destination_never_reaches_mediator(self):
+        """(b) DENIED destination: real _handle_connection RSTs; mediator count stays 0.
+
+        Drives the REAL _handle_connection (not just decide()).  Includes a POSITIVE
+        CONTROL: an allowed connection through the same _handle_connection path DOES
+        increment the mediator's connection count, proving the counter is wired and the
+        count==0 on deny is real evidence, not an artefact of a dead mediator.
+
+        Uses plain HTTP (port 80) for both allow and deny paths so _extract_http_host
+        correctly extracts the Host header and drives decide() with the right hostname.
+        The _start_counting_echo_mediator just accepts + closes; _connect_via_mediator
+        will fail (no 200) but the TCP connection is established — incrementing the count.
+        """
+        med_port = self._find_free_port()
+        t = threading.Thread(target=_start_counting_echo_mediator,
+                             args=(med_port, self._stop), daemon=True)
+        t.start()
+        time.sleep(0.05)
+
+        allowed_host = "api.github.com"
+
+        # --- POSITIVE CONTROL: allowed connection DOES reach the mediator ---
+        # Plain HTTP request so _extract_http_host returns "api.github.com" → ALLOW.
+        # The router calls _connect_via_mediator; the counting mediator accepts + closes.
+        # _connect_via_mediator raises OSError (no 200); the router catches it and returns.
+        # Crucially, the TCP connection IS established → count increments to ≥ 1.
+        allowed_http = f"GET / HTTP/1.1\r\nHost: {allowed_host}\r\nConnection: close\r\n\r\n".encode()
+        allowed_rules = _block_doc(allowed_hosts=[allowed_host])
+        allowed_rules["http_forward_to"] = f"127.0.0.1:{med_port}"
+
+        positive_client, positive_thread = _run_handle_connection_via_socketpair(
+            allowed_rules,
+            fake_orig_dst=("10.0.0.1", 80),
+            first_chunk=allowed_http,
+        )
+        positive_client.close()
+        positive_thread.join(timeout=3.0)
+
+        # After the allowed path, the mediator must have seen ≥ 1 connection.
+        time.sleep(0.05)
+        count_after_allow = _MEDIATOR_CONNECTION_COUNT
+        self.assertGreaterEqual(count_after_allow, 1,
+                                "POSITIVE CONTROL: allowed connection must reach the mediator "
+                                f"(count={count_after_allow} — if 0 the mediator is not wired)")
+
+        # --- DENY PATH: denied connection must NOT add to the count ---
+        # Plain HTTP with Host: evil.example.com → _extract_http_host → DENY.
+        # The router RSTs the connection before calling _connect_via_mediator.
+        deny_http = b"GET / HTTP/1.1\r\nHost: evil.example.com\r\nConnection: close\r\n\r\n"
+        deny_rules = _block_doc(allowed_hosts=[allowed_host])
+        deny_rules["http_forward_to"] = f"127.0.0.1:{med_port}"
+
+        deny_client, deny_thread = _run_handle_connection_via_socketpair(
+            deny_rules,
+            fake_orig_dst=("10.0.0.1", 80),
+            first_chunk=deny_http,
+        )
+        # Wait for the router to close/RST the deny client socket.
+        deny_client.settimeout(3.0)
+        try:
+            data = deny_client.recv(4096)
+        except (socket.timeout, OSError):
+            data = b""
+        deny_client.close()
+        deny_thread.join(timeout=3.0)
+
+        time.sleep(0.05)
+        count_after_deny = _MEDIATOR_CONNECTION_COUNT
+        self.assertEqual(count_after_deny, count_after_allow,
+                         f"Mediator count must not increase after a DENIED connection "
+                         f"(before={count_after_allow}, after={count_after_deny})")
+
+    # (c) http_forward_to null → _resolve_upstream returns None (origin-splice)
+    def test_null_forward_to_uses_origin_splice(self):
+        """(c) With http_forward_to null, _resolve_upstream returns None (origin-splice)."""
+        doc = _block_doc(allowed_hosts=["api.github.com"])
+        # No http_forward_to key = None
+        result = _resolve_upstream(doc)
+        self.assertIsNone(result,
+                          "Null http_forward_to must return None (origin-splice behavior)")
+
+    # (d) With http_forward_to set: _resolve_upstream returns a valid (host, port)
+    def test_configured_forward_to_returns_mediator_address(self):
+        """(d) With http_forward_to set, _resolve_upstream returns (host, port)."""
+        doc = _block_doc(allowed_hosts=["api.github.com"])
+        doc["http_forward_to"] = "127.0.0.1:9999"
+        result = _resolve_upstream(doc)
+        self.assertIsNotNone(result, "http_forward_to set must return a (host, port) tuple")
+        host, port = result
+        self.assertEqual(host, "127.0.0.1")
+        self.assertEqual(port, 9999)
+
+    # (e) _resolve_upstream handles host-only (no port) using a default port
+    def test_host_only_forward_to_uses_default_port(self):
+        """(e) http_forward_to='127.0.0.1' (no port) uses a sensible default port."""
+        doc = _block_doc(allowed_hosts=[])
+        doc["http_forward_to"] = "127.0.0.1"
+        result = _resolve_upstream(doc)
+        self.assertIsNotNone(result)
+        host, port = result
+        self.assertEqual(host, "127.0.0.1")
+        self.assertIsInstance(port, int)
+        self.assertGreater(port, 0)
+
+    # (f) _connect_via_mediator: non-200 CONNECT response → fail-closed (OSError)
+    def test_connect_via_mediator_non_200_response_fails_closed(self):
+        """(f) _connect_via_mediator with non-200 response fails closed (raises OSError).
+
+        Exercises the 200-status check at rip_cage_router._connect_via_mediator ~line 199.
+        A mediator that rejects CONNECT with 407/502/etc must cause an OSError, not a
+        silently open tunnel.  Also tests partial/short response (no \\r\\n\\r\\n) and
+        empty response (mediator closes immediately).
+        """
+        def _find_free_port():
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.bind(("127.0.0.1", 0))
+            p = s.getsockname()[1]
+            s.close()
+            return p
+
+        # --- sub-case 1: mediator sends 407 Proxy Auth Required ---
+        stop407 = threading.Event()
+        port407 = _find_free_port()
+
+        def _mediator_407(port, stop):
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", port))
+            srv.listen(5)
+            srv.settimeout(1.0)
+            while not stop.is_set():
+                try:
+                    conn, _ = srv.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                try:
+                    conn.recv(4096)  # drain CONNECT request
+                    conn.sendall(b"HTTP/1.1 407 Proxy Auth Required\r\n\r\n")
+                    conn.close()
+                except OSError:
+                    pass
+            srv.close()
+
+        t407 = threading.Thread(target=_mediator_407, args=(port407, stop407), daemon=True)
+        t407.start()
+        time.sleep(0.05)
+
+        with self.assertRaises(OSError,
+                               msg="_connect_via_mediator must raise OSError on 407 response"):
+            _connect_via_mediator("127.0.0.1", port407, "api.github.com", 443)
+        stop407.set()
+
+        # --- sub-case 2: mediator sends oversized response (> 8192 bytes before \\r\\n\\r\\n) ---
+        stop_big = threading.Event()
+        port_big = _find_free_port()
+
+        def _mediator_oversized(port, stop):
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", port))
+            srv.listen(5)
+            srv.settimeout(1.0)
+            while not stop.is_set():
+                try:
+                    conn, _ = srv.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                try:
+                    conn.recv(4096)
+                    # Send >8192 bytes WITHOUT \r\n\r\n to trigger the size bail-out
+                    conn.sendall(b"X" * 8193)
+                    conn.close()
+                except OSError:
+                    pass
+            srv.close()
+
+        t_big = threading.Thread(target=_mediator_oversized, args=(port_big, stop_big), daemon=True)
+        t_big.start()
+        time.sleep(0.05)
+
+        with self.assertRaises(OSError,
+                               msg="_connect_via_mediator must raise OSError on oversized response"):
+            _connect_via_mediator("127.0.0.1", port_big, "api.github.com", 443)
+        stop_big.set()
+
+        # --- sub-case 3: mediator closes connection immediately (no response) ---
+        stop_close = threading.Event()
+        port_close = _find_free_port()
+
+        def _mediator_close_immediately(port, stop):
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", port))
+            srv.listen(5)
+            srv.settimeout(1.0)
+            while not stop.is_set():
+                try:
+                    conn, _ = srv.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                try:
+                    conn.close()  # close immediately without sending anything
+                except OSError:
+                    pass
+            srv.close()
+
+        t_close = threading.Thread(target=_mediator_close_immediately,
+                                   args=(port_close, stop_close), daemon=True)
+        t_close.start()
+        time.sleep(0.05)
+
+        with self.assertRaises(OSError,
+                               msg="_connect_via_mediator must raise OSError when mediator closes immediately"):
+            _connect_via_mediator("127.0.0.1", port_close, "api.github.com", 443)
+        stop_close.set()
 
 
 if __name__ == "__main__":
