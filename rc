@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Apply strict mode only when executed, not when sourced by a test harness.
+# Mirror the dispatch-skip predicate at the bottom of this file (rc:9482) so the
+# two stay in sync. Piped exec (`bash -s --`, BASH_SOURCE empty) counts as invoked.
+if ! { [[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]]; }; then
+  set -euo pipefail
+fi
 
 # Resolve SCRIPT_DIR through symlinks so `rc build` finds the Dockerfile
 # even when rc is invoked via a symlink (e.g., /usr/local/bin/rc -> .../rip-cage/rc)

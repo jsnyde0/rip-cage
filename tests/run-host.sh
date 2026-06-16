@@ -133,6 +133,7 @@ export RC_CONFIG_GLOBAL="${RC_CONFIG_GLOBAL:-${_RUN_HOST_CFG_DIR}/rip-cage/confi
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${_RUN_HOST_CFG_DIR}}"
 
 # Uncomment each line below after the audit step confirms pass or skip-guard:
+run_test "${SCRIPT_DIR}/test-rc-source-isolation.sh" # rip-cage-k2d5: rc source isolation — set -e must not leak when sourcing rc
 run_test "${SCRIPT_DIR}/test-rc-commands.sh"
 run_test "${SCRIPT_DIR}/test-worktree-support.sh"
 run_test "${SCRIPT_DIR}/test-security-hardening.sh"
