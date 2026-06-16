@@ -1,6 +1,6 @@
 # Network egress firewall
 
-Rip cage watches every outbound connection the agent makes and decides what's allowed to leave. This is a **network-layer** control — distinct from the command-level guard (DCG) that gates what the agent runs in the shell. It's enabled by default on `rc up`; `RIP_CAGE_EGRESS=off` disables it entirely. Under the hood: an L7 TLS-MITM proxy (mitmproxy) intercepts HTTP/HTTPS, a DNS resolver sidecar inspects port-53 queries, and iptables refuses TCP-22 to hosts that aren't on the allowlist. See [ADR-012](../decisions/ADR-012-egress-firewall.md) for the full rationale.
+Rip cage watches every outbound connection the agent makes and decides what's allowed to leave. This is a **network-layer** control — distinct from the command-level guard (DCG) that gates what the agent runs in the shell. It's enabled by default on `rc up`; `RIP_CAGE_EGRESS=off` disables it entirely. Under the hood: a **pure SNI destination router** intercepts HTTP/HTTPS — it reads the TLS SNI (or the HTTP Host header) in the clear, allow/denies the **destination host**, and splices the still-encrypted bytes through unchanged (no TLS termination, no CA, no content inspection); a DNS resolver sidecar inspects port-53 queries; and iptables refuses TCP-22 to hosts that aren't on the allowlist. Content-layer enforcement (method/path, credential injection) is **not** rip-cage's job — it composes onto an external mediator (see [composition-seam.md](composition-seam.md)). See [ADR-012](../decisions/ADR-012-egress-firewall.md) and [ADR-026](../decisions/ADR-026-containment-mediation-identity.md) for the full rationale.
 
 ---
 
@@ -36,7 +36,7 @@ Running rc reload my-cage to apply...
 
 `promote` merges the observed hosts into `network.allowed_hosts` in `.rip-cage.yaml`, sets `network.mode: block`, and — when `--cage` is given — runs `rc reload` so the change applies live without recreating the container. Review the diff first; everything the agent reached in observe mode gets promoted, so prune anything you don't want in `.rip-cage.yaml` afterward.
 
-From here the cage enforces the allowlist: anything not in `network.allowed_hosts` (or the baseline) is refused, with a structured 403 the agent can read and self-correct against.
+From here the cage enforces the allowlist: anything not in `network.allowed_hosts` (or the baseline) is refused at the connection level (the destination host isn't allowed), and the denial is logged to `.rip-cage/egress.log` (host + reason) for the agent or host to read and self-correct against. (A pure router can't return a per-request structured 403 body — it never decrypts the request; per-request structured feedback returns when a mediator is composed, per [ADR-026](../decisions/ADR-026-containment-mediation-identity.md) D4.)
 
 > The agent inside the cage **cannot** promote or self-grant. `rc allowlist add`/`promote` are host-only (they mutate effective config via `rc reload`, which is not on the cage PATH). The human running the command on the host is the approval step.
 
@@ -95,7 +95,7 @@ The allowlist lives in `.rip-cage.yaml` under `network.*`:
 
 ## DNS exfil detection
 
-A small Python DNS resolver sidecar runs inside the cage alongside the HTTP proxy. iptables transparently REDIRECTs UDP **and** TCP port 53 to it, so `dig @8.8.8.8 evil.com`, `nslookup`, `ping`, and `host` are all captured regardless of the resolver the caller names — there's no `dig @8.8.8.8` bypass.
+A small Python DNS resolver sidecar runs inside the cage alongside the HTTP router. iptables transparently REDIRECTs UDP **and** TCP port 53 to it, so `dig @8.8.8.8 evil.com`, `nslookup`, `ping`, and `host` are all captured regardless of the resolver the caller names — there's no `dig @8.8.8.8` bypass. Clean queries forward to a default upstream (8.8.8.8) or, when `network.dns.forward_to` is set, to a DNS-exfil specialist of your choice (see [config.md](config.md)).
 
 The resolver applies an exfil-shape heuristic (long encoded subdomain labels, high per-apex query cardinality) **only to non-whitelisted apex domains**. Queries to apexes in `network.allowed_hosts` pass unconditionally. It honors the cage mode like every other layer: in `observe` it logs a would-block record and resolves; in `block` it refuses. DNS denials land in `.rip-cage/egress-dns.log`. The resolver is fail-closed — if it can't start, DNS fails loudly rather than routing around the control.
 
@@ -132,6 +132,7 @@ JSONL audit logs live inside the workspace (visible from the host without enteri
 
 ## See also
 
-- [ADR-012](../decisions/ADR-012-egress-firewall.md) — full design rationale (modes, MITM proxy, DNS sidecar, IOC floor, threat model)
+- [ADR-012](../decisions/ADR-012-egress-firewall.md) — full design rationale (modes, pure SNI router, DNS sidecar, IOC floor, threat model)
 - [config.md → `network.*`](config.md#network----egress-firewall) — the config schema
 - [CLI reference → `rc allowlist`](cli-reference.md#rc-allowlist----egress-allowlist) — command summary
+- [composition-seam.md](composition-seam.md) — how to attach an external mediator (clawpatrol, Cloudflare Sandbox, Coder) for credential non-possession and L7 content policy
