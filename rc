@@ -3341,11 +3341,18 @@ _up_validate_dcg_config() {
     echo "Error: DCG config file not found at ${_config_path}" >&2
     return 1
   fi
+  # Guard: if python3 is absent entirely, gracefully degrade (matching the
+  # missing-tomllib path inside the script at sys.exit(0) below). The host
+  # check is best-effort; the authoritative fail-closed gate is
+  # init-rip-cage.sh:256-267 (container-side, python3+tomllib guaranteed in
+  # the image — ADR-025 D5). exit 127 (command-not-found) must not be treated
+  # as a TOML parse error.
+  if ! command -v python3 > /dev/null 2>&1; then
+    return 0
+  fi
   # Try tomllib (Python 3.11+) then tomli backport; gracefully degrade when
   # neither is available (host may have Python 3.9 — container init catches it).
   # Uses python3 -c with newlines joined as semicolons (shellcheck-safe).
-  # Try tomllib (Python 3.11+) then tomli backport; gracefully degrade when
-  # neither is available (host may have Python 3.9 — container init catches it).
   local _dcg_py_ok
   _dcg_py_ok=0
   python3 -c "

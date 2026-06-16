@@ -2,14 +2,18 @@
 # Host-side unit tests for DCG host-adoptable policy (ADR-025 D1/D5, rip-cage-hhh.11.2).
 #
 # Coverage:
-#   C1  Schema — dcg.packs and dcg.custom_rule_paths are additive_list in schema
-#   C2  Safe-by-default — no dcg.* config adds NO mount (baked default untouched)
-#   C3  Happy path — dcg.packs: [net] produces merged config with net in enabled list
-#   C4  Additive — merged config always contains "core" (floor is uncrossable)
-#   C5  custom_rule_paths — generates custom_paths in merged config pointing at /workspace path
-#   C6  Fail-closed — malformed TOML → _up_validate_dcg_config exits non-zero (tomllib hosts)
-#   C7  No mount on no-config — _UP_DCG_CONFIG_PATH unset/empty when no dcg.* configured
-#   C8  Mount path set — _UP_DCG_CONFIG_PATH set to cache-file path when dcg.packs configured
+#   C1   Schema — dcg.packs and dcg.custom_rule_paths are additive_list in schema
+#   C2   Safe-by-default — no dcg.* config adds NO mount (baked default untouched)
+#   C3   Happy path — dcg.packs: [net] produces merged config with net in enabled list
+#   C4   Additive — merged config always contains "core" (floor is uncrossable)
+#   C5   custom_rule_paths — generates custom_paths in merged config pointing at /workspace path
+#   C6   Fail-closed — malformed TOML → _up_validate_dcg_config exits non-zero (tomllib hosts)
+#   C7   No mount on no-config — _UP_DCG_CONFIG_PATH unset/empty when no dcg.* configured
+#   C8   Mount path set — _UP_DCG_CONFIG_PATH set to cache-file path when dcg.packs configured
+#   C9   Traversal rejection — ../.. in custom_rule_paths escaping /workspace → skipped w/ warning
+#   C10  Regression guard — mixed entry: bad traversal skipped, good glob kept
+#   C11  Missing python3 graceful degrade — absent python3 binary → return 0 (not fail-closed)
+#        (authoritative gate is init-rip-cage.sh:256-267 / ADR-025 D5, container-side)
 #
 # All tests run host-side without docker (source rc pattern per test-egress-rules-gen.sh).
 # ADRs: ADR-025 D1/D5, ADR-021 D1/D2
@@ -63,6 +67,38 @@ teardown_sandbox() {
   fi
   TEST_HOME="" TEST_WS="" CACHE_DIR=""
 }
+
+# _make_no_python3_path: return a PATH string that includes essential tools
+# but NOT python3. Creates a temp bindir (once; cached in _NO_PY3_BINDIR)
+# with symlinks to needed tools from their real locations, deliberately
+# omitting python3 — so `command -v python3` fails regardless of where the
+# system installed python3.
+# Pattern mirrors _make_no_yq_path in tests/test-config-loader.sh:
+# - _NO_PY3_BINDIR is a top-level global (so cleanup sees it)
+# - NO trap registered inside the function (trap in a $(...) subshell fires
+#   on subshell exit, destroying the dir before the caller can use it)
+# - Cleanup handled by the top-level _cleanup_no_py3 via trap ... EXIT below.
+_NO_PY3_BINDIR=""
+_make_no_python3_path() {
+  if [[ -z "${_NO_PY3_BINDIR:-}" ]]; then
+    _NO_PY3_BINDIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dcg-no-py3-XXXXXX")
+    local tool loc
+    # Symlink all tools rc may call from within _up_validate_dcg_config (except python3).
+    for tool in bash sh cat grep sed awk sort uniq cut tr wc head tail find \
+                xargs mktemp realpath readlink rm mkdir cp mv chmod touch printf tee \
+                date id uname pwd ls jq dirname basename stat file \
+                docker git curl wget; do
+      loc=$(command -v "$tool" 2>/dev/null) || continue
+      ln -sf "$loc" "${_NO_PY3_BINDIR}/${tool}" 2>/dev/null || true
+    done
+    # Deliberately do NOT symlink python3 — that's the whole point.
+  fi
+  echo "$_NO_PY3_BINDIR"
+}
+_cleanup_no_py3() {
+  [[ -n "${_NO_PY3_BINDIR:-}" && -d "${_NO_PY3_BINDIR:-}" ]] && rm -rf "$_NO_PY3_BINDIR"
+}
+trap _cleanup_no_py3 EXIT
 
 # ---------------------------------------------------------------------------
 # C1  Schema — dcg.packs and dcg.custom_rule_paths are additive_list
@@ -409,6 +445,57 @@ else
   fail 10 "mixed custom_rule_paths: traversal skipped + valid glob kept" "$_c10_reason"
 fi
 teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# C11  Missing python3 graceful degrade — absent python3 binary → return 0
+#
+# When python3 is absent from PATH entirely, _up_validate_dcg_config must
+# return 0 (graceful degrade — matching the existing missing-tomllib path at
+# rc:3354). The authoritative fail-closed gate is init-rip-cage.sh:256-267
+# (container-side, python3 + tomllib guaranteed in image — ADR-025 D5).
+#
+# Discrimination: C6 (malformed TOML + python3 present → fail-closed) is the
+# paired positive control proving the function still CAN fail-closed, so C11's
+# "returns 0" is not vacuous.
+#
+# rip-cage-lce7
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== C11: python3 absent from PATH → _up_validate_dcg_config returns 0 (graceful degrade) ==="
+
+_c11_no_py3_path=$(_make_no_python3_path)
+
+# Verify python3 truly absent from sanitized PATH (sanity check).
+_c11_py3_check=$(PATH="$_c11_no_py3_path" command -v python3 2>/dev/null || true)
+if [[ -n "$_c11_py3_check" ]]; then
+  fail 11 "missing-python3 graceful degrade" "python3 still found in sanitized PATH: $_c11_py3_check — test is not discriminating"
+else
+  # Use the baked valid TOML config so the [[ -f ]] precondition (rc:3340) is satisfied.
+  _c11_valid_cfg="${SCRIPT_DIR}/../dcg/default-config.toml"
+
+  PATH="$_c11_no_py3_path" bash -c "
+    source '${RC}' 2>/dev/null
+    _up_validate_dcg_config '${_c11_valid_cfg}'
+  " > /tmp/rc-dcg-c11-out 2>/tmp/rc-dcg-c11-err
+  _c11_exit=$?
+
+  _c11_ok=true _c11_reason=""
+  if [[ "$_c11_exit" -ne 0 ]]; then
+    _c11_ok=false
+    _c11_reason="function returned $_c11_exit (want 0) — missing python3 incorrectly treated as malformed TOML"
+  fi
+  if grep -q "malformed TOML" /tmp/rc-dcg-c11-err 2>/dev/null; then
+    _c11_ok=false
+    _c11_reason="${_c11_reason:+$_c11_reason; }printed 'malformed TOML' error (should gracefully degrade when python3 absent)"
+  fi
+  rm -f /tmp/rc-dcg-c11-out /tmp/rc-dcg-c11-err
+
+  if [[ "$_c11_ok" == "true" ]]; then
+    pass 11 "python3 absent: _up_validate_dcg_config returns 0 (graceful degrade — container init is the hard stop)"
+  else
+    fail 11 "missing-python3 graceful degrade" "$_c11_reason"
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # Summary
