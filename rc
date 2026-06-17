@@ -7089,7 +7089,7 @@ _manifest_validate() {
             fi
           done
           if [[ "$med_is_known" -eq 0 ]]; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): MEDIATOR entry has unknown field '${med_unknown_key}' (strict-parse — only name/archetype/version_pin/run_as_uid/hooks are allowed; ADR-025 D5)." >&2
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): MEDIATOR entry has unknown field '${med_unknown_key}' (strict-parse — only name/archetype/version_pin/run_as_uid/hooks/ca_cert_path are allowed; ADR-025 D5)." >&2
             return 1
           fi
         done <<<"$med_entry_keys"
