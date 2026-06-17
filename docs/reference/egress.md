@@ -88,8 +88,10 @@ The allowlist lives in `.rip-cage.yaml` under `network.*`:
 |---|---|
 | `network.mode` | `observe` or `block`. Absent = legacy. |
 | `network.allowed_hosts` | Additive list of domains allowed for HTTP/HTTPS (and reachable on TCP-22). |
+| `network.egress.mediator` | Name of a manifest-declared MEDIATOR provider to run co-located (e.g. `iron-proxy`, `mitmproxy`). Default: unset (standalone mode). Validated against the `rc.mediators` image label — unknown names abort loud. See [composition-seam.md](composition-seam.md). |
+| `network.http.forward_to` | Address (`host:port`) the SNI router sends allowed HTTP/HTTPS traffic to via HTTP CONNECT, instead of splicing directly to origin. Typically `"127.0.0.1:8888"` for a co-located MEDIATOR. Requires the destination check and IOC floor to pass first (push-side uncrossable floor). See [composition-seam.md](composition-seam.md). |
 
-`rc allowlist add` and `promote` edit these fields for you. For the schema (types, defaults, merge semantics), see [config.md → `network.*`](config.md#network----egress-firewall).
+`rc allowlist add` and `promote` edit the `network.mode` and `network.allowed_hosts` fields for you. For the full schema (types, defaults, merge semantics), see [config.md → `network.*`](config.md#network----egress-firewall).
 
 ---
 
@@ -135,4 +137,4 @@ JSONL audit logs live inside the workspace (visible from the host without enteri
 - [ADR-012](../decisions/ADR-012-egress-firewall.md) — full design rationale (modes, pure SNI router, DNS sidecar, IOC floor, threat model)
 - [config.md → `network.*`](config.md#network----egress-firewall) — the config schema
 - [CLI reference → `rc allowlist`](cli-reference.md#rc-allowlist----egress-allowlist) — command summary
-- [composition-seam.md](composition-seam.md) — how to attach an external mediator (clawpatrol, Cloudflare Sandbox, Coder) for credential non-possession and L7 content policy
+- [composition-seam.md](composition-seam.md) — how to attach an external MEDIATOR (mitmproxy, iron-proxy) for credential non-possession and L7 content policy; `network.egress.mediator` + `network.http.forward_to` seam

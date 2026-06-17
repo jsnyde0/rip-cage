@@ -3652,6 +3652,44 @@ _up_init_firewall() {
   fi
 }
 
+# _up_init_mediator — root-phase mediator init inside the container.
+# (rip-cage-ta1o.5.8 / ADR-026 D5)
+#
+# Mirrors _up_init_firewall: runs `docker exec -u root` so the in-container
+# mediator-launch script can su to the non-root mediator uid (root→non-root
+# needs no password). Called AFTER _up_init_firewall (uid-exemption is in
+# place) and BEFORE _up_init_container (init-rip-cage.sh) on BOTH the create
+# path and the resume path.
+#
+# The mediator secret channel (_UP_MEDIATOR_ENV_ARGS, populated by --mediator-env
+# KEY=VALUE / --mediator-env-file PATH on the rc up CLI) is passed ONLY into
+# this docker exec -e ..., NEVER into docker run. This ensures the real secret
+# is visible only in the mediator process env, not in PID 1 (agent cannot read
+# it via /proc/1/environ). ADR-001 / ADR-024 D2 / ADR-026 D6.
+#
+# Globals read: OUTPUT_FORMAT, RC_MEDIATOR (set in container env by cmd_up),
+#               _UP_MEDIATOR_ENV_ARGS (array of -e KEY=VAL for the mediator exec)
+# Globals written: _UP_MEDIATOR_OK (set to "true" or "false")
+# Parameter: $1 name — container name
+_up_init_mediator() {
+  local _name="$1"
+  _UP_MEDIATOR_OK=true
+  log "Running mediator init..."
+  # Build the docker exec command: always -u root; pass mediator-only env vars.
+  local _med_exec_args=(-u root)
+  # _UP_MEDIATOR_ENV_ARGS is an array of "-e" "KEY=VAL" pairs set by --mediator-env.
+  if [[ "${#_UP_MEDIATOR_ENV_ARGS[@]}" -gt 0 ]]; then
+    _med_exec_args+=("${_UP_MEDIATOR_ENV_ARGS[@]}")
+  fi
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    docker exec "${_med_exec_args[@]}" "$_name" \
+      /usr/local/lib/rip-cage/init-mediator.sh >/dev/null 2>&1 || _UP_MEDIATOR_OK=false
+  else
+    docker exec "${_med_exec_args[@]}" "$_name" \
+      /usr/local/lib/rip-cage/init-mediator.sh || _UP_MEDIATOR_OK=false
+  fi
+}
+
 # _probe_tcp HOST PORT — returns 0 if TCP connection succeeds within 1s, non-zero otherwise.
 # Uses bash /dev/tcp — no nc or timeout(1) dependency (macOS bash 3.2 compat).
 _probe_tcp() {
@@ -3773,6 +3811,12 @@ cmd_up() {
   # ADR-024 D1 / rip-cage-hhh.5: per-invocation bypass for workspace base-URL redirect check.
   # When set, validator emits a warning instead of refusing.
   local rc_allow_config_override=""
+  # rip-cage-ta1o.5.8: mediator-only secret channel (ADR-026 D6 / ADR-001 / ADR-024 D2).
+  # Populated by --mediator-env KEY=VALUE (repeatable) and --mediator-env-file PATH.
+  # Values go ONLY into _up_init_mediator's docker exec -e ..., NEVER into docker run.
+  # This prevents the real secret from appearing in /proc/1/environ (PID 1 = sleep
+  # infinity runs as agent). ADR-005 D12: flag names env vars generically, no mediator names.
+  _UP_MEDIATOR_ENV_ARGS=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --port) [[ $# -ge 2 ]] || { echo "Error: --port requires a value" >&2; exit 1; }; port="$2"; shift 2 ;;
@@ -3788,6 +3832,26 @@ cmd_up() {
       --session) [[ $# -ge 2 ]] || { echo "Error: --session requires a value" >&2; exit 1; }; rc_up_session_name="$2"; shift 2 ;;
       --allow-risky-mount) [[ $# -ge 2 ]] || { echo "Error: --allow-risky-mount requires a value" >&2; exit 1; }; RC_ALLOW_RISKY_MOUNT+=("$2"); shift 2 ;;
       --allow-config-override) rc_allow_config_override="true"; shift ;;
+      --mediator-env)
+        # rip-cage-ta1o.5.8: mediator-only env var (KEY=VALUE). Repeatable.
+        # Goes ONLY into _up_init_mediator's docker exec, NOT into docker run.
+        [[ $# -ge 2 ]] || { echo "Error: --mediator-env requires a KEY=VALUE argument" >&2; exit 1; }
+        _UP_MEDIATOR_ENV_ARGS+=(-e "$2"); shift 2 ;;
+      --mediator-env-file)
+        # rip-cage-ta1o.5.8: load mediator-only env from a file (KEY=VALUE lines).
+        # Each line becomes a separate -e KEY=VALUE in the mediator docker exec.
+        [[ $# -ge 2 ]] || { echo "Error: --mediator-env-file requires a PATH argument" >&2; exit 1; }
+        local _mef="$2"; shift 2
+        if [[ ! -f "$_mef" ]]; then
+          echo "Error: --mediator-env-file: file not found: ${_mef}" >&2; exit 1
+        fi
+        while IFS= read -r _mef_line || [[ -n "$_mef_line" ]]; do
+          # Skip blank lines and comments.
+          [[ -z "$_mef_line" || "$_mef_line" == \#* ]] && continue
+          _UP_MEDIATOR_ENV_ARGS+=(-e "$_mef_line")
+        done < "$_mef"
+        unset _mef _mef_line
+        ;;
       *) path="$1"; shift ;;
     esac
   done
@@ -4199,6 +4263,22 @@ cmd_up() {
         exit 1
       fi
     fi
+    # rip-cage-ta1o.5.8: mediator launch on resume path (F5 fix).
+    # A stopped container kills the mediator; resume must re-launch it.
+    # Runs AFTER firewall (uid-exemption installed), BEFORE init-rip-cage.sh.
+    if [[ "$rc_egress" != "off" ]]; then
+      _up_init_mediator "$name"
+      if [[ "${_UP_MEDIATOR_OK:-true}" == "false" ]]; then
+        if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+          docker stop "$name" >/dev/null 2>&1
+          _up_json_output "$name" "resumed" "$path" "stopped" "failed"
+          return 1
+        fi
+        echo "Error: mediator init failed on resume. Stopping container so next 'rc up' retries." >&2
+        docker stop "$name"
+        exit 1
+      fi
+    fi
     _up_init_container "$name"
     if [[ "$_UP_INIT_OK" == "false" ]]; then
       if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -4527,6 +4607,21 @@ cmd_up() {
         return 1
       fi
       echo "Error: firewall init failed. Stopping container so next 'rc up' retries." >&2
+      docker stop "$name"
+      exit 1
+    fi
+  fi
+  # rip-cage-ta1o.5.8: mediator launch on create path (F5 / option-a host-driven root launch).
+  # Runs AFTER firewall (uid-exemption installed), BEFORE init-rip-cage.sh.
+  if [[ "$rc_egress" != "off" ]]; then
+    _up_init_mediator "$name"
+    if [[ "${_UP_MEDIATOR_OK:-true}" == "false" ]]; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        docker stop "$name" >/dev/null 2>&1
+        _up_json_output "$name" "created" "$path" "stopped" "failed"
+        return 1
+      fi
+      echo "Error: mediator init failed. Stopping container so next 'rc up' retries." >&2
       docker stop "$name"
       exit 1
     fi
@@ -7015,9 +7110,12 @@ _manifest_validate() {
         fi
 
         # Strict-parse: reject unknown/extra top-level fields on MEDIATOR entries.
-        # Known fields: name, archetype, version_pin, run_as_uid, hooks
+        # Known fields: name, archetype, version_pin, run_as_uid, hooks, ca_cert_path
+        # ca_cert_path (optional): path inside the container to the mediator's generated CA cert.
+        # When present, init-mediator.sh installs it into the system trust store so the
+        # in-cage agent curl can verify the MITM cert. (rip-cage-ta1o.5.8)
         local med_known_fields med_entry_keys med_unknown_key
-        med_known_fields="name archetype version_pin run_as_uid hooks"
+        med_known_fields="name archetype version_pin run_as_uid hooks ca_cert_path"
         med_entry_keys=$(jq -r 'keys[]' <<<"$entry" 2>/dev/null)
         while IFS= read -r med_unknown_key; do
           [[ -z "$med_unknown_key" ]] && continue
@@ -7030,7 +7128,7 @@ _manifest_validate() {
             fi
           done
           if [[ "$med_is_known" -eq 0 ]]; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): MEDIATOR entry has unknown field '${med_unknown_key}' (strict-parse — only name/archetype/version_pin/run_as_uid/hooks are allowed; ADR-025 D5)." >&2
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): MEDIATOR entry has unknown field '${med_unknown_key}' (strict-parse — only name/archetype/version_pin/run_as_uid/hooks/ca_cert_path are allowed; ADR-025 D5)." >&2
             return 1
           fi
         done <<<"$med_entry_keys"
@@ -7129,6 +7227,29 @@ _manifest_validate() {
           # Pattern 4: Lifecycle-interceptor registration
           if echo "$med_hook_cmd" | grep -qE '/etc/rip-cage/|settings\.json|PreToolUse|PostToolUse'; then
             echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' references lifecycle-interceptor targets (/etc/rip-cage/, settings.json, PreToolUse, or PostToolUse), which can register hooks that weaken the safety floor (floor-weakening lifecycle-interceptor; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
+            return 1
+          fi
+
+          # Pattern 5: Egress kill-switch disable (MEDIATOR-specific, ADR-026 D5).
+          # RIP_CAGE_EGRESS=off (or any value) in a hook would disable the entire L7
+          # egress enforcement stack — the floor the mediator sits behind. A push-side
+          # mediator hook MUST NOT touch the kill-switch (floor-uncrossable, ADR-026 D5).
+          # Static check: any RIP_CAGE_EGRESS= assignment in a hook command is rejected.
+          if echo "$med_hook_cmd" | grep -qE 'RIP_CAGE_EGRESS='; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' sets RIP_CAGE_EGRESS=, which disables the egress enforcement stack and weakens the safety floor (floor-weakening egress kill-switch; ADR-026 D5, ADR-001 fail-loud). Remove RIP_CAGE_EGRESS manipulation from hook commands." >&2
+            return 1
+          fi
+
+          # Pattern 6: iptables/ip6tables/nft manipulation (MEDIATOR-specific, ADR-026 D5).
+          # iptables, ip6tables, and nft can disable the REDIRECT rule that force-routes
+          # all traffic through the egress router — a hook using these tools can silently
+          # strip the force-through floor. A push-side mediator hook MUST NOT manipulate
+          # the firewall rules it depends on (floor-uncrossable, ADR-026 D5).
+          # Static check: any reference to iptables/ip6tables/nft as a command is rejected.
+          # Boundary class includes '/' so a full-path invocation (e.g. /sbin/iptables -F)
+          # is also caught, not just the bare command word.
+          if echo "$med_hook_cmd" | grep -qE '(^|[[:space:];|&/])(iptables|ip6tables|nft)([[:space:]]|$)'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' references iptables/ip6tables/nft, which can disable the force-through REDIRECT rule and weaken the safety floor (floor-weakening firewall manipulation; ADR-026 D5, ADR-001 fail-loud). Remove firewall manipulation from hook commands." >&2
             return 1
           fi
         done
@@ -8093,6 +8214,15 @@ _manifest_generate_mediator_registry_steps() {
     med_run_as_uid=$(jq -r '.run_as_uid // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
     if [[ "$med_run_as_uid" != "___RC_ABSENT___" && -n "$med_run_as_uid" ]]; then
       steps+="RUN printf '%s' '${med_run_as_uid}' > '${registry_dir}/run_as_uid'"$'\n'
+    fi
+
+    # Optional: ca_cert_path — path inside the container to the mediator's generated CA cert.
+    # init-mediator.sh reads this at cage init and installs the cert into the system trust
+    # store so the in-cage agent curl can verify the MITM cert. (rip-cage-ta1o.5.8)
+    local med_ca_cert_path
+    med_ca_cert_path=$(jq -r '.ca_cert_path // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+    if [[ "$med_ca_cert_path" != "___RC_ABSENT___" && -n "$med_ca_cert_path" ]]; then
+      steps+="RUN printf '%s' '${med_ca_cert_path}' > '${registry_dir}/ca_cert_path'"$'\n'
     fi
 
     # Write each declared hook as a file under the registry dir.

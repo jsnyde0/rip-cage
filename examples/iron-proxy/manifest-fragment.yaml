@@ -1,0 +1,114 @@
+version: 1
+tools:
+  # iron-proxy mediator provider — copy these two entries into your tools.yaml to enable
+  # iron-proxy as the in-cage egress mediator for credential injection (ADR-026 D5).
+  #
+  # Two entries are required:
+  #   1. iron-proxy-bin (TOOL): installs iron-proxy into the image at build time,
+  #      creates the rip-ironproxy system user, generates a self-signed CA, and
+  #      writes the YAML config (including the secrets transform).
+  #   2. iron-proxy (MEDIATOR): bakes start/teardown hooks into the registry for
+  #      dispatch at cage init via the mediator lifecycle (ADR-026 D5).
+  #
+  # After adding, run: rc build
+  # Then configure the workspace .rip-cage.yaml (see compose-rc-with-iron-proxy.md).
+  #
+  # iron-proxy is a single Go binary (Apache-2.0, github.com/ironsh/iron-proxy).
+  # It is installed at /usr/local/bin/iron-proxy (root-owned, as required by
+  # ADR-005 D11). The YAML config lives at /etc/iron-proxy/proxy.yaml (root-owned).
+  # A TLS CA is generated at build time under /etc/iron-proxy/ so the binary can
+  # MITM-terminate TLS for the secrets transform.
+  #
+  # CONNECT tunnel listener (load-bearing, rip-cage-ta1o.5.5):
+  #   iron-proxy has two intake modes:
+  #     - Direct HTTP/HTTPS listeners (:80/:443) — DNS-routing model.
+  #     - tunnel_listen (:8888) — HTTP CONNECT / SOCKS5 listener.
+  #   rip-cage's router sends an HTTP CONNECT to 127.0.0.1:8888 (the tunnel
+  #   listener) for allowed traffic via network.http.forward_to.
+  #   The tunnel_listen port MUST be distinct from the rip-cage router's own listen
+  #   port (127.0.0.1:8080). 8888 is the router's _MEDIATOR_DEFAULT_PORT.
+  #
+  # See examples/compose-rc-with-iron-proxy.md for a full setup walkthrough.
+
+  # TOOL entry: installs iron-proxy at image build time.
+  # Creates the rip-ironproxy system user (for uid-exemption loop prevention,
+  # ADR-026 D5), generates a TLS CA, and writes the YAML config.
+  # Root-owned throughout — ADR-005 D11.
+  - name: iron-proxy-bin
+    archetype: TOOL
+    # iron-proxy v0.45.0 — released 2026-06-16, Apache-2.0.
+    # Releases: https://github.com/ironsh/iron-proxy/releases/tag/v0.45.0
+    # SHA-256 checksums sourced from the signed checksums.txt in the release.
+    version_pin: "v0.45.0"
+    # install_cmd:
+    #   1. Create the rip-ironproxy system user (mediator uid, loop prevention).
+    #      -m: create home dir. -d: put it at /opt/rip-cage-ironproxy-home.
+    #   2. Download the arch-appropriate binary, verify SHA-256, install to /usr/local/bin/.
+    #   3. Generate a self-signed CA (openssl) at /etc/iron-proxy/ for TLS MITM.
+    #   4. Write /etc/iron-proxy/proxy.yaml with:
+    #      - tunnel_listen: ":8888" (HTTP CONNECT intake — what rip-cage's router dials)
+    #      - tls: references the generated CA
+    #      - transforms.allowlist: empty domains list (default-deny; allowlist is runtime
+    #        config driven by network.allowed_hosts in .rip-cage.yaml, not baked here)
+    #      - transforms.secrets: maps RIPCAGE_MEDIATOR_PLACEHOLDER → RIPCAGE_MEDIATOR_BEARER_SECRET
+    #        on the Authorization header. proxy_value is a fixed sentinel overridden at
+    #        cage start by injecting RIPCAGE_MEDIATOR_PLACEHOLDER into iron-proxy's env.
+    install_cmd: "useradd -r -s /usr/sbin/nologin -m -d /opt/rip-cage-ironproxy-home rip-ironproxy && ARCH=$(uname -m) && if [ \"$ARCH\" = \"aarch64\" ]; then TARGET=arm64; EXPECTED_SHA=bb2d2a411d9faff7f63f8068d03e01ea036827393d83fff86c8c84c230b913a4; else TARGET=amd64; EXPECTED_SHA=a72d58503362da19c3c1b46d779993ed85a6b54a18847e618c9e9030919b680c; fi && curl -fsSL \"https://github.com/ironsh/iron-proxy/releases/download/v0.45.0/iron-proxy_0.45.0_linux_${TARGET}.tar.gz\" -o /tmp/iron-proxy.tar.gz && ACTUAL_SHA=$(sha256sum /tmp/iron-proxy.tar.gz | awk '{print $1}') && if [ \"$ACTUAL_SHA\" != \"$EXPECTED_SHA\" ]; then echo \"SHA256 mismatch: expected $EXPECTED_SHA, got $ACTUAL_SHA\" >&2; exit 1; fi && tar -xzf /tmp/iron-proxy.tar.gz -C /tmp && install -m 755 /tmp/iron-proxy /usr/local/bin/iron-proxy && rm -f /tmp/iron-proxy.tar.gz /tmp/iron-proxy && mkdir -p /etc/iron-proxy && openssl genrsa -out /etc/iron-proxy/ca.key 4096 && openssl req -x509 -new -nodes -key /etc/iron-proxy/ca.key -sha256 -days 3650 -subj '/CN=rip-cage iron-proxy CA' -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign' -out /etc/iron-proxy/ca.crt && chmod 640 /etc/iron-proxy/ca.key && chown root:rip-ironproxy /etc/iron-proxy/ca.key && printf '%s\\n' 'proxy:' '  tunnel_listen: \":8888\"' '  http_listen: \"\"' '  https_listen: \"\"' 'tls:' '  ca_cert: /etc/iron-proxy/ca.crt' '  ca_key: /etc/iron-proxy/ca.key' 'transforms:' '  - name: allowlist' '    config:' '      domains: []' '  - name: secrets' '    config:' '      secrets:' '        - source:' '            type: env' '            var: RIPCAGE_MEDIATOR_BEARER_SECRET' '          proxy_value: RIPCAGE_MEDIATOR_PLACEHOLDER_VALUE' '          match_headers:' '            - Authorization' '          require: false' > /etc/iron-proxy/proxy.yaml && chmod 640 /etc/iron-proxy/proxy.yaml && chown root:rip-ironproxy /etc/iron-proxy/proxy.yaml"
+    # iron-proxy binary download happens at image build time only.
+    # No runtime egress needed — iron-proxy originates traffic as rip-ironproxy uid,
+    # which is exempted from the REDIRECT rule (loop prevention, init-firewall.sh Step 1a).
+    egress:
+      - github.com
+      - objects.githubusercontent.com
+    mounts: []
+
+  # MEDIATOR entry: bakes start/teardown hooks into /etc/rip-cage/mediators/iron-proxy/.
+  # The start hook launches iron-proxy in tunnel (HTTP CONNECT) mode under the
+  # rip-ironproxy uid. The router sends an HTTP CONNECT to 127.0.0.1:8888 for
+  # allowed traffic (set network.http.forward_to: "127.0.0.1:8888" in .rip-cage.yaml).
+  #
+  # PORT (load-bearing, mirrors mitmproxy note in rip-cage-ta1o.5.4): the mediator
+  # MUST listen on a port DIFFERENT from the rip-cage router's own listen port
+  # (127.0.0.1:8080, see rip_cage_router.py LISTEN_PORT). 8888 is the router's
+  # _MEDIATOR_DEFAULT_PORT. Using 8080 collides with the router (EADDRINUSE) AND
+  # would loop the router back to itself.
+  #
+  # Hook-bounds: no DCG-config writes, no PATH=, no /etc/rip-cage/ writes,
+  # no iptables/nft, no RIP_CAGE_EGRESS — passes the MEDIATOR validator (ADR-005 D11).
+  - name: iron-proxy
+    archetype: MEDIATOR
+    version_pin: "v0.45.0"
+    # rip-ironproxy: dedicated system user created by the iron-proxy-bin TOOL entry above.
+    # init-firewall.sh Step 1a reads this field from /etc/rip-cage/mediators/iron-proxy/run_as_uid
+    # and exempts the uid from the OUTPUT REDIRECT rule (loop prevention, ADR-026 D5).
+    run_as_uid: "rip-ironproxy"
+    # ca_cert_path: iron-proxy's CA, generated at BUILD time by the TOOL install_cmd
+    # (unlike mitmproxy, which generates its CA at runtime). The root-phase launcher
+    # (init-mediator.sh, rip-cage-ta1o.5.8) reads this from
+    # /etc/rip-cage/mediators/iron-proxy/ca_cert_path and installs it into the cage
+    # trust store (update-ca-certificates) — so the agent's HTTPS clients trust
+    # iron-proxy's MITM cert automatically. No manual CA step needed.
+    ca_cert_path: "/etc/iron-proxy/ca.crt"
+    hooks:
+      # start: launched by the root-phase mediator launcher (init-mediator.sh), which
+      # drops to <run_as_uid> and backgrounds the hook — so the hook is the
+      # BARE iron-proxy command: NO inner `su` (a non-root->non-root double-su that
+      # fails without a password) and NO trailing `&` (the dispatcher backgrounds it).
+      #
+      # iron-proxy reads its config from /etc/iron-proxy/proxy.yaml (baked at build time).
+      # tunnel_listen: ":8888" in that config is the HTTP CONNECT intake the rip-cage
+      # router forwards to. The secrets transform maps RIPCAGE_MEDIATOR_PLACEHOLDER_VALUE
+      # (the baked placeholder) → RIPCAGE_MEDIATOR_BEARER_SECRET (the real secret, injected
+      # into iron-proxy's process env at cage start via the mediator-only secret channel;
+      # see compose-rc-with-iron-proxy.md step 4).
+      #
+      # NOTE on proxy_value: iron-proxy reads proxy_value as a literal string from the
+      # YAML config. To make the placeholder runtime-configurable (so each cage instance
+      # can use a distinct placeholder), set RIPCAGE_MEDIATOR_PLACEHOLDER_VALUE as an
+      # env var and substitute it in the config at cage init. For simplicity, a fixed
+      # placeholder string works for single-cage deployments.
+      #
+      # Logs go to /tmp/rip-cage-mediator-iron-proxy.log (cage-lifetime, agent-readable).
+      start: "/usr/local/bin/iron-proxy -config /etc/iron-proxy/proxy.yaml > /tmp/rip-cage-mediator-iron-proxy.log 2>&1"
+      # teardown: send SIGTERM to any iron-proxy process owned by rip-ironproxy.
+      teardown: "pkill -u rip-ironproxy iron-proxy || true"

@@ -157,6 +157,7 @@ COPY rip_cage_egress.py /usr/local/lib/rip-cage/rip_cage_egress.py
 COPY rip_cage_router.py /usr/local/lib/rip-cage/rip_cage_router.py
 COPY rip_cage_dns.py /usr/local/lib/rip-cage/rip_cage_dns.py
 COPY init-firewall.sh /usr/local/lib/rip-cage/init-firewall.sh
+COPY init-mediator.sh /usr/local/lib/rip-cage/init-mediator.sh
 COPY rip-proxy-start.sh /usr/local/lib/rip-cage/rip-proxy-start.sh
 COPY rip-dns-start.sh /usr/local/lib/rip-cage/rip-dns-start.sh
 COPY tests/test-egress-firewall.sh /usr/local/lib/rip-cage/test-egress-firewall.sh
@@ -171,6 +172,7 @@ RUN chmod +x /usr/local/bin/init-rip-cage.sh \
     /usr/local/lib/rip-cage/test-bd-roundtrip.sh \
     /usr/local/lib/rip-cage/test-pi-dcg-gate.sh \
     /usr/local/lib/rip-cage/init-firewall.sh \
+    /usr/local/lib/rip-cage/init-mediator.sh \
     /usr/local/lib/rip-cage/rip-proxy-start.sh \
     /usr/local/lib/rip-cage/rip-dns-start.sh
 
