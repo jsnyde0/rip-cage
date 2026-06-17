@@ -115,7 +115,7 @@ RUN chmod +x /usr/local/bin/claude
 # Non-root user
 RUN groupadd -g 1000 agent \
     && useradd -m -u 1000 -g agent -s /usr/bin/zsh agent \
-    && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state, /usr/bin/chown agent\:agent /home/agent/.pi/agent, /usr/bin/chown agent\:agent /ssh-agent.sock, /usr/bin/chown agent\:agent /ssh-agent-upstream.sock, /usr/bin/ln -sfT /tmp/rip-cage-filter/agent.* /ssh-agent.sock, /usr/local/lib/rip-cage/init-firewall.sh, /usr/sbin/iptables -t nat -L OUTPUT -n, /usr/sbin/iptables -L OUTPUT -n, /usr/bin/chown -R agent\:agent /home/agent/.local/share/mise" > /etc/sudoers.d/agent \
+    && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state, /usr/bin/chown agent\:agent /home/agent/.pi/agent, /usr/bin/chown agent\:agent /ssh-agent.sock, /usr/bin/chown agent\:agent /ssh-agent-upstream.sock, /usr/bin/ln -sfT /tmp/rip-cage-filter/agent.* /ssh-agent.sock, /usr/local/lib/rip-cage/init-firewall.sh, /usr/sbin/iptables -t nat -L OUTPUT -n, /usr/sbin/iptables -L OUTPUT -n, /usr/bin/chown -R agent\:agent /home/agent/.local/share/mise, /usr/bin/ln -sfT /home/agent/.rc-context/pi-ext-subagent /home/agent/.pi/agent/extensions/subagent, /bin/rm -rf /home/agent/.pi/agent/extensions/subagent" > /etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent
 
 RUN useradd -r -s /usr/sbin/nologin -M rip-proxy
@@ -176,18 +176,20 @@ RUN chmod +x /usr/local/bin/init-rip-cage.sh \
     /usr/local/lib/rip-cage/rip-proxy-start.sh \
     /usr/local/lib/rip-cage/rip-dns-start.sh
 
+# Pi extensions/ dir: root-owned so the in-cage agent cannot write new extensions
+# or replace dcg-gate.ts (rip-cage-olen). Mode 755: agent can read/traverse/load,
+# cannot write. pi only READS extensions/ (auto-discovery glob, loader.ts:583-585)
+# and never writes it, so root-ownership does not impede pi (ADR-019 D1).
+# Must be created in root context (before USER agent) to stay root:root.
+RUN mkdir -p /home/agent/.pi/agent/extensions \
+    && chmod 755 /home/agent/.pi/agent/extensions
+
 USER agent
 WORKDIR /home/agent
 # Pre-create mount targets so Docker inherits agent ownership on first use.
 # If Docker overrides ownership at mount time, init-rip-cage.sh has scoped
 # sudo chown as a fallback (see sudoers above).
 RUN mkdir -p /home/agent/.claude /home/agent/.claude-state /home/agent/.local/share/mise
-# Pi config dir: container-local cage-owned path (ADR-019 D1 evolved, rip-cage-hhh.12).
-# Only durable state (auth.json) is bind-mounted from the host; everything else
-# (bin/, sessions/) is container-local and agent-owned. The extensions/ subdir is the
-# auto-discovery path for cage-installed pi guard extensions (prerequisite for rip-cage-bl1).
-# Must be created after USER agent so ownership is agent:agent without chown.
-RUN mkdir -p /home/agent/.pi/agent/extensions
 # Mise global config: enable idiomatic version file detection for tools that use
 # .nvmrc (node) and packageManager field in package.json (yarn). Without this,
 # mise's core backends don't detect these files even with legacy_version_file=true.
@@ -198,8 +200,9 @@ RUN mkdir -p /home/agent/.config/mise \
 COPY --chown=agent:agent zshrc /home/agent/.zshrc
 # Pi DCG gate extension (rip-cage-bl1): baked into cage-owned container-local extensions dir.
 # Auto-discovered by pi (extensions/*.ts glob, no -e flag needed, loader.ts:583-585).
-# NOT under the host-mounted auth.json sub-mount — cage-owned, agent-owned, host-clean.
-COPY --chown=agent:agent pi/dcg-gate.ts /home/agent/.pi/agent/extensions/dcg-gate.ts
+# NOT under the host-mounted auth.json sub-mount — cage-owned, root-owned, host-clean.
+# Root-owned (no --chown): agent can read/load but cannot overwrite or delete (rip-cage-olen).
+COPY pi/dcg-gate.ts /home/agent/.pi/agent/extensions/dcg-gate.ts
 
 # Version label — baked in at build time so rc up can detect stale local images.
 # Placed last so version bumps don't invalidate upstream layer cache.

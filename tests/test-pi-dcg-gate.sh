@@ -350,6 +350,97 @@ if [[ "$SENTINEL_OK" == "true" ]]; then
 fi
 
 # -----------------------------------------------------------------------
+# 6. Ownership and write-denial regression (rip-cage-olen)
+#
+# dcg-gate.ts and extensions/ MUST be root-owned and non-agent-writable.
+# Tested as the agent user (this script runs inside the cage as agent).
+# Vector (a): agent cannot overwrite/delete dcg-gate.ts.
+# Vector (b): agent cannot create new extensions (e.g. z-evil.ts) to
+#             shadow/mutate post-DCG-approval — requires directory write.
+# -----------------------------------------------------------------------
+echo ""
+echo "-- Ownership + write-denial regression (rip-cage-olen) --"
+
+DCG_EXT_DIR="/home/agent/.pi/agent/extensions"
+
+# 6a. dcg-gate.ts owner is root (not agent)
+if [[ -f "$DCG_GATE" ]]; then
+  _dcg_owner=$(stat -c '%U' "$DCG_GATE" 2>/dev/null || true)
+  if [[ "$_dcg_owner" == "root" ]]; then
+    check "rip-cage-olen [6a] dcg-gate.ts is root-owned" "pass" "owner: root"
+  else
+    check "rip-cage-olen [6a] dcg-gate.ts is root-owned" "fail" "owner: ${_dcg_owner:-unknown} (expected root)"
+  fi
+else
+  check "rip-cage-olen [6a] dcg-gate.ts is root-owned" "fail" "dcg-gate.ts absent — section 6 not reached (image regression?)"
+fi
+
+# 6b. extensions/ dir owner is root (not agent)
+if [[ -d "$DCG_EXT_DIR" ]]; then
+  _ext_dir_owner=$(stat -c '%U' "$DCG_EXT_DIR" 2>/dev/null || true)
+  if [[ "$_ext_dir_owner" == "root" ]]; then
+    check "rip-cage-olen [6b] extensions/ dir is root-owned" "pass" "owner: root"
+  else
+    check "rip-cage-olen [6b] extensions/ dir is root-owned" "fail" "owner: ${_ext_dir_owner:-unknown} (expected root)"
+  fi
+else
+  check "rip-cage-olen [6b] extensions/ dir is root-owned" "fail" "extensions/ dir absent — section 6 not reached (image regression?)"
+fi
+
+# 6c. dcg-gate.ts is not agent-writable (permission assertion)
+if [[ -f "$DCG_GATE" ]]; then
+  if [ ! -w "$DCG_GATE" ]; then
+    check "rip-cage-olen [6c] dcg-gate.ts is not writable by agent (permission)" "pass"
+  else
+    check "rip-cage-olen [6c] dcg-gate.ts is not writable by agent (permission)" "fail" "agent can write $DCG_GATE"
+  fi
+else
+  check "rip-cage-olen [6c] dcg-gate.ts is not writable by agent (permission)" "fail" "dcg-gate.ts absent — section 6 not reached (image regression?)"
+fi
+
+# 6d. extensions/ dir is not agent-writable (permission assertion)
+if [[ -d "$DCG_EXT_DIR" ]]; then
+  if [ ! -w "$DCG_EXT_DIR" ]; then
+    check "rip-cage-olen [6d] extensions/ dir is not writable by agent (permission)" "pass"
+  else
+    check "rip-cage-olen [6d] extensions/ dir is not writable by agent (permission)" "fail" "agent can write $DCG_EXT_DIR"
+  fi
+else
+  check "rip-cage-olen [6d] extensions/ dir is not writable by agent (permission)" "fail" "extensions/ dir absent — section 6 not reached (image regression?)"
+fi
+
+# 6e. Actual failed-write probe: agent cannot overwrite dcg-gate.ts (vector a)
+if [[ -f "$DCG_GATE" ]]; then
+  if touch "$DCG_GATE" 2>/dev/null; then
+    check "rip-cage-olen [6e] agent write to dcg-gate.ts EACCES (vector a)" "fail" "touch succeeded — guard is agent-writable"
+  else
+    check "rip-cage-olen [6e] agent write to dcg-gate.ts EACCES (vector a)" "pass" "touch correctly denied"
+  fi
+else
+  check "rip-cage-olen [6e] agent write to dcg-gate.ts EACCES (vector a)" "fail" "dcg-gate.ts absent — section 6 not reached (image regression?)"
+fi
+
+# 6f. Actual failed-write probe: agent cannot create z-evil.ts in extensions/ (vector b)
+if [[ -d "$DCG_EXT_DIR" ]]; then
+  _evil_path="${DCG_EXT_DIR}/z-evil.ts"
+  if touch "$_evil_path" 2>/dev/null; then
+    # Write succeeded — clean up and fail
+    rm -f "$_evil_path" 2>/dev/null || true
+    check "rip-cage-olen [6f] agent cannot create z-evil.ts in extensions/ (vector b)" "fail" "touch succeeded — extensions dir is agent-writable"
+  else
+    # Confirm the file was NOT created (defense: it shouldn't exist)
+    if [[ ! -e "$_evil_path" ]]; then
+      check "rip-cage-olen [6f] agent cannot create z-evil.ts in extensions/ (vector b)" "pass" "touch correctly denied, file absent"
+    else
+      check "rip-cage-olen [6f] agent cannot create z-evil.ts in extensions/ (vector b)" "fail" "touch failed but file exists somehow"
+    fi
+  fi
+  unset _evil_path
+else
+  check "rip-cage-olen [6f] agent cannot create z-evil.ts in extensions/ (vector b)" "fail" "extensions/ dir absent — section 6 not reached (image regression?)"
+fi
+
+# -----------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------
 echo ""

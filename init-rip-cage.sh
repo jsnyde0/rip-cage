@@ -31,9 +31,11 @@ fi
 if [[ ! -L /home/agent/.claude ]]; then
   sudo chown agent:agent /home/agent/.claude 2>/dev/null || true
 fi
-# Pi config dir is container-local (ADR-019 D1 evolved). The image bakes it as
-# agent:agent, but Docker may override ownership at mount time if auth.json is
-# sub-mounted. Chown top-level only (not -R) to preserve sub-mount ownership.
+# Pi config dir is container-local (ADR-019 D1 evolved). The image creates .pi/agent
+# as root-owned (via mkdir in root context), but Docker may override ownership at mount
+# time if auth.json is sub-mounted. Chown top-level only (not -R): .pi/agent dir needs
+# to be agent-writable for pi to create sessions/bin/etc; extensions/ sub-dir stays
+# root:root (rip-cage-olen — that's the security invariant, don't chown -R).
 if [[ ! -L /home/agent/.pi/agent ]]; then
   sudo chown agent:agent /home/agent/.pi/agent 2>/dev/null || true
 fi
@@ -230,19 +232,30 @@ done
 unset _pi_substrate _pi_stage _pi_dest
 
 # Subagent extension: symlink alongside the baked dcg-gate.ts inside extensions/.
-# Prerequisite: extensions/ must exist (baked by Dockerfile) — never replace it.
+# Prerequisite: extensions/ must exist (baked by Dockerfile, root-owned) — never replace it.
+# extensions/ is now root-owned (rip-cage-olen) so agent-user writes EACCES.
+# Use fixed-path sudo grants (sudoers: exact src + exact dest, NO glob — FOLD-2) for:
+#   - ln -sfT: place the symlink atomically (replaces any existing symlink at that exact path)
+#   - rm -rf: remove a stale real-dir entry at the exact path (near-impossible post-fix,
+#     since agent can't create entries in root-owned extensions/, but handled defensively
+#     so init never EACCES-aborts — FOLD-1)
+# NEVER replace extensions/ itself — only the 'subagent' entry inside it.
 _pi_ext_stage="/home/agent/.rc-context/pi-ext-subagent"
 _pi_ext_dir="${PI_CODING_AGENT_DIR:-/home/agent/.pi/agent}/extensions"
 _pi_ext_dest="${_pi_ext_dir}/subagent"
 if [ -e "${_pi_ext_stage}" ] || [ -L "${_pi_ext_stage}" ]; then
-  # Ensure extensions/ dir exists (baked; this is a safety net only)
+  # mkdir -p is a safe no-op on the existing root-owned extensions/ dir (returns 0).
   mkdir -p "${_pi_ext_dir}"
-  # Remove any pre-existing subagent entry (real dir or stale symlink) but NEVER touch extensions/ itself
+  # Remove any pre-existing real dir/file at the exact symlink dest (not a symlink) —
+  # requires privilege since extensions/ is root-owned (FOLD-1: defensive, near-impossible
+  # post-fix but must not EACCES-abort under set -euo pipefail).
   if [ -e "${_pi_ext_dest}" ] && [ ! -L "${_pi_ext_dest}" ]; then
     echo "[rip-cage] pi: removing pre-existing real dir ${_pi_ext_dest} before linking" >&2
-    rm -rf "${_pi_ext_dest}"
+    sudo -n /bin/rm -rf "${_pi_ext_dest}"
   fi
-  ln -sfn "${_pi_ext_stage}" "${_pi_ext_dest}"
+  # ln -sfT: place symlink atomically; -T prevents nesting if dest is a dir-symlink.
+  # Fixed-path sudo grant matches exact src + dest (FOLD-2: no glob into extensions/).
+  sudo -n /usr/bin/ln -sfT "${_pi_ext_stage}" "${_pi_ext_dest}"
   echo "[rip-cage] pi extensions/subagent linked from host"
 fi
 unset _pi_ext_stage _pi_ext_dir _pi_ext_dest
@@ -322,16 +335,29 @@ echo "[rip-cage] Hooks verified"
 # (rc:1511), not only when pi auth is mounted. The guard is baked into every image, so
 # the presence check always runs and verifies both dcg-gate.ts (cage-owned auto-discovery
 # path) and dcg-guard (the wrapper binary it delegates to) are present.
+# Ownership assertion (rip-cage-olen): dcg-gate.ts AND extensions/ must be root-owned —
+# agent ownership means the guard is self-disablable (ADR-024 threat). Fail-closed (ADR-001).
 if [ "${PI_CODING_AGENT_DIR:-}" = "/home/agent/.pi/agent" ]; then
   if [ ! -f /home/agent/.pi/agent/extensions/dcg-gate.ts ]; then
     echo "[rip-cage] ERROR: pi-cage guard extension missing at /home/agent/.pi/agent/extensions/dcg-gate.ts — pi cage would launch unguarded (rip-cage-bl1)" >&2
     exit 1
   fi
+  _dcg_gate_owner=$(stat -c '%U' /home/agent/.pi/agent/extensions/dcg-gate.ts 2>/dev/null || true)
+  if [ "${_dcg_gate_owner}" != "root" ]; then
+    echo "[rip-cage] ERROR: dcg-gate.ts is owned by '${_dcg_gate_owner}' (expected root) — guard is agent-writable and self-disablable; Dockerfile ownership must be root:root (rip-cage-olen)" >&2
+    exit 1
+  fi
+  _dcg_ext_dir_owner=$(stat -c '%U' /home/agent/.pi/agent/extensions 2>/dev/null || true)
+  if [ "${_dcg_ext_dir_owner}" != "root" ]; then
+    echo "[rip-cage] ERROR: extensions/ dir is owned by '${_dcg_ext_dir_owner}' (expected root) — agent can add competing extensions; Dockerfile ownership must be root:root (rip-cage-olen)" >&2
+    exit 1
+  fi
+  unset _dcg_gate_owner _dcg_ext_dir_owner
   if [ ! -x /usr/local/lib/rip-cage/bin/dcg-guard ]; then
     echo "[rip-cage] ERROR: dcg-guard wrapper missing — pi-cage guard cannot function (rip-cage-bl1)" >&2
     exit 1
   fi
-  echo "[rip-cage] pi-cage guard verified (dcg-gate.ts + dcg-guard both present)"
+  echo "[rip-cage] pi-cage guard verified (dcg-gate.ts + dcg-guard both present, root-owned)"
 fi
 
 # 6. Set git identity
