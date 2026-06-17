@@ -244,9 +244,15 @@ test_B_pi_denylist_warn_and_skip() {
 
   local stderr_out
   local exit_code=0
+  # RC_CONFIG_GLOBAL is overridden here to the sandbox config (which has .aws in
+  # the denylist). Without this, run-host.sh's driver-level empty-denylist fixture
+  # (RC_CONFIG_GLOBAL → /tmp/.../rip-cage/config.yaml) would take precedence and
+  # suppress the warn-and-skip we're testing. (See: test-secret-path-denylist.sh
+  # top-level `unset RC_CONFIG_GLOBAL` for the same pattern.)
   stderr_out=$(
     HOME="$resolved_home" \
     XDG_CONFIG_HOME="${resolved_home}/.config" \
+    RC_CONFIG_GLOBAL="${resolved_home}/.config/rip-cage/config.yaml" \
     RC_ALLOWED_ROOTS="${TEST_WS}" \
     bash -c "
       source '$RC' 2>/dev/null
