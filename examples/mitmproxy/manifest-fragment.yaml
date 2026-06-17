@@ -48,8 +48,14 @@ tools:
 
   # MEDIATOR entry: bakes start/teardown hooks into /etc/rip-cage/mediators/mitmproxy/.
   # The start hook launches mitmdump in regular (CONNECT-proxy) mode under the
-  # rip-mitmproxy uid. The router sends an HTTP CONNECT to 127.0.0.1:8080 for
-  # allowed traffic (set network.http.forward_to: "127.0.0.1:8080" in .rip-cage.yaml).
+  # rip-mitmproxy uid. The router sends an HTTP CONNECT to 127.0.0.1:8888 for
+  # allowed traffic (set network.http.forward_to: "127.0.0.1:8888" in .rip-cage.yaml).
+  #
+  # PORT (load-bearing, rip-cage-ta1o.5.4): the mediator MUST listen on a port
+  # DIFFERENT from the rip-cage router's own listen port (127.0.0.1:8080, see
+  # rip_cage_router.py LISTEN_PORT). 8888 is the router's _MEDIATOR_DEFAULT_PORT.
+  # Using 8080 here collides with the router (EADDRINUSE) AND would loop the
+  # router back to itself — the in-cage E4 proof surfaced this.
   #
   # Hook-bounds: no DCG-config writes, no PATH=, no /etc/rip-cage/ writes,
   # no iptables/nft, no RIP_CAGE_EGRESS — passes the MEDIATOR validator (ADR-005 D11).
@@ -61,16 +67,19 @@ tools:
     # and exempts the uid from the OUTPUT REDIRECT rule (loop prevention, ADR-026 D5).
     run_as_uid: "rip-mitmproxy"
     hooks:
-      # start: called by the mediator lifecycle dispatcher at cage init.
-      # Launches mitmdump in regular mode (speaks HTTP CONNECT — that is what
-      # rip-cage's router sends on ALLOW via _connect_via_mediator).
+      # start: called by the mediator lifecycle dispatcher at cage init, which runs
+      # this hook via `su -s /bin/sh <run_as_uid> -c "<start>"` — so the hook is the
+      # BARE mitmdump command: NO inner `su` (a non-root->non-root double-su that
+      # fails without a password) and NO trailing `&` (the dispatcher backgrounds it).
+      # mitmdump in regular mode speaks HTTP CONNECT — what rip-cage's router sends
+      # on ALLOW via _connect_via_mediator.
       # --listen-host 127.0.0.1: loopback only — the router is co-located.
-      # --listen-port 8080: matches the network.http.forward_to address below.
+      # --listen-port 8888: matches network.http.forward_to; distinct from the router's 8080.
       # -s: load the injection addon from the venv's addon directory.
       # --set connection_strategy=eager: connect to upstream eagerly (not lazy)
       #   so the addon fires even on the first byte (avoids the lazy-connect
       #   false-green where the addon runs but the CONNECT upstream hasn't formed yet).
       # Logs go to /tmp/rip-cage-mediator-mitmproxy.log (cage-lifetime, agent-readable).
-      start: "su -s /bin/sh rip-mitmproxy -c '/opt/rip-cage-mitmproxy/bin/mitmdump --mode regular --listen-host 127.0.0.1 --listen-port 8080 -s /opt/rip-cage-mitmproxy/addon/inject_credential.py --set connection_strategy=eager > /tmp/rip-cage-mediator-mitmproxy.log 2>&1 &'"
+      start: "/opt/rip-cage-mitmproxy/bin/mitmdump --mode regular --listen-host 127.0.0.1 --listen-port 8888 -s /opt/rip-cage-mitmproxy/addon/inject_credential.py --set connection_strategy=eager > /tmp/rip-cage-mediator-mitmproxy.log 2>&1"
       # teardown: send SIGTERM to any mitmdump process owned by rip-mitmproxy.
       teardown: "pkill -u rip-mitmproxy mitmdump || true"

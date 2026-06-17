@@ -207,7 +207,7 @@ mkdir -p "$OFF_WS"
 git -C "$OFF_WS" init > /dev/null 2>&1
 
 # E4 mediator cage: block mode with httpbin.org allowed, mitmproxy-composed
-# (network.http.forward_to points at mitmdump on 127.0.0.1:8080).
+# (network.http.forward_to points at mitmdump on 127.0.0.1:8888).
 # network.egress.mediator is set here for config-validator documentation purposes;
 # the mediator process is started manually below (lifecycle dispatcher wiring is
 # a follow-up integration step — see rip-cage-ta1o.5.4 integration note).
@@ -224,7 +224,7 @@ network:
     - httpbin.org
     - api.anthropic.com
   http:
-    forward_to: "127.0.0.1:8080"
+    forward_to: "127.0.0.1:8888"
 YAML
 
 # Block-mode cage: .rip-cage.yaml with mode=block and a minimal baseline
@@ -1324,7 +1324,7 @@ if [[ "$E4_SKIP" == "true" ]]; then
   check "E4 rip-mitmproxy user exists in image" "pass" "SKIP (image not baked)"
   check "E4 mitmdump binary present in image" "pass" "SKIP (image not baked)"
   check "E4 inject_credential.py addon present in image" "pass" "SKIP (image not baked)"
-  check "E4 mitmproxy listening on 127.0.0.1:8080" "pass" "SKIP (image not baked)"
+  check "E4 mitmproxy listening on 127.0.0.1:8888" "pass" "SKIP (image not baked)"
   check "E4 httpbin.org/headers reachable (live-source gate)" "pass" "SKIP (image not baked)"
   check "E4 Authorization header echoed (header-present gate)" "pass" "SKIP (image not baked)"
   check "E4 Authorization contains Bearer sentinel (injection fired)" "pass" "SKIP (image not baked)"
@@ -1391,7 +1391,7 @@ else
       /opt/rip-cage-mitmproxy/bin/mitmdump \
         --mode regular \
         --listen-host 127.0.0.1 \
-        --listen-port 8080 \
+        --listen-port 8888 \
         -s /opt/rip-cage-mitmproxy/addon/inject_credential.py \
         --set connection_strategy=eager \
         > /dev/null 2>&1 || true
@@ -1399,14 +1399,20 @@ else
     # Give mitmproxy a moment to bind the port and generate its CA.
     sleep 3
 
-    # Verify mitmproxy is listening.
-    _e4_listen=$(docker exec "$MED_CAGE" ss -tlnp 2>/dev/null | grep ":8080" || true)
-    if [[ -n "$_e4_listen" ]]; then
-      check "E4 mitmproxy listening on 127.0.0.1:8080" "pass"
+    # Verify mitmproxy is listening. NOTE: `ss`/`netstat` are NOT installed in the
+    # cage image, so use a bash /dev/tcp connect probe (tool-free, port-agnostic).
+    # OPEN => mitmdump bound the port; CLOSED => failed to start (rip-cage-ta1o.5.4).
+    if docker exec "$MED_CAGE" bash -c '(exec 3<>/dev/tcp/127.0.0.1/8888) 2>/dev/null'; then
+      _e4_listen="open"
     else
-      check "E4 mitmproxy listening on 127.0.0.1:8080" "fail" "port 8080 not bound (mitmdump may have failed to start; check /tmp/rip-cage-mediator-mitmproxy.log)"
+      _e4_listen=""
+    fi
+    if [[ -n "$_e4_listen" ]]; then
+      check "E4 mitmproxy listening on 127.0.0.1:8888" "pass"
+    else
+      check "E4 mitmproxy listening on 127.0.0.1:8888" "fail" "port 8888 not bound (mitmdump may have failed to start; check /tmp/rip-cage-mediator-mitmproxy.log)"
       E4_SKIP="true"
-      E4_SKIP_REASON="mitmproxy not listening on :8080"
+      E4_SKIP_REASON="mitmproxy not listening on :8888"
     fi
   fi
 
@@ -1416,7 +1422,9 @@ else
     # running user's home (/opt/rip-cage-mitmproxy-home/, set via HOME env above).
     # Search multiple candidate locations in case the path differs. Install it as
     # a trusted CA so curl inside the cage can verify mitmproxy's TLS MITM cert.
-    docker exec "$MED_CAGE" bash -c "
+    # MUST run as root: the CA lives under rip-mitmproxy's 0700 home (agent cannot
+    # even read it), and cp + update-ca-certificates write root-owned dirs (ta1o.5.4).
+    docker exec -u root "$MED_CAGE" bash -c "
       _ca_src=''
       for _p in /opt/rip-cage-mitmproxy-home/.mitmproxy/mitmproxy-ca-cert.pem /root/.mitmproxy/mitmproxy-ca-cert.pem /home/rip-mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem; do
         [ -f \"\$_p\" ] && _ca_src=\"\$_p\" && break

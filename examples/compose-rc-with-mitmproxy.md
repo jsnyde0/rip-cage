@@ -34,10 +34,10 @@ Agent (inside cage)
 rip-cage router (rip_cage_router.py)
   │
   │  Destination check: allowed? → yes
-  │  network.http.forward_to = "127.0.0.1:8080"
-  │  HTTP CONNECT <orig-dst>:<port> → mitmdump on :8080
+  │  network.http.forward_to = "127.0.0.1:8888"
+  │  HTTP CONNECT <orig-dst>:<port> → mitmdump on :8888
   ▼
-mitmdump (rip-mitmproxy uid, 127.0.0.1:8080)
+mitmdump (rip-mitmproxy uid, 127.0.0.1:8888)
   │
   │  TLS-MITM: sees plaintext request
   │  inject_credential.py: replaces placeholder → real secret
@@ -78,7 +78,7 @@ tools:
     version_pin: "11.0.2"
     run_as_uid: "rip-mitmproxy"
     hooks:
-      start: "su -s /bin/sh rip-mitmproxy -c '...'  # see manifest-fragment.yaml
+      start: "/opt/rip-cage-mitmproxy/bin/mitmdump --mode regular ... --listen-port 8888 ..."  # see manifest-fragment.yaml
       teardown: "pkill -u rip-mitmproxy mitmdump || true"
 ```
 
@@ -114,7 +114,7 @@ network:
   egress:
     mediator: mitmproxy
   http:
-    forward_to: "127.0.0.1:8080"
+    forward_to: "127.0.0.1:8888"
 ```
 
 `network.http.forward_to` tells the router to send allowed HTTP/HTTPS traffic to
@@ -189,7 +189,7 @@ At `rc up` time:
    - The mediator lifecycle dispatcher reads `RC_MEDIATOR=mitmproxy` (threaded in
      by `rc up`) and executes `/etc/rip-cage/mediators/mitmproxy/start`.
    - The `start` hook launches `mitmdump` in regular CONNECT-proxy mode under the
-     `rip-mitmproxy` uid, listening on `127.0.0.1:8080`.
+     `rip-mitmproxy` uid, listening on `127.0.0.1:8888`.
    - Logs go to `/tmp/rip-cage-mediator-mitmproxy.log` (cage-lifetime).
 
 ### 7. Verify the injection is working
@@ -232,9 +232,13 @@ curl https://evil.example.com 2>&1   # → connection refused (router blocks at 
   ```
   Or mount the CA cert from the host and add it at cage init via `init-rip-cage.sh`
   extensions (IN-CAGE-DAEMON pattern).
-- **Port conflict**: If another process is already on `127.0.0.1:8080`, change
-  both `--listen-port` in the MEDIATOR `start` hook and `network.http.forward_to`
-  in `.rip-cage.yaml` to an unused port (e.g. `8081`). Rebuild after changing the hook.
+- **Port conflict**: The mediator MUST listen on a port distinct from the rip-cage
+  router's own listen port (`127.0.0.1:8080`). `8888` (the router's
+  `_MEDIATOR_DEFAULT_PORT`) is the recommended default. Using `8080` collides with
+  the router (`EADDRINUSE`) and would loop the router back to itself. If `8888` is
+  also taken, change both `--listen-port` in the MEDIATOR `start` hook and
+  `network.http.forward_to` in `.rip-cage.yaml` to another unused port (e.g. `8889`).
+  Rebuild after changing the hook.
 
 ---
 
