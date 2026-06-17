@@ -14,7 +14,7 @@
 - [x] Default-deny whitelist with `observe` / `block` / legacy modes
 - [x] `network.allowed_hosts` default-deny whitelist (method-axis `writable_hosts` write-gating **removed** in rip-cage-ta1o.1 — egress is now a pure SNI destination router with no method axis; [ADR-012 D2](decisions/ADR-012-egress-firewall.md))
 - [x] DNS-exfil resolver sidecar + transparent port-53 REDIRECT, plus the `network.dns.forward_to` forward-to-specialist seam (rip-cage-ta1o.2; [ADR-012 D9](decisions/ADR-012-egress-firewall.md))
-- [x] Egress reshaped into a pluggable containment chokepoint — pure SNI router (no TLS-MITM), tool-agnostic composition seam + clawpatrol reference recipe ([ADR-026](decisions/ADR-026-containment-mediation-identity.md); rip-cage-ta1o.1/.2/.3; Linux-cage end-to-end validation = rip-cage-ta1o.4)
+- [x] Egress reshaped into a pluggable containment chokepoint — pure SNI router (no TLS-MITM), tool-agnostic MEDIATOR composition seam (`network.http.forward_to` + `network.egress.mediator`), mitmproxy (proof) + iron-proxy (recommended adopt) reference providers ([ADR-026](decisions/ADR-026-containment-mediation-identity.md); rip-cage-ta1o.1/.2/.3/.5; clawpatrol reclassified to alternative appliance)
 - [x] `rc allowlist add/show/promote` agent-first CLI; `rc doctor` egress sections; `rc ls` mode column
 - [x] Workspace-trust validator — refuse hostile base-URL redirect at cage start
 - [x] Injection-exfil integration harness (`rc test --e2e-security`)

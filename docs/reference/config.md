@@ -216,6 +216,8 @@ Rip-cage's network egress firewall reads `network.*` to decide what outbound tra
 |---|---|---|---|
 | `network.mode` | scalar | unset (legacy) | `observe` (log all outbound destinations, block nothing — default for new cages) or `block` (enforce the allowlist). Absence means legacy behavior — cages created before egress shipped run the old denylist with no `network.mode`; non-regression per [ADR-021](../decisions/ADR-021-layered-rip-cage-config.md) D5. |
 | `network.allowed_hosts` | additive_list | `[]` | Domains allowed for HTTP/HTTPS egress, and the destinations reachable on TCP-22 (git-over-ssh). Effective allowlist = baseline ∪ global ∪ project. Project EXPANDS; cannot contract. The agent inside the cage cannot mutate this — edits apply via the host-only `rc reload`. |
+| `network.egress.mediator` | scalar | unset (standalone) | Name of a manifest-declared MEDIATOR provider to run co-located at cage init (e.g. `iron-proxy`, `mitmproxy`). Validated against the `rc.mediators` image label on the built image — unknown names abort loud (fail-closed). Default `none` / unset = standalone mode (no mediator). Pairs with `network.http.forward_to`. See [composition-seam.md](composition-seam.md) and [ADR-026 D5](../decisions/ADR-026-containment-mediation-identity.md). |
+| `network.http.forward_to` | scalar | unset (origin-splice) | Address (`host:port`) the SNI router sends allowed HTTP/HTTPS traffic to via HTTP CONNECT, instead of splicing directly to origin. Typically `"127.0.0.1:8888"` for a co-located MEDIATOR. Destination allow/deny and the IOC floor run **before** the forward — the mediator can add restriction but cannot subtract (push-side uncrossable floor, [ADR-026 D5](../decisions/ADR-026-containment-mediation-identity.md)). Tool-agnostic (a configurable address, not a blessed product — ADR-005 D12). |
 | `network.dns.forward_to` | scalar | unset (→ `8.8.8.8`) | Upstream resolver the DNS sidecar forwards **clean** queries to (`host` or `host:port`). The built-in exfil heuristic always runs first regardless; this only changes where queries that pass it go — point it at a DNS-exfil specialist (NextDNS / Cisco Umbrella / dnsdist / Zeek / a local forwarder). Tool-agnostic (a configurable address, not a blessed product — ADR-005 D12). Reload-eligible via `rc reload`. |
 
 There is also an **IOC floor** — a curated denylist of known exfil sinks — that is always enforced and **cannot be overridden** by `network.allowed_hosts`. The project allowlist can broaden but never shrink below this floor.
@@ -230,13 +232,37 @@ network:
   allowed_hosts:
     - api.deepseek.com        # added by `rc allowlist promote`
     - files.example-cdn.net
+  egress:
+    mediator: iron-proxy      # optional: select a manifest-declared MEDIATOR provider
+  http:
+    forward_to: "127.0.0.1:8888"   # optional: forward allowed traffic to mediator via HTTP CONNECT
   dns:
     forward_to: "192.0.2.1:5353"   # optional: forward clean DNS queries to a specialist
 ```
 
 `network.allowed_hosts` follows the **additive-list** merge rule (global ∪ project, deduplicated, global first — same as `ssh.allowed_hosts`). Edits to `network.allowed_hosts` are reload-eligible via `rc reload`; changing `network.mode` likewise applies via `rc reload`. Use `rc allowlist add` / `rc allowlist promote` (host-only) rather than hand-editing.
 
-Cross-reference: [egress.md](egress.md) for the workflow, modes, DNS exfil detection, and baseline allowlist; [ADR-012](../decisions/ADR-012-egress-firewall.md) for full design rationale.
+`network.egress.mediator` and `network.http.forward_to` require a built-in mediator provider (baked via the tool manifest + `rc build`). See [composition-seam.md](composition-seam.md) for the MEDIATOR provider model.
+
+### `rc up` mediator flags
+
+When a mediator is configured, the real credential must reach the mediator's process env — not the container env (where the agent could read it). Use these `rc up` flags:
+
+| Flag | Effect |
+|---|---|
+| `--mediator-env KEY=VALUE` | Pass `KEY=VALUE` into `init-mediator.sh`'s `docker exec -e` channel — reaches the mediator process env only, never `/proc/1/environ`. Repeatable. |
+| `--mediator-env-file /path/to/file` | Read `KEY=VALUE` pairs from a file (one per line, not committed to git). Equivalent to supplying each line as `--mediator-env`. |
+
+**Must be re-supplied on every `rc up`** (including resume after `rc down`). The secret intentionally does not persist in the container filesystem or the image. If omitted on resume, the mediator re-launches but the secret is absent and injection silently no-ops — the agent sends the placeholder token to the upstream.
+
+```bash
+rc up /path/to/workspace \
+  --mediator-env RIPCAGE_MEDIATOR_BEARER_SECRET=sk-ant-real-key-here
+# or from a secrets file not in version control:
+rc up /path/to/workspace --mediator-env-file /path/to/.cage-secrets
+```
+
+Cross-reference: [egress.md](egress.md) for the workflow, modes, DNS exfil detection, and baseline allowlist; [ADR-012](../decisions/ADR-012-egress-firewall.md) for full design rationale; [composition-seam.md](composition-seam.md) for the MEDIATOR model.
 
 ---
 
