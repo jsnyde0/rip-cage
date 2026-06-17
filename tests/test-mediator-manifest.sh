@@ -19,6 +19,7 @@
 #     T1i — ADR-005 D12 floor: grep -nE 'mitmproxy|iron-proxy|clawpatrol' rc returns zero hits
 #     T1j — fixture with unknown hook sub-key FAILS strict-parse
 #     T1k — start hook with floor-weakening write to DCG config FAILS (hook-bounds)
+#     T1m — fixture WITH ca_cert_path VALIDATES (positive control, rip-cage-oslv)
 #
 # =============================================================================
 # Positive-sentinel discipline:
@@ -410,6 +411,45 @@ YAML
   teardown_manifest_sandbox
 }
 
+# ---------------------------------------------------------------------------
+# T1m — fixture with ca_cert_path VALIDATES (positive control for rip-cage-oslv).
+# ca_cert_path is a canonical MEDIATOR field (added ta1o.5.8; consumed by
+# init-mediator.sh to install the mediator's CA cert into the trust store).
+# Without this positive control, a regression dropping ca_cert_path from the
+# MEDIATOR allowed-set (med_known_fields) would pass the suite green while
+# re-breaking `rc up` on any host manifest carrying it — the exact oslv failure.
+# T1d proves UNKNOWN fields are rejected; T1m proves ca_cert_path is ACCEPTED.
+# ---------------------------------------------------------------------------
+test_t1m_ca_cert_path_validates() {
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  setup_manifest_sandbox
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<'YAML'
+version: 1
+tools:
+  - name: test-mediator-cacert
+    archetype: MEDIATOR
+    version_pin: "1.0.0"
+    run_as_uid: "rip-mediator"
+    ca_cert_path: "/opt/rip-cage-mitmproxy-home/.mitmproxy/mitmproxy-ca-cert.pem"
+    hooks:
+      start: "test-mediator start --listen 127.0.0.1:8888"
+YAML
+  local fixture_path="${TEST_HOME}/.config/rip-cage/tools.yaml"
+  local out
+  out=$(run_manifest_validate "$fixture_path" "$stderr_file") || exit_code=$?
+  local err_output
+  err_output=$(cat "$stderr_file")
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "T1m MEDIATOR with ca_cert_path validates: _manifest_validate exits 0 (rip-cage-oslv positive control)"
+  else
+    fail "T1m expected exit 0 for MEDIATOR with ca_cert_path. exit=${exit_code} stderr='${err_output}' stdout='${out}'"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
 # Run all T1 tests
 test_t1a_valid_fixture_validates
 test_t1b_start_only_validates
@@ -423,6 +463,7 @@ test_t1i_zero_hardcoded_mediator_names
 test_t1j_unknown_hook_subkey_fails
 test_t1l_run_as_uid_baked_to_registry
 test_t1k_hook_writes_dcg_config_fails
+test_t1m_ca_cert_path_validates
 
 echo ""
 echo "Results: FAILURES=${FAILURES}"
