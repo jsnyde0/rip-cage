@@ -93,6 +93,8 @@ SEC_TMP_MED=""               # temp root for mediator cage workspace
 # ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
+# shellcheck disable=SC2329
+# CLEANUP is invoked indirectly via 'trap CLEANUP EXIT' below
 CLEANUP() {
   local c
   for c in "$BLOCK_CAGE" "$OBS_CAGE" "$NEG_CAGE" "$OFF_CAGE" "$MED_CAGE"; do
@@ -206,11 +208,11 @@ OFF_WS="${SEC_TMP_OFF}/rc-sec-inj/off"
 mkdir -p "$OFF_WS"
 git -C "$OFF_WS" init > /dev/null 2>&1
 
-# E4 mediator cage: block mode with httpbin.org allowed, mitmproxy-composed
-# (network.http.forward_to points at mitmdump on 127.0.0.1:8888).
-# network.egress.mediator is set here for config-validator documentation purposes;
-# the mediator process is started manually below (lifecycle dispatcher wiring is
-# a follow-up integration step — see rip-cage-ta1o.5.4 integration note).
+# E4 mediator cage: block mode with httpbin.org allowed, mitmproxy-composed.
+# network.egress.mediator: mitmproxy tells rc up to auto-launch mitmdump via
+# the host-driven root docker exec (_up_init_mediator / init-mediator.sh).
+# network.http.forward_to: "127.0.0.1:8888" tells the router to forward
+# allowed HTTPS to mitmdump's CONNECT-proxy port. (rip-cage-ta1o.5.8)
 mkdir -p "${SEC_TMP_MED}/rc-sec-inj"
 MED_WS="${SEC_TMP_MED}/rc-sec-inj/med"
 mkdir -p "$MED_WS"
@@ -223,6 +225,8 @@ network:
   allowed_hosts:
     - httpbin.org
     - api.anthropic.com
+  egress:
+    mediator: mitmproxy
   http:
     forward_to: "127.0.0.1:8888"
 YAML
@@ -313,6 +317,18 @@ echo "-- Starting mediator-composed cage ($MED_CAGE, E4 probes) --"
 E4_SKIP="false"
 E4_SKIP_REASON=""
 
+# Sentinel and placeholder values (defined here so --mediator-env can pass them at rc up time).
+# E4_SENTINEL is injected via --mediator-env (not --env): it goes ONLY into the mediator's
+# docker exec env, never into /proc/1/environ or the agent's own env (ADR-024 D2, non-possession).
+E4_RUN_ID=$(date +%s)
+# F2: sentinel intentionally contains a space (e.g. "ripcage-e4 sentinel <runid>").
+# This regression-proofs the env-passthrough quoting in init-mediator.sh — a secret
+# with spaces will be silently truncated if the KEY=VAL string is unquoted. The e2e
+# must echo the FULL value (including the space) from httpbin.org/headers. Keeping
+# a space-containing sentinel as the permanent fixture prevents this from regressing.
+E4_SENTINEL="ripcage-e4 sentinel ${E4_RUN_ID}"
+E4_PLACEHOLDER="ripcage-e4-placeholder-${E4_RUN_ID}"
+
 # Check whether the image has mitmproxy baked in (rc.mediators label).
 _e4_med_label=$(docker inspect --format '{{ index .Config.Labels "rc.mediators" }}' rip-cage:latest 2>/dev/null || true)
 if [[ "$_e4_med_label" != *"mitmproxy"* ]]; then
@@ -324,7 +340,12 @@ unset _e4_med_label
 
 med_running=""
 if [[ "$E4_SKIP" == "false" ]]; then
-  "$RC" up "$MED_WS" < /dev/null > /tmp/rc-sec-med-up.out 2>&1 || true
+  # Pass sentinel via --mediator-env so it goes ONLY into init-mediator.sh's docker exec call,
+  # never into the container's /proc/1/environ (non-possession, ADR-024 D2 / rip-cage-ta1o.5.8).
+  "$RC" up "$MED_WS" \
+    --mediator-env "RIPCAGE_MEDIATOR_BEARER_SECRET=${E4_SENTINEL}" \
+    --mediator-env "RIPCAGE_MEDIATOR_PLACEHOLDER=${E4_PLACEHOLDER}" \
+    < /dev/null > /tmp/rc-sec-med-up.out 2>&1 || true
   med_running=$(docker ps --filter "name=^${MED_CAGE}$" --format '{{.Names}}' 2>/dev/null | head -1 || true)
   if [[ "$med_running" == "$MED_CAGE" ]]; then
     check "E4 mediator cage started ($MED_CAGE)" "pass"
@@ -1153,7 +1174,8 @@ YAML
   # exit 56 = recv failure after TCP RST from router (should not happen in observe).
   # We accept any exit EXCEPT where the would-block log entry shows event=deny
   # (which would confirm the router refused rather than forwarded).
-  o1_has_deny_not_would_block="no"
+  # shellcheck disable=SC2034
+  o1_has_deny_not_would_block="no"  # documentation variable; logic below uses direct grep on o1_early_log
   sleep 1
   o1_early_log=$(docker exec "$OBS_CAGE" cat /workspace/.rip-cage/egress.log 2>/dev/null || true)
   if echo "$o1_early_log" | python3 -c "
@@ -1311,12 +1333,10 @@ echo ""
 #   per run. Any test that echoes the placeholder instead of the sentinel fails
 #   loud, not silently.
 # ---------------------------------------------------------------------------
-echo "=== E4: Mediator-composed credential injection (rip-cage-ta1o.5.4) ==="
+echo "=== E4: Mediator-composed credential injection (rip-cage-ta1o.5.8) ==="
 
-# Sentinel and placeholder values.
-E4_RUN_ID=$(date +%s)
-E4_SENTINEL="ripcage-e4-sentinel-${E4_RUN_ID}"
-E4_PLACEHOLDER="ripcage-e4-placeholder-${E4_RUN_ID}"
+# E4_RUN_ID / E4_SENTINEL / E4_PLACEHOLDER are defined earlier (before rc up) so they
+# could be passed via --mediator-env at cage-start time (see mediator cage start section).
 
 if [[ "$E4_SKIP" == "true" ]]; then
   echo "[E4 SKIP] ${E4_SKIP_REASON}"
@@ -1324,7 +1344,9 @@ if [[ "$E4_SKIP" == "true" ]]; then
   check "E4 rip-mitmproxy user exists in image" "pass" "SKIP (image not baked)"
   check "E4 mitmdump binary present in image" "pass" "SKIP (image not baked)"
   check "E4 inject_credential.py addon present in image" "pass" "SKIP (image not baked)"
+  check "E4 mitmproxy auto-started by rc up (via init-mediator.sh)" "pass" "SKIP (image not baked)"
   check "E4 mitmproxy listening on 127.0.0.1:8888" "pass" "SKIP (image not baked)"
+  check "E4 /proc/1/environ does NOT contain sentinel (non-possession)" "pass" "SKIP (image not baked)"
   check "E4 httpbin.org/headers reachable (live-source gate)" "pass" "SKIP (image not baked)"
   check "E4 Authorization header echoed (header-present gate)" "pass" "SKIP (image not baked)"
   check "E4 Authorization contains Bearer sentinel (injection fired)" "pass" "SKIP (image not baked)"
@@ -1337,13 +1359,13 @@ if [[ "$E4_SKIP" == "true" ]]; then
   echo "NOTE(none=no-regression): After rc build with network.egress.mediator=none (default), re-run this suite with the standard image to confirm no regression in the existing B1-B9, O1-O2 probes."
 else
   # -------------------------------------------------------------------------
-  # Start mitmproxy inside the mediator cage.
-  # The mediator lifecycle dispatcher in init-rip-cage.sh may not yet be wired
-  # for RC_MEDIATOR (integration gap — see rip-cage-ta1o.5.4 integration note).
-  # We start the process directly via docker exec as rip-mitmproxy.
-  # The sentinel secret is passed as an env var to the mitmproxy process.
+  # Verify mitmproxy was auto-started by rc up (via init-mediator.sh).
+  # The mediator is launched by _up_init_mediator in cmd_up (rip-cage-ta1o.5.8)
+  # which runs init-mediator.sh as a host-driven root docker exec. The sentinel
+  # was passed via --mediator-env at rc up time — it reached the mediator env
+  # but not /proc/1/environ (non-possession, ADR-024 D2).
   # -------------------------------------------------------------------------
-  echo "-- Starting mitmproxy inside $MED_CAGE (direct exec, E4 probe) --"
+  echo "-- Verifying mitmproxy auto-started by rc up ($MED_CAGE, E4 probe) --"
 
   # Check that the rip-mitmproxy user and mitmdump binary exist in the image.
   _e4_user_check=$(docker exec "$MED_CAGE" id rip-mitmproxy 2>/dev/null || true)
@@ -1376,32 +1398,24 @@ else
   unset _e4_user_check _e4_bin_check _e4_addon_check
 
   if [[ "$E4_SKIP" == "false" ]]; then
-    # Start mitmproxy WITH the sentinel secret for the main E4 probe.
-    # docker exec -d: background (detach). --user: run as rip-mitmproxy (no su needed).
-    # -e: env vars are passed to the mitmdump process directly.
-    # HOME: explicitly set to rip-mitmproxy's home so mitmproxy writes its CA cert
-    #   to /opt/rip-cage-mitmproxy-home/.mitmproxy/ (docker exec --user does not
-    #   automatically set HOME from /etc/passwd).
-    docker exec -d \
-      --user rip-mitmproxy \
-      -e "HOME=/opt/rip-cage-mitmproxy-home" \
-      -e "RIPCAGE_MEDIATOR_BEARER_SECRET=${E4_SENTINEL}" \
-      -e "RIPCAGE_MEDIATOR_PLACEHOLDER=${E4_PLACEHOLDER}" \
-      "$MED_CAGE" \
-      /opt/rip-cage-mitmproxy/bin/mitmdump \
-        --mode regular \
-        --listen-host 127.0.0.1 \
-        --listen-port 8888 \
-        -s /opt/rip-cage-mitmproxy/addon/inject_credential.py \
-        --set connection_strategy=eager \
-        > /dev/null 2>&1 || true
-
-    # Give mitmproxy a moment to bind the port and generate its CA.
-    sleep 3
+    # Verify mitmdump was auto-started by rc up (not started manually here).
+    # init-mediator.sh runs at rc up time; by the time we reach this probe the
+    # mediator should already be running. Check pid file and port.
+    _e4_mitmdump_pid=$(docker exec "$MED_CAGE" cat /run/rip-cage-mediator-mitmproxy.pid 2>/dev/null || true)
+    if [[ -n "$_e4_mitmdump_pid" ]]; then
+      check "E4 mitmproxy auto-started by rc up (via init-mediator.sh)" "pass" \
+        "pid=${_e4_mitmdump_pid}"
+    else
+      check "E4 mitmproxy auto-started by rc up (via init-mediator.sh)" "fail" \
+        "PID file /run/rip-cage-mediator-mitmproxy.pid absent — init-mediator.sh may not have run; see /tmp/rc-sec-med-up.out"
+      E4_SKIP="true"
+      E4_SKIP_REASON="mitmdump PID file absent"
+    fi
+    unset _e4_mitmdump_pid
 
     # Verify mitmproxy is listening. NOTE: `ss`/`netstat` are NOT installed in the
     # cage image, so use a bash /dev/tcp connect probe (tool-free, port-agnostic).
-    # OPEN => mitmdump bound the port; CLOSED => failed to start (rip-cage-ta1o.5.4).
+    # OPEN => mitmdump bound the port; CLOSED => failed to start.
     if docker exec "$MED_CAGE" bash -c '(exec 3<>/dev/tcp/127.0.0.1/8888) 2>/dev/null'; then
       _e4_listen="open"
     else
@@ -1410,30 +1424,62 @@ else
     if [[ -n "$_e4_listen" ]]; then
       check "E4 mitmproxy listening on 127.0.0.1:8888" "pass"
     else
-      check "E4 mitmproxy listening on 127.0.0.1:8888" "fail" "port 8888 not bound (mitmdump may have failed to start; check /tmp/rip-cage-mediator-mitmproxy.log)"
+      check "E4 mitmproxy listening on 127.0.0.1:8888" "fail" \
+        "port 8888 not bound (mitmdump may have failed to start; check /tmp/rip-cage-mediator-mitmproxy.log and /tmp/rc-sec-med-up.out)"
       E4_SKIP="true"
       E4_SKIP_REASON="mitmproxy not listening on :8888"
     fi
   fi
 
+  # Non-possession check: the sentinel MUST NOT be in /proc/1/environ (agent's PID 1).
+  # /proc/1/environ is the environment of the container's PID 1 (sleep infinity, run as agent).
+  # The --mediator-env channel delivers vars ONLY to init-mediator.sh's docker exec,
+  # so they must never appear in PID 1's environ (ADR-024 D2, rip-cage-ta1o.5.8).
+  # This check always runs when the cage is up (does not depend on mitmproxy running).
+  if [[ "$med_running" == "$MED_CAGE" ]]; then
+    # Read as the agent user (not root): PID 1 is the agent's sleep process, so the
+    # agent user owns /proc/1/environ and can read it. Root inside the container lacks
+    # CAP_SYS_PTRACE and cannot read /proc/<pid>/environ for a process owned by another user.
+    _e4_proc1_env=$(docker exec "$MED_CAGE" cat /proc/1/environ 2>/dev/null | tr '\0' '\n' || true)
+    # Liveness gate: assert the capture is non-empty by checking for a known-present var
+    # (PATH= must always be in /proc/1/environ on Linux). If the capture is empty/missing,
+    # fail loud — an absence check against an empty source passes vacuously (F1 fix).
+    if ! echo "$_e4_proc1_env" | grep -q "^PATH="; then
+      check "E4 /proc/1/environ does NOT contain sentinel (non-possession)" "fail" \
+        "LIVENESS GATE FAILED: /proc/1/environ capture is empty or PATH= absent — grep-for-absence would pass vacuously (exec hiccup or container not running). Sentinel: ${E4_SENTINEL}"
+    elif echo "$_e4_proc1_env" | grep -qF "${E4_SENTINEL}"; then
+      check "E4 /proc/1/environ does NOT contain sentinel (non-possession)" "fail" \
+        "SENTINEL FOUND IN /proc/1/environ — mediator secret leaked into agent env (non-possession violated)"
+    else
+      check "E4 /proc/1/environ does NOT contain sentinel (non-possession)" "pass" \
+        "sentinel absent from /proc/1/environ (liveness gate: PATH= present)"
+    fi
+    unset _e4_proc1_env
+  else
+    check "E4 /proc/1/environ does NOT contain sentinel (non-possession)" "fail" \
+      "SKIP: container not running"
+  fi
+
   if [[ "$E4_SKIP" == "false" ]]; then
-    # Trust the mitmproxy CA so curl can verify TLS.
-    # mitmproxy writes its CA to ~/.mitmproxy/mitmproxy-ca-cert.pem under the
-    # running user's home (/opt/rip-cage-mitmproxy-home/, set via HOME env above).
-    # Search multiple candidate locations in case the path differs. Install it as
-    # a trusted CA so curl inside the cage can verify mitmproxy's TLS MITM cert.
-    # MUST run as root: the CA lives under rip-mitmproxy's 0700 home (agent cannot
-    # even read it), and cp + update-ca-certificates write root-owned dirs (ta1o.5.4).
-    docker exec -u root "$MED_CAGE" bash -c "
-      _ca_src=''
-      for _p in /opt/rip-cage-mitmproxy-home/.mitmproxy/mitmproxy-ca-cert.pem /root/.mitmproxy/mitmproxy-ca-cert.pem /home/rip-mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem; do
-        [ -f \"\$_p\" ] && _ca_src=\"\$_p\" && break
-      done
-      if [ -z \"\$_ca_src\" ]; then echo '[E4] CA not found yet — mitmproxy may still be generating it'; exit 1; fi
-      cp \"\$_ca_src\" /usr/local/share/ca-certificates/mitmproxy-e4-ca.crt
-      update-ca-certificates > /dev/null 2>&1
-      echo \"[E4] CA installed from \$_ca_src\"
-    " > /dev/null 2>&1 || true
+    # CA trust: init-mediator.sh installs the CA automatically (ca_cert_path registry field).
+    # Verify it is in the system trust store; if not, fall back to manual install.
+    # This handles the case where the CA cert was not yet generated when init-mediator.sh ran.
+    _e4_ca_already=$(docker exec "$MED_CAGE" test -f /usr/local/share/ca-certificates/mitmproxy-ca.crt 2>/dev/null && echo "ok" || echo "absent")
+    if [[ "$_e4_ca_already" != "ok" ]]; then
+      # Fallback: CA not yet installed by init-mediator.sh (may have raced cert generation).
+      # Install manually as root so curl inside the cage can verify the MITM cert.
+      docker exec -u root "$MED_CAGE" bash -c "
+        _ca_src=''
+        for _p in /opt/rip-cage-mitmproxy-home/.mitmproxy/mitmproxy-ca-cert.pem /root/.mitmproxy/mitmproxy-ca-cert.pem; do
+          [ -f \"\$_p\" ] && _ca_src=\"\$_p\" && break
+        done
+        if [ -z \"\$_ca_src\" ]; then echo '[E4] CA not found — mitmproxy may still be generating it'; exit 1; fi
+        cp \"\$_ca_src\" /usr/local/share/ca-certificates/mitmproxy-e4-ca.crt
+        update-ca-certificates > /dev/null 2>&1
+        echo \"[E4] CA fallback-installed from \$_ca_src\"
+      " > /dev/null 2>&1 || true
+    fi
+    unset _e4_ca_already
 
     # ---------------------------------------------------------------------------
     # E4: Positive-sentinel probe — curl with placeholder, assert sentinel echoed.
@@ -1446,20 +1492,46 @@ else
     # ---------------------------------------------------------------------------
     echo "--- E4: credential injection delta probe ---"
     e4_response=""
+    e4_http_code=""
     e4_curl_exit=0
-    e4_response=$(docker exec "$MED_CAGE" curl -s \
-      -H "Authorization: Bearer ${E4_PLACEHOLDER}" \
-      --max-time 20 \
-      "https://httpbin.org/headers" 2>/dev/null) || e4_curl_exit=$?
+    # Capture HTTP status code AND response body separately.
+    # Write body to a temp file inside the cage and capture http_code via -w.
+    # (Head -n -1 is BSD-incompatible on macOS; use separate -o / -w calls.)
+    _e4_tmpbody=$(docker exec "$MED_CAGE" mktemp 2>/dev/null || true)
+    if [[ -n "$_e4_tmpbody" ]]; then
+      e4_http_code=$(docker exec "$MED_CAGE" curl -s \
+        -H "Authorization: Bearer ${E4_PLACEHOLDER}" \
+        --max-time 20 \
+        -o "$_e4_tmpbody" \
+        -w '%{http_code}' \
+        "https://httpbin.org/headers" 2>/dev/null) || e4_curl_exit=$?
+      e4_response=$(docker exec "$MED_CAGE" cat "$_e4_tmpbody" 2>/dev/null || true)
+      docker exec "$MED_CAGE" rm -f "$_e4_tmpbody" > /dev/null 2>&1 || true
+    else
+      # Fallback: no temp file, just capture body (cannot check HTTP status code).
+      e4_response=$(docker exec "$MED_CAGE" curl -s \
+        -H "Authorization: Bearer ${E4_PLACEHOLDER}" \
+        --max-time 20 \
+        "https://httpbin.org/headers" 2>/dev/null) || e4_curl_exit=$?
+      e4_http_code="unknown"
+    fi
+    unset _e4_tmpbody
 
-    # Gate: confirm httpbin.org was actually reached (live-source check).
-    # If curl fails entirely, the E4 assertions cannot be made meaningfully.
+    # Gate: confirm httpbin.org was actually reached with HTTP 200 (live-source check).
+    # 5xx (e.g. 503 from httpbin.org's backend being overloaded) is an external service
+    # availability issue, not a mitmproxy/injection failure — treat as SKIP, not FAIL.
     if [[ "$e4_curl_exit" -ne 0 || -z "$e4_response" ]]; then
       check "E4 httpbin.org/headers reachable (live-source gate)" "fail" \
         "curl exit=${e4_curl_exit} — httpbin.org not reachable through mediator; check mitmproxy CA trust or forward_to config"
       check "E4 Authorization header echoed (header-present gate)" "fail" "SKIP: httpbin.org not reachable"
       check "E4 Authorization contains Bearer sentinel (injection fired)" "fail" "SKIP: httpbin.org not reachable"
       check "E4 Authorization does NOT contain placeholder (no-leak)" "fail" "SKIP: httpbin.org not reachable"
+    elif [[ "$e4_http_code" != "200" && "$e4_http_code" != "unknown" ]]; then
+      check "E4 httpbin.org/headers reachable (live-source gate)" "fail" \
+        "HTTP ${e4_http_code} — httpbin.org backend returned non-200 (upstream service issue, not mediator); re-run to retry"
+      check "E4 Authorization header echoed (header-present gate)" "fail" "SKIP: httpbin.org returned ${e4_http_code}"
+      check "E4 Authorization contains Bearer sentinel (injection fired)" "fail" "SKIP: httpbin.org returned ${e4_http_code}"
+      check "E4 Authorization does NOT contain placeholder (no-leak)" "fail" "SKIP: httpbin.org returned ${e4_http_code}"
     else
       check "E4 httpbin.org/headers reachable (live-source gate)" "pass"
 
@@ -1622,7 +1694,12 @@ else:
       check "E4-neg addon unit: non-matching placeholder → no-op" "fail" "addon unit test failed"
     fi
   else
-    # E4_SKIP became true after image checks.
+    # E4_SKIP became true (binary/user checks failed OR auto-start/listening failed).
+    # "E4 mitmproxy auto-started" and "E4 mitmproxy listening" may or may not have been
+    # emitted already (they are emitted inside the first E4_SKIP==false block). Emit the
+    # remaining checks that would have run in the second E4_SKIP==false block.
+    # NOTE: "E4 /proc/1/environ non-possession" is always emitted above (tied to med_running),
+    # so it is NOT repeated here.
     check "E4 httpbin.org/headers reachable (live-source gate)" "fail" "SKIP: ${E4_SKIP_REASON}"
     check "E4 Authorization header echoed (header-present gate)" "fail" "SKIP: ${E4_SKIP_REASON}"
     check "E4 Authorization contains Bearer sentinel (injection fired)" "fail" "SKIP: ${E4_SKIP_REASON}"

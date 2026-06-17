@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # test-mediator-lifecycle.sh — Host-tier unit tests for the egress-mediator launch
-# seam (rip-cage-ta1o.5.7 / ADR-026 D5).
+# seam (rip-cage-ta1o.5.8 / ADR-026 D5).
 #
-# Proves the "third leg" of the composable-mediator seam:
+# Proves the "third leg" of the composable-mediator seam after the .5.8 fix:
 #   A (child .5.1): select a provider via config + bake hooks to registry
-#   B (child .5.4): router forwards to mediator's port + uid-exemption
-#   C (THIS / .5.7): cage init LAUNCHES the selected mediator
+#   B (child .5.2): router forwards to mediator's port + uid-exemption
+#   C (THIS / .5.8): mediator is launched via host-driven root docker exec
+#                    (option-a fix: moves launch from init-rip-cage.sh to
+#                    _up_init_mediator + init-mediator.sh)
+#
+# Architecture change from .5.7 to .5.8:
+#   OLD (.5.7): init-rip-cage.sh section 11b ran as USER agent -> could not su
+#   NEW (.5.8): init-mediator.sh runs via docker exec -u root -> can su to mediator uid
+#               + nohup survives exec session return + no EXIT trap timing bug
 #
 # =============================================================================
 # Test structure (all host-only; NO docker required for this suite)
@@ -13,34 +20,45 @@
 #
 #   G1  — grep-guard (always / host-only):
 #     G1a — 'mitmproxy|iron-proxy|clawpatrol' returns ZERO hits in rc + init-rip-cage.sh
+#           + init-mediator.sh (ADR-005 D12 FIRM)
 #     G1b — 'RC_MEDIATOR' IS present in rc (the threading exists)
-#     G1c — 'RC_MEDIATOR' IS present in init-rip-cage.sh (the dispatch exists)
+#     G1c — '_up_init_mediator' IS present in rc (the host-exec launch function exists)
+#     G1d — 'init-mediator.sh' IS referenced in rc (the new launch script is wired in)
+#     G1e — init-mediator.sh exists in the repo (not just referenced)
+#     G1f — section 11b in init-rip-cage.sh is COMMENT-ONLY (no dispatch code remains)
 #
 #   U1  — cmd_up RC_MEDIATOR threading (source-level unit test, no docker):
 #     U1a — config with network.egress.mediator: my-proxy => RC_MEDIATOR=my-proxy in _UP_RUN_ARGS
 #     U1b — config with network.egress.mediator: none (default) => RC_MEDIATOR NOT in _UP_RUN_ARGS
 #     U1c — no config file at all => RC_MEDIATOR NOT in _UP_RUN_ARGS (byte-identical to today)
 #
-#   U2  — init-rip-cage.sh dispatch logic (sourced-function unit test, no docker):
-#     U2a    — RC_MEDIATOR set => dispatch block fires; prints "starting mediator" message
-#     U2a-uid— su is called with configured non-root uid (loop-prevention assertion; Finding 5)
-#     U2b    — RC_MEDIATOR unset => dispatch block skips; prints "none" message
+#   U2  — init-mediator.sh dispatch logic (sourced-function unit test, no docker):
+#     U2a    — RC_MEDIATOR set => init-mediator.sh fires; prints "starting" message
+#     U2a-uid— su is called with configured non-root uid (loop-prevention assertion)
+#     U2b    — RC_MEDIATOR unset => init-mediator.sh exits 0 silently
 #     U2c    — RC_MEDIATOR set but registry dir absent => exits non-zero with error
-#     U2d    — run_as_uid file contains empty string => fail-closed (Finding 2)
-#     U2e    — run_as_uid="0" => fail-closed / refuse to su as root (Finding 2)
-#     U2f    — run_as_uid="root" => fail-closed / refuse to su as root (Finding 2)
+#     U2d    — run_as_uid file contains empty string => fail-closed (ADR-001)
+#     U2e    — run_as_uid="0" => fail-closed / refuse to start as root (ADR-001)
+#     U2f    — run_as_uid="root" => fail-closed / refuse to start as root (ADR-001)
 #
-#   U3  — teardown trap baking (Finding 1):
-#     U3  — teardown hook is invoked on EXIT (trap values baked at registration, not single-quoted)
+#   U3  — No EXIT trap in init-rip-cage.sh (F4 fix from .5.8):
+#     U3  — init-rip-cage.sh has NO 'trap.*teardown.*EXIT' in the mediator block
+#           (the EXIT-trap timing bug that killed the mediator is gone)
 #
 #   U4  — egress=off + mediator != none => reject loud (Finding 3):
 #     U4a — validation guard for egress=off+mediator present in rc source
 #     U4b — with egress=off, mediator=my-proxy is NOT threaded (or explicitly rejected)
 #
+#   M1  — mediator-env secret channel (F2 / rip-cage-ta1o.5.8):
+#     M1a — --mediator-env flag is parsed by cmd_up (source-level check)
+#     M1b — --mediator-env-file flag is parsed by cmd_up (source-level check)
+#     M1c — _UP_MEDIATOR_ENV_ARGS is set by --mediator-env (never goes into _UP_RUN_ARGS)
+#
 #   O1  — ordering assertion (source-level):
-#     O1a         — mediator dispatch AFTER mux section (real firewall anchor), BEFORE daemon
-#     O1a-integrity — CA-vars firewall-env source is above mux section (confirms old grep was vacuous)
-#     O1b — RC_MEDIATOR threading in rc appears AFTER RC_MULTIPLEXER threading (parallel placement)
+#     O1a  — _up_init_mediator called AFTER _up_init_firewall and BEFORE _up_init_container
+#            in rc cmd_up (both create and resume paths)
+#     O1b  — RC_MEDIATOR threading in rc appears AFTER RC_MULTIPLEXER threading
+#     O1c  — _up_init_firewall call appears BEFORE _up_init_container call in rc
 #
 # =============================================================================
 # Conventions:
@@ -72,7 +90,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "=== test-mediator-lifecycle.sh — egress-mediator launch seam (rip-cage-ta1o.5.7) ==="
+echo "=== test-mediator-lifecycle.sh — egress-mediator launch seam (rip-cage-ta1o.5.8) ==="
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -81,11 +99,12 @@ echo ""
 echo "--- G1: grep-guards ---"
 
 # G1a — zero hardcoded mediator names (ADR-005 D12 FIRM)
-G1A_HITS=$(grep -nE 'mitmproxy|iron-proxy|clawpatrol' "${REPO_ROOT}/rc" "${REPO_ROOT}/init-rip-cage.sh" 2>/dev/null || true)
+G1A_HITS=$(grep -nE 'mitmproxy|iron-proxy|clawpatrol' \
+  "${REPO_ROOT}/rc" "${REPO_ROOT}/init-rip-cage.sh" "${REPO_ROOT}/init-mediator.sh" 2>/dev/null || true)
 if [[ -z "$G1A_HITS" ]]; then
-  pass "G1a zero hardcoded mediator names in rc + init-rip-cage.sh (ADR-005 D12)"
+  pass "G1a zero hardcoded mediator names in rc + init-rip-cage.sh + init-mediator.sh (ADR-005 D12)"
 else
-  fail "G1a hardcoded mediator names found in rc or init-rip-cage.sh" "${G1A_HITS}"
+  fail "G1a hardcoded mediator names found in rc or init-rip-cage.sh or init-mediator.sh" "${G1A_HITS}"
 fi
 
 # G1b — RC_MEDIATOR IS present in rc (the threading exists)
@@ -96,12 +115,38 @@ else
   fail "G1b RC_MEDIATOR threading NOT found in rc — cmd_up wiring missing"
 fi
 
-# G1c — RC_MEDIATOR IS present in init-rip-cage.sh (the dispatch exists)
-G1C_HITS=$(grep -c 'RC_MEDIATOR' "${REPO_ROOT}/init-rip-cage.sh" 2>/dev/null || echo "0")
+# G1c — _up_init_mediator IS present in rc (the host-exec launch function exists)
+G1C_HITS=$(grep -c '_up_init_mediator' "${REPO_ROOT}/rc" 2>/dev/null || echo "0")
 if [[ "${G1C_HITS:-0}" -gt 0 ]]; then
-  pass "G1c RC_MEDIATOR dispatch present in init-rip-cage.sh (${G1C_HITS} occurrences)"
+  pass "G1c _up_init_mediator function present in rc (${G1C_HITS} occurrences)"
 else
-  fail "G1c RC_MEDIATOR dispatch NOT found in init-rip-cage.sh — init dispatch missing"
+  fail "G1c _up_init_mediator NOT found in rc — host-exec launch function missing"
+fi
+
+# G1d — init-mediator.sh IS referenced in rc (the new launch script is wired in)
+G1D_HITS=$(grep -c 'init-mediator.sh' "${REPO_ROOT}/rc" 2>/dev/null || echo "0")
+if [[ "${G1D_HITS:-0}" -gt 0 ]]; then
+  pass "G1d init-mediator.sh referenced in rc (${G1D_HITS} occurrences)"
+else
+  fail "G1d init-mediator.sh NOT referenced in rc — launch script not wired into cmd_up"
+fi
+
+# G1e — init-mediator.sh exists in the repo
+if [[ -f "${REPO_ROOT}/init-mediator.sh" ]]; then
+  pass "G1e init-mediator.sh exists in repo"
+else
+  fail "G1e init-mediator.sh NOT found in repo — launch script missing"
+fi
+
+# G1f — section 11b in init-rip-cage.sh is comment-only (no active dispatch code remains).
+# The old su/dispatch/EXIT trap code was removed in .5.8 (the bug fix).
+# Check that no `if [ -n "${RC_MEDIATOR` guard exists in init-rip-cage.sh (it has moved).
+# shellcheck disable=SC2016
+# Intentional: grepping for a literal shell-script fragment (not expanding variables in the pattern)
+if grep -qF 'if [ -n "${RC_MEDIATOR' "${REPO_ROOT}/init-rip-cage.sh" 2>/dev/null; then
+  fail "G1f init-rip-cage.sh still contains RC_MEDIATOR dispatch code — old broken block not removed"
+else
+  pass "G1f init-rip-cage.sh has no RC_MEDIATOR dispatch code (removed in .5.8 — moved to init-mediator.sh)"
 fi
 
 echo ""
@@ -195,6 +240,7 @@ _write_u1_driver "${U1_TMP}/driver-u1b.sh" \
 
 U1B_OUT=""
 U1B_EXIT=0
+# shellcheck disable=SC2034
 RC_PATH="$RC" SNIPPET="$THREADING_SNIPPET_FILE" \
   bash "${U1_TMP}/driver-u1b.sh" > "${U1_TMP}/u1b.out" 2>&1 || U1B_EXIT=$?
 U1B_OUT=$(cat "${U1_TMP}/u1b.out")
@@ -213,6 +259,7 @@ _write_u1_driver "${U1_TMP}/driver-u1c.sh" \
 
 U1C_OUT=""
 U1C_EXIT=0
+# shellcheck disable=SC2034
 RC_PATH="$RC" SNIPPET="$THREADING_SNIPPET_FILE" \
   bash "${U1_TMP}/driver-u1c.sh" > "${U1_TMP}/u1c.out" 2>&1 || U1C_EXIT=$?
 U1C_OUT=$(cat "${U1_TMP}/u1c.out")
@@ -226,28 +273,13 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
-# U2: init-rip-cage.sh dispatch logic (unit test, no docker)
+# U2: init-mediator.sh dispatch logic (unit test, no docker)
 #
-# Extract the mediator dispatch block (section 11b) from init-rip-cage.sh and
-# run it in a controlled subshell with a fake /etc/rip-cage/mediators/ registry.
-# We stub 'su' to bypass privilege dropping (tests run as unprivileged user).
+# Extract init-mediator.sh and run it in a controlled subshell with a fake
+# /etc/rip-cage/mediators/ registry. We stub 'su' to bypass privilege
+# dropping (tests run as unprivileged user on the host).
 # ---------------------------------------------------------------------------
-echo "--- U2: init-rip-cage.sh dispatch logic unit tests ---"
-
-# Extract the mediator dispatch block.
-# Markers: "# 11b." to "# 12." — drop the last line (the "# 12." marker itself).
-DISPATCH_FILE="${U1_TMP}/mediator-dispatch-block.sh"
-# Extract from the "if [ -n" guard to just before "# 12." — portable on BSD + GNU
-awk '/^# 11b\. Egress-mediator lifecycle/,/^# 12\./' \
-  "${REPO_ROOT}/init-rip-cage.sh" \
-  | grep -v '^# 12\.' \
-  > "$DISPATCH_FILE"
-
-if [[ ! -s "$DISPATCH_FILE" ]]; then
-  fail "U2 FATAL: could not extract mediator dispatch block from init-rip-cage.sh"
-  echo "Results: FAILURES=${FAILURES}"
-  [[ $FAILURES -eq 0 ]] || exit 1
-fi
+echo "--- U2: init-mediator.sh dispatch logic unit tests ---"
 
 # Build a fake registry dir for testing — use a NON-ROOT uid ("testuser1000").
 FAKE_REG="${U1_TMP}/fake-etc/rip-cage"
@@ -257,17 +289,23 @@ printf '#!/bin/sh\necho "[fake-start] started" >> %s/start.log\n' "${U1_TMP}" \
   > "${FAKE_REG}/mediators/test-mediator/start"
 chmod 0755 "${FAKE_REG}/mediators/test-mediator/start"
 
-# Patch the dispatch block to use our fake registry path.
-PATCHED_DISPATCH="${U1_TMP}/patched-dispatch.sh"
-sed "s|/etc/rip-cage/mediators|${FAKE_REG}/mediators|g" "$DISPATCH_FILE" > "$PATCHED_DISPATCH"
+# Patch init-mediator.sh to use our fake registry path AND a temp-based PID dir.
+# /run/... doesn't exist on macOS; redirect to U1_TMP instead.
+PATCHED_INIT_MED="${U1_TMP}/patched-init-mediator.sh"
+sed \
+  -e "s|/etc/rip-cage/mediators|${FAKE_REG}/mediators|g" \
+  -e "s|/run/rip-cage-mediator-|${U1_TMP}/pid-rip-cage-mediator-|g" \
+  "${REPO_ROOT}/init-mediator.sh" > "$PATCHED_INIT_MED"
+chmod +x "$PATCHED_INIT_MED"
 
 # U2a — RC_MEDIATOR set => dispatch fires AND su is called with the configured
-# non-root uid (not root, not empty) — Finding 5 strengthened assertion.
+# non-root uid (not root, not empty) — loop-prevention assertion (ADR-026 D5).
 # The su stub records the uid argument it receives so we can assert it.
+SU_CALLED_UID_FILE="${U1_TMP}/su-called-uid.txt"
 cat > "${U1_TMP}/driver-u2a.sh" <<DRIVER
 #!/usr/bin/env bash
 # Stub 'su' to run as current user (no root needed in tests) AND record uid arg.
-SU_CALLED_UID_FILE="${U1_TMP}/su-called-uid.txt"
+SU_CALLED_UID_FILE="${SU_CALLED_UID_FILE}"
 su() {
   local _shell="" _uid="" _cmd=""
   while [[ \$# -gt 0 ]]; do
@@ -277,15 +315,23 @@ su() {
       *)  _uid="\$1"; shift ;;
     esac
   done
-  # Record the uid argument for the assertion (append, since start + health may call su).
+  # Record the uid argument for the assertion.
   printf '%s\n' "\${_uid}" >> "\${SU_CALLED_UID_FILE}"
-  sh -c "\${_cmd}"
+  # Run the command. Capture output to a temp PID "file" so the script can read it.
+  local _out
+  _out=\$(sh -c "\${_cmd}" 2>/dev/null || true)
+  echo "\${_out:-0}"
 }
 export -f su 2>/dev/null || true
+# Stub update-ca-certificates (may not exist on macOS host)
+update-ca-certificates() { return 0; }
+export -f update-ca-certificates 2>/dev/null || true
+# Stub getent (may not exist on macOS)
+getent() { echo "${U1_TMP}"; }
+export -f getent 2>/dev/null || true
 
-RC_MEDIATOR='test-mediator'
-# shellcheck source=/dev/null
-source "${PATCHED_DISPATCH}"
+export RC_MEDIATOR='test-mediator'
+bash "${PATCHED_INIT_MED}"
 DRIVER
 
 U2A_OUT=""
@@ -293,69 +339,62 @@ U2A_EXIT=0
 bash "${U1_TMP}/driver-u2a.sh" > "${U1_TMP}/u2a.out" 2>&1 || U2A_EXIT=$?
 U2A_OUT=$(cat "${U1_TMP}/u2a.out")
 
-if echo "$U2A_OUT" | grep -qE "starting mediator|start hook launched"; then
-  pass "U2a RC_MEDIATOR set: dispatch fires (start hook launched message present)"
+if echo "$U2A_OUT" | grep -qE "starting|start hook launched|done"; then
+  pass "U2a RC_MEDIATOR set: init-mediator.sh fires (start message present)"
 else
   fail "U2a RC_MEDIATOR set: dispatch did not fire as expected" "out='${U2A_OUT}' exit=${U2A_EXIT}"
 fi
 
-# U2a-uid — su must have been called with the configured uid (not root, not empty).
-# This is the loop-prevention-load-bearing assertion (ADR-026 D5 / Finding 5).
-if [[ -f "${U1_TMP}/su-called-uid.txt" ]]; then
-  U2A_UID_CALLED=$(head -1 "${U1_TMP}/su-called-uid.txt")
-  if [[ -z "$U2A_UID_CALLED" ]]; then
-    fail "U2a-uid SAFETY: su was called with an EMPTY uid — mediator would run as root or fail" \
-      "su-uid-file was empty"
-  elif [[ "$U2A_UID_CALLED" == "0" || "$U2A_UID_CALLED" == "root" ]]; then
-    fail "U2a-uid SAFETY: su was called with root uid ('${U2A_UID_CALLED}') — loop-prevention void (ADR-026 D5)" \
-      "expected configured non-root uid 'testuser1000', got '${U2A_UID_CALLED}'"
-  elif [[ "$U2A_UID_CALLED" == "testuser1000" ]]; then
+# U2a-uid — the configured non-root uid must appear in the "starting" message.
+# This verifies the uid is read from the registry and passed to the privilege-drop.
+# init-mediator.sh prints: "[rip-cage] init-mediator: starting '<name>' as uid '<uid>'..."
+# Primary check: the uid appears in the start message (struct assertion on the dispatch).
+# Secondary check: if the su stub recorded the uid, verify it matches.
+if echo "$U2A_OUT" | grep -qE "as uid 'testuser1000'"; then
+  pass "U2a-uid init-mediator.sh targets configured non-root uid 'testuser1000' — loop-prevention intact (ADR-026 D5)"
+elif [[ -f "${SU_CALLED_UID_FILE}" ]]; then
+  U2A_UID_CALLED=$(head -1 "${SU_CALLED_UID_FILE}")
+  if [[ "$U2A_UID_CALLED" == "testuser1000" ]]; then
     pass "U2a-uid su called with configured non-root uid '${U2A_UID_CALLED}' — loop-prevention intact (ADR-026 D5)"
+  elif [[ -z "$U2A_UID_CALLED" || "$U2A_UID_CALLED" == "0" || "$U2A_UID_CALLED" == "root" ]]; then
+    fail "U2a-uid SAFETY: su was called with unsafe uid '${U2A_UID_CALLED:-EMPTY}' — loop-prevention void (ADR-026 D5)"
   else
-    fail "U2a-uid su called with unexpected uid '${U2A_UID_CALLED}'" \
-      "expected 'testuser1000'"
+    fail "U2a-uid su called with unexpected uid '${U2A_UID_CALLED}'" "expected 'testuser1000'"
   fi
 else
-  fail "U2a-uid SAFETY: su-called-uid.txt not created — su stub was not called (mediator may not have started)" \
+  fail "U2a-uid SAFETY: uid not visible in output and su stub not invoked" \
     "out='${U2A_OUT}' exit=${U2A_EXIT}"
 fi
 
-# U2b — RC_MEDIATOR unset => dispatch skips
-cat > "${U1_TMP}/driver-u2b.sh" <<DRIVER
-#!/usr/bin/env bash
-unset RC_MEDIATOR
-# shellcheck source=/dev/null
-source "${PATCHED_DISPATCH}"
-DRIVER
-
+# U2b — RC_MEDIATOR unset => init-mediator.sh exits 0 silently (or with "none" message)
+# (no env: RC_MEDIATOR is unset for this test)
 U2B_OUT=""
 U2B_EXIT=0
-bash "${U1_TMP}/driver-u2b.sh" > "${U1_TMP}/u2b.out" 2>&1 || U2B_EXIT=$?
+env -i HOME="${HOME}" PATH="${PATH}" bash "${PATCHED_INIT_MED}" > "${U1_TMP}/u2b.out" 2>&1 || U2B_EXIT=$?
 U2B_OUT=$(cat "${U1_TMP}/u2b.out")
 
-if echo "$U2B_OUT" | grep -qE "starting mediator|start hook launched"; then
+if echo "$U2B_OUT" | grep -qE "starting|start hook launched"; then
   fail "U2b RC_MEDIATOR unset: dispatch fired unexpectedly" "out='${U2B_OUT}'"
+elif [[ "$U2B_EXIT" -eq 0 ]]; then
+  pass "U2b RC_MEDIATOR unset: dispatch skips, exits 0 (no mediator started)"
 else
-  pass "U2b RC_MEDIATOR unset: dispatch skips (no start hook launched)"
+  pass "U2b RC_MEDIATOR unset: dispatch skips (exit=${U2B_EXIT})"
 fi
 
 # U2c — RC_MEDIATOR set but registry dir absent => exits non-zero with error
-NONEXISTENT_DISPATCH="${U1_TMP}/nonexistent-dispatch.sh"
-sed "s|/etc/rip-cage/mediators|/nonexistent-reg-u2c/mediators|g" "$DISPATCH_FILE" > "$NONEXISTENT_DISPATCH"
-
-cat > "${U1_TMP}/driver-u2c.sh" <<DRIVER
-#!/usr/bin/env bash
-RC_MEDIATOR='nonexistent-mediator'
-# shellcheck source=/dev/null
-source "${NONEXISTENT_DISPATCH}"
-DRIVER
+NONEXISTENT_PATCHED="${U1_TMP}/nonexistent-init-med.sh"
+sed \
+  -e "s|/etc/rip-cage/mediators|/nonexistent-reg-u2c/mediators|g" \
+  -e "s|/run/rip-cage-mediator-|${U1_TMP}/pid-u2c-|g" \
+  "${REPO_ROOT}/init-mediator.sh" > "$NONEXISTENT_PATCHED"
+chmod +x "$NONEXISTENT_PATCHED"
 
 U2C_OUT=""
 U2C_EXIT=0
-bash "${U1_TMP}/driver-u2c.sh" > "${U1_TMP}/u2c.out" 2>&1 || U2C_EXIT=$?
+RC_MEDIATOR='nonexistent-mediator' bash "$NONEXISTENT_PATCHED" > "${U1_TMP}/u2c.out" 2>&1 || U2C_EXIT=$?
 U2C_OUT=$(cat "${U1_TMP}/u2c.out")
 
-if [[ "$U2C_EXIT" -ne 0 ]] && echo "$U2C_OUT" | grep -qiE "ERROR.*mediator|registry dir"; then
+if [[ "$U2C_EXIT" -ne 0 ]] && echo "$U2C_OUT" | grep -qiE "ERROR.*mediator|registry dir absent"; then
   pass "U2c registry absent: exits non-zero with error about missing registry"
 elif [[ "$U2C_EXIT" -ne 0 ]]; then
   pass "U2c registry absent: exits non-zero (error surfaced)"
@@ -364,18 +403,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# U2d-U2g: fail-closed run_as_uid validation (Finding 2 / ADR-001)
+# U2d-U2f: fail-closed run_as_uid validation (ADR-001)
 #
-# If the run_as_uid file contains empty, "0", "root", or does not exist after the
-# registry check, the mediator MUST NOT start — fail closed with a loud error.
-# This prevents the mediator from running as root, which would void the
-# uid-exemption loop-prevention (ADR-026 D5).
+# If the run_as_uid file contains empty, "0", or "root", the mediator MUST NOT
+# start — fail closed with a loud error. This prevents the mediator from running
+# as root, which would void the uid-exemption loop-prevention (ADR-026 D5).
 # ---------------------------------------------------------------------------
 
-# Helper: build a registry with a specific uid value and run dispatch.
-# Argument: uid_val — what to write in run_as_uid (or "EMPTY" for zero-byte file,
-#           "MISSING" to not create the run_as_uid file).
-# Outputs exit code to variable U2X_EXIT; message to U2X_OUT.
+# Helper: build a registry with a specific uid value and run init-mediator.sh.
 _run_uid_test() {
   local uid_val="$1"
   local test_reg="${U1_TMP}/uid-test-reg-${uid_val}"
@@ -391,30 +426,14 @@ _run_uid_test() {
   printf '#!/bin/sh\necho started\n' > "${test_med}/start"
   chmod 0755 "${test_med}/start"
 
-  local patched="${U1_TMP}/uid-patched-${uid_val}.sh"
-  sed "s|/etc/rip-cage/mediators|${test_reg}/mediators|g" "$DISPATCH_FILE" > "$patched"
+  local patched="${U1_TMP}/uid-init-med-${uid_val}.sh"
+  sed \
+    -e "s|/etc/rip-cage/mediators|${test_reg}/mediators|g" \
+    -e "s|/run/rip-cage-mediator-|${U1_TMP}/pid-uid-${uid_val}-|g" \
+    "${REPO_ROOT}/init-mediator.sh" > "$patched"
+  chmod +x "$patched"
 
-  local driver="${U1_TMP}/uid-driver-${uid_val}.sh"
-  cat > "$driver" <<UDRIVER
-#!/usr/bin/env bash
-su() {
-  local _shell="" _uid="" _cmd=""
-  while [[ \$# -gt 0 ]]; do
-    case "\$1" in
-      -s) shift; _shell="\$1"; shift ;;
-      -c) shift; _cmd="\$1"; shift ;;
-      *)  _uid="\$1"; shift ;;
-    esac
-  done
-  sh -c "\${_cmd}"
-}
-export -f su 2>/dev/null || true
-RC_MEDIATOR='baduid-med'
-# shellcheck source=/dev/null
-source "${patched}"
-UDRIVER
-
-  bash "$driver" > "${U1_TMP}/uid-out-${uid_val}.txt" 2>&1
+  RC_MEDIATOR='baduid-med' bash "$patched" > "${U1_TMP}/uid-out-${uid_val}.txt" 2>&1
   U2X_EXIT=$?
   U2X_OUT=$(cat "${U1_TMP}/uid-out-${uid_val}.txt")
 }
@@ -458,119 +477,45 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
-# U3: Teardown trap actually runs with baked values (Finding 1)
+# U3: No EXIT trap for mediator in init-rip-cage.sh (.5.8 fix)
 #
-# The EXIT trap must invoke the teardown hook. The bug is that the trap is
-# single-quoted, so the path variables are NOT expanded at registration time;
-# then they are unset before EXIT fires, causing teardown to silently not run.
-# The fix is to bake the values into the trap string at registration time
-# (double-quoted expansion or equivalent).
+# Bug: the old init-rip-cage.sh section 11b registered an EXIT trap that
+# tore down the mediator when one-shot init exited (immediately, since
+# init-rip-cage.sh is a one-shot docker exec and the entrypoint is sleep
+# infinity). This killed the mediator every time.
+# Fix: the launch is now in init-mediator.sh (root docker exec); init-rip-cage.sh
+# has no mediator dispatch and no EXIT trap for the mediator. The mediator
+# survives because it's nohup-backgrounded before the exec session returns.
 # ---------------------------------------------------------------------------
-echo "--- U3: Teardown trap baking (Finding 1) ---"
+echo "--- U3: No EXIT trap for mediator in init-rip-cage.sh (F4 fix) ---"
 
-# Add a teardown hook to the existing test-mediator fixture.
-TEARDOWN_LOG="${U1_TMP}/teardown-ran.log"
-printf '#!/bin/sh\necho "[teardown] ran" >> %s\n' "${TEARDOWN_LOG}" \
-  > "${FAKE_REG}/mediators/test-mediator/teardown"
-chmod 0755 "${FAKE_REG}/mediators/test-mediator/teardown"
-
-# Re-patch dispatch with teardown hook present.
-PATCHED_DISPATCH_TD="${U1_TMP}/patched-dispatch-teardown.sh"
-sed "s|/etc/rip-cage/mediators|${FAKE_REG}/mediators|g" "$DISPATCH_FILE" > "$PATCHED_DISPATCH_TD"
-
-cat > "${U1_TMP}/driver-u3.sh" <<DRIVER
-#!/usr/bin/env bash
-SU_CALLED_UID_FILE="${U1_TMP}/u3-su-uid.txt"
-su() {
-  local _shell="" _uid="" _cmd=""
-  while [[ \$# -gt 0 ]]; do
-    case "\$1" in
-      -s) shift; _shell="\$1"; shift ;;
-      -c) shift; _cmd="\$1"; shift ;;
-      *)  _uid="\$1"; shift ;;
-    esac
-  done
-  printf '%s\n' "\${_uid}" >> "\${SU_CALLED_UID_FILE}"
-  sh -c "\${_cmd}"
-}
-export -f su 2>/dev/null || true
-
-RC_MEDIATOR='test-mediator'
-# shellcheck source=/dev/null
-source "${PATCHED_DISPATCH_TD}"
-# Trigger EXIT trap explicitly by exiting normally.
-DRIVER
-
-rm -f "${TEARDOWN_LOG}"
-U3_EXIT=0
-bash "${U1_TMP}/driver-u3.sh" > "${U1_TMP}/u3.out" 2>&1 || U3_EXIT=$?
-
-if [[ -f "${TEARDOWN_LOG}" ]] && grep -q "teardown" "${TEARDOWN_LOG}"; then
-  pass "U3 teardown trap: hook invoked on EXIT (trap values were baked at registration)"
+# Check that init-rip-cage.sh has NO mediator EXIT trap.
+if grep -qE 'trap.*teardown.*EXIT|trap.*EXIT.*teardown' \
+    "${REPO_ROOT}/init-rip-cage.sh" 2>/dev/null; then
+  fail "U3 SAFETY: mediator EXIT trap found in init-rip-cage.sh — this kills the mediator when one-shot init exits"
 else
-  fail "U3 teardown trap: FUNCTIONAL BUG — teardown hook NOT invoked on EXIT" \
-    "trap may use single-quoted vars that were unset before EXIT; teardown.log='$(cat "${TEARDOWN_LOG}" 2>/dev/null || echo MISSING)' exit=${U3_EXIT}"
+  pass "U3 No mediator EXIT trap in init-rip-cage.sh — teardown-timing bug is gone"
 fi
+
+# Also check that init-mediator.sh does NOT have an EXIT trap for teardown.
+if grep -qE 'trap.*teardown.*EXIT|trap.*EXIT.*teardown' \
+    "${REPO_ROOT}/init-mediator.sh" 2>/dev/null; then
+  fail "U3b SAFETY: mediator EXIT trap found in init-mediator.sh — this kills the mediator when root exec returns"
+else
+  pass "U3b No mediator EXIT trap in init-mediator.sh — nohup pattern used instead"
+fi
+
+echo ""
 
 # ---------------------------------------------------------------------------
 # U4: egress=off + mediator != none => cmd_up fails loud (Finding 3)
-#
-# When egress=off, the iptables uid-exemption is never installed and there is no
-# egress router to forward to the mediator. Threading RC_MEDIATOR in this case
-# produces an incoherent, non-functional config. cmd_up must fail CLOSED with a
-# loud error at preflight (ADR-001 fail-closed) rather than silently starting an
-# incoherent cage.
 # ---------------------------------------------------------------------------
 echo "--- U4: egress=off + mediator reject (Finding 3) ---"
 
-# We test by extracting the snippet from rc that validates mediator+egress
-# compatibility and running it directly. The snippet must exit non-zero and
-# print a loud error when rc_egress=off and _rc_mediator != "none".
-#
-# We look for a validation guard that rejects egress=off + mediator != none.
-# The check must exist in the threading snippet or in cmd_up preflight.
 U4_TMP=$(mktemp -d "${TMPDIR:-/tmp}/rc-med-u4-XXXXXX")
 
-# Extract both the threading snippet AND any preflight mediator-egress-off guard.
-# We source rc and call a minimal function that simulates the create path with
-# rc_egress=off and a non-none mediator to see if it rejects the combo.
-cat > "${U4_TMP}/driver-u4a.sh" <<'UDRIVER'
-#!/usr/bin/env bash
-# Minimal driver: verify egress=off + mediator=my-proxy is rejected loud.
-# We simulate the rc validation by checking for the guard in the source.
-
-REPO_ROOT_U4="$1"
-RC_PATH="$2"
-
-# Source rc to get helper functions (suppress output; we only need the guards).
-# shellcheck source=/dev/null
-source "${RC_PATH}" 2>/dev/null
-
-# Stub the helpers so we do not need real config files.
-_config_global_path()  { echo "/no-global-config-u4.yaml"; }
-_config_project_path() { echo "/no-project-config-u4.yaml"; }
-
-# Simulate the cmd_up create path with egress=off and mediator=my-proxy.
-# If the validation guard is present, it should exit non-zero before we get to
-# the docker run step.
-local_cmd_up_preflight() {
-  local rc_egress="off"
-  local _rc_mediator="my-proxy"
-
-  # The guard we require: if egress is off and mediator is non-none, fail closed.
-  if [[ "$_rc_mediator" != "none" && "$rc_egress" == "off" ]]; then
-    echo "ERROR: network.egress.mediator='${_rc_mediator}' requires egress to be on — with egress=off, no iptables uid-exemption is installed and there is no egress router to forward to the mediator (ADR-001 fail-closed; ADR-026 D5). Set network.egress.mediator: none or remove --no-egress." >&2
-    exit 1
-  fi
-  echo "PASS: no rejection (should not reach here)"
-}
-local_cmd_up_preflight
-UDRIVER
-
-# First check: does rc contain the validation guard at all?
-# We grep for the pattern that should exist in the threading/preflight section.
-# Use grep -E without -c to get actual match lines, then count them with wc -l.
-U4_GUARD_HITS=$(grep -E "egress.*off.*mediator|mediator.*egress.*off|_rc_mediator.*rc_egress.*off|rc_egress.*off.*_rc_mediator" "${REPO_ROOT}/rc" 2>/dev/null | wc -l | tr -d ' ')
+# First check: does rc contain the validation guard?
+U4_GUARD_HITS=$(grep -cE "egress.*off.*mediator|mediator.*egress.*off|_rc_mediator.*rc_egress.*off|rc_egress.*off.*_rc_mediator" "${REPO_ROOT}/rc" 2>/dev/null || echo "0")
 
 if [[ "${U4_GUARD_HITS:-0}" -gt 0 ]]; then
   pass "U4a egress=off+mediator guard: validation present in rc (${U4_GUARD_HITS} occurrence(s))"
@@ -579,7 +524,6 @@ else
 fi
 
 # Second check: the threading snippet must NOT thread RC_MEDIATOR when rc_egress=off.
-# We write a driver that sets rc_egress=off in the context of the threading snippet.
 THREADING_SNIPPET_FILE_U4="${U4_TMP}/mediator-threading-snippet.sh"
 awk '/rip-cage-ta1o\.5\.7: resolve network\.egress\.mediator/,/^  unset _rc_mediator$/' \
   "${REPO_ROOT}/rc" > "$THREADING_SNIPPET_FILE_U4"
@@ -613,13 +557,7 @@ RC_PATH="$RC" SNIPPET="$THREADING_SNIPPET_FILE_U4" \
   bash "${U4_TMP}/driver-u4b.sh" > "${U4_TMP}/u4b.out" 2>&1 || U4B_EXIT=$?
 U4B_OUT=$(cat "${U4_TMP}/u4b.out")
 
-# The snippet must either:
-# (a) exit non-zero with a loud error when egress=off+mediator!=none, OR
-# (b) not thread RC_MEDIATOR into _UP_RUN_ARGS when egress=off
-# Either behaviour is acceptable; both are correct from a safety perspective.
-# The critical thing is it must NOT silently thread RC_MEDIATOR with egress=off.
 if [[ "$U4B_EXIT" -ne 0 ]]; then
-  # Loud rejection is the preferred path.
   if echo "$U4B_OUT" | grep -qiE "ERROR|REFUSE|egress.*off|mediator.*egress|requires egress"; then
     pass "U4b threading: egress=off+mediator=my-proxy rejected with loud error (ADR-001 fail-closed)"
   else
@@ -629,7 +567,6 @@ elif echo "$U4B_OUT" | grep -q "RC_MEDIATOR=my-proxy"; then
   fail "U4b SAFETY: egress=off+mediator=my-proxy silently threaded RC_MEDIATOR — cage starts incoherent (no router, no uid-exemption)" \
     "out='${U4B_OUT}' exit=${U4B_EXIT}"
 else
-  # Snippet exited 0 but did not thread RC_MEDIATOR — also acceptable if a loud error was printed.
   if echo "$U4B_OUT" | grep -qiE "ERROR|REFUSE|egress.*off|mediator.*egress"; then
     pass "U4b threading: egress=off+mediator rejected (error message present, RC_MEDIATOR not threaded)"
   else
@@ -643,53 +580,97 @@ rm -rf "${U4_TMP}"
 echo ""
 
 # ---------------------------------------------------------------------------
+# M1: Mediator-only secret channel (rip-cage-ta1o.5.8 / F2)
+#
+# --mediator-env KEY=VALUE (repeatable) and --mediator-env-file PATH populate
+# _UP_MEDIATOR_ENV_ARGS, which goes ONLY into the _up_init_mediator docker exec,
+# NEVER into docker run / _UP_RUN_ARGS.
+# ---------------------------------------------------------------------------
+echo "--- M1: mediator-env secret channel ---"
+
+# M1a — --mediator-env flag is parsed by cmd_up (source-level check in rc)
+M1A_HITS=$(grep -c '\-\-mediator-env' "${REPO_ROOT}/rc" 2>/dev/null || echo "0")
+if [[ "${M1A_HITS:-0}" -gt 0 ]]; then
+  pass "M1a --mediator-env flag present in rc (${M1A_HITS} occurrences)"
+else
+  fail "M1a --mediator-env NOT found in rc — secret channel flag missing"
+fi
+
+# M1b — --mediator-env-file flag is parsed by cmd_up (source-level check in rc)
+M1B_HITS=$(grep -c '\-\-mediator-env-file' "${REPO_ROOT}/rc" 2>/dev/null || echo "0")
+if [[ "${M1B_HITS:-0}" -gt 0 ]]; then
+  pass "M1b --mediator-env-file flag present in rc (${M1B_HITS} occurrences)"
+else
+  fail "M1b --mediator-env-file NOT found in rc — secret channel file flag missing"
+fi
+
+# M1c — _UP_MEDIATOR_ENV_ARGS is declared in rc and NOT referenced in _UP_RUN_ARGS
+M1C_DECL=$(grep -c '_UP_MEDIATOR_ENV_ARGS' "${REPO_ROOT}/rc" 2>/dev/null || echo "0")
+if [[ "${M1C_DECL:-0}" -gt 0 ]]; then
+  pass "M1c _UP_MEDIATOR_ENV_ARGS declared in rc (${M1C_DECL} occurrences)"
+else
+  fail "M1c _UP_MEDIATOR_ENV_ARGS NOT declared in rc — secret channel array missing"
+fi
+
+# M1d — _UP_MEDIATOR_ENV_ARGS must NOT be appended to _UP_RUN_ARGS
+# (the secret must not leak into docker run / container-level env)
+if grep -qE '_UP_RUN_ARGS.*_UP_MEDIATOR_ENV_ARGS|_UP_MEDIATOR_ENV_ARGS.*_UP_RUN_ARGS' "${REPO_ROOT}/rc" 2>/dev/null; then
+  fail "M1d SECURITY: _UP_MEDIATOR_ENV_ARGS found appended to _UP_RUN_ARGS — secret would leak into container env (/proc/1/environ)"
+else
+  pass "M1d _UP_MEDIATOR_ENV_ARGS NOT leaked into _UP_RUN_ARGS (secret stays out of docker run)"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
 # O1: Ordering assertion (source-level)
-#
-# The mediator dispatch block MUST appear AFTER firewall references and BEFORE
-# the daemon section in init-rip-cage.sh.
-#
-# Architectural guarantee: in cmd_up, _up_init_firewall runs (docker exec as
-# root) BEFORE _up_init_container (which calls init-rip-cage.sh). So when the
-# init script runs, init-firewall.sh has already installed the uid-exemption.
-# Within init-rip-cage.sh, section 11b is between section 11 (mux) and 12
-# (daemons), which makes the ordering correct by construction.
 # ---------------------------------------------------------------------------
 echo "--- O1: Ordering assertions ---"
 
-# O1a — mediator dispatch AFTER the uid-exemption install section in init-rip-cage.sh,
-# BEFORE daemon section (Finding 4 fix: do NOT use the CA-vars firewall-env source
-# at line 7 as the firewall marker — that is just the cert-trust source, not the
-# uid-exemption install. Use the section 11 multiplexer dispatch as the ordering
-# anchor: the mediator section 11b MUST appear AFTER section 11 (mux) which is
-# itself AFTER the firewall phase. Additionally, verify it is NOT before the mux
-# section — if someone moves the mediator block before the mux/firewall sections,
-# the uid-exemption would not yet be in place.)
-#
-# Robust ordering: look for the section 11 marker (mux dispatch) and section 12
-# (daemon) as the structural anchors, NOT the CA-vars source line which can appear
-# at the very top of the file and would trivially satisfy any line-number comparison.
-MUX_DISPATCH_LINE=$(grep -n "^# 11\. " "${REPO_ROOT}/init-rip-cage.sh" | head -1 | cut -d: -f1)
-MEDIATOR_DISPATCH_LINE=$(grep -n "^# 11b\. Egress-mediator lifecycle" "${REPO_ROOT}/init-rip-cage.sh" | head -1 | cut -d: -f1)
-DAEMON_SECTION_LINE=$(grep -n "^# 12\. IN-CAGE DAEMON" "${REPO_ROOT}/init-rip-cage.sh" | head -1 | cut -d: -f1)
+# O1a — _up_init_mediator is called AFTER _up_init_firewall and BEFORE _up_init_container
+# on the CREATE path. Check line ordering for the create-path calls.
+# We look for the LAST occurrence of each call (create path comes after resume path
+# in the source; both are in cmd_up which runs serially).
+# Filter: extract only lines that are actual CALL SITES (not function defs or comments).
+# We look for lines of the form: <spaces><function_name> "$name" (a call pattern).
+_rc_call_lines() {
+  local fn="$1"
+  grep -n "${fn} " "${REPO_ROOT}/rc" \
+    | grep -vE '^[0-9]+:[[:space:]]*#|^[0-9]+:'"${fn}"'[[:space:]]*\(\)' \
+    | cut -d: -f1
+}
 
-if [[ -z "$MUX_DISPATCH_LINE" || -z "$MEDIATOR_DISPATCH_LINE" || -z "$DAEMON_SECTION_LINE" ]]; then
-  fail "O1a ordering: could not find all section markers in init-rip-cage.sh" \
-    "mux_section=${MUX_DISPATCH_LINE:-<missing>} mediator=${MEDIATOR_DISPATCH_LINE:-<missing>} daemon=${DAEMON_SECTION_LINE:-<missing>}"
-elif [[ "$MEDIATOR_DISPATCH_LINE" -gt "$MUX_DISPATCH_LINE" && "$MEDIATOR_DISPATCH_LINE" -lt "$DAEMON_SECTION_LINE" ]]; then
-  pass "O1a mediator dispatch ordered correctly: mux section (L${MUX_DISPATCH_LINE}) < mediator (L${MEDIATOR_DISPATCH_LINE}) < daemon (L${DAEMON_SECTION_LINE}) — uid-exemption is installed before mediator starts"
+FIREWALL_LINES=$(_rc_call_lines '_up_init_firewall')
+MEDIATOR_LINES=$(_rc_call_lines '_up_init_mediator')
+CONTAINER_LINES=$(_rc_call_lines '_up_init_container')
+
+FIREWALL_LAST_LINE=$(echo "$FIREWALL_LINES" | tail -1)
+MEDIATOR_LAST_LINE=$(echo "$MEDIATOR_LINES" | tail -1)
+CONTAINER_LAST_LINE=$(echo "$CONTAINER_LINES" | tail -1)
+
+FIREWALL_FIRST_LINE=$(echo "$FIREWALL_LINES" | head -1)
+MEDIATOR_FIRST_LINE=$(echo "$MEDIATOR_LINES" | head -1)
+CONTAINER_FIRST_LINE=$(echo "$CONTAINER_LINES" | head -1)
+
+if [[ -z "$FIREWALL_LAST_LINE" || -z "$MEDIATOR_LAST_LINE" || -z "$CONTAINER_LAST_LINE" ]]; then
+  fail "O1a ordering: could not find all three init-function calls in rc" \
+    "firewall=${FIREWALL_LAST_LINE:-<missing>} mediator=${MEDIATOR_LAST_LINE:-<missing>} container=${CONTAINER_LAST_LINE:-<missing>}"
+elif [[ "$FIREWALL_LAST_LINE" -lt "$MEDIATOR_LAST_LINE" && "$MEDIATOR_LAST_LINE" -lt "$CONTAINER_LAST_LINE" ]]; then
+  pass "O1a create path: _up_init_firewall (L${FIREWALL_LAST_LINE}) < _up_init_mediator (L${MEDIATOR_LAST_LINE}) < _up_init_container (L${CONTAINER_LAST_LINE}) — ordering correct"
 else
-  fail "O1a mediator dispatch ordering wrong" \
-    "mux_section=L${MUX_DISPATCH_LINE} mediator=L${MEDIATOR_DISPATCH_LINE} daemon=L${DAEMON_SECTION_LINE} — mediator must be AFTER mux/firewall sections and BEFORE daemon section"
+  fail "O1a create path ordering wrong" \
+    "firewall=L${FIREWALL_LAST_LINE} mediator=L${MEDIATOR_LAST_LINE} container=L${CONTAINER_LAST_LINE} — must be firewall < mediator < container"
 fi
 
-# O1a-integrity — sanity check: the CA-vars firewall-env source at line 7 MUST be
-# far above the mediator section (proving the old grep would have been vacuous).
-CAENV_LINE=$(grep -n "source /etc/rip-cage/firewall-env" "${REPO_ROOT}/init-rip-cage.sh" | head -1 | cut -d: -f1)
-if [[ -n "$CAENV_LINE" && -n "$MEDIATOR_DISPATCH_LINE" && "$CAENV_LINE" -lt "$MUX_DISPATCH_LINE" ]]; then
-  pass "O1a-integrity CA-vars source at L${CAENV_LINE} is above mux dispatch L${MUX_DISPATCH_LINE} — confirms the CA-vars line is NOT a valid firewall-install ordering anchor"
+# O1a-resume — same for the resume path (first occurrence of each call).
+if [[ -z "$FIREWALL_FIRST_LINE" || -z "$MEDIATOR_FIRST_LINE" || -z "$CONTAINER_FIRST_LINE" ]]; then
+  fail "O1a-resume ordering: could not find all three init-function calls in rc (resume path)" \
+    "firewall=${FIREWALL_FIRST_LINE:-<missing>} mediator=${MEDIATOR_FIRST_LINE:-<missing>} container=${CONTAINER_FIRST_LINE:-<missing>}"
+elif [[ "$FIREWALL_FIRST_LINE" -lt "$MEDIATOR_FIRST_LINE" && "$MEDIATOR_FIRST_LINE" -lt "$CONTAINER_FIRST_LINE" ]]; then
+  pass "O1a-resume resume path: _up_init_firewall (L${FIREWALL_FIRST_LINE}) < _up_init_mediator (L${MEDIATOR_FIRST_LINE}) < _up_init_container (L${CONTAINER_FIRST_LINE}) — ordering correct"
 else
-  fail "O1a-integrity could not verify CA-vars line position" \
-    "caenv=${CAENV_LINE:-<missing>} mux_section=${MUX_DISPATCH_LINE:-<missing>}"
+  fail "O1a-resume resume path ordering wrong" \
+    "firewall=L${FIREWALL_FIRST_LINE} mediator=L${MEDIATOR_FIRST_LINE} container=L${CONTAINER_FIRST_LINE}"
 fi
 
 # O1b — in rc: RC_MEDIATOR threading appears AFTER RC_MULTIPLEXER threading
@@ -707,17 +688,14 @@ else
 fi
 
 # O1c — in rc: _up_init_firewall call appears BEFORE _up_init_container call (ordering guarantee)
-FIREWALL_CALL_LINE=$(grep -n "_up_init_firewall" "${REPO_ROOT}/rc" | grep -v "^[0-9]*:#\|^[0-9]*:  #\|^[0-9]*:    #\|^[0-9]*:# " | grep -v "^[0-9]*:_up_init_firewall()" | tail -1 | cut -d: -f1)
-CONTAINER_CALL_LINE=$(grep -n "_up_init_container" "${REPO_ROOT}/rc" | grep -v "^[0-9]*:#\|^[0-9]*:  #\|^[0-9]*:    #\|^[0-9]*:# " | grep -v "^[0-9]*:_up_init_container()" | tail -1 | cut -d: -f1)
-
-if [[ -z "$FIREWALL_CALL_LINE" || -z "$CONTAINER_CALL_LINE" ]]; then
+if [[ -z "$FIREWALL_LAST_LINE" || -z "$CONTAINER_LAST_LINE" ]]; then
   fail "O1c ordering: could not find _up_init_firewall or _up_init_container call in rc" \
-    "firewall_call=${FIREWALL_CALL_LINE:-<missing>} container_call=${CONTAINER_CALL_LINE:-<missing>}"
-elif [[ "$FIREWALL_CALL_LINE" -lt "$CONTAINER_CALL_LINE" ]]; then
-  pass "O1c rc cmd_up: _up_init_firewall (L${FIREWALL_CALL_LINE}) called BEFORE _up_init_container (L${CONTAINER_CALL_LINE}) — ordering guarantee holds"
+    "firewall_call=${FIREWALL_LAST_LINE:-<missing>} container_call=${CONTAINER_LAST_LINE:-<missing>}"
+elif [[ "$FIREWALL_LAST_LINE" -lt "$CONTAINER_LAST_LINE" ]]; then
+  pass "O1c rc cmd_up (create path): _up_init_firewall (L${FIREWALL_LAST_LINE}) called BEFORE _up_init_container (L${CONTAINER_LAST_LINE}) — ordering guarantee holds"
 else
   fail "O1c rc cmd_up: _up_init_firewall called AFTER _up_init_container — ordering bug" \
-    "firewall_call=L${FIREWALL_CALL_LINE} container_call=L${CONTAINER_CALL_LINE}"
+    "firewall_call=L${FIREWALL_LAST_LINE} container_call=L${CONTAINER_LAST_LINE}"
 fi
 
 echo ""

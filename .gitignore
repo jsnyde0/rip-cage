@@ -62,3 +62,5 @@ docs/tmp/*
 
 # Beads / Dolt files (added by bd init)
 .beads/proxieddb/
+# bd worktree
+.worktrees/kstk/

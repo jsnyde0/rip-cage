@@ -125,22 +125,42 @@ mitmdump's listen address via HTTP CONNECT, instead of origin-splicing directly.
 
 ### 4. Configure the real secret (host-side only)
 
-The real credential must be in the mitmproxy process environment at cage start time,
-NOT in the agent's environment. Pass it via `--env` or an env file:
+The real credential must reach the mitmproxy process environment at cage start time,
+**NOT the agent's environment**. Use `--mediator-env` (not `--env`):
+
+> **Important — re-supply on every `rc up`, including resume.**
+> The secret intentionally never persists in the container filesystem or
+> `/proc/1/environ` (ADR-024 D2 non-persistence guarantee). After `rc down`, the
+> mediator process is killed and the secret is gone. On the next `rc up` (resume or
+> fresh start) `init-mediator.sh` re-launches the mediator, but if you omit
+> `--mediator-env` the secret is absent and the injection addon silently no-ops —
+> the agent will send the placeholder token to the upstream instead of the real
+> secret. Always re-supply `--mediator-env RIPCAGE_MEDIATOR_BEARER_SECRET=...` on
+> every `rc up`.
 
 ```bash
-rc up /path/to/workspace --env RIPCAGE_MEDIATOR_BEARER_SECRET=sk-ant-real-key-here
+rc up /path/to/workspace \
+  --mediator-env RIPCAGE_MEDIATOR_BEARER_SECRET=sk-ant-real-key-here \
+  --mediator-env RIPCAGE_MEDIATOR_PLACEHOLDER=ripcage-placeholder
 ```
 
-Or use the `RC_CAGE_ENV_FILE` pattern:
+**Why `--mediator-env`, not `--env`?**  
+`--env` passes vars to `docker run`, which places them in the container's
+`/proc/1/environ` (readable by the agent). `--mediator-env` delivers vars only to
+the `init-mediator.sh` root docker exec that launches mitmdump — they never appear
+in `/proc/1/environ` or the agent's own environment. This is the non-possession
+guarantee (ADR-024 D2 / rip-cage-ta1o.5.8).
+
+Or use a secrets file:
 
 ```bash
-# In a file NOT committed to version control:
+# In a file NOT committed to version control (.gitignore it):
 RIPCAGE_MEDIATOR_BEARER_SECRET=sk-ant-real-key-here
+RIPCAGE_MEDIATOR_PLACEHOLDER=ripcage-placeholder
 ```
 
 ```bash
-rc up /path/to/workspace --env-file /path/to/.cage-secrets
+rc up /path/to/workspace --mediator-env-file /path/to/.mediator-secrets
 ```
 
 **The real secret must never appear in the agent's environment.** Set only the
@@ -160,14 +180,9 @@ The agent sends `Authorization: Bearer ripcage-placeholder` on its requests;
 mitmproxy's `inject_credential.py` intercepts and replaces it with
 `Authorization: Bearer <real-secret>` before the request reaches the upstream.
 
-Also configure `RIPCAGE_MEDIATOR_PLACEHOLDER=ripcage-placeholder` in the mitmproxy
-process env (same env-file / `--env` as the secret above) so the addon only fires on
-the matching placeholder and passes other headers through:
-
-```
-RIPCAGE_MEDIATOR_BEARER_SECRET=sk-ant-real-key-here
-RIPCAGE_MEDIATOR_PLACEHOLDER=ripcage-placeholder
-```
+`RIPCAGE_MEDIATOR_PLACEHOLDER=ripcage-placeholder` (set via `--mediator-env` in
+step 4) tells the addon to only replace headers matching the placeholder, passing
+other headers through unchanged.
 
 If `RIPCAGE_MEDIATOR_PLACEHOLDER` is absent, the addon replaces the Authorization
 header unconditionally (useful for development).
@@ -175,7 +190,9 @@ header unconditionally (useful for development).
 ### 6. Start the cage
 
 ```bash
-rc up /path/to/workspace
+rc up /path/to/workspace \
+  --mediator-env RIPCAGE_MEDIATOR_BEARER_SECRET=sk-ant-real-key-here \
+  --mediator-env RIPCAGE_MEDIATOR_PLACEHOLDER=ripcage-placeholder
 ```
 
 At `rc up` time:
@@ -185,11 +202,15 @@ At `rc up` time:
    - `init-firewall.sh` Step 1a reads `/etc/rip-cage/mediators/mitmproxy/run_as_uid`
      and adds an OUTPUT RETURN rule for `rip-mitmproxy`'s numeric uid — this prevents
      mitmproxy's own re-originated egress from being re-captured (loop prevention).
-3. `init-rip-cage.sh` runs:
-   - The mediator lifecycle dispatcher reads `RC_MEDIATOR=mitmproxy` (threaded in
-     by `rc up`) and executes `/etc/rip-cage/mediators/mitmproxy/start`.
-   - The `start` hook launches `mitmdump` in regular CONNECT-proxy mode under the
-     `rip-mitmproxy` uid, listening on `127.0.0.1:8888`.
+3. **`init-mediator.sh` runs as a host-driven root docker exec** (rip-cage-ta1o.5.8):
+   - Reads the `mitmproxy` registry entry from `/etc/rip-cage/mediators/mitmproxy/`.
+   - Privilege-drops to the `rip-mitmproxy` uid via `nohup su ...`.
+   - Launches `mitmdump` in regular CONNECT-proxy mode under `rip-mitmproxy`,
+     listening on `127.0.0.1:8888`. Uses `nohup ... &` so the process survives
+     the exec session return.
+   - Installs mitmproxy's CA cert into the system trust store (`ca_cert_path`
+     registry field → `update-ca-certificates` → `NODE_EXTRA_CA_CERTS`).
+   - Writes PID to `/run/rip-cage-mediator-mitmproxy.pid` for idempotency.
    - Logs go to `/tmp/rip-cage-mediator-mitmproxy.log` (cage-lifetime).
 
 ### 7. Verify the injection is working
@@ -220,18 +241,19 @@ curl https://evil.example.com 2>&1   # → connection refused (router blocks at 
 - **Placeholder not replaced**: Confirm `RIPCAGE_MEDIATOR_BEARER_SECRET` is set in the
   mitmproxy process env (NOT the agent env). The addon logs to stderr, redirected to
   `/tmp/rip-cage-mediator-mitmproxy.log`.
-- **TLS errors / CERT_VERIFY_FAILED**: mitmproxy generates a self-signed CA cert at
-  `~/.mitmproxy/mitmproxy-ca-cert.pem` under the `rip-mitmproxy` user's home
-  (`/opt/rip-cage-mitmproxy-home/.mitmproxy/`). Trust it inside the cage:
+- **TLS errors / CERT_VERIFY_FAILED**: `init-mediator.sh` automatically installs
+  mitmproxy's CA cert at cage start (`ca_cert_path` registry field). If it still
+  fails (e.g. timing race — cert generated after init-mediator.sh ran), trigger
+  a manual re-install:
   ```bash
-  cp /opt/rip-cage-mitmproxy-home/.mitmproxy/mitmproxy-ca-cert.pem \
-     /usr/local/share/ca-certificates/mitmproxy-ca.crt
-  update-ca-certificates
-  # For Node.js (Claude Code):
-  export NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/mitmproxy-ca.crt
+  docker exec -u root <cage> bash -c "
+    cp /opt/rip-cage-mitmproxy-home/.mitmproxy/mitmproxy-ca-cert.pem \
+       /usr/local/share/ca-certificates/mitmproxy-ca.crt
+    update-ca-certificates
+  "
   ```
-  Or mount the CA cert from the host and add it at cage init via `init-rip-cage.sh`
-  extensions (IN-CAGE-DAEMON pattern).
+  For Node.js (Claude Code), `NODE_EXTRA_CA_CERTS` is set automatically by
+  `init-mediator.sh` in `/etc/rip-cage/firewall-env`.
 - **Port conflict**: The mediator MUST listen on a port distinct from the rip-cage
   router's own listen port (`127.0.0.1:8080`). `8888` (the router's
   `_MEDIATOR_DEFAULT_PORT`) is the recommended default. Using `8080` collides with
@@ -242,21 +264,20 @@ curl https://evil.example.com 2>&1   # → connection refused (router blocks at 
 
 ---
 
-## Integration note: mediator lifecycle dispatcher
+## How the mediator lifecycle dispatcher works
 
-The mediator `start` hook is dispatched at cage init by `init-rip-cage.sh` via the
-`RC_MEDIATOR` env var (threaded in by `rc up`, same mechanism as `RC_MULTIPLEXER` for
-multiplexers). The dispatcher reads `/etc/rip-cage/mediators/<name>/start` from the
-baked registry and runs it via `sh`.
+The mediator `start` hook is dispatched at cage init by a **host-driven root docker
+exec** step in `cmd_up` (rip-cage-ta1o.5.8). `rc up` calls `init-mediator.sh` as
+root immediately after `init-firewall.sh` — both on container create and on resume
+(stop re-kills the mediator; the resume path re-launches it).
 
-> **Integration gap (current):** As of bead `rip-cage-ta1o.5.4`, the mediator
-> lifecycle dispatcher in `init-rip-cage.sh` may not yet be wired up (unlike the
-> multiplexer dispatcher which is in section 11). If the mediator does not start
-> automatically on `rc up`, run the start hook manually for validation:
-> ```bash
-> docker exec <cage> sh /etc/rip-cage/mediators/mitmproxy/start
-> ```
-> The dispatcher wiring is tracked as a follow-up integration step.
+`init-mediator.sh` reads `/etc/rip-cage/mediators/<name>/` from the baked registry,
+privilege-drops to the configured uid via `nohup su ... &`, and writes the PID to
+`/run/rip-cage-mediator-<name>.pid` for idempotency (re-run on an already-running
+mediator is a no-op).
+
+The secret (`--mediator-env` vars) reaches mitmdump's process env via the `docker
+exec -e` channel and is never written to the container filesystem or `/proc/1/environ`.
 
 ---
 
