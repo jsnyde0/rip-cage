@@ -1648,6 +1648,8 @@ _up_prepare_docker_mounts() {
       "prompts:pi-prompts"
       "roles:pi-roles"
       "AGENTS.md:pi-AGENTS.md"
+      "SYSTEM.md:pi-SYSTEM.md"
+      "APPEND_SYSTEM.md:pi-APPEND_SYSTEM.md"
       "extensions/subagent:pi-ext-subagent"
     )
     for _pi_substrate_entry in "${_pi_substrate_table[@]}"; do

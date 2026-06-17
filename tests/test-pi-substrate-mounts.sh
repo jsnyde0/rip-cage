@@ -166,13 +166,31 @@ test_A_pi_mounts_emitted() {
     fail "(A) pi-ext-subagent mount arg missing; expected '${subagent_realpath}:/home/agent/.rc-context/pi-ext-subagent:ro'; got: $(printf '%s' "$mount_args" | grep pi-ext || echo '<none>')"
   fi
 
-  # --- Verify NO whole-extensions-dir mount (floor-shadow check) ---
-  local ext_dir
-  ext_dir="${TEST_HOME}/.pi/agent/extensions"
-  if printf '%s' "$mount_args" | grep -q "${ext_dir}:/home/agent/.pi/agent/extensions"; then
-    fail "(A) whole extensions/ dir was mounted — floor-shadow risk (must mount only subagent)"
+  # --- Verify NO whole-extensions-dir mount (floor-shadow check, strengthened) ---
+  # Check 1: no -v arg's destination path ends in /extensions (bare extensions dir)
+  # The loop emits .rc-context/<cage-name>, never a bare .pi/agent/extensions destination.
+  if printf '%s\n' "$mount_args" | grep -E ":/home/agent/[^:]*extensions:?$|:/home/agent/[^:]*extensions:ro$" | grep -vq "extensions/"; then
+    fail "(A-fs1) a -v mount arg maps to a bare extensions/ destination — floor-shadow risk"
   else
-    pass "(A) whole extensions/ dir NOT mounted (floor protected)"
+    pass "(A-fs1) no mount arg maps to a bare extensions/ destination (floor protected)"
+  fi
+
+  # Check 2: no -v arg's destination path is .rc-context/pi-extensions (non-subagent cage name)
+  if printf '%s\n' "$mount_args" | grep -q ":/home/agent/.rc-context/pi-extensions:"; then
+    fail "(A-fs2) a -v mount maps to pi-extensions (non-subagent cage name) — unexpected"
+  else
+    pass "(A-fs2) no mount maps to pi-extensions cage name (only pi-ext-subagent allowed)"
+  fi
+
+  # Check 3: the pi-ext-subagent source realpath ends in /extensions/subagent (selective projection)
+  local subagent_mount_src
+  subagent_mount_src=$(printf '%s\n' "$mount_args" \
+    | grep ":/home/agent/.rc-context/pi-ext-subagent:" \
+    | sed 's|:/home/agent.*||')
+  if [[ "${subagent_mount_src}" == */extensions/subagent ]]; then
+    pass "(A-fs3) pi-ext-subagent source ends in /extensions/subagent (selective projection)"
+  else
+    fail "(A-fs3) pi-ext-subagent source '${subagent_mount_src}' does not end in /extensions/subagent"
   fi
 
   teardown_sandbox
@@ -320,6 +338,124 @@ test_E_floor_not_shadowed_by_init() {
 }
 
 # ---------------------------------------------------------------------------
+# (F) subagent extension source registers NO tool_call / interceptor handler
+#     (ADR-027 fact #3: structural reason it cannot shadow dcg-gate)
+# ---------------------------------------------------------------------------
+test_F_subagent_no_interceptor() {
+  # Resolve the host realpath of the subagent extension to read its source.
+  local subagent_src
+  subagent_src=$(realpath "${HOME}/.pi/agent/extensions/subagent/index.ts" 2>/dev/null || true)
+  if [[ -z "${subagent_src}" || ! -f "${subagent_src}" ]]; then
+    # If the host does not have pi installed, skip gracefully
+    pass "(F) subagent index.ts absent on host — skip interceptor check (pi not installed)"
+    return
+  fi
+
+  # Confirm it calls registerTool (positive: extension IS a tool registration)
+  if grep -q "registerTool" "${subagent_src}"; then
+    pass "(F) subagent/index.ts calls registerTool (tool registration confirmed)"
+  else
+    fail "(F) subagent/index.ts does not call registerTool — unexpected structure"
+  fi
+
+  # Confirm absence of interceptor handler patterns.
+  # pi's block is monotonic: a handler can block but not un-block.
+  # Dangerous patterns that could mutate post-approval state:
+  #   tool_call handler, onToolCall, registerHandler (for events), pi.on(), addListener (for events)
+  # NOTE: addEventListener is used for AbortSignal (abort-on-cancel) — NOT a pi event interceptor.
+  # We grep specifically for pi-level event handlers, not DOM/signal listeners.
+  local interceptor_hits
+  interceptor_hits=$(grep -E \
+    "pi\.on\(|registerHandler\(|onToolCall\b|\"tool_call\"|'tool_call'" \
+    "${subagent_src}" 2>/dev/null || true)
+  if [[ -z "${interceptor_hits}" ]]; then
+    pass "(F) subagent/index.ts: no pi-level tool_call/interceptor handler (fact #3 structural check)"
+  else
+    fail "(F) subagent/index.ts contains pi-level interceptor pattern — floor-shadow risk: ${interceptor_hits}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# (G) SYSTEM.md and APPEND_SYSTEM.md entries skip gracefully when absent
+# ---------------------------------------------------------------------------
+test_G_system_md_absent_graceful() {
+  setup_sandbox
+
+  # The sandbox has no SYSTEM.md or APPEND_SYSTEM.md under .pi/agent/
+  local mount_args
+  local exit_code=0
+  mount_args=$(
+    HOME="$TEST_HOME" \
+    XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_ALLOWED_ROOTS="${TEST_WS}" \
+    bash -c "
+      source '$RC' 2>/dev/null
+      _UP_RUN_ARGS=()
+      wt_detected=false
+      _up_prepare_docker_mounts '$TEST_WS' 'test-container' 2>/dev/null
+      printf '%s\n' \"\${_UP_RUN_ARGS[@]:-}\"
+    " 2>/dev/null
+  ) || exit_code=$?
+
+  # Neither pi-SYSTEM.md nor pi-APPEND_SYSTEM.md should appear (absent on host)
+  if printf '%s\n' "$mount_args" | grep -q "pi-SYSTEM.md\|pi-APPEND_SYSTEM.md"; then
+    fail "(G) pi-SYSTEM.md or pi-APPEND_SYSTEM.md mount emitted when host files are absent"
+  else
+    pass "(G) pi-SYSTEM.md and pi-APPEND_SYSTEM.md skip gracefully when absent (no mount emitted)"
+  fi
+
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "(G) rc exits 0 when SYSTEM.md/APPEND_SYSTEM.md are absent"
+  else
+    fail "(G) rc exits non-zero when SYSTEM.md/APPEND_SYSTEM.md are absent (exit=$exit_code)"
+  fi
+
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# (H) SYSTEM.md and APPEND_SYSTEM.md emit mount args when present
+# ---------------------------------------------------------------------------
+test_H_system_md_present_emits_mount() {
+  setup_sandbox
+
+  # Create SYSTEM.md and APPEND_SYSTEM.md in the sandbox pi agent dir
+  local system_realpath append_realpath
+  touch "${TEST_HOME}/.pi/agent/SYSTEM.md"
+  touch "${TEST_HOME}/.pi/agent/APPEND_SYSTEM.md"
+  system_realpath=$(realpath "${TEST_HOME}/.pi/agent/SYSTEM.md" 2>/dev/null || echo "${TEST_HOME}/.pi/agent/SYSTEM.md")
+  append_realpath=$(realpath "${TEST_HOME}/.pi/agent/APPEND_SYSTEM.md" 2>/dev/null || echo "${TEST_HOME}/.pi/agent/APPEND_SYSTEM.md")
+
+  local mount_args
+  mount_args=$(
+    HOME="$TEST_HOME" \
+    XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_ALLOWED_ROOTS="${TEST_WS}" \
+    bash -c "
+      source '$RC' 2>/dev/null
+      _UP_RUN_ARGS=()
+      wt_detected=false
+      _up_prepare_docker_mounts '$TEST_WS' 'test-container' 2>/dev/null
+      printf '%s\n' \"\${_UP_RUN_ARGS[@]:-}\"
+    " 2>/dev/null
+  )
+
+  if printf '%s\n' "$mount_args" | grep -q "${system_realpath}:/home/agent/.rc-context/pi-SYSTEM.md:ro"; then
+    pass "(H) pi-SYSTEM.md mount emitted when SYSTEM.md is present"
+  else
+    fail "(H) pi-SYSTEM.md mount missing; expected '${system_realpath}:/home/agent/.rc-context/pi-SYSTEM.md:ro'; got: $(printf '%s\n' "$mount_args" | grep "SYSTEM" || echo '<none>')"
+  fi
+
+  if printf '%s\n' "$mount_args" | grep -q "${append_realpath}:/home/agent/.rc-context/pi-APPEND_SYSTEM.md:ro"; then
+    pass "(H) pi-APPEND_SYSTEM.md mount emitted when APPEND_SYSTEM.md is present"
+  else
+    fail "(H) pi-APPEND_SYSTEM.md mount missing; expected '${append_realpath}:/home/agent/.rc-context/pi-APPEND_SYSTEM.md:ro'; got: $(printf '%s\n' "$mount_args" | grep "APPEND" || echo '<none>')"
+  fi
+
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 echo "=== test-pi-substrate-mounts.sh — pi substrate projection (rip-cage-kstk) ==="
@@ -335,6 +471,12 @@ echo ""
 test_D_init_creates_pi_symlinks
 echo ""
 test_E_floor_not_shadowed_by_init
+echo ""
+test_F_subagent_no_interceptor
+echo ""
+test_G_system_md_absent_graceful
+echo ""
+test_H_system_md_present_emits_mount
 echo ""
 
 if [[ "$FAILURES" -eq 0 ]]; then

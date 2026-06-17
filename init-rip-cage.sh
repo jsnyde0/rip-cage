@@ -208,11 +208,12 @@ unset _rc_asset
 
 # 3b. Link pi substrate assets from host (staged via .rc-context/pi-*)
 # DATA-DRIVEN table: stage_name:agent_subpath (NO per-agent if/elif branch — ADR-005 D12).
-# For instruction-content assets (skills/prompts/roles/AGENTS.md): symlink directly.
+# For instruction-content assets (skills/prompts/roles/AGENTS.md/SYSTEM.md/APPEND_SYSTEM.md):
+# symlink directly (skips gracefully when not present via the [ -e ] guard below).
 # For the subagent extension: symlink ONLY the subagent subdir alongside the baked dcg-gate.ts
 # — NEVER replace ~/.pi/agent/extensions/ itself (that would shadow the floor guard).
 # ADR-027 D1: mounts are :ro (host→cage); symlinks here are cage-internal only.
-for _pi_substrate in "pi-skills:skills" "pi-prompts:prompts" "pi-roles:roles" "pi-AGENTS.md:AGENTS.md"; do
+for _pi_substrate in "pi-skills:skills" "pi-prompts:prompts" "pi-roles:roles" "pi-AGENTS.md:AGENTS.md" "pi-SYSTEM.md:SYSTEM.md" "pi-APPEND_SYSTEM.md:APPEND_SYSTEM.md"; do
   _pi_stage="/home/agent/.rc-context/${_pi_substrate%%:*}"
   _pi_dest="${PI_CODING_AGENT_DIR:-/home/agent/.pi/agent}/${_pi_substrate##*:}"
   if [ -e "${_pi_stage}" ] || [ -L "${_pi_stage}" ]; then
