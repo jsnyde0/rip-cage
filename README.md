@@ -96,6 +96,23 @@ Pi (`@mariozechner/pi-coding-agent`) is also supported in the same image alongsi
 
 > **Note:** pi cages get the same DCG destructive-command enforcement as Claude Code cages (via the auto-loaded `dcg-gate.ts` extension) plus container isolation and the egress firewall. See [Pi safety model](docs/reference/auth.md#pi-safety-model).
 
+## Configuration & recipes
+
+Rip cage reads layered config, so you set host-wide defaults once and override per project:
+
+- `~/.config/rip-cage/config.yaml` — global defaults (egress, SSH allowlist, mount denylist, DCG packs, multiplexer)
+- `~/.config/rip-cage/tools.yaml` — the global **tool manifest**: optional tools and egress mediators the cage installs
+- `<project>/.rip-cage.yaml` — per-project overrides, layered over the global defaults (lists merge additively; single selections override)
+
+`rc config show` prints the merged result with the source of each field. Full details in [docs/reference/config.md](docs/reference/config.md).
+
+**Composing an egress mediator** (L7 credential injection or content policy) is a manifest entry, not a source change — rip cage stays tool-agnostic. Worked recipes for two proven providers:
+
+- [mitmproxy](examples/compose-rc-with-mitmproxy.md) — credential injection via a Python addon
+- [iron-proxy](examples/compose-rc-with-iron-proxy.md) — out-of-the-box transparent proxy with placeholder-secret injection
+
+See [docs/reference/composition-seam.md](docs/reference/composition-seam.md) for the seam these plug into.
+
 ## More info
 
 **Reference:**

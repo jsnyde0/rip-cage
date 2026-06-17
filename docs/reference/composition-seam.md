@@ -80,7 +80,7 @@ network:
 
 ## The MEDIATOR Provider Model
 
-A mediator is declared as an entry in the tool manifest (`~/.config/rip-cage/tools.yaml` or a project `tools.yaml`) with `archetype: MEDIATOR`. Adding a mediator is a **manifest entry with zero rip-cage source edits** — rip-cage never hardcodes any mediator name ([ADR-005 D12](../decisions/ADR-005-ecosystem-tools.md)).
+A mediator is declared as an entry in the global tool manifest (`~/.config/rip-cage/tools.yaml`) with `archetype: MEDIATOR`. Adding a mediator is a **manifest entry with zero rip-cage source edits** — rip-cage never hardcodes any mediator name ([ADR-005 D12](../decisions/ADR-005-ecosystem-tools.md)). The manifest is host-level today; per-project tool manifests are planned but not yet implemented (tracked separately).
 
 ### MEDIATOR manifest archetype
 
