@@ -7190,6 +7190,29 @@ _manifest_validate() {
             echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' references lifecycle-interceptor targets (/etc/rip-cage/, settings.json, PreToolUse, or PostToolUse), which can register hooks that weaken the safety floor (floor-weakening lifecycle-interceptor; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
             return 1
           fi
+
+          # Pattern 5: Egress kill-switch disable (MEDIATOR-specific, ADR-026 D5).
+          # RIP_CAGE_EGRESS=off (or any value) in a hook would disable the entire L7
+          # egress enforcement stack — the floor the mediator sits behind. A push-side
+          # mediator hook MUST NOT touch the kill-switch (floor-uncrossable, ADR-026 D5).
+          # Static check: any RIP_CAGE_EGRESS= assignment in a hook command is rejected.
+          if echo "$med_hook_cmd" | grep -qE 'RIP_CAGE_EGRESS='; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' sets RIP_CAGE_EGRESS=, which disables the egress enforcement stack and weakens the safety floor (floor-weakening egress kill-switch; ADR-026 D5, ADR-001 fail-loud). Remove RIP_CAGE_EGRESS manipulation from hook commands." >&2
+            return 1
+          fi
+
+          # Pattern 6: iptables/ip6tables/nft manipulation (MEDIATOR-specific, ADR-026 D5).
+          # iptables, ip6tables, and nft can disable the REDIRECT rule that force-routes
+          # all traffic through the egress router — a hook using these tools can silently
+          # strip the force-through floor. A push-side mediator hook MUST NOT manipulate
+          # the firewall rules it depends on (floor-uncrossable, ADR-026 D5).
+          # Static check: any reference to iptables/ip6tables/nft as a command is rejected.
+          # Boundary class includes '/' so a full-path invocation (e.g. /sbin/iptables -F)
+          # is also caught, not just the bare command word.
+          if echo "$med_hook_cmd" | grep -qE '(^|[[:space:];|&/])(iptables|ip6tables|nft)([[:space:]]|$)'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' references iptables/ip6tables/nft, which can disable the force-through REDIRECT rule and weaken the safety floor (floor-weakening firewall manipulation; ADR-026 D5, ADR-001 fail-loud). Remove firewall manipulation from hook commands." >&2
+            return 1
+          fi
         done
         ;;
     esac
