@@ -1,7 +1,7 @@
 # ADR-027: Agent-Substrate Projection into the Cage
 
 Status: PROPOSED — D1 FIRM (human-confirmed 2026-06-16), D2 FLEXIBLE, D3 EXPLORATORY
-Date: 2026-06-16
+Date: 2026-06-16 (D2 prose revised 2026-06-17 — describe the shipped hardcoded-symmetric interim accurately)
 
 ## Context
 
@@ -39,13 +39,15 @@ This generalizes ADR-019 D1: the host→cage surface is no longer "only auth.jso
 | Exclude executable extensions; mount only "inert" content | `direct:` skills already carry executable scripts (CC + pi), and pi can't spawn sub-agents without the `subagent` extension (verified fact #2) — so "inert-only" neither matches reality nor unblocks the factory. |
 | Admit substrate read-write (parity with auth.json) | `reasoned:` opens a cage→host write-back path — a compromised cage could rewrite host methodology/extensions. RO is necessary. |
 
-### D2 (FLEXIBLE) — pi substrate (instruction-content + the `subagent` extension) projected as bundled-agent cage-infra, manifest-derived, symmetric with CC (interim)
+### D2 (FLEXIBLE) — pi substrate (instruction-content + the `subagent` extension) projected as a hardcoded per-bundled-agent block, symmetric with CC (interim)
 
-Project pi's instruction-content (skills, prompts, roles, AGENTS.md, SYSTEM.md/APPEND_SYSTEM.md seam) **and** dotpi's `subagent` extension into the cage, read-only, so `/skill:send-it` and `/drover` both *resolve and run*. Implement via a **loop driven by the bundled-agent set already declared in the seeded manifest** (claude, pi are seeded there) — `rc` reads which bundled agents declare substrate and projects each; it does NOT hardcode a `{claude, pi}` literal or a per-agent branch. This satisfies ADR-005 D12 (rc names no specific tool — the agent set comes from the manifest, exactly as the multiplexer allowed-set is manifest-derived) without inventing a "bundled-agent exception" D12 doesn't grant.
+Project pi's instruction-content (skills, prompts, roles, AGENTS.md, SYSTEM.md/APPEND_SYSTEM.md seam) **and** dotpi's `subagent` extension into the cage, read-only, so `/skill:send-it` and `/drover` both *resolve and run*. The shipped interim (rip-cage-kstk) implements this as a **hardcoded per-bundled-agent projection block in `rc`** — a presence-gated (`[[ -d ~/.pi/agent ]]`) loop that is data-driven over *that agent's asset table* (`{asset → cage-path}` tuples), with **no `if/elif` branch on agent identity** beyond the presence gate. This is **symmetric with the pre-existing hardcoded CC projection block** (the `~/.claude/{skills,commands,agents}` mounts), which is the same shape.
+
+This is **D12-clean by classification, not by manifest-derivation**: ADR-005 D12 forbids `rc` naming a specific *optional* tool (the herdr-leak anti-pattern); `claude` and `pi` are **bundled cage-infra** (per D1, agent-substrate projection is cage-infrastructure), so a hardcoded bundled-agent block does not trip D12. The interim is therefore **NOT yet manifest-derived** — `rc` does not read the seeded manifest to discover which agents declare substrate; that, and a per-agent substrate *declaration* schema, is the **D3 target** (the CONTENT-MOUNT archetype + manifest-derived allowed-set, isomorphic to the multiplexer allowed-set).
 
 Mechanism per asset: resolve host realpath (the dotpi symlinks) → bind-mount `:ro` → `/home/agent/.rc-context/pi-<asset>` → ADR-023 denylist check (warn-and-skip, incidental tier) → symlink into `~/.pi/agent/<asset>` (pi discovers via `PI_CODING_AGENT_DIR`). The `subagent` extension is projected **selectively** (just that extension, vetted tool-only per fact #3) so the baked `dcg-gate` is not shadowed.
 
-**Rationale:** projecting a bundled agent's substrate is cage-infrastructure, not optional-tool composition; the manifest-derived loop keeps it D12-clean. This is **acknowledged interim debt** — pre-seam hardcode, NOT "floor", NOT a D12 exception — to be absorbed by D3.
+**Rationale:** projecting a bundled agent's substrate is cage-infrastructure, not optional-tool composition; the **bundled-vs-optional classification** (not manifest-derivation) is what keeps the hardcoded block D12-clean. This is **acknowledged interim debt** — pre-seam hardcode, NOT "floor", NOT a D12 exception — to be absorbed by D3. (A fresh-context reviewer read the hardcoded `pi` block as a D12 violation precisely because the earlier D2 prose promised manifest-derivation the interim never implemented; this revision removes that trap.)
 
 **What would invalidate D2:** D3's seam ships → CC + pi migrate onto it and this retires.
 
