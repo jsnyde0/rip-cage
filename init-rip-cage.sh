@@ -206,6 +206,46 @@ for _rc_asset in skills commands agents; do
 done
 unset _rc_asset
 
+# 3b. Link pi substrate assets from host (staged via .rc-context/pi-*)
+# DATA-DRIVEN table: stage_name:agent_subpath (NO per-agent if/elif branch — ADR-005 D12).
+# For instruction-content assets (skills/prompts/roles/AGENTS.md): symlink directly.
+# For the subagent extension: symlink ONLY the subagent subdir alongside the baked dcg-gate.ts
+# — NEVER replace ~/.pi/agent/extensions/ itself (that would shadow the floor guard).
+# ADR-027 D1: mounts are :ro (host→cage); symlinks here are cage-internal only.
+for _pi_substrate in "pi-skills:skills" "pi-prompts:prompts" "pi-roles:roles" "pi-AGENTS.md:AGENTS.md"; do
+  _pi_stage="/home/agent/.rc-context/${_pi_substrate%%:*}"
+  _pi_dest="${PI_CODING_AGENT_DIR:-/home/agent/.pi/agent}/${_pi_substrate##*:}"
+  if [ -e "${_pi_stage}" ] || [ -L "${_pi_stage}" ]; then
+    # Remove any real dir/file that exists — ln -sfn would nest inside a dir otherwise
+    if [ -e "${_pi_dest}" ] && [ ! -L "${_pi_dest}" ]; then
+      echo "[rip-cage] pi: removing pre-existing real dir/file ${_pi_dest} before linking" >&2
+      # shellcheck disable=SC2115  # safe: _pi_dest is a computed specific path, not a variable-empty accident
+      rm -rf "${_pi_dest}"
+    fi
+    ln -sfn "${_pi_stage}" "${_pi_dest}"
+    echo "[rip-cage] pi ${_pi_substrate##*:} linked from host"
+  fi
+done
+unset _pi_substrate _pi_stage _pi_dest
+
+# Subagent extension: symlink alongside the baked dcg-gate.ts inside extensions/.
+# Prerequisite: extensions/ must exist (baked by Dockerfile) — never replace it.
+_pi_ext_stage="/home/agent/.rc-context/pi-ext-subagent"
+_pi_ext_dir="${PI_CODING_AGENT_DIR:-/home/agent/.pi/agent}/extensions"
+_pi_ext_dest="${_pi_ext_dir}/subagent"
+if [ -e "${_pi_ext_stage}" ] || [ -L "${_pi_ext_stage}" ]; then
+  # Ensure extensions/ dir exists (baked; this is a safety net only)
+  mkdir -p "${_pi_ext_dir}"
+  # Remove any pre-existing subagent entry (real dir or stale symlink) but NEVER touch extensions/ itself
+  if [ -e "${_pi_ext_dest}" ] && [ ! -L "${_pi_ext_dest}" ]; then
+    echo "[rip-cage] pi: removing pre-existing real dir ${_pi_ext_dest} before linking" >&2
+    rm -rf "${_pi_ext_dest}"
+  fi
+  ln -sfn "${_pi_ext_stage}" "${_pi_ext_dest}"
+  echo "[rip-cage] pi extensions/subagent linked from host"
+fi
+unset _pi_ext_stage _pi_ext_dir _pi_ext_dest
+
 # 4. Claude session persistence (rip-cage-dn2)
 # Preferred path: ~/.claude/projects and ~/.claude/sessions are bind-mounted
 # from the host, so sessions are visible to host tools (cass) and survive

@@ -1633,6 +1633,43 @@ _up_prepare_docker_mounts() {
     log "Warning: ${HOME}/.pi/agent/auth.json not mounted (absent and could not be seeded, or a dangling symlink) — pi will require login on first request."
   fi
 
+  # Pi substrate projection (rip-cage-kstk): mount pi instruction-content assets and the
+  # subagent extension read-only into .rc-context/ for init-rip-cage.sh to symlink.
+  # DATA-DRIVEN table: each entry is "host-path:cage-name" (NO per-agent if/elif branch —
+  # ADR-005 D12). Realpaths are resolved here so Docker mounts the real dir even when the
+  # host path is a relative symlink (dotpi uses relative symlinks into ~/code/personal/dotpi/).
+  # ADR-023 denylist check on each resolved host path: warn-and-skip on match.
+  # ADR-027 D1: all mounts are :ro (no cage→host write-back).
+  if [[ -d "${HOME}/.pi/agent" ]]; then
+    local _pi_substrate_entry _pi_host_raw _pi_cage_name _pi_host_real _pi_pat
+    local _pi_substrate_table
+    _pi_substrate_table=(
+      "skills:pi-skills"
+      "prompts:pi-prompts"
+      "roles:pi-roles"
+      "AGENTS.md:pi-AGENTS.md"
+      "extensions/subagent:pi-ext-subagent"
+    )
+    for _pi_substrate_entry in "${_pi_substrate_table[@]}"; do
+      _pi_host_raw="${HOME}/.pi/agent/${_pi_substrate_entry%%:*}"
+      _pi_cage_name="${_pi_substrate_entry##*:}"
+      # Skip absent host paths (dir or file)
+      if [[ ! -e "${_pi_host_raw}" ]]; then
+        continue
+      fi
+      # Resolve realpath so relative dotpi symlinks mount the actual target
+      _pi_host_real=$(realpath "${_pi_host_raw}" 2>/dev/null || echo "${_pi_host_raw}")
+      # ADR-023 denylist: warn-and-skip on match
+      if _check_secret_path_denylist "${_pi_host_real}" "${_path}"; then
+        _pi_pat=$(_secret_path_denylist_matched_pattern "${_pi_host_real}" "${_path}" 2>/dev/null || true)
+        echo "Warning: skipping pi substrate mount ${_pi_host_real} — matched secret-path denylist pattern '${_pi_pat:-<unknown>}'" >&2
+        continue
+      fi
+      _UP_RUN_ARGS+=(-v "${_pi_host_real}:/home/agent/.rc-context/${_pi_cage_name}:ro")
+    done
+    unset _pi_substrate_table _pi_substrate_entry _pi_host_raw _pi_cage_name _pi_host_real _pi_pat
+  fi
+
   # CAGE_HOST_ADDR explicit pass-through for non-interactive pi -p runs.
   # Resolve on the host side so the value is never empty inside the container.
   # host.docker.internal is the default (works on Docker Desktop/macOS/Linux with host-gateway).

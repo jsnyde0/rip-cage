@@ -206,6 +206,7 @@ run_test "${SCRIPT_DIR}/test-bd-host-preflight.sh"    # _bd_host_preflight dolt-
 run_test "${SCRIPT_DIR}/test-lfs-warning.sh"          # rc --dry-run up LFS pointer-stub scan + silent-exit-1 regression
 run_test "${SCRIPT_DIR}/test-ssh-allowlist.sh"        # ADR-022 known_hosts filter + hashed-host HMAC + resume mount-shape guard (EXIT-trap fixed)
 run_test "${SCRIPT_DIR}/test-denylist-matching.sh"    # _check_secret_path_denylist component-match (unsets RC_CONFIG_GLOBAL per driver-fixture trap)
+run_test "${SCRIPT_DIR}/test-pi-substrate-mounts.sh"  # rip-cage-kstk: pi substrate projection mount args + denylist + init symlinks + floor-protection
 run_test "${SCRIPT_DIR}/test-symlink-follow.sh"       # symlink-follow scanner + fingerprint + denylist gating (unsets RC_CONFIG_GLOBAL)
 run_test "${SCRIPT_DIR}/test-config-loader.sh"        # layered config additive/select merge + provenance matrix (unsets RC_CONFIG_GLOBAL)
 # Container-tier (NEEDS_CONTAINER above; self-skip under --host-only, run on full invocation):
