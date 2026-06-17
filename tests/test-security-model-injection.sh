@@ -89,6 +89,10 @@ NEG_CAGE="rc-sec-inj-neg"   # legacy/off cage for negative cases
 OFF_CAGE="rc-sec-inj-off"   # egress=off cage for negative cases
 MED_CAGE="rc-sec-inj-med"   # mediator-composed cage for E4 probes (rip-cage-ta1o.5.4)
 SEC_TMP_MED=""               # temp root for mediator cage workspace
+E4IP_CAGE="rc-sec-inj-e4ip"     # iron-proxy mediator cage for E4-ip probes (rip-cage-nyst)
+E4IP_NEG_CAGE="rc-sec-inj-e4ip-neg"  # iron-proxy cage WITHOUT --mediator-env (negative control)
+SEC_TMP_E4IP=""              # temp root for iron-proxy E4 positive cage workspace
+SEC_TMP_E4IP_NEG=""          # temp root for iron-proxy E4 negative cage workspace
 
 # ---------------------------------------------------------------------------
 # Cleanup
@@ -97,7 +101,7 @@ SEC_TMP_MED=""               # temp root for mediator cage workspace
 # CLEANUP is invoked indirectly via 'trap CLEANUP EXIT' below
 CLEANUP() {
   local c
-  for c in "$BLOCK_CAGE" "$OBS_CAGE" "$NEG_CAGE" "$OFF_CAGE" "$MED_CAGE"; do
+  for c in "$BLOCK_CAGE" "$OBS_CAGE" "$NEG_CAGE" "$OFF_CAGE" "$MED_CAGE" "$E4IP_CAGE" "$E4IP_NEG_CAGE"; do
     docker rm -f "$c" > /dev/null 2>&1 || true
     docker volume rm "rc-state-${c}" > /dev/null 2>&1 || true
   done
@@ -106,23 +110,25 @@ CLEANUP() {
     local sp
     sp=$(docker inspect --format '{{index .Config.Labels "rc.source.path"}}' "$c" 2>/dev/null || true)
     case "$sp" in
-      "${SEC_TMP}"/*|"${SEC_TMP_OBS}"/*|"${SEC_TMP_NEG}"/*|"${SEC_TMP_OFF}"/*|"${SEC_TMP_MED}"/*)
+      "${SEC_TMP}"/*|"${SEC_TMP_OBS}"/*|"${SEC_TMP_NEG}"/*|"${SEC_TMP_OFF}"/*|"${SEC_TMP_MED}"/*|"${SEC_TMP_E4IP}"/*|"${SEC_TMP_E4IP_NEG}"/*)
         docker rm -f "$c" > /dev/null 2>&1 || true
         docker volume rm "rc-state-${c}" > /dev/null 2>&1 || true
         ;;
     esac
   done
-  [[ -n "$SEC_TMP" ]]     && rm -rf "$SEC_TMP"
-  [[ -n "$SEC_TMP_OBS" ]] && rm -rf "$SEC_TMP_OBS"
-  [[ -n "$SEC_TMP_NEG" ]] && rm -rf "$SEC_TMP_NEG"
-  [[ -n "$SEC_TMP_OFF" ]] && rm -rf "$SEC_TMP_OFF"
-  [[ -n "$SEC_TMP_MED" ]] && rm -rf "$SEC_TMP_MED"
+  [[ -n "$SEC_TMP" ]]         && rm -rf "$SEC_TMP"
+  [[ -n "$SEC_TMP_OBS" ]]     && rm -rf "$SEC_TMP_OBS"
+  [[ -n "$SEC_TMP_NEG" ]]     && rm -rf "$SEC_TMP_NEG"
+  [[ -n "$SEC_TMP_OFF" ]]     && rm -rf "$SEC_TMP_OFF"
+  [[ -n "$SEC_TMP_MED" ]]     && rm -rf "$SEC_TMP_MED"
+  [[ -n "$SEC_TMP_E4IP" ]]    && rm -rf "$SEC_TMP_E4IP"
+  [[ -n "$SEC_TMP_E4IP_NEG" ]] && rm -rf "$SEC_TMP_E4IP_NEG"
   [[ -n "$_SEC_CFG_DIR" ]] && rm -rf "$_SEC_CFG_DIR"
 }
 trap CLEANUP EXIT
 
 # Pre-cleanup: remove any leftover state from a prior aborted run.
-for _c in "$BLOCK_CAGE" "$OBS_CAGE" "$NEG_CAGE" "$OFF_CAGE" "$MED_CAGE"; do
+for _c in "$BLOCK_CAGE" "$OBS_CAGE" "$NEG_CAGE" "$OFF_CAGE" "$MED_CAGE" "$E4IP_CAGE" "$E4IP_NEG_CAGE"; do
   docker rm -f "$_c" > /dev/null 2>&1 || true
   docker volume rm "rc-state-${_c}" > /dev/null 2>&1 || true
 done
@@ -180,12 +186,16 @@ SEC_TMP_OBS=$(mktemp -d)
 SEC_TMP_NEG=$(mktemp -d)
 SEC_TMP_OFF=$(mktemp -d)
 SEC_TMP_MED=$(mktemp -d)
+SEC_TMP_E4IP=$(mktemp -d)
+SEC_TMP_E4IP_NEG=$(mktemp -d)
 
 SEC_TMP_REAL=$(realpath "$SEC_TMP")
 SEC_TMP_OBS_REAL=$(realpath "$SEC_TMP_OBS")
 SEC_TMP_NEG_REAL=$(realpath "$SEC_TMP_NEG")
 SEC_TMP_OFF_REAL=$(realpath "$SEC_TMP_OFF")
 SEC_TMP_MED_REAL=$(realpath "$SEC_TMP_MED")
+SEC_TMP_E4IP_REAL=$(realpath "$SEC_TMP_E4IP")
+SEC_TMP_E4IP_NEG_REAL=$(realpath "$SEC_TMP_E4IP_NEG")
 
 # Build workspace paths that produce the desired container names.
 mkdir -p "${SEC_TMP}/rc-sec-inj"
@@ -224,9 +234,57 @@ network:
   mode: block
   allowed_hosts:
     - httpbin.org
+    - httpbingo.org
     - api.anthropic.com
   egress:
     mediator: mitmproxy
+  http:
+    forward_to: "127.0.0.1:8888"
+YAML
+
+# E4-ip (iron-proxy) positive cage: block mode + iron-proxy co-located as forward_to mediator.
+# network.egress.mediator: iron-proxy tells rc up to auto-launch iron-proxy via init-mediator.sh.
+# iron-proxy's baked proxy.yaml has domains: [httpbin.org, httpbingo.org] (review finding 1 — allowlist preflight).
+# httpbingo.org listed as fallback for when httpbin.org is unavailable.
+# proxy_value: RIPCAGE_MEDIATOR_PLACEHOLDER_VALUE (baked static literal in proxy.yaml).
+mkdir -p "${SEC_TMP_E4IP}/rc-sec-inj"
+E4IP_WS="${SEC_TMP_E4IP}/rc-sec-inj/e4ip"
+mkdir -p "$E4IP_WS"
+git -C "$E4IP_WS" init > /dev/null 2>&1
+
+cat > "${E4IP_WS}/.rip-cage.yaml" <<'YAML'
+version: 1
+network:
+  mode: block
+  allowed_hosts:
+    - httpbin.org
+    - httpbingo.org
+    - api.anthropic.com
+  egress:
+    mediator: iron-proxy
+  http:
+    forward_to: "127.0.0.1:8888"
+YAML
+
+# E4-ip-neg (iron-proxy negative control): same config but launched WITHOUT --mediator-env.
+# Without RIPCAGE_MEDIATOR_BEARER_SECRET in iron-proxy's env, the secrets transform is a no-op
+# and the placeholder passes through to httpbin.org unchanged. This proves the positive
+# E4-ip assertion is load-bearing: sentinel echoed ↔ injection fired, not a request artifact.
+mkdir -p "${SEC_TMP_E4IP_NEG}/rc-sec-inj"
+E4IP_NEG_WS="${SEC_TMP_E4IP_NEG}/rc-sec-inj/e4ip-neg"
+mkdir -p "$E4IP_NEG_WS"
+git -C "$E4IP_NEG_WS" init > /dev/null 2>&1
+
+cat > "${E4IP_NEG_WS}/.rip-cage.yaml" <<'YAML'
+version: 1
+network:
+  mode: block
+  allowed_hosts:
+    - httpbin.org
+    - httpbingo.org
+    - api.anthropic.com
+  egress:
+    mediator: iron-proxy
   http:
     forward_to: "127.0.0.1:8888"
 YAML
@@ -260,7 +318,7 @@ YAML
 
 # Off cage: explicit egress=off (no proxy at all).
 
-export RC_ALLOWED_ROOTS="${SEC_TMP_REAL}:${SEC_TMP_OBS_REAL}:${SEC_TMP_NEG_REAL}:${SEC_TMP_OFF_REAL}:${SEC_TMP_MED_REAL}"
+export RC_ALLOWED_ROOTS="${SEC_TMP_REAL}:${SEC_TMP_OBS_REAL}:${SEC_TMP_NEG_REAL}:${SEC_TMP_OFF_REAL}:${SEC_TMP_MED_REAL}:${SEC_TMP_E4IP_REAL}:${SEC_TMP_E4IP_NEG_REAL}"
 
 # ---------------------------------------------------------------------------
 # Start cages
@@ -353,6 +411,63 @@ if [[ "$E4_SKIP" == "false" ]]; then
     check "E4 mediator cage started ($MED_CAGE)" "fail" "container not running (see /tmp/rc-sec-med-up.out)"
     E4_SKIP="true"
     E4_SKIP_REASON="mediator cage failed to start"
+  fi
+fi
+
+# E4-ip iron-proxy cages: positive (with --mediator-env) and negative (without).
+# Requires iron-proxy baked into the image (rc.mediators includes iron-proxy).
+# E4IP_PLACEHOLDER is the STATIC literal baked into proxy.yaml (proxy_value: RIPCAGE_MEDIATOR_PLACEHOLDER_VALUE).
+# E4IP_SENTINEL is the per-run value passed via --mediator-env (must contain a space for F2 test).
+echo "-- Starting iron-proxy E4-ip cages ($E4IP_CAGE and $E4IP_NEG_CAGE) --"
+E4IP_SKIP="false"
+E4IP_SKIP_REASON=""
+
+E4IP_RUN_ID=$(date +%s)
+# F2: sentinel intentionally contains a space ("ripcage-ironproxy-e4 sentinel <runid>").
+# iron-proxy's secrets transform substitutes RIPCAGE_MEDIATOR_BEARER_SECRET into the header;
+# init-mediator.sh quotes the env passthrough (F2 fix). A space in the sentinel regression-proofs
+# the quoting path — truncation at the space would cause a mismatch vs. the full sentinel.
+E4IP_SENTINEL="ripcage-ironproxy-e4 sentinel ${E4IP_RUN_ID}"
+# The placeholder is the STATIC literal baked into /etc/iron-proxy/proxy.yaml as proxy_value.
+# Iron-proxy matches Authorization: Bearer RIPCAGE_MEDIATOR_PLACEHOLDER_VALUE and replaces it.
+E4IP_PLACEHOLDER="RIPCAGE_MEDIATOR_PLACEHOLDER_VALUE"
+
+_e4ip_med_label=$(docker inspect --format '{{ index .Config.Labels "rc.mediators" }}' rip-cage:latest 2>/dev/null || true)
+if [[ "$_e4ip_med_label" != *"iron-proxy"* ]]; then
+  E4IP_SKIP="true"
+  E4IP_SKIP_REASON="rip-cage:latest image does not have iron-proxy baked in (rc.mediators='${_e4ip_med_label}'). Run: rc build with examples/iron-proxy/manifest-fragment.yaml (or equivalent) in tools.yaml, then re-run this suite."
+  echo "[E4-ip SKIP] $E4IP_SKIP_REASON"
+fi
+unset _e4ip_med_label
+
+e4ip_running=""
+e4ip_neg_running=""
+if [[ "$E4IP_SKIP" == "false" ]]; then
+  # Positive cage: pass sentinel via --mediator-env (iron-proxy process env only).
+  "$RC" up "$E4IP_WS" \
+    --mediator-env "RIPCAGE_MEDIATOR_BEARER_SECRET=${E4IP_SENTINEL}" \
+    < /dev/null > /tmp/rc-sec-e4ip-up.out 2>&1 || true
+  e4ip_running=$(docker ps --filter "name=^${E4IP_CAGE}$" --format '{{.Names}}' 2>/dev/null | head -1 || true)
+  if [[ "$e4ip_running" == "$E4IP_CAGE" ]]; then
+    check "E4-ip iron-proxy positive cage started ($E4IP_CAGE)" "pass"
+  else
+    check "E4-ip iron-proxy positive cage started ($E4IP_CAGE)" "fail" "container not running (see /tmp/rc-sec-e4ip-up.out)"
+    E4IP_SKIP="true"
+    E4IP_SKIP_REASON="iron-proxy positive cage failed to start"
+  fi
+
+  # Negative cage: start WITHOUT --mediator-env — no secret injected into iron-proxy's env.
+  # The secrets transform requires RIPCAGE_MEDIATOR_BEARER_SECRET in iron-proxy's process env;
+  # without it, the transform is a no-op and the placeholder passes through to httpbin unchanged.
+  # (iron-proxy require: false means it does not fail the request — it just skips substitution.)
+  "$RC" up "$E4IP_NEG_WS" \
+    < /dev/null > /tmp/rc-sec-e4ip-neg-up.out 2>&1 || true
+  e4ip_neg_running=$(docker ps --filter "name=^${E4IP_NEG_CAGE}$" --format '{{.Names}}' 2>/dev/null | head -1 || true)
+  if [[ "$e4ip_neg_running" == "$E4IP_NEG_CAGE" ]]; then
+    check "E4-ip iron-proxy negative cage started ($E4IP_NEG_CAGE)" "pass"
+  else
+    check "E4-ip iron-proxy negative cage started ($E4IP_NEG_CAGE)" "fail" "container not running (see /tmp/rc-sec-e4ip-neg-up.out)"
+    # Negative cage failure does not block the positive probe — report but continue.
   fi
 fi
 
@@ -1494,6 +1609,7 @@ else
     e4_response=""
     e4_http_code=""
     e4_curl_exit=0
+    e4_live_host="httpbin.org"
     # Capture HTTP status code AND response body separately.
     # Write body to a temp file inside the cage and capture http_code via -w.
     # (Head -n -1 is BSD-incompatible on macOS; use separate -o / -w calls.)
@@ -1506,7 +1622,6 @@ else
         -w '%{http_code}' \
         "https://httpbin.org/headers" 2>/dev/null) || e4_curl_exit=$?
       e4_response=$(docker exec "$MED_CAGE" cat "$_e4_tmpbody" 2>/dev/null || true)
-      docker exec "$MED_CAGE" rm -f "$_e4_tmpbody" > /dev/null 2>&1 || true
     else
       # Fallback: no temp file, just capture body (cannot check HTTP status code).
       e4_response=$(docker exec "$MED_CAGE" curl -s \
@@ -1515,28 +1630,57 @@ else
         "https://httpbin.org/headers" 2>/dev/null) || e4_curl_exit=$?
       e4_http_code="unknown"
     fi
+
+    # Fallback to httpbingo.org if httpbin.org was unreachable (connection-level
+    # failure: timeout exit=28, refused exit=7, TLS exit=35/...) OR returned a
+    # non-200 upstream error. A bare 5xx-only trigger missed the transient-timeout
+    # case, which then hard-failed instead of retrying the alternate host.
+    # httpbingo.org is in allowed_hosts for the E4 mediator cage.
+    if [[ "$e4_curl_exit" -ne 0 || ( "$e4_http_code" != "200" && "$e4_http_code" != "unknown" ) ]]; then
+      echo "[E4] httpbin.org unreachable (exit=${e4_curl_exit}, code=${e4_http_code}) — trying httpbingo.org fallback"
+      e4_live_host="httpbingo.org"
+      e4_curl_exit=0
+      if [[ -n "$_e4_tmpbody" ]]; then
+        e4_http_code=$(docker exec "$MED_CAGE" curl -s \
+          -H "Authorization: Bearer ${E4_PLACEHOLDER}" \
+          --max-time 20 \
+          -o "$_e4_tmpbody" \
+          -w '%{http_code}' \
+          "https://httpbingo.org/headers" 2>/dev/null) || e4_curl_exit=$?
+        e4_response=$(docker exec "$MED_CAGE" cat "$_e4_tmpbody" 2>/dev/null || true)
+      else
+        e4_response=$(docker exec "$MED_CAGE" curl -s \
+          -H "Authorization: Bearer ${E4_PLACEHOLDER}" \
+          --max-time 20 \
+          "https://httpbingo.org/headers" 2>/dev/null) || e4_curl_exit=$?
+        e4_http_code="unknown"
+      fi
+    fi
+
+    [[ -n "$_e4_tmpbody" ]] && docker exec "$MED_CAGE" rm -f "$_e4_tmpbody" > /dev/null 2>&1 || true
     unset _e4_tmpbody
 
-    # Gate: confirm httpbin.org was actually reached with HTTP 200 (live-source check).
+    # Gate: confirm header-echo host was actually reached with HTTP 200 (live-source check).
     # 5xx (e.g. 503 from httpbin.org's backend being overloaded) is an external service
     # availability issue, not a mitmproxy/injection failure — treat as SKIP, not FAIL.
     if [[ "$e4_curl_exit" -ne 0 || -z "$e4_response" ]]; then
       check "E4 httpbin.org/headers reachable (live-source gate)" "fail" \
-        "curl exit=${e4_curl_exit} — httpbin.org not reachable through mediator; check mitmproxy CA trust or forward_to config"
-      check "E4 Authorization header echoed (header-present gate)" "fail" "SKIP: httpbin.org not reachable"
-      check "E4 Authorization contains Bearer sentinel (injection fired)" "fail" "SKIP: httpbin.org not reachable"
-      check "E4 Authorization does NOT contain placeholder (no-leak)" "fail" "SKIP: httpbin.org not reachable"
+        "curl exit=${e4_curl_exit} — ${e4_live_host} not reachable through mediator; check mitmproxy CA trust or forward_to config"
+      check "E4 Authorization header echoed (header-present gate)" "fail" "SKIP: ${e4_live_host} not reachable"
+      check "E4 Authorization contains Bearer sentinel (injection fired)" "fail" "SKIP: ${e4_live_host} not reachable"
+      check "E4 Authorization does NOT contain placeholder (no-leak)" "fail" "SKIP: ${e4_live_host} not reachable"
     elif [[ "$e4_http_code" != "200" && "$e4_http_code" != "unknown" ]]; then
       check "E4 httpbin.org/headers reachable (live-source gate)" "fail" \
-        "HTTP ${e4_http_code} — httpbin.org backend returned non-200 (upstream service issue, not mediator); re-run to retry"
-      check "E4 Authorization header echoed (header-present gate)" "fail" "SKIP: httpbin.org returned ${e4_http_code}"
-      check "E4 Authorization contains Bearer sentinel (injection fired)" "fail" "SKIP: httpbin.org returned ${e4_http_code}"
-      check "E4 Authorization does NOT contain placeholder (no-leak)" "fail" "SKIP: httpbin.org returned ${e4_http_code}"
+        "HTTP ${e4_http_code} — both httpbin.org and httpbingo.org returned non-200 (upstream service issue, not mediator); re-run to retry"
+      check "E4 Authorization header echoed (header-present gate)" "fail" "SKIP: header-echo host returned ${e4_http_code}"
+      check "E4 Authorization contains Bearer sentinel (injection fired)" "fail" "SKIP: header-echo host returned ${e4_http_code}"
+      check "E4 Authorization does NOT contain placeholder (no-leak)" "fail" "SKIP: header-echo host returned ${e4_http_code}"
     else
-      check "E4 httpbin.org/headers reachable (live-source gate)" "pass"
+      check "E4 httpbin.org/headers reachable (live-source gate)" "pass" "${e4_live_host} returned 200"
 
-      # Extract the Authorization header value from httpbin.org's JSON response.
-      # httpbin.org/headers returns {"headers": {"Authorization": "Bearer ...", ...}}
+      # Extract the Authorization header value from the echo service's JSON response.
+      # httpbin.org returns {"headers": {"Authorization": "Bearer ...", ...}} (string).
+      # httpbingo.org returns {"headers": {"Authorization": ["Bearer ..."], ...}} (list).
       e4_auth=$(echo "$e4_response" | python3 -c "
 import json, sys
 try:
@@ -1544,6 +1688,9 @@ try:
     h = d.get('headers', {})
     # httpbin.org may capitalize as 'Authorization'
     v = h.get('Authorization') or h.get('authorization') or ''
+    # httpbingo.org returns header values as lists; flatten to string
+    if isinstance(v, list):
+        v = v[0] if v else ''
     print(v)
 except Exception:
     print('')
@@ -1715,6 +1862,377 @@ echo ""
 echo "NOTE(none=no-regression): To verify no regression with mediator=none: rebuild rip-cage"
 echo "  image WITHOUT mitmproxy in tools.yaml and re-run this suite. The E4 probes will SKIP"
 echo "  (image not baked) while B1-B9 and O1-O2 must all remain green."
+echo ""
+
+# ---------------------------------------------------------------------------
+# E4-ip: iron-proxy E4 probe family (rip-cage-nyst, ADR-026 D5)
+#
+# Validates the iron-proxy recommended-adopt MEDIATOR provider end-to-end inside
+# a real Linux cage. Mirrors the mitmproxy E4 family above, with differences:
+#   - Placeholder is STATIC (RIPCAGE_MEDIATOR_PLACEHOLDER_VALUE, baked in proxy.yaml)
+#   - Negative control = second cage run WITHOUT --mediator-env (no Python addon unit)
+#   - Liveness probe checks for rip-ironproxy uid + iron-proxy binary
+#   - Port probe is the same: bash /dev/tcp 127.0.0.1:8888
+#
+# Predicates (rip-cage-nyst harness):
+#   (a) auto-start/liveness: pid file, rip-ironproxy uid, /dev/tcp probe on :8888
+#   (b) positive injection: placeholder → sentinel in Authorization header (liveness-gated)
+#   (b-neg) negative control: no --mediator-env → placeholder passes through unchanged
+#   (c) non-possession: sentinel absent from /proc/1/environ (liveness-gated, agent uid)
+#   (d) floor-deny: example.org denied even with iron-proxy composed
+#   (e) mediator=none no-regression: noted (checked via the existing B1-B9, O1-O2 still green)
+#   (f) zero rc diff: checked in report, not in this probe
+# ---------------------------------------------------------------------------
+echo "=== E4-ip: iron-proxy credential injection (rip-cage-nyst) ==="
+
+if [[ "$E4IP_SKIP" == "true" ]]; then
+  echo "[E4-ip SKIP] ${E4IP_SKIP_REASON}"
+  check "E4-ip skip: iron-proxy image not baked (rc build required)" "pass" "skip is expected without iron-proxy image"
+  check "E4-ip rip-ironproxy user exists in image" "pass" "SKIP (image not baked)"
+  check "E4-ip iron-proxy binary present in image" "pass" "SKIP (image not baked)"
+  check "E4-ip iron-proxy auto-started by rc up (via init-mediator.sh)" "pass" "SKIP (image not baked)"
+  check "E4-ip iron-proxy listening on 127.0.0.1:8888" "pass" "SKIP (image not baked)"
+  check "E4-ip /proc/1/environ does NOT contain sentinel (non-possession)" "pass" "SKIP (image not baked)"
+  check "E4-ip httpbin.org/headers reachable (live-source gate)" "pass" "SKIP (image not baked)"
+  check "E4-ip Authorization header echoed (header-present gate)" "pass" "SKIP (image not baked)"
+  check "E4-ip Authorization contains Bearer sentinel (injection fired)" "pass" "SKIP (image not baked)"
+  check "E4-ip Authorization does NOT contain placeholder (no-leak)" "pass" "SKIP (image not baked)"
+  check "E4-ip-neg no-mediator-env: placeholder passes through (injection load-bearing)" "pass" "SKIP (image not baked)"
+  check "E4-ip-floor non-allowlisted host denied (floor holds with iron-proxy)" "pass" "SKIP (image not baked)"
+  echo ""
+  echo "NOTE(E4-ip-none-note): run rc build with iron-proxy in tools.yaml and re-run to activate."
+else
+  # -------------------------------------------------------------------------
+  # (a) Liveness: verify rip-ironproxy user, iron-proxy binary, auto-start pid.
+  # -------------------------------------------------------------------------
+  echo "-- Verifying iron-proxy auto-started by rc up ($E4IP_CAGE, E4-ip probe) --"
+
+  _e4ip_user_check=$(docker exec "$E4IP_CAGE" id rip-ironproxy 2>/dev/null || true)
+  _e4ip_bin_check=$(docker exec "$E4IP_CAGE" test -f /usr/local/bin/iron-proxy 2>/dev/null && echo "ok" || echo "absent")
+
+  if [[ -z "$_e4ip_user_check" ]]; then
+    check "E4-ip rip-ironproxy user exists in image" "fail" "user not found — image may not have iron-proxy baked"
+    E4IP_SKIP="true"
+    E4IP_SKIP_REASON="rip-ironproxy user absent from image"
+  else
+    check "E4-ip rip-ironproxy user exists in image" "pass" "${_e4ip_user_check}"
+  fi
+
+  if [[ "$_e4ip_bin_check" != "ok" ]]; then
+    check "E4-ip iron-proxy binary present in image" "fail" "iron-proxy absent at /usr/local/bin/iron-proxy"
+    E4IP_SKIP="true"
+    E4IP_SKIP_REASON="${E4IP_SKIP_REASON:+${E4IP_SKIP_REASON}; }iron-proxy binary absent"
+  else
+    check "E4-ip iron-proxy binary present in image" "pass"
+  fi
+  unset _e4ip_user_check _e4ip_bin_check
+
+  if [[ "$E4IP_SKIP" == "false" ]]; then
+    _e4ip_pid=$(docker exec "$E4IP_CAGE" cat /run/rip-cage-mediator-iron-proxy.pid 2>/dev/null || true)
+    if [[ -n "$_e4ip_pid" ]]; then
+      check "E4-ip iron-proxy auto-started by rc up (via init-mediator.sh)" "pass" \
+        "pid=${_e4ip_pid}"
+    else
+      check "E4-ip iron-proxy auto-started by rc up (via init-mediator.sh)" "fail" \
+        "PID file /run/rip-cage-mediator-iron-proxy.pid absent — init-mediator.sh may not have run; see /tmp/rc-sec-e4ip-up.out"
+      E4IP_SKIP="true"
+      E4IP_SKIP_REASON="iron-proxy PID file absent"
+    fi
+    unset _e4ip_pid
+
+    # Port liveness: bash /dev/tcp connect probe (ss not in image).
+    if docker exec "$E4IP_CAGE" bash -c '(exec 3<>/dev/tcp/127.0.0.1/8888) 2>/dev/null'; then
+      _e4ip_listen="open"
+    else
+      _e4ip_listen=""
+    fi
+    if [[ -n "$_e4ip_listen" ]]; then
+      check "E4-ip iron-proxy listening on 127.0.0.1:8888" "pass"
+    else
+      check "E4-ip iron-proxy listening on 127.0.0.1:8888" "fail" \
+        "port 8888 not bound — iron-proxy may have failed to start; check /tmp/rip-cage-mediator-iron-proxy.log and /tmp/rc-sec-e4ip-up.out"
+      E4IP_SKIP="true"
+      E4IP_SKIP_REASON="iron-proxy not listening on :8888"
+    fi
+    unset _e4ip_listen
+  fi
+
+  # -------------------------------------------------------------------------
+  # (c) Non-possession: sentinel absent from /proc/1/environ.
+  # Runs whenever the cage is up, regardless of whether iron-proxy started.
+  # -------------------------------------------------------------------------
+  if [[ "$e4ip_running" == "$E4IP_CAGE" ]]; then
+    _e4ip_proc1_env=$(docker exec "$E4IP_CAGE" cat /proc/1/environ 2>/dev/null | tr '\0' '\n' || true)
+    if ! echo "$_e4ip_proc1_env" | grep -q "^PATH="; then
+      check "E4-ip /proc/1/environ does NOT contain sentinel (non-possession)" "fail" \
+        "LIVENESS GATE FAILED: /proc/1/environ capture is empty or PATH= absent — absence check would pass vacuously. Sentinel: ${E4IP_SENTINEL}"
+    elif echo "$_e4ip_proc1_env" | grep -qF "${E4IP_SENTINEL}"; then
+      check "E4-ip /proc/1/environ does NOT contain sentinel (non-possession)" "fail" \
+        "SENTINEL FOUND IN /proc/1/environ — mediator secret leaked into agent env (non-possession violated)"
+    else
+      check "E4-ip /proc/1/environ does NOT contain sentinel (non-possession)" "pass" \
+        "sentinel absent from /proc/1/environ (liveness gate: PATH= present)"
+    fi
+    unset _e4ip_proc1_env
+  else
+    check "E4-ip /proc/1/environ does NOT contain sentinel (non-possession)" "fail" \
+      "SKIP: container not running"
+  fi
+
+  if [[ "$E4IP_SKIP" == "false" ]]; then
+    # -------------------------------------------------------------------------
+    # (b) Positive sentinel probe: send placeholder, assert sentinel echoed.
+    # iron-proxy matches Authorization: Bearer RIPCAGE_MEDIATOR_PLACEHOLDER_VALUE
+    # and substitutes RIPCAGE_MEDIATOR_BEARER_SECRET from its process env.
+    # Tries httpbin.org first; falls back to httpbingo.org if httpbin.org is
+    # unavailable (5xx). Both are in iron-proxy domains + rip-cage allowed_hosts.
+    # httpbingo.org returns headers as JSON lists; the parser handles both formats.
+    # -------------------------------------------------------------------------
+    echo "--- E4-ip: credential injection delta probe ---"
+    e4ip_response=""
+    e4ip_http_code=""
+    e4ip_curl_exit=0
+    e4ip_live_host="httpbin.org"
+    _e4ip_tmpbody=$(docker exec "$E4IP_CAGE" mktemp 2>/dev/null || true)
+    if [[ -n "$_e4ip_tmpbody" ]]; then
+      e4ip_http_code=$(docker exec "$E4IP_CAGE" curl -s \
+        -H "Authorization: Bearer ${E4IP_PLACEHOLDER}" \
+        --max-time 30 \
+        -o "$_e4ip_tmpbody" \
+        -w '%{http_code}' \
+        "https://httpbin.org/headers" 2>/dev/null) || e4ip_curl_exit=$?
+      e4ip_response=$(docker exec "$E4IP_CAGE" cat "$_e4ip_tmpbody" 2>/dev/null || true)
+    else
+      e4ip_response=$(docker exec "$E4IP_CAGE" curl -s \
+        -H "Authorization: Bearer ${E4IP_PLACEHOLDER}" \
+        --max-time 30 \
+        "https://httpbin.org/headers" 2>/dev/null) || e4ip_curl_exit=$?
+      e4ip_http_code="unknown"
+    fi
+
+    # Fallback to httpbingo.org if httpbin.org was unreachable (connection-level
+    # failure: timeout exit=28, refused exit=7, TLS exit=35/...) OR returned a
+    # non-200 upstream error. Mirrors the E4 (mitmproxy) fallback fix — a 5xx-only
+    # trigger missed the transient-timeout case and hard-failed instead of retrying.
+    if [[ "$e4ip_curl_exit" -ne 0 || ( "$e4ip_http_code" != "200" && "$e4ip_http_code" != "unknown" ) ]]; then
+      echo "[E4-ip] httpbin.org unreachable (exit=${e4ip_curl_exit}, code=${e4ip_http_code}) — trying httpbingo.org fallback"
+      e4ip_live_host="httpbingo.org"
+      e4ip_curl_exit=0
+      if [[ -n "$_e4ip_tmpbody" ]]; then
+        e4ip_http_code=$(docker exec "$E4IP_CAGE" curl -s \
+          -H "Authorization: Bearer ${E4IP_PLACEHOLDER}" \
+          --max-time 30 \
+          -o "$_e4ip_tmpbody" \
+          -w '%{http_code}' \
+          "https://httpbingo.org/headers" 2>/dev/null) || e4ip_curl_exit=$?
+        e4ip_response=$(docker exec "$E4IP_CAGE" cat "$_e4ip_tmpbody" 2>/dev/null || true)
+      else
+        e4ip_response=$(docker exec "$E4IP_CAGE" curl -s \
+          -H "Authorization: Bearer ${E4IP_PLACEHOLDER}" \
+          --max-time 30 \
+          "https://httpbingo.org/headers" 2>/dev/null) || e4ip_curl_exit=$?
+        e4ip_http_code="unknown"
+      fi
+    fi
+
+    [[ -n "$_e4ip_tmpbody" ]] && docker exec "$E4IP_CAGE" rm -f "$_e4ip_tmpbody" > /dev/null 2>&1 || true
+    unset _e4ip_tmpbody
+
+    if [[ "$e4ip_curl_exit" -ne 0 || -z "$e4ip_response" ]]; then
+      check "E4-ip httpbin.org/headers reachable (live-source gate)" "fail" \
+        "curl exit=${e4ip_curl_exit} — ${e4ip_live_host} not reachable through iron-proxy; check CA trust or forward_to config (see /tmp/rip-cage-mediator-iron-proxy.log)"
+      check "E4-ip Authorization header echoed (header-present gate)" "fail" "SKIP: ${e4ip_live_host} not reachable"
+      check "E4-ip Authorization contains Bearer sentinel (injection fired)" "fail" "SKIP: ${e4ip_live_host} not reachable"
+      check "E4-ip Authorization does NOT contain placeholder (no-leak)" "fail" "SKIP: ${e4ip_live_host} not reachable"
+    elif [[ "$e4ip_http_code" != "200" && "$e4ip_http_code" != "unknown" ]]; then
+      check "E4-ip httpbin.org/headers reachable (live-source gate)" "fail" \
+        "HTTP ${e4ip_http_code} — both httpbin.org and httpbingo.org returned non-200 (upstream service issue); re-run to retry"
+      check "E4-ip Authorization header echoed (header-present gate)" "fail" "SKIP: header-echo host returned ${e4ip_http_code}"
+      check "E4-ip Authorization contains Bearer sentinel (injection fired)" "fail" "SKIP: header-echo host returned ${e4ip_http_code}"
+      check "E4-ip Authorization does NOT contain placeholder (no-leak)" "fail" "SKIP: header-echo host returned ${e4ip_http_code}"
+    else
+      check "E4-ip httpbin.org/headers reachable (live-source gate)" "pass" "${e4ip_live_host} returned 200"
+
+      # Parse Authorization header — handle both httpbin.org (string) and httpbingo.org (list) formats.
+      e4ip_auth=$(echo "$e4ip_response" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    h = d.get('headers', {})
+    v = h.get('Authorization') or h.get('authorization') or ''
+    # httpbingo.org returns header values as lists; flatten to string
+    if isinstance(v, list):
+        v = v[0] if v else ''
+    print(v)
+except Exception:
+    print('')
+" 2>/dev/null || true)
+
+      if [[ -z "$e4ip_auth" ]]; then
+        check "E4-ip Authorization header echoed (header-present gate)" "fail" \
+          "Authorization header absent in ${e4ip_live_host}/headers response — iron-proxy transform did not fire (or header stripped). Response: ${e4ip_response:0:300}"
+        check "E4-ip Authorization contains Bearer sentinel (injection fired)" "fail" "SKIP: header absent"
+        check "E4-ip Authorization does NOT contain placeholder (no-leak)" "fail" "SKIP: header absent"
+      else
+        check "E4-ip Authorization header echoed (header-present gate)" "pass" "auth='${e4ip_auth}'"
+
+        if [[ "$e4ip_auth" == "Bearer ${E4IP_SENTINEL}" ]]; then
+          check "E4-ip Authorization contains Bearer sentinel (injection fired)" "pass" \
+            "auth='${e4ip_auth}'"
+        else
+          check "E4-ip Authorization contains Bearer sentinel (injection fired)" "fail" \
+            "expected 'Bearer ${E4IP_SENTINEL}', got '${e4ip_auth}' — iron-proxy secrets transform did not replace placeholder with sentinel (wrong placeholder match, secret absent, or config issue)"
+        fi
+
+        if [[ "$e4ip_auth" != *"${E4IP_PLACEHOLDER}"* ]]; then
+          check "E4-ip Authorization does NOT contain placeholder (no-leak)" "pass"
+        else
+          check "E4-ip Authorization does NOT contain placeholder (no-leak)" "fail" \
+            "placeholder found in Authorization header: '${e4ip_auth}' — iron-proxy did not replace it"
+        fi
+      fi
+    fi
+
+    # -------------------------------------------------------------------------
+    # (b-neg) Negative control: no --mediator-env → placeholder passes through.
+    # iron-proxy's require: false means the request is not blocked when the env var
+    # is absent — the placeholder propagates to httpbin.org unchanged.
+    # Uses the same fallback host as the positive probe above (e4ip_live_host).
+    # -------------------------------------------------------------------------
+    echo "--- E4-ip-neg: negative control (no --mediator-env → placeholder preserved) ---"
+    if [[ "$e4ip_neg_running" == "$E4IP_NEG_CAGE" ]]; then
+      # Wait for iron-proxy in the negative cage to listen on :8888 (same as positive cage
+      # liveness check above, but the neg cage starts in parallel and may not be ready yet).
+      _e4ip_neg_wait=0
+      while [[ "$_e4ip_neg_wait" -lt 15 ]]; do
+        if docker exec "$E4IP_NEG_CAGE" bash -c '(exec 3<>/dev/tcp/127.0.0.1/8888) 2>/dev/null'; then
+          break
+        fi
+        _e4ip_neg_wait=$((_e4ip_neg_wait + 1))
+        sleep 1
+      done
+      unset _e4ip_neg_wait
+
+      e4ip_neg_response=""
+      e4ip_neg_http_code=""
+      e4ip_neg_curl_exit=0
+      e4ip_neg_host="$e4ip_live_host"   # start with the host the positive probe validated
+      _e4ip_neg_tmpbody=$(docker exec "$E4IP_NEG_CAGE" mktemp 2>/dev/null || true)
+      if [[ -n "$_e4ip_neg_tmpbody" ]]; then
+        e4ip_neg_http_code=$(docker exec "$E4IP_NEG_CAGE" curl -s \
+          -H "Authorization: Bearer ${E4IP_PLACEHOLDER}" \
+          --max-time 30 \
+          -o "$_e4ip_neg_tmpbody" \
+          -w '%{http_code}' \
+          "https://${e4ip_neg_host}/headers" 2>/dev/null) || e4ip_neg_curl_exit=$?
+        e4ip_neg_response=$(docker exec "$E4IP_NEG_CAGE" cat "$_e4ip_neg_tmpbody" 2>/dev/null || true)
+      else
+        e4ip_neg_response=$(docker exec "$E4IP_NEG_CAGE" curl -s \
+          -H "Authorization: Bearer ${E4IP_PLACEHOLDER}" \
+          --max-time 30 \
+          "https://${e4ip_neg_host}/headers" 2>/dev/null) || e4ip_neg_curl_exit=$?
+        e4ip_neg_http_code="unknown"
+      fi
+
+      # Same connection-failure/non-200 fallback as the positive probes: a transient
+      # timeout on one echo host must not fail the negative control. Toggle to the
+      # alternate echo host (both are in allowed_hosts + iron-proxy domains) and retry.
+      if [[ "$e4ip_neg_curl_exit" -ne 0 || ( "$e4ip_neg_http_code" != "200" && "$e4ip_neg_http_code" != "unknown" ) ]]; then
+        if [[ "$e4ip_neg_host" == "httpbin.org" ]]; then e4ip_neg_host="httpbingo.org"; else e4ip_neg_host="httpbin.org"; fi
+        echo "[E4-ip-neg] retrying via ${e4ip_neg_host} (first host unreachable: exit=${e4ip_neg_curl_exit}, code=${e4ip_neg_http_code})"
+        e4ip_neg_curl_exit=0
+        if [[ -n "$_e4ip_neg_tmpbody" ]]; then
+          e4ip_neg_http_code=$(docker exec "$E4IP_NEG_CAGE" curl -s \
+            -H "Authorization: Bearer ${E4IP_PLACEHOLDER}" \
+            --max-time 30 \
+            -o "$_e4ip_neg_tmpbody" \
+            -w '%{http_code}' \
+            "https://${e4ip_neg_host}/headers" 2>/dev/null) || e4ip_neg_curl_exit=$?
+          e4ip_neg_response=$(docker exec "$E4IP_NEG_CAGE" cat "$_e4ip_neg_tmpbody" 2>/dev/null || true)
+        else
+          e4ip_neg_response=$(docker exec "$E4IP_NEG_CAGE" curl -s \
+            -H "Authorization: Bearer ${E4IP_PLACEHOLDER}" \
+            --max-time 30 \
+            "https://${e4ip_neg_host}/headers" 2>/dev/null) || e4ip_neg_curl_exit=$?
+          e4ip_neg_http_code="unknown"
+        fi
+      fi
+
+      [[ -n "$_e4ip_neg_tmpbody" ]] && docker exec "$E4IP_NEG_CAGE" rm -f "$_e4ip_neg_tmpbody" > /dev/null 2>&1 || true
+      unset _e4ip_neg_tmpbody
+
+      if [[ "$e4ip_neg_curl_exit" -ne 0 || -z "$e4ip_neg_response" ]]; then
+        # If the negative cage can't even reach the echo host, note this but don't count as injection proof.
+        check "E4-ip-neg no-mediator-env: placeholder passes through (injection load-bearing)" "fail" \
+          "curl exit=${e4ip_neg_curl_exit} — negative cage cannot reach ${e4ip_neg_host} (curl exit or empty body, both echo hosts tried)"
+      elif [[ "$e4ip_neg_http_code" != "200" && "$e4ip_neg_http_code" != "unknown" ]]; then
+        check "E4-ip-neg no-mediator-env: placeholder passes through (injection load-bearing)" "fail" \
+          "HTTP ${e4ip_neg_http_code} from negative cage — upstream service issue; re-run"
+      else
+        e4ip_neg_auth=$(echo "$e4ip_neg_response" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    h = d.get('headers', {})
+    v = h.get('Authorization') or h.get('authorization') or ''
+    # httpbingo.org returns header values as lists; flatten to string
+    if isinstance(v, list):
+        v = v[0] if v else ''
+    print(v)
+except Exception:
+    print('')
+" 2>/dev/null || true)
+
+        # Negative control: echo host must echo the PLACEHOLDER (not the sentinel).
+        # Iron-proxy without a secret env var leaves the header unchanged.
+        if [[ "$e4ip_neg_auth" == "Bearer ${E4IP_PLACEHOLDER}" ]]; then
+          check "E4-ip-neg no-mediator-env: placeholder passes through (injection load-bearing)" "pass" \
+            "auth='${e4ip_neg_auth}' (sentinel not injected — load-bearing proof)"
+        elif echo "$e4ip_neg_auth" | grep -qF "${E4IP_SENTINEL}"; then
+          check "E4-ip-neg no-mediator-env: placeholder passes through (injection load-bearing)" "fail" \
+            "SENTINEL PRESENT in negative cage — injection not load-bearing (sentinel present even without --mediator-env): '${e4ip_neg_auth}'"
+        else
+          check "E4-ip-neg no-mediator-env: placeholder passes through (injection load-bearing)" "fail" \
+            "unexpected auth in negative cage: '${e4ip_neg_auth}' (expected placeholder 'Bearer ${E4IP_PLACEHOLDER}')"
+        fi
+      fi
+    else
+      check "E4-ip-neg no-mediator-env: placeholder passes through (injection load-bearing)" "fail" \
+        "negative cage not running — skip (see /tmp/rc-sec-e4ip-neg-up.out)"
+    fi
+
+    # -------------------------------------------------------------------------
+    # (d) Floor-deny: non-allowlisted host still denied with iron-proxy composed.
+    # -------------------------------------------------------------------------
+    echo "--- E4-ip-floor: non-allowlisted host still denied with iron-proxy composed ---"
+    e4ip_floor_exit=0
+    docker exec "$E4IP_CAGE" curl -s -o /dev/null -w '%{http_code}' \
+      --max-time 10 \
+      "https://example.org/" 2>/dev/null || e4ip_floor_exit=$?
+
+    if [[ "$e4ip_floor_exit" -ne 0 ]]; then
+      check "E4-ip-floor non-allowlisted host denied (floor holds with iron-proxy)" "pass" \
+        "curl exit=${e4ip_floor_exit} — connection refused as expected"
+    else
+      check "E4-ip-floor non-allowlisted host denied (floor holds with iron-proxy)" "fail" \
+        "curl exit=0 — connection NOT refused; iron-proxy or rip-cage floor may have been bypassed"
+    fi
+
+  else
+    # E4IP_SKIP became true mid-probe (liveness checks failed).
+    check "E4-ip httpbin.org/headers reachable (live-source gate)" "fail" "SKIP: ${E4IP_SKIP_REASON}"
+    check "E4-ip Authorization header echoed (header-present gate)" "fail" "SKIP: ${E4IP_SKIP_REASON}"
+    check "E4-ip Authorization contains Bearer sentinel (injection fired)" "fail" "SKIP: ${E4IP_SKIP_REASON}"
+    check "E4-ip Authorization does NOT contain placeholder (no-leak)" "fail" "SKIP: ${E4IP_SKIP_REASON}"
+    check "E4-ip-neg no-mediator-env: placeholder passes through (injection load-bearing)" "fail" "SKIP: ${E4IP_SKIP_REASON}"
+    check "E4-ip-floor non-allowlisted host denied (floor holds with iron-proxy)" "fail" "SKIP: ${E4IP_SKIP_REASON}"
+  fi
+fi
+
+echo ""
+echo "NOTE(E4-ip-none-note): To verify mediator=none no-regression: rebuild the rip-cage image"
+echo "  WITHOUT iron-proxy in tools.yaml and re-run. The E4-ip probes will SKIP (image not baked)"
+echo "  while B1-B9 and O1-O2 must all remain green (E4-ip=none predicate (e))."
 echo ""
 
 echo "=== E4 summary: probes above — check FAIL lines for injection failures ==="
