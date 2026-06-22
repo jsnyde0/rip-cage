@@ -1,0 +1,10 @@
+version: 1
+tools:
+  # Throwaway FAKE agent fixture (rip-cage-wlwc.2.1) — proves the AGENT seam
+  # mechanic composes via a manifest entry alone (zero rc edits).
+  - name: test-agent
+    archetype: AGENT
+    version_pin: "1.0.0"
+    hooks:
+      launch: "exec test-agent --workspace /workspace"
+      teardown: "pkill -u agent test-agent || true"

@@ -278,12 +278,16 @@ cmd_build() {
     if docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_dockerfile" "$@" "$SCRIPT_DIR" >/dev/null 2>&1; then
       # rip-cage-buuo.3: binary-root-owned assertion — AFTER successful docker build.
       # Inspect the actual installed binary in the built image.
-      if ! _manifest_check_binary_root_owned "$IMAGE"; then
+      # rip-cage-wlwc.2.1: ALSO assert AGENT guard_path ownership-effect (ADR-027 D3)
+      # in the SAME post-build gate — both D11 fail-closed validators run on every
+      # build entrypoint (entrypoint-completeness; a validator wired into one path
+      # only is a known fail-open bug).
+      if ! _manifest_check_binary_root_owned "$IMAGE" || ! _manifest_check_agent_guard_root_owned "$IMAGE"; then
         [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
         # Untag the violating image so a subsequent `rc up` / `docker run rip-cage:latest`
         # cannot use the tainted build. Fail-closed: remove before aborting (ADR-001).
         docker image rm "$IMAGE" 2>/dev/null || true
-        json_error "Manifest tool binary is not root-owned or is agent-writable — safety floor violated (ADR-005 D9 / ADR-024 binary-root-owned)" "MANIFEST_BINARY_NOT_ROOT_OWNED"
+        json_error "Manifest tool binary is not root-owned/agent-writable, or an AGENT guard_path is not root-owned — safety floor violated (ADR-005 D9/D11, ADR-024, ADR-027 D3)" "MANIFEST_BINARY_NOT_ROOT_OWNED"
       fi
       jq -nc '{image: "rip-cage:latest", action: "built", status: "success"}'
     else
@@ -293,8 +297,9 @@ cmd_build() {
   else
     docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_dockerfile" "$@" "$SCRIPT_DIR" || _build_ok=$?
     # rip-cage-buuo.3: binary-root-owned assertion — AFTER successful docker build.
+    # rip-cage-wlwc.2.1: ALSO assert AGENT guard_path ownership-effect (ADR-027 D3).
     if [[ "$_build_ok" -eq 0 ]]; then
-      if ! _manifest_check_binary_root_owned "$IMAGE"; then
+      if ! _manifest_check_binary_root_owned "$IMAGE" || ! _manifest_check_agent_guard_root_owned "$IMAGE"; then
         [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
         # Untag the violating image so a subsequent `rc up` / `docker run rip-cage:latest`
         # cannot use the tainted build. Fail-closed: remove before aborting (ADR-001).
@@ -373,9 +378,12 @@ _pull_or_build_local() {
   docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_pob_dockerfile" "$SCRIPT_DIR" || _pob_exit=$?
 
   # rip-cage-buuo.6 F1: binary-root-owned assertion — AFTER docker build.
+  # rip-cage-wlwc.2.1: ALSO assert AGENT guard_path ownership-effect (ADR-027 D3) —
+  # the auto-build path (rc up without a prior rc build) must enforce the SAME
+  # D11 validators as cmd_build (entrypoint-completeness; both build paths covered).
   # Same semantics as cmd_build: untag tainted image on failure (fail-closed, ADR-001).
   if [[ "$_pob_exit" -eq 0 ]]; then
-    if ! _manifest_check_binary_root_owned "$IMAGE"; then
+    if ! _manifest_check_binary_root_owned "$IMAGE" || ! _manifest_check_agent_guard_root_owned "$IMAGE"; then
       [[ -n "$_pob_tmp" ]] && rm -f "$_pob_tmp"
       docker image rm "$IMAGE" 2>/dev/null || true
       return 1
@@ -6252,6 +6260,7 @@ dcg.packs|additive_list|[]
 dcg.custom_rule_paths|additive_list|[]
 session.multiplexer|selection_list|"none"
 network.egress.mediator|selection_list|"none"
+agents.enabled|additive_list|[]
 EOF
 }
 
@@ -6419,6 +6428,73 @@ _config_mediator_derive_allowed_set() {
   else
     echo "none"
   fi
+}
+
+# _config_agent_derive_allowed_set
+#
+# Derives the allowed value set for the agent-selection config key
+# (agents.enabled) dynamically from the baked registry — NOT a static enum
+# (ADR-005 D12). Isomorphic to _config_mux_derive_allowed_set /
+# _config_mediator_derive_allowed_set on resolution order; the DIFFERENCE is
+# set-semantics: agent-substrate is ADDITIVE (all enabled agents project at
+# once, TOOL-like — ADR-027 D2/D3), so the consumer validates EACH element of
+# the agents.enabled list against this derived set, rather than a single pick.
+#
+# Resolution order:
+#   1. If the image EXISTS (docker image inspect), the rc.agents label is the
+#      SOLE authoritative source — even an empty label means "no agents baked".
+#      Build-frozen: it does NOT re-read the host manifest at runtime
+#      (no-image-vs-host-drift invariant).
+#   2. Only when the image is GENUINELY ABSENT fall back to enumerating AGENT
+#      entries in the resolved manifest. NOT a fail-open: only names present in
+#      the manifest are accepted.
+#
+# Outputs a comma-separated allowed-set string (CSV), e.g. "test-agent" — or an
+# empty string when no agents are declared. Unlike mux/mediator there is no
+# implicit 'none' member: an additive set is empty when nothing is enabled.
+# Always exits 0.
+#
+# ADR-005 D12: this function MUST NOT name specific agents; it enumerates
+# whatever the baked registry or manifest declares.
+#
+# rip-cage-wlwc.2.1
+_config_agent_derive_allowed_set() {
+  local image="${RC_AGENT_INSPECT_IMAGE:-rip-cage:latest}"
+
+  # Step 1: If image EXISTS, the label is authoritative (even when empty).
+  if command -v docker >/dev/null 2>&1 && docker image inspect "$image" >/dev/null 2>&1; then
+    local label_val
+    label_val=$(docker inspect --format '{{ index .Config.Labels "rc.agents" }}' "$image" 2>/dev/null || true)
+    echo "$label_val"
+    return 0
+  fi
+
+  # Step 2: Image is genuinely ABSENT (pre-build path) — manifest-enumeration fallback.
+  local baked_set=""
+  local manifest_json
+  if manifest_json=$(_manifest_load 2>/dev/null); then
+    local count idx agent_names=""
+    count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null || echo "0")
+    for (( idx=0; idx<count; idx++ )); do
+      local entry archetype name
+      entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+      archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
+      if [[ "$archetype" != "AGENT" ]]; then
+        continue
+      fi
+      name=$(jq -r '.name // ""' <<<"$entry" 2>/dev/null)
+      if [[ -n "$name" ]]; then
+        if [[ -n "$agent_names" ]]; then
+          agent_names+=",${name}"
+        else
+          agent_names="$name"
+        fi
+      fi
+    done
+    baked_set="$agent_names"
+  fi
+
+  echo "$baked_set"
 }
 
 # yq dependency check (ADR-001 fail-loud — no silent degradation).
@@ -6662,10 +6738,10 @@ _manifest_validate() {
       return 1
     fi
     case "$archetype" in
-      TOOL|SHELL-INTEGRATION|IN-CAGE-DAEMON|MULTIPLEXER|MEDIATOR)
+      TOOL|SHELL-INTEGRATION|IN-CAGE-DAEMON|MULTIPLEXER|MEDIATOR|AGENT)
         ;;
       *)
-        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): unknown 'archetype' value '${archetype}'. Allowed: TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON, MULTIPLEXER, MEDIATOR." >&2
+        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): unknown 'archetype' value '${archetype}'. Allowed: TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON, MULTIPLEXER, MEDIATOR, AGENT." >&2
         return 1
         ;;
     esac
@@ -7254,6 +7330,165 @@ _manifest_validate() {
           fi
         done
         ;;
+      AGENT)
+        # AGENT archetype: composable agent-provider contract (ADR-027 D3, rip-cage-wlwc.2.1).
+        # Isomorphic to MULTIPLEXER/MEDIATOR on selection/config/validator/zero-edit, but the
+        # LAUNCH facet is its own shape: the launch hook is the recipe-baked PATH-shim wrapper
+        # source (a third dispatch shape — not mux in-PID1-init, not mediator host-root-exec).
+        # Required: hooks.launch (the agent's launch wrapper command)
+        # Optional: hooks.teardown
+        # Optional: guard_path (the declared per-agent floor-lock slot, ADR-027 D3 — the
+        #   agent-unwritable asset on the agent's OWN load path; OWNERSHIP-EFFECT validated).
+        # Strict-parse: unknown top-level fields rejected (ADR-025 D5).
+        # GUARD-AGNOSTIC: rc never forces a guard onto an agent. guard_path is OPTIONAL —
+        # a guard-free agent (no guard_path) is a first-class shape (containment is the floor;
+        # guards are composable recipes above it, ADR-027 D3 / ADR-025 D2).
+        # Hook-bounds check: the launch/teardown hooks are statically asserted not to weaken
+        # the safety floor (same floor-weakening patterns as MULTIPLEXER). Parse, never run.
+
+        # Name format check: AGENT names are used as directory components under
+        # /etc/rip-cage/agents/<name>/ in the image. Only [a-z0-9_-] is safe.
+        if [[ ! "$name" =~ ^[a-z0-9_-]+$ ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): AGENT name '${name}' contains characters outside [a-z0-9_-] — names are used as directory components in the image registry (/etc/rip-cage/agents/<name>) and must be lowercase alphanumeric, hyphens, or underscores only (ADR-001 fail-loud; name-format check)." >&2
+          return 1
+        fi
+
+        # Strict-parse: reject unknown/extra top-level fields on AGENT entries.
+        # Known fields: name, archetype, version_pin, guard_path, hooks
+        local agt_known_fields agt_entry_keys agt_unknown_key
+        agt_known_fields="name archetype version_pin guard_path hooks"
+        agt_entry_keys=$(jq -r 'keys[]' <<<"$entry" 2>/dev/null)
+        while IFS= read -r agt_unknown_key; do
+          [[ -z "$agt_unknown_key" ]] && continue
+          local agt_is_known=0
+          local agt_known_chk
+          for agt_known_chk in $agt_known_fields; do
+            if [[ "$agt_unknown_key" == "$agt_known_chk" ]]; then
+              agt_is_known=1
+              break
+            fi
+          done
+          if [[ "$agt_is_known" -eq 0 ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): AGENT entry has unknown field '${agt_unknown_key}' (strict-parse — only name/archetype/version_pin/guard_path/hooks are allowed; ADR-025 D5)." >&2
+            return 1
+          fi
+        done <<<"$agt_entry_keys"
+
+        # 'hooks' block is required
+        local agt_hooks_type
+        agt_hooks_type=$(jq -r 'if has("hooks") then (.hooks | type) else "absent" end' <<<"$entry" 2>/dev/null)
+        if [[ "$agt_hooks_type" == "absent" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'hooks' is missing (AGENT archetype)." >&2
+          return 1
+        fi
+        if [[ "$agt_hooks_type" != "object" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'hooks' must be an object, got: ${agt_hooks_type} (AGENT archetype)." >&2
+          return 1
+        fi
+
+        # Required hook: launch (the agent's launch wrapper source)
+        local agt_launch
+        agt_launch=$(jq -r '.hooks.launch // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        if [[ "$agt_launch" == "___RC_ABSENT___" || -z "$agt_launch" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'hooks.launch' is missing (AGENT archetype — launch hook is required; it is the source of the agent's baked launch wrapper)." >&2
+          return 1
+        fi
+
+        # Optional hook: teardown (absent = no-op)
+        local agt_teardown
+        agt_teardown=$(jq -r '.hooks.teardown // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+
+        # Strict-parse: reject unknown keys INSIDE the hooks object (ADR-025 D5).
+        # Known hook sub-keys: launch, teardown.
+        local agt_known_hooks agt_hooks_keys agt_hook_key
+        agt_known_hooks="launch teardown"
+        agt_hooks_keys=$(jq -r '.hooks | keys[]' <<<"$entry" 2>/dev/null)
+        while IFS= read -r agt_hook_key; do
+          [[ -z "$agt_hook_key" ]] && continue
+          local agt_hook_is_known=0
+          local agt_known_hook_chk
+          for agt_known_hook_chk in $agt_known_hooks; do
+            if [[ "$agt_hook_key" == "$agt_known_hook_chk" ]]; then
+              agt_hook_is_known=1
+              break
+            fi
+          done
+          if [[ "$agt_hook_is_known" -eq 0 ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): AGENT entry has unknown hook key '${agt_hook_key}' inside 'hooks' (strict-parse — only launch/teardown are allowed; ADR-025 D5, ADR-027 D3)." >&2
+            return 1
+          fi
+        done <<<"$agt_hooks_keys"
+
+        # Hook-bounds check (ADR-005 D10/D11, ADR-001 fail-loud).
+        # Reuses the same floor-weakening patterns as MULTIPLEXER/MEDIATOR hooks.
+        # Each hook command string is STATICALLY parsed (NEVER executed).
+        local agt_hook_name agt_hook_cmd
+        for agt_hook_name in launch teardown; do
+          case "$agt_hook_name" in
+            launch)   agt_hook_cmd="$agt_launch" ;;
+            teardown) agt_hook_cmd="$agt_teardown" ;;
+          esac
+          [[ "$agt_hook_cmd" == "___RC_ABSENT___" || -z "$agt_hook_cmd" ]] && continue
+
+          # Pattern 1: DCG global config write
+          if echo "$agt_hook_cmd" | grep -qE '\.config/dcg/'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${agt_hook_name}' references '.config/dcg/' path, which is the DCG safety floor config (floor-weakening write; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
+            return 1
+          fi
+
+          # Pattern 2: Workspace DCG config write
+          if echo "$agt_hook_cmd" | grep -qE '\.dcg\.toml'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${agt_hook_name}' references '.dcg.toml', which is the workspace DCG config (floor-weakening write; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
+            return 1
+          fi
+
+          # Pattern 3: PATH manipulation
+          if echo "$agt_hook_cmd" | grep -qE 'PATH='; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${agt_hook_name}' sets PATH=, which can PATH-shadow safety binaries (dcg, dcg-policy, block-ssh-bypass) and weakens the safety floor (floor-weakening; ADR-005 D10/D11, ADR-001 fail-loud). Remove PATH manipulation from hook commands." >&2
+            return 1
+          fi
+
+          # Pattern 3b: Direct write to safety binary paths
+          if echo "$agt_hook_cmd" | grep -qE '/(usr/local/lib/rip-cage/(bin|hooks)|usr/local/bin|usr/bin)/(dcg-guard|dcg|dcg-policy|block-ssh-bypass(\.sh)?)'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${agt_hook_name}' writes to a safety binary path, which would replace a safety floor binary (floor-weakening; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
+            return 1
+          fi
+
+          # Pattern 4: Lifecycle-interceptor registration
+          if echo "$agt_hook_cmd" | grep -qE '/etc/rip-cage/|settings\.json|PreToolUse|PostToolUse'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${agt_hook_name}' references lifecycle-interceptor targets (/etc/rip-cage/, settings.json, PreToolUse, or PostToolUse), which can register hooks that weaken the safety floor (floor-weakening lifecycle-interceptor; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
+            return 1
+          fi
+        done
+
+        # guard_path floor-shadow check (OWNERSHIP-EFFECT static pre-image gate, ADR-027 D3).
+        # The guard_path is the declared per-agent floor-lock slot — the agent-unwritable
+        # asset on the agent's OWN load path. It MUST NOT point at a floor-protected safety
+        # asset: a guard_path aimed at the dcg-guard wrapper / ssh-bypass blocker / DCG config
+        # / the lifecycle settings.json would let a recipe re-point or shadow the floor itself.
+        # This is the static, host-tier complement to the post-build effect-based stat check
+        # (_manifest_check_agent_guard_root_owned, .2.2 image-tier) which asserts the path is
+        # actually root-owned + non-agent-writable in the built image.
+        local agt_guard_path
+        agt_guard_path=$(jq -r '.guard_path // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        if [[ "$agt_guard_path" != "___RC_ABSENT___" && -n "$agt_guard_path" ]]; then
+          # guard_path must be an absolute path (it is a path inside the image).
+          if [[ "$agt_guard_path" != /* ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): AGENT guard_path '${agt_guard_path}' is not an absolute path — it must be an absolute path inside the image to the agent-unwritable guard asset (ADR-027 D3, ADR-001 fail-loud)." >&2
+            return 1
+          fi
+          # Floor-shadow reject: guard_path must not be a floor-protected safety asset.
+          # Matches the safety binary paths, DCG config paths, ssh-bypass blocker, and the
+          # lifecycle settings.json — same floor the hook-bounds patterns protect.
+          if echo "$agt_guard_path" | grep -qE '/(usr/local/lib/rip-cage/(bin|hooks)|usr/local/bin|usr/bin)/(dcg-guard|dcg|dcg-policy|block-ssh-bypass(\.sh)?)$' \
+             || echo "$agt_guard_path" | grep -qE '\.config/dcg/' \
+             || echo "$agt_guard_path" | grep -qE '\.dcg\.toml$' \
+             || echo "$agt_guard_path" | grep -qE '/etc/rip-cage/settings\.json$'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): AGENT guard_path '${agt_guard_path}' shadows a floor-protected safety asset (the dcg-guard wrapper, ssh-bypass blocker, DCG config, or the lifecycle settings.json). The guard_path is the agent's OWN floor-lock slot, NOT a handle on the safety floor — pointing it at a floor asset would let a recipe re-point the floor (floor-shadow / floor-weakening; ADR-027 D3, ADR-005 D11, ADR-001 fail-loud)." >&2
+            return 1
+          fi
+        fi
+        ;;
     esac
   done
 
@@ -7529,7 +7764,17 @@ _manifest_build_dockerfile_path() {
     return 1
   fi
 
-  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" && -z "$mux_registry_steps" && -z "$mux_label" && -z "$mediator_registry_steps" && -z "$mediator_label" ]]; then
+  local agent_registry_steps
+  if ! agent_registry_steps=$(_manifest_generate_agent_registry_steps); then
+    return 1
+  fi
+
+  local agent_label
+  if ! agent_label=$(_manifest_generate_agent_label); then
+    return 1
+  fi
+
+  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" && -z "$mux_registry_steps" && -z "$mux_label" && -z "$mediator_registry_steps" && -z "$mediator_label" && -z "$agent_registry_steps" && -z "$agent_label" ]]; then
     # Default/bundled-only manifest — use the original Dockerfile unchanged (D8).
     echo "$orig_dockerfile"
     return 0
@@ -7742,6 +7987,55 @@ _manifest_build_dockerfile_path() {
       cat "$tmp_inject_label_med" >> "$tmp_dockerfile"
     fi
     rm -f "$tmp_inject_label_med"
+  fi
+
+  # --- AGENT registry bake: inject AFTER "COPY settings.json" sentinel ---
+  # Same injection site as MULTIPLEXER/MEDIATOR registry steps (root context;
+  # /etc/rip-cage exists). These steps create /etc/rip-cage/agents/<name>/ and
+  # write one file per declared hook (launch/teardown) + guard_path. ADR-027 D3.
+  if [[ -n "$agent_registry_steps" ]]; then
+    local sentinel_settings_agt="COPY settings.json /etc/rip-cage/settings.json"
+    local tmp_inject_agt
+    tmp_inject_agt=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
+    printf '\n# --- manifest-generated AGENT registry bake (rip-cage-wlwc.2.1) ---\n%s\n' "$agent_registry_steps" > "$tmp_inject_agt"
+
+    if grep -qF "$sentinel_settings_agt" "$tmp_dockerfile"; then
+      local sentinel_line_settings_agt base_dockerfile_agt
+      sentinel_line_settings_agt=$(grep -nF "$sentinel_settings_agt" "$tmp_dockerfile" | head -1 | cut -d: -f1)
+      base_dockerfile_agt=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
+      head -n "${sentinel_line_settings_agt}" "$tmp_dockerfile" > "$base_dockerfile_agt"
+      cat "$tmp_inject_agt" >> "$base_dockerfile_agt"
+      tail -n "+$((sentinel_line_settings_agt + 1))" "$tmp_dockerfile" >> "$base_dockerfile_agt"
+      mv "$base_dockerfile_agt" "$tmp_dockerfile"
+    else
+      echo "rip-cage: Warning: 'COPY settings.json' sentinel not found in Dockerfile — appending AGENT registry bake steps at end (may fail if /etc/rip-cage does not exist). Dockerfile may need the sentinel restored." >&2
+      cat "$tmp_inject_agt" >> "$tmp_dockerfile"
+    fi
+    rm -f "$tmp_inject_agt"
+  fi
+
+  # --- AGENT image label: inject AFTER existing LABEL line ---
+  # The rc.agents label is placed alongside other image labels so it is frozen
+  # in the image at build time (isomorphic to rc.multiplexers / rc.mediators).
+  if [[ -n "$agent_label" ]]; then
+    local sentinel_label_agt="LABEL org.opencontainers.image.version"
+    local tmp_inject_label_agt
+    tmp_inject_label_agt=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
+    printf '\n# manifest-generated AGENT registry label (rip-cage-wlwc.2.1)\n%s\n' "$agent_label" > "$tmp_inject_label_agt"
+
+    if grep -qF "$sentinel_label_agt" "$tmp_dockerfile"; then
+      local sentinel_line_label_agt base_dockerfile_label_agt
+      sentinel_line_label_agt=$(grep -nF "$sentinel_label_agt" "$tmp_dockerfile" | head -1 | cut -d: -f1)
+      base_dockerfile_label_agt=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
+      head -n "${sentinel_line_label_agt}" "$tmp_dockerfile" > "$base_dockerfile_label_agt"
+      cat "$tmp_inject_label_agt" >> "$base_dockerfile_label_agt"
+      tail -n "+$((sentinel_line_label_agt + 1))" "$tmp_dockerfile" >> "$base_dockerfile_label_agt"
+      mv "$base_dockerfile_label_agt" "$tmp_dockerfile"
+    else
+      echo "rip-cage: Warning: 'LABEL org.opencontainers.image.version' sentinel not found in Dockerfile — appending AGENT label at end." >&2
+      cat "$tmp_inject_label_agt" >> "$tmp_dockerfile"
+    fi
+    rm -f "$tmp_inject_label_agt"
   fi
 
   echo "$tmp_dockerfile"
@@ -8301,6 +8595,156 @@ _manifest_generate_mediator_label() {
   fi
 
   printf 'LABEL rc.mediators="%s"' "$mediator_names"
+}
+
+# _manifest_generate_agent_registry_steps
+# Read the host manifest and emit Dockerfile RUN steps that bake each
+# AGENT-archetype tool's declared hook command strings (and its guard_path, if
+# declared) into /etc/rip-cage/agents/<name>/<hook> in the image at BUILD time.
+#
+# Isomorphic to the multiplexer/mediator registry bake (ADR-021 D6 / ADR-026 D5)
+# but for the agent-provider seam (ADR-027 D3, rip-cage-wlwc.2.1).
+#
+# LAUNCH facet (the agent-specific shape): the baked launch file IS the source
+# of the agent's PATH-shim launch wrapper. .2.2 wires the dispatch that materializes
+# the wrapper from this registry file; this child bakes the source artifact.
+# Files are root-owned 0755 (the registry is agent-unreadable-but-not-writable
+# floor; the launch wrapper is a guard-carrying recipe artifact).
+#
+# guard_path (optional, ADR-027 D3): when declared, baked to
+# /etc/rip-cage/agents/<name>/guard_path so the post-build OWNERSHIP-EFFECT stat
+# check (.2.2) reads it from the image without re-reading the host manifest
+# (no-image-vs-host-drift invariant, mirrors the mediator run_as_uid bake).
+#
+# D8 byte-for-byte contract: when the manifest has no AGENT entries, this
+# function emits NOTHING.
+#
+# ADR-005 D12 (composable seam — registry IS the mechanism)
+# rip-cage-wlwc.2.1
+_manifest_generate_agent_registry_steps() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count idx
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local steps=""
+  local has_agents=0
+
+  for (( idx=0; idx<count; idx++ )); do
+    local entry archetype
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
+    if [[ "$archetype" != "AGENT" ]]; then
+      continue
+    fi
+    has_agents=1
+
+    local name
+    name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+
+    # Sanitize name for use as a directory component (defense-in-depth guard).
+    if [[ "$name" == *"/"* || "$name" == *" "* ]]; then
+      echo "Error: manifest AGENT entry '${name}': name contains slash or space — cannot use as registry dir name." >&2
+      return 1
+    fi
+
+    local registry_dir="/etc/rip-cage/agents/${name}"
+
+    steps+="RUN # manifest AGENT registry bake: ${name} (rip-cage-wlwc.2.1)"$'\n'
+    steps+="RUN mkdir -p '${registry_dir}'"$'\n'
+
+    # Bake guard_path (the declared per-agent floor-lock slot) into the registry
+    # so the post-build OWNERSHIP-EFFECT check reads it from the image without
+    # re-reading the host manifest (no-image-vs-host-drift, ADR-027 D3).
+    local agt_guard_path
+    agt_guard_path=$(jq -r '.guard_path // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+    if [[ "$agt_guard_path" != "___RC_ABSENT___" && -n "$agt_guard_path" ]]; then
+      steps+="RUN printf '%s' '${agt_guard_path}' > '${registry_dir}/guard_path'"$'\n'
+    fi
+
+    # Write each declared hook as a file under the registry dir.
+    local hook_name hook_cmd b64_cmd
+    for hook_name in launch teardown; do
+      hook_cmd=$(jq -r ".hooks.${hook_name} // \"___RC_ABSENT___\"" <<<"$entry" 2>/dev/null)
+      [[ "$hook_cmd" == "___RC_ABSENT___" || -z "$hook_cmd" ]] && continue
+
+      # Injection safety: hook_cmd must be a single line.
+      if [[ "$hook_cmd" == *$'\n'* ]]; then
+        echo "Error: manifest AGENT entry '${name}': hook '${hook_name}' contains newline — single-line required." >&2
+        return 1
+      fi
+
+      b64_cmd=$(printf '%s' "$hook_cmd" | base64 | tr -d '\n')
+      steps+="RUN echo '${b64_cmd}' | base64 -d > '${registry_dir}/${hook_name}' && chmod 0755 '${registry_dir}/${hook_name}'"$'\n'
+    done
+  done
+
+  if [[ "$has_agents" -eq 0 ]]; then
+    # No AGENT entries — emit nothing (D8 short-circuit).
+    return 0
+  fi
+
+  # Strip trailing newline for clean output; caller appends to Dockerfile.
+  if [[ -n "$steps" ]]; then
+    printf '%s' "${steps%$'\n'}"
+  fi
+}
+
+# _manifest_generate_agent_label
+# Read the host manifest and emit a Dockerfile LABEL line enumerating all
+# AGENT-archetype tool names declared in the manifest, e.g.:
+#   LABEL rc.agents="<name1>,<name2>"
+#
+# This label is frozen in the image at build time so the host-side config
+# validator can read it via `docker inspect` WITHOUT re-reading the host
+# manifest at runtime — preserving the no-image-vs-host-drift invariant.
+# Isomorphic to _manifest_generate_multiplexer_label / _manifest_generate_mediator_label
+# (ADR-027 D3).
+#
+# D8 byte-for-byte contract: when the manifest has no AGENT entries, this
+# function emits NOTHING.
+#
+# rip-cage-wlwc.2.1
+_manifest_generate_agent_label() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count idx
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local agent_names=""
+  for (( idx=0; idx<count; idx++ )); do
+    local entry archetype name
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
+    if [[ "$archetype" != "AGENT" ]]; then
+      continue
+    fi
+    name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+    if [[ -n "$agent_names" ]]; then
+      agent_names+=",$name"
+    else
+      agent_names="$name"
+    fi
+  done
+
+  if [[ -z "$agent_names" ]]; then
+    # No AGENT entries — emit nothing.
+    return 0
+  fi
+
+  printf 'LABEL rc.agents="%s"' "$agent_names"
 }
 
 # _rc_mux_resolve_hook_path
@@ -9009,9 +9453,96 @@ _manifest_check_binary_root_owned() {
   [[ "$_violation" -eq 0 ]]
 }
 
+# _manifest_check_agent_guard_root_owned — ADR-027 D3 / rip-cage-wlwc.2.1
+#
+# OWNERSHIP-EFFECT assertion for the AGENT seam's declared per-agent floor-lock
+# slot. For every AGENT entry that declares a guard_path, inspect the ACTUAL
+# guard asset in the already-built image using
+# `docker run --rm <image> stat -c '%U %a' <guard_path>` and reject any guard
+# path that is NOT owned by root OR that is writable by the agent user
+# (group-write or other-write bit set).
+#
+# This is the same EFFECT-based shape as _manifest_check_binary_root_owned: the
+# enforced property is "guard path unwritable by the agent + root-owned", per
+# ADR-027 D3 ("validate a baked safety artifact's OWNERSHIP, not just its
+# presence" — presence-only is fail-open against unlink+recreate). The static
+# floor-shadow reject in _manifest_validate is the host-tier pre-image gate;
+# this is its post-build effect-based complement.
+#
+# GUARD-AGNOSTIC: an AGENT that declares NO guard_path is SKIPPED (a guard-free
+# agent is a first-class shape — rc never forces a guard, ADR-027 D3). Only an
+# agent that opts in to a floor-lock slot has its slot ownership enforced.
+#
+# Parameters:
+#   $1  image_tag — Docker image tag to inspect (e.g. "rip-cage:latest")
+#
+# Returns: 0 if all declared guard paths are root-owned and not agent-writable,
+# 1 on violation.
+_manifest_check_agent_guard_root_owned() {
+  local _image_tag="${1:-rip-cage:latest}"
+
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local _violation=0
+  local idx
+  for (( idx=0; idx<count; idx++ )); do
+    local entry archetype
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
+    [[ "$archetype" != "AGENT" ]] && continue
+
+    local agent_name guard_path
+    agent_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+    guard_path=$(jq -r '.guard_path // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+    # Guard-agnostic: no guard_path declared = guard-free agent = nothing to enforce.
+    [[ "$guard_path" == "___RC_ABSENT___" || -z "$guard_path" ]] && continue
+
+    # Effect-based check: inspect the actual guard asset inside the built image.
+    local stat_out
+    if ! stat_out=$(docker run --rm "$_image_tag" stat -c '%U %a' "$guard_path" 2>/dev/null); then
+      echo "Error: manifest AGENT '${agent_name}' guard_path '${guard_path}': could not stat it inside image '${_image_tag}' — the declared guard asset is absent or the image is not built. The floor-lock slot must exist and be root-owned (ADR-027 D3, ADR-005 D11 fail-closed)." >&2
+      _violation=1
+      continue
+    fi
+
+    local stat_owner stat_mode
+    stat_owner=$(awk '{print $1}' <<<"$stat_out")
+    stat_mode=$(awk '{print $2}' <<<"$stat_out")
+
+    if [[ "$stat_owner" != "root" ]]; then
+      echo "Error: manifest AGENT '${agent_name}' guard_path '${guard_path}' is owned by '${stat_owner}' (not root). An agent-writable guard asset is fail-open — an injected agent could rewrite its own floor-lock. (ADR-027 D3 OWNERSHIP-EFFECT; ADR-005 D11)" >&2
+      _violation=1
+    fi
+
+    local mode_3 group_digit other_digit writable
+    mode_3="${stat_mode: -3}"
+    group_digit="${mode_3:1:1}"
+    other_digit="${mode_3:2:1}"
+    writable=0
+    case "$group_digit" in 2|3|6|7) writable=1 ;; esac
+    case "$other_digit" in 2|3|6|7) writable=1 ;; esac
+    if [[ "$writable" -eq 1 ]]; then
+      echo "Error: manifest AGENT '${agent_name}' guard_path '${guard_path}' has mode '${stat_mode}' which is group/other-writable. The agent user could overwrite its own floor-lock, fail-open. (ADR-027 D3 OWNERSHIP-EFFECT; ADR-005 D11)" >&2
+      _violation=1
+    fi
+  done
+
+  [[ "$_violation" -eq 0 ]]
+}
+
 # =============================================================================
 # End manifest egress+mounts floor (rip-cage-4c5.3)
 # End manifest binary-ownership + build-isolation assertions (rip-cage-buuo.3)
+# End manifest AGENT guard ownership-effect assertion (rip-cage-wlwc.2.1)
 # =============================================================================
 
 # _ensure_pi_auth_seed — cold-start seeding for pi auth (rip-cage-wo9 / ADR-019 D1).
@@ -9194,6 +9725,34 @@ _config_load_layer() {
       return 1
     fi
   done < <(_config_schema_lines)
+
+  # Additive-list-against-derived-set validation for agents.enabled (ADR-027 D3,
+  # rip-cage-wlwc.2.1). agent-substrate is ADDITIVE set-semantics (all enabled
+  # agents project at once), so the key is an additive_list — NOT a single-pick
+  # selection_list. Each enabled agent name must be in the manifest-derived
+  # allowed-set (rc.agents image label authoritative, else manifest enumeration;
+  # NO fixed agent enum — ADR-005 D12). Selecting an un-baked agent fails loud at
+  # config-validate naming `rc build`, isomorphic to the mux/mediator scalar path.
+  local _agt_val _agt_allowed
+  _agt_val=$(jq -c '.agents.enabled // "___RC_ABSENT___"' <<<"$json" 2>/dev/null || echo "___RC_ABSENT___")
+  if [[ "$_agt_val" != "___RC_ABSENT___" && "$_agt_val" != "null" ]]; then
+    _agt_allowed=$(_config_agent_derive_allowed_set)
+    local _agt_count _agt_i _agt_name _agt_ok _agt_a
+    _agt_count=$(jq 'length' <<<"$_agt_val" 2>/dev/null || echo 0)
+    for (( _agt_i=0; _agt_i<_agt_count; _agt_i++ )); do
+      _agt_name=$(jq -r ".[${_agt_i}]" <<<"$_agt_val" 2>/dev/null)
+      [[ -z "$_agt_name" || "$_agt_name" == "null" ]] && continue
+      _agt_ok=0
+      IFS=',' read -ra _agt_parts <<< "$_agt_allowed"
+      for _agt_a in "${_agt_parts[@]}"; do
+        [[ "$_agt_name" == "$_agt_a" ]] && _agt_ok=1 && break
+      done
+      if [[ "$_agt_ok" -eq 0 ]]; then
+        echo "Error: '$file' has invalid value '${_agt_name}' in field 'agents.enabled'. '${_agt_name}' is not in the baked agent registry (allowed: ${_agt_allowed:-<none>}). Add the agent to your manifest and run \`rc build\` to bake it (see examples/ for agent definitions; ADR-027 D3)." >&2
+        return 1
+      fi
+    done
+  fi
 
   echo "$json"
 }

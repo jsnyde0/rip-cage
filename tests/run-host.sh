@@ -187,6 +187,7 @@ run_test "${SCRIPT_DIR}/test-multiplexer-registry-bake.sh"     # rip-cage-61al.2
 run_test "${SCRIPT_DIR}/test-multiplexer-config-dynamic.sh"    # rip-cage-61al.4: dynamic session.multiplexer schema + config-validate (T1a-T1e host-only; T2a-T2c self-skip via RC_E2E gate)
 run_test "${SCRIPT_DIR}/test-multiplexer-composable.sh"        # rip-cage-61al.8: composability integration harness — live fakemux e2e + exhaustive grep-guard (G1 host-only; E1a-E1g self-skip via RC_E2E gate)
 run_test "${SCRIPT_DIR}/test-mediator-manifest.sh"             # rip-cage-ta1o.5.1: MEDIATOR archetype manifest validation (T1a-T1l host-only)
+run_test "${SCRIPT_DIR}/test-agent-manifest.sh"                # rip-cage-wlwc.2.1: AGENT archetype seam — fake-agent parse+compose+derive+label+ownership-effect floor-shadow + zero-rc-edit proof (T1a-T1r host-only)
 run_test "${SCRIPT_DIR}/test-mediator-lifecycle.sh"            # rip-cage-ta1o.5.8: egress-mediator launch seam — host-driven init-mediator.sh launcher + fail-closed uid + ordering (G1/U1/U2/O1 host-only)
 run_test "${SCRIPT_DIR}/test-mediator-validator.sh"           # rip-cage-ta1o.5.3: fail-closed validator bounds MEDIATOR hooks — RIP_CAGE_EGRESS=/iptables/floor-weakening + both build entrypoints (T1a-T1j host-only)
 run_test "${SCRIPT_DIR}/test-skill-manifest-author.sh" # rip-cage-buuo.4: repo-shipped skill — skill well-formed + cm worked example passes _manifest_validate (SA1-SA7 host-only)
