@@ -13,11 +13,28 @@
 #      (anti-pattern: auth-precondition-presence-not-validity-silent-timeout)
 #   3. MANAGED ENFORCEMENT: bake a sentinel deny hook into
 #      /etc/claude-code/managed-settings.json; strip hooks from EVERY agent-writable
-#      settings layer; ask claude to run a bash command; confirm the hook WAS called
-#      and the bash command was NOT executed.
-#   4. DENY-WINS: add an agent-level ALLOW hook to the probe session settings.json;
-#      re-run; confirm the managed deny still wins (agent allow cannot un-block it).
+#      settings layer (including ~/.claude/settings.json — the layer the wrapper
+#      symlinks sessions to); seed .claude.json in probe session dir so the wrapper
+#      DOES NOT re-seed (defeats the symlink-seeding vector); ask claude to run a bash
+#      command; confirm the hook WAS called and the bash command was NOT executed.
+#   4. DENY-WINS: add an agent-level ALLOW hook DIRECTLY to the probe session's
+#      settings.json (which is now owned by the probe, not a symlink); re-run;
+#      confirm the managed deny still wins (agent allow cannot un-block it).
 #   5. VERDICT: emit GREEN or RED. Exit $FAILURES.
+#
+# Adversarial-review fixes applied (rip-cage-wlwc.1 false-certification fix):
+#   FIX-1: Defeat wrapper re-seeding by writing .claude.json into the probe session dir
+#           before any invocation. The wrapper only seeds when .claude.json is ABSENT;
+#           with it present, the wrapper skips Class 1 symlinks including settings.json.
+#           Also ensure ~/.claude/settings.json (the symlink target) is hook-free.
+#   FIX-2: Clear ~/.claude/settings.json (user-global layer) as part of the strip —
+#           this is the file the wrapper symlinks session dirs to; it was NOT cleared
+#           in the original probe, leaving DCG+ssh-bypass hooks silently active.
+#   FIX-3: In deny-wins (Section 3), write the agent ALLOW hook directly to the probe
+#           session's own settings.json (not to a stale symlinked copy). Because
+#           FIX-1 guarantees the probe owns settings.json (not a symlink), this hook
+#           is genuinely active during the Section 3 invocation.
+#   FIX-4: test-cc-managed-settings-probe.sh added to NEEDS_CONTAINER in run-host.sh.
 #
 # Non-negotiable guardrails wired in (repo scars):
 #   - Positive control gates all subsequent assertions.
@@ -47,6 +64,8 @@ HOOK_CALLED_WITNESS="/tmp/probe-hook-called-${PROBE_SUFFIX}.txt"
 BASH_EXECUTED_FILE="/tmp/probe-bash-ran-${PROBE_SUFFIX}.txt"
 WS_CLAUDE_SETTINGS_BACKUP="/tmp/probe-ws-claude-settings-backup-${PROBE_SUFFIX}.json"
 WS_SETTINGS_LOCAL_BACKUP="/tmp/probe-settings-local-backup-${PROBE_SUFFIX}.json"
+# FIX-2: track the user-global settings.json backup path
+USER_GLOBAL_SETTINGS_BACKUP="/tmp/probe-user-global-settings-backup-${PROBE_SUFFIX}.json"
 
 pass() {
   TOTAL=$((TOTAL + 1))
@@ -100,6 +119,13 @@ _cleanup_probe() {
   cexec rm -rf "$PROBE_SESSION_DIR" 2>/dev/null || true
   cexec rm -f "$HOOK_CALLED_WITNESS" "$BASH_EXECUTED_FILE" 2>/dev/null || true
   cexec rm -f "$SENTINEL_HOOK" "$AGENT_ALLOW_HOOK" 2>/dev/null || true
+
+  # FIX-2: Restore ~/.claude/settings.json (user-global layer) if we backed it up
+  if cexec test -f "$USER_GLOBAL_SETTINGS_BACKUP" 2>/dev/null; then
+    cexec cp "$USER_GLOBAL_SETTINGS_BACKUP" /home/agent/.claude/settings.json 2>/dev/null || true
+    cexec rm -f "$USER_GLOBAL_SETTINGS_BACKUP" 2>/dev/null || true
+    info "Restored /home/agent/.claude/settings.json"
+  fi
 
   # Restore /workspace/.claude/settings.json if we backed it up
   if cexec test -f "$WS_CLAUDE_SETTINGS_BACKUP" 2>/dev/null; then
@@ -195,9 +221,42 @@ info "Auth file present ($CRED_FILE_PRESENT) — proceeding to validity check"
 
 # Validity check: quick claude -p with a short timeout.
 # Auth-file PRESENCE is NOT validity — an expired token will hang without this check.
+# FIX-1 applied here too: create .claude.json in AUTH_CHECK_DIR so the wrapper
+# does NOT re-seed settings.json to ~/.claude/settings.json (which may carry hooks
+# from the live container config). The auth check must be hook-free.
+#
+# IMPORTANT: When we bypass wrapper seeding (by placing .claude.json), the wrapper
+# also skips symlinking .credentials.json → ~/.claude/.credentials.json. We must
+# explicitly symlink .credentials.json so CC can find auth credentials.
 AUTH_CHECK_DIR="/tmp/probe-auth-check-${PROBE_SUFFIX}"
 cexec mkdir -p "$AUTH_CHECK_DIR"
-cexec bash -c "printf '{\"permissions\":{\"defaultMode\":\"bypassPermissions\"}}' > ${AUTH_CHECK_DIR}/settings.json"
+# Write a hook-free settings.json for auth check
+cexec bash -c "printf '{\"permissions\":{\"defaultMode\":\"bypassPermissions\"}}\n' > ${AUTH_CHECK_DIR}/settings.json"
+# FIX-1: seed .claude.json so the wrapper skips re-seeding (and does not symlink
+# settings.json -> ~/.claude/settings.json, which carries DCG/ssh-bypass hooks).
+# We copy from the stable seed if available, else create a minimal placeholder.
+# SC2016 disabled: shell expands inside the container.
+# shellcheck disable=SC2016
+cexec bash -c '
+  SEED_SRC=""
+  if [[ -f /home/agent/.claude/.claude.json.seed ]]; then
+    SEED_SRC="/home/agent/.claude/.claude.json.seed"
+  elif [[ -f /home/agent/.claude.json ]]; then
+    SEED_SRC="/home/agent/.claude.json"
+  fi
+  if [[ -n "$SEED_SRC" ]]; then
+    cp "$SEED_SRC" '"${AUTH_CHECK_DIR}"'/.claude.json
+  else
+    printf "{}\n" > '"${AUTH_CHECK_DIR}"'/.claude.json
+  fi
+'
+# Explicitly symlink .credentials.json — the wrapper normally does this during seeding,
+# but since we placed .claude.json to defeat seeding, we must do it manually.
+cexec bash -c "
+  if [[ -f /home/agent/.claude/.credentials.json ]]; then
+    ln -sfn /home/agent/.claude/.credentials.json ${AUTH_CHECK_DIR}/.credentials.json
+  fi
+"
 
 AUTH_OUT=$(mktemp)
 run_with_timeout 45 "$AUTH_OUT" \
@@ -244,6 +303,50 @@ echo "-- Probe setup --"
 
 # Create probe session dir
 cexec mkdir -p "$PROBE_SESSION_DIR"
+
+# FIX-1: Seed .claude.json into the probe session dir NOW so the wrapper's idempotency
+# check fires and the wrapper SKIPS Class-1 symlink seeding (including settings.json).
+# Without this, the wrapper would symlink settings.json → ~/.claude/settings.json
+# (which carries DCG+ssh-bypass hooks), silently overriding the probe's hook-free copy.
+#
+# IMPORTANT: When we bypass wrapper seeding (by placing .claude.json), the wrapper
+# also skips symlinking .credentials.json → ~/.claude/.credentials.json. We must
+# explicitly symlink .credentials.json so CC can find auth credentials.
+# SC2016 disabled: shell expands inside the container.
+# shellcheck disable=SC2016
+cexec bash -c '
+  SEED_SRC=""
+  if [[ -f /home/agent/.claude/.claude.json.seed ]]; then
+    SEED_SRC="/home/agent/.claude/.claude.json.seed"
+  elif [[ -f /home/agent/.claude.json ]]; then
+    SEED_SRC="/home/agent/.claude.json"
+  fi
+  if [[ -n "$SEED_SRC" ]]; then
+    cp "$SEED_SRC" '"${PROBE_SESSION_DIR}"'/.claude.json
+  else
+    printf "{}\n" > '"${PROBE_SESSION_DIR}"'/.claude.json
+  fi
+'
+
+if cexec test -f "${PROBE_SESSION_DIR}/.claude.json"; then
+  info "FIX-1: .claude.json seeded in probe session dir (wrapper will skip re-seeding)"
+else
+  # Non-fatal: we still write .claude.json below; the wrapper check is on this file
+  info "WARNING: could not copy .claude.json seed — writing minimal placeholder"
+  cexec bash -c "printf '{}' > ${PROBE_SESSION_DIR}/.claude.json"
+fi
+
+# Explicitly symlink .credentials.json — the wrapper normally does this during seeding,
+# but since we placed .claude.json to defeat seeding, we must do it manually so CC
+# can find auth credentials during the probe run.
+cexec bash -c "
+  if [[ -f /home/agent/.claude/.credentials.json ]]; then
+    ln -sfn /home/agent/.claude/.credentials.json ${PROBE_SESSION_DIR}/.credentials.json
+    echo 'Symlinked .credentials.json into probe session dir'
+  else
+    echo 'WARNING: no .credentials.json found at /home/agent/.claude/.credentials.json'
+  fi
+"
 
 # Sentinel deny hook: denies ALL Bash PreToolUse calls + writes witness file.
 # Created as root so it lives at a predictable root-owned path.
@@ -316,13 +419,36 @@ fi
 # The probe session dir has bypassPermissions but ZERO PreToolUse hooks.
 # This eliminates dcg-guard and ssh-bypass hooks from the probe run —
 # so any denial comes ONLY from the managed-settings sentinel.
+#
+# FIX-2: We now also strip ~/.claude/settings.json (user-global layer).
+# This is the file the wrapper symlinks session dirs to, so if it carries
+# DCG+ssh-bypass hooks, those hooks silently survive even a probe-session strip.
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "-- Stripping agent-writable hook layers --"
+echo "-- Stripping agent-writable hook layers (FIX-2: includes user-global) --"
 
-# Probe session settings.json: no hooks (bypassPermissions for clean tool use)
+# Probe session settings.json: no hooks (bypassPermissions for clean tool use).
+# FIX-1: Because we seeded .claude.json above, the wrapper will NOT overwrite this
+# file with a symlink to ~/.claude/settings.json when the probe invokes the wrapper.
 cexec bash -c "printf '{\"permissions\":{\"defaultMode\":\"bypassPermissions\"},\"hooks\":{}}\n' > ${PROBE_SESSION_DIR}/settings.json"
+info "Probe session dir settings.json written (hook-free, wrapper-seeding defeated)"
+
+# FIX-2: Back up and clear /home/agent/.claude/settings.json (user-global layer).
+# This is the file the wrapper symlinks per-session settings.json to. Leaving hooks
+# here means they silently remain active even when the probe session's settings.json
+# looks hook-free (the symlinked source is what CC actually reads).
+if cexec test -f /home/agent/.claude/settings.json 2>/dev/null; then
+  cexec cp /home/agent/.claude/settings.json "$USER_GLOBAL_SETTINGS_BACKUP"
+  cexec bash -c 'printf "{\"permissions\":{\"defaultMode\":\"bypassPermissions\"},\"hooks\":{}}\n" > /home/agent/.claude/settings.json'
+  info "FIX-2: Cleared /home/agent/.claude/settings.json (backed up to $USER_GLOBAL_SETTINGS_BACKUP)"
+else
+  info "FIX-2: /home/agent/.claude/settings.json absent — no strip needed"
+fi
+
+# Verify the user-global layer is now hook-free (diagnostic)
+USER_GLOBAL_HOOKS=$(cexec bash -c 'jq -r ".hooks.PreToolUse // [] | length" /home/agent/.claude/settings.json 2>/dev/null || echo "0"')
+info "FIX-2 verification: /home/agent/.claude/settings.json PreToolUse hooks after strip: $USER_GLOBAL_HOOKS"
 
 # Back up and clear /workspace/.claude/settings.json (project-level hook layer)
 if cexec test -f /workspace/.claude/settings.json 2>/dev/null; then
@@ -338,7 +464,17 @@ if cexec test -f /workspace/settings.local.json 2>/dev/null; then
   info "Cleared /workspace/settings.local.json (backed up)"
 fi
 
-pass "All agent-writable hook layers cleared for probe run"
+pass "All agent-writable hook layers cleared for probe run (including user-global ~/.claude/settings.json)"
+
+# Diagnostic: confirm the probe session settings.json is NOT a symlink to the global one
+SETTINGS_IS_SYMLINK=$(cexec bash -c "test -L ${PROBE_SESSION_DIR}/settings.json && echo 'yes' || echo 'no'")
+info "Probe session settings.json is symlink: $SETTINGS_IS_SYMLINK (should be 'no' — FIX-1 verification)"
+if [[ "$SETTINGS_IS_SYMLINK" == "yes" ]]; then
+  fail "FIX-1 verification: probe session settings.json IS a symlink — wrapper re-seeding NOT defeated" \
+    "The .claude.json seed may not have been placed correctly; wrapper will symlink settings.json to ~/.claude/settings.json"
+else
+  pass "FIX-1 verification: probe session settings.json is NOT a symlink (wrapper seeding defeated)"
+fi
 
 # ---------------------------------------------------------------------------
 # SECTION 1: POSITIVE CONTROL
@@ -452,26 +588,52 @@ fi
 # Add an agent-level ALLOW hook to the probe session settings.json.
 # If managed-settings deny-wins, the managed deny must still block execution
 # even when the agent's own settings have an allow hook.
+#
+# FIX-3: The original probe wrote the allow hook to settings.json before FIX-1
+# was applied. Without FIX-1, the wrapper re-seeded settings.json as a symlink
+# to ~/.claude/settings.json (which was then overwritten with the allow hook but
+# also still had DCG/ssh-bypass hooks). With FIX-1+FIX-2 applied:
+#   - The probe owns settings.json (not a symlink)
+#   - ~/.claude/settings.json is hook-free
+#   - Writing the allow hook to ${PROBE_SESSION_DIR}/settings.json IS the
+#     genuinely-active agent layer that CC reads
 # Gate: only run if section 2 was green.
 # ---------------------------------------------------------------------------
 
 echo ""
-echo "-- Section 3: Deny-wins test --"
+echo "-- Section 3: Deny-wins test (FIX-3: agent ALLOW genuinely active) --"
 
 DENY_WINS_GREEN=false
 
 if [[ "$ENFORCEMENT_GREEN" != "true" ]]; then
   info "Section 3 SKIPPED: managed enforcement (section 2) did not pass — deny-wins test is not meaningful"
 else
-  # Create agent-level allow hook (simulates agent trying to un-block a managed deny)
+  # FIX-3: Create agent-level allow hook script
   cexec bash -c "cat > ${AGENT_ALLOW_HOOK} << 'ALLOW_HOOK_EOF'
 #!/usr/bin/env bash
 printf '{\"permissionDecision\":\"allow\"}\n'
 ALLOW_HOOK_EOF"
   cexec chmod +x "$AGENT_ALLOW_HOOK"
 
-  # Update probe session settings.json to add the agent-level allow hook
+  # FIX-3: Update the probe session's OWN settings.json (which is NOT a symlink,
+  # per FIX-1) to add the agent-level allow hook. This is the genuinely-active
+  # agent allow that the original probe failed to achieve (the wrapper was re-seeding
+  # over it with a symlink to the hooks-bearing ~/.claude/settings.json).
   cexec bash -c "printf '{\"permissions\":{\"defaultMode\":\"bypassPermissions\"},\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Bash\",\"hooks\":[{\"type\":\"command\",\"command\":\"%s\"}]}]}}\n' '${AGENT_ALLOW_HOOK}' > ${PROBE_SESSION_DIR}/settings.json"
+
+  # Verify the allow hook is genuinely in the probe session's settings.json
+  ALLOW_HOOK_IN_SETTINGS=$(cexec bash -c "jq -r '.hooks.PreToolUse[0].hooks[0].command // \"absent\"' ${PROBE_SESSION_DIR}/settings.json 2>/dev/null")
+  info "FIX-3 verification: agent allow hook in probe session settings.json: $ALLOW_HOOK_IN_SETTINGS"
+  if [[ "$ALLOW_HOOK_IN_SETTINGS" == *"probe-agent-allow"* ]]; then
+    pass "Section 3 setup: agent ALLOW hook is GENUINELY in probe session settings.json (FIX-3 verified)"
+  else
+    fail "Section 3 setup: agent ALLOW hook NOT found in probe session settings.json" \
+      "expected $AGENT_ALLOW_HOOK in .hooks.PreToolUse, got: $ALLOW_HOOK_IN_SETTINGS"
+  fi
+
+  # Verify settings.json is still NOT a symlink (belt-and-suspenders: wrapper must not have re-seeded)
+  DENY_WINS_SETTINGS_SYMLINK=$(cexec bash -c "test -L ${PROBE_SESSION_DIR}/settings.json && echo 'yes' || echo 'no'")
+  info "Probe session settings.json still a symlink after allow-hook write: $DENY_WINS_SETTINGS_SYMLINK (should be 'no')"
 
   # Clean up witness/execution files from section 2
   cexec rm -f "$HOOK_CALLED_WITNESS" "$BASH_EXECUTED_FILE" 2>/dev/null || true
@@ -538,8 +700,10 @@ if [[ "$ENFORCEMENT_GREEN" == "true" && "$DENY_WINS_GREEN" == "true" ]]; then
   echo ""
   echo "  /etc/claude-code/managed-settings.json IS enforced on the shipped claude binary:"
   echo "    (a) The sentinel hook fired even with ALL agent-writable hooks stripped"
+  echo "        (including ~/.claude/settings.json — the wrapper-symlink target)"
   echo "    (b) The managed deny blocked Bash execution"
   echo "    (c) An agent-level ALLOW hook did NOT un-block the managed deny (deny-wins)"
+  echo "        (the ALLOW hook was genuinely active — FIX-3 verified)"
   echo ""
   echo "  CONSEQUENCE (D8 GREEN path):"
   echo "    - rip-cage-r9n4 can close: managed-settings IS the CC floor-lock"
