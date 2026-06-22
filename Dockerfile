@@ -112,6 +112,14 @@ RUN for i in 1 2 3; do \
 COPY claude-session-wrapper.sh /usr/local/bin/claude
 RUN chmod +x /usr/local/bin/claude
 
+# Pi launch hardening (rip-cage-sn1h): wrapper at /usr/local/bin/pi (precedes /usr/bin/pi on PATH).
+# Adds --no-extensions -e <dcg-gate.ts> to EVERY pi invocation, disabling auto-discovery
+# so /workspace/.pi/extensions/ admits NO agent-dropped extension (the workspace-path DCG bypass
+# vector confirmed in rip-cage-sn1h source analysis). Load order is deterministic.
+# wlwc D5 half (b): this is the per-agent recipe launch hook baked as a cage artifact.
+COPY pi/pi-wrapper.sh /usr/local/bin/pi
+RUN chmod +x /usr/local/bin/pi
+
 # Non-root user
 RUN groupadd -g 1000 agent \
     && useradd -m -u 1000 -g agent -s /usr/bin/zsh agent \
@@ -199,7 +207,9 @@ RUN mkdir -p /home/agent/.config/mise \
        > /home/agent/.config/mise/config.toml
 COPY --chown=agent:agent zshrc /home/agent/.zshrc
 # Pi DCG gate extension (rip-cage-bl1): baked into cage-owned container-local extensions dir.
-# Auto-discovered by pi (extensions/*.ts glob, no -e flag needed, loader.ts:583-585).
+# Loaded via EXPLICIT -e flag by the pi-wrapper (rip-cage-sn1h) — NOT auto-discovered.
+# (Prior: auto-discovered via extensions/*.ts glob; rip-cage-sn1h replaced auto-discovery
+# with --no-extensions + -e <dcg-gate> to close the /workspace/.pi/extensions/ bypass vector.)
 # NOT under the host-mounted auth.json sub-mount — cage-owned, root-owned, host-clean.
 # Root-owned (no --chown): agent can read/load but cannot overwrite or delete (rip-cage-olen).
 COPY pi/dcg-gate.ts /home/agent/.pi/agent/extensions/dcg-gate.ts
