@@ -79,15 +79,35 @@ fi
 # 8. DCG hook wired via managed-settings (rip-cage-r9n4: delivered via root-owned managed layer,
 # NOT agent-writable settings.json). Check /etc/claude-code/managed-settings.json first (production
 # path); fall back to settings.json for backward-compat with pre-r9n4 images.
+# FIX (rip-cage-r9n4 gap 4): assert ROOT OWNERSHIP, not just hook presence.
+# A hook present in an agent-writable managed-settings.json (or its parent dir) is a bypass vector:
+# agent could symlink-replace the file. Per harness.md line 258 + bd memory
+# unix-dir-ownership-is-the-write-gate-not-file-ownership: assert the parent directory AND
+# the file are root-owned (not agent-owned). Presence-only assertion passes even if
+# an agent replaced /etc/claude-code/managed-settings.json with a symlink to an agent-writable file.
+_managed_settings_ok=false
 if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/bin/dcg-guard")' /etc/claude-code/managed-settings.json >/dev/null 2>&1; then
-  check "managed-settings.json wires DCG hook (rip-cage-r9n4 floor-lock)" "pass"
+  _managed_file_owner=$(stat -c '%U' /etc/claude-code/managed-settings.json 2>/dev/null || echo "unknown")
+  _managed_dir_owner=$(stat -c '%U' /etc/claude-code 2>/dev/null || echo "unknown")
+  if [[ "$_managed_file_owner" == "root" && "$_managed_dir_owner" == "root" ]]; then
+    check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "pass" \
+      "file owner=$_managed_file_owner dir owner=$_managed_dir_owner"
+    _managed_settings_ok=true
+  elif [[ "$_managed_file_owner" != "root" ]]; then
+    check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "fail" \
+      "hook present BUT file owner='$_managed_file_owner' (expected root) — agent can overwrite/replace"
+  else
+    check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "fail" \
+      "hook present BUT dir /etc/claude-code owner='$_managed_dir_owner' (expected root) — agent can inject new files or unlink+replace"
+  fi
 elif jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/bin/dcg-guard")' ~/.claude/settings.json >/dev/null 2>&1; then
-  check "managed-settings.json wires DCG hook (rip-cage-r9n4 floor-lock)" "fail" \
+  check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "fail" \
     "DCG hook found in agent-writable settings.json, NOT in managed-settings.json — self-disable vector open"
 else
-  check "managed-settings.json wires DCG hook (rip-cage-r9n4 floor-lock)" "fail" \
+  check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "fail" \
     "DCG hook absent from both managed-settings.json and settings.json"
 fi
+unset _managed_settings_ok _managed_file_owner _managed_dir_owner
 
 # 9. settings.json has ssh-bypass blocker hook wired (ADR-022 D5)
 # NOTE: compound blocker removed in rip-cage-4r8 — DCG is chaining-robust (see 11f/11g).
