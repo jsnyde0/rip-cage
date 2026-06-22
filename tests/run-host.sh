@@ -188,6 +188,7 @@ run_test "${SCRIPT_DIR}/test-mediator-lifecycle.sh"            # rip-cage-ta1o.5
 run_test "${SCRIPT_DIR}/test-mediator-validator.sh"           # rip-cage-ta1o.5.3: fail-closed validator bounds MEDIATOR hooks — RIP_CAGE_EGRESS=/iptables/floor-weakening + both build entrypoints (T1a-T1j host-only)
 run_test "${SCRIPT_DIR}/test-skill-manifest-author.sh" # rip-cage-buuo.4: repo-shipped skill — skill well-formed + cm worked example passes _manifest_validate (SA1-SA7 host-only)
 run_test "${SCRIPT_DIR}/test-claude-concurrency.sh"    # rip-cage-p1p: per-session Claude config isolation (NEEDS_CONTAINER; self-skips if no running cage)
+run_test "${SCRIPT_DIR}/test-cc-managed-settings-probe.sh"  # rip-cage-wlwc.1: D8 CC managed-settings anchor probe — enforces un-suppressibly + deny-wins? (NEEDS_CONTAINER+AUTH; self-skips if no cage or unauthed)
 run_test "${SCRIPT_DIR}/test-multiplexer-lifecycle.sh"  # rip-cage-1f59.8: multiplexer lifecycle (none/tmux/herdr) + retirement + config-isolation (NEEDS_CONTAINER; self-skips without RC_E2E=1)
 run_test "${SCRIPT_DIR}/test-selftest-classifier.sh"   # rip-cage-fft: pure classifier unit tests (no live firewall needed)
 run_test "${SCRIPT_DIR}/test-selftest-mode-gating.sh"  # rip-cage-fft: mode-gating tests via curl PATH-shim (no production hook)
