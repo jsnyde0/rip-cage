@@ -76,11 +76,17 @@ else
   check "settings.json has bypassPermissions mode" "fail"
 fi
 
-# 8. settings.json has DCG hook wired (via wrapper, ADR-025 D3/D4)
-if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/bin/dcg-guard")' ~/.claude/settings.json >/dev/null 2>&1; then
-  check "settings.json wires DCG hook" "pass"
+# 8. DCG hook wired via managed-settings (rip-cage-r9n4: delivered via root-owned managed layer,
+# NOT agent-writable settings.json). Check /etc/claude-code/managed-settings.json first (production
+# path); fall back to settings.json for backward-compat with pre-r9n4 images.
+if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/bin/dcg-guard")' /etc/claude-code/managed-settings.json >/dev/null 2>&1; then
+  check "managed-settings.json wires DCG hook (rip-cage-r9n4 floor-lock)" "pass"
+elif jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/bin/dcg-guard")' ~/.claude/settings.json >/dev/null 2>&1; then
+  check "managed-settings.json wires DCG hook (rip-cage-r9n4 floor-lock)" "fail" \
+    "DCG hook found in agent-writable settings.json, NOT in managed-settings.json — self-disable vector open"
 else
-  check "settings.json wires DCG hook" "fail"
+  check "managed-settings.json wires DCG hook (rip-cage-r9n4 floor-lock)" "fail" \
+    "DCG hook absent from both managed-settings.json and settings.json"
 fi
 
 # 9. settings.json has ssh-bypass blocker hook wired (ADR-022 D5)

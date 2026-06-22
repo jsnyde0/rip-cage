@@ -154,6 +154,16 @@ COPY tests/test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
 # rip-cage repo's own workspace (rip-cage-16t).
 COPY tests/fixtures/ripcage-testsentinel-rule.yaml /usr/local/lib/rip-cage/dcg/fixtures/ripcage-testsentinel-rule.yaml
 COPY settings.json /etc/rip-cage/settings.json
+# CC managed-settings: baked root-owned highest-precedence CC hook layer (rip-cage-r9n4).
+# /etc/claude-code/managed-settings.json is CC's managed-settings path — hooks here merge
+# un-suppressibly with user/project hooks and PreToolUse is deny-wins. This delivers the
+# DCG guard hook via a layer the in-cage agent CANNOT edit or unregister, closing the
+# self-disable vector (ADR-027 D3 floor-lock slot; ADR-002 D5 managed-settings target).
+# root:root + mode 644: agent can read, cannot write.
+RUN mkdir -p /etc/claude-code
+COPY managed-settings.json /etc/claude-code/managed-settings.json
+RUN chown root:root /etc/claude-code/managed-settings.json \
+    && chmod 644 /etc/claude-code/managed-settings.json
 COPY cage-claude.md /etc/rip-cage/cage-claude.md
 COPY cage-pi.md /etc/rip-cage/cage-pi.md
 COPY init-rip-cage.sh /usr/local/bin/init-rip-cage.sh

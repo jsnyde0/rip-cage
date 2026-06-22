@@ -89,15 +89,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/local/lib/rip-cage/bin/dcg-guard"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
             "command": "/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh"
           }
         ]
