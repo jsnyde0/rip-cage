@@ -122,7 +122,7 @@ For pi-specific cage topology, see /etc/rip-cage/cage-pi.md
 
 **Canonical refs:**
 
-- ADR-011 D1 (in-place rule — this decision edited in place, no supersession chain)
+- In-place-evolution convention (this decision edited in place, no supersession chain; note: rip-cage's local ADR-011 is shell-completions, not this rule)
 - ADR-016 D1 (fence convention for `~/.claude/CLAUDE.md` topology appends)
 - `cage-claude.md`, `cage-pi.md`, `init-rip-cage.sh` (implementation locus)
 

@@ -2,7 +2,7 @@
 
 Navigable index of rip-cage's ADRs. Each ADR captures a cross-cutting, load-bearing decision; firmness is **per-decision** (`FIRM` / `FLEXIBLE` / `EXPLORATORY` / `PROPOSED`), not per-document, so the doc-level **Status** column below is a coarse signal — open the ADR for the firmness of a specific decision (Dn).
 
-**How to consult:** scan the *By topic* map for the scope you're touching, open the ADR, and check the relevant decision's firmness before contradicting it. Decisions evolve **in place** (ADR-011 D1) — git history carries predecessor wording; there are no supersession chains. ADRs link upstream via a `## canonical_refs` section where present.
+**How to consult:** scan the *By topic* map for the scope you're touching, open the ADR, and check the relevant decision's firmness before contradicting it. Decisions evolve **in place** (per the in-place-evolution convention — the global methodology rule that ADRs reflect target architecture; note: rip-cage's local ADR-011 is shell-completions, not this rule; see bead `rip-cage-bwwm` for the cross-repo namespace decision) — git history carries predecessor wording; there are no supersession chains. ADRs link upstream via a `## canonical_refs` section where present.
 
 When a decision evolves, edit the ADR in place and update this row. Drift between this index and `ls docs/decisions/ADR-*.md` is the failure this file exists to prevent.
 

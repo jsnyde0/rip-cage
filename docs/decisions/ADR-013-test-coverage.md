@@ -79,7 +79,7 @@ Current egress suite validates the L7 denylist but not the L3/L4 perimeter. P3 a
 2. **Build** — `docker build` of the multi-stage image (Go beads + Rust DCG + Debian runtime), proving the toolchain compiles.
 3. **Test (host-only)** — `bash tests/run-host.sh --host-only` on `ubuntu-latest`.
 
-The `rc test --e2e` lifecycle tier (D1/D3) stays OUT of CI: it needs a live container, which `ubuntu-latest` cannot provide deterministically (docker-in-docker / self-hosted runner is still the prerequisite, now tracked as backlog rip-cage-rat). The "follow-up ADR" this decision originally deferred to is folded here in-place rather than spun out, per ADR-011 D1.
+The `rc test --e2e` lifecycle tier (D1/D3) stays OUT of CI: it needs a live container, which `ubuntu-latest` cannot provide deterministically (docker-in-docker / self-hosted runner is still the prerequisite, now tracked as backlog rip-cage-rat). The "follow-up ADR" this decision originally deferred to is folded here in-place rather than spun out, per the in-place-evolution convention.
 
 **Rationale:** shipping the host-only tier in CI first gives a real gate on the cross-platform (GNU-Linux) and image-absent behaviour that the maintainer's macOS box masks — without paying for DinD infrastructure. The constraints this imposes on the host-only tier are codified in D6.
 
