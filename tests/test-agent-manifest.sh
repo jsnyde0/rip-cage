@@ -321,24 +321,19 @@ test_t1h_image_label_round_trip() {
 # appear elsewhere as bundled-cage-infra hardcode, which .2.2 migrates.)
 # ---------------------------------------------------------------------------
 test_t1i_no_fixed_agent_enum_in_seam() {
-  # Extract just the AGENT seam machinery (functions whose names match _*agent*),
-  # then assert none of them name a specific third-party agent provider.
-  local seam_src
-  seam_src=$(awk '
-    /^_config_agent_derive_allowed_set\(\)/        { capture=1 }
-    /^_manifest_generate_agent_registry_steps\(\)/  { capture=1 }
-    /^_manifest_generate_agent_label\(\)/           { capture=1 }
-    /^_manifest_check_agent_guard_root_owned\(\)/    { capture=1 }
-    capture { print }
-    capture && /^}/ { capture=0 }
-  ' "$RC")
-  # Forbidden: specific agent provider names baked into the seam machinery.
+  # No third-party agent provider name may be hardcoded ANYWHERE in rc — the
+  # allowed-set is manifest/label-derived (ADR-005 D12). We grep the WHOLE rc
+  # file (not just the _*agent* helper functions) so an enum planted in the
+  # AGENT validate `case` arm — or anywhere else — is also caught; the
+  # function-scoped check missed the validate block. Forbidden names are
+  # specific third-party providers (NOT claude/pi, which are bundled-cage-infra
+  # hardcode that .2.2 migrates to example recipes).
   local hits
-  hits=$(echo "$seam_src" | grep -nwE 'codex|crush|gemini|aider|goose' || true)
+  hits=$(grep -nwE 'codex|crush|gemini|aider|goose' "$RC" || true)
   if [[ -z "$hits" ]]; then
-    pass "T1i ADR-005 D12 floor: no fixed agent enum (codex/crush/gemini/...) in AGENT seam machinery"
+    pass "T1i ADR-005 D12 floor: no fixed agent enum (codex/crush/gemini/...) hardcoded anywhere in rc"
   else
-    fail "T1i FAILED: fixed agent name(s) found in AGENT seam machinery:
+    fail "T1i FAILED: third-party agent name(s) hardcoded in rc:
 ${hits}"
   fi
 }
