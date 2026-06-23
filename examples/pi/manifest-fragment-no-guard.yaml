@@ -1,7 +1,6 @@
 version: 1
 tools:
-  # pi (NO-GUARD variant) agent recipe — the SWAPPABILITY PROOF (ADR-027 D3,
-  # rip-cage-wlwc.2.2; user's explicit acceptance 2026-06-22).
+  # pi (NO-GUARD variant) recipe — the SWAPPABILITY PROOF.
   #
   # This recipe runs the pi coding agent with ALL of its extensions auto-discovered
   # and NO dcg-gate command guard. It composes + launches with ZERO rc source edits
@@ -13,11 +12,10 @@ tools:
   # Diff vs examples/pi/manifest-fragment.yaml (the default-on guarded recipe):
   #   - the launch wrapper exec's the REAL pi binary directly (no --no-extensions,
   #     no -e dcg-gate.ts) so pi's normal extension auto-discovery is active.
-  #   - NO dcg-gate.ts is baked, and NO guard_path is declared on the AGENT entry
-  #     (guard_path is OPTIONAL — a guard-free agent is a first-class shape).
+  #   - NO dcg-gate.ts is baked.
   #
-  # To use: replace the two 'pi'/'pi-recipe' entries in your tools.yaml with the
-  # two entries below, then `rc build`. No rc edits. No Dockerfile edits.
+  # To use: replace the 'pi-recipe' entry in your tools.yaml with the entry below,
+  # then `rc build`. No rc edits. No Dockerfile edits.
 
   # TOOL entry: bake an UNGUARDED launch wrapper (exec real pi, no guard flags).
   # Still root-owned (the wrapper itself is not agent-writable) — this variant
@@ -31,11 +29,3 @@ tools:
     install_cmd: ": && echo 'IyEvdXNyL2Jpbi9lbnYgYmFzaApzZXQgLWV1byBwaXBlZmFpbApleGVjIC91c3IvYmluL3BpICIkQCIK' | base64 -d > /usr/local/bin/pi && chown root:root /usr/local/bin/pi && chmod 0755 /usr/local/bin/pi"
     egress: []
     mounts: []
-
-  # AGENT entry: launch hook only, NO guard_path (guard-free first-class shape).
-  - name: pi
-    archetype: AGENT
-    version_pin: "bundled-recipe"
-    hooks:
-      launch: "exec /usr/local/bin/pi \"$@\""
-      teardown: "pkill -u agent -f /usr/bin/pi || true"

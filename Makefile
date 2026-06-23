@@ -2,7 +2,7 @@
 
 PREFIX ?= $(HOME)/.local
 
-BASH_SCRIPTS := rc init-rip-cage.sh init-mediator.sh hooks/*.sh bd-wrapper.sh tests/test-prerequisites.sh tests/test-docker-daemon-hang.sh tests/test-manifest-schema.sh tests/test-manifest-tool.sh tests/test-manifest-egress.sh tests/test-manifest-shell.sh tests/test-manifest-daemon.sh tests/test-manifest-agent-mail.sh tests/test-manifest-cross.sh tests/test-manifest-security.sh tests/test-manifest-herdr.sh tests/test-multiplexer-lifecycle.sh tests/test-manifest-multiplexer-validate.sh tests/test-mediator-lifecycle.sh tests/test-security-model-injection.sh tests/test-mediator-validator.sh tests/test-agent-manifest.sh
+BASH_SCRIPTS := rc init-rip-cage.sh init-mediator.sh hooks/*.sh bd-wrapper.sh tests/test-prerequisites.sh tests/test-docker-daemon-hang.sh tests/test-manifest-schema.sh tests/test-manifest-tool.sh tests/test-manifest-egress.sh tests/test-manifest-shell.sh tests/test-manifest-daemon.sh tests/test-manifest-agent-mail.sh tests/test-manifest-cross.sh tests/test-manifest-security.sh tests/test-manifest-herdr.sh tests/test-multiplexer-lifecycle.sh tests/test-manifest-multiplexer-validate.sh tests/test-mediator-lifecycle.sh tests/test-security-model-injection.sh tests/test-mediator-validator.sh
 
 .PHONY: help install uninstall build test lint
 

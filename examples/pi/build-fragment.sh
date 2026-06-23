@@ -26,7 +26,7 @@ CAGEMD_B64="$(b64 "${_here}/cage-pi.md")"
 cat <<YAML
 version: 1
 tools:
-  # pi (DCG-guarded) agent recipe — copy these TWO entries into your tools.yaml
+  # pi (DCG-guarded) recipe — copy this entry into your tools.yaml
   # to run the pi coding agent inside rip-cage WITH the default-on DCG command
   # guard. After adding, run: rc build
   #
@@ -34,21 +34,15 @@ tools:
   # artifacts (pi-wrapper.sh, dcg-gate.ts, cage-pi.md). Do not hand-edit the
   # base64 blobs — edit the source files and re-run the generator.
   #
-  # Two entries are required (mirrors the herdr/mitmproxy two-entry pattern):
-  #   1. pi-recipe (TOOL): bakes the launch wrapper + DCG guard extension +
-  #      cage-topology doc into the image at build time, ALL root-owned
-  #      (agent-unwritable — the guard cannot be self-disabled in the ro-default
-  #      config; ADR-027 D1/D3, ADR-005 D11). The pi BINARY itself is installed
-  #      by the bundled 'pi' TOOL entry (Dockerfile npm install).
-  #   2. pi (AGENT): declares the launch hook + the guard_path (the agent's OWN
-  #      floor-lock slot) so the seam bakes the registry + label + runs the
-  #      post-build ownership-effect validator (ADR-027 D3, rip-cage-wlwc.2.1).
+  # pi-recipe (TOOL): bakes the launch wrapper + DCG guard extension +
+  # cage-topology doc into the image at build time, ALL root-owned
+  # (agent-unwritable — the guard cannot be self-disabled in the ro-default
+  # config; ADR-027 D1, ADR-005 D11). The pi BINARY itself is installed
+  # by the bundled 'pi' TOOL entry (Dockerfile npm install).
   #
-  # SWAPPABLE GUARD (ADR-027 D3 — guard is recipe content, NOT an rc mandate):
-  #   The DCG guard is the wrapper's '--no-extensions -e dcg-gate.ts' wiring.
-  #   To run pi with ALL its extensions and NO dcg-gate, swap THIS recipe for
-  #   examples/pi/manifest-fragment-no-guard.yaml — ZERO rc source edits.
-  #   rc never forces a guard onto an agent; containment is the floor.
+  # SWAPPABLE GUARD: the DCG guard is the wrapper's '--no-extensions -e dcg-gate.ts'
+  # wiring. To run pi with ALL its extensions and NO dcg-gate, swap THIS recipe for
+  # examples/pi/manifest-fragment-no-guard.yaml — ZERO rc source edits.
 
   # ---------------------------------------------------------------------------
   # TOOL entry: bake the pi launch wrapper + guard extension + cage doc (root-owned).
@@ -68,20 +62,4 @@ tools:
     install_cmd: ": && mkdir -p /home/agent/.pi/agent/extensions /etc/rip-cage && echo '${WRAPPER_B64}' | base64 -d > /usr/local/bin/pi && chown root:root /usr/local/bin/pi && chmod 0755 /usr/local/bin/pi && echo '${GATE_B64}' | base64 -d > /home/agent/.pi/agent/extensions/dcg-gate.ts && chown root:root /home/agent/.pi/agent/extensions/dcg-gate.ts && chmod 0644 /home/agent/.pi/agent/extensions/dcg-gate.ts && chown root:root /home/agent/.pi/agent/extensions && chmod 0755 /home/agent/.pi/agent/extensions && echo '${CAGEMD_B64}' | base64 -d > /etc/rip-cage/cage-pi.md && chown root:root /etc/rip-cage/cage-pi.md && chmod 0644 /etc/rip-cage/cage-pi.md"
     egress: []
     mounts: []
-
-  # ---------------------------------------------------------------------------
-  # AGENT entry: declares the launch hook + the per-agent floor-lock slot.
-  # The launch hook is the contract the seam bakes into the registry
-  # (/etc/rip-cage/agents/pi/launch). The actual launch mechanism is the PATH
-  # wrapper installed above — invoking 'pi' runs /usr/local/bin/pi which
-  # exec's the real binary with the guard wiring. guard_path points at the
-  # agent's OWN guard asset (NOT a floor asset) so the ownership-effect
-  # validator asserts it is root-owned in the built image.
-  - name: pi
-    archetype: AGENT
-    version_pin: "bundled-recipe"
-    guard_path: "/home/agent/.pi/agent/extensions/dcg-gate.ts"
-    hooks:
-      launch: "exec /usr/local/bin/pi \"\$@\""
-      teardown: "pkill -u agent -f /usr/bin/pi || true"
 YAML

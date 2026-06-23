@@ -710,11 +710,12 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# MR5 — _manifest_check_mount_root_owned: does NOT reach back for AGENT archetype
-#        or guard_path field — generic (keyed off root_owned_required only).
+# MR5 — _manifest_check_mount_root_owned: generic (keyed off root_owned_required
+#        only) — does NOT reach back into old ownership-check slots or per-tool
+#        archetype fields that no longer exist in the seam.
 #
 # Negative control: a manifest with NO root_owned_required fields must produce
-# exit 0 regardless of archetype, proving the validator is generic.
+# exit 0 for any tool, proving the validator is generic.
 # ---------------------------------------------------------------------------
 test_mr5_validator_is_generic_not_agent_keyed() {
   local stderr_file exit_code
@@ -899,7 +900,6 @@ MOCK
       # All validators succeed — positive control.
       _manifest_check_mount_root_owned() { return 0; }
       _manifest_check_binary_root_owned() { return 0; }
-      _manifest_check_agent_guard_root_owned() { return 0; }
       OUTPUT_FORMAT=''
       cmd_build
     "
@@ -978,7 +978,6 @@ MOCK
       # Override to simulate a violation — must cause _pull_or_build_local to fail.
       _manifest_check_mount_root_owned() { echo 'MOCK: mount root_owned_required violation' >&2; return 1; }
       _manifest_check_binary_root_owned() { return 0; }
-      _manifest_check_agent_guard_root_owned() { return 0; }
       RIP_CAGE_IMAGE_REGISTRY=''
       _pull_or_build_local
     "
