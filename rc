@@ -282,12 +282,15 @@ cmd_build() {
       # in the SAME post-build gate — both D11 fail-closed validators run on every
       # build entrypoint (entrypoint-completeness; a validator wired into one path
       # only is a known fail-open bug).
-      if ! _manifest_check_binary_root_owned "$IMAGE" || ! _manifest_check_agent_guard_root_owned "$IMAGE"; then
+      # rip-cage-wlwc.3: ALSO assert per-asset root_owned_required mount ownership-effect
+      # (ADR-027 D1) — sibling to _manifest_check_binary_root_owned, same gate, same
+      # fail-closed semantics. All three validators run on every build entrypoint.
+      if ! _manifest_check_binary_root_owned "$IMAGE" || ! _manifest_check_agent_guard_root_owned "$IMAGE" || ! _manifest_check_mount_root_owned "$IMAGE"; then
         [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
         # Untag the violating image so a subsequent `rc up` / `docker run rip-cage:latest`
         # cannot use the tainted build. Fail-closed: remove before aborting (ADR-001).
         docker image rm "$IMAGE" 2>/dev/null || true
-        json_error "Manifest tool binary is not root-owned/agent-writable, or an AGENT guard_path is not root-owned — safety floor violated (ADR-005 D9/D11, ADR-024, ADR-027 D3)" "MANIFEST_BINARY_NOT_ROOT_OWNED"
+        json_error "Manifest tool binary is not root-owned/agent-writable, AGENT guard_path is not root-owned, or a root_owned_required mount asset is not root-owned — safety floor violated (ADR-005 D9/D11, ADR-024, ADR-027 D1/D3)" "MANIFEST_BINARY_NOT_ROOT_OWNED"
       fi
       jq -nc '{image: "rip-cage:latest", action: "built", status: "success"}'
     else
@@ -298,8 +301,10 @@ cmd_build() {
     docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_dockerfile" "$@" "$SCRIPT_DIR" || _build_ok=$?
     # rip-cage-buuo.3: binary-root-owned assertion — AFTER successful docker build.
     # rip-cage-wlwc.2.1: ALSO assert AGENT guard_path ownership-effect (ADR-027 D3).
+    # rip-cage-wlwc.3: ALSO assert per-asset root_owned_required mount ownership-effect
+    # (ADR-027 D1) — entrypoint-completeness: same three validators on all build paths.
     if [[ "$_build_ok" -eq 0 ]]; then
-      if ! _manifest_check_binary_root_owned "$IMAGE" || ! _manifest_check_agent_guard_root_owned "$IMAGE"; then
+      if ! _manifest_check_binary_root_owned "$IMAGE" || ! _manifest_check_agent_guard_root_owned "$IMAGE" || ! _manifest_check_mount_root_owned "$IMAGE"; then
         [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
         # Untag the violating image so a subsequent `rc up` / `docker run rip-cage:latest`
         # cannot use the tainted build. Fail-closed: remove before aborting (ADR-001).
@@ -381,9 +386,11 @@ _pull_or_build_local() {
   # rip-cage-wlwc.2.1: ALSO assert AGENT guard_path ownership-effect (ADR-027 D3) —
   # the auto-build path (rc up without a prior rc build) must enforce the SAME
   # D11 validators as cmd_build (entrypoint-completeness; both build paths covered).
+  # rip-cage-wlwc.3: ALSO assert per-asset root_owned_required mount ownership-effect
+  # (ADR-027 D1) — all three validators on all build paths (entrypoint-completeness).
   # Same semantics as cmd_build: untag tainted image on failure (fail-closed, ADR-001).
   if [[ "$_pob_exit" -eq 0 ]]; then
-    if ! _manifest_check_binary_root_owned "$IMAGE" || ! _manifest_check_agent_guard_root_owned "$IMAGE"; then
+    if ! _manifest_check_binary_root_owned "$IMAGE" || ! _manifest_check_agent_guard_root_owned "$IMAGE" || ! _manifest_check_mount_root_owned "$IMAGE"; then
       [[ -n "$_pob_tmp" ]] && rm -f "$_pob_tmp"
       docker image rm "$IMAGE" 2>/dev/null || true
       return 1
@@ -1725,9 +1732,10 @@ _up_prepare_docker_mounts() {
   _UP_RUN_ARGS+=(-e "RC_HOST_PROJECT_KEY=${_host_project_key}")
 
   # Manifest-declared data mounts (rip-cage-buuo.1 / ADR-005 D7, D9).
-  # Turn each manifest tool's mounts: [{host, dest}, ...] entry into -v args.
-  # _manifest_build_mount_args emits "host:dest" lines (no -v prefix); we add
+  # Turn each manifest tool's mounts: [{host, dest, mode, root_owned_required}, ...] into -v args.
+  # _manifest_build_mount_args emits "host:dest:mode" lines (no -v prefix); we add
   # -v as a separate array element for the two-element docker run form.
+  # mode defaults to 'ro' (rip-cage-wlwc.3 / ADR-027 D1); rw opt-in is explicit.
   # The denylist pre-check at cmd_up already fired (rc:4048); this consumer runs
   # after that gate so denylist denials here are impossible in normal flow.
   local _mba_out _mba_rc=0
@@ -6805,6 +6813,27 @@ _manifest_validate() {
             echo "Error: manifest '${file}' tools[${idx}] ('${name}'): mounts[${midx_val}]: required field 'dest' is missing or empty (must be the in-cage destination path)." >&2
             return 1
           fi
+          # 'mode' is optional (default: ro); when present must be exactly "ro" or "rw".
+          # rip-cage-wlwc.3: per-asset ro/rw mount seam (ADR-027 D1).
+          local mount_mode_raw
+          mount_mode_raw=$(jq -r '.mode // "___RC_ABSENT___"' <<<"$mount_element" 2>/dev/null)
+          if [[ "$mount_mode_raw" != "___RC_ABSENT___" ]]; then
+            if [[ "$mount_mode_raw" != "ro" && "$mount_mode_raw" != "rw" ]]; then
+              echo "Error: manifest '${file}' tools[${idx}] ('${name}'): mounts[${midx_val}]: field 'mode' must be 'ro' or 'rw' (got '${mount_mode_raw}'); default is 'ro' (ADR-027 D1 / rip-cage-wlwc.3)." >&2
+              return 1
+            fi
+          fi
+          # 'root_owned_required' is optional (default: false); when present must be a boolean.
+          # rip-cage-wlwc.3: generic per-asset root-owned flag (NOT AGENT-keyed).
+          local root_owned_raw root_owned_type
+          root_owned_raw=$(jq -r 'if has("root_owned_required") then (.root_owned_required | tostring) else "___RC_ABSENT___" end' <<<"$mount_element" 2>/dev/null)
+          if [[ "$root_owned_raw" != "___RC_ABSENT___" ]]; then
+            root_owned_type=$(jq -r 'if has("root_owned_required") then (.root_owned_required | type) else "absent" end' <<<"$mount_element" 2>/dev/null)
+            if [[ "$root_owned_type" != "boolean" ]]; then
+              echo "Error: manifest '${file}' tools[${idx}] ('${name}'): mounts[${midx_val}]: field 'root_owned_required' must be a boolean (true or false), got type '${root_owned_type}' (rip-cage-wlwc.3)." >&2
+              return 1
+            fi
+          fi
         done
         # 'install_cmd' / 'build_source' coupling with version_pin:
         #   version_pin == "bundled"  → MUST NOT have install_cmd or build_source
@@ -9131,23 +9160,24 @@ _manifest_egress_hosts_json() {
 }
 
 # _manifest_build_mount_args — build the -v docker run args for all manifest
-# mounts: entries (rip-cage-buuo.1).
+# mounts: entries (rip-cage-buuo.1 / rip-cage-wlwc.3).
 #
 # For each tool entry in the manifest:
-#   - Iterates over mounts[] entries (objects {host, dest}).
+#   - Iterates over mounts[] entries (objects {host, dest[, mode][, root_owned_required]}).
 #   - Skips entries whose .host dir does not exist on the host (skip-if-missing).
 #   - Applies realpath to resolve the host path (ADR-023 D6 FIRM).
 #   - Checks against the secret-path denylist (ADR-023 D1/D6 FIRM) — fail-loud.
-#   - Emits "-v <resolved_host>:<dest>" to stdout (one per line).
+#   - Reads per-asset .mode field ('ro' or 'rw'; default 'ro' per ADR-027 D1).
+#   - Emits "<resolved_host>:<dest>:<mode>" to stdout (one per line).
 #
-# The caller (_up_prepare_docker_mounts) collects these into _UP_RUN_ARGS.
+# The caller (_up_prepare_docker_mounts) collects these into _UP_RUN_ARGS via -v.
 #
 # Mounts DIRECTORIES only — never a single-file bind (host-atomic-rename tripwire).
 #
 # Parameters:
 #   $1  workspace — passed to _check_secret_path_denylist as the workspace root
 #
-# Stdout: zero or more "-v <host>:<dest>" lines (one per mount)
+# Stdout: zero or more "<host>:<dest>:<mode>" lines (one per mount)
 # Stderr: skip/error messages
 # Returns: 0 on success, 1 on denylist-denied mount (fail-loud).
 _manifest_build_mount_args() {
@@ -9211,8 +9241,14 @@ _manifest_build_mount_args() {
         return 1
       fi
 
-      # Emit host:dest (caller adds -v as a separate array element — two-element form).
-      echo "${resolved_host}:${mount_dest}"
+      # Per-asset ro/rw mode (rip-cage-wlwc.3 / ADR-027 D1).
+      # Default is 'ro' — opt-in write-through requires explicit mode: rw.
+      local mount_mode
+      mount_mode=$(jq -r ".mounts[${midx}].mode // \"ro\"" <<<"$entry" 2>/dev/null)
+      [[ "$mount_mode" != "rw" ]] && mount_mode="ro"
+
+      # Emit host:dest:mode (caller adds -v as a separate array element — two-element form).
+      echo "${resolved_host}:${mount_dest}:${mount_mode}"
     done
   done
 
@@ -9539,10 +9575,120 @@ _manifest_check_agent_guard_root_owned() {
   [[ "$_violation" -eq 0 ]]
 }
 
+# _manifest_check_mount_root_owned — rip-cage-wlwc.3 / ADR-027 D1
+#
+# OWNERSHIP-EFFECT assertion: for every mount entry in the manifest that declares
+# root_owned_required: true, inspect the ACTUAL asset inside the already-built
+# image using `docker run --rm <image> stat -c '%U %a' <dest>` and reject any
+# mount asset that is NOT owned by root OR that is writable by the agent user
+# (group-write or other-write bit set).
+#
+# This is the GENERIC per-asset root-owned validator — it keys off the mount
+# declaration field `root_owned_required`, NOT any agent archetype or guard_path
+# field. This is a deliberate design choice (rip-cage-wlwc.3): the validator must
+# not reach back for AGENT/guard_path.
+#
+# Sibling to _manifest_check_binary_root_owned (which keys off TOOL binary paths)
+# and to the now-deprecated _manifest_check_agent_guard_root_owned (which was
+# AGENT-keyed — not salvaged here).
+#
+# A mount entry that does NOT declare root_owned_required: true is SKIPPED.
+# A mount entry that declares root_owned_required: false is also SKIPPED.
+# Only root_owned_required: true triggers the ownership-effect check.
+#
+# Parameters:
+#   $1  image_tag — Docker image tag to inspect (e.g. "rip-cage:latest")
+#
+# Stdout: (none)
+# Stderr: error messages on violation
+# Returns: 0 if all declared root_owned_required assets pass, 1 on violation.
+_manifest_check_mount_root_owned() {
+  local _image_tag="${1:-rip-cage:latest}"
+
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local _violation=0
+  local idx
+  for (( idx=0; idx<count; idx++ )); do
+    local entry mounts_count midx
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+
+    mounts_count=$(jq '.mounts | length' <<<"$entry" 2>/dev/null)
+    [[ -z "$mounts_count" || "$mounts_count" -eq 0 ]] && continue
+
+    local tool_name
+    tool_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+
+    for (( midx=0; midx<mounts_count; midx++ )); do
+      local root_owned_required_val root_owned_required_type
+      root_owned_required_type=$(jq -r ".mounts[${midx}] | if has(\"root_owned_required\") then (.root_owned_required | type) else \"absent\" end" <<<"$entry" 2>/dev/null)
+      # Skip: root_owned_required absent or not a boolean true
+      [[ "$root_owned_required_type" != "boolean" ]] && continue
+      root_owned_required_val=$(jq -r ".mounts[${midx}].root_owned_required" <<<"$entry" 2>/dev/null)
+      [[ "$root_owned_required_val" != "true" ]] && continue
+
+      # This mount declared root_owned_required: true — check ownership inside the image.
+      local mount_dest
+      mount_dest=$(jq -r ".mounts[${midx}].dest // \"\"" <<<"$entry" 2>/dev/null)
+      if [[ -z "$mount_dest" || "$mount_dest" == "null" ]]; then
+        echo "Error: manifest tool '${tool_name}' mounts[${midx}]: root_owned_required: true but 'dest' is empty — cannot check ownership." >&2
+        _violation=1
+        continue
+      fi
+
+      # Effect-based check: inspect the actual asset inside the built image.
+      # stat -c '%U %a' prints: owner_name octal_mode (e.g. "root 755")
+      local stat_out
+      if ! stat_out=$(docker run --rm "$_image_tag" stat -c '%U %a' "$mount_dest" 2>/dev/null); then
+        echo "Error: manifest tool '${tool_name}' mounts[${midx}] dest '${mount_dest}': root_owned_required: true but could not stat path inside image '${_image_tag}' — asset may be absent or image not built. (rip-cage-wlwc.3 / ADR-027 D1)" >&2
+        _violation=1
+        continue
+      fi
+
+      local stat_owner stat_mode
+      stat_owner=$(awk '{print $1}' <<<"$stat_out")
+      stat_mode=$(awk '{print $2}' <<<"$stat_out")
+
+      # Owner MUST be root.
+      if [[ "$stat_owner" != "root" ]]; then
+        echo "Error: manifest tool '${tool_name}' mounts[${midx}] dest '${mount_dest}' is owned by '${stat_owner}' (not root). A root_owned_required asset must be root-owned — an agent-writable asset is fail-open against the ro-mount guarantee. (rip-cage-wlwc.3 / ADR-027 D1)" >&2
+        _violation=1
+      fi
+
+      # Mode: group-write or other-write bit must NOT be set.
+      # Normalize to exactly 3 digits (drop leading "0" prefix if stat gives 4).
+      local mode_3
+      mode_3="${stat_mode: -3}"
+      local group_digit other_digit writable
+      group_digit="${mode_3:1:1}"
+      other_digit="${mode_3:2:1}"
+      writable=0
+      case "$group_digit" in 2|3|6|7) writable=1 ;; esac
+      case "$other_digit" in 2|3|6|7) writable=1 ;; esac
+      if [[ "$writable" -eq 1 ]]; then
+        echo "Error: manifest tool '${tool_name}' mounts[${midx}] dest '${mount_dest}' has mode '${stat_mode}' which is group/other-writable. A root_owned_required asset must not be agent-writable (fail-open against ro-mount guarantee). (rip-cage-wlwc.3 / ADR-027 D1)" >&2
+        _violation=1
+      fi
+    done
+  done
+
+  [[ "$_violation" -eq 0 ]]
+}
+
 # =============================================================================
 # End manifest egress+mounts floor (rip-cage-4c5.3)
 # End manifest binary-ownership + build-isolation assertions (rip-cage-buuo.3)
 # End manifest AGENT guard ownership-effect assertion (rip-cage-wlwc.2.1)
+# End per-asset ro/rw mount mode + root_owned_required validator (rip-cage-wlwc.3)
 # =============================================================================
 
 # _ensure_pi_auth_seed — cold-start seeding for pi auth (rip-cage-wo9 / ADR-019 D1).

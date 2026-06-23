@@ -52,6 +52,7 @@ NEEDS_CONTAINER=(
   "test-symlink-follow.sh"    # needs a non-reserved writable scratch dir for symlink targets; on Linux every writable top-level (/home,/tmp,/var) is in rc's FHS-reserved set (rc:1511-1513), so it only runs on macOS (mktemp→/private/var dodges rc's deliberate non-canonicalization). Not "needs a cage" but host-only-Linux-incompatible (rip-cage-woow)
   "test-cc-managed-settings-probe.sh" # rip-cage-wlwc.1: D8 CC managed-settings anchor probe — requires live authed cage + API call; self-skips if no cage or unauthed (NEEDS_CONTAINER+AUTH)
   "test-cc-dcg-managed-settings.sh"  # rip-cage-r9n4: DCG managed-settings regression — proves managed deny survives stripping ALL agent-writable layers; requires live authed cage (NEEDS_CONTAINER+AUTH)
+  "test-mount-mode-e2e.sh"           # rip-cage-wlwc.3: real-cage ro/rw behavioral probes (RE1-RE3); self-skips without RC_E2E=1
 )
 
 # Helper: check if a given test basename is in NEEDS_CONTAINER.
@@ -182,6 +183,8 @@ run_test "${SCRIPT_DIR}/test-manifest-cm.sh"           # rip-cage-l0u2.4: cm bin
 run_test "${SCRIPT_DIR}/test-manifest-mounts.sh"      # rip-cage-buuo.1: manifest mounts schema + consumer (host-only MV1/MH*/MD1/MC*; ME1 self-skips via RC_E2E gate)
 run_test "${SCRIPT_DIR}/test-manifest-source.sh"      # rip-cage-buuo.2: from-source builder stage schema + codegen (host-only S1-S10; SE1 self-skips via RC_E2E gate)
 run_test "${SCRIPT_DIR}/test-manifest-security.sh"   # rip-cage-buuo.3: binary-root-owned + build-isolation assertions (host-only B1a-d/BI1a-h; BE1-BE2 self-skip via RC_E2E gate)
+run_test "${SCRIPT_DIR}/test-manifest-mount-mode.sh"  # rip-cage-wlwc.3: per-asset ro/rw mount mode + root_owned_required validator (MS1-MS8/MA1-MA4/MR1-MR5/MD1-MD2 host-only; RE1-RE3 real-cage in test-mount-mode-e2e.sh)
+run_test "${SCRIPT_DIR}/test-mount-mode-e2e.sh"       # rip-cage-wlwc.3: real-cage ro/rw behavioral probes (RE1-RE3; NEEDS_CONTAINER/RC_E2E, self-skips without RC_E2E=1)
 run_test "${SCRIPT_DIR}/test-manifest-multiplexer-validate.sh" # rip-cage-61al.1: MULTIPLEXER archetype validation (T1a-T1m host-only)
 run_test "${SCRIPT_DIR}/test-multiplexer-registry-bake.sh"     # rip-cage-61al.2: MULTIPLEXER registry bake + label + reference reader (T1a-T1g host-only; T2a-T2e self-skip via RC_E2E gate)
 run_test "${SCRIPT_DIR}/test-multiplexer-config-dynamic.sh"    # rip-cage-61al.4: dynamic session.multiplexer schema + config-validate (T1a-T1e host-only; T2a-T2c self-skip via RC_E2E gate)

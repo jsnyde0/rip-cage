@@ -26,8 +26,10 @@ tools:
     egress: []
     mounts:
       # ~/.cass-memory works as-is — rc expands ~/ to $HOME at rc-up time.
+      # mode: rw is explicit — ro is now the default (rip-cage-wlwc.3).
       - host: "~/.cass-memory"
         dest: "/home/agent/.cass-memory"
+        mode: rw
     build_source:
       builder_image: "debian:trixie"
       build_script: "tests/fixtures/build-cm-from-source.sh"
@@ -49,8 +51,9 @@ both produce a native binary).
 ## Mount mechanics
 
 The manifest `mounts` entry binds the host cm store RW at `/home/agent/.cass-memory`.
-Docker's default for `-v host:dest` is read-write; the generic mount consumer
-(`_manifest_build_mount_args`) inherits this default — no explicit `:rw` suffix needed.
+The mount declares `mode: rw` explicitly — **ro is the default** as of rip-cage-wlwc.3,
+so write-through mounts must always be declared with `mode: rw`. The generic mount consumer
+(`_manifest_build_mount_args`) emits `:rw` when `mode: rw` is declared, `:ro` otherwise.
 
 **Tilde and `$HOME` expansion (rip-cage-buuo.5):**
 The rc mount consumer expands a leading `~/` or `$HOME/` (and `${HOME}/`) prefix to the
