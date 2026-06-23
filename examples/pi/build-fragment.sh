@@ -59,7 +59,7 @@ tools:
   - name: pi-recipe
     archetype: TOOL
     version_pin: "bundled-recipe"
-    install_cmd: ": && mkdir -p /home/agent/.pi/agent/extensions /etc/rip-cage && echo '${WRAPPER_B64}' | base64 -d > /usr/local/bin/pi && chown root:root /usr/local/bin/pi && chmod 0755 /usr/local/bin/pi && echo '${GATE_B64}' | base64 -d > /home/agent/.pi/agent/extensions/dcg-gate.ts && chown root:root /home/agent/.pi/agent/extensions/dcg-gate.ts && chmod 0644 /home/agent/.pi/agent/extensions/dcg-gate.ts && chown root:root /home/agent/.pi/agent/extensions && chmod 0755 /home/agent/.pi/agent/extensions && echo '${CAGEMD_B64}' | base64 -d > /etc/rip-cage/cage-pi.md && chown root:root /etc/rip-cage/cage-pi.md && chmod 0644 /etc/rip-cage/cage-pi.md"
+    install_cmd: ": && mkdir -p /home/agent/.pi/agent/extensions /etc/rip-cage && chown 1000:1000 /home/agent && echo '${WRAPPER_B64}' | base64 -d > /usr/local/bin/pi && chown root:root /usr/local/bin/pi && chmod 0755 /usr/local/bin/pi && echo '${GATE_B64}' | base64 -d > /home/agent/.pi/agent/extensions/dcg-gate.ts && chown root:root /home/agent/.pi/agent/extensions/dcg-gate.ts && chmod 0644 /home/agent/.pi/agent/extensions/dcg-gate.ts && chown root:root /home/agent/.pi/agent/extensions && chmod 0755 /home/agent/.pi/agent/extensions && echo '${CAGEMD_B64}' | base64 -d > /etc/rip-cage/cage-pi.md && chown root:root /etc/rip-cage/cage-pi.md && chmod 0644 /etc/rip-cage/cage-pi.md"
     egress: []
     mounts: []
 YAML

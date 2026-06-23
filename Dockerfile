@@ -99,21 +99,11 @@ RUN for i in 1 2 3; do \
       echo "pi-coding-agent npm install failed (attempt $i/3); retrying in 10s" && sleep 10; \
     done
 
-# Per-session Claude config isolation (rip-cage-p1p).
-# This wrapper is placed at /usr/local/bin/claude which precedes /usr/bin/claude on PATH.
-# It resolves CLAUDE_CONFIG_DIR (seeding the session dir if absent) then exec-s the real
-# claude binary at /usr/bin/claude. Both the interactive (tmux) and headless (docker exec)
-# paths are covered; see claude-session-wrapper.sh for full logic.
-COPY claude-session-wrapper.sh /usr/local/bin/claude
-RUN chmod +x /usr/local/bin/claude
-
-# Pi launch hardening (rip-cage-sn1h): wrapper at /usr/local/bin/pi (precedes /usr/bin/pi on PATH).
-# Adds --no-extensions -e <dcg-gate.ts> to EVERY pi invocation, disabling auto-discovery
-# so /workspace/.pi/extensions/ admits NO agent-dropped extension (the workspace-path DCG bypass
-# vector confirmed in rip-cage-sn1h source analysis). Load order is deterministic.
-# wlwc D5 half (b): this is the per-agent recipe launch hook baked as a cage artifact.
-COPY pi/pi-wrapper.sh /usr/local/bin/pi
-RUN chmod +x /usr/local/bin/pi
+# CC session-isolation wrapper and pi launch-hardening wrapper are provisioned by
+# composable recipes (examples/claude/ and examples/pi/) via install_cmd at build time.
+# Un-baked from base image per rip-cage-wlwc.2.2 (ADR-005 D12 / ADR-027 D1/D3).
+# The binaries (npm-installed claude + pi) remain in the base image; only the
+# wrappers and floor-lock assets are recipe-provisioned.
 
 # Non-root user
 RUN groupadd -g 1000 agent \
@@ -142,18 +132,10 @@ COPY ssh/ssh_config /etc/ssh/ssh_config.d/00-rip-cage.conf
 RUN chmod 0644 /etc/ssh/ssh_known_hosts /etc/ssh/ssh_config.d/00-rip-cage.conf
 COPY tests/test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
 COPY settings.json /etc/rip-cage/settings.json
-# CC managed-settings: baked root-owned highest-precedence CC hook layer (rip-cage-r9n4).
-# /etc/claude-code/managed-settings.json is CC's managed-settings path — hooks here merge
-# un-suppressibly with user/project hooks and PreToolUse is deny-wins. This delivers the
-# DCG guard hook via a layer the in-cage agent CANNOT edit or unregister, closing the
-# self-disable vector (ADR-027 D3 floor-lock slot; ADR-002 D5 managed-settings target).
-# root:root + mode 644: agent can read, cannot write.
-RUN mkdir -p /etc/claude-code
-COPY managed-settings.json /etc/claude-code/managed-settings.json
-RUN chown root:root /etc/claude-code/managed-settings.json \
-    && chmod 644 /etc/claude-code/managed-settings.json
-COPY cage-claude.md /etc/rip-cage/cage-claude.md
-COPY cage-pi.md /etc/rip-cage/cage-pi.md
+# CC managed-settings floor-lock, cage-claude.md, and cage-pi.md are provisioned by
+# composable recipes (examples/claude/, examples/pi/) via root-owned install_cmd.
+# Un-baked from base image per rip-cage-wlwc.2.2 (ADR-005 D12; floor-lock preserved:
+# install_cmd runs as root, writes chown root:root, parent dir root-owned — ADR-027 D3).
 COPY init-rip-cage.sh /usr/local/bin/init-rip-cage.sh
 COPY skill-server.py /usr/local/lib/rip-cage/skill-server.py
 COPY tests/test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
@@ -180,13 +162,10 @@ RUN chmod +x /usr/local/bin/init-rip-cage.sh \
     /usr/local/lib/rip-cage/rip-proxy-start.sh \
     /usr/local/lib/rip-cage/rip-dns-start.sh
 
-# Pi extensions/ dir: root-owned so the in-cage agent cannot write new extensions
-# or replace dcg-gate.ts (rip-cage-olen). Mode 755: agent can read/traverse/load,
-# cannot write. pi only READS extensions/ (auto-discovery glob, loader.ts:583-585)
-# and never writes it, so root-ownership does not impede pi (ADR-019 D1).
-# Must be created in root context (before USER agent) to stay root:root.
-RUN mkdir -p /home/agent/.pi/agent/extensions \
-    && chmod 755 /home/agent/.pi/agent/extensions
+# Pi extensions/ dir (root-owned) + dcg-gate.ts guard are provisioned by the
+# composable examples/pi recipe via install_cmd (runs as root before USER agent,
+# preserving root:root ownership of extensions/ and dcg-gate.ts — rip-cage-olen).
+# Un-baked from base image per rip-cage-wlwc.2.2 (ADR-005 D12).
 
 USER agent
 WORKDIR /home/agent
@@ -202,13 +181,9 @@ RUN mkdir -p /home/agent/.config/mise \
     && printf '[settings]\nidiomatic_version_file_enable_tools = ["node", "yarn"]\n' \
        > /home/agent/.config/mise/config.toml
 COPY --chown=agent:agent zshrc /home/agent/.zshrc
-# Pi DCG gate extension (rip-cage-bl1): baked into cage-owned container-local extensions dir.
-# Loaded via EXPLICIT -e flag by the pi-wrapper (rip-cage-sn1h) — NOT auto-discovered.
-# (Prior: auto-discovered via extensions/*.ts glob; rip-cage-sn1h replaced auto-discovery
-# with --no-extensions + -e <dcg-gate> to close the /workspace/.pi/extensions/ bypass vector.)
-# NOT under the host-mounted auth.json sub-mount — cage-owned, root-owned, host-clean.
-# Root-owned (no --chown): agent can read/load but cannot overwrite or delete (rip-cage-olen).
-COPY pi/dcg-gate.ts /home/agent/.pi/agent/extensions/dcg-gate.ts
+# Pi dcg-gate.ts and extensions/ dir are provisioned by examples/pi recipe (install_cmd
+# runs in root context before USER agent). See examples/pi/build-fragment.sh.
+# (rip-cage-wlwc.2.2: un-baked from base image per ADR-005 D12)
 
 # Version label — baked in at build time so rc up can detect stale local images.
 # Placed last so version bumps don't invalidate upstream layer cache.

@@ -85,27 +85,35 @@ fi
 # unix-dir-ownership-is-the-write-gate-not-file-ownership: assert the parent directory AND
 # the file are root-owned (not agent-owned). Presence-only assertion passes even if
 # an agent replaced /etc/claude-code/managed-settings.json with a symlink to an agent-writable file.
+# GATE (rip-cage-wlwc.2.2): managed-settings.json is a composable recipe (examples/claude), NOT
+# baked into the base image. A cage built from the bare in-repo default manifest has no
+# managed-settings.json; assertions only fire when the file is present (mirrors check #9 ssh-bypass pattern).
 _managed_settings_ok=false
-if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/bin/dcg-guard")' /etc/claude-code/managed-settings.json >/dev/null 2>&1; then
-  _managed_file_owner=$(stat -c '%U' /etc/claude-code/managed-settings.json 2>/dev/null || echo "unknown")
-  _managed_dir_owner=$(stat -c '%U' /etc/claude-code 2>/dev/null || echo "unknown")
-  if [[ "$_managed_file_owner" == "root" && "$_managed_dir_owner" == "root" ]]; then
-    check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "pass" \
-      "file owner=$_managed_file_owner dir owner=$_managed_dir_owner"
-    _managed_settings_ok=true
-  elif [[ "$_managed_file_owner" != "root" ]]; then
+if [[ -f /etc/claude-code/managed-settings.json ]]; then
+  if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/bin/dcg-guard")' /etc/claude-code/managed-settings.json >/dev/null 2>&1; then
+    _managed_file_owner=$(stat -c '%U' /etc/claude-code/managed-settings.json 2>/dev/null || echo "unknown")
+    _managed_dir_owner=$(stat -c '%U' /etc/claude-code 2>/dev/null || echo "unknown")
+    if [[ "$_managed_file_owner" == "root" && "$_managed_dir_owner" == "root" ]]; then
+      check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "pass" \
+        "file owner=$_managed_file_owner dir owner=$_managed_dir_owner"
+      _managed_settings_ok=true
+    elif [[ "$_managed_file_owner" != "root" ]]; then
+      check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "fail" \
+        "hook present BUT file owner='$_managed_file_owner' (expected root) — agent can overwrite/replace"
+    else
+      check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "fail" \
+        "hook present BUT dir /etc/claude-code owner='$_managed_dir_owner' (expected root) — agent can inject new files or unlink+replace"
+    fi
+  elif jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/bin/dcg-guard")' ~/.claude/settings.json >/dev/null 2>&1; then
     check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "fail" \
-      "hook present BUT file owner='$_managed_file_owner' (expected root) — agent can overwrite/replace"
+      "DCG hook found in agent-writable settings.json, NOT in managed-settings.json — self-disable vector open"
   else
     check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "fail" \
-      "hook present BUT dir /etc/claude-code owner='$_managed_dir_owner' (expected root) — agent can inject new files or unlink+replace"
+      "DCG hook absent from managed-settings.json (file present but hook missing)"
   fi
-elif jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/bin/dcg-guard")' ~/.claude/settings.json >/dev/null 2>&1; then
-  check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "fail" \
-    "DCG hook found in agent-writable settings.json, NOT in managed-settings.json — self-disable vector open"
 else
-  check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "fail" \
-    "DCG hook absent from both managed-settings.json and settings.json"
+  TOTAL=$((TOTAL + 1))
+  echo "INFO  [$TOTAL] managed-settings.json absent — CC floor-lock is a composable recipe (examples/claude), not composed in this cage"
 fi
 unset _managed_settings_ok _managed_file_owner _managed_dir_owner
 

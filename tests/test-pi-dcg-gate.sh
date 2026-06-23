@@ -50,10 +50,17 @@ fi
 # -----------------------------------------------------------------------
 echo "-- Structural checks --"
 DCG_GATE="/home/agent/.pi/agent/extensions/dcg-gate.ts"
+# Post-rip-cage-wlwc.2.2: dcg-gate.ts is recipe-provisioned (examples/pi), NOT baked into
+# the base image. When the no-guard pi recipe variant is used, dcg-gate.ts is intentionally
+# absent. In that case, sections 1/1b-1e and 6 are inapplicable — skip silently.
+# Section 2 (dcg-guard engine) and 3-5 (schema parity) still run independently of dcg-gate.ts.
+PI_GUARD_RECIPE_ABSENT=false
 if [[ -f "$DCG_GATE" ]]; then
   check "dcg-gate.ts exists at cage-owned extensions path" "pass" "$DCG_GATE"
 else
-  check "dcg-gate.ts exists at cage-owned extensions path" "fail" "missing: $DCG_GATE"
+  PI_GUARD_RECIPE_ABSENT=true
+  TOTAL=$((TOTAL + 1))
+  echo "INFO  [$TOTAL] dcg-gate.ts absent at $DCG_GATE — pi running with no-guard recipe variant (examples/pi/manifest-fragment-no-guard.yaml); sections 1/6 skipped"
 fi
 
 # 1b. Extension does NOT reference /pi-agent (host-mounted path)
@@ -357,11 +364,19 @@ fi
 # Vector (a): agent cannot overwrite/delete dcg-gate.ts.
 # Vector (b): agent cannot create new extensions (e.g. z-evil.ts) to
 #             shadow/mutate post-DCG-approval — requires directory write.
+#
+# Post-rip-cage-wlwc.2.2: if PI_GUARD_RECIPE_ABSENT (no-guard pi recipe),
+# dcg-gate.ts and extensions/ do not exist — section 6 is inapplicable. Skip.
 # -----------------------------------------------------------------------
 echo ""
 echo "-- Ownership + write-denial regression (rip-cage-olen) --"
 
 DCG_EXT_DIR="/home/agent/.pi/agent/extensions"
+
+if [[ "$PI_GUARD_RECIPE_ABSENT" == "true" ]]; then
+  TOTAL=$((TOTAL + 1))
+  echo "INFO  [$TOTAL] Section 6 (ownership regression) skipped — no-guard pi recipe in use; dcg-gate.ts/extensions/ not provisioned by design"
+else
 
 # 6a. dcg-gate.ts owner is root (not agent)
 if [[ -f "$DCG_GATE" ]]; then
@@ -372,7 +387,7 @@ if [[ -f "$DCG_GATE" ]]; then
     check "rip-cage-olen [6a] dcg-gate.ts is root-owned" "fail" "owner: ${_dcg_owner:-unknown} (expected root)"
   fi
 else
-  check "rip-cage-olen [6a] dcg-gate.ts is root-owned" "fail" "dcg-gate.ts absent — section 6 not reached (image regression?)"
+  check "rip-cage-olen [6a] dcg-gate.ts is root-owned" "fail" "dcg-gate.ts absent — section 6 not reached (recipe regression?)"
 fi
 
 # 6b. extensions/ dir owner is root (not agent)
@@ -384,7 +399,7 @@ if [[ -d "$DCG_EXT_DIR" ]]; then
     check "rip-cage-olen [6b] extensions/ dir is root-owned" "fail" "owner: ${_ext_dir_owner:-unknown} (expected root)"
   fi
 else
-  check "rip-cage-olen [6b] extensions/ dir is root-owned" "fail" "extensions/ dir absent — section 6 not reached (image regression?)"
+  check "rip-cage-olen [6b] extensions/ dir is root-owned" "fail" "extensions/ dir absent — section 6 not reached (recipe regression?)"
 fi
 
 # 6c. dcg-gate.ts is not agent-writable (permission assertion)
@@ -395,7 +410,7 @@ if [[ -f "$DCG_GATE" ]]; then
     check "rip-cage-olen [6c] dcg-gate.ts is not writable by agent (permission)" "fail" "agent can write $DCG_GATE"
   fi
 else
-  check "rip-cage-olen [6c] dcg-gate.ts is not writable by agent (permission)" "fail" "dcg-gate.ts absent — section 6 not reached (image regression?)"
+  check "rip-cage-olen [6c] dcg-gate.ts is not writable by agent (permission)" "fail" "dcg-gate.ts absent — section 6 not reached (recipe regression?)"
 fi
 
 # 6d. extensions/ dir is not agent-writable (permission assertion)
@@ -406,7 +421,7 @@ if [[ -d "$DCG_EXT_DIR" ]]; then
     check "rip-cage-olen [6d] extensions/ dir is not writable by agent (permission)" "fail" "agent can write $DCG_EXT_DIR"
   fi
 else
-  check "rip-cage-olen [6d] extensions/ dir is not writable by agent (permission)" "fail" "extensions/ dir absent — section 6 not reached (image regression?)"
+  check "rip-cage-olen [6d] extensions/ dir is not writable by agent (permission)" "fail" "extensions/ dir absent — section 6 not reached (recipe regression?)"
 fi
 
 # 6e. Actual failed-write probe: agent cannot overwrite dcg-gate.ts (vector a)
@@ -417,7 +432,7 @@ if [[ -f "$DCG_GATE" ]]; then
     check "rip-cage-olen [6e] agent write to dcg-gate.ts EACCES (vector a)" "pass" "touch correctly denied"
   fi
 else
-  check "rip-cage-olen [6e] agent write to dcg-gate.ts EACCES (vector a)" "fail" "dcg-gate.ts absent — section 6 not reached (image regression?)"
+  check "rip-cage-olen [6e] agent write to dcg-gate.ts EACCES (vector a)" "fail" "dcg-gate.ts absent — section 6 not reached (recipe regression?)"
 fi
 
 # 6f. Actual failed-write probe: agent cannot create z-evil.ts in extensions/ (vector b)
@@ -437,8 +452,10 @@ if [[ -d "$DCG_EXT_DIR" ]]; then
   fi
   unset _evil_path
 else
-  check "rip-cage-olen [6f] agent cannot create z-evil.ts in extensions/ (vector b)" "fail" "extensions/ dir absent — section 6 not reached (image regression?)"
+  check "rip-cage-olen [6f] agent cannot create z-evil.ts in extensions/ (vector b)" "fail" "extensions/ dir absent — section 6 not reached (recipe regression?)"
 fi
+
+fi  # end: if not PI_GUARD_RECIPE_ABSENT
 
 # -----------------------------------------------------------------------
 # Summary
