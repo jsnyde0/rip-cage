@@ -310,21 +310,26 @@ fi
 if [ ! -x /usr/local/bin/dcg ]; then
   echo "[rip-cage] INFO: DCG binary not found at /usr/local/bin/dcg — command-guard inactive (opt-in via examples/dcg recipe, ADR-025 D2)"
 fi
-# Verify dcg-guard wrapper (ADR-025 D3): must exist, be executable, and DCG_CONFIG must parse.
-# A missing/malformed DCG_CONFIG silently re-opens the user-layer config hole (ADR-025 D5).
-if [ ! -x /usr/local/lib/rip-cage/bin/dcg-guard ]; then
-  echo "[rip-cage] ERROR: dcg-guard wrapper not found or not executable at /usr/local/lib/rip-cage/bin/dcg-guard" >&2
-  exit 1
+# Verify dcg-guard wrapper + config ONLY when the dcg recipe is composed (binary present).
+# When dcg is absent (recipe not composed) these artifacts do not exist — skip silently.
+# When dcg IS composed: keep all checks fail-closed (ADR-025 D3/D5, ADR-001).
+if [ -x /usr/local/bin/dcg ]; then
+  # Verify dcg-guard wrapper (ADR-025 D3): must exist, be executable, and DCG_CONFIG must parse.
+  # A missing/malformed DCG_CONFIG silently re-opens the user-layer config hole (ADR-025 D5).
+  if [ ! -x /usr/local/lib/rip-cage/bin/dcg-guard ]; then
+    echo "[rip-cage] ERROR: dcg-guard wrapper not found or not executable at /usr/local/lib/rip-cage/bin/dcg-guard" >&2
+    exit 1
+  fi
+  if [ ! -f /usr/local/lib/rip-cage/dcg/config.toml ]; then
+    echo "[rip-cage] ERROR: baked DCG_CONFIG not found at /usr/local/lib/rip-cage/dcg/config.toml — user-layer config hole remains open" >&2
+    exit 1
+  fi
+  if ! python3 -c "import tomllib; tomllib.load(open('/usr/local/lib/rip-cage/dcg/config.toml','rb'))" 2>/dev/null; then
+    echo "[rip-cage] ERROR: pinned DCG_CONFIG at /usr/local/lib/rip-cage/dcg/config.toml is malformed TOML — a bad config silently re-opens the user-layer config hole; refusing to start (ADR-025 D5 fail-closed)" >&2
+    exit 1
+  fi
+  echo "[rip-cage] dcg-guard wrapper verified (CWD-anchor + pinned DCG_CONFIG active)"
 fi
-if [ ! -f /usr/local/lib/rip-cage/dcg/config.toml ]; then
-  echo "[rip-cage] ERROR: baked DCG_CONFIG not found at /usr/local/lib/rip-cage/dcg/config.toml — user-layer config hole remains open" >&2
-  exit 1
-fi
-if ! python3 -c "import tomllib; tomllib.load(open('/usr/local/lib/rip-cage/dcg/config.toml','rb'))" 2>/dev/null; then
-  echo "[rip-cage] ERROR: pinned DCG_CONFIG at /usr/local/lib/rip-cage/dcg/config.toml is malformed TOML — a bad config silently re-opens the user-layer config hole; refusing to start (ADR-025 D5 fail-closed)" >&2
-  exit 1
-fi
-echo "[rip-cage] dcg-guard wrapper verified (CWD-anchor + pinned DCG_CONFIG active)"
 # NOTE: compound blocker removed in rip-cage-4r8 — DCG is chaining-robust.
 # Verify python3 (required for skill-server.py MCP shim)
 if ! command -v python3 > /dev/null 2>&1; then
@@ -333,47 +338,50 @@ if ! command -v python3 > /dev/null 2>&1; then
 fi
 echo "[rip-cage] python3 found (skill-server.py will be available)"
 echo "[rip-cage] Hooks verified"
-# 5b. Verify pi-cage guard (dcg-gate.ts extension) — fail-loud (ADR-001)
+# 5b. Verify pi-cage guard (dcg-gate.ts extension) — fail-loud when dcg IS composed (ADR-001)
 # PI_CODING_AGENT_DIR=/home/agent/.pi/agent is set unconditionally by rc up for ALL cages
-# (rc:1511), not only when pi auth is mounted. The guard is baked into every image, so
-# the presence check always runs and verifies both dcg-gate.ts (cage-owned auto-discovery
-# path) and dcg-guard (the wrapper binary it delegates to) are present.
+# (rc:1511), not only when pi auth is mounted. The dcg-gate.ts is baked into every image
+# (deferred removal, rip-cage-wlwc.2) but is INERT without the dcg-guard wrapper — when
+# dcg is not composed (binary absent) the gate check is skipped entirely (not a boot-blocker).
+# When dcg IS composed: the guard is active and all checks remain fail-closed (ADR-001, ADR-024).
 # Ownership assertion (rip-cage-olen): dcg-gate.ts AND extensions/ must be root-owned —
 # agent ownership means the guard is self-disablable (ADR-024 threat). Fail-closed (ADR-001).
 if [ "${PI_CODING_AGENT_DIR:-}" = "/home/agent/.pi/agent" ]; then
-  if [ ! -f /home/agent/.pi/agent/extensions/dcg-gate.ts ]; then
-    echo "[rip-cage] ERROR: pi-cage guard extension missing at /home/agent/.pi/agent/extensions/dcg-gate.ts — pi cage would launch unguarded (rip-cage-bl1)" >&2
-    exit 1
+  if [ -x /usr/local/bin/dcg ]; then
+    if [ ! -f /home/agent/.pi/agent/extensions/dcg-gate.ts ]; then
+      echo "[rip-cage] ERROR: pi-cage guard extension missing at /home/agent/.pi/agent/extensions/dcg-gate.ts — pi cage would launch unguarded (rip-cage-bl1)" >&2
+      exit 1
+    fi
+    _dcg_gate_owner=$(stat -c '%U' /home/agent/.pi/agent/extensions/dcg-gate.ts 2>/dev/null || true)
+    if [ "${_dcg_gate_owner}" != "root" ]; then
+      echo "[rip-cage] ERROR: dcg-gate.ts is owned by '${_dcg_gate_owner}' (expected root) — guard is agent-writable and self-disablable; Dockerfile ownership must be root:root (rip-cage-olen)" >&2
+      exit 1
+    fi
+    _dcg_ext_dir_owner=$(stat -c '%U' /home/agent/.pi/agent/extensions 2>/dev/null || true)
+    if [ "${_dcg_ext_dir_owner}" != "root" ]; then
+      echo "[rip-cage] ERROR: extensions/ dir is owned by '${_dcg_ext_dir_owner}' (expected root) — agent can add competing extensions; Dockerfile ownership must be root:root (rip-cage-olen)" >&2
+      exit 1
+    fi
+    unset _dcg_gate_owner _dcg_ext_dir_owner
+    if [ ! -x /usr/local/lib/rip-cage/bin/dcg-guard ]; then
+      echo "[rip-cage] ERROR: dcg-guard wrapper missing — pi-cage guard cannot function (rip-cage-bl1)" >&2
+      exit 1
+    fi
+    # rip-cage-sn1h: pi launch wrapper must be present at /usr/local/bin/pi (intercepts every pi call,
+    # adds --no-extensions -e <dcg-gate> to close the /workspace/.pi/extensions/ auto-discovery bypass).
+    # Ownership: must be root-owned so the agent cannot swap it for an unwrapped pi call.
+    if [ ! -x /usr/local/bin/pi ]; then
+      echo "[rip-cage] ERROR: pi launch wrapper missing at /usr/local/bin/pi — pi would launch without --no-extensions guard (rip-cage-sn1h)" >&2
+      exit 1
+    fi
+    _pi_wrapper_owner=$(stat -c '%U' /usr/local/bin/pi 2>/dev/null || true)
+    if [ "${_pi_wrapper_owner}" != "root" ]; then
+      echo "[rip-cage] ERROR: pi wrapper at /usr/local/bin/pi is owned by '${_pi_wrapper_owner}' (expected root) — agent could replace it to bypass --no-extensions (rip-cage-sn1h)" >&2
+      exit 1
+    fi
+    unset _pi_wrapper_owner
+    echo "[rip-cage] pi-cage guard verified (dcg-gate.ts + dcg-guard + pi-wrapper all present, root-owned)"
   fi
-  _dcg_gate_owner=$(stat -c '%U' /home/agent/.pi/agent/extensions/dcg-gate.ts 2>/dev/null || true)
-  if [ "${_dcg_gate_owner}" != "root" ]; then
-    echo "[rip-cage] ERROR: dcg-gate.ts is owned by '${_dcg_gate_owner}' (expected root) — guard is agent-writable and self-disablable; Dockerfile ownership must be root:root (rip-cage-olen)" >&2
-    exit 1
-  fi
-  _dcg_ext_dir_owner=$(stat -c '%U' /home/agent/.pi/agent/extensions 2>/dev/null || true)
-  if [ "${_dcg_ext_dir_owner}" != "root" ]; then
-    echo "[rip-cage] ERROR: extensions/ dir is owned by '${_dcg_ext_dir_owner}' (expected root) — agent can add competing extensions; Dockerfile ownership must be root:root (rip-cage-olen)" >&2
-    exit 1
-  fi
-  unset _dcg_gate_owner _dcg_ext_dir_owner
-  if [ ! -x /usr/local/lib/rip-cage/bin/dcg-guard ]; then
-    echo "[rip-cage] ERROR: dcg-guard wrapper missing — pi-cage guard cannot function (rip-cage-bl1)" >&2
-    exit 1
-  fi
-  # rip-cage-sn1h: pi launch wrapper must be present at /usr/local/bin/pi (intercepts every pi call,
-  # adds --no-extensions -e <dcg-gate> to close the /workspace/.pi/extensions/ auto-discovery bypass).
-  # Ownership: must be root-owned so the agent cannot swap it for an unwrapped pi call.
-  if [ ! -x /usr/local/bin/pi ]; then
-    echo "[rip-cage] ERROR: pi launch wrapper missing at /usr/local/bin/pi — pi would launch without --no-extensions guard (rip-cage-sn1h)" >&2
-    exit 1
-  fi
-  _pi_wrapper_owner=$(stat -c '%U' /usr/local/bin/pi 2>/dev/null || true)
-  if [ "${_pi_wrapper_owner}" != "root" ]; then
-    echo "[rip-cage] ERROR: pi wrapper at /usr/local/bin/pi is owned by '${_pi_wrapper_owner}' (expected root) — agent could replace it to bypass --no-extensions (rip-cage-sn1h)" >&2
-    exit 1
-  fi
-  unset _pi_wrapper_owner
-  echo "[rip-cage] pi-cage guard verified (dcg-gate.ts + dcg-guard + pi-wrapper all present, root-owned)"
 fi
 
 # 6. Set git identity
