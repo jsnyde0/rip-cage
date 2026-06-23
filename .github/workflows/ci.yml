@@ -31,11 +31,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install yq (mikefarah v4, required by rc generate-dockerfile)
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Generate composed Dockerfile from dist/default-tools.yaml
+        # rip-cage-wlwc.12: CI builds the default-composed image (CC+pi+dcg+ssh-bypass)
+        # from the maintainer-authored dist/default-tools.yaml manifest.
+        run: RC_MANIFEST_GLOBAL=dist/default-tools.yaml ./rc generate-dockerfile > /tmp/Dockerfile.composed
+
       - name: Build Docker image
-        # The multi-stage build compiles the Go beads binary and the Rust DCG
-        # binary before assembling the Debian runtime image.
-        # A successful build confirms the full toolchain works.
-        run: docker build -t rip-cage:ci-test .
+        # The multi-stage build compiles the Go beads binary, the Rust DCG binary,
+        # and the CC+pi+dcg+ssh-bypass recipe steps before assembling the runtime image.
+        # A successful build confirms the full toolchain + composition works.
+        run: docker build -t rip-cage:ci-test -f /tmp/Dockerfile.composed .
 
   # ---------------------------------------------------------------------------
   # Job 3: Test (host-only) — single driver: tests/run-host.sh with --host-only

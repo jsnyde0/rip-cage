@@ -97,11 +97,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install yq (mikefarah v4, required by rc generate-dockerfile)
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Generate composed Dockerfile from dist/default-tools.yaml
+        # rip-cage-wlwc.12: the published image is built from the maintainer-authored
+        # default-composed manifest (dist/default-tools.yaml), which composes CC+pi+dcg+ssh-bypass.
+        # The composition mechanism is "agent/CI copies recipe fragments into the manifest,
+        # runs rc build" — no compose mechanism in rc code (ADR-005 D12).
+        run: RC_MANIFEST_GLOBAL=dist/default-tools.yaml ./rc generate-dockerfile > /tmp/Dockerfile.composed
+
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: /tmp/Dockerfile.composed
           platforms: ${{ matrix.platform }}
           build-args: |
             RC_VERSION=${{ needs.prepare.outputs.version }}

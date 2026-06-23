@@ -117,17 +117,37 @@ else
 fi
 unset _managed_settings_ok _managed_file_owner _managed_dir_owner
 
-# 9. settings.json wires ssh-bypass blocker IF the recipe is installed (opt-in, rip-cage-wlwc.11).
+# 9. ssh-bypass hook wired via managed-settings (mirrors check #8 pattern for rip-cage-wlwc.12).
 # block-ssh-bypass is NOT floor (ADR-025 D2, ADR-026 D2) — it is a composable recipe.
-# A base cage without examples/ssh-bypass does NOT have the hook wired; containment holds via other layers.
+# A cage without examples/ssh-bypass does NOT have the hook installed; INFO-skip in that case.
+# When the recipe IS installed, check managed-settings.json first (default-composed path via
+# examples/claude/managed-settings.json, installed root-owned as floor-lock). Fall back to
+# agent-writable settings.json for the standalone-recipe composition path (where an agent merged
+# settings-fragment.json per the .11 recipe).
 # NOTE: compound blocker removed in rip-cage-4r8 — DCG is chaining-robust (see 11f/11g).
 _hook_path="/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh"
 if [[ -x "$_hook_path" ]]; then
-  # Recipe is installed — verify the hook is also wired in settings.json.
-  if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh")' ~/.claude/settings.json >/dev/null 2>&1; then
-    check "settings.json wires ssh-bypass blocker (recipe installed)" "pass"
+  # Recipe is installed — verify hook is wired. Check managed-settings.json first (floor-lock path).
+  if [[ -f /etc/claude-code/managed-settings.json ]] && \
+     jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh")' /etc/claude-code/managed-settings.json >/dev/null 2>&1; then
+    _ms9_file_owner=$(stat -c '%U' /etc/claude-code/managed-settings.json 2>/dev/null || echo "unknown")
+    _ms9_dir_owner=$(stat -c '%U' /etc/claude-code 2>/dev/null || echo "unknown")
+    if [[ "$_ms9_file_owner" == "root" && "$_ms9_dir_owner" == "root" ]]; then
+      check "managed-settings.json wires ssh-bypass hook + is root-owned (rip-cage-wlwc.12 floor-lock)" "pass" \
+        "file owner=$_ms9_file_owner dir owner=$_ms9_dir_owner"
+    elif [[ "$_ms9_file_owner" != "root" ]]; then
+      check "managed-settings.json wires ssh-bypass hook + is root-owned (rip-cage-wlwc.12 floor-lock)" "fail" \
+        "hook present BUT file owner='$_ms9_file_owner' (expected root) — agent can overwrite/replace"
+    else
+      check "managed-settings.json wires ssh-bypass hook + is root-owned (rip-cage-wlwc.12 floor-lock)" "fail" \
+        "hook present BUT dir /etc/claude-code owner='$_ms9_dir_owner' (expected root) — agent can inject new files or unlink+replace"
+    fi
+    unset _ms9_file_owner _ms9_dir_owner
+  elif jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh")' ~/.claude/settings.json >/dev/null 2>&1; then
+    # Fallback: standalone-recipe path — hook in agent-writable settings.json (acceptable for that composition).
+    check "settings.json wires ssh-bypass hook (standalone-recipe composition path)" "pass"
   else
-    check "settings.json wires ssh-bypass blocker (recipe installed, hook missing from settings)" "fail"
+    check "ssh-bypass hook wired in settings (recipe installed, hook missing from managed-settings.json and settings.json)" "fail"
   fi
 else
   TOTAL=$((TOTAL + 1))

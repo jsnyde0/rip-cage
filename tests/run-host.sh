@@ -218,6 +218,8 @@ run_test "${SCRIPT_DIR}/test-denylist-matching.sh"    # _check_secret_path_denyl
 run_test "${SCRIPT_DIR}/test-pi-substrate-mounts.sh"  # rip-cage-kstk: pi substrate projection mount args + denylist + init symlinks + floor-protection
 run_test "${SCRIPT_DIR}/test-symlink-follow.sh"       # symlink-follow scanner + fingerprint + denylist gating (unsets RC_CONFIG_GLOBAL)
 run_test "${SCRIPT_DIR}/test-config-loader.sh"        # layered config additive/select merge + provenance matrix (unsets RC_CONFIG_GLOBAL)
+run_test "${SCRIPT_DIR}/test-ssh-bypass-demotion.sh"  # rip-cage-wlwc.11: block-ssh-bypass demoted from base image to composable recipe (SS1-SS3 host-only structural; SB1-SB2 RC_E2E-gated)
+run_test "${SCRIPT_DIR}/test-dcg-demotion.sh"          # rip-cage-wlwc.10: dcg demoted from base image to composable recipe (DS1-DS4 host-only structural; DB1-DB2 RC_E2E-gated)
 # Container-tier (NEEDS_CONTAINER above; self-skip under --host-only, run on full invocation):
 run_test "${SCRIPT_DIR}/test-ssh-forwarding.sh"       # ADR-017/018 live ssh-agent forwarding
 run_test "${SCRIPT_DIR}/test-ssh-resolver.sh"         # github-identity resolver; Tests 6-10 spin up cages

@@ -229,6 +229,30 @@ EOF
   exit 1
 }
 
+cmd_generate_dockerfile() {
+  # Expose the composed Dockerfile for CI/release use (rip-cage-wlwc.12).
+  # Reads RC_MANIFEST_GLOBAL (default: ~/.config/rip-cage/tools.yaml) and emits
+  # the composed Dockerfile to stdout. The caller redirects to a file and passes
+  # it to docker build --file.
+  #
+  # This is NOT a compose mechanism — it simply exposes _manifest_build_dockerfile_path
+  # (already used by cmd_build) so that CI can generate the composed Dockerfile without
+  # also running docker build. No auto-wiring; no config-merge; the agent/CI provides
+  # the manifest, this function outputs the Dockerfile.
+  #
+  # Usage: RC_MANIFEST_GLOBAL=dist/default-tools.yaml ./rc generate-dockerfile > Dockerfile.composed
+  local _df_path
+  _df_path=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/Dockerfile") || {
+    echo "Error: failed to resolve composed Dockerfile from manifest." >&2
+    return 1
+  }
+  cat "$_df_path"
+  # Clean up temp file if one was created (path differs from original Dockerfile).
+  if [[ "$_df_path" != "${SCRIPT_DIR}/Dockerfile" ]]; then
+    rm -f "$_df_path"
+  fi
+}
+
 cmd_build() {
   # Ensure the manifest is seeded (first-run: writes defaults to ~/.config/rip-cage/tools.yaml).
   _manifest_ensure_seeded
@@ -6531,9 +6555,14 @@ _manifest_global_path() {
   echo "${RC_MANIFEST_GLOBAL:-${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/tools.yaml}"
 }
 
-# The default tool manifest — the current bundled stack (ADR-005 D8).
-# Any cage with an absent or empty manifest gets this content, so the cage
-# behaves identically to a pre-manifest rip-cage image.
+# The default (floor-only) tool manifest — the containment floor with no optional tools.
+# Any cage built from this default gets beads, dolt, and gh only — no CC, pi, dcg,
+# or ssh-bypass. The "blessed default" for the PUBLISHED image is dist/default-tools.yaml
+# (maintainer-authored, composing CC+pi+dcg+ssh-bypass). This in-repo default stays
+# floor-only so rc never silently special-cases any optional tool (ADR-005 D12).
+#
+# Agents and operators compose the rest: copy recipe fragments from examples/ into
+# ~/.config/rip-cage/tools.yaml (or dist/default-tools.yaml) and run rc build.
 _manifest_default_yaml() {
   cat <<'YAML'
 version: 1
@@ -6560,24 +6589,10 @@ tools:
       - github.com
     mounts: []
 
-  - name: claude
-    archetype: TOOL
-    version_pin: "bundled"
-    egress:
-      - api.anthropic.com
-      - statsig.anthropic.com
-      - statsig.com
-    mounts: []
-
-  - name: pi
-    archetype: TOOL
-    version_pin: "bundled"
-    egress: []
-    mounts: []
-
-  # dcg (Destructive Command Guard) is NOT floor (ADR-025 D2, ADR-026 D2).
-  # It is a composable recipe — see examples/dcg/manifest-fragment.yaml (rip-cage-wlwc.10).
-  # Add it to your ~/.config/rip-cage/tools.yaml and run `rc build` to opt in.
+  # claude, pi, dcg, ssh-bypass are NOT floor — they are composable recipes.
+  # See examples/{claude,pi,dcg,ssh-bypass}/ for recipe fragments.
+  # The published image composes them via dist/default-tools.yaml (rip-cage-wlwc.12).
+  # Add recipe entries to ~/.config/rip-cage/tools.yaml and run rc build to opt in.
 YAML
 }
 
@@ -10341,5 +10356,6 @@ case "${1:-}" in
   setup)       shift; cmd_setup "$@" ;;
   schema)  cmd_schema ;;
   __bd-preflight-test) shift; _bd_host_preflight "${1:-}" "${2:-}" --test-mode ;;
+  generate-dockerfile) shift; cmd_generate_dockerfile "$@" ;;
   *)       usage ;;
 esac
