@@ -2574,7 +2574,9 @@ _build_ssh_mount_args() {
   # is the filtered file. NB: this narrows the system-path known_hosts but does NOT,
   # by itself, defeat `ssh -o UserKnownHostsFile=/tmp/anything -o StrictHostKeyChecking=accept-new`.
   # OpenSSH CLI -o always wins over Match final blocks. The CLI-flag bypass is closed
-  # at the PreToolUse hook layer (hooks/block-ssh-bypass.sh, ADR-022 D5), not here.
+  # by the ssh-bypass recipe (examples/ssh-bypass/, ADR-022 D5) when composed (default-on
+  # in the published image). A base cage without that recipe has no CLI-flag guard here;
+  # the known_hosts mount (this block) is the always-present containment floor (ADR-022 D3).
   # ADR-001 fail-loud: always emit the mount. _up_resolve_ssh_allowlists is the
   # contract for populating these files (always writes the known_hosts cache;
   # always writes the sentinel when filtering is active). If a future code path

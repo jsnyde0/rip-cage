@@ -109,13 +109,23 @@ else
 fi
 unset _managed_settings_ok _managed_file_owner _managed_dir_owner
 
-# 9. settings.json has ssh-bypass blocker hook wired (ADR-022 D5)
+# 9. settings.json wires ssh-bypass blocker IF the recipe is installed (opt-in, rip-cage-wlwc.11).
+# block-ssh-bypass is NOT floor (ADR-025 D2, ADR-026 D2) — it is a composable recipe.
+# A base cage without examples/ssh-bypass does NOT have the hook wired; containment holds via other layers.
 # NOTE: compound blocker removed in rip-cage-4r8 — DCG is chaining-robust (see 11f/11g).
-if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh")' ~/.claude/settings.json >/dev/null 2>&1; then
-  check "settings.json wires ssh-bypass blocker" "pass"
+_hook_path="/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh"
+if [[ -x "$_hook_path" ]]; then
+  # Recipe is installed — verify the hook is also wired in settings.json.
+  if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh")' ~/.claude/settings.json >/dev/null 2>&1; then
+    check "settings.json wires ssh-bypass blocker (recipe installed)" "pass"
+  else
+    check "settings.json wires ssh-bypass blocker (recipe installed, hook missing from settings)" "fail"
+  fi
 else
-  check "settings.json wires ssh-bypass blocker" "fail"
+  TOTAL=$((TOTAL + 1))
+  echo "INFO  [$TOTAL] ssh-bypass blocker opt-in recipe NOT installed (examples/ssh-bypass — ADR-025 D2, ADR-026 D2); containment holds via other layers"
 fi
+unset _hook_path
 
 
 # 10. settings.json denies .git/hooks writes
@@ -278,51 +288,67 @@ else
 fi
 unset _dcg_chain_semi_payload _dcg_chain_semi
 
-# 11h. block-ssh-bypass denies chained ssh-bypass after && (chaining-robust)
-# Verifies block-ssh-bypass.sh scans the whole command string, not just the first command.
-_ssh_chain_payload=$(mktemp /tmp/ssh-chain-XXXXXX.json)
-printf '{"tool_name":"Bash","tool_input":{"command":"echo x && ssh -o StrictHostKeyChecking=no host"}}' > "$_ssh_chain_payload"
-_ssh_chain=$(cat "$_ssh_chain_payload" | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh 2>/dev/null || true)
-rm -f "$_ssh_chain_payload"
-if echo "$_ssh_chain" | grep -qE '"permissionDecision".*"deny"'; then
-  check "ssh-bypass chaining-robust: denies chained ssh-bypass (rip-cage-4r8)" "pass"
+# 11h. block-ssh-bypass denies chained ssh-bypass after && (chaining-robust) — only if recipe installed.
+# block-ssh-bypass is opt-in via examples/ssh-bypass recipe (rip-cage-wlwc.11 / ADR-025 D2).
+# Skip gracefully when the recipe is not installed (base cage without recipe = containment via other layers).
+_sshbypass_hook="/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh"
+if [[ -x "$_sshbypass_hook" ]]; then
+  _ssh_chain_payload=$(mktemp /tmp/ssh-chain-XXXXXX.json)
+  printf '{"tool_name":"Bash","tool_input":{"command":"echo x && ssh -o StrictHostKeyChecking=no host"}}' > "$_ssh_chain_payload"
+  _ssh_chain=$(cat "$_ssh_chain_payload" | "$_sshbypass_hook" 2>/dev/null || true)
+  rm -f "$_ssh_chain_payload"
+  if echo "$_ssh_chain" | grep -qE '"permissionDecision".*"deny"'; then
+    check "ssh-bypass chaining-robust: denies chained ssh-bypass (rip-cage-4r8)" "pass"
+  else
+    check "ssh-bypass chaining-robust: denies chained ssh-bypass (rip-cage-4r8)" "fail" "$_ssh_chain"
+  fi
+  unset _ssh_chain_payload _ssh_chain
 else
-  check "ssh-bypass chaining-robust: denies chained ssh-bypass (rip-cage-4r8)" "fail" "$_ssh_chain"
+  TOTAL=$((TOTAL + 1))
+  echo "INFO  [$TOTAL] ssh-bypass chaining-robust: hook not installed (opt-in recipe — ADR-025 D2)"
 fi
-unset _ssh_chain_payload _ssh_chain
+unset _sshbypass_hook
 
-# 12. ssh-bypass blocker denies the verified bypass shape (ADR-022 D5)
+# 12. ssh-bypass blocker denies the verified bypass shape (ADR-022 D5) — only if recipe installed.
 # NOTE: compound blocker (formerly check 12) removed in rip-cage-4r8. DCG chaining-robustness
 # is regression-tested at 11f/11g. ssh-bypass chaining robustness at 11h.
-sshbypass_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/x git@gitlab.com"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh 2>/dev/null || true)
-if echo "$sshbypass_result" | grep -qE '"permissionDecision".*"deny"'; then
-  check "ssh-bypass blocker denies UserKnownHostsFile+accept-new" "pass"
-else
-  check "ssh-bypass blocker denies UserKnownHostsFile+accept-new" "fail" "$sshbypass_result"
-fi
+# block-ssh-bypass is opt-in via examples/ssh-bypass recipe (rip-cage-wlwc.11 / ADR-025 D2).
+_sshbypass_hook="/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh"
+if [[ -x "$_sshbypass_hook" ]]; then
+  sshbypass_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/x git@gitlab.com"}}' | "$_sshbypass_hook" 2>/dev/null || true)
+  if echo "$sshbypass_result" | grep -qE '"permissionDecision".*"deny"'; then
+    check "ssh-bypass blocker denies UserKnownHostsFile+accept-new" "pass"
+  else
+    check "ssh-bypass blocker denies UserKnownHostsFile+accept-new" "fail" "$sshbypass_result"
+  fi
 
-# 12b. ssh-bypass refusal message points at .rip-cage.yaml + rc config init
-if echo "$sshbypass_result" | grep -q '\.rip-cage\.yaml' && echo "$sshbypass_result" | grep -q 'rc config init'; then
-  check "ssh-bypass refusal message names .rip-cage.yaml + rc config init" "pass"
-else
-  check "ssh-bypass refusal message names .rip-cage.yaml + rc config init" "fail" "$sshbypass_result"
-fi
+  # 12b. ssh-bypass refusal message points at .rip-cage.yaml + rc config init
+  if echo "$sshbypass_result" | grep -q '\.rip-cage\.yaml' && echo "$sshbypass_result" | grep -q 'rc config init'; then
+    check "ssh-bypass refusal message names .rip-cage.yaml + rc config init" "pass"
+  else
+    check "ssh-bypass refusal message names .rip-cage.yaml + rc config init" "fail" "$sshbypass_result"
+  fi
 
-# 12c. ssh-bypass blocker catches /usr/bin/ssh direct path call
-sshbypass_direct=$(echo '{"tool_name":"Bash","tool_input":{"command":"/usr/bin/ssh -o StrictHostKeyChecking=no host"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh 2>/dev/null || true)
-if echo "$sshbypass_direct" | grep -qE '"permissionDecision".*"deny"'; then
-  check "ssh-bypass blocker catches /usr/bin/ssh direct path" "pass"
-else
-  check "ssh-bypass blocker catches /usr/bin/ssh direct path" "fail" "$sshbypass_direct"
-fi
+  # 12c. ssh-bypass blocker catches /usr/bin/ssh direct path call
+  sshbypass_direct=$(echo '{"tool_name":"Bash","tool_input":{"command":"/usr/bin/ssh -o StrictHostKeyChecking=no host"}}' | "$_sshbypass_hook" 2>/dev/null || true)
+  if echo "$sshbypass_direct" | grep -qE '"permissionDecision".*"deny"'; then
+    check "ssh-bypass blocker catches /usr/bin/ssh direct path" "pass"
+  else
+    check "ssh-bypass blocker catches /usr/bin/ssh direct path" "fail" "$sshbypass_direct"
+  fi
 
-# 12d. ssh-bypass blocker does NOT block legitimate ssh
-sshbypass_legit=$(echo '{"tool_name":"Bash","tool_input":{"command":"ssh git@github.com"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh 2>/dev/null || true)
-if [[ -z "$sshbypass_legit" ]]; then
-  check "ssh-bypass blocker allows legitimate ssh (no override flags)" "pass"
+  # 12d. ssh-bypass blocker does NOT block legitimate ssh
+  sshbypass_legit=$(echo '{"tool_name":"Bash","tool_input":{"command":"ssh git@github.com"}}' | "$_sshbypass_hook" 2>/dev/null || true)
+  if [[ -z "$sshbypass_legit" ]]; then
+    check "ssh-bypass blocker allows legitimate ssh (no override flags)" "pass"
+  else
+    check "ssh-bypass blocker allows legitimate ssh (no override flags)" "fail" "$sshbypass_legit"
+  fi
 else
-  check "ssh-bypass blocker allows legitimate ssh (no override flags)" "fail" "$sshbypass_legit"
+  TOTAL=$((TOTAL + 1))
+  echo "INFO  [$TOTAL] ssh-bypass hook tests: hook not installed (opt-in recipe — ADR-025 D2, ADR-026 D2)"
 fi
+unset _sshbypass_hook
 
 echo ""
 echo "-- Auth --"

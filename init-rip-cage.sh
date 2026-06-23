@@ -305,7 +305,8 @@ fi
 # 5. Verify hooks
 # dcg binary is opt-in via examples/dcg recipe (rip-cage-wlwc.10 / ADR-025 D2).
 # Warn-only when absent — a cage without the dcg recipe has no command-guard but
-# containment still holds via other layers (egress firewall, ssh-bypass blocker, etc.).
+# containment still holds via other layers (egress firewall, ssh-bypass blocker opt-in
+# via examples/ssh-bypass recipe, etc.).
 if [ ! -x /usr/local/bin/dcg ]; then
   echo "[rip-cage] INFO: DCG binary not found at /usr/local/bin/dcg — command-guard inactive (opt-in via examples/dcg recipe, ADR-025 D2)"
 fi

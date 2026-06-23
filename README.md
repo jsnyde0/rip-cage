@@ -43,15 +43,16 @@ New to rip cage? The [Getting Started guide](docs/guides/getting-started.md) wal
 
 ## What does the cage do?
 
-The cage runs your agent behind independent layers. Three intercept every shell command before it runs; a fourth watches the network.
+The cage runs your agent behind independent layers. The base image provides the containment floor (container boundary, egress firewall, filesystem sandbox, non-root user, secret-path denylist, `.git/hooks` RO weld, ssh known_hosts mount). Command-guard recipes compose on top of that floor.
 
-**DCG (Destructive Command Guard)** blocks dangerous commands:
+**DCG (Destructive Command Guard)** — a composable recipe (`examples/dcg/`) that blocks dangerous commands:
 ```
 $ rm -rf /          → DENIED by DCG
 $ dd if=/dev/zero   → DENIED by DCG
 ```
+DCG and the ssh-bypass blocker are **default-on composable recipes** in the published image, but are not baked into the base image (ADR-025 D2, ADR-026 D2). A custom minimal cage omitting those recipes relies on the containment floor alone.
 
-**bypassPermissions with hooks** — Claude Code runs with bypassPermissions enabled, but DCG and the ssh-bypass blocker fire as PreToolUse hooks on every command regardless. DCG uses unanchored whole-command regex matching, so chaining (`&&`, `;`, `||`) does not bypass it. Writing to `.git/hooks/*` is hard-denied.
+**bypassPermissions with hooks** — Claude Code runs with bypassPermissions enabled. When the DCG and ssh-bypass recipes are composed, their PreToolUse hooks fire on every command. DCG uses unanchored whole-command regex matching, so chaining (`&&`, `;`, `||`) does not bypass it. Writing to `.git/hooks/*` is hard-denied by the base image deny rules regardless of which recipes are composed.
 
 **Network egress firewall** — the cage watches every outbound connection. New cages start in **observe mode**: nothing is blocked, but the agent's traffic is logged. When you're ready to lock things down, one command promotes everything the agent actually talked to into an allowlist and flips the cage to **block mode** — so it can still reach the APIs it needs and nothing else:
 
@@ -94,7 +95,7 @@ If you're already invested in Claude Code and want to run it with `bypassPermiss
 
 Pi (`@mariozechner/pi-coding-agent`) is also supported in the same image alongside Claude Code. If you have a ChatGPT Plus/Pro subscription, pi's Codex OAuth flow lets you run OpenAI Codex from inside the cage without an API key. Pi also supports Anthropic, Gemini, Groq, Cerebras, and more. See [Auth → Pi auth](docs/reference/auth.md#pi-auth) for setup and TOS notes.
 
-> **Note:** pi cages get the same DCG destructive-command enforcement as Claude Code cages (via the auto-loaded `dcg-gate.ts` extension) plus container isolation and the egress firewall. See [Pi safety model](docs/reference/auth.md#pi-safety-model).
+> **Note:** When the DCG recipe is composed, pi cages get the same DCG destructive-command enforcement as Claude Code cages (via the baked `dcg-gate.ts` extension that calls the recipe-provisioned `dcg` binary) plus container isolation and the egress firewall. See [Pi safety model](docs/reference/auth.md#pi-safety-model).
 
 ## Configuration & recipes
 

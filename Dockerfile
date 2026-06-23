@@ -140,7 +140,6 @@ RUN mkdir -p /etc/ssh/ssh_config.d
 COPY ssh/known_hosts.github /etc/ssh/ssh_known_hosts
 COPY ssh/ssh_config /etc/ssh/ssh_config.d/00-rip-cage.conf
 RUN chmod 0644 /etc/ssh/ssh_known_hosts /etc/ssh/ssh_config.d/00-rip-cage.conf
-COPY hooks/ /usr/local/lib/rip-cage/hooks/
 COPY tests/test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
 COPY settings.json /etc/rip-cage/settings.json
 # CC managed-settings: baked root-owned highest-precedence CC hook layer (rip-cage-r9n4).
@@ -171,7 +170,6 @@ COPY tests/test-egress-firewall.sh /usr/local/lib/rip-cage/test-egress-firewall.
 COPY tests/test-bd-roundtrip.sh /usr/local/lib/rip-cage/test-bd-roundtrip.sh
 COPY tests/test-pi-dcg-gate.sh /usr/local/lib/rip-cage/test-pi-dcg-gate.sh
 RUN chmod +x /usr/local/bin/init-rip-cage.sh \
-    /usr/local/lib/rip-cage/hooks/*.sh \
     /usr/local/lib/rip-cage/test-safety-stack.sh \
     /usr/local/lib/rip-cage/test-skills.sh \
     /usr/local/lib/rip-cage/test-egress-firewall.sh \

@@ -96,7 +96,7 @@ Pi supports a wide range of providers: Anthropic (Claude), OpenAI (including Cod
 
 ### Pi safety model
 
-Inside the cage, pi enforces the same destructive-command guard (DCG) as Claude Code, via an image-baked `dcg-gate.ts` extension that auto-loads from a cage-owned path and forwards bash tool calls to the shared `dcg` binary (ADR-019 D8; shipped in rip-cage-bl1). Container isolation, non-root user (`agent`, uid 1000), `--cap-drop=ALL --no-new-privileges`, and the L7 egress firewall (ADR-012) are also active.
+Inside the cage, pi can enforce the same destructive-command guard (DCG) as Claude Code, via the image-baked `dcg-gate.ts` extension (cage-owned path, root-owned, loaded via the pi-wrapper's explicit `-e` flag). `dcg-gate.ts` forwards bash tool calls to the shared `dcg` binary — which is provisioned by the composable DCG recipe (`examples/dcg/`, not baked in the base image). When the DCG recipe is composed, pi's destructive-command guard is active (ADR-019 D8; shipped in rip-cage-bl1). Container isolation, non-root user (`agent`, uid 1000), `--cap-drop=ALL --no-new-privileges`, and the L7 egress firewall (ADR-012) are active in the base image regardless of which recipes are composed.
 
 There is no compound-command blocker on pi or Claude Code — it was removed 2026-06-03 because DCG matches over the whole command string regardless of `&&`/`;`/`||` chaining, which made the blocker redundant for destructive-command containment (ADR-002 D5).
 
