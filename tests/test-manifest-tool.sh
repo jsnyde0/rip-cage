@@ -89,7 +89,7 @@ test_t1a_with_scratch_tool_steps_present() {
 
 # ---------------------------------------------------------------------------
 # T1b — Default manifest (no user tools.yaml): generated steps are empty (zero steps).
-# The default manifest is core-only (beads/dolt/gh/claude/pi/dcg), all with
+# The default manifest is core-only (beads/dolt/gh/claude/pi), all with
 # version_pin "bundled" and no install_cmd — they are baked by the Dockerfile.
 # No extra TOOL entries means no extra install steps.
 # This test asserts: exit=0, output is empty (no install steps generated), output does NOT
@@ -144,7 +144,7 @@ test_t1c_counterfactual_steps_differ() {
 }
 
 # ---------------------------------------------------------------------------
-# T1d — D8 default manifest: bundled-only tools (beads/dolt/gh/claude/pi/dcg) produce
+# T1d — D8 default manifest: bundled-only tools (beads/dolt/gh/claude/pi) produce
 # zero extra steps. The default manifest is core-only (ADR-005 D12) — all entries have
 # version_pin "bundled" and no install_cmd. This validates that the default manifest
 # generates ZERO install steps (empty output), and no multiplexer/herdr steps appear.
@@ -156,12 +156,13 @@ test_t1d_default_manifest_bundled_only_no_extra_steps() {
   stderr_file=$(mktemp)
   exit_code=0
   out=$(run_manifest_generate_steps "$stderr_file") || exit_code=$?
-  # Assert: ALL tools are bundled (beads/dolt/gh/claude/pi/dcg) → zero extra steps (empty output).
-  # Neither herdr nor any other non-bundled tool appears in the default manifest (ADR-005 D12).
+  # Assert: ALL tools are bundled (beads/dolt/gh/claude/pi) → zero extra steps (empty output).
+  # dcg is opt-in via examples/dcg recipe (rip-cage-wlwc.10 / ADR-025 D2).
+  # Neither herdr nor dcg nor any other non-bundled tool appears in the default manifest (ADR-005 D12).
   if [[ "$exit_code" -eq 0 ]] \
      && [[ -z "$out" ]] \
-     && ! echo "$out" | grep -qE "herdr|manifest TOOL: (beads|dolt|gh|claude|pi|dcg) "; then
-    pass "T1d D8 default manifest: ALL bundled tools (beads/dolt/gh/claude/pi/dcg) produce zero extra steps; default is core-only (ADR-005 D12)"
+     && ! echo "$out" | grep -qE "herdr|manifest TOOL: (beads|dolt|gh|claude|pi) "; then
+    pass "T1d D8 default manifest: ALL bundled tools (beads/dolt/gh/claude/pi) produce zero extra steps; default is core-only (ADR-005 D12, dcg is opt-in recipe)"
   else
     fail "T1d D8 default manifest: expected zero steps (empty output — core-only default). exit=$exit_code out='$out' stderr=$(cat "$stderr_file")"
   fi

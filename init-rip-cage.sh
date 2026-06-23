@@ -303,9 +303,11 @@ elif [ -d /home/agent/.claude-state ]; then
 fi
 
 # 5. Verify hooks
+# dcg binary is opt-in via examples/dcg recipe (rip-cage-wlwc.10 / ADR-025 D2).
+# Warn-only when absent — a cage without the dcg recipe has no command-guard but
+# containment still holds via other layers (egress firewall, ssh-bypass blocker, etc.).
 if [ ! -x /usr/local/bin/dcg ]; then
-  echo "[rip-cage] ERROR: DCG not found or not executable at /usr/local/bin/dcg" >&2
-  exit 1
+  echo "[rip-cage] INFO: DCG binary not found at /usr/local/bin/dcg — command-guard inactive (opt-in via examples/dcg recipe, ADR-025 D2)"
 fi
 # Verify dcg-guard wrapper (ADR-025 D3): must exist, be executable, and DCG_CONFIG must parse.
 # A missing/malformed DCG_CONFIG silently re-opens the user-layer config hole (ADR-025 D5).

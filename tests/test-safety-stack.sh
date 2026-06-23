@@ -745,7 +745,7 @@ manifest_tool "bd" "bd --version"
 manifest_tool "dolt" "dolt version"
 manifest_tool "claude" "claude --version"
 manifest_tool "bun" "bun --version"
-manifest_tool "dcg" "dcg --version"
+# dcg binary removed from base image (rip-cage-wlwc.10 / ADR-025 D2 — opt-in via examples/dcg recipe)
 manifest_tool "node" "node --version"
 manifest_tool "debian" "cat /etc/debian_version"
 

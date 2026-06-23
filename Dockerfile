@@ -8,13 +8,7 @@ RUN git clone --depth=1 --branch ${BEADS_VERSION} https://github.com/steveyegge/
  && cd /src/beads \
  && go build -o /go/bin/bd ./cmd/bd
 
-# Stage 2: Rust builder for DCG
-FROM rust:1-slim-trixie AS rust-builder
-ARG DCG_VERSION=0.4.0
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
-RUN cargo install --git https://github.com/Dicklesworthstone/destructive_command_guard --tag v${DCG_VERSION} destructive_command_guard
-
-# Stage 3: Runtime (previously Stage 4; cm-builder removed in rip-cage-buuo.5 — cm is opt-in via manifest ADR-005 D2/D6)
+# Stage 2: Runtime (previously Stage 3+4; rust-builder removed in rip-cage-wlwc.10 — dcg is opt-in via manifest ADR-025 D2/ADR-005 D12)
 # Stage 4: Runtime — sentinel for manifest from-source builder stage injection (rip-cage-buuo.2)
 FROM debian:trixie
 
@@ -75,8 +69,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get update && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-# DCG (Dangerous Command Guard) — built from source in rust-builder stage
-COPY --from=rust-builder /usr/local/cargo/bin/dcg /usr/local/bin/dcg
+# DCG (Dangerous Command Guard): opt-in via examples/dcg recipe (rip-cage-wlwc.10).
+# Binary, guard wrapper, cage config, and sentinel are all provisioned by the recipe.
+# Un-baked from the base image (ADR-025 D2/D3: dcg engine is a composable recipe, not floor).
 
 # Dolt (storage backend for beads) — required by bd v0.62.0+
 # Sync (push/pull) won't work without SSH keys, but local ops work fine
@@ -146,13 +141,7 @@ COPY ssh/known_hosts.github /etc/ssh/ssh_known_hosts
 COPY ssh/ssh_config /etc/ssh/ssh_config.d/00-rip-cage.conf
 RUN chmod 0644 /etc/ssh/ssh_known_hosts /etc/ssh/ssh_config.d/00-rip-cage.conf
 COPY hooks/ /usr/local/lib/rip-cage/hooks/
-COPY dcg/dcg-guard /usr/local/lib/rip-cage/bin/dcg-guard
-COPY dcg/default-config.toml /usr/local/lib/rip-cage/dcg/config.toml
 COPY tests/test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
-# Sentinel fixture for the DCG additive-rule-fires check (ADR-025 D1). Baked into the
-# image so `rc test <cage>` check 11e is portable across ALL cages, not only the
-# rip-cage repo's own workspace (rip-cage-16t).
-COPY tests/fixtures/ripcage-testsentinel-rule.yaml /usr/local/lib/rip-cage/dcg/fixtures/ripcage-testsentinel-rule.yaml
 COPY settings.json /etc/rip-cage/settings.json
 # CC managed-settings: baked root-owned highest-precedence CC hook layer (rip-cage-r9n4).
 # /etc/claude-code/managed-settings.json is CC's managed-settings path — hooks here merge
@@ -182,7 +171,6 @@ COPY tests/test-egress-firewall.sh /usr/local/lib/rip-cage/test-egress-firewall.
 COPY tests/test-bd-roundtrip.sh /usr/local/lib/rip-cage/test-bd-roundtrip.sh
 COPY tests/test-pi-dcg-gate.sh /usr/local/lib/rip-cage/test-pi-dcg-gate.sh
 RUN chmod +x /usr/local/bin/init-rip-cage.sh \
-    /usr/local/lib/rip-cage/bin/dcg-guard \
     /usr/local/lib/rip-cage/hooks/*.sh \
     /usr/local/lib/rip-cage/test-safety-stack.sh \
     /usr/local/lib/rip-cage/test-skills.sh \

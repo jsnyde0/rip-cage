@@ -6573,11 +6573,9 @@ tools:
     egress: []
     mounts: []
 
-  - name: dcg
-    archetype: TOOL
-    version_pin: "bundled"
-    egress: []
-    mounts: []
+  # dcg (Destructive Command Guard) is NOT floor (ADR-025 D2, ADR-026 D2).
+  # It is a composable recipe — see examples/dcg/manifest-fragment.yaml (rip-cage-wlwc.10).
+  # Add it to your ~/.config/rip-cage/tools.yaml and run `rc build` to opt in.
 YAML
 }
 
