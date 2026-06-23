@@ -302,7 +302,7 @@ Three mechanisms turn D7's host-only manifest into an **agent-first composabilit
 
 ### D12: rip-cage is a composable seam, not a bundler
 
-**Firmness: FIRM** (added 2026-06-15)
+**Firmness: FIRM** (added 2026-06-15; agentic-composition premise made explicit 2026-06-23)
 
 rip-cage owns the **composition interfaces** (the tool manifest and its archetypes, the multiplexer provider contract, egress/mount declarations) and the **welded safety floor** — and nothing else. It never owns, bundles, or *blesses* a specific optional tool. Three binding consequences:
 
@@ -311,6 +311,8 @@ rip-cage owns the **composition interfaces** (the tool manifest and its archetyp
 3. **Examples live outside the binary.** Provider definitions and composition recipes (how to wire rc with tmux / herdr / zellij / agent_mail / …) ship as copyable examples (an `examples/` folder + reference docs), never special-cased in `rc`. tmux and herdr are example entries exactly like agent_mail — not a blessed set.
 
 **Convenience never earns a hardcoded exception in the seam.** When a tool would be "nice to have on by default," the move is *not* to bundle it into the optional surface — it is either (a) an opt-in example the user composes, or (b), if the tool is genuinely universal, reclassify it as **floor** (baked unconditionally, git/curl tier). There is no third "blessed-but-optional" category; that category is precisely what re-introduces the hardcoded exceptions this decision forecloses.
+
+**Composition is performed by agents, not automated by rip-cage (the agentic-era premise).** The reason there is no `include:`/`compose:` directive, no auto-wiring step, and no config-merge machinery is not merely thin-seam minimalism — it is that in rip-cage, software is installed, configured, and composed *by agents*. An agent configuring a cage reads the example recipe and performs the composition itself (copy the manifest entry, run `rc build`); deterministic plumbing to automate that wiring solves a problem agents do not have. The obligation this premise creates is the inverse of building machinery: make recipes **discoverable and legible to an agent** (clear `examples/<name>/` fragments, obvious seams, good headers/READMEs). **Design tripwire:** any proposed `compose:` directive, install/setup script, auto-wiring step, or fixed config-merge mechanism is this premise being forgotten — the move is always "make the recipe legible," never "automate the wiring." This drift recurs across sessions (it is why the `compose:` directive was re-proposed during the wlwc re-cut, 2026-06-23); it is named in CLAUDE.md ("Built for the agentic era") and `bd memories agentic-era-install-config-by-agents-not-scripts` so it stops recurring.
 
 **Rationale:** Every "just bundle this one optional tool by default" trades a permanent, compounding cost (every default cage carries it; the blessed set is a threat + maintenance surface that grows with tool count) to erase a one-time cost (copying a documented example). It also creates second-class citizens — a "blessed" tool gets `rc`-source support a user's own tool cannot — which is the exact asymmetry that re-grows hardcoded dispatch. The herdr-in-default-manifest regression (rip-cage-kqvw: an optional multiplexer pre-installed for every cage, dispatched via a hardcoded `case` in `rc`) is the canonical failure this decision names so it stops recurring. The seam stays thin and uniform; tool count scales in the manifest, never in `rc`.
 
