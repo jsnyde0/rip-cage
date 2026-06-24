@@ -29,13 +29,12 @@
 #           Compose a TOOL that declares a hook-bounds-violating rw mount; call
 #           _manifest_validate; assert it REJECTS. DO NOT rebuild full MD1 depth.
 #
-#   SI5 — assert-present flip positive control: same helper, fixture drives the SAME path.
-#           Override RC_ASSERTED_FILE to a fixture naming 'ssh-bypass'; simulate hook absent
-#           (hook path env override); call _assert_ssh_bypass_present + _guard_is_asserted
-#           (sourced from _safety-stack-assert-lib.sh — the SAME shared lib test-safety-stack.sh
-#            sources, so this exercises the real in-cage code path, not a copy);
-#           assert it emits a FAIL result. This proves the flip's red-on-named-absent without
-#           a build, and that the fixture exercises the SAME code path (CORRECTION B).
+#   SI5 — assert-present flip positive control (rip-cage-m8zc, generic/name-free):
+#           Compose an ARBITRARY SYNTHETIC required tool whose baked check deliberately fails.
+#           Override RC_ASSERTED_FILE to a fixture with the synthetic tool's baked line;
+#           call _run_asserted_checks (sourced from _safety-stack-assert-lib.sh — SAME shared
+#           lib test-safety-stack.sh sources; no divorced copy);
+#           assert it returns FAIL. Proves generic RED-on-absent with zero guard-specific names.
 #
 #   SI6 — fake-AGENT-archetype sweep: confirm zero remnants in tests/ (verification only).
 #
@@ -335,21 +334,31 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# SI5 — assert-present flip positive control (CORRECTION B: SAME helper, fixture path)
-#        Override RC_ASSERTED_FILE to fixture naming 'ssh-bypass'; simulate hook absent
-#        by running test-safety-stack.sh's logic with a modified hook path.
-#        We source the helper directly to exercise the SAME function the real in-cage
-#        path calls — not a copy.
+# SI5 — assert-present flip positive control (rip-cage-m8zc: generic, name-free)
+#        Compose an ARBITRARY SYNTHETIC required tool whose baked check is designed
+#        to FAIL (the check command references a path that does not exist on the host).
+#        Override RC_ASSERTED_FILE to a fixture with the synthetic tool's baked line.
+#        Assert that _run_asserted_checks returns FAIL through the REAL shared lib,
+#        proving RED through the generic mechanism with zero guard-specific names.
+#        Single-source: sources _safety-stack-assert-lib.sh (SAME lib test-safety-stack.sh
+#        sources — no divorced copy).
 # ---------------------------------------------------------------------------
 test_si5_assert_present_flip_positive_control() {
-  # Create a fixture asserted-file that names 'ssh-bypass'.
+  # Arbitrary synthetic required tool — name-free (no guard-specific strings).
+  local synth_id synth_check b64_check
+  synth_id="zzz-synthetic-required-${RANDOM}"
+  # The check command deliberately references a path that does not exist:
+  # /usr/local/lib/rip-cage/zzz-nonexistent-synthetic-<rand> — will always FAIL.
+  synth_check="test -x /usr/local/lib/rip-cage/zzz-nonexistent-synthetic-${RANDOM}"
+  b64_check=$(printf '%s' "$synth_check" | base64 | tr -d '\n')
+
+  # Create a fixture asserted-file with the synthetic tool's baked line.
   local fixture_asserted
   fixture_asserted=$(mktemp "${TMPDIR:-/tmp}/rc-seam-asserted-XXXXXX")
-  printf 'ssh-bypass\n' > "$fixture_asserted"
+  printf '%s %s\n' "$synth_id" "$b64_check" > "$fixture_asserted"
 
-  # Source the SAME shared lib that test-safety-stack.sh sources (CORRECTION B).
-  # Both files (this script and _safety-stack-assert-lib.sh) live in the same
-  # directory whether on the host (tests/) or in-cage (/usr/local/lib/rip-cage/).
+  # Source the SAME shared lib that test-safety-stack.sh sources (no divorced copy).
+  # Both files live in the same directory (tests/ on host, /usr/local/lib/rip-cage/ in-cage).
   local lib_path
   lib_path="$(dirname "${BASH_SOURCE[0]}")/_safety-stack-assert-lib.sh"
 
@@ -357,12 +366,11 @@ test_si5_assert_present_flip_positive_control() {
   exit_code=0
 
   # Run a subshell that:
-  # 1. Defines the check/FAIL/TOTAL counters (consumer stub — _assert_ssh_bypass_present
-  #    calls check() which resolves dynamically at call-time from this scope)
-  # 2. Sources the REAL _guard_is_asserted and _assert_ssh_bypass_present from the shared lib
-  # 3. With RC_ASSERTED_FILE=fixture, calls _guard_is_asserted "ssh-bypass"
-  # 4. Calls _assert_ssh_bypass_present (hook-absent scenario)
-  # 5. Exits with $FAIL count
+  # 1. Defines check/FAIL/TOTAL counters (consumer stub — _run_asserted_checks
+  #    calls check() which resolves dynamically from this scope)
+  # 2. Sources the REAL _run_asserted_checks from the shared lib
+  # 3. With RC_ASSERTED_FILE=fixture, calls _run_asserted_checks
+  # 4. Exits with $FAIL count
   RC_ASSERTED_FILE="$fixture_asserted" \
     bash -c "
 PASS=0; FAIL=0; TOTAL=0
@@ -378,16 +386,11 @@ check() {
   fi
 }
 
-# Source the SAME shared lib (CORRECTION B: no divorced copy)
+# Source the SAME shared lib (no divorced copy — single-source principle)
 source '${lib_path}'
 
-# Simulate: hook IS absent, guard IS asserted in fixture file
-if _guard_is_asserted 'ssh-bypass'; then
-  _assert_ssh_bypass_present
-else
-  echo 'UNEXPECTED: ssh-bypass not asserted in fixture file'
-  FAIL=\$((FAIL + 1))
-fi
+# Run all checks from the fixture file; synthetic tool's check MUST FAIL.
+_run_asserted_checks
 
 echo \"exit_fail_count=\$FAIL\"
 exit \$FAIL
@@ -396,11 +399,11 @@ exit \$FAIL
   rm -f "$fixture_asserted"
 
   # The positive-control must produce a FAIL (non-zero exit from the subshell).
-  # If it exits 0, the flip is broken (helper accepted absent guard when asserted).
+  # If it exits 0, the flip is broken (absent required tool not caught generically).
   if [[ "$exit_code" -ne 0 ]]; then
-    pass "SI5 assert-present flip: positive control correctly returns FAIL (exit=${exit_code}) when 'ssh-bypass' is asserted but hook absent — flip is RED-on-named-absent (CORRECTION B: SAME shared lib sourced, no divorced copy)"
+    pass "SI5 assert-present flip: positive control correctly returns FAIL (exit=${exit_code}) for arbitrary synthetic required tool '${synth_id}' with failing check — generic flip RED-on-absent PROVEN (rip-cage-m8zc, name-free, SAME shared lib, no divorced copy)"
   else
-    fail "SI5 assert-present flip: positive control returned 0 (passed) when 'ssh-bypass' is asserted but hook absent — flip is BROKEN; absent guard not caught"
+    fail "SI5 assert-present flip: positive control returned 0 (passed) for synthetic tool with failing check — generic flip BROKEN; absent required tool not caught"
   fi
 }
 
@@ -664,29 +667,34 @@ test_se_tier2_composed_cage_suite() {
     fail "SE5 safety-stack-asserted: NOT root-owned (file=${ssa_file_owner} dir=${ssa_dir_owner}) — agent could modify the declaration"
   fi
 
-  # File lists 'dcg' and 'ssh-bypass'.
+  # File lists 'dcg-wiring' and 'ssh-bypass-hook' as entry-ids (new format: "<id> <b64check>").
+  # The Tier-2 probe hardcodes the default image's expected required-set {dcg-wiring, ssh-bypass-hook}
+  # as a release-gate: if either is dropped, the asserted-file won't list it → FAIL.
+  # (This probe legitimately knows what the default image ships — same latitude as the
+  # safety-stack test knowing its guards; D12 governs rc/codegen, not release-gate tests.)
   local ssa_content
   ssa_content=$(docker exec "$se_container" cat /etc/rip-cage/safety-stack-asserted 2>/dev/null || echo "")
-  if echo "$ssa_content" | grep -qxF "dcg"; then
-    pass "SE5 safety-stack-asserted: lists 'dcg' guard-id"
+  if echo "$ssa_content" | grep -q "^dcg-wiring "; then
+    pass "SE5 safety-stack-asserted: lists 'dcg-wiring' entry-id (required tool declared + baked)"
   else
-    fail "SE5 safety-stack-asserted: does NOT list 'dcg'. content='${ssa_content}'"
+    fail "SE5 safety-stack-asserted: does NOT list 'dcg-wiring'. content='${ssa_content}'"
   fi
-  if echo "$ssa_content" | grep -qxF "ssh-bypass"; then
-    pass "SE5 safety-stack-asserted: lists 'ssh-bypass' guard-id"
+  if echo "$ssa_content" | grep -q "^ssh-bypass-hook "; then
+    pass "SE5 safety-stack-asserted: lists 'ssh-bypass-hook' entry-id (required tool declared + baked)"
   else
-    fail "SE5 safety-stack-asserted: does NOT list 'ssh-bypass'. content='${ssa_content}'"
+    fail "SE5 safety-stack-asserted: does NOT list 'ssh-bypass-hook'. content='${ssa_content}'"
   fi
 
   # SE5 flip proof — intentionally deferred from Tier-2 (not a counted pass).
-  # The RED-on-named-absent flip behavior is proven by SI5 (Tier-1 positive control):
+  # The generic RED-on-absent flip behavior is proven by SI5 (Tier-1 positive control, rip-cage-m8zc):
   # SI5 sources the SAME shared lib (_safety-stack-assert-lib.sh) that test-safety-stack.sh
-  # uses in-cage (CORRECTION B), overrides RC_ASSERTED_FILE to a fixture naming 'ssh-bypass',
-  # and asserts the helper returns FAIL when the hook is absent. The heavyweight in-cage
-  # counterfactual (removing the real hook binary inside a running container) is intentionally
+  # uses in-cage, overrides RC_ASSERTED_FILE to a fixture with an ARBITRARY synthetic required
+  # tool whose check is designed to fail, and asserts _run_asserted_checks returns FAIL
+  # generically — zero guard-specific names, no divorced copy. The heavyweight in-cage
+  # counterfactual (removing a real binary inside a running container) is intentionally
   # deferred — it requires root-level teardown and adds no new coverage beyond SI5.
   TOTAL=$((TOTAL + 1))
-  echo "INFO  [${TOTAL}] SE5 flip proof: RED-on-named-absent proven by SI5 Tier-1 positive control (CORRECTION B — same shared lib, no divorced copy); heavyweight in-cage counterfactual intentionally deferred (not a counted pass)"
+  echo "INFO  [${TOTAL}] SE5 flip proof: generic RED-on-absent proven by SI5 Tier-1 positive control (rip-cage-m8zc — arbitrary synthetic required tool, same shared lib, no divorced copy); heavyweight in-cage counterfactual intentionally deferred (not a counted pass)"
 }
 
 # ---------------------------------------------------------------------------

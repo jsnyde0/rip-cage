@@ -7299,6 +7299,84 @@ _manifest_validate() {
         done
         ;;
     esac
+
+    # ---------------------------------------------------------------------------
+    # Cross-cutting: validate 'required' + 'assert_loaded' fields (rip-cage-m8zc).
+    # These fields may appear on ANY archetype; all REJECT rules live here.
+    # Truth table (all cells fail-closed per locked-design v3):
+    #   required:true + assert_loaded:"cmd"       → ACCEPT (bake <id> b64(cmd))
+    #   required:true + no assert_loaded + path   → ACCEPT (codegen synthesizes test -x <path>)
+    #   required:true + assert_loaded empty/ws    → REJECT (never bash -c ""; F5 fail-open closed)
+    #   required:true + no assert_loaded + no path → REJECT (must be checkable)
+    #   assert_loaded present + required absent   → REJECT (a check that would never fire is a footgun)
+    #   required:false (with or without path)     → ACCEPT (INFO-skip; explicit false is a valid optional tool)
+    #   neither field                             → ACCEPT (INFO-skip; normal optional tool)
+    # ---------------------------------------------------------------------------
+    local req_raw al_raw req_val
+    req_raw=$(jq -r 'if has("required") then (.required | tostring) else "___RC_ABSENT___" end' <<<"$entry" 2>/dev/null)
+    al_raw=$(jq -r '.assert_loaded // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+
+    # Detect presence of assert_loaded without required (footgun → REJECT).
+    if [[ "$al_raw" != "___RC_ABSENT___" ]]; then
+      # assert_loaded is present — required must also be set and true.
+      if [[ "$req_raw" == "___RC_ABSENT___" || "$req_raw" == "false" ]]; then
+        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'assert_loaded' requires 'required: true' — a check command that would never fire is a footgun (truth-table REJECT; rip-cage-m8zc)." >&2
+        return 1
+      fi
+    fi
+
+    # If required is present and truthy, validate the full truth table.
+    if [[ "$req_raw" != "___RC_ABSENT___" && "$req_raw" != "false" ]]; then
+      req_val=$(jq -r 'if has("required") then (.required | type) else "absent" end' <<<"$entry" 2>/dev/null)
+      if [[ "$req_val" != "boolean" ]]; then
+        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'required' must be a boolean (got type '${req_val}'; rip-cage-m8zc)." >&2
+        return 1
+      fi
+      # required:true is confirmed (req_raw == "true"). Check assert_loaded.
+      if [[ "$al_raw" == "___RC_ABSENT___" || "$al_raw" == "null" ]]; then
+        # No assert_loaded — fall through to codegen synthesize from path.
+        # For TOOL archetype, binary_path or build_source.output_path must be present.
+        # For other archetypes without a path-declaration, REJECT.
+        if [[ "$archetype" == "TOOL" ]]; then
+          # Check: does the entry have binary_path or build_source.output_path?
+          local has_binary_path has_output_path
+          has_binary_path=$(jq -r 'if has("binary_path") then "yes" else "no" end' <<<"$entry" 2>/dev/null)
+          has_output_path=$(jq -r 'if (.build_source // {}) | has("output_path") then "yes" else "no" end' <<<"$entry" 2>/dev/null)
+          if [[ "$has_binary_path" != "yes" && "$has_output_path" != "yes" ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): 'required: true' but no 'assert_loaded' and no declarable path (binary_path or build_source.output_path) — a required tool must be presence-checkable or carry assert_loaded (truth-table REJECT; rip-cage-m8zc)." >&2
+            return 1
+          fi
+        else
+          # Non-TOOL archetype with required:true but no assert_loaded → REJECT.
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): 'required: true' on archetype '${archetype}' requires 'assert_loaded' (non-TOOL archetypes have no declarable binary path; truth-table REJECT; rip-cage-m8zc)." >&2
+          return 1
+        fi
+      else
+        # assert_loaded is present — reject empty/whitespace (never bash -c "").
+        local al_trimmed
+        al_trimmed=$(printf '%s' "$al_raw" | tr -d '[:space:]')
+        if [[ -z "$al_trimmed" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'assert_loaded' is present but empty/whitespace — an empty check is never run as bash -c \"\" (truth-table REJECT; rip-cage-m8zc)." >&2
+          return 1
+        fi
+        # assert_loaded must be a single line (newlines inject arbitrary Dockerfile directives).
+        if [[ "$al_raw" == *$'\n'* ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'assert_loaded' must be a single-line shell command (newlines inject arbitrary Dockerfile directives; single-line-required; rip-cage-m8zc)." >&2
+          return 1
+        fi
+        # Entry-id (name) must be space-free (the baked line format is space-delimited).
+        if [[ "$name" == *' '* ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): tool 'name' must be space-free when 'required: true' is set (the baked asserted-file is space-delimited; a space in name corrupts the line parser; rip-cage-m8zc)." >&2
+          return 1
+        fi
+      fi
+      # Space-free name check for synthesized path case too.
+      if [[ "$name" == *' '* ]]; then
+        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): tool 'name' must be space-free when 'required: true' is set (the baked asserted-file is space-delimited; rip-cage-m8zc)." >&2
+        return 1
+      fi
+    fi
+
   done
 
   return 0
@@ -7793,16 +7871,16 @@ _manifest_build_dockerfile_path() {
     rm -f "$tmp_inject_label_med"
   fi
 
-  # --- floor_assert safety-stack-asserted: inject AFTER "COPY settings.json" sentinel ---
-  # Bakes /etc/rip-cage/safety-stack-asserted (one guard-id per line) root:root 0644
-  # so in-cage rc test can assert named guards are present+active (rip-cage-wlwc.6).
+  # --- required/assert_loaded safety-stack-asserted: inject AFTER "COPY settings.json" sentinel ---
+  # Bakes /etc/rip-cage/safety-stack-asserted (one "<id> <b64check>" per line) root:root 0644
+  # so in-cage rc test can run declared checks for required tools (rip-cage-m8zc).
   # Injection site: same as daemon/mux/mediator config steps (root context; /etc/rip-cage exists).
-  # rc copies guard-id strings VERBATIM — never interprets them (ADR-005 D12 tool-agnostic).
+  # rc codegen copies check strings from manifest DATA — never interprets tool names (ADR-005 D12).
   if [[ -n "$safety_stack_asserted_steps" ]]; then
     local sentinel_settings_ssa="COPY settings.json /etc/rip-cage/settings.json"
     local tmp_inject_ssa
     tmp_inject_ssa=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
-    printf '\n# --- manifest-generated safety-stack-asserted bake (rip-cage-wlwc.6) ---\n%s\n' "$safety_stack_asserted_steps" > "$tmp_inject_ssa"
+    printf '\n# --- manifest-generated safety-stack-asserted bake (rip-cage-m8zc) ---\n%s\n' "$safety_stack_asserted_steps" > "$tmp_inject_ssa"
 
     if grep -qF "$sentinel_settings_ssa" "$tmp_dockerfile"; then
       local sentinel_line_ssa base_dockerfile_ssa
@@ -8330,21 +8408,32 @@ _manifest_generate_mediator_registry_steps() {
 
 # _manifest_generate_safety_stack_asserted_steps
 # Read the host manifest and emit Dockerfile RUN steps to bake
-# /etc/rip-cage/safety-stack-asserted (one guard-id per line), root:root 0644,
+# /etc/rip-cage/safety-stack-asserted, root:root 0644,
 # parent dir root:root 0755 (already created by Dockerfile).
 #
-# ONLY tools that carry `floor_assert: <guard-id>` contribute. rc copies the
-# guard-id strings VERBATIM — it never interprets "dcg"/"ssh-bypass" or any
-# other guard name. This preserves ADR-005 D12 (rc stays tool-agnostic).
+# ONLY tools that carry `required: true` contribute. rc never interprets tool
+# names — it reads required + assert_loaded (or synthesizes test -x from the
+# declared runtime binary_path) and bakes <entry-id> <base64(check)> pairs,
+# one per line. This preserves ADR-005 D12 (rc stays tool-agnostic).
 #
-# The file is ABSENT when no floor_assert fields are declared (default/bundled-only
+# Line format: "<entry-id> <base64(check-cmd)>"
+#   - entry-id: the tool's manifest 'name' field (human-legible; space-free enforced by validator)
+#   - base64(check-cmd): standard base64 of the shell check to run in-cage
+#
+# Codegen synthesizes the check:
+#   required:true + assert_loaded:"cmd"           → bake <id> b64(cmd)
+#   required:true + no assert_loaded + binary_path → bake <id> b64(test -x <binary_path>)
+#   required:true + no assert_loaded + output_path → bake <id> b64(test -x <output_path>)
+#   All other required:true combinations → rejected by _manifest_validate (never reach here)
+#
+# The file is ABSENT when no required:true entries are declared (default/bundled-only
 # manifest), keeping the fail-closed semantics consistent: absent = minimal cage
-# (no assertions); present = named guards must be active.
+# (no assertions); present = named tools must be active.
 #
-# D8 byte-for-byte contract: when the manifest has no floor_assert entries,
+# D8 byte-for-byte contract: when the manifest has no required:true entries,
 # this function emits NOTHING — rc build uses the original Dockerfile unchanged.
 #
-# rip-cage-wlwc.6
+# rip-cage-m8zc
 _manifest_generate_safety_stack_asserted_steps() {
   local manifest_json
   if ! manifest_json=$(_manifest_load); then
@@ -8357,43 +8446,73 @@ _manifest_generate_safety_stack_asserted_steps() {
     return 0
   fi
 
-  local guard_ids=""
+  # asserted_lines: each entry is "<id> <base64(check)>" for a required tool.
+  local asserted_lines=""
   for (( idx=0; idx<count; idx++ )); do
-    local entry floor_assert_val
+    local entry req_raw entry_name
     entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
-    # Extract floor_assert value; if absent or null, skip this entry.
-    floor_assert_val=$(jq -r '.floor_assert // ""' <<<"$entry" 2>/dev/null)
-    [[ -z "$floor_assert_val" || "$floor_assert_val" == "null" ]] && continue
+    req_raw=$(jq -r 'if has("required") then (.required | tostring) else "false" end' <<<"$entry" 2>/dev/null)
+    # Skip entries that are not required:true.
+    [[ "$req_raw" != "true" ]] && continue
 
-    # Validate: guard-id must be a non-empty single-line string (no newlines —
-    # newlines in RUN step content inject arbitrary Dockerfile directives).
-    if [[ "$floor_assert_val" == *$'\n'* ]]; then
-      local entry_name
-      entry_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
-      echo "Error: manifest tools entry '${entry_name}': field 'floor_assert' must be a single-line guard-id (no newlines)." >&2
-      return 1
+    entry_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+
+    # Determine the check command.
+    # Priority: author-supplied assert_loaded → synthesized from binary_path → synthesized from output_path.
+    local al_val check_cmd
+    al_val=$(jq -r '.assert_loaded // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+
+    if [[ "$al_val" != "___RC_ABSENT___" && "$al_val" != "null" && -n "$al_val" ]]; then
+      # Author-supplied assert_loaded — validated single-line by _manifest_validate.
+      check_cmd="$al_val"
+    else
+      # Synthesize from runtime binary_path (preferred) or build_source.output_path.
+      # The validator ensures at least one is present when required:true and no assert_loaded.
+      local binary_path_val output_path_val
+      binary_path_val=$(jq -r '.binary_path // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+      output_path_val=$(jq -r '.build_source.output_path // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+
+      if [[ "$binary_path_val" != "___RC_ABSENT___" && "$binary_path_val" != "null" && -n "$binary_path_val" ]]; then
+        # binary_path may be a string or a list; take the first element if list.
+        local bp_type
+        bp_type=$(jq -r '.binary_path | type' <<<"$entry" 2>/dev/null)
+        if [[ "$bp_type" == "array" ]]; then
+          binary_path_val=$(jq -r '.binary_path[0]' <<<"$entry" 2>/dev/null)
+        fi
+        check_cmd="test -x ${binary_path_val}"
+      elif [[ "$output_path_val" != "___RC_ABSENT___" && "$output_path_val" != "null" && -n "$output_path_val" ]]; then
+        check_cmd="test -x ${output_path_val}"
+      else
+        # Should never reach here — _manifest_validate rejects this case.
+        echo "Error: manifest tools entry '${entry_name}': required:true but no assert_loaded and no binary path — codegen cannot synthesize check (rip-cage-m8zc)." >&2
+        return 1
+      fi
     fi
 
-    if [[ -n "$guard_ids" ]]; then
-      guard_ids+=$'\n'"$floor_assert_val"
+    # base64-encode the check command (newline-free for safe RUN embedding).
+    local b64_check
+    b64_check=$(printf '%s' "$check_cmd" | base64 | tr -d '\n')
+
+    local line="${entry_name} ${b64_check}"
+    if [[ -n "$asserted_lines" ]]; then
+      asserted_lines+=$'\n'"$line"
     else
-      guard_ids="$floor_assert_val"
+      asserted_lines="$line"
     fi
   done
 
-  if [[ -z "$guard_ids" ]]; then
-    # No floor_assert entries — emit nothing (D8 contract).
+  if [[ -z "$asserted_lines" ]]; then
+    # No required:true entries — emit nothing (D8 contract).
     return 0
   fi
 
   # Emit a Dockerfile RUN step that writes the asserted file root:root 0644.
-  # Uses printf with a here-doc-style approach: base64-encode the guard-ids
-  # so the RUN step is safe against any content (no shell injection risk).
-  # The guard-ids are verified single-line above; base64 output is newline-safe.
-  local b64_guard_ids
-  b64_guard_ids=$(printf '%s\n' "$guard_ids" | base64 | tr -d '\n')
-  printf 'RUN # manifest floor_assert: bake safety-stack-asserted (rip-cage-wlwc.6)\n'
-  printf "RUN echo '%s' | base64 -d > /etc/rip-cage/safety-stack-asserted && chown root:root /etc/rip-cage/safety-stack-asserted && chmod 0644 /etc/rip-cage/safety-stack-asserted\n" "$b64_guard_ids"
+  # base64-encode the whole file content so the RUN step is safe against any
+  # content (no shell injection risk).
+  local b64_asserted
+  b64_asserted=$(printf '%s\n' "$asserted_lines" | base64 | tr -d '\n')
+  printf 'RUN # manifest required/assert_loaded: bake safety-stack-asserted (rip-cage-m8zc)\n'
+  printf "RUN echo '%s' | base64 -d > /etc/rip-cage/safety-stack-asserted && chown root:root /etc/rip-cage/safety-stack-asserted && chmod 0644 /etc/rip-cage/safety-stack-asserted\n" "$b64_asserted"
 }
 
 # _manifest_generate_mediator_label
