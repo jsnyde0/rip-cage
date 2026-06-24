@@ -131,7 +131,7 @@ if cexec test -x /usr/local/bin/pi; then
   pass "S1: pi wrapper present and executable at /usr/local/bin/pi"
 else
   fail "S1: pi wrapper MISSING or not executable at /usr/local/bin/pi" \
-    "expected: COPY pi/pi-wrapper.sh /usr/local/bin/pi in Dockerfile (rip-cage-sn1h)"
+    "expected: examples/pi recipe install_cmd writes the wrapper to /usr/local/bin/pi (rip-cage-sn1h)"
 fi
 
 # S2: wrapper contains --no-extensions flag
@@ -168,20 +168,21 @@ else
 fi
 unset _wrapper_owner
 
-# S6: dcg-gate.ts still present and root-owned (regression from rip-cage-olen)
-if cexec test -f /home/agent/.pi/agent/extensions/dcg-gate.ts; then
-  pass "S6a: dcg-gate.ts present at /home/agent/.pi/agent/extensions/dcg-gate.ts"
+# S6: dcg-gate.ts present and root-owned on its OWN separate load path
+# (ADR-027 D1/D3 — guard wiring NOT inside extensions/; olen retired, rip-cage-wlwc.4)
+if cexec test -f /etc/rip-cage/pi/dcg-gate.ts; then
+  pass "S6a: dcg-gate.ts present at /etc/rip-cage/pi/dcg-gate.ts"
 else
-  fail "S6a: dcg-gate.ts MISSING at /home/agent/.pi/agent/extensions/dcg-gate.ts" \
-    "Dockerfile regression: COPY pi/dcg-gate.ts must still be present"
+  fail "S6a: dcg-gate.ts MISSING at /etc/rip-cage/pi/dcg-gate.ts" \
+    "recipe regression: examples/pi install_cmd must write the guard to /etc/rip-cage/pi/dcg-gate.ts"
 fi
 
-_dcg_owner=$(cexec stat -c '%U' /home/agent/.pi/agent/extensions/dcg-gate.ts 2>/dev/null || true)
+_dcg_owner=$(cexec stat -c '%U' /etc/rip-cage/pi/dcg-gate.ts 2>/dev/null || true)
 if [[ "$_dcg_owner" == "root" ]]; then
   pass "S6b: dcg-gate.ts is root-owned (write-denied to agent)"
 else
   fail "S6b: dcg-gate.ts is owned by '${_dcg_owner}' (expected root)" \
-    "agent can overwrite the guard — rip-cage-olen regression"
+    "agent can overwrite the guard — floor-lock regression (ADR-027 D1/D3)"
 fi
 unset _dcg_owner
 

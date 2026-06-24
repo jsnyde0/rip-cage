@@ -8,10 +8,12 @@ and the DCG guard TypeScript extension.
 - `/usr/local/bin/pi` — launch-hardening wrapper (precedes `/usr/bin/pi` on PATH).
   Intercepts every `pi` invocation, adds `--no-extensions -e <dcg-gate.ts>`, disabling
   auto-discovery so `/workspace/.pi/extensions/` admits NO agent-dropped extension.
-- `/home/agent/.pi/agent/extensions/dcg-gate.ts` — the DCG guard extension, root-owned
-  so the agent cannot overwrite or disable it (rip-cage-olen protection).
-- `/home/agent/.pi/agent/extensions/` — root-owned directory (agent cannot inject
-  competing extensions).
+- `/etc/rip-cage/pi/dcg-gate.ts` — the DCG guard extension on its OWN separate
+  root-owned load path (file AND parent dir root-owned), so the agent cannot overwrite
+  or disable it. NOT inside the agent's `extensions/` dir (olen retired per
+  ADR-027 D1/D3); the wrapper loads it via `--no-extensions -e /etc/rip-cage/pi/dcg-gate.ts`.
+  The agent's own `~/.pi/agent/extensions/` dir is agent-owned by design — `--no-extensions`
+  means anything dropped there is never auto-loaded, so it needs no root lock.
 - `/etc/rip-cage/cage-pi.md` — cage-topology doc for pi, consumed by init-rip-cage.sh.
 
 The pi binary itself (`/usr/bin/pi`) is npm-installed in the base Dockerfile and is

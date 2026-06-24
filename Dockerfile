@@ -108,7 +108,7 @@ RUN for i in 1 2 3; do \
 # Non-root user
 RUN groupadd -g 1000 agent \
     && useradd -m -u 1000 -g agent -s /usr/bin/zsh agent \
-    && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state, /usr/bin/chown agent\:agent /home/agent/.pi/agent, /usr/bin/chown agent\:agent /ssh-agent.sock, /usr/bin/chown agent\:agent /ssh-agent-upstream.sock, /usr/bin/ln -sfT /tmp/rip-cage-filter/agent.* /ssh-agent.sock, /usr/local/lib/rip-cage/init-firewall.sh, /usr/sbin/iptables -t nat -L OUTPUT -n, /usr/sbin/iptables -L OUTPUT -n, /usr/bin/chown -R agent\:agent /home/agent/.local/share/mise, /usr/bin/ln -sfT /home/agent/.rc-context/pi-ext-subagent /home/agent/.pi/agent/extensions/subagent, /bin/rm -rf /home/agent/.pi/agent/extensions/subagent" > /etc/sudoers.d/agent \
+    && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state, /usr/bin/chown agent\:agent /home/agent/.pi/agent, /usr/bin/chown agent\:agent /ssh-agent.sock, /usr/bin/chown agent\:agent /ssh-agent-upstream.sock, /usr/bin/ln -sfT /tmp/rip-cage-filter/agent.* /ssh-agent.sock, /usr/local/lib/rip-cage/init-firewall.sh, /usr/sbin/iptables -t nat -L OUTPUT -n, /usr/sbin/iptables -L OUTPUT -n, /usr/bin/chown -R agent\:agent /home/agent/.local/share/mise" > /etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent
 
 RUN useradd -r -s /usr/sbin/nologin -M rip-proxy
@@ -162,10 +162,12 @@ RUN chmod +x /usr/local/bin/init-rip-cage.sh \
     /usr/local/lib/rip-cage/rip-proxy-start.sh \
     /usr/local/lib/rip-cage/rip-dns-start.sh
 
-# Pi extensions/ dir (root-owned) + dcg-gate.ts guard are provisioned by the
-# composable examples/pi recipe via install_cmd (runs as root before USER agent,
-# preserving root:root ownership of extensions/ and dcg-gate.ts — rip-cage-olen).
-# Un-baked from base image per rip-cage-wlwc.2.2 (ADR-005 D12).
+# Pi's dcg-gate.ts guard is provisioned by the composable examples/pi recipe via
+# install_cmd (runs as root before USER agent) at its OWN separate root-owned load
+# path /etc/rip-cage/pi/dcg-gate.ts — NOT inside the agent's extensions/ dir, which
+# is agent-owned (olen retired per ADR-027 D1/D3; the guard loads via
+# `pi --no-extensions -e <path>`). Un-baked from base image per rip-cage-wlwc.2.2
+# (ADR-005 D12).
 
 USER agent
 WORKDIR /home/agent

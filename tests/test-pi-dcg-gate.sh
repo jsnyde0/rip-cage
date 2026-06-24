@@ -46,17 +46,19 @@ if ! command -v pi >/dev/null 2>&1; then
 fi
 
 # -----------------------------------------------------------------------
-# 1. Structural: dcg-gate.ts exists at cage-owned auto-discovery path
+# 1. Structural: dcg-gate.ts exists at its own root-owned load path
+#    (ADR-027 D1/D3 — guard wiring on a separate path, NOT inside extensions/;
+#    loaded explicitly via `pi --no-extensions -e <path>`; olen retired)
 # -----------------------------------------------------------------------
 echo "-- Structural checks --"
-DCG_GATE="/home/agent/.pi/agent/extensions/dcg-gate.ts"
+DCG_GATE="/etc/rip-cage/pi/dcg-gate.ts"
 # Post-rip-cage-wlwc.2.2: dcg-gate.ts is recipe-provisioned (examples/pi), NOT baked into
 # the base image. When the no-guard pi recipe variant is used, dcg-gate.ts is intentionally
 # absent. In that case, sections 1/1b-1e and 6 are inapplicable — skip silently.
 # Section 2 (dcg-guard engine) and 3-5 (schema parity) still run independently of dcg-gate.ts.
 PI_GUARD_RECIPE_ABSENT=false
 if [[ -f "$DCG_GATE" ]]; then
-  check "dcg-gate.ts exists at cage-owned extensions path" "pass" "$DCG_GATE"
+  check "dcg-gate.ts exists at its own root-owned load path" "pass" "$DCG_GATE"
 else
   PI_GUARD_RECIPE_ABSENT=true
   TOTAL=$((TOTAL + 1))
@@ -357,21 +359,28 @@ if [[ "$SENTINEL_OK" == "true" ]]; then
 fi
 
 # -----------------------------------------------------------------------
-# 6. Ownership and write-denial regression (rip-cage-olen)
+# 6. Ownership and write-denial regression (floor-lock, ADR-027 D1/D3)
 #
-# dcg-gate.ts and extensions/ MUST be root-owned and non-agent-writable.
-# Tested as the agent user (this script runs inside the cage as agent).
-# Vector (a): agent cannot overwrite/delete dcg-gate.ts.
-# Vector (b): agent cannot create new extensions (e.g. z-evil.ts) to
-#             shadow/mutate post-DCG-approval — requires directory write.
+# The DCG guard (dcg-gate.ts) lives on its OWN separate root-owned load path
+# (/etc/rip-cage/pi/), NOT inside the agent's extensions/ dir (olen retired,
+# rip-cage-wlwc.4). dcg-gate.ts AND its parent dir /etc/rip-cage/pi MUST be
+# root-owned and non-agent-writable. Tested as the agent user (this script runs
+# inside the cage as agent).
+# Vector (a): agent cannot overwrite/delete dcg-gate.ts (file unwritable).
+# Vector (b): agent cannot drop a competing extension into the guard's dir to
+#             shadow/mutate post-DCG-approval — requires directory write, which
+#             the root-owned /etc/rip-cage/pi denies. (The agent's own
+#             extensions/ dir is now agent-writable BY DESIGN: pi launches with
+#             --no-extensions, so an agent-dropped extension there is never
+#             auto-loaded — only the explicit -e guard path loads.)
 #
 # Post-rip-cage-wlwc.2.2: if PI_GUARD_RECIPE_ABSENT (no-guard pi recipe),
-# dcg-gate.ts and extensions/ do not exist — section 6 is inapplicable. Skip.
+# dcg-gate.ts does not exist — section 6 is inapplicable. Skip.
 # -----------------------------------------------------------------------
 echo ""
-echo "-- Ownership + write-denial regression (rip-cage-olen) --"
+echo "-- Ownership + write-denial regression (floor-lock, ADR-027 D1/D3) --"
 
-DCG_EXT_DIR="/home/agent/.pi/agent/extensions"
+DCG_GUARD_DIR="/etc/rip-cage/pi"
 
 if [[ "$PI_GUARD_RECIPE_ABSENT" == "true" ]]; then
   TOTAL=$((TOTAL + 1))
@@ -382,77 +391,81 @@ else
 if [[ -f "$DCG_GATE" ]]; then
   _dcg_owner=$(stat -c '%U' "$DCG_GATE" 2>/dev/null || true)
   if [[ "$_dcg_owner" == "root" ]]; then
-    check "rip-cage-olen [6a] dcg-gate.ts is root-owned" "pass" "owner: root"
+    check "floor-lock [6a] dcg-gate.ts is root-owned" "pass" "owner: root"
   else
-    check "rip-cage-olen [6a] dcg-gate.ts is root-owned" "fail" "owner: ${_dcg_owner:-unknown} (expected root)"
+    check "floor-lock [6a] dcg-gate.ts is root-owned" "fail" "owner: ${_dcg_owner:-unknown} (expected root)"
   fi
 else
-  check "rip-cage-olen [6a] dcg-gate.ts is root-owned" "fail" "dcg-gate.ts absent — section 6 not reached (recipe regression?)"
+  check "floor-lock [6a] dcg-gate.ts is root-owned" "fail" "dcg-gate.ts absent — section 6 not reached (recipe regression?)"
 fi
 
-# 6b. extensions/ dir owner is root (not agent)
-if [[ -d "$DCG_EXT_DIR" ]]; then
-  _ext_dir_owner=$(stat -c '%U' "$DCG_EXT_DIR" 2>/dev/null || true)
-  if [[ "$_ext_dir_owner" == "root" ]]; then
-    check "rip-cage-olen [6b] extensions/ dir is root-owned" "pass" "owner: root"
+# 6b. guard dir /etc/rip-cage/pi owner is root (not agent) — the unix-dir-ownership
+#     invariant: a root-owned file in an agent-writable dir is still replaceable.
+if [[ -d "$DCG_GUARD_DIR" ]]; then
+  _guard_dir_owner=$(stat -c '%U' "$DCG_GUARD_DIR" 2>/dev/null || true)
+  if [[ "$_guard_dir_owner" == "root" ]]; then
+    check "floor-lock [6b] /etc/rip-cage/pi guard dir is root-owned" "pass" "owner: root"
   else
-    check "rip-cage-olen [6b] extensions/ dir is root-owned" "fail" "owner: ${_ext_dir_owner:-unknown} (expected root)"
+    check "floor-lock [6b] /etc/rip-cage/pi guard dir is root-owned" "fail" "owner: ${_guard_dir_owner:-unknown} (expected root)"
   fi
 else
-  check "rip-cage-olen [6b] extensions/ dir is root-owned" "fail" "extensions/ dir absent — section 6 not reached (recipe regression?)"
+  check "floor-lock [6b] /etc/rip-cage/pi guard dir is root-owned" "fail" "guard dir absent — section 6 not reached (recipe regression?)"
 fi
 
 # 6c. dcg-gate.ts is not agent-writable (permission assertion)
 if [[ -f "$DCG_GATE" ]]; then
   if [ ! -w "$DCG_GATE" ]; then
-    check "rip-cage-olen [6c] dcg-gate.ts is not writable by agent (permission)" "pass"
+    check "floor-lock [6c] dcg-gate.ts is not writable by agent (permission)" "pass"
   else
-    check "rip-cage-olen [6c] dcg-gate.ts is not writable by agent (permission)" "fail" "agent can write $DCG_GATE"
+    check "floor-lock [6c] dcg-gate.ts is not writable by agent (permission)" "fail" "agent can write $DCG_GATE"
   fi
 else
-  check "rip-cage-olen [6c] dcg-gate.ts is not writable by agent (permission)" "fail" "dcg-gate.ts absent — section 6 not reached (recipe regression?)"
+  check "floor-lock [6c] dcg-gate.ts is not writable by agent (permission)" "fail" "dcg-gate.ts absent — section 6 not reached (recipe regression?)"
 fi
 
-# 6d. extensions/ dir is not agent-writable (permission assertion)
-if [[ -d "$DCG_EXT_DIR" ]]; then
-  if [ ! -w "$DCG_EXT_DIR" ]; then
-    check "rip-cage-olen [6d] extensions/ dir is not writable by agent (permission)" "pass"
+# 6d. guard dir /etc/rip-cage/pi is not agent-writable (permission assertion)
+if [[ -d "$DCG_GUARD_DIR" ]]; then
+  if [ ! -w "$DCG_GUARD_DIR" ]; then
+    check "floor-lock [6d] /etc/rip-cage/pi guard dir is not writable by agent (permission)" "pass"
   else
-    check "rip-cage-olen [6d] extensions/ dir is not writable by agent (permission)" "fail" "agent can write $DCG_EXT_DIR"
+    check "floor-lock [6d] /etc/rip-cage/pi guard dir is not writable by agent (permission)" "fail" "agent can write $DCG_GUARD_DIR"
   fi
 else
-  check "rip-cage-olen [6d] extensions/ dir is not writable by agent (permission)" "fail" "extensions/ dir absent — section 6 not reached (recipe regression?)"
+  check "floor-lock [6d] /etc/rip-cage/pi guard dir is not writable by agent (permission)" "fail" "guard dir absent — section 6 not reached (recipe regression?)"
 fi
 
 # 6e. Actual failed-write probe: agent cannot overwrite dcg-gate.ts (vector a)
 if [[ -f "$DCG_GATE" ]]; then
   if touch "$DCG_GATE" 2>/dev/null; then
-    check "rip-cage-olen [6e] agent write to dcg-gate.ts EACCES (vector a)" "fail" "touch succeeded — guard is agent-writable"
+    check "floor-lock [6e] agent write to dcg-gate.ts EACCES (vector a)" "fail" "touch succeeded — guard is agent-writable"
   else
-    check "rip-cage-olen [6e] agent write to dcg-gate.ts EACCES (vector a)" "pass" "touch correctly denied"
+    check "floor-lock [6e] agent write to dcg-gate.ts EACCES (vector a)" "pass" "touch correctly denied"
   fi
 else
-  check "rip-cage-olen [6e] agent write to dcg-gate.ts EACCES (vector a)" "fail" "dcg-gate.ts absent — section 6 not reached (recipe regression?)"
+  check "floor-lock [6e] agent write to dcg-gate.ts EACCES (vector a)" "fail" "dcg-gate.ts absent — section 6 not reached (recipe regression?)"
 fi
 
-# 6f. Actual failed-write probe: agent cannot create z-evil.ts in extensions/ (vector b)
-if [[ -d "$DCG_EXT_DIR" ]]; then
-  _evil_path="${DCG_EXT_DIR}/z-evil.ts"
+# 6f. Actual failed-write probe: agent cannot drop a competing extension into the
+#     guard's root-owned dir /etc/rip-cage/pi (vector b). This is the real injection
+#     defense now — NOT extensions/ ownership (extensions/ is agent-writable by design;
+#     --no-extensions means anything dropped there never loads).
+if [[ -d "$DCG_GUARD_DIR" ]]; then
+  _evil_path="${DCG_GUARD_DIR}/z-evil.ts"
   if touch "$_evil_path" 2>/dev/null; then
     # Write succeeded — clean up and fail
     rm -f "$_evil_path" 2>/dev/null || true
-    check "rip-cage-olen [6f] agent cannot create z-evil.ts in extensions/ (vector b)" "fail" "touch succeeded — extensions dir is agent-writable"
+    check "floor-lock [6f] agent cannot create competing ext in /etc/rip-cage/pi (vector b)" "fail" "touch succeeded — guard dir is agent-writable"
   else
     # Confirm the file was NOT created (defense: it shouldn't exist)
     if [[ ! -e "$_evil_path" ]]; then
-      check "rip-cage-olen [6f] agent cannot create z-evil.ts in extensions/ (vector b)" "pass" "touch correctly denied, file absent"
+      check "floor-lock [6f] agent cannot create competing ext in /etc/rip-cage/pi (vector b)" "pass" "touch correctly denied, file absent"
     else
-      check "rip-cage-olen [6f] agent cannot create z-evil.ts in extensions/ (vector b)" "fail" "touch failed but file exists somehow"
+      check "floor-lock [6f] agent cannot create competing ext in /etc/rip-cage/pi (vector b)" "fail" "touch failed but file exists somehow"
     fi
   fi
   unset _evil_path
 else
-  check "rip-cage-olen [6f] agent cannot create z-evil.ts in extensions/ (vector b)" "fail" "extensions/ dir absent — section 6 not reached (recipe regression?)"
+  check "floor-lock [6f] agent cannot create competing ext in /etc/rip-cage/pi (vector b)" "fail" "guard dir absent — section 6 not reached (recipe regression?)"
 fi
 
 fi  # end: if not PI_GUARD_RECIPE_ABSENT

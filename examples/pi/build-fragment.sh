@@ -35,10 +35,12 @@ tools:
   # base64 blobs — edit the source files and re-run the generator.
   #
   # pi-recipe (TOOL): bakes the launch wrapper + DCG guard extension +
-  # cage-topology doc into the image at build time, ALL root-owned
-  # (agent-unwritable — the guard cannot be self-disabled in the ro-default
-  # config; ADR-027 D1, ADR-005 D11). The pi BINARY itself is installed
-  # by the bundled 'pi' TOOL entry (Dockerfile npm install).
+  # cage-topology doc into the image at build time, root-owned where
+  # required (agent-unwritable guard; ADR-027 D1/D3, ADR-005 D11).
+  # The guard lives at /etc/rip-cage/pi/dcg-gate.ts (its OWN separate
+  # root-owned load path — NOT inside extensions/; olen retired).
+  # The pi BINARY itself is installed by the bundled 'pi' TOOL entry
+  # (Dockerfile npm install).
   #
   # SWAPPABLE GUARD: the DCG guard is the wrapper's '--no-extensions -e dcg-gate.ts'
   # wiring. To run pi with ALL its extensions and NO dcg-gate, swap THIS recipe for
@@ -49,9 +51,11 @@ tools:
   # install_cmd runs as root in the runtime stage (RUN). It:
   #   - writes /usr/local/bin/pi  (the launch wrapper; precedes /usr/bin/pi on PATH),
   #     root:root mode 0755 — the agent can execute but cannot replace it.
-  #   - writes /home/agent/.pi/agent/extensions/dcg-gate.ts (the DCG guard),
-  #     and root-owns the extensions/ dir so the agent cannot add a competing
-  #     extension or overwrite the guard (rip-cage-olen protection, preserved).
+  #   - writes /etc/rip-cage/pi/dcg-gate.ts (the DCG guard) on its OWN separate
+  #     root-owned load path (ADR-027 D1/D3 — olen retired; extensions/ is no longer
+  #     root-owned; the guard is NOT inside extensions/).
+  #     Both the file AND its parent dir /etc/rip-cage/pi are root-owned so an agent
+  #     cannot unlink or replace the guard (unix-dir-ownership).
   #   - writes /etc/rip-cage/cage-pi.md (cage-topology doc, consumed generically
   #     by init-rip-cage.sh).
   # No apt packages needed; the leading ':' is a no-op so the rc-generated
@@ -59,7 +63,7 @@ tools:
   - name: pi-recipe
     archetype: TOOL
     version_pin: "bundled-recipe"
-    install_cmd: ": && mkdir -p /home/agent/.pi/agent/extensions /etc/rip-cage && chown 1000:1000 /home/agent && echo '${WRAPPER_B64}' | base64 -d > /usr/local/bin/pi && chown root:root /usr/local/bin/pi && chmod 0755 /usr/local/bin/pi && echo '${GATE_B64}' | base64 -d > /home/agent/.pi/agent/extensions/dcg-gate.ts && chown root:root /home/agent/.pi/agent/extensions/dcg-gate.ts && chmod 0644 /home/agent/.pi/agent/extensions/dcg-gate.ts && chown root:root /home/agent/.pi/agent/extensions && chmod 0755 /home/agent/.pi/agent/extensions && echo '${CAGEMD_B64}' | base64 -d > /etc/rip-cage/cage-pi.md && chown root:root /etc/rip-cage/cage-pi.md && chmod 0644 /etc/rip-cage/cage-pi.md"
+    install_cmd: ": && mkdir -p /etc/rip-cage/pi /etc/rip-cage && echo '${WRAPPER_B64}' | base64 -d > /usr/local/bin/pi && chown root:root /usr/local/bin/pi && chmod 0755 /usr/local/bin/pi && echo '${GATE_B64}' | base64 -d > /etc/rip-cage/pi/dcg-gate.ts && chown root:root /etc/rip-cage/pi/dcg-gate.ts && chmod 0644 /etc/rip-cage/pi/dcg-gate.ts && chown root:root /etc/rip-cage/pi && chmod 0755 /etc/rip-cage/pi && echo '${CAGEMD_B64}' | base64 -d > /etc/rip-cage/cage-pi.md && chown root:root /etc/rip-cage/cage-pi.md && chmod 0644 /etc/rip-cage/cage-pi.md"
     egress: []
     mounts: []
 YAML
