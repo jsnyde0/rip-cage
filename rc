@@ -7573,7 +7573,12 @@ _manifest_build_dockerfile_path() {
     return 1
   fi
 
-  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" && -z "$mux_registry_steps" && -z "$mux_label" && -z "$mediator_registry_steps" && -z "$mediator_label" ]]; then
+  local safety_stack_asserted_steps
+  if ! safety_stack_asserted_steps=$(_manifest_generate_safety_stack_asserted_steps); then
+    return 1
+  fi
+
+  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" && -z "$mux_registry_steps" && -z "$mux_label" && -z "$mediator_registry_steps" && -z "$mediator_label" && -z "$safety_stack_asserted_steps" ]]; then
     # Default/bundled-only manifest — use the original Dockerfile unchanged (D8).
     echo "$orig_dockerfile"
     return 0
@@ -7786,6 +7791,32 @@ _manifest_build_dockerfile_path() {
       cat "$tmp_inject_label_med" >> "$tmp_dockerfile"
     fi
     rm -f "$tmp_inject_label_med"
+  fi
+
+  # --- floor_assert safety-stack-asserted: inject AFTER "COPY settings.json" sentinel ---
+  # Bakes /etc/rip-cage/safety-stack-asserted (one guard-id per line) root:root 0644
+  # so in-cage rc test can assert named guards are present+active (rip-cage-wlwc.6).
+  # Injection site: same as daemon/mux/mediator config steps (root context; /etc/rip-cage exists).
+  # rc copies guard-id strings VERBATIM — never interprets them (ADR-005 D12 tool-agnostic).
+  if [[ -n "$safety_stack_asserted_steps" ]]; then
+    local sentinel_settings_ssa="COPY settings.json /etc/rip-cage/settings.json"
+    local tmp_inject_ssa
+    tmp_inject_ssa=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
+    printf '\n# --- manifest-generated safety-stack-asserted bake (rip-cage-wlwc.6) ---\n%s\n' "$safety_stack_asserted_steps" > "$tmp_inject_ssa"
+
+    if grep -qF "$sentinel_settings_ssa" "$tmp_dockerfile"; then
+      local sentinel_line_ssa base_dockerfile_ssa
+      sentinel_line_ssa=$(grep -nF "$sentinel_settings_ssa" "$tmp_dockerfile" | head -1 | cut -d: -f1)
+      base_dockerfile_ssa=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
+      head -n "${sentinel_line_ssa}" "$tmp_dockerfile" > "$base_dockerfile_ssa"
+      cat "$tmp_inject_ssa" >> "$base_dockerfile_ssa"
+      tail -n "+$((sentinel_line_ssa + 1))" "$tmp_dockerfile" >> "$base_dockerfile_ssa"
+      mv "$base_dockerfile_ssa" "$tmp_dockerfile"
+    else
+      echo "rip-cage: Warning: 'COPY settings.json' sentinel not found in Dockerfile — appending safety-stack-asserted bake at end (may fail if /etc/rip-cage does not exist). Dockerfile may need the sentinel restored." >&2
+      cat "$tmp_inject_ssa" >> "$tmp_dockerfile"
+    fi
+    rm -f "$tmp_inject_ssa"
   fi
 
   echo "$tmp_dockerfile"
@@ -8295,6 +8326,74 @@ _manifest_generate_mediator_registry_steps() {
   if [[ -n "$steps" ]]; then
     printf '%s' "${steps%$'\n'}"
   fi
+}
+
+# _manifest_generate_safety_stack_asserted_steps
+# Read the host manifest and emit Dockerfile RUN steps to bake
+# /etc/rip-cage/safety-stack-asserted (one guard-id per line), root:root 0644,
+# parent dir root:root 0755 (already created by Dockerfile).
+#
+# ONLY tools that carry `floor_assert: <guard-id>` contribute. rc copies the
+# guard-id strings VERBATIM — it never interprets "dcg"/"ssh-bypass" or any
+# other guard name. This preserves ADR-005 D12 (rc stays tool-agnostic).
+#
+# The file is ABSENT when no floor_assert fields are declared (default/bundled-only
+# manifest), keeping the fail-closed semantics consistent: absent = minimal cage
+# (no assertions); present = named guards must be active.
+#
+# D8 byte-for-byte contract: when the manifest has no floor_assert entries,
+# this function emits NOTHING — rc build uses the original Dockerfile unchanged.
+#
+# rip-cage-wlwc.6
+_manifest_generate_safety_stack_asserted_steps() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count idx
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local guard_ids=""
+  for (( idx=0; idx<count; idx++ )); do
+    local entry floor_assert_val
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    # Extract floor_assert value; if absent or null, skip this entry.
+    floor_assert_val=$(jq -r '.floor_assert // ""' <<<"$entry" 2>/dev/null)
+    [[ -z "$floor_assert_val" || "$floor_assert_val" == "null" ]] && continue
+
+    # Validate: guard-id must be a non-empty single-line string (no newlines —
+    # newlines in RUN step content inject arbitrary Dockerfile directives).
+    if [[ "$floor_assert_val" == *$'\n'* ]]; then
+      local entry_name
+      entry_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+      echo "Error: manifest tools entry '${entry_name}': field 'floor_assert' must be a single-line guard-id (no newlines)." >&2
+      return 1
+    fi
+
+    if [[ -n "$guard_ids" ]]; then
+      guard_ids+=$'\n'"$floor_assert_val"
+    else
+      guard_ids="$floor_assert_val"
+    fi
+  done
+
+  if [[ -z "$guard_ids" ]]; then
+    # No floor_assert entries — emit nothing (D8 contract).
+    return 0
+  fi
+
+  # Emit a Dockerfile RUN step that writes the asserted file root:root 0644.
+  # Uses printf with a here-doc-style approach: base64-encode the guard-ids
+  # so the RUN step is safe against any content (no shell injection risk).
+  # The guard-ids are verified single-line above; base64 output is newline-safe.
+  local b64_guard_ids
+  b64_guard_ids=$(printf '%s\n' "$guard_ids" | base64 | tr -d '\n')
+  printf 'RUN # manifest floor_assert: bake safety-stack-asserted (rip-cage-wlwc.6)\n'
+  printf "RUN echo '%s' | base64 -d > /etc/rip-cage/safety-stack-asserted && chown root:root /etc/rip-cage/safety-stack-asserted && chmod 0644 /etc/rip-cage/safety-stack-asserted\n" "$b64_guard_ids"
 }
 
 # _manifest_generate_mediator_label

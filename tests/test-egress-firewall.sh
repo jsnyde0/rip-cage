@@ -34,8 +34,8 @@ if [[ ! -f /etc/rip-cage/firewall-env ]]; then
   echo ""
 
   # Egress-off check A: no router process running
-  if pgrep -u rip-proxy python3 >/dev/null 2>/dev/null; then
-    check "No router process (egress-off)" "fail" "python3 router running unexpectedly"
+  if pgrep -u rip-proxy -f rip_cage_router >/dev/null 2>/dev/null; then
+    check "No router process (egress-off)" "fail" "rip_cage_router running unexpectedly"
   else
     check "No router process (egress-off)" "pass"
   fi
@@ -65,10 +65,10 @@ fi
 echo "-- Router Process --"
 
 # Check 1: Router process running as rip-proxy user
-if pgrep -u rip-proxy python3 >/dev/null 2>/dev/null; then
+if pgrep -u rip-proxy -f rip_cage_router >/dev/null 2>/dev/null; then
   check "SNI router process running (rip-proxy user)" "pass"
 else
-  check "SNI router process running (rip-proxy user)" "fail" "no python3 router process for rip-proxy"
+  check "SNI router process running (rip-proxy user)" "fail" "no rip_cage_router process for rip-proxy"
 fi
 
 # Check 2: Router listening on :8080

@@ -131,6 +131,7 @@ COPY ssh/known_hosts.github /etc/ssh/ssh_known_hosts
 COPY ssh/ssh_config /etc/ssh/ssh_config.d/00-rip-cage.conf
 RUN chmod 0644 /etc/ssh/ssh_known_hosts /etc/ssh/ssh_config.d/00-rip-cage.conf
 COPY tests/test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
+COPY tests/_safety-stack-assert-lib.sh /usr/local/lib/rip-cage/_safety-stack-assert-lib.sh
 COPY settings.json /etc/rip-cage/settings.json
 # CC managed-settings floor-lock, cage-claude.md, and cage-pi.md are provisioned by
 # composable recipes (examples/claude/, examples/pi/) via root-owned install_cmd.

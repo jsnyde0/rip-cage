@@ -32,6 +32,17 @@ check_auth() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# assert-present flip helper (rip-cage-wlwc.6) — sourced from shared lib
+# ---------------------------------------------------------------------------
+# Defines RC_ASSERTED_FILE default, _guard_is_asserted(), and
+# _assert_ssh_bypass_present(). Both this file and test-mount-seam-integration.sh
+# source the SAME lib (CORRECTION B: no divorced copy).
+# In-cage: both files live in /usr/local/lib/rip-cage/ — dirname resolves correctly.
+# Host/CI: both files live in tests/ — dirname resolves correctly.
+# shellcheck source=tests/_safety-stack-assert-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_safety-stack-assert-lib.sh"
+
 echo "=== Rip Cage Health Check ==="
 echo ""
 
@@ -150,8 +161,15 @@ if [[ -x "$_hook_path" ]]; then
     check "ssh-bypass hook wired in settings (recipe installed, hook missing from managed-settings.json and settings.json)" "fail"
   fi
 else
-  TOTAL=$((TOTAL + 1))
-  echo "INFO  [$TOTAL] ssh-bypass blocker opt-in recipe NOT installed (examples/ssh-bypass — ADR-025 D2, ADR-026 D2); containment holds via other layers"
+  # Hook binary absent. Check floor_assert: if 'ssh-bypass' is asserted, this is a FAIL
+  # (default cage declared the guard but it's missing — rip-cage-wlwc.6 assert-present flip).
+  # If not asserted, INFO-skip is correct (opt-in recipe not composed — ADR-025 D2).
+  if _guard_is_asserted "ssh-bypass"; then
+    _assert_ssh_bypass_present
+  else
+    TOTAL=$((TOTAL + 1))
+    echo "INFO  [$TOTAL] ssh-bypass blocker opt-in recipe NOT installed (examples/ssh-bypass — ADR-025 D2, ADR-026 D2); containment holds via other layers"
+  fi
 fi
 unset _hook_path
 
@@ -169,6 +187,30 @@ if echo "$dcg_result" | grep -qE '"permissionDecision".*"deny"'; then
   check "DCG denies destructive command" "pass"
 else
   check "DCG denies destructive command" "fail" "$dcg_result"
+fi
+
+# 11-assert. DCG assert-present membership check (rip-cage-wlwc.6).
+# If the asserted-file lists 'dcg', verify it is in the declared set.
+# The functional denial check (#11) already fails-closed when dcg-guard is absent —
+# this is a complementary check that the asserted-file LISTS dcg (completeness),
+# and that the asserted-file itself is root-owned (fail-closed semantics check).
+if [[ -f "${RC_ASSERTED_FILE}" ]]; then
+  if _guard_is_asserted "dcg"; then
+    # Confirm the asserted-file and its parent dir are root-owned (fail-closed per F3 fix).
+    _ssa_file_owner=$(stat -c '%U' "${RC_ASSERTED_FILE}" 2>/dev/null || echo "unknown")
+    _ssa_dir_owner=$(stat -c '%U' "$(dirname "${RC_ASSERTED_FILE}")" 2>/dev/null || echo "unknown")
+    if [[ "$_ssa_file_owner" == "root" && "$_ssa_dir_owner" == "root" ]]; then
+      check "safety-stack-asserted lists 'dcg' and file+dir are root-owned (rip-cage-wlwc.6)" "pass" \
+        "file=${RC_ASSERTED_FILE} owner=${_ssa_file_owner} dir owner=${_ssa_dir_owner}"
+    else
+      check "safety-stack-asserted lists 'dcg' but ownership is wrong (rip-cage-wlwc.6)" "fail" \
+        "file owner='${_ssa_file_owner}' dir owner='${_ssa_dir_owner}' (expected root:root) — agent-writable declaration is untrustworthy"
+    fi
+    unset _ssa_file_owner _ssa_dir_owner
+  else
+    TOTAL=$((TOTAL + 1))
+    echo "INFO  [$TOTAL] safety-stack-asserted present but 'dcg' not listed (non-default cage composition; opt-in only)"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
