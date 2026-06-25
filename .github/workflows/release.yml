@@ -99,7 +99,10 @@ jobs:
 
       - name: Install yq (mikefarah v4, required by rc generate-dockerfile)
         run: |
-          sudo curl -fsSL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          # Arch-aware: each arch builds on its NATIVE runner, so the yq binary
+          # must match (matrix.arch is amd64|arm64, exactly mikefarah's asset
+          # suffix). Hardcoding amd64 here exec-format-errors on the arm64 runner.
+          sudo curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${{ matrix.arch }}"
           sudo chmod +x /usr/local/bin/yq
           yq --version
 
