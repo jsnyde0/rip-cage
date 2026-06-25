@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-25
+
 ### Changed
 
 - **Agents, command-guards, and substrate collapse to two composable seams: `TOOL` + per-asset ro/rw mount** (epic rip-cage-wlwc; [ADR-025](docs/decisions/ADR-025-host-adoptable-dcg-policy.md) D2, [ADR-027](docs/decisions/ADR-027-agent-substrate-projection.md) D1/D3, [ADR-005](docs/decisions/ADR-005-ecosystem-tools.md) D12). There is no longer a bespoke AGENT archetype or an `agents.enabled` switch — an agent (Claude Code, pi) and its command-guard are each just a `TOOL` manifest recipe plus per-asset read-only / read-write mounts. Composing or swapping one is "edit the manifest, `rc build`" with **zero `rc` edits** and no `compose:` directive or auto-wiring (the agent does the wiring per ADR-005 D12). The welded floor is now strictly **containment** (container boundary, egress firewall, fs sandbox, non-root + scoped sudo, secret-path denylist, git-hooks RO weld, ssh known_hosts). (rip-cage-wlwc.2/.3/.9/.12)
