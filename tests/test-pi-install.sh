@@ -51,7 +51,7 @@ else
 fi
 
 # -----------------------------------------------
-# Test 4: /home/agent/.pi/agent/extensions dir exists (cage-owned auto-discovery path)
+# Test 4: /home/agent/.pi/agent/extensions dir exists (agent-owned extension space; not auto-scanned post-olen)
 # -----------------------------------------------
 echo ""
 echo "=== Test 4: /home/agent/.pi/agent/extensions exists ==="

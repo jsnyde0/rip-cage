@@ -13,7 +13,7 @@
 #   7. /home/agent/.pi/agent/AGENTS.md content + mtime unchanged after rc up
 #      (init must not mutate container-local dotfiles)
 #   8. auth.json RW round-trip: write inside cage → visible on host (inode preserved)
-#   9. extensions auto-load: marker extension in image-baked extensions/ loads with NO -e flag
+#   9. extensions/ dir is agent-owned + writable (agent's own extension space; the pi guard is NOT auto-loaded from here — post-olen it rides --no-extensions -e from /etc/rip-cage/pi/)
 
 set -uo pipefail
 
@@ -318,30 +318,29 @@ fi
 printf '{"fake":true}\n' > "$PI_AGENT_DIR/auth.json"
 
 # ================================================================
-# Test 9: extensions auto-discovery path is correct, agent-owned, and writable
+# Test 9: the agent's pi extensions/ dir is correct, agent-owned, and writable
 #
-# Acceptance item 4 requires pi to auto-load extensions from the image-baked
-# /home/agent/.pi/agent/extensions/ with no -e flag.
+# Post-wlwc.4 (olen retirement, ADR-019 D8 / ADR-027 D1/D3) pi does NOT auto-load
+# this dir. The root-owned wrapper (/usr/local/bin/pi) prepends
+# '--no-extensions -e /etc/rip-cage/pi/dcg-gate.ts', so the guard rides its OWN
+# separate root-owned load path and the workspace cannot inject a shadowing
+# extension. /home/agent/.pi/agent/extensions/ is therefore NOT a guard path —
+# it is the agent's own writable extension space (ADR-027 rw self-improvement).
 #
-# What this test CAN prove non-interactively:
+# What this test proves non-interactively:
 #   - The dir exists in the container image (baked by Dockerfile)
-#   - It is agent:agent owned (pi runs as agent, so it can access)
-#   - The agent user can write to it (required for bl1 to drop guard extensions)
+#   - It is agent:agent owned (the agent owns its own extension space)
+#   - The agent user can write to it (agent improves its own extensions in-cage)
 #   - A marker file dropped here is readable by the agent user
 #
-# What this test CANNOT prove non-interactively:
-#   - That pi's extension loader actually loaded a file from this dir at runtime.
-#     pi's --print mode calls the full loader (loader.ts:583-585 discoverAndLoadExtensions
-#     scans agentDir/extensions/) but proving loading succeeded requires a live API call
-#     or a side-effectful extension that writes an observable artifact without a TTY.
-#     Runtime-load proof is deferred to bl1, which will bake a real guard extension.
-#
-# This matches the pi loader's auto-discovery path: loader.ts line 584:
-#   const globalExtDir = path.join(agentDir, "extensions");
-#   addPaths(discoverExtensionsInDir(globalExtDir));
+# What this test does NOT assert (deliberately, post-olen):
+#   - That pi auto-loads from this dir — it does not. --no-extensions disables
+#     auto-discovery; the guard loads explicitly via -e from /etc/rip-cage/pi/.
+#     The --no-extensions bypass-block (workspace extensions NOT loaded) is
+#     covered by tests/test-pi-no-extensions.sh, not here.
 # ================================================================
 echo ""
-echo "=== Test 9: pi extensions auto-discovery dir exists, is agent-owned, and is writable ==="
+echo "=== Test 9: agent pi extensions/ dir exists, is agent-owned, and is writable ==="
 
 # 9a: dir must exist (baked in Dockerfile line: RUN mkdir -p /home/agent/.pi/agent/extensions)
 ext_dir_stat=$(docker exec "$CONTAINER" stat -c '%U:%G' /home/agent/.pi/agent/extensions 2>/dev/null || true)
@@ -351,7 +350,7 @@ else
   fail "/home/agent/.pi/agent/extensions dir missing or wrong ownership (got: '$ext_dir_stat')" ""
 fi
 
-# 9b: dir must be writable by agent user (bl1 needs to drop extensions here)
+# 9b: dir must be writable by agent user (agent's own extension space — ADR-027 rw)
 write_test=$(docker exec "$CONTAINER" bash -c 'touch /home/agent/.pi/agent/extensions/.write-test && echo ok && rm /home/agent/.pi/agent/extensions/.write-test' 2>/dev/null || true)
 if [[ "$write_test" == "ok" ]]; then
   pass "/home/agent/.pi/agent/extensions dir is writable by agent user"
@@ -360,14 +359,14 @@ else
 fi
 
 # 9c: a marker file dropped into the dir is readable by the agent user
-#     (confirms the discovery path is not blocked by permissions or mount shadowing)
+#     (confirms the agent extension space is not blocked by permissions or mount shadowing)
 docker exec "$CONTAINER" bash -c 'printf "// marker\nexport default {};\n" > /home/agent/.pi/agent/extensions/marker-test.js' 2>/dev/null
 marker_content=$(docker exec "$CONTAINER" cat /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true)
 docker exec "$CONTAINER" rm -f /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true
 if echo "$marker_content" | grep -q "marker"; then
-  pass "marker file dropped in extensions/ is readable by agent user (auto-discovery path unblocked)"
+  pass "marker file dropped in extensions/ is readable by agent user (agent extension space writable)"
 else
-  fail "marker file in extensions/ not readable — discovery path may be blocked" "$marker_content"
+  fail "marker file in extensions/ not readable — agent extension space may be blocked" "$marker_content"
 fi
 
 # ================================================================
