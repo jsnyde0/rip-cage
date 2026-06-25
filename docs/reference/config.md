@@ -268,7 +268,7 @@ Cross-reference: [egress.md](egress.md) for the workflow, modes, DNS exfil detec
 
 ## `dcg.*` — destructive-command guard policy
 
-Rip-cage's DCG (destructive_command_guard) binary is baked into the image and enforces a hard `core` pack floor that cannot be lowered. The `dcg.*` fields let you **additively** enable extra built-in DCG packs and load custom YAML rule packs from the workspace — without touching the `core` floor or rebuilding the image.
+Rip-cage's DCG (destructive_command_guard) is a **composable recipe** (`examples/dcg/`) — not baked into the base image (ADR-025 D2). When the DCG recipe is composed, the `dcg.*` fields let you **additively** enable extra built-in DCG packs and load custom YAML rule packs from the workspace. The `core` pack floor enforced by the DCG binary cannot be lowered once DCG is present; the `dcg.*` fields only expand policy, never contract it.
 
 See [ADR-025](../decisions/ADR-025-host-adoptable-dcg-policy.md) for full design rationale.
 
@@ -285,7 +285,7 @@ At `rc up`, the effective `dcg.*` (global∪project, union-merged per additive_l
 
 **Fail-closed (ADR-025 D5):** If the translated config fails to parse, `rc up` refuses to launch the container and exits non-zero with an actionable message. Fix your `dcg.*` fields and retry.
 
-**Safe-by-default:** With no `dcg.*` configured, no extra mount is added — the baked image default stays in effect and behavior is unchanged.
+**Safe-by-default:** With no `dcg.*` configured, no extra mount is added — the recipe-provisioned DCG config stays in effect and behavior is unchanged (requires the DCG recipe to be composed; omitting the recipe means no DCG binary is present and no config is needed).
 
 ### Example
 

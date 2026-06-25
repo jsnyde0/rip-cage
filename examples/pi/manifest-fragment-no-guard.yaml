@@ -1,0 +1,31 @@
+version: 1
+tools:
+  # pi (NO-GUARD variant) recipe — the SWAPPABILITY PROOF.
+  #
+  # This recipe runs the pi coding agent with ALL of its extensions auto-discovered
+  # and NO dcg-gate command guard. It composes + launches with ZERO rc source edits
+  # — exactly the same seam as the guarded recipe, just without the guard wiring.
+  # This is the concrete demonstration that the guard is RECIPE CONTENT, not an rc
+  # mandate: rc never forces a guard onto an agent (containment is the floor; the
+  # command guard is a composable recipe ABOVE it).
+  #
+  # Diff vs examples/pi/manifest-fragment.yaml (the default-on guarded recipe):
+  #   - the launch wrapper exec's the REAL pi binary directly (no --no-extensions,
+  #     no -e dcg-gate.ts) so pi's normal extension auto-discovery is active.
+  #   - NO dcg-gate.ts is baked.
+  #
+  # To use: replace the 'pi-recipe' entry in your tools.yaml with the entry below,
+  # then `rc build`. No rc edits. No Dockerfile edits.
+
+  # TOOL entry: bake an UNGUARDED launch wrapper (exec real pi, no guard flags).
+  # Still root-owned (the wrapper itself is not agent-writable) — this variant
+  # removes the GUARD, not the wrapper's tamper-resistance. We do NOT bake
+  # dcg-gate.ts and we do NOT lock the extensions/ dir (the agent's own
+  # extensions are allowed in this opt-in no-guard config).
+  - name: pi-recipe
+    archetype: TOOL
+    version_pin: "bundled-recipe"
+    # Wrapper body (base64-decoded at build time): exec /usr/bin/pi "$@"
+    install_cmd: ": && echo 'IyEvdXNyL2Jpbi9lbnYgYmFzaApzZXQgLWV1byBwaXBlZmFpbApleGVjIC91c3IvYmluL3BpICIkQCIK' | base64 -d > /usr/local/bin/pi && chown root:root /usr/local/bin/pi && chmod 0755 /usr/local/bin/pi"
+    egress: []
+    mounts: []

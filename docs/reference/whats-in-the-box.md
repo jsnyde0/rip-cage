@@ -13,7 +13,7 @@ The rip-cage image is based on `debian:bookworm` with a multi-stage Dockerfile (
 | Go (build stage only) | Compiles bd/beads — not available at runtime |
 | gh CLI | GitHub operations |
 | git | Version control |
-| DCG | Destructive command guard (Rust binary) |
+| DCG | Destructive command guard (Rust binary) — composable recipe (`examples/dcg/`), not baked in base image |
 | Dolt + bd | Issue tracking (beads) |
 | tmux | Session persistence when `session.multiplexer: tmux` is configured (optional — not the default) |
 | zsh | Shell with sensible defaults |

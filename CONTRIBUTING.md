@@ -75,9 +75,9 @@ The test suite (`tests/test-safety-stack.sh`) runs 30+ checks organized into sec
 
 **User & Environment** — verifies the container agent runs as the `agent` user (uid 1000, not root) and that `/workspace` is mounted and writable.
 
-**Settings & Safety Stack** — verifies `settings.json` is present, valid JSON, has `bypassPermissions` mode, and has all hooks wired: DCG, ssh-bypass blocker, and the `.git/hooks` write deny rule.
+**Settings & Safety Stack** — verifies `settings.json` is present, valid JSON, has `bypassPermissions` mode, and has the `.git/hooks` write deny rule. When the DCG and ssh-bypass recipes are composed, also verifies those hooks are wired.
 
-**DCG functional** — sends a destructive command (plain and chained via `&&`/`;`) through DCG and confirms it returns a `deny` decision. DCG is chaining-robust (unanchored whole-command regexes); the compound-command blocker was removed in rip-cage 0.6.0 as its only real purpose was permission-allowlist bypass, which is moot under `bypassPermissions`.
+**DCG functional** — when the DCG recipe is composed: sends a destructive command (plain and chained via `&&`/`;`) through DCG and confirms it returns a `deny` decision. DCG is chaining-robust (unanchored whole-command regexes); the compound-command blocker was removed in rip-cage 0.6.0 as its only real purpose was permission-allowlist bypass, which is moot under `bypassPermissions`.
 
 **Auth** — verifies OAuth credentials or API key is present and (if OAuth) the token is not expired.
 
@@ -127,7 +127,7 @@ The image is multi-stage. Changes to earlier stages invalidate the build cache f
 
 ### Hooks and settings
 
-`hooks/block-ssh-bypass.sh` and `settings.json` are security-critical. Changes to either require careful review. Any change that weakens the safety stack must include an explicit rationale.
+`hooks/block-ssh-bypass.sh` is the source asset for the ssh-bypass composable recipe (`examples/ssh-bypass/`). `settings.json` controls base-image permissions and deny rules. Changes to either require careful review. Any change that weakens the safety stack must include an explicit rationale. Note: `block-ssh-bypass.sh` is **not** baked into the base image — it is opt-in via the composable recipe (ADR-025 D2, ADR-026 D2). The recipe's `manifest-fragment.yaml` carries the base64-encoded hook; update it via `examples/ssh-bypass/build-fragment.sh` after editing the source.
 
 ### Test script
 

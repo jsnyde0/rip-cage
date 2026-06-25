@@ -33,9 +33,10 @@ if [[ ! -L /home/agent/.claude ]]; then
 fi
 # Pi config dir is container-local (ADR-019 D1 evolved). The image creates .pi/agent
 # as root-owned (via mkdir in root context), but Docker may override ownership at mount
-# time if auth.json is sub-mounted. Chown top-level only (not -R): .pi/agent dir needs
-# to be agent-writable for pi to create sessions/bin/etc; extensions/ sub-dir stays
-# root:root (rip-cage-olen — that's the security invariant, don't chown -R).
+# time if auth.json is sub-mounted. Chown top-level only (not -R): .pi/agent dir and
+# its subdirs (including extensions/) should be agent-writable (olen retired per
+# ADR-027 D1/D3 — the DCG guard now lives at /etc/rip-cage/pi/dcg-gate.ts on its own
+# separate root-owned load path; extensions/ is no longer root-owned).
 if [[ ! -L /home/agent/.pi/agent ]]; then
   sudo chown agent:agent /home/agent/.pi/agent 2>/dev/null || true
 fi
@@ -231,34 +232,17 @@ for _pi_substrate in "pi-skills:skills" "pi-prompts:prompts" "pi-roles:roles" "p
 done
 unset _pi_substrate _pi_stage _pi_dest
 
-# Subagent extension: symlink alongside the baked dcg-gate.ts inside extensions/.
-# Prerequisite: extensions/ must exist (baked by Dockerfile, root-owned) — never replace it.
-# extensions/ is now root-owned (rip-cage-olen) so agent-user writes EACCES.
-# Use fixed-path sudo grants (sudoers: exact src + exact dest, NO glob — FOLD-2) for:
-#   - ln -sfT: place the symlink atomically (replaces any existing symlink at that exact path)
-#   - rm -rf: remove a stale real-dir entry at the exact path (near-impossible post-fix,
-#     since agent can't create entries in root-owned extensions/, but handled defensively
-#     so init never EACCES-aborts — FOLD-1)
-# NEVER replace extensions/ itself — only the 'subagent' entry inside it.
+# Subagent extension: loaded directly from its ro-mount staging path by pi-wrapper.sh.
+# ADR-027 D1/D3 (olen retired): the wrapper loads the subagent via
+#   -e /home/agent/.rc-context/pi-ext-subagent/index.ts
+# No symlink into extensions/ is needed, and no sudo is required — extensions/ is
+# agent-owned now that the DCG guard lives at /etc/rip-cage/pi/dcg-gate.ts (its own
+# separate root-owned load path).
 _pi_ext_stage="/home/agent/.rc-context/pi-ext-subagent"
-_pi_ext_dir="${PI_CODING_AGENT_DIR:-/home/agent/.pi/agent}/extensions"
-_pi_ext_dest="${_pi_ext_dir}/subagent"
 if [ -e "${_pi_ext_stage}" ] || [ -L "${_pi_ext_stage}" ]; then
-  # mkdir -p is a safe no-op on the existing root-owned extensions/ dir (returns 0).
-  mkdir -p "${_pi_ext_dir}"
-  # Remove any pre-existing real dir/file at the exact symlink dest (not a symlink) —
-  # requires privilege since extensions/ is root-owned (FOLD-1: defensive, near-impossible
-  # post-fix but must not EACCES-abort under set -euo pipefail).
-  if [ -e "${_pi_ext_dest}" ] && [ ! -L "${_pi_ext_dest}" ]; then
-    echo "[rip-cage] pi: removing pre-existing real dir ${_pi_ext_dest} before linking" >&2
-    sudo -n /bin/rm -rf "${_pi_ext_dest}"
-  fi
-  # ln -sfT: place symlink atomically; -T prevents nesting if dest is a dir-symlink.
-  # Fixed-path sudo grant matches exact src + dest (FOLD-2: no glob into extensions/).
-  sudo -n /usr/bin/ln -sfT "${_pi_ext_stage}" "${_pi_ext_dest}"
-  echo "[rip-cage] pi extensions/subagent linked from host"
+  echo "[rip-cage] pi subagent: ro-mount present at ${_pi_ext_stage} (loaded by wrapper via -e)"
 fi
-unset _pi_ext_stage _pi_ext_dir _pi_ext_dest
+unset _pi_ext_stage
 
 # 4. Claude session persistence (rip-cage-dn2)
 # Preferred path: ~/.claude/projects and ~/.claude/sessions are bind-mounted
@@ -303,25 +287,33 @@ elif [ -d /home/agent/.claude-state ]; then
 fi
 
 # 5. Verify hooks
+# dcg binary is opt-in via examples/dcg recipe (rip-cage-wlwc.10 / ADR-025 D2).
+# Warn-only when absent — a cage without the dcg recipe has no command-guard but
+# containment still holds via other layers (egress firewall, ssh-bypass blocker opt-in
+# via examples/ssh-bypass recipe, etc.).
 if [ ! -x /usr/local/bin/dcg ]; then
-  echo "[rip-cage] ERROR: DCG not found or not executable at /usr/local/bin/dcg" >&2
-  exit 1
+  echo "[rip-cage] INFO: DCG binary not found at /usr/local/bin/dcg — command-guard inactive (opt-in via examples/dcg recipe, ADR-025 D2)"
 fi
-# Verify dcg-guard wrapper (ADR-025 D3): must exist, be executable, and DCG_CONFIG must parse.
-# A missing/malformed DCG_CONFIG silently re-opens the user-layer config hole (ADR-025 D5).
-if [ ! -x /usr/local/lib/rip-cage/bin/dcg-guard ]; then
-  echo "[rip-cage] ERROR: dcg-guard wrapper not found or not executable at /usr/local/lib/rip-cage/bin/dcg-guard" >&2
-  exit 1
+# Verify dcg-guard wrapper + config ONLY when the dcg recipe is composed (binary present).
+# When dcg is absent (recipe not composed) these artifacts do not exist — skip silently.
+# When dcg IS composed: keep all checks fail-closed (ADR-025 D3/D5, ADR-001).
+if [ -x /usr/local/bin/dcg ]; then
+  # Verify dcg-guard wrapper (ADR-025 D3): must exist, be executable, and DCG_CONFIG must parse.
+  # A missing/malformed DCG_CONFIG silently re-opens the user-layer config hole (ADR-025 D5).
+  if [ ! -x /usr/local/lib/rip-cage/bin/dcg-guard ]; then
+    echo "[rip-cage] ERROR: dcg-guard wrapper not found or not executable at /usr/local/lib/rip-cage/bin/dcg-guard" >&2
+    exit 1
+  fi
+  if [ ! -f /usr/local/lib/rip-cage/dcg/config.toml ]; then
+    echo "[rip-cage] ERROR: baked DCG_CONFIG not found at /usr/local/lib/rip-cage/dcg/config.toml — user-layer config hole remains open" >&2
+    exit 1
+  fi
+  if ! python3 -c "import tomllib; tomllib.load(open('/usr/local/lib/rip-cage/dcg/config.toml','rb'))" 2>/dev/null; then
+    echo "[rip-cage] ERROR: pinned DCG_CONFIG at /usr/local/lib/rip-cage/dcg/config.toml is malformed TOML — a bad config silently re-opens the user-layer config hole; refusing to start (ADR-025 D5 fail-closed)" >&2
+    exit 1
+  fi
+  echo "[rip-cage] dcg-guard wrapper verified (CWD-anchor + pinned DCG_CONFIG active)"
 fi
-if [ ! -f /usr/local/lib/rip-cage/dcg/config.toml ]; then
-  echo "[rip-cage] ERROR: baked DCG_CONFIG not found at /usr/local/lib/rip-cage/dcg/config.toml — user-layer config hole remains open" >&2
-  exit 1
-fi
-if ! python3 -c "import tomllib; tomllib.load(open('/usr/local/lib/rip-cage/dcg/config.toml','rb'))" 2>/dev/null; then
-  echo "[rip-cage] ERROR: pinned DCG_CONFIG at /usr/local/lib/rip-cage/dcg/config.toml is malformed TOML — a bad config silently re-opens the user-layer config hole; refusing to start (ADR-025 D5 fail-closed)" >&2
-  exit 1
-fi
-echo "[rip-cage] dcg-guard wrapper verified (CWD-anchor + pinned DCG_CONFIG active)"
 # NOTE: compound blocker removed in rip-cage-4r8 — DCG is chaining-robust.
 # Verify python3 (required for skill-server.py MCP shim)
 if ! command -v python3 > /dev/null 2>&1; then
@@ -330,34 +322,55 @@ if ! command -v python3 > /dev/null 2>&1; then
 fi
 echo "[rip-cage] python3 found (skill-server.py will be available)"
 echo "[rip-cage] Hooks verified"
-# 5b. Verify pi-cage guard (dcg-gate.ts extension) — fail-loud (ADR-001)
-# PI_CODING_AGENT_DIR=/home/agent/.pi/agent is set unconditionally by rc up for ALL cages
-# (rc:1511), not only when pi auth is mounted. The guard is baked into every image, so
-# the presence check always runs and verifies both dcg-gate.ts (cage-owned auto-discovery
-# path) and dcg-guard (the wrapper binary it delegates to) are present.
-# Ownership assertion (rip-cage-olen): dcg-gate.ts AND extensions/ must be root-owned —
-# agent ownership means the guard is self-disablable (ADR-024 threat). Fail-closed (ADR-001).
+# 5b. Verify pi-cage guard (dcg-gate.ts extension) — when dcg IS composed AND guard recipe is present.
+# PI_CODING_AGENT_DIR=/home/agent/.pi/agent is set unconditionally by rc up for ALL cages.
+# Post-rip-cage-wlwc.2.2: dcg-gate.ts is provisioned by the examples/pi recipe (install_cmd),
+# NOT baked into the base image. When dcg IS composed but the pi recipe is the NO-GUARD variant
+# (dcg-gate.ts absent), that is a valid user choice — warn-only, do not fail.
+# When dcg IS composed AND dcg-gate.ts IS present: all checks are fail-closed (ADR-001, ADR-024).
+# Ownership assertion (ADR-027 D1/D3, olen retired): guard wiring lives on its OWN
+# separate root-owned load path /etc/rip-cage/pi/dcg-gate.ts — NOT inside extensions/.
+# extensions/ is intentionally agent-owned (not root-owned; olen retired).
+# Assert: dcg-gate.ts AND its parent /etc/rip-cage/pi are both root-owned so an agent
+# cannot replace or shadow the guard (unix-dir-ownership invariant). Fail-closed (ADR-001).
 if [ "${PI_CODING_AGENT_DIR:-}" = "/home/agent/.pi/agent" ]; then
-  if [ ! -f /home/agent/.pi/agent/extensions/dcg-gate.ts ]; then
-    echo "[rip-cage] ERROR: pi-cage guard extension missing at /home/agent/.pi/agent/extensions/dcg-gate.ts — pi cage would launch unguarded (rip-cage-bl1)" >&2
-    exit 1
+  if [ -x /usr/local/bin/dcg ]; then
+    if [ ! -f /etc/rip-cage/pi/dcg-gate.ts ]; then
+      # dcg is composed but dcg-gate.ts is absent — user chose the no-guard pi recipe variant.
+      # This is intentional and valid per ADR-027 D1/D3 (rc never forces the guard).
+      echo "[rip-cage] INFO: DCG composed but dcg-gate.ts absent — pi running without command guard (no-guard recipe variant; examples/pi/manifest-fragment-no-guard.yaml)"
+    else
+      _dcg_gate_owner=$(stat -c '%U' /etc/rip-cage/pi/dcg-gate.ts 2>/dev/null || true)
+      if [ "${_dcg_gate_owner}" != "root" ]; then
+        echo "[rip-cage] ERROR: /etc/rip-cage/pi/dcg-gate.ts is owned by '${_dcg_gate_owner}' (expected root) — guard is agent-writable and self-disablable; recipe install_cmd must chown root:root (ADR-027 D1/D3)" >&2
+        exit 1
+      fi
+      _dcg_pi_dir_owner=$(stat -c '%U' /etc/rip-cage/pi 2>/dev/null || true)
+      if [ "${_dcg_pi_dir_owner}" != "root" ]; then
+        echo "[rip-cage] ERROR: /etc/rip-cage/pi dir is owned by '${_dcg_pi_dir_owner}' (expected root) — agent can replace guard file via dir write; recipe install_cmd must chown root:root (ADR-027 D1/D3, unix-dir-ownership)" >&2
+        exit 1
+      fi
+      unset _dcg_gate_owner _dcg_pi_dir_owner
+      if [ ! -x /usr/local/lib/rip-cage/bin/dcg-guard ]; then
+        echo "[rip-cage] ERROR: dcg-guard wrapper missing — pi-cage guard cannot function (rip-cage-bl1)" >&2
+        exit 1
+      fi
+      # rip-cage-sn1h: pi launch wrapper must be present at /usr/local/bin/pi (intercepts every pi call,
+      # adds --no-extensions -e <dcg-gate> to close the /workspace/.pi/extensions/ auto-discovery bypass).
+      # Ownership: must be root-owned so the agent cannot swap it for an unwrapped pi call.
+      if [ ! -x /usr/local/bin/pi ]; then
+        echo "[rip-cage] ERROR: pi launch wrapper missing at /usr/local/bin/pi — pi would launch without --no-extensions guard (rip-cage-sn1h)" >&2
+        exit 1
+      fi
+      _pi_wrapper_owner=$(stat -c '%U' /usr/local/bin/pi 2>/dev/null || true)
+      if [ "${_pi_wrapper_owner}" != "root" ]; then
+        echo "[rip-cage] ERROR: pi wrapper at /usr/local/bin/pi is owned by '${_pi_wrapper_owner}' (expected root) — agent could replace it to bypass --no-extensions (rip-cage-sn1h)" >&2
+        exit 1
+      fi
+      unset _pi_wrapper_owner
+      echo "[rip-cage] pi-cage guard verified (dcg-gate.ts + dcg-guard + pi-wrapper all present, root-owned)"
+    fi
   fi
-  _dcg_gate_owner=$(stat -c '%U' /home/agent/.pi/agent/extensions/dcg-gate.ts 2>/dev/null || true)
-  if [ "${_dcg_gate_owner}" != "root" ]; then
-    echo "[rip-cage] ERROR: dcg-gate.ts is owned by '${_dcg_gate_owner}' (expected root) — guard is agent-writable and self-disablable; Dockerfile ownership must be root:root (rip-cage-olen)" >&2
-    exit 1
-  fi
-  _dcg_ext_dir_owner=$(stat -c '%U' /home/agent/.pi/agent/extensions 2>/dev/null || true)
-  if [ "${_dcg_ext_dir_owner}" != "root" ]; then
-    echo "[rip-cage] ERROR: extensions/ dir is owned by '${_dcg_ext_dir_owner}' (expected root) — agent can add competing extensions; Dockerfile ownership must be root:root (rip-cage-olen)" >&2
-    exit 1
-  fi
-  unset _dcg_gate_owner _dcg_ext_dir_owner
-  if [ ! -x /usr/local/lib/rip-cage/bin/dcg-guard ]; then
-    echo "[rip-cage] ERROR: dcg-guard wrapper missing — pi-cage guard cannot function (rip-cage-bl1)" >&2
-    exit 1
-  fi
-  echo "[rip-cage] pi-cage guard verified (dcg-gate.ts + dcg-guard both present, root-owned)"
 fi
 
 # 6. Set git identity
@@ -454,9 +467,10 @@ fi
 unset _cage_host_addr _candidate _cage_probe_status
 
 # R4: Snapshot ~/.claude.json → ~/.claude/.claude.json.seed (rip-cage-p1p)
-# MUST run BEFORE the first `claude` invocation below — the wrapper seeds the
-# default session from this snapshot, so it has to exist before `claude --version`
-# (otherwise the wrapper warns + falls back to the live mount for that first seed).
+# MUST run BEFORE the first `claude` invocation below — when the claude-recipe is
+# composed (/usr/local/bin/claude wrapper present), the wrapper seeds the default
+# session from this snapshot, so it has to exist before `claude --version`.
+# If the claude-recipe is not composed, the snapshot is taken but unused (benign).
 # ~/.claude.json is a single-file virtiofs bind mount. An atomic temp+rename
 # rewrite on the host (any Claude run on the host) BREAKS the container's mount
 # handle — the container then sees ENOENT while the host file is intact. The

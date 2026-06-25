@@ -18,7 +18,8 @@ version: 1
 #
 #   If you use CASS_MEMORY_HOME or XDG_DATA_HOME to point cm to a non-default
 #   location, update this entry's mounts.host to that absolute path.
-#   The mount is RW (Docker default for -v host:dest; cm needs write access).
+#   The mount declares mode: rw explicitly (cm needs write access; ro is now the
+#   default per rip-cage-wlwc.3 — rw mounts must be declared explicitly).
 #
 #   Security: the ADR-023 denylist check runs AFTER tilde expansion — a mount
 #   like  host: "~/.ssh"  would still be rejected.  Only safe paths pass through.
@@ -35,9 +36,12 @@ tools:
     # RW mount for the host cm store (opt-in: skip-if-missing if the dir is absent).
     # ~/  is expanded to $HOME at rc-up time (rip-cage-buuo.5) — no editing needed
     # for the default ~/.cass-memory location.
+    # mode: rw is explicit because the default changed to ro (rip-cage-wlwc.3).
+    # cm needs write access to persist observations and calibrations.
     mounts:
       - host: "~/.cass-memory"
         dest: "/home/agent/.cass-memory"
+        mode: rw
     build_source:
       # debian:trixie matches the runtime stage — same libc, no compat issues.
       builder_image: "debian:trixie"

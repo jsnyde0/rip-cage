@@ -4,7 +4,7 @@
 **Status:** Design — pending implementation (`rip-cage-b0c`)
 **Decisions:** [ADR-022](../decisions/ADR-022-ssh-allowlist.md)
 **Builds on:** [ADR-021](../decisions/ADR-021-layered-rip-cage-config.md) (`.rip-cage.yaml` substrate), [ADR-020](../decisions/ADR-020-ssh-identity-routing.md) (config translation, pubkey mount), [ADR-018](../decisions/ADR-018-macos-ssh-agent-discovery.md) (host-side socket discovery), [ADR-017](../decisions/ADR-017-ssh-agent-forwarding-default.md) (forward-by-default)
-**Edits in place per ADR-011:** ADR-020 D1, ADR-020 D2 transform 5, ADR-014 D2 caveat
+**Edits in place per the in-place-evolution convention:** ADR-020 D1, ADR-020 D2 transform 5, ADR-014 D2 caveat
 **Follow-up:** `rip-cage-97n` (interactive `.rip-cage.yaml` bootstrap for ergonomic adoption)
 
 ## Problem

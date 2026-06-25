@@ -229,6 +229,30 @@ EOF
   exit 1
 }
 
+cmd_generate_dockerfile() {
+  # Expose the composed Dockerfile for CI/release use (rip-cage-wlwc.12).
+  # Reads RC_MANIFEST_GLOBAL (default: ~/.config/rip-cage/tools.yaml) and emits
+  # the composed Dockerfile to stdout. The caller redirects to a file and passes
+  # it to docker build --file.
+  #
+  # This is NOT a compose mechanism — it simply exposes _manifest_build_dockerfile_path
+  # (already used by cmd_build) so that CI can generate the composed Dockerfile without
+  # also running docker build. No auto-wiring; no config-merge; the agent/CI provides
+  # the manifest, this function outputs the Dockerfile.
+  #
+  # Usage: RC_MANIFEST_GLOBAL=dist/default-tools.yaml ./rc generate-dockerfile > Dockerfile.composed
+  local _df_path
+  _df_path=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/Dockerfile") || {
+    echo "Error: failed to resolve composed Dockerfile from manifest." >&2
+    return 1
+  }
+  cat "$_df_path"
+  # Clean up temp file if one was created (path differs from original Dockerfile).
+  if [[ "$_df_path" != "${SCRIPT_DIR}/Dockerfile" ]]; then
+    rm -f "$_df_path"
+  fi
+}
+
 cmd_build() {
   # Ensure the manifest is seeded (first-run: writes defaults to ~/.config/rip-cage/tools.yaml).
   _manifest_ensure_seeded
@@ -278,12 +302,15 @@ cmd_build() {
     if docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_dockerfile" "$@" "$SCRIPT_DIR" >/dev/null 2>&1; then
       # rip-cage-buuo.3: binary-root-owned assertion — AFTER successful docker build.
       # Inspect the actual installed binary in the built image.
-      if ! _manifest_check_binary_root_owned "$IMAGE"; then
+      # rip-cage-wlwc.3: ALSO assert per-asset root_owned_required mount ownership-effect
+      # (ADR-027 D1) — sibling to _manifest_check_binary_root_owned, same gate, same
+      # fail-closed semantics. Both validators run on every build entrypoint.
+      if ! _manifest_check_binary_root_owned "$IMAGE" || ! _manifest_check_mount_root_owned "$IMAGE"; then
         [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
         # Untag the violating image so a subsequent `rc up` / `docker run rip-cage:latest`
         # cannot use the tainted build. Fail-closed: remove before aborting (ADR-001).
         docker image rm "$IMAGE" 2>/dev/null || true
-        json_error "Manifest tool binary is not root-owned or is agent-writable — safety floor violated (ADR-005 D9 / ADR-024 binary-root-owned)" "MANIFEST_BINARY_NOT_ROOT_OWNED"
+        json_error "Manifest tool binary is not root-owned/agent-writable, or a root_owned_required mount asset is not root-owned — safety floor violated (ADR-005 D9/D11, ADR-024, ADR-027 D1)" "MANIFEST_BINARY_NOT_ROOT_OWNED"
       fi
       jq -nc '{image: "rip-cage:latest", action: "built", status: "success"}'
     else
@@ -293,8 +320,10 @@ cmd_build() {
   else
     docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_dockerfile" "$@" "$SCRIPT_DIR" || _build_ok=$?
     # rip-cage-buuo.3: binary-root-owned assertion — AFTER successful docker build.
+    # rip-cage-wlwc.3: ALSO assert per-asset root_owned_required mount ownership-effect
+    # (ADR-027 D1) — entrypoint-completeness: same two validators on all build paths.
     if [[ "$_build_ok" -eq 0 ]]; then
-      if ! _manifest_check_binary_root_owned "$IMAGE"; then
+      if ! _manifest_check_binary_root_owned "$IMAGE" || ! _manifest_check_mount_root_owned "$IMAGE"; then
         [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
         # Untag the violating image so a subsequent `rc up` / `docker run rip-cage:latest`
         # cannot use the tainted build. Fail-closed: remove before aborting (ADR-001).
@@ -373,9 +402,11 @@ _pull_or_build_local() {
   docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_pob_dockerfile" "$SCRIPT_DIR" || _pob_exit=$?
 
   # rip-cage-buuo.6 F1: binary-root-owned assertion — AFTER docker build.
+  # rip-cage-wlwc.3: ALSO assert per-asset root_owned_required mount ownership-effect
+  # (ADR-027 D1) — both validators on all build paths (entrypoint-completeness).
   # Same semantics as cmd_build: untag tainted image on failure (fail-closed, ADR-001).
   if [[ "$_pob_exit" -eq 0 ]]; then
-    if ! _manifest_check_binary_root_owned "$IMAGE"; then
+    if ! _manifest_check_binary_root_owned "$IMAGE" || ! _manifest_check_mount_root_owned "$IMAGE"; then
       [[ -n "$_pob_tmp" ]] && rm -f "$_pob_tmp"
       docker image rm "$IMAGE" 2>/dev/null || true
       return 1
@@ -1717,9 +1748,10 @@ _up_prepare_docker_mounts() {
   _UP_RUN_ARGS+=(-e "RC_HOST_PROJECT_KEY=${_host_project_key}")
 
   # Manifest-declared data mounts (rip-cage-buuo.1 / ADR-005 D7, D9).
-  # Turn each manifest tool's mounts: [{host, dest}, ...] entry into -v args.
-  # _manifest_build_mount_args emits "host:dest" lines (no -v prefix); we add
+  # Turn each manifest tool's mounts: [{host, dest, mode, root_owned_required}, ...] into -v args.
+  # _manifest_build_mount_args emits "host:dest:mode" lines (no -v prefix); we add
   # -v as a separate array element for the two-element docker run form.
+  # mode defaults to 'ro' (rip-cage-wlwc.3 / ADR-027 D1); rw opt-in is explicit.
   # The denylist pre-check at cmd_up already fired (rc:4048); this consumer runs
   # after that gate so denylist denials here are impossible in normal flow.
   local _mba_out _mba_rc=0
@@ -2566,7 +2598,9 @@ _build_ssh_mount_args() {
   # is the filtered file. NB: this narrows the system-path known_hosts but does NOT,
   # by itself, defeat `ssh -o UserKnownHostsFile=/tmp/anything -o StrictHostKeyChecking=accept-new`.
   # OpenSSH CLI -o always wins over Match final blocks. The CLI-flag bypass is closed
-  # at the PreToolUse hook layer (hooks/block-ssh-bypass.sh, ADR-022 D5), not here.
+  # by the ssh-bypass recipe (examples/ssh-bypass/, ADR-022 D5) when composed (default-on
+  # in the published image). A base cage without that recipe has no CLI-flag guard here;
+  # the known_hosts mount (this block) is the always-present containment floor (ADR-022 D3).
   # ADR-001 fail-loud: always emit the mount. _up_resolve_ssh_allowlists is the
   # contract for populating these files (always writes the known_hosts cache;
   # always writes the sentinel when filtering is active). If a future code path
@@ -5748,7 +5782,20 @@ cmd_test() {
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local output
     output=$(docker exec "$name" bash -c \
-      '/usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-egress-firewall.sh; /usr/local/lib/rip-cage/test-bd-roundtrip.sh; /usr/local/lib/rip-cage/test-pi-dcg-gate.sh' 2>&1) || true
+      '/usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-egress-firewall.sh; /usr/local/lib/rip-cage/test-bd-roundtrip.sh' 2>&1) || true
+    # run-recipe-smokes.sh: run separately to capture non-zero exit AND stdout.
+    # Its per-smoke PASS/FAIL lines are parsed by the loop below; additionally,
+    # a non-zero runner exit injects a synthetic FAIL line so the JSON overall
+    # goes "fail" even if stdout parsing sees only passing lines (anti-swallow).
+    local smokes_output smokes_rc
+    smokes_rc=0
+    smokes_output=$(docker exec "$name" /usr/local/lib/rip-cage/run-recipe-smokes.sh 2>&1) || smokes_rc=$?
+    if [[ "$smokes_rc" -ne 0 ]]; then
+      smokes_output="${smokes_output}
+FAIL  [0] run-recipe-smokes: runner exited ${smokes_rc} (one or more recipe smoke tests failed)"
+    fi
+    output="${output}
+${smokes_output}"
     # Prepend host-side preflight line so the parse loop handles it uniformly
     output="${preflight_line}
 ${output}"
@@ -5778,7 +5825,7 @@ ${output}"
     docker exec "$name" /usr/local/lib/rip-cage/test-skills.sh
     docker exec "$name" /usr/local/lib/rip-cage/test-egress-firewall.sh
     docker exec "$name" /usr/local/lib/rip-cage/test-bd-roundtrip.sh
-    docker exec "$name" /usr/local/lib/rip-cage/test-pi-dcg-gate.sh
+    docker exec "$name" /usr/local/lib/rip-cage/run-recipe-smokes.sh
   fi
 }
 
@@ -6521,9 +6568,14 @@ _manifest_global_path() {
   echo "${RC_MANIFEST_GLOBAL:-${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/tools.yaml}"
 }
 
-# The default tool manifest — the current bundled stack (ADR-005 D8).
-# Any cage with an absent or empty manifest gets this content, so the cage
-# behaves identically to a pre-manifest rip-cage image.
+# The default (floor-only) tool manifest — the containment floor with no optional tools.
+# Any cage built from this default gets beads, dolt, and gh only — no CC, pi, dcg,
+# or ssh-bypass. The "blessed default" for the PUBLISHED image is dist/default-tools.yaml
+# (maintainer-authored, composing CC+pi+dcg+ssh-bypass). This in-repo default stays
+# floor-only so rc never silently special-cases any optional tool (ADR-005 D12).
+#
+# Agents and operators compose the rest: copy recipe fragments from examples/ into
+# ~/.config/rip-cage/tools.yaml (or dist/default-tools.yaml) and run rc build.
 _manifest_default_yaml() {
   cat <<'YAML'
 version: 1
@@ -6550,26 +6602,10 @@ tools:
       - github.com
     mounts: []
 
-  - name: claude
-    archetype: TOOL
-    version_pin: "bundled"
-    egress:
-      - api.anthropic.com
-      - statsig.anthropic.com
-      - statsig.com
-    mounts: []
-
-  - name: pi
-    archetype: TOOL
-    version_pin: "bundled"
-    egress: []
-    mounts: []
-
-  - name: dcg
-    archetype: TOOL
-    version_pin: "bundled"
-    egress: []
-    mounts: []
+  # claude, pi, dcg, ssh-bypass are NOT floor — they are composable recipes.
+  # See examples/{claude,pi,dcg,ssh-bypass}/ for recipe fragments.
+  # The published image composes them via dist/default-tools.yaml (rip-cage-wlwc.12).
+  # Add recipe entries to ~/.config/rip-cage/tools.yaml and run rc build to opt in.
 YAML
 }
 
@@ -6728,6 +6764,27 @@ _manifest_validate() {
           if [[ "$mount_dest" == "___RC_ABSENT___" || -z "$mount_dest" ]]; then
             echo "Error: manifest '${file}' tools[${idx}] ('${name}'): mounts[${midx_val}]: required field 'dest' is missing or empty (must be the in-cage destination path)." >&2
             return 1
+          fi
+          # 'mode' is optional (default: ro); when present must be exactly "ro" or "rw".
+          # rip-cage-wlwc.3: per-asset ro/rw mount seam (ADR-027 D1).
+          local mount_mode_raw
+          mount_mode_raw=$(jq -r '.mode // "___RC_ABSENT___"' <<<"$mount_element" 2>/dev/null)
+          if [[ "$mount_mode_raw" != "___RC_ABSENT___" ]]; then
+            if [[ "$mount_mode_raw" != "ro" && "$mount_mode_raw" != "rw" ]]; then
+              echo "Error: manifest '${file}' tools[${idx}] ('${name}'): mounts[${midx_val}]: field 'mode' must be 'ro' or 'rw' (got '${mount_mode_raw}'); default is 'ro' (ADR-027 D1 / rip-cage-wlwc.3)." >&2
+              return 1
+            fi
+          fi
+          # 'root_owned_required' is optional (default: false); when present must be a boolean.
+          # rip-cage-wlwc.3: generic per-asset root-owned flag (NOT AGENT-keyed).
+          local root_owned_raw root_owned_type
+          root_owned_raw=$(jq -r 'if has("root_owned_required") then (.root_owned_required | tostring) else "___RC_ABSENT___" end' <<<"$mount_element" 2>/dev/null)
+          if [[ "$root_owned_raw" != "___RC_ABSENT___" ]]; then
+            root_owned_type=$(jq -r 'if has("root_owned_required") then (.root_owned_required | type) else "absent" end' <<<"$mount_element" 2>/dev/null)
+            if [[ "$root_owned_type" != "boolean" ]]; then
+              echo "Error: manifest '${file}' tools[${idx}] ('${name}'): mounts[${midx_val}]: field 'root_owned_required' must be a boolean (true or false), got type '${root_owned_type}' (rip-cage-wlwc.3)." >&2
+              return 1
+            fi
           fi
         done
         # 'install_cmd' / 'build_source' coupling with version_pin:
@@ -7255,6 +7312,84 @@ _manifest_validate() {
         done
         ;;
     esac
+
+    # ---------------------------------------------------------------------------
+    # Cross-cutting: validate 'required' + 'assert_loaded' fields (rip-cage-m8zc).
+    # These fields may appear on ANY archetype; all REJECT rules live here.
+    # Truth table (all cells fail-closed per locked-design v3):
+    #   required:true + assert_loaded:"cmd"       → ACCEPT (bake <id> b64(cmd))
+    #   required:true + no assert_loaded + path   → ACCEPT (codegen synthesizes test -x <path>)
+    #   required:true + assert_loaded empty/ws    → REJECT (never bash -c ""; F5 fail-open closed)
+    #   required:true + no assert_loaded + no path → REJECT (must be checkable)
+    #   assert_loaded present + required absent   → REJECT (a check that would never fire is a footgun)
+    #   required:false (with or without path)     → ACCEPT (INFO-skip; explicit false is a valid optional tool)
+    #   neither field                             → ACCEPT (INFO-skip; normal optional tool)
+    # ---------------------------------------------------------------------------
+    local req_raw al_raw req_val
+    req_raw=$(jq -r 'if has("required") then (.required | tostring) else "___RC_ABSENT___" end' <<<"$entry" 2>/dev/null)
+    al_raw=$(jq -r '.assert_loaded // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+
+    # Detect presence of assert_loaded without required (footgun → REJECT).
+    if [[ "$al_raw" != "___RC_ABSENT___" ]]; then
+      # assert_loaded is present — required must also be set and true.
+      if [[ "$req_raw" == "___RC_ABSENT___" || "$req_raw" == "false" ]]; then
+        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'assert_loaded' requires 'required: true' — a check command that would never fire is a footgun (truth-table REJECT; rip-cage-m8zc)." >&2
+        return 1
+      fi
+    fi
+
+    # If required is present and truthy, validate the full truth table.
+    if [[ "$req_raw" != "___RC_ABSENT___" && "$req_raw" != "false" ]]; then
+      req_val=$(jq -r 'if has("required") then (.required | type) else "absent" end' <<<"$entry" 2>/dev/null)
+      if [[ "$req_val" != "boolean" ]]; then
+        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'required' must be a boolean (got type '${req_val}'; rip-cage-m8zc)." >&2
+        return 1
+      fi
+      # required:true is confirmed (req_raw == "true"). Check assert_loaded.
+      if [[ "$al_raw" == "___RC_ABSENT___" || "$al_raw" == "null" ]]; then
+        # No assert_loaded — fall through to codegen synthesize from path.
+        # For TOOL archetype, binary_path or build_source.output_path must be present.
+        # For other archetypes without a path-declaration, REJECT.
+        if [[ "$archetype" == "TOOL" ]]; then
+          # Check: does the entry have binary_path or build_source.output_path?
+          local has_binary_path has_output_path
+          has_binary_path=$(jq -r 'if has("binary_path") then "yes" else "no" end' <<<"$entry" 2>/dev/null)
+          has_output_path=$(jq -r 'if (.build_source // {}) | has("output_path") then "yes" else "no" end' <<<"$entry" 2>/dev/null)
+          if [[ "$has_binary_path" != "yes" && "$has_output_path" != "yes" ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): 'required: true' but no 'assert_loaded' and no declarable path (binary_path or build_source.output_path) — a required tool must be presence-checkable or carry assert_loaded (truth-table REJECT; rip-cage-m8zc)." >&2
+            return 1
+          fi
+        else
+          # Non-TOOL archetype with required:true but no assert_loaded → REJECT.
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): 'required: true' on archetype '${archetype}' requires 'assert_loaded' (non-TOOL archetypes have no declarable binary path; truth-table REJECT; rip-cage-m8zc)." >&2
+          return 1
+        fi
+      else
+        # assert_loaded is present — reject empty/whitespace (never bash -c "").
+        local al_trimmed
+        al_trimmed=$(printf '%s' "$al_raw" | tr -d '[:space:]')
+        if [[ -z "$al_trimmed" ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'assert_loaded' is present but empty/whitespace — an empty check is never run as bash -c \"\" (truth-table REJECT; rip-cage-m8zc)." >&2
+          return 1
+        fi
+        # assert_loaded must be a single line (newlines inject arbitrary Dockerfile directives).
+        if [[ "$al_raw" == *$'\n'* ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'assert_loaded' must be a single-line shell command (newlines inject arbitrary Dockerfile directives; single-line-required; rip-cage-m8zc)." >&2
+          return 1
+        fi
+        # Entry-id (name) must be space-free (the baked line format is space-delimited).
+        if [[ "$name" == *' '* ]]; then
+          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): tool 'name' must be space-free when 'required: true' is set (the baked asserted-file is space-delimited; a space in name corrupts the line parser; rip-cage-m8zc)." >&2
+          return 1
+        fi
+      fi
+      # Space-free name check for synthesized path case too.
+      if [[ "$name" == *' '* ]]; then
+        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): tool 'name' must be space-free when 'required: true' is set (the baked asserted-file is space-delimited; rip-cage-m8zc)." >&2
+        return 1
+      fi
+    fi
+
   done
 
   return 0
@@ -7529,7 +7664,12 @@ _manifest_build_dockerfile_path() {
     return 1
   fi
 
-  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" && -z "$mux_registry_steps" && -z "$mux_label" && -z "$mediator_registry_steps" && -z "$mediator_label" ]]; then
+  local safety_stack_asserted_steps
+  if ! safety_stack_asserted_steps=$(_manifest_generate_safety_stack_asserted_steps); then
+    return 1
+  fi
+
+  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" && -z "$mux_registry_steps" && -z "$mux_label" && -z "$mediator_registry_steps" && -z "$mediator_label" && -z "$safety_stack_asserted_steps" ]]; then
     # Default/bundled-only manifest — use the original Dockerfile unchanged (D8).
     echo "$orig_dockerfile"
     return 0
@@ -7742,6 +7882,32 @@ _manifest_build_dockerfile_path() {
       cat "$tmp_inject_label_med" >> "$tmp_dockerfile"
     fi
     rm -f "$tmp_inject_label_med"
+  fi
+
+  # --- required/assert_loaded safety-stack-asserted: inject AFTER "COPY settings.json" sentinel ---
+  # Bakes /etc/rip-cage/safety-stack-asserted (one "<id> <b64check>" per line) root:root 0644
+  # so in-cage rc test can run declared checks for required tools (rip-cage-m8zc).
+  # Injection site: same as daemon/mux/mediator config steps (root context; /etc/rip-cage exists).
+  # rc codegen copies check strings from manifest DATA — never interprets tool names (ADR-005 D12).
+  if [[ -n "$safety_stack_asserted_steps" ]]; then
+    local sentinel_settings_ssa="COPY settings.json /etc/rip-cage/settings.json"
+    local tmp_inject_ssa
+    tmp_inject_ssa=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
+    printf '\n# --- manifest-generated safety-stack-asserted bake (rip-cage-m8zc) ---\n%s\n' "$safety_stack_asserted_steps" > "$tmp_inject_ssa"
+
+    if grep -qF "$sentinel_settings_ssa" "$tmp_dockerfile"; then
+      local sentinel_line_ssa base_dockerfile_ssa
+      sentinel_line_ssa=$(grep -nF "$sentinel_settings_ssa" "$tmp_dockerfile" | head -1 | cut -d: -f1)
+      base_dockerfile_ssa=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
+      head -n "${sentinel_line_ssa}" "$tmp_dockerfile" > "$base_dockerfile_ssa"
+      cat "$tmp_inject_ssa" >> "$base_dockerfile_ssa"
+      tail -n "+$((sentinel_line_ssa + 1))" "$tmp_dockerfile" >> "$base_dockerfile_ssa"
+      mv "$base_dockerfile_ssa" "$tmp_dockerfile"
+    else
+      echo "rip-cage: Warning: 'COPY settings.json' sentinel not found in Dockerfile — appending safety-stack-asserted bake at end (may fail if /etc/rip-cage does not exist). Dockerfile may need the sentinel restored." >&2
+      cat "$tmp_inject_ssa" >> "$tmp_dockerfile"
+    fi
+    rm -f "$tmp_inject_ssa"
   fi
 
   echo "$tmp_dockerfile"
@@ -8253,6 +8419,115 @@ _manifest_generate_mediator_registry_steps() {
   fi
 }
 
+# _manifest_generate_safety_stack_asserted_steps
+# Read the host manifest and emit Dockerfile RUN steps to bake
+# /etc/rip-cage/safety-stack-asserted, root:root 0644,
+# parent dir root:root 0755 (already created by Dockerfile).
+#
+# ONLY tools that carry `required: true` contribute. rc never interprets tool
+# names — it reads required + assert_loaded (or synthesizes test -x from the
+# declared runtime binary_path) and bakes <entry-id> <base64(check)> pairs,
+# one per line. This preserves ADR-005 D12 (rc stays tool-agnostic).
+#
+# Line format: "<entry-id> <base64(check-cmd)>"
+#   - entry-id: the tool's manifest 'name' field (human-legible; space-free enforced by validator)
+#   - base64(check-cmd): standard base64 of the shell check to run in-cage
+#
+# Codegen synthesizes the check:
+#   required:true + assert_loaded:"cmd"           → bake <id> b64(cmd)
+#   required:true + no assert_loaded + binary_path → bake <id> b64(test -x <binary_path>)
+#   required:true + no assert_loaded + output_path → bake <id> b64(test -x <output_path>)
+#   All other required:true combinations → rejected by _manifest_validate (never reach here)
+#
+# The file is ABSENT when no required:true entries are declared (default/bundled-only
+# manifest), keeping the fail-closed semantics consistent: absent = minimal cage
+# (no assertions); present = named tools must be active.
+#
+# D8 byte-for-byte contract: when the manifest has no required:true entries,
+# this function emits NOTHING — rc build uses the original Dockerfile unchanged.
+#
+# rip-cage-m8zc
+_manifest_generate_safety_stack_asserted_steps() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count idx
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  # asserted_lines: each entry is "<id> <base64(check)>" for a required tool.
+  local asserted_lines=""
+  for (( idx=0; idx<count; idx++ )); do
+    local entry req_raw entry_name
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    req_raw=$(jq -r 'if has("required") then (.required | tostring) else "false" end' <<<"$entry" 2>/dev/null)
+    # Skip entries that are not required:true.
+    [[ "$req_raw" != "true" ]] && continue
+
+    entry_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+
+    # Determine the check command.
+    # Priority: author-supplied assert_loaded → synthesized from binary_path → synthesized from output_path.
+    local al_val check_cmd
+    al_val=$(jq -r '.assert_loaded // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+
+    if [[ "$al_val" != "___RC_ABSENT___" && "$al_val" != "null" && -n "$al_val" ]]; then
+      # Author-supplied assert_loaded — validated single-line by _manifest_validate.
+      check_cmd="$al_val"
+    else
+      # Synthesize from runtime binary_path (preferred) or build_source.output_path.
+      # The validator ensures at least one is present when required:true and no assert_loaded.
+      local binary_path_val output_path_val
+      binary_path_val=$(jq -r '.binary_path // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+      output_path_val=$(jq -r '.build_source.output_path // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+
+      if [[ "$binary_path_val" != "___RC_ABSENT___" && "$binary_path_val" != "null" && -n "$binary_path_val" ]]; then
+        # binary_path may be a string or a list; take the first element if list.
+        local bp_type
+        bp_type=$(jq -r '.binary_path | type' <<<"$entry" 2>/dev/null)
+        if [[ "$bp_type" == "array" ]]; then
+          binary_path_val=$(jq -r '.binary_path[0]' <<<"$entry" 2>/dev/null)
+        fi
+        check_cmd="test -x ${binary_path_val}"
+      elif [[ "$output_path_val" != "___RC_ABSENT___" && "$output_path_val" != "null" && -n "$output_path_val" ]]; then
+        check_cmd="test -x ${output_path_val}"
+      else
+        # Should never reach here — _manifest_validate rejects this case.
+        echo "Error: manifest tools entry '${entry_name}': required:true but no assert_loaded and no binary path — codegen cannot synthesize check (rip-cage-m8zc)." >&2
+        return 1
+      fi
+    fi
+
+    # base64-encode the check command (newline-free for safe RUN embedding).
+    local b64_check
+    b64_check=$(printf '%s' "$check_cmd" | base64 | tr -d '\n')
+
+    local line="${entry_name} ${b64_check}"
+    if [[ -n "$asserted_lines" ]]; then
+      asserted_lines+=$'\n'"$line"
+    else
+      asserted_lines="$line"
+    fi
+  done
+
+  if [[ -z "$asserted_lines" ]]; then
+    # No required:true entries — emit nothing (D8 contract).
+    return 0
+  fi
+
+  # Emit a Dockerfile RUN step that writes the asserted file root:root 0644.
+  # base64-encode the whole file content so the RUN step is safe against any
+  # content (no shell injection risk).
+  local b64_asserted
+  b64_asserted=$(printf '%s\n' "$asserted_lines" | base64 | tr -d '\n')
+  printf 'RUN # manifest required/assert_loaded: bake safety-stack-asserted (rip-cage-m8zc)\n'
+  printf "RUN echo '%s' | base64 -d > /etc/rip-cage/safety-stack-asserted && chown root:root /etc/rip-cage/safety-stack-asserted && chmod 0644 /etc/rip-cage/safety-stack-asserted\n" "$b64_asserted"
+}
+
 # _manifest_generate_mediator_label
 # Read the host manifest and emit a Dockerfile LABEL line enumerating all
 # MEDIATOR-archetype tool names declared in the manifest, e.g.:
@@ -8687,23 +8962,24 @@ _manifest_egress_hosts_json() {
 }
 
 # _manifest_build_mount_args — build the -v docker run args for all manifest
-# mounts: entries (rip-cage-buuo.1).
+# mounts: entries (rip-cage-buuo.1 / rip-cage-wlwc.3).
 #
 # For each tool entry in the manifest:
-#   - Iterates over mounts[] entries (objects {host, dest}).
+#   - Iterates over mounts[] entries (objects {host, dest[, mode][, root_owned_required]}).
 #   - Skips entries whose .host dir does not exist on the host (skip-if-missing).
 #   - Applies realpath to resolve the host path (ADR-023 D6 FIRM).
 #   - Checks against the secret-path denylist (ADR-023 D1/D6 FIRM) — fail-loud.
-#   - Emits "-v <resolved_host>:<dest>" to stdout (one per line).
+#   - Reads per-asset .mode field ('ro' or 'rw'; default 'ro' per ADR-027 D1).
+#   - Emits "<resolved_host>:<dest>:<mode>" to stdout (one per line).
 #
-# The caller (_up_prepare_docker_mounts) collects these into _UP_RUN_ARGS.
+# The caller (_up_prepare_docker_mounts) collects these into _UP_RUN_ARGS via -v.
 #
 # Mounts DIRECTORIES only — never a single-file bind (host-atomic-rename tripwire).
 #
 # Parameters:
 #   $1  workspace — passed to _check_secret_path_denylist as the workspace root
 #
-# Stdout: zero or more "-v <host>:<dest>" lines (one per mount)
+# Stdout: zero or more "<host>:<dest>:<mode>" lines (one per mount)
 # Stderr: skip/error messages
 # Returns: 0 on success, 1 on denylist-denied mount (fail-loud).
 _manifest_build_mount_args() {
@@ -8767,8 +9043,14 @@ _manifest_build_mount_args() {
         return 1
       fi
 
-      # Emit host:dest (caller adds -v as a separate array element — two-element form).
-      echo "${resolved_host}:${mount_dest}"
+      # Per-asset ro/rw mode (rip-cage-wlwc.3 / ADR-027 D1).
+      # Default is 'ro' — opt-in write-through requires explicit mode: rw.
+      local mount_mode
+      mount_mode=$(jq -r ".mounts[${midx}].mode // \"ro\"" <<<"$entry" 2>/dev/null)
+      [[ "$mount_mode" != "rw" ]] && mount_mode="ro"
+
+      # Emit host:dest:mode (caller adds -v as a separate array element — two-element form).
+      echo "${resolved_host}:${mount_dest}:${mount_mode}"
     done
   done
 
@@ -9009,9 +9291,117 @@ _manifest_check_binary_root_owned() {
   [[ "$_violation" -eq 0 ]]
 }
 
+# _manifest_check_mount_root_owned — rip-cage-wlwc.3 / ADR-027 D1
+#
+# OWNERSHIP-EFFECT assertion: for every mount entry in the manifest that declares
+# root_owned_required: true, inspect the ACTUAL asset inside the already-built
+# image using `docker run --rm <image> stat -c '%U %a' <dest>` and reject any
+# mount asset that is NOT owned by root OR that is writable by the agent user
+# (group-write or other-write bit set).
+#
+# This is the GENERIC per-asset root-owned validator — it keys off the mount
+# declaration field `root_owned_required`, not any per-agent archetype field.
+# This is a deliberate design choice (rip-cage-wlwc.3): the validator keys only
+# off mount-level declarations, not archetype-level or agent-specific fields.
+#
+# Sibling to _manifest_check_binary_root_owned (which keys off TOOL binary paths).
+#
+# A mount entry that does NOT declare root_owned_required: true is SKIPPED.
+# A mount entry that declares root_owned_required: false is also SKIPPED.
+# Only root_owned_required: true triggers the ownership-effect check.
+#
+# Parameters:
+#   $1  image_tag — Docker image tag to inspect (e.g. "rip-cage:latest")
+#
+# Stdout: (none)
+# Stderr: error messages on violation
+# Returns: 0 if all declared root_owned_required assets pass, 1 on violation.
+_manifest_check_mount_root_owned() {
+  local _image_tag="${1:-rip-cage:latest}"
+
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  local _violation=0
+  local idx
+  for (( idx=0; idx<count; idx++ )); do
+    local entry mounts_count midx
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+
+    mounts_count=$(jq '.mounts | length' <<<"$entry" 2>/dev/null)
+    [[ -z "$mounts_count" || "$mounts_count" -eq 0 ]] && continue
+
+    local tool_name
+    tool_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+
+    for (( midx=0; midx<mounts_count; midx++ )); do
+      local root_owned_required_val root_owned_required_type
+      root_owned_required_type=$(jq -r ".mounts[${midx}] | if has(\"root_owned_required\") then (.root_owned_required | type) else \"absent\" end" <<<"$entry" 2>/dev/null)
+      # Skip: root_owned_required absent or not a boolean true
+      [[ "$root_owned_required_type" != "boolean" ]] && continue
+      root_owned_required_val=$(jq -r ".mounts[${midx}].root_owned_required" <<<"$entry" 2>/dev/null)
+      [[ "$root_owned_required_val" != "true" ]] && continue
+
+      # This mount declared root_owned_required: true — check ownership inside the image.
+      local mount_dest
+      mount_dest=$(jq -r ".mounts[${midx}].dest // \"\"" <<<"$entry" 2>/dev/null)
+      if [[ -z "$mount_dest" || "$mount_dest" == "null" ]]; then
+        echo "Error: manifest tool '${tool_name}' mounts[${midx}]: root_owned_required: true but 'dest' is empty — cannot check ownership." >&2
+        _violation=1
+        continue
+      fi
+
+      # Effect-based check: inspect the actual asset inside the built image.
+      # stat -c '%U %a' prints: owner_name octal_mode (e.g. "root 755")
+      local stat_out
+      if ! stat_out=$(docker run --rm "$_image_tag" stat -c '%U %a' "$mount_dest" 2>/dev/null); then
+        echo "Error: manifest tool '${tool_name}' mounts[${midx}] dest '${mount_dest}': root_owned_required: true but could not stat path inside image '${_image_tag}' — asset may be absent or image not built. (rip-cage-wlwc.3 / ADR-027 D1)" >&2
+        _violation=1
+        continue
+      fi
+
+      local stat_owner stat_mode
+      stat_owner=$(awk '{print $1}' <<<"$stat_out")
+      stat_mode=$(awk '{print $2}' <<<"$stat_out")
+
+      # Owner MUST be root.
+      if [[ "$stat_owner" != "root" ]]; then
+        echo "Error: manifest tool '${tool_name}' mounts[${midx}] dest '${mount_dest}' is owned by '${stat_owner}' (not root). A root_owned_required asset must be root-owned — an agent-writable asset is fail-open against the ro-mount guarantee. (rip-cage-wlwc.3 / ADR-027 D1)" >&2
+        _violation=1
+      fi
+
+      # Mode: group-write or other-write bit must NOT be set.
+      # Normalize to exactly 3 digits (drop leading "0" prefix if stat gives 4).
+      local mode_3
+      mode_3="${stat_mode: -3}"
+      local group_digit other_digit writable
+      group_digit="${mode_3:1:1}"
+      other_digit="${mode_3:2:1}"
+      writable=0
+      case "$group_digit" in 2|3|6|7) writable=1 ;; esac
+      case "$other_digit" in 2|3|6|7) writable=1 ;; esac
+      if [[ "$writable" -eq 1 ]]; then
+        echo "Error: manifest tool '${tool_name}' mounts[${midx}] dest '${mount_dest}' has mode '${stat_mode}' which is group/other-writable. A root_owned_required asset must not be agent-writable (fail-open against ro-mount guarantee). (rip-cage-wlwc.3 / ADR-027 D1)" >&2
+        _violation=1
+      fi
+    done
+  done
+
+  [[ "$_violation" -eq 0 ]]
+}
+
 # =============================================================================
 # End manifest egress+mounts floor (rip-cage-4c5.3)
 # End manifest binary-ownership + build-isolation assertions (rip-cage-buuo.3)
+# End per-asset ro/rw mount mode + root_owned_required validator (rip-cage-wlwc.3)
 # =============================================================================
 
 # _ensure_pi_auth_seed — cold-start seeding for pi auth (rip-cage-wo9 / ADR-019 D1).
@@ -10197,5 +10587,6 @@ case "${1:-}" in
   setup)       shift; cmd_setup "$@" ;;
   schema)  cmd_schema ;;
   __bd-preflight-test) shift; _bd_host_preflight "${1:-}" "${2:-}" --test-mode ;;
+  generate-dockerfile) shift; cmd_generate_dockerfile "$@" ;;
   *)       usage ;;
 esac

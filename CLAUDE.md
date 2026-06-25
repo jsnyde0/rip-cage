@@ -1,6 +1,6 @@
 # Rip Cage — Agent Context
 
-You're working on **rip-cage**, a Docker-based sandbox for running Claude Code agents with a safety stack (DCG + ssh-bypass blocker + PreToolUse hooks) so they can operate with bypassPermissions mode without nuking anything.
+You're working on **rip-cage**, a Docker-based sandbox for running Claude Code agents with a safety stack (containment floor + composable command-guard recipes: DCG, ssh-bypass blocker) so they can operate with bypassPermissions mode without nuking anything. DCG and the ssh-bypass blocker are composable recipes (`examples/dcg/`, `examples/ssh-bypass/`) — not baked into the base image.
 
 ## Philosophy — read this before designing anything
 
@@ -9,10 +9,11 @@ The cage **limits blast radius**. It does not prevent all danger, and it is not 
 What this means in practice when you propose changes:
 
 - **Agent autonomy is the product.** The point of the cage is that a human can walk away and let the agent keep working. Any design that forces human intervention on a legitimate operation (credential prompts, TTY dialogs, interactive approvals, "please run this on the host") defeats the purpose.
-- **Layers, not walls.** DCG, ssh-bypass blocker, filesystem sandbox, egress whitelist — each catches a class of accidents. None of them individually is a security boundary against a motivated attacker, and pretending they are leads to over-strict designs.
+- **Layers, not walls.** DCG (composable recipe), ssh-bypass blocker (composable recipe), filesystem sandbox, egress whitelist — each catches a class of accidents. None of them individually is a security boundary against a motivated attacker, and pretending they are leads to over-strict designs.
 - **80/20, not 100/0.** The L7 egress firewall defaults to a host whitelist, but new cages ship in observe-mode so it learns real traffic before it blocks anything. Same principle everywhere else: block the obvious accident, don't gate the legitimate work.
 - **"It's annoying" is a design signal.** If an agent hits something the cage blocks and the right human response is "just turn it off," the default is probably wrong. Revisit the decision.
 - **rip-cage is a composable seam, not a bundler.** Per [ADR-005 D12](docs/decisions/ADR-005-ecosystem-tools.md), rc owns the composition *interfaces* (tool manifest, multiplexer provider contract, egress/mount declarations) and the safety floor — never specific optional tools. rc's code must never name, bundle, or "bless" an optional tool (no hardcoded multiplexer set, no built-in tool list); adding a tool — even a new multiplexer — is a manifest entry with zero rc edits. Defaults ship minimal; examples live *outside* the binary (`examples/`), never special-cased. **Convenience never earns a hardcoded exception in the seam** — if a tool feels like it should be on by default, it's either an opt-in example or genuinely *floor* (git/curl tier), never "blessed-optional." This is the principle agents keep drifting from (it's how herdr leaked into the default manifest); hold it.
+- **Built for the agentic era — composition is the agent's job.** rip-cage is deterministic about what's **invariant** — the containment floor (what must hold no matter what's inside) and the mechanical seams (identical every run: manifest format, `rc build`, mount mechanics). It pushes to the **agent** what **varies by situation** — which tools, whether a guard at all, how the pieces wire together. Help the agent generously on the invariant/mechanical side: CLIs, scripts, skills, and legible `examples/` recipes *are* the job. The drift is the inverse — freezing the *varying* part (the composition, the wiring) into deterministic machinery. A `compose:` directive / installer / auto-wire / config-merge step is the classic shape, but judge by the principle ("am I automating something that's the agent's judgment?"), not by matching that list. This is the sibling of "composable seam, not a bundler" above — that one says don't bless/bundle a *tool*; this one says don't automate the *wiring*. Rationale: [ADR-005 D12](docs/decisions/ADR-005-ecosystem-tools.md) (agentic-composition premise).
 - **The threat model includes prompt-injection.** Per [ADR-024](docs/decisions/ADR-024-prompt-injection-threat-model.md), "accident" now also covers a non-adversarial agent following hostile instructions injected via fetched READMEs, web pages, MCP output, or workspace files — not just honest mistakes. The egress whitelist, DNS inspection, ssh destination-scoping, and workspace-trust validator are the layers that target it. A motivated *adversarial* agent remains explicitly out of scope.
 
 Containment-flavored language ("the thing inside the cage is not you") has shown up in past ADRs and is a trap — it reads as an adversarial threat model rip-cage is not trying to meet. When in doubt, optimize for autonomous uninterrupted runs over theoretical blast-radius reduction.
@@ -22,11 +23,14 @@ Containment-flavored language ("the thing inside the cage is not you") has shown
 ```
 Host (macOS/Linux)
 ├── rc                      CLI entrypoint (bash). Commands: build, init, up, ls, attach, exec, down, destroy, reload, allowlist, test, doctor, auth, config, schema, completions, setup
-├── Dockerfile              Multi-stage: Go (beads) → Rust (DCG) → Debian runtime
+├── Dockerfile              Multi-stage: Go (beads) → Debian runtime (dcg un-baked per rip-cage-wlwc.10)
 ├── init-rip-cage.sh        Runs inside the container on start. Sets up auth, settings, hooks, git identity, beads
-├── settings.json           Claude Code config — bypassPermissions, PreToolUse hooks
+├── settings.json           Claude Code config — bypassPermissions, deny rules
 ├── hooks/
-│   └── block-ssh-bypass.sh          Denies ssh/scp/sftp with host-key-override flags.
+│   └── block-ssh-bypass.sh          Source for the ssh-bypass composable recipe (examples/ssh-bypass/).
+├── examples/
+│   ├── dcg/               Composable recipe: DCG destructive-command guard (not baked in base image).
+│   └── ssh-bypass/        Composable recipe: ssh host-key-override blocker (not baked in base image).
 ├── tests/                  Test scripts (test-safety-stack.sh, test-rc-commands.sh, etc.)
 └── zshrc                   Minimal zshrc for the container agent user
 ```

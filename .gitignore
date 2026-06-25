@@ -31,7 +31,11 @@ homebrew-rip-cage/
 __pycache__/
 *.py[cod]
 *.egg-info/
-dist/
+# dist/ holds Python build artifacts; ignore those but track the maintainer-authored
+# distribution manifest (dist/default-tools.yaml — rip-cage-wlwc.12).
+dist/*.whl
+dist/*.tar.gz
+dist/*.egg
 build/
 .venv/
 venv/

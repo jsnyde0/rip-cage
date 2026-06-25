@@ -4,16 +4,19 @@ The safety stack intercepts every shell command via Claude Code's hook system in
 
 ## PreToolUse hooks
 
-Two hooks run before every Bash command:
+The base image does **not** bake any PreToolUse command-guard hooks. DCG and the ssh-bypass blocker are **composable recipes** (`examples/dcg/`, `examples/ssh-bypass/`) — default-on in the published image when those recipes are composed, but absent in a custom minimal cage that omits them. See ADR-025 D2 and ADR-026 D2 (command-string policy is composable, not floor).
 
-1. **DCG** (`/usr/local/lib/rip-cage/bin/dcg-guard`) — Rust binary, built from source in the Dockerfile. Blocks destructive commands like `rm -rf`, `dd if=/dev/zero`, filesystem formatting, etc. DCG rules use unanchored whole-command regex matching, so operator chaining (`&&`, `;`, `||`) does **not** bypass them — verified live 2026-06-03.
-2. **SSH-bypass blocker** (`hooks/block-ssh-bypass.sh`) — Perl-based detection of `ssh`/`scp`/`sftp` invocations with host-key-override flags (`-o StrictHostKeyChecking=no`, `-o UserKnownHostsFile=...`). Also whole-command (chaining-robust). See ADR-022.
+When the **DCG recipe** is composed:
+- **DCG** (`/usr/local/lib/rip-cage/bin/dcg-guard`) — Rust binary, built from source via the `examples/dcg/` recipe. Blocks destructive commands like `rm -rf`, `dd if=/dev/zero`, filesystem formatting, etc. DCG rules use unanchored whole-command regex matching, so operator chaining (`&&`, `;`, `||`) does **not** bypass them — verified live 2026-06-03.
 
-> **Why no compound-command blocker?** A `block-compound-commands.sh` hook existed until rip-cage 0.6.0 (removed in rip-cage-4r8). Its only real purpose was permission-allowlist bypass — Claude Code prefix-matches only the *first* command, so an allowlisted `git add` followed by `&& rm -rf` could bypass the allowlist. Under `bypassPermissions` (the cage default) the allowlist does not gate commands at all, making that protection moot. The destructive-command class is fully covered by DCG regardless of chaining. See ADR-002 D5 for the full rationale.
+When the **ssh-bypass recipe** is composed:
+- **SSH-bypass blocker** (`hooks/block-ssh-bypass.sh`) — Perl-based detection of `ssh`/`scp`/`sftp` invocations with host-key-override flags (`-o StrictHostKeyChecking=no`, `-o UserKnownHostsFile=...`). Also whole-command (chaining-robust). See ADR-022.
+
+> **Why no compound-command blocker?** A `block-compound-commands.sh` hook existed until rip-cage 0.6.0 (removed in rip-cage-4r8). Its only real purpose was permission-allowlist bypass — Claude Code prefix-matches only the *first* command, so an allowlisted `git add` followed by `&& rm -rf` could bypass the allowlist. Under `bypassPermissions` (the cage default) the allowlist does not gate commands at all, making that protection moot. The destructive-command class is fully covered by DCG regardless of chaining (when the DCG recipe is composed). See ADR-002 D5 for the full rationale.
 
 ## bypassPermissions
 
-Claude Code runs with `bypassPermissions` enabled in `settings.json`. This means the permission allowlist doesn't gate commands — but DCG and the ssh-bypass blocker still fire as PreToolUse hooks on every command regardless. The hooks provide the actual safety layer.
+Claude Code runs with `bypassPermissions` enabled in `settings.json`. This means the permission allowlist doesn't gate commands. When the DCG and ssh-bypass recipes are composed, their PreToolUse hooks fire on every command and provide the command-guard safety layer. Without those recipes, the cage falls back to containment-only (container boundary, egress firewall, filesystem sandbox, non-root user, secret-path denylist, `.git/hooks` RO weld, and ssh known_hosts mount floor).
 
 The `deny` entries in `settings.json` (e.g., `Write(.git/hooks/*)`, `Edit(.git/hooks/*)`) are enforced independently of `bypassPermissions` — they fire as part of the permissions system and block matching tool calls even in bypass mode.
 
