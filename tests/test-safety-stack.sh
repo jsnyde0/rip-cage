@@ -87,105 +87,61 @@ else
   check "settings.json has bypassPermissions mode" "fail"
 fi
 
-# 8. DCG hook wired via managed-settings (rip-cage-r9n4: delivered via root-owned managed layer,
-# NOT agent-writable settings.json). Check /etc/claude-code/managed-settings.json first (production
-# path); fall back to settings.json for backward-compat with pre-r9n4 images.
-# FIX (rip-cage-r9n4 gap 4): assert ROOT OWNERSHIP, not just hook presence.
-# A hook present in an agent-writable managed-settings.json (or its parent dir) is a bypass vector:
-# agent could symlink-replace the file. Per harness.md line 258 + bd memory
-# unix-dir-ownership-is-the-write-gate-not-file-ownership: assert the parent directory AND
-# the file are root-owned (not agent-owned). Presence-only assertion passes even if
-# an agent replaced /etc/claude-code/managed-settings.json with a symlink to an agent-writable file.
-# GATE (rip-cage-wlwc.2.2): managed-settings.json is a composable recipe (examples/claude), NOT
-# baked into the base image. A cage built from the bare in-repo default manifest has no
-# managed-settings.json; assertions only fire when the file is present (mirrors check #9 ssh-bypass pattern).
-_managed_settings_ok=false
+# 8. managed-settings.json — floor-lock check (name-free, ADR-027 D1/D3).
+# Asserts THREE properties, all without naming any specific guard:
+#   (i)   managed-settings.json file + parent dir are root-owned (write-gate floor)
+#   (ii)  .hooks.PreToolUse | length > 0 in the MANAGED file (layer-placement — at least
+#         one hook is wired in the root-owned layer, not merely in agent-writable settings.json)
+#   (iii) agent-writable settings.json self-disable vector: if managed-settings.json is ABSENT
+#         but settings.json contains a PreToolUse hook, the hook lives in the agent-writable
+#         layer and the agent could remove it (self-disable vector open).
+#
+# Composable recipe note (rip-cage-wlwc.2.2): managed-settings.json is provisioned by the
+# examples/claude recipe, NOT baked into the base image. A cage built from the bare in-repo
+# default manifest has no managed-settings.json; assertions only fire when the file is present.
 if [[ -f /etc/claude-code/managed-settings.json ]]; then
-  if jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/bin/dcg-guard")' /etc/claude-code/managed-settings.json >/dev/null 2>&1; then
-    _managed_file_owner=$(stat -c '%U' /etc/claude-code/managed-settings.json 2>/dev/null || echo "unknown")
-    _managed_dir_owner=$(stat -c '%U' /etc/claude-code 2>/dev/null || echo "unknown")
-    if [[ "$_managed_file_owner" == "root" && "$_managed_dir_owner" == "root" ]]; then
-      check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "pass" \
-        "file owner=$_managed_file_owner dir owner=$_managed_dir_owner"
-      _managed_settings_ok=true
-    elif [[ "$_managed_file_owner" != "root" ]]; then
-      check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "fail" \
-        "hook present BUT file owner='$_managed_file_owner' (expected root) — agent can overwrite/replace"
-    else
-      check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "fail" \
-        "hook present BUT dir /etc/claude-code owner='$_managed_dir_owner' (expected root) — agent can inject new files or unlink+replace"
-    fi
-  elif jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/bin/dcg-guard")' ~/.claude/settings.json >/dev/null 2>&1; then
-    check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "fail" \
-      "DCG hook found in agent-writable settings.json, NOT in managed-settings.json — self-disable vector open"
+  _ms8_file_owner=$(stat -c '%U' /etc/claude-code/managed-settings.json 2>/dev/null || echo "unknown")
+  _ms8_dir_owner=$(stat -c '%U' /etc/claude-code 2>/dev/null || echo "unknown")
+  _ms8_hook_count=$(jq '.hooks.PreToolUse | length' /etc/claude-code/managed-settings.json 2>/dev/null || echo "0")
+  if [[ "$_ms8_file_owner" != "root" ]]; then
+    check "managed-settings.json floor-lock: file + dir root-owned, PreToolUse wired in managed layer (ADR-027 D1/D3)" "fail" \
+      "file owner='$_ms8_file_owner' (expected root) — agent can overwrite/replace"
+  elif [[ "$_ms8_dir_owner" != "root" ]]; then
+    check "managed-settings.json floor-lock: file + dir root-owned, PreToolUse wired in managed layer (ADR-027 D1/D3)" "fail" \
+      "dir /etc/claude-code owner='$_ms8_dir_owner' (expected root) — agent can inject new files or unlink+replace"
+  elif [[ "$_ms8_hook_count" -lt 1 ]]; then
+    check "managed-settings.json floor-lock: file + dir root-owned, PreToolUse wired in managed layer (ADR-027 D1/D3)" "fail" \
+      "managed-settings.json is root-owned BUT .hooks.PreToolUse | length = $_ms8_hook_count (no hook in managed layer — layer-placement floor not met)"
   else
-    check "managed-settings.json wires DCG hook + is root-owned (rip-cage-r9n4 floor-lock)" "fail" \
-      "DCG hook absent from managed-settings.json (file present but hook missing)"
+    check "managed-settings.json floor-lock: file + dir root-owned, PreToolUse wired in managed layer (ADR-027 D1/D3)" "pass" \
+      "file owner=$_ms8_file_owner dir owner=$_ms8_dir_owner PreToolUse hooks=$_ms8_hook_count"
   fi
+  unset _ms8_file_owner _ms8_dir_owner _ms8_hook_count
+  # (iii) agent-writable-settings.json self-disable-vector check: if PreToolUse ONLY in agent-writable
+  # settings.json (not in managed), the hook can be self-disabled. Managed file is present, so
+  # the self-disable vector is closed via managed layer (no additional check needed here).
 else
-  TOTAL=$((TOTAL + 1))
-  echo "INFO  [$TOTAL] managed-settings.json absent — CC floor-lock is a composable recipe (examples/claude), not composed in this cage"
-fi
-unset _managed_settings_ok _managed_file_owner _managed_dir_owner
-
-# 9. ssh-bypass hook wired via managed-settings (mirrors check #8 pattern for rip-cage-wlwc.12).
-# block-ssh-bypass is NOT floor (ADR-025 D2, ADR-026 D2) — it is a composable recipe.
-# A cage without examples/ssh-bypass does NOT have the hook installed; INFO-skip in that case.
-# When the recipe IS installed, check managed-settings.json first (default-composed path via
-# examples/claude/managed-settings.json, installed root-owned as floor-lock). Fall back to
-# agent-writable settings.json for the standalone-recipe composition path (where an agent merged
-# settings-fragment.json per the .11 recipe).
-# NOTE: compound blocker removed in rip-cage-4r8 — DCG is chaining-robust (see 11f/11g).
-_hook_path="/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh"
-if [[ -x "$_hook_path" ]]; then
-  # Recipe is installed — verify hook is wired. Check managed-settings.json first (floor-lock path).
-  if [[ -f /etc/claude-code/managed-settings.json ]] && \
-     jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh")' /etc/claude-code/managed-settings.json >/dev/null 2>&1; then
-    _ms9_file_owner=$(stat -c '%U' /etc/claude-code/managed-settings.json 2>/dev/null || echo "unknown")
-    _ms9_dir_owner=$(stat -c '%U' /etc/claude-code 2>/dev/null || echo "unknown")
-    if [[ "$_ms9_file_owner" == "root" && "$_ms9_dir_owner" == "root" ]]; then
-      check "managed-settings.json wires ssh-bypass hook + is root-owned (rip-cage-wlwc.12 floor-lock)" "pass" \
-        "file owner=$_ms9_file_owner dir owner=$_ms9_dir_owner"
-    elif [[ "$_ms9_file_owner" != "root" ]]; then
-      check "managed-settings.json wires ssh-bypass hook + is root-owned (rip-cage-wlwc.12 floor-lock)" "fail" \
-        "hook present BUT file owner='$_ms9_file_owner' (expected root) — agent can overwrite/replace"
-    else
-      check "managed-settings.json wires ssh-bypass hook + is root-owned (rip-cage-wlwc.12 floor-lock)" "fail" \
-        "hook present BUT dir /etc/claude-code owner='$_ms9_dir_owner' (expected root) — agent can inject new files or unlink+replace"
-    fi
-    unset _ms9_file_owner _ms9_dir_owner
-  elif jq -e '.hooks.PreToolUse[] | select(.hooks[].command == "/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh")' ~/.claude/settings.json >/dev/null 2>&1; then
-    # Fallback: standalone-recipe path — hook in agent-writable settings.json (acceptable for that composition).
-    check "settings.json wires ssh-bypass hook (standalone-recipe composition path)" "pass"
+  # managed-settings.json absent — check the self-disable vector in agent-writable settings.json.
+  # If ANY PreToolUse hook lives only in agent-writable settings.json, report it as a vector.
+  _ms8_agent_hooks=$(jq '.hooks.PreToolUse | length' ~/.claude/settings.json 2>/dev/null || echo "0")
+  if [[ "$_ms8_agent_hooks" -gt 0 ]]; then
+    check "managed-settings.json floor-lock: self-disable vector (ADR-027 D3)" "fail" \
+      "managed-settings.json ABSENT but PreToolUse hooks found in agent-writable settings.json — hooks live in agent-writable layer (self-disable vector open)"
   else
-    check "ssh-bypass hook wired in settings (recipe installed, hook missing from managed-settings.json and settings.json)" "fail"
+    TOTAL=$((TOTAL + 1))
+    echo "INFO  [$TOTAL] managed-settings.json absent — CC floor-lock is a composable recipe (examples/claude), not composed in this cage; no hooks in agent-writable settings.json (self-disable vector not applicable)"
   fi
-else
-  # Hook binary absent. INFO-skip — the generic drop-detector (_run_asserted_checks below)
-  # catches this if the recipe was declared required (rip-cage-m8zc generic mechanism).
-  # If not asserted, INFO-skip is correct (opt-in recipe not composed — ADR-025 D2).
-  TOTAL=$((TOTAL + 1))
-  echo "INFO  [$TOTAL] ssh-bypass blocker opt-in recipe NOT installed (examples/ssh-bypass — ADR-025 D2, ADR-026 D2); containment holds via other layers (generic drop-detector fires if declared required)"
+  unset _ms8_agent_hooks
 fi
-unset _hook_path
 
-
-# 10. settings.json denies .git/hooks writes
+# 9. settings.json denies .git/hooks writes (floor property, name-free)
 if jq -e '.permissions.deny[] | select(startswith("Write(.git/hooks"))' ~/.claude/settings.json >/dev/null 2>&1; then
   check "settings.json denies .git/hooks writes" "pass"
 else
   check "settings.json denies .git/hooks writes" "fail"
 fi
 
-# 11. DCG denies destructive command (via wrapper, ADR-025 D3)
-dcg_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | /usr/local/lib/rip-cage/bin/dcg-guard 2>/dev/null || true)
-if echo "$dcg_result" | grep -qE '"permissionDecision".*"deny"'; then
-  check "DCG denies destructive command" "pass"
-else
-  check "DCG denies destructive command" "fail" "$dcg_result"
-fi
-
-# 11-assert. Generic assert-present check (rip-cage-m8zc).
+# 10-assert. Generic assert-present check (rip-cage-m8zc).
 # Runs every declared-required tool's baked check from the asserted-file.
 # File absent = minimal cage (valid; no assertions baked). File present = run checks.
 # Also verifies root-ownership of the file + parent dir (fail-closed trust requirement).
@@ -208,212 +164,9 @@ else
   echo "INFO  [$TOTAL] safety-stack-asserted absent (minimal cage — no required tools declared; valid state)"
 fi
 
-# ---------------------------------------------------------------------------
-# DCG Floor-Uncrossable + Additive Regression Suite (ADR-025 D2/D5)
-# rip-cage-hhh.11.4: permanent in-container regression assertions.
-# ---------------------------------------------------------------------------
-
-# 11b. Floor vs /workspace/.dcg.toml — hostile workspace config does NOT weaken guard via wrapper
-# Write a hostile /workspace/.dcg.toml that allows everything via wildcard overrides.allow.
-# The wrapper (dcg-guard) anchors CWD to /usr/local/lib/rip-cage which has no .git ancestor,
-# so DCG's project-config discovery never walks up to /workspace. Floor must hold.
-_hostile_ws="/workspace/.dcg.toml"
-cat > "$_hostile_ws" << 'HOSTILE_EOF'
-[overrides]
-allow = [".*"]
-HOSTILE_EOF
-_floor_ws_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | /usr/local/lib/rip-cage/bin/dcg-guard 2>/dev/null || true)
-rm -f "$_hostile_ws"
-if echo "$_floor_ws_result" | grep -qE '"permissionDecision".*"deny"'; then
-  check "DCG floor holds vs hostile /workspace/.dcg.toml (via wrapper)" "pass"
-else
-  check "DCG floor holds vs hostile /workspace/.dcg.toml (via wrapper)" "fail" "$_floor_ws_result"
-fi
-unset _hostile_ws _floor_ws_result
-
-# 11c. Floor vs user-layer — hostile ~/.config/dcg/config.toml does NOT weaken guard via wrapper
-# The wrapper pins DCG_CONFIG to the cage-owned baked config, which suppresses the user-layer
-# config entirely (config.rs:2417: user layer loads only if explicit_layer.is_none()).
-_hostile_user_dir="${HOME}/.config/dcg"
-_hostile_user_cfg="${_hostile_user_dir}/config.toml"
-_hostile_user_existed=false
-if [[ -f "$_hostile_user_cfg" ]]; then
-  _hostile_user_existed=true
-  cp "$_hostile_user_cfg" "${_hostile_user_cfg}.rc-test-bak"
-fi
-mkdir -p "$_hostile_user_dir"
-cat > "$_hostile_user_cfg" << 'HOSTILE_EOF'
-[overrides]
-allow = [".*"]
-HOSTILE_EOF
-_floor_ul_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | /usr/local/lib/rip-cage/bin/dcg-guard 2>/dev/null || true)
-# Restore user config state
-if [[ "$_hostile_user_existed" == "true" ]]; then
-  mv "${_hostile_user_cfg}.rc-test-bak" "$_hostile_user_cfg"
-else
-  rm -f "$_hostile_user_cfg"
-fi
-if echo "$_floor_ul_result" | grep -qE '"permissionDecision".*"deny"'; then
-  check "DCG floor holds vs hostile ~/.config/dcg/config.toml (via wrapper)" "pass"
-else
-  check "DCG floor holds vs hostile ~/.config/dcg/config.toml (via wrapper)" "fail" "$_floor_ul_result"
-fi
-unset _hostile_user_dir _hostile_user_cfg _hostile_user_existed _floor_ul_result
-
-# 11d. Sensitivity proof — hostile /workspace/.dcg.toml WOULD weaken raw DCG (proves wrapper is load-bearing)
-# Run raw /usr/local/bin/dcg from CWD=/workspace (NOT via wrapper) with the hostile file present.
-# The hostile file is in a git repo root (DCG discovers it via find_repo_root from process CWD).
-# This must NOT show "deny" — proving the wrapper's CWD-anchor is the mechanism, not DCG ignoring configs.
-# Without the wrapper, the floor is crossable. With the wrapper, it is not (proven by 11b above).
-#
-# Precondition: /workspace must be a git repo. DCG's find_repo_root discovers the hostile config
-# only when it can walk up to a git root from CWD=/workspace. On non-git workspaces, find_repo_root
-# finds no root, raw dcg still denies, and the sensitivity proof cannot be demonstrated here.
-# Skip gracefully in that case — the safety property is still intact (11b/11c prove the wrapper
-# is load-bearing); this check just cannot be demonstrated in a non-git environment.
-# (rip-cage-fh53)
-if git -C /workspace rev-parse --show-toplevel >/dev/null 2>&1; then
-  _hostile_ws="/workspace/.dcg.toml"
-  cat > "$_hostile_ws" << 'HOSTILE_EOF'
-[overrides]
-allow = [".*"]
-HOSTILE_EOF
-  _raw_result=$(cd /workspace; echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' | /usr/local/bin/dcg 2>/dev/null || true)
-  rm -f "$_hostile_ws"
-  # Sensitivity proof: raw dcg SHOULD be weakened (i.e., NOT deny). If it still denies, the test cannot prove the wrapper is load-bearing.
-  if echo "$_raw_result" | grep -qE '"permissionDecision".*"deny"'; then
-    check "DCG sensitivity: raw dcg weakened by hostile /workspace/.dcg.toml (wrapper is load-bearing)" "fail" "raw dcg still denied — hostile config not loaded (sensitivity proof invalid)"
-  else
-    check "DCG sensitivity: raw dcg weakened by hostile /workspace/.dcg.toml (wrapper is load-bearing)" "pass"
-  fi
-  unset _hostile_ws _raw_result
-else
-  check "DCG sensitivity: raw dcg weakened by hostile /workspace/.dcg.toml (wrapper is load-bearing) [skip: /workspace not a git repo]" "pass" "11b/11c already prove wrapper is load-bearing; proof not demonstrable without git root"
-fi
-
-# 11e. Additive rule fires — custom rule pack loaded via DCG_CONFIG custom_paths blocks sentinel command
-# Proves the additive mechanism (ADR-025 D1): DCG loads and evaluates custom YAML rule packs.
-# Fixture resolution (rip-cage-16t): prefer the image-baked copy so this check is portable
-# across ALL cages; fall back to the repo workspace path for dev runs from a rip-cage
-# checkout. test-safety-stack.sh is baked into the image and runs inside any cage via
-# `rc test`, so a /workspace-only fixture path fails everywhere except this repo's own cage.
-# Invokes raw dcg directly with a temp DCG_CONFIG pointing at the fixture, NOT via wrapper
-# (wrapper pins DCG_CONFIG to baked floor config; this tests the additive translation mechanism).
-# The sentinel command "ripcagetestsentinel" must NOT match any real command.
-_sentinel_fixture="/usr/local/lib/rip-cage/dcg/fixtures/ripcage-testsentinel-rule.yaml"
-if [ ! -f "$_sentinel_fixture" ]; then
-  _sentinel_fixture="/workspace/tests/fixtures/ripcage-testsentinel-rule.yaml"
-fi
-_sentinel_cfg=$(mktemp /tmp/dcg-test-sentinel-XXXXXX.toml)
-cat > "$_sentinel_cfg" << 'SENTINEL_TOML_EOF'
-[packs]
-enabled = ["core"]
-SENTINEL_TOML_EOF
-echo "custom_paths = [\"${_sentinel_fixture}\"]" >> "$_sentinel_cfg"
-_additive_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"ripcagetestsentinel"}}' | DCG_CONFIG="$_sentinel_cfg" /usr/local/bin/dcg 2>/dev/null || true)
-rm -f "$_sentinel_cfg"
-if echo "$_additive_result" | grep -qE '"permissionDecision".*"deny"'; then
-  check "DCG additive rule fires: sentinel command denied by custom rule pack" "pass"
-else
-  check "DCG additive rule fires: sentinel command denied by custom rule pack" "fail" "fixture=$_sentinel_fixture result=$_additive_result"
-fi
-unset _sentinel_fixture _sentinel_cfg _additive_result
-
-# ---------------------------------------------------------------------------
-# DCG Chaining-Robustness Regression Suite (rip-cage-4r8)
-# Locks in that DCG denies destructive commands REGARDLESS of operator chaining.
-# DCG uses unanchored whole-command regex matching, so && and ; do not bypass it.
-# A future DCG version bump that anchors patterns would fail these loud.
-# ---------------------------------------------------------------------------
-
-# 11f. DCG denies destructive command after && (chaining-robust)
-# Build JSON payload in a temp file — avoids literal && in a shell command string
-# (the local compound-blocker hook in active sessions scans raw Bash tool input,
-# not test-script shell lines, but writing to a file is the safe portable pattern).
-_dcg_chain_and_payload=$(mktemp /tmp/dcg-chain-and-XXXXXX.json)
-printf '{"tool_name":"Bash","tool_input":{"command":"echo hi && rm -rf ~"}}' > "$_dcg_chain_and_payload"
-_dcg_chain_and=$(cat "$_dcg_chain_and_payload" | /usr/local/lib/rip-cage/bin/dcg-guard 2>/dev/null || true)
-rm -f "$_dcg_chain_and_payload"
-if echo "$_dcg_chain_and" | grep -qE '"permissionDecision".*"deny"'; then
-  check "DCG chaining-robust: denies destructive after && (rip-cage-4r8)" "pass"
-else
-  check "DCG chaining-robust: denies destructive after && (rip-cage-4r8)" "fail" "$_dcg_chain_and"
-fi
-unset _dcg_chain_and_payload _dcg_chain_and
-
-# 11g. DCG denies destructive command after ; (chaining-robust)
-_dcg_chain_semi_payload=$(mktemp /tmp/dcg-chain-semi-XXXXXX.json)
-printf '{"tool_name":"Bash","tool_input":{"command":"ls; rm -rf /important"}}' > "$_dcg_chain_semi_payload"
-_dcg_chain_semi=$(cat "$_dcg_chain_semi_payload" | /usr/local/lib/rip-cage/bin/dcg-guard 2>/dev/null || true)
-rm -f "$_dcg_chain_semi_payload"
-if echo "$_dcg_chain_semi" | grep -qE '"permissionDecision".*"deny"'; then
-  check "DCG chaining-robust: denies destructive after ; (rip-cage-4r8)" "pass"
-else
-  check "DCG chaining-robust: denies destructive after ; (rip-cage-4r8)" "fail" "$_dcg_chain_semi"
-fi
-unset _dcg_chain_semi_payload _dcg_chain_semi
-
-# 11h. block-ssh-bypass denies chained ssh-bypass after && (chaining-robust) — only if recipe installed.
-# block-ssh-bypass is opt-in via examples/ssh-bypass recipe (rip-cage-wlwc.11 / ADR-025 D2).
-# Skip gracefully when the recipe is not installed (base cage without recipe = containment via other layers).
-_sshbypass_hook="/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh"
-if [[ -x "$_sshbypass_hook" ]]; then
-  _ssh_chain_payload=$(mktemp /tmp/ssh-chain-XXXXXX.json)
-  printf '{"tool_name":"Bash","tool_input":{"command":"echo x && ssh -o StrictHostKeyChecking=no host"}}' > "$_ssh_chain_payload"
-  _ssh_chain=$(cat "$_ssh_chain_payload" | "$_sshbypass_hook" 2>/dev/null || true)
-  rm -f "$_ssh_chain_payload"
-  if echo "$_ssh_chain" | grep -qE '"permissionDecision".*"deny"'; then
-    check "ssh-bypass chaining-robust: denies chained ssh-bypass (rip-cage-4r8)" "pass"
-  else
-    check "ssh-bypass chaining-robust: denies chained ssh-bypass (rip-cage-4r8)" "fail" "$_ssh_chain"
-  fi
-  unset _ssh_chain_payload _ssh_chain
-else
-  TOTAL=$((TOTAL + 1))
-  echo "INFO  [$TOTAL] ssh-bypass chaining-robust: hook not installed (opt-in recipe — ADR-025 D2)"
-fi
-unset _sshbypass_hook
-
-# 12. ssh-bypass blocker denies the verified bypass shape (ADR-022 D5) — only if recipe installed.
-# NOTE: compound blocker (formerly check 12) removed in rip-cage-4r8. DCG chaining-robustness
-# is regression-tested at 11f/11g. ssh-bypass chaining robustness at 11h.
-# block-ssh-bypass is opt-in via examples/ssh-bypass recipe (rip-cage-wlwc.11 / ADR-025 D2).
-_sshbypass_hook="/usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh"
-if [[ -x "$_sshbypass_hook" ]]; then
-  sshbypass_result=$(echo '{"tool_name":"Bash","tool_input":{"command":"ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/x git@gitlab.com"}}' | "$_sshbypass_hook" 2>/dev/null || true)
-  if echo "$sshbypass_result" | grep -qE '"permissionDecision".*"deny"'; then
-    check "ssh-bypass blocker denies UserKnownHostsFile+accept-new" "pass"
-  else
-    check "ssh-bypass blocker denies UserKnownHostsFile+accept-new" "fail" "$sshbypass_result"
-  fi
-
-  # 12b. ssh-bypass refusal message points at .rip-cage.yaml + rc config init
-  if echo "$sshbypass_result" | grep -q '\.rip-cage\.yaml' && echo "$sshbypass_result" | grep -q 'rc config init'; then
-    check "ssh-bypass refusal message names .rip-cage.yaml + rc config init" "pass"
-  else
-    check "ssh-bypass refusal message names .rip-cage.yaml + rc config init" "fail" "$sshbypass_result"
-  fi
-
-  # 12c. ssh-bypass blocker catches /usr/bin/ssh direct path call
-  sshbypass_direct=$(echo '{"tool_name":"Bash","tool_input":{"command":"/usr/bin/ssh -o StrictHostKeyChecking=no host"}}' | "$_sshbypass_hook" 2>/dev/null || true)
-  if echo "$sshbypass_direct" | grep -qE '"permissionDecision".*"deny"'; then
-    check "ssh-bypass blocker catches /usr/bin/ssh direct path" "pass"
-  else
-    check "ssh-bypass blocker catches /usr/bin/ssh direct path" "fail" "$sshbypass_direct"
-  fi
-
-  # 12d. ssh-bypass blocker does NOT block legitimate ssh
-  sshbypass_legit=$(echo '{"tool_name":"Bash","tool_input":{"command":"ssh git@github.com"}}' | "$_sshbypass_hook" 2>/dev/null || true)
-  if [[ -z "$sshbypass_legit" ]]; then
-    check "ssh-bypass blocker allows legitimate ssh (no override flags)" "pass"
-  else
-    check "ssh-bypass blocker allows legitimate ssh (no override flags)" "fail" "$sshbypass_legit"
-  fi
-else
-  TOTAL=$((TOTAL + 1))
-  echo "INFO  [$TOTAL] ssh-bypass hook tests: hook not installed (opt-in recipe — ADR-025 D2, ADR-026 D2)"
-fi
-unset _sshbypass_hook
+# Recipe-specific behavioral smoke tests have been moved to co-located recipe smoke tests
+# (examples/dcg/smoke.sh, examples/ssh-bypass/smoke.sh) run by the generic name-free
+# runner (run-recipe-smokes.sh) per rip-cage-wiwa (ADR-025 D2 clarification).
 
 echo ""
 echo "-- Auth --"

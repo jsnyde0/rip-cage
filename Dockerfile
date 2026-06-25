@@ -132,6 +132,7 @@ COPY ssh/ssh_config /etc/ssh/ssh_config.d/00-rip-cage.conf
 RUN chmod 0644 /etc/ssh/ssh_known_hosts /etc/ssh/ssh_config.d/00-rip-cage.conf
 COPY tests/test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
 COPY tests/_safety-stack-assert-lib.sh /usr/local/lib/rip-cage/_safety-stack-assert-lib.sh
+COPY tests/run-recipe-smokes.sh /usr/local/lib/rip-cage/run-recipe-smokes.sh
 COPY settings.json /etc/rip-cage/settings.json
 # CC managed-settings floor-lock, cage-claude.md, and cage-pi.md are provisioned by
 # composable recipes (examples/claude/, examples/pi/) via root-owned install_cmd.
@@ -151,13 +152,12 @@ COPY rip-proxy-start.sh /usr/local/lib/rip-cage/rip-proxy-start.sh
 COPY rip-dns-start.sh /usr/local/lib/rip-cage/rip-dns-start.sh
 COPY tests/test-egress-firewall.sh /usr/local/lib/rip-cage/test-egress-firewall.sh
 COPY tests/test-bd-roundtrip.sh /usr/local/lib/rip-cage/test-bd-roundtrip.sh
-COPY tests/test-pi-dcg-gate.sh /usr/local/lib/rip-cage/test-pi-dcg-gate.sh
 RUN chmod +x /usr/local/bin/init-rip-cage.sh \
     /usr/local/lib/rip-cage/test-safety-stack.sh \
     /usr/local/lib/rip-cage/test-skills.sh \
     /usr/local/lib/rip-cage/test-egress-firewall.sh \
     /usr/local/lib/rip-cage/test-bd-roundtrip.sh \
-    /usr/local/lib/rip-cage/test-pi-dcg-gate.sh \
+    /usr/local/lib/rip-cage/run-recipe-smokes.sh \
     /usr/local/lib/rip-cage/init-firewall.sh \
     /usr/local/lib/rip-cage/init-mediator.sh \
     /usr/local/lib/rip-cage/rip-proxy-start.sh \

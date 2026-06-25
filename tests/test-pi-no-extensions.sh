@@ -295,7 +295,7 @@ echo ""
 # SECTION D: DCG GUARD STILL DENIES (effect test)
 #
 # Tests the DCG guard actually BLOCKS a destructive command (effect, not config).
-# Uses dcg-guard directly (same as test-pi-dcg-gate.sh section 2) — no API call.
+# Uses dcg-guard directly (same mechanism as DCG-PI-GUARD-2a.rm in examples/dcg/smoke.sh) — no API call.
 # D1: positive control — safe command is ALLOWED (proves guard actually ran)
 # D2: destructive command (rm -rf /) is DENIED
 # ---------------------------------------------------------------------------

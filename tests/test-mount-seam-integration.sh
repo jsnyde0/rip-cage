@@ -58,6 +58,12 @@
 #           (file+dir), lists dcg + ssh-bypass; safety-stack.sh FAILs if ssh-bypass hook
 #           is removed (prove the flip goes RED, not just that the file is present).
 #
+#   SE7 — Recipe smoke enforcing gate (rip-cage-wiwa): run the generic name-free runner
+#           (run-recipe-smokes.sh) inside the composed cage; assert both recipe smoke tests
+#           RAN, each reported >= pinned check count (count-pin), all passed. Three positive
+#           controls: count-drop→RED (count < pin), missing-install→RED (smoke file absent),
+#           recipe-tests dir root-owned (write-gate floor, ADR-027 D1).
+#
 # Anti-false-green discipline:
 #   * Every failure increments FAILURES.
 #   * Script ends with [[ $FAILURES -eq 0 ]] || exit $FAILURES.
@@ -695,6 +701,90 @@ test_se_tier2_composed_cage_suite() {
   # deferred — it requires root-level teardown and adds no new coverage beyond SI5.
   TOTAL=$((TOTAL + 1))
   echo "INFO  [${TOTAL}] SE5 flip proof: generic RED-on-absent proven by SI5 Tier-1 positive control (rip-cage-m8zc — arbitrary synthetic required tool, same shared lib, no divorced copy); heavyweight in-cage counterfactual intentionally deferred (not a counted pass)"
+
+  # -----------------------------------------------------------------
+  # SE7 — Recipe smoke enforcing gate (rip-cage-wiwa)
+  # Run the generic recipe-smoke runner inside the composed cage.
+  # Asserts: both recipe smoke tests RAN, each reported >= pinned check count, all passed.
+  # Count pins (from probe-by-probe diff):
+  #   dcg-smoke.sh:       DCG-1..DCG-7 = 7 core checks + 24 pi-conditional checks = 31 total
+  #                       (pi IS present in this cage, so all pi checks fire)
+  #                       Note: pin assumes SE composed-cage config (pi present + dcg-gate installed).
+  #                       A no-guard-pi variant would report ~22 (not exercised by this gate).
+  #   ssh-bypass-smoke.sh: SSH-1..SSH-5 = 5 checks
+  # Positive controls: count-drop RED, broken-wiring RED, missing-install RED (via expected-set).
+  # -----------------------------------------------------------------
+  echo ""
+  echo "--- SE7: Recipe smoke enforcing gate (generic name-free runner, rip-cage-wiwa) ---"
+
+  # DCG_SMOKE_MIN: 7 core + 24 pi checks = 31 total (pi present in this cage, dcg-gate installed).
+  # ssh-bypass smoke has 5 checks.
+  local DCG_SMOKE_MIN=31
+  local SSH_SMOKE_MIN=5
+
+  # Run the generic runner via rc test equivalent (invoke run-recipe-smokes.sh directly).
+  local se7_runner_out se7_runner_rc
+  se7_runner_rc=0
+  se7_runner_out=$(docker exec "$se_container" /usr/local/lib/rip-cage/run-recipe-smokes.sh 2>&1) || se7_runner_rc=$?
+
+  echo "$se7_runner_out"
+
+  if [[ "$se7_runner_rc" -eq 0 ]]; then
+    pass "SE7 recipe-smoke runner: all recipe smoke tests PASSED (exit=0)"
+  else
+    fail "SE7 recipe-smoke runner: runner exited ${se7_runner_rc} — one or more recipe smoke tests FAILED"
+  fi
+
+  # Verify dcg-smoke.sh ran and reported >= pinned count.
+  local dcg_smoke_total
+  dcg_smoke_total=$(echo "$se7_runner_out" | grep -E '^PASS|^FAIL' | grep -v 'SMOKE-' | wc -l | tr -d ' ' || echo "0")
+  # Count from the dcg-smoke output: look for the summary line.
+  local dcg_summary_count
+  dcg_summary_count=$(echo "$se7_runner_out" | grep 'DCG Smoke Summary:' | grep -oE '[0-9]+ checks' | grep -oE '[0-9]+' | head -1 || echo "0")
+  if [[ -n "$dcg_summary_count" && "$dcg_summary_count" -ge "$DCG_SMOKE_MIN" ]]; then
+    pass "SE7 dcg-smoke: reported ${dcg_summary_count} checks >= pinned floor ${DCG_SMOKE_MIN} (count-pin met)"
+  elif [[ -n "$dcg_summary_count" ]]; then
+    fail "SE7 dcg-smoke: reported ${dcg_summary_count} checks < pinned floor ${DCG_SMOKE_MIN} (count-pin FAILED — probe may have been dropped)"
+  else
+    fail "SE7 dcg-smoke: DCG Smoke Summary line not found — dcg-smoke.sh may not have run"
+  fi
+
+  # Verify ssh-bypass-smoke.sh ran and reported >= pinned count.
+  local ssh_summary_count
+  ssh_summary_count=$(echo "$se7_runner_out" | grep 'SSH-Bypass Smoke Summary:' | grep -oE '[0-9]+ checks' | grep -oE '[0-9]+' | head -1 || echo "0")
+  if [[ -n "$ssh_summary_count" && "$ssh_summary_count" -ge "$SSH_SMOKE_MIN" ]]; then
+    pass "SE7 ssh-bypass-smoke: reported ${ssh_summary_count} checks >= pinned floor ${SSH_SMOKE_MIN} (count-pin met)"
+  elif [[ -n "$ssh_summary_count" ]]; then
+    fail "SE7 ssh-bypass-smoke: reported ${ssh_summary_count} checks < pinned floor ${SSH_SMOKE_MIN} (count-pin FAILED — probe may have been dropped)"
+  else
+    fail "SE7 ssh-bypass-smoke: SSH-Bypass Smoke Summary line not found — ssh-bypass-smoke.sh may not have run"
+  fi
+
+  # Positive control: missing-install tripwire.
+  # Both recipe smoke tests must be present in the recipe-tests dir. If either is missing,
+  # the runner produces no summary line → count-pin FAIL above already catches it.
+  local dcg_smoke_file ssh_smoke_file
+  dcg_smoke_file=$(docker exec "$se_container" test -f /usr/local/lib/rip-cage/recipe-tests/dcg-smoke.sh 2>/dev/null && echo "present" || echo "absent")
+  ssh_smoke_file=$(docker exec "$se_container" test -f /usr/local/lib/rip-cage/recipe-tests/ssh-bypass-smoke.sh 2>/dev/null && echo "present" || echo "absent")
+  if [[ "$dcg_smoke_file" == "present" ]]; then
+    pass "SE7 install: dcg-smoke.sh is installed in recipe-tests dir"
+  else
+    fail "SE7 install: dcg-smoke.sh is ABSENT from recipe-tests dir — recipe install_cmd did not install the smoke test (install tripwire RED)"
+  fi
+  if [[ "$ssh_smoke_file" == "present" ]]; then
+    pass "SE7 install: ssh-bypass-smoke.sh is installed in recipe-tests dir"
+  else
+    fail "SE7 install: ssh-bypass-smoke.sh is ABSENT from recipe-tests dir — recipe install_cmd did not install the smoke test (install tripwire RED)"
+  fi
+
+  # Positive control: recipe-tests dir is root-owned (ADR-027 D1 write-gate floor).
+  local recipe_tests_dir_owner
+  recipe_tests_dir_owner=$(docker exec "$se_container" stat -c '%U' /usr/local/lib/rip-cage/recipe-tests 2>/dev/null || echo "unknown")
+  if [[ "$recipe_tests_dir_owner" == "root" ]]; then
+    pass "SE7 ownership: recipe-tests dir is root-owned (write-gate floor, ADR-027 D1)"
+  else
+    fail "SE7 ownership: recipe-tests dir owner='${recipe_tests_dir_owner}' (expected root) — agent could add/replace smoke tests"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -716,7 +806,7 @@ test_si5_assert_present_flip_positive_control
 test_si6_no_fake_agent_archetype_remnants
 
 echo ""
-echo "--- SE1-SE5: Tier-2 composed-cage behavioral (RC_E2E-gated) ---"
+echo "--- SE1-SE5+SE7: Tier-2 composed-cage behavioral (RC_E2E-gated) ---"
 test_se_tier2_composed_cage_suite
 
 echo ""
