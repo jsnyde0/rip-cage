@@ -56,6 +56,17 @@ TEST_HOME=""
 
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
+# Wrapper that checks function existence before calling it.  A dangling call
+# to a removed test function (command-not-found, exit 127) is counted as a
+# failure rather than silently skipped (silent-red guard).
+run_test() {
+  local fn="$1"
+  if declare -f "$fn" >/dev/null 2>&1; then
+    "$fn"
+  else
+    fail "runner: function '$fn' not found (removed test? dangling reference)"
+  fi
+}
 
 _NO_YQ_BINDIR=""
 
@@ -984,51 +995,51 @@ test_t45_network_egress_mediator_invalid_aborts() {
 # ---------------------------------------------------------------------------
 
 echo "=== test-config-loader.sh — ADR-021 layered config loader ==="
-test_t1_additive_union
-test_t2_selection_replaces
-test_t3_selection_inherit_global
-test_t4_selection_zero_out
-test_t5_scalar_replaces
-test_t6_missing_version_warns
-test_t7_future_version_with_selection_aborts
-test_t8_future_version_additive_only_skips
-test_t9_per_file_version_independence
-test_t10_yaml_provenance_comments
-test_t11_json_parallel_structure
-test_t12_sha256_canonical
-test_t13_both_absent_defaults
-test_t14_only_global
-test_t15_only_project
-test_t16_yq_missing_fails_loud
-test_t17_validate_aborts_on_selection_list_future_version
-test_t18_validate_silent_no_config
-test_t19_validate_yq_missing_with_config_aborts
-test_t20_mounts_symlinks_default_emission
-test_t21_mounts_symlinks_on_dangling_invalid_aborts
-test_t22_mounts_symlinks_mode_invalid_aborts
-test_t23_mounts_symlinks_with_project_default_fixture
-test_t24_mounts_symlinks_ro_fixture
-test_t25_mounts_symlinks_parent_fixture
-test_t26_config_show_mounts_symlinks_nested_yaml
-test_t27_mounts_denylist_from_global
-test_t28_mounts_denylist_from_project
-test_t29_mounts_denylist_additive_merge
-test_t30_mounts_allow_risky_selection_list
-test_t31_network_allowed_hosts_from_global
-test_t32_network_allowed_hosts_additive_merge
-test_t33_v1_config_no_network_parses_unchanged
-test_t34_network_mode_selection_list
-test_t35_absent_network_mode_is_null_not_enum
-test_t36_network_writable_not_subset_aborts
-test_t37_network_writable_hosts_removed_from_schema
-test_t38_network_mode_invalid_aborts
-test_t39_validate_yq_missing_with_global_config_emits_dependency_message
-test_t40_session_multiplexer_default_none
-test_t41_session_multiplexer_tmux_parses
-test_t42_session_multiplexer_invalid_aborts
-test_t43_network_egress_mediator_default_none
-test_t44_network_egress_mediator_declared_parses
-test_t45_network_egress_mediator_invalid_aborts
+run_test test_t1_additive_union
+run_test test_t2_selection_replaces
+run_test test_t3_selection_inherit_global
+run_test test_t4_selection_zero_out
+run_test test_t5_scalar_replaces
+run_test test_t6_missing_version_warns
+run_test test_t7_future_version_with_selection_aborts
+run_test test_t8_future_version_additive_only_skips
+run_test test_t9_per_file_version_independence
+run_test test_t10_yaml_provenance_comments
+run_test test_t11_json_parallel_structure
+run_test test_t12_sha256_canonical
+run_test test_t13_both_absent_defaults
+run_test test_t14_only_global
+run_test test_t15_only_project
+run_test test_t16_yq_missing_fails_loud
+run_test test_t17_validate_aborts_on_selection_list_future_version
+run_test test_t18_validate_silent_no_config
+run_test test_t19_validate_yq_missing_with_config_aborts
+run_test test_t20_mounts_symlinks_default_emission
+run_test test_t21_mounts_symlinks_on_dangling_invalid_aborts
+run_test test_t22_mounts_symlinks_mode_invalid_aborts
+run_test test_t23_mounts_symlinks_with_project_default_fixture
+run_test test_t24_mounts_symlinks_ro_fixture
+run_test test_t25_mounts_symlinks_parent_fixture
+run_test test_t26_config_show_mounts_symlinks_nested_yaml
+run_test test_t27_mounts_denylist_from_global
+run_test test_t28_mounts_denylist_from_project
+run_test test_t29_mounts_denylist_additive_merge
+run_test test_t30_mounts_allow_risky_selection_list
+run_test test_t31_network_allowed_hosts_from_global
+run_test test_t32_network_allowed_hosts_additive_merge
+run_test test_t33_v1_config_no_network_parses_unchanged
+run_test test_t34_network_mode_selection_list
+run_test test_t35_absent_network_mode_is_null_not_enum
+run_test test_t36_network_writable_hosts_unknown_field_ignored
+run_test test_t37_network_writable_hosts_removed_from_schema
+run_test test_t38_network_mode_invalid_aborts
+run_test test_t39_validate_yq_missing_with_global_config_emits_dependency_message
+run_test test_t40_session_multiplexer_default_none
+run_test test_t41_session_multiplexer_tmux_parses
+run_test test_t42_session_multiplexer_invalid_aborts
+run_test test_t43_network_egress_mediator_default_none
+run_test test_t44_network_egress_mediator_declared_parses
+run_test test_t45_network_egress_mediator_invalid_aborts
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then
