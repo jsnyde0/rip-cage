@@ -95,6 +95,10 @@ After modifying the Dockerfile or any file that gets COPY'd into the image:
 
 For changes to `rc` itself, you can test without rebuilding the image.
 
+## Releasing rip-cage
+
+Cutting a release (tag → multi-arch GHCR publish → Homebrew formula pin) has rip-cage-specific steps the global `/release` skill does not know — GHCR visibility flip, `scripts/update-formula-sha.sh`, the two-repo tap sync, the pre-tag **full host suite** gate, and the formula `brew fetch` verification. The single source of truth is **[docs/reference/release-ceremony.md](docs/reference/release-ceremony.md)** — follow it step by step when tagging a version.
+
 ## Roadmap & design docs
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the phased plan, design docs, and ADRs.

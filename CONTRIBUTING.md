@@ -167,6 +167,10 @@ The image is multi-stage. Changes to earlier stages invalidate the build cache f
 
 5. **Push** and open a pull request against `main`. Fill in the PR template.
 
+## Cutting a release
+
+Maintainers tagging a version follow the full step-by-step in [docs/reference/release-ceremony.md](docs/reference/release-ceremony.md) — it covers the pre-tag full host-suite gate, the multi-arch GHCR publish, the GHCR public-visibility flip, the Homebrew formula sha pin and `brew fetch` verification, and the multi-arch smoke check.
+
 ## Reporting issues
 
 Use GitHub Issues. Bug reports should include:

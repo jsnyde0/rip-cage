@@ -53,7 +53,7 @@ Use semantic versioning (major.minor.patch). Start at `0.1.0` to signal "usable 
 | `git describe --tags` | Automatic | Breaks in tarballs, CI needs git history |
 | Hardcoded in `rc` | No extra file | Easy to forget updating |
 
-### D4: CI pipeline — lint and build first, integration tests later (revised 2026-05-28)
+### D4: CI pipeline — lint and build first, integration tests later (revised 2026-06-25)
 
 **Firmness: FLEXIBLE**
 
@@ -63,7 +63,9 @@ Start with a GitHub Actions workflow that runs:
 
 Integration tests (`rc test`) require Docker-in-Docker or a self-hosted runner. Defer this to a follow-up rather than blocking the initial release.
 
-**Local==CI by construction (added 2026-05-28, rip-cage-wn4).** Every CI validation surface must be invoked through a repo-pinned artifact that a developer runs identically locally — a pinned tool container image and/or the canonical test driver — never a CI-only re-implementation. Concretely: do not `apt-get install` a tool inside a workflow (the version drifts from local dev), and do not hand-maintain a parallel test list or fixture in workflow YAML (it drifts from the canonical driver). The lint gate runs `make lint` (which runs the pinned `koalaman/shellcheck:v0.11.0` image) in both `ci.yml` and `release.yml`; the host-test gate runs `tests/run-host.sh --host-only` (one driver, denylist-default classification). `make lint` doubles as the pre-tag gate. The strictness bar (fail-on-info, no `--severity`) is revisitable; the local==CI invariant is the durable part.
+**Local==CI by construction (added 2026-05-28, rip-cage-wn4).** Every CI validation surface must be invoked through a repo-pinned artifact that a developer runs identically locally — a pinned tool container image and/or the canonical test driver — never a CI-only re-implementation. Concretely: do not `apt-get install` a tool inside a workflow (the version drifts from local dev), and do not hand-maintain a parallel test list or fixture in workflow YAML (it drifts from the canonical driver). The lint gate runs `make lint` (which runs the pinned `koalaman/shellcheck:v0.11.0` image) in both `ci.yml` and `release.yml`; the host-test gate runs `tests/run-host.sh --host-only` (one driver, denylist-default classification). The pre-tag gate is **both** `make lint` **and** the full `tests/run-host.sh --host-only` run — not lint-only and not a per-changed-file subset (see D8's release-ceremony step 1). The strictness bar (fail-on-info, no `--severity`) is revisitable; the local==CI invariant is the durable part.
+
+**Arch-matched CI tooling (added 2026-06-25, rip-cage-9t8k).** Any tool a workflow *fetches by architecture* (a downloaded binary such as `yq`) must select the binary per `matrix.arch` (`yq_linux_${matrix.arch}`), never hardcode one arch. This is the binary-arch form of the same drift the local==CI invariant guards against — a CI-only assumption that bites only on a real tag. The v0.9.0 tag's first CI run published **nothing**: the native arm64 build downloaded the amd64 `yq` → `Exec format error` (exit 126) → the manifest-merge job skipped → no image at `:VERSION`/`:latest` (`rip-cage-9t8k`, commit 224c150; v0.9.0 was the first release to exercise the native arm64 runner). **release.yml-invalidation clause:** a release-CI run that publishes nothing usable means the tag can be safely **re-pointed** (delete + recreate at the fix commit) rather than burning a fresh version — valid **only** while nothing downstream (the pinned formula, GHCR `:VERSION`/`:latest`, the GitHub release) has consumed the tag yet.
 
 **Rationale:** Shellcheck + build catches the majority of contribution errors (syntax, Dockerfile issues) without the complexity of DinD. Integration tests are valuable but shouldn't block the first public release. The local==CI invariant was added because CI-only validation surfaces silently diverge from local dev and the gap bites only after a tag is public: the v0.4.x release burned **three tags** when CI's apt-installed shellcheck 0.9.0 emitted info findings that local 0.11.0 did not, surfacing only on tag push when the formula sha was already pinned.
 
@@ -75,7 +77,7 @@ Integration tests (`rc test`) require Docker-in-Docker or a self-hosted runner. 
 | Shared fixture file (CI + driver both source it), but keep CI's own test list | `direct:` rip-cage-wn4 — fixes fixture drift but leaves the test-list drift live; CI's inline list was already stale (missing pytest/firewall/config-init host tests) |
 | Loosen the lint bar to `--severity=warning` instead of pinning | `reasoned:` lowers signal without closing divergence; warnings would still differ across versions. The burned tags were a *version* problem, not a *strictness* problem |
 
-**What would invalidate this:** (a) If shellcheck + build proves insufficient to catch real contribution breakage — invest in DinD or a self-hosted runner. (b) If a `make lint` / `apt-get install ... shellcheck` reappears in a workflow, or a second test-list/fixture is added outside `tests/run-host.sh`, the invariant has been violated — that is the regression cue.
+**What would invalidate this:** (a) If shellcheck + build proves insufficient to catch real contribution breakage — invest in DinD or a self-hosted runner. (b) If a `make lint` / `apt-get install ... shellcheck` reappears in a workflow, or a second test-list/fixture is added outside `tests/run-host.sh`, the invariant has been violated — that is the regression cue. (c) A new CI tool fetched by architecture without a `matrix.arch` selector is the same drift in binary-arch form — the cue is a per-arch native job failing with `Exec format error`.
 
 ### D5: Bash 3.2 compatibility is a hard requirement
 
@@ -95,7 +97,7 @@ The `rc` script must work with bash 3.2 (macOS default). Any bash 4+ syntax is a
 
 **Rationale:** Building the multi-stage image (Go + Rust + Debian) takes 5-10 minutes on a clean machine. A pre-built image reduces first-use time to ~30 seconds. GHCR is free for public repos and integrates natively with GitHub Actions.
 
-**Release-ceremony note:** GHCR packages default to private on first push. The release-ceremony checklist includes a one-time human action to set the `rip-cage` package's visibility to Public on github.com.
+**Release-ceremony note:** GHCR packages default to private on first push. The release-ceremony checklist includes a one-time human action to set the `rip-cage` package's visibility to Public on github.com. The full step-by-step ceremony lives at [docs/reference/release-ceremony.md](../reference/release-ceremony.md) — the consolidated source of truth.
 
 **What would invalidate this:** If the image size becomes unmanageable (>2GB) or if users need to customize the build (e.g., different base image). In that case, the existing `RIP_CAGE_IMAGE_REGISTRY=""` opt-out and explicit `rc build` already provide escape hatches; no further design change needed.
 
@@ -109,7 +111,7 @@ The `rc` script must work with bash 3.2 (macOS default). Any bash 4+ syntax is a
 
 **Alternatives considered:** See D8 for the Homebrew packaging shape (single-repo tap vs separate tap vs homebrew-core).
 
-### D8: Homebrew tap shape — separate tap repo
+### D8: Homebrew tap shape — separate tap repo (revised 2026-06-25)
 
 **Firmness: FLEXIBLE**
 
@@ -119,11 +121,12 @@ The Homebrew formula lives in [`jsnyde0/homebrew-rip-cage`](https://github.com/j
 
 **Rationale:** Homebrew's `brew tap user/name` hardcodes a clone of `github.com/user/homebrew-name`. The `homebrew-` prefix is not optional. A "single-repo tap" only works if the project repo itself is named `homebrew-*`, which is awkward. The separate tap repo is the universal pattern (used by `gh`, GoReleaser, etc.) and the only one that makes `brew install user/tap/formula` work without a manual `brew tap ... URL` step.
 
-**Release ceremony (tap sync):**
-1. Tag → GHCR publish (existing)
-2. `scripts/update-formula-sha.sh` patches `Formula/rip-cage.rb` in this repo and copies to `../homebrew-rip-cage/` if present. **The versioned tarball `url` tag and the `sha256` MUST be patched together** — a stale `url` against a fresh `sha256` ships a formula whose tarball fails checksum and breaks `brew install` for every user on that release. This shipped broken on **v0.5.0 and v0.5.1** before the script was fixed (`rip-cage-ndz`, commit 49992c1) to `sed` the `url` tag from `VERSION` alongside the `sha256`.
-3. **Verify end-to-end with `brew fetch jsnyde0/rip-cage/rip-cage` before pushing** — it downloads the real tarball and checks the `sha256`, which is the actual breakage point. Eyeballing the formula diff is not sufficient (it cannot catch a url/sha mismatch against the published tarball). Cross-check with `curl -sL <url> | shasum -a 256` against the pinned sha.
-4. Commit + push both repos
+**Release ceremony (tap sync).** The full step-by-step with commands lives at [docs/reference/release-ceremony.md](../reference/release-ceremony.md) — the load-bearing decisions this ADR pins:
+1. **Pre-tag gate — run the FULL host suite, not lint-only.** Before tagging, run both `make lint` and `bash tests/run-host.sh --host-only` (the full ordered host suite, not a per-changed-file subset). A sibling-decayed positive control in an *untouched* test file escapes every per-bead / per-changed-file scope but not the full run — v0.9.0 shipped a stale floor-protection assertion (in `test-pi-substrate-mounts.sh`, asserting retired symlink wiring) to the release gate because the epic close ran only lint plus the beads it touched (`rip-cage-r92e`, commit f494a31; see D4's pre-tag gate).
+2. Tag → GHCR publish (existing; multi-arch native builds — see D6).
+3. `scripts/update-formula-sha.sh` patches `Formula/rip-cage.rb` in this repo and copies to `../homebrew-rip-cage/` if present. **The versioned tarball `url` tag and the `sha256` MUST be patched together** — a stale `url` against a fresh `sha256` ships a formula whose tarball fails checksum and breaks `brew install` for every user on that release. This shipped broken on **v0.5.0 and v0.5.1** before the script was fixed (`rip-cage-ndz`, commit 49992c1) to `sed` the `url` tag from `VERSION` alongside the `sha256`.
+4. **Verify end-to-end before pushing** — `scripts/update-formula-sha.sh` patches+syncs both repos but does **not** run `brew fetch`, so this stays a manual gate. (a) Cross-check the live tarball sha against the pinned sha: `curl -sL <url> | shasum -a 256` == `Formula/rip-cage.rb`'s sha256. (b) Fast-forward the **local** tap clone first — `git -C "$(brew --repository)/Library/Taps/jsnyde0/homebrew-rip-cage" pull --ff-only` — so `brew` verifies the *pushed* formula, not a stale local copy. (c) `brew fetch jsnyde0/rip-cage/rip-cage` (exit 0) exercises brew's real download+checksum, the actual breakage point. Eyeballing the formula diff is insufficient (it cannot catch a url/sha mismatch against the published tarball).
+5. Commit + push both repos
 
 **Alternatives considered:**
 
@@ -143,3 +146,12 @@ The Homebrew formula lives in [`jsnyde0/homebrew-rip-cage`](https://github.com/j
 - **DinD-based end-to-end `brew install` smoke test in CI** — would catch formula regressions automatically but requires Docker-in-Homebrew. Manual smoke check at release ceremony covers it for now.
 - **Git history rewrite** — Personal data in old commits is not a security risk (paths, not credentials). The cost of force-pushing outweighs the benefit.
 - **Windows support** — `rc` is bash; WSL2 works but is untested. Not a launch blocker.
+
+## canonical_refs
+
+- [ADR-002](ADR-002-rip-cage-containers.md) (container architecture), [ADR-003](ADR-003-agent-friendly-cli.md) (CLI design) — upstream constraints (see header `**Related:**`).
+- [ADR-013](ADR-013-test-coverage.md) D5/D6 (CI tiers — full host-only suite; host-only determinism) — the pre-tag full-suite gate (D4/D8) builds on these.
+- [ADR-001](ADR-001-fail-loud-pattern.md) (fail-loud) — a skipped/missing publish (manifest merge skipped, broken formula) must fail loud before shipping.
+- [docs/reference/release-ceremony.md](../reference/release-ceremony.md) — the consolidated agent-facing ceremony checklist (D6/D8 point here; `rip-cage-ynv`).
+- bd memories: `epic-close-reverify-delta-and-carry-forward-sweep` (full-suite-vs-subset gate, D8 step 1), `ci-new-tool-dependency-needs-arch-matrix-coverage` (arch-matched tooling, D4), `rip-cage-homebrew-formula-url-sha-coupling` (url/sha + brew-fetch gate, D8 steps 3–4), `ci-shellcheck-version-divergence` (the burned-tags lint precedent, D4).
+- v0.9.0 worked example: commits `f494a31` (r92e full-suite test fix), `224c150` (9t8k arch-matched CI fix), `09f1394` (formula sha pin).
