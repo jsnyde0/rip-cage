@@ -9,8 +9,8 @@
 #   (C)  syntax check: bash -n on rc and init-rip-cage.sh
 #   (D)  init-rip-cage.sh creates pi symlinks (grep for pi symlink stanza)
 #   (E)  init-rip-cage.sh does NOT replace the baked extensions dir with a
-#        symlink (floor-shadow check: ln -sfn must only create
-#        extensions/subagent, never extensions itself)
+#        symlink (floor-shadow check: no bare extensions/ ln -sfn); and
+#        pi-wrapper.sh loads the subagent extension via -e $SUBAGENT_EXT
 #
 # Tests call _up_prepare_docker_mounts directly in a subshell (the same
 # pattern used by test-secret-path-denylist.sh test_bprime) — no Docker needed.
@@ -20,6 +20,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RC="${SCRIPT_DIR}/../rc"
 INIT="${SCRIPT_DIR}/../init-rip-cage.sh"
+WRAPPER="${SCRIPT_DIR}/../examples/pi/pi-wrapper.sh"
 FAILURES=0
 TEST_TMPDIR=""
 
@@ -316,17 +317,14 @@ test_D_init_creates_pi_symlinks() {
 }
 
 # ---------------------------------------------------------------------------
-# (E) init-rip-cage.sh does NOT replace the extensions dir itself
-#     (only creates extensions/subagent symlink alongside baked dcg-gate)
+# (E) init-rip-cage.sh does NOT replace the extensions dir itself;
+#     subagent extension is projected via the launch wrapper, not a symlink
 # ---------------------------------------------------------------------------
 test_E_floor_not_shadowed_by_init() {
-  # Verify that init-rip-cage.sh DOES NOT contain a pattern like:
+  # Negative control: init-rip-cage.sh DOES NOT contain a pattern like:
   #   ln -sfn ... ~/.pi/agent/extensions
   # which would replace the entire baked extensions dir.
-  #
-  # It SHOULD contain:
-  #   ln -sfn ... ~/.pi/agent/extensions/subagent
-  # which adds alongside the baked dcg-gate.ts
+  # (post-wlwc: no extensions/ symlink at all — wrapper owns the wiring)
 
   if grep -E "ln -sfn.*extensions[^/]" "$INIT" | grep -vq "extensions/subagent"; then
     # A bare 'extensions' symlink target exists without the subagent qualifier
@@ -335,11 +333,15 @@ test_E_floor_not_shadowed_by_init() {
     pass "(E) init-rip-cage.sh does not replace whole extensions/ dir (floor protected)"
   fi
 
-  # Positive: should have the per-extension subagent symlink
-  if grep -q "extensions/subagent" "$INIT"; then
-    pass "(E) init-rip-cage.sh creates extensions/subagent symlink (selective projection)"
+  # Positive control: the subagent extension is loaded by the launch wrapper
+  # via -e with the pi-ext-subagent/index.ts path (post-wlwc wiring).
+  # Assert both that SUBAGENT_EXT references pi-ext-subagent/index.ts AND
+  # that it is appended to the vetted extension list with -e "$SUBAGENT_EXT".
+  if grep -q 'pi-ext-subagent/index.ts' "$WRAPPER" \
+     && grep -q 'VETTED_EXTENSIONS+=.*"-e".*SUBAGENT_EXT' "$WRAPPER"; then
+    pass "(E) pi-wrapper.sh loads subagent extension via -e \$SUBAGENT_EXT (wrapper wiring present)"
   else
-    fail "(E) init-rip-cage.sh missing extensions/subagent symlink"
+    fail "(E) pi-wrapper.sh missing -e \$SUBAGENT_EXT wiring for pi-ext-subagent/index.ts"
   fi
 }
 
