@@ -68,3 +68,6 @@ docs/tmp/*
 .beads/proxieddb/
 # bd worktree
 .worktrees/kstk/
+
+# Claude Code agent worktrees (transient, per-subagent isolation)
+.claude/worktrees/
