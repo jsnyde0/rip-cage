@@ -16,8 +16,11 @@
 #   C11  Drift-hint still warns on non-eligible delta after reload
 #   C12  Cache file mode preserved across reload (0644 stays 0644)
 #   C13  In-cage invocation negative test — rc not on cage PATH
+#   C14  Drift-hint silent when snapshot pre-dates session.multiplexer field
+#        (absent-in-snapshot + live==schema-default → non-drift, rip-cage-1f59.9)
+#   C15  Generality: same absent-default suppression for mounts.symlinks.scope
 #
-# Tests stub `docker` via PATH shim so no real docker is required for C1-C12.
+# Tests stub `docker` via PATH shim so no real docker is required for C1-C12, C14-C15.
 # C13 is docker-conditional (requires rip-cage:latest image).
 #
 # ADRs: ADR-022 D6 (rc reload), ADR-021 (layered config), rip-cage-rx8 (inode)
@@ -396,6 +399,55 @@ c12_ok=true c12_reason=""
 [[ "$c12_pre_mode" != "$c12_post_mode" ]] && c12_ok=false && c12_reason="${c12_reason:+$c12_reason; }mode changed ($c12_pre_mode → $c12_post_mode)"
 if [[ "$c12_ok" == "true" ]]; then pass 12 "cache file mode preserved across reload"
 else fail 12 "mode preservation" "$c12_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# C14: Drift-hint suppression — snapshot MISSING session.multiplexer (old pre-1f59
+#      snapshot), live config has it at schema default "none" → NO recreate hint.
+#      Tests the general fix: absent-in-snapshot + live==schema-default → non-drift.
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox "config-project-allowed-hosts-only.yaml"
+make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
+# Old snapshot: no session.multiplexer field (written before rip-cage-1f59 landed).
+write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]}}'
+
+c14_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
+c14_exit=$?
+
+c14_ok=true c14_reason=""
+[[ "$c14_exit" -ne 0 ]] && c14_ok=false && c14_reason="emit_hint exit $c14_exit"
+# Must be silent — session.multiplexer absent in snapshot but live==default("none").
+if [[ -n "$c14_out" ]]; then
+  c14_ok=false; c14_reason="${c14_reason:+$c14_reason; }spurious output: $c14_out"
+fi
+if [[ "$c14_ok" == "true" ]]; then pass 14 "drift-hint silent when only absent-default field added (session.multiplexer)"
+else fail 14 "spurious recreate-hint for absent-default field" "$c14_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# C15: Generality — snapshot MISSING mounts.symlinks.scope (another defaulted
+#      field), live has it at schema default "file" → NO recreate hint.
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox "config-project-allowed-hosts-only.yaml"
+make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
+# Old snapshot: no mounts.symlinks.scope field.
+write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+
+c15_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
+c15_exit=$?
+
+c15_ok=true c15_reason=""
+[[ "$c15_exit" -ne 0 ]] && c15_ok=false && c15_reason="emit_hint exit $c15_exit"
+# Must be silent — mounts.symlinks.scope absent in snapshot but live==default("file").
+if [[ -n "$c15_out" ]]; then
+  c15_ok=false; c15_reason="${c15_reason:+$c15_reason; }spurious output: $c15_out"
+fi
+if [[ "$c15_ok" == "true" ]]; then pass 15 "drift-hint silent when only absent-default field added (mounts.symlinks.scope)"
+else fail 15 "spurious recreate-hint for absent-default field (generality)" "$c15_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------

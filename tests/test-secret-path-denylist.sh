@@ -611,6 +611,209 @@ test_i_shellcheck_rc_clean() {
 }
 
 # ---------------------------------------------------------------------------
+# (l) scope=parent denylist check uses the ACTUAL mount source (parent dir),
+#     not the leaf target.
+#
+# Invariant (ADR-023 D7, FIRM): fingerprint + denylist check exactly what mounts.
+# In scope=parent, the docker mount source is dirname(target). The denylist check
+# and fingerprint function must use the parent dir, not the leaf.
+#
+# Subtest (l-1): scope=parent + parent-dir under denied component → warn-and-skip
+#   leaf target = <tmpdir>/.aws/safe-file
+#   parent dir  = <tmpdir>/.aws  (has ".aws" component → denied)
+#   scope=parent → mount source is <tmpdir>/.aws → must warn-and-skip
+#   (With component-equals matching, both leaf and parent contain ".aws" as a
+#   path component, so the outcome is the same — but this confirms the code
+#   path correctly uses _sfl_mount_src which is the parent, not the leaf var.)
+#
+# Subtest (l-2): scope=parent + leaf filename in denylist but safe parent
+#   leaf target = <tmpdir>/safe-dir/credentials
+#   parent dir  = <tmpdir>/safe-dir/  (no denied component)
+#   scope=parent → mount source is safe-dir/ → NOT denied → mount proceeds
+#   scope=file   → leaf "credentials" matches → would be skipped
+#   This is the behaviorally meaningful case: the fix allows a mount whose
+#   parent dir is safe even if the leaf filename triggers the denylist.
+#
+# Subtest (l-3): fingerprint with scope=parent excludes the denied parent.
+#   With the .aws denylist active, the symlink whose parent is .aws must be
+#   excluded from the fingerprint hash. Confirms the fingerprint function also
+#   uses the parent (mount source), not the leaf.
+# ---------------------------------------------------------------------------
+test_l_scope_parent_denylist_checks_parent_dir() {
+  setup_sandbox
+  write_default_global_config
+
+  # On macOS, realpath resolves /tmp → /private/tmp. Use the resolved test home
+  # so that the rc sanity checks pass.
+  local resolved_test_home
+  resolved_test_home=$(realpath "$TEST_HOME" 2>/dev/null)
+  local resolved_ws
+  resolved_ws=$(realpath "$TEST_WS" 2>/dev/null)
+
+  # Real global config under the resolved path.
+  mkdir -p "${resolved_test_home}/.config/rip-cage"
+  cp "${TEST_HOME}/.config/rip-cage/config.yaml" "${resolved_test_home}/.config/rip-cage/config.yaml" 2>/dev/null || true
+  mkdir -p "$resolved_ws"
+  mkdir -p "${resolved_test_home}/.pi/agent"
+
+  # --- Subtest (l-1): parent dir is under .aws → warn-and-skip fires ---
+  # leaf = <home>/.aws/safe-file  (leaf filename "safe-file" is not a denylist pattern,
+  # but the parent .aws is). With component-equals matching, the leaf path also contains
+  # ".aws", so both leaf-check and parent-check fire — the test proves the code path is
+  # reached, not that the outcomes differ.
+  local aws_dir="${resolved_test_home}/.aws"
+  mkdir -p "$aws_dir"
+  echo "data" > "${aws_dir}/safe-file"
+  local leaf_target_l1
+  leaf_target_l1=$(realpath "${aws_dir}/safe-file" 2>/dev/null)
+
+  ln -sf "$leaf_target_l1" "${resolved_test_home}/.pi/agent/safe-file-link"
+
+  cat > "${resolved_ws}/.rip-cage.yaml" <<'YAML'
+version: 1
+mounts:
+  symlinks:
+    on_dangling: follow
+    scope: parent
+    mode: rw
+YAML
+
+  local stderr_l1 exit_l1=0
+  stderr_l1=$(
+    HOME="$resolved_test_home" \
+    XDG_CONFIG_HOME="${resolved_test_home}/.config" \
+    bash -c "
+      source '$RC' 2>/dev/null
+      _UP_RUN_ARGS=()
+      wt_detected=false
+      _up_prepare_docker_mounts '$resolved_ws' 'test-container'
+    " 2>&1 >/dev/null
+  ) || exit_l1=$?
+
+  if printf '%s' "$stderr_l1" | grep -q "matched secret-path denylist pattern"; then
+    pass "(l-1) scope=parent: parent dir under .aws is denied, warn-and-skip fires"
+  else
+    fail "(l-1) scope=parent: expected warn-and-skip for parent .aws dir; got exit=$exit_l1 stderr=${stderr_l1:-(empty)}"
+  fi
+
+  # Clean up the symlink for the next subtest
+  rm -f "${resolved_test_home}/.pi/agent/safe-file-link"
+
+  # --- Subtest (l-2): leaf filename in denylist but parent is safe → scope=parent allows ---
+  # leaf = <home>/safe-dir/credentials  (filename "credentials" IS in denylist)
+  # parent = <home>/safe-dir/            (no denied component)
+  # scope=parent: mount source = safe-dir/ → no denied component → ALLOW (mount)
+  # scope=file:   mount source = leaf → "credentials" matches → skip
+  # This is the primary behavioral difference the fix introduces.
+  local safe_dir="${resolved_test_home}/safe-dir"
+  mkdir -p "$safe_dir"
+  echo "data" > "${safe_dir}/credentials"
+  local leaf_target_l2
+  leaf_target_l2=$(realpath "${safe_dir}/credentials" 2>/dev/null)
+
+  ln -sf "$leaf_target_l2" "${resolved_test_home}/.pi/agent/cred-link"
+
+  # scope=parent run: should NOT skip (parent is safe-dir, no denied component)
+  local out_l2_parent exit_l2_parent=0
+  out_l2_parent=$(
+    HOME="$resolved_test_home" \
+    XDG_CONFIG_HOME="${resolved_test_home}/.config" \
+    bash -c "
+      source '$RC' 2>/dev/null
+      _UP_RUN_ARGS=()
+      wt_detected=false
+      _up_prepare_docker_mounts '$resolved_ws' 'test-container'
+      for _a in \"\${_UP_RUN_ARGS[@]+\${_UP_RUN_ARGS[@]}}\"; do printf '%s\n' \"\$_a\"; done
+    " 2>&1
+  ) || exit_l2_parent=$?
+
+  local has_mount_l2_parent has_skip_l2_parent
+  has_mount_l2_parent=$(printf '%s' "$out_l2_parent" | grep -c "${safe_dir}:${safe_dir}" || true)
+  has_skip_l2_parent=$(printf '%s' "$out_l2_parent" | grep -c "matched secret-path denylist pattern" || true)
+
+  if [[ "$has_mount_l2_parent" -gt 0 && "$has_skip_l2_parent" -eq 0 ]]; then
+    pass "(l-2a) scope=parent: leaf 'credentials' in safe parent → mount proceeds (parent is the gate)"
+  else
+    fail "(l-2a) scope=parent: expected mount when parent is safe; has_mount=$has_mount_l2_parent has_skip=$has_skip_l2_parent exit=$exit_l2_parent out=${out_l2_parent:-(empty)}"
+  fi
+
+  # scope=file run: should skip (leaf "credentials" matches denylist)
+  cat > "${resolved_ws}/.rip-cage.yaml" <<'YAML'
+version: 1
+mounts:
+  symlinks:
+    on_dangling: follow
+    scope: file
+    mode: rw
+YAML
+
+  local out_l2_file exit_l2_file=0
+  out_l2_file=$(
+    HOME="$resolved_test_home" \
+    XDG_CONFIG_HOME="${resolved_test_home}/.config" \
+    bash -c "
+      source '$RC' 2>/dev/null
+      _UP_RUN_ARGS=()
+      wt_detected=false
+      _up_prepare_docker_mounts '$resolved_ws' 'test-container'
+    " 2>&1
+  ) || exit_l2_file=$?
+
+  local has_skip_l2_file
+  has_skip_l2_file=$(printf '%s' "$out_l2_file" | grep -c "matched secret-path denylist pattern" || true)
+
+  if [[ "$has_skip_l2_file" -gt 0 ]]; then
+    pass "(l-2b) scope=file: leaf 'credentials' → warn-and-skip fires (file-scope behavior unchanged)"
+  else
+    fail "(l-2b) scope=file: expected skip for leaf 'credentials'; exit=$exit_l2_file out=${out_l2_file:-(empty)}"
+  fi
+
+  # Clean up for next subtest
+  rm -f "${resolved_test_home}/.pi/agent/cred-link"
+
+  # --- Subtest (l-3): fingerprint with scope=parent excludes denylist-denied parent ---
+  # Leaf under .aws/ → in scope=parent, the mount source (parent=.aws/) is denied.
+  # The fingerprint with-denylist must differ from without-denylist.
+  ln -sf "$leaf_target_l1" "${resolved_test_home}/.pi/agent/safe-file-link2"
+
+  # Restore default config with .aws denylist
+  cp "${TEST_HOME}/.config/rip-cage/config.yaml" "${resolved_test_home}/.config/rip-cage/config.yaml" 2>/dev/null || true
+
+  local fp_with_denylist
+  fp_with_denylist=$(
+    HOME="$resolved_test_home" XDG_CONFIG_HOME="${resolved_test_home}/.config" \
+    bash -c "
+      source '$RC' 2>/dev/null
+      _symlink_follow_fingerprint '${resolved_test_home}/.pi/agent' 'rw' 'follow' 'parent' '$resolved_ws'
+    "
+  )
+
+  # Empty denylist to compare
+  cat > "${resolved_test_home}/.config/rip-cage/config.yaml" <<'YAML'
+version: 1
+mounts:
+  denylist: []
+YAML
+
+  local fp_without_denylist
+  fp_without_denylist=$(
+    HOME="$resolved_test_home" XDG_CONFIG_HOME="${resolved_test_home}/.config" \
+    bash -c "
+      source '$RC' 2>/dev/null
+      _symlink_follow_fingerprint '${resolved_test_home}/.pi/agent' 'rw' 'follow' 'parent' '$resolved_ws'
+    "
+  )
+
+  if [[ "$fp_with_denylist" != "$fp_without_denylist" && -n "$fp_with_denylist" && -n "$fp_without_denylist" ]]; then
+    pass "(l-3) scope=parent fingerprint: denylist exclusion changes hash (parent gate in fingerprint works)"
+  else
+    fail "(l-3) scope=parent fingerprint: expected fp to differ with vs without denylist; with=$fp_with_denylist without=$fp_without_denylist"
+  fi
+
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -627,6 +830,7 @@ test_h_config_show_denylist_provenance
 test_i_shellcheck_rc_clean
 test_j_missing_global_config_auto_seeds
 test_k_rc_install_writes_16_patterns
+test_l_scope_parent_denylist_checks_parent_dir
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

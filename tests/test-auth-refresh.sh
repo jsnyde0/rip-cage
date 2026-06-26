@@ -272,6 +272,36 @@ else
   fail "_extract_credentials not found in rc at all"
 fi
 
+# --- Test 11a: agent-neutral warning wording (rip-cage-5kt) ---
+echo ""
+echo "=== Test 11a: agent-neutral phrasing in Claude credential warnings ==="
+# Keychain-extraction failure: must say "fine if you are not using Claude Code"
+if grep -q "failed to extract Claude credentials from macOS keychain — fine if you are not using Claude Code" "$RC"; then
+  pass "keychain-extraction warning uses agent-neutral phrasing"
+else
+  fail "keychain-extraction warning does not use agent-neutral phrasing"
+fi
+# Expired-token warning: must say "fine if you are not using Claude Code"
+if grep -q "Claude OAuth token is EXPIRED.*fine if you are not using Claude Code" "$RC"; then
+  pass "expired-token warning uses agent-neutral phrasing"
+else
+  fail "expired-token warning does not use agent-neutral phrasing"
+fi
+# Missing credentials.json: must say "fine if you are not using Claude Code"
+if grep -q "credentials.json not found — skipping mount (fine if you are not using Claude Code" "$RC"; then
+  pass "missing-credentials warning uses agent-neutral phrasing"
+else
+  fail "missing-credentials warning does not use agent-neutral phrasing"
+fi
+# 'Run claude auth login' must not be the LEAD on these paths (must appear only as secondary clause)
+# Lead imperative means it appears at the start of a Warning: line (not indented / secondary)
+lead_count=$(grep "^[[:space:]]*echo.*Warning:.*Run 'claude auth login'" "$RC" | wc -l | tr -d ' ')
+if [[ "$lead_count" -eq 0 ]]; then
+  pass "'Run claude auth login' is not the lead imperative on any Warning line"
+else
+  fail "'Run claude auth login' appears as lead on $lead_count Warning line(s)"
+fi
+
 # --- Test 11: auth does not require Docker ---
 echo ""
 echo "=== Test 11: auth does not require Docker ==="
