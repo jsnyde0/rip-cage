@@ -214,11 +214,10 @@ fi
 echo ""
 echo "-- Tools --"
 
-# 16-24. Tool availability checks
+# 16-23. Tool availability checks (tmux removed — opt-in multiplexer, not floor; rip-cage-1ssw)
 for tool_check in \
   "claude:claude --version" \
   "jq:jq --version" \
-  "tmux:tmux -V" \
   "bd:bd --version" \
   "python3:python3 --version" \
   "uv:uv --version" \

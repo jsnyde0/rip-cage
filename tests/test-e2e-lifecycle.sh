@@ -170,7 +170,7 @@ fi
 # Surface missing advisory tools as detail but do not fail.
 tools_missing=()
 tools_advisory_missing=()
-for tool in claude dcg bd uv bun node gh git perl jq tmux zsh; do
+for tool in claude bd uv bun node gh git perl jq zsh; do
   if ! docker exec "$CONTAINER_NAME" which "$tool" > /dev/null 2>&1; then
     tools_missing+=("$tool")
   fi
@@ -209,17 +209,12 @@ else
   check "CLAUDE.md presence matches host source" "pass" "no CLAUDE.md (host template absent)"
 fi
 
-# Check 11: Hook path consistency
-# NOTE: block-compound-commands.sh removed in rip-cage-4r8 — DCG is chaining-robust.
-ssh_hook_ok=0; dcg_ok=0
-docker exec "$CONTAINER_NAME" test -x /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh > /dev/null 2>&1 && ssh_hook_ok=1
-docker exec "$CONTAINER_NAME" test -x /usr/local/bin/dcg > /dev/null 2>&1 && dcg_ok=1
-if [[ "$ssh_hook_ok" -eq 1 && "$dcg_ok" -eq 1 ]]; then
-  check "hook path consistency (block-ssh-bypass.sh + dcg)" "pass"
-else
-  check "hook path consistency (block-ssh-bypass.sh + dcg)" "fail" \
-    "ssh_hook=$ssh_hook_ok dcg=$dcg_ok"
-fi
+# (No recipe-presence check here.) dcg and block-ssh-bypass.sh are opt-in composable
+# recipes; whether a built cage contains them depends entirely on the operator's manifest
+# (~/.config/rip-cage/tools.yaml), NOT on a base-image invariant — this suite builds from
+# that manifest, so it cannot assert recipe presence/absence stably. Recipe wiring is
+# covered where a KNOWN manifest is composed: examples/{dcg,ssh-bypass}/smoke.sh, the
+# demotion tests, and test-mount-seam-integration.sh SE7. (rip-cage-1ssw)
 
 # Check 12: Pi verify line appears in init log (ADR-019 B3).
 # init-rip-cage.sh runs via `docker exec` (sleep infinity is the entrypoint),
@@ -512,42 +507,16 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# ADR-022 D5 invalidation: ssh-bypass hook denies CLI-override class
-# (rip-cage-nww — runs while CONTAINER_NAME is alive, before destroy below)
+# ADR-022 D5 invalidation: ssh-bypass hook behavioral checks moved to recipe
+# (rip-cage-1ssw — composable recipe, not present in bare default cage)
 #
-# These probe the in-cage hook directly with the verified bypass shape.
-# Mount-layer narrowing (D4) is exercised by checks 24/25 below; the CLI-flag
-# bypass class lives at the PreToolUse hook layer (D5).
+# ssh-bypass hook denial checks (18a hook denies accept-new shape, 18b refusal
+# message, 18c /usr/bin/ssh direct path) removed — the hook is un-baked from the
+# base image (rip-cage-wlwc.11); behavioral coverage lives in:
+#   examples/ssh-bypass/smoke.sh (SSH-1..SSH-5)
+#   tests/test-ssh-bypass-demotion.sh (SS1-SS3)
+# Check 18d (floor: bare cage allows legitimate ssh) is retained.
 # -----------------------------------------------------------------------------
-
-# Check 18a: hook denies the verified bypass shape (writable /tmp + accept-new
-# — exactly what the 2026-05-12 verified bypass used).
-sshbypass_result=$(docker exec "$CONTAINER_NAME" bash -c "echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts_bypass git@gitlab.com\"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh" 2>/dev/null || true)
-if echo "$sshbypass_result" | grep -qE '"permissionDecision".*"deny"'; then
-  check "ssh-bypass hook denies UserKnownHostsFile+accept-new shape (ADR-022 D5)" "pass"
-else
-  check "ssh-bypass hook denies UserKnownHostsFile+accept-new shape (ADR-022 D5)" "fail" \
-    "$sshbypass_result"
-fi
-
-# Check 18b: refusal message names .rip-cage.yaml + rc config init (the
-# self-recovery path the agent should take instead of working around).
-if echo "$sshbypass_result" | grep -q '\.rip-cage\.yaml' && echo "$sshbypass_result" | grep -q 'rc config init'; then
-  check "ssh-bypass refusal message names .rip-cage.yaml + rc config init" "pass"
-else
-  check "ssh-bypass refusal message names .rip-cage.yaml + rc config init" "fail" \
-    "$sshbypass_result"
-fi
-
-# Check 18c: hook also catches /usr/bin/ssh direct path (basename match, not
-# PATH lookup — agents trying to evade by absolute-pathing don't escape).
-sshbypass_direct=$(docker exec "$CONTAINER_NAME" bash -c "echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"/usr/bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/tmp/x host\"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh" 2>/dev/null || true)
-if echo "$sshbypass_direct" | grep -qE '"permissionDecision".*"deny"'; then
-  check "ssh-bypass hook catches /usr/bin/ssh direct path call (ADR-022 D5)" "pass"
-else
-  check "ssh-bypass hook catches /usr/bin/ssh direct path call (ADR-022 D5)" "fail" \
-    "$sshbypass_direct"
-fi
 
 # Check 18d: legitimate ssh (no override flags) is NOT blocked.
 sshbypass_legit=$(docker exec "$CONTAINER_NAME" bash -c "echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ssh -T git@github.com\"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh" 2>/dev/null || true)
