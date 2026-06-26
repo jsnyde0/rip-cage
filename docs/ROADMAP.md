@@ -1,7 +1,27 @@
 # Rip Cage Roadmap
 
-**Last updated:** 2026-05-29
+**Last updated:** 2026-06-26
 **Philosophy:** Build → test → learn → adjust. This roadmap is directional, not a contract. Expect changes as we gain real experience using the tool.
+
+---
+
+## Now — near-term backlog (post-v0.9.0)
+
+**Latest release:** v0.9.0 (2026-06-25) — composable agent-substrate seam (agents, command-guards, and substrate all collapse to `TOOL` recipes + per-asset ro/rw mounts; dcg + ssh-bypass demoted to composable recipes, un-baked from the base image) + egress reshaped into a pure SNI destination router. Phase 1 hardening is effectively complete.
+
+Ordered by what to pull next (bead IDs in parens):
+
+1. **UX papercuts** — OAuth-flavored warnings for pi / API-key users (`5kt`), tmux clipboard relay + modern defaults (`q5i`, `dr6`), spurious recreate-hint (`1f59.9`). One polish session.
+2. **Security hardening pass** — DNS non-QUERY opcode bypass (`d9d3`), ssh-bypass `/proc/self/root` path-aliasing probe (`ar90`), symlink-follow fingerprint asymmetry (`6uz`). None accident-exploitable today; batch as one deliberate pass.
+3. **Mini cage-host setup** (when standing up the mini for concurrent cages) — per-cage RAM sizing (`vjs`), Rosetta doc (`oc8`), Login Items cleanup (`i6w`).
+
+**Needs a decision (not implementer work):** drop the VS Code devcontainer path? (`kt25`); auth seam — keep imperative vs. design a manifest facet (`6h2e`, the last wlwc residual).
+
+**Quick wins anytime:** cross-harness ADR ref rip-cage ADR-019 → dotpi ADR-002 (`e0w`), ADR number-namespace collision (`bwwm`).
+
+**Backlog (pull as needed):** iptables→nft migration (`ikvr`), mount-hygiene fail-loud cleanups (`a0h`), `rc config show/get` sugar (`08q`), Mise test migration (`o2u`), per-project tool manifest (`26dm`), historical doc-ref fix (`7tu`).
+
+> Recently shipped (cleared from this list): release-ceremony consolidation (`ynv`), Dolt-remote reconcile (`v43q`), wlwc stale/dark test cleanup (`n7q5`, `nu91`).
 
 ---
 
