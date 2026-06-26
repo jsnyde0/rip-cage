@@ -25,7 +25,7 @@
 #     T16 yq missing on PATH ⇒ rc config show fails loud per ADR-001
 #   D3 abort propagation through the substrate validation step:
 #     T17 _config_validate_or_abort exits non-zero on selection-list+future-version
-#         (covers ADR-021:177 invalidation check; the rc up / rc init contract)
+#         (covers ADR-021:177 invalidation check; the rc up contract)
 #     T18 _config_validate_or_abort returns 0 silently when neither file exists
 #         (D5 regression contract — substrate must not abort in the both-absent case)
 #     T19 _config_validate_or_abort exits non-zero when a config file exists but
@@ -417,11 +417,11 @@ test_t16_yq_missing_fails_loud() {
 
 # ---------------------------------------------------------------------------
 # D3 abort propagation through the substrate validation step
-# (ADR-021:177 invalidation check; the rc up / rc init contract)
+# (ADR-021:177 invalidation check; the rc up contract)
 # ---------------------------------------------------------------------------
 #
 # Direct tests of _config_validate_or_abort — the central gate that cmd_up
-# and cmd_init both call. We source rc to pick up the function, then
+# calls. We source rc to pick up the function, then
 # invoke it in subshells so abort=exit doesn't take down the test harness.
 
 # Source rc functions in a way that doesn't trigger top-level dispatch.

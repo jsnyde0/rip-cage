@@ -195,14 +195,14 @@ else
   fail "AGENTS.md does not mention RC_ALLOWED_ROOTS"
 fi
 
-# --- Test 16: cmd_init validates explicit paths ---
+# --- Test 16: rc init is removed — verify it returns unknown-command (rip-cage-kt25) ---
 echo ""
-echo "=== Test 16: rc init validates explicit path ==="
-init_err=$(RC_ALLOWED_ROOTS="$test_dir" "$RC" init /tmp 2>&1) || true
-if echo "$init_err" | grep -q "outside allowed roots"; then
-  pass "rc init validates explicit path"
+echo "=== Test 16: rc init returns unknown-command (removed in rip-cage-kt25) ==="
+init_err=$("$RC" init /tmp 2>&1) || true
+if echo "$init_err" | grep -q "build"; then
+  pass "rc init falls through to usage (unknown command)"
 else
-  fail "rc init did not validate path. Got: $init_err"
+  fail "rc init did not produce usage output: $init_err"
 fi
 
 # --- Test 17: rc up warns when RC_ALLOWED_ROOTS unset (dry-run, stderr warning) ---

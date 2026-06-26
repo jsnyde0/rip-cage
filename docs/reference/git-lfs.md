@@ -4,7 +4,7 @@ Rip-cage does not fetch git-lfs blobs from inside the container. This follows th
 
 ## What you'll see
 
-If you run `rc up` or `rc init` against a repo that uses LFS and has unmaterialized pointer stubs in the working tree, rip-cage prints an advisory warning:
+If you run `rc up` against a repo that uses LFS and has unmaterialized pointer stubs in the working tree, rip-cage prints an advisory warning:
 
 ```
 ⚠ LFS pointer stubs detected in /path/to/project
@@ -36,7 +36,7 @@ Same reasoning as [ADR-014 D1](../decisions/ADR-014-push-less-cage.md): the cage
 
 ## How detection works
 
-At `rc up` / `rc init` time, `rc` does a fast host-side check:
+At `rc up` time, `rc` does a fast host-side check:
 
 1. **Fast early exit.** `grep -rq --include=.gitattributes 'filter=lfs'` — if no `.gitattributes` in the project declares an LFS filter, skip entirely.
 2. **Pointer-stub scan.** `find` for files under 200 bytes (real stubs are ~130 bytes) whose first line matches the LFS v1 pointer header (`version https://git-lfs.github.com/spec/v1`).

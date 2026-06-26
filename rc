@@ -189,7 +189,6 @@ Usage: rc [--output json] [--dry-run] <command> [args]
 
 Commands:
   build [docker-args...]                       Build the rip-cage image
-  init [--force] [path]                        Scaffold .devcontainer/devcontainer.json
   up [path] [options]                           Start or resume a container (default: .)
     --port PORT         Expose a port
     --env-file FILE     Load env vars from file
@@ -453,269 +452,8 @@ _pull_or_build() {
   return $?
 }
 
-cmd_init() {
-  local force=0
-  local target=""
-
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --force) force=1; shift ;;
-      *) target="$1"; shift ;;
-    esac
-  done
-
-  if [[ -z "$target" ]]; then
-    target="."
-  fi
-
-  # Resolve relative paths (including ".") to absolute before validation
-  target=$(cd "$target" 2>/dev/null && pwd) || {
-    echo "Error: $target does not exist or is not a directory" >&2
-    return 1
-  }
-  validate_path "$target"
-  target="$VALIDATED_PATH"
-
-  # ADR-021 D3 + ADR-001: validate .rip-cage.yaml posture BEFORE scaffolding
-  # devcontainer.json. Symmetric with cmd_up — same abort contract on
-  # selection-list+future-version and yq-missing-with-config-present.
-  _config_validate_or_abort "$target"
-
-  # LFS advisory (same as cmd_up — see _check_lfs_stubs).
-  _check_lfs_stubs "$target"
-
-  local dest="${target}/.devcontainer/devcontainer.json"
-
-  if [[ -f "$dest" ]] && [[ "$force" -eq 0 ]]; then
-    echo "Error: ${dest} already exists. Use --force to overwrite." >&2
-    return 1
-  fi
-
-  mkdir -p "${target}/.devcontainer"
-
-  # Detect worktree (same logic as cmd_up) to decide whether to add the hooks mount
-  local init_wt_detected=false
-  if [[ -f "${target}/.git" ]]; then
-    local init_gitdir_line
-    init_gitdir_line=$(cat "${target}/.git" 2>/dev/null || true)
-    if [[ "$init_gitdir_line" == gitdir:\ * ]]; then
-      local init_host_gitdir="${init_gitdir_line#gitdir: }"
-      if [[ -n "$init_host_gitdir" && "$init_host_gitdir" == *"/worktrees/"* ]]; then
-        init_wt_detected=true
-      fi
-    fi
-  fi
-
-  # Write devcontainer.json
-  # Split heredoc to allow conditional hooks mount entry (D11)
-  {
-    if [[ "$init_wt_detected" != "true" ]] && [[ -d "${target}/.git/hooks" ]]; then
-      # Regular git repo: include hooks mount (D11) — last item, no trailing comma
-      cat <<'DEVCONTAINER_WITH_HOOKS'
-{
-  "name": "Rip Cage",
-  "image": "rip-cage:latest",
-  "remoteUser": "agent",
-  "mounts": [
-    "source=rc-state-${devcontainerId},target=/home/agent/.claude-state,type=volume",
-    "source=rc-history-${devcontainerId},target=/commandhistory,type=volume",
-    "source=${localEnv:HOME}/.claude.json,target=/home/agent/.claude.json,type=bind",
-    "source=${localEnv:HOME}/.claude/.credentials.json,target=/home/agent/.claude/.credentials.json,type=bind",
-    "source=${localEnv:HOME}/.claude/projects,target=/home/agent/.claude/projects,type=bind",
-    "source=${localEnv:HOME}/.claude/sessions,target=/home/agent/.claude/sessions,type=bind",
-    "source=${localEnv:HOME}/.claude/CLAUDE.md,target=/home/agent/.rc-context/global-claude.md,type=bind,readonly",
-    "source=${localEnv:HOME}/CLAUDE.md,target=/home/agent/.rc-context/home-claude.md,type=bind,readonly",
-    "source=${localEnv:HOME}/.claude/skills,target=/home/agent/.rc-context/skills,type=bind,readonly",
-    "source=${localEnv:HOME}/.claude/commands,target=/home/agent/.rc-context/commands,type=bind,readonly",
-    "source=${localEnv:HOME}/.claude/agents,target=/home/agent/.rc-context/agents,type=bind,readonly",
-    "source=${localWorkspaceFolder}/.git/hooks,target=/workspace/.git/hooks,type=bind,readonly",
-    "source=rc-mise-cache,target=/home/agent/.local/share/mise,type=volume",
-    "source=${localEnv:HOME}/.pi/agent/auth.json,target=/home/agent/.pi/agent/auth.json,type=bind"
-  ],
-DEVCONTAINER_WITH_HOOKS
-    else
-      # Worktree or non-git project: no hooks mount
-      cat <<'DEVCONTAINER_NO_HOOKS'
-{
-  "name": "Rip Cage",
-  "image": "rip-cage:latest",
-  "remoteUser": "agent",
-  "mounts": [
-    "source=rc-state-${devcontainerId},target=/home/agent/.claude-state,type=volume",
-    "source=rc-history-${devcontainerId},target=/commandhistory,type=volume",
-    "source=${localEnv:HOME}/.claude.json,target=/home/agent/.claude.json,type=bind",
-    "source=${localEnv:HOME}/.claude/.credentials.json,target=/home/agent/.claude/.credentials.json,type=bind",
-    "source=${localEnv:HOME}/.claude/projects,target=/home/agent/.claude/projects,type=bind",
-    "source=${localEnv:HOME}/.claude/sessions,target=/home/agent/.claude/sessions,type=bind",
-    "source=${localEnv:HOME}/.claude/CLAUDE.md,target=/home/agent/.rc-context/global-claude.md,type=bind,readonly",
-    "source=${localEnv:HOME}/CLAUDE.md,target=/home/agent/.rc-context/home-claude.md,type=bind,readonly",
-    "source=${localEnv:HOME}/.claude/skills,target=/home/agent/.rc-context/skills,type=bind,readonly",
-    "source=${localEnv:HOME}/.claude/commands,target=/home/agent/.rc-context/commands,type=bind,readonly",
-    "source=${localEnv:HOME}/.claude/agents,target=/home/agent/.rc-context/agents,type=bind,readonly",
-    "source=rc-mise-cache,target=/home/agent/.local/share/mise,type=volume",
-    "source=${localEnv:HOME}/.pi/agent/auth.json,target=/home/agent/.pi/agent/auth.json,type=bind"
-  ],
-DEVCONTAINER_NO_HOOKS
-    fi
-    # Determine beads mode for containerEnv
-    local init_beads_dir="${target}/.beads"
-    if [[ -f "${init_beads_dir}/redirect" ]]; then
-      local init_redirect
-      init_redirect=$(cat "${init_beads_dir}/redirect" 2>/dev/null || true)
-      if [[ -n "$init_redirect" && "$init_redirect" != /* ]]; then
-        local init_resolved
-        init_resolved=$(realpath "${target}/${init_redirect}" 2>/dev/null || true)
-        [[ -n "$init_resolved" && -d "$init_resolved" ]] && init_beads_dir="$init_resolved"
-      fi
-    fi
-    local init_dolt_mode=""
-    if [[ -f "${init_beads_dir}/metadata.json" ]]; then
-      init_dolt_mode=$(jq -r '.dolt_mode // empty' "${init_beads_dir}/metadata.json" 2>/dev/null || true)
-    fi
-    local init_egress="${RIP_CAGE_EGRESS:-on}"
-    local init_run_args='"--cpus=2", "--memory=4g", "--memory-swap=4g", "--pids-limit=500"'
-    local init_post_start="/usr/local/bin/init-rip-cage.sh"
-    if [[ "$init_egress" != "off" ]]; then
-      init_run_args="${init_run_args}, \"--cap-add=NET_ADMIN\""
-      init_post_start="sudo /usr/local/lib/rip-cage/init-firewall.sh \\&\\& /usr/local/bin/init-rip-cage.sh"
-    fi
-    if [[ "$init_dolt_mode" != "embedded" ]] && [[ -n "$init_dolt_mode" ]]; then
-      cat <<'DEVCONTAINER_FOOTER_SERVER' | sed \
-        -e "s|\"--cpus=2\", \"--memory=4g\", \"--memory-swap=4g\", \"--pids-limit=500\"|${init_run_args}|" \
-        -e "s|\"postStartCommand\": \"/usr/local/bin/init-rip-cage.sh\"|\"postStartCommand\": \"${init_post_start}\"|"
-  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" \"${HOME}/.claude/projects\" \"${HOME}/.claude/sessions\" 2>/dev/null; mkdir -p \"${HOME}/.pi/agent\" 2>/dev/null; [ -e \"${HOME}/.pi/agent/auth.json\" ] || [ -L \"${HOME}/.pi/agent/auth.json\" ] || echo {} > \"${HOME}/.pi/agent/auth.json\"; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
-  "containerEnv": {
-    "NODE_OPTIONS": "--max-old-space-size=4096",
-    "BEADS_DOLT_SERVER_MODE": "1",
-    "BEADS_DOLT_SERVER_HOST": "host.docker.internal"
-  },
-  "runArgs": ["--cpus=2", "--memory=4g", "--memory-swap=4g", "--pids-limit=500"],
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
-  "workspaceFolder": "/workspace",
-  "postStartCommand": "/usr/local/bin/init-rip-cage.sh"
-}
-DEVCONTAINER_FOOTER_SERVER
-    else
-      cat <<'DEVCONTAINER_FOOTER_EMBEDDED' | sed \
-        -e "s|\"--cpus=2\", \"--memory=4g\", \"--memory-swap=4g\", \"--pids-limit=500\"|${init_run_args}|" \
-        -e "s|\"postStartCommand\": \"/usr/local/bin/init-rip-cage.sh\"|\"postStartCommand\": \"${init_post_start}\"|"
-  "initializeCommand": "bash -c 'touch \"${HOME}/.claude/CLAUDE.md\" \"${HOME}/CLAUDE.md\" 2>/dev/null; mkdir -p \"${HOME}/.claude/skills\" \"${HOME}/.claude/commands\" \"${HOME}/.claude/agents\" \"${HOME}/.claude/projects\" \"${HOME}/.claude/sessions\" 2>/dev/null; mkdir -p \"${HOME}/.pi/agent\" 2>/dev/null; [ -e \"${HOME}/.pi/agent/auth.json\" ] || [ -L \"${HOME}/.pi/agent/auth.json\" ] || echo {} > \"${HOME}/.pi/agent/auth.json\"; if [[ \"$(uname)\" == \"Darwin\" ]]; then security find-generic-password -s \"Claude Code-credentials\" -w > \"${HOME}/.claude/.credentials.json\" 2>/dev/null || true; fi; true'",
-  "containerEnv": {
-    "NODE_OPTIONS": "--max-old-space-size=4096"
-  },
-  "runArgs": ["--cpus=2", "--memory=4g", "--memory-swap=4g", "--pids-limit=500"],
-  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
-  "workspaceFolder": "/workspace",
-  "postStartCommand": "/usr/local/bin/init-rip-cage.sh"
-}
-DEVCONTAINER_FOOTER_EMBEDDED
-    fi
-  } > "$dest"
-
-  # No CA trust env vars in containerEnv (rip-cage-ta1o.1): the pure SNI router does
-  # NOT terminate TLS and installs no rip-cage CA. VS Code extension-host processes
-  # validate the REAL upstream cert via the default system trust store; a
-  # NODE_EXTRA_CA_CERTS pointing at a rip-cage CA would target a nonexistent file
-  # (ADR-012 D4).
-
-  # Pi env vars in containerEnv — static values safe here (not secrets)
-  if command -v jq &>/dev/null; then
-    jq '.containerEnv += {
-      "PI_CODING_AGENT_DIR": "/home/agent/.pi/agent",
-      "CAGE_HOST_ADDR": "${localEnv:CAGE_HOST_ADDR}"
-    }' "$dest" > "${dest}.tmp"
-    mv "${dest}.tmp" "$dest"
-  fi
-
-  # Host project key for Claude session unification (rip-cage-dn2).
-  # Computed at init time from the absolute project path; init-rip-cage.sh
-  # uses this to symlink ~/.claude/projects/-workspace → host key inside the
-  # container, so sessions land in one folder on the host regardless of origin.
-  if command -v jq &>/dev/null; then
-    local _init_host_project_key
-    _init_host_project_key=$(printf '%s' "$target" | tr '/.' '-')
-    mkdir -p "${HOME}/.claude/projects/${_init_host_project_key}"
-    jq --arg k "$_init_host_project_key" \
-      '.containerEnv += {"RC_HOST_PROJECT_KEY": $k}' \
-      "$dest" > "${dest}.tmp"
-    mv "${dest}.tmp" "$dest"
-  fi
-
-  # Write .devcontainer/.env-pi for provider API key passthrough (gitignored by **/.env-pi rule;
-  # note: .env.* glob does NOT match .env-pi — the explicit rule in .gitignore covers it).
-  # The file is regenerated on each rc init invocation; an empty file is harmless to --env-file.
-  local _pi_envfile="${target}/.devcontainer/.env-pi"
-  local _pi_var
-  : > "$_pi_envfile"
-  for _pi_var in ANTHROPIC_API_KEY AZURE_OPENAI_API_KEY OPENAI_API_KEY GEMINI_API_KEY \
-                 MISTRAL_API_KEY GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY \
-                 OPENROUTER_API_KEY AI_GATEWAY_API_KEY ZAI_API_KEY OPENCODE_API_KEY \
-                 KIMI_API_KEY MINIMAX_API_KEY MINIMAX_CN_API_KEY \
-                 PI_SKIP_VERSION_CHECK PI_CACHE_RETENTION; do
-    if [[ -n "${!_pi_var:-}" ]]; then
-      printf '%s=%s\n' "$_pi_var" "${!_pi_var}" >> "$_pi_envfile"
-    fi
-  done
-  unset _pi_var
-  # Inject --env-file into runArgs via jq
-  if command -v jq &>/dev/null; then
-    jq '.runArgs += ["--env-file", "${localWorkspaceFolder}/.devcontainer/.env-pi"]' \
-      "$dest" > "${dest}.tmp"
-    mv "${dest}.tmp" "$dest"
-  fi
-
-  # Resolve skill symlinks in devcontainer.json — same logic as cmd_up.
-  # Skills stored as host symlinks become broken inside the container; mount
-  # each symlink-target parent at the same absolute path to fix this.
-  if [[ -d "${HOME}/.claude/skills" ]]; then
-    if ! command -v jq &>/dev/null; then
-      echo "Warning: jq not found — skill symlink mounts skipped in devcontainer.json (install jq to fix)" >&2
-    else
-      local _init_extra_mounts
-      _init_extra_mounts=()
-      local _init_tdir
-      while IFS= read -r _init_tdir; do
-        _init_extra_mounts+=("source=${_init_tdir},target=${_init_tdir},type=bind,readonly")
-      done < <(_collect_symlink_parents "${HOME}/.claude/skills")
-      if [[ "${#_init_extra_mounts[@]}" -gt 0 ]]; then
-        local _extra_json
-        _extra_json=$(printf '%s\n' "${_init_extra_mounts[@]}" | jq -R . | jq -s .)
-        jq ".mounts += ${_extra_json}" "$dest" > "${dest}.tmp"
-        mv "${dest}.tmp" "$dest"
-      fi
-    fi
-  fi
-
-  # Resolve agent symlinks in devcontainer.json — same logic as skills above.
-  if [[ -d "${HOME}/.claude/agents" ]]; then
-    if ! command -v jq &>/dev/null; then
-      echo "Warning: jq not found — agent symlink mounts skipped in devcontainer.json (install jq to fix)" >&2
-    else
-      local _init_agent_mounts
-      _init_agent_mounts=()
-      local _init_agent_tdir
-      while IFS= read -r _init_agent_tdir; do
-        _init_agent_mounts+=("source=${_init_agent_tdir},target=${_init_agent_tdir},type=bind,readonly")
-      done < <(_collect_symlink_parents "${HOME}/.claude/agents")
-      if [[ "${#_init_agent_mounts[@]}" -gt 0 ]]; then
-        local _agent_extra_json
-        _agent_extra_json=$(printf '%s\n' "${_init_agent_mounts[@]}" | jq -R . | jq -s .)
-        jq ".mounts += ${_agent_extra_json}" "$dest" > "${dest}.tmp"
-        mv "${dest}.tmp" "$dest"
-      fi
-    fi
-  fi
-
-  echo "Created ${dest}"
-
-  # ADR-021 D5: substrate-only informational hint when a project config is
-  # present at scaffold time. Does not consume the file (devcontainer.json is
-  # static); just surfaces the loader's existence so the user knows it'll
-  # apply on the next 'rc up'.
-  if [[ -f "${target}/.rip-cage.yaml" ]] && command -v yq &>/dev/null; then
-    log "Detected ${target}/.rip-cage.yaml — will be merged with the global config on 'rc up' (run 'rc config show' to inspect)."
-  fi
-}
+# cmd_init removed — VS Code devcontainer path removed (rip-cage-kt25).
+# The sole usage path is rc up (CLI/headless).
 
 # Derive container name from last two path components
 container_name() {
@@ -10457,10 +10195,6 @@ cmd_schema() {
       "args": [],
       "flags": {"--output": {"values": ["json"], "default": null}}
     },
-    "init": {
-      "args": [{"name": "path", "type": "path", "required": false, "default": "."}],
-      "flags": {"--force": {"type": "bool", "default": false}}
-    },
     "auth": {
       "subcommands": {
         "refresh": {
@@ -10536,7 +10270,7 @@ fi
 if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   case "${1:-}" in
     build|ls|up|down|destroy|test|doctor|auth|exec) ;;  # supported
-    init|attach|schema|completions|setup|config|__bd-preflight-test|"")
+    attach|schema|completions|setup|config|__bd-preflight-test|"")
       echo "Error: --output json is not supported for '${1:-}' (use 'rc config show --json' for config JSON)" >&2
       exit 1
       ;;
@@ -10568,7 +10302,6 @@ esac
 # Main dispatch
 case "${1:-}" in
   build)    shift; cmd_build "$@" ;;
-  init)     shift; cmd_init "$@" ;;
   up)       shift; cmd_up "$@" ;;
   ls)       shift; cmd_ls "$@" ;;
   attach)   shift; cmd_attach "$@" ;;

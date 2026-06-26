@@ -580,12 +580,9 @@ case "$_rc_mux" in
       echo "[rip-cage] ERROR: multiplexer '${_rc_mux}' has no 'start' hook at ${_rc_mux_start_hook} — the manifest entry must declare hooks.start (ADR-001 fail-loud)." >&2
       exit 1
     fi
-    # CLI mode only — skip inside VS Code devcontainer (multiplexer not needed there).
-    if [ -z "${VSCODE_INJECTION:-}" ] && [ -z "${REMOTE_CONTAINERS:-}" ]; then
-      echo "[rip-cage] session.multiplexer=${_rc_mux}: running start hook..."
-      sh "$_rc_mux_start_hook"
-      echo "[rip-cage] session.multiplexer=${_rc_mux}: start hook completed"
-    fi
+    echo "[rip-cage] session.multiplexer=${_rc_mux}: running start hook..."
+    sh "$_rc_mux_start_hook"
+    echo "[rip-cage] session.multiplexer=${_rc_mux}: start hook completed"
     unset _rc_mux_start_hook _rc_mux_registry_dir
     ;;
 esac
@@ -703,8 +700,7 @@ fi
 unset _rc_daemon_config
 
 # github-identity first-shell echo (ADR-020 D5). Reads the sentinels written by
-# the in-cage preflight and emits a one-line identity status so devcontainer
-# users (who never see the multiplexer banner) see routing posture on first attach.
+# the in-cage preflight and emits a one-line identity status on first attach.
 # Test-mode: RC_SENTINEL_DIR overrides /etc/rip-cage.
 _rc_gi_dir="${RC_SENTINEL_DIR:-/etc/rip-cage}"
 if [ -r "${_rc_gi_dir}/github-identity" ]; then

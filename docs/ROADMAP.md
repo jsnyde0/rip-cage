@@ -48,7 +48,7 @@
 ### Toolchain provisioning (ADR-015)
 
 - [ ] Install mise in runtime stage of Dockerfile ([ADR-015 D1](decisions/ADR-015-mise-toolchain-provisioning.md))
-- [ ] Add `rc-mise-cache` shared named volume to `rc up` + devcontainer mounts ([ADR-015 D2](decisions/ADR-015-mise-toolchain-provisioning.md))
+- [ ] Add `rc-mise-cache` shared named volume to `rc up` mounts ([ADR-015 D2](decisions/ADR-015-mise-toolchain-provisioning.md))
 - [ ] `init-rip-cage.sh` runs `mise install` when workspace declares a toolchain ([ADR-015 D3](decisions/ADR-015-mise-toolchain-provisioning.md))
 - [ ] Set `MISE_TRUSTED_CONFIG_PATHS=/workspace` in image ([ADR-015 D4](decisions/ADR-015-mise-toolchain-provisioning.md))
 - [ ] Tier 1 + Tier 2 test coverage per ADR-013
@@ -66,7 +66,6 @@ Get the existing implementation working end-to-end and solid.
 - [ ] Expand `rc test` to 15+ checks ([ADR-004 D4](decisions/ADR-004-phase1-hardening.md))
 - [ ] Richer zshrc ([ADR-004 D5](decisions/ADR-004-phase1-hardening.md))
 - [ ] First real agent session in the container
-- [ ] Test devcontainer flow in VS Code
 - [x] Add `rc test --e2e` lifecycle suite ([ADR-013 D1](decisions/ADR-013-test-coverage.md))
 - [x] Fix + wire host-side tests via `rc test --host`; CI = lint+build+host-only ([ADR-013 D2](decisions/ADR-013-test-coverage.md), [D5/D6](decisions/ADR-013-test-coverage.md))
 - [x] Expand egress perimeter tests (IPv6, WebSocket, non-HTTP ports, DoH) ([ADR-013 D4](decisions/ADR-013-test-coverage.md))

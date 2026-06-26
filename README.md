@@ -123,7 +123,6 @@ See [docs/reference/composition-seam.md](docs/reference/composition-seam.md) for
 - [Layered config (`.rip-cage.yaml`)](docs/reference/config.md) — global + per-project posture, `rc config show`
 - [Network egress](docs/reference/egress.md) — observe vs. block mode, `rc allowlist`, DNS exfil detection
 - [Safety stack](docs/reference/safety-stack.md) — hook config, allowlists, denied commands
-- [Dev containers](docs/reference/devcontainer.md) — VS Code setup via `rc init`
 - [What's in the box](docs/reference/whats-in-the-box.md) — tools, Dockerfile layers
 
 **Guides:**

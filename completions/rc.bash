@@ -6,7 +6,7 @@ _rc_complete() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local subcommands="build init up ls attach exec down destroy reload test doctor auth config schema completions setup"
+  local subcommands="build up ls attach exec down destroy reload test doctor auth config schema completions setup"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "$subcommands" -- "$cur") )
@@ -24,7 +24,7 @@ _rc_complete() {
       containers=$(docker ps -a --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null)
       COMPREPLY=( $(compgen -W "$containers" -- "$cur") )
       ;;
-    up|init)
+    up)
       COMPREPLY=( $(compgen -d -- "$cur") )
       ;;
     auth)

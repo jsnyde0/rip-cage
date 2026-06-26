@@ -110,7 +110,7 @@ rc up --no-forward-ssh --ssh-config ~/code/my-project
 
 ## Banner states
 
-Every new shell inside the cage (on tmux attach or devcontainer open) shows a one-line github.com identity status. The line is absent only when ssh-config is disabled.
+Every new shell inside the cage shows a one-line github.com identity status. The line is absent only when ssh-config is disabled.
 
 ### `match` (green)
 

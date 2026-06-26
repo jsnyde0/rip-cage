@@ -1,19 +1,5 @@
-# Dev Containers (VS Code)
+# Dev Containers (VS Code) — Removed
 
-Rip cage can generate a `.devcontainer/devcontainer.json` for VS Code integration. This is best for interactive development — VS Code runs inside the cage.
+The VS Code devcontainer path (`rc init` / `.devcontainer/devcontainer.json`) was removed in rip-cage-kt25 (2026-06-13). It was unused and unmaintained.
 
-## Setup
-
-```bash
-rc init /path/to/your/project
-```
-
-Then open the project in VS Code and run **"Dev Containers: Reopen in Container"**.
-
-That's it — you're in a caged environment. Open the terminal, run `claude`, and let it rip.
-
-## Notes
-
-- `.devcontainer/` and `.vscode/` are gitignored — they're generated per-project by `rc init`.
-- Use `rc init --force` to regenerate an existing devcontainer config.
-- The devcontainer uses the same safety stack as CLI mode.
+The single supported usage path is `rc up`. See the [CLI reference](cli-reference.md) and the main [README](../../README.md) for quickstart.

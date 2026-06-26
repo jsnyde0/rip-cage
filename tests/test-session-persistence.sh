@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Test: Claude Code session JSONL logs persist to host (rip-cage-dn2)
 #
-# Validates the three layers of the dn2 change:
-#   1. `rc init` writes the projects/sessions bind-mounts + RC_HOST_PROJECT_KEY
-#      env var into devcontainer.json.
-#   2. `rc --dry-run up` advertises the same mounts + key for the CLI path.
-#   3. End-to-end: a file written inside the container at
+# Validates the CLI (rc up) path for session persistence:
+#   1. `rc --dry-run up` advertises the projects/sessions bind-mounts + RC_HOST_PROJECT_KEY
+#      for the CLI path.
+#   2. End-to-end: a file written inside the container at
 #      ~/.claude/projects/-workspace/ lands on the host under
 #      ~/.claude/projects/<encoded-host-path>/ and survives `rc destroy`.
 #
 # The host-key encoding matches Claude Code's convention: tr '/.' '-'.
 #
-# Runtime: <5s for phases 1+2; ~30-60s for phase 3 (warm image).
+# Note: Phase 1 (rc init devcontainer.json) was removed in rip-cage-kt25.
+# The VS Code devcontainer path is no longer supported.
+#
+# Runtime: <5s for phase 1 (dry-run); ~30-60s for phase 2 (warm image).
 
 set -uo pipefail
 
@@ -33,7 +35,6 @@ check() {
 }
 
 # Per-phase tmp dirs so cleanup is straightforward
-INIT_TMP=""
 DRY_TMP=""
 E2E_TMP=""
 CONTAINER_NAME=""
@@ -43,46 +44,12 @@ CLEANUP() {
   [[ -n "$CONTAINER_NAME" ]] && docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
   [[ -n "$CONTAINER_NAME" ]] && docker volume rm "rc-state-${CONTAINER_NAME}" >/dev/null 2>&1 || true
   [[ -n "$HOST_PROJECTS_DIR" && "$HOST_PROJECTS_DIR" == "$HOME/.claude/projects/"*"-rc-dn2-test"* ]] && rm -rf "$HOST_PROJECTS_DIR"
-  [[ -n "$INIT_TMP" ]] && rm -rf "$INIT_TMP"
   [[ -n "$DRY_TMP"  ]] && rm -rf "$DRY_TMP"
   [[ -n "$E2E_TMP"  ]] && rm -rf "$E2E_TMP"
 }
 trap CLEANUP EXIT
 
-echo "=== Phase 1: rc init devcontainer.json ==="
-INIT_TMP=$(mktemp -d)
-INIT_PROJECT="$INIT_TMP/myproj"
-mkdir -p "$INIT_PROJECT"
-INIT_PARENT_RESOLVED=$(cd "$INIT_TMP" && pwd -P)
-RC_ALLOWED_ROOTS="$INIT_PARENT_RESOLVED" "$RC" init "$INIT_PROJECT" >/dev/null
-
-DCJ="$INIT_PROJECT/.devcontainer/devcontainer.json"
-if grep -q 'claude/projects,target=/home/agent/.claude/projects' "$DCJ"; then
-  check "rc init mounts ~/.claude/projects" pass
-else
-  check "rc init mounts ~/.claude/projects" fail
-fi
-if grep -q 'claude/sessions,target=/home/agent/.claude/sessions' "$DCJ"; then
-  check "rc init mounts ~/.claude/sessions" pass
-else
-  check "rc init mounts ~/.claude/sessions" fail
-fi
-
-INIT_PROJECT_RESOLVED=$(cd "$INIT_PROJECT" && pwd -P)
-EXPECTED_INIT_KEY=$(printf '%s' "$INIT_PROJECT_RESOLVED" | tr '/.' '-')
-if command -v jq >/dev/null 2>&1; then
-  ACTUAL_INIT_KEY=$(jq -r '.containerEnv.RC_HOST_PROJECT_KEY // empty' "$DCJ")
-  if [[ "$ACTUAL_INIT_KEY" == "$EXPECTED_INIT_KEY" ]]; then
-    check "rc init sets RC_HOST_PROJECT_KEY=$EXPECTED_INIT_KEY" pass
-  else
-    check "rc init sets RC_HOST_PROJECT_KEY" fail "got '$ACTUAL_INIT_KEY' expected '$EXPECTED_INIT_KEY'"
-  fi
-else
-  check "rc init sets RC_HOST_PROJECT_KEY (jq required)" fail "jq not installed"
-fi
-
-echo ""
-echo "=== Phase 2: rc up --dry-run ==="
+echo "=== Phase 1: rc up --dry-run ==="
 DRY_TMP=$(mktemp -d)
 DRY_PROJECT="$DRY_TMP/dryrun-fixture"
 mkdir -p "$DRY_PROJECT"
@@ -108,7 +75,7 @@ else
 fi
 
 echo ""
-echo "=== Phase 3: E2E lifecycle ==="
+echo "=== Phase 2: E2E lifecycle ==="
 if ! command -v docker >/dev/null 2>&1; then
   echo "SKIP: Docker not available"
   echo ""

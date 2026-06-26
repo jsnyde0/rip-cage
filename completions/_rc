@@ -7,7 +7,6 @@ _rc() {
   local -a subcommands
   subcommands=(
     'build:Build the rip-cage image'
-    'init:Scaffold .devcontainer/devcontainer.json'
     'up:Start or resume a container'
     'ls:List rip-cage containers'
     'attach:Attach to container (multiplexer-aware)'
@@ -44,7 +43,7 @@ _rc() {
           containers=($(docker ps -a --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null))
           _describe 'container' containers
           ;;
-        up|init)
+        up)
           _files -/
           ;;
         auth)

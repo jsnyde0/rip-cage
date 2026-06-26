@@ -1,6 +1,6 @@
 # Layered `.rip-cage.yaml` config
 
-Rip cage reads two optional YAML files on every `rc up` / `rc init` and merges them into one **effective config**. The result is what downstream consumers (SSH allowlist, egress firewall, etc.) see.
+Rip cage reads two optional YAML files on every `rc up` and merges them into one **effective config**. The result is what downstream consumers (SSH allowlist, egress firewall, etc.) see.
 
 | File | Path | Scope | Tracked in git? |
 |---|---|---|---|

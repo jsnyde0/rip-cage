@@ -163,20 +163,17 @@ else
 fi
 
 # -----------------------------------------------
-# Test 6: rc init does NOT require tmux
+# Test 6: rc init is removed — verify it errors (rip-cage-kt25)
 # -----------------------------------------------
 echo ""
-echo "=== Test 6: rc init does not require tmux ==="
+echo "=== Test 6: rc init returns unknown-command (removed in rip-cage-kt25) ==="
 
-TEST_DIR=$(mktemp -d)
-# tmux is not installed on this host — regular PATH is sufficient to test that rc init still works
-output=$(RC_ALLOWED_ROOTS="$(dirname "$TEST_DIR")" "$RC" init "$TEST_DIR" 2>&1 || true)
-if [[ -f "$TEST_DIR/.devcontainer/devcontainer.json" ]]; then
-  pass "rc init works without tmux"
+output=$("$RC" init 2>&1 || true)
+if echo "$output" | grep -q "build"; then
+  pass "rc init falls through to usage (unknown command)"
 else
-  fail "rc init should work without tmux" "$output"
+  fail "rc init did not produce usage output: $output"
 fi
-rm -rf "$TEST_DIR"
 
 # -----------------------------------------------
 # Summary

@@ -13,7 +13,7 @@ These rules apply to AI agents that use `rc` programmatically (e.g., from automa
 - `rc attach` has no `--output json` mode — use `rc ls --output json` to verify container status before calling attach
 - Never call `rc destroy` without confirming with the user first
 - Use `rc auth refresh` to update credentials without destroying containers
-- Set `RC_ALLOWED_ROOTS` to colon-separated absolute paths before calling `rc up` or `rc init`
+- Set `RC_ALLOWED_ROOTS` to colon-separated absolute paths before calling `rc up`
 
 ## Technical reference
 

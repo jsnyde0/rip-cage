@@ -5,7 +5,6 @@
 | Command | Description |
 |---------|-------------|
 | `rc build [docker-args...]` | Build the rip-cage Docker image |
-| `rc init [--force] [path]` | Scaffold `.devcontainer/devcontainer.json` for VS Code |
 | `rc up <path> [--port PORT] [--env-file FILE] [--new] [--session NAME]` | Start or resume a container |
 | `rc ls` | List rip-cage containers |
 | `rc attach [name]` | Attach to a running container (multiplexer-neutral — plain shell under `none`, tmux attach under `tmux`, supervisor view under `herdr`) |
@@ -141,7 +140,7 @@ On a cage with no sessions, `rc up` creates and attaches `rip-cage` with no pick
 
 `--new` and `--session` are mutually exclusive (exits 2 if both are given).
 
-Non-TTY invocations (CI, devcontainer `initializeCommand`, piped stdin) skip the picker entirely and fall back to attaching `rip-cage` if it exists or creating it.
+Non-TTY invocations (CI, piped stdin) skip the picker entirely and fall back to attaching `rip-cage` if it exists or creating it.
 
 ### Other shapes still supported
 
