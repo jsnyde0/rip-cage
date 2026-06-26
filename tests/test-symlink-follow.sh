@@ -241,10 +241,15 @@ YAML
     source "/tmp/rc-sfl-mount-print-helper.sh"; _print_mounts
   " 2>&1) || exit_code=$?
 
-  # Check: no MOUNT for norm_target, but warning logged
+  # Check: no MOUNT for norm_target (mirror format), but SFL-specific skip warning logged.
+  # Use the mirror-mount format (norm_target:norm_target) — same as S8 — so that the
+  # intentional pi-substrate mount (norm_target:/home/agent/.rc-context/pi-AGENTS.md:ro)
+  # is NOT counted as a symlink-follow mirror mount (they differ in destination format).
+  # Grep for the SFL-specific "on_dangling=skip" marker to avoid matching the unrelated
+  # OAuth-file-missing "skipping mount" warnings (.claude.json, .credentials.json).
   local has_target_mount has_warning
-  has_target_mount=$(echo "$out" | grep "MOUNT:" | grep -c "${norm_target}" || true)
-  has_warning=$(echo "$out" | grep -c "skipping mount" || true)
+  has_target_mount=$(echo "$out" | grep "MOUNT:" | grep -c "${norm_target}:${norm_target}" || true)
+  has_warning=$(echo "$out" | grep -c "on_dangling=skip" || true)
 
   if [[ "$has_target_mount" -eq 0 && "$has_warning" -gt 0 ]]; then
     pass "6" "on_dangling=skip: no second mount added, warning logged"

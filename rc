@@ -969,9 +969,11 @@ _collect_dangling_symlinks() {
     # Skip relative symlinks — they resolve relative to the link's dir
     # and typically work inside the cage if the parent dir is mounted.
     [[ "$link_val" != /* ]] && continue
-    # Resolve the absolute target via readlink -f
-    target=$(readlink -f "$link" 2>/dev/null)
-    if [[ -z "$target" ]]; then
+    # Resolve the absolute target via readlink -f.
+    # macOS readlink -f returns a NON-EMPTY partial path with EXIT CODE 1 for a
+    # truly-broken chain (e.g. /nonexistent/absolute/path/file.md → "/nonexistent").
+    # Guard on exit-nonzero OR empty output so this fires on both macOS and Linux.
+    if ! target=$(readlink -f "$link" 2>/dev/null) || [[ -z "$target" ]]; then
       echo "Error: symlink at '$link' could not be resolved (broken symlink chain). Set mounts.symlinks.on_dangling=skip in .rip-cage.yaml to unblock." >&2
       return 1
     fi
@@ -1297,8 +1299,16 @@ _up_prepare_docker_mounts() {
     fi
   fi
 
-  local _sfl_root _sfl_link _sfl_target
+  local _sfl_root _sfl_link _sfl_target _sfl_collected
   for _sfl_root in "${_SFL_SCAN_ROOTS[@]+"${_SFL_SCAN_ROOTS[@]}"}"; do
+    # Buffer collector output before the while loop so that a non-zero exit
+    # (broken symlink chain) propagates correctly under set -e.  A process
+    # substitution done < <(failing_cmd) silently swallows the failure; capturing
+    # into a variable first lets the || branch abort the caller (ADR-001 D1).
+    _sfl_collected=$(_collect_dangling_symlinks "$_sfl_root") || {
+      # Error message already printed by _collect_dangling_symlinks.
+      exit 1
+    }
     while IFS='|' read -r _sfl_link _sfl_target; do
       [[ -z "$_sfl_link" ]] && continue
 
@@ -1385,11 +1395,11 @@ _up_prepare_docker_mounts() {
           exit 1
           ;;
       esac
-    done < <(_collect_dangling_symlinks "$_sfl_root")
+    done <<< "$_sfl_collected"
   done
   unset _SFL_SCAN_ROOTS _SFL_RESERVED_CAGE_PATHS
   unset _sfl_on_dangling _sfl_scope _sfl_mode _sfl_cfg_result
-  unset _sfl_root _sfl_link _sfl_target
+  unset _sfl_root _sfl_link _sfl_target _sfl_collected
   unset _sfl_reserved _sfl_rp _sfl_collision _sfl_arg _sfl_dest
   unset _sfl_mount_src _sfl_mode_suffix
 
