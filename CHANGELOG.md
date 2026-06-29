@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-06-29
+
+### Fixed
+
+- **DNS non-QUERY opcode exfil bypass closed** (rip-cage-d9d3). The DNS resolver forwarded non-QUERY opcodes (UPDATE/STATUS/NOTIFY/etc.) straight to upstream with no exfil-heuristic and no mode awareness — a hole in the DNS chokepoint that also reached a configured `forward_to` specialist uninspected. The opcode branch now mirrors the QUERY path: **block mode refuses (never forwards)**, observe mode logs a `would-block` event then forwards, legacy mode passes through silently, and an unrecognized mode coerces to block (fail-closed). ([ADR-026](docs/decisions/ADR-026-containment-mediation-identity.md) D2/D3, [ADR-024](docs/decisions/ADR-024-prompt-injection-threat-model.md) D4)
+- **symlink-follow broken-chain detection repaired on macOS, fail-loud end-to-end** (rip-cage-l0bu). A truly-broken symlink chain (missing target parent) was silently missed on macOS — `readlink -f` returns a non-empty partial path with exit 1 there (Linux returns empty), so the empty-stdout-only guard fired on Linux but not macOS; and the consumer swallowed the collector's non-zero exit through a process-substitution loop under `set -e`, so the loud abort never reached the caller ([ADR-001](docs/decisions/ADR-001-architecture.md) D1). Both fixed; broken chains now abort loud on both platforms.
+- **symlink-follow `scope: parent` validates the actual mount source** (rip-cage-6uz). In `scope: parent` mode the fingerprint and secret-path denylist now check the parent directory that actually mounts, not the leaf target — restoring the "validate exactly what mounts" invariant ([ADR-023](docs/decisions/ADR-023-symlink-follow.md) D7) and closing the leaf-check hole. (The residual that `parent` exposes the whole directory including sensitive-named leaf files is now documented in `docs/reference/config.md`; prefer `scope: file` for directories holding secrets — rip-cage-hs70.)
+- **Spurious config "recreate to apply" hint suppressed** (rip-cage-1f59.9) when a field is absent from an older config snapshot but the live value already equals the schema default ([ADR-021](docs/decisions/ADR-021-rip-cage-yaml.md) D5).
+- **`rc up` Claude-OAuth warnings reworded to an agent-neutral tone** (rip-cage-5kt) so they read sensibly for pi-only / API-key-only users (still actionable for Claude users; the warning is kept, not suppressed).
+
+### Added
+
+- **tmux recipe: copy-on-select via OSC 52** (rip-cage-q5i) — drag-select + release relays the selection to the host clipboard with no Cmd-C and no `y` keystroke. Opt-in recipe polish (`examples/tmux/`), not core-cage UX.
+
+### Removed
+
+- **VS Code devcontainer usage path removed** (rip-cage-kt25). The `.devcontainer/` path was legacy; `rc up` is the supported entry. (`.devcontainer/` / `.vscode/` remain gitignored.)
+
 ## [0.9.0] - 2026-06-25
 
 ### Changed
