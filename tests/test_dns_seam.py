@@ -342,5 +342,165 @@ class TestSidecarReadsDnsForwardTo(unittest.TestCase):
         self.assertEqual(port, 15353)
 
 
+# ---------------------------------------------------------------------------
+# Non-QUERY opcode handling (rip-cage-d9d3 security fix)
+# ---------------------------------------------------------------------------
+@unittest.skipUnless(_HAS_DNSPYTHON, "dnspython not installed")
+class TestNonQueryOpcodeHandling(unittest.TestCase):
+    """
+    Non-QUERY opcodes (UPDATE, STATUS, NOTIFY) must NOT bypass the guard.
+
+    block mode  + non-QUERY opcode  => REFUSED, _forward_query NOT called
+    observe mode + non-QUERY opcode => forwarded (would-block behavior), _forward_query IS called
+    legacy mode  + non-QUERY opcode => forwarded (pure passthrough), _forward_query IS called
+    """
+
+    def _make_update_query(self, zone="attacker.com"):
+        """Build a minimal DNS UPDATE query datagram."""
+        import dns.opcode
+        msg = dns.message.make_query(zone, dns.rdatatype.SOA)
+        msg.set_opcode(dns.opcode.UPDATE)
+        return msg.to_wire()
+
+    def _make_status_query(self, zone="attacker.com"):
+        """Build a minimal DNS STATUS query datagram."""
+        import dns.opcode
+        msg = dns.message.make_query(zone, dns.rdatatype.SOA)
+        msg.set_opcode(dns.opcode.STATUS)
+        return msg.to_wire()
+
+    def test_block_mode_non_query_opcode_refused(self):
+        """
+        block mode + non-QUERY opcode => REFUSED response, _forward_query NOT called.
+        """
+        import dns.opcode
+        import dns.rcode
+
+        query_wire = self._make_update_query()
+        rules_doc = {
+            "version": 2,
+            "mode": "block",
+            "allowed_hosts": [],
+            "rules": [],
+        }
+
+        forwarded_to = []
+
+        def _recording_forward(request, upstream_host, upstream_port):
+            forwarded_to.append((upstream_host, upstream_port))
+            response = dns.message.make_response(request)
+            response.set_rcode(dns.rcode.NOERROR)
+            return response
+
+        with mock.patch.object(_dns_module, "_forward_query",
+                                side_effect=_recording_forward):
+            resp_wire = _dns_module._handle_dns_query(query_wire, rules_doc)
+
+        self.assertEqual(forwarded_to, [],
+                         "block mode: _forward_query must NOT be called for non-QUERY opcodes")
+        resp = dns.message.from_wire(resp_wire)
+        self.assertEqual(resp.rcode(), dns.rcode.REFUSED,
+                         "block mode: non-QUERY opcode must return REFUSED")
+
+    def test_block_mode_status_opcode_refused(self):
+        """
+        block mode + STATUS opcode => REFUSED response, _forward_query NOT called.
+        """
+        import dns.rcode
+
+        query_wire = self._make_status_query()
+        rules_doc = {
+            "version": 2,
+            "mode": "block",
+            "allowed_hosts": [],
+            "rules": [],
+        }
+
+        forwarded_to = []
+
+        def _recording_forward(request, upstream_host, upstream_port):
+            forwarded_to.append((upstream_host, upstream_port))
+            response = dns.message.make_response(request)
+            response.set_rcode(dns.rcode.NOERROR)
+            return response
+
+        with mock.patch.object(_dns_module, "_forward_query",
+                                side_effect=_recording_forward):
+            resp_wire = _dns_module._handle_dns_query(query_wire, rules_doc)
+
+        self.assertEqual(forwarded_to, [],
+                         "block mode: _forward_query must NOT be called for STATUS opcode")
+        resp = dns.message.from_wire(resp_wire)
+        self.assertEqual(resp.rcode(), dns.rcode.REFUSED,
+                         "block mode: STATUS opcode must return REFUSED")
+
+    def test_observe_mode_non_query_opcode_forwarded(self):
+        """
+        observe mode + non-QUERY opcode => forwarded (mirrors observe would-block behavior:
+        the query goes through but the event is logged as 'would-block').
+        _forward_query IS called exactly once AND _log_dns_event fires with "would-block".
+        """
+        import dns.rcode
+
+        query_wire = self._make_update_query()
+        rules_doc = {
+            "version": 2,
+            "mode": "observe",
+            "allowed_hosts": [],
+            "rules": [],
+        }
+
+        forwarded_to = []
+        logged_events = []
+
+        def _recording_forward(request, upstream_host, upstream_port):
+            forwarded_to.append((upstream_host, upstream_port))
+            response = dns.message.make_response(request)
+            response.set_rcode(dns.rcode.NOERROR)
+            return response
+
+        def _recording_log(event, result):
+            logged_events.append(event)
+
+        with mock.patch.object(_dns_module, "_forward_query",
+                                side_effect=_recording_forward):
+            with mock.patch.object(_dns_module, "_log_dns_event",
+                                    side_effect=_recording_log):
+                _dns_module._handle_dns_query(query_wire, rules_doc)
+
+        self.assertEqual(len(forwarded_to), 1,
+                         "observe mode: _forward_query must be called once for non-QUERY opcodes")
+        self.assertIn("would-block", logged_events,
+                      "observe mode: _log_dns_event must fire with 'would-block' for non-QUERY opcodes")
+
+    def test_legacy_mode_non_query_opcode_forwarded(self):
+        """
+        legacy mode (no mode key / mode=null) + non-QUERY opcode => forwarded (pure passthrough).
+        _forward_query IS called exactly once.
+        """
+        import dns.rcode
+
+        query_wire = self._make_update_query()
+        rules_doc = {
+            "version": 1,
+            "rules": [],
+        }
+
+        forwarded_to = []
+
+        def _recording_forward(request, upstream_host, upstream_port):
+            forwarded_to.append((upstream_host, upstream_port))
+            response = dns.message.make_response(request)
+            response.set_rcode(dns.rcode.NOERROR)
+            return response
+
+        with mock.patch.object(_dns_module, "_forward_query",
+                                side_effect=_recording_forward):
+            _dns_module._handle_dns_query(query_wire, rules_doc)
+
+        self.assertEqual(len(forwarded_to), 1,
+                         "legacy mode: _forward_query must be called once for non-QUERY opcodes")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

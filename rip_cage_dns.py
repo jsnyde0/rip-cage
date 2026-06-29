@@ -466,8 +466,47 @@ try:
         # rules_doc if present; falls back to _UPSTREAM_DNS/_UPSTREAM_PORT).
         upstream_host, upstream_port = _resolve_upstream(rules_doc)
 
-        # Only handle standard queries
+        # Non-QUERY opcodes (UPDATE, STATUS, NOTIFY, etc.): apply mode-aware guard.
+        # block mode   => fail-closed: REFUSED, never forwarded (no bypass channel)
+        # observe mode => forward + emit would-block log (mirrors QUERY observe path)
+        # legacy/None  => passthrough (preserve prior behavior, no logging)
         if request.opcode() != dns.opcode.QUERY:
+            mode_raw = rules_doc.get("mode") if rules_doc else None
+            if mode_raw is not None:
+                mode_norm = str(mode_raw).strip().lower()
+                if mode_norm not in ("observe", "block"):
+                    print(
+                        f"rip-cage dns: unrecognized mode value {mode_raw!r} — failing closed to 'block'",
+                        file=sys.stderr,
+                    )
+                    mode_norm = "block"  # fail-closed on unrecognized mode
+            else:
+                mode_norm = None  # legacy: passthrough
+            if mode_norm == "block":
+                return _make_refused_response(request)
+            if mode_norm == "observe":
+                # Emit a would-block log event mirroring the QUERY observe path.
+                # Extract zone name from question section if present (UPDATE/NOTIFY carry one).
+                opcode_qname = ""
+                if request.question:
+                    opcode_qname = str(request.question[0].name).rstrip(".")
+                opcode_apex = _derive_apex(opcode_qname) if opcode_qname else ""
+                opcode_result = DNSDecisionResult(
+                    action="would-block",
+                    heuristic="non-query-opcode",
+                    apex=opcode_apex,
+                    pattern=f"non-query-opcode:{dns.opcode.to_text(request.opcode())}",
+                    target=opcode_qname,
+                    why=(
+                        f"DNS non-QUERY opcode {dns.opcode.to_text(request.opcode())!r} "
+                        f"forwarded in observe mode (would be REFUSED in block mode)"
+                    ),
+                    fix_command=f"rc allowlist add {opcode_apex} --cage=<cage-name>" if opcode_apex else "",
+                    config_file=".rip-cage.yaml",
+                    config_path="network.allowed_hosts",
+                )
+                _log_dns_event("would-block", opcode_result)
+            # observe or legacy: forward (no heuristic — opcodes have no qname to inspect)
             try:
                 return _forward_query(request, upstream_host, upstream_port).to_wire()
             except Exception:
