@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-30
+
+### Changed
+
+- **pi launch composition is fully manifest-declared** (epic rip-cage-l72i; [ADR-027](docs/decisions/ADR-027-agent-substrate-projection.md) D4, [ADR-005](docs/decisions/ADR-005-ecosystem-tools.md) D12). pi's launch wrapper no longer hardcodes `--no-extensions -e <dcg-gate>` plus a single `SUBAGENT_EXT` slot. A generic `launch_args` list field on `TOOL` fragments is concatenated by `rc build` in fragment order (guard-first) and baked into a generic pi shim — `rc` names no tool and the wrapper hardcodes no path. The DCG guard, the sub-agent extension, and herdr's pi extension are now **identical manifest contributions**; adding an extension is a recipe declaration with **zero `rc` edits**. Because `rc build` is host-side, the "agent drops a hostile extension into a scanned dir" prompt-injection vector is closed **by construction** — no runtime code-inspection validator is needed ([ADR-024](docs/decisions/ADR-024-prompt-injection-threat-model.md) D4). The DCG guard stays loaded first and tamper-proof (root-owned file **and** parent dir on its own `/etc/rip-cage/pi` load path). (rip-cage-l72i.1)
+
+### Added
+
+- **`examples/herdr-pi/` recipe** (rip-cage-l72i.4) — composes herdr's pi integration extension into a cage: runs `herdr integration install pi` (the public CLI, [ADR-006](docs/decisions/ADR-006-cli-interface.md) D8), relocates the generated extension to a root-owned load path, and declares its `launch_args` + herdr socket-directory mount. This enables herdr semantic working/idle status for caged pi agents — the gap that the hardcoded `SUBAGENT_EXT` slot used to silently swallow.
+- **`examples/pi/subagent-fragment.yaml`** (rip-cage-l72i.3) — a self-contained opt-in recipe that mounts the host sub-agent extension and adds its `-e` launch arg. This is the explicit, composable successor to the retired `SUBAGENT_EXT` wrapper slot.
+- **herdr binary pin bumped v0.6.10 → v0.7.0** (rip-cage-1pgp.2) in `examples/herdr/` (per-arch SHA-256, fail-closed).
+
+### Removed
+
+- **`SUBAGENT_EXT` hardcoded slot in the pi wrapper** (rip-cage-l72i.3) — pi sub-agent extension dispatch is now **opt-in** via `examples/pi/subagent-fragment.yaml` rather than a hardcoded wrapper slot. The default cage no longer auto-loads a sub-agent extension; compose the recipe to retain it. `grep -ni subagent rc` is now empty — the special-casing is fully retired from `rc`.
+
 ## [0.9.1] - 2026-06-29
 
 ### Fixed
