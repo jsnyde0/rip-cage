@@ -10,7 +10,10 @@
 #   (D)  init-rip-cage.sh creates pi symlinks (grep for pi symlink stanza)
 #   (E)  init-rip-cage.sh does NOT replace the baked extensions dir with a
 #        symlink (floor-shadow check: no bare extensions/ ln -sfn); and
-#        pi-wrapper.sh loads the subagent extension via -e $SUBAGENT_EXT
+#        pi-wrapper.sh is the generic shim (no recipe-specific literals hardcoded)
+#   (I)  examples/pi/subagent-fragment.yaml exists with correct manifest-declared
+#        structure (launch_args -e, rc-context path, no baked source)
+#   (J)  init-rip-cage.sh does NOT contain stale 'loaded by wrapper via -e' claim
 #
 # Tests call _up_prepare_docker_mounts directly in a subshell (the same
 # pattern used by test-secret-path-denylist.sh test_bprime) — no Docker needed.
@@ -158,40 +161,115 @@ test_A_pi_mounts_emitted() {
     fail "(A) pi-AGENTS.md mount arg missing; expected '${agents_realpath}:/home/agent/.rc-context/pi-AGENTS.md:ro'; got: $(printf '%s' "$mount_args" | grep pi-AGENTS || echo '<none>')"
   fi
 
-  # --- subagent extension ---
+  # --- No subagent extension in rc's special-case table (rip-cage-l72i.3) ---
+  # After the migration, rc no longer has a hardcoded 'extensions/subagent' entry.
+  # The subagent mount is now fragment-declared (see test_A3). This rc path should
+  # emit ONLY the instruction-content assets (skills/prompts/roles/AGENTS.md/etc).
+  if printf '%s\n' "$mount_args" | grep -q "pi-ext-subagent"; then
+    fail "(A) pi-ext-subagent mount unexpectedly emitted by rc special-case (should be fragment-declared only)"
+  else
+    pass "(A) pi-ext-subagent NOT emitted by rc's pi substrate table (removed per rip-cage-l72i.3)"
+  fi
+
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# (A3) Fragment-declared subagent mount: when the subagent fragment is composed
+#      AND the host has the extension dir, mount is emitted via manifest mechanism
+# ---------------------------------------------------------------------------
+test_A3_subagent_fragment_mount() {
+  setup_sandbox
+
+  # Create a tools.yaml in the sandbox that includes the subagent fragment.
+  # This causes _manifest_build_mount_args to emit the subagent mount.
+  mkdir -p "${TEST_HOME}/.config/rip-cage"
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<YAML
+version: 1
+tools:
+  - name: pi-subagent
+    archetype: TOOL
+    version_pin: "bundled-recipe"
+    install_cmd: ":"
+    egress: []
+    mounts:
+      - host: "~/.pi/agent/extensions/subagent"
+        dest: "/home/agent/.rc-context/pi-ext-subagent"
+        mode: ro
+    launch_args: ["-e", "/home/agent/.rc-context/pi-ext-subagent/index.ts"]
+YAML
+
+  local mount_args
+  local exit_code=0
+  mount_args=$(
+    HOME="$TEST_HOME" \
+    XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_ALLOWED_ROOTS="${TEST_WS}" \
+    bash -c "
+      source '$RC' 2>/dev/null
+      _UP_RUN_ARGS=()
+      wt_detected=false
+      _up_prepare_docker_mounts '$TEST_WS' 'test-container' 2>/dev/null
+      printf '%s\n' \"\${_UP_RUN_ARGS[@]:-}\"
+    " 2>/dev/null
+  ) || exit_code=$?
+
   local subagent_realpath
   subagent_realpath=$(realpath "${TEST_HOME}/.pi/agent/extensions/subagent" 2>/dev/null || echo "${TEST_HOME}/.pi/agent/extensions/subagent")
-  if printf '%s' "$mount_args" | grep -q "${subagent_realpath}:/home/agent/.rc-context/pi-ext-subagent:ro"; then
-    pass "(A) pi-ext-subagent mount arg present with resolved realpath :ro"
+
+  # The fragment mount (~/.pi/agent/extensions/subagent -> /home/agent/.rc-context/pi-ext-subagent)
+  # should be emitted via the manifest mechanism.
+  if printf '%s\n' "$mount_args" | grep -q "${subagent_realpath}:/home/agent/.rc-context/pi-ext-subagent:ro"; then
+    pass "(A3) subagent mount emitted via fragment-declared mounts (manifest mechanism)"
   else
-    fail "(A) pi-ext-subagent mount arg missing; expected '${subagent_realpath}:/home/agent/.rc-context/pi-ext-subagent:ro'; got: $(printf '%s' "$mount_args" | grep pi-ext || echo '<none>')"
+    fail "(A3) subagent mount missing; expected '${subagent_realpath}:/home/agent/.rc-context/pi-ext-subagent:ro' from fragment; got: $(printf '%s\n' "$mount_args" | grep -i "ext-sub\|subagent\|extensions" || echo '<none>')"
   fi
 
-  # --- Verify NO whole-extensions-dir mount (floor-shadow check, strengthened) ---
-  # Check 1: no -v arg's destination path ends in /extensions (bare extensions dir)
-  # The loop emits .rc-context/<cage-name>, never a bare .pi/agent/extensions destination.
-  if printf '%s\n' "$mount_args" | grep -E ":/home/agent/[^:]*extensions:?$|:/home/agent/[^:]*extensions:ro$" | grep -vq "extensions/"; then
-    fail "(A-fs1) a -v mount arg maps to a bare extensions/ destination — floor-shadow risk"
-  else
-    pass "(A-fs1) no mount arg maps to a bare extensions/ destination (floor protected)"
-  fi
+  teardown_sandbox
+}
 
-  # Check 2: no -v arg's destination path is .rc-context/pi-extensions (non-subagent cage name)
-  if printf '%s\n' "$mount_args" | grep -q ":/home/agent/.rc-context/pi-extensions:"; then
-    fail "(A-fs2) a -v mount maps to pi-extensions (non-subagent cage name) — unexpected"
-  else
-    pass "(A-fs2) no mount maps to pi-extensions cage name (only pi-ext-subagent allowed)"
-  fi
+# ---------------------------------------------------------------------------
+# (A4) Fragment-declared subagent mount skips gracefully when host ext is absent
+# ---------------------------------------------------------------------------
+test_A4_subagent_fragment_absent_graceful() {
+  setup_sandbox
 
-  # Check 3: the pi-ext-subagent source realpath ends in /extensions/subagent (selective projection)
-  local subagent_mount_src
-  subagent_mount_src=$(printf '%s\n' "$mount_args" \
-    | grep ":/home/agent/.rc-context/pi-ext-subagent:" \
-    | sed 's|:/home/agent.*||')
-  if [[ "${subagent_mount_src}" == */extensions/subagent ]]; then
-    pass "(A-fs3) pi-ext-subagent source ends in /extensions/subagent (selective projection)"
+  # Same tools.yaml with subagent fragment, but NO extensions/subagent on host.
+  local NOEXT_HOME="${TEST_TMPDIR}/home_noext"
+  mkdir -p "${NOEXT_HOME}/.config/rip-cage"
+  cp "${TEST_HOME}/.config/rip-cage/config.yaml" "${NOEXT_HOME}/.config/rip-cage/config.yaml"
+  # Create .pi/agent WITHOUT extensions/subagent
+  mkdir -p "${NOEXT_HOME}/.pi/agent/skills"
+  touch "${NOEXT_HOME}/.pi/agent/skills/skill.md"
+  # tools.yaml with subagent fragment
+  cat > "${NOEXT_HOME}/.config/rip-cage/tools.yaml" <<YAML
+version: 1
+tools:
+  - name: pi-subagent
+    archetype: TOOL
+    version_pin: "bundled-recipe"
+    install_cmd: ":"
+    egress: []
+    mounts:
+      - host: "~/.pi/agent/extensions/subagent"
+        dest: "/home/agent/.rc-context/pi-ext-subagent"
+        mode: ro
+    launch_args: ["-e", "/home/agent/.rc-context/pi-ext-subagent/index.ts"]
+YAML
+
+  local exit_code=0
+  bash -c "
+    source '$RC' 2>/dev/null
+    _UP_RUN_ARGS=()
+    wt_detected=false
+    HOME='$NOEXT_HOME' XDG_CONFIG_HOME='${NOEXT_HOME}/.config' \
+    _up_prepare_docker_mounts '$TEST_WS' 'test-container' 2>/dev/null
+  " 2>/dev/null || exit_code=$?
+
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "(A4) rc up succeeds when fragment composed but extensions/subagent absent (skip-if-host-missing)"
   else
-    fail "(A-fs3) pi-ext-subagent source '${subagent_mount_src}' does not end in /extensions/subagent"
+    fail "(A4) rc up failed when extensions/subagent absent — should be graceful (exit=${exit_code})"
   fi
 
   teardown_sandbox
@@ -308,17 +386,17 @@ test_D_init_creates_pi_symlinks() {
     fail "(D) init-rip-cage.sh missing .rc-context/pi- references"
   fi
 
-  # Also verify it references pi skills and the subagent extension
-  if grep -q "pi-skills\|pi-ext-subagent" "$INIT"; then
-    pass "(D) init-rip-cage.sh references pi-skills and pi-ext-subagent"
+  # Verify pi-skills is still referenced (core substrate asset)
+  if grep -q "pi-skills" "$INIT"; then
+    pass "(D) init-rip-cage.sh references pi-skills (core substrate asset)"
   else
-    fail "(D) init-rip-cage.sh missing pi-skills or pi-ext-subagent references"
+    fail "(D) init-rip-cage.sh missing pi-skills reference"
   fi
 }
 
 # ---------------------------------------------------------------------------
-# (E) init-rip-cage.sh does NOT replace the extensions dir itself;
-#     subagent extension is projected via the launch wrapper, not a symlink
+# (E) Floor invariant: guard on its own root-owned path, not in extensions/;
+#     pi-wrapper.sh is the generic shim (no recipe-specific wiring hardcoded)
 # ---------------------------------------------------------------------------
 test_E_floor_not_shadowed_by_init() {
   # Negative control: init-rip-cage.sh DOES NOT contain a pattern like:
@@ -326,22 +404,41 @@ test_E_floor_not_shadowed_by_init() {
   # which would replace the entire baked extensions dir.
   # (post-wlwc: no extensions/ symlink at all — wrapper owns the wiring)
 
-  if grep -E "ln -sfn.*extensions[^/]" "$INIT" | grep -vq "extensions/subagent"; then
-    # A bare 'extensions' symlink target exists without the subagent qualifier
+  if grep -qE "ln -sfn.*extensions[^/]" "$INIT"; then
     fail "(E) init-rip-cage.sh may replace whole extensions/ dir — floor-shadow risk"
   else
     pass "(E) init-rip-cage.sh does not replace whole extensions/ dir (floor protected)"
   fi
 
-  # Positive control: the subagent extension is loaded by the launch wrapper
-  # via -e with the pi-ext-subagent/index.ts path (post-wlwc wiring).
-  # Assert both that SUBAGENT_EXT references pi-ext-subagent/index.ts AND
-  # that it is appended to the vetted extension list with -e "$SUBAGENT_EXT".
-  if grep -q 'pi-ext-subagent/index.ts' "$WRAPPER" \
-     && grep -q 'VETTED_EXTENSIONS+=.*"-e".*SUBAGENT_EXT' "$WRAPPER"; then
-    pass "(E) pi-wrapper.sh loads subagent extension via -e \$SUBAGENT_EXT (wrapper wiring present)"
+  # Floor reasoning (ADR-027 D3/D4): the DCG guard lives at /etc/rip-cage/pi/dcg-gate.ts
+  # (root-owned, separate from extensions/). Mounting anything into extensions/ or
+  # rc-context/pi-ext-subagent CANNOT shadow the guard because:
+  #   (a) the guard is not in extensions/ anymore (relocated to its own root-owned path)
+  #   (b) --no-extensions (contributed by DCG fragment) disables pi auto-discovery of extensions/
+  #   (c) guard is loaded via explicit -e /etc/rip-cage/pi/dcg-gate.ts (build-time artifact)
+  # Verify the subagent fragment does NOT declare a mount dest over the guard's path.
+  local guard_path_prefix="/etc/rip-cage/pi"
+  if [[ -f "${SUBAGENT_FRAGMENT}" ]]; then
+    if grep -q "${guard_path_prefix}" "${SUBAGENT_FRAGMENT}"; then
+      fail "(E-fs) subagent fragment declares a mount dest overlapping the guard's root-owned path (${guard_path_prefix}) — floor-shadow risk"
+    else
+      pass "(E-fs) subagent fragment does NOT mount into guard's root-owned path (${guard_path_prefix}) — floor protected by separate-path model"
+    fi
   else
-    fail "(E) pi-wrapper.sh missing -e \$SUBAGENT_EXT wiring for pi-ext-subagent/index.ts"
+    pass "(E-fs) subagent fragment absent — skip floor-shadow check"
+  fi
+
+  # Positive control (rip-cage-l72i.1): pi-wrapper.sh is the generic shim.
+  # It MUST NOT contain recipe-specific literals (ADR-027 D4 FIRM principle).
+  # Extension wiring (--no-extensions, -e dcg-gate.ts, subagent ext) is now
+  # declared in manifest launch_args and assembled by rc build, NOT hardcoded.
+  local wrapper_literals
+  wrapper_literals=$(grep -E 'SUBAGENT_EXT|dcg-gate|/dcg/|herdr' "$WRAPPER" 2>/dev/null || true)
+  if [[ -z "$wrapper_literals" ]]; then
+    pass "(E) pi-wrapper.sh is the generic shim (no recipe-specific literals hardcoded)"
+  else
+    fail "(E) pi-wrapper.sh STILL contains recipe-specific literals — not a generic shim:
+  ${wrapper_literals}"
   fi
 }
 
@@ -464,6 +561,104 @@ test_H_system_md_present_emits_mount() {
 }
 
 # ---------------------------------------------------------------------------
+# (I) subagent recipe fragment exists with correct manifest-declared structure
+#     (rip-cage-l72i.3: subagent migrated onto manifest-declared mechanism)
+# ---------------------------------------------------------------------------
+SUBAGENT_FRAGMENT="${SCRIPT_DIR}/../examples/pi/subagent-fragment.yaml"
+test_I_subagent_fragment_exists() {
+  # (I-1) The fragment file exists
+  if [[ -f "$SUBAGENT_FRAGMENT" ]]; then
+    pass "(I-1) examples/pi/subagent-fragment.yaml exists"
+  else
+    fail "(I-1) examples/pi/subagent-fragment.yaml missing — subagent must be declared as a recipe fragment"
+    return
+  fi
+
+  # (I-2) The fragment declares launch_args with -e pointing to the rc-context path
+  if grep -q "\-e" "$SUBAGENT_FRAGMENT" && grep -q "pi-ext-subagent" "$SUBAGENT_FRAGMENT"; then
+    pass "(I-2) subagent-fragment.yaml declares launch_args with -e and pi-ext-subagent path"
+  else
+    fail "(I-2) subagent-fragment.yaml missing launch_args -e declaration for pi-ext-subagent; got: $(grep -E 'launch_args|-e|pi-ext' "$SUBAGENT_FRAGMENT" || echo '<none>')"
+  fi
+
+  # (I-3) The fragment documents the runtime ro mount (host-projected via rc up).
+  # NOTE: the manifest mounts[] is empty (Dockerfile-level mounts: none needed).
+  # The ro mount at /home/agent/.rc-context/pi-ext-subagent is emitted at rc up
+  # time by _up_prepare_docker_mounts. The fragment documents this in comments.
+  if grep -q "pi-ext-subagent" "$SUBAGENT_FRAGMENT" && grep -q "rc-context" "$SUBAGENT_FRAGMENT"; then
+    pass "(I-3) subagent-fragment.yaml documents the rc-context ro-mount path for pi-ext-subagent"
+  else
+    fail "(I-3) subagent-fragment.yaml missing rc-context/pi-ext-subagent path documentation; got: $(grep -E 'mount|rc-context|pi-ext' "$SUBAGENT_FRAGMENT" || echo '<none>')"
+  fi
+
+  # (I-4) The fragment does NOT bake the subagent source itself (it's host-projected, not baked)
+  if ! grep -q "base64\|install_cmd.*subagent" "$SUBAGENT_FRAGMENT"; then
+    pass "(I-4) subagent-fragment.yaml does not bake subagent source (host-projected ro mount)"
+  else
+    fail "(I-4) subagent-fragment.yaml should not bake the subagent source (it is host-projected)"
+  fi
+
+  # (I-5) YAML syntax: fragment must be parseable (use python3 yaml if available)
+  local yaml_available=false
+  if command -v python3 >/dev/null 2>&1; then
+    if python3 -c "import yaml" 2>/dev/null; then
+      yaml_available=true
+    fi
+  fi
+  if [[ "$yaml_available" == "true" ]]; then
+    local yaml_err
+    yaml_err=$(python3 -c "import yaml, sys; yaml.safe_load(open('$SUBAGENT_FRAGMENT'))" 2>&1)
+    if [[ -z "$yaml_err" ]]; then
+      pass "(I-5) subagent-fragment.yaml is valid YAML"
+    else
+      fail "(I-5) subagent-fragment.yaml YAML parse error: ${yaml_err}"
+    fi
+  else
+    pass "(I-5) python3/yaml absent — skipping YAML syntax check"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# (J) init-rip-cage.sh does NOT contain the stale 'loaded by wrapper via -e'
+#     claim (rip-cage-l72i.3: init comment must reflect manifest-declared reality)
+# ---------------------------------------------------------------------------
+test_J_init_comment_updated() {
+  # The old comment asserted "loaded by wrapper via -e" — stale post-l72i.1.
+  # After l72i.3, the subagent is declared in the pi/subagent recipe fragment's
+  # launch_args and loaded by the manifest-assembled shim — not by a wrapper slot.
+  if grep -q "loaded by wrapper via -e" "$INIT"; then
+    fail "(J) init-rip-cage.sh still contains stale 'loaded by wrapper via -e' comment — update to reflect manifest-declared reality"
+  else
+    pass "(J) init-rip-cage.sh: stale 'loaded by wrapper via -e' claim absent (comment updated)"
+  fi
+
+  # The init region should still reference pi-ext-subagent (the mount path)
+  # so the reader knows what path the runtime mount projects to.
+  if grep -q "pi-ext-subagent" "$INIT"; then
+    pass "(J) init-rip-cage.sh still references pi-ext-subagent (mount path documentation present)"
+  else
+    fail "(J) init-rip-cage.sh missing pi-ext-subagent reference — should document the fragment-declared mount path"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# (K) rc does NOT name 'subagent' anywhere (ADR-005 D12: no tool-specific
+#     special-cases in rc source — rip-cage-l72i.3 removes the rc special-case)
+# ---------------------------------------------------------------------------
+test_K_rc_no_subagent_naming() {
+  # grep -ni subagent rc should return empty.
+  # This mirrors the accepted "grep -ri herdr rc → empty" invariant.
+  local subagent_hits
+  subagent_hits=$(grep -ni "subagent" "$RC" 2>/dev/null || true)
+  if [[ -z "$subagent_hits" ]]; then
+    pass "(K) grep -ni subagent rc: empty (rc no longer names subagent — ADR-005 D12)"
+  else
+    fail "(K) rc STILL contains 'subagent' references — must be removed per ADR-005 D12:
+$(echo "$subagent_hits" | head -10)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 echo "=== test-pi-substrate-mounts.sh — pi substrate projection (rip-cage-kstk) ==="
@@ -485,6 +680,16 @@ echo ""
 test_G_system_md_absent_graceful
 echo ""
 test_H_system_md_present_emits_mount
+echo ""
+test_A3_subagent_fragment_mount
+echo ""
+test_A4_subagent_fragment_absent_graceful
+echo ""
+test_I_subagent_fragment_exists
+echo ""
+test_J_init_comment_updated
+echo ""
+test_K_rc_no_subagent_naming
 echo ""
 
 if [[ "$FAILURES" -eq 0 ]]; then

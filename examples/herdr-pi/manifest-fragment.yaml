@@ -1,0 +1,139 @@
+version: 1
+# herdr-pi — composable pi launch-extension recipe (rip-cage-l72i.4).
+#
+# Loads herdr's generated pi extension into the cage so herdr can observe the
+# pi agent's semantic status (working/blocked/idle) via its integration path
+# instead of the screen-detection fallback.
+#
+# ADR-006 D8: integrations are wired only through each tool's public CLI
+# (herdr integration install pi — never hand-authored).
+# ADR-005 D12: zero rc source edits; this is an inspiration recipe in examples/.
+# ADR-027 D4: launch extensions are declared as manifest launch_args + mounts,
+# assembled by rc build into the pi launch shim — no wrapper edits required.
+#
+# ## Composition requirements
+#
+#   This fragment requires the herdr binary to be in the image when it runs.
+#   Compose AFTER the herdr-bin TOOL entry from examples/herdr/manifest-fragment.yaml.
+#
+#   Example tools.yaml (excerpt):
+#
+#     - name: herdr-bin        # from examples/herdr/manifest-fragment.yaml
+#       archetype: TOOL
+#       version_pin: "v0.7.0"
+#       install_cmd: "..."
+#       egress: [github.com]
+#       mounts: []
+#
+#     - name: herdr-pi         # this fragment
+#       archetype: TOOL
+#       ...
+#
+#   If you also use DCG, compose dcg and dcg-wiring BEFORE herdr-pi so --no-extensions
+#   appears first in the assembled launch_args (guard-first by fragment order, ADR-027 D4).
+#   DCG contributes --no-extensions which disables pi's auto-discovery paths; herdr-pi
+#   contributes -e <herdr-ext> which adds the explicit herdr extension alongside dcg-gate.
+#   Without DCG, pi auto-discovers normally and the herdr integration installed by
+#   herdr multiplexer's start hook also just works (see examples/herdr/).
+#
+# ## What this recipe provisions
+#
+#   herdr-pi (TOOL):
+#     1. Runs `herdr integration install pi` inside the image build (the public CLI —
+#        ADR-006 D8) to generate the pi extension file.
+#     2. Relocates herdr's generated output to the cage's root-owned load path
+#        /etc/rip-cage/pi/herdr-ext/ (see D8 open-verification below).
+#     3. Declares the herdr socket directory as a mount so the in-cage extension
+#        can connect to herdr if running on the host (skip-if-host-missing).
+#     4. Contributes launch_args: -e /etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts
+#        to the assembled pi launch shim (ADR-027 D4 / rip-cage-l72i.1).
+#
+# ## D8 open-verification finding (for ADR-027 D4 reconciliation — rip-cage-l72i.6)
+#
+#   `herdr integration install pi` accepts NO output-directory flag.
+#   Its only calling convention is:
+#     herdr integration install pi
+#   and it ALWAYS writes to <PI_CODING_AGENT_DIR>/extensions/herdr-agent-state.ts
+#   (defaulting to ~/.pi/agent/extensions/ when PI_CODING_AGENT_DIR is unset).
+#   Inside the Docker build stage (running as root, no env override), it writes to
+#   /root/.pi/agent/extensions/herdr-agent-state.ts.
+#
+#   FINDING: **NAMED BOUNDED D8 DEVIATION** — the CLI cannot write directly to the
+#   recipe's chosen cage-owned load path (/etc/rip-cage/pi/herdr-ext/). The recipe
+#   must run the CLI first (honoring D8: file is herdr-authored) then relocate the
+#   generated output to the root-owned cage path (only the location is cage-dictated).
+#   The file content is 100% herdr-generated; the cage only moves and chown-s it.
+#   This is the minimal deviation consistent with D8: no hand-authored internals,
+#   no impersonation of herdr's file format — just a post-generate cp + chown.
+#
+# ## Socket mount rationale
+#
+#   The herdr pi extension connects to herdr via the unix socket path in
+#   HERDR_SOCKET_PATH. Two scenarios:
+#
+#   (a) herdr as multiplexer (examples/herdr/): herdr server starts INSIDE the cage;
+#       the socket lives at ~/.config/herdr/herdr.sock inside the cage.
+#       No host socket mount needed — the socket is cage-local.
+#
+#   (b) herdr running on the HOST (e.g., host supervisor watching the cage):
+#       The socket is at ~/.config/herdr/ on the host. This fragment mounts that
+#       directory ro into the cage at /home/agent/.config/herdr so the in-cage
+#       extension can reach the host herdr socket when HERDR_SOCKET_PATH is set
+#       to the cage-side path.
+#
+#   The mount is skip-if-host-missing: if ~/.config/herdr/ does not exist on the
+#   host, the mount is silently omitted and the extension no-ops (it checks
+#   HERDR_ENV=1 at runtime). A directory mount is used (not single-file) because
+#   single-file bind mounts break on host atomic rename (rip-cage-single-file-mount-
+#   handle-breaks-on-host-atomic-rename bd memory).
+#
+#   In scenario (a) the host mount is harmlessly inactive (the cage-local socket
+#   takes precedence via HERDR_SOCKET_PATH set by herdr in managed panes).
+#
+# ## No-DCG path
+#
+#   If composing herdr-pi WITHOUT the DCG fragment, --no-extensions is absent from
+#   the assembled launch_args, so pi auto-discovers extensions normally (workspace +
+#   agent extensions/). The herdr extension installed by herdr's start hook will also
+#   load automatically — this fragment's -e contribution is additive, not exclusive.
+#   Accepted residual: no destructive-command guard. Containment bounds blast radius.
+
+tools:
+  # herdr-pi (TOOL): generates herdr's pi extension into the image at build time
+  # and contributes the launch_args + socket mount for the cage runtime.
+  #
+  # Ordering: this entry must appear AFTER herdr-bin in your tools.yaml (the herdr
+  # binary must be installed before this install_cmd runs in the Dockerfile).
+  #
+  # D8 bounded deviation: herdr integration install pi writes to the default path
+  # (~/.pi/agent/extensions/herdr-agent-state.ts inside the image build root);
+  # the recipe relocates to /etc/rip-cage/pi/herdr-ext/ and sets root ownership.
+  # The file content is entirely herdr-generated.
+  - name: herdr-pi
+    archetype: TOOL
+    # Pinned to herdr v0.7.0 (the version whose generate integration file was verified).
+    # When upgrading herdr-bin, bump this pin to match and re-verify the extension shape.
+    version_pin: "herdr-v0.7.0-integration"
+    # install_cmd runs as root inside the Docker runtime stage (RUN step).
+    # Step 1: create dest dir and ensure ~/.pi/agent/extensions/ exists for herdr's write
+    # Step 2: run herdr integration install pi (D8: public CLI only — never hand-authored)
+    # Step 3: relocate generated file to cage's root-owned load path (D8 bounded deviation)
+    # Step 4: chown root:root + chmod 0644 (root-owned so agent cannot replace/weaken)
+    # Step 5: clean up the intermediate path herdr wrote to (keep image tidy)
+    install_cmd: "mkdir -p /root/.pi/agent/extensions /etc/rip-cage/pi/herdr-ext && herdr integration install pi && cp /root/.pi/agent/extensions/herdr-agent-state.ts /etc/rip-cage/pi/herdr-ext/ && chown -R root:root /etc/rip-cage/pi/herdr-ext && chmod 0644 /etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts && rm -rf /root/.pi"
+    # No internet needed: herdr generates the extension locally (static file generation).
+    egress: []
+    # mounts: herdr config directory (contains the unix socket) from host to cage.
+    # Used in scenario (b) — host herdr watching the cage (not herdr-as-multiplexer).
+    # skip-if-host-missing: if ~/.config/herdr/ is absent, this mount is omitted silently.
+    # Directory mount (not single-file) — atomic rename safety (bd memory).
+    mounts:
+      - host: "~/.config/herdr"
+        dest: "/home/agent/.config/herdr"
+        mode: "ro"
+    # launch_args: contributes the -e flag that loads the herdr extension when pi launches.
+    # rc build assembles these across all composed fragments (ADR-027 D4 / rip-cage-l72i.1).
+    # When DCG is composed (dcg-wiring fragment first), --no-extensions appears before -e,
+    # so auto-discovery is disabled and only the explicitly listed extensions load.
+    # Without DCG, -e is still additive — pi loads the herdr ext plus any auto-discovered ones.
+    launch_args: ["-e", "/etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts"]

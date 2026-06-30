@@ -213,8 +213,9 @@ unset _rc_asset
 # DATA-DRIVEN table: stage_name:agent_subpath (NO per-agent if/elif branch — ADR-005 D12).
 # For instruction-content assets (skills/prompts/roles/AGENTS.md/SYSTEM.md/APPEND_SYSTEM.md):
 # symlink directly (skips gracefully when not present via the [ -e ] guard below).
-# For the subagent extension: symlink ONLY the subagent subdir alongside the baked dcg-gate.ts
-# — NEVER replace ~/.pi/agent/extensions/ itself (that would shadow the floor guard).
+# Pi launch extensions (e.g. the subagent extension) are no longer projected here —
+# they are declared as manifest recipe fragments (mount + launch_args) and assembled
+# by rc build into the pi shim (rip-cage-l72i.3, ADR-027 D3/D4); rc names no tool.
 # ADR-027 D1: mounts are :ro (host→cage); symlinks here are cage-internal only.
 for _pi_substrate in "pi-skills:skills" "pi-prompts:prompts" "pi-roles:roles" "pi-AGENTS.md:AGENTS.md" "pi-SYSTEM.md:SYSTEM.md" "pi-APPEND_SYSTEM.md:APPEND_SYSTEM.md"; do
   _pi_stage="/home/agent/.rc-context/${_pi_substrate%%:*}"
@@ -232,15 +233,15 @@ for _pi_substrate in "pi-skills:skills" "pi-prompts:prompts" "pi-roles:roles" "p
 done
 unset _pi_substrate _pi_stage _pi_dest
 
-# Subagent extension: loaded directly from its ro-mount staging path by pi-wrapper.sh.
-# ADR-027 D1/D3 (olen retired): the wrapper loads the subagent via
-#   -e /home/agent/.rc-context/pi-ext-subagent/index.ts
-# No symlink into extensions/ is needed, and no sudo is required — extensions/ is
-# agent-owned now that the DCG guard lives at /etc/rip-cage/pi/dcg-gate.ts (its own
-# separate root-owned load path).
+# Pi extension staging path: extensions composed via recipe fragments are projected
+# by rc up at /home/agent/.rc-context/pi-ext-<name>/ (ro), then loaded by the assembled
+# pi shim via manifest-declared launch_args -e flags (ADR-027 D3/D4 / rip-cage-l72i.3).
+# No symlink into extensions/ is needed; the shim loads from the staging path directly.
+# Extension mounts are declared in each recipe's mounts: entry (e.g. examples/pi/subagent-fragment.yaml)
+# and assembled by _manifest_build_mount_args at rc up time — not hardcoded in rc source.
 _pi_ext_stage="/home/agent/.rc-context/pi-ext-subagent"
 if [ -e "${_pi_ext_stage}" ] || [ -L "${_pi_ext_stage}" ]; then
-  echo "[rip-cage] pi subagent: ro-mount present at ${_pi_ext_stage} (loaded by wrapper via -e)"
+  echo "[rip-cage] pi extension: ro-mount present at ${_pi_ext_stage} (loaded via manifest-declared launch_args -e)"
 fi
 unset _pi_ext_stage
 

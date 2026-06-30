@@ -1,0 +1,63 @@
+version: 1
+tools:
+  # pi/subagent recipe fragment — composable pi extension for sub-agent dispatch
+  # (rip-cage-l72i.3: migrated from hardcoded SUBAGENT_EXT slot / D2 interim to
+  # the manifest-declared mechanism — ADR-027 D3/D4 / rip-cage-l72i.1)
+  #
+  # WHAT THIS FRAGMENT DOES (self-contained — declare once, compose to activate):
+  #   1. mounts: declares the extension dir ro from the host into the cage staging path.
+  #      Source: ~/.pi/agent/extensions/subagent/ (the sub-agent extension package).
+  #      Dest:   /home/agent/.rc-context/pi-ext-subagent/ (the cage-internal staging dir).
+  #      skip-if-host-missing: if the source dir is absent, the mount is skipped (no error).
+  #   2. launch_args: ["-e", "/home/agent/.rc-context/pi-ext-subagent/index.ts"]
+  #      rc build bakes this -e flag into the assembled pi shim. The shim includes a
+  #      fail-loud check: if the extension file is absent at pi launch, pi refuses to start.
+  #
+  # COMPOSING THIS FRAGMENT:
+  #   Copy this entry into your tools.yaml (alongside pi-recipe and optionally dcg) and run:
+  #     rc build
+  #   Composing => extension is required at launch (fail-loud if source absent — correct:
+  #   you declared you want it). NOT composing => -e absent => no extension loaded (graceful).
+  #
+  # MIGRATION NOTE (D2-interim retirement):
+  #   Previously, sub-agent dispatch loaded via a hardcoded SUBAGENT_EXT slot in the
+  #   pi wrapper and was auto-projected whenever ~/.pi/agent/extensions/subagent/ existed.
+  #   That auto-projection behavior is retired (rip-cage-l72i.3). To get sub-agent dispatch,
+  #   compose this fragment explicitly in your tools.yaml. One line — zero rc source edits.
+  #
+  # ORDERING:
+  #   Compose AFTER the dcg-wiring fragment (if using DCG) so the guard loads first.
+  #   Fragment order in tools.yaml = load order in the assembled shim (ADR-027 D4).
+  #
+  # ADR-005 D12: rc names no tool; this fragment is opt-in. rc builds the shim from
+  # manifest-declared launch_args only — no tool-specific special-cases in rc source.
+  # ADR-027 D3/D4: selection by composing this fragment (D3); launch args + mount declared
+  # in manifest, assembled by rc build (D4). install_cmd is a no-op (nothing to bake at
+  # build time — the extension is host-projected at rc up time via the mounts: entry).
+
+  # ---------------------------------------------------------------------------
+  # TOOL entry: self-contained sub-agent extension declaration.
+  # install_cmd is a no-op (':') — nothing is baked into the image at build time.
+  # The extension source lives on the host and is projected read-only at rc up time
+  # via the mounts: entry below. launch_args wires the -e flag into the pi shim.
+  # ---------------------------------------------------------------------------
+  - name: pi-subagent
+    archetype: TOOL
+    version_pin: "bundled-recipe"
+    install_cmd: ":"
+    egress: []
+    mounts:
+      # ro mount: project the sub-agent extension from host into cage staging path.
+      # skip-if-host-missing: if ~/.pi/agent/extensions/subagent/ is absent,
+      # the mount is skipped (no error from rc up). However, the pi shim will fail-loud
+      # at launch if the extension file is not present at the declared -e path below.
+      # Compose this fragment only when you have the extension on your host.
+      - host: "~/.pi/agent/extensions/subagent"
+        dest: "/home/agent/.rc-context/pi-ext-subagent"
+        mode: ro
+    # launch_args: contributed pi launch flags (ADR-027 D4 / rip-cage-l72i.1).
+    # rc build concatenates launch_args across composed fragments in fragment order
+    # and bakes a generic pi shim at /usr/local/bin/pi. The shim includes a fail-loud
+    # check: if a -e <path> is declared but the file is absent at pi launch, pi refuses
+    # to start. (The mount above provides the file; both must be in sync.)
+    launch_args: ["-e", "/home/agent/.rc-context/pi-ext-subagent/index.ts"]

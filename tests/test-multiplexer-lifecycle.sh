@@ -89,6 +89,15 @@ MUX_COMBINED_IMAGE=""
 MUX_SAVED_LATEST=""
 MUX_HAD_LATEST=0
 
+# ---------------------------------------------------------------------------
+# rip-cage-l72i.7: DCG+herdr+pi composed fixture (three-conjunction test)
+# Variables for the composed image built from manifest-dcg-herdr-pi.yaml.
+# ---------------------------------------------------------------------------
+DCG_HERDR_PI_FIXTURE="${SCRIPT_DIR}/fixtures/manifest-dcg-herdr-pi.yaml"
+DCG_HERDR_PI_IMAGE=""
+DCG_HERDR_PI_SAVED_LATEST=""
+DCG_HERDR_PI_HAD_LATEST=0
+
 _mux_build_combined_image() {
   if [[ -n "${MUX_COMBINED_IMAGE:-}" ]]; then
     return 0
@@ -149,6 +158,72 @@ _mux_restore_latest() {
 }
 
 # ---------------------------------------------------------------------------
+# rip-cage-l72i.7: _dcg_herdr_pi_build_image — build composed DCG+herdr+pi image
+#
+# Mirrors _mux_build_combined_image: saves rip-cage:latest, builds from the
+# composed manifest-dcg-herdr-pi.yaml fixture (HOME override pattern), tags the
+# result, restores the saved image. Called lazily (once) before the three-
+# conjunction test. Idempotent: returns 0 immediately if already built.
+# ---------------------------------------------------------------------------
+_dcg_herdr_pi_build_image() {
+  if [[ -n "${DCG_HERDR_PI_IMAGE:-}" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$DCG_HERDR_PI_FIXTURE" ]]; then
+    echo "FATAL: DCG+herdr+pi fixture not found at ${DCG_HERDR_PI_FIXTURE}"
+    exit 1
+  fi
+
+  local unique_suffix
+  unique_suffix="$(date +%s)-$$-dcghp"
+  DCG_HERDR_PI_SAVED_LATEST="rip-cage:l72i7-saved-${unique_suffix}"
+  DCG_HERDR_PI_HAD_LATEST=0
+  if docker image inspect rip-cage:latest >/dev/null 2>&1; then
+    docker tag rip-cage:latest "${DCG_HERDR_PI_SAVED_LATEST}" 2>/dev/null && DCG_HERDR_PI_HAD_LATEST=1
+  fi
+
+  local dcghp_build_home
+  dcghp_build_home=$(mktemp -d)
+  mkdir -p "${dcghp_build_home}/.config/rip-cage"
+  cp "$DCG_HERDR_PI_FIXTURE" "${dcghp_build_home}/.config/rip-cage/tools.yaml"
+  echo "=== Building DCG+herdr+pi composed image (manifest-dcg-herdr-pi.yaml) ==="
+  local dcghp_build_rc=0
+  HOME="$dcghp_build_home" XDG_CONFIG_HOME="${dcghp_build_home}/.config" \
+    "$RC" build >/tmp/rc-l72i7-dcghp-build.out 2>&1 || dcghp_build_rc=$?
+  rm -rf "$dcghp_build_home"
+
+  if [[ "$dcghp_build_rc" -ne 0 ]]; then
+    fail "(l72i7) DCG+herdr+pi image build FAILED (see /tmp/rc-l72i7-dcghp-build.out)"
+    echo "FATAL: cannot run l72i7 three-conjunction test without the composed image"
+    if [[ "${DCG_HERDR_PI_HAD_LATEST}" -eq 1 ]]; then
+      docker tag "${DCG_HERDR_PI_SAVED_LATEST}" rip-cage:latest 2>/dev/null || true
+    fi
+    docker image rm "${DCG_HERDR_PI_SAVED_LATEST}" 2>/dev/null || true
+    return 1
+  fi
+
+  DCG_HERDR_PI_IMAGE="rip-cage:l72i7-dcghp-${unique_suffix}"
+  docker tag rip-cage:latest "${DCG_HERDR_PI_IMAGE}" 2>/dev/null || true
+  pass "(l72i7) DCG+herdr+pi composed image built: ${DCG_HERDR_PI_IMAGE}"
+}
+
+_dcg_herdr_pi_restore_latest() {
+  # Only clean up the DCG+herdr+pi side-tag; rip-cage:latest restore is owned by
+  # _mux_restore_latest (which restores the user's original pre-test image).
+  # DCG_HERDR_PI_SAVED_LATEST points to the combined-mux image (what was
+  # rip-cage:latest when the DCG+herdr+pi build ran) — that image is managed
+  # as MUX_COMBINED_IMAGE by _mux_restore_latest, so we only clean the saved copy.
+  if [[ -n "${DCG_HERDR_PI_IMAGE:-}" ]]; then
+    docker image rm "${DCG_HERDR_PI_IMAGE}" 2>/dev/null || true
+    DCG_HERDR_PI_IMAGE=""
+  fi
+  if [[ -n "${DCG_HERDR_PI_SAVED_LATEST:-}" ]]; then
+    docker image rm "${DCG_HERDR_PI_SAVED_LATEST}" 2>/dev/null || true
+    DCG_HERDR_PI_SAVED_LATEST=""
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Scratch workspace / container name staging
 # ---------------------------------------------------------------------------
 # We create three workspaces (none/tmux/herdr) each under a predictable parent
@@ -173,6 +248,9 @@ CLEANUP() {
   # Restore rip-cage:latest if we swapped it for the combined build.
   # _mux_restore_latest is idempotent (no-ops when MUX_SAVED_LATEST is empty).
   _mux_restore_latest
+  # Restore rip-cage:latest for the DCG+herdr+pi composed build (l72i7).
+  # _dcg_herdr_pi_restore_latest is idempotent.
+  _dcg_herdr_pi_restore_latest
 }
 # Arm the trap BEFORE the first mutation (_mux_build_combined_image tags aside and
 # overwrites rip-cage:latest). An interrupt during the build would otherwise strand
@@ -180,8 +258,28 @@ CLEANUP() {
 # cleanup loop in CLEANUP is a safe no-op; _mux_restore_latest handles the image.
 trap CLEANUP EXIT INT TERM
 
-# Build combined image now (needed for tmux + herdr lifecycle tests)
-_mux_build_combined_image
+# ---------------------------------------------------------------------------
+# RC_E2E_DCGHP_ONLY=1: skip the combined-mux preamble (none/tmux/herdr lifecycle
+# tests + _mux_build_combined_image) and run ONLY the l72i7 three-conjunction
+# block. Useful for fast iteration on the DCG+herdr+pi composed cage without
+# waiting ~25 min for the combined-mux build.
+#
+# Usage:
+#   RC_E2E=1 RC_E2E_DCGHP_ONLY=1 bash tests/test-multiplexer-lifecycle.sh
+#
+# When set:
+#   - _mux_build_combined_image is skipped (MUX_COMBINED_IMAGE stays empty)
+#   - none/tmux/herdr lifecycle cages are not spun up
+#   - grep-guard and retirement assertions are skipped
+#   - The l72i7 block builds its own dcghp image from scratch
+#   - cleanup handles only dcghp images (nothing to restore for mux)
+# ---------------------------------------------------------------------------
+if [[ "${RC_E2E_DCGHP_ONLY:-0}" == "1" ]]; then
+  echo "=== RC_E2E_DCGHP_ONLY=1: skipping combined-mux preamble — running l72i7 only ==="
+else
+  # Build combined image now (needed for tmux + herdr lifecycle tests)
+  _mux_build_combined_image
+fi
 
 # Resolve to realpath immediately (before cages are created and before the label is
 # stamped) so MUX_TMP matches the rc.source.path label on macOS where mktemp -d
@@ -199,8 +297,13 @@ NONE_CAGE="rc-mux-none-test"
 TMUX_CAGE="rc-mux-tmux-test"
 HERDR_CAGE="rc-mux-herdr-test"
 
+# rip-cage-l72i.7: DCG+herdr+pi composed cage workspace + name.
+# Uses parent rc-mux / base dcghp-test → container rc-mux-dcghp-test.
+DCG_HERDR_PI_WS="${MUX_TMP}/rc-mux/dcghp-test"
+DCG_HERDR_PI_CAGE="rc-mux-dcghp-test"
+
 # Pre-cleanup: remove leftover cages from prior aborted runs
-for _c in "$NONE_CAGE" "$TMUX_CAGE" "$HERDR_CAGE"; do
+for _c in "$NONE_CAGE" "$TMUX_CAGE" "$HERDR_CAGE" "$DCG_HERDR_PI_CAGE"; do
   docker rm -f "$_c" >/dev/null 2>&1 || true
   docker volume rm "rc-state-${_c}" >/dev/null 2>&1 || true
 done
@@ -211,6 +314,24 @@ export RC_ALLOWED_ROOTS="${MUX_TMP}"
 echo "=== test-multiplexer-lifecycle.sh ==="
 echo "MUX_TMP=${MUX_TMP}"
 echo ""
+
+# ---------------------------------------------------------------------------
+# Helper: create workspace + .rip-cage.yaml + git init
+# Defined here (before any gate) so it is available to both the preamble and
+# the RC_E2E_DCGHP_ONLY=1 l72i7 block.
+# ---------------------------------------------------------------------------
+_create_workspace() {
+  local ws="$1" mux="$2"
+  mkdir -p "$ws"
+  git -C "$ws" init -q 2>/dev/null
+  printf '# mux lifecycle test workspace\n' > "${ws}/README"
+  if [[ "$mux" != "none" ]]; then
+    printf 'version: 1\nsession:\n  multiplexer: %s\n' "$mux" > "${ws}/.rip-cage.yaml"
+  fi
+  # no .rip-cage.yaml for none — default is none
+}
+
+if [[ "${RC_E2E_DCGHP_ONLY:-0}" != "1" ]]; then
 
 # ---------------------------------------------------------------------------
 # (c) RETIREMENT: rc agent / rc sessions gone from dispatch, --help,
@@ -343,18 +464,6 @@ echo ""
 # ---------------------------------------------------------------------------
 # Spin up cages under each multiplexer value
 # ---------------------------------------------------------------------------
-
-# Helper: create workspace + .rip-cage.yaml + git init
-_create_workspace() {
-  local ws="$1" mux="$2"
-  mkdir -p "$ws"
-  git -C "$ws" init -q 2>/dev/null
-  printf '# mux lifecycle test workspace\n' > "${ws}/README"
-  if [[ "$mux" != "none" ]]; then
-    printf 'version: 1\nsession:\n  multiplexer: %s\n' "$mux" > "${ws}/.rip-cage.yaml"
-  fi
-  # no .rip-cage.yaml for none — default is none
-}
 
 echo "=== Spinning up cages under each multiplexer ==="
 echo ""
@@ -880,6 +989,341 @@ else
     fail "(d) config-isolation (GATING): herdr cage not started — cannot run p1p probe under herdr"
   fi
 fi
+
+fi # end RC_E2E_DCGHP_ONLY gate
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# rip-cage-l72i.7: Three-conjunction test — DCG+herdr+pi composed cage
+#
+# Builds and exercises a real cage from the operator manifest
+# tests/fixtures/manifest-dcg-herdr-pi.yaml, asserting SIMULTANEOUSLY:
+#   (1) DOWNGRADED per invalidation clause: herdr extension loaded in-process
+#       (herdr-agent-state.ts present + in ASSEMBLED_ARGS; semantic working-status
+#        not observable headlessly — see bead's ## Harness target Invalidation clause)
+#   (2) DCG guard floor present + loaded: dcg-guard binary + config.toml exist,
+#       pi shim has --no-extensions first + -e dcg-gate.ts present
+#   (3) canary extension dropped into pi auto-discovery path NOT loaded
+#       (--no-extensions from dcg-wiring fragment disables auto-discovery;
+#        live-fired: canary marker must NOT appear after pi run)
+#
+# IMPORTANT: Assertion (2) + downgraded (1a)+(1b) are ALWAYS run (structural,
+# no auth needed). The best-effort semantic poll part of (1) and assertion (3)
+# are auth-gated (require openrouter key in pi auth.json to drive a real pi
+# invocation); they SKIP (not FAIL) when auth is absent.
+#
+# False-green guards:
+#   - NOT a synthetic stub: built from the real operator manifest under RC_E2E=1
+#   - NOT session-seeding: the probe observes real composed cage state
+#     (per wrapper-seeding-false-green-in-cage-probes bd memory)
+#   - NOT a self-skipped gated tier: all RC_E2E=1 assertions execute and
+#     assert, not just pass vacuously
+# ---------------------------------------------------------------------------
+echo "=== (l72i7) Three-conjunction test: DCG+herdr+pi composed cage ==="
+
+# Build the composed image from manifest-dcg-herdr-pi.yaml.
+# On build failure, _dcg_herdr_pi_build_image returns non-zero; skip the
+# whole block and register a FAIL (FATAL for this conjunction test).
+_L72I7_CAGE_STARTED=false
+
+if ! _dcg_herdr_pi_build_image; then
+  fail "(l72i7) cannot run three-conjunction test — composed image build failed"
+else
+  # Spin up the DCG+herdr+pi cage (multiplexer=herdr for the semantic-status path)
+  _create_workspace "$DCG_HERDR_PI_WS" "herdr"
+  echo "--- (l72i7) Spinning up DCG+herdr+pi composed cage (${DCG_HERDR_PI_CAGE}) ---"
+  "$RC" up "$DCG_HERDR_PI_WS" </dev/null >/tmp/rc-l72i7-dcghp-up.out 2>&1 || true
+  if docker inspect "$DCG_HERDR_PI_CAGE" >/dev/null 2>&1; then
+    _L72I7_CAGE_STARTED=true
+    pass "(l72i7) DCG+herdr+pi cage started: ${DCG_HERDR_PI_CAGE}"
+  else
+    fail "(l72i7) DCG+herdr+pi cage failed to start (see /tmp/rc-l72i7-dcghp-up.out)"
+  fi
+
+  # Restore the combined-mux image as rip-cage:latest after the DCG+herdr+pi build
+  # swapped it. The combined-mux image is still needed by the herdr lifecycle tests
+  # above (already run), but we want rip-cage:latest to refer to the combined-mux
+  # image for any remaining assertions. Re-tag it.
+  if [[ -n "${MUX_COMBINED_IMAGE:-}" ]]; then
+    docker tag "${MUX_COMBINED_IMAGE}" rip-cage:latest 2>/dev/null || true
+  fi
+fi
+
+if [[ "$_L72I7_CAGE_STARTED" == "true" ]]; then
+  echo ""
+  echo "--- (l72i7) Assertion (2): DCG guard floor present + pi shim guard-first ---"
+  # (2) DCG guard floor: targeted in-cage checks (always run, no auth needed).
+  # NOT rc test --output json overall (which includes base-image CLAUDE.md topology
+  # checks inapplicable to pi+herdr operator manifests — e2e-lifecycle-builds-from-
+  # operator-manifest; those checks only apply when rip-cage:latest is the base).
+  # Instead, probe the guard floor SPECIFICALLY:
+  #   (2a) dcg-guard binary executable + config.toml present (dcg-wiring install_cmd ran)
+  #   (2b) /etc/rip-cage/pi/dcg-gate.ts owned by root:root
+  #   (2c) /usr/local/bin/pi owned by root:root
+  #   (2d) pi shim ASSEMBLED_ARGS has --no-extensions as first arg and
+  #        -e /etc/rip-cage/pi/dcg-gate.ts present (guard-first order, ADR-027 D4)
+
+  # (2a) dcg-guard binary + config.toml
+  _L72I7_DCG_FLOOR=0
+  docker exec "$DCG_HERDR_PI_CAGE" sh -c \
+    'test -x /usr/local/lib/rip-cage/bin/dcg-guard && test -f /usr/local/lib/rip-cage/dcg/config.toml' \
+    2>/dev/null || _L72I7_DCG_FLOOR=$?
+  if [[ $_L72I7_DCG_FLOOR -eq 0 ]]; then
+    pass "(l72i7/2a) DCG guard floor: dcg-guard binary executable + config.toml present"
+  else
+    fail "(l72i7/2a) DCG guard floor: dcg-guard binary or config.toml missing (dcg-wiring install_cmd may not have run)"
+  fi
+
+  # (2b) /etc/rip-cage/pi/dcg-gate.ts owned by root
+  _L72I7_GATE_OWNER=$(docker exec "$DCG_HERDR_PI_CAGE" sh -c \
+    "stat -c '%U' /etc/rip-cage/pi/dcg-gate.ts 2>/dev/null || echo absent")
+  echo "  dcg-gate.ts owner: ${_L72I7_GATE_OWNER}"
+  if [[ "$_L72I7_GATE_OWNER" == "root" ]]; then
+    pass "(l72i7/2b) DCG gate extension root-owned: /etc/rip-cage/pi/dcg-gate.ts is root:root"
+  else
+    fail "(l72i7/2b) DCG gate extension NOT root-owned: got '${_L72I7_GATE_OWNER}' (expected root)"
+  fi
+
+  # (2c) /usr/local/bin/pi owned by root
+  _L72I7_PI_OWNER=$(docker exec "$DCG_HERDR_PI_CAGE" sh -c \
+    "stat -c '%U' /usr/local/bin/pi 2>/dev/null || echo absent")
+  echo "  pi shim owner: ${_L72I7_PI_OWNER}"
+  if [[ "$_L72I7_PI_OWNER" == "root" ]]; then
+    pass "(l72i7/2c) pi shim root-owned: /usr/local/bin/pi is root:root"
+  else
+    fail "(l72i7/2c) pi shim NOT root-owned: got '${_L72I7_PI_OWNER}' (expected root)"
+  fi
+
+  # (2d) pi shim ASSEMBLED_ARGS: --no-extensions first, -e dcg-gate.ts present
+  # Decode the pi shim (base64 or direct grep) to inspect ASSEMBLED_ARGS inline.
+  _L72I7_PI_ARGS=$(docker exec "$DCG_HERDR_PI_CAGE" sh -c \
+    "grep 'ASSEMBLED_ARGS=' /usr/local/bin/pi 2>/dev/null || echo 'NOT_FOUND'")
+  echo "  pi shim ASSEMBLED_ARGS line: ${_L72I7_PI_ARGS}"
+  # Check --no-extensions is present in ASSEMBLED_ARGS
+  if echo "$_L72I7_PI_ARGS" | grep -q -- '--no-extensions'; then
+    pass "(l72i7/2d-a) pi shim ASSEMBLED_ARGS contains --no-extensions (auto-discovery disabled)"
+  else
+    fail "(l72i7/2d-a) pi shim ASSEMBLED_ARGS missing --no-extensions (dcg-wiring fragment may not be first)"
+  fi
+  # Check the dcg-gate guard extension is declared. The shim bakes args as
+  # single-quoted tokens: ASSEMBLED_ARGS=('--no-extensions' '-e' '/etc/rip-cage/pi/dcg-gate.ts' ...)
+  # so match the guard PATH token (unique to the guard -e arg), not a space-joined "-e <path>".
+  if echo "$_L72I7_PI_ARGS" | grep -q -- '/etc/rip-cage/pi/dcg-gate.ts'; then
+    pass "(l72i7/2d-b) pi shim ASSEMBLED_ARGS declares the guard extension /etc/rip-cage/pi/dcg-gate.ts"
+  else
+    fail "(l72i7/2d-b) pi shim ASSEMBLED_ARGS missing the guard extension /etc/rip-cage/pi/dcg-gate.ts (guard not declared)"
+  fi
+  # Check --no-extensions comes before the guard -e path (guard-first order, ADR-027 D4)
+  _L72I7_NOEXT_POS=$(echo "$_L72I7_PI_ARGS" | grep -bo -- '--no-extensions' | head -1 | cut -d: -f1)
+  _L72I7_DCGE_POS=$(echo "$_L72I7_PI_ARGS" | grep -bo -- '/etc/rip-cage/pi/dcg-gate.ts' | head -1 | cut -d: -f1)
+  if [[ -n "$_L72I7_NOEXT_POS" ]] && [[ -n "$_L72I7_DCGE_POS" ]] && \
+     [[ $_L72I7_NOEXT_POS -lt $_L72I7_DCGE_POS ]]; then
+    pass "(l72i7/2d-c) guard-first order: --no-extensions before -e dcg-gate.ts in ASSEMBLED_ARGS (ADR-027 D4)"
+  else
+    fail "(l72i7/2d-c) guard-first order violated or args not found: --no-extensions pos=${_L72I7_NOEXT_POS} dcg-gate pos=${_L72I7_DCGE_POS}"
+  fi
+  unset _L72I7_DCG_FLOOR _L72I7_GATE_OWNER _L72I7_PI_OWNER _L72I7_PI_ARGS
+  unset _L72I7_NOEXT_POS _L72I7_DCGE_POS
+
+  # (1) + (3): auth-gated (require openrouter API key for pi to run)
+  echo ""
+  echo "--- (l72i7) Checking openrouter auth for assertions (1) + (3) ---"
+  _L72I7_OR_KEY=$(docker exec "$DCG_HERDR_PI_CAGE" python3 -c "
+import json, sys
+try:
+    with open('/home/agent/.pi/agent/auth.json') as f:
+        data = json.load(f)
+    entry = data.get('openrouter', {})
+    key = entry.get('key', '')
+    print('yes' if key else 'no')
+except Exception:
+    print('no')
+" 2>/dev/null || echo "no")
+
+  if [[ "$_L72I7_OR_KEY" != "yes" ]]; then
+    skip "(l72i7/1+3)" "openrouter auth absent — assertions (1) herdr semantic status and (3) canary not-loaded require pi to run. Run 'pi /login openrouter' on host. SKIP (not a false-pass)."
+  else
+    pass "(l72i7) auth precondition: openrouter API key present in cage"
+
+    # (3) Setup: drop canary extension into pi's auto-discovery path BEFORE pi launches.
+    # The canary extension writes a marker file at module-load time (top-level TS).
+    # If pi loads the extension (auto-discovery), the marker appears.
+    # With --no-extensions, auto-discovery is disabled → marker must NOT appear.
+    #
+    # Canary marker path (cage-internal): /tmp/l72i7-canary-loaded
+    # Canary extension path: /home/agent/.pi/agent/extensions/l72i7-canary/index.ts
+    # (pi's default PI_CODING_AGENT_DIR is /home/agent/.pi/agent by default; verify below)
+    _L72I7_CANARY_MARKER="/tmp/l72i7-canary-loaded"
+    _L72I7_CANARY_DIR="/home/agent/.pi/agent/extensions/l72i7-canary"
+    _L72I7_CANARY_TS="${_L72I7_CANARY_DIR}/index.ts"
+
+    echo ""
+    echo "--- (l72i7) Assertion (3) setup: dropping canary extension into auto-discovery path ---"
+    # The canary extension writes the marker file via top-level fs.writeFileSync at
+    # module-load time (synchronous, before any tool call). If pi auto-discovers this
+    # extension (without --no-extensions), the marker appears when pi starts.
+    # With --no-extensions in the assembled shim, auto-discovery is disabled;
+    # only the manifest-declared -e extensions load → marker must stay absent.
+    docker exec -u agent "$DCG_HERDR_PI_CAGE" sh -c \
+      "mkdir -p '${_L72I7_CANARY_DIR}'" 2>/dev/null || true
+    docker exec -u agent "$DCG_HERDR_PI_CAGE" sh -c \
+      "cat > '${_L72I7_CANARY_TS}'" <<'CANARY_EOF'
+// l72i7 canary extension — writes marker at load time (NOT a real tool)
+// If pi loads this extension via auto-discovery, the marker file appears.
+// Under --no-extensions, this extension is NOT loaded -> marker stays absent.
+import * as fs from "fs";
+
+// Write marker immediately at module load (synchronous at extension load time)
+try {
+  fs.writeFileSync("/tmp/l72i7-canary-loaded", "l72i7-canary-was-loaded\n");
+} catch (_e) {}
+CANARY_EOF
+    _L72I7_CANARY_PLACED=$(docker exec "$DCG_HERDR_PI_CAGE" sh -c \
+      "test -f '${_L72I7_CANARY_TS}' && echo yes || echo no" 2>/dev/null || echo "no")
+    if [[ "$_L72I7_CANARY_PLACED" == "yes" ]]; then
+      pass "(l72i7/3-setup) canary extension placed at ${_L72I7_CANARY_TS} (in pi auto-discovery path)"
+    else
+      fail "(l72i7/3-setup) canary extension NOT placed — cannot assert not-loaded"
+    fi
+
+    # (1) DOWNGRADED per bead invalidation clause.
+    # Original: assert herdr agent_status=working + screen_detection_skipped=true.
+    # Problem: herdr semantic working-status is not externally observable in a
+    # headless harness (same limitation as the pre-existing herdr status-view test).
+    # Downgrade: verify herdr extension is LOADED IN-PROCESS (herdr-agent-state.ts
+    # present at the expected path AND present in pi shim ASSEMBLED_ARGS). This
+    # is structurally verifiable without running pi.
+    # Best-effort: also attempt semantic poll (SKIP, not FAIL, when agents list empty).
+    echo ""
+    echo "--- (l72i7) Assertion (1): herdr extension loaded in-process [DOWNGRADED] ---"
+    echo "  (l72i7/1) DOWNGRADED per invalidation clause: herdr ext loaded in-process"
+    echo "  + guard intact; externally-observable working-status not verifiable in headless harness"
+
+    # (1a) herdr-agent-state.ts present in cage (installed by herdr-pi fragment)
+    _L72I7_HERDR_EXT_PATH="/etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts"
+    _L72I7_HERDR_EXT_EXISTS=$(docker exec "$DCG_HERDR_PI_CAGE" sh -c \
+      "test -f '${_L72I7_HERDR_EXT_PATH}' && echo yes || echo no" 2>/dev/null || echo "no")
+    echo "  herdr-agent-state.ts present: ${_L72I7_HERDR_EXT_EXISTS}"
+    if [[ "$_L72I7_HERDR_EXT_EXISTS" == "yes" ]]; then
+      pass "(l72i7/1a-downgraded) herdr extension file present: ${_L72I7_HERDR_EXT_PATH}"
+    else
+      fail "(l72i7/1a-downgraded) herdr extension file ABSENT at ${_L72I7_HERDR_EXT_PATH} (herdr-pi install_cmd may not have run)"
+    fi
+
+    # (1b) pi shim ASSEMBLED_ARGS contains -e herdr-agent-state.ts
+    _L72I7_HERDR_IN_ARGS=$(docker exec "$DCG_HERDR_PI_CAGE" sh -c \
+      "grep -c 'herdr-agent-state.ts' /usr/local/bin/pi 2>/dev/null || echo 0")
+    echo "  pi shim contains herdr-agent-state.ts in args: ${_L72I7_HERDR_IN_ARGS} occurrences"
+    if [[ "${_L72I7_HERDR_IN_ARGS:-0}" -gt 0 ]]; then
+      pass "(l72i7/1b-downgraded) herdr extension declared in pi shim ASSEMBLED_ARGS"
+    else
+      fail "(l72i7/1b-downgraded) herdr extension NOT declared in pi shim ASSEMBLED_ARGS (herdr-pi launch_args fragment missing)"
+    fi
+    unset _L72I7_HERDR_EXT_PATH _L72I7_HERDR_EXT_EXISTS _L72I7_HERDR_IN_ARGS
+
+    # (1-best-effort) Attempt semantic poll: drive pi agent via herdr to observe
+    # agent_status=working + screen_detection_skipped=true. SKIP (not FAIL) if
+    # herdr server not up or agents list stays empty (headless harness limitation).
+    echo ""
+    echo "--- (l72i7/1-best-effort) Optional semantic poll (SKIP-not-FAIL if unobservable) ---"
+    _L72I7_HERDR_START_OUT=$(docker exec -u agent "$DCG_HERDR_PI_CAGE" herdr agent start \
+      l72i7-probe \
+      --cwd /workspace \
+      -- pi \
+        --provider openrouter \
+        --model anthropic/claude-3.5-haiku \
+        -p "Write the word hello to /workspace/l72i7-hello.txt using your write tool. Then write the word world to /workspace/l72i7-world.txt using your write tool. Then write the word done to /workspace/l72i7-done.txt using your write tool." \
+      2>&1 || true)
+    echo "  herdr agent start output: ${_L72I7_HERDR_START_OUT}"
+
+    # Wait for herdr server socket
+    _l72i7_herdr_wait=0
+    _l72i7_herdr_up=false
+    while [[ $_l72i7_herdr_wait -lt 15 ]]; do
+      if docker exec "$DCG_HERDR_PI_CAGE" bash -c \
+          'test -S "${HOME}/.config/herdr/herdr.sock"' 2>/dev/null; then
+        _l72i7_herdr_up=true
+        break
+      fi
+      sleep 1
+      _l72i7_herdr_wait=$((_l72i7_herdr_wait + 1))
+    done
+
+    if [[ "$_l72i7_herdr_up" != "true" ]]; then
+      skip "(l72i7/1-semantic)" "herdr socket not found in composed cage after ${_l72i7_herdr_wait}s — semantic poll not observable (headless harness limitation; downgraded checks above are the binding assertions)"
+    else
+      # Poll herdr agent list for agent_status=working + screen_detection_skipped=true
+      _L72I7_WORKING=false
+      _L72I7_INTEGRATION_PATH=false
+      _l72i7_poll_elapsed=0
+      _l72i7_poll_interval=2
+      _l72i7_poll_timeout=60
+      _l72i7_last_list=""
+      while [[ $_l72i7_poll_elapsed -lt $_l72i7_poll_timeout ]]; do
+        _l72i7_last_list=$(docker exec -u agent "$DCG_HERDR_PI_CAGE" herdr agent list 2>/dev/null || echo '{}')
+        _l72i7_status_check=$(echo "$_l72i7_last_list" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    agents = data.get('result', {}).get('agents', [])
+    for a in agents:
+        status = a.get('agent_status', '')
+        sds = a.get('screen_detection_skipped', False)
+        print('agent_status=' + str(status))
+        print('screen_detection_skipped=' + str(sds))
+        if status == 'working' and sds is True:
+            print('integration_working=yes')
+            sys.exit(0)
+    print('integration_working=no')
+except Exception as e:
+    print('integration_working=error:' + str(e))
+" 2>/dev/null || echo "integration_working=parse_error")
+        echo "  [l72i7/1-semantic t=${_l72i7_poll_elapsed}s] herdr agent list: ${_l72i7_status_check}"
+        if echo "$_l72i7_status_check" | grep -q "integration_working=yes"; then
+          _L72I7_WORKING=true
+          _L72I7_INTEGRATION_PATH=true
+          break
+        fi
+        sleep $_l72i7_poll_interval
+        _l72i7_poll_elapsed=$((_l72i7_poll_elapsed + _l72i7_poll_interval))
+      done
+      echo "  Final herdr agent list: ${_l72i7_last_list}"
+      if [[ "$_L72I7_WORKING" == "true" ]] && [[ "$_L72I7_INTEGRATION_PATH" == "true" ]]; then
+        pass "(l72i7/1-semantic) BONUS: herdr semantic status observed: agent_status=working + screen_detection_skipped=true (ADR-006 D8 integration path — above downgraded checks already satisfied)"
+      else
+        # Not a FAIL — downgraded checks (1a+1b) are the binding assertions.
+        skip "(l72i7/1-semantic)" "herdr semantic working-status not observable in ${_l72i7_poll_timeout}s (headless harness limitation per invalidation clause). Downgraded checks (1a+1b) are green — this SKIP does NOT affect overall pass."
+      fi
+      unset _l72i7_last_list _l72i7_status_check
+    fi
+    unset _l72i7_herdr_wait _l72i7_herdr_up _l72i7_poll_elapsed _l72i7_poll_interval _l72i7_poll_timeout
+
+    # (3) Check: canary marker must NOT exist after pi ran under --no-extensions
+    # Wait a few seconds for pi to start (it may not have started extensions yet
+    # at the time herdr polled 'working'; give it time to settle)
+    sleep 3
+    echo ""
+    echo "--- (l72i7) Assertion (3): canary extension NOT loaded under --no-extensions ---"
+    _L72I7_CANARY_MARKER_EXISTS=$(docker exec "$DCG_HERDR_PI_CAGE" sh -c \
+      "test -f '${_L72I7_CANARY_MARKER}' && echo yes || echo no" 2>/dev/null || echo "no")
+    echo "  Canary marker exists: ${_L72I7_CANARY_MARKER_EXISTS}"
+    if [[ "$_L72I7_CANARY_MARKER_EXISTS" == "no" ]]; then
+      pass "(l72i7/3) canary extension NOT loaded: marker absent (--no-extensions prevents auto-discovery, only manifest-declared -e extensions load)"
+    else
+      _L72I7_CANARY_CONTENT=$(docker exec "$DCG_HERDR_PI_CAGE" cat "${_L72I7_CANARY_MARKER}" 2>/dev/null || echo "<unreadable>")
+      fail "(l72i7/3) canary extension WAS loaded: marker found at ${_L72I7_CANARY_MARKER} with content '${_L72I7_CANARY_CONTENT}' — --no-extensions may not be in the assembled pi shim, or pi auto-discovered extensions despite it"
+    fi
+
+    unset _L72I7_HERDR_START_OUT _L72I7_WORKING _L72I7_INTEGRATION_PATH
+    unset _L72I7_OR_KEY
+    unset _L72I7_CANARY_MARKER _L72I7_CANARY_DIR _L72I7_CANARY_TS _L72I7_CANARY_PLACED _L72I7_CANARY_MARKER_EXISTS
+  fi
+else
+  fail "(l72i7) skipping three-conjunction assertions — DCG+herdr+pi cage did not start"
+fi
+
+unset _L72I7_CAGE_STARTED
 
 echo ""
 

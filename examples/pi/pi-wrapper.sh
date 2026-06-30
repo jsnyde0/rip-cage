@@ -1,59 +1,55 @@
 #!/usr/bin/env bash
-# pi-wrapper.sh — Rip Cage pi launch hardening (rip-cage-sn1h)
+# pi-wrapper.sh — Rip Cage generic pi launch shim (rip-cage-l72i.1)
 #
-# Intercepts every `pi` invocation and adds:
-#   --no-extensions -e <dcg-gate.ts>
-# disabling auto-discovery so /workspace/.pi/extensions/ admits NO
-# agent-dropped extension. Load order is deterministic.
+# This is the TEMPLATE for the generic pi launch wrapper. At build time, rc build
+# concatenates launch_args declared across composed recipe fragments (in fragment
+# order — guard fragment first) and bakes a wrapper at /usr/local/bin/pi that
+# execs the real pi binary with the assembled args + "$@".
 #
-# The real pi binary lives at /usr/bin/pi (npm-installed global).
-# This wrapper is installed at /usr/local/bin/pi (earlier in PATH).
+# This source file is the human-readable TEMPLATE — no recipe-specific paths,
+# no flags, no extension paths baked here. rc build generates the real image
+# wrapper from this pattern plus the assembled launch_args.
 #
-# ADR-024 D2: closes the workspace-path DCG bypass (rip-cage-sn1h).
-# ADR-025 D3/D4: the dcg-gate.ts extension is the per-agent guard wiring
-#   that must be loaded from the unwritable (root-owned) cage path.
-# ADR-027 D1/D3: guard wiring on its OWN separate root-owned load path
-#   (/etc/rip-cage/pi/dcg-gate.ts) — NOT inside extensions/ (olen retired).
-# wlwc D5 half (b): "launch the agent so it loads guard wiring ONLY
-#   from the unwritable path" — this is that launch hook, baked as a
-#   recipe artifact per the composable-seam design.
+# ADR-027 D4 (FIRM principle): no hardcoded cross-recipe paths in any launch leg.
+# Recipes contribute launch args via manifest launch_args, assembled at rc build.
 #
-# Vetted explicit extension set (loaded in order):
-#   1. /etc/rip-cage/pi/dcg-gate.ts — baked DCG guard
-#      (root-owned, agent-unwritable; own separate load path per ADR-027 D1/D3)
-#   2. /home/agent/.rc-context/pi-ext-subagent/index.ts — host-projected
-#      subagent extension, IF present (ro-mounted from host; loaded directly
-#      without symlink into extensions/)
+# ADR-005 D12: rc owns the composition interface (assembling the shim from
+# manifest-declared launch_args), NOT blessing any specific tool.
 #
-# Any host-composed extensions passed via additional -e flags on the outer
-# invocation are preserved (they appear AFTER these, in $@).
+# Guard wiring (extension flags for the DCG guard or any other guard) is contributed
+# by the relevant recipe fragment and assembled into this shim at build time by
+# rc build. Dropping a guard fragment removes its flags. Zero wrapper edits needed
+# to add or remove any extension.
+#
+# ADR-027 D1/D3: guard wiring stays root-owned on its OWN separate load path,
+# NOT inside extensions/ (olen retired).
 
 set -euo pipefail
 
 REAL_PI="/usr/bin/pi"
-DCG_GATE="/etc/rip-cage/pi/dcg-gate.ts"
-SUBAGENT_EXT="/home/agent/.rc-context/pi-ext-subagent/index.ts"
 
 # Fail loud if the real pi binary is missing (Dockerfile regression)
 if [[ ! -x "$REAL_PI" ]]; then
-  echo "[rip-cage pi-wrapper] FATAL: real pi binary not found at ${REAL_PI}" >&2
+  echo "[rip-cage pi-shim] FATAL: real pi binary not found at ${REAL_PI}" >&2
   exit 1
 fi
 
-# Fail loud if dcg-gate.ts is missing (guard not baked — should never happen)
-if [[ ! -f "$DCG_GATE" ]]; then
-  echo "[rip-cage pi-wrapper] FATAL: DCG guard extension missing at ${DCG_GATE}" >&2
-  echo "[rip-cage pi-wrapper] pi would launch without command gating — refusing to start" >&2
-  exit 1
-fi
+# Assembled launch args — baked in at image build time from manifest launch_args.
+# rc build writes the real wrapper with the assembled args; this placeholder
+# shows the generic exec pattern (ASSEMBLED_ARGS is empty in the template).
+# In the image wrapper, ASSEMBLED_ARGS contains the concatenated launch_args
+# from all composed fragments in fragment order.
+ASSEMBLED_ARGS=()
 
-# Build the vetted extension list
-VETTED_EXTENSIONS=("--no-extensions" "-e" "$DCG_GATE")
+# Fail loud if any -e <ext-path> arg is missing (guard wiring not baked).
+# This check is generic — works for any extension path contributed by any fragment.
+_prev=""
+for _arg in "${ASSEMBLED_ARGS[@]+"${ASSEMBLED_ARGS[@]}"}"; do
+  if [[ "$_prev" == "-e" && ! -f "$_arg" ]]; then
+    echo "[rip-cage pi-shim] FATAL: declared extension missing at ${_arg} — refusing to launch" >&2
+    exit 1
+  fi
+  _prev="$_arg"
+done
 
-# Include the subagent extension if projected (ro-mounted from host at rc-context path)
-if [[ -f "$SUBAGENT_EXT" ]]; then
-  VETTED_EXTENSIONS+=("-e" "$SUBAGENT_EXT")
-fi
-
-# Exec the real pi with vetted flags prepended, all original args preserved
-exec "$REAL_PI" "${VETTED_EXTENSIONS[@]}" "$@"
+exec "$REAL_PI" "${ASSEMBLED_ARGS[@]+"${ASSEMBLED_ARGS[@]}"}" "$@"

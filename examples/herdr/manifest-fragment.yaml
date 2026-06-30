@@ -23,11 +23,12 @@ tools:
   # TOOL entry: installs the herdr binary at image build time.
   - name: herdr-bin
     archetype: TOOL
-    # Pinned release: github.com/ogulcancelik/herdr v0.6.10
+    # Pinned release: github.com/ogulcancelik/herdr v0.7.0
     # Prebuilt binaries: herdr-linux-x86_64, herdr-linux-aarch64.
-    # SHA-256 checksums sourced from GitHub API release asset digest field.
-    version_pin: "v0.6.10"
-    install_cmd: "ARCH=$(uname -m) && if [ \"$ARCH\" = \"aarch64\" ]; then TARGET=aarch64; EXPECTED_SHA=b3144a41df364f0541bbbdfe840fa61dbd67daf6e313ee317fe495d2ccf4927a; else TARGET=x86_64; EXPECTED_SHA=78d298d5a1ef076b4607e8e3c92d98f5de9f0cb30daf31aa910a1a6e9abb4fa1; fi && curl -fsSL \"https://github.com/ogulcancelik/herdr/releases/download/v0.6.10/herdr-linux-${TARGET}\" -o /tmp/herdr && echo \"${EXPECTED_SHA}  /tmp/herdr\" | sha256sum -c - && install -m 755 /tmp/herdr /usr/local/bin/herdr && rm -f /tmp/herdr"
+    # SHA-256 checksums computed from the v0.7.0 release binaries (rip-cage-l72i.7 /
+    # rip-cage-1pgp.2 — bumped from v0.6.10 to match herdr-pi's integration target).
+    version_pin: "v0.7.0"
+    install_cmd: "ARCH=$(uname -m) && if [ \"$ARCH\" = \"aarch64\" ]; then TARGET=aarch64; EXPECTED_SHA=77407959c514c25c870bbcc6d2a2c86fef5b5701ed0c7c37745d7412e8563d72; else TARGET=x86_64; EXPECTED_SHA=ad2a5d480a4e04609a9dd30a19ec07854578df6b5f0ea9299246963baf40363b; fi && curl -fsSL \"https://github.com/ogulcancelik/herdr/releases/download/v0.7.0/herdr-linux-${TARGET}\" -o /tmp/herdr && echo \"${EXPECTED_SHA}  /tmp/herdr\" | sha256sum -c - && install -m 755 /tmp/herdr /usr/local/bin/herdr && rm -f /tmp/herdr"
     # herdr opens no external connections at runtime (unix socket only, localhost).
     # The download happens at image build time only; no runtime egress needed.
     egress:

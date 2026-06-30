@@ -10,22 +10,22 @@ tools:
   # command guard is a composable recipe ABOVE it).
   #
   # Diff vs examples/pi/manifest-fragment.yaml (the default-on guarded recipe):
-  #   - the launch wrapper exec's the REAL pi binary directly (no --no-extensions,
-  #     no -e dcg-gate.ts) so pi's normal extension auto-discovery is active.
-  #   - NO dcg-gate.ts is baked.
+  #   - no launch_args declared by any composed fragment, so rc build bakes NO pi
+  #     shim. pi runs from its installed binary (/usr/bin/pi) with its normal
+  #     extension auto-discovery active.
+  #   - NO dcg-gate.ts is baked (no DCG fragment composed).
   #
   # To use: replace the 'pi-recipe' entry in your tools.yaml with the entry below,
   # then `rc build`. No rc edits. No Dockerfile edits.
 
-  # TOOL entry: bake an UNGUARDED launch wrapper (exec real pi, no guard flags).
-  # Still root-owned (the wrapper itself is not agent-writable) — this variant
-  # removes the GUARD, not the wrapper's tamper-resistance. We do NOT bake
-  # dcg-gate.ts and we do NOT lock the extensions/ dir (the agent's own
-  # extensions are allowed in this opt-in no-guard config).
+  # TOOL entry: no launch_args → rc build bakes no /usr/local/bin/pi shim (the
+  # shim is baked ONLY when a composed fragment declares launch_args — the generic,
+  # tool-agnostic signal, ADR-005 D12 / rip-cage-l72i.1). With no shim, pi launches
+  # from /usr/bin/pi and auto-discovers its extensions — which IS the no-guard
+  # semantics. install_cmd is a no-op (non-bundled TOOL entries require the field).
   - name: pi-recipe
     archetype: TOOL
     version_pin: "bundled-recipe"
-    # Wrapper body (base64-decoded at build time): exec /usr/bin/pi "$@"
-    install_cmd: ": && echo 'IyEvdXNyL2Jpbi9lbnYgYmFzaApzZXQgLWV1byBwaXBlZmFpbApleGVjIC91c3IvYmluL3BpICIkQCIK' | base64 -d > /usr/local/bin/pi && chown root:root /usr/local/bin/pi && chmod 0755 /usr/local/bin/pi"
+    install_cmd: ":"
     egress: []
     mounts: []

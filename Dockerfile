@@ -163,12 +163,13 @@ RUN chmod +x /usr/local/bin/init-rip-cage.sh \
     /usr/local/lib/rip-cage/rip-proxy-start.sh \
     /usr/local/lib/rip-cage/rip-dns-start.sh
 
-# Pi's dcg-gate.ts guard is provisioned by the composable examples/pi recipe via
+# Pi's dcg-gate.ts guard is provisioned by the composable examples/dcg recipe via
 # install_cmd (runs as root before USER agent) at its OWN separate root-owned load
 # path /etc/rip-cage/pi/dcg-gate.ts — NOT inside the agent's extensions/ dir, which
-# is agent-owned (olen retired per ADR-027 D1/D3; the guard loads via
-# `pi --no-extensions -e <path>`). Un-baked from base image per rip-cage-wlwc.2.2
-# (ADR-005 D12).
+# is agent-owned (olen retired per ADR-027 D1/D3; the guard loads via assembled
+# launch_args: --no-extensions -e <path>). Relocated from pi recipe to dcg recipe
+# per rip-cage-l72i.1 (ADR-027 D4): pi recipe no longer names dcg (ADR-005 D12).
+# Un-baked from base image per rip-cage-wlwc.2.2 (ADR-005 D12).
 
 USER agent
 WORKDIR /home/agent
@@ -184,8 +185,9 @@ RUN mkdir -p /home/agent/.config/mise \
     && printf '[settings]\nidiomatic_version_file_enable_tools = ["node", "yarn"]\n' \
        > /home/agent/.config/mise/config.toml
 COPY --chown=agent:agent zshrc /home/agent/.zshrc
-# Pi dcg-gate.ts and extensions/ dir are provisioned by examples/pi recipe (install_cmd
-# runs in root context before USER agent). See examples/pi/build-fragment.sh.
+# Pi cage-pi.md is provisioned by examples/pi recipe (install_cmd runs in root context
+# before USER agent). See examples/pi/build-fragment.sh. The pi launch shim and guard
+# wiring are assembled by rc build from manifest launch_args (rip-cage-l72i.1).
 # (rip-cage-wlwc.2.2: un-baked from base image per ADR-005 D12)
 
 # Version label — baked in at build time so rc up can detect stale local images.

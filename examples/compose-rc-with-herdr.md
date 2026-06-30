@@ -17,8 +17,8 @@ tools:
   # TOOL entry: installs the herdr binary at image build time.
   - name: herdr-bin
     archetype: TOOL
-    version_pin: "v0.6.10"
-    install_cmd: "ARCH=$(uname -m) && ..."  # see manifest-fragment.yaml for full command
+    version_pin: "v0.7.0"
+    install_cmd: "ARCH=$(uname -m) && ..."  # see manifest-fragment.yaml for full command (SHA-256 computed from the downloaded release binaries)
     egress:
       - github.com
     mounts: []

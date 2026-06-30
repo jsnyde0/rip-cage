@@ -1421,13 +1421,17 @@ _up_prepare_docker_mounts() {
     log "Warning: ${HOME}/.pi/agent/auth.json not mounted (absent and could not be seeded, or a dangling symlink) — pi will require login on first request."
   fi
 
-  # Pi substrate projection (rip-cage-kstk): mount pi instruction-content assets and the
-  # subagent extension read-only into .rc-context/ for init-rip-cage.sh to symlink.
+  # Pi substrate projection (rip-cage-kstk): mount pi instruction-content assets
+  # read-only into .rc-context/ for init-rip-cage.sh to symlink.
   # DATA-DRIVEN table: each entry is "host-path:cage-name" (NO per-agent if/elif branch —
   # ADR-005 D12). Realpaths are resolved here so Docker mounts the real dir even when the
   # host path is a relative symlink (dotpi uses relative symlinks into ~/code/personal/dotpi/).
   # ADR-023 denylist check on each resolved host path: warn-and-skip on match.
   # ADR-027 D1: all mounts are :ro (no cage→host write-back).
+  #
+  # NOTE (rip-cage-l72i.3): pi extension mounts are NO LONGER hardcoded here.
+  # Extensions are declared as manifest mounts in the relevant recipe fragment
+  # and assembled by _manifest_build_mount_args below (ADR-005 D12 / ADR-027 D3/D4).
   if [[ -d "${HOME}/.pi/agent" ]]; then
     local _pi_substrate_entry _pi_host_raw _pi_cage_name _pi_host_real _pi_pat
     local _pi_substrate_table
@@ -1438,7 +1442,6 @@ _up_prepare_docker_mounts() {
       "AGENTS.md:pi-AGENTS.md"
       "SYSTEM.md:pi-SYSTEM.md"
       "APPEND_SYSTEM.md:pi-APPEND_SYSTEM.md"
-      "extensions/subagent:pi-ext-subagent"
     )
     for _pi_substrate_entry in "${_pi_substrate_table[@]}"; do
       _pi_host_raw="${HOME}/.pi/agent/${_pi_substrate_entry%%:*}"
@@ -6699,6 +6702,40 @@ _manifest_validate() {
             return 1
           fi
         fi
+        # Validate optional 'launch_args' field (rip-cage-l72i.1 / ADR-027 D4).
+        # launch_args is a list of strings — manifest-declared launch flags contributed
+        # by this recipe fragment and concatenated by rc build across fragments in
+        # fragment order (ADR-005 D12: owning the composition interface, not naming a tool).
+        # When absent, valid (no launch-arg contribution from this fragment).
+        # Each element must be a non-empty, single-line string (newline-injection defense).
+        local launch_args_raw launch_args_type
+        launch_args_raw=$(jq -r 'if has("launch_args") then "present" else "absent" end' <<<"$entry" 2>/dev/null)
+        if [[ "$launch_args_raw" == "present" ]]; then
+          launch_args_type=$(jq -r '.launch_args | type' <<<"$entry" 2>/dev/null)
+          if [[ "$launch_args_type" != "array" ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'launch_args' must be a list of strings (got: ${launch_args_type}; use launch_args: [\"--flag\", \"value\"])." >&2
+            return 1
+          fi
+          local la_count la_i
+          la_count=$(jq '.launch_args | length' <<<"$entry" 2>/dev/null)
+          for (( la_i=0; la_i<la_count; la_i++ )); do
+            local la_elem_type la_elem_val
+            la_elem_type=$(jq -r ".launch_args[${la_i}] | type" <<<"$entry" 2>/dev/null)
+            if [[ "$la_elem_type" != "string" ]]; then
+              echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'launch_args[${la_i}]' must be a string (got: ${la_elem_type})." >&2
+              return 1
+            fi
+            la_elem_val=$(jq -r ".launch_args[${la_i}]" <<<"$entry" 2>/dev/null)
+            if [[ -z "$la_elem_val" ]]; then
+              echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'launch_args[${la_i}]' must be a non-empty string (got empty string)." >&2
+              return 1
+            fi
+            if [[ "$la_elem_val" == *$'\n'* ]]; then
+              echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'launch_args[${la_i}]' must be a single-line string (newlines are not allowed; single-line-required)." >&2
+              return 1
+            fi
+          done
+        fi
         ;;
       SHELL-INTEGRATION)
         # 'shell_init' required and must be a single line.
@@ -7365,6 +7402,120 @@ _manifest_generate_source_builder_stages() {
   fi
 }
 
+# _manifest_generate_launch_args
+# Read the host manifest and collect all launch_args across TOOL entries in
+# fragment order (tools[] array order), outputting one arg per line.
+#
+# This is the assembly step for ADR-027 D4: recipes declare their launch-flag
+# contributions in the manifest, and rc build concatenates them in fragment
+# order so the guard fragment's args (loaded first) precede extension args.
+#
+# The caller (rc build) uses the assembled args to bake the generic pi launch
+# shim: exec <real-binary> <assembled-args> "$@".
+#
+# Fragment order is the composition tool (ADR-005 D12 agentic-composition):
+#   guard fragment composed first → guard args first → guard loads before
+#   any other extension. Non-floor ordering among other fragments is the
+#   configuring agent's responsibility.
+#
+# Output: zero or more lines, one arg per line, in fragment order.
+# Entries with no launch_args field contribute zero lines (correct: omitting
+# the field = no launch contribution from that fragment).
+#
+# rip-cage-l72i.1 — manifest-declared launch_args assembly (ADR-027 D4 FLEXIBLE).
+_manifest_generate_launch_args() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count idx
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  for (( idx=0; idx<count; idx++ )); do
+    local entry launch_args_present la_count la_i la_val
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    launch_args_present=$(jq -r 'if has("launch_args") then "yes" else "no" end' <<<"$entry" 2>/dev/null)
+    if [[ "$launch_args_present" != "yes" ]]; then
+      continue
+    fi
+    la_count=$(jq '.launch_args | length' <<<"$entry" 2>/dev/null)
+    for (( la_i=0; la_i<la_count; la_i++ )); do
+      la_val=$(jq -r ".launch_args[${la_i}]" <<<"$entry" 2>/dev/null)
+      printf '%s\n' "$la_val"
+    done
+  done
+}
+
+# _manifest_generate_pi_shim_steps <wrapper_template_path>
+# Generates the Dockerfile RUN step that bakes the generic pi launch wrapper at
+# /usr/local/bin/pi (root:root 0755) with ASSEMBLED_ARGS populated from all
+# launch_args declared across composed fragments in fragment order.
+#
+# The wrapper template file is read (pi-wrapper.sh), the ASSEMBLED_ARGS=()
+# placeholder is replaced with the assembled args, the result is base64-encoded,
+# and a single RUN step is emitted.
+#
+# This function is generic: it names no recipe. It bakes whatever launch_args the
+# composed fragments declared. Guard args appear first when the guard fragment is
+# composed first (fragment order is the agent's composition tool, per ADR-005 D12).
+#
+# When no launch_args are declared across any fragment, ASSEMBLED_ARGS stays (),
+# which means pi auto-discovers its extensions (correct for no-guard compositions).
+#
+# This generator ALWAYS emits a step when invoked (the direct-call test contract).
+# The DECISION of whether to bake the shim at all lives in the caller
+# (_manifest_build_dockerfile_path), which only invokes this generator when at least
+# one composed fragment declares launch_args — so a no-launch_args manifest keeps the
+# original Dockerfile unchanged (ADR-005 D8 invariant).
+#
+# rip-cage-l72i.1 — ADR-027 D4 FLEXIBLE + ADR-005 D12
+_manifest_generate_pi_shim_steps() {
+  local wrapper_template="${1:-}"
+  if [[ -z "$wrapper_template" || ! -f "$wrapper_template" ]]; then
+    echo "rip-cage: _manifest_generate_pi_shim_steps: wrapper template not found: ${wrapper_template}" >&2
+    return 1
+  fi
+
+  # Collect assembled args (one per line from _manifest_generate_launch_args)
+  local raw_args
+  raw_args=$(_manifest_generate_launch_args 2>/dev/null) || true
+
+  # Build the ASSEMBLED_ARGS=(...) literal from the args
+  # Each arg is single-quoted with ' -> '\'' escaping for safety
+  local assembled_literal="ASSEMBLED_ARGS=("
+  if [[ -n "$raw_args" ]]; then
+    local _arg_line
+    while IFS= read -r _arg_line; do
+      # Single-quote each arg: replace ' with '\''
+      local _quoted
+      _quoted="'${_arg_line//"'"/"'\\''"}'"
+      assembled_literal+="${_quoted} "
+    done <<<"$raw_args"
+    # Trim trailing space
+    assembled_literal="${assembled_literal% }"
+  fi
+  assembled_literal+=")"
+
+  # Read the template and substitute the ASSEMBLED_ARGS=() placeholder
+  local wrapper_content
+  wrapper_content=$(< "$wrapper_template")
+  # Replace the ASSEMBLED_ARGS=() line with the assembled literal
+  local assembled_wrapper
+  assembled_wrapper="${wrapper_content/ASSEMBLED_ARGS=()/$assembled_literal}"
+
+  # Base64-encode (single line, no wraps)
+  local b64_wrapper
+  b64_wrapper=$(printf '%s' "$assembled_wrapper" | base64 | tr -d '\n')
+
+  # Emit the Dockerfile RUN step
+  printf 'RUN echo %s | base64 -d > /usr/local/bin/pi && chown root:root /usr/local/bin/pi && chmod 0755 /usr/local/bin/pi\n' \
+    "'${b64_wrapper}'"
+}
+
 # _manifest_build_dockerfile_path
 # Returns the path to the Dockerfile that rc build should use.
 # If the manifest has non-bundled tools (extra steps to add), writes a temp
@@ -7440,7 +7591,36 @@ _manifest_build_dockerfile_path() {
     return 1
   fi
 
-  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" && -z "$mux_registry_steps" && -z "$mux_label" && -z "$mediator_registry_steps" && -z "$mediator_label" && -z "$safety_stack_asserted_steps" ]]; then
+  # Pi launch shim: bake /usr/local/bin/pi ONLY when at least one composed fragment
+  # declares launch_args. launch_args is the generic, tool-agnostic signal that this
+  # manifest composes a pi launch contribution (ADR-005 D12 — rc names no tool/recipe).
+  # Consequences of the gate:
+  #   - floor-only / non-pi (SHELL/DAEMON/cross) manifests declare no launch_args, so
+  #     the original Dockerfile is returned unchanged (ADR-005 D8 byte-for-byte invariant).
+  #   - a no-guard pi recipe declares no launch_args, so no shim is baked — pi runs from
+  #     /usr/bin/pi with auto-discovery, which IS the no-guard semantics.
+  #   - the default published manifest's dcg fragment declares the guard launch_args, so
+  #     the shim bakes and the guard loads first.
+  # (rip-cage-l72i.1 — ADR-027 D4 FLEXIBLE; D8-invariant fix v0.10.0)
+  local pi_shim_steps=""
+  local pi_launch_args
+  pi_launch_args=$(_manifest_generate_launch_args 2>/dev/null) || true
+  if [[ -n "$pi_launch_args" ]]; then
+    local pi_wrapper_template="${SCRIPT_DIR}/examples/pi/pi-wrapper.sh"
+    if [[ -f "$pi_wrapper_template" ]]; then
+      if ! pi_shim_steps=$(_manifest_generate_pi_shim_steps "$pi_wrapper_template"); then
+        return 1
+      fi
+    else
+      # launch_args declared (a guard wants to load) but the wrapper template is
+      # missing — we cannot bake the shim that carries the guard. Fail loud rather
+      # than silently building an unguarded image (ADR-001 D1 fail-closed).
+      echo "rip-cage: pi launch_args declared but wrapper template missing: ${pi_wrapper_template}" >&2
+      return 1
+    fi
+  fi
+
+  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" && -z "$mux_registry_steps" && -z "$mux_label" && -z "$mediator_registry_steps" && -z "$mediator_label" && -z "$safety_stack_asserted_steps" && -z "$pi_shim_steps" ]]; then
     # Default/bundled-only manifest — use the original Dockerfile unchanged (D8).
     echo "$orig_dockerfile"
     return 0
@@ -7478,9 +7658,12 @@ _manifest_build_dockerfile_path() {
     rm -f "$tmp_inject_builders"
   fi
 
-  # --- TOOL install steps: inject before "# Non-root user" sentinel ---
+  # --- TOOL install steps + pi shim: inject before "# Non-root user" sentinel ---
   # extra_steps includes: apt-get / binary installs (prebuilt path) and COPY --from
   # (from-source path). Both run as root in the runtime stage; no /etc/rip-cage dependency.
+  # pi_shim_steps (rip-cage-l72i.1) also runs root — appended here so /usr/local/bin/pi
+  # is always root-owned with the assembled ASSEMBLED_ARGS from composed launch_args.
+  [[ -n "$pi_shim_steps" ]] && extra_steps+="${extra_steps:+$'\n'}${pi_shim_steps}"
   if [[ -n "$extra_steps" ]]; then
     local sentinel_tool="# Non-root user"
     local tmp_inject_root
