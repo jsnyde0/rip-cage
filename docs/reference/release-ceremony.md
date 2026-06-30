@@ -139,6 +139,40 @@ The first cut after the `wlwc` + `ta1o` epics, which surfaced all three gates ab
 - `224c150` — pinned `yq` per `matrix.arch` (the arm64 CI failure).
 - `09f1394` — pinned the v0.9.0 formula sha.
 
+## Disk hygiene — post-heavy-test/release prune habit
+
+After a release or a heavy testing session, Docker's disk image can grow significantly from accumulated build caches, old release images, and test-harness artifacts. Run these in order (each prunes a distinct layer):
+
+```bash
+# 1. Prune dangling and unused images (old release images, intermediate build layers).
+docker image prune -f
+
+# 2. Prune the Docker BuildKit build cache (the dominant source of churn after
+#    repeated rc build / manifest e2e runs).
+docker builder prune -f
+
+# 3. Prune scratch-cage containers that the test harness leaked (only those whose
+#    rc.source.path label is under the temp root — the safe discriminator).
+#    run-host.sh's self-healing sweep does this automatically at run start/end,
+#    but after a daemon crash or a Ctrl-C before the next run, this one-liner
+#    cleans them directly.
+for c in $(docker ps -aq --filter "label=rc.source.path" --format '{{.Names}}'); do
+  sp=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$c" 2>/dev/null || true)
+  case "$sp" in
+    /private/var/folders/*|/var/folders/*|/tmp/*|/private/tmp/*) ./rc destroy --force "$c" || true ;;
+  esac
+done
+
+# 4. Prune orphaned volumes — the rare tail where a container record was removed
+#    but its volume was not (e.g. `docker rm -f` without `docker volume rm`).
+#    rc destroy removes both container and volumes; this catches the stragglers.
+#    WARNING: this removes ALL dangling volumes on the host — run it only when
+#    you are confident no real cage's kept volume is dangling (check rc ls first).
+docker volume prune -f
+```
+
+> **Why not automate the volume prune?** Volumes carry no `rc.source.path` label, so they cannot be temp-root-scoped safely. A real cage's volume a user intentionally kept would be silently removed by a blanket sweep. The harness sweeps containers (which carry the label); orphaned volumes are left to this manual step executed with human judgment (rip-cage-aqww D2/D3).
+
 ## canonical_refs
 
 - ADR-008 D4 (local==CI invariant; pinned-tool lint gate; release.yml-invalidation clause), D6 (GHCR multi-arch publish + visibility flip), D7 (Homebrew primary), D8 (tap-sync + url/sha coupling + brew-fetch gate)

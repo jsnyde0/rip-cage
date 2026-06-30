@@ -128,7 +128,66 @@ mounts:
 YAML
 # Empty tools.yaml: seeded once at driver level; zero-byte = default bundled stack.
 touch "${_RUN_HOST_CFG_DIR}/rip-cage/tools.yaml"
-trap 'rm -rf "${_RUN_HOST_CFG_DIR}"' EXIT
+
+# ---------------------------------------------------------------------------
+# Self-healing sweep (rip-cage-aqww D2): reap leaked scratch-cage containers
+# whose rc.source.path label is under the OS temp root.
+#
+# DISCRIMINATOR: every cage carries an rc.source.path label (rc:4196); the value
+# is already realpath-resolved at creation (rc:504/3685).  On macOS $TMPDIR is
+# /var/folders/... but the label is /private/var/folders/... — resolve the temp
+# root before comparing, NOT the label (the cage workspace dir may already be
+# deleted, and BSD realpath returns empty on missing paths, which would miss it).
+#
+# This mirrors the existing idiom in test-multiplexer-agent-e2e.sh:163-179.
+# Uses `rc destroy --force` (rc:4882) to remove BOTH rc-state-<name> and
+# rc-history-<name> volumes — no hand-rolled volume removal.
+# ---------------------------------------------------------------------------
+_SWEEP_TEMP_ROOTS=()
+_sweep_init_temp_roots() {
+  local _rt
+  _rt=$(realpath "${TMPDIR:-/tmp}" 2>/dev/null || true)
+  [[ -n "$_rt" ]] && _SWEEP_TEMP_ROOTS+=("$_rt")
+  # macOS /private/var/folders, /tmp, /private/tmp — add as literals so the
+  # sweep still works even if realpath above gives only one form.
+  for _lit in "/private/var/folders" "/tmp" "/private/tmp"; do
+    local _already=0
+    local _existing
+    for _existing in "${_SWEEP_TEMP_ROOTS[@]+"${_SWEEP_TEMP_ROOTS[@]}"}"; do
+      [[ "$_existing" == "$_lit" ]] && _already=1
+    done
+    [[ "$_already" -eq 0 ]] && _SWEEP_TEMP_ROOTS+=("$_lit")
+  done
+}
+_sweep_init_temp_roots
+
+_sweep_scratch_cages() {
+  if ! command -v docker >/dev/null 2>&1; then
+    return 0
+  fi
+  local _cname _raw_sp _root
+  for _cname in $(docker ps -a --filter "label=rc.source.path" --format '{{.Names}}' 2>/dev/null || true); do
+    _raw_sp=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$_cname" 2>/dev/null || true)
+    [[ -z "$_raw_sp" ]] && continue
+    for _root in "${_SWEEP_TEMP_ROOTS[@]+"${_SWEEP_TEMP_ROOTS[@]}"}"; do
+      if [[ "$_raw_sp" == "${_root}"/* || "$_raw_sp" == "${_root}" ]]; then
+        "${SCRIPT_DIR}/../rc" destroy --force "$_cname" >/dev/null 2>&1 || true
+        break
+      fi
+    done
+  done
+}
+
+# Run the sweep at START of run to reap any residue from a previous aborted run.
+_sweep_scratch_cages
+
+# Combined EXIT/INT/TERM handler: config-fixture cleanup + scratch-cage sweep.
+_run_host_cleanup() {
+  rm -rf "${_RUN_HOST_CFG_DIR}"
+  _sweep_scratch_cages
+}
+trap '_run_host_cleanup' EXIT INT TERM
+
 export RC_CONFIG_GLOBAL="${RC_CONFIG_GLOBAL:-${_RUN_HOST_CFG_DIR}/rip-cage/config.yaml}"
 # XDG_CONFIG_HOME: default to driver temp dir so rc invocations without an explicit
 # HOME/XDG sandbox read from the driver fixture. Tests that set HOME+XDG_CONFIG_HOME
@@ -201,6 +260,7 @@ run_test "${SCRIPT_DIR}/test-selftest-classifier.sh"   # rip-cage-fft: pure clas
 run_test "${SCRIPT_DIR}/test-selftest-mode-gating.sh"  # rip-cage-fft: mode-gating tests via curl PATH-shim (no production hook)
 run_pytest "${SCRIPT_DIR}/test_selftest_endpoint.py" --with pytest --with pyyaml python -m pytest "${SCRIPT_DIR}/test_selftest_endpoint.py" -v  # rip-cage-fft: proxy reserved endpoint unit tests
 run_test "${SCRIPT_DIR}/test-selftest-integration.sh"  # rip-cage-fft: container integration tests (init-firewall.sh → curl → iptables → proxy end-to-end)
+run_test "${SCRIPT_DIR}/test-scratch-cage-cleanup.sh"  # rip-cage-aqww: scratch-cage cleanup helper (D1 lib + D2 sweep) — needs docker daemon; self-skips without docker
 run_test "${SCRIPT_DIR}/test-agent-readability.sh"     # rip-cage-7wc: host-side fixture tests for agent *.md readability classification
 run_test "${SCRIPT_DIR}/test-agent-mail-concurrent.sh" # rip-cage-swv: two concurrent pi agents coordinate via am CLI (NEEDS_CONTAINER + RC_E2E)
 run_test "${SCRIPT_DIR}/test-multiplexer-agent-e2e.sh" # rip-cage-w621.7: pi agent through tmux mux surface with >=2 distinct tool invocations (NEEDS_CONTAINER + RC_E2E)
