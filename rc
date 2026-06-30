@@ -8830,6 +8830,129 @@ _manifest_expand_mount_host() {
   echo "$raw_path"
 }
 
+# _lexical_normalize_path PATH
+#
+# Lexically normalize an absolute CONTAINER path by collapsing '..' and '.'
+# components and stripping double-slashes and trailing slashes.
+# This is a pure string operation — it does NOT call realpath or touch the
+# host filesystem (container paths are not resolvable on the host).
+#
+# Used by the manifest dest-allowlist check (rip-cage-rc09) to prevent
+# '..' escape attacks such as /home/agent/../etc/rip-cage/pi → /etc/rip-cage/pi.
+#
+# Inputs:  $1  raw_path — an absolute container path (must start with /)
+# Stdout:  normalized absolute path (no trailing slash; root "/" is preserved)
+_lexical_normalize_path() {
+  local raw_path="$1"
+  # Build a stack of path components; ".." pops the top.
+  local _oldIFS="$IFS"
+  IFS="/"
+  local _parts=()
+  read -ra _parts <<< "$raw_path"
+  IFS="$_oldIFS"
+  local _stack=() _slen=0 _c
+  for _c in "${_parts[@]}"; do
+    case "$_c" in
+      ""|".")  ;;
+      "..")
+        if [[ $_slen -gt 0 ]]; then
+          _stack=("${_stack[@]:0:$((_slen - 1))}")
+          _slen=$((_slen - 1))
+        fi
+        ;;
+      *)
+        _stack[_slen]="$_c"
+        _slen=$((_slen + 1))
+        ;;
+    esac
+  done
+  # Reconstruct normalized path from stack.
+  local _norm="/"
+  local _i
+  for (( _i = 0; _i < _slen; _i++ )); do
+    _norm="${_norm}${_stack[$_i]}/"
+  done
+  # Strip trailing slash (except bare root "/").
+  if [[ "$_norm" != "/" ]]; then
+    _norm="${_norm%/}"
+  fi
+  echo "$_norm"
+}
+
+# _manifest_dest_in_allowed_roots NORMALIZED_DEST
+#
+# Returns 0 (true) if NORMALIZED_DEST is exactly or nested under one of the
+# agent-writable allowlist roots: /home/agent or /workspace.
+# Uses boundary-safe prefix matching (== or prefix/*) to prevent /home/agentEVIL
+# from matching /home/agent (reuses the same logic as _path_under_allowed_roots).
+#
+# Called by manifest dest-allowlist checks (rip-cage-rc09).
+_manifest_dest_in_allowed_roots() {
+  local _dest="$1"
+  local _allowed_root
+  for _allowed_root in /home/agent /workspace; do
+    if [[ "$_dest" == "$_allowed_root" ]] || [[ "$_dest" == "$_allowed_root"/* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# _host_source_is_root_owned PATH
+#
+# Returns 0 (true) if the HOST-SIDE directory at PATH is:
+#   - owned by uid 0 (root), AND
+#   - not group-writable and not other-writable (mode bit check).
+# Returns 1 (false) if any of those conditions fail, or if the path cannot be
+# stat'd (fail-closed: unknown ownership is treated as NOT root-owned).
+#
+# This is a PURE HOST-SIDE check — no docker invocation.  The path must exist
+# on the host filesystem.  Used by the root_owned_required carve-out gate in
+# _manifest_check_mounts_denylist and _manifest_build_mount_args (rip-cage-rc09).
+#
+# Cross-platform stat:
+#   macOS (BSD): stat -f "%u %p" — %u is numeric UID, %p is full octal (e.g. 40755)
+#   Linux (GNU): stat -c "%u %a" — %u is numeric UID, %a is permission octal (e.g. 755)
+# Both forms produce last-3-octal-chars as the rwxrwxrwx permission bits.
+#
+# Threat class: operator-accident (host-only manifest, ADR-024 host-side out of scope).
+# A root_owned_required mount where the host SOURCE is NOT root-owned is not exempt
+# from the dest-allowlist — the operator may have mis-pointed the flag at an
+# agent-writable dir, and the host-uid is the operator (not root), so the exemption
+# is NOT earned.  The legit use (a genuinely root-owned host asset mounted to a system
+# dest) has host-uid == 0 → exempt.  Cite: rip-cage-rc09 / ADR-027 D1.
+_host_source_is_root_owned() {
+  local _hsr_path="$1"
+  [[ -z "$_hsr_path" ]] && return 1
+  [[ ! -d "$_hsr_path" ]] && return 1
+
+  local _hsr_uid _hsr_mode _hsr_stat_out
+  # Cross-platform stat: macOS (BSD) vs Linux (GNU).
+  if [[ "$(uname)" == "Darwin" ]]; then
+    _hsr_stat_out=$(stat -f "%u %p" "$_hsr_path" 2>/dev/null) || return 1
+  else
+    _hsr_stat_out=$(stat -c "%u %a" "$_hsr_path" 2>/dev/null) || return 1
+  fi
+
+  _hsr_uid=$(awk '{print $1}' <<<"$_hsr_stat_out")
+  _hsr_mode=$(awk '{print $2}' <<<"$_hsr_stat_out")
+
+  # Must be owned by uid 0 (root).
+  [[ "$_hsr_uid" == "0" ]] || return 1
+
+  # Mode: check last 3 octal digits for group-write or other-write bit.
+  # (macOS %p may give 6 chars like "40755"; Linux %a gives 3-4 chars like "755".
+  #  In both cases, last-3 gives the rwxrwxrwx bits.)
+  local _hsr_mode3 _hsr_gbit _hsr_obit
+  _hsr_mode3="${_hsr_mode: -3}"
+  _hsr_gbit="${_hsr_mode3:1:1}"
+  _hsr_obit="${_hsr_mode3:2:1}"
+  local _hsr_writable=0
+  case "$_hsr_gbit" in 2|3|6|7) _hsr_writable=1 ;; esac
+  case "$_hsr_obit" in 2|3|6|7) _hsr_writable=1 ;; esac
+  [[ "$_hsr_writable" -eq 0 ]]
+}
+
 # _manifest_check_mounts_denylist — ADR-023 D1/D6 / rip-cage-4c5.3
 #
 # Check every manifest mounts: path declaration against the secret-path
@@ -8885,6 +9008,39 @@ _manifest_check_mounts_denylist() {
         _denied_pattern=$(_secret_path_denylist_matched_pattern "$resolved_path" "$_workspace" 2>/dev/null || true)
         echo "Error: manifest-declared mount for tool '${tool_name}': '${resolved_path}' matched secret-path denylist pattern '${_denied_pattern:-<unknown>}'. Remove this path from the manifest mounts: declaration or add to mounts.allow_risky in .rip-cage.yaml. (ADR-023 D1/D6)" >&2
         return 1
+      fi
+
+      # rip-cage-rc09: dest-allowlist check.
+      # CARVE-OUT (honest): root_owned_required: true mounts are exempt from
+      # the dest-allowlist ONLY IF the resolved HOST SOURCE is genuinely
+      # root-owned (uid 0, not group/other-writable).
+      #
+      # If root_owned_required: true but the source is NOT root-owned, the
+      # exemption is NOT granted — fall through to the normal allowlist check.
+      # This closes the bypass: a fragment with root_owned_required: true +
+      # dest: /etc/rip-cage/pi + host: <agent-writable dir> is NOT exempt
+      # (host uid != 0 → no exemption → allowlist rejects the system dest).
+      #
+      # A non-root source to an agent-space dest is still allowed (the allowlist
+      # accepts it).  A non-root source to a system dest is rejected.
+      # Cite: rip-cage-rc09 / ADR-027 D1.
+      local _root_owned_req _allowlist_exempt=0
+      _root_owned_req=$(jq -r ".mounts[${midx}].root_owned_required // false" <<<"$entry" 2>/dev/null)
+      if [[ "$_root_owned_req" == "true" ]] && _host_source_is_root_owned "$resolved_path"; then
+        _allowlist_exempt=1
+      fi
+      if [[ "$_allowlist_exempt" -ne 1 ]]; then
+        # Lexically normalize the container dest path before allowlist check
+        # to block '..' escape attacks (e.g. /home/agent/../etc/rip-cage/pi).
+        local _mount_dest _norm_dest
+        _mount_dest=$(jq -r ".mounts[${midx}].dest // \"\"" <<<"$entry" 2>/dev/null)
+        if [[ -n "$_mount_dest" && "$_mount_dest" != "null" ]]; then
+          _norm_dest=$(_lexical_normalize_path "$_mount_dest")
+          if ! _manifest_dest_in_allowed_roots "$_norm_dest"; then
+            echo "Error: manifest-declared mount for tool '${tool_name}': dest '${_mount_dest}' (normalized: '${_norm_dest}') is outside the agent-writable allowlist (/home/agent, /workspace). Mounts must land in agent-writable space, or declare root_owned_required: true with a root-owned host source (ADR-027 D1). (rip-cage-rc09)" >&2
+            return 1
+          fi
+        fi
       fi
     done
   done
@@ -8995,6 +9151,31 @@ _manifest_build_mount_args() {
         _denied_pattern=$(_secret_path_denylist_matched_pattern "$resolved_host" "$_workspace" 2>/dev/null || true)
         echo "Error: manifest-declared mount for tool '${tool_name}': '${resolved_host}' matched secret-path denylist pattern '${_denied_pattern:-<unknown>}'. Remove this path from the manifest mounts: declaration or add to mounts.allow_risky in .rip-cage.yaml. (ADR-023 D1/D6)" >&2
         return 1
+      fi
+
+      # rip-cage-rc09: dest-allowlist check — fail-loud for non-agent-writable dests.
+      # CARVE-OUT (honest): root_owned_required: true mounts are exempt from
+      # the dest-allowlist ONLY IF the resolved HOST SOURCE is genuinely
+      # root-owned (uid 0, not group/other-writable).
+      #
+      # If root_owned_required: true but the source is NOT root-owned, the
+      # exemption is NOT granted — fall through to the normal allowlist check.
+      # This closes the bypass: a fragment with root_owned_required: true +
+      # dest: /etc/rip-cage/pi + host: <agent-writable dir> is NOT exempt
+      # (host uid != 0 → no exemption → allowlist rejects the system dest).
+      # Cite: rip-cage-rc09 / ADR-027 D1.
+      local _mba_root_owned_req _mba_allowlist_exempt=0
+      _mba_root_owned_req=$(jq -r ".mounts[${midx}].root_owned_required // false" <<<"$entry" 2>/dev/null)
+      if [[ "$_mba_root_owned_req" == "true" ]] && _host_source_is_root_owned "$resolved_host"; then
+        _mba_allowlist_exempt=1
+      fi
+      if [[ "$_mba_allowlist_exempt" -ne 1 ]]; then
+        local _norm_mount_dest
+        _norm_mount_dest=$(_lexical_normalize_path "$mount_dest")
+        if ! _manifest_dest_in_allowed_roots "$_norm_mount_dest"; then
+          echo "Error: manifest-declared mount for tool '${tool_name}': dest '${mount_dest}' (normalized: '${_norm_mount_dest}') is outside the agent-writable allowlist (/home/agent, /workspace). Mounts must land in agent-writable space, or declare root_owned_required: true with a root-owned host source (ADR-027 D1). (rip-cage-rc09)" >&2
+          return 1
+        fi
       fi
 
       # Per-asset ro/rw mode (rip-cage-wlwc.3 / ADR-027 D1).

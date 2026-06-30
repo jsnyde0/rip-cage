@@ -1,0 +1,20 @@
+version: 1
+tools:
+  # Test fixture: a TOOL entry declaring a mount with root_owned_required: true
+  # at a system dest (/etc/rip-cage/pi) — the supported seam for mounting
+  # root-owned assets at non-agent-writable paths (ADR-027 D1 FIRM).
+  #
+  # NOTE (rip-cage-rc09 bypass fix): under the honest carve-out, this fixture
+  # with host: "/tmp/root-owned-asset" (a non-root-owned path) would NOT be
+  # exempted from the dest-allowlist.  Tests now use inline manifests with mktemp
+  # dirs (non-root sources) rather than this fixture.  This fixture is retained
+  # for reference — in production use, the host dir would be a genuinely
+  # root-owned asset (uid 0), which earns the exemption.
+  - name: root-owned-system-mount
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - host: "/tmp/root-owned-asset"
+        dest: "/etc/rip-cage/pi"
+        root_owned_required: true

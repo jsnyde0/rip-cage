@@ -1,0 +1,13 @@
+version: 1
+tools:
+  # Test fixture: a TOOL entry declaring a mount with dest under /home/agent —
+  # within the agent-writable allowlist.
+  # Used by tests/test-manifest-mounts.sh MA4 (dest-allowlist check, rip-cage-rc09).
+  # Expected: ACCEPTED by dest-allowlist check.
+  - name: allowed-dest-home-agent
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - host: "/tmp/agent-data"
+        dest: "/home/agent/tool-data"

@@ -619,6 +619,303 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
+# MA1 — SECURITY (rip-cage-rc09): dest /etc/claude-code is REJECTED
+#
+# A manifest mount whose dest is /etc/claude-code (the CC managed-settings
+# guard, ADR-027 D3) must be rejected by the dest-allowlist check BEFORE any
+# docker invocation.  This is the guard the earlier narrow-denylist draft
+# missed (design finding N1).
+# ---------------------------------------------------------------------------
+test_ma1_dest_etc_claude_code_rejected() {
+  setup_manifest_sandbox "manifest-hostile-dest-etc-claude-code.yaml"
+  # Create a real /tmp/agent-data so skip-if-host-missing does not fire.
+  local host_dir
+  host_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma1-host-XXXXXX")
+  # Rewrite the fixture to use this real dir.
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<YAML
+version: 1
+tools:
+  - name: hostile-dest-etc-claude-code
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - host: "${host_dir}"
+        dest: "/etc/claude-code"
+YAML
+
+  local tmpdir out exit_code
+  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma1-ws-XXXXXX")
+  exit_code=0
+  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
+    RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
+    RC_ALLOWED_ROOTS="$tmpdir" \
+    "${RC}" up "$tmpdir" 2>&1) || exit_code=$?
+
+  local denied_signal
+  denied_signal=$(grep -iE "dest.*outside.*allowlist|allowlist.*dest|mount.*dest.*not.*allowed|dest.*agent.writable|agent.writable.*allowlist|mount.*dest.*outside|not.*agent-writable|dest.*allow" <<<"$out" | head -1)
+
+  if [[ "$exit_code" -ne 0 ]] && [[ -n "$denied_signal" ]]; then
+    pass "MA1 SECURITY: dest /etc/claude-code REJECTED by dest-allowlist check (exit=$exit_code)"
+  elif [[ "$exit_code" -eq 0 ]]; then
+    fail "MA1 SECURITY FAIL: dest-allowlist check did NOT fire (exit=0) — /etc/claude-code slipped through. output='${out:0:300}'"
+  else
+    fail "MA1 SECURITY: exited non-zero (exit=$exit_code) but dest-allowlist message NOT present. output='${out:0:500}'"
+  fi
+  rm -rf "$tmpdir" "$host_dir"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# MA2 — SECURITY (rip-cage-rc09): '..' escape dest is REJECTED after normalization
+#
+# A manifest mount whose dest is /home/agent/../etc/rip-cage/pi lexically
+# normalizes to /etc/rip-cage/pi (the DCG guard root, ADR-027 D1) — outside
+# the agent-writable allowlist.  Must be rejected even though it appears to
+# start with /home/agent/.
+# ---------------------------------------------------------------------------
+test_ma2_dest_dotdot_escape_rejected() {
+  setup_manifest_sandbox
+  local host_dir
+  host_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma2-host-XXXXXX")
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<YAML
+version: 1
+tools:
+  - name: hostile-dest-dotdot-escape
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - host: "${host_dir}"
+        dest: "/home/agent/../etc/rip-cage/pi"
+YAML
+
+  local tmpdir out exit_code
+  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma2-ws-XXXXXX")
+  exit_code=0
+  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
+    RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
+    RC_ALLOWED_ROOTS="$tmpdir" \
+    "${RC}" up "$tmpdir" 2>&1) || exit_code=$?
+
+  local denied_signal
+  denied_signal=$(grep -iE "dest.*outside.*allowlist|allowlist.*dest|mount.*dest.*not.*allowed|dest.*agent.writable|agent.writable.*allowlist|mount.*dest.*outside|not.*agent-writable|dest.*allow" <<<"$out" | head -1)
+
+  if [[ "$exit_code" -ne 0 ]] && [[ -n "$denied_signal" ]]; then
+    pass "MA2 SECURITY: '..' escape dest /home/agent/../etc/rip-cage/pi REJECTED after normalization (exit=$exit_code)"
+  elif [[ "$exit_code" -eq 0 ]]; then
+    fail "MA2 SECURITY FAIL: dest-allowlist did NOT reject '..' escape (exit=0) — canonicalization bypass slipped through. output='${out:0:300}'"
+  else
+    fail "MA2 SECURITY: exited non-zero (exit=$exit_code) but dest-allowlist message NOT present. output='${out:0:500}'"
+  fi
+  rm -rf "$tmpdir" "$host_dir"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# MA3 — SECURITY (rip-cage-rc09): parent-shadow dest /usr/local/bin is REJECTED
+#
+# A manifest mount whose dest is /usr/local/bin (a root-owned floor dir hosting
+# the pi shim, claude binary, and DCG init) must be rejected by the allowlist —
+# not under /home/agent or /workspace (parent-shadow coverage by construction).
+# ---------------------------------------------------------------------------
+test_ma3_dest_usr_local_bin_rejected() {
+  setup_manifest_sandbox
+  local host_dir
+  host_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma3-host-XXXXXX")
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<YAML
+version: 1
+tools:
+  - name: hostile-dest-usr-local-bin
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - host: "${host_dir}"
+        dest: "/usr/local/bin"
+YAML
+
+  local tmpdir out exit_code
+  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma3-ws-XXXXXX")
+  exit_code=0
+  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
+    RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
+    RC_ALLOWED_ROOTS="$tmpdir" \
+    "${RC}" up "$tmpdir" 2>&1) || exit_code=$?
+
+  local denied_signal
+  denied_signal=$(grep -iE "dest.*outside.*allowlist|allowlist.*dest|mount.*dest.*not.*allowed|dest.*agent.writable|agent.writable.*allowlist|mount.*dest.*outside|not.*agent-writable|dest.*allow" <<<"$out" | head -1)
+
+  if [[ "$exit_code" -ne 0 ]] && [[ -n "$denied_signal" ]]; then
+    pass "MA3 SECURITY: parent-shadow dest /usr/local/bin REJECTED by dest-allowlist check (exit=$exit_code)"
+  elif [[ "$exit_code" -eq 0 ]]; then
+    fail "MA3 SECURITY FAIL: dest-allowlist did NOT reject /usr/local/bin (exit=0). output='${out:0:300}'"
+  else
+    fail "MA3 SECURITY: exited non-zero (exit=$exit_code) but dest-allowlist message NOT present. output='${out:0:500}'"
+  fi
+  rm -rf "$tmpdir" "$host_dir"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# MA4 — ACCEPTED: dest under /home/agent is allowed by the allowlist
+#
+# A manifest mount whose dest is under /home/agent (agent-writable space)
+# must NOT be rejected by the dest-allowlist check.  This is the positive
+# case — proves the allowlist does not over-block legitimate mounts.
+# ---------------------------------------------------------------------------
+test_ma4_dest_home_agent_accepted() {
+  setup_manifest_sandbox
+  local host_dir
+  host_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma4-host-XXXXXX")
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<YAML
+version: 1
+tools:
+  - name: allowed-dest-home-agent
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - host: "${host_dir}"
+        dest: "/home/agent/tool-data"
+YAML
+
+  local tmpdir out exit_code
+  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma4-ws-XXXXXX")
+  exit_code=0
+  # We can test at the _manifest_check_mounts_denylist level directly
+  # (the full rc up would need docker).  Call the check function directly.
+  local stderr_file
+  stderr_file=$(mktemp)
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
+    bash -c "source '${RC}'; _manifest_check_mounts_denylist '${tmpdir}'" 2>"$stderr_file" || exit_code=$?
+
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "MA4 ACCEPTED: dest /home/agent/tool-data allowed by dest-allowlist (exit=0)"
+  else
+    fail "MA4 ACCEPTED: dest /home/agent/tool-data was REJECTED by dest-allowlist (should be allowed). exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  rm -rf "$tmpdir" "$host_dir"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# MA5 — CARVE-OUT: root_owned_required: true at AGENT-SPACE dest is accepted
+#
+# Under the honest carve-out (rip-cage-rc09 fix), a root_owned_required: true
+# mount at a system dest is only exempt if the HOST SOURCE is root-owned (uid 0,
+# non-writable).  A test cannot easily create a root-owned host dir without sudo,
+# so MA5 now asserts the ALWAYS-SAFE shape: root_owned_required: true with an
+# agent-space dest (/home/agent/...) is accepted regardless of source ownership.
+#
+# Rationale: the allowlist accepts /home/agent/... unconditionally.  Whether the
+# exemption fires or not does not matter — the dest passes either way.  This
+# proves the fix does NOT over-reject legitimate agent-space mounts that happen
+# to carry root_owned_required: true.
+#
+# The system-dest exemption (ADR-027 D1 FIRM) is covered by the trust model:
+# in production, root-owned assets ARE root-owned on the host, so the exemption
+# fires.  The positive-sentinel for that path requires sudo to create, so it is
+# left to RC_E2E=1 (or manual verification by a root-capable CI environment).
+# ---------------------------------------------------------------------------
+test_ma5_root_owned_required_agent_space_accepted() {
+  setup_manifest_sandbox
+  local host_dir
+  host_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma5-host-XXXXXX")
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<YAML
+version: 1
+tools:
+  - name: root-owned-agent-space-mount
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - host: "${host_dir}"
+        dest: "/home/agent/tool-data"
+        root_owned_required: true
+YAML
+
+  local tmpdir exit_code
+  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma5-ws-XXXXXX")
+  exit_code=0
+  local stderr_file
+  stderr_file=$(mktemp)
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
+    bash -c "source '${RC}'; _manifest_check_mounts_denylist '${tmpdir}'" 2>"$stderr_file" || exit_code=$?
+
+  if [[ "$exit_code" -eq 0 ]]; then
+    pass "MA5 CARVE-OUT: root_owned_required:true at /home/agent/tool-data accepted (agent-space dest — always valid regardless of source ownership)"
+  else
+    fail "MA5 CARVE-OUT: root_owned_required:true mount at agent-space dest was REJECTED — over-blocking. exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  rm -rf "$tmpdir" "$host_dir"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# MA6 — SECURITY (rip-cage-rc09): root_owned_required:true + system dest +
+#        non-root host source is REJECTED by the dest-allowlist.
+#
+# This is the bypass regression guard for the honest carve-out fix.
+# A fragment with root_owned_required: true + dest: /etc/rip-cage/pi +
+# host: <a normal (agent-writable, non-root) dir> must NOT be exempted from
+# the allowlist.  The host dir is a mktemp dir (owned by the current user,
+# not root) — so _host_source_is_root_owned returns false → no exemption →
+# allowlist rejects the system dest /etc/rip-cage/pi.
+#
+# ADR-027 D1 / rip-cage-rc09 security: fail-open regression here is a
+# security defect (shadow the guard with agent-writable content).
+# ---------------------------------------------------------------------------
+test_ma6_root_owned_required_nonroot_source_system_dest_rejected() {
+  setup_manifest_sandbox
+  local host_dir
+  host_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma6-host-XXXXXX")
+  # host_dir is owned by the current user (NOT root) — this is the attack shape.
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<YAML
+version: 1
+tools:
+  - name: hostile-nonroot-source-system-dest
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - host: "${host_dir}"
+        dest: "/etc/rip-cage/pi"
+        root_owned_required: true
+YAML
+
+  local tmpdir out exit_code
+  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma6-ws-XXXXXX")
+  exit_code=0
+  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
+    RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
+    RC_ALLOWED_ROOTS="$tmpdir" \
+    "${RC}" up "$tmpdir" 2>&1) || exit_code=$?
+
+  # The rc09 allowlist error message must be present.
+  local denied_signal
+  denied_signal=$(grep -iE "dest.*outside.*allowlist|allowlist.*dest|mount.*dest.*not.*allowed|dest.*agent.writable|agent.writable.*allowlist|mount.*dest.*outside|not.*agent-writable|dest.*allow" <<<"$out" | head -1)
+
+  if [[ "$exit_code" -ne 0 ]] && [[ -n "$denied_signal" ]]; then
+    pass "MA6 SECURITY: root_owned_required:true + system dest /etc/rip-cage/pi + non-root host source REJECTED by allowlist (exit=$exit_code) — bypass closed (rip-cage-rc09)"
+  elif [[ "$exit_code" -eq 0 ]]; then
+    fail "MA6 SECURITY FAIL: root_owned_required:true bypass NOT closed — non-root source + system dest slipped through (exit=0). output='${out:0:300}'"
+  else
+    fail "MA6 SECURITY: exited non-zero (exit=$exit_code) but dest-allowlist message NOT present. output='${out:0:500}'"
+  fi
+  rm -rf "$tmpdir" "$host_dir"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -648,6 +945,15 @@ test_mc2_consumer_emits_host_dest_mapping
 test_mc3_empty_mounts_no_v_arg
 test_mc4_default_manifest_no_mounts
 test_mc5_skip_if_host_missing
+
+echo ""
+echo "--- DEST ALLOWLIST tests (rip-cage-rc09) ---"
+test_ma1_dest_etc_claude_code_rejected
+test_ma2_dest_dotdot_escape_rejected
+test_ma3_dest_usr_local_bin_rejected
+test_ma4_dest_home_agent_accepted
+test_ma5_root_owned_required_agent_space_accepted
+test_ma6_root_owned_required_nonroot_source_system_dest_rejected
 
 echo ""
 echo "--- E2E PARITY (RC_E2E=1) ---"

@@ -1,0 +1,13 @@
+version: 1
+tools:
+  # Test fixture: a TOOL entry declaring a mount with dest /usr/local/bin —
+  # a root-owned floor path hosting the pi shim, claude binary, and DCG init.
+  # Used by tests/test-manifest-mounts.sh MA3 (dest-allowlist check, rip-cage-rc09).
+  # Expected: REJECTED — parent-shadow dest, not under /home/agent or /workspace.
+  - name: hostile-dest-usr-local-bin
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - host: "/tmp/agent-data"
+        dest: "/usr/local/bin"

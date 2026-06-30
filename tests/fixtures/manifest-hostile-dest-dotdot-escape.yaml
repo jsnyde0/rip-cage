@@ -1,0 +1,14 @@
+version: 1
+tools:
+  # Test fixture: a TOOL entry declaring a mount with a '..' escape dest —
+  # /home/agent/../etc/rip-cage/pi lexically normalizes to /etc/rip-cage/pi,
+  # which is a root-owned floor path (DCG guard, ADR-027 D1/D3).
+  # Used by tests/test-manifest-mounts.sh MA2 (dest-allowlist check, rip-cage-rc09).
+  # Expected: REJECTED — canonicalization-bypass attempt, still lands outside allowlist.
+  - name: hostile-dest-dotdot-escape
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts:
+      - host: "/tmp/agent-data"
+        dest: "/home/agent/../etc/rip-cage/pi"
