@@ -1,6 +1,6 @@
 # ADR-021: Layered `.rip-cage.yaml` config — global defaults, per-project overrides
 
-**Status:** Proposed
+**Status:** Proposed (revised 2026-07-01 — D7 config ro-mount-by-default, rip-cage-cw51)
 **Date:** 2026-05-11
 **Beads:** `rip-cage-uzp` (this ADR), `rip-cage-o4z` (loader implementation), `rip-cage-b0c` (first user: SSH host+key allowlist)
 **Related:** [ADR-001](ADR-001-fail-loud-pattern.md) (fail-loud + narrow exception scope — informs D3), [ADR-014](ADR-014-push-less-cage.md) D2 (non-interactive SSH posture — `Match final` reach limits caveat at line 79 anticipated CLI `-o` bypass), [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (forward-by-default — the capability the SSH allowlist scopes), [ADR-020](ADR-020-ssh-identity-routing.md) (ssh identity routing — coexists; shares `~/.config/rip-cage/` namespace), project [CLAUDE.md](../../CLAUDE.md) philosophy section ("agent autonomy is the product", "layers, not walls", "'It's annoying' is a design signal")
@@ -325,6 +325,37 @@ One enum-scalar field (selection_list type) selecting which terminal multiplexer
 
 **What would invalidate this:** (a) a multiplexer whose configuration cannot be expressed as a single enum value (needs per-multiplexer sub-keys) — then this grows into a field group (D4a shape); it is not abandoned. (b) A validated need to constrain the selectable set *below* "whatever the manifest bakes" — that would reintroduce a list, but derived from policy, not from hardcoded tool names in `rc`.
 
+### D7: `.rip-cage.yaml` is read-only inside the cage by default; write-access is opt-in
+
+**Firmness: FLEXIBLE**
+
+The project `.rip-cage.yaml` is mounted **read-only** into the cage by default. An in-cage agent cannot modify the cage's own posture manifest. Write-access is an explicit opt-in via `mounts.config_mode` (selection_list enum scalar; default `"ro"`, allowed values `ro`, `rw`), authored **host-side**.
+
+**Mechanism.** `.rip-cage.yaml` is writable in-cage today only as a side effect of riding the `/workspace` rw bind-mount — there is no dedicated config mount. Ro-by-default is implemented by a nested read-only bind-mount shadowing the single path: a more-specific `-v <workspace>/.rip-cage.yaml:/workspace/.rip-cage.yaml:ro` layered over the rw workspace mount. Host content still shows through (the file is not a copy); the host can still edit it; the in-cage agent cannot write through the ro mount, and cannot unlink or rename a live mount target. Scope is the **project file at the workspace root only** — the global `~/.config/rip-cage/config.yaml` is not mounted into the cage and is unaffected by this decision.
+
+**Boundary — absent config.** If no `.rip-cage.yaml` exists at `rc up` time there is nothing to shadow-mount, and an agent may author one via the rw workspace mount. This is acceptable: the threat below is silently *modifying* an existing, human-trusted config; a from-scratch file is still surfaced to the human *wholesale* at the apply step (`rc reload` / next `rc up`), where there is no pre-existing trusted content for a malicious line to hide behind.
+
+**Rationale.** Per ADR-024 the threat model covers a prompt-injected in-cage agent following hostile instructions. `.rip-cage.yaml` is the cage's own control-plane file — it declares egress allowlist, ssh hosts, and risky-mount exceptions. Left writable in-cage, a hijacked agent can *bury* a containment-weakening line (an extra `egress.allow` host, an `ssh.allowed_hosts` entry, a `mounts.allow_risky` path) inside an otherwise-legitimate edit, then ask the human to `rc reload` / `rc up` — and a human running a routine reload rubber-stamps the buried line without diffing the whole file. Ro-by-default removes the silent-staging vector entirely: the human (or a host-side assistant the human relays to) authors the change, so there are no hidden lines to approve. Autonomy is preserved because the human was *already* the approval step (`rc` is not on the cage PATH; the agent cannot `rc reload`/`rc up` itself per ADR-022 D6) — the only thing that changes is *who types the YAML*, not whether a human is in the loop. This is the config-file application of the per-asset `ro`-default / `rw`-opt-in pattern ADR-027 D1 established for agent substrate; host-side adversaries remain explicitly out of scope.
+
+**Reconciliation with the self-service flows (edited in place).** Two prior FLEXIBLE decisions instructed the in-cage agent to edit `.rip-cage.yaml` directly; both are evolved in place by this decision:
+- **ADR-022 D6** (ssh.allowed_hosts + `rc reload`) — the "agent edits `.rip-cage.yaml` (writable inside), human reloads" flow.
+- **ADR-023 D3** (mounts.allow_risky before next `rc up`) — the "agent writes `mounts.allow_risky` entries" flow.
+
+Under ro-default these become: the agent **surfaces the request in prose**; the human — or a host-side assistant the human relays to — authors the edit host-side, then runs `rc reload` / `rc up`. The `rc allowlist add` in-cage refusal message (which today redirects the agent to edit the file) is updated to point at host-side authorship. Under `mounts.config_mode: rw` the original in-cage self-edit flows remain available unchanged.
+
+**Alternatives considered:**
+
+| Alternative | Rejected because |
+|---|---|
+| Fork B — keep `.rip-cage.yaml` writable in-cage, add a diff-and-confirm step to `rc reload`/`rc up` | `reasoned:` Only defends if the human actually reads the diff; a line buried in a large diff survives a skimming human. ADR-024's threat is specifically the buried/injected edit, and only author-side authorship *structurally* prevents hidden lines. Fork B is worthwhile complementary defense-in-depth (informs the human at the gate) but is not a substitute; tracked as a separate follow-up, not this decision. |
+| Keep writable (status quo) | `direct:` Leaves the silent-staging vector open — the exact rubber-stamp gap this decision closes. The "writable but inert until reload" property (ADR-022 D6, ADR-023 D3) defangs *auto-apply* but not the buried-line-approved-on-reload path. |
+| Make the whole `/workspace` mount read-only | `direct:` Over-broad — breaks the agent's legitimate code edits, which are the product (CLAUDE.md "agent autonomy is the product"). The shadow-mount scopes ro to the one control-plane file. |
+| One-shot CLI flag (`--config-rw`) instead of a config field | `reasoned:` One-shot, untracked, undiscoverable — ADR-021 D1's own rationale rejects CLI flags for persistent per-project posture. `mounts.config_mode` lives in the tracked substrate and merges per D2 (selection_list: project replaces global if present). |
+
+**What would invalidate this:** host-side-authorship friction shows up as the "just turn it off" signal (CLAUDE.md) — users setting `mounts.config_mode: rw` across many projects, or repeatedly filing the friction. That means the default polarity is wrong; flip to writable-by-default and add Fork B's diff-confirm at the host gate. Mirror trigger: a new legitimate in-cage config-write workflow emerges that genuinely cannot route through host-side authorship.
+
+**Invalidation check (mechanical, runnable post-implementation):** With default config (`mounts.config_mode` absent or `ro`), an in-cage `test -w /workspace/.rip-cage.yaml` returns non-zero and `echo x >> /workspace/.rip-cage.yaml` fails — while a host-side edit + `rc reload` still applies the change. With `mounts.config_mode: rw` in effect, the in-cage write succeeds. Both `.rip-cage.yaml`-absent and `.rip-cage.yaml`-present-ro cases are covered.
+
 ## Consequences
 
 **Positive:**
@@ -366,3 +397,10 @@ One enum-scalar field (selection_list type) selecting which terminal multiplexer
 - **ADR-014 D2** (non-interactive SSH posture) is **not modified by this substrate**. The downstream `rip-cage-b0c` (SSH allowlist) bead will edit ADR-014 D2 in place per the in-place-evolution convention when shipped, replacing the `known_hosts` rewrite with capability-scoped allowlists. ADR-014 D2's caveat at line 79 (CLI `-o` reach limit) remains accurate as-stated for the default container.
 - **ADR-020** (ssh identity routing) coexists. Identity routing remains keyed by `~/.config/rip-cage/identity-rules` and CLI flags / labels; the SSH allowlist enabled by this substrate is orthogonal (one is "which key for which github account?", the other is "which hosts and keys can the cage reach at all?"). Both share the `~/.config/rip-cage/` namespace by D1.
 - **ADR-017** (ssh-agent forwarding) is the capability that the SSH allowlist consumer scopes. This substrate is what makes per-project scoping expressible.
+
+## canonical_refs
+
+- `docs/decisions/ADR-024-prompt-injection-threat-model.md` — D7's threat warrant: the prompt-injected in-cage agent that buries a containment-weakening edit for a human to rubber-stamp on reload.
+- `docs/decisions/ADR-027-agent-substrate-projection.md` — D1's per-asset `ro`-default / `rw`-opt-in mount pattern that D7 applies to the config file (agent config/substrate is a distinct asset class; D7 governs rip-cage's own posture manifest).
+- `docs/decisions/ADR-022-ssh-allowlist.md` — D6 (ssh.allowed_hosts self-edit + `rc reload`) evolved in place by D7: in-cage self-edit → host-side authorship under ro-default.
+- `docs/decisions/ADR-023-secret-path-mount-denylist.md` — D3 (mounts.allow_risky self-edit before `rc up`) evolved in place by D7: same in-cage self-edit → host-side authorship change.
