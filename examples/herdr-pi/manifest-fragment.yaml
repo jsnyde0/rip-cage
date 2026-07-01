@@ -43,8 +43,10 @@ version: 1
 #        ADR-006 D8) to generate the pi extension file.
 #     2. Relocates herdr's generated output to the cage's root-owned load path
 #        /etc/rip-cage/pi/herdr-ext/ (see D8 open-verification below).
-#     3. Declares the herdr socket directory as a mount so the in-cage extension
-#        can connect to herdr if running on the host (skip-if-host-missing).
+#     3. Declares NO host-config mount (`mounts: []`) — scenario (a), herdr as the
+#        in-cage multiplexer, needs a cage-WRITABLE ~/.config/herdr; scenario (b)
+#        (host-watch) adds its own mount to a non-colliding path. See "Socket mount
+#        rationale" below.
 #     4. Contributes launch_args: -e /etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts
 #        to the assembled pi launch shim (ADR-027 D4 / rip-cage-l72i.1).
 #
@@ -73,22 +75,22 @@ version: 1
 #
 #   (a) herdr as multiplexer (examples/herdr/): herdr server starts INSIDE the cage;
 #       the socket lives at ~/.config/herdr/herdr.sock inside the cage.
-#       No host socket mount needed — the socket is cage-local.
+#       NO host-config mount — the socket is cage-local, and the in-cage server MUST
+#       own a WRITABLE ~/.config/herdr to create it. This recipe therefore declares
+#       `mounts: []`. (Do NOT mount the host's ~/.config/herdr here: even a ro mount
+#       makes the dir read-only and the in-cage server dies at start with
+#       "server did not become ready within 5s" / Os code 30 ReadOnlyFilesystem.)
 #
 #   (b) herdr running on the HOST (e.g., host supervisor watching the cage):
-#       The socket is at ~/.config/herdr/ on the host. This fragment mounts that
-#       directory ro into the cage at /home/agent/.config/herdr so the in-cage
-#       extension can reach the host herdr socket when HERDR_SOCKET_PATH is set
-#       to the cage-side path.
-#
-#   The mount is skip-if-host-missing: if ~/.config/herdr/ does not exist on the
-#   host, the mount is silently omitted and the extension no-ops (it checks
-#   HERDR_ENV=1 at runtime). A directory mount is used (not single-file) because
-#   single-file bind mounts break on host atomic rename (rip-cage-single-file-mount-
-#   handle-breaks-on-host-atomic-rename bd memory).
-#
-#   In scenario (a) the host mount is harmlessly inactive (the cage-local socket
-#   takes precedence via HERDR_SOCKET_PATH set by herdr in managed panes).
+#       The socket is at ~/.config/herdr/ on the host, and the cage does NOT run its
+#       own herdr server. A host-watch user adds their OWN host-config mount, but to a
+#       NON-colliding cage path (e.g. /home/agent/.config/herdr-host), and sets the
+#       extension's HERDR_SOCKET_PATH to that path. The mount must never land over the
+#       cage-local ~/.config/herdr. Prefer a directory mount (not single-file) —
+#       single-file bind mounts break on host atomic rename (rip-cage-single-file-mount-
+#       handle-breaks-on-host-atomic-rename bd memory). This scenario-(b) mount is an
+#       opt-in the host-watch user composes; it is intentionally NOT baked into this
+#       recipe (it would break scenario (a), the common case).
 #
 # ## No-DCG path
 #
@@ -100,7 +102,8 @@ version: 1
 
 tools:
   # herdr-pi (TOOL): generates herdr's pi extension into the image at build time
-  # and contributes the launch_args + socket mount for the cage runtime.
+  # and contributes the launch_args for the cage runtime (no host-config mount —
+  # see "Socket mount rationale" in the header).
   #
   # Ordering: this entry must appear AFTER herdr-bin in your tools.yaml (the herdr
   # binary must be installed before this install_cmd runs in the Dockerfile).
@@ -123,14 +126,16 @@ tools:
     install_cmd: "mkdir -p /root/.pi/agent/extensions /etc/rip-cage/pi/herdr-ext && herdr integration install pi && cp /root/.pi/agent/extensions/herdr-agent-state.ts /etc/rip-cage/pi/herdr-ext/ && chown -R root:root /etc/rip-cage/pi/herdr-ext && chmod 0644 /etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts && rm -rf /root/.pi"
     # No internet needed: herdr generates the extension locally (static file generation).
     egress: []
-    # mounts: herdr config directory (contains the unix socket) from host to cage.
-    # Used in scenario (b) — host herdr watching the cage (not herdr-as-multiplexer).
-    # skip-if-host-missing: if ~/.config/herdr/ is absent, this mount is omitted silently.
-    # Directory mount (not single-file) — atomic rename safety (bd memory).
-    mounts:
-      - host: "~/.config/herdr"
-        dest: "/home/agent/.config/herdr"
-        mode: "ro"
+    # NO host-config mount. This recipe provisions the pi EXTENSION only (both scenarios
+    # need it). The scenario-(b) host-config mount does NOT belong here: mounting the host's
+    # ~/.config/herdr over the cage's ~/.config/herdr breaks scenario (a) — herdr as the
+    # in-cage multiplexer — because the in-cage server needs to WRITE that dir to create its
+    # socket, and even a ro mount makes it read-only (Os code 30 ReadOnlyFilesystem: the
+    # server dies at start with "server did not become ready within 5s"). A scenario-(b)
+    # host-watch user adds their OWN host-config mount to a NON-colliding cage path
+    # (e.g. /home/agent/.config/herdr-host) and points the extension's HERDR_SOCKET_PATH
+    # there — never over ~/.config/herdr. See "Socket mount rationale" above.
+    mounts: []
     # launch_args: contributes the -e flag that loads the herdr extension when pi launches.
     # rc build assembles these across all composed fragments (ADR-027 D4 / rip-cage-l72i.1).
     # When DCG is composed (dcg-wiring fragment first), --no-extensions appears before -e,

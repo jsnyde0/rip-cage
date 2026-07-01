@@ -23,8 +23,11 @@ the image and declares its load via `launch_args` so every pi invocation carries
   `/etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts`, and contributes:
   - `launch_args: ["-e", "/etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts"]` to the
     assembled pi launch shim (assembled by `rc build` from all composed fragments)
-  - `mounts: [{host: "~/.config/herdr", dest: "/home/agent/.config/herdr", mode: "ro"}]`
-    — the herdr socket directory (skip-if-host-missing)
+  - `mounts: []` — **no host-config mount.** In scenario (a) (herdr as the in-cage
+    multiplexer) the cage runs its own herdr server and needs a *writable*
+    `~/.config/herdr`; mounting the host dir there (even `ro`) makes it read-only and
+    kills the server. Scenario (b) (host-watch) adds its own mount to a non-colliding
+    path — see [Socket mount scenarios](#socket-mount-scenarios) below.
 
 ## D8 open-verification finding
 
@@ -97,10 +100,7 @@ tools:
     version_pin: "herdr-v0.7.0-integration"
     install_cmd: "mkdir -p /root/.pi/agent/extensions /etc/rip-cage/pi/herdr-ext && herdr integration install pi && cp /root/.pi/agent/extensions/herdr-agent-state.ts /etc/rip-cage/pi/herdr-ext/ && chown -R root:root /etc/rip-cage/pi/herdr-ext && chmod 0644 /etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts && rm -rf /root/.pi"
     egress: []
-    mounts:
-      - host: "~/.config/herdr"
-        dest: "/home/agent/.config/herdr"
-        mode: "ro"
+    mounts: []   # no host-config mount — see "Socket mount scenarios" below
     launch_args: ["-e", "/etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts"]
 ```
 
@@ -126,22 +126,27 @@ Without DCG, the assembled args are:
 (pi auto-discovers normally; the herdr extension is loaded explicitly AND available
 via auto-discovery from `herdr integration install pi` at cage start — see below.)
 
-## Socket connectivity
+## Socket mount scenarios
 
 The herdr pi extension connects to herdr via the unix socket path in `HERDR_SOCKET_PATH`.
-Two scenarios:
+Two scenarios — **this recipe declares `mounts: []` and targets scenario A**:
 
-**Scenario A — herdr as multiplexer (examples/herdr/)**:
-herdr server runs INSIDE the cage. The socket is at `~/.config/herdr/herdr.sock` inside
-the container. `HERDR_SOCKET_PATH` is set by herdr in managed panes. No host socket mount
-needed — the socket is cage-local. The host mount declared by this fragment is
-skip-if-host-missing and harmlessly inactive in this scenario.
+**Scenario A — herdr as multiplexer (examples/herdr/, `session.multiplexer: herdr`)**:
+the herdr server runs INSIDE the cage. The socket is at `~/.config/herdr/herdr.sock` inside
+the container, and `HERDR_SOCKET_PATH` is set by herdr in managed panes. The cage's herdr
+server **must own a writable `~/.config/herdr`** to create that socket — so this recipe
+mounts **nothing** there. ⚠️ Do NOT mount the host's `~/.config/herdr` into the cage in this
+scenario: even a `ro` mount makes the dir read-only and the in-cage server dies at start
+with `herdr: server did not become ready within 5s` (`Os code 30 ReadOnlyFilesystem`).
 
-**Scenario B — herdr running on the HOST**:
-herdr watches the cage from outside (e.g., a host-side supervisor). The socket is at
-`~/.config/herdr/herdr.sock` on the host. This fragment mounts `~/.config/herdr/` ro into
-the cage at `/home/agent/.config/herdr` so `HERDR_SOCKET_PATH` can be set to the cage-side
-path (e.g., `/home/agent/.config/herdr/herdr.sock`).
+**Scenario B — herdr running on the HOST (host-watch)**:
+herdr watches the cage from outside (e.g., a host-side supervisor) and the cage does NOT
+run its own herdr server. The host socket is at `~/.config/herdr/herdr.sock`. A host-watch
+user adds their OWN mount — but to a **non-colliding cage path**, e.g.
+`{host: "~/.config/herdr", dest: "/home/agent/.config/herdr-host", mode: "ro"}` — and sets
+`HERDR_SOCKET_PATH` to `/home/agent/.config/herdr-host/herdr.sock`. Never mount it over the
+cage-local `~/.config/herdr`. This scenario-B mount is intentionally NOT baked into this
+recipe because it would break scenario A (the common case).
 
 ## Without DCG (no-guard path)
 
