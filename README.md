@@ -117,6 +117,7 @@ See [docs/reference/composition-seam.md](docs/reference/composition-seam.md) for
 ## More info
 
 **Reference:**
+- [Reference docs index + composable seams catalog](docs/reference/README.md) — all six seams (TOOL manifest, per-asset ro/rw mounts, extension composition, multiplexer/mediator providers, guard recipes, launch composition) with manifest shapes and worked-example links; full index of every reference doc
 - [CLI reference](docs/reference/cli-reference.md) — all commands, flags, JSON output
 - [Auth](docs/reference/auth.md) — OAuth, Keychain, API key fallback
 - [SSH identity routing](docs/reference/ssh-routing.md) — `--github-identity`, rules file, banner states

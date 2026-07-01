@@ -37,7 +37,7 @@ Host (macOS/Linux)
 
 **Usage:** `rc up` — CLI/headless mode (creates container, runs init, attaches — behavior depends on `session.multiplexer` config: plain shell under `none` (default), tmux attach under `tmux`, herdr supervisor view under `herdr`). The project directory is bind-mounted at `/workspace` — file changes sync instantly, no git push needed.
 
-> For installation, quickstart, auth, safety stack details, and full CLI reference, see [docs/reference/](docs/reference/).
+> For installation, quickstart, auth, safety stack details, and full CLI reference, see [docs/reference/](docs/reference/). For the composable seams catalog (how to add tools, guards, multiplexers, mediators, and launch composition), see **[docs/reference/README.md](docs/reference/README.md)**.
 
 ## Auth flow (for contributors)
 
