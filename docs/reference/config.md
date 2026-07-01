@@ -114,6 +114,40 @@ Run `rc config show` to see the effective value with provenance.
 
 ---
 
+## `mounts.config_mode` — project config file access inside the cage
+
+Controls whether `.rip-cage.yaml` (the project config file) is writable inside the cage. Default: read-only. ([ADR-021 D7](../decisions/ADR-021-layered-rip-cage-config.md))
+
+| Field | Type | Default | Allowed values |
+|---|---|---|---|
+| `mounts.config_mode` | selection_list (enum scalar) | `ro` | `ro`, `rw` |
+
+**`ro` (default):** `rc up` adds a nested `:ro` bind-mount over `/workspace/.rip-cage.yaml`, shadowing the broader `/workspace` read-write mount. The in-cage agent cannot write to or unlink the config file. The host can still edit it freely; an in-place host edit shows through the ro mount (editors that write-temp-then-rename replace the inode, so the in-cage view may lag until recreate — but in-cage visibility is not load-bearing: enforcement re-reads the host file). To apply a config change, edit on the host and run `rc reload <cage>`.
+
+**Threat rationale (ADR-024 prompt-injection):** A prompt-injected in-cage agent could bury a containment-weakening line (extra egress host / ssh host / risky mount) in an otherwise-legitimate edit that a human rubber-stamps on `rc reload`/`rc up`. Making the config author-side-only structurally prevents hidden in-cage lines.
+
+**`rw` opt-in:** When `mounts.config_mode: rw` is set, the shadow-mount is omitted and the agent can write to `/workspace/.rip-cage.yaml` directly via the workspace mount. Since `mounts.config_mode` itself is in the config file (which is ro by default), the agent cannot flip ro→rw from inside — opting into rw requires a host-side edit. This preserves the human-approval property.
+
+**Scope:** Project `.rip-cage.yaml` only. The global config (`~/.config/rip-cage/config.yaml`) is never mounted inside the cage — it is unaffected by this field.
+
+**Absent-config case:** If no `.rip-cage.yaml` exists at `rc up` time, no shadow-mount is added. The agent may author a new file via the rw workspace mount; a new file is reviewed wholesale at apply-time, so there is no buried-edit risk ([ADR-021 D5 both-absent posture](../decisions/ADR-021-layered-rip-cage-config.md)).
+
+**Mount-shape label-lock:** `mounts.config_mode` is a create-time mount-shape decision. Toggling between `ro` and `rw` on a running cage requires `rc destroy <name> && rc up` — `rc up` aborts loud on mismatch. `rc reload` also refuses loud on a `config_mode` change (not reload-eligible).
+
+```yaml
+# .rip-cage.yaml — opt in to writable config (rare; most projects keep the default ro)
+version: 1
+mounts:
+  config_mode: rw
+```
+
+When the in-cage agent needs to change `ssh.allowed_hosts` or another allowlist entry, the correct flow (default ro) is:
+1. Agent surfaces the request in prose: "please add `<host>` to `.rip-cage.yaml` under `ssh.allowed_hosts`"
+2. Human (or a host-side assistant) edits `.rip-cage.yaml` on the host
+3. Human runs `rc reload <cage>` to apply live without recreating the container
+
+---
+
 ## `mounts.denylist` and `mounts.allow_risky` — secret-path denylist
 
 Rip-cage blocks `rc up` from mounting paths that match a set of secret-path patterns (e.g. `.aws`, `.ssh`, `credentials`). This is the **secret-path denylist** ([ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md)).

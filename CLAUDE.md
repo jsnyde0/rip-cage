@@ -69,11 +69,12 @@ The shim implements the same `list`/`show`/`load` tools as the host `ms` binary.
 
 If you hit a wall like `Host key verification failed` for some host (e.g. a non-github mirror), the cage is enforcing `ssh.allowed_hosts` from `.rip-cage.yaml`. To unblock:
 
-1. Edit `.rip-cage.yaml` in the workspace (it's writable inside the cage) to add the host under `ssh.allowed_hosts`.
-2. Ask the human to run on the host: `rc reload <cage>` — this hot-reloads the allowlist without tearing down the running session or losing in-flight context (rip-cage-ocn / [ADR-022](docs/decisions/ADR-022-ssh-allowlist.md) D6).
-3. Retry the failing operation. No restart, no reattach.
+1. **Surface the request in prose** — e.g. "please add `<host>` to `.rip-cage.yaml` under `ssh.allowed_hosts`". Do NOT attempt to edit `.rip-cage.yaml` directly inside the cage.
+2. The human (or a host-side assistant they relay to) edits `.rip-cage.yaml` on the host to add the host under `ssh.allowed_hosts`.
+3. The human runs on the host: `rc reload <cage>` — this hot-reloads the allowlist without tearing down the running session or losing in-flight context (rip-cage-ocn / [ADR-022](docs/decisions/ADR-022-ssh-allowlist.md) D6).
+4. Retry the failing operation. No restart, no reattach.
 
-`rc reload` is host-side only and not on the cage's PATH by design — the human is the approval step. You cannot self-grant; surface the request and wait for the human to apply.
+**Why:** `.rip-cage.yaml` is **read-only inside the cage by default** ([ADR-021 D7](docs/decisions/ADR-021-layered-rip-cage-config.md) — `mounts.config_mode: ro`). This prevents a prompt-injected agent from burying a containment-weakening line in an otherwise-legitimate config edit. `rc reload` is host-side only and not on the cage's PATH — the human is the approval step. You cannot self-grant; surface the request and wait for the human to apply.
 
 ## Harness inventory
 

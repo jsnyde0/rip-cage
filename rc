@@ -1175,6 +1175,32 @@ _up_prepare_docker_mounts() {
   # Workspace mount
   _UP_RUN_ARGS+=(-v "${_path}:/workspace:delegated")
 
+  # ADR-021 D7: .rip-cage.yaml ro shadow-mount.
+  # If the project config file exists and effective mounts.config_mode is not "rw",
+  # add a more-specific nested :ro bind-mount over /workspace/.rip-cage.yaml.
+  # This prevents a prompt-injected in-cage agent from writing containment-weakening
+  # lines that a human would rubber-stamp on rc reload/rc up (ADR-024 buried-edit threat).
+  # The global config (~/.config/rip-cage/config.yaml) is never mounted in-cage — untouched.
+  # D5 regression contract: skip entirely when the project file is absent (no shadow-mount
+  # means a new file can be authored via the rw workspace mount, which is reviewed wholesale).
+  if [[ -f "${_path}/.rip-cage.yaml" ]]; then
+    local _cfg_mode="ro"
+    if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "${_path}")" ]]; then
+      local _cm_cfg_result
+      if _cm_cfg_result=$(_load_effective_config "${_path}" 2>/dev/null); then
+        _cfg_mode=$(jq -r '.config.mounts.config_mode // "ro"' <<<"$_cm_cfg_result")
+      fi
+      unset _cm_cfg_result
+    fi
+    if [[ "$_cfg_mode" != "rw" ]]; then
+      _UP_RUN_ARGS+=(-v "${_path}/.rip-cage.yaml:/workspace/.rip-cage.yaml:ro")
+      log ".rip-cage.yaml: ro shadow-mount added (mounts.config_mode=${_cfg_mode})"
+    else
+      log ".rip-cage.yaml: writable via workspace mount (mounts.config_mode=rw)"
+    fi
+    unset _cfg_mode
+  fi
+
   # D11: .git/hooks read-only — physical enforcement against container escape
   # Worktree mode handles hooks separately (see worktree mount block below)
   if [[ "$wt_detected" != "true" ]] && [[ -d "${_path}/.git/hooks" ]]; then
@@ -1919,6 +1945,60 @@ _up_resolve_resume_ssh_key_filter() {
     fi
     echo "Error: container $_name was created with rc.ssh-key-filter=${_UP_RESUME_SSH_KEY_FILTER} but current effective config has ssh.allowed_keys filter=${_current}." >&2
     echo "       The /etc/rip-cage/ssh-allowed-keys bind mount is wired at create time; toggling ssh.allowed_keys between null and non-null requires recreating the container." >&2
+    echo "       Run:" >&2
+    echo "         rc destroy $_name" >&2
+    echo "         rc up $_path" >&2
+    exit 1
+  fi
+}
+
+# _up_resolve_resume_config_mode -- read and validate the rc.config-mode
+# label on resume; abort loud if current effective config's mounts.config_mode
+# differs from the label (ro↔rw is a mount-shape transition — the nested
+# :ro shadow-mount either exists or doesn't; immutable on resume).
+#
+# ADR-021 D7: mounts.config_mode toggles whether a nested :ro bind-mount is
+# added over /workspace/.rip-cage.yaml. Silently re-using a stale mount would
+# leave the agent with a mount shape inconsistent with what the user configured.
+# Mirrors _up_resolve_resume_ssh_key_filter.
+#
+# Missing label (legacy container, pre-cw51): treated as "ro" (the default);
+# if current effective config is also ro (or absent), no mismatch.
+# Parameters: $1 name, $2 path
+_up_resolve_resume_config_mode() {
+  local _name="$1" _path="$2"
+  local _label
+  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.config-mode" }}' "$_name" 2>/dev/null); then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
+    fi
+    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
+    exit 1
+  fi
+  # Empty label = legacy container; treat as "ro" (the default, matches the
+  # shadow-mount-added-by-default posture of pre-label containers).
+  local _stored_mode
+  if [[ -z "$_label" ]]; then
+    _stored_mode="ro"
+  else
+    _stored_mode="$_label"
+  fi
+
+  # Compute current effective mounts.config_mode from on-disk config.
+  local _eff_result _current
+  _eff_result=$(_load_effective_config "$_path" 2>/dev/null || true)
+  if [[ -z "$_eff_result" ]]; then
+    _current="ro"
+  else
+    _current=$(jq -r '.config.mounts.config_mode // "ro"' <<<"$_eff_result" 2>/dev/null || echo "ro")
+  fi
+
+  if [[ "$_stored_mode" != "$_current" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Container $_name was created with rc.config-mode=${_stored_mode} but current effective config has mounts.config_mode=${_current}. Mount shape is immutable on resume — run: rc destroy $_name && rc up $_path to apply the change." "CONFIG_MODE_MOUNT_SHAPE_CHANGED"
+    fi
+    echo "Error: container $_name was created with rc.config-mode=${_stored_mode} but current effective config has mounts.config_mode=${_current}." >&2
+    echo "       The /workspace/.rip-cage.yaml :ro shadow-mount is wired at create time; toggling mounts.config_mode between ro and rw requires recreating the container." >&2
     echo "       Run:" >&2
     echo "         rc destroy $_name" >&2
     echo "         rc up $_path" >&2
@@ -3927,6 +4007,8 @@ cmd_up() {
   fi
 
   if [[ "$state" == "running" ]]; then
+    # ADR-021 D7: config-mode mount-shape guard applies to running containers too.
+    _up_resolve_resume_config_mode "$name" "$path"
     # rip-cage-c1p.2 D4: fingerprint label-lock applies to running containers too.
     # A policy change (on_dangling, scope, mode) must block resume regardless of
     # whether the container is stopped or running — the mount shape is immutable.
@@ -4012,6 +4094,9 @@ cmd_up() {
     # on resume — if ssh.allowed_keys was toggled between null and non-null since
     # create, the rc.ssh-key-filter label resolver below aborts loud.
     _up_resolve_resume_ssh_key_filter "$name" "$path"
+    # ADR-021 D7: config-mode mount-shape guard — abort loud if mounts.config_mode
+    # was toggled between ro and rw since the container was created.
+    _up_resolve_resume_config_mode "$name" "$path"
     # rip-cage-c1p.2 D4: symlink-follow fingerprint label-lock — abort loud if
     # the dangling-symlink set (or mode) changed since create time.
     _up_resolve_resume_symlink_fingerprint "$name" "$path"
@@ -4261,6 +4346,22 @@ cmd_up() {
   else
     _UP_RUN_ARGS+=(--label "rc.ssh-key-filter=off")
   fi
+
+  # ADR-021 D7: persist effective mounts.config_mode as a container label so
+  # resume can detect ro↔rw mount-shape transitions and abort loud rather than
+  # silently presenting a stale mount shape. Mirrors rc.ssh-key-filter pattern.
+  local _cm_label_mode="ro"
+  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
+    if command -v yq &>/dev/null; then
+      local _cm_label_cfg
+      if _cm_label_cfg=$(_load_effective_config "$path" 2>/dev/null); then
+        _cm_label_mode=$(jq -r '.config.mounts.config_mode // "ro"' <<<"$_cm_label_cfg")
+      fi
+      unset _cm_label_cfg
+    fi
+  fi
+  _UP_RUN_ARGS+=(--label "rc.config-mode=${_cm_label_mode}")
+  unset _cm_label_mode
 
   # ADR-021 D5: persist effective .rip-cage.yaml content sha as a container
   # label — but ONLY when at least one config file exists. D5 forbids new
@@ -4982,8 +5083,13 @@ cmd_reload() {
   fi
 
   # Compute differing JSON paths (e.g. "ssh.allowed_hosts", "egress.mode").
-  local diff_paths
-  diff_paths=$(_config_diff_paths "$live_cfg" "$applied_cfg" 2>/dev/null || true)
+  # Pass schema defaults so absent-in-snapshot + live==default fields are non-drift
+  # (handles old snapshots written before a new defaulted field was introduced —
+  # same suppression as _config_emit_hint / rip-cage-1f59.9).
+  local diff_paths _schema_defaults_reload
+  _schema_defaults_reload=$(_config_schema_defaults_json 2>/dev/null || echo '{}')
+  diff_paths=$(_config_diff_paths "$live_cfg" "$applied_cfg" "$_schema_defaults_reload" 2>/dev/null || true)
+  unset _schema_defaults_reload
 
   if [[ -z "$diff_paths" ]]; then
     log "No changes since last apply — nothing to reload."
@@ -5123,8 +5229,10 @@ _allowlist_refuse_in_cage() {
   local subcmd="$1"
   echo "Error: 'rc allowlist ${subcmd}' is a host-only command — it mutates effective config via rc reload." >&2
   echo "You appear to be inside a rip-cage container. To add a host:" >&2
-  echo "  - Edit .rip-cage.yaml in your workspace (already reflected on host)" >&2
-  echo "  - Then run on the host: rc reload <cage-name>" >&2
+  echo "  - Surface the request in prose to the human (e.g. 'please add <host> to .rip-cage.yaml')" >&2
+  echo "  - The human (or a host-side assistant) edits .rip-cage.yaml on the host" >&2
+  echo "  - Then the human runs on the host: rc reload <cage-name>" >&2
+  echo "  Note: .rip-cage.yaml is read-only inside the cage by default (ADR-021 D7 / mounts.config_mode); under mounts.config_mode=rw you may edit it in-cage, but rc reload is host-only regardless." >&2
   exit 1
 }
 
@@ -6048,6 +6156,7 @@ ssh.allowed_keys|selection_list|null
 ssh.allowed_hosts|additive_list|[]
 mounts.denylist|additive_list|[]
 mounts.allow_risky|selection_list|null
+mounts.config_mode|selection_list|"ro"|ro,rw
 mounts.symlinks.on_dangling|selection_list|"follow"|follow,warn,skip,error
 mounts.symlinks.scope|selection_list|"file"|file,parent
 mounts.symlinks.mode|selection_list|"rw"|ro,rw

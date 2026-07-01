@@ -39,6 +39,8 @@ Running rc reload my-cage to apply...
 From here the cage enforces the allowlist: anything not in `network.allowed_hosts` (or the baseline) is refused at the connection level (the destination host isn't allowed), and the denial is logged to `.rip-cage/egress.log` (host + reason) for the agent or host to read and self-correct against. (A pure router can't return a per-request structured 403 body — it never decrypts the request; per-request structured feedback returns when a mediator is composed, per [ADR-026](../decisions/ADR-026-containment-mediation-identity.md) D4.)
 
 > The agent inside the cage **cannot** promote or self-grant. `rc allowlist add`/`promote` are host-only (they mutate effective config via `rc reload`, which is not on the cage PATH). The human running the command on the host is the approval step.
+>
+> Additionally, `.rip-cage.yaml` is **read-only inside the cage by default** (`mounts.config_mode: ro`, [ADR-021 D7](../decisions/ADR-021-layered-rip-cage-config.md)). The agent cannot directly edit the file. The correct flow: the agent surfaces the request in prose, the human edits `.rip-cage.yaml` on the host, then runs `rc reload <cage>`. See [config.md → `mounts.config_mode`](config.md#mountsconfig_mode----project-config-file-access-inside-the-cage).
 
 ---
 
