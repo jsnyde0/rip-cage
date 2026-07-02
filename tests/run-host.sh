@@ -233,6 +233,7 @@ run_test "${SCRIPT_DIR}/test-manifest-schema.sh"       # rip-cage-4c5.1: tool ma
 # The e2e-tier wiring + driver-level fixture for T2 is rip-cage-4c5.8's job.
 run_test "${SCRIPT_DIR}/test-manifest-tool.sh"         # rip-cage-4c5.2: TOOL install-step generation (host-only T1); e2e self-skips via RC_E2E gate
 run_test "${SCRIPT_DIR}/test-manifest-tool-init-hook.sh" # rip-cage-p35a.2: TOOL archetype 'init' agent-context boot-hook seam (host-only T1a-T1k); e2e T2a/T2b self-skip via RC_E2E gate
+run_test "${SCRIPT_DIR}/test-pi-recipe-lifecycle.sh"   # rip-cage-p35a.3: pi-recipe owns full lifecycle — fwp3 mkdir relocated to init hook, base-init de-pi audit, dist/e2e-fixture sync, --model pin mechanism-not-default (host-only T1a-T1i)
 run_test "${SCRIPT_DIR}/test-manifest-egress.sh"       # rip-cage-4c5.3: egress+mounts floor (host-only E1/E1b/E2/E3); e2e self-skips via RC_E2E gate
 run_test "${SCRIPT_DIR}/test-manifest-shell.sh"        # rip-cage-4c5.4: SHELL-INTEGRATION shell_init baking (host-only T1); e2e self-skips via RC_E2E gate
 run_test "${SCRIPT_DIR}/test-manifest-daemon.sh"       # rip-cage-4c5.5: IN-CAGE-DAEMON lifecycle (host-only T1); e2e self-skips via RC_E2E gate

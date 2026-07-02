@@ -57,6 +57,31 @@ tools:
   #
   # ADR-005 D12: the pi recipe no longer names dcg (the launch wiring is now
   # declared in the fragment that contributes it — the dcg recipe).
+  #
+  # OPTIONAL: pin pi's provider/model via launch_args (rip-cage-p35a.3 —
+  # MECHANISM ONLY; closes rip-cage-tl6q's pin-mechanism conjunct — the
+  # construction-skill VALUE-CHOICE conjunct closes at rip-cage-p35a.5).
+  # Throttle rationale (rip-cage-px6v spike, live-verified 2026-07-02): pi's
+  # HEADLESS default resolves to the Claude subscription entitlement, which
+  # is throttled by Anthropic's third-party-app usage policy (400 "Third-party
+  # apps now draw from your extra usage"). This throttle is independent of
+  # interactive/headless/herdr-spawned launch mode — pinning a working
+  # provider/model forces every launch shape onto it.
+  # NOT enabled by default here — do NOT uncomment this in a shipped/default
+  # manifest. Forcing one provider on EVERY operator would break anyone
+  # without that provider's auth AND override pi's interactive-picked
+  # default for users who never hit the throttle (DESIGN CLARIFICATION,
+  # orchestrator 2026-07-02). This is a mechanism + a worked EXAMPLE — the
+  # operator (or the construction skill, rip-cage-p35a.4/.5) chooses the
+  # actual value for THEIR auth. To pin, add a launch_args field to a TOOL
+  # entry that contributes to the pi shim assembly (any composed fragment;
+  # this one is a natural home since it already provisions pi's lifecycle):
+  #
+  #   launch_args: ["--model", "openai-codex/gpt-5.5"]  # EXAMPLE — set this to YOUR provider/model + auth
+  #
+  # (spike-verified working value: openai-codex/gpt-5.5 on a ChatGPT-account
+  # codex login; -codex/-codex-mini model-name variants are rejected for
+  # ChatGPT accounts — see rip-cage-px6v spike notes.)
 
   # ---------------------------------------------------------------------------
   # TOOL entry: bake the cage-topology doc into the image (root-owned).
@@ -66,9 +91,26 @@ tools:
   #     by init-rip-cage.sh)
   # No apt packages needed; the leading ':' is a no-op so the rc-generated
   # 'apt-get update && <install_cmd> && rm ...' wrapper stays valid.
+  # 'init' agent-context boot-hook (rip-cage-p35a.3, seam from rip-cage-p35a.2 /
+  # ADR-005 D7): relocated here from init-rip-cage.sh (commit e360c3b, the
+  # rip-cage-fwp3 stopgap). herdr v0.7.0's 'integration install pi' (run by the
+  # herdr multiplexer start hook, examples/herdr/manifest-fragment.yaml) writes
+  # into \${PI_CODING_AGENT_DIR}/extensions/ and REQUIRES that directory to
+  # already exist — it does not create it. Must run AS AGENT (no sudo; the
+  # TOOL init hook seam is agent-context-only) — creating it at build time as
+  # root reintroduces the Permission-denied bug from the 2026-06-29 audit.
+  # Fail-loud WARNING (not fail-closed) on mkdir failure, matching the
+  # original stopgap's semantics (ADR-005 D10 fail-warn asymmetry for user
+  # tool contributions) — a silently-absent extensions/ dir would resurrect
+  # this bead's exact "extension directory not found" symptom with zero
+  # signal. Firing is now gated on THIS recipe being composed (not on
+  # \`command -v pi\`, which was always true anyway since pi is npm-installed
+  # unconditionally in the base Dockerfile) — a cleanup win: the old gate was
+  # vestigial.
   - name: pi-recipe
     archetype: TOOL
     version_pin: "bundled-recipe"
+    init: '_rc_pi_ext_dir="\${PI_CODING_AGENT_DIR:-/home/agent/.pi/agent}/extensions"; if ! mkdir -p "\$_rc_pi_ext_dir" 2>/tmp/rc-pi-ext-mkdir-err; then echo "[rip-cage] WARNING: could not create \${_rc_pi_ext_dir} (herdr''s boot-time ''integration install pi'' will fail with ''extension directory not found'', rip-cage-fwp3): \$(cat /tmp/rc-pi-ext-mkdir-err 2>/dev/null)" >&2; fi; rm -f /tmp/rc-pi-ext-mkdir-err; true'
     install_cmd: ": && mkdir -p /etc/rip-cage/pi /etc/rip-cage && echo '${CAGEMD_B64}' | base64 -d > /etc/rip-cage/cage-pi.md && chown root:root /etc/rip-cage/cage-pi.md && chmod 0644 /etc/rip-cage/cage-pi.md"
     egress: []
     mounts: []

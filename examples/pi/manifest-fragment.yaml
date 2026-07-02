@@ -22,6 +22,31 @@ tools:
   #
   # ADR-005 D12: the pi recipe no longer names dcg (the launch wiring is now
   # declared in the fragment that contributes it — the dcg recipe).
+  #
+  # OPTIONAL: pin pi's provider/model via launch_args (rip-cage-p35a.3 —
+  # MECHANISM ONLY; closes rip-cage-tl6q's pin-mechanism conjunct — the
+  # construction-skill VALUE-CHOICE conjunct closes at rip-cage-p35a.5).
+  # Throttle rationale (rip-cage-px6v spike, live-verified 2026-07-02): pi's
+  # HEADLESS default resolves to the Claude subscription entitlement, which
+  # is throttled by Anthropic's third-party-app usage policy (400 "Third-party
+  # apps now draw from your extra usage"). This throttle is independent of
+  # interactive/headless/herdr-spawned launch mode — pinning a working
+  # provider/model forces every launch shape onto it.
+  # NOT enabled by default here — do NOT uncomment this in a shipped/default
+  # manifest. Forcing one provider on EVERY operator would break anyone
+  # without that provider's auth AND override pi's interactive-picked
+  # default for users who never hit the throttle (DESIGN CLARIFICATION,
+  # orchestrator 2026-07-02). This is a mechanism + a worked EXAMPLE — the
+  # operator (or the construction skill, rip-cage-p35a.4/.5) chooses the
+  # actual value for THEIR auth. To pin, add a launch_args field to a TOOL
+  # entry that contributes to the pi shim assembly (any composed fragment;
+  # this one is a natural home since it already provisions pi's lifecycle):
+  #
+  #   launch_args: ["--model", "openai-codex/gpt-5.5"]  # EXAMPLE — set this to YOUR provider/model + auth
+  #
+  # (spike-verified working value: openai-codex/gpt-5.5 on a ChatGPT-account
+  # codex login; -codex/-codex-mini model-name variants are rejected for
+  # ChatGPT accounts — see rip-cage-px6v spike notes.)
 
   # ---------------------------------------------------------------------------
   # TOOL entry: bake the cage-topology doc into the image (root-owned).
@@ -31,9 +56,26 @@ tools:
   #     by init-rip-cage.sh)
   # No apt packages needed; the leading ':' is a no-op so the rc-generated
   # 'apt-get update && <install_cmd> && rm ...' wrapper stays valid.
+  # 'init' agent-context boot-hook (rip-cage-p35a.3, seam from rip-cage-p35a.2 /
+  # ADR-005 D7): relocated here from init-rip-cage.sh (commit e360c3b, the
+  # rip-cage-fwp3 stopgap). herdr v0.7.0's 'integration install pi' (run by the
+  # herdr multiplexer start hook, examples/herdr/manifest-fragment.yaml) writes
+  # into ${PI_CODING_AGENT_DIR}/extensions/ and REQUIRES that directory to
+  # already exist — it does not create it. Must run AS AGENT (no sudo; the
+  # TOOL init hook seam is agent-context-only) — creating it at build time as
+  # root reintroduces the Permission-denied bug from the 2026-06-29 audit.
+  # Fail-loud WARNING (not fail-closed) on mkdir failure, matching the
+  # original stopgap's semantics (ADR-005 D10 fail-warn asymmetry for user
+  # tool contributions) — a silently-absent extensions/ dir would resurrect
+  # this bead's exact "extension directory not found" symptom with zero
+  # signal. Firing is now gated on THIS recipe being composed (not on
+  # `command -v pi`, which was always true anyway since pi is npm-installed
+  # unconditionally in the base Dockerfile) — a cleanup win: the old gate was
+  # vestigial.
   - name: pi-recipe
     archetype: TOOL
     version_pin: "bundled-recipe"
+    init: '_rc_pi_ext_dir="${PI_CODING_AGENT_DIR:-/home/agent/.pi/agent}/extensions"; if ! mkdir -p "$_rc_pi_ext_dir" 2>/tmp/rc-pi-ext-mkdir-err; then echo "[rip-cage] WARNING: could not create ${_rc_pi_ext_dir} (herdr''s boot-time ''integration install pi'' will fail with ''extension directory not found'', rip-cage-fwp3): $(cat /tmp/rc-pi-ext-mkdir-err 2>/dev/null)" >&2; fi; rm -f /tmp/rc-pi-ext-mkdir-err; true'
     install_cmd: ": && mkdir -p /etc/rip-cage/pi /etc/rip-cage && echo 'PCEtLSBiZWdpbjpyaXAtY2FnZS10b3BvbG9neS1waSAtLT4KIyMgUmlwLUNhZ2UgVG9wb2xvZ3kgZm9yIFBpIChjYWdlLWF1dGhvcmVkKQoKPiAqKkRpc2NvdmVyeSoqOiBUaGlzIGZpbGUgbGl2ZXMgYXQgYC9ldGMvcmlwLWNhZ2UvY2FnZS1waS5tZGAgaW5zaWRlIGV2ZXJ5Cj4gcmlwLWNhZ2UgY29udGFpbmVyIGFuZCBpcyBzdXJmYWNlZCB2aWEgYSByZWZlcmVuY2UgaW4gYH4vLmNsYXVkZS9DTEFVREUubWRgCj4gKGluc2lkZSB0aGUgYDwhLS0gYmVnaW46cmlwLWNhZ2UtdG9wb2xvZ3kgLS0+YCBmZW5jZSkuIEl0IGlzIG5ldmVyIGFwcGVuZGVkCj4gdG8gYC9waS1hZ2VudC9BR0VOVFMubWRgIOKAlCB0aGF0IGZpbGUgaXMgaG9zdC1vd25lZCBhbmQgcmlwLWNhZ2UgZG9lcyBub3QKPiBtdXRhdGUgaXQgKEFEUi0wMTkgRDMpLiBQaSBhZ2VudHMgY2FuIHJlYWQgdGhpcyBmaWxlIGRpcmVjdGx5IGF0IGl0cyBrbm93bgo+IHBhdGggb3IgZm9sbG93IHRoZSByZWZlcmVuY2UgaW4gYH4vLmNsYXVkZS9DTEFVREUubWRgLgoKIyMgUmlwLUNhZ2UgTmV0d29yayBUb3BvbG9neSAoY2FnZS1hdXRob3JlZCkKCllvdSBhcmUgcnVubmluZyBpbnNpZGUgYSAqKnJpcC1jYWdlKiogRG9ja2VyIGNvbnRhaW5lciBvbiB0aGUgdXNlcidzIGhvc3QgKG1hY09TCm9yIExpbnV4KS4gVGhpcyBzZWN0aW9uIHRlbGxzIHlvdSB3aGVyZSB0aGluZ3MgYXJlIGFuZCBob3cgdG8gcmVhY2ggdGhlbSBmcm9tCippbnNpZGUqIHRoZSBjYWdlLgoKIyMjIEZpbGVzeXN0ZW0KCi0gYC93b3Jrc3BhY2VgIGlzIHRoZSBvbmx5IGhvc3QgcGF0aCBtb3VudGVkIGluLiBFdmVyeXRoaW5nIG91dHNpZGUgYC93b3Jrc3BhY2VgCiAgaXMgY2FnZS1sb2NhbCAoZXBoZW1lcmFsLCBsb3N0IG9uIGByYyBkZXN0cm95YCkuCi0gQ2FnZSBgJEhPTUVgIGlzIGAvaG9tZS9hZ2VudGAg4oCUIGFnZW50LWxvY2FsLCBub3QgdGhlIHVzZXIncyByZWFsIGhvbWUuCgojIyMgTmV0d29ya2luZwoKLSBgbG9jYWxob3N0YCBhbmQgYDEyNy4wLjAuMWAgcmVmZXIgdG8gdGhlICoqY2FnZSoqLCBub3QgdGhlIGhvc3QuIEEgc2VydmljZQogIG9uIGBsb2NhbGhvc3Q6NTQzMmAgaW5zaWRlIHRoZSBjYWdlIGlzIGEgc2VydmljZSBydW5uaW5nIGluIHRoaXMgY29udGFpbmVyLgotIFRvIHJlYWNoIGEgc2VydmljZSBydW5uaW5nIG9uIHRoZSAqKmhvc3QqKiwgdXNlIGAkQ0FHRV9IT1NUX0FERFJgCiAgKHNldCBieSBpbml0OyBmYWxscyBiYWNrIHRvIGxpdGVyYWwgYGhvc3QuZG9ja2VyLmludGVybmFsYCkuIEV4YW1wbGU6CiAgYGBgYmFzaAogICMgUHJvYmUgYSBzcGVjaWZpYyBob3N0IHBvcnQgd2l0aG91dCBndWVzc2luZwogIHB5dGhvbjMgLWMgImltcG9ydCBzb2NrZXQ7IHM9c29ja2V0LnNvY2tldCgpOyBzLnNldHRpbWVvdXQoMik7IFwKICAgIHMuY29ubmVjdCgoJyRDQUdFX0hPU1RfQUREUicsIDU0MzIpKTsgcHJpbnQoJ09QRU4nKSIKICBgYGAKLSBBIHNpYmxpbmcgYGRvY2tlci1jb21wb3NlYCBzZXJ2aWNlIGZyb20gKmFub3RoZXIqIHByb2plY3QgaXMgb25seSByZWFjaGFibGUKICBmcm9tIHRoZSBjYWdlIGlmIG9uZSBvZiB0aGVzZSBpcyB0cnVlOgogIChhKSB0aGF0IHNlcnZpY2UgcHVibGlzaGVzIGl0cyBwb3J0IHZpYSBgcG9ydHM6YCBpbiBpdHMgY29tcG9zZSBmaWxlLCBpbgogICAgICB3aGljaCBjYXNlIGl0J3MgcmVhY2hhYmxlIGF0IGAkQ0FHRV9IT1NUX0FERFI6PHB1Ymxpc2hlZC1wb3J0PmA7IG9yCiAgKGIpIHRoZSBjYWdlIGlzIGF0dGFjaGVkIHRvIHRoYXQgcHJvamVjdCdzIGNvbXBvc2UgbmV0d29yayAoZnV0dXJlCiAgICAgIGByYyB1cCAtLWpvaW4tbmV0d29ya2A7IG5vdCBhdmFpbGFibGUgdG9kYXkpLgogIElmIG5laXRoZXIgYXBwbGllcywgeW91IHdpbGwgc2VlIGBjb25uZWN0aW9uIHJlZnVzZWRgIG9yIGBubyByb3V0ZWAgbm8KICBtYXR0ZXIgd2hhdCBob3N0bmFtZSBvciBJUCB5b3UgdHJ5LgotIFRoZSBlZ3Jlc3MgZmlyZXdhbGwgKEFEUi0wMTIpIHJlc3RyaWN0cyAqaW50ZXJuZXQqIGFjY2Vzcywgbm90IGhvc3QgYWNjZXNzLgogICJJIGNhbiByZWFjaCBgJENBR0VfSE9TVF9BRERSYCIgYW5kICJJIGNhbiByZWFjaCBnaXRodWIuY29tIiBhcmUgaW5kZXBlbmRlbnQKICBxdWVzdGlvbnMg4oCUIGRvIG5vdCBjb25mbGF0ZSBgY29ubmVjdGlvbiByZWZ1c2VkYCAobm8gc2VydmljZSBvbiB0aGF0IHBvcnQpCiAgd2l0aCBgZmlyZXdhbGwgYmxvY2tlZGAgKGRlc3RpbmF0aW9uIG5vdCBpbiBhbGxvd2xpc3QpLgoKIyMjIERlYnVnIHJlY2lwZXMKCmBgYGJhc2gKIyBJcyB0aGUgaG9zdCBicmlkZ2UgcmVzb2x2YWJsZT8KZ2V0ZW50IGhvc3RzICIkQ0FHRV9IT1NUX0FERFIiCgojIElzIGEgc3BlY2lmaWMgaG9zdCBwb3J0IHJlYWNoYWJsZT8KcHl0aG9uMyAtYyAiaW1wb3J0IHNvY2tldDsgcz1zb2NrZXQuc29ja2V0KCk7IHMuc2V0dGltZW91dCgyKTsgXAogIHMuY29ubmVjdCgoJyRDQUdFX0hPU1RfQUREUicsIFBPUlQpKTsgcHJpbnQoJ09QRU4nKSIKCiMgV2hlcmUgYW0gST8gKHJ1bnRpbWUgLyBicmlkZ2UgbmFtZSkKZWNobyAiQ0FHRV9IT1NUX0FERFI9JENBR0VfSE9TVF9BRERSIgpgYGAKCiMjIyBQcmVjZWRlbnRzIGluc2lkZSB0aGUgY2FnZSB0aGF0IGFscmVhZHkgdXNlIHRoaXMgYnJpZGdlCgotIEJlYWRzIERvbHQgc2VydmVyIChBRFItMDA3KTogYEJFQURTX0RPTFRfU0VSVkVSX0hPU1Q9aG9zdC5kb2NrZXIuaW50ZXJuYWxgCi0gRmlyZXdhbGwgQ0EgdHJ1c3QgKEFEUi0wMTIpOiBwcm94eSBlbmRwb2ludCBsaXZlcyBvbiB0aGUgaG9zdAoKIyMjIE5vdGFibGUgcGkgc3RhdGUgcGF0aHMKCi0gUGkgYXV0aCAoQURSLTAxOSBEMSk6IGAvcGktYWdlbnQvYXV0aC5qc29uYCBpcyB0aGUgYXV0aCBjcmVkZW50aWFsIGZpbGUgKGBQSV9DT0RJTkdfQUdFTlRfRElSPS9waS1hZ2VudGApCi0gUGkgZXh0ZW5zaW9uczogYC9waS1hZ2VudC9leHRlbnNpb25zL2Ag4oCUIGdsb2JhbCBwaSBleHRlbnNpb25zIGRpcmVjdG9yeQoKSWYgYSB0b29sICppbnNpZGUqIHRoZSBjYWdlIHdvcmtzIGJ1dCB5b3VyIG5ldyBjb25uZWN0aW9uIGRvZXNuJ3QsIHRoZSBwcm9ibGVtCmlzIGFsbW9zdCBhbHdheXMgKGEpIHdyb25nIGhvc3RuYW1lIChgbG9jYWxob3N0YCBpbnN0ZWFkIG9mIGAkQ0FHRV9IT1NUX0FERFJgKSwKb3IgKGIpIG5vIHB1Ymxpc2hlZCBwb3J0IG9uIHRoZSB0YXJnZXQgY29tcG9zZSBzZXJ2aWNlLgo8IS0tIGVuZDpyaXAtY2FnZS10b3BvbG9neS1waSAtLT4K' | base64 -d > /etc/rip-cage/cage-pi.md && chown root:root /etc/rip-cage/cage-pi.md && chmod 0644 /etc/rip-cage/cage-pi.md"
     egress: []
     mounts: []

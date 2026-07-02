@@ -31,41 +31,27 @@ fi
 if [[ ! -L /home/agent/.claude ]]; then
   sudo chown agent:agent /home/agent/.claude 2>/dev/null || true
 fi
-# Pi config dir is container-local (ADR-019 D1 evolved). Nothing in the image
-# mkdirs .pi/agent at build time; it comes into existence only when 'rc up'
-# bind-mounts auth.json into it, which makes Docker auto-create the parent dir
-# root-owned (2026-07-02 live-verified: rip-cage-fwp3). Chown top-level only
-# (not -R): .pi/agent dir and its subdirs (including extensions/) should be
-# agent-writable (olen retired per ADR-027 D1/D3 — the DCG guard now lives at
+# BASE-INFRA (pi, rip-cage-p35a.3 audit): Pi config dir is container-local
+# (ADR-019 D1 evolved). Nothing in the image mkdirs .pi/agent at build time;
+# it comes into existence only when 'rc up' bind-mounts auth.json into it,
+# which makes Docker auto-create the parent dir root-owned (2026-07-02
+# live-verified: rip-cage-fwp3). Chown top-level only (not -R): .pi/agent dir
+# and its subdirs (including extensions/) should be agent-writable (olen
+# retired per ADR-027 D1/D3 — the DCG guard now lives at
 # /etc/rip-cage/pi/dcg-gate.ts on its own separate root-owned load path;
-# extensions/ is no longer root-owned).
+# extensions/ is no longer root-owned). JUSTIFICATION: this requires sudo
+# (fixing a Docker-created root-owned bind-mount parent dir) and the TOOL
+# 'init' boot-hook seam (rip-cage-p35a.2, ADR-005 D7) is agent-context-ONLY
+# (no sudo) — there is no per-recipe root-context boot-time hook today, so
+# this genuinely cannot move to pi's recipe. Stays base-infra.
 if [[ ! -L /home/agent/.pi/agent ]]; then
   sudo chown agent:agent /home/agent/.pi/agent 2>/dev/null || true
 fi
-# rip-cage-fwp3: herdr v0.7.0's 'integration install pi' (run by the herdr
-# multiplexer start hook, examples/herdr/manifest-fragment.yaml) writes into
-# ${PI_CODING_AGENT_DIR}/extensions/ and REQUIRES that directory to already
-# exist — it does not create it. Nothing else provisions extensions/: the
-# chown above only fixes ownership of dirs that already exist, and the
-# herdr-pi build_source recipe builds its extension into the build-root
-# /root/.pi then rm -rf's it (build-time artifact, not runtime state).
-# Create it here, agent-owned, so the boot-time integration install
-# succeeds. Must run AS AGENT (no sudo) — creating it at build time as root
-# reintroduces the Permission-denied bug from the 2026-06-29 audit.
-# Gated on pi actually being on PATH (mirrors the "9. Pi verify" check below)
-# so a claude-only cage doesn't grow a stray empty .pi/agent/extensions tree.
-# On mkdir failure, WARN loudly instead of swallowing (matching the
-# herdr-integration-install-failure idiom in examples/herdr/manifest-
-# fragment.yaml) — a silently-absent extensions/ dir would resurrect this
-# bead's exact "extension directory not found" symptom with zero signal.
-if command -v pi >/dev/null 2>&1; then
-  _rc_pi_ext_dir="${PI_CODING_AGENT_DIR:-/home/agent/.pi/agent}/extensions"
-  if ! mkdir -p "$_rc_pi_ext_dir" 2>/tmp/rc-pi-ext-mkdir-err; then
-    echo "[rip-cage] WARNING: could not create ${_rc_pi_ext_dir} (herdr's boot-time 'integration install pi' will fail with 'extension directory not found', rip-cage-fwp3): $(cat /tmp/rc-pi-ext-mkdir-err 2>/dev/null)" >&2
-  fi
-  rm -f /tmp/rc-pi-ext-mkdir-err
-  unset _rc_pi_ext_dir
-fi
+# rip-cage-fwp3's extensions/ mkdir RELOCATED (rip-cage-p35a.3) to pi's own
+# recipe as a TOOL 'init' agent-context boot-hook (examples/pi/manifest-
+# fragment.yaml, rip-cage-p35a.2 seam / ADR-005 D7) — dispatched generically
+# by the "1b. TOOL archetype agent-context init hooks" block below. It no
+# longer lives here: base init names no specific tool (ADR-005 D12).
 
 # 1b. TOOL archetype agent-context init hooks (rip-cage-p35a.2, ADR-005 D7).
 # Reads the baked config from /etc/rip-cage/tool-init-config.json (written at
@@ -244,10 +230,18 @@ if [ -f /etc/rip-cage/cage-claude.md ]; then
   rm -f /tmp/claude-md-base
   echo "[rip-cage] Cage-topology section appended to ~/.claude/CLAUDE.md"
 fi
-# ADR-019 D3 (post-c1p.1/hhh.12): cage-topology for pi is surfaced via reference in
-# ~/.claude/CLAUDE.md (cage-owned path) rather than appended to host AGENTS.md.
-# Post-hhh.12: PI_CODING_AGENT_DIR points to container-local /home/agent/.pi/agent.
-# This preserves the user's canonical dotpi files intact on the host.
+# BASE-INFRA (pi, rip-cage-p35a.3 audit): ADR-019 D3 (post-c1p.1/hhh.12):
+# cage-topology for pi is surfaced via reference in ~/.claude/CLAUDE.md
+# (cage-owned path) rather than appended to host AGENTS.md. Post-hhh.12:
+# PI_CODING_AGENT_DIR points to container-local /home/agent/.pi/agent. This
+# preserves the user's canonical dotpi files intact on the host.
+# JUSTIFICATION: this one-line availability echo's own MESSAGE TEXT names
+# the literal path /etc/rip-cage/cage-pi.md — the TOOL init hook-bounds
+# validator (ADR-005 D11) fail-closed-rejects ANY init command referencing
+# '/etc/rip-cage/' (lifecycle-interceptor pattern), even in inert prose. That
+# static grep is a blunt safety-floor check, not a semantic one; reformulating
+# the message to dodge it isn't worth the churn for a cosmetic echo. Stays
+# base-infra.
 if [ "${PI_CODING_AGENT_DIR:-}" = "/home/agent/.pi/agent" ]; then
   echo "[rip-cage] Cage-pi topology available at /etc/rip-cage/cage-pi.md (not appended to host AGENTS.md — container-local pi dir preserves host dotpi files intact)"
 fi
@@ -271,7 +265,8 @@ for _rc_asset in skills commands agents; do
 done
 unset _rc_asset
 
-# 3b. Link pi substrate assets from host (staged via .rc-context/pi-*)
+# BASE-INFRA (pi, rip-cage-p35a.3 audit): 3b. Link pi substrate assets from
+# host (staged via .rc-context/pi-*)
 # DATA-DRIVEN table: stage_name:agent_subpath (NO per-agent if/elif branch — ADR-005 D12).
 # For instruction-content assets (skills/prompts/roles/AGENTS.md/SYSTEM.md/APPEND_SYSTEM.md):
 # symlink directly (skips gracefully when not present via the [ -e ] guard below).
@@ -279,6 +274,16 @@ unset _rc_asset
 # they are declared as manifest recipe fragments (mount + launch_args) and assembled
 # by rc build into the pi shim (rip-cage-l72i.3, ADR-027 D3/D4); rc names no tool.
 # ADR-027 D1: mounts are :ro (host→cage); symlinks here are cage-internal only.
+# JUSTIFICATION: the host-side mount projection this loop consumes
+# (.rc-context/pi-*) is staged by `rc up` UNCONDITIONALLY whenever
+# ${HOME}/.pi/agent exists on the HOST (rc:1461) — completely decoupled from
+# whether the pi-recipe TOOL entry is composed in the cage's manifest.
+# Relocating this loop into pi-recipe's 'init' hook would silently break
+# substrate projection for any cage that has host pi substrate mounted but
+# does not compose pi-recipe — a genuine cross-recipe/host-CLI coordination
+# case the ADR-005 D7 invalidation clause names explicitly ("a boot step that
+# genuinely requires cross-recipe coordination not expressible per-recipe").
+# Stays base-infra.
 for _pi_substrate in "pi-skills:skills" "pi-prompts:prompts" "pi-roles:roles" "pi-AGENTS.md:AGENTS.md" "pi-SYSTEM.md:SYSTEM.md" "pi-APPEND_SYSTEM.md:APPEND_SYSTEM.md"; do
   _pi_stage="/home/agent/.rc-context/${_pi_substrate%%:*}"
   _pi_dest="${PI_CODING_AGENT_DIR:-/home/agent/.pi/agent}/${_pi_substrate##*:}"
@@ -564,7 +569,17 @@ if ! claude --version > /dev/null 2>&1; then
 fi
 echo "[rip-cage] Claude Code $(claude --version) ready"
 
-# 9. Pi verify
+# BASE-INFRA (pi, rip-cage-p35a.3 audit): 9. Pi verify
+# JUSTIFICATION: pi is npm-installed UNCONDITIONALLY in the base Dockerfile
+# (not manifest-gated, independent of whether the pi-recipe TOOL entry is
+# composed) — this check verifies that floor invariant and must run
+# regardless of pi-recipe composition. It is also fail-CLOSED (FATAL, exit 1)
+# while the TOOL 'init' boot-hook seam (rip-cage-p35a.2, ADR-005 D7) is
+# fail-WARN by design ("cage still starts" — ADR-005 D10 asymmetry): the
+# init-hook mechanism cannot express hard-fail semantics, and gating this
+# check on pi-recipe composition would silently drop floor verification for
+# any cage that doesn't compose pi-recipe even though the Dockerfile still
+# bakes pi. Stays base-infra.
 if command -v pi >/dev/null 2>&1; then
     # pi --version writes the version to stderr, not stdout (pi 0.73.x), so a bare
     # $(pi --version) captures nothing and renders a double-space. Capture via 2>&1
