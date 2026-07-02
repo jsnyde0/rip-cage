@@ -42,7 +42,7 @@ if [[ -f /.dockerenv ]]; then
   exit 1
 fi
 
-IMAGE="rip-cage:latest"
+IMAGE="${RC_IMAGE:-rip-cage:latest}"
 
 # GHCR registry for pre-built images (ADR-008 D6, implemented at v0.2.0).
 # `${VAR-default}` (no colon) honors explicit empty as "skip pull, build locally" —
@@ -311,7 +311,7 @@ cmd_build() {
         docker image rm "$IMAGE" 2>/dev/null || true
         json_error "Manifest tool binary is not root-owned/agent-writable, or a root_owned_required mount asset is not root-owned — safety floor violated (ADR-005 D9/D11, ADR-024, ADR-027 D1)" "MANIFEST_BINARY_NOT_ROOT_OWNED"
       fi
-      jq -nc '{image: "rip-cage:latest", action: "built", status: "success"}'
+      jq -nc --arg img "$IMAGE" '{image: $img, action: "built", status: "success"}'
     else
       [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
       json_error "Build failed" "BUILD_FAILED"

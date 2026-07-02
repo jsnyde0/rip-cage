@@ -385,7 +385,7 @@ test_t2a_init_hook_fires_at_real_boot() {
   if skip_if_not_e2e "T2a TOOL init hook fires at real boot"; then return 0; fi
 
   local container_name="rc-tool-init-test-t2a-$$"
-  local image_name="rip-cage:latest"
+  local image_name="rip-cage-toolinit-test:latest"
   local workspace
   workspace=$(mktemp -d "${TMPDIR:-/tmp}/rc-tool-init-e2e-XXXXXX")
   local manifest_home
@@ -397,11 +397,12 @@ test_t2a_init_hook_fires_at_real_boot() {
   t2a_cleanup() {
     docker stop "$container_name" 2>/dev/null || true
     docker rm "$container_name" 2>/dev/null || true
+    docker rmi "$image_name" 2>/dev/null || true
     rm -rf "$workspace" "$manifest_home"
   }
 
   local build_out
-  if ! build_out=$(HOME="$manifest_home" XDG_CONFIG_HOME="${manifest_home}/.config" \
+  if ! build_out=$(RC_IMAGE="$image_name" HOME="$manifest_home" XDG_CONFIG_HOME="${manifest_home}/.config" \
        "${REPO_ROOT}/rc" build 2>&1); then
     fail "T2a Could not build cage image with TOOL-init manifest: ${build_out}"
     t2a_cleanup
@@ -442,7 +443,7 @@ test_t2b_control_tool_no_init_no_sentinel() {
   if skip_if_not_e2e "T2b control TOOL (no init) → no sentinel fires"; then return 0; fi
 
   local container_name="rc-tool-init-test-t2b-$$"
-  local image_name="rip-cage:latest"
+  local image_name="rip-cage-toolinit-test:latest"
   local workspace
   workspace=$(mktemp -d "${TMPDIR:-/tmp}/rc-tool-init-e2e-XXXXXX")
   local manifest_home
@@ -454,11 +455,12 @@ test_t2b_control_tool_no_init_no_sentinel() {
   t2b_cleanup() {
     docker stop "$container_name" 2>/dev/null || true
     docker rm "$container_name" 2>/dev/null || true
+    docker rmi "$image_name" 2>/dev/null || true
     rm -rf "$workspace" "$manifest_home"
   }
 
   local build_out
-  if ! build_out=$(HOME="$manifest_home" XDG_CONFIG_HOME="${manifest_home}/.config" \
+  if ! build_out=$(RC_IMAGE="$image_name" HOME="$manifest_home" XDG_CONFIG_HOME="${manifest_home}/.config" \
        "${REPO_ROOT}/rc" build 2>&1); then
     fail "T2b Could not build cage image with control manifest: ${build_out}"
     t2b_cleanup
