@@ -81,6 +81,8 @@ tools:
   - name: dcg-wiring
     archetype: TOOL
     ...
+    # OPEN by default (ADR-027 D1, FIRM 2026-07-02): no --no-extensions.
+    # Shown here is the LOCKED opt-in variant — see examples/dcg/README.md.
     launch_args: ["--no-extensions", "-e", "/etc/rip-cage/pi/dcg-gate.ts"]
     mounts:
       - host: "..."
@@ -186,8 +188,14 @@ tools:
   - name: dcg-wiring     # bakes the guard wrapper engine + hook registration + cage config
     archetype: TOOL
     ...
-    launch_args: ["--no-extensions", "-e", "/etc/rip-cage/pi/dcg-gate.ts"]
+    launch_args: ["-e", "/etc/rip-cage/pi/dcg-gate.ts"]  # OPEN default (ADR-027 D1, FIRM)
 ```
+
+Ships OPEN by default (ADR-027 D1, FIRM 2026-07-02): the guard extension always loads, but
+pi's own extension auto-discovery paths stay live — a prompt-injected pi writing its own
+bypass extension is an accepted residual. A `--no-extensions` LOCKED opt-in (closes that
+residual at the cost of pi extension autonomy) is documented in
+[examples/dcg/README.md](../../examples/dcg/README.md).
 
 **Doc:** [safety-stack.md](safety-stack.md) — PreToolUse hooks, `bypassPermissions`, hard-denied operations. [ADR-025](../decisions/ADR-025-host-adoptable-dcg-policy.md) — DCG composable recipe design rationale.
 
@@ -206,8 +214,8 @@ tools:
 tools:
   - name: dcg         # guard binary
     ...
-  - name: dcg-wiring  # contributes: --no-extensions -e /etc/rip-cage/pi/dcg-gate.ts
-    launch_args: ["--no-extensions", "-e", "/etc/rip-cage/pi/dcg-gate.ts"]
+  - name: dcg-wiring  # contributes: -e /etc/rip-cage/pi/dcg-gate.ts (OPEN default, ADR-027 D1)
+    launch_args: ["-e", "/etc/rip-cage/pi/dcg-gate.ts"]
   - name: herdr-bin   # herdr binary
     ...
   - name: herdr-pi    # contributes: -e /etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts
@@ -219,7 +227,7 @@ tools:
     ...
 ```
 
-Assembled `launch_args` (in fragment order): `--no-extensions -e /etc/rip-cage/pi/dcg-gate.ts -e /etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts`. `rc build` bakes this into a generic pi shim. Adding the Nth tool is a fragment declaration — zero wrapper edits, zero `rc` source edits.
+Assembled `launch_args` (in fragment order): `-e /etc/rip-cage/pi/dcg-gate.ts -e /etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts`. `rc build` bakes this into a generic pi shim. Adding the Nth tool is a fragment declaration — zero wrapper edits, zero `rc` source edits. (LOCKED opt-in: add `--no-extensions` to `dcg-wiring`'s `launch_args` — see [examples/dcg/README.md](../../examples/dcg/README.md).)
 
 **Worked example:** [examples/herdr-pi/README.md](../../examples/herdr-pi/README.md) — a full DCG + herdr + pi launch composition recipe (the canonical launch-composition example), including the without-DCG path, socket connectivity, and upgrading.
 

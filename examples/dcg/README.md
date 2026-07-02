@@ -43,3 +43,41 @@ The agent does the wiring. No rc source edits required.
 The published GHCR image includes this recipe via `dist/default-tools.yaml`. To compose
 locally, copy both `tools[]` entries from `manifest-fragment.yaml` into your
 `~/.config/rip-cage/tools.yaml` and run `rc build`. Zero rc source edits needed.
+
+## pi launch wiring: OPEN by default, LOCKED opt-in (ADR-027 D1/D4)
+
+`dcg-wiring` also contributes the `launch_args` that load the DCG guard extension
+(`dcg-gate.ts`) into pi's launch. As shipped (this fragment, `dist/default-tools.yaml`):
+
+```yaml
+launch_args: ["-e", "/etc/rip-cage/pi/dcg-gate.ts"]
+```
+
+This is the **OPEN default** (ADR-027 D1, FIRM 2026-07-02): the DCG guard extension
+always loads, but pi's own extension auto-discovery paths (`/workspace/.pi/extensions/`,
+`~/.pi/agent/extensions/`) stay live. **Accepted residual ("vector-b")**: a
+prompt-injected pi agent could write its own extension into an auto-discovery path and
+have it auto-load — there is no guard against that in the open default. This trade
+favors agent autonomy (the point of the cage) over closing that residual.
+
+### LOCKED opt-in
+
+To close vector-b at the cost of pi extension autonomy, add `--no-extensions` back to
+`dcg-wiring`'s `launch_args` in your own `tools.yaml` (or a local copy of this fragment):
+
+```yaml
+launch_args: ["--no-extensions", "-e", "/etc/rip-cage/pi/dcg-gate.ts"]
+```
+
+`--no-extensions` disables pi's auto-discovery paths entirely — only extensions
+explicitly listed via `-e` in the assembled `launch_args` (across ALL composed
+fragments) load. This closes vector-b, but means the agent can no longer drop its own
+pi extensions into `~/.pi/agent/extensions/` and have them pick up automatically; every
+extension the agent wants active must be baked into a recipe's `launch_args` at image
+build time. This is a real autonomy cost — most cages should stay on the open default;
+reach for the locked variant only when the extension-autonomy tradeoff is acceptable for
+your threat model (e.g. a cage that never needs the agent to author its own pi
+extensions).
+
+This is a recipe OPTION, not a hidden default — rip-cage never silently re-locks the
+posture; you opt in explicitly by editing your own `tools.yaml`.

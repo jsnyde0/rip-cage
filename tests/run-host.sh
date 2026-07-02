@@ -44,7 +44,7 @@ NEEDS_CONTAINER=(
   "test-ssh-forwarding.sh"    # ADR-017/018 live-cage ssh-agent socket mount/label/sentinels; self-skips without docker (rip-cage-b6ia)
   "test-ssh-resolver.sh"      # Tests 6-10 spin up live cages; Tests 1-5 are host unit tests of _parse_identity_rules/_resolve_github_identity, already covered by test-ssh-config.sh checks 10-13 — whole file denylisted, no unique host coverage lost under --host-only (rip-cage-b6ia)
   "test-session-persistence.sh" # Phase 3 calls rc up + docker exec for dn2 projects/sessions persist-to-host (rip-cage-b6ia)
-  "test-pi-no-extensions.sh"  # rip-cage-sn1h: pi wrapper --no-extensions regression probe; requires running cage
+  "test-pi-no-extensions.sh"  # rip-cage-sn1h: LOCKED-VARIANT-ONLY probe; requires running cage; self-skips under shipped OPEN default (rip-cage-p35a.1 / ADR-027 D1)
   "test-skills.sh"            # live meta-skill MCP handshake + cage-path/settings assertions inside a container (rip-cage-b6ia)
   "test-multiplexer-agent-e2e.sh" # requires RC_E2E=1 + pi auth; proves pi agent does real work THROUGH the tmux attach surface with >=2 distinct tool invocations (rip-cage-w621.7)
   "test-multiplexer-composable.sh" # E1 tier builds + runs a cage; G1 host-only grep-guards run always (rip-cage-61al.8)
@@ -287,7 +287,7 @@ run_test "${SCRIPT_DIR}/test-mount-seam-integration.sh" # rip-cage-wlwc.6: integ
 run_test "${SCRIPT_DIR}/test-ssh-forwarding.sh"       # ADR-017/018 live ssh-agent forwarding
 run_test "${SCRIPT_DIR}/test-ssh-resolver.sh"         # github-identity resolver; Tests 6-10 spin up cages
 run_test "${SCRIPT_DIR}/test-session-persistence.sh"  # dn2 projects/sessions persist-to-host (Phase 3 container)
-run_test "${SCRIPT_DIR}/test-pi-no-extensions.sh"     # rip-cage-sn1h: pi wrapper --no-extensions regression (evil.ts NOT loaded + DCG still denies)
+run_test "${SCRIPT_DIR}/test-pi-no-extensions.sh"     # rip-cage-sn1h: LOCKED-VARIANT-ONLY probe (evil.ts NOT loaded + DCG still denies); self-skips under the shipped OPEN default (rip-cage-p35a.1 / ADR-027 D1)
 run_test "${SCRIPT_DIR}/test-skills.sh"               # meta-skill MCP handshake + cage-path/settings inside cage
 
 echo "=== run-host.sh complete ==="

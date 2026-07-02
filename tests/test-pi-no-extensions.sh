@@ -1,10 +1,25 @@
 #!/usr/bin/env bash
-# test-pi-no-extensions.sh — Regression probe: pi --no-extensions bypass guard (rip-cage-sn1h)
+# test-pi-no-extensions.sh — LOCKED-VARIANT-ONLY probe: pi --no-extensions bypass guard
+# (rip-cage-sn1h; retired-as-default-assertion by rip-cage-p35a.1 / ADR-027 D1)
 #
-# Confirms that the pi launch wrapper (/usr/local/bin/pi) closes the workspace-path
-# extension auto-discovery bypass by adding --no-extensions -e <dcg-gate> to every pi call.
+# ADR-027 D1 (FIRM, 2026-07-02) flips the SHIPPED DCG default posture to OPEN: the
+# dcg-wiring launch_args no longer include --no-extensions, so pi's own extension
+# auto-discovery paths stay live even with DCG composed. The "evil.ts NOT loaded"
+# property this probe checks is now an ACCEPTED RESIDUAL in the default cage
+# ("vector-b" — a prompt-injected pi could write a bypass extension into an
+# auto-loaded path), not a regression. See examples/dcg/README.md for the
+# documented LOCKED opt-in variant that still closes this bypass.
 #
-# This probe verifies TWO things:
+# This probe therefore SELF-SKIPS unless the composed cage's pi wrapper actually
+# carries --no-extensions (i.e. the operator opted INTO the locked variant). It is
+# NOT part of the default-posture safety contract; it exists to validate the locked
+# opt-in still works correctly when someone composes it.
+#
+# Confirms that a LOCKED pi launch wrapper (/usr/local/bin/pi) closes the
+# workspace-path extension auto-discovery bypass by adding --no-extensions
+# -e <dcg-gate> to every pi call.
+#
+# This probe verifies TWO things (LOCKED variant only):
 #   (a) /workspace/.pi/extensions/evil.ts is NOT loaded by the wrapper (auto-discovery disabled)
 #   (b) a known-destructive command is still DENIED by the DCG guard (effect, not presence)
 #
@@ -108,6 +123,18 @@ cexec() { docker exec "$CONTAINER" "$@"; }
 # ---------------------------------------------------------------------------
 if ! cexec bash -c 'command -v pi >/dev/null 2>&1'; then
   echo "SKIP: pi not installed in container $CONTAINER (non-pi cage)"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Guard: LOCKED-VARIANT-ONLY. Self-skip unless the composed pi wrapper actually
+# carries --no-extensions (rip-cage-p35a.1 / ADR-027 D1: open is the shipped
+# default; --no-extensions is a documented opt-in, not something every cage has).
+# ---------------------------------------------------------------------------
+if ! cexec grep -q -- '--no-extensions' /usr/local/bin/pi 2>/dev/null; then
+  echo "SKIP: pi wrapper does NOT carry --no-extensions — cage is on the OPEN default"
+  echo "      posture (ADR-027 D1, FIRM). This probe only applies to cages that opted"
+  echo "      into the LOCKED variant (examples/dcg/README.md). Not a regression."
   exit 0
 fi
 

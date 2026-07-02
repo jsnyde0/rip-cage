@@ -49,8 +49,11 @@ tools:
   #
   # To get DCG guard wiring, ALSO compose examples/dcg/manifest-fragment.yaml.
   # The DCG fragment bakes dcg-gate.ts AND contributes the launch_args
-  # (--no-extensions -e /etc/rip-cage/pi/dcg-gate.ts). Composing WITHOUT the
-  # DCG fragment gives a clean generic shim with no guard and auto-discovery on.
+  # (-e /etc/rip-cage/pi/dcg-gate.ts). OPEN by default (ADR-027 D1, FIRM
+  # 2026-07-02): no --no-extensions, so pi's own extension auto-discovery
+  # paths stay live even with DCG composed (see examples/dcg/README.md for
+  # the LOCKED opt-in variant). Composing WITHOUT the DCG fragment gives a
+  # clean generic shim with no guard and auto-discovery on.
   #
   # ADR-005 D12: the pi recipe no longer names dcg (the launch wiring is now
   # declared in the fragment that contributes it — the dcg recipe).

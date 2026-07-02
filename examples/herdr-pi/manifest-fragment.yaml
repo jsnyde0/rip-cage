@@ -29,10 +29,12 @@ version: 1
 #       archetype: TOOL
 #       ...
 #
-#   If you also use DCG, compose dcg and dcg-wiring BEFORE herdr-pi so --no-extensions
+#   If you also use DCG, compose dcg and dcg-wiring BEFORE herdr-pi so the guard's -e
 #   appears first in the assembled launch_args (guard-first by fragment order, ADR-027 D4).
-#   DCG contributes --no-extensions which disables pi's auto-discovery paths; herdr-pi
-#   contributes -e <herdr-ext> which adds the explicit herdr extension alongside dcg-gate.
+#   DCG contributes -e <dcg-gate> which loads the guard; herdr-pi contributes
+#   -e <herdr-ext> which adds the explicit herdr extension alongside it. OPEN by
+#   default (ADR-027 D1, FIRM 2026-07-02): DCG's launch_args do NOT include
+#   --no-extensions, so pi's own extension auto-discovery paths stay live either way.
 #   Without DCG, pi auto-discovers normally and the herdr integration installed by
 #   herdr multiplexer's start hook also just works (see examples/herdr/).
 #
@@ -94,11 +96,13 @@ version: 1
 #
 # ## No-DCG path
 #
-#   If composing herdr-pi WITHOUT the DCG fragment, --no-extensions is absent from
-#   the assembled launch_args, so pi auto-discovers extensions normally (workspace +
-#   agent extensions/). The herdr extension installed by herdr's start hook will also
+#   If composing herdr-pi WITHOUT the DCG fragment, pi auto-discovers extensions
+#   normally (workspace + agent extensions/) — same as the WITH-DCG OPEN default
+#   (ADR-027 D1). The herdr extension installed by herdr's start hook will also
 #   load automatically — this fragment's -e contribution is additive, not exclusive.
-#   Accepted residual: no destructive-command guard. Containment bounds blast radius.
+#   Accepted residual: no destructive-command guard at all (vs. WITH-DCG open,
+#   which still guards command execution — only extension auto-discovery is shared).
+#   Containment bounds blast radius.
 
 tools:
   # herdr-pi (TOOL): generates herdr's pi extension into the image at build time
@@ -138,7 +142,8 @@ tools:
     mounts: []
     # launch_args: contributes the -e flag that loads the herdr extension when pi launches.
     # rc build assembles these across all composed fragments (ADR-027 D4 / rip-cage-l72i.1).
-    # When DCG is composed (dcg-wiring fragment first), --no-extensions appears before -e,
-    # so auto-discovery is disabled and only the explicitly listed extensions load.
-    # Without DCG, -e is still additive — pi loads the herdr ext plus any auto-discovered ones.
+    # OPEN by default (ADR-027 D1, FIRM 2026-07-02): whether or not DCG is composed,
+    # pi's own extension auto-discovery paths stay live — -e is additive, not exclusive.
+    # A LOCKED opt-in (DCG's launch_args carrying --no-extensions, see
+    # examples/dcg/README.md) would make -e the ONLY way extensions load.
     launch_args: ["-e", "/etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts"]

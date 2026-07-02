@@ -13,7 +13,7 @@
 #   7. /home/agent/.pi/agent/AGENTS.md content + mtime unchanged after rc up
 #      (init must not mutate container-local dotfiles)
 #   8. auth.json RW round-trip: write inside cage → visible on host (inode preserved)
-#   9. extensions/ dir is agent-owned + writable (agent's own extension space; the pi guard is NOT auto-loaded from here — post-olen it rides --no-extensions -e from /etc/rip-cage/pi/)
+#   9. extensions/ dir is agent-owned + writable (agent's own extension space; the pi guard is NOT auto-loaded from here — post-olen it rides an explicit -e from /etc/rip-cage/pi/; OPEN by default, ADR-027 D1, FIRM 2026-07-02 — extensions/ still auto-loads normally, --no-extensions is a LOCKED opt-in)
 
 set -uo pipefail
 
@@ -320,12 +320,15 @@ printf '{"fake":true}\n' > "$PI_AGENT_DIR/auth.json"
 # ================================================================
 # Test 9: the agent's pi extensions/ dir is correct, agent-owned, and writable
 #
-# Post-wlwc.4 (olen retirement, ADR-019 D8 / ADR-027 D1/D3) pi does NOT auto-load
-# this dir. The root-owned wrapper (/usr/local/bin/pi) prepends
-# '--no-extensions -e /etc/rip-cage/pi/dcg-gate.ts', so the guard rides its OWN
-# separate root-owned load path and the workspace cannot inject a shadowing
-# extension. /home/agent/.pi/agent/extensions/ is therefore NOT a guard path —
-# it is the agent's own writable extension space (ADR-027 rw self-improvement).
+# Post-wlwc.4 (olen retirement, ADR-019 D8 / ADR-027 D1/D3) the DCG guard does
+# NOT live in this dir. The root-owned wrapper (/usr/local/bin/pi) loads the
+# guard explicitly via -e /etc/rip-cage/pi/dcg-gate.ts on its OWN separate
+# root-owned path — a workspace/extensions write cannot shadow it either way.
+# /home/agent/.pi/agent/extensions/ is therefore NOT a guard path — it is the
+# agent's own writable extension space (ADR-027 rw self-improvement). OPEN by
+# default (ADR-027 D1, FIRM 2026-07-02): pi DOES normally auto-load whatever
+# the agent drops here (that autonomy IS the point); --no-extensions is a
+# documented LOCKED opt-in (examples/dcg/README.md) that disables it.
 #
 # What this test proves non-interactively:
 #   - The dir exists in the container image (baked by Dockerfile)
@@ -333,11 +336,11 @@ printf '{"fake":true}\n' > "$PI_AGENT_DIR/auth.json"
 #   - The agent user can write to it (agent improves its own extensions in-cage)
 #   - A marker file dropped here is readable by the agent user
 #
-# What this test does NOT assert (deliberately, post-olen):
-#   - That pi auto-loads from this dir — it does not. --no-extensions disables
-#     auto-discovery; the guard loads explicitly via -e from /etc/rip-cage/pi/.
-#     The --no-extensions bypass-block (workspace extensions NOT loaded) is
-#     covered by tests/test-pi-no-extensions.sh, not here.
+# What this test does NOT assert:
+#   - Whether pi actually auto-loads from this dir at runtime (open vs. locked
+#     posture) — that live behavior is covered by tests/test-pi-no-extensions.sh
+#     (LOCKED-VARIANT-ONLY; self-skips under the shipped OPEN default) and the
+#     RC_E2E_DCGHP_ONLY canary in tests/test-multiplexer-lifecycle.sh.
 # ================================================================
 echo ""
 echo "=== Test 9: agent pi extensions/ dir exists, is agent-owned, and is writable ==="

@@ -414,8 +414,10 @@ test_E_floor_not_shadowed_by_init() {
   # (root-owned, separate from extensions/). Mounting anything into extensions/ or
   # rc-context/pi-ext-subagent CANNOT shadow the guard because:
   #   (a) the guard is not in extensions/ anymore (relocated to its own root-owned path)
-  #   (b) --no-extensions (contributed by DCG fragment) disables pi auto-discovery of extensions/
-  #   (c) guard is loaded via explicit -e /etc/rip-cage/pi/dcg-gate.ts (build-time artifact)
+  #   (b) guard is loaded via explicit -e /etc/rip-cage/pi/dcg-gate.ts (build-time artifact,
+  #       contributed by the DCG fragment), independent of whether extensions/ auto-discovery
+  #       is live. OPEN by default (ADR-027 D1, FIRM 2026-07-02): --no-extensions is a
+  #       documented LOCKED opt-in (examples/dcg/README.md), not something relied on here.
   # Verify the subagent fragment does NOT declare a mount dest over the guard's path.
   local guard_path_prefix="/etc/rip-cage/pi"
   if [[ -f "${SUBAGENT_FRAGMENT}" ]]; then

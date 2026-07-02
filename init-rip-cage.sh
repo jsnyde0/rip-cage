@@ -418,16 +418,22 @@ if [ "${PI_CODING_AGENT_DIR:-}" = "/home/agent/.pi/agent" ]; then
         echo "[rip-cage] ERROR: dcg-guard wrapper missing — pi-cage guard cannot function (rip-cage-bl1)" >&2
         exit 1
       fi
-      # rip-cage-sn1h: pi launch wrapper must be present at /usr/local/bin/pi (intercepts every pi call,
-      # adds --no-extensions -e <dcg-gate> to close the /workspace/.pi/extensions/ auto-discovery bypass).
+      # rip-cage-sn1h: pi launch wrapper must be present at /usr/local/bin/pi (intercepts every
+      # pi call, adds -e <dcg-gate> so the DCG guard extension loads on every launch).
+      # OPEN by default (ADR-027 D1/D4, FIRM 2026-07-02; rip-cage-p35a.1): the wrapper does NOT
+      # add --no-extensions — pi's own extension auto-discovery paths (/workspace/.pi/extensions/,
+      # ~/.pi/agent/extensions/) stay live even with DCG composed. The accepted residual
+      # ("vector-b": a prompt-injected pi writing a bypass extension into an auto-loaded path)
+      # is knowingly accepted in this default; --no-extensions is a documented LOCKED opt-in
+      # (see examples/dcg/README.md), not something this check enforces.
       # Ownership: must be root-owned so the agent cannot swap it for an unwrapped pi call.
       if [ ! -x /usr/local/bin/pi ]; then
-        echo "[rip-cage] ERROR: pi launch wrapper missing at /usr/local/bin/pi — pi would launch without --no-extensions guard (rip-cage-sn1h)" >&2
+        echo "[rip-cage] ERROR: pi launch wrapper missing at /usr/local/bin/pi — pi would launch without the DCG guard extension load (rip-cage-sn1h)" >&2
         exit 1
       fi
       _pi_wrapper_owner=$(stat -c '%U' /usr/local/bin/pi 2>/dev/null || true)
       if [ "${_pi_wrapper_owner}" != "root" ]; then
-        echo "[rip-cage] ERROR: pi wrapper at /usr/local/bin/pi is owned by '${_pi_wrapper_owner}' (expected root) — agent could replace it to bypass --no-extensions (rip-cage-sn1h)" >&2
+        echo "[rip-cage] ERROR: pi wrapper at /usr/local/bin/pi is owned by '${_pi_wrapper_owner}' (expected root) — agent could replace it to bypass the DCG guard extension load (rip-cage-sn1h)" >&2
         exit 1
       fi
       unset _pi_wrapper_owner

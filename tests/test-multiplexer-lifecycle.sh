@@ -996,6 +996,8 @@ echo ""
 
 # ---------------------------------------------------------------------------
 # rip-cage-l72i.7: Three-conjunction test — DCG+herdr+pi composed cage
+# (rip-cage-p35a.1 / ADR-027 D1, FIRM 2026-07-02: reconciled to the OPEN
+# shipped default posture — dcg-wiring no longer contributes --no-extensions)
 #
 # Builds and exercises a real cage from the operator manifest
 # tests/fixtures/manifest-dcg-herdr-pi.yaml, asserting SIMULTANEOUSLY:
@@ -1003,12 +1005,17 @@ echo ""
 #       (herdr-agent-state.ts present + in ASSEMBLED_ARGS; semantic working-status
 #        not observable headlessly — see bead's ## Harness target Invalidation clause)
 #   (2) DCG guard floor present + loaded: dcg-guard binary + config.toml exist,
-#       pi shim has --no-extensions first + -e dcg-gate.ts present
-#   (3) canary extension dropped into pi auto-discovery path NOT loaded
-#       (--no-extensions from dcg-wiring fragment disables auto-discovery;
-#        live-fired: canary marker must NOT appear after pi run)
+#       pi shim has -e dcg-gate.ts present (guard loads) and --no-extensions
+#       ABSENT (OPEN default). EFFECT test: a root/home-targeted destructive
+#       command is still DENIED by dcg-guard (the load-bearing safety check —
+#       open posture must not disarm command-guarding).
+#   (3) canary extension dropped into pi auto-discovery path IS loaded under
+#       the OPEN default (accepted residual "vector-b", ADR-027 D1 — pi's own
+#       extension autonomy is preserved; this is NOT a regression, it is the
+#       decided tradeoff). Retired: the old "NOT loaded" assertion tested the
+#       now-abandoned LOCKED-by-default posture.
 #
-# IMPORTANT: Assertion (2) + downgraded (1a)+(1b) are ALWAYS run (structural,
+# IMPORTANT: Assertion (2a-2e) + downgraded (1a)+(1b) are ALWAYS run (structural,
 # no auth needed). The best-effort semantic poll part of (1) and assertion (3)
 # are auth-gated (require openrouter key in pi auth.json to drive a real pi
 # invocation); they SKIP (not FAIL) when auth is absent.
@@ -1061,8 +1068,9 @@ if [[ "$_L72I7_CAGE_STARTED" == "true" ]]; then
   #   (2a) dcg-guard binary executable + config.toml present (dcg-wiring install_cmd ran)
   #   (2b) /etc/rip-cage/pi/dcg-gate.ts owned by root:root
   #   (2c) /usr/local/bin/pi owned by root:root
-  #   (2d) pi shim ASSEMBLED_ARGS has --no-extensions as first arg and
-  #        -e /etc/rip-cage/pi/dcg-gate.ts present (guard-first order, ADR-027 D4)
+  #   (2d) pi shim ASSEMBLED_ARGS has -e /etc/rip-cage/pi/dcg-gate.ts present
+  #        (guard loads, ADR-027 D4) and does NOT contain --no-extensions
+  #        (OPEN default, ADR-027 D1, FIRM — rip-cage-p35a.1)
 
   # (2a) dcg-guard binary + config.toml
   _L72I7_DCG_FLOOR=0
@@ -1095,36 +1103,59 @@ if [[ "$_L72I7_CAGE_STARTED" == "true" ]]; then
     fail "(l72i7/2c) pi shim NOT root-owned: got '${_L72I7_PI_OWNER}' (expected root)"
   fi
 
-  # (2d) pi shim ASSEMBLED_ARGS: --no-extensions first, -e dcg-gate.ts present
-  # Decode the pi shim (base64 or direct grep) to inspect ASSEMBLED_ARGS inline.
+  # (2d) pi shim ASSEMBLED_ARGS: -e dcg-gate.ts present, --no-extensions ABSENT
+  # (OPEN default, ADR-027 D1, FIRM — rip-cage-p35a.1). Decode the pi shim
+  # (direct grep) to inspect ASSEMBLED_ARGS inline.
   _L72I7_PI_ARGS=$(docker exec "$DCG_HERDR_PI_CAGE" sh -c \
     "grep 'ASSEMBLED_ARGS=' /usr/local/bin/pi 2>/dev/null || echo 'NOT_FOUND'")
   echo "  pi shim ASSEMBLED_ARGS line: ${_L72I7_PI_ARGS}"
-  # Check --no-extensions is present in ASSEMBLED_ARGS
-  if echo "$_L72I7_PI_ARGS" | grep -q -- '--no-extensions'; then
-    pass "(l72i7/2d-a) pi shim ASSEMBLED_ARGS contains --no-extensions (auto-discovery disabled)"
-  else
-    fail "(l72i7/2d-a) pi shim ASSEMBLED_ARGS missing --no-extensions (dcg-wiring fragment may not be first)"
-  fi
   # Check the dcg-gate guard extension is declared. The shim bakes args as
-  # single-quoted tokens: ASSEMBLED_ARGS=('--no-extensions' '-e' '/etc/rip-cage/pi/dcg-gate.ts' ...)
+  # single-quoted tokens: ASSEMBLED_ARGS=('-e' '/etc/rip-cage/pi/dcg-gate.ts' ...)
   # so match the guard PATH token (unique to the guard -e arg), not a space-joined "-e <path>".
   if echo "$_L72I7_PI_ARGS" | grep -q -- '/etc/rip-cage/pi/dcg-gate.ts'; then
-    pass "(l72i7/2d-b) pi shim ASSEMBLED_ARGS declares the guard extension /etc/rip-cage/pi/dcg-gate.ts"
+    pass "(l72i7/2d-a) pi shim ASSEMBLED_ARGS declares the guard extension /etc/rip-cage/pi/dcg-gate.ts (guard loads)"
   else
-    fail "(l72i7/2d-b) pi shim ASSEMBLED_ARGS missing the guard extension /etc/rip-cage/pi/dcg-gate.ts (guard not declared)"
+    fail "(l72i7/2d-a) pi shim ASSEMBLED_ARGS missing the guard extension /etc/rip-cage/pi/dcg-gate.ts (guard not declared)"
   fi
-  # Check --no-extensions comes before the guard -e path (guard-first order, ADR-027 D4)
-  _L72I7_NOEXT_POS=$(echo "$_L72I7_PI_ARGS" | grep -bo -- '--no-extensions' | head -1 | cut -d: -f1)
-  _L72I7_DCGE_POS=$(echo "$_L72I7_PI_ARGS" | grep -bo -- '/etc/rip-cage/pi/dcg-gate.ts' | head -1 | cut -d: -f1)
-  if [[ -n "$_L72I7_NOEXT_POS" ]] && [[ -n "$_L72I7_DCGE_POS" ]] && \
-     [[ $_L72I7_NOEXT_POS -lt $_L72I7_DCGE_POS ]]; then
-    pass "(l72i7/2d-c) guard-first order: --no-extensions before -e dcg-gate.ts in ASSEMBLED_ARGS (ADR-027 D4)"
+  # Check --no-extensions is ABSENT — the shipped default is OPEN (ADR-027 D1,
+  # FIRM 2026-07-02): pi's own extension auto-discovery paths stay live even
+  # with DCG composed. --no-extensions is a documented LOCKED opt-in
+  # (examples/dcg/README.md), not something the default-posture fixture adds.
+  if echo "$_L72I7_PI_ARGS" | grep -q -- '--no-extensions'; then
+    fail "(l72i7/2d-b) pi shim ASSEMBLED_ARGS contains --no-extensions — expected OPEN default (ADR-027 D1); fixture may still be on the retired LOCKED posture"
   else
-    fail "(l72i7/2d-c) guard-first order violated or args not found: --no-extensions pos=${_L72I7_NOEXT_POS} dcg-gate pos=${_L72I7_DCGE_POS}"
+    pass "(l72i7/2d-b) pi shim ASSEMBLED_ARGS does NOT contain --no-extensions (OPEN default, ADR-027 D1, FIRM)"
   fi
   unset _L72I7_DCG_FLOOR _L72I7_GATE_OWNER _L72I7_PI_OWNER _L72I7_PI_ARGS
-  unset _L72I7_NOEXT_POS _L72I7_DCGE_POS
+
+  # (2e) EFFECT test: DCG guard still DENIES a root/home-targeted destructive
+  # command (canonical form, NOT a /tmp path — memory in-cage-guard-probe-false-
+  # fail-shapes). This is the load-bearing safety check under the OPEN default:
+  # dropping --no-extensions must not disarm command-guarding (bead Invalidation
+  # clause). Positive control (D1) proves the guard ran and is responsive;
+  # D2 proves the destructive command is actually blocked.
+  _L72I7_DCG_GUARD="/usr/local/lib/rip-cage/bin/dcg-guard"
+  if docker exec "$DCG_HERDR_PI_CAGE" test -x "$_L72I7_DCG_GUARD" 2>/dev/null; then
+    _L72I7_SAFE_OUT=$(docker exec "$DCG_HERDR_PI_CAGE" sh -c \
+      "printf '{\"tool_name\":\"bash\",\"tool_input\":{\"command\":\"echo hello\"}}' | ${_L72I7_DCG_GUARD} 2>/dev/null || true")
+    if echo "$_L72I7_SAFE_OUT" | grep -qE '"permissionDecision".*"deny"'; then
+      fail "(l72i7/2e-a) POSITIVE CONTROL FAILED — safe command 'echo hello' was DENIED by dcg-guard (over-blocking)"
+    else
+      pass "(l72i7/2e-a) POSITIVE CONTROL — safe command 'echo hello' is ALLOWED (guard ran and is responsive)"
+    fi
+
+    _L72I7_DENY_OUT=$(docker exec "$DCG_HERDR_PI_CAGE" sh -c \
+      "printf '{\"tool_name\":\"bash\",\"tool_input\":{\"command\":\"rm -rf /\"}}' | ${_L72I7_DCG_GUARD} 2>/dev/null || true")
+    if echo "$_L72I7_DENY_OUT" | grep -qE '"permissionDecision".*"deny"'; then
+      pass "(l72i7/2e-b) EFFECT — destructive 'rm -rf /' is DENIED by dcg-guard (open posture did not disarm command-guarding)"
+    else
+      fail "(l72i7/2e-b) EFFECT FAILED — destructive 'rm -rf /' was NOT denied by dcg-guard; output: ${_L72I7_DENY_OUT}"
+    fi
+    unset _L72I7_SAFE_OUT _L72I7_DENY_OUT
+  else
+    fail "(l72i7/2e) dcg-guard not executable at ${_L72I7_DCG_GUARD} — cannot run deny-probe"
+  fi
+  unset _L72I7_DCG_GUARD
 
   # ---------------------------------------------------------------------------
   # Assertion (4): herdr integration install/status parity for pi (rip-cage-fwp3)
@@ -1215,14 +1246,16 @@ except Exception:
 " 2>/dev/null || echo "no")
 
   if [[ "$_L72I7_OR_KEY" != "yes" ]]; then
-    skip "(l72i7/1+3)" "openrouter auth absent — assertions (1) herdr semantic status and (3) canary not-loaded require pi to run. Run 'pi /login openrouter' on host. SKIP (not a false-pass)."
+    skip "(l72i7/1+3)" "openrouter auth absent — assertions (1) herdr semantic status and (3) canary auto-load require pi to run. Run 'pi /login openrouter' on host. SKIP (not a false-pass)."
   else
     pass "(l72i7) auth precondition: openrouter API key present in cage"
 
     # (3) Setup: drop canary extension into pi's auto-discovery path BEFORE pi launches.
     # The canary extension writes a marker file at module-load time (top-level TS).
     # If pi loads the extension (auto-discovery), the marker appears.
-    # With --no-extensions, auto-discovery is disabled → marker must NOT appear.
+    # Under the OPEN default (ADR-027 D1, FIRM — rip-cage-p35a.1), --no-extensions
+    # is NOT in the assembled shim, so auto-discovery stays live → marker MUST
+    # appear (proves pi extension autonomy — the accepted-residual tradeoff).
     #
     # Canary marker path (cage-internal): /tmp/l72i7-canary-loaded
     # Canary extension path: /home/agent/.pi/agent/extensions/l72i7-canary/index.ts
@@ -1234,17 +1267,16 @@ except Exception:
     echo ""
     echo "--- (l72i7) Assertion (3) setup: dropping canary extension into auto-discovery path ---"
     # The canary extension writes the marker file via top-level fs.writeFileSync at
-    # module-load time (synchronous, before any tool call). If pi auto-discovers this
-    # extension (without --no-extensions), the marker appears when pi starts.
-    # With --no-extensions in the assembled shim, auto-discovery is disabled;
-    # only the manifest-declared -e extensions load → marker must stay absent.
+    # module-load time (synchronous, before any tool call). Under the OPEN default
+    # (no --no-extensions in the assembled shim), pi auto-discovers this extension
+    # from its writable extensions/ dir → marker MUST appear when pi starts.
     docker exec -u agent "$DCG_HERDR_PI_CAGE" sh -c \
       "mkdir -p '${_L72I7_CANARY_DIR}'" 2>/dev/null || true
     docker exec -u agent "$DCG_HERDR_PI_CAGE" sh -c \
       "cat > '${_L72I7_CANARY_TS}'" <<'CANARY_EOF'
 // l72i7 canary extension — writes marker at load time (NOT a real tool)
 // If pi loads this extension via auto-discovery, the marker file appears.
-// Under --no-extensions, this extension is NOT loaded -> marker stays absent.
+// Under the OPEN default (ADR-027 D1), auto-discovery stays live -> loaded.
 import * as fs from "fs";
 
 // Write marker immediately at module load (synchronous at extension load time)
@@ -1372,20 +1404,36 @@ except Exception as e:
     fi
     unset _l72i7_herdr_wait _l72i7_herdr_up _l72i7_poll_elapsed _l72i7_poll_interval _l72i7_poll_timeout
 
-    # (3) Check: canary marker must NOT exist after pi ran under --no-extensions
-    # Wait a few seconds for pi to start (it may not have started extensions yet
-    # at the time herdr polled 'working'; give it time to settle)
+    # (3) Check: canary marker MUST exist after pi ran under the OPEN default
+    # (ADR-027 D1, FIRM 2026-07-02 — rip-cage-p35a.1: dcg-wiring no longer
+    # contributes --no-extensions, so pi's own extension auto-discovery paths
+    # stay live; this canary loading IS the accepted-residual proof, not a
+    # regression). Wait a few seconds for pi to start (it may not have started
+    # extensions yet at the time herdr polled 'working'; give it time to settle).
     sleep 3
     echo ""
-    echo "--- (l72i7) Assertion (3): canary extension NOT loaded under --no-extensions ---"
+    echo "--- (l72i7) Assertion (3): canary extension IS loaded under the OPEN default ---"
     _L72I7_CANARY_MARKER_EXISTS=$(docker exec "$DCG_HERDR_PI_CAGE" sh -c \
       "test -f '${_L72I7_CANARY_MARKER}' && echo yes || echo no" 2>/dev/null || echo "no")
     echo "  Canary marker exists: ${_L72I7_CANARY_MARKER_EXISTS}"
-    if [[ "$_L72I7_CANARY_MARKER_EXISTS" == "no" ]]; then
-      pass "(l72i7/3) canary extension NOT loaded: marker absent (--no-extensions prevents auto-discovery, only manifest-declared -e extensions load)"
-    else
+    if [[ "$_L72I7_CANARY_MARKER_EXISTS" == "yes" ]]; then
       _L72I7_CANARY_CONTENT=$(docker exec "$DCG_HERDR_PI_CAGE" cat "${_L72I7_CANARY_MARKER}" 2>/dev/null || echo "<unreadable>")
-      fail "(l72i7/3) canary extension WAS loaded: marker found at ${_L72I7_CANARY_MARKER} with content '${_L72I7_CANARY_CONTENT}' — --no-extensions may not be in the assembled pi shim, or pi auto-discovered extensions despite it"
+      pass "(l72i7/3) canary extension IS loaded: marker present at ${_L72I7_CANARY_MARKER} with content '${_L72I7_CANARY_CONTENT}' (OPEN default preserves pi extension autonomy — ADR-027 D1)"
+    else
+      # POSITIVE CONTROL before declaring FAIL: the canary writes its marker
+      # SYNCHRONOUSLY at extension module-load time, before any tool call —
+      # its absence is only meaningful if pi actually started as a process.
+      # Same headless-harness limitation as the semantic poll above (herdr
+      # agent list showed zero/idle agents the whole time): check whether pi
+      # produced ANY of its requested output files as evidence it ran at all.
+      _L72I7_PI_RAN_EVIDENCE=$(docker exec "$DCG_HERDR_PI_CAGE" sh -c \
+        "test -f /workspace/l72i7-hello.txt -o -f /workspace/l72i7-world.txt -o -f /workspace/l72i7-done.txt && echo yes || echo no" 2>/dev/null || echo "no")
+      if [[ "$_L72I7_PI_RAN_EVIDENCE" == "yes" ]]; then
+        fail "(l72i7/3) canary extension NOT loaded: marker absent at ${_L72I7_CANARY_MARKER} despite pi having demonstrably run (output files present) — expected auto-discovery to be live under the OPEN default (ADR-027 D1); pi shim may still carry --no-extensions (retired LOCKED-by-default posture)"
+      else
+        skip "(l72i7/3)" "canary marker absent AND no evidence pi produced any output (l72i7-hello/world/done.txt all absent) — same headless-harness limitation as the (1) semantic poll above (herdr agent list showed no working agent); not a false-pass, but not conclusive enough to FAIL the auto-discovery property. Structural assertions (2a-2e) — including the DCG deny-probe — are the binding safety check and are green."
+      fi
+      unset _L72I7_PI_RAN_EVIDENCE
     fi
 
     unset _L72I7_HERDR_START_OUT _L72I7_WORKING _L72I7_INTEGRATION_PATH

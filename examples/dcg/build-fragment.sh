@@ -16,10 +16,18 @@
 #
 # rip-cage-l72i.1 (ADR-027 D4): the DCG fragment now ALSO bakes the pi-agent
 # DCG guard extension (examples/pi/dcg-gate.ts) at its root-owned load path
-# (/etc/rip-cage/pi/dcg-gate.ts) AND declares launch_args with --no-extensions
-# and -e. This relocates both the gate file and the launch wiring FROM the pi
-# recipe TO the dcg recipe, so the pi recipe no longer names dcg (ADR-005 D12).
+# (/etc/rip-cage/pi/dcg-gate.ts) AND declares launch_args with -e. This
+# relocates both the gate file and the launch wiring FROM the pi recipe TO
+# the dcg recipe, so the pi recipe no longer names dcg (ADR-005 D12).
 # Composing pi WITHOUT this dcg fragment = clean generic shim, no guard.
+#
+# rip-cage-p35a.1 (ADR-027 D1, FIRM 2026-07-02): the shipped default posture
+# is OPEN — launch_args is `-e /etc/rip-cage/pi/dcg-gate.ts` only. It does
+# NOT add `--no-extensions`, so pi's own extension auto-discovery paths stay
+# live even with DCG composed (accepted residual: a prompt-injected pi could
+# write a bypass extension into an auto-loaded path — "vector-b"). The
+# locked posture (`--no-extensions` prepended, closing vector-b at the cost
+# of pi extension autonomy) is a documented opt-in — see examples/dcg/README.md.
 #
 # This generator exists only so the artifacts stay human-readable/editable in
 # version control; the COMMITTED manifest-fragment.yaml is the load-bearing,
@@ -61,9 +69,13 @@ version: 1
 #      All written chown root:root so the agent cannot overwrite or weaken the guard.
 #      Also installs examples/dcg/smoke.sh as /usr/local/lib/rip-cage/recipe-tests/dcg-smoke.sh
 #      root:root so the generic name-free runner can execute it (ADR-027 D1).
-#      Declares launch_args: --no-extensions -e /etc/rip-cage/pi/dcg-gate.ts
-#      (the pi launch flags that load the DCG guard; contributed by this fragment so
-#      the pi recipe no longer names dcg — ADR-005 D12; ADR-027 D4).
+#      Declares launch_args: -e /etc/rip-cage/pi/dcg-gate.ts
+#      (the pi launch flag that loads the DCG guard; contributed by this fragment so
+#      the pi recipe no longer names dcg — ADR-005 D12; ADR-027 D4). OPEN by default
+#      (ADR-027 D1, FIRM): does NOT add --no-extensions, so pi's own extension
+#      auto-discovery paths stay live. --no-extensions is a documented LOCKED
+#      opt-in (see examples/dcg/README.md) that trades pi extension autonomy
+#      for closing the agent-dropped-extension residual (vector-b).
 #
 # How DCG works in the cage:
 #   - The managed-settings.json PreToolUse hook invokes /usr/local/lib/rip-cage/bin/dcg-guard
@@ -124,17 +136,20 @@ tools:
   # No apt packages needed; the leading ':' is a no-op so the rc-generated
   # 'apt-get update && <install_cmd> && rm ...' wrapper stays valid.
   # launch_args: contributed pi launch flags for this fragment (ADR-027 D4 / rip-cage-l72i.1).
-  #   --no-extensions: disables pi's auto-discovery paths so agent-dropped extensions are not
-  #     loaded; only the explicitly -e listed extensions run (keeping the guard tamper-proof).
   #   -e /etc/rip-cage/pi/dcg-gate.ts: loads the DCG guard from its root-owned path.
-  #   Fragment order matters: composing this fragment first => these args prepend => guard loads first.
+  #   Fragment order matters: composing this fragment first => this arg prepends => guard loads first.
+  #   OPEN by default (ADR-027 D1, FIRM 2026-07-02): --no-extensions is deliberately
+  #   NOT included here, so pi's own extension auto-discovery paths stay live. The
+  #   accepted residual (a prompt-injected pi writing a bypass extension into an
+  #   auto-loaded path — "vector-b") is knowingly accepted in the open default.
+  #   --no-extensions is a documented LOCKED opt-in — see examples/dcg/README.md.
   - name: dcg-wiring
     archetype: TOOL
     version_pin: "bundled-recipe"
     required: true
     assert_loaded: "test -x /usr/local/lib/rip-cage/bin/dcg-guard && test -f /usr/local/lib/rip-cage/dcg/config.toml"
     install_cmd: ": && mkdir -p /usr/local/lib/rip-cage/bin /usr/local/lib/rip-cage/dcg/fixtures /usr/local/lib/rip-cage/recipe-tests /etc/rip-cage/pi && echo '${GUARD_B64}' | base64 -d > /usr/local/lib/rip-cage/bin/dcg-guard && chown root:root /usr/local/lib/rip-cage/bin/dcg-guard && chmod 0755 /usr/local/lib/rip-cage/bin/dcg-guard && echo '${CONFIG_B64}' | base64 -d > /usr/local/lib/rip-cage/dcg/config.toml && chown root:root /usr/local/lib/rip-cage/dcg/config.toml && chmod 0644 /usr/local/lib/rip-cage/dcg/config.toml && echo '${SENTINEL_B64}' | base64 -d > /usr/local/lib/rip-cage/dcg/fixtures/ripcage-testsentinel-rule.yaml && chown root:root /usr/local/lib/rip-cage/dcg/fixtures/ripcage-testsentinel-rule.yaml && chmod 0644 /usr/local/lib/rip-cage/dcg/fixtures/ripcage-testsentinel-rule.yaml && echo '${SMOKE_B64}' | base64 -d > /usr/local/lib/rip-cage/recipe-tests/dcg-smoke.sh && chown root:root /usr/local/lib/rip-cage/recipe-tests/dcg-smoke.sh && chmod 0755 /usr/local/lib/rip-cage/recipe-tests/dcg-smoke.sh && chown root:root /usr/local/lib/rip-cage/recipe-tests && echo '${GATE_B64}' | base64 -d > /etc/rip-cage/pi/dcg-gate.ts && chown root:root /etc/rip-cage/pi/dcg-gate.ts && chmod 0644 /etc/rip-cage/pi/dcg-gate.ts && chown root:root /etc/rip-cage/pi && chmod 0755 /etc/rip-cage/pi"
-    launch_args: ["--no-extensions", "-e", "/etc/rip-cage/pi/dcg-gate.ts"]
+    launch_args: ["-e", "/etc/rip-cage/pi/dcg-gate.ts"]
     egress: []
     mounts: []
 YAML

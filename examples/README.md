@@ -62,4 +62,4 @@ Recipes that demonstrate **combining** multiple fragments — guard + multiplexe
 
 | Recipe | Seam | What it provides |
 |---|---|---|
-| [examples/herdr-pi/](herdr-pi/) | Launch composition (TOOL with `launch_args`) | The canonical launch-composition example: herdr's pi semantic-status extension composed alongside DCG. Shows how `launch_args` from DCG (`--no-extensions -e <dcg-gate>`) and herdr-pi (`-e <herdr-ext>`) assemble in fragment order. With-DCG and without-DCG paths. See [herdr-pi/README.md](herdr-pi/README.md). |
+| [examples/herdr-pi/](herdr-pi/) | Launch composition (TOOL with `launch_args`) | The canonical launch-composition example: herdr's pi semantic-status extension composed alongside DCG. Shows how `launch_args` from DCG (`-e <dcg-gate>`, OPEN by default — ADR-027 D1) and herdr-pi (`-e <herdr-ext>`) assemble in fragment order. With-DCG, without-DCG, and LOCKED-opt-in (`--no-extensions`) paths. See [herdr-pi/README.md](herdr-pi/README.md). |

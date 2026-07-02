@@ -131,27 +131,35 @@ test_2_assembly_ordering() {
 }
 
 # ---------------------------------------------------------------------------
-# (3) --no-extensions declared in DCG fragment's launch_args, NOT in wrapper source
+# (3) DCG fragment's launch_args field ships OPEN by default (rip-cage-p35a.1 /
+# ADR-027 D1, FIRM 2026-07-02): no --no-extensions in the actual launch_args
+# value. Prose elsewhere in the fragment MAY still mention "--no-extensions"
+# to document the LOCKED opt-in variant — this check targets the launch_args
+# FIELD specifically (not a blanket file grep) so it isn't vacuously satisfied
+# by that documentation text. Never in wrapper source either way.
 # ---------------------------------------------------------------------------
 test_3_no_extensions_in_dcg_fragment() {
-  # Check DCG fragment declares --no-extensions in launch_args
-  local dcg_has_no_ext
-  dcg_has_no_ext=$(grep -E 'no-extensions' "$DCG_FRAGMENT" 2>/dev/null || true)
+  # The launch_args field itself must NOT declare --no-extensions (open default).
+  local launch_args_line
+  launch_args_line=$(grep -E '^\s*launch_args:' "$DCG_FRAGMENT" 2>/dev/null || true)
 
-  if [[ -n "$dcg_has_no_ext" ]]; then
-    pass "(3a) DCG fragment declares --no-extensions (in launch_args field)"
+  if [[ -z "$launch_args_line" ]]; then
+    fail "(3a) DCG fragment has no launch_args: field at all — expected -e dcg-gate.ts"
+  elif printf '%s' "$launch_args_line" | grep -q -- '--no-extensions'; then
+    fail "(3a) DCG fragment's launch_args FIELD contains --no-extensions — expected OPEN default (ADR-027 D1); got: ${launch_args_line}"
   else
-    fail "(3a) DCG fragment does NOT declare --no-extensions — expected in launch_args"
+    pass "(3a) DCG fragment's launch_args field does NOT contain --no-extensions (OPEN default, ADR-027 D1, FIRM)"
   fi
 
-  # And confirm wrapper source does NOT contain --no-extensions
+  # And confirm wrapper source does NOT contain --no-extensions (never baked there,
+  # regardless of open/locked — it's a recipe-contributed launch_arg, not a wrapper literal).
   local wrapper_has_no_ext
   wrapper_has_no_ext=$(grep -E 'no-extensions' "$WRAPPER" 2>/dev/null || true)
 
   if [[ -z "$wrapper_has_no_ext" ]]; then
-    pass "(3b) pi-wrapper.sh source does NOT contain --no-extensions (it's in DCG fragment, not wrapper)"
+    pass "(3b) pi-wrapper.sh source does NOT contain --no-extensions (it's recipe-contributed via launch_args, not a wrapper literal)"
   else
-    fail "(3b) pi-wrapper.sh STILL contains --no-extensions — should be in DCG fragment only"
+    fail "(3b) pi-wrapper.sh STILL contains --no-extensions — should never be hardcoded in the generic wrapper"
   fi
 }
 

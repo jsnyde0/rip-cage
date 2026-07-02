@@ -86,9 +86,10 @@ tools:
     egress: [github.com]
     mounts: []
 
-  # 2. (Optional) DCG guard — compose BEFORE herdr-pi so --no-extensions appears
-  #    first in the assembled launch_args (guard-first by fragment order, ADR-027 D4).
-  #    From examples/dcg/manifest-fragment.yaml.
+  # 2. (Optional) DCG guard — compose BEFORE herdr-pi so its guard extension's -e
+  #    appears first in the assembled launch_args (guard-first by fragment order,
+  #    ADR-027 D4). OPEN by default (ADR-027 D1, FIRM 2026-07-02): does NOT add
+  #    --no-extensions. From examples/dcg/manifest-fragment.yaml.
   - name: dcg
     ...
   - name: dcg-wiring
@@ -113,9 +114,10 @@ rc build
 ```
 
 `rc build` assembles `launch_args` across all composed fragments in fragment order and
-bakes a generic pi shim. With DCG + herdr-pi composed, the assembled args are:
+bakes a generic pi shim. With DCG + herdr-pi composed (**OPEN default**, ADR-027 D1,
+FIRM 2026-07-02), the assembled args are:
 ```
---no-extensions -e /etc/rip-cage/pi/dcg-gate.ts -e /etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts
+-e /etc/rip-cage/pi/dcg-gate.ts -e /etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts
 ```
 
 Without DCG, the assembled args are:
@@ -123,8 +125,18 @@ Without DCG, the assembled args are:
 -e /etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts
 ```
 
-(pi auto-discovers normally; the herdr extension is loaded explicitly AND available
-via auto-discovery from `herdr integration install pi` at cage start — see below.)
+In both cases pi auto-discovers normally; the herdr extension is loaded explicitly AND
+available via auto-discovery from `herdr integration install pi` at cage start — see
+below.
+
+**LOCKED opt-in:** if you additionally add `--no-extensions` to `dcg-wiring`'s
+`launch_args` in your own `tools.yaml` (see `examples/dcg/README.md`), the assembled
+args become:
+```
+--no-extensions -e /etc/rip-cage/pi/dcg-gate.ts -e /etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts
+```
+and pi's own extension auto-discovery paths are disabled — only the explicitly listed
+`-e` extensions load.
 
 ## Socket mount scenarios
 
@@ -168,18 +180,22 @@ Composing herdr-pi WITHOUT the DCG fragment:
   herdr-agent-state.ts extension twice does not error or crash pi — extension
   loading completes and pi proceeds normally to the provider/auth check. No
   guard was added; do not add one unless a real failure mode surfaces.
-- **Accepted residual**: no destructive-command guard. Containment bounds blast radius.
+- **Accepted residual**: no destructive-command guard at all (vs. WITH-DCG **open**, which still guards command execution). Containment bounds blast radius.
 
 ## Relationship to examples/herdr/
 
 `examples/herdr/` provides the herdr multiplexer (start/attach hooks, binary install).
 Its `start` hook runs `herdr integration install pi` at cage boot into the agent's
-writable `~/.pi/agent/extensions/` dir. That auto-install works for the no-DCG path.
+writable `~/.pi/agent/extensions/` dir. That auto-install works regardless of whether
+DCG is composed (OPEN default, ADR-027 D1) or absent.
 
 `examples/herdr-pi/` (this recipe) bakes the extension at a root-owned cage path and
-contributes it via `launch_args`, which is required when DCG is composed (because DCG
-declares `--no-extensions`, which suppresses the auto-discovery path the start hook writes to).
-The two recipes are complementary: compose both when using herdr as multiplexer WITH DCG.
+contributes it via `launch_args`. This is not required by the DCG open default (which
+leaves auto-discovery live), but IS required if you opt into the **LOCKED** DCG variant
+(`--no-extensions` re-added to `dcg-wiring`, see `examples/dcg/README.md`) — that
+variant suppresses the auto-discovery path the herdr start hook writes to, so the
+explicit `-e` from this recipe becomes the only way the herdr extension loads.
+The two recipes are complementary: compose both when using herdr as multiplexer.
 
 ## Upgrading
 
