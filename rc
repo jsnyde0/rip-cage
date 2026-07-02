@@ -6845,6 +6845,53 @@ _manifest_validate() {
             fi
           done
         fi
+        # Validate optional 'init' field (rip-cage-p35a.2, ADR-005 D7).
+        # A one-shot AGENT-CONTEXT boot command a TOOL recipe declares — runs once
+        # at cage boot (distinct from IN-CAGE-DAEMON 'start', which launches a
+        # long-lived background service). Uniform with how MULTIPLEXER/MEDIATOR
+        # contribute boot logic (ADR-005 D9/D11) — completes the per-archetype
+        # build/boot/launch lifecycle. When absent, valid (no init contribution).
+        local tool_init_raw
+        tool_init_raw=$(jq -r '.init // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+        if [[ "$tool_init_raw" != "___RC_ABSENT___" ]]; then
+          # Must be non-empty/non-whitespace (never eval "").
+          local tool_init_trimmed
+          tool_init_trimmed=$(printf '%s' "$tool_init_raw" | tr -d '[:space:]')
+          if [[ -z "$tool_init_trimmed" ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'init' is present but empty/whitespace — an empty hook is never run as eval \"\" (rip-cage-p35a.2)." >&2
+            return 1
+          fi
+          # Must be a single line — newlines inject arbitrary Dockerfile directives
+          # when baked (same injection-safety rule as install_cmd/shell_init/hooks.*).
+          if [[ "$tool_init_raw" == *$'\n'* ]]; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'init' must be a single-line shell command (newlines inject arbitrary Dockerfile directives; single-line-required; rip-cage-p35a.2)." >&2
+            return 1
+          fi
+          # Hook-bounds check (ADR-005 D10/D11, ADR-001 fail-loud) — the exact
+          # floor-weakening patterns enforced on MULTIPLEXER/MEDIATOR hooks
+          # (rc:6995-7068), STATICALLY applied to the TOOL 'init' hook command.
+          # Parse, never run (validate-config-by-parsing-not-by-running-fail-open-consumer).
+          if echo "$tool_init_raw" | grep -qE '\.config/dcg/'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — 'init' references '.config/dcg/' path, which is the DCG safety floor config (floor-weakening write; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the init command." >&2
+            return 1
+          fi
+          if echo "$tool_init_raw" | grep -qE '\.dcg\.toml'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — 'init' references '.dcg.toml', which is the workspace DCG config (floor-weakening write; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the init command." >&2
+            return 1
+          fi
+          if echo "$tool_init_raw" | grep -qE 'PATH='; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — 'init' sets PATH=, which can PATH-shadow safety binaries (dcg, dcg-policy, block-ssh-bypass) and weakens the safety floor (floor-weakening; ADR-005 D10/D11, ADR-001 fail-loud). Remove PATH manipulation from the init command." >&2
+            return 1
+          fi
+          if echo "$tool_init_raw" | grep -qE '/(usr/local/lib/rip-cage/(bin|hooks)|usr/local/bin|usr/bin)/(dcg-guard|dcg|dcg-policy|block-ssh-bypass(\.sh)?)'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — 'init' writes to a safety binary path (/usr/local/lib/rip-cage/bin/dcg-guard or similar), which would replace a safety floor binary (floor-weakening; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the init command." >&2
+            return 1
+          fi
+          if echo "$tool_init_raw" | grep -qE '/etc/rip-cage/|settings\.json|PreToolUse|PostToolUse'; then
+            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — 'init' references lifecycle-interceptor targets (/etc/rip-cage/, settings.json, PreToolUse, or PostToolUse), which can register hooks that weaken the safety floor (floor-weakening lifecycle-interceptor; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the init command." >&2
+            return 1
+          fi
+        fi
         ;;
       SHELL-INTEGRATION)
         # 'shell_init' required and must be a single line.
@@ -7675,6 +7722,11 @@ _manifest_build_dockerfile_path() {
     return 1
   fi
 
+  local tool_init_config_steps
+  if ! tool_init_config_steps=$(_manifest_generate_tool_init_config_dockerfile_steps); then
+    return 1
+  fi
+
   local mux_registry_steps
   if ! mux_registry_steps=$(_manifest_generate_multiplexer_registry_steps); then
     return 1
@@ -7729,7 +7781,7 @@ _manifest_build_dockerfile_path() {
     fi
   fi
 
-  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" && -z "$mux_registry_steps" && -z "$mux_label" && -z "$mediator_registry_steps" && -z "$mediator_label" && -z "$safety_stack_asserted_steps" && -z "$pi_shim_steps" ]]; then
+  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" && -z "$tool_init_config_steps" && -z "$mux_registry_steps" && -z "$mux_label" && -z "$mediator_registry_steps" && -z "$mediator_label" && -z "$safety_stack_asserted_steps" && -z "$pi_shim_steps" ]]; then
     # Default/bundled-only manifest — use the original Dockerfile unchanged (D8).
     echo "$orig_dockerfile"
     return 0
@@ -7825,6 +7877,32 @@ _manifest_build_dockerfile_path() {
       cat "$tmp_inject_daemon" >> "$tmp_dockerfile"
     fi
     rm -f "$tmp_inject_daemon"
+  fi
+
+  # --- TOOL init-hook config bake: inject AFTER "COPY settings.json" sentinel ---
+  # Same injection site as IN-CAGE-DAEMON config steps (root context; /etc/rip-cage
+  # exists). Writes /etc/rip-cage/tool-init-config.json, read by init-rip-cage.sh
+  # at boot to run each declared TOOL 'init' command in agent context
+  # (rip-cage-p35a.2, ADR-005 D7).
+  if [[ -n "$tool_init_config_steps" ]]; then
+    local sentinel_settings_ti="COPY settings.json /etc/rip-cage/settings.json"
+    local tmp_inject_ti
+    tmp_inject_ti=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
+    printf '\n# --- manifest-generated TOOL init-hook config bake (rip-cage-p35a.2) ---\n%s\n' "$tool_init_config_steps" > "$tmp_inject_ti"
+
+    if grep -qF "$sentinel_settings_ti" "$tmp_dockerfile"; then
+      local sentinel_line_settings_ti base_dockerfile_ti
+      sentinel_line_settings_ti=$(grep -nF "$sentinel_settings_ti" "$tmp_dockerfile" | head -1 | cut -d: -f1)
+      base_dockerfile_ti=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
+      head -n "${sentinel_line_settings_ti}" "$tmp_dockerfile" > "$base_dockerfile_ti"
+      cat "$tmp_inject_ti" >> "$base_dockerfile_ti"
+      tail -n "+$((sentinel_line_settings_ti + 1))" "$tmp_dockerfile" >> "$base_dockerfile_ti"
+      mv "$base_dockerfile_ti" "$tmp_dockerfile"
+    else
+      echo "rip-cage: Warning: 'COPY settings.json' sentinel not found in Dockerfile — appending TOOL init-hook config bake steps at end (may fail if /etc/rip-cage does not exist). Dockerfile may need the sentinel restored." >&2
+      cat "$tmp_inject_ti" >> "$tmp_dockerfile"
+    fi
+    rm -f "$tmp_inject_ti"
   fi
 
   # --- SHELL-INTEGRATION shell_init steps: inject after "COPY zshrc" sentinel ---
@@ -8235,6 +8313,93 @@ _manifest_generate_daemon_mcp_dockerfile_steps() {
   if [[ -n "$steps" ]]; then
     printf '%s' "${steps%$'\n'}"
   fi
+}
+
+# _manifest_generate_tool_init_config_dockerfile_steps
+# Read the host manifest and emit a Dockerfile RUN step that bakes the
+# declared 'init' command for every TOOL entry that carries one into
+# /etc/rip-cage/tool-init-config.json at BUILD time (rip-cage-p35a.2,
+# implementing ADR-005 D7).
+#
+# Mechanism: the manifest is host-only (not mounted into the cage), so each
+# TOOL's declared init command must be known at build time (ADR-005 D7:
+# install=build-time). This generator base64-encodes a JSON config and emits
+# a Dockerfile RUN step that decodes + writes it. init-rip-cage.sh reads
+# /etc/rip-cage/tool-init-config.json at startup and runs each declared init
+# command ONCE, in agent context (no sudo) — distinct from IN-CAGE-DAEMON
+# 'start', which launches a long-lived background service.
+#
+# D8 byte-for-byte contract: when NO TOOL entry declares 'init', this function
+# emits NOTHING — a TOOL manifest with no init hooks must produce byte-identical
+# codegen output to a manifest with no init field at all (rip-cage-p35a.2;
+# cf. memory dist-default-manifest-must-be-regenerated-when-example-recipes-change
+# gap (2), where a shim was once baked unconditionally).
+#
+# Tool-agnostic seam (ADR-005 D12): this function reads manifest DATA only
+# (entry.name, entry.init) — it names no tool. Any TOOL entry that declares
+# 'init' is wired identically; there is no tool-specific branch.
+#
+# Strict-parse discipline: 'init' is single-line-validated and hook-bounds-
+# checked by _manifest_validate before this function ever runs (rc:~6849-6866).
+_manifest_generate_tool_init_config_dockerfile_steps() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load); then
+    return 1
+  fi
+
+  local count idx
+  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
+  if [[ -z "$count" || "$count" -eq 0 ]]; then
+    return 0
+  fi
+
+  # Build JSON array of tool-init entries for baking.
+  local tool_init_entries="[]"
+  local has_tool_inits=0
+  for (( idx=0; idx<count; idx++ )); do
+    local entry archetype
+    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
+    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
+    if [[ "$archetype" != "TOOL" ]]; then
+      continue
+    fi
+
+    local name tool_init
+    name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
+    tool_init=$(jq -r '.init // ""' <<<"$entry" 2>/dev/null)
+
+    if [[ -z "$tool_init" ]]; then
+      continue
+    fi
+
+    has_tool_inits=1
+
+    local init_obj
+    init_obj=$(jq -cn \
+      --arg n "$name" \
+      --arg i "$tool_init" \
+      '{name:$n, init:$i}')
+    tool_init_entries=$(jq -c ". + [$init_obj]" <<<"$tool_init_entries" 2>/dev/null)
+  done
+
+  if [[ "$has_tool_inits" -eq 0 ]]; then
+    # No TOOL entry declares 'init' — emit nothing (D8 short-circuit).
+    return 0
+  fi
+
+  # Build the full config JSON and base64-encode it for Dockerfile injection.
+  local config_json b64_config
+  config_json=$(jq -c '{tool_inits:'"$tool_init_entries"'}' <<<"null" 2>/dev/null) || config_json="{\"tool_inits\":${tool_init_entries}}"
+  b64_config=$(printf '%s' "$config_json" | base64 | tr -d '\n')
+
+  # Emit Dockerfile RUN steps (as root, AFTER settings.json COPY at Dockerfile:133 —
+  # same injection site as the IN-CAGE-DAEMON config bake, root context, /etc/rip-cage exists).
+  # init-rip-cage.sh reads tool-init-config.json at startup and runs each declared init.
+  local step=""
+  step+="RUN # manifest TOOL init-hook config bake (rip-cage-p35a.2)"$'\n'
+  step+="RUN echo '${b64_config}' | base64 -d > /etc/rip-cage/tool-init-config.json && chmod 0644 /etc/rip-cage/tool-init-config.json"
+
+  printf '%s' "$step"
 }
 
 # _manifest_generate_multiplexer_registry_steps

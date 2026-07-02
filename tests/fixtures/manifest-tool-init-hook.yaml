@@ -1,0 +1,13 @@
+version: 1
+tools:
+  # Test fixture: a SYNTHETIC TOOL (not pi/dcg — proves the seam is tool-agnostic,
+  # ADR-005 D12) declaring an optional 'init' agent-context boot-hook
+  # (rip-cage-p35a.2, ADR-005 D7). version_pin: bundled + no install_cmd so this
+  # entry contributes NOTHING to Dockerfile codegen except the init bake — keeps
+  # the byte-identical diff isolated to the init-specific injected block.
+  - name: fixture-tool-with-init
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts: []
+    init: "touch /tmp/rip-cage-tool-init-fired-fixture-tool-with-init"

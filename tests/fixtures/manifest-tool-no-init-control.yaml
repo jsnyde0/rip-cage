@@ -1,0 +1,13 @@
+version: 1
+tools:
+  # Sibling control TOOL — identical shape to fixture-tool-with-init EXCEPT no
+  # 'init' field. Proves the D8 byte-for-byte codegen invariant: a TOOL manifest
+  # with NO init declared must NOT trigger the init-registry codegen path at all
+  # (rip-cage-p35a.2). version_pin: bundled + no install_cmd + no init means this
+  # manifest triggers NO codegen whatsoever, so _manifest_build_dockerfile_path
+  # must return the ORIGINAL Dockerfile path, unchanged.
+  - name: fixture-tool-no-init
+    archetype: TOOL
+    version_pin: "bundled"
+    egress: []
+    mounts: []

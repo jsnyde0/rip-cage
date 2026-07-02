@@ -67,6 +67,42 @@ if command -v pi >/dev/null 2>&1; then
   unset _rc_pi_ext_dir
 fi
 
+# 1b. TOOL archetype agent-context init hooks (rip-cage-p35a.2, ADR-005 D7).
+# Reads the baked config from /etc/rip-cage/tool-init-config.json (written at
+# build time by _manifest_generate_tool_init_config_dockerfile_steps in rc).
+# Each declared TOOL 'init' command runs ONCE at cage boot, in agent context
+# (no sudo) — this is the generic per-recipe agent-context boot-contribution
+# seam: a TOOL recipe can run boot-time setup here without rc/init-rip-cage.sh
+# naming it (ADR-005 D12 — manifest DATA only, no tool-name literal gates this
+# loop). Distinct from IN-CAGE-DAEMON 'start' (section 12 below), which
+# launches a long-lived background service, not a one-shot hook.
+# FAIL-WARN on a failing init hook — cage still starts (ADR-005 D10 / ADR-001
+# asymmetry: safety floor fails-closed, user tool contribution fails-warn).
+_rc_tool_init_config="/etc/rip-cage/tool-init-config.json"
+if [[ -f "$_rc_tool_init_config" ]] && command -v jq >/dev/null 2>&1; then
+  _rc_tool_init_count=$(jq '.tool_inits | length' "$_rc_tool_init_config" 2>/dev/null || echo "0")
+  for (( _rc_tii=0; _rc_tii<_rc_tool_init_count; _rc_tii++ )); do
+    _rc_tool_init_entry=$(jq -c ".tool_inits[${_rc_tii}]" "$_rc_tool_init_config" 2>/dev/null)
+    _rc_tool_init_name=$(jq -r '.name // "unknown"' <<<"$_rc_tool_init_entry" 2>/dev/null)
+    _rc_tool_init_cmd=$(jq -r '.init // ""' <<<"$_rc_tool_init_entry" 2>/dev/null)
+
+    if [[ -z "$_rc_tool_init_cmd" ]]; then
+      unset _rc_tool_init_entry _rc_tool_init_name _rc_tool_init_cmd
+      continue
+    fi
+
+    echo "[rip-cage] TOOL '${_rc_tool_init_name}' init hook: running..."
+    if eval "$_rc_tool_init_cmd"; then
+      echo "[rip-cage] TOOL '${_rc_tool_init_name}' init hook: completed"
+    else
+      echo "[rip-cage] WARNING: TOOL '${_rc_tool_init_name}' init hook FAILED — cage continues without it." >&2
+    fi
+    unset _rc_tool_init_entry _rc_tool_init_name _rc_tool_init_cmd
+  done
+  unset _rc_tii _rc_tool_init_count
+fi
+unset _rc_tool_init_config
+
 # ADR-017 D1 / ADR-018 2026-04-25: when ssh-agent forwarding is on, the
 # mounted host socket arrives owned by the host uid (e.g. 501:67278 on
 # macOS/OrbStack) and is inaccessible to the in-container agent user
