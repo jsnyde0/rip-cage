@@ -153,8 +153,21 @@ recipe because it would break scenario A (the common case).
 Composing herdr-pi WITHOUT the DCG fragment:
 - `--no-extensions` is absent from the assembled launch_args.
 - pi auto-discovers extensions from workspace and `~/.pi/agent/extensions/`.
-- The herdr extension from the image is loaded via `-e` AND may auto-load if herdr's
-  `integration install pi` was re-run at cage start (by the herdr multiplexer start hook).
+- The herdr extension from the image is loaded via `-e` AND also auto-loads from
+  `~/.pi/agent/extensions/herdr-agent-state.ts`, written by herdr's
+  `integration install pi` at cage boot (the herdr multiplexer start hook —
+  see examples/herdr/). This is a genuine double-load of the same
+  herdr-generated file content from two paths, not a hypothetical.
+- **Newly enabled by rip-cage-fwp3 (2026-07-02)**: before that fix, the
+  boot-time `integration install pi` always failed (its target dir,
+  `~/.pi/agent/extensions/`, didn't exist yet — nothing provisioned it), so
+  in practice the no-DCG path only ever single-loaded via the `-e` bake. The
+  fix makes the boot-time install succeed, which is what makes this
+  double-load real rather than aspirational.
+- **Live-verified non-issue (rip-cage-fwp3, 2026-07-02)**: loading the identical
+  herdr-agent-state.ts extension twice does not error or crash pi — extension
+  loading completes and pi proceeds normally to the provider/auth check. No
+  guard was added; do not add one unless a real failure mode surfaces.
 - **Accepted residual**: no destructive-command guard. Containment bounds blast radius.
 
 ## Relationship to examples/herdr/

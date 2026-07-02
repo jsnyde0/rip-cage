@@ -1126,6 +1126,79 @@ if [[ "$_L72I7_CAGE_STARTED" == "true" ]]; then
   unset _L72I7_DCG_FLOOR _L72I7_GATE_OWNER _L72I7_PI_OWNER _L72I7_PI_ARGS
   unset _L72I7_NOEXT_POS _L72I7_DCGE_POS
 
+  # ---------------------------------------------------------------------------
+  # Assertion (4): herdr integration install/status parity for pi (rip-cage-fwp3)
+  #
+  # AUTH-FREE, fully headless. Closes the observability gap l72i's downgrade
+  # left open: the interactive/boot-time 'herdr integration install pi' path
+  # was never actually asserted (only the -e build-time bake was proven green).
+  #
+  # Root cause this catches: herdr v0.7.0's 'integration install pi' (run by
+  # the herdr multiplexer start hook at every boot, examples/herdr/manifest-
+  # fragment.yaml) writes into ${PI_CODING_AGENT_DIR}/extensions/ and requires
+  # that directory to pre-exist. Before rip-cage-fwp3's fix, nothing in the
+  # image or init flow created extensions/ (only the chown of the already-
+  # existing top-level .pi/agent dir) -> the install silently WARNed and
+  # failed every boot, and pi showed "available but not installed" in the
+  # herdr roster while claude showed installed (the false-negative asymmetry).
+  #
+  # This assertion is pinned to the composed image built from the REAL
+  # manifest-dcg-herdr-pi.yaml fixture (herdr v0.7.0 — _dcg_herdr_pi_build_image
+  # above), NOT the older manifest-herdr-multiplexer.yaml fixture used by
+  # test-manifest-herdr.sh T2d (that one pins herdr v0.6.10 and would
+  # false-green this exact RED — do not reuse it for this assertion).
+  # ---------------------------------------------------------------------------
+  echo ""
+  echo "--- (l72i7) Assertion (4): herdr integration install/status parity for pi (rip-cage-fwp3, headless) ---"
+
+  # (4a) extensions/ directory exists and is agent-writable (the fix)
+  _L72I7_PI_EXT_DIR_STAT=$(docker exec "$DCG_HERDR_PI_CAGE" sh -c \
+    "stat -c '%U:%a' /home/agent/.pi/agent/extensions 2>/dev/null || echo absent")
+  echo "  /home/agent/.pi/agent/extensions owner:mode = ${_L72I7_PI_EXT_DIR_STAT}"
+  if [[ "$_L72I7_PI_EXT_DIR_STAT" == agent:* ]]; then
+    pass "(l72i7/4a) /home/agent/.pi/agent/extensions exists, agent-owned (rip-cage-fwp3 fix)"
+  else
+    fail "(l72i7/4a) /home/agent/.pi/agent/extensions missing or not agent-owned (got '${_L72I7_PI_EXT_DIR_STAT}') — herdr's boot-time 'integration install pi' cannot write its extension file"
+  fi
+
+  # (4b) herdr integration status shows pi installed, at parity with claude
+  # (this is the exact roster the smoketest observed as "available but not
+  # installed" for pi while claude showed installed).
+  _L72I7_HERDR_STATUS=$(docker exec -u agent "$DCG_HERDR_PI_CAGE" herdr integration status 2>&1 || true)
+  echo "  herdr integration status:"
+  echo "$_L72I7_HERDR_STATUS" | while IFS= read -r _l72i7_status_line; do echo "    $_l72i7_status_line"; done
+
+  if echo "$_L72I7_HERDR_STATUS" | grep -qE '^pi: *(current|outdated|installed)'; then
+    pass "(l72i7/4b) herdr integration status: pi installed (parity with claude, rip-cage-fwp3 fix)"
+  else
+    fail "(l72i7/4b) herdr integration status: pi NOT installed" \
+      "Got: ${_L72I7_HERDR_STATUS}. Expected a 'pi: current/outdated/installed' line — regression of rip-cage-fwp3 (extensions/ dir provisioning)."
+  fi
+  if echo "$_L72I7_HERDR_STATUS" | grep -qE '^claude: *(current|outdated|installed)'; then
+    pass "(l72i7/4b) herdr integration status: claude installed (control — unaffected by this fix)"
+  else
+    fail "(l72i7/4b) herdr integration status: claude NOT installed (unexpected regression outside this bead's scope)"
+  fi
+
+  # (4c) 'herdr integration install pi' run directly succeeds and the
+  # "extension directory not found" error is gone (the exact smoketest symptom).
+  _L72I7_INSTALL_OUT=$(docker exec -u agent "$DCG_HERDR_PI_CAGE" herdr integration install pi 2>&1)
+  _L72I7_INSTALL_RC=$?
+  echo "  herdr integration install pi (rc=${_L72I7_INSTALL_RC}): ${_L72I7_INSTALL_OUT}"
+  if [[ "$_L72I7_INSTALL_RC" -eq 0 ]]; then
+    pass "(l72i7/4c) 'herdr integration install pi' exits 0"
+  else
+    fail "(l72i7/4c) 'herdr integration install pi' exited ${_L72I7_INSTALL_RC}" "output: ${_L72I7_INSTALL_OUT}"
+  fi
+  if echo "$_L72I7_INSTALL_OUT" | grep -q "extension directory not found"; then
+    fail "(l72i7/4c) 'herdr integration install pi' still emits the rip-cage-fwp3 symptom: 'extension directory not found'" \
+      "output: ${_L72I7_INSTALL_OUT}"
+  else
+    pass "(l72i7/4c) 'herdr integration install pi' error message ('extension directory not found') is gone"
+  fi
+
+  unset _L72I7_PI_EXT_DIR_STAT _L72I7_HERDR_STATUS _L72I7_INSTALL_OUT _L72I7_INSTALL_RC
+
   # (1) + (3): auth-gated (require openrouter API key for pi to run)
   echo ""
   echo "--- (l72i7) Checking openrouter auth for assertions (1) + (3) ---"

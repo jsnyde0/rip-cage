@@ -31,14 +31,40 @@ fi
 if [[ ! -L /home/agent/.claude ]]; then
   sudo chown agent:agent /home/agent/.claude 2>/dev/null || true
 fi
-# Pi config dir is container-local (ADR-019 D1 evolved). The image creates .pi/agent
-# as root-owned (via mkdir in root context), but Docker may override ownership at mount
-# time if auth.json is sub-mounted. Chown top-level only (not -R): .pi/agent dir and
-# its subdirs (including extensions/) should be agent-writable (olen retired per
-# ADR-027 D1/D3 — the DCG guard now lives at /etc/rip-cage/pi/dcg-gate.ts on its own
-# separate root-owned load path; extensions/ is no longer root-owned).
+# Pi config dir is container-local (ADR-019 D1 evolved). Nothing in the image
+# mkdirs .pi/agent at build time; it comes into existence only when 'rc up'
+# bind-mounts auth.json into it, which makes Docker auto-create the parent dir
+# root-owned (2026-07-02 live-verified: rip-cage-fwp3). Chown top-level only
+# (not -R): .pi/agent dir and its subdirs (including extensions/) should be
+# agent-writable (olen retired per ADR-027 D1/D3 — the DCG guard now lives at
+# /etc/rip-cage/pi/dcg-gate.ts on its own separate root-owned load path;
+# extensions/ is no longer root-owned).
 if [[ ! -L /home/agent/.pi/agent ]]; then
   sudo chown agent:agent /home/agent/.pi/agent 2>/dev/null || true
+fi
+# rip-cage-fwp3: herdr v0.7.0's 'integration install pi' (run by the herdr
+# multiplexer start hook, examples/herdr/manifest-fragment.yaml) writes into
+# ${PI_CODING_AGENT_DIR}/extensions/ and REQUIRES that directory to already
+# exist — it does not create it. Nothing else provisions extensions/: the
+# chown above only fixes ownership of dirs that already exist, and the
+# herdr-pi build_source recipe builds its extension into the build-root
+# /root/.pi then rm -rf's it (build-time artifact, not runtime state).
+# Create it here, agent-owned, so the boot-time integration install
+# succeeds. Must run AS AGENT (no sudo) — creating it at build time as root
+# reintroduces the Permission-denied bug from the 2026-06-29 audit.
+# Gated on pi actually being on PATH (mirrors the "9. Pi verify" check below)
+# so a claude-only cage doesn't grow a stray empty .pi/agent/extensions tree.
+# On mkdir failure, WARN loudly instead of swallowing (matching the
+# herdr-integration-install-failure idiom in examples/herdr/manifest-
+# fragment.yaml) — a silently-absent extensions/ dir would resurrect this
+# bead's exact "extension directory not found" symptom with zero signal.
+if command -v pi >/dev/null 2>&1; then
+  _rc_pi_ext_dir="${PI_CODING_AGENT_DIR:-/home/agent/.pi/agent}/extensions"
+  if ! mkdir -p "$_rc_pi_ext_dir" 2>/tmp/rc-pi-ext-mkdir-err; then
+    echo "[rip-cage] WARNING: could not create ${_rc_pi_ext_dir} (herdr's boot-time 'integration install pi' will fail with 'extension directory not found', rip-cage-fwp3): $(cat /tmp/rc-pi-ext-mkdir-err 2>/dev/null)" >&2
+  fi
+  rm -f /tmp/rc-pi-ext-mkdir-err
+  unset _rc_pi_ext_dir
 fi
 
 # ADR-017 D1 / ADR-018 2026-04-25: when ssh-agent forwarding is on, the
