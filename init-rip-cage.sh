@@ -300,6 +300,11 @@ for _pi_substrate in "pi-skills:skills" "pi-prompts:prompts" "pi-roles:roles" "p
 done
 unset _pi_substrate _pi_stage _pi_dest
 
+# BASE-INFRA (pi, rip-cage-p35a.3 audit): host-mount-coupled, stays in base init.
+# This block only ECHOES the presence of an rc-up-projected ro extension mount
+# (staged by rc up, same host-mount-projection class as the pi-substrate loop above);
+# it provisions nothing per-recipe, so it does not belong in the pi TOOL init hook
+# (ADR-005 D7 cross-recipe-coordination invalidation clause).
 # Pi extension staging path: extensions composed via recipe fragments are projected
 # by rc up at /home/agent/.rc-context/pi-ext-<name>/ (ro), then loaded by the assembled
 # pi shim via manifest-declared launch_args -e flags (ADR-027 D3/D4 / rip-cage-l72i.3).
