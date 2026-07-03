@@ -85,14 +85,29 @@ YAML
   mkdir -p "${TEST_HOME}/.pi/agent/roles"
   touch "${TEST_HOME}/.pi/agent/roles/default.md"
 
-  # Relative symlinks (simulating what dotpi ships)
-  # prompts -> ../../dotpi/agent/prompts (relative symlink)
-  ln -s "${DOTPI_DIR}/prompts" "${TEST_HOME}/.pi/agent/prompts"
-  # AGENTS.md -> ../../dotpi/agent/AGENTS.md (relative symlink)
-  ln -s "${DOTPI_DIR}/AGENTS.md" "${TEST_HOME}/.pi/agent/AGENTS.md"
-  # extensions/subagent -> dotpi (absolute for test simplicity — same realpath behavior)
+  # Relative symlinks (simulating what dotpi ships). Real dotpi ships relative
+  # symlink VALUES (not absolute), so the test fixture must too — an absolute
+  # target lands the symlink's TARGET under the reserved scratch root
+  # (${TMPDIR:-/tmp}) on Linux (where TMPDIR is typically unset), which trips
+  # rc's symlink-follow reserved-path guard before pi-substrate mounts are
+  # even considered (rip-cage-7hrw). Compute the relative target portably
+  # (GNU 'ln -r' isn't available on BSD/macOS) via python3's os.path.relpath,
+  # relative to the symlink's own parent directory.
+  _rel_symlink() {
+    local target="$1" linkpath="$2"
+    local link_parent rel
+    link_parent="$(dirname "$linkpath")"
+    rel=$(python3 -c "import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$target" "$link_parent")
+    ln -s "$rel" "$linkpath"
+  }
+
+  # prompts -> ../../../dotpi/agent/prompts (relative symlink)
+  _rel_symlink "${DOTPI_DIR}/prompts" "${TEST_HOME}/.pi/agent/prompts"
+  # AGENTS.md -> ../../../dotpi/agent/AGENTS.md (relative symlink)
+  _rel_symlink "${DOTPI_DIR}/AGENTS.md" "${TEST_HOME}/.pi/agent/AGENTS.md"
+  # extensions/subagent -> ../../../../dotpi/agent/extensions/subagent (relative symlink)
   mkdir -p "${TEST_HOME}/.pi/agent/extensions"
-  ln -s "${DOTPI_DIR}/extensions/subagent" "${TEST_HOME}/.pi/agent/extensions/subagent"
+  _rel_symlink "${DOTPI_DIR}/extensions/subagent" "${TEST_HOME}/.pi/agent/extensions/subagent"
 }
 
 teardown_sandbox() {
