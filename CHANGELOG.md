@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-07-03
+
+### Fixed
+
+- **Caged agents start in the repo (`/workspace`), not `/home/agent`** (rip-cage-0rng) — nothing rooted the agent's cwd at the workspace, so every entry mode landed in `/home/agent` (the Docker `WORKDIR` default), where `bd`'s upward `.beads/` search fails, `git` isn't a repo, and relative paths break — forcing a per-session `cd /workspace` that broke AFK / drover use. Fixed at two layers, each at its correct home: `rc` adds `--workdir /workspace` to the `docker run` args (covers `rc attach` / `rc exec`; mux-agnostic per [ADR-005](docs/decisions/ADR-005-ecosystem-tools.md) D12), and the herdr `start` hook exports `HERDR_STARTUP_CWD=/workspace` before `herdr server`. herdr roots its default workspace from that env var — not its process cwd or the container `WORKDIR`, falling back to `$HOME` when unset, which is why `--workdir` alone didn't reach herdr panes; `new_cwd=follow` then carries it to subsequent panes.
+
 ## [0.11.0] - 2026-07-03
 
 ### Changed
