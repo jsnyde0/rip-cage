@@ -33,6 +33,14 @@ bash tests/run-host.sh --host-only # the FULL ordered host suite — NOT a per-c
 
 > **Why the full suite, not just lint or the changed tests** *(v0.9.0 lesson A)*: an epic close that runs only lint plus the beads it touched lets a **sibling-decayed** control in an untouched test file survive to the release gate. v0.9.0 shipped a stale floor-protection assertion (in `test-pi-substrate-mounts.sh`, asserting retired symlink wiring) precisely because the close ran a per-bead subset. A decayed positive control in an untouched file escapes every per-bead / per-changed-file scope but **not** the full ordered run. `make lint` is the local==CI lint gate; `tests/run-host.sh --host-only` is the local==CI host gate (one driver, denylist-default classification — ADR-008 D4). Local must equal CI by construction; don't tag on a subset.
 
+> **Also confirm CI is actually green on `main` before tagging** *(v0.11.0 lesson)*: a green `--host-only` run on **macOS** does NOT prove CI (**Linux**) is green for the same commit — platform-path-dependent tests can diverge (the FHS reserved-path set differs; `config_mode=ro` shadow-mount interactions differ — see `.claude/harness.md`'s Local-vs-CI divergence checklist and `bd memories release-pretag-gate-blind-to-live-ci-status`). Run:
+>
+> ```bash
+> gh run list --branch main --limit 5
+> ```
+>
+> and confirm the latest `host-only` job succeeded on the commit you're about to tag. If it's red and **pre-existing** (unrelated to this release's content — check `git log` for when it started failing), the release can still proceed (`release.yml` gates on lint + version + build, **not** the host-only job — ADR-008 D4) but **file the red as its own bead** rather than discovering it only in the post-tag Actions run (the v0.11.0 cut hit exactly this — `rip-cage-vnbd`).
+
 ### 3. Tag and push
 
 ```bash
