@@ -1,6 +1,6 @@
 # Stage 1: Go builder for beads (bd)
-FROM golang:1.25-trixie AS go-builder
-ARG BEADS_VERSION=v1.0.2
+FROM golang:1.26-trixie AS go-builder
+ARG BEADS_VERSION=v1.0.5
 RUN apt-get update && apt-get install -y libicu-dev libzstd-dev pkg-config git && rm -rf /var/lib/apt/lists/*
 # Clone + build (not `go install @latest`): upstream's go.mod carries a `replace`
 # directive, which `go install` rejects unless the module is the main module.
@@ -79,7 +79,7 @@ ARG DOLT_VERSION=1.84.0
 RUN curl -fsSL https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION}/install.sh | bash
 
 # bd (beads issue tracker)
-# bd-real is compiled in the golang:1.25-trixie builder, which links against
+# bd-real is compiled in the golang:1.26-trixie builder, which links against
 # the same ICU76 that trixie's runtime ships — no soname shim needed.
 COPY --from=go-builder /go/bin/bd /usr/local/bin/bd-real
 COPY bd-wrapper.sh /usr/local/bin/bd

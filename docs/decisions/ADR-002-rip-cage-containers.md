@@ -56,7 +56,7 @@ A single "rip-cage" Docker image with Python/uv, Bun/Node, git, tmux, Claude Cod
 
 **Firmness: FLEXIBLE** (was EXPLORATORY / PROVISIONAL until the 2026-06-08 forward evaluation below)
 
-The runtime base is **debian:trixie** (glibc 2.41); the builder stages are **golang:1.25-trixie** and **rust:1-slim-trixie**, so bd-real and DCG compile against trixie's libicu76 — no ICU soname shim is needed. The iptables backend is pinned to LEGACY via `update-alternatives --set iptables /usr/sbin/iptables-legacy` (Dockerfile ~line 40; this pin is safety-critical — see ADR-012 D10).
+The runtime base is **debian:trixie** (glibc 2.41); the builder stages are **golang:1.26-trixie** and **rust:1-slim-trixie**, so bd-real and DCG compile against trixie's libicu76 — no ICU soname shim is needed. The iptables backend is pinned to LEGACY via `update-alternatives --set iptables /usr/sbin/iptables-legacy` (Dockerfile ~line 40; this pin is safety-critical — see ADR-012 D10).
 
 **Origin (2026-06-07):** trixie entered as a user-authorized spike (bead `rip-cage-4c5.10`) forced by agent_mail's glibc floor — "may revert or pick an alternative."
 
