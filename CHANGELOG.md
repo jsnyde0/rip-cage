@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-03
+
+### Changed
+
+- **DCG's default extension posture flipped from LOCKED to OPEN** (security-default behavior change; epic rip-cage-p35a; [ADR-027](docs/decisions/ADR-027-agent-substrate-projection.md) D1/D4 — FIRM, human-confirmed). The DCG recipe's default no longer contributes `--no-extensions` to pi's launch. A default cage now lets **pi auto-discover and load its own extensions** (`~/.pi/agent/extensions/`, `/workspace/.pi/extensions/`) — restoring pi's extension-write autonomy and making an ordinarily-installed herdr integration "just work" — while the DCG guard still loads first (`-e /etc/rip-cage/pi/dcg-gate.ts`) and still **DENIES destructive commands**. The honest tradeoff: this **reopens "vector-b"** — a prompt-injected pi could write a guard-bypassing extension into an auto-discovery path that then auto-loads — as a **knowingly-accepted residual** backstopped by containment (the guard itself stays unreplaceable on its root-owned path; the container / egress / filesystem floor is untouched, so blast radius stays bounded). The tighter **LOCKED** posture (`--no-extensions`) is now a **documented opt-in** for operators who want vector-b closed. (rip-cage-p35a.1)
+- **pi recipe owns its full lifecycle; base init names no tool** (rip-cage-p35a.3; [ADR-005](docs/decisions/ADR-005-ecosystem-tools.md) D7/D12). pi's extension-directory creation moved out of the shared `init-rip-cage.sh` into pi's own recipe **`init` boot-hook**, and a `--model <provider/model>` pin mechanism was added to the pi recipe. Base infrastructure no longer carries pi-specific logic.
+
+### Added
+
+- **`TOOL` archetype `init` boot-hook seam** (rip-cage-p35a.2; [ADR-005](docs/decisions/ADR-005-ecosystem-tools.md) D7). Plain `TOOL` recipes can now contribute a cage-boot hook (fires at attach, agent context), making the three-phase lifecycle (build / boot / launch) uniform across archetypes — a recipe owns its full lifecycle and base infra names no tool.
+- **`configure-cage` skill** (rip-cage-p35a.5) — an agent-run interview that composes a cage manifest (`~/.config/rip-cage/tools.yaml`) **by judgment**, one question at a time: which tools, the DCG guard and its **open-vs-locked posture**, multiplexer, egress posture, and a **pi provider/model pin**. It surfaces the open-vs-locked tradeoff at setup so the OPEN default is a conscious, agent-relayed choice — the naive-user mitigation the open default's safety argument rests on — and writes a reviewable manifest the operator inspects before `rc build`. No generator/installer/merger: the agent reads the `examples/` recipes and hand-writes the entries ([ADR-005](docs/decisions/ADR-005-ecosystem-tools.md) D12).
+- **pi provider/model pin surfaced by `configure-cage`** (rip-cage-tl6q) — pinning a **static-key provider** (e.g. `openai-codex/gpt-5.5`) keeps headless / walk-away pi runs from stalling on the Anthropic third-party subscription throttle (a fresh headless pi that defaults to Claude-subscription resolution now gets a 400).
+
+### Fixed
+
+- **`herdr integration install pi` succeeds in a composed herdr+pi cage** (rip-cage-fwp3) — pi's agent-owned `extensions/` directory is now created at cage boot (gated on pi being present), so herdr's pi integration installs and `herdr integration status` reports pi installed.
+- **Release / test hygiene** — the mount-seam integration test's arbitrary-`TOOL` fixture now mounts under the agent-writable zone to match the rc09 dest allowlist (rip-cage-p35a.6); the `RC_E2E_DCGHP_ONLY` gate no longer clobbers the operator's daily-driver `rip-cage:latest` (threaded an `RC_IMAGE` override, rip-cage-2mpn).
+
 ## [0.10.0] - 2026-06-30
 
 ### Changed
