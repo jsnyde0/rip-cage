@@ -67,6 +67,11 @@ else
   check "/workspace is writable" "fail"
 fi
 
+# 4b. Fresh shell cwd is /workspace, not /home/agent (rip-cage-2cks; guards
+# rip-cage-0rng — the in-cage-observable half of rc doctor's cwd-floor check).
+cwd_actual=$(pwd)
+check "cwd is /workspace" "$([[ "$cwd_actual" == "/workspace" ]] && echo pass || echo fail)" "$cwd_actual"
+
 echo ""
 echo "-- Settings & Safety Stack --"
 
@@ -249,6 +254,39 @@ if [ -d /workspace/.beads ]; then
   fi
 else
   check_auth "bd can access beads data" "pass" "no .beads/ in workspace (skipped)"
+fi
+
+# 26. Workspace resolution (rip-cage-2cks; guards rip-cage-aq70): `bd status`
+# (NOT `bd ready` -- ready does not run the blocked-IDs query that surfaces a
+# schema mismatch, confirmed empirically against a real skewed cage) and
+# `git status` both exit clean from /workspace. Unlike the SKIP_AUTH-gated
+# check above, a schema error here is ALWAYS a hard fail (not an auth
+# concern, so check_auth's downgrade doesn't apply) -- this is the honest
+# aq70 symptom firing exactly when a baked bd can't read the store it's
+# handed. No .beads/ or no git repo is a skip-with-note, not a fail -- not
+# every cage workspace is a beads/git project.
+if [ -d /workspace/.beads ]; then
+  ws_bd_rc=0
+  ws_bd_out=$(cd /workspace && bd status 2>&1) || ws_bd_rc=$?
+  if [ "$ws_bd_rc" -eq 0 ]; then
+    check "bd status resolves cleanly from /workspace" "pass"
+  else
+    check "bd status resolves cleanly from /workspace" "fail" "$(echo "$ws_bd_out" | head -1)"
+  fi
+else
+  check "bd status resolves cleanly from /workspace" "pass" "no .beads/ in workspace (skipped)"
+fi
+
+if git -C /workspace rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  ws_git_rc=0
+  ws_git_out=$(cd /workspace && git status 2>&1) || ws_git_rc=$?
+  if [ "$ws_git_rc" -eq 0 ]; then
+    check "git status resolves cleanly from /workspace" "pass"
+  else
+    check "git status resolves cleanly from /workspace" "fail" "$(echo "$ws_git_out" | head -1)"
+  fi
+else
+  check "git status resolves cleanly from /workspace" "pass" "not a git repo (skipped)"
 fi
 
 echo ""

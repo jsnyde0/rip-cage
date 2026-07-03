@@ -5782,11 +5782,44 @@ _doctor_host() {
   fi
 }
 
+# _doctor_bd_version_compare <host_version_raw> <cage_version_raw>
+#
+# rip-cage-2cks D3: host-vs-cage bd version-skew comparator for `rc doctor`.
+# Extracts the numeric x.y.z from each raw `bd --version` string (ignoring a
+# trailing build-provenance suffix like "(dev)" or "(Homebrew)" — comparing
+# on provenance would WARN on every single cage, since the in-cage bd is
+# always built from source and the host bd is whatever the operator's package
+# manager shipped; that's noise, not skew) and echoes exactly one of:
+#   ok <host_norm> <cage_norm>     -- numeric versions match
+#   warn <host_norm> <cage_norm>   -- numeric versions differ
+#   skip <reason>                  -- one or both strings didn't parse
+#
+# Deliberately never returns "fail": a bare version mismatch does not by
+# itself prove the store won't parse (rip-cage-aq70's actual symptom) — that
+# invariant belongs to the workspace-resolution check. This function is pure
+# string logic so it's unit-testable without docker (test-doctor-version-skew.sh).
+_doctor_bd_version_compare() {
+  local host_raw="$1" cage_raw="$2"
+  local host_norm cage_norm
+  host_norm=$(echo "$host_raw" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  cage_norm=$(echo "$cage_raw" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  if [[ -z "$host_norm" || -z "$cage_norm" ]]; then
+    echo "skip could-not-parse-version (host='${host_raw}' cage='${cage_raw}')"
+    return
+  fi
+  if [[ "$host_norm" == "$cage_norm" ]]; then
+    echo "ok $host_norm $cage_norm"
+  else
+    echo "warn $host_norm $cage_norm"
+  fi
+}
+
 # cmd_doctor — per-container diagnostic view.
 #
 # Complements `rc ls` (fleet view) with depth for a single container: posture
 # labels (rc.egress, rc.forward-ssh, rc.source.path) plus live probes when the
-# container is running (firewall, ssh-add, beads port, auth creds, skills).
+# container is running (firewall, ssh-add, beads port, auth creds, skills,
+# cwd floor, workspace resolution, bd version skew — rip-cage-2cks).
 # Labels are readable whether the container is running or stopped; live probes
 # report "not running, no live probe" when the container is stopped.
 # Resolves via resolve_name (CWD convention — same as rc attach/down/destroy).
@@ -5831,6 +5864,10 @@ cmd_doctor() {
   local beads_probe="not running, no live probe"
   local auth_probe="not running, no live probe"
   local skills_probe="not running, no live probe"
+  # rip-cage-2cks: runnability probes (cwd floor, workspace resolution, bd version skew).
+  local cwd_probe="not running, no live probe"
+  local workspace_probe="not running, no live probe"
+  local bd_version_probe="not running, no live probe"
   # rip-cage-hhh FIX1: egress mode — derived from source path's .rip-cage.yaml
   # (current, post-promote/reload) rather than the immutable create-time label.
   # Overridden below by the live rules file when the container is running.
@@ -5928,6 +5965,104 @@ cmd_doctor() {
       skills_probe="INFO — no skills mount"
     fi
 
+    # rip-cage-2cks D1: cwd floor probe. Guards rip-cage-0rng: a fresh exec's
+    # cwd must land in /workspace, not /home/agent (the Docker WORKDIR
+    # default). --workdir only takes effect at container CREATE time (rc:1186)
+    # — a reused ('docker start') container from before the fix silently
+    # keeps the old WorkingDir, so the fail hint names recreation explicitly.
+    local _cwd_actual
+    _cwd_actual=$(docker exec "$name" pwd 2>/dev/null || true)
+    if [[ "$_cwd_actual" == "/workspace" ]]; then
+      cwd_probe="OK — fresh exec cwd is /workspace"
+    else
+      cwd_probe="FAIL — fresh exec cwd is '${_cwd_actual:-<unknown>}', not /workspace (likely fix: recreate the container — 'rc destroy' + 'rc up', not 'rc down'/'up' reuse; --workdir only applies at container create time)"
+    fi
+
+    # rip-cage-2cks D2: workspace-resolution probe. Guards rip-cage-aq70: bd
+    # reading a store written by a different bd release can schema-error
+    # (e.g. the depends_on_id class) even though the workspace mount itself
+    # is fine. Use `bd status` specifically (not `bd ready`) — `bd ready`
+    # does not exercise the blocked-IDs query that surfaces the schema
+    # mismatch, so it stays clean even when the store genuinely can't be
+    # read by this bd (empirically confirmed against a real skewed cage).
+    # A workspace with no .beads/ or no git repo skips that leg with a note
+    # rather than failing — not every cage workspace is a beads/git project.
+    # NOTE: rc runs under `set -euo pipefail` when executed (rc:5-7), so every
+    # probe below that captures a possibly-failing docker exec must use the
+    # `var=$(cmd) || rc=$?` idiom (same as the ssh_probe block above) or an
+    # `if cmd; then` conditional — a bare `cmd && var=1` / `var=$(cmd); rc=$?`
+    # aborts cmd_doctor silently on the first failing probe (caught live
+    # against the aq70 schema-error fixture during implementation).
+    local _has_beads=0 _has_git=0
+    if docker exec "$name" test -d /workspace/.beads >/dev/null 2>&1; then
+      _has_beads=1
+    fi
+    if docker exec "$name" sh -c 'git -C /workspace rev-parse --is-inside-work-tree' >/dev/null 2>&1; then
+      _has_git=1
+    fi
+
+    local _bd_leg _bd_state="skip" _bd_out _bd_rc=0
+    if [[ "$_has_beads" -eq 1 ]]; then
+      _bd_out=$(docker exec -w /workspace "$name" bd status 2>&1) || _bd_rc=$?
+      if [[ "$_bd_rc" -eq 0 ]]; then
+        _bd_state="ok"
+        _bd_leg="bd status OK"
+      else
+        _bd_state="fail"
+        _bd_leg="bd status failed: $(echo "$_bd_out" | head -1)"
+      fi
+    else
+      _bd_leg="no .beads/ in workspace (skipped)"
+    fi
+
+    local _git_leg _git_state="skip" _git_out _git_rc=0
+    if [[ "$_has_git" -eq 1 ]]; then
+      _git_out=$(docker exec -w /workspace "$name" git status 2>&1) || _git_rc=$?
+      if [[ "$_git_rc" -eq 0 ]]; then
+        _git_state="ok"
+        _git_leg="git status OK"
+      else
+        _git_state="fail"
+        _git_leg="git status failed: $(echo "$_git_out" | head -1)"
+      fi
+    else
+      _git_leg="not a git repo (skipped)"
+    fi
+
+    if [[ "$_bd_state" == "fail" || "$_git_state" == "fail" ]]; then
+      workspace_probe="FAIL — ${_bd_leg}; ${_git_leg} (likely fix: baked bd doesn't match the release that wrote this store — rebuild the image with a matching bd pin, ADR-005 D9/D11)"
+    elif [[ "$_bd_state" == "ok" || "$_git_state" == "ok" ]]; then
+      workspace_probe="OK — ${_bd_leg}; ${_git_leg}"
+    else
+      workspace_probe="INFO — ${_bd_leg}; ${_git_leg}"
+    fi
+
+    # rip-cage-2cks D3: bd version-skew probe. A bare mismatch WARNs only —
+    # the workspace-resolution probe above owns "does the store parse".
+    if ! command -v bd >/dev/null 2>&1; then
+      bd_version_probe="INFO — host has no bd on PATH (skipped; can't compare)"
+    else
+      local _host_bd_raw _cage_bd_raw
+      _host_bd_raw=$(bd --version 2>&1 || true)
+      _cage_bd_raw=$(docker exec "$name" bd --version 2>&1 || true)
+      if ! docker exec "$name" sh -c 'command -v bd' >/dev/null 2>&1; then
+        bd_version_probe="INFO — no bd in-cage (skipped)"
+      else
+        local _cmp
+        _cmp=$(_doctor_bd_version_compare "$_host_bd_raw" "$_cage_bd_raw")
+        case "$_cmp" in
+          ok\ *)
+            bd_version_probe="OK — host and in-cage bd both ${_cmp#ok }" ;;
+          warn\ *)
+            local _wh _wc
+            read -r _ _wh _wc <<< "$_cmp"
+            bd_version_probe="WARN — host bd ${_wh} vs in-cage bd ${_wc} (version skew alone is not a failure — see workspace-resolution probe for whether the store actually parses)" ;;
+          *)
+            bd_version_probe="INFO — could not parse bd version strings (host='${_host_bd_raw}' cage='${_cage_bd_raw}')" ;;
+        esac
+      fi
+    fi
+
     # rip-cage-hhh.6 D2: egress section live probes.
     # mode: read from mounted rules file (overrides label — reflects actual running config).
     local _rules_mode_raw
@@ -5988,6 +6123,9 @@ cmd_doctor() {
       --arg beads_probe "$beads_probe" \
       --arg auth_probe "$auth_probe" \
       --arg skills_probe "$skills_probe" \
+      --arg cwd_probe "$cwd_probe" \
+      --arg workspace_probe "$workspace_probe" \
+      --arg bd_version_probe "$bd_version_probe" \
       --arg egress_mode "$_egress_live_mode" \
       --arg egress_config_override "$egress_config_override_label" \
       --argjson egress_allowed_hosts "$_egress_allowed_hosts_json" \
@@ -6007,7 +6145,10 @@ cmd_doctor() {
           ssh_forwarding: $ssh_probe,
           beads_server: $beads_probe,
           auth: $auth_probe,
-          skills_mount: $skills_probe
+          skills_mount: $skills_probe,
+          cwd: $cwd_probe,
+          workspace_resolution: $workspace_probe,
+          bd_version_skew: $bd_version_probe
         },
         egress: {
           mode: $egress_mode,
@@ -6032,6 +6173,11 @@ cmd_doctor() {
     echo "  beads-server   : $beads_probe"
     echo "  auth           : $auth_probe"
     echo "  skills-mount   : $skills_probe"
+    echo ""
+    echo "Runnability:"
+    echo "  cwd                  : $cwd_probe"
+    echo "  workspace-resolution : $workspace_probe"
+    echo "  bd-version-skew      : $bd_version_probe"
     echo ""
     echo "Egress:"
     echo "  mode               : $_egress_live_mode"
