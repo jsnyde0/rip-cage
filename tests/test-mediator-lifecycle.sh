@@ -80,13 +80,20 @@ REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 FAILURES=0
 U1_TMP=""
+P_TEST_HOME=""
 
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1${2:+  -- $2}"; FAILURES=$((FAILURES + 1)); }
 
+# tests/run-host.sh exports RC_CONFIG_GLOBAL at driver level, which would
+# shadow the per-test XDG sandboxes the P-section below builds. Unset so
+# per-call XDG_CONFIG_HOME sandboxes win (mirrors test-config-loader.sh).
+unset RC_CONFIG_GLOBAL
+
 # shellcheck disable=SC2329
 cleanup() {
   [[ -n "${U1_TMP:-}" && -d "${U1_TMP:-}" ]] && rm -rf "$U1_TMP"
+  [[ -n "${P_TEST_HOME:-}" && -d "${P_TEST_HOME:-}" ]] && rm -rf "$P_TEST_HOME"
 }
 trap cleanup EXIT
 
@@ -697,6 +704,290 @@ else
   fail "O1c rc cmd_up: _up_init_firewall called AFTER _up_init_container — ordering bug" \
     "firewall_call=L${FIREWALL_LAST_LINE} container_call=L${CONTAINER_LAST_LINE}"
 fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# P: network.egress.mediator_env_file resolver (rip-cage-seqc.4 / B5 / F3)
+#
+# The stopped-resume path DOES relaunch the mediator, but _UP_MEDIATOR_ENV_ARGS
+# is populated ONLY from CLI flags — so an unattended `rc down && rc up` with
+# no flags silently no-ops injection. network.egress.mediator_env_file is a
+# persisted POINTER (never the secret itself) that _up_resolve_mediator_env_file
+# re-applies on every create/resume.
+# ---------------------------------------------------------------------------
+echo "--- P: mediator_env_file resolver (autonomy fix) ---"
+
+setup_p_sandbox() {
+  P_TEST_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-med-p-XXXXXX")
+  mkdir -p "${P_TEST_HOME}/.config/rip-cage"
+  cat > "${P_TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
+version: 1
+mounts:
+  denylist: []
+  allow_risky: null
+YAML
+  touch "${P_TEST_HOME}/.config/rip-cage/tools.yaml"
+  P_TEST_WS="${P_TEST_HOME}/workspace"
+  mkdir -p "$P_TEST_WS"
+}
+
+teardown_p_sandbox() {
+  [[ -n "${P_TEST_HOME:-}" ]] && rm -rf "$P_TEST_HOME"
+  P_TEST_HOME="" P_TEST_WS=""
+}
+
+# Run _up_resolve_mediator_env_file in a sourced subshell. Args: $1=phase,
+# $2=stderr capture file, $3...=extra shell statements to inject before the
+# call (e.g. pre-populating _UP_MEDIATOR_ENV_ARGS for the CLI-wins case).
+run_resolve_mediator_env_file() {
+  local phase="$1" stderr_file="$2" pre="${3:-}"
+  HOME="$P_TEST_HOME" XDG_CONFIG_HOME="${P_TEST_HOME}/.config" bash -c "
+    source '$RC' 2>/dev/null
+    _UP_MEDIATOR_ENV_ARGS=()
+    ${pre}
+    _up_resolve_mediator_env_file '$P_TEST_WS' '$phase'
+    _rc=\$?
+    printf '%s\n' \"\${_UP_MEDIATOR_ENV_ARGS[@]+\${_UP_MEDIATOR_ENV_ARGS[@]}}\"
+    exit \"\$_rc\"
+  " 2>"$stderr_file"
+}
+
+# P1 — pointer applied, CLI empty: config mediator_env_file -> a mode-0600
+# pointer file, no CLI flag, phase=create -> the mediator arg array reflects
+# the pointer's KEY=VALUE pairs.
+setup_p_sandbox
+_p1_envfile="${P_TEST_HOME}/mediator-secrets.env"
+(umask 077; printf 'RIPCAGE_MEDIATOR_BEARER_SECRET=sk-ant-test-p1\n' > "$_p1_envfile")
+cat > "${P_TEST_WS}/.rip-cage.yaml" <<YAML
+version: 1
+network:
+  egress:
+    mediator_env_file: ${_p1_envfile}
+YAML
+_p1_stderr=$(mktemp)
+_p1_out=$(run_resolve_mediator_env_file "create" "$_p1_stderr")
+_p1_exit=$?
+if [[ "$_p1_exit" -eq 0 ]] && echo "$_p1_out" | grep -q "RIPCAGE_MEDIATOR_BEARER_SECRET=sk-ant-test-p1"; then
+  pass "P1 pointer applied (CLI empty): config mediator_env_file loaded into mediator arg array (create phase)"
+else
+  fail "P1 pointer applied" "exit=$_p1_exit out='$_p1_out' stderr=$(cat "$_p1_stderr")"
+fi
+rm -f "$_p1_stderr"
+teardown_p_sandbox
+
+# P2 — CLI wins: CLI --mediator-env plus the config pointer both present ->
+# the array reflects the CLI only; the pointer is ignored (with a log note).
+setup_p_sandbox
+_p2_envfile="${P_TEST_HOME}/mediator-secrets.env"
+(umask 077; printf 'RIPCAGE_MEDIATOR_BEARER_SECRET=sk-ant-from-pointer\n' > "$_p2_envfile")
+cat > "${P_TEST_WS}/.rip-cage.yaml" <<YAML
+version: 1
+network:
+  egress:
+    mediator_env_file: ${_p2_envfile}
+YAML
+_p2_stderr=$(mktemp)
+_p2_out=$(run_resolve_mediator_env_file "create" "$_p2_stderr" "_UP_MEDIATOR_ENV_ARGS+=(-e RIPCAGE_MEDIATOR_BEARER_SECRET=sk-ant-from-cli)")
+_p2_exit=$?
+if [[ "$_p2_exit" -eq 0 ]] \
+  && echo "$_p2_out" | grep -q "sk-ant-from-cli" \
+  && ! echo "$_p2_out" | grep -q "sk-ant-from-pointer"; then
+  pass "P2 CLI wins: --mediator-env value present, config pointer value absent"
+else
+  fail "P2 CLI wins" "exit=$_p2_exit out='$_p2_out' stderr=$(cat "$_p2_stderr")"
+fi
+rm -f "$_p2_stderr"
+teardown_p_sandbox
+
+# P3a (F3) — missing file, CREATE phase -> fails loud, non-zero, names
+# MEDIATOR_ENV_FILE_NOT_FOUND / the missing path.
+setup_p_sandbox
+cat > "${P_TEST_WS}/.rip-cage.yaml" <<YAML
+version: 1
+network:
+  egress:
+    mediator_env_file: ${P_TEST_HOME}/nonexistent-secrets.env
+YAML
+_p3a_stderr=$(mktemp)
+run_resolve_mediator_env_file "create" "$_p3a_stderr" >/dev/null
+_p3a_exit=$?
+_p3a_err=$(cat "$_p3a_stderr")
+if [[ "$_p3a_exit" -ne 0 ]] && echo "$_p3a_err" | grep -qi "nonexistent-secrets.env"; then
+  pass "P3a (F3) missing mediator_env_file on CREATE: fails loud, names the missing path"
+else
+  fail "P3a missing file create-phase" "exit=$_p3a_exit stderr=$_p3a_err"
+fi
+rm -f "$_p3a_stderr"
+teardown_p_sandbox
+
+# P3b (F3) — missing file, RESUME phase -> WARNS loud on stderr, returns 0
+# (no exit — docker start already ran before this resolver on resume).
+# Positive control against P3a proving the phase split.
+setup_p_sandbox
+cat > "${P_TEST_WS}/.rip-cage.yaml" <<YAML
+version: 1
+network:
+  egress:
+    mediator_env_file: ${P_TEST_HOME}/nonexistent-secrets.env
+YAML
+_p3b_stderr=$(mktemp)
+_p3b_out=$(run_resolve_mediator_env_file "resume" "$_p3b_stderr")
+_p3b_exit=$?
+_p3b_err=$(cat "$_p3b_stderr")
+if [[ "$_p3b_exit" -eq 0 ]] && echo "$_p3b_err" | grep -qi "nonexistent-secrets.env" && [[ -z "$_p3b_out" ]]; then
+  pass "P3b (F3) missing mediator_env_file on RESUME: warns loud, returns 0 (degraded-but-alive, no exit)"
+else
+  fail "P3b missing file resume-phase" "exit=$_p3b_exit out='$_p3b_out' stderr=$_p3b_err"
+fi
+rm -f "$_p3b_stderr"
+teardown_p_sandbox
+
+# P4 — perms warn: pointer file at mode 0644 -> warns loud on stderr, still
+# loads the array (non-fatal, both phases).
+setup_p_sandbox
+_p4_envfile="${P_TEST_HOME}/mediator-secrets-loose.env"
+printf 'RIPCAGE_MEDIATOR_BEARER_SECRET=sk-ant-test-p4\n' > "$_p4_envfile"
+chmod 0644 "$_p4_envfile"
+cat > "${P_TEST_WS}/.rip-cage.yaml" <<YAML
+version: 1
+network:
+  egress:
+    mediator_env_file: ${_p4_envfile}
+YAML
+_p4_stderr=$(mktemp)
+_p4_out=$(run_resolve_mediator_env_file "create" "$_p4_stderr")
+_p4_exit=$?
+_p4_err=$(cat "$_p4_stderr")
+if [[ "$_p4_exit" -eq 0 ]] \
+  && echo "$_p4_err" | grep -qi "0600\|permission\|mode" \
+  && echo "$_p4_out" | grep -q "sk-ant-test-p4"; then
+  pass "P4 non-0600 mediator_env_file perms: warns loud, still loads the array"
+else
+  fail "P4 perms warn" "exit=$_p4_exit out='$_p4_out' stderr=$_p4_err"
+fi
+rm -f "$_p4_stderr"
+teardown_p_sandbox
+
+# P5 — secret non-leak: after resolution, the sentinel secret is absent from
+# _UP_RUN_ARGS (never docker run / a --label) and never echoed by the
+# resolver's own log output. Positive control: the sentinel DOES appear in
+# the mediator arg array (_UP_MEDIATOR_ENV_ARGS).
+setup_p_sandbox
+_p5_envfile="${P_TEST_HOME}/mediator-secrets.env"
+(umask 077; printf 'RIPCAGE_MEDIATOR_BEARER_SECRET=sk-ant-SENTINEL-p5\n' > "$_p5_envfile")
+cat > "${P_TEST_WS}/.rip-cage.yaml" <<YAML
+version: 1
+network:
+  egress:
+    mediator_env_file: ${_p5_envfile}
+YAML
+_p5_stderr=$(mktemp)
+_p5_out=$(HOME="$P_TEST_HOME" XDG_CONFIG_HOME="${P_TEST_HOME}/.config" bash -c "
+  source '$RC' 2>/dev/null
+  _UP_MEDIATOR_ENV_ARGS=()
+  _UP_RUN_ARGS=()
+  _up_resolve_mediator_env_file '$P_TEST_WS' 'create'
+  printf 'RUN_ARGS: %s\n' \"\${_UP_RUN_ARGS[@]+\${_UP_RUN_ARGS[@]}}\"
+  printf 'MEDIATOR_ARGS: %s\n' \"\${_UP_MEDIATOR_ENV_ARGS[@]+\${_UP_MEDIATOR_ENV_ARGS[@]}}\"
+" 2>"$_p5_stderr")
+_p5_err=$(cat "$_p5_stderr")
+_p5_ok=true _p5_reason=""
+if echo "$_p5_out" | grep "^RUN_ARGS:" | grep -q "sk-ant-SENTINEL-p5"; then
+  _p5_ok=false; _p5_reason="sentinel leaked into _UP_RUN_ARGS (would reach docker run/labels)"
+fi
+if echo "$_p5_err" | grep -q "sk-ant-SENTINEL-p5"; then
+  _p5_ok=false; _p5_reason="${_p5_reason:+$_p5_reason; }sentinel echoed by resolver's own log output"
+fi
+if ! echo "$_p5_out" | grep "^MEDIATOR_ARGS:" | grep -q "sk-ant-SENTINEL-p5"; then
+  _p5_ok=false; _p5_reason="${_p5_reason:+$_p5_reason; }positive control failed: sentinel not found in _UP_MEDIATOR_ENV_ARGS"
+fi
+if [[ "$_p5_ok" == "true" ]]; then
+  pass "P5 secret non-leak: sentinel absent from _UP_RUN_ARGS and resolver logs; present in _UP_MEDIATOR_ENV_ARGS (positive control)"
+else
+  fail "P5 secret non-leak" "$_p5_reason"
+fi
+rm -f "$_p5_stderr"
+teardown_p_sandbox
+
+# P6 (F2) — composed-but-no-env warning, keyed off the container's RC_MEDIATOR
+# env (via docker inspect — no rc.mediator label exists). Stub docker inspect
+# so the container reports an RC_MEDIATOR name with an EMPTY mediator arg
+# array -> _up_init_mediator emits the warning. Positive controls: (a)
+# container WITHOUT RC_MEDIATOR (mediator=none) -> no warning; (b) RC_MEDIATOR
+# present PLUS args present -> no warning.
+setup_p_sandbox
+
+_p6_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-p6-stub-XXXXXX")
+cat > "${_p6_stub_dir}/docker" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" exec "*"init-mediator.sh"*) exit 0 ;;
+  *" inspect "*)
+    if [[ -n "${RC_P6_STUB_SELECTION:-}" ]]; then
+      printf '["RC_MEDIATOR=%s"]\n' "${RC_P6_STUB_SELECTION}"
+    else
+      printf '[]\n'
+    fi
+    ;;
+  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "${_p6_stub_dir}/docker"
+
+# P6 primary: RC_MEDIATOR=my-proxy, empty mediator args -> warning fires.
+_p6_stderr=$(mktemp)
+PATH="${_p6_stub_dir}:$PATH" RC_P6_STUB_SELECTION="my-proxy" \
+  HOME="$P_TEST_HOME" bash -c "
+  source '$RC' 2>/dev/null
+  _UP_MEDIATOR_ENV_ARGS=()
+  OUTPUT_FORMAT=''
+  _up_init_mediator 'rc-p6-test'
+" >/dev/null 2>"$_p6_stderr"
+_p6_err=$(cat "$_p6_stderr")
+if echo "$_p6_err" | grep -qi "no mediator.*secret\|mediator.*no.*env\|injection.*no-op"; then
+  pass "P6 (F2) composed-but-no-env: RC_MEDIATOR present + empty mediator args -> warning fires"
+else
+  fail "P6 primary composed-but-no-env" "stderr=$_p6_err"
+fi
+rm -f "$_p6_stderr"
+
+# P6 positive control (a): container WITHOUT RC_MEDIATOR (mediator=none) -> no warning.
+_p6b_stderr=$(mktemp)
+PATH="${_p6_stub_dir}:$PATH" RC_P6_STUB_SELECTION="" \
+  HOME="$P_TEST_HOME" bash -c "
+  source '$RC' 2>/dev/null
+  _UP_MEDIATOR_ENV_ARGS=()
+  OUTPUT_FORMAT=''
+  _up_init_mediator 'rc-p6b-test'
+" >/dev/null 2>"$_p6b_stderr"
+_p6b_err=$(cat "$_p6b_stderr")
+if echo "$_p6b_err" | grep -qi "no mediator.*secret\|mediator.*no.*env\|injection.*no-op"; then
+  fail "P6b positive control (mediator=none)" "warning fired even though no mediator is composed: $_p6b_err"
+else
+  pass "P6b positive control: no RC_MEDIATOR (mediator=none) -> no composed-but-no-env warning"
+fi
+rm -f "$_p6b_stderr"
+
+# P6 positive control (b): RC_MEDIATOR present PLUS mediator args present -> no warning.
+_p6c_stderr=$(mktemp)
+PATH="${_p6_stub_dir}:$PATH" RC_P6_STUB_SELECTION="my-proxy" \
+  HOME="$P_TEST_HOME" bash -c "
+  source '$RC' 2>/dev/null
+  _UP_MEDIATOR_ENV_ARGS=(-e RIPCAGE_MEDIATOR_BEARER_SECRET=sk-ant-present)
+  OUTPUT_FORMAT=''
+  _up_init_mediator 'rc-p6c-test'
+" >/dev/null 2>"$_p6c_stderr"
+_p6c_err=$(cat "$_p6c_stderr")
+if echo "$_p6c_err" | grep -qi "no mediator.*secret\|mediator.*no.*env\|injection.*no-op"; then
+  fail "P6c positive control (args present)" "warning fired even though mediator args are non-empty: $_p6c_err"
+else
+  pass "P6c positive control: RC_MEDIATOR present + mediator args present -> no warning"
+fi
+rm -f "$_p6c_stderr"
+
+rm -rf "${_p6_stub_dir}"
+teardown_p_sandbox
 
 echo ""
 

@@ -253,6 +253,7 @@ Rip-cage's network egress firewall reads `network.*` to decide what outbound tra
 | `network.egress.mediator` | scalar | unset (standalone) | Name of a manifest-declared MEDIATOR provider to run co-located at cage init (e.g. `iron-proxy`, `mitmproxy`). Validated against the `rc.mediators` image label on the built image — unknown names abort loud (fail-closed). Default `none` / unset = standalone mode (no mediator). Pairs with `network.http.forward_to`. See [composition-seam.md](composition-seam.md) and [ADR-026 D5](../decisions/ADR-026-containment-mediation-identity.md). |
 | `network.http.forward_to` | scalar | unset (origin-splice) | Address (`host:port`) the SNI router sends allowed HTTP/HTTPS traffic to via HTTP CONNECT, instead of splicing directly to origin. Typically `"127.0.0.1:8888"` for a co-located MEDIATOR. Destination allow/deny and the IOC floor run **before** the forward — the mediator can add restriction but cannot subtract (push-side uncrossable floor, [ADR-026 D5](../decisions/ADR-026-containment-mediation-identity.md)). Tool-agnostic (a configurable address, not a blessed product — ADR-005 D12). |
 | `network.dns.forward_to` | scalar | unset (→ `8.8.8.8`) | Upstream resolver the DNS sidecar forwards **clean** queries to (`host` or `host:port`). The built-in exfil heuristic always runs first regardless; this only changes where queries that pass it go — point it at a DNS-exfil specialist (NextDNS / Cisco Umbrella / dnsdist / Zeek / a local forwarder). Tool-agnostic (a configurable address, not a blessed product — ADR-005 D12). Reload-eligible via `rc reload`. |
+| `network.egress.mediator_env_file` | scalar | unset (null) | Host path to a `KEY=VALUE`-per-line file — a **persisted POINTER**, applied on both `rc up` create AND resume (including after `rc down`). `rc` re-reads the file content at every up/resume; it never persists the secret VALUE itself, only this path. Fixes the "must be re-supplied on every `rc up`" autonomy gap for `--mediator-env`/`--mediator-env-file` — see below. Not reload-eligible (rotate by editing the file's content, then `rc down && rc up`). |
 
 There is also an **IOC floor** — a curated denylist of known exfil sinks — that is always enforced and **cannot be overridden** by `network.allowed_hosts`. The project allowlist can broaden but never shrink below this floor.
 
@@ -287,7 +288,7 @@ When a mediator is configured, the real credential must reach the mediator's pro
 | `--mediator-env KEY=VALUE` | Pass `KEY=VALUE` into `init-mediator.sh`'s `docker exec -e` channel — reaches the mediator process env only, never `/proc/1/environ`. Repeatable. |
 | `--mediator-env-file /path/to/file` | Read `KEY=VALUE` pairs from a file (one per line, not committed to git). Equivalent to supplying each line as `--mediator-env`. |
 
-**Must be re-supplied on every `rc up`** (including resume after `rc down`). The secret intentionally does not persist in the container filesystem or the image. If omitted on resume, the mediator re-launches but the secret is absent and injection silently no-ops — the agent sends the placeholder token to the upstream.
+**Must be re-supplied on every `rc up`** (including resume after `rc down`) **unless you set `network.egress.mediator_env_file`**, which re-applies the pointer automatically on every up/resume. The secret intentionally does not persist in the container filesystem or the image. If omitted on resume (no CLI flag, no config pointer), the mediator re-launches but the secret is absent and injection silently no-ops — the agent sends the placeholder token to the upstream. `rc` warns loudly on `docker exec` when it detects this composed-but-no-env state.
 
 ```bash
 rc up /path/to/workspace \
@@ -295,6 +296,19 @@ rc up /path/to/workspace \
 # or from a secrets file not in version control:
 rc up /path/to/workspace --mediator-env-file /path/to/.cage-secrets
 ```
+
+**Persisted pointer (survives unattended `rc down && rc up`):** set `network.egress.mediator_env_file` in `.rip-cage.yaml` to a host path (mode `0600` recommended; group/world-readable perms produce a loud warning but are not refused). `rc` re-reads the file's content — never the value — at every create/resume and loads it the same way `--mediator-env-file` would. CLI flags always win over the pointer (deterministic precedence; no additive merge). A CREATE with a configured-but-missing pointer file fails loud (a human is present); a RESUME with a missing pointer file warns loud and continues — the mediator relaunches without the secret rather than stranding an already-`docker start`ed container.
+
+```yaml
+# <project>/.rip-cage.yaml
+version: 1
+network:
+  egress:
+    mediator: iron-proxy
+    mediator_env_file: /Users/you/.config/rip-cage/iron-proxy.env   # NOT committed to git
+```
+
+**Rotation:** edit the pointed-to file's content (the path itself doesn't need to change), then `rc down && rc up` — the stopped-resume path re-applies the pointer when the mediator relaunches. Not reload-eligible: `rc reload` never touches the mediator (it only re-applies egress/SSH allowlists to the running proxy).
 
 Cross-reference: [egress.md](egress.md) for the workflow, modes, DNS exfil detection, and baseline allowlist; [ADR-012](../decisions/ADR-012-egress-firewall.md) for full design rationale; [composition-seam.md](composition-seam.md) for the MEDIATOR model.
 
@@ -391,6 +405,35 @@ All fields are `selection_list` type in the schema (per ADR-021 D2): unknown val
 **Mount-shape label-lock:** At create time, `rc up` computes and persists a `rc.symlink-follow-fingerprint=<sha256>` container label. On `rc up` resume, if the fingerprint differs (symlink set or `mode` changed), `rc up` aborts with a "destroy and re-up" remediation. This is a host-state-derived label (distinct from config-derived labels like `rc.config-loaded`) — its value changes when host state changes, even with identical `.rip-cage.yaml` content.
 
 **`rc reload` behavior:** `mounts.symlinks.*` changes are mount-shape changes and are **not** reload-eligible. `rc reload` refuses loud with a "destroy and re-up" hint when these fields differ from the applied-config snapshot.
+
+---
+
+## `auth.credential_mounts` — host credential mount posture
+
+Controls whether `rc up` bind-mounts host Claude Code / pi credential files into the cage at all.
+
+```yaml
+# <project>/.rip-cage.yaml
+version: 1
+auth:
+  credential_mounts: none   # real (default) | none
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `auth.credential_mounts` | enum-scalar | `real` | `real` (default) preserves today's behavior bit-for-bit: `~/.claude.json` and `~/.claude/.credentials.json` are bind-mounted read-write, the per-cage macOS-keychain credential extraction runs, and the symlink-follow synthesis may mount a dotpi-managed `auth.json` symlink's resolved target. `none` means credentials are **not** mounted at all — neither the direct CC/pi mount blocks nor the symlink-follow `auth.json` leaf — and the per-cage keychain extraction is skipped. Intended for cages that obtain credentials via a composed mediator (non-possession posture). |
+
+**Gated as a unit:** `~/.claude.json` (config/trust metadata) and `~/.claude/.credentials.json` (the token secret) are gated together under `none` — both are Claude Code state a non-possession cage shouldn't receive.
+
+**Mount-shape, create-time only:** `auth.credential_mounts` determines what gets bind-mounted at container **create** time; `rc up` on an existing container never re-runs mount setup. Toggling the value between `real` and `none` on a running/stopped cage requires `rc destroy <name> && rc up` — `rc up` aborts loud on a mismatch (a `rc.auth.credential-mounts` container label records the create-time value).
+
+**Not reload-eligible:** `auth.credential_mounts` affects create-time mounts, not live container state — `rc reload` refuses loud if this field differs from the applied-config snapshot (same posture as `mounts.config_mode` and `mounts.symlinks.*`).
+
+**`rc auth refresh` is unaffected:** the host-side keychain-to-file maintenance command (`rc auth refresh` → `cmd_auth_refresh`) is project-agnostic and always runs regardless of `auth.credential_mounts` — a `none` cage simply never mounts the file it refreshes. See [auth.md](auth.md).
+
+**Distinguishable skip:** under `none`, `rc up` logs a distinct `auth.credential_mounts=none — ... intentionally skipped (non-possession posture)` line at each gated site (CC block, pi block, symlink-follow leaf, keychain extraction) — never the ordinary existence-gated "not found — skipping" warning, so the two states are never confused in the log.
+
+**`:ro` in-cage:** like every other config field, this key lives in `.rip-cage.yaml`, which is shadow-mounted `:ro` in-cage by default (`mounts.config_mode`) — the agent inside the cage cannot self-flip `none` → `real`.
 
 ---
 

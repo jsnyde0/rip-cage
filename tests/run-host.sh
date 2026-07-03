@@ -256,6 +256,7 @@ run_test "${SCRIPT_DIR}/test-multiplexer-composable.sh"        # rip-cage-61al.8
 run_test "${SCRIPT_DIR}/test-mediator-manifest.sh"             # rip-cage-ta1o.5.1: MEDIATOR archetype manifest validation (T1a-T1l host-only)
 run_test "${SCRIPT_DIR}/test-mediator-lifecycle.sh"            # rip-cage-ta1o.5.8: egress-mediator launch seam — host-driven init-mediator.sh launcher + fail-closed uid + ordering (G1/U1/U2/O1 host-only)
 run_test "${SCRIPT_DIR}/test-mediator-validator.sh"           # rip-cage-ta1o.5.3: fail-closed validator bounds MEDIATOR hooks — RIP_CAGE_EGRESS=/iptables/floor-weakening + both build entrypoints (T1a-T1j host-only)
+run_test "${SCRIPT_DIR}/test-credential-mounts.sh"             # rip-cage-seqc.4: config-gated credential mounts — schema / mount-absence / symlink-follow-leaf / fingerprint / extraction-skip / resume-guard (CM1-CM11 host-only)
 run_test "${SCRIPT_DIR}/test-skill-manifest-author.sh" # rip-cage-buuo.4: repo-shipped skill — skill well-formed + cm worked example passes _manifest_validate (SA1-SA7 host-only)
 run_test "${SCRIPT_DIR}/test-claude-concurrency.sh"    # rip-cage-p1p: per-session Claude config isolation (NEEDS_CONTAINER; self-skips if no running cage)
 run_test "${SCRIPT_DIR}/test-cc-managed-settings-probe.sh"  # rip-cage-wlwc.1: D8 CC managed-settings anchor probe — enforces un-suppressibly + deny-wins? (NEEDS_CONTAINER+AUTH; self-skips if no cage or unauthed)

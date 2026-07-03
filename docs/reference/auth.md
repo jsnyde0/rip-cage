@@ -31,6 +31,17 @@ the change immediately via bind mount — no restart needed.
 On Linux (no Keychain), update `~/.claude/.credentials.json` directly. Running
 containers see the change immediately.
 
+### `auth.credential_mounts: none` (non-possession cages)
+
+`rc auth refresh` (and the `_extract_credentials` maintenance it runs) is
+**project-agnostic and unaffected** by `auth.credential_mounts` — it always
+refreshes the host `~/.claude/.credentials.json` file regardless. What
+changes under `auth.credential_mounts: none` is that a cage's `rc up`
+**does not mount** the CC or pi credential files into that container at all
+(and skips the per-cage keychain extraction step), even though the host-side
+refresh keeps maintaining the file for every other (real-mode) cage. See [config.md](config.md) (`auth.credential_mounts` section) for the full
+field reference.
+
 ## Account rotation
 
 If you run multiple Claude Code accounts (e.g., to spread rate limits across profiles), any tool that rewrites `~/.claude/.credentials.json` on the host will propagate to all running containers instantly via the bind mount. No container restart needed.

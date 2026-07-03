@@ -999,9 +999,16 @@ _collect_dangling_symlinks() {
 #   $5  workspace  — workspace path for denylist check (default: ".")
 #                    ADR-023 D2 FIRM: fingerprint reflects post-denylist mount set.
 #                    Denylist-skipped targets are silently excluded from the hash.
+#   $6  cred_mounts — real|none (default: real). F1 (rip-cage-seqc.4): when
+#                    none, excludes the pi_root/auth.json leaf from the hash —
+#                    IDENTICAL predicate to the mount-loop leaf-filter in
+#                    _up_prepare_docker_mounts, so the fingerprint never drifts
+#                    from the honest post-filter mount set (label-lock /
+#                    filter-the-fingerprint-too, mirrors the existing ADR-023 D2
+#                    denylist exclusion above).
 # Output: sha256 hex string on stdout (always; empty set hashes to a fixed value)
 _symlink_follow_fingerprint() {
-  local pi_root="$1" mode="$2" on_dangling="${3:-follow}" scope="${4:-file}" workspace="${5:-.}"
+  local pi_root="$1" mode="$2" on_dangling="${3:-follow}" scope="${4:-file}" workspace="${5:-.}" cred_mounts="${6:-real}"
   # Prepend a policy header so that policy changes produce a different
   # fingerprint even when the scanned symlink set is identical.
   local lines="policy: on_dangling=${on_dangling}, scope=${scope}, mode=${mode}"$'\n'
@@ -1009,6 +1016,12 @@ _symlink_follow_fingerprint() {
     local link target mount_src
     while IFS='|' read -r link target; do
       [[ -z "$link" ]] && continue
+      # F1: identical predicate to the mount-loop leaf-filter — skip the
+      # credential leaf under none so the fingerprint reflects the honest
+      # post-filter mount set.
+      if [[ "$cred_mounts" == "none" && "$link" == "${pi_root}/auth.json" ]]; then
+        continue
+      fi
       # Compute the actual mount source — mirrors the scope branch in the mount loop
       # so the denylist gate and the fingerprint both reflect what actually mounts.
       # ADR-023 D7 FIRM: check/fingerprint the realpath-resolved actual mount source.
@@ -1228,8 +1241,20 @@ _up_prepare_docker_mounts() {
     log "Worktree: mounted main .git/ and corrected .git pointer for ${wt_name}"
   fi
 
-  # Extract OAuth credentials from macOS keychain to file (if on macOS)
-  _extract_credentials || true
+  # auth.credential_mounts (rip-cage-seqc.4): real (default) preserves today's
+  # behavior bit-for-bit. none = non-possession posture — the per-cage keychain
+  # extraction is skipped so the cage never receives a host credential.
+  # _UP_CREDENTIAL_MOUNTS is resolved once on the create path (see cmd_up, near
+  # the rc.symlink-follow-fingerprint label) and consumed here + at every other
+  # gated site below. Callers that don't set it (e.g. legacy paths) default to
+  # "real" so the unset case is byte-identical to today.
+  local _UP_CREDENTIAL_MOUNTS="${_UP_CREDENTIAL_MOUNTS:-real}"
+  if [[ "$_UP_CREDENTIAL_MOUNTS" == "none" ]]; then
+    log "auth.credential_mounts=none — Claude keychain extraction intentionally skipped (non-possession posture)"
+  else
+    # Extract OAuth credentials from macOS keychain to file (if on macOS)
+    _extract_credentials || true
+  fi
 
   # Skills and commands: mount host's ~/.claude/skills and ~/.claude/commands read-only
   # Staged via .rc-context/ so init-rip-cage.sh can symlink them into ~/.claude/
@@ -1291,15 +1316,22 @@ _up_prepare_docker_mounts() {
   fi
 
   # OAuth mounts (read-write, skip if missing to avoid Docker creating empty dirs)
-  if [[ -f "${HOME}/.claude.json" ]]; then
-    _UP_RUN_ARGS+=(-v "${HOME}/.claude.json:/home/agent/.claude.json")
+  # auth.credential_mounts=none (rip-cage-seqc.4): both the .claude.json (config/
+  # trust metadata) and .credentials.json (the token secret) are gated as a UNIT
+  # under non-possession — see design decision note "dot-claude-json under none".
+  if [[ "$_UP_CREDENTIAL_MOUNTS" == "none" ]]; then
+    log "auth.credential_mounts=none — Claude credential mounts (.claude.json + .credentials.json) intentionally skipped (non-possession posture)"
   else
-    log "Warning: ${HOME}/.claude.json not found — skipping mount"
-  fi
-  if [[ -f "${HOME}/.claude/.credentials.json" ]]; then
-    _UP_RUN_ARGS+=(-v "${HOME}/.claude/.credentials.json:/home/agent/.claude/.credentials.json")
-  else
-    log "Warning: ${HOME}/.claude/.credentials.json not found — skipping mount (fine if you are not using Claude Code in this cage)"
+    if [[ -f "${HOME}/.claude.json" ]]; then
+      _UP_RUN_ARGS+=(-v "${HOME}/.claude.json:/home/agent/.claude.json")
+    else
+      log "Warning: ${HOME}/.claude.json not found — skipping mount"
+    fi
+    if [[ -f "${HOME}/.claude/.credentials.json" ]]; then
+      _UP_RUN_ARGS+=(-v "${HOME}/.claude/.credentials.json:/home/agent/.claude/.credentials.json")
+    else
+      log "Warning: ${HOME}/.claude/.credentials.json not found — skipping mount (fine if you are not using Claude Code in this cage)"
+    fi
   fi
 
   # Symlink-follow mount synthesis (rip-cage-c1p.2 / D1-D4 FIRM).
@@ -1347,6 +1379,19 @@ _up_prepare_docker_mounts() {
     }
     while IFS='|' read -r _sfl_link _sfl_target; do
       [[ -z "$_sfl_link" ]] && continue
+
+      # F1 (rip-cage-seqc.4, CRITICAL): auth.credential_mounts=none must also
+      # gate the symlink-follow synthesis path — it is a SECOND, previously-
+      # ungated mount route for the pi credential when auth.json is an
+      # absolute dotpi-managed symlink. Filter the specific credential LEAF
+      # (not the whole scan root: ~/.pi/agent may contain other legitimate
+      # absolute dangling symlinks that must keep mounting under none).
+      # IDENTICAL predicate to the fingerprint filter in _symlink_follow_fingerprint
+      # (B1a) — the two must never diverge (label-lock / filter-the-fingerprint-too).
+      if [[ "$_UP_CREDENTIAL_MOUNTS" == "none" && "$_sfl_link" == "${HOME}/.pi/agent/auth.json" ]]; then
+        log "auth.credential_mounts=none — symlink-follow auth.json leaf intentionally skipped (non-possession posture)"
+        continue
+      fi
 
       # Collision check: target must not be in the FHS reserved set.
       # The target comes from readlink -f (canonical). On macOS, /etc → /private/etc,
@@ -1449,12 +1494,19 @@ _up_prepare_docker_mounts() {
   # cage behaves identically — the explicit set just makes the value visible in `env`.
   # Seed an empty auth.json when absent so the bind mount below always fires (normal path).
   # A dangling symlink is left to the symlink-follow machinery (D1).
-  _ensure_pi_auth_seed
+  # auth.credential_mounts=none (rip-cage-seqc.4): the pi auth.json bind is
+  # gated under non-possession; PI_CODING_AGENT_DIR stays unconditional (it's
+  # a container-local dir pointer, not a host credential mount).
   _UP_RUN_ARGS+=(-e PI_CODING_AGENT_DIR=/home/agent/.pi/agent)
-  if [[ -f "${HOME}/.pi/agent/auth.json" ]]; then
-    _UP_RUN_ARGS+=(-v "${HOME}/.pi/agent/auth.json:/home/agent/.pi/agent/auth.json")
+  if [[ "$_UP_CREDENTIAL_MOUNTS" == "none" ]]; then
+    log "auth.credential_mounts=none — pi credential mount (auth.json) intentionally skipped (non-possession posture)"
   else
-    log "Warning: ${HOME}/.pi/agent/auth.json not mounted (absent and could not be seeded, or a dangling symlink) — pi will require login on first request."
+    _ensure_pi_auth_seed
+    if [[ -f "${HOME}/.pi/agent/auth.json" ]]; then
+      _UP_RUN_ARGS+=(-v "${HOME}/.pi/agent/auth.json:/home/agent/.pi/agent/auth.json")
+    else
+      log "Warning: ${HOME}/.pi/agent/auth.json not mounted (absent and could not be seeded, or a dangling symlink) — pi will require login on first request."
+    fi
   fi
 
   # Pi substrate projection (rip-cage-kstk): mount pi instruction-content assets
@@ -2016,6 +2068,58 @@ _up_resolve_resume_config_mode() {
   fi
 }
 
+# _up_resolve_resume_credential_mounts (rip-cage-seqc.4 / B1) — clone of
+# _up_resolve_resume_config_mode. auth.credential_mounts is a create-time
+# mount-shape decision (which host credential files get bind-mounted); it is
+# not covered by mounts.config_mode's guard. Without this, flipping
+# auth.credential_mounts between create and resume would silently carry the
+# create-time mount shape (a real cage resumed as "none" would keep believing
+# it has no credentials mounted while the container still has them — or vice
+# versa). Missing label (legacy container, pre-seqc.4): treated as "real" (the
+# historical default); if current effective config is also real (or absent),
+# no mismatch.
+# Parameters: $1 name, $2 path
+_up_resolve_resume_credential_mounts() {
+  local _name="$1" _path="$2"
+  local _label
+  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts" }}' "$_name" 2>/dev/null); then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
+    fi
+    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
+    exit 1
+  fi
+  # Empty label = legacy container (pre-seqc.4); treat as "real" (the default,
+  # matches the always-mounted posture of pre-label containers).
+  local _stored_mode
+  if [[ -z "$_label" ]]; then
+    _stored_mode="real"
+  else
+    _stored_mode="$_label"
+  fi
+
+  # Compute current effective auth.credential_mounts from on-disk config.
+  local _eff_result _current
+  _eff_result=$(_load_effective_config "$_path" 2>/dev/null || true)
+  if [[ -z "$_eff_result" ]]; then
+    _current="real"
+  else
+    _current=$(jq -r '.config.auth.credential_mounts // "real"' <<<"$_eff_result" 2>/dev/null || echo "real")
+  fi
+
+  if [[ "$_stored_mode" != "$_current" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Container $_name was created with rc.auth.credential-mounts=${_stored_mode} but current effective config has auth.credential_mounts=${_current}. Credential mounts are immutable on resume — run: rc destroy $_name && rc up $_path to apply the change." "CREDENTIAL_MOUNTS_MOUNT_SHAPE_CHANGED"
+    fi
+    echo "Error: container $_name was created with rc.auth.credential-mounts=${_stored_mode} but current effective config has auth.credential_mounts=${_current}." >&2
+    echo "       Credential mounts are wired at create time; toggling auth.credential_mounts between real and none requires recreating the container." >&2
+    echo "       Run:" >&2
+    echo "         rc destroy $_name" >&2
+    echo "         rc up $_path" >&2
+    exit 1
+  fi
+}
+
 # _up_resolve_resume_symlink_fingerprint -- compare the rc.symlink-follow-fingerprint
 # label on the existing container against the current host state. Abort loud if
 # mismatch (mount-shape change — requires destroy and re-up per D4 FIRM).
@@ -2030,6 +2134,13 @@ _up_resolve_resume_symlink_fingerprint() {
   # Compute current fingerprint — include mode, on_dangling, and scope so that
   # policy changes (not just symlink-set changes) produce fingerprint drift.
   local _sfl_cur_mode="rw" _sfl_cur_on_dangling="follow" _sfl_cur_scope="file"
+  # rip-cage-seqc.4 / B1a call-site 2: also read current effective
+  # auth.credential_mounts so the recomputed fingerprint reflects the SAME
+  # F1 leaf-filter the (immutable) create-time mount set was built with. A
+  # real->none flip then changes this fingerprint too — defense-in-depth
+  # alongside the dedicated _up_resolve_resume_credential_mounts guard (B1),
+  # both fail loud, no silent drift.
+  local _sfl_cur_cred_mounts="real"
   if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "${_path}")" ]]; then
     if command -v yq &>/dev/null; then
       local _sfl_cur_cfg
@@ -2037,18 +2148,22 @@ _up_resolve_resume_symlink_fingerprint() {
         _sfl_cur_mode=$(jq -r '.config.mounts.symlinks.mode // "rw"' <<<"$_sfl_cur_cfg")
         _sfl_cur_on_dangling=$(jq -r '.config.mounts.symlinks.on_dangling // "follow"' <<<"$_sfl_cur_cfg")
         _sfl_cur_scope=$(jq -r '.config.mounts.symlinks.scope // "file"' <<<"$_sfl_cur_cfg")
+        _sfl_cur_cred_mounts=$(jq -r '.config.auth.credential_mounts // "real"' <<<"$_sfl_cur_cfg")
       fi
     fi
   fi
   local _current_fp
-  _current_fp=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_cur_mode" "$_sfl_cur_on_dangling" "$_sfl_cur_scope" "$_path")
+  _current_fp=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_cur_mode" "$_sfl_cur_on_dangling" "$_sfl_cur_scope" "$_path" "$_sfl_cur_cred_mounts")
 
   # Missing label: pre-c1p.2 container. Only block if current state has
   # dangling symlinks (non-trivial fingerprint would mean a new second mount
   # that was never wired into the container).
   if [[ -z "$_stored_fp" ]]; then
     local _empty_fp
-    _empty_fp=$(_symlink_follow_fingerprint "" "rw" "follow" "file" ".")  # empty set fp
+    # B1a call-site 3: pi_root is empty so the loop body never runs and the
+    # cred_mounts filter is INERT here — pass current for signature
+    # consistency only (behavior is identical either way).
+    _empty_fp=$(_symlink_follow_fingerprint "" "rw" "follow" "file" "." "$_sfl_cur_cred_mounts")  # empty set fp
     if [[ "$_current_fp" == "$_empty_fp" ]]; then
       return 0  # Both empty — no mismatch
     fi
@@ -3536,6 +3651,96 @@ _up_init_firewall() {
   fi
 }
 
+# _load_mediator_env_file <path> — appends "-e" "KEY=VALUE" pairs (one per
+# non-blank, non-comment line) to _UP_MEDIATOR_ENV_ARGS. Factored out of the
+# --mediator-env-file CLI branch (rip-cage-seqc.4 / E7) so the config-pointer
+# resolver below can share the same parse logic (DRY).
+_load_mediator_env_file() {
+  local _lmf_path="$1"
+  local _lmf_line
+  while IFS= read -r _lmf_line || [[ -n "$_lmf_line" ]]; do
+    [[ -z "$_lmf_line" || "$_lmf_line" == \#* ]] && continue
+    _UP_MEDIATOR_ENV_ARGS+=(-e "$_lmf_line")
+  done < "$_lmf_path"
+}
+
+# _up_resolve_mediator_env_file <path> <phase> (rip-cage-seqc.4 / B5, F3)
+#
+# network.egress.mediator_env_file is a PERSISTED POINTER to a host env file
+# (never the secret content itself). Without this, an unattended
+# `rc down && rc up` re-launches the mediator with an empty
+# _UP_MEDIATOR_ENV_ARGS (CLI flags are not remembered across invocations) and
+# injection silently no-ops — the autonomy regression F3 exists to close.
+#
+# phase = create|resume selects the fail-mode on a missing file:
+#   create — fail loud, exit 1 (a human is present; a configured pointer to
+#            an absent secret is a misconfiguration worth stopping for).
+#   resume — WARN loud, never exit. On the stopped-resume call site,
+#            `docker start` has already run before this resolver — exiting
+#            here would strand an already-started, half-init container.
+#            Degraded-but-alive: not worse than today's no-flag resume.
+#
+# CLI flags (--mediator-env / --mediator-env-file) always win over the
+# pointer — deterministic precedence, no additive-merge ambiguity.
+#
+# Secret non-leak: this function logs ONLY the pointer path + entry count,
+# NEVER parsed values. Values live solely in _UP_MEDIATOR_ENV_ARGS, which
+# flows ONLY into _up_init_mediator's docker exec -u root -e channel — never
+# docker run, never a --label, never echoed.
+_up_resolve_mediator_env_file() {
+  local _mef_path="$1" _mef_phase="$2"
+
+  # CLI wins: if --mediator-env/--mediator-env-file already populated the
+  # array, the pointer is ignored (deterministic; avoids conflicting pairs).
+  if [[ "${#_UP_MEDIATOR_ENV_ARGS[@]}" -gt 0 ]]; then
+    log "network.egress.mediator_env_file: ignored — CLI --mediator-env/--mediator-env-file already supplied mediator env"
+    return 0
+  fi
+
+  local _mef_pointer="null"
+  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "${_mef_path}")" ]]; then
+    if command -v yq &>/dev/null; then
+      local _mef_cfg
+      if _mef_cfg=$(_load_effective_config "${_mef_path}" 2>/dev/null); then
+        _mef_pointer=$(jq -r '.config.network.egress.mediator_env_file // "null"' <<<"$_mef_cfg")
+      fi
+      unset _mef_cfg
+    fi
+  fi
+  # F4 note: yq is a hard startup dependency (cmd_up's preflight aborts
+  # before any mount/mediator work when a config file exists and yq is
+  # absent) — the command-v-yq else-branch above (implicit default "null")
+  # is unreachable-but-harmless, kept for idiom-consistency with siblings.
+  if [[ -z "$_mef_pointer" || "$_mef_pointer" == "null" ]]; then
+    return 0
+  fi
+
+  if [[ ! -f "$_mef_pointer" ]]; then
+    if [[ "$_mef_phase" == "create" ]]; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        json_error "network.egress.mediator_env_file points at a missing file: ${_mef_pointer}" "MEDIATOR_ENV_FILE_NOT_FOUND"
+      fi
+      echo "Error: network.egress.mediator_env_file points at a missing file: ${_mef_pointer}" >&2
+      exit 1
+    else
+      echo "Warning: network.egress.mediator_env_file points at a missing file: ${_mef_pointer} — the mediator will relaunch WITHOUT the secret and injection will silently no-op. Re-supply --mediator-env, fix the pointer, then 'rc down && rc up' to pick it up." >&2
+      return 0
+    fi
+  fi
+
+  # Perms check: warn loud on group/world-accessible pointer files, but do
+  # NOT refuse (open-question ruling 2). Portable stat across Darwin/Linux.
+  local _mef_perms
+  _mef_perms=$(stat -f '%Lp' "$_mef_pointer" 2>/dev/null || stat -c '%a' "$_mef_pointer" 2>/dev/null || echo "")
+  if [[ -n "$_mef_perms" && "$_mef_perms" != "600" ]]; then
+    echo "Warning: network.egress.mediator_env_file (${_mef_pointer}) is not mode 0600 (found ${_mef_perms}) — the pointer file is group/world-accessible." >&2
+  fi
+
+  _load_mediator_env_file "$_mef_pointer"
+  local _mef_count=$(( ${#_UP_MEDIATOR_ENV_ARGS[@]} / 2 ))
+  log "network.egress.mediator_env_file: loaded ${_mef_count} entr$( [[ "$_mef_count" -eq 1 ]] && echo y || echo ies ) from ${_mef_pointer}"
+}
+
 # _up_init_mediator — root-phase mediator init inside the container.
 # (rip-cage-ta1o.5.8 / ADR-026 D5)
 #
@@ -3546,10 +3751,11 @@ _up_init_firewall() {
 # path and the resume path.
 #
 # The mediator secret channel (_UP_MEDIATOR_ENV_ARGS, populated by --mediator-env
-# KEY=VALUE / --mediator-env-file PATH on the rc up CLI) is passed ONLY into
-# this docker exec -e ..., NEVER into docker run. This ensures the real secret
-# is visible only in the mediator process env, not in PID 1 (agent cannot read
-# it via /proc/1/environ). ADR-001 / ADR-024 D2 / ADR-026 D6.
+# KEY=VALUE / --mediator-env-file PATH on the rc up CLI, or the
+# network.egress.mediator_env_file config pointer — rip-cage-seqc.4) is passed
+# ONLY into this docker exec -e ..., NEVER into docker run. This ensures the
+# real secret is visible only in the mediator process env, not in PID 1 (agent
+# cannot read it via /proc/1/environ). ADR-001 / ADR-024 D2 / ADR-026 D6.
 #
 # Globals read: OUTPUT_FORMAT, RC_MEDIATOR (set in container env by cmd_up),
 #               _UP_MEDIATOR_ENV_ARGS (array of -e KEY=VAL for the mediator exec)
@@ -3564,6 +3770,18 @@ _up_init_mediator() {
   # _UP_MEDIATOR_ENV_ARGS is an array of "-e" "KEY=VAL" pairs set by --mediator-env.
   if [[ "${#_UP_MEDIATOR_ENV_ARGS[@]}" -gt 0 ]]; then
     _med_exec_args+=("${_UP_MEDIATOR_ENV_ARGS[@]}")
+  fi
+  # F2 (rip-cage-seqc.4 / B5a): warn loud when a mediator is composed but no
+  # mediator env was resolved — injection would silently no-op. There is no
+  # rc.mediator LABEL; the container's RC_MEDIATOR env var (threaded at
+  # docker-run time, cmd_up) is the single source of truth on BOTH create and
+  # resume (the cmd_up-local _rc_mediator variable is create-only and out of
+  # scope here). Tool-agnostic message (ADR-005 D12): no mediator name.
+  local _med_sel _med_env_json
+  _med_env_json=$(docker inspect --format '{{json .Config.Env}}' "$_name" 2>/dev/null || echo '[]')
+  _med_sel=$(jq -r '(.[]? // empty) | select(startswith("RC_MEDIATOR=")) | sub("^RC_MEDIATOR="; "")' <<<"$_med_env_json" 2>/dev/null | head -1)
+  if [[ -n "$_med_sel" && "$_med_sel" != "none" && "${#_UP_MEDIATOR_ENV_ARGS[@]}" -eq 0 ]]; then
+    echo "Warning: a mediator is composed for this cage but no mediator env was resolved (no --mediator-env/--mediator-env-file and no network.egress.mediator_env_file) — injection will silently no-op. Set network.egress.mediator_env_file or re-supply --mediator-env." >&2
   fi
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     docker exec "${_med_exec_args[@]}" "$_name" \
@@ -3729,12 +3947,10 @@ cmd_up() {
         if [[ ! -f "$_mef" ]]; then
           echo "Error: --mediator-env-file: file not found: ${_mef}" >&2; exit 1
         fi
-        while IFS= read -r _mef_line || [[ -n "$_mef_line" ]]; do
-          # Skip blank lines and comments.
-          [[ -z "$_mef_line" || "$_mef_line" == \#* ]] && continue
-          _UP_MEDIATOR_ENV_ARGS+=(-e "$_mef_line")
-        done < "$_mef"
-        unset _mef _mef_line
+        # rip-cage-seqc.4 / E7: factored into _load_mediator_env_file (DRY —
+        # the network.egress.mediator_env_file config-pointer resolver shares it).
+        _load_mediator_env_file "$_mef"
+        unset _mef
         ;;
       *) path="$1"; shift ;;
     esac
@@ -4023,6 +4239,9 @@ cmd_up() {
     # A policy change (on_dangling, scope, mode) must block resume regardless of
     # whether the container is stopped or running — the mount shape is immutable.
     _up_resolve_resume_symlink_fingerprint "$name" "$path"
+    # rip-cage-seqc.4 / B1: credential-mounts mount-shape guard applies to
+    # running containers too — same rationale as the two guards above.
+    _up_resolve_resume_credential_mounts "$name" "$path"
     _config_emit_hint "$path" "$name"
     _config_init_emit_tip "$path"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -4110,6 +4329,9 @@ cmd_up() {
     # rip-cage-c1p.2 D4: symlink-follow fingerprint label-lock — abort loud if
     # the dangling-symlink set (or mode) changed since create time.
     _up_resolve_resume_symlink_fingerprint "$name" "$path"
+    # rip-cage-seqc.4 / B1: credential-mounts mount-shape guard — abort loud if
+    # auth.credential_mounts was toggled between real and none since create.
+    _up_resolve_resume_credential_mounts "$name" "$path"
     _UP_SSH_FILTER_ACTIVE="false"
     _up_resolve_ssh_allowlists "$path" "$_rc_ssh_cache_dir"
     # rip-cage-hhh.2: regenerate egress-rules on resume (truncate-then-write;
@@ -4156,6 +4378,11 @@ cmd_up() {
     # A stopped container kills the mediator; resume must re-launch it.
     # Runs AFTER firewall (uid-exemption installed), BEFORE init-rip-cage.sh.
     if [[ "$rc_egress" != "off" ]]; then
+      # rip-cage-seqc.4 / B5 / F3: re-apply the mediator_env_file pointer on
+      # resume too (autonomy fix) — phase=resume warns-and-continues on a
+      # missing file rather than exiting (docker start already ran above;
+      # exiting here would strand an already-started container).
+      _up_resolve_mediator_env_file "$path" "resume"
       _up_init_mediator "$name"
       if [[ "${_UP_MEDIATOR_OK:-true}" == "false" ]]; then
         if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -4357,6 +4584,24 @@ cmd_up() {
     _UP_RUN_ARGS+=(--label "rc.ssh-key-filter=off")
   fi
 
+  # auth.credential_mounts (rip-cage-seqc.4 / E2): resolve the effective value
+  # BEFORE the symlink-follow fingerprint call below (B1a) — the fingerprint's
+  # leaf-filter (F1) must be computed with the SAME credential-mounts value
+  # that determines the mount set, or the create-time fingerprint label would
+  # not match the honest post-filter mount set. _UP_CREDENTIAL_MOUNTS is a
+  # global (not `local`) so _up_prepare_docker_mounts can read it below.
+  _UP_CREDENTIAL_MOUNTS="real"
+  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
+    if command -v yq &>/dev/null; then
+      local _cred_mounts_cfg
+      if _cred_mounts_cfg=$(_load_effective_config "$path" 2>/dev/null); then
+        _UP_CREDENTIAL_MOUNTS=$(jq -r '.config.auth.credential_mounts // "real"' <<<"$_cred_mounts_cfg")
+      fi
+      unset _cred_mounts_cfg
+    fi
+  fi
+  _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts=${_UP_CREDENTIAL_MOUNTS}")
+
   # ADR-021 D7: persist effective mounts.config_mode as a container label so
   # resume can detect ro↔rw mount-shape transitions and abort loud rather than
   # silently presenting a stale mount shape. Mirrors rc.ssh-key-filter pattern.
@@ -4404,7 +4649,7 @@ cmd_up() {
     fi
   fi
   local _sfl_fingerprint
-  _sfl_fingerprint=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_mode_for_fp" "$_sfl_on_dangling_for_fp" "$_sfl_scope_for_fp" "$path")
+  _sfl_fingerprint=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_mode_for_fp" "$_sfl_on_dangling_for_fp" "$_sfl_scope_for_fp" "$path" "$_UP_CREDENTIAL_MOUNTS")
   _UP_RUN_ARGS+=(--label "rc.symlink-follow-fingerprint=${_sfl_fingerprint}")
   unset _sfl_mode_for_fp _sfl_on_dangling_for_fp _sfl_scope_for_fp _sfl_fp_cfg _sfl_fingerprint
 
@@ -4519,6 +4764,9 @@ cmd_up() {
   # rip-cage-ta1o.5.8: mediator launch on create path (F5 / option-a host-driven root launch).
   # Runs AFTER firewall (uid-exemption installed), BEFORE init-rip-cage.sh.
   if [[ "$rc_egress" != "off" ]]; then
+    # rip-cage-seqc.4 / B5 / F3: resolve the mediator_env_file pointer before
+    # launch — phase=create fails loud on a missing file (human present).
+    _up_resolve_mediator_env_file "$path" "create"
     _up_init_mediator "$name"
     if [[ "${_UP_MEDIATOR_OK:-true}" == "false" ]]; then
       if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -6324,6 +6572,8 @@ dcg.packs|additive_list|[]
 dcg.custom_rule_paths|additive_list|[]
 session.multiplexer|selection_list|"none"
 network.egress.mediator|selection_list|"none"
+auth.credential_mounts|selection_list|"real"|real,none
+network.egress.mediator_env_file|scalar|null
 EOF
 }
 

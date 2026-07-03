@@ -991,6 +991,102 @@ test_t45_network_egress_mediator_invalid_aborts() {
 }
 
 # ---------------------------------------------------------------------------
+# auth.credential_mounts + network.egress.mediator_env_file config fields
+# (rip-cage-seqc.4, C3 — confirms the schema additions ride the generic
+# merge/provenance/enum engines with no per-key code).
+# T46: auth.credential_mounts absent ⇒ default "real"
+# T47: auth.credential_mounts: none ⇒ parses from project, prov=project;
+#      project replaces global (selection_list semantics)
+# T48: auth.credential_mounts: bogus ⇒ aborts loud per ADR-021 D3
+# T49: network.egress.mediator_env_file absent ⇒ default null; declared value
+#      parses as a scalar with project provenance
+# ---------------------------------------------------------------------------
+
+test_t46_auth_credential_mounts_default_real() {
+  setup_sandbox "" ""
+  local out val prov
+  out=$(run_rc_config "show --json")
+  val=$(jq -r '.config.auth.credential_mounts // "MISSING"' <<<"$out")
+  prov=$(jq -r '.provenance["auth.credential_mounts"]' <<<"$out")
+  if [[ "$val" == "real" && "$prov" == "default" ]]; then
+    pass "T46 auth.credential_mounts absent ⇒ default 'real', prov=default"
+  else
+    fail "T46 expected val=real prov=default, got val=$val prov=$prov"
+  fi
+  teardown_sandbox
+}
+
+test_t47_auth_credential_mounts_none_parses() {
+  setup_sandbox "" ""
+  cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
+version: 1
+auth:
+  credential_mounts: none
+YAML
+  local out val prov
+  out=$(run_rc_config "show --json")
+  val=$(jq -r '.config.auth.credential_mounts' <<<"$out")
+  prov=$(jq -r '.provenance["auth.credential_mounts"]' <<<"$out")
+  if [[ "$val" == "none" && "$prov" == "project" ]]; then
+    pass "T47 auth.credential_mounts=none parses from project, prov=project"
+  else
+    fail "T47 expected val=none prov=project, got val=$val prov=$prov"
+  fi
+  teardown_sandbox
+}
+
+test_t48_auth_credential_mounts_invalid_aborts() {
+  setup_sandbox "" ""
+  cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
+version: 1
+auth:
+  credential_mounts: bogus
+YAML
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "credential_mounts" "$stderr_file"; then
+    pass "T48 auth.credential_mounts=bogus aborts loud per ADR-021 D3, stderr names field"
+  else
+    fail "T48 expected non-zero exit + stderr naming field, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+test_t49_mediator_env_file_default_null_and_declared() {
+  setup_sandbox "" ""
+  local out val prov
+  out=$(run_rc_config "show --json")
+  val=$(jq -r '.config.network.egress.mediator_env_file' <<<"$out")
+  prov=$(jq -r '.provenance["network.egress.mediator_env_file"]' <<<"$out")
+  if [[ "$val" != "null" || "$prov" != "default" ]]; then
+    fail "T49 expected default null/default, got val=$val prov=$prov"
+    teardown_sandbox
+    return
+  fi
+  teardown_sandbox
+
+  setup_sandbox "" ""
+  cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
+version: 1
+network:
+  egress:
+    mediator_env_file: /home/user/.cage-secrets
+YAML
+  out=$(run_rc_config "show --json")
+  val=$(jq -r '.config.network.egress.mediator_env_file' <<<"$out")
+  prov=$(jq -r '.provenance["network.egress.mediator_env_file"]' <<<"$out")
+  if [[ "$val" == "/home/user/.cage-secrets" && "$prov" == "project" ]]; then
+    pass "T49 network.egress.mediator_env_file absent ⇒ null/default; declared ⇒ scalar parses, prov=project"
+  else
+    fail "T49 expected val=/home/user/.cage-secrets prov=project, got val=$val prov=$prov"
+  fi
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -1040,6 +1136,10 @@ run_test test_t42_session_multiplexer_invalid_aborts
 run_test test_t43_network_egress_mediator_default_none
 run_test test_t44_network_egress_mediator_declared_parses
 run_test test_t45_network_egress_mediator_invalid_aborts
+run_test test_t46_auth_credential_mounts_default_real
+run_test test_t47_auth_credential_mounts_none_parses
+run_test test_t48_auth_credential_mounts_invalid_aborts
+run_test test_t49_mediator_env_file_default_null_and_declared
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

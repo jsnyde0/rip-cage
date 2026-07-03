@@ -12,6 +12,9 @@
 #   M7  Mount-shape lock same-state: label agrees with current config → returns 0
 #   M8  Mount-shape lock missing label (legacy container): treat as "ro" (no break on existing
 #       containers that predate the label, since the shadow-mount would have been added by default)
+#   M9  auth.credential_mounts: none in the project file does NOT perturb the ro shadow-mount
+#       (rip-cage-seqc.4 / C4 — confirms ADR-021 D7 is unaffected by the new key: the agent
+#       cannot self-flip none->real in-cage regardless of which key triggered the read)
 #
 # All tests are host-side only (no live docker container required).
 # M6-M8 stub `docker inspect` via a PATH shim (same idiom as test-ssh-allowlist.sh C20-C22).
@@ -365,8 +368,38 @@ fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
+# M9: auth.credential_mounts: none does NOT perturb the ro shadow-mount
+# (rip-cage-seqc.4 / C4).
+# ---------------------------------------------------------------------------
+setup_sandbox "version: 1
+auth:
+  credential_mounts: none"
+
+_m9_args=""
+set +e
+_m9_args=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  RC_ALLOWED_ROOTS="$TEST_WS" RC_SKIP_KEYCHAIN_EXTRACTION=1 bash -c "
+  source '$RC' 2>/dev/null
+  _UP_RUN_ARGS=()
+  wt_detected=false wt_name= wt_main_git=
+  _UP_CREDENTIAL_MOUNTS='none'
+  _up_prepare_docker_mounts '$TEST_WS' 'test-cage-m9' 2>/dev/null
+  printf '%s\n' \"\${_UP_RUN_ARGS[@]+\${_UP_RUN_ARGS[@]}}\"
+" 2>/dev/null)
+set -e
+
+_expected_shadow="${TEST_WS}/.rip-cage.yaml:/workspace/.rip-cage.yaml:ro"
+if echo "$_m9_args" | grep -qF "$_expected_shadow"; then
+  pass 9 "auth.credential_mounts: none in project file does NOT perturb the ro shadow-mount (still :ro)"
+else
+  fail 9 "auth.credential_mounts: none + ro shadow-mount" \
+    "shadow-mount arg '${_expected_shadow}' not found in run args. Got: $(echo "$_m9_args" | grep -F ".rip-cage.yaml" || echo '(no .rip-cage.yaml args)')"
+fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Results: ${FAILURES} failure(s) out of 8 checks ---"
+echo "--- Results: ${FAILURES} failure(s) out of 9 checks ---"
 exit "$FAILURES"
