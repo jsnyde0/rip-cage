@@ -92,11 +92,22 @@ MUX_HAD_LATEST=0
 # ---------------------------------------------------------------------------
 # rip-cage-l72i.7: DCG+herdr+pi composed fixture (three-conjunction test)
 # Variables for the composed image built from manifest-dcg-herdr-pi.yaml.
+#
+# rip-cage-2mpn: RC_IMAGE override, same shape as tests/test-manifest-tool-
+# init-hook.sh's T2a/T2b (RC_IMAGE="$image_name" ... "$RC" build) and rc's own
+# `IMAGE="${RC_IMAGE:-rip-cage:latest}"` default (rc:45). Default (RC_IMAGE
+# unset) resolves to rip-cage:latest — zero behavior change: the build still
+# tags rip-cage:latest and the existing save/tag/restore dance below still
+# runs. When the caller sets RC_IMAGE to a dedicated tag, the DCGHP build
+# targets that tag DIRECTLY (rc build honors RC_IMAGE natively) and
+# rip-cage:latest is never read or written by the build, so the epic-close
+# gate can run RC_E2E_DCGHP_ONLY=1 without clobbering the daily driver.
 # ---------------------------------------------------------------------------
 DCG_HERDR_PI_FIXTURE="${SCRIPT_DIR}/fixtures/manifest-dcg-herdr-pi.yaml"
 DCG_HERDR_PI_IMAGE=""
 DCG_HERDR_PI_SAVED_LATEST=""
 DCG_HERDR_PI_HAD_LATEST=0
+DCGHP_IMAGE_TAG="${RC_IMAGE:-rip-cage:latest}"
 
 _mux_build_combined_image() {
   if [[ -n "${MUX_COMBINED_IMAGE:-}" ]]; then
@@ -160,10 +171,17 @@ _mux_restore_latest() {
 # ---------------------------------------------------------------------------
 # rip-cage-l72i.7: _dcg_herdr_pi_build_image — build composed DCG+herdr+pi image
 #
-# Mirrors _mux_build_combined_image: saves rip-cage:latest, builds from the
-# composed manifest-dcg-herdr-pi.yaml fixture (HOME override pattern), tags the
-# result, restores the saved image. Called lazily (once) before the three-
-# conjunction test. Idempotent: returns 0 immediately if already built.
+# Builds from the composed manifest-dcg-herdr-pi.yaml fixture (HOME override
+# pattern). Called lazily (once) before the three-conjunction test. Idempotent:
+# returns 0 immediately if already built.
+#
+# rip-cage-2mpn: branches on DCGHP_IMAGE_TAG (RC_IMAGE override, default
+# rip-cage:latest).
+#   - Override set (DCGHP_IMAGE_TAG != rip-cage:latest): rc build targets the
+#     override tag directly; rip-cage:latest is never touched.
+#   - Override unset (default): mirrors _mux_build_combined_image exactly —
+#     saves rip-cage:latest, builds (which tags rip-cage:latest), tags the
+#     result, restores the saved image on build failure.
 # ---------------------------------------------------------------------------
 _dcg_herdr_pi_build_image() {
   if [[ -n "${DCG_HERDR_PI_IMAGE:-}" ]]; then
@@ -176,17 +194,41 @@ _dcg_herdr_pi_build_image() {
 
   local unique_suffix
   unique_suffix="$(date +%s)-$$-dcghp"
+
+  local dcghp_build_home
+  dcghp_build_home=$(mktemp -d)
+  mkdir -p "${dcghp_build_home}/.config/rip-cage"
+  cp "$DCG_HERDR_PI_FIXTURE" "${dcghp_build_home}/.config/rip-cage/tools.yaml"
+  echo "=== Building DCG+herdr+pi composed image (manifest-dcg-herdr-pi.yaml) -> ${DCGHP_IMAGE_TAG} ==="
+
+  # rip-cage-2mpn: RC_IMAGE override path — rc build tags DCGHP_IMAGE_TAG
+  # directly. rip-cage:latest is never inspected/tagged, so there is nothing
+  # to save or restore around this build.
+  if [[ "$DCGHP_IMAGE_TAG" != "rip-cage:latest" ]]; then
+    local dcghp_build_rc=0
+    RC_IMAGE="$DCGHP_IMAGE_TAG" HOME="$dcghp_build_home" XDG_CONFIG_HOME="${dcghp_build_home}/.config" \
+      "$RC" build >/tmp/rc-l72i7-dcghp-build.out 2>&1 || dcghp_build_rc=$?
+    rm -rf "$dcghp_build_home"
+
+    if [[ "$dcghp_build_rc" -ne 0 ]]; then
+      fail "(l72i7) DCG+herdr+pi image build FAILED (see /tmp/rc-l72i7-dcghp-build.out)"
+      echo "FATAL: cannot run l72i7 three-conjunction test without the composed image"
+      return 1
+    fi
+
+    DCG_HERDR_PI_IMAGE="$DCGHP_IMAGE_TAG"
+    pass "(l72i7) DCG+herdr+pi composed image built: ${DCG_HERDR_PI_IMAGE} (RC_IMAGE override — rip-cage:latest untouched)"
+    return 0
+  fi
+
+  # Default path (RC_IMAGE unset): unchanged from prior behavior — rc build
+  # tags rip-cage:latest, so we save/restore it around the build.
   DCG_HERDR_PI_SAVED_LATEST="rip-cage:l72i7-saved-${unique_suffix}"
   DCG_HERDR_PI_HAD_LATEST=0
   if docker image inspect rip-cage:latest >/dev/null 2>&1; then
     docker tag rip-cage:latest "${DCG_HERDR_PI_SAVED_LATEST}" 2>/dev/null && DCG_HERDR_PI_HAD_LATEST=1
   fi
 
-  local dcghp_build_home
-  dcghp_build_home=$(mktemp -d)
-  mkdir -p "${dcghp_build_home}/.config/rip-cage"
-  cp "$DCG_HERDR_PI_FIXTURE" "${dcghp_build_home}/.config/rip-cage/tools.yaml"
-  echo "=== Building DCG+herdr+pi composed image (manifest-dcg-herdr-pi.yaml) ==="
   local dcghp_build_rc=0
   HOME="$dcghp_build_home" XDG_CONFIG_HOME="${dcghp_build_home}/.config" \
     "$RC" build >/tmp/rc-l72i7-dcghp-build.out 2>&1 || dcghp_build_rc=$?
@@ -308,6 +350,16 @@ for _c in "$NONE_CAGE" "$TMUX_CAGE" "$HERDR_CAGE" "$DCG_HERDR_PI_CAGE"; do
   docker volume rm "rc-state-${_c}" >/dev/null 2>&1 || true
 done
 unset _c
+
+# Pre-cleanup: reap orphan l72i7 image tags from prior aborted DCGHP runs
+# (rip-cage-2mpn). rip-cage:l72i7-saved-*/l72i7-dcghp-* are throwaway side-tags
+# normally removed by _dcg_herdr_pi_restore_latest on a clean exit; a killed
+# run (SIGKILL, OOM) can strand one. Reaping is scoped to the l72i7- prefix so
+# it never touches rip-cage:latest or an unrelated image.
+for _orphan_tag in $(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E '^rip-cage:l72i7-(saved|dcghp)-' || true); do
+  docker image rm "$_orphan_tag" >/dev/null 2>&1 || true
+done
+unset _orphan_tag
 
 export RC_ALLOWED_ROOTS="${MUX_TMP}"
 
@@ -1040,7 +1092,10 @@ else
   # Spin up the DCG+herdr+pi cage (multiplexer=herdr for the semantic-status path)
   _create_workspace "$DCG_HERDR_PI_WS" "herdr"
   echo "--- (l72i7) Spinning up DCG+herdr+pi composed cage (${DCG_HERDR_PI_CAGE}) ---"
-  "$RC" up "$DCG_HERDR_PI_WS" </dev/null >/tmp/rc-l72i7-dcghp-up.out 2>&1 || true
+  # rip-cage-2mpn: explicitly thread the built image tag through RC_IMAGE so the
+  # cage boots from DCG_HERDR_PI_IMAGE regardless of what rip-cage:latest points
+  # to (load-bearing when DCGHP_IMAGE_TAG overrides away from rip-cage:latest).
+  RC_IMAGE="$DCG_HERDR_PI_IMAGE" "$RC" up "$DCG_HERDR_PI_WS" </dev/null >/tmp/rc-l72i7-dcghp-up.out 2>&1 || true
   if docker inspect "$DCG_HERDR_PI_CAGE" >/dev/null 2>&1; then
     _L72I7_CAGE_STARTED=true
     pass "(l72i7) DCG+herdr+pi cage started: ${DCG_HERDR_PI_CAGE}"
