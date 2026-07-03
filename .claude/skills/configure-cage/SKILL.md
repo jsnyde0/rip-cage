@@ -1,9 +1,9 @@
 ---
-name: construct-cage
+name: configure-cage
 description: Interviews a human, one question at a time, to compose a rip-cage host manifest (~/.config/rip-cage/tools.yaml) by reading examples/ recipes and hand-writing the tools entries by judgment — no generator script, no setup tool. Covers tool selection, the DCG guard (including its open-vs-locked extension posture), multiplexer choice, egress posture, and the pi provider/model pin. Use when a human says "set up a rip-cage cage", "configure a cage", "which tools/guards for my cage", "compose a rip-cage manifest", or otherwise wants help composing their rip-cage tools.yaml before running rc build.
 ---
 
-# Construct a rip-cage cage
+# Configure a rip-cage cage
 
 You are helping a human compose a rip-cage host manifest (`~/.config/rip-cage/tools.yaml`).
 Your output is a **reviewable YAML file the human can read before `rc build` ever runs** —
