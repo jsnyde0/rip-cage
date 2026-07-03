@@ -1175,6 +1175,16 @@ _up_prepare_docker_mounts() {
   # Workspace mount
   _UP_RUN_ARGS+=(-v "${_path}:/workspace:delegated")
 
+  # Land every in-cage entry mode in the repo, not /home/agent. The image WORKDIR is
+  # /home/agent — correct for build-time RUN/CMD, but /workspace is a runtime-only bind
+  # mount (above) that doesn't exist at build time, so the fix belongs at container-run
+  # time, not in the Dockerfile. Setting the container's runtime working dir here makes
+  # `docker run` AND every subsequent `docker exec` (rc attach, herdr panes, rc exec,
+  # the drover's cage-exec worker spawn) default into the workspace, so bd/git/rg and
+  # all project-relative paths resolve without a per-session `cd /workspace`. Colocated
+  # with the mount so it only applies when /workspace is actually mounted. (rip-cage-0rng)
+  _UP_RUN_ARGS+=(--workdir /workspace)
+
   # ADR-021 D7: .rip-cage.yaml ro shadow-mount.
   # If the project config file exists and effective mounts.config_mode is not "rw",
   # add a more-specific nested :ro bind-mount over /workspace/.rip-cage.yaml.

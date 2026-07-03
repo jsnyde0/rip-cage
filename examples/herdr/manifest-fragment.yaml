@@ -45,7 +45,14 @@ tools:
       # Starts the herdr server in the background. Logs to /tmp/rip-cage-mux-herdr.log.
       # ADR-006 D8: installs coding-agent integrations (pi, claude) via herdr's public CLI.
       # The integration-install loop runs for any agents present on PATH.
-      start: "mkdir -p \"${HOME}/.config/herdr\" && herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 & echo \"[rip-cage] herdr server started (PID=$!)\" && sleep 1 && for _agent in pi claude; do if command -v \"${_agent}\" > /dev/null 2>&1; then _out=$(herdr integration install \"${_agent}\" 2>&1); _rc=$?; if [ \"$_rc\" -eq 0 ]; then echo \"[rip-cage] herdr integration installed: ${_agent}\"; else echo \"[rip-cage] WARNING: herdr integration install ${_agent} failed (exit=${_rc}): ${_out}\" >&2; fi; fi; done"
+      # HERDR_STARTUP_CWD roots herdr's auto-created default workspace. herdr does NOT
+      # use its process cwd or the container WORKDIR for this — unset, it falls back to
+      # $HOME (/home/agent), so the initial agent pane opens outside the repo and bd/git
+      # break. Point it at the workspace so the default pane (and, via new_cwd=follow,
+      # every subsequent pane) starts in the repo. Guarded so a cage with no /workspace
+      # mount still starts herdr. (rip-cage-0rng — pairs with rc's --workdir /workspace,
+      # which covers the non-herdr rc attach/exec entries.)
+      start: "mkdir -p \"${HOME}/.config/herdr\" && { [ -d /workspace ] && export HERDR_STARTUP_CWD=/workspace || true; } && herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 & echo \"[rip-cage] herdr server started (PID=$!)\" && sleep 1 && for _agent in pi claude; do if command -v \"${_agent}\" > /dev/null 2>&1; then _out=$(herdr integration install \"${_agent}\" 2>&1); _rc=$?; if [ \"$_rc\" -eq 0 ]; then echo \"[rip-cage] herdr integration installed: ${_agent}\"; else echo \"[rip-cage] WARNING: herdr integration install ${_agent} failed (exit=${_rc}): ${_out}\" >&2; fi; fi; done"
       # attach: called by rc attach / rc up (ADR-019 D9 control surface).
       # Opens the herdr TUI client; the server was started by 'start'.
       attach: "herdr"
