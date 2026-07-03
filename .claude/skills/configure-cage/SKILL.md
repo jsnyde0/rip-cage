@@ -1,6 +1,6 @@
 ---
 name: configure-cage
-description: Reads dist/default-tools.yaml — the maintained, guaranteed-current default that the published rip-cage image is built from — as the reference base for a host manifest (~/.config/rip-cage/tools.yaml), then proposes deltas for the human's actual situation by judgment: reading the relevant examples/ recipe fragments and hand-writing tools.yaml entries — no generator script, no setup tool, no fixed interview. Carries the 3-layer config mental model (image manifest / global posture / per-project config), reconcile-awareness (a tools.yaml may already exist from a past session — you are probably not starting from zero), and known footguns (DCG's open-extension-discovery residual, pi's headless-throttle) as knowledge to relay by judgment, not gates to force through. Use when a human says "set up a rip-cage cage", "configure a cage", "which tools/guards for my cage", "compose a rip-cage manifest", or otherwise wants help composing their rip-cage tools.yaml before running rc build.
+description: Reads dist/default-tools.yaml — the maintained, guaranteed-current default that the published rip-cage image is built from — as the reference base for a host manifest (~/.config/rip-cage/tools.yaml), then proposes deltas for the human's actual situation by judgment: reading the relevant examples/ recipe fragments and hand-writing tools.yaml entries — no generator script, no setup tool, no fixed interview. Carries the 3-layer config mental model (image manifest / global posture / per-project config), reconcile-awareness (a tools.yaml may already exist from a past session — you are probably not starting from zero), the credential non-possession posture (composing a mediator like iron-proxy so the agent holds a placeholder, never the real secret — opt-in per situation, points to examples/compose-rc-with-iron-proxy.md), and known footguns (DCG's open-extension-discovery residual, pi's headless-throttle) as knowledge to relay by judgment, not gates to force through. Use when a human says "set up a rip-cage cage", "configure a cage", "which tools/guards for my cage", "compose a rip-cage manifest", "keep my credentials out of the cage", or otherwise wants help composing their rip-cage tools.yaml before running rc build.
 ---
 
 # Configure a rip-cage cage
@@ -105,9 +105,12 @@ default, LOCKED opt-in" for the exact mechanism if the human's threat model make
 the autonomy cost.
 
 **pi's headless default can silently throttle.** A fresh headless pi invocation — scripted,
-herdr-spawned, `pi --print` — defaults to resolving the Claude subscription entitlement, and
-Anthropic returns a 400 for third-party apps on that path (rip-cage-tl6q), so an unpinned
-headless pi can simply stop working mid-run with no warning. This only bites once pi is
+herdr-spawned, `pi --print` — with Claude auth in context resolves toward the Claude
+subscription entitlement, and Anthropic returns a 400 for third-party apps on that path
+(rip-cage-tl6q — the same third-party-billing wall the credential non-possession section
+below covers); absent Claude auth, pi's bare CLI default is `--provider google`. Either
+way it isn't a working Anthropic-subscription path, so an unpinned headless pi can simply
+stop working mid-run with no warning. This only bites once pi is
 running unattended/headless — an interactively-driven pi with working subscription auth never
 hits it. The fix is pinning a static-key provider via a `--model <provider/model>` entry in a
 `launch_args` array; the commented example block in
@@ -117,6 +120,49 @@ it is deliberately commented out there because a shipped default must not force 
 on every operator. If the human is heading toward a walk-away or otherwise headless setup,
 [`examples/compose-walk-away-cage.md`](../../../examples/compose-walk-away-cage.md) covers
 this pin as part of that recipe.
+
+## Credential non-possession — composing a mediator for credential safety
+
+By default a cage mounts the human's real credentials, so the agent *possesses* them —
+a prompt-injected agent could exfiltrate them. rip-cage can instead run the agent on a
+**placeholder** while a composed **mediator** (e.g. iron-proxy) injects the real
+credential on egress, so the agent never holds the real secret. This is a *composition*,
+not a new mode — the same schema, opt-in per the human's situation (ADR-026). Reach for
+it when the human wants credential safety under the prompt-injection threat model, or is
+running walk-away / untrusted-content work; leave it off (the simpler default
+mount-everything posture) when the cage never touches anything a compromised agent could
+meaningfully exfiltrate. Both cases are first-class — the point is that the *without-mediator*
+path stays exactly as it is today.
+
+The mechanics are four pieces, and they live — current and copy-paste-ready — in
+[`examples/compose-rc-with-iron-proxy.md`](../../../examples/compose-rc-with-iron-proxy.md);
+read it fresh and copy from it rather than re-deriving here. In brief: `auth.credential_mounts:
+none` (posture config) suppresses the real credential mounts; a MEDIATOR recipe (iron-proxy)
+is composed into the manifest; an `sk-ant-oat`-shaped placeholder token reaches the agent via
+`rc up --env-file`; and the real secret sits in a chmod-600 host file that
+`network.egress.mediator_env_file` points at (re-applied on every up/resume).
+
+What to carry as judgment when someone asks for this — the parts that actually bite
+(validated with the real agent binaries, rip-cage-ahnp, 2026-07-03):
+
+- **Proven for Claude Code, not for pi.** `claude` runs on the placeholder against the
+  Anthropic *subscription* end-to-end. pi is a third-party app and Anthropic refuses
+  subscription billing for it (`400 "third-party apps now draw from your extra usage"`),
+  so pi non-possession needs a static-key provider (e.g. openrouter), not the Anthropic
+  subscription. Don't tell a human "both tools work on your subscription" — they don't.
+- **`auth.credential_mounts` is all-or-nothing** — one toggle covering claude *and* pi
+  together; you cannot mix "claude non-possession, pi possession" in one cage through it.
+- **Node tools need `NODE_EXTRA_CA_CERTS`** pointed at the mediator CA, or they reject the
+  MITM cert with a bare `Connection error` (claude reads the system store; pi and other
+  Node tools don't). Set it in the same non-secret `--env-file` as the placeholder.
+- **The placeholder must contain `sk-ant-oat`** or the tools route it away from the
+  `Authorization: Bearer` header the mediator swaps on.
+- **The real secret is human-minted.** `claude setup-token` prints the token to stdout —
+  never suggest an *agent* run it (that leaks it into the transcript). The human mints it
+  and writes the chmod-600 file themselves.
+
+Relay this when it fits the human's situation, the same as the other footguns — not a
+procedure to push through every cage.
 
 ## Composing by judgment, not by machinery
 

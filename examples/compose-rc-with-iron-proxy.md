@@ -31,6 +31,35 @@ nothing; this is a copyable recipe, not a baked integration.
 
 ---
 
+## What actually works today (worked example: Claude Code on the Anthropic subscription)
+
+The steps below use the concrete case rip-cage validated end-to-end with the **real
+agent binary**: Claude Code holding a placeholder, iron-proxy injecting a real
+`claude setup-token`, drawing on your Max/Pro subscription (rip-cage-ahnp, 2026-07-03).
+
+Two honest scope notes before you invest in this:
+
+- **Claude Code: works, subscription-billed.** A real `claude -p` turn completes on
+  the placeholder; the injected `setup-token` is long-lived (~1yr, no OAuth refresh) and
+  bills against your plan limits because Claude Code is a *first-party* app. This is the
+  recommended, proven configuration.
+- **pi (and other third-party agents on Anthropic): does NOT ride the subscription.**
+  The injection mechanism itself works for pi once you clear two mechanical hurdles
+  (pin an anthropic model — pi defaults to `--provider google`, which a single-host
+  floor blocks — its bare CLI default is `--provider google`; and set `NODE_EXTRA_CA_CERTS`,
+  see step 6). But Anthropic then returns
+  `400 "Third-party apps now draw from your extra usage, not your plan limits"` — it
+  bills third-party apps as metered extra-usage, which a subscription-only account has
+  disabled. This is Anthropic-side billing, not a rip-cage limitation. For pi
+  non-possession, use a **static-key provider** (e.g. openrouter) instead of the
+  Anthropic subscription path, or accept metered extra-usage.
+
+Also note `auth.credential_mounts` is a single all-or-nothing toggle (step 3): it
+suppresses the real Claude **and** pi credentials together — you cannot express
+"claude non-possession, pi possession" in one cage through that key alone.
+
+---
+
 ## How the seam works
 
 ```
@@ -119,24 +148,36 @@ This bakes iron-proxy into the image:
 
 ### 3. Configure the workspace
 
-In the workspace `.rip-cage.yaml`:
+In the workspace `.rip-cage.yaml` (this is the validated non-possession posture):
 
 ```yaml
 version: 1
+auth:
+  # Suppress the real Claude + pi credential mounts (and keychain extraction).
+  # WITHOUT this line the agent still possesses the real credentials — this key is
+  # what makes non-possession real. Default is `real` (today's mount-everything behavior).
+  # All-or-nothing: covers claude AND pi together. Create-time only (a resume flip refuses loud).
+  credential_mounts: none
 network:
   mode: block
   allowed_hosts:
     - api.anthropic.com
-    - httpbin.org
-    # ... other hosts the agent needs
+    # Deliberately NOT platform.claude.com: leaving the OAuth-refresh endpoint
+    # unreachable is defense-in-depth — the in-cage tools must never self-refresh.
   egress:
     mediator: iron-proxy
+    # Persisted pointer to a chmod-600 host file holding the real secret (step 4).
+    # rc re-applies this on every up AND resume, so the cage keeps working unattended.
+    mediator_env_file: /Users/you/.config/rip-cage/anthropic-mediator.env
   http:
     forward_to: "127.0.0.1:8888"
 ```
 
 `network.http.forward_to` tells the router to send allowed HTTP/HTTPS traffic to
 iron-proxy's tunnel listener via HTTP CONNECT, instead of origin-splicing directly.
+`auth.credential_mounts: none` is what suppresses the real credentials so the agent
+holds only the placeholder (step 5). `.rip-cage.yaml` is read-only inside the cage
+(ADR-021 D7), so a prompt-injected agent cannot flip `credential_mounts` back to `real`.
 
 `network.egress.mediator: iron-proxy` tells rip-cage to run the MEDIATOR lifecycle
 (start hook at cage init) and is validated against the baked `rc.mediators` label.
@@ -157,21 +198,32 @@ NOT in the agent's environment. This keeps the real secret out of the agent's re
 (it cannot be read via `/proc/self/environ` because iron-proxy runs as `rip-ironproxy`,
 a different uid from `agent`).
 
-**Secret delivery mechanism:** pass the real secret with `rc up --mediator-env`,
-which threads it ONLY into the mediator's process environment — never into the
-container-level env (where the agent could read it via `/proc/1/environ`, since
-PID 1 runs as the `agent` uid):
+**For the Anthropic subscription case, the real secret is a `claude setup-token`** —
+a long-lived (~1yr) `sk-ant-oat01-…` subscription token that never triggers OAuth
+refresh in-cage. **Mint it yourself, on the host** (an agent tool-call would print it
+to stdout and leak it into the transcript):
 
 ```bash
-rc up /path/to/workspace --mediator-env RIPCAGE_MEDIATOR_BEARER_SECRET=sk-real-key-here
-# or from a file not in version control:
-rc up /path/to/workspace --mediator-env-file /path/to/.cage-secrets
+# On the HOST, in your own terminal — not via any agent:
+claude setup-token          # prints the sk-ant-oat01-… token; copy it
+
+# Write the chmod-600 mediator env file, OUTSIDE any workspace
+# (the repo dir bind-mounts into the cage as /workspace):
+umask 077
+printf 'RIPCAGE_MEDIATOR_BEARER_SECRET=%s\n' '<paste-the-setup-token>' \
+  > ~/.config/rip-cage/anthropic-mediator.env
+chmod 600 ~/.config/rip-cage/anthropic-mediator.env
 ```
 
-This must be re-supplied on every `rc up` (including resume after `rc down`) —
-the secret intentionally never persists in the image or container. Same mechanism
-as the mitmproxy recipe; see
-[compose-rc-with-mitmproxy.md](compose-rc-with-mitmproxy.md).
+**Delivery — the persisted pointer (recommended, autonomous):** point
+`network.egress.mediator_env_file` at that file in `.rip-cage.yaml` (step 3). rc reads
+it and threads each `KEY=VALUE` into the mediator via `docker exec -u root -e` into the
+`rip-ironproxy` uid — never into the container-level env — on **every** `rc up` AND
+resume. rc persists only the *path*, never the value. This is the autonomy win: you set
+it once, and unattended restarts keep working.
+
+Ad-hoc alternative (retyped each `rc up`): `rc up <ws> --mediator-env-file /path/to/file`
+or `--mediator-env KEY=VALUE`. Same leak-free `docker exec -e` channel.
 
 **What not to do:** do not use `rc up --env RIPCAGE_MEDIATOR_BEARER_SECRET=...` —
 this injects the secret into the container-level environment, making it readable
@@ -180,44 +232,60 @@ process env only.
 
 ### 5. Configure the agent proxy token
 
-In the agent's environment inside the cage, set the proxy token (not the real secret):
+The agent holds a **placeholder**, never the real secret. `.rip-cage.yaml` has no env
+block — the placeholder is supplied via `rc up --env-file` (a CLI flag). Create a
+non-secret placeholder env file:
 
-```bash
-# In .rip-cage.yaml env block:
-ANTHROPIC_API_KEY=ripcage-placeholder
-# Or any distinct proxy token — never the real key
+```
+# ~/.config/rip-cage/agent-placeholder.env  (NOT secret — a fixed fake token)
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-ripcage-placeholder
+ANTHROPIC_OAUTH_TOKEN=sk-ant-oat01-ripcage-placeholder
 ```
 
-The agent sends `Authorization: Bearer ripcage-placeholder` on its requests.
-iron-proxy's secrets transform intercepts the CONNECT-tunneled request, finds the
-proxy token `ripcage-placeholder` in the Authorization header, and replaces it with
-the real secret from `RIPCAGE_MEDIATOR_BEARER_SECRET` in its process env.
-
-**Note on proxy_value in the config:** the baked `/etc/iron-proxy/proxy.yaml` uses
-a fixed `proxy_value: RIPCAGE_MEDIATOR_PLACEHOLDER_VALUE` sentinel. Replace this
-with the actual proxy token string (e.g., `ripcage-placeholder`) before running
-`rc build`. The proxy token is not a secret — it just needs to match what the agent
-sends. For multi-cage deployments, generate a distinct token per cage and bake it
-in at build time (or render the config template at cage init).
-
-### 6. CA trust (automatic)
-
-iron-proxy MITM-terminates TLS using the CA generated at build time. The agent's
-HTTPS client must trust this CA to avoid certificate verification errors — and the
-MEDIATOR manifest entry's `ca_cert_path: /etc/iron-proxy/ca.crt` makes this
-**automatic**: the root-phase launcher (`init-mediator.sh`) installs that CA into
-the cage trust store (`update-ca-certificates`) when the mediator starts. No manual
-step is needed.
-
-Manual fallback (only if you removed `ca_cert_path`):
-
 ```bash
-# Inside the cage (via rc exec <cage>):
-cp /etc/iron-proxy/ca.crt /usr/local/share/ca-certificates/iron-proxy-ca.crt
-update-ca-certificates
-# For Node.js (Claude Code):
-export NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/iron-proxy-ca.crt
+rc up /path/to/workspace --env-file ~/.config/rip-cage/agent-placeholder.env
 ```
+
+**The placeholder MUST be `sk-ant-oat01-…`-shaped.** Claude Code and pi route a token
+to the OAuth/Bearer branch (`Authorization: Bearer …`) only when its string contains
+`sk-ant-oat`; a differently-shaped placeholder would be sent as `x-api-key` instead,
+and iron-proxy's `match_headers: [Authorization]` swap would miss it. `CLAUDE_CODE_OAUTH_TOKEN`
+is honored by Claude Code; `ANTHROPIC_OAUTH_TOKEN` by pi. With `auth.credential_mounts: none`
+(step 3) suppressing the real credential files, these env tokens become the active auth
+(a mounted `auth.json`/`.credentials.json` would otherwise win over the env).
+
+**Match `proxy_value` in the baked config.** The shipped
+`/etc/iron-proxy/proxy.yaml` uses a generic `proxy_value: RIPCAGE_MEDIATOR_PLACEHOLDER_VALUE`
+sentinel — change it to this exact placeholder string (`sk-ant-oat01-ripcage-placeholder`)
+before `rc build`, so the secrets transform recognizes what the agent sends. The
+placeholder is not a secret; it just has to match on both sides.
+
+### 6. CA trust — system store is automatic, but Node tools need one more env var
+
+iron-proxy MITM-terminates TLS using the CA generated at build time. Every HTTPS
+client in the cage must trust that CA or the handshake fails.
+
+- **System trust store: automatic.** The MEDIATOR entry's
+  `ca_cert_path: /etc/iron-proxy/ca.crt` makes `init-mediator.sh` install the CA via
+  `update-ca-certificates` at cage start. This covers `curl` and **Claude Code** (it
+  reads the system store) — no manual step, and this is why `claude` works out of the box.
+
+- **Node tools (pi, and any Node-based agent): NOT covered by the above.** Node's
+  default TLS uses its own bundled CA store and **ignores the system store**, so even
+  with `ca_cert_path` set, a Node client rejects the MITM cert with
+  `SELF_SIGNED_CERT_IN_CHAIN` — surfaced as a generic `Connection error`. You must point
+  Node at the mediator CA explicitly via `NODE_EXTRA_CA_CERTS`. Add it to the same
+  `--env-file` as the placeholder (step 5), since it's not a secret:
+
+  ```
+  # append to ~/.config/rip-cage/agent-placeholder.env
+  NODE_EXTRA_CA_CERTS=/etc/iron-proxy/ca.crt
+  ```
+
+  (Validated: with this unset a raw `node` POST to a MITM'd host fails
+  `SELF_SIGNED_CERT_IN_CHAIN`; set to the mediator CA it returns 200 — rip-cage-ahnp.)
+  A seam-level fix that would export this automatically from the manifest `ca_cert_path`
+  is tracked in **rip-cage-yid0**; until it lands, set it here.
 
 ### 7. Start the cage
 
@@ -246,29 +314,36 @@ root-phase step, sibling to `init-firewall.sh`):
 
 ### 8. Verify the injection is working
 
-From inside the cage (via `rc exec <cage>`):
+From inside the cage (via `rc exec <cage>`). **Do not verify by echoing the injected
+header to an echo service** (e.g. `httpbin.org/headers`) — that would print the *real*
+secret to your terminal. Verify by *outcome* instead:
 
 ```bash
-# The agent env has only the proxy token:
-echo $ANTHROPIC_API_KEY   # → ripcage-placeholder
+# 1. Agent holds ONLY the placeholder:
+echo $CLAUDE_CODE_OAUTH_TOKEN   # → sk-ant-oat01-ripcage-placeholder
 
-# Confirm the router is on-path (force-through guarantee):
-curl -v http://selftest.rip-cage.internal/ 2>&1 | grep x-rip-cage-selftest
+# 2. A real agent turn succeeds (proves injection end-to-end, no secret printed):
+claude -p "Reply with exactly: RCOK" --model claude-haiku-4-5-20251001   # → RCOK
 
-# Confirm credential injection: the echo shows the REAL secret, not the proxy token.
-# (httpbin.org/headers echoes back all request headers)
-curl -H "Authorization: Bearer ripcage-placeholder" https://httpbin.org/headers
+# 3. Negative control — a bearer iron-proxy will NOT swap must be rejected,
+#    proving the success above is load-bearing on the injection:
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://api.anthropic.com/v1/messages \
+  -H "Authorization: Bearer sk-ant-oat01-not-the-placeholder" \
+  -H "anthropic-beta: oauth-2025-04-20" -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  --data '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}'
+  # → 401
 
-# Expected: Authorization header in response body contains "Bearer sk-ant-real-key..."
-# NOT "Bearer ripcage-placeholder"
+# 4. Floor still holds — a non-allowlisted host is refused even with the mediator up:
+curl -s -o /dev/null -w '%{http_code}\n' --max-time 10 https://example.org   # → 000/refused
 
-# Confirm the floor still holds — a non-allowlisted host is still denied:
-curl https://evil.example.com 2>&1   # → connection refused (router blocks at destination)
+# 5. Non-possession — the real secret is NOT in the agent's reach:
+cat /proc/1/environ | tr '\0' '\n' | grep RIPCAGE_MEDIATOR_BEARER_SECRET   # → (empty)
 ```
 
-The iron-proxy structured audit log (`/tmp/rip-cage-mediator-iron-proxy.log`) shows
-each proxied request with the full transform pipeline result, including which secrets
-were swapped and which requests were blocked.
+The iron-proxy structured audit log (`/tmp/rip-cage-mediator-iron-proxy.log`, readable
+only as root) shows each proxied request and its transform result (`secrets` → `allow`)
+without printing secret values — that's the safe place to confirm the swap fired.
 
 ### 9. Troubleshooting
 
@@ -277,12 +352,19 @@ were swapped and which requests were blocked.
 - **Proxy token not replaced**: Confirm `RIPCAGE_MEDIATOR_BEARER_SECRET` is set in
   iron-proxy's process env (NOT the agent env). Check the audit log for the
   `secrets` transform trace — it logs which secrets were swapped and why.
-- **TLS errors / CERT_VERIFY_FAILED**: iron-proxy's generated CA cert is at
-  `/etc/iron-proxy/ca.crt`. Trust it inside the cage:
-  ```bash
-  cp /etc/iron-proxy/ca.crt /usr/local/share/ca-certificates/iron-proxy-ca.crt
-  update-ca-certificates
-  ```
+- **`SELF_SIGNED_CERT_IN_CHAIN` / a bare `Connection error` from a Node tool (pi)**:
+  Node ignores the system CA store. Set `NODE_EXTRA_CA_CERTS=/etc/iron-proxy/ca.crt` in
+  the agent env (step 6) — this is required even though `update-ca-certificates` ran.
+  `curl` and Claude Code work without it; pi and other Node tools do not.
+- **pi returns `400 "Third-party apps now draw from your extra usage…"`**: not a
+  rip-cage bug — Anthropic bills third-party apps (pi) as metered extra-usage, not
+  against your subscription plan, and a subscription-only account has that disabled.
+  The setup-token subscription path is Claude-Code-only. Use a static-key provider
+  (openrouter) for pi non-possession, or enable extra-usage. Also make sure pi is pinned
+  to an anthropic model (`--provider anthropic`) — its default `--provider google` is
+  blocked by a single-host floor and also surfaces as `Connection error`.
+- **Other TLS errors / CERT_VERIFY_FAILED** (non-Node clients): iron-proxy's CA is at
+  `/etc/iron-proxy/ca.crt`; confirm `init-mediator.sh` ran `update-ca-certificates`.
 - **Port conflict**: The tunnel listener MUST be on a port distinct from the rip-cage
   router's own listen port (`127.0.0.1:8080`). `8888` (the router's
   `_MEDIATOR_DEFAULT_PORT`) is the recommended default. If `8888` is also taken,
