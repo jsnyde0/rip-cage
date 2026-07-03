@@ -197,10 +197,10 @@ tools:
     egress: []
     mounts:
       - host: "${ro_src}"
-        dest: "/opt/probe-ro"
+        dest: "/home/agent/probe-ro"
         mode: ro
       - host: "${rw_src}"
-        dest: "/opt/probe-rw"
+        dest: "/home/agent/probe-rw"
         mode: rw
 YAML
 
@@ -222,14 +222,14 @@ YAML
   fi
 
   # Assert ro mount emits :ro suffix.
-  if echo "$mount_args" | grep -q ":/opt/probe-ro:ro"; then
+  if echo "$mount_args" | grep -q ":/home/agent/probe-ro:ro"; then
     pass "SI2 mount seam: arbitrary TOOL '${probe_name}' ro mount emits ':ro' suffix — mount seam-purity PROVEN"
   else
     fail "SI2 mount seam: arbitrary TOOL '${probe_name}' ro mount does NOT emit ':ro' suffix. mount_args='${mount_args}'"
   fi
 
   # Assert rw mount emits :rw suffix.
-  if echo "$mount_args" | grep -q ":/opt/probe-rw:rw"; then
+  if echo "$mount_args" | grep -q ":/home/agent/probe-rw:rw"; then
     pass "SI2 mount seam: arbitrary TOOL '${probe_name}' rw mount emits ':rw' suffix — mount seam-purity PROVEN"
   else
     fail "SI2 mount seam: arbitrary TOOL '${probe_name}' rw mount does NOT emit ':rw' suffix. mount_args='${mount_args}'"
