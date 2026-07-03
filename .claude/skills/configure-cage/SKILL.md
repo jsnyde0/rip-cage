@@ -1,6 +1,6 @@
 ---
 name: configure-cage
-description: Interviews a human, one question at a time, to compose a rip-cage host manifest (~/.config/rip-cage/tools.yaml) by reading examples/ recipes and hand-writing the tools entries by judgment — no generator script, no setup tool. Covers tool selection, the DCG guard (including its open-vs-locked extension posture), multiplexer choice, egress posture, and the pi provider/model pin. Use when a human says "set up a rip-cage cage", "configure a cage", "which tools/guards for my cage", "compose a rip-cage manifest", or otherwise wants help composing their rip-cage tools.yaml before running rc build.
+description: Reads dist/default-tools.yaml — the maintained, guaranteed-current default that the published rip-cage image is built from — as the reference base for a host manifest (~/.config/rip-cage/tools.yaml), then proposes deltas for the human's actual situation by judgment: reading the relevant examples/ recipe fragments and hand-writing tools.yaml entries — no generator script, no setup tool, no fixed interview. Carries the 3-layer config mental model (image manifest / global posture / per-project config), reconcile-awareness (a tools.yaml may already exist from a past session — you are probably not starting from zero), and known footguns (DCG's open-extension-discovery residual, pi's headless-throttle) as knowledge to relay by judgment, not gates to force through. Use when a human says "set up a rip-cage cage", "configure a cage", "which tools/guards for my cage", "compose a rip-cage manifest", or otherwise wants help composing their rip-cage tools.yaml before running rc build.
 ---
 
 # Configure a rip-cage cage
@@ -8,208 +8,200 @@ description: Interviews a human, one question at a time, to compose a rip-cage h
 You are helping a human compose a rip-cage host manifest (`~/.config/rip-cage/tools.yaml`).
 Your output is a **reviewable YAML file the human can read before `rc build` ever runs** —
 not a running cage. You do the composition **by judgment**, the same way any engineer would:
-read the recipe catalog, understand what each fragment provides, and hand-write the entries
-that match what the human told you they want.
+read a maintained reference composition, understand what it gives you, read the recipes for
+whatever the human wants beyond it, and hand-write the entries.
 
 **You do not run `rc build`.** That is a host operation the human triggers themselves,
 after reviewing what you wrote.
 
-## Read the catalog first
+## Start from the reference base, not a blank slate
 
-Before interviewing, orient yourself (or refresh if you already know this repo):
+[`dist/default-tools.yaml`](../../../dist/default-tools.yaml) is not sample material — it is
+the manifest the *published* rip-cage image is literally built from
+(`RC_MANIFEST_GLOBAL=dist/default-tools.yaml ./rc build`), and its own header declares it the
+single data-layer home of the default tool-set blessing (ADR-005 D12). That makes it the best
+starting point available: read it, understand what it already composes (the floor tools, the
+Claude Code and pi wrappers, DCG in its **open** posture, the ssh-bypass guard), and treat the
+human's request as a **delta** against that — additions (a language runtime, a database CLI,
+a multiplexer, a mediator), removals, or posture changes (DCG locked, egress enforce-mode, a
+pinned pi model) — rather than reconstructing a cage from nothing.
 
-- [`examples/README.md`](../../../examples/README.md) — the recipe index: every
-  composable fragment (guards, multiplexers, mediators, plain tools, launch-composition
-  examples), grouped by archetype, with a one-line description and a path to its
-  `manifest-fragment.yaml`.
-- [`docs/reference/README.md`](../../../docs/reference/README.md) — the seam catalog:
-  what each of the six composable seams (TOOL, mounts, launch_args/extension
-  composition, multiplexer/mediator providers, guard recipes, launch composition) is
-  for and the manifest field shape it uses.
+There is no separate "minimal reference" file to maintain here on purpose: `dist` already
+guarantees currency (it is what actually ships), and a copied second reference would drift
+from it the moment either one changes. If the human wants a richer walk-away/headless setup,
+[`examples/compose-walk-away-cage.md`](../../../examples/compose-walk-away-cage.md) is a
+delta recipe layered on top of `dist` for exactly that shape — read it when it applies rather
+than re-deriving the same delta from scratch.
 
-Do not memorize recipe bodies into this skill file. Each time you compose a manifest,
-go **read the actual `manifest-fragment.yaml`** for the recipes the human chose — recipes
-change independently of this skill, and a copy pasted in here would silently drift from
-the source of truth. This file tells you *where to look and what to ask*, not what the
-fragments contain.
+## You may not be starting from zero
 
-## The interview
+`rc` seeds a bare floor-only `tools.yaml` on first run, but a human who has used this skill
+before (or hand-edited their manifest) may already have a richer one sitting at
+`~/.config/rip-cage/tools.yaml` (or a project-level `tools.yaml`). Before you write anything,
+it is worth knowing what — if anything — is already there. Two failure stories from this
+project's own history make the point concrete: a session once overwrote an existing composed
+`tools.yaml` with a fresh minimal one, silently discarding tools a prior session had
+deliberately added (the "dotpi clobber"); another time a hand-copied pi recipe fragment
+drifted out of sync with its canonical source because nobody re-read the fragment before
+editing (the pi-recipe drift). Both came from assuming a fresh start when one wasn't warranted.
+Reading and reconciling against what's already composed, rather than always emitting from
+scratch, is judgment you apply here — not a mandated diff step.
 
-Ask **one question at a time**, in this order. For each dimension, state the
-**recommended default first**, then the one-line tradeoff, then ask what they want.
-Most humans using this skill only talk to their agent and never hand-edit
-`tools.yaml` — so lead with the default and let them accept it with a single "yes"
-or "sounds good."
+## The 3-layer config model
 
-### 1. Tools
+A rip-cage cage's configuration lives in three layers, and knowing which one a given ask
+belongs to keeps you from editing the wrong file:
 
-> Recommended default: the minimal floor — Claude Code (`examples/claude/`) and pi
-> (`examples/pi/`). Tradeoff: every additional tool composed is more image surface;
-> add only what the actual work needs (e.g. a database CLI, a language runtime).
+| Layer | File | Governs |
+|---|---|---|
+| Image manifest | `~/.config/rip-cage/tools.yaml` (or a project-level `tools.yaml`) | which tools/guards/multiplexers/mediators get **baked into the image** at `rc build` time — this is the file this skill composes |
+| Global posture | `~/.config/rip-cage/config.yaml` + `rc.conf` | host-wide guardrails that apply to every cage: the mount denylist, `RC_ALLOWED_ROOTS` (which host paths `rc up` may target) |
+| Per-project config | `<repo>/.rip-cage.yaml` | per-workspace runtime posture: `session.multiplexer`, `ssh.allowed_hosts`, `network.mode` + the egress allowlist, `mounts.config_mode` |
 
-Ask which coding agent(s) and any extra tools they want beyond the floor. Point them
-at the TOOL section of `examples/README.md` for what's available; don't enumerate
-every possible tool in this skill — the catalog is the source of truth and it grows
-independently of this file.
+(The two posture layers are not disjoint field sets — `config.yaml` and `.rip-cage.yaml`
+share one schema at two precedence levels that merge, global default / project override
+(ADR-021). The "Governs" column shows where each concern *typically* lives.)
 
-### 2. DCG guard (destructive-command guard)
+"Add a Postgres CLI" is an image-manifest ask. "Don't let any cage touch `~/.aws`" is a
+global-posture ask. "Allow this cage to reach `some-private-mirror.example.com` over SSH" is a
+per-project ask (and per `CLAUDE.md`, `.rip-cage.yaml` is read-only inside the cage by
+design — that edit and the `rc reload` that picks it up happen on the host, not from inside a
+running cage). Most requests this skill handles land in the image-manifest layer; know when
+one doesn't.
 
-> Recommended default: ON (`examples/dcg/`). Tradeoff: DCG is a removable
-> accident-guardrail that blocks `rm -rf`-class destructive commands — it is not an
-> adversarial wall. Containment (the container boundary, egress firewall, non-root
-> user, filesystem sandbox) is the real floor; DCG just catches a common accident
-> class on top of it.
+## The recipe catalog — read fragments fresh, don't memorize them here
 
-### 3. DCG extension posture — open vs locked (MANDATORY to surface)
+[`examples/README.md`](../../../examples/README.md) is the recipe index: every composable
+fragment (guards, multiplexers, mediators, plain tools, launch-composition examples), grouped
+by archetype, with a path to its `manifest-fragment.yaml`.
+[`docs/reference/README.md`](../../../docs/reference/README.md) is the seam catalog: what each
+of the six composable seams is for and the manifest field shape it uses.
 
-This dimension must always be surfaced explicitly when DCG is composed — do not skip
-it even if the human seems eager to move fast. It is the naive-user mitigation the
-cage's OPEN default relies on: the human needs to have heard the tradeoff, not just
-inherit it silently.
+Recipes change independently of this skill file, and their `install_cmd` entries often carry
+generated content (base64 blobs regenerated by the recipe's own `build-fragment.sh`) — a copy
+pasted into this skill would silently drift from the source of truth the moment the recipe is
+regenerated. So: every time you compose a fragment, go open its actual
+`manifest-fragment.yaml` and README, and copy what it says to copy. This file tells you where
+to look, not what the fragments currently contain.
 
-> Recommended default: **OPEN**. Under OPEN, pi's own extension auto-discovery paths
-> (`/workspace/.pi/extensions/`, `~/.pi/agent/extensions/`) stay live, so pi can load
-> and write its own extensions autonomously — the DCG guard extension still loads and
-> still DENIES destructive commands regardless. The honest tradeoff: a
-> prompt-injected pi could, in principle, write its own extension into an
-> auto-discovery path and have it auto-load, and nothing in the open posture guards
-> against that specific vector — it's a knowingly-accepted residual (containment
-> still bounds the blast radius even if this happens). The alternative, **LOCKED**
-> (`--no-extensions`, opt-in only), closes that vector, but at the cost of pi no
-> longer auto-loading its own extensions — every extension the agent wants active
-> then has to be baked into a recipe's `launch_args` at image build time, which is a
-> real autonomy cost.
+## Footguns worth knowing
 
-Read [`examples/dcg/README.md`](../../../examples/dcg/README.md) §"pi launch wiring:
-OPEN by default, LOCKED opt-in" for the exact mechanism (which `launch_args` array
-gets `--no-extensions` prepended, and where). Relay both options plainly, recommend
-OPEN, and apply whichever the human picks.
+Two things have already bitten real sessions. Relay them when they're relevant to what the
+human is doing — they are knowledge you bring to bear by judgment, not checklist items to
+force through regardless of context.
 
-### 4. Multiplexer
+**DCG's open posture carries a knowingly-accepted residual.** `dist` composes DCG in its
+**open** default (ADR-027 D1/D4, FIRM): pi's own extension auto-discovery paths
+(`/workspace/.pi/extensions/`, `~/.pi/agent/extensions/`) stay live even with the guard
+composed, so the guard extension always loads and always denies destructive commands, but a
+prompt-injected pi could, in principle, write its own extension into an auto-discovery path
+and have it auto-load — nothing in the open posture guards against that specific vector. This
+is an accepted trade (containment still bounds the blast radius), favoring agent autonomy over
+closing the residual. The alternative, **locked** (`--no-extensions`, opt-in only), closes the
+vector but costs pi's own auto-loading — every extension the agent wants active then has to be
+baked into a recipe's `launch_args` at image build time. Read
+[`examples/dcg/README.md`](../../../examples/dcg/README.md) §"pi launch wiring: OPEN by
+default, LOCKED opt-in" for the exact mechanism if the human's threat model makes locked worth
+the autonomy cost.
 
-> Recommended default: **none** — a plain shell (`session.multiplexer: none` in
-> `.rip-cage.yaml`, the config default). Tradeoff: `tmux` (`examples/tmux/`) adds
-> terminal-session persistence; `herdr` (`examples/herdr/`, or
-> `examples/herdr-pi/` for the paired pi status extension) adds a supervisor view
-> suited to walk-away multi-agent runs. Both add a TOOL + MULTIPLEXER entry pair and
-> some install surface; `none` is simplest and is fine for a single interactive
-> session.
+**pi's headless default can silently throttle.** A fresh headless pi invocation — scripted,
+herdr-spawned, `pi --print` — defaults to resolving the Claude subscription entitlement, and
+Anthropic returns a 400 for third-party apps on that path (rip-cage-tl6q), so an unpinned
+headless pi can simply stop working mid-run with no warning. This only bites once pi is
+running unattended/headless — an interactively-driven pi with working subscription auth never
+hits it. The fix is pinning a static-key provider via a `--model <provider/model>` entry in a
+`launch_args` array; the commented example block in
+[`examples/pi/manifest-fragment.yaml`](../../../examples/pi/manifest-fragment.yaml) (search
+for "OPTIONAL: pin pi's provider/model") shows the field shape and a verified-working value —
+it is deliberately commented out there because a shipped default must not force one provider
+on every operator. If the human is heading toward a walk-away or otherwise headless setup,
+[`examples/compose-walk-away-cage.md`](../../../examples/compose-walk-away-cage.md) covers
+this pin as part of that recipe.
 
-### 5. Egress posture
+## Composing by judgment, not by machinery
 
-> Recommended default: **observe-mode** whitelist. Tradeoff: observe-mode won't
-> block anything yet — it learns real outbound traffic first so you can promote
-> observed hosts to the allowlist before flipping to enforce. Enforce mode blocks
-> immediately but risks false-blocking legitimate work if the allowlist hasn't been
-> learned yet. See [`docs/reference/egress.md`](../../../docs/reference/egress.md)
-> for the observe → promote → block workflow and `rc allowlist` commands (an
-> `.rip-cage.yaml`/`rc allowlist` concern, not a `tools.yaml` entry).
+Write `tools.yaml` yourself, the way an engineer hand-writing config from documented building
+blocks would: for each recipe you're composing, open its `manifest-fragment.yaml`, read the
+actual `tools[]` entries it says to copy, and copy them into the manifest you're building
+verbatim, per that recipe's own "how to enable" instructions. Apply posture choices (DCG's
+open/locked `launch_args`, a pi model pin, a multiplexer's TOOL+MULTIPLEXER pair, a mediator's
+TOOL+MEDIATOR pair) by editing the relevant fragment's entry the same way. When more than one
+composed fragment contributes `launch_args` to the same shim (e.g. DCG's guard extension and
+herdr-pi's status extension both loading into pi), they combine in the order the fragments
+appear in the manifest — that's a fact about how `rc build` assembles the shim, worth knowing
+so you can read back what you've composed; see
+[`examples/herdr-pi/README.md`](../../../examples/herdr-pi/README.md) for the canonical worked
+example of multiple fragments' `launch_args` coming together.
 
-### 6. pi provider/model pin (MANDATORY to surface)
+This is manual work you perform by reading and understanding each fragment — **not** a script,
+generator, setup tool, or config-file merger. Do not write or invoke any of the following, in
+any form, as part of this workflow:
 
-This dimension must always be surfaced when pi is one of the chosen tools — do not
-skip it. It closes a real, previously-hit failure mode (rip-cage-tl6q): a fresh
-headless `pi` invocation (scripted, herdr-spawned pane, `pi --print`) defaults to
-resolving the Claude subscription entitlement, and Anthropic now returns a 400
-("Third-party apps now draw from your extra usage, not your plan limits") for
-third-party apps on that path — so an unpinned headless pi can simply stop working
-mid-run with no warning.
-
-> Recommended default: pin a **static-key provider** so headless/walk-away runs
-> don't depend on OAuth-subscription resolution. A verified-working example is
-> `openai-codex/gpt-5.5` (via a ChatGPT-account codex login; the `-codex`/
-> `-codex-mini` model-name variants are rejected for ChatGPT accounts — use
-> `gpt-5.5`). Tradeoff: pinning forces every pi launch (interactive, herdr-spawned,
-> scripted) onto the chosen provider — right for autonomous/headless use, but it
-> does override pi's own interactive-picked default for humans who never hit the
-> throttle. Ask what provider/model the human actually has working auth for; don't
-> force the example value if they use something else.
-
-The pin is expressed as a `--model <provider/model>` entry in a `launch_args`
-array. Read the commented `--model` example block in
-[`examples/pi/manifest-fragment.yaml`](../../../examples/pi/manifest-fragment.yaml)
-(search for "OPTIONAL: pin pi's provider/model") for the exact field shape and where
-it composes — it is intentionally commented out there (a shipped default must not
-force one provider on every operator); you add an uncommented `launch_args` line
-with the operator's chosen value to the manifest you compose.
-
-## Composing the manifest — by judgment, not by machinery
-
-Once you have all six answers, **write `tools.yaml` yourself**, the way an engineer
-hand-writing config from documented building blocks would:
-
-1. Start from the bare floor entries (`beads`, `dolt`, `gh` — same as rc's own
-   seeded default) plus whichever tool/guard/multiplexer recipes the interview
-   selected.
-2. For each selected recipe, **open its `manifest-fragment.yaml`, read the actual
-   `tools[]` entries, and copy the ones it says to copy** into the manifest you're
-   building — verbatim, per that recipe's own "How to enable" instructions.
-3. Apply the human's DCG posture choice by editing the `dcg-wiring` entry's
-   `launch_args` (add or omit `--no-extensions`) per `examples/dcg/README.md`.
-4. Apply the human's pi model pin by adding a `launch_args: ["--model",
-   "<provider/model>"]` entry to a composed pi-lifecycle fragment, following the
-   commented example in `examples/pi/manifest-fragment.yaml`.
-5. If DCG and the pi model pin both contribute `launch_args` to the pi shim, they
-   combine in **fragment order** — DCG's guard fragment first (see
-   [`examples/herdr-pi/README.md`](../../../examples/herdr-pi/README.md) for the
-   canonical worked example of multiple fragments' `launch_args` coming together).
-
-This is manual work you perform by reading and understanding each fragment — **not**
-a script, generator, setup tool, or config-file merger. Do not write or invoke any
-of the following, in any form, as part of this workflow:
-
-- a directive or config field, anywhere, that pulls fragments together for you
-  without you reading them
+- a directive or config field, anywhere, that pulls fragments together for you without you
+  reading them
 - a setup script that writes `tools.yaml` for you
 - a "manifest builder/generator" script (e.g. no `scripts/write-tools-yaml.py`, no
   `merge-fragments.sh`)
 - any other deterministic mechanism that takes recipe fragments as input and emits
   `tools.yaml` as output without an agent reading and judging each fragment
 
-If you find yourself reaching for any of these — stop. The point of this skill is
-that **you**, the agent, read the recipes and write the YAML, the same way a human
-engineer would hand-put-together a config file from documented examples. rip-cage
-is a composable seam, not a bundler (ADR-005 D12): it gives you legible recipes and
-a manifest format, and putting them together is your job, every time, fresh — not a
-one-time mechanism you build once and rerun.
+If you find yourself reaching for any of these — stop. The point of this skill is that
+**you**, the agent, read the recipes and write the YAML, the same way a human engineer would
+hand-put-together a config file from documented examples. rip-cage is a composable seam, not a
+bundler (ADR-005 D12): it gives you legible recipes and a manifest format, and putting them
+together is your job, every time, fresh — not a one-time mechanism you build once and rerun.
 
-## Show your work — transparency before build
+## Composing cleanly is not the same claim as running
 
-Before writing the file, show the human the **composed `tools.yaml`** in full, so
-they can review it like they would review a diff.
+A `tools.yaml` that parses is not yet a cage that works — the dotpi session that motivated
+this rewrite produced exactly that gap: a manifest that composed fine but booted an agent into
+the wrong working directory with no beads store reachable, and nothing about the *config*
+made that visible. Two separate, honest checks close that gap, at two different times:
 
-Also surface the **resulting pi launch line** in plain terms — walk the composed
-`launch_args` across every contributing fragment, in the order they'll be
-concatenated, and write out what the resulting pi launch shim will actually run,
-e.g.:
+- **Compose-time — proves the manifest parses.** `RC_MANIFEST_GLOBAL=<your composed file>
+  ./rc generate-dockerfile` runs against the operator's own manifest and proves it is
+  well-formed and assembles into a Dockerfile, before anyone commits to a build.
+- **Post-build — proves the cage runs.** Once the human has run `rc build` and brought a cage
+  up, `rc doctor <cage>` is the mechanical way to verify the built cage is actually usable
+  (e.g. that a fresh exec lands in the right place and the workspace resolves cleanly) — this
+  check keeps growing as rip-cage's own tooling matures, so don't treat the specific checks it
+  runs today as fixed; point the human at `rc doctor` rather than trying to eyeball
+  runnability yourself.
+
+## Show your work before the human builds
+
+Before writing the file, show the human the **composed `tools.yaml`** in full, so they can
+review it like they would review a diff. Also make the **resulting pi launch line** legible —
+walk the composed `launch_args` across every contributing fragment, in the order they'll be
+concatenated, and write out what the resulting pi launch shim will actually run, e.g.:
 
 ```
 Resulting pi launch args (in fragment order):
   -e /etc/rip-cage/pi/dcg-gate.ts --model openai-codex/gpt-5.5
 ```
 
-This is the step that makes the wiring legible *before* `rc build` bakes it into an
-image — the composed launch args (which extensions load, whether
-`--no-extensions` is present, which model is pinned) are otherwise invisible until
-someone reads the generated Dockerfile.
+This is what makes the wiring legible *before* `rc build` bakes it into an image — which
+extensions load, whether `--no-extensions` is present, which model is pinned — otherwise
+invisible until someone reads the generated Dockerfile.
 
 ## Emit and hand off
 
-1. Write the composed manifest to `~/.config/rip-cage/tools.yaml` (creating the
-   directory if needed).
-2. Hand off with something like: **"I've written `~/.config/rip-cage/tools.yaml` —
-   review it, then run `rc build` when you're ready."**
+Write the composed manifest to `~/.config/rip-cage/tools.yaml` (creating the directory if
+needed), then hand off with something like: **"I've written
+`~/.config/rip-cage/tools.yaml` — review it, then run `rc build` when you're ready."**
 
-Do not run `rc build` yourself. Do not run `docker build`. The human reviews and
-triggers the build.
+Do not run `rc build` yourself. Do not run `docker build`. The human reviews and triggers the
+build.
 
 ## What this skill is not
 
-- Not a directive, setup tool, or config-file merger — see "Composing the
-  manifest" above.
-- Not a mechanism that ships recipe bodies inline — recipes live in `examples/` and
-  you read them fresh each time; this file only points at them.
+- Not a directive, setup tool, or config-file merger — see "Composing by judgment, not by
+  machinery" above.
+- Not a mechanism that ships recipe bodies inline — recipes live in `examples/` and you read
+  them fresh each time; this file only points at them.
 - Not a build trigger — it produces a reviewable file, never runs `rc build`.
-- Not a cross-recipe wiring layer of its own — each recipe's `launch_args`
-  combines by manifest fragment order (`rc build`'s existing mechanism); this skill
-  does not add any new wiring path.
+- Not a cross-recipe wiring layer of its own — each recipe's `launch_args` combines by
+  manifest fragment order (`rc build`'s existing mechanism); this skill does not add any new
+  wiring path.
+- Not a runnability verifier — that job belongs to `rc generate-dockerfile` (compose-time) and
+  `rc doctor` (post-build), not to this skill's judgment.

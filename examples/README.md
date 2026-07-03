@@ -63,3 +63,16 @@ Recipes that demonstrate **combining** multiple fragments — guard + multiplexe
 | Recipe | Seam | What it provides |
 |---|---|---|
 | [examples/herdr-pi/](herdr-pi/) | Launch composition (TOOL with `launch_args`) | The canonical launch-composition example: herdr's pi semantic-status extension composed alongside DCG. Shows how `launch_args` from DCG (`-e <dcg-gate>`, OPEN by default — ADR-027 D1) and herdr-pi (`-e <herdr-ext>`) assemble in fragment order. With-DCG, without-DCG, and LOCKED-opt-in (`--no-extensions`) paths. See [herdr-pi/README.md](herdr-pi/README.md). |
+
+---
+
+## Whole-cage delta composition recipes
+
+Recipes that compose a full cage shape as a **delta on top of `dist/default-tools.yaml`** (the
+published image's reference manifest), spanning multiple archetypes at once. No pre-composed
+manifest ships alongside these — read the fragments they point at fresh, per the same judgment
+the `configure-cage` skill applies.
+
+| Recipe | What it provides |
+|---|---|
+| [compose-walk-away-cage.md](compose-walk-away-cage.md) | Walk-away/headless multi-agent delta: `dist` + herdr (supervisor multiplexer) + herdr-pi (status extension) fragments, the pi provider/model pin (closes the headless-throttle footgun), and the egress mediator framed as situational/optional (ADR-026), not part of the base delta. |
