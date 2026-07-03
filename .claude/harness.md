@@ -120,11 +120,12 @@ All follow the same PASS/FAIL/TOTAL convention; grep for `FAIL` in output.
 ## Runtime / observable
 
 ### `./rc doctor <name>` — per-container diagnostic
-- **What it is:** labels + live probes for one container (introduced in the commit before this audit)
+- **What it is:** labels + live probes for one container (firewall, ssh-add, beads port, auth, skills) plus three runnability probes (rip-cage-2cks, text + JSON output): cwd floor (fresh exec cwd == `/workspace` — guards the rip-cage-0rng agent-cwd regression), workspace resolution (`bd status` + `git status` from `/workspace`; a bd schema error is a hard FAIL — the rip-cage-aq70 baked-bd-skew symptom; `bd status`, not `bd ready`, is the schema-surfacing probe), and host-vs-cage bd version skew (WARN-only — skew alone isn't failure, the parse invariant belongs to the resolution probe)
 - **Speed:** <5s
-- **Catches:** misconfigured labels, missing mounts, auth state drift, "why is my container broken"
-- **Useful when:** a container won't behave as expected but is running
+- **Catches:** misconfigured labels, missing mounts, auth state drift, a cage that composes but doesn't RUN (wrong cwd, unreadable beads store, stale baked bd), "why is my container broken"
+- **Useful when:** a container won't behave as expected but is running; post-build proof that a freshly composed cage is actually runnable (the configure-cage skill points here)
 - **Less useful when:** no container exists yet (start one with `rc up`)
+- **Regression tests:** `tests/test-doctor-version-skew.sh` (pure comparator units, host-only) + `tests/test-doctor-runnability.sh` (live-cage: correct cage green, cwd-broken fails loud; stale-bd schema-error case gated behind `RC_DOCTOR_STALE_BD_IMAGE`), both wired into `run-host.sh`; `test-safety-stack.sh` carries the in-cage cwd + resolution cells so `rc test` also guards them
 
 ### `./rc ls` — list rip-cage containers with state
 - **Speed:** <1s
