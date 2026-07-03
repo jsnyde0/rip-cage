@@ -611,6 +611,47 @@ test_i_shellcheck_rc_clean() {
 }
 
 # ---------------------------------------------------------------------------
+# Reserved-scratch predicate (rip-cage-vnbd).
+#
+# rc's symlink-follow reserved-path guard (rc:1312-1365) refuses to mount any
+# symlink target resolving under a Debian FHS reserved top-level (checked
+# literally, not canonicalized — rc:1344-1346 deliberately excludes /var and
+# /tmp from canonicalization to avoid macOS /private/var false positives).
+# That guard runs BEFORE the denylist check (rc:1399), so when this test's
+# fixture scratch dir (mktemp under "${TMPDIR:-/tmp}") itself resolves under
+# a reserved top-level, the reserved-path guard preempts the denylist check
+# subtests (l-1/l-2a/l-2b) are designed to exercise.
+#
+# On macOS, mktemp resolves under /private/var/folders/... (component
+# "private", not reserved) — the guard never fires, so the denylist path is
+# reached and the subtests run as designed.
+# On Linux (incl. CI), TMPDIR is typically unset → mktemp resolves under
+# /tmp (reserved) — the guard fires first, exit 1, before the denylist check.
+#
+# Key the skip on this ACTUAL reserved-ness condition (not a uname/OS check):
+# it's the right abstraction and self-documents WHY the skip exists.
+_rc_reserved_top_levels() {
+  printf '%s\n' bin boot dev etc home lib opt proc root run sbin sys usr var tmp
+}
+
+# Returns 0 (true) if the canonicalized form of path "$1" has a reserved FHS
+# top-level as its first path component — i.e. rc's reserved-path guard would
+# preempt the denylist check for fixtures rooted there.
+_fixture_under_rc_reserved_top_level() {
+  local _path_arg="$1"
+  local _resolved _first_component _reserved
+  _resolved=$(realpath "$_path_arg" 2>/dev/null) || return 1
+  _first_component="${_resolved#/}"
+  _first_component="${_first_component%%/*}"
+  for _reserved in $(_rc_reserved_top_levels); do
+    if [[ "$_first_component" == "$_reserved" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # (l) scope=parent denylist check uses the ACTUAL mount source (parent dir),
 #     not the leaf target.
 #
@@ -649,6 +690,17 @@ test_l_scope_parent_denylist_checks_parent_dir() {
   resolved_test_home=$(realpath "$TEST_HOME" 2>/dev/null)
   local resolved_ws
   resolved_ws=$(realpath "$TEST_WS" 2>/dev/null)
+
+  # rip-cage-vnbd: when the fixture scratch dir itself resolves under an
+  # rc-reserved FHS top-level (e.g. /tmp or /home on Linux CI, where TMPDIR
+  # is typically unset), rc's reserved-path guard (rc:1362) preempts the
+  # denylist check that l-1/l-2a/l-2b are designed to exercise. Gate those
+  # three subtests behind a visible SKIP in that case; l-3 uses a different
+  # code path (_symlink_follow_fingerprint, no reserved guard) and always runs.
+  local _l_reserved_scratch=false
+  if _fixture_under_rc_reserved_top_level "$resolved_test_home"; then
+    _l_reserved_scratch=true
+  fi
 
   # Real global config under the resolved path.
   mkdir -p "${resolved_test_home}/.config/rip-cage"
@@ -690,7 +742,9 @@ YAML
     " 2>&1 >/dev/null
   ) || exit_l1=$?
 
-  if printf '%s' "$stderr_l1" | grep -q "matched secret-path denylist pattern"; then
+  if $_l_reserved_scratch; then
+    echo "SKIP (reserved-scratch): (l-1) scope=parent denylist — fixture target under an rc-reserved top-level; rc's reserved-path guard (rc:1362) preempts the denylist check on Linux. Runs on macOS + full local suite. See bead rip-cage-vnbd."
+  elif printf '%s' "$stderr_l1" | grep -q "matched secret-path denylist pattern"; then
     pass "(l-1) scope=parent: parent dir under .aws is denied, warn-and-skip fires"
   else
     fail "(l-1) scope=parent: expected warn-and-skip for parent .aws dir; got exit=$exit_l1 stderr=${stderr_l1:-(empty)}"
@@ -731,7 +785,9 @@ YAML
   has_mount_l2_parent=$(printf '%s' "$out_l2_parent" | grep -c "${safe_dir}:${safe_dir}" || true)
   has_skip_l2_parent=$(printf '%s' "$out_l2_parent" | grep -c "matched secret-path denylist pattern" || true)
 
-  if [[ "$has_mount_l2_parent" -gt 0 && "$has_skip_l2_parent" -eq 0 ]]; then
+  if $_l_reserved_scratch; then
+    echo "SKIP (reserved-scratch): (l-2a) scope=parent denylist — fixture target under an rc-reserved top-level; rc's reserved-path guard (rc:1362) preempts the denylist check on Linux. Runs on macOS + full local suite. See bead rip-cage-vnbd."
+  elif [[ "$has_mount_l2_parent" -gt 0 && "$has_skip_l2_parent" -eq 0 ]]; then
     pass "(l-2a) scope=parent: leaf 'credentials' in safe parent → mount proceeds (parent is the gate)"
   else
     fail "(l-2a) scope=parent: expected mount when parent is safe; has_mount=$has_mount_l2_parent has_skip=$has_skip_l2_parent exit=$exit_l2_parent out=${out_l2_parent:-(empty)}"
@@ -762,7 +818,9 @@ YAML
   local has_skip_l2_file
   has_skip_l2_file=$(printf '%s' "$out_l2_file" | grep -c "matched secret-path denylist pattern" || true)
 
-  if [[ "$has_skip_l2_file" -gt 0 ]]; then
+  if $_l_reserved_scratch; then
+    echo "SKIP (reserved-scratch): (l-2b) scope=file denylist — fixture target under an rc-reserved top-level; rc's reserved-path guard (rc:1362) preempts the denylist check on Linux. Runs on macOS + full local suite. See bead rip-cage-vnbd."
+  elif [[ "$has_skip_l2_file" -gt 0 ]]; then
     pass "(l-2b) scope=file: leaf 'credentials' → warn-and-skip fires (file-scope behavior unchanged)"
   else
     fail "(l-2b) scope=file: expected skip for leaf 'credentials'; exit=$exit_l2_file out=${out_l2_file:-(empty)}"
