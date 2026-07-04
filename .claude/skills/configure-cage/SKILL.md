@@ -137,7 +137,8 @@ path stays exactly as it is today.
 The mechanics are four pieces, and they live — current and copy-paste-ready — in
 [`examples/compose-rc-with-iron-proxy.md`](../../../examples/compose-rc-with-iron-proxy.md);
 read it fresh and copy from it rather than re-deriving here. In brief: `auth.credential_mounts:
-none` (posture config) suppresses the real credential mounts; a MEDIATOR recipe (iron-proxy)
+none` (posture config, or `auth.per_tool.{claude,pi}` for per-tool grain — rip-cage-xhgr)
+suppresses the real credential mounts; a MEDIATOR recipe (iron-proxy)
 is composed into the manifest; an `sk-ant-oat`-shaped placeholder token reaches the agent via
 `rc up --env-file`; and the real secret sits in a chmod-600 host file that
 `network.egress.mediator_env_file` points at (re-applied on every up/resume).
@@ -150,8 +151,12 @@ What to carry as judgment when someone asks for this — the parts that actually
   subscription billing for it (`400 "third-party apps now draw from your extra usage"`),
   so pi non-possession needs a static-key provider (e.g. openrouter), not the Anthropic
   subscription. Don't tell a human "both tools work on your subscription" — they don't.
-- **`auth.credential_mounts` is all-or-nothing** — one toggle covering claude *and* pi
-  together; you cannot mix "claude non-possession, pi possession" in one cage through it.
+- **Mixed posture is expressible via `auth.per_tool.{claude,pi}`.** The bare
+  `auth.credential_mounts` scalar still gates claude *and* pi together (unchanged
+  default), but `auth.per_tool.claude` / `auth.per_tool.pi` override it per tool —
+  e.g. `{claude: none, pi: real}` is exactly the caged-`pi` shape: claude runs
+  non-possession while pi keeps its real, self-refreshing `auth.json` (pi has no
+  static token to ride non-possession with in the first place — see the next bullet).
 - **Node tools need `NODE_EXTRA_CA_CERTS`** pointed at the mediator CA, or they reject the
   MITM cert with a bare `Connection error` (claude reads the system store; pi and other
   Node tools don't). Set it in the same non-secret `--env-file` as the placeholder.

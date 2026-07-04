@@ -1241,15 +1241,23 @@ _up_prepare_docker_mounts() {
     log "Worktree: mounted main .git/ and corrected .git pointer for ${wt_name}"
   fi
 
-  # auth.credential_mounts (rip-cage-seqc.4): real (default) preserves today's
-  # behavior bit-for-bit. none = non-possession posture — the per-cage keychain
-  # extraction is skipped so the cage never receives a host credential.
-  # _UP_CREDENTIAL_MOUNTS is resolved once on the create path (see cmd_up, near
-  # the rc.symlink-follow-fingerprint label) and consumed here + at every other
-  # gated site below. Callers that don't set it (e.g. legacy paths) default to
-  # "real" so the unset case is byte-identical to today.
-  local _UP_CREDENTIAL_MOUNTS="${_UP_CREDENTIAL_MOUNTS:-real}"
-  if [[ "$_UP_CREDENTIAL_MOUNTS" == "none" ]]; then
+  # auth.credential_mounts (rip-cage-seqc.4) + auth.per_tool.{claude,pi}
+  # (rip-cage-xhgr): real (default) preserves today's behavior bit-for-bit.
+  # none = non-possession posture — the per-cage keychain extraction is
+  # skipped so the cage never receives a host credential. _UP_CRED_MOUNTS_CLAUDE
+  # / _UP_CRED_MOUNTS_PI are each resolved once on the create path (see cmd_up,
+  # near the rc.symlink-follow-fingerprint label) via
+  # _up_resolve_effective_credential_mounts_for_tool (effective(T) = per_tool.T
+  # if set, else the global credential_mounts, else "real") and consumed here
+  # + at every other gated site below. Callers that don't set them (e.g.
+  # legacy paths) default to "real" so the unset case is byte-identical to
+  # today. Claude's credential surface (keychain extraction + CC .claude.json/
+  # .credentials.json) is gated on effective(claude); pi's (auth.json mount +
+  # symlink-follow leaf) is gated on effective(pi) — the two tools are
+  # independently suppressible.
+  local _UP_CRED_MOUNTS_CLAUDE="${_UP_CRED_MOUNTS_CLAUDE:-real}"
+  local _UP_CRED_MOUNTS_PI="${_UP_CRED_MOUNTS_PI:-real}"
+  if [[ "$_UP_CRED_MOUNTS_CLAUDE" == "none" ]]; then
     log "auth.credential_mounts=none — Claude keychain extraction intentionally skipped (non-possession posture)"
   else
     # Extract OAuth credentials from macOS keychain to file (if on macOS)
@@ -1316,10 +1324,11 @@ _up_prepare_docker_mounts() {
   fi
 
   # OAuth mounts (read-write, skip if missing to avoid Docker creating empty dirs)
-  # auth.credential_mounts=none (rip-cage-seqc.4): both the .claude.json (config/
-  # trust metadata) and .credentials.json (the token secret) are gated as a UNIT
-  # under non-possession — see design decision note "dot-claude-json under none".
-  if [[ "$_UP_CREDENTIAL_MOUNTS" == "none" ]]; then
+  # auth.credential_mounts=none (rip-cage-seqc.4) / effective(claude) (rip-cage-xhgr):
+  # both the .claude.json (config/trust metadata) and .credentials.json (the
+  # token secret) are gated as a UNIT under non-possession — see design
+  # decision note "dot-claude-json under none".
+  if [[ "$_UP_CRED_MOUNTS_CLAUDE" == "none" ]]; then
     log "auth.credential_mounts=none — Claude credential mounts (.claude.json + .credentials.json) intentionally skipped (non-possession posture)"
   else
     if [[ -f "${HOME}/.claude.json" ]]; then
@@ -1380,15 +1389,17 @@ _up_prepare_docker_mounts() {
     while IFS='|' read -r _sfl_link _sfl_target; do
       [[ -z "$_sfl_link" ]] && continue
 
-      # F1 (rip-cage-seqc.4, CRITICAL): auth.credential_mounts=none must also
-      # gate the symlink-follow synthesis path — it is a SECOND, previously-
-      # ungated mount route for the pi credential when auth.json is an
-      # absolute dotpi-managed symlink. Filter the specific credential LEAF
-      # (not the whole scan root: ~/.pi/agent may contain other legitimate
-      # absolute dangling symlinks that must keep mounting under none).
+      # F1 (rip-cage-seqc.4, CRITICAL) / effective(pi) (rip-cage-xhgr):
+      # auth.credential_mounts=none (or per-tool pi:none) must also gate the
+      # symlink-follow synthesis path — it is a SECOND, previously-ungated
+      # mount route for the pi credential when auth.json is an absolute
+      # dotpi-managed symlink. Filter the specific credential LEAF (not the
+      # whole scan root: ~/.pi/agent may contain other legitimate absolute
+      # dangling symlinks that must keep mounting under none). This is the
+      # pi-only scan root — claude's effective value is irrelevant here.
       # IDENTICAL predicate to the fingerprint filter in _symlink_follow_fingerprint
       # (B1a) — the two must never diverge (label-lock / filter-the-fingerprint-too).
-      if [[ "$_UP_CREDENTIAL_MOUNTS" == "none" && "$_sfl_link" == "${HOME}/.pi/agent/auth.json" ]]; then
+      if [[ "$_UP_CRED_MOUNTS_PI" == "none" && "$_sfl_link" == "${HOME}/.pi/agent/auth.json" ]]; then
         log "auth.credential_mounts=none — symlink-follow auth.json leaf intentionally skipped (non-possession posture)"
         continue
       fi
@@ -1494,11 +1505,12 @@ _up_prepare_docker_mounts() {
   # cage behaves identically — the explicit set just makes the value visible in `env`.
   # Seed an empty auth.json when absent so the bind mount below always fires (normal path).
   # A dangling symlink is left to the symlink-follow machinery (D1).
-  # auth.credential_mounts=none (rip-cage-seqc.4): the pi auth.json bind is
-  # gated under non-possession; PI_CODING_AGENT_DIR stays unconditional (it's
-  # a container-local dir pointer, not a host credential mount).
+  # auth.credential_mounts=none (rip-cage-seqc.4) / effective(pi) (rip-cage-xhgr):
+  # the pi auth.json bind is gated under non-possession; PI_CODING_AGENT_DIR
+  # stays unconditional (it's a container-local dir pointer, not a host
+  # credential mount).
   _UP_RUN_ARGS+=(-e PI_CODING_AGENT_DIR=/home/agent/.pi/agent)
-  if [[ "$_UP_CREDENTIAL_MOUNTS" == "none" ]]; then
+  if [[ "$_UP_CRED_MOUNTS_PI" == "none" ]]; then
     log "auth.credential_mounts=none — pi credential mount (auth.json) intentionally skipped (non-possession posture)"
   else
     _ensure_pi_auth_seed
@@ -2068,56 +2080,89 @@ _up_resolve_resume_config_mode() {
   fi
 }
 
-# _up_resolve_resume_credential_mounts (rip-cage-seqc.4 / B1) — clone of
-# _up_resolve_resume_config_mode. auth.credential_mounts is a create-time
-# mount-shape decision (which host credential files get bind-mounted); it is
-# not covered by mounts.config_mode's guard. Without this, flipping
-# auth.credential_mounts between create and resume would silently carry the
-# create-time mount shape (a real cage resumed as "none" would keep believing
-# it has no credentials mounted while the container still has them — or vice
-# versa). Missing label (legacy container, pre-seqc.4): treated as "real" (the
-# historical default); if current effective config is also real (or absent),
-# no mismatch.
+# _up_resolve_effective_credential_mounts_for_tool (rip-cage-xhgr / D1) — the
+# single jq expression backing every effective(T) computation site: the
+# create-time resolver (cmd_up), the resume-side credential-mounts guard, and
+# the resume-side symlink-follow fingerprint recompute all call this so the
+# resolution rule (per_tool.T if set, else the global credential_mounts, else
+# "real") never drifts between call sites.
+# Parameters: $1 tool ("claude"|"pi"), $2 effective-config JSON (the object
+#             returned by _load_effective_config, i.e. has a top-level .config)
+# Output: "real" or "none" on stdout.
+_up_resolve_effective_credential_mounts_for_tool() {
+  local _tool="$1" _cfg_json="$2"
+  jq -r --arg t "$_tool" '.config.auth.per_tool[$t] // .config.auth.credential_mounts // "real"' <<<"$_cfg_json"
+}
+
+# _up_resolve_resume_credential_mounts (rip-cage-seqc.4 / B1, per-tool grain
+# rip-cage-xhgr / D5a) — clone of _up_resolve_resume_config_mode.
+# auth.credential_mounts (+ per-tool overrides) is a create-time mount-shape
+# decision (which host credential files get bind-mounted); it is not covered
+# by mounts.config_mode's guard. Without this, flipping the effective value
+# for a tool between create and resume would silently carry the create-time
+# mount shape (a real cage resumed as "none" would keep believing it has no
+# credentials mounted while the container still has them — or vice versa).
+#
+# Legacy derivation ladder per tool (D5a): stored(T) = the per-tool label
+# (rc.auth.credential-mounts.claude / .pi) if present, ELSE the stored global
+# label (rc.auth.credential-mounts) if present, ELSE "real" (the pre-seqc.4
+# historical default). This means a container created BEFORE this bead (no
+# per-tool labels at all) resumes clean as long as its effective per-tool
+# values are unchanged from its stored global label — upgrading rc never
+# bricks a running cage. Mismatch on EITHER tool refuses loud, naming the
+# tool so the operator knows which one changed.
 # Parameters: $1 name, $2 path
 _up_resolve_resume_credential_mounts() {
   local _name="$1" _path="$2"
-  local _label
-  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts" }}' "$_name" 2>/dev/null); then
+
+  local _label_global
+  if ! _label_global=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts" }}' "$_name" 2>/dev/null); then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       json_error "docker inspect failed for $_name" "DOCKER_ERROR"
     fi
     echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
     exit 1
   fi
-  # Empty label = legacy container (pre-seqc.4); treat as "real" (the default,
-  # matches the always-mounted posture of pre-label containers).
-  local _stored_mode
-  if [[ -z "$_label" ]]; then
-    _stored_mode="real"
-  else
-    _stored_mode="$_label"
-  fi
+  local _label_claude _label_pi
+  _label_claude=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts.claude" }}' "$_name" 2>/dev/null || true)
+  _label_pi=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts.pi" }}' "$_name" 2>/dev/null || true)
 
-  # Compute current effective auth.credential_mounts from on-disk config.
-  local _eff_result _current
+  # Empty global label = legacy container (pre-seqc.4); treat as "real".
+  local _stored_global="real"
+  [[ -n "$_label_global" ]] && _stored_global="$_label_global"
+
+  # Per-tool label wins over the stored global label when both present.
+  local _stored_claude="$_stored_global" _stored_pi="$_stored_global"
+  [[ -n "$_label_claude" ]] && _stored_claude="$_label_claude"
+  [[ -n "$_label_pi" ]] && _stored_pi="$_label_pi"
+
+  # Compute current effective per-tool values from on-disk config.
+  local _eff_result _current_claude="real" _current_pi="real"
   _eff_result=$(_load_effective_config "$_path" 2>/dev/null || true)
-  if [[ -z "$_eff_result" ]]; then
-    _current="real"
-  else
-    _current=$(jq -r '.config.auth.credential_mounts // "real"' <<<"$_eff_result" 2>/dev/null || echo "real")
+  if [[ -n "$_eff_result" ]]; then
+    _current_claude=$(_up_resolve_effective_credential_mounts_for_tool "claude" "$_eff_result")
+    _current_pi=$(_up_resolve_effective_credential_mounts_for_tool "pi" "$_eff_result")
   fi
 
-  if [[ "$_stored_mode" != "$_current" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name was created with rc.auth.credential-mounts=${_stored_mode} but current effective config has auth.credential_mounts=${_current}. Credential mounts are immutable on resume — run: rc destroy $_name && rc up $_path to apply the change." "CREDENTIAL_MOUNTS_MOUNT_SHAPE_CHANGED"
+  local _tool _stored _current
+  for _tool in claude pi; do
+    if [[ "$_tool" == "claude" ]]; then
+      _stored="$_stored_claude"; _current="$_current_claude"
+    else
+      _stored="$_stored_pi"; _current="$_current_pi"
     fi
-    echo "Error: container $_name was created with rc.auth.credential-mounts=${_stored_mode} but current effective config has auth.credential_mounts=${_current}." >&2
-    echo "       Credential mounts are wired at create time; toggling auth.credential_mounts between real and none requires recreating the container." >&2
-    echo "       Run:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  fi
+    if [[ "$_stored" != "$_current" ]]; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        json_error "Container $_name was created with effective auth.credential_mounts for ${_tool}=${_stored} but current effective config has ${_tool}=${_current}. Credential mounts are immutable on resume — run: rc destroy $_name && rc up $_path to apply the change." "CREDENTIAL_MOUNTS_MOUNT_SHAPE_CHANGED"
+      fi
+      echo "Error: container $_name was created with effective auth.credential_mounts for ${_tool}=${_stored} but current effective config has ${_tool}=${_current}." >&2
+      echo "       Credential mounts are wired at create time; toggling auth.credential_mounts (or auth.per_tool.${_tool}) between real and none requires recreating the container." >&2
+      echo "       Run:" >&2
+      echo "         rc destroy $_name" >&2
+      echo "         rc up $_path" >&2
+      exit 1
+    fi
+  done
 }
 
 # _up_resolve_resume_symlink_fingerprint -- compare the rc.symlink-follow-fingerprint
@@ -2134,12 +2179,16 @@ _up_resolve_resume_symlink_fingerprint() {
   # Compute current fingerprint — include mode, on_dangling, and scope so that
   # policy changes (not just symlink-set changes) produce fingerprint drift.
   local _sfl_cur_mode="rw" _sfl_cur_on_dangling="follow" _sfl_cur_scope="file"
-  # rip-cage-seqc.4 / B1a call-site 2: also read current effective
-  # auth.credential_mounts so the recomputed fingerprint reflects the SAME
-  # F1 leaf-filter the (immutable) create-time mount set was built with. A
-  # real->none flip then changes this fingerprint too — defense-in-depth
-  # alongside the dedicated _up_resolve_resume_credential_mounts guard (B1),
-  # both fail loud, no silent drift.
+  # rip-cage-seqc.4 / B1a call-site 2, effective(pi) (rip-cage-xhgr / D5b):
+  # also read current effective(pi) — NEVER effective(claude); this
+  # fingerprint's scan root is ~/.pi/agent only — so the recomputed
+  # fingerprint reflects the SAME F1 leaf-filter the (immutable) create-time
+  # mount set was built with. A pi flip (global or per_tool.pi) then changes
+  # this fingerprint too — defense-in-depth alongside the dedicated
+  # _up_resolve_resume_credential_mounts guard (B1), both fail loud, no
+  # silent drift. Using effective(pi) here (not the bare global) is what
+  # keeps a stable {claude:real, pi:none} cage's resume-side recompute
+  # symmetric with its create-time fingerprint.
   local _sfl_cur_cred_mounts="real"
   if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "${_path}")" ]]; then
     if command -v yq &>/dev/null; then
@@ -2148,7 +2197,7 @@ _up_resolve_resume_symlink_fingerprint() {
         _sfl_cur_mode=$(jq -r '.config.mounts.symlinks.mode // "rw"' <<<"$_sfl_cur_cfg")
         _sfl_cur_on_dangling=$(jq -r '.config.mounts.symlinks.on_dangling // "follow"' <<<"$_sfl_cur_cfg")
         _sfl_cur_scope=$(jq -r '.config.mounts.symlinks.scope // "file"' <<<"$_sfl_cur_cfg")
-        _sfl_cur_cred_mounts=$(jq -r '.config.auth.credential_mounts // "real"' <<<"$_sfl_cur_cfg")
+        _sfl_cur_cred_mounts=$(_up_resolve_effective_credential_mounts_for_tool "pi" "$_sfl_cur_cfg")
       fi
     fi
   fi
@@ -4584,23 +4633,33 @@ cmd_up() {
     _UP_RUN_ARGS+=(--label "rc.ssh-key-filter=off")
   fi
 
-  # auth.credential_mounts (rip-cage-seqc.4 / E2): resolve the effective value
-  # BEFORE the symlink-follow fingerprint call below (B1a) — the fingerprint's
-  # leaf-filter (F1) must be computed with the SAME credential-mounts value
-  # that determines the mount set, or the create-time fingerprint label would
-  # not match the honest post-filter mount set. _UP_CREDENTIAL_MOUNTS is a
-  # global (not `local`) so _up_prepare_docker_mounts can read it below.
+  # auth.credential_mounts (rip-cage-seqc.4 / E2) + auth.per_tool.{claude,pi}
+  # (rip-cage-xhgr / D1): resolve the effective values BEFORE the
+  # symlink-follow fingerprint call below (B1a) — the fingerprint's leaf-filter
+  # (F1) must be computed with the SAME effective(pi) value that determines
+  # the mount set, or the create-time fingerprint label would not match the
+  # honest post-filter mount set. _UP_CREDENTIAL_MOUNTS / _UP_CRED_MOUNTS_CLAUDE
+  # / _UP_CRED_MOUNTS_PI are globals (not `local`) so _up_prepare_docker_mounts
+  # can read them below. The global label stays unchanged (byte-identical to
+  # today); the two new per-tool labels are emitted unconditionally alongside
+  # it (D5a) so resume can detect a per-tool mount-shape flip.
   _UP_CREDENTIAL_MOUNTS="real"
+  _UP_CRED_MOUNTS_CLAUDE="real"
+  _UP_CRED_MOUNTS_PI="real"
   if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
     if command -v yq &>/dev/null; then
       local _cred_mounts_cfg
       if _cred_mounts_cfg=$(_load_effective_config "$path" 2>/dev/null); then
         _UP_CREDENTIAL_MOUNTS=$(jq -r '.config.auth.credential_mounts // "real"' <<<"$_cred_mounts_cfg")
+        _UP_CRED_MOUNTS_CLAUDE=$(_up_resolve_effective_credential_mounts_for_tool "claude" "$_cred_mounts_cfg")
+        _UP_CRED_MOUNTS_PI=$(_up_resolve_effective_credential_mounts_for_tool "pi" "$_cred_mounts_cfg")
       fi
       unset _cred_mounts_cfg
     fi
   fi
   _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts=${_UP_CREDENTIAL_MOUNTS}")
+  _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts.claude=${_UP_CRED_MOUNTS_CLAUDE}")
+  _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts.pi=${_UP_CRED_MOUNTS_PI}")
 
   # ADR-021 D7: persist effective mounts.config_mode as a container label so
   # resume can detect ro↔rw mount-shape transitions and abort loud rather than
@@ -4648,8 +4707,10 @@ cmd_up() {
       fi
     fi
   fi
+  # effective(pi), NEVER effective(claude) (rip-cage-xhgr / D5b) — this
+  # fingerprint's scan root is ~/.pi/agent only.
   local _sfl_fingerprint
-  _sfl_fingerprint=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_mode_for_fp" "$_sfl_on_dangling_for_fp" "$_sfl_scope_for_fp" "$path" "$_UP_CREDENTIAL_MOUNTS")
+  _sfl_fingerprint=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_mode_for_fp" "$_sfl_on_dangling_for_fp" "$_sfl_scope_for_fp" "$path" "$_UP_CRED_MOUNTS_PI")
   _UP_RUN_ARGS+=(--label "rc.symlink-follow-fingerprint=${_sfl_fingerprint}")
   unset _sfl_mode_for_fp _sfl_on_dangling_for_fp _sfl_scope_for_fp _sfl_fp_cfg _sfl_fingerprint
 
@@ -6574,6 +6635,8 @@ session.multiplexer|selection_list|"none"
 network.egress.mediator|selection_list|"none"
 auth.credential_mounts|selection_list|"real"|real,none
 network.egress.mediator_env_file|scalar|null
+auth.per_tool.claude|selection_list|null|real,none
+auth.per_tool.pi|selection_list|null|real,none
 EOF
 }
 
@@ -10399,6 +10462,24 @@ _config_load_layer() {
       return 1
     fi
   done < <(_config_schema_lines)
+
+  # D7 (rip-cage-xhgr, fail-closed): unknown keys under auth.per_tool. abort
+  # loud rather than silently vanishing. _config_merge only reads the two
+  # schema-declared per-tool keys (claude, pi) by walking _config_schema_lines
+  # — any other key under auth.per_tool (a typo like 'claud', or an
+  # unsupported tool name) would otherwise be silently dropped by the merge
+  # and the tool would silently inherit the global default ("real") against
+  # operator intent. A credential-suppression knob must fail closed, not
+  # open (ADR-001). Scoped to auth.per_tool. only — general unknown-key
+  # rejection is a separate ADR-021 D3 conformance question, out of scope here.
+  local _pt_key
+  while IFS= read -r _pt_key; do
+    [[ -z "$_pt_key" ]] && continue
+    if [[ "$_pt_key" != "claude" && "$_pt_key" != "pi" ]]; then
+      echo "Error: '$file' has unknown key 'auth.per_tool.${_pt_key}'. Allowed per-tool keys: claude, pi." >&2
+      return 1
+    fi
+  done < <(jq -r '.auth.per_tool // {} | keys[]?' <<<"$json" 2>/dev/null || true)
 
   echo "$json"
 }

@@ -408,30 +408,39 @@ All fields are `selection_list` type in the schema (per ADR-021 D2): unknown val
 
 ---
 
-## `auth.credential_mounts` — host credential mount posture
+## `auth.credential_mounts` / `auth.per_tool.{claude,pi}` — host credential mount posture
 
-Controls whether `rc up` bind-mounts host Claude Code / pi credential files into the cage at all.
+Controls whether `rc up` bind-mounts host Claude Code / pi credential files into the cage at all — globally, or **per tool** (rip-cage-xhgr).
 
 ```yaml
 # <project>/.rip-cage.yaml
 version: 1
 auth:
-  credential_mounts: none   # real (default) | none
+  credential_mounts: real   # real (default) | none — global default, applies to both tools
+  per_tool:
+    claude: none            # optional override: null (default, inherit global) | real | none
+    pi: real                # optional override: null (default, inherit global) | real | none
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `auth.credential_mounts` | enum-scalar | `real` | `real` (default) preserves today's behavior bit-for-bit: `~/.claude.json` and `~/.claude/.credentials.json` are bind-mounted read-write, the per-cage macOS-keychain credential extraction runs, and the symlink-follow synthesis may mount a dotpi-managed `auth.json` symlink's resolved target. `none` means credentials are **not** mounted at all — neither the direct CC/pi mount blocks nor the symlink-follow `auth.json` leaf — and the per-cage keychain extraction is skipped. Intended for cages that obtain credentials via a composed mediator (non-possession posture). |
+| `auth.credential_mounts` | enum-scalar | `real` | Global default. `real` (default) preserves today's behavior bit-for-bit: `~/.claude.json` and `~/.claude/.credentials.json` are bind-mounted read-write, the per-cage macOS-keychain credential extraction runs, and the symlink-follow synthesis may mount a dotpi-managed `auth.json` symlink's resolved target. `none` means credentials are **not** mounted at all — neither the direct CC/pi mount blocks nor the symlink-follow `auth.json` leaf — and the per-cage keychain extraction is skipped. Intended for cages that obtain credentials via a composed mediator (non-possession posture). |
+| `auth.per_tool.claude` | selection_list (null-default) | `null` | Optional override for Claude Code's credential mounts (keychain extraction + `.claude.json`/`.credentials.json`). `null` (default, unset) inherits `auth.credential_mounts`; `real` or `none` overrides it for claude only. |
+| `auth.per_tool.pi` | selection_list (null-default) | `null` | Optional override for pi's credential mount (`auth.json`, including the symlink-follow leaf). `null` (default, unset) inherits `auth.credential_mounts`; `real` or `none` overrides it for pi only. |
 
-**Gated as a unit:** `~/.claude.json` (config/trust metadata) and `~/.claude/.credentials.json` (the token secret) are gated together under `none` — both are Claude Code state a non-possession cage shouldn't receive.
+**Resolution:** `effective(T) = auth.per_tool.T if set, else auth.credential_mounts`. A bare `credential_mounts: none` with no `per_tool` block suppresses **both** tools — byte-identical to the pre-per-tool behavior. `per_tool` lets you express **mixed posture** in a single cage, e.g. `{claude: none, pi: real}` — claude runs non-possession (placeholder + mediator-injected token) while pi keeps its real, self-refreshing `auth.json`. This is the shape a caged `pi` needs today: pi's third-party OAuth providers have no long-lived static token, so pi cannot ride the same non-possession mechanism claude uses (see [ADR-026](../decisions/ADR-026-containment-mediation-identity.md) D3, D7).
 
-**Mount-shape, create-time only:** `auth.credential_mounts` determines what gets bind-mounted at container **create** time; `rc up` on an existing container never re-runs mount setup. Toggling the value between `real` and `none` on a running/stopped cage requires `rc destroy <name> && rc up` — `rc up` aborts loud on a mismatch (a `rc.auth.credential-mounts` container label records the create-time value).
+**Gated as a unit (per tool):** for claude, `~/.claude.json` (config/trust metadata) and `~/.claude/.credentials.json` (the token secret) are gated together under `none` — both are Claude Code state a non-possession cage shouldn't receive. For pi, the single `~/.pi/agent/auth.json` (direct mount and symlink-follow leaf) is the credential unit — one file holds all of pi's provider credentials, so there is no finer grain than per-tool.
 
-**Not reload-eligible:** `auth.credential_mounts` affects create-time mounts, not live container state — `rc reload` refuses loud if this field differs from the applied-config snapshot (same posture as `mounts.config_mode` and `mounts.symlinks.*`).
+**Mount-shape, create-time only:** the effective value for each tool determines what gets bind-mounted at container **create** time; `rc up` on an existing container never re-runs mount setup. Toggling either tool's effective value on a running/stopped cage requires `rc destroy <name> && rc up` — `rc up` aborts loud on a mismatch, naming the specific tool that changed. Container labels record the create-time values: `rc.auth.credential-mounts` (the global value, unchanged) plus `rc.auth.credential-mounts.claude` / `rc.auth.credential-mounts.pi` (the per-tool effective values, added by rip-cage-xhgr). A container created before this label pair existed resumes clean as long as its effective values are unchanged (legacy derivation: per-tool label → stored global label → `real`) — upgrading `rc` never bricks a running cage.
 
-**`rc auth refresh` is unaffected:** the host-side keychain-to-file maintenance command (`rc auth refresh` → `cmd_auth_refresh`) is project-agnostic and always runs regardless of `auth.credential_mounts` — a `none` cage simply never mounts the file it refreshes. See [auth.md](auth.md).
+**Not reload-eligible:** these fields affect create-time mounts, not live container state — `rc reload` refuses loud if either tool's effective value differs from the applied-config snapshot (same posture as `mounts.config_mode` and `mounts.symlinks.*`).
 
-**Distinguishable skip:** under `none`, `rc up` logs a distinct `auth.credential_mounts=none — ... intentionally skipped (non-possession posture)` line at each gated site (CC block, pi block, symlink-follow leaf, keychain extraction) — never the ordinary existence-gated "not found — skipping" warning, so the two states are never confused in the log.
+**`rc auth refresh` is unaffected:** the host-side keychain-to-file maintenance command (`rc auth refresh` → `cmd_auth_refresh`) is project-agnostic and always runs regardless of `auth.credential_mounts` / `auth.per_tool.*` — a `none` cage simply never mounts the file it refreshes. See [auth.md](auth.md).
+
+**Distinguishable skip:** under `none` (global or per-tool), `rc up` logs a distinct `auth.credential_mounts=none — ... intentionally skipped (non-possession posture)` line at each gated site (CC block, pi block, symlink-follow leaf, keychain extraction) — never the ordinary existence-gated "not found — skipping" warning, so the two states are never confused in the log.
+
+**Unknown per-tool keys abort loud:** a typo'd or unsupported key under `auth.per_tool.` (anything other than `claude`/`pi`) fails config validation loud, naming the key, the file, and the allowed set — it never silently inherits `real` (fail-closed, since this is a credential-suppression knob).
 
 **`:ro` in-cage:** like every other config field, this key lives in `.rip-cage.yaml`, which is shadow-mounted `:ro` in-cage by default (`mounts.config_mode`) — the agent inside the cage cannot self-flip `none` → `real`.
 

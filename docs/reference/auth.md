@@ -34,13 +34,18 @@ containers see the change immediately.
 ### `auth.credential_mounts: none` (non-possession cages)
 
 `rc auth refresh` (and the `_extract_credentials` maintenance it runs) is
-**project-agnostic and unaffected** by `auth.credential_mounts` — it always
+**project-agnostic and unaffected** by `auth.credential_mounts` (or its
+per-tool overrides, `auth.per_tool.claude` / `auth.per_tool.pi`) — it always
 refreshes the host `~/.claude/.credentials.json` file regardless. What
-changes under `auth.credential_mounts: none` is that a cage's `rc up`
-**does not mount** the CC or pi credential files into that container at all
-(and skips the per-cage keychain extraction step), even though the host-side
-refresh keeps maintaining the file for every other (real-mode) cage. See [config.md](config.md) (`auth.credential_mounts` section) for the full
-field reference.
+changes under `none` (global or per-tool) is that a cage's `rc up`
+**does not mount** the affected tool's credential files into that container
+at all (and, for claude, skips the per-cage keychain extraction step), even
+though the host-side refresh keeps maintaining the file for every other
+(real-mode) cage. `auth.per_tool.{claude,pi}` lets a single cage mix postures
+— e.g. claude non-possession alongside pi possession, the shape a caged `pi`
+needs since its providers have no long-lived static token to ride
+non-possession with. See [config.md](config.md) (`auth.credential_mounts`
+section) for the full field reference.
 
 ## Account rotation
 

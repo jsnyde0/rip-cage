@@ -382,7 +382,8 @@ _m9_args=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   source '$RC' 2>/dev/null
   _UP_RUN_ARGS=()
   wt_detected=false wt_name= wt_main_git=
-  _UP_CREDENTIAL_MOUNTS='none'
+  _UP_CRED_MOUNTS_CLAUDE='none'
+  _UP_CRED_MOUNTS_PI='none'
   _up_prepare_docker_mounts '$TEST_WS' 'test-cage-m9' 2>/dev/null
   printf '%s\n' \"\${_UP_RUN_ARGS[@]+\${_UP_RUN_ARGS[@]}}\"
 " 2>/dev/null)

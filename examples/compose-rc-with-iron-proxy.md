@@ -54,9 +54,14 @@ Two honest scope notes before you invest in this:
   non-possession, use a **static-key provider** (e.g. openrouter) instead of the
   Anthropic subscription path, or accept metered extra-usage.
 
-Also note `auth.credential_mounts` is a single all-or-nothing toggle (step 3): it
-suppresses the real Claude **and** pi credentials together — you cannot express
-"claude non-possession, pi possession" in one cage through that key alone.
+The bare `auth.credential_mounts` toggle (step 3) still suppresses the real Claude
+**and** pi credentials together by default. To express **mixed posture** — claude
+non-possession alongside pi possession, which is exactly the recommended shape
+given the billing constraint above — use the per-tool overrides instead:
+`auth.per_tool.claude: none` with `auth.per_tool.pi: real` (or simply leave
+`auth.per_tool.pi` unset, since `real` is the global default). See
+[config.md](../docs/reference/config.md#authcredential_mounts--authper_toolclaudepi--host-credential-mount-posture)
+for the full field reference (rip-cage-xhgr).
 
 ---
 
@@ -156,7 +161,8 @@ auth:
   # Suppress the real Claude + pi credential mounts (and keychain extraction).
   # WITHOUT this line the agent still possesses the real credentials — this key is
   # what makes non-possession real. Default is `real` (today's mount-everything behavior).
-  # All-or-nothing: covers claude AND pi together. Create-time only (a resume flip refuses loud).
+  # Bare form covers claude AND pi together; use auth.per_tool.{claude,pi} instead
+  # for mixed posture (rip-cage-xhgr). Create-time only (a resume flip refuses loud).
   credential_mounts: none
 network:
   mode: block
