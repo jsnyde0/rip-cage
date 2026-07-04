@@ -1,6 +1,6 @@
 # ADR-026: Rip-Cage Identity — Containment Layer + Delegated Mediation Seam
 
-**Status:** Accepted (D2 revised 2026-06-17 — wlwc: the **ssh-bypass command hook** reclassified OUT of containment to a composable default-on command-guard recipe (sibling to DCG, ADR-025 D2); welded ssh containment is the known_hosts/config mount floor (ADR-022 D4); DNS exfil guard stays containment. D5 revised 2026-06-17 — lifted EXPLORATORY→FIRM on the in-cage E4 proof + real-`rc up` auto-launch; second-provider behavioral residual discharged 2026-06-17 — iron-proxy E4, rip-cage-nyst)
+**Status:** Accepted (D2 revised 2026-06-17 — wlwc: the **ssh-bypass command hook** reclassified OUT of containment to a composable default-on command-guard recipe (sibling to DCG, ADR-025 D2); welded ssh containment is the known_hosts/config mount floor (ADR-022 D4); DNS exfil guard stays containment. D5 revised 2026-06-17 — lifted EXPLORATORY→FIRM on the in-cage E4 proof + real-`rc up` auto-launch; second-provider behavioral residual discharged 2026-06-17 — iron-proxy E4, rip-cage-nyst. D7 added 2026-07-04 — per-tool credential-mount posture + mixed posture, rip-cage-xhgr)
 **Date:** 2026-06-11
 **Design:** bead `rip-cage-ta1o` (full decision narrative, verdict:pass) ; competitor investigated from source: github.com/denoland/clawpatrol (reclassified to *alternative appliance* — D5)
 
@@ -77,7 +77,7 @@ rip-cage's irreducible contribution is to **guarantee all egress (HTTP and DNS) 
 
 rip-cage builds **no** credential injection and **no** content policy. ssh-agent forwarding (ADR-017) and real-creds-in-container remain the standalone posture; **credential non-possession is a property gained by composing a mediator**, not a rip-cage feature.
 
-**Standalone gap, stated explicitly:** with real creds in the container, standalone rip-cage does **not** close the **credential-exfil axis** named in ADR-024 D2 — a prompt-injected agent can read its own env / `.credentials.json` and exfiltrate the real token to any allowed destination. The egress allowlist narrows the *destination*; it does not stop the *read*. Closing this axis requires composing a mediator for non-possession; standalone is the accident-containment tier only (D6).
+**Standalone gap, stated explicitly:** with real creds in the container, standalone rip-cage does **not** close the **credential-exfil axis** named in ADR-024 D2 — a prompt-injected agent can read its own env / `.credentials.json` and exfiltrate the real token to any allowed destination. The egress allowlist narrows the *destination*; it does not stop the *read*. Closing this axis requires composing a mediator for non-possession; standalone is the accident-containment tier only (D6). The floor-side enabler is the config-gated credential-mount knob `auth.credential_mounts` (suppress the real-credential mounts so the cage holds only a placeholder; the composed mediator injects) — per-tool grain per D7.
 
 **Rationale:** injection is mediation (high-drift — a specialist maintains ~6 mechanisms across ~20 credential types). The "cheap generic-header injection" option was reconsidered and rejected: cheap to *build* but in the *drift* category and the first step onto the slope a specialist already descended.
 
@@ -140,7 +140,30 @@ Standalone rip-cage is honestly the **accident-containment** tier ("at least put
 
 **What would invalidate this:** if users empirically read standalone rip-cage as providing exfil-grade guarantees (the false-confidence failure), the positioning is mis-calibrated and the docs/recipe must push composition harder or gate a warning.
 
-## Consequences for ADR-012 (egress firewall)
+### D7: Per-tool credential-mount posture — `auth.per_tool.{claude,pi}`; mixed posture is the caged-pi shape
+
+**Firmness: FLEXIBLE** (added 2026-07-04 — design user-ratified + two adversarial-review rounds, bead `rip-cage-xhgr`; lift candidate once shipped with the extended host suite green)
+
+The config-gated credential-mount knob (D4) gains **per-tool grain**: the global `auth.credential_mounts` scalar (unchanged, default `real`) is joined by optional `auth.per_tool.claude` / `auth.per_tool.pi` scalar overrides — each null-default three-state (unset = inherit global / `real` / `none`), merging by ADR-021 D2's existing scalar rule (`network.mode`'s null-default selection-list shape; no new merge type). Resolution: `effective(T) = per_tool.T if set, else credential_mounts`.
+
+**The spine: config granularity matches the mount enforcement unit.** The enforcement unit is the credential *mount*, and mounts are per-tool because the credential is one artifact per tool — claude = keychain extraction + `.claude.json`/`.credentials.json`; pi = the single `~/.pi/agent/auth.json`. Per-tool is the **terminal** grain: per-provider posture is physically impossible (one `auth.json` holds ALL pi providers; a mount cannot split below the file), so there is no finer axis to regret not having.
+
+**Why mixed posture:** claude non-possession (placeholder + mediator-injected static `claude setup-token`, the D5-validated flow) composed with pi possession (real `auth.json` mounted, refreshing normally) is the pragmatic caged-pi shape — pi's openai-codex provider has **no static/long-lived token** (refreshes against `auth.openai.com`), so it cannot ride static header-swap injection. **Provider-viability is documented reality, never a config axis:** which tools can do non-possession is a capability *fact* for docs/recipes; a schema knob for it would let an operator request the impossible.
+
+**Posture stays in the config layer (ADR-021), not the manifest (ADR-005):** possession-vs-non-possession varies per project/situation; the manifest is the invariant build-time surface defining what a tool *is*. Naming claude/pi in the credential floor is consistent with ADR-005 D12 — credential mounting is floor, not tool-blessing, and the `per_tool` namespace is a **closed enumeration by design**: a third credentialed tool requires hand-written floor gate-site code anyway, so a schema row added in the same floor change is not the "tool count scales in `rc`" bottleneck D12 guards against. Unknown keys under `auth.per_tool.` fail **loud** at the per-file config-load stage (fail-closed: a typo'd suppression key must never silently inherit `real`).
+
+**Resume immutability goes per-tool:** effective values are mount-shape (create-time only). Per-tool container labels `rc.auth.credential-mounts.claude`/`.pi` join the kept global label, with a legacy derivation ladder (per-tool label → global label → `real`) so upgrading `rc` never bricks a running cage; the pi-scoped symlink-follow fingerprint takes `effective(pi)` at **both** computation sites (create-time and the resume-side recompute), keeping the filter-the-fingerprint-too coupling and create/resume symmetry for mixed-posture cages.
+
+**Alternatives considered:**
+
+| Approach | Rejection |
+|---|---|
+| Overload `credential_mounts` to be scalar-OR-object | `reasoned:` a field that is sometimes scalar, sometimes object cannot declare ONE ADR-021 D2 merge type; scalar-vs-object across the two config layers has no defined merge rule. |
+| A genuine `per_tool:` MAP field | `direct:` (ADR-021:65–69) the merge vocabulary has no map/object type — only additive-list, selection-list, scalar; adding one is a versioned schema change (ADR-021:71), unwarranted here. |
+| Per-provider posture (e.g. pi-on-openrouter possess, pi-on-codex not) | `direct:` (one `~/.pi/agent/auth.json` holds all pi providers) the mount cannot split below the file — the grain is physically unreachable. |
+| Keep all-or-nothing; run two cages for mixed posture | `reasoned:` forces cage-per-posture proliferation for the common caged-pi case; the enforcement unit is already per-tool inside one cage, so the config should express it. |
+
+**What would invalidate this:** (1) a tool's credential stops being a whole-file/whole-keychain artifact (e.g. pi ships per-provider credential files) — the terminal-grain argument re-opens; (2) a refresh-owning mediator for openai-codex emerges and proves out — mixed posture stops being the *only* caged-pi shape (a docs/recipe update, not a schema change); (3) credential mounting becomes fully manifest-declarable (a generic seam expressing keychain + single-file mounts) — the config-layer placement could relocate.
 
 ADR-012's L7 TLS-MITM direction is the layer this ADR re-homes as *mediation*. The in-place evolution of ADR-012's decisions lands with the implementation (bead `rip-cage-ta1o`), so the ADR continues to describe shipped state until then; the decisions affected and the direction are:
 
@@ -157,10 +180,11 @@ ADR-012's L7 TLS-MITM direction is the layer this ADR re-homes as *mediation*. T
 - [ADR-006](ADR-006-multi-agent-architecture.md) D7 — rip-cage as a composable asset, orchestration external (the orchestration-layer cousin of this network-layer cut; box-entry-vs-spawn split mirrored by D5's responsibility split) ; D8 — wire tool↔tool only through public CLIs (D5 forwards via the mediator's public listen interface)
 - [ADR-009](ADR-009-ux-overhaul.md) D1 — harm-reduction positioning (D1, D6)
 - [ADR-012](ADR-012-egress-firewall.md) D2/D4/D5/D6/D9 — the egress decisions this ADR re-homes (see Consequences) ; D6 — the non-overridable IOC floor the mediator may add to but never subtract from (D5 push-side asymmetry) ; D9 — the DNS `forward_to` seam D5's `network.http.forward_to` is the HTTP analog of
-- [ADR-021](ADR-021-layered-rip-cage-config.md) D6 — `session.multiplexer` config shape (default none, manifest-derived allowed-set, not a fixed enum) that `network.egress.mediator` (D5) directly mirrors
+- [ADR-021](ADR-021-layered-rip-cage-config.md) D6 — `session.multiplexer` config shape (default none, manifest-derived allowed-set, not a fixed enum) that `network.egress.mediator` (D5) directly mirrors ; D2 — per-field merge rules (scalar / selection-list / additive-list, no map type) that bound D7's per-tool config shape
 - [ADR-017](ADR-017-ssh-agent-forwarding-default.md) — ssh-agent forwarding unchanged standalone (D4)
 - [ADR-022](ADR-022-ssh-allowlist.md) D4 — the welded ssh known_hosts/config mount floor (containment, D2); D5 — the ssh-bypass *hook* is **reclassified 2026-06-17** out of containment to a composable default-on command-guard recipe (ADR-025 D2 / wlwc), sibling to DCG; full ssh destination scoping = welded mount floor + default-on ssh-bypass recipe (D2 tie-break)
 - [ADR-024](ADR-024-prompt-injection-threat-model.md) D2 (credential-exfil axis — standalone gap, D4) ; D4 (motivated adversary out of scope — D3 framing) ; D5 (cross-layer-coordination assumption — D1 invalidation)
+- bead `rip-cage-xhgr` — per-tool credential-mount design (D7 source: full gate-site mechanics, resume-label ladder, fingerprint coupling, acceptance contract)
 - [ADR-025](ADR-025-host-adoptable-dcg-policy.md) D2 (revised 2026-06-17) — DCG demoted from welded floor to a composable default-on command-guard recipe; the command-guard tier (DCG, ssh-bypass) sits above the containment line that D1/D2 weld
 - bead `rip-cage-ta1o` — converged design + adversarial-review record (verdict:pass)
 - bead `rip-cage-4c5` — wpu/herdr composable-tool-manifest epic (the pluggability direction this is the network-layer sibling of)
