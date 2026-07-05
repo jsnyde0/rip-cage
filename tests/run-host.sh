@@ -288,6 +288,7 @@ run_test "${SCRIPT_DIR}/test-config-ro-mount.sh"      # rip-cage-cw51: .rip-cage
 run_test "${SCRIPT_DIR}/test-ssh-bypass-demotion.sh"  # rip-cage-wlwc.11: block-ssh-bypass demoted from base image to composable recipe (SS1-SS3 host-only structural; SB1-SB2 RC_E2E-gated)
 run_test "${SCRIPT_DIR}/test-dcg-demotion.sh"          # rip-cage-wlwc.10: dcg demoted from base image to composable recipe (DS1-DS4 host-only structural; DB1-DB2 RC_E2E-gated)
 run_test "${SCRIPT_DIR}/test-mount-seam-integration.sh" # rip-cage-wlwc.6: integration harness capstone (SI1-SI6 host-only Tier-1; SE1-SE5 self-skip via RC_E2E gate)
+run_test "${SCRIPT_DIR}/test-image-drift-resume.sh"    # rip-cage-jnvb: rc up image-ID drift guard on resume — full-rc-through-fake-docker-shim T1-T6, host-only, no live container needed
 # Container-tier (NEEDS_CONTAINER above; self-skip under --host-only, run on full invocation):
 run_test "${SCRIPT_DIR}/test-ssh-forwarding.sh"       # ADR-017/018 live ssh-agent forwarding
 run_test "${SCRIPT_DIR}/test-ssh-resolver.sh"         # github-identity resolver; Tests 6-10 spin up cages
