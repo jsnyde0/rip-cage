@@ -4080,6 +4080,115 @@ _up_resolve_mediator_env_file() {
   log "network.egress.mediator_env_file: loaded ${_mef_count} entr$( [[ "$_mef_count" -eq 1 ]] && echo y || echo ies ) from ${_mef_pointer}"
 }
 
+# _up_resolve_placeholder_env_file <path> <cli_env_file> (rip-cage-b9to)
+#
+# auth.placeholder_env_file is a PERSISTED POINTER to a host env file carrying
+# the agent's non-secret placeholder token (e.g. CLAUDE_CODE_OAUTH_TOKEN) —
+# the mediator swaps it for the real credential at egress time. Modeled on
+# _up_resolve_mediator_env_file above, but for a DIFFERENT channel: this
+# pointer's contents land in the container via `docker run --env-file`, i.e.
+# in PID 1's environment, which the agent CAN read (/proc/1/environ) — that's
+# the point (agent-held, non-secret by design). The mediator's channel above
+# is `docker exec -u <mediator-uid> -e ...`, never agent-readable.
+#
+# CREATE-ONLY, phase-aware by CALL SITE (not by a $2-phase arg like the
+# mediator resolver): the call site in cmd_up invokes this ONLY on the create
+# path, immediately before _up_prepare_environment — never on resume (container
+# env is immutable across stop/start; D3) and never under --dry-run (D4).
+#
+# ORDER MATTERS (v3 design D2, R2 F1) — mirrors the separated
+# local + if _x=$(...) idiom of _up_resolve_mediator_env_file above:
+#   a. Read the effective config key FIRST. Null/absent -> return silently,
+#      ZERO output — every existing --env-file CLI user (who never sets this
+#      key) sees nothing new (acceptance d).
+#   b. Only once the key IS set: if the CLI already supplied --env-file
+#      (cli_env_file non-empty) -> log an ignore-note and return. CLI wins;
+#      returns before touching anything, so same-file double-apply is
+#      impossible.
+#   c. Pointer fails [[ -f ]] (missing, directory, dangling symlink) -> FATAL:
+#      json_error under json mode + echo>&2 + exit 1, naming
+#      auth.placeholder_env_file (mirrors the mediator resolver's F3 fatal
+#      above). Create-only call site: this can never strand a resume.
+#   d. Run _check_secret_path_denylist on the pointer with the SAME treatment
+#      the CLI --env-file path gives it (rc:~4367) — deliberate divergence
+#      from the mediator resolver (D2d): this channel IS agent-readable, so an
+#      operator accidentally pointing at a real secret file (~/.aws/credentials)
+#      must be refused the same way the CLI path refuses it.
+#   e. No tilde/HOME expansion, no relative-path resolution (raw pointer, like
+#      the mediator resolver — config.md documents "absolute path"). No
+#      allowed-roots check (host-authored config, host-only trust — mediator
+#      precedent). No 0600 warning (non-secret by design; agent-readability of
+#      the placeholder is the point).
+#
+# RETURN MECHANISM (R2 F2, pinned): sets the global _UP_PLACEHOLDER_ENV_FILE
+# (reset to "" at the top of every call so a stale value from a prior
+# invocation in the same process can never leak forward) — mirrors the
+# established _UP_* global idiom (cf. _UP_MEDIATOR_CA_ENV). This function
+# must NOT rely on dynamic-scope bare assignment into the caller's `env_file`
+# and must NOT declare `local env_file` itself. The CALL SITE (cmd_up,
+# immediately before _up_prepare_environment) is responsible for copying
+# _UP_PLACEHOLDER_ENV_FILE into its own env_file when non-empty — that copy is
+# part of the change, not implied by this function.
+#
+# Globals read: OUTPUT_FORMAT
+# Globals written: _UP_PLACEHOLDER_ENV_FILE
+# Parameters:
+#   $1  path          — validated workspace path (effective-config resolution)
+#   $2  cli_env_file  — the CLI --env-file value as seen so far by cmd_up
+#                        ("" if not supplied). Needed here because, unlike the
+#                        mediator's CLI flags (which populate a global array,
+#                        _UP_MEDIATOR_ENV_ARGS), --env-file only ever sets a
+#                        `local env_file` inside cmd_up — there is no global to
+#                        inspect, so the caller must pass its current value.
+_up_resolve_placeholder_env_file() {
+  local _pef_path="$1" _pef_cli_env_file="${2:-}"
+  _UP_PLACEHOLDER_ENV_FILE=""
+
+  local _pef_pointer="null"
+  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "${_pef_path}")" ]]; then
+    if command -v yq &>/dev/null; then
+      local _pef_cfg
+      if _pef_cfg=$(_load_effective_config "${_pef_path}" 2>/dev/null); then
+        _pef_pointer=$(jq -r '.config.auth.placeholder_env_file // "null"' <<<"$_pef_cfg")
+      fi
+      unset _pef_cfg
+    fi
+  fi
+  if [[ -z "$_pef_pointer" || "$_pef_pointer" == "null" ]]; then
+    return 0
+  fi
+
+  if [[ -n "$_pef_cli_env_file" ]]; then
+    log "auth.placeholder_env_file: ignored — CLI --env-file already supplied"
+    return 0
+  fi
+
+  if [[ ! -f "$_pef_pointer" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "auth.placeholder_env_file points at a missing file: ${_pef_pointer}" "PLACEHOLDER_ENV_FILE_NOT_FOUND"
+    fi
+    echo "Error: auth.placeholder_env_file points at a missing file: ${_pef_pointer}" >&2
+    exit 1
+  fi
+
+  # D2d: same treatment as the CLI --env-file path's denylist check (rc:~4367)
+  # — this channel is agent-readable, unlike the mediator's docker-exec-only
+  # channel, so an accidental secret-path pointer must be refused the same way.
+  # Known partial parity (accepted at rip-cage-b9to impl-review): the check
+  # runs on the RAW pointer (D2e: no realpath), so a symlink to a denylisted
+  # secret bypasses it here while the CLI path (which realpaths first) would
+  # catch it. Host-authored config, accident model — out of threat scope.
+  if _check_secret_path_denylist "$_pef_pointer" "$_pef_path"; then
+    local _pef_denied_pattern
+    _pef_denied_pattern=$(_secret_path_denylist_matched_pattern "$_pef_pointer" "$_pef_path")
+    _emit_denylist_denial "$_pef_pointer" "${_pef_denied_pattern:-<unknown>}"
+    exit 1
+  fi
+
+  _UP_PLACEHOLDER_ENV_FILE="$_pef_pointer"
+  log "auth.placeholder_env_file: applied ${_pef_pointer}"
+}
+
 # _up_init_mediator — root-phase mediator init inside the container.
 # (rip-cage-ta1o.5.8 / ADR-026 D5)
 #
@@ -5138,6 +5247,16 @@ cmd_up() {
   unset _rc_mediator
 
   _up_prepare_docker_mounts "$path" "$name"
+
+  # rip-cage-b9to: resolve the auth.placeholder_env_file pointer (create-only,
+  # immediately before _up_prepare_environment consumes env_file as $3). CLI
+  # --env-file always wins — the resolver itself checks env_file's current
+  # value and no-ops (with a log note) when it is already non-empty.
+  _up_resolve_placeholder_env_file "$path" "$env_file"
+  if [[ -n "$_UP_PLACEHOLDER_ENV_FILE" ]]; then
+    env_file="$_UP_PLACEHOLDER_ENV_FILE"
+  fi
+
   _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" "$rc_egress" "$rc_forward_ssh"
 
   # rip-cage-hhh.6 D3: stamp rc.egress.mode label (observe|block|legacy) and
@@ -7000,6 +7119,7 @@ session.multiplexer|selection_list|"none"
 network.egress.mediator|selection_list|"none"
 auth.credential_mounts|selection_list|"real"|real,none
 network.egress.mediator_env_file|scalar|null
+auth.placeholder_env_file|scalar|null
 auth.per_tool.claude|selection_list|null|real,none
 auth.per_tool.pi|selection_list|null|real,none
 EOF
