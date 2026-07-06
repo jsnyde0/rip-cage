@@ -1132,6 +1132,31 @@ _check_lfs_stubs() {
 # instead of silently starting a no-credentials cage. DO NOT export in a real shell.
 #
 # Returns: 0 on success or on Linux, 1 on macOS extraction failure.
+
+# _extract_credentials_has_usable_existing — rip-cage-towm: does a usable
+# credential file ALREADY exist at ~/.claude/.credentials.json? "Usable" =
+# exists, non-empty, and (best-effort) not expired per the same jq expiry
+# idiom used elsewhere (rc ~1345-1354, D3 credential health check). No jq, no
+# expiry field, or an unparsable expiry date all fall back to "usable"
+# (best-effort — see the design's own invalidation clause: a stale-but-present
+# file could theoretically suppress a warning that should fire; revisit if
+# that turns out to bite in practice). Used to decide whether a keychain
+# extraction failure is a genuine problem or a benign no-op (the existing
+# file gets mounted regardless of extraction outcome).
+_extract_credentials_has_usable_existing() {
+  local creds_file="${HOME}/.claude/.credentials.json"
+  [[ -s "$creds_file" ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 0
+  local expiry
+  expiry=$(jq -r '.expiry // .expiresAt // empty' "$creds_file" 2>/dev/null || true)
+  [[ -z "$expiry" ]] && return 0
+  local expiry_epoch now_epoch
+  expiry_epoch=$(date -jf "%Y-%m-%dT%H:%M:%S" "${expiry%%[.+Z]*}" "+%s" 2>/dev/null || date -d "$expiry" "+%s" 2>/dev/null || true)
+  [[ -z "$expiry_epoch" ]] && return 0
+  now_epoch=$(date "+%s")
+  [[ "$expiry_epoch" -gt "$now_epoch" ]]
+}
+
 _extract_credentials() {
   # Test seam: skip keychain extraction when explicitly requested. Warn loudly so
   # an accidental export surfaces instead of silently producing a no-auth cage.
@@ -1169,8 +1194,15 @@ _extract_credentials() {
       rm -f "$creds_tmp"
     else
       rm -f "$creds_tmp"
-      echo "Warning: failed to extract Claude credentials from macOS keychain — fine if you are not using Claude Code in this cage" >&2
-      echo "  If you are using Claude Code, run 'claude auth login' on the host to set up credentials, or set ANTHROPIC_API_KEY" >&2
+      # rip-cage-towm: only warn when there's no usable existing credential
+      # file to fall back on. A usable file gets mounted regardless of this
+      # extraction outcome, so the warning would be a false alarm — silent
+      # here (info-level, not printed, to avoid adding routine noise on every
+      # `rc up` for a host with no keychain item that's actually fine).
+      if ! _extract_credentials_has_usable_existing; then
+        echo "Warning: failed to extract Claude credentials from macOS keychain — fine if you are not using Claude Code in this cage" >&2
+        echo "  If you are using Claude Code, run 'claude auth login' on the host to set up credentials, or set ANTHROPIC_API_KEY" >&2
+      fi
       return 1
     fi
   fi
@@ -6667,8 +6699,25 @@ _doctor_bd_version_compare() {
 #                                socket, or regular file all count as
 #                                healthy here) — a working mount is never a
 #                                fault.
+#   "SEEDED <dst> <seed>"      — destination dead (atomic-rename hazard), BUT
+#                                a non-empty destination-sibling seed snapshot
+#                                exists in-cage at <dirname(dst)>/.claude/
+#                                <basename(dst)>.seed (rip-cage-i7s9: matches
+#                                init-rip-cage.sh:576-580's R4 naming
+#                                convention). Benign by design: init snapshots
+#                                the mount once at container start (while the
+#                                handle was intact) and all runtime consumers
+#                                read the snapshot, never the live mount, so a
+#                                post-init dead handle has zero functional
+#                                impact. Generic classifier — not keyed on any
+#                                specific mount path; keyed on the seed
+#                                sibling's existence.
 #   "DEAD <dst>"               — destination dead; host source IS a regular
-#                                file. The classic atomic-rename hazard.
+#                                file; NO usable seed sibling found. The
+#                                classic atomic-rename hazard, actionable
+#                                (e.g. .credentials.json, where the live mount
+#                                IS the refresh channel — no seed convention
+#                                covers it).
 #   "DEAD_OTHER <dst> <src>"   — destination dead; host source exists but is
 #                                NOT a regular file (socket, FIFO, etc.).
 #                                NOT the atomic-rename hazard (that requires
@@ -6705,7 +6754,19 @@ _doctor_dead_file_mounts() {
     fi
     # Destination is dead. Only now classify by host source state.
     if [[ -f "$src" ]]; then
-      echo "DEAD ${dst}"
+      # rip-cage-i7s9: before crying DEAD, check for a non-empty destination-
+      # sibling seed snapshot (the naming convention init-rip-cage.sh:576-580
+      # R4 writes: <dirname(dst)>/.claude/<basename(dst)>.seed). If present,
+      # the dead live handle is benign — init already snapshotted it once
+      # while intact, and runtime consumers read the snapshot, not the live
+      # mount. Generic classifier: not keyed on any specific mount path.
+      local _seed_path
+      _seed_path="$(dirname "$dst")/.claude/$(basename "$dst").seed"
+      if docker exec "$name" test -s "$_seed_path" >/dev/null 2>&1; then
+        echo "SEEDED ${dst} ${_seed_path}"
+      else
+        echo "DEAD ${dst}"
+      fi
     elif [[ -e "$src" ]]; then
       echo "DEAD_OTHER ${dst} ${src}"
     else
@@ -6732,11 +6793,12 @@ _doctor_format_dead_mounts() {
     return
   fi
 
-  local dead_list=() dead_other_list=() missing_list=() healthy_count=0
+  local dead_list=() dead_other_list=() missing_list=() seeded_list=() healthy_count=0
   local line
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     case "$line" in
+      SEEDED\ *) seeded_list+=("${line#SEEDED }") ;;
       DEAD_OTHER\ *) dead_other_list+=("${line#DEAD_OTHER }") ;;
       DEAD\ *) dead_list+=("${line#DEAD }") ;;
       MISSING\ *) missing_list+=("${line#MISSING }") ;;
@@ -6759,9 +6821,67 @@ _doctor_format_dead_mounts() {
     mjoined=$(printf '%s, ' "${missing_list[@]}")
     mjoined="${mjoined%, }"
     echo "WARN — mount source no longer exists on host: ${mjoined} (deleted, not renamed — not the atomic-rename dead-handle hazard)"
+  elif [[ ${#seeded_list[@]} -gt 0 ]]; then
+    # rip-cage-i7s9: dead live handle, but init already snapshotted the mount
+    # to a destination-sibling seed file and all runtime consumers read the
+    # snapshot — benign by design. INFO, not FAIL; no re-bind advice (re-
+    # binding would not change anything runtime-observable).
+    local _sd
+    local sdst_list=()
+    for _sd in "${seeded_list[@]}"; do
+      sdst_list+=("${_sd%% *}")
+    done
+    local sjoined
+    sjoined=$(printf '%s, ' "${sdst_list[@]}")
+    sjoined="${sjoined%, }"
+    echo "INFO — seed-only mount(s), dead live handle is benign: ${sjoined} (snapshotted at init, runtime reads the snapshot; no action needed)"
   else
     echo "OK — ${healthy_count} single-file mount(s) healthy"
   fi
+}
+
+# _doctor_format_auth_probe <name>
+#
+# rip-cage-ebdd: posture-aware auth probe. A cage running the credential
+# non-possession posture (auth.per_tool.claude: none — agent holds a
+# placeholder token, a composed mediator injects the real secret on egress)
+# has neither a mounted credentials file nor ANTHROPIC_API_KEY, and the
+# original probe cried FAIL on it despite the cage being perfectly healthy.
+# Recognizes the posture via, in order:
+#   1. Existing credentials file / ANTHROPIC_API_KEY (today's healthy paths,
+#      unchanged).
+#   2. The rc.auth.credential-mounts.claude=none container label (stamped at
+#      create time, rc:5129) — host-side `docker inspect`, cheap and not
+#      forgeable by an in-cage agent. Checked before the env var per the
+#      scoping review (label preferred, env second).
+#   3. CLAUDE_CODE_OAUTH_TOKEN present in-cage — mirrors the check
+#      tests/test-safety-stack.sh already uses (~line 187) via docker exec,
+#      for cages that recognize the posture through the env var alone (e.g.
+#      pre-label containers).
+# A cage with NEITHER credentials NOR a recognized posture still FAILs
+# exactly as before. Kept as its own pure/testable helper (same idiom as
+# _doctor_format_dead_mounts) so it's unit-testable without a live cage.
+_doctor_format_auth_probe() {
+  local name="$1"
+  if docker exec "$name" test -s /home/agent/.claude/.credentials.json >/dev/null 2>&1; then
+    echo "OK — ~/.claude/.credentials.json present"
+    return
+  fi
+  if docker exec "$name" sh -c 'test -n "${ANTHROPIC_API_KEY:-}"' >/dev/null 2>&1; then
+    echo "OK — ANTHROPIC_API_KEY set (no OAuth creds)"
+    return
+  fi
+  local _cred_mounts_claude_label
+  _cred_mounts_claude_label=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts.claude" }}' "$name" 2>/dev/null || true)
+  if [[ "$_cred_mounts_claude_label" == "none" ]]; then
+    echo "OK — non-possession posture (claude credentials deliberately not mounted; rc.auth.credential-mounts.claude=none)"
+    return
+  fi
+  if docker exec "$name" sh -c 'test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"' >/dev/null 2>&1; then
+    echo "OK — non-possession posture (CLAUDE_CODE_OAUTH_TOKEN present; mediator-injected auth)"
+    return
+  fi
+  echo "FAIL — no credentials and no ANTHROPIC_API_KEY"
 }
 
 cmd_doctor() {
@@ -6881,14 +7001,9 @@ cmd_doctor() {
       beads_probe="WARN — port_file=${port_file_exists} dolt_running=${dolt_running} port='${port_val}'"
     fi
 
-    # Auth probe: credentials file presence + nonzero.
-    if docker exec "$name" test -s /home/agent/.claude/.credentials.json >/dev/null 2>&1; then
-      auth_probe="OK — ~/.claude/.credentials.json present"
-    elif docker exec "$name" sh -c 'test -n "${ANTHROPIC_API_KEY:-}"' >/dev/null 2>&1; then
-      auth_probe="OK — ANTHROPIC_API_KEY set (no OAuth creds)"
-    else
-      auth_probe="FAIL — no credentials and no ANTHROPIC_API_KEY"
-    fi
+    # Auth probe: credentials file presence + nonzero, or a recognized
+    # non-possession posture (rip-cage-ebdd — see _doctor_format_auth_probe).
+    auth_probe=$(_doctor_format_auth_probe "$name")
 
     # Dead-handle probe: generic sweep over ALL single-file bind mounts
     # (rip-cage-uben). Distinct from auth_probe above — auth_probe's `test -s`

@@ -53,6 +53,27 @@
 #       from both the atomic-rename FAIL and the "deleted, not renamed" WARN
 #       (source here is neither a plain file nor missing -- it exists as a
 #       non-regular file).
+#   D8  dead handle WITH a non-empty destination-sibling seed snapshot
+#       (<dirname(dst)>/.claude/<basename(dst)>.seed, matching
+#       init-rip-cage.sh:576-580's R4 naming convention) -> raw helper reports
+#       SEEDED not DEAD; formatted probe is INFO, not FAIL, and drops the
+#       "rc down/rc up" re-bind advice (rip-cage-i7s9: the dead live handle is
+#       benign when a snapshot already exists and runtime reads it).
+#   D9  dead handle WITHOUT a seed sibling -> still DEAD/FAIL (regression pin:
+#       the new seed-check must not swallow the genuine atomic-rename FAIL,
+#       e.g. .credentials.json where the live mount IS the refresh channel).
+#   D10 dead handle WITH an EMPTY seed sibling -> still DEAD/FAIL (an empty
+#       snapshot is not a working fallback -- `test -s`, not `test -e`).
+#
+# Also tests a THIRD pure helper (rip-cage-ebdd, posture-aware auth probe),
+# co-located here because it shares the same docker-stub idiom:
+#   _doctor_format_auth_probe <name> -- doctor-probe auth display string
+#   A1  rc.auth.credential-mounts.claude=none label present -> OK, posture
+#       named informatively (non-possession), not FAIL.
+#   A2  CLAUDE_CODE_OAUTH_TOKEN present in-cage, no recognized label -> OK,
+#       posture named informatively, not FAIL.
+#   A3  no label, no CLAUDE_CODE_OAUTH_TOKEN, no credentials file, no
+#       ANTHROPIC_API_KEY -> still FAIL (regression pin).
 
 set -uo pipefail
 
@@ -586,6 +607,332 @@ else
   fail "D7e formatted probe names the dead destination path" "got: $D7_FMT"
 fi
 rm -rf "${D7_STUB_DIR}"
+
+# ---------------------------------------------------------------------------
+# D8: dead handle WITH a non-empty destination-sibling seed snapshot ->
+# SEEDED not DEAD; formatted probe is INFO, drops the re-bind advice
+# (rip-cage-i7s9).
+# ---------------------------------------------------------------------------
+echo ""
+echo "-- D8: dead handle with non-empty seed sibling -> INFO not FAIL --"
+
+D8_HOST_FILE="${DOCTOR_DM_TMP}/d8-claude.json"
+printf '{"fake":"claude-json"}' > "$D8_HOST_FILE"
+D8_DST="/home/agent/.claude.json"
+D8_SEED="/home/agent/.claude/.claude.json.seed"
+
+D8_MOUNTS_JSON=$(cat <<JSON
+[{"Type":"bind","Source":"${D8_HOST_FILE}","Destination":"${D8_DST}"}]
+JSON
+)
+
+D8_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-d8-stub-XXXXXX")
+cat > "${D8_STUB_DIR}/docker" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+  *"json .Mounts"*) echo '${D8_MOUNTS_JSON}'; exit 0 ;;
+  *"test -e ${D8_DST}"*) exit 1 ;;
+  *"test -s ${D8_SEED}"*) exit 0 ;;
+  *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "${D8_STUB_DIR}/docker"
+
+D8_RAW=$(PATH="${D8_STUB_DIR}:$PATH" bash -c "
+  eval \"\$(awk '
+    /^_doctor_dead_file_mounts\(\)/ { found=1 }
+    found { print }
+    found && /^\}\$/ { exit }
+  ' '$RC')\"
+  _doctor_dead_file_mounts 'd8-cage'
+")
+
+if [[ "$D8_RAW" == *"SEEDED ${D8_DST}"* ]]; then
+  pass "D8a raw helper reports SEEDED (not DEAD) when a non-empty seed sibling exists"
+else
+  fail "D8a raw helper reports SEEDED for the seed-backed destination" "got: $D8_RAW"
+fi
+if [[ "$D8_RAW" != *"DEAD ${D8_DST}"* ]]; then
+  pass "D8b raw helper does not ALSO report plain DEAD for the same destination"
+else
+  fail "D8b raw helper does not report plain DEAD" "got: $D8_RAW"
+fi
+
+D8_FMT_EXIT=0
+D8_FMT=$(PATH="${D8_STUB_DIR}:$PATH" bash -c "
+  eval \"\$(awk '
+    /^_doctor_dead_file_mounts\(\)/ { found=1 }
+    found { print }
+    found && /^\}\$/ { exit }
+  ' '$RC')\"
+  eval \"\$(awk '
+    /^_doctor_format_dead_mounts\(\)/ { found=1 }
+    found { print }
+    found && /^\}\$/ { exit }
+  ' '$RC')\"
+  _doctor_format_dead_mounts 'd8-cage' '/some/workspace/path'
+") || D8_FMT_EXIT=$?
+
+if [[ "$D8_FMT" == INFO* ]]; then
+  pass "D8c formatted probe reports INFO (not FAIL) for a seed-backed dead handle"
+else
+  fail "D8c formatted probe reports INFO for a seed-backed dead handle" "got: $D8_FMT"
+fi
+if [[ "$D8_FMT" != *FAIL* ]]; then
+  pass "D8d formatted probe contains no FAIL wording"
+else
+  fail "D8d formatted probe contains no FAIL wording" "got: $D8_FMT"
+fi
+if [[ "$D8_FMT" != *"rc down"* && "$D8_FMT" != *"rc up"* ]]; then
+  pass "D8e formatted probe drops the re-bind advice (rc down / rc up) for the seed-backed mount"
+else
+  fail "D8e formatted probe drops the re-bind advice" "got: $D8_FMT"
+fi
+if [[ "$D8_FMT_EXIT" -eq 0 ]]; then
+  pass "D8f formatter exits 0 (exit contribution 0 for the seed-backed case)"
+else
+  fail "D8f formatter exits 0" "got exit $D8_FMT_EXIT"
+fi
+rm -rf "${D8_STUB_DIR}"
+rm -f "$D8_HOST_FILE"
+
+# ---------------------------------------------------------------------------
+# D9: dead handle WITHOUT a seed sibling -> still DEAD/FAIL (regression pin).
+# ---------------------------------------------------------------------------
+echo ""
+echo "-- D9: dead handle with NO seed sibling -> still FAIL --"
+
+D9_HOST_FILE="${DOCTOR_DM_TMP}/d9-claude.json"
+printf '{"fake":"claude-json"}' > "$D9_HOST_FILE"
+D9_DST="/home/agent/.claude.json"
+D9_SEED="/home/agent/.claude/.claude.json.seed"
+
+D9_MOUNTS_JSON=$(cat <<JSON
+[{"Type":"bind","Source":"${D9_HOST_FILE}","Destination":"${D9_DST}"}]
+JSON
+)
+
+D9_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-d9-stub-XXXXXX")
+cat > "${D9_STUB_DIR}/docker" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+  *"json .Mounts"*) echo '${D9_MOUNTS_JSON}'; exit 0 ;;
+  *"test -e ${D9_DST}"*) exit 1 ;;
+  *"test -s ${D9_SEED}"*) exit 1 ;;
+  *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "${D9_STUB_DIR}/docker"
+
+D9_RAW=$(PATH="${D9_STUB_DIR}:$PATH" bash -c "
+  eval \"\$(awk '
+    /^_doctor_dead_file_mounts\(\)/ { found=1 }
+    found { print }
+    found && /^\}\$/ { exit }
+  ' '$RC')\"
+  _doctor_dead_file_mounts 'd9-cage'
+")
+
+if [[ "$D9_RAW" == *"DEAD ${D9_DST}"* ]]; then
+  pass "D9a raw helper still reports DEAD when no seed sibling exists"
+else
+  fail "D9a raw helper still reports DEAD with no seed sibling" "got: $D9_RAW"
+fi
+
+D9_FMT=$(PATH="${D9_STUB_DIR}:$PATH" bash -c "
+  eval \"\$(awk '
+    /^_doctor_dead_file_mounts\(\)/ { found=1 }
+    found { print }
+    found && /^\}\$/ { exit }
+  ' '$RC')\"
+  eval \"\$(awk '
+    /^_doctor_format_dead_mounts\(\)/ { found=1 }
+    found { print }
+    found && /^\}\$/ { exit }
+  ' '$RC')\"
+  _doctor_format_dead_mounts 'd9-cage' '/some/workspace/path'
+")
+
+if [[ "$D9_FMT" == FAIL* ]]; then
+  pass "D9b formatted probe still FAILs with no seed sibling (regression pin)"
+else
+  fail "D9b formatted probe still FAILs with no seed sibling" "got: $D9_FMT"
+fi
+rm -rf "${D9_STUB_DIR}"
+rm -f "$D9_HOST_FILE"
+
+# ---------------------------------------------------------------------------
+# D10: dead handle WITH an EMPTY seed sibling -> still DEAD/FAIL (an empty
+# snapshot is not a working fallback).
+# ---------------------------------------------------------------------------
+echo ""
+echo "-- D10: dead handle with EMPTY seed sibling -> still FAIL --"
+
+D10_HOST_FILE="${DOCTOR_DM_TMP}/d10-claude.json"
+printf '{"fake":"claude-json"}' > "$D10_HOST_FILE"
+D10_DST="/home/agent/.claude.json"
+D10_SEED="/home/agent/.claude/.claude.json.seed"
+
+D10_MOUNTS_JSON=$(cat <<JSON
+[{"Type":"bind","Source":"${D10_HOST_FILE}","Destination":"${D10_DST}"}]
+JSON
+)
+
+D10_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-d10-stub-XXXXXX")
+cat > "${D10_STUB_DIR}/docker" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+  *"json .Mounts"*) echo '${D10_MOUNTS_JSON}'; exit 0 ;;
+  *"test -e ${D10_DST}"*) exit 1 ;;
+  *"test -s ${D10_SEED}"*) exit 1 ;;
+  *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "${D10_STUB_DIR}/docker"
+
+D10_FMT=$(PATH="${D10_STUB_DIR}:$PATH" bash -c "
+  eval \"\$(awk '
+    /^_doctor_dead_file_mounts\(\)/ { found=1 }
+    found { print }
+    found && /^\}\$/ { exit }
+  ' '$RC')\"
+  eval \"\$(awk '
+    /^_doctor_format_dead_mounts\(\)/ { found=1 }
+    found { print }
+    found && /^\}\$/ { exit }
+  ' '$RC')\"
+  _doctor_format_dead_mounts 'd10-cage' '/some/workspace/path'
+")
+
+if [[ "$D10_FMT" == FAIL* ]]; then
+  pass "D10a formatted probe still FAILs when the seed sibling exists but is EMPTY"
+else
+  fail "D10a formatted probe still FAILs with an empty seed sibling" "got: $D10_FMT"
+fi
+rm -rf "${D10_STUB_DIR}"
+rm -f "$D10_HOST_FILE"
+
+# ---------------------------------------------------------------------------
+# A1: rc.auth.credential-mounts.claude=none label present -> OK, non-
+# possession posture named informatively (rip-cage-ebdd).
+# ---------------------------------------------------------------------------
+echo ""
+echo "-- A1: auth probe, non-possession label -> OK not FAIL --"
+
+A1_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-a1-stub-XXXXXX")
+cat > "${A1_STUB_DIR}/docker" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *"test -s /home/agent/.claude/.credentials.json"*) exit 1 ;;
+  *"ANTHROPIC_API_KEY"*) exit 1 ;;
+  *"credential-mounts.claude"*) echo "none"; exit 0 ;;
+  *"CLAUDE_CODE_OAUTH_TOKEN"*) exit 1 ;;
+  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "${A1_STUB_DIR}/docker"
+
+A1_FMT=$(PATH="${A1_STUB_DIR}:$PATH" bash -c "
+  eval \"\$(awk '
+    /^_doctor_format_auth_probe\(\)/ { found=1 }
+    found { print }
+    found && /^\}\$/ { exit }
+  ' '$RC')\"
+  _doctor_format_auth_probe 'a1-cage'
+")
+
+if [[ "$A1_FMT" == OK* ]]; then
+  pass "A1a auth probe reports OK when rc.auth.credential-mounts.claude=none label is present"
+else
+  fail "A1a auth probe reports OK for the non-possession label" "got: $A1_FMT"
+fi
+if [[ "$A1_FMT" == *"non-possession"* ]]; then
+  pass "A1b auth probe names the non-possession posture informatively"
+else
+  fail "A1b auth probe names the non-possession posture" "got: $A1_FMT"
+fi
+if [[ "$A1_FMT" != *FAIL* ]]; then
+  pass "A1c auth probe contains no FAIL wording"
+else
+  fail "A1c auth probe contains no FAIL wording" "got: $A1_FMT"
+fi
+rm -rf "${A1_STUB_DIR}"
+
+# ---------------------------------------------------------------------------
+# A2: CLAUDE_CODE_OAUTH_TOKEN present in-cage, no recognized label -> OK,
+# posture named informatively (rip-cage-ebdd).
+# ---------------------------------------------------------------------------
+echo ""
+echo "-- A2: auth probe, CLAUDE_CODE_OAUTH_TOKEN present -> OK not FAIL --"
+
+A2_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-a2-stub-XXXXXX")
+cat > "${A2_STUB_DIR}/docker" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *"test -s /home/agent/.claude/.credentials.json"*) exit 1 ;;
+  *"ANTHROPIC_API_KEY"*) exit 1 ;;
+  *"credential-mounts.claude"*) echo ""; exit 0 ;;
+  *"CLAUDE_CODE_OAUTH_TOKEN"*) exit 0 ;;
+  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "${A2_STUB_DIR}/docker"
+
+A2_FMT=$(PATH="${A2_STUB_DIR}:$PATH" bash -c "
+  eval \"\$(awk '
+    /^_doctor_format_auth_probe\(\)/ { found=1 }
+    found { print }
+    found && /^\}\$/ { exit }
+  ' '$RC')\"
+  _doctor_format_auth_probe 'a2-cage'
+")
+
+if [[ "$A2_FMT" == OK* ]]; then
+  pass "A2a auth probe reports OK when CLAUDE_CODE_OAUTH_TOKEN is present in-cage"
+else
+  fail "A2a auth probe reports OK for CLAUDE_CODE_OAUTH_TOKEN" "got: $A2_FMT"
+fi
+if [[ "$A2_FMT" != *FAIL* ]]; then
+  pass "A2b auth probe contains no FAIL wording"
+else
+  fail "A2b auth probe contains no FAIL wording" "got: $A2_FMT"
+fi
+rm -rf "${A2_STUB_DIR}"
+
+# ---------------------------------------------------------------------------
+# A3: no label, no CLAUDE_CODE_OAUTH_TOKEN, no credentials file, no
+# ANTHROPIC_API_KEY -> still FAIL (regression pin, rip-cage-ebdd).
+# ---------------------------------------------------------------------------
+echo ""
+echo "-- A3: auth probe, no posture recognized and no creds -> still FAIL --"
+
+A3_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-a3-stub-XXXXXX")
+cat > "${A3_STUB_DIR}/docker" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *"test -s /home/agent/.claude/.credentials.json"*) exit 1 ;;
+  *"ANTHROPIC_API_KEY"*) exit 1 ;;
+  *"credential-mounts.claude"*) echo ""; exit 0 ;;
+  *"CLAUDE_CODE_OAUTH_TOKEN"*) exit 1 ;;
+  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "${A3_STUB_DIR}/docker"
+
+A3_FMT=$(PATH="${A3_STUB_DIR}:$PATH" bash -c "
+  eval \"\$(awk '
+    /^_doctor_format_auth_probe\(\)/ { found=1 }
+    found { print }
+    found && /^\}\$/ { exit }
+  ' '$RC')\"
+  _doctor_format_auth_probe 'a3-cage'
+")
+
+if [[ "$A3_FMT" == FAIL* ]]; then
+  pass "A3a auth probe still FAILs with neither credentials nor a recognized posture (regression pin)"
+else
+  fail "A3a auth probe still FAILs with no creds and no recognized posture" "got: $A3_FMT"
+fi
 
 # ---------------------------------------------------------------------------
 # Summary
