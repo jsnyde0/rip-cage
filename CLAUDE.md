@@ -54,6 +54,15 @@ Skills mounted from the host are discoverable inside containers via a Python MCP
 The shim implements the same `list`/`show`/`load` tools as the host `ms` binary.
 
 - Skills that are broken symlinks inside the container (host-only paths) are skipped at startup
+- **Skill-source symlinks (projection contract, rip-cage-1pgp.1):** rc's floor auto-mounts each
+  skill-symlink target's parent dir `ro` at its **host-absolute** path (`_collect_symlink_parents`,
+  rc:939-975) — that fixes **absolute** symlinks. **Relative** symlinks (e.g.
+  `../../code/personal/dotpi/agent/skills/<name>`) resolve against the cage home instead
+  (`/home/agent/code/...` from `~/.rc-context/skills`, same 2-level depth as `~/.claude/skills`),
+  so they need the operator to compose a `ro` mount of the skills repo at that cage-side
+  resolution path (a mounts-only TOOL entry in `tools.yaml` — composition, never an rc-blessed
+  path, ADR-005 D12). Contract: cage-resolvable mount, not resolve+copy at init — host live-edits
+  stay visible in cages. Mounts are runtime `-v` args: existing cages gain it on destroy+recreate.
 - Upgrade path: when `ms` publishes Linux binaries, swap `command`/`args` in `settings.json`
   and remove `skill-server.py`; server name `meta-skill` stays unchanged
 - See: `history/2026-04-14-skills-in-containers-design.md` for full design rationale
