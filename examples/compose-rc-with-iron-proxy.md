@@ -168,8 +168,15 @@ network:
   mode: block
   allowed_hosts:
     - api.anthropic.com
-    # Deliberately NOT platform.claude.com: leaving the OAuth-refresh endpoint
-    # unreachable is defense-in-depth — the in-cage tools must never self-refresh.
+    - platform.claude.com
+    # platform.claude.com IS on the allowlist (flipped 2026-07-06, rip-cage-e770):
+    # (i) it's on Anthropic's documented required-domains list for Claude Code
+    #     (code.claude.com/docs/en/network-config — "Console account authentication");
+    # (ii) interactive Claude Code >=2.1.19x hard-fails startup with
+    #     ERR_SOCKET_CLOSED when this host is unreachable (headless `-p` does not);
+    # (iii) safety re-derivation: under non-possession the agent holds only the
+    #     worthless placeholder (step 5) — there is no real refresh token in the
+    #     cage to refresh or leak via this host, so omitting it protected nothing.
   egress:
     mediator: iron-proxy
     # Persisted pointer to a chmod-600 host file holding the real secret (step 4).
@@ -192,10 +199,14 @@ holds only the placeholder (step 5). `.rip-cage.yaml` is read-only inside the ca
 an empty `domains: []` allowlist (default-deny at the iron-proxy layer). For iron-proxy
 to forward traffic to the upstream, you must also populate its allowlist. The
 recommended approach is to align iron-proxy's allowlist with `network.allowed_hosts`
-in `.rip-cage.yaml`. You can do this by overwriting `/etc/iron-proxy/proxy.yaml`
-at cage init with the final allowlist, or by running iron-proxy with a config
-template that is rendered at start time. The simplest approach for a single cage:
-add the upstream hosts to the `domains:` list in the baked config before `rc build`.
+in `.rip-cage.yaml` — that means BOTH `api.anthropic.com` AND `platform.claude.com`,
+not just the API host; omitting the latter from iron-proxy's `domains:` list
+reproduces the same startup hard-fail even if `allowed_hosts` is correct. You can do
+this by overwriting `/etc/iron-proxy/proxy.yaml` at cage init with the final
+allowlist, or by running iron-proxy with a config template that is rendered at
+start time. The simplest approach for a single cage: add the upstream hosts
+(`api.anthropic.com`, `platform.claude.com`) to the `domains:` list in the baked
+config before `rc build`.
 
 ### 4. Configure the real secret (mediator process env only)
 
