@@ -176,11 +176,18 @@ fi
 echo ""
 echo "-- Auth --"
 
-# 13. Auth present (credentials file OR API key)
-if [[ -s ~/.claude/.credentials.json ]] || [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-  check_auth "Auth present" "pass" "$([[ -s ~/.claude/.credentials.json ]] && echo "OAuth" || echo "API key")"
+# 13. Auth present (credentials file, API key, or OAuth token env var).
+# CLAUDE_CODE_OAUTH_TOKEN is the auth path under credential non-possession
+# (auth.per_tool.claude: none — agent holds a placeholder, a composed mediator
+# injects the real secret on egress; rip-cage-73bz).
+if [[ -s ~/.claude/.credentials.json ]]; then
+  check_auth "Auth present" "pass" "OAuth"
+elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+  check_auth "Auth present" "pass" "API key"
+elif [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+  check_auth "Auth present" "pass" "OAuth token env"
 else
-  check_auth "Auth present" "fail" "no credentials file and no ANTHROPIC_API_KEY"
+  check_auth "Auth present" "fail" "no credentials file, no ANTHROPIC_API_KEY, no CLAUDE_CODE_OAUTH_TOKEN"
 fi
 
 # 14. Token not expired (skip if using API key only)
