@@ -431,6 +431,45 @@ else
 fi
 rm -rf "$_ac5_home"
 
+# Case 6: CLAUDE_CODE_OAUTH_TOKEN present via --env-file, non-possession posture
+# (no credentials file, no ~/.claude.json, no ANTHROPIC_API_KEY) → no 'WARNING: No
+# auth' (rip-cage-df1c). The init-time auth-warn check must additively recognize
+# CLAUDE_CODE_OAUTH_TOKEN, mirroring rc test check 13's recognition set
+# (test-safety-stack.sh:187) — this is the load-bearing non-possession auth path
+# (rip-cage-73bz).
+_aws6="${AUTH_TMP}/rc-auth/case6"
+_ac6_out="${AUTH_TMP}/case6-up.out"
+_ac6_home=$(mktemp -d)
+_ac6_envfile="${AUTH_TMP}/case6.env"
+mkdir -p "$_aws6"
+git -C "$_aws6" init > /dev/null 2>&1
+printf 'CLAUDE_CODE_OAUTH_TOKEN=placeholder-token-case6\n' > "$_ac6_envfile"
+chmod 600 "$_ac6_envfile"
+HOME="$_ac6_home" \
+  RC_SKIP_KEYCHAIN_EXTRACTION=1 \
+  ANTHROPIC_API_KEY="" \
+  RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
+  RIP_CAGE_EGRESS=off \
+  "$RC" up "$_aws6" --env-file "$_ac6_envfile" </dev/null >"$_ac6_out" 2>&1 || true
+_ac6_name=$(docker ps -a --filter "label=rc.source.path=$(realpath "$_aws6")" \
+  --format '{{.Names}}' 2>/dev/null | head -1)
+if [[ -z "$_ac6_name" ]]; then
+  check "auth-warn case 6: CLAUDE_CODE_OAUTH_TOKEN set (non-possession) → no WARNING (rip-cage-df1c)" "fail" "container did not start (see $_ac6_out)"
+else
+  # See case 1: assert on captured rc up stdout, gated on an init sentinel (rip-cage-igm).
+  _ac6_log=$(cat "$_ac6_out" 2>/dev/null || true)
+  if ! printf '%s\n' "$_ac6_log" | grep -q '\[rip-cage\] pi '; then
+    check "auth-warn case 6: CLAUDE_CODE_OAUTH_TOKEN set (non-possession) → no WARNING (rip-cage-df1c)" "fail" "init output not captured (see $_ac6_out)"
+  elif ! printf '%s\n' "$_ac6_log" | grep -q 'WARNING: No auth'; then
+    check "auth-warn case 6: CLAUDE_CODE_OAUTH_TOKEN set (non-possession) → no WARNING (rip-cage-df1c)" "pass"
+  else
+    check "auth-warn case 6: CLAUDE_CODE_OAUTH_TOKEN set (non-possession) → no WARNING (rip-cage-df1c)" "fail" "(container=$_ac6_name)"
+  fi
+  docker rm -f "$_ac6_name" > /dev/null 2>&1 || true
+  docker volume rm "rc-state-${_ac6_name}" > /dev/null 2>&1 || true
+fi
+rm -rf "$_ac6_home"
+
 # Restore RC_ALLOWED_ROOTS to the primary e2e root (subsequent checks use E2E_TMP_RESOLVED).
 export RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}"
 

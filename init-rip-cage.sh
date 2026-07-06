@@ -596,9 +596,15 @@ else
 fi
 
 # Check auth (warn only, do not fail)
+# CLAUDE_CODE_OAUTH_TOKEN is the auth path under credential non-possession
+# (auth.per_tool.claude: none — agent holds a placeholder, a composed mediator
+# injects the real secret on egress; rip-cage-73bz). Recognized additively here
+# to mirror rc test check 13's recognition set (tests/test-safety-stack.sh:187)
+# without replacing the existing credentials-file / ~/.claude.json / API-key
+# branches (rip-cage-df1c).
 if [ -f ~/.claude/.credentials.json ]; then
   echo "[rip-cage] OAuth credentials found"
-elif [ ! -f ~/.claude.json ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+elif [ ! -f ~/.claude.json ] && [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   echo "[rip-cage] WARNING: No auth found (~/.claude/.credentials.json missing, ANTHROPIC_API_KEY not set)" >&2
 fi
 
