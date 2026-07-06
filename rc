@@ -6630,6 +6630,140 @@ _doctor_bd_version_compare() {
 #
 # `rc doctor --host` is a separate mode (no container, daemon liveness only)
 # and is dispatched here so the existing JSON/help wiring is shared.
+# _doctor_dead_file_mounts <name>
+#
+# rip-cage-uben: generic dead-handle detection for single-FILE Docker bind
+# mounts. A host atomic-rename (write tmp + rename over — the standard
+# safe-rewrite idiom, e.g. a host Claude Code session rewriting
+# ~/.claude/.credentials.json) severs the inode a single-file bind mount
+# tracks: `docker inspect` keeps listing the mount, but the in-cage
+# destination path goes ENOENT (dead handle). DIRECTORY mounts do NOT have
+# this problem (the dentry re-resolves) — only DIRECTORY-sourced mounts are
+# skipped up front (host `-d`, no docker-exec probe issued — no stat storm);
+# everything else (regular file, socket, or a host path that no longer
+# exists at all) gets exactly one docker-exec destination probe.
+#
+# DESTINATION-FIRST predicate (rip-cage-uben live-negative-control fix,
+# 2026-07-06): the in-cage DESTINATION is probed BEFORE looking at the host
+# source's type/existence, and a healthy destination is reported HEALTHY
+# UNCONDITIONALLY — regardless of what the host source looks like. This
+# matters because some legitimate mounts (the ssh-agent-forwarding socket,
+# `/run/host-services/ssh-auth.sock` on macOS/OrbStack) have a host source
+# path that is NEVER host-visible at all — OrbStack materializes it only
+# inside the container's mount namespace — yet the mount works perfectly
+# in-cage. Checking host-source-existence FIRST (the original shape) treated
+# every one of those as "source missing" and WARNed on every single healthy
+# macOS cage forever: exactly the cry-wolf desensitization the ops docs warn
+# about. Only once the destination is confirmed DEAD do we look at the host
+# source to give an honest, differentiated diagnosis instead of always
+# claiming atomic-rename.
+#
+# Enumerates ALL bind mounts on the container (not hardcoded to
+# .credentials.json — a second single-file mount, ~/.claude.json, exists
+# under possession today and non-possession is adding another). Prints one
+# line per finding:
+#   "HEALTHY <dst>"            — in-cage destination resolves. Reported
+#                                regardless of host source state (missing,
+#                                socket, or regular file all count as
+#                                healthy here) — a working mount is never a
+#                                fault.
+#   "DEAD <dst>"               — destination dead; host source IS a regular
+#                                file. The classic atomic-rename hazard.
+#   "DEAD_OTHER <dst> <src>"   — destination dead; host source exists but is
+#                                NOT a regular file (socket, FIFO, etc.).
+#                                NOT the atomic-rename hazard (that requires
+#                                a plain file source) — reported with plain
+#                                wording instead of misdiagnosing a rename.
+#   "MISSING <dst> <src>"      — destination dead; host source does not
+#                                exist at ALL (deleted, not renamed). Also
+#                                distinct from the atomic-rename hazard.
+# Directory-sourced mounts print nothing (skipped before any probe).
+#
+# Pure enumeration only — never aborts on a dead handle (a probe, not a
+# guard); exits 0 whenever the mount list itself was readable, matching
+# cmd_doctor's existing convention that only container-not-found aborts.
+_doctor_dead_file_mounts() {
+  local name="$1"
+  local mounts_json
+  mounts_json=$(docker inspect --format '{{json .Mounts}}' "$name" 2>/dev/null) || return 0
+  [[ -z "$mounts_json" || "$mounts_json" == "null" ]] && return 0
+
+  local src dst
+  while IFS=$'\t' read -r src dst; do
+    [[ -z "$src" || -z "$dst" ]] && continue
+    if [[ -d "$src" ]]; then
+      # Directory-sourced bind mount — the dentry re-resolves; immune to
+      # this bug class. Skip WITHOUT probing (no stat storm).
+      continue
+    fi
+    if docker exec "$name" test -e "$dst" >/dev/null 2>&1; then
+      # Destination resolves in-cage — healthy, full stop. Do NOT look at
+      # the host source at all here: a host source that isn't host-visible
+      # (ssh-agent socket magic paths) with a WORKING mount is not a fault.
+      echo "HEALTHY ${dst}"
+      continue
+    fi
+    # Destination is dead. Only now classify by host source state.
+    if [[ -f "$src" ]]; then
+      echo "DEAD ${dst}"
+    elif [[ -e "$src" ]]; then
+      echo "DEAD_OTHER ${dst} ${src}"
+    else
+      echo "MISSING ${dst} ${src}"
+    fi
+  done < <(printf '%s' "$mounts_json" | jq -r '.[]? | select(.Type == "bind") | [.Source, .Destination] | @tsv' 2>/dev/null)
+}
+
+# _doctor_format_dead_mounts <name> <source_path>
+#
+# Renders _doctor_dead_file_mounts' raw findings into the doctor probe
+# display string (OK/WARN/FAIL, matching the convention of the other live
+# probes in cmd_doctor). Kept separate from the raw enumerator so it's
+# independently unit-testable (test-doctor-dead-mount.sh stubs docker and
+# calls each helper directly — no live cage / no full cmd_doctor stub surface
+# needed).
+_doctor_format_dead_mounts() {
+  local name="$1" src_path="$2"
+  local raw
+  raw=$(_doctor_dead_file_mounts "$name")
+
+  if [[ -z "$raw" ]]; then
+    echo "OK — no single-file bind mounts to check"
+    return
+  fi
+
+  local dead_list=() dead_other_list=() missing_list=() healthy_count=0
+  local line
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    case "$line" in
+      DEAD_OTHER\ *) dead_other_list+=("${line#DEAD_OTHER }") ;;
+      DEAD\ *) dead_list+=("${line#DEAD }") ;;
+      MISSING\ *) missing_list+=("${line#MISSING }") ;;
+      HEALTHY\ *) healthy_count=$((healthy_count + 1)) ;;
+    esac
+  done <<< "$raw"
+
+  if [[ ${#dead_list[@]} -gt 0 ]]; then
+    local joined
+    joined=$(printf '%s, ' "${dead_list[@]}")
+    joined="${joined%, }"
+    echo "FAIL — dead handle(s): ${joined} (host file was replaced by atomic rename; the mount still points at the old inode; fix: rc down ${name} && rc up ${src_path:-<path>} to re-bind)"
+  elif [[ ${#dead_other_list[@]} -gt 0 ]]; then
+    local ojoined
+    ojoined=$(printf '%s, ' "${dead_other_list[@]}")
+    ojoined="${ojoined%, }"
+    echo "WARN — mount destination unreachable, host source exists but is not a regular file (socket/FIFO/other): ${ojoined} (not the atomic-rename hazard)"
+  elif [[ ${#missing_list[@]} -gt 0 ]]; then
+    local mjoined
+    mjoined=$(printf '%s, ' "${missing_list[@]}")
+    mjoined="${mjoined%, }"
+    echo "WARN — mount source no longer exists on host: ${mjoined} (deleted, not renamed — not the atomic-rename dead-handle hazard)"
+  else
+    echo "OK — ${healthy_count} single-file mount(s) healthy"
+  fi
+}
+
 cmd_doctor() {
   if [[ "${1:-}" == "--host" ]]; then
     _doctor_host
@@ -6668,6 +6802,8 @@ cmd_doctor() {
   local beads_probe="not running, no live probe"
   local auth_probe="not running, no live probe"
   local skills_probe="not running, no live probe"
+  # rip-cage-uben: generic dead-handle detection over single-file bind mounts.
+  local dead_mounts_probe="not running, no live probe"
   # rip-cage-2cks: runnability probes (cwd floor, workspace resolution, bd version skew).
   local cwd_probe="not running, no live probe"
   local workspace_probe="not running, no live probe"
@@ -6753,6 +6889,13 @@ cmd_doctor() {
     else
       auth_probe="FAIL — no credentials and no ANTHROPIC_API_KEY"
     fi
+
+    # Dead-handle probe: generic sweep over ALL single-file bind mounts
+    # (rip-cage-uben). Distinct from auth_probe above — auth_probe's `test -s`
+    # would ALSO come back false on a severed .credentials.json handle,
+    # attributing the symptom to "no credentials" rather than the actual
+    # broken-mount cause; this probe names the real cause + repair directly.
+    dead_mounts_probe=$(_doctor_format_dead_mounts "$name" "$source_path")
 
     # Skills mount probe: count entries under ~/.claude/skills (symlink to
     # /home/agent/.rc-context/skills). Report broken symlinks.
@@ -6926,6 +7069,7 @@ cmd_doctor() {
       --arg ssh_probe "$ssh_probe" \
       --arg beads_probe "$beads_probe" \
       --arg auth_probe "$auth_probe" \
+      --arg dead_mounts_probe "$dead_mounts_probe" \
       --arg skills_probe "$skills_probe" \
       --arg cwd_probe "$cwd_probe" \
       --arg workspace_probe "$workspace_probe" \
@@ -6949,6 +7093,7 @@ cmd_doctor() {
           ssh_forwarding: $ssh_probe,
           beads_server: $beads_probe,
           auth: $auth_probe,
+          dead_mounts: $dead_mounts_probe,
           skills_mount: $skills_probe,
           cwd: $cwd_probe,
           workspace_resolution: $workspace_probe,
@@ -6976,6 +7121,7 @@ cmd_doctor() {
     echo "  ssh-forwarding : $ssh_probe"
     echo "  beads-server   : $beads_probe"
     echo "  auth           : $auth_probe"
+    echo "  dead-mounts    : $dead_mounts_probe"
     echo "  skills-mount   : $skills_probe"
     echo ""
     echo "Runnability:"

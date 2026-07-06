@@ -74,6 +74,29 @@ For a step-by-step guide to multi-account rotation with CAAM, see [Multi-account
 - **macOS + OrbStack/Docker Desktop (VirtioFS):** Works reliably. VirtioFS tracks file paths, so atomic file replacements (like CAAM's `mv`) propagate correctly. There is a sub-second window during the atomic swap where the file briefly disappears — Claude Code handles this naturally via retry.
 - **Linux (native Docker):** Single-file bind mounts track inodes, not paths. An atomic `mv` (new inode) will NOT propagate. Use directory-level bind mounts or in-place file writes (`cat > file`) instead.
 
+> **Correction (rip-cage-uben, 2026-07-06):** despite the "works reliably" claim above, atomic-rename severing of this exact mount HAS been observed live on macOS + OrbStack/VirtioFS (host Claude Code session rewrote `.credentials.json` ~30s after cage start; in-cage `claude` went to "Not logged in" while `docker inspect` still listed the mount). The platform-safety claim above describes the common case, not a guarantee — Docker's single-file bind mount is a Linux VFS-level bind to the inode resolved at container-CREATE time, independent of the host filesystem driver; it is host-write-timing dependent and intermittent on every platform. Don't infer safety from platform — run `rc doctor <cage>` (see the gotcha below) to check the actual mount state.
+
+## Gotcha: host atomic-rename can silently sever a live single-file mount
+
+A single-file Docker bind mount (`~/.claude/.credentials.json` — same class as `~/.claude.json`) tracks the specific **inode** the host file had at container-create time, not its path. If a process outside rip-cage — most commonly a **host** Claude Code session refreshing its own token, or a third-party account-rotation tool like CAAM — rewrites the file via the standard safe-rewrite idiom (write to a temp file, then atomically `rename()` over the original), the container's mount keeps pointing at the now-unlinked old inode. The host path looks completely normal (`ls ~/.claude/.credentials.json` on the host shows a fresh, valid file), but inside the cage the path goes ENOENT — `ls` inside the container shows a dead handle (`-????????? ? ... .credentials.json`), and `docker inspect` still lists the mount as if nothing changed.
+
+**Symptom:** the agent inside the cage suddenly reports `Not logged in — Please run /login`, potentially minutes (or longer) into an otherwise-healthy session. This can happen at any point during a long-running cage's life — whenever a host writer next rewrites the file — not just at cage start.
+
+**Why rc's own writer doesn't trigger this:** `rc auth refresh` and the keychain-extraction step in `rc up` both truncate-and-write the SAME inode in place (rc:1152-1167) rather than rename over it, so rc's own credential refresh never breaks the mount. The hazard comes from external writers rip-cage does not control.
+
+**Detection:** run `rc doctor <cage>`. Its dead-mounts probe enumerates every single-file bind mount on the container — generically, not hardcoded to `.credentials.json`, since `~/.claude.json` is the same class of mount under possession — and checks the **in-cage destination first**: a mount whose destination still resolves is reported healthy unconditionally, regardless of what the host source path looks like. Only a destination that has actually gone dead gets a further look at the host source, to give an honest diagnosis:
+
+    Live probes:
+      dead-mounts    : FAIL — dead handle(s): /home/agent/.claude/.credentials.json (host file was replaced by atomic rename; the mount still points at the old inode; fix: rc down <cage> && rc up <path> to re-bind)
+
+The destination-first order matters: some legitimate mounts (the ssh-agent-forwarding socket, `/run/host-services/ssh-auth.sock` on macOS/OrbStack) have a host source path that is never host-visible at all — OrbStack materializes it only inside the container's mount namespace — yet the mount works fine. Checking host-source-existence first would WARN on every one of those, on every healthy cage, forever; checking the destination first means a working mount is never flagged no matter what its host source looks like.
+
+**Repair:** `rc down <cage> && rc up <path>` — this recreates the container and re-binds every mount against the current inode. No data is lost; the credentials file itself was never touched by the cage.
+
+**Why rip-cage does NOT snapshot `.credentials.json`** the way it does for `~/.claude.json` (init-time seed synthesis, see the `rip-cage-single-file-mount-handle-breaks-on-host-atomic-rename` memory): credentials **expire**. A snapshot copied once at container-start would go stale the moment the host token refreshes — trading an intermittent, *detectable* accident (this one, now caught by `rc doctor`) for a *guaranteed-stale* credential that `rc auth refresh` could no longer fix without a full container recreate. The live mount is deliberate: it's what lets a host-side `rc auth refresh` (or CAAM, or any host token rotation) propagate a fresh token into a running cage without restarting it. `~/.claude.json` is a different case — it's project/session state, not an expiring secret, so a one-time init-time snapshot trades nothing away there.
+
+**Non-possession retires this mount class entirely:** under `auth.per_tool.claude: none` (see [config.md](config.md)), `rc up` does not mount `.credentials.json` into the container at all, so this hazard does not apply to non-possession cages.
+
 ## Pi auth
 
 Pi (`@mariozechner/pi-coding-agent`) is also supported alongside Claude Code in the same image. This section covers auth, safety model, and related projects.
