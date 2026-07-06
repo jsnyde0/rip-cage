@@ -233,6 +233,48 @@ seed_symlink_auth_json() {
 }
 
 # ---------------------------------------------------------------------------
+# Reserved-scratch predicate (rip-cage-29sp, same class as vnbd/7hrw).
+#
+# rc's symlink-follow reserved-path guard (rc ~1456-1480) refuses to mount
+# (exit 1, aborting _up_prepare_docker_mounts entirely) any resolved symlink
+# target under a Debian FHS reserved top-level (checked literally for
+# /var and /tmp — rc deliberately skips canonicalizing those two to dodge
+# macOS /private/var false positives).
+#
+# seed_symlink_auth_json's external-target-dir is nested inside TEST_HOME.
+# On macOS, mktemp resolves TEST_HOME under /private/var/folders/... via
+# TMPDIR ("private" is not reserved) so the guard never fires. On Linux
+# (incl. CI), TMPDIR is typically unset -> mktemp resolves TEST_HOME under
+# /tmp (reserved) -> the guard fires for the non-credential "other.json"
+# symlink (auth.json itself is filtered earlier under cred_mounts=none, but
+# "other.json" is not) -> _up_prepare_docker_mounts exits 1 before either
+# CM4b's or CM15's assertions can observe real mount output. No non-reserved
+# writable top-level exists for a non-root Linux user (/mnt, /srv, /opt are
+# root-owned — see .claude/harness.md), so this can't be fixed by relocating
+# the fixture. Key the skip on this ACTUAL reserved-ness condition (not a
+# uname/OS check) — same idiom as test-secret-path-denylist.sh l-1/l-2a/l-2b.
+_rc_reserved_top_levels() {
+  printf '%s\n' bin boot dev etc home lib opt proc root run sbin sys usr var tmp
+}
+
+# Returns 0 (true) if the canonicalized form of path "$1" has a reserved FHS
+# top-level as its first path component — i.e. rc's reserved-path guard would
+# preempt the symlink-follow mount synthesis for fixtures rooted there.
+_fixture_under_rc_reserved_top_level() {
+  local _path_arg="$1"
+  local _resolved _first_component _reserved
+  _resolved=$(realpath "$_path_arg" 2>/dev/null) || return 1
+  _first_component="${_resolved#/}"
+  _first_component="${_first_component%%/*}"
+  for _reserved in $(_rc_reserved_top_levels); do
+    if [[ "$_first_component" == "$_reserved" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # CM4b (F1): none -> symlink-follow leaf filter fires for auth.json's
 # resolved-target bind; a NON-credential dangling symlink in the same scan
 # root still mounts under none (proves leaf-filter, not scan-root drop).
@@ -241,27 +283,31 @@ seed_symlink_auth_json() {
 setup_sandbox ""
 seed_symlink_auth_json
 
-_cm4b_real_args=$(run_prepare_mounts "real" "real" "test-cage-cm4b-real")
-_cm4b_none_args=$(run_prepare_mounts "none" "none" "test-cage-cm4b-none")
-
-_cm4b_auth_target="${NORM_AUTH_TARGET}:${NORM_AUTH_TARGET}"
-_cm4b_other_target="${NORM_OTHER_TARGET}:${NORM_OTHER_TARGET}"
-
-_cm4b_ok=true _cm4b_reason=""
-if ! echo "$_cm4b_real_args" | grep -qF "$_cm4b_auth_target"; then
-  _cm4b_ok=false; _cm4b_reason="real: auth.json resolved-target bind NOT present (positive control failed)"
-fi
-if echo "$_cm4b_none_args" | grep -qF "$_cm4b_auth_target"; then
-  _cm4b_ok=false; _cm4b_reason="${_cm4b_reason:+$_cm4b_reason; }none: auth.json resolved-target bind IS present (F1 leaf-filter did not fire)"
-fi
-if ! echo "$_cm4b_none_args" | grep -qF "$_cm4b_other_target"; then
-  _cm4b_ok=false; _cm4b_reason="${_cm4b_reason:+$_cm4b_reason; }none: non-credential symlink target ABSENT (leaf-filter over-broadened to scan-root drop)"
-fi
-
-if [[ "$_cm4b_ok" == "true" ]]; then
-  pass 4b "F1: none filters ONLY the auth.json symlink-follow leaf; other scan-root symlinks still mount; real still mounts auth.json"
+if _fixture_under_rc_reserved_top_level "$TEST_HOME"; then
+  echo "SKIP (reserved-scratch): CM4b F1 symlink-follow leaf-filter — fixture external-target-dir resolves under an rc-reserved FHS top-level (TMPDIR unset on Linux CI -> mktemp lands under /tmp); rc's reserved-path guard (rc ~1456-1480) preempts the leaf-filter this subtest exercises. Runs on macOS + full local suite. See bead rip-cage-29sp."
 else
-  fail 4b "F1 symlink-follow leaf-filter" "$_cm4b_reason"
+  _cm4b_real_args=$(run_prepare_mounts "real" "real" "test-cage-cm4b-real")
+  _cm4b_none_args=$(run_prepare_mounts "none" "none" "test-cage-cm4b-none")
+
+  _cm4b_auth_target="${NORM_AUTH_TARGET}:${NORM_AUTH_TARGET}"
+  _cm4b_other_target="${NORM_OTHER_TARGET}:${NORM_OTHER_TARGET}"
+
+  _cm4b_ok=true _cm4b_reason=""
+  if ! echo "$_cm4b_real_args" | grep -qF "$_cm4b_auth_target"; then
+    _cm4b_ok=false; _cm4b_reason="real: auth.json resolved-target bind NOT present (positive control failed)"
+  fi
+  if echo "$_cm4b_none_args" | grep -qF "$_cm4b_auth_target"; then
+    _cm4b_ok=false; _cm4b_reason="${_cm4b_reason:+$_cm4b_reason; }none: auth.json resolved-target bind IS present (F1 leaf-filter did not fire)"
+  fi
+  if ! echo "$_cm4b_none_args" | grep -qF "$_cm4b_other_target"; then
+    _cm4b_ok=false; _cm4b_reason="${_cm4b_reason:+$_cm4b_reason; }none: non-credential symlink target ABSENT (leaf-filter over-broadened to scan-root drop)"
+  fi
+
+  if [[ "$_cm4b_ok" == "true" ]]; then
+    pass 4b "F1: none filters ONLY the auth.json symlink-follow leaf; other scan-root symlinks still mount; real still mounts auth.json"
+  else
+    fail 4b "F1 symlink-follow leaf-filter" "$_cm4b_reason"
+  fi
 fi
 teardown_sandbox
 
@@ -707,23 +753,27 @@ teardown_sandbox
 setup_sandbox ""
 seed_symlink_auth_json
 
-_cm15_args=$(run_prepare_mounts "real" "none" "test-cage-cm15")
-
-_cm15_auth_target="${NORM_AUTH_TARGET}:${NORM_AUTH_TARGET}"
-_cm15_other_target="${NORM_OTHER_TARGET}:${NORM_OTHER_TARGET}"
-
-_cm15_ok=true _cm15_reason=""
-if echo "$_cm15_args" | grep -qF "$_cm15_auth_target"; then
-  _cm15_ok=false; _cm15_reason="pi:none but auth.json resolved-target bind IS present (F1 leaf-filter did not fire under per-tool pi:none)"
-fi
-if ! echo "$_cm15_args" | grep -qF "$_cm15_other_target"; then
-  _cm15_ok=false; _cm15_reason="${_cm15_reason:+$_cm15_reason; }non-credential symlink target ABSENT (leaf-filter over-broadened to scan-root drop)"
-fi
-
-if [[ "$_cm15_ok" == "true" ]]; then
-  pass 15 "mixed {claude:real,pi:none}: F1 symlink-follow leaf filtered for pi only, non-credential symlink still mounts"
+if _fixture_under_rc_reserved_top_level "$TEST_HOME"; then
+  echo "SKIP (reserved-scratch): CM15 mixed-posture F1 symlink-follow leaf-filter — fixture external-target-dir resolves under an rc-reserved FHS top-level (TMPDIR unset on Linux CI -> mktemp lands under /tmp); rc's reserved-path guard (rc ~1456-1480) preempts the leaf-filter this subtest exercises. Runs on macOS + full local suite. See bead rip-cage-29sp."
 else
-  fail 15 "mixed posture symlink-follow leaf-filter" "$_cm15_reason"
+  _cm15_args=$(run_prepare_mounts "real" "none" "test-cage-cm15")
+
+  _cm15_auth_target="${NORM_AUTH_TARGET}:${NORM_AUTH_TARGET}"
+  _cm15_other_target="${NORM_OTHER_TARGET}:${NORM_OTHER_TARGET}"
+
+  _cm15_ok=true _cm15_reason=""
+  if echo "$_cm15_args" | grep -qF "$_cm15_auth_target"; then
+    _cm15_ok=false; _cm15_reason="pi:none but auth.json resolved-target bind IS present (F1 leaf-filter did not fire under per-tool pi:none)"
+  fi
+  if ! echo "$_cm15_args" | grep -qF "$_cm15_other_target"; then
+    _cm15_ok=false; _cm15_reason="${_cm15_reason:+$_cm15_reason; }non-credential symlink target ABSENT (leaf-filter over-broadened to scan-root drop)"
+  fi
+
+  if [[ "$_cm15_ok" == "true" ]]; then
+    pass 15 "mixed {claude:real,pi:none}: F1 symlink-follow leaf filtered for pi only, non-credential symlink still mounts"
+  else
+    fail 15 "mixed posture symlink-follow leaf-filter" "$_cm15_reason"
+  fi
 fi
 teardown_sandbox
 
