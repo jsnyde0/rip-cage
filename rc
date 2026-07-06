@@ -1363,17 +1363,28 @@ _up_prepare_docker_mounts() {
 
   # OAuth mounts (read-write, skip if missing to avoid Docker creating empty dirs)
   # auth.credential_mounts=none (rip-cage-seqc.4) / effective(claude) (rip-cage-xhgr):
-  # both the .claude.json (config/trust metadata) and .credentials.json (the
-  # token secret) are gated as a UNIT under non-possession — see design
-  # decision note "dot-claude-json under none".
-  if [[ "$_UP_CRED_MOUNTS_CLAUDE" == "none" ]]; then
-    log "auth.credential_mounts=none — Claude credential mounts (.claude.json + .credentials.json) intentionally skipped (non-possession posture)"
-  else
-    if [[ -f "${HOME}/.claude.json" ]]; then
-      _UP_RUN_ARGS+=(-v "${HOME}/.claude.json:/home/agent/.claude.json")
+  # rip-cage-t7cu re-scope — the gated-as-a-unit set is now .credentials.json
+  # (the token secret) + keychain extraction ONLY. ~/.claude.json holds no
+  # token-shaped fields (account metadata + workflow state, verified by full
+  # key-inventory audit) — it was swept into the original gate by association,
+  # not because it is a credential. Under non-possession it still mounts, but
+  # READ-ONLY (:ro): an RW bind would hand a prompt-injected in-cage agent
+  # (ADR-024 in-scope) a write primitive into the host's real-credential claude
+  # config (mcpServers/hooks poisoning, later executed by host claude with real
+  # creds); under possession RW is no escalation, so the mount stays RW there
+  # (bit-for-bit unchanged). Skip-if-missing semantics match possession.
+  if [[ -f "${HOME}/.claude.json" ]]; then
+    if [[ "$_UP_CRED_MOUNTS_CLAUDE" == "none" ]]; then
+      _UP_RUN_ARGS+=(-v "${HOME}/.claude.json:/home/agent/.claude.json:ro")
     else
-      log "Warning: ${HOME}/.claude.json not found — skipping mount"
+      _UP_RUN_ARGS+=(-v "${HOME}/.claude.json:/home/agent/.claude.json")
     fi
+  else
+    log "Warning: ${HOME}/.claude.json not found — skipping mount"
+  fi
+  if [[ "$_UP_CRED_MOUNTS_CLAUDE" == "none" ]]; then
+    log "auth.credential_mounts=none — Claude .credentials.json mount intentionally skipped (non-possession posture)"
+  else
     if [[ -f "${HOME}/.claude/.credentials.json" ]]; then
       _UP_RUN_ARGS+=(-v "${HOME}/.claude/.credentials.json:/home/agent/.claude/.credentials.json")
     else

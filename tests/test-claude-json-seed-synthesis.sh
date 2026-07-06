@@ -26,6 +26,12 @@
 #   V5  — genuinely-broken case: the WARNING still fires when no seed exists
 #         at all (keeps the wrapper's fail-loud fallback alive per the bead's
 #         explicit constraint — this is NOT a regression to fix away)
+#   V6  — rip-cage-t7cu: effective(claude)=none WITH a host ~/.claude.json
+#         fixture present -> the mount is now carried (read-only) instead of
+#         suppressed; init snapshots the mounted file byte-identical to the
+#         fixture, and the synthesized minimal fallback (V1's path) does NOT
+#         fire. V6b: the in-cage mount is actually read-only (write attempt
+#         fails).
 #
 # CRITICAL: run-host.sh exports RC_CONFIG_GLOBAL pointing to a benign fixture
 # for the whole suite. Standalone runs must not inherit a dev machine's real
@@ -61,6 +67,7 @@ echo "=== test-claude-json-seed-synthesis.sh ==="
 
 NP_HOME=""; NP_WS_ROOT=""; NP_NAME=""
 PC_HOME=""; PC_WS_ROOT=""; PC_NAME=""
+NN_HOME=""; NN_WS_ROOT=""; NN_NAME=""
 
 cleanup() {
   if [[ -n "$NP_NAME" ]]; then
@@ -71,10 +78,16 @@ cleanup() {
     docker rm -f "$PC_NAME" >/dev/null 2>&1 || true
     docker volume rm "rc-state-${PC_NAME}" >/dev/null 2>&1 || true
   fi
+  if [[ -n "$NN_NAME" ]]; then
+    docker rm -f "$NN_NAME" >/dev/null 2>&1 || true
+    docker volume rm "rc-state-${NN_NAME}" >/dev/null 2>&1 || true
+  fi
   [[ -n "$NP_HOME" && -d "$NP_HOME" ]] && rm -rf "$NP_HOME"
   [[ -n "$NP_WS_ROOT" && -d "$NP_WS_ROOT" ]] && rm -rf "$NP_WS_ROOT"
   [[ -n "$PC_HOME" && -d "$PC_HOME" ]] && rm -rf "$PC_HOME"
   [[ -n "$PC_WS_ROOT" && -d "$PC_WS_ROOT" ]] && rm -rf "$PC_WS_ROOT"
+  [[ -n "$NN_HOME" && -d "$NN_HOME" ]] && rm -rf "$NN_HOME"
+  [[ -n "$NN_WS_ROOT" && -d "$NN_WS_ROOT" ]] && rm -rf "$NN_WS_ROOT"
 }
 trap cleanup EXIT
 
@@ -275,6 +288,87 @@ if [[ "$PC_LIVE" == "true" ]]; then
     pass "V3: possession-posture seed is byte-identical to the live ~/.claude.json mount"
   else
     fail "V3: possession-posture seed does not match the live mount" "expected=$PC_SENTINEL got=$PC_SEED"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Setup: non-possession cage WITH a host ~/.claude.json fixture present
+# (rip-cage-t7cu). auth.credential_mounts: none forces effective(claude)=none;
+# the host still has a ~/.claude.json, so the re-scoped gate now carries it
+# (read-only) instead of suppressing it.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Setup: non-possession cage WITH host ~/.claude.json fixture (rip-cage-t7cu) ==="
+NN_WS_ROOT=$(mktemp -d)
+NN_HOME=$(mktemp -d)
+NN_WS="${NN_WS_ROOT}/nn-cage"
+mkdir -p "$NN_WS"
+git -C "$NN_WS" init -q
+NN_SENTINEL='{"nn-sentinel-t7cu":"xyz789","hasCompletedOnboarding":true}'
+printf '%s' "$NN_SENTINEL" > "${NN_HOME}/.claude.json"
+cat > "${NN_WS}/.rip-cage.yaml" <<'RIPCAGE_NN_YAML_EOF'
+auth:
+  credential_mounts: none
+RIPCAGE_NN_YAML_EOF
+NN_ENVFILE="${NN_WS_ROOT}/nn.env"
+printf 'CLAUDE_CODE_OAUTH_TOKEN=placeholder-token-t7cu\n' > "$NN_ENVFILE"
+chmod 600 "$NN_ENVFILE"
+NN_UP_OUT="${NN_WS_ROOT}/nn-up.out"
+HOME="$NN_HOME" \
+  RC_SKIP_KEYCHAIN_EXTRACTION=1 \
+  ANTHROPIC_API_KEY="" \
+  RC_ALLOWED_ROOTS="$(realpath "$NN_WS_ROOT")" \
+  RIP_CAGE_EGRESS=off \
+  "$RC" up "$NN_WS" --env-file "$NN_ENVFILE" </dev/null >"$NN_UP_OUT" 2>&1 || true
+NN_NAME=$(docker ps -a --filter "label=rc.source.path=$(realpath "$NN_WS")" \
+  --format '{{.Names}}' 2>/dev/null | head -1)
+
+NN_LIVE=false
+if [[ -z "$NN_NAME" ]]; then
+  fail "non-possession-with-fixture cage did not start (see $NN_UP_OUT)"
+else
+  NN_LOG=$(cat "$NN_UP_OUT" 2>/dev/null || true)
+  if printf '%s\n' "$NN_LOG" | grep -q '\[rip-cage\] pi '; then
+    NN_LIVE=true
+    pass "non-possession-with-fixture cage booted (init sentinel present)"
+  else
+    fail "non-possession-with-fixture cage init sentinel absent — init output not captured" "(see $NN_UP_OUT)"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# V6 / V6b (rip-cage-t7cu)
+# ---------------------------------------------------------------------------
+if [[ "$NN_LIVE" == "true" ]]; then
+  echo ""
+  echo "=== V6: none + host ~/.claude.json present -> mount carried, snapshot NOT synthesized ==="
+  NN_SEED=$(docker exec "$NN_NAME" cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
+  if [[ "$NN_SEED" == "$NN_SENTINEL" ]]; then
+    pass "V6: non-possession seed is byte-identical to the host ~/.claude.json fixture (real snapshot, not the synthesized fallback)"
+  else
+    fail "V6: non-possession seed does not match the host fixture" "expected=$NN_SENTINEL got=$NN_SEED"
+  fi
+  if echo "$NN_SEED" | grep -q 'theme.*dark'; then
+    fail "V6: synthesized minimal fallback fired despite the host mount being present" "content: $NN_SEED"
+  else
+    pass "V6: synthesized minimal fallback (theme:dark sentinel) did NOT fire"
+  fi
+
+  echo ""
+  echo "=== V6b: the carried ~/.claude.json mount is actually read-only in-cage ==="
+  NN_WRITE_OUT=$(docker exec "$NN_NAME" sh -c 'echo blocked >> /home/agent/.claude.json' 2>&1)
+  NN_WRITE_EXIT=$?
+  if [[ $NN_WRITE_EXIT -ne 0 ]] && echo "$NN_WRITE_OUT" | grep -qi 'read-only\|permission denied'; then
+    pass "V6b: write to /home/agent/.claude.json in-cage fails (read-only mount, non-possession posture)"
+  else
+    fail "V6b: write to /home/agent/.claude.json in-cage unexpectedly succeeded" "exit=$NN_WRITE_EXIT out=$NN_WRITE_OUT"
+  fi
+
+  NN_CREDS=$(docker exec "$NN_NAME" sh -c 'test -f /home/agent/.claude/.credentials.json && echo present || echo absent' 2>/dev/null || true)
+  if [[ "$NN_CREDS" == "absent" ]]; then
+    pass "V6: .credentials.json still absent in-cage under none (positive control)"
+  else
+    fail "V6: .credentials.json unexpectedly present in-cage under none" "$NN_CREDS"
   fi
 fi
 

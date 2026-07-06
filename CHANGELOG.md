@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Non-possession claude cages now carry `~/.claude.json`, read-only** (rip-cage-t7cu). Under `effective(claude)=none`, `~/.claude.json` was previously suppressed as part of the credential gate alongside `~/.claude/.credentials.json`. It holds no token-shaped fields — account metadata (org/tier/email), MCP server config, and workspace-trust/onboarding state, not a secret — so it was swept into the gate by association, not because it's a credential. It now mounts (skip-if-missing, same as `real`) but read-only (`:ro`): an RW bind would give a prompt-injected in-cage agent a write primitive into the host's real-credential claude config (poisoned `mcpServers`/hooks executed later by host claude with real creds); under possession RW is no escalation, so the possession path is unchanged (bit-for-bit). The actual gated-as-a-unit credential set under `none` is now `~/.claude/.credentials.json` + keychain extraction only. **Existing non-possession cages are unaffected until recreated** — no resume guard fires (the `rc.auth.credential-mounts.claude=none` label is unchanged), so a running/stopped `none` cage simply lacks the new mount until `rc destroy <name> && rc up`. See [docs/reference/config.md](docs/reference/config.md) and [ADR-024](docs/decisions/ADR-024-prompt-injection-threat-model.md) D2 (named residual: rip-cage's fixed `/workspace` mount path collapses Claude Code's per-project workspace-trust flag across cages sharing the same host file).
+
 ## [0.11.1] - 2026-07-03
 
 ### Fixed

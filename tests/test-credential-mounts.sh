@@ -9,7 +9,8 @@
 # Coverage matrix (see design section C1):
 #   CM1  default (no auth.* key) -> CC + pi mounts present, bit-for-bit (positive control)
 #   CM2  auth.credential_mounts: real (explicit) -> identical to CM1 (positive control)
-#   CM3  none -> CC .claude.json AND .credentials.json binds BOTH absent (gated as a unit)
+#   CM3  none -> CC .claude.json bind PRESENT+ro (not a credential, rip-cage-t7cu);
+#                .credentials.json bind absent (positive control)
 #   CM4  none -> pi auth.json bind absent; PI_CODING_AGENT_DIR still present
 #   CM4b none -> F1 symlink-follow leaf (auth.json) resolved-target bind absent;
 #                a non-credential symlink in the same scan root still mounts (leaf-filter,
@@ -27,8 +28,8 @@
 # Per-tool extension (rip-cage-xhgr):
 #   CM12  resolver: _up_resolve_effective_credential_mounts_for_tool per_tool.T
 #         override, unset-inherits-global, and default-real semantics
-#   CM13  {claude:none,pi:real} -> claude CC binds absent + keychain skipped; pi
-#         auth.json bind present
+#   CM13  {claude:none,pi:real} -> claude .claude.json present+ro, .credentials.json
+#         absent + keychain skipped; pi auth.json bind present
 #   CM14  {claude:real,pi:none} -> symmetric to CM13
 #   CM15  {claude:real,pi:none} -> F1 symlink-follow leaf filtered for pi only
 #         (leaf-filter, not scan-root drop); claude side unaffected
@@ -172,22 +173,27 @@ fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# CM3: none -> CC .claude.json AND .credentials.json binds BOTH absent
-# (gated as a UNIT — open-question ruling 1).
+# CM3: none -> CC .claude.json bind PRESENT but READ-ONLY (:ro) — rip-cage-t7cu
+# re-scope: ~/.claude.json holds no token-shaped fields (account metadata +
+# workflow state only), so it is no longer suppressed under non-possession;
+# it downgrades to ro instead (design-review F3: ro closes the write-primitive
+# an in-cage agent would otherwise have into the host's real-credential claude
+# config). .credentials.json (the actual secret) stays absent — positive
+# control, preserved from the original "gated as a unit" case.
 # ---------------------------------------------------------------------------
 setup_sandbox ""
 seed_cred_fixtures
 
 _cm3_args=$(run_prepare_mounts "none" "none" "test-cage-cm3")
 
-_cm3_claude_json="${TEST_HOME}/.claude.json:/home/agent/.claude.json"
+_cm3_claude_json_ro="${TEST_HOME}/.claude.json:/home/agent/.claude.json:ro"
 _cm3_creds_json="${TEST_HOME}/.claude/.credentials.json:/home/agent/.claude/.credentials.json"
-if echo "$_cm3_args" | grep -qF "$_cm3_claude_json"; then
-  fail 3 "none -> CC .claude.json bind ABSENT" ".claude.json bind was present: $(echo "$_cm3_args" | grep -F '.claude.json')"
+if ! echo "$_cm3_args" | grep -qF "$_cm3_claude_json_ro"; then
+  fail 3 "none -> CC .claude.json bind PRESENT and read-only (:ro)" ".claude.json:ro bind not found: $(echo "$_cm3_args" | grep -F '.claude.json')"
 elif echo "$_cm3_args" | grep -qF "$_cm3_creds_json"; then
   fail 3 "none -> CC .credentials.json bind ABSENT" ".credentials.json bind was present: $(echo "$_cm3_args" | grep -F '.credentials.json')"
 else
-  pass 3 "none -> CC .claude.json AND .credentials.json binds both ABSENT (gated as a unit)"
+  pass 3 "none -> CC .claude.json bind present+ro (not a credential); .credentials.json bind ABSENT (positive control)"
 fi
 teardown_sandbox
 
@@ -622,9 +628,10 @@ teardown_sandbox
 
 # ---------------------------------------------------------------------------
 # CM13 (mixed posture a): {claude:none, pi:real} -> claude gets NO credentials
-# (keychain extraction skipped + CC .claude.json/.credentials.json binds
-# absent) AND pi's auth.json bind IS present. Proves the two gate-site groups
-# (claude: keychain + CC mounts; pi: auth.json mount) are keyed independently.
+# (keychain extraction skipped + CC .credentials.json bind absent; .claude.json
+# bind IS present but read-only per rip-cage-t7cu) AND pi's auth.json bind IS
+# present. Proves the two gate-site groups (claude: keychain + CC mounts; pi:
+# auth.json mount) are keyed independently.
 # ---------------------------------------------------------------------------
 setup_sandbox ""
 seed_cred_fixtures
@@ -644,8 +651,8 @@ _cm13_extract_calls=$(wc -l < "$_cm13_recorder" | tr -d ' ')
 rm -f "$_cm13_recorder"
 
 _cm13_ok=true _cm13_reason=""
-if echo "$_cm13_args" | grep -qF "${TEST_HOME}/.claude.json:/home/agent/.claude.json"; then
-  _cm13_ok=false; _cm13_reason="claude:none but .claude.json bind IS present"
+if ! echo "$_cm13_args" | grep -qF "${TEST_HOME}/.claude.json:/home/agent/.claude.json:ro"; then
+  _cm13_ok=false; _cm13_reason="claude:none but .claude.json:ro bind is ABSENT: $(echo "$_cm13_args" | grep -F '.claude.json')"
 fi
 if echo "$_cm13_args" | grep -qF "${TEST_HOME}/.claude/.credentials.json:/home/agent/.claude/.credentials.json"; then
   _cm13_ok=false; _cm13_reason="${_cm13_reason:+$_cm13_reason; }claude:none but .credentials.json bind IS present"
@@ -658,7 +665,7 @@ if ! echo "$_cm13_args" | grep -qF "${TEST_HOME}/.pi/agent/auth.json:/home/agent
 fi
 
 if [[ "$_cm13_ok" == "true" ]]; then
-  pass 13 "mixed {claude:none,pi:real}: claude CC binds + keychain extraction absent; pi auth.json bind present"
+  pass 13 "mixed {claude:none,pi:real}: claude .claude.json present+ro, .credentials.json + keychain extraction absent (positive controls); pi auth.json bind present"
 else
   fail 13 "mixed posture a" "$_cm13_reason"
 fi

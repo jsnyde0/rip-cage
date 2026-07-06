@@ -192,6 +192,15 @@ iron-proxy's tunnel listener via HTTP CONNECT, instead of origin-splicing direct
 holds only the placeholder (step 5). `.rip-cage.yaml` is read-only inside the cage
 (ADR-021 D7), so a prompt-injected agent cannot flip `credential_mounts` back to `real`.
 
+**Note (rip-cage-t7cu):** `credential_mounts: none` only suppresses `~/.claude/.credentials.json`
+(the token secret) and keychain extraction — it does **not** suppress `~/.claude.json`.
+That file holds no credentials (account metadata, MCP server config, onboarding/trust
+state), so under `none` it still carries into the cage, read-only (`:ro`). If your host
+`~/.claude.json` has user-scope `mcpServers` entries or onboarding state you rely on,
+those come along automatically; if you'd rather the cage start from a clean slate, there
+is currently no per-field carve-out — see [config.md](../docs/reference/config.md) for
+the full behavior.
+
 `network.egress.mediator: iron-proxy` tells rip-cage to run the MEDIATOR lifecycle
 (start hook at cage init) and is validated against the baked `rc.mediators` label.
 
