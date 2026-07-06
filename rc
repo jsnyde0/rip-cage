@@ -216,6 +216,8 @@ Commands:
   doctor --host                                Daemon-liveness probe (no container required)
   auth refresh                                 Refresh credentials from host keychain
   config show [--json]                         Print effective .rip-cage.yaml config (ADR-021)
+  manifest reconcile                           Re-seed default-derived tools.yaml entries from current
+                                                dist/default-tools.yaml, preserving custom entries (rip-cage-6vt9)
   schema                                       Print machine-readable command schema
   completions <shell>                          Print shell completion script (zsh|bash)
   setup                                        Interactive shell integration setup
@@ -255,6 +257,13 @@ cmd_generate_dockerfile() {
 cmd_build() {
   # Ensure the manifest is seeded (first-run: writes defaults to ~/.config/rip-cage/tools.yaml).
   _manifest_ensure_seeded
+
+  # rip-cage-6vt9: seed-drift detection — informational, never blocks the
+  # build. Warns when the manifest's seed provenance stamp is stale relative
+  # to the CURRENT shipped dist/default-tools.yaml (or, unstamped, when its
+  # freshness is simply unknown). See the section header above
+  # _manifest_check_seed_drift for the full design.
+  _manifest_check_seed_drift "$(_manifest_global_path)"
 
   # rip-cage-4c5.3: IOC pre-build check — reject any manifest egress: entry naming
   # a host on the IOC denylist BEFORE any Docker call (ADR-005 D3 / ADR-012 D1).
@@ -7739,6 +7748,160 @@ _manifest_ensure_seeded() {
   echo "rip-cage: seeded default tool manifest at ${_path} (first run; edit to add tools)." >&2
 }
 
+# =============================================================================
+# Manifest seed-drift detection + reconcile (rip-cage-6vt9)
+#
+# ROOT CAUSE: the operator manifest ~/.config/rip-cage/tools.yaml is typically
+# composed once — by copying dist/default-tools.yaml (the maintainer-blessed
+# composed default; see _manifest_default_yaml's header above for why the
+# in-repo default stays floor-only) and adding custom entries — then never
+# re-checked against the shipped defaults. When dist/default-tools.yaml's
+# recipes change (e.g. a guard relocation), a frozen local manifest keeps
+# baking the superseded layout on every `rc build`, silently.
+#
+# Sibling of rip-cage-jnvb (stale IMAGE blind-resumed on `rc up`): same
+# "stale artifact silently used, no drift-detection" family — jnvb compares
+# a resumed container's pinned image against the current image; this
+# compares a local manifest's seed provenance against the current
+# dist/default-tools.yaml.
+#
+# DETECTION SUBSTRATE: a seed-provenance STAMP (`# rc-seed-fingerprint:
+# sha256:<hash>` comment line, written by `rc manifest reconcile`), not a
+# raw content-diff of local-vs-dist — a content-diff would false-fire on
+# legitimate user customization (any hand-edit looks like drift to a naive
+# diff). The stamp records dist's hash AT RECONCILE TIME; `rc build`
+# compares it to dist's CURRENT hash.
+#
+# UNSTAMPED manifests (every manifest in the wild before this bead, and any
+# hand-authored one that never ran `rc manifest reconcile`) have no
+# ground truth to compare against. Rather than risk a false-fire content
+# heuristic, this is split by the one case we CAN judge safely:
+#   - byte-identical to the floor-only in-repo default (_manifest_default_yaml)
+#     -> nothing was ever composed from dist; there is nothing to reconcile;
+#        stay completely silent (an unconfigured `rc build` must never warn).
+#   - anything else (composed/hand-edited, no stamp) -> a soft, distinctly-
+#     worded "provenance unknown" notice pointing at `rc manifest reconcile`
+#     to adopt tracking. Never the hard "stale" wording — we don't actually
+#     know it's stale, only that we can't tell.
+# =============================================================================
+
+# _manifest_dist_path — the shipped, maintainer-composed default manifest
+# (dist/default-tools.yaml), resolved relative to this checkout/install.
+_manifest_dist_path() {
+  echo "${SCRIPT_DIR}/dist/default-tools.yaml"
+}
+
+# _manifest_seed_fingerprint_hash FILE — bare sha256 hex digest of FILE's
+# current byte content (no "sha256:" prefix, no comment wrapper).
+_manifest_seed_fingerprint_hash() {
+  shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+}
+
+# _manifest_extract_seed_fingerprint FILE — the recorded fingerprint hash
+# from FILE's `# rc-seed-fingerprint: sha256:<hex>` stamp line, if present.
+# Empty stdout = unstamped (a NORMAL, expected outcome for most manifests —
+# always returns 0, even on no-match; grep's no-match exit code must not
+# propagate under `set -o pipefail`, which would otherwise abort the caller
+# under `set -e` on the (common) unstamped path). Extracted via grep/sed on
+# the raw file, NOT via a yq round-trip — yq's YAML re-serialization can
+# drop comments, so the stamp must never pass through it (rc manifest
+# reconcile writes the stamp line directly, after any yq-based rendering,
+# for the same reason).
+_manifest_extract_seed_fingerprint() {
+  local _line
+  _line=$(grep -m1 '^# rc-seed-fingerprint: sha256:' "$1" 2>/dev/null || true)
+  sed -n 's/^# rc-seed-fingerprint: sha256:\([0-9a-f]*\).*/\1/p' <<<"$_line"
+  return 0
+}
+
+# _manifest_check_seed_drift MANIFEST_PATH
+# Informational only — emits at most one line to stderr, never fails the
+# build. See the section header above for the full detection design.
+_manifest_check_seed_drift() {
+  local _manifest_path="$1"
+  local _dist_path
+  _dist_path=$(_manifest_dist_path)
+
+  [[ -f "$_manifest_path" ]] || return 0
+  [[ -f "$_dist_path" ]] || return 0
+
+  # Bypass: MANIFEST_PATH resolves to rc's own shipped dist file (the
+  # RC_MANIFEST_GLOBAL=dist/default-tools.yaml CI/release compose path). It
+  # IS dist — comparing it to itself is meaningless, and this path must
+  # never surface a warning in CI.
+  local _manifest_abs _dist_abs
+  _manifest_abs="$(cd "$(dirname "$_manifest_path")" 2>/dev/null && pwd)/$(basename "$_manifest_path")"
+  _dist_abs="$(cd "$(dirname "$_dist_path")" 2>/dev/null && pwd)/$(basename "$_dist_path")"
+  if [[ -n "$_manifest_abs" && "$_manifest_abs" == "$_dist_abs" ]]; then
+    return 0
+  fi
+
+  local _stamp
+  _stamp=$(_manifest_extract_seed_fingerprint "$_manifest_path")
+
+  if [[ -n "$_stamp" ]]; then
+    local _current_hash
+    _current_hash=$(_manifest_seed_fingerprint_hash "$_dist_path")
+    if [[ "$_stamp" != "$_current_hash" ]]; then
+      echo "Warning: ${_manifest_path} was seeded/reconciled from an older dist/default-tools.yaml layout — the shipped defaults changed since (sibling drift-detection family: rip-cage-jnvb, stale image on resume). Run 'rc manifest reconcile' to pull the update (preserves your custom entries)." >&2
+    fi
+    return 0
+  fi
+
+  # Unstamped. A pristine, never-composed floor default is healthy by
+  # construction — stay silent rather than cry-wolf on every default build.
+  local _manifest_content _floor_default_content
+  _manifest_content=$(cat "$_manifest_path" 2>/dev/null)
+  _floor_default_content=$(_manifest_default_yaml)
+  if [[ "$_manifest_content" == "$_floor_default_content" ]]; then
+    return 0
+  fi
+
+  # rip-cage-6vt9 F1 (adversarial review fold): the bead's own documented
+  # repro is an UNSTAMPED manifest frozen at an older dist layout — that
+  # case must not be limited to a "provenance unknown" shrug. Compare each
+  # LOCALLY-present entry whose name ALSO exists in the CURRENT dist by
+  # name (entry-level, not a whole-file diff — a whole-file diff false-fires
+  # on ANY customization, e.g. an added custom tool). A dist-default entry
+  # simply absent locally is fine (operators compose subsets); only entries
+  # present on BOTH sides are load-bearing here. Reuses the same yq/jq
+  # node-extraction shape as _manifest_reconcile below (sibling: rip-cage-jnvb,
+  # stale image on resume).
+  command -v yq &>/dev/null || return 0
+  command -v jq &>/dev/null || return 0
+  local _local_tools_json _dist_tools_json
+  _local_tools_json=$(yq -o=json '.tools // []' "$_manifest_path" 2>/dev/null) || return 0
+  _dist_tools_json=$(yq -o=json '.tools // []' "$_dist_path" 2>/dev/null) || return 0
+
+  local _intersecting_json
+  _intersecting_json=$(jq -c -n --argjson dist "$_dist_tools_json" --argjson local "$_local_tools_json" '
+    ($dist | map(.name)) as $dist_names
+    | [ $local[] | select(.name as $n | $dist_names | index($n)) | .name ]
+  ' 2>/dev/null) || return 0
+
+  if [[ "$_intersecting_json" == "[]" || -z "$_intersecting_json" ]]; then
+    # Zero overlap with dist by name — an all-custom manifest. Nothing to
+    # compare; fall back to the same soft "provenance unknown" notice.
+    echo "Notice: ${_manifest_path} has no seed-fingerprint stamp (composed before this rc version, or hand-authored) — its freshness vs the shipped dist/default-tools.yaml defaults is unknown. Run 'rc manifest reconcile' to adopt tracking (preserves your custom entries)." >&2
+    return 0
+  fi
+
+  local _differing_names
+  _differing_names=$(jq -r -n --argjson dist "$_dist_tools_json" --argjson local "$_local_tools_json" '
+    ($dist | map({key: .name, value: .}) | from_entries) as $dist_by_name
+    | [ $local[] | select(.name as $n | $dist_by_name | has($n)) | select($dist_by_name[.name] != .) | .name ]
+    | join(", ")
+  ' 2>/dev/null)
+
+  if [[ -n "$_differing_names" ]]; then
+    echo "Warning: ${_manifest_path}: entries also present in the shipped dist/default-tools.yaml no longer match it — [${_differing_names}] differ from the current dist defaults (customized, or seeded by an older rc — a stale seed silently bakes superseded recipe layouts). Run 'rc manifest reconcile' to refresh defaults (preserves custom entries, backs up the old file, stamps provenance)." >&2
+  fi
+  # All name-intersecting entries byte/structurally match current dist —
+  # provably current. Stay completely silent (no notice at all): this is
+  # the cry-wolf-prevention branch for a healthy composed-but-unstamped
+  # manifest.
+}
+
 # _manifest_validate FILE
 # Strict-parse, fail-closed validator for a manifest YAML file.
 # Validates ALL tool entries. On the first violation, prints a field-naming
@@ -8582,6 +8745,158 @@ _manifest_validate() {
 
   done
 
+  return 0
+}
+
+# cmd_manifest / _manifest_reconcile (rip-cage-6vt9)
+#
+# `rc manifest reconcile` — the reconcile path paired with the seed-drift
+# warning above. Re-seeds default-derived entries in the local operator
+# manifest from the CURRENT shipped dist/default-tools.yaml, while
+# PRESERVING any entry whose name is NOT present in dist (a custom/opt-in
+# entry the operator added, e.g. an herdr integration). Never overwrites
+# silently (ADR-005 D12 — the manifest composition is the operator's): the
+# previous file is backed up before being replaced, and the new file is
+# validated before it is ever moved into place.
+cmd_manifest() {
+  local subcmd="${1:-}"
+  shift || true
+  case "$subcmd" in
+    reconcile) _manifest_reconcile "$@" ;;
+    *)
+      echo "Usage: rc manifest reconcile" >&2
+      echo "  Re-seed default-derived entries in ~/.config/rip-cage/tools.yaml from the" >&2
+      echo "  current dist/default-tools.yaml, preserving any custom (non-default) entries." >&2
+      echo "  Backs up the previous file first; never overwrites silently." >&2
+      exit 1
+      ;;
+  esac
+}
+
+# _manifest_reconcile — see cmd_manifest header above for the design.
+_manifest_reconcile() {
+  local _local_path _dist_path
+  _local_path=$(_manifest_global_path)
+  _dist_path=$(_manifest_dist_path)
+
+  if [[ ! -f "$_dist_path" ]]; then
+    echo "Error: shipped default manifest not found at ${_dist_path} — cannot reconcile." >&2
+    return 1
+  fi
+  if ! command -v yq &>/dev/null; then
+    echo "Error: yq not found on PATH. yq is required for 'rc manifest reconcile' — install it: brew install yq (macOS) | apt-get install yq (Debian/Ubuntu)." >&2
+    return 1
+  fi
+  if ! command -v jq &>/dev/null; then
+    echo "Error: jq not found on PATH. jq is required for 'rc manifest reconcile'." >&2
+    return 1
+  fi
+
+  local _dist_tools_json
+  if ! _dist_tools_json=$(yq -o=json '.tools // []' "$_dist_path" 2>/dev/null); then
+    echo "Error: failed to parse shipped default manifest '${_dist_path}' as YAML." >&2
+    return 1
+  fi
+
+  local _local_tools_json="[]"
+  if [[ -f "$_local_path" ]]; then
+    if ! _local_tools_json=$(yq -o=json '.tools // []' "$_local_path" 2>/dev/null); then
+      echo "Error: failed to parse local manifest '${_local_path}' as YAML — refusing to reconcile (fix or remove it first)." >&2
+      return 1
+    fi
+  fi
+
+  # Merge: dist's entries win for any name dist defines (refreshed to
+  # current dist content, added if new); any local entry whose name is
+  # NOT in dist is a custom entry and is preserved, appended after.
+  local _merged_tools_json
+  _merged_tools_json=$(jq -c -n --argjson dist "$_dist_tools_json" --argjson local "$_local_tools_json" '
+    ($dist | map(.name)) as $dist_names
+    | ($local | map(select(.name as $n | ($dist_names | index($n)) | not))) as $custom
+    | ($dist + $custom)
+  ') || {
+    echo "Error: failed to compute the reconciled tool list (jq merge failed)." >&2
+    return 1
+  }
+
+  # Summary of what changed, for the operator-facing report.
+  local _summary
+  _summary=$(jq -c -n --argjson dist "$_dist_tools_json" --argjson local "$_local_tools_json" '
+    ($dist | map({key: .name, value: .}) | from_entries) as $dist_by_name
+    | ($local | map({key: .name, value: .}) | from_entries) as $local_by_name
+    | ($dist | map(.name)) as $dist_names
+    | ($local | map(.name)) as $local_names
+    | {
+        added: [$dist_names[] | select(. as $n | ($local_names | index($n)) | not)],
+        updated: [$dist_names[] | select(. as $n | ($local_names | index($n)) and ($dist_by_name[$n] != $local_by_name[$n]))],
+        preserved: [$local_names[] | select(. as $n | ($dist_names | index($n)) | not)]
+      }
+  ') || _summary='{"added":[],"updated":[],"preserved":[]}'
+
+  local _final_yaml
+  if ! _final_yaml=$(jq -n --argjson tools "$_merged_tools_json" '{version: 1, tools: $tools}' | yq -p=json -o=yaml '.' 2>/dev/null); then
+    echo "Error: failed to render the reconciled manifest as YAML." >&2
+    return 1
+  fi
+
+  local _dist_hash
+  _dist_hash=$(_manifest_seed_fingerprint_hash "$_dist_path")
+
+  local _tmp_path="${_local_path}.rc-reconcile-tmp.$$"
+  {
+    echo "# rc-seed-fingerprint: sha256:${_dist_hash}"
+    echo "# Reconciled from $(basename "$_dist_path") by 'rc manifest reconcile' on $(date -u +%Y-%m-%dT%H:%M:%SZ)."
+    printf '%s\n' "$_final_yaml"
+  } > "$_tmp_path"
+
+  if ! _manifest_validate "$_tmp_path"; then
+    echo "Error: reconciled manifest failed validation — aborting; the original manifest at '${_local_path}' is untouched." >&2
+    rm -f "$_tmp_path"
+    return 1
+  fi
+
+  local _backup_path=""
+  if [[ -f "$_local_path" ]]; then
+    _backup_path="${_local_path}.bak-$(date -u +%Y%m%d%H%M%S)"
+    if ! cp "$_local_path" "$_backup_path"; then
+      echo "Error: failed to back up '${_local_path}' before reconciling — aborting; nothing was changed." >&2
+      rm -f "$_tmp_path"
+      return 1
+    fi
+  fi
+
+  mkdir -p "$(dirname "$_local_path")"
+  mv "$_tmp_path" "$_local_path"
+
+  local _added _updated _preserved
+  _added=$(jq -r '.added | join(", ")' <<<"$_summary")
+  _updated=$(jq -r '.updated | join(", ")' <<<"$_summary")
+  _preserved=$(jq -r '.preserved | join(", ")' <<<"$_summary")
+
+  echo "rc manifest reconcile: updated ${_local_path} from $(basename "$_dist_path")." >&2
+  [[ -n "$_backup_path" ]] && echo "  Backup of the previous manifest: ${_backup_path}" >&2
+  # F2 (rip-cage-6vt9 review fold): the YAML-through-JSON round-trip used to
+  # render the merged manifest (yq -o=json / -p=json) drops comments —
+  # including any operator comment living inside a PRESERVED custom entry.
+  # Disclose this honestly rather than silently; the backup is the recovery
+  # path (it is a raw `cp` of the original file, comments intact).
+  [[ -n "$_backup_path" ]] && echo "  Note: comments are not preserved by this merge (yq/jq round-trip) — the backup retains the original file with comments intact." >&2
+  [[ -n "$_added" ]] && echo "  Added (new in dist): ${_added}" >&2
+  [[ -n "$_updated" ]] && echo "  Updated (refreshed to current dist): ${_updated}" >&2
+  [[ -n "$_preserved" ]] && echo "  Preserved (custom entries, not in dist): ${_preserved}" >&2
+  if [[ -z "$_added" && -z "$_updated" && -z "$_preserved" ]]; then
+    echo "  No changes — already matches current dist." >&2
+  fi
+
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    jq -nc \
+      --arg path "$_local_path" \
+      --arg backup "$_backup_path" \
+      --argjson added "$(jq -c '.added' <<<"$_summary")" \
+      --argjson updated "$(jq -c '.updated' <<<"$_summary")" \
+      --argjson preserved "$(jq -c '.preserved' <<<"$_summary")" \
+      '{manifest: $path, backup: (if $backup == "" then null else $backup end), added: $added, updated: $updated, preserved: $preserved, status: "reconciled"}'
+  fi
   return 0
 }
 
@@ -12251,6 +12566,7 @@ case "${1:-}" in
   doctor)    shift; cmd_doctor "$@" ;;
   auth)      shift; cmd_auth "$@" ;;
   config)    shift; cmd_config "$@" ;;
+  manifest)  shift; cmd_manifest "$@" ;;
   # completions: handled by fast-path above (before container guard); unreachable here
   completions) echo "Usage: rc completions <shell>" >&2; echo "Shells: zsh, bash" >&2; exit 1 ;;
   install)     shift; cmd_install "$@" ;;
