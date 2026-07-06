@@ -4474,16 +4474,45 @@ cmd_up() {
   if [[ "$DRY_RUN" == "true" ]]; then
     local would_action
     if [[ "$state" == "running" ]]; then
+      # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-RUNNING BEGIN (mirrors the real
+      # running branch below — see RESUME-GUARDS-REAL-RUNNING). All 5 guards
+      # here are read-only (label read + _load_effective_config + compare) —
+      # safe under --dry-run.
+      _up_resolve_resume_image_drift_running "$name" "$path"
+      _up_resolve_resume_config_mode "$name" "$path"
+      _up_resolve_resume_symlink_fingerprint "$name" "$path"
+      _up_resolve_resume_credential_mounts "$name" "$path"
+      _up_resolve_resume_mediator_ca_env "$name" "$path"
+      # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-RUNNING END
       would_action="would_attach"
     elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
       # Surface legacy/invalid-label conditions in dry-run so planners see the
       # same hard stop the actual resume would hit (ADR-001).
       # rip-cage-jnvb / D-b: image-ID drift hard-stop surfaced here too —
       # dry-run planners must see the same refusal the real resume would hit.
+      # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-STOPPED BEGIN (mirrors the real
+      # stopped branch below — see RESUME-GUARDS-REAL-STOPPED). All 10 guards
+      # here are read-only (label read + _load_effective_config + compare);
+      # the mkdir + _translate_ssh_config resume machinery that follows the
+      # real branch's ssh_config guard is intentionally NOT pulled in here —
+      # that's resume-side mutation, not a guard.
       _up_resolve_resume_image_drift_stopped "$name" "$path"
       _up_resolve_resume_egress "$name" "$path"
       _up_resolve_resume_forward_ssh "$name" "$path"
       _up_resolve_resume_github_identity "$name" "$path" "$rc_github_identity_flag"
+      local _dry_ssh_config_cli_flag=""
+      if [[ -n "$rc_no_ssh_config_flag" ]]; then
+        _dry_ssh_config_cli_flag="off"
+      elif [[ -n "$rc_ssh_config_explicit_flag" ]]; then
+        _dry_ssh_config_cli_flag="on"
+      fi
+      _up_resolve_resume_ssh_config "$name" "$path" "$_dry_ssh_config_cli_flag"
+      _up_resolve_resume_ssh_key_filter "$name" "$path"
+      _up_resolve_resume_config_mode "$name" "$path"
+      _up_resolve_resume_symlink_fingerprint "$name" "$path"
+      _up_resolve_resume_credential_mounts "$name" "$path"
+      _up_resolve_resume_mediator_ca_env "$name" "$path"
+      # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-STOPPED END
       would_action="would_resume"
     elif [[ "$_inspect_exit" -ne 0 ]]; then
       # docker inspect failed → container is absent; create new.
@@ -4575,6 +4604,8 @@ cmd_up() {
   fi
 
   if [[ "$state" == "running" ]]; then
+    # rip-cage-3y9g: RESUME-GUARDS-REAL-RUNNING BEGIN (mirrored by the
+    # dry-run running sub-branch above — see RESUME-GUARDS-DRY-RUN-RUNNING)
     # rip-cage-jnvb / D-c: image-ID drift is warn-only on the running branch —
     # no crash path exists here (no docker start, no mediator/firewall init;
     # exec runs against the container's OWN filesystem) — refusing attach
@@ -4592,6 +4623,7 @@ cmd_up() {
     # rip-cage-yid0: mediator CA env guard applies to running containers too
     # — CA trust env vars are frozen at container-create time, same rationale.
     _up_resolve_resume_mediator_ca_env "$name" "$path"
+    # rip-cage-3y9g: RESUME-GUARDS-REAL-RUNNING END
     _config_emit_hint "$path" "$name"
     _config_init_emit_tip "$path"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -4642,6 +4674,8 @@ cmd_up() {
     return
   elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
     log "Resuming stopped container $name..."
+    # rip-cage-3y9g: RESUME-GUARDS-REAL-STOPPED BEGIN (mirrored by the
+    # dry-run stopped sub-branch above — see RESUME-GUARDS-DRY-RUN-STOPPED)
     # rip-cage-jnvb / D-b, D-f: image-ID drift guard — FIRST, before any other
     # resume machinery and before docker start (rc:4409-and-friends below).
     # `rc build` creates a new image but an already-existing stopped container
@@ -4694,6 +4728,7 @@ cmd_up() {
     # composed after create-time (or the container pre-dates the fix) — CA
     # trust env vars are frozen at container-create time.
     _up_resolve_resume_mediator_ca_env "$name" "$path"
+    # rip-cage-3y9g: RESUME-GUARDS-REAL-STOPPED END
     _UP_SSH_FILTER_ACTIVE="false"
     _up_resolve_ssh_allowlists "$path" "$_rc_ssh_cache_dir"
     # rip-cage-hhh.2: regenerate egress-rules on resume (truncate-then-write;
