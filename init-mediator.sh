@@ -173,6 +173,17 @@ echo "[rip-cage] init-mediator: '${_rc_med}' start hook launched (pid=${_rc_med_
 # Wait up to 10s for the CA cert to appear (mediator start is async).
 # Tool-agnostic: driven by the optional ca_cert_path registry file; no mediator
 # name is hardcoded here.
+#
+# rip-cage-yid0: FAIL CLOSED if ca_cert_path is declared but the cert never
+# appears within the wait window. cmd_up (rc) now threads NODE_EXTRA_CA_CERTS /
+# SSL_CERT_FILE / REQUESTS_CA_BUNDLE into every mediator-composed container at
+# create time, pointed at this CA / the system trust store that is supposed to
+# include it. If the CA never materializes, those vars point at trust stores
+# that DON'T have the mediator's CA — every MITM'd connection would fail
+# opaquely (SELF_SIGNED_CERT_IN_CHAIN) if we let the cage continue silently.
+# Exiting non-zero here routes through the existing mediator hard-failure path
+# (_up_init_mediator sets _UP_MEDIATOR_OK=false -> cmd_up stops the container),
+# matching the mediator start-failure posture elsewhere in this script.
 # ---------------------------------------------------------------------------
 if [ -f "$_rc_med_ca_cert_file" ]; then
   _rc_med_ca_path=$(cat "$_rc_med_ca_cert_file" | tr -d '[:space:]')
@@ -203,7 +214,8 @@ if [ -f "$_rc_med_ca_cert_file" ]; then
         echo "[rip-cage] WARN: init-mediator: update-ca-certificates failed — curl may reject the mediator's TLS cert" >&2
       fi
     else
-      echo "[rip-cage] WARN: init-mediator: CA cert not found at '${_rc_med_ca_path}' after 10s — skipping CA install (curl may reject MITM cert)" >&2
+      echo "[rip-cage] ERROR: init-mediator: CA cert not found at '${_rc_med_ca_path}' after 10s — ca_cert_path is declared but no CA ever materialized. Failing closed: NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / REQUESTS_CA_BUNDLE are already pointed at trust stores lacking this CA (rip-cage-yid0) — continuing would let every MITM'd connection fail opaquely with SELF_SIGNED_CERT_IN_CHAIN. (ADR-001 fail-closed; ADR-026 D5)" >&2
+      exit 1
     fi
     unset _rc_med_ca_wait _rc_med_ca_path
   fi

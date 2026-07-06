@@ -60,6 +60,25 @@
 #     O1b  — RC_MEDIATOR threading in rc appears AFTER RC_MULTIPLEXER threading
 #     O1c  — _up_init_firewall call appears BEFORE _up_init_container call in rc
 #
+#   CA  — mediator CA trust env vars (rip-cage-yid0 / Node SELF_SIGNED_CERT_IN_CHAIN fix):
+#     CA1a — mediator composed => NODE_EXTRA_CA_CERTS/SSL_CERT_FILE/REQUESTS_CA_BUNDLE
+#            all present in final run args with the exact expected values
+#     CA1b — mediator=none => none of the three vars present
+#     CA1c — no config at all => none of the three vars present (no regression)
+#
+#   R   — resume guard for mediator CA env (rip-cage-yid0):
+#     R1 — mediator composed, label absent/false => abort loud with recreate instructions
+#     R2 — mediator composed, label=true => resolver returns 0 (no mismatch)
+#     R3 — mediator=none, label=false => resolver returns 0 (no mismatch)
+#     R4 — legacy container (missing label), mediator composed => treated as
+#          "false" => abort loud (same as R1)
+#
+#   T   — CA-wait timeout fail-closed (rip-cage-yid0 / F3-analog for init-mediator.sh):
+#     T1 — ca_cert_path declared, cert never appears => init-mediator.sh exits
+#          non-zero => _up_init_mediator sets _UP_MEDIATOR_OK=false
+#     T2 — positive control: ca_cert_path declared, cert present immediately =>
+#          exits 0, _UP_MEDIATOR_OK stays true
+#
 # =============================================================================
 # Conventions:
 #   * FAILURES counter + [[ $FAILURES -eq 0 ]] || exit 1 (no prose-only red)
@@ -988,6 +1007,396 @@ rm -f "$_p6c_stderr"
 
 rm -rf "${_p6_stub_dir}"
 teardown_p_sandbox
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# CA: mediator CA trust env vars (rip-cage-yid0)
+#
+# The mediator-resolution snippet (THREADING_SNIPPET_FILE, already extracted
+# above) sets the _UP_MEDIATOR_CA_ENV gate flag. A SIBLING snippet, extracted
+# from _up_prepare_environment, gates the three CA env vars off that flag.
+# Sourcing both in sequence (same _UP_RUN_ARGS accumulator) proves the full
+# composed behavior: flag-set (in the resolution block) + arg-addition (in
+# _up_prepare_environment) — not just the flag in isolation.
+# ---------------------------------------------------------------------------
+echo "--- CA: mediator CA trust env vars unit tests ---"
+
+CA_GATE_SNIPPET_FILE="${U1_TMP}/mediator-ca-gate-snippet.sh"
+awk '/rip-cage-yid0: mediator CA trust env vars\./,/rip-cage-yid0: end mediator CA trust env vars\./' \
+  "${REPO_ROOT}/rc" > "$CA_GATE_SNIPPET_FILE"
+
+if [[ ! -s "$CA_GATE_SNIPPET_FILE" ]]; then
+  fail "CA FATAL: could not extract mediator CA trust env var gate snippet from rc — markers may have changed"
+fi
+
+# Helper: write a driver script that sources BOTH the resolution snippet
+# (sets _UP_MEDIATOR_CA_ENV) and the CA-gate snippet (consumes it), same
+# _UP_RUN_ARGS accumulator throughout — mirrors _write_u1_driver.
+_write_ca_driver() {
+  local driver_file="$1" global_path_val="$2" eff_config_json="${3:-}"
+  local load_stub=""
+  if [[ -n "$eff_config_json" ]]; then
+    load_stub="_load_effective_config() { echo '${eff_config_json}'; }"
+  fi
+  cat > "$driver_file" <<DRIVER
+#!/usr/bin/env bash
+set -uo pipefail
+# shellcheck source=/dev/null
+source "\${RC_PATH}" 2>/dev/null
+
+_config_global_path()  { echo '${global_path_val}'; }
+_config_project_path() { echo "/nonexistent-project-stub.yaml"; }
+${load_stub}
+
+_run_ca_snippets() {
+  local path="/tmp/stub-workspace"
+  local rc_egress="on"
+  _UP_RUN_ARGS=()
+  # shellcheck source=/dev/null
+  source "\${SNIPPET}"
+  # shellcheck source=/dev/null
+  source "\${CA_SNIPPET}"
+  for arg in "\${_UP_RUN_ARGS[@]:-}"; do
+    printf 'ARG: %s\n' "\$arg"
+  done
+}
+_run_ca_snippets
+DRIVER
+}
+
+# CA1a — mediator=my-proxy => all three CA vars present with exact values.
+_write_ca_driver "${U1_TMP}/driver-ca1a.sh" \
+  "$RC" \
+  '{"config":{"network":{"egress":{"mediator":"my-proxy"}}}}'
+
+CA1A_OUT=""
+CA1A_EXIT=0
+RC_PATH="$RC" SNIPPET="$THREADING_SNIPPET_FILE" CA_SNIPPET="$CA_GATE_SNIPPET_FILE" \
+  bash "${U1_TMP}/driver-ca1a.sh" > "${U1_TMP}/ca1a.out" 2>&1 || CA1A_EXIT=$?
+CA1A_OUT=$(cat "${U1_TMP}/ca1a.out")
+
+_ca1a_ok=true _ca1a_reason=""
+if ! echo "$CA1A_OUT" | grep -qF "ARG: NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/rip-cage-mediator-ca.crt"; then
+  _ca1a_ok=false; _ca1a_reason="${_ca1a_reason:+$_ca1a_reason; }NODE_EXTRA_CA_CERTS missing or wrong value"
+fi
+if ! echo "$CA1A_OUT" | grep -qF "ARG: SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"; then
+  _ca1a_ok=false; _ca1a_reason="${_ca1a_reason:+$_ca1a_reason; }SSL_CERT_FILE missing or wrong value"
+fi
+if ! echo "$CA1A_OUT" | grep -qF "ARG: REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt"; then
+  _ca1a_ok=false; _ca1a_reason="${_ca1a_reason:+$_ca1a_reason; }REQUESTS_CA_BUNDLE missing or wrong value"
+fi
+if [[ "$_ca1a_ok" == "true" ]]; then
+  pass "CA1a mediator composed: all three CA trust env vars present with exact expected values"
+else
+  fail "CA1a mediator composed CA env vars" "${_ca1a_reason} -- out='${CA1A_OUT}' exit=${CA1A_EXIT}"
+fi
+
+# CA1b — mediator=none => none of the three vars present.
+_write_ca_driver "${U1_TMP}/driver-ca1b.sh" \
+  "$RC" \
+  '{"config":{"network":{"egress":{"mediator":"none"}}}}'
+
+CA1B_OUT=""
+CA1B_EXIT=0
+# shellcheck disable=SC2034
+RC_PATH="$RC" SNIPPET="$THREADING_SNIPPET_FILE" CA_SNIPPET="$CA_GATE_SNIPPET_FILE" \
+  bash "${U1_TMP}/driver-ca1b.sh" > "${U1_TMP}/ca1b.out" 2>&1 || CA1B_EXIT=$?
+CA1B_OUT=$(cat "${U1_TMP}/ca1b.out")
+
+if echo "$CA1B_OUT" | grep -qE "NODE_EXTRA_CA_CERTS|SSL_CERT_FILE|REQUESTS_CA_BUNDLE"; then
+  fail "CA1b mediator=none: a CA trust env var was found (should be absent)" "out='${CA1B_OUT}'"
+else
+  pass "CA1b mediator=none: no CA trust env vars in _UP_RUN_ARGS"
+fi
+
+# CA1c — no config file at all => none of the three vars present (no regression).
+_write_ca_driver "${U1_TMP}/driver-ca1c.sh" \
+  "/no-config-exists-for-ca1c/rip-cage.yaml" \
+  ""
+
+CA1C_OUT=""
+CA1C_EXIT=0
+# shellcheck disable=SC2034
+RC_PATH="$RC" SNIPPET="$THREADING_SNIPPET_FILE" CA_SNIPPET="$CA_GATE_SNIPPET_FILE" \
+  bash "${U1_TMP}/driver-ca1c.sh" > "${U1_TMP}/ca1c.out" 2>&1 || CA1C_EXIT=$?
+CA1C_OUT=$(cat "${U1_TMP}/ca1c.out")
+
+if echo "$CA1C_OUT" | grep -qE "NODE_EXTRA_CA_CERTS|SSL_CERT_FILE|REQUESTS_CA_BUNDLE"; then
+  fail "CA1c no config: a CA trust env var was found (should be absent)" "out='${CA1C_OUT}'"
+else
+  pass "CA1c no config: no CA trust env vars in _UP_RUN_ARGS (no regression)"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# R: resume guard for mediator CA env (rip-cage-yid0)
+#
+# _up_resolve_resume_mediator_ca_env mirrors _up_resolve_resume_config_mode:
+# reads the rc.mediator-ca-env label, compares against whether the CURRENT
+# effective config composes a mediator, aborts loud on mismatch. Uses the
+# same PATH-stub-docker idiom as test-config-ro-mount.sh M6-M8, but stubs
+# _load_effective_config directly (like the U1/CA driver tests above) rather
+# than relying on real .rip-cage.yaml + the live mediator-name validator —
+# that validator's allowed-set depends on this HOST's baked rip-cage:latest
+# image / manifest state, which is out of scope for this unit test.
+# ---------------------------------------------------------------------------
+echo "--- R: resume guard for mediator CA env unit tests ---"
+
+# Helper: run _up_resolve_resume_mediator_ca_env with a stubbed docker (for
+# the label query) and a stubbed _load_effective_config (for the "current
+# effective config composes a mediator" side). Captures stdout/stderr/exit.
+_run_resume_mediator_ca_env() {
+  local label_val="$1" eff_config_json="$2" out_var_err="$3" out_var_exit="$4"
+  local stub_dir
+  stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-rmce-stub-XXXXXX")
+  cat > "${stub_dir}/docker" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+  *" inspect "*"rc.mediator-ca-env"*) echo "${label_val}"; exit 0 ;;
+  *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
+esac
+STUB
+  chmod +x "${stub_dir}/docker"
+
+  local _exit=0
+  # No `set -e` re-enable afterward: this file never enables errexit (only
+  # `set -uo pipefail` at the top) — reactivating it here would leak past
+  # this function for the rest of the script (bash's `set` is not function-
+  # scoped) and could abort later, unrelated code on its first bare nonzero
+  # command (e.g. the cleanup() trap's `[[ -n "" ]]` check at EOF).
+  set +e
+  PATH="${stub_dir}:$PATH" bash -c "
+    source '$RC' 2>/dev/null
+    _load_effective_config() { echo '${eff_config_json}'; }
+    _up_resolve_resume_mediator_ca_env 'rc-rmce-test' '/tmp/stub-workspace'
+  " >/tmp/rc-rmce-out 2>/tmp/rc-rmce-err
+  _exit=$?
+  eval "${out_var_err}=\$(cat /tmp/rc-rmce-err 2>/dev/null || true)"
+  eval "${out_var_exit}=${_exit}"
+  rm -rf "${stub_dir}" /tmp/rc-rmce-out /tmp/rc-rmce-err
+}
+
+# R1 — mediator composed (current effective config), label says "false"
+# => abort loud, error names the label + gives recreate instructions.
+_r1_err="" _r1_exit=0
+_run_resume_mediator_ca_env "false" \
+  '{"config":{"network":{"egress":{"mediator":"my-proxy"}}}}' \
+  _r1_err _r1_exit
+
+_r1_ok=true _r1_reason=""
+if [[ "$_r1_exit" -eq 0 ]]; then
+  _r1_ok=false; _r1_reason="resolver returned 0 (should abort — mediator composed but CA env label is false)"
+fi
+if ! echo "$_r1_err" | grep -qi "rc.mediator-ca-env"; then
+  _r1_ok=false; _r1_reason="${_r1_reason:+$_r1_reason; }error message did not name the label 'rc.mediator-ca-env'"
+fi
+if ! echo "$_r1_err" | grep -qi "rc destroy"; then
+  _r1_ok=false; _r1_reason="${_r1_reason:+$_r1_reason; }error message did not include 'rc destroy' remediation hint"
+fi
+if [[ "$_r1_ok" == "true" ]]; then
+  pass "R1 mediator composed + label=false: resume guard aborts loud with recreate instructions"
+else
+  fail "R1 mediator composed + label=false" "$_r1_reason (exit=$_r1_exit, stderr=$_r1_err)"
+fi
+
+# R2 — mediator composed, label=true => resolver returns 0 (no mismatch).
+_r2_err="" _r2_exit=0
+_run_resume_mediator_ca_env "true" \
+  '{"config":{"network":{"egress":{"mediator":"my-proxy"}}}}' \
+  _r2_err _r2_exit
+
+if [[ "$_r2_exit" -eq 0 ]]; then
+  pass "R2 mediator composed + label=true: resume guard returns 0 (no mismatch)"
+else
+  fail "R2 mediator composed + label=true" "expected exit 0, got $_r2_exit (stderr=$_r2_err)"
+fi
+
+# R3 — mediator=none (no config composing one), label=false => resolver returns 0.
+_r3_err="" _r3_exit=0
+_run_resume_mediator_ca_env "false" \
+  '{"config":{"network":{"egress":{"mediator":"none"}}}}' \
+  _r3_err _r3_exit
+
+if [[ "$_r3_exit" -eq 0 ]]; then
+  pass "R3 mediator=none + label=false: resume guard returns 0 (no mismatch)"
+else
+  fail "R3 mediator=none + label=false" "expected exit 0, got $_r3_exit (stderr=$_r3_err)"
+fi
+
+# R4 — legacy container (rc.mediator-ca-env label absent entirely, pre-yid0),
+# mediator composed => treated as "false" => abort loud (same as R1).
+_r4_err="" _r4_exit=0
+_run_resume_mediator_ca_env "" \
+  '{"config":{"network":{"egress":{"mediator":"my-proxy"}}}}' \
+  _r4_err _r4_exit
+
+if [[ "$_r4_exit" -ne 0 ]]; then
+  pass "R4 legacy container (missing label) + mediator composed: treated as false, aborts loud"
+else
+  fail "R4 legacy container missing label" "expected non-zero exit (missing label treated as false), got 0"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# T: CA-wait timeout fail-closed (rip-cage-yid0)
+#
+# init-mediator.sh: if a mediator's registry declares ca_cert_path but the CA
+# file never materializes within the wait window, the script must fail closed
+# (exit non-zero) rather than warn-and-proceed — otherwise the three CA env
+# vars point at trust stores lacking the mediator's CA, and every MITM'd
+# connection fails opaquely. The wait loop is sed-patched to a short window
+# so this test runs in well under a second (same sed-patch idiom as the U2
+# registry-dir tests above).
+# ---------------------------------------------------------------------------
+echo "--- T: CA-wait timeout fail-closed unit tests ---"
+
+_setup_t_registry() {
+  local reg_dir="$1" ca_target="$2"
+  mkdir -p "${reg_dir}/mediators/timeout-med"
+  printf 'testuser1000' > "${reg_dir}/mediators/timeout-med/run_as_uid"
+  printf '#!/bin/sh\ntrue\n' > "${reg_dir}/mediators/timeout-med/start"
+  chmod 0755 "${reg_dir}/mediators/timeout-med/start"
+  printf '%s' "$ca_target" > "${reg_dir}/mediators/timeout-med/ca_cert_path"
+}
+
+# T1 — ca_cert_path declared, cert never appears => exits non-zero, ERROR mentions
+# fail-closed. Patch the wait loop to 2 iterations of 0.05s so the test is fast.
+T_REG="${U1_TMP}/fake-etc-timeout/rip-cage"
+_T1_CA_TARGET="${U1_TMP}/never-appears-ca.crt"
+_setup_t_registry "$T_REG" "$_T1_CA_TARGET"
+
+T1_PATCHED="${U1_TMP}/patched-init-mediator-t1.sh"
+sed \
+  -e "s|/etc/rip-cage/mediators|${T_REG}/mediators|g" \
+  -e "s|/run/rip-cage-mediator-|${U1_TMP}/pid-t1-|g" \
+  -e "s/-lt 20/-lt 2/" \
+  -e "s/sleep 0.5/sleep 0.05/" \
+  "${REPO_ROOT}/init-mediator.sh" > "$T1_PATCHED"
+chmod +x "$T1_PATCHED"
+
+cat > "${U1_TMP}/driver-t1.sh" <<DRIVER
+#!/usr/bin/env bash
+su() {
+  local _cmd=""
+  while [[ \$# -gt 0 ]]; do
+    case "\$1" in
+      -c) shift; _cmd="\$1"; shift ;;
+      *) shift ;;
+    esac
+  done
+  local _out
+  _out=\$(sh -c "\${_cmd}" 2>/dev/null || true)
+  echo "\${_out:-0}"
+}
+export -f su 2>/dev/null || true
+update-ca-certificates() { return 0; }
+export -f update-ca-certificates 2>/dev/null || true
+getent() { echo "${U1_TMP}"; }
+export -f getent 2>/dev/null || true
+
+export RC_MEDIATOR='timeout-med'
+bash "${T1_PATCHED}"
+DRIVER
+
+T1_OUT=""
+T1_EXIT=0
+bash "${U1_TMP}/driver-t1.sh" > "${U1_TMP}/t1.out" 2>&1 || T1_EXIT=$?
+T1_OUT=$(cat "${U1_TMP}/t1.out")
+
+if [[ "$T1_EXIT" -ne 0 ]] && echo "$T1_OUT" | grep -qiE "ERROR.*fail.*clos|fail.*clos.*ERROR"; then
+  pass "T1 ca_cert_path declared, cert never appears: init-mediator.sh fails closed (exit=${T1_EXIT}, ERROR names fail-closed)"
+elif [[ "$T1_EXIT" -ne 0 ]]; then
+  pass "T1 ca_cert_path declared, cert never appears: init-mediator.sh exits non-zero (fail-closed)"
+else
+  fail "T1 SAFETY: ca_cert_path declared but CA never appeared, init-mediator.sh exited 0 (warn-and-proceed) — CA env vars would point at trust stores lacking the mediator CA" \
+    "out='${T1_OUT}' exit=${T1_EXIT}"
+fi
+
+# T1b — the rc-level integration: _up_init_mediator sets _UP_MEDIATOR_OK=false
+# when init-mediator.sh (docker-exec'd) exits non-zero. Stub docker exec to run
+# our timeout-patched script for real (not force exit 0, unlike the P6 stub).
+_t1b_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-t1b-stub-XXXXXX")
+cat > "${_t1b_stub_dir}/docker" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+  *" exec "*"init-mediator.sh"*) exec bash "${T1_PATCHED}" ;;
+  *" inspect "*) echo '["RC_MEDIATOR=timeout-med"]' ;;
+  *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "${_t1b_stub_dir}/docker"
+
+T1B_OUT=""
+PATH="${_t1b_stub_dir}:$PATH" bash -c "
+  source '$RC' 2>/dev/null
+  _UP_MEDIATOR_ENV_ARGS=(-e RIPCAGE_MEDIATOR_BEARER_SECRET=sk-ant-t1b)
+  OUTPUT_FORMAT=''
+  export RC_MEDIATOR='timeout-med'
+  _up_init_mediator 'rc-t1b-test'
+  echo \"MEDIATOR_OK=\${_UP_MEDIATOR_OK}\"
+" > "${U1_TMP}/t1b.out" 2>&1
+T1B_OUT=$(cat "${U1_TMP}/t1b.out")
+rm -rf "${_t1b_stub_dir}"
+
+if echo "$T1B_OUT" | grep -q "MEDIATOR_OK=false"; then
+  pass "T1b rc integration: init-mediator.sh CA-timeout exit propagates to _UP_MEDIATOR_OK=false"
+else
+  fail "T1b SAFETY: _UP_MEDIATOR_OK did not become false after init-mediator.sh CA-timeout failure" "out='${T1B_OUT}'"
+fi
+
+# T2 — positive control: ca_cert_path declared, cert present immediately =>
+# exits 0, no fail-closed error.
+T_REG_OK="${U1_TMP}/fake-etc-timeout-ok/rip-cage"
+_T2_CA_TARGET="${U1_TMP}/appears-immediately-ca.crt"
+printf 'fake-ca-pem-content\n' > "$_T2_CA_TARGET"
+_setup_t_registry "$T_REG_OK" "$_T2_CA_TARGET"
+
+T2_PATCHED="${U1_TMP}/patched-init-mediator-t2.sh"
+sed \
+  -e "s|/etc/rip-cage/mediators|${T_REG_OK}/mediators|g" \
+  -e "s|/run/rip-cage-mediator-|${U1_TMP}/pid-t2-|g" \
+  -e "s/-lt 20/-lt 2/" \
+  -e "s/sleep 0.5/sleep 0.05/" \
+  "${REPO_ROOT}/init-mediator.sh" > "$T2_PATCHED"
+chmod +x "$T2_PATCHED"
+
+cat > "${U1_TMP}/driver-t2.sh" <<DRIVER
+#!/usr/bin/env bash
+su() {
+  local _cmd=""
+  while [[ \$# -gt 0 ]]; do
+    case "\$1" in
+      -c) shift; _cmd="\$1"; shift ;;
+      *) shift ;;
+    esac
+  done
+  local _out
+  _out=\$(sh -c "\${_cmd}" 2>/dev/null || true)
+  echo "\${_out:-0}"
+}
+export -f su 2>/dev/null || true
+update-ca-certificates() { return 0; }
+export -f update-ca-certificates 2>/dev/null || true
+getent() { echo "${U1_TMP}"; }
+export -f getent 2>/dev/null || true
+
+export RC_MEDIATOR='timeout-med'
+bash "${T2_PATCHED}"
+DRIVER
+
+T2_OUT=""
+T2_EXIT=0
+bash "${U1_TMP}/driver-t2.sh" > "${U1_TMP}/t2.out" 2>&1 || T2_EXIT=$?
+T2_OUT=$(cat "${U1_TMP}/t2.out")
+
+if [[ "$T2_EXIT" -eq 0 ]]; then
+  pass "T2 positive control: ca_cert_path declared, cert present immediately => exits 0"
+else
+  fail "T2 positive control regressed" "out='${T2_OUT}' exit=${T2_EXIT}"
+fi
 
 echo ""
 

@@ -1840,13 +1840,50 @@ _up_prepare_environment() {
   if [[ "$_rc_egress" != "off" ]]; then
     _UP_RUN_ARGS+=(--cap-add=NET_ADMIN)
     _UP_RUN_ARGS+=(-l rc.egress=on)
-    # No CA trust env vars (rip-cage-ta1o.1): the pure SNI router does NOT terminate
-    # TLS and installs no rip-cage CA, so clients validate the REAL upstream cert via
-    # the default system trust store. NODE_EXTRA_CA_CERTS / *_CA_BUNDLE pointing at a
-    # rip-cage CA would target a nonexistent file (ADR-012 D4).
   else
     _UP_RUN_ARGS+=(-l rc.egress=off)
   fi
+
+  # rip-cage-yid0: mediator CA trust env vars.
+  #
+  # SNI-router-only (no mediator composed, network.egress.mediator: none,
+  # ADR-026 D5): NO CA vars are added here (rip-cage-ta1o.1) — the pure SNI
+  # router does NOT terminate TLS and installs no rip-cage CA, so clients
+  # validate the REAL upstream cert via the default system trust store.
+  # NODE_EXTRA_CA_CERTS / *_CA_BUNDLE pointing at a rip-cage CA would target a
+  # nonexistent file (ADR-012 D4). This case is unchanged / still correct.
+  #
+  # Mediator composed (_UP_MEDIATOR_CA_ENV="true" — set in the mediator-
+  # resolution block of cmd_up, BEFORE _rc_mediator is unset there; this
+  # function runs AFTER that unset, so it reads the _UP_* global flag instead
+  # of _rc_mediator directly): init-mediator.sh (host-driven root docker exec)
+  # installs the mediator's MITM CA into the container's SYSTEM trust store via
+  # update-ca-certificates. Node's TLS stack ignores the system store unless
+  # told, so:
+  #   - NODE_EXTRA_CA_CERTS points at the rc-owned canonical mediator CA file
+  #     alone (additive, correct for Node — there is no other way for it to
+  #     pick up update-ca-certificates' output).
+  #   - SSL_CERT_FILE / REQUESTS_CA_BUNDLE point at the SYSTEM bundle, NEVER at
+  #     the mediator CA file alone — these REPLACE the trust store for
+  #     openssl-linked / requests-based tools, so pointing them at just the
+  #     mediator CA would break non-MITM'd TLS to every other host.
+  #
+  # Timing: these are static paths threaded at container-create time (docker
+  # run -e); the CA FILE itself only materializes later, during host-driven
+  # init-mediator.sh, which runs before _up_init_container (rc:~3886) and
+  # therefore before any agent process. Only pre-init processes (sleep-
+  # infinity PID 1, firewall/mediator init) predate the file — none of them
+  # are Node.
+  #
+  # Residual (accepted, 80/20): a mediator composed WITHOUT a declared
+  # ca_cert_path leaves NODE_EXTRA_CA_CERTS pointing at a file that never
+  # appears -> one harmless "ignoring extra certs" Node warning per process.
+  if [[ "${_UP_MEDIATOR_CA_ENV:-false}" == "true" ]]; then
+    _UP_RUN_ARGS+=(-e "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/rip-cage-mediator-ca.crt")
+    _UP_RUN_ARGS+=(-e "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt")
+    _UP_RUN_ARGS+=(-e "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt")
+  fi
+  # rip-cage-yid0: end mediator CA trust env vars.
 
   # ssh-agent forwarding (ADR-017 + ADR-018): forward whichever host ssh-agent
   # the user actually populates. _resolve_host_ssh_sock() probes candidate
@@ -2111,6 +2148,60 @@ _up_resolve_resume_config_mode() {
     fi
     echo "Error: container $_name was created with rc.config-mode=${_stored_mode} but current effective config has mounts.config_mode=${_current}." >&2
     echo "       The /workspace/.rip-cage.yaml :ro shadow-mount is wired at create time; toggling mounts.config_mode between ro and rw requires recreating the container." >&2
+    echo "       Run:" >&2
+    echo "         rc destroy $_name" >&2
+    echo "         rc up $_path" >&2
+    exit 1
+  fi
+}
+
+# _up_resolve_resume_mediator_ca_env -- read and validate the rc.mediator-ca-env
+# label on resume; abort loud if the CURRENT effective config composes a
+# mediator (network.egress.mediator != none) but the container was created
+# WITHOUT the mediator CA trust env vars (NODE_EXTRA_CA_CERTS / SSL_CERT_FILE /
+# REQUESTS_CA_BUNDLE — rip-cage-yid0).
+#
+# These vars are threaded via `docker run -e` at container-create time and are
+# frozen for the container's lifetime — `docker start` (resume) cannot add
+# them. Without this guard, a stopped cage that pre-dates this fix, or one
+# reconfigured to add a mediator after creation, would silently resume with
+# broken Node TLS (SELF_SIGNED_CERT_IN_CHAIN) every time. Mirrors
+# _up_resolve_resume_config_mode / _up_resolve_resume_credential_mounts.
+#
+# Missing label (legacy container, pre-yid0): treated as "false" (CA env vars
+# were never set at create time for any pre-fix container) — if the current
+# effective config also composes no mediator, there is no mismatch.
+# Parameters: $1 name, $2 path
+_up_resolve_resume_mediator_ca_env() {
+  local _name="$1" _path="$2"
+  local _label
+  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.mediator-ca-env" }}' "$_name" 2>/dev/null); then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
+    fi
+    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
+    exit 1
+  fi
+  local _stored
+  if [[ -z "$_label" ]]; then
+    _stored="false"
+  else
+    _stored="$_label"
+  fi
+
+  # Compute whether the CURRENT effective config composes a mediator.
+  local _eff_result _current_mediator="none"
+  _eff_result=$(_load_effective_config "$_path" 2>/dev/null || true)
+  if [[ -n "$_eff_result" ]]; then
+    _current_mediator=$(jq -r '.config.network.egress.mediator // "none"' <<<"$_eff_result" 2>/dev/null || echo "none")
+  fi
+
+  if [[ "$_current_mediator" != "none" && "$_stored" != "true" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Container $_name was created with rc.mediator-ca-env=${_stored} but current effective config composes network.egress.mediator=${_current_mediator}. CA trust env vars are immutable on resume — run: rc destroy $_name && rc up $_path to apply the change." "MEDIATOR_CA_ENV_STALE"
+    fi
+    echo "Error: container $_name was created with rc.mediator-ca-env=${_stored} but current effective config composes network.egress.mediator=${_current_mediator}." >&2
+    echo "       NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / REQUESTS_CA_BUNDLE are threaded via docker run -e at container-create time and cannot be added to an existing container — resuming blind would silently reproduce SELF_SIGNED_CERT_IN_CHAIN for Node tools (rip-cage-yid0)." >&2
     echo "       Run:" >&2
     echo "         rc destroy $_name" >&2
     echo "         rc up $_path" >&2
@@ -4498,6 +4589,9 @@ cmd_up() {
     # rip-cage-seqc.4 / B1: credential-mounts mount-shape guard applies to
     # running containers too — same rationale as the two guards above.
     _up_resolve_resume_credential_mounts "$name" "$path"
+    # rip-cage-yid0: mediator CA env guard applies to running containers too
+    # — CA trust env vars are frozen at container-create time, same rationale.
+    _up_resolve_resume_mediator_ca_env "$name" "$path"
     _config_emit_hint "$path" "$name"
     _config_init_emit_tip "$path"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -4596,6 +4690,10 @@ cmd_up() {
     # rip-cage-seqc.4 / B1: credential-mounts mount-shape guard — abort loud if
     # auth.credential_mounts was toggled between real and none since create.
     _up_resolve_resume_credential_mounts "$name" "$path"
+    # rip-cage-yid0: mediator CA env guard — abort loud if a mediator was
+    # composed after create-time (or the container pre-dates the fix) — CA
+    # trust env vars are frozen at container-create time.
+    _up_resolve_resume_mediator_ca_env "$name" "$path"
     _UP_SSH_FILTER_ACTIVE="false"
     _up_resolve_ssh_allowlists "$path" "$_rc_ssh_cache_dir"
     # rip-cage-hhh.2: regenerate egress-rules on resume (truncate-then-write;
@@ -4957,7 +5055,16 @@ cmd_up() {
   # cages with no mediator config remain byte-identical to today (no regression).
   # ADR-005 D12 FIRM: no mediator name is ever hardcoded here; dispatch is entirely driven
   # by the config value + baked registry files under /etc/rip-cage/mediators/<name>/.
+  #
+  # rip-cage-yid0: this block is also where _UP_MEDIATOR_CA_ENV (the gate flag
+  # consumed by the mediator-CA-trust-env-vars block in _up_prepare_environment,
+  # rc:~1724) is set. _up_prepare_environment is called AFTER the
+  # `unset _rc_mediator` at the end of this block — a gate written there
+  # directly on _rc_mediator would never fire. Follow the
+  # existing _UP_* global pattern (mirrors _UP_FORWARD_SSH_HOST_SOCK): set the
+  # flag here, consume it downstream.
   local _rc_mediator="none"
+  _UP_MEDIATOR_CA_ENV="false"
   if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
     if command -v yq &>/dev/null; then
       local _med_eff_result
@@ -4982,9 +5089,17 @@ cmd_up() {
     fi
     _UP_RUN_ARGS+=(-e "RC_MEDIATOR=${_rc_mediator}")
     log "network.egress.mediator: ${_rc_mediator}"
+    _UP_MEDIATOR_CA_ENV="true"
   else
     log "network.egress.mediator: none (no mediator env threaded)"
   fi
+  # rip-cage-yid0: create-time label stamp for the resume guard
+  # (_up_resolve_resume_mediator_ca_env). NODE_EXTRA_CA_CERTS / SSL_CERT_FILE /
+  # REQUESTS_CA_BUNDLE are frozen at container-create time (docker run -e is
+  # immutable on resume, unlike this rc invocation's re-resolved config) — this
+  # label is the ground truth the resume guard compares against the CURRENT
+  # effective config so a stale resume can't silently keep broken Node TLS.
+  _UP_RUN_ARGS+=(--label "rc.mediator-ca-env=${_UP_MEDIATOR_CA_ENV}")
   unset _rc_mediator
 
   _up_prepare_docker_mounts "$path" "$name"

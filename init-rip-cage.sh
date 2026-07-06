@@ -621,11 +621,27 @@ if [ -d /workspace/.beads ]; then
   fi
 fi
 
-# NOTE: firewall-env (written by init-firewall.sh) is now comment-only — the pure SNI
-# router (rip-cage-ta1o.1) does not set CA vars (NODE_EXTRA_CA_CERTS etc.) because it
-# does not terminate TLS. The old "cat firewall-env >> .zshrc" append was removed because
-# it carried no load-bearing env vars and the idempotency guard (grep 'NODE_EXTRA_CA_CERTS')
-# would never match, causing .zshrc to grow on every rc up / resume (F4 fix, rip-cage-ta1o.1).
+# NOTE: firewall-env (written by init-firewall.sh) is comment-only when the pure
+# SNI router runs with NO mediator composed (rip-cage-ta1o.1) — the router does
+# not terminate TLS, so it sets no CA vars (NODE_EXTRA_CA_CERTS etc.).
+#
+# When a mediator IS composed, init-mediator.sh (root-phase, runs before this
+# script — rip-cage-ta1o.5.8) additionally appends NODE_EXTRA_CA_CERTS to this
+# same firewall-env file as a belt-and-suspenders measure (rip-cage-yid0). The
+# LOAD-BEARING copy of NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / REQUESTS_CA_BUNDLE
+# is threaded via `docker run -e` at container-create time (rc cmd_up,
+# _up_prepare_environment) — that's what covers `docker exec` children (rc exec,
+# attach shells, multiplexer panes), since none of them source this script or
+# any shell-startup file. Sourcing firewall-env here is redundant-but-harmless
+# for that inherited value; it only matters for the rare process that runs
+# before container-create env would apply (there are none in practice, since
+# create-time env is already in place by the time this script runs).
+#
+# The old "cat firewall-env >> .zshrc" append was removed because it carried no
+# load-bearing env vars and the idempotency guard (grep 'NODE_EXTRA_CA_CERTS')
+# would never match, causing .zshrc to grow on every rc up / resume (F4 fix,
+# rip-cage-ta1o.1). Do NOT resurrect that append — the docker-run -e mechanism
+# above is what makes CA env vars reach exec-descendant processes now.
 # cage-env (CAGE_HOST_ADDR) is still sourced below.
 
 # Same pattern for cage-env (CAGE_HOST_ADDR) so interactive shells and multiplexer
