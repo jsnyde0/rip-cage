@@ -560,11 +560,29 @@ unset _cage_host_addr _candidate _cage_probe_status
 # Guard: only snapshot a readable, non-empty ~/.claude.json. A broken mount read
 # is ENOENT (fails -f) or empty (fails -s), so this guard cannot clobber a prior
 # good seed with a bad read — it simply skips and the existing seed is preserved.
+#
+# Non-possession synthesis (rip-cage-vwka): when the live mount is absent, a
+# non-possession cage (auth.per_tool.claude: none) has no ~/.claude.json at
+# all — the wrapper's seed chain then comes up empty, forcing interactive
+# claude through the full theme+login onboarding wall (unusable in-cage: the
+# login screen needs a browser OAuth flow, and the placeholder token +
+# mediator injection already auth the API path throughout). Synthesize a
+# minimal seed instead, ONLY if no seed exists yet — this must never clobber
+# a prior good snapshot (e.g. one taken on an earlier boot before the host
+# mount broke). Deliberately minimal and non-credential-shaped: no
+# oauthAccount / claudeAiOauth fields. Proven sufficient 2026-07-06:
+# {"hasCompletedOnboarding": true, "theme": "dark"} makes interactive claude
+# skip theme+login and land on workspace-trust -> prompt -> model round-trip.
 if [ -f ~/.claude.json ] && [ -s ~/.claude.json ]; then
   cp ~/.claude.json ~/.claude/.claude.json.seed
   echo "[rip-cage] Snapshotted ~/.claude.json → ~/.claude/.claude.json.seed (R4 stable seed)"
+elif [ -s ~/.claude/.claude.json.seed ]; then
+  echo "[rip-cage] NOTE: ~/.claude.json not readable/non-empty at init time — existing seed preserved (R4 stable seed)"
 else
-  echo "[rip-cage] NOTE: ~/.claude.json not readable/non-empty at init time — R4 seed not taken (wrapper will fall back)" >&2
+  cat > ~/.claude/.claude.json.seed <<'RIPCAGE_SEED_EOF'
+{"hasCompletedOnboarding": true, "theme": "dark"}
+RIPCAGE_SEED_EOF
+  echo "[rip-cage] Synthesized minimal ~/.claude/.claude.json.seed (non-possession onboarding skip, rip-cage-vwka)"
 fi
 
 # 8. Verify Claude Code
