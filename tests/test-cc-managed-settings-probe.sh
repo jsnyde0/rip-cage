@@ -210,10 +210,29 @@ CRED_FILE_PRESENT=$(cexec bash -c '
   fi
 ')
 
+# rip-cage-6k2u: non-possession posture recognition. A cage running
+# auth.per_tool.claude: none (agent holds a placeholder token; a composed
+# mediator injects the real secret on egress) has neither a mounted
+# credentials file nor ANTHROPIC_API_KEY by design — the checks above
+# correctly come back "absent" for it. Before declaring FATAL, mirror rc's
+# _doctor_format_auth_probe (rc:6873-6890): check the
+# rc.auth.credential-mounts.claude=none container label first (host-side
+# docker inspect, cheap and not forgeable by an in-cage agent), then
+# CLAUDE_CODE_OAUTH_TOKEN in-cage (tests/test-safety-stack.sh:186-190 idiom).
+if [[ "$CRED_FILE_PRESENT" == "absent" ]]; then
+  CRED_MOUNTS_CLAUDE_LABEL=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts.claude" }}' "$CONTAINER" 2>/dev/null || true)
+  if [[ "$CRED_MOUNTS_CLAUDE_LABEL" == "none" ]]; then
+    CRED_FILE_PRESENT="non-possession-label"
+  elif cexec bash -c 'test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"' >/dev/null 2>&1; then
+    CRED_FILE_PRESENT="oauth-token-env"
+  fi
+fi
+
 if [[ "$CRED_FILE_PRESENT" == "absent" ]]; then
   echo ""
   echo "FATAL: Auth credentials absent in container $CONTAINER"
   echo "  Missing artifact: ~/.claude/.credentials.json (non-empty) OR ANTHROPIC_API_KEY"
+  echo "    OR CLAUDE_CODE_OAUTH_TOKEN OR rc.auth.credential-mounts.claude=none label"
   echo "  This probe requires a live authenticated cage. Start one with: rc up <workspace>"
   exit 1
 fi
