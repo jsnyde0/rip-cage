@@ -7464,7 +7464,10 @@ _config_schema_defaults_json() {
 #
 # rip-cage-61al.4
 _config_mux_derive_allowed_set() {
-  local image="${RC_MUX_INSPECT_IMAGE:-rip-cage:latest}"
+  # Default to $IMAGE (rc:45) so an RC_IMAGE override (custom-tag/scratch cage)
+  # validates against ITS OWN baked registry, not rip-cage:latest's. The
+  # explicit RC_MUX_INSPECT_IMAGE env override still wins (rip-cage-gkc7).
+  local image="${RC_MUX_INSPECT_IMAGE:-$IMAGE}"
 
   # Step 1: If image EXISTS, the label is authoritative (even when empty).
   # Empty label = no muxes baked = allowed set is "none" only.
@@ -7538,7 +7541,10 @@ _config_mux_derive_allowed_set() {
 #
 # rip-cage-ta1o.5.1
 _config_mediator_derive_allowed_set() {
-  local image="${RC_MEDIATOR_INSPECT_IMAGE:-rip-cage:latest}"
+  # Default to $IMAGE (rc:45) so an RC_IMAGE override (custom-tag/scratch cage)
+  # validates against ITS OWN baked registry, not rip-cage:latest's. The
+  # explicit RC_MEDIATOR_INSPECT_IMAGE env override still wins (rip-cage-gkc7).
+  local image="${RC_MEDIATOR_INSPECT_IMAGE:-$IMAGE}"
 
   # Step 1: If image EXISTS, the label is authoritative (even when empty).
   # Empty label = no mediators baked = allowed set is "none" only.

@@ -1087,6 +1087,141 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
+# RC_IMAGE propagation into the registry inspects (rip-cage-gkc7)
+# T50: RC_MUX_INSPECT_IMAGE unset ⇒ mux registry inspect follows $IMAGE (RC_IMAGE)
+# T51: explicit RC_MUX_INSPECT_IMAGE still wins over RC_IMAGE
+# T52: RC_MEDIATOR_INSPECT_IMAGE unset ⇒ mediator registry inspect follows $IMAGE
+# T53: explicit RC_MEDIATOR_INSPECT_IMAGE still wins over RC_IMAGE
+# ---------------------------------------------------------------------------
+
+# Fake-docker PATH shim (test-manifest-seed-drift.sh idiom) for T50-T53.
+# 'docker image inspect <tag>' reports EXISTS only for the two given tags;
+# 'docker inspect --format ... <tag>' echoes the label value for the LABELED
+# tag and nothing (empty label) for the EMPTY tag. Permissive exit 0 otherwise.
+# Args: $1 = shim dir, $2 = labeled tag, $3 = label value, $4 = empty-label tag (or "")
+_make_fake_docker_gkc7() {
+  local dir="$1" labeled_tag="$2" label_val="$3" empty_tag="${4:-}"
+  mkdir -p "$dir"
+  cat > "${dir}/docker" <<SHIM
+#!/usr/bin/env bash
+# Fake docker (rip-cage-gkc7 T50-T53): '${labeled_tag}' exists (label '${label_val}');
+# '${empty_tag}' exists with an EMPTY label; every other tag is absent.
+case "\$1" in
+  image)
+    if [[ "\$2" == "inspect" ]]; then
+      [[ "\$3" == "${labeled_tag}" ]] && exit 0
+      [[ -n "${empty_tag}" && "\$3" == "${empty_tag}" ]] && exit 0
+      exit 1
+    fi
+    exit 0
+    ;;
+  inspect)
+    # docker inspect --format '<fmt>' <image> — the derive fns' label query.
+    if [[ "\${*: -1}" == "${labeled_tag}" ]]; then
+      echo "${label_val}"
+    fi
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+SHIM
+  chmod +x "${dir}/docker"
+}
+
+test_t50_mux_inspect_follows_rc_image() {
+  # rip-cage-gkc7: with RC_MUX_INSPECT_IMAGE unset, _config_mux_derive_allowed_set
+  # must inspect $IMAGE (RC_IMAGE) — NOT the literal rip-cage:latest. The fake
+  # docker only knows the custom tag (rc.multiplexers=tmux) and the manifest is
+  # empty, so the buggy path (inspect rip-cage:latest → absent → manifest
+  # fallback → tmux unbaked) fails loud instead of accepting tmux.
+  setup_sandbox "" "config-project-multiplexer-tmux.yaml"
+  printf 'version: 1\ntools: []\n' > "${TEST_HOME}/.config/rip-cage/tools.yaml"
+  _make_fake_docker_gkc7 "${TEST_HOME}/fake-docker-bin" "rip-cage:custom-gkc7" "tmux"
+  local out mux exit_code=0 stderr_file
+  stderr_file=$(mktemp)
+  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    PATH="${TEST_HOME}/fake-docker-bin:$PATH" \
+    RC_IMAGE="rip-cage:custom-gkc7" RC_MUX_INSPECT_IMAGE="" \
+    bash -c "cd '$TEST_WS' && '$RC' config show --json" 2>"$stderr_file") || exit_code=$?
+  mux=$(jq -r '.config.session.multiplexer' <<<"$out" 2>/dev/null)
+  if [[ "$exit_code" -eq 0 && "$mux" == "tmux" ]]; then
+    pass "T50 mux registry inspect follows RC_IMAGE when RC_MUX_INSPECT_IMAGE unset (rip-cage-gkc7)"
+  else
+    fail "T50 expected exit=0 mux=tmux (custom-tag label authoritative), got exit=$exit_code mux=$mux stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+test_t51_mux_inspect_explicit_override_wins() {
+  # The explicit RC_MUX_INSPECT_IMAGE env override must still WIN over RC_IMAGE
+  # (regression contract for T41 / test-prerequisites / composable e2e, which
+  # pin the inspect image). The override tag exists with an EMPTY label ⇒
+  # allowed set is "none" only ⇒ tmux must fail loud, even though RC_IMAGE's
+  # tag carries rc.multiplexers=tmux.
+  setup_sandbox "" "config-project-multiplexer-tmux.yaml"
+  printf 'version: 1\ntools: []\n' > "${TEST_HOME}/.config/rip-cage/tools.yaml"
+  _make_fake_docker_gkc7 "${TEST_HOME}/fake-docker-bin" "rip-cage:custom-gkc7" "tmux" "rip-cage:other-gkc7"
+  local exit_code=0 stderr_file
+  stderr_file=$(mktemp)
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    PATH="${TEST_HOME}/fake-docker-bin:$PATH" \
+    RC_IMAGE="rip-cage:custom-gkc7" RC_MUX_INSPECT_IMAGE="rip-cage:other-gkc7" \
+    bash -c "cd '$TEST_WS' && '$RC' config show --json" >/dev/null 2>"$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]]; then
+    pass "T51 explicit RC_MUX_INSPECT_IMAGE wins over RC_IMAGE (empty-label override rejects tmux)"
+  else
+    fail "T51 expected non-zero exit (override tag has empty label), got exit=0 — RC_IMAGE wrongly took precedence"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+test_t52_mediator_inspect_follows_rc_image() {
+  # Isomorphic to T50 for _config_mediator_derive_allowed_set (rip-cage-gkc7:
+  # the original field failure — 'iron-proxy is not in the baked mediator
+  # registry' against a custom-tagged image whose rc.mediators label lists it).
+  setup_sandbox "" "config-project-mediator-myproxy.yaml"
+  printf 'version: 1\ntools: []\n' > "${TEST_HOME}/.config/rip-cage/tools.yaml"
+  _make_fake_docker_gkc7 "${TEST_HOME}/fake-docker-bin" "rip-cage:custom-gkc7" "my-proxy"
+  local out mediator exit_code=0 stderr_file
+  stderr_file=$(mktemp)
+  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    PATH="${TEST_HOME}/fake-docker-bin:$PATH" \
+    RC_IMAGE="rip-cage:custom-gkc7" RC_MEDIATOR_INSPECT_IMAGE="" \
+    bash -c "cd '$TEST_WS' && '$RC' config show --json" 2>"$stderr_file") || exit_code=$?
+  mediator=$(jq -r '.config.network.egress.mediator' <<<"$out" 2>/dev/null)
+  if [[ "$exit_code" -eq 0 && "$mediator" == "my-proxy" ]]; then
+    pass "T52 mediator registry inspect follows RC_IMAGE when RC_MEDIATOR_INSPECT_IMAGE unset (rip-cage-gkc7)"
+  else
+    fail "T52 expected exit=0 mediator=my-proxy (custom-tag label authoritative), got exit=$exit_code mediator=$mediator stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+test_t53_mediator_inspect_explicit_override_wins() {
+  # Isomorphic to T51: explicit RC_MEDIATOR_INSPECT_IMAGE (empty-label tag)
+  # must win over RC_IMAGE (labeled tag) ⇒ my-proxy fails loud.
+  setup_sandbox "" "config-project-mediator-myproxy.yaml"
+  printf 'version: 1\ntools: []\n' > "${TEST_HOME}/.config/rip-cage/tools.yaml"
+  _make_fake_docker_gkc7 "${TEST_HOME}/fake-docker-bin" "rip-cage:custom-gkc7" "my-proxy" "rip-cage:other-gkc7"
+  local exit_code=0 stderr_file
+  stderr_file=$(mktemp)
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    PATH="${TEST_HOME}/fake-docker-bin:$PATH" \
+    RC_IMAGE="rip-cage:custom-gkc7" RC_MEDIATOR_INSPECT_IMAGE="rip-cage:other-gkc7" \
+    bash -c "cd '$TEST_WS' && '$RC' config show --json" >/dev/null 2>"$stderr_file" || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]]; then
+    pass "T53 explicit RC_MEDIATOR_INSPECT_IMAGE wins over RC_IMAGE (empty-label override rejects my-proxy)"
+  else
+    fail "T53 expected non-zero exit (override tag has empty label), got exit=0 — RC_IMAGE wrongly took precedence"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -1140,6 +1275,10 @@ run_test test_t46_auth_credential_mounts_default_real
 run_test test_t47_auth_credential_mounts_none_parses
 run_test test_t48_auth_credential_mounts_invalid_aborts
 run_test test_t49_mediator_env_file_default_null_and_declared
+run_test test_t50_mux_inspect_follows_rc_image
+run_test test_t51_mux_inspect_explicit_override_wins
+run_test test_t52_mediator_inspect_follows_rc_image
+run_test test_t53_mediator_inspect_explicit_override_wins
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then
