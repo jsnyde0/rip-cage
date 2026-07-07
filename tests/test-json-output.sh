@@ -214,6 +214,55 @@ else
   echo "SKIP: no rc-managed containers found — doctor egress-object test deferred (H-tier)"
 fi
 
+# --- Test 13: symlink-fingerprint MISMATCH on resume under --output json emits
+# a stable {code} (rip-cage-7gr9 finding 2). Before this bead,
+# _up_resolve_resume_symlink_fingerprint had no json_error path on either
+# branch -- under --output json it emitted plain stderr text + exit 1 instead
+# of a parseable {error, code}. Isolated-resolver idiom (source rc, stub
+# `docker inspect` for the label, call the resolver directly) -- same
+# technique as tests/test-dry-run-resume-guards.sh B1 / test-ssh-allowlist.sh
+# C20-C22 for the sibling ssh-key-filter guard.
+echo ""
+echo "=== Test 13: --output json resume symlink-fingerprint MISMATCH emits SYMLINK_FINGERPRINT_MOUNT_SHAPE_CHANGED ==="
+_t13_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-t13-stub-XXXXXX")
+cat > "${_t13_stub_dir}/docker" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" inspect "*"rc.symlink-follow-fingerprint"*) echo "not-a-real-fingerprint-marker"; exit 0 ;;
+  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "${_t13_stub_dir}/docker"
+
+_t13_home=$(mktemp -d "${TMPDIR:-/tmp}/rc-t13-home-XXXXXX")
+
+set +e
+_t13_stdout=$(PATH="${_t13_stub_dir}:$PATH" HOME="$_t13_home" XDG_CONFIG_HOME="${_t13_home}/.config" bash -c "
+  source '$RC' 2>/dev/null
+  OUTPUT_FORMAT=json
+  _up_resolve_resume_symlink_fingerprint 'rc-t13-test' '$_t13_home'
+" 2>/tmp/rc-t13-err)
+_t13_exit=$?
+set +e
+_t13_stderr=$(cat /tmp/rc-t13-err 2>/dev/null || true)
+
+_t13_ok=true _t13_reason=""
+if [[ "$_t13_exit" -eq 0 ]]; then
+  _t13_ok=false; _t13_reason="resolver returned 0 (should abort -- stored fingerprint differs from current)"
+fi
+if ! echo "$_t13_stdout" | jq -e '.code == "SYMLINK_FINGERPRINT_MOUNT_SHAPE_CHANGED"' >/dev/null 2>&1; then
+  _t13_ok=false; _t13_reason="${_t13_reason:+$_t13_reason; }stdout did not contain a parseable {code} JSON with SYMLINK_FINGERPRINT_MOUNT_SHAPE_CHANGED"
+fi
+
+rm -rf "${_t13_stub_dir}" "${_t13_home}"
+rm -f /tmp/rc-t13-err
+
+if [[ "$_t13_ok" == "true" ]]; then
+  pass "symlink-fingerprint mismatch under --output json emits parseable {code: SYMLINK_FINGERPRINT_MOUNT_SHAPE_CHANGED}"
+else
+  fail "symlink-fingerprint mismatch json code -- ${_t13_reason} (exit=${_t13_exit}, stdout=${_t13_stdout}, stderr=${_t13_stderr})"
+fi
+
 # --- Cleanup ---
 echo ""
 echo "=== Results ==="

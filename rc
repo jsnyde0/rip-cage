@@ -2582,6 +2582,9 @@ _up_resolve_resume_symlink_fingerprint() {
     if [[ "$_current_fp" == "$_empty_fp" ]]; then
       return 0  # Both empty — no mismatch
     fi
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Container $_name predates symlink-follow mount support (no rc.symlink-follow-fingerprint label) but current host state has dangling symlinks that would require a second bind mount not wired into this container. Run: rc destroy $_name && rc up ${_path} to apply the change." "SYMLINK_FINGERPRINT_MOUNT_SHAPE_CHANGED"
+    fi
     echo "Error: container $_name predates symlink-follow mount support (no rc.symlink-follow-fingerprint label)." >&2
     echo "       Current host has dangling symlinks that would require a second bind mount not wired into this container." >&2
     echo "       Run: rc destroy $_name && rc up ${_path}" >&2
@@ -2589,6 +2592,9 @@ _up_resolve_resume_symlink_fingerprint() {
   fi
 
   if [[ "$_stored_fp" != "$_current_fp" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Container $_name was created with rc.symlink-follow-fingerprint=${_stored_fp} but current host state has fingerprint=${_current_fp}. Mount shape (symlink-follow second bind mounts) is immutable on resume — run: rc destroy $_name && rc up ${_path} to apply the change." "SYMLINK_FINGERPRINT_MOUNT_SHAPE_CHANGED"
+    fi
     echo "Error: container $_name was created with rc.symlink-follow-fingerprint=${_stored_fp} but current host state has fingerprint=${_current_fp}." >&2
     echo "       Mount shape (symlink-follow second bind mounts) is immutable on resume — destroy and re-up to apply mount-shape changes." >&2
     echo "       Run: rc destroy $_name && rc up ${_path}" >&2
@@ -4688,11 +4694,12 @@ cmd_up() {
     local would_action
     if [[ "$state" == "running" ]]; then
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-RUNNING BEGIN (mirrors the real
-      # running branch below — see RESUME-GUARDS-REAL-RUNNING). All 5 guards
+      # running branch below — see RESUME-GUARDS-REAL-RUNNING). All 6 guards
       # here are read-only (label read + _load_effective_config + compare) —
       # safe under --dry-run.
       _up_resolve_resume_image_drift_running "$name" "$path"
       _up_resolve_resume_config_mode "$name" "$path"
+      _up_resolve_resume_ssh_key_filter "$name" "$path"
       _up_resolve_resume_symlink_fingerprint "$name" "$path"
       _up_resolve_resume_credential_mounts "$name" "$path"
       _up_resolve_resume_mediator_ca_env "$name" "$path"
@@ -4826,6 +4833,10 @@ cmd_up() {
     _up_resolve_resume_image_drift_running "$name" "$path"
     # ADR-021 D7: config-mode mount-shape guard applies to running containers too.
     _up_resolve_resume_config_mode "$name" "$path"
+    # ADR-028 D1 / rip-cage-7gr9: ssh key-filter mount-shape guard applies to
+    # running containers too — the /etc/rip-cage/ssh-allowed-keys bind is
+    # frozen at create time.
+    _up_resolve_resume_ssh_key_filter "$name" "$path"
     # rip-cage-c1p.2 D4: fingerprint label-lock applies to running containers too.
     # A policy change (on_dangling, scope, mode) must block resume regardless of
     # whether the container is stopped or running — the mount shape is immutable.

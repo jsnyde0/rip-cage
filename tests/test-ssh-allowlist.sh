@@ -751,6 +751,121 @@ fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
+# C23  Resume mount-shape guard wired into the RUNNING branch of `rc up`
+#      (rip-cage-7gr9 finding 1). C20-C22 above prove the RESOLVER function
+#      itself is correct in isolation, but before this bead the resolver was
+#      never CALLED on the running (attach) branch of cmd_up -- so a running
+#      container whose ssh.allowed_keys filter changed since create would
+#      silently attach instead of blocking. Drives the REAL `rc up` through a
+#      full docker PATH-shim (same end-to-end idiom as
+#      tests/test-image-drift-resume.sh's run_rc_up) with container
+#      state=running, so this proves the guard is WIRED into cmd_up, not just
+#      correct as a standalone function.
+# ---------------------------------------------------------------------------
+_c23_home=$(mktemp -d "${TMPDIR:-/tmp}/rc-c23-home-XXXXXX")
+mkdir -p "${_c23_home}/.config/rip-cage"
+cat > "${_c23_home}/.config/rip-cage/config.yaml" <<'YAML'
+version: 1
+mounts:
+  denylist: []
+  allow_risky: null
+YAML
+touch "${_c23_home}/.config/rip-cage/tools.yaml"
+_c23_ws="${_c23_home}/workspace"
+mkdir -p "$_c23_ws"
+# current effective config: ssh.allowed_keys is non-null -> filter "on"
+cp "${SCRIPT_DIR}/fixtures/config-project-allowed-keys-one.yaml" "${_c23_ws}/.rip-cage.yaml"
+
+_c23_rc_version=$(cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo "unknown")
+_c23_img_id="sha256:$(printf 'c%.0s' $(seq 1 64))"
+
+_c23_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-c23-stub-XXXXXX")
+cat > "${_c23_stub_dir}/docker" <<STUB
+#!/usr/bin/env bash
+set -u
+case "\${1:-}" in
+  image)
+    shift
+    if [[ "\${1:-}" == "inspect" ]]; then
+      shift
+      _fmt=""
+      while [[ \$# -gt 0 ]]; do
+        case "\$1" in
+          --format) shift; _fmt="\${1:-}"; shift ;;
+          *) shift ;;
+        esac
+      done
+      case "\$_fmt" in
+        *'"org.opencontainers.image.version"'*) echo "${_c23_rc_version}"; exit 0 ;;
+        '{{.Id}}') echo "${_c23_img_id}"; exit 0 ;;
+        "") exit 0 ;;
+        *) echo ""; exit 0 ;;
+      esac
+    fi
+    exit 0
+    ;;
+  inspect)
+    shift
+    _fmt="" _name=""
+    while [[ \$# -gt 0 ]]; do
+      case "\$1" in
+        --format) shift; _fmt="\${1:-}"; shift ;;
+        *) _name="\$1"; shift ;;
+      esac
+    done
+    case "\$_fmt" in
+      *'"rc.source.path"'*) echo "${_c23_ws}"; exit 0 ;;
+      '{{.State.Status}}') echo "running"; exit 0 ;;
+      '{{.Image}}') echo "${_c23_img_id}"; exit 0 ;;
+      *'"rc.ssh-key-filter"'*) echo "off"; exit 0 ;;
+      *'"rc.config-mode"'*) echo ""; exit 0 ;;
+      *) echo ""; exit 0 ;;
+    esac
+    ;;
+  exec)
+    printf 'exec\n' >> "\${C23_DOCKER_LOG}"
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "${_c23_stub_dir}/docker"
+
+_c23_log=$(mktemp "${TMPDIR:-/tmp}/rc-c23-dockerlog-XXXXXX")
+: > "$_c23_log"
+
+set +e
+_c23_stdout=$(PATH="${_c23_stub_dir}:$PATH" \
+  HOME="$_c23_home" XDG_CONFIG_HOME="${_c23_home}/.config" \
+  RC_ALLOWED_ROOTS="$_c23_ws" \
+  C23_DOCKER_LOG="$_c23_log" \
+  "$RC" --output json up "$_c23_ws" 2>/tmp/rc-c23-err)
+_c23_exit=$?
+set +e
+_c23_stderr=$(cat /tmp/rc-c23-err 2>/dev/null || true)
+
+_c23_ok=true _c23_reason=""
+if [[ "$_c23_exit" -eq 0 ]]; then
+  _c23_ok=false; _c23_reason="rc up exited 0 on a RUNNING container with a flipped ssh-key-filter mount shape (should abort)"
+fi
+if ! echo "$_c23_stdout" | jq -e '.code == "SSH_KEY_FILTER_MOUNT_SHAPE_CHANGED"' >/dev/null 2>&1; then
+  _c23_ok=false; _c23_reason="${_c23_reason:+$_c23_reason; }stdout did not contain code=SSH_KEY_FILTER_MOUNT_SHAPE_CHANGED. Got: $_c23_stdout / stderr: $_c23_stderr"
+fi
+if grep -qx "exec" "$_c23_log"; then
+  _c23_ok=false; _c23_reason="${_c23_reason:+$_c23_reason; }docker exec (attach) WAS reached — guard must block BEFORE attaching to a running container"
+fi
+
+rm -rf "${_c23_stub_dir}" "${_c23_home}" /tmp/rc-c23-err
+rm -f "$_c23_log"
+
+TOTAL=$((TOTAL + 1))
+if [[ "$_c23_ok" == "true" ]]; then
+  pass 23 "resume mount-shape guard wired into the RUNNING branch: 'rc up' on a running container with flipped ssh.allowed_keys aborts with SSH_KEY_FILTER_MOUNT_SHAPE_CHANGED, no attach"
+else
+  fail 23 "resume mount-shape guard RUNNING-branch wiring" "$_c23_reason (exit=$_c23_exit)"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""

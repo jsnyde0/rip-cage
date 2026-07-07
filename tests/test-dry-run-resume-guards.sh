@@ -109,6 +109,31 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
+# P2 (rip-cage-7gr9 finding 1): _up_resolve_resume_ssh_key_filter must be
+# present in BOTH running-branch guard lists, not merely absent from both in
+# lockstep. P1b parity alone is non-vacuous only for a REMOVAL from an
+# already-matching pair — it would also report PASS if both running branches
+# identically omitted this guard (the bug this bead fixes). Assert presence
+# directly so a future regression that drops the guard from both branches
+# together cannot hide behind a green P1b.
+# ---------------------------------------------------------------------------
+echo "--- P2: ssh_key_filter guard present in RUNNING branches (rip-cage-7gr9) ---"
+
+if echo "$DRY_RUNNING" | grep -qx "_up_resolve_resume_ssh_key_filter"; then
+  pass "P2a _up_resolve_resume_ssh_key_filter present in DRY-RUN-RUNNING guard list"
+else
+  fail "P2a ssh_key_filter guard missing from DRY-RUN-RUNNING" "guard list=[$(_fmt_list "$DRY_RUNNING")]"
+fi
+
+if echo "$REAL_RUNNING" | grep -qx "_up_resolve_resume_ssh_key_filter"; then
+  pass "P2b _up_resolve_resume_ssh_key_filter present in REAL-RUNNING guard list"
+else
+  fail "P2b ssh_key_filter guard missing from REAL-RUNNING" "guard list=[$(_fmt_list "$REAL_RUNNING")]"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
 # B1: behavioral proof for a newly-wired guard (_up_resolve_resume_config_mode)
 # ---------------------------------------------------------------------------
 echo "--- B1: behavioral proof (_up_resolve_resume_config_mode) ---"
