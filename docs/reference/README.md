@@ -6,7 +6,7 @@ This file is the landing page for an agent new to rip-cage who needs to understa
 
 ## Composable seams
 
-rip-cage is a **composable seam, not a bundler** ([ADR-005 D12](../decisions/ADR-005-ecosystem-tools.md)). The cage owns the composition *interfaces* — manifest format, mount mechanics, `rc build` assembly — and you (or an agent) perform the wiring. These six seams are what you compose from.
+rip-cage is a **composable seam, not a bundler** ([ADR-005 D12](../decisions/ADR-005-ecosystem-tools.md)). The cage owns the composition *interfaces* — manifest format, mount mechanics, `rc build` assembly — and you (or an agent) perform the wiring. These seams are what you compose from (entries 1–6 are the common path; 7–9 are the remaining manifest archetypes/mechanisms; 10 is the fail-closed contract bounding all of them).
 
 ---
 
@@ -233,6 +233,83 @@ Assembled `launch_args` (in fragment order): `-e /etc/rip-cage/pi/dcg-gate.ts -e
 
 ---
 
+### 7. SHELL-INTEGRATION manifest entry
+
+**What it is for:** tools that integrate via a shell rc `eval` line — the hook must run in the interactive shell's own process (history managers, smarter-`cd`, prompt/env hooks), not just sit on PATH. One `shell_init` field, baked into `/home/agent/.zshrc` at build time. Interactive shells only; single-line enforced fail-closed. Any tool of this class (atuin, zoxide, …) is illustration-only per ADR-005 D12 — none is blessed or shipped.
+
+**Manifest/config shape** (usually paired with a TOOL entry installing the binary — the same two-entry pattern as multiplexers):
+
+```yaml
+tools:
+  - name: zoxide-bin        # illustration only — the binary install (plain TOOL)
+    archetype: TOOL
+    ...
+  - name: zoxide            # the shell hook
+    archetype: SHELL-INTEGRATION
+    version_pin: "0.9.6-debian"
+    shell_init: 'eval "$(zoxide init zsh)"'
+```
+
+**Worked example:** [shell-integration.md](shell-integration.md) — eval-into-shell mechanics, the two-entry pattern, interactive-vs-non-interactive scope, verification. Harness fixtures: `tests/fixtures/manifest-with-shell-integration.yaml`, `tests/fixtures/manifest-e2e-shell-integration.yaml`.
+
+---
+
+### 8. IN-CAGE DAEMON manifest entry
+
+**What it is for:** a long-running localhost service other in-cage agents talk to (agent coordination, mailboxes, local APIs). Contract ([ADR-005 D7/D8/D10](../decisions/ADR-005-ecosystem-tools.md)): installed at build, started at init, **fail-warn** (a broken daemon never bricks the cage), strictly in-cage (no cross-cage reach — D8 FIRM). MCP-capable agents reach it via `mcp_fragment`; bash-only agents (pi) via the daemon's own CLI (ADR-019 D9).
+
+**Manifest/config shape:**
+
+```yaml
+tools:
+  - name: my-daemon
+    archetype: IN-CAGE-DAEMON
+    version_pin: "1.2.3"
+    install_cmd: "..."
+    start: "STATE_ROOT=/var/lib/rip-cage-daemon/my-daemon my-daemon serve --no-tui"
+    health: "curl -sf http://127.0.0.1:8765/healthz"
+    state_dir: "/var/lib/rip-cage-daemon/my-daemon"   # cage-lifetime; /workspace path for durability
+    egress: []
+    mcp_fragment: { type: http, url: "http://127.0.0.1:8765/mcp/" }  # optional; nested mapping, not a JSON string
+```
+
+**Worked example:** [in-cage-daemon.md](in-cage-daemon.md) — the generic archetype walkthrough including the DAEMON-vs-TOOL(-init-hook) decision aid; [agent-mail-daemon.md](agent-mail-daemon.md) — the concrete instance (agent_mail, pinned source, CLI + MCP reach paths).
+
+---
+
+### 9. From-source builder stage (`build_source`)
+
+**What it is for:** compiling a TOOL's binary at `rc build` when no prebuilt release exists for the cage's architecture ([ADR-005 D11](../decisions/ADR-005-ecosystem-tools.md) mechanism 1, FLEXIBLE; prefer prebuilt per D6). One generic isolated Docker stage per entry — `rc` interprets no build logic; the per-tool intelligence lives in your build script. Arch-adaptive by construction (the stage targets the build platform).
+
+**Manifest/config shape** (replaces `install_cmd`; the two are mutually exclusive):
+
+```yaml
+tools:
+  - name: my-tool
+    archetype: TOOL
+    version_pin: "v1.2.3"
+    egress: []
+    mounts: []
+    build_source:
+      builder_image: "rust:1-slim-trixie"            # toolchain image
+      build_script: "path/relative/to/repo-root.sh"  # COPY'd into the stage; never interpreted by rc
+      output_path: "/usr/local/bin/my-tool"          # artifact copied into the runtime image
+```
+
+**Worked example:** [building-from-source.md](building-from-source.md) — the full `rc build` flow (codegen → pre-build isolation gate → build → post-build ownership gate) and honest limits. Live instance: [examples/dcg/manifest-fragment.yaml](../../examples/dcg/manifest-fragment.yaml) (the `dcg` entry).
+
+---
+
+### 10. Fail-closed manifest validator (the contract on all of the above)
+
+**What it is for:** the enforcement arm of "adding a tool can never become weakening the cage" ([ADR-005 D11](../decisions/ADR-005-ecosystem-tools.md) mechanism 2, **FIRM** — not skippable, wired into every build path). Every entry composed through seams 1–9 is bounded by it: strict-parse field validation, hook-bounds (no floor-weakening hook commands), IOC egress floor, secret-path mount denylist + dest allowlist, builder-stage isolation scan, and post-build root-owned assertions on binaries and declared mount assets. A violation fails the build with a named error.
+
+**Manifest/config shape:** none — it is not composed, it bounds composition. Author entries to satisfy it.
+
+**Doc:** [manifest-validator.md](manifest-validator.md) — the complete catalog of checks and error messages (by `rc` function name), so a manifest author can predict failures without reading `rc` source.
+
+---
+
 ## Reference docs
 
 ### Setup and quickstart
@@ -260,7 +337,11 @@ Assembled `launch_args` (in fragment order): `-e /etc/rip-cage/pi/dcg-gate.ts -e
 |---|---|
 | [composition-seam.md](composition-seam.md) | The HTTP mediator seam (`network.http.forward_to`): the MEDIATOR provider model, launch order, real-secret delivery via `--mediator-env`, tiering (standalone vs. composed), reference providers (mitmproxy, iron-proxy) |
 | [adding-a-tool.md](adding-a-tool.md) | Step-by-step: add a plain binary-on-PATH tool via a TOOL manifest entry; apt-install and curl/binary paths; runtime mounts |
+| [shell-integration.md](shell-integration.md) | SHELL-INTEGRATION archetype walkthrough: eval-into-shell mechanics, the two-entry (TOOL + SHELL-INTEGRATION) pattern, interactive-shell scope |
+| [in-cage-daemon.md](in-cage-daemon.md) | Generic IN-CAGE-DAEMON archetype walkthrough: install-at-build/start-at-init/fail-warn contract, manifest shape, DAEMON-vs-TOOL decision aid |
 | [agent-mail-daemon.md](agent-mail-daemon.md) | IN-CAGE-DAEMON worked example: `mcp-agent-mail` running as a manifest-declared in-cage daemon (the C5 archetype) |
+| [building-from-source.md](building-from-source.md) | From-source TOOL builds: the `build_source` generic builder stage, `rc build` flow, isolation gates, honest limits (ADR-005 D11 mechanism 1) |
+| [manifest-validator.md](manifest-validator.md) | The fail-closed manifest validator contract: every check and error message, by `rc` function name (ADR-005 D11 mechanism 2, FIRM) |
 | [cm.md](cm.md) | Mounting a host cm (CASSMS) store read-write into the cage via manifest opt-in |
 
 ### Operations
