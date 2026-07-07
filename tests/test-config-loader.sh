@@ -32,6 +32,16 @@
 #         yq is missing (ADR-021 implementation notes: no silent degradation)
 #     T39 _config_validate_or_abort: global config present + yq absent ⇒ non-zero
 #         exit AND stderr names "rip-cage config dependency" (rip-cage-j86 review)
+#   D6 (rc config show <path> + rc config get <key> sugar, rip-cage-08q):
+#     T54 rc config show <path> resolves the project layer for <path>, not cwd
+#     T55 rc config show <nonexistent-path> ⇒ clear non-zero error (+ JSON shape)
+#     T56 rc config get <key> matches rc config show for nested + top-level keys
+#     T57 rc config get <key> --json emits a JSON-parseable value
+#     T58 rc config get <bogus.key> ⇒ non-zero + "key not found" error
+#     T59 rc config get <key-with-legitimate-null-value> ⇒ prints null, exit 0
+#     T60 rc config get <key> <path> resolves project layer for <path>, not cwd
+#     T61 rc config get <key-through-scalar> (e.g. mounts.config_mode.bogus)
+#         degrades to KEY_NOT_FOUND instead of crashing rc (adversarial review fix)
 #
 # Tests do NOT require docker — pure host-side loader logic only.
 # Container label / first-run hint behavior is covered by e2e tests.
@@ -126,6 +136,34 @@ run_rc_config() {
   local args="$1" stderr_file="${2:-/dev/null}"
   HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     bash -c "cd '$TEST_WS' && '$RC' config $args" 2>"$stderr_file"
+}
+
+# ---------------------------------------------------------------------------
+# D6 sandbox helpers (rip-cage-08q): two distinct project workspaces, so
+# tests can prove `rc config show/get <path>` resolves the NAMED path's
+# project layer rather than pwd's. Sets globals: TEST_HOME, TEST_WS_A, TEST_WS_B.
+# ---------------------------------------------------------------------------
+setup_two_workspace_sandbox() {
+  TEST_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-config-test-XXXXXX")
+  mkdir -p "${TEST_HOME}/.config/rip-cage"
+  TEST_WS_A="${TEST_HOME}/workspace-a"
+  TEST_WS_B="${TEST_HOME}/workspace-b"
+  mkdir -p "$TEST_WS_A" "$TEST_WS_B"
+}
+
+teardown_two_workspace_sandbox() {
+  [[ -n "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME"
+  TEST_HOME=""
+  TEST_WS_A=""
+  TEST_WS_B=""
+}
+
+# Run rc config with an explicit cwd (distinct from any positional <path>
+# argument under test) — with sandbox HOME / XDG_CONFIG_HOME.
+run_rc_config_from() {
+  local cwd="$1" args="$2" stderr_file="${3:-/dev/null}"
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    bash -c "cd '$cwd' && '$RC' config $args" 2>"$stderr_file"
 }
 
 # ---------------------------------------------------------------------------
@@ -1222,6 +1260,188 @@ test_t53_mediator_inspect_explicit_override_wins() {
 }
 
 # ---------------------------------------------------------------------------
+# D6 — rc config show <path> + rc config get <key> sugar (rip-cage-08q)
+# ---------------------------------------------------------------------------
+
+test_t54_config_show_path_arg_resolves_project_layer() {
+  # Core bug fix: rc config show <path> must resolve <path>'s project layer,
+  # not the CWD's. Two distinct project workspaces, invoked from A, targeting
+  # B — asserts the output reflects B, not A (and not a bare-pwd default).
+  setup_two_workspace_sandbox
+  cat > "${TEST_WS_A}/.rip-cage.yaml" <<'YAML'
+version: 1
+ssh:
+  allowed_hosts:
+    - workspace-a-host.example
+YAML
+  cat > "${TEST_WS_B}/.rip-cage.yaml" <<'YAML'
+version: 1
+ssh:
+  allowed_hosts:
+    - workspace-b-host.example
+YAML
+  local out hosts
+  out=$(run_rc_config_from "$TEST_WS_A" "show --json '$TEST_WS_B'")
+  hosts=$(jq -c '.config.ssh.allowed_hosts' <<<"$out" 2>/dev/null)
+  if [[ "$hosts" == '["workspace-b-host.example"]' ]]; then
+    pass "T54 rc config show <path> resolves <path>'s project layer, not cwd's (rip-cage-08q)"
+  else
+    fail "T54 expected pathB's ssh.allowed_hosts=[workspace-b-host.example], got: $hosts (out=$out)"
+  fi
+  teardown_two_workspace_sandbox
+}
+
+test_t55_config_show_nonexistent_path_errors() {
+  setup_two_workspace_sandbox
+  local stderr_file exit_code=0
+  stderr_file=$(mktemp)
+  run_rc_config_from "$TEST_WS_A" "show '${TEST_HOME}/does-not-exist'" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "does-not-exist" "$stderr_file"; then
+    pass "T55a rc config show <nonexistent-path> exits non-zero with a clear stderr error"
+  else
+    fail "T55a expected non-zero exit + path-naming stderr, got exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+
+  local json_out exit_code2=0 has_error has_code
+  json_out=$(run_rc_config_from "$TEST_WS_A" "show --json '${TEST_HOME}/does-not-exist'" 2>/dev/null) || exit_code2=$?
+  has_error=$(jq 'has("error")' <<<"$json_out" 2>/dev/null)
+  has_code=$(jq 'has("code")' <<<"$json_out" 2>/dev/null)
+  if [[ "$exit_code2" -ne 0 && "$has_error" == "true" && "$has_code" == "true" ]]; then
+    pass "T55b rc config show --json <nonexistent-path> emits a {error,code} JSON error shape"
+  else
+    fail "T55b expected non-zero exit + JSON {error,code} shape, got exit=$exit_code2 out=$json_out"
+  fi
+  teardown_two_workspace_sandbox
+}
+
+test_t56_config_get_key_matches_show() {
+  # rc config get <key> must print the same effective value rc config show
+  # reports for that key — for both a nested key and a top-level-ish key.
+  setup_sandbox "" "config-project-mounts-symlinks-default.yaml"
+  local show_out show_nested show_top get_nested get_top
+  show_out=$(run_rc_config "show --json")
+  show_nested=$(jq -r '.config.mounts.symlinks.on_dangling' <<<"$show_out")
+  show_top=$(jq -r '.config.mounts.config_mode' <<<"$show_out")
+  get_nested=$(run_rc_config "get mounts.symlinks.on_dangling")
+  get_top=$(run_rc_config "get mounts.config_mode")
+  if [[ "$get_nested" == "$show_nested" && "$get_top" == "$show_top" ]]; then
+    pass "T56 rc config get <key> matches rc config show for nested + top-level keys"
+  else
+    fail "T56 expected nested=$show_nested top=$show_top, got nested=$get_nested top=$get_top"
+  fi
+  teardown_sandbox
+}
+
+test_t57_config_get_json_flag() {
+  setup_sandbox "" "config-project-mounts-symlinks-default.yaml"
+  local out parsed
+  out=$(run_rc_config "get mounts.symlinks.on_dangling --json")
+  parsed=$(jq -r '.' <<<"$out" 2>/dev/null)
+  if [[ -n "$parsed" && "$parsed" == "follow" ]]; then
+    pass "T57 rc config get <key> --json emits a jq-parseable JSON value"
+  else
+    fail "T57 expected JSON-parseable 'follow', got: $out"
+  fi
+  teardown_sandbox
+}
+
+test_t58_config_get_bogus_key_errors() {
+  setup_sandbox "" "config-project-basic.yaml"
+  local stderr_file exit_code=0
+  stderr_file=$(mktemp)
+  run_rc_config "get ssh.no_such_field" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "key not found" "$stderr_file"; then
+    pass "T58 rc config get <bogus.key> exits non-zero with a 'key not found' error"
+  else
+    fail "T58 expected non-zero exit + 'key not found', got exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+test_t59_config_get_null_value_not_not_found() {
+  # mounts.allow_risky defaults to null (selection_list|null, no fixture
+  # override) — a legitimate null VALUE, distinct from an absent/bogus key.
+  # Must print "null" and exit 0, not be treated as not-found.
+  setup_sandbox "" ""
+  local out exit_code=0
+  out=$(run_rc_config "get mounts.allow_risky") || exit_code=$?
+  if [[ "$exit_code" -eq 0 && "$out" == "null" ]]; then
+    pass "T59 rc config get <key-with-legitimate-null-value> prints null and exits 0 (not not-found)"
+  else
+    fail "T59 expected exit=0 output=null, got exit=$exit_code out=$out"
+  fi
+  teardown_sandbox
+}
+
+test_t60_config_get_path_arg() {
+  # Symmetric with T54: rc config get <key> <path> must resolve <path>'s
+  # project layer, not cwd's. network.dns.forward_to is a plain scalar field
+  # (no enum validation) so any string value is accepted.
+  setup_two_workspace_sandbox
+  cat > "${TEST_WS_A}/.rip-cage.yaml" <<'YAML'
+version: 1
+network:
+  dns:
+    forward_to: 1.1.1.1
+YAML
+  cat > "${TEST_WS_B}/.rip-cage.yaml" <<'YAML'
+version: 1
+network:
+  dns:
+    forward_to: 9.9.9.9
+YAML
+  local out
+  out=$(run_rc_config_from "$TEST_WS_A" "get network.dns.forward_to '$TEST_WS_B'")
+  if [[ "$out" == "9.9.9.9" ]]; then
+    pass "T60 rc config get <key> <path> resolves <path>'s project layer, not cwd's"
+  else
+    fail "T60 expected 9.9.9.9 (from pathB), got: $out"
+  fi
+  teardown_two_workspace_sandbox
+}
+
+test_t61_config_get_key_traverses_through_scalar() {
+  # rip-cage-08q adversarial review: a key whose PARENT PATH descends THROUGH
+  # a scalar/leaf node (mounts.config_mode defaults to the string "ro") must
+  # degrade to the ordinary KEY_NOT_FOUND path, not crash rc. Note: the
+  # scalar must be an INTERMEDIATE segment of the parent path, not the
+  # second-to-last segment — "mounts.config_mode.bogus" only reads
+  # getpath([mounts,config_mode]), which returns the scalar itself (no
+  # indexing INTO it, no crash). "mounts.config_mode.bogus.baz" requires
+  # getpath([mounts,config_mode,bogus]), which must index the scalar "ro"
+  # with "bogus" — THAT'S where jq errors ("Cannot index string with
+  # string"). Before the fix, that error aborts the `present=$(...)`
+  # assignment under `set -euo pipefail`, crashing rc BEFORE the not-found
+  # branch runs — yielding a bare non-zero exit with EMPTY stderr (raw mode)
+  # and EMPTY stdout (--json mode, breaking a `| jq` consumer) instead of the
+  # intended "key not found" error.
+  setup_sandbox "" "config-project-basic.yaml"
+
+  local stderr_file exit_code=0
+  stderr_file=$(mktemp)
+  run_rc_config "get mounts.config_mode.bogus.baz" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "key not found" "$stderr_file"; then
+    pass "T61a rc config get <key-through-scalar> exits non-zero with a 'key not found' error (not a silent crash)"
+  else
+    fail "T61a expected non-zero exit + 'key not found' in stderr, got exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+
+  local json_out exit_code2=0 code_field
+  json_out=$(run_rc_config "get mounts.config_mode.bogus.baz --json" 2>/dev/null) || exit_code2=$?
+  code_field=$(jq -e -r '.code' <<<"$json_out" 2>/dev/null)
+  if [[ "$exit_code2" -ne 0 && "$code_field" == "KEY_NOT_FOUND" ]]; then
+    pass "T61b rc config get --json <key-through-scalar> emits a parseable {error,code=KEY_NOT_FOUND} JSON object (not empty stdout)"
+  else
+    fail "T61b expected non-zero exit + code=KEY_NOT_FOUND JSON, got exit=$exit_code2 stdout=$json_out"
+  fi
+
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -1279,6 +1499,14 @@ run_test test_t50_mux_inspect_follows_rc_image
 run_test test_t51_mux_inspect_explicit_override_wins
 run_test test_t52_mediator_inspect_follows_rc_image
 run_test test_t53_mediator_inspect_explicit_override_wins
+run_test test_t54_config_show_path_arg_resolves_project_layer
+run_test test_t55_config_show_nonexistent_path_errors
+run_test test_t56_config_get_key_matches_show
+run_test test_t57_config_get_json_flag
+run_test test_t58_config_get_bogus_key_errors
+run_test test_t59_config_get_null_value_not_not_found
+run_test test_t60_config_get_path_arg
+run_test test_t61_config_get_key_traverses_through_scalar
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then
