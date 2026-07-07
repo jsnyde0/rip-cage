@@ -1271,7 +1271,7 @@ _up_prepare_docker_mounts() {
   # /home/agent — correct for build-time RUN/CMD, but /workspace is a runtime-only bind
   # mount (above) that doesn't exist at build time, so the fix belongs at container-run
   # time, not in the Dockerfile. Setting the container's runtime working dir here makes
-  # `docker run` AND every subsequent `docker exec` (rc attach, herdr panes, rc exec,
+  # `docker run` AND every subsequent `docker exec` (rc attach, multiplexer panes, rc exec,
   # the drover's cage-exec worker spawn) default into the workspace, so bd/git/rg and
   # all project-relative paths resolve without a per-session `cd /workspace`. Colocated
   # with the mount so it only applies when /workspace is actually mounted. (rip-cage-0rng)
@@ -8794,7 +8794,7 @@ _manifest_validate() {
 # warning above. Re-seeds default-derived entries in the local operator
 # manifest from the CURRENT shipped dist/default-tools.yaml, while
 # PRESERVING any entry whose name is NOT present in dist (a custom/opt-in
-# entry the operator added, e.g. an herdr integration). Never overwrites
+# entry the operator added, e.g. an optional multiplexer integration). Never overwrites
 # silently (ADR-005 D12 — the manifest composition is the operator's): the
 # previous file is backed up before being replaced, and the new file is
 # validated before it is ever moved into place.
