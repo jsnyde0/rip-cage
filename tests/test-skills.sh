@@ -293,5 +293,42 @@ else
 fi
 
 echo ""
+echo "=== Broken Symlink Warning Check (rip-cage-a0h item (b)) ==="
+echo ""
+
+# _collect_symlink_parents (rc:958-985) used to skip broken symlinks under
+# ~/.claude/skills / ~/.claude/agents SILENTLY (rc:965 realpath-fails path,
+# rc:966 [[ -e ]]-false path). Both must now warn to stderr naming the broken
+# link (existing skip behavior is preserved — the link still isn't emitted as
+# a mount parent). Host-only: sources rc directly against a fake HOME/asset
+# dir, mirroring tests/test-symlink-follow.sh's `source "$RC"` convention.
+_bsw_rc="${_TS_DIR}/../rc"
+_bsw_test_home=$(mktemp -d)
+mkdir -p "${_bsw_test_home}/.claude/skills"
+_bsw_broken_link="${_bsw_test_home}/.claude/skills/broken-skill"
+ln -s "${_bsw_test_home}/.claude/skills/nonexistent-target" "${_bsw_broken_link}"
+
+_bsw_stdout_file=$(mktemp)
+_bsw_stderr_file=$(mktemp)
+_bsw_exit=0
+HOME="${_bsw_test_home}" bash -c "source '${_bsw_rc}'; _collect_symlink_parents '${_bsw_test_home}/.claude/skills'" \
+  >"${_bsw_stdout_file}" 2>"${_bsw_stderr_file}" || _bsw_exit=$?
+_bsw_out=$(cat "${_bsw_stdout_file}")
+_bsw_err=$(cat "${_bsw_stderr_file}")
+rm -f "${_bsw_stdout_file}" "${_bsw_stderr_file}"
+
+if [[ "${_bsw_exit}" -eq 0 ]] \
+   && echo "${_bsw_err}" | grep -qF "${_bsw_broken_link}" \
+   && echo "${_bsw_err}" | grep -qiE "broken|unresolvable" \
+   && [[ -z "${_bsw_out}" ]]; then
+  check "broken symlink under skills dir: stderr warning names the link, function still skips it (exit 0)" "pass"
+else
+  check "broken symlink under skills dir: stderr warning names the link, function still skips it (exit 0)" "fail" \
+    "exit=${_bsw_exit} stdout='${_bsw_out}' stderr='${_bsw_err}'"
+fi
+
+rm -rf "${_bsw_test_home}"
+
+echo ""
 echo "=== Results: ${PASS} passed, ${FAIL} failed (of ${TOTAL}) ==="
 [[ "${FAIL}" -eq 0 ]] || exit 1

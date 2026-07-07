@@ -962,8 +962,16 @@ _collect_symlink_parents() {
   seen_dirs=()
   for entry in "${asset_dir}/"*; do
     [[ -L "$entry" ]] || continue
-    target=$(realpath "$entry" 2>/dev/null) || continue
-    [[ -e "$target" ]] || continue
+    if ! target=$(realpath "$entry" 2>/dev/null); then
+      # BSD/macOS realpath fails outright on a broken symlink.
+      echo "[rc] Warning: asset symlink '$entry' is broken (unresolvable target) — skipping mount" >&2
+      continue
+    fi
+    if [[ ! -e "$target" ]]; then
+      # GNU realpath resolves a missing target instead of failing — catch it here.
+      echo "[rc] Warning: asset symlink '$entry' is broken (target does not exist: $target) — skipping mount" >&2
+      continue
+    fi
     # Security: only mount targets within the user's home directory.
     # A symlink pointing outside $HOME (e.g. -> /etc) would mount a system
     # directory into the container — skip it with a warning.
@@ -1889,8 +1897,10 @@ _up_prepare_environment() {
     _UP_RUN_ARGS+=(-e "BEADS_DOLT_SERVER_MODE=1")
     _UP_RUN_ARGS+=(-e "BEADS_DOLT_SERVER_HOST=host.docker.internal")
     local dolt_port_file="${beads_dir}/dolt-server.port"
-    if [[ -f "$dolt_port_file" ]]; then
-      _UP_RUN_ARGS+=(-e "BEADS_DOLT_SERVER_PORT=$(cat "$dolt_port_file")")
+    local _dolt_port_env_arg
+    _dolt_port_env_arg=$(_bd_dolt_port_inject_arg "$dolt_port_file")
+    if [[ -n "$_dolt_port_env_arg" ]]; then
+      _UP_RUN_ARGS+=(-e "$_dolt_port_env_arg")
     fi
     log "Beads: server mode — connecting to host Dolt server"
     # ADR-007 D8: host-side pre-flight — warn if port is missing/stale/corrupt.
@@ -4319,6 +4329,34 @@ _probe_tcp() {
   local rc=$?
   kill "$killer" 2>/dev/null
   return "$rc"
+}
+
+# _bd_dolt_port_inject_arg DOLT_PORT_FILE
+#
+# Validates .beads/dolt-server.port content BEFORE it is used to build the
+# BEADS_DOLT_SERVER_PORT env-injection arg (rc:~1891 residual, rip-cage-a0h
+# item (a) — ADR-007 D8 rescope). Mirrors the validation predicate already
+# used by the host preflight (_bd_host_preflight, rc:4372) for consistency:
+# an integer in 1-65535.
+#
+# On missing file: emits nothing (existing behavior — no file, no injection).
+# On valid content: echoes "BEADS_DOLT_SERVER_PORT=<port>" to stdout.
+# On invalid content (non-integer / out-of-range): emits NOTHING to stdout
+# (caller skips the -e injection) and warns to stderr naming the file and the
+# expected format — never exits non-zero (ADR-007 D8 warn-not-fail; bd is
+# optional and must never block the container). Warning goes straight to
+# stderr (not log()) so stdout stays clean for the `-e "$(...)"` capture
+# pattern at the call site.
+_bd_dolt_port_inject_arg() {
+  local dolt_port_file="$1"
+  [[ -f "$dolt_port_file" ]] || return 0
+  local val
+  val=$(cat "$dolt_port_file")
+  if ! [[ "$val" =~ ^[0-9]+$ ]] || (( val <= 0 || val >= 65536 )); then
+    echo "Warning: ${dolt_port_file} contains invalid content (expected an integer port 1-65535) — skipping BEADS_DOLT_SERVER_PORT env injection." >&2
+    return 0
+  fi
+  echo "BEADS_DOLT_SERVER_PORT=${val}"
 }
 
 # _bd_host_preflight BEADS_DIR DOLT_MODE [--test-mode]
@@ -12631,7 +12669,7 @@ fi
 if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   case "${1:-}" in
     build|ls|up|down|destroy|test|doctor|auth|exec) ;;  # supported
-    attach|schema|completions|setup|config|__bd-preflight-test|"")
+    attach|schema|completions|setup|config|__bd-preflight-test|__bd-port-inject-test|"")
       echo "Error: --output json is not supported for '${1:-}' (use 'rc config show --json' for config JSON)" >&2
       exit 1
       ;;
@@ -12682,6 +12720,7 @@ case "${1:-}" in
   setup)       shift; cmd_setup "$@" ;;
   schema)  cmd_schema ;;
   __bd-preflight-test) shift; _bd_host_preflight "${1:-}" "${2:-}" --test-mode ;;
+  __bd-port-inject-test) shift; _bd_dolt_port_inject_arg "${1:-}" ;;
   generate-dockerfile) shift; cmd_generate_dockerfile "$@" ;;
   *)       usage ;;
 esac

@@ -283,6 +283,7 @@ run_test "${SCRIPT_DIR}/test-allowed-roots-bypass.sh"  # rip-cage-36j: RC_ALLOWE
 run_test "${SCRIPT_DIR}/test-ssh-preflight.sh"        # ADR-020 identity-preflight cache (cold/warm/mismatch/TTL/JSON shape)
 run_test "${SCRIPT_DIR}/test-ssh-visibility.sh"       # ADR-020 D5 visibility surfaces (zshrc/init banner, rc ls GH-IDENTITY col) + 9eg regression
 run_test "${SCRIPT_DIR}/test-bd-host-preflight.sh"    # _bd_host_preflight dolt-server preflight helper (host-only)
+run_test "${SCRIPT_DIR}/test-container-name.sh"       # rip-cage-a0h item (c): container_name() collision-hash disambiguation regression — docker PATH-shim + real cmd_up --dry-run, host-only
 run_test "${SCRIPT_DIR}/test-lfs-warning.sh"          # rc --dry-run up LFS pointer-stub scan + silent-exit-1 regression
 run_test "${SCRIPT_DIR}/test-ssh-allowlist.sh"        # ADR-022 known_hosts filter + hashed-host HMAC + resume mount-shape guard (EXIT-trap fixed)
 run_test "${SCRIPT_DIR}/test-denylist-matching.sh"    # _check_secret_path_denylist component-match (unsets RC_CONFIG_GLOBAL per driver-fixture trap)

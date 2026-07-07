@@ -123,5 +123,76 @@ else
 fi
 
 echo "---"
+echo "=== dolt-server.port env-injection validation (rip-cage-a0h item (a), ADR-007 D8 rescope) ==="
+echo "==="
+
+# _bd_dolt_port_inject_arg — validates .beads/dolt-server.port content BEFORE
+# it is used to build the BEADS_DOLT_SERVER_PORT env-injection arg (rc:~1891
+# residual). Mirrors the validation predicate in _bd_host_preflight (rc:4372).
+# On invalid content: warns (naming the file) to stderr, emits NOTHING on
+# stdout (skip injection), and returns 0 (warn-not-fail — ADR-007 D8; bd is
+# optional and must never block the container). Exercised via the hidden
+# `__bd-port-inject-test` CLI entry point (sibling of __bd-preflight-test).
+check_inject() {
+  local desc="$1" port_file="$2" expect_stdout="$3" expect_stderr_contains="$4"
+  local actual_stdout actual_stderr actual_exit=0
+  actual_stdout=$("$RC" __bd-port-inject-test "$port_file" 2>/tmp/rc-inject-test-stderr.$$) || actual_exit=$?
+  actual_stderr=$(cat "/tmp/rc-inject-test-stderr.$$" 2>/dev/null)
+  rm -f "/tmp/rc-inject-test-stderr.$$"
+
+  local ok=true
+  [[ "$actual_exit" -eq 0 ]] || ok=false
+  [[ "$actual_stdout" == "$expect_stdout" ]] || ok=false
+  if [[ -n "$expect_stderr_contains" ]]; then
+    [[ "$actual_stderr" == *"$expect_stderr_contains"* ]] || ok=false
+  else
+    [[ -z "$actual_stderr" ]] || ok=false
+  fi
+
+  if $ok; then
+    echo "PASS: $desc"
+    pass=$(( pass + 1 ))
+  else
+    echo "FAIL: $desc"
+    echo "  expected exit 0, got $actual_exit"
+    echo "  expected stdout: '$expect_stdout' — actual: '$actual_stdout'"
+    echo "  expected stderr to contain: '$expect_stderr_contains' — actual: '$actual_stderr'"
+    fail=$(( fail + 1 ))
+  fi
+}
+
+TMPDIR_INJECT=$(mktemp -d)
+
+# Missing file: no injection, no warning, exit 0 (existing behavior preserved).
+check_inject "missing port file: no injection, no warning" \
+  "${TMPDIR_INJECT}/nonexistent/dolt-server.port" "" ""
+
+# Valid port: injected verbatim, no warning.
+mkdir -p "${TMPDIR_INJECT}/valid"
+printf '5000\n' > "${TMPDIR_INJECT}/valid/dolt-server.port"
+check_inject "valid port: injected as BEADS_DOLT_SERVER_PORT" \
+  "${TMPDIR_INJECT}/valid/dolt-server.port" "BEADS_DOLT_SERVER_PORT=5000" ""
+
+# Invalid (non-integer) content: NOT injected, warns naming the file, exit 0.
+mkdir -p "${TMPDIR_INJECT}/corrupt"
+printf 'not-a-number\n' > "${TMPDIR_INJECT}/corrupt/dolt-server.port"
+check_inject "corrupt (non-integer) port: not injected, warns naming the file, exit 0" \
+  "${TMPDIR_INJECT}/corrupt/dolt-server.port" "" "${TMPDIR_INJECT}/corrupt/dolt-server.port"
+
+# Out-of-range content: NOT injected, warns, exit 0.
+mkdir -p "${TMPDIR_INJECT}/outrange"
+printf '65536\n' > "${TMPDIR_INJECT}/outrange/dolt-server.port"
+check_inject "out-of-range port: not injected, warns, exit 0" \
+  "${TMPDIR_INJECT}/outrange/dolt-server.port" "" "expected an integer port 1-65535"
+
+# Zero: NOT injected, warns, exit 0.
+mkdir -p "${TMPDIR_INJECT}/zero"
+printf '0\n' > "${TMPDIR_INJECT}/zero/dolt-server.port"
+check_inject "zero port: not injected, warns, exit 0" \
+  "${TMPDIR_INJECT}/zero/dolt-server.port" "" "expected an integer port 1-65535"
+
+rm -rf "$TMPDIR_INJECT"
+
+echo "---"
 echo "Results: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
