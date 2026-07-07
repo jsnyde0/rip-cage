@@ -27,9 +27,11 @@ Any config field whose value determines create-time mount shape gets a **label-l
 
 1. **Create-time label.** At `docker create`, persist the effective policy value as a container label `rc.<feature>` (boolean/enum instances) or `rc.<feature>-fingerprint=<sha256>` (set-valued instances: sha256 over sorted policy-header + structural-input lines).
 2. **Resume-time compare — BOTH branches.** On `rc up` against an existing container, a `_up_resolve_resume_<feature>` resolver reads the label, recomputes the current effective value, and compares — on the **running-container branch AND the stopped-container branch**. Guards that check only one branch were the original bug shape.
-3. **Abort loud, fixed message shape.** On mismatch, refuse with the established shape: `Container <name> was created with <label>=<stored> but current effective config has <field>=<current>. Mount shape is immutable on resume — run: rc destroy <name> && rc up <path> to apply the change.` JSON mode carries a stable error code (`<FEATURE>_MOUNT_SHAPE_CHANGED`). Never silently re-mount, never warn-and-proceed (ADR-001).
+3. **Abort loud, established message template.** On mismatch, refuse with the template: `Container <name> was created with <label>=<stored> but current effective config has <field>=<current>. Mount shape is immutable on resume — run: rc destroy <name> && rc up <path> to apply the change.` JSON mode carries a stable error code (`<FEATURE>_MOUNT_SHAPE_CHANGED`). Per-instance wording may vary slightly; the load-bearing parts are naming both values, the immutability statement, and the destroy-and-re-up remediation. Never silently re-mount, never warn-and-proceed (ADR-001).
 4. **Reload-ineligible by omission.** `rc reload` hot-reloads only fields listed in the `_RC_RELOAD_ELIGIBLE_PATHS` allowlist (content-only changes, e.g. `ssh.allowed_hosts` per ADR-022 D6). Mount-shape fields are guarded by *never adding them* — the allowlist-of-stable-zone shape, so a new guarded field is safe by default with zero reload-side edits.
 5. **Backward-compat derivation ladder.** When a guard is added (or its grain refined, e.g. global → per-tool in instance 4), resume of a pre-guard container must not brick: derive the stored value as *specific label if present, else coarser/older label if present, else the historical default*. Upgrading `rc` never invalidates a running cage whose effective posture is unchanged.
+
+**Known residuals in shipped instances (as of promotion, 2026-07-07):** this recipe states the target; two instances drift from it and are tracked for repair, not cloned as variants. Instance 1 (`_up_resolve_resume_ssh_key_filter`) predates the both-branches rule and today runs on the **stopped branch only** — exactly the one-branch bug shape step 2 warns about. Instance 2 (`_up_resolve_resume_symlink_fingerprint`) has **no JSON error code** — under `--json` it emits plain stderr and exits. Both surfaced during this ADR's adversarial review; rc fix tracked in `rip-cage-7gr9`.
 
 **Rationale:** docker owns the mount table and offers no rebind; the honest contract is "mount shape is immutable per container generation." A create-time label is the cheapest durable record of the shape actually built; comparing at resume converts silent divergence into a loud, actionable refusal at the exact moment the operator can still choose (destroy-and-re-up vs keep the old shape). Four instances converged on this recipe independently enough that divergence risk now exceeds codification cost.
 
@@ -37,7 +39,7 @@ Any config field whose value determines create-time mount shape gets a **label-l
 
 | Alternative | Rejection |
 |---|---|
-| Evolve ADR-022 in place — promote its implementation-note guard to the canonical pattern decision (the ADR-008 D7 overlap scout's 4/5 recommendation) | `reasoned:` the overlap is with an *implementation note* documenting instance 1, not with ADR-022's decision space (SSH host/key allowlisting). The pattern is cross-cutting — instances live in ADR-021 D4a/D7 and ADR-026 D7 too; housing the recipe inside the SSH ADR makes three non-SSH ADRs depend on an SSH doc for a docker-lifecycle pattern. Scored honestly, overlap is moderate (2-3/5) → create-and-flag per D7 thresholds; the flag is discharged by this table + cross-refs. |
+| Evolve ADR-022 in place — promote its implementation-note guard to the canonical pattern decision (the overlap scout's 4/5 recommendation, per the global methodology ADR-008 D7 overlap-detection discipline — distinct from this repo's ADR-008, open-source publication) | `reasoned:` the overlap is with an *implementation note* documenting instance 1, not with ADR-022's decision space (SSH host/key allowlisting). The pattern is cross-cutting — instances live in ADR-021 D4a/D7 and ADR-026 D7 too; housing the recipe inside the SSH ADR makes three non-SSH ADRs depend on an SSH doc for a docker-lifecycle pattern. Scored honestly, overlap is moderate (2-3/5) → create-and-flag per the same discipline's thresholds; the flag is discharged by this table + cross-refs. |
 | Silently re-filter / re-mount on resume to match new config | `direct:` rejected in ADR-022 D6's alternatives — resume preserves labels, mutations are explicit; `rc reload` is the explicit mutate verb for content-eligible fields. |
 | Warn-and-proceed on mismatch | `reasoned:` fails open — the operator's next 200 agent-turns run against a posture that contradicts displayed config; ADR-001 requires loud failure with remediation. |
 | Denylist mount-shape fields from reload instead of allowlisting eligible ones | `direct:` bd memory `allowlist-stable-zone-over-denylist-of-growing-floor-set` — the guarded set grows with every instance; a denylist requires an edit-per-instance and fails open when forgotten. |
@@ -101,10 +103,12 @@ Do **not** count label-free guards toward the label-lock instance tally — the 
 
 The sibling **image-shape** label-lock (label on the IMAGE, compared at the provisioning gate: `org.opencontainers.image.version`, `rip-cage-rcw`) is a distinct shape with its own tally (1/3 as of this writing) and is *not* governed by this ADR. If it reaches its own rule-of-three, it gets its own promotion (likely a Dn here, evolved in place).
 
+Likewise out of scope: `_up_resolve_resume_mediator_ca_env` (`rc.mediator-ca-env`, `rip-cage-yid0`) guards create-time-frozen **ENV shape**, not mount shape — same guard family and message posture, both branches, but not counted toward this ADR's instance tally.
+
 ## Consequences
 
 - New mount-shape config fields have a named recipe to clone: label at create, `_up_resolve_resume_<feature>` resolver on both branches, fixed message shape, no `_RC_RELOAD_ELIGIBLE_PATHS` entry, derivation ladder if retrofitting.
-- The instance ADRs (ADR-021 D4a/D7, ADR-022 implementation notes, ADR-026 D7) remain the authority on their instances' policy semantics; this ADR owns only the guard recipe. No back-edits to those ADRs were made with this promotion (follow-up pointers may land per ADR-008 D4 if drift appears).
+- The instance ADRs (ADR-021 D4a/D7, ADR-022 implementation notes, ADR-026 D7) remain the authority on their instances' policy semantics; this ADR owns only the guard recipe. No back-edits to those ADRs were made with this promotion (follow-up pointers may land as discovered-from beads if drift appears).
 - The `rip-cage-mount-shape-label-lock-pattern` bd memory slims to a tally + pointer; the recipe content here is canonical.
 
 ## canonical_refs
@@ -113,6 +117,7 @@ The sibling **image-shape** label-lock (label on the IMAGE, compared at the prov
 - ADR-021 D4a (`mounts.symlinks.*` fingerprint, instance 2), D7 (`mounts.config_mode`, instance 3).
 - ADR-022 implementation notes (`rc.ssh-key-filter` resume guard, instance 1); D6 (`rc reload` eligibility, the allowlist D1 step 4 rides on).
 - ADR-026 D7 (per-tool credential-mount posture, instance 4).
-- Beads: `rip-cage-jxy`, `rip-cage-c1p.2`, `rip-cage-cw51`, `rip-cage-xhgr` (instances); `rip-cage-36u` (D2), `rip-cage-jnvb` (D4), `rip-cage-h2hl` (D4 residual); `rip-cage-izi2` (this promotion).
+- Beads: `rip-cage-jxy`, `rip-cage-c1p.2`, `rip-cage-cw51`, `rip-cage-xhgr` (instances); `rip-cage-36u` (D2), `rip-cage-jnvb` (D4), `rip-cage-h2hl` (D4 residual); `rip-cage-rcw` (image-shape sibling, Scope boundary); `rip-cage-yid0` (env-shape sibling, Scope boundary); `rip-cage-7gr9` (instance-residual repairs); `rip-cage-izi2` (this promotion).
+- Global methodology ADR-008 (ADR-authoring conventions; D7 overlap-detection thresholds) — external namespace, distinct from this repo's ADR-008 (open-source publication); same cross-repo collision noted for ADR-011/ADR-013 in INDEX.md.
 - bd memory `rip-cage-mount-shape-label-lock-pattern` (pre-promotion home; now tally + pointer).
 - bd memory `allowlist-stable-zone-over-denylist-of-growing-floor-set` (D1 step 4 warrant).
