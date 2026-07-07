@@ -4,6 +4,8 @@
 **ADR:** [ADR-014](decisions/ADR-014-push-less-cage.md)
 **Related:** [ADR-001](decisions/ADR-001-fail-loud-pattern.md), [ADR-002](decisions/ADR-002-rip-cage-containers.md), [ADR-012](decisions/ADR-012-egress-firewall.md), [ADR-013](decisions/ADR-013-test-coverage.md)
 
+> **Superseded detail (note added 2026-07-07, `rip-cage-7tu`):** this doc is a frozen-in-time design artifact; ADRs are the target-architecture source of truth. The single-file `UserKnownHostsFile /etc/ssh/ssh_known_hosts` form used below was superseded by the dual-file form `UserKnownHostsFile /home/agent/.ssh/known_hosts /etc/ssh/ssh_known_hosts` — see [ADR-022 D4](decisions/ADR-022-ssh-allowlist.md) (mount-path correction, `rip-cage-g2q`, 2026-05-13) and [ADR-014 D2](decisions/ADR-014-push-less-cage.md) (edited in place accordingly).
+
 ## Problem
 
 An agent running inside a rip-cage container hit this prompt and hung:
