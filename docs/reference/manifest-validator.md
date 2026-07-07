@@ -69,7 +69,7 @@ An empty/null file passes (treated as "use defaults").
 | `version_pin: "bundled"` + `build_source` | `'build_source' must not be set when version_pin is "bundled"` |
 | both `install_cmd` and `build_source` | `mutually exclusive (use build_source for from-source builds; install_cmd for prebuilt …)` |
 | neither (non-bundled) | `required field 'install_cmd' is missing` |
-| `install_cmd` contains a newline | `must be a single line (newlines inject arbitrary Dockerfile directives)` |
+| `install_cmd` contains a newline | `must be a single line (newlines inject arbitrary Dockerfile directives)` — enforced in the **TOOL, SHELL-INTEGRATION, and IN-CAGE-DAEMON cases** (every archetype that can carry `install_cmd`; rip-cage-62a9), and re-checked at the generation site (`_manifest_generate_extra_dockerfile_steps`) as defense-in-depth |
 
 **`build_source` sub-fields** (from-source path — see [building-from-source.md](building-from-source.md)):
 
@@ -92,6 +92,7 @@ An empty/null file passes (treated as "use defaults").
 |---|---|
 | `shell_init` missing/empty | `required field 'shell_init' is missing (SHELL-INTEGRATION archetype)` |
 | `shell_init` contains a newline | `must be a single line (newlines inject arbitrary Dockerfile directives)` — checked again at the generation site (`_manifest_generate_shell_init_zshrc_steps`) as defense-in-depth |
+| optional `install_cmd` contains a newline | `field 'install_cmd' must be a single line …` — SHELL-INTEGRATION entries may carry `install_cmd` for binary baking; the generator consumes it identically to TOOL, so the same newline guard applies (rip-cage-62a9) |
 
 ### IN-CAGE-DAEMON entries
 
@@ -101,6 +102,7 @@ An empty/null file passes (treated as "use defaults").
 | `state_dir` not absolute | `must be an absolute path (starting with '/')` |
 | `state_dir` contains whitespace | `must not contain whitespace (word-split injection risk)` |
 | `state_dir` contains shell metacharacters | ``must not contain shell metacharacters ($`;&|><()\)`` |
+| optional `install_cmd` contains a newline | `field 'install_cmd' must be a single line …` — IN-CAGE-DAEMON entries may carry `install_cmd` for binary baking; the generator consumes it identically to TOOL, so the same newline guard applies (rip-cage-62a9) |
 
 ### MULTIPLEXER entries
 

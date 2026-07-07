@@ -296,6 +296,74 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
+# T1e4 — Validator rejects multi-line install_cmd on SHELL-INTEGRATION at LOAD
+# time. _manifest_generate_extra_dockerfile_steps has NO archetype filter — a
+# SHELL-INTEGRATION entry carrying install_cmd gets a Dockerfile RUN step, so
+# the same newline-injection guard that protects TOOL install_cmd must hold
+# here (fail-closed validator gap, rip-cage-62a9 / ADR-005 D11 mechanism 2).
+# ---------------------------------------------------------------------------
+test_t1e4_validator_rejects_multiline_install_cmd_shell_integration() {
+  setup_manifest_sandbox
+  # Valid shell_init, hostile multi-line install_cmd (YAML double-quoted \n
+  # parses to a literal newline — same mechanism as T1e3).
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<'YAML'
+version: 1
+tools:
+  - name: shell-with-hostile-install
+    archetype: SHELL-INTEGRATION
+    version_pin: "1.0.0"
+    shell_init: "eval \"$(some-tool init zsh)\""
+    install_cmd: "apt-get install -y some-tool\nUSER root"
+YAML
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    bash -c "source '${RC}'; _manifest_load" >/dev/null 2>"$stderr_file" || exit_code=$?
+
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "install_cmd" "$stderr_file"; then
+    pass "T1e4 Validator rejects multi-line install_cmd on SHELL-INTEGRATION (fail-closed, names install_cmd)"
+  else
+    fail "T1e4 expected non-zero exit + 'install_cmd' in error. exit=${exit_code} stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# T1e5 — Single-line install_cmd on SHELL-INTEGRATION still validates AND is
+# consumed by the generator (positive sentinel guarding against the rejected
+# fix direction: an archetype filter in the generator would silently drop
+# install_cmd for non-TOOL entries — a behavior change for third-party
+# manifests; rip-cage-62a9 scoping review).
+# ---------------------------------------------------------------------------
+test_t1e5_single_line_install_cmd_shell_integration_accepted_and_baked() {
+  setup_manifest_sandbox
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<'YAML'
+version: 1
+tools:
+  - name: shell-with-install
+    archetype: SHELL-INTEGRATION
+    version_pin: "1.0.0"
+    shell_init: "eval \"$(some-tool init zsh)\""
+    install_cmd: "apt-get install -y some-tool"
+YAML
+  local stderr_file out exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    bash -c "source '${RC}'; _manifest_generate_extra_dockerfile_steps" 2>"$stderr_file") || exit_code=$?
+
+  if [[ "$exit_code" -eq 0 ]] && echo "$out" | grep -q "apt-get install -y some-tool"; then
+    pass "T1e5 Single-line install_cmd on SHELL-INTEGRATION validates and generator emits its RUN step"
+  else
+    fail "T1e5 expected exit 0 + install_cmd in generated steps. exit=${exit_code} out='${out}' stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # T1f — _manifest_build_dockerfile_path incorporates shell_init steps
 # When both TOOL and SHELL-INTEGRATION entries exist, the generated temp
 # Dockerfile contains both the install RUN step AND the .zshrc append step.
@@ -475,6 +543,8 @@ test_t1d_counterfactual_delta
 test_t1e_newline_injection_rejected
 test_t1e2_single_quote_in_shell_init_produces_valid_run_step
 test_t1e3_validator_rejects_multiline_shell_init
+test_t1e4_validator_rejects_multiline_install_cmd_shell_integration
+test_t1e5_single_line_install_cmd_shell_integration_accepted_and_baked
 test_t1f_build_dockerfile_path_includes_shell_init
 
 echo ""

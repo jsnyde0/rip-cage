@@ -354,6 +354,80 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
+# T1d5 — Strict-parse rejects multi-line install_cmd on IN-CAGE-DAEMON.
+# _manifest_generate_extra_dockerfile_steps has NO archetype filter — a daemon
+# entry carrying install_cmd gets a Dockerfile RUN step, so the same
+# newline-injection guard that protects TOOL install_cmd must hold here
+# (fail-closed validator gap, rip-cage-62a9 / ADR-005 D11 mechanism 2).
+# ---------------------------------------------------------------------------
+test_t1d5_strict_parse_rejects_multiline_install_cmd() {
+  setup_manifest_sandbox
+  # Valid required fields, hostile multi-line install_cmd (YAML double-quoted
+  # \n parses to a literal newline).
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<'YAML'
+version: 1
+tools:
+  - name: daemon-with-hostile-install
+    archetype: IN-CAGE-DAEMON
+    version_pin: "0.1.0"
+    start: "/usr/bin/python3 -m http.server 9995"
+    health: "curl -sf http://127.0.0.1:9995/"
+    state_dir: "/var/lib/rip-cage-daemon/daemon-with-hostile-install"
+    install_cmd: "apt-get install -y some-daemon\nUSER root"
+YAML
+  local stderr_file exit_code err_output
+  stderr_file=$(mktemp)
+  exit_code=0
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    bash -c "source '${RC}'; _manifest_validate '${TEST_HOME}/.config/rip-cage/tools.yaml'" \
+    2>"$stderr_file" || exit_code=$?
+
+  err_output=$(cat "$stderr_file")
+  if [[ "$exit_code" -ne 0 ]] && echo "$err_output" | grep -qi "install_cmd"; then
+    pass "T1d5 Strict-parse rejects multi-line install_cmd on IN-CAGE-DAEMON: exits non-zero and names install_cmd"
+  else
+    fail "T1d5 Strict-parse should reject multi-line install_cmd on IN-CAGE-DAEMON. exit=${exit_code} stderr='${err_output}'"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# T1d6 — Single-line install_cmd on IN-CAGE-DAEMON still validates AND is
+# consumed by the generator (positive sentinel guarding against the rejected
+# fix direction: an archetype filter in the generator would silently drop
+# install_cmd for non-TOOL entries — a behavior change for third-party
+# manifests; rip-cage-62a9 scoping review).
+# ---------------------------------------------------------------------------
+test_t1d6_single_line_install_cmd_daemon_accepted_and_baked() {
+  setup_manifest_sandbox
+  cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<'YAML'
+version: 1
+tools:
+  - name: daemon-with-install
+    archetype: IN-CAGE-DAEMON
+    version_pin: "0.1.0"
+    start: "/usr/bin/python3 -m http.server 9994"
+    health: "curl -sf http://127.0.0.1:9994/"
+    state_dir: "/var/lib/rip-cage-daemon/daemon-with-install"
+    install_cmd: "apt-get install -y some-daemon"
+YAML
+  local stderr_file out exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    bash -c "source '${RC}'; _manifest_generate_extra_dockerfile_steps" 2>"$stderr_file") || exit_code=$?
+
+  if [[ "$exit_code" -eq 0 ]] && echo "$out" | grep -q "apt-get install -y some-daemon"; then
+    pass "T1d6 Single-line install_cmd on IN-CAGE-DAEMON validates and generator emits its RUN step"
+  else
+    fail "T1d6 expected exit 0 + install_cmd in generated steps. exit=${exit_code} out='${out}' stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # T1e — MCP fragment: WITH mcp_fragment → step merges mcpServers into settings.json
 # ---------------------------------------------------------------------------
 test_t1e_with_mcp_fragment_step_present() {
@@ -831,6 +905,8 @@ test_t1d_strict_parse_rejects_missing_start_field
 test_t1d2_strict_parse_rejects_missing_health_field
 test_t1d3_strict_parse_rejects_missing_state_dir_field
 test_t1d4_strict_parse_rejects_invalid_state_dir
+test_t1d5_strict_parse_rejects_multiline_install_cmd
+test_t1d6_single_line_install_cmd_daemon_accepted_and_baked
 test_t1e_with_mcp_fragment_step_present
 test_t1e2_without_mcp_fragment_no_step
 test_t1f_build_dockerfile_path_with_daemon

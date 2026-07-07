@@ -7902,6 +7902,23 @@ _manifest_check_seed_drift() {
   # manifest.
 }
 
+# _manifest_check_install_cmd_single_line FILE IDX NAME VALUE
+# install_cmd is interpolated inline into a generated Dockerfile RUN line by
+# _manifest_generate_extra_dockerfile_steps, which has no archetype filter —
+# TOOL, SHELL-INTEGRATION and IN-CAGE-DAEMON entries may all carry it — so
+# the newline-injection guard must hold in all three of those cases, not just
+# TOOL (rip-cage-62a9; ADR-005 D11 mechanism 2). MULTIPLEXER/MEDIATOR
+# strict-parse reject install_cmd outright. This helper covers install_cmd
+# only; build_source sub-field validation remains TOOL-only (rip-cage-m0hh).
+_manifest_check_install_cmd_single_line() {
+  local file="$1" idx="$2" name="$3" value="$4"
+  if [[ "$value" == *$'\n'* ]]; then
+    echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'install_cmd' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
+    return 1
+  fi
+  return 0
+}
+
 # _manifest_validate FILE
 # Strict-parse, fail-closed validator for a manifest YAML file.
 # Validates ALL tool entries. On the first violation, prints a field-naming
@@ -8137,8 +8154,7 @@ _manifest_validate() {
             return 1
           fi
           # install_cmd must be a single line — newlines inject arbitrary Dockerfile directives.
-          if [[ "$install_cmd_raw" == *$'\n'* ]]; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'install_cmd' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
+          if ! _manifest_check_install_cmd_single_line "$file" "$idx" "$name" "$install_cmd_raw"; then
             return 1
           fi
         fi
@@ -8298,6 +8314,15 @@ _manifest_validate() {
           echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'shell_init' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
           return 1
         fi
+        # Optional 'install_cmd' (binary baking via _manifest_generate_extra_dockerfile_steps,
+        # which has no archetype filter) — same newline guard as TOOL (rip-cage-62a9).
+        local si_install_cmd
+        si_install_cmd=$(jq -r '.install_cmd // ""' <<<"$entry" 2>/dev/null)
+        if [[ -n "$si_install_cmd" ]]; then
+          if ! _manifest_check_install_cmd_single_line "$file" "$idx" "$name" "$si_install_cmd"; then
+            return 1
+          fi
+        fi
         ;;
       IN-CAGE-DAEMON)
         # 'start', 'health', 'state_dir' required
@@ -8333,6 +8358,15 @@ _manifest_validate() {
         if [[ "$daemon_state_dir" =~ [\$\`\;\|\&\>\<\(\)\\] ]]; then
           echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'state_dir' must not contain shell metacharacters (\$\`;&|><()\\); got '${daemon_state_dir}'." >&2
           return 1
+        fi
+        # Optional 'install_cmd' (binary baking via _manifest_generate_extra_dockerfile_steps,
+        # which has no archetype filter) — same newline guard as TOOL (rip-cage-62a9).
+        local daemon_install_cmd
+        daemon_install_cmd=$(jq -r '.install_cmd // ""' <<<"$entry" 2>/dev/null)
+        if [[ -n "$daemon_install_cmd" ]]; then
+          if ! _manifest_check_install_cmd_single_line "$file" "$idx" "$name" "$daemon_install_cmd"; then
+            return 1
+          fi
         fi
         ;;
       MULTIPLEXER)
@@ -8979,10 +9013,14 @@ _manifest_load() {
 #
 # Output: zero or more lines of the form:
 #   RUN <install_cmd>
-# one per non-bundled TOOL entry that has an install_cmd field.
-# Only TOOL archetype entries are processed here (SHELL-INTEGRATION and
-# IN-CAGE-DAEMON wiring is siblings .4/.5 — but their binary baking uses the
-# same install_cmd mechanism if they carry the field).
+# one per non-bundled entry that has an install_cmd field. There is NO
+# archetype filter: SHELL-INTEGRATION and IN-CAGE-DAEMON entries may carry
+# install_cmd for their binary baking and are consumed identically to TOOL
+# entries — which is why _manifest_validate enforces the install_cmd
+# single-line rule in all three of those cases, not just TOOL
+# (rip-cage-62a9). MULTIPLEXER/MEDIATOR strict-parse reject install_cmd.
+# build_source (also consumed here, branch below) has TOOL-only sub-field
+# validation — non-TOOL coverage is pending rip-cage-m0hh.
 _manifest_generate_extra_dockerfile_steps() {
   local manifest_json
   if ! manifest_json=$(_manifest_load); then
@@ -9020,6 +9058,14 @@ _manifest_generate_extra_dockerfile_steps() {
       steps+="# manifest from-source TOOL: ${name} (copy artifact from isolated builder stage)"$'\n'
       steps+="COPY --from=${stage_name} ${bs_output_path} ${bs_runtime_dest}"$'\n'
     elif [[ -n "$install_cmd" ]]; then
+      # Defense-in-depth: install_cmd is validated single-line at load time
+      # (_manifest_validate, all consumed archetypes) — re-check here at the
+      # generation site, mirroring the shell_init guard in
+      # _manifest_generate_shell_init_zshrc_steps (rip-cage-62a9).
+      if [[ "$install_cmd" == *$'\n'* ]]; then
+        echo "Error: manifest entry '${name}' (${archetype}): field 'install_cmd' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
+        return 1
+      fi
       # Prebuilt install path: emit a RUN apt-get / install step in the runtime stage.
       steps+="RUN # manifest TOOL: ${name} (${archetype})"$'\n'
       steps+="RUN apt-get update && ${install_cmd} && rm -rf /var/lib/apt/lists/*"$'\n'
