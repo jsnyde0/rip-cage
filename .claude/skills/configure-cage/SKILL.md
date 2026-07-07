@@ -243,6 +243,18 @@ What to carry as judgment when someone asks for this — the parts that actually
   when the real gap is the mediator's own allowlist. See
   [`examples/compose-rc-with-iron-proxy.md`](../../../examples/compose-rc-with-iron-proxy.md)
   for the exact fields.
+- **The mediator's baked allowlist chokes egress MODE-INDEPENDENTLY — and dev tooling needs
+  the dev-infra hosts in it.** The platform.claude.com lesson above generalizes: with a
+  mediator composed, `network.mode: observe` in `.rip-cage.yaml` does NOT mean "nothing is
+  blocked" — the router forwards all egress through the mediator regardless of mode, so any
+  host missing from the mediator's build-time domains list is 403'd even under observe (the
+  symptom on a direct probe is a bare `tls handshake eof`; the honest probe is
+  `curl -x http://127.0.0.1:8888 <url>` + the mediator log). Concretely bitten (2026-07-07):
+  in-cage `uv sync` fought PyPI for ~40 attempts before diagnosis. If the human's cages run
+  coding agents that install packages, the baked list needs the dev-infra set — `pypi.org`,
+  `files.pythonhosted.org`, `registry.npmjs.org`, `objects.githubusercontent.com` — and any
+  fix there is `tools.yaml` edit → `rc build` → destroy+recreate, never a `.rip-cage.yaml`
+  edit or `rc reload`.
 
 Relay this when it fits the human's situation, the same as the other footguns — not a
 procedure to push through every cage.
