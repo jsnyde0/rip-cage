@@ -5,6 +5,21 @@ All notable changes to rip-cage will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2026-07-07
+
+Stabilization patch on the 0.12.0 non-possession release: the remaining false alarms on healthy cages, a stale-manifest drift detector for `rc build`, and the test-suite reliability fixes that make CI trustworthy again.
+
+### Added
+
+- **Seed-drift detection on `rc build` + `rc manifest reconcile`** (rip-cage-6vt9). `rc build` no longer silently bakes a stale layout from an un-reconciled `~/.config/rip-cage/tools.yaml` (the repro silently reverted a shipped guard relocation). A seed-provenance fingerprint stamp plus an entry-level structural comparison for unstamped legacy manifests warns — naming the diverging entries — when the seeded recipe entries have drifted from the current `dist/default-tools.yaml`; provably-current or all-custom manifests stay silent. The new `rc manifest reconcile` merges by entry name (dist entries refreshed, user-added entries preserved verbatim, validated before writing, timestamped backup first).
+
+### Fixed
+
+- **The remaining cry-wolf cluster on healthy cages** (rip-cage-i7s9, rip-cage-ebdd, rip-cage-towm). Three false alarms fixed in one cross-probe sweep: `rc doctor`'s dead-mounts probe downgrades a dead single-file mount to INFO when the init snapshot convention covers it (seed-only mount — runtime reads the snapshot; mounts without a seed, like the live `.credentials.json` refresh channel, still FAIL); the doctor auth probe is posture-aware (recognizes the non-possession container label, then the `CLAUDE_CODE_OAUTH_TOKEN` env) instead of FAILing on a healthy placeholder-token cage; and the keychain-extraction warning only fires when no usable credentials file exists. No-signal cages still fail loud on all three.
+- **E2e probe auth pre-flights recognize non-possession cages** (rip-cage-6k2u). The two managed-settings probe suites' pre-flights only knew the credentials-file and `ANTHROPIC_API_KEY` signals, so they FATALed on healthy non-possession cages; they now mirror the doctor probe's label + env-token recognition. Absent every signal, they still refuse to run.
+- **`apt-get install yq` hint removed everywhere** (rip-cage-7nls). Six `rc` hint sites and two doc surfaces recommended apt's `yq` on Debian/Ubuntu — which installs the kislyuk python-yq, flag-incompatible with the mikefarah v4 `yq` rc requires (`-e`, `... style=`, `eval` positional). All now point at `brew install yq` or the mikefarah release binary and name the trap.
+- **Test-suite reliability: errexit leakage + reserved-scratch CI reds** (rip-cage-1b91, rip-cage-29sp, rip-cage-5fsy). Seven test files carried `set +e … set -e` brackets whose restore silently switched errexit ON for files baselined without it — later checks in the file were truncated instead of recorded as failures (the mechanism behind the CM15-CM21 silent truncation on Linux CI). All 43 leaking restores flipped to restore-to-baseline; the credential-mounts and config-ro-mount suites additionally gained visible SKIPs on reserved-scratch hosts, un-redding the Linux CI host-only job. The new keychain-warning test also stubs `uname` alongside `security`, so it exercises the macOS branch it documents on Linux CI instead of failing there.
+
 ## [0.12.0] - 2026-07-06
 
 The headline is **credential non-possession**: a cage can now run `claude` while never holding the real credential — the cage carries only a placeholder token and a composed external mediator injects the real secret on egress. The posture is per-project, per-tool config (default unchanged: full possession), and the release rounds it out with the doctor probes, seed synthesis, and warning fixes that make a non-possession cage boot clean and verifiable.
