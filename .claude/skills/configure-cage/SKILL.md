@@ -96,6 +96,17 @@ regenerated. So: every time you compose a fragment, go open its actual
 `manifest-fragment.yaml` and README, and copy what it says to copy. This file tells you where
 to look, not what the fragments currently contain.
 
+## External agent substrate has its own recipe — don't expect one here
+
+Sometimes the human's situation includes agent substrate rip-cage doesn't own — e.g. a
+self-driving bead factory whose worker sessions need to run caged. That substrate's own
+project is where its provisioning recipe lives, not `examples/`: per ADR-005 D12, rc blesses
+no tool, and the same holds one level up — rc doesn't bless or bundle *recipes* for
+externally-owned substrate either. When you recognize this shape, consult that project's own
+recipe doc by judgment rather than expecting (or inventing) an rc-shipped one. Illustration,
+not a name to hardcode: dotpi's `docs/factory-cage-provisioning.md` is the recipe for
+provisioning dotpi's bead-factory substrate into a cage.
+
 ## Footguns worth knowing
 
 Two things have already bitten real sessions. Relay them when they're relevant to what the

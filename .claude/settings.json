@@ -10,6 +10,16 @@
         ],
         "matcher": ""
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /Users/jonatanpi/code/personal/dotpi/agent/extensions/claude-close-hook/stop-hook.mjs"
+          }
+        ]
+      }
     ]
   }
 }
