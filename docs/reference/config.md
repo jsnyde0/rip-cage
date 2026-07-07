@@ -519,7 +519,7 @@ Most fields apply on resume; capability-changing fields that affect docker-creat
 The loader uses [`yq`](https://github.com/mikefarah/yq) (mikefarah/yq, the Go reimplementation) to parse YAML.
 
 - **macOS:** `brew install yq`
-- **Linux:** `sudo apt install yq` (or via brew on Linux)
+- **Linux:** the [mikefarah/yq release binary](https://github.com/mikefarah/yq/releases) (or via brew on Linux) — NOT apt's `yq`, which is [kislyuk/python-yq](https://github.com/kislyuk/yq) and does not understand the mikefarah v4 flags this repo uses
 
 If `yq` is missing, `rc config show` and any `rc up` that needs the loader exit with an actionable error per [ADR-001](../decisions/ADR-001-fail-loud-pattern.md). The loader does not silently degrade to "skip config" — that would silently nullify a user-authored capability scoping (same failure class as silently skipping an unsupported-version file with selection-list fields).
 

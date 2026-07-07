@@ -6121,7 +6121,7 @@ _allowlist_add_host_to_yaml() {
 
   # Ensure network.allowed_hosts exists with yq; append the host.
   if ! command -v yq &>/dev/null; then
-    echo "Error: yq not found on PATH. Install yq (brew install yq | apt-get install yq) to use rc allowlist." >&2
+    echo "Error: yq not found on PATH. Install yq (brew install yq, or the mikefarah/yq release binary on Linux: https://github.com/mikefarah/yq/releases — NOT apt's yq, which is the incompatible python-yq) to use rc allowlist." >&2
     exit 1
   fi
 
@@ -6328,7 +6328,7 @@ _allowlist_promote() {
   yaml_file=$(_allowlist_resolve_config_file "$config_file")
 
   if ! command -v yq &>/dev/null; then
-    echo "Error: yq not found on PATH. Install yq (brew install yq | apt-get install yq) to use rc allowlist." >&2
+    echo "Error: yq not found on PATH. Install yq (brew install yq, or the mikefarah/yq release binary on Linux: https://github.com/mikefarah/yq/releases — NOT apt's yq, which is the incompatible python-yq) to use rc allowlist." >&2
     exit 1
   fi
 
@@ -6590,7 +6590,7 @@ _doctor_host() {
   if _yq_path=$(command -v yq 2>/dev/null); then
     _yq_status="OK — ${_yq_path}"
   else
-    _yq_status="WARNING — yq not found on PATH (install: brew install yq | apt-get install yq)"
+    _yq_status="WARNING — yq not found on PATH (install: brew install yq / mikefarah releases binary — apt's yq is incompatible)"
   fi
   local _global_cfg_path _global_cfg_status
   _global_cfg_path=$(_config_global_path)
@@ -7591,7 +7591,7 @@ _config_mediator_derive_allowed_set() {
 # silently nullify a user-authored capability scoping.
 _config_check_yq() {
   if ! command -v yq &>/dev/null; then
-    echo "Error: yq not found on PATH. yq is a rip-cage config dependency — install it: brew install yq (macOS) | apt-get install yq (Debian/Ubuntu)." >&2
+    echo "Error: yq not found on PATH. yq is a rip-cage config dependency — install it: brew install yq (macOS) or the mikefarah/yq release binary (Linux: https://github.com/mikefarah/yq/releases) — NOT apt's yq, which is the incompatible python-yq." >&2
     exit 1
   fi
 }
@@ -7912,7 +7912,7 @@ _manifest_validate() {
 
   # yq required (same policy as config loader — no silent degradation ADR-001).
   if ! command -v yq &>/dev/null; then
-    echo "Error: yq not found on PATH. yq is a rip-cage manifest dependency — install it: brew install yq (macOS) | apt-get install yq (Debian/Ubuntu)." >&2
+    echo "Error: yq not found on PATH. yq is a rip-cage manifest dependency — install it: brew install yq (macOS) or the mikefarah/yq release binary (Linux: https://github.com/mikefarah/yq/releases) — NOT apt's yq, which is the incompatible python-yq." >&2
     return 1
   fi
 
@@ -8784,7 +8784,7 @@ _manifest_reconcile() {
     return 1
   fi
   if ! command -v yq &>/dev/null; then
-    echo "Error: yq not found on PATH. yq is required for 'rc manifest reconcile' — install it: brew install yq (macOS) | apt-get install yq (Debian/Ubuntu)." >&2
+    echo "Error: yq not found on PATH. yq is required for 'rc manifest reconcile' — install it: brew install yq (macOS) or the mikefarah/yq release binary (Linux: https://github.com/mikefarah/yq/releases) — NOT apt's yq, which is the incompatible python-yq." >&2
     return 1
   fi
   if ! command -v jq &>/dev/null; then
