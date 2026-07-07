@@ -52,6 +52,18 @@ exit 1
 STUB
 chmod +x "${SECURITY_STUB_DIR}/security"
 
+# A `uname` stub that always reports Darwin (rip-cage-5fsy). The branch under
+# test is gated on uname==Darwin inside _extract_credentials; without this
+# shim, Linux CI never enters it — E2/E3 got empty stderr and E1 passed
+# vacuously. The branch's internals are host-portable (security is stubbed
+# above; the expiry check already falls back to GNU `date -d`), so pinning
+# uname makes the test exercise the identical code path on any host.
+cat > "${SECURITY_STUB_DIR}/uname" <<'STUB'
+#!/usr/bin/env bash
+echo Darwin
+STUB
+chmod +x "${SECURITY_STUB_DIR}/uname"
+
 _run_extract_credentials() {
   local sandbox_home="$1"
   local stderr_file
