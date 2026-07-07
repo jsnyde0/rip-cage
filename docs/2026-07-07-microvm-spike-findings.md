@@ -289,15 +289,21 @@ climbing into exactly that layer.
 - ✅ virtiofs perf probe on a real repo (§1c) — profiled; usable with build-output mitigation.
 - ✅ Moat analysis vs msb itself (§7).
 
+- ✅ Herdr full session smoke — PASS under msb via the factory socket-API pattern (§8a); two
+  headless gotchas documented (per-session socket path; pane-width needs a sized client).
+- ✅ Migration-shape sketch — `rc` verb → msb flag mapping (§8b); MEDIATOR entries map 1:1 to
+  `--secret`, egress-rules to `--net-rule`.
+
 **REMAINING before the final go/no-go + ADR:**
-- Herdr full session smoke — multiplexer behavior under msb TTY (`msb run -t` / `msb ssh`);
-  a real caged agent session driving a real workspace end-to-end.
-- Migration-shape sketch: what `rc up` generates as `msb run` flags; how the manifest's
-  MEDIATOR entries map to `--secret ENV@HOST` bindings; doctor/reload redesign against msb's CLI.
+- **Strategic product-direction decision (operator's call, §7)** — adopt-msb is settled on the
+  isolation axis; the product/moat axis (posture-layer vs substrate-niche vs fold) is the open
+  decision that gates what the ADR concludes.
+- Interactive sized-client herdr attach via `msb run -t` / `msb ssh` (socket-API path already proven).
 - Empirically confirm the msb **KVM/Linux** path is as dogfooded as the HVF/macOS path (future
   Linux tier).
-- Then: final go/no-go + ADR via `/adr-write`, `/adversarial-review` before stamping.
-  Bead acceptance still open pending the explicit adopt/second-primitive/reject recommendation.
+- Then: ADR via `/adr-write`, `/adversarial-review` before stamping.
+  Bead acceptance still open pending the explicit adopt/second-primitive/reject recommendation +
+  the operator's product-direction steer.
 
 ## 7. Moat analysis: rip-cage vs microsandbox itself (2026-07-07, round 2)
 
@@ -359,6 +365,59 @@ layer on msb)**, entered with clear eyes that the moat is thin and the defensibl
 agent-workbench/substrate layer (ADR-027 projection + the composition manifest as *reviewable
 intent*), NOT the sandbox. The security engineering that this repo has invested most in is the part
 that should be retired. That is the no-sunk-cost read.
+
+## 8. herdr session smoke + migration-shape sketch (2026-07-07, round 2)
+
+### 8a. herdr full-session smoke under microsandbox — PASS (with one headless caveat)
+
+herdr 0.7.0 (baked in the image) drives correctly under msb using the **factory pattern**
+(socket-API, not interactive attach):
+
+- Server boots headless and **persists across `msb exec` sessions** once properly detached
+  (`setsid`+`nohup`+`script -qec` to give the TUI a PTY; a bare `&` dies when the exec returns).
+- `herdr --session <name> status server` → running; `pane list` → the pane exists (`w1:p1`).
+- `herdr --session <name> pane run w1:p1 "<cmd>"` **submits and executes** (shell ran the command);
+  `pane read w1:p1 --source visible` **returns the output** — the exact `pane run`/`pane read`
+  primitives dotpi-3bi's drover/herdr automation depends on.
+- **Gotcha 1 (socket path):** a `--session <name>` server puts its socket at
+  `~/.config/herdr/sessions/<name>/herdr.sock`, NOT the default `~/.config/herdr/herdr.sock`.
+  A plain `herdr status` checks the default and falsely reports "not running" — always
+  session-target status/pane calls.
+- **Gotcha 2 (headless pane width):** with no client attached, the pane defaults to a **~4-column**
+  width, so `pane read` returns output hard-wrapped every 4 chars (the sentinel was present but
+  looked like `NTIN`/`EL-4`/`2`). This is a herdr headless characteristic, **not an msb break** —
+  the spawner must set pane dimensions (attach a sized client, or provide size) rather than rely on
+  the default. Worth carrying into the migration: the factory's pane spawner sets dimensions
+  explicitly. `resize` is directional-only (client layout), not absolute cols/rows.
+- Not yet done: a real sized-client attach via `msb run -t` / `msb ssh` (interactive; blocks a
+  non-interactive shell) — confirm interactively before the factory port, but the socket-API path
+  (what the automation actually uses) is proven.
+
+### 8b. Migration-shape sketch: `rc` verbs on microsandbox
+
+The image and manifest stay the source of truth; `rc up` shrinks from "docker run + three root-exec
+init phases" to "generate msb flags + orchestrate substrate projection."
+
+| rc today | On microsandbox | Notes |
+|---|---|---|
+| `rc build` (tools.yaml→Dockerfile→image) | **Unchanged** + one-time `docker save \| msb load` (EROFS convert) | image *is* the manifest artifact; msb has no Sandboxfile yet (#970) |
+| `rc up`: `docker run --cap-add NET_ADMIN` | `msb run -d` (no NET_ADMIN, no privileged) | isolation is the VM boundary now |
+| `init-firewall.sh` (iptables REDIRECT, xt_owner) | **DELETE** → `--net-default deny` + `--net-rule allow@<host>:tcp:443` per `egress-rules.yaml` | host-side, un-bypassable |
+| `init-mediator.sh` + MEDIATOR archetype + `RIPCAGE_MEDIATOR_*` | **DELETE** → `--secret ENV@HOST` per manifest MEDIATOR entry (+ `--on-secret-violation block-and-terminate`) | host-side credential swap (§1b) |
+| `rip_cage_router.py` / `_egress.py` / `_dns.py` | **DELETE** → msb smoltcp host stack | msb owns SNI/DNS-pin |
+| mediator TLS-MITM + generated CA | `--tls-intercept` (+ `--tls-intercept-ca-*`) only if body/header rewrite needed | most `--secret` cases need only header injection |
+| `-v /workspace`, `~/.claude` binds (ADR-027 projection) | `-v host:guest` (+ `host-perms=mirror` for uid parity) | keep build output off the mount (§1c) |
+| `rc exec` / `rc attach` | `msb exec` / `msb exec -t` / `msb ssh` | TTY + SSH both host-side |
+| `rc down` | `msb rm` | |
+| `rc doctor` / `rc reload` | **Redesign** against msb CLI (`msb ls`, `msb image list`); reload has no docker-restart analog | msb sandboxes are more ephemeral |
+| DCG (PreToolUse hook) | **Unchanged** — baked in image, host-adoptable, substrate-agnostic | ADR-025 |
+| beads/memories/hooks (bd-wrapper, `bd prime`) | **Unchanged** — in-image | ADR-002 D10 |
+
+**The clean mapping insight:** the manifest's MEDIATOR entries map 1:1 to `msb run --secret ENV@HOST`
+bindings, and `egress-rules.yaml` maps 1:1 to `--net-rule allow@host` flags. So `rc` becomes an
+**msb-flag generator + substrate-projection orchestrator** — the composition manifest survives as the
+human-reviewable intent that compiles to msb flags instead of to init-scripts. That is precisely the
+"posture layer on a commodity runtime" shape (§7 option 1) expressed at the CLI level.
 
 ## Appendix: host-side gotchas hit during the spike (macOS 26.3)
 
