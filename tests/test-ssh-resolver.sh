@@ -77,7 +77,7 @@ _source_rc_functions() {
   # have no side effects. Docker calls happen only in cmd_* functions.
   # shellcheck source=../rc
   source "$RC" 2>/dev/null
-  set -e
+  set +e
 }
 
 _source_rc_functions

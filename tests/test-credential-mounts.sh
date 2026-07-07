@@ -458,7 +458,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   RC_ALLOWED_ROOTS="$TEST_WS" \
   "$RC" --dry-run up "$TEST_WS" >"${_cm7_tmperr}.out" 2>"${_cm7_tmperr}.err"
 _cm7_exit=$?
-set -e
+set +e
 _cm7_err=$(cat "${_cm7_tmperr}.err")
 rm -f "${_cm7_tmperr}.out" "${_cm7_tmperr}.err"
 
@@ -508,7 +508,7 @@ PATH="${_cm8_stub_dir}:$PATH" \
   _up_resolve_resume_credential_mounts 'rc-cm8-test' '$TEST_WS'
 " >/tmp/rc-cm8-out 2>/tmp/rc-cm8-err
 _cm8_exit=$?
-set -e
+set +e
 _cm8_err=$(cat /tmp/rc-cm8-err 2>/dev/null || true)
 rm -rf "${_cm8_stub_dir}" /tmp/rc-cm8-out /tmp/rc-cm8-err
 
@@ -555,7 +555,7 @@ PATH="${_cm9_stub_dir}:$PATH" \
   _up_resolve_resume_credential_mounts 'rc-cm9-test' '$TEST_WS'
 " >/tmp/rc-cm9-out 2>/tmp/rc-cm9-err
 _cm9_exit=$?
-set -e
+set +e
 rm -rf "${_cm9_stub_dir}" /tmp/rc-cm9-out /tmp/rc-cm9-err
 
 if [[ "$_cm9_exit" -eq 0 ]]; then
@@ -591,7 +591,7 @@ PATH="${_cm10_stub_dir}:$PATH" \
   _up_resolve_resume_credential_mounts 'rc-cm10-test' '$TEST_WS'
 " >/tmp/rc-cm10-out 2>/tmp/rc-cm10-err
 _cm10_exit=$?
-set -e
+set +e
 rm -rf "${_cm10_stub_dir}" /tmp/rc-cm10-out /tmp/rc-cm10-err
 
 if [[ "$_cm10_exit" -eq 0 ]]; then
@@ -663,7 +663,7 @@ _cm12_out=$(_cm12_helper_out "claude" "$_cm12_cfg3")
 if [[ "$_cm12_out" != "real" ]]; then
   _cm12_ok=false; _cm12_reason="${_cm12_reason:+$_cm12_reason; }absent auth key -> expected default 'real', got '$_cm12_out'"
 fi
-set -e
+set +e
 
 if [[ "$_cm12_ok" == "true" ]]; then
   pass 12 "resolver: per_tool.T override wins, unset inherits global, absent defaults to real"
@@ -794,7 +794,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   RC_ALLOWED_ROOTS="$TEST_WS" \
   "$RC" --dry-run up "$TEST_WS" >"${_cm16_tmperr}.out" 2>"${_cm16_tmperr}.err"
 _cm16_exit=$?
-set -e
+set +e
 _cm16_err=$(cat "${_cm16_tmperr}.err")
 rm -f "${_cm16_tmperr}.out" "${_cm16_tmperr}.err"
 
@@ -851,7 +851,7 @@ PATH="${_cm17_stub_dir}:$PATH" \
   _up_resolve_resume_credential_mounts 'rc-cm17-test' '$TEST_WS'
 " >/tmp/rc-cm17-out 2>/tmp/rc-cm17-err
 _cm17_exit=$?
-set -e
+set +e
 _cm17_err=$(cat /tmp/rc-cm17-err 2>/dev/null || true)
 rm -rf "${_cm17_stub_dir}" /tmp/rc-cm17-out /tmp/rc-cm17-err
 
@@ -906,7 +906,7 @@ PATH="${_cm18_stub_dir}:$PATH" \
   _up_resolve_resume_credential_mounts 'rc-cm18a-test' '$TEST_WS'
 " >/tmp/rc-cm18a-out 2>/tmp/rc-cm18a-err
 _cm18a_exit=$?
-set -e
+set +e
 rm -f /tmp/rc-cm18a-out /tmp/rc-cm18a-err
 teardown_sandbox
 
@@ -925,7 +925,7 @@ PATH="${_cm18_stub_dir}:$PATH" \
   _up_resolve_resume_credential_mounts 'rc-cm18b-test' '$TEST_WS'
 " >/tmp/rc-cm18b-out 2>/tmp/rc-cm18b-err
 _cm18b_exit=$?
-set -e
+set +e
 _cm18b_err=$(cat /tmp/rc-cm18b-err 2>/dev/null || true)
 rm -rf "${_cm18_stub_dir}" /tmp/rc-cm18b-out /tmp/rc-cm18b-err
 teardown_sandbox
@@ -981,7 +981,7 @@ PATH="${_cm19_stub_dir}:$PATH" \
   _up_resolve_resume_symlink_fingerprint 'rc-cm19-test' '$TEST_WS'
 " >/tmp/rc-cm19-out 2>/tmp/rc-cm19-err
 _cm19_exit=$?
-set -e
+set +e
 rm -rf "${_cm19_stub_dir}" /tmp/rc-cm19-out /tmp/rc-cm19-err
 teardown_sandbox
 
@@ -1026,7 +1026,7 @@ PATH="${_cm20_stub_dir}:$PATH" \
   _up_resolve_resume_symlink_fingerprint 'rc-cm20-test' '$TEST_WS'
 " >/tmp/rc-cm20-out 2>/tmp/rc-cm20-err
 _cm20_exit=$?
-set -e
+set +e
 _cm20_err=$(cat /tmp/rc-cm20-err 2>/dev/null || true)
 rm -rf "${_cm20_stub_dir}" /tmp/rc-cm20-out /tmp/rc-cm20-err
 teardown_sandbox
@@ -1084,7 +1084,7 @@ PATH="${_cm21_stub_dir}:$PATH" \
   _up_resolve_resume_symlink_fingerprint 'rc-cm21-test' '$TEST_WS'
 " >/tmp/rc-cm21-out 2>/tmp/rc-cm21-err
 _cm21_exit=$?
-set -e
+set +e
 rm -rf "${_cm21_stub_dir}" /tmp/rc-cm21-out /tmp/rc-cm21-err
 teardown_sandbox
 

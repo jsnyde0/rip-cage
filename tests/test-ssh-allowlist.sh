@@ -84,7 +84,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
   _filter_known_hosts '' '${TEST_HOME}/.ssh/known_hosts' '$_c1_out'
 " 2>/dev/null
 _c1_exit=$?
-set -e
+set +e
 
 if [[ -f "$_c1_out" && ! -s "$_c1_out" ]]; then
   pass 1 "no .rip-cage.yaml → filtered known_hosts is empty (bypass closed)"
@@ -109,7 +109,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
   source '$RC' 2>/dev/null
   _filter_known_hosts '' '${TEST_HOME}/.ssh/known_hosts' '$_c2_out'
 " 2>/dev/null
-set -e
+set +e
 
 if ! grep -q "switch.berlin" "$_c2_out" 2>/dev/null; then
   pass 2 "no .rip-cage.yaml → switch.berlin absent from filtered file"
@@ -165,7 +165,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
   source '$RC' 2>/dev/null
   _filter_known_hosts 'switch.berlin' '${TEST_HOME}/.ssh/known_hosts' '$_c4_out'
 " 2>/dev/null
-set -e
+set +e
 
 if grep -q "switch.berlin" "$_c4_out" 2>/dev/null; then
   pass 4 "allowed host switch.berlin present in filtered file"
@@ -187,7 +187,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
   source '$RC' 2>/dev/null
   _filter_known_hosts '*.internal.example.com' '${TEST_HOME}/.ssh/known_hosts' '$_c5_out'
 " 2>/dev/null
-set -e
+set +e
 
 _c5_ok=true _c5_reason=""
 if ! grep -q "foo.internal.example.com" "$_c5_out" 2>/dev/null; then
@@ -223,7 +223,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
   source '$RC' 2>/dev/null
   _filter_known_hosts 'switch.berlin' '${TEST_HOME}/.ssh/known_hosts' '$_c6_out'
 " 2>/dev/null
-set -e
+set +e
 
 _c6_ok=true _c6_reason=""
 if ! grep -q "switch.berlin" "$_c6_out" 2>/dev/null; then
@@ -258,7 +258,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
   source '$RC' 2>/dev/null
   _filter_known_hosts '*.example.com' '${TEST_HOME}/.ssh/known_hosts' '$_c7_out'
 " 2>"$_c7_stderr"
-set -e
+set +e
 
 _c7_warned=false
 grep -qi "ssh-keyscan\|hashed\|wildcard\|cannot match" "$_c7_stderr" 2>/dev/null && _c7_warned=true
@@ -371,7 +371,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
   _filter_known_hosts 'switch.berlin github.com' '${TEST_HOME}/.ssh/known_hosts' '$_c12_out2'
 " 2>/dev/null
 _c12_exit=$?
-set -e
+set +e
 
 if [[ -f "$_c12_out1" && -f "$_c12_out2" ]]; then
   if diff "$_c12_out1" "$_c12_out2" >/dev/null 2>/dev/null; then
@@ -397,7 +397,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
   _config_validate_or_abort '$TEST_WS'
 " 2>/dev/null
 _c13_exit=$?
-set -e
+set +e
 
 if [[ "$_c13_exit" -ne 0 ]]; then
   pass 13 "D3 version-drift abort: _config_validate_or_abort exits non-zero"
@@ -432,7 +432,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
   source '$RC' 2>/dev/null
   _translate_ssh_config '$_c14_cfg' '$_c14_out' ''
 " 2>/dev/null
-set -e
+set +e
 
 # The OLD rewrite would replace these with /etc/ssh/ssh_known_hosts + ADR-014 D2 annotation.
 # The NEW behavior passes them through unchanged — so /etc/ssh/ssh_known_hosts should NOT appear
@@ -487,7 +487,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
   _up_resolve_ssh_allowlists '$TEST_WS' '$CACHE_DIR'
 " 2>/dev/null
 _c15_exit=$?
-set -e
+set +e
 
 _c15_ok=true _c15_reason=""
 if [[ ! -f "${CACHE_DIR}/known_hosts" ]]; then
@@ -519,7 +519,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
   _up_resolve_ssh_allowlists '$TEST_WS' '$CACHE_DIR'
 " 2>/dev/null
 _c16_exit=$?
-set -e
+set +e
 
 _c16_ok=true _c16_reason=""
 if ! grep -q "switch.berlin" "${CACHE_DIR}/known_hosts" 2>/dev/null; then
@@ -548,7 +548,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
   _up_resolve_ssh_allowlists '$TEST_WS' '$CACHE_DIR'
 " 2>/dev/null
 _c17_exit=$?
-set -e
+set +e
 
 _c17_ok=true _c17_reason=""
 if [[ ! -f "${CACHE_DIR}/ssh-allowed-keys" ]]; then
@@ -586,7 +586,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
   _up_resolve_ssh_allowlists '$TEST_WS' '$CACHE_DIR'
 " 2>/dev/null
 _c18_exit=$?
-set -e
+set +e
 
 _c18_ok=true _c18_reason=""
 if [[ ! -f "${CACHE_DIR}/ssh-allowed-keys" ]]; then
@@ -655,7 +655,7 @@ PATH="${_c20_stub_dir}:$PATH" \
   _up_resolve_resume_ssh_key_filter 'rc-c20-test' '$TEST_WS'
 " >/tmp/rc-c20-out 2>/tmp/rc-c20-err
 _c20_exit=$?
-set -e
+set +e
 
 _c20_ok=true _c20_reason=""
 if [[ "$_c20_exit" -eq 0 ]]; then
@@ -698,7 +698,7 @@ PATH="${_c20b_stub_dir}:$PATH" \
   _up_resolve_resume_ssh_key_filter 'rc-c20b-test' '$TEST_WS'
 " >/tmp/rc-c20b-out 2>/tmp/rc-c20b-err
 _c20b_exit=$?
-set -e
+set +e
 
 _c20b_ok=true _c20b_reason=""
 if [[ "$_c20b_exit" -eq 0 ]]; then
@@ -738,7 +738,7 @@ PATH="${_c20c_stub_dir}:$PATH" \
   _up_resolve_resume_ssh_key_filter 'rc-c20c-test' '$TEST_WS'
 " >/tmp/rc-c20c-out 2>/tmp/rc-c20c-err
 _c20c_exit=$?
-set -e
+set +e
 
 rm -rf "${_c20c_stub_dir}" /tmp/rc-c20c-out /tmp/rc-c20c-err
 

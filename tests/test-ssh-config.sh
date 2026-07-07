@@ -137,7 +137,7 @@ _source_rc_functions() {
   set +e
   # shellcheck source=../rc
   source "$RC" 2>/dev/null
-  set -e
+  set +e
 }
 _source_rc_functions
 

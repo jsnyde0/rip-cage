@@ -230,7 +230,7 @@ write_rules_file "$RULES" "block"
 set +e
 output=$(run_with_shim "$RULES" 28 000 "" 2>&1)
 exit_code=$?
-set -e
+set +e
 if echo "$output" | grep -qiE "BYPASSED|fail.open|silent|x_tables"; then
   pass "MG5a: block mode + timeout => fail-loud message in log"
 else
@@ -250,7 +250,7 @@ write_rules_file "$RULES" "legacy"
 set +e
 output=$(run_with_shim "$RULES" 28 000 "" 2>&1)
 exit_code=$?
-set -e
+set +e
 if [[ $exit_code -ne 0 ]]; then
   pass "MG6: legacy mode + BYPASSED probe => exits non-zero"
 else

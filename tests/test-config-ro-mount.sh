@@ -87,7 +87,7 @@ _m1_args=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   printf '%s\n' \"\${_UP_RUN_ARGS[@]+\${_UP_RUN_ARGS[@]}}\"
 " 2>/dev/null)
 _m1_exit=$?
-set -e
+set +e
 
 _expected_shadow="${TEST_WS}/.rip-cage.yaml:/workspace/.rip-cage.yaml:ro"
 if echo "$_m1_args" | grep -qF "$_expected_shadow"; then
@@ -116,7 +116,7 @@ _m2_args=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   printf '%s\n' \"\${_UP_RUN_ARGS[@]+\${_UP_RUN_ARGS[@]}}\"
 " 2>/dev/null)
 _m2_exit=$?
-set -e
+set +e
 
 _expected_shadow="${TEST_WS}/.rip-cage.yaml:/workspace/.rip-cage.yaml:ro"
 if echo "$_m2_args" | grep -qF "$_expected_shadow"; then
@@ -145,7 +145,7 @@ _m3_args=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   printf '%s\n' \"\${_UP_RUN_ARGS[@]+\${_UP_RUN_ARGS[@]}}\"
 " 2>/dev/null)
 _m3_exit=$?
-set -e
+set +e
 
 _rw_shadow="${TEST_WS}/.rip-cage.yaml:/workspace/.rip-cage.yaml:ro"
 if echo "$_m3_args" | grep -qF "$_rw_shadow"; then
@@ -170,7 +170,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   RC_ALLOWED_ROOTS="$TEST_WS" \
   "$RC" --dry-run up "$TEST_WS" >"$_m4_tmpout" 2>"$_m4_tmperr"
 _m4_exit=$?
-set -e
+set +e
 _m4_out=$(cat "$_m4_tmpout")
 _m4_err=$(cat "$_m4_tmperr")
 rm -f "$_m4_tmpout" "$_m4_tmperr"
@@ -194,7 +194,7 @@ _m4_args=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   _up_prepare_docker_mounts '$TEST_WS' 'test-cage-m4' 2>/dev/null
   printf '%s\n' \"\${_UP_RUN_ARGS[@]+\${_UP_RUN_ARGS[@]}}\"
 " 2>/dev/null)
-set -e
+set +e
 
 _shadow_ro="${TEST_WS}/.rip-cage.yaml:/workspace/.rip-cage.yaml:ro"
 if echo "$_m4_args" | grep -qF "$_shadow_ro"; then
@@ -223,7 +223,7 @@ HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   RC_ALLOWED_ROOTS="$TEST_WS" \
   "$RC" --dry-run up "$TEST_WS" >"$_m5_tmperr.out" 2>"$_m5_tmperr.err"
 _m5_exit=$?
-set -e
+set +e
 _m5_err=$(cat "$_m5_tmperr.err")
 rm -f "$_m5_tmperr.out" "$_m5_tmperr.err"
 
@@ -274,7 +274,7 @@ PATH="${_m6_stub_dir}:$PATH" \
   _up_resolve_resume_config_mode 'rc-m6-test' '$TEST_WS'
 " >/tmp/rc-m6-out 2>/tmp/rc-m6-err
 _m6_exit=$?
-set -e
+set +e
 _m6_err=$(cat /tmp/rc-m6-err 2>/dev/null || true)
 rm -rf "${_m6_stub_dir}" /tmp/rc-m6-out /tmp/rc-m6-err
 
@@ -321,7 +321,7 @@ PATH="${_m7_stub_dir}:$PATH" \
   _up_resolve_resume_config_mode 'rc-m7-test' '$TEST_WS'
 " >/tmp/rc-m7-out 2>/tmp/rc-m7-err
 _m7_exit=$?
-set -e
+set +e
 rm -rf "${_m7_stub_dir}" /tmp/rc-m7-out /tmp/rc-m7-err
 
 if [[ "$_m7_exit" -eq 0 ]]; then
@@ -357,7 +357,7 @@ PATH="${_m8_stub_dir}:$PATH" \
   _up_resolve_resume_config_mode 'rc-m8-test' '$TEST_WS'
 " >/tmp/rc-m8-out 2>/tmp/rc-m8-err
 _m8_exit=$?
-set -e
+set +e
 rm -rf "${_m8_stub_dir}" /tmp/rc-m8-out /tmp/rc-m8-err
 
 if [[ "$_m8_exit" -eq 0 ]]; then
@@ -387,7 +387,7 @@ _m9_args=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   _up_prepare_docker_mounts '$TEST_WS' 'test-cage-m9' 2>/dev/null
   printf '%s\n' \"\${_UP_RUN_ARGS[@]+\${_UP_RUN_ARGS[@]}}\"
 " 2>/dev/null)
-set -e
+set +e
 
 _expected_shadow="${TEST_WS}/.rip-cage.yaml:/workspace/.rip-cage.yaml:ro"
 if echo "$_m9_args" | grep -qF "$_expected_shadow"; then
