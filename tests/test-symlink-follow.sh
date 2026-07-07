@@ -22,6 +22,10 @@
 #   S17  ADR-021 D5 invariant: both configs absent, no dangling symlinks vs
 #        with dangling symlinks → label set differs only in rc.symlink-follow-fingerprint
 #   S18  cage-claude.md negative invariant: bead B does NOT modify cage-claude.md
+#   S24  Reserved-path collision under on_dangling=skip → skipped, exit 0, warning
+#        (rip-cage-hcdn: on_dangling=skip actually unblocks a reserved-path symlink)
+#   S25  Broken symlink chain under on_dangling=skip → collector skips, exit 0,
+#        continues scan past the broken link (rip-cage-hcdn sibling fold)
 #
 # Tests S1-S15 are host-only (no Docker required).
 # Tests S16 uses the docker stub pattern from test-rc-reload.sh.
@@ -581,6 +585,82 @@ test_s14_fhs_reserved_collision() {
     fi
   else
     pass "14" "FHS reserved path collision test skipped (no /etc/hosts on this platform)"
+  fi
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# S24: Reserved-path collision under on_dangling=skip → skipped, exit 0, warning
+# (rip-cage-hcdn: on_dangling=skip actually skips a reserved-path-resolving
+# symlink instead of aborting — the error message at rc:1519 has always told
+# the user to set on_dangling=skip to unblock; this proves it now works.)
+# ---------------------------------------------------------------------------
+test_s24_reserved_collision_skip() {
+  setup_sandbox
+  if [[ -f /etc/hosts ]]; then
+    ln -sf /etc/hosts "${TEST_HOME}/.pi/agent/etc-link.md"
+
+    local ws="${TEST_HOME}/workspace"
+    mkdir -p "$ws"
+    cat > "${ws}/.rip-cage.yaml" <<'YAML'
+version: 1
+mounts:
+  symlinks:
+    on_dangling: skip
+    scope: file
+    mode: rw
+YAML
+
+    local out exit_code=0
+    out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
+      source '$RC'
+      _UP_RUN_ARGS=()
+      wt_detected=false
+      _up_prepare_docker_mounts '$ws' 'testcage'
+    " 2>&1) || exit_code=$?
+
+    if [[ "$exit_code" -eq 0 ]] && echo "$out" | grep -q "etc-link.md" \
+       && echo "$out" | grep -q "on_dangling=skip" \
+       && ! echo "$out" | grep -q "refuse to mount"; then
+      pass "24" "reserved-path collision under on_dangling=skip: skipped (mount never attempted), exit 0, warning logged"
+    else
+      fail "24" "reserved-path collision under on_dangling=skip" "exit=$exit_code out=$out"
+    fi
+  else
+    pass "24" "reserved-path collision under on_dangling=skip test skipped (no /etc/hosts on this platform)"
+  fi
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# S25: Broken symlink chain under on_dangling=skip → collector skips, exit 0
+# (rip-cage-hcdn sibling fold: _collect_dangling_symlinks honors on_dangling
+# so a broken-chain link is skipped WITHOUT truncating links found after it.)
+# ---------------------------------------------------------------------------
+test_s25_broken_chain_skip() {
+  setup_sandbox
+  # Broken symlink (nonexistent absolute target)
+  ln -sf "/nonexistent/absolute/path/file.md" "${TEST_HOME}/.pi/agent/broken.md"
+  # A second, VALID absolute symlink pointing outside root — proves skip
+  # continues past the broken link rather than truncating the scan.
+  local valid_target_dir="${TEST_HOME}/canonical"
+  mkdir -p "$valid_target_dir"
+  echo "content" > "${valid_target_dir}/valid.md"
+  ln -sf "${valid_target_dir}/valid.md" "${TEST_HOME}/.pi/agent/valid-link.md"
+  local norm_valid_target
+  norm_valid_target=$(readlink -f "${valid_target_dir}/valid.md" 2>/dev/null || echo "${valid_target_dir}/valid.md")
+
+  local out exit_code=0
+  out=$(HOME="$TEST_HOME" bash -c "source '$RC'; _collect_dangling_symlinks '${TEST_HOME}/.pi/agent' skip" 2>&1) || exit_code=$?
+
+  local has_warning has_valid_line
+  has_warning=$(echo "$out" | grep -c "broken symlink chain" || true)
+  has_valid_line=$(echo "$out" | grep -c "${norm_valid_target}" || true)
+
+  if [[ "$exit_code" -eq 0 && "$has_warning" -gt 0 && "$has_valid_line" -gt 0 ]]; then
+    pass "25" "_collect_dangling_symlinks on_dangling=skip: skips broken chain, continues scan (valid link still emitted), exit 0"
+  else
+    fail "25" "_collect_dangling_symlinks on_dangling=skip broken chain behavior" "exit=$exit_code has_warning=$has_warning has_valid_line=$has_valid_line out=$out"
   fi
   teardown_sandbox
 }
@@ -1193,6 +1273,8 @@ test_s20_denylist_blocks_aws_symlink_target
 test_s21_denylist_allows_non_matching_target
 test_s22_fingerprint_excludes_denylisted_targets
 test_s23_fingerprint_gate_is_silent
+test_s24_reserved_collision_skip
+test_s25_broken_chain_skip
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

@@ -994,11 +994,16 @@ _collect_symlink_parents() {
 #
 # Parameters:
 #   $1  root — the host directory to scan (e.g. ~/.pi/agent)
+#   $2  on_dangling — follow|skip|warn|error (default: follow). Only "skip"
+#       changes behaviour: a broken/unresolvable chain is skipped (warn +
+#       continue) instead of aborting, so the scan keeps emitting subsequent
+#       resolvable links (rip-cage-hcdn). All other values stay fail-loud.
 # Output: lines of "<absolute-link-path>|<readlink-f-resolved-target>"
 #         for each absolute symlink found under root.
-# Errors: exits non-zero (ADR-001 D1) when readlink -f fails.
+# Errors: returns non-zero (ADR-001 D1) when readlink -f fails, EXCEPT under
+#         on_dangling=skip where a broken chain is skipped rather than fatal.
 _collect_dangling_symlinks() {
-  local root="$1"
+  local root="$1" on_dangling="${2:-follow}"
   [[ -d "$root" ]] || return 0
   # Resolve root itself (handles macOS /var → /private/var etc.) for the
   # in-root comparison below. Use realpath if available, fall back to readlink -f.
@@ -1021,6 +1026,10 @@ _collect_dangling_symlinks() {
     # truly-broken chain (e.g. /nonexistent/absolute/path/file.md → "/nonexistent").
     # Guard on exit-nonzero OR empty output so this fires on both macOS and Linux.
     if ! target=$(readlink -f "$link" 2>/dev/null) || [[ -z "$target" ]]; then
+      if [[ "$on_dangling" == "skip" ]]; then
+        echo "Warning: symlink at '$link' could not be resolved (broken symlink chain); skipping (mounts.symlinks.on_dangling=skip)." >&2
+        continue
+      fi
       echo "Error: symlink at '$link' could not be resolved (broken symlink chain). Set mounts.symlinks.on_dangling=skip in .rip-cage.yaml to unblock." >&2
       return 1
     fi
@@ -1083,7 +1092,7 @@ _symlink_follow_fingerprint() {
         continue
       fi
       lines+="${link} → ${mount_src} (${mode})"$'\n'
-    done < <(_collect_dangling_symlinks "$pi_root" 2>/dev/null || true)
+    done < <(_collect_dangling_symlinks "$pi_root" "$on_dangling" 2>/dev/null || true)
   fi
   # Sort for stability, then hash
   printf '%s' "$lines" | sort | shasum -a 256 | awk '{print $1}'
@@ -1472,7 +1481,7 @@ _up_prepare_docker_mounts() {
     # (broken symlink chain) propagates correctly under set -e.  A process
     # substitution done < <(failing_cmd) silently swallows the failure; capturing
     # into a variable first lets the || branch abort the caller (ADR-001 D1).
-    _sfl_collected=$(_collect_dangling_symlinks "$_sfl_root") || {
+    _sfl_collected=$(_collect_dangling_symlinks "$_sfl_root" "$_sfl_on_dangling") || {
       # Error message already printed by _collect_dangling_symlinks.
       exit 1
     }
@@ -1516,6 +1525,10 @@ _up_prepare_docker_mounts() {
         fi
       done
       if [[ "$_sfl_reserved" -eq 1 ]]; then
+        if [[ "$_sfl_on_dangling" == "skip" ]]; then
+          echo "[rip-cage] Warning: symlink at '${_sfl_link}' resolves to reserved cage path '${_sfl_target}'; skipping mount (mounts.symlinks.on_dangling=skip)." >&2
+          continue
+        fi
         echo "[rip-cage] Error: symlink at '${_sfl_link}' resolves to reserved cage path '${_sfl_target}'; refuse to mount. Remove the symlink or set mounts.symlinks.on_dangling=skip to unblock." >&2
         exit 1
       fi
