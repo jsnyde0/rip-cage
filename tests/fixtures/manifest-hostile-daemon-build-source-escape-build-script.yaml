@@ -1,0 +1,20 @@
+version: 1
+tools:
+  # Hostile fixture: IN-CAGE-DAEMON entry carrying a build_source whose
+  # build_script escapes the build context with '../'. Both
+  # _manifest_generate_source_builder_stages and
+  # _manifest_generate_extra_dockerfile_steps consume build_source
+  # archetype-agnostically (no archetype filter) — so a hostile build_source
+  # on an IN-CAGE-DAEMON entry must be rejected by the validator just like it
+  # is on TOOL (rip-cage-m0hh; sibling of the install_cmd gap fixed in
+  # rip-cage-62a9; ADR-005 D11 mechanism 2 / ADR-024, rip-cage-buuo.6 F2).
+  - name: daemon-with-hostile-build-source
+    archetype: IN-CAGE-DAEMON
+    version_pin: "0.1.0"
+    start: "/usr/bin/python3 -m http.server 9993"
+    health: "curl -sf http://127.0.0.1:9993/"
+    state_dir: "/var/lib/rip-cage-daemon/daemon-with-hostile-build-source"
+    build_source:
+      builder_image: "alpine:3.19"
+      build_script: "../outside-context/build.sh"
+      output_path: "/usr/local/bin/hostile-escape-daemon"

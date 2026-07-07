@@ -364,6 +364,33 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
+# T1e6 — Strict-parse rejects a hostile build_source on SHELL-INTEGRATION.
+# _manifest_generate_extra_dockerfile_steps and
+# _manifest_generate_source_builder_stages consume build_source with NO
+# archetype filter — a SHELL-INTEGRATION entry carrying build_source gets a
+# builder stage + COPY --from step, so the same build_source sub-field guard
+# that protects TOOL must hold here (fail-closed validator gap, rip-cage-m0hh
+# / sibling of rip-cage-62a9 / ADR-005 D11 mechanism 2).
+# ---------------------------------------------------------------------------
+test_t1e6_strict_parse_rejects_hostile_build_source_shell_integration() {
+  setup_manifest_sandbox "manifest-hostile-shell-integration-build-source-newline-builder-image.yaml"
+  local stderr_file exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    bash -c "source '${RC}'; _manifest_validate '${TEST_HOME}/.config/rip-cage/tools.yaml'" \
+    2>"$stderr_file" || exit_code=$?
+
+  if [[ "$exit_code" -ne 0 ]] && grep -qi "builder_image" "$stderr_file"; then
+    pass "T1e6 Strict-parse rejects hostile build_source (newline in builder_image) on SHELL-INTEGRATION: exits non-zero and names builder_image"
+  else
+    fail "T1e6 expected non-zero exit + 'builder_image' in error. exit=${exit_code} stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # T1f — _manifest_build_dockerfile_path incorporates shell_init steps
 # When both TOOL and SHELL-INTEGRATION entries exist, the generated temp
 # Dockerfile contains both the install RUN step AND the .zshrc append step.
@@ -545,6 +572,7 @@ test_t1e2_single_quote_in_shell_init_produces_valid_run_step
 test_t1e3_validator_rejects_multiline_shell_init
 test_t1e4_validator_rejects_multiline_install_cmd_shell_integration
 test_t1e5_single_line_install_cmd_shell_integration_accepted_and_baked
+test_t1e6_strict_parse_rejects_hostile_build_source_shell_integration
 test_t1f_build_dockerfile_path_includes_shell_init
 
 echo ""

