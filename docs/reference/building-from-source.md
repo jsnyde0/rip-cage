@@ -42,7 +42,7 @@ The flow, in order (functions named for cross-reference into `rc`):
    RUN sh /rc-build/build.sh
    ```
 
-   The stage name is derived from the entry name (lowercased, non-alphanumerics collapsed to hyphens: `rc-builder-my-tool`). The script is `COPY`'d from the build context — never bind-mounted from the host.
+   The stage name is derived from the entry name (lowercased, non-alphanumerics collapsed to hyphens, trailing hyphen stripped: `rc-builder-my-tool`). The script is `COPY`'d from the build context — never bind-mounted from the host.
 3. **Runtime copy** (`_manifest_generate_extra_dockerfile_steps`) — the runtime stage gets only the artifact: `COPY --from=rc-builder-<name> <output_path> /usr/local/bin/<basename of output_path>`. The toolchain, source tree, and build cache stay in the discarded builder layer (the beads/DCG multi-stage pattern, ADR-002).
 4. **Pre-build gate** (`_manifest_check_build_isolation`) — static scan of the generated Dockerfile's `rc-builder-*` stages for host-access vectors (host bind mounts, ssh/secret mounts, `VOLUME`). A violation **refuses the build** before `docker build` runs.
 5. **`docker build`** runs the stage. Note the stage targets the *build platform* — no `--platform`/`--target` hardcode — so arm64 and amd64 hosts each produce a native binary (arch-adaptive by construction).

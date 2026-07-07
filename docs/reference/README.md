@@ -302,7 +302,7 @@ tools:
 
 ### 10. Fail-closed manifest validator (the contract on all of the above)
 
-**What it is for:** the enforcement arm of "adding a tool can never become weakening the cage" ([ADR-005 D11](../decisions/ADR-005-ecosystem-tools.md) mechanism 2, **FIRM** — not skippable, wired into every build path). Every entry composed through seams 1–9 is bounded by it: strict-parse field validation, hook-bounds (no floor-weakening hook commands), IOC egress floor, secret-path mount denylist + dest allowlist, builder-stage isolation scan, and post-build root-owned assertions on binaries and declared mount assets. A violation fails the build with a named error.
+**What it is for:** the enforcement arm of "adding a tool can never become weakening the cage" ([ADR-005 D11](../decisions/ADR-005-ecosystem-tools.md) mechanism 2, **FIRM** — not skippable, wired into every build path). Every *manifest entry* composed through seams 1–9 is bounded by it (seam 2's `.rip-cage.yaml` `config_mode` half is project-config validation, outside this validator; its `mounts:`-entry half is covered): strict-parse field validation, hook-bounds (no floor-weakening hook commands), IOC egress floor, secret-path mount denylist + dest allowlist, builder-stage isolation scan, and post-build root-owned assertions on binaries and declared mount assets. A violation fails the build with a named error.
 
 **Manifest/config shape:** none — it is not composed, it bounds composition. Author entries to satisfy it.
 

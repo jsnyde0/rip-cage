@@ -17,7 +17,7 @@ The pipeline, in firing order:
 | 5. Binary root-owned | `_manifest_check_binary_root_owned` | **after** `docker build` (stats the built image) |
 | 6. Mount-asset root-owned | `_manifest_check_mount_root_owned` | after `docker build` (same gate as 5) |
 
-In `rc build --json`, phase-4 failures surface as error code `MANIFEST_BUILD_ISOLATION_VIOLATED` and phase-5/6 failures as `MANIFEST_BINARY_NOT_ROOT_OWNED`.
+In `rc build --json`, phase-2 failures surface as error code `MANIFEST_IOC_EGRESS_DENIED`, phase-4 failures as `MANIFEST_BUILD_ISOLATION_VIOLATED`, and phase-5/6 failures as `MANIFEST_BINARY_NOT_ROOT_OWNED`. The `rc up`-side re-checks emit `MANIFEST_IOC_EGRESS_DENIED` (phase 2) and `MANIFEST_MOUNT_DENYLIST_DENIED` (phase 3) under `--json`.
 
 ---
 
@@ -124,7 +124,7 @@ Isomorphic to MULTIPLEXER, for the egress-mediator seam (ADR-026 D5; [compositio
 | `run_as_uid` missing | `required field 'run_as_uid' is missing (… dedicated non-root uid for loop prevention; ADR-026 D5)` |
 | `hooks` missing / not object; `hooks.start` missing | as MULTIPLEXER |
 | unknown hook key | `only start/health_check/teardown are allowed` |
-| hook-bounds patterns 1–4 | as below |
+| hook-bounds patterns 1–5 | as below |
 | hook sets `RIP_CAGE_EGRESS=` | `disables the egress enforcement stack … floor-weakening egress kill-switch` |
 | hook references `iptables`/`ip6tables`/`nft` | `can disable the force-through REDIRECT rule … floor-weakening firewall manipulation` |
 
