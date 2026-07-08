@@ -1,0 +1,1 @@
+Notice: <GM_ROOT>/home/.config/rip-cage/tools.yaml has no seed-fingerprint stamp (composed before this rc version, or hand-authored) — its freshness vs the shipped dist/default-tools.yaml defaults is unknown. Run 'rc manifest reconcile' to adopt tracking (preserves your custom entries).

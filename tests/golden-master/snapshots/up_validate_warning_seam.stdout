@@ -1,0 +1,1 @@
+{"name":"rc-golden-master-root-workspace","action":"would_attach","source_path":"<GM_ROOT>/workspace","name_disambiguated":false,"warning":"RC_ALLOWED_ROOTS unset — allowing <GM_ROOT>/workspace only.","dry_run":true,"git_hooks_ro":false}

@@ -1,0 +1,2 @@
+Warning: RC_ALLOWED_ROOTS unset — allowing <GM_ROOT>/workspace only.
+Set RC_ALLOWED_ROOTS in ~/.config/rip-cage/rc.conf for permanent access.

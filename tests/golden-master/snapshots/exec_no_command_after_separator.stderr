@@ -1,0 +1,1 @@
+Error: 'rc exec' requires a command after '--'. Usage: rc exec <cage> -- <cmd...>

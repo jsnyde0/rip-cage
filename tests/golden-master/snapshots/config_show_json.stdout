@@ -1,0 +1,77 @@
+{
+  "config": {
+    "version": 1,
+    "ssh": {
+      "allowed_keys": null,
+      "allowed_hosts": []
+    },
+    "mounts": {
+      "denylist": [],
+      "allow_risky": null,
+      "config_mode": "ro",
+      "symlinks": {
+        "on_dangling": "follow",
+        "scope": "file",
+        "mode": "rw"
+      }
+    },
+    "network": {
+      "allowed_hosts": [],
+      "mode": null,
+      "dns": {
+        "forward_to": null
+      },
+      "http": {
+        "forward_to": null
+      },
+      "egress": {
+        "mediator": "none",
+        "mediator_env_file": null
+      }
+    },
+    "dcg": {
+      "packs": [],
+      "custom_rule_paths": []
+    },
+    "session": {
+      "multiplexer": "none"
+    },
+    "auth": {
+      "credential_mounts": "real",
+      "placeholder_env_file": null,
+      "per_tool": {
+        "claude": null,
+        "pi": null
+      }
+    }
+  },
+  "provenance": {
+    "version": "global",
+    "ssh.allowed_keys": "default",
+    "ssh.allowed_hosts": "default",
+    "mounts.denylist": "global",
+    "mounts.allow_risky": "default",
+    "mounts.config_mode": "default",
+    "mounts.symlinks.on_dangling": "default",
+    "mounts.symlinks.scope": "default",
+    "mounts.symlinks.mode": "default",
+    "network.allowed_hosts": "default",
+    "network.mode": "default",
+    "network.dns.forward_to": "default",
+    "network.http.forward_to": "default",
+    "dcg.packs": "default",
+    "dcg.custom_rule_paths": "default",
+    "session.multiplexer": "default",
+    "network.egress.mediator": "default",
+    "auth.credential_mounts": "default",
+    "network.egress.mediator_env_file": "default",
+    "auth.placeholder_env_file": "default",
+    "auth.per_tool.claude": "default",
+    "auth.per_tool.pi": "default"
+  },
+  "layers": {
+    "global": "<GM_ROOT>/home/.config/rip-cage/config.yaml",
+    "project": null
+  },
+  "sha256": "086f6b5f427b49064b42b020d4a66fd638faba609774768b09bf11e4c914c43c"
+}

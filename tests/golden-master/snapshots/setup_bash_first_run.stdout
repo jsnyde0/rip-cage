@@ -1,0 +1,15 @@
+
+rc setup — shell integration
+
+  Shell detected: bash
+  Config file:    <GM_ROOT>/home/.bashrc
+
+  This will add the following line to <GM_ROOT>/home/.bashrc:
+
+    eval "$(rc completions bash)"
+
+  This enables:
+    - Tab completion for rc commands (build, up, down, ls, ...)
+    - Tab completion for container names (rc down <TAB>)
+
+  Add shell completions to <GM_ROOT>/home/.bashrc? [y/N] 

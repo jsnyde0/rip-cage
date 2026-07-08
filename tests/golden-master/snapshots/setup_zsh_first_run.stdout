@@ -1,0 +1,15 @@
+
+rc setup — shell integration
+
+  Shell detected: zsh
+  Config file:    <GM_ROOT>/home/.zprofile
+
+  This will add the following line to <GM_ROOT>/home/.zprofile:
+
+    eval "$(rc completions zsh)"
+
+  This enables:
+    - Tab completion for rc commands (build, up, down, ls, ...)
+    - Tab completion for container names (rc down <TAB>)
+
+  Add shell completions to <GM_ROOT>/home/.zprofile? [y/N] 

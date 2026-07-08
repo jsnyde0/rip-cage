@@ -1,0 +1,2 @@
+On Linux, update ~/.claude/.credentials.json directly.
+Running containers will see the change immediately via bind mount.

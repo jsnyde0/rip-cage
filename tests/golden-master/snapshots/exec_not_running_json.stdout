@@ -1,0 +1,1 @@
+{"error":"Container some-cage is not running. Start it with: rc up","code":"CONTAINER_NOT_RUNNING"}

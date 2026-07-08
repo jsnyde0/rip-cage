@@ -1,0 +1,1 @@
+{"error":"Container rc-golden-master-root-workspace is being removed. Wait, then run: rc up <GM_ROOT>/workspace","code":"CONTAINER_STATE_UNSUPPORTED"}

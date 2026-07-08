@@ -1,0 +1,1 @@
+Error: --output json is not supported for 'setup' (use 'rc config show --json' for config JSON)

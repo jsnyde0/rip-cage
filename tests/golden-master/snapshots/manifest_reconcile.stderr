@@ -1,0 +1,5 @@
+rc manifest reconcile: updated <GM_ROOT>/home/.config/rip-cage/tools.yaml from default-tools.yaml.
+  Backup of the previous manifest: <GM_ROOT>/home/.config/rip-cage/tools.yaml.bak-<TS>
+  Note: comments are not preserved by this merge (yq/jq round-trip) — the backup retains the original file with comments intact.
+  Added (new in dist): beads, dolt, gh, claude, pi, claude-recipe, pi-recipe, dcg, dcg-wiring, ssh-bypass-hook
+  Preserved (custom entries, not in dist): my-custom-tool

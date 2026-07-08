@@ -1,0 +1,6 @@
+Would create container rc-golden-master-root-workspace for <GM_ROOT>/workspace
+Would mount <GM_ROOT>/workspace -> /workspace
+Would mount ~/.claude/projects -> /home/agent/.claude/projects (sessions persist to host, rip-cage-dn2)
+Would mount ~/.claude/sessions -> /home/agent/.claude/sessions
+Would set RC_HOST_PROJECT_KEY=<GM_ROOT_SLUG>-workspace (unifies -workspace sessions with host project key)
+Would run init script

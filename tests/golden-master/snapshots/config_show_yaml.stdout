@@ -1,0 +1,42 @@
+# Effective rip-cage config (rc config show)
+# Layers loaded:
+#   global  = <GM_ROOT>/home/.config/rip-cage/config.yaml
+#   project = (absent)
+#
+version: 1               # from global
+ssh:
+  allowed_keys: null               # from default
+  allowed_hosts: []                 # from default
+mounts:
+  denylist: []                 # from global
+  allow_risky: null               # from default
+  config_mode: ro               # from default
+  symlinks:
+    on_dangling: follow               # from default
+    scope: file               # from default
+    mode: rw               # from default
+network:
+  allowed_hosts: []                 # from default
+  mode: null               # from default
+  dns:
+    forward_to: null               # from default
+  http:
+    forward_to: null               # from default
+dcg:
+  packs: []                 # from default
+  custom_rule_paths: []                 # from default
+session:
+  multiplexer: none               # from default
+network:
+  egress:
+    mediator: none               # from default
+auth:
+  credential_mounts: real               # from default
+network:
+  egress:
+    mediator_env_file: null               # from default
+auth:
+  placeholder_env_file: null               # from default
+  per_tool:
+    claude: null               # from default
+    pi: null               # from default

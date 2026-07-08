@@ -1,0 +1,1 @@
+Error: unexpected argument 'extra-arg' before '--' separator. Usage: rc exec <cage> -- <cmd...>

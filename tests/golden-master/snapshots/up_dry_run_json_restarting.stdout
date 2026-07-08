@@ -1,0 +1,1 @@
+{"error":"Container rc-golden-master-root-workspace is restarting. Wait, or run: docker stop rc-golden-master-root-workspace && rc up <GM_ROOT>/workspace","code":"CONTAINER_STATE_UNSUPPORTED"}

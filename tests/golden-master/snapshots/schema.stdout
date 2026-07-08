@@ -1,0 +1,98 @@
+{
+  "version": "1",
+  "commands": {
+    "up": {
+      "args": [{"name": "path", "type": "path", "required": true}],
+      "flags": {
+        "--output": {"values": ["json"], "default": null},
+        "--dry-run": {"type": "bool", "default": false},
+        "--env-file": {"type": "path", "optional": true},
+        "--port": {"type": "string", "optional": true},
+        "--cpus": {"type": "string", "default": "2"},
+        "--memory": {"type": "string", "default": "4g"},
+        "--pids-limit": {"type": "string", "default": "500"},
+        "--no-forward-ssh": {"type": "bool", "default": false, "note": "disable host ssh-agent forwarding (ADR-017)"}
+      }
+    },
+    "down": {
+      "args": [{"name": "name", "type": "string", "required": false, "note": "auto-selected if exactly one container exists"}],
+      "flags": {"--output": {"values": ["json"], "default": null}}
+    },
+    "destroy": {
+      "args": [{"name": "name", "type": "string", "required": false}],
+      "flags": {
+        "--output": {"values": ["json"], "default": null},
+        "--dry-run": {"type": "bool", "default": false},
+        "--force": {"type": "bool", "default": false, "aliases": ["-f"], "note": "skip confirmation prompt"}
+      }
+    },
+    "reload": {
+      "args": [{"name": "name", "type": "string", "required": false, "note": "auto-selected via CWD or singleton"}],
+      "flags": {
+        "--dry-run": {"type": "bool", "default": false, "note": "print diff without mutating cache/snapshot"}
+      }
+    },
+    "ls": {
+      "args": [],
+      "flags": {"--output": {"values": ["json"], "default": null}}
+    },
+    "test": {
+      "args": [{"name": "name", "type": "string", "required": false}],
+      "flags": {"--output": {"values": ["json"], "default": null}}
+    },
+    "doctor": {
+      "args": [{"name": "name", "type": "string", "required": false, "note": "auto-selected via CWD convention or singleton"}],
+      "flags": {"--output": {"values": ["json"], "default": null}}
+    },
+    "attach": {
+      "args": [{"name": "name", "type": "string", "required": false}],
+      "flags": {}
+    },
+    "exec": {
+      "args": [{"name": "cage", "type": "string", "required": false, "note": "auto-selected if exactly one container exists"}],
+      "flags": {
+        "--output": {"values": ["json"], "default": null}
+      },
+      "variadic_trailing": {"separator": "--", "note": "command to run verbatim inside the container (word boundaries preserved)"}
+    },
+    "build": {
+      "args": [],
+      "flags": {"--output": {"values": ["json"], "default": null}}
+    },
+    "auth": {
+      "subcommands": {
+        "refresh": {
+          "args": [],
+          "flags": {"--output": {"values": ["json"], "default": null}}
+        }
+      }
+    },
+    "config": {
+      "subcommands": {
+        "show": {
+          "args": [{"name": "path", "type": "string", "required": false}],
+          "flags": {"--json": {"type": "bool", "default": false}}
+        },
+        "get": {
+          "args": [
+            {"name": "key", "type": "string", "required": true},
+            {"name": "path", "type": "string", "required": false}
+          ],
+          "flags": {"--json": {"type": "bool", "default": false}}
+        }
+      }
+    },
+    "schema": {
+      "args": [],
+      "flags": {}
+    },
+    "completions": {
+      "args": [{"name": "shell", "type": "string", "required": true, "values": ["zsh", "bash"]}],
+      "flags": {}
+    },
+    "setup": {
+      "args": [],
+      "flags": {}
+    }
+  }
+}

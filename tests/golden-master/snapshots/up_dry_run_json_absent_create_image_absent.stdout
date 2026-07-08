@@ -1,0 +1,1 @@
+{"dry_run":true,"would_pull":true,"would_build_on_fail":true,"image":"ghcr.io/jsnyde0/rip-cage:0.12.1","action":"would_pull_and_create"}

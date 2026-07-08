@@ -1,0 +1,69 @@
+#compdef rc
+
+_rc() {
+  local curcontext="$curcontext" state line
+  typeset -A opt_args
+
+  local -a subcommands
+  subcommands=(
+    'build:Build the rip-cage image'
+    'up:Start or resume a container'
+    'ls:List rip-cage containers'
+    'attach:Attach to container (multiplexer-aware)'
+    'exec:Run a one-off command in the container'
+    'down:Stop a container'
+    'destroy:Remove container and volumes'
+    'reload:Hot-reload .rip-cage.yaml allowlist changes'
+    'test:Run safety stack smoke test'
+    'doctor:Per-container diagnostic — labels + live probes'
+    'auth:Auth subcommands (refresh)'
+    'config:Inspect effective .rip-cage.yaml config'
+    'schema:Print machine-readable command schema'
+    'completions:Print shell completion script'
+    'setup:Interactive shell integration setup'
+  )
+
+  _arguments -C \
+    '1: :->subcmd' \
+    '*: :->args'
+
+  case $state in
+    subcmd)
+      _describe 'subcommand' subcommands
+      ;;
+    args)
+      case $line[1] in
+        attach|exec|down|test|reload)
+          local -a containers
+          containers=($(docker ps --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null))
+          _describe 'container' containers
+          ;;
+        destroy|doctor)
+          local -a containers
+          containers=($(docker ps -a --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null))
+          _describe 'container' containers
+          ;;
+        up)
+          _files -/
+          ;;
+        auth)
+          local -a auth_subcmds
+          auth_subcmds=('refresh:Refresh credentials from host keychain')
+          _describe 'auth subcommand' auth_subcmds
+          ;;
+        config)
+          local -a config_subcmds
+          config_subcmds=('show:Print effective merged config (add --json for machine output)')
+          _describe 'config subcommand' config_subcmds
+          ;;
+        completions)
+          local -a shells
+          shells=('zsh:Zsh completion script' 'bash:Bash completion script')
+          _describe 'shell' shells
+          ;;
+      esac
+      ;;
+  esac
+}
+
+_rc

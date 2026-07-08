@@ -278,6 +278,24 @@ run_test "${SCRIPT_DIR}/test-multiplexer-agent-e2e.sh" # rip-cage-w621.7: pi age
 run_test "${SCRIPT_DIR}/test-ssh-config.sh"            # rip-cage-b0a: SSH config translation checks incl. ADR-022 D4 inverse assertion (host-side; no container needed)
 run_test "${SCRIPT_DIR}/test-allowed-roots-bypass.sh"  # rip-cage-36j: RC_ALLOWED_ROOTS bypass regression net (symlink/redirect cases)
 
+# rip-cage-9oyh: rc behavior-preservation golden-master harness (baseline
+# captured at HEAD) + §3/§4 seam and gap-fill tests. All container-free
+# (content-keyed fake-docker PATH shim under tests/golden-master/lib/fake-bin;
+# see docs/2026-07-08-rc-decomposition-harness.md rev.2). The two-directional
+# scrub self-check (tests/golden-master/self-check.sh) is intentionally NOT
+# wired here — it's a meta-check of the harness's own scrub soundness, run
+# on-demand when cases.sh/scrub.sh change, not a per-commit regression gate.
+run_test "${SCRIPT_DIR}/golden-master/capture.sh"       # §1/§2: byte-identity check of the recorded baseline (--check, the default)
+run_test "${SCRIPT_DIR}/test-up-run-args-full-chain.sh" # §3(i) CRITICAL gate, helper-level: full create-path _UP_RUN_ARGS replica
+run_test "${SCRIPT_DIR}/test-up-run-args-e2e.sh"        # §3(i) CRITICAL gate, e2e: real cmd_up through the content-keyed docker shim
+run_test "${SCRIPT_DIR}/test-up-validate-warning-seam.sh" # §3(iii): RC_VALIDATE_WARNING write (validate_path) -> read (_up_json_output) seam
+run_test "${SCRIPT_DIR}/test-reload-exit-trap-seam.sh"  # §3(vi): cmd_reload's EXIT-trap lock_dir cleanup (golden-master-invisible filesystem effect)
+run_test "${SCRIPT_DIR}/test-generate-dockerfile.sh"    # §4 gap-fill: rc generate-dockerfile (bundled + from-source structural assertions)
+run_test "${SCRIPT_DIR}/test-rc-setup.sh"               # §4 gap-fill: rc setup idempotency (zsh/bash, relaxed eval-line match)
+run_test "${SCRIPT_DIR}/test-manifest-reconcile-verb.sh" # §4 gap-fill: rc manifest reconcile backup-before-overwrite + validation-abort
+run_test "${SCRIPT_DIR}/test-rc-install.sh"             # §4 gap-fill: rc install idempotency + --yes/--force/no-TTY matrix
+run_test "${SCRIPT_DIR}/test-attach-exec-errors.sh"     # §4 gap-fill: attach/exec error-path matrix
+
 # rip-cage-b6ia: previously-dark test files, audited 2026-06-09 and wired.
 # Host-tier (run on every invocation):
 run_test "${SCRIPT_DIR}/test-ssh-preflight.sh"        # ADR-020 identity-preflight cache (cold/warm/mismatch/TTL/JSON shape)

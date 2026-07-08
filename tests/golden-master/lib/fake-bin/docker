@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# Content-keyed fake `docker` for the golden-master harness (rip-cage-9oyh).
+#
+# CONTENT-KEYED, NOT POSITIONAL (harness spec §3(i) rev.2): every branch below
+# dispatches on WHAT is being inspected/run (the literal --format string, or
+# the subcommand), never on "this is the Nth docker call". Two prior review
+# rounds each mis-stated the exact rc create-path docker call sequence, which
+# is the tell that a positional-replay shim is the wrong shape — this shim is
+# robust to any call being added, removed, or reordered by the upcoming
+# decomposition, as long as the CONTENT of each call is unchanged.
+#
+# Configured entirely via env vars (read fresh on every invocation, so a
+# single shim file serves every capture.sh case + the §3(i)/§3(vi) seam
+# tests):
+#   GM_DOCKER_IMAGE_PRESENT   "true"|"false" (default "true") — bare
+#                             `docker image inspect $IMAGE` outcome.
+#   GM_DOCKER_IMAGE_VERSION   value returned when a `--format` asks for the
+#                             image's org.opencontainers.image.version label
+#                             (default: unset -> empty, i.e. stale/absent).
+#   GM_DOCKER_STATE           "running"|"exited"|"created"|"paused"|
+#                             "restarting"|"removing"|"dead"|"absent"
+#                             (default "absent") — container existence/state.
+#   GM_DOCKER_LABEL_SOURCE_PATH   value for the rc.source.path label.
+#   GM_DOCKER_LABEL_EGRESS        value for the rc.egress label.
+#   GM_DOCKER_LABEL_FWD_SSH       value for the rc.forward-ssh label.
+#   GM_DOCKER_LABEL_EGRESS_MODE   value for the rc.egress.mode label.
+#   GM_DOCKER_LABEL_EGRESS_OVERRIDE value for the rc.egress.config-override label.
+#   GM_DOCKER_LABEL_GH_IDENTITY   value for the rc.github-identity label.
+#   GM_DOCKER_STARTED_AT      value for .State.StartedAt (default empty).
+#   GM_DOCKER_RUN_CAPTURE     file path — `docker run` appends "$@" here
+#                             (one arg per line, blank line as separator),
+#                             then exits 1 (§3(i): forces deterministic
+#                             termination before any live-container code).
+#   GM_DOCKER_RUN_EXIT        override the `docker run` exit code (default 1).
+#
+# Any invocation this shim does not recognize fails LOUD (nonzero exit +
+# stderr naming the unhandled argv) rather than silently succeeding — a
+# silently-successful unknown call is exactly the failure mode that would
+# mask a real regression during the upcoming decomposition.
+set -u
+
+_fmt_value() {
+  # Extract the value following a literal --format token, if present.
+  local prev=""
+  for a in "$@"; do
+    if [[ "$prev" == "--format" ]]; then
+      printf '%s' "$a"
+      return 0
+    fi
+    prev="$a"
+  done
+  return 1
+}
+
+case "${1:-}" in
+  info)
+    # check_docker / doctor --host daemon-liveness preflight.
+    exit "${GM_DOCKER_INFO_EXIT:-0}"
+    ;;
+
+  image)
+    if [[ "${2:-}" == "inspect" ]]; then
+      shift 2
+      if [[ "${GM_DOCKER_IMAGE_PRESENT:-true}" != "true" ]]; then
+        exit 1
+      fi
+      if fmt=$(_fmt_value "$@"); then
+        case "$fmt" in
+          *version*)
+            printf '%s\n' "${GM_DOCKER_IMAGE_VERSION:-}"
+            ;;
+          *)
+            printf '\n'
+            ;;
+        esac
+      fi
+      exit 0
+    fi
+    echo "fake-docker: unhandled 'image' invocation: $*" >&2
+    exit 1
+    ;;
+
+  inspect)
+    shift
+    if [[ "${GM_DOCKER_STATE:-absent}" == "absent" ]]; then
+      echo "Error: No such object" >&2
+      exit 1
+    fi
+    if fmt=$(_fmt_value "$@"); then
+      case "$fmt" in
+        *State.Status*)   printf '%s\n' "${GM_DOCKER_STATE:-}" ;;
+        *State.StartedAt*) printf '%s\n' "${GM_DOCKER_STARTED_AT:-}" ;;
+        *rc.source.path*) printf '%s\n' "${GM_DOCKER_LABEL_SOURCE_PATH:-}" ;;
+        *rc.egress.mode*) printf '%s\n' "${GM_DOCKER_LABEL_EGRESS_MODE:-}" ;;
+        *rc.egress.config-override*) printf '%s\n' "${GM_DOCKER_LABEL_EGRESS_OVERRIDE:-}" ;;
+        *rc.egress*)      printf '%s\n' "${GM_DOCKER_LABEL_EGRESS:-}" ;;
+        *rc.forward-ssh*) printf '%s\n' "${GM_DOCKER_LABEL_FWD_SSH:-}" ;;
+        *rc.github-identity*) printf '%s\n' "${GM_DOCKER_LABEL_GH_IDENTITY:-}" ;;
+        *Mounts*)         printf '\n' ;;
+        *)                printf '\n' ;;
+      esac
+    fi
+    # Bare `docker inspect NAME` (existence check, no --format): succeed.
+    exit 0
+    ;;
+
+  ps)
+    # `rc ls` — fixed (empty) table: deterministic, zero-row output is a
+    # valid fixed table (determinism plan §2 "Ordering" row).
+    exit 0
+    ;;
+
+  run)
+    shift
+    if [[ -n "${GM_DOCKER_RUN_CAPTURE:-}" ]]; then
+      printf '%s\n' "$@" >> "$GM_DOCKER_RUN_CAPTURE"
+    fi
+    exit "${GM_DOCKER_RUN_EXIT:-1}"
+    ;;
+
+  start|stop|exec|rm|volume|build)
+    exit 0
+    ;;
+
+  *)
+    echo "fake-docker: unhandled invocation: $*" >&2
+    exit 1
+    ;;
+esac

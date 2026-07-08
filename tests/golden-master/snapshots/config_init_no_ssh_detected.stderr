@@ -1,0 +1,2 @@
+rc config init: no SSH remotes or matching identity files detected.
+                Nothing to lock down — skipping (no .rip-cage.yaml written).

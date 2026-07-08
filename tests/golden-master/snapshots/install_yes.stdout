@@ -1,0 +1,24 @@
+Proposed <GM_ROOT>/home/.config/rip-cage/config.yaml:
+----
+version: 1
+mounts:
+  denylist:
+    - .ssh
+    - .gnupg
+    - .gpg
+    - .aws
+    - .azure
+    - .gcloud
+    - .kube
+    - .docker
+    - credentials
+    - .netrc
+    - .npmrc
+    - .pypirc
+    - id_rsa
+    - id_ed25519
+    - private_key
+    - .secret
+  allow_risky: null
+----
+Wrote <GM_ROOT>/home/.config/rip-cage/config.yaml

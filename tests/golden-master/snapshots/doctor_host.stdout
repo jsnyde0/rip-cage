@@ -1,0 +1,5 @@
+Scope:        host (daemon liveness)
+Docker path:  <REPO_ROOT>/tests/golden-master/lib/fake-bin/docker
+Daemon:       OK — daemon reachable within 3s
+yq:           OK — <YQ_PATH>/yq
+Global config: OK — <GM_ROOT>/home/.config/rip-cage/config.yaml

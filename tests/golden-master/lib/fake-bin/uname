@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Fake `uname` pinned to a non-macOS report — golden-master determinism
+# (rip-cage-9oyh §2, generalizing the rip-cage-5fsy lesson in .claude/harness.md:
+# stub the platform PROBE, not just the functional dependency, so a
+# uname-gated branch runs identically on any host — macOS dev box or Linux
+# CI). Every capture.sh case runs with this shim on PATH so the recorded
+# baseline never depends on which OS recorded it.
+case "${1:-}" in
+  -s|"") echo "Linux" ;;
+  -r) echo "0-golden-master" ;;
+  -m) echo "x86_64" ;;
+  *) echo "Linux" ;;
+esac
