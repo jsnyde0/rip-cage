@@ -6,129 +6,128 @@ But many of us do it anyway. If that's you, at least put your Claude in a cage.
 
 Rip cage wraps your project in a Docker container with a safety stack that intercepts every shell command. It won't make agents safe — but it limits the blast radius.
 
-## Quick start
+Two things set it apart from a generic dev container:
 
-**Prerequisites:** Docker (or OrbStack on macOS) and Claude Code authenticated on your host.
+- **It's your workflow, caged — not a new environment to learn.** `rc up .` and your real repo (a live bind-mount), your credentials, your skills, agents, memories, and beads are all just *there*. Nothing to migrate, changes sync instantly.
+- **It's composable, not bundled.** Rip cage welds a containment floor and blesses nothing above it. Every agent, guard, multiplexer, and egress mediator is a reviewable recipe you compose into the image — so you build exactly the cage you want, and every layer is auditable YAML before it's baked.
 
-For `git push` from inside the cage (ADR-017), your host `ssh-agent` is forwarded by default:
-- **Linux / WSL2**: just have `ssh-agent` running with your keys loaded (the usual `ssh-add ~/.ssh/id_ed25519`).
-- **macOS**: add `UseKeychain yes` and `AddKeysToAgent yes` to `~/.ssh/config`, then run `ssh-add --apple-use-keychain ~/.ssh/id_ed25519` once. Your keys are now reachable via the macOS system agent that OrbStack/Docker Desktop proxies into containers.
-- Don't want forwarding? Pass `--no-forward-ssh` to `rc up` and push from the host.
+## Install
 
-`rc up` warns loudly if the forwarded agent is empty or unreachable — the warning is also surfaced in every new shell banner and in `rc ls`.
-
-**Install (recommended):**
 ```bash
 brew install jsnyde0/rip-cage/rip-cage
 ```
 
-This pulls in `jq`, drops `rc` on your PATH, and installs zsh/bash completions automatically. macOS and Linux (via Linuxbrew/WSL2).
+This drops `rc` on your PATH, pulls in `jq` + `yq`, and installs zsh/bash completions. Works on macOS and Linux (Linuxbrew / WSL2).
 
-**From source:**
+**Prerequisite:** Docker (or OrbStack on macOS), with Claude Code authenticated on your host.
+
+<details>
+<summary>From source instead</summary>
+
 ```bash
 git clone https://github.com/jsnyde0/rip-cage.git
-cd rip-cage && make install      # symlinks rc to ~/.local/bin/rc
-rc setup                         # optional: enable shell completions
+cd rip-cage && make install   # symlinks rc to ~/.local/bin/rc
+rc setup                      # optional: shell completions
 ```
+</details>
 
-**Use:**
+## First run
+
 ```bash
 cd ~/projects/my-app
 rc up .
 ```
 
-That's it. On first run, `rc` prompts for allowed directories and pulls the pre-built image from GHCR (~30s, with local-build fallback if GHCR is unreachable). You're in a caged shell — run `claude` and let it rip.
+That's it. On first run `rc` asks which directories cages may touch, then pulls the pre-built image from GHCR (~30s, with a local-build fallback). You land in a caged shell — run `claude` (or `pi`) and let it rip.
 
-New to rip cage? The [Getting Started guide](docs/guides/getting-started.md) walks through a first run on a throwaway project, what `rc up` actually does, and the handful of commands you'll use day to day.
+New here? The [Getting Started guide](docs/guides/getting-started.md) walks a first run end to end.
 
-## What does the cage do?
+> **Pushing from inside the cage?** Your host `ssh-agent` is forwarded by default (ADR-017), so `git push` just works — on macOS you load your key into the system agent once. Details and the `--no-forward-ssh` opt-out are in [SSH routing](docs/reference/ssh-routing.md).
 
-The cage runs your agent behind independent layers. The base image provides the containment floor (container boundary, egress firewall, filesystem sandbox, non-root user, secret-path denylist, `.git/hooks` RO weld, ssh known_hosts mount). Command-guard recipes compose on top of that floor.
+## Compose your cage
 
-**DCG (Destructive Command Guard)** — a composable recipe (`examples/dcg/`) that blocks dangerous commands:
-```
-$ rm -rf /          → DENIED by DCG
-$ dd if=/dev/zero   → DENIED by DCG
-```
-DCG and the ssh-bypass blocker are **default-on composable recipes** in the published image, but are not baked into the base image (ADR-025 D2, ADR-026 D2). A custom minimal cage omitting those recipes relies on the containment floor alone.
+Rip cage is a **composable seam, not a bundler**: the `rc` binary welds the containment floor and defines the composition interfaces — and blesses no specific tool (ADR-005 D12). Everything above the floor — the agents themselves (Claude Code, pi), command guards, multiplexers, egress mediators, plain tools, in-cage daemons — is a **recipe you compose in**.
 
-**bypassPermissions with hooks** — Claude Code runs with bypassPermissions enabled. When the DCG and ssh-bypass recipes are composed, their PreToolUse hooks fire on every command. DCG uses unanchored whole-command regex matching, so chaining (`&&`, `;`, `||`) does not bypass it. Writing to `.git/hooks/*` is hard-denied by the base image deny rules regardless of which recipes are composed.
+A cage is defined by a **manifest** (`tools.yaml`) listing what gets baked into the image at `rc build`. Adding a Postgres CLI, a mediator, or a locked-down guard is a manifest entry — never an `rc` source edit. The recipes live in [`examples/`](examples/README.md), each a copy-pasteable fragment; the composition surface — plain tools, guards, multiplexers, mediators, daemons — is documented as a small set of seams in the [reference + seam catalog](docs/reference/README.md).
 
-**Network egress firewall** — the cage watches every outbound connection. New cages start in **observe mode**: nothing is blocked, but the agent's traffic is logged. When you're ready to lock things down, one command promotes everything the agent actually talked to into an allowlist and flips the cage to **block mode** — so it can still reach the APIs it needs and nothing else:
+**The simplest way to compose is to ask your agent.** Since composition *is* the agent's job here, the [`configure-cage`](.claude/skills/configure-cage/SKILL.md) skill (ships in this repo) does it for you: it reads the maintained reference manifest, then hand-writes the tools, guards, mediators, and posture you want into a **reviewable `~/.config/rip-cage/tools.yaml`** — which you inspect like a diff before you ever run `rc build`.
+
+> "Set up a rip-cage cage with a Postgres CLI and my credentials kept out of it."
+
+Config layers so you set host-wide defaults once and override per project:
+
+| Layer | File | Governs |
+|---|---|---|
+| **Image manifest** | `~/.config/rip-cage/tools.yaml` | which tools, guards, multiplexers, and mediators get baked in at `rc build` |
+| **Global posture** | `~/.config/rip-cage/config.yaml` + `rc.conf` | host-wide guardrails: mount denylist, which host paths `rc up` may target |
+| **Per-project** | `<repo>/.rip-cage.yaml` | per-workspace runtime posture: egress mode + allowlist, SSH hosts, multiplexer |
+
+Global and project configs merge on every `rc up` (lists union, project can expand but never contract the floor — ADR-021). `rc config show` prints the merged result with the source of each field. Full details in [layered config](docs/reference/config.md).
+
+## The safety model
+
+Rip cage is honest about what a container can and can't hold: **layers, not walls.** No single layer is a hard boundary against a motivated attacker — together they limit the blast radius of an agent that goes wrong, including one following instructions injected via a fetched web page, README, or MCP output (ADR-024). A determined *adversarial* agent is explicitly out of scope.
+
+**Containment floor — always on.** Welded into the base image, never composable away: the container boundary, an egress firewall (every outbound connection forced through a chokepoint with an IOC + DNS-exfil denylist), a filesystem sandbox, a non-root user with scoped sudo, a secret-path mount denylist, and a read-only weld over `.git/hooks`.
+
+**Command guards — default-on, composable recipes.** The published image ships two guards on top of the floor (ADR-025, ADR-026):
+
+- **DCG (Destructive Command Guard)** blocks dangerous commands — `rm -rf /`, `dd if=/dev/zero` → `DENIED`. It matches the whole command unanchored, so chaining with `&&`, `;`, or `||` doesn't slip past it. Ships **open** by default (agents still auto-load their own extensions; the guard loads first and always denies) — a locked posture closes that residual at the cost of auto-loading.
+- **ssh-bypass blocker** stops the agent from routing around the guards over SSH.
+
+Omit them for a minimal cage and containment still holds — you just lose the accident guardrails.
+
+**Egress: observe → block.** New cages start in **observe mode** — nothing blocked, everything logged. When you're ready, one command promotes what the agent actually used into an allowlist and flips to **block mode**:
 
 ```bash
-rc allowlist show --observed        # see where the agent connected in observe mode
+rc allowlist show --observed         # where did the agent connect?
 rc allowlist promote --from-observed # allow those hosts + switch to block mode
 ```
 
-For the full safety stack, see [docs/reference/safety-stack.md](docs/reference/safety-stack.md). For the egress model in detail — observe vs. block, DNS exfil detection, the baseline allowlist — see [docs/reference/egress.md](docs/reference/egress.md).
+**Credential non-possession — opt-in.** By default a cage mounts your real credentials, so a prompt-injected agent could exfiltrate them. Instead you can run the agent on a **placeholder** while a composed **mediator** (e.g. iron-proxy) injects the real secret on egress — the agent never holds it, proven end-to-end for Claude Code on the Anthropic subscription. Ask the `configure-cage` skill for it, or see the [iron-proxy recipe](examples/compose-rc-with-iron-proxy.md).
 
-## The worktree workflow
+The split is deliberate: containment is low-drift and welded; content and credential policy is high-drift, so it's delegated to a composed mediator rather than baked in — "customs, not the postal service" (ADR-026). The full stack lives in [safety-stack.md](docs/reference/safety-stack.md) and [egress.md](docs/reference/egress.md).
 
-Once you're hooked, git worktrees let you run multiple caged agents in parallel from a single VS Code window:
+## Everyday commands
+
+| Command | What it does |
+|---|---|
+| `rc up [path]` | Start or resume a cage (default: `.`) |
+| `rc ls` | List cages |
+| `rc attach [name]` | Attach to a running cage |
+| `rc exec <cage> -- <cmd>` | Run a one-off command in a cage |
+| `rc down [name]` / `rc destroy [name]` | Stop / remove a cage |
+| `rc doctor [name]` | Diagnose a cage (or `--host` for daemon liveness) |
+| `rc config show [path]` / `rc config get <key>` | Inspect merged config |
+| `rc allowlist show \| promote` | Manage egress allowlist |
+| `rc reload [name]` | Hot-reload `.rip-cage.yaml` allowlist changes |
+| `rc auth refresh` | Refresh credentials from the host keychain |
+
+Every command, flag, and JSON output: [CLI reference](docs/reference/cli-reference.md).
+
+## Run agents in parallel
+
+Git worktrees let you run multiple caged agents at once, each in its own container:
 
 ```bash
 git worktree add ../worktrees/feature-auth
-rc up ../worktrees/feature-auth
-
-# Meanwhile, you stay on main, managing things.
-# File changes sync instantly — it's a bind mount, no git push needed.
+rc up ../worktrees/feature-auth   # meanwhile you stay on main
 ```
 
-Spin up as many as you want. Each agent is sandboxed in its own container.
+File changes sync instantly — it's a bind mount, no git push needed. Spin up as many as you want. For more than one agent inside a *single* cage, see [running multiple agents](docs/reference/cli-reference.md#running-multiple-agents).
 
-For running more than one agent inside a *single* cage (or a note on what happens when you `rc up` the same path from a second terminal), see [Running multiple agents](docs/reference/cli-reference.md#running-multiple-agents).
+## Going further
 
-## Who is this for?
+- **[Recipe catalog](examples/README.md)** — every composable fragment: tools, guards, multiplexers, mediators, launch composition
+- **[Reference + seam catalog](docs/reference/README.md)** — the composition seams and every reference doc
+- **[Walk-away / headless cages](examples/compose-walk-away-cage.md)** — unattended agent runs
+- **[Mediators](docs/reference/composition-seam.md)** — credential injection & content policy: [iron-proxy](examples/compose-rc-with-iron-proxy.md), [mitmproxy](examples/compose-rc-with-mitmproxy.md)
+- **[Multi-account rotation](docs/guides/multi-account-rotation.md)** — spread rate limits across Claude accounts
+- **[Auth](docs/reference/auth.md)** — OAuth, Keychain, API-key fallback, pi's Codex/Anthropic/Gemini providers
 
-Rip cage is **your existing Claude Code workflow, caged** — not a new environment to learn.
+**pi is a first-class citizen** alongside Claude Code in the same image — same DCG enforcement, container isolation, and egress firewall. With a ChatGPT Plus/Pro subscription, pi's Codex OAuth runs OpenAI Codex in the cage with no API key. See [Auth → Pi](docs/reference/auth.md#pi-auth).
 
-`rc up` from any worktree or project folder and everything your agent already uses comes with it:
-
-- Your credentials (OAuth via Keychain, or API key fallback)
-- Your skills (`~/.claude/skills`) and agents (`~/.claude/agents`)
-- Your project's `CLAUDE.md`, hooks, and `.claude/settings.json`
-- Your beads database, git identity, and git worktrees
-- Your Claude Code settings, merged with rip-cage's safety layer
-
-If you're already invested in Claude Code and want to run it with `bypassPermissions` without nuking your machine, rip cage cages your workflow and adds a safety stack. If you're looking for a batteries-included dev environment with pre-built language profiles and a fancy shell, tools like [ClaudeBox](https://github.com/RchGrav/claudebox) may fit better.
-
-Pi (`@mariozechner/pi-coding-agent`) is also supported in the same image alongside Claude Code. If you have a ChatGPT Plus/Pro subscription, pi's Codex OAuth flow lets you run OpenAI Codex from inside the cage without an API key. Pi also supports Anthropic, Gemini, Groq, Cerebras, and more. See [Auth → Pi auth](docs/reference/auth.md#pi-auth) for setup and TOS notes.
-
-> **Note:** When the DCG recipe is composed, pi cages get the same DCG destructive-command enforcement as Claude Code cages (via the baked `dcg-gate.ts` extension that calls the recipe-provisioned `dcg` binary) plus container isolation and the egress firewall. See [Pi safety model](docs/reference/auth.md#pi-safety-model).
-
-## Configuration & recipes
-
-Rip cage reads layered config, so you set host-wide defaults once and override per project:
-
-- `~/.config/rip-cage/config.yaml` — global defaults (egress, SSH allowlist, mount denylist, DCG packs, multiplexer)
-- `~/.config/rip-cage/tools.yaml` — the global **tool manifest**: optional tools and egress mediators the cage installs
-- `<project>/.rip-cage.yaml` — per-project overrides, layered over the global defaults (lists merge additively; single selections override)
-
-`rc config show` prints the merged result with the source of each field. Full details in [docs/reference/config.md](docs/reference/config.md).
-
-**Composing an egress mediator** (L7 credential injection or content policy) is a manifest entry, not a source change — rip cage stays tool-agnostic. Worked recipes for two proven providers:
-
-- [mitmproxy](examples/compose-rc-with-mitmproxy.md) — credential injection via a Python addon
-- [iron-proxy](examples/compose-rc-with-iron-proxy.md) — out-of-the-box transparent proxy with placeholder-secret injection
-
-See [docs/reference/composition-seam.md](docs/reference/composition-seam.md) for the seam these plug into.
-
-## More info
-
-**Reference:**
-- [Reference docs index + composable seams catalog](docs/reference/README.md) — all six seams (TOOL manifest, per-asset ro/rw mounts, extension composition, multiplexer/mediator providers, guard recipes, launch composition) with manifest shapes and worked-example links; full index of every reference doc
-- [CLI reference](docs/reference/cli-reference.md) — all commands, flags, JSON output
-- [Auth](docs/reference/auth.md) — OAuth, Keychain, API key fallback
-- [SSH identity routing](docs/reference/ssh-routing.md) — `--github-identity`, rules file, banner states
-- [Layered config (`.rip-cage.yaml`)](docs/reference/config.md) — global + per-project posture, `rc config show`
-- [Network egress](docs/reference/egress.md) — observe vs. block mode, `rc allowlist`, DNS exfil detection
-- [Safety stack](docs/reference/safety-stack.md) — hook config, allowlists, denied commands
-- [What's in the box](docs/reference/whats-in-the-box.md) — tools, Dockerfile layers
-
-**Guides:**
-- [Getting started](docs/guides/getting-started.md) — your first caged session, end to end
-- [Multi-account rotation](docs/guides/multi-account-rotation.md) — spread rate limits across Claude accounts
+Looking for a batteries-included dev environment with pre-built language profiles instead? Tools like [ClaudeBox](https://github.com/RchGrav/claudebox) may fit better — rip cage cages the workflow you already have.
 
 ## Contributing
 
