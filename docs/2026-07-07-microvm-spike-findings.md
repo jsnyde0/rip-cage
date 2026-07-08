@@ -419,6 +419,83 @@ bindings, and `egress-rules.yaml` maps 1:1 to `--net-rule allow@host` flags. So 
 human-reviewable intent that compiles to msb flags instead of to init-scripts. That is precisely the
 "posture layer on a commodity runtime" shape (§7 option 1) expressed at the CLI level.
 
+## 9. Interesting-entrant deep dives — SmolVM / cocoon / Morph (2026-07-08)
+
+Three fresh-context source-grounded evaluations, each scored on the same 11 fields against the msb
+baseline (does it run on macOS / OCI-boot / virtiofs / **host-side egress allowlist** /
+**credential non-possession** / boot+overhead / TTY-exec / snapshot-fork / maturity / integration
+burden). **All three reinforce staying on msb; none is a viable substrate.**
+
+- **SmolVM** (CelestoAI, ~3mo old, YC W26) — **NO-GO.** macOS defaults to **QEMU, not HVF/libkrun**
+  (~4–7× slower boot than msb), and on that QEMU/macOS path its `allowed_domains` egress control is a
+  **documented no-op** (SLIRP user-mode net bypasses host firewalls — their own docs say so). Even on
+  Linux/Firecracker the allowlist is IP-based with **no DNS-pinning and no SNI check** (the exact gaps
+  msb closes). Credentials are the **structural opposite of non-possession** — injected plaintext and
+  persisted into the guest disk (`/etc/profile.d/…`), incl. live Keychain extraction. No unmodified-OCI
+  boot (builds an ext4 rootfs). Bus factor worse than msb (~90% one contributor). *Worth noting:* it
+  ships turnkey **claude/codex/pi presets** and snapshot/resume — ergonomics msb lacks, but orthogonal
+  to the security requirements driving this.
+- **cocoon** (cocoonstack, ~4.5mo old, CH-based) — **NO-GO as primary; marginal as a Linux tier.**
+  **Linux/KVM-only, confirmed at source** (`lifecycle_darwin.go` stubs every net op to "not supported
+  on darwin") — zero macOS path, disqualifying for a local-first Mac tool. **No egress allowlist and no
+  credential injection at all** (plain CNI/TAP — same 100%-build-it-yourself burden as raw Cloud
+  Hypervisor). Its one genuine edge over msb is **snapshot/clone maturity** (content-addressed snapshot
+  registry "Epoch", real CH upstream patches) — but clone has a documented **post-fork IP-conflict
+  race** that directly threatens the isolated-fork-per-cage property you'd want it for. Solo maintainer
+  (468/472 commits). Re-look only if a Linux-fleet snapshot tier is ever needed.
+- **Morph / Infinibranch** (Morph Labs, $57.5M raised) — **DISQUALIFIED as substrate, but steal the
+  idea.** **Cloud-only SaaS, no self-host, closed proprietary stack** (custom "MorphVM"/"MorphFS", not
+  confirmed Firecracker), no unmodified-OCI boot (nested-docker only), no egress/credential
+  agent-safety model — fails local-first outright. **BUT** its differentiator — *fork a running VM
+  with full state (incl. DB) in <250ms*, "git for compute" (`clone()`/`merge_selective()` verbs) — is
+  a genuinely compelling agent-workflow primitive (branch a cage, try two approaches, keep the winner).
+  It is **not a hypervisor trick unique to Morph**: msb/libkrun already advertise snapshot/fork/restore
+  (WIP, #250; also cf. `forkd` doing 100-child fork in ~100ms on KVM). **Steal the fork UX; deliver it
+  locally on msb — no Morph dependency.**
+
+**Cross-cutting signal (matters for the substrate decision AND the other thread):** every young entrant
+is pre-1.0 and effectively single-maintainer — msb's 2 maintainers is *above* median for this field,
+and its libkrun core is separately governed (the real de-risk). More strategically: the recurring gap
+across the *entire* field is exactly rip-cage's two hardest needs — a **host-side, un-bypassable egress
+allowlist (DNS-pinned + SNI-checked)** and **credential non-possession**. **msb is the only surveyed
+runtime that ships both host-side.** Two ideas worth carrying regardless of substrate: Morph's
+**fork-a-running-cage** UX (deliverable via msb snapshot/fork once matured) and cocoon's
+**content-addressed snapshot/golden-image registry** model.
+
+## 10. Original-problem spike: `docker compose up` inside a msb cage (2026-07-08)
+
+The investigation started because a caged agent couldn't run a Postgres+pgvector docker-compose test
+suite under shared-kernel OrbStack. **The capability that was impossible before is PROVEN under msb** —
+with two operational sharp edges to design around.
+
+**Proven end-to-end:** a msb cage runs a real docker daemon (`docker:dind`, Docker **29.6.1**, cgroup
+v2, kernel 6.12.91); `docker pull` works (nested egress to Docker Hub); `docker compose up -d` creates
+the network and container; the **Postgres 16.14 + pgvector** service initializes, listens on 5432, and
+runs healthy checkpoints — served for 17 minutes. So the own-kernel-per-cage thesis dissolves the
+in-cage-services blocker: **DinD + compose + a real DB service work in a cage.**
+
+**Sharp edge 1 — DinD needs block-backed storage, not msb's virtiofs volumes.** docker's default
+`overlay2` can't write whiteout files onto virtiofs/overlayfs (`failed to convert whiteout file …
+operation not permitted`), and **msb `--mount-named` volumes are virtiofs-backed** (not virtio-blk
+ext4). Workaround used for the spike: `dockerd --storage-driver=vfs`. **Production fix:** overlay2 on a
+real block device via `--mount-disk <ext4-image>:/var/lib/docker`.
+
+**Sharp edge 2 — vfs I/O latency is severe and blocks query round-trips.** Under `vfs`, a Postgres
+checkpoint took **4.2s to write 44 buffers** (normally ms); `docker exec` and psql query backends
+touching catalogs on vfs never returned in practical time. **This is a vfs artifact, not a msb gap** —
+`msb exec` itself is instant and the container serves fine; the fix is the same block-backed overlay2.
+The one unproven step (a clean `CREATE EXTENSION vector` + vector-distance query round-trip) is blocked
+solely by this storage choice.
+
+**Boot detail:** msb runs `/init.krun` as PID1 and does NOT auto-run the image entrypoint — hand off to
+the daemon with `--init /usr/local/bin/dockerd-entrypoint.sh --init-arg dockerd`. A bare backgrounded
+`dockerd &` dies when `msb exec` returns (same reaping as the herdr smoke, §8a).
+
+**Design implication for rip-cage-on-msb:** cages that need DinD/compose must **compose a block-backed
+docker-data volume** (an explicit manifest concern — a tool/volume that materializes an ext4 disk image
+for `/var/lib/docker`), not rely on the virtiofs default. **Next validation:** redo with overlay2 on an
+ext4 `--mount-disk` image to get the clean query round-trip.
+
 ## Appendix: host-side gotchas hit during the spike (macOS 26.3)
 
 - **Docker-signed `sbx` binary froze forever pre-main** (syspolicyd launched-suspended,
