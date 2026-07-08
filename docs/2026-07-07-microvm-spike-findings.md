@@ -480,21 +480,62 @@ operation not permitted`), and **msb `--mount-named` volumes are virtiofs-backed
 ext4). Workaround used for the spike: `dockerd --storage-driver=vfs`. **Production fix:** overlay2 on a
 real block device via `--mount-disk <ext4-image>:/var/lib/docker`.
 
-**Sharp edge 2 — vfs I/O latency is severe and blocks query round-trips.** Under `vfs`, a Postgres
-checkpoint took **4.2s to write 44 buffers** (normally ms); `docker exec` and psql query backends
-touching catalogs on vfs never returned in practical time. **This is a vfs artifact, not a msb gap** —
-`msb exec` itself is instant and the container serves fine; the fix is the same block-backed overlay2.
-The one unproven step (a clean `CREATE EXTENSION vector` + vector-distance query round-trip) is blocked
-solely by this storage choice.
+**Sharp edge 2 — vfs I/O latency is severe** (a real but separate issue). Under `vfs`, a Postgres
+checkpoint took **4.2s to write 44 buffers** (normally ms). Not a msb gap (`msb exec` is instant); just
+a reason not to use vfs. **RESOLVED by §10b** below — block-backed storage removes the need for vfs.
 
 **Boot detail:** msb runs `/init.krun` as PID1 and does NOT auto-run the image entrypoint — hand off to
 the daemon with `--init /usr/local/bin/dockerd-entrypoint.sh --init-arg dockerd`. A bare backgrounded
 `dockerd &` dies when `msb exec` returns (same reaping as the herdr smoke, §8a).
 
-**Design implication for rip-cage-on-msb:** cages that need DinD/compose must **compose a block-backed
-docker-data volume** (an explicit manifest concern — a tool/volume that materializes an ext4 disk image
-for `/var/lib/docker`), not rely on the virtiofs default. **Next validation:** redo with overlay2 on an
-ext4 `--mount-disk` image to get the clean query round-trip.
+### 10b. Block-backed rerun — FULLY GREEN, end-to-end (2026-07-08)
+
+Redid the spike with a **disk-kind** msb volume (informed by superradcompany's own `skills` repo — see
+§11) and it closes cleanly. Two corrections to the round-1 read:
+
+- **The storage fix is a disk-kind named volume, not `--mount-disk`.** `msb volume create <n> --kind
+  disk --size 12G` makes a **raw ext4 virtio-blk** volume; mount it with
+  `--mount-named <n>:/var/lib/docker:kind=disk,size=12G` (the `kind=disk,size=` in the *mount spec* is
+  required, or msb tries a `dir`/virtiofs mount and conflicts). Result: docker's default **`overlayfs`
+  driver on `/dev/vdc` ext4** — no whiteout failure, no vfs. `docker compose up` is fast.
+- **The query round-trip hang was NOT storage — it was psql SSL negotiation.** psql's default
+  `sslmode=prefer` stalls on the SSL handshake through the nested-docker network; **`PGSSLMODE=disable`
+  returns instantly.** (Round-1's "vfs blocks queries" was a partial misread: vfs *was* slow, but the
+  actual infinite hang was SSL. `docker exec` into the container also hangs — a nested-exec TTY/stream
+  issue — so connect over TCP from the cage instead.)
+
+**Proof (Postgres 16.14 + pgvector 0.8.4, via `docker compose up` in the cage, queried over TCP with
+`PGSSLMODE=disable`):** plain write cycle `CREATE TABLE / INSERT 0 1 / SELECT → 42` (exit 0);
+`CREATE EXTENSION vector` → success; and real vector ops returned correct math —
+`'[1,2,3]' <-> '[4,5,6]'` = **5.196** (√27), `'[1,0,0]' <=> '[0,1,0]'` = **1** (orthogonal cosine),
+`'[1,2,3]' <#> '[1,2,3]'` = **-14** (neg inner product). **The original DB-backed-test-suite blocker
+that started this whole investigation is fully dissolved.**
+
+**Design implication for rip-cage-on-msb:** a cage needing DinD/compose composes a **disk-kind
+docker-data volume** for `/var/lib/docker` (an explicit manifest concern), and in-cage DB clients should
+connect over TCP with SSL disabled (or postgres configured for SSL). Both are small, known knobs — not
+capability gaps.
+
+## 11. superradcompany's `skills` repo — a ready-made msb operating manual (2026-07-08)
+
+`github.com/superradcompany/skills` (msb's own parent company) ships a `microsandbox/SKILL.md` — an
+agent-facing operating manual for driving msb: security model, full CLI quick-reference, and
+volume/snapshot/networking/ssh recipes, plus Rust/TS/Python/Go SDK references. **Directly useful for
+rip-cage-on-msb**, on two levels:
+
+- **Operationally:** it documents exactly the recipes this spike rediscovered the hard way — the
+  disk-kind dind volume (`--mount-named docker-data:/var/lib/docker:kind=disk,size=20G docker:dind`,
+  verbatim line 210) and the `--secret "KEY=$KEY@host"` non-possession pattern. Worth cloning as a
+  reference and having `configure-cage` (or its msb successor) lean on it instead of re-deriving.
+- **Strategically (for the moat/UVP thread):** superradcompany already frames msb as *"a containment
+  boundary… run untrusted code under hardware-level isolation"* with a security model that reads
+  strikingly close to rip-cage's posture — *sandbox output is untrusted data never instructions*
+  (rip-cage's ADR-024 prompt-injection stance), *least privilege / `--no-net` + tight allowlist by
+  default*, *never expose host credentials / `--secret` over `-e`*. This both **validates** rip-cage's
+  security thesis and **confirms the vendor is climbing into that layer** — the exact tension the moat
+  analysis (§7) flagged. Their SKILL.md is agent-*operating* guidance; it is NOT a composition manifest,
+  a build step, substrate projection, or a fleet cockpit — so it sharpens rather than erases the
+  "workbench-above-the-runtime" line.
 
 ## Appendix: host-side gotchas hit during the spike (macOS 26.3)
 
