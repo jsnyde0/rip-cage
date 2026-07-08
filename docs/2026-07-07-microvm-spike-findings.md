@@ -298,7 +298,9 @@ climbing into exactly that layer.
 - **Strategic product-direction decision (operator's call, §7)** — adopt-msb is settled on the
   isolation axis; the product/moat axis (posture-layer vs substrate-niche vs fold) is the open
   decision that gates what the ADR concludes.
-- Interactive sized-client herdr attach via `msb run -t` / `msb ssh` (socket-API path already proven).
+- ~~Interactive sized-client herdr attach via `msb run -t` / `msb ssh`~~ — **VERIFIED 2026-07-08**
+  (§8a-follow-up): `msb run -t`/`exec -t` propagate real TTY size + live resize; herdr panes size to
+  the attached client (94×39 in a 120×40 term), no 4-col wrap.
 - Empirically confirm the msb **KVM/Linux** path is as dogfooded as the HVF/macOS path (future
   Linux tier).
 - Then: ADR via `/adr-write`, `/adversarial-review` before stamping.
@@ -392,6 +394,32 @@ herdr 0.7.0 (baked in the image) drives correctly under msb using the **factory 
 - Not yet done: a real sized-client attach via `msb run -t` / `msb ssh` (interactive; blocks a
   non-interactive shell) — confirm interactively before the factory port, but the socket-API path
   (what the automation actually uses) is proven.
+
+### 8a-follow-up. Sized-client TTY attach — VERIFIED (2026-07-08, resolves gotcha 2 for the interactive path)
+
+The interactive attach left open in §8a is now confirmed. Method: drive `msb` through a host-side
+PTY of a **known** size (Python `pty` + `TIOCSWINSZ`) and observe what the guest sees, since a live
+TTY attach otherwise blocks a non-interactive shell.
+
+- **`msb run -t` propagates real dimensions.** PTY set to 40×120 → guest `stty size` = `40 120`,
+  `tput cols` = `120`. Not the ~4-column headless default. (`$COLUMNS` unset is normal — shells set
+  it interactively; the TTY ioctl that `stty`/`tput` read is the ground truth and is correct.)
+- **`msb exec -t` propagates dimensions AND live resize.** Into a detached sandbox: PTY at 30×100 →
+  guest `stty size` = `30 100`; host resizes the PTY mid-session to 50×160 → guest re-reads `50 160`.
+  So `SIGWINCH` is forwarded host→guest. This is the `rc exec` / `rc attach` path (§8b line for
+  `rc exec`/`rc attach`), and it works cleanly.
+- **herdr sizes panes off the attached client.** Launched a 120×40 herdr TUI client via
+  `msb exec -t … herdr --session anyr`; from a separate plain exec, `pane layout` reported the pane
+  at **94 cols × 39 rows** inside a 120×40 terminal (94 usable + 26-col herdr sidebar chrome = 120;
+  39 + 1 status row = 40). An 80-char line run in the pane read back as **one unwrapped line**, not
+  wrapped every 4 chars. So gotcha 2 (~4-col headless pane) is a pure herdr-headless artifact that a
+  sized client fully resolves — msb delivers a correct, live-resizing PTY, and herdr sizes to it.
+
+**Conclusion:** the interactive human-facing attach (`rc attach` / `rc exec -t`) maps cleanly onto
+msb `-t`; no msb-side gap. The factory automation path (socket-API, dimensions set explicitly)
+remains the proven path for headless spawning. `msb ssh` not separately exercised — `run -t` and
+`exec -t` both cover the PTY-allocation mechanism `ssh` shares; a live ssh attach is a thin
+follow-up if the migration exposes `rc attach` over ssh specifically.
 
 ### 8b. Migration-shape sketch: `rc` verbs on microsandbox
 
