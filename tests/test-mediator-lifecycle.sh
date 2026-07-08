@@ -124,9 +124,13 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "--- G1: grep-guards ---"
 
+# rc is now a thin shim (rip-cage-gto1 decomposition); RC_MEDIATOR threading /
+# _up_init_mediator / the init-mediator.sh reference all live in cli/up.sh.
+RC_AND_MODULES=("${REPO_ROOT}/rc" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh)
+
 # G1a — zero hardcoded mediator names (ADR-005 D12 FIRM)
 G1A_HITS=$(grep -nE 'mitmproxy|iron-proxy|clawpatrol' \
-  "${REPO_ROOT}/rc" "${REPO_ROOT}/cage/init/init-rip-cage.sh" "${REPO_ROOT}/cage/egress/init-mediator.sh" 2>/dev/null || true)
+  "${RC_AND_MODULES[@]}" "${REPO_ROOT}/cage/init/init-rip-cage.sh" "${REPO_ROOT}/cage/egress/init-mediator.sh" 2>/dev/null || true)
 if [[ -z "$G1A_HITS" ]]; then
   pass "G1a zero hardcoded mediator names in rc + init-rip-cage.sh + init-mediator.sh (ADR-005 D12)"
 else
@@ -134,7 +138,7 @@ else
 fi
 
 # G1b — RC_MEDIATOR IS present in rc (the threading exists)
-G1B_HITS=$(grep -c 'RC_MEDIATOR' "${REPO_ROOT}/rc" 2>/dev/null || echo "0")
+G1B_HITS=$(grep -c 'RC_MEDIATOR' "${REPO_ROOT}/cli/up.sh" 2>/dev/null || echo "0")
 if [[ "${G1B_HITS:-0}" -gt 0 ]]; then
   pass "G1b RC_MEDIATOR threading present in rc (${G1B_HITS} occurrences)"
 else
@@ -142,7 +146,7 @@ else
 fi
 
 # G1c — _up_init_mediator IS present in rc (the host-exec launch function exists)
-G1C_HITS=$(grep -c '_up_init_mediator' "${REPO_ROOT}/rc" 2>/dev/null || echo "0")
+G1C_HITS=$(grep -c '_up_init_mediator' "${REPO_ROOT}/cli/up.sh" 2>/dev/null || echo "0")
 if [[ "${G1C_HITS:-0}" -gt 0 ]]; then
   pass "G1c _up_init_mediator function present in rc (${G1C_HITS} occurrences)"
 else
@@ -150,7 +154,7 @@ else
 fi
 
 # G1d — init-mediator.sh IS referenced in rc (the new launch script is wired in)
-G1D_HITS=$(grep -c 'init-mediator.sh' "${REPO_ROOT}/rc" 2>/dev/null || echo "0")
+G1D_HITS=$(grep -c 'init-mediator.sh' "${REPO_ROOT}/cli/up.sh" 2>/dev/null || echo "0")
 if [[ "${G1D_HITS:-0}" -gt 0 ]]; then
   pass "G1d init-mediator.sh referenced in rc (${G1D_HITS} occurrences)"
 else
@@ -193,7 +197,7 @@ U1_TMP=$(mktemp -d "${TMPDIR:-/tmp}/rc-med-u1-XXXXXX")
 # We write it to a file and include it in each driver.
 THREADING_SNIPPET_FILE="${U1_TMP}/mediator-threading-snippet.sh"
 awk '/rip-cage-ta1o\.5\.7: resolve network\.egress\.mediator/,/^  unset _rc_mediator$/' \
-  "${REPO_ROOT}/rc" > "$THREADING_SNIPPET_FILE"
+  "${REPO_ROOT}/cli/up.sh" > "$THREADING_SNIPPET_FILE"
 
 if [[ ! -s "$THREADING_SNIPPET_FILE" ]]; then
   fail "U1 FATAL: could not extract RC_MEDIATOR threading snippet from rc — markers may have changed"
@@ -541,7 +545,7 @@ echo "--- U4: egress=off + mediator reject (Finding 3) ---"
 U4_TMP=$(mktemp -d "${TMPDIR:-/tmp}/rc-med-u4-XXXXXX")
 
 # First check: does rc contain the validation guard?
-U4_GUARD_HITS=$(grep -cE "egress.*off.*mediator|mediator.*egress.*off|_rc_mediator.*rc_egress.*off|rc_egress.*off.*_rc_mediator" "${REPO_ROOT}/rc" 2>/dev/null || echo "0")
+U4_GUARD_HITS=$(grep -cE "egress.*off.*mediator|mediator.*egress.*off|_rc_mediator.*rc_egress.*off|rc_egress.*off.*_rc_mediator" "${REPO_ROOT}/cli/up.sh" 2>/dev/null || echo "0")
 
 if [[ "${U4_GUARD_HITS:-0}" -gt 0 ]]; then
   pass "U4a egress=off+mediator guard: validation present in rc (${U4_GUARD_HITS} occurrence(s))"
@@ -552,7 +556,7 @@ fi
 # Second check: the threading snippet must NOT thread RC_MEDIATOR when rc_egress=off.
 THREADING_SNIPPET_FILE_U4="${U4_TMP}/mediator-threading-snippet.sh"
 awk '/rip-cage-ta1o\.5\.7: resolve network\.egress\.mediator/,/^  unset _rc_mediator$/' \
-  "${REPO_ROOT}/rc" > "$THREADING_SNIPPET_FILE_U4"
+  "${REPO_ROOT}/cli/up.sh" > "$THREADING_SNIPPET_FILE_U4"
 
 cat > "${U4_TMP}/driver-u4b.sh" <<UDRIVER4B
 #!/usr/bin/env bash
@@ -615,7 +619,7 @@ echo ""
 echo "--- M1: mediator-env secret channel ---"
 
 # M1a — --mediator-env flag is parsed by cmd_up (source-level check in rc)
-M1A_HITS=$(grep -c '\-\-mediator-env' "${REPO_ROOT}/rc" 2>/dev/null || echo "0")
+M1A_HITS=$(grep -c '\-\-mediator-env' "${REPO_ROOT}/cli/up.sh" 2>/dev/null || echo "0")
 if [[ "${M1A_HITS:-0}" -gt 0 ]]; then
   pass "M1a --mediator-env flag present in rc (${M1A_HITS} occurrences)"
 else
@@ -623,7 +627,7 @@ else
 fi
 
 # M1b — --mediator-env-file flag is parsed by cmd_up (source-level check in rc)
-M1B_HITS=$(grep -c '\-\-mediator-env-file' "${REPO_ROOT}/rc" 2>/dev/null || echo "0")
+M1B_HITS=$(grep -c '\-\-mediator-env-file' "${REPO_ROOT}/cli/up.sh" 2>/dev/null || echo "0")
 if [[ "${M1B_HITS:-0}" -gt 0 ]]; then
   pass "M1b --mediator-env-file flag present in rc (${M1B_HITS} occurrences)"
 else
@@ -631,7 +635,7 @@ else
 fi
 
 # M1c — _UP_MEDIATOR_ENV_ARGS is declared in rc and NOT referenced in _UP_RUN_ARGS
-M1C_DECL=$(grep -c '_UP_MEDIATOR_ENV_ARGS' "${REPO_ROOT}/rc" 2>/dev/null || echo "0")
+M1C_DECL=$(grep -c '_UP_MEDIATOR_ENV_ARGS' "${REPO_ROOT}/cli/up.sh" 2>/dev/null || echo "0")
 if [[ "${M1C_DECL:-0}" -gt 0 ]]; then
   pass "M1c _UP_MEDIATOR_ENV_ARGS declared in rc (${M1C_DECL} occurrences)"
 else
@@ -640,7 +644,7 @@ fi
 
 # M1d — _UP_MEDIATOR_ENV_ARGS must NOT be appended to _UP_RUN_ARGS
 # (the secret must not leak into docker run / container-level env)
-if grep -qE '_UP_RUN_ARGS.*_UP_MEDIATOR_ENV_ARGS|_UP_MEDIATOR_ENV_ARGS.*_UP_RUN_ARGS' "${REPO_ROOT}/rc" 2>/dev/null; then
+if grep -qE '_UP_RUN_ARGS.*_UP_MEDIATOR_ENV_ARGS|_UP_MEDIATOR_ENV_ARGS.*_UP_RUN_ARGS' "${REPO_ROOT}/cli/up.sh" 2>/dev/null; then
   fail "M1d SECURITY: _UP_MEDIATOR_ENV_ARGS found appended to _UP_RUN_ARGS — secret would leak into container env (/proc/1/environ)"
 else
   pass "M1d _UP_MEDIATOR_ENV_ARGS NOT leaked into _UP_RUN_ARGS (secret stays out of docker run)"
@@ -661,7 +665,7 @@ echo "--- O1: Ordering assertions ---"
 # We look for lines of the form: <spaces><function_name> "$name" (a call pattern).
 _rc_call_lines() {
   local fn="$1"
-  grep -n "${fn} " "${REPO_ROOT}/rc" \
+  grep -n "${fn} " "${REPO_ROOT}/cli/up.sh" \
     | grep -vE '^[0-9]+:[[:space:]]*#|^[0-9]+:'"${fn}"'[[:space:]]*\(\)' \
     | cut -d: -f1
 }
@@ -700,8 +704,8 @@ else
 fi
 
 # O1b — in rc: RC_MEDIATOR threading appears AFTER RC_MULTIPLEXER threading
-MUX_THREADING_LINE=$(grep -n 'RC_MULTIPLEXER.*_UP_RUN_ARGS\|_UP_RUN_ARGS.*RC_MULTIPLEXER' "${REPO_ROOT}/rc" | head -1 | cut -d: -f1)
-MED_THREADING_LINE=$(grep -n 'RC_MEDIATOR.*_UP_RUN_ARGS\|_UP_RUN_ARGS.*RC_MEDIATOR' "${REPO_ROOT}/rc" | head -1 | cut -d: -f1)
+MUX_THREADING_LINE=$(grep -n 'RC_MULTIPLEXER.*_UP_RUN_ARGS\|_UP_RUN_ARGS.*RC_MULTIPLEXER' "${REPO_ROOT}/cli/up.sh" | head -1 | cut -d: -f1)
+MED_THREADING_LINE=$(grep -n 'RC_MEDIATOR.*_UP_RUN_ARGS\|_UP_RUN_ARGS.*RC_MEDIATOR' "${REPO_ROOT}/cli/up.sh" | head -1 | cut -d: -f1)
 
 if [[ -z "$MUX_THREADING_LINE" || -z "$MED_THREADING_LINE" ]]; then
   fail "O1b ordering: could not find RC_MULTIPLEXER or RC_MEDIATOR threading lines in rc" \
@@ -1024,7 +1028,7 @@ echo "--- CA: mediator CA trust env vars unit tests ---"
 
 CA_GATE_SNIPPET_FILE="${U1_TMP}/mediator-ca-gate-snippet.sh"
 awk '/rip-cage-yid0: mediator CA trust env vars\./,/rip-cage-yid0: end mediator CA trust env vars\./' \
-  "${REPO_ROOT}/rc" > "$CA_GATE_SNIPPET_FILE"
+  "${REPO_ROOT}/cli/up.sh" > "$CA_GATE_SNIPPET_FILE"
 
 if [[ ! -s "$CA_GATE_SNIPPET_FILE" ]]; then
   fail "CA FATAL: could not extract mediator CA trust env var gate snippet from rc — markers may have changed"

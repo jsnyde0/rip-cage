@@ -39,6 +39,11 @@ fail() { echo "FAIL C$1: $2 — $3"; FAILURES=$((FAILURES + 1)); }
 # shellcheck disable=SC1090
 source "$RC" 2>/dev/null
 set +e
+# rc's own sourcing (rip-cage-gto1 decomposition) recomputes the GLOBAL
+# SCRIPT_DIR to rc's own directory (needed so rc can `source` cli/lib +
+# cli/*.sh relative to itself) -- this clobbers the value THIS test script
+# set at line 25 for its own fixture-path lookups. Restore it.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Build sandbox with optional config files. Sets TEST_HOME, TEST_WS, CACHE_DIR.
 TEST_HOME=""

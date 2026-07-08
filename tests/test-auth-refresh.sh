@@ -6,6 +6,15 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RC="${SCRIPT_DIR}/../rc"
+# rc is now a thin shim (rip-cage-gto1 decomposition); this test's static
+# source-content assertions (_extract_credentials/cmd_auth_refresh bodies,
+# credential-warning strings, the _up_prepare_docker_mounts scan) live in
+# cli/auth.sh + cli/up.sh now. $RC stays unchanged for checks that are
+# genuinely about the shim itself (the auth dispatch case line, the
+# check_docker prereq gate) and for run_rc's piped-exec invocation.
+RC_SRC="$(mktemp)"
+trap 'rm -f "$RC_SRC"' EXIT
+cat "${SCRIPT_DIR}/../cli/auth.sh" "${SCRIPT_DIR}/../cli/up.sh" > "$RC_SRC" 2>/dev/null
 FAILURES=0
 
 pass() { echo "PASS: $1"; }
@@ -87,7 +96,7 @@ if [[ "$(uname)" != "Darwin" ]]; then
   extract_exit=0
   bash -c '
     # Source just the function from rc (bypass the dockerenv guard and main dispatch)
-    eval "$(sed -n "/_extract_credentials()/,/^}/p" "'"$RC"'")"
+    eval "$(sed -n "/_extract_credentials()/,/^}/p" "'"$RC_SRC"'")"
     _extract_credentials
   ' 2>/dev/null
   extract_exit=$?
@@ -123,7 +132,7 @@ mkdir -p "$MOCK_HOME/.claude"
 # Run _extract_credentials with mocked commands
 extract_mac_exit=0
 PATH="$MOCK_DIR:$PATH" HOME="$MOCK_HOME" bash -c '
-  eval "$(sed -n "/_extract_credentials()/,/^}/p" "'"$RC"'")"
+  eval "$(sed -n "/_extract_credentials()/,/^}/p" "'"$RC_SRC"'")"
   _extract_credentials
 ' 2>/dev/null
 extract_mac_exit=$?
@@ -151,8 +160,8 @@ json_fail_output=$(PATH="$MOCK_DIR:$PATH" HOME="$MOCK_HOME" bash -c '
       echo "$@"
     fi
   }
-  eval "$(sed -n "/_extract_credentials()/,/^}/p" "'"$RC"'")"
-  eval "$(sed -n "/^cmd_auth_refresh()/,/^}/p" "'"$RC"'")"
+  eval "$(sed -n "/_extract_credentials()/,/^}/p" "'"$RC_SRC"'")"
+  eval "$(sed -n "/^cmd_auth_refresh()/,/^}/p" "'"$RC_SRC"'")"
   cmd_auth_refresh
 ' 2>/dev/null) || true
 
@@ -188,7 +197,7 @@ mkdir -p "$MOCK_HOME2/.claude"
 
 extract_success_exit=0
 PATH="$MOCK_SUCCESS_DIR:$PATH" HOME="$MOCK_HOME2" bash -c '
-  eval "$(sed -n "/_extract_credentials()/,/^}/p" "'"$RC"'")"
+  eval "$(sed -n "/_extract_credentials()/,/^}/p" "'"$RC_SRC"'")"
   _extract_credentials
 ' 2>/dev/null
 extract_success_exit=$?
@@ -224,8 +233,8 @@ json_success_output=$(PATH="$MOCK_SUCCESS_DIR:$PATH" HOME="$MOCK_HOME3" bash -c 
       echo "$@"
     fi
   }
-  eval "$(sed -n "/_extract_credentials()/,/^}/p" "'"$RC"'")"
-  eval "$(sed -n "/^cmd_auth_refresh()/,/^}/p" "'"$RC"'")"
+  eval "$(sed -n "/_extract_credentials()/,/^}/p" "'"$RC_SRC"'")"
+  eval "$(sed -n "/^cmd_auth_refresh()/,/^}/p" "'"$RC_SRC"'")"
   cmd_auth_refresh
 ' 2>/dev/null) || true
 
@@ -257,13 +266,13 @@ fi
 # --- Test 10: _up_prepare_docker_mounts calls _extract_credentials ---
 echo ""
 echo "=== Test 10: _up_prepare_docker_mounts calls _extract_credentials ==="
-if grep -q '_extract_credentials' "$RC"; then
+if grep -q '_extract_credentials' "$RC_SRC"; then
   # Verify it's called inside _up_prepare_docker_mounts using awk — avoids the
   # GNU sed broken-pipe issue under set -o pipefail: when grep -q closes the pipe
   # early, GNU sed exits 141 (SIGPIPE), causing the pipeline to return 141 with
   # pipefail even when the match was found. awk reads the whole body without a
   # downstream reader that can close early, so no broken-pipe race.
-  if awk '/_up_prepare_docker_mounts\(\)/{in_fn=1} in_fn && /^\}/{in_fn=0} in_fn && /_extract_credentials/{found=1} END{exit !found}' "$RC"; then
+  if awk '/_up_prepare_docker_mounts\(\)/{in_fn=1} in_fn && /^\}/{in_fn=0} in_fn && /_extract_credentials/{found=1} END{exit !found}' "$RC_SRC"; then
     pass "_up_prepare_docker_mounts calls _extract_credentials"
   else
     fail "_up_prepare_docker_mounts does not call _extract_credentials"
@@ -276,26 +285,26 @@ fi
 echo ""
 echo "=== Test 11a: agent-neutral phrasing in Claude credential warnings ==="
 # Keychain-extraction failure: must say "fine if you are not using Claude Code"
-if grep -q "failed to extract Claude credentials from macOS keychain — fine if you are not using Claude Code" "$RC"; then
+if grep -q "failed to extract Claude credentials from macOS keychain — fine if you are not using Claude Code" "$RC_SRC"; then
   pass "keychain-extraction warning uses agent-neutral phrasing"
 else
   fail "keychain-extraction warning does not use agent-neutral phrasing"
 fi
 # Expired-token warning: must say "fine if you are not using Claude Code"
-if grep -q "Claude OAuth token is EXPIRED.*fine if you are not using Claude Code" "$RC"; then
+if grep -q "Claude OAuth token is EXPIRED.*fine if you are not using Claude Code" "$RC_SRC"; then
   pass "expired-token warning uses agent-neutral phrasing"
 else
   fail "expired-token warning does not use agent-neutral phrasing"
 fi
 # Missing credentials.json: must say "fine if you are not using Claude Code"
-if grep -q "credentials.json not found — skipping mount (fine if you are not using Claude Code" "$RC"; then
+if grep -q "credentials.json not found — skipping mount (fine if you are not using Claude Code" "$RC_SRC"; then
   pass "missing-credentials warning uses agent-neutral phrasing"
 else
   fail "missing-credentials warning does not use agent-neutral phrasing"
 fi
 # 'Run claude auth login' must not be the LEAD on these paths (must appear only as secondary clause)
 # Lead imperative means it appears at the start of a Warning: line (not indented / secondary)
-lead_count=$(grep "^[[:space:]]*echo.*Warning:.*Run 'claude auth login'" "$RC" | wc -l | tr -d ' ')
+lead_count=$(grep "^[[:space:]]*echo.*Warning:.*Run 'claude auth login'" "$RC_SRC" | wc -l | tr -d ' ')
 if [[ "$lead_count" -eq 0 ]]; then
   pass "'Run claude auth login' is not the lead imperative on any Warning line"
 else

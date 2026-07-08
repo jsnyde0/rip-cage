@@ -344,7 +344,9 @@ test_t1j_with_init_step_position() {
 # ---------------------------------------------------------------------------
 test_t1k_no_tool_name_literal_in_wiring() {
   local codegen_body dispatch_body
-  codegen_body=$(sed -n '/^_manifest_generate_tool_init_config_dockerfile_steps() {/,/^}/p' "$RC")
+  # _manifest_generate_tool_init_config_dockerfile_steps lives in
+  # cli/lib/manifest_checks.sh post-decomposition (rip-cage-gto1), not rc.
+  codegen_body=$(sed -n '/^_manifest_generate_tool_init_config_dockerfile_steps() {/,/^}/p' "${REPO_ROOT}/cli/lib/manifest_checks.sh")
   dispatch_body=$(sed -n '/TOOL archetype agent-context init hooks/,/unset _rc_tool_init_config/p' "${REPO_ROOT}/cage/init/init-rip-cage.sh")
 
   if [[ -z "$codegen_body" ]]; then

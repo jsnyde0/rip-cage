@@ -30,14 +30,15 @@ TOTAL=0
 pass() { TOTAL=$((TOTAL + 1)); echo "PASS  [$TOTAL] $1"; }
 fail() { TOTAL=$((TOTAL + 1)); FAILURES=$((FAILURES + 1)); echo "FAIL  [$TOTAL] $1 -- $2"; }
 
-# Source the REAL helper function from rc (same awk-extraction idiom as
+# Source the REAL helper function (same awk-extraction idiom as
 # test-ls-mode-source.sh — rc's sourcing guard prevents dispatch from running
-# when sourced, but we only need this one function body).
+# when sourced, but we only need this one function body). Post-decomposition
+# (rip-cage-gto1) the function lives in cli/doctor.sh, not the rc shim.
 eval "$(awk '
   /^_doctor_bd_version_compare\(\)/ { found=1 }
   found { print }
   found && /^\}$/ { exit }
-' "$RC")"
+' "${SCRIPT_DIR}/../cli/doctor.sh")"
 
 if ! declare -F _doctor_bd_version_compare >/dev/null 2>&1; then
   fail "_doctor_bd_version_compare exists in rc" "function not found after extraction"

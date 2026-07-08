@@ -823,7 +823,8 @@ echo "=== Test 34: registry dispatch checks both stdin and stdout TTY ==="
 # new-container paths). Verify the source still enforces both TTY checks via
 # the dispatch invocation pattern "docker exec -it" gated on "-t 0 && -t 1".
 # We grep for the combined pattern across all three dispatch sites.
-if grep -c '\-t 0 && \-t 1' "${REPO_ROOT}/rc" | grep -qE '^[1-9]'; then
+# cmd_up lives in cli/up.sh post-decomposition (rip-cage-gto1), not rc.
+if grep -c '\-t 0 && \-t 1' "${REPO_ROOT}/cli/up.sh" | grep -qE '^[1-9]'; then
   pass "registry dispatch includes [[ -t 0 && -t 1 ]] TTY guard (stdin+stdout)"
 else
   fail "registry dispatch missing [[ -t 0 && -t 1 ]] TTY guard — both stdin and stdout must be checked"

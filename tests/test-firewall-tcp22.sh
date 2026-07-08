@@ -158,7 +158,7 @@ fi
 # Structural test: after regenerating egress-rules on reload, must also refresh
 # the TCP-22 iptables rules inside the container.
 # ---------------------------------------------------------------------------
-if grep -qE '_setup_tcp22|tcp22|TCP.22|dport 22|port.22' "$RC" 2>/dev/null; then
+if grep -qE '_setup_tcp22|tcp22|TCP.22|dport 22|port.22' "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh 2>/dev/null; then
   pass 10 "rc contains TCP-22 related code (reload/setup path)"
 else
   fail 10 "rc contains TCP-22 related code" "no TCP-22 related code found in rc"

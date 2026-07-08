@@ -9,6 +9,16 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# rc is now a thin shim (rip-cage-gto1 decomposition); this test's static
+# grep/awk source-content assertions (json_error, LEGACY_CONTAINER, cmd_up/
+# cmd_ls bodies, etc.) need the decomposed cli/lib/*.sh + cli/*.sh modules,
+# concatenated in the shim's own sourcing order so relative-position checks
+# (e.g. "cmd_up appears before the next cmd_ function") still hold. Real `rc`
+# INVOCATIONS below (executing the CLI, not grepping its source) still use
+# $RC unchanged.
+RC_SRC="$(mktemp)"
+trap 'rm -f "$RC_SRC"' EXIT
+cat "${REPO_ROOT}"/cli/lib/*.sh "${REPO_ROOT}"/cli/*.sh > "$RC_SRC" 2>/dev/null
 FAILURES=0
 PASSES=0
 
@@ -21,7 +31,7 @@ echo "=== Code Review Fix Tests ==="
 echo ""
 echo "=== C1: json_error uses jq --arg ==="
 # Verify json_error implementation uses jq --arg, not string interpolation
-if grep -A2 'json_error()' "$RC" | grep -q 'jq -nc --arg'; then
+if grep -A2 'json_error()' "$RC_SRC" | grep -q 'jq -nc --arg'; then
   pass "json_error uses jq --arg for safe JSON construction"
 else
   fail "json_error does not use jq --arg"
@@ -33,7 +43,7 @@ echo "=== C2: No unsafe json_out with interpolated variables ==="
 # Count json_out *function calls* (exact name, not _up_json_output) with $ (variable interpolation).
 # Exclude variable assignments (json_out=...) and variable substitutions (${json_out}, "$json_out") —
 # those are not function calls and don't carry the interpolation-injection risk this check guards.
-unsafe_count=$(grep -w 'json_out' "$RC" \
+unsafe_count=$(grep -w 'json_out' "$RC_SRC" \
   | grep -v 'json_out()' \
   | grep -v 'json_out=' \
   | grep -v '\${json_out' \
@@ -63,7 +73,7 @@ fi
 echo ""
 echo "=== I2: volumes_removed empty array handling ==="
 # Verify the code uses select(length > 0) pattern
-if grep -q 'select(length > 0)' "$RC"; then
+if grep -q 'select(length > 0)' "$RC_SRC"; then
   pass "volumes_removed uses select(length > 0) filter"
 else
   fail "volumes_removed missing select(length > 0) filter"
@@ -86,7 +96,7 @@ while IFS= read -r line; do
       dup_found=true
     fi
   fi
-done < "$RC"
+done < "$RC_SRC"
 if [[ "$dup_found" == false ]]; then
   pass "cmd_up does not have duplicate --dry-run/--output parsing"
 else
@@ -108,23 +118,23 @@ fi
 echo ""
 echo "=== L1: resume fail-loud on missing/unknown rc.egress label ==="
 # Helper must exist and handle all three ADR-001 cases.
-if grep -q '^_up_resolve_resume_egress()' "$RC"; then
+if grep -q '^_up_resolve_resume_egress()' "$RC_SRC"; then
   pass "_up_resolve_resume_egress helper defined"
 else
   fail "_up_resolve_resume_egress helper missing"
 fi
-if grep -q '"LEGACY_CONTAINER"' "$RC"; then
+if grep -q '"LEGACY_CONTAINER"' "$RC_SRC"; then
   pass "LEGACY_CONTAINER error code present"
 else
   fail "LEGACY_CONTAINER error code missing"
 fi
-if grep -q '"INVALID_EGRESS_LABEL"' "$RC"; then
+if grep -q '"INVALID_EGRESS_LABEL"' "$RC_SRC"; then
   pass "INVALID_EGRESS_LABEL error code present"
 else
   fail "INVALID_EGRESS_LABEL error code missing"
 fi
 # Helper must be called from both dry-run and actual resume paths.
-call_count=$(grep -c '_up_resolve_resume_egress "\$name"' "$RC")
+call_count=$(grep -c '_up_resolve_resume_egress "\$name"' "$RC_SRC")
 if [[ "$call_count" -ge 2 ]]; then
   pass "helper called from both dry-run and resume paths ($call_count sites)"
 else
@@ -136,7 +146,7 @@ echo ""
 echo "=== L2: cmd_up fail-loud on unsupported container states ==="
 
 # Static: CONTAINER_STATE_UNSUPPORTED error code present
-if grep -q '"CONTAINER_STATE_UNSUPPORTED"' "$RC"; then
+if grep -q '"CONTAINER_STATE_UNSUPPORTED"' "$RC_SRC"; then
   pass "CONTAINER_STATE_UNSUPPORTED error code present in rc"
 else
   fail "CONTAINER_STATE_UNSUPPORTED error code missing from rc"
@@ -145,8 +155,8 @@ fi
 # Capture function slices once. Avoids `awk … | grep -q …` under `set -o pipefail`:
 # grep -q closes the pipe on first match → awk dies with SIGPIPE (141) → pipefail
 # treats the whole pipeline as failed even though the pattern was found.
-cmd_up_slice=$(awk '/^cmd_up\(\)/,/^}/' "$RC")
-cmd_ls_slice=$(awk '/^cmd_ls\(\)/,/^}/' "$RC")
+cmd_up_slice=$(awk '/^cmd_up\(\)/,/^}/' "$RC_SRC")
+cmd_ls_slice=$(awk '/^cmd_ls\(\)/,/^}/' "$RC_SRC")
 
 # Static: all four unsupported states have explicit elif branches (scoped to cmd_up)
 for state in paused restarting removing dead; do

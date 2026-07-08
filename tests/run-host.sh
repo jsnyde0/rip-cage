@@ -198,6 +198,7 @@ export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${_RUN_HOST_CFG_DIR}}"
 
 # Uncomment each line below after the audit step confirms pass or skip-guard:
 run_test "${SCRIPT_DIR}/test-rc-source-isolation.sh" # rip-cage-k2d5: rc source isolation — set -e must not leak when sourcing rc
+run_test "${SCRIPT_DIR}/test-rc-decomposition-structure.sh" # rip-cage-gto1: post-split structural invariants (strict-mode-per-module, fn-count, reachability, up<->reload coupling, top-level globals, lib/-boundary, cwd/libexec sourcing)
 run_test "${SCRIPT_DIR}/test-rc-commands.sh"
 run_test "${SCRIPT_DIR}/test-worktree-support.sh"
 run_test "${SCRIPT_DIR}/test-security-hardening.sh"

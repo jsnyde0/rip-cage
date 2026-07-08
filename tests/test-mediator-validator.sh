@@ -403,16 +403,17 @@ test_t1j_both_entrypoints_route_through_validator() {
   #
   # We extract function names by scanning rc for function definitions and docker build calls.
 
-  # List all lines with 'docker build' (excluding comments)
+  # List all lines with 'docker build' (excluding comments). cmd_build /
+  # _pull_or_build_local live in cli/build.sh post-decomposition (rip-cage-gto1).
   local docker_build_lines
-  docker_build_lines=$(grep -n 'docker build' "${RC}" | grep -v '^\s*#')
+  docker_build_lines=$(grep -n 'docker build' "${REPO_ROOT}/cli/build.sh" | grep -v '^\s*#')
 
   # The expected callers: cmd_build and _pull_or_build_local
   local callers_ok=true
 
   # Verify cmd_build contains both docker build AND _manifest_build_dockerfile_path
   local cmd_build_has_guard
-  cmd_build_has_guard=$(awk '/^cmd_build\(\)/{found=1} found && /\}$/{found=0} found && /_manifest_build_dockerfile_path/{print}' "${RC}")
+  cmd_build_has_guard=$(awk '/^cmd_build\(\)/{found=1} found && /\}$/{found=0} found && /_manifest_build_dockerfile_path/{print}' "${REPO_ROOT}/cli/build.sh")
   if [[ -z "$cmd_build_has_guard" ]]; then
     fail "T1j FAIL: cmd_build does not call _manifest_build_dockerfile_path (guard gateway) before docker build"
     callers_ok=false
@@ -420,16 +421,17 @@ test_t1j_both_entrypoints_route_through_validator() {
 
   # Verify _pull_or_build_local contains both docker build AND _manifest_build_dockerfile_path
   local pob_has_guard
-  pob_has_guard=$(awk '/^_pull_or_build_local\(\)/{found=1} found && /^_[a-z]/{if(!/^_pull_or_build_local/)found=0} found && /_manifest_build_dockerfile_path/{print}' "${RC}")
+  pob_has_guard=$(awk '/^_pull_or_build_local\(\)/{found=1} found && /^_[a-z]/{if(!/^_pull_or_build_local/)found=0} found && /_manifest_build_dockerfile_path/{print}' "${REPO_ROOT}/cli/build.sh")
   if [[ -z "$pob_has_guard" ]]; then
     fail "T1j FAIL: _pull_or_build_local does not call _manifest_build_dockerfile_path (guard gateway) before docker build"
     callers_ok=false
   fi
 
   # Confirm that _manifest_load (called by _manifest_generate_extra_dockerfile_steps)
-  # actually calls _manifest_validate — completing the chain.
+  # actually calls _manifest_validate — completing the chain. Both live in
+  # cli/lib/manifest_checks.sh post-decomposition.
   local load_calls_validate
-  load_calls_validate=$(awk '/^_manifest_load\(\)/{found=1} found && /^[a-z_]/{if(!/^_manifest_load/)found=0} found && /_manifest_validate/{print}' "${RC}")
+  load_calls_validate=$(awk '/^_manifest_load\(\)/{found=1} found && /^[a-z_]/{if(!/^_manifest_load/)found=0} found && /_manifest_validate/{print}' "${REPO_ROOT}/cli/lib/manifest_checks.sh")
   if [[ -z "$load_calls_validate" ]]; then
     fail "T1j FAIL: _manifest_load does not call _manifest_validate — guard chain is broken"
     callers_ok=false

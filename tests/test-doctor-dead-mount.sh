@@ -78,7 +78,10 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RC="${SCRIPT_DIR}/../rc"
+# _doctor_dead_file_mounts / _doctor_format_dead_mounts / _doctor_format_auth_probe
+# live in cli/doctor.sh post-decomposition (rip-cage-gto1), not the rc shim --
+# every awk-extraction site below uses $RC as the extraction source.
+RC="${SCRIPT_DIR}/../cli/doctor.sh"
 FAILURES=0
 TOTAL=0
 

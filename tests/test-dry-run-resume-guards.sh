@@ -44,7 +44,9 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
-RC="${REPO_ROOT}/rc"
+# The RESUME-GUARDS marker regions this test greps are inside cmd_up, which
+# lives in cli/up.sh post-decomposition (rip-cage-gto1), not the rc shim.
+RC="${REPO_ROOT}/cli/up.sh"
 FAILURES=0
 
 pass() { echo "PASS: $1"; }

@@ -22,16 +22,17 @@ TOTAL=0
 pass() { TOTAL=$((TOTAL + 1)); echo "PASS  [$TOTAL] $1"; }
 fail() { TOTAL=$((TOTAL + 1)); FAILURES=$((FAILURES + 1)); echo "FAIL  [$TOTAL] $1 -- $2"; }
 
-# Source the REAL helper function from rc.
+# Source the REAL helper function.
 # rc has a sourcing guard (BASH_SOURCE[0] != $0) at the bottom that prevents
 # dispatch from running when sourced, but the early initialization code still
 # executes. To avoid that, we extract just the _rc_ls_mode_from_source_path
-# function body from rc using awk and eval it in this shell.
+# function body using awk and eval it in this shell. Post-decomposition
+# (rip-cage-gto1) the function lives in cli/ls.sh, not the rc shim.
 eval "$(awk '
   /^_rc_ls_mode_from_source_path\(\)/ { found=1 }
   found { print }
   found && /^\}$/ { exit }
-' "$RC")"
+' "${SCRIPT_DIR}/../cli/ls.sh")"
 
 TMPDIR_TEST=$(mktemp -d)
 cleanup() { rm -rf "$TMPDIR_TEST"; }

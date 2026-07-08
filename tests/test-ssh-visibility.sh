@@ -522,7 +522,8 @@ fi
 # D6: rc ls cmd_ls does not write sentinels or labels
 echo "--- D6 (AC5): cmd_ls in rc has no write operations ---"
 
-CMDLS_BLOCK=$(sed -n '/^cmd_ls()/,/^}/p' "${RC}" 2>/dev/null || true)
+# cmd_ls lives in cli/ls.sh post-decomposition (rip-cage-gto1), not rc.
+CMDLS_BLOCK=$(sed -n '/^cmd_ls()/,/^}/p' "${REPO_ROOT}/cli/ls.sh" 2>/dev/null || true)
 
 if [[ -z "$CMDLS_BLOCK" ]]; then
   fail "D6 (AC5): could not extract cmd_ls from rc"

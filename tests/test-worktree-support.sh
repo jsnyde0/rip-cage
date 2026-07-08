@@ -3,7 +3,15 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
-RC_FILE="${REPO_ROOT}/rc"
+# rc is now a thin shim (rip-cage-gto1 decomposition) -- the worktree-detection
+# source text this test greps/awks over lives in cli/up.sh (cmd_up), with one
+# check (gitfile cleanup) against cli/down_destroy.sh (cmd_destroy), in that
+# relative order (matches the pre-split monolith's cmd_up-before-cmd_destroy
+# ordering, which a couple of these checks assert on).
+_RC_ALL_SOURCE="$(mktemp)"
+trap 'rm -f "$_RC_ALL_SOURCE"' EXIT
+cat "${REPO_ROOT}/cli/up.sh" "${REPO_ROOT}/cli/down_destroy.sh" > "$_RC_ALL_SOURCE" 2>/dev/null
+RC_FILE="$_RC_ALL_SOURCE"
 
 pass_count=0
 fail_count=0
