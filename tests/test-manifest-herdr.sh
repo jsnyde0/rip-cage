@@ -273,7 +273,7 @@ test_t1f_default_seed_does_not_contain_herdr() {
 # tmux becomes optional/manifest-installed, not a hard Homebrew dependency.
 # ---------------------------------------------------------------------------
 test_t1g_formula_no_tmux_dep() {
-  local formula_file="${REPO_ROOT}/Formula/rip-cage.rb"
+  local formula_file="${REPO_ROOT}/packaging/Formula/rip-cage.rb"
   if [[ ! -f "$formula_file" ]]; then
     fail "T1g Formula/rip-cage.rb not found at expected path"
     return

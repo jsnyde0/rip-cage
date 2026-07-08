@@ -338,7 +338,7 @@ teardown_sandbox
 # sentinel and conditionally launches ssh-agent-filter (the daemon; afssh is
 # a one-shot ssh wrapper, not a long-running socket bridge).
 # ---------------------------------------------------------------------------
-INIT_SCRIPT="${REPO_ROOT}/init-rip-cage.sh"
+INIT_SCRIPT="${REPO_ROOT}/cage/init/init-rip-cage.sh"
 
 _c11_ok=true _c11_reason=""
 if ! grep -q "ssh-allowed-keys" "$INIT_SCRIPT" 2>/dev/null; then

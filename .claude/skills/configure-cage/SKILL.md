@@ -1,6 +1,6 @@
 ---
 name: configure-cage
-description: Reads dist/default-tools.yaml — the maintained, guaranteed-current default that the published rip-cage image is built from — as the reference base for a host manifest (~/.config/rip-cage/tools.yaml), then proposes deltas for the human's actual situation by judgment: reading the relevant examples/ recipe fragments and hand-writing tools.yaml entries — no generator script, no setup tool, no fixed interview. Carries the 3-layer config mental model (image manifest / global posture / per-project config), reconcile-awareness (a tools.yaml may already exist from a past session — you are probably not starting from zero), the credential non-possession posture (composing a mediator like iron-proxy so the agent holds a placeholder, never the real secret — opt-in per situation, points to examples/compose-rc-with-iron-proxy.md), and known footguns (DCG's open-extension-discovery residual, pi's headless-throttle) as knowledge to relay by judgment, not gates to force through. Use when a human says "set up a rip-cage cage", "configure a cage", "which tools/guards for my cage", "compose a rip-cage manifest", "keep my credentials out of the cage", or otherwise wants help composing their rip-cage tools.yaml before running rc build.
+description: Reads manifest/default-tools.yaml — the maintained, guaranteed-current default that the published rip-cage image is built from — as the reference base for a host manifest (~/.config/rip-cage/tools.yaml), then proposes deltas for the human's actual situation by judgment: reading the relevant examples/ recipe fragments and hand-writing tools.yaml entries — no generator script, no setup tool, no fixed interview. Carries the 3-layer config mental model (image manifest / global posture / per-project config), reconcile-awareness (a tools.yaml may already exist from a past session — you are probably not starting from zero), the credential non-possession posture (composing a mediator like iron-proxy so the agent holds a placeholder, never the real secret — opt-in per situation, points to examples/compose-rc-with-iron-proxy.md), and known footguns (DCG's open-extension-discovery residual, pi's headless-throttle) as knowledge to relay by judgment, not gates to force through. Use when a human says "set up a rip-cage cage", "configure a cage", "which tools/guards for my cage", "compose a rip-cage manifest", "keep my credentials out of the cage", or otherwise wants help composing their rip-cage tools.yaml before running rc build.
 ---
 
 # Configure a rip-cage cage
@@ -16,9 +16,9 @@ after reviewing what you wrote.
 
 ## Start from the reference base, not a blank slate
 
-[`dist/default-tools.yaml`](../../../dist/default-tools.yaml) is not sample material — it is
+[`manifest/default-tools.yaml`](../../../manifest/default-tools.yaml) is not sample material — it is
 the manifest the *published* rip-cage image is literally built from
-(`RC_MANIFEST_GLOBAL=dist/default-tools.yaml ./rc build`), and its own header declares it the
+(`RC_MANIFEST_GLOBAL=manifest/default-tools.yaml ./rc build`), and its own header declares it the
 single data-layer home of the default tool-set blessing (ADR-005 D12). That makes it the best
 starting point available: read it, understand what it already composes (the floor tools, the
 Claude Code and pi wrappers, DCG in its **open** posture, the ssh-bypass guard), and treat the

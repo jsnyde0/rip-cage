@@ -44,7 +44,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
-DOCKERFILE="${REPO_ROOT}/Dockerfile"
+DOCKERFILE="${REPO_ROOT}/cage/Dockerfile"
 EXAMPLES_DCG="${REPO_ROOT}/examples/dcg"
 FAILURES=0
 TEST_HOME=""

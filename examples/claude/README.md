@@ -35,8 +35,8 @@ The agent does the wiring by reading this recipe. No rc source edits required.
 - `build-fragment.sh` — generator: re-run to update `manifest-fragment.yaml` after
   editing the source files.
 
-## How to compose (dist/default-tools.yaml model)
+## How to compose (manifest/default-tools.yaml model)
 
-The published GHCR image includes this recipe via `dist/default-tools.yaml`. To compose
+The published GHCR image includes this recipe via `manifest/default-tools.yaml`. To compose
 locally, copy the `tools[]` entry from `manifest-fragment.yaml` into your
 `~/.config/rip-cage/tools.yaml` and run `rc build`. Zero rc source edits needed.

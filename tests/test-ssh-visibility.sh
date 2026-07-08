@@ -22,8 +22,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
-ZSHRC="${REPO_ROOT}/zshrc"
-INIT_SCRIPT="${REPO_ROOT}/init-rip-cage.sh"
+ZSHRC="${REPO_ROOT}/cage/agent/zshrc"
+INIT_SCRIPT="${REPO_ROOT}/cage/init/init-rip-cage.sh"
 RC="${REPO_ROOT}/rc"
 FAILURES=0
 TMPDIR_TEST=""

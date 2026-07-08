@@ -1,12 +1,12 @@
 # Compose a walk-away cage (dist + herdr + herdr-pi, mediator situational)
 
-This recipe shows the **delta** on top of [`dist/default-tools.yaml`](../dist/default-tools.yaml)
+This recipe shows the **delta** on top of [`manifest/default-tools.yaml`](../manifest/default-tools.yaml)
 for a cage meant to run **unattended, multi-agent, walk-away** sessions: a human kicks off one or
 more headless agents, disconnects, and checks back later via a supervisor view rather than a
 live terminal. It is a composition recipe, not a pre-composed manifest — see "No new manifest
 file" below for why.
 
-`dist/default-tools.yaml` is already the reference base for a rip-cage cage (floor tools, Claude
+`manifest/default-tools.yaml` is already the reference base for a rip-cage cage (floor tools, Claude
 Code and pi wrappers, DCG in its open posture, the ssh-bypass guard) — see the
 [`configure-cage` skill](../.claude/skills/configure-cage/SKILL.md) for how an agent composes
 from it by judgment. This recipe is the delta a walk-away setup adds on top: a supervisor
@@ -94,7 +94,7 @@ never handles anything a compromised agent could meaningfully exfiltrate may not
 
 ## No new manifest file
 
-This recipe deliberately does not ship a pre-composed `walk-away.yaml`. `dist/default-tools.yaml`'s
+This recipe deliberately does not ship a pre-composed `walk-away.yaml`. `manifest/default-tools.yaml`'s
 own header notes that its recipe entries carry *generated* `install_cmd` content (re-run each
 recipe's `build-fragment.sh` to refresh) — a second, checked-in manifest built from the same
 fragments would duplicate that generated content and silently drift the moment any composed

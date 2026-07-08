@@ -281,14 +281,14 @@ test_t1i_d8_control_byte_identical() {
   stderr_file=$(mktemp)
   exit_code=0
   dockerfile_path=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    bash -c "source '${RC}'; _manifest_build_dockerfile_path '${REPO_ROOT}/Dockerfile'" \
+    bash -c "source '${RC}'; _manifest_build_dockerfile_path '${REPO_ROOT}/cage/Dockerfile'" \
     2>"$stderr_file") || exit_code=$?
 
-  if [[ "$exit_code" -eq 0 ]] && [[ "$dockerfile_path" == "${REPO_ROOT}/Dockerfile" ]]; then
+  if [[ "$exit_code" -eq 0 ]] && [[ "$dockerfile_path" == "${REPO_ROOT}/cage/Dockerfile" ]]; then
     pass "T1i D8 invariant: control TOOL (no init) → _manifest_build_dockerfile_path returns original Dockerfile (byte-identical)"
   else
     fail "T1i D8 invariant: expected original Dockerfile path. exit=${exit_code} got='${dockerfile_path}' stderr=$(cat "$stderr_file")"
-    [[ -n "$dockerfile_path" && "$dockerfile_path" != "${REPO_ROOT}/Dockerfile" ]] && rm -f "$dockerfile_path"
+    [[ -n "$dockerfile_path" && "$dockerfile_path" != "${REPO_ROOT}/cage/Dockerfile" ]] && rm -f "$dockerfile_path"
   fi
   rm -f "$stderr_file"
   teardown_manifest_sandbox
@@ -304,7 +304,7 @@ test_t1j_with_init_step_position() {
   stderr_file=$(mktemp)
   exit_code=0
   dockerfile_path=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    bash -c "source '${RC}'; _manifest_build_dockerfile_path '${REPO_ROOT}/Dockerfile'" \
+    bash -c "source '${RC}'; _manifest_build_dockerfile_path '${REPO_ROOT}/cage/Dockerfile'" \
     2>"$stderr_file") || exit_code=$?
 
   if [[ "$exit_code" -ne 0 ]]; then
@@ -314,7 +314,7 @@ test_t1j_with_init_step_position() {
     return
   fi
 
-  if [[ "$dockerfile_path" == "${REPO_ROOT}/Dockerfile" ]]; then
+  if [[ "$dockerfile_path" == "${REPO_ROOT}/cage/Dockerfile" ]]; then
     fail "T1j _manifest_build_dockerfile_path returned original Dockerfile (expected temp with tool-init step)"
     rm -f "$stderr_file"
     teardown_manifest_sandbox
@@ -322,7 +322,7 @@ test_t1j_with_init_step_position() {
   fi
 
   local copy_settings_line init_config_line user_agent_line
-  copy_settings_line=$(grep -n "COPY settings.json /etc/rip-cage/settings.json" "$dockerfile_path" | head -1 | cut -d: -f1)
+  copy_settings_line=$(grep -n "COPY cage/agent/settings.json /etc/rip-cage/settings.json" "$dockerfile_path" | head -1 | cut -d: -f1)
   init_config_line=$(grep -n "tool-init-config.json" "$dockerfile_path" | head -1 | cut -d: -f1)
   user_agent_line=$(grep -n "^USER agent" "$dockerfile_path" | head -1 | cut -d: -f1)
 
@@ -334,7 +334,7 @@ test_t1j_with_init_step_position() {
     fail "T1j WRONG POSITION: init_config_line=${init_config_line}, copy_settings_line=${copy_settings_line}, user_agent_line=${user_agent_line}"
   fi
 
-  [[ "$dockerfile_path" != "${REPO_ROOT}/Dockerfile" ]] && rm -f "$dockerfile_path"
+  [[ "$dockerfile_path" != "${REPO_ROOT}/cage/Dockerfile" ]] && rm -f "$dockerfile_path"
   rm -f "$stderr_file"
   teardown_manifest_sandbox
 }
@@ -345,7 +345,7 @@ test_t1j_with_init_step_position() {
 test_t1k_no_tool_name_literal_in_wiring() {
   local codegen_body dispatch_body
   codegen_body=$(sed -n '/^_manifest_generate_tool_init_config_dockerfile_steps() {/,/^}/p' "$RC")
-  dispatch_body=$(sed -n '/TOOL archetype agent-context init hooks/,/unset _rc_tool_init_config/p' "${REPO_ROOT}/init-rip-cage.sh")
+  dispatch_body=$(sed -n '/TOOL archetype agent-context init hooks/,/unset _rc_tool_init_config/p' "${REPO_ROOT}/cage/init/init-rip-cage.sh")
 
   if [[ -z "$codegen_body" ]]; then
     fail "T1k SENTINEL FAILED: could not extract _manifest_generate_tool_init_config_dockerfile_steps body from rc"

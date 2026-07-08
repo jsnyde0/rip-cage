@@ -76,7 +76,7 @@ echo "--- G1: grep-guards (host-only, always) ---"
 # G1a — 'fakemux' appears NOWHERE in rc or init-rip-cage.sh.
 # This is the load-bearing precondition: if 'fakemux' were already in rc/init,
 # the test would prove nothing (it would just be testing a known special-case).
-FAKEMUX_HITS=$(grep -n 'fakemux' "${REPO_ROOT}/rc" "${REPO_ROOT}/init-rip-cage.sh" 2>/dev/null || true)
+FAKEMUX_HITS=$(grep -n 'fakemux' "${REPO_ROOT}/rc" "${REPO_ROOT}/cage/init/init-rip-cage.sh" 2>/dev/null || true)
 if [[ -z "$FAKEMUX_HITS" ]]; then
   pass "G1a 'fakemux' appears NOWHERE in rc or init-rip-cage.sh (name is novel — precondition holds)"
 else
@@ -89,7 +89,7 @@ fi
 # optional tool — not in dispatch, not in schema enum, not in comments, not in function
 # names, not in the check_tmux preflight. A broad grep catches every shape.
 # After rip-cage-61al (all children closed), expected count = 0.
-GREP_GUARD_OUT=$(grep -n 'tmux\|herdr' "${REPO_ROOT}/rc" "${REPO_ROOT}/init-rip-cage.sh" 2>/dev/null || true)
+GREP_GUARD_OUT=$(grep -n 'tmux\|herdr' "${REPO_ROOT}/rc" "${REPO_ROOT}/cage/init/init-rip-cage.sh" 2>/dev/null || true)
 if [[ -z "$GREP_GUARD_OUT" ]]; then
   pass "G1b zero tmux|herdr hits in rc + init-rip-cage.sh (ADR-005 D12 FIRM invariant holds)"
 else
@@ -114,7 +114,7 @@ fi
 # G1d — No case-arm matching 'tmux' or 'herdr' as named targets in rc or init-rip-cage.sh.
 # The case-dispatch pattern 'case.*tmux|herdr' is the historically-hardcoded dispatch shape
 # (B3's job was to de-hardcode these). Anchored grep.
-CASE_HITS=$(grep -nE 'tmux\)|herdr\)' "${REPO_ROOT}/rc" "${REPO_ROOT}/init-rip-cage.sh" 2>/dev/null || true)
+CASE_HITS=$(grep -nE 'tmux\)|herdr\)' "${REPO_ROOT}/rc" "${REPO_ROOT}/cage/init/init-rip-cage.sh" 2>/dev/null || true)
 if [[ -z "$CASE_HITS" ]]; then
   pass "G1d no 'tmux)' or 'herdr)' case-arm targets in rc or init-rip-cage.sh (B3 dispatch de-hardcoding holds)"
 else

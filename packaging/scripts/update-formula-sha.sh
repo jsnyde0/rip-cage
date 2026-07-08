@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # update-formula-sha.sh — compute sha256 of the current VERSION's source
-# tarball from GitHub and patch Formula/rip-cage.rb. Idempotent; safe to run
-# multiple times.
+# tarball from GitHub and patch packaging/Formula/rip-cage.rb. Idempotent;
+# safe to run multiple times.
 #
 # Run this AFTER pushing a vX.Y.Z tag (so GitHub's archive endpoint serves the
 # tarball). Retries up to ~2 min for tag-to-tarball propagation.
@@ -9,8 +9,8 @@
 # Release ceremony: see docs/decisions/ADR-008-open-source-publication.md D6/D8.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-FORMULA="${REPO_ROOT}/Formula/rip-cage.rb"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+FORMULA="${REPO_ROOT}/packaging/Formula/rip-cage.rb"
 VERSION_FILE="${REPO_ROOT}/VERSION"
 
 if [[ ! -f "$VERSION_FILE" ]]; then
@@ -64,8 +64,8 @@ if [[ -f "$TAP_FORMULA" ]]; then
   echo "Synced to homebrew-rip-cage tap repo"
   echo ""
   echo "Next: review and commit both repos:"
-  echo "  git diff Formula/rip-cage.rb"
-  echo "  git add Formula/rip-cage.rb"
+  echo "  git diff packaging/Formula/rip-cage.rb"
+  echo "  git add packaging/Formula/rip-cage.rb"
   echo "  git commit -m 'release: pin v${version} sha256'"
   echo "  git push"
   echo ""
@@ -76,12 +76,12 @@ if [[ -f "$TAP_FORMULA" ]]; then
 else
   echo ""
   echo "Next: review the diff and commit:"
-  echo "  git diff Formula/rip-cage.rb"
-  echo "  git add Formula/rip-cage.rb"
+  echo "  git diff packaging/Formula/rip-cage.rb"
+  echo "  git add packaging/Formula/rip-cage.rb"
   echo "  git commit -m 'release: pin v${version} sha256'"
   echo "  git push"
   echo ""
   echo "Then sync to the tap repo (homebrew-rip-cage):"
-  echo "  cp Formula/rip-cage.rb ../homebrew-rip-cage/Formula/rip-cage.rb"
+  echo "  cp packaging/Formula/rip-cage.rb ../homebrew-rip-cage/Formula/rip-cage.rb"
   echo "  cd ../homebrew-rip-cage && git add -A && git commit -m 'rip-cage ${version}' && git push"
 fi

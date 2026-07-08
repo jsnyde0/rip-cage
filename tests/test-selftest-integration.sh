@@ -47,19 +47,19 @@ if ! docker image inspect rip-cage:latest > /dev/null 2>/dev/null; then
   exit 0
 fi
 
-INIT_FIREWALL="${REPO_ROOT}/init-firewall.sh"
+INIT_FIREWALL="${REPO_ROOT}/cage/egress/init-firewall.sh"
 if [[ ! -f "$INIT_FIREWALL" ]]; then
   echo "FAIL: init-firewall.sh not found at ${INIT_FIREWALL}"
   exit 1
 fi
 
-RIP_CAGE_EGRESS_PY="${REPO_ROOT}/rip_cage_egress.py"
+RIP_CAGE_EGRESS_PY="${REPO_ROOT}/cage/egress/rip_cage_egress.py"
 if [[ ! -f "$RIP_CAGE_EGRESS_PY" ]]; then
   echo "FAIL: rip_cage_egress.py not found at ${RIP_CAGE_EGRESS_PY}"
   exit 1
 fi
 
-RIP_PROXY_START="${REPO_ROOT}/rip-proxy-start.sh"
+RIP_PROXY_START="${REPO_ROOT}/cage/egress/rip-proxy-start.sh"
 if [[ ! -f "$RIP_PROXY_START" ]]; then
   echo "FAIL: rip-proxy-start.sh not found at ${RIP_PROXY_START}"
   exit 1

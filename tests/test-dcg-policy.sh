@@ -472,7 +472,7 @@ if [[ -n "$_c11_py3_check" ]]; then
   fail 11 "missing-python3 graceful degrade" "python3 still found in sanitized PATH: $_c11_py3_check — test is not discriminating"
 else
   # Use the baked valid TOML config so the [[ -f ]] precondition (rc:3340) is satisfied.
-  _c11_valid_cfg="${SCRIPT_DIR}/../dcg/default-config.toml"
+  _c11_valid_cfg="${SCRIPT_DIR}/../cage/guards/dcg/default-config.toml"
 
   PATH="$_c11_no_py3_path" bash -c "
     source '${RC}' 2>/dev/null

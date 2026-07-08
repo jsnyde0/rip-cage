@@ -86,7 +86,7 @@ fi
 # --- Test 4: Dockerfile sudoers does NOT contain unrestricted chown ---
 echo ""
 echo "-- Test 4: Dockerfile sudoers pins chown to exact paths --"
-SUDOERS_LINE=$(grep 'sudoers.d/agent' "${REPO_ROOT}/Dockerfile")
+SUDOERS_LINE=$(grep 'sudoers.d/agent' "${REPO_ROOT}/cage/Dockerfile")
 if echo "$SUDOERS_LINE" | grep -q '/usr/bin/chown \*'; then
   fail "sudoers still contains unrestricted /usr/bin/chown *"
 elif echo "$SUDOERS_LINE" | grep -q '/usr/bin/chown agent'; then

@@ -68,7 +68,7 @@ Recipes that demonstrate **combining** multiple fragments — guard + multiplexe
 
 ## Whole-cage delta composition recipes
 
-Recipes that compose a full cage shape as a **delta on top of `dist/default-tools.yaml`** (the
+Recipes that compose a full cage shape as a **delta on top of `manifest/default-tools.yaml`** (the
 published image's reference manifest), spanning multiple archetypes at once. No pre-composed
 manifest ships alongside these — read the fragments they point at fresh, per the same judgment
 the `configure-cage` skill applies.

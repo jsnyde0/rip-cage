@@ -458,16 +458,16 @@ test_se_tier2_composed_cage_suite() {
   }
   trap _se_cleanup RETURN
 
-  # Build from dist/default-tools.yaml (the composed/default image: CC+pi+dcg+ssh-bypass).
+  # Build from manifest/default-tools.yaml (the composed/default image: CC+pi+dcg+ssh-bypass).
   # FRESH + COLD: use a temp HOME so no user manifest bleeds in.
   local se_manifest_home
   se_manifest_home=$(mktemp -d "${TMPDIR:-/tmp}/rc-se-home-XXXXXX")
   _SE_TMPDIRS+=("$se_manifest_home")
   mkdir -p "${se_manifest_home}/.config/rip-cage"
-  # Seed the dist/default-tools.yaml as the manifest for this build.
-  cp "${REPO_ROOT}/dist/default-tools.yaml" "${se_manifest_home}/.config/rip-cage/tools.yaml"
+  # Seed the manifest/default-tools.yaml as the manifest for this build.
+  cp "${REPO_ROOT}/manifest/default-tools.yaml" "${se_manifest_home}/.config/rip-cage/tools.yaml"
 
-  echo "SE: Building cage from dist/default-tools.yaml (fresh+cold, composed image)..."
+  echo "SE: Building cage from manifest/default-tools.yaml (fresh+cold, composed image)..."
   local se_build_out se_build_rc
   se_build_rc=0
   se_build_out=$(HOME="$se_manifest_home" XDG_CONFIG_HOME="${se_manifest_home}/.config" \
@@ -475,11 +475,11 @@ test_se_tier2_composed_cage_suite() {
     "${RC}" build 2>&1) || se_build_rc=$?
 
   if [[ "$se_build_rc" -ne 0 ]]; then
-    fail "SE build: dist/default-tools.yaml build FAILED (exit=${se_build_rc}). Last 10 lines: $(echo "$se_build_out" | tail -10)"
+    fail "SE build: manifest/default-tools.yaml build FAILED (exit=${se_build_rc}). Last 10 lines: $(echo "$se_build_out" | tail -10)"
     fail "SE1-SE5: LOUD-FAIL — build failed, cannot run composed-cage suite (RC_E2E=1 but build precondition missing)"
     return
   fi
-  pass "SE build: dist/default-tools.yaml build succeeded — fresh+cold composed image"
+  pass "SE build: manifest/default-tools.yaml build succeeded — fresh+cold composed image"
 
   # Bring up the cage.
   local se_ws_base se_ws se_ws_resolved
@@ -659,7 +659,7 @@ test_se_tier2_composed_cage_suite() {
   if [[ "$ssa_exists" == "yes" ]]; then
     pass "SE5 safety-stack-asserted: file EXISTS at /etc/rip-cage/safety-stack-asserted"
   else
-    fail "SE5 safety-stack-asserted: file ABSENT at /etc/rip-cage/safety-stack-asserted — dist/default-tools.yaml build did not generate it"
+    fail "SE5 safety-stack-asserted: file ABSENT at /etc/rip-cage/safety-stack-asserted — manifest/default-tools.yaml build did not generate it"
     return
   fi
 

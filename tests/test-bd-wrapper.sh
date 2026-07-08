@@ -7,7 +7,7 @@ PASS=0
 FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
-WRAPPER="${REPO_ROOT}/bd-wrapper.sh"
+WRAPPER="${REPO_ROOT}/cage/substrate/bd-wrapper.sh"
 
 check() {
   local name="$1" result="$2" detail="${3:-}"

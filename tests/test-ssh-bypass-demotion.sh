@@ -10,7 +10,7 @@
 #   SS1 — Dockerfile: block-ssh-bypass.sh absent from baked hooks COPY and chmod.
 #          Grep proves absence of the hooks COPY and the chmod hooks/*.sh that
 #          baked the hook into the base image. The known_hosts/ssh_config MOUNT floor
-#          (COPY ssh/known_hosts.github + COPY ssh/ssh_config) MUST still be present.
+#          (COPY cage/guards/ssh/known_hosts.github + COPY cage/guards/ssh/ssh_config) MUST still be present.
 #
 #   SS2 — settings.json: no PreToolUse wiring for block-ssh-bypass.
 #          The baked settings.json must NOT contain "block-ssh-bypass" — confirming
@@ -40,8 +40,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
-DOCKERFILE="${REPO_ROOT}/Dockerfile"
-SETTINGS_JSON="${REPO_ROOT}/settings.json"
+DOCKERFILE="${REPO_ROOT}/cage/Dockerfile"
+SETTINGS_JSON="${REPO_ROOT}/cage/agent/settings.json"
 EXAMPLES_SSH="${REPO_ROOT}/examples/ssh-bypass"
 FAILURES=0
 TEST_HOME=""
@@ -101,11 +101,11 @@ test_ss1_hook_absent_from_dockerfile_floor_intact() {
 
   # Known_hosts floor MUST still be present (ADR-022 — distinct from the ssh-bypass hook)
   local known_hosts_count ssh_config_count
-  known_hosts_count=$(grep -cE "COPY ssh/known_hosts" "$DOCKERFILE" || true)
-  ssh_config_count=$(grep -cE "COPY ssh/ssh_config" "$DOCKERFILE" || true)
+  known_hosts_count=$(grep -cE "COPY cage/guards/ssh/known_hosts" "$DOCKERFILE" || true)
+  ssh_config_count=$(grep -cE "COPY cage/guards/ssh/ssh_config" "$DOCKERFILE" || true)
 
   if [[ "$known_hosts_count" -gt 0 && "$ssh_config_count" -gt 0 ]]; then
-    pass "SS1(c) Dockerfile: known_hosts floor INTACT (COPY ssh/known_hosts.github count=${known_hosts_count}, COPY ssh/ssh_config count=${ssh_config_count}) — floor untouched (ADR-022)"
+    pass "SS1(c) Dockerfile: known_hosts floor INTACT (COPY cage/guards/ssh/known_hosts.github count=${known_hosts_count}, COPY cage/guards/ssh/ssh_config count=${ssh_config_count}) — floor untouched (ADR-022)"
   else
     fail "SS1(c) Dockerfile: known_hosts floor BROKEN — known_hosts_count=${known_hosts_count}, ssh_config_count=${ssh_config_count}; this floor must NOT be removed (ADR-022)"
   fi

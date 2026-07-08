@@ -44,7 +44,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FIREWALL_SCRIPT="${SCRIPT_DIR}/../init-firewall.sh"
+FIREWALL_SCRIPT="${SCRIPT_DIR}/../cage/egress/init-firewall.sh"
 FAILURES=0
 TOTAL=0
 
@@ -280,7 +280,7 @@ fi
 # Confirm RIP_CAGE_SELFTEST_PROBE_RESULT is NOT referenced in init-firewall.sh
 # (FIX 1 guard: the env-var production hook must be absent).
 # -------------------------------------------------------------------
-if grep -q "RIP_CAGE_SELFTEST_PROBE_RESULT" "${SCRIPT_DIR}/../init-firewall.sh"; then
+if grep -q "RIP_CAGE_SELFTEST_PROBE_RESULT" "${SCRIPT_DIR}/../cage/egress/init-firewall.sh"; then
   fail "hook-absent: RIP_CAGE_SELFTEST_PROBE_RESULT must NOT appear in init-firewall.sh" \
        "found in init-firewall.sh"
 else
@@ -348,7 +348,7 @@ fi
 # The router must (a) recognise SELFTEST_HOSTNAME and (b) do so before the upstream
 # connect() call — proven structurally by the selftest short-circuit appearing
 # before the first socket connect in rip_cage_router.py.
-_router_py="${SCRIPT_DIR}/../rip_cage_router.py"
+_router_py="${SCRIPT_DIR}/../cage/egress/rip_cage_router.py"
 _selftest_line=$(grep -n "SELFTEST_HOSTNAME" "$_router_py" | grep -v "^.*import" | head -1 | cut -d: -f1)
 _connect_line=$(grep -n "\.connect(" "$_router_py" | head -1 | cut -d: -f1)
 if [[ -n "$_selftest_line" && -n "$_connect_line" && "$_selftest_line" -lt "$_connect_line" ]]; then

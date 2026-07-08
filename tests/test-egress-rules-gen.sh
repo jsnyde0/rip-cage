@@ -40,11 +40,11 @@ source "$RC"
 
 # Helper: call _generate_egress_rules_file with a JSON config object.
 # $1 = JSON string (the .config subtree from _load_effective_config)
-# $2 = (optional) path to IOC rules file; defaults to ${REPO_ROOT}/egress-rules.yaml
+# $2 = (optional) path to IOC rules file; defaults to ${REPO_ROOT}/cage/egress/egress-rules.yaml
 # Echoes the generated YAML to stdout.
 gen_rules() {
   local cfg_json="$1"
-  local ioc_file="${2:-${REPO_ROOT}/egress-rules.yaml}"
+  local ioc_file="${2:-${REPO_ROOT}/cage/egress/egress-rules.yaml}"
   _generate_egress_rules_file "$cfg_json" "$ioc_file" 2>/dev/null || true
 }
 

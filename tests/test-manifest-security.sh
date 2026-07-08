@@ -344,7 +344,7 @@ test_bi1e_original_dockerfile_noop() {
   stderr_file=$(mktemp)
   exit_code=0
   # The original Dockerfile has no rc-builder-* stages.
-  bash -c "source '${RC}'; _manifest_check_build_isolation '${REPO_ROOT}/Dockerfile'" 2>"$stderr_file" || exit_code=$?
+  bash -c "source '${RC}'; _manifest_check_build_isolation '${REPO_ROOT}/cage/Dockerfile'" 2>"$stderr_file" || exit_code=$?
   if [[ "$exit_code" -eq 0 ]]; then
     pass "BI1e original Dockerfile (no rc-builder-* stages) passes isolation check (no-op)"
   else

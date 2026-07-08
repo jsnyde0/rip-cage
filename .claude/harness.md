@@ -15,7 +15,7 @@ Feedback mechanisms available in this repo. The agent picks what fits the task; 
 - **Less useful when:** logic bugs (it only validates parsing)
 
 ### `make lint` — pinned shellcheck via Docker
-- **What it is:** `make lint` runs `koalaman/shellcheck:v0.11.0` via Docker against the canonical `BASH_SCRIPTS` list (`rc init-rip-cage.sh hooks/*.sh bd-wrapper.sh tests/test-prerequisites.sh tests/test-docker-daemon-hang.sh`). This is the single lint source of truth — CI mirrors it exactly.
+- **What it is:** `make lint` runs `koalaman/shellcheck:v0.11.0` via Docker against the canonical `BASH_SCRIPTS` list (`rc cage/init/init-rip-cage.sh cage/egress/init-mediator.sh cage/guards/hooks/*.sh cage/substrate/bd-wrapper.sh tests/test-prerequisites.sh tests/test-docker-daemon-hang.sh`). This is the single lint source of truth — CI mirrors it exactly.
 - **Speed:** ~5-15s (Docker pull is cached after first run)
 - **Catches:** quoting bugs, unused variables, SC2086 word-splitting, unsafe `cd` patterns, missing `-r` on `read`
 - **Useful when:** touching any listed script — `rc` is large (~2400 lines) so shellcheck finds real bugs; run `make lint` before tagging a release

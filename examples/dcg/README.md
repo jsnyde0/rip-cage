@@ -5,7 +5,7 @@ from source and provision the guard wrapper, cage config, and sentinel fixture.
 
 DCG is **NOT floor** (ADR-025 D2, ADR-026 D2). It is a composable recipe. A cage built
 from the bare in-repo default manifest (`_manifest_default_yaml` in rc) has no DCG binary;
-containment holds via other layers. The published image includes DCG via `dist/default-tools.yaml`.
+containment holds via other layers. The published image includes DCG via `manifest/default-tools.yaml`.
 
 ## What this recipe provisions
 
@@ -38,16 +38,16 @@ The agent does the wiring. No rc source edits required.
 - `build-fragment.sh` — generator: re-run to update `manifest-fragment.yaml` after
   editing source files.
 
-## How to compose (dist/default-tools.yaml model)
+## How to compose (manifest/default-tools.yaml model)
 
-The published GHCR image includes this recipe via `dist/default-tools.yaml`. To compose
+The published GHCR image includes this recipe via `manifest/default-tools.yaml`. To compose
 locally, copy both `tools[]` entries from `manifest-fragment.yaml` into your
 `~/.config/rip-cage/tools.yaml` and run `rc build`. Zero rc source edits needed.
 
 ## pi launch wiring: OPEN by default, LOCKED opt-in (ADR-027 D1/D4)
 
 `dcg-wiring` also contributes the `launch_args` that load the DCG guard extension
-(`dcg-gate.ts`) into pi's launch. As shipped (this fragment, `dist/default-tools.yaml`):
+(`dcg-gate.ts`) into pi's launch. As shipped (this fragment, `manifest/default-tools.yaml`):
 
 ```yaml
 launch_args: ["-e", "/etc/rip-cage/pi/dcg-gate.ts"]

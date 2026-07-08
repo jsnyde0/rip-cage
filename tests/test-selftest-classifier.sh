@@ -25,7 +25,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FIREWALL_SCRIPT="${SCRIPT_DIR}/../init-firewall.sh"
+FIREWALL_SCRIPT="${SCRIPT_DIR}/../cage/egress/init-firewall.sh"
 FAILURES=0
 TOTAL=0
 

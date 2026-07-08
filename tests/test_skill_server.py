@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 
 
-SERVER_PATH = Path(__file__).resolve().parent.parent / "skill-server.py"
+SERVER_PATH = Path(__file__).resolve().parent.parent / "cage" / "substrate" / "skill-server.py"
 
 
 def launch_server(env=None):

@@ -218,7 +218,7 @@ Commands:
   config show [path] [--json]                  Print effective .rip-cage.yaml config (ADR-021); path defaults to pwd
   config get <key> [path] [--json]             Print one effective config value (dotted.key; rip-cage-08q)
   manifest reconcile                           Re-seed default-derived tools.yaml entries from current
-                                                dist/default-tools.yaml, preserving custom entries (rip-cage-6vt9)
+                                                manifest/default-tools.yaml, preserving custom entries (rip-cage-6vt9)
   schema                                       Print machine-readable command schema
   completions <shell>                          Print shell completion script (zsh|bash)
   setup                                        Interactive shell integration setup
@@ -242,15 +242,15 @@ cmd_generate_dockerfile() {
   # also running docker build. No auto-wiring; no config-merge; the agent/CI provides
   # the manifest, this function outputs the Dockerfile.
   #
-  # Usage: RC_MANIFEST_GLOBAL=dist/default-tools.yaml ./rc generate-dockerfile > Dockerfile.composed
+  # Usage: RC_MANIFEST_GLOBAL=manifest/default-tools.yaml ./rc generate-dockerfile > Dockerfile.composed
   local _df_path
-  _df_path=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/Dockerfile") || {
+  _df_path=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/cage/Dockerfile") || {
     echo "Error: failed to resolve composed Dockerfile from manifest." >&2
     return 1
   }
   cat "$_df_path"
   # Clean up temp file if one was created (path differs from original Dockerfile).
-  if [[ "$_df_path" != "${SCRIPT_DIR}/Dockerfile" ]]; then
+  if [[ "$_df_path" != "${SCRIPT_DIR}/cage/Dockerfile" ]]; then
     rm -f "$_df_path"
   fi
 }
@@ -261,7 +261,7 @@ cmd_build() {
 
   # rip-cage-6vt9: seed-drift detection — informational, never blocks the
   # build. Warns when the manifest's seed provenance stamp is stale relative
-  # to the CURRENT shipped dist/default-tools.yaml (or, unstamped, when its
+  # to the CURRENT shipped manifest/default-tools.yaml (or, unstamped, when its
   # freshness is simply unknown). See the section header above
   # _manifest_check_seed_drift for the full design.
   _manifest_check_seed_drift "$(_manifest_global_path)"
@@ -269,7 +269,7 @@ cmd_build() {
   # rip-cage-4c5.3: IOC pre-build check — reject any manifest egress: entry naming
   # a host on the IOC denylist BEFORE any Docker call (ADR-005 D3 / ADR-012 D1).
   # Fires fail-loud, naming the offending host, so the human knows what to fix.
-  if ! _manifest_check_ioc_egress "${SCRIPT_DIR}/egress-rules.yaml"; then
+  if ! _manifest_check_ioc_egress "${SCRIPT_DIR}/cage/egress/egress-rules.yaml"; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       json_error "Manifest declares an IOC-denylisted egress host — rc build refused (ADR-005 D3 / ADR-012 D1)" "MANIFEST_IOC_EGRESS_DENIED"
     fi
@@ -281,12 +281,12 @@ cmd_build() {
   local _dockerfile _tmp_dockerfile
   _dockerfile=""
   _tmp_dockerfile=""
-  _dockerfile=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/Dockerfile") || {
+  _dockerfile=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/cage/Dockerfile") || {
     echo "Error: failed to resolve Dockerfile from manifest." >&2
     return 1
   }
   # Track a temp file for cleanup (empty means original was used).
-  if [[ "$_dockerfile" != "${SCRIPT_DIR}/Dockerfile" ]]; then
+  if [[ "$_dockerfile" != "${SCRIPT_DIR}/cage/Dockerfile" ]]; then
     _tmp_dockerfile="$_dockerfile"
   fi
 
@@ -426,11 +426,11 @@ _pull_or_build_local() {
   local _pob_dockerfile _pob_tmp
   _pob_dockerfile=""
   _pob_tmp=""
-  _pob_dockerfile=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/Dockerfile") || {
+  _pob_dockerfile=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/cage/Dockerfile") || {
     echo "Error: failed to resolve Dockerfile from manifest." >&2
     return 1
   }
-  if [[ "$_pob_dockerfile" != "${SCRIPT_DIR}/Dockerfile" ]]; then
+  if [[ "$_pob_dockerfile" != "${SCRIPT_DIR}/cage/Dockerfile" ]]; then
     _pob_tmp="$_pob_dockerfile"
   fi
 
@@ -3666,7 +3666,7 @@ _generate_egress_rules_file() {
   # Second arg: path to the IOC rules file. Defaults to egress-rules.yaml
   # co-located with this script. Callers may pass an explicit path to make the
   # function testable without depending on SCRIPT_DIR resolution in sourced contexts.
-  local _ioc_rules_file="${2:-${SCRIPT_DIR}/egress-rules.yaml}"
+  local _ioc_rules_file="${2:-${SCRIPT_DIR}/cage/egress/egress-rules.yaml}"
 
   # Extract network.* fields from the effective config.
   # Note: writable_hosts was removed in rip-cage-ta1o.1 (method-asymmetry deleted).
@@ -3786,7 +3786,7 @@ _up_resolve_egress_rules() {
   local _rules_path="${_cache_dir}/egress-rules.yaml"
   mkdir -p "$_cache_dir"
   : > "$_rules_path"
-  _generate_egress_rules_file "$_eff_config" "${SCRIPT_DIR}/egress-rules.yaml" > "$_rules_path"
+  _generate_egress_rules_file "$_eff_config" "${SCRIPT_DIR}/cage/egress/egress-rules.yaml" > "$_rules_path"
 }
 
 # Global: resolved network.mode from last _up_resolve_egress_rules call.
@@ -4610,7 +4610,7 @@ cmd_up() {
   # Reject any manifest egress: entry naming a host on the IOC denylist.
   # Fires loudly naming the offending host (ADR-005 D3 / ADR-012 D1).
   _manifest_ensure_seeded
-  if ! _manifest_check_ioc_egress "${SCRIPT_DIR}/egress-rules.yaml"; then
+  if ! _manifest_check_ioc_egress "${SCRIPT_DIR}/cage/egress/egress-rules.yaml"; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       json_error "Manifest declares an IOC-denylisted egress host — rc up refused (ADR-005 D3 / ADR-012 D1)" "MANIFEST_IOC_EGRESS_DENIED"
     fi
@@ -6074,7 +6074,7 @@ cmd_reload() {
     # rip-cage-4c5.3 Fix 4: IOC check fires on EVERY egress-regeneration path
     # (build, up, AND reload). A manifest edited between rc up and rc reload to add
     # an IOC host must fail loud here, naming the offending host.
-    if ! _manifest_check_ioc_egress "${SCRIPT_DIR}/egress-rules.yaml"; then
+    if ! _manifest_check_ioc_egress "${SCRIPT_DIR}/cage/egress/egress-rules.yaml"; then
       exit 1
     fi
     _up_resolve_egress_rules "$workspace" "$cache_dir"
@@ -7757,12 +7757,12 @@ _manifest_global_path() {
 
 # The default (floor-only) tool manifest — the containment floor with no optional tools.
 # Any cage built from this default gets beads, dolt, and gh only — no CC, pi, dcg,
-# or ssh-bypass. The "blessed default" for the PUBLISHED image is dist/default-tools.yaml
+# or ssh-bypass. The "blessed default" for the PUBLISHED image is manifest/default-tools.yaml
 # (maintainer-authored, composing CC+pi+dcg+ssh-bypass). This in-repo default stays
 # floor-only so rc never silently special-cases any optional tool (ADR-005 D12).
 #
 # Agents and operators compose the rest: copy recipe fragments from examples/ into
-# ~/.config/rip-cage/tools.yaml (or dist/default-tools.yaml) and run rc build.
+# ~/.config/rip-cage/tools.yaml (or manifest/default-tools.yaml) and run rc build.
 _manifest_default_yaml() {
   cat <<'YAML'
 version: 1
@@ -7791,7 +7791,7 @@ tools:
 
   # claude, pi, dcg, ssh-bypass are NOT floor — they are composable recipes.
   # See examples/{claude,pi,dcg,ssh-bypass}/ for recipe fragments.
-  # The published image composes them via dist/default-tools.yaml (rip-cage-wlwc.12).
+  # The published image composes them via manifest/default-tools.yaml (rip-cage-wlwc.12).
   # Add recipe entries to ~/.config/rip-cage/tools.yaml and run rc build to opt in.
 YAML
 }
@@ -7821,10 +7821,10 @@ _manifest_ensure_seeded() {
 # Manifest seed-drift detection + reconcile (rip-cage-6vt9)
 #
 # ROOT CAUSE: the operator manifest ~/.config/rip-cage/tools.yaml is typically
-# composed once — by copying dist/default-tools.yaml (the maintainer-blessed
+# composed once — by copying manifest/default-tools.yaml (the maintainer-blessed
 # composed default; see _manifest_default_yaml's header above for why the
 # in-repo default stays floor-only) and adding custom entries — then never
-# re-checked against the shipped defaults. When dist/default-tools.yaml's
+# re-checked against the shipped defaults. When manifest/default-tools.yaml's
 # recipes change (e.g. a guard relocation), a frozen local manifest keeps
 # baking the superseded layout on every `rc build`, silently.
 #
@@ -7832,7 +7832,7 @@ _manifest_ensure_seeded() {
 # "stale artifact silently used, no drift-detection" family — jnvb compares
 # a resumed container's pinned image against the current image; this
 # compares a local manifest's seed provenance against the current
-# dist/default-tools.yaml.
+# manifest/default-tools.yaml.
 #
 # DETECTION SUBSTRATE: a seed-provenance STAMP (`# rc-seed-fingerprint:
 # sha256:<hash>` comment line, written by `rc manifest reconcile`), not a
@@ -7855,9 +7855,9 @@ _manifest_ensure_seeded() {
 # =============================================================================
 
 # _manifest_dist_path — the shipped, maintainer-composed default manifest
-# (dist/default-tools.yaml), resolved relative to this checkout/install.
+# (manifest/default-tools.yaml), resolved relative to this checkout/install.
 _manifest_dist_path() {
-  echo "${SCRIPT_DIR}/dist/default-tools.yaml"
+  echo "${SCRIPT_DIR}/manifest/default-tools.yaml"
 }
 
 # _manifest_seed_fingerprint_hash FILE — bare sha256 hex digest of FILE's
@@ -7895,7 +7895,7 @@ _manifest_check_seed_drift() {
   [[ -f "$_dist_path" ]] || return 0
 
   # Bypass: MANIFEST_PATH resolves to rc's own shipped dist file (the
-  # RC_MANIFEST_GLOBAL=dist/default-tools.yaml CI/release compose path). It
+  # RC_MANIFEST_GLOBAL=manifest/default-tools.yaml CI/release compose path). It
   # IS dist — comparing it to itself is meaningless, and this path must
   # never surface a warning in CI.
   local _manifest_abs _dist_abs
@@ -7912,7 +7912,7 @@ _manifest_check_seed_drift() {
     local _current_hash
     _current_hash=$(_manifest_seed_fingerprint_hash "$_dist_path")
     if [[ "$_stamp" != "$_current_hash" ]]; then
-      echo "Warning: ${_manifest_path} was seeded/reconciled from an older dist/default-tools.yaml layout — the shipped defaults changed since (sibling drift-detection family: rip-cage-jnvb, stale image on resume). Run 'rc manifest reconcile' to pull the update (preserves your custom entries)." >&2
+      echo "Warning: ${_manifest_path} was seeded/reconciled from an older manifest/default-tools.yaml layout — the shipped defaults changed since (sibling drift-detection family: rip-cage-jnvb, stale image on resume). Run 'rc manifest reconcile' to pull the update (preserves your custom entries)." >&2
     fi
     return 0
   fi
@@ -7951,7 +7951,7 @@ _manifest_check_seed_drift() {
   if [[ "$_intersecting_json" == "[]" || -z "$_intersecting_json" ]]; then
     # Zero overlap with dist by name — an all-custom manifest. Nothing to
     # compare; fall back to the same soft "provenance unknown" notice.
-    echo "Notice: ${_manifest_path} has no seed-fingerprint stamp (composed before this rc version, or hand-authored) — its freshness vs the shipped dist/default-tools.yaml defaults is unknown. Run 'rc manifest reconcile' to adopt tracking (preserves your custom entries)." >&2
+    echo "Notice: ${_manifest_path} has no seed-fingerprint stamp (composed before this rc version, or hand-authored) — its freshness vs the shipped manifest/default-tools.yaml defaults is unknown. Run 'rc manifest reconcile' to adopt tracking (preserves your custom entries)." >&2
     return 0
   fi
 
@@ -7963,7 +7963,7 @@ _manifest_check_seed_drift() {
   ' 2>/dev/null)
 
   if [[ -n "$_differing_names" ]]; then
-    echo "Warning: ${_manifest_path}: entries also present in the shipped dist/default-tools.yaml no longer match it — [${_differing_names}] differ from the current dist defaults (customized, or seeded by an older rc — a stale seed silently bakes superseded recipe layouts). Run 'rc manifest reconcile' to refresh defaults (preserves custom entries, backs up the old file, stamps provenance)." >&2
+    echo "Warning: ${_manifest_path}: entries also present in the shipped manifest/default-tools.yaml no longer match it — [${_differing_names}] differ from the current dist defaults (customized, or seeded by an older rc — a stale seed silently bakes superseded recipe layouts). Run 'rc manifest reconcile' to refresh defaults (preserves custom entries, backs up the old file, stamps provenance)." >&2
   fi
   # All name-intersecting entries byte/structurally match current dist —
   # provably current. Stay completely silent (no notice at all): this is
@@ -8898,7 +8898,7 @@ _manifest_validate() {
 #
 # `rc manifest reconcile` — the reconcile path paired with the seed-drift
 # warning above. Re-seeds default-derived entries in the local operator
-# manifest from the CURRENT shipped dist/default-tools.yaml, while
+# manifest from the CURRENT shipped manifest/default-tools.yaml, while
 # PRESERVING any entry whose name is NOT present in dist (a custom/opt-in
 # entry the operator added, e.g. an optional multiplexer integration). Never overwrites
 # silently (ADR-005 D12 — the manifest composition is the operator's): the
@@ -8912,7 +8912,7 @@ cmd_manifest() {
     *)
       echo "Usage: rc manifest reconcile" >&2
       echo "  Re-seed default-derived entries in ~/.config/rip-cage/tools.yaml from the" >&2
-      echo "  current dist/default-tools.yaml, preserving any custom (non-default) entries." >&2
+      echo "  current manifest/default-tools.yaml, preserving any custom (non-default) entries." >&2
       echo "  Backs up the previous file first; never overwrites silently." >&2
       exit 1
       ;;
@@ -9388,14 +9388,14 @@ _manifest_generate_pi_shim_steps() {
 #      for from-source tools) → before "# Non-root user" (root context; no /etc/rip-cage
 #      dependency).
 #   2. IN-CAGE-DAEMON config bake + MCP fragment merge (daemon_config_steps + daemon_mcp_steps)
-#      → after "COPY settings.json /etc/rip-cage/settings.json" (still root context,
+#      → after "COPY cage/agent/settings.json /etc/rip-cage/settings.json" (still root context,
 #        but MUST be after /etc/rip-cage is created at Dockerfile:113 and settings.json
 #        is COPY'd at Dockerfile:133; writing to /etc/rip-cage/ before mkdir-p fails with
 #        "Directory nonexistent" — rip-cage-4c5.9 fix).
-#   3. SHELL-INTEGRATION shell_init steps → after "COPY zshrc /home/agent/.zshrc"
+#   3. SHELL-INTEGRATION shell_init steps → after "COPY --chown=agent:agent cage/agent/zshrc /home/agent/.zshrc"
 #      (USER agent context; appends to the agent-owned .zshrc)
 _manifest_build_dockerfile_path() {
-  local orig_dockerfile="${1:-${SCRIPT_DIR}/Dockerfile}"
+  local orig_dockerfile="${1:-${SCRIPT_DIR}/cage/Dockerfile}"
 
   local extra_steps
   if ! extra_steps=$(_manifest_generate_extra_dockerfile_steps); then
@@ -9559,7 +9559,7 @@ _manifest_build_dockerfile_path() {
   daemon_root_steps="${daemon_root_steps%$'\n'}"
 
   if [[ -n "$daemon_root_steps" ]]; then
-    local sentinel_settings="COPY settings.json /etc/rip-cage/settings.json"
+    local sentinel_settings="COPY cage/agent/settings.json /etc/rip-cage/settings.json"
     local tmp_inject_daemon
     tmp_inject_daemon=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
     printf '\n# --- manifest-generated daemon config steps (rip-cage-4c5.5/.9) ---\n%s\n' "$daemon_root_steps" > "$tmp_inject_daemon"
@@ -9585,7 +9585,7 @@ _manifest_build_dockerfile_path() {
   # at boot to run each declared TOOL 'init' command in agent context
   # (rip-cage-p35a.2, ADR-005 D7).
   if [[ -n "$tool_init_config_steps" ]]; then
-    local sentinel_settings_ti="COPY settings.json /etc/rip-cage/settings.json"
+    local sentinel_settings_ti="COPY cage/agent/settings.json /etc/rip-cage/settings.json"
     local tmp_inject_ti
     tmp_inject_ti=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
     printf '\n# --- manifest-generated TOOL init-hook config bake (rip-cage-p35a.2) ---\n%s\n' "$tool_init_config_steps" > "$tmp_inject_ti"
@@ -9607,7 +9607,7 @@ _manifest_build_dockerfile_path() {
 
   # --- SHELL-INTEGRATION shell_init steps: inject after "COPY zshrc" sentinel ---
   if [[ -n "$shell_init_steps" ]]; then
-    local sentinel_zshrc="COPY --chown=agent:agent zshrc /home/agent/.zshrc"
+    local sentinel_zshrc="COPY --chown=agent:agent cage/agent/zshrc /home/agent/.zshrc"
     local tmp_inject_shell
     tmp_inject_shell=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
     printf '\n# --- manifest-generated shell_init steps (rip-cage-4c5.4) ---\n%s\n' "$shell_init_steps" > "$tmp_inject_shell"
@@ -9632,7 +9632,7 @@ _manifest_build_dockerfile_path() {
   # Same injection site as IN-CAGE-DAEMON config steps (root context; /etc/rip-cage exists).
   # These steps create /etc/rip-cage/multiplexers/<name>/ and write one file per declared hook.
   if [[ -n "$mux_registry_steps" ]]; then
-    local sentinel_settings_mux="COPY settings.json /etc/rip-cage/settings.json"
+    local sentinel_settings_mux="COPY cage/agent/settings.json /etc/rip-cage/settings.json"
     local tmp_inject_mux
     tmp_inject_mux=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
     printf '\n# --- manifest-generated MULTIPLEXER registry bake (rip-cage-61al.2) ---\n%s\n' "$mux_registry_steps" > "$tmp_inject_mux"
@@ -9681,7 +9681,7 @@ _manifest_build_dockerfile_path() {
   # Same injection site as MULTIPLEXER registry steps (root context; /etc/rip-cage exists).
   # These steps create /etc/rip-cage/mediators/<name>/ and write one file per declared hook.
   if [[ -n "$mediator_registry_steps" ]]; then
-    local sentinel_settings_med="COPY settings.json /etc/rip-cage/settings.json"
+    local sentinel_settings_med="COPY cage/agent/settings.json /etc/rip-cage/settings.json"
     local tmp_inject_med
     tmp_inject_med=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
     printf '\n# --- manifest-generated MEDIATOR registry bake (rip-cage-ta1o.5.1) ---\n%s\n' "$mediator_registry_steps" > "$tmp_inject_med"
@@ -9731,7 +9731,7 @@ _manifest_build_dockerfile_path() {
   # Injection site: same as daemon/mux/mediator config steps (root context; /etc/rip-cage exists).
   # rc codegen copies check strings from manifest DATA — never interprets tool names (ADR-005 D12).
   if [[ -n "$safety_stack_asserted_steps" ]]; then
-    local sentinel_settings_ssa="COPY settings.json /etc/rip-cage/settings.json"
+    local sentinel_settings_ssa="COPY cage/agent/settings.json /etc/rip-cage/settings.json"
     local tmp_inject_ssa
     tmp_inject_ssa=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
     printf '\n# --- manifest-generated safety-stack-asserted bake (rip-cage-m8zc) ---\n%s\n' "$safety_stack_asserted_steps" > "$tmp_inject_ssa"
@@ -10113,7 +10113,7 @@ _manifest_generate_tool_init_config_dockerfile_steps() {
 # are written; optional hooks absent from the manifest produce no file.
 #
 # Injection point: same as IN-CAGE-DAEMON config steps — after
-# "COPY settings.json /etc/rip-cage/settings.json" (root context;
+# "COPY cage/agent/settings.json /etc/rip-cage/settings.json" (root context;
 # /etc/rip-cage already exists at Dockerfile:127).
 #
 # D8 byte-for-byte contract: when the manifest has no MULTIPLEXER entries,
@@ -10647,7 +10647,7 @@ _rc_mux_resolve_hook_path() {
 # The check fires BEFORE any Docker call in both cmd_build and cmd_up so it is
 # testable without a working Docker daemon.
 _manifest_check_ioc_egress() {
-  local _ioc_rules_file="${1:-${SCRIPT_DIR}/egress-rules.yaml}"
+  local _ioc_rules_file="${1:-${SCRIPT_DIR}/cage/egress/egress-rules.yaml}"
 
   if ! command -v yq &>/dev/null; then
     echo "Error: yq not found — required for manifest IOC egress check (install: brew install yq)." >&2

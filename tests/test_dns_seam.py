@@ -30,7 +30,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "cage" / "egress"))
 from rip_cage_dns import (
     DNS_LABEL_LENGTH_THRESHOLD,
     dns_decide,
@@ -109,7 +109,7 @@ class TestDnsDecideUnchanged(unittest.TestCase):
         (NextDNS, Umbrella, dnsdist, Zeek) as defaults or special-cased values.
         The seam is a bare address, not a blessed product name.
         """
-        module_path = Path(__file__).parent.parent / "rip_cage_dns.py"
+        module_path = Path(__file__).parent.parent / "cage" / "egress" / "rip_cage_dns.py"
         source = module_path.read_text()
         # These are the specialist product names that must NOT be hardcoded
         forbidden = ["nextdns", "umbrella", "dnsdist", "zeek", "cisco", "opendns"]

@@ -488,7 +488,7 @@ echo ""
 echo "=== (rip-cage-61al.3) grep-guard: no optional-mux names in rc/init-rip-cage.sh ==="
 
 REPO_ROOT="${SCRIPT_DIR}/.."
-GREP_GUARD_OUT=$(grep -n 'tmux\|herdr' "${REPO_ROOT}/rc" "${REPO_ROOT}/init-rip-cage.sh" 2>/dev/null || true)
+GREP_GUARD_OUT=$(grep -n 'tmux\|herdr' "${REPO_ROOT}/rc" "${REPO_ROOT}/cage/init/init-rip-cage.sh" 2>/dev/null || true)
 
 if [[ -z "$GREP_GUARD_OUT" ]]; then
   pass "(grep-guard) zero tmux|herdr hits in rc + init-rip-cage.sh"

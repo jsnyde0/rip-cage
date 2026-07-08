@@ -88,7 +88,7 @@ RUN curl -fsSL https://github.com/dolthub/dolt/releases/download/v${DOLT_VERSION
 # bd-real is compiled in the golang:1.26-trixie builder, which links against
 # the same ICU76 that trixie's runtime ships — no soname shim needed.
 COPY --from=go-builder /go/bin/bd /usr/local/bin/bd-real
-COPY bd-wrapper.sh /usr/local/bin/bd
+COPY cage/substrate/bd-wrapper.sh /usr/local/bin/bd
 RUN chmod +x /usr/local/bin/bd /usr/local/bin/bd-real
 
 # Claude Code — bounded retry loop survives transient registry flakiness.
@@ -137,29 +137,29 @@ RUN : > /etc/rip-cage/cage-env \
 
 # Copy rip-cage files — stable files first (fewer cache busts), frequently-edited last
 RUN mkdir -p /etc/ssh/ssh_config.d
-COPY ssh/known_hosts.github /etc/ssh/ssh_known_hosts
-COPY ssh/ssh_config /etc/ssh/ssh_config.d/00-rip-cage.conf
+COPY cage/guards/ssh/known_hosts.github /etc/ssh/ssh_known_hosts
+COPY cage/guards/ssh/ssh_config /etc/ssh/ssh_config.d/00-rip-cage.conf
 RUN chmod 0644 /etc/ssh/ssh_known_hosts /etc/ssh/ssh_config.d/00-rip-cage.conf
 COPY tests/test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
 COPY tests/_safety-stack-assert-lib.sh /usr/local/lib/rip-cage/_safety-stack-assert-lib.sh
 COPY tests/run-recipe-smokes.sh /usr/local/lib/rip-cage/run-recipe-smokes.sh
-COPY settings.json /etc/rip-cage/settings.json
+COPY cage/agent/settings.json /etc/rip-cage/settings.json
 # CC managed-settings floor-lock, cage-claude.md, and cage-pi.md are provisioned by
 # composable recipes (examples/claude/, examples/pi/) via root-owned install_cmd.
 # Un-baked from base image per rip-cage-wlwc.2.2 (ADR-005 D12; floor-lock preserved:
 # install_cmd runs as root, writes chown root:root, parent dir root-owned — ADR-027 D3).
-COPY init-rip-cage.sh /usr/local/bin/init-rip-cage.sh
-COPY skill-server.py /usr/local/lib/rip-cage/skill-server.py
+COPY cage/init/init-rip-cage.sh /usr/local/bin/init-rip-cage.sh
+COPY cage/substrate/skill-server.py /usr/local/lib/rip-cage/skill-server.py
 COPY tests/test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
 COPY tests/_agent-readability.sh /usr/local/lib/rip-cage/_agent-readability.sh
-COPY egress-rules.yaml /etc/rip-cage/egress-rules.yaml
-COPY rip_cage_egress.py /usr/local/lib/rip-cage/rip_cage_egress.py
-COPY rip_cage_router.py /usr/local/lib/rip-cage/rip_cage_router.py
-COPY rip_cage_dns.py /usr/local/lib/rip-cage/rip_cage_dns.py
-COPY init-firewall.sh /usr/local/lib/rip-cage/init-firewall.sh
-COPY init-mediator.sh /usr/local/lib/rip-cage/init-mediator.sh
-COPY rip-proxy-start.sh /usr/local/lib/rip-cage/rip-proxy-start.sh
-COPY rip-dns-start.sh /usr/local/lib/rip-cage/rip-dns-start.sh
+COPY cage/egress/egress-rules.yaml /etc/rip-cage/egress-rules.yaml
+COPY cage/egress/rip_cage_egress.py /usr/local/lib/rip-cage/rip_cage_egress.py
+COPY cage/egress/rip_cage_router.py /usr/local/lib/rip-cage/rip_cage_router.py
+COPY cage/egress/rip_cage_dns.py /usr/local/lib/rip-cage/rip_cage_dns.py
+COPY cage/egress/init-firewall.sh /usr/local/lib/rip-cage/init-firewall.sh
+COPY cage/egress/init-mediator.sh /usr/local/lib/rip-cage/init-mediator.sh
+COPY cage/egress/rip-proxy-start.sh /usr/local/lib/rip-cage/rip-proxy-start.sh
+COPY cage/egress/rip-dns-start.sh /usr/local/lib/rip-cage/rip-dns-start.sh
 COPY tests/test-egress-firewall.sh /usr/local/lib/rip-cage/test-egress-firewall.sh
 COPY tests/test-bd-roundtrip.sh /usr/local/lib/rip-cage/test-bd-roundtrip.sh
 RUN chmod +x /usr/local/bin/init-rip-cage.sh \
@@ -194,7 +194,7 @@ RUN mkdir -p /home/agent/.claude /home/agent/.claude-state /home/agent/.local/sh
 RUN mkdir -p /home/agent/.config/mise \
     && printf '[settings]\nidiomatic_version_file_enable_tools = ["node", "yarn"]\n' \
        > /home/agent/.config/mise/config.toml
-COPY --chown=agent:agent zshrc /home/agent/.zshrc
+COPY --chown=agent:agent cage/agent/zshrc /home/agent/.zshrc
 # Pi cage-pi.md is provisioned by examples/pi recipe (install_cmd runs in root context
 # before USER agent). See examples/pi/build-fragment.sh. The pi launch shim and guard
 # wiring are assembled by rc build from manifest launch_args (rip-cage-l72i.1).

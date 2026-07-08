@@ -401,7 +401,7 @@ test_t1f_build_dockerfile_path_includes_shell_init() {
   stderr_file=$(mktemp)
   exit_code=0
   dockerfile_path=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    bash -c "source '${RC}'; _manifest_build_dockerfile_path '${REPO_ROOT}/Dockerfile'" 2>"$stderr_file") || exit_code=$?
+    bash -c "source '${RC}'; _manifest_build_dockerfile_path '${REPO_ROOT}/cage/Dockerfile'" 2>"$stderr_file") || exit_code=$?
 
   if [[ "$exit_code" -ne 0 ]]; then
     fail "T1f _manifest_build_dockerfile_path failed. exit=${exit_code} stderr=$(cat "$stderr_file")"
@@ -413,7 +413,7 @@ test_t1f_build_dockerfile_path_includes_shell_init() {
   # With base64-safe baking (Fix 1), the eval line is embedded as a base64 payload.
   # Check the temp Dockerfile contains: a base64 -d step AND references /home/agent/.zshrc.
   # Also verify the base64 payload decodes to include the expected tool name.
-  if [[ "$dockerfile_path" == "${REPO_ROOT}/Dockerfile" ]]; then
+  if [[ "$dockerfile_path" == "${REPO_ROOT}/cage/Dockerfile" ]]; then
     # If original returned, the step was not baked — this is a failure for SHELL-INTEGRATION
     fail "T1f _manifest_build_dockerfile_path returned original Dockerfile (expected temp with .zshrc step). path='${dockerfile_path}'"
   elif grep -q "base64" "$dockerfile_path" && grep -q "/home/agent/.zshrc" "$dockerfile_path"; then
@@ -427,10 +427,10 @@ test_t1f_build_dockerfile_path_includes_shell_init() {
       fail "T1f _manifest_build_dockerfile_path: base64 payload does not decode to expected eval. decoded='${decoded}'"
     fi
     # Cleanup temp file
-    [[ "$dockerfile_path" != "${REPO_ROOT}/Dockerfile" ]] && rm -f "$dockerfile_path"
+    [[ "$dockerfile_path" != "${REPO_ROOT}/cage/Dockerfile" ]] && rm -f "$dockerfile_path"
   else
     fail "T1f _manifest_build_dockerfile_path: temp Dockerfile missing base64 step or .zshrc reference. path='${dockerfile_path}' content=$(grep -A2 -B2 zshrc "$dockerfile_path" || echo '(no zshrc line)')"
-    [[ "$dockerfile_path" != "${REPO_ROOT}/Dockerfile" ]] && rm -f "$dockerfile_path"
+    [[ "$dockerfile_path" != "${REPO_ROOT}/cage/Dockerfile" ]] && rm -f "$dockerfile_path"
   fi
   rm -f "$stderr_file"
   teardown_manifest_sandbox

@@ -126,7 +126,7 @@ echo "--- G1: grep-guards ---"
 
 # G1a — zero hardcoded mediator names (ADR-005 D12 FIRM)
 G1A_HITS=$(grep -nE 'mitmproxy|iron-proxy|clawpatrol' \
-  "${REPO_ROOT}/rc" "${REPO_ROOT}/init-rip-cage.sh" "${REPO_ROOT}/init-mediator.sh" 2>/dev/null || true)
+  "${REPO_ROOT}/rc" "${REPO_ROOT}/cage/init/init-rip-cage.sh" "${REPO_ROOT}/cage/egress/init-mediator.sh" 2>/dev/null || true)
 if [[ -z "$G1A_HITS" ]]; then
   pass "G1a zero hardcoded mediator names in rc + init-rip-cage.sh + init-mediator.sh (ADR-005 D12)"
 else
@@ -158,7 +158,7 @@ else
 fi
 
 # G1e — init-mediator.sh exists in the repo
-if [[ -f "${REPO_ROOT}/init-mediator.sh" ]]; then
+if [[ -f "${REPO_ROOT}/cage/egress/init-mediator.sh" ]]; then
   pass "G1e init-mediator.sh exists in repo"
 else
   fail "G1e init-mediator.sh NOT found in repo — launch script missing"
@@ -169,7 +169,7 @@ fi
 # Check that no `if [ -n "${RC_MEDIATOR` guard exists in init-rip-cage.sh (it has moved).
 # shellcheck disable=SC2016
 # Intentional: grepping for a literal shell-script fragment (not expanding variables in the pattern)
-if grep -qF 'if [ -n "${RC_MEDIATOR' "${REPO_ROOT}/init-rip-cage.sh" 2>/dev/null; then
+if grep -qF 'if [ -n "${RC_MEDIATOR' "${REPO_ROOT}/cage/init/init-rip-cage.sh" 2>/dev/null; then
   fail "G1f init-rip-cage.sh still contains RC_MEDIATOR dispatch code — old broken block not removed"
 else
   pass "G1f init-rip-cage.sh has no RC_MEDIATOR dispatch code (removed in .5.8 — moved to init-mediator.sh)"
@@ -321,7 +321,7 @@ PATCHED_INIT_MED="${U1_TMP}/patched-init-mediator.sh"
 sed \
   -e "s|/etc/rip-cage/mediators|${FAKE_REG}/mediators|g" \
   -e "s|/run/rip-cage-mediator-|${U1_TMP}/pid-rip-cage-mediator-|g" \
-  "${REPO_ROOT}/init-mediator.sh" > "$PATCHED_INIT_MED"
+  "${REPO_ROOT}/cage/egress/init-mediator.sh" > "$PATCHED_INIT_MED"
 chmod +x "$PATCHED_INIT_MED"
 
 # U2a — RC_MEDIATOR set => dispatch fires AND su is called with the configured
@@ -412,7 +412,7 @@ NONEXISTENT_PATCHED="${U1_TMP}/nonexistent-init-med.sh"
 sed \
   -e "s|/etc/rip-cage/mediators|/nonexistent-reg-u2c/mediators|g" \
   -e "s|/run/rip-cage-mediator-|${U1_TMP}/pid-u2c-|g" \
-  "${REPO_ROOT}/init-mediator.sh" > "$NONEXISTENT_PATCHED"
+  "${REPO_ROOT}/cage/egress/init-mediator.sh" > "$NONEXISTENT_PATCHED"
 chmod +x "$NONEXISTENT_PATCHED"
 
 U2C_OUT=""
@@ -456,7 +456,7 @@ _run_uid_test() {
   sed \
     -e "s|/etc/rip-cage/mediators|${test_reg}/mediators|g" \
     -e "s|/run/rip-cage-mediator-|${U1_TMP}/pid-uid-${uid_val}-|g" \
-    "${REPO_ROOT}/init-mediator.sh" > "$patched"
+    "${REPO_ROOT}/cage/egress/init-mediator.sh" > "$patched"
   chmod +x "$patched"
 
   RC_MEDIATOR='baduid-med' bash "$patched" > "${U1_TMP}/uid-out-${uid_val}.txt" 2>&1
@@ -517,7 +517,7 @@ echo "--- U3: No EXIT trap for mediator in init-rip-cage.sh (F4 fix) ---"
 
 # Check that init-rip-cage.sh has NO mediator EXIT trap.
 if grep -qE 'trap.*teardown.*EXIT|trap.*EXIT.*teardown' \
-    "${REPO_ROOT}/init-rip-cage.sh" 2>/dev/null; then
+    "${REPO_ROOT}/cage/init/init-rip-cage.sh" 2>/dev/null; then
   fail "U3 SAFETY: mediator EXIT trap found in init-rip-cage.sh — this kills the mediator when one-shot init exits"
 else
   pass "U3 No mediator EXIT trap in init-rip-cage.sh — teardown-timing bug is gone"
@@ -525,7 +525,7 @@ fi
 
 # Also check that init-mediator.sh does NOT have an EXIT trap for teardown.
 if grep -qE 'trap.*teardown.*EXIT|trap.*EXIT.*teardown' \
-    "${REPO_ROOT}/init-mediator.sh" 2>/dev/null; then
+    "${REPO_ROOT}/cage/egress/init-mediator.sh" 2>/dev/null; then
   fail "U3b SAFETY: mediator EXIT trap found in init-mediator.sh — this kills the mediator when root exec returns"
 else
   pass "U3b No mediator EXIT trap in init-mediator.sh — nohup pattern used instead"
@@ -1274,7 +1274,7 @@ sed \
   -e "s|/run/rip-cage-mediator-|${U1_TMP}/pid-t1-|g" \
   -e "s/-lt 20/-lt 2/" \
   -e "s/sleep 0.5/sleep 0.05/" \
-  "${REPO_ROOT}/init-mediator.sh" > "$T1_PATCHED"
+  "${REPO_ROOT}/cage/egress/init-mediator.sh" > "$T1_PATCHED"
 chmod +x "$T1_PATCHED"
 
 cat > "${U1_TMP}/driver-t1.sh" <<DRIVER
@@ -1360,7 +1360,7 @@ sed \
   -e "s|/run/rip-cage-mediator-|${U1_TMP}/pid-t2-|g" \
   -e "s/-lt 20/-lt 2/" \
   -e "s/sleep 0.5/sleep 0.05/" \
-  "${REPO_ROOT}/init-mediator.sh" > "$T2_PATCHED"
+  "${REPO_ROOT}/cage/egress/init-mediator.sh" > "$T2_PATCHED"
 chmod +x "$T2_PATCHED"
 
 cat > "${U1_TMP}/driver-t2.sh" <<DRIVER

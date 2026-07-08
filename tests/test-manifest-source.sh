@@ -94,7 +94,7 @@ run_manifest_generate_builder_stages() {
 # Outputs the path to the temp Dockerfile on stdout.
 run_manifest_build_dockerfile_path() {
   local stderr_file="${1:-/dev/null}"
-  local orig_dockerfile="${2:-${REPO_ROOT}/Dockerfile}"
+  local orig_dockerfile="${2:-${REPO_ROOT}/cage/Dockerfile}"
   HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     bash -c "source '${RC}'; _manifest_build_dockerfile_path '${orig_dockerfile}'" 2>"$stderr_file"
 }

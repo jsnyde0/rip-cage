@@ -55,7 +55,7 @@ fi
 rm -f /tmp/rc-gm-selfcheck-underscrub.diff
 
 # ---------------------------------------------------------------------------
-# (b) Over-scrub / mutation canary: perturb dist/default-tools.yaml's first
+# (b) Over-scrub / mutation canary: perturb manifest/default-tools.yaml's first
 # tool entry's name, so `rc manifest reconcile`'s "Added (new in dist): ..."
 # summary genuinely differs, then --check against the real (unmutated)
 # baseline. Must go RED. IMPORTANT: reuse the SAME (default) GM_ROOT the
@@ -67,13 +67,13 @@ rm -f /tmp/rc-gm-selfcheck-underscrub.diff
 # production GM_ROOT literal is hardcoded in lib/sandbox.sh, so it never
 # varies machine-to-machine in the first place).
 #
-# Mutation is applied to the real checkout's dist/default-tools.yaml
+# Mutation is applied to the real checkout's manifest/default-tools.yaml
 # (generate-dockerfile's BUNDLED case reads rc's own inline
-# _manifest_default_yaml, not dist/default-tools.yaml -- `rc manifest
-# reconcile` is the case that actually reads dist/default-tools.yaml, so it
+# _manifest_default_yaml, not manifest/default-tools.yaml -- `rc manifest
+# reconcile` is the case that actually reads manifest/default-tools.yaml, so it
 # is the correct, load-bearing canary target). Restored unconditionally.
 # ---------------------------------------------------------------------------
-CANARY_FILE="${REPO_ROOT}/dist/default-tools.yaml"
+CANARY_FILE="${REPO_ROOT}/manifest/default-tools.yaml"
 CANARY_BACKUP=$(mktemp)
 cp "$CANARY_FILE" "$CANARY_BACKUP"
 restore_canary() { cp "$CANARY_BACKUP" "$CANARY_FILE"; rm -f "$CANARY_BACKUP"; }
@@ -82,7 +82,7 @@ if grep -q '^  - name: beads$' "$CANARY_FILE"; then
   sed -i.bak 's/^  - name: beads$/  - name: beadsGOLDENMASTERCANARY/' "$CANARY_FILE"
   rm -f "${CANARY_FILE}.bak"
 else
-  fail "over-scrub setup" "dist/default-tools.yaml did not contain the expected 'name: beads' anchor line -- cannot mount the mutation canary"
+  fail "over-scrub setup" "manifest/default-tools.yaml did not contain the expected 'name: beads' anchor line -- cannot mount the mutation canary"
   restore_canary
   echo ""
   echo "=== self-check.sh: ${FAILURES} failure(s) ==="
@@ -94,7 +94,7 @@ CANARY_EXIT=$?
 restore_canary
 
 if [[ "$CANARY_EXIT" -ne 0 ]] && echo "$CANARY_OUT" | grep -q "FAIL manifest_reconcile"; then
-  pass "over-scrub (mutation canary): perturbed dist/default-tools.yaml -> manifest_reconcile snapshot goes RED"
+  pass "over-scrub (mutation canary): perturbed manifest/default-tools.yaml -> manifest_reconcile snapshot goes RED"
 else
   fail "over-scrub (mutation canary)" "expected capture.sh --check to go RED (and name manifest_reconcile) on a genuinely-different reconcile summary; got exit=${CANARY_EXIT}
 $CANARY_OUT"

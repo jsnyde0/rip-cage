@@ -94,13 +94,13 @@ test_h1_default_manifest_returns_original_dockerfile() {
   stderr_file=$(mktemp)
   exit_code=0
   dockerfile_path=$(HOME="$test_home" XDG_CONFIG_HOME="${test_home}/.config" \
-    bash -c "source '${RC}'; _manifest_build_dockerfile_path '${REPO_ROOT}/Dockerfile'" \
+    bash -c "source '${RC}'; _manifest_build_dockerfile_path '${REPO_ROOT}/cage/Dockerfile'" \
     2>"$stderr_file") || exit_code=$?
 
   rm -rf "$test_home"
   rm -f "$stderr_file"
 
-  if [[ "$exit_code" -eq 0 ]] && [[ "$dockerfile_path" == "${REPO_ROOT}/Dockerfile" ]]; then
+  if [[ "$exit_code" -eq 0 ]] && [[ "$dockerfile_path" == "${REPO_ROOT}/cage/Dockerfile" ]]; then
     pass "H1 default manifest → _manifest_build_dockerfile_path returns ORIGINAL Dockerfile (D8 invariant)"
   else
     fail "H1 D8 invariant: expected original Dockerfile path. exit=${exit_code} got='${dockerfile_path}'"

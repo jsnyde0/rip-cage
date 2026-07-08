@@ -756,7 +756,7 @@ fi
 # --- Test 28: tmux.conf contains remain-on-exit setting ---
 echo ""
 echo "=== Test 28: tmux.conf has remain-on-exit on ==="
-if grep -q "remain-on-exit on" "${REPO_ROOT}/tmux.conf"; then
+if grep -q "remain-on-exit on" "${REPO_ROOT}/cage/agent/tmux.conf"; then
   pass "tmux.conf contains 'remain-on-exit on'"
 else
   fail "tmux.conf missing 'remain-on-exit on'"
@@ -765,7 +765,7 @@ fi
 # --- Test 29: tmux.conf contains pane-died hook ---
 echo ""
 echo "=== Test 29: tmux.conf has pane-died hook ==="
-if grep -q "pane-died" "${REPO_ROOT}/tmux.conf"; then
+if grep -q "pane-died" "${REPO_ROOT}/cage/agent/tmux.conf"; then
   pass "tmux.conf contains pane-died hook"
 else
   fail "tmux.conf missing pane-died hook"
@@ -774,7 +774,7 @@ fi
 # --- Test 30: init-rip-cage.sh does NOT contain runtime remain-on-exit set ---
 echo ""
 echo "=== Test 30: init-rip-cage.sh runtime remain-on-exit removed ==="
-if grep -q "tmux set-option -t rip-cage remain-on-exit" "${REPO_ROOT}/init-rip-cage.sh"; then
+if grep -q "tmux set-option -t rip-cage remain-on-exit" "${REPO_ROOT}/cage/init/init-rip-cage.sh"; then
   fail "init-rip-cage.sh still has runtime 'tmux set-option -t rip-cage remain-on-exit' (should be removed)"
 else
   pass "init-rip-cage.sh does not have runtime remain-on-exit set (moved to tmux.conf)"
@@ -783,7 +783,7 @@ fi
 # --- Test 31: init-rip-cage.sh does NOT contain runtime pane-died hook set ---
 echo ""
 echo "=== Test 31: init-rip-cage.sh runtime pane-died hook removed ==="
-if grep -q "tmux set-hook -t rip-cage pane-died" "${REPO_ROOT}/init-rip-cage.sh"; then
+if grep -q "tmux set-hook -t rip-cage pane-died" "${REPO_ROOT}/cage/init/init-rip-cage.sh"; then
   fail "init-rip-cage.sh still has runtime 'tmux set-hook -t rip-cage pane-died' (should be removed)"
 else
   pass "init-rip-cage.sh does not have runtime pane-died hook set (moved to tmux.conf)"

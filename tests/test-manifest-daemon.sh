@@ -518,7 +518,7 @@ test_t1f_build_dockerfile_path_with_daemon() {
   stderr_file=$(mktemp)
   exit_code=0
   dockerfile_path=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    bash -c "source '${RC}'; _manifest_build_dockerfile_path '${REPO_ROOT}/Dockerfile'" \
+    bash -c "source '${RC}'; _manifest_build_dockerfile_path '${REPO_ROOT}/cage/Dockerfile'" \
     2>"$stderr_file") || exit_code=$?
 
   if [[ "$exit_code" -ne 0 ]]; then
@@ -528,14 +528,14 @@ test_t1f_build_dockerfile_path_with_daemon() {
     return
   fi
 
-  if [[ "$dockerfile_path" == "${REPO_ROOT}/Dockerfile" ]]; then
+  if [[ "$dockerfile_path" == "${REPO_ROOT}/cage/Dockerfile" ]]; then
     fail "T1f _manifest_build_dockerfile_path returned original Dockerfile (expected temp with daemon step). path='${dockerfile_path}'"
   elif grep -q "daemon-config.json" "$dockerfile_path" 2>/dev/null; then
     pass "T1f _manifest_build_dockerfile_path temp Dockerfile contains daemon-config.json bake step"
-    [[ "$dockerfile_path" != "${REPO_ROOT}/Dockerfile" ]] && rm -f "$dockerfile_path"
+    [[ "$dockerfile_path" != "${REPO_ROOT}/cage/Dockerfile" ]] && rm -f "$dockerfile_path"
   else
     fail "T1f _manifest_build_dockerfile_path: temp Dockerfile missing daemon-config.json bake step. path='${dockerfile_path}'"
-    [[ "$dockerfile_path" != "${REPO_ROOT}/Dockerfile" ]] && rm -f "$dockerfile_path"
+    [[ "$dockerfile_path" != "${REPO_ROOT}/cage/Dockerfile" ]] && rm -f "$dockerfile_path"
   fi
   rm -f "$stderr_file"
   teardown_manifest_sandbox
@@ -544,7 +544,7 @@ test_t1f_build_dockerfile_path_with_daemon() {
 # ---------------------------------------------------------------------------
 # T1f2 — Daemon-config bake step POSITION regression (rip-cage-4c5.9 fix).
 #         The daemon-config bake step must appear AFTER the
-#         "COPY settings.json /etc/rip-cage/settings.json" line AND BEFORE
+#         "COPY cage/agent/settings.json /etc/rip-cage/settings.json" line AND BEFORE
 #         the "USER agent" line in the generated Dockerfile.
 #         A regression that re-splices daemon steps before "# Non-root user"
 #         (the exact bug fixed in 4c5.9) would still green T1f but fail here.
@@ -555,7 +555,7 @@ test_t1f2_daemon_config_step_position() {
   stderr_file=$(mktemp)
   exit_code=0
   dockerfile_path=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    bash -c "source '${RC}'; _manifest_build_dockerfile_path '${REPO_ROOT}/Dockerfile'" \
+    bash -c "source '${RC}'; _manifest_build_dockerfile_path '${REPO_ROOT}/cage/Dockerfile'" \
     2>"$stderr_file") || exit_code=$?
 
   if [[ "$exit_code" -ne 0 ]]; then
@@ -565,7 +565,7 @@ test_t1f2_daemon_config_step_position() {
     return
   fi
 
-  if [[ "$dockerfile_path" == "${REPO_ROOT}/Dockerfile" ]]; then
+  if [[ "$dockerfile_path" == "${REPO_ROOT}/cage/Dockerfile" ]]; then
     fail "T1f2 _manifest_build_dockerfile_path returned original Dockerfile (expected temp with daemon step)"
     rm -f "$stderr_file"
     teardown_manifest_sandbox
@@ -574,14 +574,14 @@ test_t1f2_daemon_config_step_position() {
 
   # Extract line numbers for the three sentinels
   local copy_settings_line daemon_config_line user_agent_line
-  copy_settings_line=$(grep -n "COPY settings.json /etc/rip-cage/settings.json" "$dockerfile_path" | head -1 | cut -d: -f1)
+  copy_settings_line=$(grep -n "COPY cage/agent/settings.json /etc/rip-cage/settings.json" "$dockerfile_path" | head -1 | cut -d: -f1)
   daemon_config_line=$(grep -n "daemon-config.json" "$dockerfile_path" | head -1 | cut -d: -f1)
   user_agent_line=$(grep -n "^USER agent" "$dockerfile_path" | head -1 | cut -d: -f1)
 
   # All three must be present
   if [[ -z "$copy_settings_line" ]] || [[ -z "$daemon_config_line" ]] || [[ -z "$user_agent_line" ]]; then
     fail "T1f2 Position check: could not find all sentinels in generated Dockerfile. copy_settings=${copy_settings_line} daemon_config=${daemon_config_line} user_agent=${user_agent_line}"
-    [[ "$dockerfile_path" != "${REPO_ROOT}/Dockerfile" ]] && rm -f "$dockerfile_path"
+    [[ "$dockerfile_path" != "${REPO_ROOT}/cage/Dockerfile" ]] && rm -f "$dockerfile_path"
     rm -f "$stderr_file"
     teardown_manifest_sandbox
     return
@@ -594,7 +594,7 @@ test_t1f2_daemon_config_step_position() {
     fail "T1f2 Daemon-config bake step WRONG POSITION: daemon_config_line=${daemon_config_line}, copy_settings_line=${copy_settings_line}, user_agent_line=${user_agent_line}. Expected: copy_settings < daemon_config < user_agent. A regression to pre-4c5.9 injection point would place daemon-config before COPY settings.json."
   fi
 
-  [[ "$dockerfile_path" != "${REPO_ROOT}/Dockerfile" ]] && rm -f "$dockerfile_path"
+  [[ "$dockerfile_path" != "${REPO_ROOT}/cage/Dockerfile" ]] && rm -f "$dockerfile_path"
   rm -f "$stderr_file"
   teardown_manifest_sandbox
 }
@@ -609,10 +609,10 @@ test_t1g_d8_default_manifest_original_dockerfile() {
   stderr_file=$(mktemp)
   exit_code=0
   dockerfile_path=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    bash -c "source '${RC}'; _manifest_build_dockerfile_path '${REPO_ROOT}/Dockerfile'" \
+    bash -c "source '${RC}'; _manifest_build_dockerfile_path '${REPO_ROOT}/cage/Dockerfile'" \
     2>"$stderr_file") || exit_code=$?
 
-  if [[ "$exit_code" -eq 0 ]] && [[ "$dockerfile_path" == "${REPO_ROOT}/Dockerfile" ]]; then
+  if [[ "$exit_code" -eq 0 ]] && [[ "$dockerfile_path" == "${REPO_ROOT}/cage/Dockerfile" ]]; then
     pass "T1g D8 invariant: default manifest → _manifest_build_dockerfile_path returns original Dockerfile (byte-for-byte unchanged build)"
   else
     fail "T1g D8 invariant: expected original Dockerfile path. exit=${exit_code} got='${dockerfile_path}' stderr=$(cat "$stderr_file")"

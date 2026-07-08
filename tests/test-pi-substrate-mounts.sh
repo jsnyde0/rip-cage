@@ -22,7 +22,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RC="${SCRIPT_DIR}/../rc"
-INIT="${SCRIPT_DIR}/../init-rip-cage.sh"
+INIT="${SCRIPT_DIR}/../cage/init/init-rip-cage.sh"
 WRAPPER="${SCRIPT_DIR}/../examples/pi/pi-wrapper.sh"
 FAILURES=0
 TEST_TMPDIR=""

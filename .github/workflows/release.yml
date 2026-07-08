@@ -106,12 +106,12 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
           yq --version
 
-      - name: Generate composed Dockerfile from dist/default-tools.yaml
+      - name: Generate composed Dockerfile from manifest/default-tools.yaml
         # rip-cage-wlwc.12: the published image is built from the maintainer-authored
-        # default-composed manifest (dist/default-tools.yaml), which composes CC+pi+dcg+ssh-bypass.
+        # default-composed manifest (manifest/default-tools.yaml), which composes CC+pi+dcg+ssh-bypass.
         # The composition mechanism is "agent/CI copies recipe fragments into the manifest,
         # runs rc build" — no compose mechanism in rc code (ADR-005 D12).
-        run: RC_MANIFEST_GLOBAL=dist/default-tools.yaml ./rc generate-dockerfile > /tmp/Dockerfile.composed
+        run: RC_MANIFEST_GLOBAL=manifest/default-tools.yaml ./rc generate-dockerfile > /tmp/Dockerfile.composed
 
       - name: Build and push by digest
         id: build

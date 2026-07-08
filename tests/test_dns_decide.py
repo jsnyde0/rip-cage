@@ -23,7 +23,7 @@ import time
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "cage" / "egress"))
 from rip_cage_dns import (
     dns_decide,
     DNSDecisionResult,

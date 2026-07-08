@@ -2,9 +2,9 @@
 # Host-side tests for manifest seed-drift detection + reconcile (rip-cage-6vt9).
 #
 # ROOT CAUSE (rip-cage-6vt9): the operator manifest ~/.config/rip-cage/tools.yaml
-# is composed once (typically by copying dist/default-tools.yaml and adding
+# is composed once (typically by copying manifest/default-tools.yaml and adding
 # custom entries) and never re-checked against the shipped defaults. When the
-# maintainer-shipped dist/default-tools.yaml's recipes change (e.g. a guard
+# maintainer-shipped manifest/default-tools.yaml's recipes change (e.g. a guard
 # relocation), a frozen local manifest keeps baking the superseded layout on
 # every `rc build`, with no signal. Sibling of rip-cage-jnvb (stale IMAGE
 # blind-resumed on `rc up`) — same "stale artifact silently used, no
@@ -15,7 +15,7 @@
 # sha256:<hash>` comment line), not a raw content-diff — a content-diff would
 # false-fire on legitimate user customization (any hand-edit looks like
 # drift). `rc manifest reconcile` writes the stamp with the CURRENT
-# dist/default-tools.yaml hash at reconcile time; `rc build` compares the
+# manifest/default-tools.yaml hash at reconcile time; `rc build` compares the
 # recorded stamp to dist's CURRENT hash. Unstamped manifests (every manifest
 # in the wild before this bead) get either silence (byte-identical to the
 # floor-only in-repo default — nothing composed, nothing to reconcile) or a
@@ -36,7 +36,7 @@
 #   D4  unstamped + byte-identical to the floor default (`_manifest_default_yaml`)
 #       -> completely silent (no cry-wolf on a totally vanilla/unconfigured
 #       manifest).
-#   D5  RC_MANIFEST_GLOBAL pointed AT dist/default-tools.yaml itself (the
+#   D5  RC_MANIFEST_GLOBAL pointed AT manifest/default-tools.yaml itself (the
 #       CI/release compose path) -> drift check bypassed entirely (it IS
 #       dist; comparing it to itself is meaningless, and CI must never see
 #       this warning).
@@ -56,7 +56,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
-DIST_MANIFEST="${REPO_ROOT}/dist/default-tools.yaml"
+DIST_MANIFEST="${REPO_ROOT}/manifest/default-tools.yaml"
 FAILURES=0
 TOTAL=0
 
@@ -371,11 +371,11 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
-# D5: RC_MANIFEST_GLOBAL pointed AT dist/default-tools.yaml itself -> the
+# D5: RC_MANIFEST_GLOBAL pointed AT manifest/default-tools.yaml itself -> the
 #     drift check is bypassed entirely (it IS dist; this is the CI/release
 #     compose path and must never warn, per ci.yml/release.yml).
 # ---------------------------------------------------------------------------
-echo "-- D5: RC_MANIFEST_GLOBAL=dist/default-tools.yaml bypasses the check --"
+echo "-- D5: RC_MANIFEST_GLOBAL=manifest/default-tools.yaml bypasses the check --"
 
 D5_STUB_DIR=$(_msd_new_stub_dir)
 D5_ERR_FILE="${MSD_TMP}/d5-err"
@@ -386,9 +386,9 @@ PATH="${D5_STUB_DIR}:$PATH" \
 D5_ERR=$(cat "$D5_ERR_FILE" 2>/dev/null || true)
 
 if [[ "$D5_EXIT" -eq 0 ]]; then
-  pass "D5z build succeeds cleanly against dist/default-tools.yaml directly"
+  pass "D5z build succeeds cleanly against manifest/default-tools.yaml directly"
 else
-  fail "D5z build succeeds cleanly against dist/default-tools.yaml directly" "exit=$D5_EXIT stderr=$D5_ERR"
+  fail "D5z build succeeds cleanly against manifest/default-tools.yaml directly" "exit=$D5_EXIT stderr=$D5_ERR"
 fi
 if ! printf '%s' "$D5_ERR" | grep -qi "reconcile\|seed-fingerprint\|provenance"; then
   pass "D5 RC_MANIFEST_GLOBAL=dist bypasses the drift check entirely (no warning/notice)"

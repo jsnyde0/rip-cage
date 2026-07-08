@@ -1,4 +1,4 @@
-# dist/default-tools.yaml - maintainer-authored default-composed tool manifest
+# manifest/default-tools.yaml - maintainer-authored default-composed tool manifest
 #
 # This is the DEFAULT CONFIG for the DISTRIBUTION LAYER (GHCR published image +
 # brew formula). It composes the floor tools + the CC, pi, dcg, and ssh-bypass
@@ -10,7 +10,7 @@
 #   - The in-repo default manifest (_manifest_default_yaml) is floor-only: beads,
 #     dolt, gh. A local rc build without configuration produces a floor-only image.
 #   - The published image is built with:
-#         RC_MANIFEST_GLOBAL=dist/default-tools.yaml ./rc build
+#         RC_MANIFEST_GLOBAL=manifest/default-tools.yaml ./rc build
 #     No compose mechanism in rc; no auto-wiring. An agent copies recipe fragments
 #     from examples/ into this file and runs rc build. rip-cage builds no plumbing.
 #

@@ -7,7 +7,7 @@
 #     boot-hook (rip-cage-p35a.2 seam, ADR-005 D7) — NOT in base init-rip-cage.sh.
 #   - init-rip-cage.sh's remaining pi/PI_CODING references are all justified
 #     base-infra (genuinely can't move to the per-recipe seam).
-#   - dist/default-tools.yaml and the l72i.7 e2e fixture (verbatim copies of
+#   - manifest/default-tools.yaml and the l72i.7 e2e fixture (verbatim copies of
 #     the pi-recipe entry) stay in sync with examples/pi/manifest-fragment.yaml.
 #   - the pi recipe ships the --model launch_arg MECHANISM + a documented
 #     EXAMPLE, but NOT an active universal default (DESIGN CLARIFICATION,
@@ -29,7 +29,7 @@
 #           markers: _rc_pi_ext_dir=, the command -v pi gated mkdir).
 #     T1e — init-rip-cage.sh's remaining pi-specific lines (chown, substrate
 #           link loop, pi-verify) each carry a BASE-INFRA justification tag.
-#     T1f — dist/default-tools.yaml's pi-recipe entry byte-matches examples/
+#     T1f — manifest/default-tools.yaml's pi-recipe entry byte-matches examples/
 #           pi/manifest-fragment.yaml's pi-recipe entry (dist-sync).
 #     T1g — tests/fixtures/manifest-dcg-herdr-pi.yaml's pi-recipe entry
 #           byte-matches examples/pi/manifest-fragment.yaml's pi-recipe entry
@@ -38,7 +38,7 @@
 #           launch_arg MECHANISM (a commented EXAMPLE naming openai-codex/
 #           gpt-5.5 + the throttle rationale) but the pi-recipe TOOL entry
 #           itself declares NO active launch_args field (no universal default).
-#     T1i — dist/default-tools.yaml's pi-recipe entry ALSO has no active
+#     T1i — manifest/default-tools.yaml's pi-recipe entry ALSO has no active
 #           launch_args field (the shipped default never force-pins a model).
 #
 #   T2 (e2e, NEEDS_CONTAINER / RC_E2E=1): covered by the existing
@@ -58,8 +58,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 PI_FRAGMENT="${REPO_ROOT}/examples/pi/manifest-fragment.yaml"
-INIT_SCRIPT="${REPO_ROOT}/init-rip-cage.sh"
-DIST_MANIFEST="${REPO_ROOT}/dist/default-tools.yaml"
+INIT_SCRIPT="${REPO_ROOT}/cage/init/init-rip-cage.sh"
+DIST_MANIFEST="${REPO_ROOT}/manifest/default-tools.yaml"
 E2E_FIXTURE="${REPO_ROOT}/tests/fixtures/manifest-dcg-herdr-pi.yaml"
 FAILURES=0
 TEST_HOME=""
@@ -183,7 +183,7 @@ test_t1e_remaining_pi_lines_justified() {
 }
 
 # ---------------------------------------------------------------------------
-# T1f — dist/default-tools.yaml pi-recipe entry byte-matches examples/pi
+# T1f — manifest/default-tools.yaml pi-recipe entry byte-matches examples/pi
 # ---------------------------------------------------------------------------
 test_t1f_dist_pi_recipe_in_sync() {
   local examples_entry dist_entry
@@ -195,13 +195,13 @@ test_t1f_dist_pi_recipe_in_sync() {
     return
   fi
   if [[ -z "$dist_entry" ]]; then
-    fail "T1f SENTINEL FAILED: could not extract pi-recipe entry from dist/default-tools.yaml"
+    fail "T1f SENTINEL FAILED: could not extract pi-recipe entry from manifest/default-tools.yaml"
     return
   fi
   if [[ "$examples_entry" == "$dist_entry" ]]; then
-    pass "T1f dist/default-tools.yaml pi-recipe entry byte-matches examples/pi/manifest-fragment.yaml (regenerated)"
+    pass "T1f manifest/default-tools.yaml pi-recipe entry byte-matches examples/pi/manifest-fragment.yaml (regenerated)"
   else
-    fail "T1f dist/default-tools.yaml pi-recipe entry is STALE relative to examples/pi/manifest-fragment.yaml — regenerate dist (memory dist-default-manifest-must-be-regenerated-when-example-recipes-change)"
+    fail "T1f manifest/default-tools.yaml pi-recipe entry is STALE relative to examples/pi/manifest-fragment.yaml — regenerate dist (memory dist-default-manifest-must-be-regenerated-when-example-recipes-change)"
   fi
 }
 
@@ -268,9 +268,9 @@ test_t1i_dist_pi_recipe_no_active_pin() {
     return
   fi
   if echo "$entry" | grep -q "^    launch_args:"; then
-    fail "T1i dist/default-tools.yaml pi-recipe entry declares an active launch_args (would force a --model pin on every operator) — DESIGN CLARIFICATION forbids a universal default"
+    fail "T1i manifest/default-tools.yaml pi-recipe entry declares an active launch_args (would force a --model pin on every operator) — DESIGN CLARIFICATION forbids a universal default"
   else
-    pass "T1i dist/default-tools.yaml pi-recipe entry has no active launch_args (no universal --model default shipped)"
+    pass "T1i manifest/default-tools.yaml pi-recipe entry has no active launch_args (no universal --model default shipped)"
   fi
 }
 

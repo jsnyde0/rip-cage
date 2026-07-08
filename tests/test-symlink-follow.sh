@@ -960,7 +960,7 @@ test_s17_d5_label_invariant() {
 # ---------------------------------------------------------------------------
 test_s18_cage_claude_md_unchanged() {
   local last_cage_mod
-  last_cage_mod=$(git -C "$REPO_ROOT" log --oneline -- cage-claude.md 2>/dev/null | head -1 || true)
+  last_cage_mod=$(git -C "$REPO_ROOT" log --oneline -- cage/agent/cage-claude.md 2>/dev/null | head -1 || true)
   if [[ -z "$last_cage_mod" ]]; then
     pass "18" "cage-claude.md negative invariant: file has no modifications in git log"
     return
@@ -968,7 +968,7 @@ test_s18_cage_claude_md_unchanged() {
 
   # Check if cage-claude.md has any uncommitted changes
   local cage_status
-  cage_status=$(git -C "$REPO_ROOT" status --porcelain -- cage-claude.md 2>/dev/null || true)
+  cage_status=$(git -C "$REPO_ROOT" status --porcelain -- cage/agent/cage-claude.md 2>/dev/null || true)
   if [[ -z "$cage_status" ]]; then
     pass "18" "cage-claude.md negative invariant: no uncommitted changes to cage-claude.md in bead B"
   else

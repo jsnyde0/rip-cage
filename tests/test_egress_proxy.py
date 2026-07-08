@@ -34,7 +34,7 @@ from pathlib import Path
 # Import the module under test. The pure decide() function is importable
 # without a live proxy. pyyaml must be installed (uv run --with pyyaml).
 try:
-    sys.path.insert(0, str(Path(__file__).parent.parent))
+    sys.path.insert(0, str(Path(__file__).parent.parent / "cage" / "egress"))
     from rip_cage_egress import decide, DecisionResult, STRUCTURED_FIELD_NAMES
     import rip_cage_router
     from rip_cage_router import (

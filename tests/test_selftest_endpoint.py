@@ -18,7 +18,7 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "cage" / "egress"))
 from rip_cage_egress import (
     SELFTEST_HOSTNAME,
     SELFTEST_MARKER_HEADER,
