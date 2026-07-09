@@ -27,6 +27,19 @@
 # is deterministically GREEN (every worker gets its own root, so no two
 # processes ever touch the same directory).
 #
+# S3 (rip-cage-9odv): an AMBIENT-ENV-LEAK regression check, orthogonal to
+# S1/S2's scratch-root race. gm_capture() (sandbox.sh) launches the child
+# `rc` with plain `env` (whitelist-APPEND, not clean-slate `env -i`), so an
+# ambient RC_CONFIG_GLOBAL / RC_MANIFEST_GLOBAL exported by the calling
+# process (e.g. tests/run-host.sh's own driver fixture, ~line 193) leaks
+# into every sandboxed `rc` invocation and corrupts the config the
+# golden-master cases resolve against. capture.sh --check is 55/55 when run
+# standalone (no ambient var) but was 5-7/55 red when run inside the full
+# run-host.sh suite. S3 exports a bogus RC_CONFIG_GLOBAL and RC_MANIFEST_GLOBAL
+# in THIS process's environment and asserts capture.sh --check is still
+# 55/55 -- i.e. the golden-master outcome must be independent of ambient
+# RC_*/RIP_CAGE_* vars.
+#
 # Wired into tests/run-host.sh (host-only tier).
 set -uo pipefail
 
@@ -130,6 +143,24 @@ if [[ "$TOTAL_CORRUPT" -eq 0 ]]; then
   pass "S2: ${WORKERS} concurrent sandbox-sourcing workers x ${ITERS} resets each -- zero cross-contamination"
 else
   fail "S2 concurrency isolation" "${TOTAL_CORRUPT} cross-contamination event(s) across ${WORKERS} concurrent workers -- see ${STRESS_DIR}/worker-*.result (removed on exit; rerun to inspect)"
+fi
+
+# ---------------------------------------------------------------------------
+# S3: ambient RC_CONFIG_GLOBAL / RC_MANIFEST_GLOBAL must not leak into the
+# sandboxed `rc` child that gm_capture() launches. Run capture.sh --check
+# with bogus values of both exported in this process's environment; it must
+# report 0 failure(s), same as a clean run.
+# ---------------------------------------------------------------------------
+CAPTURE_SH="${SCRIPT_DIR}/golden-master/capture.sh"
+S3_OUT=$(RC_CONFIG_GLOBAL=/tmp/bogus-leak-9odv/config.yaml \
+  RC_MANIFEST_GLOBAL=/tmp/bogus-leak-9odv/manifest.yaml \
+  bash "$CAPTURE_SH" --check 2>&1)
+S3_SUMMARY=$(printf '%s\n' "$S3_OUT" | grep -E '^=== capture\.sh \(check\):' || true)
+
+if printf '%s' "$S3_SUMMARY" | grep -q ', 0 failure(s)'; then
+  pass "S3: ambient RC_CONFIG_GLOBAL/RC_MANIFEST_GLOBAL does not leak into sandboxed rc (${S3_SUMMARY})"
+else
+  fail "S3 ambient env-leak isolation" "capture.sh --check with ambient RC_CONFIG_GLOBAL/RC_MANIFEST_GLOBAL set did not report 0 failure(s): ${S3_SUMMARY:-<no summary line found>}"
 fi
 
 echo ""

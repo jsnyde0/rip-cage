@@ -98,6 +98,30 @@ gm_capture() {
     "XDG_CONFIG_HOME=${GM_XDG}"
     "TERM=dumb"
   )
+  # rip-cage-9odv: namespace-scoped hermeticity. gm_capture launches the
+  # child `rc` with plain `env` (whitelist-APPEND, not clean-slate `env -i`)
+  # so it inherits the calling process's FULL environment. That's fine for
+  # most vars (e.g. tests/run-host.sh's own driver fixture legitimately
+  # wants ambient ordinary vars to pass through), but it means an ambient
+  # RC_CONFIG_GLOBAL/RC_MANIFEST_GLOBAL/etc (e.g. run-host.sh ~line 193
+  # exports RC_CONFIG_GLOBAL for ITS OWN fixture) silently overrides the
+  # config golden-master cases resolve against -- capture.sh --check was
+  # 55/55 standalone but red inside the full run-host.sh suite. Explicitly
+  # `-u` every currently-exported RC_*/RIP_CAGE_* var before the _env
+  # assignments below: `env` processes args left-to-right, so a later
+  # explicit RC_CONFIG_GLOBAL=... in _env (the GM_CONFIG_GLOBAL opt-in a
+  # few lines down) still wins over an earlier `-u RC_CONFIG_GLOBAL` here.
+  # Deliberately NOT a full env -i clean-slate: that would also strip
+  # LANG/LC_ALL and other base vars `rc` may read, risking collation drift
+  # and colliding with the separate LC_ALL=C pin (rip-cage-qt4k). Scoped to
+  # this one namespace so it closes the whole RC_*/RIP_CAGE_* leak class
+  # without touching locale. GM_DOCKER_* (forwarded below) is a DIFFERENT,
+  # deliberately-forwarded namespace (shim knobs) -- left untouched.
+  local -a _env_unset=()
+  local _leak_var
+  for _leak_var in $(compgen -e 2>/dev/null | grep -E '^(RC_|RIP_CAGE_)' || true); do
+    _env_unset+=(-u "$_leak_var")
+  done
   if [[ "${GM_NO_ALLOWED_ROOTS:-0}" != "1" ]]; then
     _env+=("RC_ALLOWED_ROOTS=${GM_ALLOWED_ROOTS:-$GM_WS}")
   fi
@@ -114,7 +138,10 @@ gm_capture() {
   done
 
   set +e
-  env "${_env[@]}" "$RC" "$@" >"$_outfile" 2>"$_errfile" < "${GM_STDIN:-/dev/null}"
+  # ${_env_unset[@]+...}: expand to nothing when _env_unset is empty (clean
+  # env, no ambient RC_*/RIP_CAGE_*) WITHOUT tripping `set -u` on bash 3.2
+  # (macOS /bin/bash), where a bare "${empty[@]}" is an unbound-variable error.
+  env ${_env_unset[@]+"${_env_unset[@]}"} "${_env[@]}" "$RC" "$@" >"$_outfile" 2>"$_errfile" < "${GM_STDIN:-/dev/null}"
   GM_EXIT=$?
   set -e 2>/dev/null || true
   set +e
