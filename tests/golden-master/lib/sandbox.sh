@@ -25,11 +25,40 @@ REPO_ROOT="$(cd "${GM_DIR}/../.." && pwd)"
 RC="${REPO_ROOT}/rc"
 GM_FAKEBIN="${GM_LIB_DIR}/fake-bin"
 
-# Fixed (non-mktemp) scratch root. Override via GM_ROOT_OVERRIDE for the
-# two-directional self-check driver, which needs TWO independent scratch
-# roots (one per run) so the second run's fixture writes cannot mask a
-# scrub gap in the first run's captured paths.
-GM_ROOT="${GM_ROOT_OVERRIDE:-${TMPDIR:-/tmp}/rc-golden-master-root}"
+# Fixed (non-mktemp, non-random) scratch-root NAME, but per-PROCESS-unique
+# scratch-root PATH: the default fallback nests the fixed leaf directory
+# name "rc-golden-master-root" under a $$-tagged parent
+# (rc-golden-master-root.$$/), computed ONCE here at source-time (module
+# load), not inside gm_sandbox_reset -- every case within one invocation
+# still shares the same root; only cross-process invocations differ
+# (rip-cage-6qxs: a shared, unlocked GM_ROOT let any two overlapping
+# sandbox-sourcing processes rm -rf/mkdir-race each other's fixtures).
+#
+# The leaf basename is kept EXACTLY "rc-golden-master-root" (not
+# "rc-golden-master-root.$$") deliberately: `container_name()`
+# (cli/lib/container.sh) derives container names from
+# basename(dirname(path))-basename(path) alone, discarding the rest of the
+# path -- so the workspace's container name embeds GM_ROOT's bare basename
+# literally, UNSCRUBBED (scrub.sh's gm_scrub_root_script only scrubs
+# full-path occurrences of GM_ROOT, not this standalone token; see
+# up_dry_run_json_*/up_validate_warning_seam snapshots, which hardcode
+# "rc-golden-master-root-workspace"). Tagging the basename itself with $$
+# would vary that literal every run and break golden-master byte-
+# determinism; nesting under a $$-tagged PARENT keeps the full path
+# per-process-unique (so gm_sandbox_reset's rm -rf never collides across
+# processes) while the basename-derived container name stays byte-for-byte
+# identical to the recorded baseline. mktemp's randomized suffix (and
+# macOS's randomized /var/folders/<rand> TMPDIR) is intentionally NOT used
+# for the same reason a fixed name was originally chosen: it would inject
+# nondeterminism into every path reference before the scrub even runs
+# (full-path occurrences ARE scrubbed, so this is about full-path
+# CONTENT-derived tokens like the container name, not the scrub itself).
+#
+# Override via GM_ROOT_OVERRIDE for the two-directional self-check driver,
+# which needs TWO independent scratch roots (one per run) so the second
+# run's fixture writes cannot mask a scrub gap in the first run's captured
+# paths.
+GM_ROOT="${GM_ROOT_OVERRIDE:-${TMPDIR:-/tmp}/rc-golden-master-root.$$/rc-golden-master-root}"
 GM_ROOT="${GM_ROOT%/}"
 
 GM_HOME="${GM_ROOT}/home"

@@ -287,6 +287,7 @@ run_test "${SCRIPT_DIR}/test-allowed-roots-bypass.sh"  # rip-cage-36j: RC_ALLOWE
 # wired here — it's a meta-check of the harness's own scrub soundness, run
 # on-demand when cases.sh/scrub.sh change, not a per-commit regression gate.
 run_test "${SCRIPT_DIR}/golden-master/capture.sh"       # §1/§2: byte-identity check of the recorded baseline (--check, the default)
+run_test "${SCRIPT_DIR}/test-golden-master-sandbox-isolation.sh" # rip-cage-6qxs: GM_ROOT per-process-uniqueness (structural) + concurrent sandbox-sourcing processes don't cross-contaminate (stress)
 run_test "${SCRIPT_DIR}/test-up-run-args-full-chain.sh" # §3(i) CRITICAL gate, helper-level: full create-path _UP_RUN_ARGS replica
 run_test "${SCRIPT_DIR}/test-up-run-args-e2e.sh"        # §3(i) CRITICAL gate, e2e: real cmd_up through the content-keyed docker shim
 run_test "${SCRIPT_DIR}/test-up-validate-warning-seam.sh" # §3(iii): RC_VALIDATE_WARNING write (validate_path) -> read (_up_json_output) seam
