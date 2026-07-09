@@ -40,6 +40,16 @@
 # 55/55 -- i.e. the golden-master outcome must be independent of ambient
 # RC_*/RIP_CAGE_* vars.
 #
+# S4 (rip-cage-qt4k): an AMBIENT-LOCALE-LEAK regression check, orthogonal to
+# S1/S2/S3. gm_capture launches the child `rc` with plain `env` (not env -i),
+# so it inherits the caller's LANG/LC_ALL/LC_COLLATE; rc's allowlist
+# --observed path pipes through `sort -u`, whose ordering is collation-
+# dependent, so a non-C ambient locale could break byte-identity across
+# machines. S4 exports a hostile non-C LC_ALL, overrides RC with a locale
+# probe, and asserts the sandboxed child still sees LC_ALL=C (the pin wins
+# over the inherited locale). Latent today (no GM case exercises sort -u) but
+# guarded ahead of the msb migration running the net on a different-locale CI.
+#
 # Wired into tests/run-host.sh (host-only tier).
 set -uo pipefail
 
@@ -161,6 +171,40 @@ if printf '%s' "$S3_SUMMARY" | grep -q ', 0 failure(s)'; then
   pass "S3: ambient RC_CONFIG_GLOBAL/RC_MANIFEST_GLOBAL does not leak into sandboxed rc (${S3_SUMMARY})"
 else
   fail "S3 ambient env-leak isolation" "capture.sh --check with ambient RC_CONFIG_GLOBAL/RC_MANIFEST_GLOBAL set did not report 0 failure(s): ${S3_SUMMARY:-<no summary line found>}"
+fi
+
+# ---------------------------------------------------------------------------
+# S4 (rip-cage-qt4k): gm_capture must pin LC_ALL=C in the sandboxed child
+# regardless of the invoking shell's ambient locale, so `sort -u`-driven
+# output (rc's allowlist --observed path) is collation-deterministic across
+# machines. A `capture.sh --check` assertion would be VACUOUS here: no current
+# golden-master case exercises the sort -u path, so it stays 55/55 with OR
+# without the pin (assert-negative vacuity). Instead assert the pin DIRECTLY
+# and discriminatingly: override RC with a locale probe, export a HOSTILE
+# non-C ambient LC_ALL, and confirm the child still sees LC_ALL=C. Mutation-
+# verified: drop the LC_ALL=C line from sandbox.sh:_env and this goes RED
+# (child sees the leaked en_US.UTF-8), pass with the pin.
+# ---------------------------------------------------------------------------
+S4_PROBE="${STRESS_DIR}/lc-probe.sh"
+cat > "$S4_PROBE" <<'PROBE'
+#!/usr/bin/env bash
+printf 'PROBE_LC_ALL=%s\n' "${LC_ALL:-<unset>}"
+PROBE
+chmod +x "$S4_PROBE"
+
+S4_OUT=$(
+  export LC_ALL=en_US.UTF-8
+  # shellcheck source=/dev/null
+  source "${GM_LIB}/sandbox.sh"
+  RC="$S4_PROBE"          # gm_capture runs "$RC"; point it at the probe
+  gm_capture noop
+  printf '%s' "$GM_OUT"
+)
+
+if printf '%s' "$S4_OUT" | grep -q '^PROBE_LC_ALL=C$'; then
+  pass "S4: gm_capture pins LC_ALL=C in the child regardless of ambient LC_ALL (collation determinism)"
+else
+  fail "S4 LC_ALL collation pin" "with ambient LC_ALL=en_US.UTF-8 exported, the sandboxed child saw '${S4_OUT:-<no output>}' -- expected 'PROBE_LC_ALL=C' (rip-cage-qt4k pin not applied / not winning over the inherited locale)"
 fi
 
 echo ""

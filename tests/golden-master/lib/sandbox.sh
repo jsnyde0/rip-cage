@@ -97,6 +97,19 @@ gm_capture() {
     "HOME=${GM_HOME}"
     "XDG_CONFIG_HOME=${GM_XDG}"
     "TERM=dumb"
+    # rip-cage-qt4k: pin LC_ALL=C for cross-machine collation determinism.
+    # gm_capture launches the child `rc` with plain `env` (NOT env -i), so it
+    # inherits the invoking shell's locale (LANG/LC_ALL/LC_COLLATE). rc's
+    # allowlist path (_allowlist_read_observed_hosts, cli/allowlist.sh) pipes
+    # through `sort -u`, whose ordering is locale-collation-dependent, so a
+    # non-C ambient locale (e.g. a CI runner vs a laptop) could yield a
+    # different byte order and break golden-master byte-identity across
+    # machines. LC_ALL=C dominates LANG and every other LC_* (incl.
+    # LC_COLLATE), and comes AFTER any inherited value in env's left-to-right
+    # arg processing, so it wins over whatever the caller's shell exported.
+    # Latent today (no GM case exercises the sort -u path yet) but pinned
+    # ahead of the msb migration running the net on a different-locale runner.
+    "LC_ALL=C"
   )
   # rip-cage-9odv: namespace-scoped hermeticity. gm_capture launches the
   # child `rc` with plain `env` (whitelist-APPEND, not clean-slate `env -i`)
