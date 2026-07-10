@@ -2,8 +2,16 @@
 set -uo pipefail
 
 # Test that pi-coding-agent is installed in the rip-cage:latest image
-# and that /home/agent/.pi/agent is pre-created with agent:agent ownership
-# (ADR-019 D1 evolved: container-local cage-owned dir, rip-cage-hhh.12).
+# and that a RUNNING cage has /home/agent/.pi/agent pre-created with
+# agent:agent ownership (ADR-019 D1 evolved: container-local cage-owned dir,
+# rip-cage-hhh.12).
+#
+# pi was un-baked from the base image into a composable TOOL recipe
+# (commits 9b67bb6, b6095b2): the bare image intentionally does NOT contain
+# /home/agent/.pi/agent — it is created at cage-up time. So Tests 3/4 assert
+# the up-time (running-cage) shape, not the bare-image shape. Mirrors
+# test-pi-auth-mount.sh Tests 7/9, which assert the same shape against a
+# running cage.
 
 FAILURES=0
 
@@ -38,29 +46,48 @@ else
 fi
 
 # -----------------------------------------------
-# Test 3: /home/agent/.pi/agent is owned by agent:agent (container-local dir)
+# Resolve a running rip-cage container for Tests 3/4 (up-time shape).
+# Prefer explicit RC_TEST_CONTAINER; else auto-detect via docker ps.
 # -----------------------------------------------
-echo ""
-echo "=== Test 3: /home/agent/.pi/agent owned by agent:agent ==="
-
-ownership=$(docker run --rm "$IMAGE" stat -c '%U:%G' /home/agent/.pi/agent 2>&1 || true)
-if [[ "$ownership" == "agent:agent" ]]; then
-  pass "/home/agent/.pi/agent ownership is agent:agent"
-else
-  fail "/home/agent/.pi/agent should be owned by agent:agent" "$ownership"
+CONTAINER="${RC_TEST_CONTAINER:-}"
+if [[ -z "$CONTAINER" ]]; then
+  CONTAINER=$(docker ps --format '{{.Names}}' --filter 'ancestor=rip-cage:latest' | head -1)
 fi
 
 # -----------------------------------------------
-# Test 4: /home/agent/.pi/agent/extensions dir exists (agent-owned extension space; not auto-scanned post-olen)
+# Test 3: /home/agent/.pi/agent is owned by agent:agent in a RUNNING cage
+# (container-local dir, created at cage-up time — not baked into the image)
 # -----------------------------------------------
 echo ""
-echo "=== Test 4: /home/agent/.pi/agent/extensions exists ==="
+echo "=== Test 3: /home/agent/.pi/agent owned by agent:agent (running cage) ==="
 
-ext_stat=$(docker run --rm "$IMAGE" stat -c '%U:%G' /home/agent/.pi/agent/extensions 2>&1 || true)
-if [[ "$ext_stat" == "agent:agent" ]]; then
-  pass "/home/agent/.pi/agent/extensions exists and is agent:agent"
+if [[ -z "$CONTAINER" ]]; then
+  echo "SKIP: no running rip-cage container found; pass RC_TEST_CONTAINER=<name> or start one with rc up"
 else
-  fail "/home/agent/.pi/agent/extensions should exist and be agent:agent" "$ext_stat"
+  ownership=$(docker exec "$CONTAINER" stat -c '%U:%G' /home/agent/.pi/agent 2>&1 || true)
+  if [[ "$ownership" == "agent:agent" ]]; then
+    pass "/home/agent/.pi/agent ownership is agent:agent"
+  else
+    fail "/home/agent/.pi/agent should be owned by agent:agent" "$ownership"
+  fi
+fi
+
+# -----------------------------------------------
+# Test 4: /home/agent/.pi/agent/extensions dir exists in a RUNNING cage
+# (agent-owned extension space; not auto-scanned post-olen)
+# -----------------------------------------------
+echo ""
+echo "=== Test 4: /home/agent/.pi/agent/extensions exists (running cage) ==="
+
+if [[ -z "$CONTAINER" ]]; then
+  echo "SKIP: no running rip-cage container found; pass RC_TEST_CONTAINER=<name> or start one with rc up"
+else
+  ext_stat=$(docker exec "$CONTAINER" stat -c '%U:%G' /home/agent/.pi/agent/extensions 2>&1 || true)
+  if [[ "$ext_stat" == "agent:agent" ]]; then
+    pass "/home/agent/.pi/agent/extensions exists and is agent:agent"
+  else
+    fail "/home/agent/.pi/agent/extensions should exist and be agent:agent" "$ext_stat"
+  fi
 fi
 
 # -----------------------------------------------
