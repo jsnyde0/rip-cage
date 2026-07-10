@@ -302,32 +302,45 @@ echo ""
 # link (existing skip behavior is preserved — the link still isn't emitted as
 # a mount parent). Host-only: sources rc directly against a fake HOME/asset
 # dir, mirroring tests/test-symlink-follow.sh's `source "$RC"` convention.
-_bsw_rc="${_TS_DIR}/../rc"
-_bsw_test_home=$(mktemp -d)
-mkdir -p "${_bsw_test_home}/.claude/skills"
-_bsw_broken_link="${_bsw_test_home}/.claude/skills/broken-skill"
-ln -s "${_bsw_test_home}/.claude/skills/nonexistent-target" "${_bsw_broken_link}"
-
-_bsw_stdout_file=$(mktemp)
-_bsw_stderr_file=$(mktemp)
-_bsw_exit=0
-HOME="${_bsw_test_home}" bash -c "source '${_bsw_rc}'; _collect_symlink_parents '${_bsw_test_home}/.claude/skills'" \
-  >"${_bsw_stdout_file}" 2>"${_bsw_stderr_file}" || _bsw_exit=$?
-_bsw_out=$(cat "${_bsw_stdout_file}")
-_bsw_err=$(cat "${_bsw_stderr_file}")
-rm -f "${_bsw_stdout_file}" "${_bsw_stderr_file}"
-
-if [[ "${_bsw_exit}" -eq 0 ]] \
-   && echo "${_bsw_err}" | grep -qF "${_bsw_broken_link}" \
-   && echo "${_bsw_err}" | grep -qiE "broken|unresolvable" \
-   && [[ -z "${_bsw_out}" ]]; then
-  check "broken symlink under skills dir: stderr warning names the link, function still skips it (exit 0)" "pass"
+#
+# Host-vs-in-cage detection: /.dockerenv is the repo-wide canonical in-cage
+# signal (rc:50 itself hard-exits on it; test-auth-refresh.sh, test-rc-
+# allowlist.sh, test-ssh-resolver.sh all gate the same way). This script is
+# also invoked in-cage as the canonical path (cli/test.sh:138, docker exec
+# .../test-skills.sh), where ${_TS_DIR}/../rc resolves to /usr/local/lib/rc —
+# not baked into the image — so sourcing it there is a guaranteed exit=127,
+# not a real check of anything (rip-cage-7atw.8). Skip cleanly in that case
+# rather than false-failing on a missing host artifact.
+if [[ -f /.dockerenv ]]; then
+  echo "SKIP (in-cage): broken symlink under skills dir check — host-only, sources ${_TS_DIR}/../rc which isn't baked into the image (rip-cage-7atw.8)"
 else
-  check "broken symlink under skills dir: stderr warning names the link, function still skips it (exit 0)" "fail" \
-    "exit=${_bsw_exit} stdout='${_bsw_out}' stderr='${_bsw_err}'"
-fi
+  _bsw_rc="${_TS_DIR}/../rc"
+  _bsw_test_home=$(mktemp -d)
+  mkdir -p "${_bsw_test_home}/.claude/skills"
+  _bsw_broken_link="${_bsw_test_home}/.claude/skills/broken-skill"
+  ln -s "${_bsw_test_home}/.claude/skills/nonexistent-target" "${_bsw_broken_link}"
 
-rm -rf "${_bsw_test_home}"
+  _bsw_stdout_file=$(mktemp)
+  _bsw_stderr_file=$(mktemp)
+  _bsw_exit=0
+  HOME="${_bsw_test_home}" bash -c "source '${_bsw_rc}'; _collect_symlink_parents '${_bsw_test_home}/.claude/skills'" \
+    >"${_bsw_stdout_file}" 2>"${_bsw_stderr_file}" || _bsw_exit=$?
+  _bsw_out=$(cat "${_bsw_stdout_file}")
+  _bsw_err=$(cat "${_bsw_stderr_file}")
+  rm -f "${_bsw_stdout_file}" "${_bsw_stderr_file}"
+
+  if [[ "${_bsw_exit}" -eq 0 ]] \
+     && echo "${_bsw_err}" | grep -qF "${_bsw_broken_link}" \
+     && echo "${_bsw_err}" | grep -qiE "broken|unresolvable" \
+     && [[ -z "${_bsw_out}" ]]; then
+    check "broken symlink under skills dir: stderr warning names the link, function still skips it (exit 0)" "pass"
+  else
+    check "broken symlink under skills dir: stderr warning names the link, function still skips it (exit 0)" "fail" \
+      "exit=${_bsw_exit} stdout='${_bsw_out}' stderr='${_bsw_err}'"
+  fi
+
+  rm -rf "${_bsw_test_home}"
+fi
 
 echo ""
 echo "=== Results: ${PASS} passed, ${FAIL} failed (of ${TOTAL}) ==="
