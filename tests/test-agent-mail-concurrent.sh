@@ -513,7 +513,7 @@ B_PROMPT_CONTENT=$(docker exec "$CONTAINER_NAME" cat "$PROMPT_B_PATH" 2>/dev/nul
 # 'sleep 600' keeps the pane alive well past B's own polling window (up to
 # 20 * 5s + reasoning time) so later steps can still read its scrollback.
 docker exec "$CONTAINER_NAME" herdr agent start mail-b --cwd /workspace \
-  -- bash -c 'pi --provider openrouter --model anthropic/claude-3.5-haiku -p "$1"; sleep 600' _ "$B_PROMPT_CONTENT"
+  -- bash -c 'pi --provider openrouter --model anthropic/claude-haiku-4.5 -p "$1"; sleep 600' _ "$B_PROMPT_CONTENT"
 EXIT_B=$?
 
 if [[ $EXIT_B -eq 0 ]]; then
@@ -587,7 +587,7 @@ A_PROMPT_CONTENT=$(docker exec "$CONTAINER_NAME" cat "$PROMPT_A_PATH" 2>/dev/nul
 # comment for the argv/pane-persistence rationale (sleep tail keeps A's pane
 # readable through Step 6, well after A's own one-shot task completes).
 docker exec "$CONTAINER_NAME" herdr agent start mail-a --cwd /workspace \
-  -- bash -c 'pi --provider openrouter --model anthropic/claude-3.5-haiku -p "$1"; sleep 600' _ "$A_PROMPT_CONTENT"
+  -- bash -c 'pi --provider openrouter --model anthropic/claude-haiku-4.5 -p "$1"; sleep 600' _ "$A_PROMPT_CONTENT"
 EXIT_A=$?
 
 if [[ $EXIT_A -eq 0 ]]; then

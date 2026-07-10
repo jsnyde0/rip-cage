@@ -9,7 +9,7 @@
 # This test drives pi THROUGH tmux (docker exec tmux send-keys → rip-cage session).
 #
 # Provider pin — WHY openrouter:
-#   This test pins `pi --provider openrouter --model anthropic/claude-3.5-haiku`
+#   This test pins `pi --provider openrouter --model anthropic/claude-haiku-4.5`
 #   (static API key auth) deliberately. The cage-default provider (openai-codex) is
 #   OAuth-based and its access token gets server-side invalidated within hours of
 #   issuance (observed 2026-06-14: openai-codex invalidated same day, exit 1 on
@@ -244,7 +244,7 @@ cat > "${WORKSPACE}/run-pi.sh" <<PIEOF
 mkdir -p /workspace/.pi-sessions
 exec pi \
   --provider openrouter \
-  --model anthropic/claude-3.5-haiku \
+  --model anthropic/claude-haiku-4.5 \
   --session-dir /workspace/.pi-sessions \
   -p "You are a coding assistant. Do all four steps below using your tools. Each step is a SEPARATE tool call -- do not combine them.
 

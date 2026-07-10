@@ -914,7 +914,7 @@ except Exception:
       --cwd /workspace \
       -- pi \
         --provider openrouter \
-        --model anthropic/claude-3.5-haiku \
+        --model anthropic/claude-haiku-4.5 \
         -p "Write the word hello to /workspace/sv-hello.txt using your write tool. Then write the word world to /workspace/sv-world.txt using your write tool. Then write the word done to /workspace/sv-done.txt using your write tool." \
       2>&1 || true)
 
@@ -1392,7 +1392,7 @@ CANARY_EOF
       --cwd /workspace \
       -- pi \
         --provider openrouter \
-        --model anthropic/claude-3.5-haiku \
+        --model anthropic/claude-haiku-4.5 \
         -p "Write the word hello to /workspace/l72i7-hello.txt using your write tool. Then write the word world to /workspace/l72i7-world.txt using your write tool. Then write the word done to /workspace/l72i7-done.txt using your write tool." \
       2>&1 || true)
     echo "  herdr agent start output: ${_L72I7_HERDR_START_OUT}"
