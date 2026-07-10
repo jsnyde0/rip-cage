@@ -75,6 +75,15 @@ projection / fleet topology* — things msb is deliberately ignorant of — it i
 host dir; (b) network — each cage gets a private IP, deny-by-default, allowlist specific paths;
 (c) shared host service — every cage talks out to one service on the host (e.g. a beads server).
 
+> **Host-service seam — design CAPTURED, not committed (2026-07-10).** Under msb the only delivering
+> guest→host path is the host's LAN IP (spike-proven), so (c) implies a real seam: manifest-declared
+> host services, rc owning LAN-IP discovery / liveness / per-cage net-rule scoping, services
+> operator-composed and never blessed. Full design, consumer list (beads single-writer, OAuth
+> refresher, package caches, host MCP tools, telemetry collector, cross-cage bus), tradeoffs, and
+> decide-or-dismiss triggers live in bead `rip-cage-o7tx`; the three unmeasured exposure inputs
+> (guest-traffic source address, other-LAN-device reachability, offline shape) are probed by bead
+> `rip-cage-606c`. Do not build without an explicit go decision.
+
 **The honest core:** multi-cage composition buys exactly ONE thing over one-big-cage-with-mounts —
 **isolation**. Every "share files / talk / use a service" trick is easier *inside* one cage. So
 composition = **cooperation-with-a-wall** (contain a disaster to one cage), NOT "microservices for
