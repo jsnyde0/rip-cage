@@ -46,6 +46,21 @@ if ! docker image inspect rip-cage:latest >/dev/null 2>&1; then
   exit 0
 fi
 
+# ---- Self-isolate HOME (rip-cage-7atw.3) ----
+# This test manipulates ~/.pi/agent directly (mv-away, in-place overwrite,
+# rm -rf of an auto-seeded artifact). It must NEVER do that against the
+# operator's REAL ~/.pi/agent. The full-suite driver (tests/run-host.sh)
+# sandboxes XDG_CONFIG_HOME/RC_CONFIG_GLOBAL but deliberately does NOT set
+# HOME — well-behaved tests are expected to sandbox their own (see
+# test-ssh-preflight.sh / test-ssh-config.sh for the same pattern). Point
+# HOME at a throwaway dir for the lifetime of this script BEFORE deriving
+# PI_AGENT_DIR, so every operation below lands in the sandbox regardless of
+# how/where this test is invoked. Not nested under the real $HOME, so
+# teardown is a plain rm -rf (mirrors TEST_WS/TEST_WS2 cleanup below) — no
+# DCG home-path collision is possible.
+TEST_HOME_SANDBOX=$(mktemp -d)
+export HOME="$TEST_HOME_SANDBOX"
+
 # ---- State backup/restore for ~/.pi/agent ----
 PI_AGENT_DIR="${HOME}/.pi/agent"
 PI_AGENT_BACKUP=""
@@ -84,6 +99,11 @@ cleanup() {
       fi
     fi
   fi
+  # Tear down the throwaway HOME sandbox itself. It is never nested under
+  # the real $HOME (mktemp'd, like TEST_WS/TEST_WS2 above), so a plain
+  # rm -rf is safe here too — the whole point of the sandbox is that
+  # discarding it can never touch the operator's real ~/.pi/agent.
+  [[ -n "${TEST_HOME_SANDBOX:-}" && -d "$TEST_HOME_SANDBOX" ]] && rm -rf "$TEST_HOME_SANDBOX"
 }
 trap cleanup EXIT
 
@@ -248,7 +268,17 @@ else
   pass "rc up did not fatal on missing ~/.pi/agent (warning check inconclusive)"
 fi
 
-# Restore for cleanup trap
+# Restore for cleanup trap.
+# The 'rc up' above runs rc's cold-start auto-seed (_ensure_pi_auth_seed,
+# cli/up.sh, rip-cage-wo9): since $PI_AGENT_DIR was moved away, 'rc up' sees
+# it absent and RECREATES it with a fresh auth.json='{}' (a new inode). If we
+# just 'mv' the backup back now, mv would NEST the backup dir INSIDE that
+# still-existing recreated dir instead of replacing it — silently orphaning
+# the original (correct-inode) auth.json at a nested path and leaving the
+# seeded '{}' at the top level, which starves Test 8's round-trip check
+# (rip-cage-7atw.3). Remove the auto-seeded artifact first so the restore
+# lands at the top level again.
+rm -rf "$PI_AGENT_DIR"
 mv "${PI_AGENT_DIR}.bak-test" "$PI_AGENT_DIR"
 
 # ================================================================
