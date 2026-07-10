@@ -1,6 +1,8 @@
 # ADR-026: Rip-Cage Identity — Containment Layer + Delegated Mediation Seam
 
 **Status:** Accepted (D2 revised 2026-06-17 — wlwc: the **ssh-bypass command hook** reclassified OUT of containment to a composable default-on command-guard recipe (sibling to DCG, ADR-025 D2); welded ssh containment is the known_hosts/config mount floor (ADR-022 D4); DNS exfil guard stays containment. D5 revised 2026-06-17 — lifted EXPLORATORY→FIRM on the in-cage E4 proof + real-`rc up` auto-launch; second-provider behavioral residual discharged 2026-06-17 — iron-proxy E4, rip-cage-nyst. D7 added 2026-07-04 — per-tool credential-mount posture + mixed posture, rip-cage-xhgr)
+> **Migration status (ADR-029, 2026-07-10):** This ADR is evolved by [ADR-029](ADR-029-msb-migration.md) — the central question re-answers: the delegate is now the isolation platform (msb) rather than a composed external mediator. D3/D4 are reversed by their own predicates (in substance / verbatim); D5's MEDIATOR machinery retires wholesale at cutover; D6's tiering collapses. The mechanisms below remain shipped and load-bearing in the Docker path until the msb cutover release lands; until then this ADR describes current behavior.
+
 **Date:** 2026-06-11
 **Design:** bead `rip-cage-ta1o` (full decision narrative, verdict:pass) ; competitor investigated from source: github.com/denoland/clawpatrol (reclassified to *alternative appliance* — D5)
 
@@ -13,6 +15,8 @@ Reading clawpatrol from source forced the question this ADR answers: *where does
 ## Decisions
 
 ### D1: Identity — rip-cage is containment; mediation is delegated
+
+> [ADR-029 D1/D2: EVOLVED — rip-cage still builds no mediation; what changes is who the delegate *is*. Previously the delegate was a composed external mediator (clawpatrol-shape, mitmproxy/iron-proxy); at cutover the delegate becomes msb's own host engine (TLS intercept, `--net-rule`, `--secret`). The customs-not-postal-service framing survives — rip-cage still never reads application content — only the identity of who does the reading/rewriting changes.]
 
 **Firmness: FIRM**
 
@@ -30,6 +34,8 @@ rip-cage controls **where** traffic may go (destination control + a force-throug
 **What would invalidate this:** if injection-affected agents in practice coordinate across layers to route around refusals (ADR-024 D5's load-bearing assumption fails), the containment/mediation line blurs — a content-reading layer rip-cage delegated would need to come back in-house.
 
 ### D2: The spine — sort safety layers by maintenance drift-rate
+
+> [ADR-029 D2: EVOLVED — the drift-rate spine stays intact and now governs the migration itself (the runtime absorbing low-drift containment mechanisms is exactly the spine's logic one level up). Bucket exemplars update: the DNS-exfil sidecar is deleted (re-homed to msb DNS default-deny), the ssh floor is deleted (re-homed to HTTPS + `--secret`), and the ssh-bypass recipe is deleted (no CLI-override class once ssh is not the transport). **Lockstep floor list (ADR-029 D2, the msb-era floor this decision's "Containment (rip-cage's, low-drift)" bullet becomes at cutover):** the microVM boundary itself; msb default-deny egress + net rules; msb DNS default-deny; `--secret` credential non-possession (ADR-029 D5); the secret-path mount denylist (ADR-023); the `.git/hooks` read-only weld (ADR-002 D11); and the in-guest floor items (root-owned guard artifacts, scoped sudo, ro mounts) (shipped floor until cutover: the ADR-012/ADR-022 mechanisms, retiring per ADR-029 D2). This exact list is duplicated in lockstep across [ADR-005](ADR-005-ecosystem-tools.md) D9, [ADR-025](ADR-025-host-adoptable-dcg-policy.md) D2, and ADR-026 D2 (here). The 2026-06-17 ssh-reclassification paragraph below describes retired machinery (the ssh-bypass hook and the ssh known_hosts/config mount floor both retire per ADR-029 D3) — it remains accurate as a description of currently-shipped, load-bearing behavior until cutover.]
 
 **Firmness: FIRM**
 
@@ -55,6 +61,8 @@ Every safety layer sorts into one of two buckets, and the cut is the **maintenan
 
 ### D3: The single container-native contribution — guarantee the chokepoint
 
+> [ADR-029 D2: REVERSED BY OWN PREDICATE, IN SUBSTANCE — this decision's own "What would invalidate this" fired in substance, not verbatim: "if a mediator ships a container-runtime that itself owns the netns and force-captures... this stops being rip-cage's to claim." msb is a runtime rather than a mediator, and it owns capture at the VM NIC rather than a netns — the predicate's literal shape (a *mediator* shipping a container-runtime) did not occur, but its consequence lands exactly as written: the force-through chokepoint stops being rip-cage's irreducible contribution. rip-cage's contribution moves up a level: the composition/policy surface (what rc declares) and the workbench layer above the runtime. The chokepoint guarantee itself gets **stronger** (hypervisor-enforced rather than netns-enforced).]
+
 **Firmness: FIRM**
 
 rip-cage's irreducible contribution is to **guarantee all egress (HTTP and DNS) hits a chosen chokepoint.** A network gateway cannot force-capture an agent that routes around its tunnel (clawpatrol's own security-model doc admits this); a container owns its network namespace and can. *What happens at the chokepoint is pluggable* (a built-in destination allowlist / DNS heuristic by default, or forward to a composed mediator).
@@ -72,6 +80,8 @@ rip-cage's irreducible contribution is to **guarantee all egress (HTTP and DNS) 
 **What would invalidate this:** if a mediator ships a container-runtime that itself owns the netns and force-captures (collapsing this contribution), or if force-through proves bypassable from inside the cage under bypassPermissions, this stops being rip-cage's to claim.
 
 ### D4: No mediation built into rip-cage; credential non-possession is a composition property
+
+> [ADR-029 D5: REVERSED BY OWN PREDICATE (quoted) — this decision's own "What would invalidate this" fired verbatim: "if a single-mechanism, genuinely low-drift injection covering the dominant secret (the Anthropic OAuth token) emerges that does NOT pull in per-service maintenance, the no-mediation line *for that one secret* could be revisited." msb `--secret` IS that mechanism. Non-possession moves from a composition property (requiring a composed mediator) to a **default platform property**. The "standalone credential-exfil gap" paragraph below is largely closed at cutover — real credential material need not enter the guest at all for the dominant secret — though per-tool boundaries (D7: pi's openai-codex has no static token, stays possession-mode) still apply.]
 
 **Firmness: FIRM**
 
@@ -91,6 +101,8 @@ rip-cage builds **no** credential injection and **no** content policy. ssh-agent
 **What would invalidate this:** if a single-mechanism, genuinely low-drift injection covering the dominant secret (the Anthropic OAuth token) emerges that does NOT pull in per-service maintenance, the no-mediation line *for that one secret* could be revisited.
 
 ### D5: Composition shape — a composable-provider mediator seam (isomorphic to the session-multiplexer seam); bundle nothing
+
+> [ADR-029 D2/D5: RETIRED — the MEDIATOR archetype and its composition seam are deleted at cutover, not ported. **CUTOVER-TIME deletion sweep:** `network.egress.mediator` + `forward_to` config fields, the MEDIATOR tool-manifest archetype, `init-mediator.sh`, the `--mediator-env` launch flag, `rc.mediators` + `rc.mediator-ca-env` container labels, and the mitmproxy/iron-proxy `examples/` recipes. The seqc.5 live-Anthropic validation record (static `claude setup-token` injected via iron-proxy, non-possession proven) is preserved explicitly as **design precedent** — it is the evidence base that led to ADR-029 D5's `--secret`-based non-possession default — but is **retired as architecture**: the mediator-composition path this decision built is superseded, not extended, by the platform-native mechanism.]
 
 **Firmness: FIRM** (revised 2026-06-17 — lifted from EXPLORATORY on the real-cage E4 proof + real-`rc up` auto-launch; see Validation below)
 
@@ -126,6 +138,8 @@ rip-cage exposes egress mediation as a **composable provider seam**, built isomo
 
 ### D6: Tiering — standalone is accident-containment; exfil-grade requires composition
 
+> [ADR-029 D5: REVERSED — the two-tier structure (accident-containment standalone vs. exfil-grade-requires-composition) collapses at cutover: the standalone default becomes non-possession (`--secret`) + deny egress, which is exfil-grade for the dominant secret without composing anything. The positioning-language sweep this implies (docs/recipe copy that urges composition to reach exfil-grade) is a cutover-time child, noted here rather than performed in this pass.]
+
 **Firmness: FIRM**
 
 Standalone rip-cage is honestly the **accident-containment** tier ("at least put your Claude in a cage" — ADR-009 D1). **Exfil-grade** security — closing the credential-exfil axis (D4) and the content-exfil channels (delegated mediation) — requires composing a mediator. Docs and the reference recipe actively urge composition; standalone is never marketed as an exfil boundary.
@@ -141,6 +155,8 @@ Standalone rip-cage is honestly the **accident-containment** tier ("at least put
 **What would invalidate this:** if users empirically read standalone rip-cage as providing exfil-grade guarantees (the false-confidence failure), the positioning is mis-calibrated and the docs/recipe must push composition harder or gate a warning.
 
 ### D7: Per-tool credential-mount posture — `auth.per_tool.{claude,pi}`; mixed posture is the caged-pi shape
+
+> [ADR-029 D5: EVOLVED — the per-tool grain survives and matters more under the migration: claude rides `--secret` non-possession by default; pi stays possession-mode (real `auth.json` mounted) because openai-codex has no static token to swap. Mixed posture remains the caged-pi shape, now on the msb mechanism rather than a composed mediator. Labels and fingerprints (`rc.auth.credential-mounts.claude`/`.pi`) re-bind per [ADR-028](ADR-028-mount-shape-label-lock.md)'s disposition.]
 
 **Firmness: FLEXIBLE** (added 2026-07-04 — design user-ratified + two adversarial-review rounds, bead `rip-cage-xhgr`; lift candidate once shipped with the extended host suite green)
 

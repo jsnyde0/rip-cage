@@ -1,6 +1,9 @@
 # ADR-024: Prompt-Injection-Driven Harm as First-Class Threat Class
 
 **Status:** Accepted (revised 2026-06-09 — D6 added: MCP posture)
+
+> **Migration status (ADR-029, 2026-07-10):** The threat model itself is unaffected by [ADR-029](ADR-029-msb-migration.md) — the axes, vectors, and out-of-scope items in D1/D3/D4/D5 are unchanged. Only the layer *mappings* in D2 evolve (mechanisms re-home to msb), and D6's egress-firewall reference restates as the msb VM boundary. The mechanisms below remain shipped and load-bearing in the Docker path until the msb cutover release lands; until then this ADR describes current behavior.
+
 **Date:** 2026-05-27
 **Design:** Brainstorm-converged epic — bead created from `/tmp/brainstorm/pi-security-model-design.md` (filed alongside this ADR). D6 added 2026-06-09 (rip-cage-b4c).
 **Related:**
@@ -48,6 +51,8 @@ The cage's blast-radius-reduction goal explicitly covers harm caused by a non-ad
 
 ### D2: Two harm axes named explicitly — exfiltration and on-device harm
 
+> [ADR-029 D2/D3/D5: EVOLVED — the axes themselves (exfiltration, on-device harm) are unaffected; the layer-mapping table below re-maps mechanism-by-mechanism (see inline notes on the Egress firewall and ssh-agent-scope rows) and gains a DNS-exfil residual note per ADR-029 D2 item 3. The credential-exfil axis largely closes at cutover — msb `--secret` non-possession means the dominant secret (Claude's token) is never a real credential inside the guest — with the per-tool boundary named honestly: pi stays possession-mode (no static openai-codex token), so the axis does not close uniformly across tools. The t7cu fixed-`/workspace`-path residual (below) survives conceptually under msb's fixed guest mount path — marked re-verify, not assumed identical.]
+
 **Firmness: FIRM**
 
 Under D1's threat class, two distinct harm axes are in scope:
@@ -62,11 +67,14 @@ Layer mapping (informative — load-bearing decisions live in their own ADRs):
 | DCG (ADR-004) — chaining-robust (unanchored whole-command regex) | weak (curl is not destructive) | strong |
 | ~~Compound-blocker~~ (removed rip-cage-4r8; see ADR-002 D5 — DCG is chaining-robust) | n/a | n/a |
 | Mount denylist (ADR-023) | strong (creds not in cage) | strong (host files not reachable) |
-| Egress firewall (ADR-012, evolved) | strong (network-layer block) | n/a |
-| ssh-agent scope (ADR-017, evolved) | strong (cannot mirror to attacker repo) | n/a |
+| Egress firewall (ADR-012, evolved) — **re-maps to msb host-side egress (ADR-029 D2) at cutover; shipped as ADR-012 until then** | strong (network-layer block) | n/a |
+| ssh-agent scope (ADR-017, evolved) — **retired (ADR-029 D3); HTTPS tokens + `--secret` replace this row at cutover** | strong (cannot mirror to attacker repo) | n/a |
 | Workspace-trust (epic-introduced) | strong (no base-URL redirect) | n/a |
+| DNS default-deny (msb, ADR-029 D2 item 3) — **new row, cutover-only; re-homes the ADR-012 D9 DNS sidecar** | strong, with accepted narrow residual (subdomains of an *allowlisted* domain are not otherwise flagged — requires attacker NS control over an allowed domain) | n/a |
 
 **Named residual (rip-cage-t7cu, 2026-07-06):** Claude Code's workspace-trust gate (`checkHasTrustDialogAccepted`) keys off `~/.claude.json`'s `projects[<cwd>].hasTrustDialogAccepted` (checked for the exact cwd and every filesystem ancestor up to `/`) — it is a **per-path**, not per-content, trust flag. Because rip-cage always mounts the workspace at the fixed in-container path `/workspace` regardless of which host project a cage corresponds to, this key structurally collapses across every cage that shares the same `~/.claude.json`: the first cage (any project) for which a user accepts the trust dialog persists `projects["/workspace"].hasTrustDialogAccepted:true`, and every later cage carrying that same file inherits pre-accepted trust regardless of that cage's actual workspace content. This is a property of rip-cage's fixed mount path, not of any single ADR-024 layer decision, and it predates t7cu — it already applied to every possession-posture (`auth.per_tool.claude: real`) cage. t7cu's effect is to extend its reach: non-possession cages previously never carried `~/.claude.json` at all (mount fully suppressed) and so were incidentally immune (no `projects{}` map existed for the dialog to consult); after t7cu they carry the real file (read-only) when the host has one, and so can inherit the same collapsed trust state. **Accepted, not fixed here:** (1) the egress firewall row above already blocks the network-layer exfil (base-URL redirect) this gate exists to prevent, independent of trust-dialog state; (2) under non-possession specifically, the credential riding along is a worthless placeholder token, so a bypassed-trust early redirect captures nothing of value. Closing the root cause (fixed `/workspace` mount path causing project-key collapse) is out of scope for a credential-gate re-scope bead — it is a candidate for its own future bead if the residual is judged to need active closure.
+
+> [ADR-029: RE-VERIFY, not decided — msb guests also mount the workspace at a fixed guest path, so this residual survives *conceptually* (the structural cause — a fixed mount path collapsing a per-path trust key — is not itself Docker-specific). Whether `~/.claude.json`'s trust-dialog key and mount path resolve identically under msb is unconfirmed; this is flagged for re-verification at cutover, not assumed to carry over unchanged.]
 
 **Rationale:** distinct enforcement layers cover distinct axes. Naming the axes explicitly avoids "layer X protects against prompt injection" hand-waving — each layer's contribution to each axis is auditable.
 
@@ -132,7 +140,9 @@ Consequences of the posture:
 - **The `meta-skill` skill-server (`skill-server.py`) is the one *sanctioned* in-cage MCP server and is out of scope of this posture.** It is a harness-internal skill-discovery shim with **no network egress** (it reads mounted skill files), transient by design — slated for replacement when the official `ms` tool ships Linux binaries ([ADR-002 D18](ADR-002-rip-cage-containers.md)). It is not a third-party trust surface and is not what "MCP not blessed" refers to.
 - **No MCP trust machinery is built at this time** — deliberately no MCP allowlist analogous to `network.allowed_hosts`, no per-server / per-tool trust, no nested MCP sandboxing.
 
-**Rationale:** the scary part of an untrusted MCP server is covert exfil, and the cage's network-layer firewall already neutralizes that for anything running inside the cage. The remaining hole (host-placed MCP) is not reachable by anything rip-cage ships today. Building a trust system for a surface that is (a) already firewall-covered in its common placement and (b) not used as a blessed path would be over-engineering against the cage's stated threat model (D4 #2 agent-not-adversarial; CLAUDE.md "layers not walls / 80/20 / autonomy is the product"). CLI-over-bash gives the same capability through a path the cage already governs.
+> [ADR-029: EVOLVED — this decision's own rationale below restates its "L7 egress firewall" / "cage's network-layer firewall" reference as msb VM-boundary capture at cutover: msb's `--net-default deny` + `--net-rule` + TLS intercept is the mechanism that neutralizes in-cage MCP egress, in place of ADR-012's SNI router (until the msb cutover release lands, ADR-012's mechanism remains the shipped one).]
+
+**Rationale:** the scary part of an untrusted MCP server is covert exfil, and the cage's network-layer firewall already neutralizes that for anything running inside the cage (until cutover, [ADR-012](ADR-012-egress-firewall.md)'s SNI router; at cutover, the msb VM-boundary capture per [ADR-029](ADR-029-msb-migration.md) D2). The remaining hole (host-placed MCP) is not reachable by anything rip-cage ships today. Building a trust system for a surface that is (a) already firewall-covered in its common placement and (b) not used as a blessed path would be over-engineering against the cage's stated threat model (D4 #2 agent-not-adversarial; CLAUDE.md "layers not walls / 80/20 / autonomy is the product"). CLI-over-bash gives the same capability through a path the cage already governs.
 
 **Alternatives considered:**
 

@@ -1,6 +1,9 @@
 # ADR-022: SSH host + key allowlist as the first `.rip-cage.yaml` consumer
 
 **Status:** Accepted — D1–D4 shipped (`rip-cage-b0c`); D5 hook-layer added 2026-05-12 (`rip-cage-nww`) closing the OpenSSH CLI-override class; D4 mount-path corrected 2026-05-13 (`rip-cage-g2q`) so the filtered cache is actually read by ssh; D6 host-side hot-reload added 2026-05-13 (`rip-cage-ocn`) for `allowed_hosts` content changes
+
+> **Migration status (ADR-029, 2026-07-10):** All decisions D1–D6 are retired per [ADR-029](ADR-029-msb-migration.md) D3 — the entire ssh cluster (host+key allowlist) retires in favor of HTTPS + `--secret` credential injection. The mechanisms below remain shipped and load-bearing in the Docker path until the msb cutover release lands; until then this ADR describes current behavior.
+
 **Date:** 2026-05-12
 **Design:** [Design doc](../design/2026-05-12-ssh-allowlist-design.md); [D6 design (rc reload)](../../history/2026-05-13-rc-reload-design.md)
 **Builds on:** [ADR-021](ADR-021-layered-rip-cage-config.md) (`.rip-cage.yaml` substrate), [ADR-020](ADR-020-ssh-identity-routing.md) (config translation, pubkey mount), [ADR-018](ADR-018-macos-ssh-agent-discovery.md) (host-side socket discovery), [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (forward-by-default)
@@ -27,6 +30,8 @@ This ADR is that consumer.
 ## Decisions
 
 ### D1: Schema — `ssh.allowed_hosts` (additive_list) + `ssh.allowed_keys` (selection_list)
+
+> [ADR-029 D3: RETIRED — the ssh cluster retires wholesale; `.rip-cage.yaml` no longer carries `ssh.allowed_hosts`/`ssh.allowed_keys` at cutover. Per-project git identity selection survives, re-homed to a token-selection design (see D6's carry-forward below).]
 
 **Firmness: FIRM**
 
@@ -65,6 +70,8 @@ Per ADR-021 D2 merge rules:
 
 ### D2: Defaults — host arrow locks down; key arrow stays open
 
+> [ADR-029 D3: RETIRED — both arrows retire with the ssh cluster. The "what would invalidate this" concern below (open-by-default key-arrow polarity) resolves by elimination: HTTPS + `--secret` forwards no keys at all, so there is no key arrow left to be open or closed by default.]
+
 **Firmness: FIRM**
 
 When neither layer declares `ssh.allowed_hosts`:
@@ -92,6 +99,8 @@ This deliberately tightens behavior on rc upgrade for users who currently SSH to
 
 ### D3: Mechanism — `ssh-agent-filter` for the agent half; bash + openssl HMAC for the host half
 
+> [ADR-029 D3: RETIRED — `ssh-agent-filter`, the host-side HMAC known_hosts filter, and the socket-symlink launcher all retire; no agent-half or host-half mechanism survives, since no ssh credential crosses the boundary under HTTPS + `--secret`.]
+
 **Firmness: FIRM**
 
 **Agent half — `ssh-agent-filter` (Debian package `ssh-agent-filter`)**. A small C++ program that speaks the ssh-agent wire protocol, applies a comment- or fingerprint-based filter, and forwards matching requests to an upstream agent named via the `SSH_AUTH_SOCK` env var. Already packaged for Debian/Ubuntu; install via `apt-get install -y ssh-agent-filter` in the runtime stage of the Dockerfile. The package also ships a sibling binary `afssh` — that one is a one-shot wrapper that starts the filter, runs `ssh -A` once, and tears the filter down on ssh exit; it is **not** the daemon and is not used here. `init-rip-cage.sh` starts `ssh-agent-filter` when the in-cage sentinel `/etc/rip-cage/ssh-allowed-keys` signals filtering: from an agent-owned working directory (`/tmp/rip-cage-filter/`), invoke `SSH_AUTH_SOCK=/ssh-agent-upstream.sock ssh-agent-filter --comment c1 --comment c2 ...`. The daemon forks, picks `$PWD/agent.<PID>` as its socket path, and prints the path + PID to stdout (matching `ssh-agent`'s contract). `init` parses that output and `sudo ln -sfT <parsed-sock> /ssh-agent.sock` so the cage's existing `SSH_AUTH_SOCK=/ssh-agent.sock` contract holds without needing every consumer to learn a new path.
@@ -117,6 +126,8 @@ This deliberately tightens behavior on rc upgrade for users who currently SSH to
 
 ### D4: Two arrows compose multiplicatively at the mount layer
 
+> [ADR-029 D3: RETIRED — the mount-layer known_hosts/agent-socket composition retires with the ssh cluster; there is no mount-layer ssh surface left to compose once git authenticates over HTTPS with a placeholder token.]
+
 **Firmness: FIRM**
 
 The cage's effective SSH reach is the intersection of the two filters:
@@ -138,6 +149,8 @@ This still fulfills ADR-014 D2's line-79 caveat ("a future ... forwarded-agent s
 **Invalidation check (mechanical, runnable post-implementation):** In `tests/test-e2e-lifecycle.sh` checks 24–25, with no `.rip-cage.yaml` present, the in-cage `/home/agent/.ssh/known_hosts` byte-equals the host-side filtered cache (proof the cage sees the filtered file, not the raw mount) and is empty (schema default `allowed_hosts=[]`). The CLI-override class is covered by D5's invalidation check (Check 26).
 
 ### D5: PreToolUse hook closes the OpenSSH CLI-override bypass class
+
+> [ADR-029 D3: RETIRED — `hooks/block-ssh-bypass.sh` and the `examples/ssh-bypass/` composable recipe retire at cutover; there is no OpenSSH CLI-override class to close once ssh itself is not the git transport. The implementation notes below are preserved as historical record — the label-lock instance this decision's mechanism participates in is referenced by [ADR-028](ADR-028-mount-shape-label-lock.md), whose own disposition notes that instance retiring alongside this ADR.]
 
 **Firmness: FIRM**
 
@@ -187,6 +200,8 @@ This composes with `rip-cage-97n` (closed): `rc config init` is exactly the path
 **Invalidation check (mechanical, runnable post-implementation):** `tests/test-e2e-lifecycle.sh` Check 26 series invokes the hook with the verified bypass shape (`-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts_bypass git@gitlab.com`) plus `/usr/bin/ssh` direct-path variant; both must return `permissionDecision: deny` with a message naming `.rip-cage.yaml` and `rc config init`. A legitimate `ssh -T git@github.com` (no override flags) must be allowed (empty hook output). `tests/test-safety-stack.sh` checks 12b–12e cover the same matrix at unit level.
 
 ### D6: `rc reload <cage>` — host-side hot-reload for `allowed_hosts` content changes
+
+> [ADR-029 D3/D4: RETIRED-WITH-CARRY-FORWARD — the `ssh.allowed_hosts`-specific reload mechanism retires with the ssh cluster, but three properties re-home into the ADR-029 D4 deny→fix→reload repair loop: the `rc reload` verb itself, the human-as-approval-step posture (the human runs the reload, the agent cannot self-grant), and the refuse-loud taxonomy (named exit codes for out-of-scope field changes, cage-not-running, concurrent-reload). What does NOT carry forward: the inode-preserving truncate-not-mv bind-mount rewrite mechanics — those are Docker-bind-mount-specific and need re-verification on msb virtiofs, per [ADR-010](ADR-010-auth-refresh.md) D4's fired predicate ("a different file-sharing backend" is exactly what virtiofs is).]
 
 **Firmness: FLEXIBLE**
 

@@ -1,6 +1,9 @@
 # ADR-017: SSH-Agent Forwarding On By Default — The Cage Can Push
 
 **Status:** Accepted (D4 amended by [ADR-018](ADR-018-macos-ssh-agent-discovery.md))
+
+> **Migration status (ADR-029, 2026-07-10):** All decisions D1–D4 are retired per [ADR-029](ADR-029-msb-migration.md) D3 — ssh-agent forwarding retires in favor of HTTPS + `--secret` credential injection. The mechanisms below remain shipped and load-bearing in the Docker path until the msb cutover release lands; until then this ADR describes current behavior.
+
 **Date:** 2026-04-23
 **Supersedes:** [ADR-014](ADR-014-push-less-cage.md) D1 (no outbound push credentials) and D3 (push-less session-close protocol). ADR-014 D2 (non-interactive SSH posture) and D4 (LFS pointer detection) remain in force.
 **Amended by:** [ADR-018](ADR-018-macos-ssh-agent-discovery.md) — D4's macOS host-prereq model is replaced by a host-side probe-and-pick loop. D1, D2, D3 unchanged.
@@ -19,6 +22,8 @@ ADR-014 D1 was the right call for a containment cage. It is the wrong call for a
 ## Decisions
 
 ### D1: SSH-agent forwarding is on by default, scoped via network allowlist
+
+> [ADR-029 D3: RETIRED — ssh-agent forwarding and its network-allowlist scoping retire wholesale; git authenticates over HTTPS with an msb `--secret`-injected token instead.]
 
 **Firmness: FIRM**
 
@@ -54,6 +59,8 @@ The pre-evolution residual risk ("session-long push capability if container is c
 
 ### D2: Opt-out via `rc up --no-forward-ssh`
 
+> [ADR-029 D3: RETIRED — there is no ssh-agent forwarding left to opt out of; `--no-forward-ssh` and the `rc.forward-ssh` label retire with the rest of the cluster.]
+
 **Firmness: FIRM**
 
 Users who want the ADR-014 containment posture can pass `--no-forward-ssh` to `rc up`. This skips the socket mount, leaves `SSH_AUTH_SOCK` unset inside the container, and restores the "cage cannot push" behavior.
@@ -66,6 +73,8 @@ The flag is persisted on the container via an `rc.forward-ssh=off` label, so res
 
 ### D3: Session-close protocol restores `git push`
 
+> [ADR-029 D3: RETIRED-WITH-MECHANISM — the autonomy property this decision restores (the agent pushes at session close, including `bd dolt push`, with no human intervention) survives; the mechanism becomes HTTPS + `--secret` instead of ssh-agent forwarding.]
+
 **Firmness: FIRM**
 
 The project-level CLAUDE.md session-close protocol is reverted from ADR-014 D3 ("do not push from inside the container") back to the pre-ADR-014 form: commit locally, then push.
@@ -77,6 +86,8 @@ The project-level CLAUDE.md session-close protocol is reverted from ADR-014 D3 (
 **What would invalidate this:** same as D1.
 
 ### D4: Cross-platform reachability — loud failure, not silent
+
+> [ADR-029 D3: RETIRED BY OWN PREDICATE — this decision's own "What would invalidate this" fired: "a future shift to bot-identity tokens (Deferred option in ADR-014) makes the agent-reachability question moot." ADR-029 D3 is that shift, arrived at because msb made token non-possession free (dissolving the setup-burden grounds ADR-017 originally used to reject the token alternative). The cross-platform socket-reachability problem this decision solved does not exist under HTTPS + `--secret`.]
 
 **Firmness: FIRM**
 

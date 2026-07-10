@@ -1,6 +1,9 @@
 # ADR-002: Rip Cage — Containerized Agentic Development Flywheel
 
 **Status:** Accepted
+
+> **Migration status (ADR-029, 2026-07-10):** This ADR is evolved by [ADR-029](ADR-029-msb-migration.md) — the container runtime is reversed (D1) and several decisions' mechanics re-bind to msb (see per-decision dispositions below); D9 (devcontainer) is separately dead regardless of migration (rip-cage-kt25). The mechanisms below remain shipped and load-bearing in the Docker path until the msb cutover release lands; until then this ADR describes current behavior.
+
 **Date:** 2026-03-25
 **Design:** [Rip Cage Design](../2026-03-25-rip-cage-design.md)
 **Related:** [ACFS](https://github.com/Dicklesworthstone/agentic_coding_flywheel_setup)
@@ -14,6 +17,8 @@ The ecosystem already has several containerized Claude Code solutions (ClaudeCag
 ## Decisions
 
 ### D1: OrbStack as container runtime on Mac
+
+> [ADR-029 D1: REVERSED — msb (libkrun microVMs riding Apple's Hypervisor framework) replaces OrbStack as the isolation primitive. This decision's own "What would invalidate this" clause ("Apple ships native container support") is adjacent-not-fired: msb rides Apple's HVF hypervisor API, which is not Apple-native *container* support — the invalidation as literally written did not occur, but the runtime is reversed anyway on the strength of the boundary upgrade (host/VM vs co-located-uid).]
 
 **Firmness: FIRM**
 
@@ -35,6 +40,8 @@ Use OrbStack for running containers on Mac. Includes `docker buildx` out of the 
 
 ### D2: One base image for all projects
 
+> [ADR-029 D2: EVOLVED — the one-image concept survives; msb consumes OCI images directly, so "no per-project Dockerfiles" carries forward with the runtime swapped underneath.]
+
 **Firmness: FLEXIBLE**
 
 A single "rip-cage" Docker image with Python/uv, Bun/Node, git, tmux, Claude Code, beads (bd, built from Go source), DCG (pre-built binary), and hooks. No per-project Dockerfiles. 2-stage build: Go builder for bd → debian:trixie runtime (~1.1 GB). (Runtime base was debian:bookworm until the 2026-06-07 base bump — see "Base-image selection" below.)
@@ -53,6 +60,8 @@ A single "rip-cage" Docker image with Python/uv, Bun/Node, git, tmux, Claude Cod
 **What would invalidate this:** Projects require wildly different system deps (e.g., CUDA, system libraries). Image size becomes a problem on VPS with limited disk.
 
 #### D2a: Base-image selection — debian:trixie (revised 2026-06-08)
+
+> [ADR-029 D2: RETIRED (pin designation only) — the "safety-critical" designation this decision assigns to the legacy-iptables pin is retired: msb guests have no in-guest iptables at all, legacy or nft (per [ADR-012](ADR-012-egress-firewall.md) D10's disposition, a third unanticipated invalidator). The base-image choice itself (debian:trixie, glibc 2.41) stands independent of this — it is not an iptables-motivated pick alone and nothing here forces a base change at cutover.]
 
 **Firmness: FLEXIBLE** (was EXPLORATORY / PROVISIONAL until the 2026-06-08 forward evaluation below)
 
@@ -80,6 +89,8 @@ The runtime base is **debian:trixie** (glibc 2.41); the builder stages are **gol
 
 ### D3: Persistent containers with manual lifecycle
 
+> [ADR-029 D2/D4: EVOLVED — the persistent-cage concept survives; the "cheap-recreate" story (`rc destroy` + `rc up` is fast) re-mechanizes as ADR-029 D4's snapshot-amend (0.783s) / cold-recreate (0.303s) plus session resume, both markedly faster than the Docker-era destroy+up cycle this decision described.]
+
 **Firmness: FIRM**
 
 Containers are persistent (one per working directory). Started with `rc up`, stopped with `rc down`, destroyed with `rc destroy`. Deps survive across sessions.
@@ -97,6 +108,8 @@ Containers are persistent (one per working directory). Started with `rc up`, sto
 **What would invalidate this:** Containers frequently get into bad state requiring destruction. Volume caching turns out to be simple enough to implement.
 
 ### D4: Path-based launch with transparent worktree handling
+
+> [ADR-029 D6: EVOLVED — the transparent-worktree-handling property survives; the mount mechanics (four-mount worktree scheme, `:ro` hooks sub-mount) need to re-prove on msb virtiofs. Scoped macOS/HVF per ADR-029 D6's platform gate — Linux/KVM virtiofs behavior is a separate reconfirmation.]
 
 **Firmness: FIRM**
 
@@ -132,6 +145,8 @@ See: [Worktree Git Mount Design](../2026-04-02-worktree-git-mount-design.md)
 
 ### D5: Bypass permissions with phased hooks
 
+> [ADR-029 D1/D2: EVOLVED-STRENGTHENED — "the container is the safety boundary, not the classifier" survives and strengthens: the boundary upgrades from co-located-uid container to microVM (ADR-029 D1). Below, the hook inventory and scope-note references to `block-ssh-bypass.sh` and the ADR-012 egress firewall are annotated per their own retirement (ADR-029 D2/D3).]
+
 **Firmness: FIRM**
 
 **Amended 2026-04-02:** Changed from auto mode to `bypassPermissions` after e2e validation showed auto mode's classifier prompts defeat the purpose of containerized autonomous execution.
@@ -144,7 +159,7 @@ The key insight: **the container is the safety boundary, not the classifier.** I
 
 Hooks provide two types of in-container safety:
 - **DCG** — blocks destructive commands, returns `"deny"` with explanation. Agent self-corrects. Matches over the whole command string, so chaining (`&&`/`;`/`||`) does not evade it.
-- **ssh-bypass blocker** (`block-ssh-bypass.sh`) — denies ssh-family flags that defeat the cage host arrow (`-o UserKnownHostsFile`, `StrictHostKeyChecking=no/accept-new`), whole-command. (A compound-command blocker was part of this set until 2026-06-03 — see the amendment above for why it was removed.)
+- **ssh-bypass blocker** (`block-ssh-bypass.sh`) — denies ssh-family flags that defeat the cage host arrow (`-o UserKnownHostsFile`, `StrictHostKeyChecking=no/accept-new`), whole-command. (A compound-command blocker was part of this set until 2026-06-03 — see the amendment above for why it was removed.) [ADR-029 D3: this hook retires along with the rest of the ssh cluster — no ssh CLI-override class to close once ssh is not the git transport.]
 
 Both are "block and redirect" hooks — they teach the agent to fix its approach without requiring human intervention. This is the correct pattern for autonomous containers.
 
@@ -171,9 +186,11 @@ Allow/deny lists in settings.json are bypassed in this mode but retained as docu
 
 This **sidesteps the secondary rejection ground**: `~/.claude/settings.json` STAYS agent-writable — we do **NOT** chmod the writable file (so the "CC writes settings.json at runtime" objection no longer applies); a **separate root-owned layer** is added instead. It **consciously REVERSES the primary equivalence-axis rejection** *for the command-guard specifically*: we now DO invest in guard-tamper-resistance, because [ADR-024](ADR-024-prompt-injection-threat-model.md)'s prompt-injection threat (a non-adversarial agent following injected instructions to "make X work" by unregistering the hook) makes guard-tamper-resistance worth it — the "don't over-invest beyond loaded-by-default" calculus that held when only honest mistakes were in scope no longer holds for the guard once injected-instruction-following is a named threat.
 
-**Scope of this hardening:** the **DCG** command-guard *registration* is now tamper-resistant — and this is **DCG-specific**. `block-ssh-bypass.sh` remains registered in the agent-writable `settings.json` (still agent-removable; it was NOT moved to the managed layer). This is not a claim that the whole agent layer is tamper-proof. The welded floor remains **containment** (ADR-025 D2 revised; ADR-026 D1/D2); both command-string guards (DCG and `block-ssh-bypass.sh`) are **composable default-on recipes ABOVE containment** — DCG's registration is now ALSO tamper-resistant via the managed-settings layer, while ssh-bypass's registration is not (an injected agent could attempt to remove it, with containment still holding underneath). The other containment layers remain independent of `settings.json` — the egress firewall (pure SNI router + iptables, ADR-012) at the network layer and the filesystem/container boundary at the Docker layer — so even a residual command-guard disable path would remove **neither network nor filesystem containment**.
+**Scope of this hardening:** the **DCG** command-guard *registration* is now tamper-resistant — and this is **DCG-specific**. `block-ssh-bypass.sh` remains registered in the agent-writable `settings.json` (still agent-removable; it was NOT moved to the managed layer). [ADR-029 D3: `block-ssh-bypass.sh` and its registration retire wholesale with the ssh cluster — this paragraph describes current, still-shipped Docker-path behavior.] This is not a claim that the whole agent layer is tamper-proof. The welded floor remains **containment** (ADR-025 D2 revised; ADR-026 D1/D2); both command-string guards (DCG and `block-ssh-bypass.sh`) are **composable default-on recipes ABOVE containment** — DCG's registration is now ALSO tamper-resistant via the managed-settings layer, while ssh-bypass's registration is not (an injected agent could attempt to remove it, with containment still holding underneath). The other containment layers remain independent of `settings.json` — until the msb cutover release lands, that floor is the egress firewall (pure SNI router + iptables, [ADR-012](ADR-012-egress-firewall.md)) at the network layer and the filesystem/container boundary at the Docker layer; at cutover it becomes [ADR-029](ADR-029-msb-migration.md) D2's floor (the microVM boundary + msb default-deny egress/DNS + the surviving host-mount floor items) — so even a residual command-guard disable path would remove **neither network nor filesystem containment**, on either side of the cutover.
 
 ### D6: Bind mount default, clone mode as flag
+
+> [ADR-029 D6: EVOLVED — the bind-mount-default posture restates as an msb virtiofs share at cutover. This decision's "What would invalidate this" text is OrbStack-literal ("bind mount performance on Mac is unacceptable even with OrbStack") — note it re-binds to virtiofs performance under msb rather than OrbStack.]
 
 **Firmness: FLEXIBLE**
 
@@ -194,6 +211,8 @@ Default: bind mount host path into container (interactive, hot reload). Flag: `-
 
 ### D7: Same image for local and VPS
 
+> [ADR-029 D6: EVOLVED — "same image local and VPS" is exactly where the ADR-029 D6 Linux/KVM hard gate is written in: the mechanics proven on macOS/HVF (msb v0.6.4) are FIRM only within that platform scope, and this decision's VPS/Linux half inherits the gate — `rip-cage-4fxg` reconfirmation is required before any VPS/Linux deployment on msb.]
+
 **Firmness: FIRM**
 
 The same Docker image runs on Mac (via OrbStack) and on VPS (via Docker/Podman). Phase 2 VPS portability is a deployment change, not an image change.
@@ -210,6 +229,8 @@ The same Docker image runs on Mac (via OrbStack) and on VPS (via Docker/Podman).
 **What would invalidate this:** arm64/amd64 differences cause significant issues. VPS needs tools that don't make sense locally (monitoring, etc.).
 
 ### D8: Dev credentials only, not `.env` mounting
+
+> [ADR-029 D5: EVOLVED-STRENGTHENED — msb `--secret` non-possession supersedes this decision's "limit damage if dev creds leak" framing: the real credential now need not enter the guest at all for the dominant secret, rather than merely being scoped to a low-value dev credential. Reconciling the alternatives-table rebuttal below: this decision rejected "Network firewall (egress filtering)" as "too restrictive — agents need network for packages, docs, APIs." Host-side egress control shipped anyway ([ADR-012](ADR-012-egress-firewall.md), now re-homed to [ADR-029](ADR-029-msb-migration.md) D2) without the predicted friction — observe-mode-first (and now the ADR-029 D4 repair loop) solved the friction problem this decision anticipated but didn't yet have an answer for.]
 
 **Firmness: FIRM**
 
@@ -232,6 +253,8 @@ On VPS (Phase 2), credentials are for the disposable environment. Rotate after u
 
 ### D9: Devcontainer as primary local UX
 
+> [DEAD regardless of migration — the devcontainer path was removed (rip-cage-kt25); `.devcontainer/` is legacy and gitignored. This decision is retired independent of the msb migration; not an ADR-029 disposition.]
+
 **Firmness: FLEXIBLE**
 
 The Dockerfile is structured to work as both a standalone container (via `rc` CLI) and a VS Code devcontainer. Devcontainer is the primary local UX; CLI mode is for headless/VPS use.
@@ -249,6 +272,8 @@ The Dockerfile is structured to work as both a standalone container (via `rc` CL
 **What would invalidate this:** VS Code becomes too heavyweight or devcontainer support regresses. CLI-only workflows prove sufficient for all use cases.
 
 ### D10: Beads (bd) in the base image
+
+> [ADR-029 D7: REVERSED — `host.docker.internal` does not exist under msb, so the container-connects-to-host-Dolt-server mechanism this decision describes has no path forward as written. Interim posture (stated explicitly): while a cage is up rw on a repo, bd writes happen from exactly one side (single-writer discipline, convention-enforced, not physically guarded) — see [ADR-029](ADR-029-msb-migration.md) D7. The durable host-service topology is captured-not-committed in bead `rip-cage-o7tx`, decided later, not here.]
 
 **Firmness: FLEXIBLE**
 
@@ -269,6 +294,8 @@ The base image includes `bd` CLI and Dolt, enabling beads-based issue tracking i
 **What would invalidate this:** Beads replaced by a different issue tracking system. bd publishes pre-built binaries (remove Go builder stage).
 
 ### D11: Deny `.git/hooks` writes in bind-mount mode
+
+> [ADR-029 D2: EVOLVED — the rationale holds unchanged; the `:ro` sub-mount enforcement mechanism re-implements in msb mount syntax (scoped macOS/HVF per ADR-029 D6 until Linux/KVM reconfirmation). This is a named surviving floor item in ADR-029 D2's new welded-containment-floor enumeration (the `.git/hooks` read-only weld).]
 
 **Firmness: FIRM**
 
@@ -292,6 +319,8 @@ Docker processes sub-mounts after parent mounts, so the `:ro` overlay on hooks p
 **What would invalidate this:** Legitimate need for agents to modify git hooks inside the container (e.g., setting up pre-commit linting). In that case, use `core.hooksPath` pointing to a container-only directory instead.
 
 ### D12: Scoped sudo, not blanket NOPASSWD
+
+> [ADR-029: UNAFFECTED-mechanism-prose-updated — the scoped-sudo posture is an in-guest floor item independent of the container-vs-microVM boundary and is not itself reversed or retired. Light touch only: this decision's rationale names the removed compound blocker ("`sudo chmod -x block-compound-commands.sh`") as an example of tampering it prevents — that blocker no longer exists (removed 2026-06-03, see D5's amendment) and is illustrative-historical text only, not a live consideration.]
 
 **Firmness: FIRM**
 
@@ -317,6 +346,8 @@ The agent user has sudo access scoped to: `apt-get`, `dpkg`, `chown`. Blanket `N
 **What would invalidate this:** Agent needs sudo for commands not in the allow list (e.g., `systemctl`, custom build tools). Add them to the sudoers file as needed.
 
 ### D13: Image-based devcontainer with `rc init` scaffolding
+
+> [Partially RETIRED / ADR-029 D1: EVOLVED — the devcontainer half is dead independent of the migration (rip-cage-kt25, same as D9). The image-distribution half (pre-built image, no per-project Dockerfile paths) evolves: distribution becomes an msb pull rather than a Docker registry pull, but the "distributable, no source dependency" property survives.]
 
 **Firmness: FIRM**
 
@@ -345,6 +376,8 @@ This merges the previous Phase 1a (devcontainer) and Phase 1b (`rc` CLI) into a 
 
 ### D14: Container self-detection in `rc`
 
+> [ADR-029 D2: RETIRED-WITH-MECHANISM — `/.dockerenv` is absent in msb guests, so this decision's detection mechanism does not fire there. The "rc is a host tool" property it protects still needs an in-guest marker of some kind under msb — flagged as a decompose-time item, not decided here.]
+
 **Firmness: FIRM**
 
 **Added:** 2026-03-27 (manual testing)
@@ -364,6 +397,8 @@ The `rc` script checks for `/.dockerenv` at startup and exits with a helpful mes
 **What would invalidate this:** Need to run `rc` inside a container (e.g., nested containers, Docker-in-Docker). In that case, install Docker CLI in the image and remove this guard.
 
 ### D15: Auto-select single container for name-required commands
+
+> [ADR-029: EVOLVED (msb list) — the CWD-match + singleton-fallback resolution strategy carries over unchanged in shape; it resolves against msb sandbox listings rather than `docker ps` output.]
 
 **Firmness: FLEXIBLE**
 
@@ -392,6 +427,8 @@ Explicit names still work and are recommended for scripts/orchestrators.
 
 ### D16: TUI rendering — locale, tmux config, synchronized output
 
+> [ADR-029: mostly UNAFFECTED — the multiplexer is already composable (session.multiplexer config; tmux is one option among none/tmux/herdr), so this decision's TUI concerns are largely orthogonal to the runtime swap. Only the docker-specific mentions age; the tmux/locale/rendering content itself is not an ADR-029 disposition.]
+
 **Firmness: FLEXIBLE**
 
 **Added:** 2026-03-27 (manual testing)
@@ -412,6 +449,8 @@ The container ships with UTF-8 locale (`LANG=C.UTF-8`), `TERM=xterm-256color`, a
 **What would invalidate this:** Claude Code stops relying on DEC 2026 for flicker-free rendering (e.g., ships its own frame batching). Or Claude Code ships a built-in terminal multiplexer, making tmux unnecessary.
 
 ### D17: Mount host skills and commands read-only
+
+> [ADR-029 D6: EVOLVED (mount mechanics only) — the read-only `.rc-context/` staging pattern re-implements on msb mount syntax; the security posture and rationale are unaffected. Scoped macOS/HVF per ADR-029 D6 until Linux/KVM reconfirmation.]
 
 **Firmness: FLEXIBLE**
 
@@ -460,6 +499,8 @@ should not be exposed inside the container. In that case, introduce a skills
 allowlist in `rc.conf`.
 
 ### D18: Skill discovery mechanism in containers
+
+> [ADR-029 D6: EVOLVED (mount mechanics only) — `skill-server.py` and the MCP-shim discovery mechanism are runtime-agnostic (they run in-guest regardless of container vs microVM); only the underlying `.rc-context/` mount mechanics (D17) re-bind. Not otherwise affected by the migration.]
 
 **Firmness: FLEXIBLE**
 
@@ -517,6 +558,8 @@ replace the Python server command in `settings.json`.
 
 ### D19: Mount host agent definitions read-only
 
+> [ADR-029 D6: EVOLVED (mount mechanics only) — same disposition as D17: the `.rc-context/` mount pattern re-implements on msb mount syntax; security posture and rationale unaffected. Scoped macOS/HVF per ADR-029 D6 until Linux/KVM reconfirmation.]
+
 **Firmness: FLEXIBLE**
 
 **Added:** 2026-04-14
@@ -561,6 +604,8 @@ that should not be visible across projects. In that case, introduce an
 `agents_allowlist` in `rc.conf` (same pattern proposed for skills in D17).
 
 ### D20: Agent definition discovery mechanism
+
+> [ADR-029: UNTOUCHED — filesystem-scanning discovery is runtime-agnostic; the msb migration does not bear on this decision.]
 
 **Firmness: EXPLORATORY**
 

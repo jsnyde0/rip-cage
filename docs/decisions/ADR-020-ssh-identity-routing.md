@@ -1,6 +1,9 @@
 # ADR-020: SSH identity routing — the cage carries over your SSH config, not just your agent
 
 **Status:** Reviewed — pending implementation
+
+> **Migration status (ADR-029, 2026-07-10):** All decisions D1–D7 are retired per [ADR-029](ADR-029-msb-migration.md) D3 — SSH config/identity routing retires along with the rest of the ssh cluster in favor of HTTPS + `--secret` credential injection. D3's four-layer priority shape and D6's match/mismatch/unset state machine are named successor designs for msb *token* selection (ADR-029 D3 cites them explicitly). Unlike the rest of the ssh cluster, these mechanisms were never implemented (status: pending implementation) — nothing here ships or retires at cutover; the retirement is of the *planned* design, whose reusable shapes (D3, D6) carry forward to token selection.
+
 **Date:** 2026-04-27
 **Design:** [Design doc](../design/2026-04-27-ssh-identity-routing-design.md)
 **Builds on:** [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (forward-by-default), [ADR-018](ADR-018-macos-ssh-agent-discovery.md) (probe-and-pick agent)
@@ -25,6 +28,8 @@ The fix is structurally the same as ADR-018: **the cage inherits the user's host
 ## Decisions
 
 ### D1: Strict mount — config + referenced public keys + known_hosts only
+
+> [ADR-029 D3: RETIRED — the config/pubkey/known_hosts mount surface retires with the ssh cluster; there is no ssh config to translate or mount once git authenticates over HTTPS with an msb `--secret` token.]
 
 **Firmness: FIRM**
 
@@ -56,6 +61,8 @@ This rules out the simpler `bind-mount ~/.ssh:ro` shape. Read-only is not a secu
 **Limitation (host-filesystem pubkey dependency).** This decision assumes the host has `<name>.pub` files under `~/.ssh/` for every key the user wants the cage to use. That holds for the dogfooding setup (`~/.ssh/id_ed25519_personal.pub`, `id_ed25519_work.pub`). It does **not** hold for: 1Password SSH agent (pubkeys live in the vault, not on disk), macOS Secure Enclave / Secretive (keys never touch disk by design), agent forwarded from a remote workstation where pubkey files exist on a third machine, and users who `ssh-add`'d a key then deleted the file. In those configurations the forwarded agent works perfectly but D4's mount finds nothing and lands the user in the "user-config-block missing-pubkey" warn-and-degrade branch — strictly worse than today, since the fallback is "first-key-wins" with a confusing warning. Captured here rather than fixed in v1: switching to `ssh-add -L` as the canonical pubkey source is a single-decision pivot (see alternative in the table above) but reshapes D4 enough that we want dogfooding signal first.
 
 ### D2: Translate the host config; re-run on every `rc up`; write to a stable per-container path
+
+> [ADR-029 D3: RETIRED — the six-transform host-config translation retires with the ssh cluster; there is no `~/.ssh/config` to translate once ssh is not the git transport.]
 
 **Firmness: FIRM**
 
@@ -92,6 +99,8 @@ The transform is idempotent — running twice with identical input produces iden
 **Invalidation check (mechanical, optional):** In `tests/test-ssh-config.sh`, run the translation against a fixture `~/.ssh/config` containing `UseKeychain yes` and verify (a) the translated output leads with `IgnoreUnknown UseKeychain,...` and (b) `ssh -G github.com` inside the cage returns no fatal-directive errors. If the `IgnoreUnknown` shim is absent, Debian openssh-client will error on macOS-only directives and transform 2 is broken.
 
 ### D3: github.com identity pin uses a four-layer priority list with no built-in inference defaults
+
+> [ADR-029 D3: RETIRED-WITH-MECHANISM, NAMED SUCCESSOR DESIGN — the ssh-key-specific pin mechanism retires with the cluster, but the four-layer priority *shape* (flag → label → rules file → loud unset, no built-in default) is the reusable design ADR-029 D3 names explicitly as the successor pattern for msb **token** selection: "which identity does this cage push as" survives the transport change from ssh key to HTTPS token.]
 
 **Firmness: FIRM**
 
@@ -135,6 +144,8 @@ This explicitly *does not* generalize to other hosts (bitbucket, gitlab, interna
 
 ### D4: Allowlist pubkey mount; explicit-pin missing-pubkey aborts; `IdentitiesOnly yes` is load-bearing
 
+> [ADR-029 D3: RETIRED — the pubkey-availability invariant and `IdentitiesOnly yes` correctness contract retire with the ssh mount surface; an msb `--secret` token has no equivalent "missing pubkey" failure mode.]
+
 **Firmness: FIRM**
 
 The translation step in D2 produces the set of `IdentityFile` paths the cage config references. Those `.pub` files (and only those, plus `~/.ssh/known_hosts`) get bind-mounted read-only into `/home/agent/.ssh/`.
@@ -167,6 +178,8 @@ Abort message follows ADR-001 actionability: `Error: --github-identity=id_ed2551
 
 ### D5: Sentinels feed banner + `rc ls`; first-shell echo closes devcontainer visibility gap
 
+> [ADR-029 D3: RETIRED-WITH-PRINCIPLE — the specific ssh-identity sentinels (`github-identity`, `ssh-config-source`) retire with the cluster; the visibility principle (banner + `rc ls` column + first-shell echo, never silent) is a reusable pattern any msb-era token-identity surface should honor, but this is not decided here.]
+
 **Firmness: FIRM**
 
 Two new sentinels join the existing pair from ADR-018 D3:
@@ -193,6 +206,8 @@ The zshrc ssh-agent banner block reads both. `rc ls` gains a `GH-IDENTITY` colum
 **Invalidation check (mechanical, optional):** After `rc up`, `docker exec "$container" stat -c "%U %a" /etc/rip-cage/github-identity /etc/rip-cage/ssh-config-source` must output `root 644` for both files. Missing files or non-root ownership means D5's root-preflight write path regressed.
 
 ### D6: github.com identity preflight in cage; greeting probe primary; cache shipped in v1
+
+> [ADR-029 D3: RETIRED-WITH-MECHANISM, NAMED SUCCESSOR DESIGN — the SSH-greeting-probe mechanism retires with the cluster, but the match/mismatch/unset state machine is the reusable design ADR-029 D3 names explicitly as the successor pattern for msb **token** identity verification, with `gh api user` (the parallel diagnostic this decision already named) as the natural identity probe over HTTPS in place of the SSH greeting.]
 
 **Firmness: FIRM**
 
@@ -242,6 +257,8 @@ If github.com is unreachable (egress firewall, no network), the sentinel records
 **Invalidation check (mechanical, optional):** After `rc up` with a resolved identity, `jq -e 'keys | length > 0' ~/.cache/rip-cage/identity-map.json` must exit 0. An absent or empty cache means the cold-cache populate-then-compare step was dropped and first `rc up` with correct config will show `unset` instead of `match`.
 
 ### D7: `--no-ssh-config` opt-out; `--no-forward-ssh` implies `--no-ssh-config` by default
+
+> [ADR-029 D3: RETIRED — there is no ssh-config posture left to opt out of; `--no-ssh-config`, `--ssh-config`, and the `rc.ssh-config` label retire with the rest of the cluster.]
 
 **Firmness: FIRM**
 

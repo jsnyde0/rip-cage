@@ -4,22 +4,28 @@
 
 **Firmness:** per-decision, see each Dn
 
+> **Migration status (ADR-029, 2026-07-10):** This ADR is evolved by [ADR-029](ADR-029-msb-migration.md) — the pattern survives, but its substrate (Docker labels) re-binds to msb sandbox metadata, and the instance tally shrinks (instance 1 retires with ADR-022; the scope-boundary `rc.mediator-ca-env` sibling retires with ADR-026 D5). The mechanisms below remain shipped and load-bearing in the Docker path until the msb cutover release lands; until then this ADR describes current behavior.
+
 ## Context
 
 Docker bind mounts are immutable after `docker create`. Several rip-cage config fields decide *mount shape* — which mounts exist, their mode, or their content-set — at create time: `ssh.allowed_keys` (filter mount on/off), `mounts.symlinks.*` (the followed-symlink mount set), `mounts.config_mode` (`ro`/`rw` shadow-mount over `.rip-cage.yaml`), and `auth.credential_mounts` (+ per-tool overrides). When such a field changes between create and resume, the running container silently keeps its create-time shape while `rc config show` displays the new value — the cage's actual posture and its displayed posture diverge, and the divergence *fails open and quiet* (the most dangerous class per ADR-001).
 
 Four independent guards shipped against this drift class, each cloning the previous one:
 
-1. `rc.ssh-key-filter` (`rip-cage-jxy`, 2026-05-12; documented in ADR-022 implementation notes) — boolean on/off mount toggle.
+1. `rc.ssh-key-filter` (`rip-cage-jxy`, 2026-05-12; documented in ADR-022 implementation notes) — boolean on/off mount toggle. [ADR-029 D3: this instance RETIRES with ADR-022 — there is no ssh-agent-filter mount to guard once the ssh cluster retires.]
 2. `rc.symlink-follow-fingerprint` (`rip-cage-c1p.2`; ADR-021 D4a) — sha256 over the symlink mount set.
 3. `rc.config-mode` (`rip-cage-cw51`, 2026-07-01; ADR-021 D7) — `ro`/`rw` present-vs-absent shadow-mount.
-4. `rc.auth.credential-mounts` + per-tool `rc.auth.credential-mounts.{claude,pi}` (`rip-cage-xhgr`, 2026-07-04; ADR-026 D7) — per-tool credential-mount posture, with a legacy derivation ladder.
+4. `rc.auth.credential-mounts` + per-tool `rc.auth.credential-mounts.{claude,pi}` (`rip-cage-xhgr`, 2026-07-04; ADR-026 D7) — per-tool credential-mount posture, with a legacy derivation ladder. [ADR-029 D5: this instance RE-SHAPES rather than retires — per-tool posture survives and matters more (ADR-026 D7's disposition), now gating `--secret` non-possession vs real-credential mounting instead of gating a composed-mediator placeholder.]
+
+**Instance tally under ADR-029:** four instances at promotion; instance 1 retires (above), instance 4 re-shapes (above), instances 2 and 3 are unaffected by the migration.
 
 The recipe existed only as fragments (per-instance ADR notes + the `rip-cage-mount-shape-label-lock-pattern` bd memory). Per the rule-of-three promotion trigger, this ADR is the pattern's canonical home; the instance ADRs describe their instances and this ADR owns the recipe. Two hard-won coupling rules (D2, D3) and one deliberate non-instance sibling (D4) ride along.
 
 ## Decisions
 
 ### D1: The canonical label-lock recipe
+
+> [ADR-029: EVOLVED — the recipe (create-time record, resume-time compare on both branches, abort-loud with the established message template, reload-ineligible by omission, backward-compat derivation ladder) survives; the substrate re-binds from Docker `rc.<feature>` container labels to msb's own sandbox metadata record. **Live open question, flagged not decided (decompose-time item):** msb's snapshot-amend (`msb run --snapshot ... --net-rule <amended>`, ADR-029 D4) makes NET-RULE shape mutable on a running/stopped sandbox in a way Docker mounts never were — if mount shape *also* becomes amendable under msb (unconfirmed), this decision's own invalidation clause fires ("a docker/OCI runtime feature that makes bind-mount shape mutable... the guard family would collapse into plain re-synthesis at resume"), and the whole label-lock family collapses to re-synthesis for mount-shape fields specifically. Whether mount shape is or isn't amendable under msb is not answered here.]
 
 **Firmness: FLEXIBLE** — the pattern is proven by four shipped instances, but its codification here is new; edits land in place. The underlying invariant (never silently re-mount on resume) is effectively load-bearing across all instances and a candidate for FIRM once this write has soaked.
 
@@ -83,6 +89,8 @@ When a label-locked field's policy input stops being a raw config read and becom
 
 ### D4: Label-free drift-detect sibling — NOT an instance
 
+> [ADR-029: EVOLVED — the label-free drift-detect principle survives; the shipped instance's mechanism (`docker inspect '{{.Image}}'` vs current image ID) re-binds to msb's own image record at cutover — the underlying logic ("compare what the platform already persists on both sides, don't mint a label") is platform-agnostic and needs no redesign, only a different inspect call.]
+
 **Firmness: FLEXIBLE** (from bd memory EXTENSION 3, `rip-cage-jnvb`, 2026-07-05)
 
 When docker already persists **both sides** of the comparison, compare them directly instead of minting a label — a create-time label would duplicate state docker owns. Shipped instance: image-ID drift at resume (container's pinned image via `docker inspect '{{.Image}}'` vs current image ID). Same abort-loud message shape and `_up_resolve_resume_*` guard family as D1, but **branch-asymmetric**: abort on stopped/created (pre-`docker start`), warn-only on running (a running drifted container is safe — its init ran against its own image; refusing would interrupt a live session).
@@ -103,7 +111,7 @@ Do **not** count label-free guards toward the label-lock instance tally — the 
 
 The sibling **image-shape** label-lock (label on the IMAGE, compared at the provisioning gate: `org.opencontainers.image.version`, `rip-cage-rcw`) is a distinct shape with its own tally (1/3 as of this writing) and is *not* governed by this ADR. If it reaches its own rule-of-three, it gets its own promotion (likely a Dn here, evolved in place).
 
-Likewise out of scope: `_up_resolve_resume_mediator_ca_env` (`rc.mediator-ca-env`, `rip-cage-yid0`) guards create-time-frozen **ENV shape**, not mount shape — same guard family and message posture, both branches, but not counted toward this ADR's instance tally.
+Likewise out of scope: `_up_resolve_resume_mediator_ca_env` (`rc.mediator-ca-env`, `rip-cage-yid0`) guards create-time-frozen **ENV shape**, not mount shape — same guard family and message posture, both branches, but not counted toward this ADR's instance tally. [ADR-029 D2/D5: this scope-boundary sibling RETIRES with [ADR-026](ADR-026-containment-mediation-identity.md) D5 — the MEDIATOR archetype and its CA-env injection are deleted wholesale at cutover, so there is no mediator CA env to guard.]
 
 ## Consequences
 
