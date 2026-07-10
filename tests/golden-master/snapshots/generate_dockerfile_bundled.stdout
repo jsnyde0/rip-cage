@@ -1,6 +1,6 @@
 # Stage 1: Go builder for beads (bd)
 FROM golang:1.26-trixie AS go-builder
-ARG BEADS_VERSION=v1.0.5
+ARG BEADS_VERSION=v1.1.0
 RUN apt-get update && apt-get install -y libicu-dev libzstd-dev pkg-config git && rm -rf /var/lib/apt/lists/*
 # Clone + build (not `go install @latest`): upstream's go.mod carries a `replace`
 # directive, which `go install` rejects unless the module is the main module.
