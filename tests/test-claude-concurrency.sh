@@ -76,6 +76,39 @@ _shared_root_files() {
 }
 
 # ---------------------------------------------------------------------------
+# Posture detection: possession vs non-possession (rip-cage-7atw.10)
+#
+# The concurrency test predates the non-possession credential machinery and
+# used to assert possession UNCONDITIONALLY (credential symlink, oauthAccount
+# carryover). The session-wrapper is already posture-aware (creates the
+# .credentials.json symlink only if the source exists,
+# examples/claude/claude-session-wrapper.sh:77-89); this test now mirrors
+# that: gate possession-only assertions on the ambient cage's posture instead
+# of assuming possession.
+#
+# Detection: prefer the host-side rc.auth.credential-mounts.claude label
+# (cheap, not forgeable by an in-cage agent, same signal
+# test-claude-json-seed-synthesis.sh and test-cc-managed-settings-probe.sh
+# use); fall back to an in-cage credentials-file presence check when the
+# label is absent (e.g. a container not created via `rc up`).
+# ---------------------------------------------------------------------------
+CRED_MOUNTS_LABEL=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts.claude" }}' "$CONTAINER" 2>/dev/null || true)
+if [[ "$CRED_MOUNTS_LABEL" == "none" ]]; then
+  POSSESSION=false
+elif [[ -n "$CRED_MOUNTS_LABEL" ]]; then
+  POSSESSION=true
+elif cexec test -f /home/agent/.claude/.credentials.json; then
+  POSSESSION=true
+else
+  POSSESSION=false
+fi
+if [[ "$POSSESSION" == "true" ]]; then
+  echo "Credential posture: possession (rc.auth.credential-mounts.claude=${CRED_MOUNTS_LABEL:-<absent, .credentials.json found in-cage>})"
+else
+  echo "Credential posture: non-possession (rc.auth.credential-mounts.claude=${CRED_MOUNTS_LABEL:-<absent, no .credentials.json in-cage>})"
+fi
+
+# ---------------------------------------------------------------------------
 # Step 0: Ensure the claude wrapper is in place
 # ---------------------------------------------------------------------------
 echo ""
@@ -217,8 +250,15 @@ else
   fail "conctest-a and conctest-b .claude.json have the same inode — NOT isolated!" "inode_a=$INODE_A inode_b=$INODE_B"
 fi
 
-# .credentials.json in session A is a symlink pointing to the shared base
-if cexec test -L /home/agent/.claude-sessions/conctest-a/.credentials.json; then
+# .credentials.json in session A is a symlink pointing to the shared base.
+# Possession-only: under non-possession there is no mounted
+# /home/agent/.claude/.credentials.json for the session-wrapper to symlink to
+# (the wrapper correctly creates the symlink only if the source exists,
+# examples/claude/claude-session-wrapper.sh:77-89) — named-skip rather than
+# asserting a shared credential that was never posture-eligible to exist.
+if [[ "$POSSESSION" != "true" ]]; then
+  echo "SKIP (non-possession posture): credential-isolation symlink assertion — no /home/agent/.claude/.credentials.json mounted"
+elif cexec test -L /home/agent/.claude-sessions/conctest-a/.credentials.json; then
   CRED_TARGET=$(cexec readlink /home/agent/.claude-sessions/conctest-a/.credentials.json)
   if [[ "$CRED_TARGET" == "/home/agent/.claude/.credentials.json" ]]; then
     pass "conctest-a/.credentials.json symlinks to /home/agent/.claude/.credentials.json (shared)"
@@ -248,49 +288,60 @@ echo "=== Step 3a: MCP-carryover proof (set-equality vs base snapshot) ==="
 
 MCP_SEED_DIR=/home/agent/.claude-sessions/conctest-mcp-setequal
 
-# Positive sentinel: the snapshot must exist and be non-empty
-_seed_exists=$(cexec bash -c "[ -f /home/agent/.claude/.claude.json.seed ] && [ -s /home/agent/.claude/.claude.json.seed ] && echo yes || echo no")
-if [[ "$_seed_exists" != "yes" ]]; then
-  fail "Step 3a: ~/.claude/.claude.json.seed is absent or empty — R4 snapshot was not taken at init time (prerequisite for set-equality test)" ""
+# Possession-only: oauthAccount carries the account-managed claude.ai
+# connectors, which only flow through a snapshot taken from a real,
+# credentialed ~/.claude.json. Under non-possession there is no guarantee the
+# synthesized/carried seed carries an oauthAccount at all (rip-cage-t7cu: a
+# fully non-possession cage without a host ~/.claude.json falls back to a
+# minimal synthesized seed with no oauthAccount) — named-skip rather than
+# asserting a posture-ineligible connector carryover.
+if [[ "$POSSESSION" != "true" ]]; then
+  echo "SKIP (non-possession posture): oauthAccount/mcpServers carryover assertion — no possession-backed credential snapshot to carry oauthAccount"
 else
-  # Non-vacuous check: oauthAccount must be present in the snapshot (it carries the connectors)
-  _base_oauth=$(cexec bash -c "jq -r 'if .oauthAccount then \"present\" else \"absent\" end' /home/agent/.claude/.claude.json.seed 2>/dev/null" || echo "jq-failed")
-  if [[ "$_base_oauth" != "present" ]]; then
-    fail "Step 3a: snapshot ~/.claude/.claude.json.seed has no oauthAccount — snapshot did not carry account-managed connectors" \
-      "oauthAccount: $(cexec bash -c "jq '.oauthAccount // \"null\"' /home/agent/.claude/.claude.json.seed 2>/dev/null" || echo 'jq-failed')"
+  # Positive sentinel: the snapshot must exist and be non-empty
+  _seed_exists=$(cexec bash -c "[ -f /home/agent/.claude/.claude.json.seed ] && [ -s /home/agent/.claude/.claude.json.seed ] && echo yes || echo no")
+  if [[ "$_seed_exists" != "yes" ]]; then
+    fail "Step 3a: ~/.claude/.claude.json.seed is absent or empty — R4 snapshot was not taken at init time (prerequisite for set-equality test)" ""
   else
-    # Read MCP server keys from the snapshot (may be empty in this env — that's OK)
-    _base_mcp_keys=$(cexec bash -c "jq -r '(.mcpServers // {}) | keys | sort | .[]' /home/agent/.claude/.claude.json.seed 2>/dev/null" || true)
-    echo "  Base snapshot: oauthAccount=present, mcpServers keys: [$(echo "$_base_mcp_keys" | tr '\n' ' ' | sed 's/ $//'  )]"
+    # Non-vacuous check: oauthAccount must be present in the snapshot (it carries the connectors)
+    _base_oauth=$(cexec bash -c "jq -r 'if .oauthAccount then \"present\" else \"absent\" end' /home/agent/.claude/.claude.json.seed 2>/dev/null" || echo "jq-failed")
+    if [[ "$_base_oauth" != "present" ]]; then
+      fail "Step 3a: snapshot ~/.claude/.claude.json.seed has no oauthAccount — snapshot did not carry account-managed connectors" \
+        "oauthAccount: $(cexec bash -c "jq '.oauthAccount // \"null\"' /home/agent/.claude/.claude.json.seed 2>/dev/null" || echo 'jq-failed')"
+    else
+      # Read MCP server keys from the snapshot (may be empty in this env — that's OK)
+      _base_mcp_keys=$(cexec bash -c "jq -r '(.mcpServers // {}) | keys | sort | .[]' /home/agent/.claude/.claude.json.seed 2>/dev/null" || true)
+      echo "  Base snapshot: oauthAccount=present, mcpServers keys: [$(echo "$_base_mcp_keys" | tr '\n' ' ' | sed 's/ $//'  )]"
 
-    # Seed a fresh session using the wrapper WITHOUT RC_P1P_JSON_BASE override,
-    # so it uses the snapshot (R4 path — ~/.claude/.claude.json.seed).
-    cexec rm -rf "$MCP_SEED_DIR"
-    docker exec \
-      -e CLAUDE_CONFIG_DIR="$MCP_SEED_DIR" \
-      "$CONTAINER" \
-      /usr/local/bin/claude --version >/dev/null 2>&1 || true
+      # Seed a fresh session using the wrapper WITHOUT RC_P1P_JSON_BASE override,
+      # so it uses the snapshot (R4 path — ~/.claude/.claude.json.seed).
+      cexec rm -rf "$MCP_SEED_DIR"
+      docker exec \
+        -e CLAUDE_CONFIG_DIR="$MCP_SEED_DIR" \
+        "$CONTAINER" \
+        /usr/local/bin/claude --version >/dev/null 2>&1 || true
 
-    # Assert oauthAccount is present in the seeded session
-    _session_oauth=$(cexec bash -c "jq -r 'if .oauthAccount then \"present\" else \"absent\" end' '${MCP_SEED_DIR}/.claude.json' 2>/dev/null" || echo "jq-failed")
-    # Assert mcpServers set-equality
-    _session_mcp_keys=$(cexec bash -c "jq -r '(.mcpServers // {}) | keys | sort | .[]' '${MCP_SEED_DIR}/.claude.json' 2>/dev/null" || true)
+      # Assert oauthAccount is present in the seeded session
+      _session_oauth=$(cexec bash -c "jq -r 'if .oauthAccount then \"present\" else \"absent\" end' '${MCP_SEED_DIR}/.claude.json' 2>/dev/null" || echo "jq-failed")
+      # Assert mcpServers set-equality
+      _session_mcp_keys=$(cexec bash -c "jq -r '(.mcpServers // {}) | keys | sort | .[]' '${MCP_SEED_DIR}/.claude.json' 2>/dev/null" || true)
 
-    echo "  Session: oauthAccount=$_session_oauth, mcpServers keys: [$(echo "$_session_mcp_keys" | tr '\n' ' ' | sed 's/ $//')]"
+      echo "  Session: oauthAccount=$_session_oauth, mcpServers keys: [$(echo "$_session_mcp_keys" | tr '\n' ' ' | sed 's/ $//')]"
 
-    _3a_ok=true
-    if [[ "$_session_oauth" != "present" ]]; then
-      fail "Step 3a: seeded session .claude.json has no oauthAccount — seed-by-copy dropped account connectors" \
-        "session file: ${MCP_SEED_DIR}/.claude.json"
-      _3a_ok=false
-    fi
-    if [[ "$_base_mcp_keys" != "$_session_mcp_keys" ]]; then
-      fail "Step 3a: seeded session mcpServers keys differ from base snapshot" \
-        "base: [$(echo "$_base_mcp_keys" | tr '\n' ',')] | session: [$(echo "$_session_mcp_keys" | tr '\n' ',')]"
-      _3a_ok=false
-    fi
-    if [[ "$_3a_ok" == "true" ]]; then
-      pass "Step 3a: seeded session carries oauthAccount (non-empty) and mcpServers == base snapshot"
+      _3a_ok=true
+      if [[ "$_session_oauth" != "present" ]]; then
+        fail "Step 3a: seeded session .claude.json has no oauthAccount — seed-by-copy dropped account connectors" \
+          "session file: ${MCP_SEED_DIR}/.claude.json"
+        _3a_ok=false
+      fi
+      if [[ "$_base_mcp_keys" != "$_session_mcp_keys" ]]; then
+        fail "Step 3a: seeded session mcpServers keys differ from base snapshot" \
+          "base: [$(echo "$_base_mcp_keys" | tr '\n' ',')] | session: [$(echo "$_session_mcp_keys" | tr '\n' ',')]"
+        _3a_ok=false
+      fi
+      if [[ "$_3a_ok" == "true" ]]; then
+        pass "Step 3a: seeded session carries oauthAccount (non-empty) and mcpServers == base snapshot"
+      fi
     fi
   fi
 fi
