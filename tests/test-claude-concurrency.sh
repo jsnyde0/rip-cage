@@ -9,7 +9,7 @@
 #   3c. R4 regression guard    — snapshot-seeded despite broken live ~/.claude.json mount
 #   4. No-leftover guard       — no session-written files leaked into shared ~/.claude root
 #   5. Single-agent no-regression — one-agent claude -p succeeds; auth-bootstrap intact
-#   6. Git-author proof        — detached tmux session sets GIT_AUTHOR_NAME=<handle>
+#   6. Git-author proof        — herdr session (HERDR_SESSION) sets GIT_AUTHOR_NAME=<handle>
 #
 # NEGATIVE CONTROL: two concurrent claude -p pointed at ONE config dir MUST show
 # corruption/error — proves the harness can detect the bug under isolation failure.
@@ -504,9 +504,14 @@ rm -f "$OUT_SINGLE"
 
 # ---------------------------------------------------------------------------
 # Step 6: Git-author proof
-# In a detached named tmux session, the zshrc snippet sets GIT_AUTHOR_NAME=<handle>
-# Drive a git commit via tmux send-keys; POLL until the commit appears (max 15s),
-# then read git log -1 deterministically — no bare sleeps (Fix 3).
+# tmux was un-baked from the image (commit af7a1ce); herdr is the new default
+# multiplexer. Mirrors Step 7c's herdr mechanism: set HERDR_SESSION directly
+# (no live multiplexer session needed — the zshrc snippet at
+# cage/agent/zshrc:170-176 reads HERDR_SESSION straight from the env) and
+# drive the commit through an interactive zsh (`zsh -ic`), which sources
+# ~/.zshrc and so picks up GIT_AUTHOR_NAME/GIT_COMMITTER_NAME=<handle>.
+# Single synchronous docker exec — no send-keys/capture-pane polling needed
+# since this is not a detached session, just an interactive login-shell exec.
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Step 6: Git-author proof ==="
@@ -527,51 +532,24 @@ cexec bash -c "
   git add testfile.txt
 "
 
-# Create a detached named tmux session (zshrc will set GIT_AUTHOR_NAME from session name)
-# Kill any stale session first
-cexec tmux kill-session -t "$GIT_SESSION" 2>/dev/null || true
-cexec tmux new-session -d -s "$GIT_SESSION" -c "$GIT_TEST_DIR"
+# Drive the commit through an interactive zsh shell with HERDR_SESSION set
+# (TMUX explicitly unset so the zshrc tmux-branch can't shadow the herdr
+# branch). Append a sentinel marker so completion is detected deterministically
+# rather than by polling/timing.
+_git_commit_out=$(docker exec \
+  -e HERDR_SESSION="$GIT_SESSION" \
+  -e TMUX="" \
+  -u agent \
+  "$CONTAINER" \
+  zsh -ic "cd $GIT_TEST_DIR && git commit -m 'test-commit-from-agent'; echo GIT_COMMIT_DONE_$$" 2>&1)
 
-# Poll until the tmux pane is ready (session shell initialized, zshrc sourced).
-# Sentinel: a shell prompt visible in the pane within 10s.
-_git_s_waited=0
-while [[ $_git_s_waited -lt 10 ]]; do
-  _pane_content=$(cexec tmux capture-pane -p -t "$GIT_SESSION" 2>/dev/null || true)
-  if [[ -n "$_pane_content" ]]; then
-    break
-  fi
-  sleep 1
-  _git_s_waited=$((_git_s_waited + 1))
-done
-# One extra second for zshrc to finish sourcing after the pane appears
-sleep 1
-
-# Send a git commit command; GIT_AUTHOR_NAME should be set by zshrc snippet to session name.
-# Append a sentinel marker so we can detect completion without relying on timing.
-cexec tmux send-keys -t "$GIT_SESSION" "git commit -m 'test-commit-from-agent'; echo GIT_COMMIT_DONE_$$" Enter
-
-# Poll (up to 15s) until the sentinel appears in the pane OR the commit lands in git log.
-# Using the tmux-pane sentinel (GIT_COMMIT_DONE) as the primary signal.
 _commit_landed=false
-_git_c_waited=0
-while [[ $_git_c_waited -lt 15 ]]; do
-  sleep 1
-  _git_c_waited=$((_git_c_waited + 1))
-  _pane_after=$(cexec tmux capture-pane -p -t "$GIT_SESSION" 2>/dev/null || true)
-  if echo "$_pane_after" | grep -q "GIT_COMMIT_DONE_$$"; then
-    _commit_landed=true
-    break
-  fi
-  # Also check git log directly as a fallback
-  _log_count=$(cexec bash -c "cd $GIT_TEST_DIR && git log --oneline 2>/dev/null | wc -l" 2>/dev/null || echo "0")
-  if [[ "$_log_count" -ge 1 ]]; then
-    _commit_landed=true
-    break
-  fi
-done
+if echo "$_git_commit_out" | grep -q "GIT_COMMIT_DONE_$$"; then
+  _commit_landed=true
+fi
 
 if [[ "$_commit_landed" != "true" ]]; then
-  fail "Git-author: commit sentinel not detected within 15s — tmux send-keys or zshrc setup failed" ""
+  fail "Git-author: commit sentinel not detected — herdr (zsh -ic HERDR_SESSION) setup failed" "$(echo "$_git_commit_out" | head -5)"
 fi
 
 # Read git log to verify author name (deterministic file read, commit is confirmed present)
@@ -583,7 +561,7 @@ AUTHOR_EMAIL=$(echo "$GIT_LOG" | cut -d'|' -f2)
 echo "  git log -1 author: name='$AUTHOR_NAME' email='$AUTHOR_EMAIL'"
 
 if [[ "$AUTHOR_NAME" == "$GIT_SESSION" ]]; then
-  pass "Git author name = tmux session handle '$GIT_SESSION'"
+  pass "Git author name = herdr session handle '$GIT_SESSION'"
 else
   fail "Git author name = '$AUTHOR_NAME' (expected '$GIT_SESSION' from GIT_AUTHOR_NAME env)" ""
 fi
@@ -597,7 +575,6 @@ else
 fi
 
 # Cleanup
-cexec tmux kill-session -t "$GIT_SESSION" 2>/dev/null || true
 cexec rm -rf "$GIT_TEST_DIR"
 
 # ---------------------------------------------------------------------------
@@ -705,23 +682,32 @@ rm -f "$OUT_NEG_X" "$OUT_NEG_Y"
 # Unit-tests the wrapper's three-way derivation logic by seeding sessions
 # via the identity env vars directly (no full cage up required):
 #
-#   7a. none (no multiplexer identity) → CLAUDE_CONFIG_DIR = ~/.claude-sessions/default
-#   7b. tmux ($TMUX set)              → CLAUDE_CONFIG_DIR = ~/.claude-sessions/<tmux-session>
-#   7c. herdr ($HERDR_SESSION set)    → CLAUDE_CONFIG_DIR = ~/.claude-sessions/<HERDR_SESSION>
+#   7a. none (no multiplexer identity)     → CLAUDE_CONFIG_DIR = ~/.claude-sessions/default
+#   7b. herdr live-shell ($HERDR_SESSION,  → CLAUDE_CONFIG_DIR = ~/.claude-sessions/<HERDR_SESSION>
+#       via zshrc export in an interactive   (zshrc snippet's export branch, live shell)
+#       shell)
+#   7c. herdr direct ($HERDR_SESSION set   → CLAUDE_CONFIG_DIR = ~/.claude-sessions/<HERDR_SESSION>
+#       on the wrapper invocation)            (wrapper's own derivation branch)
 #       GATING: must PASS, not skip (D7 RESOLVED by rip-cage-1f59.5: HERDR_SESSION confirmed)
+#
+# tmux was un-baked from the image (commit af7a1ce); herdr is the new default
+# multiplexer, so 7b — originally the tmux live-session variant — is
+# re-pointed to herdr (rip-cage-7atw.4). 7b and 7c intentionally exercise two
+# different code paths (see the comment above 7b) rather than duplicating
+# each other's mechanism.
 #
 # Method: invoke the wrapper via --version (cheap, triggers seeding) with the
 # identity env vars manipulated, then read the seeded session dirs to confirm.
 # Cleanup stale test dirs first.
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== Step 7: Multiplexer-agnostic config-dir derivation (none/tmux/herdr) ==="
+echo "=== Step 7: Multiplexer-agnostic config-dir derivation (none/herdr-live-shell/herdr-direct) ==="
 
 MUX_TEST_BASE=/home/agent/.claude-sessions
 
 # Cleanup stale derivation test dirs
 cexec rm -rf "${MUX_TEST_BASE}/mux-test-default"
-cexec rm -rf "${MUX_TEST_BASE}/mux-test-tmux-session"
+cexec rm -rf "${MUX_TEST_BASE}/mux-test-herdr-live"
 cexec rm -rf "${MUX_TEST_BASE}/mux-test-herdr-session"
 
 # --- 7a: none (no multiplexer identity) → default fallback ---
@@ -746,68 +732,38 @@ else
   fail "Step 7a: none multiplexer — ~/.claude-sessions/default/.claude.json not found (wrapper fallback broken)"
 fi
 
-# --- 7b: tmux ($TMUX set) → per-session isolation ---
-# We can't create a real tmux socket from docker exec alone, but we can test
-# the wrapper by pointing $TMUX at a fake socket path and $RC_P1P_TMUX_HANDLE
-# override... or: use docker exec into the tmux session already running in the cage.
+# --- 7b: herdr live-shell derivation ($HERDR_SESSION set) → per-session isolation ---
+# tmux was un-baked from the image (commit af7a1ce); herdr is the new default
+# multiplexer, so this step is re-pointed to herdr (mirrors Step 6 and Step 7c).
 #
-# Better approach: check if a tmux session is running; if so, exec into it.
-# The git-author step (Step 6) already validated the tmux+zshrc path.
-# Here we verify the wrapper's derivation directly by noting Step 6 proved
-# the tmux session sets CLAUDE_CONFIG_DIR to ~/.claude-sessions/<session-handle>.
-# Cross-check: conctest-gitauth session dir should have been set by zshrc.
-#
-# Since Step 6 may have cleaned up, re-create a test tmux session and invoke
-# the wrapper from inside it, then check the derived config dir.
-MUX_TMUX_SESSION="mux-test-tmux"
-cexec tmux kill-session -t "$MUX_TMUX_SESSION" 2>/dev/null || true
-cexec tmux new-session -d -s "$MUX_TMUX_SESSION" 2>/dev/null || true
+# Distinct from Step 7c: 7c invokes the claude-session-wrapper.sh binary
+# directly with HERDR_SESSION set on the docker-exec env (proving the
+# wrapper's OWN derivation branch, cage/substrate/claude-session-wrapper.sh
+# case 3). This step instead drives an interactive zsh (`zsh -ic`, sources
+# ~/.zshrc) with HERDR_SESSION set, proving the OTHER code path — the zshrc
+# snippet at cage/agent/zshrc:170-176 that exports CLAUDE_CONFIG_DIR into a
+# live shell's environment (what an actual herdr session's shell would
+# inherit) — then confirms `claude` inside that shell seeds the same
+# HERDR_SESSION-derived config dir.
+MUX_HERDR_LIVE_SESSION="mux-test-herdr-live"
+cexec rm -rf "${MUX_TEST_BASE}/${MUX_HERDR_LIVE_SESSION}"
 
-# Wait for the session to be ready (max 5s)
-_mux_tmux_ready=false
-_mux_tmux_waited=0
-while [[ $_mux_tmux_waited -lt 5 ]]; do
-  _tmux_pane=$(cexec tmux capture-pane -p -t "$MUX_TMUX_SESSION" 2>/dev/null || true)
-  if [[ -n "$_tmux_pane" ]]; then
-    _mux_tmux_ready=true
-    break
-  fi
-  sleep 1
-  _mux_tmux_waited=$((_mux_tmux_waited + 1))
-done
+_mux_herdr_live_out=$(docker exec \
+  -e HERDR_SESSION="$MUX_HERDR_LIVE_SESSION" \
+  -e TMUX="" \
+  -u agent \
+  "$CONTAINER" \
+  zsh -ic "/usr/local/bin/claude --version > /dev/null 2>&1; echo MUX_HERDR_LIVE_DONE_$$" 2>&1)
 
-if [[ "$_mux_tmux_ready" != "true" ]]; then
-  fail "Step 7b: tmux session '$MUX_TMUX_SESSION' not ready within 5s — cannot test tmux derivation"
+if ! echo "$_mux_herdr_live_out" | grep -q "MUX_HERDR_LIVE_DONE_$$"; then
+  fail "Step 7b: herdr live-shell sentinel not detected — zsh -ic (zshrc sourcing) failed" "$(echo "$_mux_herdr_live_out" | head -5)"
+elif cexec test -f "${MUX_TEST_BASE}/${MUX_HERDR_LIVE_SESSION}/.claude.json"; then
+  pass "Step 7b: herdr live-shell (zshrc export) → CLAUDE_CONFIG_DIR=~/.claude-sessions/${MUX_HERDR_LIVE_SESSION} (seeded via zshrc-derived HERDR_SESSION)"
 else
-  # Invoke wrapper from inside tmux session (TMUX env will be set by tmux)
-  # Send claude --version and check the resulting session dir
-  cexec rm -rf "${MUX_TEST_BASE}/${MUX_TMUX_SESSION}"
-  cexec tmux send-keys -t "$MUX_TMUX_SESSION" "/usr/local/bin/claude --version > /dev/null 2>&1; echo MUX_TMUX_DONE_$$" Enter
-
-  # Poll for the sentinel (max 10s)
-  _mux_tmux_done=false
-  _mux_tmux_c=0
-  while [[ $_mux_tmux_c -lt 10 ]]; do
-    sleep 1
-    _mux_tmux_c=$((_mux_tmux_c + 1))
-    _tmux_pane_after=$(cexec tmux capture-pane -p -t "$MUX_TMUX_SESSION" 2>/dev/null || true)
-    if echo "$_tmux_pane_after" | grep -q "MUX_TMUX_DONE_$$"; then
-      _mux_tmux_done=true
-      break
-    fi
-  done
-
-  if [[ "$_mux_tmux_done" != "true" ]]; then
-    fail "Step 7b: tmux session sentinel not detected within 10s"
-  elif cexec test -f "${MUX_TEST_BASE}/${MUX_TMUX_SESSION}/.claude.json"; then
-    pass "Step 7b: tmux multiplexer → CLAUDE_CONFIG_DIR=~/.claude-sessions/${MUX_TMUX_SESSION} (seeded from tmux session name)"
-  else
-    fail "Step 7b: tmux multiplexer — ~/.claude-sessions/${MUX_TMUX_SESSION}/.claude.json not found (wrapper tmux-branch broken)"
-  fi
+  fail "Step 7b: herdr live-shell — ~/.claude-sessions/${MUX_HERDR_LIVE_SESSION}/.claude.json not found (zshrc export or wrapper broken)"
 fi
 
-cexec tmux kill-session -t "$MUX_TMUX_SESSION" 2>/dev/null || true
-cexec rm -rf "${MUX_TEST_BASE}/${MUX_TMUX_SESSION}"
+cexec rm -rf "${MUX_TEST_BASE}/${MUX_HERDR_LIVE_SESSION}"
 
 # --- 7c: herdr ($HERDR_SESSION set) → per-session isolation (GATING) ---
 # D7 RESOLVED by rip-cage-1f59.5: HERDR_SESSION is wrapper-readable per-session env.
