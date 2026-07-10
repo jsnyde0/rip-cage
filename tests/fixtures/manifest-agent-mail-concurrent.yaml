@@ -1,5 +1,25 @@
 version: 1
 tools:
+  # herdr-bin + herdr (TOOL + MULTIPLEXER): tmux was un-baked from the base
+  # image (commit af7a1ce); herdr is the composable multiplexer this test
+  # uses as session-spawner INFRA for its two concurrent named pi agents
+  # (mail-a / mail-b) — see tests/test-agent-mail-concurrent.sh (rip-cage-7atw.9).
+  # v0.7.0 pin (not the older v0.6.10 used by manifest-herdr-multiplexer.yaml):
+  # this test's herdr CLI usage ('herdr agent start/read/list --source visible')
+  # was verified live against v0.7.0.
+  - name: herdr-bin
+    archetype: TOOL
+    version_pin: "v0.7.0"
+    install_cmd: "ARCH=$(uname -m) && if [ \"$ARCH\" = \"aarch64\" ]; then TARGET=aarch64; EXPECTED_SHA=77407959c514c25c870bbcc6d2a2c86fef5b5701ed0c7c37745d7412e8563d72; else TARGET=x86_64; EXPECTED_SHA=ad2a5d480a4e04609a9dd30a19ec07854578df6b5f0ea9299246963baf40363b; fi && curl -fsSL \"https://github.com/ogulcancelik/herdr/releases/download/v0.7.0/herdr-linux-${TARGET}\" -o /tmp/herdr && echo \"${EXPECTED_SHA}  /tmp/herdr\" | sha256sum -c - && install -m 755 /tmp/herdr /usr/local/bin/herdr && rm -f /tmp/herdr"
+    egress:
+      - github.com
+    mounts: []
+  - name: herdr
+    archetype: MULTIPLEXER
+    version_pin: "bundled"
+    hooks:
+      start: "mkdir -p \"${HOME}/.config/herdr\" && herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 & echo \"[rip-cage] herdr server started (PID=$!)\" && sleep 1 && for _agent in pi claude; do if command -v \"${_agent}\" > /dev/null 2>&1; then _out=$(herdr integration install \"${_agent}\" 2>&1); _rc=$?; if [ \"$_rc\" -eq 0 ]; then echo \"[rip-cage] herdr integration installed: ${_agent}\"; else echo \"[rip-cage] WARNING: herdr integration install ${_agent} failed\" >&2; fi; fi; done"
+      attach: "herdr"
   - name: agent-mail
     archetype: IN-CAGE-DAEMON
     # Pinned source: github.com/Dicklesworthstone/mcp_agent_mail_rust @ 8897497257c5fac79f7a3559cacf27fddc853d4a

@@ -142,14 +142,23 @@ SENTINEL_BODY="swv-sentinel-$(date +%s)-$$"
 T2_BUILD_MANIFEST_HOME=""
 CONTAINER_NAME=""
 WORKSPACE=""
+# rip-cage-7atw.9: IMAGE-CLOBBER GUARD state. The build below overwrites
+# rip-cage:latest with this fixture's image (am + herdr baked in); these
+# track the pre-build state so cleanup() can restore rip-cage:latest to be
+# BYTE-IDENTICAL to what it was before this test ran. Mirrors
+# test-multiplexer-lifecycle.sh's MUX_SAVED_LATEST/MUX_HAD_LATEST +
+# _mux_restore_latest save/restore pattern (:112-169).
+AM_SAVED_LATEST=""
+AM_HAD_LATEST=0
 
 # ---------------------------------------------------------------------------
 # Cleanup trap
 # ---------------------------------------------------------------------------
 cleanup() {
   if [[ -n "${CONTAINER_NAME:-}" ]]; then
-    docker exec "$CONTAINER_NAME" tmux kill-session -t mail-a 2>/dev/null || true
-    docker exec "$CONTAINER_NAME" tmux kill-session -t mail-b 2>/dev/null || true
+    # herdr agent panes are ephemeral (self-close when the spawned process
+    # exits/is killed) — no explicit per-session kill needed before teardown,
+    # unlike tmux's persistent sessions. docker stop below reaps everything.
     docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
     docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
   fi
@@ -159,8 +168,29 @@ cleanup() {
   if [[ -n "${WORKSPACE:-}" ]]; then
     rm -rf "$WORKSPACE"
   fi
+  # rip-cage-7atw.9 IMAGE-CLOBBER GUARD: restore rip-cage:latest to its
+  # pre-test state (byte-identical) — see _mux_restore_latest.
+  if [[ -n "${AM_SAVED_LATEST:-}" ]]; then
+    if [[ "${AM_HAD_LATEST:-0}" -eq 1 ]]; then
+      docker tag "${AM_SAVED_LATEST}" rip-cage:latest 2>/dev/null || true
+    else
+      docker image rm rip-cage:latest 2>/dev/null || true
+    fi
+    docker image rm "${AM_SAVED_LATEST}" 2>/dev/null || true
+    AM_SAVED_LATEST=""
+  fi
 }
 trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# rip-cage-7atw.9 IMAGE-CLOBBER GUARD: save rip-cage:latest BEFORE the build
+# below overwrites it. Mirrors test-multiplexer-lifecycle.sh :123-127.
+# ---------------------------------------------------------------------------
+_am_tag_suffix="$(date +%s)-$$"
+if docker image inspect rip-cage:latest >/dev/null 2>&1; then
+  AM_SAVED_LATEST="rip-cage:am-concurrent-saved-${_am_tag_suffix}"
+  docker tag rip-cage:latest "${AM_SAVED_LATEST}" 2>/dev/null && AM_HAD_LATEST=1
+fi
 
 # ---------------------------------------------------------------------------
 # Build the agent_mail fixture image using swv's own concurrent fixture
@@ -196,6 +226,17 @@ if [[ -z "$am_check" ]]; then
 fi
 pass "Setup: am binary present in fixture image ($am_check)"
 
+# rip-cage-7atw.9: tmux was un-baked from the base image (commit af7a1ce);
+# this fixture now bakes herdr (see manifest-agent-mail-concurrent.yaml) as
+# the session-spawner INFRA for the two concurrent named pi agents below.
+herdr_check=""
+herdr_check=$(docker run --rm rip-cage:latest which herdr 2>/dev/null)
+if [[ -z "$herdr_check" ]]; then
+  fail "SETUP: herdr binary not found in rip-cage:latest after build — fixture image missing herdr"
+  exit $FAILURES
+fi
+pass "Setup: herdr binary present in fixture image ($herdr_check)"
+
 # ---------------------------------------------------------------------------
 # Start the cage container with pi auth mounted
 # ---------------------------------------------------------------------------
@@ -209,10 +250,38 @@ docker run -d --name "$CONTAINER_NAME" \
   -v "${WORKSPACE}:/workspace" \
   -v "${PI_AUTH_FILE}:/home/agent/.pi/agent/auth.json:ro" \
   -e PI_CODING_AGENT_DIR=/home/agent/.pi/agent \
+  -e RC_MULTIPLEXER=herdr \
   rip-cage:latest sleep infinity >/dev/null
 
-# Run init to start the daemon and set up the cage
+# Run init to start the daemon and set up the cage. RC_MULTIPLEXER=herdr
+# (above) makes init-rip-cage.sh dispatch the baked herdr MULTIPLEXER start
+# hook, which starts 'herdr server' in the background (rip-cage-7atw.9).
 docker exec "$CONTAINER_NAME" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
+# PRECONDITION 2b (LOUD-FAIL): herdr server must be up before any agent spawn
+# tmux auto-starts its server on first use; herdr needs its server started
+# explicitly (done by the init-rip-cage.sh herdr start hook above) — poll for
+# it so a slow-starting server doesn't produce a confusing later failure.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Precondition: herdr server health ==="
+
+herdr_server_up=false
+for _i in $(seq 1 15); do
+  if docker exec -u agent "$CONTAINER_NAME" herdr agent list >/dev/null 2>&1; then
+    herdr_server_up=true
+    break
+  fi
+  sleep 1
+done
+
+if [[ "$herdr_server_up" != "true" ]]; then
+  herdr_log=$(docker exec "$CONTAINER_NAME" cat /tmp/rip-cage-mux-herdr.log 2>/dev/null | head -20)
+  fail "PRECONDITION: herdr server NOT reachable after 15s" "log: ${herdr_log}"
+  exit $FAILURES
+fi
+pass "Precondition: herdr server reachable (herdr agent list responded)"
 
 # ---------------------------------------------------------------------------
 # PRECONDITION 3 (LOUD-FAIL): daemon must be healthy before any send
@@ -400,6 +469,34 @@ That is all.
 PROMPT_A_EOF
 
 # ---------------------------------------------------------------------------
+# herdr pane-read helper (rip-cage-7atw.9 — tmux capture-pane equivalent).
+# 'herdr agent read <name> --source visible' returns the pane's CURRENT
+# visible screen content as JSON ({"result":{"read":{"text":"..."}}});
+# --source visible (not the default 'recent') mirrors tmux capture-pane -p's
+# whole-visible-screen semantics. Extracts .result.read.text; empty string
+# (not an error) if the agent isn't found (matches the old capture-pane's
+# `2>/dev/null` swallow-and-return-empty behavior on a missing target).
+#
+# NOTE: unlike tmux (remain-on-exit + respawn-pane keeps a session's pane
+# alive after its command exits), a herdr agent's pane closes as soon as its
+# spawned process exits — so both mail-a/mail-b are spawned as
+# 'bash -c "<pi invocation>; sleep <generous-tail>"' below, keeping the pane
+# (and its scrollback) readable for the rest of this test's polling windows.
+# ---------------------------------------------------------------------------
+hread() {
+  local target="$1" lines="${2:-300}"
+  docker exec "$CONTAINER_NAME" herdr agent read "$target" --source visible --lines "$lines" 2>/dev/null \
+    | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    sys.stdout.write(d.get('result', {}).get('read', {}).get('text', ''))
+except Exception:
+    pass
+" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
 # Step 1: Spawn agent B FIRST (will iteratively poll inbox)
 # B must be in mid-iteration (actively running am mail inbox polls) before A is
 # spawned — proving both pi processes are live across the send→read window.
@@ -407,19 +504,22 @@ PROMPT_A_EOF
 echo ""
 echo "=== Step 1: Spawn agent B (${AGENT_B_NAME}) to iteratively poll inbox ==="
 
-docker exec "$CONTAINER_NAME" tmux kill-session -t mail-a 2>/dev/null || true
-docker exec "$CONTAINER_NAME" tmux kill-session -t mail-b 2>/dev/null || true
-
 B_PROMPT_CONTENT=$(docker exec "$CONTAINER_NAME" cat "$PROMPT_B_PATH" 2>/dev/null)
 
-# rc agent was retired in rip-cage-1f59 (ADR-006 D7). Use docker exec + tmux directly.
-docker exec "$CONTAINER_NAME" tmux new-session -d -s mail-b -c /workspace pi --provider openrouter --model anthropic/claude-3.5-haiku -p "$B_PROMPT_CONTENT"
+# rc agent was retired in rip-cage-1f59 (ADR-006 D7). tmux was un-baked from
+# the base image (commit af7a1ce); use herdr's 'agent start' (session-spawner
+# INFRA, mirrors tmux new-session -d -s <name> -c <cwd> <argv...> — raw argv
+# passthrough, no shell reinterpretation of the prompt text). The trailing
+# 'sleep 600' keeps the pane alive well past B's own polling window (up to
+# 20 * 5s + reasoning time) so later steps can still read its scrollback.
+docker exec "$CONTAINER_NAME" herdr agent start mail-b --cwd /workspace \
+  -- bash -c 'pi --provider openrouter --model anthropic/claude-3.5-haiku -p "$1"; sleep 600' _ "$B_PROMPT_CONTENT"
 EXIT_B=$?
 
 if [[ $EXIT_B -eq 0 ]]; then
-  pass "Step 1: tmux new-session mail-b spawned (exit 0)"
+  pass "Step 1: herdr agent start mail-b spawned (exit 0)"
 else
-  fail "Step 1: tmux new-session mail-b failed" "exit=${EXIT_B}"
+  fail "Step 1: herdr agent start mail-b failed" "exit=${EXIT_B}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -451,7 +551,7 @@ while [[ $_waited -lt $_timeout ]]; do
   fi
 
   # Secondary: pi startup marker visible (confirms pi process is live)
-  PANE_B=$(docker exec "$CONTAINER_NAME" tmux capture-pane -p -t mail-b -S -200 2>/dev/null)
+  PANE_B=$(hread mail-b 200)
   if echo "$PANE_B" | grep -qE "escape interrupt|pi v0\.|openrouter"; then
     B_STARTUP_SEEN=true
   fi
@@ -460,7 +560,7 @@ done
 echo "B poll log after ${_waited}s:"
 docker exec "$CONTAINER_NAME" cat "$B_POLL_LOG" 2>/dev/null | head -5 | sed 's/^/  /'
 echo "B pane (last 15 lines after ${_waited}s wait):"
-docker exec "$CONTAINER_NAME" tmux capture-pane -p -t mail-b -S -15 2>/dev/null | sed 's/^/  /'
+hread mail-b 15 | sed 's/^/  /'
 
 if [[ "$B_WORKING" == "true" ]]; then
   pass "Step 2: agent B is WORKING — pi ran am mail inbox (poll log has POLL_1 entry)"
@@ -482,14 +582,18 @@ echo "=== Step 3: Spawn agent A (${AGENT_A_NAME}) to send sentinel ==="
 
 A_PROMPT_CONTENT=$(docker exec "$CONTAINER_NAME" cat "$PROMPT_A_PATH" 2>/dev/null)
 
-# rc agent was retired in rip-cage-1f59 (ADR-006 D7). Use docker exec + tmux directly.
-docker exec "$CONTAINER_NAME" tmux new-session -d -s mail-a -c /workspace pi --provider openrouter --model anthropic/claude-3.5-haiku -p "$A_PROMPT_CONTENT"
+# rc agent was retired in rip-cage-1f59 (ADR-006 D7). tmux was un-baked from
+# the base image (commit af7a1ce); use herdr's 'agent start' — see Step 1's
+# comment for the argv/pane-persistence rationale (sleep tail keeps A's pane
+# readable through Step 6, well after A's own one-shot task completes).
+docker exec "$CONTAINER_NAME" herdr agent start mail-a --cwd /workspace \
+  -- bash -c 'pi --provider openrouter --model anthropic/claude-3.5-haiku -p "$1"; sleep 600' _ "$A_PROMPT_CONTENT"
 EXIT_A=$?
 
 if [[ $EXIT_A -eq 0 ]]; then
-  pass "Step 3: tmux new-session mail-a spawned (exit 0)"
+  pass "Step 3: herdr agent start mail-a spawned (exit 0)"
 else
-  fail "Step 3: tmux new-session mail-a failed" "exit=${EXIT_A}"
+  fail "Step 3: herdr agent start mail-a failed" "exit=${EXIT_A}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -506,7 +610,7 @@ while [[ $_waited -lt $_timeout ]]; do
   sleep 5
   _waited=$((_waited + 5))
 
-  PANE_A=$(docker exec "$CONTAINER_NAME" tmux capture-pane -p -t mail-a -S -300 2>/dev/null)
+  PANE_A=$(hread mail-a 300)
 
   if echo "$PANE_A" | grep -q "SENT:OK"; then
     A_SENT=true
@@ -515,7 +619,7 @@ while [[ $_waited -lt $_timeout ]]; do
 done
 
 echo "A pane (last 15 lines after ${_waited}s wait):"
-docker exec "$CONTAINER_NAME" tmux capture-pane -p -t mail-a -S -15 2>/dev/null | sed 's/^/  /'
+hread mail-a 15 | sed 's/^/  /'
 
 if [[ "$A_SENT" == "true" ]]; then
   pass "Step 4: agent A confirmed send (SENT:OK seen in pane)"
@@ -574,7 +678,7 @@ print(bodies[0] if bodies else '')
 done
 
 echo "B pane (last 20 lines after ${_waited}s wait):"
-docker exec "$CONTAINER_NAME" tmux capture-pane -p -t mail-b -S -20 2>/dev/null | sed 's/^/  /'
+hread mail-b 20 | sed 's/^/  /'
 echo "B result file content (first 10 lines):"
 docker exec "$CONTAINER_NAME" cat "$B_RESULT_FILE" 2>/dev/null | head -10 | sed 's/^/  /'
 echo "B poll log (all entries):"
@@ -619,7 +723,7 @@ else
 fi
 
 # Also check pane for pi process evidence (belt-and-suspenders)
-PANE_B_FINAL=$(docker exec "$CONTAINER_NAME" tmux capture-pane -p -t mail-b -S -2000 2>/dev/null)
+PANE_B_FINAL=$(hread mail-b 2000)
 
 # Verify real pi process in mail-b (not a bare shell invocation)
 B_HAS_PI=false
@@ -638,7 +742,7 @@ else
 fi
 
 # Verify real pi process in mail-a
-PANE_A_FINAL=$(docker exec "$CONTAINER_NAME" tmux capture-pane -p -t mail-a -S -2000 2>/dev/null)
+PANE_A_FINAL=$(hread mail-a 2000)
 A_HAS_PI=false
 if echo "$PANE_A_FINAL" | grep -qE "escape interrupt|pi v0\.|openrouter|SENT:OK"; then
   A_HAS_PI=true
@@ -650,19 +754,22 @@ else
   fail "Step 6: mail-a session did NOT show evidence of a real pi process"
 fi
 
-# Confirm two distinct named sessions (not same-agent loopback)
-SESSION_JSON=$("$RC" sessions "$CONTAINER_NAME" --json 2>/dev/null)
+# Confirm two distinct named sessions (not same-agent loopback).
+# 'rc sessions' was RETIRED (ADR-006 D7): spawn/list/kill moved to being the
+# in-cage multiplexer's native surface — 'herdr agent list' for the herdr
+# choice (ADR-006 D7/:101). Same grep-on-raw-JSON style as the old check.
+AGENT_LIST_JSON=$(docker exec "$CONTAINER_NAME" herdr agent list 2>/dev/null)
 A_SESSION_LISTED=false
 B_SESSION_LISTED=false
-if echo "$SESSION_JSON" | grep -q '"name":"mail-a"'; then
+if echo "$AGENT_LIST_JSON" | grep -q '"name":"mail-a"'; then
   A_SESSION_LISTED=true
 fi
-if echo "$SESSION_JSON" | grep -q '"name":"mail-b"'; then
+if echo "$AGENT_LIST_JSON" | grep -q '"name":"mail-b"'; then
   B_SESSION_LISTED=true
 fi
 
 if [[ "$A_SESSION_LISTED" == "true" && "$B_SESSION_LISTED" == "true" ]]; then
-  pass "Step 6: TWO distinct tmux sessions (mail-a + mail-b) confirmed — not a same-agent loopback"
+  pass "Step 6: TWO distinct herdr agent sessions (mail-a + mail-b) confirmed — not a same-agent loopback"
   pass "Step 6: Concurrent coordination proven: send-in-A='${AGENT_A_NAME}' / read-in-B='${AGENT_B_NAME}'"
 else
   fail "Step 6: could not confirm two distinct sessions" \
