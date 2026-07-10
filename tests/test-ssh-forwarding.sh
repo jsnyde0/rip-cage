@@ -130,7 +130,7 @@ fi
 
 # rc ls column (tab-separated; STATUS column contains spaces like "Up 2 seconds")
 ls_out=$("$RC" ls 2>/dev/null | awk -F'\t' -v c="$CONTAINER" '$1 == c { print }')
-fwd_col=$(printf '%s\n' "$ls_out" | awk -F'\t' '{ print $4 }')
+fwd_col=$(printf '%s\n' "$ls_out" | awk -F'\t' '{ print $5 }')
 if [[ "$fwd_col" == "on" ]]; then
   pass "rc ls FWD-SSH column shows 'on'"
 else
