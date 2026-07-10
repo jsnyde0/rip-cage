@@ -850,6 +850,14 @@ case " \$* " in
     echo ""
     exit 0
     ;;
+  *" inspect "*"rc.config-mode"*"${cname}"*)
+    echo "ro"
+    exit 0
+    ;;
+  *" inspect "*"rc.ssh-key-filter"*"${cname}"*)
+    echo ""
+    exit 0
+    ;;
   *" inspect "*"${cname}"*)
     [[ "${state}" == "missing" ]] && exit 1
     echo "{}"
