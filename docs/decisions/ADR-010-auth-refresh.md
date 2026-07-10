@@ -1,6 +1,9 @@
 # ADR-010: Credential Hot-Swap via `rc auth refresh`
 
 **Status:** Proposed
+
+> **Migration status (ADR-029, 2026-07-10):** This ADR is evolved by [ADR-029](ADR-029-msb-migration.md) D5 — the refresh target shifts under credential non-possession, and D4's own invalidation predicate fires (a different file-sharing backend). The mechanisms below remain shipped and load-bearing in the Docker path until the msb cutover release lands; until then this ADR describes current behavior.
+
 **Date:** 2026-04-14
 **Design:** [Auth Refresh](../2026-04-14-auth-refresh-design.md)
 **Related:** [ADR-009](ADR-009-ux-overhaul.md) (UX overhaul — auth docs), [ADR-003](ADR-003-agent-friendly-cli.md) (agent-friendly CLI)
@@ -14,6 +17,8 @@ The current workaround is `rc destroy` + `rc up`, which destroys the Claude Code
 ## Decisions
 
 ### D1: `rc auth refresh` command
+
+> [ADR-029 D5: EVOLVED — under credential non-possession, the refresh *target* shifts: rather than re-extracting into a file the guest possesses, the natural target becomes the host-side secret store feeding msb `--secret`, refreshed via `msb modify --secret` (proven as a live-rotation primitive). This is an EXPLORATORY direction only — capture, not build-on-pull; the possession-mode fallback (real credentials mounted, per-tool per ADR-026 D7) keeps this decision's file-refresh path, with D4's inode semantics needing re-verification on msb virtiofs (see D4's disposition).]
 
 **Firmness: FIRM**
 
@@ -57,6 +62,8 @@ Route `rc auth <subcommand>` through `cmd_auth`. Initially only `refresh` is imp
 **What would invalidate this:** If no other `auth` subcommands ever materialize. Low cost either way — the namespace routing is ~5 lines.
 
 ### D4: Write credentials in place (preserve inode)
+
+> [ADR-029: RE-VERIFY (own predicate fired) — this decision's own "What would invalidate this" clause named the trigger precisely: "a future Docker Desktop release using a different file-sharing backend." msb's virtiofs guest/host share IS a different file-sharing backend than Docker/OrbStack's bind-mount mechanism (even where both happen to be named "virtiofs" — the implementation context differs: a microVM's virtiofs share vs. Docker Desktop's VM-to-container passthrough). The predicate fires, but the honest disposition is **re-verify, not "safe again"**: whether msb virtiofs tracks by inode or by path is unconfirmed, so neither the truncate-in-place pattern here nor a return to atomic-rename can be assumed correct until measured. The `rip-cage-rx8` truncate-not-mv recipe (used elsewhere, e.g. ADR-022 D6's `rc reload` cache rewrite) inherits the same open question. Scoped macOS/HVF per ADR-029 D6 until Linux/KVM reconfirmation.]
 
 **Firmness: FIRM**
 

@@ -1,6 +1,9 @@
 # ADR-007: Beads/Dolt Container Resilience
 
 **Status:** Accepted
+
+> **Migration status (ADR-029, 2026-07-10):** This ADR is evolved by [ADR-029](ADR-029-msb-migration.md) D7 — `host.docker.internal` does not exist under msb, so D1/D8's server-mode connectivity mechanisms go dormant; D5's embedded-mode path gains an explicit interim single-writer discipline; D8 is retired-pending by its own second invalidation clause. The mechanisms below remain shipped and load-bearing in the Docker path until the msb cutover release lands; until then this ADR describes current behavior.
+
 **Date:** 2026-04-08
 **Design:** [Beads/Dolt Container Resilience](../2026-04-08-beads-dolt-container-resilience.md), [Beads no-db Container Support](../2026-04-09-beads-no-db-container-support.md), [Host-side bd Pre-flight](../2026-04-22-bd-host-preflight-design.md)
 **Related:** [ADR-004 D1](ADR-004-phase1-hardening.md) (host Dolt server connection), [ADR-002 D10](ADR-002-rip-cage-containers.md) (beads in base image)
@@ -16,6 +19,8 @@ On 2026-04-07, this stale port caused an agent to start a local Dolt server insi
 ## Decisions
 
 ### D1: bd wrapper script for dynamic port and server start guard
+
+> [ADR-029 D7: EVOLVED — server-mode connectivity (the port-file re-read, the dial to `host.docker.internal`) goes half-dormant: `host.docker.internal` does not exist under msb, so this decision's server-mode half has no path forward as-is; the durable host-service topology is captured-not-committed in bead `rip-cage-o7tx`, decided later. The `bd dolt start` guard half gains *more* importance under ADR-029 D7's interim single-writer discipline — it is now one of the few active defenses against a second writer racing the embedded-Dolt store.]
 
 **Firmness: FIRM**
 
@@ -43,6 +48,8 @@ The start guard scans past global flags (`--verbose`, `--json`, etc.) to find th
 **What would invalidate this:** bd adds a `--port` flag or config key for pinning the Dolt server port. Or bd adds built-in port file fallback when `BEADS_DOLT_SERVER_MODE=1`.
 
 ### D2: Allow `bd dolt stop` inside containers
+
+> [ADR-029: UNAFFECTED — this decision holds *a fortiori* in a microVM: PID-namespace isolation (the property this decision relies on) is at least as strong across a host/VM boundary as across a container boundary, so `bd dolt stop` remains harmless inside an msb guest.]
 
 **Firmness: FIRM**
 
@@ -92,6 +99,8 @@ Also fix the pre-existing bug in test-safety-stack.sh check 7 which asserts `aut
 
 ### D5: Respect project's beads storage mode (embedded vs server)
 
+> [ADR-029 D7: EVOLVED — the embedded-mode path this decision protects becomes the primary path under msb (server-mode being half-dormant per D1's disposition). **Interim single-writer rule, stated explicitly:** msb virtiofs does not propagate `flock` across the guest/host boundary (marker-confirmed, version-independent — `rip-cage-9iab`), so bd writes to one embedded-Dolt store must happen from exactly one side (host or guest) while a cage is up rw on a repo — convention-enforced, not physically guarded; the race remains possible if violated. This is a named residual, not a solved problem, per [ADR-029](ADR-029-msb-migration.md) D7.]
+
 **Firmness: FIRM**
 
 **Added:** 2026-04-09
@@ -116,6 +125,8 @@ See [design doc](../2026-04-09-beads-no-db-container-support.md) and [ADR-004 D1
 **What would invalidate this:** bd changes `metadata.json` format or removes embedded mode. Or bd's server connection gracefully falls back to embedded when the database doesn't exist on the server.
 
 ### D6: Auto-redirect worktree `.beads/` to main repo when no runtime data
+
+> [ADR-029: UNAFFECTED-mechanism-prose-updated — the redirect logic itself is runtime-agnostic; only the underlying mount mechanics (the "same mount mechanism as an explicit `.beads/redirect`") re-bind to msb virtiofs at cutover, same as every other bind-mount decision (scoped macOS/HVF per ADR-029 D6 until Linux/KVM reconfirmation).]
 
 **Firmness: FIRM**
 
@@ -176,6 +187,8 @@ The diagnostic is skipped for safe no-op subcommands (`--version`, `-v`, `--help
 **What would invalidate this:** bd itself adopts clearer error messages for unreachable-server scenarios.
 
 ### D8: Host-side bd connectivity pre-flight at `rc up`
+
+> [ADR-029 D7: RETIRED-PENDING — this decision's own second invalidation clause fired in effect: "rip-cage drops server-mode support entirely." Server-mode support does not survive the migration in its current form (D1's disposition — `host.docker.internal` has no msb equivalent), which is effectively the interim state this invalidation clause named. Not formally retired here (ADR-029 D7 explicitly defers the durable topology decision), but pending on it.]
 
 **Firmness: FIRM**
 

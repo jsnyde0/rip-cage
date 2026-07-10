@@ -1,6 +1,9 @@
 # ADR-018: macOS ssh-agent discovery — probe and forward the user's actual agent
 
 **Status:** Amended 2026-04-25 (see Amendments)
+
+> **Migration status (ADR-029, 2026-07-10):** All decisions D1–D4 are retired per [ADR-029](ADR-029-msb-migration.md) D3 — macOS ssh-agent socket discovery retires along with ssh-agent forwarding in favor of HTTPS + `--secret` credential injection. The mechanisms below remain shipped and load-bearing in the Docker path until the msb cutover release lands; until then this ADR describes current behavior.
+
 **Date:** 2026-04-24
 **Design:** [Design doc](../../history/2026-04-24-macos-ssh-agent-discovery-design.md)
 **Parent:** [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (ssh-agent forwarding default)
@@ -55,6 +58,8 @@ The concrete incident: a `mapular-gtm` session left 12 commits and bead updates 
 
 ### D1: On macOS, probe host-side agent candidates and mount the first populated one
 
+> [ADR-029 D3: RETIRED BY OWN PREDICATE — this decision's own "What would invalidate this" fired: "a future shift to bot-identity tokens (deferred option in ADR-014) would make the agent-reachability question moot and this ADR irrelevant." ADR-029 D3 is that shift, arrived at because msb made token non-possession free (dissolving the setup-burden grounds ADR-017 originally used to reject the token alternative). The macOS agent-socket probe loop is irrelevant once no ssh-agent socket is forwarded at all.]
+
 **Firmness: FIRM**
 
 `rc up` on macOS no longer hard-codes the forwarded socket path. It iterates a priority-ordered list of host socket candidates, validates each is bind-mountable on the active Docker backend, runs `ssh-add -l` against each from the host, and bind-mounts the first one that reports ≥1 key to `/ssh-agent.sock` inside the container.
@@ -94,6 +99,8 @@ Matches the project's 80/20 posture: the common case (passphrase-less keys, sess
 
 ### D2: Docker Desktop / OrbStack convention socket remains a fallback candidate
 
+> [ADR-029 D3: RETIRED — the convention-socket fallback retires with D1; there is no candidate list left once ssh-agent forwarding itself retires.]
+
 **Firmness: FIRM**
 
 `/run/host-services/ssh-auth.sock` is retained at priority 2. Users who set up the Keychain-backed flow per ADR-017 D4 (passphrase-protected keys, `UseKeychain yes`) continue to work without changes — their session `$SSH_AUTH_SOCK` may or may not be set, and if unset the probe naturally selects the convention socket, which on macOS is proxied to the launchd agent backed by Keychain.
@@ -107,6 +114,8 @@ No regression is a hard requirement: ADR-017 D4 has been in force since 2026-04-
 - Evidence that no user has adopted the Keychain-agent model since ADR-017 shipped. Then candidate #2 becomes dead surface and can drop.
 
 ### D3: Preflight failure messages name the mounted socket and give a one-line fix
+
+> [ADR-029 D3: RETIRED-WITH-PRINCIPLE — the specific sentinel/banner mechanism retires with ssh-agent forwarding; the actionability principle (fail loud, name the fix inline, no "go read an ADR") is a general ADR-001 property that any msb-era credential-reachability warning should still honor, but this is not decided here.]
 
 **Firmness: FIRM**
 
@@ -126,6 +135,8 @@ ADR-001 (fail-loud) requires not just visibility but actionability. A loud warni
 - Telemetry that nobody hits `empty`/`unreachable` in practice. Unlikely in the short term; this is a common bootstrapping failure.
 
 ### D4: ADR-017 D4's macOS host-prereq table is rewritten, not retired
+
+> [ADR-029 D3: RETIRED — the macOS host-prereq table this decision amends (ADR-017 D4) itself retires per ADR-029 D3; there is no host-prereq table left to amend once ssh-agent forwarding is gone.]
 
 **Firmness: FLEXIBLE**
 

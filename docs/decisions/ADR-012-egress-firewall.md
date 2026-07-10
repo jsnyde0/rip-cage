@@ -1,6 +1,9 @@
 # ADR-012: Network Egress Firewall (Pure SNI Destination Router, Default-Deny Host Whitelist)
 
 **Status:** Accepted
+
+> **Migration status (ADR-029, 2026-07-10):** Decisions D1–D11 are retired or re-homed per [ADR-029](ADR-029-msb-migration.md) D2/D4 — containment becomes the msb runtime's job, not an in-cage engine. The mechanisms below remain shipped and load-bearing in the Docker path until the msb cutover release lands; until then this ADR describes current behavior.
+
 **Date:** 2026-04-20
 **Design:** [2026-04-20-egress-firewall-design.md](../2026-04-20-egress-firewall-design.md)
 **Supersedes:** Recommendations in [2026-04-17-egress-firewall-design.md](../2026-04-17-egress-firewall-design.md)
@@ -24,6 +27,8 @@ The architecture simplifies accordingly: one uniform destination router, no carv
 ## Decisions
 
 ### D1: Default-deny host whitelist with global-IOC denylist as floor
+
+> [ADR-029 D2/D4: EVOLVED (allowlist policy) + REVERSED (observe-mode-first) — the allowlist policy re-homes to msb `--net-default deny` + `--net-rule`, with `network.allowed_hosts` becoming the source the generator reads; the observe-mode-first rollout clause is reversed by ADR-029 D4's deny→fix→reload repair loop. The IOC-denylist floor's fate under msb rules (does a non-operator-overridable deny tier exist) is an open decompose-time item under ADR-029 D2 — flagged, not decided here.]
 
 **Firmness: FIRM**
 
@@ -52,6 +57,8 @@ The agent inside the cage **cannot** mutate `network.allowed_hosts` (the file is
 **What would invalidate this:** evidence that observe-mode-generated allowlists become unmanageably large (>~50 hosts typical) — would suggest host-axis is wrong-altitude and work-altitude is per-MCP or per-tool, not per-host.
 
 ### D2: Pure SNI destination router — no TLS termination, destination-only rules
+
+> [ADR-029 D2: RETIRED-WITH-MECHANISM — destination control is preserved host-side (msb `--net-rule`); the SNI-peek router machinery here is deleted, not ported. msb's host-side TLS intercept lifts the CA-trust cost that forced this decision's destination-only scoping — msb egress rules remain destination-grade today; content-grade control would be a future trigger per ADR-029 D2's invalidation clause.]
 
 **Firmness: FIRM** — *Implemented in `rip-cage-ta1o.1` per [ADR-026](ADR-026-containment-mediation-identity.md) D1/D2.*
 
@@ -85,6 +92,8 @@ The SNI router gives up content-layer enforcement in exchange for: zero CA trust
 **What would invalidate this:** Evidence that destination-only denial cannot close a significant class of exfil that cannot be delegated to a mediator layer. Current judgment: destination-control covers the realistic prompt-injection exfil channels (novel domains, OAST, tunnels); content-layer rules are a mediator concern.
 
 ### D3: Custom Python SNI router as the router engine
+
+> [ADR-029 D2: RETIRED — the ECH/SNI-encryption limitation this decision carried as an accepted residual dissolves once msb intercepts TLS host-side of the guest.]
 
 **Firmness: FLEXIBLE** — *Replaced mitmproxy per `rip-cage-ta1o.1`.*
 
@@ -123,6 +132,8 @@ With D2's method/path rules removed, mitmproxy's only remaining function was TCP
 
 ### D4: No TLS termination — pure destination router, no carve-outs required
 
+> [ADR-029 D2: REVERSED at the platform layer, honestly framed — no *in-guest* TLS termination survives as posture; interception becomes a host-platform property outside the guest, which honors this decision's original "wrong altitude in-cage" rationale rather than contradicting it.]
+
 **Firmness: FIRM** — *Implemented in `rip-cage-ta1o.1` per [ADR-026](ADR-026-containment-mediation-identity.md) D1.*
 
 The standalone egress layer does NOT terminate TLS for any host (including `api.anthropic.com`). No CA is generated, no cert is signed, no `NODE_EXTRA_CA_CERTS` is installed. The router reads SNI from the cleartext TLS ClientHello and splices the encrypted stream through unchanged.
@@ -152,6 +163,8 @@ TLS termination was previously justified by the method/path write-gate (D2, now 
 
 ### D5: Router runs inside the container, not on the host
 
+> [ADR-029 D2: REVERSED — enforcement moves host-side (msb's own runtime); the original rationale here (identical macOS/Linux behavior) is exactly what ADR-029 D6's KVM gate must re-establish for msb before any Linux/VPS deployment.]
+
 **Firmness: FIRM** — *Refined per [ADR-026](ADR-026-containment-mediation-identity.md) D3: destination router + DNS force-through stay in-container (this decision's in-container principle holds). The "self-contained, nothing on host" framing now admits an external mediator the router forwards to — composition is opt-in coupling, not default.*
 
 The SNI destination router (`rip_cage_router.py`), `rip_cage_egress.py` (the `decide()` rule engine), and `egress-rules.yaml` live inside the container. Host networking is untouched.
@@ -174,6 +187,8 @@ The in-container principle is unchanged from the prior (mitmproxy) decision. Iso
 **What would invalidate this:** Multi-slot concurrent instances at a scale where per-container memory footprint becomes prohibitive. The SNI router is ~0 MB overhead (pure Python, no MITM stack) so this threshold is much higher than it was under mitmproxy.
 
 ### D6: Default-on, single binary override
+
+> [ADR-029 D2: EVOLVED — the default-on + single auditable off-switch survives as policy; the mechanism sentence updates to msb terms (`--net-default deny` / `--net-rule` toggle) at cutover.]
 
 **Firmness: FIRM** — *Reframed per [ADR-026](ADR-026-containment-mediation-identity.md): `RIP_CAGE_EGRESS=off` disables iptables REDIRECT rules + the SNI router (no TLS proxy to disable). Default-on, single-binary-override semantics unchanged.*
 
@@ -200,6 +215,8 @@ Per-rule exemptions would be immediately weaponized by prompt injection ("to com
 
 ### D7: Log denials only, not allows
 
+> [ADR-029 D2: RETIRED-WITH-MECHANISM — the denial-visibility property re-homes to msb's trace-level DNS-denial log lines, which feed the ADR-029 D4 repair loop.]
+
 **Firmness: FLEXIBLE**
 
 JSONL audit log at `/workspace/.rip-cage/egress.log`, one line per denied request. No log for allowed traffic.
@@ -221,6 +238,8 @@ Bind-mount path means the user sees denials from the host without entering the c
 **What would invalidate this:** A real incident where allowed-traffic forensics would have caught a confused-deputy exfil. Revisit then — easy to extend.
 
 ### D8: Non-HTTP egress mostly allowed; TCP 22 to non-whitelisted hosts refused; HTTP/3 (UDP/443) blocked
+
+> [ADR-029 D2: RETIRED — TCP-22 scoping is moot once the ssh cluster retires (ADR-029 D3, HTTPS + `--secret` becomes the git path); QUIC/UDP handling becomes an msb net-rule concern, flagged for decompose-time verification rather than decided here.]
 
 **Firmness: FIRM**
 
@@ -255,6 +274,8 @@ Other non-HTTP (SMTP, arbitrary ports) remains out of scope. Same reasoning as t
 **Test assertion (ADR-013 P3, evolved):** positive iptables-rule check that the active rule set covers (a) TCP 80/443 redirect to SNI router, (b) TCP 22 refuse for non-whitelisted hosts, (c) UDP/443 drop. Documents the evolved policy in code.
 
 ### D9: DNS inspected by a Python resolver sidecar (transparent port-53 REDIRECT)
+
+> [ADR-029 D2: RETIRED — DNS default-deny re-homes to msb; the accepted narrow residual this decision carried (subdomains of allowlisted domains are not otherwise flagged) carries forward as ADR-029 D2 item 3's accepted residual. Cross-ref [ADR-024](ADR-024-prompt-injection-threat-model.md) D2's layer table, which records the same residual.]
 
 **Firmness: FIRM** — *→ retained per [ADR-026](ADR-026-containment-mediation-identity.md) D2: this guard stays rip-cage's (boundary-defense, low-drift, separable from the TLS stack — it covers a channel a host-allowlist can't see, and clawpatrol's `dnsvip` confirms a composed mediator doesn't cover it either). `rip-cage-ta1o.1` left the DNS sidecar UNCHANGED (it never touched TLS). The forward-to-specialist seam landed with **bead `rip-cage-ta1o.2`** — see "Configurable upstream" below.*
 
@@ -295,6 +316,8 @@ The configurable-upstream seam (rip-cage-ta1o.2) keeps the built-in heuristic as
 
 ### D10: The egress firewall depends on the legacy iptables backend
 
+> [ADR-029 D2: RETIRED — a third, unanticipated invalidator fires: msb guests have no in-guest iptables at all, legacy or nft. This also kills [ADR-002](ADR-002-rip-cage-containers.md) D2a's "safety-critical" pin designation, which named this decision as its dependent.]
+
 **Firmness: FLEXIBLE**
 
 **Added 2026-06-07 (rip-cage-4c5.10).** This is an implementation-dependency of the FIRM egress decisions above (D2, D6, D8): the iptables REDIRECT/DROP rules that implement them **require the legacy iptables backend**. Debian trixie and later default to the nft backend (`iptables-nft`), which would **silently no-op** the legacy-style rules applied by `init-firewall.sh` — leaving egress wide open. That is a **fail-OPEN safety regression**: the structural rule-installation appears to succeed while the rules never actually filter.
@@ -313,6 +336,8 @@ The configurable-upstream seam (rip-cage-ta1o.2) keeps the built-in heuristic as
 **What would invalidate this:** the egress firewall is reimplemented natively on nftables (then the legacy pin can be dropped); OR a future base removes iptables-legacy availability, forcing the nft migration.
 
 ### D11: EFFECT-based startup self-test guard — refuse to start the cage if egress is not actually filtering
+
+> [ADR-029 D2: RETIRED-WITH-MECHANISM — the effect-based-verification principle re-homes rather than dropping: it transfers as spike-tier real-data-only evidence discipline plus an msb-side effect probe in the migrated test suite (ADR-029 D2 item 2), and as the ADR-029 D6 platform gate applied at platform grain.]
 
 **Firmness: FLEXIBLE**
 

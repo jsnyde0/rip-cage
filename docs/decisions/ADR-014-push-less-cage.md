@@ -1,6 +1,9 @@
 # ADR-014: The Cage Is Push-Less
 
 **Status:** Partially superseded by [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (2026-04-23). D1 (no push credentials) and D3 (push-less session-close) are reversed — ssh-agent forwarding is now on by default. D2 (non-interactive SSH posture) and D4 (LFS pointer detection) remain in force.
+
+> **Migration status (ADR-029, 2026-07-10):** D1 and D3's superseding ADR ([ADR-017](ADR-017-ssh-agent-forwarding-default.md)) itself retires per [ADR-029](ADR-029-msb-migration.md) D3, but the autonomous-push property it restored survives on a new mechanism (HTTPS + `--secret`) — see D1/D3 dispositions below for the nuance. D2's ssh-posture mechanism becomes moot for lack of a remaining ssh consumer. D4 is transport-agnostic and unaffected. The mechanisms below remain shipped and load-bearing in the Docker path until the msb cutover release lands; until then this ADR describes current behavior.
+
 **Date:** 2026-04-21
 **Design:** [Non-interactive SSH posture](../2026-04-21-non-interactive-ssh-design.md)
 **Related:** [ADR-001](ADR-001-fail-loud-pattern.md) (fail-loud), [ADR-002](ADR-002-rip-cage-containers.md) (blast radius, no `~/.ssh` mount), [ADR-010](ADR-010-auth-refresh.md) (auth surface), [ADR-012](ADR-012-egress-firewall.md) (egress allowlist)
@@ -27,6 +30,8 @@ The architectural question is: **who owns the identity that pushes from inside t
 
 ### D1: No outbound push credentials live in the cage
 
+> [ADR-029 D3: EVOLVED (nuanced) — already reversed by ADR-017's ssh-agent forwarding, which itself now retires per ADR-029 D3. The successor mechanism, msb `--secret` non-possession, arguably honors this decision's *letter* more faithfully than ADR-017's reversal did: the real credential never lives in the guest, only an unusable placeholder (ADR-029 D5). Not a return to "no push capability" — pushing still works autonomously — but "no real credential material in the cage" is restored as a property, on a different mechanism than this decision originally imagined (bot identity / GitHub App).]
+
 **Firmness: FIRM**
 
 The cage does **not** carry credentials for writing to remote source-control or issue-tracking systems. Specifically:
@@ -50,6 +55,8 @@ Read-only outbound traffic (git `clone`/`fetch` over HTTPS, `gh` read APIs, `npm
 **What would invalidate this:** A decision to run agents autonomously enough that human-boundary pushes become the bottleneck. At that point, revisit with Option 3 (GitHub App) — see Deferred.
 
 ### D2: Non-interactive SSH posture in the image
+
+> [ADR-029 D3: RETIRED — the pinned-`known_hosts` / `BatchMode=yes` / `StrictHostKeyChecking=yes` posture becomes moot: no ssh transport remains for git once ADR-029 D3 lands (HTTPS + `--secret`), and the [ADR-022](ADR-022-ssh-allowlist.md) mount-layer enforcement this decision's caveat cross-references retires alongside the rest of the ssh cluster.]
 
 **Firmness: FIRM**
 
@@ -80,6 +87,8 @@ The base image ships a deterministic, non-interactive SSH client posture:
 
 ### D3: Session-close protocol is push-less at the cage boundary
 
+> [ADR-029 D3: EVOLVED (nuanced) — already reversed by ADR-017 D3 (session-close restores `git push`/`bd dolt push`). ADR-017 D3 itself now retires per ADR-029 D3, but its disposition is RETIRED-WITH-MECHANISM: the autonomous-push property survives, the mechanism becomes HTTPS + `--secret`. This D3's push-less posture stays superseded, just by a different mechanism than the one that superseded it in 2026-04.]
+
 **Firmness: FIRM**
 
 The project-level `CLAUDE.md` session-close protocol is updated so that "complete" means:
@@ -95,6 +104,8 @@ Pushing is the human's responsibility at the session boundary, on the host. `bd 
 **What would invalidate this:** Adoption of Option 3 (bot identity) would flip this decision: the cage gains push capability, and the protocol goes back to requiring it.
 
 ### D4: LFS materialization is host-side, parallel to push
+
+> [ADR-029 D3: UNAFFECTED-mechanism-prose-updated — LFS blob materialization is orthogonal to the git-remote transport choice (ssh vs HTTPS+`--secret`); this decision's reasoning (network-touching git operation the cage's credential/egress posture refuses to provide) holds unchanged under the msb migration.]
 
 **Firmness: FIRM**
 
