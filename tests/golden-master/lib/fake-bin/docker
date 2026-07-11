@@ -122,6 +122,16 @@ case "${1:-}" in
     exit 0
     ;;
 
+  # rip-cage-7dkq (S1, msb migration): `rc build`'s post-build
+  # docker-save->msb-load step (_build_msb_load) deliberately has NO case
+  # here. `save` falls through to the unhandled-invocation branch below,
+  # which fails loud (exit 1) -- `_build_msb_load` treats a failing `docker
+  # save` as "not a real build" and silently no-ops (never reaches msb at
+  # all), so this harness stays fully hermetic without needing to fake `msb`
+  # too. See tests/test-build-msb-load.sh T5 for the production-side
+  # regression guard this relies on (size-checked temp-file save, not a
+  # naive pipe).
+
   *)
     echo "fake-docker: unhandled invocation: $*" >&2
     exit 1

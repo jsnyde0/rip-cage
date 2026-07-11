@@ -48,10 +48,16 @@ echo ""
 #     193, a later count said 194) via:
 #       grep -noE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' rc | wc -l   =>  193
 #     at the commit immediately preceding this split.
+#
+#     This count is a canary against SILENT redefinition/shadow/drop, not a
+#     permanent ceiling -- an intentional new function (with its own tests)
+#     legitimately bumps it. Bumped 193 -> 194 by rip-cage-7dkq (S1, msb
+#     migration): `_build_msb_load` (cli/build.sh), wiring verified by
+#     tests/test-build-msb-load.sh T4.
 # ---------------------------------------------------------------------------
-echo "=== (b) Function-count invariant (measured pre-split count: 193) ==="
+echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 194) ==="
 
-EXPECTED_FN_COUNT=193
+EXPECTED_FN_COUNT=194
 _actual_fn_count=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh 2>/dev/null | wc -l | tr -d ' ')
 
 if [[ "$_actual_fn_count" -eq "$EXPECTED_FN_COUNT" ]]; then

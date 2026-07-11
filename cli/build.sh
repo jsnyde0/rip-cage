@@ -99,6 +99,10 @@ cmd_build() {
       # to a different image than the one just built — rc up will refuse to
       # resume them (see _up_resolve_resume_image_drift_stopped).
       _build_warn_stale_containers
+      # rip-cage-7dkq (S1, msb migration testability root): one-time
+      # docker save -> msb load conversion. Best-effort (see _build_msb_load);
+      # its exit code is deliberately not propagated into rc build's own.
+      _build_msb_load || true
       jq -nc --arg img "$IMAGE" '{image: $img, action: "built", status: "success"}'
     else
       [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
@@ -119,6 +123,10 @@ cmd_build() {
       fi
       # rip-cage-jnvb / D-d: same informational warning on the human-mode build path.
       _build_warn_stale_containers
+      # rip-cage-7dkq (S1, msb migration testability root): one-time
+      # docker save -> msb load conversion. Best-effort (see _build_msb_load);
+      # its exit code is deliberately not propagated into rc build's own.
+      _build_msb_load || true
     fi
   fi
   [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
@@ -155,6 +163,68 @@ _build_warn_stale_containers() {
       echo "Warning: container '${_bwsc_name}' was created from a different image than the one just built — rc up will refuse to resume it (rc destroy ${_bwsc_name} first); if a cage was intentionally pinned via RC_IMAGE, ignore this for it." >&2
     fi
   done <<<"$_names"
+}
+
+
+# _build_msb_load — one-time image-format conversion (docker save -> msb
+# load) so a cage can boot from the just-built image via microsandbox (msb),
+# the isolation-primitive migration's testability root (rip-cage-7dkq / S1,
+# rip-cage-tsf2 §8b: "image is the artifact" + "one-time msb load adoption
+# step"). Called at the end of a successful `rc build`.
+#
+# Best-effort by design: during the migration, most hosts do not have `msb`
+# installed yet (rc up / rc create still run on Docker until S6 lands), so a
+# missing `msb` binary is a silent no-op -- NOT a build failure. If `msb` IS
+# present but the load step itself fails, that's a real problem and is
+# surfaced loud on stderr; it still does not fail `rc build` overall, since
+# the Docker image remains the primary build artifact.
+#
+# Saves to a temp file (msb load -i <path>) rather than piping, so the saved
+# archive's size can be sanity-checked BEFORE ever touching msb --
+# _MSB_LOAD_MIN_BYTES (default 1 MiB; overridable for testing) guards against
+# every ad-hoc fake-docker PATH-shim fixture across this repo's test suite
+# (most were written before msb existed and only fake `docker build`/`image
+# inspect`/`run`, not `save`): on a host that has msb genuinely installed,
+# such a fixture's `docker save` would otherwise produce a near-empty/garbage
+# archive that gets handed to a REAL msb load, breaking fixtures that assert
+# clean stderr with a spurious warning. Below the threshold, this is silently
+# treated as "not a real build" and skipped -- no warning (there is nothing
+# actionable to tell the operator; a real build's docker save is always many
+# MB). rip-cage-7dkq: found live via the golden-master harness +
+# test-manifest-seed-drift.sh both breaking during this bead's own
+# verification (their fake-docker PATH shims never implement `save` for
+# real, so `docker save` fails/returns near-nothing on those fixtures);
+# regression-guarded by tests/test-build-msb-load.sh T5.
+#
+# Parameters: none (uses global $IMAGE).
+# Returns: 0 if msb is absent, the saved archive is implausibly small (not a
+# real build), or the load succeeded. 1 (with a loud stderr warning naming
+# the image) if msb is present, the archive looks real, but the load failed.
+_build_msb_load() {
+  command -v msb >/dev/null 2>&1 || return 0
+
+  local _tar
+  _tar=$(mktemp -t "rc-msb-load.XXXXXX") || return 0
+  if ! docker save "$IMAGE" -o "$_tar" >/dev/null 2>&1; then
+    rm -f "$_tar"
+    return 0
+  fi
+
+  local _tar_bytes
+  _tar_bytes=$(wc -c < "$_tar" 2>/dev/null | tr -d ' ')
+  local _min_bytes="${_MSB_LOAD_MIN_BYTES:-1048576}"
+  if [[ -z "$_tar_bytes" || "$_tar_bytes" -lt "$_min_bytes" ]]; then
+    rm -f "$_tar"
+    return 0
+  fi
+
+  if ! msb load --tag "$IMAGE" -i "$_tar" >/dev/null 2>&1; then
+    rm -f "$_tar"
+    echo "Warning: 'msb load' failed for '${IMAGE}' after a successful docker build — msb-based tooling (msb run/exec) will not see this image until this is fixed. Run 'docker save ${IMAGE} | msb load --tag ${IMAGE}' manually for diagnostics." >&2
+    return 1
+  fi
+  rm -f "$_tar"
+  return 0
 }
 
 
