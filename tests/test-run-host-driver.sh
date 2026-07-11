@@ -146,6 +146,62 @@ else
   fail "H1 ledger run-header stamps commit/image_digest/rc_e2e/timestamp" "header=[$header_line]"
 fi
 
+# --- P2: REGRESSION. With RC_TEST_STAMP_COMMIT/RC_TEST_STAMP_IMAGE_DIGEST
+# unset, header stamping must be byte-identical to today's auto-derivation:
+# commit == real `git rev-parse HEAD`, image_digest == real `docker image
+# inspect`. `env -u` guards against the pin vars leaking in from this
+# harness's own environment. ---
+independent_commit="$(git -C "$SCRIPT_DIR" rev-parse HEAD)"
+independent_digest=""
+if command -v docker >/dev/null 2>&1; then
+  independent_digest="$(docker image inspect --format '{{.Id}}' rip-cage:latest 2>/dev/null || true)"
+fi
+[[ -z "$independent_digest" ]] && independent_digest="unavailable"
+env -u RC_TEST_STAMP_COMMIT -u RC_TEST_STAMP_IMAGE_DIGEST \
+  bash "$RUN_HOST" --only 'test-selftest-classifier.sh' --dry-run --ledger "$WORKDIR/p2_ledger" >/dev/null 2>&1
+p2_header="$(grep '^#RUN' "$WORKDIR/p2_ledger")"
+if [[ "$p2_header" == *"commit=${independent_commit}"* && "$p2_header" == *"image_digest=${independent_digest}"* ]]; then
+  pass "P2 REGRESSION: pin env vars unset -> header stamping unchanged (auto-derived commit + image_digest)"
+else
+  fail "P2 REGRESSION: pin env vars unset -> header stamping unchanged (auto-derived commit + image_digest)" "header=[$p2_header] expected_commit=$independent_commit expected_digest=$independent_digest"
+fi
+
+# --- P1: RC_TEST_STAMP_COMMIT / RC_TEST_STAMP_IMAGE_DIGEST pin the header
+# stamps VERBATIM, bypassing per-invocation auto-derivation entirely. This
+# is what lets the .14 multi-hour batched baseline capture stay coherent
+# even though a concurrent session commits to main mid-run (moving the
+# auto-derived commit) and rip-cage:latest may be rebuilt (moving the
+# auto-derived image_digest) between batches. Simulated here via an
+# obviously-fake pinned value that can never coincide with the real
+# auto-derived commit (independently captured first, for contrast) --
+# stronger evidence than mutating real git HEAD, and it does not touch the
+# shared repo's history (a concurrent session is actively committing here). ---
+real_commit_for_contrast="$(git -C "$SCRIPT_DIR" rev-parse HEAD)"
+pinned_commit="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+pinned_digest="sha256:pinnedpinnedpinnedpinnedpinnedpinnedpinnedpinnedpinnedpinnedpin0"
+if [[ "$pinned_commit" == "$real_commit_for_contrast" ]]; then
+  fail "P1 fixture sanity" "pinned_commit fixture collided with the real HEAD -- pick a different fake sha"
+else
+  : > "$WORKDIR/p1_l1"
+  : > "$WORKDIR/p1_l2"
+  RC_TEST_STAMP_COMMIT="$pinned_commit" RC_TEST_STAMP_IMAGE_DIGEST="$pinned_digest" \
+    bash "$RUN_HOST" --batch 1/2 --dry-run --ledger "$WORKDIR/p1_l1" >/dev/null 2>&1
+  RC_TEST_STAMP_COMMIT="$pinned_commit" RC_TEST_STAMP_IMAGE_DIGEST="$pinned_digest" \
+    bash "$RUN_HOST" --batch 2/2 --dry-run --ledger "$WORKDIR/p1_l2" >/dev/null 2>&1
+  p1_h1="$(grep '^#RUN' "$WORKDIR/p1_l1")"
+  p1_h2="$(grep '^#RUN' "$WORKDIR/p1_l2")"
+  p1_out="$(bash "$RUN_HOST" --ledger-summary "$WORKDIR/p1_l1" "$WORKDIR/p1_l2" 2>&1)"
+  p1_rc=$?
+  if [[ "$p1_h1" == *"commit=${pinned_commit}"* && "$p1_h1" == *"image_digest=${pinned_digest}"* \
+     && "$p1_h2" == *"commit=${pinned_commit}"* && "$p1_h2" == *"image_digest=${pinned_digest}"* \
+     && "$p1_rc" -eq 0 ]] \
+     && ! printf '%s\n' "$p1_out" | grep -qi 'incoherent'; then
+    pass "P1 pinned stamps: every header carries the exact pinned values; union coherent despite would-be-differing auto-derivation"
+  else
+    fail "P1 pinned stamps: every header carries the exact pinned values; union coherent despite would-be-differing auto-derivation" "h1=[$p1_h1] h2=[$p1_h2] rc=$p1_rc out=$p1_out"
+  fi
+fi
+
 # --- R1: a real (non-dry) run against a fast host-only test writes a
 # genuine PASS row with a numeric duration. test-selftest-classifier.sh is a
 # pure classifier unit test (no docker/firewall needed), confirmed PASS in

@@ -222,14 +222,32 @@ _rh_ledger_row() {
 # One header line per invocation, stamping commit + rip-cage:latest image
 # digest + RC_E2E on/off + timestamp. Docker-unreachable must not crash the
 # driver — falls back to "unavailable".
+#
+# rip-cage-7atw.15: RC_TEST_STAMP_COMMIT / RC_TEST_STAMP_IMAGE_DIGEST, when
+# set, are used VERBATIM instead of re-deriving per invocation. A multi-hour
+# batched capture (rip-cage-7atw.14) re-derives commit/image_digest fresh on
+# every batch by default -- but a concurrent session can commit to main (or
+# rip-cage:latest can get rebuilt) mid-capture, which legitimately moves
+# those derived values batch-to-batch and would fail 7atw.13's header-
+# coherence check even though every file ran against the SAME intended
+# baseline. Pinning lets the capturer fix one identity for the whole run.
+# Unset (the default) = today's per-invocation auto-derivation, unchanged.
 _rh_ledger_write_header() {
   [[ -z "$RH_LEDGER_PATH" ]] && return 0
   local commit img_digest e2e_flag ts
-  commit="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
-  img_digest="unavailable"
-  if command -v docker >/dev/null 2>&1; then
-    img_digest="$(docker image inspect --format '{{.Id}}' rip-cage:latest 2>/dev/null || true)"
-    [[ -z "$img_digest" ]] && img_digest="unavailable"
+  if [[ -n "${RC_TEST_STAMP_COMMIT:-}" ]]; then
+    commit="$RC_TEST_STAMP_COMMIT"
+  else
+    commit="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+  fi
+  if [[ -n "${RC_TEST_STAMP_IMAGE_DIGEST:-}" ]]; then
+    img_digest="$RC_TEST_STAMP_IMAGE_DIGEST"
+  else
+    img_digest="unavailable"
+    if command -v docker >/dev/null 2>&1; then
+      img_digest="$(docker image inspect --format '{{.Id}}' rip-cage:latest 2>/dev/null || true)"
+      [[ -z "$img_digest" ]] && img_digest="unavailable"
+    fi
   fi
   e2e_flag="${RC_E2E:-0}"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
