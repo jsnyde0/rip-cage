@@ -427,6 +427,35 @@ _check_lfs_stubs() {
 }
 
 
+# _seed_claude_home_dirs — provisioning-time directory seeding for a
+# claude-home root, BEFORE it is ever mounted into a cage (rip-cage-xuy8, S3
+# of the msb migration epic rip-cage-tsf2).
+#
+# ADR-029 D4 resume-path corollary / rip-cage-1ujn footgun: the in-guest
+# claude-session-wrapper.sh (cage/substrate/claude-session-wrapper.sh) only
+# symlinks ~/.claude/projects and ~/.claude/sessions into its per-session
+# config dir IF those dirs already exist in the mounted claude-home at
+# wrapper-run time. If either is absent on first boot, the wrapper instead
+# creates fresh, EPHEMERAL copies inside the per-session dir -- Claude Code
+# session state then never lands on the host-mounted claude-home, and a
+# later resume attempt against a recreated cage silently finds nothing,
+# with no error signal anywhere in the loop.
+#
+# This must run BEFORE the claude-home root is first mounted (create time),
+# not just once per project -- the Docker up-path (below) and the msb
+# create-path (S6) both call it on their respective claude-home root.
+#
+# Idempotent (mkdir -p): safe to call on every `rc up`/create, never
+# clobbers content already written into projects/ or sessions/.
+#
+# Parameters: $1  claude_home_root — the host directory that will be (or
+#                 already is) mounted as the cage's claude-home.
+_seed_claude_home_dirs() {
+  local _claude_home_root="$1"
+  mkdir -p "${_claude_home_root}/projects" "${_claude_home_root}/sessions"
+}
+
+
 # _up_prepare_docker_mounts — build the mount (-v) portion of run_args.
 #
 # Globals read:    wt_detected, wt_name, wt_main_git (set by _up_detect_worktree)
@@ -866,7 +895,9 @@ _up_prepare_docker_mounts() {
   # logs survive container destroy and are visible to host tools (cass etc.).
   # The -workspace project key is unified with the host's encoded path key
   # inside init-rip-cage.sh, using RC_HOST_PROJECT_KEY below.
-  mkdir -p "${HOME}/.claude/projects" "${HOME}/.claude/sessions"
+  # Dir-seed must happen before this mount (rip-cage-xuy8, ADR-029 D4
+  # resume-path corollary) — see _seed_claude_home_dirs above.
+  _seed_claude_home_dirs "${HOME}/.claude"
   _UP_RUN_ARGS+=(-v "${HOME}/.claude/projects:/home/agent/.claude/projects")
   _UP_RUN_ARGS+=(-v "${HOME}/.claude/sessions:/home/agent/.claude/sessions")
   local _host_project_key
