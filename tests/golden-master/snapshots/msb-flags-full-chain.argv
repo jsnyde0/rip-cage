@@ -1,0 +1,15 @@
+--net-default
+deny
+--net-rule
+allow@github.com
+--net-rule
+allow@api.anthropic.com
+--secret
+GH_TOKEN__1_GITHUB_COM@github.com
+--secret
+GH_TOKEN__2_API_GITHUB_COM@api.github.com
+--mount-file
+/h/.pi/agent/auth.json:/g/.pi/agent/auth.json
+--mount-dir
+/h/workspace:/workspace
+--tls-intercept
