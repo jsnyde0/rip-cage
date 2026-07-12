@@ -42,10 +42,10 @@ An empty/null file passes (treated as "use defaults").
 |---|---|
 | `name` missing/empty | `required field 'name' is missing` |
 | `archetype` missing | `required field 'archetype' is missing` |
-| `archetype` not one of the allowed set | `unknown 'archetype' value '<v>'. Allowed: TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON, MULTIPLEXER, MEDIATOR` |
+| `archetype` not one of the allowed set | `unknown 'archetype' value '<v>'. Allowed: TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON, MULTIPLEXER` |
 | `version_pin` missing | `required field 'version_pin' is missing (… use "bundled" for image-bundled tools)` |
 
-(Note: the validator accepts **five** archetype values; ADR-005 D7's prose names four, with MEDIATOR added by ADR-026 D5.)
+(Note: the validator accepts **four** archetype values, matching ADR-005 D7's prose. The fifth, MEDIATOR — added by the now-retired ADR-026 D5 — is **deleted, not just undocumented**, per [ADR-029](../decisions/ADR-029-msb-migration.md) D2/D5: `cli/lib/manifest_checks.sh` has no MEDIATOR handling left.)
 
 ### TOOL entries
 
@@ -84,7 +84,7 @@ An empty/null file passes (treated as "use defaults").
 
 - `binary_path` (string or list of strings; enables the phase-5 check on prebuilt entries): each value must be non-empty, single-line, absolute (`must be an absolute path starting with '/'`); wrong type → `must be a string or a list of strings`.
 - `launch_args` (list of strings; ADR-027 D4): must be an array (`use launch_args: ["--flag", "value"]`); each element a non-empty, single-line string.
-- `init` (the one-shot agent-context boot hook, ADR-005 D7): must be non-empty/non-whitespace (`an empty hook is never run as eval ""`), single-line, **and passes the hook-bounds check** (same forbidden patterns as MULTIPLEXER/MEDIATOR hooks — see below).
+- `init` (the one-shot agent-context boot hook, ADR-005 D7): must be non-empty/non-whitespace (`an empty hook is never run as eval ""`), single-line, **and passes the hook-bounds check** (same forbidden patterns as MULTIPLEXER hooks — see below).
 
 ### SHELL-INTEGRATION entries
 
@@ -115,22 +115,9 @@ An empty/null file passes (treated as "use defaults").
 | unknown key inside `hooks` | `unknown hook key '<k>' … only start/attach/exec/new_session/teardown are allowed` |
 | any hook trips the hook-bounds patterns | see **Hook-bounds** below |
 
-### MEDIATOR entries
+> **Retired: MEDIATOR entries.** The egress-mediator manifest archetype (isomorphic to MULTIPLEXER, with `run_as_uid`/`ca_cert_path`/`hooks.start` fields and its own hook-bounds checks including an `RIP_CAGE_EGRESS=`/`iptables` guard) is **deleted, not just undocumented** ([ADR-029](../decisions/ADR-029-msb-migration.md) D2/D5) — `cli/lib/manifest_checks.sh` has no MEDIATOR handling left; `MEDIATOR` is not in the validator's allowed archetype set (see the table above). See [composition-seam.md](composition-seam.md) for what replaced it.
 
-Isomorphic to MULTIPLEXER, for the egress-mediator seam (ADR-026 D5; [composition-seam.md](composition-seam.md)):
-
-| Condition | Error (key text) |
-|---|---|
-| name outside `[a-z0-9_-]` | as MULTIPLEXER (registry: `/etc/rip-cage/mediators/<name>`) |
-| unknown top-level field | `only name/archetype/version_pin/run_as_uid/hooks/ca_cert_path are allowed` |
-| `run_as_uid` missing | `required field 'run_as_uid' is missing (… dedicated non-root uid for loop prevention; ADR-026 D5)` |
-| `hooks` missing / not object; `hooks.start` missing | as MULTIPLEXER |
-| unknown hook key | `only start/health_check/teardown are allowed` |
-| hook-bounds patterns 1–5 | as below |
-| hook sets `RIP_CAGE_EGRESS=` | `disables the egress enforcement stack … floor-weakening egress kill-switch` |
-| hook references `iptables`/`ip6tables`/`nft` | `can disable the force-through REDIRECT rule … floor-weakening firewall manipulation` |
-
-### Hook-bounds check (shared: MULTIPLEXER + MEDIATOR hooks, TOOL `init`)
+### Hook-bounds check (shared: MULTIPLEXER hooks, TOOL `init`)
 
 Every declared hook command is **statically parsed, never executed**, against the floor-weakening patterns (ADR-005 D9/D10/D11). Any match rejects the manifest with a `hook-bounds violation` error naming the hook and pattern:
 

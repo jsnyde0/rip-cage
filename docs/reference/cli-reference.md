@@ -11,14 +11,14 @@
 | `rc exec <cage> -- <cmd...>` | Run a one-off command in a running container non-interactively (safe for CI and scripts); supports `--output json` |
 | `rc down [name]` | Stop a container |
 | `rc destroy [-f] [name]` | Remove a container and its volumes (prompts for confirmation) |
-| `rc reload [name] [--dry-run]` | Hot-reload `ssh.allowed_hosts` from `.rip-cage.yaml` without recreating the container ([details](ssh-routing.md#rc-reload)) |
-| `rc allowlist add <host> [--cage=<name>]` | Append a host to `network.allowed_hosts` in `.rip-cage.yaml` (idempotent); `--cage` applies it live via `rc reload` ([details](egress.md#rc-allowlist-command-reference)) |
-| `rc allowlist show [--effective] [--observed]` | Show configured / effective / observed-blocked egress hosts ([details](egress.md#rc-allowlist-command-reference)) |
-| `rc allowlist promote --from-observed [--cage=<name>]` | Merge observed blocked hosts into `network.allowed_hosts`, flip `network.mode` to `block`, and `rc reload` ([details](egress.md#the-observe--promote--block-workflow)) |
-| `rc test [name]` | Run the safety stack smoke test inside a container |
-| `rc doctor [name]` | Per-container diagnostic — labels + live probes (egress proxy, SSH forwarding, auth) |
+| `rc reload [name] [--dry-run]` | Apply `network.allowed_hosts`/`network.mode` changes from `.rip-cage.yaml` — a **cold-recreate** post-cutover, not a hot in-place apply ([details](egress.md#the-denyfixreload-repair-loop)) |
+| `rc allowlist add <host> [--cage=<name>]` | Append a host to `network.allowed_hosts` in `.rip-cage.yaml` (idempotent); `--cage` applies it via `rc reload` ([details](egress.md#rc-allowlist-command-reference)) |
+| `rc allowlist show [--effective]` | Show configured / effective egress hosts ([details](egress.md#rc-allowlist-command-reference)) |
+| `rc test [name]` | Run the safety stack smoke test inside a cage |
+| `rc doctor [name]` | Per-cage diagnostic — labels + live probes (msb egress posture + recently-denied domains, auth, beads, dead-mount detection) |
 | `rc config show [--json]` | Print effective `.rip-cage.yaml` config with provenance ([details](config.md)) |
-| `rc config init [--yes] [--force]` | Bootstrap a starter `.rip-cage.yaml` from `git remote -v` + `ssh -G` ([details](config.md)) |
+
+`rc config init` is **retired** (it bootstrapped `ssh.*` fields via `git remote -v` + `ssh -G` — ssh-cluster-specific detection logic that no longer applies, [ADR-029](../decisions/ADR-029-msb-migration.md) D3). `cmd_config` supports only `show`/`get` today; author `network.allowed_hosts`/`auth.credentials` by hand — see [config.md](config.md).
 
 ## Flags
 
@@ -50,26 +50,26 @@ See [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md) and [`docs/ref
 
 ### `rc allowlist` — egress allowlist
 
-Manage the network egress allowlist (`network.allowed_hosts` / `network.mode` in `.rip-cage.yaml`). New cages start in **observe mode** (log, don't block); `show --observed` lists what the agent reached, and `promote --from-observed` merges it into the allowlist and flips to **block mode**.
+Manage the msb egress allowlist (`network.allowed_hosts` in `.rip-cage.yaml`). Cages boot **default-deny**; there is no observe mode post-cutover ([ADR-029](../decisions/ADR-029-msb-migration.md) D4) — see [egress.md](egress.md) for the deny→fix→reload repair loop that replaced it.
 
-`add` and `promote` are **host-only** (they mutate effective config via `rc reload`); `show` is read-only and works inside the cage too.
+`add` is **host-only** (it mutates effective config, and via `--cage`, runs `rc reload`); `show` is read-only and works inside the cage too.
 
 | Subcommand | Description |
 |------|-------------|
-| `add <host> [--cage=<name>]` | Append `<host>` to `network.allowed_hosts` (idempotent). With `--cage`, runs `rc reload` to apply live. Supports `--output json`. |
-| `show [--effective] [--observed]` | Default: configured `network.allowed_hosts`. `--effective`: merged allowlist with provenance. `--observed`: hosts blocked / would-block in the egress logs. |
-| `promote --from-observed [--cage=<name>]` | Merge observed blocked hosts into `network.allowed_hosts`, set `network.mode: block`, emit a diff, and `rc reload` when `--cage` is given. |
+| `add <host> [--cage=<name>]` | Append `<host>` to `network.allowed_hosts` (idempotent). With `--cage`, runs `rc reload` to apply (cold-recreate). Supports `--output json`. |
+| `show [--effective]` | Default: configured `network.allowed_hosts`. `--effective`: merged allowlist with provenance. |
+| `show --observed` / `promote --from-observed` | **Legacy, non-functional under msb** — read JSONL log files the deleted in-cage engine used to write; nothing writes them anymore, so these always report/apply nothing. Use `rc doctor`/`rc reload --dry-run`'s trace-log fix-hint instead. See [egress.md](egress.md#rc-allowlist-command-reference). |
 
 ```bash
-# Add one host and apply it live
+# Add one host and apply it (cold-recreate)
 rc allowlist add api.deepseek.com --cage my-cage
 
-# See what the agent reached in observe mode, then lock down
-rc allowlist show --observed --cage my-cage
-rc allowlist promote --from-observed --cage my-cage
+# Inspect configured vs. effective allowlist
+rc allowlist show
+rc allowlist show --effective
 ```
 
-See [`docs/reference/egress.md`](egress.md) and [ADR-012](../decisions/ADR-012-egress-firewall.md) for the full egress model.
+See [`docs/reference/egress.md`](egress.md) and [ADR-029](../decisions/ADR-029-msb-migration.md) D2/D4 for the full egress model.
 
 ## JSON output
 

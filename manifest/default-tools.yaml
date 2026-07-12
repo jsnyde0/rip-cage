@@ -77,7 +77,7 @@ tools:
     mounts: []
 
   # ---------------------------------------------------------------------------
-  # RECIPES - composable fragments from examples/claude, pi, dcg, ssh-bypass
+  # RECIPES - composable fragments from examples/claude, pi, dcg
   # These are the entries an operator copies from examples/ into their own
   # ~/.config/rip-cage/tools.yaml to compose the same default-composition locally.
   # ---------------------------------------------------------------------------

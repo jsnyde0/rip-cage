@@ -2,7 +2,7 @@
 
 **Status:** Amended 2026-04-25 (see Amendments)
 
-> **Migration status (ADR-029, 2026-07-10):** All decisions D1–D4 are retired per [ADR-029](ADR-029-msb-migration.md) D3 — macOS ssh-agent socket discovery retires along with ssh-agent forwarding in favor of HTTPS + `--secret` credential injection. The mechanisms below remain shipped and load-bearing in the Docker path until the msb cutover release lands; until then this ADR describes current behavior.
+> **Migration status (ADR-029, 2026-07-10):** All decisions D1–D4 are retired per [ADR-029](ADR-029-msb-migration.md) D3 — macOS ssh-agent socket discovery retires along with ssh-agent forwarding in favor of HTTPS + `--secret` credential injection. The msb cutover has landed (S1-S14, branch `wave/s13-docs` off `msb-cutover`) — the mechanisms below are retired/replaced per the dispositions above; this ADR is retained for historical record, not current behavior. See [ADR-029](ADR-029-msb-migration.md) for what replaced them.
 
 **Date:** 2026-04-24
 **Design:** [Design doc](../../history/2026-04-24-macos-ssh-agent-discovery-design.md)
