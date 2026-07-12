@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 # cli/attach_exec.sh -- extracted from rc (behavior-preserving decomposition, rip-cage-gto1).
 # NOTE: sourced by the rc shim; must NOT set -euo pipefail (shim owns strict mode once).
+#
+# rip-cage-tsf2.1 (msb migration epic rip-cage-tsf2): REWRITTEN onto msb --
+# was docker exec/inspect. attach/exec drive a cage created by the msb-
+# backed `rc up` (S6, rip-cage-rj68). Interactive attach/exec map onto `msb
+# exec -t` (real TTY size + SIGWINCH propagate; verified in the migration
+# spike -- herdr sized-attach works over msb exec -t). Non-interactive exec
+# uses plain `msb exec` (no pty, no -i concept on msb -- msb exec is
+# non-interactive by default unless -t/--tty is passed).
 
 
 cmd_attach() {
   local name
   name=$(resolve_name "${1:-}") || exit 1
-  # Verify the container is running (attach doesn't provision)
+  # Verify the sandbox is running (attach doesn't provision)
   local state
-  state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
+  state=$(_msb_sandbox_state "$name" 2>/dev/null || true)
   if [[ "$state" != "running" ]]; then
     echo "Error: container $name is not running. Start it with: rc up" >&2
     exit 1
@@ -21,7 +29,7 @@ cmd_attach() {
       # Plain shell: no multiplexer — attach directly into a new zsh session.
       # TTY-guard: interactive only when TTY present.
       if [[ -t 0 && -t 1 ]]; then
-        docker exec -it "$name" zsh
+        _msb_exec_interactive "$name" -- zsh
       else
         echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
       fi
@@ -32,11 +40,11 @@ cmd_attach() {
       local _attach_hook_path
       _attach_hook_path=$(_rc_mux_resolve_hook_path "$_attach_mux" "attach" "$name") || exit 1
       if [[ -z "$_attach_hook_path" ]]; then
-        echo "Error: multiplexer '${_attach_mux}' has no attach hook in registry for cage '$name'. Inspect with: docker inspect $name" >&2
+        echo "Error: multiplexer '${_attach_mux}' has no attach hook in registry for cage '$name'. Inspect with: msb inspect $name" >&2
         exit 1
       fi
       if [[ -t 0 && -t 1 ]]; then
-        docker exec -it "$name" sh "$_attach_hook_path"
+        _msb_exec_interactive "$name" -- sh "$_attach_hook_path"
       else
         echo "Container $name is running (multiplexer=${_attach_mux}). Attach with: rc attach $name" >&2
       fi
@@ -85,9 +93,9 @@ cmd_exec() {
   local name
   name=$(resolve_name "${name_arg:-}") || exit 1
 
-  # Verify the container is running
+  # Verify the sandbox is running
   local state
-  state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
+  state=$(_msb_sandbox_state "$name" 2>/dev/null || true)
   if [[ "$state" != "running" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       json_error "Container $name is not running. Start it with: rc up" "CONTAINER_NOT_RUNNING"
@@ -96,22 +104,25 @@ cmd_exec() {
     exit 1
   fi
 
-  # Run the command via docker exec, propagating its exit code.
-  # Non-TTY: always works (no [[ -t 0 && -t 1 ]] guard).
-  # With a TTY: pass -t for interactive use.
-  local docker_exec_flags=(-i)
-  if [[ -t 0 && -t 1 ]]; then
-    docker_exec_flags+=(-t)
-  fi
-
+  # Run the command via msb exec, propagating its exit code. msb exec is
+  # non-interactive by default (no -i concept, unlike docker exec); pass
+  # -t/--tty only when a real TTY is present (interactive use).
   local exec_exit=0
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     # ADR-003 D1: in JSON mode stdout carries ONLY the JSON envelope.
     # Route the wrapped command's stdout to stderr so a human still sees it,
     # while the JSON channel (stdout) stays clean.
-    docker exec "${docker_exec_flags[@]}" "$name" "${exec_cmd[@]}" >&2 || exec_exit=$?
+    if [[ -t 0 && -t 1 ]]; then
+      _msb_exec_interactive "$name" -- "${exec_cmd[@]}" >&2 || exec_exit=$?
+    else
+      _msb_exec "$name" -- "${exec_cmd[@]}" >&2 || exec_exit=$?
+    fi
   else
-    docker exec "${docker_exec_flags[@]}" "$name" "${exec_cmd[@]}" || exec_exit=$?
+    if [[ -t 0 && -t 1 ]]; then
+      _msb_exec_interactive "$name" -- "${exec_cmd[@]}" || exec_exit=$?
+    else
+      _msb_exec "$name" -- "${exec_cmd[@]}" || exec_exit=$?
+    fi
   fi
 
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then

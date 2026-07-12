@@ -628,24 +628,10 @@ cmd_doctor() {
 
   # Uptime (humanized) — derive from updated_at ISO timestamp (msb's closest
   # counterpart to docker's State.StartedAt — see the field-read comment
-  # above).
-  local uptime="—"
-  if [[ "$running" -eq 1 && -n "$updated_at" ]]; then
-    local started_epoch now_epoch diff
-    started_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${updated_at%%.*}" +%s 2>/dev/null \
-      || date -d "$updated_at" +%s 2>/dev/null || echo 0)
-    now_epoch=$(date +%s)
-    if [[ "$started_epoch" -gt 0 ]]; then
-      diff=$((now_epoch - started_epoch))
-      if [[ "$diff" -lt 3600 ]]; then
-        uptime="$((diff / 60))m"
-      elif [[ "$diff" -lt 86400 ]]; then
-        uptime="$((diff / 3600))h $(((diff % 3600) / 60))m"
-      else
-        uptime="$((diff / 86400))d $(((diff % 86400) / 3600))h"
-      fi
-    fi
-  fi
+  # above). Shared with cli/ls.sh (rip-cage-tsf2.1) via
+  # cli/lib/container.sh's _rc_uptime_from_state.
+  local uptime
+  uptime=$(_rc_uptime_from_state "$running" "$updated_at")
 
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     jq -nc \

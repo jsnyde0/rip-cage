@@ -235,3 +235,17 @@ _msb_remove() {
   local name="$1"
   msb remove --force "$name"
 }
+
+
+# _msb_volume_remove NAME -- delete one msb named volume (msb-side
+# counterpart to `docker volume rm NAME`). rip-cage-tsf2.1: `msb remove`
+# (above) has NO volume-deletion flag -- named volumes SURVIVE a sandbox
+# remove+recreate by design (migration spike finding). `rc destroy`'s own
+# destroy policy (mirroring the pre-migration docker behavior it replaces)
+# explicitly deletes the cage's own rc-state-<name>/rc-history-<name>
+# volumes via this primitive, a DISTINCT command (`msb volume remove`, not
+# `msb remove`) — never assume `_msb_remove` alone cleans volumes.
+_msb_volume_remove() {
+  local name="$1"
+  msb volume remove "$name"
+}

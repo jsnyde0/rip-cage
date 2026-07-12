@@ -35,19 +35,53 @@ _rc_ls_mode_from_source_path() {
 }
 
 
+# _rc_ls_enumerate -- msb-side enumeration shared by cmd_ls's JSON/human
+# branches below (rip-cage-tsf2.1: REWRITTEN onto msb — was `docker ps -a
+# --filter label=rc.source.path`). Emits one tab-separated row per REAL
+# rc-managed msb sandbox (any sandbox carrying a non-empty rc.source.path
+# label — same filter semantics as the docker path it replaces):
+#   name \t status(running|exited|unknown) \t uptime \t source_path \t egress
+#
+# rip-cage-rj68 (S6, opportunistic cleanup carried over from S5's review):
+# rc.forward-ssh / rc.github-identity are RETIRED labels (ADR-029 D3, the
+# ssh cluster is gone) — no cage created via `rc up` since S5 has ever set
+# them; never read here.
+_rc_ls_enumerate() {
+  local _lse_names_json
+  _lse_names_json=$(msb list --format json 2>/dev/null) || return 0
+  local _lse_name
+  while IFS= read -r _lse_name; do
+    [[ -z "$_lse_name" ]] && continue
+    local _lse_raw
+    _lse_raw=$(_msb_inspect_json "$_lse_name") || continue
+    local _lse_src
+    _lse_src=$(jq -r '.config.labels["rc.source.path"] // empty' <<<"$_lse_raw" 2>/dev/null)
+    [[ -z "$_lse_src" ]] && continue  # not rc-managed
+    local _lse_egress
+    _lse_egress=$(jq -r '.config.labels["rc.egress"] // empty' <<<"$_lse_raw" 2>/dev/null)
+    local _lse_status_raw _lse_status _lse_running
+    _lse_status_raw=$(jq -r '.status // empty' <<<"$_lse_raw" 2>/dev/null)
+    _lse_running=0
+    case "$_lse_status_raw" in
+      Running) _lse_status="running"; _lse_running=1 ;;
+      Stopped) _lse_status="exited" ;;
+      *)       _lse_status="unknown" ;;
+    esac
+    local _lse_updated_at _lse_uptime
+    _lse_updated_at=$(jq -r '.updated_at // empty' <<<"$_lse_raw" 2>/dev/null)
+    _lse_uptime=$(_rc_uptime_from_state "$_lse_running" "$_lse_updated_at")
+    printf '%s\t%s\t%s\t%s\t%s\n' "$_lse_name" "$_lse_status" "$_lse_uptime" "$_lse_src" "$_lse_egress"
+  done < <(jq -r '.[].name' <<<"$_lse_names_json" 2>/dev/null)
+}
+
+
 cmd_ls() {
-  local _ls_timeout="${RC_DOCKER_CALL_TIMEOUT:-15}"
-  # rip-cage-rj68 (S6, opportunistic cleanup carried over from S5's review):
-  # rc.forward-ssh / rc.github-identity are RETIRED labels (ADR-029 D3, the
-  # ssh cluster is gone) — no cage created via `rc up` since S5 has ever set
-  # them. Dropped from both the docker format string and the output shape
-  # rather than left reading empty forever.
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     # rip-cage-hhh FIX1: mode derived from source path's .rip-cage.yaml (live),
-    # not the immutable rc.egress.mode label. Include rc.source.path in format
-    # and compute mode per-row via _rc_ls_mode_from_source_path.
+    # not the immutable rc.egress.mode label. Compute mode per-row via
+    # _rc_ls_mode_from_source_path.
     local _ls_raw _ls_json
-    _ls_raw=$(_docker_call "$_ls_timeout" ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}' 2>/dev/null || true)
+    _ls_raw=$(_rc_ls_enumerate)
     _ls_json="["
     local _ls_first="true"
     while IFS=$'\t' read -r _ls_name _ls_status _ls_uptime _ls_src _ls_egress; do
@@ -86,8 +120,8 @@ EOF
     # not the immutable rc.egress.mode label. Build per-row with a while-read loop.
     echo -e "NAME\tSTATUS\tEGRESS\tMODE\tSOURCE PATH"
     local _ls_raw_txt
-    _ls_raw_txt=$(_docker_call "$_ls_timeout" ps -a --filter label=rc.source.path --format '{{.Names}}\t{{.Status}}\t{{.Label "rc.source.path"}}\t{{.Label "rc.egress"}}' 2>/dev/null || true)
-    while IFS=$'\t' read -r _ls_name _ls_uptime _ls_src _ls_egress; do
+    _ls_raw_txt=$(_rc_ls_enumerate)
+    while IFS=$'\t' read -r _ls_name _ls_status _ls_uptime _ls_src _ls_egress; do
       [[ -z "$_ls_name" ]] && continue
       local _ls_mode _ls_egress_out
       _ls_mode=$(_rc_ls_mode_from_source_path "$_ls_src")
