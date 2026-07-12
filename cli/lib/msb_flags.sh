@@ -37,11 +37,28 @@
 #     {"host_path": "/abs/host/path", "guest_path": "/abs/guest/path",
 #      "kind": "file"|"dir", "mode": "ro"|"rw"}
 #   ],
-#   "tls_body_rewrite": true|false
+#   "tls_body_rewrite": true|false,
+#   "dind_volumes": [
+#     {"name": "docker-data", "guest_path": "/var/lib/docker", "size": "20G"}
+#   ]
 # }
 #
 # All keys optional; absent/null treated as empty/false. "kind" defaults to
 # "dir" when omitted; "mode" defaults to "rw" when omitted.
+#
+# "dind_volumes" (rip-cage-75rq, S11) is a DISTINCT manifest surface from
+# "mounts"/"possession_mounts" above: those two emit virtiofs --mount-dir/
+# --mount-file (msb's `kind=dir`, the default). "dind_volumes" emits a
+# **disk-kind** (virtio-blk) --mount-named volume instead -- required
+# because docker's overlay2 storage driver cannot write whiteout files onto
+# virtiofs/overlayfs (findings §10b), so a cage running nested Docker/compose
+# needs its /var/lib/docker backed by a real block device, not a virtiofs
+# mount. Each entry requires "name" (the msb named-volume identifier --
+# reattaches to the same volume across cage recreates, findings §6), the
+# in-guest "guest_path", and "size" (disk capacity, e.g. "20G") -- all three
+# are REQUIRED, no defaults; a missing field is a generation-time validation
+# failure (fail whole, matching this module's existing credential-validation
+# discipline), never a silently-omitted mount.
 #
 # ---------------------------------------------------------------------------
 # Output contract: msb argv TOKENS, one per line, on stdout (mirrors
@@ -115,6 +132,32 @@ _msb_flags_generate() {
     fi
   done
 
+  # --- dind_volumes validation (S11, rip-cage-75rq): "name", "guest_path",
+  # and "size" are all required -- no defaults. A missing field must fail
+  # generation entirely (fail whole), never silently drop the disk-kind
+  # mount (the overlay2-on-virtiofs failure this surface exists to prevent
+  # would otherwise reappear invisibly).
+  local dind_count di
+  dind_count=$(jq '.dind_volumes // [] | length' <<<"$cfg")
+  for (( di=0; di<dind_count; di++ )); do
+    local dv_name dv_guest_path dv_size
+    dv_name=$(jq -r ".dind_volumes[${di}].name // \"\"" <<<"$cfg")
+    dv_guest_path=$(jq -r ".dind_volumes[${di}].guest_path // \"\"" <<<"$cfg")
+    dv_size=$(jq -r ".dind_volumes[${di}].size // \"\"" <<<"$cfg")
+    if [[ -z "$dv_name" ]]; then
+      echo "Error: msb_flags generator: dind_volumes[${di}] is missing required field 'name'." >&2
+      return 1
+    fi
+    if [[ -z "$dv_guest_path" ]]; then
+      echo "Error: msb_flags generator: dind_volumes[${di}] is missing required field 'guest_path'." >&2
+      return 1
+    fi
+    if [[ -z "$dv_size" ]]; then
+      echo "Error: msb_flags generator: dind_volumes[${di}] is missing required field 'size'." >&2
+      return 1
+    fi
+  done
+
   # --- Emission pass. Fixed section order for determinism (bead criterion
   # 7): net rules, then secrets. Later sections (mounts, tls) are added as
   # their own behaviors land. Within each section, input order is preserved
@@ -170,6 +213,17 @@ _msb_flags_generate() {
   if [[ "$tls_rewrite" == "true" ]]; then
     echo "--tls-intercept"
   fi
+
+  # 6. DinD/compose disk-kind docker-data volumes (S11, rip-cage-75rq,
+  # findings §10b). Appended LAST and via its own emitter
+  # (_msb_flags_emit_dind_volume) -- a distinct manifest surface from
+  # section 4's virtiofs mounts, kept structurally separate so this
+  # disk-kind concern never tangles _msb_flags_emit_mount's dir/file logic.
+  local dind_count di
+  dind_count=$(jq '.dind_volumes // [] | length' <<<"$cfg")
+  for (( di=0; di<dind_count; di++ )); do
+    _msb_flags_emit_dind_volume "$cfg" "$di"
+  done
 
   return 0
 }
@@ -238,4 +292,33 @@ _msb_flags_emit_mount() {
 
   echo "$flag"
   echo "$spec"
+}
+
+
+# _msb_flags_emit_dind_volume CONFIG_JSON INDEX
+#
+# Emits one --mount-named NAME:GUEST_PATH:kind=disk,size=SIZE line pair for
+# CONFIG_JSON.dind_volumes[INDEX] (S11, rip-cage-75rq, findings §10b).
+#
+# DISTINCT from _msb_flags_emit_mount above: msb's `--mount-named` volumes
+# default to `kind=dir` (virtiofs-backed) when no OPTIONS are given, which
+# is exactly what a plain `mounts`/`possession_mounts` entry wants -- but
+# docker's overlay2 storage driver cannot write whiteout files onto
+# virtiofs/overlayfs (fails with "failed to convert whiteout file ...
+# operation not permitted"). A cage running nested Docker/compose needs
+# `/var/lib/docker` (or wherever guest_path points) on a real virtio-blk
+# block device instead, which requires the explicit `kind=disk,size=SIZE`
+# OPTIONS suffix on the mount spec -- omitting it silently falls back to the
+# broken virtiofs default, so this function ALWAYS emits the suffix (never
+# conditionally), and the caller (_msb_flags_generate) validates all three
+# fields are present before this function is ever called.
+_msb_flags_emit_dind_volume() {
+  local cfg="$1" index="$2"
+  local name guest_path size
+  name=$(jq -r ".dind_volumes[${index}].name" <<<"$cfg")
+  guest_path=$(jq -r ".dind_volumes[${index}].guest_path" <<<"$cfg")
+  size=$(jq -r ".dind_volumes[${index}].size" <<<"$cfg")
+
+  echo "--mount-named"
+  echo "${name}:${guest_path}:kind=disk,size=${size}"
 }
