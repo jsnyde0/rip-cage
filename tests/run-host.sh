@@ -647,38 +647,15 @@ if [[ "$RH_LEDGER_SUMMARY_MODE" == "true" ]]; then
   exit $?
 fi
 
-# ADR-023 secret-path denylist (rip-cage-3gu.2): rc up requires a global
-# config file at $RC_CONFIG_GLOBAL or ~/.config/rip-cage/config.yaml.
-# Provide a default empty-denylist fixture for the suite so tests don't all
-# need to set RC_CONFIG_GLOBAL individually. Tests that verify the
-# missing-config preflight (e.g. test-secret-path-denylist.sh case j) override
-# this with their own local export.
-#
-# rip-cage-4c5.8: driver-level manifest fixture (analogous to the config fixture
-# above). Seeds a benign empty tools.yaml so any rc invocation that derives its
-# manifest path from XDG_CONFIG_HOME (the default path) reads a known-safe default
-# (empty file = bundled-only default stack, D8 contract) rather than the developer's
-# real ~/.config/rip-cage/tools.yaml. Both fixtures share a single driver temp dir
-# and a unified EXIT trap.
-#
-# ISOLATION: RC_MANIFEST_GLOBAL is NOT exported at the driver level because it has
-# higher priority than XDG_CONFIG_HOME in _manifest_global_path(), and exporting
-# it would override the per-test sandbox HOME/XDG_CONFIG_HOME used by test-manifest-
-# schema.sh, test-manifest-tool.sh, etc. Those tests correctly isolate their
-# fixture loading via explicit HOME+XDG_CONFIG_HOME in subprocess calls. The
-# driver fixture works through XDG_CONFIG_HOME (exported below) which those tests
-# then override per-call. New tests that invoke rc without a sandboxed HOME/XDG
-# inherit the driver XDG_CONFIG_HOME and thus the empty tools.yaml.
-_RUN_HOST_CFG_DIR=$(mktemp -d)
-mkdir -p "${_RUN_HOST_CFG_DIR}/rip-cage"
-cat > "${_RUN_HOST_CFG_DIR}/rip-cage/config.yaml" <<'YAML'
-version: 1
-mounts:
-  denylist: []
-  allow_risky: null
-YAML
-# Empty tools.yaml: seeded once at driver level; zero-byte = default bundled stack.
-touch "${_RUN_HOST_CFG_DIR}/rip-cage/tools.yaml"
+# rip-cage-w3lq: the config-sandbox setup (RC_CONFIG_GLOBAL + XDG_CONFIG_HOME
+# pointed at a mktemp dir with an empty-denylist config.yaml + zero-byte
+# tools.yaml; deliberately NOT exporting RC_MANIFEST_GLOBAL) is extracted into
+# a shared lib so tests/run-one.sh (single-file wrapper) can build the
+# identical sandbox. See tests/_host-sandbox-lib.sh for the full rationale
+# (ADR-023 secret-path denylist / rip-cage-4c5.8 manifest fixture / the
+# RC_MANIFEST_GLOBAL isolation contract) — preserved there verbatim.
+# shellcheck source=tests/_host-sandbox-lib.sh
+source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
 
 # ---------------------------------------------------------------------------
 # Self-healing sweep (rip-cage-aqww D2): reap leaked scratch-cage containers
@@ -729,21 +706,20 @@ _sweep_scratch_cages() {
   done
 }
 
+# Build the shared config sandbox (see tests/_host-sandbox-lib.sh) — sets
+# _HOST_SANDBOX_CFG_DIR and exports RC_CONFIG_GLOBAL/XDG_CONFIG_HOME to point
+# at it (same ${VAR:-default} precedence as before this extraction).
+_host_sandbox_setup
+
 # Run the sweep at START of run to reap any residue from a previous aborted run.
 _sweep_scratch_cages
 
 # Combined EXIT/INT/TERM handler: config-fixture cleanup + scratch-cage sweep.
 _run_host_cleanup() {
-  rm -rf "${_RUN_HOST_CFG_DIR}"
+  _host_sandbox_cleanup
   _sweep_scratch_cages
 }
 trap '_run_host_cleanup' EXIT INT TERM
-
-export RC_CONFIG_GLOBAL="${RC_CONFIG_GLOBAL:-${_RUN_HOST_CFG_DIR}/rip-cage/config.yaml}"
-# XDG_CONFIG_HOME: default to driver temp dir so rc invocations without an explicit
-# HOME/XDG sandbox read from the driver fixture. Tests that set HOME+XDG_CONFIG_HOME
-# explicitly in their subprocess calls (all test-manifest-*.sh) override this.
-export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${_RUN_HOST_CFG_DIR}}"
 
 # Real pass: write the run header (if a ledger is configured), reset the
 # call-ordinal counter so it starts fresh at 1 (matches --list/--ledger-
