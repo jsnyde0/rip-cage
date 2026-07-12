@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Content-keyed fake `msb` for the golden-master harness (rip-cage-5iti, S10
+# of the msb migration epic rip-cage-tsf2 -- the msb-side counterpart to
+# ./docker in this same directory, written when the lifecycle verbs
+# (rip-cage-rj68 S6, rip-cage-tsf2.1) moved off docker onto msb).
+#
+# Same content-keyed discipline as ./docker (harness spec §3(i) rev.2):
+# every branch dispatches on WHAT is being inspected/created, never on call
+# order. Reuses the SAME GM_DOCKER_* configuration vars ./docker reads
+# (translated to msb's JSON inspect shape below) rather than inventing a
+# parallel GM_MSB_STATE/GM_MSB_LABEL_* vocabulary — one source of truth per
+# case, and tests/golden-master/lib/sandbox.sh's `compgen -v GM_DOCKER_`
+# forwarding loop already carries them to the child process unmodified.
+#
+# GM_MSB_CREATE_CAPTURE   file path — `msb create` appends "$@" here (one
+#                         arg per line, blank line as separator), then exits
+#                         GM_MSB_CREATE_EXIT (default 1: §3(i) F2's
+#                         deterministic-termination-before-any-live-sandbox-
+#                         code design, msb-side counterpart to
+#                         GM_DOCKER_RUN_CAPTURE/GM_DOCKER_RUN_EXIT).
+# GM_MSB_CREATE_EXIT      override the `msb create` exit code (default 1).
+#
+# Any invocation this shim does not recognize fails LOUD (nonzero exit +
+# stderr naming the unhandled argv), matching ./docker's discipline.
+set -u
+
+case "${1:-}" in
+  --version)
+    echo "msb 0.0.0-fake"
+    exit 0
+    ;;
+
+  inspect)
+    shift
+    if [[ "${GM_DOCKER_STATE:-absent}" == "absent" ]]; then
+      exit 1
+    fi
+    # msb's status vocabulary: Running/Stopped (cli/lib/msb_runtime.sh's
+    # _msb_sandbox_state maps these onto the docker "running"/"exited"
+    # vocabulary this shim's GM_DOCKER_STATE already speaks -- paused/
+    # restarting/removing/dead have no msb analogue, so they're echoed
+    # through as-is and _msb_sandbox_state's own `unknown` catch-all
+    # applies, matching the "container state we can't classify" branches
+    # cmd_up's CONTAINER_STATE_UNSUPPORTED error path exercises).
+    case "${GM_DOCKER_STATE:-}" in
+      running) _status="Running" ;;
+      exited) _status="Stopped" ;;
+      *) _status="${GM_DOCKER_STATE:-}" ;;
+    esac
+    jq -nc \
+      --arg status "$_status" \
+      --arg source_path "${GM_DOCKER_LABEL_SOURCE_PATH:-}" \
+      --arg egress_mode "${GM_DOCKER_LABEL_EGRESS_MODE:-}" \
+      --arg egress_override "${GM_DOCKER_LABEL_EGRESS_OVERRIDE:-}" \
+      --arg config_mode "${GM_MSB_LABEL_CONFIG_MODE:-ro}" \
+      --arg symlink_fp "${GM_MSB_LABEL_SYMLINK_FP:-}" \
+      --arg manifest_digest "${GM_MSB_IMAGE_DIGEST:-sha256:0000000000000000000000000000000000000000000000000000000000fa}" \
+      '{
+        status: $status,
+        config: {
+          manifest_digest: $manifest_digest,
+          labels: (
+            {"rc.source.path": $source_path}
+            + (if ($egress_mode | length) > 0 then {"rc.egress.mode": $egress_mode} else {} end)
+            + (if ($egress_override | length) > 0 then {"rc.egress.config-override": $egress_override} else {} end)
+            + {"rc.config-mode": $config_mode}
+            + (if ($symlink_fp | length) > 0 then {"rc.symlink-follow-fingerprint": $symlink_fp} else {} end)
+          ),
+          mounts: []
+        }
+      }'
+    exit 0
+    ;;
+
+  create)
+    shift
+    if [[ -n "${GM_MSB_CREATE_CAPTURE:-}" ]]; then
+      printf '%s\n' "$@" >> "$GM_MSB_CREATE_CAPTURE"
+    fi
+    exit "${GM_MSB_CREATE_EXIT:-1}"
+    ;;
+
+  exec|start|stop|remove|logs)
+    exit 0
+    ;;
+
+  image)
+    if [[ "${2:-}" == "list" ]]; then
+      # _msb_current_image_digest("$IMAGE") reads this -- default digest
+      # matches the inspect handler's default GM_MSB_IMAGE_DIGEST above so
+      # a resume case's stored-vs-current image-drift compare agrees
+      # (no-drift) unless a case explicitly overrides one or the other.
+      jq -nc --arg ref "rip-cage:latest" --arg digest "${GM_MSB_IMAGE_DIGEST:-sha256:0000000000000000000000000000000000000000000000000000000000fa}" \
+        '[{reference: $ref, digest: $digest}]'
+      exit 0
+    fi
+    echo "fake-msb: unhandled 'image' invocation: $*" >&2
+    exit 1
+    ;;
+
+  volume)
+    exit 0
+    ;;
+
+  list)
+    echo "[]"
+    exit 0
+    ;;
+
+  *)
+    echo "fake-msb: unhandled invocation: $*" >&2
+    exit 1
+    ;;
+esac

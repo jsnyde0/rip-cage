@@ -220,10 +220,22 @@ _msb_stop_graceful() {
 #
 # Echoes empty (never errors) when the sandbox has no logs yet or no
 # denials occurred.
+#
+# rip-cage-5iti (S10 finding): `grep -o` exits 1 on zero matches -- the
+# common/default case for a healthy cage with no denials. Callers'
+# real dispatch context (rc's shim) runs under `set -euo pipefail`; without
+# the `|| true` guard below, pipefail propagates that non-zero through the
+# whole pipe, and an unguarded `x=$(_msb_denied_domains_from_trace_log
+# ...)` assignment at either call site (cli/reload.sh's cmd_reload,
+# cli/doctor.sh's posture probe) then aborts the CALLER under errexit --
+# violating this function's own "never errors" contract above (proven live
+# by tests/test-msb-runtime.sh R7 against a real sandbox with zero
+# denials). The guard absorbs only the expected zero-match case; a genuine
+# `msb logs` failure is already discarded via `2>/dev/null` on msb itself.
 _msb_denied_domains_from_trace_log() {
   local name="$1"
   msb logs "$name" --source system --json 2>/dev/null \
-    | grep -o 'DNS query denied by network policy domain=[^\\"]*' \
+    | { grep -o 'DNS query denied by network policy domain=[^\\"]*' || true; } \
     | sed 's/^DNS query denied by network policy domain=//' \
     | awk '!seen[$0]++'
 }

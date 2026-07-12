@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # tests/golden-master/lib/scrub.sh — determinism scrub for captured rc
 # output (rip-cage-9oyh §2). Sourced by capture.sh (which requires GM_ROOT
-# and REPO_ROOT from lib/sandbox.sh to already be set) AND by the §3(i)
-# helper-level/e2e tests (test-up-run-args-full-chain.sh /
-# test-up-run-args-e2e.sh), which reuse `gm_scrub_root_script` directly for
-# their own per-run mktemp TEST_HOME root instead of a bespoke regex.
+# and REPO_ROOT from lib/sandbox.sh to already be set) AND by the §3(i) e2e
+# test (test-up-run-args-e2e.sh; its former helper-level companion,
+# test-up-run-args-full-chain.sh, is RETIRED — rip-cage-5iti, S10), which
+# reuses `gm_scrub_root_script` directly for its own per-run mktemp
+# TEST_HOME root instead of a bespoke regex.
 #
 # Scrub classes (mirrors the harness spec §2 table):
 #   - Absolute host paths: the fixed GM_ROOT scratch tree AND the repo

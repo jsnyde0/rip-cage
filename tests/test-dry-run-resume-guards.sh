@@ -147,18 +147,24 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "--- B1: behavioral proof (_up_resolve_resume_config_mode) ---"
 
+# rip-cage-5iti (S10, msb migration test-suite port): the resolver reads
+# `msb inspect NAME --format json` via cli/lib/msb_runtime.sh's `_msb_label`
+# (rip-cage-rj68 S6 rewrote it onto msb), not `docker inspect --format`; the
+# stub below is retargeted onto `msb` accordingly (same idiom as
+# test-config-ro-mount.sh M6-M8 / test-credential-mounts.sh's
+# `_write_msb_inspect_stub`).
 _run_resume_config_mode() {
   local _label="$1" _eff_json="$2" _out_err="$3" _out_exit="$4"
   local _stub_dir
   _stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-dryrun-cm-stub-XXXXXX")
-  cat > "${_stub_dir}/docker" <<STUB
+  cat > "${_stub_dir}/msb" <<STUB
 #!/usr/bin/env bash
 case " \$* " in
-  *" inspect "*"rc.config-mode"*) echo "${_label}"; exit 0 ;;
+  *" inspect "*) echo '{"config":{"labels":{"rc.config-mode":"${_label}"}}}'; exit 0 ;;
   *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
 esac
 STUB
-  chmod +x "${_stub_dir}/docker"
+  chmod +x "${_stub_dir}/msb"
 
   local _exit=0
   # No `set -e` re-enable afterward: this file only sets `set -uo pipefail`
@@ -166,6 +172,7 @@ STUB
   # here would leak past this function for the rest of the script).
   set +e
   PATH="${_stub_dir}:$PATH" bash -c "
+    source '${REPO_ROOT}/cli/lib/msb_runtime.sh' 2>/dev/null
     source '$RC' 2>/dev/null
     _load_effective_config() { echo '${_eff_json}'; }
     _up_resolve_resume_config_mode 'rc-dryrun-cm-test' '/tmp/stub-workspace'
