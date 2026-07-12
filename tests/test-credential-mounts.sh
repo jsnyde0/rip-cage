@@ -44,8 +44,14 @@
 #         (resume of an unchanged mixed cage must NOT refuse)
 #
 # All tests are host-side only (no live docker container required); CM8-CM10,
-# CM17-CM18 stub `docker inspect` via a PATH shim (M6-M8 idiom from
-# test-config-ro-mount.sh).
+# CM17-CM21 stub `msb inspect` via a PATH shim (M6-M8 idiom from
+# test-config-ro-mount.sh, re-targeted onto msb — rip-cage-qzsx, S8 of the
+# msb migration epic rip-cage-tsf2: the resolvers under test
+# (_up_resolve_resume_credential_mounts / _up_resolve_resume_symlink_fingerprint)
+# were rewired by rip-cage-rj68 (S6) to read `msb inspect NAME --format json`
+# (cli/lib/msb_runtime.sh's _msb_label) instead of `docker inspect --format
+# '{{index .Config.Labels "KEY"}}'` — same label-lock recipe (ADR-028 D1),
+# different substrate).
 #
 # Wired into tests/run-host.sh (host-only tier).
 
@@ -94,6 +100,41 @@ YAML
 teardown_sandbox() {
   [[ -n "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME"
   TEST_HOME="" TEST_WS=""
+}
+
+# _write_msb_inspect_stub DIR LABEL1=VALUE1 [LABEL2=VALUE2 ...]
+# Writes a fake `msb` binary at DIR/msb whose `inspect NAME --format json`
+# response carries a fixed labels object built from the LABEL=VALUE pairs —
+# the msb-side counterpart to this suite's pre-retarget docker-inspect stub
+# idiom (`docker inspect --format '{{index .Config.Labels "KEY"}}'`).
+# _msb_label reads `.config.labels[$k] // empty`, so an omitted key or one
+# given an empty VALUE both simulate "label absent" (legacy container).
+# Values are plain strings (mode names, hex fingerprints) in every caller —
+# no quote-escaping is needed.
+_write_msb_inspect_stub() {
+  local _dir="$1"; shift
+  local _labels_json="{" _first=true _pair _key _val
+  for _pair in "$@"; do
+    _key="${_pair%%=*}"
+    _val="${_pair#*=}"
+    if [[ "$_first" == "true" ]]; then _first=false; else _labels_json+=","; fi
+    _labels_json+="\"${_key}\":\"${_val}\""
+  done
+  _labels_json+="}"
+  cat > "${_dir}/msb" <<STUB
+#!/usr/bin/env bash
+case "\${1:-}" in
+  inspect)
+    echo '{"status":"Stopped","config":{"manifest_digest":"","labels":${_labels_json}}}'
+    exit 0
+    ;;
+  *)
+    echo "stub: unhandled args: \$*" >&2
+    exit 1
+    ;;
+esac
+STUB
+  chmod +x "${_dir}/msb"
 }
 
 # F5: seed placeholder credential fixture files at the exact paths rc
@@ -491,14 +532,7 @@ auth:
   credential_mounts: none"   # current effective: none
 
 _cm8_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm8-stub-XXXXXX")
-cat > "${_cm8_stub_dir}/docker" <<'STUB'
-#!/usr/bin/env bash
-case " $* " in
-  *" inspect "*"rc.auth.credential-mounts"*) echo "real"; exit 0 ;;
-  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
-esac
-STUB
-chmod +x "${_cm8_stub_dir}/docker"
+_write_msb_inspect_stub "$_cm8_stub_dir" "rc.auth.credential-mounts=real"
 
 _cm8_err="" _cm8_exit=0
 set +e
@@ -538,14 +572,7 @@ auth:
   credential_mounts: none"   # current effective: none
 
 _cm9_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm9-stub-XXXXXX")
-cat > "${_cm9_stub_dir}/docker" <<'STUB'
-#!/usr/bin/env bash
-case " $* " in
-  *" inspect "*"rc.auth.credential-mounts"*) echo "none"; exit 0 ;;
-  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
-esac
-STUB
-chmod +x "${_cm9_stub_dir}/docker"
+_write_msb_inspect_stub "$_cm9_stub_dir" "rc.auth.credential-mounts=none"
 
 _cm9_exit=0
 set +e
@@ -572,16 +599,9 @@ teardown_sandbox
 setup_sandbox ""  # current effective: no .rip-cage.yaml -> default real
 
 _cm10_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm10-stub-XXXXXX")
-cat > "${_cm10_stub_dir}/docker" <<'STUB'
-#!/usr/bin/env bash
-case " $* " in
-  # Return empty string — simulates a legacy container with no
-  # rc.auth.credential-mounts label.
-  *" inspect "*"rc.auth.credential-mounts"*) echo ""; exit 0 ;;
-  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
-esac
-STUB
-chmod +x "${_cm10_stub_dir}/docker"
+# No labels at all — simulates a legacy container with no
+# rc.auth.credential-mounts label.
+_write_msb_inspect_stub "$_cm10_stub_dir"
 
 _cm10_exit=0
 set +e
@@ -832,16 +852,10 @@ auth:
     pi: none"   # current effective: claude=real (default), pi=none
 
 _cm17_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm17-stub-XXXXXX")
-cat > "${_cm17_stub_dir}/docker" <<'STUB'
-#!/usr/bin/env bash
-case " $* " in
-  *"rc.auth.credential-mounts.claude"*) echo "real"; exit 0 ;;
-  *"rc.auth.credential-mounts.pi"*) echo "real"; exit 0 ;;
-  *"rc.auth.credential-mounts"*) echo "real"; exit 0 ;;
-  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
-esac
-STUB
-chmod +x "${_cm17_stub_dir}/docker"
+_write_msb_inspect_stub "$_cm17_stub_dir" \
+  "rc.auth.credential-mounts=real" \
+  "rc.auth.credential-mounts.claude=real" \
+  "rc.auth.credential-mounts.pi=real"
 
 _cm17_err="" _cm17_exit=0
 set +e
@@ -881,18 +895,9 @@ teardown_sandbox
 # claude's effective value then flips, resume DOES refuse, naming "claude".
 # ---------------------------------------------------------------------------
 _cm18_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm18-stub-XXXXXX")
-cat > "${_cm18_stub_dir}/docker" <<'STUB'
-#!/usr/bin/env bash
-case " $* " in
-  # Legacy container: per-tool labels are absent (empty), only the global
-  # label was ever set (to "real").
-  *"rc.auth.credential-mounts.claude"*) echo ""; exit 0 ;;
-  *"rc.auth.credential-mounts.pi"*) echo ""; exit 0 ;;
-  *"rc.auth.credential-mounts"*) echo "real"; exit 0 ;;
-  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
-esac
-STUB
-chmod +x "${_cm18_stub_dir}/docker"
+# Legacy container: per-tool labels are absent (empty, so omitted), only the
+# global label was ever set (to "real").
+_write_msb_inspect_stub "$_cm18_stub_dir" "rc.auth.credential-mounts=real"
 
 # Sub-case A: no .rip-cage.yaml at all -> both tools inherit "real" -> matches
 # the legacy global label -> resume clean (exit 0).
@@ -964,14 +969,7 @@ _cm19_stored_fp=$(HOME="$TEST_HOME" bash -c "
 ")
 
 _cm19_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm19-stub-XXXXXX")
-cat > "${_cm19_stub_dir}/docker" <<STUB
-#!/usr/bin/env bash
-case " \$* " in
-  *"rc.symlink-follow-fingerprint"*) echo "${_cm19_stored_fp}"; exit 0 ;;
-  *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
-esac
-STUB
-chmod +x "${_cm19_stub_dir}/docker"
+_write_msb_inspect_stub "$_cm19_stub_dir" "rc.symlink-follow-fingerprint=${_cm19_stored_fp}"
 
 _cm19_exit=0
 set +e
@@ -1009,14 +1007,7 @@ _cm20_stored_fp=$(HOME="$TEST_HOME" bash -c "
 ")
 
 _cm20_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm20-stub-XXXXXX")
-cat > "${_cm20_stub_dir}/docker" <<STUB
-#!/usr/bin/env bash
-case " \$* " in
-  *"rc.symlink-follow-fingerprint"*) echo "${_cm20_stored_fp}"; exit 0 ;;
-  *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
-esac
-STUB
-chmod +x "${_cm20_stub_dir}/docker"
+_write_msb_inspect_stub "$_cm20_stub_dir" "rc.symlink-follow-fingerprint=${_cm20_stored_fp}"
 
 _cm20_err="" _cm20_exit=0
 set +e
@@ -1067,14 +1058,7 @@ _cm21_stored_fp=$(HOME="$TEST_HOME" bash -c "
 ")
 
 _cm21_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm21-stub-XXXXXX")
-cat > "${_cm21_stub_dir}/docker" <<STUB
-#!/usr/bin/env bash
-case " \$* " in
-  *"rc.symlink-follow-fingerprint"*) echo "${_cm21_stored_fp}"; exit 0 ;;
-  *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
-esac
-STUB
-chmod +x "${_cm21_stub_dir}/docker"
+_write_msb_inspect_stub "$_cm21_stub_dir" "rc.symlink-follow-fingerprint=${_cm21_stored_fp}"
 
 _cm21_exit=0
 set +e
