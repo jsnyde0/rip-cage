@@ -10,15 +10,19 @@ fi
 # even when rc is invoked via a symlink (e.g., /usr/local/bin/rc -> .../rip-cage/rc)
 #
 # Uses ${BASH_SOURCE[0]:-$0}, not bare $0 (rip-cage-gto1 decomposition fix):
-# for EXECUTED invocation (direct, symlink, or `bash -s --` piped-exec with
-# BASH_SOURCE empty) these are byte-identical, so this is a no-op there. It
-# only differs when rc is SOURCED from another script -- $0 would then be the
-# SOURCING script's own path, not rc's, which used to be harmless (SCRIPT_DIR
-# was only dereferenced inside functions at call time) but became load-bearing
-# once the shim itself needs a correct SCRIPT_DIR to `source` cli/lib + cli/
-# modules at SOURCE time (rc:cli-module-sourcing below). BASH_SOURCE[0] always
-# names the file bash is currently reading (rc's own path), regardless of who
-# sourced it.
+# for DIRECT or symlinked invocation, BASH_SOURCE[0] names rc's own path, same
+# as $0 would -- a no-op there. It differs in two cases: (1) when rc is
+# SOURCED from another script, $0 is the SOURCING script's own path, not
+# rc's -- this used to be harmless (SCRIPT_DIR was only dereferenced inside
+# functions at call time) but became load-bearing once the shim itself needs
+# a correct SCRIPT_DIR to `source` cli/lib + cli/ modules at SOURCE time
+# (rc:cli-module-sourcing below); and (2) under `bash -s --` piped-exec,
+# BASH_SOURCE is empty so this falls back to $0="bash" -- dirname "bash" is
+# ".", so SCRIPT_DIR resolves to the CALLER'S CWD, not rc's own directory.
+# Piped-exec callers (e.g. tests/test-auth-refresh.sh's run_rc) must cd to
+# the repo root themselves before piping if they need SCRIPT_DIR correct.
+# BASH_SOURCE[0] always names the file bash is currently reading (rc's own
+# path) when reading from a real file; it is empty when reading from stdin.
 _resolve_script_dir() {
   local source="${BASH_SOURCE[0]:-$0}"
   while [[ -L "$source" ]]; do
