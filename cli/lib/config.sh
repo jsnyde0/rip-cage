@@ -170,9 +170,31 @@ _config_global_path() {
 }
 
 
-# Returns the canonical default secret-path denylist YAML (single source of
-# truth). Used by both cmd_install (interactive seed) and
-# _config_ensure_global_seeded (auto-seed on first rc up — rip-cage-j86).
+# Returns the canonical default secret-path denylist + curated default
+# egress allowlist YAML (single source of truth). Used by both cmd_install
+# (interactive seed) and _config_ensure_global_seeded (auto-seed on first
+# rc up — rip-cage-j86).
+#
+# network.allowed_hosts (rip-cage-o2h0, S7 of the msb migration epic
+# rip-cage-tsf2, ADR-029 D4): the curated default egress allowlist so a
+# fresh cage isn't denial whack-a-mole. Seeded here, NOT in the
+# network.allowed_hosts schema-default column (cli/lib/config.sh's
+# _config_schema_lines, which stays "[]") — mirrors the exact pattern
+# mounts.denylist already uses above: the schema column is the inert
+# no-config-at-all fallback, the curated CONTENT lives only in this
+# function and is realized via the auto-seeded global config.yaml.
+#
+# Contents (discovered + proven live in the rip-cage-1ujn spike,
+# docs/2026-07-09-msb-spike-session-resume.md, Q1 host-discovery):
+#   - api.anthropic.com               hard requirement: a basic `claude -p`
+#                                      turn fails without it
+#   - mcp-proxy.anthropic.com         attempted-but-nonblocking (MCP
+#                                      marketplace/proxy check) — included
+#                                      so a denial-driven repair-loop trip
+#                                      never fires on it (denial-log-noise-
+#                                      free defaults, ADR-029 D4)
+#   - http-intake.logs.us5.datadoghq.com  attempted-but-nonblocking (client
+#                                      telemetry) — same rationale
 _config_default_global_yaml() {
   cat <<'YAML'
 version: 1
@@ -195,6 +217,11 @@ mounts:
     - private_key
     - .secret
   allow_risky: null
+network:
+  allowed_hosts:
+    - api.anthropic.com
+    - mcp-proxy.anthropic.com
+    - http-intake.logs.us5.datadoghq.com
 YAML
 }
 
