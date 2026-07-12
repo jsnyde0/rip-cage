@@ -1,4 +1,4 @@
 version: 99
-ssh:
+network:
   allowed_hosts:
     - newhost.example

@@ -63,9 +63,14 @@ teardown_sandbox() {
 
 # run_full_chain — replicates cmd_up's create-path helper sequence
 # (rc:5136-5408) verbatim in call order, using simple/deterministic flag
-# values (ssh_config=off, egress=on, no mediator/dcg config) so no docker
-# call and no host-git-identity leakage occurs. Prints the final
-# _UP_RUN_ARGS array, one entry per line.
+# values (egress=on, no mediator/dcg config) so no docker call and no
+# host-git-identity leakage occurs. Prints the final _UP_RUN_ARGS array, one
+# entry per line.
+#
+# ssh-cluster call sites (_resolve_github_identity, _resolve_github_identity_source,
+# _up_resolve_ssh_allowlists, rc.ssh-config / rc.ssh-key-filter / rc.github-identity
+# labels, rc_ssh_config / rc_forward_ssh flags) retired at the msb cutover
+# (ADR-029 D3, rip-cage-f1qo S5) and removed from this replica to match.
 run_full_chain() {
   RC_SKIP_KEYCHAIN_EXTRACTION=1 HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_ALLOWED_ROOTS="$TEST_WS" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
@@ -74,14 +79,11 @@ run_full_chain() {
     cd '$TEST_HOME'
     path='$TEST_WS'
     name='chain-test-cage'
-    rc_github_identity_flag=''
-    rc_ssh_config='off'
     rc_egress='on'
     rc_allow_config_override=''
     rc_cpus='2'
     rc_memory='4g'
     rc_pids_limit='500'
-    rc_forward_ssh='off'
     port=''
     env_file=''
     wt_detected=false wt_name= wt_main_git=
@@ -90,32 +92,15 @@ run_full_chain() {
     _UP_RUN_ARGS+=(-d --name \"\$name\")
     _UP_RUN_ARGS+=(--label \"rc.source.path=\$path\")
 
-    _resolved_github_identity=\$(_resolve_github_identity \"\$rc_github_identity_flag\" '' \"\$path\")
-    if [[ -n \"\$_resolved_github_identity\" ]]; then
-      _UP_RUN_ARGS+=(--label \"rc.github-identity=\$_resolved_github_identity\")
-    fi
-    _resolve_github_identity_source \"\$rc_github_identity_flag\" '' '' \"\$rc_ssh_config\"
-
-    _rc_ssh_cache_dir=\"\${HOME}/.cache/rip-cage/\${name}\"
-    _rc_ssh_cfg=\"\${_rc_ssh_cache_dir}/ssh-config\"
-    mkdir -p \"\$_rc_ssh_cache_dir\"
-
-    _UP_SSH_FILTER_ACTIVE=false
-    _up_resolve_ssh_allowlists \"\$path\" \"\$_rc_ssh_cache_dir\"
+    _rc_cache_dir=\"\${HOME}/.cache/rip-cage/\${name}\"
+    mkdir -p \"\$_rc_cache_dir\"
 
     if [[ \"\$rc_egress\" != off ]]; then
-      _up_resolve_egress_rules \"\$path\" \"\$_rc_ssh_cache_dir\"
+      _up_resolve_egress_rules \"\$path\" \"\$_rc_cache_dir\"
     fi
 
     _UP_DCG_CONFIG_PATH=''
-    _up_resolve_dcg_config \"\$path\" \"\$_rc_ssh_cache_dir\" || exit 1
-
-    _UP_RUN_ARGS+=(--label \"rc.ssh-config=\${rc_ssh_config}\")
-    if [[ \"\${_UP_SSH_FILTER_ACTIVE:-false}\" == true ]]; then
-      _UP_RUN_ARGS+=(--label 'rc.ssh-key-filter=on')
-    else
-      _UP_RUN_ARGS+=(--label 'rc.ssh-key-filter=off')
-    fi
+    _up_resolve_dcg_config \"\$path\" \"\$_rc_cache_dir\" || exit 1
 
     _UP_CREDENTIAL_MOUNTS='real'
     _UP_CRED_MOUNTS_CLAUDE='real'
@@ -143,7 +128,7 @@ run_full_chain() {
       env_file=\"\$_UP_PLACEHOLDER_ENV_FILE\"
     fi
 
-    _up_prepare_environment \"\$path\" \"\$port\" \"\$env_file\" \"\$rc_cpus\" \"\$rc_memory\" \"\$rc_pids_limit\" \"\$rc_egress\" \"\$rc_forward_ssh\"
+    _up_prepare_environment \"\$path\" \"\$port\" \"\$env_file\" \"\$rc_cpus\" \"\$rc_memory\" \"\$rc_pids_limit\"
 
     if [[ \"\$rc_egress\" != off ]]; then
       _UP_RUN_ARGS+=(--label \"rc.egress.mode=\${_UP_EGRESS_MODE:-legacy}\")
@@ -152,12 +137,8 @@ run_full_chain() {
     fi
     _UP_RUN_ARGS+=(--label \"rc.egress.config-override=\${rc_allow_config_override:-false}\")
 
-    if [[ \"\$rc_ssh_config\" == on ]]; then
-      _build_ssh_mount_args_with_posture \"\$_rc_ssh_cfg\" \"\$name\" _UP_RUN_ARGS on
-    fi
-
     if [[ \"\$rc_egress\" != off ]]; then
-      _egress_rules_cache=\"\${_rc_ssh_cache_dir}/egress-rules.yaml\"
+      _egress_rules_cache=\"\${_rc_cache_dir}/egress-rules.yaml\"
       _UP_RUN_ARGS+=(--mount \"type=bind,src=\${_egress_rules_cache},dst=/etc/rip-cage/egress-rules.yaml,ro\")
     fi
 

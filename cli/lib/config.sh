@@ -12,8 +12,10 @@
 # behavior), and exposes the effective config + provenance to consumers.
 #
 # Substrate-only: no behavior change in cage posture when both files absent
-# (D5). Downstream consumers (rip-cage-b0c SSH allowlist, etc.) interpret the
-# effective config; this module only loads, merges, validates, and reports.
+# (D5). Downstream consumers (the egress allowlist, mount policy, etc.)
+# interpret the effective config; this module only loads, merges, validates,
+# and reports. (The ssh.allowed_hosts/allowed_keys consumer, ADR-022,
+# retired at the msb cutover — ADR-029 D3 / rip-cage-f1qo S5.)
 # ============================================================================
 
 # Schema — single source of truth for field types and defaults.
@@ -30,8 +32,6 @@
 _config_schema_lines() {
   cat <<'EOF'
 version|scalar|1
-ssh.allowed_keys|selection_list|null
-ssh.allowed_hosts|additive_list|[]
 mounts.denylist|additive_list|[]
 mounts.allow_risky|selection_list|null
 mounts.config_mode|selection_list|"ro"|ro,rw
@@ -678,8 +678,8 @@ _config_validate_or_abort() {
 
 
 # Path to the per-container "applied config" snapshot. Written at cmd_up
-# create-time, resume-time (after _up_resolve_ssh_allowlists), and after
-# cmd_reload. Compared against live effective config by both cmd_reload
+# create-time and after cmd_reload. Compared against live effective config by
+# both cmd_reload
 # (to decide what changed) and _config_emit_hint (to suppress false-positive
 # drift hints once a reload has been applied — labels are immutable post-create
 # so a sha-only check would warn forever).
@@ -690,10 +690,9 @@ _config_applied_path() {
 
 
 # Write the snapshot. Caller passes the effective-config JSON object as $2
-# (the {ssh:{...}, egress:..., etc.} subtree — same shape as `.config` from
+# (the {network:{...}, egress:..., etc.} subtree — same shape as `.config` from
 # _load_effective_config). Truncate-then-write to preserve inode (rip-cage-rx8
-# recipe: never mv-into-place, the parent dir is not bind-mounted but we keep
-# the same semantics for consistency with the known_hosts cache neighbour).
+# recipe: never mv-into-place, the parent dir is not bind-mounted).
 _config_write_applied() {
   local cname="$1" cfg_json="$2"
   local path

@@ -111,9 +111,6 @@ cmd_auth_refresh() {
     return 0
   fi
   if _extract_credentials; then
-    # ADR-020 D6: refresh the identity-map cache timestamp so 24h TTL resets.
-    # This prevents a cache miss on the next rc up immediately after auth refresh.
-    _identity_cache_touch_all
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       jq -nc '{"status": "ok", "action": "credentials_refreshed", "credentials_updated": true}'
     else

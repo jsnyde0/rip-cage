@@ -1764,7 +1764,7 @@ _manifest_generate_shell_init_zshrc_steps() {
 # install=build-time, start=init-time). This generator base64-encodes the JSON
 # config and emits a Dockerfile RUN step that decodes + writes it.
 # init-rip-cage.sh reads /etc/rip-cage/daemon-config.json at startup to start
-# each daemon via the ssh-agent-filter-precedent (fork + PID-file + fail-warn).
+# each daemon via a fork + PID-file + fail-warn supervisor pattern.
 #
 # D8 byte-for-byte contract: when the default manifest is in effect (no
 # IN-CAGE-DAEMON entries), this function emits NOTHING.

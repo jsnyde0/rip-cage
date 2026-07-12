@@ -1,29 +1,48 @@
 #!/usr/bin/env bash
-# Host-side tests for `rc reload <cage>` (rip-cage-ocn / ADR-022 D6).
+# Host-side tests for `rc reload <cage>` (rip-cage-ocn / ADR-022 D6, carried
+# forward past the ssh-cluster retirement per ADR-029 D3/D4 -- the `rc
+# reload` verb itself, the refuse-loud taxonomy, and the applied-config
+# snapshot machinery all survive; only the ssh.allowed_hosts-specific
+# content (known_hosts cache re-filtering, ssh.allowed_keys mount-shape
+# lock) retired with the rest of the ssh cluster, rip-cage-f1qo S5).
 #
-# Coverage (matches design doc 2026-05-13-rc-reload-design.md test plan):
-#   C1   Happy path — change allowed_hosts, rc reload re-filters cache in place
-#   C2   No-op — no yaml change, exit 0, file mtime unchanged
-#   C3   Refuse-loud, allowed_keys CONTENT change → exit 1
-#   C4   Refuse-loud, allowed_keys MOUNT-SHAPE change (null↔non-null) → exit 1
-#   C5   Refuse-loud, other field (egress.mode) → exit 1
-#   C6   --dry-run prints diff, does NOT mutate cache or snapshot
-#   C7   Stopped cage → exit 2
-#   C8   Inode preservation across reload (rip-cage-rx8 regression guard)
-#   C9   Concurrent reload — second invocation gets exit 3 via mkdir lock
-#   C10  Drift-hint suppression — post-reload _config_emit_hint silent on
+# Reload-eligible content today is network.allowed_hosts / network.mode
+# (the egress allowlist, cli/allowlist.sh's domain -- unaffected by the ssh
+# retirement). Fixtures/assertions below were re-pointed from ssh.* to
+# network.* to match. `rc reload` for network.* fields currently only
+# updates the applied-config snapshot + refuses/diffs -- it does NOT
+# re-apply a live in-cage effect (the old known_hosts cache-file rewrite
+# mechanism retired with ssh; net-rule re-application onto a running msb
+# sandbox is deferred to S6's snapshot-amend lifecycle work, per
+# cli/reload.sh's own comment). Tests that asserted the retired cache-file
+# side effect (inode/mode preservation) were re-pointed to the
+# config-applied.json snapshot file instead, which _config_write_applied
+# truncate-writes with the exact same rip-cage-rx8 inode-preserving idiom.
+#
+# Coverage:
+#   C1   Happy path — network.allowed_hosts change → reload applies (exit
+#        0, diff printed, snapshot updated to live)
+#   C2   No-op — no yaml change, exit 0, snapshot file mtime unchanged
+#   C3   Refuse-loud, other field (egress.mode) → exit 1
+#   C4   --dry-run prints diff, does NOT mutate the snapshot
+#   C5   Stopped cage → exit 2
+#   C6   Inode preservation across reload (rip-cage-rx8 regression guard,
+#        applied-config snapshot file)
+#   C7   Concurrent reload — second invocation gets exit 3 via mkdir lock
+#   C8   Drift-hint suppression — post-reload _config_emit_hint silent on
 #        eligible-only delta
-#   C11  Drift-hint still warns on non-eligible delta after reload
-#   C12  Cache file mode preserved across reload (0644 stays 0644)
-#   C13  In-cage invocation negative test — rc not on cage PATH
-#   C14  Drift-hint silent when snapshot pre-dates session.multiplexer field
+#   C9   Drift-hint still warns on non-eligible delta after reload
+#   C10  Snapshot file mode preserved across reload (0644 stays 0644)
+#   C11  Drift-hint silent when snapshot pre-dates session.multiplexer field
 #        (absent-in-snapshot + live==schema-default → non-drift, rip-cage-1f59.9)
-#   C15  Generality: same absent-default suppression for mounts.symlinks.scope
+#   C12  Generality: same absent-default suppression for mounts.symlinks.scope
+#   C13  In-cage invocation negative test — rc not on cage PATH
 #
-# Tests stub `docker` via PATH shim so no real docker is required for C1-C12, C14-C15.
+# Tests stub `docker` via PATH shim so no real docker is required for C1-C12.
 # C13 is docker-conditional (requires rip-cage:latest image).
 #
-# ADRs: ADR-022 D6 (rc reload), ADR-021 (layered config), rip-cage-rx8 (inode)
+# ADRs: ADR-022 D6 (rc reload origin), ADR-029 D3/D4 (ssh-cluster retirement
+# + carry-forward), ADR-021 (layered config), rip-cage-rx8 (inode)
 
 set -uo pipefail
 
@@ -94,17 +113,11 @@ setup_sandbox() {
   CNAME="rc-reload-test"
   CACHE_DIR="${TEST_HOME}/.cache/rip-cage/${CNAME}"
   STUB_DIR="${TEST_HOME}/stub"
-  mkdir -p "$WS" "$CACHE_DIR" "$STUB_DIR" "${TEST_HOME}/.ssh"
+  mkdir -p "$WS" "$CACHE_DIR" "$STUB_DIR"
 
   if [[ -n "$fixture" ]]; then
     cp "${SCRIPT_DIR}/fixtures/${fixture}" "${WS}/.rip-cage.yaml"
   fi
-  # Seed host known_hosts with a representative set so the filter has data.
-  cat > "${TEST_HOME}/.ssh/known_hosts" <<'KH'
-github.com ssh-ed25519 AAAAfakegithubkey
-switch.berlin ssh-ed25519 AAAAfakeswitchkey
-example.org ssh-ed25519 AAAAfakeexamplekey
-KH
 }
 
 teardown_sandbox() {
@@ -130,242 +143,244 @@ write_snapshot() {
 }
 
 # ---------------------------------------------------------------------------
-# C1: Happy path — allowed_hosts: [switch.berlin] → reload applies, cache reflects
+# C1: Happy path — network.allowed_hosts: [switch.berlin] → reload applies
+# (snapshot updated to live; diff printed the added host).
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-allowed-hosts-only.yaml"
+setup_sandbox "config-project-network-allowed-hosts.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-# Pre-state: snapshot has empty allowed_hosts (so live=[switch.berlin] is a delta)
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
-# Pre-state: filter cache file (empty — bypass closed by default)
-: > "${CACHE_DIR}/known_hosts"
+# Pre-state: snapshot has empty network.allowed_hosts (so live=[switch.berlin] is a delta)
+write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 c1_out=$(run_rc reload "$CNAME" 2>&1)
 c1_exit=$?
 c1_ok=true c1_reason=""
 [[ "$c1_exit" -ne 0 ]] && c1_ok=false && c1_reason="rc reload exited $c1_exit (want 0). Output: $c1_out"
-if ! grep -q "switch.berlin" "${CACHE_DIR}/known_hosts" 2>/dev/null; then
-  c1_ok=false; c1_reason="${c1_reason:+$c1_reason; }cache does not contain switch.berlin"
-fi
+echo "$c1_out" | grep -q "switch.berlin" || { c1_ok=false; c1_reason="${c1_reason:+$c1_reason; }diff didn't mention switch.berlin"; }
 # Snapshot was updated to live
-if ! jq -e '.ssh.allowed_hosts | index("switch.berlin")' "${CACHE_DIR}/config-applied.json" >/dev/null 2>&1; then
+if ! jq -e '.network.allowed_hosts | index("switch.berlin")' "${CACHE_DIR}/config-applied.json" >/dev/null 2>&1; then
   c1_ok=false; c1_reason="${c1_reason:+$c1_reason; }snapshot not updated to live"
 fi
-if [[ "$c1_ok" == "true" ]]; then pass 1 "happy path: rc reload applies allowed_hosts to cache"
+if [[ "$c1_ok" == "true" ]]; then pass 1 "happy path: rc reload applies network.allowed_hosts, snapshot updated"
 else fail 1 "happy path" "$c1_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# C2: No-op — snapshot already matches live, exit 0, cache file untouched
+# C2: No-op — snapshot already matches live, exit 0, snapshot mtime unchanged
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-allowed-hosts-only.yaml"
+setup_sandbox "config-project-network-allowed-hosts.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-# Snapshot matches live (allowed_hosts=[switch.berlin])
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
-echo "switch.berlin ssh-ed25519 AAAA" > "${CACHE_DIR}/known_hosts"
-c2_pre_mtime=$(stat -c %Y "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %m "${CACHE_DIR}/known_hosts")
+# Snapshot matches live (network.allowed_hosts=[switch.berlin])
+write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+c2_pre_mtime=$(stat -c %Y "${CACHE_DIR}/config-applied.json" 2>/dev/null || stat -f %m "${CACHE_DIR}/config-applied.json")
 sleep 1  # ensure measurable mtime delta if mutation happens
 
 c2_out=$(run_rc reload "$CNAME" 2>&1)
 c2_exit=$?
-c2_post_mtime=$(stat -c %Y "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %m "${CACHE_DIR}/known_hosts")
+c2_post_mtime=$(stat -c %Y "${CACHE_DIR}/config-applied.json" 2>/dev/null || stat -f %m "${CACHE_DIR}/config-applied.json")
 c2_ok=true c2_reason=""
 [[ "$c2_exit" -ne 0 ]] && c2_ok=false && c2_reason="exit $c2_exit"
-[[ "$c2_post_mtime" -ne "$c2_pre_mtime" ]] && c2_ok=false && c2_reason="${c2_reason:+$c2_reason; }cache file was rewritten"
+[[ "$c2_post_mtime" -ne "$c2_pre_mtime" ]] && c2_ok=false && c2_reason="${c2_reason:+$c2_reason; }snapshot was rewritten"
 echo "$c2_out" | grep -qi "no changes" || { c2_ok=false; c2_reason="${c2_reason:+$c2_reason; }no 'no changes' message"; }
 if [[ "$c2_ok" == "true" ]]; then pass 2 "no-op: rc reload silent on identical config"
 else fail 2 "no-op" "$c2_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# C3: Refuse-loud, allowed_keys content change → exit 1
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-allowed-keys-one.yaml"
-make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-# Snapshot has different allowed_keys content (same shape: array, but different list)
-write_snapshot '{"version":1,"ssh":{"allowed_keys":["different_key.pub"],"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
-
-c3_out=$(run_rc reload "$CNAME" 2>&1)
-c3_exit=$?
-c3_ok=true c3_reason=""
-[[ "$c3_exit" -ne 1 ]] && c3_ok=false && c3_reason="exit $c3_exit (want 1)"
-echo "$c3_out" | grep -q "allowed_keys" || { c3_ok=false; c3_reason="${c3_reason:+$c3_reason; }error doesn't name allowed_keys"; }
-echo "$c3_out" | grep -q "rc destroy" || { c3_ok=false; c3_reason="${c3_reason:+$c3_reason; }no rc destroy hint"; }
-if [[ "$c3_ok" == "true" ]]; then pass 3 "refuse-loud on allowed_keys content change"
-else fail 3 "refuse allowed_keys content" "$c3_reason"; fi
-teardown_sandbox
-
-# ---------------------------------------------------------------------------
-# C4: Refuse-loud, allowed_keys mount-shape change (null → [key]) → exit 1
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-allowed-keys-one.yaml"  # live: allowed_keys=[...] (non-null)
-make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'  # snapshot: null
-
-c4_out=$(run_rc reload "$CNAME" 2>&1)
-c4_exit=$?
-c4_ok=true c4_reason=""
-[[ "$c4_exit" -ne 1 ]] && c4_ok=false && c4_reason="exit $c4_exit (want 1)"
-echo "$c4_out" | grep -q "allowed_keys" || { c4_ok=false; c4_reason="${c4_reason:+$c4_reason; }error doesn't name allowed_keys"; }
-if [[ "$c4_ok" == "true" ]]; then pass 4 "refuse-loud on allowed_keys mount-shape (null↔non-null)"
-else fail 4 "refuse mount-shape" "$c4_reason"; fi
-teardown_sandbox
-
-# ---------------------------------------------------------------------------
-# C5: Refuse-loud, non-eligible field (synthetic egress.mode delta) → exit 1
+# C3: Refuse-loud, non-eligible field (synthetic egress.mode delta) → exit 1
 # Build a fixture inline since there's no egress-mode fixture in /fixtures.
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 setup_sandbox ""
 cat > "${WS}/.rip-cage.yaml" <<'YML'
 version: 1
-ssh:
+network:
   allowed_hosts: []
 YML
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Snapshot has a synthetic field NOT in the live config — diff reports it.
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+
+c3_out=$(run_rc reload "$CNAME" 2>&1)
+c3_exit=$?
+c3_ok=true c3_reason=""
+[[ "$c3_exit" -ne 1 ]] && c3_ok=false && c3_reason="exit $c3_exit (want 1)"
+echo "$c3_out" | grep -q "egress" || { c3_ok=false; c3_reason="${c3_reason:+$c3_reason; }error doesn't name egress"; }
+echo "$c3_out" | grep -q "rc destroy" || { c3_ok=false; c3_reason="${c3_reason:+$c3_reason; }no rc destroy hint"; }
+if [[ "$c3_ok" == "true" ]]; then pass 3 "refuse-loud on non-eligible field (egress)"
+else fail 3 "refuse non-eligible" "$c3_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# C4: --dry-run prints diff, does NOT mutate the snapshot
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox "config-project-network-allowed-hosts.yaml"
+make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
+write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+c4_pre_snap_sum=$(shasum "${CACHE_DIR}/config-applied.json" | awk '{print $1}')
+
+c4_out=$(run_rc reload "$CNAME" --dry-run 2>&1)
+c4_exit=$?
+c4_post_snap_sum=$(shasum "${CACHE_DIR}/config-applied.json" | awk '{print $1}')
+c4_ok=true c4_reason=""
+[[ "$c4_exit" -ne 0 ]] && c4_ok=false && c4_reason="exit $c4_exit"
+[[ "$c4_pre_snap_sum" != "$c4_post_snap_sum" ]] && c4_ok=false && c4_reason="${c4_reason:+$c4_reason; }snapshot was mutated"
+echo "$c4_out" | grep -qi "dry-run" || { c4_ok=false; c4_reason="${c4_reason:+$c4_reason; }no dry-run notice"; }
+echo "$c4_out" | grep -q "switch.berlin" || { c4_ok=false; c4_reason="${c4_reason:+$c4_reason; }diff didn't mention added host"; }
+if [[ "$c4_ok" == "true" ]]; then pass 4 "--dry-run: prints diff, no mutation"
+else fail 4 "dry-run" "$c4_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# C5: Stopped cage → exit 2
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox "config-project-network-allowed-hosts.yaml"
+make_docker_stub "$STUB_DIR" "$CNAME" "exited" "$WS"
+write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 c5_out=$(run_rc reload "$CNAME" 2>&1)
 c5_exit=$?
 c5_ok=true c5_reason=""
-[[ "$c5_exit" -ne 1 ]] && c5_ok=false && c5_reason="exit $c5_exit (want 1)"
-echo "$c5_out" | grep -q "egress" || { c5_ok=false; c5_reason="${c5_reason:+$c5_reason; }error doesn't name egress"; }
-if [[ "$c5_ok" == "true" ]]; then pass 5 "refuse-loud on non-eligible field (egress)"
-else fail 5 "refuse non-eligible" "$c5_reason"; fi
+[[ "$c5_exit" -ne 2 ]] && c5_ok=false && c5_reason="exit $c5_exit (want 2)"
+echo "$c5_out" | grep -q "not running" || { c5_ok=false; c5_reason="${c5_reason:+$c5_reason; }no 'not running' message"; }
+echo "$c5_out" | grep -q "rc up" || { c5_ok=false; c5_reason="${c5_reason:+$c5_reason; }no 'rc up' hint"; }
+if [[ "$c5_ok" == "true" ]]; then pass 5 "stopped cage exits 2"
+else fail 5 "stopped cage" "$c5_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# C6: --dry-run prints diff, does NOT mutate cache or snapshot
+# C6: Inode preservation across reload (rip-cage-rx8 regression guard).
+# Re-pointed from the retired ssh known_hosts cache file to the
+# applied-config snapshot file, which _config_write_applied truncate-writes
+# with the identical inode-preserving idiom (never mv-into-place).
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-allowed-hosts-only.yaml"
+setup_sandbox "config-project-network-allowed-hosts.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
-: > "${CACHE_DIR}/known_hosts"
-c6_pre_kh_mtime=$(stat -c %Y "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %m "${CACHE_DIR}/known_hosts")
-c6_pre_snap_sum=$(shasum "${CACHE_DIR}/config-applied.json" | awk '{print $1}')
-sleep 1
-
-c6_out=$(run_rc reload "$CNAME" --dry-run 2>&1)
-c6_exit=$?
-c6_post_kh_mtime=$(stat -c %Y "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %m "${CACHE_DIR}/known_hosts")
-c6_post_snap_sum=$(shasum "${CACHE_DIR}/config-applied.json" | awk '{print $1}')
-c6_ok=true c6_reason=""
-[[ "$c6_exit" -ne 0 ]] && c6_ok=false && c6_reason="exit $c6_exit"
-[[ "$c6_pre_kh_mtime" -ne "$c6_post_kh_mtime" ]] && c6_ok=false && c6_reason="${c6_reason:+$c6_reason; }cache was mutated"
-[[ "$c6_pre_snap_sum" != "$c6_post_snap_sum" ]] && c6_ok=false && c6_reason="${c6_reason:+$c6_reason; }snapshot was mutated"
-echo "$c6_out" | grep -qi "dry-run" || { c6_ok=false; c6_reason="${c6_reason:+$c6_reason; }no dry-run notice"; }
-echo "$c6_out" | grep -q "switch.berlin" || { c6_ok=false; c6_reason="${c6_reason:+$c6_reason; }diff didn't mention added host"; }
-if [[ "$c6_ok" == "true" ]]; then pass 6 "--dry-run: prints diff, no mutation"
-else fail 6 "dry-run" "$c6_reason"; fi
-teardown_sandbox
-
-# ---------------------------------------------------------------------------
-# C7: Stopped cage → exit 2
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-allowed-hosts-only.yaml"
-make_docker_stub "$STUB_DIR" "$CNAME" "exited" "$WS"
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
-
-c7_out=$(run_rc reload "$CNAME" 2>&1)
-c7_exit=$?
-c7_ok=true c7_reason=""
-[[ "$c7_exit" -ne 2 ]] && c7_ok=false && c7_reason="exit $c7_exit (want 2)"
-echo "$c7_out" | grep -q "not running" || { c7_ok=false; c7_reason="${c7_reason:+$c7_reason; }no 'not running' message"; }
-echo "$c7_out" | grep -q "rc up" || { c7_ok=false; c7_reason="${c7_reason:+$c7_reason; }no 'rc up' hint"; }
-if [[ "$c7_ok" == "true" ]]; then pass 7 "stopped cage exits 2"
-else fail 7 "stopped cage" "$c7_reason"; fi
-teardown_sandbox
-
-# ---------------------------------------------------------------------------
-# C8: Inode preservation across reload (rip-cage-rx8 regression guard)
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-allowed-hosts-only.yaml"
-make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
-: > "${CACHE_DIR}/known_hosts"
-c8_pre_inode=$(stat -c %i "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %i "${CACHE_DIR}/known_hosts")
+write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+c6_pre_inode=$(stat -c %i "${CACHE_DIR}/config-applied.json" 2>/dev/null || stat -f %i "${CACHE_DIR}/config-applied.json")
 
 run_rc reload "$CNAME" >/dev/null 2>&1
-c8_exit=$?
-c8_post_inode=$(stat -c %i "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %i "${CACHE_DIR}/known_hosts")
-c8_ok=true c8_reason=""
-[[ "$c8_exit" -ne 0 ]] && c8_ok=false && c8_reason="exit $c8_exit"
-[[ "$c8_pre_inode" != "$c8_post_inode" ]] && c8_ok=false && c8_reason="${c8_reason:+$c8_reason; }inode changed ($c8_pre_inode → $c8_post_inode)"
-if [[ "$c8_ok" == "true" ]]; then pass 8 "inode preserved across reload (rip-cage-rx8)"
-else fail 8 "inode preservation" "$c8_reason"; fi
+c6_exit=$?
+c6_post_inode=$(stat -c %i "${CACHE_DIR}/config-applied.json" 2>/dev/null || stat -f %i "${CACHE_DIR}/config-applied.json")
+c6_ok=true c6_reason=""
+[[ "$c6_exit" -ne 0 ]] && c6_ok=false && c6_reason="exit $c6_exit"
+[[ "$c6_pre_inode" != "$c6_post_inode" ]] && c6_ok=false && c6_reason="${c6_reason:+$c6_reason; }inode changed ($c6_pre_inode → $c6_post_inode)"
+if [[ "$c6_ok" == "true" ]]; then pass 6 "inode preserved across reload (rip-cage-rx8, applied-config snapshot)"
+else fail 6 "inode preservation" "$c6_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# C9: Concurrent reload — second invocation gets exit 3 via mkdir lock
+# C7: Concurrent reload — second invocation gets exit 3 via mkdir lock
 # Strategy: pre-create the lock dir; rc reload should refuse loud.
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-allowed-hosts-only.yaml"
+setup_sandbox "config-project-network-allowed-hosts.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 # Pre-create the lock dir (simulates a concurrent reload holding it)
 mkdir -p "${CACHE_DIR}/.reload.lock.d"
 
-c9_out=$(run_rc reload "$CNAME" 2>&1)
-c9_exit=$?
+c7_out=$(run_rc reload "$CNAME" 2>&1)
+c7_exit=$?
 # Clean up
 rmdir "${CACHE_DIR}/.reload.lock.d" 2>/dev/null
 
-c9_ok=true c9_reason=""
-[[ "$c9_exit" -ne 3 ]] && c9_ok=false && c9_reason="exit $c9_exit (want 3)"
-echo "$c9_out" | grep -q "in progress" || { c9_ok=false; c9_reason="${c9_reason:+$c9_reason; }no 'in progress' message"; }
-if [[ "$c9_ok" == "true" ]]; then pass 9 "concurrent reload: second exits 3 (mkdir-lock contention)"
-else fail 9 "concurrent reload" "$c9_reason"; fi
+c7_ok=true c7_reason=""
+[[ "$c7_exit" -ne 3 ]] && c7_ok=false && c7_reason="exit $c7_exit (want 3)"
+echo "$c7_out" | grep -q "in progress" || { c7_ok=false; c7_reason="${c7_reason:+$c7_reason; }no 'in progress' message"; }
+if [[ "$c7_ok" == "true" ]]; then pass 7 "concurrent reload: second exits 3 (mkdir-lock contention)"
+else fail 7 "concurrent reload" "$c7_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# C10: Drift-hint suppression — _config_emit_hint silent after reload-eligible delta
+# C8: Drift-hint suppression — _config_emit_hint silent after reload-eligible delta
 # Source rc to call _config_emit_hint directly; stub docker to return no label.
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-allowed-hosts-only.yaml"
+setup_sandbox "config-project-network-allowed-hosts.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Snapshot equals live (post-reload state)
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
-c10_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+c8_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
-c10_exit=$?
+c8_exit=$?
 
-c10_ok=true c10_reason=""
-[[ "$c10_exit" -ne 0 ]] && c10_ok=false && c10_reason="emit_hint exit $c10_exit"
+c8_ok=true c8_reason=""
+[[ "$c8_exit" -ne 0 ]] && c8_ok=false && c8_reason="emit_hint exit $c8_exit"
 # Should be silent — no output expected when snapshot matches live.
-if [[ -n "$c10_out" ]]; then
-  c10_ok=false; c10_reason="${c10_reason:+$c10_reason; }unexpected output: $c10_out"
+if [[ -n "$c8_out" ]]; then
+  c8_ok=false; c8_reason="${c8_reason:+$c8_reason; }unexpected output: $c8_out"
 fi
-if [[ "$c10_ok" == "true" ]]; then pass 10 "drift-hint silent when snapshot matches live"
-else fail 10 "drift-hint suppression" "$c10_reason"; fi
+if [[ "$c8_ok" == "true" ]]; then pass 8 "drift-hint silent when snapshot matches live"
+else fail 8 "drift-hint suppression" "$c8_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# C11: Drift-hint still warns on non-eligible delta (eligible-fields snapshot
+# C9: Drift-hint still warns on non-eligible delta (eligible-fields snapshot
 #      matches, but a non-eligible field diverges).
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 setup_sandbox ""
 cat > "${WS}/.rip-cage.yaml" <<'YML'
 version: 1
-ssh:
+network:
   allowed_hosts:
     - switch.berlin
 YML
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Snapshot has eligible field aligned (allowed_hosts matches) but a synthetic
 # non-eligible field present that live lacks → drift hint must fire.
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+
+c9_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
+c9_exit=$?
+
+c9_ok=true c9_reason=""
+[[ "$c9_exit" -ne 0 ]] && c9_ok=false && c9_reason="emit_hint exit $c9_exit"
+echo "$c9_out" | grep -q "rc destroy" || { c9_ok=false; c9_reason="${c9_reason:+$c9_reason; }no rc destroy hint"; }
+echo "$c9_out" | grep -qi "egress" || { c9_ok=false; c9_reason="${c9_reason:+$c9_reason; }hint doesn't name egress path"; }
+if [[ "$c9_ok" == "true" ]]; then pass 9 "drift-hint still warns on non-eligible delta"
+else fail 9 "drift-hint non-eligible" "$c9_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# C10: Applied-config snapshot file mode preserved across reload (0644 stays 0644)
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox "config-project-network-allowed-hosts.yaml"
+make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
+write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+chmod 0644 "${CACHE_DIR}/config-applied.json"
+c10_pre_mode=$(stat -c %a "${CACHE_DIR}/config-applied.json" 2>/dev/null || stat -f %Mp%Lp "${CACHE_DIR}/config-applied.json")
+
+run_rc reload "$CNAME" >/dev/null 2>&1
+c10_exit=$?
+c10_post_mode=$(stat -c %a "${CACHE_DIR}/config-applied.json" 2>/dev/null || stat -f %Mp%Lp "${CACHE_DIR}/config-applied.json")
+c10_ok=true c10_reason=""
+[[ "$c10_exit" -ne 0 ]] && c10_ok=false && c10_reason="exit $c10_exit"
+# Don't compare exact form (macOS stat uses 100644, GNU uses 644). Just confirm same.
+[[ "$c10_pre_mode" != "$c10_post_mode" ]] && c10_ok=false && c10_reason="${c10_reason:+$c10_reason; }mode changed ($c10_pre_mode → $c10_post_mode)"
+if [[ "$c10_ok" == "true" ]]; then pass 10 "applied-config snapshot mode preserved across reload"
+else fail 10 "mode preservation" "$c10_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# C11: Drift-hint suppression — snapshot MISSING session.multiplexer (old pre-1f59
+#      snapshot), live config has it at schema default "none" → NO recreate hint.
+#      Tests the general fix: absent-in-snapshot + live==schema-default → non-drift.
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox "config-project-network-allowed-hosts.yaml"
+make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
+# Old snapshot: no session.multiplexer field (written before rip-cage-1f59 landed).
+write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]}}'
 
 c11_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
@@ -373,81 +388,36 @@ c11_exit=$?
 
 c11_ok=true c11_reason=""
 [[ "$c11_exit" -ne 0 ]] && c11_ok=false && c11_reason="emit_hint exit $c11_exit"
-echo "$c11_out" | grep -q "rc destroy" || { c11_ok=false; c11_reason="${c11_reason:+$c11_reason; }no rc destroy hint"; }
-echo "$c11_out" | grep -qi "egress" || { c11_ok=false; c11_reason="${c11_reason:+$c11_reason; }hint doesn't name egress path"; }
-if [[ "$c11_ok" == "true" ]]; then pass 11 "drift-hint still warns on non-eligible delta"
-else fail 11 "drift-hint non-eligible" "$c11_reason"; fi
-teardown_sandbox
-
-# ---------------------------------------------------------------------------
-# C12: Cache file mode preserved across reload (0644 stays 0644)
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-allowed-hosts-only.yaml"
-make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
-: > "${CACHE_DIR}/known_hosts"
-chmod 0644 "${CACHE_DIR}/known_hosts"
-c12_pre_mode=$(stat -c %a "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %Mp%Lp "${CACHE_DIR}/known_hosts")
-
-run_rc reload "$CNAME" >/dev/null 2>&1
-c12_exit=$?
-c12_post_mode=$(stat -c %a "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %Mp%Lp "${CACHE_DIR}/known_hosts")
-c12_ok=true c12_reason=""
-[[ "$c12_exit" -ne 0 ]] && c12_ok=false && c12_reason="exit $c12_exit"
-# Don't compare exact form (macOS stat uses 100644, GNU uses 644). Just confirm same.
-[[ "$c12_pre_mode" != "$c12_post_mode" ]] && c12_ok=false && c12_reason="${c12_reason:+$c12_reason; }mode changed ($c12_pre_mode → $c12_post_mode)"
-if [[ "$c12_ok" == "true" ]]; then pass 12 "cache file mode preserved across reload"
-else fail 12 "mode preservation" "$c12_reason"; fi
-teardown_sandbox
-
-# ---------------------------------------------------------------------------
-# C14: Drift-hint suppression — snapshot MISSING session.multiplexer (old pre-1f59
-#      snapshot), live config has it at schema default "none" → NO recreate hint.
-#      Tests the general fix: absent-in-snapshot + live==schema-default → non-drift.
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-allowed-hosts-only.yaml"
-make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-# Old snapshot: no session.multiplexer field (written before rip-cage-1f59 landed).
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]}}'
-
-c14_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-  bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
-c14_exit=$?
-
-c14_ok=true c14_reason=""
-[[ "$c14_exit" -ne 0 ]] && c14_ok=false && c14_reason="emit_hint exit $c14_exit"
 # Must be silent — session.multiplexer absent in snapshot but live==default("none").
-if [[ -n "$c14_out" ]]; then
-  c14_ok=false; c14_reason="${c14_reason:+$c14_reason; }spurious output: $c14_out"
+if [[ -n "$c11_out" ]]; then
+  c11_ok=false; c11_reason="${c11_reason:+$c11_reason; }spurious output: $c11_out"
 fi
-if [[ "$c14_ok" == "true" ]]; then pass 14 "drift-hint silent when only absent-default field added (session.multiplexer)"
-else fail 14 "spurious recreate-hint for absent-default field" "$c14_reason"; fi
+if [[ "$c11_ok" == "true" ]]; then pass 11 "drift-hint silent when only absent-default field added (session.multiplexer)"
+else fail 11 "spurious recreate-hint for absent-default field" "$c11_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# C15: Generality — snapshot MISSING mounts.symlinks.scope (another defaulted
+# C12: Generality — snapshot MISSING mounts.symlinks.scope (another defaulted
 #      field), live has it at schema default "file" → NO recreate hint.
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-allowed-hosts-only.yaml"
+setup_sandbox "config-project-network-allowed-hosts.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Old snapshot: no mounts.symlinks.scope field.
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
-c15_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+c12_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
-c15_exit=$?
+c12_exit=$?
 
-c15_ok=true c15_reason=""
-[[ "$c15_exit" -ne 0 ]] && c15_ok=false && c15_reason="emit_hint exit $c15_exit"
+c12_ok=true c12_reason=""
+[[ "$c12_exit" -ne 0 ]] && c12_ok=false && c12_reason="emit_hint exit $c12_exit"
 # Must be silent — mounts.symlinks.scope absent in snapshot but live==default("file").
-if [[ -n "$c15_out" ]]; then
-  c15_ok=false; c15_reason="${c15_reason:+$c15_reason; }spurious output: $c15_out"
+if [[ -n "$c12_out" ]]; then
+  c12_ok=false; c12_reason="${c12_reason:+$c12_reason; }spurious output: $c12_out"
 fi
-if [[ "$c15_ok" == "true" ]]; then pass 15 "drift-hint silent when only absent-default field added (mounts.symlinks.scope)"
-else fail 15 "spurious recreate-hint for absent-default field (generality)" "$c15_reason"; fi
+if [[ "$c12_ok" == "true" ]]; then pass 12 "drift-hint silent when only absent-default field added (mounts.symlinks.scope)"
+else fail 12 "spurious recreate-hint for absent-default field (generality)" "$c12_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------

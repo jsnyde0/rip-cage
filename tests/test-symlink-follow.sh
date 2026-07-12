@@ -854,10 +854,6 @@ case " \$* " in
     echo "ro"
     exit 0
     ;;
-  *" inspect "*"rc.ssh-key-filter"*"${cname}"*)
-    echo ""
-    exit 0
-    ;;
   *" inspect "*"${cname}"*)
     [[ "${state}" == "missing" ]] && exit 1
     echo "{}"
@@ -989,15 +985,18 @@ test_s18_cage_claude_md_unchanged() {
 # after adding 3 new schema fields (regression guard)
 # ---------------------------------------------------------------------------
 test_s_schema_regression() {
-  # Quick regression check: source rc and verify selection list keys still work
+  # Quick regression check: source rc and verify selection list keys still work.
+  # (mounts.allow_risky replaces ssh.allowed_keys as the pre-existing-field
+  # example here -- the ssh cluster's schema fields retired at the msb
+  # cutover, ADR-029 D3 / rip-cage-f1qo S5.)
   local selection_keys
   selection_keys=$(HOME="/tmp" bash -c "source '$RC'; _config_schema_selection_list_keys")
-  local has_allowed_keys has_on_dangling has_mode
-  has_allowed_keys=$(echo "$selection_keys" | grep -c "ssh.allowed_keys" || true)
+  local has_allow_risky has_on_dangling has_mode
+  has_allow_risky=$(echo "$selection_keys" | grep -c "mounts.allow_risky" || true)
   has_on_dangling=$(echo "$selection_keys" | grep -c "mounts.symlinks.on_dangling" || true)
   has_mode=$(echo "$selection_keys" | grep -c "mounts.symlinks.mode" || true)
 
-  if [[ "$has_allowed_keys" -gt 0 && "$has_on_dangling" -gt 0 && "$has_mode" -gt 0 ]]; then
+  if [[ "$has_allow_risky" -gt 0 && "$has_on_dangling" -gt 0 && "$has_mode" -gt 0 ]]; then
     pass "schema" "_config_schema_selection_list_keys includes existing + new fields"
   else
     fail "schema" "schema selection_list keys regression" "got: $selection_keys"

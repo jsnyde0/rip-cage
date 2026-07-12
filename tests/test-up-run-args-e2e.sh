@@ -78,7 +78,7 @@ run_real_up() {
     RC_ALLOWED_ROOTS="$TEST_WS" \
     GM_DOCKER_IMAGE_VERSION="$(cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo unknown)" \
     GM_DOCKER_RUN_CAPTURE="$RUN_CAPTURE" \
-    "$RC" --output json up "$TEST_WS" --no-forward-ssh >"$_outfile" 2>"$_errfile" < /dev/null
+    "$RC" --output json up "$TEST_WS" >"$_outfile" 2>"$_errfile" < /dev/null
   RC_EXIT=$?
   set -e 2>/dev/null || true
   set +e

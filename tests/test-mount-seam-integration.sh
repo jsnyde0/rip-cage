@@ -47,16 +47,16 @@
 #   SE2 — Walls-hold-composed: re-run egress + secret-path EFFECT probes inside the
 #           composed cage. Real reachable hosts (RFC-2606 example.com class), effect-not-presence.
 #
-#   SE3 — Thin per-recipe smokes (ONE denial each — NOT r9n4-depth adversarial):
-#           dcg denies a known-destructive filesystem command; ssh-bypass denies an
-#           ssh host-key override. One denial per recipe — thin, not adversarial.
+#   SE3 — Thin per-recipe smoke (ONE denial — NOT r9n4-depth adversarial):
+#           dcg denies a known-destructive filesystem command. (ssh-bypass smoke
+#           retired at the msb cutover, ADR-029 D3 — rip-cage-f1qo S5.)
 #
 #   SE4 — No-guard-pi smoke: pi wrapper present, no dcg-guard = no denial for benign command.
 #           (proves pi wrapper's absence of its own guard — the guard comes from dcg recipe).
 #
 #   SE5 — assert-present end-to-end: /etc/rip-cage/safety-stack-asserted exists, root-owned
-#           (file+dir), lists dcg + ssh-bypass; safety-stack.sh FAILs if ssh-bypass hook
-#           is removed (prove the flip goes RED, not just that the file is present).
+#           (file+dir), lists dcg; safety-stack.sh FAILs if a required tool is removed
+#           (prove the flip goes RED, not just that the file is present).
 #
 #   SE7 — Recipe smoke enforcing gate (rip-cage-wiwa): run the generic name-free runner
 #           (run-recipe-smokes.sh) inside the composed cage; assert both recipe smoke tests
@@ -458,7 +458,7 @@ test_se_tier2_composed_cage_suite() {
   }
   trap _se_cleanup RETURN
 
-  # Build from manifest/default-tools.yaml (the composed/default image: CC+pi+dcg+ssh-bypass).
+  # Build from manifest/default-tools.yaml (the composed/default image: CC+pi+dcg).
   # FRESH + COLD: use a temp HOME so no user manifest bleeds in.
   local se_manifest_home
   se_manifest_home=$(mktemp -d "${TMPDIR:-/tmp}/rc-se-home-XXXXXX")
@@ -614,15 +614,9 @@ test_se_tier2_composed_cage_suite() {
     fail "SE3 dcg smoke: dcg-guard did NOT deny destructive command. output='${dcg_smoke_result:0:200}'"
   fi
 
-  # ssh-bypass smoke: ssh with host-key override denied.
-  local ssh_smoke_result
-  ssh_smoke_result=$(docker exec "$se_container" sh -c \
-    'echo '\''{"tool_name":"Bash","tool_input":{"command":"ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/x git@evil.example.com"}}'\'' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh 2>/dev/null || true' 2>/dev/null || true)
-  if echo "$ssh_smoke_result" | grep -qE '"permissionDecision".*"deny"'; then
-    pass "SE3 ssh-bypass smoke: block-ssh-bypass.sh denies host-key override ssh — one denial confirmed"
-  else
-    fail "SE3 ssh-bypass smoke: block-ssh-bypass.sh did NOT deny host-key override. output='${ssh_smoke_result:0:200}'"
-  fi
+  # ssh-bypass smoke retired at the msb cutover (ADR-029 D3): the ssh cluster
+  # it guarded no longer exists, and the composable recipe (examples/ssh-bypass/)
+  # was deleted alongside it. See rip-cage-f1qo (S5).
 
   # -----------------------------------------------------------------
   # SE4 — No-guard-pi smoke (pi has no command-guard of its own)
@@ -666,22 +660,18 @@ test_se_tier2_composed_cage_suite() {
     fail "SE5 safety-stack-asserted: NOT root-owned (file=${ssa_file_owner} dir=${ssa_dir_owner}) — agent could modify the declaration"
   fi
 
-  # File lists 'dcg-wiring' and 'ssh-bypass-hook' as entry-ids (new format: "<id> <b64check>").
-  # The Tier-2 probe hardcodes the default image's expected required-set {dcg-wiring, ssh-bypass-hook}
-  # as a release-gate: if either is dropped, the asserted-file won't list it → FAIL.
+  # File lists 'dcg-wiring' as an entry-id (new format: "<id> <b64check>").
+  # The Tier-2 probe hardcodes the default image's expected required-set {dcg-wiring}
+  # as a release-gate: if it's dropped, the asserted-file won't list it → FAIL.
   # (This probe legitimately knows what the default image ships — same latitude as the
   # safety-stack test knowing its guards; D12 governs rc/codegen, not release-gate tests.)
+  # (ssh-bypass-hook retired at the msb cutover, ADR-029 D3 — rip-cage-f1qo S5.)
   local ssa_content
   ssa_content=$(docker exec "$se_container" cat /etc/rip-cage/safety-stack-asserted 2>/dev/null || echo "")
   if echo "$ssa_content" | grep -q "^dcg-wiring "; then
     pass "SE5 safety-stack-asserted: lists 'dcg-wiring' entry-id (required tool declared + baked)"
   else
     fail "SE5 safety-stack-asserted: does NOT list 'dcg-wiring'. content='${ssa_content}'"
-  fi
-  if echo "$ssa_content" | grep -q "^ssh-bypass-hook "; then
-    pass "SE5 safety-stack-asserted: lists 'ssh-bypass-hook' entry-id (required tool declared + baked)"
-  else
-    fail "SE5 safety-stack-asserted: does NOT list 'ssh-bypass-hook'. content='${ssa_content}'"
   fi
 
   # SE5 flip proof — intentionally deferred from Tier-2 (not a counted pass).
@@ -698,22 +688,20 @@ test_se_tier2_composed_cage_suite() {
   # -----------------------------------------------------------------
   # SE7 — Recipe smoke enforcing gate (rip-cage-wiwa)
   # Run the generic recipe-smoke runner inside the composed cage.
-  # Asserts: both recipe smoke tests RAN, each reported >= pinned check count, all passed.
+  # Asserts: the recipe smoke test RAN, reported >= pinned check count, and passed.
   # Count pins (from probe-by-probe diff):
   #   dcg-smoke.sh:       DCG-1..DCG-7 = 7 core checks + 24 pi-conditional checks = 31 total
   #                       (pi IS present in this cage, so all pi checks fire)
   #                       Note: pin assumes SE composed-cage config (pi present + dcg-gate installed).
   #                       A no-guard-pi variant would report ~22 (not exercised by this gate).
-  #   ssh-bypass-smoke.sh: SSH-1..SSH-5 = 5 checks
+  # (ssh-bypass-smoke.sh retired at the msb cutover, ADR-029 D3 — rip-cage-f1qo S5.)
   # Positive controls: count-drop RED, broken-wiring RED, missing-install RED (via expected-set).
   # -----------------------------------------------------------------
   echo ""
   echo "--- SE7: Recipe smoke enforcing gate (generic name-free runner, rip-cage-wiwa) ---"
 
   # DCG_SMOKE_MIN: 7 core + 24 pi checks = 31 total (pi present in this cage, dcg-gate installed).
-  # ssh-bypass smoke has 5 checks.
   local DCG_SMOKE_MIN=31
-  local SSH_SMOKE_MIN=5
 
   # Run the generic runner via rc test equivalent (invoke run-recipe-smokes.sh directly).
   local se7_runner_out se7_runner_rc
@@ -742,32 +730,15 @@ test_se_tier2_composed_cage_suite() {
     fail "SE7 dcg-smoke: DCG Smoke Summary line not found — dcg-smoke.sh may not have run"
   fi
 
-  # Verify ssh-bypass-smoke.sh ran and reported >= pinned count.
-  local ssh_summary_count
-  ssh_summary_count=$(echo "$se7_runner_out" | grep 'SSH-Bypass Smoke Summary:' | grep -oE '[0-9]+ checks' | grep -oE '[0-9]+' | head -1 || echo "0")
-  if [[ -n "$ssh_summary_count" && "$ssh_summary_count" -ge "$SSH_SMOKE_MIN" ]]; then
-    pass "SE7 ssh-bypass-smoke: reported ${ssh_summary_count} checks >= pinned floor ${SSH_SMOKE_MIN} (count-pin met)"
-  elif [[ -n "$ssh_summary_count" ]]; then
-    fail "SE7 ssh-bypass-smoke: reported ${ssh_summary_count} checks < pinned floor ${SSH_SMOKE_MIN} (count-pin FAILED — probe may have been dropped)"
-  else
-    fail "SE7 ssh-bypass-smoke: SSH-Bypass Smoke Summary line not found — ssh-bypass-smoke.sh may not have run"
-  fi
-
   # Positive control: missing-install tripwire.
-  # Both recipe smoke tests must be present in the recipe-tests dir. If either is missing,
+  # The dcg recipe smoke test must be present in the recipe-tests dir. If missing,
   # the runner produces no summary line → count-pin FAIL above already catches it.
-  local dcg_smoke_file ssh_smoke_file
+  local dcg_smoke_file
   dcg_smoke_file=$(docker exec "$se_container" test -f /usr/local/lib/rip-cage/recipe-tests/dcg-smoke.sh 2>/dev/null && echo "present" || echo "absent")
-  ssh_smoke_file=$(docker exec "$se_container" test -f /usr/local/lib/rip-cage/recipe-tests/ssh-bypass-smoke.sh 2>/dev/null && echo "present" || echo "absent")
   if [[ "$dcg_smoke_file" == "present" ]]; then
     pass "SE7 install: dcg-smoke.sh is installed in recipe-tests dir"
   else
     fail "SE7 install: dcg-smoke.sh is ABSENT from recipe-tests dir — recipe install_cmd did not install the smoke test (install tripwire RED)"
-  fi
-  if [[ "$ssh_smoke_file" == "present" ]]; then
-    pass "SE7 install: ssh-bypass-smoke.sh is installed in recipe-tests dir"
-  else
-    fail "SE7 install: ssh-bypass-smoke.sh is ABSENT from recipe-tests dir — recipe install_cmd did not install the smoke test (install tripwire RED)"
   fi
 
   # Positive control: recipe-tests dir is root-owned (ADR-027 D1 write-gate floor).

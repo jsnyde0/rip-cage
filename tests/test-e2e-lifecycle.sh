@@ -209,12 +209,13 @@ else
   check "CLAUDE.md presence matches host source" "pass" "no CLAUDE.md (host template absent)"
 fi
 
-# (No recipe-presence check here.) dcg and block-ssh-bypass.sh are opt-in composable
-# recipes; whether a built cage contains them depends entirely on the operator's manifest
+# (No recipe-presence check here.) dcg is an opt-in composable recipe; whether
+# a built cage contains it depends entirely on the operator's manifest
 # (~/.config/rip-cage/tools.yaml), NOT on a base-image invariant — this suite builds from
 # that manifest, so it cannot assert recipe presence/absence stably. Recipe wiring is
-# covered where a KNOWN manifest is composed: examples/{dcg,ssh-bypass}/smoke.sh, the
+# covered where a KNOWN manifest is composed: examples/dcg/smoke.sh, the
 # demotion tests, and test-mount-seam-integration.sh SE7. (rip-cage-1ssw)
+# (ssh-bypass recipe retired at the msb cutover, ADR-029 D3 — rip-cage-f1qo S5.)
 
 # Check 12: Pi verify line appears in init log (ADR-019 B3).
 # init-rip-cage.sh runs via `docker exec` (sleep infinity is the entrypoint),
@@ -546,86 +547,13 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# ADR-022 D5 invalidation: ssh-bypass hook behavioral checks moved to recipe
-# (rip-cage-1ssw — composable recipe, not present in bare default cage)
-#
-# ssh-bypass hook denial checks (18a hook denies accept-new shape, 18b refusal
-# message, 18c /usr/bin/ssh direct path) removed — the hook is un-baked from the
-# base image (rip-cage-wlwc.11); behavioral coverage lives in:
-#   examples/ssh-bypass/smoke.sh (SSH-1..SSH-5)
-#   tests/test-ssh-bypass-demotion.sh (SS1-SS3)
-# Check 18d (floor: bare cage allows legitimate ssh) is retained.
+# ADR-029 D3 invalidation: the entire ssh cluster (agent forwarding, socket
+# discovery, identity routing, host+key allowlist incl. the ssh-bypass hook
+# and its composable recipe, filtered known_hosts) retired at the msb cutover
+# (rip-cage-f1qo, S5). Checks 18a-18h (ADR-017/018/020/022 behavior) removed —
+# git in cages now authenticates over HTTPS + msb `--secret`; there is no
+# ssh-cluster surface left to probe.
 # -----------------------------------------------------------------------------
-
-# Check 18d: legitimate ssh (no override flags) is NOT blocked.
-sshbypass_legit=$(docker exec "$CONTAINER_NAME" bash -c "echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ssh -T git@github.com\"}}' | /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh" 2>/dev/null || true)
-if [[ -z "$sshbypass_legit" ]]; then
-  check "ssh-bypass hook allows legitimate ssh (no override flags)" "pass"
-else
-  check "ssh-bypass hook allows legitimate ssh (no override flags)" "fail" \
-    "$sshbypass_legit"
-fi
-
-# -----------------------------------------------------------------------------
-# ADR-022 D4 invalidation: in-cage SSH host-trust surface (rip-cage-jxy F2)
-#
-# Runs while CONTAINER_NAME is still alive (before destroy below). Schema
-# defaults (no .rip-cage.yaml): allowed_hosts=[], allowed_keys=null.
-# Pre-rip-cage-g2q, Checks 18e/18f lived after destroy and silently empty-
-# passed against a dead container; they were moved here so they actually
-# exercise in-cage state.
-# -----------------------------------------------------------------------------
-
-# Check 18e: in-cage /home/agent/.ssh/known_hosts byte-equals the host-side
-# filtered cache file (proves the cage sees the filtered file, not the raw
-# host ~/.ssh/known_hosts that the 2026-05-11 bypass exploited).
-host_cache="${HOME}/.cache/rip-cage/${CONTAINER_NAME}/known_hosts"
-in_cage_kh=$(docker exec "$CONTAINER_NAME" cat /home/agent/.ssh/known_hosts 2>/dev/null || true)
-host_kh=""
-if [[ -f "$host_cache" ]]; then
-  host_kh=$(cat "$host_cache")
-fi
-if [[ "$host_kh" == "$in_cage_kh" ]]; then
-  check "in-cage known_hosts equals host-side filtered cache (ADR-022 D4)" "pass"
-else
-  check "in-cage known_hosts equals host-side filtered cache (ADR-022 D4)" "fail" \
-    "host_cache=${host_cache} in_cage_bytes=${#in_cage_kh} host_bytes=${#host_kh}"
-fi
-
-# Check 18f: in-cage known_hosts is empty (no .rip-cage.yaml → schema default
-# allowed_hosts=[] → empty filtered file). Even if the user passes
-# `-o UserKnownHostsFile=/home/agent/.ssh/known_hosts` the file is empty.
-if [[ -z "$in_cage_kh" ]]; then
-  check "in-cage known_hosts is empty with no .rip-cage.yaml (bypass closed)" "pass"
-else
-  check "in-cage known_hosts is empty with no .rip-cage.yaml (bypass closed)" "fail" \
-    "expected empty, got $(wc -l <<<"$in_cage_kh") line(s)"
-fi
-
-# Check 18g: ssh effective config inside the cage actually reads the filtered
-# user-path known_hosts file (regression guard for rip-cage-g2q). Pre-fix,
-# /etc/ssh/ssh_config.d/00-rip-cage.conf forced UserKnownHostsFile to only
-# /etc/ssh/ssh_known_hosts, so the filtered cache mounted at ~/.ssh/known_hosts
-# was never consulted — ssh.allowed_hosts was silently a no-op for any host
-# other than the image-baked github.com pins. Per ADR-022 D4, effective reach
-# must be: filtered user file (allowed_hosts) UNION system file (github floor).
-ssh_g_kh=$(docker exec "$CONTAINER_NAME" ssh -G example.com 2>/dev/null | awk '/^userknownhostsfile/ {sub(/^userknownhostsfile[[:space:]]+/, ""); print; exit}' || true)
-if echo "$ssh_g_kh" | grep -q "/home/agent/.ssh/known_hosts"; then
-  check "ssh effective config reads filtered known_hosts (ADR-022 D4 / rip-cage-g2q)" "pass"
-else
-  check "ssh effective config reads filtered known_hosts (ADR-022 D4 / rip-cage-g2q)" "fail" \
-    "userknownhostsfile=${ssh_g_kh}"
-fi
-
-# Check 18h: github floor still reachable — ssh -G must also include the
-# system path so the image-baked github.com pins remain the floor when
-# allowed_hosts is empty or absent.
-if echo "$ssh_g_kh" | grep -q "/etc/ssh/ssh_known_hosts"; then
-  check "ssh effective config preserves /etc/ssh/ssh_known_hosts floor (ADR-014 D2)" "pass"
-else
-  check "ssh effective config preserves /etc/ssh/ssh_known_hosts floor (ADR-014 D2)" "fail" \
-    "userknownhostsfile=${ssh_g_kh}"
-fi
 
 # -----------------------------------------------------------------------------
 # Lifecycle — destroy

@@ -1,4 +1,5 @@
-version: 99
+version: 1
 mounts:
   allow_risky:
     - /opt/personal
+    - /opt/work

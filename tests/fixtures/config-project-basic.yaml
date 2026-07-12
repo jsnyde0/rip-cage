@@ -1,6 +1,7 @@
 version: 1
-ssh:
-  allowed_keys:
-    - id_ed25519_personal
+mounts:
+  allow_risky:
+    - /opt/personal
+network:
   allowed_hosts:
     - switch.berlin

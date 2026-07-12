@@ -174,14 +174,14 @@ test_t1_additive_union() {
   setup_sandbox "config-global-basic.yaml" "config-project-basic.yaml"
   local out hosts
   out=$(run_rc_config "show --json")
-  hosts=$(jq -c '.config.ssh.allowed_hosts' <<<"$out")
+  hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
   if [[ "$hosts" == '["github.com","switch.berlin"]' ]]; then
     pass "T1 additive list union (global ∪ project, order-preserving)"
   else
     fail "T1 expected [github.com, switch.berlin], got: $hosts"
   fi
   local prov
-  prov=$(jq -c '.provenance["ssh.allowed_hosts"]' <<<"$out")
+  prov=$(jq -c '.provenance["network.allowed_hosts"]' <<<"$out")
   if [[ "$prov" == '["global","project"]' ]]; then
     pass "T1b additive list provenance is union(global, project)"
   else
@@ -194,12 +194,12 @@ test_t2_selection_replaces() {
   setup_sandbox "config-global-basic.yaml" "config-project-basic.yaml"
   local out keys prov
   out=$(run_rc_config "show --json")
-  keys=$(jq -c '.config.ssh.allowed_keys' <<<"$out")
-  prov=$(jq -r '.provenance["ssh.allowed_keys"]' <<<"$out")
-  if [[ "$keys" == '["id_ed25519_personal"]' && "$prov" == "project" ]]; then
+  keys=$(jq -c '.config.mounts.allow_risky' <<<"$out")
+  prov=$(jq -r '.provenance["mounts.allow_risky"]' <<<"$out")
+  if [[ "$keys" == '["/opt/personal"]' && "$prov" == "project" ]]; then
     pass "T2 selection list — project replaces global"
   else
-    fail "T2 expected keys=[id_ed25519_personal] prov=project, got keys=$keys prov=$prov"
+    fail "T2 expected keys=[/opt/personal] prov=project, got keys=$keys prov=$prov"
   fi
   teardown_sandbox
 }
@@ -208,9 +208,9 @@ test_t3_selection_inherit_global() {
   setup_sandbox "config-global-basic.yaml" "config-project-only-additive.yaml"
   local out keys prov
   out=$(run_rc_config "show --json")
-  keys=$(jq -c '.config.ssh.allowed_keys' <<<"$out")
-  prov=$(jq -r '.provenance["ssh.allowed_keys"]' <<<"$out")
-  if [[ "$keys" == '["id_ed25519_personal","id_ed25519_work"]' && "$prov" == "global" ]]; then
+  keys=$(jq -c '.config.mounts.allow_risky' <<<"$out")
+  prov=$(jq -r '.provenance["mounts.allow_risky"]' <<<"$out")
+  if [[ "$keys" == '["/opt/personal","/opt/work"]' && "$prov" == "global" ]]; then
     pass "T3 selection list — project absent ⇒ inherit global"
   else
     fail "T3 expected keys=both prov=global, got keys=$keys prov=$prov"
@@ -222,8 +222,8 @@ test_t4_selection_zero_out() {
   setup_sandbox "config-global-basic.yaml" "config-project-zero-out-keys.yaml"
   local out keys prov
   out=$(run_rc_config "show --json")
-  keys=$(jq -c '.config.ssh.allowed_keys' <<<"$out")
-  prov=$(jq -r '.provenance["ssh.allowed_keys"]' <<<"$out")
+  keys=$(jq -c '.config.mounts.allow_risky' <<<"$out")
+  prov=$(jq -r '.provenance["mounts.allow_risky"]' <<<"$out")
   if [[ "$keys" == '[]' && "$prov" == "project" ]]; then
     pass "T4 selection list — explicit zero-out ([]) honored"
   else
@@ -271,7 +271,7 @@ test_t7_future_version_with_selection_aborts() {
   stderr_file=$(mktemp)
   out=$(run_rc_config "show --json" "$stderr_file") || exit_code=$?
   exit_code="${exit_code:-0}"
-  if [[ "$exit_code" -ne 0 ]] && grep -q "selection-list field(s) \[ssh.allowed_keys\]" "$stderr_file"; then
+  if [[ "$exit_code" -ne 0 ]] && grep -q "selection-list field(s) \[mounts.allow_risky\]" "$stderr_file"; then
     pass "T7 future version + selection-list field ⇒ abort with field-named error"
   else
     fail "T7 expected non-zero exit + selection-list error, exit=$exit_code stderr=$(cat "$stderr_file")"
@@ -286,7 +286,7 @@ test_t8_future_version_additive_only_skips() {
   stderr_file=$(mktemp)
   out=$(run_rc_config "show --json" "$stderr_file") || exit_code=$?
   exit_code="${exit_code:-0}"
-  hosts=$(jq -c '.config.ssh.allowed_hosts' <<<"$out")
+  hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
   if [[ "$exit_code" -eq 0 ]] \
      && grep -q "Skipping this file" "$stderr_file" \
      && [[ "$hosts" == '[]' ]]; then
@@ -303,10 +303,10 @@ test_t9_per_file_version_independence() {
   setup_sandbox "config-global-basic.yaml" "config-project-future-version-additive-only.yaml"
   local out hosts keys
   out=$(run_rc_config "show --json" /dev/null)
-  hosts=$(jq -c '.config.ssh.allowed_hosts' <<<"$out")
-  keys=$(jq -c '.config.ssh.allowed_keys' <<<"$out")
+  hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
+  keys=$(jq -c '.config.mounts.allow_risky' <<<"$out")
   # Global contributes; project is skipped (not merged).
-  if [[ "$hosts" == '["github.com"]' && "$keys" == '["id_ed25519_personal","id_ed25519_work"]' ]]; then
+  if [[ "$hosts" == '["github.com"]' && "$keys" == '["/opt/personal","/opt/work"]' ]]; then
     pass "T9 per-file version independence — global loads, project v99 skipped"
   else
     fail "T9 expected hosts=[github.com] keys=both, got hosts=$hosts keys=$keys"
@@ -358,11 +358,12 @@ test_t12_sha256_canonical() {
   sha1=$(run_rc_config "show --json" | jq -r '.sha256')
   # Reorder the project file (semantically equivalent).
   cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
-ssh:
+network:
   allowed_hosts:
     - switch.berlin
-  allowed_keys:
-    - id_ed25519_personal
+mounts:
+  allow_risky:
+    - /opt/personal
 version: 1
 YAML
   local sha2
@@ -401,9 +402,9 @@ test_t14_only_global() {
   out=$(run_rc_config "show --json")
   g_layer=$(jq -r '.layers.global' <<<"$out")
   p_layer=$(jq -r '.layers.project' <<<"$out")
-  keys=$(jq -c '.config.ssh.allowed_keys' <<<"$out")
+  keys=$(jq -c '.config.mounts.allow_risky' <<<"$out")
   if [[ "$g_layer" != "null" && "$p_layer" == "null" \
-        && "$keys" == '["id_ed25519_personal","id_ed25519_work"]' ]]; then
+        && "$keys" == '["/opt/personal","/opt/work"]' ]]; then
     pass "T14 only global present ⇒ project null, global values applied"
   else
     fail "T14 unexpected: g=$g_layer p=$p_layer keys=$keys"
@@ -417,7 +418,7 @@ test_t15_only_project() {
   out=$(run_rc_config "show --json")
   g_layer=$(jq -r '.layers.global' <<<"$out")
   p_layer=$(jq -r '.layers.project' <<<"$out")
-  hosts=$(jq -c '.config.ssh.allowed_hosts' <<<"$out")
+  hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
   if [[ "$g_layer" == "null" && "$p_layer" != "null" \
         && "$hosts" == '["switch.berlin"]' ]]; then
     pass "T15 only project present ⇒ global null, project values applied"
@@ -478,7 +479,7 @@ test_t17_validate_aborts_on_selection_list_future_version() {
     bash -c "source '$RC'; _config_validate_or_abort '$TEST_WS'" 2>"$stderr_file" \
     || exit_code=$?
   if [[ "$exit_code" -ne 0 ]] \
-     && grep -q "selection-list field(s) \[ssh.allowed_keys\]" "$stderr_file"; then
+     && grep -q "selection-list field(s) \[mounts.allow_risky\]" "$stderr_file"; then
     pass "T17 _config_validate_or_abort exits non-zero on selection-list+future-version"
   else
     fail "T17 expected non-zero exit + selection-list error, exit=$exit_code stderr=$(cat "$stderr_file")"
@@ -767,22 +768,23 @@ test_t32_network_allowed_hosts_additive_merge() {
 }
 
 test_t33_v1_config_no_network_parses_unchanged() {
-  # Existing v1 config with no network.* → empty defaults, no error.
+  # Existing v1 config with no network.* → empty defaults, no error; other
+  # fields (mounts.allow_risky) present in the same file are unaffected.
   # Note: writable_hosts removed from schema in rip-cage-ta1o.1 (write-gate deleted).
   # The field is no longer in the effective config output.
-  setup_sandbox "config-global-basic.yaml" "config-project-basic.yaml"
+  setup_sandbox "config-global-mounts-only.yaml" "config-project-mounts-only.yaml"
   local out hosts mode
   out=$(run_rc_config "show --json")
   hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
   mode=$(jq -r '.config.network.mode' <<<"$out")
-  # ssh fields still present
-  local ssh_hosts
-  ssh_hosts=$(jq -c '.config.ssh.allowed_hosts' <<<"$out")
+  # non-network fields still present
+  local risky
+  risky=$(jq -c '.config.mounts.allow_risky' <<<"$out")
   if [[ "$hosts" == '[]' && "$mode" == "null" \
-        && "$ssh_hosts" == '["github.com","switch.berlin"]' ]]; then
+        && "$risky" == '["/opt/personal"]' ]]; then
     pass "T33 v1 config with no network.* parses unchanged, empty defaults"
   else
-    fail "T33 expected empty network defaults (allowed_hosts=[], mode=null) + ssh unchanged, got hosts=$hosts mode=$mode ssh_hosts=$ssh_hosts"
+    fail "T33 expected empty network defaults (allowed_hosts=[], mode=null) + mounts.allow_risky unchanged, got hosts=$hosts mode=$mode allow_risky=$risky"
   fi
   teardown_sandbox
 }
@@ -1146,23 +1148,23 @@ test_t54_config_show_path_arg_resolves_project_layer() {
   setup_two_workspace_sandbox
   cat > "${TEST_WS_A}/.rip-cage.yaml" <<'YAML'
 version: 1
-ssh:
+network:
   allowed_hosts:
     - workspace-a-host.example
 YAML
   cat > "${TEST_WS_B}/.rip-cage.yaml" <<'YAML'
 version: 1
-ssh:
+network:
   allowed_hosts:
     - workspace-b-host.example
 YAML
   local out hosts
   out=$(run_rc_config_from "$TEST_WS_A" "show --json '$TEST_WS_B'")
-  hosts=$(jq -c '.config.ssh.allowed_hosts' <<<"$out" 2>/dev/null)
+  hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out" 2>/dev/null)
   if [[ "$hosts" == '["workspace-b-host.example"]' ]]; then
     pass "T54 rc config show <path> resolves <path>'s project layer, not cwd's (rip-cage-08q)"
   else
-    fail "T54 expected pathB's ssh.allowed_hosts=[workspace-b-host.example], got: $hosts (out=$out)"
+    fail "T54 expected pathB's network.allowed_hosts=[workspace-b-host.example], got: $hosts (out=$out)"
   fi
   teardown_two_workspace_sandbox
 }
@@ -1226,7 +1228,7 @@ test_t58_config_get_bogus_key_errors() {
   setup_sandbox "" "config-project-basic.yaml"
   local stderr_file exit_code=0
   stderr_file=$(mktemp)
-  run_rc_config "get ssh.no_such_field" "$stderr_file" >/dev/null || exit_code=$?
+  run_rc_config "get network.no_such_field" "$stderr_file" >/dev/null || exit_code=$?
   if [[ "$exit_code" -ne 0 ]] && grep -qi "key not found" "$stderr_file"; then
     pass "T58 rc config get <bogus.key> exits non-zero with a 'key not found' error"
   else

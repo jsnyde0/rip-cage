@@ -83,8 +83,7 @@ cmd_schema() {
         "--port": {"type": "string", "optional": true},
         "--cpus": {"type": "string", "default": "2"},
         "--memory": {"type": "string", "default": "4g"},
-        "--pids-limit": {"type": "string", "default": "500"},
-        "--no-forward-ssh": {"type": "bool", "default": false, "note": "disable host ssh-agent forwarding (ADR-017)"}
+        "--pids-limit": {"type": "string", "default": "500"}
       }
     },
     "down": {

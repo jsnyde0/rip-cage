@@ -4,9 +4,10 @@
 
 
 # cmd_reload — host-side hot-reload of .rip-cage.yaml allowlist changes
-# (rip-cage-ocn / ADR-022 D6). Today: ssh.allowed_hosts content only. Refuses
-# loud on anything else (allowed_keys content/mount-shape, egress, ports,
-# identity, env_file). Exit codes:
+# (rip-cage-ocn / ADR-022 D6, carried forward past the ssh-cluster retirement
+# per ADR-029 D3/D4). Today: network.allowed_hosts / network.mode content
+# only (the ssh.allowed_hosts-specific reload mechanism retired at the msb
+# cutover, rip-cage-f1qo S5). Refuses loud on anything else. Exit codes:
 #   0 — applied (or no-op when live matches snapshot)
 #   1 — refuse-loud (non-reload-eligible field changed)
 #   2 — container not running (`reload` promises the cage sees the change now)
@@ -78,7 +79,7 @@ cmd_reload() {
     exit 1
   fi
 
-  # Compute differing JSON paths (e.g. "ssh.allowed_hosts", "egress.mode").
+  # Compute differing JSON paths (e.g. "network.allowed_hosts", "egress.mode").
   # Pass schema defaults so absent-in-snapshot + live==default fields are non-drift
   # (handles old snapshots written before a new defaulted field was introduced —
   # same suppression as _config_emit_hint / rip-cage-1f59.9).
@@ -101,9 +102,9 @@ cmd_reload() {
     exit 1
   fi
 
-  # Print diff summary for all reload-eligible paths (generalized beyond ssh.allowed_hosts).
+  # Print diff summary for all reload-eligible paths (network.* fields).
   # For list fields (allowed_hosts), show per-entry +/- diff. For scalar fields, show
-  # the changed value. This covers network.* additions alongside ssh.allowed_hosts.
+  # the changed value.
   local _diff_p _live_v _applied_v _live_list _applied_list _l_added _l_removed _h
   while IFS= read -r _diff_p; do
     [[ -z "$_diff_p" ]] && continue
@@ -123,25 +124,10 @@ cmd_reload() {
     fi
   done <<<"$diff_paths"
 
-  # For backward compat with C1 assertion: track ssh.allowed_hosts counts for the final log line.
-  local live_hosts applied_hosts added removed
-  live_hosts=$(jq -r '.ssh.allowed_hosts // [] | .[]' <<<"$live_cfg" | sort -u)
-  applied_hosts=$(jq -r '.ssh.allowed_hosts // [] | .[]' <<<"$applied_cfg" | sort -u)
-  added=$(comm -23 <(printf '%s\n' "$live_hosts") <(printf '%s\n' "$applied_hosts") | grep -c . || true)
-  removed=$(comm -13 <(printf '%s\n' "$live_hosts") <(printf '%s\n' "$applied_hosts") | grep -c . || true)
-
   if [[ "$dry_run" -eq 1 ]]; then
-    log "(--dry-run: cache file NOT mutated, snapshot NOT updated.)"
+    log "(--dry-run: snapshot NOT updated.)"
     return 0
   fi
-
-  # Apply: re-filter known_hosts in-place per rip-cage-rx8 (truncate + write,
-  # never mv). The bind mount inside the cage points at the cache file by
-  # inode, so the agent sees the new content on the next ssh call. No docker
-  # exec, no daemon restart.
-  local allowed_hosts_str
-  allowed_hosts_str=$(jq -r '.ssh.allowed_hosts // [] | join(" ")' <<<"$live_cfg")
-  _filter_known_hosts "$allowed_hosts_str" "${HOME}/.ssh/known_hosts" "${cache_dir}/known_hosts"
 
   # rip-cage-4c5.3 Fix 4 (evolved, ADR-029 D2): IOC check still fires on rc
   # reload — a manifest edited between rc up and rc reload to add an IOC host
@@ -156,7 +142,7 @@ cmd_reload() {
   # Update snapshot to live (so subsequent emit_hint suppresses the warning).
   _config_write_applied "$name" "$live_cfg"
 
-  log "Reloaded $name (ssh.allowed_hosts: ${added} added, ${removed} removed)."
+  log "Reloaded $name."
 }
 
 
@@ -174,19 +160,20 @@ _config_schema_defaults_json() {
   printf '%s\n' "${pairs[@]}" | jq -sc 'add // {}'
 }
 
-# Reload-eligible JSON path set (rip-cage-ocn / ADR-022 D6).
+# Reload-eligible JSON path set (rip-cage-ocn / ADR-022 D6; ssh.allowed_hosts
+# retired at the msb cutover, ADR-029 D3 — rip-cage-f1qo S5).
 # Paths listed here can be mutated by `rc reload` without container recreation.
 # Anything else triggers refuse-loud (exit 1) at reload time and a recreate
 # hint from _config_emit_hint when label/snapshot drift is detected.
 # rip-cage-hhh.2: network.* fields added as reload-eligible — rc reload regenerates
 # the egress-rules file when these change (D10: regeneration ONLY at rc up / rc reload).
-_RC_RELOAD_ELIGIBLE_PATHS='ssh.allowed_hosts network.allowed_hosts network.mode'
+_RC_RELOAD_ELIGIBLE_PATHS='network.allowed_hosts network.mode'
 
 
 # Diff two effective-config JSON objects ($1 = live, $2 = applied snapshot).
-# Echoes one differing JSON path per line in dot-form (e.g. `ssh.allowed_hosts`,
+# Echoes one differing JSON path per line in dot-form (e.g. `network.allowed_hosts`,
 # `egress.mode`). Arrays compared as whole values (no per-element recursion) —
-# `.ssh.allowed_hosts` going from [a] → [a,b] is one path, not two.
+# `.network.allowed_hosts` going from [a] → [a,b] is one path, not two.
 # The `all(type == "string")` filter discards paths with array-index ints, so
 # array contents stay opaque from the diff's perspective.
 #

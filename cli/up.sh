@@ -654,7 +654,7 @@ _up_prepare_docker_mounts() {
   # be mounted over. Collision against any of these triggers abort loud.
   local _SFL_RESERVED_CAGE_PATHS=(
     /bin /boot /dev /etc /home /lib /opt /proc /root /run /sbin /sys
-    /usr /var /tmp /workspace /ssh-agent.sock
+    /usr /var /tmp /workspace
   )
 
   # Load effective config for symlinks settings (D5: skip if no config files).
@@ -932,45 +932,6 @@ _up_prepare_docker_mounts() {
 }
 
 
-# _resolve_host_ssh_sock — select the host ssh-agent socket to forward.
-#
-# Parameters:      $1  rc_forward_ssh — "on" or "off"
-# Globals written: _RESOLVE_HOST_SSH_SOCK_RESULT (empty = nothing usable)
-#
-# Logic:
-#   - If rc_forward_ssh == "off": return immediately with empty result.
-#   - Linux/WSL2: use $SSH_AUTH_SOCK directly (same kernel as Docker, no VM
-#     boundary). Reachability is checked by the in-container preflight.
-#   - macOS: return /run/host-services/ssh-auth.sock unconditionally. This is
-#     the only path OrbStack and Docker Desktop actually proxy across the VM
-#     boundary — it's a VM-internal path (not visible on the macOS host
-#     filesystem) that docker resolves at bind-mount time. Arbitrary paths
-#     like $SSH_AUTH_SOCK probe OK from a host shell but yield "Connection
-#     refused" inside the cage, so host-side probing was empirically
-#     meaningless and has been removed (ADR-018 amendment, 2026-04-24).
-_resolve_host_ssh_sock() {
-  local _rc_forward_ssh="${1:-on}"
-  _RESOLVE_HOST_SSH_SOCK_RESULT=""
-
-  # Short-circuit when forwarding is disabled — no latency added.
-  if [[ "$_rc_forward_ssh" == "off" ]]; then
-    return
-  fi
-
-  if [[ "$(uname)" == "Darwin" ]]; then
-    _RESOLVE_HOST_SSH_SOCK_RESULT="/run/host-services/ssh-auth.sock"
-    return
-  fi
-
-  # Linux / WSL2: $SSH_AUTH_SOCK is a normal AF_UNIX socket on the same kernel
-  # Docker runs on. Any existing socket is bind-mountable directly.
-  local _candidate="${SSH_AUTH_SOCK:-}"
-  if [[ -n "$_candidate" ]] && [[ -S "$_candidate" ]]; then
-    _RESOLVE_HOST_SSH_SOCK_RESULT="$_candidate"
-  fi
-}
-
-
 # _up_prepare_environment — build the env (-e), resource-limit, and beads portions of run_args.
 #
 # Globals written: _UP_RUN_ARGS (appended to)
@@ -981,9 +942,8 @@ _resolve_host_ssh_sock() {
 #   $4  rc_cpus       — CPU limit
 #   $5  rc_memory     — memory limit
 #   $6  rc_pids_limit — PID limit
-#   $7  rc_forward_ssh — ssh-agent forwarding ("on" or "off")
 _up_prepare_environment() {
-  local _path="$1" _port="$2" _env_file="$3" _rc_cpus="$4" _rc_memory="$5" _rc_pids_limit="$6" _rc_forward_ssh="${7:-on}"
+  local _path="$1" _port="$2" _env_file="$3" _rc_cpus="$4" _rc_memory="$5" _rc_pids_limit="$6"
 
   # Forward git identity from host
   local git_name git_email
@@ -1098,40 +1058,6 @@ _up_prepare_environment() {
     # (explicit ADR-001 exception per ADR-007 D8 rationale).
     _bd_host_preflight "$beads_dir" "$beads_dolt_mode"
   fi
-
-  # ssh-agent forwarding (ADR-017 + ADR-018): forward whichever host ssh-agent
-  # the user actually populates. _resolve_host_ssh_sock() probes candidate
-  # sockets and picks the first one with keys (or the first reachable one as
-  # fallback). Keys themselves never enter the container — only signing
-  # capability via the forwarded socket.
-  _UP_FORWARD_SSH_HOST_SOCK=""
-  _UP_NO_HOST_AGENT=""
-  if [[ "$_rc_forward_ssh" != "off" ]]; then
-    _resolve_host_ssh_sock "$_rc_forward_ssh"
-    local _host_ssh_sock="$_RESOLVE_HOST_SSH_SOCK_RESULT"
-    if [[ -n "$_host_ssh_sock" ]]; then
-      # ADR-022 D3: when key filtering is active, mount host agent socket as
-      # /ssh-agent-upstream.sock so ssh-agent-filter (launched by init-rip-cage.sh)
-      # can read it as its upstream and expose its own filtered socket via the
-      # /ssh-agent.sock symlink. When filtering is off, use the direct
-      # /ssh-agent.sock destination (today's default path).
-      if [[ "${_UP_SSH_FILTER_ACTIVE:-false}" == "true" ]]; then
-        _UP_RUN_ARGS+=(-v "${_host_ssh_sock}:/ssh-agent-upstream.sock")
-        _UP_RUN_ARGS+=(-e "SSH_AUTH_SOCK=/ssh-agent.sock")
-      else
-        _UP_RUN_ARGS+=(-v "${_host_ssh_sock}:/ssh-agent.sock")
-        _UP_RUN_ARGS+=(-e "SSH_AUTH_SOCK=/ssh-agent.sock")
-      fi
-      _UP_RUN_ARGS+=(-l rc.forward-ssh=on)
-      _UP_FORWARD_SSH_HOST_SOCK="$_host_ssh_sock"
-    else
-      log "Warning: ssh-agent forwarding requested but no reachable host agent found. Proceeding without forwarding; git push inside the cage will fail. Run 'ssh-add ~/.ssh/<key>' on host or pass --no-forward-ssh to suppress this warning."
-      _UP_RUN_ARGS+=(-l rc.forward-ssh=off)
-      _UP_NO_HOST_AGENT="1"
-    fi
-  else
-    _UP_RUN_ARGS+=(-l rc.forward-ssh=off)
-  fi
 }
 
 
@@ -1175,111 +1101,6 @@ _up_init_container() {
 }
 
 
-# _up_resolve_resume_forward_ssh -- read and validate the rc.forward-ssh label on resume.
-# ADR-017 D2: resume must preserve the original posture, not silently
-# upgrade/downgrade based on current env.
-# Missing label is treated as "off" (legacy pre-ADR-017 containers predate the
-# label and never had forwarding wired). On success sets _UP_RESUME_FORWARD_SSH
-# to "on" or "off"; fails loud on docker errors or unrecognized values.
-# Parameters: $1 name, $2 path (used in the recreate hint)
-_up_resolve_resume_forward_ssh() {
-  local _name="$1" _path="$2"
-  local _label
-  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.forward-ssh" }}' "$_name" 2>/dev/null); then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
-    fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
-    exit 1
-  fi
-  if [[ -z "$_label" ]]; then
-    # Legacy container from before ADR-017 — treat as off (no forwarding was
-    # configured when created). Not an error: old containers continue to work
-    # in their original push-less posture.
-    _UP_RESUME_FORWARD_SSH="off"
-    return
-  fi
-  if [[ "$_label" != "on" && "$_label" != "off" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name has unrecognized rc.forward-ssh label value: '$_label' (expected on|off). Run: rc destroy $_name && rc up $_path" "INVALID_FORWARD_SSH_LABEL"
-    fi
-    echo "Error: container $_name has unrecognized rc.forward-ssh label value: '$_label' (expected on|off)." >&2
-    echo "       Recreate it:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  fi
-  _UP_RESUME_FORWARD_SSH="$_label"
-}
-
-
-# _up_resolve_resume_ssh_key_filter -- read and validate the rc.ssh-key-filter
-# label on resume; abort loud if current effective config's ssh.allowed_keys
-# state (null vs non-null) differs from the label.
-#
-# ADR-022: ssh.allowed_keys toggling between null and non-null is a mount-shape
-# change (the /etc/rip-cage/ssh-allowed-keys bind mount appears or disappears).
-# Mounts are immutable on resume, so silently re-reading effective config would
-# leave init-rip-cage.sh consulting a stale sentinel (or missing one). Force
-# rc destroy && rc up to apply the change. Mirrors _up_resolve_resume_ssh_config.
-#
-# Missing label is treated as "off" (legacy pre-ADR-022 containers predate the
-# label and never had filtering wired). Sets _UP_RESUME_SSH_KEY_FILTER on success.
-# Parameters: $1 name, $2 path
-_up_resolve_resume_ssh_key_filter() {
-  local _name="$1" _path="$2"
-  local _label
-  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.ssh-key-filter" }}' "$_name" 2>/dev/null); then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
-    fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
-    exit 1
-  fi
-  if [[ -z "$_label" ]]; then
-    _UP_RESUME_SSH_KEY_FILTER="off"
-  elif [[ "$_label" != "on" && "$_label" != "off" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name has unrecognized rc.ssh-key-filter label value: '$_label' (expected on|off). Run: rc destroy $_name && rc up $_path" "INVALID_SSH_KEY_FILTER_LABEL"
-    fi
-    echo "Error: container $_name has unrecognized rc.ssh-key-filter label value: '$_label' (expected on|off)." >&2
-    echo "       Recreate it:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  else
-    _UP_RESUME_SSH_KEY_FILTER="$_label"
-  fi
-
-  # Compute current effective ssh.allowed_keys state from on-disk config.
-  # null → "off" (no filtering); [] or [...] → "on" (filtering active).
-  local _eff_result _eff_keys _current
-  _eff_result=$(_load_effective_config "$_path" 2>/dev/null || true)
-  if [[ -z "$_eff_result" ]]; then
-    _current="off"
-  else
-    _eff_keys=$(jq -c '.config.ssh.allowed_keys' <<<"$_eff_result" 2>/dev/null || echo "null")
-    if [[ "$_eff_keys" == "null" ]]; then
-      _current="off"
-    else
-      _current="on"
-    fi
-  fi
-
-  if [[ "$_UP_RESUME_SSH_KEY_FILTER" != "$_current" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name was created with rc.ssh-key-filter=${_UP_RESUME_SSH_KEY_FILTER} but current effective config has ssh.allowed_keys filter=${_current}. Mount shape is immutable on resume — run: rc destroy $_name && rc up $_path to apply the change." "SSH_KEY_FILTER_MOUNT_SHAPE_CHANGED"
-    fi
-    echo "Error: container $_name was created with rc.ssh-key-filter=${_UP_RESUME_SSH_KEY_FILTER} but current effective config has ssh.allowed_keys filter=${_current}." >&2
-    echo "       The /etc/rip-cage/ssh-allowed-keys bind mount is wired at create time; toggling ssh.allowed_keys between null and non-null requires recreating the container." >&2
-    echo "       Run:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  fi
-}
-
-
 # _up_resolve_resume_config_mode -- read and validate the rc.config-mode
 # label on resume; abort loud if current effective config's mounts.config_mode
 # differs from the label (ro↔rw is a mount-shape transition — the nested
@@ -1288,7 +1109,6 @@ _up_resolve_resume_ssh_key_filter() {
 # ADR-021 D7: mounts.config_mode toggles whether a nested :ro bind-mount is
 # added over /workspace/.rip-cage.yaml. Silently re-using a stale mount would
 # leave the agent with a mount shape inconsistent with what the user configured.
-# Mirrors _up_resolve_resume_ssh_key_filter.
 #
 # Missing label (legacy container, pre-cw51): treated as "ro" (the default);
 # if current effective config is also ro (or absent), no mismatch.
@@ -1658,1014 +1478,6 @@ _up_resolve_resume_symlink_fingerprint() {
   fi
 }
 
-
-# _tsc_process_file -- internal helper for _translate_ssh_config.
-# Reads lines from $1 (file path), applies transforms 2-5, outputs to stdout.
-# $2 is the effective ssh home dir (e.g., ~/.ssh, or $HOME/.ssh).
-# Recursive include inlining calls this function again on include targets.
-_tsc_process_file() {
-  local _tsc_file="$1" _tsc_ssh_home="$2"
-  local _tsc_line _tsc_indent _tsc_kw _tsc_kwlc _tsc_path _tsc_bn _tsc_lstr _tsc_lstr_lc
-
-  while IFS= read -r _tsc_line || [[ -n "$_tsc_line" ]]; do
-    # Strip leading whitespace to get keyword; lowercase for matching
-    _tsc_lstr="${_tsc_line#"${_tsc_line%%[![:space:]]*}"}"
-    _tsc_kw="${_tsc_lstr%%[[:space:]]*}"
-    _tsc_kwlc=$(printf '%s' "$_tsc_kw" | tr '[:upper:]' '[:lower:]')
-    _tsc_indent="${_tsc_line%%[! ]*}"
-
-    case "$_tsc_kwlc" in
-      # Transform 4: host-only directives → strip
-      proxycommand|proxyjump|controlmaster|controlpath|identityagent)
-        printf '%s# rip-cage: stripped (host-only)\n' "$_tsc_indent"
-        continue
-        ;;
-      # Match exec is special — keyword is 'match'; only 'Match exec' is host-only
-      match)
-        _tsc_lstr_lc=$(printf '%s' "$_tsc_lstr" | tr '[:upper:]' '[:lower:]')
-        if [[ "$_tsc_lstr_lc" =~ ^match[[:space:]]+exec([[:space:]]|$) ]]; then
-          printf '%s# rip-cage: stripped (host-only)\n' "$_tsc_indent"
-          continue
-        fi
-        ;;
-      # Transform 5: ADR-014 D2 overrides — BatchMode/StrictHostKeyChecking only.
-      # ADR-022 D4: UserKnownHostsFile/GlobalKnownHostsFile rewrites removed —
-      # config-layer rewrites were bypassable theater (-o flag beats config);
-      # mount-layer filtering via _filter_known_hosts is the real enforcement.
-      batchmode)
-        printf '%sBatchMode yes # rip-cage: overridden (ADR-014 D2)\n' "$_tsc_indent"
-        continue
-        ;;
-      stricthostkeychecking)
-        printf '%sStrictHostKeyChecking yes # rip-cage: overridden (ADR-014 D2)\n' "$_tsc_indent"
-        continue
-        ;;
-      # Transform 2: IdentityFile path rewrite
-      identityfile)
-        # Extract path portion: strip "IdentityFile" keyword + leading spaces
-        _tsc_path="${_tsc_lstr#"${_tsc_kw}"}"
-        _tsc_path="${_tsc_path#"${_tsc_path%%[![:space:]]*}"}"
-        # Tilde-expand
-        _tsc_path="${_tsc_path/#~/$HOME}"
-        _tsc_bn=$(basename "$_tsc_path")
-        printf '%sIdentityFile /home/agent/.ssh/%s\n' "$_tsc_indent" "$_tsc_bn"
-        continue
-        ;;
-      # Transform 3: Include directives
-      include)
-        _tsc_path="${_tsc_lstr#"${_tsc_kw}"}"
-        _tsc_path="${_tsc_path#"${_tsc_path%%[![:space:]]*}"}"
-        # Tilde-expand
-        _tsc_path="${_tsc_path/#~/$HOME}"
-        # In-home include → inline; out-of-home → strip
-        if [[ "$_tsc_path" == "${_tsc_ssh_home}/"* ]]; then
-          if [[ -f "$_tsc_path" ]]; then
-            _tsc_process_file "$_tsc_path" "$_tsc_ssh_home"
-          fi
-          # Absent in-home include → silently skip
-        else
-          printf '%s# rip-cage: stripped (Include outside ~/.ssh/)\n' "$_tsc_indent"
-        fi
-        continue
-        ;;
-    esac
-
-    # Default: pass through unchanged
-    printf '%s\n' "$_tsc_line"
-  done < "$_tsc_file"
-}
-
-
-# _translate_ssh_config -- ADR-020 D2 host-config translation engine.
-# Applies six transforms to produce a cage-compatible SSH config:
-#   1. IgnoreUnknown header (macOS directives shim)
-#   2. IdentityFile path rewrite: ~/.ssh/<n> → /home/agent/.ssh/<n>
-#   3. Include: in-home → inline recursively; out-of-home → strip with comment
-#   4. Host-only directives strip: Match exec, ProxyCommand, ProxyJump, ControlMaster,
-#      ControlPath, IdentityAgent → # rip-cage: stripped (host-only)
-#   5. ADR-014 D2 overrides: BatchMode/StrictHostKeyChecking (ADR-022 D4: UserKnownHostsFile/
-#      GlobalKnownHostsFile rewrites removed — mount-layer filtering is the real enforcement)
-#   6. github.com synthesis: if key_basename non-empty and no Host github.com → append synth block
-# Parameters:
-#   $1 host_config_path    — path to host's ~/.ssh/config (may be absent)
-#   $2 output_path         — idempotent write destination (parent dir must exist)
-#   $3 resolved_key_basename — key basename for github.com synthesis (may be empty)
-_translate_ssh_config() {
-  local _hcfg="$1" _out="$2" _key_bn="$3"
-  local _ssh_home="${HOME}/.ssh"
-
-  # Check if Host github.com already present in raw input
-  local _has_github=false
-  if [[ -f "$_hcfg" ]]; then
-    local _scan_line
-    while IFS= read -r _scan_line; do
-      if [[ "$_scan_line" =~ ^[[:space:]]*[Hh][Oo][Ss][Tt][[:space:]]+github\.com([[:space:]]|$) ]]; then
-        _has_github=true
-        break
-      fi
-    done < "$_hcfg"
-  fi
-
-  # Build output
-  {
-    # Transform 1: IgnoreUnknown header
-    printf 'IgnoreUnknown UseKeychain,AddKeysToAgent\n'
-
-    # Apply transforms 2-5 to host config lines (if file exists)
-    if [[ -f "$_hcfg" ]]; then
-      _tsc_process_file "$_hcfg" "$_ssh_home"
-    fi
-
-    # Transform 6: github.com synthesis
-    if [[ -n "$_key_bn" && "$_has_github" == "false" ]]; then
-      printf '\nHost github.com\n'
-      printf '  User git\n'
-      printf '  IdentityFile /home/agent/.ssh/%s\n' "$_key_bn"
-      printf '  IdentitiesOnly yes\n'
-    fi
-  } > "$_out"
-}
-
-
-# _derive_pubkey_allowlist -- parse a translated SSH config and emit one <basename>.pub per line
-# for each IdentityFile directive found. Used to build the pubkey mount allowlist (ADR-020 D1).
-# Duplicates are collapsed (each basename appears once).
-# Parameter: $1 translated_config_path — path to the translated ssh-config file
-# Returns: newline-separated list of <basename>.pub filenames (stdout), empty if none.
-_derive_pubkey_allowlist() {
-  local _cfg="$1"
-  local _line _kw _kw_lc _path _bn _seen_list
-
-  if [[ ! -f "$_cfg" ]]; then
-    return 0
-  fi
-
-  _seen_list=""
-  while IFS= read -r _line || [[ -n "$_line" ]]; do
-    # Strip leading whitespace
-    local _lstr="${_line#"${_line%%[![:space:]]*}"}"
-    _kw="${_lstr%%[[:space:]]*}"
-    _kw_lc=$(printf '%s' "$_kw" | tr '[:upper:]' '[:lower:]')
-    if [[ "$_kw_lc" == "identityfile" ]]; then
-      _path="${_lstr#"${_kw}"}"
-      _path="${_path#"${_path%%[![:space:]]*}"}"
-      _bn=$(basename "$_path")
-      # Append .pub if not already a .pub filename
-      if [[ "$_bn" != *.pub ]]; then
-        _bn="${_bn}.pub"
-      fi
-      # Dedup: only emit if not yet seen (bash 3.2 compatible — no associative arrays)
-      if [[ ":${_seen_list}:" != *":${_bn}:"* ]]; then
-        _seen_list="${_seen_list}:${_bn}"
-        printf '%s\n' "$_bn"
-      fi
-    fi
-  done < "$_cfg"
-}
-
-
-# _assert_pubkey_exists_or_die -- enforce that a pubkey file exists on the host for an explicit pin.
-# ADR-020 D4: explicit pin (layers 1-3) + missing .pub → abort non-zero with actionable error.
-# For user-config-derived keys, use _build_ssh_mount_args' warn-and-skip path instead.
-# Parameters:
-#   $1 key_basename  — key basename WITHOUT .pub extension (e.g. id_ed25519_work)
-#   $2 source_label  — human-readable source for the error message (e.g. "explicit", "rules-file")
-# Returns: 0 if ~/.ssh/<key_basename>.pub exists; exits 1 with actionable error otherwise.
-_assert_pubkey_exists_or_die() {
-  local _kb="$1" _src="${2:-explicit}"
-  local _pub_path="${HOME}/.ssh/${_kb}.pub"
-  if [[ ! -f "$_pub_path" ]]; then
-    echo "Error: ${_src} identity '${_kb}' selected, but ~/.ssh/${_kb}.pub does not exist on host." >&2
-    echo "       Generate the key (ssh-keygen) or correct your identity rules." >&2
-    return 1
-  fi
-}
-
-
-# _filter_known_hosts -- filter ~/.ssh/known_hosts to only allowed host patterns.
-# ADR-022 D3 host half: reads input file line-by-line, keeps lines where at least one
-# host field matches an allowed_hosts pattern. Hashed entries (|1|salt|hash format) are
-# resolved via HMAC-SHA1 against each exact (non-wildcard) pattern in the allowlist;
-# matched hashed entries are written unhashed. Wildcard patterns against hashed entries
-# are intractable — emit a warning with ssh-keyscan recipe and skip.
-#
-# Parameters:
-#   $1 allowed_hosts   — space-separated list of patterns (empty = no patterns → empty output)
-#   $2 input_path      — path to source known_hosts file (e.g., ~/.ssh/known_hosts)
-#   $3 output_path     — path to write filtered output (created/overwritten)
-# Side effects: warnings to stderr for wildcard + hashed entry conflicts; does not abort.
-_filter_known_hosts() {
-  local _allowed="$1" _input="$2" _output="$3"
-
-  # Build arrays of exact vs wildcard patterns from space-separated list
-  local _exact_patterns=() _wildcard_patterns=()
-  local _p
-  for _p in $_allowed; do
-    if [[ "$_p" == *'*'* || "$_p" == *'?'* ]]; then
-      _wildcard_patterns+=("$_p")
-    else
-      _exact_patterns+=("$_p")
-    fi
-  done
-
-  # Sentinel: track which wildcards had hashed entry conflicts (warn once per pattern)
-  local _wild_warned=""
-
-  : > "$_output"
-
-  [[ ! -f "$_input" ]] && return 0
-  # No allowed patterns → empty output (bypass closed by design)
-  [[ -z "$_allowed" ]] && return 0
-
-  local _line _type _key _rest
-  while IFS= read -r _line || [[ -n "$_line" ]]; do
-    # Skip blank lines and comments
-    [[ -z "$_line" || "$_line" == '#'* ]] && continue
-
-    # Hashed entry: |1|<salt_b64>|<hash_b64> <type> <key> [<comment>]
-    if [[ "$_line" =~ ^\|1\|([^|]+)\|([^[:space:]]+)[[:space:]](.+)$ ]]; then
-      local _salt_b64="${BASH_REMATCH[1]}" _hash_b64="${BASH_REMATCH[2]}" _rest="${BASH_REMATCH[3]}"
-
-      # Convert salt from base64 to hex for openssl macopt
-      local _salt_hex
-      _salt_hex=$(printf '%s' "$_salt_b64" | base64 -d 2>/dev/null | xxd -p -c 256 2>/dev/null | tr -d '\n')
-      if [[ -z "$_salt_hex" ]]; then continue; fi
-
-      # Try each exact pattern: HMAC-SHA1 the pattern against the salt and compare
-      local _matched=false
-      for _p in "${_exact_patterns[@]+"${_exact_patterns[@]}"}"; do
-        local _test_hash
-        _test_hash=$(printf '%s' "$_p" | openssl dgst -sha1 -mac HMAC -macopt "hexkey:${_salt_hex}" -binary 2>/dev/null | base64)
-        if [[ "$_test_hash" == "$_hash_b64" ]]; then
-          # Match: write unhashed form
-          printf '%s %s\n' "$_p" "$_rest" >> "$_output"
-          _matched=true
-          break
-        fi
-      done
-
-      if [[ "$_matched" == "false" ]]; then
-        # Wildcard patterns against hashed entries: warn once per wildcard
-        for _p in "${_wildcard_patterns[@]+"${_wildcard_patterns[@]}"}"; do
-          if [[ ":${_wild_warned}:" != *":${_p}:"* ]]; then
-            _wild_warned="${_wild_warned}:${_p}"
-            echo "Warning: '${_p}' in ssh.allowed_hosts cannot match hashed known_hosts entries." >&2
-            echo "         Add unhashed entries via: ssh-keyscan -t ed25519,rsa <host> >> ~/.ssh/known_hosts" >&2
-          fi
-        done
-      fi
-      continue
-    fi
-
-    # Unhashed entry: host[,host,...] type key [comment]
-    local _hosts_field
-    _hosts_field="${_line%%[[:space:]]*}"
-
-    # Split comma-separated host fields and check each against all allowed patterns
-    local _keep=false _h
-    IFS=',' read -ra _hfields <<< "$_hosts_field"
-    for _h in "${_hfields[@]+"${_hfields[@]}"}"; do
-      # Try exact patterns
-      for _p in "${_exact_patterns[@]+"${_exact_patterns[@]}"}"; do
-        if [[ "$_h" == "$_p" ]]; then
-          _keep=true; break 2
-        fi
-      done
-      # Try wildcard patterns (unquoted RHS for glob matching)
-      for _p in "${_wildcard_patterns[@]+"${_wildcard_patterns[@]}"}"; do
-        # shellcheck disable=SC2053
-        if [[ "$_h" == $_p ]]; then
-          _keep=true; break 2
-        fi
-      done
-    done
-
-    if [[ "$_keep" == "true" ]]; then
-      printf '%s\n' "$_line" >> "$_output"
-    fi
-  done < "$_input"
-}
-
-
-# _up_resolve_ssh_allowlists -- read effective config, write filtered known_hosts cache
-# and optional ssh-allowed-keys sentinel. Called by cmd_up (create + resume paths) after
-# mkdir -p of the cache dir.
-#
-# ADR-022 D3:
-#   - ssh.allowed_hosts (additive_list, default []) → filters host SSH known_hosts
-#   - ssh.allowed_keys (selection_list, default null):
-#       null   → filtering inactive (direct socket mount path preserved)
-#       []     → filtering active, zero keys (all agent signing blocked)
-#       [...]  → filtering active, listed keys forwarded by ssh-agent-filter
-#
-# Globals written:
-#   _UP_SSH_FILTER_ACTIVE  — "true" when ssh.allowed_keys is non-null; else "false"
-# Parameters:
-#   $1 workspace   — project directory (for _load_effective_config)
-#   $2 cache_dir   — per-container cache dir (known_hosts + ssh-allowed-keys written here)
-_up_resolve_ssh_allowlists() {
-  local _workspace="$1" _cache_dir="$2"
-  _UP_SSH_FILTER_ACTIVE="false"
-
-  # Read effective config (both layers merged). The central gate
-  # _config_validate_or_abort (cmd_up, line 2452) runs upstream of every call
-  # site and converts loader errors into a loud exit per ADR-001 + ADR-021 D3.
-  # Do NOT swallow loader stderr or substitute a silent default here — that
-  # would silently expand capability if a future call path bypasses the gate.
-  local _eff_result _eff_config
-  _eff_result=$(_load_effective_config "$_workspace")
-  if [[ -z "$_eff_result" ]]; then
-    # No config files present at either layer: schema defaults.
-    _eff_config='{"ssh":{"allowed_hosts":[],"allowed_keys":null}}'
-  else
-    _eff_config=$(jq -c '.config' <<<"$_eff_result")
-  fi
-
-  # Extract allowed_hosts as space-separated string (additive_list).
-  local _allowed_hosts_str
-  _allowed_hosts_str=$(jq -r '.ssh.allowed_hosts // [] | join(" ")' <<<"$_eff_config" 2>/dev/null) || _allowed_hosts_str=""
-
-  # Filter known_hosts → cache dir. Always write (even empty) so the bind-mount target exists.
-  _filter_known_hosts "$_allowed_hosts_str" "${HOME}/.ssh/known_hosts" "${_cache_dir}/known_hosts"
-
-  # Extract allowed_keys (selection_list: null = absent = inactive).
-  local _allowed_keys_json
-  _allowed_keys_json=$(jq -c '.ssh.allowed_keys' <<<"$_eff_config" 2>/dev/null) || _allowed_keys_json="null"
-
-  if [[ "$_allowed_keys_json" == "null" ]]; then
-    # Key filtering inactive — direct socket mount path preserved; no sentinel.
-    _UP_SSH_FILTER_ACTIVE="false"
-    return 0
-  fi
-
-  # Key filtering active (explicit [] or [...] list).
-  _UP_SSH_FILTER_ACTIVE="true"
-
-  # Write sentinel: one key comment per line (empty file for zero-out).
-  local _sentinel="${_cache_dir}/ssh-allowed-keys"
-  : > "$_sentinel"
-  if [[ "$_allowed_keys_json" != "[]" ]]; then
-    jq -r '.[]' <<<"$_allowed_keys_json" >> "$_sentinel" 2>/dev/null
-  fi
-}
-
-
-# _build_ssh_mount_args -- compose --mount args for the SSH config + pubkey allowlist.
-# ADR-020 D1: mounts translated config, each .pub from allowlist (warn+skip if missing).
-# ADR-022 D3: mounts filtered known_hosts from cache (not raw ~/.ssh/known_hosts).
-# This function uses the "user-config" behavior for missing pubkeys: warn+skip, never abort.
-# For explicit-pin pubkeys, call _assert_pubkey_exists_or_die before calling this function.
-#
-# Globals read: HOME, _UP_SSH_FILTER_ACTIVE
-# Parameters:
-#   $1 translated_config  — path to the translated ssh-config file
-#   $2 container_name     — used for the cache dir path component
-#   $3 array_nameref      — name of caller's array to append mount args to
-# Side effects: writes warning to stderr for each missing .pub file; does not abort.
-_build_ssh_mount_args() {
-  local _cfg="$1" _cname="$2" _arr_name="$3"
-  local _ssh_dir="${HOME}/.ssh"
-  local _pub_bn _pub_path
-
-  # Mount translated config → /home/agent/.ssh/config (read-only)
-  eval "${_arr_name}+=(\"--mount\" \"type=bind,src=${_cfg},dst=/home/agent/.ssh/config,ro\")"
-
-  # Mount each .pub from the allowlist (warn+skip if missing)
-  while IFS= read -r _pub_bn; do
-    [[ -z "$_pub_bn" ]] && continue
-    _pub_path="${_ssh_dir}/${_pub_bn}"
-    if [[ -f "$_pub_path" ]]; then
-      eval "${_arr_name}+=(\"--mount\" \"type=bind,src=${_pub_path},dst=/home/agent/.ssh/${_pub_bn},ro\")"
-    else
-      echo "Warning: identity pubkey ${HOME}/.ssh/${_pub_bn} not found on host — skipping mount." >&2
-    fi
-  done < <(_derive_pubkey_allowlist "$_cfg")
-
-  # ADR-022 D3: mount the filtered known_hosts cache (not raw ~/.ssh/known_hosts).
-  # The filtered file is at ~/.cache/rip-cage/<container>/known_hosts.
-  # Always mount it (even when empty) so the host arrow surface visible inside the cage
-  # is the filtered file. NB: this narrows the system-path known_hosts but does NOT,
-  # by itself, defeat `ssh -o UserKnownHostsFile=/tmp/anything -o StrictHostKeyChecking=accept-new`.
-  # OpenSSH CLI -o always wins over Match final blocks. The CLI-flag bypass is closed
-  # by the ssh-bypass recipe (examples/ssh-bypass/, ADR-022 D5) when composed (default-on
-  # in the published image). A base cage without that recipe has no CLI-flag guard here;
-  # the known_hosts mount (this block) is the always-present containment floor (ADR-022 D3).
-  # ADR-001 fail-loud: always emit the mount. _up_resolve_ssh_allowlists is the
-  # contract for populating these files (always writes the known_hosts cache;
-  # always writes the sentinel when filtering is active). If a future code path
-  # reaches here with the file missing, docker mount fails loudly — preferable
-  # to a silent skip that opens an unfiltered surface.
-  local _filtered_kh="${HOME}/.cache/rip-cage/${_cname}/known_hosts"
-  eval "${_arr_name}+=(\"--mount\" \"type=bind,src=${_filtered_kh},dst=/home/agent/.ssh/known_hosts,ro\")"
-
-  # ADR-022 D3: when key filtering is active, mount the ssh-allowed-keys sentinel
-  # read-only into /etc/rip-cage/ so init-rip-cage.sh can detect the filter path
-  # (ssh-agent-filter daemon vs today's direct chown-and-use path).
-  # _UP_SSH_FILTER_ACTIVE is set by _up_resolve_ssh_allowlists (called before this).
-  if [[ "${_UP_SSH_FILTER_ACTIVE:-false}" == "true" ]]; then
-    local _sentinel="${HOME}/.cache/rip-cage/${_cname}/ssh-allowed-keys"
-    eval "${_arr_name}+=(\"--mount\" \"type=bind,src=${_sentinel},dst=/etc/rip-cage/ssh-allowed-keys,ro\")"
-  fi
-}
-
-
-# _build_ssh_mount_args_with_posture -- wrapper around _build_ssh_mount_args that respects posture.
-# When posture=off, no mounts are added. When posture=on, delegates to _build_ssh_mount_args.
-# Parameters:
-#   $1 translated_config  — path to the translated ssh-config file
-#   $2 container_name     — container name (for _build_ssh_mount_args)
-#   $3 array_nameref      — name of caller's array to append mount args to
-#   $4 posture            — "on" or "off"
-_build_ssh_mount_args_with_posture() {
-  local _cfg="$1" _cname="$2" _arr_name="$3" _posture="$4"
-  if [[ "$_posture" == "on" ]]; then
-    _build_ssh_mount_args "$_cfg" "$_cname" "$_arr_name"
-  fi
-  # posture=off → no mounts added
-}
-
-
-# _resolve_ssh_config_posture -- determine the ssh-config posture from CLI flags.
-# ADR-020 D7: --no-forward-ssh implies --no-ssh-config unless --ssh-config is explicitly set.
-# Parameters:
-#   $1 no_ssh_config_flag  — "off" if --no-ssh-config was passed, else ""
-#   $2 ssh_config_flag     — "on" if --ssh-config was passed, else ""
-#   $3 rc_forward_ssh      — current forward-ssh value ("on" or "off")
-# Returns: "on" or "off" (stdout).
-_resolve_ssh_config_posture() {
-  local _no_ssh_config="$1" _ssh_config_explicit="$2" _fwd_ssh="$3"
-
-  # Explicit --no-ssh-config always wins
-  if [[ "$_no_ssh_config" == "off" ]]; then
-    printf 'off'
-    return 0
-  fi
-
-  # Explicit --ssh-config always wins (even if --no-forward-ssh is set)
-  if [[ "$_ssh_config_explicit" == "on" ]]; then
-    printf 'on'
-    return 0
-  fi
-
-  # Implication chain: --no-forward-ssh without --ssh-config → --no-ssh-config
-  if [[ "$_fwd_ssh" == "off" ]]; then
-    printf 'off'
-    return 0
-  fi
-
-  # Default: on
-  printf 'on'
-}
-
-
-# _ssh_config_label_args -- append --label rc.ssh-config=<posture> to an array.
-# Parameters:
-#   $1 posture       — "on" or "off"
-#   $2 array_nameref — name of caller's array to append to
-_ssh_config_label_args() {
-  local _posture="$1" _arr_name="$2"
-  eval "${_arr_name}+=(\"rc.ssh-config=${_posture}\")"
-}
-
-
-# _up_resolve_resume_ssh_config -- read and validate the rc.ssh-config label on resume.
-# ADR-020 D7: posture is label-persisted on create; resume reads label as ground truth.
-# Missing label: treat as "on" (legacy containers predate this label; enable by default).
-# Unrecognized value → fail loud per ADR-001.
-# On success sets _UP_RESUME_SSH_CONFIG to "on" or "off".
-# Parameters:
-#   $1 name          — container name
-#   $2 path          — workspace path (for recreate hint)
-#   $3 cli_flag      — "--ssh-config" or "--no-ssh-config" if user passed one, else ""
-_up_resolve_resume_ssh_config() {
-  local _name="$1" _path="$2" _cli_flag="${3:-}"
-  local _label
-  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.ssh-config" }}' "$_name" 2>/dev/null); then
-    if [[ "${OUTPUT_FORMAT:-}" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
-    fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
-    exit 1
-  fi
-
-  if [[ -z "$_label" ]]; then
-    # Legacy container predating rc.ssh-config label → treat as on (default posture)
-    _UP_RESUME_SSH_CONFIG="on"
-    return
-  fi
-
-  if [[ "$_label" != "on" && "$_label" != "off" ]]; then
-    if [[ "${OUTPUT_FORMAT:-}" == "json" ]]; then
-      json_error "Container $_name has unrecognized rc.ssh-config label value: '$_label' (expected on|off). Run: rc destroy $_name && rc up $_path" "INVALID_SSH_CONFIG_LABEL"
-    fi
-    echo "Error: container $_name has unrecognized rc.ssh-config label value: '$_label' (expected on|off)." >&2
-    echo "       Recreate it:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  fi
-
-  # Conflict: user passed a conflicting CLI flag at resume → fail loud (mirrors P1 pattern)
-  if [[ -n "$_cli_flag" && "$_cli_flag" != "$_label" ]]; then
-    if [[ "${OUTPUT_FORMAT:-}" == "json" ]]; then
-      json_error "Container $_name already has rc.ssh-config=$_label. Run: rc destroy $_name && rc up $_path to change posture." "SSH_CONFIG_LABEL_CONFLICT"
-    fi
-    echo "Error: container $_name already has rc.ssh-config=$_label; conflicting flag '$_cli_flag' passed." >&2
-    echo "       To change posture, recreate the container:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  fi
-
-  _UP_RESUME_SSH_CONFIG="$_label"
-}
-
-
-# _parse_identity_rules -- parse ~/.config/rip-cage/identity-rules (or $RIP_CAGE_IDENTITY_RULES).
-# Returns (via stdout) the key basename for the first glob line that matches $2 (project path).
-# Skips blank lines and '#'-prefixed comments. Tilde-expands glob patterns before matching.
-# Parameters: $1 rules_file path, $2 project_path to match against
-# Returns: key basename (stdout) or empty if no match or file absent.
-_parse_identity_rules() {
-  local _rules_file="$1" _project_path="$2"
-  local _line _pattern _key _expanded
-
-  if [[ ! -f "$_rules_file" ]]; then
-    return 0
-  fi
-
-  while IFS= read -r _line || [[ -n "$_line" ]]; do
-    # Skip blank lines and comments
-    [[ -z "$_line" || "$_line" == \#* ]] && continue
-
-    # Split on whitespace into pattern and key; skip malformed lines
-    _pattern="${_line%%[[:space:]]*}"
-    _key="${_line##*[[:space:]]}"
-    [[ -z "$_pattern" || -z "$_key" || "$_pattern" == "$_key" ]] && continue
-
-    # Tilde-expand the pattern
-    _expanded="${_pattern/#~/$HOME}"
-
-    # Glob match (bash extended glob semantics via [[)
-    # shellcheck disable=SC2053
-    if [[ "$_project_path" == $_expanded ]]; then
-      echo "$_key"
-      return 0
-    fi
-  done < "$_rules_file"
-
-  return 0
-}
-
-
-# _resolve_github_identity -- four-layer ADR-020 D3 resolver.
-# Priority: CLI flag (1) → container label on resume (2) → rules-file glob (3) → empty (4).
-# Parameters:
-#   $1 cli_flag      — value of --github-identity=KEY (or empty)
-#   $2 container_name — existing container name for label lookup (or empty for new containers)
-#   $3 project_path  — workspace path for rules-file matching
-#   $4 rules_file    — path to identity rules file (default: ~/.config/rip-cage/identity-rules)
-# Returns: key basename (stdout) or empty string (layer 4).
-# Layer 2 (label lookup) is intentionally NOT performed here on create paths — the caller
-# passes empty container_name when creating a new container. Resume label handling is done
-# by _up_resolve_resume_github_identity separately.
-_resolve_github_identity() {
-  local _cli_flag="$1" _container_name="$2" _project_path="$3"
-  local _rules_file="${4:-${RIP_CAGE_IDENTITY_RULES:-${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/identity-rules}}"
-  local _result=""
-
-  # Layer 1: CLI flag wins
-  if [[ -n "$_cli_flag" ]]; then
-    echo "$_cli_flag"
-    return 0
-  fi
-
-  # Layer 2: existing container label (resume only — caller provides name)
-  if [[ -n "$_container_name" ]]; then
-    _result=$(docker inspect --format '{{ index .Config.Labels "rc.github-identity" }}' "$_container_name" 2>/dev/null || true)
-    if [[ -n "$_result" ]]; then
-      echo "$_result"
-      return 0
-    fi
-  fi
-
-  # Layer 3: rules-file glob match
-  _result=$(_parse_identity_rules "$_rules_file" "$_project_path")
-  if [[ -n "$_result" ]]; then
-    echo "$_result"
-    return 0
-  fi
-
-  # Layer 4: unset (empty) — no synthesized github.com block
-  return 0
-}
-
-
-# _host_config_has_github -- return 0 if host ~/.ssh/config has a Host github.com block.
-# Uses the same scan logic as _translate_ssh_config to be consistent.
-_host_config_has_github() {
-  local _hcfg="${HOME}/.ssh/config"
-  [[ -f "$_hcfg" ]] || return 1
-  local _scan_line
-  while IFS= read -r _scan_line; do
-    if [[ "$_scan_line" =~ ^[[:space:]]*[Hh][Oo][Ss][Tt][[:space:]]+github\.com([[:space:]]|$) ]]; then
-      return 0
-    fi
-  done < "$_hcfg"
-  return 1
-}
-
-
-# _resolve_github_identity_source -- determine the source layer for the resolved identity.
-# Must be called AFTER _resolve_github_identity and _up_resolve_resume_github_identity.
-# Sets _UP_GITHUB_IDENTITY_SOURCE global.
-# Parameters:
-#   $1 cli_flag           — --github-identity= value (layer 1)
-#   $2 resume_label       — _UP_RESUME_GITHUB_IDENTITY value (layer 2, resume only; empty on create)
-#   $3 rules_file_result  — result from _parse_identity_rules (layer 3; empty if no match)
-#   $4 rc_ssh_config      — "off" → disabled
-_resolve_github_identity_source() {
-  local _cli_flag="$1" _resume_label="$2" _rules_result="$3" _posture="$4"
-  if [[ "$_posture" == "off" ]]; then
-    _UP_GITHUB_IDENTITY_SOURCE="disabled"
-  elif [[ -n "$_cli_flag" ]]; then
-    _UP_GITHUB_IDENTITY_SOURCE="cli-flag"
-  elif [[ -n "$_resume_label" ]]; then
-    _UP_GITHUB_IDENTITY_SOURCE="label"
-  elif [[ -n "$_rules_result" ]]; then
-    _UP_GITHUB_IDENTITY_SOURCE="rules-file"
-  elif _host_config_has_github; then
-    _UP_GITHUB_IDENTITY_SOURCE="host-config"
-  else
-    _UP_GITHUB_IDENTITY_SOURCE="none"
-  fi
-}
-
-
-# _up_resolve_resume_github_identity -- handle label-vs-CLI conflict on resume.
-# ADR-020 D3: resume must preserve the existing rc.github-identity label; a CLI
-# override on resume is an error (silent relabeling is a silent-fallback, ADR-001).
-# Sets _UP_RESUME_GITHUB_IDENTITY on success.
-# Parameters: $1 name, $2 path (for recreate hint), $3 cli_flag (may be empty)
-_up_resolve_resume_github_identity() {
-  local _name="$1" _path="$2" _cli_flag="$3"
-  local _existing_label
-  _existing_label=$(docker inspect --format '{{ index .Config.Labels "rc.github-identity" }}' "$_name" 2>/dev/null || true)
-
-  if [[ -n "$_cli_flag" && -n "$_existing_label" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name already labeled rc.github-identity=$_existing_label. Run: rc destroy $_name && rc up --github-identity=$_cli_flag $_path" "GITHUB_IDENTITY_LABEL_CONFLICT"
-    fi
-    echo "Error: container $_name already labeled rc.github-identity=$_existing_label." >&2
-    echo "       To change the identity, recreate the container:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up --github-identity=$_cli_flag $_path" >&2
-    exit 1
-  fi
-
-  _UP_RESUME_GITHUB_IDENTITY="$_existing_label"
-}
-
-
-# _up_ssh_preflight -- probe the forwarded ssh-agent and surface status.
-# ADR-017 D4: the visible failure mode for a misconfigured forward is "loud at
-# rc up, visible in every multiplexer attach, visible in rc ls" — never a
-# silent push-time failure.
-#
-# Five status values written to /etc/rip-cage/ssh-agent-status (sentinel read
-# by zshrc for the shell banner):
-#   ok:N          — agent reachable, N keys loaded
-#   empty         — agent reachable, 0 keys (host-side fix needed)
-#   unreachable   — socket mounted but agent did not respond (platform mismatch
-#                   or zombie agent; also covers the timeout case)
-#   no_host_agent — forwarding requested but host had no agent to forward
-#                   (distinct from explicit opt-out — see _UP_NO_HOST_AGENT)
-#   disabled      — forwarding explicitly off (--no-forward-ssh)
-# Also echoed to stderr at rc up time.
-# Parameters:
-#   $1 name
-#   $2 effective mode, read from either the CLI-derived rc_forward_ssh on
-#      create or the rc.forward-ssh label on resume ("on"|"off"). When "off"
-#      and _UP_NO_HOST_AGENT=="1", the preflight surfaces the no-host-agent
-#      case rather than the generic "disabled" message.
-_up_ssh_preflight() {
-  local _name="$1" _fwd="$2"
-  local _status=""
-  if [[ "$_fwd" == "off" ]]; then
-    if [[ "${_UP_NO_HOST_AGENT:-}" == "1" ]]; then
-      _status="no_host_agent"
-    else
-      _status="disabled"
-    fi
-  else
-    # ssh-add exits: 0 = ≥1 key, 1 = 0 keys, 2 = cannot contact agent.
-    # `timeout 5` converts a pathological agent that accepts but never
-    # responds (timeout exit 124) into the "unreachable" bucket rather than
-    # hanging rc up indefinitely. `coreutils` ships timeout in the base image.
-    # Capture stdout+stderr and the real exit code — a `|| true` tail would
-    # clobber $? with 0 (bug caught during first end-to-end test).
-    local _fingerprints _rc
-    if _fingerprints=$(docker exec "$_name" timeout 5 ssh-add -l 2>/dev/null); then
-      _rc=0
-    else
-      _rc=$?
-    fi
-    if [[ $_rc -eq 0 ]]; then
-      # `ssh-add -l` prints one fingerprint per key on stdout. Count non-empty
-      # lines only (printf may have appended a trailing newline that grep -c
-      # would count otherwise on an empty capture).
-      local _n
-      _n=$(printf '%s' "$_fingerprints" | grep -c '^.')
-      _status="ok:${_n}"
-    elif [[ $_rc -eq 1 ]]; then
-      _status="empty"
-    else
-      # 2 = cannot contact; 124 = timeout; 125/126/127 = docker-exec/exec failures.
-      # All collapse to "unreachable" — the user-facing story is the same.
-      _status="unreachable"
-    fi
-  fi
-  # Write sentinel (consumed by zshrc banner + rc doctor). Best-effort: a
-  # failure here does not break rc up — the stderr warning below still fires.
-  # Values are passed via -e env vars to avoid shell injection from paths
-  # containing single-quotes (e.g. /tmp/a'b would break the sh -c string).
-  docker exec -u root \
-    -e RC_STATUS="$_status" \
-    -e RC_SOCK="${_UP_FORWARD_SSH_HOST_SOCK:-}" \
-    "$_name" sh -c 'mkdir -p /etc/rip-cage \
-    && printf "%s\n" "$RC_STATUS" > /etc/rip-cage/ssh-agent-status \
-    && printf "%s\n" "$RC_SOCK" > /etc/rip-cage/ssh-agent-socket' >/dev/null 2>&1 || true
-
-  case "$_status" in
-    ok:*)
-      log "ssh-agent forwarded (${_status#ok:} key(s) loaded)"
-      ;;
-    empty)
-      log "Warning: ssh-agent forwarded but empty (0 keys). Push will fail."
-      if [[ "${_UP_FORWARD_SSH_HOST_SOCK:-}" == "/run/host-services/ssh-auth.sock" ]]; then
-        # macOS via OrbStack/Docker Desktop: only the launchd agent is proxied
-        # across the VM boundary. Default 'ssh-add' adds to the user's session
-        # agent and is invisible to the cage.
-        log "  Host fix (macOS): SSH_AUTH_SOCK=\$(launchctl getenv SSH_AUTH_SOCK) ssh-add ~/.ssh/id_ed25519"
-        log "  Then: rc down && rc up  (or pass --no-forward-ssh to skip forwarding)"
-      else
-        log "  Host fix: run 'ssh-add ~/.ssh/id_ed25519' on host (socket: ${_UP_FORWARD_SSH_HOST_SOCK:-<unknown>})"
-        log "  Then: rc down && rc up  (or pass --no-forward-ssh to skip forwarding)"
-      fi
-      ;;
-    unreachable)
-      log "Warning: ssh-agent socket mounted but not reachable from inside the cage. Push will fail."
-      log "  Socket: ${_UP_FORWARD_SSH_HOST_SOCK:-<unknown>} — verify ssh-agent is running on host"
-      if [[ "${_UP_FORWARD_SSH_HOST_SOCK:-}" == "/run/host-services/ssh-auth.sock" ]]; then
-        log "  Common cause on macOS: stale image without sudoers entry to chown the mounted socket."
-        log "  Fix: ./rc build && rc down && rc up"
-      fi
-      log "  Pass --no-forward-ssh to suppress forwarding."
-      ;;
-    no_host_agent)
-      # Warning already printed from _up_prepare_environment on create;
-      # nothing to echo on resume (the sentinel-driven zshrc banner will
-      # surface it on every shell).
-      :
-      ;;
-  esac
-}
-
-
-# ---------------------------------------------------------------------------
-# Identity-map cache: ~/.cache/rip-cage/identity-map.json
-# JSON shape: {"<keyname>": {"github_username": "<user>", "ts": "<ISO8601>"}, ...}
-# TTL: 24 hours. Shared across all containers on the host.
-# ---------------------------------------------------------------------------
-
-# _identity_cache_file -- return the path to the cache file.
-# Respects HOME for test isolation.
-_identity_cache_file() {
-  echo "${HOME}/.cache/rip-cage/identity-map.json"
-}
-
-
-# _identity_cache_read KEYNAME
-# Prints the github_username from the cache if the entry exists AND is not stale
-# (younger than 24h). Prints empty string if absent or stale.
-_identity_cache_read() {
-  local _key="$1"
-  local _cache_file
-  _cache_file=$(_identity_cache_file)
-  [[ -f "$_cache_file" ]] || return 0
-
-  local _ts _username
-  _username=$(jq -r --arg k "$_key" '.[$k].github_username // empty' "$_cache_file" 2>/dev/null)
-  _ts=$(jq -r --arg k "$_key" '.[$k].ts // empty' "$_cache_file" 2>/dev/null)
-  [[ -n "$_username" ]] || return 0
-  [[ -n "$_ts" ]] || return 0
-
-  # Check TTL: parse ts, compare to now. Both date commands (BSD/GNU) support
-  # ISO-8601 with -j/-d. We use a portable approach: convert to epoch seconds.
-  local _entry_epoch _now_epoch _age_seconds
-  # macOS BSD date: -j -f format
-  if date -j >/dev/null 2>&1; then
-    _entry_epoch=$(date -j -f '%Y-%m-%dT%H:%M:%SZ' "$_ts" '+%s' 2>/dev/null) || _entry_epoch=0
-  else
-    _entry_epoch=$(date -d "$_ts" '+%s' 2>/dev/null) || _entry_epoch=0
-  fi
-  _now_epoch=$(date '+%s' 2>/dev/null) || _now_epoch=0
-  _age_seconds=$(( _now_epoch - _entry_epoch ))
-
-  # 24h = 86400 seconds
-  if [[ "$_age_seconds" -lt 86400 ]]; then
-    echo "$_username"
-  fi
-  # else: stale — print nothing (caller treats as cold cache)
-}
-
-
-# _identity_cache_write KEYNAME USERNAME
-# Upserts the entry for KEYNAME with USERNAME and current timestamp.
-# Creates cache dir and file if absent. Mode 644 (world-readable, not sensitive).
-_identity_cache_write() {
-  local _key="$1" _username="$2"
-  local _cache_file
-  _cache_file=$(_identity_cache_file)
-  mkdir -p "$(dirname "$_cache_file")"
-
-  local _ts
-  _ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
-
-  # Merge: read existing JSON (or start with empty object), set key, write back.
-  local _existing="{}"
-  if [[ -f "$_cache_file" ]]; then
-    _existing=$(cat "$_cache_file" 2>/dev/null) || _existing="{}"
-    # Validate it's actually JSON — if not, start fresh
-    jq -e '.' <<<"$_existing" >/dev/null 2>&1 || _existing="{}"
-  fi
-  local _updated
-  _updated=$(jq -n \
-    --argjson existing "$_existing" \
-    --arg key "$_key" \
-    --arg user "$_username" \
-    --arg ts "$_ts" \
-    '$existing + {($key): {"github_username": $user, "ts": $ts}}') || return 0
-  printf '%s\n' "$_updated" > "$_cache_file"
-  chmod 644 "$_cache_file" 2>/dev/null || true
-}
-
-
-# _identity_cache_touch_all
-# Update ts for every entry in the cache to now (rc auth refresh).
-# Preserves github_username values unchanged.
-_identity_cache_touch_all() {
-  local _cache_file
-  _cache_file=$(_identity_cache_file)
-  [[ -f "$_cache_file" ]] || return 0
-
-  local _existing _ts _updated
-  _existing=$(cat "$_cache_file" 2>/dev/null) || return 0
-  jq -e '.' <<<"$_existing" >/dev/null 2>&1 || return 0
-
-  _ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
-  _updated=$(jq -n \
-    --argjson existing "$_existing" \
-    --arg ts "$_ts" \
-    'reduce ($existing | to_entries[]) as $e ({}; . + {($e.key): ($e.value + {"ts": $ts})})') || return 0
-  printf '%s\n' "$_updated" > "$_cache_file"
-  chmod 644 "$_cache_file" 2>/dev/null || true
-}
-
-
-# _up_github_identity_preflight -- probe github.com inside the container and
-# write /etc/rip-cage/github-identity + /etc/rip-cage/ssh-config-source sentinels.
-# ADR-020 D5+D6.
-#
-# Run AFTER the container is started (so docker exec works), BEFORE init-rip-cage.sh
-# reads the sentinels. Never aborts rc up (all outcomes exit 0).
-#
-# Sentinel semantics for github-identity:
-#   "disabled"                     — rc.ssh-config=off; probe skipped
-#   "unreachable\n"                — github.com not reachable from cage
-#   "unset\ngreeting=<user>"       — no pin resolved (layer-4 fallback)
-#   "match\nexpected=<X>\ngreeting=<X>"   — probe agrees with expected
-#   "mismatch\nexpected=<X>\ngreeting=<Y>" — probe differs from expected
-#   "<greeting-user>"              — source=host-config (no label compare)
-#
-# Sentinel semantics for ssh-config-source:
-#   One of: disabled, cli-flag, label, rules-file, host-config, none
-#
-# Test-mode: if RC_PREFLIGHT_SENTINEL_DIR is set, sentinels are written
-# to that directory instead of inside the container. This allows unit tests
-# to inspect sentinel content without a running container.
-#
-# Parameters:
-#   $1 name        — container name
-#   $2 key_basename — resolved key basename (may be empty for layer-4 / disabled)
-#   $3 source_layer — one of: cli-flag, label, rules-file, host-config, none, disabled
-_up_github_identity_preflight() {
-  local _name="$1"
-  local _key_basename="$2"
-  local _source_layer="$3"
-
-  # Helper: write a sentinel (test-mode or real container).
-  # $1 = filename (github-identity or ssh-config-source)
-  # $2 = content (single or multi-line)
-  _write_sentinel() {
-    local _file="$1" _content="$2"
-    if [[ -n "${RC_PREFLIGHT_SENTINEL_DIR:-}" ]]; then
-      # Test-mode: write locally so tests can inspect
-      printf '%b\n' "$_content" > "${RC_PREFLIGHT_SENTINEL_DIR}/${_file}"
-    else
-      # Real container: write as root via docker exec + tee
-      docker exec -u root \
-        -e RC_CONTENT="$_content" \
-        "$_name" sh -c \
-        'mkdir -p /etc/rip-cage \
-        && printf "%b\n" "$RC_CONTENT" > /etc/rip-cage/'"$_file"' \
-        && chmod 644 /etc/rip-cage/'"$_file" >/dev/null 2>&1 || true
-    fi
-  }
-
-  # Disabled: rc.ssh-config=off — write disabled sentinels, skip probe
-  if [[ "$_source_layer" == "disabled" ]]; then
-    _write_sentinel "github-identity" "disabled"
-    _write_sentinel "ssh-config-source" "disabled"
-    return 0
-  fi
-
-  # Always write the source layer sentinel first
-  _write_sentinel "ssh-config-source" "$_source_layer"
-
-  # No-identity layer-4 (none): probe but don't compare
-  if [[ "$_source_layer" == "none" ]]; then
-    # Probe for visibility even though no pin was set
-    local _greeting _probe_rc=0
-    _greeting=$(docker exec "$_name" ssh -T \
-      -o BatchMode=yes \
-      -o ConnectTimeout=5 \
-      git@github.com 2>&1) || _probe_rc=$?
-    local _greeting_user=""
-    _greeting_user=$(printf '%s' "$_greeting" | grep -oE 'Hi [^!]+!' | sed 's/^Hi //; s/!$//') || true
-    if [[ "$_probe_rc" -ne 0 ]] && [[ -z "$_greeting_user" ]]; then
-      _write_sentinel "github-identity" "unreachable"
-    else
-      _write_sentinel "github-identity" "unset\ngreeting=${_greeting_user}"
-    fi
-    return 0
-  fi
-
-  # host-config branch: user's own Host github.com block carried over — no label compare.
-  # Just probe and record greeting. No cache write needed (no expected value to compare).
-  if [[ "$_source_layer" == "host-config" ]]; then
-    local _greeting _probe_rc=0
-    _greeting=$(docker exec "$_name" ssh -T \
-      -o BatchMode=yes \
-      -o ConnectTimeout=5 \
-      git@github.com 2>&1) || _probe_rc=$?
-    local _greeting_user=""
-    _greeting_user=$(printf '%s' "$_greeting" | grep -oE 'Hi [^!]+!' | sed 's/^Hi //; s/!$//') || true
-    if [[ "$_probe_rc" -ne 0 ]] && [[ -z "$_greeting_user" ]]; then
-      _write_sentinel "github-identity" "unreachable"
-    else
-      _write_sentinel "github-identity" "${_greeting_user}"
-    fi
-    return 0
-  fi
-
-  # Layers 1-3 (cli-flag, label, rules-file): we have an expected keyname.
-  # Probe greeting, use/populate cache, compare.
-
-  # 1. Probe greeting
-  local _greeting _probe_rc=0
-  _greeting=$(docker exec "$_name" ssh -T \
-    -o BatchMode=yes \
-    -o ConnectTimeout=5 \
-    git@github.com 2>&1) || _probe_rc=$?
-  local _greeting_user=""
-  _greeting_user=$(printf '%s' "$_greeting" | grep -oE 'Hi [^!]+!' | sed 's/^Hi //; s/!$//') || true
-
-  # Unreachable: no cache write, write unreachable sentinel
-  if [[ "$_probe_rc" -ne 0 ]] && [[ -z "$_greeting_user" ]]; then
-    _write_sentinel "github-identity" "unreachable"
-    return 0
-  fi
-
-  # 2. Cache lookup (or cold-populate)
-  local _expected_user=""
-  if [[ -n "$_key_basename" ]]; then
-    _expected_user=$(_identity_cache_read "$_key_basename")
-    if [[ -z "$_expected_user" ]]; then
-      # Cold or stale: populate from greeting, then compare with self → match
-      _identity_cache_write "$_key_basename" "$_greeting_user"
-      _expected_user="$_greeting_user"
-    fi
-  fi
-
-  # 3. Compare and write sentinel
-  if [[ "$_greeting_user" == "$_expected_user" ]]; then
-    _write_sentinel "github-identity" "match\nexpected=${_expected_user}\ngreeting=${_greeting_user}"
-  else
-    _write_sentinel "github-identity" "mismatch\nexpected=${_expected_user}\ngreeting=${_greeting_user}"
-  fi
-  return 0
-}
 
 
 # _up_validate_dcg_config — validate a generated DCG TOML config file parses.
@@ -3093,15 +1905,6 @@ Continuing anyway — bd calls inside the container will fail until resolved."
 cmd_up() {
   local path="" port="" env_file=""
   local rc_cpus="2" rc_memory="4g" rc_pids_limit="500"
-  # RIP_CAGE_FORWARD_SSH env provides the project/shell default,
-  # --no-forward-ssh on the CLI always wins.
-  local rc_forward_ssh="${RIP_CAGE_FORWARD_SSH:-on}"
-  # ADR-020 D3: --github-identity=<keyname> CLI flag (layer 1 of four-layer resolver).
-  # Also accepts RIP_CAGE_GITHUB_IDENTITY env var as the layer-1 source.
-  local rc_github_identity_flag="${RIP_CAGE_GITHUB_IDENTITY:-}"
-  # ADR-020 D7: --no-ssh-config / --ssh-config opt-out/in flags.
-  # Empty = not explicitly set (implication chain applies).
-  local rc_no_ssh_config_flag="" rc_ssh_config_explicit_flag=""
   # Multi-session flags: --new calls the new_session hook for a new auto-named session;
   # --session <name> forwards NAME to the attach hook.  Mutually exclusive.
   local rc_up_new_session="" rc_up_session_name=""
@@ -3119,10 +1922,6 @@ cmd_up() {
       --cpus) [[ $# -ge 2 ]] || { echo "Error: --cpus requires a value" >&2; exit 1; }; rc_cpus="$2"; shift 2 ;;
       --memory) [[ $# -ge 2 ]] || { echo "Error: --memory requires a value" >&2; exit 1; }; rc_memory="$2"; shift 2 ;;
       --pids-limit) [[ $# -ge 2 ]] || { echo "Error: --pids-limit requires a value" >&2; exit 1; }; rc_pids_limit="$2"; shift 2 ;;
-      --no-forward-ssh) rc_forward_ssh="off"; shift ;;
-      --no-ssh-config) rc_no_ssh_config_flag="off"; shift ;;
-      --ssh-config) rc_ssh_config_explicit_flag="on"; shift ;;
-      --github-identity=*) rc_github_identity_flag="${1#--github-identity=}"; shift ;;
       --new) rc_up_new_session="true"; shift ;;
       --session) [[ $# -ge 2 ]] || { echo "Error: --session requires a value" >&2; exit 1; }; rc_up_session_name="$2"; shift 2 ;;
       --allow-risky-mount) [[ $# -ge 2 ]] || { echo "Error: --allow-risky-mount requires a value" >&2; exit 1; }; RC_ALLOW_RISKY_MOUNT+=("$2"); shift 2 ;;
@@ -3135,10 +1934,6 @@ cmd_up() {
     echo "Error: --new and --session are mutually exclusive. Use one or the other." >&2
     exit 2
   fi
-  # ADR-020 D7: resolve ssh-config posture from flags + implication chain.
-  local rc_ssh_config
-  rc_ssh_config=$(_resolve_ssh_config_posture "$rc_no_ssh_config_flag" "$rc_ssh_config_explicit_flag" "$rc_forward_ssh")
-
   if [[ -z "$path" ]]; then
     path="."
   fi
@@ -3309,12 +2104,11 @@ cmd_up() {
     local would_action
     if [[ "$state" == "running" ]]; then
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-RUNNING BEGIN (mirrors the real
-      # running branch below — see RESUME-GUARDS-REAL-RUNNING). All 6 guards
+      # running branch below — see RESUME-GUARDS-REAL-RUNNING). All guards
       # here are read-only (label read + _load_effective_config + compare) —
       # safe under --dry-run.
       _up_resolve_resume_image_drift_running "$name" "$path"
       _up_resolve_resume_config_mode "$name" "$path"
-      _up_resolve_resume_ssh_key_filter "$name" "$path"
       _up_resolve_resume_symlink_fingerprint "$name" "$path"
       _up_resolve_resume_credential_mounts "$name" "$path"
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-RUNNING END
@@ -3325,22 +2119,9 @@ cmd_up() {
       # rip-cage-jnvb / D-b: image-ID drift hard-stop surfaced here too —
       # dry-run planners must see the same refusal the real resume would hit.
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-STOPPED BEGIN (mirrors the real
-      # stopped branch below — see RESUME-GUARDS-REAL-STOPPED). All 10 guards
-      # here are read-only (label read + _load_effective_config + compare);
-      # the mkdir + _translate_ssh_config resume machinery that follows the
-      # real branch's ssh_config guard is intentionally NOT pulled in here —
-      # that's resume-side mutation, not a guard.
+      # stopped branch below — see RESUME-GUARDS-REAL-STOPPED). All guards
+      # here are read-only (label read + _load_effective_config + compare).
       _up_resolve_resume_image_drift_stopped "$name" "$path"
-      _up_resolve_resume_forward_ssh "$name" "$path"
-      _up_resolve_resume_github_identity "$name" "$path" "$rc_github_identity_flag"
-      local _dry_ssh_config_cli_flag=""
-      if [[ -n "$rc_no_ssh_config_flag" ]]; then
-        _dry_ssh_config_cli_flag="off"
-      elif [[ -n "$rc_ssh_config_explicit_flag" ]]; then
-        _dry_ssh_config_cli_flag="on"
-      fi
-      _up_resolve_resume_ssh_config "$name" "$path" "$_dry_ssh_config_cli_flag"
-      _up_resolve_resume_ssh_key_filter "$name" "$path"
       _up_resolve_resume_config_mode "$name" "$path"
       _up_resolve_resume_symlink_fingerprint "$name" "$path"
       _up_resolve_resume_credential_mounts "$name" "$path"
@@ -3445,10 +2226,6 @@ cmd_up() {
     _up_resolve_resume_image_drift_running "$name" "$path"
     # ADR-021 D7: config-mode mount-shape guard applies to running containers too.
     _up_resolve_resume_config_mode "$name" "$path"
-    # ADR-028 D1 / rip-cage-7gr9: ssh key-filter mount-shape guard applies to
-    # running containers too — the /etc/rip-cage/ssh-allowed-keys bind is
-    # frozen at create time.
-    _up_resolve_resume_ssh_key_filter "$name" "$path"
     # rip-cage-c1p.2 D4: fingerprint label-lock applies to running containers too.
     # A policy change (on_dangling, scope, mode) must block resume regardless of
     # whether the container is stopped or running — the mount shape is immutable.
@@ -3460,7 +2237,6 @@ cmd_up() {
     # — CA trust env vars are frozen at container-create time, same rationale.
     # rip-cage-3y9g: RESUME-GUARDS-REAL-RUNNING END
     _config_emit_hint "$path" "$name"
-    _config_init_emit_tip "$path"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       _up_json_output "$name" "attached" "$path" "running"
       return
@@ -3519,32 +2295,6 @@ cmd_up() {
     # against the OLD container's filesystem -> raw OCI stat crash + self-stop.
     # Aborts loud on mismatch or a missing current image — never fail-open.
     _up_resolve_resume_image_drift_stopped "$name" "$path"
-    # ADR-017 D2: forward-ssh posture is label-persisted.
-    _up_resolve_resume_forward_ssh "$name" "$path"
-    rc_forward_ssh="$_UP_RESUME_FORWARD_SSH"
-    # ADR-020 D3: github-identity label is immutable on resume; CLI override is an error.
-    _up_resolve_resume_github_identity "$name" "$path" "$rc_github_identity_flag"
-    # ADR-020 D7: read ssh-config posture label from the container (immutable on resume).
-    local _resume_ssh_config_cli_flag=""
-    if [[ -n "$rc_no_ssh_config_flag" ]]; then
-      _resume_ssh_config_cli_flag="off"
-    elif [[ -n "$rc_ssh_config_explicit_flag" ]]; then
-      _resume_ssh_config_cli_flag="on"
-    fi
-    _up_resolve_resume_ssh_config "$name" "$path" "$_resume_ssh_config_cli_flag"
-    rc_ssh_config="$_UP_RESUME_SSH_CONFIG"
-    # ADR-020 D2: translate host SSH config → cage-compatible config (idempotent, re-run on resume).
-    # Skip when posture=off (no translated config mounted, nothing to update).
-    local _rc_ssh_cache_dir="${HOME}/.cache/rip-cage/${name}"
-    mkdir -p "$_rc_ssh_cache_dir"
-    if [[ "$rc_ssh_config" == "on" ]]; then
-      _translate_ssh_config "${HOME}/.ssh/config" "${_rc_ssh_cache_dir}/ssh-config" "$_UP_RESUME_GITHUB_IDENTITY"
-    fi
-    # ADR-022 D3: refresh filtered known_hosts cache and ssh-allowed-keys sentinel
-    # on resume (bind-mount content updates propagate live). Mount shape is immutable
-    # on resume — if ssh.allowed_keys was toggled between null and non-null since
-    # create, the rc.ssh-key-filter label resolver below aborts loud.
-    _up_resolve_resume_ssh_key_filter "$name" "$path"
     # ADR-021 D7: config-mode mount-shape guard — abort loud if mounts.config_mode
     # was toggled between ro and rw since the container was created.
     _up_resolve_resume_config_mode "$name" "$path"
@@ -3555,23 +2305,6 @@ cmd_up() {
     # auth.credential_mounts was toggled between real and none since create.
     _up_resolve_resume_credential_mounts "$name" "$path"
     # rip-cage-3y9g: RESUME-GUARDS-REAL-STOPPED END
-    _UP_SSH_FILTER_ACTIVE="false"
-    _up_resolve_ssh_allowlists "$path" "$_rc_ssh_cache_dir"
-    # On resume, the socket (or lack thereof) was wired at create time. The
-    # label value is the ground truth for preflight — we don't re-distinguish
-    # user-opt-out from no-host-agent here. Socket cannot be changed on resume.
-    # Recover the original source path from the existing bind mount so the
-    # sentinel stays honest after rc down && rc up (ADR-018 D3 FIRM).
-    # ADR-022: when filtering is active, the socket was mounted as /ssh-agent-upstream.sock.
-    _UP_FORWARD_SSH_HOST_SOCK=$(docker inspect \
-      --format '{{ range .Mounts }}{{ if eq .Destination "/ssh-agent-upstream.sock" }}{{ .Source }}{{ end }}{{ end }}' \
-      "$name" 2>/dev/null || true)
-    if [[ -z "$_UP_FORWARD_SSH_HOST_SOCK" ]]; then
-      _UP_FORWARD_SSH_HOST_SOCK=$(docker inspect \
-        --format '{{ range .Mounts }}{{ if eq .Destination "/ssh-agent.sock" }}{{ .Source }}{{ end }}{{ end }}' \
-        "$name" 2>/dev/null || true)
-    fi
-    _UP_NO_HOST_AGENT=""
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       docker start "$name" >/dev/null
     else
@@ -3588,32 +2321,7 @@ cmd_up() {
       docker stop "$name"
       exit 1
     fi
-    _up_ssh_preflight "$name" "$rc_forward_ssh"
-    # ADR-020 D5+D6: github.com identity preflight — probe greeting inside cage,
-    # write /etc/rip-cage/github-identity and /etc/rip-cage/ssh-config-source.
-    # On resume, the resolved identity is from the container label (layer 2).
-    # Source layer: disabled if posture=off; else label if label present; else rules/host-config/none.
-    _resolve_github_identity_source "$rc_github_identity_flag" "${_UP_RESUME_GITHUB_IDENTITY:-}" "" "$rc_ssh_config"
-    _up_github_identity_preflight "$name" "${_UP_RESUME_GITHUB_IDENTITY:-}" "$_UP_GITHUB_IDENTITY_SOURCE"
-    # ADR-022 D6 / rip-cage-ocn: resume already re-applied ssh.allowed_hosts
-    # (via _up_resolve_ssh_allowlists above). Merge live reload-eligible paths
-    # into the applied-config snapshot so the drift hint doesn't keep nagging.
-    # Non-eligible paths in the snapshot are preserved (they're locked to
-    # container labels / mount shape; live drift in those still earns a hint).
-    if command -v yq &>/dev/null; then
-      local _ocn_applied _ocn_result _ocn_live
-      if _ocn_applied=$(_config_read_applied "$name" 2>/dev/null); then
-        if _ocn_result=$(_load_effective_config "$path" 2>/dev/null); then
-          _ocn_live=$(jq -c '.config' <<<"$_ocn_result")
-          local _ocn_merged
-          _ocn_merged=$(jq -nc --argjson a "$_ocn_applied" --argjson live "$_ocn_live" \
-            '$a | .ssh.allowed_hosts = ($live.ssh.allowed_hosts // [])')
-          _config_write_applied "$name" "$_ocn_merged"
-        fi
-      fi
-    fi
     _config_emit_hint "$path" "$name"
-    _config_init_emit_tip "$path"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       _up_json_output "$name" "resumed" "$path" "running" "success"
       return
@@ -3699,63 +2407,21 @@ cmd_up() {
   _UP_RUN_ARGS+=(-d --name "$name")
   _UP_RUN_ARGS+=(--label "rc.source.path=$path")
 
-  # ADR-020 D3: resolve github.com identity (four-layer: CLI → label → rules → unset).
-  # On create, container_name is empty (no existing label yet); layer 2 is skipped.
-  local _resolved_github_identity
-  _resolved_github_identity=$(_resolve_github_identity "$rc_github_identity_flag" "" "$path")
-  if [[ -n "$_resolved_github_identity" ]]; then
-    _UP_RUN_ARGS+=(--label "rc.github-identity=$_resolved_github_identity")
-  fi
-  # Determine source layer for preflight sentinel (create path: no label, so layer 2 empty).
-  # _rules_file_result is empty when CLI provided the key; non-empty only when rules-file matched.
-  local _rules_file_result_for_source=""
-  if [[ -z "$rc_github_identity_flag" ]] && [[ -n "$_resolved_github_identity" ]]; then
-    _rules_file_result_for_source="$_resolved_github_identity"
-  fi
-  _resolve_github_identity_source "$rc_github_identity_flag" "" "$_rules_file_result_for_source" "$rc_ssh_config"
-
-  # ADR-020 D2+D7: translate host SSH config and mount pubkeys (or skip if posture=off).
-  local _rc_ssh_cache_dir="${HOME}/.cache/rip-cage/${name}"
-  local _rc_ssh_cfg="${_rc_ssh_cache_dir}/ssh-config"
-  mkdir -p "$_rc_ssh_cache_dir"
-
-  # ADR-022 D3: resolve SSH allowlists from effective .rip-cage.yaml config.
-  # Writes filtered known_hosts cache and (when ssh.allowed_keys is set) the
-  # ssh-allowed-keys sentinel. Sets _UP_SSH_FILTER_ACTIVE which gates the
-  # socket-destination swap in _up_prepare_environment.
-  _UP_SSH_FILTER_ACTIVE="false"
-  _up_resolve_ssh_allowlists "$path" "$_rc_ssh_cache_dir"
+  # Per-container cache dir (DCG merged config lives here; ssh-cluster cache
+  # content — translated ssh-config, filtered known_hosts, ssh-allowed-keys
+  # sentinel — retired at the msb cutover, ADR-029 D3 / rip-cage-f1qo S5).
+  local _rc_cache_dir="${HOME}/.cache/rip-cage/${name}"
+  mkdir -p "$_rc_cache_dir"
 
   # ADR-025 D1/D5: translate dcg.* from effective config into a merged DCG
   # config file. Fail-closed on malformed TOML (D5). Safe-by-default: no file
   # written and _UP_DCG_CONFIG_PATH stays empty when no dcg.* configured.
   _UP_DCG_CONFIG_PATH=""
-  if ! _up_resolve_dcg_config "$path" "$_rc_ssh_cache_dir"; then
+  if ! _up_resolve_dcg_config "$path" "$_rc_cache_dir"; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       json_error "DCG config translation failed — check dcg.* in .rip-cage.yaml (ADR-025 D5 fail-closed)" "DCG_CONFIG_INVALID"
     fi
     exit 1
-  fi
-
-  if [[ "$rc_ssh_config" == "on" ]]; then
-    _translate_ssh_config "${HOME}/.ssh/config" "$_rc_ssh_cfg" "$_resolved_github_identity"
-    # ADR-020 D4: explicit pin (layers 1-3) + missing .pub → abort loud.
-    if [[ -n "$_resolved_github_identity" ]]; then
-      local _pin_source="explicit"
-      _assert_pubkey_exists_or_die "$_resolved_github_identity" "$_pin_source" || exit 1
-    fi
-  fi
-  # Persist posture as container label (D7).
-  _UP_RUN_ARGS+=(--label "rc.ssh-config=${rc_ssh_config}")
-
-  # ADR-022: persist ssh-key-filter posture as a container label so resume can
-  # detect ssh.allowed_keys mount-shape transitions (null ↔ non-null) and abort
-  # loud rather than silently filter against a stale sentinel. Mirrors the
-  # rc.forward-ssh / rc.ssh-config / rc.github-identity label-lock pattern.
-  if [[ "${_UP_SSH_FILTER_ACTIVE:-false}" == "true" ]]; then
-    _UP_RUN_ARGS+=(--label "rc.ssh-key-filter=on")
-  else
-    _UP_RUN_ARGS+=(--label "rc.ssh-key-filter=off")
   fi
 
   # auth.credential_mounts (rip-cage-seqc.4 / E2) + auth.per_tool.{claude,pi}
@@ -3788,7 +2454,7 @@ cmd_up() {
 
   # ADR-021 D7: persist effective mounts.config_mode as a container label so
   # resume can detect ro↔rw mount-shape transitions and abort loud rather than
-  # silently presenting a stale mount shape. Mirrors rc.ssh-key-filter pattern.
+  # silently presenting a stale mount shape.
   local _cm_label_mode="ro"
   if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
     if command -v yq &>/dev/null; then
@@ -3820,7 +2486,7 @@ cmd_up() {
   # "<link> → <target> (<mode>)" lines plus a policy header (on_dangling, scope)
   # so that policy changes also produce fingerprint drift.
   # Emitted unconditionally so the label is always present for resume checks.
-  # Follows rc.ssh-key-filter precedent (ADR-022 / rip-cage-jxy).
+  # Follows the rc.config-mode label-lock precedent above.
   local _sfl_mode_for_fp="rw" _sfl_on_dangling_for_fp="follow" _sfl_scope_for_fp="file"
   if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
     if command -v yq &>/dev/null; then
@@ -3857,7 +2523,7 @@ cmd_up() {
   _UP_RUN_ARGS+=(--label "rc.session.multiplexer=${_rc_multiplexer}")
   log "session.multiplexer: ${_rc_multiplexer}"
   # rip-cage-1f59.2: _rc_multiplexer intentionally NOT unset here — used by the new-container
-  # attach block below. It is unset after that block (after _config_init_emit_tip).
+  # attach block below. It is unset after that block.
   unset _mux_eff_result
 
   _up_prepare_docker_mounts "$path" "$name"
@@ -3871,18 +2537,13 @@ cmd_up() {
     env_file="$_UP_PLACEHOLDER_ENV_FILE"
   fi
 
-  _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" "$rc_forward_ssh"
+  _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit"
 
   # rip-cage-hhh.6 D3 (evolved, ADR-029 D2): rc.egress.config-override label so
   # rc doctor can surface the ADR-024 D1 workspace-base-URL-override posture
   # without a per-cage docker exec. (rc.egress.mode retired with the deleted
   # in-cage router — mode was the router's observe/block posture.)
   _UP_RUN_ARGS+=(--label "rc.egress.config-override=${rc_allow_config_override:-false}")
-
-  # ADR-020 D1+D7: mount translated config + pubkeys when posture=on (after run-args are initialized).
-  if [[ "$rc_ssh_config" == "on" ]]; then
-    _build_ssh_mount_args_with_posture "$_rc_ssh_cfg" "$name" _UP_RUN_ARGS "on"
-  fi
 
   # ADR-025 D1/D5: mount translated DCG config RO over the wrapper's pinned path.
   # Only added when dcg.* is configured; safe-by-default when absent.
@@ -3907,10 +2568,6 @@ cmd_up() {
     exit 1
   fi
 
-  _up_ssh_preflight "$name" "$rc_forward_ssh"
-  # ADR-020 D5+D6: github.com identity preflight — probe greeting inside cage,
-  # write /etc/rip-cage/github-identity and /etc/rip-cage/ssh-config-source.
-  _up_github_identity_preflight "$name" "$_resolved_github_identity" "$_UP_GITHUB_IDENTITY_SOURCE"
   # ADR-022 D6 / rip-cage-ocn: write applied-config snapshot so future
   # `rc reload` invocations can diff against create-time intent and
   # `_config_emit_hint` can suppress false-positive drift after a reload.
@@ -3929,7 +2586,6 @@ cmd_up() {
     fi
   fi
   _config_emit_hint "$path" "$name"
-  _config_init_emit_tip "$path"
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     _up_json_output "$name" "created" "$path" "running" "success"
     return
