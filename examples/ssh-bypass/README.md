@@ -25,6 +25,12 @@ a distinct, separate layer — this recipe only covers the CLI-flag class.
 
 The agent does the wiring by reading this recipe. No rc source edits required.
 
+**Tradeoff note (rip-cage-7atw.19):** this manual route places the hook in the
+agent-writable settings layer (the agent could remove it — a self-disable vector),
+unlike the `claude` recipe's root-owned `/etc/claude-code/managed-settings.json` route,
+which the agent cannot alter — which layer to compose here is the operator's judgment
+call (ADR-005 D12).
+
 ## Files
 
 - `manifest-fragment.yaml` — TOOL recipe that bakes `block-ssh-bypass.sh` root-owned.

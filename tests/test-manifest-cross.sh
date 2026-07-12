@@ -149,6 +149,7 @@ echo "--- E2E: Cross-cutting cage regressions (RC_E2E=1) ---"
 # Cleanup tracker for containers and temp dirs
 _CROSS_CONTAINERS=()
 _CROSS_TMPDIRS=()
+_CROSS_IMAGES=()
 
 _cross_cleanup() {
   local c
@@ -161,6 +162,12 @@ _cross_cleanup() {
   local d
   for d in "${_CROSS_TMPDIRS[@]+"${_CROSS_TMPDIRS[@]}"}"; do
     rm -rf "$d"
+  done
+  # rip-cage-7atw.19: remove any pinned per-run image tags (e.g. C2's
+  # ambient-independence tag) so repeated runs don't accumulate images.
+  local img
+  for img in "${_CROSS_IMAGES[@]+"${_CROSS_IMAGES[@]}"}"; do
+    docker rmi "$img" 2>/dev/null || true
   done
 }
 trap _cross_cleanup EXIT
@@ -175,6 +182,18 @@ trap _cross_cleanup EXIT
 #
 # By running C2 first, we ensure a CLEAN default-manifest build before C1
 # or any other fixture-manifest build overwrites rip-cage:latest.
+#
+# rip-cage-7atw.19: "run FIRST" ordering only protects C2 from pollution
+# WITHIN this file (C1 runs after). It does NOT protect against other test
+# FILES in a batched run (e.g. test-manifest-tool.sh, test-manifest-security.sh)
+# that rebuild rip-cage:latest from fixture manifests and may run earlier in
+# the same batch, or against a resumed stale container left over from a prior
+# interleaved run. Isolated reproduction confirmed the self-disable-vector
+# sub-check (test-safety-stack.sh check 8) takes the expected INFO branch on a
+# freshly built floor-only image, but FAILed in the batched Part-B baseline —
+# consistent with ambient rip-cage:latest pollution. Fix: build to a pinned,
+# per-run-unique tag via RC_IMAGE and `rc up` from THAT tag, so C2 never trusts
+# whatever rip-cage:latest happens to be at the moment it runs.
 # ---------------------------------------------------------------------------
 
 echo ""
@@ -188,10 +207,16 @@ _CROSS_TMPDIRS+=("$_c2_manifest_home")
 mkdir -p "${_c2_manifest_home}/.config/rip-cage"
 # NO tools.yaml — default manifest (absent = default stack, all bundled).
 
-echo "C2: Building cage with DEFAULT manifest (no tools.yaml)..."
+# Pinned per-run image tag (rip-cage-7atw.19: ambient-image independence).
+# Never trust ambient rip-cage:latest — build and up from this tag only.
+_c2_image_tag="rip-cage-test:manifest-cross-c2-$$-$(date +%s)"
+_CROSS_IMAGES+=("$_c2_image_tag")
+
+echo "C2: Building cage with DEFAULT manifest (no tools.yaml) to pinned tag ${_c2_image_tag}..."
 _c2_build_out=""
 _c2_build_rc=0
 _c2_build_out=$(HOME="$_c2_manifest_home" XDG_CONFIG_HOME="${_c2_manifest_home}/.config" \
+  RC_IMAGE="$_c2_image_tag" \
   "${RC}" build 2>&1) || _c2_build_rc=$?
 
 if [[ "$_c2_build_rc" -ne 0 ]]; then
@@ -226,6 +251,7 @@ if [[ "$_C2_BUILD_OK" -eq 1 ]]; then
   # with .name so we get the actual container name (handles disambiguation).
   _c2_up_out=$(RC_ALLOWED_ROOTS="$_c2_ws_resolved" \
     RC_MANIFEST_GLOBAL="${_c2_manifest_home}/.config/rip-cage/tools.yaml" \
+    RC_IMAGE="$_c2_image_tag" \
     "${RC}" --output json up "$_c2_ws" 2>&1) || _c2_up_rc=$?
 
   # Extract container name from JSON (rc up --output json returns {name: ...})

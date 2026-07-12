@@ -103,7 +103,18 @@ fi
 #
 # Composable recipe note (rip-cage-wlwc.2.2): managed-settings.json is provisioned by the
 # examples/claude recipe, NOT baked into the base image. A cage built from the bare in-repo
-# default manifest has no managed-settings.json; assertions only fire when the file is present.
+# default manifest has no managed-settings.json — that is the EXPECTED state for a minimal
+# cage, not an error.
+#
+# (rip-cage-7atw.19) The two branches below fire on OPPOSITE conditions, by design:
+#   - (i)/(ii) floor-lock assertions are PRESENCE-gated: they only run (and can only
+#     PASS/FAIL) when managed-settings.json exists, since they check properties OF that file.
+#   - (iii) the self-disable-vector check is ABSENCE-triggered: it intentionally fires when
+#     managed-settings.json is MISSING, to catch the case where PreToolUse hooks ended up
+#     only in the agent-writable settings.json (a layer the agent could edit away). This is
+#     not an inconsistency — presence-gated and absence-triggered are two different checks
+#     covering the two failure modes (missing floor-lock properties vs. a self-disable vector
+#     opened by the floor-lock's absence).
 if [[ -f /etc/claude-code/managed-settings.json ]]; then
   _ms8_file_owner=$(stat -c '%U' /etc/claude-code/managed-settings.json 2>/dev/null || echo "unknown")
   _ms8_dir_owner=$(stat -c '%U' /etc/claude-code 2>/dev/null || echo "unknown")
