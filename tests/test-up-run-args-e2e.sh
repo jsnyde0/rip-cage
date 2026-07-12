@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 # tests/test-up-run-args-e2e.sh — rip-cage-9oyh §3(i) end-to-end test (the
-# CRITICAL, higher-fidelity companion to test-up-run-args-full-chain.sh).
+# CRITICAL, sole gate over cmd_up's create-path argv assembly).
+#
+# rip-cage-5iti (S10, msb migration test-suite port): the former
+# helper-level companion, test-up-run-args-full-chain.sh, is RETIRED. Its
+# hand-replica of cmd_up's create-path had drifted onto asserting RETIRED
+# machinery (rc.mediator-ca-env / rc.egress.mode / an egress-rules.yaml
+# bind mount into the deleted in-cage engine) as its own "chain completion"
+# proof -- a rule-presence assertion on dead code (adversarial review
+# finding, 2026-07-13). THIS test drives the REAL `cmd_up` (never a
+# hand-copy) and captures the REAL `msb create` argv, so it already covers
+# the full post-translation msb-flag surface with strictly higher fidelity
+# than the retired replica ever had.
 #
 # Drives a REAL `rc --output json up <fixture>` through the content-keyed
 # fake docker + fake msb (tests/golden-master/lib/fake-bin/{docker,msb} —

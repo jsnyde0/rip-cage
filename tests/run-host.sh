@@ -592,8 +592,20 @@ _run_all_tests() {
   # on-demand when cases.sh/scrub.sh change, not a per-commit regression gate.
   run_test "${SCRIPT_DIR}/golden-master/capture.sh"       # §1/§2: byte-identity check of the recorded baseline (--check, the default)
   run_test "${SCRIPT_DIR}/test-golden-master-sandbox-isolation.sh" # rip-cage-6qxs: GM_ROOT per-process-uniqueness (structural) + concurrent sandbox-sourcing processes don't cross-contaminate (stress)
-  run_test "${SCRIPT_DIR}/test-up-run-args-full-chain.sh" # §3(i) CRITICAL gate, helper-level: full create-path _UP_RUN_ARGS replica
-  run_test "${SCRIPT_DIR}/test-up-run-args-e2e.sh"        # §3(i) CRITICAL gate, e2e: real cmd_up through the content-keyed docker shim
+  # rip-cage-5iti (S10, msb migration test-suite port): test-up-run-args-
+  # full-chain.sh RETIRED. Its hand-replica of cmd_up's create-path (never
+  # updated past the ssh-cluster retirement) had drifted onto asserting
+  # RETIRED machinery (rc.mediator-ca-env / rc.egress.mode / an
+  # egress-rules.yaml bind mount into the deleted in-cage engine) as its
+  # own "chain completion" proof -- a rule-presence assertion on dead code
+  # that could never catch a real regression (adversarial review finding,
+  # 2026-07-13). test-up-run-args-e2e.sh below drives the REAL `cmd_up`
+  # (not a hand-copy) and captures the REAL `msb create` argv, so it
+  # already covers the full post-translation msb-flag surface with
+  # strictly higher fidelity (e.g. it captures `rc.config-loaded` and the
+  # real `--net-default deny` egress flag, neither of which the retired
+  # replica ever modeled) -- no separate helper-level companion needed.
+  run_test "${SCRIPT_DIR}/test-up-run-args-e2e.sh"        # §3(i) CRITICAL gate, e2e: real cmd_up through the content-keyed docker+msb shims
   run_test "${SCRIPT_DIR}/test-up-validate-warning-seam.sh" # §3(iii): RC_VALIDATE_WARNING write (validate_path) -> read (_up_json_output) seam
   run_test "${SCRIPT_DIR}/test-reload-exit-trap-seam.sh"  # §3(vi): cmd_reload's EXIT-trap lock_dir cleanup (golden-master-invisible filesystem effect)
   run_test "${SCRIPT_DIR}/test-generate-dockerfile.sh"    # §4 gap-fill: rc generate-dockerfile (bundled + from-source structural assertions)
