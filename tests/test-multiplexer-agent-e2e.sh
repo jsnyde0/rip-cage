@@ -9,8 +9,9 @@
 # This test drives pi THROUGH tmux (docker exec tmux send-keys → rip-cage session).
 #
 # Provider pin — WHY openrouter:
-#   This test pins `pi --provider openrouter --model anthropic/claude-haiku-4.5`
-#   (static API key auth) deliberately. The cage-default provider (openai-codex) is
+#   This test pins `pi --provider openrouter --model $RC_TEST_AGENT_MODEL`
+#   (see tests/_agent-model-lib.sh; static API key auth) deliberately. The
+#   cage-default provider (openai-codex) is
 #   OAuth-based and its access token gets server-side invalidated within hours of
 #   issuance (observed 2026-06-14: openai-codex invalidated same day, exit 1 on
 #   "authentication token has been invalidated"). A durable regression guard MUST
@@ -67,6 +68,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/_agent-model-lib.sh
+source "${SCRIPT_DIR}/_agent-model-lib.sh"
 RC="${SCRIPT_DIR}/../rc"
 FAILURES=0
 
@@ -244,7 +247,7 @@ cat > "${WORKSPACE}/run-pi.sh" <<PIEOF
 mkdir -p /workspace/.pi-sessions
 exec pi \
   --provider openrouter \
-  --model anthropic/claude-haiku-4.5 \
+  --model ${RC_TEST_AGENT_MODEL} \
   --session-dir /workspace/.pi-sessions \
   -p "You are a coding assistant. Do all four steps below using your tools. Each step is a SEPARATE tool call -- do not combine them.
 
