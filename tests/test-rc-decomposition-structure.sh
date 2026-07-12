@@ -91,15 +91,42 @@ echo ""
 #     cmd_config_init, _config_init_emit_tip. This pass also closes a
 #     pre-existing canary-hygiene gap flagged above (the 194 -> 200 drift
 #     was never reflected in the enumerated name list below) -- the list
-#     (check (c) below) is now a complete, accurate enumeration of the 151
-#     functions actually declare -F-reachable after sourcing rc (156 total
-#     definitions on disk minus the 5 cli/lib/msb_flags.sh functions that
-#     are the pre-existing, not-sourced-by-rc gap this comment already
-#     named -- msb_flags.sh is not in rc's `for _rc_lib in ...` source list).
+#     (check (c) below) was, at that point, a complete, accurate enumeration
+#     of the 151 functions actually declare -F-reachable after sourcing rc
+#     (156 total definitions on disk minus the 5 cli/lib/msb_flags.sh
+#     functions that were, at that point, a pre-existing, not-sourced-by-rc
+#     gap -- msb_flags.sh was not yet in rc's `for _rc_lib in ...` source
+#     list).
+#
+#     Bumped 156 -> 175 by rip-cage-rj68 (S6, msb migration, ADR-029 D1
+#     hard cutover): the create/resume/reload/doctor lifecycle-verb rewrite
+#     onto msb. 19 functions ADDED, 0 removed:
+#       cli/lib/msb_runtime.sh (NEW FILE, 14 functions -- the msb-side
+#       runtime primitives, docker.sh's counterpart for the in-scope
+#       verbs): check_msb, _msb_call, _msb_inspect_json,
+#       _msb_sandbox_state, _msb_label, _msb_exists, _msb_exec,
+#       _msb_exec_interactive, _msb_start, _msb_stop_graceful, _msb_remove,
+#       _msb_sandbox_image_digest, _msb_current_image_digest,
+#       _msb_denied_domains_from_trace_log.
+#       cli/lib/msb_flags.sh (S6 addition, Fold b): _msb_flags_preflight_secret_env.
+#       ALSO: cli/lib/msb_flags.sh is now in rc's `for _rc_lib in ...`
+#       source list (it was not before) -- closing the "5-function gap"
+#       named above; every on-disk function is now declare -F-reachable
+#       after sourcing rc, so checks (b) and (c) use the SAME count (175)
+#       from here on, and check (c)'s enumeration below includes
+#       msb_flags.sh's pre-existing 5 functions for the first time too.
+#       cli/up.sh (3 new): _up_build_egress_config_json (S2's generator ->
+#       real-config translator), _up_translate_docker_args_to_msb (the
+#       docker-argv -> msb-argv translator), _up_prepare_resume_secrets
+#       (Fold b's preflight, re-run on every resume since msb re-resolves
+#       --secret bindings from the host env at every start, not just
+#       create -- live-discovered during this bead's implementation).
+#       cli/doctor.sh (1 new): _doctor_format_posture_probe (replaces the
+#       retired in-cage engine-process probe; bead criteria 4 + 5).
 # ---------------------------------------------------------------------------
-echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 156) ==="
+echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 175) ==="
 
-EXPECTED_FN_COUNT=156
+EXPECTED_FN_COUNT=175
 _actual_fn_count=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh 2>/dev/null | wc -l | tr -d ' ')
 
 if [[ "$_actual_fn_count" -eq "$EXPECTED_FN_COUNT" ]]; then
@@ -124,15 +151,17 @@ echo ""
 # ---------------------------------------------------------------------------
 # (c) declare -F reachability: after sourcing the shim (exposing functions
 #     only -- no dispatch, since rc is sourced not executed here), every one
-#     of the 151 currently rc-reachable functions must be `declare -F`-
-#     reachable (156 total definitions on disk minus the 5 cli/lib/msb_flags.sh
-#     functions rc does not source -- the pre-existing gap named in (b)'s
-#     comment above). A loud, per-name failure (not just a count) so a
-#     reviewer can see exactly which module dropped/misfiled a function.
+#     of the 175 currently rc-reachable functions must be `declare -F`-
+#     reachable. rip-cage-rj68 (S6): cli/lib/msb_flags.sh is now in rc's
+#     source list (previously it was not -- see (b)'s comment), so the
+#     stale "151 reachable out of 156 on disk" gap is closed; on-disk count
+#     and reachable count are the SAME number (175) from here on. A loud,
+#     per-name failure (not just a count) so a reviewer can see exactly
+#     which module dropped/misfiled a function.
 # ---------------------------------------------------------------------------
-echo "=== (c) declare -F reachability: all 151 rc-reachable functions defined after sourcing rc ==="
+echo "=== (c) declare -F reachability: all 175 rc-reachable functions defined after sourcing rc ==="
 
-ALL_193_NAMES="_allowlist_add _allowlist_add_host_to_yaml _allowlist_is_in_cage _allowlist_promote _allowlist_read_observed_hosts _allowlist_refuse_in_cage _allowlist_resolve_config_file _allowlist_show _bd_dolt_port_inject_arg _bd_host_preflight _build_msb_load _build_warn_stale_containers _check_lfs_stubs _check_secret_path_denylist _check_workspace_config_base_url _collect_dangling_symlinks _collect_symlink_parents _config_applied_path _config_check_version _config_check_yq _config_default_global_yaml _config_diff_paths _config_emit_hint _config_ensure_global_seeded _config_format_yaml _config_global_path _config_label_value _config_load_layer _config_merge _config_mux_derive_allowed_set _config_paths_all_reload_eligible _config_project_path _config_provenance _config_read_applied _config_resolve_workspace_arg _config_schema_defaults_json _config_schema_field_type _config_schema_lines _config_schema_selection_list_keys _config_unknown_version_classify _config_validate_or_abort _config_write_applied _container_multiplexer _docker_call _doctor_bd_version_compare _doctor_dead_file_mounts _doctor_format_auth_probe _doctor_format_dead_mounts _doctor_host _emit_denylist_denial _emit_workspace_config_base_url_error _emit_workspace_config_base_url_warning _ensure_pi_auth_seed _extract_credentials _extract_credentials_has_usable_existing _host_source_is_root_owned _image_is_current _lexical_normalize_path _load_effective_config _manifest_build_dockerfile_path _manifest_build_mount_args _manifest_check_binary_root_owned _manifest_check_build_isolation _manifest_check_build_source_subfields _manifest_check_install_cmd_single_line _manifest_check_ioc_egress _manifest_check_mount_root_owned _manifest_check_mounts_denylist _manifest_check_seed_drift _manifest_default_yaml _manifest_dest_in_allowed_roots _manifest_dist_path _manifest_egress_hosts_json _manifest_ensure_seeded _manifest_expand_mount_host _manifest_extract_seed_fingerprint _manifest_generate_daemon_config_dockerfile_steps _manifest_generate_daemon_mcp_dockerfile_steps _manifest_generate_extra_dockerfile_steps _manifest_generate_launch_args _manifest_generate_multiplexer_label _manifest_generate_multiplexer_registry_steps _manifest_generate_pi_shim_steps _manifest_generate_safety_stack_asserted_steps _manifest_generate_shell_init_zshrc_steps _manifest_generate_source_builder_stages _manifest_generate_tool_init_config_dockerfile_steps _manifest_global_path _manifest_load _manifest_reconcile _manifest_seed_fingerprint_hash _manifest_validate _path_under_allowed_roots _prereq_error _probe_tcp _pull_or_build _pull_or_build_local _rc_ls_mode_from_source_path _rc_mux_resolve_hook_path _resolve_script_dir _run_with_timeout _secret_path_denylist_matched_pattern _seed_claude_home_dirs _symlink_follow_fingerprint _up_detect_worktree _up_image_drift_status _up_init_container _up_json_output _up_prepare_docker_mounts _up_prepare_environment _up_resolve_dcg_config _up_resolve_effective_credential_mounts_for_tool _up_resolve_placeholder_env_file _up_resolve_resume_config_mode _up_resolve_resume_credential_mounts _up_resolve_resume_image_drift_running _up_resolve_resume_image_drift_stopped _up_resolve_resume_symlink_fingerprint _up_short_image_id _up_start_container _up_validate_dcg_config check_docker check_jq cmd_allowlist cmd_attach cmd_auth cmd_auth_refresh cmd_build cmd_config cmd_config_get cmd_config_show cmd_destroy cmd_doctor cmd_down cmd_exec cmd_generate_dockerfile cmd_install cmd_ls cmd_manifest cmd_reload cmd_schema cmd_setup cmd_test cmd_up container_name json_error log resolve_name usage validate_path verify_rc_container"
+ALL_193_NAMES="_allowlist_add _allowlist_add_host_to_yaml _allowlist_is_in_cage _allowlist_promote _allowlist_read_observed_hosts _allowlist_refuse_in_cage _allowlist_resolve_config_file _allowlist_show _bd_dolt_port_inject_arg _bd_host_preflight _build_msb_load _build_warn_stale_containers _check_lfs_stubs _check_secret_path_denylist _check_workspace_config_base_url _collect_dangling_symlinks _collect_symlink_parents _config_applied_path _config_check_version _config_check_yq _config_default_global_yaml _config_diff_paths _config_emit_hint _config_ensure_global_seeded _config_format_yaml _config_global_path _config_label_value _config_load_layer _config_merge _config_mux_derive_allowed_set _config_paths_all_reload_eligible _config_project_path _config_provenance _config_read_applied _config_resolve_workspace_arg _config_schema_defaults_json _config_schema_field_type _config_schema_lines _config_schema_selection_list_keys _config_unknown_version_classify _config_validate_or_abort _config_write_applied _container_multiplexer _docker_call _doctor_bd_version_compare _doctor_dead_file_mounts _doctor_format_auth_probe _doctor_format_dead_mounts _doctor_format_posture_probe _doctor_host _emit_denylist_denial _emit_workspace_config_base_url_error _emit_workspace_config_base_url_warning _ensure_pi_auth_seed _extract_credentials _extract_credentials_has_usable_existing _host_source_is_root_owned _image_is_current _lexical_normalize_path _load_effective_config _manifest_build_dockerfile_path _manifest_build_mount_args _manifest_check_binary_root_owned _manifest_check_build_isolation _manifest_check_build_source_subfields _manifest_check_install_cmd_single_line _manifest_check_ioc_egress _manifest_check_mount_root_owned _manifest_check_mounts_denylist _manifest_check_seed_drift _manifest_default_yaml _manifest_dest_in_allowed_roots _manifest_dist_path _manifest_egress_hosts_json _manifest_ensure_seeded _manifest_expand_mount_host _manifest_extract_seed_fingerprint _manifest_generate_daemon_config_dockerfile_steps _manifest_generate_daemon_mcp_dockerfile_steps _manifest_generate_extra_dockerfile_steps _manifest_generate_launch_args _manifest_generate_multiplexer_label _manifest_generate_multiplexer_registry_steps _manifest_generate_pi_shim_steps _manifest_generate_safety_stack_asserted_steps _manifest_generate_shell_init_zshrc_steps _manifest_generate_source_builder_stages _manifest_generate_tool_init_config_dockerfile_steps _manifest_global_path _manifest_load _manifest_reconcile _manifest_seed_fingerprint_hash _manifest_validate _msb_call _msb_current_image_digest _msb_denied_domains_from_trace_log _msb_exec _msb_exec_interactive _msb_exists _msb_flags_emit_dind_volume _msb_flags_emit_mount _msb_flags_generate _msb_flags_preflight_secret_env _msb_flags_prepare_secret_env _msb_flags_synth_secret_env_name _msb_inspect_json _msb_label _msb_remove _msb_sandbox_image_digest _msb_sandbox_state _msb_start _msb_stop_graceful _path_under_allowed_roots _prereq_error _probe_tcp _pull_or_build _pull_or_build_local _rc_ls_mode_from_source_path _rc_mux_resolve_hook_path _resolve_script_dir _run_with_timeout _secret_path_denylist_matched_pattern _seed_claude_home_dirs _symlink_follow_fingerprint _up_build_egress_config_json _up_detect_worktree _up_image_drift_status _up_init_container _up_json_output _up_prepare_docker_mounts _up_prepare_environment _up_prepare_resume_secrets _up_resolve_dcg_config _up_resolve_effective_credential_mounts_for_tool _up_resolve_placeholder_env_file _up_resolve_resume_config_mode _up_resolve_resume_credential_mounts _up_resolve_resume_image_drift_running _up_resolve_resume_image_drift_stopped _up_resolve_resume_symlink_fingerprint _up_short_image_id _up_start_container _up_translate_docker_args_to_msb _up_validate_dcg_config check_docker check_jq check_msb cmd_allowlist cmd_attach cmd_auth cmd_auth_refresh cmd_build cmd_config cmd_config_get cmd_config_show cmd_destroy cmd_doctor cmd_down cmd_exec cmd_generate_dockerfile cmd_install cmd_ls cmd_manifest cmd_reload cmd_schema cmd_setup cmd_test cmd_up container_name json_error log resolve_name usage validate_path verify_rc_container"
 
 _missing=""
 _missing_count=0
@@ -146,7 +175,7 @@ for _fn in $ALL_193_NAMES; do
 done
 
 if [[ "$_missing_count" -eq 0 ]]; then
-  pass "(c)" "all 151 rc-reachable functions are declare -F reachable after sourcing rc"
+  pass "(c)" "all 175 rc-reachable functions are declare -F reachable after sourcing rc"
 else
   fail "(c)" "${_missing_count} function(s) NOT reachable after sourcing rc" "missing:${_missing}"
 fi
@@ -161,19 +190,24 @@ echo ""
 #     _up_resolve_egress_rules, deleted with the in-cage egress engine per
 #     rip-cage-3vj2 / S4), then _filter_known_hosts (the ssh known_hosts
 #     filter, deleted with the entire ssh cluster per rip-cage-f1qo / S5,
-#     ADR-029 D3). No replacement member exists: cli/reload.sh now depends
-#     only on cli/lib/*.sh (grep-verified -- zero cli/up.sh-defined function
-#     names appear as real calls in cli/reload.sh, comments excluded). The
-#     up<->reload coupling this check tracked is therefore RETIRED, not
-#     re-pointed. Assert that severance holds (a regression would be an
-#     up.sh-defined name creeping back into reload.sh without updating this
-#     canary) by re-sourcing in shim order and checking no such name is
-#     declare -F-reachable-and-required.
+#     ADR-029 D3). That original coupling was RETIRED, not re-pointed, by S5.
+#
+#     rip-cage-rj68 (S6) reintroduces a coupling MEMBER -- an intentional,
+#     documented one, not a regression: cmd_reload's net-rule repair action
+#     (ADR-029 D4, cold-recreate DESIGN DECISION -- see cli/reload.sh's own
+#     comment) invokes `cmd_up "$workspace"` directly rather than
+#     hand-rolling a second, parallel mount/env-rebuild implementation --
+#     "the SAME create pipeline, invoked again against the now-current
+#     .rip-cage.yaml". `cmd_up` is the ONLY up.sh-defined name reload.sh may
+#     depend on; any OTHER up.sh function reappearing in reload.sh (e.g. an
+#     internal `_up_*` helper called directly, bypassing cmd_up's own
+#     validation/label/guard machinery) would be exactly the kind of
+#     under-the-radar re-coupling this canary exists to catch.
 # ---------------------------------------------------------------------------
-echo "=== (d) up<->reload coupling: RETIRED (S5) -- cli/reload.sh has no cli/up.sh-defined dependency left ==="
+echo "=== (d) up<->reload coupling: RETIRED-then-reintroduced (S5 retired it; S6 re-adds exactly ONE intentional member, cmd_up) ==="
 
 _up_fn_names=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "${REPO_ROOT}/cli/up.sh" | sed 's/()$//')
-_reload_real_calls=$(grep -v '^\s*#' "${REPO_ROOT}/cli/reload.sh" | grep -oE '_[a-zA-Z_][a-zA-Z0-9_]*' | sort -u)
+_reload_real_calls=$(grep -v '^\s*#' "${REPO_ROOT}/cli/reload.sh" | grep -oE '\b[a-zA-Z_][a-zA-Z0-9_]*\b' | sort -u)
 
 _surviving_coupling=""
 for _fn in $_up_fn_names; do
@@ -181,11 +215,15 @@ for _fn in $_up_fn_names; do
     _surviving_coupling="${_surviving_coupling} ${_fn}"
   fi
 done
+# Trim leading/trailing whitespace for a clean equality check.
+_surviving_coupling="${_surviving_coupling# }"
 
-if [[ -z "$_surviving_coupling" ]]; then
-  pass "(d)" "no cli/up.sh-defined function is referenced (call or identifier) by cli/reload.sh -- coupling confirmed retired"
+if [[ "$_surviving_coupling" == "cmd_up" ]]; then
+  pass "(d)" "the ONLY cli/up.sh-defined function reload.sh depends on is cmd_up (S6's documented cold-recreate reuse) -- no other up.sh function has crept back in"
+elif [[ -z "$_surviving_coupling" ]]; then
+  fail "(d)" "expected cmd_up to be the S6 coupling member but found none -- did cli/reload.sh's cold-recreate call get removed/renamed without updating this canary?" "(none found)"
 else
-  fail "(d)" "an up.sh-defined function reappeared in reload.sh -- update this canary to name/verify the new coupling member" "${_surviving_coupling}"
+  fail "(d)" "up.sh-defined function(s) beyond the documented cmd_up coupling appear in reload.sh -- update this canary to name/verify the new coupling member(s), or fix the unintended coupling" "${_surviving_coupling}"
 fi
 
 echo ""

@@ -49,6 +49,7 @@ auth.credential_mounts|selection_list|"real"|real,none
 auth.placeholder_env_file|scalar|null
 auth.per_tool.claude|selection_list|null|real,none
 auth.per_tool.pi|selection_list|null|real,none
+auth.credentials|additive_list|[]
 EOF
 }
 
@@ -362,6 +363,33 @@ _config_load_layer() {
       return 1
     fi
   done < <(jq -r '.auth.per_tool // {} | keys[]?' <<<"$json" 2>/dev/null || true)
+
+  # auth.credentials (rip-cage-rj68, S6 Fold a — the credential->host binding
+  # surface the deleted MEDIATOR archetype used to carry, ADR-029 D2). Each
+  # entry MUST declare a non-empty 'source_env' and a non-empty 'hosts'
+  # array — fail-closed (ADR-001), same discipline as the auth.per_tool
+  # check above: a malformed binding must never be silently dropped (an
+  # operator who thinks a credential is scoped to a host, when the entry
+  # was actually discarded, is a worse outcome than refusing to boot).
+  # This is a generation-time check ON THE CONFIG SURFACE, distinct from
+  # (and upstream of) cli/lib/msb_flags.sh's OWN source_env validation on
+  # its JSON contract — msb_flags.sh's contract stays untouched; this is
+  # the layer that produces well-formed input for it.
+  local _cred_count _cred_idx
+  _cred_count=$(jq '.auth.credentials // [] | length' <<<"$json" 2>/dev/null || echo 0)
+  for (( _cred_idx=0; _cred_idx<_cred_count; _cred_idx++ )); do
+    local _cred_source_env _cred_hosts_count
+    _cred_source_env=$(jq -r ".auth.credentials[${_cred_idx}].source_env // \"\"" <<<"$json" 2>/dev/null)
+    if [[ -z "$_cred_source_env" ]]; then
+      echo "Error: '$file' has auth.credentials[${_cred_idx}] missing required field 'source_env'." >&2
+      return 1
+    fi
+    _cred_hosts_count=$(jq ".auth.credentials[${_cred_idx}].hosts // [] | length" <<<"$json" 2>/dev/null || echo 0)
+    if [[ "$_cred_hosts_count" -eq 0 ]]; then
+      echo "Error: '$file' has auth.credentials[${_cred_idx}] (source_env=${_cred_source_env}) with missing or empty 'hosts' — a credential bound to zero hosts is not a valid binding." >&2
+      return 1
+    fi
+  done
 
   echo "$json"
 }

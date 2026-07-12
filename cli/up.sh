@@ -861,8 +861,21 @@ _up_prepare_docker_mounts() {
 
   # CAGE_HOST_ADDR explicit pass-through for non-interactive pi -p runs.
   # Resolve on the host side so the value is never empty inside the container.
-  # host.docker.internal is the default (works on Docker Desktop/macOS/Linux with host-gateway).
-  _UP_RUN_ARGS+=(-e "CAGE_HOST_ADDR=${CAGE_HOST_ADDR:-host.docker.internal}")
+  # rip-cage-rj68 (S6): default swapped from docker's host.docker.internal
+  # to msb's equivalent synthetic host-gateway hostname,
+  # host.microsandbox.internal (confirmed present in every msb-booted guest,
+  # docs/2026-07-09-msb-spike-ssh-agent.md). KNOWN LIMITATION carried
+  # forward from that spike, not resolved by this bead: general TCP dials to
+  # host.microsandbox.internal are fake-accepted by msb's netstack for
+  # arbitrary/unbound destinations (the LAN-IP host-service spike,
+  # docs/2026-07-09-msb-spike-lan-ip-host-service.md, found the host's real
+  # LAN IP is the only genuinely delivered guest->host path) — a caller of
+  # CAGE_HOST_ADDR relying on it to reach an arbitrary host-bound port
+  # should verify with a real bidirectional data check, not connect()
+  # success, exactly as everywhere else in this codebase. No current
+  # acceptance criterion in this bead depends on this value's live
+  # reachability; only the identifier name is fixed here.
+  _UP_RUN_ARGS+=(-e "CAGE_HOST_ADDR=${CAGE_HOST_ADDR:-host.microsandbox.internal}")
 
   # Provider env-var passthrough (ADR-019 D5 FLEXIBLE — fixed list, skip empty values)
   # PI_PACKAGE_DIR excluded: host dev path, breaks pi startup in cage
@@ -1041,9 +1054,11 @@ _up_prepare_environment() {
     # Embedded Dolt or no metadata: let bd use embedded engine on bind mount
     log "Beads: embedded mode — no Dolt server connection"
   else
-    # Server/owned/external mode: connect to host's Dolt server
+    # Server/owned/external mode: connect to host's Dolt server.
+    # rip-cage-rj68 (S6): msb's host-gateway hostname — see the
+    # CAGE_HOST_ADDR comment above for the same swap + its known limitation.
     _UP_RUN_ARGS+=(-e "BEADS_DOLT_SERVER_MODE=1")
-    _UP_RUN_ARGS+=(-e "BEADS_DOLT_SERVER_HOST=host.docker.internal")
+    _UP_RUN_ARGS+=(-e "BEADS_DOLT_SERVER_HOST=host.microsandbox.internal")
     local dolt_port_file="${beads_dir}/dolt-server.port"
     local _dolt_port_env_arg
     _dolt_port_env_arg=$(_bd_dolt_port_inject_arg "$dolt_port_file")
@@ -1061,30 +1076,108 @@ _up_prepare_environment() {
 }
 
 
-# _up_start_container — run the container with the prepared _UP_RUN_ARGS.
+# _up_start_container — create the msb sandbox with the prepared
+# _UP_RUN_ARGS (rip-cage-rj68, S6 — REWRITTEN onto msb; was `docker run`).
 #
-# Globals read: _UP_RUN_ARGS, OUTPUT_FORMAT
-# Parameter: $1 name — container name (for error messages)
+# The mount/env-building body that produces _UP_RUN_ARGS
+# (_up_prepare_docker_mounts, _up_prepare_environment, DCG, manifest
+# mounts) is UNCHANGED by this bead — still docker -v/-e/--label/--workdir
+# shape. This function is the one seam where that shape gets: (a)
+# translated to msb flags (_up_translate_docker_args_to_msb), and (b)
+# joined with the net-rule/secret/tls flags S2's generator produces from
+# the NEW auth.credentials config surface (_up_build_egress_config_json ->
+# _msb_flags_generate) — "create moves onto S2's generator flags" per the
+# bead design.
+#
+# Fold b (source_env preflight) gates this BEFORE any msb invocation: a
+# credential whose source_env is unset/empty in the host env aborts loud
+# here, naming the var, rather than silently booting a cage carrying an
+# empty secret.
+#
+# `--log-level trace` is always passed (criterion 5, D2's deny-visibility
+# re-home): cages boot with trace logging on by default so the DNS-denial
+# `domain=` log line is available for the repair loop's fix-hint (see
+# _reload_denied_domains_from_trace_log in cli/reload.sh).
+#
+# Globals read: _UP_RUN_ARGS, OUTPUT_FORMAT, IMAGE
+# Parameters: $1 name — container name; $2 path — validated workspace path
+#             (for the egress-config JSON build)
+# Returns non-zero on failure (human mode); JSON mode calls json_error,
+# which exits internally and never returns.
 _up_start_container() {
-  local _name="$1"
-  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    local docker_stderr
-    # Note: inside $(...), redirects are evaluated left-to-right:
-    # 2>&1 copies stderr to the capture pipe (stdout), then >/dev/null discards stdout —
-    # capturing stderr while suppressing the container ID.
-    if ! docker_stderr=$(docker run "${_UP_RUN_ARGS[@]}" 2>&1 >/dev/null); then
-      if echo "$docker_stderr" | grep -q "is already in use by container"; then
+  local _name="$1" _path="$2"
+
+  local _egress_cfg
+  _egress_cfg=$(_up_build_egress_config_json "$_path")
+
+  local _preflight_err
+  if ! _preflight_err=$(_msb_flags_preflight_secret_env "$_egress_cfg" 2>&1); then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "$_preflight_err" "SECRET_SOURCE_ENV_UNSET"
+    fi
+    echo "$_preflight_err" >&2
+    return 1
+  fi
+
+  # Export each credential's real value under its synthesized guest-
+  # placeholder name. MUST run in this shell (never via $(...), which would
+  # run in a subshell and discard the exports) per its own contract.
+  _msb_flags_prepare_secret_env "$_egress_cfg"
+
+  local _egress_out _egress_rc=0
+  _egress_out=$(_msb_flags_generate "$_egress_cfg") || _egress_rc=$?
+  if [[ "$_egress_rc" -ne 0 ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Failed to generate msb egress flags for $_name" "MSB_FLAGS_GENERATE_FAILED"
+    fi
+    echo "Error: failed to generate msb egress flags for $_name" >&2
+    return 1
+  fi
+  local _egress_flags=()
+  [[ -n "$_egress_out" ]] && mapfile -t _egress_flags <<< "$_egress_out"
+
+  local _translate_out _translate_rc=0
+  _translate_out=$(_up_translate_docker_args_to_msb "${_UP_RUN_ARGS[@]}") || _translate_rc=$?
+  if [[ "$_translate_rc" -ne 0 ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Failed to translate mount/env args to msb for $_name" "MSB_ARGS_TRANSLATE_FAILED"
+    fi
+    return 1
+  fi
+  local _translated_flags=()
+  [[ -n "$_translate_out" ]] && mapfile -t _translated_flags <<< "$_translate_out"
+
+  local msb_stderr
+  if ! msb_stderr=$(msb create --name "$_name" --log-level trace \
+      "${_translated_flags[@]}" "${_egress_flags[@]}" "$IMAGE" 2>&1 >/dev/null); then
+    if echo "$msb_stderr" | grep -q "sandbox already exists"; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
         json_error "Container name $_name is already in use" "NAME_CONFLICT"
       fi
-      json_error "Failed to create container $_name" "DOCKER_ERROR"
+      echo "Error: Container name $_name is already in use" >&2
+      return 1
     fi
-  else
-    docker run "${_UP_RUN_ARGS[@]}"
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Failed to create container $_name: ${msb_stderr}" "MSB_ERROR"
+    fi
+    echo "Error: failed to create container $_name" >&2
+    echo "$msb_stderr" >&2
+    return 1
   fi
+  return 0
 }
 
 
-# _up_init_container — run the in-container init script.
+# _up_init_container — run the in-guest init script (rip-cage-rj68, S6 —
+# REWRITTEN onto msb; was `docker exec`). This is the SAME script
+# (cage/init/init-rip-cage.sh, baked at /usr/local/bin/init-rip-cage.sh)
+# re-run on EVERY create AND every resume (see cmd_up's resume branch
+# below) — this is the mechanism behind ADR-029 D4's "rc re-runs init on
+# each resume" corollary (bead criterion 6: git identity re-established;
+# git config --global user.name/user.email are set unconditionally inside
+# init-rip-cage.sh on every run) and the cockpit/herdr re-registration
+# corollary (bead criterion 3: the multiplexer 'start' hook dispatch also
+# lives inside this same script, section 12).
 #
 # Globals read:    OUTPUT_FORMAT
 # Globals written: _UP_INIT_OK (set to "true" or "false")
@@ -1094,9 +1187,9 @@ _up_init_container() {
   _UP_INIT_OK=true
   log "Running init script..."
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    docker exec "$_name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || _UP_INIT_OK=false
+    _msb_exec "$_name" -- /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || _UP_INIT_OK=false
   else
-    docker exec "$_name" /usr/local/bin/init-rip-cage.sh || _UP_INIT_OK=false
+    _msb_exec "$_name" -- /usr/local/bin/init-rip-cage.sh || _UP_INIT_OK=false
   fi
 }
 
@@ -1116,11 +1209,11 @@ _up_init_container() {
 _up_resolve_resume_config_mode() {
   local _name="$1" _path="$2"
   local _label
-  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.config-mode" }}' "$_name" 2>/dev/null); then
+  if ! _label=$(_msb_label "$_name" "rc.config-mode"); then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
+      json_error "msb inspect failed for $_name" "MSB_ERROR"
     fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
+    echo "Error: msb inspect failed for $_name (is msb reachable?)" >&2
     exit 1
   fi
   # Empty label = legacy container; treat as "ro" (the default, matches the
@@ -1207,14 +1300,14 @@ _up_short_image_id() {
 _up_image_drift_status() {
   local _name="$1"
   local _stored_image
-  if ! _stored_image=$(docker inspect --format '{{.Image}}' "$_name" 2>/dev/null); then
+  if ! _stored_image=$(_msb_sandbox_image_digest "$_name"); then
     _UP_IMAGE_DRIFT_STORED=""
     _UP_IMAGE_DRIFT_CURRENT=""
     return 3
   fi
   _UP_IMAGE_DRIFT_STORED=$(_up_short_image_id "$_stored_image")
   local _current_image
-  if ! _current_image=$(docker image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null); then
+  if ! _current_image=$(_msb_current_image_digest "$IMAGE"); then
     _UP_IMAGE_DRIFT_CURRENT=""
     return 2
   fi
@@ -1249,9 +1342,9 @@ _up_resolve_resume_image_drift_stopped() {
     # path still has no safe default here and aborts, matching every sibling
     # _up_resolve_resume_* resolver's docker-inspect-failure idiom.
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
+      json_error "msb inspect failed for $_name" "MSB_ERROR"
     fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
+    echo "Error: msb inspect failed for $_name (is msb reachable?)" >&2
     exit 1
   fi
 
@@ -1306,7 +1399,7 @@ _up_resolve_resume_image_drift_running() {
   [[ "$_status" -eq 0 ]] && return 0
 
   if [[ "$_status" -eq 3 ]]; then
-    echo "Warning: could not verify container ${_name}'s image (docker inspect failed) — skipping the image-drift check for this attach." >&2
+    echo "Warning: could not verify container ${_name}'s image (msb inspect failed) — skipping the image-drift check for this attach." >&2
     return 0
   fi
 
@@ -1357,16 +1450,16 @@ _up_resolve_resume_credential_mounts() {
   local _name="$1" _path="$2"
 
   local _label_global
-  if ! _label_global=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts" }}' "$_name" 2>/dev/null); then
+  if ! _label_global=$(_msb_label "$_name" "rc.auth.credential-mounts"); then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
+      json_error "msb inspect failed for $_name" "MSB_ERROR"
     fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
+    echo "Error: msb inspect failed for $_name (is msb reachable?)" >&2
     exit 1
   fi
   local _label_claude _label_pi
-  _label_claude=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts.claude" }}' "$_name" 2>/dev/null || true)
-  _label_pi=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts.pi" }}' "$_name" 2>/dev/null || true)
+  _label_claude=$(_msb_label "$_name" "rc.auth.credential-mounts.claude" || true)
+  _label_pi=$(_msb_label "$_name" "rc.auth.credential-mounts.pi" || true)
 
   # Empty global label = legacy container (pre-seqc.4); treat as "real".
   local _stored_global="real"
@@ -1416,7 +1509,7 @@ _up_resolve_resume_credential_mounts() {
 _up_resolve_resume_symlink_fingerprint() {
   local _name="$1" _path="$2"
   local _stored_fp
-  _stored_fp=$(docker inspect --format '{{ index .Config.Labels "rc.symlink-follow-fingerprint" }}' "$_name" 2>/dev/null || true)
+  _stored_fp=$(_msb_label "$_name" "rc.symlink-follow-fingerprint" || true)
 
   # Compute current fingerprint — include mode, on_dangling, and scope so that
   # policy changes (not just symlink-set changes) produce fingerprint drift.
@@ -1704,6 +1797,182 @@ _UP_DCG_CONFIG_PATH=""
 #      (host-authored config, host-only trust). No 0600 warning (non-secret
 #      by design; agent-readability of the placeholder is the point).
 #
+# _up_translate_docker_args_to_msb ARGS...
+#
+# rip-cage-rj68 (S6): mechanical translator from the docker-run-argv shape
+# _up_prepare_docker_mounts/_up_prepare_environment build (UNCHANGED by this
+# bead — the worktree, symlink-follow, DCG, credential-mount, manifest-mount
+# business logic all stays exactly as it was) into msb-run/msb-create argv.
+# Most flags are byte-identical between the two runtimes (docker's
+# `-v SRC:DST[:OPTIONS]` and msb's `-v SOURCE:DEST[:OPTIONS]` share the same
+# grammar) — this function only transforms the small set of genuine
+# differences. Echoes one output token per line (mirrors msb_flags.sh's own
+# output convention — `mapfile -t FLAGS < <(_up_translate_docker_args_to_msb
+# "${_UP_RUN_ARGS[@]}")`).
+#
+# Handles (see module-level docs in tests/test-up-msb-args-translate.sh for
+# the full behavior matrix): -v (strips :delegated, msb doesn't recognize
+# the macOS Docker-Desktop cache-hint option; :ro passthrough), -e/--label/
+# --workdir/-p (byte-identical flag names, straight passthrough), --mount
+# type=bind,src=X,dst=Y[,ro] (docker long-form -> msb --mount-file X:Y[:ro]
+# — the sole caller of this docker long-form is the DCG-config mount),
+# --cpus=/--memory= (byte-identical flag names, passthrough), --memory-swap=
+# and --pids-limit= (dropped — no msb `create`-time equivalent),
+# --add-host=host.docker.internal:host-gateway (dropped — msb needs no
+# static gateway entry), --env-file FILE (expanded into individual -e
+# KEY=VALUE tokens, one per non-comment non-blank line, matching docker's
+# own env-file line format).
+#
+# NOT handled here: --name/the trailing IMAGE+override-command positional
+# tokens some callers append to a docker-run argv — this function expects
+# ONLY the flag/value body (name and image are passed to msb create as
+# their own separate arguments by the caller; msb create has no
+# command-override positional at all, so there is nothing to translate
+# there — see cli/lib/msb_runtime.sh's _msb_create_raw).
+#
+# ADR-001 fail-loud: an unrecognized flag aborts loud rather than being
+# silently dropped or silently passed through unmodified (either of which
+# could hide a real msb/docker behavior gap).
+_up_translate_docker_args_to_msb() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -v)
+        local _spec="$2"
+        # Strip a trailing ":delegated" (macOS Docker Desktop cache hint;
+        # msb has no such option and does not recognize the token).
+        _spec="${_spec%:delegated}"
+        # printf, not echo: several flags translated here (-v, -e, -p) are
+        # literally "-e"/"-p" — bash's echo builtin interprets a bare "-e"
+        # (or "-n"/"-E") as ITS OWN option when it is the sole/first
+        # argument, silently swallowing the token instead of printing it.
+        # printf '%s\n' never interprets its argument as a flag.
+        printf '%s\n' "-v" "$_spec"
+        shift 2
+        ;;
+      -e|--label|--workdir|-p)
+        printf '%s\n' "$1" "$2"
+        shift 2
+        ;;
+      --mount)
+        local _mspec="$2" _msrc="" _mdst="" _mro=""
+        local _mfield
+        IFS=',' read -ra _mfields <<<"$_mspec"
+        for _mfield in "${_mfields[@]}"; do
+          case "$_mfield" in
+            src=*) _msrc="${_mfield#src=}" ;;
+            dst=*) _mdst="${_mfield#dst=}" ;;
+            ro) _mro=":ro" ;;
+          esac
+        done
+        printf '%s\n' "--mount-file" "${_msrc}:${_mdst}${_mro}"
+        shift 2
+        ;;
+      --cpus=*|--memory=*)
+        printf '%s\n' "$1"
+        shift
+        ;;
+      --memory-swap=*|--pids-limit=*|--add-host=*)
+        # No msb create-time equivalent (memory-swap: no host-swap-limit
+        # concept in the VM model; pids-limit: no --rlimit support on `msb
+        # create`, only `msb run`; add-host: msb needs no static
+        # host-gateway /etc/hosts entry). Dropped, not translated.
+        shift
+        ;;
+      --env-file)
+        local _ef="$2"
+        local _efline
+        while IFS= read -r _efline || [[ -n "$_efline" ]]; do
+          [[ -z "$_efline" ]] && continue
+          [[ "$_efline" == \#* ]] && continue
+          printf '%s\n' "-e" "$_efline"
+        done < "$_ef"
+        shift 2
+        ;;
+      *)
+        echo "Error: _up_translate_docker_args_to_msb: unrecognized docker arg '$1' -- no known msb translation. Refusing to silently drop or pass it through unmodified." >&2
+        return 1
+        ;;
+    esac
+  done
+}
+
+
+# _up_build_egress_config_json PATH
+#
+# rip-cage-rj68 (S6 of the msb migration epic rip-cage-tsf2): translates the
+# effective .rip-cage.yaml config into the normalized JSON contract
+# cli/lib/msb_flags.sh's _msb_flags_generate expects (S2, rip-cage-kl4r,
+# APPROVED as-is per the 2026-07-12 Fable fold — this function feeds it,
+# does not reshape it).
+#
+# allowed_hosts <- network.allowed_hosts (existing schema field, unchanged).
+# credentials   <- auth.credentials (rip-cage-rj68 S6 Fold a — the NEW
+#                  credential->host binding surface; deliberately isomorphic
+#                  to the contract's own "credentials" field, so this is a
+#                  straight passthrough, not a reshaping step).
+#
+# mounts/possession_mounts/tls_body_rewrite/dind_volumes are intentionally
+# left at their contract defaults (empty/false) here: every current mount
+# (workspace, credentials, symlink-follow, DCG config, manifest mounts,
+# state volumes) is already built as a docker-shaped -v/-e/--label arg by
+# _up_prepare_docker_mounts/_up_prepare_environment (unchanged by this
+# bead) and separately translated to msb mount flags by
+# _up_translate_docker_args_to_msb — routing the SAME mounts through this
+# JSON contract's mount fields too would double-emit them. Only the
+# net-rule/secret/tls concern is genuinely new (msb primitives with no
+# pre-msb docker equivalent) and belongs in this JSON contract.
+#
+# D5 regression contract: no config files present -> {"allowed_hosts":[],
+# "credentials":[]} — msb_flags_generate on this input emits
+# --net-default deny with zero --net-rule/--secret flags (deny-all, no
+# behavior claim beyond "unconfigured cages get no egress" — S7's curated
+# default allowlist is a separate, later child).
+_up_build_egress_config_json() {
+  local _uec_path="$1"
+  local _uec_allowed_hosts='[]' _uec_credentials='[]'
+  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$_uec_path")" ]]; then
+    if command -v yq &>/dev/null; then
+      local _uec_cfg_result
+      if _uec_cfg_result=$(_load_effective_config "$_uec_path" 2>/dev/null); then
+        _uec_allowed_hosts=$(jq -c '.config.network.allowed_hosts // []' <<<"$_uec_cfg_result")
+        _uec_credentials=$(jq -c '.config.auth.credentials // []' <<<"$_uec_cfg_result")
+      fi
+    fi
+  fi
+  jq -nc --argjson hosts "$_uec_allowed_hosts" --argjson creds "$_uec_credentials" \
+    '{allowed_hosts: $hosts, credentials: $creds}'
+}
+
+
+# _up_prepare_resume_secrets PATH
+#
+# rip-cage-rj68 (S6): msb resolves a `--secret ENV@HOST` binding's real
+# value from the host environment variable ENV at SANDBOX START TIME, not
+# just at creation — confirmed live (msb start on a stopped sandbox fails
+# loud, "host environment variable ... is not set", when the synthesized
+# name is absent from the CURRENT process's environment, even though the
+# sandbox already booted successfully once before with it present). A
+# resume happening in a fresh `rc up` process therefore needs the SAME
+# Fold-b preflight (fail loud, name the var, before touching msb) and the
+# SAME secret-env export _up_start_container runs at create time — this is
+# that same two-step, factored out so create and resume share one source
+# of truth rather than drifting.
+#
+# Returns non-zero (preflight failure already printed to stderr by
+# _msb_flags_preflight_secret_env) when a credential's source_env is unset
+# or empty; the caller must not proceed to `msb start`.
+_up_prepare_resume_secrets() {
+  local _urs_path="$1"
+  local _urs_cfg
+  _urs_cfg=$(_up_build_egress_config_json "$_urs_path")
+  if ! _msb_flags_preflight_secret_env "$_urs_cfg"; then
+    return 1
+  fi
+  _msb_flags_prepare_secret_env "$_urs_cfg"
+  return 0
+}
+
+
 # RETURN MECHANISM (R2 F2, pinned): sets the global _UP_PLACEHOLDER_ENV_FILE
 # (reset to "" at the top of every call so a stale value from a prior
 # invocation in the same process can never leak forward). This function must
@@ -2040,9 +2309,17 @@ cmd_up() {
   # Check image exists and is current — pull from GHCR (with local-build
   # fallback) if missing or version label mismatches RC_VERSION (stale).
   # Provisioning fires only on the new-container (absent) path; see below.
-  # See _image_is_current / _pull_or_build / ADR-008 D6.
+  # See _image_is_current / _pull_or_build / ADR-008 D6. rip-cage-rj68 (S6):
+  # ALSO requires the image be present in msb's LOCAL cache — the actual
+  # runtime `msb create` boots from below — not just docker's, since
+  # _pull_or_build's docker-side provisioning always ends with the
+  # docker-save/msb-load conversion step (_build_msb_load, S1) that puts it
+  # there; a docker image present but never `rc build`-provisioned into msb
+  # (e.g. a stale pre-cutover local image) must still trigger provisioning.
   local _image_absent=false
-  if ! docker image inspect "$IMAGE" > /dev/null 2>&1 || ! _image_is_current; then
+  if ! docker image inspect "$IMAGE" > /dev/null 2>&1 || ! _image_is_current \
+      || ! msb image list --format json 2>/dev/null | jq -e --arg img "$IMAGE" \
+        'any(.[]; .reference == $img)' >/dev/null 2>&1; then
     _image_absent=true
   fi
 
@@ -2058,7 +2335,7 @@ cmd_up() {
 
   # Check for existing container
   local existing_path
-  existing_path=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$name" 2>/dev/null || true)
+  existing_path=$(_msb_label "$name" "rc.source.path" || true)
 
   if [[ -n "$existing_path" ]]; then
     # Container exists
@@ -2089,11 +2366,11 @@ cmd_up() {
   fi
 
   # Check container state — distinguish "container absent" from "inspect failed".
-  # docker inspect exits non-zero with "no such object" when the container does
-  # not exist; it exits 0 when the container exists (even if status is blank).
-  # Use 'if' to capture exit code without triggering set -e on failure.
+  # _msb_sandbox_state exits non-zero when the sandbox does not exist; it
+  # exits 0 when the sandbox exists (running or exited/stopped). Use 'if' to
+  # capture exit code without triggering set -e on failure.
   local state _inspect_exit
-  if state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null); then
+  if state=$(_msb_sandbox_state "$name"); then
     _inspect_exit=0
   else
     _inspect_exit=$?
@@ -2128,14 +2405,16 @@ cmd_up() {
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-STOPPED END
       would_action="would_resume"
     elif [[ "$_inspect_exit" -ne 0 ]]; then
-      # docker inspect failed → container is absent; create new.
+      # msb inspect failed → container is absent; create new.
       would_action="would_create"
     elif [[ "$state" == "paused" ]]; then
-      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is paused. Run: docker unpause $name then retry: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-      echo "Error: Container $name is paused. Run: docker unpause $name then retry: rc up $path" >&2; return 1
+      # msb has no pause/restarting/removing/dead concept — unreachable
+      # under msb (_msb_sandbox_state never returns these); kept defensive.
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is paused. Inspect manually: msb inspect $name -- then retry: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+      echo "Error: Container $name is paused. Inspect manually: msb inspect $name -- then retry: rc up $path" >&2; return 1
     elif [[ "$state" == "restarting" ]]; then
-      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is restarting. Wait, or run: docker stop $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-      echo "Error: Container $name is restarting. Wait, or run: docker stop $name && rc up $path" >&2; return 1
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is restarting. Wait, or run: msb stop $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+      echo "Error: Container $name is restarting. Wait, or run: msb stop $name && rc up $path" >&2; return 1
     elif [[ "$state" == "removing" ]]; then
       [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is being removed. Wait, then run: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
       echo "Error: Container $name is being removed. Wait, then run: rc up $path" >&2; return 1
@@ -2144,8 +2423,9 @@ cmd_up() {
       echo "Error: Container $name is dead. Run: rc destroy $name && rc up $path" >&2; return 1
     else
       # Unrecognized state (allowlist exhausted) — fail loud per ADR-001.
-      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is in unrecognized state: state=$state. Inspect manually with: docker inspect $name  — if safe, rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-      echo "Error: Container $name is in unrecognized state: state=$state. Inspect manually with: docker inspect $name  — if safe, rc destroy $name && rc up $path" >&2; return 1
+      # Reachable under msb (_msb_sandbox_state's "unknown" fallback).
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is in unrecognized state: state=$state. Inspect manually with: msb inspect $name  — if safe, rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+      echo "Error: Container $name is in unrecognized state: state=$state. Inspect manually with: msb inspect $name  — if safe, rc destroy $name && rc up $path" >&2; return 1
     fi
 
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -2251,7 +2531,7 @@ cmd_up() {
         [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
           echo "warning: --new/--session ignored under multiplexer=none" >&2
         if [[ -t 0 && -t 1 ]]; then
-          docker exec -it "$name" zsh
+          _msb_exec_interactive "$name" -- zsh
         else
           echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
         fi
@@ -2276,7 +2556,7 @@ cmd_up() {
         fi
         if [[ -t 0 && -t 1 ]]; then
           # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
-          docker exec -it "$name" sh "$_up_run_hook_path" "${rc_up_session_name:-}"
+          _msb_exec_interactive "$name" -- sh "$_up_run_hook_path" "${rc_up_session_name:-}"
         else
           echo "Container $name is running (multiplexer=${_up_run_mux}). Attach with: rc attach $name" >&2
         fi
@@ -2305,20 +2585,38 @@ cmd_up() {
     # auth.credential_mounts was toggled between real and none since create.
     _up_resolve_resume_credential_mounts "$name" "$path"
     # rip-cage-3y9g: RESUME-GUARDS-REAL-STOPPED END
+    # rip-cage-rj68 (S6): msb re-resolves every --secret binding's real
+    # value from the host env at START time, not just at create time (live-
+    # confirmed) — the same Fold-b preflight + export create uses must run
+    # again here, in THIS process, before msb start.
+    if ! _up_prepare_resume_secrets "$path"; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        _up_json_output "$name" "resumed" "$path" "stopped" "failed"
+        return 1
+      fi
+      exit 1
+    fi
+    # _msb_start is a resume — a fresh kernel boot, per ADR-029 D4's
+    # resume-path corollary. _up_init_container immediately after re-runs
+    # the SAME init script the create path runs (cockpit/herdr
+    # re-registration + git-identity re-establishment, bead criteria 3/6).
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      docker start "$name" >/dev/null
+      _msb_start "$name" >/dev/null
     else
-      docker start "$name"
+      _msb_start "$name"
     fi
     _up_init_container "$name"
     if [[ "$_UP_INIT_OK" == "false" ]]; then
+      # Graceful stop ONLY (ADR-029 D4 lifecycle corollary / bead criterion
+      # 2): _msb_stop_graceful never force-kills, so a completed guest write
+      # from this same failed-init session is not silently discarded.
       if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        docker stop "$name" >/dev/null 2>&1
+        _msb_stop_graceful "$name" >/dev/null 2>&1
         _up_json_output "$name" "resumed" "$path" "stopped" "failed"
         return 1
       fi
       echo "Error: init failed on resume. Stopping container so next 'rc up' retries." >&2
-      docker stop "$name"
+      _msb_stop_graceful "$name"
       exit 1
     fi
     _config_emit_hint "$path" "$name"
@@ -2334,7 +2632,7 @@ cmd_up() {
         [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
           echo "warning: --new/--session ignored under multiplexer=none" >&2
         if [[ -t 0 && -t 1 ]]; then
-          docker exec -it "$name" zsh
+          _msb_exec_interactive "$name" -- zsh
         else
           echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
         fi
@@ -2356,7 +2654,7 @@ cmd_up() {
         fi
         if [[ -t 0 && -t 1 ]]; then
           # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
-          docker exec -it "$name" sh "$_up_resume_hook_path" "${rc_up_session_name:-}"
+          _msb_exec_interactive "$name" -- sh "$_up_resume_hook_path" "${rc_up_session_name:-}"
         else
           echo "Container $name is running (multiplexer=${_up_resume_mux}). Attach with: rc attach $name" >&2
         fi
@@ -2366,12 +2664,17 @@ cmd_up() {
   elif [[ "$_inspect_exit" -ne 0 ]]; then
     : # container absent — fall through to "New container" block below
   elif [[ "$state" == "paused" ]]; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is paused. Run: docker unpause $name then retry: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-    echo "Error: Container $name is paused. Run: docker unpause $name then retry: rc up $path" >&2
+    # rip-cage-rj68 (S6): msb has no pause/restarting/removing/dead concept
+    # — _msb_sandbox_state never returns these; these branches are
+    # unreachable under msb (kept for defensive completeness / a future msb
+    # state this bead did not anticipate) and their remedy text is
+    # necessarily generic rather than msb-specific.
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is paused. Inspect manually: msb inspect $name -- then retry: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+    echo "Error: Container $name is paused. Inspect manually: msb inspect $name -- then retry: rc up $path" >&2
     return 1
   elif [[ "$state" == "restarting" ]]; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is restarting. Wait, or run: docker stop $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-    echo "Error: Container $name is restarting. Wait, or run: docker stop $name && rc up $path" >&2
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is restarting. Wait, or run: msb stop $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+    echo "Error: Container $name is restarting. Wait, or run: msb stop $name && rc up $path" >&2
     return 1
   elif [[ "$state" == "removing" ]]; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is being removed. Wait, then run: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
@@ -2382,9 +2685,11 @@ cmd_up() {
     echo "Error: Container $name is dead. Run: rc destroy $name && rc up $path" >&2
     return 1
   else
-    # Unrecognized state (allowlist exhausted) — fail loud per ADR-001.
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is in unrecognized state: state=$state. Inspect manually with: docker inspect $name  — if safe, rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-    echo "Error: Container $name is in unrecognized state: state=$state. Inspect manually with: docker inspect $name  — if safe, rc destroy $name && rc up $path" >&2
+    # Unrecognized state (allowlist exhausted) — fail loud per ADR-001. This
+    # IS reachable under msb (_msb_sandbox_state's "unknown" fallback for
+    # any status besides Running/Stopped).
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is in unrecognized state: state=$state. Inspect manually with: msb inspect $name  — if safe, rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+    echo "Error: Container $name is in unrecognized state: state=$state. Inspect manually with: msb inspect $name  — if safe, rc destroy $name && rc up $path" >&2
     return 1
   fi
 
@@ -2404,7 +2709,15 @@ cmd_up() {
 
   log "Creating container $name for $path..."
   local _UP_RUN_ARGS=()
-  _UP_RUN_ARGS+=(-d --name "$name")
+  # rip-cage-rj68 (S6): NO "-d --name $name" prefix here (docker-specific —
+  # msb create takes --name as its own argument, passed directly by
+  # _up_start_container below, and has no -d/detach flag to begin with,
+  # `msb create` is inherently background). Everything appended below stays
+  # in docker -v/-e/--label/--workdir/--mount/--cpus shape exactly as
+  # before — _up_translate_docker_args_to_msb converts it at the
+  # _up_start_container call site, not here, so this whole mount/env-
+  # building body (_up_prepare_docker_mounts, _up_prepare_environment,
+  # DCG, manifest mounts) is untouched by the msb cutover.
   _UP_RUN_ARGS+=(--label "rc.source.path=$path")
 
   # Per-container cache dir (DCG merged config lives here; ssh-cluster cache
@@ -2552,19 +2865,30 @@ cmd_up() {
     log "DCG policy: merged config mounted at /usr/local/lib/rip-cage/dcg/config.toml (ADR-025 D1)"
   fi
 
-  _UP_RUN_ARGS+=("$IMAGE" sleep infinity)
+  # rip-cage-rj68 (S6): NO trailing "$IMAGE sleep infinity" positional here
+  # (docker-specific CMD override — msb create has no command-override
+  # positional at all; the image's own baked CMD keeps the sandbox alive,
+  # confirmed live). _up_start_container takes $IMAGE and $path as its own
+  # arguments below.
 
-  _up_start_container "$name"
+  if ! _up_start_container "$name" "$path"; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      _up_json_output "$name" "created" "$path" "stopped" "failed"
+      return 1
+    fi
+    exit 1
+  fi
   _up_init_container "$name"
 
   if [[ "$_UP_INIT_OK" == "false" ]]; then
+    # Graceful stop ONLY (ADR-029 D4 lifecycle corollary / bead criterion 2).
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      docker stop "$name" >/dev/null 2>&1
+      _msb_stop_graceful "$name" >/dev/null 2>&1
       _up_json_output "$name" "created" "$path" "stopped" "failed"
       return 1
     fi
     echo "Error: init failed. Stopping container so next 'rc up' retries." >&2
-    docker stop "$name"
+    _msb_stop_graceful "$name"
     exit 1
   fi
 
@@ -2596,7 +2920,7 @@ cmd_up() {
       [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
         echo "warning: --new/--session ignored under multiplexer=none" >&2
       if [[ -t 0 && -t 1 ]]; then
-        docker exec -it "$name" zsh
+        _msb_exec_interactive "$name" -- zsh
       else
         echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
       fi
@@ -2619,7 +2943,7 @@ cmd_up() {
       fi
       if [[ -t 0 && -t 1 ]]; then
         # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
-        docker exec -it "$name" sh "$_up_new_hook_path" "${rc_up_session_name:-}"
+        _msb_exec_interactive "$name" -- sh "$_up_new_hook_path" "${rc_up_session_name:-}"
       else
         echo "Container $name is running (multiplexer=${_rc_multiplexer:-none}). Attach with: rc attach $name" >&2
       fi
@@ -2909,7 +3233,7 @@ _config_emit_hint() {
 
   # Legacy fallback: no snapshot file. Use label sha comparison (pre-ocn behavior).
   local existing_label
-  existing_label=$(docker inspect --format '{{ index .Config.Labels "rc.config-loaded" }}' "$container_name" 2>/dev/null || true)
+  existing_label=$(_msb_label "$container_name" "rc.config-loaded" || true)
   if [[ -z "$existing_label" ]]; then
     log "Loaded .rip-cage.yaml (sha256:${current_sha:0:12}). Run 'rc config show' to inspect."
   elif [[ "$existing_label" != "$current_sha" ]]; then

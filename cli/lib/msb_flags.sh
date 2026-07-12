@@ -269,6 +269,52 @@ _msb_flags_prepare_secret_env() {
 }
 
 
+# _msb_flags_preflight_secret_env CONFIG_JSON
+#
+# rip-cage-rj68 (S6, Fold b of the 2026-07-12 Fable rulings): NEW guard, ADDED
+# alongside the existing _msb_flags_generate/_msb_flags_prepare_secret_env
+# functions above -- the S6 input contract (this module's JSON shape) is
+# APPROVED AS-IS and stays untouched; this function does not change it.
+#
+# _msb_flags_prepare_secret_env exports each credential's CURRENT host value
+# under its synthesized name -- including an EMPTY STRING when the host
+# source_env is unset (`${!source_env:-}`), with no error anywhere. That
+# silently boots a cage carrying a placeholder-substituted EMPTY secret: the
+# guest holds a `$MSB_<SYNTH>` placeholder that resolves to nothing, msb's
+# violation guard never fires (there's no real value to compare against),
+# and the operator gets no signal until whatever used the credential fails
+# for an unrelated-looking reason deep inside the guest.
+#
+# This function is the fail-loud gate a caller runs BEFORE `msb run`/
+# `msb create` (and before calling _msb_flags_prepare_secret_env, though the
+# two are independent — order between them does not matter for correctness,
+# only that THIS one gates the invocation): for every credential's
+# source_env, checks the host environment variable is BOTH set AND
+# non-empty. On the first violation, prints a loud, actionable error to
+# stderr NAMING the offending source_env (never any value — see below) and
+# returns non-zero; the caller must not proceed to `msb run`/`msb create`.
+# Silent (no output, exit 0) when every credential's source_env passes, or
+# when no credentials are declared at all.
+#
+# Never echoes any credential VALUE, only variable NAMES — mirrors
+# _msb_flags_generate's malformed-source_env error discipline above (never
+# echo the value-looking portion of anything).
+_msb_flags_preflight_secret_env() {
+  local cfg="$1"
+  local cred_count idx
+  cred_count=$(jq '.credentials // [] | length' <<<"$cfg")
+  for (( idx=0; idx<cred_count; idx++ )); do
+    local source_env
+    source_env=$(jq -r ".credentials[${idx}].source_env" <<<"$cfg")
+    if [[ -z "${!source_env:-}" ]]; then
+      echo "Error: msb_flags preflight: credentials[${idx}].source_env '${source_env}' is unset or empty in the host environment. Export a real value for ${source_env} before running this command (e.g. 'export ${source_env}=...'), or remove this credential binding from .rip-cage.yaml. Refusing to boot a cage that would carry a placeholder-substituted empty secret." >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
+
 # _msb_flags_emit_mount CONFIG_JSON ARRAY_NAME INDEX
 #
 # Emits one --mount-file or --mount-dir SRC:DST[:ro] line pair for

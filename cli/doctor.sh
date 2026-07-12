@@ -8,13 +8,18 @@
 # reaching this dispatch table (and before the container guard), so this
 # function was unreachable dead code.
 
-# _doctor_host — daemon-level diagnostic (no container required).
+# _doctor_host — daemon/runtime-level diagnostic (no container required).
 #
-# Reports docker daemon reachability with the same timeout the preflight uses.
-# Intentionally bypasses check_docker (the dispatcher skips it for `rc doctor
-# --host`), because the whole point of this mode is to tell the user *why*
-# everything else is failing — exiting silently from the preflight would defeat
-# the purpose.
+# rip-cage-rj68 (S6): reports BOTH docker (still needed for `rc build`/`rc
+# ls`/`rc attach`/`rc exec`/`rc down`/`rc destroy`/`rc test`, out of this
+# bead's scope) AND msb (the lifecycle-verb runtime as of this bead)
+# reachability, with the same bounded-timeout discipline the preflights
+# use. Intentionally bypasses check_docker/check_msb (the dispatcher skips
+# both for `rc doctor --host`), because the whole point of this mode is to
+# tell the user *why* everything else is failing — exiting silently from
+# the preflight would defeat the purpose. Overall exit status is non-zero
+# if EITHER runtime is unreachable (either one being down breaks some rc
+# verb).
 _doctor_host() {
   local _t="${RC_DOCKER_PREFLIGHT_TIMEOUT:-3}"
   local _docker_path _docker_installed=1
@@ -35,6 +40,27 @@ _doctor_host() {
       _daemon_status="FAIL — docker info exited $_rc"
     fi
   fi
+
+  local _msb_t="${RC_MSB_PREFLIGHT_TIMEOUT:-5}"
+  local _msb_path _msb_installed=1
+  if ! _msb_path=$(command -v msb 2>/dev/null); then
+    _msb_installed=0
+  fi
+  local _msb_rc=0 _msb_status
+  if [[ "$_msb_installed" -eq 0 ]]; then
+    _msb_rc=127
+    _msb_status="FAIL — msb CLI not installed"
+  else
+    _run_with_timeout "$_msb_t" msb --version >/dev/null 2>&1 || _msb_rc=$?
+    if [[ "$_msb_rc" -eq 0 ]]; then
+      _msb_status="OK — reachable within ${_msb_t}s"
+    elif [[ "$_msb_rc" -eq 124 ]]; then
+      _msb_status="FAIL — unresponsive (no reply within ${_msb_t}s)"
+    else
+      _msb_status="FAIL — msb --version exited $_msb_rc"
+    fi
+  fi
+
   # rip-cage-j86: prerequisite checks — yq and global config (non-fatal; surface
   # fresh-device gaps at once instead of discovering them one rc up at a time).
   local _yq_path _yq_status
@@ -58,13 +84,18 @@ _doctor_host() {
       --argjson rc "$_rc" \
       --argjson timeout "$_t" \
       --arg docker_path "${_docker_path:-}" \
+      --arg msb "$_msb_status" \
+      --argjson msb_rc "$_msb_rc" \
+      --arg msb_path "${_msb_path:-}" \
       --arg yq "$_yq_status" \
       --arg global_config "$_global_cfg_status" \
-      '{scope: $scope, daemon: $daemon, docker_info_rc: $rc, timeout_seconds: $timeout, docker_path: $docker_path, yq: $yq, global_config: $global_config}'
+      '{scope: $scope, daemon: $daemon, docker_info_rc: $rc, timeout_seconds: $timeout, docker_path: $docker_path, msb: $msb, msb_rc: $msb_rc, msb_path: $msb_path, yq: $yq, global_config: $global_config}'
   else
-    printf "Scope:        host (daemon liveness)\n"
+    printf "Scope:        host (daemon/runtime liveness)\n"
     printf "Docker path:  %s\n" "${_docker_path:-<not installed>}"
     printf "Daemon:       %s\n" "$_daemon_status"
+    printf "msb path:     %s\n" "${_msb_path:-<not installed>}"
+    printf "msb:          %s\n" "$_msb_status"
     printf "yq:           %s\n" "$_yq_status"
     printf "Global config: %s\n" "$_global_cfg_status"
     if [[ "$_docker_installed" -eq 0 ]]; then
@@ -72,8 +103,13 @@ _doctor_host() {
     elif [[ "$_rc" -ne 0 ]]; then
       printf "\nRemedy: 'orb restart' (OrbStack) or restart Docker Desktop, then retry.\n"
     fi
+    if [[ "$_msb_installed" -eq 0 ]]; then
+      printf "\nRemedy: install msb — https://github.com/microsandbox/microsandbox\n"
+    elif [[ "$_msb_rc" -ne 0 ]]; then
+      printf "\nRemedy: msb is unresponsive — check the msb agent process, then retry.\n"
+    fi
   fi
-  if [[ "$_rc" -ne 0 ]]; then
+  if [[ "$_rc" -ne 0 || "$_msb_rc" -ne 0 ]]; then
     exit 1
   fi
 }
@@ -115,12 +151,16 @@ _doctor_bd_version_compare() {
 # cmd_doctor — per-container diagnostic view.
 #
 # Complements `rc ls` (fleet view) with depth for a single container: posture
-# labels (rc.forward-ssh, rc.egress.config-override, rc.source.path) plus live
-# probes when the container is running (ssh-add, beads port, auth creds,
-# skills, cwd floor, workspace resolution, bd version skew — rip-cage-2cks).
-# The engine-process probe (in-cage egress router) is retired per ADR-029 D2 —
-# containment is now an msb-runtime property verified by the msb effect-probe
-# test suite, not an rc doctor live process check.
+# labels (rc.egress.config-override, rc.source.path) plus live probes when
+# the container is running (msb posture/deny-visibility, beads port, auth
+# creds, skills, cwd floor, workspace resolution, bd version skew —
+# rip-cage-2cks). rip-cage-rj68 (S6): the engine-process probe (in-cage
+# egress router) is retired per ADR-029 D2 — containment is now an
+# msb-runtime property verified by the msb effect-probe test suite, not an
+# rc doctor live process check; replaced by _doctor_format_posture_probe
+# (declared net policy + recent denied domains). The ssh-add live probe and
+# rc.forward-ssh/rc.github-identity label reads are REMOVED (S5 review
+# carryover, ADR-029 D3 — the ssh cluster is retired).
 # Labels are readable whether the container is running or stopped; live probes
 # report "not running, no live probe" when the container is stopped.
 # Resolves via resolve_name (CWD convention — same as rc attach/down/destroy).
@@ -196,10 +236,17 @@ _doctor_bd_version_compare() {
 # Pure enumeration only — never aborts on a dead handle (a probe, not a
 # guard); exits 0 whenever the mount list itself was readable, matching
 # cmd_doctor's existing convention that only container-not-found aborts.
+# rip-cage-rj68 (S6): REWRITTEN onto msb. `msb inspect NAME --format json`'s
+# `.config.mounts[]` array carries `type` ("Bind"/"Tmpfs"/...), `host`, and
+# `guest` fields (msb-side counterparts to docker's `.Mounts[].Type`/
+# `.Source`/`.Destination`) — only `type == "Bind"` entries have a `host`
+# field at all (Tmpfs/other mount kinds don't), so this filters on
+# `.host != null` as the msb-side "is this a host-path bind mount"
+# predicate, matching the prior `select(.Type == "bind")` intent.
 _doctor_dead_file_mounts() {
   local name="$1"
   local mounts_json
-  mounts_json=$(docker inspect --format '{{json .Mounts}}' "$name" 2>/dev/null) || return 0
+  mounts_json=$(_msb_inspect_json "$name" | jq -c '.config.mounts // []' 2>/dev/null) || return 0
   [[ -z "$mounts_json" || "$mounts_json" == "null" ]] && return 0
 
   local src dst
@@ -210,7 +257,7 @@ _doctor_dead_file_mounts() {
       # this bug class. Skip WITHOUT probing (no stat storm).
       continue
     fi
-    if docker exec "$name" test -e "$dst" >/dev/null 2>&1; then
+    if _msb_exec "$name" -- test -e "$dst" >/dev/null 2>&1; then
       # Destination resolves in-cage — healthy, full stop. Do NOT look at
       # the host source at all here: a host source that isn't host-visible
       # (ssh-agent socket magic paths) with a WORKING mount is not a fault.
@@ -227,7 +274,7 @@ _doctor_dead_file_mounts() {
       # mount. Generic classifier: not keyed on any specific mount path.
       local _seed_path
       _seed_path="$(dirname "$dst")/.claude/$(basename "$dst").seed"
-      if docker exec "$name" test -s "$_seed_path" >/dev/null 2>&1; then
+      if _msb_exec "$name" -- test -s "$_seed_path" >/dev/null 2>&1; then
         echo "SEEDED ${dst} ${_seed_path}"
       else
         echo "DEAD ${dst}"
@@ -237,7 +284,7 @@ _doctor_dead_file_mounts() {
     else
       echo "MISSING ${dst} ${src}"
     fi
-  done < <(printf '%s' "$mounts_json" | jq -r '.[]? | select(.Type == "bind") | [.Source, .Destination] | @tsv' 2>/dev/null)
+  done < <(printf '%s' "$mounts_json" | jq -r '.[]? | select(.host != null) | [.host, .guest] | @tsv' 2>/dev/null)
 }
 
 
@@ -330,25 +377,57 @@ _doctor_format_dead_mounts() {
 # _doctor_format_dead_mounts) so it's unit-testable without a live cage.
 _doctor_format_auth_probe() {
   local name="$1"
-  if docker exec "$name" test -s /home/agent/.claude/.credentials.json >/dev/null 2>&1; then
+  if _msb_exec "$name" -- test -s /home/agent/.claude/.credentials.json >/dev/null 2>&1; then
     echo "OK — ~/.claude/.credentials.json present"
     return
   fi
-  if docker exec "$name" sh -c 'test -n "${ANTHROPIC_API_KEY:-}"' >/dev/null 2>&1; then
+  # shellcheck disable=SC2016 # deliberately single-quoted: expands inside the GUEST shell, not the host
+  if _msb_exec "$name" -- sh -c 'test -n "${ANTHROPIC_API_KEY:-}"' >/dev/null 2>&1; then
     echo "OK — ANTHROPIC_API_KEY set (no OAuth creds)"
     return
   fi
   local _cred_mounts_claude_label
-  _cred_mounts_claude_label=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts.claude" }}' "$name" 2>/dev/null || true)
+  _cred_mounts_claude_label=$(_msb_label "$name" "rc.auth.credential-mounts.claude" || true)
   if [[ "$_cred_mounts_claude_label" == "none" ]]; then
     echo "OK — non-possession posture (claude credentials deliberately not mounted; rc.auth.credential-mounts.claude=none)"
     return
   fi
-  if docker exec "$name" sh -c 'test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"' >/dev/null 2>&1; then
+  # shellcheck disable=SC2016 # deliberately single-quoted: expands inside the GUEST shell, not the host
+  if _msb_exec "$name" -- sh -c 'test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"' >/dev/null 2>&1; then
     echo "OK — non-possession posture (CLAUDE_CODE_OAUTH_TOKEN present; mediator-injected auth)"
     return
   fi
   echo "FAIL — no credentials and no ANTHROPIC_API_KEY"
+}
+
+
+# _doctor_format_posture_probe NAME
+#
+# rip-cage-rj68 (S6): the doctor's NEW msb-side posture-inspection story
+# (bead criterion 4 — the old in-cage engine-process probe is gone per S4;
+# containment is an msb-runtime property now, verified by the msb effect-
+# probe test suite, not by a live process check here). Reports the
+# declared network policy (default action + rule count, read from `msb
+# inspect`'s own config — a DECLARATION read, not a live enforcement
+# claim; live enforcement is what tests/test-msb-*-effect-probes.sh prove)
+# and any RECENT denied-egress domains mined from the trace log (bead
+# criterion 5's readable fix-hint,
+# _msb_denied_domains_from_trace_log) so an operator can see, at a glance,
+# what a stuck agent turn was actually blocked on.
+_doctor_format_posture_probe() {
+  local name="$1"
+  local cfg_json
+  cfg_json=$(_msb_inspect_json "$name") || { echo "INFO — could not read posture (msb inspect failed)"; return; }
+  local default_egress rule_count
+  default_egress=$(jq -r '.config.network.policy.default_egress // "unknown"' <<<"$cfg_json" 2>/dev/null)
+  rule_count=$(jq -r '.config.network.policy.rules // [] | length' <<<"$cfg_json" 2>/dev/null)
+  local denied
+  denied=$(_msb_denied_domains_from_trace_log "$name" 2>/dev/null)
+  local denied_summary="none observed"
+  if [[ -n "$denied" ]]; then
+    denied_summary=$(echo "$denied" | tr '\n' ',' | sed 's/,$//')
+  fi
+  echo "OK — net-default=${default_egress}, ${rule_count} allow-rule(s); recently denied: ${denied_summary}"
 }
 
 
@@ -359,30 +438,34 @@ cmd_doctor() {
   fi
   local name
   name=$(resolve_name "${1:-}") || exit 1
-  if ! docker inspect "$name" >/dev/null 2>&1; then
+  if ! _msb_exists "$name"; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
     echo "Error: container $name not found" >&2; exit 1
   fi
   verify_rc_container "$name"
 
-  # Read state + labels (work on stopped containers too).
-  local state source_path fwd_ssh_label started_at
+  # Read state + labels (work on stopped containers too). rip-cage-rj68
+  # (S6): REWRITTEN onto msb. rc.forward-ssh / rc.github-identity label
+  # reads and the ssh-add live probe are REMOVED here (S5 review
+  # carryover, ADR-029 D3 — the ssh cluster is retired; these labels no
+  # longer exist on any msb-created cage).
+  local state source_path updated_at
   local egress_config_override_label
-  state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || echo "unknown")
-  source_path=$(docker inspect --format '{{index .Config.Labels "rc.source.path"}}' "$name" 2>/dev/null || true)
-  fwd_ssh_label=$(docker inspect --format '{{index .Config.Labels "rc.forward-ssh"}}' "$name" 2>/dev/null || true)
-  started_at=$(docker inspect --format '{{.State.StartedAt}}' "$name" 2>/dev/null || true)
+  state=$(_msb_sandbox_state "$name" 2>/dev/null || echo "unknown")
+  source_path=$(_msb_label "$name" "rc.source.path" || true)
+  # updated_at is the closest msb-side counterpart to docker's
+  # State.StartedAt for uptime display (it changes on start/stop
+  # transitions) — not a byte-identical semantic, an honest approximation.
+  updated_at=$(_msb_inspect_json "$name" 2>/dev/null | jq -r '.updated_at // empty')
   # ADR-024 D1 workspace base-URL-override posture (unrelated to the deleted
   # in-cage egress engine — retained under its legacy label name).
-  egress_config_override_label=$(docker inspect --format '{{index .Config.Labels "rc.egress.config-override"}}' "$name" 2>/dev/null || true)
-  [[ -z "$fwd_ssh_label" ]] && fwd_ssh_label="legacy"
+  egress_config_override_label=$(_msb_label "$name" "rc.egress.config-override" || true)
   [[ -z "$egress_config_override_label" ]] && egress_config_override_label="false"
 
   local running=0
   [[ "$state" == "running" ]] && running=1
 
   # Live probes (only when running). Each probe returns a status string and detail.
-  local ssh_probe="not running, no live probe"
   local beads_probe="not running, no live probe"
   local auth_probe="not running, no live probe"
   local skills_probe="not running, no live probe"
@@ -392,45 +475,21 @@ cmd_doctor() {
   local cwd_probe="not running, no live probe"
   local workspace_probe="not running, no live probe"
   local bd_version_probe="not running, no live probe"
+  # rip-cage-rj68 (S6): the new msb posture-inspection probe (bead
+  # criterion 4 — replaces the retired in-cage engine-process probe;
+  # criterion 5 — surfaces the deny-visibility fix-hint).
+  local posture_probe="not running, no live probe"
 
   if [[ "$running" -eq 1 ]]; then
-    # SSH forwarding probe: ssh-add -l (needs SSH_AUTH_SOCK in container env).
-    # Exit 0 = keys listed, 1 = no keys, 2 = agent not reachable.
-    # Read companion sentinel to include the mounted socket path in hints
-    # (ADR-018 D3 FIRM: rc doctor incorporates the path into fix hints).
-    local ssh_out ssh_rc=0
-    ssh_out=$(docker exec "$name" sh -c 'ssh-add -l 2>&1' 2>/dev/null) || ssh_rc=$?
-    local _doctor_sock
-    _doctor_sock=$(docker exec "$name" cat /etc/rip-cage/ssh-agent-socket 2>/dev/null || true)
-    case "$ssh_rc" in
-      0)
-        local key_count
-        key_count=$(echo "$ssh_out" | grep -c . || true)
-        ssh_probe="OK — ${key_count} key(s) available via forwarded agent"
-        ;;
-      1)
-        if [[ "$fwd_ssh_label" == "on" ]]; then
-          ssh_probe="WARN — agent reachable but empty (host ssh-add -l? socket: ${_doctor_sock:-<unknown>})"
-        else
-          ssh_probe="OK — no agent (forward-ssh=off)"
-        fi
-        ;;
-      *)
-        if [[ "$fwd_ssh_label" == "on" ]]; then
-          ssh_probe="FAIL — label=on but ssh-agent not reachable (socket: ${_doctor_sock:-<unknown>})"
-        else
-          ssh_probe="OK — no agent (forward-ssh=off)"
-        fi
-        ;;
-    esac
+    posture_probe=$(_doctor_format_posture_probe "$name")
 
     # Beads server probe: look for dolt-server.port + process.
     local port_file_exists=0 port_val="" dolt_running=0
-    if docker exec "$name" test -f /workspace/.beads/dolt-server.port >/dev/null 2>&1; then
+    if _msb_exec "$name" -- test -f /workspace/.beads/dolt-server.port >/dev/null 2>&1; then
       port_file_exists=1
-      port_val=$(docker exec "$name" cat /workspace/.beads/dolt-server.port 2>/dev/null | tr -d '[:space:]' || true)
+      port_val=$(_msb_exec "$name" -- cat /workspace/.beads/dolt-server.port 2>/dev/null | tr -d '[:space:]' || true)
     fi
-    if docker exec "$name" pgrep -f 'dolt sql-server' >/dev/null 2>&1; then
+    if _msb_exec "$name" -- pgrep -f 'dolt sql-server' >/dev/null 2>&1; then
       dolt_running=1
     fi
     if [[ "$port_file_exists" -eq 1 && "$dolt_running" -eq 1 && -n "$port_val" ]]; then
@@ -455,9 +514,9 @@ cmd_doctor() {
     # Skills mount probe: count entries under ~/.claude/skills (symlink to
     # /home/agent/.rc-context/skills). Report broken symlinks.
     local skills_count=0 skills_broken=0
-    if docker exec "$name" test -d /home/agent/.claude/skills >/dev/null 2>&1; then
-      skills_count=$(docker exec "$name" sh -c 'ls -1 /home/agent/.claude/skills 2>/dev/null | wc -l' 2>/dev/null | tr -d '[:space:]' || echo 0)
-      skills_broken=$(docker exec "$name" sh -c 'find /home/agent/.claude/skills/ -maxdepth 2 -type l ! -exec test -e {} \; -print 2>/dev/null | wc -l' 2>/dev/null | tr -d '[:space:]' || echo 0)
+    if _msb_exec "$name" -- test -d /home/agent/.claude/skills >/dev/null 2>&1; then
+      skills_count=$(_msb_exec "$name" -- sh -c 'ls -1 /home/agent/.claude/skills 2>/dev/null | wc -l' 2>/dev/null | tr -d '[:space:]' || echo 0)
+      skills_broken=$(_msb_exec "$name" -- sh -c 'find /home/agent/.claude/skills/ -maxdepth 2 -type l ! -exec test -e {} \; -print 2>/dev/null | wc -l' 2>/dev/null | tr -d '[:space:]' || echo 0)
       if [[ "$skills_broken" -gt 0 ]]; then
         skills_probe="WARN — ${skills_count} entries, ${skills_broken} broken symlink(s)"
       else
@@ -468,12 +527,12 @@ cmd_doctor() {
     fi
 
     # rip-cage-2cks D1: cwd floor probe. Guards rip-cage-0rng: a fresh exec's
-    # cwd must land in /workspace, not /home/agent (the Docker WORKDIR
-    # default). --workdir only takes effect at container CREATE time (rc:1186)
-    # — a reused ('docker start') container from before the fix silently
-    # keeps the old WorkingDir, so the fail hint names recreation explicitly.
+    # cwd must land in /workspace, not /home/agent (the WORKDIR default).
+    # --workdir only takes effect at sandbox CREATE time — a resumed
+    # sandbox from before the fix silently keeps the old workdir, so the
+    # fail hint names recreation explicitly.
     local _cwd_actual
-    _cwd_actual=$(docker exec "$name" pwd 2>/dev/null || true)
+    _cwd_actual=$(_msb_exec "$name" -- pwd 2>/dev/null || true)
     if [[ "$_cwd_actual" == "/workspace" ]]; then
       cwd_probe="OK — fresh exec cwd is /workspace"
     else
@@ -490,22 +549,22 @@ cmd_doctor() {
     # A workspace with no .beads/ or no git repo skips that leg with a note
     # rather than failing — not every cage workspace is a beads/git project.
     # NOTE: rc runs under `set -euo pipefail` when executed (rc:5-7), so every
-    # probe below that captures a possibly-failing docker exec must use the
-    # `var=$(cmd) || rc=$?` idiom (same as the ssh_probe block above) or an
-    # `if cmd; then` conditional — a bare `cmd && var=1` / `var=$(cmd); rc=$?`
-    # aborts cmd_doctor silently on the first failing probe (caught live
-    # against the aq70 schema-error fixture during implementation).
+    # probe below that captures a possibly-failing msb exec must use the
+    # `var=$(cmd) || rc=$?` idiom or an `if cmd; then` conditional — a bare
+    # `cmd && var=1` / `var=$(cmd); rc=$?` aborts cmd_doctor silently on the
+    # first failing probe (caught live against the aq70 schema-error
+    # fixture during implementation).
     local _has_beads=0 _has_git=0
-    if docker exec "$name" test -d /workspace/.beads >/dev/null 2>&1; then
+    if _msb_exec "$name" -- test -d /workspace/.beads >/dev/null 2>&1; then
       _has_beads=1
     fi
-    if docker exec "$name" sh -c 'git -C /workspace rev-parse --is-inside-work-tree' >/dev/null 2>&1; then
+    if _msb_exec "$name" -- sh -c 'git -C /workspace rev-parse --is-inside-work-tree' >/dev/null 2>&1; then
       _has_git=1
     fi
 
     local _bd_leg _bd_state="skip" _bd_out _bd_rc=0
     if [[ "$_has_beads" -eq 1 ]]; then
-      _bd_out=$(docker exec -w /workspace "$name" bd status 2>&1) || _bd_rc=$?
+      _bd_out=$(msb exec -w /workspace "$name" -- bd status 2>&1) || _bd_rc=$?
       if [[ "$_bd_rc" -eq 0 ]]; then
         _bd_state="ok"
         _bd_leg="bd status OK"
@@ -519,7 +578,7 @@ cmd_doctor() {
 
     local _git_leg _git_state="skip" _git_out _git_rc=0
     if [[ "$_has_git" -eq 1 ]]; then
-      _git_out=$(docker exec -w /workspace "$name" git status 2>&1) || _git_rc=$?
+      _git_out=$(msb exec -w /workspace "$name" -- git status 2>&1) || _git_rc=$?
       if [[ "$_git_rc" -eq 0 ]]; then
         _git_state="ok"
         _git_leg="git status OK"
@@ -546,8 +605,8 @@ cmd_doctor() {
     else
       local _host_bd_raw _cage_bd_raw
       _host_bd_raw=$(bd --version 2>&1 || true)
-      _cage_bd_raw=$(docker exec "$name" bd --version 2>&1 || true)
-      if ! docker exec "$name" sh -c 'command -v bd' >/dev/null 2>&1; then
+      _cage_bd_raw=$(_msb_exec "$name" -- bd --version 2>&1 || true)
+      if ! _msb_exec "$name" -- sh -c 'command -v bd' >/dev/null 2>&1; then
         bd_version_probe="INFO — no bd in-cage (skipped)"
       else
         local _cmp
@@ -567,12 +626,14 @@ cmd_doctor() {
 
   fi
 
-  # Uptime (humanized) — derive from started_at ISO timestamp.
+  # Uptime (humanized) — derive from updated_at ISO timestamp (msb's closest
+  # counterpart to docker's State.StartedAt — see the field-read comment
+  # above).
   local uptime="—"
-  if [[ "$running" -eq 1 && -n "$started_at" ]]; then
+  if [[ "$running" -eq 1 && -n "$updated_at" ]]; then
     local started_epoch now_epoch diff
-    started_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${started_at%%.*}" +%s 2>/dev/null \
-      || date -d "$started_at" +%s 2>/dev/null || echo 0)
+    started_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${updated_at%%.*}" +%s 2>/dev/null \
+      || date -d "$updated_at" +%s 2>/dev/null || echo 0)
     now_epoch=$(date +%s)
     if [[ "$started_epoch" -gt 0 ]]; then
       diff=$((now_epoch - started_epoch))
@@ -592,8 +653,7 @@ cmd_doctor() {
       --arg state "$state" \
       --arg uptime "$uptime" \
       --arg source_path "$source_path" \
-      --arg forward_ssh_label "$fwd_ssh_label" \
-      --arg ssh_probe "$ssh_probe" \
+      --arg posture_probe "$posture_probe" \
       --arg beads_probe "$beads_probe" \
       --arg auth_probe "$auth_probe" \
       --arg dead_mounts_probe "$dead_mounts_probe" \
@@ -608,11 +668,10 @@ cmd_doctor() {
         uptime: $uptime,
         source_path: $source_path,
         labels: {
-          "rc.forward-ssh": $forward_ssh_label,
           "rc.egress.config-override": $egress_config_override
         },
         probes: {
-          ssh_forwarding: $ssh_probe,
+          posture: $posture_probe,
           beads_server: $beads_probe,
           auth: $auth_probe,
           dead_mounts: $dead_mounts_probe,
@@ -628,11 +687,10 @@ cmd_doctor() {
     echo "Workspace:  ${source_path:-<unset>}"
     echo ""
     echo "Labels:"
-    echo "  rc.forward-ssh           = $fwd_ssh_label"
     echo "  rc.egress.config-override = $egress_config_override_label"
     echo ""
     echo "Live probes:"
-    echo "  ssh-forwarding : $ssh_probe"
+    echo "  posture        : $posture_probe"
     echo "  beads-server   : $beads_probe"
     echo "  auth           : $auth_probe"
     echo "  dead-mounts    : $dead_mounts_probe"
