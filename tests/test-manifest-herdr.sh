@@ -534,11 +534,19 @@ test_t2d_herdr_integrations_auto_installed_by_init() {
   echo "  herdr integration status:"
   echo "$status_out" | while IFS= read -r line; do echo "    $line"; done
 
-  # pi must show as installed (not "not installed")
-  if echo "$status_out" | grep -qE '^pi: *(current|outdated|installed)'; then
-    pass "T2d (ADR-006 D8) pi integration auto-installed by init (no manual install)"
+  # pi is a composable TOOL recipe (rip-cage-fwp3) — the pi binary, and hence
+  # herdr's auto-install of the pi integration, is only present when a manifest
+  # actually composes pi. T2_FIXTURE_FILE (herdr TOOL+MULTIPLEXER only) does not
+  # compose pi, so assert pi-integration presence ONLY when pi is on PATH in
+  # this container; otherwise this assertion does not apply (INFO, not FAIL).
+  if docker exec "$container_name" bash -c 'command -v pi >/dev/null 2>&1'; then
+    if echo "$status_out" | grep -qE '^pi: *(current|outdated|installed)'; then
+      pass "T2d (ADR-006 D8) pi integration auto-installed by init (no manual install)"
+    else
+      fail "T2d (ADR-006 D8) pi integration NOT auto-installed — init-rip-cage.sh missing 'herdr integration install pi'"
+    fi
   else
-    fail "T2d (ADR-006 D8) pi integration NOT auto-installed — init-rip-cage.sh missing 'herdr integration install pi'"
+    echo "INFO: T2d pi not installed in this container (pi is a composable TOOL recipe, rip-cage-fwp3, not composed by ${T2_FIXTURE_FILE}) — pi-integration assertion does not apply"
   fi
 
   # claude must show as installed (not "not installed")

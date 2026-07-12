@@ -68,6 +68,11 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# _manifest_check_binary_root_owned lives in cli/lib/manifest_checks.sh post
+# rc-decomposition (it is no longer inlined in the rc shim, which now just
+# globs+sources cli/lib/*.sh and cli/*.sh) -- "assertion-active in production"
+# checks below grep this file, not $RC.
+MANIFEST_CHECKS_LIB="${REPO_ROOT}/cli/lib/manifest_checks.sh"
 FIXTURES="${SCRIPT_DIR}/fixtures"
 FAILURES=0
 TEST_HOME=""
@@ -629,11 +634,12 @@ test_be2_crafted_bad_agent_writable_rejected() {
     fail "BE2 falsifiability: expected build to pass with assertion disabled, but exit=${be2_step2_rc}. out='${be2_step2_out:0:300}'"
   fi
 
-  # Verify the production assertion is still in place (assertion active in rc on disk).
-  if grep -q "_manifest_check_binary_root_owned" "${RC}"; then
-    pass "BE2 assertion-active: _manifest_check_binary_root_owned is PRESENT in rc (production assertion active)"
+  # Verify the production assertion is still in place (assertion active on
+  # disk, defined in cli/lib/manifest_checks.sh post-decomposition).
+  if grep -q "_manifest_check_binary_root_owned" "${MANIFEST_CHECKS_LIB}"; then
+    pass "BE2 assertion-active: _manifest_check_binary_root_owned is PRESENT in cli/lib/manifest_checks.sh (production assertion active)"
   else
-    fail "BE2 assertion-active: _manifest_check_binary_root_owned NOT FOUND in rc — production assertion removed!"
+    fail "BE2 assertion-active: _manifest_check_binary_root_owned NOT FOUND in cli/lib/manifest_checks.sh — production assertion removed!"
   fi
 }
 
@@ -1226,10 +1232,10 @@ test_be5_crafted_bad_prebuilt_rejected() {
     fail "BE5 falsifiability: expected build to pass with assertion disabled, but exit=${be5_step2_rc}. out='${be5_step2_out:0:300}'"
   fi
 
-  if grep -q "_manifest_check_binary_root_owned" "${RC}"; then
-    pass "BE5 assertion-active: _manifest_check_binary_root_owned is PRESENT in rc (production assertion active)"
+  if grep -q "_manifest_check_binary_root_owned" "${MANIFEST_CHECKS_LIB}"; then
+    pass "BE5 assertion-active: _manifest_check_binary_root_owned is PRESENT in cli/lib/manifest_checks.sh (production assertion active)"
   else
-    fail "BE5 assertion-active: _manifest_check_binary_root_owned NOT FOUND in rc — production assertion removed!"
+    fail "BE5 assertion-active: _manifest_check_binary_root_owned NOT FOUND in cli/lib/manifest_checks.sh — production assertion removed!"
   fi
 }
 
