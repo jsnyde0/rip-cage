@@ -564,22 +564,15 @@ test_se_tier2_composed_cage_suite() {
   echo ""
   echo "--- SE2: Walls-hold-composed (egress + secret-path EFFECT probes) ---"
 
-  # Egress: invoke the EXISTING baked egress probe inside the composed cage.
-  # The baked probe (/usr/local/lib/rip-cage/test-egress-firewall.sh) uses the correct
-  # denylisted-IOC host (webhook.site), lazy-connect, and real-host semantics. It
-  # self-skips (prints egress-off checks, exits 0) when RIP_CAGE_EGRESS=off — honour
-  # its own reporting rather than overriding. An ad-hoc httpbin.org curl would hit the
-  # known egress false-green traps (observe-mode, HTTP 000 ambiguity, cert-handshake
-  # ordering) that this probe already handles correctly.
-  local egress_probe_rc
-  egress_probe_rc=0
-  docker exec "$se_container" /usr/local/lib/rip-cage/test-egress-firewall.sh 2>&1 || egress_probe_rc=$?
-
-  if [[ "$egress_probe_rc" -eq 0 ]]; then
-    pass "SE2 egress: baked egress probe PASSED (exit=0) — walls hold in composed cage (or probe self-skipped egress-off, which is correct)"
-  else
-    fail "SE2 egress: baked egress probe FAILED (exit=${egress_probe_rc}) — containment wall failure or probe error; see probe output above"
-  fi
+  # Egress sub-check retired: the baked in-cage egress probe
+  # (/usr/local/lib/rip-cage/test-egress-firewall.sh) tested the in-cage
+  # router/firewall engine, deleted per ADR-029 D2 (engine-deletion sweep,
+  # rip-cage-3vj2 / S4). This composed-recipe integration test still drives
+  # the OLD docker `rc build`/`rc up` create path (msb lifecycle verbs land
+  # in S6), so it cannot yet exercise msb-based egress containment here --
+  # msb selective-enforcement + engine-absence coverage lives in
+  # tests/test-msb-engine-deletion-effect-probes.sh (applies the S2
+  # generator's flags directly via `msb run`, independent of this rc-up path).
 
   # Secret-path denylist: try to mount .ssh path — should be denied at rc up level.
   # The in-cage test: verify /home/agent/.ssh is NOT bind-mounted as a full directory override.

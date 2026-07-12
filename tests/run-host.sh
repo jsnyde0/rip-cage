@@ -526,11 +526,11 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-config-init.sh"
   run_test "${SCRIPT_DIR}/test-secret-path-denylist.sh"  # tests/test-secret-path-denylist.sh
   run_test "${SCRIPT_DIR}/test-workspace-trust.sh"       # rip-cage-hhh.5: workspace base-URL redirect validator
-  run_test "${SCRIPT_DIR}/test-egress-rules-gen.sh"      # rip-cage-hhh.2: per-cage egress-rules generation
-  run_pytest "${SCRIPT_DIR}/test_egress_proxy.py" --with pytest --with pyyaml python -m pytest "${SCRIPT_DIR}/test_egress_proxy.py" -v   # rip-cage-hhh.3: egress proxy enforcement rewrite
-  run_pytest "${SCRIPT_DIR}/test_dns_decide.py" --with pytest --with dnspython --with pyyaml python -m pytest "${SCRIPT_DIR}/test_dns_decide.py" -v  # rip-cage-hhh.8: DNS resolver sidecar decision logic
+  # test-egress-rules-gen.sh / test_egress_proxy.py / test_dns_decide.py /
+  # test-firewall-tcp22.sh retired: they tested the in-cage egress
+  # router/DNS-resolver/firewall engine, deleted per ADR-029 D2
+  # (engine-deletion sweep, rip-cage-3vj2 / S4).
   run_pytest "${SCRIPT_DIR}/test_skill_server.py" --with pytest python -m pytest "${SCRIPT_DIR}/test_skill_server.py" -v   # rip-cage-nu91: skill-server MCP shim unit tests
-  run_test "${SCRIPT_DIR}/test-firewall-tcp22.sh"        # rip-cage-hhh.4: TCP-22 IP allowlist + UDP/443 DROP + mode-aware banner
   run_test "${SCRIPT_DIR}/test-rc-reload.sh"             # rip-cage-hhh.4: rc reload snapshot format + diff generalization
   run_test "${SCRIPT_DIR}/test-rc-allowlist.sh"          # rip-cage-hhh.6: rc allowlist add/show/promote + D10 host-side guard
   run_test "${SCRIPT_DIR}/test-ls-mode-source.sh"        # rip-cage-hhh.6: rc ls/doctor mode read from source .rip-cage.yaml not stale label
@@ -564,9 +564,10 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-multiplexer-registry-bake.sh"     # rip-cage-61al.2: MULTIPLEXER registry bake + label + reference reader (T1a-T1g host-only; T2a-T2e self-skip via RC_E2E gate)
   run_test "${SCRIPT_DIR}/test-multiplexer-config-dynamic.sh"    # rip-cage-61al.4: dynamic session.multiplexer schema + config-validate (T1a-T1e host-only; T2a-T2c self-skip via RC_E2E gate)
   run_test "${SCRIPT_DIR}/test-multiplexer-composable.sh"        # rip-cage-61al.8: composability integration harness — live fakemux e2e + exhaustive grep-guard (G1 host-only; E1a-E1g self-skip via RC_E2E gate)
-  run_test "${SCRIPT_DIR}/test-mediator-manifest.sh"             # rip-cage-ta1o.5.1: MEDIATOR archetype manifest validation (T1a-T1l host-only)
-  run_test "${SCRIPT_DIR}/test-mediator-lifecycle.sh"            # rip-cage-ta1o.5.8: egress-mediator launch seam — host-driven init-mediator.sh launcher + fail-closed uid + ordering (G1/U1/U2/O1 host-only)
-  run_test "${SCRIPT_DIR}/test-mediator-validator.sh"           # rip-cage-ta1o.5.3: fail-closed validator bounds MEDIATOR hooks — RIP_CAGE_EGRESS=/iptables/floor-weakening + both build entrypoints (T1a-T1j host-only)
+  # test-mediator-manifest.sh / test-mediator-lifecycle.sh /
+  # test-mediator-validator.sh retired: the MEDIATOR archetype + its launch
+  # machinery were deleted per ADR-029 D2 (engine-deletion sweep,
+  # rip-cage-3vj2 / S4).
   run_test "${SCRIPT_DIR}/test-credential-mounts.sh"             # rip-cage-seqc.4: config-gated credential mounts — schema / mount-absence / symlink-follow-leaf / fingerprint / extraction-skip / resume-guard (CM1-CM11 host-only)
   run_test "${SCRIPT_DIR}/test-skill-manifest-author.sh" # rip-cage-buuo.4: repo-shipped skill — skill well-formed + cm worked example passes _manifest_validate (SA1-SA7 host-only)
   run_test "${SCRIPT_DIR}/test-claude-concurrency.sh"    # rip-cage-p1p: per-session Claude config isolation (NEEDS_CONTAINER; self-skips if no running cage)
@@ -574,10 +575,11 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-cc-managed-settings-probe.sh"  # rip-cage-wlwc.1: D8 CC managed-settings anchor probe — enforces un-suppressibly + deny-wins? (NEEDS_CONTAINER+AUTH; self-skips if no cage or unauthed)
   run_test "${SCRIPT_DIR}/test-cc-dcg-managed-settings.sh"   # rip-cage-r9n4: DCG managed-settings regression — managed deny survives stripping ALL agent-writable layers (NEEDS_CONTAINER+AUTH; self-skips if no cage or unauthed)
   run_test "${SCRIPT_DIR}/test-multiplexer-lifecycle.sh"  # rip-cage-1f59.8: multiplexer lifecycle (none/tmux/herdr) + retirement + config-isolation (NEEDS_CONTAINER; self-skips without RC_E2E=1)
-  run_test "${SCRIPT_DIR}/test-selftest-classifier.sh"   # rip-cage-fft: pure classifier unit tests (no live firewall needed)
-  run_test "${SCRIPT_DIR}/test-selftest-mode-gating.sh"  # rip-cage-fft: mode-gating tests via curl PATH-shim (no production hook)
-  run_pytest "${SCRIPT_DIR}/test_selftest_endpoint.py" --with pytest --with pyyaml python -m pytest "${SCRIPT_DIR}/test_selftest_endpoint.py" -v  # rip-cage-fft: proxy reserved endpoint unit tests
-  run_test "${SCRIPT_DIR}/test-selftest-integration.sh"  # rip-cage-fft: container integration tests (init-firewall.sh → curl → iptables → proxy end-to-end)
+  # test-selftest-classifier.sh / test-selftest-mode-gating.sh /
+  # test_selftest_endpoint.py / test-selftest-integration.sh retired: they
+  # tested the in-cage firewall startup self-test guard (init-firewall.sh /
+  # rip_cage_egress.py's reserved endpoint), deleted per ADR-029 D2
+  # (engine-deletion sweep, rip-cage-3vj2 / S4).
   run_test "${SCRIPT_DIR}/test-scratch-cage-cleanup.sh"  # rip-cage-aqww: scratch-cage cleanup helper (D1 lib + D2 sweep) — needs docker daemon; self-skips without docker
   run_test "${SCRIPT_DIR}/test-agent-readability.sh"     # rip-cage-7wc: host-side fixture tests for agent *.md readability classification
   run_test "${SCRIPT_DIR}/test-agent-mail-concurrent.sh" # rip-cage-swv: two concurrent pi agents coordinate via am CLI (NEEDS_CONTAINER + RC_E2E)

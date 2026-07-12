@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Source firewall CA trust vars if firewall init has run (Phase 1 root init).
-# Makes NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, etc. active for this script and for
-# any Claude Code process it spawns.
-if [[ -f /etc/rip-cage/firewall-env ]]; then
-  # shellcheck source=/dev/null
-  source /etc/rip-cage/firewall-env
-fi
+# The in-cage egress-firewall CA-trust-env sourcing step (Phase 1 root init,
+# init-firewall.sh's firewall-env file) retired with the deleted in-cage
+# engine (ADR-029 D2) -- containment is msb's job now.
 
 echo "[rip-cage] Initializing..."
 
@@ -645,28 +641,10 @@ if [ -d /workspace/.beads ]; then
   fi
 fi
 
-# NOTE: firewall-env (written by init-firewall.sh) is comment-only when the pure
-# SNI router runs with NO mediator composed (rip-cage-ta1o.1) — the router does
-# not terminate TLS, so it sets no CA vars (NODE_EXTRA_CA_CERTS etc.).
-#
-# When a mediator IS composed, init-mediator.sh (root-phase, runs before this
-# script — rip-cage-ta1o.5.8) additionally appends NODE_EXTRA_CA_CERTS to this
-# same firewall-env file as a belt-and-suspenders measure (rip-cage-yid0). The
-# LOAD-BEARING copy of NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / REQUESTS_CA_BUNDLE
-# is threaded via `docker run -e` at container-create time (rc cmd_up,
-# _up_prepare_environment) — that's what covers `docker exec` children (rc exec,
-# attach shells, multiplexer panes), since none of them source this script or
-# any shell-startup file. Sourcing firewall-env here is redundant-but-harmless
-# for that inherited value; it only matters for the rare process that runs
-# before container-create env would apply (there are none in practice, since
-# create-time env is already in place by the time this script runs).
-#
-# The old "cat firewall-env >> .zshrc" append was removed because it carried no
-# load-bearing env vars and the idempotency guard (grep 'NODE_EXTRA_CA_CERTS')
-# would never match, causing .zshrc to grow on every rc up / resume (F4 fix,
-# rip-cage-ta1o.1). Do NOT resurrect that append — the docker-run -e mechanism
-# above is what makes CA env vars reach exec-descendant processes now.
-# cage-env (CAGE_HOST_ADDR) is still sourced below.
+# NOTE: the firewall-env / mediator-CA-trust-env machinery this comment used
+# to describe (init-firewall.sh, init-mediator.sh, NODE_EXTRA_CA_CERTS
+# threading) retired with the deleted in-cage engine (ADR-029 D2). A composed
+# (opt-in) mediator recipe or msb's own primitives own CA trust threading now.
 
 # Same pattern for cage-env (CAGE_HOST_ADDR) so interactive shells and multiplexer
 # panes inherit the host-bridge hostname (ADR-016 D2). Guard greps for the
@@ -716,27 +694,6 @@ case "$_rc_mux" in
     ;;
 esac
 unset _rc_mux
-
-# 11b. Egress-mediator lifecycle — MOVED to init-mediator.sh (rip-cage-ta1o.5.8)
-#
-# The mediator launch now runs as a host-driven root docker exec step in cmd_up
-# (_up_init_mediator), AFTER _up_init_firewall and BEFORE _up_init_container.
-# This fixes three bugs: privilege (init runs as agent, can't su to mediator uid),
-# EXIT-trap teardown (trap fires when one-shot init exits, killing the mediator),
-# and double-su (manifest hook was also su-ing, needing a password).
-#
-# init-mediator.sh runs as root, handles uid validation, privilege drop via
-# `nohup su ... &` (survives exec session teardown), CA trust install, and
-# idempotency (PID file). ADR-001 / ADR-026 D5 / ADR-005 D12.
-#
-# RC_MEDIATOR is still threaded in by cmd_up via -e RC_MEDIATOR=<value> so that
-# init-mediator.sh (the new home) can read it from the container environment.
-# The secret channel (_UP_MEDIATOR_ENV_ARGS / --mediator-env KEY=VAL) goes
-# ONLY into the init-mediator.sh docker exec, NEVER into docker run.
-#
-# init-rip-cage.sh no longer starts, monitors, or tears down the mediator.
-# Rely on container stop to terminate the mediator (it dies with the container,
-# like the firewall rules). No EXIT trap here.
 
 # 12. IN-CAGE DAEMON lifecycle block (rip-cage-4c5.5)
 #

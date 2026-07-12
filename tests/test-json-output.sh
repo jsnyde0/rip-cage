@@ -186,9 +186,15 @@ else
   fail "ls --output json: did not return a JSON array. Got: $ls11_output"
 fi
 
-# --- Test 12: --output json doctor includes 'egress' object (rip-cage-hhh.6 D1) ---
+# --- Test 12: --output json doctor labels carry rc.egress.config-override
+# (rip-cage-hhh.6 D1 evolved by rip-cage-3vj2 / S4, ADR-029 D2) ---
+# The doctor JSON's top-level "egress" object (mode/allowed_hosts/
+# recent_blocks/ssh_allowed_hosts) probed the in-cage egress router, deleted
+# per ADR-029 D2 (engine-deletion sweep). The ADR-024 D1 workspace
+# base-URL-override posture (unrelated to the deleted engine) survives under
+# its legacy label name in "labels".
 echo ""
-echo "=== Test 12: --output json doctor includes egress object with required keys ==="
+echo "=== Test 12: --output json doctor labels include rc.egress.config-override ==="
 # rc doctor requires a running or stopped rc-managed container.
 # Use rc ls to find the first available container name, if any.
 _doctor_test_name=$(
@@ -196,19 +202,10 @@ _doctor_test_name=$(
 )
 if [[ -n "$_doctor_test_name" ]]; then
   doctor12_output=$("$RC" --output json doctor "$_doctor_test_name" 2>/dev/null) || true
-  if echo "$doctor12_output" | jq -e 'has("egress")' >/dev/null 2>&1; then
-    # Check required sub-keys
-    _egress_keys_ok=true
-    for _k in mode allowed_hosts recent_blocks config_override_state ssh_allowed_hosts; do
-      if ! echo "$doctor12_output" | jq -e ".egress | has(\"$_k\")" >/dev/null 2>&1; then
-        _egress_keys_ok=false
-        fail "doctor --output json: egress object missing key: $_k. Got: $doctor12_output"
-        break
-      fi
-    done
-    [[ "$_egress_keys_ok" == "true" ]] && pass "doctor --output json: egress object has all required keys"
+  if echo "$doctor12_output" | jq -e '.labels | has("rc.egress.config-override")' >/dev/null 2>&1; then
+    pass "doctor --output json: labels include rc.egress.config-override"
   else
-    fail "doctor --output json: no egress key in output. Got: $doctor12_output"
+    fail "doctor --output json: labels missing rc.egress.config-override. Got: $doctor12_output"
   fi
 else
   echo "SKIP: no rc-managed containers found — doctor egress-object test deferred (H-tier)"

@@ -981,10 +981,9 @@ _resolve_host_ssh_sock() {
 #   $4  rc_cpus       — CPU limit
 #   $5  rc_memory     — memory limit
 #   $6  rc_pids_limit — PID limit
-#   $7  rc_egress     — egress firewall mode ("on" or "off")
-#   $8  rc_forward_ssh — ssh-agent forwarding ("on" or "off")
+#   $7  rc_forward_ssh — ssh-agent forwarding ("on" or "off")
 _up_prepare_environment() {
-  local _path="$1" _port="$2" _env_file="$3" _rc_cpus="$4" _rc_memory="$5" _rc_pids_limit="$6" _rc_egress="${7:-on}" _rc_forward_ssh="${8:-on}"
+  local _path="$1" _port="$2" _env_file="$3" _rc_cpus="$4" _rc_memory="$5" _rc_pids_limit="$6" _rc_forward_ssh="${7:-on}"
 
   # Forward git identity from host
   local git_name git_email
@@ -1100,55 +1099,6 @@ _up_prepare_environment() {
     _bd_host_preflight "$beads_dir" "$beads_dolt_mode"
   fi
 
-  # Egress firewall (D6): add NET_ADMIN capability unless escape valve is set
-  if [[ "$_rc_egress" != "off" ]]; then
-    _UP_RUN_ARGS+=(--cap-add=NET_ADMIN)
-    _UP_RUN_ARGS+=(-l rc.egress=on)
-  else
-    _UP_RUN_ARGS+=(-l rc.egress=off)
-  fi
-
-  # rip-cage-yid0: mediator CA trust env vars.
-  #
-  # SNI-router-only (no mediator composed, network.egress.mediator: none,
-  # ADR-026 D5): NO CA vars are added here (rip-cage-ta1o.1) — the pure SNI
-  # router does NOT terminate TLS and installs no rip-cage CA, so clients
-  # validate the REAL upstream cert via the default system trust store.
-  # NODE_EXTRA_CA_CERTS / *_CA_BUNDLE pointing at a rip-cage CA would target a
-  # nonexistent file (ADR-012 D4). This case is unchanged / still correct.
-  #
-  # Mediator composed (_UP_MEDIATOR_CA_ENV="true" — set in the mediator-
-  # resolution block of cmd_up, BEFORE _rc_mediator is unset there; this
-  # function runs AFTER that unset, so it reads the _UP_* global flag instead
-  # of _rc_mediator directly): init-mediator.sh (host-driven root docker exec)
-  # installs the mediator's MITM CA into the container's SYSTEM trust store via
-  # update-ca-certificates. Node's TLS stack ignores the system store unless
-  # told, so:
-  #   - NODE_EXTRA_CA_CERTS points at the rc-owned canonical mediator CA file
-  #     alone (additive, correct for Node — there is no other way for it to
-  #     pick up update-ca-certificates' output).
-  #   - SSL_CERT_FILE / REQUESTS_CA_BUNDLE point at the SYSTEM bundle, NEVER at
-  #     the mediator CA file alone — these REPLACE the trust store for
-  #     openssl-linked / requests-based tools, so pointing them at just the
-  #     mediator CA would break non-MITM'd TLS to every other host.
-  #
-  # Timing: these are static paths threaded at container-create time (docker
-  # run -e); the CA FILE itself only materializes later, during host-driven
-  # init-mediator.sh, which runs before _up_init_container (rc:~3886) and
-  # therefore before any agent process. Only pre-init processes (sleep-
-  # infinity PID 1, firewall/mediator init) predate the file — none of them
-  # are Node.
-  #
-  # Residual (accepted, 80/20): a mediator composed WITHOUT a declared
-  # ca_cert_path leaves NODE_EXTRA_CA_CERTS pointing at a file that never
-  # appears -> one harmless "ignoring extra certs" Node warning per process.
-  if [[ "${_UP_MEDIATOR_CA_ENV:-false}" == "true" ]]; then
-    _UP_RUN_ARGS+=(-e "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/rip-cage-mediator-ca.crt")
-    _UP_RUN_ARGS+=(-e "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt")
-    _UP_RUN_ARGS+=(-e "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt")
-  fi
-  # rip-cage-yid0: end mediator CA trust env vars.
-
   # ssh-agent forwarding (ADR-017 + ADR-018): forward whichever host ssh-agent
   # the user actually populates. _resolve_host_ssh_sock() probes candidate
   # sockets and picks the first one with keys (or the first reachable one as
@@ -1225,50 +1175,9 @@ _up_init_container() {
 }
 
 
-# _up_resolve_resume_egress -- read and validate the rc.egress label on resume.
-# Implements ADR-001 fail-loud for three cases:
-#   - docker inspect failure (transient infra or TOCTOU) -> distinct error
-#   - missing label (legacy container predating egress support)
-#   - unrecognized value (anything other than on|off)
-# On success sets _UP_RESUME_EGRESS to "on" or "off"; otherwise exits 1.
-# Parameters: $1 name, $2 path (used in the recreate hint)
-_up_resolve_resume_egress() {
-  local _name="$1" _path="$2"
-  local _label
-  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.egress" }}' "$_name" 2>/dev/null); then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
-    fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
-    exit 1
-  fi
-  if [[ -z "$_label" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name predates egress support (no rc.egress label). Run: rc destroy $_name && rc up $_path" "LEGACY_CONTAINER"
-    fi
-    echo "Error: container $_name predates egress support (no rc.egress label)." >&2
-    echo "       Recreate it to pick up current safety features:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  fi
-  if [[ "$_label" != "on" && "$_label" != "off" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name has unrecognized rc.egress label value: '$_label' (expected on|off). Run: rc destroy $_name && rc up $_path" "INVALID_EGRESS_LABEL"
-    fi
-    echo "Error: container $_name has unrecognized rc.egress label value: '$_label' (expected on|off)." >&2
-    echo "       Recreate it:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  fi
-  _UP_RESUME_EGRESS="$_label"
-}
-
-
 # _up_resolve_resume_forward_ssh -- read and validate the rc.forward-ssh label on resume.
-# Parallel shape to _up_resolve_resume_egress. ADR-017 D2: resume must preserve
-# the original posture, not silently upgrade/downgrade based on current env.
+# ADR-017 D2: resume must preserve the original posture, not silently
+# upgrade/downgrade based on current env.
 # Missing label is treated as "off" (legacy pre-ADR-017 containers predate the
 # label and never had forwarding wired). On success sets _UP_RESUME_FORWARD_SSH
 # to "on" or "off"; fails loud on docker errors or unrecognized values.
@@ -1418,61 +1327,6 @@ _up_resolve_resume_config_mode() {
     fi
     echo "Error: container $_name was created with rc.config-mode=${_stored_mode} but current effective config has mounts.config_mode=${_current}." >&2
     echo "       The /workspace/.rip-cage.yaml :ro shadow-mount is wired at create time; toggling mounts.config_mode between ro and rw requires recreating the container." >&2
-    echo "       Run:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  fi
-}
-
-
-# _up_resolve_resume_mediator_ca_env -- read and validate the rc.mediator-ca-env
-# label on resume; abort loud if the CURRENT effective config composes a
-# mediator (network.egress.mediator != none) but the container was created
-# WITHOUT the mediator CA trust env vars (NODE_EXTRA_CA_CERTS / SSL_CERT_FILE /
-# REQUESTS_CA_BUNDLE — rip-cage-yid0).
-#
-# These vars are threaded via `docker run -e` at container-create time and are
-# frozen for the container's lifetime — `docker start` (resume) cannot add
-# them. Without this guard, a stopped cage that pre-dates this fix, or one
-# reconfigured to add a mediator after creation, would silently resume with
-# broken Node TLS (SELF_SIGNED_CERT_IN_CHAIN) every time. Mirrors
-# _up_resolve_resume_config_mode / _up_resolve_resume_credential_mounts.
-#
-# Missing label (legacy container, pre-yid0): treated as "false" (CA env vars
-# were never set at create time for any pre-fix container) — if the current
-# effective config also composes no mediator, there is no mismatch.
-# Parameters: $1 name, $2 path
-_up_resolve_resume_mediator_ca_env() {
-  local _name="$1" _path="$2"
-  local _label
-  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.mediator-ca-env" }}' "$_name" 2>/dev/null); then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
-    fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
-    exit 1
-  fi
-  local _stored
-  if [[ -z "$_label" ]]; then
-    _stored="false"
-  else
-    _stored="$_label"
-  fi
-
-  # Compute whether the CURRENT effective config composes a mediator.
-  local _eff_result _current_mediator="none"
-  _eff_result=$(_load_effective_config "$_path" 2>/dev/null || true)
-  if [[ -n "$_eff_result" ]]; then
-    _current_mediator=$(jq -r '.config.network.egress.mediator // "none"' <<<"$_eff_result" 2>/dev/null || echo "none")
-  fi
-
-  if [[ "$_current_mediator" != "none" && "$_stored" != "true" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name was created with rc.mediator-ca-env=${_stored} but current effective config composes network.egress.mediator=${_current_mediator}. CA trust env vars are immutable on resume — run: rc destroy $_name && rc up $_path to apply the change." "MEDIATOR_CA_ENV_STALE"
-    fi
-    echo "Error: container $_name was created with rc.mediator-ca-env=${_stored} but current effective config composes network.egress.mediator=${_current_mediator}." >&2
-    echo "       NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / REQUESTS_CA_BUNDLE are threaded via docker run -e at container-create time and cannot be added to an existing container — resuming blind would silently reproduce SELF_SIGNED_CERT_IN_CHAIN for Node tools (rip-cage-yid0)." >&2
     echo "       Run:" >&2
     echo "         rc destroy $_name" >&2
     echo "         rc up $_path" >&2
@@ -2813,212 +2667,6 @@ _up_github_identity_preflight() {
   return 0
 }
 
-# _EGRESS_BASELINE_HOSTS — pre-loaded whitelist for new cages.
-# Baseline ∪ user network.allowed_hosts = effective allowed_hosts in the rules file.
-# D10 NOTE: this list is baked at rc up / rc reload time. The pipeline does NOT
-# watch .rip-cage.yaml for changes; an in-cage edit does not hot-apply. This is
-# by design — see ADR-012 D1 and ADR-022 D6 extended pattern.
-_EGRESS_BASELINE_HOSTS=(
-  # LLM provider APIs
-  "api.anthropic.com"
-  "api.openai.com"
-  "api.cohere.ai"
-  "generativelanguage.googleapis.com"
-  # GitHub / GitLab / Codeberg (code hosting + APIs)
-  "github.com"
-  "api.github.com"
-  "raw.githubusercontent.com"
-  "objects.githubusercontent.com"
-  "codeload.github.com"
-  "gitlab.com"
-  "codeberg.org"
-  # Package registries
-  "registry.npmjs.org"
-  "pypi.org"
-  "files.pythonhosted.org"
-  "rubygems.org"
-  "crates.io"
-  "static.crates.io"
-  "pkg.go.dev"
-  "sum.golang.org"
-  "proxy.golang.org"
-  "registry-1.docker.io"
-  "auth.docker.io"
-  "index.docker.io"
-  "maven.org"
-  "repo.maven.apache.org"
-  "jcenter.bintray.com"
-  "dl.cloudsmith.io"
-  # Common doc / CDN
-  "docs.anthropic.com"
-  "cdn.anthropic.com"
-  "fonts.googleapis.com"
-  "fonts.gstatic.com"
-)
-
-
-# _generate_egress_rules_file — generate a per-cage egress-rules YAML from effective config.
-#
-# Takes the effective-config JSON object (the .config subtree from _load_effective_config,
-# or a schema-defaults object when no config files are present) as $1.
-#
-# Emits to stdout the YAML file to be mounted at /etc/rip-cage/egress-rules.yaml.
-#
-# Format (extends current egress-rules.yaml shape — D1 backward compat):
-#   version: 2
-#   mode: observe|block         # present only when network.mode is non-null
-#   allowed_hosts: [...]        # baseline ∪ user network.allowed_hosts
-#   rules:                      # IOC denylist floor — non-overridable; same ~35 entries
-#                               # Note: writable_hosts removed in rip-cage-ta1o.1
-#     - id: ...                 # as the original static egress-rules.yaml
-#       deny: true
-#       ...
-#
-# rip_cage_egress.py enforces allowed_hosts/mode via decide(). The IOC floor
-# (deny:true rules) is always emitted regardless of mode.
-# Note: writable_hosts removed in rip-cage-ta1o.1 (method-asymmetry/write-gate deleted).
-#
-# Parameters:
-#   $1  cfg_json  — effective config JSON object (network.* subtree read here)
-#
-# D10 contract: called ONLY at rc up / rc reload. No file-watch. An in-cage write
-# to .rip-cage.yaml does not hot-apply — the pipeline regenerates only when rc up
-# or rc reload runs on the host side.
-_generate_egress_rules_file() {
-  local _cfg_json
-  _cfg_json="${1}"
-  [[ -z "$_cfg_json" ]] && _cfg_json="{}"
-  # Second arg: path to the IOC rules file. Defaults to egress-rules.yaml
-  # co-located with this script. Callers may pass an explicit path to make the
-  # function testable without depending on SCRIPT_DIR resolution in sourced contexts.
-  local _ioc_rules_file="${2:-${SCRIPT_DIR}/cage/egress/egress-rules.yaml}"
-
-  # Extract network.* fields from the effective config.
-  # Note: writable_hosts was removed in rip-cage-ta1o.1 (method-asymmetry deleted).
-  local _mode _allowed_hosts_json _dns_forward_to _http_forward_to
-  _mode=$(jq -r '.network.mode // "null"' <<<"$_cfg_json" 2>/dev/null) || _mode="null"
-  _allowed_hosts_json=$(jq -c '.network.allowed_hosts // []' <<<"$_cfg_json" 2>/dev/null) || _allowed_hosts_json="[]"
-  _dns_forward_to=$(jq -r '(.network.dns.forward_to // "null")' <<<"$_cfg_json" 2>/dev/null) || _dns_forward_to="null"
-  _http_forward_to=$(jq -r '(.network.http.forward_to // "null")' <<<"$_cfg_json" 2>/dev/null) || _http_forward_to="null"
-
-  # Merge baseline ∪ user allowed_hosts (order: baseline first, then user additions).
-  local _merged_hosts_json
-  _merged_hosts_json=$(jq -cn \
-    --argjson baseline "$(printf '%s\n' "${_EGRESS_BASELINE_HOSTS[@]}" | jq -R . | jq -sc .)" \
-    --argjson user "$_allowed_hosts_json" \
-    '($baseline + $user) | unique' 2>/dev/null) || _merged_hosts_json="[]"
-
-  # Emit YAML header.
-  printf 'version: 2\n'
-
-  # mode: emit only when network.mode is non-null (null = legacy denylist posture).
-  if [[ "$_mode" != "null" && -n "$_mode" ]]; then
-    printf 'mode: %s\n' "$_mode"
-  fi
-
-  # allowed_hosts: baseline ∪ user (for sibling B/C to enforce whitelist).
-  printf 'allowed_hosts:\n'
-  jq -r '.[]' <<<"$_merged_hosts_json" 2>/dev/null | while IFS= read -r _h; do
-    printf '  - %s\n' "$_h"
-  done
-
-  # Note: writable_hosts was removed in rip-cage-ta1o.1 (method-asymmetry / write-gate
-  # deleted). decide() in rip_cage_egress.py ignores writable_hosts; it is no longer
-  # emitted in the generated rules file.
-
-  # dns_forward_to: emit only when network.dns.forward_to is non-null.
-  # The DNS sidecar reads this field from the rules doc to route clean queries
-  # to a configured external DNS specialist instead of the hardcoded 8.8.8.8.
-  # This is the forward-to-specialist seam (ADR-012 D9, rip-cage-ta1o.2).
-  # Field name 'dns_forward_to' (underscore) matches what rip_cage_dns.py reads.
-  if [[ "$_dns_forward_to" != "null" && -n "$_dns_forward_to" ]]; then
-    printf 'dns_forward_to: %s\n' "$_dns_forward_to"
-  fi
-
-  # http_forward_to: emit only when network.http.forward_to is non-null.
-  # The SNI router reads this field from the rules doc to forward allowed traffic
-  # to a co-located HTTP mediator via HTTP CONNECT instead of origin-splicing.
-  # This is the HTTP forward-to seam (ADR-026 D5, rip-cage-ta1o.5.2).
-  # Field name 'http_forward_to' (underscore) matches what rip_cage_router.py reads.
-  if [[ "$_http_forward_to" != "null" && -n "$_http_forward_to" ]]; then
-    printf 'http_forward_to: %s\n' "$_http_forward_to"
-  fi
-
-  # IOC denylist floor — always emitted, non-overridable by user config.
-  # Read from the IOC rules file (_ioc_rules_file, see parameter above) so
-  # maintainers edit one place; the generator picks up the current rules at
-  # rc up / rc reload time without any secondary copy to drift.
-  if [[ ! -f "$_ioc_rules_file" ]]; then
-    echo "Error: egress-rules.yaml not found at ${_ioc_rules_file}" >&2
-    return 1
-  fi
-  # Extract the 'rules:' section: print from the first 'rules:' line to EOF
-  # (the canonical file contains only the rules: block after the header).
-  # We prepend the 'rules:' key and emit the entries directly; this preserves
-  # comments, formatting, and YAML structure verbatim.
-  awk '/^rules:/{found=1} found{print}' "$_ioc_rules_file"
-}
-
-
-# _up_resolve_egress_rules -- generate the per-cage egress-rules file from effective
-# config and write it to the per-container cache directory.
-#
-# The file is later mounted at /etc/rip-cage/egress-rules.yaml (same path as the
-# image-baked static file), so the proxy and DNS sidecar read the unchanged path.
-# Only the source (generated-per-cage vs image-baked) and content/format change.
-#
-# Globals written: (none)
-# Parameters:
-#   $1  workspace   — project directory (for _load_effective_config)
-#   $2  cache_dir   — per-container cache dir (egress-rules.yaml written here)
-_up_resolve_egress_rules() {
-  local _workspace="$1" _cache_dir="$2"
-
-  # Read effective config (both layers merged). Fall back to schema defaults when
-  # no config files are present (D5 regression contract: existing cages continue
-  # to work with network.mode=null -> legacy denylist posture).
-  local _eff_result _eff_config
-  _eff_result=$(_load_effective_config "$_workspace" 2>/dev/null) || true
-  if [[ -n "$_eff_result" ]]; then
-    _eff_config=$(jq -c '.config' <<<"$_eff_result")
-  else
-    # No config files present: schema defaults (network.mode=null = legacy posture).
-    # Note: writable_hosts removed in rip-cage-ta1o.1.
-    # network.dns.forward_to=null = default 8.8.8.8 upstream (rip-cage-ta1o.2).
-    _eff_config='{"network":{"allowed_hosts":[],"mode":null,"dns":{"forward_to":null}}}'
-  fi
-
-  # rip-cage-4c5.3: union manifest-declared egress hosts into network.allowed_hosts.
-  # Any archetype entry's egress: list contributes to the cage allowlist
-  # (ADR-005 D3 / ADR-024 D1: explicit declaration, host-reviewable).
-  # The IOC check fires in cmd_build, cmd_up, AND cmd_reload (before this union),
-  # so IOC hosts are rejected at all egress-regeneration entry points.
-  local _manifest_hosts_json
-  _manifest_hosts_json=$(_manifest_egress_hosts_json 2>/dev/null) || _manifest_hosts_json="[]"
-  if [[ -n "$_manifest_hosts_json" ]] && [[ "$_manifest_hosts_json" != "[]" ]]; then
-    _eff_config=$(jq -c --argjson manifest_hosts "$_manifest_hosts_json" \
-      '.network.allowed_hosts = ((.network.allowed_hosts // []) + $manifest_hosts | unique)' \
-      <<<"$_eff_config" 2>/dev/null) || true
-  fi
-
-  # Capture resolved network.mode for label stamping (rip-cage-hhh.6 D3).
-  # "legacy" = mode absent / null (denylist-only posture, no mode field in rules).
-  local _resolved_mode
-  _resolved_mode=$(jq -r '.network.mode // "legacy"' <<<"$_eff_config" 2>/dev/null) || _resolved_mode="legacy"
-  _UP_EGRESS_MODE="${_resolved_mode}"
-
-  # Generate the rules file and write to cache (truncate-then-write to preserve inode
-  # in case the file is already bind-mounted; same recipe as known_hosts cache).
-  local _rules_path="${_cache_dir}/egress-rules.yaml"
-  mkdir -p "$_cache_dir"
-  : > "$_rules_path"
-  _generate_egress_rules_file "$_eff_config" "${SCRIPT_DIR}/cage/egress/egress-rules.yaml" > "$_rules_path"
-}
-
-# Global: resolved network.mode from last _up_resolve_egress_rules call.
-# Values: observe | block | legacy (null = legacy).
-_UP_EGRESS_MODE="legacy"
-
 
 # _up_validate_dcg_config — validate a generated DCG TOML config file parses.
 #
@@ -3208,212 +2856,21 @@ _up_resolve_dcg_config() {
 # Set by _up_resolve_dcg_config; consumed by cmd_up to add RO mount.
 _UP_DCG_CONFIG_PATH=""
 
-
-# _up_reload_tcp22_allowlist -- re-apply the TCP-22 IP allowlist inside a running container.
-# (rip-cage-hhh.4 / ADR-012 D8 evolved)
-#
-# Called by cmd_reload after regenerating the egress-rules file when network.* fields change.
-# Sources init-firewall.sh inside the container to call _get_tcp22_allowed_ips and apply
-# the iptables TCP-22 ACCEPT/DROP rules. This re-resolves hostnames to IPs in-container
-# (where the DNS sidecar is active and whitelisted apexes like github.com resolve correctly).
-#
-# Skips silently if egress is off (rc.egress=off label) or if mode is not block.
-#
-# Parameter: $1 name -- container name
-_up_reload_tcp22_allowlist() {
-  local _name="$1"
-  # Use docker exec to source init-firewall.sh (which defines _get_tcp22_allowed_ips
-  # and _read_egress_mode) then apply the TCP-22 allowlist. The inline script is
-  # functionally equivalent to Step 4c of init-firewall.sh, re-run after a reload.
-  docker exec -u root "$_name" bash -c '
-    source /usr/local/lib/rip-cage/init-firewall.sh
-    _EGRESS_RULES=/etc/rip-cage/egress-rules.yaml
-    _TCP22_MODE=$(_read_egress_mode "$_EGRESS_RULES")
-    if [[ "$_TCP22_MODE" == "block" ]]; then
-      while iptables -D OUTPUT -p tcp --dport 22 -j DROP 2>/dev/null; do :; done
-      while iptables -D OUTPUT -p tcp --dport 22 -j ACCEPT 2>/dev/null; do :; done
-      while IFS= read -r _tcp22_ip; do
-        [[ -z "$_tcp22_ip" ]] && continue
-        if ! iptables -C OUTPUT -p tcp --dport 22 -d "$_tcp22_ip" -j ACCEPT 2>/dev/null; then
-          iptables -A OUTPUT -p tcp --dport 22 -d "$_tcp22_ip" -j ACCEPT
-        fi
-      done < <(_get_tcp22_allowed_ips "$_EGRESS_RULES")
-      if ! iptables -C OUTPUT -p tcp --dport 22 -j DROP 2>/dev/null; then
-        iptables -A OUTPUT -p tcp --dport 22 -j DROP
-      fi
-    fi
-  ' 2>/dev/null || true
-}
-
-
-# _up_reload_egress_proxy -- bounce the egress proxy + DNS sidecar inside a running
-# container so they re-read the regenerated /etc/rip-cage/egress-rules.yaml.
-# (rip-cage-hhh.4 / ADR-012 D9)
-#
-# Both sidecars load their rules ONCE at process startup — by design, not by watching
-# the YAML file (D10: effective config changes only at rc up / rc reload). cmd_reload
-# regenerates egress-rules.yaml and the bind-mount shows the new content in-container,
-# but the running router / DNS resolver still hold the stale rules_doc cached at
-# startup. Killing the inner process lets the restart-loop wrappers (rip-proxy-start.sh
-# / rip-dns-start.sh) relaunch it with fresh rules. The wrapper scripts' argv is the
-# .sh path (not "rip_cage_router.py" / "rip_cage_dns.py"), so the -f patterns never match the
-# wrappers — they survive to perform the relaunch.
-#
-# Caller guards on the rc.egress label (skips when egress=off).
-# Parameter: $1 name -- container name
-_up_reload_egress_proxy() {
-  local _name="$1"
-  docker exec -u root "$_name" sh -c '
-    _rip_bounce() {
-      pkill -u rip-proxy -f "$1" 2>/dev/null || true
-      # Wait for the old process to exit (max ~5s).
-      _i=0
-      while [ "$_i" -lt 25 ] && pgrep -u rip-proxy -f "$1" >/dev/null 2>&1; do
-        _i=$((_i+1)); sleep 0.2
-      done
-      # Wait for the restart-loop wrapper to relaunch it (max ~10s).
-      _i=0
-      while [ "$_i" -lt 50 ] && ! pgrep -u rip-proxy -f "$1" >/dev/null 2>&1; do
-        _i=$((_i+1)); sleep 0.2
-      done
-    }
-    _rip_bounce rip_cage_router.py
-    _rip_bounce rip_cage_dns.py
-    # Settle: allow the router to bind :8080 and the DNS resolver to bind :5300.
-    sleep 1
-  ' 2>/dev/null || true
-}
-
-
-# _up_init_firewall -- run the root-phase firewall init inside the container.
-# Called on both create and resume paths (iptables rules do not persist across stop/start).
-# Must run BEFORE _up_init_container (init-rip-cage.sh sources /etc/rip-cage/firewall-env).
-#
-# Globals read: OUTPUT_FORMAT
-# Globals written: _UP_FIREWALL_OK (set to "true" or "false")
-# Parameter: $1 name -- container name
-_up_init_firewall() {
-  local _name="$1"
-  _UP_FIREWALL_OK=true
-  log "Running firewall init..."
-  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    docker exec -u root "$_name" /usr/local/lib/rip-cage/init-firewall.sh >/dev/null 2>&1 || _UP_FIREWALL_OK=false
-  else
-    docker exec -u root "$_name" /usr/local/lib/rip-cage/init-firewall.sh || _UP_FIREWALL_OK=false
-  fi
-}
-
-
-# _load_mediator_env_file <path> — appends "-e" "KEY=VALUE" pairs (one per
-# non-blank, non-comment line) to _UP_MEDIATOR_ENV_ARGS. Factored out of the
-# --mediator-env-file CLI branch (rip-cage-seqc.4 / E7) so the config-pointer
-# resolver below can share the same parse logic (DRY).
-_load_mediator_env_file() {
-  local _lmf_path="$1"
-  local _lmf_line
-  while IFS= read -r _lmf_line || [[ -n "$_lmf_line" ]]; do
-    [[ -z "$_lmf_line" || "$_lmf_line" == \#* ]] && continue
-    _UP_MEDIATOR_ENV_ARGS+=(-e "$_lmf_line")
-  done < "$_lmf_path"
-}
-
-
-# _up_resolve_mediator_env_file <path> <phase> (rip-cage-seqc.4 / B5, F3)
-#
-# network.egress.mediator_env_file is a PERSISTED POINTER to a host env file
-# (never the secret content itself). Without this, an unattended
-# `rc down && rc up` re-launches the mediator with an empty
-# _UP_MEDIATOR_ENV_ARGS (CLI flags are not remembered across invocations) and
-# injection silently no-ops — the autonomy regression F3 exists to close.
-#
-# phase = create|resume selects the fail-mode on a missing file:
-#   create — fail loud, exit 1 (a human is present; a configured pointer to
-#            an absent secret is a misconfiguration worth stopping for).
-#   resume — WARN loud, never exit. On the stopped-resume call site,
-#            `docker start` has already run before this resolver — exiting
-#            here would strand an already-started, half-init container.
-#            Degraded-but-alive: not worse than today's no-flag resume.
-#
-# CLI flags (--mediator-env / --mediator-env-file) always win over the
-# pointer — deterministic precedence, no additive-merge ambiguity.
-#
-# Secret non-leak: this function logs ONLY the pointer path + entry count,
-# NEVER parsed values. Values live solely in _UP_MEDIATOR_ENV_ARGS, which
-# flows ONLY into _up_init_mediator's docker exec -u root -e channel — never
-# docker run, never a --label, never echoed.
-_up_resolve_mediator_env_file() {
-  local _mef_path="$1" _mef_phase="$2"
-
-  # CLI wins: if --mediator-env/--mediator-env-file already populated the
-  # array, the pointer is ignored (deterministic; avoids conflicting pairs).
-  if [[ "${#_UP_MEDIATOR_ENV_ARGS[@]}" -gt 0 ]]; then
-    log "network.egress.mediator_env_file: ignored — CLI --mediator-env/--mediator-env-file already supplied mediator env"
-    return 0
-  fi
-
-  local _mef_pointer="null"
-  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "${_mef_path}")" ]]; then
-    if command -v yq &>/dev/null; then
-      local _mef_cfg
-      if _mef_cfg=$(_load_effective_config "${_mef_path}" 2>/dev/null); then
-        _mef_pointer=$(jq -r '.config.network.egress.mediator_env_file // "null"' <<<"$_mef_cfg")
-      fi
-      unset _mef_cfg
-    fi
-  fi
-  # F4 note: yq is a hard startup dependency (cmd_up's preflight aborts
-  # before any mount/mediator work when a config file exists and yq is
-  # absent) — the command-v-yq else-branch above (implicit default "null")
-  # is unreachable-but-harmless, kept for idiom-consistency with siblings.
-  if [[ -z "$_mef_pointer" || "$_mef_pointer" == "null" ]]; then
-    return 0
-  fi
-
-  if [[ ! -f "$_mef_pointer" ]]; then
-    if [[ "$_mef_phase" == "create" ]]; then
-      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        json_error "network.egress.mediator_env_file points at a missing file: ${_mef_pointer}" "MEDIATOR_ENV_FILE_NOT_FOUND"
-      fi
-      echo "Error: network.egress.mediator_env_file points at a missing file: ${_mef_pointer}" >&2
-      exit 1
-    else
-      echo "Warning: network.egress.mediator_env_file points at a missing file: ${_mef_pointer} — the mediator will relaunch WITHOUT the secret and injection will silently no-op. Re-supply --mediator-env, fix the pointer, then 'rc down && rc up' to pick it up." >&2
-      return 0
-    fi
-  fi
-
-  # Perms check: warn loud on group/world-accessible pointer files, but do
-  # NOT refuse (open-question ruling 2). Portable stat across Darwin/Linux.
-  local _mef_perms
-  _mef_perms=$(stat -f '%Lp' "$_mef_pointer" 2>/dev/null || stat -c '%a' "$_mef_pointer" 2>/dev/null || echo "")
-  if [[ -n "$_mef_perms" && "$_mef_perms" != "600" ]]; then
-    echo "Warning: network.egress.mediator_env_file (${_mef_pointer}) is not mode 0600 (found ${_mef_perms}) — the pointer file is group/world-accessible." >&2
-  fi
-
-  _load_mediator_env_file "$_mef_pointer"
-  local _mef_count=$(( ${#_UP_MEDIATOR_ENV_ARGS[@]} / 2 ))
-  log "network.egress.mediator_env_file: loaded ${_mef_count} entr$( [[ "$_mef_count" -eq 1 ]] && echo y || echo ies ) from ${_mef_pointer}"
-}
-
-
 # _up_resolve_placeholder_env_file <path> <cli_env_file> (rip-cage-b9to)
 #
 # auth.placeholder_env_file is a PERSISTED POINTER to a host env file carrying
 # the agent's non-secret placeholder token (e.g. CLAUDE_CODE_OAUTH_TOKEN) —
-# the mediator swaps it for the real credential at egress time. Modeled on
-# _up_resolve_mediator_env_file above, but for a DIFFERENT channel: this
-# pointer's contents land in the container via `docker run --env-file`, i.e.
-# in PID 1's environment, which the agent CAN read (/proc/1/environ) — that's
-# the point (agent-held, non-secret by design). The mediator's channel above
-# is `docker exec -u <mediator-uid> -e ...`, never agent-readable.
+# a composed (opt-in) mediator recipe swaps it for the real credential at
+# egress time, or msb's --secret non-possession path (ADR-029 D5) does for
+# the default posture. This pointer's contents land in the container via
+# `docker run --env-file`, i.e. in PID 1's environment, which the agent CAN
+# read (/proc/1/environ) — that's the point (agent-held, non-secret by design).
 #
-# CREATE-ONLY, phase-aware by CALL SITE (not by a $2-phase arg like the
-# mediator resolver): the call site in cmd_up invokes this ONLY on the create
-# path, immediately before _up_prepare_environment — never on resume (container
-# env is immutable across stop/start; D3) and never under --dry-run (D4).
+# CREATE-ONLY: the call site in cmd_up invokes this ONLY on the create path,
+# immediately before _up_prepare_environment — never on resume (container env
+# is immutable across stop/start; D3) and never under --dry-run (D4).
 #
-# ORDER MATTERS (v3 design D2, R2 F1) — mirrors the separated
-# local + if _x=$(...) idiom of _up_resolve_mediator_env_file above:
+# ORDER MATTERS (v3 design D2, R2 F1):
 #   a. Read the effective config key FIRST. Null/absent -> return silently,
 #      ZERO output — every existing --env-file CLI user (who never sets this
 #      key) sees nothing new (acceptance d).
@@ -3423,25 +2880,23 @@ _up_resolve_mediator_env_file() {
 #      impossible.
 #   c. Pointer fails [[ -f ]] (missing, directory, dangling symlink) -> FATAL:
 #      json_error under json mode + echo>&2 + exit 1, naming
-#      auth.placeholder_env_file (mirrors the mediator resolver's F3 fatal
-#      above). Create-only call site: this can never strand a resume.
+#      auth.placeholder_env_file. Create-only call site: this can never
+#      strand a resume.
 #   d. Run _check_secret_path_denylist on the pointer with the SAME treatment
-#      the CLI --env-file path gives it (rc:~4367) — deliberate divergence
-#      from the mediator resolver (D2d): this channel IS agent-readable, so an
-#      operator accidentally pointing at a real secret file (~/.aws/credentials)
-#      must be refused the same way the CLI path refuses it.
-#   e. No tilde/HOME expansion, no relative-path resolution (raw pointer, like
-#      the mediator resolver — config.md documents "absolute path"). No
-#      allowed-roots check (host-authored config, host-only trust — mediator
-#      precedent). No 0600 warning (non-secret by design; agent-readability of
-#      the placeholder is the point).
+#      the CLI --env-file path gives it (rc:~4367) — this channel IS
+#      agent-readable, so an operator accidentally pointing at a real secret
+#      file (~/.aws/credentials) must be refused the same way the CLI path
+#      refuses it.
+#   e. No tilde/HOME expansion, no relative-path resolution (raw pointer —
+#      config.md documents "absolute path"). No allowed-roots check
+#      (host-authored config, host-only trust). No 0600 warning (non-secret
+#      by design; agent-readability of the placeholder is the point).
 #
 # RETURN MECHANISM (R2 F2, pinned): sets the global _UP_PLACEHOLDER_ENV_FILE
 # (reset to "" at the top of every call so a stale value from a prior
-# invocation in the same process can never leak forward) — mirrors the
-# established _UP_* global idiom (cf. _UP_MEDIATOR_CA_ENV). This function
-# must NOT rely on dynamic-scope bare assignment into the caller's `env_file`
-# and must NOT declare `local env_file` itself. The CALL SITE (cmd_up,
+# invocation in the same process can never leak forward). This function must
+# NOT rely on dynamic-scope bare assignment into the caller's `env_file` and
+# must NOT declare `local env_file` itself. The CALL SITE (cmd_up,
 # immediately before _up_prepare_environment) is responsible for copying
 # _UP_PLACEHOLDER_ENV_FILE into its own env_file when non-empty — that copy is
 # part of the change, not implied by this function.
@@ -3451,11 +2906,10 @@ _up_resolve_mediator_env_file() {
 # Parameters:
 #   $1  path          — validated workspace path (effective-config resolution)
 #   $2  cli_env_file  — the CLI --env-file value as seen so far by cmd_up
-#                        ("" if not supplied). Needed here because, unlike the
-#                        mediator's CLI flags (which populate a global array,
-#                        _UP_MEDIATOR_ENV_ARGS), --env-file only ever sets a
-#                        `local env_file` inside cmd_up — there is no global to
-#                        inspect, so the caller must pass its current value.
+#                        ("" if not supplied). Needed here because --env-file
+#                        only ever sets a `local env_file` inside cmd_up —
+#                        there is no global to inspect, so the caller must
+#                        pass its current value.
 _up_resolve_placeholder_env_file() {
   local _pef_path="$1" _pef_cli_env_file="${2:-}"
   _UP_PLACEHOLDER_ENV_FILE=""
@@ -3503,58 +2957,6 @@ _up_resolve_placeholder_env_file() {
 
   _UP_PLACEHOLDER_ENV_FILE="$_pef_pointer"
   log "auth.placeholder_env_file: applied ${_pef_pointer}"
-}
-
-
-# _up_init_mediator — root-phase mediator init inside the container.
-# (rip-cage-ta1o.5.8 / ADR-026 D5)
-#
-# Mirrors _up_init_firewall: runs `docker exec -u root` so the in-container
-# mediator-launch script can su to the non-root mediator uid (root→non-root
-# needs no password). Called AFTER _up_init_firewall (uid-exemption is in
-# place) and BEFORE _up_init_container (init-rip-cage.sh) on BOTH the create
-# path and the resume path.
-#
-# The mediator secret channel (_UP_MEDIATOR_ENV_ARGS, populated by --mediator-env
-# KEY=VALUE / --mediator-env-file PATH on the rc up CLI, or the
-# network.egress.mediator_env_file config pointer — rip-cage-seqc.4) is passed
-# ONLY into this docker exec -e ..., NEVER into docker run. This ensures the
-# real secret is visible only in the mediator process env, not in PID 1 (agent
-# cannot read it via /proc/1/environ). ADR-001 / ADR-024 D2 / ADR-026 D6.
-#
-# Globals read: OUTPUT_FORMAT, RC_MEDIATOR (set in container env by cmd_up),
-#               _UP_MEDIATOR_ENV_ARGS (array of -e KEY=VAL for the mediator exec)
-# Globals written: _UP_MEDIATOR_OK (set to "true" or "false")
-# Parameter: $1 name — container name
-_up_init_mediator() {
-  local _name="$1"
-  _UP_MEDIATOR_OK=true
-  log "Running mediator init..."
-  # Build the docker exec command: always -u root; pass mediator-only env vars.
-  local _med_exec_args=(-u root)
-  # _UP_MEDIATOR_ENV_ARGS is an array of "-e" "KEY=VAL" pairs set by --mediator-env.
-  if [[ "${#_UP_MEDIATOR_ENV_ARGS[@]}" -gt 0 ]]; then
-    _med_exec_args+=("${_UP_MEDIATOR_ENV_ARGS[@]}")
-  fi
-  # F2 (rip-cage-seqc.4 / B5a): warn loud when a mediator is composed but no
-  # mediator env was resolved — injection would silently no-op. There is no
-  # rc.mediator LABEL; the container's RC_MEDIATOR env var (threaded at
-  # docker-run time, cmd_up) is the single source of truth on BOTH create and
-  # resume (the cmd_up-local _rc_mediator variable is create-only and out of
-  # scope here). Tool-agnostic message (ADR-005 D12): no mediator name.
-  local _med_sel _med_env_json
-  _med_env_json=$(docker inspect --format '{{json .Config.Env}}' "$_name" 2>/dev/null || echo '[]')
-  _med_sel=$(jq -r '(.[]? // empty) | select(startswith("RC_MEDIATOR=")) | sub("^RC_MEDIATOR="; "")' <<<"$_med_env_json" 2>/dev/null | head -1)
-  if [[ -n "$_med_sel" && "$_med_sel" != "none" && "${#_UP_MEDIATOR_ENV_ARGS[@]}" -eq 0 ]]; then
-    echo "Warning: a mediator is composed for this cage but no mediator env was resolved (no --mediator-env/--mediator-env-file and no network.egress.mediator_env_file) — injection will silently no-op. Set network.egress.mediator_env_file or re-supply --mediator-env." >&2
-  fi
-  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    docker exec "${_med_exec_args[@]}" "$_name" \
-      /usr/local/lib/rip-cage/init-mediator.sh >/dev/null 2>&1 || _UP_MEDIATOR_OK=false
-  else
-    docker exec "${_med_exec_args[@]}" "$_name" \
-      /usr/local/lib/rip-cage/init-mediator.sh || _UP_MEDIATOR_OK=false
-  fi
 }
 
 
@@ -3691,7 +3093,7 @@ Continuing anyway — bd calls inside the container will fail until resolved."
 cmd_up() {
   local path="" port="" env_file=""
   local rc_cpus="2" rc_memory="4g" rc_pids_limit="500"
-  # Sibling pattern to RIP_CAGE_EGRESS: env provides the project/shell default,
+  # RIP_CAGE_FORWARD_SSH env provides the project/shell default,
   # --no-forward-ssh on the CLI always wins.
   local rc_forward_ssh="${RIP_CAGE_FORWARD_SSH:-on}"
   # ADR-020 D3: --github-identity=<keyname> CLI flag (layer 1 of four-layer resolver).
@@ -3710,12 +3112,6 @@ cmd_up() {
   # ADR-024 D1 / rip-cage-hhh.5: per-invocation bypass for workspace base-URL redirect check.
   # When set, validator emits a warning instead of refusing.
   local rc_allow_config_override=""
-  # rip-cage-ta1o.5.8: mediator-only secret channel (ADR-026 D6 / ADR-001 / ADR-024 D2).
-  # Populated by --mediator-env KEY=VALUE (repeatable) and --mediator-env-file PATH.
-  # Values go ONLY into _up_init_mediator's docker exec -e ..., NEVER into docker run.
-  # This prevents the real secret from appearing in /proc/1/environ (PID 1 = sleep
-  # infinity runs as agent). ADR-005 D12: flag names env vars generically, no mediator names.
-  _UP_MEDIATOR_ENV_ARGS=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --port) [[ $# -ge 2 ]] || { echo "Error: --port requires a value" >&2; exit 1; }; port="$2"; shift 2 ;;
@@ -3731,24 +3127,6 @@ cmd_up() {
       --session) [[ $# -ge 2 ]] || { echo "Error: --session requires a value" >&2; exit 1; }; rc_up_session_name="$2"; shift 2 ;;
       --allow-risky-mount) [[ $# -ge 2 ]] || { echo "Error: --allow-risky-mount requires a value" >&2; exit 1; }; RC_ALLOW_RISKY_MOUNT+=("$2"); shift 2 ;;
       --allow-config-override) rc_allow_config_override="true"; shift ;;
-      --mediator-env)
-        # rip-cage-ta1o.5.8: mediator-only env var (KEY=VALUE). Repeatable.
-        # Goes ONLY into _up_init_mediator's docker exec, NOT into docker run.
-        [[ $# -ge 2 ]] || { echo "Error: --mediator-env requires a KEY=VALUE argument" >&2; exit 1; }
-        _UP_MEDIATOR_ENV_ARGS+=(-e "$2"); shift 2 ;;
-      --mediator-env-file)
-        # rip-cage-ta1o.5.8: load mediator-only env from a file (KEY=VALUE lines).
-        # Each line becomes a separate -e KEY=VALUE in the mediator docker exec.
-        [[ $# -ge 2 ]] || { echo "Error: --mediator-env-file requires a PATH argument" >&2; exit 1; }
-        local _mef="$2"; shift 2
-        if [[ ! -f "$_mef" ]]; then
-          echo "Error: --mediator-env-file: file not found: ${_mef}" >&2; exit 1
-        fi
-        # rip-cage-seqc.4 / E7: factored into _load_mediator_env_file (DRY —
-        # the network.egress.mediator_env_file config-pointer resolver shares it).
-        _load_mediator_env_file "$_mef"
-        unset _mef
-        ;;
       *) path="$1"; shift ;;
     esac
   done
@@ -3757,8 +3135,6 @@ cmd_up() {
     echo "Error: --new and --session are mutually exclusive. Use one or the other." >&2
     exit 2
   fi
-  local rc_egress="${RIP_CAGE_EGRESS:-on}"
-
   # ADR-020 D7: resolve ssh-config posture from flags + implication chain.
   local rc_ssh_config
   rc_ssh_config=$(_resolve_ssh_config_posture "$rc_no_ssh_config_flag" "$rc_ssh_config_explicit_flag" "$rc_forward_ssh")
@@ -3941,7 +3317,6 @@ cmd_up() {
       _up_resolve_resume_ssh_key_filter "$name" "$path"
       _up_resolve_resume_symlink_fingerprint "$name" "$path"
       _up_resolve_resume_credential_mounts "$name" "$path"
-      _up_resolve_resume_mediator_ca_env "$name" "$path"
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-RUNNING END
       would_action="would_attach"
     elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
@@ -3956,7 +3331,6 @@ cmd_up() {
       # real branch's ssh_config guard is intentionally NOT pulled in here —
       # that's resume-side mutation, not a guard.
       _up_resolve_resume_image_drift_stopped "$name" "$path"
-      _up_resolve_resume_egress "$name" "$path"
       _up_resolve_resume_forward_ssh "$name" "$path"
       _up_resolve_resume_github_identity "$name" "$path" "$rc_github_identity_flag"
       local _dry_ssh_config_cli_flag=""
@@ -3970,7 +3344,6 @@ cmd_up() {
       _up_resolve_resume_config_mode "$name" "$path"
       _up_resolve_resume_symlink_fingerprint "$name" "$path"
       _up_resolve_resume_credential_mounts "$name" "$path"
-      _up_resolve_resume_mediator_ca_env "$name" "$path"
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-STOPPED END
       would_action="would_resume"
     elif [[ "$_inspect_exit" -ne 0 ]]; then
@@ -4085,7 +3458,6 @@ cmd_up() {
     _up_resolve_resume_credential_mounts "$name" "$path"
     # rip-cage-yid0: mediator CA env guard applies to running containers too
     # — CA trust env vars are frozen at container-create time, same rationale.
-    _up_resolve_resume_mediator_ca_env "$name" "$path"
     # rip-cage-3y9g: RESUME-GUARDS-REAL-RUNNING END
     _config_emit_hint "$path" "$name"
     _config_init_emit_tip "$path"
@@ -4147,12 +3519,7 @@ cmd_up() {
     # against the OLD container's filesystem -> raw OCI stat crash + self-stop.
     # Aborts loud on mismatch or a missing current image — never fail-open.
     _up_resolve_resume_image_drift_stopped "$name" "$path"
-    # On resume, source rc.egress from the container's label (the value it was
-    # created with) rather than the host env, which may have drifted. Missing or
-    # unrecognized labels fail loud per ADR-001 — there is no safe default.
-    _up_resolve_resume_egress "$name" "$path"
-    rc_egress="$_UP_RESUME_EGRESS"
-    # ADR-017 D2: forward-ssh posture is label-persisted, same pattern as egress.
+    # ADR-017 D2: forward-ssh posture is label-persisted.
     _up_resolve_resume_forward_ssh "$name" "$path"
     rc_forward_ssh="$_UP_RESUME_FORWARD_SSH"
     # ADR-020 D3: github-identity label is immutable on resume; CLI override is an error.
@@ -4187,20 +3554,9 @@ cmd_up() {
     # rip-cage-seqc.4 / B1: credential-mounts mount-shape guard — abort loud if
     # auth.credential_mounts was toggled between real and none since create.
     _up_resolve_resume_credential_mounts "$name" "$path"
-    # rip-cage-yid0: mediator CA env guard — abort loud if a mediator was
-    # composed after create-time (or the container pre-dates the fix) — CA
-    # trust env vars are frozen at container-create time.
-    _up_resolve_resume_mediator_ca_env "$name" "$path"
     # rip-cage-3y9g: RESUME-GUARDS-REAL-STOPPED END
     _UP_SSH_FILTER_ACTIVE="false"
     _up_resolve_ssh_allowlists "$path" "$_rc_ssh_cache_dir"
-    # rip-cage-hhh.2: regenerate egress-rules on resume (truncate-then-write;
-    # bind mount already exists from create time — inode preserved, agent sees
-    # updated content on the next proxy reload without container restart).
-    # D10: regenerated ONLY here and at rc up create / rc reload. No file-watch.
-    if [[ "$rc_egress" != "off" ]]; then
-      _up_resolve_egress_rules "$path" "$_rc_ssh_cache_dir"
-    fi
     # On resume, the socket (or lack thereof) was wired at create time. The
     # label value is the ground truth for preflight — we don't re-distinguish
     # user-opt-out from no-host-agent here. Socket cannot be changed on resume.
@@ -4220,40 +3576,6 @@ cmd_up() {
       docker start "$name" >/dev/null
     else
       docker start "$name"
-    fi
-    if [[ "$rc_egress" != "off" ]]; then
-      _up_init_firewall "$name"
-      if [[ "$_UP_FIREWALL_OK" == "false" ]]; then
-        if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-          docker stop "$name" >/dev/null 2>&1
-          _up_json_output "$name" "resumed" "$path" "stopped" "failed"
-          return 1
-        fi
-        echo "Error: firewall init failed on resume. Stopping container so next 'rc up' retries." >&2
-        docker stop "$name"
-        exit 1
-      fi
-    fi
-    # rip-cage-ta1o.5.8: mediator launch on resume path (F5 fix).
-    # A stopped container kills the mediator; resume must re-launch it.
-    # Runs AFTER firewall (uid-exemption installed), BEFORE init-rip-cage.sh.
-    if [[ "$rc_egress" != "off" ]]; then
-      # rip-cage-seqc.4 / B5 / F3: re-apply the mediator_env_file pointer on
-      # resume too (autonomy fix) — phase=resume warns-and-continues on a
-      # missing file rather than exiting (docker start already ran above;
-      # exiting here would strand an already-started container).
-      _up_resolve_mediator_env_file "$path" "resume"
-      _up_init_mediator "$name"
-      if [[ "${_UP_MEDIATOR_OK:-true}" == "false" ]]; then
-        if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-          docker stop "$name" >/dev/null 2>&1
-          _up_json_output "$name" "resumed" "$path" "stopped" "failed"
-          return 1
-        fi
-        echo "Error: mediator init failed on resume. Stopping container so next 'rc up' retries." >&2
-        docker stop "$name"
-        exit 1
-      fi
     fi
     _up_init_container "$name"
     if [[ "$_UP_INIT_OK" == "false" ]]; then
@@ -4404,14 +3726,6 @@ cmd_up() {
   _UP_SSH_FILTER_ACTIVE="false"
   _up_resolve_ssh_allowlists "$path" "$_rc_ssh_cache_dir"
 
-  # rip-cage-hhh.2: generate per-cage egress-rules file from effective config.
-  # Writes to cache dir; mounted below at /etc/rip-cage/egress-rules.yaml.
-  # D10: regenerated ONLY here (rc up create) and in resume path / rc reload.
-  # No file-watch — an in-cage write to .rip-cage.yaml does NOT hot-apply.
-  if [[ "$rc_egress" != "off" ]]; then
-    _up_resolve_egress_rules "$path" "$_rc_ssh_cache_dir"
-  fi
-
   # ADR-025 D1/D5: translate dcg.* from effective config into a merged DCG
   # config file. Fail-closed on malformed TOML (D5). Safe-by-default: no file
   # written and _UP_DCG_CONFIG_PATH stays empty when no dcg.* configured.
@@ -4546,60 +3860,6 @@ cmd_up() {
   # attach block below. It is unset after that block (after _config_init_emit_tip).
   unset _mux_eff_result
 
-  # rip-cage-ta1o.5.7: resolve network.egress.mediator from effective config (ADR-026 D5).
-  # Defaults to "none" when unset. Invalid values caught by _config_validate_or_abort (ADR-001).
-  # When a real mediator is selected, thread it into the container as RC_MEDIATOR so
-  # init-rip-cage.sh can dispatch its baked start hook. When none, emit nothing — existing
-  # cages with no mediator config remain byte-identical to today (no regression).
-  # ADR-005 D12 FIRM: no mediator name is ever hardcoded here; dispatch is entirely driven
-  # by the config value + baked registry files under /etc/rip-cage/mediators/<name>/.
-  #
-  # rip-cage-yid0: this block is also where _UP_MEDIATOR_CA_ENV (the gate flag
-  # consumed by the mediator-CA-trust-env-vars block in _up_prepare_environment,
-  # rc:~1724) is set. _up_prepare_environment is called AFTER the
-  # `unset _rc_mediator` at the end of this block — a gate written there
-  # directly on _rc_mediator would never fire. Follow the
-  # existing _UP_* global pattern (mirrors _UP_FORWARD_SSH_HOST_SOCK): set the
-  # flag here, consume it downstream.
-  local _rc_mediator="none"
-  _UP_MEDIATOR_CA_ENV="false"
-  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
-    if command -v yq &>/dev/null; then
-      local _med_eff_result
-      if _med_eff_result=$(_load_effective_config "$path" 2>/dev/null); then
-        _rc_mediator=$(jq -r '.config.network.egress.mediator // "none"' <<<"$_med_eff_result")
-      fi
-      unset _med_eff_result
-    fi
-  fi
-  if [[ "$_rc_mediator" != "none" ]]; then
-    # ADR-001 fail-closed: a mediator requires the egress router to be on.
-    # With egress=off, no iptables uid-exemption is installed and there is no
-    # router to forward traffic to the mediator — the combination is incoherent
-    # and non-functional. Reject loud rather than silently starting an
-    # incoherent cage (Finding 3 / ADR-026 D5).
-    if [[ "$rc_egress" == "off" ]]; then
-      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        json_error "network.egress.mediator='${_rc_mediator}' requires egress to be on — with egress=off, no iptables uid-exemption is installed and there is no egress router to forward to the mediator. Set network.egress.mediator: none or enable egress (remove RIP_CAGE_EGRESS=off). (ADR-001 fail-closed; ADR-026 D5)" "MEDIATOR_REQUIRES_EGRESS"
-      fi
-      echo "Error: network.egress.mediator='${_rc_mediator}' requires egress to be on — with egress=off, no iptables uid-exemption is installed and there is no egress router to forward to the mediator. Set network.egress.mediator: none or enable egress (ADR-001 fail-closed; ADR-026 D5)." >&2
-      exit 1
-    fi
-    _UP_RUN_ARGS+=(-e "RC_MEDIATOR=${_rc_mediator}")
-    log "network.egress.mediator: ${_rc_mediator}"
-    _UP_MEDIATOR_CA_ENV="true"
-  else
-    log "network.egress.mediator: none (no mediator env threaded)"
-  fi
-  # rip-cage-yid0: create-time label stamp for the resume guard
-  # (_up_resolve_resume_mediator_ca_env). NODE_EXTRA_CA_CERTS / SSL_CERT_FILE /
-  # REQUESTS_CA_BUNDLE are frozen at container-create time (docker run -e is
-  # immutable on resume, unlike this rc invocation's re-resolved config) — this
-  # label is the ground truth the resume guard compares against the CURRENT
-  # effective config so a stale resume can't silently keep broken Node TLS.
-  _UP_RUN_ARGS+=(--label "rc.mediator-ca-env=${_UP_MEDIATOR_CA_ENV}")
-  unset _rc_mediator
-
   _up_prepare_docker_mounts "$path" "$name"
 
   # rip-cage-b9to: resolve the auth.placeholder_env_file pointer (create-only,
@@ -4611,30 +3871,17 @@ cmd_up() {
     env_file="$_UP_PLACEHOLDER_ENV_FILE"
   fi
 
-  _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" "$rc_egress" "$rc_forward_ssh"
+  _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" "$rc_forward_ssh"
 
-  # rip-cage-hhh.6 D3: stamp rc.egress.mode label (observe|block|legacy) and
-  # rc.egress.config-override label so rc ls and rc doctor can surface them without
-  # per-cage docker exec. Mode is captured by _up_resolve_egress_rules (global
-  # _UP_EGRESS_MODE); for egress=off containers, mode is always "legacy".
-  if [[ "$rc_egress" != "off" ]]; then
-    _UP_RUN_ARGS+=(--label "rc.egress.mode=${_UP_EGRESS_MODE:-legacy}")
-  else
-    _UP_RUN_ARGS+=(--label "rc.egress.mode=legacy")
-  fi
+  # rip-cage-hhh.6 D3 (evolved, ADR-029 D2): rc.egress.config-override label so
+  # rc doctor can surface the ADR-024 D1 workspace-base-URL-override posture
+  # without a per-cage docker exec. (rc.egress.mode retired with the deleted
+  # in-cage router — mode was the router's observe/block posture.)
   _UP_RUN_ARGS+=(--label "rc.egress.config-override=${rc_allow_config_override:-false}")
 
   # ADR-020 D1+D7: mount translated config + pubkeys when posture=on (after run-args are initialized).
   if [[ "$rc_ssh_config" == "on" ]]; then
     _build_ssh_mount_args_with_posture "$_rc_ssh_cfg" "$name" _UP_RUN_ARGS "on"
-  fi
-
-  # rip-cage-hhh.2: mount generated egress-rules file over the image-baked static file.
-  # The proxy (rip_cage_egress.py) reads /etc/rip-cage/egress-rules.yaml unchanged;
-  # only the source (generated vs image-baked) and format change.
-  if [[ "$rc_egress" != "off" ]]; then
-    local _egress_rules_cache="${_rc_ssh_cache_dir}/egress-rules.yaml"
-    _UP_RUN_ARGS+=(--mount "type=bind,src=${_egress_rules_cache},dst=/etc/rip-cage/egress-rules.yaml,ro")
   fi
 
   # ADR-025 D1/D5: mount translated DCG config RO over the wrapper's pinned path.
@@ -4647,37 +3894,6 @@ cmd_up() {
   _UP_RUN_ARGS+=("$IMAGE" sleep infinity)
 
   _up_start_container "$name"
-  if [[ "$rc_egress" != "off" ]]; then
-    _up_init_firewall "$name"
-    if [[ "$_UP_FIREWALL_OK" == "false" ]]; then
-      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        docker stop "$name" >/dev/null 2>&1
-        _up_json_output "$name" "created" "$path" "stopped" "failed"
-        return 1
-      fi
-      echo "Error: firewall init failed. Stopping container so next 'rc up' retries." >&2
-      docker stop "$name"
-      exit 1
-    fi
-  fi
-  # rip-cage-ta1o.5.8: mediator launch on create path (F5 / option-a host-driven root launch).
-  # Runs AFTER firewall (uid-exemption installed), BEFORE init-rip-cage.sh.
-  if [[ "$rc_egress" != "off" ]]; then
-    # rip-cage-seqc.4 / B5 / F3: resolve the mediator_env_file pointer before
-    # launch — phase=create fails loud on a missing file (human present).
-    _up_resolve_mediator_env_file "$path" "create"
-    _up_init_mediator "$name"
-    if [[ "${_UP_MEDIATOR_OK:-true}" == "false" ]]; then
-      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        docker stop "$name" >/dev/null 2>&1
-        _up_json_output "$name" "created" "$path" "stopped" "failed"
-        return 1
-      fi
-      echo "Error: mediator init failed. Stopping container so next 'rc up' retries." >&2
-      docker stop "$name"
-      exit 1
-    fi
-  fi
   _up_init_container "$name"
 
   if [[ "$_UP_INIT_OK" == "false" ]]; then
@@ -4691,9 +3907,6 @@ cmd_up() {
     exit 1
   fi
 
-  if [[ "$rc_egress" != "off" ]]; then
-    log "egress firewall active (denylist mode)"
-  fi
   _up_ssh_preflight "$name" "$rc_forward_ssh"
   # ADR-020 D5+D6: github.com identity preflight — probe greeting inside cage,
   # write /etc/rip-cage/github-identity and /etc/rip-cage/ssh-config-source.
@@ -4789,8 +4002,10 @@ _config_ensure_global_seeded() {
 
 
 # _manifest_egress_hosts_json — collect all egress: hosts declared across all
-# manifest entries into a JSON array.  Used by _up_resolve_egress_rules to
-# union manifest-declared hosts into the cage allowlist (ADR-005 D3).
+# manifest entries into a JSON array (ADR-005 D3). The in-cage engine that
+# used to consume this union (the deleted egress router) is retired per
+# ADR-029 D2; this collector survives as the declare-time data source S6
+# wires into the msb-flags generator's allowed_hosts input.
 #
 # Returns a JSON array of strings on stdout (may be empty: []).
 _manifest_egress_hosts_json() {

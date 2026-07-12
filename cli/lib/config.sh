@@ -45,9 +45,7 @@ network.http.forward_to|scalar|null
 dcg.packs|additive_list|[]
 dcg.custom_rule_paths|additive_list|[]
 session.multiplexer|selection_list|"none"
-network.egress.mediator|selection_list|"none"
 auth.credential_mounts|selection_list|"real"|real,none
-network.egress.mediator_env_file|scalar|null
 auth.placeholder_env_file|scalar|null
 auth.per_tool.claude|selection_list|null|real,none
 auth.per_tool.pi|selection_list|null|real,none
@@ -144,82 +142,6 @@ _config_mux_derive_allowed_set() {
       fi
     done
     baked_set="$mux_names"
-  fi
-
-  # Step 3: Always include 'none'; prepend to the derived set.
-  if [[ -n "$baked_set" ]]; then
-    echo "none,${baked_set}"
-  else
-    echo "none"
-  fi
-}
-
-
-# _config_mediator_derive_allowed_set
-#
-# Derives the allowed value set for network.egress.mediator dynamically from the
-# baked registry — NOT a static enum (ADR-005 D12).
-#
-# Resolution order (isomorphic to _config_mux_derive_allowed_set):
-#   1. Check whether the image EXISTS (docker image inspect). If it exists, the
-#      rc.mediators label is the SOLE authoritative source — even an empty
-#      label means "no mediators baked", so the allowed set is "none" only.
-#   2. Only when the image is GENUINELY ABSENT (docker not available or image
-#      not found) fall back to enumerating MEDIATOR entries in the resolved
-#      manifest. Same source of truth as the build, evaluated pre-bake.
-#      NOT a fail-open: only names present in the manifest are accepted.
-#   3. 'none' is always included regardless of the registry contents.
-#
-# Outputs a comma-separated allowed-set string (CSV), e.g. "none,my-proxy".
-# Always exits 0 (returns empty string on derivation failure, treated by
-# the caller as allowed-set = "none" only — still validated, still loud).
-#
-# ADR-005 D12: the function MUST NOT name specific optional mediators;
-# it enumerates whatever the baked registry or manifest declares.
-#
-# rip-cage-ta1o.5.1
-_config_mediator_derive_allowed_set() {
-  # Default to $IMAGE (rc:45) so an RC_IMAGE override (custom-tag/scratch cage)
-  # validates against ITS OWN baked registry, not rip-cage:latest's. The
-  # explicit RC_MEDIATOR_INSPECT_IMAGE env override still wins (rip-cage-gkc7).
-  local image="${RC_MEDIATOR_INSPECT_IMAGE:-$IMAGE}"
-
-  # Step 1: If image EXISTS, the label is authoritative (even when empty).
-  # Empty label = no mediators baked = allowed set is "none" only.
-  if command -v docker >/dev/null 2>&1 && docker image inspect "$image" >/dev/null 2>&1; then
-    local label_val
-    label_val=$(docker inspect --format '{{ index .Config.Labels "rc.mediators" }}' "$image" 2>/dev/null || true)
-    if [[ -n "$label_val" ]]; then
-      echo "none,${label_val}"
-    else
-      echo "none"
-    fi
-    return 0
-  fi
-
-  # Step 2: Image is genuinely ABSENT (pre-build path) — manifest-enumeration fallback.
-  local baked_set=""
-  local manifest_json
-  if manifest_json=$(_manifest_load 2>/dev/null); then
-    local count idx mediator_names=""
-    count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null || echo "0")
-    for (( idx=0; idx<count; idx++ )); do
-      local entry archetype name
-      entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
-      archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
-      if [[ "$archetype" != "MEDIATOR" ]]; then
-        continue
-      fi
-      name=$(jq -r '.name // ""' <<<"$entry" 2>/dev/null)
-      if [[ -n "$name" ]]; then
-        if [[ -n "$mediator_names" ]]; then
-          mediator_names+=",${name}"
-        else
-          mediator_names="$name"
-        fi
-      fi
-    done
-    baked_set="$mediator_names"
   fi
 
   # Step 3: Always include 'none'; prepend to the derived set.
@@ -386,12 +308,13 @@ _config_load_layer() {
   # schema column), check that the field's value in this layer is in the set.
   # Unknown enum values abort loud per ADR-021 D3.
   #
-  # session.multiplexer and network.egress.mediator are special cases: their
-  # allowed sets derive dynamically from the baked registry (rc.multiplexers /
-  # rc.mediators image labels) via _config_mux_derive_allowed_set /
-  # _config_mediator_derive_allowed_set — not a static 4th column (rip-cage-61al.4,
-  # ADR-005 D12). The 4th column for these fields is intentionally absent
-  # from _config_schema_lines(); the dynamic derivation runs instead.
+  # session.multiplexer is a special case: its allowed set derives dynamically
+  # from the baked registry (rc.multiplexers image label) via
+  # _config_mux_derive_allowed_set — not a static 4th column (rip-cage-61al.4,
+  # ADR-005 D12). The 4th column for this field is intentionally absent from
+  # _config_schema_lines(); the dynamic derivation runs instead.
+  # (network.egress.mediator's isomorphic dynamic-derivation case retired with
+  # the MEDIATOR archetype per ADR-029 D2 — the schema field itself is gone.)
   local _ev_key _ev_type _ev_default _ev_allowed
   while IFS='|' read -r _ev_key _ev_type _ev_default _ev_allowed; do
     [[ -z "$_ev_key" ]] && continue
@@ -399,10 +322,6 @@ _config_load_layer() {
     # Dynamic derivation for session.multiplexer (4th column intentionally absent).
     if [[ "$_ev_key" == "session.multiplexer" && -z "$_ev_allowed" ]]; then
       _ev_allowed=$(_config_mux_derive_allowed_set)
-    fi
-    # Dynamic derivation for network.egress.mediator (4th column intentionally absent).
-    if [[ "$_ev_key" == "network.egress.mediator" && -z "$_ev_allowed" ]]; then
-      _ev_allowed=$(_config_mediator_derive_allowed_set)
     fi
     [[ -z "$_ev_allowed" ]] && continue
     local _ev_path_arr _ev_val
@@ -419,8 +338,6 @@ _config_load_layer() {
     if [[ "$_ev_ok" -eq 0 ]]; then
       if [[ "$_ev_key" == "session.multiplexer" ]]; then
         echo "Error: '$file' has invalid value '${_ev_val}' for field '${_ev_key}'. '${_ev_val}' is not in the baked multiplexer registry (allowed: ${_ev_allowed}). Add the provider to your manifest and run \`rc build\` to bake it (see examples/ for provider definitions)." >&2
-      elif [[ "$_ev_key" == "network.egress.mediator" ]]; then
-        echo "Error: '$file' has invalid value '${_ev_val}' for field '${_ev_key}'. '${_ev_val}' is not in the baked mediator registry (allowed: ${_ev_allowed}). Add the provider to your manifest and run \`rc build\` to bake it (see examples/ for provider definitions)." >&2
       else
         echo "Error: '$file' has invalid value '${_ev_val}' for field '${_ev_key}'. Allowed values: ${_ev_allowed}." >&2
       fi

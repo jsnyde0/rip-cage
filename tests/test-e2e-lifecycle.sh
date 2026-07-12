@@ -683,43 +683,13 @@ docker volume rm "rc-state-${CONTAINER_NAME}" > /dev/null 2>&1 || true
 # Egress-off variant
 # -----------------------------------------------------------------------------
 
-# Check 22: RIP_CAGE_EGRESS=off — no mitmdump, label = "off".
-# Stage the off workspace under a path that yields a distinct container name
-# (parent "rc-off", base "test" -> "rc-off-test").
-OFF_TMP=$(mktemp -d)
-mkdir -p "${OFF_TMP}/rc-off"
-OFF_WS="${OFF_TMP}/rc-off/test"
-mkdir -p "$OFF_WS"
-git -C "$OFF_WS" init > /dev/null 2>&1
-OFF_TMP_RESOLVED=$(realpath "$OFF_TMP")
-export RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${OFF_TMP_RESOLVED}"
-RIP_CAGE_EGRESS=off "$RC" up "$OFF_WS" < /dev/null > /dev/null 2>&1 || true
-
-off_resolved=$(realpath "$OFF_WS")
-off_container=$(docker ps -a --filter "label=rc.source.path=${off_resolved}" \
-  --format '{{.Names}}' 2>/dev/null | head -1)
-off_label=$(docker inspect "$off_container" \
-  --format '{{index .Config.Labels "rc.egress"}}' 2>/dev/null || true)
-# Check 22: RIP_CAGE_EGRESS=off — label=off, SNI router NOT running (pure router replaces mitmdump)
-# The rip_cage_router.py SNI router runs as rip-proxy user. When egress=off, init-firewall.sh
-# is skipped and the router must NOT be running. Replaces the vacuous "no mitmdump" check:
-# mitmdump was always absent after rip-cage-ta1o.1; the meaningful assertion is that the
-# SNI router (rip_cage_router.py / python3 process owned by rip-proxy) is NOT running.
-no_sni_router=0
-if [[ -n "$off_container" ]]; then
-  # pgrep -u rip-proxy python3 returns exit 0 if any python3 runs as rip-proxy, non-zero if none.
-  # no_sni_router=1 means NO python3 process owned by rip-proxy (router is not running).
-  docker exec "$off_container" pgrep -u rip-proxy python3 > /dev/null 2>&1 || no_sni_router=1
-fi
-if [[ "$off_label" == "off" && "$no_sni_router" -eq 1 ]]; then
-  check "RIP_CAGE_EGRESS=off -- label=off, SNI router not running (rip-cage-ta1o.1)" "pass"
-else
-  check "RIP_CAGE_EGRESS=off -- label=off, SNI router not running (rip-cage-ta1o.1)" "fail" \
-    "container='${off_container:-<none>}' label='${off_label:-missing}' no_sni_router=$no_sni_router"
-fi
-# Cleanup off container.
-[[ -n "$off_container" ]] && docker rm -f "$off_container" > /dev/null 2>&1 || true
-[[ -n "$off_container" ]] && docker volume rm "rc-state-${off_container}" > /dev/null 2>&1 || true
+# Check 22 (RIP_CAGE_EGRESS=off / rc.egress label / SNI-router-absence probe)
+# retired: the RIP_CAGE_EGRESS toggle, the rc.egress label, and the in-cage
+# SNI router it probed for were all deleted per ADR-029 D2 (engine-deletion
+# sweep, rip-cage-3vj2 / S4). Containment is now an msb-runtime property
+# (default-deny + declared --net-rule allows) with no on/off engine toggle to
+# probe here; msb engine-absence + selective-enforcement coverage lives in
+# tests/test-msb-engine-deletion-effect-probes.sh.
 
 # -----------------------------------------------------------------------------
 # Failure mode

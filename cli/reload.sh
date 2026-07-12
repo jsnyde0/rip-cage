@@ -143,27 +143,14 @@ cmd_reload() {
   allowed_hosts_str=$(jq -r '.ssh.allowed_hosts // [] | join(" ")' <<<"$live_cfg")
   _filter_known_hosts "$allowed_hosts_str" "${HOME}/.ssh/known_hosts" "${cache_dir}/known_hosts"
 
-  # rip-cage-hhh.2: also regenerate egress-rules on reload (D10 contract: regenerates
-  # ONLY at rc up / rc reload; not by watching the YAML file). Skip when egress was
-  # disabled at create time (rc.egress=off label), matching the cmd_up create/resume guard.
-  local _reload_egress_label
-  _reload_egress_label=$(docker inspect --format '{{index .Config.Labels "rc.egress"}}' "$name" 2>/dev/null || true)
-  if [[ "$_reload_egress_label" != "off" ]]; then
-    # rip-cage-4c5.3 Fix 4: IOC check fires on EVERY egress-regeneration path
-    # (build, up, AND reload). A manifest edited between rc up and rc reload to add
-    # an IOC host must fail loud here, naming the offending host.
-    if ! _manifest_check_ioc_egress "${SCRIPT_DIR}/cage/egress/egress-rules.yaml"; then
-      exit 1
-    fi
-    _up_resolve_egress_rules "$workspace" "$cache_dir"
-    # rip-cage-hhh.4: re-apply TCP-22 IP allowlist inside the container after
-    # network.* change. Re-resolves hostnames to IPs in-container (where the DNS
-    # sidecar is active). Skips silently if mode is not block.
-    _up_reload_tcp22_allowlist "$name"
-    # rip-cage-hhh.4 / ADR-012 D9: bounce the egress proxy + DNS sidecar so they
-    # re-read the regenerated egress-rules.yaml. Without this, allowlist/mode
-    # changes never reach the running router (it caches rules at startup).
-    _up_reload_egress_proxy "$name"
+  # rip-cage-4c5.3 Fix 4 (evolved, ADR-029 D2): IOC check still fires on rc
+  # reload — a manifest edited between rc up and rc reload to add an IOC host
+  # must fail loud here, naming the offending host. The in-cage egress-rules
+  # regeneration + TCP-22 reload + router/DNS-sidecar bounce this used to gate
+  # are retired with the deleted in-cage engine — msb net-rule changes are
+  # recreate/snapshot-amend, not hot-reloadable (S6's lifecycle-verb job).
+  if ! _manifest_check_ioc_egress "${SCRIPT_DIR}/cage/egress/egress-rules.yaml"; then
+    exit 1
   fi
 
   # Update snapshot to live (so subsequent emit_hint suppresses the warning).

@@ -114,32 +114,11 @@ else
   fail "cmd_down did not return CONTAINER_NOT_FOUND. Got: $down_err"
 fi
 
-# --- L1: resume path fails loud on missing/invalid rc.egress label (ADR-001) ---
-echo ""
-echo "=== L1: resume fail-loud on missing/unknown rc.egress label ==="
-# Helper must exist and handle all three ADR-001 cases.
-if grep -q '^_up_resolve_resume_egress()' "$RC_SRC"; then
-  pass "_up_resolve_resume_egress helper defined"
-else
-  fail "_up_resolve_resume_egress helper missing"
-fi
-if grep -q '"LEGACY_CONTAINER"' "$RC_SRC"; then
-  pass "LEGACY_CONTAINER error code present"
-else
-  fail "LEGACY_CONTAINER error code missing"
-fi
-if grep -q '"INVALID_EGRESS_LABEL"' "$RC_SRC"; then
-  pass "INVALID_EGRESS_LABEL error code present"
-else
-  fail "INVALID_EGRESS_LABEL error code missing"
-fi
-# Helper must be called from both dry-run and actual resume paths.
-call_count=$(grep -c '_up_resolve_resume_egress "\$name"' "$RC_SRC")
-if [[ "$call_count" -ge 2 ]]; then
-  pass "helper called from both dry-run and resume paths ($call_count sites)"
-else
-  fail "helper only called $call_count time(s); expected >=2 (dry-run + resume)"
-fi
+# --- L1 (resume path fails loud on missing/invalid rc.egress label, ADR-001)
+# retired: _up_resolve_resume_egress, the rc.egress label, and its
+# LEGACY_CONTAINER/INVALID_EGRESS_LABEL error codes were deleted per
+# ADR-029 D2 (engine-deletion sweep, rip-cage-3vj2 / S4) -- there is no more
+# in-cage engine on/off posture to guard on resume. ---
 
 # --- L2: cmd_up fail-loud on unsupported container states (ADR-001) ---
 echo ""

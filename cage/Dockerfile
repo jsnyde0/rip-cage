@@ -23,16 +23,16 @@ ENV LC_ALL=C.UTF-8
 ENV MISE_TRUSTED_CONFIG_PATHS=/workspace
 
 # System packages
+# iptables/ip6tables-legacy + dnsutils were installed for the in-cage egress
+# firewall/DNS-resolver engine (rip_cage_router.py/rip_cage_dns.py,
+# init-firewall.sh) -- retired per ADR-029 D2 (containment is msb's job now).
 RUN apt-get update && apt-get install -y \
     curl wget git ssh openssh-client zsh jq sudo \
     build-essential pkg-config libicu-dev libzstd-dev \
     python3 python3-venv perl ca-certificates gnupg \
-    iptables openssl procps xxd \
-    dnsutils \
+    openssl procps xxd \
     ssh-agent-filter \
-    && rm -rf /var/lib/apt/lists/* \
-    && update-alternatives --set iptables /usr/sbin/iptables-legacy \
-    && update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+    && rm -rf /var/lib/apt/lists/*
 
 # uv (Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
@@ -108,17 +108,13 @@ RUN for i in 1 2 3; do \
 # Non-root user
 RUN groupadd -g 1000 agent \
     && useradd -m -u 1000 -g agent -s /usr/bin/zsh agent \
-    && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state, /usr/bin/chown agent\:agent /home/agent/.pi/agent, /usr/bin/chown agent\:agent /ssh-agent.sock, /usr/bin/chown agent\:agent /ssh-agent-upstream.sock, /usr/bin/ln -sfT /tmp/rip-cage-filter/agent.* /ssh-agent.sock, /usr/local/lib/rip-cage/init-firewall.sh, /usr/sbin/iptables -t nat -L OUTPUT -n, /usr/sbin/iptables -L OUTPUT -n, /usr/bin/chown -R agent\:agent /home/agent/.local/share/mise" > /etc/sudoers.d/agent \
+    && echo "agent ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/dpkg, /usr/bin/chown agent\:agent /home/agent/.claude, /usr/bin/chown agent\:agent /home/agent/.claude-state, /usr/bin/chown agent\:agent /home/agent/.pi/agent, /usr/bin/chown agent\:agent /ssh-agent.sock, /usr/bin/chown agent\:agent /ssh-agent-upstream.sock, /usr/bin/ln -sfT /tmp/rip-cage-filter/agent.* /ssh-agent.sock, /usr/bin/chown -R agent\:agent /home/agent/.local/share/mise" > /etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent
 
-RUN useradd -r -s /usr/sbin/nologin -M rip-proxy
-
-RUN python3 -m venv /opt/rip-cage-proxy
-# Pure SNI destination router (rip-cage-ta1o.1): only PyYAML + dnspython needed.
-# mitmproxy removed — no TLS decryption, no CA, no per-host cert.
-RUN /opt/rip-cage-proxy/bin/pip install --no-cache-dir PyYAML dnspython
-
-RUN mkdir -p /etc/rip-cage/ca
+# rip-proxy user + /opt/rip-cage-proxy venv (PyYAML/dnspython for the SNI
+# router + DNS resolver sidecar) and /etc/rip-cage/ca (the deleted
+# init-mediator.sh's MITM CA install target) retired with the in-cage egress
+# engine (ADR-029 D2).
 # cage-env is populated at container start by the ADR-016 D2 preflight probe.
 # Pre-create it as agent-writable so the probe doesn't need a sudoers entry.
 RUN : > /etc/rip-cage/cage-env \
@@ -142,26 +138,12 @@ COPY cage/init/init-rip-cage.sh /usr/local/bin/init-rip-cage.sh
 COPY cage/substrate/skill-server.py /usr/local/lib/rip-cage/skill-server.py
 COPY tests/test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
 COPY tests/_agent-readability.sh /usr/local/lib/rip-cage/_agent-readability.sh
-COPY cage/egress/egress-rules.yaml /etc/rip-cage/egress-rules.yaml
-COPY cage/egress/rip_cage_egress.py /usr/local/lib/rip-cage/rip_cage_egress.py
-COPY cage/egress/rip_cage_router.py /usr/local/lib/rip-cage/rip_cage_router.py
-COPY cage/egress/rip_cage_dns.py /usr/local/lib/rip-cage/rip_cage_dns.py
-COPY cage/egress/init-firewall.sh /usr/local/lib/rip-cage/init-firewall.sh
-COPY cage/egress/init-mediator.sh /usr/local/lib/rip-cage/init-mediator.sh
-COPY cage/egress/rip-proxy-start.sh /usr/local/lib/rip-cage/rip-proxy-start.sh
-COPY cage/egress/rip-dns-start.sh /usr/local/lib/rip-cage/rip-dns-start.sh
-COPY tests/test-egress-firewall.sh /usr/local/lib/rip-cage/test-egress-firewall.sh
 COPY tests/test-bd-roundtrip.sh /usr/local/lib/rip-cage/test-bd-roundtrip.sh
 RUN chmod +x /usr/local/bin/init-rip-cage.sh \
     /usr/local/lib/rip-cage/test-safety-stack.sh \
     /usr/local/lib/rip-cage/test-skills.sh \
-    /usr/local/lib/rip-cage/test-egress-firewall.sh \
     /usr/local/lib/rip-cage/test-bd-roundtrip.sh \
-    /usr/local/lib/rip-cage/run-recipe-smokes.sh \
-    /usr/local/lib/rip-cage/init-firewall.sh \
-    /usr/local/lib/rip-cage/init-mediator.sh \
-    /usr/local/lib/rip-cage/rip-proxy-start.sh \
-    /usr/local/lib/rip-cage/rip-dns-start.sh
+    /usr/local/lib/rip-cage/run-recipe-smokes.sh
 
 # Pi's dcg-gate.ts guard is provisioned by the composable examples/dcg recipe via
 # install_cmd (runs as root before USER agent) at its OWN separate root-owned load

@@ -7,7 +7,7 @@
 # (enumeration only, no test execution) and --dry-run (selection + ledger
 # plumbing without executing test bodies) wherever the assertion doesn't
 # specifically need a real PASS/FAIL row; a small number of cases DO invoke a
-# real, fast, host-only test file (test-selftest-classifier.sh) to prove the
+# real, fast, host-only test file (test-doctor-version-skew.sh) to prove the
 # ledger captures genuine PASS/FAIL/duration data end-to-end.
 #
 # Coverage:
@@ -158,7 +158,7 @@ if command -v docker >/dev/null 2>&1; then
 fi
 [[ -z "$independent_digest" ]] && independent_digest="unavailable"
 env -u RC_TEST_STAMP_COMMIT -u RC_TEST_STAMP_IMAGE_DIGEST \
-  bash "$RUN_HOST" --only 'test-selftest-classifier.sh' --dry-run --ledger "$WORKDIR/p2_ledger" >/dev/null 2>&1
+  bash "$RUN_HOST" --only 'test-doctor-version-skew.sh' --dry-run --ledger "$WORKDIR/p2_ledger" >/dev/null 2>&1
 p2_header="$(grep '^#RUN' "$WORKDIR/p2_ledger")"
 if [[ "$p2_header" == *"commit=${independent_commit}"* && "$p2_header" == *"image_digest=${independent_digest}"* ]]; then
   pass "P2 REGRESSION: pin env vars unset -> header stamping unchanged (auto-derived commit + image_digest)"
@@ -203,14 +203,14 @@ else
 fi
 
 # --- R1: a real (non-dry) run against a fast host-only test writes a
-# genuine PASS row with a numeric duration. test-selftest-classifier.sh is a
-# pure classifier unit test (no docker/firewall needed), confirmed PASS in
-# isolation as part of this same change. ---
+# genuine PASS row with a numeric duration. test-doctor-version-skew.sh is a
+# pure _doctor_bd_version_compare unit test (no docker needed), confirmed
+# PASS in isolation as part of this same change. ---
 real_ledger="$WORKDIR/real.ledger"
-bash "$RUN_HOST" --only 'test-selftest-classifier.sh' --ledger "$real_ledger" >/tmp/rh_r1_out.txt 2>&1
+bash "$RUN_HOST" --only 'test-doctor-version-skew.sh' --ledger "$real_ledger" >/tmp/rh_r1_out.txt 2>&1
 real_rc=$?
-real_row="$(grep -v '^#' "$real_ledger" | grep '^test-selftest-classifier.sh|')"
-if [[ "$real_rc" -eq 0 && "$real_row" == test-selftest-classifier.sh\|PASS\|*  ]]; then
+real_row="$(grep -v '^#' "$real_ledger" | grep '^test-doctor-version-skew.sh|')"
+if [[ "$real_rc" -eq 0 && "$real_row" == test-doctor-version-skew.sh\|PASS\|*  ]]; then
   dur_field="$(printf '%s' "$real_row" | awk -F'|' '{print $3}')"
   if [[ "$dur_field" =~ ^[0-9]+$ ]]; then
     pass "R1 real run writes a genuine PASS row with numeric duration (row=$real_row)"
@@ -316,7 +316,7 @@ fi
 # actually leaves on disk. The aggregator must DETECT this as malformed
 # (not silently accept the glued line as a normal SKIP row via a merely
 # NF>=4 check, and not silently vanish it either). ---
-bash "$RUN_HOST" --only 'test-selftest-classifier.sh' --dry-run --ledger "$WORKDIR/i1_l1" >/dev/null 2>&1
+bash "$RUN_HOST" --only 'test-doctor-version-skew.sh' --dry-run --ledger "$WORKDIR/i1_l1" >/dev/null 2>&1
 bash "$RUN_HOST" --only 'test-doctor-version-skew.sh' --dry-run --ledger "$WORKDIR/i1_l2" >/dev/null 2>&1
 row1="$(grep -v '^#' "$WORKDIR/i1_l1")"      # command substitution strips the trailing newline
 header2="$(grep '^#RUN' "$WORKDIR/i1_l2")"
@@ -330,7 +330,7 @@ i1_out="$(bash "$RUN_HOST" --ledger-summary "$WORKDIR/i1_torn" 2>&1)"
 i1_rc=$?
 if [[ "$i1_rc" -ne 0 ]] \
    && printf '%s\n' "$i1_out" | grep -qi 'malformed' \
-   && printf '%s\n' "$i1_out" | grep -q 'test-selftest-classifier.sh'; then
+   && printf '%s\n' "$i1_out" | grep -q 'test-doctor-version-skew.sh'; then
   pass "I1 RED CONTROL: a torn (no-newline, header-glued) row is detected as malformed, not silently accepted or vanished"
 else
   fail "I1 RED CONTROL: a torn (no-newline, header-glued) row is detected as malformed, not silently accepted or vanished" "rc=$i1_rc output=$i1_out"
@@ -344,10 +344,10 @@ fi
 # guard against a duplicate basename in the driver's OWN enumeration is L1's
 # no-dupes check on --list output above.) ---
 : > "$WORKDIR/coll_ledger"
-bash "$RUN_HOST" --only 'test-selftest-classifier.sh' --dry-run --ledger "$WORKDIR/coll_ledger" >/dev/null 2>&1
-printf 'test-selftest-classifier.sh|FAIL|7||2026-01-01T00:00:00Z\n' >> "$WORKDIR/coll_ledger"
+bash "$RUN_HOST" --only 'test-doctor-version-skew.sh' --dry-run --ledger "$WORKDIR/coll_ledger" >/dev/null 2>&1
+printf 'test-doctor-version-skew.sh|FAIL|7||2026-01-01T00:00:00Z\n' >> "$WORKDIR/coll_ledger"
 coll_out="$(bash "$RUN_HOST" --ledger-summary "$WORKDIR/coll_ledger" 2>&1)"
-if printf '%s\n' "$coll_out" | grep -q '^test-selftest-classifier.sh: FAIL' \
+if printf '%s\n' "$coll_out" | grep -q '^test-doctor-version-skew.sh: FAIL' \
    && printf '%s\n' "$coll_out" | grep -qE '^TOTALS: PASS=0 FAIL=1 '; then
   pass "G1 basename collision: same file appearing twice is counted once, latest row wins"
 else

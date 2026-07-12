@@ -136,7 +136,7 @@ TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-allowed-hosts-only.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Pre-state: snapshot has empty allowed_hosts (so live=[switch.berlin] is a delta)
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 # Pre-state: filter cache file (empty — bypass closed by default)
 : > "${CACHE_DIR}/known_hosts"
 
@@ -162,7 +162,7 @@ TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-allowed-hosts-only.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Snapshot matches live (allowed_hosts=[switch.berlin])
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 echo "switch.berlin ssh-ed25519 AAAA" > "${CACHE_DIR}/known_hosts"
 c2_pre_mtime=$(stat -c %Y "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %m "${CACHE_DIR}/known_hosts")
 sleep 1  # ensure measurable mtime delta if mutation happens
@@ -185,7 +185,7 @@ TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-allowed-keys-one.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Snapshot has different allowed_keys content (same shape: array, but different list)
-write_snapshot '{"version":1,"ssh":{"allowed_keys":["different_key.pub"],"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"ssh":{"allowed_keys":["different_key.pub"],"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 c3_out=$(run_rc reload "$CNAME" 2>&1)
 c3_exit=$?
@@ -203,7 +203,7 @@ teardown_sandbox
 TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-allowed-keys-one.yaml"  # live: allowed_keys=[...] (non-null)
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'  # snapshot: null
+write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'  # snapshot: null
 
 c4_out=$(run_rc reload "$CNAME" 2>&1)
 c4_exit=$?
@@ -227,7 +227,7 @@ ssh:
 YML
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Snapshot has a synthetic field NOT in the live config — diff reports it.
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 c5_out=$(run_rc reload "$CNAME" 2>&1)
 c5_exit=$?
@@ -244,7 +244,7 @@ teardown_sandbox
 TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-allowed-hosts-only.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 : > "${CACHE_DIR}/known_hosts"
 c6_pre_kh_mtime=$(stat -c %Y "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %m "${CACHE_DIR}/known_hosts")
 c6_pre_snap_sum=$(shasum "${CACHE_DIR}/config-applied.json" | awk '{print $1}')
@@ -270,7 +270,7 @@ teardown_sandbox
 TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-allowed-hosts-only.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "exited" "$WS"
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 c7_out=$(run_rc reload "$CNAME" 2>&1)
 c7_exit=$?
@@ -288,7 +288,7 @@ teardown_sandbox
 TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-allowed-hosts-only.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 : > "${CACHE_DIR}/known_hosts"
 c8_pre_inode=$(stat -c %i "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %i "${CACHE_DIR}/known_hosts")
 
@@ -309,7 +309,7 @@ teardown_sandbox
 TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-allowed-hosts-only.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 # Pre-create the lock dir (simulates a concurrent reload holding it)
 mkdir -p "${CACHE_DIR}/.reload.lock.d"
@@ -334,7 +334,7 @@ TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-allowed-hosts-only.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Snapshot equals live (post-reload state)
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 c10_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
@@ -365,7 +365,7 @@ YML
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Snapshot has eligible field aligned (allowed_hosts matches) but a synthetic
 # non-eligible field present that live lacks → drift hint must fire.
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 c11_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
@@ -385,7 +385,7 @@ teardown_sandbox
 TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-allowed-hosts-only.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 : > "${CACHE_DIR}/known_hosts"
 chmod 0644 "${CACHE_DIR}/known_hosts"
 c12_pre_mode=$(stat -c %a "${CACHE_DIR}/known_hosts" 2>/dev/null || stat -f %Mp%Lp "${CACHE_DIR}/known_hosts")
@@ -410,7 +410,7 @@ TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-allowed-hosts-only.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Old snapshot: no session.multiplexer field (written before rip-cage-1f59 landed).
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]}}'
+write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]}}'
 
 c14_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
@@ -434,7 +434,7 @@ TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-allowed-hosts-only.yaml"
 make_docker_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Old snapshot: no mounts.symlinks.scope field.
-write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null,"egress":{"mediator":"none"}},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":["switch.berlin"]},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 c15_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true

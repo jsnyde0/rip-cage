@@ -33,6 +33,12 @@
 #       criterion 7)
 #   T10 golden-master argv snapshot cases (à la up-run-args-*.argv) for a
 #       representative full config -- byte-level regression net
+#   T12 structural check (rip-cage-3vj2, S4 engine-deletion sweep): the
+#       generator's emitted argv for a representative full config contains
+#       NO engine call/reference -- no egress/credential/DNS/mediator engine
+#       argv, env, or in-cage hook path (ADR-029 D2). This generator only
+#       ever emitted msb primitives to begin with; this test is the
+#       structural, permanent guard against that regressing.
 
 set -uo pipefail
 
@@ -359,6 +365,54 @@ else
   fail "T11: expected both synthesized vars to hold the source value" "val_a='${T11_VAL_A}' val_b='${T11_VAL_B}'"
 fi
 unset T11_SOURCE_VAR "$T11_NAME_A" "$T11_NAME_B"
+
+# ---------------------------------------------------------------------------
+# T12 (rip-cage-3vj2, S4 engine-deletion sweep, bead acceptance criterion 2):
+# direct structural check that the generator's emitted argv for a
+# representative full config contains NO engine call -- no egress/
+# credential/DNS/mediator engine argv, env, or in-cage hook path reference
+# remains. Covers every deleted-engine surface: the router/DNS/egress
+# Python modules, iptables/ip6tables firewall init, the mediator launch
+# machinery + its RC_MEDIATOR/--mediator-env channel, and the deleted
+# MEDIATOR archetype name itself.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T12: structural check -- generated argv contains NO engine call (ADR-029 D2) ==="
+T12_CFG='{"allowed_hosts": ["github.com", "api.anthropic.com"], "credentials": [{"source_env": "GH_TOKEN", "hosts": ["github.com", "api.github.com"]}], "possession_mounts": [{"host_path": "/h/.pi/agent/auth.json", "guest_path": "/g/.pi/agent/auth.json", "kind": "file"}], "mounts": [{"host_path": "/h/workspace", "guest_path": "/workspace"}], "tls_body_rewrite": true, "dind_volumes": [{"name": "docker-data", "guest_path": "/var/lib/docker", "size": "20G"}]}'
+T12_OUT=$(_msb_flags_generate "$T12_CFG")
+if [[ -n "$T12_OUT" ]]; then
+  pass "T12 setup: generator produced non-empty argv for the representative full config"
+else
+  fail "T12 setup: generator produced no argv" ""
+fi
+
+# Each pattern names a distinct deleted-engine surface (case-insensitive).
+T12_ENGINE_PATTERNS=(
+  "rip_cage_router"
+  "rip_cage_egress"
+  "rip_cage_dns"
+  "init-firewall"
+  "init-mediator"
+  "rip-proxy"
+  "rip-dns-start"
+  "iptables"
+  "ip6tables"
+  "RC_MEDIATOR"
+  "mediator-env"
+  "MEDIATOR"
+  "egress-rules.yaml"
+)
+T12_ALL_CLEAN=1
+for T12_PAT in "${T12_ENGINE_PATTERNS[@]}"; do
+  T12_HIT=$(printf '%s\n' "$T12_OUT" | grep -iF "$T12_PAT" || true)
+  if [[ -n "$T12_HIT" ]]; then
+    T12_ALL_CLEAN=0
+    fail "T12: generated argv contains a deleted-engine reference ('${T12_PAT}')" "$T12_HIT"
+  fi
+done
+if [[ "$T12_ALL_CLEAN" -eq 1 ]]; then
+  pass "T12: generated argv contains NO engine reference across all ${#T12_ENGINE_PATTERNS[@]} deleted-engine surfaces (router/egress/DNS Python modules, iptables/ip6tables firewall init, RC_MEDIATOR/--mediator-env channel, MEDIATOR archetype name, egress-rules.yaml in-cage path)"
+fi
 
 echo ""
 if (( FAILURES > 0 )); then

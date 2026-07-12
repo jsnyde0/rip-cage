@@ -95,7 +95,7 @@ cmd_test() {
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local output
     output=$(docker exec "$name" bash -c \
-      '/usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-egress-firewall.sh; /usr/local/lib/rip-cage/test-bd-roundtrip.sh' 2>&1) || true
+      '/usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-bd-roundtrip.sh' 2>&1) || true
     # run-recipe-smokes.sh: run separately to capture non-zero exit AND stdout.
     # Its per-smoke PASS/FAIL lines are parsed by the loop below; additionally,
     # a non-zero runner exit injects a synthetic FAIL line so the JSON overall
@@ -136,7 +136,6 @@ ${output}"
     echo "$preflight_line"
     docker exec "$name" /usr/local/lib/rip-cage/test-safety-stack.sh
     docker exec "$name" /usr/local/lib/rip-cage/test-skills.sh
-    docker exec "$name" /usr/local/lib/rip-cage/test-egress-firewall.sh
     docker exec "$name" /usr/local/lib/rip-cage/test-bd-roundtrip.sh
     docker exec "$name" /usr/local/lib/rip-cage/run-recipe-smokes.sh
   fi

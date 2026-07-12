@@ -115,9 +115,12 @@ _doctor_bd_version_compare() {
 # cmd_doctor — per-container diagnostic view.
 #
 # Complements `rc ls` (fleet view) with depth for a single container: posture
-# labels (rc.egress, rc.forward-ssh, rc.source.path) plus live probes when the
-# container is running (firewall, ssh-add, beads port, auth creds, skills,
-# cwd floor, workspace resolution, bd version skew — rip-cage-2cks).
+# labels (rc.forward-ssh, rc.egress.config-override, rc.source.path) plus live
+# probes when the container is running (ssh-add, beads port, auth creds,
+# skills, cwd floor, workspace resolution, bd version skew — rip-cage-2cks).
+# The engine-process probe (in-cage egress router) is retired per ADR-029 D2 —
+# containment is now an msb-runtime property verified by the msb effect-probe
+# test suite, not an rc doctor live process check.
 # Labels are readable whether the container is running or stopped; live probes
 # report "not running, no live probe" when the container is stopped.
 # Resolves via resolve_name (CWD convention — same as rc attach/down/destroy).
@@ -363,26 +366,22 @@ cmd_doctor() {
   verify_rc_container "$name"
 
   # Read state + labels (work on stopped containers too).
-  local state source_path egress_label fwd_ssh_label started_at
-  local egress_mode_label egress_config_override_label
+  local state source_path fwd_ssh_label started_at
+  local egress_config_override_label
   state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || echo "unknown")
   source_path=$(docker inspect --format '{{index .Config.Labels "rc.source.path"}}' "$name" 2>/dev/null || true)
-  egress_label=$(docker inspect --format '{{index .Config.Labels "rc.egress"}}' "$name" 2>/dev/null || true)
   fwd_ssh_label=$(docker inspect --format '{{index .Config.Labels "rc.forward-ssh"}}' "$name" 2>/dev/null || true)
   started_at=$(docker inspect --format '{{.State.StartedAt}}' "$name" 2>/dev/null || true)
-  # rip-cage-hhh.6 D2: new labels stamped at create time (absent on pre-hhh.6 containers).
-  egress_mode_label=$(docker inspect --format '{{index .Config.Labels "rc.egress.mode"}}' "$name" 2>/dev/null || true)
+  # ADR-024 D1 workspace base-URL-override posture (unrelated to the deleted
+  # in-cage egress engine — retained under its legacy label name).
   egress_config_override_label=$(docker inspect --format '{{index .Config.Labels "rc.egress.config-override"}}' "$name" 2>/dev/null || true)
-  [[ -z "$egress_label" ]] && egress_label="legacy"
   [[ -z "$fwd_ssh_label" ]] && fwd_ssh_label="legacy"
-  [[ -z "$egress_mode_label" ]] && egress_mode_label="legacy"
   [[ -z "$egress_config_override_label" ]] && egress_config_override_label="false"
 
   local running=0
   [[ "$state" == "running" ]] && running=1
 
   # Live probes (only when running). Each probe returns a status string and detail.
-  local egress_probe="not running, no live probe"
   local ssh_probe="not running, no live probe"
   local beads_probe="not running, no live probe"
   local auth_probe="not running, no live probe"
@@ -393,32 +392,8 @@ cmd_doctor() {
   local cwd_probe="not running, no live probe"
   local workspace_probe="not running, no live probe"
   local bd_version_probe="not running, no live probe"
-  # rip-cage-hhh FIX1: egress mode — derived from source path's .rip-cage.yaml
-  # (current, post-promote/reload) rather than the immutable create-time label.
-  # Overridden below by the live rules file when the container is running.
-  local _egress_live_mode
-  _egress_live_mode=$(_rc_ls_mode_from_source_path "$source_path")
-  local _egress_allowed_hosts_json="[]"
-  local _egress_recent_blocks_json="[]"
-  local _egress_ssh_allowed_hosts_json="[]"
 
   if [[ "$running" -eq 1 ]]; then
-    # Egress probe: if label=on, expect the SNI router running as rip-proxy. If off,
-    # expect no router. "legacy" containers: just report process state.
-    if docker exec "$name" pgrep -u rip-proxy -f rip_cage_router.py >/dev/null 2>&1; then
-      if [[ "$egress_label" == "off" ]]; then
-        egress_probe="WARN — egress router running but label=off"
-      else
-        egress_probe="OK — egress router running"
-      fi
-    else
-      if [[ "$egress_label" == "on" ]]; then
-        egress_probe="FAIL — label=on but no egress router process"
-      else
-        egress_probe="OK — no egress router (expected for egress=off)"
-      fi
-    fi
-
     # SSH forwarding probe: ssh-add -l (needs SSH_AUTH_SOCK in container env).
     # Exit 0 = keys listed, 1 = no keys, 2 = agent not reachable.
     # Read companion sentinel to include the mounted socket path in hints
@@ -590,32 +565,6 @@ cmd_doctor() {
       fi
     fi
 
-    # rip-cage-hhh.6 D2: egress section live probes.
-    # mode: read from mounted rules file (overrides label — reflects actual running config).
-    local _rules_mode_raw
-    _rules_mode_raw=$(docker exec "$name" sh -c "grep -m1 '^mode:' /etc/rip-cage/egress-rules.yaml 2>/dev/null" 2>/dev/null | awk '{print $2}' || true)
-    if [[ -n "$_rules_mode_raw" ]]; then
-      _egress_live_mode="$_rules_mode_raw"
-    fi
-    # allowed_hosts: parse from egress-rules.yaml (YAML list under allowed_hosts:)
-    local _ah_raw
-    _ah_raw=$(docker exec "$name" sh -c "
-      awk '/^allowed_hosts:/{p=1;next} p && /^  - /{print substr(\$0,5)} p && /^[^[:space:]]/{exit}' /etc/rip-cage/egress-rules.yaml 2>/dev/null" 2>/dev/null || true)
-    if [[ -n "$_ah_raw" ]]; then
-      _egress_allowed_hosts_json=$(printf '%s\n' "$_ah_raw" | jq -R . | jq -sc . 2>/dev/null) || _egress_allowed_hosts_json="[]"
-    fi
-    # ssh_allowed_hosts: same source (network.allowed_hosts is TCP-22 gate in block mode).
-    _egress_ssh_allowed_hosts_json="$_egress_allowed_hosts_json"
-    # recent_blocks: tail last 10 entries from HTTP + DNS logs, filter deny/would-block events.
-    local _blocks_raw=""
-    local _http_log="/workspace/.rip-cage/egress.log"
-    local _dns_log="/workspace/.rip-cage/egress-dns.log"
-    _blocks_raw=$(docker exec "$name" sh -c "
-      { test -f '$_http_log' && tail -n 10 '$_http_log'; test -f '$_dns_log' && tail -n 10 '$_dns_log'; } 2>/dev/null | \
-      grep -E '\"event\":\"(deny|would-block|block)\"' | tail -n 10" 2>/dev/null || true)
-    if [[ -n "$_blocks_raw" ]]; then
-      _egress_recent_blocks_json=$(printf '%s\n' "$_blocks_raw" | jq -sc '.' 2>/dev/null) || _egress_recent_blocks_json="[]"
-    fi
   fi
 
   # Uptime (humanized) — derive from started_at ISO timestamp.
@@ -643,9 +592,7 @@ cmd_doctor() {
       --arg state "$state" \
       --arg uptime "$uptime" \
       --arg source_path "$source_path" \
-      --arg egress_label "$egress_label" \
       --arg forward_ssh_label "$fwd_ssh_label" \
-      --arg egress_probe "$egress_probe" \
       --arg ssh_probe "$ssh_probe" \
       --arg beads_probe "$beads_probe" \
       --arg auth_probe "$auth_probe" \
@@ -654,22 +601,17 @@ cmd_doctor() {
       --arg cwd_probe "$cwd_probe" \
       --arg workspace_probe "$workspace_probe" \
       --arg bd_version_probe "$bd_version_probe" \
-      --arg egress_mode "$_egress_live_mode" \
       --arg egress_config_override "$egress_config_override_label" \
-      --argjson egress_allowed_hosts "$_egress_allowed_hosts_json" \
-      --argjson egress_recent_blocks "$_egress_recent_blocks_json" \
-      --argjson egress_ssh_allowed_hosts "$_egress_ssh_allowed_hosts_json" \
       '{
         name: $name,
         state: $state,
         uptime: $uptime,
         source_path: $source_path,
         labels: {
-          "rc.egress": $egress_label,
-          "rc.forward-ssh": $forward_ssh_label
+          "rc.forward-ssh": $forward_ssh_label,
+          "rc.egress.config-override": $egress_config_override
         },
         probes: {
-          egress: $egress_probe,
           ssh_forwarding: $ssh_probe,
           beads_server: $beads_probe,
           auth: $auth_probe,
@@ -678,13 +620,6 @@ cmd_doctor() {
           cwd: $cwd_probe,
           workspace_resolution: $workspace_probe,
           bd_version_skew: $bd_version_probe
-        },
-        egress: {
-          mode: $egress_mode,
-          allowed_hosts: $egress_allowed_hosts,
-          recent_blocks: $egress_recent_blocks,
-          config_override_state: $egress_config_override,
-          ssh_allowed_hosts: $egress_ssh_allowed_hosts
         }
       }'
   else
@@ -693,11 +628,10 @@ cmd_doctor() {
     echo "Workspace:  ${source_path:-<unset>}"
     echo ""
     echo "Labels:"
-    echo "  rc.egress       = $egress_label"
-    echo "  rc.forward-ssh  = $fwd_ssh_label"
+    echo "  rc.forward-ssh           = $fwd_ssh_label"
+    echo "  rc.egress.config-override = $egress_config_override_label"
     echo ""
     echo "Live probes:"
-    echo "  egress         : $egress_probe"
     echo "  ssh-forwarding : $ssh_probe"
     echo "  beads-server   : $beads_probe"
     echo "  auth           : $auth_probe"
@@ -708,17 +642,6 @@ cmd_doctor() {
     echo "  cwd                  : $cwd_probe"
     echo "  workspace-resolution : $workspace_probe"
     echo "  bd-version-skew      : $bd_version_probe"
-    echo ""
-    echo "Egress:"
-    echo "  mode               : $_egress_live_mode"
-    echo "  config-override    : $egress_config_override_label"
-    local _ah_count _rb_count _ssh_ah_count
-    _ah_count=$(echo "$_egress_allowed_hosts_json" | jq 'length' 2>/dev/null || echo 0)
-    _rb_count=$(echo "$_egress_recent_blocks_json" | jq 'length' 2>/dev/null || echo 0)
-    _ssh_ah_count=$(echo "$_egress_ssh_allowed_hosts_json" | jq 'length' 2>/dev/null || echo 0)
-    echo "  allowed_hosts      : ${_ah_count} host(s)"
-    echo "  ssh_allowed_hosts  : ${_ssh_ah_count} host(s)"
-    echo "  recent_blocks      : ${_rb_count} event(s)"
   fi
 }
 
