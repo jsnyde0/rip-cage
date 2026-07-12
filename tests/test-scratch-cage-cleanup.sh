@@ -30,8 +30,23 @@ PASS_COUNT=0
 pass() { echo "PASS: $1"; PASS_COUNT=$((PASS_COUNT + 1)); }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo "SKIP: Docker not available -- skipping $(basename "$0")"
+# rip-cage-5iti (S10, msb migration test-suite port): retargeted onto msb --
+# fixtures are now real (cheap, ~0.15s) `msb create` sandboxes booted from
+# the locally-cached `alpine` image, carrying the same rc.source.path label
+# a real cage gets, plus two named `rc-state-*`/`rc-history-*` volumes
+# (msb's own volume primitive — `msb volume create`/`remove`, no docker
+# volume equivalent). `run_sweep()` below is the msb-side mirror of
+# run-host.sh's `_sweep_scratch_cages` (same discriminator: enumerate every
+# sandbox via `msb list --format json`, read each one's rc.source.path
+# label via `msb inspect`, destroy only those under a swept temp root) —
+# kept in lockstep with that function intentionally (comment there points
+# back here).
+if ! command -v msb >/dev/null 2>&1; then
+  echo "SKIP: msb not available -- skipping $(basename "$0")"
+  exit 0
+fi
+if ! msb image list --format json 2>/dev/null | jq -e '.[] | select(.reference == "alpine")' >/dev/null 2>&1; then
+  echo "SKIP: msb has no locally-cached 'alpine' image -- skipping $(basename "$0") (fixtures need a fast-boot image; run 'msb pull alpine' once to cache it)"
   exit 0
 fi
 
@@ -57,38 +72,41 @@ make_scratch_workspace() {
 count_volumes_for() {
   local _cname="$1"
   local _cnt=0
-  docker volume inspect "rc-state-${_cname}" >/dev/null 2>&1 && _cnt=$((_cnt + 1)) || true
-  docker volume inspect "rc-history-${_cname}" >/dev/null 2>&1 && _cnt=$((_cnt + 1)) || true
+  msb volume inspect "rc-state-${_cname}" >/dev/null 2>&1 && _cnt=$((_cnt + 1)) || true
+  msb volume inspect "rc-history-${_cname}" >/dev/null 2>&1 && _cnt=$((_cnt + 1)) || true
   echo "$_cnt"
 }
 
-# Create a test fixture container (not a real rc cage — uses a lightweight image)
-# in Exited state with the rc.source.path label set to $2 and volumes attached.
-# Args: $1=container-name $2=label-value
+# msb-side counterpart of `docker inspect NAME` existence check.
+sandbox_exists() {
+  msb inspect "$1" --format json >/dev/null 2>&1
+}
+
+# Create a test fixture sandbox (not a real rc cage — a bare `alpine` boot)
+# with the rc.source.path label set to $2 and two named volumes attached
+# (mirrors what a real rc-created cage carries: rc-state-<name> +
+# rc-history-<name>). Args: $1=sandbox-name $2=label-value
 create_fixture_container() {
   local _cname="$1"
   local _label="$2"
-  # Create volumes for this fixture.
-  docker volume create "rc-state-${_cname}" >/dev/null 2>&1 || true
-  docker volume create "rc-history-${_cname}" >/dev/null 2>&1 || true
-  # Create a container that exits immediately, in Exited state.
-  docker create \
-    --name "$_cname" \
+  msb volume create "rc-state-${_cname}" >/dev/null 2>&1 || true
+  msb volume create "rc-history-${_cname}" >/dev/null 2>&1 || true
+  msb create -n "$_cname" alpine \
     --label "rc.source.path=${_label}" \
-    -v "rc-state-${_cname}:/rc-state-data" \
-    -v "rc-history-${_cname}:/rc-history-data" \
-    busybox true >/dev/null 2>&1
+    --mount-named "rc-state-${_cname}:/rc-state-data" \
+    --mount-named "rc-history-${_cname}:/rc-history-data" \
+    -q >/dev/null 2>&1
 }
 
-# Force-remove a fixture container and its volumes (for cleanup after a test).
+# Force-remove a fixture sandbox and its volumes (for cleanup after a test).
 teardown_fixture() {
   local _cname="$1"
-  docker rm -f "$_cname" >/dev/null 2>&1 || true
-  docker volume rm "rc-state-${_cname}" >/dev/null 2>&1 || true
-  docker volume rm "rc-history-${_cname}" >/dev/null 2>&1 || true
+  msb remove --force "$_cname" >/dev/null 2>&1 || true
+  msb volume remove "rc-state-${_cname}" >/dev/null 2>&1 || true
+  msb volume remove "rc-history-${_cname}" >/dev/null 2>&1 || true
 }
 
-# Run the D2 sweep inline (mirrors run-host.sh logic exactly).
+# Run the D2 sweep inline (mirrors run-host.sh's _sweep_scratch_cages exactly).
 # Args: $1=temp_root (already realpath-resolved)
 run_sweep() {
   local _root="$1"
@@ -104,8 +122,8 @@ run_sweep() {
     [[ "$_already" -eq 0 ]] && _sweep_roots+=("$_lit")
   done
 
-  for _cname in $(docker ps -a --filter "label=rc.source.path" --format '{{.Names}}' 2>/dev/null || true); do
-    _raw_sp=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$_cname" 2>/dev/null || true)
+  for _cname in $(msb list --format json 2>/dev/null | jq -r '.[].name' 2>/dev/null || true); do
+    _raw_sp=$(msb inspect "$_cname" --format json 2>/dev/null | jq -r '.config.labels["rc.source.path"] // empty' 2>/dev/null || true)
     [[ -z "$_raw_sp" ]] && continue
     local _root2
     for _root2 in "${_sweep_roots[@]+"${_sweep_roots[@]}"}"; do
@@ -153,7 +171,7 @@ _exit=$?
 
 # Verify: container and both volumes should be gone.
 _cexists=0
-docker inspect "$C1A_NAME" >/dev/null 2>&1 && _cexists=1 || true
+sandbox_exists "$C1A_NAME" && _cexists=1 || true
 _vols=$(count_volumes_for "$C1A_NAME")
 
 if [[ "$_cexists" -eq 0 && "$_vols" -eq 0 ]]; then
@@ -187,7 +205,7 @@ wait "$_bg_pid" 2>/dev/null || true
 sleep 1
 
 _cexists=0
-docker inspect "$C1B_NAME" >/dev/null 2>&1 && _cexists=1 || true
+sandbox_exists "$C1B_NAME" && _cexists=1 || true
 _vols=$(count_volumes_for "$C1B_NAME")
 
 if [[ "$_cexists" -eq 0 && "$_vols" -eq 0 ]]; then
@@ -217,7 +235,7 @@ create_fixture_container "$C2A_NAME" "$C2A_WS"
 run_sweep "$TEST_TEMP_ROOT"
 
 _cexists=0
-docker inspect "$C2A_NAME" >/dev/null 2>&1 && _cexists=1 || true
+sandbox_exists "$C2A_NAME" && _cexists=1 || true
 _vols=$(count_volumes_for "$C2A_NAME")
 
 if [[ "$_cexists" -eq 0 && "$_vols" -eq 0 ]]; then
@@ -241,7 +259,7 @@ rm -rf "$C2B_WS"
 run_sweep "$TEST_TEMP_ROOT"
 
 _cexists=0
-docker inspect "$C2B_NAME" >/dev/null 2>&1 && _cexists=1 || true
+sandbox_exists "$C2B_NAME" && _cexists=1 || true
 _vols=$(count_volumes_for "$C2B_NAME")
 
 if [[ "$_cexists" -eq 0 && "$_vols" -eq 0 ]]; then
@@ -264,15 +282,14 @@ echo "--- Case 3: Positive controls (discriminator safety) ---"
 C3A_OUTSIDE="/usr/local/share/rip-cage-test-positive-control-$$"
 C3A_NAME="rip-cage-cleanup-test-3a-$$"
 # Create fixture with label outside temp root.
-docker create \
-  --name "$C3A_NAME" \
+msb create -n "$C3A_NAME" alpine \
   --label "rc.source.path=${C3A_OUTSIDE}" \
-  busybox true >/dev/null 2>&1
+  -q >/dev/null 2>&1
 
 run_sweep "$TEST_TEMP_ROOT"
 
 _cexists=0
-docker inspect "$C3A_NAME" >/dev/null 2>&1 && _cexists=1 || true
+sandbox_exists "$C3A_NAME" && _cexists=1 || true
 
 if [[ "$_cexists" -eq 1 ]]; then
   pass "Case 3a: container labeled OUTSIDE temp root SURVIVES sweep"
@@ -280,16 +297,16 @@ else
   fail "Case 3a: sweep incorrectly reaped container labeled outside temp root (discriminator over-reach)"
 fi
 # Cleanup 3a.
-docker rm -f "$C3A_NAME" >/dev/null 2>&1 || true
+msb remove --force "$C3A_NAME" >/dev/null 2>&1 || true
 
 # Case 3b: a dangling rc-history-* volume (container already removed) survives.
 C3B_VOL="rc-history-rip-cage-cleanup-test-3b-$$"
-docker volume create "$C3B_VOL" >/dev/null 2>&1
+msb volume create "$C3B_VOL" >/dev/null 2>&1
 
 run_sweep "$TEST_TEMP_ROOT"
 
 _vexists=0
-docker volume inspect "$C3B_VOL" >/dev/null 2>&1 && _vexists=1 || true
+msb volume inspect "$C3B_VOL" >/dev/null 2>&1 && _vexists=1 || true
 
 if [[ "$_vexists" -eq 1 ]]; then
   pass "Case 3b: dangling rc-history-* volume (no container) SURVIVES sweep — blanket volume sweep is absent"
@@ -297,7 +314,7 @@ else
   fail "Case 3b: sweep incorrectly removed a dangling volume without a matching container (blanket sweep present — design violation)"
 fi
 # Cleanup 3b.
-docker volume rm "$C3B_VOL" >/dev/null 2>&1 || true
+msb volume remove "$C3B_VOL" >/dev/null 2>&1 || true
 
 # ============================================================================
 # Case (4): macOS realpath case.
@@ -320,7 +337,7 @@ create_fixture_container "$C4_NAME" "$C4_WS"
 run_sweep "$TEST_TEMP_ROOT"
 
 _cexists=0
-docker inspect "$C4_NAME" >/dev/null 2>&1 && _cexists=1 || true
+sandbox_exists "$C4_NAME" && _cexists=1 || true
 _vols=$(count_volumes_for "$C4_NAME")
 
 if [[ "$_cexists" -eq 0 && "$_vols" -eq 0 ]]; then
@@ -358,7 +375,7 @@ bash -c "
 " >/dev/null 2>&1
 
 _cexists=0
-docker inspect "$C5_NAME" >/dev/null 2>&1 && _cexists=1 || true
+sandbox_exists "$C5_NAME" && _cexists=1 || true
 _vols=$(count_volumes_for "$C5_NAME")
 _sentinel_exists=0
 [[ -f "$C5_SENTINEL" ]] && _sentinel_exists=1

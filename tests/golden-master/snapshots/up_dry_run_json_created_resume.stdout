@@ -1,1 +1,1 @@
-{"name":"rc-golden-master-root-workspace","action":"would_resume","source_path":"<GM_ROOT>/workspace","name_disambiguated":false,"dry_run":true,"git_hooks_ro":false}
+{"error":"Container rc-golden-master-root-workspace is in unrecognized state: state=unknown. Inspect manually with: msb inspect rc-golden-master-root-workspace  — if safe, rc destroy rc-golden-master-root-workspace && rc up <GM_ROOT>/workspace","code":"CONTAINER_STATE_UNSUPPORTED"}

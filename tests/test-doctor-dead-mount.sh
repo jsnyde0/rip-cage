@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Unit tests for rc doctor's generic dead-handle detection over single-file
-# Docker bind mounts (rip-cage-uben).
+# msb bind mounts (rip-cage-uben; retargeted onto msb, rip-cage-5iti S10).
 #
 # A host atomic-rename (write tmp + rename over — the standard safe-rewrite
-# idiom) severs the inode a single-FILE bind mount tracks: `docker inspect`
+# idiom) severs the inode a single-FILE bind mount tracks: `msb inspect`
 # keeps listing the mount, but the in-cage destination path goes ENOENT.
 # DIRECTORY mounts are immune (the dentry re-resolves) and must be skipped
-# with no extra `docker exec` probe (no "stat storm").
+# with no extra `msb exec` probe (no "stat storm").
 #
 # DESTINATION-FIRST predicate (rip-cage-uben live-negative-control fix,
 # 2026-07-06): the in-cage destination is probed BEFORE looking at the host
@@ -19,11 +19,23 @@
 # diagnosis instead of always claiming atomic-rename.
 #
 # Tests two pure helpers extracted from rc via the awk-extraction idiom (same
-# as test-doctor-version-skew.sh / test-ls-mode-source.sh), with `docker`
-# stubbed via a PATH shim (same idiom as test-credential-mounts.sh
-# CM8-CM10/CM19-CM21) — host-only, no live cage required:
+# as test-doctor-version-skew.sh / test-ls-mode-source.sh), with `msb`
+# stubbed via a PATH shim — host-only, no live cage required:
 #   _doctor_dead_file_mounts <name>            — raw enumeration
 #   _doctor_format_dead_mounts <name> <src_path> — doctor-probe display string
+#
+# rip-cage-5iti (S10, msb migration test-suite port): _doctor_dead_file_mounts
+# / _doctor_format_dead_mounts / _doctor_format_auth_probe were rewritten onto
+# msb by rip-cage-rj68 (S6) — they now read `msb inspect NAME --format json`
+# (`.config.mounts[]` with `host`/`guest` fields) and `msb exec NAME -- ...`
+# (cli/lib/msb_runtime.sh's `_msb_inspect_json`/`_msb_exec`/`_msb_label`), not
+# `docker inspect --format '{{json .Mounts}}'` / `docker exec`. This file's
+# stub was retargeted accordingly (same idiom as test-config-ro-mount.sh's
+# `_write_msb_inspect_stub` / test-credential-mounts.sh's
+# `_write_msb_inspect_stub`); each subshell also sources
+# cli/lib/msb_runtime.sh directly (not awk-extracted, since it defines the
+# `_msb_*` primitives the awk-extracted doctor.sh functions call into) so
+# that `msb` is invoked via the PATH-stubbed binary above, never the real one.
 #
 # Coverage:
 #   D1  dead handle: mount listed, host source still a regular file, in-cage
@@ -32,7 +44,7 @@
 #       (probe failures never abort `rc doctor` itself — matches existing
 #       convention: cmd_doctor only exits non-zero on container-not-found).
 #   D2  healthy single-file mount -> no FAIL false positive (OK line).
-#   D3  directory-sourced bind mount -> ignored: no docker exec probe issued
+#   D3  directory-sourced bind mount -> ignored: no msb exec probe issued
 #       against its destination (no stat storm), no false positive.
 #   D4  destination dead AND host source genuinely deleted (not renamed) ->
 #       distinct wording (WARN prefix + "deleted, not renamed" phrasing
@@ -66,7 +78,7 @@
 #       snapshot is not a working fallback -- `test -s`, not `test -e`).
 #
 # Also tests a THIRD pure helper (rip-cage-ebdd, posture-aware auth probe),
-# co-located here because it shares the same docker-stub idiom:
+# co-located here because it shares the same msb-stub idiom:
 #   _doctor_format_auth_probe <name> -- doctor-probe auth display string
 #   A1  rc.auth.credential-mounts.claude=none label present -> OK, posture
 #       named informatively (non-possession), not FAIL.
@@ -82,6 +94,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # live in cli/doctor.sh post-decomposition (rip-cage-gto1), not the rc shim --
 # every awk-extraction site below uses $RC as the extraction source.
 RC="${SCRIPT_DIR}/../cli/doctor.sh"
+# The _msb_* primitives (_msb_inspect_json, _msb_exec, _msb_label) these
+# functions call into live here (cli/lib/msb_runtime.sh) -- sourced whole
+# (function-defs only, no top-level side effects) rather than awk-extracted,
+# since the subshell needs the real primitive bodies, and they only shell
+# out to `msb`, which is PATH-stubbed per block below.
+MSB_LIB="${SCRIPT_DIR}/../cli/lib/msb_runtime.sh"
 FAILURES=0
 TOTAL=0
 
@@ -104,23 +122,24 @@ printf '{"fake":"creds"}' > "$D1_HOST_FILE"
 D1_DST="/home/agent/.claude/.credentials.json"
 
 D1_MOUNTS_JSON=$(cat <<JSON
-[{"Type":"bind","Source":"${D1_HOST_FILE}","Destination":"${D1_DST}"}]
+[{"type":"bind","host":"${D1_HOST_FILE}","guest":"${D1_DST}"}]
 JSON
 )
 
 D1_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-d1-stub-XXXXXX")
-cat > "${D1_STUB_DIR}/docker" <<STUB
+cat > "${D1_STUB_DIR}/msb" <<STUB
 #!/usr/bin/env bash
 case " \$* " in
-  *"json .Mounts"*) echo '${D1_MOUNTS_JSON}'; exit 0 ;;
+  *" inspect "*) echo '{"config":{"mounts":${D1_MOUNTS_JSON}}}'; exit 0 ;;
   *"test -e ${D1_DST}"*) exit 1 ;;
   *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
 esac
 STUB
-chmod +x "${D1_STUB_DIR}/docker"
+chmod +x "${D1_STUB_DIR}/msb"
 
 D1_RAW_EXIT=0
 D1_RAW=$(PATH="${D1_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -142,6 +161,7 @@ fi
 
 D1_FMT_EXIT=0
 D1_FMT=$(PATH="${D1_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -189,22 +209,23 @@ printf '{"fake":"creds"}' > "$D2_HOST_FILE"
 D2_DST="/home/agent/.claude/.credentials.json"
 
 D2_MOUNTS_JSON=$(cat <<JSON
-[{"Type":"bind","Source":"${D2_HOST_FILE}","Destination":"${D2_DST}"}]
+[{"type":"bind","host":"${D2_HOST_FILE}","guest":"${D2_DST}"}]
 JSON
 )
 
 D2_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-d2-stub-XXXXXX")
-cat > "${D2_STUB_DIR}/docker" <<STUB
+cat > "${D2_STUB_DIR}/msb" <<STUB
 #!/usr/bin/env bash
 case " \$* " in
-  *"json .Mounts"*) echo '${D2_MOUNTS_JSON}'; exit 0 ;;
+  *" inspect "*) echo '{"config":{"mounts":${D2_MOUNTS_JSON}}}'; exit 0 ;;
   *"test -e ${D2_DST}"*) exit 0 ;;
   *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
 esac
 STUB
-chmod +x "${D2_STUB_DIR}/docker"
+chmod +x "${D2_STUB_DIR}/msb"
 
 D2_FMT=$(PATH="${D2_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -232,7 +253,7 @@ rm -rf "${D2_STUB_DIR}"
 rm -f "$D2_HOST_FILE"
 
 # ---------------------------------------------------------------------------
-# D3: directory-sourced bind mount is ignored -- no docker exec probe issued
+# D3: directory-sourced bind mount is ignored -- no msb exec probe issued
 # against it (no stat storm), and it never produces a false positive.
 # ---------------------------------------------------------------------------
 echo ""
@@ -245,22 +266,23 @@ D3_MARKER="${DOCTOR_DM_TMP}/d3-exec-called-marker"
 rm -f "$D3_MARKER"
 
 D3_MOUNTS_JSON=$(cat <<JSON
-[{"Type":"bind","Source":"${D3_HOST_DIR}","Destination":"${D3_DST}"}]
+[{"type":"bind","host":"${D3_HOST_DIR}","guest":"${D3_DST}"}]
 JSON
 )
 
 D3_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-d3-stub-XXXXXX")
-cat > "${D3_STUB_DIR}/docker" <<STUB
+cat > "${D3_STUB_DIR}/msb" <<STUB
 #!/usr/bin/env bash
 case " \$* " in
-  *"json .Mounts"*) echo '${D3_MOUNTS_JSON}'; exit 0 ;;
+  *" inspect "*) echo '{"config":{"mounts":${D3_MOUNTS_JSON}}}'; exit 0 ;;
   *"test -e ${D3_DST}"*) touch '${D3_MARKER}'; exit 0 ;;
   *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
 esac
 STUB
-chmod +x "${D3_STUB_DIR}/docker"
+chmod +x "${D3_STUB_DIR}/msb"
 
 D3_RAW=$(PATH="${D3_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -270,9 +292,9 @@ D3_RAW=$(PATH="${D3_STUB_DIR}:$PATH" bash -c "
 ")
 
 if [[ -f "$D3_MARKER" ]]; then
-  fail "D3a directory mount does not trigger a docker exec probe" "marker file was created -- docker exec was called against a directory-sourced mount"
+  fail "D3a directory mount does not trigger a msb exec probe" "marker file was created -- msb exec was called against a directory-sourced mount"
 else
-  pass "D3a directory mount does not trigger a docker exec probe (no stat storm)"
+  pass "D3a directory mount does not trigger a msb exec probe (no stat storm)"
 fi
 if [[ "$D3_RAW" != *"$D3_DST"* ]]; then
   pass "D3b directory mount produces no finding at all (silently skipped)"
@@ -294,22 +316,23 @@ rm -f "$D4_HOST_FILE"   # ensure absent
 D4_DST="/home/agent/.claude.json"
 
 D4_MOUNTS_JSON=$(cat <<JSON
-[{"Type":"bind","Source":"${D4_HOST_FILE}","Destination":"${D4_DST}"}]
+[{"type":"bind","host":"${D4_HOST_FILE}","guest":"${D4_DST}"}]
 JSON
 )
 
 D4_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-d4-stub-XXXXXX")
-cat > "${D4_STUB_DIR}/docker" <<STUB
+cat > "${D4_STUB_DIR}/msb" <<STUB
 #!/usr/bin/env bash
 case " \$* " in
-  *"json .Mounts"*) echo '${D4_MOUNTS_JSON}'; exit 0 ;;
+  *" inspect "*) echo '{"config":{"mounts":${D4_MOUNTS_JSON}}}'; exit 0 ;;
   *"test -e ${D4_DST}"*) exit 1 ;;
   *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
 esac
 STUB
-chmod +x "${D4_STUB_DIR}/docker"
+chmod +x "${D4_STUB_DIR}/msb"
 
 D4_FMT=$(PATH="${D4_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -363,25 +386,26 @@ D5_DST_3="/home/agent/.pi/agent/auth.json"
 
 D5_MOUNTS_FILE="${DOCTOR_DM_TMP}/d5-mounts.json"
 cat > "$D5_MOUNTS_FILE" <<JSON
-[{"Type":"bind","Source":"${D5_HOST_FILE_1}","Destination":"${D5_DST_1}"},
- {"Type":"bind","Source":"${D5_HOST_FILE_2}","Destination":"${D5_DST_2}"},
- {"Type":"bind","Source":"${D5_HOST_FILE_3}","Destination":"${D5_DST_3}"}]
+[{"type":"bind","host":"${D5_HOST_FILE_1}","guest":"${D5_DST_1}"},
+ {"type":"bind","host":"${D5_HOST_FILE_2}","guest":"${D5_DST_2}"},
+ {"type":"bind","host":"${D5_HOST_FILE_3}","guest":"${D5_DST_3}"}]
 JSON
 
 D5_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-d5-stub-XXXXXX")
-cat > "${D5_STUB_DIR}/docker" <<STUB
+cat > "${D5_STUB_DIR}/msb" <<STUB
 #!/usr/bin/env bash
 case " \$* " in
-  *"json .Mounts"*) cat "${D5_MOUNTS_FILE}"; exit 0 ;;
+  *" inspect "*) printf '{"config":{"mounts":'; cat "${D5_MOUNTS_FILE}"; printf '}}'; exit 0 ;;
   *"test -e ${D5_DST_1}"*) exit 1 ;;
   *"test -e ${D5_DST_2}"*) exit 1 ;;
   *"test -e ${D5_DST_3}"*) exit 0 ;;
   *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
 esac
 STUB
-chmod +x "${D5_STUB_DIR}/docker"
+chmod +x "${D5_STUB_DIR}/msb"
 
 D5_RAW=$(PATH="${D5_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -402,6 +426,7 @@ else
 fi
 
 D5_FMT=$(PATH="${D5_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -435,6 +460,7 @@ fi
 printf '[]' > "$D5_MOUNTS_FILE"
 
 D5_EMPTY_FMT=$(PATH="${D5_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -474,22 +500,23 @@ D6_HOST_SOCK="${DOCTOR_DM_TMP}/does-not-exist/ssh-auth.sock"
 D6_DST="/run/host-services/ssh-auth.sock"
 
 D6_MOUNTS_JSON=$(cat <<JSON
-[{"Type":"bind","Source":"${D6_HOST_SOCK}","Destination":"${D6_DST}"}]
+[{"type":"bind","host":"${D6_HOST_SOCK}","guest":"${D6_DST}"}]
 JSON
 )
 
 D6_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-d6-stub-XXXXXX")
-cat > "${D6_STUB_DIR}/docker" <<STUB
+cat > "${D6_STUB_DIR}/msb" <<STUB
 #!/usr/bin/env bash
 case " \$* " in
-  *"json .Mounts"*) echo '${D6_MOUNTS_JSON}'; exit 0 ;;
+  *" inspect "*) echo '{"config":{"mounts":${D6_MOUNTS_JSON}}}'; exit 0 ;;
   *"test -e ${D6_DST}"*) exit 0 ;;
   *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
 esac
 STUB
-chmod +x "${D6_STUB_DIR}/docker"
+chmod +x "${D6_STUB_DIR}/msb"
 
 D6_RAW=$(PATH="${D6_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -505,6 +532,7 @@ else
 fi
 
 D6_FMT=$(PATH="${D6_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -545,22 +573,23 @@ mkfifo "$D7_HOST_FIFO"
 D7_DST="/run/host-services/ssh-auth.sock"
 
 D7_MOUNTS_JSON=$(cat <<JSON
-[{"Type":"bind","Source":"${D7_HOST_FIFO}","Destination":"${D7_DST}"}]
+[{"type":"bind","host":"${D7_HOST_FIFO}","guest":"${D7_DST}"}]
 JSON
 )
 
 D7_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-d7-stub-XXXXXX")
-cat > "${D7_STUB_DIR}/docker" <<STUB
+cat > "${D7_STUB_DIR}/msb" <<STUB
 #!/usr/bin/env bash
 case " \$* " in
-  *"json .Mounts"*) echo '${D7_MOUNTS_JSON}'; exit 0 ;;
+  *" inspect "*) echo '{"config":{"mounts":${D7_MOUNTS_JSON}}}'; exit 0 ;;
   *"test -e ${D7_DST}"*) exit 1 ;;
   *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
 esac
 STUB
-chmod +x "${D7_STUB_DIR}/docker"
+chmod +x "${D7_STUB_DIR}/msb"
 
 D7_RAW=$(PATH="${D7_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -576,6 +605,7 @@ else
 fi
 
 D7_FMT=$(PATH="${D7_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -625,23 +655,24 @@ D8_DST="/home/agent/.claude.json"
 D8_SEED="/home/agent/.claude/.claude.json.seed"
 
 D8_MOUNTS_JSON=$(cat <<JSON
-[{"Type":"bind","Source":"${D8_HOST_FILE}","Destination":"${D8_DST}"}]
+[{"type":"bind","host":"${D8_HOST_FILE}","guest":"${D8_DST}"}]
 JSON
 )
 
 D8_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-d8-stub-XXXXXX")
-cat > "${D8_STUB_DIR}/docker" <<STUB
+cat > "${D8_STUB_DIR}/msb" <<STUB
 #!/usr/bin/env bash
 case " \$* " in
-  *"json .Mounts"*) echo '${D8_MOUNTS_JSON}'; exit 0 ;;
+  *" inspect "*) echo '{"config":{"mounts":${D8_MOUNTS_JSON}}}'; exit 0 ;;
   *"test -e ${D8_DST}"*) exit 1 ;;
   *"test -s ${D8_SEED}"*) exit 0 ;;
   *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
 esac
 STUB
-chmod +x "${D8_STUB_DIR}/docker"
+chmod +x "${D8_STUB_DIR}/msb"
 
 D8_RAW=$(PATH="${D8_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -663,6 +694,7 @@ fi
 
 D8_FMT_EXIT=0
 D8_FMT=$(PATH="${D8_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -711,23 +743,24 @@ D9_DST="/home/agent/.claude.json"
 D9_SEED="/home/agent/.claude/.claude.json.seed"
 
 D9_MOUNTS_JSON=$(cat <<JSON
-[{"Type":"bind","Source":"${D9_HOST_FILE}","Destination":"${D9_DST}"}]
+[{"type":"bind","host":"${D9_HOST_FILE}","guest":"${D9_DST}"}]
 JSON
 )
 
 D9_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-d9-stub-XXXXXX")
-cat > "${D9_STUB_DIR}/docker" <<STUB
+cat > "${D9_STUB_DIR}/msb" <<STUB
 #!/usr/bin/env bash
 case " \$* " in
-  *"json .Mounts"*) echo '${D9_MOUNTS_JSON}'; exit 0 ;;
+  *" inspect "*) echo '{"config":{"mounts":${D9_MOUNTS_JSON}}}'; exit 0 ;;
   *"test -e ${D9_DST}"*) exit 1 ;;
   *"test -s ${D9_SEED}"*) exit 1 ;;
   *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
 esac
 STUB
-chmod +x "${D9_STUB_DIR}/docker"
+chmod +x "${D9_STUB_DIR}/msb"
 
 D9_RAW=$(PATH="${D9_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -743,6 +776,7 @@ else
 fi
 
 D9_FMT=$(PATH="${D9_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -777,23 +811,24 @@ D10_DST="/home/agent/.claude.json"
 D10_SEED="/home/agent/.claude/.claude.json.seed"
 
 D10_MOUNTS_JSON=$(cat <<JSON
-[{"Type":"bind","Source":"${D10_HOST_FILE}","Destination":"${D10_DST}"}]
+[{"type":"bind","host":"${D10_HOST_FILE}","guest":"${D10_DST}"}]
 JSON
 )
 
 D10_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-d10-stub-XXXXXX")
-cat > "${D10_STUB_DIR}/docker" <<STUB
+cat > "${D10_STUB_DIR}/msb" <<STUB
 #!/usr/bin/env bash
 case " \$* " in
-  *"json .Mounts"*) echo '${D10_MOUNTS_JSON}'; exit 0 ;;
+  *" inspect "*) echo '{"config":{"mounts":${D10_MOUNTS_JSON}}}'; exit 0 ;;
   *"test -e ${D10_DST}"*) exit 1 ;;
   *"test -s ${D10_SEED}"*) exit 1 ;;
   *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
 esac
 STUB
-chmod +x "${D10_STUB_DIR}/docker"
+chmod +x "${D10_STUB_DIR}/msb"
 
 D10_FMT=$(PATH="${D10_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_dead_file_mounts\(\)/ { found=1 }
     found { print }
@@ -823,19 +858,20 @@ echo ""
 echo "-- A1: auth probe, non-possession label -> OK not FAIL --"
 
 A1_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-a1-stub-XXXXXX")
-cat > "${A1_STUB_DIR}/docker" <<'STUB'
+cat > "${A1_STUB_DIR}/msb" <<'STUB'
 #!/usr/bin/env bash
 case " $* " in
   *"test -s /home/agent/.claude/.credentials.json"*) exit 1 ;;
   *"ANTHROPIC_API_KEY"*) exit 1 ;;
-  *"credential-mounts.claude"*) echo "none"; exit 0 ;;
+  *" inspect "*) echo '{"config":{"labels":{"rc.auth.credential-mounts.claude":"none"}}}'; exit 0 ;;
   *"CLAUDE_CODE_OAUTH_TOKEN"*) exit 1 ;;
   *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
 esac
 STUB
-chmod +x "${A1_STUB_DIR}/docker"
+chmod +x "${A1_STUB_DIR}/msb"
 
 A1_FMT=$(PATH="${A1_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_format_auth_probe\(\)/ { found=1 }
     found { print }
@@ -869,19 +905,20 @@ echo ""
 echo "-- A2: auth probe, CLAUDE_CODE_OAUTH_TOKEN present -> OK not FAIL --"
 
 A2_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-a2-stub-XXXXXX")
-cat > "${A2_STUB_DIR}/docker" <<'STUB'
+cat > "${A2_STUB_DIR}/msb" <<'STUB'
 #!/usr/bin/env bash
 case " $* " in
   *"test -s /home/agent/.claude/.credentials.json"*) exit 1 ;;
   *"ANTHROPIC_API_KEY"*) exit 1 ;;
-  *"credential-mounts.claude"*) echo ""; exit 0 ;;
+  *" inspect "*) echo '{"config":{"labels":{}}}'; exit 0 ;;
   *"CLAUDE_CODE_OAUTH_TOKEN"*) exit 0 ;;
   *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
 esac
 STUB
-chmod +x "${A2_STUB_DIR}/docker"
+chmod +x "${A2_STUB_DIR}/msb"
 
 A2_FMT=$(PATH="${A2_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_format_auth_probe\(\)/ { found=1 }
     found { print }
@@ -910,19 +947,20 @@ echo ""
 echo "-- A3: auth probe, no posture recognized and no creds -> still FAIL --"
 
 A3_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-a3-stub-XXXXXX")
-cat > "${A3_STUB_DIR}/docker" <<'STUB'
+cat > "${A3_STUB_DIR}/msb" <<'STUB'
 #!/usr/bin/env bash
 case " $* " in
   *"test -s /home/agent/.claude/.credentials.json"*) exit 1 ;;
   *"ANTHROPIC_API_KEY"*) exit 1 ;;
-  *"credential-mounts.claude"*) echo ""; exit 0 ;;
+  *" inspect "*) echo '{"config":{"labels":{}}}'; exit 0 ;;
   *"CLAUDE_CODE_OAUTH_TOKEN"*) exit 1 ;;
   *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
 esac
 STUB
-chmod +x "${A3_STUB_DIR}/docker"
+chmod +x "${A3_STUB_DIR}/msb"
 
 A3_FMT=$(PATH="${A3_STUB_DIR}:$PATH" bash -c "
+  source '$MSB_LIB'
   eval \"\$(awk '
     /^_doctor_format_auth_probe\(\)/ { found=1 }
     found { print }

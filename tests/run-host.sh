@@ -704,13 +704,22 @@ _sweep_init_temp_roots() {
 }
 _sweep_init_temp_roots
 
+# rip-cage-5iti (S10, msb migration test-suite port): retargeted onto msb --
+# was `docker ps --filter label=... | docker inspect`. `msb list --label
+# KEY=VALUE` only exact-matches (no docker-style presence-only `label=KEY`
+# filter), so this enumerates every sandbox name via `msb list --format
+# json` and reads each one's `rc.source.path` label via `msb inspect`
+# (mirrors _msb_label's `.config.labels[$k]` shape) -- same discriminator
+# (label value must be under one of the swept temp roots) as before, so
+# sandboxes belonging to other concurrent worktrees/sessions (labeled with
+# their own non-temp-root workspace paths) are never touched.
 _sweep_scratch_cages() {
-  if ! command -v docker >/dev/null 2>&1; then
+  if ! command -v msb >/dev/null 2>&1; then
     return 0
   fi
   local _cname _raw_sp _root
-  for _cname in $(docker ps -a --filter "label=rc.source.path" --format '{{.Names}}' 2>/dev/null || true); do
-    _raw_sp=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$_cname" 2>/dev/null || true)
+  for _cname in $(msb list --format json 2>/dev/null | jq -r '.[].name' 2>/dev/null || true); do
+    _raw_sp=$(msb inspect "$_cname" --format json 2>/dev/null | jq -r '.config.labels["rc.source.path"] // empty' 2>/dev/null || true)
     [[ -z "$_raw_sp" ]] && continue
     for _root in "${_SWEEP_TEMP_ROOTS[@]+"${_SWEEP_TEMP_ROOTS[@]}"}"; do
       if [[ "$_raw_sp" == "${_root}"/* || "$_raw_sp" == "${_root}" ]]; then

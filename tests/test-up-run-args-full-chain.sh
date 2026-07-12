@@ -16,7 +16,20 @@
 # helper call in that block without a matching edit here. That is exactly
 # why this is only ONE of the two load-bearing tests — the companion
 # END-TO-END test (test-up-run-args-e2e.sh) drives the REAL `cmd_up` through
-# a content-keyed docker shim and is the higher-fidelity gate.
+# content-keyed docker+msb shims and is the higher-fidelity gate.
+#
+# rip-cage-5iti (S10, msb migration test-suite port): the assertion target
+# is retargeted from the raw pre-translation `_UP_RUN_ARGS` array (docker
+# run-arg shape -- `-d --name`, `--mount type=bind,...`) onto its
+# POST-translation msb create-flag form (`_up_translate_docker_args_to_msb`
+# applied at the end of the chain, exactly as `_up_start_container` does
+# before its real `msb create` call) -- asserting the stale docker-shaped
+# array was a defect (rip-cage-hdcl classification: presence-assertion
+# flagged); the msb-shaped array is what's ACTUALLY sent to the runtime
+# boundary today, same reasoning as test-up-run-args-e2e.sh's E3 retarget.
+# `msb create` also has no trailing keep-alive command (unlike
+# `docker run ... IMAGE sleep infinity`), so the completion proof (Test 3)
+# now checks the array ends in the image name instead.
 #
 # Wired into tests/run-host.sh (host-only tier).
 
@@ -89,7 +102,10 @@ run_full_chain() {
     wt_detected=false wt_name= wt_main_git=
 
     _UP_RUN_ARGS=()
-    _UP_RUN_ARGS+=(-d --name \"\$name\")
+    # rip-cage-5iti (S10): NO \"-d --name \$name\" prefix -- msb create takes
+    # --name as its own argument (passed directly at the _up_start_container
+    # call site, not through _UP_RUN_ARGS), and has no -d/detach flag to
+    # begin with (matches cli/up.sh's own rc:2711 comment).
     _UP_RUN_ARGS+=(--label \"rc.source.path=\$path\")
 
     _rc_cache_dir=\"\${HOME}/.cache/rip-cage/\${name}\"
@@ -146,9 +162,18 @@ run_full_chain() {
       _UP_RUN_ARGS+=(--mount \"type=bind,src=\${_UP_DCG_CONFIG_PATH},dst=/usr/local/lib/rip-cage/dcg/config.toml,ro\")
     fi
 
-    _UP_RUN_ARGS+=(\"\$IMAGE\" sleep infinity)
+    # rip-cage-5iti (S10): NO trailing \"\$IMAGE sleep infinity\" append --
+    # _up_start_container appends IMAGE itself, directly on the real
+    # \`msb create\` command line, separate from _UP_RUN_ARGS/the translated
+    # flags (an msb sandbox's persistent-background boot needs no
+    # caller-supplied keep-alive command, unlike \`docker run\`). Translate
+    # the docker-shaped _UP_RUN_ARGS to msb create-flag shape here, exactly
+    # as _up_start_container does at its own \`msb create\` call site, so
+    # this test's assertion target is what's ACTUALLY sent to the runtime
+    # boundary today (the pre-translation docker-run shape is dead code).
+    mapfile -t _UP_TRANSLATED_ARGS < <(_up_translate_docker_args_to_msb \"\${_UP_RUN_ARGS[@]}\")
 
-    printf '%s\n' \"\${_UP_RUN_ARGS[@]}\"
+    printf '%s\n' \"\${_UP_TRANSLATED_ARGS[@]}\"
   " 2>/tmp/rc-up-args-chain-stderr.$$
 }
 
@@ -214,13 +239,20 @@ $(diff <(printf '%s\n' "$EXPECTED") <(printf '%s\n' "$RUN1_SCRUBBED"))"
 fi
 
 # ---------------------------------------------------------------------------
-# Test 3: sanity -- the argv reaches the final image+cmd append (proves the
-# chain actually ran to completion, not an early `exit`/empty array).
+# Test 3: sanity -- the translated argv reaches its final deterministic
+# element (proves the chain actually ran to completion, not an early
+# `exit`/empty array).
+#
+# rip-cage-5iti (S10): retargeted from the retired "\$IMAGE sleep infinity"
+# tail (see this file's header comment) -- with rc_egress=on and no DCG
+# config path set (this replica's fixed, deterministic inputs), the LAST
+# element _up_translate_docker_args_to_msb emits is the translated
+# egress-rules bind mount (--mount-file ...egress-rules.yaml:ro).
 # ---------------------------------------------------------------------------
-if echo "$RUN1" | grep -qF "sleep" && echo "$RUN1" | grep -qF "infinity"; then
-  pass "full-chain reaches the final '\$IMAGE sleep infinity' append"
+if echo "$RUN1" | grep -qF "mount-file" && echo "$RUN1" | grep -qF "egress-rules.yaml:/etc/rip-cage/egress-rules.yaml:ro"; then
+  pass "full-chain reaches the final translated egress-rules --mount-file append"
 else
-  fail "full-chain completion" "argv does not end in the expected image+cmd append (chain aborted early?) -- stderr: $RUN1_STDERR
+  fail "full-chain completion" "argv does not end in the expected translated mount append (chain aborted early?) -- stderr: $RUN1_STDERR
 argv: $RUN1"
 fi
 

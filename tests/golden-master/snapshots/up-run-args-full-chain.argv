@@ -1,15 +1,8 @@
 Warning: <TEST_HOME>/.claude.json not found — skipping mount
 Warning: <TEST_HOME>/.claude/.credentials.json not found — skipping mount (fine if you are not using Claude Code in this cage)
 Beads: embedded mode — no Dolt server connection
--d
---name
-chain-test-cage
 --label
 rc.source.path=<TEST_HOME>/workspace
---label
-rc.ssh-config=off
---label
-rc.ssh-key-filter=off
 --label
 rc.auth.credential-mounts=real
 --label
@@ -27,7 +20,7 @@ rc.session.multiplexer=none
 --label
 rc.mediator-ca-env=false
 -v
-<TEST_HOME>/workspace:/workspace:delegated
+<TEST_HOME>/workspace:/workspace
 --workdir
 /workspace
 -e
@@ -35,7 +28,7 @@ PI_CODING_AGENT_DIR=/home/agent/.pi/agent
 -v
 <TEST_HOME>/.pi/agent/auth.json:/home/agent/.pi/agent/auth.json
 -e
-CAGE_HOST_ADDR=host.docker.internal
+CAGE_HOST_ADDR=host.microsandbox.internal
 -v
 <TEST_HOME>/.claude/projects:/home/agent/.claude/projects
 -v
@@ -50,20 +43,9 @@ rc-history-chain-test-cage:/commandhistory
 rc-mise-cache:/home/agent/.local/share/mise
 --cpus=2
 --memory=4g
---memory-swap=4g
---pids-limit=500
---add-host=host.docker.internal:host-gateway
---cap-add=NET_ADMIN
--l
-rc.egress=on
--l
-rc.forward-ssh=off
 --label
 rc.egress.mode=legacy
 --label
 rc.egress.config-override=false
---mount
-type=bind,src=<TEST_HOME>/.cache/rip-cage/chain-test-cage/egress-rules.yaml,dst=/etc/rip-cage/egress-rules.yaml,ro
-rip-cage:latest
-sleep
-infinity
+--mount-file
+<TEST_HOME>/.cache/rip-cage/chain-test-cage/egress-rules.yaml:/etc/rip-cage/egress-rules.yaml:ro

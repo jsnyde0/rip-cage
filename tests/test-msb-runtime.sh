@@ -182,6 +182,40 @@ else
   fail "R6 setup: msb create failed"
 fi
 
+
+# ---------------------------------------------------------------------------
+# R7: _msb_denied_domains_from_trace_log's own doc comment promises "Echoes
+# empty (never errors) when the sandbox has no logs yet or no denials
+# occurred." (rip-cage-5iti, S10 finding): its internal
+# `msb logs | grep -o ... | sed ... | awk ...` pipe has grep exit 1 (no
+# match) whenever there are zero denials -- the common/default case for a
+# healthy cage. Under bare `set -uo pipefail` (this file's own mode) that's
+# invisible (command substitution swallows it), but BOTH real call sites
+# (cli/reload.sh cmd_reload, cli/doctor.sh's posture probe) run inside rc's
+# real dispatch, which sets `set -euo pipefail` -- there, an unguarded
+# `_rl_denied=$(_msb_denied_domains_from_trace_log "$name")` assignment
+# aborts the whole command on the pipefail-propagated grep failure. Proven
+# live below by reproducing that exact strict-mode context.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== R7: _msb_denied_domains_from_trace_log never errors on zero denials (pipefail contract) ==="
+if msb create "$IMAGE" --name "$NAME" --replace >/dev/null 2>&1; then
+  R7_EXIT=0
+  R7_OUT=$(bash -c '
+    set -euo pipefail
+    source "'"$RC"'" 2>/dev/null
+    _rl_denied=$(_msb_denied_domains_from_trace_log "'"$NAME"'")
+    echo "R7_REACHED_END:[${_rl_denied}]"
+  ' 2>&1) || R7_EXIT=$?
+  if [[ "$R7_EXIT" -eq 0 && "$R7_OUT" == *"R7_REACHED_END:[]"* ]]; then
+    pass "R7a: zero-denial call under set -euo pipefail does not abort the caller (empty output, exit 0)"
+  else
+    fail "R7a: expected exit 0 and reaching the end marker with empty denied-list" "exit=${R7_EXIT} out='${R7_OUT}'"
+  fi
+else
+  fail "R7 setup: msb create failed"
+fi
+
 echo ""
 echo "=== test-msb-runtime.sh: ${FAILURES}/${TOTAL} failure(s) ==="
 [[ "$FAILURES" -eq 0 ]]

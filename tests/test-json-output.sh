@@ -216,20 +216,23 @@ fi
 # _up_resolve_resume_symlink_fingerprint had no json_error path on either
 # branch -- under --output json it emitted plain stderr text + exit 1 instead
 # of a parseable {error, code}. Isolated-resolver idiom (source rc, stub
-# `docker inspect` for the label, call the resolver directly) -- same
-# technique as tests/test-dry-run-resume-guards.sh B1 / test-ssh-allowlist.sh
-# C20-C22 for the sibling ssh-key-filter guard.
+# `msb` for the label lookup, call the resolver directly) -- same technique
+# as tests/test-dry-run-resume-guards.sh B1 / test-config-ro-mount.sh M6-M8.
+# rip-cage-5iti (S10, msb migration test-suite port): retargeted the stub
+# from `docker inspect --format` onto `msb inspect --format json`
+# (cli/lib/msb_runtime.sh's `_msb_label`), since rip-cage-rj68 (S6) rewrote
+# _up_resolve_resume_symlink_fingerprint onto msb.
 echo ""
 echo "=== Test 13: --output json resume symlink-fingerprint MISMATCH emits SYMLINK_FINGERPRINT_MOUNT_SHAPE_CHANGED ==="
 _t13_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-t13-stub-XXXXXX")
-cat > "${_t13_stub_dir}/docker" <<'STUB'
+cat > "${_t13_stub_dir}/msb" <<'STUB'
 #!/usr/bin/env bash
 case " $* " in
-  *" inspect "*"rc.symlink-follow-fingerprint"*) echo "not-a-real-fingerprint-marker"; exit 0 ;;
+  *" inspect "*) echo '{"config":{"labels":{"rc.symlink-follow-fingerprint":"not-a-real-fingerprint-marker"}}}'; exit 0 ;;
   *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
 esac
 STUB
-chmod +x "${_t13_stub_dir}/docker"
+chmod +x "${_t13_stub_dir}/msb"
 
 _t13_home=$(mktemp -d "${TMPDIR:-/tmp}/rc-t13-home-XXXXXX")
 

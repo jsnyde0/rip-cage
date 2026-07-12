@@ -1,10 +1,6 @@
 {
   "config": {
     "version": 1,
-    "ssh": {
-      "allowed_keys": null,
-      "allowed_hosts": []
-    },
     "mounts": {
       "denylist": [],
       "allow_risky": null,
@@ -23,10 +19,6 @@
       },
       "http": {
         "forward_to": null
-      },
-      "egress": {
-        "mediator": "none",
-        "mediator_env_file": null
       }
     },
     "dcg": {
@@ -42,13 +34,12 @@
       "per_tool": {
         "claude": null,
         "pi": null
-      }
+      },
+      "credentials": []
     }
   },
   "provenance": {
     "version": "global",
-    "ssh.allowed_keys": "default",
-    "ssh.allowed_hosts": "default",
     "mounts.denylist": "global",
     "mounts.allow_risky": "default",
     "mounts.config_mode": "default",
@@ -62,16 +53,15 @@
     "dcg.packs": "default",
     "dcg.custom_rule_paths": "default",
     "session.multiplexer": "default",
-    "network.egress.mediator": "default",
     "auth.credential_mounts": "default",
-    "network.egress.mediator_env_file": "default",
     "auth.placeholder_env_file": "default",
     "auth.per_tool.claude": "default",
-    "auth.per_tool.pi": "default"
+    "auth.per_tool.pi": "default",
+    "auth.credentials": "default"
   },
   "layers": {
     "global": "<GM_ROOT>/home/.config/rip-cage/config.yaml",
     "project": null
   },
-  "sha256": "086f6b5f427b49064b42b020d4a66fd638faba609774768b09bf11e4c914c43c"
+  "sha256": "1574d95842b7a499099c7090d3b9c5262a5ba8c392ae9254de68b4ecf9ff2d8a"
 }
