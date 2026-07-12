@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 
-> **Migration status (ADR-029, 2026-07-10):** This ADR is evolved by [ADR-029](ADR-029-msb-migration.md) — the container runtime is reversed (D1) and several decisions' mechanics re-bind to msb (see per-decision dispositions below); D9 (devcontainer) is separately dead regardless of migration (rip-cage-kt25). The msb cutover has landed (S1-S14, branch `wave/s13-docs` off `msb-cutover`) — the mechanisms below are retired/replaced per the dispositions above; this ADR is retained for historical record, not current behavior. See [ADR-029](ADR-029-msb-migration.md) for what replaced them.
+> **Migration status (ADR-029, 2026-07-10):** This ADR is evolved by [ADR-029](ADR-029-msb-migration.md) — the container runtime is reversed (D1) and several decisions' mechanics re-bind to msb (see per-decision dispositions below); D9 (devcontainer) is separately dead regardless of migration (rip-cage-kt25). **The msb cutover has landed (S1-S14, branch `wave/s13-docs` off `msb-cutover`) — this ADR is PARTIALLY SUPERSEDED, not wholly retired.** D1 (container runtime choice) is reversed; several decisions' mechanics re-bind to msb per the dispositions below. But D4 (`.git/hooks` RO weld), D5 (DCG hook hardening — see its own note below), D11/D12 (sudoers scope, non-root posture) and the other floor items **survive as current, shipped behavior** — they are carried forward verbatim into the ADR-029 D2 lockstep floor list. See [ADR-029](ADR-029-msb-migration.md) for the migration decisions.
 
 **Date:** 2026-03-25
 **Design:** [Rip Cage Design](../2026-03-25-rip-cage-design.md)

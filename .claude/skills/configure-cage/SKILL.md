@@ -1,6 +1,6 @@
 ---
 name: configure-cage
-description: Reads manifest/default-tools.yaml — the maintained, guaranteed-current default that the published rip-cage image is built from — as the reference base for a host manifest (~/.config/rip-cage/tools.yaml), then proposes deltas for the human's actual situation by judgment: reading the relevant examples/ recipe fragments and hand-writing tools.yaml entries — no generator script, no setup tool, no fixed interview. Carries the 3-layer config mental model (image manifest / global posture / per-project config), reconcile-awareness (a tools.yaml may already exist from a past session — you are probably not starting from zero), the credential non-possession posture (composing a mediator like iron-proxy so the agent holds a placeholder, never the real secret — opt-in per situation, points to examples/compose-rc-with-iron-proxy.md), and known footguns (DCG's open-extension-discovery residual, pi's headless-throttle) as knowledge to relay by judgment, not gates to force through. Use when a human says "set up a rip-cage cage", "configure a cage", "which tools/guards for my cage", "compose a rip-cage manifest", "keep my credentials out of the cage", or otherwise wants help composing their rip-cage tools.yaml before running rc build.
+description: Reads manifest/default-tools.yaml — the maintained, guaranteed-current default that the published rip-cage image is built from — as the reference base for a host manifest (~/.config/rip-cage/tools.yaml), then proposes deltas for the human's actual situation by judgment: reading the relevant examples/ recipe fragments and hand-writing tools.yaml entries — no generator script, no setup tool, no fixed interview. Carries the 3-layer config mental model (image manifest / global posture / per-project config), reconcile-awareness (a tools.yaml may already exist from a past session — you are probably not starting from zero), the credential non-possession posture (declaring auth.credentials so msb --secret injects the real value on the wire and the agent only ever holds a placeholder — a default config declaration, not a composed mediator; see docs/reference/egress.md), and known footguns (DCG's open-extension-discovery residual, pi's headless-throttle) as knowledge to relay by judgment, not gates to force through. Use when a human says "set up a rip-cage cage", "configure a cage", "which tools/guards for my cage", "compose a rip-cage manifest", "keep my credentials out of the cage", or otherwise wants help composing their rip-cage tools.yaml before running rc build.
 ---
 
 # Configure a rip-cage cage
@@ -21,9 +21,9 @@ the manifest the *published* rip-cage image is literally built from
 (`RC_MANIFEST_GLOBAL=manifest/default-tools.yaml ./rc build`), and its own header declares it the
 single data-layer home of the default tool-set blessing (ADR-005 D12). That makes it the best
 starting point available: read it, understand what it already composes (the floor tools, the
-Claude Code and pi wrappers, DCG in its **open** posture, the ssh-bypass guard), and treat the
+Claude Code and pi wrappers, DCG in its **open** posture), and treat the
 human's request as a **delta** against that — additions (a language runtime, a database CLI,
-a multiplexer, a mediator), removals, or posture changes (DCG locked, egress enforce-mode, a
+a multiplexer), removals, or posture changes (DCG locked, egress allowlist changes, a
 pinned pi model) — rather than reconstructing a cage from nothing.
 
 There is no separate "minimal reference" file to maintain here on purpose: `dist` already
@@ -54,7 +54,7 @@ belongs to keeps you from editing the wrong file:
 
 | Layer | File | Governs |
 |---|---|---|
-| Image manifest | `~/.config/rip-cage/tools.yaml` (or a project-level `tools.yaml`) | which tools/guards/multiplexers/mediators get **baked into the image** at `rc build` time — this is the file this skill composes |
+| Image manifest | `~/.config/rip-cage/tools.yaml` (or a project-level `tools.yaml`) | which tools/guards/multiplexers get **baked into the image** at `rc build` time — this is the file this skill composes |
 | Global posture | `~/.config/rip-cage/config.yaml` + `rc.conf` | host-wide guardrails that apply to every cage: the mount denylist, `RC_ALLOWED_ROOTS` (which host paths `rc up` may target) |
 | Per-project config | `<repo>/.rip-cage.yaml` | per-workspace runtime posture: `session.multiplexer`, `ssh.allowed_hosts`, `network.mode` + the egress allowlist, `mounts.config_mode` |
 
@@ -71,10 +71,10 @@ one doesn't.
 
 The credential non-possession posture (below) splits across these same layers, and the split
 isn't a style preference — it follows from how each layer merges. `auth.per_tool` (or the bare
-`auth.credential_mounts`), `network.egress.mediator`, `network.egress.mediator_env_file`, and
-`auth.placeholder_env_file` belong in the **global** `config.yaml`: they're posture the human
-wants on every cage they create, set once (rip-cage-u2ro promote). `network.allowed_hosts`
-stays **per-project**, and that's load-bearing, not a preference — the two posture layers merge
+`auth.credential_mounts`) and `auth.placeholder_env_file` belong in the **global** `config.yaml`:
+they're posture the human wants on every cage they create, set once (rip-cage-u2ro promote).
+`network.allowed_hosts` and `auth.credentials` (per-host credential bindings, msb `--secret`)
+stay **per-project**, and that's load-bearing, not a preference — the two posture layers merge
 list fields additively (ADR-021), so a host added at the global layer applies to every project
 forever and no project can narrow it back out. A host only one project needs (a private mirror,
 a scoped API) belongs at the project layer for exactly that reason: put it in global instead and
@@ -144,120 +144,33 @@ on every operator. If the human is heading toward a walk-away or otherwise headl
 [`examples/compose-walk-away-cage.md`](../../../examples/compose-walk-away-cage.md) covers
 this pin as part of that recipe.
 
-## Credential non-possession — composing a mediator for credential safety
+## Credential non-possession — a config declaration, not a composed mediator
 
-By default a cage mounts the human's real credentials, so the agent *possesses* them —
-a prompt-injected agent could exfiltrate them. rip-cage can instead run the agent on a
-**placeholder** while a composed **mediator** (e.g. iron-proxy) injects the real
-credential on egress, so the agent never holds the real secret. This is a *composition*,
-not a new mode — the same schema, opt-in per the human's situation (ADR-026). Reach for
-it when the human wants credential safety under the prompt-injection threat model, or is
-running walk-away / untrusted-content work; leave it off (the simpler default
-mount-everything posture) when the cage never touches anything a compromised agent could
-meaningfully exfiltrate. Both cases are first-class — the point is that the *without-mediator*
-path stays exactly as it is today.
+> **Retired ([ADR-029](../../../docs/decisions/ADR-029-msb-migration.md) D2/D5):** the
+> composed-MEDIATOR recipe this section used to walk through (`examples/compose-rc-with-iron-proxy.md`,
+> a manifest `archetype: MEDIATOR` entry, `network.egress.mediator`/`network.egress.mediator_env_file`)
+> is **deleted, not just undocumented** — there is no manifest MEDIATOR archetype or mediator
+> launch machinery left in `rc` to compose. The recipe file this section pointed at no longer
+> exists in this tree.
 
-There's a second, independent reason to reach for non-possession that has nothing to do with
-prompt injection: robustness. A real-possession cage bind-mounts a single host file,
-`~/.claude/.credentials.json`; Claude Code's own token refresh on the host rewrites that file
-via atomic temp+rename, and that rename can race the bind mount's inode and sever it — the
-container keeps a handle to the now-unlinked old inode while the host has moved on, so in-cage
-`claude` silently starts reporting "Not logged in" with no warning (observed live 2026-07-06;
-`rc doctor` now detects the dead handle, but the repair is `rc down && rc up`). Non-possession
-has no such mount to sever — the placeholder token is injected once at container create and
-stays static for the cage's life, so it simply cannot be orphaned by host-side credential-file
-churn the way the real credential can. Worth naming when a human is choosing a posture for a
-long-running or walk-away cage, independent of whether they care about the prompt-injection
-threat model at all.
+By default a cage mounts the human's real credentials, so the agent *possesses* them — a
+prompt-injected agent could exfiltrate them. Non-possession for the dominant secrets (Claude's
+own auth, any git host token) is now a **default platform property**, not something you compose:
+declare `auth.credentials: [{source_env: <HOST_ENV_VAR>, hosts: [<domain>, ...]}]` in
+`.rip-cage.yaml` (a host must ALSO be in `network.allowed_hosts`, or the connection is denied
+before the secret is ever considered) and msb `--secret` injects the real value on the wire
+toward the named host(s) only — the guest env/disk/proc hold just a placeholder. See
+[`docs/reference/egress.md`](../../../docs/reference/egress.md) for the full worked example and
+[`docs/reference/config.md`](../../../docs/reference/config.md) for the field reference.
+`auth.credential_mounts: none` / `auth.per_tool.{claude,pi}` (unchanged by the migration) still
+gate whether the possession-mode credential files mount at all.
 
-The mechanics are four pieces, and they live — current and copy-paste-ready — in
-[`examples/compose-rc-with-iron-proxy.md`](../../../examples/compose-rc-with-iron-proxy.md);
-read it fresh and copy from it rather than re-deriving here. In brief: `auth.credential_mounts:
-none` (posture config, or `auth.per_tool.{claude,pi}` for per-tool grain — rip-cage-xhgr)
-suppresses the real credential mounts; a MEDIATOR recipe (iron-proxy)
-is composed into the manifest; an `sk-ant-oat`-shaped placeholder token reaches the agent either
-via `rc up --env-file` on the CLI, or — the better default for a posture that's meant to be
-durable — via `auth.placeholder_env_file` set once in the **global** config, which every
-`rc create` then applies automatically with no flag to retype (create-time only, unlike the
-mediator pointer below — a resume doesn't re-read it, since the container's own env is frozen
-at create; CLI `--env-file` wins when both are given, no additive merge); and the real secret
-sits in a chmod-600 host file that `network.egress.mediator_env_file` points at (this one *does*
-re-apply on every up/resume, since its channel is a `docker exec` into the mediator at each
-start, not the container's frozen env).
-
-What to carry as judgment when someone asks for this — the parts that actually bite
-(validated with the real agent binaries, rip-cage-ahnp, 2026-07-03):
-
-- **Proven for Claude Code, not for pi.** `claude` runs on the placeholder against the
-  Anthropic *subscription* end-to-end. pi is a third-party app and Anthropic refuses
-  subscription billing for it (`400 "third-party apps now draw from your extra usage"`),
-  so pi non-possession needs a static-key provider (e.g. openrouter), not the Anthropic
-  subscription. Don't tell a human "both tools work on your subscription" — they don't.
-- **Mixed posture is expressible via `auth.per_tool.{claude,pi}`.** The bare
-  `auth.credential_mounts` scalar still gates claude *and* pi together (unchanged
-  default), but `auth.per_tool.claude` / `auth.per_tool.pi` override it per tool —
-  e.g. `{claude: none, pi: real}` is exactly the caged-`pi` shape: claude runs
-  non-possession while pi keeps its real, self-refreshing `auth.json` (pi has no
-  static token to ride non-possession with in the first place — see the next bullet).
-- **Node tools need `NODE_EXTRA_CA_CERTS`** pointed at the mediator CA, or they reject the
-  MITM cert with a bare `Connection error` (claude reads the system store; pi and other
-  Node tools don't). Set it in the same non-secret `--env-file` as the placeholder.
-- **The placeholder must contain `sk-ant-oat`** or the tools route it away from the
-  `Authorization: Bearer` header the mediator swaps on.
-- **The real secret is human-minted.** `claude setup-token` prints the token to stdout —
-  never suggest an *agent* run it (that leaks it into the transcript). The human mints it
-  and writes the chmod-600 file themselves.
-- **`credential_mounts: none` is narrower than it sounds.** It suppresses exactly
-  `~/.claude/.credentials.json` (the token secret) plus keychain extraction — nothing broader.
-  Everything else under `~/.claude` (skills, agents, commands, `CLAUDE.md`, `projects/`,
-  `sessions/`) still mounts under `none`, same as under `real` — that's the misconception worth
-  preempting when a human assumes non-possession means a stripped-down `~/.claude`.
-  `~/.claude.json` (account metadata, MCP config, onboarding/trust state — no credential
-  fields) also still mounts, now **read-only** under `none` (rip-cage-t7cu): the RO is
-  deliberate, not incidental — a prompt-injected agent under non-possession must not get a
-  write path into the host's real-credential Claude config (`mcpServers`/hooks poisoning could
-  otherwise steer a *possession* cage into executing with real creds later — ADR-024 D2
-  residual). The practical payoff: a fresh non-possession cage carries the human's full
-  user-scope Claude config — onboarding, prefs, MCP enablement — with no login/theme wall,
-  proven live. Don't tell a human non-possession loses their Claude config; only the token
-  does. The synthesized minimal seed from rip-cage-vwka is only the fallback for hosts with no
-  `~/.claude.json` at all — it doesn't fire when the real file is there to mount. And an
-  *existing* `none`-posture cage doesn't pick up this mount automatically: the label value
-  doesn't change, so no resume guard fires, but the new mount only appears on
-  destroy+recreate.
-- **A posture flip is create-time-only.** Changing `auth.credential_mounts` / `auth.per_tool.*`
-  (or composing/removing the mediator) in an existing cage's config does nothing until that
-  cage is destroyed and recreated — the mount shape is decided once, at container create. A
-  plain resume of a cage whose posture changed since it was created refuses loud by design
-  rather than silently running on the stale shape or silently picking up the new one. Don't
-  tell a human "just resume it" after they change posture; walk them to destroy+recreate.
-- **`platform.claude.com` belongs in BOTH egress layers, not just one.** When a project's
-  `network.allowed_hosts` needs the Anthropic hosts, `platform.claude.com` has to be there —
-  it's on Anthropic's own documented required-domains list — AND independently in the
-  mediator's own allowlist (e.g. iron-proxy's `transforms.allowlist.domains`, baked at build
-  time), because the mediator applies its own default-deny regardless of what `.rip-cage.yaml`
-  permits. Miss it at the `allowed_hosts` layer and interactive Claude Code ≥2.1.19x hard-fails
-  startup (`ERR_SOCKET_CLOSED`) — headless `-p` doesn't need it and looks fine, which hides the
-  gap until someone attaches interactively. Miss it at the mediator layer instead and the
-  failure masquerades as a TLS/CA problem, not a missing-domain one — don't chase a cert fix
-  when the real gap is the mediator's own allowlist. See
-  [`examples/compose-rc-with-iron-proxy.md`](../../../examples/compose-rc-with-iron-proxy.md)
-  for the exact fields.
-- **The mediator's baked allowlist chokes egress MODE-INDEPENDENTLY — and dev tooling needs
-  the dev-infra hosts in it.** The platform.claude.com lesson above generalizes: with a
-  mediator composed, `network.mode: observe` in `.rip-cage.yaml` does NOT mean "nothing is
-  blocked" — the router forwards all egress through the mediator regardless of mode, so any
-  host missing from the mediator's build-time domains list is 403'd even under observe (the
-  symptom on a direct probe is a bare `tls handshake eof`; the honest probe is
-  `curl -x http://127.0.0.1:8888 <url>` + the mediator log). Concretely bitten (2026-07-07):
-  in-cage `uv sync` fought PyPI for ~40 attempts before diagnosis. If the human's cages run
-  coding agents that install packages, the baked list needs the dev-infra set — `pypi.org`,
-  `files.pythonhosted.org`, `registry.npmjs.org`, `objects.githubusercontent.com` — and any
-  fix there is `tools.yaml` edit → `rc build` → destroy+recreate, never a `.rip-cage.yaml`
-  edit or `rc reload`.
-
-Relay this when it fits the human's situation, the same as the other footguns — not a
-procedure to push through every cage.
+If a human needs L7 content policy or credential injection beyond a per-host `--secret` binding,
+that is fully operator-composed and unwired today — there is no manifest seam to point them at;
+relay that honestly rather than reaching for the deleted recipe. **Residual staleness in this
+skill beyond the mediator recipe (e.g. `ssh.allowed_hosts`/`network.mode` mentioned elsewhere as
+if still live per-project fields) is a known finding, not addressed by this fix — flagged for a
+follow-up bead.**
 
 ## Composing by judgment, not by machinery
 
@@ -265,8 +178,8 @@ Write `tools.yaml` yourself, the way an engineer hand-writing config from docume
 blocks would: for each recipe you're composing, open its `manifest-fragment.yaml`, read the
 actual `tools[]` entries it says to copy, and copy them into the manifest you're building
 verbatim, per that recipe's own "how to enable" instructions. Apply posture choices (DCG's
-open/locked `launch_args`, a pi model pin, a multiplexer's TOOL+MULTIPLEXER pair, a mediator's
-TOOL+MEDIATOR pair) by editing the relevant fragment's entry the same way. When more than one
+open/locked `launch_args`, a pi model pin, a multiplexer's TOOL+MULTIPLEXER pair) by editing
+the relevant fragment's entry the same way. When more than one
 composed fragment contributes `launch_args` to the same shim (e.g. DCG's guard extension and
 herdr-pi's status extension both loading into pi), they combine in the order the fragments
 appear in the manifest — that's a fact about how `rc build` assembles the shim, worth knowing

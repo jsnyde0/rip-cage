@@ -4,7 +4,7 @@
 
 **Firmness:** per-decision, see each Dn
 
-> **Migration status (ADR-029, 2026-07-10):** This ADR is evolved by [ADR-029](ADR-029-msb-migration.md) — the pattern survives, but its substrate (Docker labels) re-binds to msb sandbox metadata, and the instance tally shrinks (instance 1 retires with ADR-022; the scope-boundary `rc.mediator-ca-env` sibling retires with ADR-026 D5). The msb cutover has landed (S1-S14, branch `wave/s13-docs` off `msb-cutover`) — the mechanisms below are retired/replaced per the dispositions above; this ADR is retained for historical record, not current behavior. See [ADR-029](ADR-029-msb-migration.md) for what replaced them.
+> **Migration status (ADR-029, 2026-07-10):** This ADR is evolved by [ADR-029](ADR-029-msb-migration.md) — the pattern survives, but its substrate (Docker labels) re-binds to msb sandbox metadata, and the instance tally shrinks (instance 1 retires with ADR-022; the scope-boundary `rc.mediator-ca-env` sibling retires with ADR-026 D5). **The msb cutover has landed (S1-S14, branch `wave/s13-docs` off `msb-cutover`) — this ADR is NOT retired.** Instance 1 retires with ADR-022 and the `rc.mediator-ca-env` sibling retires with ADR-026 D5. But **the mount-shape label-lock pattern itself survives and is LIVE under msb** — re-bound to msb sandbox metadata by S8 (`rip-cage-qzsx`), current and shipped. The mount-mutability verdict below is S8's own content, not touched by this docs sweep. See [ADR-029](ADR-029-msb-migration.md) for the migration decisions.
 
 ## Context
 

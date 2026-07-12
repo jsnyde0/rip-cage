@@ -2,7 +2,7 @@
 
 **Status:** Accepted (revised 2026-06-09 — D6 added: MCP posture)
 
-> **Migration status (ADR-029, 2026-07-10):** The threat model itself is unaffected by [ADR-029](ADR-029-msb-migration.md) — the axes, vectors, and out-of-scope items in D1/D3/D4/D5 are unchanged. Only the layer *mappings* in D2 evolve (mechanisms re-home to msb), and D6's egress-firewall reference restates as the msb VM boundary. The msb cutover has landed (S1-S14, branch `wave/s13-docs` off `msb-cutover`) — the mechanisms below are retired/replaced per the dispositions above; this ADR is retained for historical record, not current behavior. See [ADR-029](ADR-029-msb-migration.md) for what replaced them.
+> **Migration status (ADR-029, 2026-07-10):** The threat model itself is unaffected by [ADR-029](ADR-029-msb-migration.md) — the axes, vectors, and out-of-scope items in D1/D3/D4/D5 are unchanged. Only the layer *mappings* in D2 evolve (mechanisms re-home to msb), and D6's egress-firewall reference restates as the msb VM boundary. **The msb cutover has landed (S1-S14, branch `wave/s13-docs` off `msb-cutover`) — this ADR is NOT retired.** **The threat model — D1/D3/D4/D5 — is unaffected and remains current, governing doctrine.** Only D2's layer-to-mechanism mapping and D6's egress-firewall reference are restated to name the msb-era mechanisms. See [ADR-029](ADR-029-msb-migration.md) for the migration decisions.
 
 **Date:** 2026-05-27
 **Design:** Brainstorm-converged epic — bead created from `/tmp/brainstorm/pi-security-model-design.md` (filed alongside this ADR). D6 added 2026-06-09 (rip-cage-b4c).
