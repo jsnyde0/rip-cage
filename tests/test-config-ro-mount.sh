@@ -17,7 +17,12 @@
 #       cannot self-flip none->real in-cage regardless of which key triggered the read)
 #
 # All tests are host-side only (no live docker container required).
-# M6-M8 stub `docker inspect` via a PATH shim (same idiom as test-ssh-allowlist.sh C20-C22).
+# M6-M8 stub `msb inspect` via a PATH shim (rip-cage-qzsx, S8 of the msb
+# migration epic rip-cage-tsf2: _up_resolve_resume_config_mode was rewired
+# onto msb by rip-cage-rj68 (S6) — it now reads `msb inspect NAME --format
+# json` (cli/lib/msb_runtime.sh's _msb_label), not `docker inspect --format
+# ...`; same idiom as test-ssh-allowlist.sh C20-C22 and the msb-native
+# translation shipped in test-credential-mounts.sh's _write_msb_inspect_stub).
 
 set -uo pipefail
 
@@ -66,6 +71,39 @@ YAML
 teardown_sandbox() {
   [[ -n "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME"
   TEST_HOME="" TEST_WS=""
+}
+
+# _write_msb_inspect_stub DIR LABEL1=VALUE1 [LABEL2=VALUE2 ...]
+# Writes a fake `msb` binary at DIR/msb whose `inspect NAME --format json`
+# response carries a fixed labels object built from the LABEL=VALUE pairs —
+# the msb-side counterpart to this suite's pre-retarget docker-inspect stub
+# idiom (`docker inspect --format '{{index .Config.Labels "KEY"}}'`).
+# _msb_label reads `.config.labels[$k] // empty`, so an omitted key or one
+# given an empty VALUE both simulate "label absent" (legacy container).
+_write_msb_inspect_stub() {
+  local _dir="$1"; shift
+  local _labels_json="{" _first=true _pair _key _val
+  for _pair in "$@"; do
+    _key="${_pair%%=*}"
+    _val="${_pair#*=}"
+    if [[ "$_first" == "true" ]]; then _first=false; else _labels_json+=","; fi
+    _labels_json+="\"${_key}\":\"${_val}\""
+  done
+  _labels_json+="}"
+  cat > "${_dir}/msb" <<STUB
+#!/usr/bin/env bash
+case "\${1:-}" in
+  inspect)
+    echo '{"status":"Stopped","config":{"manifest_digest":"","labels":${_labels_json}}}'
+    exit 0
+    ;;
+  *)
+    echo "stub: unhandled args: \$*" >&2
+    exit 1
+    ;;
+esac
+STUB
+  chmod +x "${_dir}/msb"
 }
 
 # ---------------------------------------------------------------------------
@@ -254,17 +292,10 @@ setup_sandbox "version: 1
 mounts:
   config_mode: rw"   # current effective: rw
 
-# Stub docker that returns "ro" for the rc.config-mode label query.
+# Stub msb that returns "ro" for the rc.config-mode label query.
 # Simulates a container created in ro mode while config is now rw → mismatch → abort.
 _m6_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-m6-stub-XXXXXX")
-cat > "${_m6_stub_dir}/docker" <<'STUB'
-#!/usr/bin/env bash
-case " $* " in
-  *" inspect "*"rc.config-mode"*) echo "ro"; exit 0 ;;
-  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
-esac
-STUB
-chmod +x "${_m6_stub_dir}/docker"
+_write_msb_inspect_stub "$_m6_stub_dir" "rc.config-mode=ro"
 
 _m6_err="" _m6_exit=0
 set +e
@@ -304,14 +335,7 @@ mounts:
   config_mode: ro"   # current effective: ro
 
 _m7_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-m7-stub-XXXXXX")
-cat > "${_m7_stub_dir}/docker" <<'STUB'
-#!/usr/bin/env bash
-case " $* " in
-  *" inspect "*"rc.config-mode"*) echo "ro"; exit 0 ;;
-  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
-esac
-STUB
-chmod +x "${_m7_stub_dir}/docker"
+_write_msb_inspect_stub "$_m7_stub_dir" "rc.config-mode=ro"
 
 _m7_exit=0
 set +e
@@ -339,15 +363,8 @@ teardown_sandbox
 setup_sandbox ""  # current effective: no .rip-cage.yaml → default ro
 
 _m8_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-m8-stub-XXXXXX")
-cat > "${_m8_stub_dir}/docker" <<'STUB'
-#!/usr/bin/env bash
-case " $* " in
-  # Return empty string — simulates a legacy container with no rc.config-mode label.
-  *" inspect "*"rc.config-mode"*) echo ""; exit 0 ;;
-  *) echo "stub: unhandled args: $*" >&2; exit 1 ;;
-esac
-STUB
-chmod +x "${_m8_stub_dir}/docker"
+# No labels at all — simulates a legacy container with no rc.config-mode label.
+_write_msb_inspect_stub "$_m8_stub_dir"
 
 _m8_exit=0
 set +e
