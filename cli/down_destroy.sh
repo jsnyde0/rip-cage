@@ -1,14 +1,31 @@
 #!/usr/bin/env bash
 # cli/down_destroy.sh -- extracted from rc (behavior-preserving decomposition, rip-cage-gto1).
 # NOTE: sourced by the rc shim; must NOT set -euo pipefail (shim owns strict mode once).
+#
+# rip-cage-tsf2.1 (msb migration epic rip-cage-tsf2): REWRITTEN onto msb --
+# was docker inspect/stop/rm/volume rm. down/destroy drive a cage created
+# by the msb-backed `rc up` (S6, rip-cage-rj68).
+#
+# ADR-029 D4 lifecycle corollary (FIRM): any cage-stop path that must
+# preserve state uses graceful stop only. `cmd_down` calls
+# `_msb_stop_graceful` (msb_runtime.sh's ONLY stop primitive — see that
+# module's own comment for why there is deliberately no forced-stop
+# sibling to misuse here).
+#
+# msb behavioral fact (migration spike): `msb remove` has NO volume-
+# deletion flag -- a cage's named volumes (rc-state-<name>,
+# rc-history-<name>) SURVIVE `msb remove` alone. `cmd_destroy`'s destroy
+# policy (mirroring the pre-migration docker behavior it replaces, which
+# explicitly ran `docker volume rm` per volume) therefore ALSO calls the
+# distinct `_msb_volume_remove` primitive per volume -- never assumes
+# removing the sandbox cleans its volumes.
 
 
 cmd_down() {
   local name
   name=$(resolve_name "${1:-}") || exit 1
-  local _down_timeout="${RC_DOCKER_CALL_TIMEOUT:-15}"
   local state
-  state=$(_docker_call "$_down_timeout" inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
+  state=$(_msb_sandbox_state "$name" 2>/dev/null || true)
   if [[ -z "$state" ]]; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
     echo "Error: container $name not found" >&2; exit 1
@@ -18,9 +35,8 @@ cmd_down() {
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is not running (state: $state)" "CONTAINER_NOT_RUNNING"
     echo "Error: container $name is not running (state: $state)" >&2; exit 1
   fi
-  # `docker stop` defaults to a 10s grace period before SIGKILL; bound the
-  # outer wait at 30s (2× grace + slack) so a wedged daemon doesn't hang us.
-  _docker_call 30 stop "$name" >/dev/null 2>&1
+  # Graceful stop ONLY (ADR-029 D4 FIRM) -- see module comment above.
+  _msb_stop_graceful "$name" >/dev/null 2>&1
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     jq -nc --arg name "$name" --arg action "stopped" --arg status "exited" \
       '{name: $name, action: $action, status: $status}'
@@ -40,10 +56,8 @@ cmd_destroy() {
   done
   name=$(resolve_name "$name") || exit 1
 
-  local _destroy_timeout="${RC_DOCKER_CALL_TIMEOUT:-15}"
-
-  # Verify container exists and is managed by rc
-  if ! _docker_call "$_destroy_timeout" inspect "$name" >/dev/null 2>&1; then
+  # Verify sandbox exists and is managed by rc
+  if ! _msb_exists "$name"; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
     echo "Error: container $name not found" >&2; exit 1
   fi
@@ -52,7 +66,7 @@ cmd_destroy() {
   # Interactive confirmation for destructive operation (skip in JSON/non-TTY/--force)
   if [[ "$force" -eq 0 ]] && [[ "$DRY_RUN" != "true" ]] && [[ "$OUTPUT_FORMAT" != "json" ]] && [[ -t 0 ]]; then
     local source_path
-    source_path=$(_docker_call "$_destroy_timeout" inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$name" 2>/dev/null || true)
+    source_path=$(_msb_label "$name" "rc.source.path" 2>/dev/null || true)
     echo "This will permanently remove:"
     echo "  Container:  $name"
     [[ -n "$source_path" ]] && echo "  Workspace:  $source_path"
@@ -78,21 +92,26 @@ cmd_destroy() {
     return 0
   fi
 
-  # `docker rm -f` runs SIGKILL after a brief grace; 30s outer cap is generous.
-  if ! _docker_call 30 rm -f "$name" >/dev/null 2>&1; then
+  # msb remove --force stops (if running) then removes the sandbox.
+  if ! _msb_remove "$name" >/dev/null 2>&1; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
     echo "Error: container $name not found" >&2; exit 1
   fi
   # Clean up worktree gitfile if it exists
   rm -f "${HOME}/.cache/rc/${name}.gitfile"
+  # `msb remove` (above) does NOT delete named volumes (no volume-deletion
+  # flag on that command — a separate finding from the migration spike, see
+  # this file's own header comment). Explicitly delete this cage's two
+  # named volumes via the distinct `msb volume remove` primitive, mirroring
+  # the pre-migration docker destroy policy this replaces.
   local volumes_removed=()
   for vol in "rc-state-${name}" "rc-history-${name}"; do
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      if docker volume rm "$vol" >/dev/null 2>/dev/null; then
+      if _msb_volume_remove "$vol" >/dev/null 2>/dev/null; then
         volumes_removed+=("$vol")
       fi
     else
-      if docker volume rm "$vol" 2>/dev/null; then
+      if _msb_volume_remove "$vol" 2>/dev/null; then
         volumes_removed+=("$vol")
       else
         echo "Warning: volume $vol not found"

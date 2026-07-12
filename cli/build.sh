@@ -136,21 +136,30 @@ cmd_build() {
 
 # _build_warn_stale_containers (rip-cage-jnvb / D-d) — after a successful
 # `rc build`, warn (informational, non-blocking) about existing rc-managed
-# containers still pinned to an older image than the one just built. `rc up`
+# cages still pinned to an older image than the one just built. `rc up`
 # will refuse to resume them (_up_resolve_resume_image_drift_stopped) until
-# `rc destroy` + `rc up` (or the correct RC_IMAGE). Enumerates via the same
-# `docker ps -a --filter label=rc.source.path` machinery as cmd_ls
-# (rc:4962/5057-equivalent) / resolve_name.
+# `rc destroy` + `rc up` (or the correct RC_IMAGE).
+#
+# rip-cage-tsf2.1: REWRITTEN onto msb — was `docker ps -a --filter
+# label=rc.source.path` + `docker inspect --format '{{.Image}}'`. Enumerates
+# via the same msb primitives cli/ls.sh's _rc_ls_enumerate uses (msb list +
+# _msb_inspect_json), and compares each real cage's STORED image digest
+# (_msb_sandbox_image_digest) against the just-built image's REAL current
+# digest in msb's local cache (_msb_current_image_digest) — the same digest
+# comparator cli/up.sh's _up_image_drift_status already trusts for the
+# single-cage resume-time check.
 _build_warn_stale_containers() {
-  local _just_built_id
-  _just_built_id=$(docker image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null) || return 0
-  [[ -z "$_just_built_id" ]] && return 0
-  local _names
-  _names=$(docker ps -a --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null) || return 0
-  [[ -z "$_names" ]] && return 0
-  local _bwsc_name _bwsc_image
+  local _just_built_digest
+  _just_built_digest=$(_msb_current_image_digest "$IMAGE" 2>/dev/null) || return 0
+  [[ -z "$_just_built_digest" ]] && return 0
+  local _names_json
+  _names_json=$(msb list --format json 2>/dev/null) || return 0
+  [[ -z "$_names_json" || "$_names_json" == "[]" ]] && return 0
+  local _bwsc_name _bwsc_src _bwsc_digest
   while IFS= read -r _bwsc_name; do
     [[ -z "$_bwsc_name" ]] && continue
+    _bwsc_src=$(_msb_label "$_bwsc_name" "rc.source.path" 2>/dev/null || true)
+    [[ -z "$_bwsc_src" ]] && continue  # not rc-managed
     # Deliberately NOT _up_image_drift_status here: that resolver is shaped
     # for a single named container with an abort/warn decision (per D-b/D-c),
     # not a fan-out enumeration over every rc container — a silent `continue`
@@ -158,11 +167,11 @@ _build_warn_stale_containers() {
     # sweep, which doesn't fit the resolver's status-code contract. Do not
     # "fix" this into a third derivation of the compare — see the M1 note on
     # rip-cage-jnvb (bd memory rip-cage-mount-shape-label-lock-pattern family).
-    _bwsc_image=$(docker inspect --format '{{.Image}}' "$_bwsc_name" 2>/dev/null) || continue
-    if [[ -n "$_bwsc_image" && "$_bwsc_image" != "$_just_built_id" ]]; then
+    _bwsc_digest=$(_msb_sandbox_image_digest "$_bwsc_name" 2>/dev/null) || continue
+    if [[ -n "$_bwsc_digest" && "$_bwsc_digest" != "$_just_built_digest" ]]; then
       echo "Warning: container '${_bwsc_name}' was created from a different image than the one just built — rc up will refuse to resume it (rc destroy ${_bwsc_name} first); if a cage was intentionally pinned via RC_IMAGE, ignore this for it." >&2
     fi
-  done <<<"$_names"
+  done < <(jq -r '.[].name' <<<"$_names_json" 2>/dev/null)
 }
 
 

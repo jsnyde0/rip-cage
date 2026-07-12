@@ -49,6 +49,12 @@ else
 fi
 
 # --- Test 8: check_docker surfaces Docker daemon errors ---
+# rip-cage-tsf2.1: `rc down` moved from check_docker to check_msb (ADR-029
+# D1 hard cutover -- down/destroy/attach/exec/ls/test now drive an msb
+# sandbox, not a docker container). `rc build` is the one remaining verb
+# this suite can use to exercise check_docker for real (cmd_build still
+# runs a genuine `docker build`) -- see the new Test 8b below for `rc
+# down`'s own (now msb-backed) daemon-error surfacing.
 echo ""
 echo "=== Test 8: check_docker surfaces Docker errors when daemon is not running ==="
 FAKE_DOCKER_DIR=$(mktemp -d)
@@ -58,14 +64,35 @@ echo "Cannot connect to the Docker daemon" >&2
 exit 1
 FAKE
 chmod +x "$FAKE_DOCKER_DIR/docker"
-# Call rc down with the fake docker on PATH — check_docker runs first
-docker_err_output=$(PATH="$FAKE_DOCKER_DIR:$PATH" "$RC" down 2>&1 || true)
+# Call rc build with the fake docker on PATH — check_docker runs first
+docker_err_output=$(PATH="$FAKE_DOCKER_DIR:$PATH" "$RC" build 2>&1 || true)
 if echo "$docker_err_output" | grep -qi "docker"; then
   pass "check_docker surfaces docker error message"
 else
   fail "check_docker did not surface docker failure: $docker_err_output"
 fi
 rm -rf "$FAKE_DOCKER_DIR"
+
+# --- Test 8b: check_msb surfaces msb daemon errors for rc down (rip-cage-tsf2.1) ---
+echo ""
+echo "=== Test 8b: check_msb surfaces msb errors when the runtime is not running ==="
+FAKE_MSB_DIR=$(mktemp -d)
+cat > "$FAKE_MSB_DIR/msb" <<'FAKE'
+#!/usr/bin/env bash
+echo "msb: connection refused" >&2
+exit 1
+FAKE
+chmod +x "$FAKE_MSB_DIR/msb"
+# Call rc down with the fake msb on PATH — check_msb runs first (down was
+# rewired onto msb by rip-cage-tsf2.1; no fake docker needed here — the
+# real docker on this host is fine, only msb is faked unreachable).
+msb_err_output=$(PATH="$FAKE_MSB_DIR:$PATH" "$RC" down 2>&1 || true)
+if echo "$msb_err_output" | grep -qi "msb"; then
+  pass "check_msb surfaces msb error message for rc down"
+else
+  fail "check_msb did not surface msb failure: $msb_err_output"
+fi
+rm -rf "$FAKE_MSB_DIR"
 
 # --- Test 9: skill symlink resolution in rc up --dry-run ---
 echo ""

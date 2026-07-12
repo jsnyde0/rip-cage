@@ -116,12 +116,16 @@ else
 fi
 
 # -----------------------------------------------
-# Test 3: Docker daemon not running — rc ls fails with helpful message
+# Test 3: Docker daemon not running — rc build fails with helpful message
+# rip-cage-tsf2.1: `rc ls` moved from check_docker to check_msb (ADR-029 D1
+# hard cutover). `rc build` is the one remaining verb that genuinely still
+# runs `docker build`, so it's the real check_docker exerciser now; Test 3b
+# below covers `rc ls`'s new msb-side daemon-error surfacing.
 # -----------------------------------------------
 echo ""
 echo "=== Test 3: Docker daemon not running gives helpful error ==="
 
-output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" ls 2>&1 || true)
+output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" build 2>&1 || true)
 if echo "$output" | grep -qi "docker"; then
   pass "docker not running: error mentions 'docker'"
 else
@@ -134,20 +138,66 @@ else
 fi
 
 # -----------------------------------------------
-# Test 4: Commands that need docker check it (build, up, ls, attach, down, destroy, test)
+# Test 3b: msb runtime not reachable — rc ls fails with a helpful,
+# msb-specific message (rip-cage-tsf2.1).
 # -----------------------------------------------
 echo ""
-echo "=== Test 4: Docker check runs for docker-dependent commands ==="
+echo "=== Test 3b: msb not reachable gives a helpful msb-specific error ==="
 
-# build and ls get a clean error; attach/down/destroy/test need an arg but still hit docker check first
-for cmd in build ls attach down destroy test; do
-  output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" $cmd 2>&1 || true)
-  if echo "$output" | grep -qi "docker"; then
-    pass "docker check for 'rc $cmd'"
+FAKE_MSB_BIN=$(mktemp -d)
+cat > "$FAKE_MSB_BIN/msb" <<'FAKEMSB'
+#!/usr/bin/env bash
+echo "msb: connection refused" >&2
+exit 1
+FAKEMSB
+chmod +x "$FAKE_MSB_BIN/msb"
+
+output=$(PATH="$FAKE_MSB_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" ls 2>&1 || true)
+if echo "$output" | grep -qi "msb"; then
+  pass "msb not reachable: error mentions 'msb'"
+else
+  fail "msb not reachable: error should mention 'msb'" "$output"
+fi
+if echo "$output" | grep -qi "reachable\|unresponsive"; then
+  pass "msb not reachable: error mentions reachability status"
+else
+  fail "msb not reachable: error should mention reachability status" "$output"
+fi
+rm -rf "$FAKE_MSB_BIN"
+
+# -----------------------------------------------
+# Test 4: Commands that need docker check it (build); commands rewired onto
+# msb by rip-cage-tsf2.1 check msb instead (ls, attach, down, destroy, test)
+# -----------------------------------------------
+echo ""
+echo "=== Test 4: Docker check runs for build; msb check runs for the msb-rewired verbs ==="
+
+output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" build 2>&1 || true)
+if echo "$output" | grep -qi "docker"; then
+  pass "docker check for 'rc build'"
+else
+  fail "docker check for 'rc build'" "$output"
+fi
+
+FAKE_MSB_BIN=$(mktemp -d)
+cat > "$FAKE_MSB_BIN/msb" <<'FAKEMSB'
+#!/usr/bin/env bash
+echo "msb: connection refused" >&2
+exit 1
+FAKEMSB
+chmod +x "$FAKE_MSB_BIN/msb"
+
+# ls gets a clean error; attach/down/destroy/test need an arg but still hit
+# the msb check first.
+for cmd in ls attach down destroy test; do
+  output=$(PATH="$FAKE_MSB_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" $cmd 2>&1 || true)
+  if echo "$output" | grep -qi "msb"; then
+    pass "msb check for 'rc $cmd'"
   else
-    fail "docker check for 'rc $cmd'" "$output"
+    fail "msb check for 'rc $cmd'" "$output"
   fi
 done
+rm -rf "$FAKE_MSB_BIN"
 
 # -----------------------------------------------
 # Test 5: rc schema (no docker needed) does NOT trigger docker check

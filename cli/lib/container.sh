@@ -96,6 +96,43 @@ _container_multiplexer() {
 }
 
 
+# _rc_uptime_from_state RUNNING(0|1) UPDATED_AT -- humanized uptime string
+# derived from `updated_at` (msb's closest counterpart to docker's
+# State.StartedAt for uptime display — it changes on start/stop
+# transitions; not a byte-identical semantic to docker's, an honest
+# approximation, per cli/doctor.sh's original rip-cage-rj68/S6 comment
+# this helper was extracted from). Shared by cli/doctor.sh (its original
+# home) and cli/ls.sh (rip-cage-tsf2.1) — a genuine >=2-module cross-
+# cutting helper, not a single-caller convenience.
+#
+# "—" for not-running (msb exposes only ONE transition timestamp, unlike
+# docker's separate "Up X"/"Exited (code) X ago" vocabulary — a never-
+# started and a stopped-after-running cage are not distinguished here;
+# an honest simplification of what the msb data model actually offers,
+# not a lost docker feature silently faked back in).
+_rc_uptime_from_state() {
+  local _running="$1" _updated_at="$2"
+  local uptime="—"
+  if [[ "$_running" -eq 1 && -n "$_updated_at" ]]; then
+    local started_epoch now_epoch diff
+    started_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${_updated_at%%.*}" +%s 2>/dev/null \
+      || date -d "$_updated_at" +%s 2>/dev/null || echo 0)
+    now_epoch=$(date +%s)
+    if [[ "$started_epoch" -gt 0 ]]; then
+      diff=$((now_epoch - started_epoch))
+      if [[ "$diff" -lt 3600 ]]; then
+        uptime="$((diff / 60))m"
+      elif [[ "$diff" -lt 86400 ]]; then
+        uptime="$((diff / 3600))h $(((diff % 3600) / 60))m"
+      else
+        uptime="$((diff / 86400))d $(((diff % 86400) / 3600))h"
+      fi
+    fi
+  fi
+  echo "$uptime"
+}
+
+
 verify_rc_container() {
   local name="$1"
   local label
