@@ -28,7 +28,11 @@
 #        continues scan past the broken link (rip-cage-hcdn sibling fold)
 #
 # Tests S1-S15 are host-only (no Docker required).
-# Tests S16 uses the docker stub pattern from test-rc-reload.sh.
+# Tests S16/S19 use a fake-msb PATH-shim stub (rip-cage-qzsx, S8 of the msb
+# migration epic rip-cage-tsf2 — cli/reload.sh + cli/up.sh's resume path were
+# rewired onto msb by rip-cage-rj68, S6; the stub pattern is the msb-native
+# translation of the original docker-inspect-stub idiom from
+# test-rc-reload.sh).
 # Tests S17 requires Docker (conditional).
 # S18 is a static git-diff check.
 #
@@ -739,41 +743,34 @@ test_s15_fingerprint_deterministic() {
 # (acc 11 — extend test-rc-reload.sh pattern)
 # ---------------------------------------------------------------------------
 
-# Build a docker stub for reload tests
-make_docker_stub_symlink() {
+# Build a fake msb for reload tests (rip-cage-qzsx, S8 of the msb migration
+# epic rip-cage-tsf2: cli/reload.sh was rewritten onto msb by rip-cage-rj68
+# (S6) — `_msb_exists`/`_msb_sandbox_state`/`_msb_label`, all backed by one
+# `msb inspect NAME --format json` call, never `docker inspect --format
+# ...`). One JSON response covers every label reload.sh reads
+# (rc.source.path); state absent (state=="missing") makes inspect fail,
+# matching _msb_exists's "sandbox does not exist" contract.
+make_msb_stub_symlink() {
   local stub_dir="$1" cname="$2" state="$3" workspace="$4"
-  cat > "${stub_dir}/docker" <<STUB
+  cat > "${stub_dir}/msb" <<STUB
 #!/usr/bin/env bash
 case "\${1:-}" in
-  info) exit 0 ;;
-esac
-case " \$* " in
-  *" inspect "*"State.Status"*"${cname}"*)
-    [[ "${state}" == "missing" ]] && exit 1
-    echo "${state}"
-    exit 0
-    ;;
-  *" inspect "*"rc.source.path"*"${cname}"*)
-    [[ "${state}" == "missing" ]] && exit 1
-    echo "${workspace}"
-    exit 0
-    ;;
-  *" inspect "*"rc.config-loaded"*"${cname}"*)
-    echo ""
-    exit 0
-    ;;
-  *" inspect "*"${cname}"*)
-    [[ "${state}" == "missing" ]] && exit 1
-    echo "{}"
+  inspect)
+    if [[ "\${2:-}" != "${cname}" || "${state}" == "missing" ]]; then
+      echo "Error: no such sandbox: \${2:-}" >&2
+      exit 1
+    fi
+    _status="Stopped"
+    [[ "${state}" == "running" ]] && _status="Running"
+    echo "{\"status\":\"\${_status}\",\"config\":{\"manifest_digest\":\"\",\"labels\":{\"rc.source.path\":\"${workspace}\"}}}"
     exit 0
     ;;
   *)
-    echo "stub: unhandled docker args: \$*" >&2
-    exit 1
+    exit 0
     ;;
 esac
 STUB
-  chmod +x "${stub_dir}/docker"
+  chmod +x "${stub_dir}/msb"
 }
 
 test_s16_rc_reload_refuses_mounts_symlinks_change() {
@@ -785,7 +782,7 @@ test_s16_rc_reload_refuses_mounts_symlinks_change() {
   stub_dir="${test_home}/stub"
   mkdir -p "$ws" "$cache_dir" "$stub_dir" "${test_home}/.ssh"
 
-  make_docker_stub_symlink "$stub_dir" "$cname" "running" "$ws"
+  make_msb_stub_symlink "$stub_dir" "$cname" "running" "$ws"
 
   # Write initial applied-config snapshot with mounts.symlinks.mode=rw
   cat > "${cache_dir}/config-applied.json" <<'JSON'
@@ -818,54 +815,51 @@ YAML
 # ---------------------------------------------------------------------------
 # S19: rc up for a *running* container refuses loud when fingerprint drifts
 # (label-lock must fire for both running and exited state, not just exited).
-# Uses the same docker stub + HOME override pattern as S16.
+# Uses the same msb stub + HOME override pattern as S16 — re-targeted onto
+# msb (rip-cage-qzsx, S8): `rc up`'s running-branch resolvers
+# (_up_resolve_resume_image_drift_running / _up_resolve_resume_config_mode /
+# _up_resolve_resume_symlink_fingerprint), all rewritten onto msb by
+# rip-cage-rj68 (S6), read every one of these values from a SINGLE `msb
+# inspect NAME --format json` call's `.status` / `.config.labels[...]` /
+# `.config.manifest_digest` — never `docker inspect --format ...`.
 # ---------------------------------------------------------------------------
 
-# Build a docker stub for running-state fingerprint tests.
-# Includes the rc.symlink-follow-fingerprint label so the lock can compare.
-make_docker_stub_fingerprint() {
+# Build a fake msb for running-state fingerprint tests. One JSON response
+# carries every label the running-branch resolvers read
+# (rc.source.path, rc.symlink-follow-fingerprint, rc.config-mode); a bare
+# `msb --version` / `msb image list` are handled generically (this bead
+# is the ONLY caller of _up_resolve_resume_image_drift_running here and
+# that resolver is warn-only on any inspect/image-list failure, so an
+# unhandled `image list` call is a safe no-op for this test's purposes).
+make_msb_stub_fingerprint() {
   local stub_dir="$1" cname="$2" state="$3" workspace="$4" stored_fp="$5"
-  cat > "${stub_dir}/docker" <<STUB
+  cat > "${stub_dir}/msb" <<STUB
 #!/usr/bin/env bash
 case "\${1:-}" in
-  info) exit 0 ;;
-  image) exit 0 ;;   # image inspect — pretend image exists
-esac
-case " \$* " in
-  *" inspect "*"State.Status"*"${cname}"*)
-    [[ "${state}" == "missing" ]] && exit 1
-    echo "${state}"
+  --version)
+    echo "microsandbox 0.6.4 (fake)"
     exit 0
     ;;
-  *" inspect "*"rc.source.path"*"${cname}"*)
-    [[ "${state}" == "missing" ]] && exit 1
-    echo "${workspace}"
+  inspect)
+    if [[ "\${2:-}" != "${cname}" || "${state}" == "missing" ]]; then
+      echo "Error: no such sandbox: \${2:-}" >&2
+      exit 1
+    fi
+    _status="Stopped"
+    [[ "${state}" == "running" ]] && _status="Running"
+    echo "{\"status\":\"\${_status}\",\"config\":{\"manifest_digest\":\"\",\"labels\":{\"rc.source.path\":\"${workspace}\",\"rc.symlink-follow-fingerprint\":\"${stored_fp}\",\"rc.config-mode\":\"ro\"}}}"
     exit 0
     ;;
-  *" inspect "*"rc.symlink-follow-fingerprint"*"${cname}"*)
-    echo "${stored_fp}"
-    exit 0
-    ;;
-  *" inspect "*"rc.config-loaded"*"${cname}"*)
-    echo ""
-    exit 0
-    ;;
-  *" inspect "*"rc.config-mode"*"${cname}"*)
-    echo "ro"
-    exit 0
-    ;;
-  *" inspect "*"${cname}"*)
-    [[ "${state}" == "missing" ]] && exit 1
-    echo "{}"
+  image)
+    [[ "\${2:-}" == "list" ]] && { echo "[]"; exit 0; }
     exit 0
     ;;
   *)
-    echo "stub: unhandled docker args: \$*" >&2
-    exit 1
+    exit 0
     ;;
 esac
 STUB
-  chmod +x "${stub_dir}/docker"
+  chmod +x "${stub_dir}/msb"
 }
 
 test_s19_fingerprint_lock_fires_for_running_container() {
@@ -904,8 +898,8 @@ YAML
   local stored_fp
   stored_fp=$(HOME="$test_home" XDG_CONFIG_HOME="${test_home}/.config" bash -c "source '$RC'; _symlink_follow_fingerprint '${pi_agent}' 'rw' 'follow' 'file' '$ws_real'")
 
-  # Create the docker stub. rc.source.path must match VALIDATED_PATH (realpath of ws).
-  make_docker_stub_fingerprint "$stub_dir" "$cname" "running" "$ws_real" "$stored_fp"
+  # Create the msb stub. rc.source.path must match VALIDATED_PATH (realpath of ws).
+  make_msb_stub_fingerprint "$stub_dir" "$cname" "running" "$ws_real" "$stored_fp"
 
   # Write .rip-cage.yaml with on_dangling changed to skip
   cat > "${ws}/.rip-cage.yaml" <<YAML
