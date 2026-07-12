@@ -76,3 +76,4 @@ the `configure-cage` skill applies.
 | Recipe | What it provides |
 |---|---|
 | [compose-walk-away-cage.md](compose-walk-away-cage.md) | Walk-away/headless multi-agent delta: `dist` + herdr (supervisor multiplexer) + herdr-pi (status extension) fragments, the pi provider/model pin (closes the headless-throttle footgun), and the egress mediator framed as situational/optional (ADR-026), not part of the base delta. |
+| [examples/dotpi-3bi/](dotpi-3bi/) | Factory socket-API drive delta on top of `examples/herdr/`: how a host-side orchestrator drives a cage's herdr pane via `pane run`/`pane read` (not interactive attach) — session-scoped socket path + explicit pane sizing, the two headless-herdr gotchas. See [dotpi-3bi/README.md](dotpi-3bi/README.md). |
