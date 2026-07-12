@@ -73,7 +73,8 @@ The lifecycle decides it, not the tool's size or importance:
 | Runs continuously and serves requests from in-cage agents over localhost | **IN-CAGE-DAEMON** (this doc) |
 | Hooks the interactive shell via an rc-file eval line | **SHELL-INTEGRATION** ([shell-integration.md](shell-integration.md)) |
 | Is a terminal session the agent's interactive session runs *inside* | **MULTIPLEXER** (seam catalog entry 4, [README.md](README.md)) |
-| Is an egress proxy that mediates the cage's outbound traffic | **MEDIATOR** ([composition-seam.md](composition-seam.md)) |
+
+The former **MEDIATOR** archetype (an egress proxy mediating the cage's outbound traffic) is **deleted, not just undocumented** — msb's `--net-rule`/`--secret` absorbed that role as runtime primitives, not a manifest-declared, `rc`-launched process. See [composition-seam.md](composition-seam.md).
 
 The common confusion is the second row vs. this archetype: a TOOL `init` hook is a **one-shot command that exits**; a DAEMON `start` is a **process that stays up and answers a health probe**. If your "daemon" would exit immediately after doing its setup, it is a TOOL `init` hook — declaring it as a DAEMON just earns you a failed health check and a spurious fail-warn at every cage start.
 

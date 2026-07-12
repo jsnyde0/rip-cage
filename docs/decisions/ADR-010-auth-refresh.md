@@ -2,7 +2,7 @@
 
 **Status:** Proposed
 
-> **Migration status (ADR-029, 2026-07-10):** This ADR is evolved by [ADR-029](ADR-029-msb-migration.md) D5 — the refresh target shifts under credential non-possession, and D4's own invalidation predicate fires (a different file-sharing backend). The mechanisms below remain shipped and load-bearing in the Docker path until the msb cutover release lands; until then this ADR describes current behavior.
+> **Migration status (ADR-029, 2026-07-10):** This ADR is evolved by [ADR-029](ADR-029-msb-migration.md) D5 — the refresh target shifts under credential non-possession, and D4's own invalidation predicate fires (a different file-sharing backend). The msb cutover has landed (S1-S14, branch `wave/s13-docs` off `msb-cutover`) — the mechanisms below are retired/replaced per the dispositions above; this ADR is retained for historical record, not current behavior. See [ADR-029](ADR-029-msb-migration.md) for what replaced them.
 
 **Date:** 2026-04-14
 **Design:** [Auth Refresh](../2026-04-14-auth-refresh-design.md)

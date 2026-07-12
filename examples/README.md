@@ -13,7 +13,8 @@ These recipes compose on top of the containment floor to block classes of danger
 | Recipe | Seam | What it provides |
 |---|---|---|
 | [examples/dcg/](dcg/) | Guard (TOOL) | DCG (Destructive Command Guard) — builds the `dcg` binary from source (Rust) and bakes the guard wrapper engine + cage config + pi DCG extension (`dcg-gate.ts`). Blocks `rm -rf`, `dd`, format ops, and more. See [dcg/README.md](dcg/README.md). |
-| [examples/ssh-bypass/](ssh-bypass/) | Guard (TOOL) | `block-ssh-bypass.sh` — Perl PreToolUse hook that blocks `ssh`/`scp`/`sftp` invocations carrying host-key-override flags (`-o StrictHostKeyChecking=no`, etc.). See [ssh-bypass/README.md](ssh-bypass/README.md). |
+
+`examples/ssh-bypass/` (the ssh host-key-override PreToolUse guard) is **deleted, not just undocumented** — it retired wholesale with the ssh cluster ([ADR-029](../docs/decisions/ADR-029-msb-migration.md) D3). Git now authenticates over HTTPS + msb `--secret`; there is no ssh host-key-override surface left to guard.
 
 ---
 
@@ -28,14 +29,11 @@ Multiplexers provide the terminal session layer (persistence, attach/detach) abo
 
 ---
 
-## Mediator recipes
+## Mediator recipes — DROPPED
 
-Mediators compose onto rip-cage's egress chokepoint for L7 traffic inspection, credential injection, or content-level policy. The mediator receives all allowed HTTPS traffic via HTTP CONNECT (`network.http.forward_to`). Each provider needs a TOOL entry (binary + uid setup) + a MEDIATOR entry (start hook, `run_as_uid`, optional `ca_cert_path`). ([ADR-026 D5](../docs/decisions/ADR-026-containment-mediation-identity.md), [composition-seam.md](../docs/reference/composition-seam.md))
-
-| Recipe | Seam | What it provides |
-|---|---|---|
-| [examples/iron-proxy/](iron-proxy/) | Mediator (TOOL + MEDIATOR) | iron-proxy (Apache-2.0, single Go binary) — recommended-adopt provider. OOTB default-deny + built-in placeholder→real-secret injection, no addon to write. See [manifest-fragment.yaml](iron-proxy/manifest-fragment.yaml) and [compose-rc-with-iron-proxy.md](compose-rc-with-iron-proxy.md). |
-| [examples/mitmproxy/](mitmproxy/) | Mediator (TOOL + MEDIATOR) | mitmproxy — reference/proof provider. Validates the seam end-to-end; a Python addon handles credential injection. Read this recipe first to understand the seam mechanics before adopting iron-proxy. See [manifest-fragment.yaml](mitmproxy/manifest-fragment.yaml) and [compose-rc-with-mitmproxy.md](compose-rc-with-mitmproxy.md). |
+> **The manifest-declared MEDIATOR archetype and its launch machinery are deleted, not merely undocumented** ([ADR-029](../docs/decisions/ADR-029-msb-migration.md) D2/D5). `examples/iron-proxy/`, `examples/mitmproxy/`, `compose-rc-with-iron-proxy.md`, and `compose-rc-with-mitmproxy.md` — which documented `network.egress.mediator` + `network.http.forward_to` + a `docker exec -u root`-launched, uid-exempted co-located proxy — are removed from this tree. There is no `rc`-side mediator launch, selection, or HTTP-CONNECT handoff surface left to recipe against; `network.egress.mediator`/`network.http.forward_to` are gone from the config schema (retained only as inert legacy fields, see [config.md](../docs/reference/config.md)).
+>
+> Credential non-possession for the dominant secret (Claude's own auth, and any git host token) is now a **default platform property** via msb `--secret` (`auth.credentials` in `.rip-cage.yaml` — see [egress.md](../docs/reference/egress.md)), not something that required composing a mediator. If you need L7 content policy (method/path rules, request rewriting) or credential injection beyond `--secret`'s per-host binding, that is fully **operator-composed and unwired** today — rip-cage provides no manifest archetype, launch hook, or forward-to seam for it; you'd run a proxy yourself and point your own tooling at it, outside `rc`'s declared composition surface.
 
 **Alternative appliance (not a mediator):**
 

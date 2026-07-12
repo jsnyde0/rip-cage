@@ -1,6 +1,6 @@
 # ADR-029: Migrate the Isolation Primitive to microsandbox (msb)
 
-**Status:** Accepted — 2026-07-10, epic `rip-cage-tsf2`; decisions user-locked 2026-07-09/10 after adversarially-verified spikes
+**Status:** Accepted — 2026-07-10, epic `rip-cage-tsf2`; decisions user-locked 2026-07-09/10 after adversarially-verified spikes. **Cutover LANDED** on branch `msb-cutover` (S1–S14: engine deletion, ssh-cluster retirement, msb lifecycle verbs, egress allowlist seed, mount-shape label-lock rebind, dotpi-3bi factory drive path, and this sibling-reconciliation docs sweep, S13). The Docker path is deleted on this branch; the sibling ADRs' migration-status banners are flipped to record the cutover as landed.
 
 **Firmness:** per-decision, see each Dn. Platform-scoping rule in D6.
 
@@ -88,6 +88,11 @@ msb logs nothing for allowed flows; rebuilding allow-observation means rebuildin
 
 1. **Curated default allowlist** shipped in config, so fresh cages are not denial whack-a-mole. Seed from `rip-cage-1ujn`: `api.anthropic.com:tcp:443` is the only host a basic `claude -p` turn *requires*; `mcp-proxy.anthropic.com` and the datadog intake are attempted-but-nonblocking (include for denial-log-noise-free defaults). Contents finalized at decompose.
 2. **deny→fix→reload repair loop:** rc tails trace-level DNS-denial lines for fix-hints; apply = **snapshot-amend** (`msb run --snapshot ... --net-rule <amended>`, 0.783s, overlay preserved — default for cages with overlay state) or **cold-recreate** (0.303s, mount-only cages); the agent session resumes from host-mounted state. Proven honest wall-clock including agent relaunch: 6.085s, 94% of it Claude cold-start, msb lifecycle 0.363s (`rip-cage-1ujn`).
+
+   **LANDED disposition (`rip-cage-rj68`, S6): `rc reload` implements the mount-only branch — COLD-RECREATE, not snapshot-amend — unconditionally.** `net-rule`/`net-default` have no live-mutation path on a running msb sandbox (`msb modify` carries no network parameter; confirmed live, `docs/2026-07-09-msb-spike-egress-observability.md` Q1), so applying an amended allowlist is inherently a recreate. rip-cage cages are mount-projected **by construction** — workspace, `~/.claude/{projects,sessions}`, pi's `auth.json` are host bind mounts; `rc-state-*`/`rc-history-*`/`rc-mise-cache` are **named volumes**, which reattach by name independent of the sandbox's own OCI overlay — so the mount-only branch is not a special case for rip-cage, it is the *only* case. Concretely, `rc reload` runs **graceful stop → remove → the same create pipeline `cmd_up` uses, against the now-current `.rip-cage.yaml`** (`cli/reload.sh`):
+   - **SURVIVES the recreate:** everything host-mounted or volume-backed — the workspace, `~/.claude/{projects,sessions}` (so the Claude session **resumes**, it is not lost), pi's `auth.json`, and the named volumes (`rc-state-*`, `rc-history-*`, `rc-mise-cache`).
+   - **LOSES:** only the guest's own ephemeral rootfs overlay — state an in-cage process wrote that was never baked into the image or captured by a mount (e.g. an ad-hoc `apt-get install` at runtime). This is a narrow, documented tradeoff, not a session-continuity loss, and cold-recreate is ~2.6x cheaper than snapshot-amend (0.303s vs 0.783s).
+   - Snapshot-amend remains a valid *mechanic* this ADR names for a future cage shape that carries meaningful guest-overlay state; it is not what rip-cage's own `rc reload` invokes today.
 3. **Opt-in observation** stays available by composing a mediator recipe (operators who want traffic visibility).
 
 Lifecycle corollary (FIRM): any cage-stop path that must preserve state uses **graceful stop only** — `--force` hard-kill silently discards guest writes that already reported success (`rip-cage-9iab` Q4); graceful stop provably persists (`rip-cage-1ujn`).

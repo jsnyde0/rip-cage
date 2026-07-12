@@ -107,11 +107,11 @@ Extension composition (the `launch_args` field) was established in rip-cage-l72i
 
 ---
 
-### 4. Multiplexer / mediator providers
+### 4. Multiplexer providers
 
-**What it is for:** selecting which terminal multiplexer (if any) runs inside the cage, and optionally forwarding cage egress through an external L7 proxy for credential injection or content-level policy.
+**What it is for:** selecting which terminal multiplexer (if any) runs inside the cage.
 
-**Manifest/config shape — multiplexer** ([ADR-021 D6](../decisions/ADR-021-layered-rip-cage-config.md)):
+**Manifest/config shape** ([ADR-021 D6](../decisions/ADR-021-layered-rip-cage-config.md)):
 
 ```yaml
 # <project>/.rip-cage.yaml
@@ -135,39 +135,11 @@ tools:
       attach: "herdr"
 ```
 
-**Manifest/config shape — mediator** ([ADR-026 D5](../decisions/ADR-026-containment-mediation-identity.md)):
+**Doc:** [config.md — `session.multiplexer`](config.md#sessionmultiplexer----in-cage-multiplexer).
 
-```yaml
-# <project>/.rip-cage.yaml
-version: 1
-network:
-  egress:
-    mediator: iron-proxy       # must match a MEDIATOR name in tools.yaml
-  http:
-    forward_to: "127.0.0.1:8888"  # router sends allowed traffic here via HTTP CONNECT
-```
+**Examples:** [examples/herdr/manifest-fragment.yaml](../../examples/herdr/manifest-fragment.yaml) and [examples/tmux/manifest-fragment.yaml](../../examples/tmux/manifest-fragment.yaml)
 
-A mediator provider is declared as a TOOL entry (install) + a MEDIATOR entry (start/teardown hooks, `run_as_uid`, optional `ca_cert_path`):
-
-```yaml
-tools:
-  - name: iron-proxy-bin
-    archetype: TOOL
-    run_as_uid: "rip-ironproxy"
-    ...
-  - name: iron-proxy
-    archetype: MEDIATOR
-    run_as_uid: "rip-ironproxy"
-    ca_cert_path: "/etc/iron-proxy/ca.crt"
-    hooks:
-      start: "/usr/local/bin/iron-proxy -config /etc/iron-proxy/proxy.yaml ..."
-```
-
-**Doc:** [config.md — `session.multiplexer`](config.md#sessionmultiplexer----in-cage-multiplexer) and [composition-seam.md](composition-seam.md) (the full mediator seam doc).
-
-**Examples:**
-- Multiplexers: [examples/herdr/manifest-fragment.yaml](../../examples/herdr/manifest-fragment.yaml) and [examples/tmux/manifest-fragment.yaml](../../examples/tmux/manifest-fragment.yaml)
-- Mediators: [examples/compose-rc-with-iron-proxy.md](../../examples/compose-rc-with-iron-proxy.md) (recommended) and [examples/compose-rc-with-mitmproxy.md](../../examples/compose-rc-with-mitmproxy.md) (proof provider / seam mechanics)
+> **Retired: the MEDIATOR provider archetype** ([ADR-029](../decisions/ADR-029-msb-migration.md) D2/D5). This seam used to let a manifest declare a co-located L7 proxy (`archetype: MEDIATOR`, `network.egress.mediator` + `network.http.forward_to` in `.rip-cage.yaml`) that `rc up` launched via `docker exec -u root`. **That archetype, its config fields, and its launch machinery are deleted, not merely undocumented** — `manifest_checks.sh` has no MEDIATOR handling left. Credential non-possession for the dominant secrets is now a default platform property via msb `--secret` (`auth.credentials` in `.rip-cage.yaml`, see [egress.md](egress.md)); L7 content policy beyond that is fully operator-composed and unwired today — see [examples/README.md](../../examples/README.md#mediator-recipes--dropped).
 
 ---
 
@@ -199,13 +171,13 @@ residual at the cost of pi extension autonomy) is documented in
 
 **Doc:** [safety-stack.md](safety-stack.md) — PreToolUse hooks, `bypassPermissions`, hard-denied operations. [ADR-025](../decisions/ADR-025-host-adoptable-dcg-policy.md) — DCG composable recipe design rationale.
 
-**Examples:** [examples/dcg/](../../examples/dcg/) (DCG destructive-command guard) and [examples/ssh-bypass/](../../examples/ssh-bypass/) (ssh host-key-override blocker).
+**Examples:** [examples/dcg/](../../examples/dcg/) (DCG destructive-command guard). The former sibling `examples/ssh-bypass/` (ssh host-key-override blocker) is deleted — it guarded the ssh cluster, which retired wholesale at the msb cutover ([ADR-029](../decisions/ADR-029-msb-migration.md) D3).
 
 ---
 
 ### 6. Launch composition
 
-**What it is for:** assembling a multi-recipe cage where tools, a multiplexer, a mediator, and a guard all compose together cleanly — with each recipe declaring its own launch contributions in the manifest, and `rc build` assembling the final image. No recipe names another recipe's paths; no hardcoded cross-recipe paths in any launch leg.
+**What it is for:** assembling a multi-recipe cage where tools, a multiplexer, and a guard all compose together cleanly — with each recipe declaring its own launch contributions in the manifest, and `rc build` assembling the final image. No recipe names another recipe's paths; no hardcoded cross-recipe paths in any launch leg.
 
 **Manifest/config shape:** fragment order in `tools.yaml` determines `launch_args` assembly order. Compose the guard fragment first (so guard flags appear first in the assembled args), then extensions. Each recipe fragment is self-contained — it declares only what it contributes:
 
@@ -322,20 +294,20 @@ tools:
 ### Configuration
 | File | What it covers |
 |---|---|
-| [config.md](config.md) | Layered `.rip-cage.yaml` config: `session.multiplexer`, `mounts.config_mode` (ro/rw), `mounts.denylist`, `network.*` egress fields, `dcg.*` policy, `mounts.symlinks.*`; merge rules; `rc config show` / `rc config init` |
-| [ssh-routing.md](ssh-routing.md) | SSH identity routing: `--github-identity`, identity rules file, known-hosts mount, banner states |
+| [config.md](config.md) | Layered `.rip-cage.yaml` config: `session.multiplexer`, `mounts.config_mode` (ro/rw), `mounts.denylist`, `network.*` msb egress allowlist, `auth.credentials`, `dcg.*` policy, `mounts.symlinks.*`; merge rules; `rc config show` (`rc config init` is retired) |
+| [ssh-routing.md](ssh-routing.md) | **Retired** — ssh identity routing (`--github-identity`, identity rules file, banner states) no longer exists in `rc`; kept as a historical record, with a pointer to the current HTTPS + `--secret` path |
 | [git-lfs.md](git-lfs.md) | Git LFS: what rip-cage does (and doesn't) fetch; LFS pointer stub advisory warning |
 
 ### Safety and security
 | File | What it covers |
 |---|---|
-| [safety-stack.md](safety-stack.md) | PreToolUse hooks (DCG, ssh-bypass — composable recipes), `bypassPermissions` mode, hard-denied operations (`.git/hooks/*`), secret-path denylist, running `rc test` |
-| [egress.md](egress.md) | Network egress firewall: observe vs. block mode, `rc allowlist` commands, DNS exfil detection, the observe→promote→block workflow |
+| [safety-stack.md](safety-stack.md) | PreToolUse hooks (DCG — the sole surviving composable command-guard recipe; ssh-bypass retired), `bypassPermissions` mode, hard-denied operations (`.git/hooks/*`), secret-path denylist, running `rc test` |
+| [egress.md](egress.md) | msb egress allowlist: default-deny + `network.allowed_hosts`, `rc allowlist` commands, the deny→fix→reload repair loop (there is no observe mode post-cutover) |
 
 ### Composition and seams
 | File | What it covers |
 |---|---|
-| [composition-seam.md](composition-seam.md) | The HTTP mediator seam (`network.http.forward_to`): the MEDIATOR provider model, launch order, real-secret delivery via `--mediator-env`, tiering (standalone vs. composed), reference providers (mitmproxy, iron-proxy) |
+| [composition-seam.md](composition-seam.md) | **Mostly retired** — the manifest MEDIATOR provider archetype and its `network.http.forward_to` launch seam are deleted ([ADR-029](../decisions/ADR-029-msb-migration.md) D2/D5); the page now points at the current `auth.credentials`/`--secret` non-possession path and notes that L7 content-policy composition is fully operator-driven and unwired today |
 | [adding-a-tool.md](adding-a-tool.md) | Step-by-step: add a plain binary-on-PATH tool via a TOOL manifest entry; apt-install and curl/binary paths; runtime mounts |
 | [shell-integration.md](shell-integration.md) | SHELL-INTEGRATION archetype walkthrough: eval-into-shell mechanics, the two-entry (TOOL + SHELL-INTEGRATION) pattern, interactive-shell scope |
 | [in-cage-daemon.md](in-cage-daemon.md) | Generic IN-CAGE-DAEMON archetype walkthrough: install-at-build/start-at-init/fail-warn contract, manifest shape, DAEMON-vs-TOOL decision aid |
