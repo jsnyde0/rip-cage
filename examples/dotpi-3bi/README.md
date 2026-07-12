@@ -80,8 +80,14 @@ os.close(slave_fd)
 ```
 
 At 40×120 this sizes the pane to 94×39 usable (120 total − 26-col herdr sidebar chrome = 94;
-39 rows + 1 status row = 40) — confirmed via `herdr pane layout --pane <id>` and a real
-before/after wrap differential in `tests/test-msb-factory-socket-api-drive.sh`.
+39 rows + 1 status row = 40). `herdr pane layout --pane <id>` reporting those numbers is a
+useful secondary signal, but the load-bearing proof in
+`tests/test-msb-factory-socket-api-drive.sh` is a **content differential**: the identical
+wide token is run through `pane run`/`pane read` twice — once before the sized client
+attaches (where it comes back hard-wrapped across multiple lines) and once after (where the
+exact same token comes back as a single contiguous unwrapped line). A dimension self-report
+alone doesn't prove `pane read` output actually stopped wrapping; re-running the same content
+across the resize and diffing the two reads does.
 
 ## The drive loop itself
 
@@ -111,6 +117,9 @@ this recipe.
 ## Validated by
 
 `tests/test-msb-factory-socket-api-drive.sh` (bead `rip-cage-lczu`) exercises both gotchas
-live against a real msb cage: session-scoped socket presence (gotcha 1), a genuine wrap
-differential before/after explicit sizing (gotcha 2), and a real computed value round-tripped
-through `pane run`/`pane read` (not a static echo, not attach-liveness).
+live against a real msb cage: session-scoped socket presence (gotcha 1); for gotcha 2, the
+same wide token run through `pane run`/`pane read` before sizing (wraps) and again after
+sizing (reads back as one unwrapped line) — a genuine wrapped→unwrapped content differential,
+not just a `pane layout` dimension self-report; and, separately, a real computed value
+(arithmetic performed in-guest by the pane's own shell) round-tripped through `pane
+run`/`pane read` (not a static echo, not attach-liveness).

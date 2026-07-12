@@ -33,8 +33,11 @@
 #
 # Session-scoped socket path (epic gotcha 1) and explicit pane sizing via
 # a host-driven sized PTY into `msb exec -t` (epic gotcha 2) are both
-# exercised for real, with a differential wrap/no-wrap proof for gotcha 2
-# rather than a bare "pane exists" liveness check.
+# exercised for real. Gotcha 2's proof is a CONTENT DIFFERENTIAL: the
+# identical wide token is run through pane run/read once before the sized
+# client attaches (asserted WRAPPED) and once after (asserted the SAME
+# token now reads back as one UNWRAPPED line) -- not a `pane layout`
+# dimension self-report alone, and not a bare "pane exists" liveness check.
 #
 # NEEDS_MSB + a pre-built rip-cage:latest image + live network path to
 # github.com (to fetch the herdr binary) + python3 (host-side PTY sizer).
@@ -195,25 +198,40 @@ for _ in $(seq 1 15); do
   fi
   sleep 1
 done
-rm -f "$SIZER"
 
+# Secondary signal only: the layout self-report. The load-bearing proof is the
+# content differential below (SAME wide token, wrapped pre-sizing above, now
+# read back unwrapped) -- a dimension self-report alone doesn't prove `pane
+# read` output actually stopped wrapping.
 if [[ -n "$SIZED" ]]; then
-  pass "GOTCHA2 fix: pane layout reports width=94 height=39 (matches the epic spike's own sized-attach figures, not the ~4-col/narrow headless default)"
+  pass "GOTCHA2 fix (secondary signal): pane layout reports width=94 height=39 (matches the epic spike's own sized-attach figures, not the ~4-col/narrow headless default)"
 else
-  fail "GOTCHA2 fix: pane never reported the expected sized dimensions" "last layout: ${LAYOUT:-<none>}"
+  fail "GOTCHA2 fix (secondary signal): pane never reported the expected sized dimensions" "last layout: ${LAYOUT:-<none>}"
 fi
 
 echo ""
-echo "=== ACCEPTANCE (1)+(2): a REAL command run through the socket returns its ACTUAL output, unwrapped, at the explicit size ==="
+echo "=== GOTCHA 2 fix -- CONTENT DIFFERENTIAL: the SAME wide token that WRAPPED pre-sizing above now reads back as ONE UNWRAPPED line post-sizing ==="
+msb exec "$NAME" -- herdr --session "$SESSION" pane run "$PANE" "printf '%s\n' '${UNSIZED_TOKEN}'" >/dev/null 2>&1
+sleep 1
+RESIZED_READ=$(msb exec "$NAME" -- herdr --session "$SESSION" pane read "$PANE" --source visible 2>&1)
+rm -f "$SIZER"
+if echo "$RESIZED_READ" | grep -qF "$UNSIZED_TOKEN"; then
+  pass "GOTCHA2 fix (content differential): the identical token that wrapped pre-sizing (GOTCHA2 baseline above) now reads back as ONE CONTIGUOUS UNWRAPPED line post-sizing -- a genuine wrapped-before/unwrapped-after proof, not a dimension self-report"
+else
+  fail "GOTCHA2 fix (content differential): expected the same token that wrapped pre-sizing to read back UNWRAPPED (as one contiguous substring) post-sizing" "$RESIZED_READ"
+fi
+
+echo ""
+echo "=== ACCEPTANCE (1): a REAL command run through the socket returns its ACTUAL output (real data, not attach-liveness) ==="
 COMPUTED=$(( (RANDOM % 900) + 100 ))
 msb exec "$NAME" -- herdr --session "$SESSION" pane run "$PANE" "printf 'FACTORY_MARKER_%s\n' \$(( ${COMPUTED} * 3 - ${COMPUTED} * 2 ))" >/dev/null 2>&1
 sleep 1
 SIZED_READ=$(msb exec "$NAME" -- herdr --session "$SESSION" pane read "$PANE" --source visible 2>&1)
 EXPECTED_LINE="FACTORY_MARKER_${COMPUTED}"
 if echo "$SIZED_READ" | grep -qxF "$EXPECTED_LINE"; then
-  pass "ACCEPTANCE(1): the socket-API pane run/read round-trip returned the REAL COMPUTED value '${EXPECTED_LINE}' as a single unwrapped line (not just attach-liveness)"
+  pass "ACCEPTANCE(1): the socket-API pane run/read round-trip returned the REAL COMPUTED value '${EXPECTED_LINE}' (arithmetic performed in-guest by the pane's own shell, not echoed) -- real data, not attach-liveness"
 else
-  fail "ACCEPTANCE(1): expected an exact unwrapped line '${EXPECTED_LINE}'" "$SIZED_READ"
+  fail "ACCEPTANCE(1): expected an exact line '${EXPECTED_LINE}'" "$SIZED_READ"
 fi
 
 echo ""
