@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
-if ! command -v docker > /dev/null 2>&1; then
-  echo "SKIP: Docker not available -- skipping $(basename "$0")"
-  exit 0
-fi
+# rip-cage-tsf2 (msb-cutover, coordinator branch fix): the old top-of-file
+# `command -v docker` guard self-skipped only if the docker BINARY was
+# absent -- but docker is still installed on this branch (used for
+# `docker build`/`docker save` -> `msb load` image conversion, see
+# cli/build.sh), so the guard never fired and the body ran regardless.
+# It was also the WRONG precondition either way: this file is a KEEP-class
+# host-side static-source-grep test (docs/2026-07-11-msb-test-classification.md)
+# that never needs Docker for C1/C2/I1-I4/L2-static/syntax-check -- the only
+# genuinely Docker-dependent sub-checks (L2 live paused/legacy-container
+# probes) already have their OWN local Docker+daemon guard further down
+# (`command -v docker &>/dev/null && docker info &>/dev/null`, with a SKIP
+# path when absent). Removed rather than replaced: no single top-level
+# precondition covers what the file actually needs (jq/yq, both are baseline
+# `rc` dependencies with no existing skip-guard convention in this suite).
 set -uo pipefail
 
 # Tests for code review fixes (C1, C2, I1, I2, I3, I4)
@@ -17,10 +27,21 @@ RC="${REPO_ROOT}/rc"
 # INVOCATIONS below (executing the CLI, not grepping its source) still use
 # $RC unchanged.
 RC_SRC="$(mktemp)"
-trap 'rm -f "$RC_SRC"' EXIT
 cat "${REPO_ROOT}"/cli/lib/*.sh "${REPO_ROOT}"/cli/*.sh > "$RC_SRC" 2>/dev/null
 FAILURES=0
 PASSES=0
+
+# Bare per-file runs of this file (e.g. `bash tests/test-code-review-fixes.sh`
+# directly, outside run-host.sh/run-one.sh) are non-hermetic against a real
+# developer ~/.config/rip-cage/tools.yaml: a stale entry there (e.g. a
+# retired archetype, or an IOC-denylisted egress host) makes the live L2 `rc
+# up` calls below fail for reasons unrelated to what L2 actually tests.
+# Same shared sandbox fixture run-host.sh/run-one.sh build (rip-cage-w3lq) —
+# empty tools.yaml (default bundled stack) + benign config.yaml.
+# shellcheck source=tests/_host-sandbox-lib.sh
+source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
+_host_sandbox_setup
+trap '_host_sandbox_cleanup; rm -f "$RC_SRC"' EXIT
 
 pass() { echo "PASS: $1"; PASSES=$((PASSES + 1)); }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
@@ -178,6 +199,34 @@ elif command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
   echo ""
   echo "--- L2 live tests (Docker available) ---"
 
+  # NOTE (rip-cage-tsf2, coordinator branch-fix scout, left UNCHANGED pending
+  # reclassification — CASE (b), NOT fixed here): this live paused-container
+  # probe targets genuinely-retired docker-lifecycle machinery, not just a
+  # reshaped assertion. It is structurally, not just empirically, unreachable
+  # under msb:
+  #   1. `msb --help` has no `pause` subcommand at all -- there is no msb
+  #      primitive that produces a paused sandbox to construct this scenario
+  #      with (unlike `docker pause`, used below).
+  #   2. cli/lib/msb_runtime.sh's _msb_sandbox_state() case-maps
+  #      `.status`: Running->running, Stopped->exited, ""->absent(err), and
+  #      *EVERY OTHER VALUE*->"unknown". There is no code path, for any
+  #      msb-reported status string, that can ever produce the literal
+  #      "paused" this probe polls for -- so cmd_up's `elif [[ "$state" ==
+  #      "paused" ]]` branch (cli/up.sh) is provably dead code under msb,
+  #      confirmed by that very branch's own comment ("msb has no
+  #      pause/restarting/removing/dead concept — unreachable under msb;
+  #      kept defensive").
+  # A raw `docker pause` on a raw `docker run` container (below) is also
+  # invisible to `rc up`'s state resolution entirely now (cmd_up queries
+  # `msb inspect`, never `docker inspect`/`docker ps`) -- so `rc up` falls
+  # through to "no existing sandbox -> create a new one", which is a
+  # DIFFERENT, unrelated code path than the one this probe means to hit,
+  # and (side effect, also unresolved) leaks a real running msb sandbox on
+  # every run since the cleanup below only knows `docker rm`, never `msb
+  # rm`, for this specific container.
+  # Left the live docker construction, its docker-only cleanup, and this
+  # probe's assertion (`.code == "CONTAINER_STATE_UNSUPPORTED"`) verbatim.
+
   # Live L2-a: paused container → CONTAINER_STATE_UNSUPPORTED
   # rc resolves paths via realpath before comparing. On macOS /tmp → /private/tmp.
   # We must:
@@ -213,20 +262,58 @@ elif command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
     fi
   fi
 
-  # Live L2-b: legacy container (no rc.egress label) → egress == "legacy" in ls output
-  TEST_PATH_L2b=$(mktemp -d)
-  CNAME_L2b="rc-l2b-test-$(date +%s)"
-  docker run -d --name "$CNAME_L2b" \
-    --label rc.source.path="$TEST_PATH_L2b" \
-    alpine sleep 600 >/dev/null 2>&1 || true
-  l2b_result=$("$RC" --output json ls 2>/dev/null) || true
-  docker rm -f "$CNAME_L2b" >/dev/null 2>&1 || true
+  # Live L2-b: msb-native construction (rip-cage-tsf2, coordinator branch
+  # fix; CASE (a) — surviving behavior, mechanics re-platformed onto msb).
+  # The OLD raw `docker run --label rc.source.path=... alpine sleep 600`
+  # construction is dead: cmd_ls's enumeration is REWRITTEN onto msb
+  # (cli/ls.sh:_rc_ls_enumerate, rip-cage-tsf2.1 — `msb list` + `msb
+  # inspect`, never `docker ps`), so a raw docker container is invisible to
+  # `rc ls` regardless of its labels.
+  #
+  # The "legacy" normalization itself is very much alive, and is now the
+  # UNIVERSAL case for any cage a CURRENT `rc up` creates: grepping this
+  # repo's own cli/*.sh confirms nothing sets the bare `rc.egress` label
+  # any more (only the unrelated `rc.egress.config-override` label is set
+  # — msb declares egress via host-side --net-rule/--net-default flags at
+  # create time, not an in-cage engine on/off marker) — so
+  # `_rc_ls_enumerate`'s `.config.labels["rc.egress"]` read is always
+  # empty for a real msb cage, and cmd_ls's own egress-normalization
+  # (`_ls_egress_norm`, cli/ls.sh) always falls to "legacy". Prove this
+  # with a REAL `rc up` cage instead of a fake docker one.
+  TEST_PATH_L2b=$(mktemp -d)/l2b-legacy-probe
+  mkdir -p "$TEST_PATH_L2b"
+  cat > "${TEST_PATH_L2b}/.rip-cage.yaml" <<'YAML'
+version: 1
+network:
+  mode: block
+  allowed_hosts:
+    - example.com
+YAML
+  _l2b_parent=$(basename "$(dirname "$TEST_PATH_L2b")")
+  _l2b_base=$(basename "$TEST_PATH_L2b")
+  CNAME_L2b=$(echo "${_l2b_parent}-${_l2b_base}" | tr -cs 'a-zA-Z0-9_.-' '-' | sed 's/^[.-]*//' | sed 's/-$//')
+  # Per-invocation RC_MANIFEST_GLOBAL (NOT exported -- test-manifest-cross.sh/
+  # test-manifest-cm.sh idiom): _host_sandbox_setup's XDG_CONFIG_HOME isolation
+  # above only takes effect when the CALLER's shell hasn't already exported
+  # XDG_CONFIG_HOME to (or matching) the real default -- a live risk on any
+  # dev shell that sets it explicitly, even to the default path. RC_MANIFEST_GLOBAL
+  # outranks XDG_CONFIG_HOME in _manifest_global_path() (cli/lib/manifest_checks.sh),
+  # so pointing it at a fresh empty (zero-byte = default bundled stack, D8) fixture
+  # here guarantees isolation from a real ~/.config/rip-cage/tools.yaml regardless.
+  _l2b_manifest_fixture=$(mktemp)
+  RC_ALLOWED_ROOTS="$(dirname "$TEST_PATH_L2b")" RC_MANIFEST_GLOBAL="$_l2b_manifest_fixture" \
+    "$RC" up "$TEST_PATH_L2b" < /dev/null > /tmp/rc-l2b-up.out 2>&1 || true
+  l2b_result=$(RC_ALLOWED_ROOTS="$(dirname "$TEST_PATH_L2b")" RC_MANIFEST_GLOBAL="$_l2b_manifest_fixture" \
+    "$RC" --output json ls 2>/dev/null) || true
+  msb rm "$CNAME_L2b" --force >/dev/null 2>&1 || true
   rm -rf "$TEST_PATH_L2b"
+  rm -f "$_l2b_manifest_fixture"
   if echo "$l2b_result" | jq -e --arg name "$CNAME_L2b" '.[] | select(.name == $name) | .egress == "legacy"' >/dev/null 2>&1; then
-    pass "legacy container (no rc.egress label) shown as egress=legacy in cmd_ls"
+    pass "real msb cage (no rc.egress label set by any current cmd_up path) shown as egress=legacy in cmd_ls"
   else
-    fail "legacy container not shown as egress=legacy. Got: $l2b_result"
+    fail "legacy container not shown as egress=legacy. Got: $l2b_result (rc up output: $(cat /tmp/rc-l2b-up.out 2>/dev/null))"
   fi
+  rm -f /tmp/rc-l2b-up.out
 else
   echo "SKIP: Docker daemon not running — skipping L2 live tests"
 fi
