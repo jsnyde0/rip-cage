@@ -97,9 +97,16 @@ NC/REFACTOR authed-cage files, not two — it also carries **test-cc-dcg-managed
 ledger's 14-FAIL list). Fable's count attributes only 2 of 7atw.22's 5 to the "8". Two readings both
 sum to 8 and the artifacts don't adjudicate. The 6 above are the artifact-grounded best fit; the three
 extra 7atw.22-deferred files are named HERE explicitly so they demonstrably do **not** silently drop —
-they remain deferred under rip-cage-7atw.22 regardless of which reading Fable confirms. **Fable to
-confirm the intended 6+2 split at epic close.** (NOT in the 8: test-security-model-injection.sh —
-owned by rip-cage-tsf2.6, ruling r2 sends it FIRST in the post-merge test re-platform thread.)
+they remain deferred under rip-cage-7atw.22 regardless of which reading Fable confirms. (NOT in the
+set: test-security-model-injection.sh — owned by rip-cage-tsf2.6, ruling r2 sends it FIRST in the
+post-merge test re-platform thread.)
+
+**✔ RESOLVED — Fable ruling 9 (2026-07-13, rip-cage-tsf2 notes):** the count "8" was never binding —
+it was the ledger run's red-file count relayed through the merge report, not a design decision. The
+binding invariant is rider r1's substance: nothing silently drops. The suite-green exclusion set is
+defined **extensionally** as exactly the enumerated files above — 6 under rip-cage-5iti + 5 under
+rip-cage-7atw.22 = **11 named files**, every one owned by an open bead. There is no 6+2 split to
+confirm; the 2-vs-5 attribution was an undercount in relay, and this table supersedes it.
 
 ## Reproduce / resume
 
