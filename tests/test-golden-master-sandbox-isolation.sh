@@ -50,6 +50,20 @@
 # over the inherited locale). Latent today (no GM case exercises sort -u) but
 # guarded ahead of the msb migration running the net on a different-locale CI.
 #
+# S5 (rip-cage-jmhn): a CANARY-FILE-RACE regression check, orthogonal to
+# S1-S4. self-check.sh's over-scrub/mutation-canary probe (b) mutates the
+# real, repo-tracked manifest/default-tools.yaml IN PLACE (backup -> mutate
+# -> capture.sh --check -> restore) on the SHARED checkout path -- unlike
+# S1/S2's GM_ROOT, this file is not process-scoped at all. Two overlapping
+# self-check.sh invocations race: one process's mutate can fire between
+# another's `grep -q '^  - name: beads$'` setup guard and its own mutate
+# (spurious "over-scrub setup" FAIL), and interleaved restores can leave the
+# REAL checked-out file corrupted in the working tree after both processes
+# exit -- a standing-guard script must not have a failure mode that corrupts
+# the repo it is guarding. S5 runs several self-check.sh invocations
+# concurrently and asserts every one exits 0 AND the real canary file is
+# byte-identical to its pre-test content afterward.
+#
 # Wired into tests/run-host.sh (host-only tier).
 set -uo pipefail
 
@@ -205,6 +219,69 @@ if printf '%s' "$S4_OUT" | grep -q '^PROBE_LC_ALL=C$'; then
   pass "S4: gm_capture pins LC_ALL=C in the child regardless of ambient LC_ALL (collation determinism)"
 else
   fail "S4 LC_ALL collation pin" "with ambient LC_ALL=en_US.UTF-8 exported, the sandboxed child saw '${S4_OUT:-<no output>}' -- expected 'PROBE_LC_ALL=C' (rip-cage-qt4k pin not applied / not winning over the inherited locale)"
+fi
+
+
+# ---------------------------------------------------------------------------
+# S5 (rip-cage-jmhn): concurrent self-check.sh invocations race on the
+# shared, repo-tracked manifest/default-tools.yaml mutation canary. Run
+# SC_WORKERS self-check.sh processes in parallel; every one must exit 0
+# (canary setup/teardown must not observe a sibling's in-flight mutation) and
+# the real checked-out file must be byte-identical to its pre-test content
+# afterward (no leaked corruption of the repo tree).
+# ---------------------------------------------------------------------------
+SC_WORKERS=8
+SELF_CHECK_SH="${SCRIPT_DIR}/golden-master/self-check.sh"
+CANARY_REAL="${SCRIPT_DIR}/../manifest/default-tools.yaml"
+CANARY_REAL_BACKUP=$(mktemp)
+cp "$CANARY_REAL" "$CANARY_REAL_BACKUP"
+
+SC_STRESS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-gm-selfcheck-stress-XXXXXX")
+cleanup_sc_stress() {
+  rm -rf "$SC_STRESS_DIR"
+  cp "$CANARY_REAL_BACKUP" "$CANARY_REAL"
+  rm -f "$CANARY_REAL_BACKUP"
+}
+# Replaces the S2-installed trap with one that runs BOTH cleanups (a second
+# `trap ... EXIT` overwrites, it does not accumulate).
+trap 'cleanup_stress; cleanup_sc_stress' EXIT
+
+SC_PIDS=()
+sc_w=1
+while [[ "$sc_w" -le "$SC_WORKERS" ]]; do
+  SC_RESULT="${SC_STRESS_DIR}/sc-${sc_w}.result"
+  : > "$SC_RESULT"
+  ( bash "$SELF_CHECK_SH" > "$SC_RESULT" 2>&1; echo "EXIT=$?" >> "$SC_RESULT" ) &
+  SC_PIDS+=("$!")
+  sc_w=$((sc_w + 1))
+done
+
+for pid in "${SC_PIDS[@]}"; do
+  wait "$pid"
+done
+
+SC_BAD=0
+sc_w=1
+while [[ "$sc_w" -le "$SC_WORKERS" ]]; do
+  SC_RESULT="${SC_STRESS_DIR}/sc-${sc_w}.result"
+  if ! grep -q '^EXIT=0$' "$SC_RESULT" 2>/dev/null; then
+    SC_BAD=$((SC_BAD + 1))
+    echo "  S5 worker ${sc_w} output: $(tr '\n' ' ' < "$SC_RESULT" 2>/dev/null)" >&2
+  fi
+  sc_w=$((sc_w + 1))
+done
+
+if [[ "$SC_BAD" -eq 0 ]]; then
+  pass "S5: ${SC_WORKERS} concurrent self-check.sh invocations -- all exit 0 (no canary-file races)"
+else
+  fail "S5 self-check concurrency" "${SC_BAD}/${SC_WORKERS} concurrent self-check.sh invocations reported a nonzero exit -- see stderr above for worker output"
+fi
+
+if diff -q "$CANARY_REAL_BACKUP" "$CANARY_REAL" >/dev/null 2>&1; then
+  pass "S5: real manifest/default-tools.yaml is byte-identical after concurrent self-check.sh runs (no leaked mutation)"
+else
+  fail "S5 canary-file corruption" "manifest/default-tools.yaml differs from its pre-test content after concurrent self-check.sh runs -- a mutation leaked into the real checkout:
+$(diff "$CANARY_REAL_BACKUP" "$CANARY_REAL" 2>&1)"
 fi
 
 echo ""
