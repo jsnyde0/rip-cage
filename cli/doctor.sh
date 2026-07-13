@@ -394,7 +394,7 @@ _doctor_format_auth_probe() {
   fi
   # shellcheck disable=SC2016 # deliberately single-quoted: expands inside the GUEST shell, not the host
   if _msb_exec "$name" -- sh -c 'test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"' >/dev/null 2>&1; then
-    echo "OK — non-possession posture (CLAUDE_CODE_OAUTH_TOKEN present; mediator-injected auth)"
+    echo "OK — non-possession posture (CLAUDE_CODE_OAUTH_TOKEN present; msb --secret-injected auth)"
     return
   fi
   echo "FAIL — no credentials and no ANTHROPIC_API_KEY"

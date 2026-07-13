@@ -241,6 +241,12 @@ _msb_flags_generate() {
     local b_source_env b_host b_synth bti
     b_source_env=$(jq -r ".credentials[${bidx}].source_env" <<<"$cfg")
     b_host=$(jq -r ".credentials[${bidx}].hosts[0]" <<<"$cfg")
+    # Index is hardcoded 1 (and host is hosts[0]) ONLY because the validation
+    # pass above guarantees a target_env credential is single-host, so its sole
+    # synth uses index 1 (matching the secret loop's $((hi+1)) at hi=0). If that
+    # single-host constraint is ever relaxed to multi-host bridging, this site
+    # must derive the index per target->host mapping, not assume 1 — otherwise
+    # the bridge would silently point every target at the first host's synth.
     b_synth=$(_msb_flags_synth_secret_env_name "$b_source_env" 1 "$b_host")
     for (( bti=0; bti<b_tgt_count; bti++ )); do
       local b_target
