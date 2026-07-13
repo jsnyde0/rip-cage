@@ -207,6 +207,65 @@ else
 fi
 cleanup
 
+# ---------------------------------------------------------------------------
+# T7: the guest-env bridge fields (target_env, source_file) survive the
+# additive_list merge intact into the effective config (rip-cage-9dlw) — the
+# per-credential objects are merged wholesale, so nested fields the generator
+# consumes downstream must not be stripped.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T7: target_env + source_file survive into effective config ==="
+setup_sandbox
+cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'EOF'
+version: 1
+auth:
+  credentials:
+    - source_env: CCTOK
+      source_file: /host/path/to/claude-setup-token
+      hosts: [api.anthropic.com]
+      target_env: [CLAUDE_CODE_OAUTH_TOKEN]
+EOF
+T7_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "source '${RC}' 2>/dev/null; _load_effective_config '${TEST_WS}'" 2>/tmp/t7-auth-creds.err)
+T7_RC=$?
+if [[ "$T7_RC" -eq 0 ]]; then
+  T7_SF=$(jq -r '.config.auth.credentials[0].source_file' <<<"$T7_OUT")
+  T7_TE=$(jq -c '.config.auth.credentials[0].target_env' <<<"$T7_OUT")
+  if [[ "$T7_SF" == "/host/path/to/claude-setup-token" && "$T7_TE" == '["CLAUDE_CODE_OAUTH_TOKEN"]' ]]; then
+    pass "T7: source_file and target_env preserved through the merge"
+  else
+    fail "T7: bridge fields not preserved" "source_file='$T7_SF' target_env='$T7_TE'"
+  fi
+else
+  fail "T7: _load_effective_config failed" "$(cat /tmp/t7-auth-creds.err)"
+fi
+cleanup
+
+# ---------------------------------------------------------------------------
+# T8: target_env on a MULTI-host credential aborts loud on the config surface
+# (rip-cage-9dlw) — a fixed guest var carries a single placeholder, so a
+# multi-host bridge is ambiguous. Caught at config-load, before any cage boot.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T8: target_env + multi-host credential aborts loud ==="
+setup_sandbox
+cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
+version: 1
+auth:
+  credentials:
+    - source_env: CCTOK
+      hosts: [api.anthropic.com, mcp-proxy.anthropic.com]
+      target_env: [CLAUDE_CODE_OAUTH_TOKEN]
+EOF
+T8_ERR_FILE=/tmp/t8-auth-creds.err
+HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "source '${RC}' 2>/dev/null; _load_effective_config '${TEST_WS}'" >/dev/null 2>"$T8_ERR_FILE"
+T8_RC=$?
+if [[ "$T8_RC" -ne 0 ]] && grep -qi "target_env" "$T8_ERR_FILE"; then
+  pass "T8: target_env + multi-host aborts loud, naming target_env"
+else
+  fail "T8: expected non-zero exit + target_env in stderr" "rc=$T8_RC stderr=$(cat "$T8_ERR_FILE")"
+fi
+cleanup
+
 echo ""
 echo "=== test-auth-credentials-config.sh: ${FAILURES}/${TOTAL} failure(s) ==="
 [[ "$FAILURES" -eq 0 ]]

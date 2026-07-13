@@ -486,6 +486,174 @@ else
 fi
 unset T13_TOKEN_A
 
+
+# ---------------------------------------------------------------------------
+# T14: target_env (rip-cage-9dlw) -- the guest-env bridge. A credential with a
+# target_env list emits, IN ADDITION to its --secret flag, one `-e
+# <TARGET>=$MSB_<synth>` per target name, so a tool that reads a FIXED env var
+# (e.g. claude reads CLAUDE_CODE_OAUTH_TOKEN) receives the exact placeholder
+# string msb watches for on the wire. <synth> is the SAME synthesized name the
+# --secret flag uses for that credential's single host, so the two carry the
+# identical placeholder. NO tool name is hardcoded in rc -- the operator's
+# config names the target var (ADR-005 D12).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T14: target_env emits -e TARGET=\$MSB_<synth> bridging the fixed var ==="
+T14_CFG='{"credentials": [{"source_env": "CCTOK", "hosts": ["api.anthropic.com"], "target_env": ["CLAUDE_CODE_OAUTH_TOKEN"]}]}'
+T14_OUT=$(_msb_flags_generate "$T14_CFG")
+T14_RC=$?
+if [[ "$T14_RC" -eq 0 ]]; then
+  pass "T14: exits 0"
+else
+  fail "T14: expected exit 0, got $T14_RC" "$T14_OUT"
+fi
+# The --secret flag still emits (bridge is additive, not a replacement).
+if printf '%s\n' "$T14_OUT" | grep -A1 -- '^--secret$' | grep -qx 'CCTOK__1_API_ANTHROPIC_COM@api.anthropic.com'; then
+  pass "T14b: --secret CCTOK__1_API_ANTHROPIC_COM@api.anthropic.com still emitted"
+else
+  fail "T14b: expected the --secret flag alongside the bridge" "$T14_OUT"
+fi
+T14_ENV_LINE=$(printf '%s\n' "$T14_OUT" | grep -A1 -- '^-e$' | tail -1)
+# SC2016: the single quotes are INTENTIONAL -- the emitted value is the LITERAL
+# string `$MSB_...` (msb's placeholder), which must NOT expand here.
+# shellcheck disable=SC2016
+if [[ "$T14_ENV_LINE" == 'CLAUDE_CODE_OAUTH_TOKEN=$MSB_CCTOK__1_API_ANTHROPIC_COM' ]]; then
+  pass "T14c: -e line bridges the fixed var to the exact synth placeholder: '${T14_ENV_LINE}'"
+else
+  fail "T14c: bridge -e line mismatch" "expected 'CLAUDE_CODE_OAUTH_TOKEN=\$MSB_CCTOK__1_API_ANTHROPIC_COM' got '${T14_ENV_LINE}'"
+fi
+T14_E_COUNT=$(printf '%s\n' "$T14_OUT" | grep -cx -- '-e')
+if [[ "$T14_E_COUNT" -eq 1 ]]; then
+  pass "T14d: exactly one -e flag for one target_env name"
+else
+  fail "T14d: expected exactly 1 -e flag, got $T14_E_COUNT" "$T14_OUT"
+fi
+
+# T14e: two target names -> two -e bridge lines, both to the same synth.
+T14E_CFG='{"credentials": [{"source_env": "CCTOK", "hosts": ["api.anthropic.com"], "target_env": ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"]}]}'
+T14E_OUT=$(_msb_flags_generate "$T14E_CFG")
+T14E_E_COUNT=$(printf '%s\n' "$T14E_OUT" | grep -cx -- '-e')
+# shellcheck disable=SC2016  # literal $MSB_ placeholder must not expand (see T14c)
+if [[ "$T14E_E_COUNT" -eq 2 ]] \
+  && printf '%s\n' "$T14E_OUT" | grep -qx 'CLAUDE_CODE_OAUTH_TOKEN=$MSB_CCTOK__1_API_ANTHROPIC_COM' \
+  && printf '%s\n' "$T14E_OUT" | grep -qx 'ANTHROPIC_AUTH_TOKEN=$MSB_CCTOK__1_API_ANTHROPIC_COM'; then
+  pass "T14e: two target names -> two -e bridge lines, both to the same synth placeholder"
+else
+  fail "T14e: expected two -e bridge lines to the same synth" "$T14E_OUT"
+fi
+
+# T14f: a credential with NO target_env emits zero -e flags (bridge is opt-in;
+# git-PAT-style bindings that need no fixed-var bridge are unaffected).
+T14F_CFG='{"credentials": [{"source_env": "GH_TOKEN", "hosts": ["github.com"]}]}'
+T14F_OUT=$(_msb_flags_generate "$T14F_CFG")
+if [[ "$(printf '%s\n' "$T14F_OUT" | grep -cx -- '-e')" -eq 0 ]]; then
+  pass "T14f: no target_env -> zero -e flags (bridge is opt-in)"
+else
+  fail "T14f: expected zero -e flags without target_env" "$T14F_OUT"
+fi
+
+
+# ---------------------------------------------------------------------------
+# T15: target_env on a MULTI-host credential is REJECTED at generation (fail
+# whole, no flags). A fixed guest var can hold exactly ONE placeholder string;
+# a credential bound to N hosts has N DISTINCT synth placeholders -- populating
+# one target var from N of them is ambiguous and would silently swap correctly
+# for only one host. Loud rejection, not a silent wrong-host bridge.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T15: target_env + multi-host -> REJECTED at generation (fail whole) ==="
+T15_CFG='{"credentials": [{"source_env": "CCTOK", "hosts": ["api.anthropic.com", "mcp-proxy.anthropic.com"], "target_env": ["CLAUDE_CODE_OAUTH_TOKEN"]}]}'
+T15_ERR=$(_msb_flags_generate "$T15_CFG" 2>&1 1>/dev/null)
+T15_OUT=$(_msb_flags_generate "$T15_CFG" 2>/dev/null)
+T15_RC=0
+_msb_flags_generate "$T15_CFG" >/dev/null 2>&1 || T15_RC=$?
+if [[ "$T15_RC" -ne 0 ]]; then
+  pass "T15: exits non-zero on target_env + multi-host"
+else
+  fail "T15: expected non-zero exit" "rc=$T15_RC"
+fi
+if [[ -z "$T15_OUT" ]]; then
+  pass "T15b: NO flags emitted at all (fail whole)"
+else
+  fail "T15b: expected empty stdout" "$T15_OUT"
+fi
+if [[ "$T15_ERR" == *"target_env"* ]]; then
+  pass "T15c: error names target_env (actionable)"
+else
+  fail "T15c: expected an actionable error mentioning target_env" "$T15_ERR"
+fi
+
+
+# ---------------------------------------------------------------------------
+# T16: source_file (rip-cage-9dlw) -- host token-file sourcing for autonomy. A
+# credential may declare source_file instead of requiring a pre-exported host
+# env var; rc reads the real value from that file host-side into msb's --secret
+# machinery only (never guest FS/env, never printed). Sentinel values only --
+# never a real token.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T16: source_file sourcing (prepare + preflight), sentinel values only ==="
+T16_SENTINEL="sentinel-file-token-DO-NOT-LOG"
+T16_FILE=$(mktemp)
+printf '%s' "$T16_SENTINEL" > "$T16_FILE"
+T16_CFG=$(jq -nc --arg f "$T16_FILE" '{"credentials": [{"source_env": "CCTOK", "source_file": $f, "hosts": ["api.anthropic.com"]}]}')
+
+# T16a: prepare exports the synth var with the FILE's value (no host env var set).
+unset CCTOK CCTOK__1_API_ANTHROPIC_COM 2>/dev/null || true
+_msb_flags_prepare_secret_env "$T16_CFG"
+if [[ "${CCTOK__1_API_ANTHROPIC_COM:-}" == "$T16_SENTINEL" ]]; then
+  pass "T16a: prepare sources the value from source_file into the synth name"
+else
+  fail "T16a: synth var not populated from file" "got '${CCTOK__1_API_ANTHROPIC_COM:-<unset>}'"
+fi
+unset CCTOK__1_API_ANTHROPIC_COM 2>/dev/null || true
+
+# T16b: preflight passes (exit 0, silent) when source_file exists + non-empty,
+# even though the host env var CCTOK is unset.
+unset CCTOK 2>/dev/null || true
+T16B_OUT=$(_msb_flags_preflight_secret_env "$T16_CFG" 2>&1)
+T16B_RC=$?
+if [[ "$T16B_RC" -eq 0 && -z "$T16B_OUT" ]]; then
+  pass "T16b: preflight passes on a non-empty source_file (no host env var needed)"
+else
+  fail "T16b: expected exit 0 + silent" "rc=$T16B_RC out='$T16B_OUT'"
+fi
+
+# T16c: preflight fails loud when source_file path does not exist; error names
+# the PATH (a path is not secret), never a value.
+T16C_MISSING="${T16_FILE}.does-not-exist"
+T16C_CFG=$(jq -nc --arg f "$T16C_MISSING" '{"credentials": [{"source_env": "CCTOK", "source_file": $f, "hosts": ["api.anthropic.com"]}]}')
+T16C_OUT=$(_msb_flags_preflight_secret_env "$T16C_CFG" 2>&1)
+T16C_RC=$?
+if [[ "$T16C_RC" -ne 0 ]] && printf '%s' "$T16C_OUT" | grep -qF "$T16C_MISSING"; then
+  pass "T16c: missing source_file -> non-zero exit, error names the path"
+else
+  fail "T16c: expected non-zero exit naming the missing path" "rc=$T16C_RC out='$T16C_OUT'"
+fi
+
+# T16d: preflight fails loud when source_file exists but is EMPTY.
+T16D_FILE=$(mktemp)  # empty
+T16D_CFG=$(jq -nc --arg f "$T16D_FILE" '{"credentials": [{"source_env": "CCTOK", "source_file": $f, "hosts": ["api.anthropic.com"]}]}')
+T16D_OUT=$(_msb_flags_preflight_secret_env "$T16D_CFG" 2>&1)
+T16D_RC=$?
+if [[ "$T16D_RC" -ne 0 ]]; then
+  pass "T16d: empty source_file -> non-zero exit"
+else
+  fail "T16d: expected non-zero exit on empty source_file" "rc=$T16D_RC out='$T16D_OUT'"
+fi
+
+# T16e: neither prepare nor preflight ever echoes the file's value.
+unset CCTOK__1_API_ANTHROPIC_COM 2>/dev/null || true
+T16E_OUT=$( { _msb_flags_prepare_secret_env "$T16_CFG"; _msb_flags_preflight_secret_env "$T16_CFG"; } 2>&1 )
+if ! printf '%s' "$T16E_OUT" | grep -qF "$T16_SENTINEL"; then
+  pass "T16e: neither prepare nor preflight echoes the source_file value"
+else
+  fail "T16e: source_file value leaked into output" "$T16E_OUT"
+fi
+unset CCTOK__1_API_ANTHROPIC_COM 2>/dev/null || true
+rm -f "$T16_FILE" "$T16D_FILE"
+
+
 echo ""
 if (( FAILURES > 0 )); then
   echo "=== test-msb-flags-generator.sh: ${FAILURES}/${TOTAL} failure(s) ==="

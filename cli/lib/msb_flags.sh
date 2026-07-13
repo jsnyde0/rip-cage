@@ -27,8 +27,18 @@
 # {
 #   "allowed_hosts": ["github.com", "api.anthropic.com"],
 #   "credentials": [
-#     {"source_env": "GH_TOKEN", "hosts": ["github.com", "api.github.com"]}
+#     {"source_env": "GH_TOKEN", "hosts": ["github.com", "api.github.com"]},
+#     {"source_env": "CCTOK", "source_file": "/abs/host/token-file",
+#      "hosts": ["api.anthropic.com"],
+#      "target_env": ["CLAUDE_CODE_OAUTH_TOKEN"]}
 #   ],
+#   # source_file (optional, rip-cage-9dlw): read the real value from a host
+#   #   FILE instead of a pre-exported host env var named source_env -- source
+#   #   value moves only into the --secret machinery, never the guest.
+#   # target_env (optional list, rip-cage-9dlw): guest env-var names to bridge
+#   #   to this credential's placeholder via `-e <TARGET>=$MSB_<synth>`, so a
+#   #   tool reading a FIXED var name gets the swappable placeholder. REQUIRES
+#   #   the credential be bound to exactly one host (single placeholder).
 #   "possession_mounts": [
 #     {"host_path": "/abs/host/path", "guest_path": "/abs/guest/path",
 #      "kind": "file"|"dir", "mode": "ro"|"rw"}
@@ -130,6 +140,23 @@ _msb_flags_generate() {
       echo "Error: msb_flags generator: credentials[${idx}].source_env ('${source_env}') is not a valid bare env-var name ([A-Za-z_][A-Za-z0-9_]*)." >&2
       return 1
     fi
+    # target_env guest-env bridge (rip-cage-9dlw): a fixed guest env var can
+    # hold exactly ONE placeholder string, but a credential bound to N hosts
+    # has N DISTINCT synthesized placeholders. Populating one target var from a
+    # multi-host credential is ambiguous and would silently swap correctly for
+    # only one host -- so REJECT it here (fail whole, before any flag), never
+    # emit a silently-wrong-host bridge. A credential that needs the same
+    # secret bridged toward multiple hosts must be split into one single-host
+    # credential per host.
+    local tgt_count hosts_count_v
+    tgt_count=$(jq ".credentials[${idx}].target_env // [] | length" <<<"$cfg")
+    if [[ "$tgt_count" -gt 0 ]]; then
+      hosts_count_v=$(jq ".credentials[${idx}].hosts // [] | length" <<<"$cfg")
+      if [[ "$hosts_count_v" -ne 1 ]]; then
+        echo "Error: msb_flags generator: credentials[${idx}] (source_env=${source_env}) declares target_env but is bound to ${hosts_count_v} hosts -- a target_env bridge requires exactly ONE host (a fixed guest var carries a single placeholder). Split into one single-host credential per host, or drop target_env." >&2
+        return 1
+      fi
+    fi
   done
 
   # --- dind_volumes validation (S11, rip-cage-75rq): "name", "guest_path",
@@ -189,6 +216,39 @@ _msb_flags_generate() {
       synth=$(_msb_flags_synth_secret_env_name "$source_env" "$((hi + 1))" "$cred_host")
       echo "--secret"
       echo "${synth}@${cred_host}"
+    done
+  done
+
+  # 2b. Guest-env bridge (rip-cage-9dlw): for each credential that declares a
+  # target_env, emit one `-e <TARGET>=$MSB_<synth>` per target name. This
+  # populates the FIXED guest env var a tool reads (e.g. claude's
+  # CLAUDE_CODE_OAUTH_TOKEN) with the SAME placeholder string msb watches for
+  # on the wire toward the bound host (msb's placeholder for a --secret NAME is
+  # the literal string `$MSB_<NAME>` -- proven end-to-end in rip-cage-cmqb,
+  # docs/2026-07-09-msb-spike-claude-nonpossession.md, where the guest var held
+  # exactly `$MSB_CCTOK`). Single-host is guaranteed by the validation pass
+  # above, so hosts[0]'s synth is the one unambiguous placeholder. NO tool name
+  # is hardcoded here -- the operator's config names the target var (ADR-005
+  # D12). The `$MSB_` value is emitted literally (never shell-expanded here):
+  # it reaches `msb run` as a verbatim argv token via the caller's
+  # `mapfile`/`"${FLAGS[@]}"`, and msb sets the guest var to that literal.
+  local bcred_count bidx
+  bcred_count=$(jq '.credentials // [] | length' <<<"$cfg")
+  for (( bidx=0; bidx<bcred_count; bidx++ )); do
+    local b_tgt_count
+    b_tgt_count=$(jq ".credentials[${bidx}].target_env // [] | length" <<<"$cfg")
+    [[ "$b_tgt_count" -eq 0 ]] && continue
+    local b_source_env b_host b_synth bti
+    b_source_env=$(jq -r ".credentials[${bidx}].source_env" <<<"$cfg")
+    b_host=$(jq -r ".credentials[${bidx}].hosts[0]" <<<"$cfg")
+    b_synth=$(_msb_flags_synth_secret_env_name "$b_source_env" 1 "$b_host")
+    for (( bti=0; bti<b_tgt_count; bti++ )); do
+      local b_target
+      b_target=$(jq -r ".credentials[${bidx}].target_env[${bti}]" <<<"$cfg")
+      # printf, NOT echo: a bare `echo "-e"` is swallowed by bash's echo
+      # builtin as the -e escape flag (same footgun noted at cli/up.sh:1845),
+      # emitting an empty line instead of the literal token `-e`.
+      printf '%s\n' "-e" "${b_target}=\$MSB_${b_synth}"
     done
   done
 
@@ -256,14 +316,26 @@ _msb_flags_prepare_secret_env() {
   local cred_count idx
   cred_count=$(jq '.credentials // [] | length' <<<"$cfg")
   for (( idx=0; idx<cred_count; idx++ )); do
-    local source_env hosts_count hi
+    local source_env source_file hosts_count hi cred_value
     source_env=$(jq -r ".credentials[${idx}].source_env" <<<"$cfg")
+    source_file=$(jq -r ".credentials[${idx}].source_file // \"\"" <<<"$cfg")
+    # Source the real value from a host FILE when source_file is declared
+    # (rip-cage-9dlw, autonomy: a plain `rc up` needs no pre-exported host env
+    # var), else from the same-named host env var. The value moves only through
+    # this process's environment into the synthesized --secret name; it is
+    # never printed and never written to the guest. `$(cat ...)` strips a
+    # trailing newline, matching the rip-cage-cmqb spike's host-side read.
+    if [[ -n "$source_file" ]]; then
+      cred_value=$(cat "$source_file" 2>/dev/null || true)
+    else
+      cred_value="${!source_env:-}"
+    fi
     hosts_count=$(jq ".credentials[${idx}].hosts // [] | length" <<<"$cfg")
     for (( hi=0; hi<hosts_count; hi++ )); do
       local cred_host synth
       cred_host=$(jq -r ".credentials[${idx}].hosts[${hi}]" <<<"$cfg")
       synth=$(_msb_flags_synth_secret_env_name "$source_env" "$((hi + 1))" "$cred_host")
-      export "${synth}=${!source_env:-}"
+      export "${synth}=${cred_value}"
     done
   done
 }
@@ -304,10 +376,19 @@ _msb_flags_preflight_secret_env() {
   local cred_count idx
   cred_count=$(jq '.credentials // [] | length' <<<"$cfg")
   for (( idx=0; idx<cred_count; idx++ )); do
-    local source_env
+    local source_env source_file
     source_env=$(jq -r ".credentials[${idx}].source_env" <<<"$cfg")
-    if [[ -z "${!source_env:-}" ]]; then
-      echo "Error: msb_flags preflight: credentials[${idx}].source_env '${source_env}' is unset or empty in the host environment. Export a real value for ${source_env} before running this command (e.g. 'export ${source_env}=...'), or remove this credential binding from .rip-cage.yaml. Refusing to boot a cage that would carry a placeholder-substituted empty secret." >&2
+    source_file=$(jq -r ".credentials[${idx}].source_file // \"\"" <<<"$cfg")
+    if [[ -n "$source_file" ]]; then
+      # source_file path (rip-cage-9dlw): must exist, be readable, and be
+      # non-empty. The PATH is named in the error (a path is not secret); the
+      # file CONTENTS are never read into the message.
+      if [[ ! -r "$source_file" || ! -s "$source_file" ]]; then
+        echo "Error: msb_flags preflight: credentials[${idx}].source_file '${source_file}' is missing, unreadable, or empty. Provide a readable, non-empty file holding the real secret value, or remove this credential binding from .rip-cage.yaml. Refusing to boot a cage that would carry a placeholder-substituted empty secret." >&2
+        return 1
+      fi
+    elif [[ -z "${!source_env:-}" ]]; then
+      echo "Error: msb_flags preflight: credentials[${idx}].source_env '${source_env}' is unset or empty in the host environment. Export a real value for ${source_env} before running this command (e.g. 'export ${source_env}=...'), declare a source_file, or remove this credential binding from .rip-cage.yaml. Refusing to boot a cage that would carry a placeholder-substituted empty secret." >&2
       return 1
     fi
   done

@@ -457,6 +457,18 @@ _config_load_layer() {
       echo "Error: '$file' has auth.credentials[${_cred_idx}] (source_env=${_cred_source_env}) with missing or empty 'hosts' — a credential bound to zero hosts is not a valid binding." >&2
       return 1
     fi
+    # target_env guest-env bridge (rip-cage-9dlw): rejected on the config
+    # surface when the credential is bound to more than one host — a fixed
+    # guest var carries exactly ONE placeholder, so a multi-host bridge is
+    # ambiguous. Defense in depth: cli/lib/msb_flags.sh's generator enforces
+    # the same at emission; catching it here surfaces the error at `rc config
+    # show`/config-load time (before any cage boot), not deep in generation.
+    local _cred_tgt_count
+    _cred_tgt_count=$(jq ".auth.credentials[${_cred_idx}].target_env // [] | length" <<<"$json" 2>/dev/null || echo 0)
+    if [[ "$_cred_tgt_count" -gt 0 && "$_cred_hosts_count" -ne 1 ]]; then
+      echo "Error: '$file' has auth.credentials[${_cred_idx}] (source_env=${_cred_source_env}) declaring 'target_env' while bound to ${_cred_hosts_count} hosts — a target_env bridge requires exactly one host (a fixed guest env var carries a single placeholder). Split into one single-host credential per host, or drop target_env." >&2
+      return 1
+    fi
   done
 
   echo "$json"
