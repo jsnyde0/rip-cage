@@ -410,6 +410,21 @@ _manifest_validate() {
     case "$archetype" in
       TOOL|SHELL-INTEGRATION|IN-CAGE-DAEMON|MULTIPLEXER)
         ;;
+      MEDIATOR)
+        # Retired archetype, dedicated arm ahead of the generic 'unknown
+        # archetype' catch-all below -- a retired archetype needs an
+        # actionable rejection (name it, name the offending entry, name
+        # WHY it's gone, name the fix), not "unknown value, pick from this
+        # list" (Fable rider on the hard-fail-stands ruling; rip-cage-tsf2.2
+        # sibling). MEDIATOR was the co-located-proxy archetype whose launch
+        # machinery (init-mediator.sh, the MEDIATOR registry bake/label
+        # generators, the mediator hook contract) was deleted, not ported,
+        # when the in-cage security engine retired (ADR-029 D2; the ssh
+        # cluster's own retirement is ADR-029 D3 -- ssh was never an
+        # ARCHETYPE value, only config fields under network.ssh.*).
+        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): archetype 'MEDIATOR' is retired in the msb migration (ADR-029 D2/D3) -- the co-located mediator-proxy launch machinery it required was deleted, not ported, when the in-cage security engine was replaced by msb host-side net rules. Fix: delete this entry from ${file}." >&2
+        return 1
+        ;;
       *)
         echo "Error: manifest '${file}' tools[${idx}] ('${name}'): unknown 'archetype' value '${archetype}'. Allowed: TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON, MULTIPLEXER." >&2
         return 1

@@ -1,0 +1,5 @@
+version: 1
+tools:
+  - name: legacy-mediator
+    archetype: MEDIATOR
+    version_pin: "1.0.0"

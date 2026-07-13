@@ -540,6 +540,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-manifest-seed-drift.sh"   # rip-cage-6vt9: manifest seed-drift detection (rc build) + rc manifest reconcile — sibling of rip-cage-jnvb (stale image on resume)
   run_test "${SCRIPT_DIR}/test-pi-cold-start-seed.sh"   # rip-cage-wo9: rc up seeds ~/.pi/agent/auth.json on cold start
   run_test "${SCRIPT_DIR}/test-manifest-schema.sh"       # rip-cage-4c5.1: tool manifest schema/loader (host-only)
+  run_test "${SCRIPT_DIR}/test-manifest-retired-archetype.sh" # rip-cage-tsf2.2 sibling: retired MEDIATOR archetype gets an actionable rejection (names archetype+file+entry, cites ADR-029 D2/D3, gives the delete-entry fix) instead of falling into the generic 'unknown archetype' arm
   # NOTE: T1 cases are host-only; T2 (NEEDS_CONTAINER) self-skips via RC_E2E gate.
   # The e2e-tier wiring + driver-level fixture for T2 is rip-cage-4c5.8's job.
   run_test "${SCRIPT_DIR}/test-manifest-tool.sh"         # rip-cage-4c5.2: TOOL install-step generation (host-only T1); e2e self-skips via RC_E2E gate
