@@ -122,6 +122,22 @@ Any test tier structurally excluded from CI (per D5/D6: the NEEDS_CONTAINER/cont
 
 **What would invalidate this:** the tier stops being CI-excluded (rip-cage-rat DinD/self-hosted runner, or the msb-era effect-probe suite proving cheap enough for CI) — then D5's normal CI gate covers it and the audit triggers reduce to the release gate.
 
+### D8: During an active platform migration, stale-test fixes on the dying platform defer to the target — fix once, re-homed, never twice
+
+**Firmness: FLEXIBLE** (added 2026-07-13; warrant: the same judgment fired three independent times during the rip-cage-7atw pre-msb baseline with no written home — the 5 authed-cage reds re-homed to the msb suite (rip-cage-7atw.22), the deferred shell-integration probe, and the reload-IOC contract gap re-homed to the msb generator (rip-cage-7atw.20 ruling))
+
+When a migration that re-platforms a test's subject is **active** (a FIRM cutover decision exists and the replacement is in flight — ADR-029 is the canonical instance), a stale or red test on the dying platform is NOT fixed in place. The requirement it encodes is **re-homed**: restated platform-neutrally and attached as a named work item (bead) on the target-platform suite, then fixed once there. Fixing on the dying path is double work whose first half is deleted at cutover.
+
+Three conditions gate the deferral — absent any one, fix in place now:
+
+1. **The cutover is decided, not speculative.** A FIRM ADR + a live cutover branch. "We might migrate someday" defers nothing (that's how rot accumulates; D7 exists because of it).
+2. **The floor stays enforced in the interim.** The dying path must retain an independently verified control for whatever the stale test guarded (in the reload-IOC instance: the build/up gates stayed green, so the reload gap exposed no containment). If the stale test is the *only* thing standing between now and the cutover merge, the gap is a must-fix, not a deferral.
+3. **The deferral is a named re-homed work item, not a skip.** A bead on the target suite naming the platform-neutral requirement, plus an honest ledger/annotation on the dying test (per D7's per-file ledger discipline). An undocumented "known red, migration will handle it" is indistinguishable from rot six weeks later.
+
+**Rationale:** the cost asymmetry is the inverse of D7's. D7 argues stale tests are cheapest fixed early because rot compounds; D8 carves out the one regime where early fixing is *waste* — the fix's substrate is scheduled for deletion, and the durable deliverable is the requirement, not the assertion text. The two decisions compose: D7's retirement-time coupling forces the sweep that *finds* the stale tests; D8 routes what the sweep finds during a migration window to the target instead of the grave.
+
+**What would invalidate this:** a migration window long enough that condition 2 erodes (interim floors decay while the cutover slips) — then the deferral list converts back to fix-in-place work items and the migration's own schedule becomes the bug.
+
 ## Trade-offs accepted
 
 - **E2E runtime**: 90s–8min is slower than contributors want on every commit. Mitigated by making it opt-in (`--e2e` flag) and cache-friendly.
