@@ -252,6 +252,20 @@ fi
 msb exec "$CAGE_NAME" -- sh -c 'echo pre-reload-overlay-marker > /home/agent/overlay-only-marker.txt'
 
 # ---------------------------------------------------------------------------
+# OVERLAY-PRESENT: the overlay-only marker write above is otherwise
+# unchecked. Assert it landed BEFORE the reload -- without this, a silent
+# write failure would make OVERLAY-GONE below pass VACUOUSLY (empty
+# readback either way), collapsing the "cold-recreate is genuinely cold"
+# proof it exists to provide.
+# ---------------------------------------------------------------------------
+OVERLAY_PREREAD=$(msb exec "$CAGE_NAME" -- cat /home/agent/overlay-only-marker.txt 2>/dev/null)
+if [[ "$OVERLAY_PREREAD" == "pre-reload-overlay-marker" ]]; then
+  pass "OVERLAY-PRESENT: the overlay-only marker was actually written pre-reload (makes OVERLAY-GONE below non-vacuous)"
+else
+  fail "OVERLAY-PRESENT: the overlay-only marker write did not land pre-reload" "got '${OVERLAY_PREREAD}'"
+fi
+
+# ---------------------------------------------------------------------------
 # FIX: amend .rip-cage.yaml, run the REAL `rc reload` verb (cold-recreate).
 # ---------------------------------------------------------------------------
 echo ""
