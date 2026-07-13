@@ -12,8 +12,10 @@
 # behavior), and exposes the effective config + provenance to consumers.
 #
 # Substrate-only: no behavior change in cage posture when both files absent
-# (D5). Downstream consumers (rip-cage-b0c SSH allowlist, etc.) interpret the
-# effective config; this module only loads, merges, validates, and reports.
+# (D5). Downstream consumers (the egress allowlist, mount policy, etc.)
+# interpret the effective config; this module only loads, merges, validates,
+# and reports. (The ssh.allowed_hosts/allowed_keys consumer, ADR-022,
+# retired at the msb cutover — ADR-029 D3 / rip-cage-f1qo S5.)
 # ============================================================================
 
 # Schema — single source of truth for field types and defaults.
@@ -30,8 +32,6 @@
 _config_schema_lines() {
   cat <<'EOF'
 version|scalar|1
-ssh.allowed_keys|selection_list|null
-ssh.allowed_hosts|additive_list|[]
 mounts.denylist|additive_list|[]
 mounts.allow_risky|selection_list|null
 mounts.config_mode|selection_list|"ro"|ro,rw
@@ -45,12 +45,27 @@ network.http.forward_to|scalar|null
 dcg.packs|additive_list|[]
 dcg.custom_rule_paths|additive_list|[]
 session.multiplexer|selection_list|"none"
-network.egress.mediator|selection_list|"none"
 auth.credential_mounts|selection_list|"real"|real,none
-network.egress.mediator_env_file|scalar|null
 auth.placeholder_env_file|scalar|null
 auth.per_tool.claude|selection_list|null|real,none
 auth.per_tool.pi|selection_list|null|real,none
+auth.credentials|additive_list|[]
+EOF
+}
+
+# Retired-field table — fields removed from the schema at the msb cutover that a
+# stale config file may still carry. Kept as a first-class list (not woven into
+# the schema) so a retired field loud-rejects (see _config_load_layer) instead of
+# silently vanishing in _config_merge's schema walk. Consumed retirements:
+#   ssh.allowed_keys / ssh.allowed_hosts        -> ADR-029 D3 + ADR-022 D6
+#   network.egress.mediator / *_env_file        -> ADR-029 D2/D5
+# Format: <dotted_key>|<cite>|<fix>
+_config_retired_fields() {
+  cat <<'EOF'
+ssh.allowed_keys|ADR-029 D3 + ADR-022 D6, in-guest ssh host-key scoping retired|delete this block -- ssh host scoping is replaced by HTTPS remotes + host-bound auth.credentials tokens
+ssh.allowed_hosts|ADR-029 D3 + ADR-022 D6, in-guest ssh host-key scoping retired|delete this block -- ssh host scoping is replaced by HTTPS remotes + host-bound auth.credentials tokens
+network.egress.mediator|ADR-029 D2/D5, the co-located mediator-proxy archetype retired|delete this block -- credential non-possession is now msb host-side --secret injection (see auth.credentials)
+network.egress.mediator_env_file|ADR-029 D2/D5, the co-located mediator-proxy archetype retired|delete this block -- credential non-possession is now msb host-side --secret injection (see auth.credentials)
 EOF
 }
 
@@ -155,82 +170,6 @@ _config_mux_derive_allowed_set() {
 }
 
 
-# _config_mediator_derive_allowed_set
-#
-# Derives the allowed value set for network.egress.mediator dynamically from the
-# baked registry — NOT a static enum (ADR-005 D12).
-#
-# Resolution order (isomorphic to _config_mux_derive_allowed_set):
-#   1. Check whether the image EXISTS (docker image inspect). If it exists, the
-#      rc.mediators label is the SOLE authoritative source — even an empty
-#      label means "no mediators baked", so the allowed set is "none" only.
-#   2. Only when the image is GENUINELY ABSENT (docker not available or image
-#      not found) fall back to enumerating MEDIATOR entries in the resolved
-#      manifest. Same source of truth as the build, evaluated pre-bake.
-#      NOT a fail-open: only names present in the manifest are accepted.
-#   3. 'none' is always included regardless of the registry contents.
-#
-# Outputs a comma-separated allowed-set string (CSV), e.g. "none,my-proxy".
-# Always exits 0 (returns empty string on derivation failure, treated by
-# the caller as allowed-set = "none" only — still validated, still loud).
-#
-# ADR-005 D12: the function MUST NOT name specific optional mediators;
-# it enumerates whatever the baked registry or manifest declares.
-#
-# rip-cage-ta1o.5.1
-_config_mediator_derive_allowed_set() {
-  # Default to $IMAGE (rc:45) so an RC_IMAGE override (custom-tag/scratch cage)
-  # validates against ITS OWN baked registry, not rip-cage:latest's. The
-  # explicit RC_MEDIATOR_INSPECT_IMAGE env override still wins (rip-cage-gkc7).
-  local image="${RC_MEDIATOR_INSPECT_IMAGE:-$IMAGE}"
-
-  # Step 1: If image EXISTS, the label is authoritative (even when empty).
-  # Empty label = no mediators baked = allowed set is "none" only.
-  if command -v docker >/dev/null 2>&1 && docker image inspect "$image" >/dev/null 2>&1; then
-    local label_val
-    label_val=$(docker inspect --format '{{ index .Config.Labels "rc.mediators" }}' "$image" 2>/dev/null || true)
-    if [[ -n "$label_val" ]]; then
-      echo "none,${label_val}"
-    else
-      echo "none"
-    fi
-    return 0
-  fi
-
-  # Step 2: Image is genuinely ABSENT (pre-build path) — manifest-enumeration fallback.
-  local baked_set=""
-  local manifest_json
-  if manifest_json=$(_manifest_load 2>/dev/null); then
-    local count idx mediator_names=""
-    count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null || echo "0")
-    for (( idx=0; idx<count; idx++ )); do
-      local entry archetype name
-      entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
-      archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
-      if [[ "$archetype" != "MEDIATOR" ]]; then
-        continue
-      fi
-      name=$(jq -r '.name // ""' <<<"$entry" 2>/dev/null)
-      if [[ -n "$name" ]]; then
-        if [[ -n "$mediator_names" ]]; then
-          mediator_names+=",${name}"
-        else
-          mediator_names="$name"
-        fi
-      fi
-    done
-    baked_set="$mediator_names"
-  fi
-
-  # Step 3: Always include 'none'; prepend to the derived set.
-  if [[ -n "$baked_set" ]]; then
-    echo "none,${baked_set}"
-  else
-    echo "none"
-  fi
-}
-
-
 # yq dependency check (ADR-001 fail-loud — no silent degradation).
 # Loader does NOT fall back to "skip config" on missing parser; that would
 # silently nullify a user-authored capability scoping.
@@ -247,9 +186,31 @@ _config_global_path() {
 }
 
 
-# Returns the canonical default secret-path denylist YAML (single source of
-# truth). Used by both cmd_install (interactive seed) and
-# _config_ensure_global_seeded (auto-seed on first rc up — rip-cage-j86).
+# Returns the canonical default secret-path denylist + curated default
+# egress allowlist YAML (single source of truth). Used by both cmd_install
+# (interactive seed) and _config_ensure_global_seeded (auto-seed on first
+# rc up — rip-cage-j86).
+#
+# network.allowed_hosts (rip-cage-o2h0, S7 of the msb migration epic
+# rip-cage-tsf2, ADR-029 D4): the curated default egress allowlist so a
+# fresh cage isn't denial whack-a-mole. Seeded here, NOT in the
+# network.allowed_hosts schema-default column (cli/lib/config.sh's
+# _config_schema_lines, which stays "[]") — mirrors the exact pattern
+# mounts.denylist already uses above: the schema column is the inert
+# no-config-at-all fallback, the curated CONTENT lives only in this
+# function and is realized via the auto-seeded global config.yaml.
+#
+# Contents (discovered + proven live in the rip-cage-1ujn spike,
+# docs/2026-07-09-msb-spike-session-resume.md, Q1 host-discovery):
+#   - api.anthropic.com               hard requirement: a basic `claude -p`
+#                                      turn fails without it
+#   - mcp-proxy.anthropic.com         attempted-but-nonblocking (MCP
+#                                      marketplace/proxy check) — included
+#                                      so a denial-driven repair-loop trip
+#                                      never fires on it (denial-log-noise-
+#                                      free defaults, ADR-029 D4)
+#   - http-intake.logs.us5.datadoghq.com  attempted-but-nonblocking (client
+#                                      telemetry) — same rationale
 _config_default_global_yaml() {
   cat <<'YAML'
 version: 1
@@ -272,6 +233,11 @@ mounts:
     - private_key
     - .secret
   allow_risky: null
+network:
+  allowed_hosts:
+    - api.anthropic.com
+    - mcp-proxy.anthropic.com
+    - http-intake.logs.us5.datadoghq.com
 YAML
 }
 
@@ -386,12 +352,13 @@ _config_load_layer() {
   # schema column), check that the field's value in this layer is in the set.
   # Unknown enum values abort loud per ADR-021 D3.
   #
-  # session.multiplexer and network.egress.mediator are special cases: their
-  # allowed sets derive dynamically from the baked registry (rc.multiplexers /
-  # rc.mediators image labels) via _config_mux_derive_allowed_set /
-  # _config_mediator_derive_allowed_set — not a static 4th column (rip-cage-61al.4,
-  # ADR-005 D12). The 4th column for these fields is intentionally absent
-  # from _config_schema_lines(); the dynamic derivation runs instead.
+  # session.multiplexer is a special case: its allowed set derives dynamically
+  # from the baked registry (rc.multiplexers image label) via
+  # _config_mux_derive_allowed_set — not a static 4th column (rip-cage-61al.4,
+  # ADR-005 D12). The 4th column for this field is intentionally absent from
+  # _config_schema_lines(); the dynamic derivation runs instead.
+  # (network.egress.mediator's isomorphic dynamic-derivation case retired with
+  # the MEDIATOR archetype per ADR-029 D2 — the schema field itself is gone.)
   local _ev_key _ev_type _ev_default _ev_allowed
   while IFS='|' read -r _ev_key _ev_type _ev_default _ev_allowed; do
     [[ -z "$_ev_key" ]] && continue
@@ -399,10 +366,6 @@ _config_load_layer() {
     # Dynamic derivation for session.multiplexer (4th column intentionally absent).
     if [[ "$_ev_key" == "session.multiplexer" && -z "$_ev_allowed" ]]; then
       _ev_allowed=$(_config_mux_derive_allowed_set)
-    fi
-    # Dynamic derivation for network.egress.mediator (4th column intentionally absent).
-    if [[ "$_ev_key" == "network.egress.mediator" && -z "$_ev_allowed" ]]; then
-      _ev_allowed=$(_config_mediator_derive_allowed_set)
     fi
     [[ -z "$_ev_allowed" ]] && continue
     local _ev_path_arr _ev_val
@@ -419,14 +382,37 @@ _config_load_layer() {
     if [[ "$_ev_ok" -eq 0 ]]; then
       if [[ "$_ev_key" == "session.multiplexer" ]]; then
         echo "Error: '$file' has invalid value '${_ev_val}' for field '${_ev_key}'. '${_ev_val}' is not in the baked multiplexer registry (allowed: ${_ev_allowed}). Add the provider to your manifest and run \`rc build\` to bake it (see examples/ for provider definitions)." >&2
-      elif [[ "$_ev_key" == "network.egress.mediator" ]]; then
-        echo "Error: '$file' has invalid value '${_ev_val}' for field '${_ev_key}'. '${_ev_val}' is not in the baked mediator registry (allowed: ${_ev_allowed}). Add the provider to your manifest and run \`rc build\` to bake it (see examples/ for provider definitions)." >&2
       else
         echo "Error: '$file' has invalid value '${_ev_val}' for field '${_ev_key}'. Allowed values: ${_ev_allowed}." >&2
       fi
       return 1
     fi
   done < <(_config_schema_lines)
+
+  # Retired-field loud-reject (Fable ruling 6, rip-cage-tsf2). Four fields were
+  # removed from _config_schema_lines at the msb cutover. Because _config_merge
+  # walks the schema explicitly (only declared fields survive the merge), a file
+  # still carrying one of them would have it SILENTLY DROPPED with zero feedback
+  # — the identical posture-surprise class the retired MEDIATOR *archetype*
+  # rejection guards against (cli/lib/manifest_checks.sh): declared containment
+  # silently un-enforcing = false confidence (ADR-029 D1). The archetype-vs-field
+  # asymmetry would otherwise let the config selectively lie. Reject each at the
+  # same actionability bar as the archetype error: name the field, the file, WHY
+  # it's gone (the right ADR cite), and the exact fix.
+  local _rf_key _rf_cite _rf_fix
+  while IFS='|' read -r _rf_key _rf_cite _rf_fix; do
+    [[ -z "$_rf_key" ]] && continue
+    local _rf_path_arr _rf_present
+    _rf_path_arr=$(jq -nc --arg k "$_rf_key" '$k | split(".")')
+    # Presence, not truthiness: a declared-but-null retired field (e.g.
+    # `ssh.allowed_keys: null`) is still a stale declaration the operator must
+    # be told about. `paths` enumerates every path including null-valued leaves.
+    _rf_present=$(jq -c --argjson p "$_rf_path_arr" '[paths] | any(. == $p)' <<<"$json" 2>/dev/null || echo false)
+    if [[ "$_rf_present" == "true" ]]; then
+      echo "Error: '$file' declares retired config field '${_rf_key}' — retired in the msb migration (${_rf_cite}). Fix: ${_rf_fix}." >&2
+      return 1
+    fi
+  done < <(_config_retired_fields)
 
   # D7 (rip-cage-xhgr, fail-closed): unknown keys under auth.per_tool. abort
   # loud rather than silently vanishing. _config_merge only reads the two
@@ -445,6 +431,33 @@ _config_load_layer() {
       return 1
     fi
   done < <(jq -r '.auth.per_tool // {} | keys[]?' <<<"$json" 2>/dev/null || true)
+
+  # auth.credentials (rip-cage-rj68, S6 Fold a — the credential->host binding
+  # surface the deleted MEDIATOR archetype used to carry, ADR-029 D2). Each
+  # entry MUST declare a non-empty 'source_env' and a non-empty 'hosts'
+  # array — fail-closed (ADR-001), same discipline as the auth.per_tool
+  # check above: a malformed binding must never be silently dropped (an
+  # operator who thinks a credential is scoped to a host, when the entry
+  # was actually discarded, is a worse outcome than refusing to boot).
+  # This is a generation-time check ON THE CONFIG SURFACE, distinct from
+  # (and upstream of) cli/lib/msb_flags.sh's OWN source_env validation on
+  # its JSON contract — msb_flags.sh's contract stays untouched; this is
+  # the layer that produces well-formed input for it.
+  local _cred_count _cred_idx
+  _cred_count=$(jq '.auth.credentials // [] | length' <<<"$json" 2>/dev/null || echo 0)
+  for (( _cred_idx=0; _cred_idx<_cred_count; _cred_idx++ )); do
+    local _cred_source_env _cred_hosts_count
+    _cred_source_env=$(jq -r ".auth.credentials[${_cred_idx}].source_env // \"\"" <<<"$json" 2>/dev/null)
+    if [[ -z "$_cred_source_env" ]]; then
+      echo "Error: '$file' has auth.credentials[${_cred_idx}] missing required field 'source_env'." >&2
+      return 1
+    fi
+    _cred_hosts_count=$(jq ".auth.credentials[${_cred_idx}].hosts // [] | length" <<<"$json" 2>/dev/null || echo 0)
+    if [[ "$_cred_hosts_count" -eq 0 ]]; then
+      echo "Error: '$file' has auth.credentials[${_cred_idx}] (source_env=${_cred_source_env}) with missing or empty 'hosts' — a credential bound to zero hosts is not a valid binding." >&2
+      return 1
+    fi
+  done
 
   echo "$json"
 }
@@ -761,8 +774,8 @@ _config_validate_or_abort() {
 
 
 # Path to the per-container "applied config" snapshot. Written at cmd_up
-# create-time, resume-time (after _up_resolve_ssh_allowlists), and after
-# cmd_reload. Compared against live effective config by both cmd_reload
+# create-time and after cmd_reload. Compared against live effective config by
+# both cmd_reload
 # (to decide what changed) and _config_emit_hint (to suppress false-positive
 # drift hints once a reload has been applied — labels are immutable post-create
 # so a sha-only check would warn forever).
@@ -773,10 +786,9 @@ _config_applied_path() {
 
 
 # Write the snapshot. Caller passes the effective-config JSON object as $2
-# (the {ssh:{...}, egress:..., etc.} subtree — same shape as `.config` from
+# (the {network:{...}, egress:..., etc.} subtree — same shape as `.config` from
 # _load_effective_config). Truncate-then-write to preserve inode (rip-cage-rx8
-# recipe: never mv-into-place, the parent dir is not bind-mounted but we keep
-# the same semantics for consistency with the known_hosts cache neighbour).
+# recipe: never mv-into-place, the parent dir is not bind-mounted).
 _config_write_applied() {
   local cname="$1" cfg_json="$2"
   local path

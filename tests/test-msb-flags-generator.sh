@@ -33,6 +33,12 @@
 #       criterion 7)
 #   T10 golden-master argv snapshot cases (à la up-run-args-*.argv) for a
 #       representative full config -- byte-level regression net
+#   T12 structural check (rip-cage-3vj2, S4 engine-deletion sweep): the
+#       generator's emitted argv for a representative full config contains
+#       NO engine call/reference -- no egress/credential/DNS/mediator engine
+#       argv, env, or in-cage hook path (ADR-029 D2). This generator only
+#       ever emitted msb primitives to begin with; this test is the
+#       structural, permanent guard against that regressing.
 
 set -uo pipefail
 
@@ -359,6 +365,126 @@ else
   fail "T11: expected both synthesized vars to hold the source value" "val_a='${T11_VAL_A}' val_b='${T11_VAL_B}'"
 fi
 unset T11_SOURCE_VAR "$T11_NAME_A" "$T11_NAME_B"
+
+# ---------------------------------------------------------------------------
+# T12 (rip-cage-3vj2, S4 engine-deletion sweep, bead acceptance criterion 2):
+# direct structural check that the generator's emitted argv for a
+# representative full config contains NO engine call -- no egress/
+# credential/DNS/mediator engine argv, env, or in-cage hook path reference
+# remains. Covers every deleted-engine surface: the router/DNS/egress
+# Python modules, iptables/ip6tables firewall init, the mediator launch
+# machinery + its RC_MEDIATOR/--mediator-env channel, and the deleted
+# MEDIATOR archetype name itself.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T12: structural check -- generated argv contains NO engine call (ADR-029 D2) ==="
+T12_CFG='{"allowed_hosts": ["github.com", "api.anthropic.com"], "credentials": [{"source_env": "GH_TOKEN", "hosts": ["github.com", "api.github.com"]}], "possession_mounts": [{"host_path": "/h/.pi/agent/auth.json", "guest_path": "/g/.pi/agent/auth.json", "kind": "file"}], "mounts": [{"host_path": "/h/workspace", "guest_path": "/workspace"}], "tls_body_rewrite": true, "dind_volumes": [{"name": "docker-data", "guest_path": "/var/lib/docker", "size": "20G"}]}'
+T12_OUT=$(_msb_flags_generate "$T12_CFG")
+if [[ -n "$T12_OUT" ]]; then
+  pass "T12 setup: generator produced non-empty argv for the representative full config"
+else
+  fail "T12 setup: generator produced no argv" ""
+fi
+
+# Each pattern names a distinct deleted-engine surface (case-insensitive).
+T12_ENGINE_PATTERNS=(
+  "rip_cage_router"
+  "rip_cage_egress"
+  "rip_cage_dns"
+  "init-firewall"
+  "init-mediator"
+  "rip-proxy"
+  "rip-dns-start"
+  "iptables"
+  "ip6tables"
+  "RC_MEDIATOR"
+  "mediator-env"
+  "MEDIATOR"
+  "egress-rules.yaml"
+)
+T12_ALL_CLEAN=1
+for T12_PAT in "${T12_ENGINE_PATTERNS[@]}"; do
+  T12_HIT=$(printf '%s\n' "$T12_OUT" | grep -iF "$T12_PAT" || true)
+  if [[ -n "$T12_HIT" ]]; then
+    T12_ALL_CLEAN=0
+    fail "T12: generated argv contains a deleted-engine reference ('${T12_PAT}')" "$T12_HIT"
+  fi
+done
+if [[ "$T12_ALL_CLEAN" -eq 1 ]]; then
+  pass "T12: generated argv contains NO engine reference across all ${#T12_ENGINE_PATTERNS[@]} deleted-engine surfaces (router/egress/DNS Python modules, iptables/ip6tables firewall init, RC_MEDIATOR/--mediator-env channel, MEDIATOR archetype name, egress-rules.yaml in-cage path)"
+fi
+
+echo ""
+echo "=== T13: _msb_flags_preflight_secret_env (rip-cage-rj68 S6 Fold b) ==="
+# S6 Fold b: _msb_flags_prepare_secret_env (existing, untouched) exports the
+# host source_env's CURRENT value under each synthesized name -- including
+# an EMPTY STRING when the host var is unset, which would silently boot a
+# cage carrying a placeholder-substituted empty secret with no error
+# anywhere. _msb_flags_preflight_secret_env is the NEW guard a caller runs
+# BEFORE invoking msb: it must fail loud, non-zero, naming the offending
+# var, whenever a credential's source_env is unset OR set-empty in the host
+# environment -- and succeed silently when every source_env is
+# set-and-non-empty.
+T13_CFG='{"credentials": [{"source_env": "T13_TOKEN_A", "hosts": ["a.example.com"]}, {"source_env": "T13_TOKEN_B", "hosts": ["b.example.com"]}]}'
+
+# T13a: both source_envs set and non-empty -> succeeds silently, exit 0.
+unset T13_TOKEN_A T13_TOKEN_B 2>/dev/null || true
+export T13_TOKEN_A="real-value-a"
+export T13_TOKEN_B="real-value-b"
+T13A_OUT=$(_msb_flags_preflight_secret_env "$T13_CFG" 2>&1)
+T13A_RC=$?
+if [[ "$T13A_RC" -eq 0 && -z "$T13A_OUT" ]]; then
+  pass "T13a: all source_envs set+non-empty -> exit 0, silent"
+else
+  fail "T13a: expected exit 0 + silent" "rc=$T13A_RC out='$T13A_OUT'"
+fi
+unset T13_TOKEN_A T13_TOKEN_B
+
+# T13b: one source_env UNSET entirely -> non-zero exit, error names the var.
+export T13_TOKEN_A="real-value-a"
+unset T13_TOKEN_B 2>/dev/null || true
+T13B_OUT=$(_msb_flags_preflight_secret_env "$T13_CFG" 2>&1)
+T13B_RC=$?
+if [[ "$T13B_RC" -ne 0 ]] && echo "$T13B_OUT" | grep -q "T13_TOKEN_B"; then
+  pass "T13b: unset source_env -> non-zero exit, error names T13_TOKEN_B"
+else
+  fail "T13b: expected non-zero exit naming T13_TOKEN_B" "rc=$T13B_RC out='$T13B_OUT'"
+fi
+unset T13_TOKEN_A
+
+# T13c: one source_env set to EMPTY STRING -> non-zero exit, error names the var
+# (distinct from unset -- an exported empty var is the exact silent-empty-secret
+# footgun _msb_flags_prepare_secret_env would otherwise carry through unnoticed).
+export T13_TOKEN_A="real-value-a"
+export T13_TOKEN_B=""
+T13C_OUT=$(_msb_flags_preflight_secret_env "$T13_CFG" 2>&1)
+T13C_RC=$?
+if [[ "$T13C_RC" -ne 0 ]] && echo "$T13C_OUT" | grep -q "T13_TOKEN_B"; then
+  pass "T13c: empty-string source_env -> non-zero exit, error names T13_TOKEN_B"
+else
+  fail "T13c: expected non-zero exit naming T13_TOKEN_B" "rc=$T13C_RC out='$T13C_OUT'"
+fi
+unset T13_TOKEN_A T13_TOKEN_B
+
+# T13d: no credentials declared at all -> exit 0, silent (nothing to check).
+T13D_OUT=$(_msb_flags_preflight_secret_env '{}' 2>&1)
+T13D_RC=$?
+if [[ "$T13D_RC" -eq 0 && -z "$T13D_OUT" ]]; then
+  pass "T13d: no credentials declared -> exit 0, silent"
+else
+  fail "T13d: expected exit 0 + silent for empty config" "rc=$T13D_RC out='$T13D_OUT'"
+fi
+
+# T13e: never echoes the real value anywhere (even in the success/failure path).
+export T13_TOKEN_A="super-secret-value-should-never-appear"
+unset T13_TOKEN_B 2>/dev/null || true
+T13E_OUT=$(_msb_flags_preflight_secret_env "$T13_CFG" 2>&1)
+if ! echo "$T13E_OUT" | grep -q "super-secret-value-should-never-appear"; then
+  pass "T13e: never echoes a real credential value, even alongside a failure"
+else
+  fail "T13e: real value leaked into preflight output" "$T13E_OUT"
+fi
+unset T13_TOKEN_A
 
 echo ""
 if (( FAILURES > 0 )); then

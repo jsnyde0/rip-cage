@@ -141,12 +141,14 @@ gm_capture() {
   [[ -n "${GM_SHELL_OVERRIDE+x}" ]] && _env+=("SHELL=${GM_SHELL_OVERRIDE}")
   [[ -n "${GM_MANIFEST_GLOBAL:-}" ]] && _env+=("RC_MANIFEST_GLOBAL=${GM_MANIFEST_GLOBAL}")
   [[ -n "${GM_CONFIG_GLOBAL:-}" ]] && _env+=("RC_CONFIG_GLOBAL=${GM_CONFIG_GLOBAL}")
-  # Forward every currently-set GM_DOCKER_* configuration var to the child
-  # (the fake docker shim reads these directly). A single generic loop
-  # (rather than one hardcoded line per var) so a new shim knob never needs
-  # a matching edit here.
+  # Forward every currently-set GM_DOCKER_*/GM_MSB_* configuration var to
+  # the child (the fake docker/msb shims read these directly -- rip-cage-
+  # 5iti, S10: fake-bin/msb reuses the GM_DOCKER_* vocabulary for inspect
+  # state/labels, but its own create-capture knobs are GM_MSB_*). A single
+  # generic loop per prefix (rather than one hardcoded line per var) so a
+  # new shim knob never needs a matching edit here.
   local _gm_var
-  for _gm_var in $(compgen -v GM_DOCKER_ 2>/dev/null || true); do
+  for _gm_var in $(compgen -v GM_DOCKER_ 2>/dev/null || true) $(compgen -v GM_MSB_ 2>/dev/null || true); do
     _env+=("${_gm_var}=${!_gm_var}")
   done
 

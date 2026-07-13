@@ -64,8 +64,7 @@
 #   controls this per-entry.
 #
 # Supervisor model decision:
-#   init-script-start (NOT host-exec). The ssh-agent-filter fork+PID-parse+
-#   fail-warn pattern (init-rip-cage.sh:60-103) is the exact precedent.
+#   init-script-start (NOT host-exec): a fork+PID-parse+fail-warn pattern.
 #   PID stored in /tmp/rip-cage-daemon-<name>.pid for idempotency detection.
 #   Health check wrapped in a timeout (bd memory rip-cage-validate-hung-daemon)
 #   to prevent a wedged daemon from hanging the init script.

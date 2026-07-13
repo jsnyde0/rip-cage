@@ -1,4 +1,4 @@
 version: 99
-ssh:
-  allowed_keys:
-    - id_ed25519_personal
+mounts:
+  allow_risky:
+    - /opt/personal

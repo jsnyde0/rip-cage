@@ -32,7 +32,9 @@
 #   B6  Hostile .claude/settings.json (ANTHROPIC_BASE_URL) → rc up refuses (host-side)
 #   B7  In-cage write to network.allowed_hosts in .rip-cage.yaml → effective config unchanged
 #   B8  Host-agent repair cycle (D11 load-bearing seam)
-#   B9  promote transition: observe→block, never-touched host excluded
+#   B9  allowlist promote --from-observed is retired: exits non-zero,
+#       message names ADR-029/rip-cage-tsf2.2, never mutates .rip-cage.yaml
+#       (mirrors tests/test-rc-allowlist.sh A8-A10)
 #   B10 rc ls --output json mode column present
 #   B11 rc doctor <cage> --output json egress sections present + schema-valid
 #   O1  Observe mode: curl evil.com succeeds but would-block in egress.log
@@ -1017,18 +1019,22 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
-# B9: promote transition — observe → block, never-touched host excluded
+# B9: allowlist promote --from-observed is RETIRED (rip-cage-tsf2.2, ADR-029
+# D2/D3) -- the observe-mode would-block log this probe promoted FROM was
+# re-homed to msb trace-level DNS-denial lines; the promote command that
+# used to read the old in-cage JSONL log and mutate .rip-cage.yaml no longer
+# has a live source to promote from, so it fails loud instead of silently
+# promoting nothing (or worse, partially applying against stale/synthetic
+# data). See tests/test-rc-allowlist.sh A8-A10, which this probe mirrors.
 #
-# Setup: start with observe-mode cage, make some requests.
-# The observe-mode cage has allowed_hosts=[api.anthropic.com, example.com, httpbin.org].
-# We'll curl example.com and httpbin.org (observed), leave never-touched.test alone.
-# Then promote --from-observed and verify:
-#   (a) allowed_hosts now includes observed ∪ baseline (NOT never-touched.test)
-#   (b) mode flipped observe→block
-#   (c) rc ls --output json shows mode=block for OBS_CAGE
-#   (d) request to never-touched.test now blocks
+# Setup: start with observe-mode cage, make some requests (still valid,
+# feeds the O1 would-block-logging coverage below). Then assert
+# `allowlist promote --from-observed`:
+#   (a) exits NON-ZERO (loud-fail, not a silent no-op) -- mirrors A8
+#   (b) stderr names ADR-029 + rip-cage-tsf2.2 -- mirrors A9
+#   (c) NEVER mutates .rip-cage.yaml -- no silent partial apply -- mirrors A10
 # ---------------------------------------------------------------------------
-echo "=== B9: promote observe→block transition ==="
+echo "=== B9: allowlist promote --from-observed is retired (loud-fail, no mutation) ==="
 
 if [[ "$obs_running" == "$OBS_CAGE" ]]; then
   # First: curl hosts in observe mode. FIX4: example.net is NOT in this cage's
@@ -1065,98 +1071,64 @@ sys.exit(1)
       "no would-block events in egress.log after curls in observe mode"
   fi
 
-  # Write synthetic egress log with observed hosts (supplement real log)
-  # This ensures the promote test has stable data even if real curls got blocked
-  # at the DNS/TCP layer before reaching the proxy.
+  # Write synthetic egress log with observed hosts (supplement real log).
+  # Retained even though promote is retired: this data is what the OLD
+  # command would have promoted FROM, so it still proves the retirement
+  # holds even when a plausible-looking source log exists (not just when
+  # there's nothing to promote).
   B9_LOG="${OBS_WS}/.rip-cage/egress.log"
   mkdir -p "$(dirname "$B9_LOG")"
-  # Append synthetic would-block entries for our observed hosts
   cat >> "$B9_LOG" <<'JSONL'
 {"timestamp":"2026-05-28T10:00:00Z","event":"would-block","rule_id":"not-whitelisted","method":"GET","host":"newly-observed-b9.test","path":"/","container_hostname":"obs-cage","pattern":"allowed_hosts","target":"newly-observed-b9.test","why":"Host not in allowed_hosts","fix_command":"rc allowlist add newly-observed-b9.test","config_file":".rip-cage.yaml","config_path":"network.allowed_hosts"}
 JSONL
 
-  # Promote --from-observed
-  b9_promote_out=$("$RC" allowlist promote --from-observed \
+  # Snapshot .rip-cage.yaml BEFORE promote — mirrors test-rc-allowlist.sh A10's
+  # before/after comparison (no-mutation is only meaningful against a known-good
+  # pre-image, per the same discipline as the roundtrip test's OVERLAY-PRESENT fix).
+  b9_yaml_before=$(cat "${OBS_WS}/.rip-cage.yaml" 2>/dev/null || true)
+
+  # allowlist promote --from-observed (retired, ADR-029 D2/D3, rip-cage-tsf2.2)
+  b9_promote_err=$(mktemp)
+  "$RC" allowlist promote --from-observed \
     --config-file "${OBS_WS}/.rip-cage.yaml" \
-    --log-file "$B9_LOG" 2>&1 || true)
+    --log-file "$B9_LOG" >/dev/null 2>"$b9_promote_err"
   b9_promote_exit=$?
 
-  if [[ "$b9_promote_exit" -eq 0 ]]; then
-    check "B9 promote --from-observed exit 0" "pass"
+  # (a) exits non-zero — mirrors A8
+  if [[ "$b9_promote_exit" -ne 0 ]]; then
+    check "B9 (a) promote --from-observed exits non-zero (retired)" "pass" \
+      "exit=${b9_promote_exit}"
   else
-    check "B9 promote --from-observed exit 0" "fail" \
-      "exit=$b9_promote_exit; out: ${b9_promote_out:0:200}"
+    check "B9 (a) promote --from-observed exits non-zero (retired)" "fail" \
+      "exit=0 -- --from-observed must fail loud, not silently apply nothing"
   fi
 
-  # (a) allowed_hosts now contains observed host
-  if grep -q "newly-observed-b9.test" "${OBS_WS}/.rip-cage.yaml" 2>/dev/null; then
-    check "B9 (a) promoted host in allowed_hosts" "pass"
+  # (b) stderr names ADR-029 + rip-cage-tsf2.2 — mirrors A9
+  b9_msg_ok=true b9_msg_reason=""
+  grep -qi "retired" "$b9_promote_err" || { b9_msg_ok=false; b9_msg_reason="stderr does not say 'retired'"; }
+  grep -q "ADR-029" "$b9_promote_err" || { b9_msg_ok=false; b9_msg_reason="${b9_msg_reason:+$b9_msg_reason; }stderr does not cite ADR-029"; }
+  grep -q "rip-cage-tsf2.2" "$b9_promote_err" || { b9_msg_ok=false; b9_msg_reason="${b9_msg_reason:+$b9_msg_reason; }stderr does not point at fast-follow bead rip-cage-tsf2.2"; }
+  if [[ "$b9_msg_ok" == "true" ]]; then
+    check "B9 (b) promote --from-observed message names ADR-029 + rip-cage-tsf2.2" "pass"
   else
-    check "B9 (a) promoted host in allowed_hosts" "fail" \
-      "newly-observed-b9.test not in .rip-cage.yaml after promote"
+    check "B9 (b) promote --from-observed message names ADR-029 + rip-cage-tsf2.2" "fail" \
+      "${b9_msg_reason} -- stderr: $(cat "$b9_promote_err")"
   fi
+  rm -f "$b9_promote_err"
 
-  # (a) example.org (never curled) NOT in allowed_hosts. FIX4: example.org is the
-  # never-touched host — a real domain we never request, so promote must exclude it.
-  if grep -q "example.org" "${OBS_WS}/.rip-cage.yaml" 2>/dev/null; then
-    check "B9 (a) never-touched host excluded from promoted hosts" "fail" \
-      "example.org appeared in .rip-cage.yaml — should not be promoted"
+  # (c) .rip-cage.yaml never mutated — no silent partial apply — mirrors A10.
+  # Subsumes the old (a)/(a)/(b) checks (promoted host present, never-touched
+  # host excluded, mode flipped) in one comparison: since promote is retired,
+  # NONE of those transitions may occur -- the file must be byte-identical.
+  b9_yaml_after=$(cat "${OBS_WS}/.rip-cage.yaml" 2>/dev/null || true)
+  if [[ "$b9_yaml_before" == "$b9_yaml_after" ]]; then
+    check "B9 (c) promote --from-observed never mutates .rip-cage.yaml" "pass"
   else
-    check "B9 (a) never-touched host excluded from promoted hosts" "pass"
-  fi
-
-  # (b) mode flipped to block
-  if grep -q "mode: block" "${OBS_WS}/.rip-cage.yaml" 2>/dev/null; then
-    check "B9 (b) mode flipped observe→block" "pass"
-  else
-    check "B9 (b) mode flipped observe→block" "fail" \
-      ".rip-cage.yaml does not have mode: block after promote"
-  fi
-
-  # Now reload the cage so the effective config updates
-  b9_reload_out=$("$RC" reload "$OBS_CAGE" 2>&1 || true)
-  b9_reload_exit=$?
-  if [[ "$b9_reload_exit" -eq 0 ]]; then
-    check "B9 reload after promote → success" "pass"
-  else
-    check "B9 reload after promote → success" "fail" \
-      "exit=$b9_reload_exit; out: ${b9_reload_out:0:200}"
-  fi
-
-  # (c) rc ls --output json shows mode=block for OBS_CAGE
-  b9_ls=$(RC_ALLOWED_ROOTS="${SEC_TMP_REAL}:${SEC_TMP_OBS_REAL}:${SEC_TMP_NEG_REAL}:${SEC_TMP_OFF_REAL}" \
-    "$RC" --output json ls 2>/dev/null || true)
-  b9_mode=$(echo "$b9_ls" | python3 -c "
-import json, sys
-arr = json.loads(sys.stdin.read())
-for cage in arr:
-    if cage.get('name') == '${OBS_CAGE}':
-        print(cage.get('mode', 'missing'))
-        sys.exit(0)
-print('not-found')
-" 2>/dev/null || true)
-  if [[ "$b9_mode" == "block" ]]; then
-    check "B9 (c) rc ls --output json mode=block after promote+reload" "pass"
-  else
-    check "B9 (c) rc ls --output json mode=block after promote+reload" "fail" \
-      "mode=${b9_mode} (expected block)"
-  fi
-
-  # (d) request to example.org (never-touched) now blocks (mode is block, not in
-  # allowed_hosts). Pure router: TCP RST / connection refused — curl exits non-zero.
-  b9_d_exit=0
-  docker exec "$OBS_CAGE" curl -s -o /dev/null -w '%{http_code}' \
-    --max-time 8 \
-    "https://example.org/" 2>/dev/null || b9_d_exit=$?
-  if [[ "$b9_d_exit" -ne 0 ]]; then
-    check "B9 (d) never-touched host blocked after promote (mode=block)" "pass" \
-      "curl exit=$b9_d_exit"
-  else
-    check "B9 (d) never-touched host blocked after promote (mode=block)" "fail" \
-      "curl exit=0 — example.org not in allowed_hosts, should be denied"
+    check "B9 (c) promote --from-observed never mutates .rip-cage.yaml" "fail" \
+      ".rip-cage.yaml was mutated by a retired flag (silent partial apply)"
   fi
 else
-  for _n in a b c d e f g h; do
+  for _n in a b c; do
     check "B9 (${_n})" "fail" "SKIP: observe cage not running"
   done
 fi

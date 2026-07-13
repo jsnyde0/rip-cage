@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 
-> **Migration status (ADR-029, 2026-07-10):** This ADR is evolved by [ADR-029](ADR-029-msb-migration.md) D7 — `host.docker.internal` does not exist under msb, so D1/D8's server-mode connectivity mechanisms go dormant; D5's embedded-mode path gains an explicit interim single-writer discipline; D8 is retired-pending by its own second invalidation clause. The mechanisms below remain shipped and load-bearing in the Docker path until the msb cutover release lands; until then this ADR describes current behavior.
+> **Migration status (ADR-029, 2026-07-10):** This ADR is evolved by [ADR-029](ADR-029-msb-migration.md) D7 — `host.docker.internal` does not exist under msb, so D1/D8's server-mode connectivity mechanisms go dormant; D5's embedded-mode path gains an explicit interim single-writer discipline; D8 is retired-pending by its own second invalidation clause. **The msb cutover has landed (S1-S14, branch `wave/s13-docs` off `msb-cutover`) — this ADR is PARTIALLY SUPERSEDED, not wholly retired.** D1/D8's server-mode connectivity is dormant (not deleted — no `host.docker.internal` equivalent under msb yet) and D8 is retired-pending per its own clause. But **D5's embedded-mode path is current, shipped behavior**, now carrying the additional ADR-029 D7 interim single-writer discipline. See [ADR-029](ADR-029-msb-migration.md) for the migration decisions.
 
 **Date:** 2026-04-08
 **Design:** [Beads/Dolt Container Resilience](../2026-04-08-beads-dolt-container-resilience.md), [Beads no-db Container Support](../2026-04-09-beads-no-db-container-support.md), [Host-side bd Pre-flight](../2026-04-22-bd-host-preflight-design.md)

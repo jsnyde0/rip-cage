@@ -1,4 +1,4 @@
-# Compose a walk-away cage (dist + herdr + herdr-pi, mediator situational)
+# Compose a walk-away cage (dist + herdr + herdr-pi)
 
 This recipe shows the **delta** on top of [`manifest/default-tools.yaml`](../manifest/default-tools.yaml)
 for a cage meant to run **unattended, multi-agent, walk-away** sessions: a human kicks off one or
@@ -7,7 +7,8 @@ live terminal. It is a composition recipe, not a pre-composed manifest — see "
 file" below for why.
 
 `manifest/default-tools.yaml` is already the reference base for a rip-cage cage (floor tools, Claude
-Code and pi wrappers, DCG in its open posture, the ssh-bypass guard) — see the
+Code and pi wrappers, DCG in its open posture — the former ssh-bypass guard sibling retired wholesale
+with the ssh cluster, [ADR-029](../docs/decisions/ADR-029-msb-migration.md) D3) — see the
 [`configure-cage` skill](../.claude/skills/configure-cage/SKILL.md) for how an agent composes
 from it by judgment. This recipe is the delta a walk-away setup adds on top: a supervisor
 multiplexer to watch multiple agents from outside any one of their panes, and (for headless pi)
@@ -25,8 +26,8 @@ A walk-away cage doesn't — which shifts what's worth composing:
   provider resolution assumes an interactive session; run headless long enough and an
   unattended agent can silently stop making progress (see the pi model pin below).
 - **Credential handling becomes more of a live question**, since nobody is present to notice a
-  credential behaving oddly — this is why the mediator is covered here as a situational add,
-  not baked into the base delta (see below).
+  credential behaving oddly — see "Credential non-possession" below for how msb `--secret`
+  addresses this by default post-cutover.
 
 ## The delta: herdr + herdr-pi on top of dist
 
@@ -77,20 +78,24 @@ model-name variants are rejected for ChatGPT accounts). It is commented out ther
 uncomment it with **the human's own working provider/model**, not the example value, unless
 that happens to be what they use.
 
-## The mediator: situational, not part of this delta
+## Credential non-possession: a config declaration now, not a composed mediator
 
-An egress mediator (credential non-possession — the agent holds a proxy token, never the real
-secret) is a *separate* axis from walk-away supervision, and this recipe deliberately does not
-fold it in as a default. Compose one only when the human's situation calls for it — e.g. the
-walk-away cage handles credentials whose exfiltration would matter, or the human wants a
-structured audit trail of every outbound request regardless of who's watching.
+Pre-cutover, credential non-possession for a walk-away cage meant composing an egress mediator
+(`examples/compose-rc-with-iron-proxy.md`) — a co-located proxy `rc` launched and wired via the
+manifest MEDIATOR archetype. **That machinery is deleted, not merely undocumented**
+([ADR-029](../docs/decisions/ADR-029-msb-migration.md) D2/D5) — there is no MEDIATOR archetype,
+launch hook, or HTTP-CONNECT forward-to seam left in `rc` to compose against; see
+[`examples/README.md`](README.md#mediator-recipes--dropped).
 
-When it does apply, [`examples/compose-rc-with-iron-proxy.md`](compose-rc-with-iron-proxy.md)
-is the recommended-adopt MEDIATOR recipe (ADR-026): built-in default-deny egress plus
-credential injection with no addon to write. Read
-[`docs/decisions/ADR-026-containment-mediation-identity.md`](../docs/decisions/ADR-026-containment-mediation-identity.md)
-for the threat-tier framing before deciding whether it's warranted — a walk-away cage that
-never handles anything a compromised agent could meaningfully exfiltrate may not need it at all.
+Non-possession for the dominant secrets (Claude's own auth, and any git host token) is now a
+**default platform property**: declare `auth.credentials: [{source_env, hosts}]` in
+`.rip-cage.yaml` and msb's `--secret` injects the real value on the wire toward the named host(s)
+only, while the guest env/disk/proc hold just a placeholder ([ADR-029](../docs/decisions/ADR-029-msb-migration.md)
+D5, [egress.md](../docs/reference/egress.md)). This is exactly the property a walk-away
+cage — nobody watching for a credential behaving oddly — benefits from, and it's now the default
+rather than something you opt into by composing a proxy. If you need L7 content policy or
+audit-trail-grade request logging beyond that, that remains fully operator-composed and unwired
+— run something yourself, outside `rc`'s declared composition surface.
 
 ## No new manifest file
 

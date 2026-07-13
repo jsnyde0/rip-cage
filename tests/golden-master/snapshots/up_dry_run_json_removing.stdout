@@ -1,1 +1,1 @@
-{"error":"Container rc-golden-master-root-workspace is being removed. Wait, then run: rc up <GM_ROOT>/workspace","code":"CONTAINER_STATE_UNSUPPORTED"}
+{"error":"Container rc-golden-master-root-workspace is in unrecognized state: state=unknown. Inspect manually with: msb inspect rc-golden-master-root-workspace  — if safe, rc destroy rc-golden-master-root-workspace && rc up <GM_ROOT>/workspace","code":"CONTAINER_STATE_UNSUPPORTED"}

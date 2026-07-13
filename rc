@@ -96,7 +96,7 @@ RC_VERSION="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || echo "unknown")"
 # flat file. None of the sourced files set -euo pipefail themselves -- this
 # shim is the ONLY place strict mode is toggled (map hazard 2); it is owned
 # here, once, so sourcing a module never leaks -e onto the caller.
-for _rc_lib in output docker container path config manifest_checks; do
+for _rc_lib in output docker msb_runtime msb_flags container path config manifest_checks; do
   # shellcheck disable=SC1090
   source "${SCRIPT_DIR}/cli/lib/${_rc_lib}.sh"
 done
@@ -168,14 +168,32 @@ fi
 # runtime (rip-cage-61al.3 / ADR-005 D12). No host-side binary-presence check
 # is performed here — the hook's own fail-loud handles any missing dependency.
 
-# docker: needed for all commands that talk to Docker.
+# docker: needed for all commands that still talk to Docker directly.
 # `rc doctor --host` is the one exception: its job is to *diagnose* a wedged
 # daemon, so the preflight (which would itself fail loud) must be skipped.
+#
+# rip-cage-rj68 (S6, ADR-029 D1 hard cutover): `up` still needs docker for
+# its image-provisioning fallback (_pull_or_build/_image_is_current stay
+# docker-based — the image is built via docker then `msb load`-converted,
+# S1) but the cage lifecycle itself (create/resume/attach) is msb now, so
+# `up` needs BOTH preflights. `reload`/`doctor` were rewritten fully onto
+# msb by S6 — check_docker dropped for them, check_msb added.
+#
+# rip-cage-tsf2.1 (this bead): `ls|attach|exec|down|destroy|test` are now
+# ALSO rewritten fully onto msb (a cage created by `rc up` is an msb
+# sandbox — these verbs drive it via cli/lib/msb_runtime.sh) — check_docker
+# dropped for them too, check_msb added. `build` alone keeps check_docker:
+# `cmd_build` still runs a real `docker build` (image build stays docker;
+# msb only consumes the built image via the best-effort, self-skipping
+# `msb load` step in `_build_msb_load` — no hard check_msb needed there).
 case "${1:-}" in
-  build|up|ls|attach|exec|down|destroy|reload|test) check_docker ;;
+  build) check_docker ;;
+  ls|attach|exec|down|destroy|test) check_msb ;;
+  up) check_docker; check_msb ;;
+  reload) check_msb ;;
   doctor)
     if [[ "${2:-}" != "--host" ]]; then
-      check_docker
+      check_msb
     fi
     ;;
 esac

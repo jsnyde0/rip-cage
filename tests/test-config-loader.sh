@@ -174,14 +174,14 @@ test_t1_additive_union() {
   setup_sandbox "config-global-basic.yaml" "config-project-basic.yaml"
   local out hosts
   out=$(run_rc_config "show --json")
-  hosts=$(jq -c '.config.ssh.allowed_hosts' <<<"$out")
+  hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
   if [[ "$hosts" == '["github.com","switch.berlin"]' ]]; then
     pass "T1 additive list union (global ∪ project, order-preserving)"
   else
     fail "T1 expected [github.com, switch.berlin], got: $hosts"
   fi
   local prov
-  prov=$(jq -c '.provenance["ssh.allowed_hosts"]' <<<"$out")
+  prov=$(jq -c '.provenance["network.allowed_hosts"]' <<<"$out")
   if [[ "$prov" == '["global","project"]' ]]; then
     pass "T1b additive list provenance is union(global, project)"
   else
@@ -194,12 +194,12 @@ test_t2_selection_replaces() {
   setup_sandbox "config-global-basic.yaml" "config-project-basic.yaml"
   local out keys prov
   out=$(run_rc_config "show --json")
-  keys=$(jq -c '.config.ssh.allowed_keys' <<<"$out")
-  prov=$(jq -r '.provenance["ssh.allowed_keys"]' <<<"$out")
-  if [[ "$keys" == '["id_ed25519_personal"]' && "$prov" == "project" ]]; then
+  keys=$(jq -c '.config.mounts.allow_risky' <<<"$out")
+  prov=$(jq -r '.provenance["mounts.allow_risky"]' <<<"$out")
+  if [[ "$keys" == '["/opt/personal"]' && "$prov" == "project" ]]; then
     pass "T2 selection list — project replaces global"
   else
-    fail "T2 expected keys=[id_ed25519_personal] prov=project, got keys=$keys prov=$prov"
+    fail "T2 expected keys=[/opt/personal] prov=project, got keys=$keys prov=$prov"
   fi
   teardown_sandbox
 }
@@ -208,9 +208,9 @@ test_t3_selection_inherit_global() {
   setup_sandbox "config-global-basic.yaml" "config-project-only-additive.yaml"
   local out keys prov
   out=$(run_rc_config "show --json")
-  keys=$(jq -c '.config.ssh.allowed_keys' <<<"$out")
-  prov=$(jq -r '.provenance["ssh.allowed_keys"]' <<<"$out")
-  if [[ "$keys" == '["id_ed25519_personal","id_ed25519_work"]' && "$prov" == "global" ]]; then
+  keys=$(jq -c '.config.mounts.allow_risky' <<<"$out")
+  prov=$(jq -r '.provenance["mounts.allow_risky"]' <<<"$out")
+  if [[ "$keys" == '["/opt/personal","/opt/work"]' && "$prov" == "global" ]]; then
     pass "T3 selection list — project absent ⇒ inherit global"
   else
     fail "T3 expected keys=both prov=global, got keys=$keys prov=$prov"
@@ -222,8 +222,8 @@ test_t4_selection_zero_out() {
   setup_sandbox "config-global-basic.yaml" "config-project-zero-out-keys.yaml"
   local out keys prov
   out=$(run_rc_config "show --json")
-  keys=$(jq -c '.config.ssh.allowed_keys' <<<"$out")
-  prov=$(jq -r '.provenance["ssh.allowed_keys"]' <<<"$out")
+  keys=$(jq -c '.config.mounts.allow_risky' <<<"$out")
+  prov=$(jq -r '.provenance["mounts.allow_risky"]' <<<"$out")
   if [[ "$keys" == '[]' && "$prov" == "project" ]]; then
     pass "T4 selection list — explicit zero-out ([]) honored"
   else
@@ -271,7 +271,7 @@ test_t7_future_version_with_selection_aborts() {
   stderr_file=$(mktemp)
   out=$(run_rc_config "show --json" "$stderr_file") || exit_code=$?
   exit_code="${exit_code:-0}"
-  if [[ "$exit_code" -ne 0 ]] && grep -q "selection-list field(s) \[ssh.allowed_keys\]" "$stderr_file"; then
+  if [[ "$exit_code" -ne 0 ]] && grep -q "selection-list field(s) \[mounts.allow_risky\]" "$stderr_file"; then
     pass "T7 future version + selection-list field ⇒ abort with field-named error"
   else
     fail "T7 expected non-zero exit + selection-list error, exit=$exit_code stderr=$(cat "$stderr_file")"
@@ -286,7 +286,7 @@ test_t8_future_version_additive_only_skips() {
   stderr_file=$(mktemp)
   out=$(run_rc_config "show --json" "$stderr_file") || exit_code=$?
   exit_code="${exit_code:-0}"
-  hosts=$(jq -c '.config.ssh.allowed_hosts' <<<"$out")
+  hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
   if [[ "$exit_code" -eq 0 ]] \
      && grep -q "Skipping this file" "$stderr_file" \
      && [[ "$hosts" == '[]' ]]; then
@@ -303,10 +303,10 @@ test_t9_per_file_version_independence() {
   setup_sandbox "config-global-basic.yaml" "config-project-future-version-additive-only.yaml"
   local out hosts keys
   out=$(run_rc_config "show --json" /dev/null)
-  hosts=$(jq -c '.config.ssh.allowed_hosts' <<<"$out")
-  keys=$(jq -c '.config.ssh.allowed_keys' <<<"$out")
+  hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
+  keys=$(jq -c '.config.mounts.allow_risky' <<<"$out")
   # Global contributes; project is skipped (not merged).
-  if [[ "$hosts" == '["github.com"]' && "$keys" == '["id_ed25519_personal","id_ed25519_work"]' ]]; then
+  if [[ "$hosts" == '["github.com"]' && "$keys" == '["/opt/personal","/opt/work"]' ]]; then
     pass "T9 per-file version independence — global loads, project v99 skipped"
   else
     fail "T9 expected hosts=[github.com] keys=both, got hosts=$hosts keys=$keys"
@@ -358,11 +358,12 @@ test_t12_sha256_canonical() {
   sha1=$(run_rc_config "show --json" | jq -r '.sha256')
   # Reorder the project file (semantically equivalent).
   cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
-ssh:
+network:
   allowed_hosts:
     - switch.berlin
-  allowed_keys:
-    - id_ed25519_personal
+mounts:
+  allow_risky:
+    - /opt/personal
 version: 1
 YAML
   local sha2
@@ -401,9 +402,9 @@ test_t14_only_global() {
   out=$(run_rc_config "show --json")
   g_layer=$(jq -r '.layers.global' <<<"$out")
   p_layer=$(jq -r '.layers.project' <<<"$out")
-  keys=$(jq -c '.config.ssh.allowed_keys' <<<"$out")
+  keys=$(jq -c '.config.mounts.allow_risky' <<<"$out")
   if [[ "$g_layer" != "null" && "$p_layer" == "null" \
-        && "$keys" == '["id_ed25519_personal","id_ed25519_work"]' ]]; then
+        && "$keys" == '["/opt/personal","/opt/work"]' ]]; then
     pass "T14 only global present ⇒ project null, global values applied"
   else
     fail "T14 unexpected: g=$g_layer p=$p_layer keys=$keys"
@@ -417,7 +418,7 @@ test_t15_only_project() {
   out=$(run_rc_config "show --json")
   g_layer=$(jq -r '.layers.global' <<<"$out")
   p_layer=$(jq -r '.layers.project' <<<"$out")
-  hosts=$(jq -c '.config.ssh.allowed_hosts' <<<"$out")
+  hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
   if [[ "$g_layer" == "null" && "$p_layer" != "null" \
         && "$hosts" == '["switch.berlin"]' ]]; then
     pass "T15 only project present ⇒ global null, project values applied"
@@ -478,7 +479,7 @@ test_t17_validate_aborts_on_selection_list_future_version() {
     bash -c "source '$RC'; _config_validate_or_abort '$TEST_WS'" 2>"$stderr_file" \
     || exit_code=$?
   if [[ "$exit_code" -ne 0 ]] \
-     && grep -q "selection-list field(s) \[ssh.allowed_keys\]" "$stderr_file"; then
+     && grep -q "selection-list field(s) \[mounts.allow_risky\]" "$stderr_file"; then
     pass "T17 _config_validate_or_abort exits non-zero on selection-list+future-version"
   else
     fail "T17 expected non-zero exit + selection-list error, exit=$exit_code stderr=$(cat "$stderr_file")"
@@ -767,22 +768,23 @@ test_t32_network_allowed_hosts_additive_merge() {
 }
 
 test_t33_v1_config_no_network_parses_unchanged() {
-  # Existing v1 config with no network.* → empty defaults, no error.
+  # Existing v1 config with no network.* → empty defaults, no error; other
+  # fields (mounts.allow_risky) present in the same file are unaffected.
   # Note: writable_hosts removed from schema in rip-cage-ta1o.1 (write-gate deleted).
   # The field is no longer in the effective config output.
-  setup_sandbox "config-global-basic.yaml" "config-project-basic.yaml"
+  setup_sandbox "config-global-mounts-only.yaml" "config-project-mounts-only.yaml"
   local out hosts mode
   out=$(run_rc_config "show --json")
   hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
   mode=$(jq -r '.config.network.mode' <<<"$out")
-  # ssh fields still present
-  local ssh_hosts
-  ssh_hosts=$(jq -c '.config.ssh.allowed_hosts' <<<"$out")
+  # non-network fields still present
+  local risky
+  risky=$(jq -c '.config.mounts.allow_risky' <<<"$out")
   if [[ "$hosts" == '[]' && "$mode" == "null" \
-        && "$ssh_hosts" == '["github.com","switch.berlin"]' ]]; then
+        && "$risky" == '["/opt/personal"]' ]]; then
     pass "T33 v1 config with no network.* parses unchanged, empty defaults"
   else
-    fail "T33 expected empty network defaults (allowed_hosts=[], mode=null) + ssh unchanged, got hosts=$hosts mode=$mode ssh_hosts=$ssh_hosts"
+    fail "T33 expected empty network defaults (allowed_hosts=[], mode=null) + mounts.allow_risky unchanged, got hosts=$hosts mode=$mode allow_risky=$risky"
   fi
   teardown_sandbox
 }
@@ -967,77 +969,21 @@ test_t42_session_multiplexer_invalid_aborts() {
 }
 
 # ---------------------------------------------------------------------------
-# network.egress.mediator config field (ADR-026 D5, rip-cage-ta1o.5.1)
-# T43: network.egress.mediator absent ⇒ default "none"
-# T44: network.egress.mediator: my-proxy ⇒ parses as my-proxy, prov=project
-#      (manifest declares "my-proxy" as MEDIATOR; image-absent path → manifest fallback)
-# T45: network.egress.mediator: unknown-mediator ⇒ aborts loud per ADR-001
+# T43/T44/T45 (network.egress.mediator config field, ADR-026 D5,
+# rip-cage-ta1o.5.1) retired: the MEDIATOR archetype + its config field were
+# deleted per ADR-029 D2 (engine-deletion sweep).
 # ---------------------------------------------------------------------------
 
-test_t43_network_egress_mediator_default_none() {
-  # When network.egress.mediator is absent, it defaults to "none"
-  setup_sandbox "" ""
-  local out mediator
-  out=$(run_rc_config "show --json")
-  mediator=$(jq -r '.config.network.egress.mediator // "MISSING"' <<<"$out")
-  if [[ "$mediator" == "none" ]]; then
-    pass "T43 network.egress.mediator absent ⇒ default 'none'"
-  else
-    fail "T43 expected 'none' default, got: $mediator"
-  fi
-  teardown_sandbox
-}
-
-test_t44_network_egress_mediator_declared_parses() {
-  # network.egress.mediator: my-proxy parses correctly with project provenance.
-  # Isomorphic to T41 (session.multiplexer=tmux).
-  # RC_MEDIATOR_INSPECT_IMAGE is pinned to a nonexistent tag so
-  # _config_mediator_derive_allowed_set deterministically takes the image-absent
-  # path → manifest-enumeration fallback.
-  setup_sandbox "" "config-project-mediator-myproxy.yaml"
-  # Seed a tools.yaml with my-proxy as a MEDIATOR so the manifest-enumeration
-  # fallback accepts it (pre-build path; no real image needed for this test).
-  cp "${FIXTURES}/manifest-mediator-provider.yaml" "${TEST_HOME}/.config/rip-cage/tools.yaml"
-  local out mediator prov
-  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    RC_MEDIATOR_INSPECT_IMAGE="rip-cage:nonexistent-isolation-t44" \
-    bash -c "cd '$TEST_WS' && '$RC' config show --json")
-  mediator=$(jq -r '.config.network.egress.mediator' <<<"$out")
-  prov=$(jq -r '.provenance["network.egress.mediator"]' <<<"$out")
-  if [[ "$mediator" == "my-proxy" && "$prov" == "project" ]]; then
-    pass "T44 network.egress.mediator=my-proxy parses from project, prov=project (my-proxy declared in manifest)"
-  else
-    fail "T44 expected mediator=my-proxy prov=project, got mediator=$mediator prov=$prov"
-  fi
-  teardown_sandbox
-}
-
-test_t45_network_egress_mediator_invalid_aborts() {
-  # network.egress.mediator: unknown-mediator-not-in-manifest ⇒ aborts loud per ADR-001
-  setup_sandbox "" "config-project-mediator-invalid.yaml"
-  local stderr_file exit_code
-  stderr_file=$(mktemp)
-  exit_code=0
-  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
-  if [[ "$exit_code" -ne 0 ]]; then
-    pass "T45 network.egress.mediator=unknown aborts loud per ADR-021 D3"
-  else
-    fail "T45 expected non-zero exit for invalid network.egress.mediator, exit=$exit_code stderr=$(cat "$stderr_file")"
-  fi
-  rm -f "$stderr_file"
-  teardown_sandbox
-}
-
 # ---------------------------------------------------------------------------
-# auth.credential_mounts + network.egress.mediator_env_file config fields
+# auth.credential_mounts config field
 # (rip-cage-seqc.4, C3 — confirms the schema additions ride the generic
 # merge/provenance/enum engines with no per-key code).
 # T46: auth.credential_mounts absent ⇒ default "real"
 # T47: auth.credential_mounts: none ⇒ parses from project, prov=project;
 #      project replaces global (selection_list semantics)
 # T48: auth.credential_mounts: bogus ⇒ aborts loud per ADR-021 D3
-# T49: network.egress.mediator_env_file absent ⇒ default null; declared value
-#      parses as a scalar with project provenance
+# (T49, network.egress.mediator_env_file, retired with the MEDIATOR archetype
+# — ADR-029 D2 engine-deletion sweep.)
 # ---------------------------------------------------------------------------
 
 test_t46_auth_credential_mounts_default_real() {
@@ -1093,46 +1039,18 @@ YAML
   teardown_sandbox
 }
 
-test_t49_mediator_env_file_default_null_and_declared() {
-  setup_sandbox "" ""
-  local out val prov
-  out=$(run_rc_config "show --json")
-  val=$(jq -r '.config.network.egress.mediator_env_file' <<<"$out")
-  prov=$(jq -r '.provenance["network.egress.mediator_env_file"]' <<<"$out")
-  if [[ "$val" != "null" || "$prov" != "default" ]]; then
-    fail "T49 expected default null/default, got val=$val prov=$prov"
-    teardown_sandbox
-    return
-  fi
-  teardown_sandbox
-
-  setup_sandbox "" ""
-  cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
-network:
-  egress:
-    mediator_env_file: /home/user/.cage-secrets
-YAML
-  out=$(run_rc_config "show --json")
-  val=$(jq -r '.config.network.egress.mediator_env_file' <<<"$out")
-  prov=$(jq -r '.provenance["network.egress.mediator_env_file"]' <<<"$out")
-  if [[ "$val" == "/home/user/.cage-secrets" && "$prov" == "project" ]]; then
-    pass "T49 network.egress.mediator_env_file absent ⇒ null/default; declared ⇒ scalar parses, prov=project"
-  else
-    fail "T49 expected val=/home/user/.cage-secrets prov=project, got val=$val prov=$prov"
-  fi
-  teardown_sandbox
-}
+# T49 (network.egress.mediator_env_file) retired: the field was deleted with
+# the MEDIATOR archetype (ADR-029 D2 engine-deletion sweep).
 
 # ---------------------------------------------------------------------------
 # RC_IMAGE propagation into the registry inspects (rip-cage-gkc7)
 # T50: RC_MUX_INSPECT_IMAGE unset ⇒ mux registry inspect follows $IMAGE (RC_IMAGE)
 # T51: explicit RC_MUX_INSPECT_IMAGE still wins over RC_IMAGE
-# T52: RC_MEDIATOR_INSPECT_IMAGE unset ⇒ mediator registry inspect follows $IMAGE
-# T53: explicit RC_MEDIATOR_INSPECT_IMAGE still wins over RC_IMAGE
+# (T52/T53, the mediator isomorphs, retired with the MEDIATOR archetype —
+# ADR-029 D2 engine-deletion sweep.)
 # ---------------------------------------------------------------------------
 
-# Fake-docker PATH shim (test-manifest-seed-drift.sh idiom) for T50-T53.
+# Fake-docker PATH shim (test-manifest-seed-drift.sh idiom) for T50-T51.
 # 'docker image inspect <tag>' reports EXISTS only for the two given tags;
 # 'docker inspect --format ... <tag>' echoes the label value for the LABELED
 # tag and nothing (empty label) for the EMPTY tag. Permissive exit 0 otherwise.
@@ -1142,7 +1060,7 @@ _make_fake_docker_gkc7() {
   mkdir -p "$dir"
   cat > "${dir}/docker" <<SHIM
 #!/usr/bin/env bash
-# Fake docker (rip-cage-gkc7 T50-T53): '${labeled_tag}' exists (label '${label_val}');
+# Fake docker (rip-cage-gkc7 T50-T51): '${labeled_tag}' exists (label '${label_val}');
 # '${empty_tag}' exists with an EMPTY label; every other tag is absent.
 case "\$1" in
   image)
@@ -1215,49 +1133,9 @@ test_t51_mux_inspect_explicit_override_wins() {
   teardown_sandbox
 }
 
-test_t52_mediator_inspect_follows_rc_image() {
-  # Isomorphic to T50 for _config_mediator_derive_allowed_set (rip-cage-gkc7:
-  # the original field failure — 'iron-proxy is not in the baked mediator
-  # registry' against a custom-tagged image whose rc.mediators label lists it).
-  setup_sandbox "" "config-project-mediator-myproxy.yaml"
-  printf 'version: 1\ntools: []\n' > "${TEST_HOME}/.config/rip-cage/tools.yaml"
-  _make_fake_docker_gkc7 "${TEST_HOME}/fake-docker-bin" "rip-cage:custom-gkc7" "my-proxy"
-  local out mediator exit_code=0 stderr_file
-  stderr_file=$(mktemp)
-  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    PATH="${TEST_HOME}/fake-docker-bin:$PATH" \
-    RC_IMAGE="rip-cage:custom-gkc7" RC_MEDIATOR_INSPECT_IMAGE="" \
-    bash -c "cd '$TEST_WS' && '$RC' config show --json" 2>"$stderr_file") || exit_code=$?
-  mediator=$(jq -r '.config.network.egress.mediator' <<<"$out" 2>/dev/null)
-  if [[ "$exit_code" -eq 0 && "$mediator" == "my-proxy" ]]; then
-    pass "T52 mediator registry inspect follows RC_IMAGE when RC_MEDIATOR_INSPECT_IMAGE unset (rip-cage-gkc7)"
-  else
-    fail "T52 expected exit=0 mediator=my-proxy (custom-tag label authoritative), got exit=$exit_code mediator=$mediator stderr=$(cat "$stderr_file")"
-  fi
-  rm -f "$stderr_file"
-  teardown_sandbox
-}
-
-test_t53_mediator_inspect_explicit_override_wins() {
-  # Isomorphic to T51: explicit RC_MEDIATOR_INSPECT_IMAGE (empty-label tag)
-  # must win over RC_IMAGE (labeled tag) ⇒ my-proxy fails loud.
-  setup_sandbox "" "config-project-mediator-myproxy.yaml"
-  printf 'version: 1\ntools: []\n' > "${TEST_HOME}/.config/rip-cage/tools.yaml"
-  _make_fake_docker_gkc7 "${TEST_HOME}/fake-docker-bin" "rip-cage:custom-gkc7" "my-proxy" "rip-cage:other-gkc7"
-  local exit_code=0 stderr_file
-  stderr_file=$(mktemp)
-  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    PATH="${TEST_HOME}/fake-docker-bin:$PATH" \
-    RC_IMAGE="rip-cage:custom-gkc7" RC_MEDIATOR_INSPECT_IMAGE="rip-cage:other-gkc7" \
-    bash -c "cd '$TEST_WS' && '$RC' config show --json" >/dev/null 2>"$stderr_file" || exit_code=$?
-  if [[ "$exit_code" -ne 0 ]]; then
-    pass "T53 explicit RC_MEDIATOR_INSPECT_IMAGE wins over RC_IMAGE (empty-label override rejects my-proxy)"
-  else
-    fail "T53 expected non-zero exit (override tag has empty label), got exit=0 — RC_IMAGE wrongly took precedence"
-  fi
-  rm -f "$stderr_file"
-  teardown_sandbox
-}
+# T52/T53 (mediator registry inspect isomorphs of T50/T51) retired: the
+# network.egress.mediator field + _config_mediator_derive_allowed_set were
+# deleted with the MEDIATOR archetype (ADR-029 D2 engine-deletion sweep).
 
 # ---------------------------------------------------------------------------
 # D6 — rc config show <path> + rc config get <key> sugar (rip-cage-08q)
@@ -1270,23 +1148,23 @@ test_t54_config_show_path_arg_resolves_project_layer() {
   setup_two_workspace_sandbox
   cat > "${TEST_WS_A}/.rip-cage.yaml" <<'YAML'
 version: 1
-ssh:
+network:
   allowed_hosts:
     - workspace-a-host.example
 YAML
   cat > "${TEST_WS_B}/.rip-cage.yaml" <<'YAML'
 version: 1
-ssh:
+network:
   allowed_hosts:
     - workspace-b-host.example
 YAML
   local out hosts
   out=$(run_rc_config_from "$TEST_WS_A" "show --json '$TEST_WS_B'")
-  hosts=$(jq -c '.config.ssh.allowed_hosts' <<<"$out" 2>/dev/null)
+  hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out" 2>/dev/null)
   if [[ "$hosts" == '["workspace-b-host.example"]' ]]; then
     pass "T54 rc config show <path> resolves <path>'s project layer, not cwd's (rip-cage-08q)"
   else
-    fail "T54 expected pathB's ssh.allowed_hosts=[workspace-b-host.example], got: $hosts (out=$out)"
+    fail "T54 expected pathB's network.allowed_hosts=[workspace-b-host.example], got: $hosts (out=$out)"
   fi
   teardown_two_workspace_sandbox
 }
@@ -1350,7 +1228,7 @@ test_t58_config_get_bogus_key_errors() {
   setup_sandbox "" "config-project-basic.yaml"
   local stderr_file exit_code=0
   stderr_file=$(mktemp)
-  run_rc_config "get ssh.no_such_field" "$stderr_file" >/dev/null || exit_code=$?
+  run_rc_config "get network.no_such_field" "$stderr_file" >/dev/null || exit_code=$?
   if [[ "$exit_code" -ne 0 ]] && grep -qi "key not found" "$stderr_file"; then
     pass "T58 rc config get <bogus.key> exits non-zero with a 'key not found' error"
   else
@@ -1442,6 +1320,61 @@ test_t61_config_get_key_traverses_through_scalar() {
 }
 
 # ---------------------------------------------------------------------------
+# T62-T66: retired-field loud-reject (Fable ruling 6, rip-cage-tsf2).
+# Four containment-bearing fields removed from the schema at the msb cutover
+# (ssh.allowed_keys, ssh.allowed_hosts, network.egress.mediator,
+# network.egress.mediator_env_file) must LOUD-REJECT rather than silently drop
+# in _config_merge's schema walk — declared containment silently un-enforcing =
+# false confidence (ADR-029 D1). Distinct from T36/T37 (network.writable_hosts,
+# a retired write-gate that stays silently ignored — no containment posture).
+# ---------------------------------------------------------------------------
+_assert_retired_reject() {
+  local field="$1" fixture="$2" cite_grep="$3"
+  setup_sandbox "" "$fixture"
+  local stderr_file exit_code=0
+  stderr_file=$(mktemp)
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] \
+     && grep -q "retired config field '${field}'" "$stderr_file" \
+     && grep -q "retired in the msb migration" "$stderr_file" \
+     && grep -q "$cite_grep" "$stderr_file" \
+     && grep -qi "Fix:" "$stderr_file"; then
+    pass "retired field '${field}' loud-rejects with actionable message (ruling 6)"
+  else
+    fail "expected non-zero + actionable retired-field message for '${field}', got exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+test_t62_retired_ssh_allowed_keys() {
+  _assert_retired_reject "ssh.allowed_keys" "config-project-retired-ssh-allowed-keys.yaml" "ADR-029 D3 + ADR-022 D6"
+}
+test_t63_retired_ssh_allowed_hosts() {
+  _assert_retired_reject "ssh.allowed_hosts" "config-project-retired-ssh-allowed-hosts.yaml" "ADR-029 D3 + ADR-022 D6"
+}
+test_t64_retired_egress_mediator() {
+  _assert_retired_reject "network.egress.mediator" "config-project-retired-egress-mediator.yaml" "ADR-029 D2/D5"
+}
+test_t65_retired_egress_mediator_env_file() {
+  _assert_retired_reject "network.egress.mediator_env_file" "config-project-retired-egress-mediator-env-file.yaml" "ADR-029 D2/D5"
+}
+test_t66_clean_config_no_false_reject() {
+  # Negative control: a modern config with NONE of the retired fields must pass —
+  # guards against an over-broad path match rejecting legitimate configs.
+  setup_sandbox "config-global-with-network.yaml" "config-project-with-network.yaml"
+  local stderr_file exit_code=0
+  stderr_file=$(mktemp)
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -eq 0 ]] && ! grep -q "retired config field" "$stderr_file"; then
+    pass "T66 clean config with no retired fields is not falsely rejected"
+  else
+    fail "T66 clean config unexpectedly rejected, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -1488,17 +1421,11 @@ run_test test_t39_validate_yq_missing_with_global_config_emits_dependency_messag
 run_test test_t40_session_multiplexer_default_none
 run_test test_t41_session_multiplexer_tmux_parses
 run_test test_t42_session_multiplexer_invalid_aborts
-run_test test_t43_network_egress_mediator_default_none
-run_test test_t44_network_egress_mediator_declared_parses
-run_test test_t45_network_egress_mediator_invalid_aborts
 run_test test_t46_auth_credential_mounts_default_real
 run_test test_t47_auth_credential_mounts_none_parses
 run_test test_t48_auth_credential_mounts_invalid_aborts
-run_test test_t49_mediator_env_file_default_null_and_declared
 run_test test_t50_mux_inspect_follows_rc_image
 run_test test_t51_mux_inspect_explicit_override_wins
-run_test test_t52_mediator_inspect_follows_rc_image
-run_test test_t53_mediator_inspect_explicit_override_wins
 run_test test_t54_config_show_path_arg_resolves_project_layer
 run_test test_t55_config_show_nonexistent_path_errors
 run_test test_t56_config_get_key_matches_show
@@ -1507,6 +1434,11 @@ run_test test_t58_config_get_bogus_key_errors
 run_test test_t59_config_get_null_value_not_not_found
 run_test test_t60_config_get_path_arg
 run_test test_t61_config_get_key_traverses_through_scalar
+run_test test_t62_retired_ssh_allowed_keys
+run_test test_t63_retired_ssh_allowed_hosts
+run_test test_t64_retired_egress_mediator
+run_test test_t65_retired_egress_mediator_env_file
+run_test test_t66_clean_config_no_false_reject
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

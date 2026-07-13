@@ -1,0 +1,4 @@
+version: 1
+network:
+  egress:
+    mediator_env_file: /tmp/secrets.env

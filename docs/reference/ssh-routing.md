@@ -1,204 +1,46 @@
-# SSH Identity Routing
+# SSH Identity Routing — RETIRED
 
-Rip cage carries your host SSH posture into the cage — not just the forwarded agent (ADR-017/018), but also the config that says *which* key to use for *which* destination. Without it, OpenSSH inside the cage falls back to offering every key in the agent in load order; on GitHub that means whichever key was loaded first decides which account is used for the entire session, silently.
+> **This page describes a retired feature.** [ADR-029](../decisions/ADR-029-msb-migration.md) D3 retires the entire ssh cluster (ADR-017 agent forwarding, ADR-018 socket discovery, ADR-020 identity routing, ADR-022 host+key allowlist) in favor of git over HTTPS with a per-cage token injected by msb `--secret`. The `--github-identity` flag, `RIP_CAGE_GITHUB_IDENTITY` env var, `~/.config/rip-cage/identity-rules`, the `--no-ssh-config`/`--no-forward-ssh` flags, the `[rip-cage] github.com: ...` banner, and the `~/.cache/rip-cage/identity-map.json` cache described below **no longer exist in `rc`** — none of this is wired into `cli/up.sh` post-cutover. This page is kept as a historical record of the pre-cutover design, not a how-to.
 
-After `rc up`, the cage has a translated version of your `~/.ssh/config`, read-only pub key files for the keys your config references, and a synthesized `Host github.com` block if one was resolved. Private keys are never mounted — the forwarded agent handles signing.
+## What replaced it
+
+Git authenticates over HTTPS: `https://x-access-token:$TOKEN@github.com/...`, with `$TOKEN` injected on the wire by msb `--secret` — the guest never possesses the real token, only a synthesized placeholder ([ADR-029](../decisions/ADR-029-msb-migration.md) D3/D5). The per-cage token binding **is** the identity scoping (no four-layer resolution, no rules file, no `match`/`unset`/`mismatch` banner) — you declare which token is bound to which host(s) directly in `.rip-cage.yaml`:
+
+```yaml
+# <project>/.rip-cage.yaml
+version: 1
+network:
+  allowed_hosts:
+    - github.com
+auth:
+  credentials:
+    - source_env: GH_TOKEN     # a host env var holding a scoped GitHub PAT
+      hosts: [github.com]
+```
+
+See [egress.md](egress.md) for the full worked example (reachability + credential injection are two separate declarations) and [CLAUDE.md](../../CLAUDE.md#when-you-need-a-new-host-allowed-for-egress-inside-the-cage) for the "I hit a wall" flow.
+
+**Successor design pointer** ([ADR-029](../decisions/ADR-029-msb-migration.md) D3): if a per-project "which identity does this cage push as" selection mechanism is ever rebuilt for token-based auth, this retired page's four-layer priority shape (flag → label → rules-file → loud-unset) and `match`/`mismatch`/`unset` state machine are the named reusable designs — `gh api user` is the natural identity probe over HTTPS, parallel to the old `ssh -T git@github.com` greeting probe. Nothing along these lines is implemented today; `auth.credentials` above is the entire current surface.
+
+## `rc reload` — also retired in its pre-cutover shape
+
+The retired `rc reload` below hot-reloaded `ssh.allowed_hosts` in place, with no container teardown. **That hot-reload property does not survive the cutover.** The current `rc reload` (`cli/reload.sh`) applies `network.allowed_hosts`/`network.mode` changes and is a **cold-recreate** (graceful stop → remove → recreate) — see [egress.md](egress.md#the-denyfixreload-repair-loop) and [ADR-029](../decisions/ADR-029-msb-migration.md) D4 for what survives (host mounts, named volumes, the Claude session) versus what's lost (only the guest's ephemeral overlay).
 
 ---
 
-## `--github-identity` flag
+<details>
+<summary>Historical record of the pre-cutover ssh identity routing design (click to expand — not current behavior)</summary>
 
-```
-rc up --github-identity=id_ed25519_work ~/code/mapular/foo
-```
+Rip cage carried your host SSH posture into the cage — not just the forwarded agent (ADR-017/018), but also the config that says *which* key to use for *which* destination. Without it, OpenSSH inside the cage fell back to offering every key in the agent in load order; on GitHub that meant whichever key was loaded first decided which account was used for the entire session, silently.
 
-Pins `github.com` inside the cage to the named key for this container. The basename identifies a key file under `~/.ssh/` on the host — no path, no extension.
+After `rc up`, the cage had a translated version of your `~/.ssh/config`, read-only pub key files for the keys your config referenced, and a synthesized `Host github.com` block if one was resolved. Private keys were never mounted — the forwarded agent handled signing.
 
-After `rc up`, all `git@github.com:` URLs inside the cage authenticate using that key. The pin is immutable for the lifetime of the container: passing `--github-identity` to `rc up` on an already-running container errors loud and tells you to `rc destroy && rc up` to change it.
+**`--github-identity` flag.** `rc up --github-identity=id_ed25519_work ~/code/mapular/foo` pinned `github.com` inside the cage to the named key for that container, for the container's lifetime.
 
-The same effect can be achieved without the flag by setting `RIP_CAGE_GITHUB_IDENTITY=<keyname>` in your environment before calling `rc up`.
+**Resolution order:** 1) `--github-identity`/`RIP_CAGE_GITHUB_IDENTITY` CLI/env, 2) `rc.github-identity` container label (resume), 3) first matching glob in `~/.config/rip-cage/identity-rules`, 4) no match (banner showed `unset`).
 
----
+**Banner states:** `match` (green, resolved identity matches expected), `unset` (yellow, no pin configured), `mismatch` (red, resolved identity differs from expected — recreate required to fix), `unreachable` (yellow, the github.com SSH probe couldn't connect).
 
-## Resolution order for the github.com identity
+**`rc reload`** (pre-cutover): host-side hot-reload of `ssh.allowed_hosts` content changes only, re-running `_filter_known_hosts` against host `~/.ssh/known_hosts` and rewriting the cage's cached `known_hosts` bind-mount source in place — no container recreation, no daemon restart, no tmux interruption. Full design: [ADR-022](../decisions/ADR-022-ssh-allowlist.md) D6.
 
-When you run `rc up`, the cage resolves which identity to pin to `github.com` via a four-layer priority list. The first layer that produces a result wins; later layers are not consulted.
-
-| Priority | Source | When it applies |
-|----------|--------|-----------------|
-| 1 | `--github-identity=<keyname>` CLI flag, or `RIP_CAGE_GITHUB_IDENTITY=<keyname>` env var | You explicitly named a key at `rc up` time |
-| 2 | `rc.github-identity` container label (resume only) | A previous `rc up` already pinned the key; it carries over |
-| 3 | First matching glob in `~/.config/rip-cage/identity-rules` against the project path | Your rules file declares a per-path convention |
-| 4 | No match | No `Host github.com` block is synthesized; the preflight surfaces this as `unset` |
-
-**Layer 1 example.** You're running `rc up` for a work repo and want to make the pin explicit:
-
-```
-rc up --github-identity=id_ed25519_work ~/code/mapular/my-service
-```
-
-**Layer 2 example.** You stop and resume a container that was already pinned to `id_ed25519_work`. The pin carries over automatically — no flag needed on resume.
-
-**Layer 3 example.** Your rules file maps project paths to keys:
-
-```
-# ~/.config/rip-cage/identity-rules
-~/code/mapular/*    id_ed25519_work
-~/code/personal/*   id_ed25519_personal
-```
-
-When you run `rc up ~/code/mapular/my-service`, the first matching line (`~/code/mapular/*`) fires and the cage is pinned to `id_ed25519_work` without any flag.
-
-**Layer 4 example.** You have no rules file and no `--github-identity` flag. The cage starts with no `github.com` pin; the banner shows `unset` in yellow and names which identity github.com actually sees (useful for single-identity setups where the fallback is fine).
-
----
-
-## Rules file
-
-Path on host: `~/.config/rip-cage/identity-rules`
-
-Format: one rule per line, a glob pattern followed by a key basename. Blank lines and lines beginning with `#` are skipped. The first matching rule wins.
-
-```
-# ~/.config/rip-cage/identity-rules
-~/code/mapular/*    id_ed25519_work
-~/code/personal/*   id_ed25519_personal
-~/dev/clients/*     id_ed25519_client
-```
-
-Globs use shell glob semantics — `*` matches path segments, but not `/` boundaries within a segment. The tilde (`~`) is expanded to your `$HOME` before matching, so `~/code/mapular/*` works as expected.
-
-The file is read at `rc up` time (both create and resume). If the file does not exist, layer 3 produces no match and resolution falls through to layer 4.
-
----
-
-## `--no-ssh-config` and `--no-forward-ssh`
-
-### `--no-ssh-config`
-
-An independent opt-out. When passed, `rc up` skips config translation, pubkey mounts, and the github.com identity preflight entirely. The cage behaves as before ADR-020: forwarded agent, no config, first-key-wins.
-
-```
-rc up --no-ssh-config ~/code/my-project
-```
-
-After `rc up --no-ssh-config`:
-- `/home/agent/.ssh/config` is not mounted (the directory may still exist but is empty).
-- No `*.pub` files are mounted.
-- The github.com preflight does not run; the banner emits nothing for identity routing.
-
-The opt-out is persisted as a container label (`rc.ssh-config=off`) so resume preserves the posture without re-passing the flag.
-
-### `--no-forward-ssh` implies `--no-ssh-config`
-
-Passing `--no-forward-ssh` (the ADR-017 containment flag) implies `--no-ssh-config` by default. The reasoning: a cage with a translated config and pub key mounts but no forwarded agent is a confusing half-state. When you ask for no SSH forwarding, the config routing goes away too.
-
-To decouple the two — forwarding off, but config and pub key mounts on — pass both flags explicitly:
-
-```
-rc up --no-forward-ssh --ssh-config ~/code/my-project
-```
-
-| Flags passed | Forwarded agent | Config + pubkeys mounted | Identity preflight |
-|---|---|---|---|
-| (default) | yes | yes | yes |
-| `--no-ssh-config` | yes | no | no |
-| `--no-forward-ssh` | no | no | no |
-| `--no-forward-ssh --ssh-config` | no | yes | yes |
-
----
-
-## Banner states
-
-Every new shell inside the cage shows a one-line github.com identity status. The line is absent only when ssh-config is disabled.
-
-### `match` (green)
-
-**Condition:** The identity github.com authenticated as matches the expected key for this container.
-
-```
-[rip-cage] github.com: jonatan-mapular (source: rules-file)
-```
-
-Shown in green. The source field names which resolution layer produced the pin: `host-config`, `cli-flag`, `label`, `rules-file`, or `none`.
-
-### `unset` (yellow)
-
-**Condition:** No `Host github.com` block was synthesized (layer 4 — no rules file, no flag, no label), but SSH itself is active.
-
-```
-[rip-cage] github.com: unset — pushes will go to jsnyde0
-```
-
-Shown in yellow. The message names the identity github.com actually resolved to, so you can verify whether the fallback is acceptable. To pin: `rc destroy <name> && rc up --github-identity=<keyname> <path>`.
-
-### `mismatch` (red)
-
-**Condition:** The expected identity (from the label or flag) differs from what github.com actually resolved to — typically caused by a missing pub key file or an `IdentitiesOnly yes` block that couldn't be honored.
-
-```
-[rip-cage] github.com: MISMATCH — expected jonatan-mapular, greeting jsnyde0
-```
-
-Shown in red. To fix: `rc destroy <name> && rc up --github-identity=<keyname> <path>` (passing `--github-identity` on an existing container errors; recreate is required).
-
-### `unreachable` (yellow)
-
-**Condition:** The github.com SSH probe could not connect — egress firewall, no network, or github.com is down.
-
-```
-[rip-cage] github.com: unreachable (skipping pubkey check)
-```
-
-Shown in yellow. Routing configuration is still in place; the probe just couldn't confirm it. Read-only work and HTTPS git remain usable.
-
----
-
-## Identity-map cache
-
-Host path: `~/.cache/rip-cage/identity-map.json`
-
-The cache maps key basenames to the GitHub usernames they authenticate as, so the preflight can detect `match` vs `mismatch` without a round-trip comparison requiring user input. It is populated lazily from successful preflights and shared across all containers on the host.
-
-TTL: 24 hours. Refresh: `rc auth refresh` invalidates cache entries and triggers a fresh probe on the next `rc up`.
-
----
-
-## What is observable in the cage after `rc up`
-
-After a successful `rc up` with ssh-config enabled, `/home/agent/.ssh/` contains:
-
-- **`config`** — the translated config derived from your host `~/.ssh/config`, read-only bind mount. `IdentityFile` paths point into `/home/agent/.ssh/`; macOS-only directives are shimmed; host-only directives (`ProxyCommand`, `ControlPath`, etc.) are stripped. If a `Host github.com` block was synthesized, it appears at the end.
-- **`<keyname>.pub`** — one file per key referenced by an `IdentityFile` directive in the translated config, read-only bind mounts from `~/.ssh/<keyname>.pub` on the host.
-- **`known_hosts`** — read-only bind mount from `~/.ssh/known_hosts` on the host, if it exists. Augments the cage-baked `/etc/ssh/ssh_known_hosts` (which holds `github.com` only).
-
-**No private key material is present.** The forwarded ssh-agent handles all signing; the cage only needs the pub key files so that `IdentitiesOnly yes` can filter the agent down to the correct identity. This is the load-bearing structural invariant from ADR-017 D1.
-
-If `--no-ssh-config` was passed (or implied by `--no-forward-ssh`), the directory exists but contains none of the above mounts.
-
----
-
-## `rc reload`
-
-Hot-reload `.rip-cage.yaml` allowlist changes without recreating the container (rip-cage-ocn / [ADR-022](../decisions/ADR-022-ssh-allowlist.md) D6).
-
-**Today: `ssh.allowed_hosts` content changes only.** Anything else refuses loud and tells you to `rc destroy && rc up`.
-
-```bash
-# Add a host: edit .rip-cage.yaml, then on the host:
-rc reload my-cage
-# Preview without applying:
-rc reload my-cage --dry-run
-```
-
-**What it does:** re-runs the `_filter_known_hosts` pipeline against your host `~/.ssh/known_hosts` and rewrites `~/.cache/rip-cage/<cname>/known_hosts` in place. The bind mount inside the cage (`/home/agent/.ssh/known_hosts`) reflects the new content on the next SSH call. No `docker exec`, no daemon restart, no tmux interruption.
-
-**Exit codes:**
-- `0` — applied (or no-op when live matches the applied-config snapshot)
-- `1` — refuse-loud: a non-reload-eligible field changed (e.g. `ssh.allowed_keys`, `egress`, `ports`, `identity`, `env_file`). The error names the path. Run `rc destroy && rc up`.
-- `2` — container not running. The verb "reload" promises the cage sees the change now; reloading a stopped cage would be misleading. Run `rc up` first.
-- `3` — concurrent reload in progress (another `rc reload` holds the lock dir at `~/.cache/rip-cage/<cname>/.reload.lock.d`).
-
-**Security boundary:** `rc reload` is host-side only. The `rc` binary is not on the cage PATH, and the docker socket is not mounted into the cage. The agent inside can edit `.rip-cage.yaml` (it's writable) but cannot run `rc reload` itself — the human running the command on the host is the approval step. No in-cage hook is needed (and was deliberately rejected: see [ADR-022](../decisions/ADR-022-ssh-allowlist.md) D6 alternatives).
-
-**Drift hint:** `rc up` resume compares the live effective config against the applied-config snapshot at `~/.cache/rip-cage/<cname>/config-applied.json`. When only `ssh.allowed_hosts` differs, the hint points at `rc reload`. When any other field differs, the hint points at `rc destroy && rc up`.
+</details>

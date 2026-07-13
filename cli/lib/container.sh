@@ -18,6 +18,18 @@ container_name() {
 
 
 
+# rip-cage-rj68 (S6, ADR-029 D1 hard cutover): resolve_name/verify_rc_container/
+# _container_multiplexer are shared by cli/up.sh, cli/reload.sh, cli/doctor.sh
+# (all rewritten onto msb by this bead) AND by cli/attach_exec.sh,
+# cli/down_destroy.sh, cli/allowlist.sh, cli/ls.sh (NOT in this bead's
+# scope, still docker-only elsewhere in those files). D1 is a hard cutover,
+# not a dual backend, so these three functions move onto msb wholesale —
+# they cannot serve both an msb-backed and a docker-backed caller at once.
+# Known, flagged consequence: the not-in-scope verbs above cannot resolve/
+# verify/multiplex an msb-created cage after this change (they already
+# could not drive one via their own direct `docker exec`/`docker inspect`
+# calls either — this does not newly break a working path, it makes an
+# already-broken one fail at a different, earlier point). Follow-up child.
 resolve_name() {
   local name="${1:-}"
   if [[ -n "$name" ]]; then
@@ -28,14 +40,13 @@ resolve_name() {
   # Try CWD-based resolution first (same logic as cmd_up):
   # derive the expected container name from the current directory and check
   # if a matching rc-managed container exists.
-  local _resolve_timeout="${RC_DOCKER_CALL_TIMEOUT:-15}"
   local cwd_resolved cwd_candidate
   cwd_resolved=$(realpath "." 2>/dev/null) || true
   if [[ -n "$cwd_resolved" ]]; then
     cwd_candidate=$(container_name "$cwd_resolved")
     if [[ -n "$cwd_candidate" ]]; then
       local cwd_label
-      cwd_label=$(_docker_call "$_resolve_timeout" inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$cwd_candidate" 2>/dev/null || true)
+      cwd_label=$(_msb_label "$cwd_candidate" "rc.source.path" 2>/dev/null || true)
       if [[ -n "$cwd_label" ]]; then
         echo "$cwd_candidate"
         return
@@ -43,12 +54,21 @@ resolve_name() {
     fi
   fi
 
-  # Fallback: if no CWD match, use singleton auto-select
-  local containers
-  if ! containers=$(_docker_call "$_resolve_timeout" ps -a --filter label=rc.source.path --format '{{.Names}}'); then
-    echo "Error: failed to list containers (is Docker running?)" >&2
+  # Fallback: if no CWD match, use singleton auto-select over ALL real msb
+  # sandboxes carrying the rc.source.path label.
+  local sandboxes_json
+  if ! sandboxes_json=$(msb list --format json 2>/dev/null); then
+    echo "Error: failed to list sandboxes (is msb running?)" >&2
     return 1
   fi
+  local containers=""
+  local _rn_sbx_name _rn_label
+  while IFS= read -r _rn_sbx_name; do
+    [[ -z "$_rn_sbx_name" ]] && continue
+    _rn_label=$(_msb_label "$_rn_sbx_name" "rc.source.path" 2>/dev/null || true)
+    [[ -n "$_rn_label" ]] && containers+="${_rn_sbx_name}"$'\n'
+  done < <(jq -r '.[].name' <<<"$sandboxes_json" 2>/dev/null)
+  containers="${containers%$'\n'}"
   local count
   count=$(echo "$containers" | grep -c . || true)
   if [[ "$count" -eq 0 ]]; then
@@ -71,15 +91,52 @@ resolve_name() {
 _container_multiplexer() {
   local _cname="$1"
   local _mux
-  _mux=$(docker inspect --format '{{ index .Config.Labels "rc.session.multiplexer" }}' "$_cname" 2>/dev/null || true)
+  _mux=$(_msb_label "$_cname" "rc.session.multiplexer" 2>/dev/null || true)
   echo "${_mux:-none}"
+}
+
+
+# _rc_uptime_from_state RUNNING(0|1) UPDATED_AT -- humanized uptime string
+# derived from `updated_at` (msb's closest counterpart to docker's
+# State.StartedAt for uptime display — it changes on start/stop
+# transitions; not a byte-identical semantic to docker's, an honest
+# approximation, per cli/doctor.sh's original rip-cage-rj68/S6 comment
+# this helper was extracted from). Shared by cli/doctor.sh (its original
+# home) and cli/ls.sh (rip-cage-tsf2.1) — a genuine >=2-module cross-
+# cutting helper, not a single-caller convenience.
+#
+# "—" for not-running (msb exposes only ONE transition timestamp, unlike
+# docker's separate "Up X"/"Exited (code) X ago" vocabulary — a never-
+# started and a stopped-after-running cage are not distinguished here;
+# an honest simplification of what the msb data model actually offers,
+# not a lost docker feature silently faked back in).
+_rc_uptime_from_state() {
+  local _running="$1" _updated_at="$2"
+  local uptime="—"
+  if [[ "$_running" -eq 1 && -n "$_updated_at" ]]; then
+    local started_epoch now_epoch diff
+    started_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "${_updated_at%%.*}" +%s 2>/dev/null \
+      || date -d "$_updated_at" +%s 2>/dev/null || echo 0)
+    now_epoch=$(date +%s)
+    if [[ "$started_epoch" -gt 0 ]]; then
+      diff=$((now_epoch - started_epoch))
+      if [[ "$diff" -lt 3600 ]]; then
+        uptime="$((diff / 60))m"
+      elif [[ "$diff" -lt 86400 ]]; then
+        uptime="$((diff / 3600))h $(((diff % 3600) / 60))m"
+      else
+        uptime="$((diff / 86400))d $(((diff % 86400) / 3600))h"
+      fi
+    fi
+  fi
+  echo "$uptime"
 }
 
 
 verify_rc_container() {
   local name="$1"
   local label
-  label=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$name" 2>/dev/null || true)
+  label=$(_msb_label "$name" "rc.source.path" 2>/dev/null || true)
   if [[ -z "$label" ]]; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is not managed by rc" "CONTAINER_NOT_FOUND"
     echo "Error: container $name is not managed by rc" >&2

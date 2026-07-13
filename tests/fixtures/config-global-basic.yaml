@@ -1,7 +1,8 @@
 version: 1
-ssh:
-  allowed_keys:
-    - id_ed25519_personal
-    - id_ed25519_work
+mounts:
+  allow_risky:
+    - /opt/personal
+    - /opt/work
+network:
   allowed_hosts:
     - github.com

@@ -4,9 +4,6 @@
 #   project = <GM_ROOT>/workspace/.rip-cage.yaml
 #
 version: 1               # from project
-ssh:
-  allowed_keys: null               # from default
-  allowed_hosts: []                 # from default
 mounts:
   denylist: []                 # from global
   allow_risky: null               # from default
@@ -28,16 +25,10 @@ dcg:
   custom_rule_paths: []                 # from default
 session:
   multiplexer: none               # from default
-network:
-  egress:
-    mediator: none               # from default
 auth:
   credential_mounts: real               # from default
-network:
-  egress:
-    mediator_env_file: null               # from default
-auth:
   placeholder_env_file: null               # from default
   per_tool:
     claude: null               # from default
     pi: null               # from default
+  credentials: []                 # from default

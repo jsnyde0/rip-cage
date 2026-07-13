@@ -121,8 +121,6 @@ NEEDS_CONTAINER=(
   "test-claude-json-seed-synthesis.sh" # rip-cage-vwka: spins its own real cages via rc up (non-possession + possession) to verify R4 seed synthesis; requires docker + a pre-built rip-cage image
   "test-multiplexer-lifecycle.sh" # requires a live rip-cage container; exercises multiplexer lifecycle (none/tmux/herdr) + retirement + config-isolation (rip-cage-1f59.8)
   "test-agent-mail-concurrent.sh" # requires RC_E2E=1 + pi auth + agent_mail fixture image; proves two concurrent pi agents coordinate via am CLI
-  "test-ssh-forwarding.sh"    # ADR-017/018 live-cage ssh-agent socket mount/label/sentinels; self-skips without docker (rip-cage-b6ia)
-  "test-ssh-resolver.sh"      # Tests 6-10 spin up live cages; Tests 1-5 are host unit tests of _parse_identity_rules/_resolve_github_identity, already covered by test-ssh-config.sh checks 10-13 — whole file denylisted, no unique host coverage lost under --host-only (rip-cage-b6ia)
   "test-session-persistence.sh" # Phase 3 calls rc up + docker exec for dn2 projects/sessions persist-to-host (rip-cage-b6ia)
   "test-pi-no-extensions.sh"  # rip-cage-sn1h: LOCKED-VARIANT-ONLY probe; requires running cage; self-skips under shipped OPEN default (rip-cage-p35a.1 / ADR-027 D1)
   "test-skills.sh"            # live meta-skill MCP handshake + cage-path/settings assertions inside a container (rip-cage-b6ia)
@@ -523,14 +521,13 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-pi-auth-mount.sh"
   run_test "${SCRIPT_DIR}/test-pi-cage-context.sh"
   run_test "${SCRIPT_DIR}/test-pi-e2e.sh"
-  run_test "${SCRIPT_DIR}/test-config-init.sh"
   run_test "${SCRIPT_DIR}/test-secret-path-denylist.sh"  # tests/test-secret-path-denylist.sh
   run_test "${SCRIPT_DIR}/test-workspace-trust.sh"       # rip-cage-hhh.5: workspace base-URL redirect validator
-  run_test "${SCRIPT_DIR}/test-egress-rules-gen.sh"      # rip-cage-hhh.2: per-cage egress-rules generation
-  run_pytest "${SCRIPT_DIR}/test_egress_proxy.py" --with pytest --with pyyaml python -m pytest "${SCRIPT_DIR}/test_egress_proxy.py" -v   # rip-cage-hhh.3: egress proxy enforcement rewrite
-  run_pytest "${SCRIPT_DIR}/test_dns_decide.py" --with pytest --with dnspython --with pyyaml python -m pytest "${SCRIPT_DIR}/test_dns_decide.py" -v  # rip-cage-hhh.8: DNS resolver sidecar decision logic
+  # test-egress-rules-gen.sh / test_egress_proxy.py / test_dns_decide.py /
+  # test-firewall-tcp22.sh retired: they tested the in-cage egress
+  # router/DNS-resolver/firewall engine, deleted per ADR-029 D2
+  # (engine-deletion sweep, rip-cage-3vj2 / S4).
   run_pytest "${SCRIPT_DIR}/test_skill_server.py" --with pytest python -m pytest "${SCRIPT_DIR}/test_skill_server.py" -v   # rip-cage-nu91: skill-server MCP shim unit tests
-  run_test "${SCRIPT_DIR}/test-firewall-tcp22.sh"        # rip-cage-hhh.4: TCP-22 IP allowlist + UDP/443 DROP + mode-aware banner
   run_test "${SCRIPT_DIR}/test-rc-reload.sh"             # rip-cage-hhh.4: rc reload snapshot format + diff generalization
   run_test "${SCRIPT_DIR}/test-rc-allowlist.sh"          # rip-cage-hhh.6: rc allowlist add/show/promote + D10 host-side guard
   run_test "${SCRIPT_DIR}/test-ls-mode-source.sh"        # rip-cage-hhh.6: rc ls/doctor mode read from source .rip-cage.yaml not stale label
@@ -543,6 +540,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-manifest-seed-drift.sh"   # rip-cage-6vt9: manifest seed-drift detection (rc build) + rc manifest reconcile — sibling of rip-cage-jnvb (stale image on resume)
   run_test "${SCRIPT_DIR}/test-pi-cold-start-seed.sh"   # rip-cage-wo9: rc up seeds ~/.pi/agent/auth.json on cold start
   run_test "${SCRIPT_DIR}/test-manifest-schema.sh"       # rip-cage-4c5.1: tool manifest schema/loader (host-only)
+  run_test "${SCRIPT_DIR}/test-manifest-retired-archetype.sh" # rip-cage-tsf2.2 sibling: retired MEDIATOR archetype gets an actionable rejection (names archetype+file+entry, cites ADR-029 D2/D3, gives the delete-entry fix) instead of falling into the generic 'unknown archetype' arm
   # NOTE: T1 cases are host-only; T2 (NEEDS_CONTAINER) self-skips via RC_E2E gate.
   # The e2e-tier wiring + driver-level fixture for T2 is rip-cage-4c5.8's job.
   run_test "${SCRIPT_DIR}/test-manifest-tool.sh"         # rip-cage-4c5.2: TOOL install-step generation (host-only T1); e2e self-skips via RC_E2E gate
@@ -564,9 +562,10 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-multiplexer-registry-bake.sh"     # rip-cage-61al.2: MULTIPLEXER registry bake + label + reference reader (T1a-T1g host-only; T2a-T2e self-skip via RC_E2E gate)
   run_test "${SCRIPT_DIR}/test-multiplexer-config-dynamic.sh"    # rip-cage-61al.4: dynamic session.multiplexer schema + config-validate (T1a-T1e host-only; T2a-T2c self-skip via RC_E2E gate)
   run_test "${SCRIPT_DIR}/test-multiplexer-composable.sh"        # rip-cage-61al.8: composability integration harness — live fakemux e2e + exhaustive grep-guard (G1 host-only; E1a-E1g self-skip via RC_E2E gate)
-  run_test "${SCRIPT_DIR}/test-mediator-manifest.sh"             # rip-cage-ta1o.5.1: MEDIATOR archetype manifest validation (T1a-T1l host-only)
-  run_test "${SCRIPT_DIR}/test-mediator-lifecycle.sh"            # rip-cage-ta1o.5.8: egress-mediator launch seam — host-driven init-mediator.sh launcher + fail-closed uid + ordering (G1/U1/U2/O1 host-only)
-  run_test "${SCRIPT_DIR}/test-mediator-validator.sh"           # rip-cage-ta1o.5.3: fail-closed validator bounds MEDIATOR hooks — RIP_CAGE_EGRESS=/iptables/floor-weakening + both build entrypoints (T1a-T1j host-only)
+  # test-mediator-manifest.sh / test-mediator-lifecycle.sh /
+  # test-mediator-validator.sh retired: the MEDIATOR archetype + its launch
+  # machinery were deleted per ADR-029 D2 (engine-deletion sweep,
+  # rip-cage-3vj2 / S4).
   run_test "${SCRIPT_DIR}/test-credential-mounts.sh"             # rip-cage-seqc.4: config-gated credential mounts — schema / mount-absence / symlink-follow-leaf / fingerprint / extraction-skip / resume-guard (CM1-CM11 host-only)
   run_test "${SCRIPT_DIR}/test-skill-manifest-author.sh" # rip-cage-buuo.4: repo-shipped skill — skill well-formed + cm worked example passes _manifest_validate (SA1-SA7 host-only)
   run_test "${SCRIPT_DIR}/test-claude-concurrency.sh"    # rip-cage-p1p: per-session Claude config isolation (NEEDS_CONTAINER; self-skips if no running cage)
@@ -574,15 +573,15 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-cc-managed-settings-probe.sh"  # rip-cage-wlwc.1: D8 CC managed-settings anchor probe — enforces un-suppressibly + deny-wins? (NEEDS_CONTAINER+AUTH; self-skips if no cage or unauthed)
   run_test "${SCRIPT_DIR}/test-cc-dcg-managed-settings.sh"   # rip-cage-r9n4: DCG managed-settings regression — managed deny survives stripping ALL agent-writable layers (NEEDS_CONTAINER+AUTH; self-skips if no cage or unauthed)
   run_test "${SCRIPT_DIR}/test-multiplexer-lifecycle.sh"  # rip-cage-1f59.8: multiplexer lifecycle (none/tmux/herdr) + retirement + config-isolation (NEEDS_CONTAINER; self-skips without RC_E2E=1)
-  run_test "${SCRIPT_DIR}/test-selftest-classifier.sh"   # rip-cage-fft: pure classifier unit tests (no live firewall needed)
-  run_test "${SCRIPT_DIR}/test-selftest-mode-gating.sh"  # rip-cage-fft: mode-gating tests via curl PATH-shim (no production hook)
-  run_pytest "${SCRIPT_DIR}/test_selftest_endpoint.py" --with pytest --with pyyaml python -m pytest "${SCRIPT_DIR}/test_selftest_endpoint.py" -v  # rip-cage-fft: proxy reserved endpoint unit tests
-  run_test "${SCRIPT_DIR}/test-selftest-integration.sh"  # rip-cage-fft: container integration tests (init-firewall.sh → curl → iptables → proxy end-to-end)
+  # test-selftest-classifier.sh / test-selftest-mode-gating.sh /
+  # test_selftest_endpoint.py / test-selftest-integration.sh retired: they
+  # tested the in-cage firewall startup self-test guard (init-firewall.sh /
+  # rip_cage_egress.py's reserved endpoint), deleted per ADR-029 D2
+  # (engine-deletion sweep, rip-cage-3vj2 / S4).
   run_test "${SCRIPT_DIR}/test-scratch-cage-cleanup.sh"  # rip-cage-aqww: scratch-cage cleanup helper (D1 lib + D2 sweep) — needs docker daemon; self-skips without docker
   run_test "${SCRIPT_DIR}/test-agent-readability.sh"     # rip-cage-7wc: host-side fixture tests for agent *.md readability classification
   run_test "${SCRIPT_DIR}/test-agent-mail-concurrent.sh" # rip-cage-swv: two concurrent pi agents coordinate via am CLI (NEEDS_CONTAINER + RC_E2E)
   run_test "${SCRIPT_DIR}/test-multiplexer-agent-e2e.sh" # rip-cage-w621.7: pi agent through tmux mux surface with >=2 distinct tool invocations (NEEDS_CONTAINER + RC_E2E)
-  run_test "${SCRIPT_DIR}/test-ssh-config.sh"            # rip-cage-b0a: SSH config translation checks incl. ADR-022 D4 inverse assertion (host-side; no container needed)
   run_test "${SCRIPT_DIR}/test-allowed-roots-bypass.sh"  # rip-cage-36j: RC_ALLOWED_ROOTS bypass regression net (symlink/redirect cases)
 
   # rip-cage-9oyh: rc behavior-preservation golden-master harness (baseline
@@ -594,8 +593,20 @@ _run_all_tests() {
   # on-demand when cases.sh/scrub.sh change, not a per-commit regression gate.
   run_test "${SCRIPT_DIR}/golden-master/capture.sh"       # §1/§2: byte-identity check of the recorded baseline (--check, the default)
   run_test "${SCRIPT_DIR}/test-golden-master-sandbox-isolation.sh" # rip-cage-6qxs: GM_ROOT per-process-uniqueness (structural) + concurrent sandbox-sourcing processes don't cross-contaminate (stress)
-  run_test "${SCRIPT_DIR}/test-up-run-args-full-chain.sh" # §3(i) CRITICAL gate, helper-level: full create-path _UP_RUN_ARGS replica
-  run_test "${SCRIPT_DIR}/test-up-run-args-e2e.sh"        # §3(i) CRITICAL gate, e2e: real cmd_up through the content-keyed docker shim
+  # rip-cage-5iti (S10, msb migration test-suite port): test-up-run-args-
+  # full-chain.sh RETIRED. Its hand-replica of cmd_up's create-path (never
+  # updated past the ssh-cluster retirement) had drifted onto asserting
+  # RETIRED machinery (rc.mediator-ca-env / rc.egress.mode / an
+  # egress-rules.yaml bind mount into the deleted in-cage engine) as its
+  # own "chain completion" proof -- a rule-presence assertion on dead code
+  # that could never catch a real regression (adversarial review finding,
+  # 2026-07-13). test-up-run-args-e2e.sh below drives the REAL `cmd_up`
+  # (not a hand-copy) and captures the REAL `msb create` argv, so it
+  # already covers the full post-translation msb-flag surface with
+  # strictly higher fidelity (e.g. it captures `rc.config-loaded` and the
+  # real `--net-default deny` egress flag, neither of which the retired
+  # replica ever modeled) -- no separate helper-level companion needed.
+  run_test "${SCRIPT_DIR}/test-up-run-args-e2e.sh"        # §3(i) CRITICAL gate, e2e: real cmd_up through the content-keyed docker+msb shims
   run_test "${SCRIPT_DIR}/test-up-validate-warning-seam.sh" # §3(iii): RC_VALIDATE_WARNING write (validate_path) -> read (_up_json_output) seam
   run_test "${SCRIPT_DIR}/test-reload-exit-trap-seam.sh"  # §3(vi): cmd_reload's EXIT-trap lock_dir cleanup (golden-master-invisible filesystem effect)
   run_test "${SCRIPT_DIR}/test-generate-dockerfile.sh"    # §4 gap-fill: rc generate-dockerfile (bundled + from-source structural assertions)
@@ -608,25 +619,19 @@ _run_all_tests() {
 
   # rip-cage-b6ia: previously-dark test files, audited 2026-06-09 and wired.
   # Host-tier (run on every invocation):
-  run_test "${SCRIPT_DIR}/test-ssh-preflight.sh"        # ADR-020 identity-preflight cache (cold/warm/mismatch/TTL/JSON shape)
-  run_test "${SCRIPT_DIR}/test-ssh-visibility.sh"       # ADR-020 D5 visibility surfaces (zshrc/init banner, rc ls GH-IDENTITY col) + 9eg regression
   run_test "${SCRIPT_DIR}/test-bd-host-preflight.sh"    # _bd_host_preflight dolt-server preflight helper (host-only)
   run_test "${SCRIPT_DIR}/test-container-name.sh"       # rip-cage-a0h item (c): container_name() collision-hash disambiguation regression — docker PATH-shim + real cmd_up --dry-run, host-only
   run_test "${SCRIPT_DIR}/test-lfs-warning.sh"          # rc --dry-run up LFS pointer-stub scan + silent-exit-1 regression
-  run_test "${SCRIPT_DIR}/test-ssh-allowlist.sh"        # ADR-022 known_hosts filter + hashed-host HMAC + resume mount-shape guard (EXIT-trap fixed)
   run_test "${SCRIPT_DIR}/test-denylist-matching.sh"    # _check_secret_path_denylist component-match (unsets RC_CONFIG_GLOBAL per driver-fixture trap)
   run_test "${SCRIPT_DIR}/test-pi-substrate-mounts.sh"  # rip-cage-kstk: pi substrate projection mount args + denylist + init symlinks + floor-protection
   run_test "${SCRIPT_DIR}/test-symlink-follow.sh"       # symlink-follow scanner + fingerprint + denylist gating (unsets RC_CONFIG_GLOBAL)
   run_test "${SCRIPT_DIR}/test-config-loader.sh"        # layered config additive/select merge + provenance matrix (unsets RC_CONFIG_GLOBAL)
   run_test "${SCRIPT_DIR}/test-config-ro-mount.sh"      # rip-cage-cw51: .rip-cage.yaml ro shadow-mount (ADR-021 D7) — schema + mount-arg + label-lock (unsets RC_CONFIG_GLOBAL)
-  run_test "${SCRIPT_DIR}/test-ssh-bypass-demotion.sh"  # rip-cage-wlwc.11: block-ssh-bypass demoted from base image to composable recipe (SS1-SS3 host-only structural; SB1-SB2 RC_E2E-gated)
   run_test "${SCRIPT_DIR}/test-dcg-demotion.sh"          # rip-cage-wlwc.10: dcg demoted from base image to composable recipe (DS1-DS4 host-only structural; DB1-DB2 RC_E2E-gated)
   run_test "${SCRIPT_DIR}/test-mount-seam-integration.sh" # rip-cage-wlwc.6: integration harness capstone (SI1-SI6 host-only Tier-1; SE1-SE5 self-skip via RC_E2E gate)
   run_test "${SCRIPT_DIR}/test-image-drift-resume.sh"    # rip-cage-jnvb: rc up image-ID drift guard on resume — full-rc-through-fake-docker-shim T1-T6, host-only, no live container needed
   run_test "${SCRIPT_DIR}/test-dry-run-resume-guards.sh" # rip-cage-3y9g: rc up --dry-run runs the same _up_resolve_resume_* guard set/order as a real resume (P1a/P1b parity + B1 behavioral), host-only
   # Container-tier (NEEDS_CONTAINER above; self-skip under --host-only, run on full invocation):
-  run_test "${SCRIPT_DIR}/test-ssh-forwarding.sh"       # ADR-017/018 live ssh-agent forwarding
-  run_test "${SCRIPT_DIR}/test-ssh-resolver.sh"         # github-identity resolver; Tests 6-10 spin up cages
   run_test "${SCRIPT_DIR}/test-session-persistence.sh"  # dn2 projects/sessions persist-to-host (Phase 3 container)
   run_test "${SCRIPT_DIR}/test-pi-no-extensions.sh"     # rip-cage-sn1h: LOCKED-VARIANT-ONLY probe (evil.ts NOT loaded + DCG still denies); self-skips under the shipped OPEN default (rip-cage-p35a.1 / ADR-027 D1)
   run_test "${SCRIPT_DIR}/test-skills.sh"               # meta-skill MCP handshake + cage-path/settings inside cage
@@ -689,13 +694,22 @@ _sweep_init_temp_roots() {
 }
 _sweep_init_temp_roots
 
+# rip-cage-5iti (S10, msb migration test-suite port): retargeted onto msb --
+# was `docker ps --filter label=... | docker inspect`. `msb list --label
+# KEY=VALUE` only exact-matches (no docker-style presence-only `label=KEY`
+# filter), so this enumerates every sandbox name via `msb list --format
+# json` and reads each one's `rc.source.path` label via `msb inspect`
+# (mirrors _msb_label's `.config.labels[$k]` shape) -- same discriminator
+# (label value must be under one of the swept temp roots) as before, so
+# sandboxes belonging to other concurrent worktrees/sessions (labeled with
+# their own non-temp-root workspace paths) are never touched.
 _sweep_scratch_cages() {
-  if ! command -v docker >/dev/null 2>&1; then
+  if ! command -v msb >/dev/null 2>&1; then
     return 0
   fi
   local _cname _raw_sp _root
-  for _cname in $(docker ps -a --filter "label=rc.source.path" --format '{{.Names}}' 2>/dev/null || true); do
-    _raw_sp=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$_cname" 2>/dev/null || true)
+  for _cname in $(msb list --format json 2>/dev/null | jq -r '.[].name' 2>/dev/null || true); do
+    _raw_sp=$(msb inspect "$_cname" --format json 2>/dev/null | jq -r '.config.labels["rc.source.path"] // empty' 2>/dev/null || true)
     [[ -z "$_raw_sp" ]] && continue
     for _root in "${_SWEEP_TEMP_ROOTS[@]+"${_SWEEP_TEMP_ROOTS[@]}"}"; do
       if [[ "$_raw_sp" == "${_root}"/* || "$_raw_sp" == "${_root}" ]]; then

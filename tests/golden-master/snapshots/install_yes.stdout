@@ -20,5 +20,10 @@ mounts:
     - private_key
     - .secret
   allow_risky: null
+network:
+  allowed_hosts:
+    - api.anthropic.com
+    - mcp-proxy.anthropic.com
+    - http-intake.logs.us5.datadoghq.com
 ----
 Wrote <GM_ROOT>/home/.config/rip-cage/config.yaml

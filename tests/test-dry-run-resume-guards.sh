@@ -111,26 +111,33 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
-# P2 (rip-cage-7gr9 finding 1): _up_resolve_resume_ssh_key_filter must be
-# present in BOTH running-branch guard lists, not merely absent from both in
-# lockstep. P1b parity alone is non-vacuous only for a REMOVAL from an
-# already-matching pair — it would also report PASS if both running branches
-# identically omitted this guard (the bug this bead fixes). Assert presence
-# directly so a future regression that drops the guard from both branches
-# together cannot hide behind a green P1b.
+# P2 (rip-cage-7gr9 finding 1): a mount-shape resume guard must be present in
+# BOTH running-branch guard lists, not merely absent from both in lockstep.
+# P1b parity alone is non-vacuous only for a REMOVAL from an already-matching
+# pair — it would also report PASS if both running branches identically
+# omitted a guard (the bug rip-cage-7gr9 fixed). Assert presence directly so
+# a future regression that drops a guard from both branches together cannot
+# hide behind a green P1b.
+#
+# Originally asserted _up_resolve_resume_ssh_key_filter; that guard (and the
+# ssh.allowed_keys mount-shape it protected) retired with the entire ssh
+# cluster at the msb cutover (ADR-029 D3, rip-cage-f1qo S5). Re-pointed to
+# _up_resolve_resume_config_mode, a still-surviving mount-shape guard with
+# the identical running-branch-inclusion property (also proven behaviorally
+# by B1 below).
 # ---------------------------------------------------------------------------
-echo "--- P2: ssh_key_filter guard present in RUNNING branches (rip-cage-7gr9) ---"
+echo "--- P2: mount-shape guard present in RUNNING branches (rip-cage-7gr9) ---"
 
-if echo "$DRY_RUNNING" | grep -qx "_up_resolve_resume_ssh_key_filter"; then
-  pass "P2a _up_resolve_resume_ssh_key_filter present in DRY-RUN-RUNNING guard list"
+if echo "$DRY_RUNNING" | grep -qx "_up_resolve_resume_config_mode"; then
+  pass "P2a _up_resolve_resume_config_mode present in DRY-RUN-RUNNING guard list"
 else
-  fail "P2a ssh_key_filter guard missing from DRY-RUN-RUNNING" "guard list=[$(_fmt_list "$DRY_RUNNING")]"
+  fail "P2a config_mode guard missing from DRY-RUN-RUNNING" "guard list=[$(_fmt_list "$DRY_RUNNING")]"
 fi
 
-if echo "$REAL_RUNNING" | grep -qx "_up_resolve_resume_ssh_key_filter"; then
-  pass "P2b _up_resolve_resume_ssh_key_filter present in REAL-RUNNING guard list"
+if echo "$REAL_RUNNING" | grep -qx "_up_resolve_resume_config_mode"; then
+  pass "P2b _up_resolve_resume_config_mode present in REAL-RUNNING guard list"
 else
-  fail "P2b ssh_key_filter guard missing from REAL-RUNNING" "guard list=[$(_fmt_list "$REAL_RUNNING")]"
+  fail "P2b config_mode guard missing from REAL-RUNNING" "guard list=[$(_fmt_list "$REAL_RUNNING")]"
 fi
 
 echo ""
@@ -140,18 +147,24 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "--- B1: behavioral proof (_up_resolve_resume_config_mode) ---"
 
+# rip-cage-5iti (S10, msb migration test-suite port): the resolver reads
+# `msb inspect NAME --format json` via cli/lib/msb_runtime.sh's `_msb_label`
+# (rip-cage-rj68 S6 rewrote it onto msb), not `docker inspect --format`; the
+# stub below is retargeted onto `msb` accordingly (same idiom as
+# test-config-ro-mount.sh M6-M8 / test-credential-mounts.sh's
+# `_write_msb_inspect_stub`).
 _run_resume_config_mode() {
   local _label="$1" _eff_json="$2" _out_err="$3" _out_exit="$4"
   local _stub_dir
   _stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-dryrun-cm-stub-XXXXXX")
-  cat > "${_stub_dir}/docker" <<STUB
+  cat > "${_stub_dir}/msb" <<STUB
 #!/usr/bin/env bash
 case " \$* " in
-  *" inspect "*"rc.config-mode"*) echo "${_label}"; exit 0 ;;
+  *" inspect "*) echo '{"config":{"labels":{"rc.config-mode":"${_label}"}}}'; exit 0 ;;
   *) echo "stub: unhandled args: \$*" >&2; exit 1 ;;
 esac
 STUB
-  chmod +x "${_stub_dir}/docker"
+  chmod +x "${_stub_dir}/msb"
 
   local _exit=0
   # No `set -e` re-enable afterward: this file only sets `set -uo pipefail`
@@ -159,6 +172,7 @@ STUB
   # here would leak past this function for the rest of the script).
   set +e
   PATH="${_stub_dir}:$PATH" bash -c "
+    source '${REPO_ROOT}/cli/lib/msb_runtime.sh' 2>/dev/null
     source '$RC' 2>/dev/null
     _load_effective_config() { echo '${_eff_json}'; }
     _up_resolve_resume_config_mode 'rc-dryrun-cm-test' '/tmp/stub-workspace'

@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # cli/test.sh -- extracted from rc (behavior-preserving decomposition, rip-cage-gto1).
 # NOTE: sourced by the rc shim; must NOT set -euo pipefail (shim owns strict mode once).
+#
+# rip-cage-tsf2.1 (msb migration epic rip-cage-tsf2): cmd_test's live-probe
+# path REWRITTEN onto msb -- was docker inspect (workspace mount source
+# discovery) + docker exec (in-guest safety/skills/bd/recipe-smoke checks).
+# The workspace mount source is simply the cage's own rc.source.path label
+# (msb's `--mount-dir <path>:/workspace` args are built FROM that path at
+# create time, cli/up.sh's _up_prepare_docker_mounts -- so the label IS the
+# mount source, no need to walk a Mounts array the way docker's inspect
+# shape required).
 
 
 cmd_test() {
@@ -34,7 +43,7 @@ cmd_test() {
   # container's /workspace mount source, then invoke _bd_host_preflight in
   # --test-mode to get a PASS|FAIL [0] beads-host-dolt — <detail> line.
   local ws_source
-  ws_source=$(docker inspect -f '{{ range .Mounts }}{{ if eq .Destination "/workspace" }}{{ .Source }}{{ end }}{{ end }}' "$name" 2>/dev/null || true)
+  ws_source=$(_msb_label "$name" "rc.source.path" 2>/dev/null || true)
   local preflight_beads_dir="" preflight_dolt_mode=""
   local preflight_skip_line=""  # if set, skip _bd_host_preflight and use this line
   if [[ -n "$ws_source" ]]; then
@@ -94,15 +103,15 @@ cmd_test() {
 
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local output
-    output=$(docker exec "$name" bash -c \
-      '/usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-egress-firewall.sh; /usr/local/lib/rip-cage/test-bd-roundtrip.sh' 2>&1) || true
+    output=$(_msb_exec "$name" -- bash -c \
+      '/usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-bd-roundtrip.sh' 2>&1) || true
     # run-recipe-smokes.sh: run separately to capture non-zero exit AND stdout.
     # Its per-smoke PASS/FAIL lines are parsed by the loop below; additionally,
     # a non-zero runner exit injects a synthetic FAIL line so the JSON overall
     # goes "fail" even if stdout parsing sees only passing lines (anti-swallow).
     local smokes_output smokes_rc
     smokes_rc=0
-    smokes_output=$(docker exec "$name" /usr/local/lib/rip-cage/run-recipe-smokes.sh 2>&1) || smokes_rc=$?
+    smokes_output=$(_msb_exec "$name" -- /usr/local/lib/rip-cage/run-recipe-smokes.sh 2>&1) || smokes_rc=$?
     if [[ "$smokes_rc" -ne 0 ]]; then
       smokes_output="${smokes_output}
 FAIL  [0] run-recipe-smokes: runner exited ${smokes_rc} (one or more recipe smoke tests failed)"
@@ -134,11 +143,10 @@ ${output}"
       '{name: $name, checks: $checks, overall: $overall}'
   else
     echo "$preflight_line"
-    docker exec "$name" /usr/local/lib/rip-cage/test-safety-stack.sh
-    docker exec "$name" /usr/local/lib/rip-cage/test-skills.sh
-    docker exec "$name" /usr/local/lib/rip-cage/test-egress-firewall.sh
-    docker exec "$name" /usr/local/lib/rip-cage/test-bd-roundtrip.sh
-    docker exec "$name" /usr/local/lib/rip-cage/run-recipe-smokes.sh
+    _msb_exec "$name" -- /usr/local/lib/rip-cage/test-safety-stack.sh
+    _msb_exec "$name" -- /usr/local/lib/rip-cage/test-skills.sh
+    _msb_exec "$name" -- /usr/local/lib/rip-cage/test-bd-roundtrip.sh
+    _msb_exec "$name" -- /usr/local/lib/rip-cage/run-recipe-smokes.sh
   fi
 }
 

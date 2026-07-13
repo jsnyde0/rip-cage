@@ -8,6 +8,15 @@ set -uo pipefail
 # simulating a wedged daemon (OrbStack VM stuck in Starting state — socket
 # present but never replies). Lower RC_DOCKER_PREFLIGHT_TIMEOUT so each case
 # runs in ~1s.
+#
+# rip-cage-tsf2.1: `rc ls`/`rc down` moved from check_docker to check_msb
+# (ADR-029 D1 hard cutover). Tests 1/2 below now exercise a fake `msb` that
+# hangs on `--version` (check_msb's own preflight call) instead of a fake
+# `docker` — otherwise identical wedge-detection shape, msb-side error code
+# (MSB_UNREACHABLE, not DOCKER_DAEMON_UNREACHABLE). Tests 3-6 (`rc doctor
+# --host`) are UNCHANGED: that verb's job is specifically to diagnose the
+# DOCKER daemon (ADR-029 D1's docker-build path is still real docker), so
+# it stays fake-docker-driven.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
@@ -20,9 +29,10 @@ fail() { echo "FAIL: $1 — got: ${2:-}"; FAILURES=$((FAILURES + 1)); }
 # Sandboxes
 HANG_BIN=$(mktemp -d)
 DEAD_BIN=$(mktemp -d)
+MSB_HANG_BIN=$(mktemp -d)
 cleanup() {
-  rm -rf "$HANG_BIN" "$DEAD_BIN"
-  # Reap any orphan `sleep` processes our fake docker may have left behind.
+  rm -rf "$HANG_BIN" "$DEAD_BIN" "$MSB_HANG_BIN"
+  # Reap any orphan `sleep` processes our fake docker/msb may have left behind.
   pkill -P $$ 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -48,45 +58,58 @@ exit 0
 DEADEOF
 chmod +x "$DEAD_BIN/docker"
 
+# Fake msb that hangs on `--version` (check_msb's own preflight call --
+# simulates a wedged msb runtime, the msb-side counterpart to the docker
+# HANG_BIN above).
+cat > "$MSB_HANG_BIN/msb" <<'MSBHANGEOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then
+  exec sleep 60
+fi
+exit 0
+MSBHANGEOF
+chmod +x "$MSB_HANG_BIN/msb"
+
 # 1s timeout keeps the suite fast. We don't time the calls strictly, but they
 # must complete in well under the suite-level test timeout.
 export RC_DOCKER_PREFLIGHT_TIMEOUT=1
+export RC_MSB_PREFLIGHT_TIMEOUT=1
 
 # -----------------------------------------------
-# Test 1: rc ls against a wedged daemon → DOCKER_DAEMON_UNREACHABLE, JSON
+# Test 1: rc ls against a wedged msb runtime → MSB_UNREACHABLE, JSON
 # -----------------------------------------------
 echo ""
-echo "=== Test 1: rc ls --output json against wedged daemon ==="
+echo "=== Test 1: rc ls --output json against wedged msb ==="
 start=$(date +%s)
-output=$(PATH="$HANG_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" --output json ls 2>&1 || true)
+output=$(PATH="$MSB_HANG_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" --output json ls 2>&1 || true)
 elapsed=$(( $(date +%s) - start ))
 
-if echo "$output" | grep -q '"code":"DOCKER_DAEMON_UNREACHABLE"'; then
-  pass "wedged daemon: JSON error code is DOCKER_DAEMON_UNREACHABLE"
+if echo "$output" | grep -q '"code":"MSB_UNREACHABLE"'; then
+  pass "wedged msb: JSON error code is MSB_UNREACHABLE"
 else
-  fail "wedged daemon: expected DOCKER_DAEMON_UNREACHABLE in JSON" "$output"
+  fail "wedged msb: expected MSB_UNREACHABLE in JSON" "$output"
 fi
 if echo "$output" | grep -qi "unresponsive\|wedged"; then
-  pass "wedged daemon: human message names the failure mode"
+  pass "wedged msb: human message names the failure mode"
 else
-  fail "wedged daemon: message should explain wedge/unresponsive" "$output"
+  fail "wedged msb: message should explain wedge/unresponsive" "$output"
 fi
 if (( elapsed <= 4 )); then
-  pass "wedged daemon: rc ls returns in <=4s (was ${elapsed}s)"
+  pass "wedged msb: rc ls returns in <=4s (was ${elapsed}s)"
 else
-  fail "wedged daemon: rc ls should not hang (was ${elapsed}s)" ""
+  fail "wedged msb: rc ls should not hang (was ${elapsed}s)" ""
 fi
 
 # -----------------------------------------------
-# Test 2: rc down against a wedged daemon — same fail-loud
+# Test 2: rc down against a wedged msb runtime — same fail-loud
 # -----------------------------------------------
 echo ""
-echo "=== Test 2: rc down --output json against wedged daemon ==="
-output=$(PATH="$HANG_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" --output json down 2>&1 || true)
-if echo "$output" | grep -q '"code":"DOCKER_DAEMON_UNREACHABLE"'; then
-  pass "wedged daemon (down): JSON error code is DOCKER_DAEMON_UNREACHABLE"
+echo "=== Test 2: rc down --output json against wedged msb ==="
+output=$(PATH="$MSB_HANG_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" --output json down 2>&1 || true)
+if echo "$output" | grep -q '"code":"MSB_UNREACHABLE"'; then
+  pass "wedged msb (down): JSON error code is MSB_UNREACHABLE"
 else
-  fail "wedged daemon (down): expected DOCKER_DAEMON_UNREACHABLE" "$output"
+  fail "wedged msb (down): expected MSB_UNREACHABLE" "$output"
 fi
 
 # -----------------------------------------------

@@ -13,12 +13,17 @@
 #   show [--effective] [--observed] [--cage=<name>] [--config-file=<path>] [--log-file=<path>]
 #     Default (JSON): list configured network.allowed_hosts.
 #     --effective: show merged allowlist with provenance (ADR-021 D4).
-#     --observed: read egress JSONL log and list blocked/would-block hosts.
+#     --observed: RETIRED under msb (rip-cage-tsf2.2 loud-fail stub, ADR-029).
+#       The in-cage egress log this read no longer exists; the flag now
+#       exits non-zero instead of silently reporting "(none)". Fast-follow
+#       (redesign/removal) tracked at rip-cage-tsf2.2.
 #
 #   promote --from-observed [--cage=<name>] [--config-file=<path>] [--log-file=<path>]
-#     Read observed egress log, merge unique blocked hosts into .rip-cage.yaml
-#     network.allowed_hosts, flip network.mode to block, then invoke rc reload --cage if given.
-#     Emits a diff of the .rip-cage.yaml mutation (hosts added + mode flip).
+#     RETIRED under msb (rip-cage-tsf2.2 loud-fail stub, ADR-029). Used to
+#     read the observed egress log and merge blocked hosts into
+#     .rip-cage.yaml; the log producer no longer exists, so the flag now
+#     exits non-zero instead of silently applying nothing. Fast-follow
+#     (redesign/removal) tracked at rip-cage-tsf2.2.
 #
 # D10 host-side-only: add and promote are refused when RC_TEST_FAKE_DOCKERENV=1
 # (host-unit-test simulation of in-cage; real in-cage is blocked by the global
@@ -182,6 +187,11 @@ _allowlist_read_observed_hosts() {
 
 _allowlist_show() {
   local show_effective=0 show_observed=0 cage="" config_file="" log_file=""
+  # log_file is still parsed below (CLI-compat) but is unused now that the
+  # rip-cage-tsf2.2 --observed retirement guard exits before ever reading a
+  # log file; kept as flag-parsing scaffolding, not removed, per the
+  # loud-fail-not-redesign ruling.
+  # shellcheck disable=SC2034
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --effective)      show_effective=1; shift ;;
@@ -201,40 +211,17 @@ _allowlist_show() {
   yaml_file=$(_allowlist_resolve_config_file "$config_file")
 
   if [[ "$show_observed" -eq 1 ]]; then
-    # Derive log file from cage workspace or explicit --log-file.
-    local http_log dns_log
-    if [[ -n "$log_file" ]]; then
-      http_log="$log_file"
-      dns_log="${log_file%egress.log}egress-dns.log"
-    elif [[ -n "$cage" ]]; then
-      local ws
-      ws=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$cage" 2>/dev/null || true)
-      http_log="${ws}/.rip-cage/egress.log"
-      dns_log="${ws}/.rip-cage/egress-dns.log"
-    else
-      # Try CWD workspace
-      http_log="${PWD}/.rip-cage/egress.log"
-      dns_log="${PWD}/.rip-cage/egress-dns.log"
-    fi
-
-    local observed_hosts
-    observed_hosts=$(_allowlist_read_observed_hosts "$http_log" "$dns_log")
-
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      local hosts_json
-      hosts_json=$(printf '%s\n' "$observed_hosts" | grep -v '^$' | jq -R . | jq -sc .)
-      jq -nc --argjson h "$hosts_json" '{observed_hosts: $h}'
-    else
-      echo "Observed blocked/would-block hosts:"
-      if [[ -z "$observed_hosts" ]]; then
-        echo "  (none)"
-      else
-        while IFS= read -r h; do
-          [[ -n "$h" ]] && echo "  $h"
-        done <<<"$observed_hosts"
-      fi
-    fi
-    return 0
+    # rip-cage-tsf2.2 loud-fail stub: --observed is retired. Observed-host
+    # capture read .rip-cage/egress.log + egress-dns.log, produced by the
+    # in-cage egress engine that was deleted in the msb migration (ADR-029
+    # D2) -- nothing writes those logs anymore under microsandbox, so this
+    # guard MUST fire before any log read (below) or it silently reports
+    # "(none)" instead of failing (a containment-posture surprise). Full
+    # removal/redesign is the fast-follow: rip-cage-tsf2.2.
+    echo "Error: 'rc allowlist show --observed' is retired." >&2
+    echo "Observed-host capture relied on the in-cage egress log (.rip-cage/egress.log, .rip-cage/egress-dns.log), produced by the in-cage egress engine deleted in the msb migration (ADR-029). Nothing writes those logs under microsandbox, so this flag is not available and cannot report anything meaningful." >&2
+    echo "Fast-follow (redesign or removal): rip-cage-tsf2.2." >&2
+    exit 2
   fi
 
   if [[ "$show_effective" -eq 1 ]]; then
@@ -281,6 +268,11 @@ _allowlist_show() {
 
 _allowlist_promote() {
   local from_observed=0 cage="" config_file="" log_file=""
+  # log_file is still parsed below (CLI-compat) but is unused now that the
+  # rip-cage-tsf2.2 --from-observed retirement guard exits before ever
+  # reading a log file or writing .rip-cage.yaml; kept as flag-parsing
+  # scaffolding, not removed, per the loud-fail-not-redesign ruling.
+  # shellcheck disable=SC2034
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --from-observed)  from_observed=1; shift ;;
@@ -304,92 +296,16 @@ _allowlist_promote() {
     _allowlist_refuse_in_cage "promote"
   fi
 
-  local yaml_file
-  yaml_file=$(_allowlist_resolve_config_file "$config_file")
-
-  if ! command -v yq &>/dev/null; then
-    echo "Error: yq not found on PATH. Install yq (brew install yq, or the mikefarah/yq release binary on Linux: https://github.com/mikefarah/yq/releases — NOT apt's yq, which is the incompatible python-yq) to use rc allowlist." >&2
-    exit 1
-  fi
-
-  # Create minimal file if absent.
-  if [[ ! -f "$yaml_file" ]]; then
-    printf 'version: 1\nnetwork:\n  allowed_hosts: []\n  mode: observe\n' > "$yaml_file"
-  fi
-
-  # Resolve log files.
-  local http_log dns_log
-  if [[ -n "$log_file" ]]; then
-    http_log="$log_file"
-    dns_log="${log_file%egress.log}egress-dns.log"
-  elif [[ -n "$cage" ]]; then
-    local ws
-    ws=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$cage" 2>/dev/null || true)
-    http_log="${ws}/.rip-cage/egress.log"
-    dns_log="${ws}/.rip-cage/egress-dns.log"
-  else
-    http_log="${PWD}/.rip-cage/egress.log"
-    dns_log="${PWD}/.rip-cage/egress-dns.log"
-  fi
-
-  # Read observed hosts.
-  local observed_hosts
-  observed_hosts=$(_allowlist_read_observed_hosts "$http_log" "$dns_log")
-
-  # Read current allowed_hosts from yaml (for idempotency check + diff).
-  local current_hosts_json
-  current_hosts_json=$(yq -o=json '.network.allowed_hosts // []' "$yaml_file" 2>/dev/null) || current_hosts_json="[]"
-  local current_mode
-  current_mode=$(yq -r '.network.mode // "null"' "$yaml_file" 2>/dev/null) || current_mode="null"
-
-  # Compute which hosts to add (observed minus already-present).
-  local hosts_to_add=()
-  local h
-  while IFS= read -r h; do
-    [[ -z "$h" ]] && continue
-    # Check if already in current list.
-    if ! jq -e --arg h "$h" '. | index($h) != null' <<<"$current_hosts_json" >/dev/null 2>&1; then
-      hosts_to_add+=("$h")
-    fi
-  done <<<"$observed_hosts"
-
-  # Emit diff header.
-  echo "=== rc allowlist promote: .rip-cage.yaml mutation diff ==="
-  if [[ ${#hosts_to_add[@]} -eq 0 ]]; then
-    echo "  network.allowed_hosts: no new hosts to add (all observed hosts already present)"
-  else
-    echo "  network.allowed_hosts: adding ${#hosts_to_add[@]} host(s):"
-    for h in "${hosts_to_add[@]}"; do
-      echo "    + $h"
-    done
-  fi
-
-  if [[ "$current_mode" != "block" ]]; then
-    echo "  network.mode: ${current_mode} -> block"
-  else
-    echo "  network.mode: already block (no change)"
-  fi
-  echo "=== end diff ==="
-
-  # Apply mutations to the YAML file.
-  local tmp_file
-  tmp_file=$(mktemp)
-
-  # Build updated allowed_hosts: current ∪ observed (order-preserving dedup).
-  local new_hosts_json="$current_hosts_json"
-  for h in "${hosts_to_add[@]}"; do
-    new_hosts_json=$(jq -c --arg h "$h" '. + [$h]' <<<"$new_hosts_json")
-  done
-
-  # Write updated YAML using yq: set network.allowed_hosts and network.mode.
-  yq -r ".network.allowed_hosts = ${new_hosts_json} | .network.mode = \"block\"" "$yaml_file" > "$tmp_file"
-  cp "$tmp_file" "$yaml_file"
-  rm -f "$tmp_file"
-
-  # If --cage given, invoke rc reload to apply.
-  if [[ -n "$cage" ]]; then
-    log "Running rc reload $cage to apply..."
-    "$0" reload "$cage" || true
-  fi
+  # rip-cage-tsf2.2 loud-fail stub: --from-observed is retired. It read
+  # .rip-cage/egress.log + egress-dns.log, produced by the in-cage egress
+  # engine that was deleted in the msb migration (ADR-029 D2) -- nothing
+  # writes those logs anymore under microsandbox, so this guard MUST fire
+  # before any log read or .rip-cage.yaml write (below) or it silently
+  # applies nothing (a containment-posture surprise). Full removal/redesign
+  # is the fast-follow: rip-cage-tsf2.2.
+  echo "Error: 'rc allowlist promote --from-observed' is retired." >&2
+  echo "Observed-host capture relied on the in-cage egress log (.rip-cage/egress.log, .rip-cage/egress-dns.log), produced by the in-cage egress engine deleted in the msb migration (ADR-029). Nothing writes those logs under microsandbox, so this flag is not available and cannot promote anything meaningful." >&2
+  echo "Fast-follow (redesign or removal): rip-cage-tsf2.2." >&2
+  exit 2
 }
 

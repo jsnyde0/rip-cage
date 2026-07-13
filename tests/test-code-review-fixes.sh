@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
-if ! command -v docker > /dev/null 2>&1; then
-  echo "SKIP: Docker not available -- skipping $(basename "$0")"
-  exit 0
-fi
+# rip-cage-tsf2 (msb-cutover, coordinator branch fix): the old top-of-file
+# `command -v docker` guard self-skipped only if the docker BINARY was
+# absent -- but docker is still installed on this branch (used for
+# `docker build`/`docker save` -> `msb load` image conversion, see
+# cli/build.sh), so the guard never fired and the body ran regardless.
+# It was also the WRONG precondition either way: this file is a KEEP-class
+# host-side static-source-grep test (docs/2026-07-11-msb-test-classification.md)
+# that never needs Docker for C1/C2/I1-I4/L2-static/syntax-check -- the only
+# genuinely Docker-dependent sub-checks (L2 live paused/legacy-container
+# probes) already have their OWN local Docker+daemon guard further down
+# (`command -v docker &>/dev/null && docker info &>/dev/null`, with a SKIP
+# path when absent). Removed rather than replaced: no single top-level
+# precondition covers what the file actually needs (jq/yq, both are baseline
+# `rc` dependencies with no existing skip-guard convention in this suite).
 set -uo pipefail
 
 # Tests for code review fixes (C1, C2, I1, I2, I3, I4)
@@ -17,10 +27,21 @@ RC="${REPO_ROOT}/rc"
 # INVOCATIONS below (executing the CLI, not grepping its source) still use
 # $RC unchanged.
 RC_SRC="$(mktemp)"
-trap 'rm -f "$RC_SRC"' EXIT
 cat "${REPO_ROOT}"/cli/lib/*.sh "${REPO_ROOT}"/cli/*.sh > "$RC_SRC" 2>/dev/null
 FAILURES=0
 PASSES=0
+
+# Bare per-file runs of this file (e.g. `bash tests/test-code-review-fixes.sh`
+# directly, outside run-host.sh/run-one.sh) are non-hermetic against a real
+# developer ~/.config/rip-cage/tools.yaml: a stale entry there (e.g. a
+# retired archetype, or an IOC-denylisted egress host) makes the live L2 `rc
+# up` calls below fail for reasons unrelated to what L2 actually tests.
+# Same shared sandbox fixture run-host.sh/run-one.sh build (rip-cage-w3lq) —
+# empty tools.yaml (default bundled stack) + benign config.yaml.
+# shellcheck source=tests/_host-sandbox-lib.sh
+source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
+_host_sandbox_setup
+trap '_host_sandbox_cleanup; rm -f "$RC_SRC"' EXIT
 
 pass() { echo "PASS: $1"; PASSES=$((PASSES + 1)); }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
@@ -114,32 +135,11 @@ else
   fail "cmd_down did not return CONTAINER_NOT_FOUND. Got: $down_err"
 fi
 
-# --- L1: resume path fails loud on missing/invalid rc.egress label (ADR-001) ---
-echo ""
-echo "=== L1: resume fail-loud on missing/unknown rc.egress label ==="
-# Helper must exist and handle all three ADR-001 cases.
-if grep -q '^_up_resolve_resume_egress()' "$RC_SRC"; then
-  pass "_up_resolve_resume_egress helper defined"
-else
-  fail "_up_resolve_resume_egress helper missing"
-fi
-if grep -q '"LEGACY_CONTAINER"' "$RC_SRC"; then
-  pass "LEGACY_CONTAINER error code present"
-else
-  fail "LEGACY_CONTAINER error code missing"
-fi
-if grep -q '"INVALID_EGRESS_LABEL"' "$RC_SRC"; then
-  pass "INVALID_EGRESS_LABEL error code present"
-else
-  fail "INVALID_EGRESS_LABEL error code missing"
-fi
-# Helper must be called from both dry-run and actual resume paths.
-call_count=$(grep -c '_up_resolve_resume_egress "\$name"' "$RC_SRC")
-if [[ "$call_count" -ge 2 ]]; then
-  pass "helper called from both dry-run and resume paths ($call_count sites)"
-else
-  fail "helper only called $call_count time(s); expected >=2 (dry-run + resume)"
-fi
+# --- L1 (resume path fails loud on missing/invalid rc.egress label, ADR-001)
+# retired: _up_resolve_resume_egress, the rc.egress label, and its
+# LEGACY_CONTAINER/INVALID_EGRESS_LABEL error codes were deleted per
+# ADR-029 D2 (engine-deletion sweep, rip-cage-3vj2 / S4) -- there is no more
+# in-cage engine on/off posture to guard on resume. ---
 
 # --- L2: cmd_up fail-loud on unsupported container states (ADR-001) ---
 echo ""
@@ -190,64 +190,84 @@ else
 fi
 
 # Live tests: require Docker and must not run under host-only CI mode
-# (alpine pull would be subject to Docker Hub anonymous rate limits in CI)
+# (L2-b's `rc up` needs a real msb boot, which is a container-tier op)
 if [[ -n "${RC_HOST_ONLY:-}" ]]; then
   echo ""
-  echo "SKIP (host-only): L2-a live paused-container check (needs a live container; runs via full run-host.sh / container tier)"
   echo "SKIP (host-only): L2-b live legacy-container egress check (needs a live container; runs via full run-host.sh / container tier)"
 elif command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
   echo ""
   echo "--- L2 live tests (Docker available) ---"
 
-  # Live L2-a: paused container → CONTAINER_STATE_UNSUPPORTED
-  # rc resolves paths via realpath before comparing. On macOS /tmp → /private/tmp.
-  # We must:
-  #   1. Resolve TEST_PATH_L2 via realpath so labels match what rc sees after resolution.
-  #   2. Derive CNAME_L2 from the resolved path (mirrors container_name() in rc).
-  TEST_PATH_L2_RAW="/tmp/rc-l2-$(date +%s)"
-  mkdir -p "$TEST_PATH_L2_RAW"
-  TEST_PATH_L2=$(realpath "$TEST_PATH_L2_RAW")
-  # Derive the name rc would compute for this path (mirrors container_name() in rc)
-  _l2a_parent=$(basename "$(dirname "$TEST_PATH_L2")")
-  _l2a_base=$(basename "$TEST_PATH_L2")
-  CNAME_L2=$(echo "${_l2a_parent}-${_l2a_base}" | tr -cs 'a-zA-Z0-9_.-' '-' | sed 's/^[.-]*//' | sed 's/-$//')
-  docker rm -f "$CNAME_L2" >/dev/null 2>&1 || true
-  if ! docker run -d --name "$CNAME_L2" \
-    --label rc.source.path="$TEST_PATH_L2" \
-    --label rc.egress=on \
-    alpine sleep 600 >/dev/null 2>&1; then
-    rm -rf "$TEST_PATH_L2_RAW"
-    fail "L2-a: docker run failed — cannot test paused-container path"
-  else
-    docker pause "$CNAME_L2" >/dev/null 2>&1 || true
-    # RC_ALLOWED_ROOTS must include TEST_PATH_L2 so path validation passes
-    # Capture stdout only — CONTAINER_STATE_UNSUPPORTED JSON is on stdout (json_error rc:65).
-    # 2>/dev/null avoids any stderr progress preamble (e.g. pulling) from polluting the assertion.
-    l2a_result=$(RC_ALLOWED_ROOTS="$TEST_PATH_L2" "$RC" --output json up "$TEST_PATH_L2" 2>/dev/null) || true
-    docker unpause "$CNAME_L2" >/dev/null 2>&1 || true
-    docker rm -f "$CNAME_L2" >/dev/null 2>&1 || true
-    rm -rf "$TEST_PATH_L2_RAW"
-    if echo "$l2a_result" | jq -e '.code == "CONTAINER_STATE_UNSUPPORTED"' >/dev/null 2>&1; then
-      pass "paused container → CONTAINER_STATE_UNSUPPORTED (json)"
-    else
-      fail "paused container did not return CONTAINER_STATE_UNSUPPORTED. Got: $l2a_result"
-    fi
-  fi
+  # Live L2-a RETIRED (rip-cage-tsf2, coordinator-confirmed classification
+  # call, 2026-07-13): this probe used to pause a raw `docker run` container
+  # and assert `rc up` returned CONTAINER_STATE_UNSUPPORTED for it. That
+  # `docker pause` construction has no msb equivalent -- `msb --help` has no
+  # `pause` subcommand, and cli/lib/msb_runtime.sh's _msb_sandbox_state()
+  # can never report the literal "paused" (its case statement only ever
+  # produces running/exited/absent/unknown), so the cmd_up branch it targeted
+  # is unreachable under msb by design (that branch's own comment: "msb has
+  # no pause/restarting/removing/dead concept — unreachable under msb; kept
+  # defensive"). Retiring this live probe loses zero coverage: the guarded
+  # fail-loud-on-unsupported-state behavior (ADR-001) remains covered by the
+  # static source-shape assertions above --
+  # "CONTAINER_STATE_UNSUPPORTED error code present in rc",
+  # "cmd_up has explicit branch for state: paused/restarting/removing/dead",
+  # and "CONTAINER_STATE_UNSUPPORTED referenced >= 8 times in cmd_up" --
+  # which all still pass. Follow-up (optional msb-status-stub re-platform,
+  # if ever wanted): rip-cage-tsf2.7.
 
-  # Live L2-b: legacy container (no rc.egress label) → egress == "legacy" in ls output
-  TEST_PATH_L2b=$(mktemp -d)
-  CNAME_L2b="rc-l2b-test-$(date +%s)"
-  docker run -d --name "$CNAME_L2b" \
-    --label rc.source.path="$TEST_PATH_L2b" \
-    alpine sleep 600 >/dev/null 2>&1 || true
-  l2b_result=$("$RC" --output json ls 2>/dev/null) || true
-  docker rm -f "$CNAME_L2b" >/dev/null 2>&1 || true
+  # Live L2-b: msb-native construction (rip-cage-tsf2, coordinator branch
+  # fix; CASE (a) — surviving behavior, mechanics re-platformed onto msb).
+  # The OLD raw `docker run --label rc.source.path=... alpine sleep 600`
+  # construction is dead: cmd_ls's enumeration is REWRITTEN onto msb
+  # (cli/ls.sh:_rc_ls_enumerate, rip-cage-tsf2.1 — `msb list` + `msb
+  # inspect`, never `docker ps`), so a raw docker container is invisible to
+  # `rc ls` regardless of its labels.
+  #
+  # The "legacy" normalization itself is very much alive, and is now the
+  # UNIVERSAL case for any cage a CURRENT `rc up` creates: grepping this
+  # repo's own cli/*.sh confirms nothing sets the bare `rc.egress` label
+  # any more (only the unrelated `rc.egress.config-override` label is set
+  # — msb declares egress via host-side --net-rule/--net-default flags at
+  # create time, not an in-cage engine on/off marker) — so
+  # `_rc_ls_enumerate`'s `.config.labels["rc.egress"]` read is always
+  # empty for a real msb cage, and cmd_ls's own egress-normalization
+  # (`_ls_egress_norm`, cli/ls.sh) always falls to "legacy". Prove this
+  # with a REAL `rc up` cage instead of a fake docker one.
+  TEST_PATH_L2b=$(mktemp -d)/l2b-legacy-probe
+  mkdir -p "$TEST_PATH_L2b"
+  cat > "${TEST_PATH_L2b}/.rip-cage.yaml" <<'YAML'
+version: 1
+network:
+  mode: block
+  allowed_hosts:
+    - example.com
+YAML
+  _l2b_parent=$(basename "$(dirname "$TEST_PATH_L2b")")
+  _l2b_base=$(basename "$TEST_PATH_L2b")
+  CNAME_L2b=$(echo "${_l2b_parent}-${_l2b_base}" | tr -cs 'a-zA-Z0-9_.-' '-' | sed 's/^[.-]*//' | sed 's/-$//')
+  # Per-invocation RC_MANIFEST_GLOBAL (NOT exported -- test-manifest-cross.sh/
+  # test-manifest-cm.sh idiom): _host_sandbox_setup's XDG_CONFIG_HOME isolation
+  # above only takes effect when the CALLER's shell hasn't already exported
+  # XDG_CONFIG_HOME to (or matching) the real default -- a live risk on any
+  # dev shell that sets it explicitly, even to the default path. RC_MANIFEST_GLOBAL
+  # outranks XDG_CONFIG_HOME in _manifest_global_path() (cli/lib/manifest_checks.sh),
+  # so pointing it at a fresh empty (zero-byte = default bundled stack, D8) fixture
+  # here guarantees isolation from a real ~/.config/rip-cage/tools.yaml regardless.
+  _l2b_manifest_fixture=$(mktemp)
+  RC_ALLOWED_ROOTS="$(dirname "$TEST_PATH_L2b")" RC_MANIFEST_GLOBAL="$_l2b_manifest_fixture" \
+    "$RC" up "$TEST_PATH_L2b" < /dev/null > /tmp/rc-l2b-up.out 2>&1 || true
+  l2b_result=$(RC_ALLOWED_ROOTS="$(dirname "$TEST_PATH_L2b")" RC_MANIFEST_GLOBAL="$_l2b_manifest_fixture" \
+    "$RC" --output json ls 2>/dev/null) || true
+  msb rm "$CNAME_L2b" --force >/dev/null 2>&1 || true
   rm -rf "$TEST_PATH_L2b"
+  rm -f "$_l2b_manifest_fixture"
   if echo "$l2b_result" | jq -e --arg name "$CNAME_L2b" '.[] | select(.name == $name) | .egress == "legacy"' >/dev/null 2>&1; then
-    pass "legacy container (no rc.egress label) shown as egress=legacy in cmd_ls"
+    pass "real msb cage (no rc.egress label set by any current cmd_up path) shown as egress=legacy in cmd_ls"
   else
-    fail "legacy container not shown as egress=legacy. Got: $l2b_result"
+    fail "legacy container not shown as egress=legacy. Got: $l2b_result (rc up output: $(cat /tmp/rc-l2b-up.out 2>/dev/null))"
   fi
+  rm -f /tmp/rc-l2b-up.out
 else
   echo "SKIP: Docker daemon not running — skipping L2 live tests"
 fi

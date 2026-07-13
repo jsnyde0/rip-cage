@@ -654,7 +654,7 @@ _up_prepare_docker_mounts() {
   # be mounted over. Collision against any of these triggers abort loud.
   local _SFL_RESERVED_CAGE_PATHS=(
     /bin /boot /dev /etc /home /lib /opt /proc /root /run /sbin /sys
-    /usr /var /tmp /workspace /ssh-agent.sock
+    /usr /var /tmp /workspace
   )
 
   # Load effective config for symlinks settings (D5: skip if no config files).
@@ -861,8 +861,21 @@ _up_prepare_docker_mounts() {
 
   # CAGE_HOST_ADDR explicit pass-through for non-interactive pi -p runs.
   # Resolve on the host side so the value is never empty inside the container.
-  # host.docker.internal is the default (works on Docker Desktop/macOS/Linux with host-gateway).
-  _UP_RUN_ARGS+=(-e "CAGE_HOST_ADDR=${CAGE_HOST_ADDR:-host.docker.internal}")
+  # rip-cage-rj68 (S6): default swapped from docker's host.docker.internal
+  # to msb's equivalent synthetic host-gateway hostname,
+  # host.microsandbox.internal (confirmed present in every msb-booted guest,
+  # docs/2026-07-09-msb-spike-ssh-agent.md). KNOWN LIMITATION carried
+  # forward from that spike, not resolved by this bead: general TCP dials to
+  # host.microsandbox.internal are fake-accepted by msb's netstack for
+  # arbitrary/unbound destinations (the LAN-IP host-service spike,
+  # docs/2026-07-09-msb-spike-lan-ip-host-service.md, found the host's real
+  # LAN IP is the only genuinely delivered guest->host path) — a caller of
+  # CAGE_HOST_ADDR relying on it to reach an arbitrary host-bound port
+  # should verify with a real bidirectional data check, not connect()
+  # success, exactly as everywhere else in this codebase. No current
+  # acceptance criterion in this bead depends on this value's live
+  # reachability; only the identifier name is fixed here.
+  _UP_RUN_ARGS+=(-e "CAGE_HOST_ADDR=${CAGE_HOST_ADDR:-host.microsandbox.internal}")
 
   # Provider env-var passthrough (ADR-019 D5 FLEXIBLE — fixed list, skip empty values)
   # PI_PACKAGE_DIR excluded: host dev path, breaks pi startup in cage
@@ -932,45 +945,6 @@ _up_prepare_docker_mounts() {
 }
 
 
-# _resolve_host_ssh_sock — select the host ssh-agent socket to forward.
-#
-# Parameters:      $1  rc_forward_ssh — "on" or "off"
-# Globals written: _RESOLVE_HOST_SSH_SOCK_RESULT (empty = nothing usable)
-#
-# Logic:
-#   - If rc_forward_ssh == "off": return immediately with empty result.
-#   - Linux/WSL2: use $SSH_AUTH_SOCK directly (same kernel as Docker, no VM
-#     boundary). Reachability is checked by the in-container preflight.
-#   - macOS: return /run/host-services/ssh-auth.sock unconditionally. This is
-#     the only path OrbStack and Docker Desktop actually proxy across the VM
-#     boundary — it's a VM-internal path (not visible on the macOS host
-#     filesystem) that docker resolves at bind-mount time. Arbitrary paths
-#     like $SSH_AUTH_SOCK probe OK from a host shell but yield "Connection
-#     refused" inside the cage, so host-side probing was empirically
-#     meaningless and has been removed (ADR-018 amendment, 2026-04-24).
-_resolve_host_ssh_sock() {
-  local _rc_forward_ssh="${1:-on}"
-  _RESOLVE_HOST_SSH_SOCK_RESULT=""
-
-  # Short-circuit when forwarding is disabled — no latency added.
-  if [[ "$_rc_forward_ssh" == "off" ]]; then
-    return
-  fi
-
-  if [[ "$(uname)" == "Darwin" ]]; then
-    _RESOLVE_HOST_SSH_SOCK_RESULT="/run/host-services/ssh-auth.sock"
-    return
-  fi
-
-  # Linux / WSL2: $SSH_AUTH_SOCK is a normal AF_UNIX socket on the same kernel
-  # Docker runs on. Any existing socket is bind-mountable directly.
-  local _candidate="${SSH_AUTH_SOCK:-}"
-  if [[ -n "$_candidate" ]] && [[ -S "$_candidate" ]]; then
-    _RESOLVE_HOST_SSH_SOCK_RESULT="$_candidate"
-  fi
-}
-
-
 # _up_prepare_environment — build the env (-e), resource-limit, and beads portions of run_args.
 #
 # Globals written: _UP_RUN_ARGS (appended to)
@@ -981,10 +955,8 @@ _resolve_host_ssh_sock() {
 #   $4  rc_cpus       — CPU limit
 #   $5  rc_memory     — memory limit
 #   $6  rc_pids_limit — PID limit
-#   $7  rc_egress     — egress firewall mode ("on" or "off")
-#   $8  rc_forward_ssh — ssh-agent forwarding ("on" or "off")
 _up_prepare_environment() {
-  local _path="$1" _port="$2" _env_file="$3" _rc_cpus="$4" _rc_memory="$5" _rc_pids_limit="$6" _rc_egress="${7:-on}" _rc_forward_ssh="${8:-on}"
+  local _path="$1" _port="$2" _env_file="$3" _rc_cpus="$4" _rc_memory="$5" _rc_pids_limit="$6"
 
   # Forward git identity from host
   local git_name git_email
@@ -1082,9 +1054,11 @@ _up_prepare_environment() {
     # Embedded Dolt or no metadata: let bd use embedded engine on bind mount
     log "Beads: embedded mode — no Dolt server connection"
   else
-    # Server/owned/external mode: connect to host's Dolt server
+    # Server/owned/external mode: connect to host's Dolt server.
+    # rip-cage-rj68 (S6): msb's host-gateway hostname — see the
+    # CAGE_HOST_ADDR comment above for the same swap + its known limitation.
     _UP_RUN_ARGS+=(-e "BEADS_DOLT_SERVER_MODE=1")
-    _UP_RUN_ARGS+=(-e "BEADS_DOLT_SERVER_HOST=host.docker.internal")
+    _UP_RUN_ARGS+=(-e "BEADS_DOLT_SERVER_HOST=host.microsandbox.internal")
     local dolt_port_file="${beads_dir}/dolt-server.port"
     local _dolt_port_env_arg
     _dolt_port_env_arg=$(_bd_dolt_port_inject_arg "$dolt_port_file")
@@ -1099,116 +1073,111 @@ _up_prepare_environment() {
     # (explicit ADR-001 exception per ADR-007 D8 rationale).
     _bd_host_preflight "$beads_dir" "$beads_dolt_mode"
   fi
-
-  # Egress firewall (D6): add NET_ADMIN capability unless escape valve is set
-  if [[ "$_rc_egress" != "off" ]]; then
-    _UP_RUN_ARGS+=(--cap-add=NET_ADMIN)
-    _UP_RUN_ARGS+=(-l rc.egress=on)
-  else
-    _UP_RUN_ARGS+=(-l rc.egress=off)
-  fi
-
-  # rip-cage-yid0: mediator CA trust env vars.
-  #
-  # SNI-router-only (no mediator composed, network.egress.mediator: none,
-  # ADR-026 D5): NO CA vars are added here (rip-cage-ta1o.1) — the pure SNI
-  # router does NOT terminate TLS and installs no rip-cage CA, so clients
-  # validate the REAL upstream cert via the default system trust store.
-  # NODE_EXTRA_CA_CERTS / *_CA_BUNDLE pointing at a rip-cage CA would target a
-  # nonexistent file (ADR-012 D4). This case is unchanged / still correct.
-  #
-  # Mediator composed (_UP_MEDIATOR_CA_ENV="true" — set in the mediator-
-  # resolution block of cmd_up, BEFORE _rc_mediator is unset there; this
-  # function runs AFTER that unset, so it reads the _UP_* global flag instead
-  # of _rc_mediator directly): init-mediator.sh (host-driven root docker exec)
-  # installs the mediator's MITM CA into the container's SYSTEM trust store via
-  # update-ca-certificates. Node's TLS stack ignores the system store unless
-  # told, so:
-  #   - NODE_EXTRA_CA_CERTS points at the rc-owned canonical mediator CA file
-  #     alone (additive, correct for Node — there is no other way for it to
-  #     pick up update-ca-certificates' output).
-  #   - SSL_CERT_FILE / REQUESTS_CA_BUNDLE point at the SYSTEM bundle, NEVER at
-  #     the mediator CA file alone — these REPLACE the trust store for
-  #     openssl-linked / requests-based tools, so pointing them at just the
-  #     mediator CA would break non-MITM'd TLS to every other host.
-  #
-  # Timing: these are static paths threaded at container-create time (docker
-  # run -e); the CA FILE itself only materializes later, during host-driven
-  # init-mediator.sh, which runs before _up_init_container (rc:~3886) and
-  # therefore before any agent process. Only pre-init processes (sleep-
-  # infinity PID 1, firewall/mediator init) predate the file — none of them
-  # are Node.
-  #
-  # Residual (accepted, 80/20): a mediator composed WITHOUT a declared
-  # ca_cert_path leaves NODE_EXTRA_CA_CERTS pointing at a file that never
-  # appears -> one harmless "ignoring extra certs" Node warning per process.
-  if [[ "${_UP_MEDIATOR_CA_ENV:-false}" == "true" ]]; then
-    _UP_RUN_ARGS+=(-e "NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/rip-cage-mediator-ca.crt")
-    _UP_RUN_ARGS+=(-e "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt")
-    _UP_RUN_ARGS+=(-e "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt")
-  fi
-  # rip-cage-yid0: end mediator CA trust env vars.
-
-  # ssh-agent forwarding (ADR-017 + ADR-018): forward whichever host ssh-agent
-  # the user actually populates. _resolve_host_ssh_sock() probes candidate
-  # sockets and picks the first one with keys (or the first reachable one as
-  # fallback). Keys themselves never enter the container — only signing
-  # capability via the forwarded socket.
-  _UP_FORWARD_SSH_HOST_SOCK=""
-  _UP_NO_HOST_AGENT=""
-  if [[ "$_rc_forward_ssh" != "off" ]]; then
-    _resolve_host_ssh_sock "$_rc_forward_ssh"
-    local _host_ssh_sock="$_RESOLVE_HOST_SSH_SOCK_RESULT"
-    if [[ -n "$_host_ssh_sock" ]]; then
-      # ADR-022 D3: when key filtering is active, mount host agent socket as
-      # /ssh-agent-upstream.sock so ssh-agent-filter (launched by init-rip-cage.sh)
-      # can read it as its upstream and expose its own filtered socket via the
-      # /ssh-agent.sock symlink. When filtering is off, use the direct
-      # /ssh-agent.sock destination (today's default path).
-      if [[ "${_UP_SSH_FILTER_ACTIVE:-false}" == "true" ]]; then
-        _UP_RUN_ARGS+=(-v "${_host_ssh_sock}:/ssh-agent-upstream.sock")
-        _UP_RUN_ARGS+=(-e "SSH_AUTH_SOCK=/ssh-agent.sock")
-      else
-        _UP_RUN_ARGS+=(-v "${_host_ssh_sock}:/ssh-agent.sock")
-        _UP_RUN_ARGS+=(-e "SSH_AUTH_SOCK=/ssh-agent.sock")
-      fi
-      _UP_RUN_ARGS+=(-l rc.forward-ssh=on)
-      _UP_FORWARD_SSH_HOST_SOCK="$_host_ssh_sock"
-    else
-      log "Warning: ssh-agent forwarding requested but no reachable host agent found. Proceeding without forwarding; git push inside the cage will fail. Run 'ssh-add ~/.ssh/<key>' on host or pass --no-forward-ssh to suppress this warning."
-      _UP_RUN_ARGS+=(-l rc.forward-ssh=off)
-      _UP_NO_HOST_AGENT="1"
-    fi
-  else
-    _UP_RUN_ARGS+=(-l rc.forward-ssh=off)
-  fi
 }
 
 
-# _up_start_container — run the container with the prepared _UP_RUN_ARGS.
+# _up_start_container — create the msb sandbox with the prepared
+# _UP_RUN_ARGS (rip-cage-rj68, S6 — REWRITTEN onto msb; was `docker run`).
 #
-# Globals read: _UP_RUN_ARGS, OUTPUT_FORMAT
-# Parameter: $1 name — container name (for error messages)
+# The mount/env-building body that produces _UP_RUN_ARGS
+# (_up_prepare_docker_mounts, _up_prepare_environment, DCG, manifest
+# mounts) is UNCHANGED by this bead — still docker -v/-e/--label/--workdir
+# shape. This function is the one seam where that shape gets: (a)
+# translated to msb flags (_up_translate_docker_args_to_msb), and (b)
+# joined with the net-rule/secret/tls flags S2's generator produces from
+# the NEW auth.credentials config surface (_up_build_egress_config_json ->
+# _msb_flags_generate) — "create moves onto S2's generator flags" per the
+# bead design.
+#
+# Fold b (source_env preflight) gates this BEFORE any msb invocation: a
+# credential whose source_env is unset/empty in the host env aborts loud
+# here, naming the var, rather than silently booting a cage carrying an
+# empty secret.
+#
+# `--log-level trace` is always passed (criterion 5, D2's deny-visibility
+# re-home): cages boot with trace logging on by default so the DNS-denial
+# `domain=` log line is available for the repair loop's fix-hint (see
+# _reload_denied_domains_from_trace_log in cli/reload.sh).
+#
+# Globals read: _UP_RUN_ARGS, OUTPUT_FORMAT, IMAGE
+# Parameters: $1 name — container name; $2 path — validated workspace path
+#             (for the egress-config JSON build)
+# Returns non-zero on failure (human mode); JSON mode calls json_error,
+# which exits internally and never returns.
 _up_start_container() {
-  local _name="$1"
-  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    local docker_stderr
-    # Note: inside $(...), redirects are evaluated left-to-right:
-    # 2>&1 copies stderr to the capture pipe (stdout), then >/dev/null discards stdout —
-    # capturing stderr while suppressing the container ID.
-    if ! docker_stderr=$(docker run "${_UP_RUN_ARGS[@]}" 2>&1 >/dev/null); then
-      if echo "$docker_stderr" | grep -q "is already in use by container"; then
+  local _name="$1" _path="$2"
+
+  local _egress_cfg
+  _egress_cfg=$(_up_build_egress_config_json "$_path")
+
+  local _preflight_err
+  if ! _preflight_err=$(_msb_flags_preflight_secret_env "$_egress_cfg" 2>&1); then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "$_preflight_err" "SECRET_SOURCE_ENV_UNSET"
+    fi
+    echo "$_preflight_err" >&2
+    return 1
+  fi
+
+  # Export each credential's real value under its synthesized guest-
+  # placeholder name. MUST run in this shell (never via $(...), which would
+  # run in a subshell and discard the exports) per its own contract.
+  _msb_flags_prepare_secret_env "$_egress_cfg"
+
+  local _egress_out _egress_rc=0
+  _egress_out=$(_msb_flags_generate "$_egress_cfg") || _egress_rc=$?
+  if [[ "$_egress_rc" -ne 0 ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Failed to generate msb egress flags for $_name" "MSB_FLAGS_GENERATE_FAILED"
+    fi
+    echo "Error: failed to generate msb egress flags for $_name" >&2
+    return 1
+  fi
+  local _egress_flags=()
+  [[ -n "$_egress_out" ]] && mapfile -t _egress_flags <<< "$_egress_out"
+
+  local _translate_out _translate_rc=0
+  _translate_out=$(_up_translate_docker_args_to_msb "${_UP_RUN_ARGS[@]}") || _translate_rc=$?
+  if [[ "$_translate_rc" -ne 0 ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Failed to translate mount/env args to msb for $_name" "MSB_ARGS_TRANSLATE_FAILED"
+    fi
+    return 1
+  fi
+  local _translated_flags=()
+  [[ -n "$_translate_out" ]] && mapfile -t _translated_flags <<< "$_translate_out"
+
+  local msb_stderr
+  if ! msb_stderr=$(msb create --name "$_name" --log-level trace \
+      "${_translated_flags[@]}" "${_egress_flags[@]}" "$IMAGE" 2>&1 >/dev/null); then
+    if echo "$msb_stderr" | grep -q "sandbox already exists"; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
         json_error "Container name $_name is already in use" "NAME_CONFLICT"
       fi
-      json_error "Failed to create container $_name" "DOCKER_ERROR"
+      echo "Error: Container name $_name is already in use" >&2
+      return 1
     fi
-  else
-    docker run "${_UP_RUN_ARGS[@]}"
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "Failed to create container $_name: ${msb_stderr}" "MSB_ERROR"
+    fi
+    echo "Error: failed to create container $_name" >&2
+    echo "$msb_stderr" >&2
+    return 1
   fi
+  return 0
 }
 
 
-# _up_init_container — run the in-container init script.
+# _up_init_container — run the in-guest init script (rip-cage-rj68, S6 —
+# REWRITTEN onto msb; was `docker exec`). This is the SAME script
+# (cage/init/init-rip-cage.sh, baked at /usr/local/bin/init-rip-cage.sh)
+# re-run on EVERY create AND every resume (see cmd_up's resume branch
+# below) — this is the mechanism behind ADR-029 D4's "rc re-runs init on
+# each resume" corollary (bead criterion 6: git identity re-established;
+# git config --global user.name/user.email are set unconditionally inside
+# init-rip-cage.sh on every run) and the cockpit/herdr re-registration
+# corollary (bead criterion 3: the multiplexer 'start' hook dispatch also
+# lives inside this same script, section 12).
 #
 # Globals read:    OUTPUT_FORMAT
 # Globals written: _UP_INIT_OK (set to "true" or "false")
@@ -1218,155 +1187,9 @@ _up_init_container() {
   _UP_INIT_OK=true
   log "Running init script..."
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    docker exec "$_name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || _UP_INIT_OK=false
+    _msb_exec "$_name" -- /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || _UP_INIT_OK=false
   else
-    docker exec "$_name" /usr/local/bin/init-rip-cage.sh || _UP_INIT_OK=false
-  fi
-}
-
-
-# _up_resolve_resume_egress -- read and validate the rc.egress label on resume.
-# Implements ADR-001 fail-loud for three cases:
-#   - docker inspect failure (transient infra or TOCTOU) -> distinct error
-#   - missing label (legacy container predating egress support)
-#   - unrecognized value (anything other than on|off)
-# On success sets _UP_RESUME_EGRESS to "on" or "off"; otherwise exits 1.
-# Parameters: $1 name, $2 path (used in the recreate hint)
-_up_resolve_resume_egress() {
-  local _name="$1" _path="$2"
-  local _label
-  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.egress" }}' "$_name" 2>/dev/null); then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
-    fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
-    exit 1
-  fi
-  if [[ -z "$_label" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name predates egress support (no rc.egress label). Run: rc destroy $_name && rc up $_path" "LEGACY_CONTAINER"
-    fi
-    echo "Error: container $_name predates egress support (no rc.egress label)." >&2
-    echo "       Recreate it to pick up current safety features:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  fi
-  if [[ "$_label" != "on" && "$_label" != "off" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name has unrecognized rc.egress label value: '$_label' (expected on|off). Run: rc destroy $_name && rc up $_path" "INVALID_EGRESS_LABEL"
-    fi
-    echo "Error: container $_name has unrecognized rc.egress label value: '$_label' (expected on|off)." >&2
-    echo "       Recreate it:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  fi
-  _UP_RESUME_EGRESS="$_label"
-}
-
-
-# _up_resolve_resume_forward_ssh -- read and validate the rc.forward-ssh label on resume.
-# Parallel shape to _up_resolve_resume_egress. ADR-017 D2: resume must preserve
-# the original posture, not silently upgrade/downgrade based on current env.
-# Missing label is treated as "off" (legacy pre-ADR-017 containers predate the
-# label and never had forwarding wired). On success sets _UP_RESUME_FORWARD_SSH
-# to "on" or "off"; fails loud on docker errors or unrecognized values.
-# Parameters: $1 name, $2 path (used in the recreate hint)
-_up_resolve_resume_forward_ssh() {
-  local _name="$1" _path="$2"
-  local _label
-  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.forward-ssh" }}' "$_name" 2>/dev/null); then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
-    fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
-    exit 1
-  fi
-  if [[ -z "$_label" ]]; then
-    # Legacy container from before ADR-017 — treat as off (no forwarding was
-    # configured when created). Not an error: old containers continue to work
-    # in their original push-less posture.
-    _UP_RESUME_FORWARD_SSH="off"
-    return
-  fi
-  if [[ "$_label" != "on" && "$_label" != "off" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name has unrecognized rc.forward-ssh label value: '$_label' (expected on|off). Run: rc destroy $_name && rc up $_path" "INVALID_FORWARD_SSH_LABEL"
-    fi
-    echo "Error: container $_name has unrecognized rc.forward-ssh label value: '$_label' (expected on|off)." >&2
-    echo "       Recreate it:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  fi
-  _UP_RESUME_FORWARD_SSH="$_label"
-}
-
-
-# _up_resolve_resume_ssh_key_filter -- read and validate the rc.ssh-key-filter
-# label on resume; abort loud if current effective config's ssh.allowed_keys
-# state (null vs non-null) differs from the label.
-#
-# ADR-022: ssh.allowed_keys toggling between null and non-null is a mount-shape
-# change (the /etc/rip-cage/ssh-allowed-keys bind mount appears or disappears).
-# Mounts are immutable on resume, so silently re-reading effective config would
-# leave init-rip-cage.sh consulting a stale sentinel (or missing one). Force
-# rc destroy && rc up to apply the change. Mirrors _up_resolve_resume_ssh_config.
-#
-# Missing label is treated as "off" (legacy pre-ADR-022 containers predate the
-# label and never had filtering wired). Sets _UP_RESUME_SSH_KEY_FILTER on success.
-# Parameters: $1 name, $2 path
-_up_resolve_resume_ssh_key_filter() {
-  local _name="$1" _path="$2"
-  local _label
-  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.ssh-key-filter" }}' "$_name" 2>/dev/null); then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
-    fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
-    exit 1
-  fi
-  if [[ -z "$_label" ]]; then
-    _UP_RESUME_SSH_KEY_FILTER="off"
-  elif [[ "$_label" != "on" && "$_label" != "off" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name has unrecognized rc.ssh-key-filter label value: '$_label' (expected on|off). Run: rc destroy $_name && rc up $_path" "INVALID_SSH_KEY_FILTER_LABEL"
-    fi
-    echo "Error: container $_name has unrecognized rc.ssh-key-filter label value: '$_label' (expected on|off)." >&2
-    echo "       Recreate it:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  else
-    _UP_RESUME_SSH_KEY_FILTER="$_label"
-  fi
-
-  # Compute current effective ssh.allowed_keys state from on-disk config.
-  # null → "off" (no filtering); [] or [...] → "on" (filtering active).
-  local _eff_result _eff_keys _current
-  _eff_result=$(_load_effective_config "$_path" 2>/dev/null || true)
-  if [[ -z "$_eff_result" ]]; then
-    _current="off"
-  else
-    _eff_keys=$(jq -c '.config.ssh.allowed_keys' <<<"$_eff_result" 2>/dev/null || echo "null")
-    if [[ "$_eff_keys" == "null" ]]; then
-      _current="off"
-    else
-      _current="on"
-    fi
-  fi
-
-  if [[ "$_UP_RESUME_SSH_KEY_FILTER" != "$_current" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name was created with rc.ssh-key-filter=${_UP_RESUME_SSH_KEY_FILTER} but current effective config has ssh.allowed_keys filter=${_current}. Mount shape is immutable on resume — run: rc destroy $_name && rc up $_path to apply the change." "SSH_KEY_FILTER_MOUNT_SHAPE_CHANGED"
-    fi
-    echo "Error: container $_name was created with rc.ssh-key-filter=${_UP_RESUME_SSH_KEY_FILTER} but current effective config has ssh.allowed_keys filter=${_current}." >&2
-    echo "       The /etc/rip-cage/ssh-allowed-keys bind mount is wired at create time; toggling ssh.allowed_keys between null and non-null requires recreating the container." >&2
-    echo "       Run:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
+    _msb_exec "$_name" -- /usr/local/bin/init-rip-cage.sh || _UP_INIT_OK=false
   fi
 }
 
@@ -1379,7 +1202,6 @@ _up_resolve_resume_ssh_key_filter() {
 # ADR-021 D7: mounts.config_mode toggles whether a nested :ro bind-mount is
 # added over /workspace/.rip-cage.yaml. Silently re-using a stale mount would
 # leave the agent with a mount shape inconsistent with what the user configured.
-# Mirrors _up_resolve_resume_ssh_key_filter.
 #
 # Missing label (legacy container, pre-cw51): treated as "ro" (the default);
 # if current effective config is also ro (or absent), no mismatch.
@@ -1387,11 +1209,11 @@ _up_resolve_resume_ssh_key_filter() {
 _up_resolve_resume_config_mode() {
   local _name="$1" _path="$2"
   local _label
-  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.config-mode" }}' "$_name" 2>/dev/null); then
+  if ! _label=$(_msb_label "$_name" "rc.config-mode"); then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
+      json_error "msb inspect failed for $_name" "MSB_ERROR"
     fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
+    echo "Error: msb inspect failed for $_name (is msb reachable?)" >&2
     exit 1
   fi
   # Empty label = legacy container; treat as "ro" (the default, matches the
@@ -1418,61 +1240,6 @@ _up_resolve_resume_config_mode() {
     fi
     echo "Error: container $_name was created with rc.config-mode=${_stored_mode} but current effective config has mounts.config_mode=${_current}." >&2
     echo "       The /workspace/.rip-cage.yaml :ro shadow-mount is wired at create time; toggling mounts.config_mode between ro and rw requires recreating the container." >&2
-    echo "       Run:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  fi
-}
-
-
-# _up_resolve_resume_mediator_ca_env -- read and validate the rc.mediator-ca-env
-# label on resume; abort loud if the CURRENT effective config composes a
-# mediator (network.egress.mediator != none) but the container was created
-# WITHOUT the mediator CA trust env vars (NODE_EXTRA_CA_CERTS / SSL_CERT_FILE /
-# REQUESTS_CA_BUNDLE — rip-cage-yid0).
-#
-# These vars are threaded via `docker run -e` at container-create time and are
-# frozen for the container's lifetime — `docker start` (resume) cannot add
-# them. Without this guard, a stopped cage that pre-dates this fix, or one
-# reconfigured to add a mediator after creation, would silently resume with
-# broken Node TLS (SELF_SIGNED_CERT_IN_CHAIN) every time. Mirrors
-# _up_resolve_resume_config_mode / _up_resolve_resume_credential_mounts.
-#
-# Missing label (legacy container, pre-yid0): treated as "false" (CA env vars
-# were never set at create time for any pre-fix container) — if the current
-# effective config also composes no mediator, there is no mismatch.
-# Parameters: $1 name, $2 path
-_up_resolve_resume_mediator_ca_env() {
-  local _name="$1" _path="$2"
-  local _label
-  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.mediator-ca-env" }}' "$_name" 2>/dev/null); then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
-    fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
-    exit 1
-  fi
-  local _stored
-  if [[ -z "$_label" ]]; then
-    _stored="false"
-  else
-    _stored="$_label"
-  fi
-
-  # Compute whether the CURRENT effective config composes a mediator.
-  local _eff_result _current_mediator="none"
-  _eff_result=$(_load_effective_config "$_path" 2>/dev/null || true)
-  if [[ -n "$_eff_result" ]]; then
-    _current_mediator=$(jq -r '.config.network.egress.mediator // "none"' <<<"$_eff_result" 2>/dev/null || echo "none")
-  fi
-
-  if [[ "$_current_mediator" != "none" && "$_stored" != "true" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name was created with rc.mediator-ca-env=${_stored} but current effective config composes network.egress.mediator=${_current_mediator}. CA trust env vars are immutable on resume — run: rc destroy $_name && rc up $_path to apply the change." "MEDIATOR_CA_ENV_STALE"
-    fi
-    echo "Error: container $_name was created with rc.mediator-ca-env=${_stored} but current effective config composes network.egress.mediator=${_current_mediator}." >&2
-    echo "       NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / REQUESTS_CA_BUNDLE are threaded via docker run -e at container-create time and cannot be added to an existing container — resuming blind would silently reproduce SELF_SIGNED_CERT_IN_CHAIN for Node tools (rip-cage-yid0)." >&2
     echo "       Run:" >&2
     echo "         rc destroy $_name" >&2
     echo "         rc up $_path" >&2
@@ -1533,14 +1300,14 @@ _up_short_image_id() {
 _up_image_drift_status() {
   local _name="$1"
   local _stored_image
-  if ! _stored_image=$(docker inspect --format '{{.Image}}' "$_name" 2>/dev/null); then
+  if ! _stored_image=$(_msb_sandbox_image_digest "$_name"); then
     _UP_IMAGE_DRIFT_STORED=""
     _UP_IMAGE_DRIFT_CURRENT=""
     return 3
   fi
   _UP_IMAGE_DRIFT_STORED=$(_up_short_image_id "$_stored_image")
   local _current_image
-  if ! _current_image=$(docker image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null); then
+  if ! _current_image=$(_msb_current_image_digest "$IMAGE"); then
     _UP_IMAGE_DRIFT_CURRENT=""
     return 2
   fi
@@ -1575,9 +1342,9 @@ _up_resolve_resume_image_drift_stopped() {
     # path still has no safe default here and aborts, matching every sibling
     # _up_resolve_resume_* resolver's docker-inspect-failure idiom.
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
+      json_error "msb inspect failed for $_name" "MSB_ERROR"
     fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
+    echo "Error: msb inspect failed for $_name (is msb reachable?)" >&2
     exit 1
   fi
 
@@ -1632,7 +1399,7 @@ _up_resolve_resume_image_drift_running() {
   [[ "$_status" -eq 0 ]] && return 0
 
   if [[ "$_status" -eq 3 ]]; then
-    echo "Warning: could not verify container ${_name}'s image (docker inspect failed) — skipping the image-drift check for this attach." >&2
+    echo "Warning: could not verify container ${_name}'s image (msb inspect failed) — skipping the image-drift check for this attach." >&2
     return 0
   fi
 
@@ -1683,16 +1450,16 @@ _up_resolve_resume_credential_mounts() {
   local _name="$1" _path="$2"
 
   local _label_global
-  if ! _label_global=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts" }}' "$_name" 2>/dev/null); then
+  if ! _label_global=$(_msb_label "$_name" "rc.auth.credential-mounts"); then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
+      json_error "msb inspect failed for $_name" "MSB_ERROR"
     fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
+    echo "Error: msb inspect failed for $_name (is msb reachable?)" >&2
     exit 1
   fi
   local _label_claude _label_pi
-  _label_claude=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts.claude" }}' "$_name" 2>/dev/null || true)
-  _label_pi=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts.pi" }}' "$_name" 2>/dev/null || true)
+  _label_claude=$(_msb_label "$_name" "rc.auth.credential-mounts.claude" || true)
+  _label_pi=$(_msb_label "$_name" "rc.auth.credential-mounts.pi" || true)
 
   # Empty global label = legacy container (pre-seqc.4); treat as "real".
   local _stored_global="real"
@@ -1742,7 +1509,7 @@ _up_resolve_resume_credential_mounts() {
 _up_resolve_resume_symlink_fingerprint() {
   local _name="$1" _path="$2"
   local _stored_fp
-  _stored_fp=$(docker inspect --format '{{ index .Config.Labels "rc.symlink-follow-fingerprint" }}' "$_name" 2>/dev/null || true)
+  _stored_fp=$(_msb_label "$_name" "rc.symlink-follow-fingerprint" || true)
 
   # Compute current fingerprint — include mode, on_dangling, and scope so that
   # policy changes (not just symlink-set changes) produce fingerprint drift.
@@ -1804,1220 +1571,6 @@ _up_resolve_resume_symlink_fingerprint() {
   fi
 }
 
-
-# _tsc_process_file -- internal helper for _translate_ssh_config.
-# Reads lines from $1 (file path), applies transforms 2-5, outputs to stdout.
-# $2 is the effective ssh home dir (e.g., ~/.ssh, or $HOME/.ssh).
-# Recursive include inlining calls this function again on include targets.
-_tsc_process_file() {
-  local _tsc_file="$1" _tsc_ssh_home="$2"
-  local _tsc_line _tsc_indent _tsc_kw _tsc_kwlc _tsc_path _tsc_bn _tsc_lstr _tsc_lstr_lc
-
-  while IFS= read -r _tsc_line || [[ -n "$_tsc_line" ]]; do
-    # Strip leading whitespace to get keyword; lowercase for matching
-    _tsc_lstr="${_tsc_line#"${_tsc_line%%[![:space:]]*}"}"
-    _tsc_kw="${_tsc_lstr%%[[:space:]]*}"
-    _tsc_kwlc=$(printf '%s' "$_tsc_kw" | tr '[:upper:]' '[:lower:]')
-    _tsc_indent="${_tsc_line%%[! ]*}"
-
-    case "$_tsc_kwlc" in
-      # Transform 4: host-only directives → strip
-      proxycommand|proxyjump|controlmaster|controlpath|identityagent)
-        printf '%s# rip-cage: stripped (host-only)\n' "$_tsc_indent"
-        continue
-        ;;
-      # Match exec is special — keyword is 'match'; only 'Match exec' is host-only
-      match)
-        _tsc_lstr_lc=$(printf '%s' "$_tsc_lstr" | tr '[:upper:]' '[:lower:]')
-        if [[ "$_tsc_lstr_lc" =~ ^match[[:space:]]+exec([[:space:]]|$) ]]; then
-          printf '%s# rip-cage: stripped (host-only)\n' "$_tsc_indent"
-          continue
-        fi
-        ;;
-      # Transform 5: ADR-014 D2 overrides — BatchMode/StrictHostKeyChecking only.
-      # ADR-022 D4: UserKnownHostsFile/GlobalKnownHostsFile rewrites removed —
-      # config-layer rewrites were bypassable theater (-o flag beats config);
-      # mount-layer filtering via _filter_known_hosts is the real enforcement.
-      batchmode)
-        printf '%sBatchMode yes # rip-cage: overridden (ADR-014 D2)\n' "$_tsc_indent"
-        continue
-        ;;
-      stricthostkeychecking)
-        printf '%sStrictHostKeyChecking yes # rip-cage: overridden (ADR-014 D2)\n' "$_tsc_indent"
-        continue
-        ;;
-      # Transform 2: IdentityFile path rewrite
-      identityfile)
-        # Extract path portion: strip "IdentityFile" keyword + leading spaces
-        _tsc_path="${_tsc_lstr#"${_tsc_kw}"}"
-        _tsc_path="${_tsc_path#"${_tsc_path%%[![:space:]]*}"}"
-        # Tilde-expand
-        _tsc_path="${_tsc_path/#~/$HOME}"
-        _tsc_bn=$(basename "$_tsc_path")
-        printf '%sIdentityFile /home/agent/.ssh/%s\n' "$_tsc_indent" "$_tsc_bn"
-        continue
-        ;;
-      # Transform 3: Include directives
-      include)
-        _tsc_path="${_tsc_lstr#"${_tsc_kw}"}"
-        _tsc_path="${_tsc_path#"${_tsc_path%%[![:space:]]*}"}"
-        # Tilde-expand
-        _tsc_path="${_tsc_path/#~/$HOME}"
-        # In-home include → inline; out-of-home → strip
-        if [[ "$_tsc_path" == "${_tsc_ssh_home}/"* ]]; then
-          if [[ -f "$_tsc_path" ]]; then
-            _tsc_process_file "$_tsc_path" "$_tsc_ssh_home"
-          fi
-          # Absent in-home include → silently skip
-        else
-          printf '%s# rip-cage: stripped (Include outside ~/.ssh/)\n' "$_tsc_indent"
-        fi
-        continue
-        ;;
-    esac
-
-    # Default: pass through unchanged
-    printf '%s\n' "$_tsc_line"
-  done < "$_tsc_file"
-}
-
-
-# _translate_ssh_config -- ADR-020 D2 host-config translation engine.
-# Applies six transforms to produce a cage-compatible SSH config:
-#   1. IgnoreUnknown header (macOS directives shim)
-#   2. IdentityFile path rewrite: ~/.ssh/<n> → /home/agent/.ssh/<n>
-#   3. Include: in-home → inline recursively; out-of-home → strip with comment
-#   4. Host-only directives strip: Match exec, ProxyCommand, ProxyJump, ControlMaster,
-#      ControlPath, IdentityAgent → # rip-cage: stripped (host-only)
-#   5. ADR-014 D2 overrides: BatchMode/StrictHostKeyChecking (ADR-022 D4: UserKnownHostsFile/
-#      GlobalKnownHostsFile rewrites removed — mount-layer filtering is the real enforcement)
-#   6. github.com synthesis: if key_basename non-empty and no Host github.com → append synth block
-# Parameters:
-#   $1 host_config_path    — path to host's ~/.ssh/config (may be absent)
-#   $2 output_path         — idempotent write destination (parent dir must exist)
-#   $3 resolved_key_basename — key basename for github.com synthesis (may be empty)
-_translate_ssh_config() {
-  local _hcfg="$1" _out="$2" _key_bn="$3"
-  local _ssh_home="${HOME}/.ssh"
-
-  # Check if Host github.com already present in raw input
-  local _has_github=false
-  if [[ -f "$_hcfg" ]]; then
-    local _scan_line
-    while IFS= read -r _scan_line; do
-      if [[ "$_scan_line" =~ ^[[:space:]]*[Hh][Oo][Ss][Tt][[:space:]]+github\.com([[:space:]]|$) ]]; then
-        _has_github=true
-        break
-      fi
-    done < "$_hcfg"
-  fi
-
-  # Build output
-  {
-    # Transform 1: IgnoreUnknown header
-    printf 'IgnoreUnknown UseKeychain,AddKeysToAgent\n'
-
-    # Apply transforms 2-5 to host config lines (if file exists)
-    if [[ -f "$_hcfg" ]]; then
-      _tsc_process_file "$_hcfg" "$_ssh_home"
-    fi
-
-    # Transform 6: github.com synthesis
-    if [[ -n "$_key_bn" && "$_has_github" == "false" ]]; then
-      printf '\nHost github.com\n'
-      printf '  User git\n'
-      printf '  IdentityFile /home/agent/.ssh/%s\n' "$_key_bn"
-      printf '  IdentitiesOnly yes\n'
-    fi
-  } > "$_out"
-}
-
-
-# _derive_pubkey_allowlist -- parse a translated SSH config and emit one <basename>.pub per line
-# for each IdentityFile directive found. Used to build the pubkey mount allowlist (ADR-020 D1).
-# Duplicates are collapsed (each basename appears once).
-# Parameter: $1 translated_config_path — path to the translated ssh-config file
-# Returns: newline-separated list of <basename>.pub filenames (stdout), empty if none.
-_derive_pubkey_allowlist() {
-  local _cfg="$1"
-  local _line _kw _kw_lc _path _bn _seen_list
-
-  if [[ ! -f "$_cfg" ]]; then
-    return 0
-  fi
-
-  _seen_list=""
-  while IFS= read -r _line || [[ -n "$_line" ]]; do
-    # Strip leading whitespace
-    local _lstr="${_line#"${_line%%[![:space:]]*}"}"
-    _kw="${_lstr%%[[:space:]]*}"
-    _kw_lc=$(printf '%s' "$_kw" | tr '[:upper:]' '[:lower:]')
-    if [[ "$_kw_lc" == "identityfile" ]]; then
-      _path="${_lstr#"${_kw}"}"
-      _path="${_path#"${_path%%[![:space:]]*}"}"
-      _bn=$(basename "$_path")
-      # Append .pub if not already a .pub filename
-      if [[ "$_bn" != *.pub ]]; then
-        _bn="${_bn}.pub"
-      fi
-      # Dedup: only emit if not yet seen (bash 3.2 compatible — no associative arrays)
-      if [[ ":${_seen_list}:" != *":${_bn}:"* ]]; then
-        _seen_list="${_seen_list}:${_bn}"
-        printf '%s\n' "$_bn"
-      fi
-    fi
-  done < "$_cfg"
-}
-
-
-# _assert_pubkey_exists_or_die -- enforce that a pubkey file exists on the host for an explicit pin.
-# ADR-020 D4: explicit pin (layers 1-3) + missing .pub → abort non-zero with actionable error.
-# For user-config-derived keys, use _build_ssh_mount_args' warn-and-skip path instead.
-# Parameters:
-#   $1 key_basename  — key basename WITHOUT .pub extension (e.g. id_ed25519_work)
-#   $2 source_label  — human-readable source for the error message (e.g. "explicit", "rules-file")
-# Returns: 0 if ~/.ssh/<key_basename>.pub exists; exits 1 with actionable error otherwise.
-_assert_pubkey_exists_or_die() {
-  local _kb="$1" _src="${2:-explicit}"
-  local _pub_path="${HOME}/.ssh/${_kb}.pub"
-  if [[ ! -f "$_pub_path" ]]; then
-    echo "Error: ${_src} identity '${_kb}' selected, but ~/.ssh/${_kb}.pub does not exist on host." >&2
-    echo "       Generate the key (ssh-keygen) or correct your identity rules." >&2
-    return 1
-  fi
-}
-
-
-# _filter_known_hosts -- filter ~/.ssh/known_hosts to only allowed host patterns.
-# ADR-022 D3 host half: reads input file line-by-line, keeps lines where at least one
-# host field matches an allowed_hosts pattern. Hashed entries (|1|salt|hash format) are
-# resolved via HMAC-SHA1 against each exact (non-wildcard) pattern in the allowlist;
-# matched hashed entries are written unhashed. Wildcard patterns against hashed entries
-# are intractable — emit a warning with ssh-keyscan recipe and skip.
-#
-# Parameters:
-#   $1 allowed_hosts   — space-separated list of patterns (empty = no patterns → empty output)
-#   $2 input_path      — path to source known_hosts file (e.g., ~/.ssh/known_hosts)
-#   $3 output_path     — path to write filtered output (created/overwritten)
-# Side effects: warnings to stderr for wildcard + hashed entry conflicts; does not abort.
-_filter_known_hosts() {
-  local _allowed="$1" _input="$2" _output="$3"
-
-  # Build arrays of exact vs wildcard patterns from space-separated list
-  local _exact_patterns=() _wildcard_patterns=()
-  local _p
-  for _p in $_allowed; do
-    if [[ "$_p" == *'*'* || "$_p" == *'?'* ]]; then
-      _wildcard_patterns+=("$_p")
-    else
-      _exact_patterns+=("$_p")
-    fi
-  done
-
-  # Sentinel: track which wildcards had hashed entry conflicts (warn once per pattern)
-  local _wild_warned=""
-
-  : > "$_output"
-
-  [[ ! -f "$_input" ]] && return 0
-  # No allowed patterns → empty output (bypass closed by design)
-  [[ -z "$_allowed" ]] && return 0
-
-  local _line _type _key _rest
-  while IFS= read -r _line || [[ -n "$_line" ]]; do
-    # Skip blank lines and comments
-    [[ -z "$_line" || "$_line" == '#'* ]] && continue
-
-    # Hashed entry: |1|<salt_b64>|<hash_b64> <type> <key> [<comment>]
-    if [[ "$_line" =~ ^\|1\|([^|]+)\|([^[:space:]]+)[[:space:]](.+)$ ]]; then
-      local _salt_b64="${BASH_REMATCH[1]}" _hash_b64="${BASH_REMATCH[2]}" _rest="${BASH_REMATCH[3]}"
-
-      # Convert salt from base64 to hex for openssl macopt
-      local _salt_hex
-      _salt_hex=$(printf '%s' "$_salt_b64" | base64 -d 2>/dev/null | xxd -p -c 256 2>/dev/null | tr -d '\n')
-      if [[ -z "$_salt_hex" ]]; then continue; fi
-
-      # Try each exact pattern: HMAC-SHA1 the pattern against the salt and compare
-      local _matched=false
-      for _p in "${_exact_patterns[@]+"${_exact_patterns[@]}"}"; do
-        local _test_hash
-        _test_hash=$(printf '%s' "$_p" | openssl dgst -sha1 -mac HMAC -macopt "hexkey:${_salt_hex}" -binary 2>/dev/null | base64)
-        if [[ "$_test_hash" == "$_hash_b64" ]]; then
-          # Match: write unhashed form
-          printf '%s %s\n' "$_p" "$_rest" >> "$_output"
-          _matched=true
-          break
-        fi
-      done
-
-      if [[ "$_matched" == "false" ]]; then
-        # Wildcard patterns against hashed entries: warn once per wildcard
-        for _p in "${_wildcard_patterns[@]+"${_wildcard_patterns[@]}"}"; do
-          if [[ ":${_wild_warned}:" != *":${_p}:"* ]]; then
-            _wild_warned="${_wild_warned}:${_p}"
-            echo "Warning: '${_p}' in ssh.allowed_hosts cannot match hashed known_hosts entries." >&2
-            echo "         Add unhashed entries via: ssh-keyscan -t ed25519,rsa <host> >> ~/.ssh/known_hosts" >&2
-          fi
-        done
-      fi
-      continue
-    fi
-
-    # Unhashed entry: host[,host,...] type key [comment]
-    local _hosts_field
-    _hosts_field="${_line%%[[:space:]]*}"
-
-    # Split comma-separated host fields and check each against all allowed patterns
-    local _keep=false _h
-    IFS=',' read -ra _hfields <<< "$_hosts_field"
-    for _h in "${_hfields[@]+"${_hfields[@]}"}"; do
-      # Try exact patterns
-      for _p in "${_exact_patterns[@]+"${_exact_patterns[@]}"}"; do
-        if [[ "$_h" == "$_p" ]]; then
-          _keep=true; break 2
-        fi
-      done
-      # Try wildcard patterns (unquoted RHS for glob matching)
-      for _p in "${_wildcard_patterns[@]+"${_wildcard_patterns[@]}"}"; do
-        # shellcheck disable=SC2053
-        if [[ "$_h" == $_p ]]; then
-          _keep=true; break 2
-        fi
-      done
-    done
-
-    if [[ "$_keep" == "true" ]]; then
-      printf '%s\n' "$_line" >> "$_output"
-    fi
-  done < "$_input"
-}
-
-
-# _up_resolve_ssh_allowlists -- read effective config, write filtered known_hosts cache
-# and optional ssh-allowed-keys sentinel. Called by cmd_up (create + resume paths) after
-# mkdir -p of the cache dir.
-#
-# ADR-022 D3:
-#   - ssh.allowed_hosts (additive_list, default []) → filters host SSH known_hosts
-#   - ssh.allowed_keys (selection_list, default null):
-#       null   → filtering inactive (direct socket mount path preserved)
-#       []     → filtering active, zero keys (all agent signing blocked)
-#       [...]  → filtering active, listed keys forwarded by ssh-agent-filter
-#
-# Globals written:
-#   _UP_SSH_FILTER_ACTIVE  — "true" when ssh.allowed_keys is non-null; else "false"
-# Parameters:
-#   $1 workspace   — project directory (for _load_effective_config)
-#   $2 cache_dir   — per-container cache dir (known_hosts + ssh-allowed-keys written here)
-_up_resolve_ssh_allowlists() {
-  local _workspace="$1" _cache_dir="$2"
-  _UP_SSH_FILTER_ACTIVE="false"
-
-  # Read effective config (both layers merged). The central gate
-  # _config_validate_or_abort (cmd_up, line 2452) runs upstream of every call
-  # site and converts loader errors into a loud exit per ADR-001 + ADR-021 D3.
-  # Do NOT swallow loader stderr or substitute a silent default here — that
-  # would silently expand capability if a future call path bypasses the gate.
-  local _eff_result _eff_config
-  _eff_result=$(_load_effective_config "$_workspace")
-  if [[ -z "$_eff_result" ]]; then
-    # No config files present at either layer: schema defaults.
-    _eff_config='{"ssh":{"allowed_hosts":[],"allowed_keys":null}}'
-  else
-    _eff_config=$(jq -c '.config' <<<"$_eff_result")
-  fi
-
-  # Extract allowed_hosts as space-separated string (additive_list).
-  local _allowed_hosts_str
-  _allowed_hosts_str=$(jq -r '.ssh.allowed_hosts // [] | join(" ")' <<<"$_eff_config" 2>/dev/null) || _allowed_hosts_str=""
-
-  # Filter known_hosts → cache dir. Always write (even empty) so the bind-mount target exists.
-  _filter_known_hosts "$_allowed_hosts_str" "${HOME}/.ssh/known_hosts" "${_cache_dir}/known_hosts"
-
-  # Extract allowed_keys (selection_list: null = absent = inactive).
-  local _allowed_keys_json
-  _allowed_keys_json=$(jq -c '.ssh.allowed_keys' <<<"$_eff_config" 2>/dev/null) || _allowed_keys_json="null"
-
-  if [[ "$_allowed_keys_json" == "null" ]]; then
-    # Key filtering inactive — direct socket mount path preserved; no sentinel.
-    _UP_SSH_FILTER_ACTIVE="false"
-    return 0
-  fi
-
-  # Key filtering active (explicit [] or [...] list).
-  _UP_SSH_FILTER_ACTIVE="true"
-
-  # Write sentinel: one key comment per line (empty file for zero-out).
-  local _sentinel="${_cache_dir}/ssh-allowed-keys"
-  : > "$_sentinel"
-  if [[ "$_allowed_keys_json" != "[]" ]]; then
-    jq -r '.[]' <<<"$_allowed_keys_json" >> "$_sentinel" 2>/dev/null
-  fi
-}
-
-
-# _build_ssh_mount_args -- compose --mount args for the SSH config + pubkey allowlist.
-# ADR-020 D1: mounts translated config, each .pub from allowlist (warn+skip if missing).
-# ADR-022 D3: mounts filtered known_hosts from cache (not raw ~/.ssh/known_hosts).
-# This function uses the "user-config" behavior for missing pubkeys: warn+skip, never abort.
-# For explicit-pin pubkeys, call _assert_pubkey_exists_or_die before calling this function.
-#
-# Globals read: HOME, _UP_SSH_FILTER_ACTIVE
-# Parameters:
-#   $1 translated_config  — path to the translated ssh-config file
-#   $2 container_name     — used for the cache dir path component
-#   $3 array_nameref      — name of caller's array to append mount args to
-# Side effects: writes warning to stderr for each missing .pub file; does not abort.
-_build_ssh_mount_args() {
-  local _cfg="$1" _cname="$2" _arr_name="$3"
-  local _ssh_dir="${HOME}/.ssh"
-  local _pub_bn _pub_path
-
-  # Mount translated config → /home/agent/.ssh/config (read-only)
-  eval "${_arr_name}+=(\"--mount\" \"type=bind,src=${_cfg},dst=/home/agent/.ssh/config,ro\")"
-
-  # Mount each .pub from the allowlist (warn+skip if missing)
-  while IFS= read -r _pub_bn; do
-    [[ -z "$_pub_bn" ]] && continue
-    _pub_path="${_ssh_dir}/${_pub_bn}"
-    if [[ -f "$_pub_path" ]]; then
-      eval "${_arr_name}+=(\"--mount\" \"type=bind,src=${_pub_path},dst=/home/agent/.ssh/${_pub_bn},ro\")"
-    else
-      echo "Warning: identity pubkey ${HOME}/.ssh/${_pub_bn} not found on host — skipping mount." >&2
-    fi
-  done < <(_derive_pubkey_allowlist "$_cfg")
-
-  # ADR-022 D3: mount the filtered known_hosts cache (not raw ~/.ssh/known_hosts).
-  # The filtered file is at ~/.cache/rip-cage/<container>/known_hosts.
-  # Always mount it (even when empty) so the host arrow surface visible inside the cage
-  # is the filtered file. NB: this narrows the system-path known_hosts but does NOT,
-  # by itself, defeat `ssh -o UserKnownHostsFile=/tmp/anything -o StrictHostKeyChecking=accept-new`.
-  # OpenSSH CLI -o always wins over Match final blocks. The CLI-flag bypass is closed
-  # by the ssh-bypass recipe (examples/ssh-bypass/, ADR-022 D5) when composed (default-on
-  # in the published image). A base cage without that recipe has no CLI-flag guard here;
-  # the known_hosts mount (this block) is the always-present containment floor (ADR-022 D3).
-  # ADR-001 fail-loud: always emit the mount. _up_resolve_ssh_allowlists is the
-  # contract for populating these files (always writes the known_hosts cache;
-  # always writes the sentinel when filtering is active). If a future code path
-  # reaches here with the file missing, docker mount fails loudly — preferable
-  # to a silent skip that opens an unfiltered surface.
-  local _filtered_kh="${HOME}/.cache/rip-cage/${_cname}/known_hosts"
-  eval "${_arr_name}+=(\"--mount\" \"type=bind,src=${_filtered_kh},dst=/home/agent/.ssh/known_hosts,ro\")"
-
-  # ADR-022 D3: when key filtering is active, mount the ssh-allowed-keys sentinel
-  # read-only into /etc/rip-cage/ so init-rip-cage.sh can detect the filter path
-  # (ssh-agent-filter daemon vs today's direct chown-and-use path).
-  # _UP_SSH_FILTER_ACTIVE is set by _up_resolve_ssh_allowlists (called before this).
-  if [[ "${_UP_SSH_FILTER_ACTIVE:-false}" == "true" ]]; then
-    local _sentinel="${HOME}/.cache/rip-cage/${_cname}/ssh-allowed-keys"
-    eval "${_arr_name}+=(\"--mount\" \"type=bind,src=${_sentinel},dst=/etc/rip-cage/ssh-allowed-keys,ro\")"
-  fi
-}
-
-
-# _build_ssh_mount_args_with_posture -- wrapper around _build_ssh_mount_args that respects posture.
-# When posture=off, no mounts are added. When posture=on, delegates to _build_ssh_mount_args.
-# Parameters:
-#   $1 translated_config  — path to the translated ssh-config file
-#   $2 container_name     — container name (for _build_ssh_mount_args)
-#   $3 array_nameref      — name of caller's array to append mount args to
-#   $4 posture            — "on" or "off"
-_build_ssh_mount_args_with_posture() {
-  local _cfg="$1" _cname="$2" _arr_name="$3" _posture="$4"
-  if [[ "$_posture" == "on" ]]; then
-    _build_ssh_mount_args "$_cfg" "$_cname" "$_arr_name"
-  fi
-  # posture=off → no mounts added
-}
-
-
-# _resolve_ssh_config_posture -- determine the ssh-config posture from CLI flags.
-# ADR-020 D7: --no-forward-ssh implies --no-ssh-config unless --ssh-config is explicitly set.
-# Parameters:
-#   $1 no_ssh_config_flag  — "off" if --no-ssh-config was passed, else ""
-#   $2 ssh_config_flag     — "on" if --ssh-config was passed, else ""
-#   $3 rc_forward_ssh      — current forward-ssh value ("on" or "off")
-# Returns: "on" or "off" (stdout).
-_resolve_ssh_config_posture() {
-  local _no_ssh_config="$1" _ssh_config_explicit="$2" _fwd_ssh="$3"
-
-  # Explicit --no-ssh-config always wins
-  if [[ "$_no_ssh_config" == "off" ]]; then
-    printf 'off'
-    return 0
-  fi
-
-  # Explicit --ssh-config always wins (even if --no-forward-ssh is set)
-  if [[ "$_ssh_config_explicit" == "on" ]]; then
-    printf 'on'
-    return 0
-  fi
-
-  # Implication chain: --no-forward-ssh without --ssh-config → --no-ssh-config
-  if [[ "$_fwd_ssh" == "off" ]]; then
-    printf 'off'
-    return 0
-  fi
-
-  # Default: on
-  printf 'on'
-}
-
-
-# _ssh_config_label_args -- append --label rc.ssh-config=<posture> to an array.
-# Parameters:
-#   $1 posture       — "on" or "off"
-#   $2 array_nameref — name of caller's array to append to
-_ssh_config_label_args() {
-  local _posture="$1" _arr_name="$2"
-  eval "${_arr_name}+=(\"rc.ssh-config=${_posture}\")"
-}
-
-
-# _up_resolve_resume_ssh_config -- read and validate the rc.ssh-config label on resume.
-# ADR-020 D7: posture is label-persisted on create; resume reads label as ground truth.
-# Missing label: treat as "on" (legacy containers predate this label; enable by default).
-# Unrecognized value → fail loud per ADR-001.
-# On success sets _UP_RESUME_SSH_CONFIG to "on" or "off".
-# Parameters:
-#   $1 name          — container name
-#   $2 path          — workspace path (for recreate hint)
-#   $3 cli_flag      — "--ssh-config" or "--no-ssh-config" if user passed one, else ""
-_up_resolve_resume_ssh_config() {
-  local _name="$1" _path="$2" _cli_flag="${3:-}"
-  local _label
-  if ! _label=$(docker inspect --format '{{ index .Config.Labels "rc.ssh-config" }}' "$_name" 2>/dev/null); then
-    if [[ "${OUTPUT_FORMAT:-}" == "json" ]]; then
-      json_error "docker inspect failed for $_name" "DOCKER_ERROR"
-    fi
-    echo "Error: docker inspect failed for $_name (is the Docker daemon running?)" >&2
-    exit 1
-  fi
-
-  if [[ -z "$_label" ]]; then
-    # Legacy container predating rc.ssh-config label → treat as on (default posture)
-    _UP_RESUME_SSH_CONFIG="on"
-    return
-  fi
-
-  if [[ "$_label" != "on" && "$_label" != "off" ]]; then
-    if [[ "${OUTPUT_FORMAT:-}" == "json" ]]; then
-      json_error "Container $_name has unrecognized rc.ssh-config label value: '$_label' (expected on|off). Run: rc destroy $_name && rc up $_path" "INVALID_SSH_CONFIG_LABEL"
-    fi
-    echo "Error: container $_name has unrecognized rc.ssh-config label value: '$_label' (expected on|off)." >&2
-    echo "       Recreate it:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  fi
-
-  # Conflict: user passed a conflicting CLI flag at resume → fail loud (mirrors P1 pattern)
-  if [[ -n "$_cli_flag" && "$_cli_flag" != "$_label" ]]; then
-    if [[ "${OUTPUT_FORMAT:-}" == "json" ]]; then
-      json_error "Container $_name already has rc.ssh-config=$_label. Run: rc destroy $_name && rc up $_path to change posture." "SSH_CONFIG_LABEL_CONFLICT"
-    fi
-    echo "Error: container $_name already has rc.ssh-config=$_label; conflicting flag '$_cli_flag' passed." >&2
-    echo "       To change posture, recreate the container:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  fi
-
-  _UP_RESUME_SSH_CONFIG="$_label"
-}
-
-
-# _parse_identity_rules -- parse ~/.config/rip-cage/identity-rules (or $RIP_CAGE_IDENTITY_RULES).
-# Returns (via stdout) the key basename for the first glob line that matches $2 (project path).
-# Skips blank lines and '#'-prefixed comments. Tilde-expands glob patterns before matching.
-# Parameters: $1 rules_file path, $2 project_path to match against
-# Returns: key basename (stdout) or empty if no match or file absent.
-_parse_identity_rules() {
-  local _rules_file="$1" _project_path="$2"
-  local _line _pattern _key _expanded
-
-  if [[ ! -f "$_rules_file" ]]; then
-    return 0
-  fi
-
-  while IFS= read -r _line || [[ -n "$_line" ]]; do
-    # Skip blank lines and comments
-    [[ -z "$_line" || "$_line" == \#* ]] && continue
-
-    # Split on whitespace into pattern and key; skip malformed lines
-    _pattern="${_line%%[[:space:]]*}"
-    _key="${_line##*[[:space:]]}"
-    [[ -z "$_pattern" || -z "$_key" || "$_pattern" == "$_key" ]] && continue
-
-    # Tilde-expand the pattern
-    _expanded="${_pattern/#~/$HOME}"
-
-    # Glob match (bash extended glob semantics via [[)
-    # shellcheck disable=SC2053
-    if [[ "$_project_path" == $_expanded ]]; then
-      echo "$_key"
-      return 0
-    fi
-  done < "$_rules_file"
-
-  return 0
-}
-
-
-# _resolve_github_identity -- four-layer ADR-020 D3 resolver.
-# Priority: CLI flag (1) → container label on resume (2) → rules-file glob (3) → empty (4).
-# Parameters:
-#   $1 cli_flag      — value of --github-identity=KEY (or empty)
-#   $2 container_name — existing container name for label lookup (or empty for new containers)
-#   $3 project_path  — workspace path for rules-file matching
-#   $4 rules_file    — path to identity rules file (default: ~/.config/rip-cage/identity-rules)
-# Returns: key basename (stdout) or empty string (layer 4).
-# Layer 2 (label lookup) is intentionally NOT performed here on create paths — the caller
-# passes empty container_name when creating a new container. Resume label handling is done
-# by _up_resolve_resume_github_identity separately.
-_resolve_github_identity() {
-  local _cli_flag="$1" _container_name="$2" _project_path="$3"
-  local _rules_file="${4:-${RIP_CAGE_IDENTITY_RULES:-${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/identity-rules}}"
-  local _result=""
-
-  # Layer 1: CLI flag wins
-  if [[ -n "$_cli_flag" ]]; then
-    echo "$_cli_flag"
-    return 0
-  fi
-
-  # Layer 2: existing container label (resume only — caller provides name)
-  if [[ -n "$_container_name" ]]; then
-    _result=$(docker inspect --format '{{ index .Config.Labels "rc.github-identity" }}' "$_container_name" 2>/dev/null || true)
-    if [[ -n "$_result" ]]; then
-      echo "$_result"
-      return 0
-    fi
-  fi
-
-  # Layer 3: rules-file glob match
-  _result=$(_parse_identity_rules "$_rules_file" "$_project_path")
-  if [[ -n "$_result" ]]; then
-    echo "$_result"
-    return 0
-  fi
-
-  # Layer 4: unset (empty) — no synthesized github.com block
-  return 0
-}
-
-
-# _host_config_has_github -- return 0 if host ~/.ssh/config has a Host github.com block.
-# Uses the same scan logic as _translate_ssh_config to be consistent.
-_host_config_has_github() {
-  local _hcfg="${HOME}/.ssh/config"
-  [[ -f "$_hcfg" ]] || return 1
-  local _scan_line
-  while IFS= read -r _scan_line; do
-    if [[ "$_scan_line" =~ ^[[:space:]]*[Hh][Oo][Ss][Tt][[:space:]]+github\.com([[:space:]]|$) ]]; then
-      return 0
-    fi
-  done < "$_hcfg"
-  return 1
-}
-
-
-# _resolve_github_identity_source -- determine the source layer for the resolved identity.
-# Must be called AFTER _resolve_github_identity and _up_resolve_resume_github_identity.
-# Sets _UP_GITHUB_IDENTITY_SOURCE global.
-# Parameters:
-#   $1 cli_flag           — --github-identity= value (layer 1)
-#   $2 resume_label       — _UP_RESUME_GITHUB_IDENTITY value (layer 2, resume only; empty on create)
-#   $3 rules_file_result  — result from _parse_identity_rules (layer 3; empty if no match)
-#   $4 rc_ssh_config      — "off" → disabled
-_resolve_github_identity_source() {
-  local _cli_flag="$1" _resume_label="$2" _rules_result="$3" _posture="$4"
-  if [[ "$_posture" == "off" ]]; then
-    _UP_GITHUB_IDENTITY_SOURCE="disabled"
-  elif [[ -n "$_cli_flag" ]]; then
-    _UP_GITHUB_IDENTITY_SOURCE="cli-flag"
-  elif [[ -n "$_resume_label" ]]; then
-    _UP_GITHUB_IDENTITY_SOURCE="label"
-  elif [[ -n "$_rules_result" ]]; then
-    _UP_GITHUB_IDENTITY_SOURCE="rules-file"
-  elif _host_config_has_github; then
-    _UP_GITHUB_IDENTITY_SOURCE="host-config"
-  else
-    _UP_GITHUB_IDENTITY_SOURCE="none"
-  fi
-}
-
-
-# _up_resolve_resume_github_identity -- handle label-vs-CLI conflict on resume.
-# ADR-020 D3: resume must preserve the existing rc.github-identity label; a CLI
-# override on resume is an error (silent relabeling is a silent-fallback, ADR-001).
-# Sets _UP_RESUME_GITHUB_IDENTITY on success.
-# Parameters: $1 name, $2 path (for recreate hint), $3 cli_flag (may be empty)
-_up_resolve_resume_github_identity() {
-  local _name="$1" _path="$2" _cli_flag="$3"
-  local _existing_label
-  _existing_label=$(docker inspect --format '{{ index .Config.Labels "rc.github-identity" }}' "$_name" 2>/dev/null || true)
-
-  if [[ -n "$_cli_flag" && -n "$_existing_label" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name already labeled rc.github-identity=$_existing_label. Run: rc destroy $_name && rc up --github-identity=$_cli_flag $_path" "GITHUB_IDENTITY_LABEL_CONFLICT"
-    fi
-    echo "Error: container $_name already labeled rc.github-identity=$_existing_label." >&2
-    echo "       To change the identity, recreate the container:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up --github-identity=$_cli_flag $_path" >&2
-    exit 1
-  fi
-
-  _UP_RESUME_GITHUB_IDENTITY="$_existing_label"
-}
-
-
-# _up_ssh_preflight -- probe the forwarded ssh-agent and surface status.
-# ADR-017 D4: the visible failure mode for a misconfigured forward is "loud at
-# rc up, visible in every multiplexer attach, visible in rc ls" — never a
-# silent push-time failure.
-#
-# Five status values written to /etc/rip-cage/ssh-agent-status (sentinel read
-# by zshrc for the shell banner):
-#   ok:N          — agent reachable, N keys loaded
-#   empty         — agent reachable, 0 keys (host-side fix needed)
-#   unreachable   — socket mounted but agent did not respond (platform mismatch
-#                   or zombie agent; also covers the timeout case)
-#   no_host_agent — forwarding requested but host had no agent to forward
-#                   (distinct from explicit opt-out — see _UP_NO_HOST_AGENT)
-#   disabled      — forwarding explicitly off (--no-forward-ssh)
-# Also echoed to stderr at rc up time.
-# Parameters:
-#   $1 name
-#   $2 effective mode, read from either the CLI-derived rc_forward_ssh on
-#      create or the rc.forward-ssh label on resume ("on"|"off"). When "off"
-#      and _UP_NO_HOST_AGENT=="1", the preflight surfaces the no-host-agent
-#      case rather than the generic "disabled" message.
-_up_ssh_preflight() {
-  local _name="$1" _fwd="$2"
-  local _status=""
-  if [[ "$_fwd" == "off" ]]; then
-    if [[ "${_UP_NO_HOST_AGENT:-}" == "1" ]]; then
-      _status="no_host_agent"
-    else
-      _status="disabled"
-    fi
-  else
-    # ssh-add exits: 0 = ≥1 key, 1 = 0 keys, 2 = cannot contact agent.
-    # `timeout 5` converts a pathological agent that accepts but never
-    # responds (timeout exit 124) into the "unreachable" bucket rather than
-    # hanging rc up indefinitely. `coreutils` ships timeout in the base image.
-    # Capture stdout+stderr and the real exit code — a `|| true` tail would
-    # clobber $? with 0 (bug caught during first end-to-end test).
-    local _fingerprints _rc
-    if _fingerprints=$(docker exec "$_name" timeout 5 ssh-add -l 2>/dev/null); then
-      _rc=0
-    else
-      _rc=$?
-    fi
-    if [[ $_rc -eq 0 ]]; then
-      # `ssh-add -l` prints one fingerprint per key on stdout. Count non-empty
-      # lines only (printf may have appended a trailing newline that grep -c
-      # would count otherwise on an empty capture).
-      local _n
-      _n=$(printf '%s' "$_fingerprints" | grep -c '^.')
-      _status="ok:${_n}"
-    elif [[ $_rc -eq 1 ]]; then
-      _status="empty"
-    else
-      # 2 = cannot contact; 124 = timeout; 125/126/127 = docker-exec/exec failures.
-      # All collapse to "unreachable" — the user-facing story is the same.
-      _status="unreachable"
-    fi
-  fi
-  # Write sentinel (consumed by zshrc banner + rc doctor). Best-effort: a
-  # failure here does not break rc up — the stderr warning below still fires.
-  # Values are passed via -e env vars to avoid shell injection from paths
-  # containing single-quotes (e.g. /tmp/a'b would break the sh -c string).
-  docker exec -u root \
-    -e RC_STATUS="$_status" \
-    -e RC_SOCK="${_UP_FORWARD_SSH_HOST_SOCK:-}" \
-    "$_name" sh -c 'mkdir -p /etc/rip-cage \
-    && printf "%s\n" "$RC_STATUS" > /etc/rip-cage/ssh-agent-status \
-    && printf "%s\n" "$RC_SOCK" > /etc/rip-cage/ssh-agent-socket' >/dev/null 2>&1 || true
-
-  case "$_status" in
-    ok:*)
-      log "ssh-agent forwarded (${_status#ok:} key(s) loaded)"
-      ;;
-    empty)
-      log "Warning: ssh-agent forwarded but empty (0 keys). Push will fail."
-      if [[ "${_UP_FORWARD_SSH_HOST_SOCK:-}" == "/run/host-services/ssh-auth.sock" ]]; then
-        # macOS via OrbStack/Docker Desktop: only the launchd agent is proxied
-        # across the VM boundary. Default 'ssh-add' adds to the user's session
-        # agent and is invisible to the cage.
-        log "  Host fix (macOS): SSH_AUTH_SOCK=\$(launchctl getenv SSH_AUTH_SOCK) ssh-add ~/.ssh/id_ed25519"
-        log "  Then: rc down && rc up  (or pass --no-forward-ssh to skip forwarding)"
-      else
-        log "  Host fix: run 'ssh-add ~/.ssh/id_ed25519' on host (socket: ${_UP_FORWARD_SSH_HOST_SOCK:-<unknown>})"
-        log "  Then: rc down && rc up  (or pass --no-forward-ssh to skip forwarding)"
-      fi
-      ;;
-    unreachable)
-      log "Warning: ssh-agent socket mounted but not reachable from inside the cage. Push will fail."
-      log "  Socket: ${_UP_FORWARD_SSH_HOST_SOCK:-<unknown>} — verify ssh-agent is running on host"
-      if [[ "${_UP_FORWARD_SSH_HOST_SOCK:-}" == "/run/host-services/ssh-auth.sock" ]]; then
-        log "  Common cause on macOS: stale image without sudoers entry to chown the mounted socket."
-        log "  Fix: ./rc build && rc down && rc up"
-      fi
-      log "  Pass --no-forward-ssh to suppress forwarding."
-      ;;
-    no_host_agent)
-      # Warning already printed from _up_prepare_environment on create;
-      # nothing to echo on resume (the sentinel-driven zshrc banner will
-      # surface it on every shell).
-      :
-      ;;
-  esac
-}
-
-
-# ---------------------------------------------------------------------------
-# Identity-map cache: ~/.cache/rip-cage/identity-map.json
-# JSON shape: {"<keyname>": {"github_username": "<user>", "ts": "<ISO8601>"}, ...}
-# TTL: 24 hours. Shared across all containers on the host.
-# ---------------------------------------------------------------------------
-
-# _identity_cache_file -- return the path to the cache file.
-# Respects HOME for test isolation.
-_identity_cache_file() {
-  echo "${HOME}/.cache/rip-cage/identity-map.json"
-}
-
-
-# _identity_cache_read KEYNAME
-# Prints the github_username from the cache if the entry exists AND is not stale
-# (younger than 24h). Prints empty string if absent or stale.
-_identity_cache_read() {
-  local _key="$1"
-  local _cache_file
-  _cache_file=$(_identity_cache_file)
-  [[ -f "$_cache_file" ]] || return 0
-
-  local _ts _username
-  _username=$(jq -r --arg k "$_key" '.[$k].github_username // empty' "$_cache_file" 2>/dev/null)
-  _ts=$(jq -r --arg k "$_key" '.[$k].ts // empty' "$_cache_file" 2>/dev/null)
-  [[ -n "$_username" ]] || return 0
-  [[ -n "$_ts" ]] || return 0
-
-  # Check TTL: parse ts, compare to now. Both date commands (BSD/GNU) support
-  # ISO-8601 with -j/-d. We use a portable approach: convert to epoch seconds.
-  local _entry_epoch _now_epoch _age_seconds
-  # macOS BSD date: -j -f format
-  if date -j >/dev/null 2>&1; then
-    _entry_epoch=$(date -j -f '%Y-%m-%dT%H:%M:%SZ' "$_ts" '+%s' 2>/dev/null) || _entry_epoch=0
-  else
-    _entry_epoch=$(date -d "$_ts" '+%s' 2>/dev/null) || _entry_epoch=0
-  fi
-  _now_epoch=$(date '+%s' 2>/dev/null) || _now_epoch=0
-  _age_seconds=$(( _now_epoch - _entry_epoch ))
-
-  # 24h = 86400 seconds
-  if [[ "$_age_seconds" -lt 86400 ]]; then
-    echo "$_username"
-  fi
-  # else: stale — print nothing (caller treats as cold cache)
-}
-
-
-# _identity_cache_write KEYNAME USERNAME
-# Upserts the entry for KEYNAME with USERNAME and current timestamp.
-# Creates cache dir and file if absent. Mode 644 (world-readable, not sensitive).
-_identity_cache_write() {
-  local _key="$1" _username="$2"
-  local _cache_file
-  _cache_file=$(_identity_cache_file)
-  mkdir -p "$(dirname "$_cache_file")"
-
-  local _ts
-  _ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
-
-  # Merge: read existing JSON (or start with empty object), set key, write back.
-  local _existing="{}"
-  if [[ -f "$_cache_file" ]]; then
-    _existing=$(cat "$_cache_file" 2>/dev/null) || _existing="{}"
-    # Validate it's actually JSON — if not, start fresh
-    jq -e '.' <<<"$_existing" >/dev/null 2>&1 || _existing="{}"
-  fi
-  local _updated
-  _updated=$(jq -n \
-    --argjson existing "$_existing" \
-    --arg key "$_key" \
-    --arg user "$_username" \
-    --arg ts "$_ts" \
-    '$existing + {($key): {"github_username": $user, "ts": $ts}}') || return 0
-  printf '%s\n' "$_updated" > "$_cache_file"
-  chmod 644 "$_cache_file" 2>/dev/null || true
-}
-
-
-# _identity_cache_touch_all
-# Update ts for every entry in the cache to now (rc auth refresh).
-# Preserves github_username values unchanged.
-_identity_cache_touch_all() {
-  local _cache_file
-  _cache_file=$(_identity_cache_file)
-  [[ -f "$_cache_file" ]] || return 0
-
-  local _existing _ts _updated
-  _existing=$(cat "$_cache_file" 2>/dev/null) || return 0
-  jq -e '.' <<<"$_existing" >/dev/null 2>&1 || return 0
-
-  _ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
-  _updated=$(jq -n \
-    --argjson existing "$_existing" \
-    --arg ts "$_ts" \
-    'reduce ($existing | to_entries[]) as $e ({}; . + {($e.key): ($e.value + {"ts": $ts})})') || return 0
-  printf '%s\n' "$_updated" > "$_cache_file"
-  chmod 644 "$_cache_file" 2>/dev/null || true
-}
-
-
-# _up_github_identity_preflight -- probe github.com inside the container and
-# write /etc/rip-cage/github-identity + /etc/rip-cage/ssh-config-source sentinels.
-# ADR-020 D5+D6.
-#
-# Run AFTER the container is started (so docker exec works), BEFORE init-rip-cage.sh
-# reads the sentinels. Never aborts rc up (all outcomes exit 0).
-#
-# Sentinel semantics for github-identity:
-#   "disabled"                     — rc.ssh-config=off; probe skipped
-#   "unreachable\n"                — github.com not reachable from cage
-#   "unset\ngreeting=<user>"       — no pin resolved (layer-4 fallback)
-#   "match\nexpected=<X>\ngreeting=<X>"   — probe agrees with expected
-#   "mismatch\nexpected=<X>\ngreeting=<Y>" — probe differs from expected
-#   "<greeting-user>"              — source=host-config (no label compare)
-#
-# Sentinel semantics for ssh-config-source:
-#   One of: disabled, cli-flag, label, rules-file, host-config, none
-#
-# Test-mode: if RC_PREFLIGHT_SENTINEL_DIR is set, sentinels are written
-# to that directory instead of inside the container. This allows unit tests
-# to inspect sentinel content without a running container.
-#
-# Parameters:
-#   $1 name        — container name
-#   $2 key_basename — resolved key basename (may be empty for layer-4 / disabled)
-#   $3 source_layer — one of: cli-flag, label, rules-file, host-config, none, disabled
-_up_github_identity_preflight() {
-  local _name="$1"
-  local _key_basename="$2"
-  local _source_layer="$3"
-
-  # Helper: write a sentinel (test-mode or real container).
-  # $1 = filename (github-identity or ssh-config-source)
-  # $2 = content (single or multi-line)
-  _write_sentinel() {
-    local _file="$1" _content="$2"
-    if [[ -n "${RC_PREFLIGHT_SENTINEL_DIR:-}" ]]; then
-      # Test-mode: write locally so tests can inspect
-      printf '%b\n' "$_content" > "${RC_PREFLIGHT_SENTINEL_DIR}/${_file}"
-    else
-      # Real container: write as root via docker exec + tee
-      docker exec -u root \
-        -e RC_CONTENT="$_content" \
-        "$_name" sh -c \
-        'mkdir -p /etc/rip-cage \
-        && printf "%b\n" "$RC_CONTENT" > /etc/rip-cage/'"$_file"' \
-        && chmod 644 /etc/rip-cage/'"$_file" >/dev/null 2>&1 || true
-    fi
-  }
-
-  # Disabled: rc.ssh-config=off — write disabled sentinels, skip probe
-  if [[ "$_source_layer" == "disabled" ]]; then
-    _write_sentinel "github-identity" "disabled"
-    _write_sentinel "ssh-config-source" "disabled"
-    return 0
-  fi
-
-  # Always write the source layer sentinel first
-  _write_sentinel "ssh-config-source" "$_source_layer"
-
-  # No-identity layer-4 (none): probe but don't compare
-  if [[ "$_source_layer" == "none" ]]; then
-    # Probe for visibility even though no pin was set
-    local _greeting _probe_rc=0
-    _greeting=$(docker exec "$_name" ssh -T \
-      -o BatchMode=yes \
-      -o ConnectTimeout=5 \
-      git@github.com 2>&1) || _probe_rc=$?
-    local _greeting_user=""
-    _greeting_user=$(printf '%s' "$_greeting" | grep -oE 'Hi [^!]+!' | sed 's/^Hi //; s/!$//') || true
-    if [[ "$_probe_rc" -ne 0 ]] && [[ -z "$_greeting_user" ]]; then
-      _write_sentinel "github-identity" "unreachable"
-    else
-      _write_sentinel "github-identity" "unset\ngreeting=${_greeting_user}"
-    fi
-    return 0
-  fi
-
-  # host-config branch: user's own Host github.com block carried over — no label compare.
-  # Just probe and record greeting. No cache write needed (no expected value to compare).
-  if [[ "$_source_layer" == "host-config" ]]; then
-    local _greeting _probe_rc=0
-    _greeting=$(docker exec "$_name" ssh -T \
-      -o BatchMode=yes \
-      -o ConnectTimeout=5 \
-      git@github.com 2>&1) || _probe_rc=$?
-    local _greeting_user=""
-    _greeting_user=$(printf '%s' "$_greeting" | grep -oE 'Hi [^!]+!' | sed 's/^Hi //; s/!$//') || true
-    if [[ "$_probe_rc" -ne 0 ]] && [[ -z "$_greeting_user" ]]; then
-      _write_sentinel "github-identity" "unreachable"
-    else
-      _write_sentinel "github-identity" "${_greeting_user}"
-    fi
-    return 0
-  fi
-
-  # Layers 1-3 (cli-flag, label, rules-file): we have an expected keyname.
-  # Probe greeting, use/populate cache, compare.
-
-  # 1. Probe greeting
-  local _greeting _probe_rc=0
-  _greeting=$(docker exec "$_name" ssh -T \
-    -o BatchMode=yes \
-    -o ConnectTimeout=5 \
-    git@github.com 2>&1) || _probe_rc=$?
-  local _greeting_user=""
-  _greeting_user=$(printf '%s' "$_greeting" | grep -oE 'Hi [^!]+!' | sed 's/^Hi //; s/!$//') || true
-
-  # Unreachable: no cache write, write unreachable sentinel
-  if [[ "$_probe_rc" -ne 0 ]] && [[ -z "$_greeting_user" ]]; then
-    _write_sentinel "github-identity" "unreachable"
-    return 0
-  fi
-
-  # 2. Cache lookup (or cold-populate)
-  local _expected_user=""
-  if [[ -n "$_key_basename" ]]; then
-    _expected_user=$(_identity_cache_read "$_key_basename")
-    if [[ -z "$_expected_user" ]]; then
-      # Cold or stale: populate from greeting, then compare with self → match
-      _identity_cache_write "$_key_basename" "$_greeting_user"
-      _expected_user="$_greeting_user"
-    fi
-  fi
-
-  # 3. Compare and write sentinel
-  if [[ "$_greeting_user" == "$_expected_user" ]]; then
-    _write_sentinel "github-identity" "match\nexpected=${_expected_user}\ngreeting=${_greeting_user}"
-  else
-    _write_sentinel "github-identity" "mismatch\nexpected=${_expected_user}\ngreeting=${_greeting_user}"
-  fi
-  return 0
-}
-
-# _EGRESS_BASELINE_HOSTS — pre-loaded whitelist for new cages.
-# Baseline ∪ user network.allowed_hosts = effective allowed_hosts in the rules file.
-# D10 NOTE: this list is baked at rc up / rc reload time. The pipeline does NOT
-# watch .rip-cage.yaml for changes; an in-cage edit does not hot-apply. This is
-# by design — see ADR-012 D1 and ADR-022 D6 extended pattern.
-_EGRESS_BASELINE_HOSTS=(
-  # LLM provider APIs
-  "api.anthropic.com"
-  "api.openai.com"
-  "api.cohere.ai"
-  "generativelanguage.googleapis.com"
-  # GitHub / GitLab / Codeberg (code hosting + APIs)
-  "github.com"
-  "api.github.com"
-  "raw.githubusercontent.com"
-  "objects.githubusercontent.com"
-  "codeload.github.com"
-  "gitlab.com"
-  "codeberg.org"
-  # Package registries
-  "registry.npmjs.org"
-  "pypi.org"
-  "files.pythonhosted.org"
-  "rubygems.org"
-  "crates.io"
-  "static.crates.io"
-  "pkg.go.dev"
-  "sum.golang.org"
-  "proxy.golang.org"
-  "registry-1.docker.io"
-  "auth.docker.io"
-  "index.docker.io"
-  "maven.org"
-  "repo.maven.apache.org"
-  "jcenter.bintray.com"
-  "dl.cloudsmith.io"
-  # Common doc / CDN
-  "docs.anthropic.com"
-  "cdn.anthropic.com"
-  "fonts.googleapis.com"
-  "fonts.gstatic.com"
-)
-
-
-# _generate_egress_rules_file — generate a per-cage egress-rules YAML from effective config.
-#
-# Takes the effective-config JSON object (the .config subtree from _load_effective_config,
-# or a schema-defaults object when no config files are present) as $1.
-#
-# Emits to stdout the YAML file to be mounted at /etc/rip-cage/egress-rules.yaml.
-#
-# Format (extends current egress-rules.yaml shape — D1 backward compat):
-#   version: 2
-#   mode: observe|block         # present only when network.mode is non-null
-#   allowed_hosts: [...]        # baseline ∪ user network.allowed_hosts
-#   rules:                      # IOC denylist floor — non-overridable; same ~35 entries
-#                               # Note: writable_hosts removed in rip-cage-ta1o.1
-#     - id: ...                 # as the original static egress-rules.yaml
-#       deny: true
-#       ...
-#
-# rip_cage_egress.py enforces allowed_hosts/mode via decide(). The IOC floor
-# (deny:true rules) is always emitted regardless of mode.
-# Note: writable_hosts removed in rip-cage-ta1o.1 (method-asymmetry/write-gate deleted).
-#
-# Parameters:
-#   $1  cfg_json  — effective config JSON object (network.* subtree read here)
-#
-# D10 contract: called ONLY at rc up / rc reload. No file-watch. An in-cage write
-# to .rip-cage.yaml does not hot-apply — the pipeline regenerates only when rc up
-# or rc reload runs on the host side.
-_generate_egress_rules_file() {
-  local _cfg_json
-  _cfg_json="${1}"
-  [[ -z "$_cfg_json" ]] && _cfg_json="{}"
-  # Second arg: path to the IOC rules file. Defaults to egress-rules.yaml
-  # co-located with this script. Callers may pass an explicit path to make the
-  # function testable without depending on SCRIPT_DIR resolution in sourced contexts.
-  local _ioc_rules_file="${2:-${SCRIPT_DIR}/cage/egress/egress-rules.yaml}"
-
-  # Extract network.* fields from the effective config.
-  # Note: writable_hosts was removed in rip-cage-ta1o.1 (method-asymmetry deleted).
-  local _mode _allowed_hosts_json _dns_forward_to _http_forward_to
-  _mode=$(jq -r '.network.mode // "null"' <<<"$_cfg_json" 2>/dev/null) || _mode="null"
-  _allowed_hosts_json=$(jq -c '.network.allowed_hosts // []' <<<"$_cfg_json" 2>/dev/null) || _allowed_hosts_json="[]"
-  _dns_forward_to=$(jq -r '(.network.dns.forward_to // "null")' <<<"$_cfg_json" 2>/dev/null) || _dns_forward_to="null"
-  _http_forward_to=$(jq -r '(.network.http.forward_to // "null")' <<<"$_cfg_json" 2>/dev/null) || _http_forward_to="null"
-
-  # Merge baseline ∪ user allowed_hosts (order: baseline first, then user additions).
-  local _merged_hosts_json
-  _merged_hosts_json=$(jq -cn \
-    --argjson baseline "$(printf '%s\n' "${_EGRESS_BASELINE_HOSTS[@]}" | jq -R . | jq -sc .)" \
-    --argjson user "$_allowed_hosts_json" \
-    '($baseline + $user) | unique' 2>/dev/null) || _merged_hosts_json="[]"
-
-  # Emit YAML header.
-  printf 'version: 2\n'
-
-  # mode: emit only when network.mode is non-null (null = legacy denylist posture).
-  if [[ "$_mode" != "null" && -n "$_mode" ]]; then
-    printf 'mode: %s\n' "$_mode"
-  fi
-
-  # allowed_hosts: baseline ∪ user (for sibling B/C to enforce whitelist).
-  printf 'allowed_hosts:\n'
-  jq -r '.[]' <<<"$_merged_hosts_json" 2>/dev/null | while IFS= read -r _h; do
-    printf '  - %s\n' "$_h"
-  done
-
-  # Note: writable_hosts was removed in rip-cage-ta1o.1 (method-asymmetry / write-gate
-  # deleted). decide() in rip_cage_egress.py ignores writable_hosts; it is no longer
-  # emitted in the generated rules file.
-
-  # dns_forward_to: emit only when network.dns.forward_to is non-null.
-  # The DNS sidecar reads this field from the rules doc to route clean queries
-  # to a configured external DNS specialist instead of the hardcoded 8.8.8.8.
-  # This is the forward-to-specialist seam (ADR-012 D9, rip-cage-ta1o.2).
-  # Field name 'dns_forward_to' (underscore) matches what rip_cage_dns.py reads.
-  if [[ "$_dns_forward_to" != "null" && -n "$_dns_forward_to" ]]; then
-    printf 'dns_forward_to: %s\n' "$_dns_forward_to"
-  fi
-
-  # http_forward_to: emit only when network.http.forward_to is non-null.
-  # The SNI router reads this field from the rules doc to forward allowed traffic
-  # to a co-located HTTP mediator via HTTP CONNECT instead of origin-splicing.
-  # This is the HTTP forward-to seam (ADR-026 D5, rip-cage-ta1o.5.2).
-  # Field name 'http_forward_to' (underscore) matches what rip_cage_router.py reads.
-  if [[ "$_http_forward_to" != "null" && -n "$_http_forward_to" ]]; then
-    printf 'http_forward_to: %s\n' "$_http_forward_to"
-  fi
-
-  # IOC denylist floor — always emitted, non-overridable by user config.
-  # Read from the IOC rules file (_ioc_rules_file, see parameter above) so
-  # maintainers edit one place; the generator picks up the current rules at
-  # rc up / rc reload time without any secondary copy to drift.
-  if [[ ! -f "$_ioc_rules_file" ]]; then
-    echo "Error: egress-rules.yaml not found at ${_ioc_rules_file}" >&2
-    return 1
-  fi
-  # Extract the 'rules:' section: print from the first 'rules:' line to EOF
-  # (the canonical file contains only the rules: block after the header).
-  # We prepend the 'rules:' key and emit the entries directly; this preserves
-  # comments, formatting, and YAML structure verbatim.
-  awk '/^rules:/{found=1} found{print}' "$_ioc_rules_file"
-}
-
-
-# _up_resolve_egress_rules -- generate the per-cage egress-rules file from effective
-# config and write it to the per-container cache directory.
-#
-# The file is later mounted at /etc/rip-cage/egress-rules.yaml (same path as the
-# image-baked static file), so the proxy and DNS sidecar read the unchanged path.
-# Only the source (generated-per-cage vs image-baked) and content/format change.
-#
-# Globals written: (none)
-# Parameters:
-#   $1  workspace   — project directory (for _load_effective_config)
-#   $2  cache_dir   — per-container cache dir (egress-rules.yaml written here)
-_up_resolve_egress_rules() {
-  local _workspace="$1" _cache_dir="$2"
-
-  # Read effective config (both layers merged). Fall back to schema defaults when
-  # no config files are present (D5 regression contract: existing cages continue
-  # to work with network.mode=null -> legacy denylist posture).
-  local _eff_result _eff_config
-  _eff_result=$(_load_effective_config "$_workspace" 2>/dev/null) || true
-  if [[ -n "$_eff_result" ]]; then
-    _eff_config=$(jq -c '.config' <<<"$_eff_result")
-  else
-    # No config files present: schema defaults (network.mode=null = legacy posture).
-    # Note: writable_hosts removed in rip-cage-ta1o.1.
-    # network.dns.forward_to=null = default 8.8.8.8 upstream (rip-cage-ta1o.2).
-    _eff_config='{"network":{"allowed_hosts":[],"mode":null,"dns":{"forward_to":null}}}'
-  fi
-
-  # rip-cage-4c5.3: union manifest-declared egress hosts into network.allowed_hosts.
-  # Any archetype entry's egress: list contributes to the cage allowlist
-  # (ADR-005 D3 / ADR-024 D1: explicit declaration, host-reviewable).
-  # The IOC check fires in cmd_build, cmd_up, AND cmd_reload (before this union),
-  # so IOC hosts are rejected at all egress-regeneration entry points.
-  local _manifest_hosts_json
-  _manifest_hosts_json=$(_manifest_egress_hosts_json 2>/dev/null) || _manifest_hosts_json="[]"
-  if [[ -n "$_manifest_hosts_json" ]] && [[ "$_manifest_hosts_json" != "[]" ]]; then
-    _eff_config=$(jq -c --argjson manifest_hosts "$_manifest_hosts_json" \
-      '.network.allowed_hosts = ((.network.allowed_hosts // []) + $manifest_hosts | unique)' \
-      <<<"$_eff_config" 2>/dev/null) || true
-  fi
-
-  # Capture resolved network.mode for label stamping (rip-cage-hhh.6 D3).
-  # "legacy" = mode absent / null (denylist-only posture, no mode field in rules).
-  local _resolved_mode
-  _resolved_mode=$(jq -r '.network.mode // "legacy"' <<<"$_eff_config" 2>/dev/null) || _resolved_mode="legacy"
-  _UP_EGRESS_MODE="${_resolved_mode}"
-
-  # Generate the rules file and write to cache (truncate-then-write to preserve inode
-  # in case the file is already bind-mounted; same recipe as known_hosts cache).
-  local _rules_path="${_cache_dir}/egress-rules.yaml"
-  mkdir -p "$_cache_dir"
-  : > "$_rules_path"
-  _generate_egress_rules_file "$_eff_config" "${SCRIPT_DIR}/cage/egress/egress-rules.yaml" > "$_rules_path"
-}
-
-# Global: resolved network.mode from last _up_resolve_egress_rules call.
-# Values: observe | block | legacy (null = legacy).
-_UP_EGRESS_MODE="legacy"
 
 
 # _up_validate_dcg_config — validate a generated DCG TOML config file parses.
@@ -3208,212 +1761,21 @@ _up_resolve_dcg_config() {
 # Set by _up_resolve_dcg_config; consumed by cmd_up to add RO mount.
 _UP_DCG_CONFIG_PATH=""
 
-
-# _up_reload_tcp22_allowlist -- re-apply the TCP-22 IP allowlist inside a running container.
-# (rip-cage-hhh.4 / ADR-012 D8 evolved)
-#
-# Called by cmd_reload after regenerating the egress-rules file when network.* fields change.
-# Sources init-firewall.sh inside the container to call _get_tcp22_allowed_ips and apply
-# the iptables TCP-22 ACCEPT/DROP rules. This re-resolves hostnames to IPs in-container
-# (where the DNS sidecar is active and whitelisted apexes like github.com resolve correctly).
-#
-# Skips silently if egress is off (rc.egress=off label) or if mode is not block.
-#
-# Parameter: $1 name -- container name
-_up_reload_tcp22_allowlist() {
-  local _name="$1"
-  # Use docker exec to source init-firewall.sh (which defines _get_tcp22_allowed_ips
-  # and _read_egress_mode) then apply the TCP-22 allowlist. The inline script is
-  # functionally equivalent to Step 4c of init-firewall.sh, re-run after a reload.
-  docker exec -u root "$_name" bash -c '
-    source /usr/local/lib/rip-cage/init-firewall.sh
-    _EGRESS_RULES=/etc/rip-cage/egress-rules.yaml
-    _TCP22_MODE=$(_read_egress_mode "$_EGRESS_RULES")
-    if [[ "$_TCP22_MODE" == "block" ]]; then
-      while iptables -D OUTPUT -p tcp --dport 22 -j DROP 2>/dev/null; do :; done
-      while iptables -D OUTPUT -p tcp --dport 22 -j ACCEPT 2>/dev/null; do :; done
-      while IFS= read -r _tcp22_ip; do
-        [[ -z "$_tcp22_ip" ]] && continue
-        if ! iptables -C OUTPUT -p tcp --dport 22 -d "$_tcp22_ip" -j ACCEPT 2>/dev/null; then
-          iptables -A OUTPUT -p tcp --dport 22 -d "$_tcp22_ip" -j ACCEPT
-        fi
-      done < <(_get_tcp22_allowed_ips "$_EGRESS_RULES")
-      if ! iptables -C OUTPUT -p tcp --dport 22 -j DROP 2>/dev/null; then
-        iptables -A OUTPUT -p tcp --dport 22 -j DROP
-      fi
-    fi
-  ' 2>/dev/null || true
-}
-
-
-# _up_reload_egress_proxy -- bounce the egress proxy + DNS sidecar inside a running
-# container so they re-read the regenerated /etc/rip-cage/egress-rules.yaml.
-# (rip-cage-hhh.4 / ADR-012 D9)
-#
-# Both sidecars load their rules ONCE at process startup — by design, not by watching
-# the YAML file (D10: effective config changes only at rc up / rc reload). cmd_reload
-# regenerates egress-rules.yaml and the bind-mount shows the new content in-container,
-# but the running router / DNS resolver still hold the stale rules_doc cached at
-# startup. Killing the inner process lets the restart-loop wrappers (rip-proxy-start.sh
-# / rip-dns-start.sh) relaunch it with fresh rules. The wrapper scripts' argv is the
-# .sh path (not "rip_cage_router.py" / "rip_cage_dns.py"), so the -f patterns never match the
-# wrappers — they survive to perform the relaunch.
-#
-# Caller guards on the rc.egress label (skips when egress=off).
-# Parameter: $1 name -- container name
-_up_reload_egress_proxy() {
-  local _name="$1"
-  docker exec -u root "$_name" sh -c '
-    _rip_bounce() {
-      pkill -u rip-proxy -f "$1" 2>/dev/null || true
-      # Wait for the old process to exit (max ~5s).
-      _i=0
-      while [ "$_i" -lt 25 ] && pgrep -u rip-proxy -f "$1" >/dev/null 2>&1; do
-        _i=$((_i+1)); sleep 0.2
-      done
-      # Wait for the restart-loop wrapper to relaunch it (max ~10s).
-      _i=0
-      while [ "$_i" -lt 50 ] && ! pgrep -u rip-proxy -f "$1" >/dev/null 2>&1; do
-        _i=$((_i+1)); sleep 0.2
-      done
-    }
-    _rip_bounce rip_cage_router.py
-    _rip_bounce rip_cage_dns.py
-    # Settle: allow the router to bind :8080 and the DNS resolver to bind :5300.
-    sleep 1
-  ' 2>/dev/null || true
-}
-
-
-# _up_init_firewall -- run the root-phase firewall init inside the container.
-# Called on both create and resume paths (iptables rules do not persist across stop/start).
-# Must run BEFORE _up_init_container (init-rip-cage.sh sources /etc/rip-cage/firewall-env).
-#
-# Globals read: OUTPUT_FORMAT
-# Globals written: _UP_FIREWALL_OK (set to "true" or "false")
-# Parameter: $1 name -- container name
-_up_init_firewall() {
-  local _name="$1"
-  _UP_FIREWALL_OK=true
-  log "Running firewall init..."
-  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    docker exec -u root "$_name" /usr/local/lib/rip-cage/init-firewall.sh >/dev/null 2>&1 || _UP_FIREWALL_OK=false
-  else
-    docker exec -u root "$_name" /usr/local/lib/rip-cage/init-firewall.sh || _UP_FIREWALL_OK=false
-  fi
-}
-
-
-# _load_mediator_env_file <path> — appends "-e" "KEY=VALUE" pairs (one per
-# non-blank, non-comment line) to _UP_MEDIATOR_ENV_ARGS. Factored out of the
-# --mediator-env-file CLI branch (rip-cage-seqc.4 / E7) so the config-pointer
-# resolver below can share the same parse logic (DRY).
-_load_mediator_env_file() {
-  local _lmf_path="$1"
-  local _lmf_line
-  while IFS= read -r _lmf_line || [[ -n "$_lmf_line" ]]; do
-    [[ -z "$_lmf_line" || "$_lmf_line" == \#* ]] && continue
-    _UP_MEDIATOR_ENV_ARGS+=(-e "$_lmf_line")
-  done < "$_lmf_path"
-}
-
-
-# _up_resolve_mediator_env_file <path> <phase> (rip-cage-seqc.4 / B5, F3)
-#
-# network.egress.mediator_env_file is a PERSISTED POINTER to a host env file
-# (never the secret content itself). Without this, an unattended
-# `rc down && rc up` re-launches the mediator with an empty
-# _UP_MEDIATOR_ENV_ARGS (CLI flags are not remembered across invocations) and
-# injection silently no-ops — the autonomy regression F3 exists to close.
-#
-# phase = create|resume selects the fail-mode on a missing file:
-#   create — fail loud, exit 1 (a human is present; a configured pointer to
-#            an absent secret is a misconfiguration worth stopping for).
-#   resume — WARN loud, never exit. On the stopped-resume call site,
-#            `docker start` has already run before this resolver — exiting
-#            here would strand an already-started, half-init container.
-#            Degraded-but-alive: not worse than today's no-flag resume.
-#
-# CLI flags (--mediator-env / --mediator-env-file) always win over the
-# pointer — deterministic precedence, no additive-merge ambiguity.
-#
-# Secret non-leak: this function logs ONLY the pointer path + entry count,
-# NEVER parsed values. Values live solely in _UP_MEDIATOR_ENV_ARGS, which
-# flows ONLY into _up_init_mediator's docker exec -u root -e channel — never
-# docker run, never a --label, never echoed.
-_up_resolve_mediator_env_file() {
-  local _mef_path="$1" _mef_phase="$2"
-
-  # CLI wins: if --mediator-env/--mediator-env-file already populated the
-  # array, the pointer is ignored (deterministic; avoids conflicting pairs).
-  if [[ "${#_UP_MEDIATOR_ENV_ARGS[@]}" -gt 0 ]]; then
-    log "network.egress.mediator_env_file: ignored — CLI --mediator-env/--mediator-env-file already supplied mediator env"
-    return 0
-  fi
-
-  local _mef_pointer="null"
-  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "${_mef_path}")" ]]; then
-    if command -v yq &>/dev/null; then
-      local _mef_cfg
-      if _mef_cfg=$(_load_effective_config "${_mef_path}" 2>/dev/null); then
-        _mef_pointer=$(jq -r '.config.network.egress.mediator_env_file // "null"' <<<"$_mef_cfg")
-      fi
-      unset _mef_cfg
-    fi
-  fi
-  # F4 note: yq is a hard startup dependency (cmd_up's preflight aborts
-  # before any mount/mediator work when a config file exists and yq is
-  # absent) — the command-v-yq else-branch above (implicit default "null")
-  # is unreachable-but-harmless, kept for idiom-consistency with siblings.
-  if [[ -z "$_mef_pointer" || "$_mef_pointer" == "null" ]]; then
-    return 0
-  fi
-
-  if [[ ! -f "$_mef_pointer" ]]; then
-    if [[ "$_mef_phase" == "create" ]]; then
-      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        json_error "network.egress.mediator_env_file points at a missing file: ${_mef_pointer}" "MEDIATOR_ENV_FILE_NOT_FOUND"
-      fi
-      echo "Error: network.egress.mediator_env_file points at a missing file: ${_mef_pointer}" >&2
-      exit 1
-    else
-      echo "Warning: network.egress.mediator_env_file points at a missing file: ${_mef_pointer} — the mediator will relaunch WITHOUT the secret and injection will silently no-op. Re-supply --mediator-env, fix the pointer, then 'rc down && rc up' to pick it up." >&2
-      return 0
-    fi
-  fi
-
-  # Perms check: warn loud on group/world-accessible pointer files, but do
-  # NOT refuse (open-question ruling 2). Portable stat across Darwin/Linux.
-  local _mef_perms
-  _mef_perms=$(stat -f '%Lp' "$_mef_pointer" 2>/dev/null || stat -c '%a' "$_mef_pointer" 2>/dev/null || echo "")
-  if [[ -n "$_mef_perms" && "$_mef_perms" != "600" ]]; then
-    echo "Warning: network.egress.mediator_env_file (${_mef_pointer}) is not mode 0600 (found ${_mef_perms}) — the pointer file is group/world-accessible." >&2
-  fi
-
-  _load_mediator_env_file "$_mef_pointer"
-  local _mef_count=$(( ${#_UP_MEDIATOR_ENV_ARGS[@]} / 2 ))
-  log "network.egress.mediator_env_file: loaded ${_mef_count} entr$( [[ "$_mef_count" -eq 1 ]] && echo y || echo ies ) from ${_mef_pointer}"
-}
-
-
 # _up_resolve_placeholder_env_file <path> <cli_env_file> (rip-cage-b9to)
 #
 # auth.placeholder_env_file is a PERSISTED POINTER to a host env file carrying
 # the agent's non-secret placeholder token (e.g. CLAUDE_CODE_OAUTH_TOKEN) —
-# the mediator swaps it for the real credential at egress time. Modeled on
-# _up_resolve_mediator_env_file above, but for a DIFFERENT channel: this
-# pointer's contents land in the container via `docker run --env-file`, i.e.
-# in PID 1's environment, which the agent CAN read (/proc/1/environ) — that's
-# the point (agent-held, non-secret by design). The mediator's channel above
-# is `docker exec -u <mediator-uid> -e ...`, never agent-readable.
+# a composed (opt-in) mediator recipe swaps it for the real credential at
+# egress time, or msb's --secret non-possession path (ADR-029 D5) does for
+# the default posture. This pointer's contents land in the container via
+# `docker run --env-file`, i.e. in PID 1's environment, which the agent CAN
+# read (/proc/1/environ) — that's the point (agent-held, non-secret by design).
 #
-# CREATE-ONLY, phase-aware by CALL SITE (not by a $2-phase arg like the
-# mediator resolver): the call site in cmd_up invokes this ONLY on the create
-# path, immediately before _up_prepare_environment — never on resume (container
-# env is immutable across stop/start; D3) and never under --dry-run (D4).
+# CREATE-ONLY: the call site in cmd_up invokes this ONLY on the create path,
+# immediately before _up_prepare_environment — never on resume (container env
+# is immutable across stop/start; D3) and never under --dry-run (D4).
 #
-# ORDER MATTERS (v3 design D2, R2 F1) — mirrors the separated
-# local + if _x=$(...) idiom of _up_resolve_mediator_env_file above:
+# ORDER MATTERS (v3 design D2, R2 F1):
 #   a. Read the effective config key FIRST. Null/absent -> return silently,
 #      ZERO output — every existing --env-file CLI user (who never sets this
 #      key) sees nothing new (acceptance d).
@@ -3423,25 +1785,199 @@ _up_resolve_mediator_env_file() {
 #      impossible.
 #   c. Pointer fails [[ -f ]] (missing, directory, dangling symlink) -> FATAL:
 #      json_error under json mode + echo>&2 + exit 1, naming
-#      auth.placeholder_env_file (mirrors the mediator resolver's F3 fatal
-#      above). Create-only call site: this can never strand a resume.
+#      auth.placeholder_env_file. Create-only call site: this can never
+#      strand a resume.
 #   d. Run _check_secret_path_denylist on the pointer with the SAME treatment
-#      the CLI --env-file path gives it (rc:~4367) — deliberate divergence
-#      from the mediator resolver (D2d): this channel IS agent-readable, so an
-#      operator accidentally pointing at a real secret file (~/.aws/credentials)
-#      must be refused the same way the CLI path refuses it.
-#   e. No tilde/HOME expansion, no relative-path resolution (raw pointer, like
-#      the mediator resolver — config.md documents "absolute path"). No
-#      allowed-roots check (host-authored config, host-only trust — mediator
-#      precedent). No 0600 warning (non-secret by design; agent-readability of
-#      the placeholder is the point).
+#      the CLI --env-file path gives it (rc:~4367) — this channel IS
+#      agent-readable, so an operator accidentally pointing at a real secret
+#      file (~/.aws/credentials) must be refused the same way the CLI path
+#      refuses it.
+#   e. No tilde/HOME expansion, no relative-path resolution (raw pointer —
+#      config.md documents "absolute path"). No allowed-roots check
+#      (host-authored config, host-only trust). No 0600 warning (non-secret
+#      by design; agent-readability of the placeholder is the point).
 #
+# _up_translate_docker_args_to_msb ARGS...
+#
+# rip-cage-rj68 (S6): mechanical translator from the docker-run-argv shape
+# _up_prepare_docker_mounts/_up_prepare_environment build (UNCHANGED by this
+# bead — the worktree, symlink-follow, DCG, credential-mount, manifest-mount
+# business logic all stays exactly as it was) into msb-run/msb-create argv.
+# Most flags are byte-identical between the two runtimes (docker's
+# `-v SRC:DST[:OPTIONS]` and msb's `-v SOURCE:DEST[:OPTIONS]` share the same
+# grammar) — this function only transforms the small set of genuine
+# differences. Echoes one output token per line (mirrors msb_flags.sh's own
+# output convention — `mapfile -t FLAGS < <(_up_translate_docker_args_to_msb
+# "${_UP_RUN_ARGS[@]}")`).
+#
+# Handles (see module-level docs in tests/test-up-msb-args-translate.sh for
+# the full behavior matrix): -v (strips :delegated, msb doesn't recognize
+# the macOS Docker-Desktop cache-hint option; :ro passthrough), -e/--label/
+# --workdir/-p (byte-identical flag names, straight passthrough), --mount
+# type=bind,src=X,dst=Y[,ro] (docker long-form -> msb --mount-file X:Y[:ro]
+# — the sole caller of this docker long-form is the DCG-config mount),
+# --cpus=/--memory= (byte-identical flag names, passthrough), --memory-swap=
+# and --pids-limit= (dropped — no msb `create`-time equivalent),
+# --add-host=host.docker.internal:host-gateway (dropped — msb needs no
+# static gateway entry), --env-file FILE (expanded into individual -e
+# KEY=VALUE tokens, one per non-comment non-blank line, matching docker's
+# own env-file line format).
+#
+# NOT handled here: --name/the trailing IMAGE+override-command positional
+# tokens some callers append to a docker-run argv — this function expects
+# ONLY the flag/value body (name and image are passed to msb create as
+# their own separate arguments by the caller; msb create has no
+# command-override positional at all, so there is nothing to translate
+# there — see cli/lib/msb_runtime.sh's _msb_create_raw).
+#
+# ADR-001 fail-loud: an unrecognized flag aborts loud rather than being
+# silently dropped or silently passed through unmodified (either of which
+# could hide a real msb/docker behavior gap).
+_up_translate_docker_args_to_msb() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -v)
+        local _spec="$2"
+        # Strip a trailing ":delegated" (macOS Docker Desktop cache hint;
+        # msb has no such option and does not recognize the token).
+        _spec="${_spec%:delegated}"
+        # printf, not echo: several flags translated here (-v, -e, -p) are
+        # literally "-e"/"-p" — bash's echo builtin interprets a bare "-e"
+        # (or "-n"/"-E") as ITS OWN option when it is the sole/first
+        # argument, silently swallowing the token instead of printing it.
+        # printf '%s\n' never interprets its argument as a flag.
+        printf '%s\n' "-v" "$_spec"
+        shift 2
+        ;;
+      -e|--label|--workdir|-p)
+        printf '%s\n' "$1" "$2"
+        shift 2
+        ;;
+      --mount)
+        local _mspec="$2" _msrc="" _mdst="" _mro=""
+        local _mfield
+        IFS=',' read -ra _mfields <<<"$_mspec"
+        for _mfield in "${_mfields[@]}"; do
+          case "$_mfield" in
+            src=*) _msrc="${_mfield#src=}" ;;
+            dst=*) _mdst="${_mfield#dst=}" ;;
+            ro) _mro=":ro" ;;
+          esac
+        done
+        printf '%s\n' "--mount-file" "${_msrc}:${_mdst}${_mro}"
+        shift 2
+        ;;
+      --cpus=*|--memory=*)
+        printf '%s\n' "$1"
+        shift
+        ;;
+      --memory-swap=*|--pids-limit=*|--add-host=*)
+        # No msb create-time equivalent (memory-swap: no host-swap-limit
+        # concept in the VM model; pids-limit: no --rlimit support on `msb
+        # create`, only `msb run`; add-host: msb needs no static
+        # host-gateway /etc/hosts entry). Dropped, not translated.
+        shift
+        ;;
+      --env-file)
+        local _ef="$2"
+        local _efline
+        while IFS= read -r _efline || [[ -n "$_efline" ]]; do
+          [[ -z "$_efline" ]] && continue
+          [[ "$_efline" == \#* ]] && continue
+          printf '%s\n' "-e" "$_efline"
+        done < "$_ef"
+        shift 2
+        ;;
+      *)
+        echo "Error: _up_translate_docker_args_to_msb: unrecognized docker arg '$1' -- no known msb translation. Refusing to silently drop or pass it through unmodified." >&2
+        return 1
+        ;;
+    esac
+  done
+}
+
+
+# _up_build_egress_config_json PATH
+#
+# rip-cage-rj68 (S6 of the msb migration epic rip-cage-tsf2): translates the
+# effective .rip-cage.yaml config into the normalized JSON contract
+# cli/lib/msb_flags.sh's _msb_flags_generate expects (S2, rip-cage-kl4r,
+# APPROVED as-is per the 2026-07-12 Fable fold — this function feeds it,
+# does not reshape it).
+#
+# allowed_hosts <- network.allowed_hosts (existing schema field, unchanged).
+# credentials   <- auth.credentials (rip-cage-rj68 S6 Fold a — the NEW
+#                  credential->host binding surface; deliberately isomorphic
+#                  to the contract's own "credentials" field, so this is a
+#                  straight passthrough, not a reshaping step).
+#
+# mounts/possession_mounts/tls_body_rewrite/dind_volumes are intentionally
+# left at their contract defaults (empty/false) here: every current mount
+# (workspace, credentials, symlink-follow, DCG config, manifest mounts,
+# state volumes) is already built as a docker-shaped -v/-e/--label arg by
+# _up_prepare_docker_mounts/_up_prepare_environment (unchanged by this
+# bead) and separately translated to msb mount flags by
+# _up_translate_docker_args_to_msb — routing the SAME mounts through this
+# JSON contract's mount fields too would double-emit them. Only the
+# net-rule/secret/tls concern is genuinely new (msb primitives with no
+# pre-msb docker equivalent) and belongs in this JSON contract.
+#
+# D5 regression contract: no config files present -> {"allowed_hosts":[],
+# "credentials":[]} — msb_flags_generate on this input emits
+# --net-default deny with zero --net-rule/--secret flags (deny-all, no
+# behavior claim beyond "unconfigured cages get no egress" — S7's curated
+# default allowlist is a separate, later child).
+_up_build_egress_config_json() {
+  local _uec_path="$1"
+  local _uec_allowed_hosts='[]' _uec_credentials='[]'
+  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$_uec_path")" ]]; then
+    if command -v yq &>/dev/null; then
+      local _uec_cfg_result
+      if _uec_cfg_result=$(_load_effective_config "$_uec_path" 2>/dev/null); then
+        _uec_allowed_hosts=$(jq -c '.config.network.allowed_hosts // []' <<<"$_uec_cfg_result")
+        _uec_credentials=$(jq -c '.config.auth.credentials // []' <<<"$_uec_cfg_result")
+      fi
+    fi
+  fi
+  jq -nc --argjson hosts "$_uec_allowed_hosts" --argjson creds "$_uec_credentials" \
+    '{allowed_hosts: $hosts, credentials: $creds}'
+}
+
+
+# _up_prepare_resume_secrets PATH
+#
+# rip-cage-rj68 (S6): msb resolves a `--secret ENV@HOST` binding's real
+# value from the host environment variable ENV at SANDBOX START TIME, not
+# just at creation — confirmed live (msb start on a stopped sandbox fails
+# loud, "host environment variable ... is not set", when the synthesized
+# name is absent from the CURRENT process's environment, even though the
+# sandbox already booted successfully once before with it present). A
+# resume happening in a fresh `rc up` process therefore needs the SAME
+# Fold-b preflight (fail loud, name the var, before touching msb) and the
+# SAME secret-env export _up_start_container runs at create time — this is
+# that same two-step, factored out so create and resume share one source
+# of truth rather than drifting.
+#
+# Returns non-zero (preflight failure already printed to stderr by
+# _msb_flags_preflight_secret_env) when a credential's source_env is unset
+# or empty; the caller must not proceed to `msb start`.
+_up_prepare_resume_secrets() {
+  local _urs_path="$1"
+  local _urs_cfg
+  _urs_cfg=$(_up_build_egress_config_json "$_urs_path")
+  if ! _msb_flags_preflight_secret_env "$_urs_cfg"; then
+    return 1
+  fi
+  _msb_flags_prepare_secret_env "$_urs_cfg"
+  return 0
+}
+
+
 # RETURN MECHANISM (R2 F2, pinned): sets the global _UP_PLACEHOLDER_ENV_FILE
 # (reset to "" at the top of every call so a stale value from a prior
-# invocation in the same process can never leak forward) — mirrors the
-# established _UP_* global idiom (cf. _UP_MEDIATOR_CA_ENV). This function
-# must NOT rely on dynamic-scope bare assignment into the caller's `env_file`
-# and must NOT declare `local env_file` itself. The CALL SITE (cmd_up,
+# invocation in the same process can never leak forward). This function must
+# NOT rely on dynamic-scope bare assignment into the caller's `env_file` and
+# must NOT declare `local env_file` itself. The CALL SITE (cmd_up,
 # immediately before _up_prepare_environment) is responsible for copying
 # _UP_PLACEHOLDER_ENV_FILE into its own env_file when non-empty — that copy is
 # part of the change, not implied by this function.
@@ -3451,11 +1987,10 @@ _up_resolve_mediator_env_file() {
 # Parameters:
 #   $1  path          — validated workspace path (effective-config resolution)
 #   $2  cli_env_file  — the CLI --env-file value as seen so far by cmd_up
-#                        ("" if not supplied). Needed here because, unlike the
-#                        mediator's CLI flags (which populate a global array,
-#                        _UP_MEDIATOR_ENV_ARGS), --env-file only ever sets a
-#                        `local env_file` inside cmd_up — there is no global to
-#                        inspect, so the caller must pass its current value.
+#                        ("" if not supplied). Needed here because --env-file
+#                        only ever sets a `local env_file` inside cmd_up —
+#                        there is no global to inspect, so the caller must
+#                        pass its current value.
 _up_resolve_placeholder_env_file() {
   local _pef_path="$1" _pef_cli_env_file="${2:-}"
   _UP_PLACEHOLDER_ENV_FILE=""
@@ -3503,58 +2038,6 @@ _up_resolve_placeholder_env_file() {
 
   _UP_PLACEHOLDER_ENV_FILE="$_pef_pointer"
   log "auth.placeholder_env_file: applied ${_pef_pointer}"
-}
-
-
-# _up_init_mediator — root-phase mediator init inside the container.
-# (rip-cage-ta1o.5.8 / ADR-026 D5)
-#
-# Mirrors _up_init_firewall: runs `docker exec -u root` so the in-container
-# mediator-launch script can su to the non-root mediator uid (root→non-root
-# needs no password). Called AFTER _up_init_firewall (uid-exemption is in
-# place) and BEFORE _up_init_container (init-rip-cage.sh) on BOTH the create
-# path and the resume path.
-#
-# The mediator secret channel (_UP_MEDIATOR_ENV_ARGS, populated by --mediator-env
-# KEY=VALUE / --mediator-env-file PATH on the rc up CLI, or the
-# network.egress.mediator_env_file config pointer — rip-cage-seqc.4) is passed
-# ONLY into this docker exec -e ..., NEVER into docker run. This ensures the
-# real secret is visible only in the mediator process env, not in PID 1 (agent
-# cannot read it via /proc/1/environ). ADR-001 / ADR-024 D2 / ADR-026 D6.
-#
-# Globals read: OUTPUT_FORMAT, RC_MEDIATOR (set in container env by cmd_up),
-#               _UP_MEDIATOR_ENV_ARGS (array of -e KEY=VAL for the mediator exec)
-# Globals written: _UP_MEDIATOR_OK (set to "true" or "false")
-# Parameter: $1 name — container name
-_up_init_mediator() {
-  local _name="$1"
-  _UP_MEDIATOR_OK=true
-  log "Running mediator init..."
-  # Build the docker exec command: always -u root; pass mediator-only env vars.
-  local _med_exec_args=(-u root)
-  # _UP_MEDIATOR_ENV_ARGS is an array of "-e" "KEY=VAL" pairs set by --mediator-env.
-  if [[ "${#_UP_MEDIATOR_ENV_ARGS[@]}" -gt 0 ]]; then
-    _med_exec_args+=("${_UP_MEDIATOR_ENV_ARGS[@]}")
-  fi
-  # F2 (rip-cage-seqc.4 / B5a): warn loud when a mediator is composed but no
-  # mediator env was resolved — injection would silently no-op. There is no
-  # rc.mediator LABEL; the container's RC_MEDIATOR env var (threaded at
-  # docker-run time, cmd_up) is the single source of truth on BOTH create and
-  # resume (the cmd_up-local _rc_mediator variable is create-only and out of
-  # scope here). Tool-agnostic message (ADR-005 D12): no mediator name.
-  local _med_sel _med_env_json
-  _med_env_json=$(docker inspect --format '{{json .Config.Env}}' "$_name" 2>/dev/null || echo '[]')
-  _med_sel=$(jq -r '(.[]? // empty) | select(startswith("RC_MEDIATOR=")) | sub("^RC_MEDIATOR="; "")' <<<"$_med_env_json" 2>/dev/null | head -1)
-  if [[ -n "$_med_sel" && "$_med_sel" != "none" && "${#_UP_MEDIATOR_ENV_ARGS[@]}" -eq 0 ]]; then
-    echo "Warning: a mediator is composed for this cage but no mediator env was resolved (no --mediator-env/--mediator-env-file and no network.egress.mediator_env_file) — injection will silently no-op. Set network.egress.mediator_env_file or re-supply --mediator-env." >&2
-  fi
-  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    docker exec "${_med_exec_args[@]}" "$_name" \
-      /usr/local/lib/rip-cage/init-mediator.sh >/dev/null 2>&1 || _UP_MEDIATOR_OK=false
-  else
-    docker exec "${_med_exec_args[@]}" "$_name" \
-      /usr/local/lib/rip-cage/init-mediator.sh || _UP_MEDIATOR_OK=false
-  fi
 }
 
 
@@ -3691,15 +2174,6 @@ Continuing anyway — bd calls inside the container will fail until resolved."
 cmd_up() {
   local path="" port="" env_file=""
   local rc_cpus="2" rc_memory="4g" rc_pids_limit="500"
-  # Sibling pattern to RIP_CAGE_EGRESS: env provides the project/shell default,
-  # --no-forward-ssh on the CLI always wins.
-  local rc_forward_ssh="${RIP_CAGE_FORWARD_SSH:-on}"
-  # ADR-020 D3: --github-identity=<keyname> CLI flag (layer 1 of four-layer resolver).
-  # Also accepts RIP_CAGE_GITHUB_IDENTITY env var as the layer-1 source.
-  local rc_github_identity_flag="${RIP_CAGE_GITHUB_IDENTITY:-}"
-  # ADR-020 D7: --no-ssh-config / --ssh-config opt-out/in flags.
-  # Empty = not explicitly set (implication chain applies).
-  local rc_no_ssh_config_flag="" rc_ssh_config_explicit_flag=""
   # Multi-session flags: --new calls the new_session hook for a new auto-named session;
   # --session <name> forwards NAME to the attach hook.  Mutually exclusive.
   local rc_up_new_session="" rc_up_session_name=""
@@ -3710,12 +2184,6 @@ cmd_up() {
   # ADR-024 D1 / rip-cage-hhh.5: per-invocation bypass for workspace base-URL redirect check.
   # When set, validator emits a warning instead of refusing.
   local rc_allow_config_override=""
-  # rip-cage-ta1o.5.8: mediator-only secret channel (ADR-026 D6 / ADR-001 / ADR-024 D2).
-  # Populated by --mediator-env KEY=VALUE (repeatable) and --mediator-env-file PATH.
-  # Values go ONLY into _up_init_mediator's docker exec -e ..., NEVER into docker run.
-  # This prevents the real secret from appearing in /proc/1/environ (PID 1 = sleep
-  # infinity runs as agent). ADR-005 D12: flag names env vars generically, no mediator names.
-  _UP_MEDIATOR_ENV_ARGS=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --port) [[ $# -ge 2 ]] || { echo "Error: --port requires a value" >&2; exit 1; }; port="$2"; shift 2 ;;
@@ -3723,32 +2191,10 @@ cmd_up() {
       --cpus) [[ $# -ge 2 ]] || { echo "Error: --cpus requires a value" >&2; exit 1; }; rc_cpus="$2"; shift 2 ;;
       --memory) [[ $# -ge 2 ]] || { echo "Error: --memory requires a value" >&2; exit 1; }; rc_memory="$2"; shift 2 ;;
       --pids-limit) [[ $# -ge 2 ]] || { echo "Error: --pids-limit requires a value" >&2; exit 1; }; rc_pids_limit="$2"; shift 2 ;;
-      --no-forward-ssh) rc_forward_ssh="off"; shift ;;
-      --no-ssh-config) rc_no_ssh_config_flag="off"; shift ;;
-      --ssh-config) rc_ssh_config_explicit_flag="on"; shift ;;
-      --github-identity=*) rc_github_identity_flag="${1#--github-identity=}"; shift ;;
       --new) rc_up_new_session="true"; shift ;;
       --session) [[ $# -ge 2 ]] || { echo "Error: --session requires a value" >&2; exit 1; }; rc_up_session_name="$2"; shift 2 ;;
       --allow-risky-mount) [[ $# -ge 2 ]] || { echo "Error: --allow-risky-mount requires a value" >&2; exit 1; }; RC_ALLOW_RISKY_MOUNT+=("$2"); shift 2 ;;
       --allow-config-override) rc_allow_config_override="true"; shift ;;
-      --mediator-env)
-        # rip-cage-ta1o.5.8: mediator-only env var (KEY=VALUE). Repeatable.
-        # Goes ONLY into _up_init_mediator's docker exec, NOT into docker run.
-        [[ $# -ge 2 ]] || { echo "Error: --mediator-env requires a KEY=VALUE argument" >&2; exit 1; }
-        _UP_MEDIATOR_ENV_ARGS+=(-e "$2"); shift 2 ;;
-      --mediator-env-file)
-        # rip-cage-ta1o.5.8: load mediator-only env from a file (KEY=VALUE lines).
-        # Each line becomes a separate -e KEY=VALUE in the mediator docker exec.
-        [[ $# -ge 2 ]] || { echo "Error: --mediator-env-file requires a PATH argument" >&2; exit 1; }
-        local _mef="$2"; shift 2
-        if [[ ! -f "$_mef" ]]; then
-          echo "Error: --mediator-env-file: file not found: ${_mef}" >&2; exit 1
-        fi
-        # rip-cage-seqc.4 / E7: factored into _load_mediator_env_file (DRY —
-        # the network.egress.mediator_env_file config-pointer resolver shares it).
-        _load_mediator_env_file "$_mef"
-        unset _mef
-        ;;
       *) path="$1"; shift ;;
     esac
   done
@@ -3757,12 +2203,6 @@ cmd_up() {
     echo "Error: --new and --session are mutually exclusive. Use one or the other." >&2
     exit 2
   fi
-  local rc_egress="${RIP_CAGE_EGRESS:-on}"
-
-  # ADR-020 D7: resolve ssh-config posture from flags + implication chain.
-  local rc_ssh_config
-  rc_ssh_config=$(_resolve_ssh_config_posture "$rc_no_ssh_config_flag" "$rc_ssh_config_explicit_flag" "$rc_forward_ssh")
-
   if [[ -z "$path" ]]; then
     path="."
   fi
@@ -3869,9 +2309,17 @@ cmd_up() {
   # Check image exists and is current — pull from GHCR (with local-build
   # fallback) if missing or version label mismatches RC_VERSION (stale).
   # Provisioning fires only on the new-container (absent) path; see below.
-  # See _image_is_current / _pull_or_build / ADR-008 D6.
+  # See _image_is_current / _pull_or_build / ADR-008 D6. rip-cage-rj68 (S6):
+  # ALSO requires the image be present in msb's LOCAL cache — the actual
+  # runtime `msb create` boots from below — not just docker's, since
+  # _pull_or_build's docker-side provisioning always ends with the
+  # docker-save/msb-load conversion step (_build_msb_load, S1) that puts it
+  # there; a docker image present but never `rc build`-provisioned into msb
+  # (e.g. a stale pre-cutover local image) must still trigger provisioning.
   local _image_absent=false
-  if ! docker image inspect "$IMAGE" > /dev/null 2>&1 || ! _image_is_current; then
+  if ! docker image inspect "$IMAGE" > /dev/null 2>&1 || ! _image_is_current \
+      || ! msb image list --format json 2>/dev/null | jq -e --arg img "$IMAGE" \
+        'any(.[]; .reference == $img)' >/dev/null 2>&1; then
     _image_absent=true
   fi
 
@@ -3887,7 +2335,7 @@ cmd_up() {
 
   # Check for existing container
   local existing_path
-  existing_path=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$name" 2>/dev/null || true)
+  existing_path=$(_msb_label "$name" "rc.source.path" || true)
 
   if [[ -n "$existing_path" ]]; then
     # Container exists
@@ -3918,11 +2366,11 @@ cmd_up() {
   fi
 
   # Check container state — distinguish "container absent" from "inspect failed".
-  # docker inspect exits non-zero with "no such object" when the container does
-  # not exist; it exits 0 when the container exists (even if status is blank).
-  # Use 'if' to capture exit code without triggering set -e on failure.
+  # _msb_sandbox_state exits non-zero when the sandbox does not exist; it
+  # exits 0 when the sandbox exists (running or exited/stopped). Use 'if' to
+  # capture exit code without triggering set -e on failure.
   local state _inspect_exit
-  if state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null); then
+  if state=$(_msb_sandbox_state "$name"); then
     _inspect_exit=0
   else
     _inspect_exit=$?
@@ -3933,15 +2381,13 @@ cmd_up() {
     local would_action
     if [[ "$state" == "running" ]]; then
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-RUNNING BEGIN (mirrors the real
-      # running branch below — see RESUME-GUARDS-REAL-RUNNING). All 6 guards
+      # running branch below — see RESUME-GUARDS-REAL-RUNNING). All guards
       # here are read-only (label read + _load_effective_config + compare) —
       # safe under --dry-run.
       _up_resolve_resume_image_drift_running "$name" "$path"
       _up_resolve_resume_config_mode "$name" "$path"
-      _up_resolve_resume_ssh_key_filter "$name" "$path"
       _up_resolve_resume_symlink_fingerprint "$name" "$path"
       _up_resolve_resume_credential_mounts "$name" "$path"
-      _up_resolve_resume_mediator_ca_env "$name" "$path"
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-RUNNING END
       would_action="would_attach"
     elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
@@ -3950,38 +2396,25 @@ cmd_up() {
       # rip-cage-jnvb / D-b: image-ID drift hard-stop surfaced here too —
       # dry-run planners must see the same refusal the real resume would hit.
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-STOPPED BEGIN (mirrors the real
-      # stopped branch below — see RESUME-GUARDS-REAL-STOPPED). All 10 guards
-      # here are read-only (label read + _load_effective_config + compare);
-      # the mkdir + _translate_ssh_config resume machinery that follows the
-      # real branch's ssh_config guard is intentionally NOT pulled in here —
-      # that's resume-side mutation, not a guard.
+      # stopped branch below — see RESUME-GUARDS-REAL-STOPPED). All guards
+      # here are read-only (label read + _load_effective_config + compare).
       _up_resolve_resume_image_drift_stopped "$name" "$path"
-      _up_resolve_resume_egress "$name" "$path"
-      _up_resolve_resume_forward_ssh "$name" "$path"
-      _up_resolve_resume_github_identity "$name" "$path" "$rc_github_identity_flag"
-      local _dry_ssh_config_cli_flag=""
-      if [[ -n "$rc_no_ssh_config_flag" ]]; then
-        _dry_ssh_config_cli_flag="off"
-      elif [[ -n "$rc_ssh_config_explicit_flag" ]]; then
-        _dry_ssh_config_cli_flag="on"
-      fi
-      _up_resolve_resume_ssh_config "$name" "$path" "$_dry_ssh_config_cli_flag"
-      _up_resolve_resume_ssh_key_filter "$name" "$path"
       _up_resolve_resume_config_mode "$name" "$path"
       _up_resolve_resume_symlink_fingerprint "$name" "$path"
       _up_resolve_resume_credential_mounts "$name" "$path"
-      _up_resolve_resume_mediator_ca_env "$name" "$path"
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-STOPPED END
       would_action="would_resume"
     elif [[ "$_inspect_exit" -ne 0 ]]; then
-      # docker inspect failed → container is absent; create new.
+      # msb inspect failed → container is absent; create new.
       would_action="would_create"
     elif [[ "$state" == "paused" ]]; then
-      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is paused. Run: docker unpause $name then retry: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-      echo "Error: Container $name is paused. Run: docker unpause $name then retry: rc up $path" >&2; return 1
+      # msb has no pause/restarting/removing/dead concept — unreachable
+      # under msb (_msb_sandbox_state never returns these); kept defensive.
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is paused. Inspect manually: msb inspect $name -- then retry: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+      echo "Error: Container $name is paused. Inspect manually: msb inspect $name -- then retry: rc up $path" >&2; return 1
     elif [[ "$state" == "restarting" ]]; then
-      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is restarting. Wait, or run: docker stop $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-      echo "Error: Container $name is restarting. Wait, or run: docker stop $name && rc up $path" >&2; return 1
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is restarting. Wait, or run: msb stop $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+      echo "Error: Container $name is restarting. Wait, or run: msb stop $name && rc up $path" >&2; return 1
     elif [[ "$state" == "removing" ]]; then
       [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is being removed. Wait, then run: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
       echo "Error: Container $name is being removed. Wait, then run: rc up $path" >&2; return 1
@@ -3990,8 +2423,9 @@ cmd_up() {
       echo "Error: Container $name is dead. Run: rc destroy $name && rc up $path" >&2; return 1
     else
       # Unrecognized state (allowlist exhausted) — fail loud per ADR-001.
-      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is in unrecognized state: state=$state. Inspect manually with: docker inspect $name  — if safe, rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-      echo "Error: Container $name is in unrecognized state: state=$state. Inspect manually with: docker inspect $name  — if safe, rc destroy $name && rc up $path" >&2; return 1
+      # Reachable under msb (_msb_sandbox_state's "unknown" fallback).
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is in unrecognized state: state=$state. Inspect manually with: msb inspect $name  — if safe, rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+      echo "Error: Container $name is in unrecognized state: state=$state. Inspect manually with: msb inspect $name  — if safe, rc destroy $name && rc up $path" >&2; return 1
     fi
 
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -4072,10 +2506,6 @@ cmd_up() {
     _up_resolve_resume_image_drift_running "$name" "$path"
     # ADR-021 D7: config-mode mount-shape guard applies to running containers too.
     _up_resolve_resume_config_mode "$name" "$path"
-    # ADR-028 D1 / rip-cage-7gr9: ssh key-filter mount-shape guard applies to
-    # running containers too — the /etc/rip-cage/ssh-allowed-keys bind is
-    # frozen at create time.
-    _up_resolve_resume_ssh_key_filter "$name" "$path"
     # rip-cage-c1p.2 D4: fingerprint label-lock applies to running containers too.
     # A policy change (on_dangling, scope, mode) must block resume regardless of
     # whether the container is stopped or running — the mount shape is immutable.
@@ -4085,10 +2515,8 @@ cmd_up() {
     _up_resolve_resume_credential_mounts "$name" "$path"
     # rip-cage-yid0: mediator CA env guard applies to running containers too
     # — CA trust env vars are frozen at container-create time, same rationale.
-    _up_resolve_resume_mediator_ca_env "$name" "$path"
     # rip-cage-3y9g: RESUME-GUARDS-REAL-RUNNING END
     _config_emit_hint "$path" "$name"
-    _config_init_emit_tip "$path"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       _up_json_output "$name" "attached" "$path" "running"
       return
@@ -4103,7 +2531,7 @@ cmd_up() {
         [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
           echo "warning: --new/--session ignored under multiplexer=none" >&2
         if [[ -t 0 && -t 1 ]]; then
-          docker exec -it "$name" zsh
+          _msb_exec_interactive "$name" -- zsh
         else
           echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
         fi
@@ -4128,7 +2556,7 @@ cmd_up() {
         fi
         if [[ -t 0 && -t 1 ]]; then
           # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
-          docker exec -it "$name" sh "$_up_run_hook_path" "${rc_up_session_name:-}"
+          _msb_exec_interactive "$name" -- sh "$_up_run_hook_path" "${rc_up_session_name:-}"
         else
           echo "Container $name is running (multiplexer=${_up_run_mux}). Attach with: rc attach $name" >&2
         fi
@@ -4147,37 +2575,6 @@ cmd_up() {
     # against the OLD container's filesystem -> raw OCI stat crash + self-stop.
     # Aborts loud on mismatch or a missing current image — never fail-open.
     _up_resolve_resume_image_drift_stopped "$name" "$path"
-    # On resume, source rc.egress from the container's label (the value it was
-    # created with) rather than the host env, which may have drifted. Missing or
-    # unrecognized labels fail loud per ADR-001 — there is no safe default.
-    _up_resolve_resume_egress "$name" "$path"
-    rc_egress="$_UP_RESUME_EGRESS"
-    # ADR-017 D2: forward-ssh posture is label-persisted, same pattern as egress.
-    _up_resolve_resume_forward_ssh "$name" "$path"
-    rc_forward_ssh="$_UP_RESUME_FORWARD_SSH"
-    # ADR-020 D3: github-identity label is immutable on resume; CLI override is an error.
-    _up_resolve_resume_github_identity "$name" "$path" "$rc_github_identity_flag"
-    # ADR-020 D7: read ssh-config posture label from the container (immutable on resume).
-    local _resume_ssh_config_cli_flag=""
-    if [[ -n "$rc_no_ssh_config_flag" ]]; then
-      _resume_ssh_config_cli_flag="off"
-    elif [[ -n "$rc_ssh_config_explicit_flag" ]]; then
-      _resume_ssh_config_cli_flag="on"
-    fi
-    _up_resolve_resume_ssh_config "$name" "$path" "$_resume_ssh_config_cli_flag"
-    rc_ssh_config="$_UP_RESUME_SSH_CONFIG"
-    # ADR-020 D2: translate host SSH config → cage-compatible config (idempotent, re-run on resume).
-    # Skip when posture=off (no translated config mounted, nothing to update).
-    local _rc_ssh_cache_dir="${HOME}/.cache/rip-cage/${name}"
-    mkdir -p "$_rc_ssh_cache_dir"
-    if [[ "$rc_ssh_config" == "on" ]]; then
-      _translate_ssh_config "${HOME}/.ssh/config" "${_rc_ssh_cache_dir}/ssh-config" "$_UP_RESUME_GITHUB_IDENTITY"
-    fi
-    # ADR-022 D3: refresh filtered known_hosts cache and ssh-allowed-keys sentinel
-    # on resume (bind-mount content updates propagate live). Mount shape is immutable
-    # on resume — if ssh.allowed_keys was toggled between null and non-null since
-    # create, the rc.ssh-key-filter label resolver below aborts loud.
-    _up_resolve_resume_ssh_key_filter "$name" "$path"
     # ADR-021 D7: config-mode mount-shape guard — abort loud if mounts.config_mode
     # was toggled between ro and rw since the container was created.
     _up_resolve_resume_config_mode "$name" "$path"
@@ -4187,111 +2584,42 @@ cmd_up() {
     # rip-cage-seqc.4 / B1: credential-mounts mount-shape guard — abort loud if
     # auth.credential_mounts was toggled between real and none since create.
     _up_resolve_resume_credential_mounts "$name" "$path"
-    # rip-cage-yid0: mediator CA env guard — abort loud if a mediator was
-    # composed after create-time (or the container pre-dates the fix) — CA
-    # trust env vars are frozen at container-create time.
-    _up_resolve_resume_mediator_ca_env "$name" "$path"
     # rip-cage-3y9g: RESUME-GUARDS-REAL-STOPPED END
-    _UP_SSH_FILTER_ACTIVE="false"
-    _up_resolve_ssh_allowlists "$path" "$_rc_ssh_cache_dir"
-    # rip-cage-hhh.2: regenerate egress-rules on resume (truncate-then-write;
-    # bind mount already exists from create time — inode preserved, agent sees
-    # updated content on the next proxy reload without container restart).
-    # D10: regenerated ONLY here and at rc up create / rc reload. No file-watch.
-    if [[ "$rc_egress" != "off" ]]; then
-      _up_resolve_egress_rules "$path" "$_rc_ssh_cache_dir"
+    # rip-cage-rj68 (S6): msb re-resolves every --secret binding's real
+    # value from the host env at START time, not just at create time (live-
+    # confirmed) — the same Fold-b preflight + export create uses must run
+    # again here, in THIS process, before msb start.
+    if ! _up_prepare_resume_secrets "$path"; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        _up_json_output "$name" "resumed" "$path" "stopped" "failed"
+        return 1
+      fi
+      exit 1
     fi
-    # On resume, the socket (or lack thereof) was wired at create time. The
-    # label value is the ground truth for preflight — we don't re-distinguish
-    # user-opt-out from no-host-agent here. Socket cannot be changed on resume.
-    # Recover the original source path from the existing bind mount so the
-    # sentinel stays honest after rc down && rc up (ADR-018 D3 FIRM).
-    # ADR-022: when filtering is active, the socket was mounted as /ssh-agent-upstream.sock.
-    _UP_FORWARD_SSH_HOST_SOCK=$(docker inspect \
-      --format '{{ range .Mounts }}{{ if eq .Destination "/ssh-agent-upstream.sock" }}{{ .Source }}{{ end }}{{ end }}' \
-      "$name" 2>/dev/null || true)
-    if [[ -z "$_UP_FORWARD_SSH_HOST_SOCK" ]]; then
-      _UP_FORWARD_SSH_HOST_SOCK=$(docker inspect \
-        --format '{{ range .Mounts }}{{ if eq .Destination "/ssh-agent.sock" }}{{ .Source }}{{ end }}{{ end }}' \
-        "$name" 2>/dev/null || true)
-    fi
-    _UP_NO_HOST_AGENT=""
+    # _msb_start is a resume — a fresh kernel boot, per ADR-029 D4's
+    # resume-path corollary. _up_init_container immediately after re-runs
+    # the SAME init script the create path runs (cockpit/herdr
+    # re-registration + git-identity re-establishment, bead criteria 3/6).
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      docker start "$name" >/dev/null
+      _msb_start "$name" >/dev/null
     else
-      docker start "$name"
-    fi
-    if [[ "$rc_egress" != "off" ]]; then
-      _up_init_firewall "$name"
-      if [[ "$_UP_FIREWALL_OK" == "false" ]]; then
-        if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-          docker stop "$name" >/dev/null 2>&1
-          _up_json_output "$name" "resumed" "$path" "stopped" "failed"
-          return 1
-        fi
-        echo "Error: firewall init failed on resume. Stopping container so next 'rc up' retries." >&2
-        docker stop "$name"
-        exit 1
-      fi
-    fi
-    # rip-cage-ta1o.5.8: mediator launch on resume path (F5 fix).
-    # A stopped container kills the mediator; resume must re-launch it.
-    # Runs AFTER firewall (uid-exemption installed), BEFORE init-rip-cage.sh.
-    if [[ "$rc_egress" != "off" ]]; then
-      # rip-cage-seqc.4 / B5 / F3: re-apply the mediator_env_file pointer on
-      # resume too (autonomy fix) — phase=resume warns-and-continues on a
-      # missing file rather than exiting (docker start already ran above;
-      # exiting here would strand an already-started container).
-      _up_resolve_mediator_env_file "$path" "resume"
-      _up_init_mediator "$name"
-      if [[ "${_UP_MEDIATOR_OK:-true}" == "false" ]]; then
-        if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-          docker stop "$name" >/dev/null 2>&1
-          _up_json_output "$name" "resumed" "$path" "stopped" "failed"
-          return 1
-        fi
-        echo "Error: mediator init failed on resume. Stopping container so next 'rc up' retries." >&2
-        docker stop "$name"
-        exit 1
-      fi
+      _msb_start "$name"
     fi
     _up_init_container "$name"
     if [[ "$_UP_INIT_OK" == "false" ]]; then
+      # Graceful stop ONLY (ADR-029 D4 lifecycle corollary / bead criterion
+      # 2): _msb_stop_graceful never force-kills, so a completed guest write
+      # from this same failed-init session is not silently discarded.
       if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        docker stop "$name" >/dev/null 2>&1
+        _msb_stop_graceful "$name" >/dev/null 2>&1
         _up_json_output "$name" "resumed" "$path" "stopped" "failed"
         return 1
       fi
       echo "Error: init failed on resume. Stopping container so next 'rc up' retries." >&2
-      docker stop "$name"
+      _msb_stop_graceful "$name"
       exit 1
     fi
-    _up_ssh_preflight "$name" "$rc_forward_ssh"
-    # ADR-020 D5+D6: github.com identity preflight — probe greeting inside cage,
-    # write /etc/rip-cage/github-identity and /etc/rip-cage/ssh-config-source.
-    # On resume, the resolved identity is from the container label (layer 2).
-    # Source layer: disabled if posture=off; else label if label present; else rules/host-config/none.
-    _resolve_github_identity_source "$rc_github_identity_flag" "${_UP_RESUME_GITHUB_IDENTITY:-}" "" "$rc_ssh_config"
-    _up_github_identity_preflight "$name" "${_UP_RESUME_GITHUB_IDENTITY:-}" "$_UP_GITHUB_IDENTITY_SOURCE"
-    # ADR-022 D6 / rip-cage-ocn: resume already re-applied ssh.allowed_hosts
-    # (via _up_resolve_ssh_allowlists above). Merge live reload-eligible paths
-    # into the applied-config snapshot so the drift hint doesn't keep nagging.
-    # Non-eligible paths in the snapshot are preserved (they're locked to
-    # container labels / mount shape; live drift in those still earns a hint).
-    if command -v yq &>/dev/null; then
-      local _ocn_applied _ocn_result _ocn_live
-      if _ocn_applied=$(_config_read_applied "$name" 2>/dev/null); then
-        if _ocn_result=$(_load_effective_config "$path" 2>/dev/null); then
-          _ocn_live=$(jq -c '.config' <<<"$_ocn_result")
-          local _ocn_merged
-          _ocn_merged=$(jq -nc --argjson a "$_ocn_applied" --argjson live "$_ocn_live" \
-            '$a | .ssh.allowed_hosts = ($live.ssh.allowed_hosts // [])')
-          _config_write_applied "$name" "$_ocn_merged"
-        fi
-      fi
-    fi
     _config_emit_hint "$path" "$name"
-    _config_init_emit_tip "$path"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       _up_json_output "$name" "resumed" "$path" "running" "success"
       return
@@ -4304,7 +2632,7 @@ cmd_up() {
         [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
           echo "warning: --new/--session ignored under multiplexer=none" >&2
         if [[ -t 0 && -t 1 ]]; then
-          docker exec -it "$name" zsh
+          _msb_exec_interactive "$name" -- zsh
         else
           echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
         fi
@@ -4326,7 +2654,7 @@ cmd_up() {
         fi
         if [[ -t 0 && -t 1 ]]; then
           # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
-          docker exec -it "$name" sh "$_up_resume_hook_path" "${rc_up_session_name:-}"
+          _msb_exec_interactive "$name" -- sh "$_up_resume_hook_path" "${rc_up_session_name:-}"
         else
           echo "Container $name is running (multiplexer=${_up_resume_mux}). Attach with: rc attach $name" >&2
         fi
@@ -4336,12 +2664,17 @@ cmd_up() {
   elif [[ "$_inspect_exit" -ne 0 ]]; then
     : # container absent — fall through to "New container" block below
   elif [[ "$state" == "paused" ]]; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is paused. Run: docker unpause $name then retry: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-    echo "Error: Container $name is paused. Run: docker unpause $name then retry: rc up $path" >&2
+    # rip-cage-rj68 (S6): msb has no pause/restarting/removing/dead concept
+    # — _msb_sandbox_state never returns these; these branches are
+    # unreachable under msb (kept for defensive completeness / a future msb
+    # state this bead did not anticipate) and their remedy text is
+    # necessarily generic rather than msb-specific.
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is paused. Inspect manually: msb inspect $name -- then retry: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+    echo "Error: Container $name is paused. Inspect manually: msb inspect $name -- then retry: rc up $path" >&2
     return 1
   elif [[ "$state" == "restarting" ]]; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is restarting. Wait, or run: docker stop $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-    echo "Error: Container $name is restarting. Wait, or run: docker stop $name && rc up $path" >&2
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is restarting. Wait, or run: msb stop $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+    echo "Error: Container $name is restarting. Wait, or run: msb stop $name && rc up $path" >&2
     return 1
   elif [[ "$state" == "removing" ]]; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is being removed. Wait, then run: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
@@ -4352,9 +2685,11 @@ cmd_up() {
     echo "Error: Container $name is dead. Run: rc destroy $name && rc up $path" >&2
     return 1
   else
-    # Unrecognized state (allowlist exhausted) — fail loud per ADR-001.
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is in unrecognized state: state=$state. Inspect manually with: docker inspect $name  — if safe, rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-    echo "Error: Container $name is in unrecognized state: state=$state. Inspect manually with: docker inspect $name  — if safe, rc destroy $name && rc up $path" >&2
+    # Unrecognized state (allowlist exhausted) — fail loud per ADR-001. This
+    # IS reachable under msb (_msb_sandbox_state's "unknown" fallback for
+    # any status besides Running/Stopped).
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is in unrecognized state: state=$state. Inspect manually with: msb inspect $name  — if safe, rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
+    echo "Error: Container $name is in unrecognized state: state=$state. Inspect manually with: msb inspect $name  — if safe, rc destroy $name && rc up $path" >&2
     return 1
   fi
 
@@ -4374,74 +2709,32 @@ cmd_up() {
 
   log "Creating container $name for $path..."
   local _UP_RUN_ARGS=()
-  _UP_RUN_ARGS+=(-d --name "$name")
+  # rip-cage-rj68 (S6): NO "-d --name $name" prefix here (docker-specific —
+  # msb create takes --name as its own argument, passed directly by
+  # _up_start_container below, and has no -d/detach flag to begin with,
+  # `msb create` is inherently background). Everything appended below stays
+  # in docker -v/-e/--label/--workdir/--mount/--cpus shape exactly as
+  # before — _up_translate_docker_args_to_msb converts it at the
+  # _up_start_container call site, not here, so this whole mount/env-
+  # building body (_up_prepare_docker_mounts, _up_prepare_environment,
+  # DCG, manifest mounts) is untouched by the msb cutover.
   _UP_RUN_ARGS+=(--label "rc.source.path=$path")
 
-  # ADR-020 D3: resolve github.com identity (four-layer: CLI → label → rules → unset).
-  # On create, container_name is empty (no existing label yet); layer 2 is skipped.
-  local _resolved_github_identity
-  _resolved_github_identity=$(_resolve_github_identity "$rc_github_identity_flag" "" "$path")
-  if [[ -n "$_resolved_github_identity" ]]; then
-    _UP_RUN_ARGS+=(--label "rc.github-identity=$_resolved_github_identity")
-  fi
-  # Determine source layer for preflight sentinel (create path: no label, so layer 2 empty).
-  # _rules_file_result is empty when CLI provided the key; non-empty only when rules-file matched.
-  local _rules_file_result_for_source=""
-  if [[ -z "$rc_github_identity_flag" ]] && [[ -n "$_resolved_github_identity" ]]; then
-    _rules_file_result_for_source="$_resolved_github_identity"
-  fi
-  _resolve_github_identity_source "$rc_github_identity_flag" "" "$_rules_file_result_for_source" "$rc_ssh_config"
-
-  # ADR-020 D2+D7: translate host SSH config and mount pubkeys (or skip if posture=off).
-  local _rc_ssh_cache_dir="${HOME}/.cache/rip-cage/${name}"
-  local _rc_ssh_cfg="${_rc_ssh_cache_dir}/ssh-config"
-  mkdir -p "$_rc_ssh_cache_dir"
-
-  # ADR-022 D3: resolve SSH allowlists from effective .rip-cage.yaml config.
-  # Writes filtered known_hosts cache and (when ssh.allowed_keys is set) the
-  # ssh-allowed-keys sentinel. Sets _UP_SSH_FILTER_ACTIVE which gates the
-  # socket-destination swap in _up_prepare_environment.
-  _UP_SSH_FILTER_ACTIVE="false"
-  _up_resolve_ssh_allowlists "$path" "$_rc_ssh_cache_dir"
-
-  # rip-cage-hhh.2: generate per-cage egress-rules file from effective config.
-  # Writes to cache dir; mounted below at /etc/rip-cage/egress-rules.yaml.
-  # D10: regenerated ONLY here (rc up create) and in resume path / rc reload.
-  # No file-watch — an in-cage write to .rip-cage.yaml does NOT hot-apply.
-  if [[ "$rc_egress" != "off" ]]; then
-    _up_resolve_egress_rules "$path" "$_rc_ssh_cache_dir"
-  fi
+  # Per-container cache dir (DCG merged config lives here; ssh-cluster cache
+  # content — translated ssh-config, filtered known_hosts, ssh-allowed-keys
+  # sentinel — retired at the msb cutover, ADR-029 D3 / rip-cage-f1qo S5).
+  local _rc_cache_dir="${HOME}/.cache/rip-cage/${name}"
+  mkdir -p "$_rc_cache_dir"
 
   # ADR-025 D1/D5: translate dcg.* from effective config into a merged DCG
   # config file. Fail-closed on malformed TOML (D5). Safe-by-default: no file
   # written and _UP_DCG_CONFIG_PATH stays empty when no dcg.* configured.
   _UP_DCG_CONFIG_PATH=""
-  if ! _up_resolve_dcg_config "$path" "$_rc_ssh_cache_dir"; then
+  if ! _up_resolve_dcg_config "$path" "$_rc_cache_dir"; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       json_error "DCG config translation failed — check dcg.* in .rip-cage.yaml (ADR-025 D5 fail-closed)" "DCG_CONFIG_INVALID"
     fi
     exit 1
-  fi
-
-  if [[ "$rc_ssh_config" == "on" ]]; then
-    _translate_ssh_config "${HOME}/.ssh/config" "$_rc_ssh_cfg" "$_resolved_github_identity"
-    # ADR-020 D4: explicit pin (layers 1-3) + missing .pub → abort loud.
-    if [[ -n "$_resolved_github_identity" ]]; then
-      local _pin_source="explicit"
-      _assert_pubkey_exists_or_die "$_resolved_github_identity" "$_pin_source" || exit 1
-    fi
-  fi
-  # Persist posture as container label (D7).
-  _UP_RUN_ARGS+=(--label "rc.ssh-config=${rc_ssh_config}")
-
-  # ADR-022: persist ssh-key-filter posture as a container label so resume can
-  # detect ssh.allowed_keys mount-shape transitions (null ↔ non-null) and abort
-  # loud rather than silently filter against a stale sentinel. Mirrors the
-  # rc.forward-ssh / rc.ssh-config / rc.github-identity label-lock pattern.
-  if [[ "${_UP_SSH_FILTER_ACTIVE:-false}" == "true" ]]; then
-    _UP_RUN_ARGS+=(--label "rc.ssh-key-filter=on")
-  else
-    _UP_RUN_ARGS+=(--label "rc.ssh-key-filter=off")
   fi
 
   # auth.credential_mounts (rip-cage-seqc.4 / E2) + auth.per_tool.{claude,pi}
@@ -4474,7 +2767,7 @@ cmd_up() {
 
   # ADR-021 D7: persist effective mounts.config_mode as a container label so
   # resume can detect ro↔rw mount-shape transitions and abort loud rather than
-  # silently presenting a stale mount shape. Mirrors rc.ssh-key-filter pattern.
+  # silently presenting a stale mount shape.
   local _cm_label_mode="ro"
   if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
     if command -v yq &>/dev/null; then
@@ -4506,7 +2799,7 @@ cmd_up() {
   # "<link> → <target> (<mode>)" lines plus a policy header (on_dangling, scope)
   # so that policy changes also produce fingerprint drift.
   # Emitted unconditionally so the label is always present for resume checks.
-  # Follows rc.ssh-key-filter precedent (ADR-022 / rip-cage-jxy).
+  # Follows the rc.config-mode label-lock precedent above.
   local _sfl_mode_for_fp="rw" _sfl_on_dangling_for_fp="follow" _sfl_scope_for_fp="file"
   if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
     if command -v yq &>/dev/null; then
@@ -4543,62 +2836,8 @@ cmd_up() {
   _UP_RUN_ARGS+=(--label "rc.session.multiplexer=${_rc_multiplexer}")
   log "session.multiplexer: ${_rc_multiplexer}"
   # rip-cage-1f59.2: _rc_multiplexer intentionally NOT unset here — used by the new-container
-  # attach block below. It is unset after that block (after _config_init_emit_tip).
+  # attach block below. It is unset after that block.
   unset _mux_eff_result
-
-  # rip-cage-ta1o.5.7: resolve network.egress.mediator from effective config (ADR-026 D5).
-  # Defaults to "none" when unset. Invalid values caught by _config_validate_or_abort (ADR-001).
-  # When a real mediator is selected, thread it into the container as RC_MEDIATOR so
-  # init-rip-cage.sh can dispatch its baked start hook. When none, emit nothing — existing
-  # cages with no mediator config remain byte-identical to today (no regression).
-  # ADR-005 D12 FIRM: no mediator name is ever hardcoded here; dispatch is entirely driven
-  # by the config value + baked registry files under /etc/rip-cage/mediators/<name>/.
-  #
-  # rip-cage-yid0: this block is also where _UP_MEDIATOR_CA_ENV (the gate flag
-  # consumed by the mediator-CA-trust-env-vars block in _up_prepare_environment,
-  # rc:~1724) is set. _up_prepare_environment is called AFTER the
-  # `unset _rc_mediator` at the end of this block — a gate written there
-  # directly on _rc_mediator would never fire. Follow the
-  # existing _UP_* global pattern (mirrors _UP_FORWARD_SSH_HOST_SOCK): set the
-  # flag here, consume it downstream.
-  local _rc_mediator="none"
-  _UP_MEDIATOR_CA_ENV="false"
-  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
-    if command -v yq &>/dev/null; then
-      local _med_eff_result
-      if _med_eff_result=$(_load_effective_config "$path" 2>/dev/null); then
-        _rc_mediator=$(jq -r '.config.network.egress.mediator // "none"' <<<"$_med_eff_result")
-      fi
-      unset _med_eff_result
-    fi
-  fi
-  if [[ "$_rc_mediator" != "none" ]]; then
-    # ADR-001 fail-closed: a mediator requires the egress router to be on.
-    # With egress=off, no iptables uid-exemption is installed and there is no
-    # router to forward traffic to the mediator — the combination is incoherent
-    # and non-functional. Reject loud rather than silently starting an
-    # incoherent cage (Finding 3 / ADR-026 D5).
-    if [[ "$rc_egress" == "off" ]]; then
-      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        json_error "network.egress.mediator='${_rc_mediator}' requires egress to be on — with egress=off, no iptables uid-exemption is installed and there is no egress router to forward to the mediator. Set network.egress.mediator: none or enable egress (remove RIP_CAGE_EGRESS=off). (ADR-001 fail-closed; ADR-026 D5)" "MEDIATOR_REQUIRES_EGRESS"
-      fi
-      echo "Error: network.egress.mediator='${_rc_mediator}' requires egress to be on — with egress=off, no iptables uid-exemption is installed and there is no egress router to forward to the mediator. Set network.egress.mediator: none or enable egress (ADR-001 fail-closed; ADR-026 D5)." >&2
-      exit 1
-    fi
-    _UP_RUN_ARGS+=(-e "RC_MEDIATOR=${_rc_mediator}")
-    log "network.egress.mediator: ${_rc_mediator}"
-    _UP_MEDIATOR_CA_ENV="true"
-  else
-    log "network.egress.mediator: none (no mediator env threaded)"
-  fi
-  # rip-cage-yid0: create-time label stamp for the resume guard
-  # (_up_resolve_resume_mediator_ca_env). NODE_EXTRA_CA_CERTS / SSL_CERT_FILE /
-  # REQUESTS_CA_BUNDLE are frozen at container-create time (docker run -e is
-  # immutable on resume, unlike this rc invocation's re-resolved config) — this
-  # label is the ground truth the resume guard compares against the CURRENT
-  # effective config so a stale resume can't silently keep broken Node TLS.
-  _UP_RUN_ARGS+=(--label "rc.mediator-ca-env=${_UP_MEDIATOR_CA_ENV}")
-  unset _rc_mediator
 
   _up_prepare_docker_mounts "$path" "$name"
 
@@ -4611,31 +2850,13 @@ cmd_up() {
     env_file="$_UP_PLACEHOLDER_ENV_FILE"
   fi
 
-  _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" "$rc_egress" "$rc_forward_ssh"
+  _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit"
 
-  # rip-cage-hhh.6 D3: stamp rc.egress.mode label (observe|block|legacy) and
-  # rc.egress.config-override label so rc ls and rc doctor can surface them without
-  # per-cage docker exec. Mode is captured by _up_resolve_egress_rules (global
-  # _UP_EGRESS_MODE); for egress=off containers, mode is always "legacy".
-  if [[ "$rc_egress" != "off" ]]; then
-    _UP_RUN_ARGS+=(--label "rc.egress.mode=${_UP_EGRESS_MODE:-legacy}")
-  else
-    _UP_RUN_ARGS+=(--label "rc.egress.mode=legacy")
-  fi
+  # rip-cage-hhh.6 D3 (evolved, ADR-029 D2): rc.egress.config-override label so
+  # rc doctor can surface the ADR-024 D1 workspace-base-URL-override posture
+  # without a per-cage docker exec. (rc.egress.mode retired with the deleted
+  # in-cage router — mode was the router's observe/block posture.)
   _UP_RUN_ARGS+=(--label "rc.egress.config-override=${rc_allow_config_override:-false}")
-
-  # ADR-020 D1+D7: mount translated config + pubkeys when posture=on (after run-args are initialized).
-  if [[ "$rc_ssh_config" == "on" ]]; then
-    _build_ssh_mount_args_with_posture "$_rc_ssh_cfg" "$name" _UP_RUN_ARGS "on"
-  fi
-
-  # rip-cage-hhh.2: mount generated egress-rules file over the image-baked static file.
-  # The proxy (rip_cage_egress.py) reads /etc/rip-cage/egress-rules.yaml unchanged;
-  # only the source (generated vs image-baked) and format change.
-  if [[ "$rc_egress" != "off" ]]; then
-    local _egress_rules_cache="${_rc_ssh_cache_dir}/egress-rules.yaml"
-    _UP_RUN_ARGS+=(--mount "type=bind,src=${_egress_rules_cache},dst=/etc/rip-cage/egress-rules.yaml,ro")
-  fi
 
   # ADR-025 D1/D5: mount translated DCG config RO over the wrapper's pinned path.
   # Only added when dcg.* is configured; safe-by-default when absent.
@@ -4644,60 +2865,33 @@ cmd_up() {
     log "DCG policy: merged config mounted at /usr/local/lib/rip-cage/dcg/config.toml (ADR-025 D1)"
   fi
 
-  _UP_RUN_ARGS+=("$IMAGE" sleep infinity)
+  # rip-cage-rj68 (S6): NO trailing "$IMAGE sleep infinity" positional here
+  # (docker-specific CMD override — msb create has no command-override
+  # positional at all; the image's own baked CMD keeps the sandbox alive,
+  # confirmed live). _up_start_container takes $IMAGE and $path as its own
+  # arguments below.
 
-  _up_start_container "$name"
-  if [[ "$rc_egress" != "off" ]]; then
-    _up_init_firewall "$name"
-    if [[ "$_UP_FIREWALL_OK" == "false" ]]; then
-      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        docker stop "$name" >/dev/null 2>&1
-        _up_json_output "$name" "created" "$path" "stopped" "failed"
-        return 1
-      fi
-      echo "Error: firewall init failed. Stopping container so next 'rc up' retries." >&2
-      docker stop "$name"
-      exit 1
+  if ! _up_start_container "$name" "$path"; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      _up_json_output "$name" "created" "$path" "stopped" "failed"
+      return 1
     fi
-  fi
-  # rip-cage-ta1o.5.8: mediator launch on create path (F5 / option-a host-driven root launch).
-  # Runs AFTER firewall (uid-exemption installed), BEFORE init-rip-cage.sh.
-  if [[ "$rc_egress" != "off" ]]; then
-    # rip-cage-seqc.4 / B5 / F3: resolve the mediator_env_file pointer before
-    # launch — phase=create fails loud on a missing file (human present).
-    _up_resolve_mediator_env_file "$path" "create"
-    _up_init_mediator "$name"
-    if [[ "${_UP_MEDIATOR_OK:-true}" == "false" ]]; then
-      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        docker stop "$name" >/dev/null 2>&1
-        _up_json_output "$name" "created" "$path" "stopped" "failed"
-        return 1
-      fi
-      echo "Error: mediator init failed. Stopping container so next 'rc up' retries." >&2
-      docker stop "$name"
-      exit 1
-    fi
+    exit 1
   fi
   _up_init_container "$name"
 
   if [[ "$_UP_INIT_OK" == "false" ]]; then
+    # Graceful stop ONLY (ADR-029 D4 lifecycle corollary / bead criterion 2).
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      docker stop "$name" >/dev/null 2>&1
+      _msb_stop_graceful "$name" >/dev/null 2>&1
       _up_json_output "$name" "created" "$path" "stopped" "failed"
       return 1
     fi
     echo "Error: init failed. Stopping container so next 'rc up' retries." >&2
-    docker stop "$name"
+    _msb_stop_graceful "$name"
     exit 1
   fi
 
-  if [[ "$rc_egress" != "off" ]]; then
-    log "egress firewall active (denylist mode)"
-  fi
-  _up_ssh_preflight "$name" "$rc_forward_ssh"
-  # ADR-020 D5+D6: github.com identity preflight — probe greeting inside cage,
-  # write /etc/rip-cage/github-identity and /etc/rip-cage/ssh-config-source.
-  _up_github_identity_preflight "$name" "$_resolved_github_identity" "$_UP_GITHUB_IDENTITY_SOURCE"
   # ADR-022 D6 / rip-cage-ocn: write applied-config snapshot so future
   # `rc reload` invocations can diff against create-time intent and
   # `_config_emit_hint` can suppress false-positive drift after a reload.
@@ -4716,7 +2910,6 @@ cmd_up() {
     fi
   fi
   _config_emit_hint "$path" "$name"
-  _config_init_emit_tip "$path"
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     _up_json_output "$name" "created" "$path" "running" "success"
     return
@@ -4727,7 +2920,7 @@ cmd_up() {
       [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
         echo "warning: --new/--session ignored under multiplexer=none" >&2
       if [[ -t 0 && -t 1 ]]; then
-        docker exec -it "$name" zsh
+        _msb_exec_interactive "$name" -- zsh
       else
         echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
       fi
@@ -4750,7 +2943,7 @@ cmd_up() {
       fi
       if [[ -t 0 && -t 1 ]]; then
         # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
-        docker exec -it "$name" sh "$_up_new_hook_path" "${rc_up_session_name:-}"
+        _msb_exec_interactive "$name" -- sh "$_up_new_hook_path" "${rc_up_session_name:-}"
       else
         echo "Container $name is running (multiplexer=${_rc_multiplexer:-none}). Attach with: rc attach $name" >&2
       fi
@@ -4789,8 +2982,10 @@ _config_ensure_global_seeded() {
 
 
 # _manifest_egress_hosts_json — collect all egress: hosts declared across all
-# manifest entries into a JSON array.  Used by _up_resolve_egress_rules to
-# union manifest-declared hosts into the cage allowlist (ADR-005 D3).
+# manifest entries into a JSON array (ADR-005 D3). The in-cage engine that
+# used to consume this union (the deleted egress router) is retired per
+# ADR-029 D2; this collector survives as the declare-time data source S6
+# wires into the msb-flags generator's allowed_hosts input.
 #
 # Returns a JSON array of strings on stdout (may be empty: []).
 _manifest_egress_hosts_json() {
@@ -5038,7 +3233,7 @@ _config_emit_hint() {
 
   # Legacy fallback: no snapshot file. Use label sha comparison (pre-ocn behavior).
   local existing_label
-  existing_label=$(docker inspect --format '{{ index .Config.Labels "rc.config-loaded" }}' "$container_name" 2>/dev/null || true)
+  existing_label=$(_msb_label "$container_name" "rc.config-loaded" || true)
   if [[ -z "$existing_label" ]]; then
     log "Loaded .rip-cage.yaml (sha256:${current_sha:0:12}). Run 'rc config show' to inspect."
   elif [[ "$existing_label" != "$current_sha" ]]; then

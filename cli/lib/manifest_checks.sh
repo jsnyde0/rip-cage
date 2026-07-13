@@ -262,8 +262,8 @@ _manifest_check_seed_drift() {
 # _manifest_generate_extra_dockerfile_steps, which has no archetype filter —
 # TOOL, SHELL-INTEGRATION and IN-CAGE-DAEMON entries may all carry it — so
 # the newline-injection guard must hold in all three of those cases, not just
-# TOOL (rip-cage-62a9; ADR-005 D11 mechanism 2). MULTIPLEXER/MEDIATOR
-# strict-parse reject install_cmd outright. This helper covers install_cmd
+# TOOL (rip-cage-62a9; ADR-005 D11 mechanism 2). MULTIPLEXER
+# strict-parse rejects install_cmd outright. This helper covers install_cmd
 # only; the sibling build_source sub-field validation now lives in
 # _manifest_check_build_source_subfields below, applied across the same set
 # of consumed archetypes (rip-cage-m0hh).
@@ -408,10 +408,25 @@ _manifest_validate() {
       return 1
     fi
     case "$archetype" in
-      TOOL|SHELL-INTEGRATION|IN-CAGE-DAEMON|MULTIPLEXER|MEDIATOR)
+      TOOL|SHELL-INTEGRATION|IN-CAGE-DAEMON|MULTIPLEXER)
+        ;;
+      MEDIATOR)
+        # Retired archetype, dedicated arm ahead of the generic 'unknown
+        # archetype' catch-all below -- a retired archetype needs an
+        # actionable rejection (name it, name the offending entry, name
+        # WHY it's gone, name the fix), not "unknown value, pick from this
+        # list" (Fable rider on the hard-fail-stands ruling; rip-cage-tsf2.2
+        # sibling). MEDIATOR was the co-located-proxy archetype whose launch
+        # machinery (init-mediator.sh, the MEDIATOR registry bake/label
+        # generators, the mediator hook contract) was deleted, not ported,
+        # when the in-cage security engine retired (ADR-029 D2; the ssh
+        # cluster's own retirement is ADR-029 D3 -- ssh was never an
+        # ARCHETYPE value, only config fields under network.ssh.*).
+        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): archetype 'MEDIATOR' is retired in the msb migration (ADR-029 D2/D3) -- the co-located mediator-proxy launch machinery it required was deleted, not ported, when the in-cage security engine was replaced by msb host-side net rules. Fix: delete this entry from ${file}." >&2
+        return 1
         ;;
       *)
-        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): unknown 'archetype' value '${archetype}'. Allowed: TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON, MULTIPLEXER, MEDIATOR." >&2
+        echo "Error: manifest '${file}' tools[${idx}] ('${name}'): unknown 'archetype' value '${archetype}'. Allowed: TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON, MULTIPLEXER." >&2
         return 1
         ;;
     esac
@@ -633,8 +648,8 @@ _manifest_validate() {
         # Validate optional 'init' field (rip-cage-p35a.2, ADR-005 D7).
         # A one-shot AGENT-CONTEXT boot command a TOOL recipe declares — runs once
         # at cage boot (distinct from IN-CAGE-DAEMON 'start', which launches a
-        # long-lived background service). Uniform with how MULTIPLEXER/MEDIATOR
-        # contribute boot logic (ADR-005 D9/D11) — completes the per-archetype
+        # long-lived background service). Uniform with how MULTIPLEXER
+        # contributes boot logic (ADR-005 D9/D11) — completes the per-archetype
         # build/boot/launch lifecycle. When absent, valid (no init contribution).
         local tool_init_raw
         tool_init_raw=$(jq -r '.init // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
@@ -653,7 +668,7 @@ _manifest_validate() {
             return 1
           fi
           # Hook-bounds check (ADR-005 D10/D11, ADR-001 fail-loud) — the exact
-          # floor-weakening patterns enforced on MULTIPLEXER/MEDIATOR hooks
+          # floor-weakening patterns enforced on MULTIPLEXER hooks
           # (rc:6995-7068), STATICALLY applied to the TOOL 'init' hook command.
           # Parse, never run (validate-config-by-parsing-not-by-running-fail-open-consumer).
           if echo "$tool_init_raw" | grep -qE '\.config/dcg/'; then
@@ -937,167 +952,6 @@ _manifest_validate() {
           fi
         done
         ;;
-      MEDIATOR)
-        # MEDIATOR archetype: co-located proxy hook contract (ADR-026 D5, rip-cage-ta1o.5.1).
-        # Isomorphic to MULTIPLEXER but for the egress-mediator seam.
-        # Required: hooks.start (launch the proxy at cage init)
-        # Optional: hooks.health_check, hooks.teardown
-        # Required: run_as_uid (dedicated non-root uid for co-located-process topology)
-        # Strict-parse: unknown top-level fields rejected (ADR-025 D5).
-        # Hook-bounds check: reuses the same floor-weakening patterns as MULTIPLEXER.
-
-        # Name format check: MEDIATOR names are used as directory components under
-        # /etc/rip-cage/mediators/<name>/ in the image. Only [a-z0-9_-] is safe.
-        if [[ ! "$name" =~ ^[a-z0-9_-]+$ ]]; then
-          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): MEDIATOR name '${name}' contains characters outside [a-z0-9_-] — names are used as directory components in the image registry (/etc/rip-cage/mediators/<name>) and must be lowercase alphanumeric, hyphens, or underscores only (ADR-001 fail-loud; name-format check)." >&2
-          return 1
-        fi
-
-        # Strict-parse: reject unknown/extra top-level fields on MEDIATOR entries.
-        # Known fields: name, archetype, version_pin, run_as_uid, hooks, ca_cert_path
-        # ca_cert_path (optional): path inside the container to the mediator's generated CA cert.
-        # When present, init-mediator.sh installs it into the system trust store so the
-        # in-cage agent curl can verify the MITM cert. (rip-cage-ta1o.5.8)
-        local med_known_fields med_entry_keys med_unknown_key
-        med_known_fields="name archetype version_pin run_as_uid hooks ca_cert_path"
-        med_entry_keys=$(jq -r 'keys[]' <<<"$entry" 2>/dev/null)
-        while IFS= read -r med_unknown_key; do
-          [[ -z "$med_unknown_key" ]] && continue
-          local med_is_known=0
-          local med_known_chk
-          for med_known_chk in $med_known_fields; do
-            if [[ "$med_unknown_key" == "$med_known_chk" ]]; then
-              med_is_known=1
-              break
-            fi
-          done
-          if [[ "$med_is_known" -eq 0 ]]; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): MEDIATOR entry has unknown field '${med_unknown_key}' (strict-parse — only name/archetype/version_pin/run_as_uid/hooks/ca_cert_path are allowed; ADR-025 D5)." >&2
-            return 1
-          fi
-        done <<<"$med_entry_keys"
-
-        # 'run_as_uid' is required (co-located-process topology, ADR-026 D5).
-        # The start hook must support launching the mediator under a dedicated non-root uid.
-        local med_run_as_uid
-        med_run_as_uid=$(jq -r '.run_as_uid // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
-        if [[ "$med_run_as_uid" == "___RC_ABSENT___" || -z "$med_run_as_uid" ]]; then
-          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'run_as_uid' is missing (MEDIATOR archetype — the mediator must run under a dedicated non-root uid for loop prevention; ADR-026 D5)." >&2
-          return 1
-        fi
-
-        # 'hooks' block is required
-        local med_hooks_type
-        med_hooks_type=$(jq -r 'if has("hooks") then (.hooks | type) else "absent" end' <<<"$entry" 2>/dev/null)
-        if [[ "$med_hooks_type" == "absent" ]]; then
-          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'hooks' is missing (MEDIATOR archetype)." >&2
-          return 1
-        fi
-        if [[ "$med_hooks_type" != "object" ]]; then
-          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): field 'hooks' must be an object, got: ${med_hooks_type} (MEDIATOR archetype)." >&2
-          return 1
-        fi
-
-        # Required hook: start
-        local med_start
-        med_start=$(jq -r '.hooks.start // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
-        if [[ "$med_start" == "___RC_ABSENT___" || -z "$med_start" ]]; then
-          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): required field 'hooks.start' is missing (MEDIATOR archetype — start hook is required to launch the mediator at cage init)." >&2
-          return 1
-        fi
-
-        # Optional hooks: health_check, teardown (absent = no-op / generic fallback)
-        local med_health_check med_teardown
-        med_health_check=$(jq -r '.hooks.health_check // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
-        med_teardown=$(jq -r '.hooks.teardown // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
-
-        # Strict-parse: reject unknown keys INSIDE the hooks object (ADR-025 D5).
-        # Known hook sub-keys: start, health_check, teardown.
-        local med_known_hooks med_hooks_keys med_hook_key
-        med_known_hooks="start health_check teardown"
-        med_hooks_keys=$(jq -r '.hooks | keys[]' <<<"$entry" 2>/dev/null)
-        while IFS= read -r med_hook_key; do
-          [[ -z "$med_hook_key" ]] && continue
-          local med_hook_is_known=0
-          local med_known_hook_chk
-          for med_known_hook_chk in $med_known_hooks; do
-            if [[ "$med_hook_key" == "$med_known_hook_chk" ]]; then
-              med_hook_is_known=1
-              break
-            fi
-          done
-          if [[ "$med_hook_is_known" -eq 0 ]]; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): MEDIATOR entry has unknown hook key '${med_hook_key}' inside 'hooks' (strict-parse — only start/health_check/teardown are allowed; ADR-025 D5, ADR-026 D5)." >&2
-            return 1
-          fi
-        done <<<"$med_hooks_keys"
-
-        # Hook-bounds check (ADR-005 D10/D11, ADR-001 fail-loud).
-        # Reuses the same floor-weakening patterns as MULTIPLEXER hooks.
-        # Each hook command string is STATICALLY parsed (NEVER executed).
-        local med_hook_name med_hook_cmd
-        for med_hook_name in start health_check teardown; do
-          case "$med_hook_name" in
-            start)        med_hook_cmd="$med_start" ;;
-            health_check) med_hook_cmd="$med_health_check" ;;
-            teardown)     med_hook_cmd="$med_teardown" ;;
-          esac
-          [[ "$med_hook_cmd" == "___RC_ABSENT___" || -z "$med_hook_cmd" ]] && continue
-
-          # Pattern 1: DCG global config write
-          if echo "$med_hook_cmd" | grep -qE '\.config/dcg/'; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' references '.config/dcg/' path, which is the DCG safety floor config (floor-weakening write; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
-            return 1
-          fi
-
-          # Pattern 2: Workspace DCG config write
-          if echo "$med_hook_cmd" | grep -qE '\.dcg\.toml'; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' references '.dcg.toml', which is the workspace DCG config (floor-weakening write; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
-            return 1
-          fi
-
-          # Pattern 3: PATH manipulation
-          if echo "$med_hook_cmd" | grep -qE 'PATH='; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' sets PATH=, which can PATH-shadow safety binaries and weakens the safety floor (floor-weakening; ADR-005 D10/D11, ADR-001 fail-loud). Remove PATH manipulation from hook commands." >&2
-            return 1
-          fi
-
-          # Pattern 3b: Direct write to safety binary paths
-          if echo "$med_hook_cmd" | grep -qE '/(usr/local/lib/rip-cage/(bin|hooks)|usr/local/bin|usr/bin)/(dcg-guard|dcg|dcg-policy|block-ssh-bypass(\.sh)?)'; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' writes to a safety binary path, which would replace a safety floor binary (floor-weakening; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
-            return 1
-          fi
-
-          # Pattern 4: Lifecycle-interceptor registration
-          if echo "$med_hook_cmd" | grep -qE '/etc/rip-cage/|settings\.json|PreToolUse|PostToolUse'; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' references lifecycle-interceptor targets (/etc/rip-cage/, settings.json, PreToolUse, or PostToolUse), which can register hooks that weaken the safety floor (floor-weakening lifecycle-interceptor; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
-            return 1
-          fi
-
-          # Pattern 5: Egress kill-switch disable (MEDIATOR-specific, ADR-026 D5).
-          # RIP_CAGE_EGRESS=off (or any value) in a hook would disable the entire L7
-          # egress enforcement stack — the floor the mediator sits behind. A push-side
-          # mediator hook MUST NOT touch the kill-switch (floor-uncrossable, ADR-026 D5).
-          # Static check: any RIP_CAGE_EGRESS= assignment in a hook command is rejected.
-          if echo "$med_hook_cmd" | grep -qE 'RIP_CAGE_EGRESS='; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' sets RIP_CAGE_EGRESS=, which disables the egress enforcement stack and weakens the safety floor (floor-weakening egress kill-switch; ADR-026 D5, ADR-001 fail-loud). Remove RIP_CAGE_EGRESS manipulation from hook commands." >&2
-            return 1
-          fi
-
-          # Pattern 6: iptables/ip6tables/nft manipulation (MEDIATOR-specific, ADR-026 D5).
-          # iptables, ip6tables, and nft can disable the REDIRECT rule that force-routes
-          # all traffic through the egress router — a hook using these tools can silently
-          # strip the force-through floor. A push-side mediator hook MUST NOT manipulate
-          # the firewall rules it depends on (floor-uncrossable, ADR-026 D5).
-          # Static check: any reference to iptables/ip6tables/nft as a command is rejected.
-          # Boundary class includes '/' so a full-path invocation (e.g. /sbin/iptables -F)
-          # is also caught, not just the bare command word.
-          if echo "$med_hook_cmd" | grep -qE '(^|[[:space:];|&/])(iptables|ip6tables|nft)([[:space:]]|$)'; then
-            echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${med_hook_name}' references iptables/ip6tables/nft, which can disable the force-through REDIRECT rule and weaken the safety floor (floor-weakening firewall manipulation; ADR-026 D5, ADR-001 fail-loud). Remove firewall manipulation from hook commands." >&2
-            return 1
-          fi
-        done
-        ;;
     esac
 
     # ---------------------------------------------------------------------------
@@ -1268,7 +1122,7 @@ _manifest_load() {
 # install_cmd for their binary baking and are consumed identically to TOOL
 # entries — which is why _manifest_validate enforces the install_cmd
 # single-line rule in all three of those cases, not just TOOL
-# (rip-cage-62a9). MULTIPLEXER/MEDIATOR strict-parse reject install_cmd.
+# (rip-cage-62a9). MULTIPLEXER strict-parse rejects install_cmd.
 # build_source (also consumed here, branch below) is validated across every
 # consumed archetype (TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON) by the shared
 # _manifest_check_build_source_subfields helper (rip-cage-m0hh).
@@ -1579,16 +1433,6 @@ _manifest_build_dockerfile_path() {
     return 1
   fi
 
-  local mediator_registry_steps
-  if ! mediator_registry_steps=$(_manifest_generate_mediator_registry_steps); then
-    return 1
-  fi
-
-  local mediator_label
-  if ! mediator_label=$(_manifest_generate_mediator_label); then
-    return 1
-  fi
-
   local safety_stack_asserted_steps
   if ! safety_stack_asserted_steps=$(_manifest_generate_safety_stack_asserted_steps); then
     return 1
@@ -1623,13 +1467,13 @@ _manifest_build_dockerfile_path() {
     fi
   fi
 
-  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" && -z "$tool_init_config_steps" && -z "$mux_registry_steps" && -z "$mux_label" && -z "$mediator_registry_steps" && -z "$mediator_label" && -z "$safety_stack_asserted_steps" && -z "$pi_shim_steps" ]]; then
+  if [[ -z "$extra_steps" && -z "$source_builder_stages" && -z "$shell_init_steps" && -z "$daemon_config_steps" && -z "$daemon_mcp_steps" && -z "$tool_init_config_steps" && -z "$mux_registry_steps" && -z "$mux_label" && -z "$safety_stack_asserted_steps" && -z "$pi_shim_steps" ]]; then
     # Default/bundled-only manifest — use the original Dockerfile unchanged (D8).
     echo "$orig_dockerfile"
     return 0
   fi
 
-  # Non-bundled tools and/or SHELL-INTEGRATION/IN-CAGE-DAEMON/MULTIPLEXER/MEDIATOR entries present — generate a temp Dockerfile.
+  # Non-bundled tools and/or SHELL-INTEGRATION/IN-CAGE-DAEMON/MULTIPLEXER entries present — generate a temp Dockerfile.
   local tmp_dockerfile
   tmp_dockerfile=$(mktemp "${TMPDIR:-/tmp}/rip-cage-Dockerfile-XXXXXX")
 
@@ -1819,58 +1663,10 @@ _manifest_build_dockerfile_path() {
     rm -f "$tmp_inject_label"
   fi
 
-  # --- MEDIATOR registry bake: inject AFTER "COPY settings.json" sentinel ---
-  # Same injection site as MULTIPLEXER registry steps (root context; /etc/rip-cage exists).
-  # These steps create /etc/rip-cage/mediators/<name>/ and write one file per declared hook.
-  if [[ -n "$mediator_registry_steps" ]]; then
-    local sentinel_settings_med="COPY cage/agent/settings.json /etc/rip-cage/settings.json"
-    local tmp_inject_med
-    tmp_inject_med=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
-    printf '\n# --- manifest-generated MEDIATOR registry bake (rip-cage-ta1o.5.1) ---\n%s\n' "$mediator_registry_steps" > "$tmp_inject_med"
-
-    if grep -qF "$sentinel_settings_med" "$tmp_dockerfile"; then
-      local sentinel_line_settings_med base_dockerfile_med
-      sentinel_line_settings_med=$(grep -nF "$sentinel_settings_med" "$tmp_dockerfile" | head -1 | cut -d: -f1)
-      base_dockerfile_med=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
-      head -n "${sentinel_line_settings_med}" "$tmp_dockerfile" > "$base_dockerfile_med"
-      cat "$tmp_inject_med" >> "$base_dockerfile_med"
-      tail -n "+$((sentinel_line_settings_med + 1))" "$tmp_dockerfile" >> "$base_dockerfile_med"
-      mv "$base_dockerfile_med" "$tmp_dockerfile"
-    else
-      echo "rip-cage: Warning: 'COPY settings.json' sentinel not found in Dockerfile — appending MEDIATOR registry bake steps at end (may fail if /etc/rip-cage does not exist). Dockerfile may need the sentinel restored." >&2
-      cat "$tmp_inject_med" >> "$tmp_dockerfile"
-    fi
-    rm -f "$tmp_inject_med"
-  fi
-
-  # --- MEDIATOR image label: inject AFTER existing LABEL line ---
-  # The rc.mediators label is placed alongside other image labels so it is
-  # frozen in the image at build time (isomorphic to rc.multiplexers handling).
-  if [[ -n "$mediator_label" ]]; then
-    local sentinel_label_med="LABEL org.opencontainers.image.version"
-    local tmp_inject_label_med
-    tmp_inject_label_med=$(mktemp "${TMPDIR:-/tmp}/rip-cage-inject-XXXXXX")
-    printf '\n# manifest-generated MEDIATOR registry label (rip-cage-ta1o.5.1)\n%s\n' "$mediator_label" > "$tmp_inject_label_med"
-
-    if grep -qF "$sentinel_label_med" "$tmp_dockerfile"; then
-      local sentinel_line_label_med base_dockerfile_label_med
-      sentinel_line_label_med=$(grep -nF "$sentinel_label_med" "$tmp_dockerfile" | head -1 | cut -d: -f1)
-      base_dockerfile_label_med=$(mktemp "${TMPDIR:-/tmp}/rip-cage-base-XXXXXX")
-      head -n "${sentinel_line_label_med}" "$tmp_dockerfile" > "$base_dockerfile_label_med"
-      cat "$tmp_inject_label_med" >> "$base_dockerfile_label_med"
-      tail -n "+$((sentinel_line_label_med + 1))" "$tmp_dockerfile" >> "$base_dockerfile_label_med"
-      mv "$base_dockerfile_label_med" "$tmp_dockerfile"
-    else
-      echo "rip-cage: Warning: 'LABEL org.opencontainers.image.version' sentinel not found in Dockerfile — appending MEDIATOR label at end." >&2
-      cat "$tmp_inject_label_med" >> "$tmp_dockerfile"
-    fi
-    rm -f "$tmp_inject_label_med"
-  fi
-
   # --- required/assert_loaded safety-stack-asserted: inject AFTER "COPY settings.json" sentinel ---
   # Bakes /etc/rip-cage/safety-stack-asserted (one "<id> <b64check>" per line) root:root 0644
   # so in-cage rc test can run declared checks for required tools (rip-cage-m8zc).
-  # Injection site: same as daemon/mux/mediator config steps (root context; /etc/rip-cage exists).
+  # Injection site: same as daemon/mux config steps (root context; /etc/rip-cage exists).
   # rc codegen copies check strings from manifest DATA — never interprets tool names (ADR-005 D12).
   if [[ -n "$safety_stack_asserted_steps" ]]; then
     local sentinel_settings_ssa="COPY cage/agent/settings.json /etc/rip-cage/settings.json"
@@ -1983,7 +1779,7 @@ _manifest_generate_shell_init_zshrc_steps() {
 # install=build-time, start=init-time). This generator base64-encodes the JSON
 # config and emits a Dockerfile RUN step that decodes + writes it.
 # init-rip-cage.sh reads /etc/rip-cage/daemon-config.json at startup to start
-# each daemon via the ssh-agent-filter-precedent (fork + PID-file + fail-warn).
+# each daemon via a fork + PID-file + fail-warn supervisor pattern.
 #
 # D8 byte-for-byte contract: when the default manifest is in effect (no
 # IN-CAGE-DAEMON entries), this function emits NOTHING.
@@ -2394,109 +2190,6 @@ _manifest_generate_multiplexer_label() {
 }
 
 
-# _manifest_generate_mediator_registry_steps
-# Read the host manifest and emit Dockerfile RUN steps that bake each
-# MEDIATOR-archetype tool's declared hook command strings into
-# /etc/rip-cage/mediators/<name>/<hook> in the image at BUILD time.
-#
-# Isomorphic to _manifest_generate_multiplexer_registry_steps but for the
-# egress-mediator seam (ADR-026 D5, rip-cage-ta1o.5.1).
-#
-# Mechanism: for each MEDIATOR entry, mkdir the registry dir and use
-# base64-encoded hook commands decoded at Dockerfile-RUN time into one file
-# per declared hook. Only DECLARED hooks are written.
-#
-# D8 byte-for-byte contract: when the manifest has no MEDIATOR entries,
-# this function emits NOTHING.
-#
-# ADR-005 D12 (composable seam — registry IS the mechanism)
-# rip-cage-ta1o.5.1
-_manifest_generate_mediator_registry_steps() {
-  local manifest_json
-  if ! manifest_json=$(_manifest_load); then
-    return 1
-  fi
-
-  local count idx
-  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
-  if [[ -z "$count" || "$count" -eq 0 ]]; then
-    return 0
-  fi
-
-  local steps=""
-  local has_mediators=0
-
-  for (( idx=0; idx<count; idx++ )); do
-    local entry archetype
-    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
-    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
-    if [[ "$archetype" != "MEDIATOR" ]]; then
-      continue
-    fi
-    has_mediators=1
-
-    local name
-    name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
-
-    # Sanitize name for use as a directory component (defense-in-depth guard).
-    if [[ "$name" == *"/"* || "$name" == *" "* ]]; then
-      echo "Error: manifest MEDIATOR entry '${name}': name contains slash or space — cannot use as registry dir name." >&2
-      return 1
-    fi
-
-    local registry_dir="/etc/rip-cage/mediators/${name}"
-
-    steps+="RUN # manifest MEDIATOR registry bake: ${name} (rip-cage-ta1o.5.1)"$'\n'
-    steps+="RUN mkdir -p '${registry_dir}'"$'\n'
-
-    # Bake run_as_uid into the registry so it's readable from the image without
-    # re-reading the host manifest — preserves the no-image-vs-host-drift invariant
-    # (ADR-026 D5). Child .2 (router forward) reads this to (a) install the
-    # iptables egress uid-exemption and (b) drop privileges in the start hook.
-    local med_run_as_uid
-    med_run_as_uid=$(jq -r '.run_as_uid // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
-    if [[ "$med_run_as_uid" != "___RC_ABSENT___" && -n "$med_run_as_uid" ]]; then
-      steps+="RUN printf '%s' '${med_run_as_uid}' > '${registry_dir}/run_as_uid'"$'\n'
-    fi
-
-    # Optional: ca_cert_path — path inside the container to the mediator's generated CA cert.
-    # init-mediator.sh reads this at cage init and installs the cert into the system trust
-    # store so the in-cage agent curl can verify the MITM cert. (rip-cage-ta1o.5.8)
-    local med_ca_cert_path
-    med_ca_cert_path=$(jq -r '.ca_cert_path // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
-    if [[ "$med_ca_cert_path" != "___RC_ABSENT___" && -n "$med_ca_cert_path" ]]; then
-      steps+="RUN printf '%s' '${med_ca_cert_path}' > '${registry_dir}/ca_cert_path'"$'\n'
-    fi
-
-    # Write each declared hook as a file under the registry dir.
-    local hook_name hook_cmd b64_cmd
-    for hook_name in start health_check teardown; do
-      hook_cmd=$(jq -r ".hooks.${hook_name} // \"___RC_ABSENT___\"" <<<"$entry" 2>/dev/null)
-      [[ "$hook_cmd" == "___RC_ABSENT___" || -z "$hook_cmd" ]] && continue
-
-      # Injection safety: hook_cmd must be a single line.
-      if [[ "$hook_cmd" == *$'\n'* ]]; then
-        echo "Error: manifest MEDIATOR entry '${name}': hook '${hook_name}' contains newline — single-line required." >&2
-        return 1
-      fi
-
-      b64_cmd=$(printf '%s' "$hook_cmd" | base64 | tr -d '\n')
-      steps+="RUN echo '${b64_cmd}' | base64 -d > '${registry_dir}/${hook_name}' && chmod 0755 '${registry_dir}/${hook_name}'"$'\n'
-    done
-  done
-
-  if [[ "$has_mediators" -eq 0 ]]; then
-    # No MEDIATOR entries — emit nothing (D8 short-circuit).
-    return 0
-  fi
-
-  # Strip trailing newline for clean output; caller appends to Dockerfile.
-  if [[ -n "$steps" ]]; then
-    printf '%s' "${steps%$'\n'}"
-  fi
-}
-
-
 # _manifest_generate_safety_stack_asserted_steps
 # Read the host manifest and emit Dockerfile RUN steps to bake
 # /etc/rip-cage/safety-stack-asserted, root:root 0644,
@@ -2606,56 +2299,6 @@ _manifest_generate_safety_stack_asserted_steps() {
   printf "RUN echo '%s' | base64 -d > /etc/rip-cage/safety-stack-asserted && chown root:root /etc/rip-cage/safety-stack-asserted && chmod 0644 /etc/rip-cage/safety-stack-asserted\n" "$b64_asserted"
 }
 
-
-# _manifest_generate_mediator_label
-# Read the host manifest and emit a Dockerfile LABEL line enumerating all
-# MEDIATOR-archetype tool names declared in the manifest, e.g.:
-#   LABEL rc.mediators="<name1>,<name2>"
-#
-# This label is frozen in the image at build time so the host-side config
-# validator can read it via `docker inspect` WITHOUT re-reading the host
-# manifest at runtime — preserving the no-image-vs-host-drift invariant.
-# Isomorphic to _manifest_generate_multiplexer_label (ADR-026 D5).
-#
-# D8 byte-for-byte contract: when the manifest has no MEDIATOR entries,
-# this function emits NOTHING.
-#
-# rip-cage-ta1o.5.1
-_manifest_generate_mediator_label() {
-  local manifest_json
-  if ! manifest_json=$(_manifest_load); then
-    return 1
-  fi
-
-  local count idx
-  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
-  if [[ -z "$count" || "$count" -eq 0 ]]; then
-    return 0
-  fi
-
-  local mediator_names=""
-  for (( idx=0; idx<count; idx++ )); do
-    local entry archetype name
-    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
-    archetype=$(jq -r '.archetype // ""' <<<"$entry" 2>/dev/null)
-    if [[ "$archetype" != "MEDIATOR" ]]; then
-      continue
-    fi
-    name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
-    if [[ -n "$mediator_names" ]]; then
-      mediator_names+=",$name"
-    else
-      mediator_names="$name"
-    fi
-  done
-
-  if [[ -z "$mediator_names" ]]; then
-    # No MEDIATOR entries — emit nothing.
-    return 0
-  fi
-
-  printf 'LABEL rc.mediators="%s"' "$mediator_names"
-}
 
 
 # =============================================================================

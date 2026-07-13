@@ -2,7 +2,7 @@
 
 This walkthrough shows how to add a binary-on-PATH tool to your rip-cage image using the **TOOL manifest entry** — the generic seam for any installable tool ([ADR-005 D7](../decisions/ADR-005-ecosystem-tools.md)).
 
-**Scope:** this is the "plain tool" path. Multiplexers, mediators, and guards use the same `TOOL` archetype for the install step but also need additional fields (`MULTIPLEXER`/`MEDIATOR` archetype entries, hooks, etc.). See [docs/reference/README.md](README.md) for the full seam catalog.
+**Scope:** this is the "plain tool" path. Multiplexers and guards use the same `TOOL` archetype for the install step but also need additional fields (`MULTIPLEXER` archetype entries, hooks, etc.). The former `MEDIATOR` archetype is retired — see [composition-seam.md](composition-seam.md). See [docs/reference/README.md](README.md) for the full seam catalog.
 
 **ADR-005 D12 (FIRM):** the tool you add is **not** blessed, bundled, or defaulted by rip-cage. The example below uses `ripgrep` (`rg`) as an illustration. You can replace it with any binary that installs similarly. Never modify `rc` source to add a tool — a manifest entry with zero source edits is the entire point.
 

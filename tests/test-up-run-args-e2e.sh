@@ -1,21 +1,45 @@
 #!/usr/bin/env bash
 # tests/test-up-run-args-e2e.sh — rip-cage-9oyh §3(i) end-to-end test (the
-# CRITICAL, higher-fidelity companion to test-up-run-args-full-chain.sh).
+# CRITICAL, sole gate over cmd_up's create-path argv assembly).
+#
+# rip-cage-5iti (S10, msb migration test-suite port): the former
+# helper-level companion, test-up-run-args-full-chain.sh, is RETIRED. Its
+# hand-replica of cmd_up's create-path had drifted onto asserting RETIRED
+# machinery (rc.mediator-ca-env / rc.egress.mode / an egress-rules.yaml
+# bind mount into the deleted in-cage engine) as its own "chain completion"
+# proof -- a rule-presence assertion on dead code (adversarial review
+# finding, 2026-07-13). THIS test drives the REAL `cmd_up` (never a
+# hand-copy) and captures the REAL `msb create` argv, so it already covers
+# the full post-translation msb-flag surface with strictly higher fidelity
+# than the retired replica ever had.
 #
 # Drives a REAL `rc --output json up <fixture>` through the content-keyed
-# fake docker (tests/golden-master/lib/fake-bin/docker — see that file for
-# the full CONTENT-KEYED contract). Per harness spec §3(i) rev.2: the shim
-# responds by WHAT is inspected/run, never by call-order position -- so this
-# test is robust to the decomposition reordering or adding/removing docker
-# calls, as long as their CONTENT is unchanged. `--output json` pins the
-# JSON branch's `json_error` -> `exit 1` (rc:2005-2015/71) so `docker run`
-# failing (the shim's `run` handler always exits 1 after capturing argv)
-# terminates deterministically -- the review VERIFIED the full _UP_RUN_ARGS
-# argv is assembled at rc:5408 with NO intervening docker call before
-# `_up_start_container` (rc:5410) reaches `docker run`.
+# fake docker + fake msb (tests/golden-master/lib/fake-bin/{docker,msb} —
+# see those files for the full CONTENT-KEYED contract). Per harness spec
+# §3(i) rev.2: the shims respond by WHAT is inspected/created, never by
+# call-order position -- so this test is robust to the decomposition
+# reordering or adding/removing docker/msb calls, as long as their CONTENT
+# is unchanged. `--output json` pins the JSON branch's `json_error` ->
+# `exit 1` (rc:2005-2015/71) so `msb create` failing (the shim's `create`
+# handler always exits 1 after capturing argv, mirroring the pre-migration
+# `docker run` shim's same deterministic-failure design) terminates
+# deterministically.
 #
-# Wired into tests/run-host.sh (host-only tier — no live docker container
-# needed; the fake docker on PATH replaces the real binary entirely).
+# rip-cage-5iti (S10, msb migration test-suite port): retargeted from
+# capturing `docker run`'s argv onto capturing `msb create`'s argv --
+# rip-cage-rj68 (S6) rewrote _up_start_container onto
+# `msb create --name NAME --log-level trace <flags...> IMAGE` (cli/up.sh)
+# -- `docker run` is no longer on cmd_up's create-path call graph at all.
+# `msb create` has no trailing command argument the way `docker run ...
+# IMAGE sleep infinity` did (an msb sandbox's persistent-background boot is
+# msb's own responsibility, not a caller-supplied keep-alive command), so
+# the old "argv ends in sleep infinity" completion proof is retargeted to
+# "argv ends in the image name" (the actual last positional arg
+# _up_start_container appends) -- still proves the chain wasn't truncated
+# mid-build, just against the real post-migration call shape.
+#
+# Wired into tests/run-host.sh (host-only tier — no live docker/msb daemon
+# needed; the fake binaries on PATH replace the real ones entirely).
 
 set -uo pipefail
 
@@ -60,12 +84,12 @@ teardown_sandbox() {
 }
 
 # run_real_up — drives the REAL `rc --output json up $TEST_WS` through the
-# content-keyed docker shim, configured so cmd_up takes the CREATE
-# (new-container) path: `.State.Status` -> absent (GM_DOCKER_STATE unset =
-# shim default "absent"), bare `docker image inspect` -> success, version
+# content-keyed docker+msb shims, configured so cmd_up takes the CREATE
+# (new-sandbox) path: msb inspect -> absent (GM_DOCKER_STATE unset = shim
+# default "absent"), bare `docker image inspect` -> success, version
 # inspect -> matches RC_VERSION (image current, no provisioning branch).
-# Sets RC_OUT/RC_ERR/RC_EXIT/RUN_CAPTURE (path to the captured docker-run
-# argv, one arg per line — empty/absent if `docker run` was never reached).
+# Sets RC_OUT/RC_ERR/RC_EXIT/RUN_CAPTURE (path to the captured `msb create`
+# argv, one arg per line — empty/absent if `msb create` was never reached).
 RC_OUT="" RC_ERR="" RC_EXIT=0 RUN_CAPTURE=""
 run_real_up() {
   RUN_CAPTURE=$(mktemp "${TMPDIR:-/tmp}/rc-up-args-e2e-capture-XXXXXX")
@@ -77,8 +101,8 @@ run_real_up() {
     HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_ALLOWED_ROOTS="$TEST_WS" \
     GM_DOCKER_IMAGE_VERSION="$(cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo unknown)" \
-    GM_DOCKER_RUN_CAPTURE="$RUN_CAPTURE" \
-    "$RC" --output json up "$TEST_WS" --no-forward-ssh >"$_outfile" 2>"$_errfile" < /dev/null
+    GM_MSB_CREATE_CAPTURE="$RUN_CAPTURE" \
+    "$RC" --output json up "$TEST_WS" >"$_outfile" 2>"$_errfile" < /dev/null
   RC_EXIT=$?
   set -e 2>/dev/null || true
   set +e
@@ -88,7 +112,7 @@ run_real_up() {
 }
 
 # ---------------------------------------------------------------------------
-# E1: the create path reaches `docker run` (proves the full argv-assembly
+# E1: the create path reaches `msb create` (proves the full argv-assembly
 # chain rc:5136->5408->_up_start_container:5410 actually executes end to
 # end through the REAL cmd_up, not a hand-replica).
 # ---------------------------------------------------------------------------
@@ -96,14 +120,14 @@ setup_sandbox
 run_real_up
 
 if [[ -f "$RUN_CAPTURE" ]]; then
-  pass "E1: real cmd_up reaches 'docker run' (content-keyed shim captured the argv)"
+  pass "E1: real cmd_up reaches 'msb create' (content-keyed shim captured the argv)"
 else
-  fail "E1: docker run reached" "no capture file written -- cmd_up never called 'docker run'. stdout=$RC_OUT stderr=$RC_ERR"
+  fail "E1: msb create reached" "no capture file written -- cmd_up never called 'msb create'. stdout=$RC_OUT stderr=$RC_ERR"
 fi
 
 # ---------------------------------------------------------------------------
 # E2: `--output json`'s json_error -> exit 1 fires deterministically (the
-# shim's `docker run` always exits 1 after capturing argv -- §3(i) F2).
+# shim's `msb create` always exits 1 after capturing argv -- §3(i) F2).
 # ---------------------------------------------------------------------------
 if [[ "$RC_EXIT" -eq 1 ]]; then
   pass "E2: rc exits 1 (json_error -> exit 1 termination, per §3(i) F2)"
@@ -118,15 +142,20 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# E3: the captured argv contains the expected image+cmd tail (proves the
-# FULL chain ran -- an early abort would leave the capture file absent,
-# already caught by E1; this additionally proves the array wasn't truncated
-# mid-build).
+# E3: the captured argv ends in the image name (proves the FULL chain ran
+# -- an early abort would leave the capture file absent, already caught by
+# E1; this additionally proves the array wasn't truncated mid-build).
+# rip-cage-5iti (S10): `msb create` has no trailing command argument the
+# way `docker run ... IMAGE sleep infinity` did -- an msb sandbox's
+# persistent-background boot is msb's own responsibility, not a
+# caller-supplied keep-alive command (_up_start_container's own call:
+# `msb create --name NAME --log-level trace <flags...> IMAGE`, IMAGE is the
+# LAST positional arg, no tail after it).
 # ---------------------------------------------------------------------------
-if [[ -f "$RUN_CAPTURE" ]] && grep -qF "sleep" "$RUN_CAPTURE" && grep -qF "infinity" "$RUN_CAPTURE"; then
-  pass "E3: captured docker-run argv ends in the expected image+cmd append"
+if [[ -f "$RUN_CAPTURE" ]] && [[ "$(tail -1 "$RUN_CAPTURE" 2>/dev/null)" == "rip-cage:latest" ]]; then
+  pass "E3: captured msb-create argv ends in the expected image name"
 else
-  fail "E3: argv completeness" "captured argv missing the 'sleep infinity' tail: $(cat "$RUN_CAPTURE" 2>/dev/null)"
+  fail "E3: argv completeness" "captured argv does not end in 'rip-cage:latest': $(cat "$RUN_CAPTURE" 2>/dev/null)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -151,7 +180,7 @@ RUN2_ARGV=$(cat "$RUN_CAPTURE" 2>/dev/null | sed -E -e "$(gm_scrub_root_script "
 teardown_sandbox
 
 if [[ -n "$RUN1_ARGV" && "$RUN1_ARGV" == "$RUN2_ARGV" ]]; then
-  pass "E4: captured docker-run argv is deterministic across independent runs"
+  pass "E4: captured msb-create argv is deterministic across independent runs"
 else
   fail "E4: argv determinism" "argv differs between two independent runs:
 $(diff <(printf '%s\n' "$RUN1_ARGV") <(printf '%s\n' "$RUN2_ARGV"))"

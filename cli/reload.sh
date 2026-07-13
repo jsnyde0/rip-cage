@@ -4,9 +4,10 @@
 
 
 # cmd_reload — host-side hot-reload of .rip-cage.yaml allowlist changes
-# (rip-cage-ocn / ADR-022 D6). Today: ssh.allowed_hosts content only. Refuses
-# loud on anything else (allowed_keys content/mount-shape, egress, ports,
-# identity, env_file). Exit codes:
+# (rip-cage-ocn / ADR-022 D6, carried forward past the ssh-cluster retirement
+# per ADR-029 D3/D4). Today: network.allowed_hosts / network.mode content
+# only (the ssh.allowed_hosts-specific reload mechanism retired at the msb
+# cutover, rip-cage-f1qo S5). Refuses loud on anything else. Exit codes:
 #   0 — applied (or no-op when live matches snapshot)
 #   1 — refuse-loud (non-reload-eligible field changed)
 #   2 — container not running (`reload` promises the cage sees the change now)
@@ -25,13 +26,14 @@ cmd_reload() {
   fi
   name=$(resolve_name "$name") || exit 1
 
-  if ! docker inspect "$name" >/dev/null 2>&1; then
+  # rip-cage-rj68 (S6): REWRITTEN onto msb.
+  if ! _msb_exists "$name"; then
     echo "Error: container $name not found" >&2; exit 1
   fi
   verify_rc_container "$name"
 
   local state
-  state=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)
+  state=$(_msb_sandbox_state "$name" 2>/dev/null || true)
   if [[ "$state" != "running" ]]; then
     echo "Error: container $name is not running (state: $state). Use 'rc up' to start it." >&2
     exit 2
@@ -39,7 +41,7 @@ cmd_reload() {
 
   # Workspace path comes from the container label (set by cmd_up create-time).
   local workspace
-  workspace=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$name" 2>/dev/null || true)
+  workspace=$(_msb_label "$name" "rc.source.path" || true)
   if [[ -z "$workspace" || ! -d "$workspace" ]]; then
     echo "Error: cannot resolve workspace for $name (rc.source.path label missing or path gone)." >&2
     exit 1
@@ -78,7 +80,7 @@ cmd_reload() {
     exit 1
   fi
 
-  # Compute differing JSON paths (e.g. "ssh.allowed_hosts", "egress.mode").
+  # Compute differing JSON paths (e.g. "network.allowed_hosts", "egress.mode").
   # Pass schema defaults so absent-in-snapshot + live==default fields are non-drift
   # (handles old snapshots written before a new defaulted field was introduced —
   # same suppression as _config_emit_hint / rip-cage-1f59.9).
@@ -101,9 +103,9 @@ cmd_reload() {
     exit 1
   fi
 
-  # Print diff summary for all reload-eligible paths (generalized beyond ssh.allowed_hosts).
+  # Print diff summary for all reload-eligible paths (network.* fields).
   # For list fields (allowed_hosts), show per-entry +/- diff. For scalar fields, show
-  # the changed value. This covers network.* additions alongside ssh.allowed_hosts.
+  # the changed value.
   local _diff_p _live_v _applied_v _live_list _applied_list _l_added _l_removed _h
   while IFS= read -r _diff_p; do
     [[ -z "$_diff_p" ]] && continue
@@ -123,53 +125,75 @@ cmd_reload() {
     fi
   done <<<"$diff_paths"
 
-  # For backward compat with C1 assertion: track ssh.allowed_hosts counts for the final log line.
-  local live_hosts applied_hosts added removed
-  live_hosts=$(jq -r '.ssh.allowed_hosts // [] | .[]' <<<"$live_cfg" | sort -u)
-  applied_hosts=$(jq -r '.ssh.allowed_hosts // [] | .[]' <<<"$applied_cfg" | sort -u)
-  added=$(comm -23 <(printf '%s\n' "$live_hosts") <(printf '%s\n' "$applied_hosts") | grep -c . || true)
-  removed=$(comm -13 <(printf '%s\n' "$live_hosts") <(printf '%s\n' "$applied_hosts") | grep -c . || true)
+  # rip-cage-rj68 (S6, ADR-029 D2's re-homed deny-visibility / bead
+  # criterion 5): surface any recently-denied domains as the fix-hint the
+  # repair loop consumes — this is the "domain= field rc tails" made
+  # concrete at the point an operator is about to act on a diff. Shown for
+  # both dry-run and real apply (informational either way).
+  local _rl_denied
+  _rl_denied=$(_msb_denied_domains_from_trace_log "$name" 2>/dev/null)
+  if [[ -n "$_rl_denied" ]]; then
+    log "Fix-hint: recently denied domain(s) on ${name} (not necessarily related to this diff):"
+    while IFS= read -r _rl_d; do [[ -n "$_rl_d" ]] && log "    domain=${_rl_d}"; done <<<"$_rl_denied"
+  fi
 
   if [[ "$dry_run" -eq 1 ]]; then
-    log "(--dry-run: cache file NOT mutated, snapshot NOT updated.)"
+    log "(--dry-run: snapshot NOT updated, cage NOT recreated.)"
     return 0
   fi
 
-  # Apply: re-filter known_hosts in-place per rip-cage-rx8 (truncate + write,
-  # never mv). The bind mount inside the cage points at the cache file by
-  # inode, so the agent sees the new content on the next ssh call. No docker
-  # exec, no daemon restart.
-  local allowed_hosts_str
-  allowed_hosts_str=$(jq -r '.ssh.allowed_hosts // [] | join(" ")' <<<"$live_cfg")
-  _filter_known_hosts "$allowed_hosts_str" "${HOME}/.ssh/known_hosts" "${cache_dir}/known_hosts"
+  # rip-cage-4c5.3 Fix 4 (evolved, ADR-029 D2): IOC check still fires on rc
+  # reload — a manifest edited between rc up and rc reload to add an IOC host
+  # must fail loud here, naming the offending host.
+  if ! _manifest_check_ioc_egress "${SCRIPT_DIR}/cage/egress/egress-rules.yaml"; then
+    exit 1
+  fi
 
-  # rip-cage-hhh.2: also regenerate egress-rules on reload (D10 contract: regenerates
-  # ONLY at rc up / rc reload; not by watching the YAML file). Skip when egress was
-  # disabled at create time (rc.egress=off label), matching the cmd_up create/resume guard.
-  local _reload_egress_label
-  _reload_egress_label=$(docker inspect --format '{{index .Config.Labels "rc.egress"}}' "$name" 2>/dev/null || true)
-  if [[ "$_reload_egress_label" != "off" ]]; then
-    # rip-cage-4c5.3 Fix 4: IOC check fires on EVERY egress-regeneration path
-    # (build, up, AND reload). A manifest edited between rc up and rc reload to add
-    # an IOC host must fail loud here, naming the offending host.
-    if ! _manifest_check_ioc_egress "${SCRIPT_DIR}/cage/egress/egress-rules.yaml"; then
-      exit 1
-    fi
-    _up_resolve_egress_rules "$workspace" "$cache_dir"
-    # rip-cage-hhh.4: re-apply TCP-22 IP allowlist inside the container after
-    # network.* change. Re-resolves hostnames to IPs in-container (where the DNS
-    # sidecar is active). Skips silently if mode is not block.
-    _up_reload_tcp22_allowlist "$name"
-    # rip-cage-hhh.4 / ADR-012 D9: bounce the egress proxy + DNS sidecar so they
-    # re-read the regenerated egress-rules.yaml. Without this, allowlist/mode
-    # changes never reach the running router (it caches rules at startup).
-    _up_reload_egress_proxy "$name"
+  # rip-cage-rj68 (S6): net-rule changes are recreate-only under msb (no
+  # live-mutation path exists for --net-rule/--net-default on a running
+  # sandbox — confirmed live, docs/2026-07-09-msb-spike-egress-
+  # observability.md Q1; `msb modify` has no network parameter at all).
+  # ADR-029 D4 names two repair-loop mechanics: snapshot-amend (preserves
+  # the guest's own writable-overlay state) or cold-recreate (mount-only
+  # cages, cheaper, discards the overlay). DESIGN DECISION (this bead):
+  # cold-recreate is rip-cage's default, not snapshot-amend — rip-cage
+  # cages are mount-projected BY CONSTRUCTION (workspace, ~/.claude/
+  # projects+sessions, pi auth.json all host-bind-mounted; rc-state-*/
+  # rc-history-*/rc-mise-cache are NAMED VOLUMES, which persist and
+  # reattach by name independent of the sandbox's own OCI overlay — msb-
+  # confirmed live, tests/test-msb-lifecycle-reload-repair-loop.sh). The
+  # only thing cold-recreate loses is state written into the guest's own
+  # ephemeral rootfs overlay (e.g. an ad-hoc `apt-get install` at runtime
+  # not baked into the image) — for rip-cage's actual mount topology that
+  # is a narrow, documented tradeoff, not a real session-continuity loss,
+  # and it is ~2.6x cheaper than snapshot-amend (0.303s vs 0.783s,
+  # docs/2026-07-09-msb-spike-snapshot-amend.md). Implemented as "the SAME
+  # create pipeline cmd_up's create branch uses, invoked again against the
+  # NOW-current .rip-cage.yaml" (graceful stop -> remove -> cmd_up) rather
+  # than a hand-rolled parallel mount-rebuild path, so create/resume/reload
+  # never drift onto three separate mount-declaration implementations.
+  log "Recreating ${name} to apply the amended net-rule set (cold-recreate; ADR-029 D4)..."
+  _msb_stop_graceful "$name"
+  _msb_remove "$name"
+  # Force JSON mode for the inner create call regardless of the outer
+  # invocation's format, so this recreate never accidentally drops into
+  # cmd_up's interactive-attach dispatch mid-reload; the outer caller only
+  # cares whether the recreate itself succeeded.
+  local _rl_saved_output_format="$OUTPUT_FORMAT"
+  OUTPUT_FORMAT="json"
+  local _rl_create_out _rl_create_rc=0
+  _rl_create_out=$(cmd_up "$workspace" 2>&1) || _rl_create_rc=$?
+  OUTPUT_FORMAT="$_rl_saved_output_format"
+  if [[ "$_rl_create_rc" -ne 0 ]]; then
+    echo "Error: reload's cold-recreate of $name failed:" >&2
+    echo "$_rl_create_out" >&2
+    exit 1
   fi
 
   # Update snapshot to live (so subsequent emit_hint suppresses the warning).
   _config_write_applied "$name" "$live_cfg"
 
-  log "Reloaded $name (ssh.allowed_hosts: ${added} added, ${removed} removed)."
+  log "Reloaded $name."
 }
 
 
@@ -187,19 +211,20 @@ _config_schema_defaults_json() {
   printf '%s\n' "${pairs[@]}" | jq -sc 'add // {}'
 }
 
-# Reload-eligible JSON path set (rip-cage-ocn / ADR-022 D6).
+# Reload-eligible JSON path set (rip-cage-ocn / ADR-022 D6; ssh.allowed_hosts
+# retired at the msb cutover, ADR-029 D3 — rip-cage-f1qo S5).
 # Paths listed here can be mutated by `rc reload` without container recreation.
 # Anything else triggers refuse-loud (exit 1) at reload time and a recreate
 # hint from _config_emit_hint when label/snapshot drift is detected.
 # rip-cage-hhh.2: network.* fields added as reload-eligible — rc reload regenerates
 # the egress-rules file when these change (D10: regeneration ONLY at rc up / rc reload).
-_RC_RELOAD_ELIGIBLE_PATHS='ssh.allowed_hosts network.allowed_hosts network.mode'
+_RC_RELOAD_ELIGIBLE_PATHS='network.allowed_hosts network.mode'
 
 
 # Diff two effective-config JSON objects ($1 = live, $2 = applied snapshot).
-# Echoes one differing JSON path per line in dot-form (e.g. `ssh.allowed_hosts`,
+# Echoes one differing JSON path per line in dot-form (e.g. `network.allowed_hosts`,
 # `egress.mode`). Arrays compared as whole values (no per-element recursion) —
-# `.ssh.allowed_hosts` going from [a] → [a,b] is one path, not two.
+# `.network.allowed_hosts` going from [a] → [a,b] is one path, not two.
 # The `all(type == "string")` filter discards paths with array-index ints, so
 # array contents stay opaque from the diff's perspective.
 #

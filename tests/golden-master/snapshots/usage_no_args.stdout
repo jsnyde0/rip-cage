@@ -8,8 +8,6 @@ Commands:
     --cpus N            CPU limit (default: 2)
     --memory SIZE       Memory limit (default: 4g)
     --pids-limit N      PID limit (default: 500)
-    --no-forward-ssh    Disable host ssh-agent forwarding (ADR-017)
-    --github-identity=KEY  Pin github.com to KEY basename (e.g. id_ed25519_work) (ADR-020 D3)
     --new               Always start a new multiplexer session (auto-named; invokes new_session hook)
     --session NAME      Forward NAME to the multiplexer attach hook as $1
   ls                                           List rip-cage containers
@@ -17,7 +15,7 @@ Commands:
   exec <cage> -- <cmd...>                      Run a one-off command in the container (non-interactive safe)
   down [name]                                  Stop a container
   destroy [-f|--force] [name]                   Remove container and volumes
-  reload [name] [--dry-run]                     Hot-reload .rip-cage.yaml allowlist changes (ssh.allowed_hosts)
+  reload [name] [--dry-run]                     Hot-reload .rip-cage.yaml allowlist changes (network.allowed_hosts)
   allowlist add <host> [--cage=<name>]         Append host to network.allowed_hosts (idempotent; --output json)
   allowlist show [--effective] [--observed]    Show configured/effective/observed blocked hosts
   allowlist promote --from-observed [--cage]   Merge observed blocked hosts + flip mode=block + rc reload

@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 
-> **Migration status (ADR-029, 2026-07-10):** Decisions D1–D11 are retired or re-homed per [ADR-029](ADR-029-msb-migration.md) D2/D4 — containment becomes the msb runtime's job, not an in-cage engine. The mechanisms below remain shipped and load-bearing in the Docker path until the msb cutover release lands; until then this ADR describes current behavior.
+> **Migration status (ADR-029, 2026-07-10):** Decisions D1–D11 are retired or re-homed per [ADR-029](ADR-029-msb-migration.md) D2/D4 — containment becomes the msb runtime's job, not an in-cage engine. The msb cutover has landed (S1-S14, branch `wave/s13-docs` off `msb-cutover`) — the mechanisms below are retired/replaced per the dispositions above; this ADR is retained for historical record, not current behavior. See [ADR-029](ADR-029-msb-migration.md) for what replaced them.
 
 **Date:** 2026-04-20
 **Design:** [2026-04-20-egress-firewall-design.md](../2026-04-20-egress-firewall-design.md)

@@ -7,20 +7,29 @@
 # missing regression test proving:
 #   T1  Two paths with identical parent/basename both derive the SAME base
 #       name from container_name() (the collision precondition).
-#   T2  When a container named after that base already exists (per a docker
+#   T2  When a sandbox named after that base already exists (per an msb
 #       PATH-shim `rc.source.path` label) for a DIFFERENT path, resolving a
 #       second, colliding project fires disambiguation: the resulting name
 #       gets a `-<4char-hash>` suffix and is DISTINCT from the first
 #       project's name. Driven through the REAL `rc up --dry-run --output
-#       json` path (not a reimplementation) via a docker PATH-shim mock —
-#       precedent: tests/test-image-drift-resume.sh.
+#       json` path (not a reimplementation) via a docker+msb PATH-shim mock
+#       — precedent: tests/test-image-drift-resume.sh.
 #   T3  The resulting rc-state-<name> / rc-history-<name> volume mount args
 #       (as produced by the REAL _up_prepare_docker_mounts) are distinct for
 #       the two projects' names.
 #
-# Host-only: no real docker or containers — driven entirely through the
-# docker PATH-shim + sourced rc functions. Registered in tests/run-host.sh
-# alongside test-bd-host-preflight.sh / test-symlink-follow.sh.
+# Host-only: no real docker/msb daemon or sandboxes — driven entirely
+# through the docker+msb PATH-shims + sourced rc functions. Registered in
+# tests/run-host.sh alongside test-bd-host-preflight.sh / test-symlink-
+# follow.sh.
+#
+# rip-cage-5iti (S10, msb migration test-suite port): T2's collision lookup
+# (existing_path=$(_msb_label "$name" "rc.source.path")) was rewritten onto
+# msb by rip-cage-rj68 (S6) -- it now reads `msb inspect NAME --format
+# json`, not `docker inspect --format`. The docker stub still covers the
+# (unchanged, still-docker-side) image-provisioning check
+# (`docker image inspect $IMAGE`); an msb stub was added alongside it for
+# the collision-lookup + `msb image list` provisioning check.
 
 set -uo pipefail
 
@@ -112,6 +121,34 @@ case "\${1:-}" in
 esac
 STUB
 chmod +x "${STUB_DIR}/docker"
+
+# Fake msb: covers the msb-side collision lookup (_msb_label, backed by
+# `msb inspect NAME --format json`) + the msb-local-image-presence check
+# (`msb image list --format json`) cmd_up's provisioning check ORs against
+# the docker-side check above.
+cat > "${STUB_DIR}/msb" <<'STUB'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  image)
+    if [[ "${2:-}" == "list" ]]; then
+      echo '[{"reference":"rip-cage:latest","digest":"sha256:0000000000000000000000000000000000000000000000000000000000fa"}]'
+      exit 0
+    fi
+    exit 1
+    ;;
+  inspect)
+    _name="${2:-}"
+    if [[ "$_name" == "${CN_EXISTING_NAME:-}" ]]; then
+      printf '{"status":"Stopped","config":{"manifest_digest":"","labels":{"rc.source.path":"%s"}}}' "${CN_EXISTING_PATH:-}"
+      exit 0
+    fi
+    exit 1
+    ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "${STUB_DIR}/msb"
 
 # Build a minimal sandbox: global config (ADR-023 preflight requires one) +
 # empty tools.yaml (default bundled stack). Sets TEST_HOME. Two workspace

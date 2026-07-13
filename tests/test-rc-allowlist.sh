@@ -7,11 +7,19 @@
 #   A3  allowlist add --output json shape: {action, host, config_file}
 #   A4  allowlist add --output json with skipped host: action=skipped
 #   A5  allowlist show lists configured network.allowed_hosts
-#   A6  allowlist show --observed parses synthetic egress JSONL log and lists blocked hosts
-#   A7  allowlist show --observed only lists deny/would-block events (not allow)
-#   A8  allowlist promote --from-observed merges observed hosts into .rip-cage.yaml + flips mode=block
-#   A9  allowlist promote --from-observed emits a diff (hosts added, mode flip)
-#   A10 allowlist promote --from-observed skips hosts already in allowed_hosts (idempotent)
+#   A6  allowlist show --observed is retired: exits non-zero + prints the
+#       retirement message to stderr (rip-cage-tsf2.2 loud-fail stub — the
+#       in-cage egress log producer was deleted in the msb migration, so
+#       this flag can no longer silently report "(none)")
+#   A7  allowlist show --observed retirement message names ADR-029 and the
+#       fast-follow bead rip-cage-tsf2.2
+#   A8  allowlist promote --from-observed is retired: exits non-zero + prints
+#       the retirement message to stderr
+#   A9  allowlist promote --from-observed retirement message names ADR-029
+#       and the fast-follow bead rip-cage-tsf2.2
+#   A10 allowlist promote --from-observed never mutates .rip-cage.yaml — the
+#       retirement guard fires before any log read or config write, so there
+#       is no silent partial apply
 #   A11 add refuses when /.dockerenv present (simulated D10 host-side-only guard)
 #   A12 promote refuses when /.dockerenv present (simulated D10 guard)
 #   A13 allowlist show --output json shape: {allowed_hosts: [...]}
@@ -183,45 +191,42 @@ else fail 5 "allowlist show json" "$a5_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# A6: allowlist show --observed parses synthetic egress JSONL log + lists blocked hosts
+# A6: allowlist show --observed is retired -- exits non-zero, prints message to stderr
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 setup_sandbox
 
 write_egress_log "${WS}/.rip-cage/egress.log"
-a6_out=$(run_rc --output json allowlist show --observed --log-file "${WS}/.rip-cage/egress.log" 2>/dev/null)
+a6_err=$(mktemp)
+a6_out=$(run_rc --output json allowlist show --observed --log-file "${WS}/.rip-cage/egress.log" 2>"$a6_err")
 a6_exit=$?
 a6_ok=true a6_reason=""
-[[ "$a6_exit" -ne 0 ]] && a6_ok=false && a6_reason="exit $a6_exit"
-if [[ "$a6_ok" == "true" ]]; then
-  a6_hosts=$(echo "$a6_out" | jq -r '.observed_hosts[]' 2>/dev/null)
-  echo "$a6_hosts" | grep -q "registry.example.com" || {
-    a6_ok=false; a6_reason="${a6_reason:+$a6_reason; }registry.example.com not in observed_hosts"; }
-  echo "$a6_hosts" | grep -q "cdn.staging.myapp.io" || {
-    a6_ok=false; a6_reason="${a6_reason:+$a6_reason; }cdn.staging.myapp.io not in observed_hosts"; }
-fi
-if [[ "$a6_ok" == "true" ]]; then pass 6 "allowlist show --observed lists blocked/would-block hosts from JSONL log"
-else fail 6 "allowlist show --observed" "$a6_reason"; fi
+[[ "$a6_exit" -eq 0 ]] && a6_ok=false && a6_reason="exit 0 (want non-zero -- --observed must fail loud, not silently report)"
+[[ -z "$(cat "$a6_err")" ]] && a6_ok=false && a6_reason="${a6_reason:+$a6_reason; }no stderr output emitted"
+if [[ "$a6_ok" == "true" ]]; then pass 6 "allowlist show --observed exits non-zero + writes to stderr (retired)"
+else fail 6 "allowlist show --observed retirement" "$a6_reason -- stdout: $a6_out stderr: $(cat "$a6_err")"; fi
+rm -f "$a6_err"
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# A7: allowlist show --observed does NOT include allow events
+# A7: allowlist show --observed retirement message names ADR-029 + fast-follow bead
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 setup_sandbox
 
-write_egress_log "${WS}/.rip-cage/egress.log"
-a7_out=$(run_rc --output json allowlist show --observed --log-file "${WS}/.rip-cage/egress.log" 2>/dev/null)
+a7_err=$(mktemp)
+run_rc allowlist show --observed >/dev/null 2>"$a7_err"
 a7_ok=true a7_reason=""
-a7_hosts=$(echo "$a7_out" | jq -r '.observed_hosts[]' 2>/dev/null)
-echo "$a7_hosts" | grep -q "api.anthropic.com" && {
-  a7_ok=false; a7_reason="api.anthropic.com (allowed event) appeared in observed_hosts"; }
-if [[ "$a7_ok" == "true" ]]; then pass 7 "allowlist show --observed excludes allow events"
-else fail 7 "allowlist show observed filters allow" "$a7_reason"; fi
+grep -qi "retired" "$a7_err" || { a7_ok=false; a7_reason="stderr does not say 'retired'"; }
+grep -q "ADR-029" "$a7_err" || { a7_ok=false; a7_reason="${a7_reason:+$a7_reason; }stderr does not cite ADR-029"; }
+grep -q "rip-cage-tsf2.2" "$a7_err" || { a7_ok=false; a7_reason="${a7_reason:+$a7_reason; }stderr does not point at fast-follow bead rip-cage-tsf2.2"; }
+if [[ "$a7_ok" == "true" ]]; then pass 7 "allowlist show --observed message names ADR-029 + rip-cage-tsf2.2"
+else fail 7 "allowlist show --observed message content" "$a7_reason -- stderr: $(cat "$a7_err")"; fi
+rm -f "$a7_err"
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# A8: allowlist promote --from-observed merges observed hosts + flips mode=block
+# A8: allowlist promote --from-observed is retired -- exits non-zero, prints message to stderr
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 setup_sandbox
@@ -235,62 +240,38 @@ network:
 YML
 write_egress_log "${WS}/.rip-cage/egress.log"
 
-a8_out=$(run_rc allowlist promote --from-observed \
+a8_err=$(mktemp)
+run_rc allowlist promote --from-observed \
   --config-file "${WS}/.rip-cage.yaml" \
-  --log-file "${WS}/.rip-cage/egress.log" 2>&1)
+  --log-file "${WS}/.rip-cage/egress.log" >/dev/null 2>"$a8_err"
 a8_exit=$?
 a8_ok=true a8_reason=""
-[[ "$a8_exit" -ne 0 ]] && a8_ok=false && a8_reason="exit $a8_exit; output: $a8_out"
-
-if [[ "$a8_ok" == "true" ]]; then
-  # Verify YAML was mutated: observed hosts added + mode flipped
-  if ! grep -q "registry.example.com" "${WS}/.rip-cage.yaml" 2>/dev/null; then
-    a8_ok=false; a8_reason="${a8_reason:+$a8_reason; }registry.example.com not added to .rip-cage.yaml"
-  fi
-  if ! grep -q "cdn.staging.myapp.io" "${WS}/.rip-cage.yaml" 2>/dev/null; then
-    a8_ok=false; a8_reason="${a8_reason:+$a8_reason; }cdn.staging.myapp.io not added"
-  fi
-  if ! grep -q "mode: block" "${WS}/.rip-cage.yaml" 2>/dev/null; then
-    a8_ok=false; a8_reason="${a8_reason:+$a8_reason; }mode not flipped to block"
-  fi
-  # Existing host preserved
-  if ! grep -q "already.allowed.com" "${WS}/.rip-cage.yaml" 2>/dev/null; then
-    a8_ok=false; a8_reason="${a8_reason:+$a8_reason; }already.allowed.com not preserved"
-  fi
-fi
-if [[ "$a8_ok" == "true" ]]; then pass 8 "allowlist promote merges observed hosts + flips mode=block"
-else fail 8 "allowlist promote" "$a8_reason"; fi
+[[ "$a8_exit" -eq 0 ]] && a8_ok=false && a8_reason="exit 0 (want non-zero -- --from-observed must fail loud, not silently apply nothing)"
+[[ -z "$(cat "$a8_err")" ]] && a8_ok=false && a8_reason="${a8_reason:+$a8_reason; }no stderr output emitted"
+if [[ "$a8_ok" == "true" ]]; then pass 8 "allowlist promote --from-observed exits non-zero + writes to stderr (retired)"
+else fail 8 "allowlist promote --from-observed retirement" "$a8_reason -- stderr: $(cat "$a8_err")"; fi
+rm -f "$a8_err"
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# A9: allowlist promote --from-observed emits a diff (hosts added + mode flip)
+# A9: allowlist promote --from-observed retirement message names ADR-029 + fast-follow bead
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 setup_sandbox
 
-cat > "${WS}/.rip-cage.yaml" <<'YML'
-version: 1
-network:
-  allowed_hosts: []
-  mode: observe
-YML
-write_egress_log "${WS}/.rip-cage/egress.log"
-
-a9_out=$(run_rc allowlist promote --from-observed \
-  --config-file "${WS}/.rip-cage.yaml" \
-  --log-file "${WS}/.rip-cage/egress.log" 2>&1)
+a9_err=$(mktemp)
+run_rc allowlist promote --from-observed --config-file "${WS}/.rip-cage.yaml" >/dev/null 2>"$a9_err"
 a9_ok=true a9_reason=""
-# Diff should mention mode change + at least one added host
-echo "$a9_out" | grep -qi "mode.*block\|block.*mode\|mode:" || {
-  a9_ok=false; a9_reason="diff does not mention mode->block"; }
-echo "$a9_out" | grep -q "registry.example.com\|cdn.staging.myapp.io" || {
-  a9_ok=false; a9_reason="${a9_reason:+$a9_reason; }diff doesn't mention observed hosts"; }
-if [[ "$a9_ok" == "true" ]]; then pass 9 "allowlist promote emits diff of .rip-cage.yaml mutation"
-else fail 9 "allowlist promote diff" "$a9_reason"; fi
+grep -qi "retired" "$a9_err" || { a9_ok=false; a9_reason="stderr does not say 'retired'"; }
+grep -q "ADR-029" "$a9_err" || { a9_ok=false; a9_reason="${a9_reason:+$a9_reason; }stderr does not cite ADR-029"; }
+grep -q "rip-cage-tsf2.2" "$a9_err" || { a9_ok=false; a9_reason="${a9_reason:+$a9_reason; }stderr does not point at fast-follow bead rip-cage-tsf2.2"; }
+if [[ "$a9_ok" == "true" ]]; then pass 9 "allowlist promote --from-observed message names ADR-029 + rip-cage-tsf2.2"
+else fail 9 "allowlist promote --from-observed message content" "$a9_reason -- stderr: $(cat "$a9_err")"; fi
+rm -f "$a9_err"
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# A10: allowlist promote --from-observed is idempotent (hosts already in list not duplicated)
+# A10: allowlist promote --from-observed never mutates .rip-cage.yaml (no silent partial apply)
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 setup_sandbox
@@ -299,23 +280,21 @@ cat > "${WS}/.rip-cage.yaml" <<'YML'
 version: 1
 network:
   allowed_hosts:
-    - registry.example.com
-    - cdn.staging.myapp.io
+    - already.allowed.com
   mode: observe
 YML
 write_egress_log "${WS}/.rip-cage/egress.log"
+a10_before=$(cat "${WS}/.rip-cage.yaml")
 
 run_rc allowlist promote --from-observed \
   --config-file "${WS}/.rip-cage.yaml" \
   --log-file "${WS}/.rip-cage/egress.log" >/dev/null 2>&1
 
-a10_count_reg=$(grep -c "registry.example.com" "${WS}/.rip-cage.yaml" 2>/dev/null || echo 0)
-a10_count_cdn=$(grep -c "cdn.staging.myapp.io" "${WS}/.rip-cage.yaml" 2>/dev/null || echo 0)
+a10_after=$(cat "${WS}/.rip-cage.yaml")
 a10_ok=true a10_reason=""
-[[ "$a10_count_reg" -ne 1 ]] && a10_ok=false && a10_reason="registry.example.com appears $a10_count_reg times"
-[[ "$a10_count_cdn" -ne 1 ]] && a10_ok=false && a10_reason="${a10_reason:+$a10_reason; }cdn.staging.myapp.io appears $a10_count_cdn times"
-if [[ "$a10_ok" == "true" ]]; then pass 10 "allowlist promote idempotent (no duplicate hosts)"
-else fail 10 "allowlist promote idempotent" "$a10_reason"; fi
+[[ "$a10_before" != "$a10_after" ]] && a10_ok=false && a10_reason=".rip-cage.yaml was mutated by a retired flag (silent partial apply)"
+if [[ "$a10_ok" == "true" ]]; then pass 10 "allowlist promote --from-observed never mutates .rip-cage.yaml"
+else fail 10 "allowlist promote --from-observed no-mutation" "$a10_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------

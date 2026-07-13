@@ -50,101 +50,10 @@ extract() {
 # mise (project toolchain). No-op when no tool files are declared.
 command -v /usr/local/bin/mise >/dev/null 2>&1 && eval "$(/usr/local/bin/mise activate zsh)"
 
-# Rip-cage posture banner: ssh-agent forwarding status (ADR-017 D4). Surfaces
-# the preflight result on every new shell so users see forward-ssh posture on
-# every tmux attach, not just at rc up time (whose stdout is swallowed by the
-# tmux auto-attach).
-if [[ -r /etc/rip-cage/ssh-agent-status ]]; then
-  _rc_ssh_status=$(cat /etc/rip-cage/ssh-agent-status 2>/dev/null)
-  _rc_ssh_socket=$(cat /etc/rip-cage/ssh-agent-socket 2>/dev/null)
-  case "$_rc_ssh_status" in
-    ok:*) echo "[rip-cage] ssh-agent: ${_rc_ssh_status#ok:} key(s) loaded — git push works" ;;
-    empty)
-      echo "[rip-cage] ssh-agent: forwarded but EMPTY (0 keys) — push will fail."
-      echo "  Host agent: ${_rc_ssh_socket:-<unknown>} has no keys loaded."
-      if [[ "$_rc_ssh_socket" == "/run/host-services/ssh-auth.sock" ]]; then
-        # macOS via OrbStack/Docker Desktop — only the launchd agent is proxied
-        # across the VM boundary, NOT the user's shell session agent. Adding keys
-        # to the session agent (default 'ssh-add') is invisible to the cage.
-        echo "  Fix (macOS): SSH_AUTH_SOCK=\$(launchctl getenv SSH_AUTH_SOCK) ssh-add ~/.ssh/id_ed25519"
-        echo "  This populates the launchd agent the OrbStack/Docker Desktop proxy actually forwards."
-        echo "  Then: rc down && rc up. Or pass --no-forward-ssh to skip forwarding."
-      else
-        echo "  Fix: run 'ssh-add ~/.ssh/id_ed25519' on host, then 'rc down && rc up'"
-        echo "  Or pass --no-forward-ssh to skip forwarding."
-      fi
-      ;;
-    unreachable)
-      echo "[rip-cage] ssh-agent: socket UNREACHABLE — push will fail."
-      echo "  Socket: ${_rc_ssh_socket:-<unknown>} mounted but not responding."
-      if [[ "$_rc_ssh_socket" == "/run/host-services/ssh-auth.sock" ]]; then
-        # The most common cause on macOS is a permission mismatch on the mounted
-        # socket (host uid != container agent uid). init-rip-cage.sh chown'd it
-        # at start; if this still trips, the image likely predates the sudoers
-        # entry and needs a rebuild.
-        echo "  Likely cause: cage agent user cannot reach the host-forwarded socket."
-        echo "  Fix: ./rc build && rc down && rc up (rebuild picks up sudoers chown grant)."
-        echo "  If that fails: verify host ssh-agent is running ('ssh-add -l' on host)."
-      else
-        echo "  Fix: verify ssh-agent is running on host ('ssh-add -l'), then 'rc down && rc up'"
-      fi
-      echo "  Or pass --no-forward-ssh to skip forwarding."
-      ;;
-    no_host_agent)
-      echo "[rip-cage] ssh-agent: NO HOST AGENT available — forwarding inactive."
-      echo "  Host fix: start ssh-agent on host ('eval \"\$(ssh-agent -s)\" && ssh-add ~/.ssh/id_ed25519'),"
-      echo "  then 'rc destroy && rc up'. Or pass --no-forward-ssh to silence."
-      ;;
-    disabled) echo "[rip-cage] ssh-agent: forwarding disabled (--no-forward-ssh). Push from host." ;;
-  esac
-  unset _rc_ssh_status _rc_ssh_socket
-fi
-
-# Rip-cage posture banner: github.com identity routing status (ADR-020 D5).
-# Reads /etc/rip-cage/github-identity and /etc/rip-cage/ssh-config-source
-# (written by the in-cage preflight at rc up time) and emits a colorized
-# one-liner so users see identity routing posture on every tmux attach.
-# Skip silently if the sentinel is absent (--no-ssh-config, pre-P4 image).
-# Test-mode: RC_SENTINEL_DIR overrides /etc/rip-cage (same pattern as preflight).
-_rc_gi_dir="${RC_SENTINEL_DIR:-/etc/rip-cage}"
-if [[ -r "${_rc_gi_dir}/github-identity" ]]; then
-  _rc_gi=$(head -1 "${_rc_gi_dir}/github-identity" 2>/dev/null)
-  _rc_gi_src=$(cat "${_rc_gi_dir}/ssh-config-source" 2>/dev/null || echo "")
-  # Helpers: parse expected= and greeting= from subsequent lines
-  _rc_gi_expected=$(grep '^expected=' "${_rc_gi_dir}/github-identity" 2>/dev/null | head -1 | sed 's/^expected=//')
-  _rc_gi_greeting=$(grep '^greeting=' "${_rc_gi_dir}/github-identity" 2>/dev/null | head -1 | sed 's/^greeting=//')
-  case "$_rc_gi" in
-    disabled)
-      # --no-ssh-config: no routing, no noise
-      ;;
-    match)
-      # Green: resolved and confirmed
-      printf "\033[32m[rip-cage] github.com: %s (source: %s)\033[0m\n" \
-        "${_rc_gi_expected:-${_rc_gi_greeting}}" "${_rc_gi_src}"
-      ;;
-    unset)
-      # Yellow: no pin, pushes may go to wrong account
-      printf "\033[33m[rip-cage] github.com: unset — pushes will go to %s\033[0m\n" \
-        "${_rc_gi_greeting}"
-      ;;
-    mismatch)
-      # Red: expected differs from actual
-      printf "\033[31m[rip-cage] github.com: MISMATCH — expected %s, greeting %s\033[0m\n" \
-        "${_rc_gi_expected}" "${_rc_gi_greeting}"
-      ;;
-    unreachable)
-      # Yellow: network unreachable
-      printf "\033[33m[rip-cage] github.com: unreachable (skipping pubkey check)\033[0m\n"
-      ;;
-    *)
-      # Bare username: host-config branch (user's own Host github.com block)
-      printf "\033[32m[rip-cage] github.com: %s (source: %s)\033[0m\n" \
-        "${_rc_gi}" "${_rc_gi_src}"
-      ;;
-  esac
-  unset _rc_gi _rc_gi_src _rc_gi_expected _rc_gi_greeting
-fi
-unset _rc_gi_dir
+# ssh-agent forwarding status banner (ADR-017 D4) and github.com identity
+# routing banner (ADR-020 D5) retired at the msb cutover — the sentinels they
+# read are no longer written; git in cages authenticates over HTTPS + msb
+# `--secret` instead (ADR-029 D3, rip-cage-f1qo S5).
 
 # rip-cage-p1p: Per-session Claude config isolation + per-agent git author.
 # Multiplexer-agnostic (rip-cage-1f59.4): derive the session handle from

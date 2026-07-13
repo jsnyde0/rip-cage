@@ -1,0 +1,3 @@
+version: 1
+ssh:
+  allowed_keys: null
