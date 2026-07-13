@@ -741,26 +741,38 @@ FORCEFLAG="--fo"
 FORCEFLAG="${FORCEFLAG}rce"
 DESTRUCTIVE_CMD="git push ${FORCEFLAG} origin main"
 
+# dcg was un-baked from the base image to an opt-in composable recipe
+# (ADR-025 D2) — it is only present when a manifest actually composes it.
+# The agent-mail fixture used to build this cage (manifest-agent-mail.yaml)
+# does NOT compose the dcg recipe, so dcg is expected to be ABSENT here.
+# Guard every dcg hard-call on presence: absent is INFO/SKIP, not FAIL.
+DCG_PRESENT=0
+[ -x /usr/local/bin/dcg ] && DCG_PRESENT=1
+
 # PART 1: DCG POSITIVELY FIRES on a known-destructive command.
 DCG_CONFIG=/usr/local/lib/rip-cage/dcg/config.toml
 export DCG_CONFIG
-dcg_test_rc=0
-dcg_test_out=$(/usr/local/bin/dcg test "$DESTRUCTIVE_CMD" 2>&1) || dcg_test_rc=$?
-if [ "$dcg_test_rc" -ne 0 ]; then
-  echo "PASS(T2e-1): DCG fired (DENIED) on destructive command (exit=${dcg_test_rc})"
-else
-  echo "FAIL(T2e-1): DCG did NOT fire on destructive command (exit=${dcg_test_rc}, out=${dcg_test_out})"
-  FAILURES=$((FAILURES + 1))
-fi
+if [ "$DCG_PRESENT" -eq 1 ]; then
+  dcg_test_rc=0
+  dcg_test_out=$(/usr/local/bin/dcg test "$DESTRUCTIVE_CMD" 2>&1) || dcg_test_rc=$?
+  if [ "$dcg_test_rc" -ne 0 ]; then
+    echo "PASS(T2e-1): DCG fired (DENIED) on destructive command (exit=${dcg_test_rc})"
+  else
+    echo "FAIL(T2e-1): DCG did NOT fire on destructive command (exit=${dcg_test_rc}, out=${dcg_test_out})"
+    FAILURES=$((FAILURES + 1))
+  fi
 
-# PART 2: DCG ALLOWS a normal command (no false-positive blocks on safe ops).
-dcg_safe_rc=0
-dcg_safe_out=$(/usr/local/bin/dcg test "git status" 2>&1) || dcg_safe_rc=$?
-if [ "$dcg_safe_rc" -eq 0 ]; then
-  echo "PASS(T2e-2): DCG allowed normal command git status (exit=${dcg_safe_rc})"
+  # PART 2: DCG ALLOWS a normal command (no false-positive blocks on safe ops).
+  dcg_safe_rc=0
+  dcg_safe_out=$(/usr/local/bin/dcg test "git status" 2>&1) || dcg_safe_rc=$?
+  if [ "$dcg_safe_rc" -eq 0 ]; then
+    echo "PASS(T2e-2): DCG allowed normal command git status (exit=${dcg_safe_rc})"
+  else
+    echo "FAIL(T2e-2): DCG blocked normal command git status (exit=${dcg_safe_rc}, out=${dcg_safe_out})"
+    FAILURES=$((FAILURES + 1))
+  fi
 else
-  echo "FAIL(T2e-2): DCG blocked normal command git status (exit=${dcg_safe_rc}, out=${dcg_safe_out})"
-  FAILURES=$((FAILURES + 1))
+  echo "INFO(T2e-1/2): /usr/local/bin/dcg absent — dcg is an opt-in composable recipe (ADR-025 D2) not composed in the agent-mail fixture; dcg-fire/allow checks skipped"
 fi
 
 # PART 3: guard hook install + DCG still fires (NON-BREAKING characterization).
@@ -784,13 +796,17 @@ if command -v mcp-agent-mail >/dev/null 2>&1 && command -v am >/dev/null 2>&1; t
   else
     echo "PASS(T2e-3a): guard hook installed in test repo (am guard install rip-cage-t2e \$TESTREPO exit=0)"
 
-    dcg_after_rc=0
-    dcg_after_out=$(/usr/local/bin/dcg test "$DESTRUCTIVE_CMD" 2>&1) || dcg_after_rc=$?
-    if [ "$dcg_after_rc" -ne 0 ]; then
-      echo "PASS(T2e-3b): DCG still fires (DENIED) after guard hook installed — NON-BREAKING confirmed"
+    if [ "$DCG_PRESENT" -eq 1 ]; then
+      dcg_after_rc=0
+      dcg_after_out=$(/usr/local/bin/dcg test "$DESTRUCTIVE_CMD" 2>&1) || dcg_after_rc=$?
+      if [ "$dcg_after_rc" -ne 0 ]; then
+        echo "PASS(T2e-3b): DCG still fires (DENIED) after guard hook installed — NON-BREAKING confirmed"
+      else
+        echo "FAIL(T2e-3b): DCG did NOT fire after guard hook installed — guard hook is BREAKING DCG"
+        FAILURES=$((FAILURES + 1))
+      fi
     else
-      echo "FAIL(T2e-3b): DCG did NOT fire after guard hook installed — guard hook is BREAKING DCG"
-      FAILURES=$((FAILURES + 1))
+      echo "INFO(T2e-3b): /usr/local/bin/dcg absent — dcg is an opt-in composable recipe (ADR-025 D2) not composed in the agent-mail fixture; NON-BREAKING dcg-fire check skipped"
     fi
 
     echo "change" >> "$TESTREPO/file.txt"

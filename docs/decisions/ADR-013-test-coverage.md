@@ -108,6 +108,20 @@ Live-container assertions are not lost: the full `run-host.sh` (no flag) runs th
 
 **What would invalidate this:** a docker-in-docker or self-hosted CI runner lands (rip-cage-rat) — then live-container assertions can run in a dedicated CI job and the "no live container" rule relaxes *for that job*, not for the host-only tier; OR an authenticated pull-through Docker Hub cache removes the rate-limit flakiness (weakens the no-live-`docker run` rationale, though the tier-name and image-absence arguments stand independently).
 
+### D7: CI-excluded tiers carry an explicit audit trigger, not just human recall
+
+**Firmness: FLEXIBLE** (added 2026-07-12; warrant: rip-cage-7atw — four independent stale-test lag-axes accumulated silently in the NEEDS_CONTAINER/Part-B tier over one epic gap)
+
+Any test tier structurally excluded from CI (per D5/D6: the NEEDS_CONTAINER/container-E2E tier today; any successor under msb) MUST have a named trigger that forces it green — "someone will remember to run it" is not a trigger:
+
+- **Event triggers (named, not implied):** before any migration that re-platforms the tier's subject (the rip-cage-7atw pre-msb baseline is the canonical instance), and at the pre-tag full-host-suite release gate (release-ceremony doc).
+- **Retirement-time coupling:** when a mechanism is retired/reversed and its regression coverage lives *only* in a CI-excluded tier, the retirement's own acceptance criteria must include either a run of that tier or the corpus grep-sweep over it (see bd memory `stale-test-survives-mechanism-retirement-grep-corpus`). This is the forcing function the grep-sweep discipline lacked — all four 7atw lag-axes (tmux un-bake, credential-posture flip, retired hardcoded model, rc→thin-shim) escaped precisely because no retirement carried it.
+- **Staleness backstop:** if no event has forced the tier green within a long horizon (order months, judgment not threshold), running it becomes a schedulable work item (a bead), captured as a per-file ledger (the rip-cage-7atw.13 batch/ledger driver support makes this cheap to run in pieces and honest about what ran).
+
+**Rationale:** a green CI is structurally silent about a tier it never runs. rip-cage-7atw found 99/113 recoverable but 14 red and *four distinct refactor-lag classes* on first forced run in months — zero real regressions, meaning every red was pure test rot that earlier triggers would have caught one-at-a-time cheaply. The cost asymmetry (one stale test fixed at retirement time vs a 15-child refresh epic later) is the whole argument.
+
+**What would invalidate this:** the tier stops being CI-excluded (rip-cage-rat DinD/self-hosted runner, or the msb-era effect-probe suite proving cheap enough for CI) — then D5's normal CI gate covers it and the audit triggers reduce to the release gate.
+
 ## Trade-offs accepted
 
 - **E2E runtime**: 90s–8min is slower than contributors want on every commit. Mitigated by making it opt-in (`--e2e` flag) and cache-friendly.

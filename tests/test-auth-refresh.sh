@@ -21,10 +21,21 @@ pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
 # Helper: run rc with the /.dockerenv guard bypassed (for testing inside containers)
+#
+# Piping the shim through `bash -s --` makes ${BASH_SOURCE[0]:-$0} resolve to
+# "bash" (BASH_SOURCE is empty under piped-exec), so rc's _resolve_script_dir
+# falls back to $0="bash" -> dirname "bash" = "." -> cd "." && pwd = the
+# CALLER'S CWD at invocation time, not the repo. That breaks sourcing of
+# cli/lib/*.sh whenever this test is launched from outside the repo root.
+# Fix: run the piped invocation in a subshell cd'd to the repo root (computed
+# from this test file's own location via SCRIPT_DIR, not the launch CWD), so
+# the piped shim's CWD-based SCRIPT_DIR resolves correctly regardless of where
+# the test itself was launched from. The subshell keeps this scoped to the
+# piped call only -- it doesn't change the outer test script's CWD.
 run_rc() {
   local rc_script
   rc_script=$(sed 's|if \[\[ -f /\.dockerenv \]\]|if false|' "$RC")
-  echo "$rc_script" | bash -s -- "$@"
+  (cd "${SCRIPT_DIR}/.." && echo "$rc_script" | bash -s -- "$@")
 }
 
 # --- Test 1: usage includes auth refresh ---

@@ -50,6 +50,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/_agent-model-lib.sh
+source "${SCRIPT_DIR}/_agent-model-lib.sh"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 FIXTURES="${SCRIPT_DIR}/fixtures"
@@ -356,7 +358,7 @@ echo ""
 echo "=== Setup: Register agents ==="
 
 AGENT_A_NAME=$(docker exec "$CONTAINER_NAME" am agents register \
-  --project /workspace --program pi --model claude-sonnet --json 2>/dev/null \
+  --project /workspace --program pi --model "${RC_TEST_AGENT_MODEL_NATIVE}" --json 2>/dev/null \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('name',''))" 2>/dev/null)
 
 if [[ -z "$AGENT_A_NAME" ]]; then
@@ -366,7 +368,7 @@ fi
 pass "Setup: agent A registered as '${AGENT_A_NAME}'"
 
 AGENT_B_NAME=$(docker exec "$CONTAINER_NAME" am agents register \
-  --project /workspace --program pi --model claude-sonnet --json 2>/dev/null \
+  --project /workspace --program pi --model "${RC_TEST_AGENT_MODEL_NATIVE}" --json 2>/dev/null \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('name',''))" 2>/dev/null)
 
 if [[ -z "$AGENT_B_NAME" ]]; then
@@ -513,7 +515,7 @@ B_PROMPT_CONTENT=$(docker exec "$CONTAINER_NAME" cat "$PROMPT_B_PATH" 2>/dev/nul
 # 'sleep 600' keeps the pane alive well past B's own polling window (up to
 # 20 * 5s + reasoning time) so later steps can still read its scrollback.
 docker exec "$CONTAINER_NAME" herdr agent start mail-b --cwd /workspace \
-  -- bash -c 'pi --provider openrouter --model anthropic/claude-haiku-4.5 -p "$1"; sleep 600' _ "$B_PROMPT_CONTENT"
+  -- bash -c "pi --provider openrouter --model ${RC_TEST_AGENT_MODEL} -p \"\$1\"; sleep 600" _ "$B_PROMPT_CONTENT"
 EXIT_B=$?
 
 if [[ $EXIT_B -eq 0 ]]; then
@@ -587,7 +589,7 @@ A_PROMPT_CONTENT=$(docker exec "$CONTAINER_NAME" cat "$PROMPT_A_PATH" 2>/dev/nul
 # comment for the argv/pane-persistence rationale (sleep tail keeps A's pane
 # readable through Step 6, well after A's own one-shot task completes).
 docker exec "$CONTAINER_NAME" herdr agent start mail-a --cwd /workspace \
-  -- bash -c 'pi --provider openrouter --model anthropic/claude-haiku-4.5 -p "$1"; sleep 600' _ "$A_PROMPT_CONTENT"
+  -- bash -c "pi --provider openrouter --model ${RC_TEST_AGENT_MODEL} -p \"\$1\"; sleep 600" _ "$A_PROMPT_CONTENT"
 EXIT_A=$?
 
 if [[ $EXIT_A -eq 0 ]]; then
