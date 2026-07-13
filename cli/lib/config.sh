@@ -53,6 +53,22 @@ auth.credentials|additive_list|[]
 EOF
 }
 
+# Retired-field table — fields removed from the schema at the msb cutover that a
+# stale config file may still carry. Kept as a first-class list (not woven into
+# the schema) so a retired field loud-rejects (see _config_load_layer) instead of
+# silently vanishing in _config_merge's schema walk. Consumed retirements:
+#   ssh.allowed_keys / ssh.allowed_hosts        -> ADR-029 D3 + ADR-022 D6
+#   network.egress.mediator / *_env_file        -> ADR-029 D2/D5
+# Format: <dotted_key>|<cite>|<fix>
+_config_retired_fields() {
+  cat <<'EOF'
+ssh.allowed_keys|ADR-029 D3 + ADR-022 D6, in-guest ssh host-key scoping retired|delete this block -- ssh host scoping is replaced by HTTPS remotes + host-bound auth.credentials tokens
+ssh.allowed_hosts|ADR-029 D3 + ADR-022 D6, in-guest ssh host-key scoping retired|delete this block -- ssh host scoping is replaced by HTTPS remotes + host-bound auth.credentials tokens
+network.egress.mediator|ADR-029 D2/D5, the co-located mediator-proxy archetype retired|delete this block -- credential non-possession is now msb host-side --secret injection (see auth.credentials)
+network.egress.mediator_env_file|ADR-029 D2/D5, the co-located mediator-proxy archetype retired|delete this block -- credential non-possession is now msb host-side --secret injection (see auth.credentials)
+EOF
+}
+
 # Highest schema version this rc supports. Files declaring a higher version
 # trigger D3 field-type-conditional behavior.
 RC_CONFIG_SUPPORTED_VERSION_MAX=1
@@ -372,6 +388,31 @@ _config_load_layer() {
       return 1
     fi
   done < <(_config_schema_lines)
+
+  # Retired-field loud-reject (Fable ruling 6, rip-cage-tsf2). Four fields were
+  # removed from _config_schema_lines at the msb cutover. Because _config_merge
+  # walks the schema explicitly (only declared fields survive the merge), a file
+  # still carrying one of them would have it SILENTLY DROPPED with zero feedback
+  # — the identical posture-surprise class the retired MEDIATOR *archetype*
+  # rejection guards against (cli/lib/manifest_checks.sh): declared containment
+  # silently un-enforcing = false confidence (ADR-029 D1). The archetype-vs-field
+  # asymmetry would otherwise let the config selectively lie. Reject each at the
+  # same actionability bar as the archetype error: name the field, the file, WHY
+  # it's gone (the right ADR cite), and the exact fix.
+  local _rf_key _rf_cite _rf_fix
+  while IFS='|' read -r _rf_key _rf_cite _rf_fix; do
+    [[ -z "$_rf_key" ]] && continue
+    local _rf_path_arr _rf_present
+    _rf_path_arr=$(jq -nc --arg k "$_rf_key" '$k | split(".")')
+    # Presence, not truthiness: a declared-but-null retired field (e.g.
+    # `ssh.allowed_keys: null`) is still a stale declaration the operator must
+    # be told about. `paths` enumerates every path including null-valued leaves.
+    _rf_present=$(jq -c --argjson p "$_rf_path_arr" '[paths] | any(. == $p)' <<<"$json" 2>/dev/null || echo false)
+    if [[ "$_rf_present" == "true" ]]; then
+      echo "Error: '$file' declares retired config field '${_rf_key}' — retired in the msb migration (${_rf_cite}). Fix: ${_rf_fix}." >&2
+      return 1
+    fi
+  done < <(_config_retired_fields)
 
   # D7 (rip-cage-xhgr, fail-closed): unknown keys under auth.per_tool. abort
   # loud rather than silently vanishing. _config_merge only reads the two

@@ -1320,6 +1320,61 @@ test_t61_config_get_key_traverses_through_scalar() {
 }
 
 # ---------------------------------------------------------------------------
+# T62-T66: retired-field loud-reject (Fable ruling 6, rip-cage-tsf2).
+# Four containment-bearing fields removed from the schema at the msb cutover
+# (ssh.allowed_keys, ssh.allowed_hosts, network.egress.mediator,
+# network.egress.mediator_env_file) must LOUD-REJECT rather than silently drop
+# in _config_merge's schema walk — declared containment silently un-enforcing =
+# false confidence (ADR-029 D1). Distinct from T36/T37 (network.writable_hosts,
+# a retired write-gate that stays silently ignored — no containment posture).
+# ---------------------------------------------------------------------------
+_assert_retired_reject() {
+  local field="$1" fixture="$2" cite_grep="$3"
+  setup_sandbox "" "$fixture"
+  local stderr_file exit_code=0
+  stderr_file=$(mktemp)
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] \
+     && grep -q "retired config field '${field}'" "$stderr_file" \
+     && grep -q "retired in the msb migration" "$stderr_file" \
+     && grep -q "$cite_grep" "$stderr_file" \
+     && grep -qi "Fix:" "$stderr_file"; then
+    pass "retired field '${field}' loud-rejects with actionable message (ruling 6)"
+  else
+    fail "expected non-zero + actionable retired-field message for '${field}', got exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+test_t62_retired_ssh_allowed_keys() {
+  _assert_retired_reject "ssh.allowed_keys" "config-project-retired-ssh-allowed-keys.yaml" "ADR-029 D3 + ADR-022 D6"
+}
+test_t63_retired_ssh_allowed_hosts() {
+  _assert_retired_reject "ssh.allowed_hosts" "config-project-retired-ssh-allowed-hosts.yaml" "ADR-029 D3 + ADR-022 D6"
+}
+test_t64_retired_egress_mediator() {
+  _assert_retired_reject "network.egress.mediator" "config-project-retired-egress-mediator.yaml" "ADR-029 D2/D5"
+}
+test_t65_retired_egress_mediator_env_file() {
+  _assert_retired_reject "network.egress.mediator_env_file" "config-project-retired-egress-mediator-env-file.yaml" "ADR-029 D2/D5"
+}
+test_t66_clean_config_no_false_reject() {
+  # Negative control: a modern config with NONE of the retired fields must pass —
+  # guards against an over-broad path match rejecting legitimate configs.
+  setup_sandbox "config-global-with-network.yaml" "config-project-with-network.yaml"
+  local stderr_file exit_code=0
+  stderr_file=$(mktemp)
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -eq 0 ]] && ! grep -q "retired config field" "$stderr_file"; then
+    pass "T66 clean config with no retired fields is not falsely rejected"
+  else
+    fail "T66 clean config unexpectedly rejected, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
@@ -1379,6 +1434,11 @@ run_test test_t58_config_get_bogus_key_errors
 run_test test_t59_config_get_null_value_not_not_found
 run_test test_t60_config_get_path_arg
 run_test test_t61_config_get_key_traverses_through_scalar
+run_test test_t62_retired_ssh_allowed_keys
+run_test test_t63_retired_ssh_allowed_hosts
+run_test test_t64_retired_egress_mediator
+run_test test_t65_retired_egress_mediator_env_file
+run_test test_t66_clean_config_no_false_reject
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then
