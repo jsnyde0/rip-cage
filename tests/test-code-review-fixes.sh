@@ -190,77 +190,31 @@ else
 fi
 
 # Live tests: require Docker and must not run under host-only CI mode
-# (alpine pull would be subject to Docker Hub anonymous rate limits in CI)
+# (L2-b's `rc up` needs a real msb boot, which is a container-tier op)
 if [[ -n "${RC_HOST_ONLY:-}" ]]; then
   echo ""
-  echo "SKIP (host-only): L2-a live paused-container check (needs a live container; runs via full run-host.sh / container tier)"
   echo "SKIP (host-only): L2-b live legacy-container egress check (needs a live container; runs via full run-host.sh / container tier)"
 elif command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
   echo ""
   echo "--- L2 live tests (Docker available) ---"
 
-  # NOTE (rip-cage-tsf2, coordinator branch-fix scout, left UNCHANGED pending
-  # reclassification — CASE (b), NOT fixed here): this live paused-container
-  # probe targets genuinely-retired docker-lifecycle machinery, not just a
-  # reshaped assertion. It is structurally, not just empirically, unreachable
-  # under msb:
-  #   1. `msb --help` has no `pause` subcommand at all -- there is no msb
-  #      primitive that produces a paused sandbox to construct this scenario
-  #      with (unlike `docker pause`, used below).
-  #   2. cli/lib/msb_runtime.sh's _msb_sandbox_state() case-maps
-  #      `.status`: Running->running, Stopped->exited, ""->absent(err), and
-  #      *EVERY OTHER VALUE*->"unknown". There is no code path, for any
-  #      msb-reported status string, that can ever produce the literal
-  #      "paused" this probe polls for -- so cmd_up's `elif [[ "$state" ==
-  #      "paused" ]]` branch (cli/up.sh) is provably dead code under msb,
-  #      confirmed by that very branch's own comment ("msb has no
-  #      pause/restarting/removing/dead concept — unreachable under msb;
-  #      kept defensive").
-  # A raw `docker pause` on a raw `docker run` container (below) is also
-  # invisible to `rc up`'s state resolution entirely now (cmd_up queries
-  # `msb inspect`, never `docker inspect`/`docker ps`) -- so `rc up` falls
-  # through to "no existing sandbox -> create a new one", which is a
-  # DIFFERENT, unrelated code path than the one this probe means to hit,
-  # and (side effect, also unresolved) leaks a real running msb sandbox on
-  # every run since the cleanup below only knows `docker rm`, never `msb
-  # rm`, for this specific container.
-  # Left the live docker construction, its docker-only cleanup, and this
-  # probe's assertion (`.code == "CONTAINER_STATE_UNSUPPORTED"`) verbatim.
-
-  # Live L2-a: paused container → CONTAINER_STATE_UNSUPPORTED
-  # rc resolves paths via realpath before comparing. On macOS /tmp → /private/tmp.
-  # We must:
-  #   1. Resolve TEST_PATH_L2 via realpath so labels match what rc sees after resolution.
-  #   2. Derive CNAME_L2 from the resolved path (mirrors container_name() in rc).
-  TEST_PATH_L2_RAW="/tmp/rc-l2-$(date +%s)"
-  mkdir -p "$TEST_PATH_L2_RAW"
-  TEST_PATH_L2=$(realpath "$TEST_PATH_L2_RAW")
-  # Derive the name rc would compute for this path (mirrors container_name() in rc)
-  _l2a_parent=$(basename "$(dirname "$TEST_PATH_L2")")
-  _l2a_base=$(basename "$TEST_PATH_L2")
-  CNAME_L2=$(echo "${_l2a_parent}-${_l2a_base}" | tr -cs 'a-zA-Z0-9_.-' '-' | sed 's/^[.-]*//' | sed 's/-$//')
-  docker rm -f "$CNAME_L2" >/dev/null 2>&1 || true
-  if ! docker run -d --name "$CNAME_L2" \
-    --label rc.source.path="$TEST_PATH_L2" \
-    --label rc.egress=on \
-    alpine sleep 600 >/dev/null 2>&1; then
-    rm -rf "$TEST_PATH_L2_RAW"
-    fail "L2-a: docker run failed — cannot test paused-container path"
-  else
-    docker pause "$CNAME_L2" >/dev/null 2>&1 || true
-    # RC_ALLOWED_ROOTS must include TEST_PATH_L2 so path validation passes
-    # Capture stdout only — CONTAINER_STATE_UNSUPPORTED JSON is on stdout (json_error rc:65).
-    # 2>/dev/null avoids any stderr progress preamble (e.g. pulling) from polluting the assertion.
-    l2a_result=$(RC_ALLOWED_ROOTS="$TEST_PATH_L2" "$RC" --output json up "$TEST_PATH_L2" 2>/dev/null) || true
-    docker unpause "$CNAME_L2" >/dev/null 2>&1 || true
-    docker rm -f "$CNAME_L2" >/dev/null 2>&1 || true
-    rm -rf "$TEST_PATH_L2_RAW"
-    if echo "$l2a_result" | jq -e '.code == "CONTAINER_STATE_UNSUPPORTED"' >/dev/null 2>&1; then
-      pass "paused container → CONTAINER_STATE_UNSUPPORTED (json)"
-    else
-      fail "paused container did not return CONTAINER_STATE_UNSUPPORTED. Got: $l2a_result"
-    fi
-  fi
+  # Live L2-a RETIRED (rip-cage-tsf2, coordinator-confirmed classification
+  # call, 2026-07-13): this probe used to pause a raw `docker run` container
+  # and assert `rc up` returned CONTAINER_STATE_UNSUPPORTED for it. That
+  # `docker pause` construction has no msb equivalent -- `msb --help` has no
+  # `pause` subcommand, and cli/lib/msb_runtime.sh's _msb_sandbox_state()
+  # can never report the literal "paused" (its case statement only ever
+  # produces running/exited/absent/unknown), so the cmd_up branch it targeted
+  # is unreachable under msb by design (that branch's own comment: "msb has
+  # no pause/restarting/removing/dead concept — unreachable under msb; kept
+  # defensive"). Retiring this live probe loses zero coverage: the guarded
+  # fail-loud-on-unsupported-state behavior (ADR-001) remains covered by the
+  # static source-shape assertions above --
+  # "CONTAINER_STATE_UNSUPPORTED error code present in rc",
+  # "cmd_up has explicit branch for state: paused/restarting/removing/dead",
+  # and "CONTAINER_STATE_UNSUPPORTED referenced >= 8 times in cmd_up" --
+  # which all still pass. Follow-up (optional msb-status-stub re-platform,
+  # if ever wanted): rip-cage-tsf2.7.
 
   # Live L2-b: msb-native construction (rip-cage-tsf2, coordinator branch
   # fix; CASE (a) — surviving behavior, mechanics re-platformed onto msb).
