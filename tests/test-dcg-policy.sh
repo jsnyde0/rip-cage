@@ -2,7 +2,7 @@
 # Host-side unit tests for DCG host-adoptable policy (ADR-025 D1/D5, rip-cage-hhh.11.2).
 #
 # Coverage:
-#   C1   Schema — dcg.packs and dcg.custom_rule_paths are additive_list in schema
+#   C1   Schema — dcg.packs and dcg.custom_rule_paths are union-default 'list' in schema (v1 name: additive_list; ADR-021 v2 rename, semantics unchanged)
 #   C2   Safe-by-default — no dcg.* config adds NO mount (baked default untouched)
 #   C3   Happy path — dcg.packs: [net] produces merged config with net in enabled list
 #   C4   Additive — merged config always contains "core" (floor is uncrossable)
@@ -107,24 +107,24 @@ _cleanup_no_py3() {
 trap _cleanup_no_py3 EXIT
 
 # ---------------------------------------------------------------------------
-# C1  Schema — dcg.packs and dcg.custom_rule_paths are additive_list
+# C1  Schema — dcg.packs and dcg.custom_rule_paths are union-default list (ADR-021 v2)
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== C1: schema declares dcg.packs and dcg.custom_rule_paths as additive_list ==="
+echo "=== C1: schema declares dcg.packs and dcg.custom_rule_paths as union-default list (v2) ==="
 
 _c1_packs_type=$(_config_schema_field_type 'dcg.packs' 2>/dev/null || true)
 _c1_paths_type=$(_config_schema_field_type 'dcg.custom_rule_paths' 2>/dev/null || true)
 
 _c1_ok=true _c1_reason=""
-if [[ "$_c1_packs_type" != "additive_list" ]]; then
-  _c1_ok=false; _c1_reason="dcg.packs type='$_c1_packs_type' (want additive_list)"
+if [[ "$_c1_packs_type" != "list" ]]; then
+  _c1_ok=false; _c1_reason="dcg.packs type='$_c1_packs_type' (want list)"
 fi
-if [[ "$_c1_paths_type" != "additive_list" ]]; then
-  _c1_ok=false; _c1_reason="${_c1_reason:+$_c1_reason; }dcg.custom_rule_paths type='$_c1_paths_type' (want additive_list)"
+if [[ "$_c1_paths_type" != "list" ]]; then
+  _c1_ok=false; _c1_reason="${_c1_reason:+$_c1_reason; }dcg.custom_rule_paths type='$_c1_paths_type' (want list)"
 fi
 
 if [[ "$_c1_ok" == "true" ]]; then
-  pass 1 "dcg.packs and dcg.custom_rule_paths are additive_list in schema"
+  pass 1 "dcg.packs and dcg.custom_rule_paths are union-default 'list' in schema (v1 name: additive_list; ADR-021 v2 rename, semantics unchanged)"
 else
   fail 1 "schema field types" "$_c1_reason"
 fi
