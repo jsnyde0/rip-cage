@@ -74,7 +74,7 @@ fi
 # ---------------------------------------------------------------------------
 gm_sandbox_reset
 cat > "${GM_XDG}/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist:
     - .custom-only-entry

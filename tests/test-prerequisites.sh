@@ -95,8 +95,8 @@ T2_WKSP=$(mktemp -d)
 T2_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-prereq-t2-XXXXXX.yaml")
 T2_MANIFEST=$(mktemp "${TMPDIR:-/tmp}/rc-prereq-t2-manifest-XXXXXX.yaml")
 mkdir -p "${T2_WKSP}/.git"
-printf 'version: 1\nsession:\n  multiplexer: tmux\nmounts:\n  denylist: []\n' > "${T2_WKSP}/.rip-cage.yaml"
-printf 'version: 1\nmounts:\n  denylist: []\n' > "$T2_GLOBAL_CFG"
+printf 'version: 2\nsession:\n  multiplexer: tmux\nmounts:\n  denylist: []\n' > "${T2_WKSP}/.rip-cage.yaml"
+printf 'version: 2\nmounts:\n  denylist: []\n' > "$T2_GLOBAL_CFG"
 # Empty manifest: no tools / no MULTIPLEXER entries.
 printf 'version: 1\ntools: []\n' > "$T2_MANIFEST"
 output=$(RC_ALLOWED_ROOTS="$T2_WKSP" RC_CONFIG_GLOBAL="$T2_GLOBAL_CFG" \

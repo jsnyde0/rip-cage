@@ -1,6 +1,6 @@
 Proposed <GM_ROOT>/home/.config/rip-cage/config.yaml:
 ----
-version: 1
+version: 2
 mounts:
   denylist:
     - .ssh

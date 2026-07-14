@@ -189,7 +189,7 @@ else
   git -C "$RCL_WS" add README.md
   git -C "$RCL_WS" -c user.name="scratch" -c user.email="scratch@example.invalid" commit -q -m "initial" >/dev/null 2>&1
   cat > "${RCL_WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts: []
 YML
@@ -204,7 +204,7 @@ YML
     RCL_CAGE=$(echo "$rcl_up_out" | tail -1 | jq -r '.name' 2>/dev/null)
     # Add switch.berlin to allowed_hosts, then reload for real.
     cat > "${RCL_WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts: [switch.berlin]
 YML
@@ -231,7 +231,7 @@ TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-network-allowed-hosts.yaml"
 make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Snapshot matches live (network.allowed_hosts=[switch.berlin])
-write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 c2_pre_mtime=$(stat -c %Y "${CACHE_DIR}/config-applied.json" 2>/dev/null || stat -f %m "${CACHE_DIR}/config-applied.json")
 sleep 1  # ensure measurable mtime delta if mutation happens
 
@@ -253,13 +253,13 @@ teardown_sandbox
 TOTAL=$((TOTAL + 1))
 setup_sandbox ""
 cat > "${WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts: []
 YML
 make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Snapshot has a synthetic field NOT in the live config — diff reports it.
-write_snapshot '{"version":1,"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":2,"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 c3_out=$(run_rc reload "$CNAME" 2>&1)
 c3_exit=$?
@@ -277,7 +277,7 @@ teardown_sandbox
 TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-network-allowed-hosts.yaml"
 make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 c4_pre_snap_sum=$(shasum "${CACHE_DIR}/config-applied.json" | awk '{print $1}')
 
 c4_out=$(run_rc reload "$CNAME" --dry-run 2>&1)
@@ -298,7 +298,7 @@ teardown_sandbox
 TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-network-allowed-hosts.yaml"
 make_msb_stub "$STUB_DIR" "$CNAME" "exited" "$WS"
-write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 c5_out=$(run_rc reload "$CNAME" 2>&1)
 c5_exit=$?
@@ -332,7 +332,7 @@ else
   git -C "$RCL_WS" add README.md
   git -C "$RCL_WS" -c user.name="scratch" -c user.email="scratch@example.invalid" commit -q -m "initial" >/dev/null 2>&1
   cat > "${RCL_WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts: []
 YML
@@ -348,7 +348,7 @@ YML
     RCL_SNAP="${HOME}/.cache/rip-cage/${RCL_CAGE}/config-applied.json"
     c6_pre_inode=$(stat -c %i "$RCL_SNAP" 2>/dev/null || stat -f %i "$RCL_SNAP")
     cat > "${RCL_WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts: [switch.berlin]
 YML
@@ -373,7 +373,7 @@ fi
 TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-network-allowed-hosts.yaml"
 make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 # Pre-create the lock dir (simulates a concurrent reload holding it)
 mkdir -p "${CACHE_DIR}/.reload.lock.d"
@@ -398,7 +398,7 @@ TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-network-allowed-hosts.yaml"
 make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Snapshot equals live (post-reload state)
-write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 c8_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
@@ -421,7 +421,7 @@ teardown_sandbox
 TOTAL=$((TOTAL + 1))
 setup_sandbox ""
 cat > "${WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts:
     - switch.berlin
@@ -429,7 +429,7 @@ YML
 make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Snapshot has eligible field aligned (allowed_hosts matches) but a synthetic
 # non-eligible field present that live lacks → drift hint must fire.
-write_snapshot '{"version":1,"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":2,"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 c9_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
@@ -462,7 +462,7 @@ else
   git -C "$RCL_WS" add README.md
   git -C "$RCL_WS" -c user.name="scratch" -c user.email="scratch@example.invalid" commit -q -m "initial" >/dev/null 2>&1
   cat > "${RCL_WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts: []
 YML
@@ -479,7 +479,7 @@ YML
     chmod 0644 "$RCL_SNAP"
     c10_pre_mode=$(stat -c %a "$RCL_SNAP" 2>/dev/null || stat -f %Mp%Lp "$RCL_SNAP")
     cat > "${RCL_WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts: [switch.berlin]
 YML
@@ -507,7 +507,7 @@ TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-network-allowed-hosts.yaml"
 make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Old snapshot: no session.multiplexer field (written before rip-cage-1f59 landed).
-write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]}}'
+write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"]},"dcg":{"packs":[],"custom_rule_paths":[]}}'
 
 c11_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
@@ -531,7 +531,7 @@ TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-network-allowed-hosts.yaml"
 make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Old snapshot: no mounts.symlinks.scope field.
-write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 c12_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
@@ -580,7 +580,7 @@ TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-network-allowed-hosts.yaml"
 make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
 # Snapshot has allowed_hosts=[] but live fixture has [switch.berlin] -> eligible drift.
-write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 
 c14_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true

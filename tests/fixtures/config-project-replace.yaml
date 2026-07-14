@@ -1,0 +1,6 @@
+# Project layer !replace discards everything inherited from lower stack
+# positions (schema default + global) and becomes the sole source.
+version: 2
+network:
+  allowed_hosts: !replace
+    - project-only.example

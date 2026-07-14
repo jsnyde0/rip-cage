@@ -37,7 +37,7 @@ setup_sandbox() {
   mkdir -p "$TEST_WS"
   # Write an empty-denylist global config so denylist preflight doesn't fire
   cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: []
   allow_risky: null

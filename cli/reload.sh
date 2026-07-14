@@ -5,8 +5,9 @@
 
 # cmd_reload — host-side hot-reload of .rip-cage.yaml allowlist changes
 # (rip-cage-ocn / ADR-022 D6, carried forward past the ssh-cluster retirement
-# per ADR-029 D3/D4). Today: network.allowed_hosts / network.mode content
-# only (the ssh.allowed_hosts-specific reload mechanism retired at the msb
+# per ADR-029 D3/D4). Today: network.allowed_hosts content only
+# (network.mode retired as vestigial at the v2 schema bump, ADR-021 D9;
+# the ssh.allowed_hosts-specific reload mechanism retired at the msb
 # cutover, rip-cage-f1qo S5). Refuses loud on anything else. Exit codes:
 #   0 — applied (or no-op when live matches snapshot)
 #   1 — refuse-loud (non-reload-eligible field changed)
@@ -216,9 +217,11 @@ _config_schema_defaults_json() {
 # Paths listed here can be mutated by `rc reload` without container recreation.
 # Anything else triggers refuse-loud (exit 1) at reload time and a recreate
 # hint from _config_emit_hint when label/snapshot drift is detected.
-# rip-cage-hhh.2: network.* fields added as reload-eligible — rc reload regenerates
-# the egress-rules file when these change (D10: regeneration ONLY at rc up / rc reload).
-_RC_RELOAD_ELIGIBLE_PATHS='network.allowed_hosts network.mode'
+# network.allowed_hosts is the sole reload-eligible path post-schema-v2 (ADR-021
+# D9): network.mode is a retired vestigial field (ADR-029, egress is msb default-
+# deny — there is no observe/block mode). A change to network.allowed_hosts is
+# applied by rc reload's cold-recreate against the now-current .rip-cage.yaml.
+_RC_RELOAD_ELIGIBLE_PATHS='network.allowed_hosts'
 
 
 # Diff two effective-config JSON objects ($1 = live, $2 = applied snapshot).

@@ -170,7 +170,7 @@ TOTAL=$((TOTAL + 1))
 setup_sandbox
 
 cat > "${WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts:
     - registry.npmjs.org
@@ -232,7 +232,7 @@ TOTAL=$((TOTAL + 1))
 setup_sandbox
 
 cat > "${WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts:
     - already.allowed.com
@@ -277,7 +277,7 @@ TOTAL=$((TOTAL + 1))
 setup_sandbox
 
 cat > "${WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts:
     - already.allowed.com
@@ -338,7 +338,7 @@ TOTAL=$((TOTAL + 1))
 setup_sandbox
 
 cat > "${WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts:
     - test.example.com

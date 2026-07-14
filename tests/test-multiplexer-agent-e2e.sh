@@ -191,7 +191,7 @@ SEED_FIRST_LINE="hello-from-mux-agent-e2e-$(date +%s)"
 printf '%s\nline2\nline3\n' "$SEED_FIRST_LINE" > "${WORKSPACE}/SEED.txt"
 
 # .rip-cage.yaml: session.multiplexer: tmux (the surface under test)
-printf 'version: 1\nsession:\n  multiplexer: tmux\n' > "${WORKSPACE}/.rip-cage.yaml"
+printf 'version: 2\nsession:\n  multiplexer: tmux\n' > "${WORKSPACE}/.rip-cage.yaml"
 
 export RC_ALLOWED_ROOTS="${MUX_AGENT_TMP}"
 

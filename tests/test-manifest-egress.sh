@@ -73,7 +73,7 @@ setup_manifest_sandbox() {
   # work correctly even when the driver exports RC_CONFIG_GLOBAL with an empty
   # denylist. This makes E3 self-contained (not dependent on the user's real config).
   cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist:
     - ".ssh"

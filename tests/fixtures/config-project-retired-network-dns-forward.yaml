@@ -1,0 +1,4 @@
+version: 2
+network:
+  dns:
+    forward_to: 1.1.1.1

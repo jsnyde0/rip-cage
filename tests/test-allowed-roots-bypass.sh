@@ -55,7 +55,7 @@ setup_sandbox() {
 
   # Minimal global config: empty denylist (we test allowed-roots logic only)
   cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: []
   allow_risky: null

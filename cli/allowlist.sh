@@ -84,14 +84,14 @@ _allowlist_resolve_config_file() {
 
 
 # _allowlist_add_host_to_yaml: idempotently append <host> to network.allowed_hosts
-# in the given YAML file. Creates the file with version: 1 if absent.
+# in the given YAML file. Creates the file with version: 2 if absent.
 # Returns 0=added, 1=skipped (already present).
 _allowlist_add_host_to_yaml() {
   local host="$1" yaml_file="$2"
 
   # Create minimal file if absent.
   if [[ ! -f "$yaml_file" ]]; then
-    printf 'version: 1\nnetwork:\n  allowed_hosts: []\n' > "$yaml_file"
+    printf 'version: 2\nnetwork:\n  allowed_hosts: []\n' > "$yaml_file"
   fi
 
   # Check if host already present (line-level scan — avoids yq parse for simple idempotency).

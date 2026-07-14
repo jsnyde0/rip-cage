@@ -54,7 +54,7 @@ setup_sandbox() {
   mkdir -p "${TEST_HOME}/.config/rip-cage"
   # Minimal global config (secret-path denylist preflight requires a global config).
   cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: []
   allow_risky: null
@@ -109,7 +109,7 @@ STUB
 # ---------------------------------------------------------------------------
 # M1: .rip-cage.yaml present + mounts.config_mode absent → shadow-mount :ro
 # ---------------------------------------------------------------------------
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 ssh:
   allowed_hosts:
     - github.com"
@@ -139,7 +139,7 @@ teardown_sandbox
 # ---------------------------------------------------------------------------
 # M2: .rip-cage.yaml present + mounts.config_mode: ro → shadow-mount :ro
 # ---------------------------------------------------------------------------
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 mounts:
   config_mode: ro"
 
@@ -168,7 +168,7 @@ teardown_sandbox
 # ---------------------------------------------------------------------------
 # M3: .rip-cage.yaml present + mounts.config_mode: rw → NO shadow-mount
 # ---------------------------------------------------------------------------
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 mounts:
   config_mode: rw"
 
@@ -250,7 +250,7 @@ teardown_sandbox
 # ---------------------------------------------------------------------------
 # M5: Invalid mounts.config_mode: bogus → aborts loud
 # ---------------------------------------------------------------------------
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 mounts:
   config_mode: bogus"
 
@@ -288,7 +288,7 @@ teardown_sandbox
 #     rc.config-mode label disagrees with current effective config (ro→rw).
 # Stubs docker inspect via a $PATH shim (same idiom as test-ssh-allowlist.sh C20-C22).
 # ---------------------------------------------------------------------------
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 mounts:
   config_mode: rw"   # current effective: rw
 
@@ -330,7 +330,7 @@ teardown_sandbox
 # ---------------------------------------------------------------------------
 # M7: Mount-shape lock same-state — label agrees with current config → returns 0
 # ---------------------------------------------------------------------------
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 mounts:
   config_mode: ro"   # current effective: ro
 
@@ -388,7 +388,7 @@ teardown_sandbox
 # M9: auth.credential_mounts: none does NOT perturb the ro shadow-mount
 # (rip-cage-seqc.4 / C4).
 # ---------------------------------------------------------------------------
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 auth:
   credential_mounts: none"
 

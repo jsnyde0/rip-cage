@@ -293,13 +293,13 @@ _e1c_sandbox=$(mktemp -d "${TMPDIR:-/tmp}/rc-fakemux-composable-config-XXXXXX")
 mkdir -p "${_e1c_sandbox}/.config/rip-cage"
 mkdir -p "${_e1c_sandbox}/workspace"
 cat > "${_e1c_sandbox}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: []
 YAML
 touch "${_e1c_sandbox}/.config/rip-cage/tools.yaml"
 cat > "${_e1c_sandbox}/workspace/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 session:
   multiplexer: fakemux
 YAML
@@ -321,7 +321,7 @@ fi
 
 # Belt-and-suspenders: ghost-mux (not in label) must FAIL loud
 cat > "${_e1c_sandbox}/workspace/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 session:
   multiplexer: ghost-mux
 YAML
@@ -356,7 +356,7 @@ printf '# fakemux composability test workspace\n' > "${FM_TMP}/fakemux-workspace
 
 # .rip-cage.yaml: select fakemux multiplexer
 cat > "${FM_TMP}/fakemux-workspace/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 session:
   multiplexer: fakemux
 YAML

@@ -1,0 +1,5 @@
+# An unknown custom tag (anything but !replace) must abort loud naming the path.
+version: 2
+network:
+  allowed_hosts: !bogus
+    - x.example

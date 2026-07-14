@@ -1,18 +1,28 @@
 #!/usr/bin/env bash
 # Host-side unit tests for the .rip-cage.yaml loader (ADR-021, rip-cage-o4z).
 #
-# Coverage matrix:
-#   D2 (per-field-type merge):
-#     T1  additive list union (global + project both contribute, dedup)
-#     T2  selection list — project replaces global when present
-#     T3  selection list — project absent ⇒ inherit global
-#     T4  selection list — explicit zero-out (project: [])
+# Coverage matrix (v2 model — ADR-021 D2/D3, rip-cage-tsf2.10.3):
+#   D2 (fold-left merge — lists union by default, !replace to narrow):
+#     T1  list union (global + project both contribute, dedup)
+#     T2  list union for mounts.allow_risky (v2 flip: was replace, now union)
+#     T3  list — project absent ⇒ inherit global
+#     T4  !replace [] — explicit zero-out discards inherited list
 #     T5  scalar — project replaces global
-#   D3 (schema versioning):
-#     T6  missing version field ⇒ warn + assume version 1
-#     T7  future version + selection-list field ⇒ ABORT (Option B)
-#     T8  future version + additive-only ⇒ warn + skip file
-#     T9  per-file version independence (global v1 ok, project v99 additive-only)
+#     T5b !replace at project layer replaces default+global (prov=project)
+#     T5c !replace at global layer becomes base; project unions onto it
+#     T5d !replace on mounts.denylist aborts citing ADR-023 D2
+#     T5e unknown custom tag aborts naming the exact path
+#     T5f !replace on a non-list field aborts naming the exact path
+#     T5g !replace on an undeclared path aborts naming the exact path
+#   D3 (schema versioning — supported set {2}):
+#     T6  missing version field ⇒ warn + assume version 2
+#     T6b version-absent + mounts.allow_risky ⇒ abort demanding explicit version
+#     T6c declared version: 1 ⇒ abort with migration hint
+#     T7  higher version + !replace ⇒ abort naming the tagged path
+#     T8  higher version + no tags ⇒ warn + skip file
+#     T9  per-file version independence (global v2 ok, project v99 skipped)
+#   Retired-field loud-reject (schema v1->v2 vestigial drop, ADR-021 D9):
+#     T34 network.mode ; T35 network.dns.forward_to ; T38 network.http.forward_to
 #   D4 (rc config show):
 #     T10 YAML output contains provenance comments
 #     T11 --json output has parallel .config + .provenance objects
@@ -24,8 +34,8 @@
 #   yq dependency:
 #     T16 yq missing on PATH ⇒ rc config show fails loud per ADR-001
 #   D3 abort propagation through the substrate validation step:
-#     T17 _config_validate_or_abort exits non-zero on selection-list+future-version
-#         (covers ADR-021:177 invalidation check; the rc up contract)
+#     T17 _config_validate_or_abort exits non-zero on !replace+future-version
+#         (covers ADR-021 D3 invalidation check; the rc up contract)
 #     T18 _config_validate_or_abort returns 0 silently when neither file exists
 #         (D5 regression contract — substrate must not abort in the both-absent case)
 #     T19 _config_validate_or_abort exits non-zero when a config file exists but
@@ -190,42 +200,46 @@ test_t1_additive_union() {
   teardown_sandbox
 }
 
-test_t2_selection_replaces() {
+test_t2_list_union_allow_risky() {
+  # v2: mounts.allow_risky flips replace->union (ADR-021 D2). global
+  # [/opt/personal,/opt/work] + project [/opt/personal] -> union dedup.
   setup_sandbox "config-global-basic.yaml" "config-project-basic.yaml"
   local out keys prov
   out=$(run_rc_config "show --json")
   keys=$(jq -c '.config.mounts.allow_risky' <<<"$out")
-  prov=$(jq -r '.provenance["mounts.allow_risky"]' <<<"$out")
-  if [[ "$keys" == '["/opt/personal"]' && "$prov" == "project" ]]; then
-    pass "T2 selection list — project replaces global"
+  prov=$(jq -c '.provenance["mounts.allow_risky"]' <<<"$out")
+  if [[ "$keys" == '["/opt/personal","/opt/work"]' && "$prov" == '["global","project"]' ]]; then
+    pass "T2 mounts.allow_risky unions across the stack (v2, was replace)"
   else
-    fail "T2 expected keys=[/opt/personal] prov=project, got keys=$keys prov=$prov"
+    fail "T2 expected keys=[/opt/personal,/opt/work] prov=[global,project], got keys=$keys prov=$prov"
   fi
   teardown_sandbox
 }
 
-test_t3_selection_inherit_global() {
+test_t3_list_inherit_global() {
+  # Project contributes no allow_risky ⇒ effective is global (union with empty).
   setup_sandbox "config-global-basic.yaml" "config-project-only-additive.yaml"
   local out keys prov
   out=$(run_rc_config "show --json")
   keys=$(jq -c '.config.mounts.allow_risky' <<<"$out")
   prov=$(jq -r '.provenance["mounts.allow_risky"]' <<<"$out")
   if [[ "$keys" == '["/opt/personal","/opt/work"]' && "$prov" == "global" ]]; then
-    pass "T3 selection list — project absent ⇒ inherit global"
+    pass "T3 list — project absent ⇒ inherit global"
   else
     fail "T3 expected keys=both prov=global, got keys=$keys prov=$prov"
   fi
   teardown_sandbox
 }
 
-test_t4_selection_zero_out() {
+test_t4_replace_zero_out() {
+  # v2: !replace [] is the explicit zero-out (project fixture tags the field).
   setup_sandbox "config-global-basic.yaml" "config-project-zero-out-keys.yaml"
   local out keys prov
   out=$(run_rc_config "show --json")
   keys=$(jq -c '.config.mounts.allow_risky' <<<"$out")
   prov=$(jq -r '.provenance["mounts.allow_risky"]' <<<"$out")
   if [[ "$keys" == '[]' && "$prov" == "project" ]]; then
-    pass "T4 selection list — explicit zero-out ([]) honored"
+    pass "T4 !replace [] — explicit zero-out discards inherited list"
   else
     fail "T4 expected keys=[] prov=project, got keys=$keys prov=$prov"
   fi
@@ -238,12 +252,106 @@ test_t5_scalar_replaces() {
   out=$(run_rc_config "show --json")
   version=$(jq -r '.config.version' <<<"$out")
   prov=$(jq -r '.provenance.version' <<<"$out")
-  # Both files declare version: 1 → scalar rule says project replaces.
-  if [[ "$version" == "1" && "$prov" == "project" ]]; then
+  # Both files declare version: 2 → scalar rule says project replaces.
+  if [[ "$version" == "2" && "$prov" == "project" ]]; then
     pass "T5 scalar — project replaces global"
   else
-    fail "T5 expected version=1 prov=project, got version=$version prov=$prov"
+    fail "T5 expected version=2 prov=project, got version=$version prov=$prov"
   fi
+  teardown_sandbox
+}
+
+test_t5b_replace_project_discards_global() {
+  # !replace at the project layer discards the default+global result and becomes
+  # the sole source (ADR-021 D2). global has [github.com]; project !replace wipes it.
+  setup_sandbox "config-global-basic.yaml" "config-project-replace.yaml"
+  local out hosts prov
+  out=$(run_rc_config "show --json")
+  hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
+  prov=$(jq -r '.provenance["network.allowed_hosts"]' <<<"$out")
+  if [[ "$hosts" == '["project-only.example"]' && "$prov" == "project" ]]; then
+    pass "T5b !replace at project layer replaces default+global, prov=project"
+  else
+    fail "T5b expected hosts=[project-only.example] prov=project, got hosts=$hosts prov=$prov"
+  fi
+  teardown_sandbox
+}
+
+test_t5c_replace_global_then_project_union() {
+  # global !replace [global-only] becomes the base; project (no tag) unions onto it.
+  setup_sandbox "config-global-replace.yaml" "config-project-only-additive.yaml"
+  local out hosts prov
+  out=$(run_rc_config "show --json")
+  hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
+  prov=$(jq -c '.provenance["network.allowed_hosts"]' <<<"$out")
+  if [[ "$hosts" == '["global-only.example","switch.berlin"]' && "$prov" == '["global","project"]' ]]; then
+    pass "T5c !replace at global layer becomes base; project unions onto it"
+  else
+    fail "T5c expected hosts=[global-only.example,switch.berlin] prov=[global,project], got hosts=$hosts prov=$prov"
+  fi
+  teardown_sandbox
+}
+
+test_t5d_denylist_replace_aborts() {
+  # !replace on mounts.denylist is replace-forbidden and must cite ADR-023 D2.
+  setup_sandbox "" "config-project-denylist-replace.yaml"
+  local stderr_file exit_code=0
+  stderr_file=$(mktemp)
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] \
+     && grep -q "mounts.denylist" "$stderr_file" \
+     && grep -q "ADR-023 D2" "$stderr_file"; then
+    pass "T5d !replace on mounts.denylist aborts loud citing ADR-023 D2"
+  else
+    fail "T5d expected non-zero + mounts.denylist + ADR-023 D2, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+test_t5e_unknown_tag_aborts() {
+  setup_sandbox "" "config-project-unknown-tag.yaml"
+  local stderr_file exit_code=0
+  stderr_file=$(mktemp)
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] \
+     && grep -q "unknown custom tag" "$stderr_file" \
+     && grep -q "network.allowed_hosts" "$stderr_file"; then
+    pass "T5e unknown custom tag aborts loud naming the exact path"
+  else
+    fail "T5e expected non-zero + unknown-tag naming path, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+test_t5f_replace_on_non_list_aborts() {
+  setup_sandbox "" "config-project-tag-on-enum.yaml"
+  local stderr_file exit_code=0
+  stderr_file=$(mktemp)
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] \
+     && grep -q "non-list field 'mounts.config_mode'" "$stderr_file"; then
+    pass "T5f !replace on a non-list field aborts loud naming the exact path"
+  else
+    fail "T5f expected non-zero + non-list naming path, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+test_t5g_replace_on_undeclared_aborts() {
+  setup_sandbox "" "config-project-tag-undeclared.yaml"
+  local stderr_file exit_code=0
+  stderr_file=$(mktemp)
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] \
+     && grep -q "undeclared path 'madeup.field'" "$stderr_file"; then
+    pass "T5g !replace on an undeclared path aborts loud naming the exact path"
+  else
+    fail "T5g expected non-zero + undeclared naming path, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
   teardown_sandbox
 }
 
@@ -256,25 +364,67 @@ test_t6_missing_version_warns() {
   local stderr_file
   stderr_file=$(mktemp)
   run_rc_config "show --json" "$stderr_file" >/dev/null
-  if grep -q "has no 'version:' field" "$stderr_file"; then
-    pass "T6 missing version field warns loud"
+  if grep -q "has no 'version:' field" "$stderr_file" \
+     && grep -q "assuming version 2" "$stderr_file"; then
+    pass "T6 missing version field warns loud + assumes version 2"
   else
-    fail "T6 expected warning about missing version, got: $(cat "$stderr_file")"
+    fail "T6 expected 'assuming version 2' warning, got: $(cat "$stderr_file")"
   fi
   rm -f "$stderr_file"
   teardown_sandbox
 }
 
-test_t7_future_version_with_selection_aborts() {
+test_t6b_missing_version_with_allow_risky_aborts() {
+  # ADR-021 D3 EXCEPTION: version-absent + mounts.allow_risky must abort loud
+  # demanding an explicit version (the one capability-widening v1->v2 flip).
+  setup_sandbox "" "config-project-missing-version-allow-risky.yaml"
+  local stderr_file exit_code=0
+  stderr_file=$(mktemp)
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] \
+     && grep -q "no 'version:' field" "$stderr_file" \
+     && grep -q "mounts.allow_risky" "$stderr_file"; then
+    pass "T6b version-absent + mounts.allow_risky aborts loud demanding an explicit version"
+  else
+    fail "T6b expected non-zero + version-demand naming allow_risky, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+test_t6c_declared_v1_aborts_with_hint() {
+  # Declared version: 1 must LOUD-ABORT with an actionable migration hint.
+  setup_sandbox "" ""
+  cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
+version: 1
+network:
+  allowed_hosts:
+    - example.com
+YAML
+  local stderr_file exit_code=0
+  stderr_file=$(mktemp)
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] \
+     && grep -q "declares version: 1" "$stderr_file" \
+     && grep -q "version: 2" "$stderr_file"; then
+    pass "T6c declared version: 1 aborts loud with a change-to-version-2 migration hint"
+  else
+    fail "T6c expected non-zero + v1 migration hint, exit=$exit_code stderr=$(cat "$stderr_file")"
+  fi
+  rm -f "$stderr_file"
+  teardown_sandbox
+}
+
+test_t7_future_version_with_replace_aborts() {
   setup_sandbox "" "config-project-future-version-with-selection.yaml"
   local stderr_file out exit_code
   stderr_file=$(mktemp)
   out=$(run_rc_config "show --json" "$stderr_file") || exit_code=$?
   exit_code="${exit_code:-0}"
-  if [[ "$exit_code" -ne 0 ]] && grep -q "selection-list field(s) \[mounts.allow_risky\]" "$stderr_file"; then
-    pass "T7 future version + selection-list field ⇒ abort with field-named error"
+  if [[ "$exit_code" -ne 0 ]] && grep -q "!replace tag at \[network.allowed_hosts\]" "$stderr_file"; then
+    pass "T7 higher version + !replace ⇒ abort naming the tagged path"
   else
-    fail "T7 expected non-zero exit + selection-list error, exit=$exit_code stderr=$(cat "$stderr_file")"
+    fail "T7 expected non-zero exit + !replace error, exit=$exit_code stderr=$(cat "$stderr_file")"
   fi
   rm -f "$stderr_file"
   teardown_sandbox
@@ -364,7 +514,7 @@ network:
 mounts:
   allow_risky:
     - /opt/personal
-version: 1
+version: 2
 YAML
   local sha2
   sha2=$(run_rc_config "show --json" | jq -r '.sha256')
@@ -470,7 +620,7 @@ _source_rc_for_validate_tests() {
   source "$RC"
 }
 
-test_t17_validate_aborts_on_selection_list_future_version() {
+test_t17_validate_aborts_on_replace_future_version() {
   setup_sandbox "" "config-project-future-version-with-selection.yaml"
   local stderr_file exit_code
   stderr_file=$(mktemp)
@@ -479,10 +629,10 @@ test_t17_validate_aborts_on_selection_list_future_version() {
     bash -c "source '$RC'; _config_validate_or_abort '$TEST_WS'" 2>"$stderr_file" \
     || exit_code=$?
   if [[ "$exit_code" -ne 0 ]] \
-     && grep -q "selection-list field(s) \[mounts.allow_risky\]" "$stderr_file"; then
-    pass "T17 _config_validate_or_abort exits non-zero on selection-list+future-version"
+     && grep -q "!replace tag at \[network.allowed_hosts\]" "$stderr_file"; then
+    pass "T17 _config_validate_or_abort exits non-zero on !replace+future-version"
   else
-    fail "T17 expected non-zero exit + selection-list error, exit=$exit_code stderr=$(cat "$stderr_file")"
+    fail "T17 expected non-zero exit + !replace error, exit=$exit_code stderr=$(cat "$stderr_file")"
   fi
   rm -f "$stderr_file"
   teardown_sandbox
@@ -571,7 +721,7 @@ test_t22_mounts_symlinks_mode_invalid_aborts() {
   setup_sandbox "" ""
   # Create inline config with invalid mode value
   cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   symlinks:
     on_dangling: follow
@@ -773,50 +923,55 @@ test_t33_v1_config_no_network_parses_unchanged() {
   # Note: writable_hosts removed from schema in rip-cage-ta1o.1 (write-gate deleted).
   # The field is no longer in the effective config output.
   setup_sandbox "config-global-mounts-only.yaml" "config-project-mounts-only.yaml"
-  local out hosts mode
+  local out hosts
   out=$(run_rc_config "show --json")
   hosts=$(jq -c '.config.network.allowed_hosts' <<<"$out")
-  mode=$(jq -r '.config.network.mode' <<<"$out")
-  # non-network fields still present
+  # non-network fields still present; allow_risky now unions (global ∪ project).
   local risky
   risky=$(jq -c '.config.mounts.allow_risky' <<<"$out")
-  if [[ "$hosts" == '[]' && "$mode" == "null" \
-        && "$risky" == '["/opt/personal"]' ]]; then
-    pass "T33 v1 config with no network.* parses unchanged, empty defaults"
+  # network.mode is a retired field — must be absent from the effective config.
+  local has_mode
+  has_mode=$(jq -e '.config.network | has("mode")' <<<"$out" >/dev/null 2>&1 && echo yes || echo no)
+  if [[ "$hosts" == '[]' && "$has_mode" == "no" \
+        && "$risky" == '["/opt/personal","/opt/work"]' ]]; then
+    pass "T33 config with no network hosts parses; allow_risky unions; network.mode absent from schema"
   else
-    fail "T33 expected empty network defaults (allowed_hosts=[], mode=null) + mounts.allow_risky unchanged, got hosts=$hosts mode=$mode allow_risky=$risky"
+    fail "T33 expected hosts=[] no-mode allow_risky=[/opt/personal,/opt/work], got hosts=$hosts has_mode=$has_mode allow_risky=$risky"
   fi
   teardown_sandbox
 }
 
-test_t34_network_mode_selection_list() {
-  # network.mode from global (block); check it parses and provenance is global
-  setup_sandbox "config-global-with-network.yaml" ""
-  local out mode prov
-  out=$(run_rc_config "show --json")
-  mode=$(jq -r '.config.network.mode' <<<"$out")
-  prov=$(jq -r '.provenance["network.mode"]' <<<"$out")
-  if [[ "$mode" == "block" && "$prov" == "global" ]]; then
-    pass "T34 network.mode=block parses from global, prov=global"
+test_t34_retired_network_mode_rejects() {
+  # network.mode dropped from the schema in the v1->v2 bump (ADR-021 D9); a file
+  # still carrying it must loud-reject (retired field), not silently drop.
+  setup_sandbox "" "config-project-retired-network-mode.yaml"
+  local stderr_file exit_code=0
+  stderr_file=$(mktemp)
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] \
+     && grep -q "retired config field 'network.mode'" "$stderr_file" \
+     && grep -q "ADR-029" "$stderr_file"; then
+    pass "T34 network.mode loud-rejects as a retired field (ADR-029 / D9)"
   else
-    fail "T34 expected mode=block prov=global, got mode=$mode prov=$prov"
+    fail "T34 expected non-zero + retired network.mode message, exit=$exit_code stderr=$(cat "$stderr_file")"
   fi
+  rm -f "$stderr_file"
   teardown_sandbox
 }
 
-test_t35_absent_network_mode_is_null_not_enum() {
-  # network.mode absent from all configs → null (not "legacy" or any string value)
-  setup_sandbox "" ""
-  local out mode prov
-  out=$(run_rc_config "show --json")
-  mode=$(jq -r '.config.network.mode' <<<"$out")
-  prov=$(jq -r '.provenance["network.mode"]' <<<"$out")
-  # mode must be null (JSON null), not any string like "legacy", "off", etc.
-  if [[ "$mode" == "null" && "$prov" == "default" ]]; then
-    pass "T35 absent network.mode resolves to null (default), not a third mode string"
+test_t35_retired_network_dns_forward_rejects() {
+  setup_sandbox "" "config-project-retired-network-dns-forward.yaml"
+  local stderr_file exit_code=0
+  stderr_file=$(mktemp)
+  run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]] \
+     && grep -q "retired config field 'network.dns.forward_to'" "$stderr_file" \
+     && grep -q "ADR-029" "$stderr_file"; then
+    pass "T35 network.dns.forward_to loud-rejects as a retired field (ADR-029 / D9)"
   else
-    fail "T35 expected mode=null prov=default, got mode=$mode prov=$prov"
+    fail "T35 expected non-zero + retired dns.forward_to message, exit=$exit_code stderr=$(cat "$stderr_file")"
   fi
+  rm -f "$stderr_file"
   teardown_sandbox
 }
 
@@ -856,27 +1011,21 @@ test_t37_network_writable_hosts_removed_from_schema() {
   teardown_sandbox
 }
 
-test_t38_network_mode_invalid_aborts() {
-  # network.mode with invalid value aborts loud
-  setup_sandbox "" ""
-  cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
-network:
-  mode: turbo_firewall
-YAML
-  local stderr_file exit_code
+test_t38_retired_network_http_forward_rejects() {
+  # network.http.forward_to dropped in the v1->v2 bump (ADR-021 D9); loud-reject.
+  setup_sandbox "" "config-project-retired-network-http-forward.yaml"
+  local stderr_file exit_code=0
   stderr_file=$(mktemp)
-  exit_code=0
   run_rc_config "show --json" "$stderr_file" >/dev/null || exit_code=$?
-  if [[ "$exit_code" -ne 0 ]]; then
-    pass "T38 network.mode=invalid aborts loud per ADR-021 D3"
+  if [[ "$exit_code" -ne 0 ]] \
+     && grep -q "retired config field 'network.http.forward_to'" "$stderr_file" \
+     && grep -q "ADR-029" "$stderr_file"; then
+    pass "T38 network.http.forward_to loud-rejects as a retired field (ADR-029 / D9)"
   else
-    fail "T38 expected non-zero exit for invalid network.mode, exit=$exit_code stderr=$(cat "$stderr_file")"
+    fail "T38 expected non-zero + retired http.forward_to message, exit=$exit_code stderr=$(cat "$stderr_file")"
   fi
   rm -f "$stderr_file"
-  [[ -n "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME"
-  TEST_HOME=""
-  TEST_WS=""
+  teardown_sandbox
 }
 
 # ---------------------------------------------------------------------------
@@ -1003,7 +1152,7 @@ test_t46_auth_credential_mounts_default_real() {
 test_t47_auth_credential_mounts_none_parses() {
   setup_sandbox "" ""
   cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 auth:
   credential_mounts: none
 YAML
@@ -1022,7 +1171,7 @@ YAML
 test_t48_auth_credential_mounts_invalid_aborts() {
   setup_sandbox "" ""
   cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 auth:
   credential_mounts: bogus
 YAML
@@ -1147,13 +1296,13 @@ test_t54_config_show_path_arg_resolves_project_layer() {
   # B — asserts the output reflects B, not A (and not a bare-pwd default).
   setup_two_workspace_sandbox
   cat > "${TEST_WS_A}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 network:
   allowed_hosts:
     - workspace-a-host.example
 YAML
   cat > "${TEST_WS_B}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 network:
   allowed_hosts:
     - workspace-b-host.example
@@ -1255,27 +1404,25 @@ test_t59_config_get_null_value_not_not_found() {
 
 test_t60_config_get_path_arg() {
   # Symmetric with T54: rc config get <key> <path> must resolve <path>'s
-  # project layer, not cwd's. network.dns.forward_to is a plain scalar field
+  # project layer, not cwd's. auth.placeholder_env_file is a plain scalar field
   # (no enum validation) so any string value is accepted.
   setup_two_workspace_sandbox
   cat > "${TEST_WS_A}/.rip-cage.yaml" <<'YAML'
-version: 1
-network:
-  dns:
-    forward_to: 1.1.1.1
+version: 2
+auth:
+  placeholder_env_file: /tmp/path-a.env
 YAML
   cat > "${TEST_WS_B}/.rip-cage.yaml" <<'YAML'
-version: 1
-network:
-  dns:
-    forward_to: 9.9.9.9
+version: 2
+auth:
+  placeholder_env_file: /tmp/path-b.env
 YAML
   local out
-  out=$(run_rc_config_from "$TEST_WS_A" "get network.dns.forward_to '$TEST_WS_B'")
-  if [[ "$out" == "9.9.9.9" ]]; then
+  out=$(run_rc_config_from "$TEST_WS_A" "get auth.placeholder_env_file '$TEST_WS_B'")
+  if [[ "$out" == "/tmp/path-b.env" ]]; then
     pass "T60 rc config get <key> <path> resolves <path>'s project layer, not cwd's"
   else
-    fail "T60 expected 9.9.9.9 (from pathB), got: $out"
+    fail "T60 expected /tmp/path-b.env (from pathB), got: $out"
   fi
   teardown_two_workspace_sandbox
 }
@@ -1380,12 +1527,20 @@ test_t66_clean_config_no_false_reject() {
 
 echo "=== test-config-loader.sh — ADR-021 layered config loader ==="
 run_test test_t1_additive_union
-run_test test_t2_selection_replaces
-run_test test_t3_selection_inherit_global
-run_test test_t4_selection_zero_out
+run_test test_t2_list_union_allow_risky
+run_test test_t3_list_inherit_global
+run_test test_t4_replace_zero_out
 run_test test_t5_scalar_replaces
+run_test test_t5b_replace_project_discards_global
+run_test test_t5c_replace_global_then_project_union
+run_test test_t5d_denylist_replace_aborts
+run_test test_t5e_unknown_tag_aborts
+run_test test_t5f_replace_on_non_list_aborts
+run_test test_t5g_replace_on_undeclared_aborts
 run_test test_t6_missing_version_warns
-run_test test_t7_future_version_with_selection_aborts
+run_test test_t6b_missing_version_with_allow_risky_aborts
+run_test test_t6c_declared_v1_aborts_with_hint
+run_test test_t7_future_version_with_replace_aborts
 run_test test_t8_future_version_additive_only_skips
 run_test test_t9_per_file_version_independence
 run_test test_t10_yaml_provenance_comments
@@ -1395,7 +1550,7 @@ run_test test_t13_both_absent_defaults
 run_test test_t14_only_global
 run_test test_t15_only_project
 run_test test_t16_yq_missing_fails_loud
-run_test test_t17_validate_aborts_on_selection_list_future_version
+run_test test_t17_validate_aborts_on_replace_future_version
 run_test test_t18_validate_silent_no_config
 run_test test_t19_validate_yq_missing_with_config_aborts
 run_test test_t20_mounts_symlinks_default_emission
@@ -1412,11 +1567,11 @@ run_test test_t30_mounts_allow_risky_selection_list
 run_test test_t31_network_allowed_hosts_from_global
 run_test test_t32_network_allowed_hosts_additive_merge
 run_test test_t33_v1_config_no_network_parses_unchanged
-run_test test_t34_network_mode_selection_list
-run_test test_t35_absent_network_mode_is_null_not_enum
+run_test test_t34_retired_network_mode_rejects
+run_test test_t35_retired_network_dns_forward_rejects
 run_test test_t36_network_writable_hosts_unknown_field_ignored
 run_test test_t37_network_writable_hosts_removed_from_schema
-run_test test_t38_network_mode_invalid_aborts
+run_test test_t38_retired_network_http_forward_rejects
 run_test test_t39_validate_yq_missing_with_global_config_emits_dependency_message
 run_test test_t40_session_multiplexer_default_none
 run_test test_t41_session_multiplexer_tmux_parses

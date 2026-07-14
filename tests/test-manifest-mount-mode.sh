@@ -62,7 +62,7 @@ setup_manifest_sandbox() {
   fi
   # Seed a default config.yaml (denylist required by manifest machinery).
   cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist:
     - ".ssh"

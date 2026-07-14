@@ -59,7 +59,7 @@ teardown_sandbox() {
 # Write the default 16-pattern global config to TEST_HOME.
 write_default_global_config() {
   cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist:
     - .ssh
@@ -259,7 +259,7 @@ test_d_allow_risky_yaml_bypass() {
 
   # Write project config with mounts.allow_risky
   cat > "${TEST_WS}/.rip-cage.yaml" <<YAML
-version: 1
+version: 2
 mounts:
   allow_risky:
     - ${resolved_env}
@@ -461,7 +461,7 @@ test_g_project_additive_denylist() {
 
   # Project config adds my-secret-pattern on top of global defaults.
   cat > "${TEST_WS}/.rip-cage.yaml" <<YAML
-version: 1
+version: 2
 mounts:
   denylist:
     - my-secret-pattern
@@ -533,7 +533,7 @@ test_h_config_show_denylist_provenance() {
 
   # Global: .aws and .ssh
   cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<YAML
-version: 1
+version: 2
 mounts:
   denylist:
     - .aws
@@ -542,7 +542,7 @@ YAML
 
   # Project: .env (additive on top)
   cat > "${TEST_WS}/.rip-cage.yaml" <<YAML
-version: 1
+version: 2
 mounts:
   denylist:
     - .env
@@ -722,7 +722,7 @@ test_l_scope_parent_denylist_checks_parent_dir() {
   ln -sf "$leaf_target_l1" "${resolved_test_home}/.pi/agent/safe-file-link"
 
   cat > "${resolved_ws}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   symlinks:
     on_dangling: follow
@@ -795,7 +795,7 @@ YAML
 
   # scope=file run: should skip (leaf "credentials" matches denylist)
   cat > "${resolved_ws}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   symlinks:
     on_dangling: follow
@@ -848,7 +848,7 @@ YAML
 
   # Empty denylist to compare
   cat > "${resolved_test_home}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: []
 YAML

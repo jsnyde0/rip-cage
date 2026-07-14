@@ -99,7 +99,7 @@ run_denylist_check() {
 # ---------------------------------------------------------------------------
 test_m1_dotfile_dir_component_match() {
   local global_yaml
-  global_yaml='version: 1
+  global_yaml='version: 2
 mounts:
   denylist:
     - .aws
@@ -120,7 +120,7 @@ mounts:
 # ---------------------------------------------------------------------------
 test_m2_bareword_filename_match() {
   local global_yaml
-  global_yaml='version: 1
+  global_yaml='version: 2
 mounts:
   denylist:
     - credentials
@@ -140,7 +140,7 @@ mounts:
 # ---------------------------------------------------------------------------
 test_m3_no_match_allowed() {
   local global_yaml
-  global_yaml='version: 1
+  global_yaml='version: 2
 mounts:
   denylist:
     - .aws
@@ -163,7 +163,7 @@ mounts:
 # ---------------------------------------------------------------------------
 test_m4_no_substring_match() {
   local global_yaml
-  global_yaml='version: 1
+  global_yaml='version: 2
 mounts:
   denylist:
     - credentials
@@ -185,13 +185,13 @@ mounts:
 # ---------------------------------------------------------------------------
 test_m5_allow_risky_config_bypass() {
   local global_yaml
-  global_yaml='version: 1
+  global_yaml='version: 2
 mounts:
   denylist:
     - .aws
 '
   local project_yaml
-  project_yaml='version: 1
+  project_yaml='version: 2
 mounts:
   allow_risky:
     - /home/u/.aws/credentials
@@ -212,7 +212,7 @@ mounts:
 # ---------------------------------------------------------------------------
 test_m6_rc_allow_risky_mount_bypass() {
   local global_yaml
-  global_yaml='version: 1
+  global_yaml='version: 2
 mounts:
   denylist:
     - .aws
@@ -234,7 +234,7 @@ mounts:
 # ---------------------------------------------------------------------------
 test_m7_intermediate_component_match() {
   local global_yaml
-  global_yaml='version: 1
+  global_yaml='version: 2
 mounts:
   denylist:
     - credentials
@@ -254,7 +254,7 @@ mounts:
 # ---------------------------------------------------------------------------
 test_m8_empty_denylist_allows_all() {
   local global_yaml
-  global_yaml='version: 1
+  global_yaml='version: 2
 mounts:
   denylist: []
 '

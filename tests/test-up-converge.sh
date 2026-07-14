@@ -152,13 +152,13 @@ run_decision() {
 TOTAL=$((TOTAL + 1))
 setup_sandbox
 cat > "${WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts:
     - switch.berlin
 YML
 make_msb_stub "$STUB_DIR" "$CNAME" "exited" "$WS"
-write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 run_decision; u1_out=$(cat "$DEC_OUT_FILE")
 u1_ok=true u1_reason=""
 [[ "$DEC_EXIT" -ne 0 ]] && u1_ok=false && u1_reason="exit $DEC_EXIT (want 0)"
@@ -173,13 +173,13 @@ teardown_sandbox
 TOTAL=$((TOTAL + 1))
 setup_sandbox
 cat > "${WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts:
     - switch.berlin
 YML
 make_msb_stub "$STUB_DIR" "$CNAME" "exited" "$WS"
-write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 run_decision; u2_out=$(cat "$DEC_OUT_FILE")
 u2_ok=true u2_reason=""
 [[ "$DEC_EXIT" -ne 1 ]] && u2_ok=false && u2_reason="exit $DEC_EXIT (want 1)"
@@ -196,12 +196,12 @@ teardown_sandbox
 TOTAL=$((TOTAL + 1))
 setup_sandbox
 cat > "${WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts: []
 YML
 make_msb_stub "$STUB_DIR" "$CNAME" "exited" "$WS"
-write_snapshot '{"version":1,"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+write_snapshot '{"version":2,"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
 run_decision; u3_out=$(cat "$DEC_OUT_FILE")
 u3_ok=true u3_reason=""
 [[ "$DEC_EXIT" -ne 1 ]] && u3_ok=false && u3_reason="exit $DEC_EXIT (want 1 — must fall through, not converge)"
@@ -217,7 +217,7 @@ teardown_sandbox
 TOTAL=$((TOTAL + 1))
 setup_sandbox
 cat > "${WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts:
     - switch.berlin
@@ -321,7 +321,7 @@ _live_setup_cage() {
   git -C "$RCL_WS" add README.md
   git -C "$RCL_WS" -c user.name="scratch" -c user.email="scratch@example.invalid" commit -q -m "initial" >/dev/null 2>&1
   cat > "${RCL_WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts: []
 YML
@@ -338,7 +338,7 @@ YML
 
 _live_add_host() {
   cat > "${RCL_WS}/.rip-cage.yaml" <<'YML'
-version: 1
+version: 2
 network:
   allowed_hosts: [example.com]
 YML

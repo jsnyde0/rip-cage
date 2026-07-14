@@ -111,7 +111,7 @@ _spin_up_cage() {
   mkdir -p "${home_dir}/.config/rip-cage"
   printf '%s\n' "$manifest_yaml" > "${home_dir}/.config/rip-cage/tools.yaml"
   cat > "${home_dir}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist:
     - ".ssh"

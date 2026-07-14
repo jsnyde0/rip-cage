@@ -1,0 +1,5 @@
+# !replace on mounts.denylist is replace-forbidden (ADR-023 D2): must abort loud.
+version: 2
+mounts:
+  denylist: !replace
+    - .only-this

@@ -1,0 +1,4 @@
+version: 2
+network:
+  http:
+    forward_to: http://proxy.example:8080

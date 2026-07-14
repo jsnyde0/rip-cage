@@ -232,7 +232,7 @@ test_s6_on_dangling_skip() {
   local ws="${TEST_HOME}/workspace"
   mkdir -p "$ws"
   cat > "${ws}/.rip-cage.yaml" <<YAML
-version: 1
+version: 2
 mounts:
   symlinks:
     on_dangling: skip
@@ -281,7 +281,7 @@ test_s7_on_dangling_error() {
   local ws="${TEST_HOME}/workspace"
   mkdir -p "$ws"
   cat > "${ws}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   symlinks:
     on_dangling: error
@@ -360,7 +360,7 @@ test_s9_on_dangling_warn() {
   local ws="${TEST_HOME}/workspace"
   mkdir -p "$ws"
   cat > "${ws}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   symlinks:
     on_dangling: warn
@@ -405,7 +405,7 @@ test_s10_mode_ro() {
   local ws="${TEST_HOME}/workspace"
   mkdir -p "$ws"
   cat > "${ws}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   symlinks:
     on_dangling: follow
@@ -489,7 +489,7 @@ test_s12_scope_parent() {
   local ws="${TEST_HOME}/workspace"
   mkdir -p "$ws"
   cat > "${ws}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   symlinks:
     on_dangling: follow
@@ -607,7 +607,7 @@ test_s24_reserved_collision_skip() {
     local ws="${TEST_HOME}/workspace"
     mkdir -p "$ws"
     cat > "${ws}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   symlinks:
     on_dangling: skip
@@ -791,7 +791,7 @@ JSON
 
   # Write live .rip-cage.yaml with mounts.symlinks.mode changed to ro
   cat > "${ws}/.rip-cage.yaml" <<YAML
-version: 1
+version: 2
 mounts:
   symlinks:
     on_dangling: follow
@@ -882,7 +882,7 @@ test_s19_fingerprint_lock_fires_for_running_container() {
   # Write a benign global config (no denylist patterns) so rc up preflight passes.
   mkdir -p "${test_home}/.config/rip-cage"
   cat > "${test_home}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: []
 YAML
@@ -903,7 +903,7 @@ YAML
 
   # Write .rip-cage.yaml with on_dangling changed to skip
   cat > "${ws}/.rip-cage.yaml" <<YAML
-version: 1
+version: 2
 mounts:
   symlinks:
     on_dangling: skip
@@ -979,21 +979,20 @@ test_s18_cage_claude_md_unchanged() {
 # after adding 3 new schema fields (regression guard)
 # ---------------------------------------------------------------------------
 test_s_schema_regression() {
-  # Quick regression check: source rc and verify selection list keys still work.
-  # (mounts.allow_risky replaces ssh.allowed_keys as the pre-existing-field
-  # example here -- the ssh cluster's schema fields retired at the msb
-  # cutover, ADR-029 D3 / rip-cage-f1qo S5.)
-  local selection_keys
-  selection_keys=$(HOME="/tmp" bash -c "source '$RC'; _config_schema_selection_list_keys")
-  local has_allow_risky has_on_dangling has_mode
-  has_allow_risky=$(echo "$selection_keys" | grep -c "mounts.allow_risky" || true)
-  has_on_dangling=$(echo "$selection_keys" | grep -c "mounts.symlinks.on_dangling" || true)
-  has_mode=$(echo "$selection_keys" | grep -c "mounts.symlinks.mode" || true)
+  # Quick regression check: source rc and verify the schema field TYPES resolve
+  # under the v2 model (ADR-021 D2, rip-cage-tsf2.10.3): the v1 selection_list
+  # split retired -> list-shaped members become `list`, enum-scalars become
+  # `enum`. The _config_schema_selection_list_keys helper is gone; probe the
+  # per-field type via _config_schema_field_type instead.
+  local ar_type od_type md_type
+  ar_type=$(HOME="/tmp" bash -c "source '$RC'; _config_schema_field_type mounts.allow_risky")
+  od_type=$(HOME="/tmp" bash -c "source '$RC'; _config_schema_field_type mounts.symlinks.on_dangling")
+  md_type=$(HOME="/tmp" bash -c "source '$RC'; _config_schema_field_type mounts.symlinks.mode")
 
-  if [[ "$has_allow_risky" -gt 0 && "$has_on_dangling" -gt 0 && "$has_mode" -gt 0 ]]; then
-    pass "schema" "_config_schema_selection_list_keys includes existing + new fields"
+  if [[ "$ar_type" == "list" && "$od_type" == "enum" && "$md_type" == "enum" ]]; then
+    pass "schema" "schema field types resolve under v2 (allow_risky=list, symlinks enums)"
   else
-    fail "schema" "schema selection_list keys regression" "got: $selection_keys"
+    fail "schema" "schema field-type regression" "got allow_risky=$ar_type on_dangling=$od_type mode=$md_type"
   fi
 }
 
@@ -1039,7 +1038,7 @@ write_denylist_config() {
   local config_dir="$1"
   mkdir -p "$config_dir"
   cat > "${config_dir}/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist:
     - .ssh
@@ -1179,7 +1178,7 @@ test_s22_fingerprint_excludes_denylisted_targets() {
 
   # Write global config with NO denylist (both targets included)
   cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: []
 YAML

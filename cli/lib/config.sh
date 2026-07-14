@@ -7,8 +7,9 @@
 # Layered .rip-cage.yaml config loader (ADR-021)
 # ----------------------------------------------------------------------------
 # Reads two layers (global ~/.config/rip-cage/config.yaml + project
-# <workspace>/.rip-cage.yaml), merges per per-field-type rules (D2), handles
-# schema versioning (D3 Option B — field-type-conditional unknown-version
+# <workspace>/.rip-cage.yaml), folds them left over schema defaults per the v2
+# merge model (D2 — lists union by default, !replace to narrow), handles schema
+# versioning (D3 — supported set {2}, !replace-conditional higher-version
 # behavior), and exposes the effective config + provenance to consumers.
 #
 # Substrate-only: no behavior change in cage posture when both files absent
@@ -20,45 +21,49 @@
 
 # Schema — single source of truth for field types and defaults.
 # Format: <dotted_key>|<type>|<default_json>[|allowed_values_csv]
-# Types: scalar | additive_list | selection_list
+# Types: scalar | list | enum
 #
-# selection_list fields with a 4th column of allowed_values are enum-scalars:
-# the field stores a single string value constrained to the allowed set.
-# Unknown enum values abort loud per ADR-021 D3 (same abort path as
-# selection-list + future-version conflict).
+# ADR-021 v2 (rip-cage-tsf2.10, D2): the v1 additive_list/selection_list split
+# is retired. ALL `list` fields union by default across the stack (order-
+# preserving dedup, lower layers first); a file layer may tag a list field
+# `!replace` to replace everything inherited from lower stack positions
+# (`!replace []` is the explicit zero-out). `enum` fields (formerly the enum-
+# shaped selection_list members) keep project-replaces-global semantics and a
+# loud unknown-value abort; their 4th column carries the allowed set. `scalar`
+# is unchanged (project replaces global).
 #
 # Schema additions are versioned changes — bump RC_CONFIG_SUPPORTED_VERSION_MAX
-# below when adding fields that v1 files cannot represent.
+# below when adding fields that older files cannot represent.
 _config_schema_lines() {
   cat <<'EOF'
-version|scalar|1
-mounts.denylist|additive_list|[]
-mounts.allow_risky|selection_list|null
-mounts.config_mode|selection_list|"ro"|ro,rw
-mounts.symlinks.on_dangling|selection_list|"follow"|follow,warn,skip,error
-mounts.symlinks.scope|selection_list|"file"|file,parent
-mounts.symlinks.mode|selection_list|"rw"|ro,rw
-network.allowed_hosts|additive_list|[]
-network.mode|selection_list|null|observe,block
-network.dns.forward_to|scalar|null
-network.http.forward_to|scalar|null
-dcg.packs|additive_list|[]
-dcg.custom_rule_paths|additive_list|[]
-session.multiplexer|selection_list|"none"
-auth.credential_mounts|selection_list|"real"|real,none
+version|scalar|2
+mounts.denylist|list|[]
+mounts.allow_risky|list|null
+mounts.config_mode|enum|"ro"|ro,rw
+mounts.symlinks.on_dangling|enum|"follow"|follow,warn,skip,error
+mounts.symlinks.scope|enum|"file"|file,parent
+mounts.symlinks.mode|enum|"rw"|ro,rw
+network.allowed_hosts|list|[]
+dcg.packs|list|[]
+dcg.custom_rule_paths|list|[]
+session.multiplexer|enum|"none"
+auth.credential_mounts|enum|"real"|real,none
 auth.placeholder_env_file|scalar|null
-auth.per_tool.claude|selection_list|null|real,none
-auth.per_tool.pi|selection_list|null|real,none
-auth.credentials|additive_list|[]
+auth.per_tool.claude|enum|null|real,none
+auth.per_tool.pi|enum|null|real,none
+auth.credentials|list|[]
 EOF
 }
 
-# Retired-field table — fields removed from the schema at the msb cutover that a
-# stale config file may still carry. Kept as a first-class list (not woven into
-# the schema) so a retired field loud-rejects (see _config_load_layer) instead of
-# silently vanishing in _config_merge's schema walk. Consumed retirements:
+# Retired-field table — fields removed from the schema that a stale config file
+# may still carry. Kept as a first-class list (not woven into the schema) so a
+# retired field loud-rejects (see _config_load_layer) instead of silently
+# vanishing in _config_merge's schema walk. Consumed retirements:
 #   ssh.allowed_keys / ssh.allowed_hosts        -> ADR-029 D3 + ADR-022 D6
 #   network.egress.mediator / *_env_file        -> ADR-029 D2/D5
+#   network.mode / network.dns.forward_to /     -> ADR-029, vestigial post-msb-
+#     network.http.forward_to                       cutover; dropped in the
+#                                                   schema v1->v2 bump (ADR-021 D9)
 # Format: <dotted_key>|<cite>|<fix>
 _config_retired_fields() {
   cat <<'EOF'
@@ -66,22 +71,46 @@ ssh.allowed_keys|ADR-029 D3 + ADR-022 D6, in-guest ssh host-key scoping retired|
 ssh.allowed_hosts|ADR-029 D3 + ADR-022 D6, in-guest ssh host-key scoping retired|delete this block -- ssh host scoping is replaced by HTTPS remotes + host-bound auth.credentials tokens
 network.egress.mediator|ADR-029 D2/D5, the co-located mediator-proxy archetype retired|delete this block -- credential non-possession is now msb host-side --secret injection (see auth.credentials)
 network.egress.mediator_env_file|ADR-029 D2/D5, the co-located mediator-proxy archetype retired|delete this block -- credential non-possession is now msb host-side --secret injection (see auth.credentials)
+network.mode|ADR-029, egress is msb default-deny at the VM boundary -- there is no observe/block mode|delete this line -- reachability comes only from network.allowed_hosts
+network.dns.forward_to|ADR-029, msb owns DNS at the VM boundary -- there is no host-side DNS forward target|delete this line -- msb default-deny DNS is not configurable via .rip-cage.yaml
+network.http.forward_to|ADR-029, the co-located http-forward mediator retired|delete this line -- credential non-possession is now msb host-side --secret injection (see auth.credentials)
 EOF
 }
 
-# Highest schema version this rc supports. Files declaring a higher version
-# trigger D3 field-type-conditional behavior.
-RC_CONFIG_SUPPORTED_VERSION_MAX=1
-
-
-_config_schema_selection_list_keys() {
-  _config_schema_lines | awk -F'|' '$2 == "selection_list" { print $1 }'
-}
+# Highest schema version this rc supports. The supported set is exactly {2}
+# (ADR-021 D3): version-absent assumes 2 (loud warn); declared version: 1 aborts
+# loud with a migration hint; a higher version aborts iff the file uses !replace,
+# else warn+skip. See _config_check_version / _config_load_layer.
+RC_CONFIG_SUPPORTED_VERSION_MAX=2
 
 
 _config_schema_field_type() {
   local key="$1"
   _config_schema_lines | awk -F'|' -v k="$key" '$1 == k { print $2; exit }'
+}
+
+
+# _config_tag_map — one-pass enumeration of every YAML custom tag (`!foo`) in a
+# file, as a JSON array of {path, tag} objects (ADR-021 D2, spike-verified
+# mikefarah yq v4.53.3). CRITICAL: this runs on the RAW YAML, BEFORE the
+# `yq -o=json` conversion the merge engine uses — `yq -o=json` silently STRIPS
+# custom tags, so the tag map must be captured separately. The regex
+# `^![^!]` matches custom tags (`!replace`, `!bogus`) but not YAML's own
+# type tags (`!!str`, `!!seq`). Absent/unparseable file ⇒ `[]`.
+_config_tag_map() {
+  local file="$1"
+  [[ -f "$file" ]] || { echo "[]"; return 0; }
+  yq '[.. | select(tag | test("^![^!]")) | {"path": path | join("."), "tag": tag}]' \
+    -o=json -I=0 "$file" 2>/dev/null || echo "[]"
+}
+
+
+# _config_replace_paths — the subset of a tag map whose tag is `!replace`, as a
+# JSON array of dotted paths. Drives the fold-left merge's replace-vs-union
+# decision per field per layer (ADR-021 D2).
+_config_replace_paths() {
+  local file="$1"
+  _config_tag_map "$file" | jq -c '[.[] | select(.tag == "!replace") | .path]'
 }
 
 
@@ -213,7 +242,7 @@ _config_global_path() {
 #                                      telemetry) — same rationale
 _config_default_global_yaml() {
   cat <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist:
     - .ssh
@@ -248,52 +277,47 @@ _config_project_path() {
 }
 
 
-# Returns: "<version_int>|<status>" where status ∈ {ok, missing, unsupported}
+# Returns: "<version>|<status>" where status ∈ {ok, missing, v1, unsupported}
+# (ADR-021 D3, supported set = {2}):
+#   missing     — no version: field; caller assumes 2 + warns (unless the file
+#                 declares mounts.allow_risky, which caller escalates to abort)
+#   v1          — declared version: 1; caller LOUD-ABORTS with a migration hint
+#   ok          — declared version: 2
+#   unsupported — any other (higher than 2, or non-integer); caller runs the
+#                 !replace-presence classify (abort iff !replace, else skip)
 _config_check_version() {
   local file="$1"
   local v
   v=$(yq '.version // "MISSING"' "$file" 2>/dev/null)
   if [[ "$v" == "MISSING" || -z "$v" || "$v" == "null" ]]; then
-    echo "1|missing"; return
+    echo "2|missing"; return
   fi
   if ! [[ "$v" =~ ^[0-9]+$ ]]; then
-    # Non-integer version — treat as unsupported so D3 partial parse fires.
+    # Non-integer version — treat as unsupported so the D3 classify fires.
     echo "${v}|unsupported"; return
   fi
-  if (( v > RC_CONFIG_SUPPORTED_VERSION_MAX )); then
-    echo "${v}|unsupported"; return
+  if (( v == 1 )); then
+    echo "1|v1"; return
   fi
-  echo "${v}|ok"
+  if (( v == RC_CONFIG_SUPPORTED_VERSION_MAX )); then
+    echo "${v}|ok"; return
+  fi
+  echo "${v}|unsupported"; return
 }
 
 
-# D3 Option B partial parse: enumerate selection-list fields PRESENT in an
-# unknown-version file. Returns "abort|<comma-separated-fields>" if any
-# selection-list field is present (silent skip would silently EXPAND
-# capability beyond user intent — ADR-001:13 failure mode), else "skip".
+# D3 higher-version classify (re-authored for v2, ADR-021 D3): the narrowing
+# construct is now the `!replace` tag, so the abort predicate follows it. If an
+# unsupported-version file contains any `!replace`, dropping it would silently
+# discard narrowing intent (the capability-EXPANDING failure direction) —
+# return "abort|<comma-separated-paths>". Otherwise "skip" (warn + skip file;
+# capability degradation is in the safer direction).
 _config_unknown_version_classify() {
   local file="$1"
-  local hits=()
-  local key
-  while IFS= read -r key; do
-    [[ -z "$key" ]] && continue
-    # mikefarah yq uses dot-notation. `.foo // "X"` returns X if foo is
-    # absent. Use a sentinel so we distinguish absent from explicit-null;
-    # explicit-null still counts as "field present" for D3 purposes (the user
-    # typed the key).
-    local present
-    present=$(yq ".${key} // \"___RC_ABSENT___\"" "$file" 2>/dev/null || echo "___RC_ABSENT___")
-    if [[ "$present" != "___RC_ABSENT___" ]]; then
-      hits+=("$key")
-    fi
-  done < <(_config_schema_selection_list_keys)
-  if [[ ${#hits[@]} -gt 0 ]]; then
-    local joined=""
-    local h
-    for h in "${hits[@]}"; do
-      joined+="${h},"
-    done
-    echo "abort|${joined%,}"
+  local paths
+  paths=$(_config_replace_paths "$file" | jq -r 'join(",")' 2>/dev/null || echo "")
+  if [[ -n "$paths" ]]; then
+    echo "abort|${paths}"
   else
     echo "skip"
   fi
@@ -317,25 +341,68 @@ _config_load_layer() {
 
   case "$vstatus" in
     missing)
-      echo "Warning: '$file' has no 'version:' field; assuming version 1. Add 'version: 1' to silence." >&2
-      ;;
-    unsupported)
-      local cls fields
-      cls=$(_config_unknown_version_classify "$file")
-      if [[ "$cls" == abort\|* ]]; then
-        fields="${cls#abort|}"
-        echo "Error: '$file' declares version: $version (rc supports up to ${RC_CONFIG_SUPPORTED_VERSION_MAX}) AND uses selection-list field(s) [$fields]." >&2
-        echo "  Skipping the file would silently expand capability beyond your declared intent." >&2
-        echo "  Upgrade rc, or remove the selection-list field(s) and pin to a supported version." >&2
+      # ADR-021 D3 EXCEPTION: a version-absent file declaring mounts.allow_risky
+      # (the one field whose v1->v2 semantics flip capability-widening,
+      # replace->union) must never be silently reinterpreted. Demand an explicit
+      # version declaration.
+      local _mar_present
+      _mar_present=$(yq '.mounts.allow_risky // "___RC_ABSENT___"' "$file" 2>/dev/null || echo "___RC_ABSENT___")
+      if [[ "$_mar_present" != "___RC_ABSENT___" ]]; then
+        echo "Error: '$file' has no 'version:' field but declares 'mounts.allow_risky', whose v1->v2 merge semantics differ (replace -> union). Refusing to assume a version for a capability-widening field. Add an explicit 'version: 2' (and express any narrowing with the !replace tag)." >&2
         return 1
       fi
-      echo "Warning: '$file' declares version: $version but rc supports up to ${RC_CONFIG_SUPPORTED_VERSION_MAX}. Skipping this file (no selection-list fields detected — capability degradation is in the safer direction). Run 'rc --version' and consider upgrading." >&2
+      echo "Warning: '$file' has no 'version:' field; assuming version 2. Add 'version: 2' to silence." >&2
+      ;;
+    v1)
+      echo "Error: '$file' declares version: 1, which rc no longer supports (schema is now v2 — ADR-021 D3/D9). Migrate: change 'version: 1' to 'version: 2'. If this file narrowed a list via v1 replace-semantics (e.g. a per-project 'mounts.allow_risky'), express that narrowing with the !replace tag under v2 (lists now union by default)." >&2
+      return 1
+      ;;
+    unsupported)
+      local cls paths
+      cls=$(_config_unknown_version_classify "$file")
+      if [[ "$cls" == abort\|* ]]; then
+        paths="${cls#abort|}"
+        echo "Error: '$file' declares version: $version (rc supports up to ${RC_CONFIG_SUPPORTED_VERSION_MAX}) AND uses the !replace tag at [$paths]." >&2
+        echo "  Skipping the file would silently drop its narrowing intent (a capability-expanding change)." >&2
+        echo "  Upgrade rc, or remove the !replace tag(s) and pin to a supported version." >&2
+        return 1
+      fi
+      echo "Warning: '$file' declares version: $version but rc supports up to ${RC_CONFIG_SUPPORTED_VERSION_MAX}. Skipping this file (no !replace tags detected — capability degradation is in the safer direction). Run 'rc --version' and consider upgrading." >&2
       echo "{}"
       return 0
       ;;
     ok)
       ;;
   esac
+
+  # Custom-tag validation (ADR-021 D2), on files that actually load (ok/missing).
+  # Runs on the RAW YAML tag map (yq -o=json below strips custom tags). Aborts
+  # loud NAMING THE EXACT PATH for: any tag other than !replace; !replace on a
+  # non-list or undeclared field; !replace on mounts.denylist (ADR-023 D2).
+  local _tag_entries
+  _tag_entries=$(_config_tag_map "$file")
+  local _tm_path _tm_tag
+  while IFS=$'\t' read -r _tm_path _tm_tag; do
+    [[ -z "$_tm_path" && -z "$_tm_tag" ]] && continue
+    if [[ "$_tm_tag" != "!replace" ]]; then
+      echo "Error: '$file' uses unknown custom tag '${_tm_tag}' at path '${_tm_path}'. The only supported tag is !replace (on a declared list field). Remove the tag." >&2
+      return 1
+    fi
+    if [[ "$_tm_path" == "mounts.denylist" ]]; then
+      echo "Error: '$file' uses !replace on 'mounts.denylist', which is replace-forbidden (ADR-023 D2): the secret-path denylist is additive-only — a project may expand it but never contract or clear it. Remove the !replace tag." >&2
+      return 1
+    fi
+    local _tm_type
+    _tm_type=$(_config_schema_field_type "$_tm_path")
+    if [[ -z "$_tm_type" ]]; then
+      echo "Error: '$file' uses !replace on undeclared path '${_tm_path}'. !replace is only valid on a declared list field. Remove the tag." >&2
+      return 1
+    fi
+    if [[ "$_tm_type" != "list" ]]; then
+      echo "Error: '$file' uses !replace on non-list field '${_tm_path}' (schema type '${_tm_type}'). !replace only applies to list fields. Remove the tag." >&2
+      return 1
+    fi
+  done < <(jq -r '.[] | [.path, .tag] | @tsv' <<<"$_tag_entries" 2>/dev/null)
 
   local json
   if ! json=$(yq -o=json '.' "$file" 2>/dev/null); then
@@ -362,7 +429,7 @@ _config_load_layer() {
   local _ev_key _ev_type _ev_default _ev_allowed
   while IFS='|' read -r _ev_key _ev_type _ev_default _ev_allowed; do
     [[ -z "$_ev_key" ]] && continue
-    [[ "$_ev_type" != "selection_list" ]] && continue
+    [[ "$_ev_type" != "enum" ]] && continue
     # Dynamic derivation for session.multiplexer (4th column intentionally absent).
     if [[ "$_ev_key" == "session.multiplexer" && -z "$_ev_allowed" ]]; then
       _ev_allowed=$(_config_mux_derive_allowed_set)
@@ -390,7 +457,9 @@ _config_load_layer() {
   done < <(_config_schema_lines)
 
   # Retired-field loud-reject (Fable ruling 6, rip-cage-tsf2). Four fields were
-  # removed from _config_schema_lines at the msb cutover. Because _config_merge
+  # removed from _config_schema_lines at the msb cutover, plus three vestigial
+  # network fields at the v2 schema bump (ADR-021 D9, rip-cage-tsf2.10.3) —
+  # seven table entries total. Because _config_merge
   # walks the schema explicitly (only declared fields survive the merge), a file
   # still carrying one of them would have it SILENTLY DROPPED with zero feedback
   # — the identical posture-surprise class the retired MEDIATOR *archetype*
@@ -475,10 +544,17 @@ _config_load_layer() {
 }
 
 
-# Merge two layer JSONs per D2 per-field-type rules. Walks the schema
-# explicitly — only declared fields appear in the effective config.
+# Merge the layer JSONs per ADR-021 D2 (v2). Fold-left over the pinned stack
+# [schema defaults, global file, project file]. Walks the schema explicitly —
+# only declared fields appear in the effective config.
+#   $1 global JSON    $2 project JSON
+#   $3 global !replace-path set (JSON array)   $4 project !replace-path set
+# list fields union by default (order-preserving dedup, lower layers first); a
+# layer tagging the field !replace replaces everything inherited from lower
+# stack positions and becomes the new base (!replace [] is the zero-out).
 _config_merge() {
   local global="$1" project="$2"
+  local global_replace="${3:-[]}" project_replace="${4:-[]}"
   local effective='{}'
   local key type default _allowed
   while IFS='|' read -r key type default _allowed; do
@@ -488,28 +564,27 @@ _config_merge() {
     g_val=$(jq -c --argjson p "$path_arr" 'getpath($p)' <<<"$global")
     p_val=$(jq -c --argjson p "$path_arr" 'getpath($p)' <<<"$project")
     case "$type" in
-      additive_list)
-        # Union: global ∪ project, order-preserving dedup. Default applied
-        # only if both layers absent (so [] in either layer is honored, not
-        # replaced with defaults).
-        if [[ "$g_val" == "null" && "$p_val" == "null" ]]; then
-          merged="$default"
-        else
-          merged=$(jq -nc --argjson g "$g_val" --argjson p "$p_val" '
-            (($g // []) + ($p // []))
-            | reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end)
-          ')
-        fi
+      list)
+        # Fold-left [default, global, project] with !replace awareness.
+        local g_repl p_repl
+        g_repl=$(jq -c --arg k "$key" 'any(.[]; . == $k)' <<<"$global_replace")
+        p_repl=$(jq -c --arg k "$key" 'any(.[]; . == $k)' <<<"$project_replace")
+        merged=$(jq -nc \
+          --argjson d "$default" --argjson g "$g_val" --argjson p "$p_val" \
+          --argjson gr "$g_repl" --argjson pr "$p_repl" '
+          def uni(a; b):
+            ((a // []) + (b // []))
+            | reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end);
+          ($d) as $base
+          | (if $gr then ($g // [])
+             elif $g != null then uni($base; $g)
+             else $base end) as $afterg
+          | (if $pr then ($p // [])
+             elif $p != null then uni($afterg; $p)
+             else $afterg end)
+        ')
         ;;
-      selection_list)
-        # Three-state per D2: project absent ⇒ inherit global (or default);
-        # project present (any value, including []) ⇒ project replaces.
-        merged=$(jq -nc --argjson g "$g_val" --argjson p "$p_val" --argjson d "$default" '
-          if $p != null then $p
-          elif $g != null then $g
-          else $d end')
-        ;;
-      scalar)
+      enum|scalar)
         merged=$(jq -nc --argjson g "$g_val" --argjson p "$p_val" --argjson d "$default" '
           if $p != null then $p
           elif $g != null then $g
@@ -530,6 +605,7 @@ _config_merge() {
 # Output: { "<dotted_key>": "global"|"project"|"default"|["global","project"] }
 _config_provenance() {
   local global="$1" project="$2"
+  local global_replace="${3:-[]}" project_replace="${4:-[]}"
   local prov='{}'
   local key type default _allowed
   while IFS='|' read -r key type default _allowed; do
@@ -542,8 +618,15 @@ _config_provenance() {
     [[ "$g_val" != "null" ]] && g_present="true"
     [[ "$p_val" != "null" ]] && p_present="true"
     case "$type" in
-      additive_list)
-        if [[ "$g_present" == "true" && "$p_present" == "true" ]]; then
+      list)
+        # A project !replace discards lower layers ⇒ sole source is project.
+        # Otherwise, layers that actually contribute a value are named (a global
+        # !replace still contributes as the fold base).
+        local p_repl
+        p_repl=$(jq -r --arg k "$key" 'any(.[]; . == $k)' <<<"$project_replace")
+        if [[ "$p_repl" == "true" ]]; then
+          src='"project"'
+        elif [[ "$g_present" == "true" && "$p_present" == "true" ]]; then
           src='["global","project"]'
         elif [[ "$g_present" == "true" ]]; then
           src='"global"'
@@ -553,7 +636,7 @@ _config_provenance() {
           src='"default"'
         fi
         ;;
-      selection_list|scalar)
+      enum|scalar)
         if [[ "$p_present" == "true" ]]; then
           src='"project"'
         elif [[ "$g_present" == "true" ]]; then
@@ -591,9 +674,17 @@ _load_effective_config() {
     return 1
   fi
 
+  # Capture the !replace-tag path sets from the RAW YAML (yq -o=json strips
+  # custom tags, so this rides alongside the JSON layers — ADR-021 D2). A file
+  # that was version-skipped never has !replace (else it aborts), so reading
+  # the raw file here is always consistent with what actually loaded.
+  local global_replace project_replace
+  if [[ -f "$global_path" ]]; then global_replace=$(_config_replace_paths "$global_path"); else global_replace='[]'; fi
+  if [[ -f "$project_path" ]]; then project_replace=$(_config_replace_paths "$project_path"); else project_replace='[]'; fi
+
   local effective provenance sha
-  effective=$(_config_merge "$global_json" "$project_json")
-  provenance=$(_config_provenance "$global_json" "$project_json")
+  effective=$(_config_merge "$global_json" "$project_json" "$global_replace" "$project_replace")
+  provenance=$(_config_provenance "$global_json" "$project_json" "$global_replace" "$project_replace")
 
   # Note: network.writable_hosts cross-field constraint removed in rip-cage-ta1o.1
   # (method-asymmetry / write-gate fully deleted; writable_hosts is no longer a live config field).
@@ -685,9 +776,13 @@ _config_format_yaml() {
     fi
 
     case "$type" in
-      additive_list)
+      list)
+        # A list field whose merged value is null (e.g. mounts.allow_risky
+        # default) renders as a scalar null.
+        if [[ "$val" == "null" ]]; then
+          echo "${indent}${leaf}: null               # ${src_text}"
         # Empty list: render inline.
-        if [[ "$val" == "[]" ]]; then
+        elif [[ "$val" == "[]" ]]; then
           echo "${indent}${leaf}: []                 # ${src_text}"
         else
           echo "${indent}${leaf}:                   # ${src_text}"
@@ -720,12 +815,11 @@ _config_format_yaml() {
           done < <(jq -r '.[]' <<<"$val")
         fi
         ;;
-      selection_list)
+      enum)
         # Enum-scalar variant: value is a JSON string (not array).
-        # Render as scalar. Array variant (e.g. allowed_keys) renders as list.
-        # Note: _allowed is the 4th schema column; some scalar selection_list fields
-        # (e.g. session.multiplexer) have no static 4th column yet are still string
-        # scalars — detect via JSON type, not _allowed presence.
+        # Render as scalar. Note: _allowed is the 4th schema column; some enum
+        # fields (e.g. session.multiplexer) have no static 4th column yet are
+        # still string scalars — detect via JSON type, not _allowed presence.
         if [[ "$val" == "null" ]]; then
           echo "${indent}${leaf}: null               # ${src_text}"
         elif [[ -n "$_allowed" ]] || jq -e 'type == "string"' <<<"$val" >/dev/null 2>&1; then

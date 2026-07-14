@@ -1,7 +1,7 @@
-version: 1
+version: 2
 network:
   allowed_hosts:
     - api.github.com
     - pypi.org
-  mode: block
-  # Note: writable_hosts removed in rip-cage-ta1o.1 (write-gate deleted)
+  # Note: writable_hosts removed in rip-cage-ta1o.1 (write-gate deleted);
+  # network.mode removed in the schema v1->v2 bump (ADR-021 D9, vestigial post-msb)

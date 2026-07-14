@@ -328,7 +328,7 @@ STUB_EOF
 
     # ADR-023: rc up requires a global config. Provide a minimal one via RC_CONFIG_GLOBAL.
     T14_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t14-cfg-XXXXXX.yaml")
-    printf 'version: 1\nmounts:\n  denylist: []\n' > "$T14_GLOBAL_CFG"
+    printf 'version: 2\nmounts:\n  denylist: []\n' > "$T14_GLOBAL_CFG"
     dry_run_output=$(RC_ALLOWED_ROOTS="$TEST_DIR_T14" RC_CONFIG_GLOBAL="$T14_GLOBAL_CFG" "$RC" up --dry-run "$TEST_DIR_T14" 2>&1 || true)
     rm -f "$T14_GLOBAL_CFG"
 
@@ -498,7 +498,7 @@ else
     mkdir -p "${TEST_DIR_T19}/.git"
     # ADR-023: rc up requires a global config. Provide a minimal one via RC_CONFIG_GLOBAL.
     T19_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t19-cfg-XXXXXX.yaml")
-    printf 'version: 1\nmounts:\n  denylist: []\n' > "$T19_GLOBAL_CFG"
+    printf 'version: 2\nmounts:\n  denylist: []\n' > "$T19_GLOBAL_CFG"
     stale_dry_run_output=$(RIP_CAGE_IMAGE_REGISTRY="" RC_ALLOWED_ROOTS="$TEST_DIR_T19" RC_CONFIG_GLOBAL="$T19_GLOBAL_CFG" \
       "$RC" up --dry-run "$TEST_DIR_T19" 2>&1 || true)
     rm -f "$T19_GLOBAL_CFG"
@@ -577,7 +577,7 @@ else
   mv "$REPO_VERSION_FILE" "$BACKUP_VERSION_FILE" 2>/dev/null || true
 
   T20_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t20-cfg-XXXXXX.yaml")
-  printf 'version: 1\nmounts:\n  denylist: []\n' > "$T20_GLOBAL_CFG"
+  printf 'version: 2\nmounts:\n  denylist: []\n' > "$T20_GLOBAL_CFG"
   unknown_dry_run_output=$(RIP_CAGE_IMAGE_REGISTRY="" RC_ALLOWED_ROOTS="$TEST_DIR_T20" RC_CONFIG_GLOBAL="$T20_GLOBAL_CFG" \
     "$RC" up --dry-run "$TEST_DIR_T20" 2>&1 || true)
   rm -f "$T20_GLOBAL_CFG"

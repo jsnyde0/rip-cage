@@ -3,35 +3,20 @@
 # NOTE: sourced by the rc shim; must NOT set -euo pipefail (shim owns strict mode once).
 
 
-# _rc_ls_mode_from_source_path -- derive the CURRENT egress mode from the source
-# workspace's .rip-cage.yaml (the live source of truth post-promote/reload).
+# _rc_ls_mode_from_source_path -- egress-mode column value for `rc ls`.
 #
-# Docker labels are stamped at create time (immutable); this helper reads the
-# file that rc reload rewrites, so it reflects the actual running mode instead
-# of the stale create-time label.
+# The former observe/block/off egress "mode" is vestigial post-msb-cutover:
+# egress is msb default-deny at the VM boundary and reachability comes only from
+# network.allowed_hosts (ADR-029). network.mode was dropped from the schema in
+# the v1->v2 bump (ADR-021 D9) and now loud-rejects as a retired field, so there
+# is nothing to derive — this helper returns the inert "legacy" sentinel
+# unconditionally. The `mode` column/JSON key is retained (stable `rc ls`
+# contract) but no longer reads any config.
 #
-# Parameter: $1 source_path -- path to the cage's workspace (rc.source.path label value)
-# Prints:    "block" | "observe" | "off" | "legacy" (absent file or absent/null network.mode)
-#
-# Falls back to "legacy" on any error (no-op for pre-hhh workspaces).
+# Parameter: $1 source_path -- unused; retained for call-site signature stability.
+# Prints:    "legacy"
 _rc_ls_mode_from_source_path() {
-  local src_path="$1"
-  local yaml_file="${src_path}/.rip-cage.yaml"
-  if [[ ! -f "$yaml_file" ]]; then
-    echo "legacy"
-    return
-  fi
-  local mode
-  if ! command -v yq &>/dev/null; then
-    echo "legacy"
-    return
-  fi
-  mode=$(yq '.network.mode // "legacy"' "$yaml_file" 2>/dev/null | tr -d '"' | tr -d "'" || echo "legacy")
-  mode="${mode:-legacy}"
-  if [[ "$mode" == "null" || "$mode" == "~" ]]; then
-    mode="legacy"
-  fi
-  echo "$mode"
+  echo "legacy"
 }
 
 

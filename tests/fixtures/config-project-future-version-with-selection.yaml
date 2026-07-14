@@ -1,4 +1,8 @@
+# Higher-than-supported version that ALSO uses the !replace narrowing tag.
+# Under ADR-021 D3 (v2) this must ABORT loud (naming the file): dropping a file
+# whose narrowing intent is expressed by a tag is the capability-EXPANDING
+# failure direction. Re-authored from the v1 selection-list shape.
 version: 99
-mounts:
-  allow_risky:
-    - /opt/personal
+network:
+  allowed_hosts: !replace
+    - only.example

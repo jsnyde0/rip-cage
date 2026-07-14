@@ -1,6 +1,6 @@
 {
   "config": {
-    "version": 1,
+    "version": 2,
     "mounts": {
       "denylist": [],
       "allow_risky": null,
@@ -12,14 +12,7 @@
       }
     },
     "network": {
-      "allowed_hosts": [],
-      "mode": null,
-      "dns": {
-        "forward_to": null
-      },
-      "http": {
-        "forward_to": null
-      }
+      "allowed_hosts": []
     },
     "dcg": {
       "packs": [],
@@ -47,9 +40,6 @@
     "mounts.symlinks.scope": "default",
     "mounts.symlinks.mode": "default",
     "network.allowed_hosts": "default",
-    "network.mode": "default",
-    "network.dns.forward_to": "default",
-    "network.http.forward_to": "default",
     "dcg.packs": "default",
     "dcg.custom_rule_paths": "default",
     "session.multiplexer": "default",
@@ -63,5 +53,5 @@
     "global": "<GM_ROOT>/home/.config/rip-cage/config.yaml",
     "project": null
   },
-  "sha256": "1574d95842b7a499099c7090d3b9c5262a5ba8c392ae9254de68b4ecf9ff2d8a"
+  "sha256": "165839fa930c444afde52deabb8af347514f9aae5d18ee5379b4b4a60428ddef"
 }

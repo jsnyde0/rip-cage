@@ -52,7 +52,7 @@ setup_sandbox() {
 
   # Write empty denylist config (so denylist machinery is active but silent)
   cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist:
     - .ssh

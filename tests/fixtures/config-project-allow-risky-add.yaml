@@ -1,0 +1,5 @@
+# Project allow_risky, unioned with global (v2 default is union, not replace).
+version: 2
+mounts:
+  allow_risky:
+    - /opt/project

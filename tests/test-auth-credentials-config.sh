@@ -64,7 +64,7 @@ echo ""
 echo "=== T1: project auth.credentials in effective config ==="
 setup_sandbox
 cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
-version: 1
+version: 2
 auth:
   credentials:
     - source_env: GH_TOKEN
@@ -91,14 +91,14 @@ echo ""
 echo "=== T2: global + project auth.credentials additive union ==="
 setup_sandbox
 cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'EOF'
-version: 1
+version: 2
 auth:
   credentials:
     - source_env: ANTHROPIC_API_KEY
       hosts: [api.anthropic.com]
 EOF
 cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
-version: 1
+version: 2
 auth:
   credentials:
     - source_env: GH_TOKEN
@@ -127,7 +127,7 @@ echo ""
 echo "=== T3: credential entry missing source_env aborts loud ==="
 setup_sandbox
 cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
-version: 1
+version: 2
 auth:
   credentials:
     - hosts: [github.com]
@@ -149,7 +149,7 @@ echo ""
 echo "=== T4: credential entry missing hosts aborts loud ==="
 setup_sandbox
 cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
-version: 1
+version: 2
 auth:
   credentials:
     - source_env: GH_TOKEN
@@ -171,7 +171,7 @@ echo ""
 echo "=== T5: credential entry with empty hosts array aborts loud ==="
 setup_sandbox
 cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
-version: 1
+version: 2
 auth:
   credentials:
     - source_env: GH_TOKEN
@@ -217,7 +217,7 @@ echo ""
 echo "=== T7: target_env + source_file survive into effective config ==="
 setup_sandbox
 cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'EOF'
-version: 1
+version: 2
 auth:
   credentials:
     - source_env: CCTOK
@@ -249,7 +249,7 @@ echo ""
 echo "=== T8: target_env + multi-host credential aborts loud ==="
 setup_sandbox
 cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
-version: 1
+version: 2
 auth:
   credentials:
     - source_env: CCTOK

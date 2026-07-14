@@ -1,0 +1,5 @@
+# Global layer narrows the schema default via !replace (becomes the new base).
+version: 2
+network:
+  allowed_hosts: !replace
+    - global-only.example

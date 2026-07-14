@@ -57,7 +57,7 @@ echo ""
 echo "=== T1+T2: allowed_hosts + credentials passthrough ==="
 setup_sandbox
 cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
-version: 1
+version: 2
 network:
   allowed_hosts: [github.com, api.anthropic.com]
 auth:
@@ -112,7 +112,7 @@ echo ""
 echo "=== T4: output round-trips through the real _msb_flags_generate contract ==="
 setup_sandbox
 cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
-version: 1
+version: 2
 network:
   allowed_hosts: [example.com]
 auth:
@@ -143,7 +143,7 @@ echo "=== T5: manifest tool egress: hosts union into allowed_hosts (rip-cage-tsf
 setup_sandbox
 SENTINEL_HOST="egress-sentinel.tsf28.test.invalid"
 cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
-version: 1
+version: 2
 network:
   allowed_hosts: [github.com, api.anthropic.com]
 EOF
@@ -183,7 +183,7 @@ echo "=== T5b: sentinel host materializes as a --net-rule through the real gener
 setup_sandbox
 SENTINEL_HOST="egress-sentinel.tsf28.test.invalid"
 cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
-version: 1
+version: 2
 network:
   allowed_hosts: [github.com]
 EOF
@@ -257,7 +257,7 @@ echo "=== T6b: manifest file absent -> union contributes nothing, config passthr
 setup_sandbox
 T6B_MANIFEST="${TEST_HOME}/.config/rip-cage/absent-tools.yaml"  # deliberately never created
 cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
-version: 1
+version: 2
 network:
   allowed_hosts: [example.com]
 EOF

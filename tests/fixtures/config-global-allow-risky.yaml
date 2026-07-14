@@ -1,0 +1,5 @@
+# Global allow_risky, used to prove union (v2) rather than replace (v1).
+version: 2
+mounts:
+  allow_risky:
+    - /opt/global

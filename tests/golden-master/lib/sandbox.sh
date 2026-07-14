@@ -74,7 +74,7 @@ gm_sandbox_reset() {
   mkdir -p "${GM_XDG}/rip-cage"
   mkdir -p "$GM_WS"
   cat > "${GM_XDG}/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: []
   allow_risky: null

@@ -1,0 +1,5 @@
+# !replace on an undeclared path must abort loud naming the path.
+version: 2
+madeup:
+  field: !replace
+    - x

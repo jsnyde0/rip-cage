@@ -79,7 +79,7 @@ git -C "$WS" add README.md
 git -C "$WS" -c user.name="scratch" -c user.email="scratch@example.invalid" commit -q -m "initial"
 
 cat > "${WS}/.rip-cage.yaml" <<'EOF'
-version: 1
+version: 2
 network:
   allowed_hosts: [example.com]
 EOF
@@ -131,7 +131,7 @@ msb exec "$CAGE_NAME" -- sh -c 'echo pre-reload-overlay-marker > /home/agent/ove
 echo ""
 echo "=== FIX: amend .rip-cage.yaml + rc reload ==="
 cat > "${WS}/.rip-cage.yaml" <<'EOF'
-version: 1
+version: 2
 network:
   allowed_hosts: [example.com, www.wikipedia.org]
 EOF

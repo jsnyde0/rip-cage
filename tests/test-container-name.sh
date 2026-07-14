@@ -158,7 +158,7 @@ setup_sandbox() {
   TEST_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-cn-test-XXXXXX")
   mkdir -p "${TEST_HOME}/.config/rip-cage"
   cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: []
   allow_risky: null

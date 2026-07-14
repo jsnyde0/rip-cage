@@ -137,7 +137,7 @@ RESOLVED_SYMLINK=$(realpath "$SYMLINK_PATH")
 # patterns as the real D4 defaults, scoped down for a deterministic test.
 mkdir -p "${TEST_HOME}/.config/rip-cage"
 cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'CFGEOF'
-version: 1
+version: 2
 mounts:
   denylist:
     - .aws

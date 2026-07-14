@@ -97,7 +97,7 @@ run_rc_up() {
 
 write_config_mode() {
   cat > "${WS}/.rip-cage.yaml" <<EOF
-version: 1
+version: 2
 mounts:
   config_mode: $1
 EOF
@@ -226,7 +226,7 @@ git -C "$WS_B" add README.md
 git -C "$WS_B" -c user.name="scratch" -c user.email="scratch@example.invalid" commit -q -m "initial"
 write_config_mode_rw_b() {
   cat > "${WS_B}/.rip-cage.yaml" <<'EOF'
-version: 1
+version: 2
 mounts:
   config_mode: rw
 EOF

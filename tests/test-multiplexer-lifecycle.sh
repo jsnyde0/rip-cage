@@ -380,7 +380,7 @@ _create_workspace() {
   git -C "$ws" init -q 2>/dev/null
   printf '# mux lifecycle test workspace\n' > "${ws}/README"
   if [[ "$mux" != "none" ]]; then
-    printf 'version: 1\nsession:\n  multiplexer: %s\n' "$mux" > "${ws}/.rip-cage.yaml"
+    printf 'version: 2\nsession:\n  multiplexer: %s\n' "$mux" > "${ws}/.rip-cage.yaml"
   fi
   # no .rip-cage.yaml for none — default is none
 }

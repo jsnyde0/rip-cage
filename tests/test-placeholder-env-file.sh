@@ -80,7 +80,7 @@ setup_p_sandbox() {
   P_TEST_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-pef-XXXXXX")
   mkdir -p "${P_TEST_HOME}/.config/rip-cage"
   cat > "${P_TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: []
   allow_risky: null
@@ -128,7 +128,7 @@ setup_p_sandbox
 _c1_envfile="${P_TEST_HOME}/agent-placeholder.env"
 printf 'CLAUDE_CODE_OAUTH_TOKEN=placeholder-token\n' > "$_c1_envfile"
 cat > "${P_TEST_WS}/.rip-cage.yaml" <<YAML
-version: 1
+version: 2
 auth:
   placeholder_env_file: ${_c1_envfile}
 YAML
@@ -155,7 +155,7 @@ printf 'SOME_VAR=from-pointer\n' > "$_c2_pointer_envfile"
 _c2_cli_envfile="${P_TEST_HOME}/from-cli.env"
 printf 'SOME_VAR=from-cli\n' > "$_c2_cli_envfile"
 cat > "${P_TEST_WS}/.rip-cage.yaml" <<YAML
-version: 1
+version: 2
 auth:
   placeholder_env_file: ${_c2_pointer_envfile}
 YAML
@@ -181,7 +181,7 @@ _c2b_cli_envfile="${P_TEST_HOME}/cli-supplied.env"
 printf 'SOME_VAR=cli-value\n' > "$_c2b_cli_envfile"
 # No auth.placeholder_env_file in .rip-cage.yaml at all.
 cat > "${P_TEST_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 YAML
 _c2b_stderr=$(mktemp)
 _c2b_out=$(run_placeholder_driver "$P_TEST_WS" "$_c2b_cli_envfile" "$_c2b_stderr")
@@ -201,7 +201,7 @@ echo ""
 echo "--- Case 3: key set + pointer file missing (create phase) ---"
 setup_p_sandbox
 cat > "${P_TEST_WS}/.rip-cage.yaml" <<YAML
-version: 1
+version: 2
 auth:
   placeholder_env_file: ${P_TEST_HOME}/nonexistent-placeholder.env
 YAML
@@ -225,7 +225,7 @@ setup_p_sandbox
 # Override the global config's denylist to include a pattern the pointer's
 # path will match by component (component-equals matching, ADR-023 D4).
 cat > "${P_TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: ["credentials"]
   allow_risky: null
@@ -234,7 +234,7 @@ mkdir -p "${P_TEST_HOME}/.aws"
 _c3b_pointer="${P_TEST_HOME}/.aws/credentials"
 printf 'aws_access_key_id=AKIAFAKE\n' > "$_c3b_pointer"
 cat > "${P_TEST_WS}/.rip-cage.yaml" <<YAML
-version: 1
+version: 2
 auth:
   placeholder_env_file: ${_c3b_pointer}
 YAML

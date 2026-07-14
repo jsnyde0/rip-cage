@@ -63,7 +63,7 @@ _host_sandbox_setup() {
   _HOST_SANDBOX_CFG_DIR=$(mktemp -d)
   mkdir -p "${_HOST_SANDBOX_CFG_DIR}/rip-cage"
   cat > "${_HOST_SANDBOX_CFG_DIR}/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: []
   allow_risky: null

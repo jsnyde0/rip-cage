@@ -1,3 +1,4 @@
-version: 1
+version: 2
 mounts:
-  allow_risky: []
+  # !replace [] is the explicit zero-out under v2 (lists union by default).
+  allow_risky: !replace []

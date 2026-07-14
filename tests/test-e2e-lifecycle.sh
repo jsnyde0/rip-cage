@@ -660,7 +660,7 @@ git -C "$_dcg_ws" init > /dev/null 2>&1
 
 # Write .rip-cage.yaml with dcg.custom_rule_paths pointing at workspace rule pack.
 cat > "${_dcg_ws}/.rip-cage.yaml" << 'RIPCAGEYAML'
-version: 1
+version: 2
 dcg:
   custom_rule_paths:
     - .rip-cage/dcg-rules/*.yaml

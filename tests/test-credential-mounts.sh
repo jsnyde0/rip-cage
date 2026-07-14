@@ -84,7 +84,7 @@ setup_sandbox() {
   TEST_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-cred-mounts-test-XXXXXX")
   mkdir -p "${TEST_HOME}/.config/rip-cage"
   cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: []
   allow_risky: null
@@ -197,7 +197,7 @@ teardown_sandbox
 # CM2: auth.credential_mounts: real (explicit) -> identical to CM1
 # (positive control).
 # ---------------------------------------------------------------------------
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 auth:
   credential_mounts: real"
 seed_cred_fixtures
@@ -488,7 +488,7 @@ teardown_sandbox
 # CM7 (invalid value): auth.credential_mounts bogus -> rc up / validate
 # aborts loud, non-zero, stderr names field + allowed real,none (mirrors M5).
 # ---------------------------------------------------------------------------
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 auth:
   credential_mounts: bogus"
 
@@ -527,7 +527,7 @@ teardown_sandbox
 # aborts non-zero, stderr names rc destroy / rc up, no rc reload mention
 # (mirrors M6 in test-config-ro-mount.sh).
 # ---------------------------------------------------------------------------
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 auth:
   credential_mounts: none"   # current effective: none
 
@@ -567,7 +567,7 @@ teardown_sandbox
 # ---------------------------------------------------------------------------
 # CM9 (resume guard agree): label equals config -> returns 0 (mirror M7).
 # ---------------------------------------------------------------------------
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 auth:
   credential_mounts: none"   # current effective: none
 
@@ -802,7 +802,7 @@ teardown_sandbox
 # unsupported tool name) -> aborts loud, stderr names the key, the file, and
 # the allowed set. Mirrors CM7's --dry-run up abort idiom.
 # ---------------------------------------------------------------------------
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 auth:
   per_tool:
     claud: none"   # typo: should be 'claude'
@@ -846,7 +846,7 @@ teardown_sandbox
 # (not a generic message — the operator must know which tool's mount shape
 # changed).
 # ---------------------------------------------------------------------------
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 auth:
   per_tool:
     pi: none"   # current effective: claude=real (default), pi=none
@@ -917,7 +917,7 @@ teardown_sandbox
 
 # Sub-case B: per_tool.claude: none -> claude's effective value flips away
 # from the legacy global "real" -> resume refuses, naming "claude".
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 auth:
   per_tool:
     claude: none"
@@ -995,7 +995,7 @@ fi
 # untouched) -> effective(pi)=none -> the resume-side recompute EXCLUDES the
 # auth.json leaf -> fingerprint CHANGES -> resume aborts.
 # ---------------------------------------------------------------------------
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 auth:
   per_tool:
     pi: none"
@@ -1045,7 +1045,7 @@ fi
 # "real") and match -> resume clean. This is the acceptance-critical case:
 # a stable mixed-posture cage must not spuriously refuse resume.
 # ---------------------------------------------------------------------------
-setup_sandbox "version: 1
+setup_sandbox "version: 2
 auth:
   credential_mounts: real
   per_tool:

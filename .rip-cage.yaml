@@ -16,7 +16,7 @@
 # --secret binding). Hosts below were converged narrow via the
 # deny -> `rc doctor` fix-hint -> `rc allowlist add` / edit -> `rc reload` loop
 # (a cold-recreate; mounts + Claude session survive) rather than guessed wide.
-version: 1
+version: 2
 network:
   allowed_hosts:
     # pi is pinned to openai-codex/gpt-5.5 (tools.yaml pi-recipe launch_args) —

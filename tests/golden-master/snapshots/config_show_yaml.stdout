@@ -3,7 +3,7 @@
 #   global  = <GM_ROOT>/home/.config/rip-cage/config.yaml
 #   project = (absent)
 #
-version: 1               # from global
+version: 2               # from global
 mounts:
   denylist: []                 # from global
   allow_risky: null               # from default
@@ -14,11 +14,6 @@ mounts:
     mode: rw               # from default
 network:
   allowed_hosts: []                 # from default
-  mode: null               # from default
-  dns:
-    forward_to: null               # from default
-  http:
-    forward_to: null               # from default
 dcg:
   packs: []                 # from default
   custom_rule_paths: []                 # from default

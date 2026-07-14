@@ -88,7 +88,7 @@ setup_sandbox() {
   mkdir -p "${TEST_WS}"
   # Default minimal global config (avoids mounts.denylist warnings)
   cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: []
 YAML
@@ -159,7 +159,7 @@ test_t1b_none_passes() {
 
   # Write project config with session.multiplexer: none
   cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 session:
   multiplexer: none
 YAML
@@ -188,7 +188,7 @@ test_t1c_unbaked_fails_loud() {
   setup_sandbox "" "" ""
 
   cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 session:
   multiplexer: ghost-mux
 YAML
@@ -226,7 +226,7 @@ test_t1d_manifest_fallback_passes() {
   setup_sandbox "" "" "manifest-multiplexer-valid.yaml"
 
   cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 session:
   multiplexer: test-mux
 YAML
@@ -257,7 +257,7 @@ test_t1e_manifest_fallback_rejects_absent_name() {
   setup_sandbox "" "" ""
 
   cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 session:
   multiplexer: test-mux
 YAML
@@ -386,7 +386,7 @@ test_t2b_baked_mux_passes() {
   setup_sandbox "" "" "manifest-multiplexer-valid.yaml"
 
   cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 session:
   multiplexer: test-mux
 YAML
@@ -421,7 +421,7 @@ test_t2c_unbaked_fails_loud_with_image() {
   setup_sandbox "" "" "manifest-multiplexer-valid.yaml"
 
   cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 session:
   multiplexer: ghost-mux
 YAML
@@ -502,7 +502,7 @@ DOCKERFILE
   # Sandbox: manifest declares test-mux as MULTIPLEXER; project config sets test-mux.
   setup_sandbox "" "" "manifest-multiplexer-valid.yaml"
   cat > "${TEST_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 session:
   multiplexer: test-mux
 YAML

@@ -155,7 +155,7 @@ echo ""
 # ---------------------------------------------------------------------------
 _SEC_CFG_DIR=$(mktemp -d)
 cat > "${_SEC_CFG_DIR}/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: []
   allow_risky: null
@@ -231,7 +231,7 @@ mkdir -p "$MED_WS"
 git -C "$MED_WS" init > /dev/null 2>&1
 
 cat > "${MED_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 network:
   mode: block
   allowed_hosts:
@@ -255,7 +255,7 @@ mkdir -p "$E4IP_WS"
 git -C "$E4IP_WS" init > /dev/null 2>&1
 
 cat > "${E4IP_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 network:
   mode: block
   allowed_hosts:
@@ -278,7 +278,7 @@ mkdir -p "$E4IP_NEG_WS"
 git -C "$E4IP_NEG_WS" init > /dev/null 2>&1
 
 cat > "${E4IP_NEG_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 network:
   mode: block
   allowed_hosts:
@@ -295,7 +295,7 @@ YAML
 # (api.anthropic.com so the Claude Code session can start).
 # writable_hosts removed (rip-cage-ta1o.1: method-asymmetry deleted).
 cat > "${BLOCK_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 network:
   mode: block
   allowed_hosts:
@@ -305,7 +305,7 @@ YAML
 
 # Observe-mode cage: same hosts but mode=observe.
 cat > "${OBS_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 network:
   mode: observe
   allowed_hosts:
@@ -800,7 +800,7 @@ JSON
 B6_CFG_DIR="${B6_TMP}/.config/rip-cage"
 mkdir -p "$B6_CFG_DIR"
 cat > "${B6_CFG_DIR}/config.yaml" <<'YAML'
-version: 1
+version: 2
 mounts:
   denylist: []
   allow_risky: null
@@ -1233,7 +1233,7 @@ if [[ "$obs_running" == "$OBS_CAGE" ]]; then
   # the O-probes (which require observe). Rewrite the config back to observe and
   # reload — this bounces the proxy/DNS sidecars so they pick up observe mode.
   cat > "${OBS_WS}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 network:
   mode: observe
   allowed_hosts:

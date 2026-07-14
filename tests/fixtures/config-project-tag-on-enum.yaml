@@ -1,0 +1,4 @@
+# !replace on a non-list (enum) field must abort loud naming the path.
+version: 2
+mounts:
+  config_mode: !replace ro

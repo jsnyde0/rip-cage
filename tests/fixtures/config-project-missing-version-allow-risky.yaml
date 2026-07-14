@@ -1,0 +1,5 @@
+# Version-absent file that declares mounts.allow_risky: must abort loud demanding
+# an explicit version (the one field whose v1->v2 flip is capability-widening).
+mounts:
+  allow_risky:
+    - /opt/personal

@@ -236,10 +236,12 @@ elif command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
   # with a REAL `rc up` cage instead of a fake docker one.
   TEST_PATH_L2b=$(mktemp -d)/l2b-legacy-probe
   mkdir -p "$TEST_PATH_L2b"
+  # network.mode retired in the schema v1->v2 bump (ADR-021 D9); the `mode`
+  # display column is always "legacy" now regardless of config, which is exactly
+  # what this probe asserts. A plain allowed_hosts config suffices.
   cat > "${TEST_PATH_L2b}/.rip-cage.yaml" <<'YAML'
-version: 1
+version: 2
 network:
-  mode: block
   allowed_hosts:
     - example.com
 YAML

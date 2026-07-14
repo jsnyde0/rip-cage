@@ -295,13 +295,13 @@ case_allowlist_add_new() {
 
 case_allowlist_add_skip_existing() {
   mkdir -p "$GM_WS"
-  printf 'version: 1\nnetwork:\n  allowed_hosts:\n    - example.com\n' > "${GM_WS}/.rip-cage.yaml"
+  printf 'version: 2\nnetwork:\n  allowed_hosts:\n    - example.com\n' > "${GM_WS}/.rip-cage.yaml"
   gm_capture --output json allowlist add example.com "--config-file=${GM_WS}/.rip-cage.yaml"
 }
 
 case_allowlist_show_effective() {
   mkdir -p "$GM_WS"
-  printf 'version: 1\nnetwork:\n  allowed_hosts:\n    - example.com\n' > "${GM_WS}/.rip-cage.yaml"
+  printf 'version: 2\nnetwork:\n  allowed_hosts:\n    - example.com\n' > "${GM_WS}/.rip-cage.yaml"
   gm_capture allowlist show --effective "--config-file=${GM_WS}/.rip-cage.yaml"
 }
 
