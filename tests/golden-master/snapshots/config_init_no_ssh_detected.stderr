@@ -1,2 +1,2 @@
 Error: unknown config subcommand 'init'
-Usage: rc config <show|get> [flags]
+Usage: rc config <show|get|set|add|remove> [flags]

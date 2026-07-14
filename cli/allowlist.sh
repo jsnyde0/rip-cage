@@ -83,36 +83,40 @@ _allowlist_resolve_config_file() {
 }
 
 
-# _allowlist_add_host_to_yaml: idempotently append <host> to network.allowed_hosts
+# _allowlist_add_host_to_yaml: idempotently add <host> to network.allowed_hosts
 # in the given YAML file. Creates the file with version: 2 if absent.
 # Returns 0=added, 1=skipped (already present).
+#
+# ADR-021 D8 (rip-cage-tsf2.10.4): `rc allowlist add` is now SUGAR over the
+# shared surgical write path — the bespoke `yq += [...]` re-emit (which dropped
+# comments/blank lines) is replaced by delegation to _config_edit_apply, the
+# same comment-preserving engine `rc config add network.allowed_hosts` uses.
+# _config_edit_apply owns idempotency itself (return code 2 = already
+# present) so this wrapper just translates that engine contract (0=added,
+# 1=refused/error, 2=idempotent no-op) onto allowlist's own long-standing CLI
+# contract (0=added, 1=skipped) — including every engine-level safety guard
+# (newline-injection refusal, F-GATE verification, etc.) for free, on this
+# path too.
 _allowlist_add_host_to_yaml() {
   local host="$1" yaml_file="$2"
 
-  # Create minimal file if absent.
-  if [[ ! -f "$yaml_file" ]]; then
-    printf 'version: 2\nnetwork:\n  allowed_hosts: []\n' > "$yaml_file"
-  fi
-
-  # Check if host already present (line-level scan — avoids yq parse for simple idempotency).
-  if grep -qxF "    - ${host}" "$yaml_file" 2>/dev/null || \
-     grep -qxF "  - ${host}" "$yaml_file" 2>/dev/null; then
-    return 1  # skipped
-  fi
-
-  # Ensure network.allowed_hosts exists with yq; append the host.
-  if ! command -v yq &>/dev/null; then
-    echo "Error: yq not found on PATH. Install yq (brew install yq, or the mikefarah/yq release binary on Linux: https://github.com/mikefarah/yq/releases — NOT apt's yq, which is the incompatible python-yq) to use rc allowlist." >&2
-    exit 1
-  fi
-
-  # Use yq to append to the list. yq v4 (mikefarah) syntax.
-  local tmp_file
-  tmp_file=$(mktemp)
-  yq '.network.allowed_hosts += ["'"$host"'"]' "$yaml_file" > "$tmp_file"
-  cp "$tmp_file" "$yaml_file"
-  rm -f "$tmp_file"
-  return 0
+  # NOTE: the shim owns `set -e`; use `|| rc=$?` (not a bare call) so a
+  # non-zero return (2 = idempotent no-op, 1 = refused) doesn't trip errexit
+  # before this function gets to translate the engine's contract onto
+  # allowlist's own (same defensive pattern as cli/config.sh's write verb —
+  # this call site happens to already run inside a caller's `if !`, which
+  # bash also exempts from -e, but that's an implicit property of the
+  # CALLER, not this function; make it explicit here too).
+  local rc=0
+  _config_edit_apply add network.allowed_hosts "$host" "$yaml_file" || rc=$?
+  case "$rc" in
+    0) return 0 ;;  # added
+    2) return 1 ;;  # already present -- skipped
+    *)
+      echo "Error: failed to add '${host}' to network.allowed_hosts in ${yaml_file}." >&2
+      exit 1
+      ;;
+  esac
 }
 
 

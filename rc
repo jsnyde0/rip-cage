@@ -96,7 +96,7 @@ RC_VERSION="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || echo "unknown")"
 # flat file. None of the sourced files set -euo pipefail themselves -- this
 # shim is the ONLY place strict mode is toggled (map hazard 2); it is owned
 # here, once, so sourcing a module never leaks -e onto the caller.
-for _rc_lib in output docker msb_runtime msb_flags container path config manifest_checks; do
+for _rc_lib in output docker msb_runtime msb_flags container path config config_edit manifest_checks; do
   # shellcheck disable=SC1090
   source "${SCRIPT_DIR}/cli/lib/${_rc_lib}.sh"
 done

@@ -143,7 +143,7 @@ echo ""
 #       `msb list` + per-sandbox `_msb_inspect_json`/label reads; shared
 #       by cmd_ls's JSON and human branches).
 # ---------------------------------------------------------------------------
-echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 182) ==="
+echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 194) ==="
 
 # Bumped 178 -> 179 by Fable ruling 6 (msb cutover merge window): cli/lib/config.sh
 # gained _config_retired_fields (the retired-config-field loud-reject table).
@@ -153,7 +153,22 @@ echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 
 # Bumped 181 -> 182 by rip-cage-tsf2.10.3 (config loader v2): cli/lib/config.sh
 # gained _config_tag_map + _config_replace_paths (the !replace tag-map pass) and
 # dropped _config_schema_selection_list_keys (selection_list type retired); net +1.
-EXPECTED_FN_COUNT=182
+# Bumped 182 -> 192 by rip-cage-tsf2.10.4 (config write verbs, ADR-021 D8): the
+# host-side surgical write engine + verbs. 10 functions ADDED, 0 removed:
+#   cli/config.sh (4): _config_write_verb (shared arg-parse/dispatch),
+#     cmd_config_set, cmd_config_add, cmd_config_remove.
+#   cli/lib/config_edit.sh (NEW FILE, 6): _config_edit_apply (public write-path
+#     entrypoint, called by cli/config.sh verbs AND cli/allowlist.sh's
+#     delegation), _config_edit_structural_key, _config_edit_create,
+#     _config_edit_set, _config_edit_add, _config_edit_remove (the shape-
+#     specific splicers, lib-closure-reachable from _config_edit_apply).
+# Bumped 192 -> 194 by the same bead's REVISE round (fresh-context review
+# folded in-tree, F-GATE hardening): cli/lib/config_edit.sh gained
+# _config_edit_verify (the post-splice parse+readback+loader verification
+# gate, F2/F3's structural backstop) and _config_edit_file_mode (portable
+# BSD-stat/GNU-stat mode-read helper for the atomic-commit mode-preserve
+# fix, F5); net +2, 0 removed.
+EXPECTED_FN_COUNT=194
 _actual_fn_count=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh 2>/dev/null | wc -l | tr -d ' ')
 
 if [[ "$_actual_fn_count" -eq "$EXPECTED_FN_COUNT" ]]; then
@@ -178,17 +193,17 @@ echo ""
 # ---------------------------------------------------------------------------
 # (c) declare -F reachability: after sourcing the shim (exposing functions
 #     only -- no dispatch, since rc is sourced not executed here), every one
-#     of the 182 currently rc-reachable functions must be `declare -F`-
+#     of the 194 currently rc-reachable functions must be `declare -F`-
 #     reachable. rip-cage-rj68 (S6): cli/lib/msb_flags.sh is now in rc's
 #     source list (previously it was not -- see (b)'s comment), so the
 #     stale "151 reachable out of 156 on disk" gap is closed; on-disk count
-#     and reachable count are the SAME number (182, since rip-cage-tsf2.9's
+#     and reachable count are the SAME number (194, since rip-cage-tsf2.9's
 #     bump) from here on. A loud, per-name failure (not just a count) so a
 #     reviewer can see exactly which module dropped/misfiled a function.
 # ---------------------------------------------------------------------------
-echo "=== (c) declare -F reachability: all 182 rc-reachable functions defined after sourcing rc ==="
+echo "=== (c) declare -F reachability: all 194 rc-reachable functions defined after sourcing rc ==="
 
-ALL_193_NAMES="_allowlist_add _allowlist_add_host_to_yaml _allowlist_is_in_cage _allowlist_promote _allowlist_read_observed_hosts _allowlist_refuse_in_cage _allowlist_resolve_config_file _allowlist_show _bd_dolt_port_inject_arg _bd_host_preflight _build_msb_load _build_warn_stale_containers _check_lfs_stubs _check_secret_path_denylist _check_workspace_config_base_url _collect_dangling_symlinks _collect_symlink_parents _config_applied_path _config_check_version _config_check_yq _config_default_global_yaml _config_diff_paths _config_emit_hint _config_ensure_global_seeded _config_format_yaml _config_global_path _config_label_value _config_load_layer _config_merge _config_mux_derive_allowed_set _config_paths_all_reload_eligible _config_project_path _config_provenance _config_read_applied _config_replace_paths _config_resolve_workspace_arg _config_retired_fields _config_schema_defaults_json _config_schema_field_type _config_schema_lines _config_tag_map _config_unknown_version_classify _config_validate_or_abort _config_write_applied _container_multiplexer _docker_call _doctor_bd_version_compare _doctor_dead_file_mounts _doctor_format_auth_probe _doctor_format_dead_mounts _doctor_format_posture_probe _doctor_host _emit_denylist_denial _emit_workspace_config_base_url_error _emit_workspace_config_base_url_warning _ensure_pi_auth_seed _extract_credentials _extract_credentials_has_usable_existing _host_source_is_root_owned _image_is_current _lexical_normalize_path _load_effective_config _manifest_build_dockerfile_path _manifest_build_mount_args _manifest_check_binary_root_owned _manifest_check_build_isolation _manifest_check_build_source_subfields _manifest_check_install_cmd_single_line _manifest_check_ioc_egress _manifest_check_mount_root_owned _manifest_check_mounts_denylist _manifest_check_seed_drift _manifest_default_yaml _manifest_dest_in_allowed_roots _manifest_dist_path _manifest_egress_hosts_json _manifest_ensure_seeded _manifest_expand_mount_host _manifest_extract_seed_fingerprint _manifest_generate_daemon_config_dockerfile_steps _manifest_generate_daemon_mcp_dockerfile_steps _manifest_generate_extra_dockerfile_steps _manifest_generate_launch_args _manifest_generate_multiplexer_label _manifest_generate_multiplexer_registry_steps _manifest_generate_pi_shim_steps _manifest_generate_safety_stack_asserted_steps _manifest_generate_shell_init_zshrc_steps _manifest_generate_source_builder_stages _manifest_generate_tool_init_config_dockerfile_steps _manifest_global_path _manifest_load _manifest_reconcile _manifest_seed_fingerprint_hash _manifest_validate _msb_call _msb_current_image_digest _msb_denied_domains_from_trace_log _msb_exec _msb_exec_interactive _msb_exists _msb_flags_emit_dind_volume _msb_flags_emit_mount _msb_flags_generate _msb_flags_preflight_secret_env _msb_flags_prepare_secret_env _msb_flags_synth_secret_env_name _msb_inspect_json _msb_label _msb_remove _msb_sandbox_image_digest _msb_sandbox_state _msb_start _msb_stop_graceful _msb_volume_remove _path_under_allowed_roots _prereq_error _probe_tcp _pull_or_build _pull_or_build_local _rc_ls_enumerate _rc_ls_mode_from_source_path _rc_mux_resolve_hook_path _rc_uptime_from_state _resolve_script_dir _run_with_timeout _secret_path_denylist_matched_pattern _seed_claude_home_dirs _symlink_follow_fingerprint _up_announce_converge _up_build_egress_config_json _up_detect_worktree _up_eligible_drift_paths _up_image_drift_status _up_init_container _up_json_output _up_prepare_docker_mounts _up_prepare_environment _up_prepare_resume_secrets _up_resolve_dcg_config _up_resolve_effective_credential_mounts_for_tool _up_resolve_placeholder_env_file _up_resolve_resume_config_mode _up_resolve_resume_credential_mounts _up_resolve_resume_image_drift_running _up_resolve_resume_image_drift_stopped _up_resolve_resume_symlink_fingerprint _up_short_image_id _up_start_container _up_translate_docker_args_to_msb _up_validate_dcg_config check_docker check_jq check_msb cmd_allowlist cmd_attach cmd_auth cmd_auth_refresh cmd_build cmd_config cmd_config_get cmd_config_show cmd_destroy cmd_doctor cmd_down cmd_exec cmd_generate_dockerfile cmd_install cmd_ls cmd_manifest cmd_reload cmd_schema cmd_setup cmd_test cmd_up container_name json_error log resolve_name usage validate_path verify_rc_container"
+ALL_193_NAMES="_allowlist_add _allowlist_add_host_to_yaml _allowlist_is_in_cage _allowlist_promote _allowlist_read_observed_hosts _allowlist_refuse_in_cage _allowlist_resolve_config_file _allowlist_show _bd_dolt_port_inject_arg _bd_host_preflight _build_msb_load _build_warn_stale_containers _check_lfs_stubs _check_secret_path_denylist _check_workspace_config_base_url _collect_dangling_symlinks _collect_symlink_parents _config_applied_path _config_check_version _config_check_yq _config_default_global_yaml _config_diff_paths _config_edit_add _config_edit_apply _config_edit_create _config_edit_file_mode _config_edit_remove _config_edit_set _config_edit_structural_key _config_edit_verify _config_emit_hint _config_ensure_global_seeded _config_format_yaml _config_global_path _config_label_value _config_load_layer _config_merge _config_mux_derive_allowed_set _config_paths_all_reload_eligible _config_project_path _config_provenance _config_read_applied _config_replace_paths _config_resolve_workspace_arg _config_retired_fields _config_schema_defaults_json _config_schema_field_type _config_schema_lines _config_tag_map _config_unknown_version_classify _config_validate_or_abort _config_write_applied _config_write_verb _container_multiplexer _docker_call _doctor_bd_version_compare _doctor_dead_file_mounts _doctor_format_auth_probe _doctor_format_dead_mounts _doctor_format_posture_probe _doctor_host _emit_denylist_denial _emit_workspace_config_base_url_error _emit_workspace_config_base_url_warning _ensure_pi_auth_seed _extract_credentials _extract_credentials_has_usable_existing _host_source_is_root_owned _image_is_current _lexical_normalize_path _load_effective_config _manifest_build_dockerfile_path _manifest_build_mount_args _manifest_check_binary_root_owned _manifest_check_build_isolation _manifest_check_build_source_subfields _manifest_check_install_cmd_single_line _manifest_check_ioc_egress _manifest_check_mount_root_owned _manifest_check_mounts_denylist _manifest_check_seed_drift _manifest_default_yaml _manifest_dest_in_allowed_roots _manifest_dist_path _manifest_egress_hosts_json _manifest_ensure_seeded _manifest_expand_mount_host _manifest_extract_seed_fingerprint _manifest_generate_daemon_config_dockerfile_steps _manifest_generate_daemon_mcp_dockerfile_steps _manifest_generate_extra_dockerfile_steps _manifest_generate_launch_args _manifest_generate_multiplexer_label _manifest_generate_multiplexer_registry_steps _manifest_generate_pi_shim_steps _manifest_generate_safety_stack_asserted_steps _manifest_generate_shell_init_zshrc_steps _manifest_generate_source_builder_stages _manifest_generate_tool_init_config_dockerfile_steps _manifest_global_path _manifest_load _manifest_reconcile _manifest_seed_fingerprint_hash _manifest_validate _msb_call _msb_current_image_digest _msb_denied_domains_from_trace_log _msb_exec _msb_exec_interactive _msb_exists _msb_flags_emit_dind_volume _msb_flags_emit_mount _msb_flags_generate _msb_flags_preflight_secret_env _msb_flags_prepare_secret_env _msb_flags_synth_secret_env_name _msb_inspect_json _msb_label _msb_remove _msb_sandbox_image_digest _msb_sandbox_state _msb_start _msb_stop_graceful _msb_volume_remove _path_under_allowed_roots _prereq_error _probe_tcp _pull_or_build _pull_or_build_local _rc_ls_enumerate _rc_ls_mode_from_source_path _rc_mux_resolve_hook_path _rc_uptime_from_state _resolve_script_dir _run_with_timeout _secret_path_denylist_matched_pattern _seed_claude_home_dirs _symlink_follow_fingerprint _up_announce_converge _up_build_egress_config_json _up_detect_worktree _up_eligible_drift_paths _up_image_drift_status _up_init_container _up_json_output _up_prepare_docker_mounts _up_prepare_environment _up_prepare_resume_secrets _up_resolve_dcg_config _up_resolve_effective_credential_mounts_for_tool _up_resolve_placeholder_env_file _up_resolve_resume_config_mode _up_resolve_resume_credential_mounts _up_resolve_resume_image_drift_running _up_resolve_resume_image_drift_stopped _up_resolve_resume_symlink_fingerprint _up_short_image_id _up_start_container _up_translate_docker_args_to_msb _up_validate_dcg_config check_docker check_jq check_msb cmd_allowlist cmd_attach cmd_auth cmd_auth_refresh cmd_build cmd_config cmd_config_add cmd_config_get cmd_config_remove cmd_config_set cmd_config_show cmd_destroy cmd_doctor cmd_down cmd_exec cmd_generate_dockerfile cmd_install cmd_ls cmd_manifest cmd_reload cmd_schema cmd_setup cmd_test cmd_up container_name json_error log resolve_name usage validate_path verify_rc_container"
 
 _missing=""
 _missing_count=0
@@ -202,7 +217,7 @@ for _fn in $ALL_193_NAMES; do
 done
 
 if [[ "$_missing_count" -eq 0 ]]; then
-  pass "(c)" "all 182 rc-reachable functions are declare -F reachable after sourcing rc"
+  pass "(c)" "all 194 rc-reachable functions are declare -F reachable after sourcing rc"
 else
   fail "(c)" "${_missing_count} function(s) NOT reachable after sourcing rc" "missing:${_missing}"
 fi
@@ -294,14 +309,19 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "=== (f) Boundary validation: every lib/ function is a genuine cross-module or closure member ==="
 
-# Pre-existing dead code (verified unreferenced in the PRE-SPLIT monolith
-# too -- `grep -c _config_schema_field_type rc` at the pre-split HEAD found
-# only its own def line). Decomposition is behavior-preserving, not a
-# dead-code cleanup pass (per the map's "clean home yes; polish the logic
-# no" guardrail) -- so this genuinely-unreferenced helper is kept, exactly
-# as unreferenced as it always was, and explicitly allowed here rather than
-# silently masked by a looser boundary rule.
-_KNOWN_DEAD_LIB_FNS=" _config_schema_field_type "
+# No known-dead lib/ functions currently. _config_schema_field_type USED to be
+# carved out here (verified unreferenced in the pre-split monolith -- `grep -c
+# _config_schema_field_type rc` at the pre-split HEAD found only its own def
+# line), but review of rip-cage-tsf2.10.4 caught that the carve-out had gone
+# STALE: the function is genuinely referenced from within cli/lib/ itself --
+# cli/lib/config.sh:396 (the tag-map type lookup, added by the tsf2.10.3
+# loader-v2 work) and cli/lib/config_edit.sh:175 (the write engine's
+# schema-type gate, added by this bead) -- so it already satisfies check (f)'s
+# "reachable from within lib/ itself" closure rule on its own merits. Leaving
+# a stale entry here would mask a REAL future dead-code case behind this
+# allowlist (exactly the failure mode this variable exists to prevent), so
+# it's removed rather than left in place.
+_KNOWN_DEAD_LIB_FNS=" "
 
 _boundary_violations=""
 for _libfile in "${REPO_ROOT}"/cli/lib/*.sh; do

@@ -31,7 +31,10 @@ _rc_complete() {
       COMPREPLY=( $(compgen -W "refresh" -- "$cur") )
       ;;
     config)
-      COMPREPLY=( $(compgen -W "show" -- "$cur") )
+      COMPREPLY=( $(compgen -W "show get set add remove" -- "$cur") )
+      ;;
+    --scope)
+      COMPREPLY=( $(compgen -W "global project" -- "$cur") )
       ;;
     completions)
       COMPREPLY=( $(compgen -W "zsh bash" -- "$cur") )

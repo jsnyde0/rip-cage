@@ -151,6 +151,30 @@ cmd_schema() {
             {"name": "path", "type": "string", "required": false}
           ],
           "flags": {"--json": {"type": "bool", "default": false}}
+        },
+        "set": {
+          "args": [
+            {"name": "key", "type": "string", "required": true},
+            {"name": "value", "type": "string", "required": true},
+            {"name": "path", "type": "string", "required": false}
+          ],
+          "flags": {"--scope": {"type": "string", "values": ["global", "project"], "required": true, "default": null}}
+        },
+        "add": {
+          "args": [
+            {"name": "key", "type": "string", "required": true},
+            {"name": "item", "type": "string", "required": true},
+            {"name": "path", "type": "string", "required": false}
+          ],
+          "flags": {"--scope": {"type": "string", "values": ["global", "project"], "required": true, "default": null}}
+        },
+        "remove": {
+          "args": [
+            {"name": "key", "type": "string", "required": true},
+            {"name": "item", "type": "string", "required": true},
+            {"name": "path", "type": "string", "required": false}
+          ],
+          "flags": {"--scope": {"type": "string", "values": ["global", "project"], "required": true, "default": null}}
         }
       }
     },

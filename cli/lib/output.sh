@@ -70,6 +70,9 @@ Commands:
   auth refresh                                 Refresh credentials from host keychain
   config show [path] [--json]                  Print effective .rip-cage.yaml config (ADR-021); path defaults to pwd
   config get <key> [path] [--json]             Print one effective config value (dotted.key; rip-cage-08q)
+  config set <key> <value> --scope S           Set a scalar/enum (S=global|project; surgical, comment-preserving; ADR-021 D8)
+  config add <key> <item> --scope S            Add a list item (S=global|project)
+  config remove <key> <item> --scope S         Remove a list item (S=global|project)
   manifest reconcile                           Re-seed default-derived tools.yaml entries from current
                                                 manifest/default-tools.yaml, preserving custom entries (rip-cage-6vt9)
   schema                                       Print machine-readable command schema

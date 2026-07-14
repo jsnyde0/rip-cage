@@ -53,7 +53,13 @@ _rc() {
           ;;
         config)
           local -a config_subcmds
-          config_subcmds=('show:Print effective merged config (add --json for machine output)')
+          config_subcmds=(
+            'show:Print effective merged config (add --json for machine output)'
+            'get:Print one effective config value (dotted.key)'
+            'set:Set a scalar/enum value (--scope global|project)'
+            'add:Add a list item (--scope global|project)'
+            'remove:Remove a list item (--scope global|project)'
+          )
           _describe 'config subcommand' config_subcmds
           ;;
         completions)
