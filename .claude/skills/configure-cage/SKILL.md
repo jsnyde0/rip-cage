@@ -56,35 +56,51 @@ belongs to keeps you from editing the wrong file:
 |---|---|---|
 | Image manifest | `~/.config/rip-cage/tools.yaml` (or a project-level `tools.yaml`) | which tools/guards/multiplexers get **baked into the image** at `rc build` time — this is the file this skill composes |
 | Global posture | `~/.config/rip-cage/config.yaml` + `rc.conf` | host-wide guardrails that apply to every cage: the mount denylist, `RC_ALLOWED_ROOTS` (which host paths `rc up` may target) |
-| Per-project config | `<repo>/.rip-cage.yaml` | per-workspace runtime posture: `session.multiplexer`, `ssh.allowed_hosts`, `network.mode` + the egress allowlist, `mounts.config_mode` |
+| Per-project config | `<repo>/.rip-cage.yaml` | per-workspace runtime posture: `session.multiplexer`, `network.allowed_hosts` (the egress allowlist), per-project `auth.credentials` bindings, `mounts.config_mode` |
 
 (The two posture layers are not disjoint field sets — `config.yaml` and `.rip-cage.yaml`
 share one schema at two precedence levels that merge, global default / project override
 (ADR-021). The "Governs" column shows where each concern *typically* lives.)
 
 "Add a Postgres CLI" is an image-manifest ask. "Don't let any cage touch `~/.aws`" is a
-global-posture ask. "Allow this cage to reach `some-private-mirror.example.com` over SSH" is a
-per-project ask (and per `CLAUDE.md`, `.rip-cage.yaml` is read-only inside the cage by
-design — that edit and the `rc reload` that picks it up happen on the host, not from inside a
-running cage). Most requests this skill handles land in the image-manifest layer; know when
-one doesn't.
+global-posture ask. "Allow this cage to reach `some-private-mirror.example.com`" is a
+per-project ask (add the host to `network.allowed_hosts`; egress is HTTPS over the msb
+default-deny boundary now — there is no ssh cluster and no per-host SSH allowlist anymore). And
+per `CLAUDE.md`, `.rip-cage.yaml` is read-only inside the cage by design — that edit and the
+`rc reload` that picks it up happen on the host, not from inside a running cage. Most requests
+this skill handles land in the image-manifest layer; know when one doesn't.
+
+**One egress gotcha worth flagging when you compose a tool's `egress:` list.** A tool entry's
+`egress:` field in `tools.yaml` feeds schema validation and the build-time IOC-denylist gate,
+but it does **not** currently materialize into the running cage's runtime allow-rules — that
+union was wired pre-cutover and the msb migration left the re-wiring unimplemented (a
+fail-closed regression tracked as rip-cage-tsf2.8, not a safety hole). Until it lands, a host a
+tool needs to reach must ALSO appear in `network.allowed_hosts` (global or per-project);
+declaring it only under a tool's `egress:` leaves it denied at the msb VM boundary. Dogfood
+evidence: a cage whose `network.allowed_hosts` held 3 hosts showed exactly "3 allow-rule(s)" in
+`rc doctor` while several tool-declared `egress:` hosts never became rules.
 
 The credential non-possession posture (below) splits across these same layers, and the split
-isn't a style preference — it follows from how each layer merges. `auth.per_tool` (or the bare
-`auth.credential_mounts`) and `auth.placeholder_env_file` belong in the **global** `config.yaml`:
-they're posture the human wants on every cage they create, set once (rip-cage-u2ro promote).
-`network.allowed_hosts` and `auth.credentials` (per-host credential bindings, msb `--secret`)
-stay **per-project**, and that's load-bearing, not a preference — the two posture layers merge
-list fields additively (ADR-021), so a host added at the global layer applies to every project
-forever and no project can narrow it back out. A host only one project needs (a private mirror,
-a scoped API) belongs at the project layer for exactly that reason: put it in global instead and
-you've silently widened every other cage's allowlist with no way for any single project to opt
-back out.
+isn't a style preference — it follows from how each layer merges. The rule, settled by the
+tt22 migration (rip-cage-9dlw): **a universal binding or host every cage needs earns a global
+slot; anything only one project needs stays per-project, because the two posture layers merge
+list fields additively (ADR-021) and an additive list can never be narrowed back out** — a host
+added at the global layer applies to every project forever, and no project can opt back out.
+`auth.per_tool` (or the bare `auth.credential_mounts`) is posture the human wants on every cage,
+so it lives **global** (rip-cage-u2ro promote). So does the one *universal* credential binding:
+claude runs in every cage, so its `auth.credentials` entry — and its single host
+`api.anthropic.com` in `network.allowed_hosts` — live **global**, which is exactly where tt22
+landed them. A host or binding only one project needs (a private mirror, a scoped API, a
+project-pinned model provider) belongs at the **project** layer for that same additive-merge
+reason: put it in global instead and you've silently widened every other cage's allowlist with
+no way for any single project to narrow it back out.
 
 ## The recipe catalog — read fragments fresh, don't memorize them here
 
 [`examples/README.md`](../../../examples/README.md) is the recipe index: every composable
-fragment (guards, multiplexers, mediators, plain tools, launch-composition examples), grouped
+fragment (guards, multiplexers, plain tools, launch-composition examples — the MEDIATOR
+archetype is retired, so `examples/README.md`'s mediator section is a DROPPED marker, not a
+composable recipe), grouped
 by archetype, with a path to its `manifest-fragment.yaml`.
 [`docs/reference/README.md`](../../../docs/reference/README.md) is the seam catalog: what each
 of the six composable seams is for and the manifest field shape it uses.
@@ -151,26 +167,46 @@ this pin as part of that recipe.
 > a manifest `archetype: MEDIATOR` entry, `network.egress.mediator`/`network.egress.mediator_env_file`)
 > is **deleted, not just undocumented** — there is no manifest MEDIATOR archetype or mediator
 > launch machinery left in `rc` to compose. The recipe file this section pointed at no longer
-> exists in this tree.
+> exists in this tree. (Note: `auth.placeholder_env_file` is *not* part of this deletion — it is
+> a still-live create-time pointer for a non-secret placeholder env-file, rip-cage-b9to — but it
+> is **not** part of the claude non-possession recipe below: msb emits claude's placeholder into
+> `target_env` itself, so you don't supply a placeholder file for it.)
 
 By default a cage mounts the human's real credentials, so the agent *possesses* them — a
 prompt-injected agent could exfiltrate them. Non-possession for the dominant secrets (Claude's
 own auth, any git host token) is now a **default platform property**, not something you compose:
-declare `auth.credentials: [{source_env: <HOST_ENV_VAR>, hosts: [<domain>, ...]}]` in
-`.rip-cage.yaml` (a host must ALSO be in `network.allowed_hosts`, or the connection is denied
-before the secret is ever considered) and msb `--secret` injects the real value on the wire
-toward the named host(s) only — the guest env/disk/proc hold just a placeholder. See
-[`docs/reference/egress.md`](../../../docs/reference/egress.md) for the full worked example and
+declare an `auth.credentials` entry and msb `--secret` injects the real value on the wire toward
+the named host(s) only, while the guest env/disk/proc hold just a placeholder. The entry names
+up to four fields (`source_env` + `hosts` required; `source_file` + `target_env` optional, added
+by the tt22 migration, rip-cage-9dlw):
+
+```yaml
+auth:
+  credentials:
+    - source_env: CCTOK                        # a bare env-var NAME; msb synthesizes the guest secret var from it
+      source_file: /Users/you/.config/rip-cage/claude-setup-token  # optional: read the real value from THIS host FILE (no manual pre-export)
+      hosts: [api.anthropic.com]               # domain(s) the real value is injected toward on the wire
+      target_env: [CLAUDE_CODE_OAUTH_TOKEN]    # optional: guest env var(s) that receive the placeholder ($MSB_…)
+```
+
+- **`source_file`** is the no-pre-export path: without it, the real value must be pre-exported in
+  the host env under the `source_env` name at every `rc up`/`reload`; with it, `rc` reads the
+  value from that host file into the `--secret` machinery — nothing to export by hand.
+- **`target_env`** bridges the placeholder to the exact guest var the tool reads (claude reads
+  `CLAUDE_CODE_OAUTH_TOKEN`). It is enforced **single-host, loud**: a `target_env` binding must
+  be bound to exactly one host (config + generator both abort otherwise) — split into one
+  single-host credential per host if you need more.
+- A host here must ALSO be in `network.allowed_hosts`, or the connection is denied before the
+  secret is ever considered.
+
+See [`docs/reference/egress.md`](../../../docs/reference/egress.md) for the full worked example and
 [`docs/reference/config.md`](../../../docs/reference/config.md) for the field reference.
 `auth.credential_mounts: none` / `auth.per_tool.{claude,pi}` (unchanged by the migration) still
 gate whether the possession-mode credential files mount at all.
 
 If a human needs L7 content policy or credential injection beyond a per-host `--secret` binding,
 that is fully operator-composed and unwired today — there is no manifest seam to point them at;
-relay that honestly rather than reaching for the deleted recipe. **Residual staleness in this
-skill beyond the mediator recipe (e.g. `ssh.allowed_hosts`/`network.mode` mentioned elsewhere as
-if still live per-project fields) is a known finding, not addressed by this fix — flagged for a
-follow-up bead.**
+relay that honestly rather than reaching for the deleted recipe.
 
 ## Composing by judgment, not by machinery
 

@@ -1,0 +1,26 @@
+# Per-project rip-cage config for the rip-cage repo itself.
+# Composed 2026-07-14 as a live dogfood of the configure-cage skill (rip-cage-tsf2.3).
+# Post-msb-cutover: egress is default-deny at the msb VM boundary; reachability
+# comes ONLY from network.allowed_hosts (curated global seed ∪ global ∪ this file).
+#
+# The global ~/.config/rip-cage/config.yaml already provides, for EVERY cage:
+#   - network.allowed_hosts: [api.anthropic.com]   (the universal claude host)
+#   - auth.credentials: claude non-possession via msb --secret (target_env
+#     CLAUDE_CODE_OAUTH_TOKEN); the guest only ever holds the placeholder
+#   - auth.per_tool: {claude: none, pi: real}       (pi keeps real possession by
+#     design — its OAuth providers have no static token to ride --secret; ADR-026 D3/D7)
+#
+# This file therefore adds ONLY the hosts THIS repo's cage needs beyond that
+# global floor. It carries no auth.credentials of its own: claude's binding is
+# global, and pi is possession-mode (real ~/.pi/agent/auth.json mounted, no
+# --secret binding). Hosts below were converged narrow via the
+# deny -> `rc doctor` fix-hint -> `rc allowlist add` / edit -> `rc reload` loop
+# (a cold-recreate; mounts + Claude session survive) rather than guessed wide.
+version: 1
+network:
+  allowed_hosts:
+    # pi is pinned to openai-codex/gpt-5.5 (tools.yaml pi-recipe launch_args) —
+    # the ChatGPT-account codex login path. These are its known provider hosts;
+    # the deny loop confirms/extends the exact set during probes.
+    - chatgpt.com
+    - auth.openai.com

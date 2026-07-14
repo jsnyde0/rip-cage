@@ -77,7 +77,23 @@ export GH_TOKEN=ghp_your_scoped_token_here
 rc up ~/code/my-project
 ```
 
-Inside the cage, `git push` authenticates as `https://x-access-token:$GH_TOKEN@github.com/...` — the guest holds only a synthesized placeholder; msb injects the real token on the wire toward `github.com` only ([ADR-029](../decisions/ADR-029-msb-migration.md) D3/D5). `source_env` must be set and non-empty in the **host** environment at every `rc up`/`resume`/`reload` (msb re-resolves `--secret` from host env at every boot); an unset or empty var fails loud, naming the var, before any sandbox is created.
+Inside the cage, `git push` authenticates as `https://x-access-token:$GH_TOKEN@github.com/...` — the guest holds only a synthesized placeholder; msb injects the real token on the wire toward `github.com` only ([ADR-029](../decisions/ADR-029-msb-migration.md) D3/D5). In this two-field form `source_env` must be set and non-empty in the **host** environment at every `rc up`/`resume`/`reload` (msb re-resolves `--secret` from host env at every boot); an unset or empty var fails loud, naming the var, before any sandbox is created.
+
+### The `source_file` + `target_env` form (no manual pre-export)
+
+Two optional fields (`rip-cage-9dlw`) cover the case where the real value already lives in a host file and the tool reads a *fixed* guest env var — this is how Claude's own non-possession binding is wired:
+
+```yaml
+auth:
+  credentials:
+    - source_env: CCTOK                                          # a logical NAME; msb synthesizes the guest secret var from it
+      source_file: /Users/you/.config/rip-cage/claude-setup-token # rc reads the real value from THIS host file — nothing to export by hand
+      hosts: [api.anthropic.com]                                 # the single host the token rides
+      target_env: [CLAUDE_CODE_OAUTH_TOKEN]                      # the guest var claude reads; it receives only the placeholder ($MSB_…)
+```
+
+- **`source_file`** replaces the manual `export` step: with it, `rc` reads the token from the named host file into the `--secret` machinery, so there is no pre-exported host env var to keep set. (Without `source_file`, the host-env requirement above applies.)
+- **`target_env`** bridges the placeholder to the exact guest variable a tool reads. It is **enforced single-host, loud**: a `target_env` binding must be bound to exactly one host — both config validation and the msb-flags generator abort naming the var otherwise. Split into one single-host credential per host if you need more.
 
 There is no ssh cluster to configure — ADR-017/018/020/022's mechanisms, `block-ssh-bypass.sh`, and `examples/ssh-bypass/` are all retired/deleted. See [auth.md](auth.md) for Claude/pi's own OAuth credential mounting (a separate, unrelated concern from git host tokens).
 
