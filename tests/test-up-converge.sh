@@ -29,18 +29,32 @@
 #          (converge must NOT swallow a guarded/non-eligible field -- it stays
 #           on the abort-loud / emit-hint path)
 #   U4  No applied snapshot (legacy cage)            -> exit 1, silent
-#   U5  Guard family untouched (representative) — the four abort-loud resume
-#          guard functions are still defined and unmodified byte-for-byte
-#          against a golden fingerprint of their bodies.
+#   U5  Guard family present (representative) — the four abort-loud resume
+#          guard functions are still DEFINED after sourcing rc AND still
+#          INVOKED on both resume branches (source-grep, >=2 call sites each).
+#          NOTE: this checks presence + wiring, NOT the guard bodies. Byte-
+#          identity of the guard implementations is enforced by diff review,
+#          not by this test (a body-fingerprint golden would be brittle across
+#          bash versions — see code-review F2 ruling).
+#   U6  dry-run/real ORDER mirror (code-review F1) — the converge step precedes
+#          the abort-loud guards in BOTH the dry-run and the real stopped
+#          branches, so an eligible-drift converge preempts (previews-not-
+#          aborts) even when non-config image drift coexists. Structural
+#          assertion, same idiom as test-dry-run-resume-guards.sh P1a (a full
+#          in-process cmd_up drive is environment-fragile — realpath/name
+#          disambiguation — so the ordering invariant is locked structurally;
+#          the behavioral dry-run preview is covered by live L4).
 #   L1  LIVE: stopped cage + new allowed host + `rc up --reload` cold-recreates;
 #          msb inspect rule domains include the new host; snapshot updated.
 #   L2  LIVE: `rc up --reload` with ZERO drift -> plain resume (no recreate).
 #   L3  LIVE: RUNNING cage + RC_UP_CONVERGE=1 + new allowed host + plain `rc up`
 #          -> NEVER recreates (warn-only); the new host is NOT applied live.
+#   L4  LIVE: `rc up --reload --dry-run` on a stopped drifted cage previews a
+#          converge (not "would resume") and mutates nothing (F1 behavioral).
 #
-# U1-U5 stub `msb` via PATH shim (no real daemon). L1-L3 are docker+msb+image
-# conditional and self-skip honestly (same idiom as tests/test-rc-reload.sh
-# C1/C6/C10).
+# U1-U6 stub `msb` via PATH shim (no real daemon) or read the source directly.
+# L1-L4 are docker+msb+image conditional and self-skip honestly (same idiom as
+# tests/test-rc-reload.sh C1/C6/C10).
 #
 # ADRs: ADR-029 D4 (reload=cold-recreate), ADR-021 D4a/D5 (abort-loud config
 # anchoring), rip-cage-tsf2.9 (this bead).
@@ -219,9 +233,13 @@ else fail 4 "no snapshot decision" "$u4_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# U5: Abort-loud guard family untouched (representative). The four resume-guard
-#     functions must still be defined; converge added no edits to their bodies.
-#     Fingerprint = a sha of each function body via `declare -f`.
+# U5: Abort-loud guard family present + wired (representative). The four
+#     resume-guard functions must still be DEFINED after sourcing rc, AND still
+#     be INVOKED on both resume branches (>=2 source call sites each). This
+#     checks presence + wiring only — NOT the guard bodies. Byte-identity of the
+#     implementations is enforced by diff review, not here (a body-fingerprint
+#     golden via `declare -f` would be brittle across bash versions — code-
+#     review F2 ruling).
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 setup_sandbox
@@ -247,6 +265,43 @@ done
 if [[ "$u5_ok" == "true" ]]; then pass 5 "abort-loud guard family present + still invoked on both resume branches"
 else fail 5 "guard family untouched" "$u5_reason"; fi
 teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# U6: dry-run/real ORDER mirror (code-review F1). The converge step must precede
+#     the abort-loud guards in BOTH the dry-run stopped sub-branch and the real
+#     stopped branch. If it does, an eligible-drift converge preempts the guards
+#     (a stopped cage with an eligible allowed_hosts edit AND non-config image
+#     drift converges/previews-a-converge, it does NOT hit the image-drift abort
+#     — the cold-recreate lands on the current image, resolving the drift).
+#     Structural assertion (same idiom as test-dry-run-resume-guards.sh P1a) —
+#     a full in-process cmd_up --dry-run drive is environment-fragile
+#     (realpath/name disambiguation), so the ordering invariant is locked here;
+#     the behavioral "preview names converge" is covered by live L4.
+#     Non-vacuous: reverting F1 (moving the dry-run converge back below the
+#     guards) makes the dry-run converge line fall AFTER the guards marker -> red.
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+_up_sh="${REPO_ROOT}/cli/up.sh"
+# dry-run branch: `would_action="would_converge"` (the preview) vs the guards
+# BEGIN marker; real branch: the converge action `_up_announce_converge` vs the
+# guards BEGIN marker. First match of each is the one in the relevant branch.
+u6_dry_converge=$(grep -n 'would_action="would_converge"' "$_up_sh" | head -1 | cut -d: -f1)
+u6_dry_guards=$(grep -n 'RESUME-GUARDS-DRY-RUN-STOPPED BEGIN' "$_up_sh" | head -1 | cut -d: -f1)
+# Anchor on the CALL (`_up_announce_converge "...`), not the `_up_announce_converge() {`
+# definition (which lives earlier in the file) — the space+quote disambiguates.
+u6_real_converge=$(grep -n '_up_announce_converge "' "$_up_sh" | head -1 | cut -d: -f1)
+u6_real_guards=$(grep -n 'RESUME-GUARDS-REAL-STOPPED BEGIN' "$_up_sh" | head -1 | cut -d: -f1)
+u6_ok=true u6_reason=""
+for _pair in "dry:$u6_dry_converge:$u6_dry_guards" "real:$u6_real_converge:$u6_real_guards"; do
+  _br=${_pair%%:*}; _rest=${_pair#*:}; _cv=${_rest%%:*}; _gd=${_rest#*:}
+  if [[ -z "$_cv" || -z "$_gd" ]]; then
+    u6_ok=false; u6_reason="${u6_reason:+$u6_reason; }${_br}: missing anchor (converge=$_cv guards=$_gd)"
+  elif [[ "$_cv" -ge "$_gd" ]]; then
+    u6_ok=false; u6_reason="${u6_reason:+$u6_reason; }${_br}: converge (L$_cv) not before guards (L$_gd)"
+  fi
+done
+if [[ "$u6_ok" == "true" ]]; then pass 6 "converge precedes abort-loud guards in BOTH dry-run and real stopped branches (F1 order mirror)"
+else fail 6 "dry-run/real converge order mirror" "$u6_reason"; fi
 
 # ===========================================================================
 # LIVE integration (docker + msb + rip-cage:latest). Self-skips honestly.
@@ -301,11 +356,11 @@ _live_inspect_has_host() {
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 if [[ "$_RC_CONVERGE_HAS_LIVE_RUNTIME" != "true" ]]; then
-  skip 6 "LIVE stopped-converge — needs docker+msb+pre-built rip-cage:latest image"
+  skip 7 "LIVE stopped-converge — needs docker+msb+pre-built rip-cage:latest image"
 else
   _live_setup_cage stopped || true
   if [[ -z "$RCL_CAGE" ]]; then
-    fail 6 "LIVE stopped-converge" "live setup failed (rc up)"
+    fail 7 "LIVE stopped-converge" "live setup failed (rc up)"
   else
     _live_add_host
     XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --output json up --reload "$RCL_WS" >/dev/null 2>&1 || true
@@ -313,8 +368,8 @@ else
     _live_inspect_has_host "$RCL_CAGE" "example.com" || { l1_ok=false; l1_reason="new host not in live net rules after --reload"; }
     L1_SNAP="${HOME}/.cache/rip-cage/${RCL_CAGE}/config-applied.json"
     jq -e '.network.allowed_hosts | index("example.com")' "$L1_SNAP" >/dev/null 2>&1 || { l1_ok=false; l1_reason="${l1_reason:+$l1_reason; }snapshot not updated to live"; }
-    if [[ "$l1_ok" == "true" ]]; then pass 6 "LIVE: rc up --reload cold-recreates stopped ${RCL_CAGE}, new host applied"
-    else fail 6 "LIVE stopped-converge" "$l1_reason"; fi
+    if [[ "$l1_ok" == "true" ]]; then pass 7 "LIVE: rc up --reload cold-recreates stopped ${RCL_CAGE}, new host applied"
+    else fail 7 "LIVE stopped-converge" "$l1_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
   [[ -n "${RCL_CAGE:-}" ]] && msb remove --force "$RCL_CAGE" >/dev/null 2>&1
@@ -327,11 +382,11 @@ fi
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 if [[ "$_RC_CONVERGE_HAS_LIVE_RUNTIME" != "true" ]]; then
-  skip 7 "LIVE no-drift no-op — needs docker+msb+pre-built rip-cage:latest image"
+  skip 8 "LIVE no-drift no-op — needs docker+msb+pre-built rip-cage:latest image"
 else
   _live_setup_cage stopped || true
   if [[ -z "$RCL_CAGE" ]]; then
-    fail 7 "LIVE no-drift no-op" "live setup failed (rc up)"
+    fail 8 "LIVE no-drift no-op" "live setup failed (rc up)"
   else
     # No config edit -> zero drift. --reload must be a plain resume.
     l2_snap_pre=$(shasum "${HOME}/.cache/rip-cage/${RCL_CAGE}/config-applied.json" 2>/dev/null | awk '{print $1}')
@@ -340,8 +395,8 @@ else
     l2_ok=true l2_reason=""
     echo "$l2_out" | grep -qi "converging" && { l2_ok=false; l2_reason="announced a converge on zero-drift"; }
     [[ "$l2_snap_pre" != "$l2_snap_post" ]] && l2_ok=false && l2_reason="${l2_reason:+$l2_reason; }snapshot changed on zero-drift"
-    if [[ "$l2_ok" == "true" ]]; then pass 7 "LIVE: rc up --reload with zero drift is a plain resume (no converge)"
-    else fail 7 "LIVE no-drift no-op" "$l2_reason"; fi
+    if [[ "$l2_ok" == "true" ]]; then pass 8 "LIVE: rc up --reload with zero drift is a plain resume (no converge)"
+    else fail 8 "LIVE no-drift no-op" "$l2_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
   [[ -n "${RCL_CAGE:-}" ]] && msb remove --force "$RCL_CAGE" >/dev/null 2>&1
@@ -354,11 +409,11 @@ fi
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 if [[ "$_RC_CONVERGE_HAS_LIVE_RUNTIME" != "true" ]]; then
-  skip 8 "LIVE running warn-only — needs docker+msb+pre-built rip-cage:latest image"
+  skip 9 "LIVE running warn-only — needs docker+msb+pre-built rip-cage:latest image"
 else
   _live_setup_cage running || true
   if [[ -z "$RCL_CAGE" ]]; then
-    fail 8 "LIVE running warn-only" "live setup failed (rc up)"
+    fail 9 "LIVE running warn-only" "live setup failed (rc up)"
   else
     _live_add_host
     l3_out=$(RC_UP_CONVERGE=1 XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --output json up "$RCL_WS" 2>&1) || true
@@ -368,8 +423,8 @@ else
       l3_ok=false; l3_reason="running cage was recreated with the new host (auto-recreate leaked!)"
     fi
     echo "$l3_out" | grep -qi "not auto-recreating\|RUNNING" || { l3_ok=false; l3_reason="${l3_reason:+$l3_reason; }no running-asymmetry warning emitted"; }
-    if [[ "$l3_ok" == "true" ]]; then pass 8 "LIVE: RUNNING cage never auto-recreates under RC_UP_CONVERGE (warn-only)"
-    else fail 8 "LIVE running warn-only" "$l3_reason"; fi
+    if [[ "$l3_ok" == "true" ]]; then pass 9 "LIVE: RUNNING cage never auto-recreates under RC_UP_CONVERGE (warn-only)"
+    else fail 9 "LIVE running warn-only" "$l3_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
   [[ -n "${RCL_CAGE:-}" ]] && msb remove --force "$RCL_CAGE" >/dev/null 2>&1
@@ -384,11 +439,11 @@ fi
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 if [[ "$_RC_CONVERGE_HAS_LIVE_RUNTIME" != "true" ]]; then
-  skip 9 "LIVE dry-run converge preview — needs docker+msb+pre-built rip-cage:latest image"
+  skip 10 "LIVE dry-run converge preview — needs docker+msb+pre-built rip-cage:latest image"
 else
   _live_setup_cage stopped || true
   if [[ -z "$RCL_CAGE" ]]; then
-    fail 9 "LIVE dry-run converge preview" "live setup failed (rc up)"
+    fail 10 "LIVE dry-run converge preview" "live setup failed (rc up)"
   else
     _live_add_host
     L4_SNAP="${HOME}/.cache/rip-cage/${RCL_CAGE}/config-applied.json"
@@ -400,8 +455,8 @@ else
     echo "$l4_out" | grep -qi "would resume" && { l4_ok=false; l4_reason="${l4_reason:+$l4_reason; }preview misreports a plain resume"; }
     [[ "$l4_snap_pre" != "$l4_snap_post" ]] && l4_ok=false && l4_reason="${l4_reason:+$l4_reason; }dry-run mutated the snapshot"
     [[ "$(msb inspect "$RCL_CAGE" --format json 2>/dev/null | jq -r '.status')" == "Stopped" ]] || { l4_ok=false; l4_reason="${l4_reason:+$l4_reason; }dry-run changed cage state"; }
-    if [[ "$l4_ok" == "true" ]]; then pass 9 "LIVE: rc up --reload --dry-run previews a converge honestly, mutates nothing"
-    else fail 9 "LIVE dry-run converge preview" "$l4_reason"; fi
+    if [[ "$l4_ok" == "true" ]]; then pass 10 "LIVE: rc up --reload --dry-run previews a converge honestly, mutates nothing"
+    else fail 10 "LIVE dry-run converge preview" "$l4_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
   [[ -n "${RCL_CAGE:-}" ]] && msb remove --force "$RCL_CAGE" >/dev/null 2>&1

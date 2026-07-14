@@ -2501,24 +2501,32 @@ cmd_up() {
       # same hard stop the actual resume would hit (ADR-001).
       # rip-cage-jnvb / D-b: image-ID drift hard-stop surfaced here too —
       # dry-run planners must see the same refusal the real resume would hit.
-      # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-STOPPED BEGIN (mirrors the real
-      # stopped branch below — see RESUME-GUARDS-REAL-STOPPED). All guards
-      # here are read-only (label read + _load_effective_config + compare).
-      _up_resolve_resume_image_drift_stopped "$name" "$path"
-      _up_resolve_resume_config_mode "$name" "$path"
-      _up_resolve_resume_symlink_fingerprint "$name" "$path"
-      _up_resolve_resume_credential_mounts "$name" "$path"
-      # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-STOPPED END
-      would_action="would_resume"
-      # rip-cage-tsf2.9: preview a converge HONESTLY. Under --reload /
-      # RC_UP_CONVERGE a STOPPED cage with eligible drift cold-recreates (guest
-      # scratch overlay discarded) — it does NOT plain-resume — so a dry-run
-      # planner must see that, not a misleading "would resume". The comparator
-      # (_up_eligible_drift_paths) is read-only (snapshot + config compare), so
-      # this stays --dry-run-safe (no mutation).
+      # rip-cage-tsf2.9 (code-review F1): preview a converge HONESTLY, and do so
+      # in the SAME ORDER the real stopped branch runs it (RESUME-GUARDS-REAL-
+      # STOPPED) — converge FIRST, before the abort-loud guards. This preserves
+      # the dry-run<->real mirror invariant: on the real path an explicit
+      # converge cold-recreates and RETURNS before the guards ever run (the
+      # recreate lands on the current image, so e.g. image-ID drift is resolved,
+      # not aborted). A dry-run that ran the image-drift guard first would falsely
+      # predict an abort for a stopped cage that has BOTH image drift (invisible
+      # to _up_eligible_drift_paths — not a config field) AND an eligible
+      # allowed_hosts edit. The comparator is read-only (snapshot + config
+      # compare), so this stays --dry-run-safe (no mutation).
       if [[ -n "$rc_up_reload" || -n "${RC_UP_CONVERGE:-}" ]] \
           && _up_eligible_drift_paths "$name" "$path" >/dev/null; then
         would_action="would_converge"
+      else
+        # No converge -> mirror the real path's plain-resume: run the abort-loud
+        # guards (read-only here) so planners see the same hard stops.
+        # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-STOPPED BEGIN (mirrors the real
+        # stopped branch below — see RESUME-GUARDS-REAL-STOPPED). All guards
+        # here are read-only (label read + _load_effective_config + compare).
+        _up_resolve_resume_image_drift_stopped "$name" "$path"
+        _up_resolve_resume_config_mode "$name" "$path"
+        _up_resolve_resume_symlink_fingerprint "$name" "$path"
+        _up_resolve_resume_credential_mounts "$name" "$path"
+        # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-STOPPED END
+        would_action="would_resume"
       fi
     elif [[ "$_inspect_exit" -ne 0 ]]; then
       # msb inspect failed → container is absent; create new.
