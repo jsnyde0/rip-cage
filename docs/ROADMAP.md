@@ -33,15 +33,15 @@ Ordered by what to pull next (bead IDs in parens):
 - [x] Per-cage egress-rules pipeline — generate + mount at `rc up` / `rc reload`
 - [x] Default-deny whitelist with `observe` / `block` / legacy modes
 - [x] `network.allowed_hosts` default-deny whitelist (method-axis `writable_hosts` write-gating **removed** in rip-cage-ta1o.1 — egress is now a pure SNI destination router with no method axis; [ADR-012 D2](decisions/ADR-012-egress-firewall.md))
-- [x] DNS-exfil resolver sidecar + transparent port-53 REDIRECT, plus the `network.dns.forward_to` forward-to-specialist seam (rip-cage-ta1o.2; [ADR-012 D9](decisions/ADR-012-egress-firewall.md))
-- [x] Egress reshaped into a pluggable containment chokepoint — pure SNI router (no TLS-MITM), tool-agnostic MEDIATOR composition seam (`network.http.forward_to` + `network.egress.mediator`), mitmproxy (proof) + iron-proxy (recommended adopt) reference providers ([ADR-026](decisions/ADR-026-containment-mediation-identity.md); rip-cage-ta1o.1/.2/.3/.5; clawpatrol reclassified to alternative appliance)
+- [x] DNS-exfil resolver sidecar + transparent port-53 REDIRECT, plus the `network.dns.forward_to` forward-to-specialist seam (rip-cage-ta1o.2; [ADR-012 D9](decisions/ADR-012-egress-firewall.md)) *(historical: the in-cage DNS engine and `network.dns.forward_to` are retired under the msb cutover — see [ADR-029](decisions/ADR-029-msb-migration.md), and `network.dns.forward_to` is now a loud-reject retired field per [ADR-021 D9](decisions/ADR-021-layered-rip-cage-config.md))*
+- [x] Egress reshaped into a pluggable containment chokepoint — pure SNI router (no TLS-MITM), tool-agnostic MEDIATOR composition seam (`network.http.forward_to` + `network.egress.mediator`), mitmproxy (proof) + iron-proxy (recommended adopt) reference providers ([ADR-026](decisions/ADR-026-containment-mediation-identity.md); rip-cage-ta1o.1/.2/.3/.5; clawpatrol reclassified to alternative appliance) *(historical: the MEDIATOR archetype, `network.http.forward_to`, and `network.egress.mediator` are all retired/deleted under the msb cutover — [ADR-029](decisions/ADR-029-msb-migration.md) D2/D5, [ADR-021 D9](decisions/ADR-021-layered-rip-cage-config.md))*
 - [x] `rc allowlist add/show/promote` agent-first CLI; `rc doctor` egress sections; `rc ls` mode column
 - [x] Workspace-trust validator — refuse hostile base-URL redirect at cage start
 - [x] Injection-exfil integration harness (`rc test --e2e-security`)
 
 ### SSH host + key allowlist + hot-reload (ADR-022) — shipped 2026-05-12/13
 
-- [x] `ssh.allowed_hosts` (additive_list) + `ssh.allowed_keys` (selection_list) schema ([ADR-022 D1](decisions/ADR-022-ssh-allowlist.md))
+- [x] `ssh.allowed_hosts` (additive_list) + `ssh.allowed_keys` (selection_list) schema ([ADR-022 D1](decisions/ADR-022-ssh-allowlist.md)) *(v1-era vocabulary and retired feature: the ssh cluster is gone under the msb cutover ([ADR-029](decisions/ADR-029-msb-migration.md) D3), and the `additive_list`/`selection_list` schema-type names were retired in the config-model v2 rework — see [ADR-021 D2](decisions/ADR-021-layered-rip-cage-config.md) (lists now union by default; enum-shaped scalars are type `enum`))*
 - [x] ssh-agent-filter (agent half) + bash/openssl host half make the allowlist load-bearing
 - [x] Hook-layer guard closes the OpenSSH CLI-override bypass class
 - [x] `rc reload <cage>` host-side hot-reload for `allowed_hosts` content changes ([ADR-022 D6](decisions/ADR-022-ssh-allowlist.md))

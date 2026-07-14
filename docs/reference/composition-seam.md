@@ -11,7 +11,7 @@ Cages run on microsandbox (msb, libkrun microVMs). Egress and credential injecti
 
 ```yaml
 # <project>/.rip-cage.yaml
-version: 1
+version: 2
 network:
   allowed_hosts:
     - github.com

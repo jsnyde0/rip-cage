@@ -11,9 +11,9 @@ Both are optional. With both absent, `rc up` behaves identically to a rip cage w
 
 ---
 
-## `rc config show`
+## The effective view — `rc config show`
 
-Prints the effective merged config with provenance.
+`rc config show` is the one command that answers "what does this cage see, and *why*". It prints the effective merged config with per-field provenance, and — separately — the tool-manifest egress, so "what can this cage reach and WHY" is a single command. Four provenance sources contribute ([ADR-021](../decisions/ADR-021-layered-rip-cage-config.md) D4): `default` (the schema), `global` (`~/.config/rip-cage/config.yaml`), `project` (`<repo>/.rip-cage.yaml`), and `manifest:<tool>` (a baked tool's declared egress hosts).
 
 ```
 $ rc config show
@@ -22,32 +22,42 @@ $ rc config show
 #   global  = /home/me/.config/rip-cage/config.yaml
 #   project = /home/me/code/personal/kinky-bubbles/.rip-cage.yaml
 #
-version: 1               # from project
+version: 2               # from default
 network:
   allowed_hosts:                   # union(global, project)
-    - api.anthropic.com          # global (curated default seed)
+    - api.anthropic.com          # global
     - github.com                 # project
 auth:
-  credentials:                    # from project
-    - source_env: GH_TOKEN
-      hosts: [github.com]
+  credentials: []                 # from default
+# manifest egress (host manifest — pending, requires rebuild to change):
+#   docs.astral.sh               # manifest:uv
 ```
 
-Add `--json` for machine consumers — emits parallel `.config` and `.provenance` objects plus the layer paths and a `sha256` of the canonical effective config.
+Provenance is shown two ways: a per-field comment (`# from default`, `# from global`, `# from project`, `# union(global, project)` for a union list that both layers contributed to) and, for list fields, a per-element label (`# global`, `# project`, `# global+project`, `# default`).
+
+The **manifest egress** block is a *separate* provenance source printed after the config body — it is **never** folded into `network.allowed_hosts`. Its header names the source:
+- **`baked into this cage — applied`** when a cage is in scope (`rc allowlist show --effective --cage <name>`, `rc doctor <name>`): the per-tool egress actually baked into that cage at create/reload, even if the host `tools.yaml` has drifted since.
+- **`host manifest — pending, requires rebuild to change`** with no cage in scope: derived from the current host manifest; applying a change means editing the manifest + `rc build` + recreate (see [egress.md](egress.md)).
+
+Add `--json` for machine consumers — emits parallel `.config` and `.provenance` objects, the layer paths, a `sha256` of the canonical effective config, and the two manifest-egress fields.
 
 ```
 $ rc config show --json
 {
-  "config":     { "version": 1, "network": { "allowed_hosts": [...] }, "auth": { "credentials": [...] } },
-  "provenance": { "version": "project", "network.allowed_hosts": ["global","project"] },
+  "config":     { "version": 2, "network": { "allowed_hosts": [...] }, "auth": { "credentials": [] } },
+  "provenance": { "version": "default", "network.allowed_hosts": ["global","project"] },
   "layers":     { "global": "/home/me/.config/rip-cage/config.yaml", "project": "..." },
-  "sha256":     "bffbf8172a20a..."
+  "sha256":     "bffbf8172a20a...",
+  "manifest_egress":        { "uv": ["docs.astral.sh"] },
+  "manifest_egress_source": "pending"
 }
 ```
 
-The command works without docker; pass no arguments to inspect from any CWD.
+`manifest_egress` is a per-tool map (`{"<tool>": ["host", ...]}`); `manifest_egress_source` is `applied`, `pending`, or `none`. Both are always present and never merged into `.config` — `rc reload`'s eligibility diff runs on `.config` only, so a manifest egress change can never surface as spurious config drift.
 
-> **`rc config init` is RETIRED, not merely undocumented.** It bootstrapped `ssh.allowed_hosts`/`ssh.allowed_keys` from `git remote -v` + `ssh -G <host>` — detection logic that only made sense for the retired ssh cluster ([ADR-029](../decisions/ADR-029-msb-migration.md) D3). `cmd_config` (`cli/config.sh`) supports only `show` and `get` today. Authoring a fresh project's `network.allowed_hosts`/`auth.credentials` is a manual `.rip-cage.yaml` edit — see [egress.md](egress.md) for the full flow and worked example.
+The command works without docker; pass a workspace path (or none, for the CWD) to inspect from anywhere. `rc config get <dotted.key> [path]` is the single-field companion (prints just the resolved value; `--json` for the JSON form).
+
+> **`rc config init` is RETIRED, not merely undocumented.** It bootstrapped `ssh.allowed_hosts`/`ssh.allowed_keys` from `git remote -v` + `ssh -G <host>` — detection logic that only made sense for the retired ssh cluster ([ADR-029](../decisions/ADR-029-msb-migration.md) D3). Today `cmd_config` (`cli/config.sh`) supports `show`, `get`, and the three host-side **write verbs** `set`/`add`/`remove` (see [Write verbs](#write-verbs) below). Authoring a fresh project's `network.allowed_hosts`/`auth.credentials` is either a `rc config add` / hand edit of `.rip-cage.yaml` — see [egress.md](egress.md) for the full flow and worked example.
 
 ---
 
@@ -57,7 +67,7 @@ Controls which terminal multiplexer (if any) the cage runs inside. Mirrors [ADR-
 
 | Field | Type | Default | Allowed values |
 |---|---|---|---|
-| `session.multiplexer` | selection_list (enum scalar) | `none` | `none`, `tmux`, `herdr` |
+| `session.multiplexer` | enum | `none` | `none` + any multiplexer provider baked into the image (validated against the `rc.multiplexers` image label; **not** a fixed `tmux`/`herdr` set) |
 
 **`none` (default):** `rc up` / `rc attach` drops into a plain interactive shell. Closing the window ends the process — normal terminal semantics, no surprising persistence.
 
@@ -65,13 +75,13 @@ Controls which terminal multiplexer (if any) the cage runs inside. Mirrors [ADR-
 
 **`herdr`:** `rc up` / `rc attach` opens the herdr supervisor view. Herdr is installed via the rip-cage tool manifest (no separate Homebrew dependency).
 
-**Merge semantics:** selection_list — project replaces global if present; absent → inherit global or use default `none`. Unknown values abort loud (same path as other enum-scalar fields).
+**Merge semantics:** enum — project replaces global if present; absent → inherit global or use default `none`. A value not in the baked registry (`rc.multiplexers` image label; `tmux`/`herdr` ship as `examples/` providers, [ADR-005 D12](../decisions/ADR-005-ecosystem-tools.md)) aborts loud, naming the fix (`add the provider to your manifest and run rc build`).
 
 ```yaml
 # <project>/.rip-cage.yaml
-version: 1
+version: 2
 session:
-  multiplexer: tmux   # or: none, herdr
+  multiplexer: tmux   # or: none, or any baked provider
 ```
 
 Run `rc config show` to see the effective value with provenance.
@@ -84,7 +94,7 @@ Controls whether `.rip-cage.yaml` (the project config file) is writable inside t
 
 | Field | Type | Default | Allowed values |
 |---|---|---|---|
-| `mounts.config_mode` | selection_list (enum scalar) | `ro` | `ro`, `rw` |
+| `mounts.config_mode` | enum | `ro` | `ro`, `rw` |
 
 **`ro` (default):** `rc up` adds a nested `:ro` bind-mount over `/workspace/.rip-cage.yaml`, shadowing the broader `/workspace` read-write mount. The in-cage agent cannot write to or unlink the config file. The host can still edit it freely; an in-place host edit shows through the ro mount (editors that write-temp-then-rename replace the inode, so the in-cage view may lag until recreate — but in-cage visibility is not load-bearing: enforcement re-reads the host file). To apply a config change, edit on the host and run `rc reload <cage>`.
 
@@ -100,7 +110,7 @@ Controls whether `.rip-cage.yaml` (the project config file) is writable inside t
 
 ```yaml
 # .rip-cage.yaml — opt in to writable config (rare; most projects keep the default ro)
-version: 1
+version: 2
 mounts:
   config_mode: rw
 ```
@@ -120,8 +130,8 @@ Rip-cage blocks `rc up` from mounting paths that match a set of secret-path patt
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `mounts.denylist` | additive_list | 16 patterns (see below) | Path-component patterns. If any component of a non-workspace mount surface path exactly equals a pattern, `rc up` aborts with a fail-loud error. Project adds patterns on top of global; cannot remove global patterns. |
-| `mounts.allow_risky` | selection_list | null | List of resolved (realpath) paths explicitly allowed to bypass the denylist. Project replaces global if present; empty list `[]` zero-outs global entries. |
+| `mounts.denylist` | list (**replace-forbidden**) | 16 patterns (see below) | Path-component patterns. If any component of a non-workspace mount surface path exactly equals a pattern, `rc up` aborts with a fail-loud error. Unions across layers; **`!replace` is refused loud** ([ADR-023 D2](../decisions/ADR-023-secret-path-mount-denylist.md)) — the secret-path denylist is additive-only: a project may expand it but never contract or clear it. |
+| `mounts.allow_risky` | list | null | Resolved (realpath) paths explicitly allowed to bypass the denylist. **Unions by default** across layers (v2 — this flipped from v1's replace semantics); use `!replace` to narrow, or `!replace []` to zero-out inherited entries. |
 
 ### Default 16 patterns
 
@@ -147,7 +157,7 @@ The workspace path (`rc up <path>`) is **never** checked — it is already valid
 
 ```yaml
 # ~/.config/rip-cage/config.yaml — global (sets the floor)
-version: 1
+version: 2
 mounts:
   denylist:
     - .ssh
@@ -157,14 +167,14 @@ mounts:
 
 ```yaml
 # <project>/.rip-cage.yaml — additive project extensions
-version: 1
+version: 2
 mounts:
   denylist:
-    - .env           # add .env for this project only
-    - my-secrets-dir
+    - my-secrets-dir   # add a project-only secret path
+    - build-secrets
 ```
 
-Effective denylist = global ∪ project (deduplicated, global first).
+Effective denylist = global ∪ project (deduplicated, global first). `mounts.denylist` is the one **replace-forbidden** list — `!replace` on it aborts loud ([ADR-023 D2](../decisions/ADR-023-secret-path-mount-denylist.md)); a project can only expand it.
 
 ### Bypassing the denylist
 
@@ -176,11 +186,13 @@ rc up --allow-risky-mount /path/to/allowed-file --env-file /path/to/allowed-file
 Persistent bypass for a project:
 ```yaml
 # <project>/.rip-cage.yaml
-version: 1
+version: 2
 mounts:
   allow_risky:
-    - /Users/alice/.aws/my-tools-credentials  # resolved (realpath) path
+    - /Users/alice/.aws/my-tools-credentials  # resolved (realpath) path — unions with any global entries
 ```
+
+`mounts.allow_risky` unions across layers by default in v2. To make a project's list authoritative (discard inherited entries), tag it `!replace`; `!replace []` clears them entirely.
 
 Both forms require the **resolved (realpath)** form of the path — `rc up` shows the resolved path in the error message so you can copy-paste it.
 
@@ -208,26 +220,25 @@ Cross-reference: [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md) f
 
 > **Retired ([ADR-029](../decisions/ADR-029-msb-migration.md) D2/D4):** the in-cage engine this section used to describe (SNI router, DNS sidecar, iptables REDIRECT, observe-mode traffic logging, the `network.egress.mediator`/`network.http.forward_to` auto-launched-mediator seam) is **deleted**. Egress is now an msb host-side runtime primitive: `--net-default deny` + one `--net-rule allow@<host>` per entry in `network.allowed_hosts`, generated straight from this config by `cli/lib/msb_flags.sh` — there is no in-cage process to inspect or restart.
 
-Cages boot **default-deny**: only hosts in the effective `network.allowed_hosts` (baseline seed ∪ global ∪ project) are reachable at all — everything else is a fake-accepted TCP connect delivering zero bytes, or a denied+logged DNS query. There is no observe mode (msb logs nothing for *allowed* flows, so rebuilding it would mean rebuilding the deleted engine) — a curated default allowlist plus a fast **deny→fix→reload** repair loop replaces it. See [egress.md](egress.md) for the full workflow.
+Cages boot **default-deny**: only hosts in the effective allow set are reachable at all — everything else is a fake-accepted TCP connect delivering zero bytes, or a denied+logged DNS query. The effective allow set is `network.allowed_hosts` **union** every baked tool's manifest egress (see [egress.md](egress.md)). `network.allowed_hosts` itself unions its file layers over the schema default — the "seed ∪ global ∪ project" phrasing describes *where the file content comes from* (the curated seed is auto-written content of the global file), not a distinct merge layer; the loader folds two file layers over the schema default ([ADR-021 D2](../decisions/ADR-021-layered-rip-cage-config.md)). There is no observe mode (msb logs nothing for *allowed* flows, so rebuilding it would mean rebuilding the deleted engine) — a curated default allowlist plus a fast **deny→fix→reload** repair loop replaces it. See [egress.md](egress.md) for the full workflow.
 
 ### Fields
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `network.allowed_hosts` | additive_list | `[]` (plus the curated seed below) | Domains allowed for egress. Effective allowlist = curated seed ∪ global ∪ project. Project EXPANDS; cannot contract. The agent inside the cage cannot mutate this — edits apply via the host-only `rc reload` (a **cold-recreate** post-cutover, [ADR-029](../decisions/ADR-029-msb-migration.md) D4 — see [egress.md](egress.md)). **Curated default seed** (auto-written to the global config on first `rc up`, `rip-cage-o2h0`): `api.anthropic.com` (hard requirement — a basic `claude -p` turn fails without it), `mcp-proxy.anthropic.com`, `http-intake.logs.us5.datadoghq.com` (both attempted-but-nonblocking, included for denial-log-noise-free defaults). **Note: `github.com` (or any other git host) is NOT in the seed** — add it explicitly for any project that pushes over HTTPS (see `auth.credentials` below and [egress.md](egress.md)'s worked example). |
-| `network.mode` | scalar | unset (legacy) | **Vestigial under msb** — retained in schema for `.rip-cage.yaml` parse-compatibility and shown by `rc ls`/`rc allowlist show`, but no msb-flags-generation code path reads it; enforcement is always default-deny + `network.allowed_hosts`, regardless of this field's value. Pre-cutover it distinguished `observe` (log-only) from `block` (enforce) under the deleted engine. |
-| `network.dns.forward_to` | scalar | unset | **Dead — schema-only.** Pre-cutover this pointed the in-cage DNS sidecar at an upstream resolver; msb's own DNS is default-deny with no forward-to seam. Accepted for parse-compatibility with old files; has no effect. |
-| `network.http.forward_to` | scalar | unset | **Dead — schema-only**, same story: pre-cutover this pointed the SNI router at a co-located MEDIATOR via HTTP CONNECT. No msb equivalent exists; a mediator today is a fully separate composed recipe, never rc-launched (see [composition-seam.md](composition-seam.md)). |
-| `auth.credentials` | additive_list | `[]` | **New in the msb era** (`rip-cage-rj68`, S6 fold a — the credential→host binding surface the deleted MEDIATOR archetype used to carry). Each entry names up to four fields — `source_env` + `hosts` required, `source_file` + `target_env` optional (added by the tt22 migration, `rip-cage-9dlw`): <br>• **`source_env`** — a bare host env-var NAME (validated `[A-Za-z_][A-Za-z0-9_]*`; the inline `ENV=VALUE@HOST` form is rejected). msb synthesizes the guest secret var from it and injects the real value on the wire toward each listed host only, while the guest env/disk/proc hold just a synthesized placeholder (`$MSB_…`), per [ADR-029](../decisions/ADR-029-msb-migration.md) D5/D3. <br>• **`hosts`** — the domain(s) the real value is injected toward. **Does NOT imply network reachability** — a host must ALSO be in `network.allowed_hosts` or the connection is denied before `--secret` ever gets a chance to inject anything. <br>• **`source_file`** (optional) — an absolute host path; `rc` reads the real value from THIS file into the `--secret` machinery instead of requiring a pre-exported host env var. This is the **no-manual-pre-export** path (how claude's setup-token is wired). <br>• **`target_env`** (optional list) — guest env-var name(s) that receive the placeholder, so a tool that reads a fixed var (claude reads `CLAUDE_CODE_OAUTH_TOKEN`) gets it. **Enforced single-host, loud:** a `target_env` binding must be bound to exactly one host — both config validation and the msb-flags generator abort naming the var otherwise (a fixed guest var carries a single placeholder). <br>**When `source_file` is absent**, `source_env` must be set and non-empty in the host environment at every `rc up`/`resume`/`reload` (msb re-resolves `--secret` from host env at every boot) — an unset/empty var fails loud naming the var, before any sandbox is created. |
+| `network.allowed_hosts` | list | `[]` (plus the curated seed below) | Domains allowed for egress. **Unions by default** across the stack (schema default, global, project). A layer may tag it `!replace` to narrow (`!replace []` = deny all config hosts); the tag is visible in the project-file diff at point of use. The agent inside the cage cannot mutate this — edits apply via the host-only `rc reload` (a **cold-recreate** post-cutover, [ADR-029](../decisions/ADR-029-msb-migration.md) D4 — see [egress.md](egress.md)). **Curated default seed** (auto-written to the global config on first `rc up`, `rip-cage-o2h0`): `api.anthropic.com` (hard requirement — a basic `claude -p` turn fails without it), `mcp-proxy.anthropic.com`, `http-intake.logs.us5.datadoghq.com` (both attempted-but-nonblocking, included for denial-log-noise-free defaults). **Note: `github.com` (or any other git host) is NOT in the seed** — add it explicitly for any project that pushes over HTTPS (see `auth.credentials` below and [egress.md](egress.md)'s worked example). **Manifest-egress residual:** hosts a baked tool declares under its `egress:` list in `tools.yaml` are *also* reachable (unioned at runtime), but they are **not** part of `network.allowed_hosts` and cannot be narrowed by `!replace` — they travel with the tool; the only removal path is dropping the tool from the manifest + `rc build`. `rc config show` attributes them as `manifest:<tool>` in a separate block. |
+| `auth.credentials` | list | `[]` | **New in the msb era** (`rip-cage-rj68`, S6 fold a — the credential→host binding surface the deleted MEDIATOR archetype used to carry). Each entry names up to four fields — `source_env` + `hosts` required, `source_file` + `target_env` optional (added by the tt22 migration, `rip-cage-9dlw`): <br>• **`source_env`** — a bare host env-var NAME (validated `[A-Za-z_][A-Za-z0-9_]*`; the inline `ENV=VALUE@HOST` form is rejected). msb synthesizes the guest secret var from it and injects the real value on the wire toward each listed host only, while the guest env/disk/proc hold just a synthesized placeholder (`$MSB_…`), per [ADR-029](../decisions/ADR-029-msb-migration.md) D5/D3. <br>• **`hosts`** — the domain(s) the real value is injected toward. **Does NOT imply network reachability** — a host must ALSO be in `network.allowed_hosts` or the connection is denied before `--secret` ever gets a chance to inject anything. <br>• **`source_file`** (optional) — an absolute host path; `rc` reads the real value from THIS file into the `--secret` machinery instead of requiring a pre-exported host env var. This is the **no-manual-pre-export** path (how claude's setup-token is wired). <br>• **`target_env`** (optional list) — guest env-var name(s) that receive the placeholder, so a tool that reads a fixed var (claude reads `CLAUDE_CODE_OAUTH_TOKEN`) gets it. **Enforced single-host, loud:** a `target_env` binding must be bound to exactly one host — both config validation and the msb-flags generator abort naming the var otherwise (a fixed guest var carries a single placeholder). <br>**When `source_file` is absent**, `source_env` must be set and non-empty in the host environment at every `rc up`/`resume`/`reload` (msb re-resolves `--secret` from host env at every boot) — an unset/empty var fails loud naming the var, before any sandbox is created. |
 | `auth.placeholder_env_file` | scalar | unset (null) | Host path to a `KEY=VALUE`-per-line file carrying the agent's non-secret placeholder token (e.g. `CLAUDE_CODE_OAUTH_TOKEN`) — a persisted POINTER, applied at cage **create only** (never on resume — the guest env is frozen at create time). CLI `--env-file` always wins when both are given (the pointer is ignored, with a log note — no additive merge). Must be an absolute path (no `~`/relative resolution). Fails loud at create if the file is missing, or if its path matches the secret-path denylist (`mounts.denylist`) — this file's contents land in the guest's PID 1 environment where the agent can read them (`/proc/1/environ`), so an operator accidentally pointing at a real secret file (e.g. `~/.aws/credentials`) is refused. Not validated under `--dry-run` (dry-run exits before the create path). |
 
 There is also an **IOC floor** — a curated denylist of known exfil sinks — that is always enforced and **cannot be overridden** by `network.allowed_hosts` (re-homed to the msb-runtime floor, [ADR-029](../decisions/ADR-029-msb-migration.md) D2).
+
+> **Retired `network.*` fields (loud-reject, not silent-drop).** `network.mode`, `network.dns.forward_to`, and `network.http.forward_to` were **removed from the schema** in the v1→v2 bump ([ADR-021 D9](../decisions/ADR-021-layered-rip-cage-config.md)). They were vestigial post-msb-cutover (egress is msb default-deny at the VM boundary — there is no observe/block mode, and msb owns DNS with no host-side forward-to seam). A file still carrying any of them **aborts loud** naming the field, the ADR cite, and the fix (`delete this line`), rather than silently ignoring it (`_config_retired_fields`, `cli/lib/config.sh`). Same treatment as the retired `ssh.*` / `network.egress.mediator*` fields.
 
 ### Example — a project that pushes to GitHub over HTTPS
 
 ```yaml
 # <project>/.rip-cage.yaml
-version: 1
+version: 2
 network:
   allowed_hosts:
     - github.com
@@ -242,7 +253,7 @@ export GH_TOKEN=ghp_your_scoped_token_here
 rc up ~/code/my-project
 ```
 
-`network.allowed_hosts` follows the **additive-list** merge rule (curated seed ∪ global ∪ project, deduplicated). Edits are reload-eligible via `rc reload` (cold-recreate, see [egress.md](egress.md)). Use `rc allowlist add` (host-only) rather than hand-editing, or hand-edit `.rip-cage.yaml` directly and run `rc reload`.
+`network.allowed_hosts` **unions by default** across the schema default, global, and project layers (deduplicated, lower layers first); a layer may `!replace` to narrow. Edits are reload-eligible via `rc reload` (cold-recreate, see [egress.md](egress.md)). Use `rc config add network.allowed_hosts <host> --scope project` (or its sugar `rc allowlist add`, host-only) rather than hand-editing, or hand-edit `.rip-cage.yaml` directly and run `rc reload`.
 
 Cross-reference: [egress.md](egress.md) for the full workflow and the curated default allowlist; [ADR-029](../decisions/ADR-029-msb-migration.md) D2/D4 for the msb-runtime design rationale; [composition-seam.md](composition-seam.md) for opt-in composed mediators (compose-only today, never rc-launched).
 
@@ -258,12 +269,12 @@ See [ADR-025](../decisions/ADR-025-host-adoptable-dcg-policy.md) for full design
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `dcg.packs` | additive_list | `[]` | Extra built-in DCG pack names to enable on top of `core`. `core` is always present and cannot be removed. Project EXPANDS; cannot contract. |
-| `dcg.custom_rule_paths` | additive_list | `[]` | Workspace-relative glob patterns pointing at custom YAML rule pack files (e.g. `.rip-cage/dcg-rules/*.yaml`). Resolved at `rc up` time to cage-absolute `/workspace/*` paths in the generated DCG config. Project EXPANDS; cannot contract. |
+| `dcg.packs` | list | `[]` | Extra built-in DCG pack names to enable on top of `core`. `core` is always present and cannot be removed. Unions across layers by default; `!replace` narrows if you need a project to override the inherited set. |
+| `dcg.custom_rule_paths` | list | `[]` | Workspace-relative glob patterns pointing at custom YAML rule pack files (e.g. `.rip-cage/dcg-rules/*.yaml`). Resolved at `rc up` time to cage-absolute `/workspace/*` paths in the generated DCG config. Unions across layers by default; `!replace` narrows. |
 
 ### How it works
 
-At `rc up`, the effective `dcg.*` (global∪project, union-merged per additive_list semantics) is translated into a merged DCG TOML config file that is bind-mounted **read-only** over the wrapper's pinned config path (`/usr/local/lib/rip-cage/dcg/config.toml`). The generated config always contains `core` in the enabled list — additive only, never subtractive.
+At `rc up`, the effective `dcg.*` (global∪project, union-merged — the v2 list default) is translated into a merged DCG TOML config file that is bind-mounted **read-only** over the wrapper's pinned config path (`/usr/local/lib/rip-cage/dcg/config.toml`). The generated config always contains `core` in the enabled list — additive only, never subtractive.
 
 **Fail-closed (ADR-025 D5):** If the translated config fails to parse, `rc up` refuses to launch the container and exits non-zero with an actionable message. Fix your `dcg.*` fields and retry.
 
@@ -273,13 +284,13 @@ At `rc up`, the effective `dcg.*` (global∪project, union-merged per additive_l
 
 ```yaml
 # ~/.config/rip-cage/config.yaml — global: enable net pack everywhere
-version: 1
+version: 2
 dcg:
   packs:
     - net
 
 # <project>/.rip-cage.yaml — project: add custom rules for this project
-version: 1
+version: 2
 dcg:
   packs:
     - filesystem   # additional built-in pack
@@ -326,9 +337,9 @@ mounts:
 | `mounts.symlinks.scope` | enum-scalar | `file` | Whether to mount the symlink's resolved target file (`file`) or its containing directory (`parent`). `file` is recommended for dotfiles with a few absolute-symlinked config entries; `parent` for cases where the entire containing directory is needed. **`parent` exposes the whole directory, including any sensitive-named leaf files inside it.** The secret-path denylist (ADR-023) is checked against what actually mounts — under `parent` that is the *containing directory's* path, so a denied leaf name (e.g. `credentials`, `id_rsa`) sitting in an otherwise-undenied directory still rides in. This is consistent with how every directory mount behaves (rip-cage never scans directory contents); prefer `scope: file` when a directory holds secrets you don't want in the cage. |
 | `mounts.symlinks.mode` | enum-scalar | `rw` | Read-write (`rw`) or read-only (`ro`) for the second bind mount. Default `rw` is intentional for dotpi users who edit canonical files from the cage. Use `ro` if the cage should treat dotfiles as read-only from the project. |
 
-All fields are `selection_list` type in the schema (per ADR-021 D2): unknown values abort loud. Each field is a scalar.
+All three fields are `enum` type in the schema (per [ADR-021 D2](../decisions/ADR-021-layered-rip-cage-config.md); v1's `selection_list` name for enum-shaped scalars is retired): unknown values abort loud. Each field is a single scalar value.
 
-**Merge behavior:** project file replaces global when explicitly present (per ADR-021 D2 scalar/selection-list rule).
+**Merge behavior:** project file replaces global when explicitly present (the v2 enum rule — project replaces global replaces default).
 
 **What gets scanned:** Only host paths mapping to rip-cage-managed dotfile mounts. Currently: `~/.pi/agent`. `/workspace` is **never** scanned, regardless of config (D2 FIRM whitelist).
 
@@ -348,7 +359,7 @@ Controls whether `rc up` bind-mounts host Claude Code / pi credential files into
 
 ```yaml
 # <project>/.rip-cage.yaml
-version: 1
+version: 2
 auth:
   credential_mounts: real   # real (default) | none — global default, applies to both tools
   per_tool:
@@ -359,8 +370,8 @@ auth:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `auth.credential_mounts` | enum-scalar | `real` | Global default. `real` (default) preserves today's behavior bit-for-bit: `~/.claude.json` and `~/.claude/.credentials.json` are bind-mounted read-write, the per-cage macOS-keychain credential extraction runs, and the symlink-follow synthesis may mount a dotpi-managed `auth.json` symlink's resolved target. `none` means the actual credential surface is suppressed — `~/.claude/.credentials.json` is **not** mounted, the symlink-follow `auth.json` leaf is filtered, and the per-cage keychain extraction is skipped; `~/.claude.json` still mounts (see next paragraph — it holds no credentials, rip-cage-t7cu). Intended for cages that obtain credentials via msb `--secret` injection (`auth.credentials`) rather than a mounted file — the non-possession posture. |
-| `auth.per_tool.claude` | selection_list (null-default) | `null` | Optional override for Claude Code's credential mounts (keychain extraction + `.credentials.json`, plus `.claude.json`'s read/write mode). `null` (default, unset) inherits `auth.credential_mounts`; `real` or `none` overrides it for claude only. |
-| `auth.per_tool.pi` | selection_list (null-default) | `null` | Optional override for pi's credential mount (`auth.json`, including the symlink-follow leaf). `null` (default, unset) inherits `auth.credential_mounts`; `real` or `none` overrides it for pi only. |
+| `auth.per_tool.claude` | enum (null-default) | `null` | Optional override for Claude Code's credential mounts (keychain extraction + `.credentials.json`, plus `.claude.json`'s read/write mode). `null` (default, unset) inherits `auth.credential_mounts`; `real` or `none` overrides it for claude only. |
+| `auth.per_tool.pi` | enum (null-default) | `null` | Optional override for pi's credential mount (`auth.json`, including the symlink-follow leaf). `null` (default, unset) inherits `auth.credential_mounts`; `real` or `none` overrides it for pi only. |
 
 **Resolution:** `effective(T) = auth.per_tool.T if set, else auth.credential_mounts`. A bare `credential_mounts: none` with no `per_tool` block suppresses **both** tools — byte-identical to the pre-per-tool behavior. `per_tool` lets you express **mixed posture** in a single cage, e.g. `{claude: none, pi: real}` — claude runs non-possession (placeholder + msb `--secret`-injected token via `auth.credentials`) while pi keeps its real, self-refreshing `auth.json`. This is the shape a caged `pi` needs today: pi's third-party OAuth providers have no long-lived static token, so pi cannot ride the same non-possession mechanism claude uses (see [ADR-026](../decisions/ADR-026-containment-mediation-identity.md) D3, D7).
 
@@ -382,57 +393,94 @@ auth:
 
 ---
 
-## Per-field-type merge rules
+## Per-field-type merge rules (v2)
 
-The schema declares each field's merge type; the loader applies the matching rule.
+The merge stack is exactly three elements, folded left: **[schema defaults, global file, project file]** ([ADR-021 D2](../decisions/ADR-021-layered-rip-cage-config.md)). There is no distinct "seed" layer — the curated default hosts are auto-seeded *content* of the global file. The schema declares each field's type (`list`, `enum`, or `scalar`); the loader applies the matching rule.
 
-| Type | Examples | Rule | Direction |
-|---|---|---|---|
-| **Additive list** | `network.allowed_hosts`, `auth.credentials` | Union — global ∪ project, deduplicated, order-preserving (global first) | Project EXPANDS; cannot contract |
-| **Selection list** | `mounts.config_mode`, `auth.credential_mounts` | Three-state: project absent ⇒ inherit global; project set ⇒ replace | Project CAN narrow/replace a global capability |
-| **Scalar** | `version` | Project replaces global if present | Project replaces |
+| Type | Examples | Rule |
+|---|---|---|
+| **`list`** | `network.allowed_hosts`, `auth.credentials`, `mounts.allow_risky`, `dcg.packs` | **Union by default** — every layer's items are combined, deduplicated, order-preserving (lower layers first). A layer may tag the field **`!replace`** to discard everything inherited from lower layers and become the new base; **`!replace []`** is the explicit zero-out. The tag is visible in the project-file diff at point of use. |
+| **`list` (replace-forbidden)** | `mounts.denylist` | Union only — `!replace` **aborts loud** ([ADR-023 D2](../decisions/ADR-023-secret-path-mount-denylist.md)). A project may expand the secret-path denylist, never contract or clear it. |
+| **`enum`** | `mounts.config_mode`, `session.multiplexer`, `auth.credential_mounts`, `auth.per_tool.*`, `mounts.symlinks.*` | Project replaces global replaces default. A value outside the allowed set **aborts loud** naming the field and the allowed values. (v1's `selection_list` name for these enum-shaped scalars is retired.) |
+| **`scalar`** | `version`, `auth.placeholder_env_file` | Project replaces global if present. |
 
-**Example.** Global config seeds the curated default host; project adds `github.com` additively and sets `auth.credential_mounts` to `none`:
+Validation **aborts loud naming the exact path** for: an unknown custom tag; `!replace` on a non-list or undeclared field; `!replace` on `mounts.denylist`.
+
+**Example 1 — union (the default).** Global seeds two hosts; project adds a third:
 
 ```yaml
 # ~/.config/rip-cage/config.yaml
-version: 1
+version: 2
 network:
-  allowed_hosts: [api.anthropic.com]                     # additive list (curated seed)
+  allowed_hosts:
+    - api.anthropic.com
+    - github.com
 ```
 
 ```yaml
 # <project>/.rip-cage.yaml
-version: 1
+version: 2
 network:
-  allowed_hosts: [github.com]                            # additive → union
+  allowed_hosts:          # effective = [api.anthropic.com, github.com, chatgpt.com]
+    - chatgpt.com
 auth:
-  credential_mounts: none                                # selection → replace
+  credential_mounts: none # enum → project replaces
 ```
 
-Effective:
+**Example 2 — `!replace` narrowing.** The same project narrows the inherited allowlist to a single host:
+
 ```yaml
-version: 1
+# <project>/.rip-cage.yaml
+version: 2
 network:
-  allowed_hosts: [api.anthropic.com, github.com]
-auth:
-  credential_mounts: none
+  allowed_hosts: !replace   # effective = [api.anthropic.com] — inherited set discarded
+    - api.anthropic.com
+```
+
+`!replace []` (an empty block under the tag) discards the inherited set entirely.
+
+---
+
+## Write verbs
+
+`rc config set/add/remove` edit the posture files host-side so the file taxonomy stops being prerequisite knowledge — the verb routes intent to the right home ([ADR-021 D8](../decisions/ADR-021-layered-rip-cage-config.md)). **The verbs are sugar; the two YAML files stay the source of truth** — a hand edit is always equivalent and remains first-class.
+
+```bash
+rc config set  <dotted.key> <value> --scope global|project [path]
+rc config add  <dotted.key> <item>  --scope global|project [path]
+rc config remove <dotted.key> <item> --scope global|project [path]
+```
+
+- **`--scope` is required** — no default guessing. `global` targets `~/.config/rip-cage/config.yaml` (seeding the canonical template first if the file is absent); `project` targets `<path-or-CWD>/.rip-cage.yaml`.
+- **Surgical, comment-preserving edits.** `yq` only *locates* the key/anchor line; the change is a minimal textual splice of the original bytes, then the full loader re-validates the result. On any validation failure the original file is untouched and the verb refuses with "edit the file." (`yq` *re-emit* is forbidden as a write path — it drops blank lines, normalizes comment spacing, and relocates free-standing comments.)
+- **`set`** replaces only the value token on an existing key's line (preserving a trailing `# comment`). It does **not** create a new nested key inside a populated file — that is structural, and refuses with "edit the file."
+- **`add`** is idempotent: re-adding an item already present reports `'<item>' already present … — no changes made` and changes nothing.
+- **Created files declare `version: 2`.**
+- **Refusals (each says "edit the file"):** placing/removing a `!replace` tag; a structural key (`auth.credentials` and other lists-of-maps / nested-map creation); removing from `mounts.denylist` (replace-forbidden, [ADR-023 D2](../decisions/ADR-023-secret-path-mount-denylist.md)); an ambiguous current-value shape; a value containing a newline/CR (injection guard). `add`/`remove` on an already-`!replace`-tagged list preserve the tag and edit that layer's items.
+- **Host-side only.** The verbs refuse when run inside a cage (`.rip-cage.yaml` is `ro` in-cage by default, and `rc` is not on the cage PATH) — the in-cage flow is to surface the request in prose for the human. `rc allowlist add` is sugar over `rc config add network.allowed_hosts` (same write engine and safety guards).
+
+```bash
+# Add a host to this project's allowlist (surgical; keeps comments)
+rc config add network.allowed_hosts files.example-cdn.net --scope project
+
+# Set a per-project multiplexer
+rc config set session.multiplexer tmux --scope project
 ```
 
 ---
 
 ## Schema versioning
 
-Each file declares `version: <integer>` at the top level. The loader's behavior on version mismatch depends on the field types in the file (per [ADR-021](../decisions/ADR-021-layered-rip-cage-config.md) D3):
+Each file declares `version: <integer>` at the top level. The supported set is exactly **`{2}`** ([ADR-021 D3](../decisions/ADR-021-layered-rip-cage-config.md)/D9). The 1→2 bump is a **breaking change** — v1 files must be hand-migrated.
 
 | Condition | Behavior |
 |---|---|
-| `version` absent | Treat as `version: 1`. Warn loud once per `rc up` invocation per file. |
-| `version` matches a supported version | Load normally. |
-| `version` higher than supported, file uses **selection-list field(s)** | **Abort loud.** Silent skip would silently expand capability beyond user intent. |
-| `version` higher than supported, **additive-only/scalar-only** | Warn loud, skip the file's contents. Effective config falls back to defaults / other layer. |
+| `version` absent | Assume `version: 2`; warn loud once per `rc up` invocation per file (`'<file>' has no 'version:' field; assuming version 2. Add 'version: 2' to silence.`). **EXCEPTION:** a version-absent file that declares `mounts.allow_risky` **aborts loud demanding an explicit version declaration** — that field's v1→v2 semantics flip (replace → union, capability-widening), so rc refuses to assume a version for it. |
+| `version: 2` | Load normally. |
+| `version: 1` | **LOUD ABORT** with an actionable migration hint (change `version: 1` to `version: 2`; express any v1 replace-narrowing with the `!replace` tag, since lists now union by default). Never reinterpreted, never silently skipped. |
+| `version` higher than supported | **Abort loud iff the file uses any `!replace` tag** (dropping a file whose narrowing intent rides on tags is the capability-EXPANDING failure direction). Otherwise warn loud + skip that file's contents (load defaults / other layer only). |
 
-Per-file independence: a global `version: 1` and a project `version: 99` are evaluated separately. The project file may be skipped or aborted; the global file still loads.
+Per-file independence: a global `version: 2` and a project `version: 99` are evaluated separately. The project file may be skipped or aborted; the global file still loads.
 
 ---
 
@@ -441,10 +489,11 @@ Per-file independence: a global `version: 1` and a project `version: 99` are eva
 When `rc up` first creates a container, it stamps a `rc.config-loaded=<sha256>` label using the canonical sha of the effective config AND writes a per-container snapshot at `~/.cache/rip-cage/<cname>/config-applied.json`. Subsequent `rc up` invocations diff the live effective config against the snapshot:
 
 - **First-run** (no snapshot yet): one-time `Loaded .rip-cage.yaml (sha256:<prefix>). Run 'rc config show' to inspect.`
-- **Reload-eligible drift** (only `network.allowed_hosts`/`network.mode` differ from snapshot): `Notice: .rip-cage.yaml has reload-eligible changes since last apply: ... Run: rc reload <cname>`
+- **Reload-eligible drift** (only `network.allowed_hosts` differs from snapshot — it is the *sole* reload-eligible path post-schema-v2, `_RC_RELOAD_ELIGIBLE_PATHS` in `cli/reload.sh`): `Notice: .rip-cage.yaml has reload-eligible changes since last apply: ... Run: rc reload <cname>`
 - **Non-eligible drift** (any other field, e.g. `auth.credentials`, `mounts.*`, `session.multiplexer`): `Notice: .rip-cage.yaml has changes since this container was created (paths: ...). Some fields require 'rc destroy <cname> && rc up' to take effect.`
+- **Manifest-egress drift** (a baked tool's `egress:` list changed since this cage was baked): reported by `rc reload`/`rc reload --dry-run` as **"requires rebuild"** — never as reload-eligible or refuse-loud drift. Its remedy is edit the manifest + `rc build` + recreate, *not* `rc reload` (which only re-materializes from the current config, and the tool binary needs a rebuild anyway).
 
-Most fields apply on resume; capability-changing fields that affect create-time mounts/net-rules/secrets (e.g. `auth.credentials`, `mounts.config_mode`) require `rc destroy && rc up`. Pure-content allowlist edits to `network.allowed_hosts`/`network.mode` apply via `rc reload` (`_RC_RELOAD_ELIGIBLE_PATHS`, `cli/reload.sh`) — **a cold-recreate post-cutover**, not a live in-place apply ([ADR-029](../decisions/ADR-029-msb-migration.md) D4; [ADR-022](../decisions/ADR-022-ssh-allowlist.md) D6's retirement note). Each consumer documents which of its fields are reload-eligible vs recreate-required vs resume-applicable.
+Most fields apply on resume; capability-changing fields that affect create-time mounts/net-rules/secrets (e.g. `auth.credentials`, `mounts.config_mode`) require `rc destroy <name> && rc up`. `rc up --reload` / `RC_UP_CONVERGE` and `rc reload` converge **only reload-eligible drift** (`network.allowed_hosts`) — they are **not** a general substitute for destroy+up: on a stopped cage with non-eligible drift, `rc up --reload` falls through to a plain resume and the resume-time mount-shape guards (`mounts.config_mode`, `mounts.symlinks.*`, `auth.credential_mounts`) abort loud, themselves naming `rc destroy && rc up` as the fix (`_up_eligible_drift_paths`, `cli/up.sh`). Pure-content edits to `network.allowed_hosts` apply via `rc reload` — **a cold-recreate post-cutover**, not a live in-place apply ([ADR-029](../decisions/ADR-029-msb-migration.md) D4; [ADR-022](../decisions/ADR-022-ssh-allowlist.md) D6's retirement note). Each consumer documents which of its fields are reload-eligible vs recreate-required vs resume-applicable.
 
 ---
 
@@ -455,7 +504,7 @@ The loader uses [`yq`](https://github.com/mikefarah/yq) (mikefarah/yq, the Go re
 - **macOS:** `brew install yq`
 - **Linux:** the [mikefarah/yq release binary](https://github.com/mikefarah/yq/releases) (or via brew on Linux) — NOT apt's `yq`, which is [kislyuk/python-yq](https://github.com/kislyuk/yq) and does not understand the mikefarah v4 flags this repo uses
 
-If `yq` is missing, `rc config show` and any `rc up` that needs the loader exit with an actionable error per [ADR-001](../decisions/ADR-001-fail-loud-pattern.md). The loader does not silently degrade to "skip config" — that would silently nullify a user-authored capability scoping (same failure class as silently skipping an unsupported-version file with selection-list fields).
+If `yq` is missing, `rc config show` and any `rc up` that needs the loader exit with an actionable error per [ADR-001](../decisions/ADR-001-fail-loud-pattern.md). The loader does not silently degrade to "skip config" — that would silently nullify a user-authored capability scoping (same failure class as silently skipping an unsupported-version file that uses `!replace`).
 
 `rc up` with no `.rip-cage.yaml` present does **not** require yq — the loader is only invoked when a file is detected.
 
@@ -464,5 +513,5 @@ If `yq` is missing, `rc config show` and any `rc up` that needs the loader exit 
 ## See also
 
 - [ADR-021](../decisions/ADR-021-layered-rip-cage-config.md) — substrate decisions (file location, merge rules, schema versioning, regression contract)
-- [ADR-001](../decisions/ADR-001-fail-loud-pattern.md) — fail-loud pattern (why `yq` missing aborts; why selection-list version-drift aborts)
+- [ADR-001](../decisions/ADR-001-fail-loud-pattern.md) — fail-loud pattern (why `yq` missing aborts; why a higher-version file using `!replace` aborts)
 - [egress.md](egress.md) — `network.allowed_hosts`/`auth.credentials` worked example (git-over-HTTPS host allow + token binding); [SSH Identity Routing](ssh-routing.md) is retired — kept only as a historical record

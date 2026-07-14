@@ -24,7 +24,7 @@ See [egress.md](egress.md) for the full worked example (reachability + credentia
 
 ## `rc reload` — also retired in its pre-cutover shape
 
-The retired `rc reload` below hot-reloaded `ssh.allowed_hosts` in place, with no container teardown. **That hot-reload property does not survive the cutover.** The current `rc reload` (`cli/reload.sh`) applies `network.allowed_hosts`/`network.mode` changes and is a **cold-recreate** (graceful stop → remove → recreate) — see [egress.md](egress.md#the-denyfixreload-repair-loop) and [ADR-029](../decisions/ADR-029-msb-migration.md) D4 for what survives (host mounts, named volumes, the Claude session) versus what's lost (only the guest's ephemeral overlay).
+The retired `rc reload` below hot-reloaded `ssh.allowed_hosts` in place, with no container teardown. **That hot-reload property does not survive the cutover.** The current `rc reload` (`cli/reload.sh`) applies `network.allowed_hosts` changes (the sole reload-eligible path post-schema-v2; `network.mode` is a retired field) and is a **cold-recreate** (graceful stop → remove → recreate) — see [egress.md](egress.md#the-denyfixreload-repair-loop) and [ADR-029](../decisions/ADR-029-msb-migration.md) D4 for what survives (host mounts, named volumes, the Claude session) versus what's lost (only the guest's ephemeral overlay).
 
 ---
 

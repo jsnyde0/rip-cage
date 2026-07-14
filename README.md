@@ -54,7 +54,7 @@ Git authenticates over HTTPS with a per-cage token (there is no ssh cluster). Fu
 | `rc ls` / `rc attach [name]` | List / re-attach to cages |
 | `rc exec <cage> -- <cmd>` | Run a one-off command in a cage |
 | `rc doctor [name]` | Diagnose a cage (`--host` for daemon liveness) |
-| `rc config show \| get` · `rc allowlist show \| add` | Inspect config · manage the egress allowlist |
+| `rc config show \| get \| set \| add \| remove` · `rc allowlist show \| add` | Inspect the effective config (provenance view) · edit it host-side (surgical, comment-preserving) · manage the egress allowlist |
 
 Every command, flag, and JSON output: [CLI reference](docs/reference/cli-reference.md).
 

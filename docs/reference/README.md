@@ -45,7 +45,7 @@ tools:
 
 ```yaml
 # <project>/.rip-cage.yaml — project config file access inside the cage
-version: 1
+version: 2
 mounts:
   config_mode: ro   # ro (default) | rw — whether .rip-cage.yaml is writable in-cage
   denylist:
@@ -66,7 +66,7 @@ tools:
 
 `config_mode: ro` (default, [ADR-021 D7](../decisions/ADR-021-layered-rip-cage-config.md)): `rc up` adds a nested `:ro` bind-mount over `/workspace/.rip-cage.yaml` so a prompt-injected agent cannot embed containment-weakening lines that a human rubber-stamps on `rc reload`. `config_mode: rw` is an opt-in for projects where the agent authors its own config — it requires a host-side edit to flip (cannot be self-granted from inside).
 
-**Doc:** [config.md — `mounts.config_mode`](config.md#mountsconfig_mode----project-config-file-access-inside-the-cage) and [config.md — `mounts.denylist`](config.md#mountsdenylist-and-mountsallow_risky----secret-path-denylist) for the full worked examples including the additive-list merge rule, the 16-pattern default floor, and the `allow_risky` escape hatch.
+**Doc:** [config.md — `mounts.config_mode`](config.md#mountsconfig_mode----project-config-file-access-inside-the-cage) and [config.md — `mounts.denylist`](config.md#mountsdenylist-and-mountsallow_risky----secret-path-denylist) for the full worked examples including the v2 list merge rules (union by default, `!replace` to narrow; `mounts.denylist` replace-forbidden), the 16-pattern default floor, and the `allow_risky` escape hatch.
 
 ---
 
@@ -115,9 +115,9 @@ Extension composition (the `launch_args` field) was established in rip-cage-l72i
 
 ```yaml
 # <project>/.rip-cage.yaml
-version: 1
+version: 2
 session:
-  multiplexer: herdr   # none (default) | tmux | herdr
+  multiplexer: herdr   # none (default) | any baked provider (e.g. tmux, herdr)
 ```
 
 A multiplexer provider is declared in `tools.yaml` as a TOOL entry (binary install) + a MULTIPLEXER entry (hooks):
@@ -294,7 +294,7 @@ tools:
 ### Configuration
 | File | What it covers |
 |---|---|
-| [config.md](config.md) | Layered `.rip-cage.yaml` config: `session.multiplexer`, `mounts.config_mode` (ro/rw), `mounts.denylist`, `network.*` msb egress allowlist, `auth.credentials`, `dcg.*` policy, `mounts.symlinks.*`; merge rules; `rc config show` (`rc config init` is retired) |
+| [config.md](config.md) | Layered `.rip-cage.yaml` config (schema v2): `session.multiplexer`, `mounts.config_mode` (ro/rw), `mounts.denylist`, `network.*` msb egress allowlist, `auth.credentials`, `dcg.*` policy, `mounts.symlinks.*`; v2 merge rules (lists union by default, `!replace` to narrow); the effective view `rc config show` + host-side write verbs `rc config set/add/remove` (`rc config init` is retired) |
 | [ssh-routing.md](ssh-routing.md) | **Retired** — ssh identity routing (`--github-identity`, identity rules file, banner states) no longer exists in `rc`; kept as a historical record, with a pointer to the current HTTPS + `--secret` path |
 | [git-lfs.md](git-lfs.md) | Git LFS: what rip-cage does (and doesn't) fetch; LFS pointer stub advisory warning |
 

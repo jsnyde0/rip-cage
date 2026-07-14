@@ -59,8 +59,9 @@ belongs to keeps you from editing the wrong file:
 | Per-project config | `<repo>/.rip-cage.yaml` | per-workspace runtime posture: `session.multiplexer`, `network.allowed_hosts` (the egress allowlist), per-project `auth.credentials` bindings, `mounts.config_mode` |
 
 (The two posture layers are not disjoint field sets — `config.yaml` and `.rip-cage.yaml`
-share one schema at two precedence levels that merge, global default / project override
-(ADR-021). The "Governs" column shows where each concern *typically* lives.)
+share one schema at two precedence levels that merge per field type: **lists union by default**
+(a project narrows with `!replace`), **enums/scalars are project-over-global** (ADR-021 D2).
+The "Governs" column shows where each concern *typically* lives.)
 
 "Add a Postgres CLI" is an image-manifest ask. "Don't let any cage touch `~/.aws`" is a
 global-posture ask. "Allow this cage to reach `some-private-mirror.example.com`" is a
@@ -82,20 +83,30 @@ effect. (2) An unconfigured cage is therefore NOT deny-all: cmd_up seeds the flo
 (beads/dolt/gh) before boot, so the floor tools' declared egress (github/dolthub) is reachable
 out of the box — the IOC denylist, not an empty allowlist, is what keeps that safe.
 
-The credential non-possession posture (below) splits across these same layers, and the split
-isn't a style preference — it follows from how each layer merges. The rule, settled by the
-tt22 migration (rip-cage-9dlw): **a universal binding or host every cage needs earns a global
-slot; anything only one project needs stays per-project, because the two posture layers merge
-list fields additively (ADR-021) and an additive list can never be narrowed back out** — a host
-added at the global layer applies to every project forever, and no project can opt back out.
-`auth.per_tool` (or the bare `auth.credential_mounts`) is posture the human wants on every cage,
-so it lives **global** (rip-cage-u2ro promote). So does the one *universal* credential binding:
-claude runs in every cage, so its `auth.credentials` entry — and its single host
-`api.anthropic.com` in `network.allowed_hosts` — live **global**, which is exactly where tt22
-landed them. A host or binding only one project needs (a private mirror, a scoped API, a
-project-pinned model provider) belongs at the **project** layer for that same additive-merge
-reason: put it in global instead and you've silently widened every other cage's allowlist with
-no way for any single project to narrow it back out.
+The credential non-possession posture (below) splits across these same layers. Under the v2
+config model (ADR-021 D2), **global slots are safe for shared defaults** — the two posture
+layers merge list fields by **union by default, and a project can narrow an inherited list
+explicitly with the `!replace` tag** (`!replace []` zero-outs). So the old "only universal
+earns global" placement rule has dissolved: a host or binding every cage typically wants
+(claude's `api.anthropic.com` + its `auth.credentials` entry, `auth.per_tool` /
+`auth.credential_mounts` posture) can live **global** without trapping every project, because
+any project that genuinely shouldn't inherit it can `!replace` its way out. Put shared defaults
+in global freely; reach for `!replace` in the one project that needs to narrow. There is **one
+exception** — `mounts.denylist` is replace-forbidden (ADR-023 D2): a project may only expand
+the secret-path denylist, never contract it.
+
+The one residual that *cannot* be narrowed out is **tool-adjacent egress**: a host declared
+under a tool's `egress:` list in `tools.yaml` travels with the tool — it is unioned into the
+cage's allow set at runtime and `!replace` on `network.allowed_hosts` does not touch it (the
+only removal path is dropping the tool + `rc build`). So put a host a *tool* needs on the
+tool's `egress:` list, and a host a *project* needs in that project's `network.allowed_hosts`.
+
+You don't have to reason about which file answers which question up front: the **host-side
+write verbs** route intent for you — `rc config add/set/remove <key> <value> --scope
+global|project` edit the right file surgically (comments preserved), and **`rc config show` is
+the one provenance view** — it shows each effective value's source (`default` / `global` /
+`project` / `manifest:<tool>`), so "what can this cage reach and why" is a single command
+rather than a mental merge across three files.
 
 ## The recipe catalog — read fragments fresh, don't memorize them here
 

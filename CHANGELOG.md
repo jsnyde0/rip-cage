@@ -5,6 +5,20 @@ All notable changes to rip-cage will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed (breaking)
+
+- **`.rip-cage.yaml` config schema v2 — supported version set is now `{2}`** (rip-cage-tsf2.10; [ADR-021](docs/decisions/ADR-021-layered-rip-cage-config.md) D2/D3/D9). The config-schema namespace (`~/.config/rip-cage/config.yaml` + `<repo>/.rip-cage.yaml`) is a breaking bump; the tool-manifest namespace (`tools.yaml`) is a separate version namespace and is untouched.
+  - **Merge model:** the v1 `additive_list` / `selection_list` split is retired. **All `list` fields now union by default** across the fold-left stack `[schema defaults, global, project]` (order-preserving dedup, lower layers first); a file layer may tag a list `!replace` to discard everything inherited from lower layers (`!replace []` is the explicit zero-out). The override is visible in the project-file diff at point of use. `mounts.denylist` is the one **replace-forbidden** list (`!replace` on it aborts loud — ADR-023 D2, the secret-path denylist is additive-only). Enum-shaped scalars are renamed schema type `enum` (semantics unchanged: project replaces global, unknown value aborts loud). One consequence: `mounts.allow_risky` flips replace→union (use `!replace` to restore narrowing).
+  - **Versioning:** `version: 1` files **abort loud** with a migration hint (change to `version: 2`; express v1 replace-narrowing with `!replace`). Version-absent files assume `2` with a per-invocation warning — **except** a version-absent file declaring `mounts.allow_risky`, which aborts demanding an explicit version. A higher-than-supported version aborts iff the file uses `!replace`, else warn-and-skip.
+  - **Vestigial fields dropped:** `network.mode`, `network.dns.forward_to`, `network.http.forward_to` are removed from the schema and join the loud-reject retired-fields table (a file still carrying them aborts naming the field + fix, not a silent drop).
+
+### Added
+
+- **Host-side write verbs `rc config set/add/remove --scope global|project`** (rip-cage-tsf2.10; [ADR-021](docs/decisions/ADR-021-layered-rip-cage-config.md) D8). Surgical, comment-preserving edits to the posture files (`yq` reads only; a minimal textual splice of the original bytes, re-validated by the full loader — `yq` re-emit is forbidden as a write path). The verbs are sugar; the two YAML files stay the source of truth. Refusals (each says "edit the file"): tag placement/removal, structural keys (`auth.credentials`), `mounts.denylist` remove, ambiguous value shapes. `add` is idempotent; created files declare `version: 2`; host-side only. `rc allowlist add` becomes sugar over `rc config add network.allowed_hosts`.
+- **Unified effective view — `rc config show` with four provenance sources** (rip-cage-tsf2.10; [ADR-021](docs/decisions/ADR-021-layered-rip-cage-config.md) D4). Each effective value is attributed to `default` / `global` / `project` / `manifest:<tool>`. Tool-manifest egress is a separate provenance field (`manifest_egress` + `manifest_egress_source` in `--json`; a distinct block in the YAML view), never folded into `network.allowed_hosts` — so a manifest egress change surfaces as **"requires rebuild"**, distinct from reload-eligible config drift. `rc config show` itself takes no `--cage` and always reads the current host manifest (`pending`); `rc allowlist show --effective --cage <name>` and `rc doctor <name>` are the two consumers that name a cage in scope and read that cage's *applied* state instead (not the possibly-drifted host manifest). "What can this cage reach and why" is one command family; `rc allowlist show --effective`, `rc doctor`, and `rc reload --dry-run` converge on the same contract.
+
 ## [0.12.1] - 2026-07-07
 
 Stabilization patch on the 0.12.0 non-possession release: the remaining false alarms on healthy cages, a stale-manifest drift detector for `rc build`, and the test-suite reliability fixes that make CI trustworthy again.

@@ -11,7 +11,7 @@
 | `rc exec <cage> -- <cmd...>` | Run a one-off command in a running container non-interactively (safe for CI and scripts); supports `--output json` |
 | `rc down [name]` | Stop a container |
 | `rc destroy [-f] [name]` | Remove a container and its volumes (prompts for confirmation) |
-| `rc reload [name] [--dry-run]` | Apply `network.allowed_hosts`/`network.mode` changes from `.rip-cage.yaml` — a **cold-recreate** post-cutover, not a hot in-place apply ([details](egress.md#the-denyfixreload-repair-loop)) |
+| `rc reload [name] [--dry-run]` | Apply `network.allowed_hosts` changes from `.rip-cage.yaml` (the sole reload-eligible path post-schema-v2) — a **cold-recreate** post-cutover, not a hot in-place apply ([details](egress.md#the-denyfixreload-repair-loop)) |
 | `rc allowlist add <host> [--cage=<name>]` | Append a host to `network.allowed_hosts` in `.rip-cage.yaml` (idempotent); `--cage` applies it via `rc reload` ([details](egress.md#rc-allowlist-command-reference)) |
 | `rc allowlist show [--effective]` | Show configured / effective egress hosts ([details](egress.md#rc-allowlist-command-reference)) |
 | `rc test [name]` | Run the safety stack smoke test inside a cage |
