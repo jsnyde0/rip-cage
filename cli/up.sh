@@ -2230,6 +2230,47 @@ Continuing anyway — bd calls inside the container will fail until resolved."
 }
 
 
+# rip-cage-tsf2.9: converge-on-up decision (PURE — no side effects but echo).
+# Echoes the newline-separated drifted config paths and returns 0 IFF the cage
+# $1 has a config-applied snapshot, live config ($2's .rip-cage.yaml) differs
+# from it, AND every differing path is reload-eligible (network.* today,
+# _RC_RELOAD_ELIGIBLE_PATHS). Returns 1 (echoes nothing) on no-snapshot / no-drift
+# / any non-eligible drift — the caller then falls through to the existing
+# _config_emit_hint + abort-loud resume guards, which already own the
+# non-eligible/mount-shape drift classes (review F4: never double-handle).
+#
+# Gated on the SAME comparator `rc reload` uses (the applied-config snapshot
+# diff), NEVER `msb inspect` — inspect cannot read back --secret bindings and a
+# rule readback is only a count (review F1). Absent-in-snapshot + live==schema-
+# default fields are suppressed as non-drift (rip-cage-1f59.9), same as reload.
+_up_eligible_drift_paths() {
+  local name="$1" workspace="$2"
+  local live_result live_cfg applied_cfg
+  live_result=$(_load_effective_config "$workspace" 2>/dev/null) || return 1
+  live_cfg=$(jq -c '.config' <<<"$live_result")
+  applied_cfg=$(_config_read_applied "$name" 2>/dev/null) || return 1
+  local _schema_defaults diff_paths
+  _schema_defaults=$(_config_schema_defaults_json 2>/dev/null || echo '{}')
+  diff_paths=$(_config_diff_paths "$live_cfg" "$applied_cfg" "$_schema_defaults" 2>/dev/null || true)
+  [[ -z "$diff_paths" ]] && return 1
+  printf '%s\n' "$diff_paths" | _config_paths_all_reload_eligible || return 1
+  printf '%s\n' "$diff_paths"
+  return 0
+}
+
+# rip-cage-tsf2.9: loud converge announcement (STOPPED cage only). Names the
+# drifted paths and makes the stopped/running asymmetry + the cold-recreate
+# tradeoff legible (review F7). $1 = cage name, $2 = newline-separated paths.
+_up_announce_converge() {
+  local name="$1" paths="$2" _p
+  log "Converging ${name}: .rip-cage.yaml has reload-eligible drift since this cage was created —"
+  while IFS= read -r _p; do [[ -n "$_p" ]] && log "  - $_p"; done <<<"$paths"
+  log "  Cold-recreating (ADR-029 D4): the guest's ephemeral scratch overlay is discarded;"
+  log "  host mounts and Claude sessions survive. (A RUNNING cage is NEVER auto-recreated —"
+  log "  this cage is stopped, so converging now.)"
+}
+
+
 cmd_up() {
   local path="" port="" env_file=""
   local rc_cpus="2" rc_memory="4g" rc_pids_limit="500"
@@ -2243,6 +2284,11 @@ cmd_up() {
   # ADR-024 D1 / rip-cage-hhh.5: per-invocation bypass for workspace base-URL redirect check.
   # When set, validator emits a warning instead of refusing.
   local rc_allow_config_override=""
+  # rip-cage-tsf2.9: --reload converges a STOPPED cage with eligible config drift
+  # to the current .rip-cage.yaml via the existing cold-recreate pipeline (loud);
+  # a no-op harmless plain `up` when there is no eligible drift. Never recreates a
+  # RUNNING cage (warn-only). Opt-in machine-level equivalent: RC_UP_CONVERGE.
+  local rc_up_reload=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --port) [[ $# -ge 2 ]] || { echo "Error: --port requires a value" >&2; exit 1; }; port="$2"; shift 2 ;;
@@ -2254,6 +2300,7 @@ cmd_up() {
       --session) [[ $# -ge 2 ]] || { echo "Error: --session requires a value" >&2; exit 1; }; rc_up_session_name="$2"; shift 2 ;;
       --allow-risky-mount) [[ $# -ge 2 ]] || { echo "Error: --allow-risky-mount requires a value" >&2; exit 1; }; RC_ALLOW_RISKY_MOUNT+=("$2"); shift 2 ;;
       --allow-config-override) rc_allow_config_override="true"; shift ;;
+      --reload) rc_up_reload="true"; shift ;;
       *) path="$1"; shift ;;
     esac
   done
@@ -2463,6 +2510,16 @@ cmd_up() {
       _up_resolve_resume_credential_mounts "$name" "$path"
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-STOPPED END
       would_action="would_resume"
+      # rip-cage-tsf2.9: preview a converge HONESTLY. Under --reload /
+      # RC_UP_CONVERGE a STOPPED cage with eligible drift cold-recreates (guest
+      # scratch overlay discarded) — it does NOT plain-resume — so a dry-run
+      # planner must see that, not a misleading "would resume". The comparator
+      # (_up_eligible_drift_paths) is read-only (snapshot + config compare), so
+      # this stays --dry-run-safe (no mutation).
+      if [[ -n "$rc_up_reload" || -n "${RC_UP_CONVERGE:-}" ]] \
+          && _up_eligible_drift_paths "$name" "$path" >/dev/null; then
+        would_action="would_converge"
+      fi
     elif [[ "$_inspect_exit" -ne 0 ]]; then
       # msb inspect failed → container is absent; create new.
       would_action="would_create"
@@ -2502,6 +2559,9 @@ cmd_up() {
       fi
     else
       echo "Would ${would_action#would_} container $name for $path"
+      # rip-cage-tsf2.9: name the cold-recreate tradeoff in the converge preview.
+      [[ "$would_action" == "would_converge" ]] && \
+        echo "  (cold-recreate: guest scratch overlay discarded; host mounts + Claude sessions survive)"
       # Image absent on new-container path — surface pull/build intent (test-pull-first.sh Tests 3+4).
       if [[ "$would_action" == "would_create" ]] && [[ "$_image_absent" == "true" ]]; then
         if [[ -n "${RIP_CAGE_IMAGE_REGISTRY}" ]]; then
@@ -2575,6 +2635,18 @@ cmd_up() {
     # rip-cage-yid0: mediator CA env guard applies to running containers too
     # — CA trust env vars are frozen at container-create time, same rationale.
     # rip-cage-3y9g: RESUME-GUARDS-REAL-RUNNING END
+    # rip-cage-tsf2.9: a RUNNING cage is NEVER auto-recreated, even with
+    # --reload / RC_UP_CONVERGE — recreating would kill a live agent session
+    # (agent autonomy is the product). Warn-only, and make the stopped/running
+    # asymmetry legible (review F7): the explicit recreate verb for a running
+    # cage is `rc reload`, which the operator invokes knowingly.
+    if [[ -n "$rc_up_reload" || -n "${RC_UP_CONVERGE:-}" ]]; then
+      if _up_eligible_drift_paths "$name" "$path" >/dev/null; then
+        log "Notice: ${name} is RUNNING — NOT auto-recreating despite --reload/RC_UP_CONVERGE"
+        log "  (a running cage keeps its live session; only a STOPPED cage auto-converges)."
+        log "  To apply the drift to this running cage now, cold-recreate explicitly: rc reload ${name}"
+      fi
+    fi
     _config_emit_hint "$path" "$name"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       _up_json_output "$name" "attached" "$path" "running"
@@ -2623,6 +2695,54 @@ cmd_up() {
     esac
     return
   elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
+    # rip-cage-tsf2.9: converge-on-up. When --reload OR the opt-in RC_UP_CONVERGE
+    # is set and this STOPPED cage has eligible config drift, cold-recreate against
+    # the now-current .rip-cage.yaml INSTEAD of resuming with stale creation-time
+    # rules. Explicit flag / opt-in env = explicit consent, so the abort-loud
+    # resume-drift guard family (anchored on ADR-021 D4a/D5) is preserved: this
+    # only converges the LEAST-destructive, reload-eligible drift class
+    # (network.*), and only after a loud announcement. Non-eligible / mount-shape
+    # drift is left to the guards below (never double-handled — review F4).
+    # Runs the SAME cold-recreate mechanic cmd_reload uses (graceful stop -> remove
+    # -> recreate), but recurses cmd_up in the CURRENT output format so an
+    # interactive `rc up --reload` still attaches after the cage comes back
+    # (cmd_reload forces json because it must NOT attach; up must).
+    if [[ -n "$rc_up_reload" || -n "${RC_UP_CONVERGE:-}" ]]; then
+      local _conv_paths
+      if _conv_paths=$(_up_eligible_drift_paths "$name" "$path"); then
+        _up_announce_converge "$name" "$_conv_paths"
+        _msb_stop_graceful "$name" 2>/dev/null || true
+        _msb_remove "$name"
+        # Cage now absent -> the recursive cmd_up takes the create path (which
+        # rebaselines the config-applied snapshot) and, in a TTY, attaches.
+        # rip-cage-tsf2.9 (review F2): forward THIS invocation's own runtime
+        # flags into the recreate so `rc up --reload --cpus 4 --memory 8g` (etc.)
+        # is honored, not silently dropped. Unlike `rc reload` (which never
+        # accepted these flags), the `up` surface does — dropping them would
+        # silently downgrade an explicitly-sized converge. --reload itself is NOT
+        # forwarded (the recreate hits the create path, so there is no drift to
+        # converge and no recursion). Note: this recovers the CURRENT
+        # invocation's flags only; a cage's ORIGINAL create-time resources are
+        # not stored anywhere rc can read back, so a bare `rc up --reload` still
+        # recreates at defaults — the same property `rc reload` has.
+        local _conv_args=()
+        [[ -n "$port" ]] && _conv_args+=(--port "$port")
+        [[ -n "$env_file" ]] && _conv_args+=(--env-file "$env_file")
+        _conv_args+=(--cpus "$rc_cpus" --memory "$rc_memory" --pids-limit "$rc_pids_limit")
+        [[ -n "$rc_up_new_session" ]] && _conv_args+=(--new)
+        [[ -n "$rc_up_session_name" ]] && _conv_args+=(--session "$rc_up_session_name")
+        [[ -n "$rc_allow_config_override" ]] && _conv_args+=(--allow-config-override)
+        local _conv_rm
+        for _conv_rm in "${RC_ALLOW_RISKY_MOUNT[@]+"${RC_ALLOW_RISKY_MOUNT[@]}"}"; do
+          _conv_args+=(--allow-risky-mount "$_conv_rm")
+        done
+        cmd_up "${_conv_args[@]}" "$path"
+        return
+      fi
+      # else: no eligible drift -> fall through to a plain resume (harmless
+      # no-op flag, safe to habituate). emit_hint below still surfaces any
+      # non-eligible drift.
+    fi
     log "Resuming stopped container $name..."
     # rip-cage-3y9g: RESUME-GUARDS-REAL-STOPPED BEGIN (mirrored by the
     # dry-run stopped sub-branch above — see RESUME-GUARDS-DRY-RUN-STOPPED)
@@ -3286,7 +3406,10 @@ _config_emit_hint() {
     if printf '%s\n' "$diff_paths" | _config_paths_all_reload_eligible; then
       log "Notice: .rip-cage.yaml has reload-eligible changes since last apply:"
       while IFS= read -r p; do [[ -n "$p" ]] && log "  - $p"; done <<<"$diff_paths"
-      log "  Run: rc reload ${container_name}"
+      # rip-cage-tsf2.9: offer both one-command fixes — `rc reload` (works on a
+      # running cage) and `rc up --reload` (converges on the next up of a
+      # stopped cage; a no-op when there is no eligible drift).
+      log "  Run: rc reload ${container_name}   (or 'rc up --reload' from the workspace to converge on start)"
     else
       log "Notice: .rip-cage.yaml has changes since this container was created (paths: $(echo "$diff_paths" | tr '\n' ',' | sed 's/,$//'))."
       log "  Some fields require 'rc destroy ${container_name} && rc up' to take effect (see 'rc config show')."

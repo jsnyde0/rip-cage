@@ -572,6 +572,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# C14: Eligible-drift hint text now offers `rc up --reload` alongside `rc reload`
+#      (rip-cage-tsf2.9 point 5). Snapshot lacks the added host -> emit_hint fires
+#      the reload-eligible notice, which must name BOTH one-command fixes.
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox "config-project-network-allowed-hosts.yaml"
+make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
+# Snapshot has allowed_hosts=[] but live fixture has [switch.berlin] -> eligible drift.
+write_snapshot '{"version":1,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[],"mode":null},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+
+c14_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
+c14_exit=$?
+
+c14_ok=true c14_reason=""
+[[ "$c14_exit" -ne 0 ]] && c14_ok=false && c14_reason="emit_hint exit $c14_exit"
+echo "$c14_out" | grep -q "rc reload" || { c14_ok=false; c14_reason="${c14_reason:+$c14_reason; }hint doesn't name rc reload"; }
+echo "$c14_out" | grep -q "rc up --reload" || { c14_ok=false; c14_reason="${c14_reason:+$c14_reason; }hint doesn't offer rc up --reload"; }
+if [[ "$c14_ok" == "true" ]]; then pass 14 "eligible-drift hint offers both 'rc reload' and 'rc up --reload'"
+else fail 14 "eligible-drift hint text" "$c14_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
 echo ""
 if [[ "$FAILURES" -gt 0 ]]; then
   echo "FAILED: $FAILURES of $TOTAL tests"
