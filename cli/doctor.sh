@@ -414,8 +414,43 @@ _doctor_format_auth_probe() {
 # criterion 5's readable fix-hint,
 # _msb_denied_domains_from_trace_log) so an operator can see, at a glance,
 # what a stuck agent turn was actually blocked on.
+# _doctor_classify_denied_domain DOMAIN EFFECTIVE_JSON
+#
+# ADR-021 D4 (rip-cage-tsf2.10.5): route a trace-log-mined denied domain through
+# the ONE loader contract (config ∪ manifest_egress) so the fix-hint never
+# suggests adding a host that is ALREADY reachable, and distinguishes a
+# baked-but-applied manifest host from a pending/unbaked one. $2 is the loader
+# result JSON for the cage in scope ({config, manifest_egress, manifest_egress_source}).
+# Echoes exactly one classification token:
+#   reachable        — already in .config.network.allowed_hosts OR in the APPLIED
+#                      manifest egress: no `rc allowlist add` needed.
+#   requires-rebuild — matches a manifest tool's egress that is PENDING (not
+#                      applied to this cage): the remedy is edit-manifest + rc
+#                      build + recreate, NOT `rc allowlist add`.
+#   add              — not reachable anywhere: suggest `rc allowlist add`.
+_doctor_classify_denied_domain() {
+  local domain="$1" eff="$2"
+  if jq -e --arg d "$domain" '(.config.network.allowed_hosts // []) | index($d) != null' <<<"$eff" >/dev/null 2>&1; then
+    echo "reachable"; return 0
+  fi
+  local in_manifest src
+  in_manifest=$(jq -r --arg d "$domain" '[ (.manifest_egress // {}) | .[][] ] | index($d) != null' <<<"$eff" 2>/dev/null || echo "false")
+  src=$(jq -r '.manifest_egress_source // "none"' <<<"$eff" 2>/dev/null || echo "none")
+  if [[ "$in_manifest" == "true" ]]; then
+    if [[ "$src" == "applied" ]]; then
+      echo "reachable"
+    else
+      echo "requires-rebuild"
+    fi
+    return 0
+  fi
+  echo "add"
+}
+
+
 _doctor_format_posture_probe() {
   local name="$1"
+  local workspace="${2:-}"
   local cfg_json
   cfg_json=$(_msb_inspect_json "$name") || { echo "INFO — could not read posture (msb inspect failed)"; return; }
   local default_egress rule_count
@@ -425,7 +460,29 @@ _doctor_format_posture_probe() {
   denied=$(_msb_denied_domains_from_trace_log "$name" 2>/dev/null)
   local denied_summary="none observed"
   if [[ -n "$denied" ]]; then
-    denied_summary=$(echo "$denied" | tr '\n' ',' | sed 's/,$//')
+    # ADR-021 D4: annotate each denied domain via the loader contract so the
+    # fix-hint routes through config ∪ manifest_egress (nobody re-derives the
+    # merge). Only when a workspace is resolvable + yq is present; otherwise
+    # fall back to the plain domain list.
+    local eff=""
+    if [[ -n "$workspace" ]] && command -v yq &>/dev/null; then
+      eff=$(_load_effective_config "$workspace" "$name" 2>/dev/null || true)
+    fi
+    local _d _cls _parts=()
+    while IFS= read -r _d; do
+      [[ -z "$_d" ]] && continue
+      if [[ -n "$eff" ]]; then
+        _cls=$(_doctor_classify_denied_domain "$_d" "$eff")
+        case "$_cls" in
+          reachable)        _parts+=("${_d} (already reachable — no add needed)") ;;
+          requires-rebuild) _parts+=("${_d} (manifest egress pending — requires rebuild)") ;;
+          *)                _parts+=("${_d} (rc allowlist add ${_d})") ;;
+        esac
+      else
+        _parts+=("$_d")
+      fi
+    done <<<"$denied"
+    local IFS_SAVE="$IFS"; IFS=','; denied_summary="${_parts[*]}"; IFS="$IFS_SAVE"
   fi
   echo "OK — net-default=${default_egress}, ${rule_count} allow-rule(s); recently denied: ${denied_summary}"
 }
@@ -481,7 +538,7 @@ cmd_doctor() {
   local posture_probe="not running, no live probe"
 
   if [[ "$running" -eq 1 ]]; then
-    posture_probe=$(_doctor_format_posture_probe "$name")
+    posture_probe=$(_doctor_format_posture_probe "$name" "$source_path")
 
     # Beads server probe: look for dolt-server.port + process.
     local port_file_exists=0 port_val="" dolt_running=0

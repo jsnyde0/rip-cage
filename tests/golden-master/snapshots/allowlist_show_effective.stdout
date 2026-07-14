@@ -27,3 +27,8 @@ auth:
     claude: null               # from default
     pi: null               # from default
   credentials: []                 # from default
+# manifest egress (host manifest — pending, requires rebuild to change):
+#   api.github.com               # manifest:beads
+#   doltremoteapi.dolthub.com               # manifest:dolt
+#   api.github.com               # manifest:gh
+#   github.com               # manifest:gh

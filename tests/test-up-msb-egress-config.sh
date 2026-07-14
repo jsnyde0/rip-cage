@@ -277,5 +277,92 @@ fi
 cleanup
 
 echo ""
+echo "=== T7: post-split runtime-invariant — tool egress X + config Y => allowed_hosts has BOTH, byte-stable (rip-cage-tsf2.10.5) ==="
+# The loader-contract split (rip-cage-tsf2.10.5) added a SEPARATE manifest_egress
+# field to _load_effective_config's output. This case pins that the RUNTIME
+# egress builder is BEHAVIOR-UNCHANGED by that split: it still unions config
+# network.allowed_hosts (Y) with the manifest tool egress (X) via
+# _manifest_egress_hosts_json, and the loader's new manifest_egress field does
+# NOT leak into the builder's output (no manifest_egress key; no double-union /
+# duplicate host). Byte-stable with the pre-split T5 union shape [Y, X].
+setup_sandbox
+INV_X="post-split-x.tsf2105.test.invalid"
+INV_Y="post-split-y.tsf2105.test.invalid"
+cat > "${TEST_WS}/.rip-cage.yaml" <<EOF
+version: 2
+network:
+  allowed_hosts: [${INV_Y}]
+EOF
+T7_MANIFEST="${TEST_HOME}/.config/rip-cage/tools.yaml"
+cat > "$T7_MANIFEST" <<EOF
+version: 1
+tools:
+  - name: inv-tool
+    archetype: TOOL
+    version_pin: "bundled"
+    egress:
+      - ${INV_X}
+    mounts: []
+EOF
+T7_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_MANIFEST_GLOBAL="$T7_MANIFEST" \
+  bash -c "source '${RC}' 2>/dev/null; _up_build_egress_config_json '${TEST_WS}'" 2>/tmp/t7-egress-cfg.err)
+T7_RC=$?
+if [[ "$T7_RC" -eq 0 ]]; then
+  T7_HOSTS=$(jq -c '.allowed_hosts' <<<"$T7_OUT")
+  T7_HAS_ME_KEY=$(jq -r 'has("manifest_egress")' <<<"$T7_OUT")
+  T7_NDUP=$(jq -r '.allowed_hosts | (length) - (unique | length)' <<<"$T7_OUT")
+  T7_ok=true; T7_reason=""
+  [[ "$T7_HOSTS" == "[\"${INV_Y}\",\"${INV_X}\"]" ]] || { T7_ok=false; T7_reason="allowed_hosts=$T7_HOSTS (want [Y,X])"; }
+  [[ "$T7_HAS_ME_KEY" == "false" ]] || { T7_ok=false; T7_reason="${T7_reason:+$T7_reason; }builder output leaked manifest_egress key"; }
+  [[ "$T7_NDUP" == "0" ]] || { T7_ok=false; T7_reason="${T7_reason:+$T7_reason; }duplicate hosts in union (${T7_NDUP})"; }
+  if [[ "$T7_ok" == "true" ]]; then
+    pass "T7: builder unchanged post-split — config Y ∪ manifest X, order-stable, no leaked field/dupes"
+  else
+    fail "T7: post-split runtime invariant regressed" "$T7_reason"
+  fi
+else
+  fail "T7: _up_build_egress_config_json failed" "$(cat /tmp/t7-egress-cfg.err)"
+fi
+cleanup
+
+echo ""
+echo "=== T8: _manifest_egress_hosts_json flattened union == union of _config_manifest_egress_map values (single-source consistency) ==="
+# The view's per-tool map (_config_manifest_egress_map) and the runtime union
+# (_manifest_egress_hosts_json) must derive from the SAME manifest source: the
+# flattened, deduped union of the per-tool map's values must equal the runtime
+# host list. This is the "nobody re-derives the merge differently" invariant.
+setup_sandbox
+T8_MANIFEST="${TEST_HOME}/.config/rip-cage/tools.yaml"
+cat > "$T8_MANIFEST" <<'EOF'
+version: 1
+tools:
+  - name: tool-a
+    archetype: TOOL
+    version_pin: "bundled"
+    egress:
+      - a1.tsf2105.test.invalid
+      - a2.tsf2105.test.invalid
+    mounts: []
+  - name: tool-b
+    archetype: TOOL
+    version_pin: "bundled"
+    egress:
+      - b1.tsf2105.test.invalid
+    mounts: []
+EOF
+T8_RUNTIME=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_MANIFEST_GLOBAL="$T8_MANIFEST" \
+  bash -c "source '${RC}' 2>/dev/null; _manifest_egress_hosts_json" 2>/dev/null)
+T8_MAP=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_MANIFEST_GLOBAL="$T8_MANIFEST" \
+  bash -c "source '${RC}' 2>/dev/null; _config_manifest_egress_map" 2>/dev/null)
+T8_MAP_FLAT=$(jq -c '[.[][]] | unique' <<<"$T8_MAP" 2>/dev/null)
+T8_RUNTIME_SORTED=$(jq -c 'unique' <<<"$T8_RUNTIME" 2>/dev/null)
+if [[ -n "$T8_MAP_FLAT" && "$T8_MAP_FLAT" == "$T8_RUNTIME_SORTED" ]]; then
+  pass "T8: per-tool map flattens to the same host set the runtime union emits (single source)"
+else
+  fail "T8: view/runtime egress sources diverged" "map_flat=$T8_MAP_FLAT runtime=$T8_RUNTIME_SORTED"
+fi
+cleanup
+
+echo ""
 echo "=== test-up-msb-egress-config.sh: ${FAILURES}/${TOTAL} failure(s) ==="
 [[ "$FAILURES" -eq 0 ]]

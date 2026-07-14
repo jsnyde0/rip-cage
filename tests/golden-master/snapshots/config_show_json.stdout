@@ -53,5 +53,18 @@
     "global": "<GM_ROOT>/home/.config/rip-cage/config.yaml",
     "project": null
   },
-  "sha256": "165839fa930c444afde52deabb8af347514f9aae5d18ee5379b4b4a60428ddef"
+  "sha256": "165839fa930c444afde52deabb8af347514f9aae5d18ee5379b4b4a60428ddef",
+  "manifest_egress": {
+    "beads": [
+      "api.github.com"
+    ],
+    "dolt": [
+      "doltremoteapi.dolthub.com"
+    ],
+    "gh": [
+      "api.github.com",
+      "github.com"
+    ]
+  },
+  "manifest_egress_source": "pending"
 }

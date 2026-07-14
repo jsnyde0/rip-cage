@@ -652,16 +652,58 @@ _config_provenance() {
 }
 
 
+# _config_manifest_egress_map — per-tool egress attribution from the CURRENT
+# host manifest (ADR-021 D4). Returns a JSON object mapping each baked TOOL
+# name that declares a non-empty `egress:` list to that list:
+#   {"<tool>": ["host", ...], ...}   ({} when no tool declares egress).
+#
+# This is the "pending/unbaked" source for the loader's manifest_egress field
+# (no cage in scope). It reads the same union source the RUNTIME egress builder
+# (_up_build_egress_config_json -> _manifest_egress_hosts_json) reads, but keeps
+# per-tool attribution instead of flattening to a host list — the flattened
+# union of THIS map's values equals _manifest_egress_hosts_json's output (modulo
+# dedup/sort), so the view and the runtime rules stay derivable from one source.
+#
+# Returns non-zero when the manifest cannot be read/parsed — the loader then
+# falls back to manifest_egress {} + source "none". Never folds into
+# .config.network.allowed_hosts.
+_config_manifest_egress_map() {
+  local manifest_json
+  if ! manifest_json=$(_manifest_load 2>/dev/null); then
+    return 1
+  fi
+  jq -c '
+    [ .tools[]?
+      | select((.egress // []) | length > 0)
+      | {(.name // "unknown"): (.egress // [])}
+    ] | add // {}
+  ' <<<"$manifest_json" 2>/dev/null || return 1
+}
+
+
 # Top-level loader entry. Returns JSON:
 # {
 #   config:     <effective merged config>,
 #   provenance: { "<dotted_key>": "global"|"project"|"default"|["global","project"] },
 #   layers:     { global: <path|null>, project: <path|null> },
-#   sha256:     "<hex>"   # of canonical effective config — for rc.config-loaded label
+#   sha256:     "<hex>",  # of canonical effective config — for rc.config-loaded label
+#   manifest_egress:        { "<tool>": ["host", ...], ... },  # ADR-021 D4, SEPARATE field
+#   manifest_egress_source: "applied" | "pending" | "none"
 # }
+#
+# manifest_egress (ADR-021 D4) is a SEPARATE top-level provenance source —
+# NEVER folded into .config.network.allowed_hosts. Source selection follows the
+# dual-source pattern the multiplexer registry uses to close the
+# validate-passes/runtime-fails hole:
+#   - TARGET CAGE in scope ($2 non-empty) with an applied manifest-egress record
+#     -> read that record verbatim; source "applied" (what was baked at create/
+#     reload, NOT the current host tools.yaml which may have drifted since).
+#   - Else derive from the current host manifest FILE (if present) -> "pending".
+#   - Manifest file absent / unreadable -> {} + "none".
 # Emits warnings/errors to stderr; exits non-zero on D3 abort case.
 _load_effective_config() {
   local workspace="$1"
+  local cage="${2:-}"
   local global_path project_path
   global_path=$(_config_global_path)
   project_path=$(_config_project_path "$workspace")
@@ -696,13 +738,37 @@ _load_effective_config() {
   if [[ -f "$global_path" ]]; then global_layer="\"$global_path\""; else global_layer="null"; fi
   if [[ -f "$project_path" ]]; then project_layer="\"$project_path\""; else project_layer="null"; fi
 
+  # manifest_egress provenance (ADR-021 D4) — SEPARATE field, dual-source.
+  local manifest_egress='{}' manifest_egress_source='none'
+  if [[ -n "$cage" ]]; then
+    local _applied_mem
+    if _applied_mem=$(_config_read_manifest_egress_applied "$cage" 2>/dev/null); then
+      manifest_egress="$_applied_mem"
+      manifest_egress_source='applied'
+    fi
+  fi
+  if [[ "$manifest_egress_source" == 'none' ]]; then
+    # Pending source: derive from the current host manifest FILE (mirrors the
+    # runtime egress builder's `-f` guard so an absent manifest stays "none"
+    # rather than resolving to the floor default via _manifest_load).
+    if [[ -f "$(_manifest_global_path)" ]] && command -v yq &>/dev/null; then
+      local _pending_mem
+      if _pending_mem=$(_config_manifest_egress_map 2>/dev/null); then
+        manifest_egress="$_pending_mem"
+        manifest_egress_source='pending'
+      fi
+    fi
+  fi
+
   jq -nc \
     --argjson c "$effective" \
     --argjson p "$provenance" \
     --argjson gl "$global_layer" \
     --argjson pr "$project_layer" \
     --arg sha "$sha" \
-    '{config: $c, provenance: $p, layers: {global: $gl, project: $pr}, sha256: $sha}'
+    --argjson me "$manifest_egress" \
+    --arg mes "$manifest_egress_source" \
+    '{config: $c, provenance: $p, layers: {global: $gl, project: $pr}, sha256: $sha, manifest_egress: $me, manifest_egress_source: $mes}'
 }
 
 
@@ -845,6 +911,46 @@ _config_format_yaml() {
         ;;
     esac
   done < <(_config_schema_lines)
+
+  # ADR-021 D4: manifest egress is a SEPARATE provenance source — rendered as
+  # comments AFTER the config body, per-tool attributed, never mixed into
+  # network.allowed_hosts. Nobody re-derives the merge; this reads the loader's
+  # own manifest_egress field.
+  _config_format_manifest_egress "$result"
+}
+
+
+# Render the manifest_egress provenance section (ADR-021 D4) as YAML comments.
+# Per-tool attribution, labeled by source:
+#   applied — baked into this cage's applied state at create/reload.
+#   pending — derived from the host manifest; requires `rc build` + recreate to
+#             actually apply (no cage in scope, or unbaked drift).
+# $1 = loader result JSON ({..., manifest_egress, manifest_egress_source}).
+_config_format_manifest_egress() {
+  local result="$1"
+  local src me
+  src=$(jq -r '.manifest_egress_source // "none"' <<<"$result" 2>/dev/null || echo "none")
+  me=$(jq -c '.manifest_egress // {}' <<<"$result" 2>/dev/null || echo "{}")
+  if [[ -z "$me" || "$me" == "{}" || "$me" == "null" ]]; then
+    echo "# manifest egress: (none)"
+    return 0
+  fi
+  local label
+  case "$src" in
+    applied) label="baked into this cage — applied" ;;
+    pending) label="host manifest — pending, requires rebuild to change" ;;
+    *)       label="$src" ;;
+  esac
+  echo "# manifest egress (${label}):"
+  local tool h hosts
+  while IFS= read -r tool; do
+    [[ -z "$tool" ]] && continue
+    hosts=$(jq -r --arg t "$tool" '.manifest_egress[$t][]?' <<<"$result" 2>/dev/null)
+    while IFS= read -r h; do
+      [[ -z "$h" ]] && continue
+      echo "#   ${h}               # manifest:${tool}"
+    done <<<"$hosts"
+  done < <(jq -r '.manifest_egress | keys[]?' <<<"$result" 2>/dev/null)
 }
 
 
@@ -895,13 +1001,27 @@ _config_applied_path() {
 # (the {network:{...}, egress:..., etc.} subtree — same shape as `.config` from
 # _load_effective_config). Truncate-then-write to preserve inode (rip-cage-rx8
 # recipe: never mv-into-place, the parent dir is not bind-mounted).
+#
+# ADR-021 D4 (rip-cage-tsf2.10.5): an OPTIONAL $3 records the per-tool
+# manifest_egress map that was actually applied to the msb rules at this create/
+# reload moment. It is written to a SEPARATE sibling file
+# (manifest-egress-applied.json), NOT folded into config-applied.json — the
+# config snapshot stays a bare config object (byte-stable), so the reload/
+# converge diff (which compares config-applied.json against live `.config`) never
+# sees manifest egress as spurious drift, and the documented top-level shape of
+# config-applied.json (e.g. tests/test-rc-reload.sh C1's `.network.allowed_hosts`
+# readback) is preserved. Omit $3 to leave the manifest-egress record untouched
+# (2-arg calls stay byte-identical to the pre-split behavior).
 _config_write_applied() {
-  local cname="$1" cfg_json="$2"
+  local cname="$1" cfg_json="$2" mem_json="${3:-}"
   local path
   path=$(_config_applied_path "$cname")
   mkdir -p "$(dirname "$path")"
   : > "$path"
   printf '%s\n' "$cfg_json" > "$path"
+  if [[ -n "$mem_json" ]]; then
+    _config_write_manifest_egress_applied "$cname" "$mem_json"
+  fi
 }
 
 
@@ -909,6 +1029,38 @@ _config_write_applied() {
 _config_read_applied() {
   local cname="$1" path
   path=$(_config_applied_path "$cname")
+  [[ -f "$path" ]] || return 1
+  cat "$path"
+}
+
+
+# Path to the per-container applied manifest-egress record (ADR-021 D4). Sibling
+# of config-applied.json in the same cache dir. Kept SEPARATE from the config
+# snapshot so the reload/converge diff stays .config-only.
+_config_manifest_egress_applied_path() {
+  local cname="$1"
+  echo "${HOME}/.cache/rip-cage/${cname}/manifest-egress-applied.json"
+}
+
+
+# Write the applied manifest-egress record (per-tool map $2). Same
+# truncate-then-write inode-preserving idiom as _config_write_applied.
+_config_write_manifest_egress_applied() {
+  local cname="$1" mem_json="$2"
+  local path
+  path=$(_config_manifest_egress_applied_path "$cname")
+  mkdir -p "$(dirname "$path")"
+  : > "$path"
+  printf '%s\n' "$mem_json" > "$path"
+}
+
+
+# Read the applied manifest-egress record. Echoes the per-tool map JSON if the
+# sibling file exists, returns non-zero otherwise (old-format cages without the
+# record — the loader then falls back to the pending source).
+_config_read_manifest_egress_applied() {
+  local cname="$1" path
+  path=$(_config_manifest_egress_applied_path "$cname")
   [[ -f "$path" ]] || return 1
   cat "$path"
 }

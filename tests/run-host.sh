@@ -532,6 +532,8 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-up-converge.sh"           # rip-cage-tsf2.9: rc up --reload / RC_UP_CONVERGE converge-on-up (stopped-only cold-recreate)
   run_test "${SCRIPT_DIR}/test-rc-allowlist.sh"          # rip-cage-hhh.6: rc allowlist add/show/promote + D10 host-side guard
   run_test "${SCRIPT_DIR}/test-config-verbs.sh"          # rip-cage-tsf2.10.4: rc config set/add/remove surgical write verbs (ADR-021 D8) + allowlist-add delegation
+  run_test "${SCRIPT_DIR}/test-config-effective-view.sh" # rip-cage-tsf2.10.5: manifest_egress loader-contract split (ADR-021 D4) — SEPARATE field, applied/pending source, consumer convergence, requires-rebuild
+  run_test "${SCRIPT_DIR}/test-up-msb-egress-config.sh"  # rip-cage-tsf2.8/tsf2.10.5: _up_build_egress_config_json config∪manifest egress union + post-split runtime-invariant regression (r1-F1: was missing from run-host.sh)
   run_test "${SCRIPT_DIR}/test-ls-mode-source.sh"        # rip-cage-hhh.6: rc ls/doctor mode read from source .rip-cage.yaml not stale label
   run_test "${SCRIPT_DIR}/test-doctor-version-skew.sh"   # rip-cage-2cks: _doctor_bd_version_compare unit tests (host-only, no docker)
   run_test "${SCRIPT_DIR}/test-doctor-dead-mount.sh"     # rip-cage-uben: generic dead-handle detection over single-file bind mounts — stubbed docker, host-only, no live cage needed

@@ -81,6 +81,17 @@ cmd_reload() {
     exit 1
   fi
 
+  # ADR-021 D4 (rip-cage-tsf2.10.5, F1 fold): surface a manifest-vs-applied
+  # egress delta as "requires rebuild" — INFORMATIONAL, distinct from
+  # reload-eligible config drift, and NEVER part of reload eligibility or the
+  # refuse-loud path. Runs BEFORE the empty-diff early-return and refuse-loud
+  # gates below: it depends only on "$name" (the applied manifest-egress
+  # record vs the current host manifest), not on diff_paths — a manifest-only
+  # drift (config unchanged) is exactly the canonical case this hint exists
+  # for, and both the empty-diff early-return (below) and the refuse-loud exit
+  # (further below) would otherwise short-circuit before it ever ran.
+  _reload_report_manifest_egress_delta "$name"
+
   # Compute differing JSON paths (e.g. "network.allowed_hosts", "egress.mode").
   # Pass schema defaults so absent-in-snapshot + live==default fields are non-drift
   # (handles old snapshots written before a new defaulted field was introduced —
@@ -192,9 +203,42 @@ cmd_reload() {
   fi
 
   # Update snapshot to live (so subsequent emit_hint suppresses the warning).
-  _config_write_applied "$name" "$live_cfg"
+  # ADR-021 D4 (rip-cage-tsf2.10.5): also rebaseline the applied manifest-egress
+  # record — the cold-recreate above re-materialized the msb net-rules from the
+  # NOW-current host manifest (the same union _up_build_egress_config_json reads),
+  # so the applied per-tool egress map is the current host manifest map.
+  local _rl_mem
+  _rl_mem=$(_config_manifest_egress_map 2>/dev/null || echo '{}')
+  _config_write_applied "$name" "$live_cfg" "$_rl_mem"
 
   log "Reloaded $name."
+}
+
+
+# _reload_report_manifest_egress_delta NAME
+#
+# ADR-021 D4 (rip-cage-tsf2.10.5): INFORMATIONAL only. Compares the cage's
+# applied manifest-egress record (written at create/reload) against the current
+# host manifest per-tool egress map. A difference means the manifest egress
+# drifted since this cage was baked; the real remedy is edit-manifest + `rc
+# build` + recreate (NOT `rc reload` / `rc allowlist add`), so it surfaces as
+# "requires rebuild" — distinct from reload-eligible config drift and NEVER part
+# of reload eligibility or the refuse-loud path. Silent when there is no applied
+# record (old cage) or no delta.
+_reload_report_manifest_egress_delta() {
+  local name="$1"
+  local applied cur
+  applied=$(_config_read_manifest_egress_applied "$name" 2>/dev/null) || return 0
+  cur=$(_config_manifest_egress_map 2>/dev/null || echo '{}')
+  local a_c c_c
+  a_c=$(jq -cS '.' <<<"$applied" 2>/dev/null || echo '{}')
+  c_c=$(jq -cS '.' <<<"$cur" 2>/dev/null || echo '{}')
+  if [[ "$a_c" != "$c_c" ]]; then
+    log "Note: manifest egress changed since this cage was baked — requires rebuild"
+    log "  (edit the manifest, then 'rc build' + recreate; this is NOT reload-eligible drift)."
+    log "  applied: ${a_c}"
+    log "  current: ${c_c}"
+  fi
 }
 
 

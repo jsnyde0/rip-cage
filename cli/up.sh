@@ -3092,7 +3092,17 @@ cmd_up() {
       _ocn_p=$(jq -r '.layers.project' <<<"$_ocn_result")
       if [[ "$_ocn_g" != "null" || "$_ocn_p" != "null" ]]; then
         _ocn_cfg=$(jq -c '.config' <<<"$_ocn_result")
-        _config_write_applied "$name" "$_ocn_cfg"
+        # ADR-021 D4 (rip-cage-tsf2.10.5): also record the per-tool manifest
+        # egress map that was applied to the msb rules at this create moment —
+        # derived from the same host manifest union the runtime builder used
+        # (_up_build_egress_config_json / _manifest_egress_hosts_json), kept as a
+        # per-tool map in a sibling snapshot file (NOT folded into the config
+        # snapshot). Closes the validate-passes/runtime-fails hole: the cage's
+        # applied egress state is now inspectable independently of a drifted
+        # host tools.yaml.
+        local _ocn_mem
+        _ocn_mem=$(_config_manifest_egress_map 2>/dev/null || echo '{}')
+        _config_write_applied "$name" "$_ocn_cfg" "$_ocn_mem"
       fi
     fi
   fi
