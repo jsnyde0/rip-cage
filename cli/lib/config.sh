@@ -415,9 +415,10 @@ _config_load_layer() {
     echo "{}"; return 0
   fi
 
-  # Enum-scalar validation: for selection_list fields with allowed_values (4th
-  # schema column), check that the field's value in this layer is in the set.
-  # Unknown enum values abort loud per ADR-021 D3.
+  # Enum validation: for enum-typed fields with allowed_values (4th schema
+  # column), check that the field's value in this layer is in the set.
+  # Unknown enum values abort loud per ADR-021 D2 (v2; the v1 type name
+  # selection_list is retired).
   #
   # session.multiplexer is a special case: its allowed set derives dynamically
   # from the baked registry (rc.multiplexers image label) via

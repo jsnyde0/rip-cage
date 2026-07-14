@@ -681,7 +681,7 @@ test_t19_validate_yq_missing_with_config_aborts() {
 # T20: default emission with mounts.symlinks default config (follow/file/rw)
 # T21: mounts.symlinks.on_dangling=invalid aborts loud per ADR-021 D3
 # T22: mounts.symlinks.mode=invalid aborts loud per ADR-021 D3
-# T23: future-version YAML with mounts.symlinks.* selection-list field aborts
+# T23: mounts.symlinks default fixture loads and produces nested config (project prov)
 # ---------------------------------------------------------------------------
 
 test_t20_mounts_symlinks_default_emission() {
@@ -811,11 +811,11 @@ $out"
 # T27: mounts.denylist parses from global config layer
 # T28: mounts.denylist parses from project config layer
 # T29: mounts.denylist merges additively across layers (global + project = union)
-# T30: mounts.allow_risky parses (selection_list semantics)
+# T30: mounts.allow_risky unions across layers (v2 union-default; replace retired)
 # ---------------------------------------------------------------------------
 
 test_t27_mounts_denylist_from_global() {
-  # mounts.denylist (additive_list) parses from global config layer
+  # mounts.denylist (union-default list, replace-forbidden) parses from global config layer
   setup_sandbox "config-global-with-denylist.yaml" ""
   local out denylist prov
   out=$(run_rc_config "show --json")
@@ -830,7 +830,7 @@ test_t27_mounts_denylist_from_global() {
 }
 
 test_t28_mounts_denylist_from_project() {
-  # mounts.denylist (additive_list) parses from project config layer
+  # mounts.denylist (union-default list, replace-forbidden) parses from project config layer
   setup_sandbox "" "config-project-with-denylist.yaml"
   local out denylist prov
   out=$(run_rc_config "show --json")
@@ -860,31 +860,36 @@ test_t29_mounts_denylist_additive_merge() {
   teardown_sandbox
 }
 
-test_t30_mounts_allow_risky_selection_list() {
-  # mounts.allow_risky (selection_list) parses; project replaces global when present
-  setup_sandbox "" "config-project-with-allow-risky.yaml"
+test_t30_mounts_allow_risky_union_default() {
+  # mounts.allow_risky is a union-default list under v2 (ADR-021 D2 — the v1
+  # selection_list replace semantics are RETIRED; this is the honest-cost flip
+  # the design names). Non-empty global + project must UNION, not replace: a
+  # replace-semantics implementation would return only the project list and go
+  # RED here (parent re-verify F2 — the previous empty-global variant was
+  # vacuous, indistinguishable between union and replace).
+  setup_sandbox "config-global-allow-risky.yaml" "config-project-with-allow-risky.yaml"
   local out allow_risky prov
   out=$(run_rc_config "show --json")
   allow_risky=$(jq -c '.config.mounts.allow_risky' <<<"$out")
-  prov=$(jq -r '.provenance["mounts.allow_risky"]' <<<"$out")
-  if [[ "$allow_risky" == '["/home/user/.aws/credentials"]' && "$prov" == "project" ]]; then
-    pass "T30 mounts.allow_risky selection_list parses from project"
+  prov=$(jq -c '.provenance["mounts.allow_risky"]' <<<"$out")
+  if [[ "$allow_risky" == '["/opt/global","/home/user/.aws/credentials"]' && "$prov" == '["global","project"]' ]]; then
+    pass "T30 mounts.allow_risky union-default: global + project = union (v2; replace would drop the global entry)"
   else
-    fail "T30 expected allow_risky=[/home/user/.aws/credentials] prov=project, got allow_risky=$allow_risky prov=$prov"
+    fail "T30 expected union [/opt/global,/home/user/.aws/credentials] prov=[global,project], got allow_risky=$allow_risky prov=$prov"
   fi
   teardown_sandbox
 }
 
 # ---------------------------------------------------------------------------
 # network.* config fields (ADR-021, rip-cage-hhh.1)
-# T31: network.allowed_hosts parses from global config layer (additive_list)
-# T32: network.allowed_hosts merges additively across layers (global + project = union)
-# T33: v1 config with no network.* fields parses unchanged with empty defaults
-# T34: network.mode selection_list parses (observe/block); project replaces global
-# T35: absent network.mode resolves to null/default (not a third mode value string)
+# T31: network.allowed_hosts parses from global config layer (union-default list, v2)
+# T32: network.allowed_hosts unions across layers (global + project = union)
+# T33: config with no network.* fields parses unchanged with empty defaults
+# T34: network.mode is a RETIRED field (v2 vestigial drop, ADR-021 D9) — loud-reject
+# T35: network.dns.forward_to retired — loud-reject (ADR-021 D9)
 # T36: network.writable_hosts in config file is silently ignored (field removed in rip-cage-ta1o.1)
 # T37: network.writable_hosts absent from effective config (field removed in rip-cage-ta1o.1)
-# T38: network.mode invalid value aborts loud per ADR-021 D3
+# T38: network.http.forward_to retired — loud-reject (ADR-021 D9)
 # ---------------------------------------------------------------------------
 
 test_t31_network_allowed_hosts_from_global() {
@@ -1129,7 +1134,7 @@ test_t42_session_multiplexer_invalid_aborts() {
 # merge/provenance/enum engines with no per-key code).
 # T46: auth.credential_mounts absent ⇒ default "real"
 # T47: auth.credential_mounts: none ⇒ parses from project, prov=project;
-#      project replaces global (selection_list semantics)
+#      project replaces global (enum semantics, v2)
 # T48: auth.credential_mounts: bogus ⇒ aborts loud per ADR-021 D3
 # (T49, network.egress.mediator_env_file, retired with the MEDIATOR archetype
 # — ADR-029 D2 engine-deletion sweep.)
@@ -1388,7 +1393,7 @@ test_t58_config_get_bogus_key_errors() {
 }
 
 test_t59_config_get_null_value_not_not_found() {
-  # mounts.allow_risky defaults to null (selection_list|null, no fixture
+  # mounts.allow_risky defaults to null (list-typed, default null; no fixture
   # override) — a legitimate null VALUE, distinct from an absent/bogus key.
   # Must print "null" and exit 0, not be treated as not-found.
   setup_sandbox "" ""
@@ -1563,7 +1568,7 @@ run_test test_t26_config_show_mounts_symlinks_nested_yaml
 run_test test_t27_mounts_denylist_from_global
 run_test test_t28_mounts_denylist_from_project
 run_test test_t29_mounts_denylist_additive_merge
-run_test test_t30_mounts_allow_risky_selection_list
+run_test test_t30_mounts_allow_risky_union_default
 run_test test_t31_network_allowed_hosts_from_global
 run_test test_t32_network_allowed_hosts_additive_merge
 run_test test_t33_v1_config_no_network_parses_unchanged

@@ -6,7 +6,7 @@
 # was deleted by ADR-029 D2; no on-disk field currently encodes these
 # bindings until this change.
 #
-# Schema: auth.credentials is an additive_list of
+# Schema: auth.credentials is a union-default list (v1 name: additive_list) of
 #   {source_env: "ENV_NAME", hosts: ["host1", "host2", ...]}
 # objects -- deliberately isomorphic to cli/lib/msb_flags.sh's
 # `credentials` input-contract field (S2, rip-cage-kl4r, APPROVED as-is
@@ -209,7 +209,7 @@ cleanup
 
 # ---------------------------------------------------------------------------
 # T7: the guest-env bridge fields (target_env, source_file) survive the
-# additive_list merge intact into the effective config (rip-cage-9dlw) — the
+# union-default list merge intact into the effective config (rip-cage-9dlw) — the
 # per-credential objects are merged wholesale, so nested fields the generator
 # consumes downstream must not be stripped.
 # ---------------------------------------------------------------------------

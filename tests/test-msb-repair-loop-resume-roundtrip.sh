@@ -223,7 +223,7 @@ fi
 # cold-recreate) before the reload. api.anthropic.com is already allowed
 # without any project-file edit -- it is part of the curated DEFAULT
 # allowlist ADR-029 D4 auto-seeds into a fresh global config.yaml on the
-# first `rc up` above (network.allowed_hosts is an additive_list: the
+# first `rc up` above (network.allowed_hosts is a union-default list: the
 # project file's [example.com] is UNIONED with the global default, not a
 # replacement).
 # ---------------------------------------------------------------------------
