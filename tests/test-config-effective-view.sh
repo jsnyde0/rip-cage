@@ -512,5 +512,54 @@ cleanup
 
 # ---------------------------------------------------------------------------
 echo ""
+echo "=== T12: rc allowlist show --effective --cage <name> threads the cage into the loader -> source applied ==="
+# Regression for a code gap surfaced by fresh-context doc-fidelity review of
+# rip-cage-tsf2.10.5 (commit 1ddb499): _allowlist_show's --effective branch
+# called _load_effective_config "$workspace" WITHOUT forwarding the parsed
+# --cage value as the 2nd (cage) arg, so `rc allowlist show --effective --cage
+# <name>` always reported manifest_egress_source "pending" even when the
+# cage's manifest-egress-applied.json existed. Fabricate a cache dir carrying
+# an applied manifest-egress record for a cage name, then verify allowlist
+# show --effective --cage <name> reports source "applied" with content taken
+# from the SNAPSHOT, not the current (mutated) host manifest.
+setup_sandbox
+CNAME="rc-eff-view-t12-cage"
+CACHE_DIR="${TEST_HOME}/.cache/rip-cage/${CNAME}"
+mkdir -p "$CACHE_DIR"
+cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
+version: 2
+network:
+  allowed_hosts: [config-host.test.invalid]
+EOF
+# Applied manifest-egress record for the cage (what config show --cage should read).
+printf '%s\n' '{"baked-tool":["baked-host.test.invalid"]}' > "${CACHE_DIR}/manifest-egress-applied.json"
+# Current host manifest is DIFFERENT -- must NOT leak into the --cage-scoped view.
+cat > "${TEST_HOME}/.config/rip-cage/tools.yaml" <<'EOF'
+version: 1
+tools:
+  - name: drifted-tool
+    archetype: TOOL
+    version_pin: "bundled"
+    egress:
+      - drifted-host.test.invalid
+    mounts: []
+EOF
+T12_OUT=$(in_sandbox "OUTPUT_FORMAT=json cmd_allowlist show --effective --cage='${CNAME}' --config-file='${TEST_WS}/.rip-cage.yaml'" 2>/tmp/t12-eff-view.err)
+T12_RC=$?
+T12_ok=true; T12_reason=""
+[[ "$T12_RC" -eq 0 ]] || { T12_ok=false; T12_reason="exit $T12_RC"; }
+T12_ME=$(jq -c '.manifest_egress' <<<"$T12_OUT" 2>/dev/null || echo "ERR")
+T12_SRC=$(jq -r '.manifest_egress_source' <<<"$T12_OUT" 2>/dev/null || echo "ERR")
+[[ "$T12_ME" == '{"baked-tool":["baked-host.test.invalid"]}' ]] || { T12_ok=false; T12_reason="${T12_reason:+$T12_reason; }manifest_egress=$T12_ME (want snapshot content, not drifted current manifest)"; }
+[[ "$T12_SRC" == "applied" ]] || { T12_ok=false; T12_reason="${T12_reason:+$T12_reason; }manifest_egress_source=$T12_SRC (want applied)"; }
+if [[ "$T12_ok" == "true" ]]; then
+  pass "T12: allowlist show --effective --cage threads the cage name into the loader -> source applied, snapshot content"
+else
+  fail "T12: --cage not threaded into _load_effective_config" "$T12_reason -- out: $T12_OUT err: $(cat /tmp/t12-eff-view.err)"
+fi
+cleanup
+
+# ---------------------------------------------------------------------------
+echo ""
 echo "=== test-config-effective-view.sh: ${FAILURES}/${TOTAL} failure(s) ==="
 [[ "$FAILURES" -eq 0 ]]

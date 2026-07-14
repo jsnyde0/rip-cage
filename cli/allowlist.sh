@@ -236,8 +236,17 @@ _allowlist_show() {
     else
       workspace="${PWD}"
     fi
+    # ADR-021 D4 (rip-cage-tsf2.10.5 F-fold): thread the parsed --cage value
+    # into the loader's 2nd (cage) arg so a CAGE-SCOPED view reads the
+    # applied manifest-egress record instead of always reporting "pending".
+    # $cage is already a NAME (not a path) — verified: it flows unresolved
+    # into `rc reload $cage` in _allowlist_add above, and cmd_reload's own
+    # resolve_name() only NORMALIZES a non-empty name (identity, no msb call)
+    # — so no extra resolution step is needed here, and passing the raw
+    # (possibly empty) value keeps the no-cage default behavior UNCHANGED:
+    # empty stays empty (pending/none source), exactly as before this fix.
     local eff_result
-    eff_result=$(_load_effective_config "$workspace" 2>/dev/null) || {
+    eff_result=$(_load_effective_config "$workspace" "$cage" 2>/dev/null) || {
       echo "Error: failed to load effective config" >&2; exit 1; }
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       echo "$eff_result"
