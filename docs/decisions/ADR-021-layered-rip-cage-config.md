@@ -1,8 +1,8 @@
 # ADR-021: Layered `.rip-cage.yaml` config — global defaults, per-project overrides
 
-**Status:** Proposed (revised 2026-07-01 — D7 config ro-mount-by-default, rip-cage-cw51)
+**Status:** Proposed (revised 2026-07-14 — v2 merge/version model: `!replace` tag, schema version {2}, four-source provenance, write verbs, migration posture, profiles deferred; FIRM D2/D3 mutation human-signed-off (Jonatan) + 3-round adversarial design review, rip-cage-tsf2.10. Prior revision 2026-07-01 — D7 config ro-mount-by-default, rip-cage-cw51)
 **Date:** 2026-05-11
-**Beads:** `rip-cage-uzp` (this ADR), `rip-cage-o4z` (loader implementation), `rip-cage-b0c` (first user: SSH host+key allowlist)
+**Beads:** `rip-cage-uzp` (this ADR), `rip-cage-o4z` (v1 loader implementation), `rip-cage-b0c` (first user: SSH host+key allowlist, since retired), `rip-cage-tsf2.10` (config model v2 — the converged design this revision projects; review trail r1 REVISE/8 folded, r2 REVISE/4 folded, r3 PASS lives in that bead's `--design`)
 **Related:** [ADR-001](ADR-001-fail-loud-pattern.md) (fail-loud + narrow exception scope — informs D3), [ADR-014](ADR-014-push-less-cage.md) D2 (non-interactive SSH posture — `Match final` reach limits caveat at line 79 anticipated CLI `-o` bypass), [ADR-017](ADR-017-ssh-agent-forwarding-default.md) (forward-by-default — the capability the SSH allowlist scopes), [ADR-020](ADR-020-ssh-identity-routing.md) (ssh identity routing — coexists; shares `~/.config/rip-cage/` namespace), project [CLAUDE.md](../../CLAUDE.md) philosophy section ("agent autonomy is the product", "layers, not walls", "'It's annoying' is a design signal")
 
 ## Context
@@ -56,143 +56,127 @@ Both are optional. Both absent → behavior contract per D5.
 
 **Invalidation check (mechanical, optional):** `find . -name '.rip-cage.yaml' -not -path './.git/*' | xargs wc -l 2>/dev/null | tail -1` — flag projects whose config exceeds 100 lines as a signal to revisit the directory-split alternative.
 
-### D2: Two-layer precedence with per-field-type merge rules
+### D2: Three-layer fold-left merge — lists union by default; explicit `!replace` tag for narrowing (schema v2)
 
-**Firmness: FIRM**
+**Firmness: FIRM** (revised 2026-07-14, rip-cage-tsf2.10 — v1's per-field-type merge rules replaced; FIRM mutation human-signed-off + 3-round design review)
 
-Both files load on every `rc up` / `rc init`. The merged result is the effective config. Merge follows three rules, applied per field declared in the schema:
+The merge stack is exactly **three elements, folded left: [schema defaults, global file, project file]**. There is NO distinct "seed" merge layer — the curated default hosts are auto-seeded CONTENT of the global file (`_config_ensure_global_seeded` writes them into `~/.config/rip-cage/config.yaml` on first `rc up`; existing behavior, unchanged). Docs that say "seed ∪ global ∪ project" describe file-content *provenance*, not merge arity; the loader merges two file layers over schema defaults.
 
-| Field type | Examples | Merge rule | Capability direction |
-|---|---|---|---|
-| **Additive list** (capability grant — adding more "allowed things") | `ssh.allowed_hosts`, `egress.allow`, `skills.extra_mounts` | **Union** — global ∪ project, deduplicated, order-preserving (global first, then project additions) | Project EXPANDS what's granted; cannot contract |
-| **Selection list** (subsetting an existing capability) | `ssh.allowed_keys` | **Project replaces if explicitly present, else inherit global**. Three-state: key absent ⇒ inherit global; key present + non-empty ⇒ subset selection; key present + empty list (`[]`) ⇒ explicit zero-out (project replaces global with empty set) | Project CAN narrow a global capability; this is intentional |
-| **Scalar** | `resources.memory_mb`, `version` | **Project replaces global if present** | Project replaces; direction is field-specific |
+Merge rules:
 
-Each schema field declares its merge type explicitly in the loader's schema definition. There is no inference. Misclassifying a field is a versioned schema change, not a silent semantic shift.
+- **ALL list fields union by default** across the stack, order-preserving dedup (lower layers first). v1's additive-list behavior becomes the universal list default.
+- **A file layer may tag a list field `!replace`:** that layer's value replaces everything inherited from lower stack positions (a global tag replaces the schema default; a project tag replaces the default+global result), and becomes the new base for higher layers. `!replace []` is the explicit zero-out.
+- **ONE replace-forbidden field: `mounts.denylist` stays union-only** — `!replace` on it aborts loud citing ADR-023 D2 (FIRM: project expands the secret-path denylist, never contracts it; a wholesale `!replace []` clear is exactly the operation it forbids, and under `mounts.config_mode: rw` it would hand a prompt-injected in-cage agent a denylist-clearing vector that additive-only structurally forecloses). The operator's own global-file edit remains the way to shape the global denylist. **ADR-023 is honored, not evolved.**
+- **Scalars and enum scalars unchanged:** project replaces global replaces default; an unknown enum value aborts loud. The schema type formerly named `selection_list` for enum-shaped scalars (`mounts.config_mode`, `mounts.symlinks.*`, `session.multiplexer`, `auth.credential_mounts`, `auth.per_tool.*`) is renamed **`enum`**; semantics unchanged.
+- **Validation aborts loud naming the exact path:** an unknown custom tag; `!replace` on a non-list or undeclared field; `!replace` on `mounts.denylist`. PR-legibility is the point — the override is visible in the project-file diff at point of use.
 
-Concrete example (the SSH allowlist, the first downstream consumer):
+Concrete example (`network.allowed_hosts`, the dominant consumer):
 
 ```yaml
-# ~/.config/rip-cage/config.yaml — global
-version: 1
-ssh:
-  allowed_keys:                   # selection list
-    - id_ed25519_personal
-    - id_ed25519_work
-  allowed_hosts:                  # additive list
-    - github.com                  # implicit anyway, but explicit OK
+# ~/.config/rip-cage/config.yaml — global (auto-seeded content + operator additions)
+version: 2
+network:
+  allowed_hosts:
+    - api.anthropic.com
+    - github.com
 ```
 
 ```yaml
-# ~/code/personal/kinky-bubbles/.rip-cage.yaml — project, committed
-version: 1
-ssh:
-  allowed_hosts:                  # additive → final = [github.com, switch.berlin]
-    - switch.berlin
-  allowed_keys:                   # selection (subset) → project replaces → final = [id_ed25519_personal]
-    - id_ed25519_personal
+# <project>/.rip-cage.yaml — default: union (project EXPANDS)
+version: 2
+network:
+  allowed_hosts:            # effective = [api.anthropic.com, github.com, chatgpt.com]
+    - chatgpt.com
 ```
-
-Effective config the loader hands to the cage:
 
 ```yaml
-version: 1
-ssh:
-  allowed_keys: [id_ed25519_personal]
-  allowed_hosts: [github.com, switch.berlin]
+# <project>/.rip-cage.yaml — explicit narrowing via !replace
+version: 2
+network:
+  allowed_hosts: !replace   # effective = [api.anthropic.com] — inherited set discarded
+    - api.anthropic.com
 ```
 
-**Rationale:**
+**Counter-argument to v1's rationale (the FIRM-mutation warrant).** v1's additive/selection split assumed a list's "capability direction" is knowable per-field at schema time and that capability-grant lists never need narrowing. Dogfooding falsified this: because additive lists could never be narrowed per-project, nothing project-narrowable could safely live in the global file, which forced the workaround placement rule "only universal earns global" (taught at length in the configure-cage skill — a smell) and made global slots write-averse — the exact "global becomes write-only state nobody benefits from" failure v1 D2's first Alternatives row was written to avoid. Per-key merge control at point of use (Docker-compose-style) keeps the union default while restoring narrowing, and the override is *visible in the project-file diff* — which a schema-declared field type never was.
 
-The two list-merge modes correspond to two different intents that share YAML key shape but mean different things:
+**Honest cost of the retirement:** `mounts.allow_risky` — v1's only list-shaped selection list — flips replace→union, which is the capability-WIDENING direction (v1: project `[b]` over global `[a]` = `[b]`; v2 default = `[a,b]`, and allow_risky is a denylist-BYPASS grant). Mitigations: declared-v1 files abort loud (forced migration awareness); a version-ABSENT file containing `mounts.allow_risky` aborts loud demanding an explicit version declaration (D3); `!replace` restores narrowing. Live incidence at flip time: zero (the global `allow_risky` is null).
 
-- **Additive (capability grant):** "On top of what's globally allowed, this project also allows X." Cannot un-grant a global capability — that's the point. Want to deny in one project? Don't grant it globally.
-- **Selection (subsetting):** "Of the globally available set, this project uses only this subset." Replace semantics are intentional: kinky-bubbles wants only the personal key forwarded, even though the global config makes both available. Union would defeat the user's narrowing intent. The three-state rule (absent / non-empty / empty list) gives the user the full control surface — including explicit zero-out — without inventing magic syntax.
-- **Scalar:** Replace is the only semantics that makes sense.
-
-**Note on selection-list capability direction:** Selection-list project overrides DO contract a global capability. This is deliberate — that's what selection lists are for. The "additive lists only expand" property does not generalize to selection lists, which has consequences for D3's version-drift behavior (see D3 below).
+**Vocabulary-migration note** (for readers arriving from ADR-022, ADR-025, or older docs that cite "additive_list per ADR-021 D2"): v1 `additive_list` ≙ v2 union-default list — those citations read correctly under v2 (ADR-025's `dcg.packs` / `dcg.custom_rule_paths` remain union-default; no semantic change). v1 `selection_list` split by shape: the list-shaped member (`mounts.allow_risky`) became union-default (see honest cost above); the enum-scalar members became type `enum` with unchanged replace semantics.
 
 **Alternatives considered:**
 
 | Alternative | Rejected because |
 |---|---|
-| Project always replaces global (simple, no per-field rules) | `reasoned:` Forces project files to redeclare global allowed_keys, allowed_hosts, etc., every time. Defeats the "global = my defaults across all projects" mental model — global becomes write-only state nobody benefits from |
-| All lists union by default; opt-in replace via `_replace: true` marker | `reasoned:` Magic-key syntax is harder to read than declared schema. A user reading the project YAML can't tell from the syntax which fields union vs replace. Schema-declared per-field type makes `rc config show` provenance comprehensible. |
-| Project additive-only (no scalar overrides allowed) | `reasoned:` Unblocks the SSH case but blocks future scalar overrides (resource limits, timeouts) without revisiting this ADR |
-| Three files (global, project, user-local-untracked) like git config | `reasoned:` Each layer needs a real use case; user-local-untracked invites hidden state invisible to teammates and to PR reviewers — the exact failure mode this ADR avoids. Revisit if a real use case emerges. |
+| Keep v1 per-field-type merge declarations | `direct:` the "only universal earns global" placement rule (configure-cage SKILL.md taxonomy section) is the operational evidence the model failed — narrowing intent had nowhere to live, so global slots went unused. |
+| Docker compose's two-tag set `!override` + `!reset` | `external:`+`reasoned:` compose is the prior art for tagged merge control, but one tag + empty list covers both operations; fewer concepts. |
+| Schema-split `_extra`/`_only` field pairs | `reasoned:` v1 D2's own named invalidation path — works but doubles field count, and the override is invisible at point of use (you must know the schema to read the file). |
+| Magic sibling keys (`_replace: true`) | `reasoned:` least legible; already rejected in v1 D2's Alternatives. |
 
-**What would invalidate this:** A schema field is genuinely ambiguous between additive and selection semantics, and users disagree about which one they want. At that point, split the field into two (`allowed_x_extra` additive + `allowed_x_only` selection) rather than introducing per-call merge-mode flags.
+**What would invalidate this:** operators demonstrably needing per-ELEMENT merge control (replace one inherited item, keep the rest) — a per-field tag cannot express it. Revisit with a finer mechanism then; do not reach for magic sibling keys.
 
-**Invalidation check (mechanical, runnable in `rip-cage-o4z`'s test suite, not in this ADR's substrate):** `rc config show --json` produces effective config; for any additive-list field, `(global_field ∪ project_field) == effective_field` must hold. For any selection-list field: project absent ⇒ effective == global; project present + non-empty ⇒ effective == project; project present + `[]` ⇒ effective == `[]`. These are the loader bead's contract test cases.
+**Invalidation check (mechanical, runnable in the loader's test suite):** the v2 matrix in `tests/test-config-loader.sh` — union default across the stack; `!replace` at global layer replaces the schema default; `!replace` at project layer replaces default+global; `!replace []` zero-out; `!replace` on `mounts.denylist` aborts naming ADR-023 D2; unknown tag / tag-on-non-list / tag-on-undeclared-path abort naming the exact path.
 
-### D3: Schema versioning — `version: 1` per file; unknown-higher-version warns; missing-version warns once-per-invocation
+### D3: Schema versioning — supported set `{2}`; absent assumes 2 with loud warn; declared 1 aborts; higher aborts iff the file uses `!replace`
 
-**Firmness: FIRM**
+**Firmness: FIRM** (revised 2026-07-14, rip-cage-tsf2.10 — v1's field-type-conditional rule replaced with the tag-conditional rule; FIRM mutation human-signed-off + 3-round design review)
 
-Each file independently declares `version: <integer>` at the top level. The loader knows the set of supported versions (initially `{1}`).
+Each file independently declares `version: <integer>` at the top level. The loader's supported set is **`{2}`**.
 
 | Condition | Behavior |
 |---|---|
-| `version` field absent | Treat as `version: 1`. Warn loud once per `rc up` invocation per file (no persisted "already warned" state — each `rc up` re-warns until the user adds the field): `'<file>' has no 'version:' field; assuming version 1. Add 'version: 1' to silence.` |
-| `version` matches a supported version | Load normally. |
-| `version` higher than highest supported | Warn loud, **skip that file's contents** (load defaults / other layer only): `'<file>' declares version: N but rc supports up to version: M. Skipping this file. Run 'rc --version' and consider upgrading.` |
-| `version` lower than supported (deprecated past schema) | Warn loud, attempt load with documented compat shim if one exists, else skip with actionable upgrade message. Not relevant in v1 (no deprecated versions exist). |
+| `version` absent | Assume `version: 2`; warn loud once per invocation per file (no persisted "already warned" state): `'<file>' has no 'version:' field; assuming version 2. Add 'version: 2' to silence.` **EXCEPTION:** a version-absent file containing `mounts.allow_risky` **aborts loud demanding an explicit version declaration** — the single field whose v1→v2 semantic flip is capability-widening (D2 honest-cost note) must never be reinterpreted silently. |
+| `version: 2` | Load normally. |
+| `version: 1` | **LOUD ABORT** with an actionable migration hint. Never reinterpret (v1 selection-list files — `mounts.allow_risky` — would silently change meaning under v2 union rules); never silently skip (a skipped project file strands the cage without its hosts — silent capability loss the operator has no cue to notice). |
+| `version` higher than supported | **Abort loud iff the file contains any `!replace`** (dropping a file whose narrowing intent is expressed by tags is the capability-EXPANDING failure direction); else warn loud + skip that file's contents (load defaults / other layer only). |
 
-**Per-file independence:** Both files declare their own version. A user with global `version: 1` and project `version: 2` (because the teammate who wrote the project file is on a newer rc) sees the project file skipped with a warning; the global file still loads.
+**Per-file independence** (unchanged from v1): both files declare their own version; a mixed pair is evaluated file-by-file under the table above.
 
-**Warn-once-per-invocation semantics:** "Once" is per `rc up` call. There is no persisted "already warned" sentinel — each invocation re-warns until the user adds the version field. This is intentional: persisted suppression risks a user thinking they fixed the warning when they actually just hit the suppression cache.
+**Warn-once-per-invocation semantics** (unchanged): no persisted suppression — each invocation re-warns until the field is added.
 
-**Unknown-higher-version handling is field-type-conditional (resolved 2026-05-11):**
+**Why the tag-conditional rule (translation of v1's failure-direction analysis).** v1 keyed the higher-version abort on selection-list field presence because selection lists were where narrowing intent lived; silent skip there = silent capability expansion (ADR-001's "user believes they have the firewall" failure mode). Under v2 the narrowing construct is the `!replace` tag, so the abort predicate follows it: higher-version file with `!replace` ⇒ abort; without ⇒ warn+skip (capability degradation in the safer direction; the team-coordination case — one teammate on a newer rc — still works for union-only files). The v1 selection-list partial-parse machinery and its fixtures are retired/re-authored; the higher-version classify is one tag-enumeration pass (`yq '[.. | select(tag | test("^![^!]"))]'` — mikefarah yq v4, verified 2026-07-14).
 
-When a file declares an unsupported version, the loader does a partial parse to enumerate which fields the file uses, classified against the loader's schema:
+**Counter-argument to v1 D3's terms (FIRM-mutation warrant):** v1's rule was correct in direction but keyed to a schema-type vocabulary that D2 retires; keeping it would leave the abort predicate referencing a field class that no longer exists. The failure-direction analysis is preserved verbatim under translation. Two genuinely new elements carry their own warrant: (a) declared-v1 abort — a real v1→v2 migration now exists where soft-loading IS harmful (`mounts.allow_risky` changes meaning), which is exactly the invalidation trigger v1 D3 named for revisiting its soft-default posture; (b) the version-absent + `allow_risky` abort closes the silent-reinterpretation hole that the assume-2 default would otherwise open for exactly that field.
 
-- **If the unknown-version file declares any selection-list field** (e.g. `ssh.allowed_keys`): `rc up` aborts loud per ADR-001. Silent skip would silently expand capability beyond user intent (the user's narrowing of a globally-available set is dropped) — exactly the ADR-001:13 failure mode ("user believes they have the firewall"). Error message: `Error: '<file>' declares version: N (rc supports up to M) AND uses selection-list field(s) [<names>]. Skipping the file would silently expand capability beyond your declared intent. Upgrade rc, or remove the selection-list field(s) and pin to a supported version.`
-- **If the unknown-version file declares only additive-list fields and/or scalars whose defaults are ≤ user intent** (e.g. `ssh.allowed_hosts`): warn loud, skip the file's contents, load defaults / other layer only. `'<file>' declares version: N but rc supports up to M. Skipping this file (no selection-list fields detected — capability degradation is in the safer direction). Run 'rc --version' and consider upgrading.`
-- **Loader's partial-parse contract:** detecting selection-list-field presence in an unknown-version file requires only field-name enumeration (e.g. `yq 'keys' <file>`), not value interpretation. The schema's name → field-type mapping is the loader's source of truth; misclassification is impossible because field names that don't appear in the schema are reported separately as "unknown fields."
-
-**Why this resolution.** ADR-001's fail-loud rule applies to safety-relevant state mismatches (line 31). Selection-list scope-down IS safety-relevant — the user explicitly narrowed a capability, and silent expansion violates user intent in the firewall-direction. Additive-list capability-grants are NOT safety-relevant in the same direction — silent drop of a user-intended addition leaves the cage with less capability than declared, which is the conservative direction. The two failure directions justify two different responses; ADR-001's exception clause (informational fields) is a different distinction (informational vs decision-affecting), not the right axis here. The field-type-conditional rule honors ADR-001's spirit (fail-loud where user intent could be silently broken) without paying its tax on the additive-list case where the failure direction is inverted.
-
-**Cost acknowledged:** Loader does a partial parse of unknown-version files to detect selection-list fields. This is ~5 lines of `yq` invocation; the schema's selection-list set is small and stable.
-
-**`rc up` does not abort on unknown-higher-version skip when no selection-list field is present.** Team-coordination case (one teammate on newer rc) still works for additive-only/scalar-only files.
-
-**Rationale:**
-
-- **Required version field forces every file to declare its assumed schema.** Without this, a v2 schema change (e.g., renaming `ssh.allowed_hosts` to `ssh.hosts.allow`) silently misinterprets v1 files written under the old name.
-- **Per-file version field** because the two files can be authored under different rc versions (global = your machine; project = whichever teammate wrote it last).
-- **Absent-version-defaults-to-1** for ergonomic ramp; the per-invocation warning makes the field discoverable without locking out users with empty/minimal early files.
-- **No compat shims yet** because there's nothing to shim — v1 is the only version. Capturing the shape of how schema evolution works now (rather than retrofitting later) is what this decision is for.
+**Ergonomic ramp preserved:** absent ⇒ assume-current + warn survives (v1 D3's "absent-version aborts" rejected alternative STAYS rejected); the abort exception is scoped to the one dangerous field.
 
 **Alternatives considered:**
 
 | Alternative | Rejected because |
 |---|---|
-| No version field; assume schema is whatever rc supports | `direct:` First breaking schema change silently misinterprets old files. The whole reason for versioning is that schema *will* evolve. |
-| Higher-version best-effort loads with warning | `reasoned:` Best-effort loading silently drops fields the loader doesn't know about; downstream consumers see partial config and behave inconsistently. Skipping the file's contents is honest: "I cannot reason about this file; here are the defaults." |
-| Absent-version aborts (force users to declare) | `reasoned:` Friction tax on the 80% case. Soft-default-with-loud-warning gets the same long-term behavior with better ramp. |
-| Persisted "already warned" suppression | `reasoned:` Risks user thinking the warning is fixed when it's actually suppressed. Re-warning per invocation is mildly annoying; that's intentional discoverability. |
+| Reinterpret declared-v1 files under v2 rules (no abort) | `direct:` `mounts.allow_risky` semantics flip replace→union — silent capability widening on a denylist-bypass grant. |
+| Compat shim for v1 files | `reasoned:` exactly two live v1 files exist (both migrated by hand in the same change, D9); adoption is near-zero; shim machinery is permanent dead weight for a one-time hand edit. |
+| Absent-version aborts (force declaration) | `reasoned:` v1 D3's rejected alternative stays rejected — friction tax on minimal/new files; the `allow_risky` exception closes the one case where assume-2 is dangerous. |
+| Higher-version: keep blanket warn+skip (v1's pre-resolution draft) | `reasoned:` silently drops `!replace` narrowing intent — the capability-expanding failure direction v1's own resolution refused. |
 
-**What would invalidate this:** A real v1→v2 migration where the soft-default-with-warning is harmful (e.g., a security-sensitive field changes meaning). At that point, that specific field gets compat handling and the rest of the file still works.
+**What would invalidate this:** a future v3 schema change whose dangerous-reinterpretation surface is NOT expressible by tag presence (e.g. a scalar whose meaning inverts) — at that point the abort predicate needs a field-keyed exception table again, added alongside the tag rule.
 
-**Invalidation check (mechanical, runnable in `rip-cage-o4z`'s test suite):** Two fixtures: (a) `config-future-version-with-selection.yaml` declares `version: 99` and `ssh.allowed_keys: [...]` — `rc up` must exit non-zero with an error naming the selection-list field. (b) `config-future-version-additive-only.yaml` declares `version: 99` and `ssh.allowed_hosts: [...]` (additive only) — `rc up` must exit 0 with a warning, and the effective config must omit the file's contents (i.e. `allowed_hosts` resolves to defaults / global only).
+**Invalidation check (mechanical, runnable in the loader's test suite):** fixtures — (a) higher-version file WITH `!replace` ⇒ non-zero exit naming the file; (b) higher-version file without tags ⇒ exit 0, warning, contents skipped; (c) declared `version: 1` ⇒ non-zero exit with migration hint; (d) version-absent ⇒ loads with per-invocation warning; (e) version-absent WITH `mounts.allow_risky` ⇒ non-zero exit demanding a version declaration.
 
-### D4: `rc config show` prints effective merged config with provenance
+### D4: Unified effective view — one loader contract, four provenance sources (revised 2026-07-14, rip-cage-tsf2.10)
 
 **Firmness: FIRM**
 
-`rc config show` (and `rc config show --json`) prints the effective merged config. Each leaf field is annotated with provenance — where the value came from (`global`, `project`, `default`, or `union(global,project)` for additive lists).
+`rc config show` (and `rc config show --json`) prints the effective merged config. Each leaf field is annotated with provenance — where the value came from (`global`, `project`, `default`, `union(global,project)` for union lists, or `manifest:<tool>` for tool-manifest-declared egress).
+
+**Four provenance sources (v2 extension).** The loader JSON contract `{config, provenance, layers, sha256}` is extended with the image manifest as a fourth provenance source: tool-declared egress hosts (each baked TOOL entry's `egress:` list in `tools.yaml`) are annotated `manifest:<tool>`, so "what can this cage reach and WHY" is one command.
+
+- **Field placement:** manifest-derived hosts live in a SEPARATE contract field (`manifest_egress`, with per-tool attribution) — **never folded into `.config.network.allowed_hosts`**. `rc reload`'s eligibility diff runs on `.config` only, so a manifest egress change can never surface as spurious config drift; the view/dry-run reports a manifest-vs-applied delta as **"requires rebuild"** (its real remedy: edit the manifest + `rc build` + recreate), distinct from reload-eligible config drift.
+- **RUNTIME INVARIANT (binding on every implementation of this contract):** the msb rule materialization at cage create and `rc reload` remains `.config.network.allowed_hosts ∪ manifest_egress` — the contract split changes VIEW/provenance/drift accounting only; baked tools keep their egress reachability (the tsf2.8 runtime union is unchanged).
+- **Source of truth per consumer** (the same dual-source pattern the multiplexer registry uses to close the validate-passes/runtime-fails hole): for a TARGET CAGE, "what can this cage reach" reads the cage's APPLIED state (the applied-snapshot record written at create/reload, extended to carry `manifest_egress`) — never the current host `tools.yaml`, which may have drifted since the image was built. With no cage in scope (pre-create view), the host manifest is read and labeled pending/unbaked.
+- **All effective-config consumers converge on this one contract:** `rc config show`, `rc allowlist show --effective`, `rc doctor`'s fix-hint, `rc reload`'s drift diff/dry-run. Nobody re-derives the merge.
+- **Named residual (consequence of D2's dissolved placement rule):** manifest-declared tool egress remains an additive, un-narrowable source — a baked tool's `egress:` hosts travel with the tool; the only removal path is removing the tool from the manifest + rebuild. This residual is honestly surfaced in the provenance view, not dissolved.
 
 YAML-with-comments output for human reading:
 
 ```
 $ rc config show
-version: 1                        # from default
-ssh:
-  allowed_keys:                   # from project (replaces global)
-    - id_ed25519_personal
+version: 2                        # from default
+network:
   allowed_hosts:                  # union(global, project)
-    - github.com                  # from global
-    - switch.berlin               # from project
+    - api.anthropic.com           # from global
+    - chatgpt.com                 # from project
+# manifest egress (requires rebuild to change):
+#   docs.astral.sh                # manifest:uv
 ```
 
 For nested-map fields and lists-of-maps (plausible v1+ schema growth: `egress.rules: [{host, port}]`, `dcg.rules: [{pattern, action}]`), provenance is annotated **at the field level** (one comment per containing key, naming the source layers) rather than per-element. Per-element provenance for nested structures is deferred to the loader bead (`rip-cage-o4z`) to specify; the substrate ADR commits only to field-level provenance for nested types.
@@ -201,12 +185,12 @@ JSON output (`--json`) embeds provenance as a parallel structure for machine con
 
 ```json
 {
-  "config": { "version": 1, "ssh": { "allowed_keys": ["id_ed25519_personal"], ... } },
+  "config": { "version": 2, "network": { "allowed_hosts": ["api.anthropic.com", "chatgpt.com"] } },
   "provenance": {
     "version": "default",
-    "ssh.allowed_keys": "project",
-    "ssh.allowed_hosts": ["global", "project"]
-  }
+    "network.allowed_hosts": ["global", "project"]
+  },
+  "manifest_egress": { "uv": ["docs.astral.sh"] }
 }
 ```
 
@@ -226,23 +210,23 @@ The two-layer-with-per-field-merge-rules design from D2 is *nontrivial*. Without
 
 **What would invalidate this:** Telemetry showing nobody runs `rc config show` and `rc config get <key>` is what users actually want. Pivot, keep the JSON output for tooling.
 
-**Invalidation check (mechanical, runnable in `rip-cage-o4z`'s test suite):** With both files present and an additive-list field that has values in each, `rc config show --json | jq '.provenance["ssh.allowed_hosts"]'` must return an array containing both `"global"` and `"project"`.
+**Invalidation check (mechanical, runnable in the loader's test suite):** With both files present and a union-list field that has values in each, `rc config show --json | jq '.provenance["network.allowed_hosts"]'` must return an array containing both `"global"` and `"project"`. With a baked tool declaring egress, `manifest_egress` carries the host under the tool's name AND `.config.network.allowed_hosts` does NOT contain it (unless independently configured); the generated msb argv contains `--net-rule allow@<host>` for it regardless (the runtime-invariant effect probe).
 
 ### D4a: `mounts.symlinks.*` field group — host-side symlink follow (added in rip-cage-c1p.2)
 
 **Firmness: FIRM** (inherited from D1-D3 schema framework)
 
-Three enum-scalar fields (selection_list type) for controlling how absolute symlinks in rip-cage-managed dotfile mount roots are resolved at `rc up` time:
+Three enum fields (v1 type name: selection_list) for controlling how absolute symlinks in rip-cage-managed dotfile mount roots are resolved at `rc up` time:
 
 | Field | Type | Default | Allowed values |
 |---|---|---|---|
-| `mounts.symlinks.on_dangling` | selection_list (enum scalar) | `"follow"` | `follow`, `warn`, `skip`, `error` |
-| `mounts.symlinks.scope` | selection_list (enum scalar) | `"file"` | `file`, `parent` |
-| `mounts.symlinks.mode` | selection_list (enum scalar) | `"rw"` | `ro`, `rw` |
+| `mounts.symlinks.on_dangling` | enum | `"follow"` | `follow`, `warn`, `skip`, `error` |
+| `mounts.symlinks.scope` | enum | `"file"` | `file`, `parent` |
+| `mounts.symlinks.mode` | enum | `"rw"` | `ro`, `rw` |
 
-**Merge semantics:** per D2 selection-list rule (project replaces global if present; absent = inherit global or use default). Each field is a single-value scalar, not a list — the "selection_list" type here indicates enum-scalar semantics: unknown values abort loud per D3.
+**Merge semantics:** per D2 enum rule (project replaces global if present; absent = inherit global or use default). Each field is a single-value enum scalar: unknown values abort loud per D2 validation.
 
-**Schema version:** stays at 1. Unknown enum values already abort loud via the selection-list abort path (D3). Future new `on_dangling` or `scope` values that break backward compatibility require a version bump.
+**Schema version:** 2 (rip-cage-tsf2.10 bump; these fields carry over semantically unchanged). Unknown enum values abort loud via the enum validation path (D2). Future new `on_dangling` or `scope` values that break backward compatibility require a version bump.
 
 **Whitelist:** The scan roots set is hardcoded — currently `{~/.pi/agent}` (the host path mapping to `/pi-agent`). `/workspace` is **never** on the scan whitelist. This is a positive-allow list, not a deny-list.
 
@@ -299,17 +283,17 @@ Net-new stdout/stderr text is not a regression in the sense this contract cares 
 
 **Firmness: FIRM** (inherited from D1-D3 schema framework)
 
-One enum-scalar field (selection_list type) selecting which terminal multiplexer the cage runs inside, or none:
+One enum field (v1 type name: selection_list) selecting which terminal multiplexer the cage runs inside, or none:
 
 | Field | Type | Default | Allowed values |
 |---|---|---|---|
-| `session.multiplexer` | selection_list (enum scalar) | `"none"` | `none` + any manifest-declared multiplexer provider (validated against the baked registry, **not** a fixed `tmux`/`herdr` enum) |
+| `session.multiplexer` | enum | `"none"` | `none` + any manifest-declared multiplexer provider (validated against the baked registry, **not** a fixed `tmux`/`herdr` enum) |
 
 **Allowed-set is open and substrate-derived (revised 2026-06-15, rip-cage-61al):** the valid values are `none` plus whatever multiplexer providers the tool manifest declares and `rc build` bakes into the image (read host-side from the `rc.multiplexers` image label, with a pre-build fallback to the manifest's MULTIPLEXER entries). A selected-but-not-baked name fails loud at config-validate, naming the fix (`add the provider to your manifest and rc build`). Adding a multiplexer (e.g. `zellij`) is a manifest entry with **zero `rc` edits** — `tmux` and `herdr` are no longer special-cased in `rc` source; they ship as `examples/` provider definitions (ADR-005 D12 consequence 2).
 
-**Merge semantics:** per D2 selection-list rule (project replaces global if present; absent ⇒ inherit global or use default). Single-value scalar — the "selection_list" type here indicates enum-scalar semantics: an unknown value (not `none`, not in the baked registry) aborts loud per D3 (same path as D4a's `mounts.symlinks.*`), but the *accepted* set is derived dynamically, not hardcoded.
+**Merge semantics:** per D2 enum rule (project replaces global if present; absent ⇒ inherit global or use default). Single-value enum scalar: an unknown value (not `none`, not in the baked registry) aborts loud per D2's enum validation (same path as D4a's `mounts.symlinks.*`), but the *accepted* set is derived dynamically, not hardcoded.
 
-**Schema version:** stays at 1. Unknown enum values already abort loud via the selection-list abort path (D3). A future multiplexer needing sub-keys (not a bare enum value) would grow this into a field group like `mounts.symlinks.*` (D4a) and may require a version bump.
+**Schema version:** 2 (rip-cage-tsf2.10 bump; field carries over semantically unchanged). Unknown enum values abort loud via the enum validation path (D2). A future multiplexer needing sub-keys (not a bare enum value) would grow this into a field group like `mounts.symlinks.*` (D4a) and may require a version bump.
 
 **Rationale:** makes the in-cage multiplexer a swappable composed component rather than a hardcoded coupling — the config-layer expression of ADR-006 D7's re-decision (the multiplexer owns session orchestration; rip-cage owns the box) and the process-layer sibling of the pluggable egress mediator (ADR-026) and tool manifest (ADR-005 D11). Default `none` = normal terminal semantics, imposing no surprising persistence on newcomers (ADR-009 D1); persistence + the supervisor view are opt-in by choosing a multiplexer provider (e.g. the `examples/tmux` or `examples/herdr` providers).
 
@@ -329,7 +313,7 @@ One enum-scalar field (selection_list type) selecting which terminal multiplexer
 
 **Firmness: FLEXIBLE**
 
-The project `.rip-cage.yaml` is mounted **read-only** into the cage by default. An in-cage agent cannot modify the cage's own posture manifest. Write-access is an explicit opt-in via `mounts.config_mode` (selection_list enum scalar; default `"ro"`, allowed values `ro`, `rw`), authored **host-side**.
+The project `.rip-cage.yaml` is mounted **read-only** into the cage by default. An in-cage agent cannot modify the cage's own posture manifest. Write-access is an explicit opt-in via `mounts.config_mode` (enum scalar; default `"ro"`, allowed values `ro`, `rw`), authored **host-side**.
 
 **Mechanism.** `.rip-cage.yaml` is writable in-cage today only as a side effect of riding the `/workspace` rw bind-mount — there is no dedicated config mount. Ro-by-default is implemented by a nested read-only bind-mount shadowing the single path: a more-specific `-v <workspace>/.rip-cage.yaml:/workspace/.rip-cage.yaml:ro` layered over the rw workspace mount. Host content still shows through (the file is not a copy); the host can still edit it; the in-cage agent cannot write through the ro mount, and cannot unlink or rename a live mount target. Scope is the **project file at the workspace root only** — the global `~/.config/rip-cage/config.yaml` is not mounted into the cage and is unaffected by this decision.
 
@@ -350,27 +334,97 @@ Under ro-default these become: the agent **surfaces the request in prose**; the 
 | Fork B — keep `.rip-cage.yaml` writable in-cage, add a diff-and-confirm step to `rc reload`/`rc up` | `reasoned:` Only defends if the human actually reads the diff; a line buried in a large diff survives a skimming human. ADR-024's threat is specifically the buried/injected edit, and only author-side authorship *structurally* prevents hidden lines. Fork B is worthwhile complementary defense-in-depth (informs the human at the gate) but is not a substitute; tracked as a separate follow-up, not this decision. |
 | Keep writable (status quo) | `direct:` Leaves the silent-staging vector open — the exact rubber-stamp gap this decision closes. The "writable but inert until reload" property (ADR-022 D6, ADR-023 D3) defangs *auto-apply* but not the buried-line-approved-on-reload path. |
 | Make the whole `/workspace` mount read-only | `direct:` Over-broad — breaks the agent's legitimate code edits, which are the product (CLAUDE.md "agent autonomy is the product"). The shadow-mount scopes ro to the one control-plane file. |
-| One-shot CLI flag (`--config-rw`) instead of a config field | `reasoned:` One-shot, untracked, undiscoverable — ADR-021 D1's own rationale rejects CLI flags for persistent per-project posture. `mounts.config_mode` lives in the tracked substrate and merges per D2 (selection_list: project replaces global if present). |
+| One-shot CLI flag (`--config-rw`) instead of a config field | `reasoned:` One-shot, untracked, undiscoverable — ADR-021 D1's own rationale rejects CLI flags for persistent per-project posture. `mounts.config_mode` lives in the tracked substrate and merges per D2 (enum: project replaces global if present). |
 
 **What would invalidate this:** host-side-authorship friction shows up as the "just turn it off" signal (CLAUDE.md) — users setting `mounts.config_mode: rw` across many projects, or repeatedly filing the friction. That means the default polarity is wrong; flip to writable-by-default and add Fork B's diff-confirm at the host gate. Mirror trigger: a new legitimate in-cage config-write workflow emerges that genuinely cannot route through host-side authorship.
 
 **Invalidation check (mechanical, runnable post-implementation):** With default config (`mounts.config_mode` absent or `ro`), an in-cage `test -w /workspace/.rip-cage.yaml` returns non-zero and `echo x >> /workspace/.rip-cage.yaml` fails — while a host-side edit + `rc reload` still applies the change. With `mounts.config_mode: rw` in effect, the in-cage write succeeds. Both `.rip-cage.yaml`-absent and `.rip-cage.yaml`-present-ro cases are covered.
 
+### D8: Host-side write verbs — `rc config set/add/remove --scope global|project`; surgical edits; verbs are sugar, files stay truth (added 2026-07-14, rip-cage-tsf2.10)
+
+**Firmness: FIRM**
+
+New verbs: `rc config set <key> <value> --scope global|project`, `rc config add <key> <item> --scope ...`, `rc config remove <key> <item> --scope ...`. `rc allowlist add` becomes sugar over `rc config add network.allowed_hosts`. Storage stays in the two posture files (D1); the verbs route intent to the right home so the file taxonomy stops being prerequisite knowledge.
+
+- **Threat model unchanged (ADR-024, D7):** verbs are host-side only, not on the cage PATH; the project file stays ro in-cage; there is no in-cage self-grant path.
+- **Edit mechanics: SURGICAL textual line edits.** `yq` locates the key/anchor line; the edit inserts/removes/sets the minimal text; then a full loader parse re-validates the result. On validation failure the original file is restored byte-identical and the verb refuses, telling the operator to edit the file. **`yq` re-emit (`yq expr > tmp; cp`) is FORBIDDEN as a write path** — empirically shown (2026-07-14, yq 4.53.3) to drop blank lines, normalize comment spacing, and relocate free-standing comments; the live config files carry load-bearing comment prose.
+- **Comment-preservation contract:** `set` on a scalar edits only the VALUE TOKEN and preserves any trailing same-line `#` comment. `add` on an inline empty/flow list (`key: []` — the shape `rc allowlist add` itself creates) performs exactly one defined structural transform: rewrite that single line to block-sequence form with the new item. No other multi-line transforms exist.
+- **Verb/tag interaction:** verbs never ADD or REMOVE a `!replace` tag (tag placement is a hand edit — refuse with "edit the file"); `add`/`remove` on an already-tagged list preserve the tag and edit that layer's items (well-defined under D2's fold-left). Verbs that CREATE an absent file write `version: 2`.
+- **Deliberately narrow surface:** add/remove a list entry, set a scalar/enum. Anything structural (nested maps, `auth.credentials` entries, tag placement) → the verb refuses with "edit the file." A verbs interface that destroys comments is worse than files.
+
+**Rationale:** DEBT 2 of the redesign — the interface was files-over-verbs; the operator had to know WHICH of three files answers which question. Generalizing the `rc allowlist add` pattern (verb + scope, system routes storage) removes the taxonomy prerequisite without centralizing the files themselves (the KEEP constraint: centralize the VIEW and the VERBS, never the project-config file).
+
+**Alternatives considered:**
+
+| Alternative | Rejected because |
+|---|---|
+| `yq` re-emit as the write engine (simplest implementation) | `direct:` empirical spike (2026-07-14, yq 4.53.3): drops blank lines, normalizes comment spacing, relocates free-standing comments — the live global config's load-bearing comment prose would be destroyed on first verb use. |
+| Full-surface verbs (nested maps, credentials, tag placement) | `reasoned:` every additional structural transform is a comment-destruction risk; the narrow surface covers the high-frequency operations, and "edit the file" remains first-class for the rest. |
+| Centralize storage (mem-style single home) instead of verbs | `reasoned:` rejected at the design KEEP layer — the in-repo tracked, PR-reviewed, ro-in-cage project file is load-bearing (D1/D7); verbs give the ergonomics without losing the substrate. |
+
+**What would invalidate this:** operators routinely needing a structural edit the verbs refuse (the refusal message becomes a friction wall) — grow the one specific transform with its own defined+tested shape, or accept the hand edit; never widen to re-emit.
+
+**Invalidation check (mechanical):** verb tests on a fixture carrying free-standing comment blocks AND same-line trailing comments AND an inline `[]` list — each verb's diff changes only the intended value tokens / the one defined `[]`-to-block transform, all comment bytes preserved; post-edit validation failure restores byte-identical (cmp) and exits non-zero.
+
+### D9: Migration — no shim; supported set jumps to `{2}`; ALL config-schema version-1 emitters flip in the same change; vestigial fields dropped in the same break (added 2026-07-14, rip-cage-tsf2.10)
+
+**Firmness: FIRM**
+
+- **v1 FILES:** loud abort + actionable migration hint (D3; rationale there).
+- **v1 GENERATORS (the bootstrap-critical part):** `version: 1` is emitted by CODE, not just the two live files. Every generator flips to `version: 2` in the same change: `_config_default_global_yaml` (the auto-seed template `rc up` writes on fresh installs BEFORE validation runs), `cmd_install`'s seed, `rc allowlist add`'s absent-file create. Enumeration is scoped to the CONFIG-SCHEMA namespace (`config.yaml` / `.rip-cage.yaml` emitters) only: the tool manifest (`tools.yaml`) carries its OWN independent `version:` namespace with its own validator and is explicitly UNTOUCHED — its emitters legitimately keep their own version 1. Fresh-install bootstrap (`rm` global config → `rc up`) must succeed and seed a v2 config file.
+- **Live files:** the two known real configs (the maintainer machine's global + this repo's project file) use no replace-semantics fields; migration is `version: 1` → `version: 2` in two files, hand-applied in the same change, preserving every comment byte. No shim machinery.
+- **Same-break cleanup — vestigial fields dropped in the 1→2 bump:** `network.mode`, `network.dns.forward_to`, `network.http.forward_to` (all parse-compat-only/dead post-msb-cutover, ADR-029) are removed from the schema and join the retired-fields loud-reject table (ADR cite + fix hint — same treatment as the retired ssh/mediator fields; not silent unknown-field drop). Code consumers cleaned in the same change: `rc ls`'s `network.mode` read and the reload-eligible path list (becomes `network.allowed_hosts` only).
+
+**Rationale:** adoption is near-zero (post-msb-cutover, two live files, both ours) — a breaking bump with hand migration is strictly cheaper NOW than shim machinery that would have to live forever. Bundling the vestigial-field removal into the same version break avoids a second breaking bump later.
+
+**Alternatives considered:**
+
+| Alternative | Rejected because |
+|---|---|
+| Compat shim (v1 files load with translation) | `reasoned:` two live files, zero external adoption; permanent machinery for a one-time hand edit. |
+| Support set `{1,2}` (dual-version loader) | `direct:` `mounts.allow_risky` means the same YAML has different semantics per version — a dual loader doubles every merge test and keeps the v1 machinery alive; D3 chose abort-with-hint instead. |
+| Keep vestigial fields as parse-compat no-ops | `reasoned:` a validator that accepts a field the runtime never executes is a hollow contract (documented failure shape); the retired-fields table is loud + actionable. |
+
+**What would invalidate this:** evidence of external v1 adoption (a real user's config aborting) — the migration hint must be sufficient for self-service; if it demonstrably isn't, revisit with a targeted translation for the reported shape, not a general shim.
+
+**Invalidation check (mechanical):** with no global config present, `rc up`'s seed path succeeds and the seeded file declares `version: 2`; a grep scoped to config-schema emitters finds no `version: 1` literal; the manifest namespace's own emitters still carry their version 1.
+
+### D10: Profiles/extends — CUT from v2; revisit trigger recorded (added 2026-07-14, rip-cage-tsf2.10; resolves the redesign's exploratory item)
+
+**Firmness: FIRM**
+
+No `extends:` / `include:` / profile mechanism ships in v2.
+
+**Rationale:** D2 removes most of the pressure — global slots are now safe for shared defaults since projects can narrow via `!replace`. An extends mechanism sits directly on ADR-005 D12's design tripwire (include-mechanism / config-merge machinery — automating the wiring that is the agent's compositional judgment). With near-zero adoption there is no operator data duplication to dedupe yet. Adding extends later is a backward-compatible schema addition — deferral costs nothing, while the merge semantics (D2) are breaking and had to land now.
+
+**Alternatives considered:**
+
+| Alternative | Rejected because |
+|---|---|
+| Operator-authored profile files a project could `extends:` | `reasoned:` judged against ADR-005 D12's tripwire — today it automates wiring judgment rather than deduplicating real operator data (none exists yet); rc-SHIPPED profile libraries are categorically out under D12. |
+| Named posture presets shipped by rc ("walk-away cage") | `direct:` ADR-005 D12 (FIRM) — rc never blesses/bundles tool or posture content; the walk-away cage remains a prose recipe in `examples/`. |
+
+**What would invalidate this (the recorded revisit trigger):** operators demonstrably copy-pasting config blocks across projects — real duplicated data is the signal that an operator-authored extends deduplicates rather than automates judgment; bring it back through ADR-005 D12 review at that point.
+
+**Invalidation check:** none mechanical — the trigger is observational (watch for repeated config-block copy-paste surfacing in configure-cage sessions or operator reports).
+
 ## Consequences
 
 **Positive:**
 - Per-project cage posture is a tracked, diff-able, auditable artifact at the workspace root — visible in PR reviews, in `git log`, and to teammates / future agents.
-- Agents can self-configure: hit a wall, edit `.rip-cage.yaml`, commit, re-run `rc up` (or `rc destroy && rc up` for fields that require recreate — see Implementation notes). No hidden env var.
+- Self-service loop with the human as the approval step (D7/D8): the in-cage agent surfaces the request in prose; the human (or host-side assistant) applies it via `rc config add/set` or a hand edit, then `rc reload` / `rc up --reload`. No hidden env var.
 - Global file collapses repeated user preferences to one place across all projects.
-- The substrate unblocks downstream work (`rip-cage-b0c` SSH allowlist, future egress overrides, future skill mount opt-outs, future resource limits) without each consumer re-inventing config plumbing.
-- `rc config show` makes the merge model inspectable, so the per-field-type rules don't become a debugging trap.
+- The substrate unblocks downstream work (egress overrides, skill mount opt-outs, resource limits, dcg policy — ADR-025) without each consumer re-inventing config plumbing.
+- `rc config show` makes the merge model inspectable, so the merge rules don't become a debugging trap.
 - D5's regression contract means existing users see no posture change on upgrade.
+- **The "only universal earns global" placement rule DISSOLVES for the two posture layers (v2, D2):** a project can now narrow an inherited list explicitly via `!replace`, so shared defaults are safe in global slots. **NAMED RESIDUAL:** manifest-declared tool egress (the tsf2.8 runtime union) remains an additive, un-narrowable source — a baked tool's `egress:` hosts travel with the tool; the only removal path is removing the tool from the manifest + rebuild. The residual is honestly surfaced in the provenance view (D4), visible, not dissolved.
 
 **Negative:**
-- New surface area: one schema, one loader, one CLI subcommand (`rc config show`), one new convention file at every project root that opts in.
+- New surface area: one schema, one loader, the `rc config` subcommand family (`show`/`get`/`set`/`add`/`remove`), one new convention file at every project root that opts in.
 - Schema versioning means schema evolution requires deliberate version bumps. (Also positive — see D3 rationale.)
+- **The 1→2 bump is a breaking change:** declared-v1 files abort loud until hand-migrated (D3/D9). Accepted deliberately while adoption is near-zero — the abort carries an actionable migration hint.
 - YAML adds a parser dependency surface (see Implementation notes for `yq` pinning).
-- D3's field-type-conditional version-drift rule adds loader complexity (partial parse of unknown-version files to enumerate field names against the schema's selection-list set). ~5 lines of `yq`; cost is real but bounded.
+- D3's tag-conditional higher-version rule adds loader complexity (a one-pass tag enumeration of unknown-version files). Bounded — one `yq` expression.
 - Two layers means `rc config show` is part of the debugging vocabulary; users who don't know it exists will be confused by merged behavior. Mitigation: D5's first-run hint surfaces it.
 
 **Neutral:**
@@ -379,21 +433,21 @@ Under ro-default these become: the agent **surfaces the request in prose**; the 
 
 ## Implementation notes
 
-- **Schema definition** lives in the loader (initially as a bash associative array or a small declarative file). For each field: name, type (scalar / additive-list / selection-list), default value, **version-strict marker** (used by D3's Option B if chosen). Schema is the single source of truth for merge behavior.
+- **Schema definition** lives in the loader (a declarative table in `cli/lib/config.sh`). For each field: name, type (scalar / list / enum), default value, allowed values for enums. Schema is the single source of truth for merge behavior; lists all union by default, `!replace` is a per-file-per-field tag, not a schema property (D2).
 - **Loader contract:** `_load_effective_config()` returns the merged config in a consumable form (JSON to stdout via `yq -o=json`, or as exported env vars for bash consumers — TBD in the loader bead).
 - **`yq` dependency pinning:** Loader requires `yq` on host. If absent, `rc up` emits an actionable error per ADR-001: `Error: yq not found on PATH. Install yq (brew install yq, or the mikefarah/yq release binary on Linux — NOT apt's yq, which is the incompatible python-yq) to use .rip-cage.yaml. Run rc with no .rip-cage.yaml present to keep today's behavior.` Loader does NOT silently degrade to "skip config" on missing parser — that would silently nullify a user-authored capability scoping (the same failure class as D3's Option A).
 - **`rc config show`:** new top-level subcommand. `rc config show` (YAML+comments), `rc config show --json` (JSON+provenance), `rc config show <key>` (single field, deferred bead).
-- **Container recreate vs `rc up`:** Most fields apply on `rc up` (resume re-runs the loader and re-translates downstream artifacts). Capability-changing fields that affect docker-create-time mounts or args (e.g., `ssh.allowed_keys` filtering the forwarded ssh-agent socket; `egress.allow` modifying iptables at create) require `rc destroy && rc up`. Each consumer bead documents which of its fields are recreate-required vs resume-applicable. Loader prints `Effective config changed since last rc up; some fields require 'rc destroy && rc up' to apply (see <field-list>).` when it detects a change against the `rc.config-loaded=<sha256>` label.
+- **Recreate vs resume (msb era):** msb net rules have no live-mutation path, so config changes to create-time state (`network.allowed_hosts`, `auth.credentials`) apply via cold-recreate — `rc reload` / `rc up --reload` (ADR-029 D4; reload-eligible set is `network.allowed_hosts` post-D9). The drift hint compares live config against the applied snapshot (`config-applied.json`) and names the applying command. Manifest-egress drift is "requires rebuild," never reload-drift (D4).
 - **First-run hint:** when `rc up` loads a `.rip-cage.yaml` for the first time on a given container (detected via label `rc.config-loaded=<sha256>`), print `Loaded .rip-cage.yaml ([N fields applied]). Run 'rc config show' to inspect.` Subsequent `rc up` calls with the same content sha256 do not re-print.
-- **Loader state location:** `rc.config-loaded=<sha256>` lives as a container label (host-side, queryable via `docker inspect`), matching ADR-020's `rc.github-identity` label pattern. "Skipped layer" diagnostics live in `rc config show` output (computed fresh each invocation), not in a sentinel — sentinel pattern from ADR-020 D5 is reserved for state that needs to be readable from inside the cage's first-shell echo.
-- **Schema version field:** the loader applies D3's field-type-conditional rule **before** attempting to merge. Partial parse: enumerate top-level field names in the unknown-version file (`yq 'keys' <file>`); cross-reference against schema's selection-list set; if intersection non-empty → abort loud with the specific field names; else → warn and skip the file's contents. Provenance for skipped files is recorded so `rc config show` can surface "this layer was skipped due to version mismatch" rather than silently omitting it.
-- **Test fixtures:** `tests/fixtures/config-*.yaml` covering the matrix in D2 (additive, selection three-state, scalar, mixed), plus D3 (missing version, unsupported version, version skew between layers) and D5 (both absent posture-unchanged check).
-- **Docs:** new reference page at `docs/reference/config.md`. README gets a one-paragraph mention with link.
-- **Downstream consumer template (for SSH allowlist `rip-cage-b0c` and future):** each consumer bead must include (a) the schema fields it owns + their merge types + version-strict markers, (b) a "both files absent → posture unchanged" regression test (D5 contract), (c) a "global + project both contribute" integration test that validates the merge rule for that consumer's fields, (d) explicit declaration of which fields are recreate-required vs resume-applicable.
+- **Loader state location:** `rc.config-loaded=<sha256>` lives as a sandbox label (host-side, queryable via the msb sandbox metadata — the ADR-028 label substrate, re-bound off `docker inspect` per ADR-029), with the applied-config snapshot file (`config-applied.json`) as the primary drift-comparison record. "Skipped layer" diagnostics live in `rc config show` output (computed fresh each invocation), not in a sentinel — sentinel pattern from ADR-020 D5 is reserved for state that needs to be readable from inside the cage's first-shell echo.
+- **Schema version field:** the loader applies D3's rules **before** attempting to merge. For an unknown HIGHER version, the classify is one tag-enumeration pass (`yq '[.. | select(tag | test("^![^!]")) | {"path": path|join("."), "tag": tag}]'`): any `!replace` present → abort loud naming the file; else → warn and skip the file's contents. Declared `version: 1` → abort with migration hint before any parse-for-merge. Provenance for skipped files is recorded so `rc config show` can surface "this layer was skipped due to version mismatch" rather than silently omitting it. The tag-map pass also runs on supported-version files to drive D2 validation (`yq -o=json` strips custom tags, so the map is captured before the JSON conversion; the yq→JSON→jq merge engine is preserved).
+- **Test fixtures:** `tests/fixtures/config-*.yaml` covering the v2 matrix in D2 (union default, `!replace` at each layer, `!replace []`, denylist replace-forbidden, tag validation), plus D3 (missing version, declared v1, higher-version ± `!replace`, version-absent-with-allow_risky) and D5 (both absent posture-unchanged check).
+- **Docs:** reference page at `docs/reference/config.md`. README gets a one-paragraph mention with link.
+- **Downstream consumer template:** each consumer bead must include (a) the schema fields it owns + their types, (b) a "both files absent → posture unchanged" regression test (D5 contract), (c) a "global + project both contribute" integration test that validates the merge rule for that consumer's fields, (d) explicit declaration of which fields are recreate-required vs resume-applicable.
 
 ## Carries over from prior ADRs
 
-- **ADR-001** fail-loud-and-actionable applies to schema validation errors and to consumer-level errors (e.g., `ssh.allowed_keys` references a key the user doesn't have). Its application to D3's version-drift behavior is **field-type-conditional**: selection-list fields trigger fail-loud-abort (silent skip would silently expand capability past user intent — ADR-001:13 failure mode); additive-list and scalar fields warn-and-skip (silent skip yields LESS capability, not more — ADR-001's failure direction is inverted).
+- **ADR-001** fail-loud-and-actionable applies to schema validation errors (unknown tags, retired fields, enum violations) and to consumer-level errors. Its application to D3's version-drift behavior is **tag-conditional** (v2 translation of the v1 field-type-conditional rule): a higher-version file using `!replace` triggers fail-loud-abort (silent skip would silently expand capability past user intent — ADR-001:13 failure mode); tag-free files warn-and-skip (silent skip yields LESS capability, not more — ADR-001's failure direction is inverted). Declared-v1 files abort unconditionally (D3/D9).
 - **ADR-014 D2** (non-interactive SSH posture) is **not modified by this substrate**. The downstream `rip-cage-b0c` (SSH allowlist) bead will edit ADR-014 D2 in place per the in-place-evolution convention when shipped, replacing the `known_hosts` rewrite with capability-scoped allowlists. ADR-014 D2's caveat at line 79 (CLI `-o` reach limit) remains accurate as-stated for the default container.
 - **ADR-020** (ssh identity routing) coexists. Identity routing remains keyed by `~/.config/rip-cage/identity-rules` and CLI flags / labels; the SSH allowlist enabled by this substrate is orthogonal (one is "which key for which github account?", the other is "which hosts and keys can the cage reach at all?"). Both share the `~/.config/rip-cage/` namespace by D1.
 - **ADR-017** (ssh-agent forwarding) is the capability that the SSH allowlist consumer scopes. This substrate is what makes per-project scoping expressible.
@@ -403,4 +457,8 @@ Under ro-default these become: the agent **surfaces the request in prose**; the 
 - `docs/decisions/ADR-024-prompt-injection-threat-model.md` — D7's threat warrant: the prompt-injected in-cage agent that buries a containment-weakening edit for a human to rubber-stamp on reload.
 - `docs/decisions/ADR-027-agent-substrate-projection.md` — D1's per-asset `ro`-default / `rw`-opt-in mount pattern that D7 applies to the config file (agent config/substrate is a distinct asset class; D7 governs rip-cage's own posture manifest).
 - `docs/decisions/ADR-022-ssh-allowlist.md` — D6 (ssh.allowed_hosts self-edit + `rc reload`) evolved in place by D7: in-cage self-edit → host-side authorship under ro-default.
-- `docs/decisions/ADR-023-secret-path-mount-denylist.md` — D3 (mounts.allow_risky self-edit before `rc up`) evolved in place by D7: same in-cage self-edit → host-side authorship change.
+- `docs/decisions/ADR-023-secret-path-mount-denylist.md` — D3 (mounts.allow_risky self-edit before `rc up`) evolved in place by D7: same in-cage self-edit → host-side authorship change. ALSO: its D2 (FIRM additive-only denylist) is the warrant for this ADR's D2 replace-forbidden exception on `mounts.denylist` — honored, not evolved.
+- `docs/decisions/ADR-005-ecosystem-tools.md` — D12 composable-seam guardrail: D10's profiles cut is judged against its tripwire; the D8 verbs and D2 merge mechanics are config MECHANICS (rc's legitimate invariant seam), not tool/posture content.
+- `docs/decisions/ADR-029-msb-migration.md` — D2/D4 egress model the D4 effective view spans; the msb runtime union (`--net-default deny` + `--net-rule`) is the materialization target of the D4 runtime invariant; the D9 vestigial fields died with its cutover.
+- `docs/decisions/ADR-025-host-adoptable-dcg-policy.md` — cites v1 vocabulary ("additive_list per ADR-021 D2"); reads correctly under the D2 vocabulary-migration note (dcg lists remain union-default); not edited.
+- `rip-cage-tsf2.10` (bead) — the converged config-model-v2 design this revision projects; carries the full review trail and spike record.
