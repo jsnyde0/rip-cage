@@ -18,6 +18,11 @@
 #   T4  output round-trips through _msb_flags_generate without error (proves
 #       the translator's output is actually well-formed against the real
 #       contract, not merely shaped like it)
+#   T5  manifest tool egress: hosts union into allowed_hosts (rip-cage-tsf2.8:
+#       a composed tool declaring egress hosts must materialize them as
+#       net-rules, unioned with config network.allowed_hosts, order-stable)
+#   T6  manifest-less config (no host tools.yaml) stays deny-all — the union
+#       never widens an unconfigured cage (D5 regression guard)
 
 set -uo pipefail
 
@@ -115,6 +120,74 @@ if [[ "$T4_RC" -eq 0 ]] && echo "$T4_OUT" | grep -qF -- "--net-rule" && echo "$T
   pass "T4: translator output round-trips through _msb_flags_generate and yields the expected net-rule"
 else
   fail "T4: round-trip through _msb_flags_generate failed" "rc=$T4_RC out='$T4_OUT' err=$(cat /tmp/t4-egress-cfg.err)"
+fi
+cleanup
+
+echo ""
+echo "=== T5: manifest tool egress: hosts union into allowed_hosts (rip-cage-tsf2.8) ==="
+# A composed tool declaring egress: hosts must have those hosts materialize in
+# the builder's allowed_hosts, unioned with config network.allowed_hosts,
+# order-stable (config hosts first, then manifest hosts not already present).
+# Sentinel host is deliberately fake (never a real credential/host we depend on)
+# and not on the IOC denylist, so it round-trips untouched.
+setup_sandbox
+SENTINEL_HOST="egress-sentinel.tsf28.test.invalid"
+cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
+version: 1
+network:
+  allowed_hosts: [github.com, api.anthropic.com]
+EOF
+T5_MANIFEST="${TEST_HOME}/.config/rip-cage/tools.yaml"
+cat > "$T5_MANIFEST" <<EOF
+version: 1
+tools:
+  - name: sentinel-tool
+    archetype: TOOL
+    version_pin: "bundled"
+    egress:
+      - ${SENTINEL_HOST}
+    mounts: []
+EOF
+T5_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_MANIFEST_GLOBAL="$T5_MANIFEST" \
+  bash -c "source '${RC}' 2>/dev/null; _up_build_egress_config_json '${TEST_WS}'" 2>/tmp/t5-egress-cfg.err)
+T5_RC=$?
+if [[ "$T5_RC" -eq 0 ]]; then
+  T5_HOSTS=$(jq -c '.allowed_hosts' <<<"$T5_OUT")
+  # Config hosts preserved in order first, then the sentinel appended (no sort).
+  if [[ "$T5_HOSTS" == "[\"github.com\",\"api.anthropic.com\",\"${SENTINEL_HOST}\"]" ]]; then
+    pass "T5: manifest tool egress host unions into allowed_hosts, order-stable"
+  else
+    fail "T5: manifest egress host did not materialize (or order churned)" "$T5_HOSTS"
+  fi
+else
+  fail "T5: _up_build_egress_config_json failed" "$(cat /tmp/t5-egress-cfg.err)"
+fi
+cleanup
+
+echo ""
+echo "=== T6: manifest-less config stays deny-all (D5 regression guard) ==="
+# No host tools.yaml -> no manifest tool egress source -> output unchanged from
+# the config-only path (deny-all when nothing is configured). Regression guard
+# so the union never silently widens an unconfigured cage.
+setup_sandbox
+T6_MANIFEST="${TEST_HOME}/.config/rip-cage/absent-tools.yaml"  # deliberately does not exist
+cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
+version: 1
+network:
+  allowed_hosts: [example.com]
+EOF
+T6_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_MANIFEST_GLOBAL="$T6_MANIFEST" \
+  bash -c "source '${RC}' 2>/dev/null; _up_build_egress_config_json '${TEST_WS}'" 2>/tmp/t6-egress-cfg.err)
+T6_RC=$?
+if [[ "$T6_RC" -eq 0 ]]; then
+  T6_HOSTS=$(jq -c '.allowed_hosts' <<<"$T6_OUT")
+  if [[ "$T6_HOSTS" == '["example.com"]' ]]; then
+    pass "T6: no host manifest -> allowed_hosts unchanged (config-only, deny-all baseline)"
+  else
+    fail "T6: manifest-less config output changed" "$T6_HOSTS"
+  fi
+else
+  fail "T6: _up_build_egress_config_json failed" "$(cat /tmp/t6-egress-cfg.err)"
 fi
 cleanup
 

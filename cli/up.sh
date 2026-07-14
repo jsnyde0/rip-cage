@@ -1939,6 +1939,51 @@ _up_build_egress_config_json() {
       fi
     fi
   fi
+
+  # rip-cage-tsf2.8: union manifest-declared tool egress: hosts into
+  # allowed_hosts (ADR-005 D3 — a composed tool declares the hosts it needs to
+  # reach; those must materialize as msb --net-rule allow entries, not silently
+  # vanish unless the operator re-types them into network.allowed_hosts). This
+  # is the wiring _manifest_egress_hosts_json's own comment claimed but never
+  # had — the pre-cutover rip-cage-4c5.3 union, re-homed onto the msb net-rules
+  # path.
+  #
+  # WHICH FILE GOVERNS (baked-vs-runtime divergence): the union source is the
+  # HOST manifest at up-time (_manifest_global_path -> ~/.config/rip-cage/
+  # tools.yaml). Tool BINARIES are baked into the image at `rc build`; egress
+  # RULES are runtime msb flags rebuilt here on every `rc up` / `rc reload`
+  # (reload cold-recreates through this same machinery, rip-cage-rj68). So a
+  # host-side tools.yaml egress edit + `rc reload` DOES widen the allowlist
+  # without a rebuild — but a newly-declared tool's binary is absent until the
+  # next `rc build`. The two can legitimately diverge; the host tools.yaml is
+  # authoritative for egress, the baked image for the binary.
+  #
+  # GATED on the host manifest file existing so an unconfigured cage (no
+  # tools.yaml) is unchanged: the in-repo default floor manifest (beads/dolt/gh)
+  # would otherwise contribute its egress here, silently widening the D5
+  # deny-all baseline. Floor tools get reachability from the curated config
+  # allowlist (ADR-029 D4), not this union.
+  #
+  # IOC interplay: the build/up-time IOC denylist gate (_manifest_check_ioc_
+  # egress) walks the manifest INDEPENDENTLY and fires BEFORE this builder runs
+  # (cmd_build cli/build.sh, cmd_up cli/up.sh:2292, cmd_reload cli/reload.sh —
+  # all before the sandbox is created / _up_start_container). A denylisted host
+  # aborts the whole command up front, so it can never reach this union. The
+  # union only ever sees hosts the gate already cleared.
+  if [[ -f "$(_manifest_global_path)" ]] && command -v yq &>/dev/null; then
+    local _uec_manifest_hosts
+    _uec_manifest_hosts=$(_manifest_egress_hosts_json 2>/dev/null) || _uec_manifest_hosts='[]'
+    if [[ -n "$_uec_manifest_hosts" && "$_uec_manifest_hosts" != '[]' ]]; then
+      # Order-stable dedup: config hosts keep their positions (first), then any
+      # manifest host not already present, in manifest order. NO jq `unique`
+      # (it sorts — the generator emits --net-rule in input order verbatim, so
+      # sorting would churn behavior/snapshots gratuitously).
+      _uec_allowed_hosts=$(jq -c --argjson mh "$_uec_manifest_hosts" \
+        'reduce (. + $mh)[] as $h ([]; if index($h) then . else . + [$h] end)' \
+        <<<"$_uec_allowed_hosts")
+    fi
+  fi
+
   jq -nc --argjson hosts "$_uec_allowed_hosts" --argjson creds "$_uec_credentials" \
     '{allowed_hosts: $hosts, credentials: $creds}'
 }
@@ -2984,8 +3029,12 @@ _config_ensure_global_seeded() {
 # _manifest_egress_hosts_json — collect all egress: hosts declared across all
 # manifest entries into a JSON array (ADR-005 D3). The in-cage engine that
 # used to consume this union (the deleted egress router) is retired per
-# ADR-029 D2; this collector survives as the declare-time data source S6
-# wires into the msb-flags generator's allowed_hosts input.
+# ADR-029 D2. This collector is now the declare-time data source that
+# _up_build_egress_config_json unions into the msb-flags generator's
+# allowed_hosts input (rip-cage-tsf2.8) — every manifest-declared tool egress
+# host becomes an msb --net-rule allow entry. Reads the HOST manifest
+# (_manifest_global_path); see _up_build_egress_config_json for the
+# baked-binary-vs-runtime-rule divergence note.
 #
 # Returns a JSON array of strings on stdout (may be empty: []).
 _manifest_egress_hosts_json() {
