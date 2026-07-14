@@ -48,4 +48,10 @@ rc-mise-cache:/home/agent/.local/share/mise
 rc.egress.config-override=false
 --net-default
 deny
+--net-rule
+allow@api.github.com
+--net-rule
+allow@doltremoteapi.dolthub.com
+--net-rule
+allow@github.com
 rip-cage:latest
