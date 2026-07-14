@@ -19,10 +19,15 @@
 #       the translator's output is actually well-formed against the real
 #       contract, not merely shaped like it)
 #   T5  manifest tool egress: hosts union into allowed_hosts (rip-cage-tsf2.8:
-#       a composed tool declaring egress hosts must materialize them as
-#       net-rules, unioned with config network.allowed_hosts, order-stable)
-#   T6  manifest-less config (no host tools.yaml) stays deny-all — the union
-#       never widens an unconfigured cage (D5 regression guard)
+#       a composed tool declaring egress hosts must materialize them, unioned
+#       with config network.allowed_hosts, order-stable)
+#   T5b sentinel host materializes as an actual --net-rule allow@<host> through
+#       the real _msb_flags_generate (closes the net-rule acceptance leg)
+#   T6  unconfigured cage = seeded floor manifest + no config -> allowed_hosts
+#       equals exactly the floor manifest's declared egress (Fable REVISE r1 F1:
+#       the real unconfigured cage is NOT empty; cmd_up seeds the floor manifest)
+#   T6b absent manifest file -> union skipped, config hosts pass through (the
+#       defensive `-f` branch; not the cmd_up path)
 
 set -uo pipefail
 
@@ -81,7 +86,12 @@ fi
 cleanup
 
 echo ""
-echo "=== T3: no config files -> empty allowed_hosts + credentials ==="
+echo "=== T3: no config AND absent manifest -> empty (defensive branch, NOT the cmd_up path) ==="
+# This is the genuinely-empty branch: no .rip-cage.yaml and no host tools.yaml
+# (RC_MANIFEST_GLOBAL unset, none seeded here). It exercises the `-f` defensive
+# guard, NOT the production unconfigured cage — cmd_up SEEDS the floor manifest
+# before the builder runs, so a real unconfigured cage reaches the floor egress
+# set (see T6). Kept as its own unit case; it does not model the cage contract.
 setup_sandbox
 T3_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "source '${RC}' 2>/dev/null; _up_build_egress_config_json '${TEST_WS}'" 2>/tmp/t3-egress-cfg.err)
 T3_RC=$?
@@ -89,9 +99,9 @@ if [[ "$T3_RC" -eq 0 ]]; then
   T3_EXPECT='{"allowed_hosts":[],"credentials":[]}'
   T3_GOT=$(jq -Sc '{allowed_hosts, credentials}' <<<"$T3_OUT")
   if [[ "$T3_GOT" == "$T3_EXPECT" ]]; then
-    pass "T3: empty config -> {allowed_hosts:[], credentials:[]}"
+    pass "T3: no config + absent manifest -> {allowed_hosts:[], credentials:[]} (defensive branch)"
   else
-    fail "T3: unexpected output for unconfigured workspace" "$T3_GOT"
+    fail "T3: unexpected output for absent-manifest branch" "$T3_GOT"
   fi
 else
   fail "T3: _up_build_egress_config_json failed" "$(cat /tmp/t3-egress-cfg.err)"
@@ -153,7 +163,7 @@ T5_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_MANIFEST_GL
 T5_RC=$?
 if [[ "$T5_RC" -eq 0 ]]; then
   T5_HOSTS=$(jq -c '.allowed_hosts' <<<"$T5_OUT")
-  # Config hosts preserved in order first, then the sentinel appended (no sort).
+  # Config hosts keep their order first; the single manifest host appends after.
   if [[ "$T5_HOSTS" == "[\"github.com\",\"api.anthropic.com\",\"${SENTINEL_HOST}\"]" ]]; then
     pass "T5: manifest tool egress host unions into allowed_hosts, order-stable"
   else
@@ -165,29 +175,104 @@ fi
 cleanup
 
 echo ""
-echo "=== T6: manifest-less config stays deny-all (D5 regression guard) ==="
-# No host tools.yaml -> no manifest tool egress source -> output unchanged from
-# the config-only path (deny-all when nothing is configured). Regression guard
-# so the union never silently widens an unconfigured cage.
+echo "=== T5b: sentinel host materializes as a --net-rule through the real generator ==="
+# Closes the 'materializes as a --net-rule allow@<host>' acceptance leg at unit
+# level: feed the builder's own output (which unioned the sentinel in) through
+# the real _msb_flags_generate and assert the generator emits an allow rule for
+# the sentinel — not merely that it appeared in the JSON.
 setup_sandbox
-T6_MANIFEST="${TEST_HOME}/.config/rip-cage/absent-tools.yaml"  # deliberately does not exist
+SENTINEL_HOST="egress-sentinel.tsf28.test.invalid"
+cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
+version: 1
+network:
+  allowed_hosts: [github.com]
+EOF
+T5B_MANIFEST="${TEST_HOME}/.config/rip-cage/tools.yaml"
+cat > "$T5B_MANIFEST" <<EOF
+version: 1
+tools:
+  - name: sentinel-tool
+    archetype: TOOL
+    version_pin: "bundled"
+    egress:
+      - ${SENTINEL_HOST}
+    mounts: []
+EOF
+T5B_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_MANIFEST_GLOBAL="$T5B_MANIFEST" \
+  bash -c "
+    source '${RC}' 2>/dev/null
+    cfg=\$(_up_build_egress_config_json '${TEST_WS}') || exit 1
+    _msb_flags_generate \"\$cfg\"
+  " 2>/tmp/t5b-egress-cfg.err)
+T5B_RC=$?
+# The generator emits '--net-rule' and 'allow@<host>' on separate consecutive
+# lines; assert both the rule flag and the sentinel allow token are present.
+if [[ "$T5B_RC" -eq 0 ]] \
+   && echo "$T5B_OUT" | grep -qF -- "--net-rule" \
+   && echo "$T5B_OUT" | grep -qF "allow@${SENTINEL_HOST}"; then
+  pass "T5b: manifest sentinel host emits a --net-rule allow@<sentinel> via _msb_flags_generate"
+else
+  fail "T5b: sentinel did not materialize as a --net-rule" "rc=$T5B_RC out='$T5B_OUT' err=$(cat /tmp/t5b-egress-cfg.err)"
+fi
+cleanup
+
+echo ""
+echo "=== T6: unconfigured cage (seeded floor manifest, no config) -> floor egress reachable ==="
+# F1 (Fable review REVISE r1): the REAL unconfigured cage is not empty. cmd_up
+# seeds the floor manifest before the builder runs, so an unconfigured cage
+# reaches exactly the floor manifest's declared egress and zero config hosts.
+# Expected set is derived from _manifest_default_yaml (not hardcoded), so it
+# tracks the floor tools automatically.
+setup_sandbox
+# Independent derivation of the floor egress set: raw default YAML -> yq unique.
+FLOOR_HOSTS=$(HOME="$TEST_HOME" bash -c "source '${RC}' 2>/dev/null; _manifest_default_yaml" 2>/dev/null \
+  | yq -o=json -I=0 '[.tools[].egress // [] | .[]] | unique' 2>/dev/null)
+# No .rip-cage.yaml, no global config; seed the floor manifest exactly as cmd_up does.
+T6_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
+    source '${RC}' 2>/dev/null
+    _manifest_ensure_seeded >/dev/null 2>&1
+    _up_build_egress_config_json '${TEST_WS}'
+  " 2>/tmp/t6-egress-cfg.err)
+T6_RC=$?
+if [[ "$T6_RC" -eq 0 && -n "$FLOOR_HOSTS" && "$FLOOR_HOSTS" != '[]' ]]; then
+  T6_GOT=$(jq -c 'sort' <<<"$(jq -c '.allowed_hosts' <<<"$T6_OUT")")
+  T6_WANT=$(jq -c 'sort' <<<"$FLOOR_HOSTS")
+  T6_CREDS=$(jq -c '.credentials' <<<"$T6_OUT")
+  if [[ "$T6_GOT" == "$T6_WANT" && "$T6_CREDS" == '[]' ]]; then
+    pass "T6: unconfigured cage reaches exactly the seeded floor manifest's declared egress (zero config hosts)"
+  else
+    fail "T6: unconfigured-cage egress != floor manifest egress" "got=$T6_GOT want=$T6_WANT creds=$T6_CREDS"
+  fi
+else
+  fail "T6: _up_build_egress_config_json failed or empty floor set" "rc=$T6_RC floor='$FLOOR_HOSTS' $(cat /tmp/t6-egress-cfg.err)"
+fi
+cleanup
+
+echo ""
+echo "=== T6b: manifest file absent -> union contributes nothing, config passthrough ==="
+# The defensive `-f` branch: when the host manifest file does not exist, the
+# union is skipped entirely and allowed_hosts is exactly the config hosts. This
+# is NOT the cmd_up path (which seeds); it guards the builder being called
+# before any manifest exists.
+setup_sandbox
+T6B_MANIFEST="${TEST_HOME}/.config/rip-cage/absent-tools.yaml"  # deliberately never created
 cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
 version: 1
 network:
   allowed_hosts: [example.com]
 EOF
-T6_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_MANIFEST_GLOBAL="$T6_MANIFEST" \
-  bash -c "source '${RC}' 2>/dev/null; _up_build_egress_config_json '${TEST_WS}'" 2>/tmp/t6-egress-cfg.err)
-T6_RC=$?
-if [[ "$T6_RC" -eq 0 ]]; then
-  T6_HOSTS=$(jq -c '.allowed_hosts' <<<"$T6_OUT")
-  if [[ "$T6_HOSTS" == '["example.com"]' ]]; then
-    pass "T6: no host manifest -> allowed_hosts unchanged (config-only, deny-all baseline)"
+T6B_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_MANIFEST_GLOBAL="$T6B_MANIFEST" \
+  bash -c "source '${RC}' 2>/dev/null; _up_build_egress_config_json '${TEST_WS}'" 2>/tmp/t6b-egress-cfg.err)
+T6B_RC=$?
+if [[ "$T6B_RC" -eq 0 ]]; then
+  T6B_HOSTS=$(jq -c '.allowed_hosts' <<<"$T6B_OUT")
+  if [[ "$T6B_HOSTS" == '["example.com"]' ]]; then
+    pass "T6b: absent manifest file -> allowed_hosts == config hosts only (union skipped)"
   else
-    fail "T6: manifest-less config output changed" "$T6_HOSTS"
+    fail "T6b: absent-manifest branch changed config passthrough" "$T6B_HOSTS"
   fi
 else
-  fail "T6: _up_build_egress_config_json failed" "$(cat /tmp/t6-egress-cfg.err)"
+  fail "T6b: _up_build_egress_config_json failed" "$(cat /tmp/t6b-egress-cfg.err)"
 fi
 cleanup
 

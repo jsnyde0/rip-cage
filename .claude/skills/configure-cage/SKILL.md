@@ -70,15 +70,17 @@ per `CLAUDE.md`, `.rip-cage.yaml` is read-only inside the cage by design — tha
 `rc reload` that picks it up happen on the host, not from inside a running cage. Most requests
 this skill handles land in the image-manifest layer; know when one doesn't.
 
-**One egress gotcha worth flagging when you compose a tool's `egress:` list.** A tool entry's
-`egress:` field in `tools.yaml` feeds schema validation and the build-time IOC-denylist gate,
-but it does **not** currently materialize into the running cage's runtime allow-rules — that
-union was wired pre-cutover and the msb migration left the re-wiring unimplemented (a
-fail-closed regression tracked as rip-cage-tsf2.8, not a safety hole). Until it lands, a host a
-tool needs to reach must ALSO appear in `network.allowed_hosts` (global or per-project);
-declaring it only under a tool's `egress:` leaves it denied at the msb VM boundary. Dogfood
-evidence: a cage whose `network.allowed_hosts` held 3 hosts showed exactly "3 allow-rule(s)" in
-`rc doctor` while several tool-declared `egress:` hosts never became rules.
+**Composing a tool's `egress:` list — how it reaches the cage.** A tool entry's `egress:` field
+in `tools.yaml` feeds schema validation, the build-time IOC-denylist gate, AND (since
+rip-cage-tsf2.8) the running cage's runtime allow-rules: at cage create / `rc reload` those hosts
+are unioned into `network.allowed_hosts` and each becomes an msb `--net-rule allow@<host>`. So you
+do NOT need to duplicate a tool's hosts into `network.allowed_hosts` — declaring them under the
+tool's `egress:` is enough. Two caveats worth relaying: (1) the union materializes only at cage
+CREATE and at `rc reload` (a cold-recreate) — a plain `rc up` that resumes a stopped cage keeps
+its creation-time rules, so a host-side `tools.yaml` egress edit needs an `rc reload` to take
+effect. (2) An unconfigured cage is therefore NOT deny-all: cmd_up seeds the floor manifest
+(beads/dolt/gh) before boot, so the floor tools' declared egress (github/dolthub) is reachable
+out of the box — the IOC denylist, not an empty allowlist, is what keeps that safe.
 
 The credential non-possession posture (below) splits across these same layers, and the split
 isn't a style preference — it follows from how each layer merges. The rule, settled by the

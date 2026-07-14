@@ -1922,11 +1922,18 @@ _up_translate_docker_args_to_msb() {
 # net-rule/secret/tls concern is genuinely new (msb primitives with no
 # pre-msb docker equivalent) and belongs in this JSON contract.
 #
-# D5 regression contract: no config files present -> {"allowed_hosts":[],
-# "credentials":[]} — msb_flags_generate on this input emits
-# --net-default deny with zero --net-rule/--secret flags (deny-all, no
-# behavior claim beyond "unconfigured cages get no egress" — S7's curated
-# default allowlist is a separate, later child).
+# D5 regression contract (scoped to CONFIG hosts): with no config files
+# present, the CONFIG contribution to allowed_hosts is empty and credentials
+# is empty. It is NOT a whole-cage deny-all claim: rip-cage-tsf2.8 unions the
+# manifest's declared tool egress in (see below), and cmd_up SEEDS the default
+# floor manifest (_manifest_ensure_seeded, up.sh:2336) BEFORE this builder
+# runs — so a real unconfigured cage boots reachable to exactly the floor
+# manifest's declared egress hosts (beads/dolt/gh -> api.github.com,
+# doltremoteapi.dolthub.com, github.com) and ZERO config hosts. The genuinely-
+# empty {"allowed_hosts":[],"credentials":[]} output only occurs when the
+# manifest file is absent AND no config — a defensive branch not reachable via
+# normal cmd_up (seeding precedes the builder). The IOC denylist gate is what
+# keeps this floor-egress default safe, not an empty allowlist.
 _up_build_egress_config_json() {
   local _uec_path="$1"
   local _uec_allowed_hosts='[]' _uec_credentials='[]'
@@ -1950,19 +1957,25 @@ _up_build_egress_config_json() {
   #
   # WHICH FILE GOVERNS (baked-vs-runtime divergence): the union source is the
   # HOST manifest at up-time (_manifest_global_path -> ~/.config/rip-cage/
-  # tools.yaml). Tool BINARIES are baked into the image at `rc build`; egress
-  # RULES are runtime msb flags rebuilt here on every `rc up` / `rc reload`
-  # (reload cold-recreates through this same machinery, rip-cage-rj68). So a
-  # host-side tools.yaml egress edit + `rc reload` DOES widen the allowlist
-  # without a rebuild — but a newly-declared tool's binary is absent until the
-  # next `rc build`. The two can legitimately diverge; the host tools.yaml is
-  # authoritative for egress, the baked image for the binary.
+  # tools.yaml, which cmd_up seeds with the floor default if absent). Tool
+  # BINARIES are baked into the image at `rc build`; egress RULES are runtime
+  # msb flags. But those rules materialize ONLY at cage CREATE (this builder ->
+  # _msb_create net flags) and at `rc reload` (a cold-recreate through this same
+  # machinery, rip-cage-rj68) — NOT on a plain `rc up` that resumes a stopped
+  # cage: the resume path (_up_prepare_resume_secrets) consumes only the
+  # secret-env side of this builder, and `_msb_start` keeps the creation-time
+  # net rules verbatim. So a host-side tools.yaml egress edit takes effect on
+  # the next `rc reload` / fresh create, but a plain resume boots with the OLD
+  # rules. The two can legitimately diverge; the host tools.yaml is
+  # authoritative for egress at create/reload, the baked image for the binary.
   #
-  # GATED on the host manifest file existing so an unconfigured cage (no
-  # tools.yaml) is unchanged: the in-repo default floor manifest (beads/dolt/gh)
-  # would otherwise contribute its egress here, silently widening the D5
-  # deny-all baseline. Floor tools get reachability from the curated config
-  # allowlist (ADR-029 D4), not this union.
+  # The `-f` guard is defensive (builder called before the manifest exists);
+  # it is NOT a deny-all gate — cmd_up SEEDS the floor manifest before this runs
+  # (up.sh:2336), so in production the guard always passes and an unconfigured
+  # cage reaches exactly the floor manifest's declared egress (beads/dolt/gh)
+  # plus zero config hosts. This restores pre-cutover semantics (rip-cage-4c5.3
+  # unioned unconditionally). The IOC denylist gate — not an empty allowlist —
+  # is the guard that keeps floor egress safe.
   #
   # IOC interplay: the build/up-time IOC denylist gate (_manifest_check_ioc_
   # egress) walks the manifest INDEPENDENTLY and fires BEFORE this builder runs
@@ -1975,9 +1988,10 @@ _up_build_egress_config_json() {
     _uec_manifest_hosts=$(_manifest_egress_hosts_json 2>/dev/null) || _uec_manifest_hosts='[]'
     if [[ -n "$_uec_manifest_hosts" && "$_uec_manifest_hosts" != '[]' ]]; then
       # Order-stable dedup: config hosts keep their positions (first), then any
-      # manifest host not already present, in manifest order. NO jq `unique`
-      # (it sorts — the generator emits --net-rule in input order verbatim, so
-      # sorting would churn behavior/snapshots gratuitously).
+      # manifest host not already present, in SORTED order (_manifest_egress_
+      # hosts_json ends in `jq unique`, which sorts). This dedup itself does NOT
+      # re-sort — it preserves config order then appends new manifest hosts as
+      # they arrive; the generator emits --net-rule in that input order verbatim.
       _uec_allowed_hosts=$(jq -c --argjson mh "$_uec_manifest_hosts" \
         'reduce (. + $mh)[] as $h ([]; if index($h) then . else . + [$h] end)' \
         <<<"$_uec_allowed_hosts")
