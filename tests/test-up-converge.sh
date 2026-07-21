@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
-# Host-side tests for `rc up --reload` / RC_UP_CONVERGE converge-on-up
-# (rip-cage-tsf2.9). Giving `rc up` a safe, EXPLICIT way to converge a drifted
-# STOPPED cage to current config (compose-style), without breaking rip-cage's
-# abort-loud posture:
+# Host-side tests for `rc up` converge-on-up (rip-cage-tsf2.9, DEFAULT-ON flip
+# rip-cage-y0u0, 2026-07-21 human sign-off). `rc up` converges a drifted
+# STOPPED cage to current config (compose-style) BY DEFAULT, loudly, without
+# breaking rip-cage's abort-loud posture:
 #
-#   - `rc up --reload`: eligible drift on a stopped cage -> the existing
+#   - Plain `rc up` on a STOPPED cage with eligible drift: the existing
 #     cold-recreate pipeline (graceful stop -> remove -> recreate against the
-#     now-current .rip-cage.yaml), with a loud announcement. No drift -> a
-#     harmless plain `up` (safe to habituate). ADR-029 D4 (reload=cold-recreate).
-#   - RC_UP_CONVERGE (opt-in env, RC_ naming per RC_IMAGE convention): a STOPPED
-#     cage with eligible drift auto-converges via the same pipeline. A RUNNING
-#     cage is NEVER auto-recreated regardless of env (agent autonomy is the
-#     product) -- warn-only with a `rc reload` fix-hint.
+#     now-current .rip-cage.yaml) runs automatically, with a loud announcement
+#     naming what's cold-recreated, what survives (workspace + ~/.claude/
+#     {projects,sessions} mounts + named volumes rc-state-*/rc-history-*/
+#     rc-mise-cache), what's lost (only the guest's ephemeral rootfs scratch),
+#     and how to opt out (--no-reload). No drift -> a harmless plain `up`.
+#     ADR-029 D4 (reload=cold-recreate).
+#   - `--no-reload`: opts OUT of the default for this invocation — resumes
+#     stale with the existing drift hint (old tsf2.9-shipped behavior).
+#   - `--reload`: kept as an explicit-intent synonym for the default on a
+#     stopped cage; on a RUNNING cage it (alone, not the default path)
+#     triggers the "NOT auto-recreating" notice — a plain `rc up` on a running
+#     cage with drift stays hint-only, same as before the flip.
+#   - `--reload` + `--no-reload` together: error out loud (mutually exclusive).
+#   - RC_UP_CONVERGE is RETIRED — no longer read anywhere (inert env var).
+#   - A RUNNING cage is NEVER auto-recreated regardless (agent autonomy).
 #
 # The converge DECISION is a pure function, `_up_eligible_drift_paths NAME WS`,
 # gated on the SAME comparator `rc reload` uses -- the config-applied.json
@@ -20,7 +29,10 @@
 # and returns 0 IFF there is drift AND every drifted path is reload-eligible
 # (network.* today, _RC_RELOAD_ELIGIBLE_PATHS); otherwise returns 1 (echoes
 # nothing) so the caller falls through to the existing emit_hint / abort-loud
-# guards -- non-eligible drift is NEVER double-handled here (review F4).
+# guards -- non-eligible drift is NEVER double-handled here (review F4). This
+# decision function and its gating by drift-eligibility are UNCHANGED by the
+# default-on flip — only the flag/env gate around the CALL site changed (from
+# "only if --reload/RC_UP_CONVERGE" to "unless --no-reload").
 #
 # Coverage:
 #   U1  Eligible drift (network.allowed_hosts added) -> exit 0, echoes path
@@ -44,20 +56,38 @@
 #          in-process cmd_up drive is environment-fragile — realpath/name
 #          disambiguation — so the ordering invariant is locked structurally;
 #          the behavioral dry-run preview is covered by live L4).
-#   L1  LIVE: stopped cage + new allowed host + `rc up --reload` cold-recreates;
-#          msb inspect rule domains include the new host; snapshot updated.
-#   L2  LIVE: `rc up --reload` with ZERO drift -> plain resume (no recreate).
-#   L3  LIVE: RUNNING cage + RC_UP_CONVERGE=1 + new allowed host + plain `rc up`
-#          -> NEVER recreates (warn-only); the new host is NOT applied live.
-#   L4  LIVE: `rc up --reload --dry-run` on a stopped drifted cage previews a
-#          converge (not "would resume") and mutates nothing (F1 behavioral).
+#   U7  `--reload` + `--no-reload` together -> exit non-zero, mutually-
+#          exclusive error message (rip-cage-y0u0 point 4). Flag-parse-level
+#          check reached before any docker/msb work — host-only, no live cage.
+#   L1  LIVE: stopped cage + new allowed host + PLAIN `rc up` (no flags, the
+#          new default) cold-recreates; msb inspect rule domains include the
+#          new host; snapshot updated. A SECOND plain `rc up` right after (now
+#          zero drift) is a no-op resume (no re-announce, no snapshot churn) —
+#          folds in tsf2.9's old "zero-drift is a plain resume" acceptance.
+#   L2  LIVE: `rc up --no-reload` on a stopped cage with eligible drift opts
+#          OUT of the default -> plain resume (no recreate, no live-rule
+#          update), and the drift hint still fires.
+#   L3  LIVE: RUNNING cage + new allowed host: plain `rc up` (default, no
+#          flags) -> NEVER recreates, hint-only, NO "not auto-recreating"
+#          notice (default doesn't claim it would have converged); a
+#          follow-up `rc up --reload` on the same still-running, still-drifted
+#          cage -> NEVER recreates either, but DOES print the explicit-intent
+#          "not auto-recreating despite --reload" notice (review F7 asymmetry).
+#   L4  LIVE: PLAIN `rc up --dry-run` (no flags) on a stopped drifted cage
+#          previews a converge (not "would resume") and mutates nothing (F1
+#          behavioral); `rc up --no-reload --dry-run` on the same cage
+#          previews a plain resume instead, still mutating nothing.
 #
-# U1-U6 stub `msb` via PATH shim (no real daemon) or read the source directly.
-# L1-L4 are docker+msb+image conditional and self-skip honestly (same idiom as
-# tests/test-rc-reload.sh C1/C6/C10).
+# U1-U7 stub `msb` via PATH shim (no real daemon), read the source directly,
+# or invoke the real `rc` binary for flag-parse-only checks (U7, reached
+# before any docker/msb call — same idiom as the --new/--session mutex check
+# in tests/test-rc-commands.sh Test 22). L1-L4 are docker+msb+image
+# conditional and self-skip honestly (same idiom as tests/test-rc-reload.sh
+# C1/C6/C10).
 #
 # ADRs: ADR-029 D4 (reload=cold-recreate), ADR-021 D4a/D5 (abort-loud config
-# anchoring), rip-cage-tsf2.9 (this bead).
+# anchoring), rip-cage-tsf2.9 (shipped opt-in), rip-cage-y0u0 (this bead —
+# default-on flip).
 
 set -uo pipefail
 
@@ -303,6 +333,30 @@ done
 if [[ "$u6_ok" == "true" ]]; then pass 6 "converge precedes abort-loud guards in BOTH dry-run and real stopped branches (F1 order mirror)"
 else fail 6 "dry-run/real converge order mirror" "$u6_reason"; fi
 
+# ---------------------------------------------------------------------------
+# U7: --reload + --no-reload together is an error (mutually exclusive) —
+#     rip-cage-y0u0 point 4. This is a flag-parse-level check reached BEFORE
+#     any docker/msb work (mirrors the existing --new/--session mutex idiom,
+#     cli/up.sh, and test-rc-commands.sh Test 22) — host-only, no live cage,
+#     no msb stub needed (the real `rc` binary is invoked directly).
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox
+mkdir -p "${WS}/.git"
+# Isolated XDG_CONFIG_HOME/HOME (like every other test here) — this repo's host
+# can have OTHER concurrent sessions/agents touching the real
+# ~/.config/rip-cage/config.yaml; the mutex check must not depend on that file
+# at all (it fires at flag-parse time, before any config read), but isolating
+# keeps this test deterministic regardless of implementation position.
+u7_out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_ALLOWED_ROOTS="$WS" "$RC" up --dry-run --reload --no-reload "$WS" 2>&1)
+u7_exit=$?
+u7_ok=true u7_reason=""
+[[ "$u7_exit" -eq 0 ]] && u7_ok=false && u7_reason="exit 0 (want non-zero)"
+echo "$u7_out" | grep -qi "mutually exclusive" || { u7_ok=false; u7_reason="${u7_reason:+$u7_reason; }no mutually-exclusive message (got: $u7_out)"; }
+if [[ "$u7_ok" == "true" ]]; then pass 7 "rc up --reload --no-reload errors out loud (mutually exclusive)"
+else fail 7 "reload/no-reload mutex" "$u7_reason"; fi
+teardown_sandbox
+
 # ===========================================================================
 # LIVE integration (docker + msb + rip-cage:latest). Self-skips honestly.
 # ===========================================================================
@@ -351,25 +405,35 @@ _live_inspect_has_host() {
 }
 
 # ---------------------------------------------------------------------------
-# L1: STOPPED cage + new allowed host + `rc up --reload` -> cold-recreate;
-#     live rule domains include the new host; snapshot updated.
+# L1: STOPPED cage + new allowed host + PLAIN `rc up` (no flags — the new
+#     default) -> cold-recreate; live rule domains include the new host;
+#     snapshot updated. A SECOND plain `rc up` right after (now zero drift)
+#     must be a no-op resume (no re-announce, no snapshot churn) — folds in
+#     tsf2.9's old "zero-drift is a plain resume" acceptance criterion.
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 if [[ "$_RC_CONVERGE_HAS_LIVE_RUNTIME" != "true" ]]; then
-  skip 7 "LIVE stopped-converge — needs docker+msb+pre-built rip-cage:latest image"
+  skip 8 "LIVE default-converge — needs docker+msb+pre-built rip-cage:latest image"
 else
   _live_setup_cage stopped || true
   if [[ -z "$RCL_CAGE" ]]; then
-    fail 7 "LIVE stopped-converge" "live setup failed (rc up)"
+    fail 8 "LIVE default-converge" "live setup failed (rc up)"
   else
     _live_add_host
-    XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --output json up --reload "$RCL_WS" >/dev/null 2>&1 || true
+    l1_out=$(XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --output json up "$RCL_WS" 2>&1) || true
     l1_ok=true l1_reason=""
-    _live_inspect_has_host "$RCL_CAGE" "example.com" || { l1_ok=false; l1_reason="new host not in live net rules after --reload"; }
+    _live_inspect_has_host "$RCL_CAGE" "example.com" || { l1_ok=false; l1_reason="new host not in live net rules after plain 'rc up'"; }
+    echo "$l1_out" | grep -qi "converging" || { l1_ok=false; l1_reason="${l1_reason:+$l1_reason; }no converge announcement on plain 'rc up' with eligible drift"; }
     L1_SNAP="${HOME}/.cache/rip-cage/${RCL_CAGE}/config-applied.json"
     jq -e '.network.allowed_hosts | index("example.com")' "$L1_SNAP" >/dev/null 2>&1 || { l1_ok=false; l1_reason="${l1_reason:+$l1_reason; }snapshot not updated to live"; }
-    if [[ "$l1_ok" == "true" ]]; then pass 7 "LIVE: rc up --reload cold-recreates stopped ${RCL_CAGE}, new host applied"
-    else fail 7 "LIVE stopped-converge" "$l1_reason"; fi
+    # Second plain `rc up`: zero drift now -> must be a silent no-op resume.
+    l1_snap_pre=$(shasum "$L1_SNAP" 2>/dev/null | awk '{print $1}')
+    l1_out2=$(XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --output json up "$RCL_WS" 2>&1) || true
+    l1_snap_post=$(shasum "$L1_SNAP" 2>/dev/null | awk '{print $1}')
+    echo "$l1_out2" | grep -qi "converging" && { l1_ok=false; l1_reason="${l1_reason:+$l1_reason; }second plain 'rc up' re-announced a converge on zero-drift"; }
+    [[ "$l1_snap_pre" != "$l1_snap_post" ]] && { l1_ok=false; l1_reason="${l1_reason:+$l1_reason; }snapshot churned on zero-drift second 'rc up'"; }
+    if [[ "$l1_ok" == "true" ]]; then pass 8 "LIVE: plain 'rc up' (default) cold-recreates stopped ${RCL_CAGE} on eligible drift; zero-drift re-up is a no-op"
+    else fail 8 "LIVE default-converge" "$l1_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
   [[ -n "${RCL_CAGE:-}" ]] && msb remove --force "$RCL_CAGE" >/dev/null 2>&1
@@ -377,26 +441,34 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# L2: `rc up --reload` with ZERO drift -> plain resume (no recreate). We prove
-#     "no recreate" by the cage keeping its ORIGINAL creation timestamp/id.
+# L2: `rc up --no-reload` on a STOPPED cage with eligible drift opts OUT of
+#     the default -> plain resume (no recreate, live rules NOT updated,
+#     snapshot NOT updated), and the drift hint still fires (old tsf2.9
+#     resume-with-a-hint behavior, now reached via --no-reload instead of
+#     "no flag").
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 if [[ "$_RC_CONVERGE_HAS_LIVE_RUNTIME" != "true" ]]; then
-  skip 8 "LIVE no-drift no-op — needs docker+msb+pre-built rip-cage:latest image"
+  skip 9 "LIVE --no-reload opt-out — needs docker+msb+pre-built rip-cage:latest image"
 else
   _live_setup_cage stopped || true
   if [[ -z "$RCL_CAGE" ]]; then
-    fail 8 "LIVE no-drift no-op" "live setup failed (rc up)"
+    fail 9 "LIVE --no-reload opt-out" "live setup failed (rc up)"
   else
-    # No config edit -> zero drift. --reload must be a plain resume.
-    l2_snap_pre=$(shasum "${HOME}/.cache/rip-cage/${RCL_CAGE}/config-applied.json" 2>/dev/null | awk '{print $1}')
-    l2_out=$(XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --output json up --reload "$RCL_WS" 2>&1) || true
-    l2_snap_post=$(shasum "${HOME}/.cache/rip-cage/${RCL_CAGE}/config-applied.json" 2>/dev/null | awk '{print $1}')
+    _live_add_host
+    L2_SNAP="${HOME}/.cache/rip-cage/${RCL_CAGE}/config-applied.json"
+    l2_snap_pre=$(shasum "$L2_SNAP" 2>/dev/null | awk '{print $1}')
+    l2_out=$(XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --output json up --no-reload "$RCL_WS" 2>&1) || true
+    l2_snap_post=$(shasum "$L2_SNAP" 2>/dev/null | awk '{print $1}')
     l2_ok=true l2_reason=""
-    echo "$l2_out" | grep -qi "converging" && { l2_ok=false; l2_reason="announced a converge on zero-drift"; }
-    [[ "$l2_snap_pre" != "$l2_snap_post" ]] && l2_ok=false && l2_reason="${l2_reason:+$l2_reason; }snapshot changed on zero-drift"
-    if [[ "$l2_ok" == "true" ]]; then pass 8 "LIVE: rc up --reload with zero drift is a plain resume (no converge)"
-    else fail 8 "LIVE no-drift no-op" "$l2_reason"; fi
+    if _live_inspect_has_host "$RCL_CAGE" "example.com"; then
+      l2_ok=false; l2_reason="new host applied live despite --no-reload (opt-out leaked!)"
+    fi
+    echo "$l2_out" | grep -qi "converging" && { l2_ok=false; l2_reason="${l2_reason:+$l2_reason; }announced a converge despite --no-reload"; }
+    [[ "$l2_snap_pre" != "$l2_snap_post" ]] && { l2_ok=false; l2_reason="${l2_reason:+$l2_reason; }snapshot changed despite --no-reload"; }
+    echo "$l2_out" | grep -qi "reload-eligible\|rc reload" || { l2_ok=false; l2_reason="${l2_reason:+$l2_reason; }no drift hint on --no-reload resume"; }
+    if [[ "$l2_ok" == "true" ]]; then pass 9 "LIVE: rc up --no-reload opts out of the default (plain resume + hint, no recreate)"
+    else fail 9 "LIVE --no-reload opt-out" "$l2_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
   [[ -n "${RCL_CAGE:-}" ]] && msb remove --force "$RCL_CAGE" >/dev/null 2>&1
@@ -404,27 +476,40 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# L3: RUNNING cage + RC_UP_CONVERGE=1 + new allowed host + plain `rc up` ->
-#     NEVER recreates (warn-only); the new host is NOT applied live.
+# L3: RUNNING cage + new allowed host: PLAIN `rc up` (default, no flags) ->
+#     NEVER recreates, hint-only, NO "not auto-recreating" notice (the
+#     default doesn't claim it would have converged — point 3). A follow-up
+#     `rc up --reload` on the SAME still-running, still-drifted cage -> also
+#     NEVER recreates, but DOES print the explicit-intent "not auto-recreating
+#     despite --reload" notice (review F7 stopped/running asymmetry).
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 if [[ "$_RC_CONVERGE_HAS_LIVE_RUNTIME" != "true" ]]; then
-  skip 9 "LIVE running warn-only — needs docker+msb+pre-built rip-cage:latest image"
+  skip 10 "LIVE running never-recreates — needs docker+msb+pre-built rip-cage:latest image"
 else
   _live_setup_cage running || true
   if [[ -z "$RCL_CAGE" ]]; then
-    fail 9 "LIVE running warn-only" "live setup failed (rc up)"
+    fail 10 "LIVE running never-recreates" "live setup failed (rc up)"
   else
     _live_add_host
-    l3_out=$(RC_UP_CONVERGE=1 XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --output json up "$RCL_WS" 2>&1) || true
     l3_ok=true l3_reason=""
-    # Running cage must NOT have converged: new host absent from live net rules.
+    # Plain `rc up` (default) on a RUNNING cage with drift: never recreates,
+    # and must NOT print the explicit-intent "not auto-recreating" notice.
+    l3_out_plain=$(XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --output json up "$RCL_WS" 2>&1) || true
     if _live_inspect_has_host "$RCL_CAGE" "example.com"; then
-      l3_ok=false; l3_reason="running cage was recreated with the new host (auto-recreate leaked!)"
+      l3_ok=false; l3_reason="running cage was recreated by a plain 'rc up' (auto-recreate leaked!)"
     fi
-    echo "$l3_out" | grep -qi "not auto-recreating\|RUNNING" || { l3_ok=false; l3_reason="${l3_reason:+$l3_reason; }no running-asymmetry warning emitted"; }
-    if [[ "$l3_ok" == "true" ]]; then pass 9 "LIVE: RUNNING cage never auto-recreates under RC_UP_CONVERGE (warn-only)"
-    else fail 9 "LIVE running warn-only" "$l3_reason"; fi
+    echo "$l3_out_plain" | grep -qi "not auto-recreating" && { l3_ok=false; l3_reason="${l3_reason:+$l3_reason; }plain 'rc up' printed the explicit-intent notice (should be hint-only)"; }
+    echo "$l3_out_plain" | grep -qi "reload-eligible\|rc reload" || { l3_ok=false; l3_reason="${l3_reason:+$l3_reason; }plain 'rc up' on running+drift didn't hint"; }
+    # Explicit `rc up --reload` on the SAME running+drifted cage: still never
+    # recreates, but NOW prints the "not auto-recreating despite --reload" notice.
+    l3_out_reload=$(XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --output json up --reload "$RCL_WS" 2>&1) || true
+    if _live_inspect_has_host "$RCL_CAGE" "example.com"; then
+      l3_ok=false; l3_reason="${l3_reason:+$l3_reason; }running cage was recreated by 'rc up --reload' (auto-recreate leaked!)"
+    fi
+    echo "$l3_out_reload" | grep -qi "not auto-recreating.*--reload\|not auto-recreating despite" || { l3_ok=false; l3_reason="${l3_reason:+$l3_reason; }explicit --reload on running cage didn't print the asymmetry notice"; }
+    if [[ "$l3_ok" == "true" ]]; then pass 10 "LIVE: RUNNING cage never auto-recreates (plain 'rc up' hint-only; explicit --reload prints the asymmetry notice)"
+    else fail 10 "LIVE running never-recreates" "$l3_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
   [[ -n "${RCL_CAGE:-}" ]] && msb remove --force "$RCL_CAGE" >/dev/null 2>&1
@@ -432,31 +517,44 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# L4: dry-run preview fidelity (review F1). `rc up --reload --dry-run` on a
-#     STOPPED cage with eligible drift must PREVIEW a converge/cold-recreate
-#     (not a misleading "would resume") AND mutate nothing (snapshot unchanged,
-#     cage still stopped).
+# L4: dry-run preview fidelity (review F1, default-on). PLAIN `rc up --dry-run`
+#     (no flags) on a STOPPED cage with eligible drift must PREVIEW a
+#     converge/cold-recreate (not a misleading "would resume") AND mutate
+#     nothing (snapshot unchanged, cage still stopped). `rc up --no-reload
+#     --dry-run` on the SAME cage must preview a plain resume instead (opt-out
+#     mirrored in the preview), still mutating nothing.
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 if [[ "$_RC_CONVERGE_HAS_LIVE_RUNTIME" != "true" ]]; then
-  skip 10 "LIVE dry-run converge preview — needs docker+msb+pre-built rip-cage:latest image"
+  skip 11 "LIVE dry-run converge preview — needs docker+msb+pre-built rip-cage:latest image"
 else
   _live_setup_cage stopped || true
   if [[ -z "$RCL_CAGE" ]]; then
-    fail 10 "LIVE dry-run converge preview" "live setup failed (rc up)"
+    fail 11 "LIVE dry-run converge preview" "live setup failed (rc up)"
   else
     _live_add_host
     L4_SNAP="${HOME}/.cache/rip-cage/${RCL_CAGE}/config-applied.json"
     l4_snap_pre=$(shasum "$L4_SNAP" 2>/dev/null | awk '{print $1}')
-    l4_out=$(XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --dry-run up --reload "$RCL_WS" 2>&1) || true
-    l4_snap_post=$(shasum "$L4_SNAP" 2>/dev/null | awk '{print $1}')
+    l4_out=$(XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --dry-run up "$RCL_WS" 2>&1) || true
+    l4_snap_mid=$(shasum "$L4_SNAP" 2>/dev/null | awk '{print $1}')
     l4_ok=true l4_reason=""
-    echo "$l4_out" | grep -qiE "converge|cold-recreate" || { l4_ok=false; l4_reason="preview didn't name converge/cold-recreate (got: $(echo "$l4_out" | tr '\n' '|'))"; }
-    echo "$l4_out" | grep -qi "would resume" && { l4_ok=false; l4_reason="${l4_reason:+$l4_reason; }preview misreports a plain resume"; }
-    [[ "$l4_snap_pre" != "$l4_snap_post" ]] && l4_ok=false && l4_reason="${l4_reason:+$l4_reason; }dry-run mutated the snapshot"
+    # NOTE: match anchored on "^Would converge"/"^Would resume" (the literal
+    # would_action preview line), NOT a bare substring — the live-cage mktemp
+    # template itself is named "rc-converge-live-XXXXXX", so an unanchored
+    # `grep -qi converge` false-matches on the cage/path name embedded in the
+    # mount-list lines regardless of which action was actually previewed.
+    echo "$l4_out" | grep -qE "^Would converge container" || { l4_ok=false; l4_reason="plain --dry-run preview didn't name converge (got: $(echo "$l4_out" | tr '\n' '|'))"; }
+    echo "$l4_out" | grep -qE "^Would resume container" && { l4_ok=false; l4_reason="${l4_reason:+$l4_reason; }plain --dry-run preview misreports a plain resume"; }
+    [[ "$l4_snap_pre" != "$l4_snap_mid" ]] && l4_ok=false && l4_reason="${l4_reason:+$l4_reason; }plain --dry-run mutated the snapshot"
+    # --no-reload --dry-run on the SAME cage: opt-out mirrored in the preview.
+    l4_out_noreload=$(XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --dry-run up --no-reload "$RCL_WS" 2>&1) || true
+    l4_snap_post=$(shasum "$L4_SNAP" 2>/dev/null | awk '{print $1}')
+    echo "$l4_out_noreload" | grep -qE "^Would resume container" || { l4_ok=false; l4_reason="${l4_reason:+$l4_reason; }--no-reload --dry-run didn't preview a plain resume (got: $(echo "$l4_out_noreload" | tr '\n' '|'))"; }
+    echo "$l4_out_noreload" | grep -qE "^Would converge container" && { l4_ok=false; l4_reason="${l4_reason:+$l4_reason; }--no-reload --dry-run still previewed a converge"; }
+    [[ "$l4_snap_mid" != "$l4_snap_post" ]] && l4_ok=false && l4_reason="${l4_reason:+$l4_reason; }--no-reload --dry-run mutated the snapshot"
     [[ "$(msb inspect "$RCL_CAGE" --format json 2>/dev/null | jq -r '.status')" == "Stopped" ]] || { l4_ok=false; l4_reason="${l4_reason:+$l4_reason; }dry-run changed cage state"; }
-    if [[ "$l4_ok" == "true" ]]; then pass 10 "LIVE: rc up --reload --dry-run previews a converge honestly, mutates nothing"
-    else fail 10 "LIVE dry-run converge preview" "$l4_reason"; fi
+    if [[ "$l4_ok" == "true" ]]; then pass 11 "LIVE: plain 'rc up --dry-run' previews a converge honestly; --no-reload --dry-run previews the opt-out; neither mutates"
+    else fail 11 "LIVE dry-run converge preview" "$l4_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
   [[ -n "${RCL_CAGE:-}" ]] && msb remove --force "$RCL_CAGE" >/dev/null 2>&1

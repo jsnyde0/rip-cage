@@ -572,9 +572,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# C14: Eligible-drift hint text now offers `rc up --reload` alongside `rc reload`
-#      (rip-cage-tsf2.9 point 5). Snapshot lacks the added host -> emit_hint fires
-#      the reload-eligible notice, which must name BOTH one-command fixes.
+# C14: Eligible-drift hint text (rip-cage-y0u0 default-on flip). Snapshot lacks
+#      the added host -> emit_hint fires the reload-eligible notice, which must
+#      name `rc reload` (applies now, works on a running cage) AND say the
+#      NEXT plain 'rc up' converges automatically once the cage is stopped
+#      (converge-on-up is default-on now — no '--reload' flag needed; that
+#      wording was retired with the flip, rip-cage-tsf2.9 point 5 superseded).
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 setup_sandbox "config-project-network-allowed-hosts.yaml"
@@ -589,8 +592,9 @@ c14_exit=$?
 c14_ok=true c14_reason=""
 [[ "$c14_exit" -ne 0 ]] && c14_ok=false && c14_reason="emit_hint exit $c14_exit"
 echo "$c14_out" | grep -q "rc reload" || { c14_ok=false; c14_reason="${c14_reason:+$c14_reason; }hint doesn't name rc reload"; }
-echo "$c14_out" | grep -q "rc up --reload" || { c14_ok=false; c14_reason="${c14_reason:+$c14_reason; }hint doesn't offer rc up --reload"; }
-if [[ "$c14_ok" == "true" ]]; then pass 14 "eligible-drift hint offers both 'rc reload' and 'rc up --reload'"
+echo "$c14_out" | grep -qi "converges automatically" || { c14_ok=false; c14_reason="${c14_reason:+$c14_reason; }hint doesn't say the next plain 'rc up' converges automatically"; }
+echo "$c14_out" | grep -q "rc up --reload" && { c14_ok=false; c14_reason="${c14_reason:+$c14_reason; }hint still names retired '--reload' flag"; }
+if [[ "$c14_ok" == "true" ]]; then pass 14 "eligible-drift hint offers 'rc reload' now + names the default-on 'rc up' converge (no --reload flag needed)"
 else fail 14 "eligible-drift hint text" "$c14_reason"; fi
 teardown_sandbox
 

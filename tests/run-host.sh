@@ -529,7 +529,7 @@ _run_all_tests() {
   # (engine-deletion sweep, rip-cage-3vj2 / S4).
   run_pytest "${SCRIPT_DIR}/test_skill_server.py" --with pytest python -m pytest "${SCRIPT_DIR}/test_skill_server.py" -v   # rip-cage-nu91: skill-server MCP shim unit tests
   run_test "${SCRIPT_DIR}/test-rc-reload.sh"             # rip-cage-hhh.4: rc reload snapshot format + diff generalization
-  run_test "${SCRIPT_DIR}/test-up-converge.sh"           # rip-cage-tsf2.9: rc up --reload / RC_UP_CONVERGE converge-on-up (stopped-only cold-recreate)
+  run_test "${SCRIPT_DIR}/test-up-converge.sh"           # rip-cage-tsf2.9 / rip-cage-y0u0: rc up converge-on-up, DEFAULT-ON for stopped cages (--no-reload opts out; RC_UP_CONVERGE retired)
   run_test "${SCRIPT_DIR}/test-rc-allowlist.sh"          # rip-cage-hhh.6: rc allowlist add/show/promote + D10 host-side guard
   run_test "${SCRIPT_DIR}/test-config-verbs.sh"          # rip-cage-tsf2.10.4: rc config set/add/remove surgical write verbs (ADR-021 D8) + allowlist-add delegation
   run_test "${SCRIPT_DIR}/test-config-effective-view.sh" # rip-cage-tsf2.10.5: manifest_egress loader-contract split (ADR-021 D4) — SEPARATE field, applied/pending source, consumer convergence, requires-rebuild
