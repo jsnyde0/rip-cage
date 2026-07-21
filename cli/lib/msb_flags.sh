@@ -200,7 +200,19 @@ _msb_flags_generate() {
     local host
     host=$(jq -r ".allowed_hosts[${h}]" <<<"$cfg")
     echo "--net-rule"
-    echo "allow@${host}"
+    # Port-tight default (ADR-029 D4; empirically proven by spike
+    # rip-cage-uuh9, tests/spike-uuh9-port443.sh, 17/17 probes): a
+    # colon-free host is a default floor host lacking an explicit port,
+    # so scope it to tcp:443 instead of all-ports. A host that already
+    # carries an explicit port/proto spec (contains a colon) is a
+    # user-added host (self-hosted svc, registry mirror on a nonstandard
+    # port) -- emit it UNCHANGED so the port stays overridable (C2 --
+    # ADR-005 D12 "block the accident, don't gate legitimate work").
+    if [[ "$host" != *:* ]]; then
+      echo "allow@${host}:tcp:443"
+    else
+      echo "allow@${host}"
+    fi
   done
 
   # 2. Secrets: one --secret <SYNTH>@<host> per (credential, host) pair.

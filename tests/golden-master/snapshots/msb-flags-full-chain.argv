@@ -1,9 +1,9 @@
 --net-default
 deny
 --net-rule
-allow@github.com
+allow@github.com:tcp:443
 --net-rule
-allow@api.anthropic.com
+allow@api.anthropic.com:tcp:443
 --secret
 GH_TOKEN__1_GITHUB_COM@github.com
 --secret

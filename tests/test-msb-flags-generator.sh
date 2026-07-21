@@ -39,6 +39,11 @@
 #       argv, env, or in-cage hook path (ADR-029 D2). This generator only
 #       ever emitted msb primitives to begin with; this test is the
 #       structural, permanent guard against that regressing.
+#   T17 port-tight default (rip-cage-mzu6, ADR-029 D4 / spike rip-cage-uuh9,
+#       C2 overridable-port condition): a colon-free host in allowed_hosts
+#       emits allow@<host>:tcp:443 (default floor hosts get port-scoped);
+#       a host already carrying an explicit port/proto spec (a colon in the
+#       string) is emitted UNCHANGED, verbatim, no double-suffix.
 
 set -uo pipefail
 
@@ -68,7 +73,7 @@ echo "=== T1: allowed_hosts -> --net-default deny + --net-rule allow@host per ho
 T1_CFG='{"allowed_hosts": ["github.com", "api.anthropic.com"]}'
 T1_OUT=$(_msb_flags_generate "$T1_CFG")
 T1_RC=$?
-T1_EXPECTED=$'--net-default\ndeny\n--net-rule\nallow@github.com\n--net-rule\nallow@api.anthropic.com'
+T1_EXPECTED=$'--net-default\ndeny\n--net-rule\nallow@github.com:tcp:443\n--net-rule\nallow@api.anthropic.com:tcp:443'
 if [[ "$T1_RC" -eq 0 ]]; then
   pass "T1: exits 0"
 else
@@ -652,6 +657,43 @@ else
 fi
 unset CCTOK__1_API_ANTHROPIC_COM 2>/dev/null || true
 rm -f "$T16_FILE" "$T16D_FILE"
+
+
+# ---------------------------------------------------------------------------
+# T17: port-tight default (rip-cage-mzu6, ADR-029 D4 / spike rip-cage-uuh9,
+# C2 overridable-port condition). A colon-free host is a default floor host
+# lacking an explicit port -> port-scoped to :tcp:443. A host string that
+# already contains a colon (an explicit port/proto spec) is emitted
+# verbatim, unchanged -- no double-suffix.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T17: port-tight default -- colon-free host gets :tcp:443, explicit-port host is preserved verbatim ==="
+
+# T17a: colon-free host -> allow@<host>:tcp:443
+T17A_CFG='{"allowed_hosts": ["github.com"]}'
+T17A_OUT=$(_msb_flags_generate "$T17A_CFG")
+T17A_EXPECTED=$'--net-default\ndeny\n--net-rule\nallow@github.com:tcp:443'
+if [[ "$T17A_OUT" == "$T17A_EXPECTED" ]]; then
+  pass "T17a: colon-free host emits allow@<host>:tcp:443 (port-tight default)"
+else
+  fail "T17a: argv mismatch" "expected:
+$T17A_EXPECTED
+got:
+$T17A_OUT"
+fi
+
+# T17b: host WITH an explicit port -> preserved verbatim, no double-suffix.
+T17B_CFG='{"allowed_hosts": ["registry.local:tcp:5000"]}'
+T17B_OUT=$(_msb_flags_generate "$T17B_CFG")
+T17B_EXPECTED=$'--net-default\ndeny\n--net-rule\nallow@registry.local:tcp:5000'
+if [[ "$T17B_OUT" == "$T17B_EXPECTED" ]]; then
+  pass "T17b: host given with an explicit port is preserved verbatim (C2 overridable-port, no double-suffix)"
+else
+  fail "T17b: argv mismatch" "expected:
+$T17B_EXPECTED
+got:
+$T17B_OUT"
+fi
 
 
 echo ""
