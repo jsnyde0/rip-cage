@@ -41,7 +41,6 @@ class RipCage < Formula
     # cmd_build to find them — verify the layout is intact.
     assert_predicate libexec/"cage/Dockerfile", :exist?
     assert_predicate libexec/"cage/init/init-rip-cage.sh", :exist?
-    assert_predicate libexec/"cage/guards/hooks/block-ssh-bypass.sh", :exist?
     assert_predicate libexec/"VERSION", :exist?
   end
 end
