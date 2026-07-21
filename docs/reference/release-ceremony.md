@@ -149,7 +149,7 @@ The first cut after the `wlwc` + `ta1o` epics, which surfaced all three gates ab
 
 ## Disk hygiene — post-heavy-test/release prune habit
 
-After a release or a heavy testing session, Docker's disk image can grow significantly from accumulated build caches, old release images, and test-harness artifacts. Run these in order (each prunes a distinct layer):
+After a release or a heavy testing session, disk can grow significantly from accumulated Docker build caches, old release images, and test-harness artifacts. Docker remains the build-time OCI image tool under msb ([ADR-029](../decisions/ADR-029-msb-migration.md)), so steps 1-2 below still apply — but cages themselves are msb sandboxes, not Docker containers, so any leaked-cage cleanup must use `msb`/`rc` verbs, not `docker ps`/`docker volume` (those silently return zero rows against msb cages and no-op). Run these in order (each prunes a distinct layer):
 
 ```bash
 # 1. Prune dangling and unused images (old release images, intermediate build layers).
@@ -159,31 +159,28 @@ docker image prune -f
 #    repeated rc build / manifest e2e runs).
 docker builder prune -f
 
-# 3. Prune scratch-cage containers that the test harness leaked (only those whose
+# 3. Prune scratch-cage sandboxes that the test harness leaked (only those whose
 #    rc.source.path label is under the temp root — the safe discriminator).
-#    run-host.sh's self-healing sweep does this automatically at run start/end,
-#    but after a daemon crash or a Ctrl-C before the next run, this one-liner
-#    cleans them directly.
-for c in $(docker ps -aq --filter "label=rc.source.path" --format '{{.Names}}'); do
-  sp=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$c" 2>/dev/null || true)
+#    run-host.sh's `_sweep_scratch_cages()` (tests/run-host.sh) does this
+#    automatically at run start/end, but after a daemon crash or a Ctrl-C
+#    before the next run, this one-liner cleans them directly. Enumerates via
+#    `msb list`/`msb inspect` (NOT `docker ps`/`docker inspect` — msb cages
+#    aren't Docker containers, so the docker verbs would return zero rows and
+#    silently miss every leaked cage).
+for c in $(msb list --format json 2>/dev/null | jq -r '.[].name'); do
+  sp=$(msb inspect "$c" --format json 2>/dev/null | jq -r '.config.labels["rc.source.path"] // empty')
   case "$sp" in
     /private/var/folders/*|/var/folders/*|/tmp/*|/private/tmp/*) ./rc destroy --force "$c" || true ;;
   esac
 done
-
-# 4. Prune orphaned volumes — the rare tail where a container record was removed
-#    but its volume was not (e.g. `docker rm -f` without `docker volume rm`).
-#    rc destroy removes both container and volumes; this catches the stragglers.
-#    WARNING: this removes ALL dangling volumes on the host — run it only when
-#    you are confident no real cage's kept volume is dangling (check rc ls first).
-docker volume prune -f
 ```
 
-> **Why not automate the volume prune?** Volumes carry no `rc.source.path` label, so they cannot be temp-root-scoped safely. A real cage's volume a user intentionally kept would be silently removed by a blanket sweep. The harness sweeps containers (which carry the label); orphaned volumes are left to this manual step executed with human judgment (rip-cage-aqww D2/D3).
+> **What about the volume-prune step?** `rc destroy --force` removes a cage's `rc-state-<name>`/`rc-history-<name>` named volumes together with the cage itself, so step 3 above leaves no orphaned-scratch-volume tail to sweep separately — unlike the old Docker path, there is no `docker volume prune -f` step here. msb also has no blanket volume-prune verb (only `msb volume list` / `msb volume remove`), which is a feature, not a gap: volumes carry no `rc.source.path` label, so a blanket sweep can't be temp-root-scoped and would risk silently removing a real cage's intentionally-kept volume (rip-cage-aqww D2/D3). The label-scoped, non-blanket sweep in step 3 is the safe path end to end — no separate manual volume step is needed.
 
 ## canonical_refs
 
 - ADR-008 D4 (local==CI invariant; pinned-tool lint gate; release.yml-invalidation clause), D6 (GHCR multi-arch publish + visibility flip), D7 (Homebrew primary), D8 (tap-sync + url/sha coupling + brew-fetch gate)
 - ADR-013 D5 (CI tiers — full host-only suite), D6 (host-only determinism, run-all driver)
 - ADR-001 (fail-loud — a skipped/missing publish must fail loud before shipping)
+- ADR-029 (msb migration — D2/D4 msb boundary + build-time-only Docker; the reason `docker ps`/`docker volume` no-op against cages and `msb list`/`msb inspect`/`rc destroy` are the correct verbs here)
 - bd memories: `epic-close-reverify-delta-and-carry-forward-sweep`, `ci-new-tool-dependency-needs-arch-matrix-coverage`, `rip-cage-homebrew-formula-url-sha-coupling`, `ci-shellcheck-version-divergence`
