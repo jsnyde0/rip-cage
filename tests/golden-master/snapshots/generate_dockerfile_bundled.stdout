@@ -116,7 +116,8 @@ RUN groupadd -g 1000 agent \
 # engine (ADR-029 D2).
 # cage-env is populated at container start by the ADR-016 D2 preflight probe.
 # Pre-create it as agent-writable so the probe doesn't need a sudoers entry.
-RUN : > /etc/rip-cage/cage-env \
+RUN mkdir -p /etc/rip-cage \
+    && : > /etc/rip-cage/cage-env \
     && chown agent:agent /etc/rip-cage/cage-env \
     && chmod 0644 /etc/rip-cage/cage-env
 

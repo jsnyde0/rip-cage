@@ -13,7 +13,7 @@ rc.auth.credential-mounts.pi=real
 --label
 rc.config-mode=ro
 --label
-rc.config-loaded=1574d95842b7a499099c7090d3b9c5262a5ba8c392ae9254de68b4ecf9ff2d8a
+rc.config-loaded=165839fa930c444afde52deabb8af347514f9aae5d18ee5379b4b4a60428ddef
 --label
 rc.symlink-follow-fingerprint=ec6a1aac36ef0b705629fbe9627f6ce080c0b1b1335b5dacdd544333b2c6e8f4
 -e
@@ -49,9 +49,9 @@ rc.egress.config-override=false
 --net-default
 deny
 --net-rule
-allow@api.github.com
+allow@api.github.com:tcp:443
 --net-rule
-allow@doltremoteapi.dolthub.com
+allow@doltremoteapi.dolthub.com:tcp:443
 --net-rule
-allow@github.com
+allow@github.com:tcp:443
 rip-cage:latest
