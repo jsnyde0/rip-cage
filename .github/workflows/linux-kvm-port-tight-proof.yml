@@ -1,0 +1,110 @@
+name: Linux/KVM port-tight egress proof
+
+# Verifies rip-cage's port-tight egress default (rip-cage-mzu6, ADR-029 D4)
+# holds when msb boots real cages on Linux/KVM (libkrun's KVM backend), not
+# just the macOS/HVF backend all prior spike evidence rests on. Closing this
+# gate (ADR-029 D6) is the last step before a Linux-claiming release; the
+# macOS release does not depend on it (bead rip-cage-4fxg).
+#
+# x86_64 ONLY. GH-hosted ARM runners have no nested KVM (libkrun's own
+# aarch64 integration-test leg uses a self-hosted runner instead of hosted
+# ubuntu-latest) -- arm64-Linux/KVM stays a documented caveat, not proven
+# here.
+#
+# Credential-free by design: runs ONLY the Q2 port-scope proof from
+# tests/spike-uuh9-port443.sh (--q2-only) -- example.com:80 blocked under a
+# :443-scoped net-rule vs an all-ports baseline vs a :443 positive control,
+# all judged on real HTTP-body-size discrimination, zero msb fake-accept
+# confound. No ~/.claude credential is read and no `claude -p` turn runs, so
+# no tokens are burned. Q1 (a real generative turn against the live default
+# host set) needs an authed credential and stays a manual/gated run, not
+# routine CI. Being credential-free also means fork PRs can run this safely.
+#
+# Permanent regression guard (post rip-cage-4fxg): path-filtered to the
+# surfaces whose change could regress port-tight-on-KVM -- the Dockerfile,
+# the net-rule generator, the spike test itself, the egress config, and this
+# workflow file.
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - cage/Dockerfile
+      - cli/lib/msb_flags.sh
+      - tests/spike-uuh9-port443.sh
+      - .rip-cage.yaml
+      - .github/workflows/linux-kvm-port-tight-proof.yml
+  push:
+    branches:
+      - main
+    paths:
+      - cage/Dockerfile
+      - cli/lib/msb_flags.sh
+      - tests/spike-uuh9-port443.sh
+      - .rip-cage.yaml
+      - .github/workflows/linux-kvm-port-tight-proof.yml
+
+jobs:
+  q2-port-scope-proof:
+    name: Q2 port-scope proof (Linux x86_64 / KVM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # KVM-on-hosted-runner prelude, copied verbatim from libkrun's own CI
+      # (containers/libkrun .github/workflows/integration_tests.yml, the
+      # "Enable KVM group perms" step on its x86_64 leg, runs-on: standard
+      # hosted ubuntu -- no self-hosted label, no fork guard). GH-hosted
+      # x86_64 ubuntu runners DO expose /dev/kvm; it's permission-gated, and
+      # this udev rule (MODE="0666") is the proven fix. libkrun boots real
+      # microVMs this way on every PR; msb rides the same libkrun core.
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo usermod -a -G kvm "$USER"
+
+      - name: Verify /dev/kvm is accessible
+        run: |
+          ls -la /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+
+      - name: Install yq (mikefarah v4, required by rc build's manifest chain)
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Install msb (microsandbox CLI)
+        # Official install script (see microsandbox/microsandbox README) --
+        # installs to ~/.local/bin, which isn't on PATH for non-login shells
+        # by default, so add it via GITHUB_PATH for subsequent steps.
+        run: |
+          curl -fsSL https://install.microsandbox.dev | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify msb is responsive
+        run: |
+          msb --version
+          msb image list --format json
+
+      - name: rc build (docker build -> auto msb load; see cli/build.sh _build_msb_load)
+        # rc build already does docker build AND, when msb is present on
+        # PATH, a one-time `docker save | msb load` conversion at the end
+        # (cli/build.sh:_build_msb_load) -- no separate load step needed.
+        run: ./rc build
+
+      - name: Verify rip-cage:latest loaded into msb
+        run: msb image list --format json | jq -e '.[] | select(.reference == "rip-cage:latest")'
+
+      - name: Run Q2 credential-free port-scope proof
+        run: bash tests/spike-uuh9-port443.sh --q2-only
+
+      - name: Upload spike diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spike-uuh9-q2-diagnostics
+          path: /tmp/spike-uuh9-*
+          if-no-files-found: ignore
