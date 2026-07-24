@@ -444,6 +444,94 @@ else
 fi
 rm -rf "$MISSING_BEADS"
 
+# --- Shared helper: stage/restore the msb image cache for Tests 19/20 ---
+# rip-cage-neu7.2: _image_absent (cli/up.sh:2442-2447) ORs a third clause --
+# "msb image list contains $IMAGE" -- alongside the docker-side staleness
+# checks that Tests 19/20 already fake via `docker build` + `docker tag`. On
+# a host where msb's LOCAL cache never had rip-cage:latest loaded into it
+# (e.g. the host-only CI job, which deliberately runs no `rc build`), that
+# third clause is unconditionally true, which pins _image_absent=true no
+# matter what RC_VERSION says -- making Test 20's "RC_VERSION=unknown must
+# NOT trigger re-provisioning" assertion unfalsifiable, and Test 19's PASS
+# vacuous (coincidental with the environment, not real positive evidence).
+#
+# Fix: after each test tags its fake image as rip-cage:latest for docker,
+# ALSO stage that same content into msb's cache under the same reference --
+# mirroring cli/build.sh's _build_msb_load conversion step (docker save ->
+# msb load --tag), confirmed via `msb load --help` to take -i <tar> and
+# --tag <ref> exactly as _build_msb_load invokes it. This makes the third
+# clause reflect a real staged image on every host, so both tests correctly
+# probe ONLY the staleness dimension (_image_is_current) instead of being
+# gated by whether msb's cache happens to be pre-populated.
+#
+# Restore semantics (verified empirically, rip-cage-neu7.2 investigation):
+# `msb load --tag <ref>` on an EXISTING reference overwrites that image row
+# in place rather than creating a new row + repointing a join table -- so
+# reloading a previously-saved backup tar under the same --tag safely
+# restores the original content even when live sandboxes hold a foreign-key
+# reference to that row (msb REMOVES from real sandboxes only if you `msb
+# image remove` the reference, not on a re-`load`). `msb image remove` is
+# reserved for the case where msb's cache had NO original rip-cage:latest
+# before staging (the CI case) -- nothing could have a live FK to an image
+# that never existed before this test ran, so plain removal is safe there.
+MSB_CACHE_HAD_ORIGINAL=false
+MSB_CACHE_BACKUP_TAR=""
+MSB_CACHE_STAGED=false
+
+_msb_available() {
+  command -v msb > /dev/null 2>&1
+}
+
+# _stage_fake_image_into_msb_cache — call AFTER `docker tag <fake> rip-cage:latest`
+# has landed. Backs up any pre-existing msb-cached rip-cage:latest, then loads
+# the current docker-side rip-cage:latest content into msb's cache under the
+# same reference. Best-effort: msb absence, save failure, or load failure all
+# leave MSB_CACHE_STAGED=false and are silently skipped (mirrors
+# _build_msb_load's best-effort posture in cli/build.sh) -- a host without msb
+# does not need this staging (up.sh's third _image_absent clause can't even
+# run `msb image list` there).
+_stage_fake_image_into_msb_cache() {
+  MSB_CACHE_HAD_ORIGINAL=false
+  MSB_CACHE_BACKUP_TAR=""
+  MSB_CACHE_STAGED=false
+  _msb_available || return 0
+
+  if msb image list --format json 2>/dev/null | jq -e \
+      'any(.[]; .reference == "rip-cage:latest")' >/dev/null 2>&1; then
+    MSB_CACHE_HAD_ORIGINAL=true
+    MSB_CACHE_BACKUP_TAR=$(mktemp -t "rc-msb-cache-backup.XXXXXX.tar")
+    msb image save rip-cage:latest -o "$MSB_CACHE_BACKUP_TAR" >/dev/null 2>&1 || true
+  fi
+
+  local _tar
+  _tar=$(mktemp -t "rc-msb-cache-stage.XXXXXX.tar")
+  if docker save rip-cage:latest -o "$_tar" >/dev/null 2>&1; then
+    if msb load --tag rip-cage:latest -i "$_tar" >/dev/null 2>&1; then
+      MSB_CACHE_STAGED=true
+    fi
+  fi
+  rm -f "$_tar"
+}
+
+# _restore_msb_cache_image — undoes _stage_fake_image_into_msb_cache. No-op
+# unless staging actually happened. If msb's cache already had rip-cage:latest
+# before staging, reloads the saved backup tar under the same --tag (in-place
+# overwrite, FK-safe per the note above). Otherwise removes the fake reference
+# entirely so later tests in the same run see an empty cache again, matching
+# the pre-test state.
+_restore_msb_cache_image() {
+  _msb_available || return 0
+  [[ "$MSB_CACHE_STAGED" == "true" ]] || return 0
+
+  if [[ "$MSB_CACHE_HAD_ORIGINAL" == "true" && -n "$MSB_CACHE_BACKUP_TAR" && -f "$MSB_CACHE_BACKUP_TAR" ]]; then
+    msb load --tag rip-cage:latest -i "$MSB_CACHE_BACKUP_TAR" >/dev/null 2>&1 || true
+  else
+    msb image remove rip-cage:latest -f >/dev/null 2>&1 || true
+  fi
+  rm -f "$MSB_CACHE_BACKUP_TAR"
+  MSB_CACHE_STAGED=false
+}
+
 # --- Test 19: stale local image triggers re-provisioning in rc up --dry-run ---
 echo ""
 echo "=== Test 19: stale local image triggers re-provisioning ==="
@@ -468,6 +556,7 @@ else
   # Idempotent: safe when ORIGINAL_IMAGE_ID is empty (removes the stub tag).
   # Cleared after the normal-path restore so it does not fire spuriously.
   trap '
+    _restore_msb_cache_image
     if [[ -n "${ORIGINAL_IMAGE_ID:-}" ]]; then
       docker tag "$ORIGINAL_IMAGE_ID" rip-cage:latest >/dev/null 2>&1 || true
     else
@@ -494,6 +583,10 @@ else
     docker rmi "$T19_STALE_TAG" >/dev/null 2>&1 || true
     trap - EXIT INT TERM
   else
+    # rip-cage-neu7.2: stage the just-tagged fake image into msb's cache too,
+    # so _image_absent's third clause (msb-cache-empty) doesn't independently
+    # pin _image_absent=true regardless of the staleness label under test.
+    _stage_fake_image_into_msb_cache
     TEST_DIR_T19=$(mktemp -d)
     mkdir -p "${TEST_DIR_T19}/.git"
     # ADR-023: rc up requires a global config. Provide a minimal one via RC_CONFIG_GLOBAL.
@@ -504,6 +597,7 @@ else
     rm -f "$T19_GLOBAL_CFG"
 
     # Restore original image (or remove the stub tag if there was no prior image)
+    _restore_msb_cache_image
     if [[ -n "$ORIGINAL_IMAGE_ID" ]]; then
       docker tag "$ORIGINAL_IMAGE_ID" rip-cage:latest >/dev/null 2>&1
     else
@@ -559,6 +653,7 @@ else
   REPO_VERSION_FILE="${REPO_ROOT}/VERSION"
   BACKUP_VERSION_FILE="${REPO_ROOT}/VERSION.t20bak"
   trap '
+    _restore_msb_cache_image
     [[ -f "${BACKUP_VERSION_FILE:-}" ]] && mv "$BACKUP_VERSION_FILE" "$REPO_VERSION_FILE" 2>/dev/null || true
     if [[ -n "${ORIGINAL_IMAGE_T20:-}" ]]; then
       docker tag "$ORIGINAL_IMAGE_T20" rip-cage:latest >/dev/null 2>&1 || true
@@ -569,6 +664,12 @@ else
   ' EXIT INT TERM
 
   docker tag "$T20_STUB_TAG" rip-cage:latest >/dev/null 2>&1
+
+  # rip-cage-neu7.2: stage the just-tagged fake image into msb's cache too,
+  # so _image_absent's third clause (msb-cache-empty) doesn't independently
+  # pin _image_absent=true, which would make the RC_VERSION=unknown skip
+  # unobservable regardless of _image_is_current's return value.
+  _stage_fake_image_into_msb_cache
 
   TEST_DIR_T20=$(mktemp -d)
   mkdir -p "${TEST_DIR_T20}/.git"
@@ -586,6 +687,7 @@ else
   mv "$BACKUP_VERSION_FILE" "$REPO_VERSION_FILE" 2>/dev/null || true
 
   # Restore original image
+  _restore_msb_cache_image
   if [[ -n "$ORIGINAL_IMAGE_T20" ]]; then
     docker tag "$ORIGINAL_IMAGE_T20" rip-cage:latest >/dev/null 2>&1
   else
