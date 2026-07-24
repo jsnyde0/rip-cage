@@ -89,6 +89,14 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
           yq --version
 
+      - name: Install msb (microsandbox CLI)
+        # Official install script (see microsandbox/microsandbox README) --
+        # installs to ~/.local/bin, which isn't on PATH for non-login shells
+        # by default, so add it via GITHUB_PATH for subsequent steps.
+        run: |
+          curl -fsSL https://install.microsandbox.dev | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Verify rc --version works
         run: ./rc --version
 
