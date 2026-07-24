@@ -98,16 +98,18 @@ trap cleanup EXIT
 #                                 (msb's `.config.manifest_digest`)
 #   DRIFT_CURRENT_IMAGE          sha256:... — the resolved $IMAGE's digest in
 #                                 msb's local image cache; empty = missing
-#   DRIFT_CONTAINER_INSPECT_FAIL "true" — the SECOND `msb inspect` call in the
-#     run (the sandbox's own image-digest check, immediately after the
-#     state check) fails, while the first (state) call and every later
-#     label-read call still succeed. Simulates a transient msb-inspect
-#     failure / TOCTOU race (sandbox removed between the state-check and
-#     the drift guard) — T7 (M2 review finding). Docker's fake shim could
-#     target this via a distinct `--format` value ('{{.Image}}' vs
-#     '{{.State.Status}}'); msb's `inspect NAME --format json` returns one
-#     undifferentiated JSON blob per call, so the msb-native translation is
-#     call-count-based instead (DRIFT_INSPECT_COUNT_FILE, reset per call by
+#   DRIFT_CONTAINER_INSPECT_FAIL "true" — the THIRD `msb inspect` call in the
+#     run (the sandbox's own image-digest check, inside
+#     _up_resolve_resume_image_drift_running) fails, while the first
+#     (existing_path label-read, cli/up.sh:2461), the second (state check,
+#     cli/up.sh:2496), and every later label-read call still succeed.
+#     Simulates a transient msb-inspect failure / TOCTOU race (sandbox
+#     removed between the state-check and the drift guard) — T7 (M2 review
+#     finding). Docker's fake shim could target this via a distinct
+#     `--format` value ('{{.Image}}' vs '{{.State.Status}}'); msb's
+#     `inspect NAME --format json` returns one undifferentiated JSON blob
+#     per call, so the msb-native translation is call-count-based instead
+#     (DRIFT_INSPECT_COUNT_FILE, reset per call by
 #     run_rc_up).
 #   DRIFT_INSPECT_COUNT_FILE     scratch file the stub uses to count `inspect`
 #     invocations within one `rc up` run (reset per call by run_rc_up).
@@ -135,7 +137,7 @@ case "${1:-}" in
       [[ -f "$DRIFT_INSPECT_COUNT_FILE" ]] && _n=$(cat "$DRIFT_INSPECT_COUNT_FILE")
       _n=$((_n + 1))
       echo "$_n" > "$DRIFT_INSPECT_COUNT_FILE"
-      if [[ "${DRIFT_CONTAINER_INSPECT_FAIL:-}" == "true" && "$_n" -eq 2 ]]; then
+      if [[ "${DRIFT_CONTAINER_INSPECT_FAIL:-}" == "true" && "$_n" -eq 3 ]]; then
         echo "Error: no such sandbox: ${_name}" >&2
         exit 1
       fi
