@@ -449,38 +449,42 @@ teardown_sandbox
 setup_sandbox ""
 seed_symlink_auth_json
 
-# log() writes to stdout when OUTPUT_FORMAT is unset (the default here), not
-# stderr — capture both streams combined so the intentional-skip lines (which
-# use log()) and any stderr-only warnings are both visible to the assertions.
-_cm6_combined=$(RC_SKIP_KEYCHAIN_EXTRACTION=1 HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-  RC_ALLOWED_ROOTS="$TEST_WS" bash -c "
-  source '$RC' 2>&1
-  _UP_RUN_ARGS=()
-  wt_detected=false wt_name= wt_main_git=
-  _UP_CRED_MOUNTS_CLAUDE='none'
-  _UP_CRED_MOUNTS_PI='none'
-  _up_prepare_docker_mounts '$TEST_WS' 'test-cage-cm6' 2>&1
-" 2>&1)
-_cm6_log="$_cm6_combined"
-
-_cm6_ok=true _cm6_reason=""
-if ! echo "$_cm6_log" | grep -qi "credential mounts.*intentionally skipped\|intentionally skipped.*non-possession"; then
-  _cm6_ok=false; _cm6_reason="no CC intentional-skip log line found"
-fi
-if ! echo "$_cm6_log" | grep -qi "pi credential mount.*intentionally skipped\|auth\.json.*intentionally skipped"; then
-  _cm6_ok=false; _cm6_reason="${_cm6_reason:+$_cm6_reason; }no pi intentional-skip log line found"
-fi
-if ! echo "$_cm6_log" | grep -qi "symlink-follow auth\.json leaf intentionally skipped"; then
-  _cm6_ok=false; _cm6_reason="${_cm6_reason:+$_cm6_reason; }no symlink-follow intentional-skip log line found"
-fi
-if echo "$_cm6_log" | grep -qi "auth\.json not found\|auth\.json not mounted"; then
-  _cm6_ok=false; _cm6_reason="${_cm6_reason:+$_cm6_reason; }existence-gated 'not found' warning appeared under none (should be the intentional-skip line, not the missing-file line)"
-fi
-
-if [[ "$_cm6_ok" == "true" ]]; then
-  pass 6 "none -> distinct intentional-skip log lines (CC + pi + symlink-follow), distinguishable from existence-gated warnings"
+if _fixture_under_rc_reserved_top_level "$TEST_HOME"; then
+  echo "SKIP (reserved-scratch): CM6 none intentional-skip log lines — fixture external-target-dir resolves under an rc-reserved FHS top-level (TMPDIR unset on Linux CI -> mktemp lands under /tmp); rc's reserved-path guard (rc ~1456-1480) preempts this subtest before its intentional-skip log lines can print. Runs on macOS + full local suite. See bead rip-cage-29sp."
 else
-  fail 6 "none intentional-skip log lines" "$_cm6_reason (log: $_cm6_log)"
+  # log() writes to stdout when OUTPUT_FORMAT is unset (the default here), not
+  # stderr — capture both streams combined so the intentional-skip lines (which
+  # use log()) and any stderr-only warnings are both visible to the assertions.
+  _cm6_combined=$(RC_SKIP_KEYCHAIN_EXTRACTION=1 HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_ALLOWED_ROOTS="$TEST_WS" bash -c "
+    source '$RC' 2>&1
+    _UP_RUN_ARGS=()
+    wt_detected=false wt_name= wt_main_git=
+    _UP_CRED_MOUNTS_CLAUDE='none'
+    _UP_CRED_MOUNTS_PI='none'
+    _up_prepare_docker_mounts '$TEST_WS' 'test-cage-cm6' 2>&1
+  " 2>&1)
+  _cm6_log="$_cm6_combined"
+
+  _cm6_ok=true _cm6_reason=""
+  if ! echo "$_cm6_log" | grep -qi "credential mounts.*intentionally skipped\|intentionally skipped.*non-possession"; then
+    _cm6_ok=false; _cm6_reason="no CC intentional-skip log line found"
+  fi
+  if ! echo "$_cm6_log" | grep -qi "pi credential mount.*intentionally skipped\|auth\.json.*intentionally skipped"; then
+    _cm6_ok=false; _cm6_reason="${_cm6_reason:+$_cm6_reason; }no pi intentional-skip log line found"
+  fi
+  if ! echo "$_cm6_log" | grep -qi "symlink-follow auth\.json leaf intentionally skipped"; then
+    _cm6_ok=false; _cm6_reason="${_cm6_reason:+$_cm6_reason; }no symlink-follow intentional-skip log line found"
+  fi
+  if echo "$_cm6_log" | grep -qi "auth\.json not found\|auth\.json not mounted"; then
+    _cm6_ok=false; _cm6_reason="${_cm6_reason:+$_cm6_reason; }existence-gated 'not found' warning appeared under none (should be the intentional-skip line, not the missing-file line)"
+  fi
+
+  if [[ "$_cm6_ok" == "true" ]]; then
+    pass 6 "none -> distinct intentional-skip log lines (CC + pi + symlink-follow), distinguishable from existence-gated warnings"
+  else
+    fail 6 "none intentional-skip log lines" "$_cm6_reason (log: $_cm6_log)"
+  fi
 fi
 teardown_sandbox
 
