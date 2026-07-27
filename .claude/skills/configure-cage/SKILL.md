@@ -221,6 +221,70 @@ If a human needs L7 content policy or credential injection beyond a per-host `--
 that is fully operator-composed and unwired today — there is no manifest seam to point them at;
 relay that honestly rather than reaching for the deleted recipe.
 
+## Secret-posture sweep — propose masks, flag Tier-2 candidates
+
+**When this applies:** you're composing a cage over a workspace that holds live-looking
+secret material — most concretely a **pooled mount** (e.g. `~/code/personal`, with many
+sibling repos, each carrying its own `.env` or credential file). Hand-classifying every
+secret across dozens of repos doesn't scale as a manual recipe-reading exercise the way the
+rest of this skill does; this section is the answer to "handle 54 repos without per-repo
+hand-rework," and it stays agent judgment end to end — never rc machinery
+([ADR-005 D12](../../../docs/decisions/ADR-005-ecosystem-tools.md), FIRM). Full governing
+model: [ADR-030](../../../docs/decisions/ADR-030-classify-by-use-secret-posture.md).
+
+**The opt-in gradient — Tier 0 is the default, not a starting checkbox.** Per
+[ADR-030 D2](../../../docs/decisions/ADR-030-classify-by-use-secret-posture.md) (FIRM):
+
+| Tier | Cost | What it does |
+|---|---|---|
+| **Tier 0 — do nothing (the default)** | Zero | The cage + egress wall alone. Most trees should stay here forever — nothing masked, nothing reworked. |
+| **Tier 1 — `mounts.mask`** | A few lines per unneeded secret file | Boot-time `ro`-overmounts a secret file the caged task doesn't need, so it isn't even readable in-cage. Cheap, additive, per-file. |
+| **Tier 2 — non-possession rework** | Per-credential authoring | The guest never holds the real credential bytes; msb `--secret` substitutes them only on the wire toward the bound host. Reserved for the credentials that clear the criterion below. |
+
+The sweep below **proposes** movement up this gradient for the human's review — it never
+mandates one, and nothing it produces should read as a required migration. A tree that stays
+at Tier 0 after the sweep is a completely normal outcome.
+
+**The sweep itself (agent judgment, not a scanner rc ships):** when asked to compose a cage
+over a tree like this, scan it for secret-looking files (`.env`, credential dumps, anything
+that looks like it carries live key material) and produce a **proposal** for the human, in
+two parts:
+
+1. **A `mounts.mask` list (Tier 1)** — for each secret file that's present in the tree but
+   that the caged task doesn't actually need, propose adding its workspace-relative path to
+   `mounts.mask`. This is cheap and per-file; see
+   [config.md → `mounts.mask`](../../../docs/reference/config.md#mountsmask--workspace-mask-primitive-tier-1-project-secret-posture)
+   for the field shape and which config layer it belongs in (it rides the same
+   3-layer/union-merge model as the rest of this skill's config surface — see
+   "The 3-layer config model" above).
+2. **A Tier-2 flag** — for any credential you notice that plausibly meets the **judgment
+   criterion**: it is **high-value AND the cost of a leak is great or irreversible**. That's
+   the whole test — apply it per credential, per situation, the same way
+   [ADR-030 D3](../../../docs/decisions/ADR-030-classify-by-use-secret-posture.md) states it.
+   A production database password is one illustration of a credential that clears this bar
+   (high-value, and a leak is hard to walk back) — offered as a single worked instance of the
+   criterion in action, not as the first entry of a list to complete. Do **not** produce, or
+   reach for, an enumerated list of credential types that "always need" Tier 2 — that is
+   exactly the brittle-checklist shape the criterion exists to avoid. A credential that looks
+   structurally similar (say, another API key) may fail the same bar in a different project if
+   its blast radius is small or it rotates cheaply; judge the credential in front of you, not
+   its type.
+
+**Human approves; agent writes; rc stays dumb.** Present the proposal — the mask list and
+any Tier-2 flags with your reasoning — to the human. They review the (typically few) lines,
+tell you what to keep, drop, or adjust, and only then do you write the approved
+`mounts.mask` entries (and, if the human wants to proceed on a flagged credential, the
+`auth.credentials` binding — see "Credential non-possession" above for that entry's field
+shape) into the config. There is no deterministic scanner baked into `rc`, and no auto-wiring
+of masks or bindings — this whole flow is you reading the tree and proposing, the human
+deciding, you writing, exactly like every other composition step in this skill.
+
+For the full Tier-2 recipe once a credential is approved — the placeholder/real-value split,
+the worked `auth.credentials` example, the substitution dead zones (transformed credentials,
+mTLS), and the reflection residual — see
+[`docs/reference/secret-posture.md`](../../../docs/reference/secret-posture.md) rather than
+duplicating that detail here.
+
 ## Composing by judgment, not by machinery
 
 Write `tools.yaml` yourself, the way an engineer hand-writing config from documented building
