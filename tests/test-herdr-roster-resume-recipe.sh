@@ -365,6 +365,60 @@ test_t7_scripted_attach_wired() {
 }
 test_t7_scripted_attach_wired
 
+# =============================================================================
+# T8 -- attach hook must export the SAME relocated HERDR_SOCKET_PATH as the
+# start hook (rip-cage-vjuv). The start hook (T6) relocates the herdr control
+# socket to a guest-local path under /tmp so it survives off the durable host
+# mount. 'rc attach' dispatches the attach hook in a FRESH 'msb exec' process
+# that does NOT inherit the start hook's exported environment -- a bare
+# 'herdr' attach hook falls back to herdr's default (mounted, now-empty)
+# socket path and fails with 'Error: Os NotFound'. Confirmed live: `msb exec
+# code-personal -- herdr agent list` -> NotFound; with
+# HERDR_SOCKET_PATH=/tmp/rip-cage-herdr.sock exported first -> works.
+# =============================================================================
+echo ""
+echo "--- T8: attach hook exports the same relocated HERDR_SOCKET_PATH ---"
+
+test_t8_attach_hook_socket_relocation() {
+  if [[ ! -f "$HERDR_FRAGMENT" ]]; then
+    fail "T8: ${HERDR_FRAGMENT} missing"
+    return
+  fi
+  local start_hook attach_hook start_sock attach_sock
+  start_hook=$(yq -o=json '.tools[] | select(.name == "herdr") | .hooks.start' "$HERDR_FRAGMENT" 2>/dev/null | tr -d '"')
+  attach_hook=$(yq -o=json '.tools[] | select(.name == "herdr") | .hooks.attach' "$HERDR_FRAGMENT" 2>/dev/null | tr -d '"')
+
+  if echo "$attach_hook" | grep -q "HERDR_SOCKET_PATH"; then
+    pass "T8a: attach hook exports HERDR_SOCKET_PATH"
+  else
+    fail "T8a: attach hook does not reference HERDR_SOCKET_PATH -- 'rc attach' runs in a fresh msb exec that does not inherit the start hook's env, so a bare 'herdr' attach falls back to the default (mounted, empty) socket path and fails with 'Error: Os NotFound'"
+    return
+  fi
+
+  # The attach hook's relocated socket path must match the start hook's
+  # relocated socket path EXACTLY -- otherwise the client dials a different
+  # socket than the server bound.
+  start_sock=$(echo "$start_hook" | grep -oE '/tmp/[A-Za-z0-9._-]*herdr[A-Za-z0-9._-]*\.sock' | head -1)
+  attach_sock=$(echo "$attach_hook" | grep -oE '/tmp/[A-Za-z0-9._-]*herdr[A-Za-z0-9._-]*\.sock' | head -1)
+  if [[ -z "$start_sock" ]]; then
+    fail "T8b: could not extract a relocated socket path from the start hook"
+    return
+  fi
+  if [[ "$attach_sock" == "$start_sock" ]]; then
+    pass "T8b: attach hook relocates to the SAME socket path as start (${start_sock})"
+  else
+    fail "T8b: attach hook socket path ('${attach_sock}') does not match start hook socket path ('${start_sock}')"
+  fi
+
+  # attach still ultimately execs herdr (does not accidentally drop the CLI call).
+  if echo "$attach_hook" | grep -qE '(^|[^A-Za-z0-9_-])herdr([^A-Za-z0-9_-]|$)'; then
+    pass "T8c: attach hook still invokes herdr"
+  else
+    fail "T8c: attach hook no longer invokes herdr"
+  fi
+}
+test_t8_attach_hook_socket_relocation
+
 echo ""
 if (( FAILURES > 0 )); then
   echo "=== test-herdr-roster-resume-recipe.sh: ${FAILURES}/${TOTAL} failure(s) ==="

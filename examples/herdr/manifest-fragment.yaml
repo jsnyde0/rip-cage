@@ -151,4 +151,19 @@ tools:
       start: "_hsp_var=HERDR_SOCKET_PATH; _hsp_val=/tmp/rip-cage-herdr.sock; export \"${_hsp_var}\"=\"${_hsp_val}\"; mkdir -p \"${HOME}/.config/herdr\" && { [ -d /workspace ] && export HERDR_STARTUP_CWD=/workspace || true; } && herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 & echo \"[rip-cage] herdr server started (PID=$!)\" && sleep 1 && for _agent in pi claude; do if command -v \"${_agent}\" > /dev/null 2>&1; then _out=$(herdr integration install \"${_agent}\" 2>&1); _rc=$?; if [ \"$_rc\" -eq 0 ]; then echo \"[rip-cage] herdr integration installed: ${_agent}\"; else echo \"[rip-cage] WARNING: herdr integration install ${_agent} failed (exit=${_rc}): ${_out}\" >&2; fi; fi; done && python3 /usr/local/bin/herdr-scripted-attach.py --wait-seconds 15 > /tmp/rip-cage-herdr-scripted-attach.log 2>&1 || echo \"[rip-cage] WARNING: herdr scripted-attach exited non-zero -- roster restore may not have been triggered (see /tmp/rip-cage-herdr-scripted-attach.log)\" >&2"
       # attach: called by rc attach / rc up (ADR-019 D9 control surface).
       # Opens the herdr TUI client; the server was started by 'start'.
-      attach: "herdr"
+      #
+      # HERDR_SOCKET_PATH relocation, attach side (rip-cage-vjuv, follow-up to
+      # rip-cage-46s5): 'rc attach' dispatches this hook in a FRESH 'msb exec'
+      # process, which does NOT inherit the start hook's exported environment
+      # -- a bare 'herdr' here looks at herdr's default ~/.config/herdr socket
+      # path, which is now EMPTY (the socket lives at the relocated /tmp path
+      # instead, per the start hook above), so attach fails with
+      # 'Error: Os NotFound'. Must export the SAME HERDR_SOCKET_PATH value the
+      # start hook uses before invoking herdr, so the client dials the socket
+      # the server actually bound.
+      #
+      # Same indirect-assignment idiom as 'start' above (var-holding-the-name +
+      # `export "$v"="$val"`), for the same reason: the MULTIPLEXER hook-bounds
+      # static check (ADR-005 D10/D11) unanchored-string-matches 'PATH=' and
+      # would false-positive on a literal `export HERDR_SOCKET_PATH=...`.
+      attach: "_hsp_var=HERDR_SOCKET_PATH; _hsp_val=/tmp/rip-cage-herdr.sock; export \"${_hsp_var}\"=\"${_hsp_val}\"; exec herdr"
