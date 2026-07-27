@@ -113,6 +113,18 @@ if [[ ! -f "${SESSION_DIR}/.claude.json" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Env hygiene (rip-cage-46s5, S4 spike trap): an inherited
+# CLAUDE_CODE_CHILD_SESSION marker silently disables transcript saving in
+# interactive panes (docs/2026-07-27-msb-spike-roster-resume.md, S4 footgun
+# #2 -- two interactive sessions incl. a clean /exit wrote NO transcript
+# jsonl while inheriting this marker from the launching process's own env).
+# This wrapper is the single PATH-shadowing chokepoint for every claude
+# invocation (herdr scripted-attach resume, -p one-shots, direct calls) --
+# scrubbing it here covers every spawn/resume path uniformly, without
+# special-casing herdr (or any other multiplexer)'s own start/resume hooks.
+unset CLAUDE_CODE_CHILD_SESSION
+
+# ---------------------------------------------------------------------------
 # Exec the real Claude binary — avoid recursion (this wrapper is at /usr/local/bin/claude)
 # ---------------------------------------------------------------------------
 exec "$REAL_CLAUDE" "$@"

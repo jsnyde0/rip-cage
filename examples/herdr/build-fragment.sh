@@ -1,3 +1,51 @@
+#!/usr/bin/env bash
+# build-fragment.sh -- regenerate examples/herdr/manifest-fragment.yaml from the
+# canonical recipe source artifact (scripted-attach.py).
+#
+# The manifest fragment is self-contained (a user copies it into tools.yaml and
+# runs `rc build` with ZERO rc source edits). The herdr-bin TOOL entry provisions
+# the herdr binary (pinned release download) AND bakes scripted-attach.py at
+# /usr/local/bin/herdr-scripted-attach.py (root:root, 0755 -- agent-executable,
+# not agent-writable, same posture as the herdr binary itself) via a single-line,
+# base64-encoded install_cmd (injection-safe -- no newlines reach the Dockerfile).
+#
+# This generator exists only so scripted-attach.py stays human-readable/editable
+# in version control; the COMMITTED manifest-fragment.yaml is the load-bearing,
+# copy-pasteable recipe. Re-run this after editing scripted-attach.py OR bumping
+# the herdr pin/checksums:
+#   examples/herdr/build-fragment.sh > examples/herdr/manifest-fragment.yaml
+#
+# Mechanism note: the template below uses a QUOTED heredoc (<<'YAML') plus
+# literal __PLACEHOLDER__ token substitution (sed), NOT an unquoted heredoc
+# with inline ${...} expansion -- the emitted install_cmd/hooks strings
+# contain THEIR OWN in-container runtime shell variables ($ARCH, ${TARGET},
+# $!, $_rc, ${_agent}, ...) that must survive into the output literally, for
+# the Dockerfile RUN / init-rip-cage.sh's `sh` to expand at BUILD/BOOT time --
+# not at THIS generator's run time. An unquoted heredoc would silently
+# (mis)expand those against this script's own (empty/wrong) environment.
+#
+# rip-cage-46s5 (ADR-029 D8): scripted-attach.py is the interim headless-PTY-
+# client mechanism that triggers herdr's native roster restore (S4 spike --
+# restore does not fire on server start alone, only within ~10s of a client
+# attach). Retires once herdr ships a headless restore-on-start trigger
+# (dotpi-s7ry feature request) -- ADR-029 D8's invalidation clause.
+set -euo pipefail
+
+_here="$(cd "$(dirname "$0")" && pwd)"
+
+b64() { base64 < "$1" | tr -d '\n'; }
+
+ATTACH_B64="$(b64 "${_here}/scripted-attach.py")"
+
+# Pinned release + checksums: keep these three values in lockstep when bumping
+# the herdr version (see the version_pin/install_cmd comments in the template
+# below for the "why" of each pin).
+HERDR_VERSION="v0.7.5"
+HERDR_SHA_AARCH64="32e763a1499a6b694b1d708e4f062b743be1da9f34fcfa4d212d6db6fe09a8b9"
+HERDR_SHA_X86_64="3dc83288073e4c2d3c679a30e7be97bcca9141c6fd17dbbb9219142e95c59253"
+ATTACH_PATH="/usr/local/bin/herdr-scripted-attach.py"
+
+TEMPLATE=$(cat <<'YAML'
 version: 1
 tools:
   # herdr multiplexer provider — copy these entries into your tools.yaml to enable
@@ -36,22 +84,22 @@ tools:
   # TOOL entry: installs the herdr binary + scripted-attach helper at build time.
   - name: herdr-bin
     archetype: TOOL
-    # Pinned release: github.com/ogulcancelik/herdr v0.7.5 (bumped
+    # Pinned release: github.com/ogulcancelik/herdr __HERDR_VERSION__ (bumped
     # from v0.7.0, rip-cage-46s5 / ADR-029 D8 hygiene bump — latest stable at
     # design time, confirmed present via the GitHub releases API 2026-07-27).
     # Prebuilt binaries: herdr-linux-x86_64, herdr-linux-aarch64.
     # SHA-256 checksums INDEPENDENTLY verified: downloaded both
-    # v0.7.5 release assets, computed sha256sum locally,
+    # __HERDR_VERSION__ release assets, computed sha256sum locally,
     # cross-checked against the GitHub release API's asset `digest` field
     # (all four matched exactly).
     # NOTE: this pin bump does NOT carry forward a "validated" restore-behavior
     # label — S4 (docs/2026-07-27-msb-spike-roster-resume.md) validated native
-    # restore on herdr 0.7.3/0.7.4-era binaries, not v0.7.5. This
+    # restore on herdr 0.7.3/0.7.4-era binaries, not __HERDR_VERSION__. This
     # bead's own in-cage e2e (deferred pending a bootable msb cage) re-validates
     # restore on this exact pinned build before the roster-resume design is
     # trusted against it.
-    version_pin: "v0.7.5"
-    install_cmd: "ARCH=$(uname -m) && if [ \"$ARCH\" = \"aarch64\" ]; then TARGET=aarch64; EXPECTED_SHA=32e763a1499a6b694b1d708e4f062b743be1da9f34fcfa4d212d6db6fe09a8b9; else TARGET=x86_64; EXPECTED_SHA=3dc83288073e4c2d3c679a30e7be97bcca9141c6fd17dbbb9219142e95c59253; fi && curl -fsSL \"https://github.com/ogulcancelik/herdr/releases/download/v0.7.5/herdr-linux-${TARGET}\" -o /tmp/herdr && echo \"${EXPECTED_SHA}  /tmp/herdr\" | sha256sum -c - && install -m 755 /tmp/herdr /usr/local/bin/herdr && rm -f /tmp/herdr && echo 'IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiJzY3JpcHRlZC1hdHRhY2gucHkgLS0gaGVhZGxlc3MgUFRZIGNsaWVudCBhdHRhY2ggdG8gdHJpZ2dlciBoZXJkcidzIG5hdGl2ZQpyb3N0ZXIgcmVzdG9yZSAocmlwLWNhZ2UtNDZzNSwgQURSLTAyOSBEOCBkZWNpc2lvbiAyKS4KClNwaWtlIGZpbmRpbmcgKGRvY3MvMjAyNi0wNy0yNy1tc2Itc3Bpa2Utcm9zdGVyLXJlc3VtZS5tZCwgUzQpOiBoZXJkcidzCm5hdGl2ZSBwZXItcnVudGltZSBhZ2VudCByZXN0b3JlIGRvZXMgTk9UIGZpcmUgb24gc2VydmVyIHN0YXJ0IGFsb25lIChhCjktbWludXRlIGhlYWRsZXNzIG9ic2VydmF0aW9uIHdpbmRvdyB3aXRoIDkgZWxpZ2libGUgcGFuZXMgcHJvZHVjZWQgemVybwpyZS1leGVjcykuIEl0IGZpcmVzIHdpdGhpbiB+MTBzIG9mIEFOWSBjbGllbnQgYXR0YWNoIC0tIGh1bWFuIG9yIHNjcmlwdGVkIC0tCmFuZCBhIHNjcmlwdGVkIGhlYWRsZXNzIFBUWSBjbGllbnQgKHB5dGhvbiBwdHkuZm9yayArIFRJT0NTV0lOU1osIG5vIGh1bWFuLApubyByZWFsIHRlcm1pbmFsKSBpcyBzdWZmaWNpZW50IHRvIHRyaWdnZXIgaXQuIFJlc3RvcmVkIHBhbmUgcHJvY2Vzc2VzCnN1cnZpdmUgdGhlIGNsaWVudCBkZXRhY2hpbmcgYWZ0ZXJ3YXJkIChTNCBmaW5kaW5nICMyIGluIHRoZSAicmlwLWNhZ2UKcm9zdGVyLXJlc3VtZSBpbXBsaWNhdGlvbnMiIHNlY3Rpb24pLgoKVGhpcyBzY3JpcHQgaXMgdGhlIGludGVyaW0gbWVjaGFuaXNtIHRoZSBjYWdlJ3MgaGVyZHIgJ3N0YXJ0JyBob29rIGludm9rZXMKcmlnaHQgYWZ0ZXIgdGhlIGhlcmRyIHNlcnZlciBib290cyAocmVjaXBlLW93bmVkLCBwZXIgQURSLTAyOSBEOCdzIHJhdGlvbmFsZToKInRoZSBvbmx5IGNhZ2Utc2lkZSBnYXBzIGFyZSBkdXJhYmlsaXR5IG9mIGl0cyBzdGF0ZSBkaXIgLi4uIEFORCBhIHNjcmlwdGVkCmhlYWRsZXNzIFBUWSBhdHRhY2ggdG8gdHJpZ2dlciByZXN0b3JlIikuIEl0IHJldGlyZXMgb25jZSBoZXJkciBzaGlwcyBhCmhlYWRsZXNzIHJlc3RvcmUtb24tc3RhcnQgdHJpZ2dlciAoZG90cGktczdyeSBmZWF0dXJlIHJlcXVlc3QsIG5vdGVkIGluIHRoZQpiZWFkJ3MgTk9URVMpIC0tIHNlZSBBRFItMDI5IEQ4J3MgaW52YWxpZGF0aW9uIGNsYXVzZS4KCldoYXQgaXQgZG9lczoKICAxLiBwdHkuZm9yaygpIGEgY2hpbGQgdGhhdCBleGVjcyB0aGUgaGVyZHIgVFVJIGNsaWVudCAoYmFyZSAnaGVyZHInIGJ5CiAgICAgZGVmYXVsdCAtLSB0aGUgc2FtZSBjbGllbnQgdGhlIGhlcmRyIE1VTFRJUExFWEVSICdhdHRhY2gnIGhvb2sgdXNlcykuCiAgMi4gU2V0cyBhIHJlYWwgd2luc2l6ZSB2aWEgVElPQ1NXSU5TWiBvbiB0aGUgcHR5IG1hc3RlciBmZCBzbyB0aGUgY2xpZW50CiAgICAgc2VlcyBwbGF1c2libGUgdGVybWluYWwgZGltZW5zaW9ucyAobm90IGEgemVyby1zaXplIHB0eSkuCiAgMy4gV2FpdHMgLS13YWl0LXNlY29uZHMgKGRlZmF1bHQgMTVzIC0tIGNvbWZvcnRhYmx5IHBhc3QgUzQncyBlbXBpcmljYWxseQogICAgIG9ic2VydmVkIH4xMHMgcmVzdG9yZS10cmlnZ2VyIHdpbmRvdykgd2hpbGUgZHJhaW5pbmcgdGhlIGNsaWVudCdzCiAgICAgb3V0cHV0IHNvIGl0IG5ldmVyIGJsb2NrcyBvbiBhIGZ1bGwgcHR5IGJ1ZmZlci4KICA0LiBEZXRhY2hlczogU0lHVEVSTXMgdGhlIGNsaWVudCBhbmQgcmVhcHMgaXQuIFBlciBTNCwgdGhpcyBkb2VzIE5PVCBraWxsCiAgICAgdGhlIHBhbmVzL3Byb2Nlc3NlcyBoZXJkciBqdXN0IHJlc3RvcmVkIC0tIG9ubHkgdGhlIHNjcmlwdGVkIGNsaWVudAogICAgIHRoYXQgdHJpZ2dlcmVkIHRoZSByZXN0b3JlLgoKVXNhZ2U6CiAgc2NyaXB0ZWQtYXR0YWNoLnB5IFstLXdhaXQtc2Vjb25kcyBOXSBbLS0gaGVyZHItYXJncy4uLl0KCkV4aXQgc3RhdHVzOiAwIG9uY2UgdGhlIGNsaWVudCBoYXMgYmVlbiBhdHRhY2hlZCwgd2FpdGVkIG9uLCBhbmQgZGV0YWNoZWQuCk5vbi16ZXJvIG9ubHkgaWYgdGhlIHB0eS9leGVjIHNldHVwIGl0c2VsZiBmYWlscyAobmV2ZXIgZm9yICJyZXN0b3JlIGhhc24ndApoYXBwZW5lZCB5ZXQiIC0tIHRoaXMgc2NyaXB0IGhhcyBubyB3YXkgdG8gb2JzZXJ2ZSBoZXJkcidzIGludGVybmFsIHJlc3RvcmUKc3RhdGU7IGl0IG9ubHkgcHJvdmlkZXMgdGhlIGNsaWVudC1hdHRhY2ggdHJpZ2dlciBTNCBwcm92ZWQgaXMgbmVjZXNzYXJ5KS4KIiIiCmltcG9ydCBmY250bAppbXBvcnQgb3MKaW1wb3J0IHB0eQppbXBvcnQgc2VsZWN0CmltcG9ydCBzaWduYWwKaW1wb3J0IHN0cnVjdAppbXBvcnQgc3lzCmltcG9ydCB0ZXJtaW9zCmltcG9ydCB0aW1lCgpERUZBVUxUX1dBSVRfU0VDT05EUyA9IDE1CkRFRkFVTFRfUk9XUyA9IDI0CkRFRkFVTFRfQ09MUyA9IDgwCgoKZGVmIF9zZXRfd2luc2l6ZShmZCwgcm93cz1ERUZBVUxUX1JPV1MsIGNvbHM9REVGQVVMVF9DT0xTKToKICAgIHdpbnNpemUgPSBzdHJ1Y3QucGFjaygiSEhISCIsIHJvd3MsIGNvbHMsIDAsIDApCiAgICBmY250bC5pb2N0bChmZCwgdGVybWlvcy5USU9DU1dJTlNaLCB3aW5zaXplKQoKCmRlZiBfcGFyc2VfYXJncyhhcmd2KToKICAgIHdhaXRfc2Vjb25kcyA9IERFRkFVTFRfV0FJVF9TRUNPTkRTCiAgICBjbGllbnRfYXJncyA9IFsiaGVyZHIiXQoKICAgIGFyZ3MgPSBsaXN0KGFyZ3YpCiAgICBpZiAiLS13YWl0LXNlY29uZHMiIGluIGFyZ3M6CiAgICAgICAgaWR4ID0gYXJncy5pbmRleCgiLS13YWl0LXNlY29uZHMiKQogICAgICAgIHdhaXRfc2Vjb25kcyA9IGludChhcmdzW2lkeCArIDFdKQogICAgICAgIGRlbCBhcmdzW2lkeCA6IGlkeCArIDJdCiAgICBpZiAiLS0iIGluIGFyZ3M6CiAgICAgICAgaWR4ID0gYXJncy5pbmRleCgiLS0iKQogICAgICAgIGNsaWVudF9hcmdzID0gWyJoZXJkciJdICsgYXJnc1tpZHggKyAxIDpdCgogICAgcmV0dXJuIHdhaXRfc2Vjb25kcywgY2xpZW50X2FyZ3MKCgpkZWYgbWFpbihhcmd2KToKICAgIHdhaXRfc2Vjb25kcywgY2xpZW50X2FyZ3MgPSBfcGFyc2VfYXJncyhhcmd2KQoKICAgIHBpZCwgZmQgPSBwdHkuZm9yaygpCiAgICBpZiBwaWQgPT0gMDoKICAgICAgICAjIENoaWxkOiBleGVjIHRoZSByZWFsIGhlcmRyIFRVSSBjbGllbnQgdW5kZXIgdGhlIG5ldyBwdHkuIEFueSBleGVjCiAgICAgICAgIyBmYWlsdXJlIGV4aXRzIHRoZSBjaGlsZCBpbW1lZGlhdGVseTsgdGhlIHBhcmVudCdzIHJlYWQgbG9vcCBiZWxvdwogICAgICAgICMgc2VlcyBFT0YvT1NFcnJvciBhbmQgbW92ZXMgb24gdG8gdGhlIGRldGFjaCBzdGVwIChmYWlsLXNvZnQ6IHRoaXMKICAgICAgICAjIHNjcmlwdCBjYW5ub3QgaXRzZWxmIGNvbmZpcm0gaGVyZHIncyByZXN0b3JlIGZpcmVkLCBvbmx5IHRoYXQgaXQKICAgICAgICAjIHByb3ZpZGVkIHRoZSBhdHRhY2ggdHJpZ2dlcikuCiAgICAgICAgdHJ5OgogICAgICAgICAgICBvcy5leGVjdnAoY2xpZW50X2FyZ3NbMF0sIGNsaWVudF9hcmdzKQogICAgICAgIGZpbmFsbHk6CiAgICAgICAgICAgIG9zLl9leGl0KDEyNykgICMgcHJhZ21hOiBubyBjb3ZlciAtIG9ubHkgcmVhY2hlZCBvbiBleGVjIGZhaWx1cmUKCiAgICAjIFBhcmVudDogZ2l2ZSB0aGUgY2hpbGQgYSBwbGF1c2libGUgd2luZG93IHNpemUgYmVmb3JlIGl0IHJlYWRzIGl0LgogICAgdHJ5OgogICAgICAgIF9zZXRfd2luc2l6ZShmZCkKICAgIGV4Y2VwdCBPU0Vycm9yIGFzIGV4YzoKICAgICAgICBwcmludCgKICAgICAgICAgICAgZiJbaGVyZHItc2NyaXB0ZWQtYXR0YWNoXSBXQVJOSU5HOiBjb3VsZCBub3Qgc2V0IHB0eSB3aW5zaXplOiB7ZXhjfSIsCiAgICAgICAgICAgIGZpbGU9c3lzLnN0ZGVyciwKICAgICAgICApCgogICAgcHJpbnQoCiAgICAgICAgZiJbaGVyZHItc2NyaXB0ZWQtYXR0YWNoXSBhdHRhY2hlZCAocGlkPXtwaWR9KTsgd2FpdGluZyB7d2FpdF9zZWNvbmRzfXMgIgogICAgICAgICJmb3IgbmF0aXZlIHJlc3RvcmUgdG8gZmlyZS4uLiIsCiAgICAgICAgZmlsZT1zeXMuc3RkZXJyLAogICAgKQoKICAgICMgRHJhaW4gYW55IG91dHB1dCB0aGUgY2xpZW50IHdyaXRlcyBzbyBpdCBuZXZlciBibG9ja3Mgb24gYSBmdWxsIHB0eQogICAgIyBidWZmZXIgZHVyaW5nIHRoZSB3YWl0IHdpbmRvdy4gb3MucmVhZChmZCwgLi4uKSBvbiBhIHB0eSBtYXN0ZXIgaXMgYQogICAgIyBCTE9DS0lORyBjYWxsIHdpdGggbm8gdGltZW91dCBvZiBpdHMgb3duIC0tIGEgbmFpdmUgInJlYWQgdGhlbiBjaGVjawogICAgIyBkZWFkbGluZSIgbG9vcCB3b3VsZCBibG9jayBpbmRlZmluaXRlbHkgd2hlbmV2ZXIgdGhlIGNsaWVudCBnb2VzIHF1aWV0CiAgICAjIChlLmcuIGJldHdlZW4gc2NyZWVuIHJlZHJhd3MpLCBzaWxlbnRseSBkZWZlYXRpbmcgd2FpdF9zZWNvbmRzIGFuZAogICAgIyB0dXJuaW5nICJ3YWl0IE4gc2Vjb25kcywgdGhlbiBmb3JjZS1kZXRhY2giIGludG8gIndhaXQgdW50aWwgdGhlIGNsaWVudAogICAgIyB3cml0ZXMgc29tZXRoaW5nIG9yIGV4aXRzIG9uIGl0cyBvd24iIChjYXVnaHQgYnkKICAgICMgdGVzdHMvdGVzdC1oZXJkci1zY3JpcHRlZC1hdHRhY2guc2ggVDQgYWdhaW5zdCBhIHNpbGVudCBzdHViIGNsaWVudCkuCiAgICAjIHNlbGVjdCgpIHdpdGggYW4gZXhwbGljaXQgdGltZW91dCBpcyB3aGF0IGFjdHVhbGx5IGJvdW5kcyB0aGUgd2FpdC4KICAgIGRlYWRsaW5lID0gdGltZS50aW1lKCkgKyB3YWl0X3NlY29uZHMKICAgIHdoaWxlIFRydWU6CiAgICAgICAgcmVtYWluaW5nID0gZGVhZGxpbmUgLSB0aW1lLnRpbWUoKQogICAgICAgIGlmIHJlbWFpbmluZyA8PSAwOgogICAgICAgICAgICBicmVhawogICAgICAgIHJlYWRhYmxlLCBfLCBfID0gc2VsZWN0LnNlbGVjdChbZmRdLCBbXSwgW10sIHJlbWFpbmluZykKICAgICAgICBpZiBub3QgcmVhZGFibGU6CiAgICAgICAgICAgICMgVGltZWQgb3V0IHdhaXRpbmcgZm9yIG91dHB1dCAtLSBkZWFkbGluZSByZWFjaGVkLCBwcm9jZWVkIHRvIGRldGFjaC4KICAgICAgICAgICAgYnJlYWsKICAgICAgICB0cnk6CiAgICAgICAgICAgIGNodW5rID0gb3MucmVhZChmZCwgNDA5NikKICAgICAgICAgICAgaWYgbm90IGNodW5rOgogICAgICAgICAgICAgICAgYnJlYWsKICAgICAgICBleGNlcHQgT1NFcnJvcjoKICAgICAgICAgICAgYnJlYWsKCiAgICAjIERldGFjaDogdGVybWluYXRlIHRoZSBzY3JpcHRlZCBjbGllbnQuIFJlc3RvcmVkIHBhbmUgcHJvY2Vzc2VzIHN1cnZpdmUKICAgICMgdGhpcyBkZXRhY2ggKFM0IHNwaWtlIGZpbmRpbmcpIC0tIG9ubHkgdGhlIENMSUVOVCBkaWVzLCBuZXZlciB0aGUgcGFuZXMKICAgICMgaGVyZHIganVzdCByZXN0b3JlZC4KICAgIHRyeToKICAgICAgICBvcy5raWxsKHBpZCwgc2lnbmFsLlNJR1RFUk0pCiAgICAgICAgb3Mud2FpdHBpZChwaWQsIDApCiAgICBleGNlcHQgKFByb2Nlc3NMb29rdXBFcnJvciwgQ2hpbGRQcm9jZXNzRXJyb3IpOgogICAgICAgIHBhc3MKCiAgICBwcmludCgiW2hlcmRyLXNjcmlwdGVkLWF0dGFjaF0gZGV0YWNoZWQiLCBmaWxlPXN5cy5zdGRlcnIpCiAgICByZXR1cm4gMAoKCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6CiAgICBzeXMuZXhpdChtYWluKHN5cy5hcmd2WzE6XSkpCg==' | base64 -d > /usr/local/bin/herdr-scripted-attach.py && chown root:root /usr/local/bin/herdr-scripted-attach.py && chmod 0755 /usr/local/bin/herdr-scripted-attach.py"
+    version_pin: "__HERDR_VERSION__"
+    install_cmd: "ARCH=$(uname -m) && if [ \"$ARCH\" = \"aarch64\" ]; then TARGET=aarch64; EXPECTED_SHA=__HERDR_SHA_AARCH64__; else TARGET=x86_64; EXPECTED_SHA=__HERDR_SHA_X86_64__; fi && curl -fsSL \"https://github.com/ogulcancelik/herdr/releases/download/__HERDR_VERSION__/herdr-linux-${TARGET}\" -o /tmp/herdr && echo \"${EXPECTED_SHA}  /tmp/herdr\" | sha256sum -c - && install -m 755 /tmp/herdr /usr/local/bin/herdr && rm -f /tmp/herdr && echo '__ATTACH_B64__' | base64 -d > __ATTACH_PATH__ && chown root:root __ATTACH_PATH__ && chmod 0755 __ATTACH_PATH__"
     # herdr opens no external connections at runtime (unix socket only, localhost).
     # The download happens at image build time only; no runtime egress needed.
     egress:
@@ -148,7 +196,17 @@ tools:
       # cage with no prior roster (S4: it just attaches the default pane's normal shell,
       # waits, detaches). Interim mechanism -- retires once herdr ships a headless
       # restore-on-start trigger (dotpi-s7ry feature request; ADR-029 D8 invalidation clause).
-      start: "_hsp_var=HERDR_SOCKET_PATH; _hsp_val=/tmp/rip-cage-herdr.sock; export \"${_hsp_var}\"=\"${_hsp_val}\"; mkdir -p \"${HOME}/.config/herdr\" && { [ -d /workspace ] && export HERDR_STARTUP_CWD=/workspace || true; } && herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 & echo \"[rip-cage] herdr server started (PID=$!)\" && sleep 1 && for _agent in pi claude; do if command -v \"${_agent}\" > /dev/null 2>&1; then _out=$(herdr integration install \"${_agent}\" 2>&1); _rc=$?; if [ \"$_rc\" -eq 0 ]; then echo \"[rip-cage] herdr integration installed: ${_agent}\"; else echo \"[rip-cage] WARNING: herdr integration install ${_agent} failed (exit=${_rc}): ${_out}\" >&2; fi; fi; done && python3 /usr/local/bin/herdr-scripted-attach.py --wait-seconds 15 > /tmp/rip-cage-herdr-scripted-attach.log 2>&1 || echo \"[rip-cage] WARNING: herdr scripted-attach exited non-zero -- roster restore may not have been triggered (see /tmp/rip-cage-herdr-scripted-attach.log)\" >&2"
+      start: "_hsp_var=HERDR_SOCKET_PATH; _hsp_val=/tmp/rip-cage-herdr.sock; export \"${_hsp_var}\"=\"${_hsp_val}\"; mkdir -p \"${HOME}/.config/herdr\" && { [ -d /workspace ] && export HERDR_STARTUP_CWD=/workspace || true; } && herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 & echo \"[rip-cage] herdr server started (PID=$!)\" && sleep 1 && for _agent in pi claude; do if command -v \"${_agent}\" > /dev/null 2>&1; then _out=$(herdr integration install \"${_agent}\" 2>&1); _rc=$?; if [ \"$_rc\" -eq 0 ]; then echo \"[rip-cage] herdr integration installed: ${_agent}\"; else echo \"[rip-cage] WARNING: herdr integration install ${_agent} failed (exit=${_rc}): ${_out}\" >&2; fi; fi; done && python3 __ATTACH_PATH__ --wait-seconds 15 > /tmp/rip-cage-herdr-scripted-attach.log 2>&1 || echo \"[rip-cage] WARNING: herdr scripted-attach exited non-zero -- roster restore may not have been triggered (see /tmp/rip-cage-herdr-scripted-attach.log)\" >&2"
       # attach: called by rc attach / rc up (ADR-019 D9 control surface).
       # Opens the herdr TUI client; the server was started by 'start'.
       attach: "herdr"
+YAML
+)
+
+TEMPLATE="${TEMPLATE//__HERDR_VERSION__/${HERDR_VERSION}}"
+TEMPLATE="${TEMPLATE//__HERDR_SHA_AARCH64__/${HERDR_SHA_AARCH64}}"
+TEMPLATE="${TEMPLATE//__HERDR_SHA_X86_64__/${HERDR_SHA_X86_64}}"
+TEMPLATE="${TEMPLATE//__ATTACH_PATH__/${ATTACH_PATH}}"
+TEMPLATE="${TEMPLATE//__ATTACH_B64__/${ATTACH_B64}}"
+
+printf '%s\n' "$TEMPLATE"
