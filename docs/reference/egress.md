@@ -158,3 +158,4 @@ A curated denylist of known exfil sinks is enforced by the msb-runtime floor (re
 - [CLI reference → `rc allowlist`](cli-reference.md#rc-allowlist----egress-allowlist) — command summary
 - [composition-seam.md](composition-seam.md) — opt-in composed mediators for L7 content policy / credential injection beyond `--secret` (compose-only, never rc-launched)
 - [auth.md](auth.md) — Claude/pi's own OAuth credential mounting (separate from git host tokens)
+- [secret-posture.md](secret-posture.md) — the opt-in Tier 0/1/2 project-secret gradient this page's `--secret` worked example is the Tier-2 entry point for; membership heuristics, the Tier-2 judgment criterion, dead zones, and the reflection residual

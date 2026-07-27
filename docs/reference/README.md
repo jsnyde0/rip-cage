@@ -303,6 +303,7 @@ tools:
 |---|---|
 | [safety-stack.md](safety-stack.md) | PreToolUse hooks (DCG — the sole surviving composable command-guard recipe; ssh-bypass retired), `bypassPermissions` mode, hard-denied operations (`.git/hooks/*`), secret-path denylist, running `rc test` |
 | [egress.md](egress.md) | msb egress allowlist: default-deny + `network.allowed_hosts`, `rc allowlist` commands, the deny→fix→reload repair loop (there is no observe mode post-cutover) |
+| [secret-posture.md](secret-posture.md) | Project-secret posture recipe (ADR-030): the Tier 0/1/2 opt-in gradient, the Class-A `--secret` non-possession recipe with a worked example, membership heuristics, the Tier-2 judgment criterion, substitution dead zones, and the reflection residual |
 
 ### Composition and seams
 | File | What it covers |

@@ -219,7 +219,7 @@ The posture reduces blast radius; it does not eliminate secret risk (CLAUDE.md "
 - `rip-cage-23cp` — secret-posture brainstorm epic (design origin)
 - `rip-cage-g5jg` — this canonicalization bead
 - `rip-cage-goaz` — workspace-mask primitive (Tier-1 `mounts.mask` implementation)
-- `rip-cage-m613` — Class-A wire-bearer recipe docs (Tier-2 via `auth.credentials`, zero rc code)
+- `rip-cage-m613` — Class-A wire-bearer recipe docs (Tier-2 via `auth.credentials`, zero rc code) — landed as [docs/reference/secret-posture.md](../reference/secret-posture.md)
 - `rip-cage-x640` — reflection-residual probe (D8 #1)
 - `rip-cage-jlu4` — denial-visibility disambiguation, doctor/reload fix-hints (D8 #2)
 - `rip-cage-3npt` — configure-cage secret-posture sweep skill (agent-assist for tier placement)
