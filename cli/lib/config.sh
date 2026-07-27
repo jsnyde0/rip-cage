@@ -39,6 +39,7 @@ _config_schema_lines() {
 version|scalar|2
 mounts.denylist|list|[]
 mounts.allow_risky|list|null
+mounts.mask|list|[]
 mounts.config_mode|enum|"ro"|ro,rw
 mounts.symlinks.on_dangling|enum|"follow"|follow,warn,skip,error
 mounts.symlinks.scope|enum|"file"|file,parent

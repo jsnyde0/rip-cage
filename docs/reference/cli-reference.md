@@ -48,6 +48,8 @@ For a persistent per-project allow, use `mounts.allow_risky` in `.rip-cage.yaml`
 
 See [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md) and [`docs/reference/config.md`](config.md#mountsdenylist-and-mountsallow_risky----secret-path-denylist) for the full denylist design.
 
+`rc up` also boot-time-masks any paths declared in `mounts.mask` — a nested `:ro` overmount presents a legible breadcrumb over each declared workspace-relative path, so the real content is unreadable in-cage while the rest of the workspace stays read-write. A declared path that doesn't exist on the host aborts `rc up` loud (never a silent no-op). See [`docs/reference/config.md`](config.md#mountsmask--workspace-mask-primitive-tier-1-project-secret-posture) and [ADR-030](../decisions/ADR-030-classify-by-use-secret-posture.md).
+
 ### `rc allowlist` — egress allowlist
 
 Manage the msb egress allowlist (`network.allowed_hosts` in `.rip-cage.yaml`). Cages boot **default-deny**; there is no observe mode post-cutover ([ADR-029](../decisions/ADR-029-msb-migration.md) D4) — see [egress.md](egress.md) for the deny→fix→reload repair loop that replaced it.

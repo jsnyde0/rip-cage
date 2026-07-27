@@ -522,6 +522,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-pi-cage-context.sh"
   run_test "${SCRIPT_DIR}/test-pi-e2e.sh"
   run_test "${SCRIPT_DIR}/test-secret-path-denylist.sh"  # tests/test-secret-path-denylist.sh
+  run_test "${SCRIPT_DIR}/test-workspace-mask.sh"        # rip-cage-goaz / ADR-030 D4-D6: mounts.mask workspace-mask primitive (host-only a-e; (f) real in-cage behavior self-skips via RC_E2E gate)
   run_test "${SCRIPT_DIR}/test-workspace-trust.sh"       # rip-cage-hhh.5: workspace base-URL redirect validator
   # test-egress-rules-gen.sh / test_egress_proxy.py / test_dns_decide.py /
   # test-firewall-tcp22.sh retired: they tested the in-cage egress

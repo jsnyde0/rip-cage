@@ -216,6 +216,79 @@ Cross-reference: [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md) f
 
 ---
 
+## `mounts.mask` — workspace-mask primitive (Tier 1 project-secret posture)
+
+Declares workspace-relative paths that `rc up` boot-time-masks with a nested `:ro` overmount, so the real file is unreadable inside the cage while the rest of the workspace stays read-write. This is **Tier 1** of the classify-by-use project-secret posture ([ADR-030](../decisions/ADR-030-classify-by-use-secret-posture.md)) — an opt-in, zero-default way to hide a Class-C secret (present in the mounted tree, not needed by the caged task) without relocating it or reworking the project.
+
+### Field
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `mounts.mask` | list | `[]` | Workspace-relative paths to mask. **Unions across layers** ([ADR-021 D2](../decisions/ADR-021-layered-rip-cage-config.md) v2) — a global floor of masks a project can expand; use `!replace` to narrow, `!replace []` to zero-out inherited entries. |
+
+**Default is empty** — no paths masked out of the box. This keeps Tier 0 (cage + egress wall only, nothing masked) the true default; a cage with no `mounts.mask` authoring behaves exactly as before.
+
+### What it does — and doesn't
+
+`mounts.mask` is **orthogonal to `mounts.denylist`** ([ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md)): the denylist *rejects a mount* by pattern-match at `rc up` (a path never enters the cage); the mask *hides content already legitimately in the tree* by explicit per-path declaration (the workspace mount is wanted; one file inside it is shadowed). `mounts.mask` is pure config **data** — rc never scans the workspace or guesses which paths are secrets; the operator (or an agent acting on the operator's behalf) declares each path explicitly ([ADR-005 D12](../decisions/ADR-005-ecosystem-tools.md), [ADR-030 D1](../decisions/ADR-030-classify-by-use-secret-posture.md)).
+
+Only **single files** are supported — msb's file-mount primitive is regular-files-only, and this is what the mechanism validates. A declared path that resolves to a directory (not a regular file) is a validation error at `rc up`, same as a missing path (below).
+
+Entries must be **workspace-relative** — an absolute path (`/etc/hosts`) or a path containing a `..` component (`../sibling-repo/.env`) is rejected at `rc up` even if it names a real, existing file on the host, since either shape would resolve outside `/workspace` on the guest side:
+
+```
+Error: mounts.mask declares '/etc/hosts', which is an absolute path — mounts.mask entries must be workspace-relative (ADR-030 D4). Use a path relative to the workspace root instead.
+```
+
+### Fail-loud on a missing mask source (D5)
+
+If a declared `mounts.mask` path does not exist on the host at `rc up` time, `rc up` **aborts non-zero** naming the path and that it came from `mounts.mask`:
+
+```
+Error: mounts.mask declares 'secrets/legacy.env' but no such path exists at /path/to/project/secrets/legacy.env — refusing to mask a nonexistent source (ADR-030 D5). Fix the typo in mounts.mask, or remove the entry if the file was relocated/deleted.
+```
+
+This is deliberate ([ADR-030 D5](../decisions/ADR-030-classify-by-use-secret-posture.md)): a masking directive that silently does nothing is the worst outcome for a security control — the operator would believe a secret is hidden when it is not. rc never lets a missing mask source fall through to msb's silent bind-source-becomes-empty-directory failure mode.
+
+### Mask content — a legible breadcrumb, not empty bytes (D6)
+
+The overmount presents fixed, self-describing content (`masked by rip-cage`) rather than a zero-length file. If a file is mislabeled Class C and masked but some in-cage process actually needs it, reading the masked path produces an immediately-diagnosable "oh, this was masked" signal instead of a confusing empty-read failure downstream.
+
+### Example
+
+```yaml
+# ~/.config/rip-cage/config.yaml — global floor (applies to every cage under a pooled mount)
+version: 2
+mounts:
+  mask:
+    - sibling-repo-a/.env
+    - sibling-repo-b/.env
+```
+
+```yaml
+# <project>/.rip-cage.yaml — project adds one more (union, not replace)
+version: 2
+mounts:
+  mask:
+    - legacy-fixture/.env
+```
+
+```bash
+rc config show   # shows effective mounts.mask with per-path provenance (global / project / union)
+```
+
+### Residuals — named, not closed
+
+`mounts.mask` reduces blast radius; it does not eliminate secret risk (see [CLAUDE.md](../../CLAUDE.md) "layers not walls"). Three residuals apply directly to this primitive ([ADR-030 D8](../decisions/ADR-030-classify-by-use-secret-posture.md)):
+
+- **Create-time-only masking.** The overmount is applied at `rc up` (boot time). A file created **after** boot at a masked path is **not** masked — it lands unshadowed on the rw workspace mount. If your workflow creates the secret file at runtime rather than it pre-existing on the host, `mounts.mask` does not cover it; re-run `rc up`/`rc reload` after the file exists, or keep it out of the tree entirely.
+- **Git-tracked-file hazard — docs-warning only, no machinery ([ADR-030 D7](../decisions/ADR-030-classify-by-use-secret-posture.md)).** If a masked path is **git-tracked**, an in-cage `git add`/`git commit` sees the *breadcrumb* content (`masked by rip-cage`), not the real file — a commit made from inside a cage with that path masked would capture the placeholder in place of the real secret. rc does **not** inspect git state, refuse to mask tracked files, or auto-add anything to `.gitignore`/exclude (per [ADR-005 D12](../decisions/ADR-005-ecosystem-tools.md) — classification and remediation stay agent/operator judgment, never rc machinery). `.env` (the archetypal mask target) is conventionally git-ignored, so the common case is already safe; this warning covers the exception. If you mask a tracked path, either don't commit it from a cage where it's masked, or stop tracking it on the host first.
+- **Inode-desync on host rename-replace.** The overmount binds to the host breadcrumb file's inode at `rc up` create time (same class of hazard as moby#15793 for any bind mount). If a host-side tool replaces the *masked target* by rename-over rather than in-place edit between create and the next `rc up`/`rc reload`, the in-cage view can desync from what's now on the host until the cage is recreated. This mirrors the general bind-mount caveat already noted for `mounts.config_mode: ro` (see above) — not a mask-specific new failure mode, but worth calling out because a security control silently going stale is a worse surprise than a config file doing so.
+
+Cross-reference: [ADR-030](../decisions/ADR-030-classify-by-use-secret-posture.md) for the full classify-by-use posture (Tier 0/1/2 gradient, the classification model, and the Tier-2 non-possession sibling mechanism).
+
+---
+
 ## `network.*` — msb egress allowlist
 
 > **Retired ([ADR-029](../decisions/ADR-029-msb-migration.md) D2/D4):** the in-cage engine this section used to describe (SNI router, DNS sidecar, iptables REDIRECT, observe-mode traffic logging, the `network.egress.mediator`/`network.http.forward_to` auto-launched-mediator seam) is **deleted**. Egress is now an msb host-side runtime primitive: `--net-default deny` + one `--net-rule allow@<host>` per entry in `network.allowed_hosts`, generated straight from this config by `cli/lib/msb_flags.sh` — there is no in-cage process to inspect or restart.
@@ -399,7 +472,7 @@ The merge stack is exactly three elements, folded left: **[schema defaults, glob
 
 | Type | Examples | Rule |
 |---|---|---|
-| **`list`** | `network.allowed_hosts`, `auth.credentials`, `mounts.allow_risky`, `dcg.packs` | **Union by default** — every layer's items are combined, deduplicated, order-preserving (lower layers first). A layer may tag the field **`!replace`** to discard everything inherited from lower layers and become the new base; **`!replace []`** is the explicit zero-out. The tag is visible in the project-file diff at point of use. |
+| **`list`** | `network.allowed_hosts`, `auth.credentials`, `mounts.allow_risky`, `mounts.mask`, `dcg.packs` | **Union by default** — every layer's items are combined, deduplicated, order-preserving (lower layers first). A layer may tag the field **`!replace`** to discard everything inherited from lower layers and become the new base; **`!replace []`** is the explicit zero-out. The tag is visible in the project-file diff at point of use. |
 | **`list` (replace-forbidden)** | `mounts.denylist` | Union only — `!replace` **aborts loud** ([ADR-023 D2](../decisions/ADR-023-secret-path-mount-denylist.md)). A project may expand the secret-path denylist, never contract or clear it. |
 | **`enum`** | `mounts.config_mode`, `session.multiplexer`, `auth.credential_mounts`, `auth.per_tool.*`, `mounts.symlinks.*` | Project replaces global replaces default. A value outside the allowed set **aborts loud** naming the field and the allowed values. (v1's `selection_list` name for these enum-shaped scalars is retired.) |
 | **`scalar`** | `version`, `auth.placeholder_env_file` | Project replaces global if present. |

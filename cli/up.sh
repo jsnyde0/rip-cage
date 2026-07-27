@@ -505,6 +505,91 @@ _up_prepare_docker_mounts() {
     unset _cfg_mode
   fi
 
+  # ADR-030 D4/D5/D6: mounts.mask — Tier-1 workspace-mask primitive.
+  # Operator-declared workspace-relative paths get a nested :ro overmount
+  # presenting a legible breadcrumb (D6), shadowing the real content while
+  # the rest of the workspace stays rw (same nesting mechanics as the
+  # .rip-cage.yaml shadow-mount above). Default empty — Tier 0 (nothing
+  # masked) stays the true default (ADR-030 D2).
+  #
+  # D5 fail-loud: a declared mask path that does not exist on the host (or
+  # is not a regular file — msb --mount-file / spike S1 validated only
+  # single-file overmounts) MUST abort rc up, never fall through to msb's
+  # silent bind-source-becomes-empty-directory failure mode. This check runs
+  # BEFORE any mask mount is added to _UP_RUN_ARGS.
+  #
+  # D1 / ADR-005 D12: mounts.mask is pure config DATA — rc never guesses
+  # which paths to mask; the operator declares the list.
+  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "${_path}")" ]]; then
+    local _mask_cfg_result
+    if _mask_cfg_result=$(_load_effective_config "${_path}" 2>/dev/null); then
+      local _mask_list
+      _mask_list=$(jq -r '.config.mounts.mask[]? // empty' <<<"$_mask_cfg_result")
+      if [[ -n "$_mask_list" ]]; then
+        # D6: a single rc-owned breadcrumb source file, shared across every
+        # masked destination in this cage — the content is a constant
+        # string, so one file can be bind-mounted read-only at N distinct
+        # guest destinations simultaneously; no per-path scratch file needed.
+        local _mask_cache_dir="${HOME}/.cache/rip-cage/${_name}"
+        mkdir -p "$_mask_cache_dir"
+        local _mask_breadcrumb="${_mask_cache_dir}/mask-breadcrumb.txt"
+        printf 'masked by rip-cage\n' > "$_mask_breadcrumb"
+        local _mask_path
+        while IFS= read -r _mask_path; do
+          [[ -z "$_mask_path" ]] && continue
+
+          # ADR-030 D4: mounts.mask entries are workspace-RELATIVE paths —
+          # an absolute entry, or one with a '..' component, would resolve
+          # outside /workspace on the guest side (dest
+          # /workspace/<path> escaping the workspace root) despite the host
+          # source lexically resolving to a real, existing, regular file
+          # (e.g. a host-absolute /etc/hosts, or ../sibling-repo/.env) — a
+          # fixture that would otherwise sail past the D5 existence/regular-
+          # file checks below. Pure lexical check on the DECLARED path, no
+          # realpath-against-host needed: the contract is "workspace-
+          # relative", not "resolves somewhere safe after the fact".
+          if [[ "$_mask_path" == /* ]]; then
+            [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "mounts.mask declares '${_mask_path}', which is an absolute path — mounts.mask entries must be workspace-relative (ADR-030 D4)" "MASK_PATH_NOT_WORKSPACE_RELATIVE"
+            echo "Error: mounts.mask declares '${_mask_path}', which is an absolute path — mounts.mask entries must be workspace-relative (ADR-030 D4). Use a path relative to the workspace root instead." >&2
+            return 1
+          fi
+          local _mask_dotdot=false _mask_component
+          local -a _mask_components=()
+          IFS='/' read -ra _mask_components <<<"$_mask_path"
+          for _mask_component in "${_mask_components[@]}"; do
+            if [[ "$_mask_component" == ".." ]]; then
+              _mask_dotdot=true
+              break
+            fi
+          done
+          if [[ "$_mask_dotdot" == "true" ]]; then
+            [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "mounts.mask declares '${_mask_path}', which contains a '..' component — mounts.mask entries must be workspace-relative (ADR-030 D4)" "MASK_PATH_NOT_WORKSPACE_RELATIVE"
+            echo "Error: mounts.mask declares '${_mask_path}', which contains a '..' component — mounts.mask entries must be workspace-relative (ADR-030 D4) and may not escape the workspace root. Use a path relative to the workspace root instead." >&2
+            return 1
+          fi
+          unset _mask_dotdot _mask_component _mask_components
+
+          local _mask_host_src="${_path%/}/${_mask_path}"
+          if [[ ! -e "$_mask_host_src" ]]; then
+            [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "mounts.mask declares '${_mask_path}' but no such path exists at ${_mask_host_src} — refusing to mask a nonexistent source (ADR-030 D5)" "MASK_SOURCE_MISSING"
+            echo "Error: mounts.mask declares '${_mask_path}' but no such path exists at ${_mask_host_src} — refusing to mask a nonexistent source (ADR-030 D5). Fix the typo in mounts.mask, or remove the entry if the file was relocated/deleted." >&2
+            return 1
+          fi
+          if [[ ! -f "$_mask_host_src" ]]; then
+            [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "mounts.mask declares '${_mask_path}' (${_mask_host_src}) but it is not a regular file — single-file overmounts only" "MASK_SOURCE_NOT_A_FILE"
+            echo "Error: mounts.mask declares '${_mask_path}' (${_mask_host_src}) but it is not a regular file — the workspace-mask primitive only supports single-file overmounts (msb --mount-file is regular-files-only; ADR-030 mechanism note)." >&2
+            return 1
+          fi
+          _UP_RUN_ARGS+=(-v "${_mask_breadcrumb}:/workspace/${_mask_path}:ro")
+          log "mounts.mask: shadowed ${_mask_path} with rc-owned breadcrumb (ro)"
+        done <<< "$_mask_list"
+        unset _mask_path _mask_breadcrumb _mask_cache_dir
+      fi
+      unset _mask_list
+    fi
+    unset _mask_cfg_result
+  fi
+
   # D11: .git/hooks read-only — physical enforcement against container escape
   # Worktree mode handles hooks separately (see worktree mount block below)
   if [[ "$wt_detected" != "true" ]] && [[ -d "${_path}/.git/hooks" ]]; then
