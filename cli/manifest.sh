@@ -207,24 +207,28 @@ _rc_mux_resolve_hook_path() {
     return 1
   fi
 
-  # The in-container path is always the canonical form; callers use docker exec to invoke it.
+  # The in-container path is always the canonical form; callers use msb exec to invoke it.
   local _rmrh_registry_in_container="/etc/rip-cage/multiplexers"
   local _rmrh_dir_in_container="${_rmrh_registry_in_container}/${_rmrh_name}"
   local _rmrh_hook_path_in_container="${_rmrh_dir_in_container}/${_rmrh_hook}"
 
   if [[ -n "$_rmrh_cage" ]]; then
     # -------------------------------------------------------------------------
-    # HOST-SIDE CALLER: cage_name provided — existence-check via docker exec.
+    # HOST-SIDE CALLER: cage_name provided — existence-check via msb exec.
+    # (rip-cage-vjuv fix: was `docker exec`, a docker-era remnant that fail-louds
+    # against every msb cage post ADR-029 D1 cutover — the multiplexer-registry
+    # check cmd_attach/cmd_up depend on. cmd_attach itself was migrated to
+    # _msb_exec_interactive; this helper was missed. neu7 post-cutover epic.)
     # -------------------------------------------------------------------------
 
     # Fail loud if the registry dir for this name is absent inside the cage (ADR-001).
-    if ! docker exec "${_rmrh_cage}" test -d "${_rmrh_dir_in_container}" 2>/dev/null; then
-      echo "Error: no baked multiplexer registry for '${_rmrh_name}' in cage '${_rmrh_cage}' at ${_rmrh_dir_in_container} — multiplexer was not declared in the manifest used to build this image (ADR-001 fail-loud). Check \`docker inspect ${_rmrh_cage} --format '{{ index .Config.Labels \"rc.multiplexers\" }}'\` and the manifest used during rc build." >&2
+    if ! _msb_exec "${_rmrh_cage}" -- test -d "${_rmrh_dir_in_container}" 2>/dev/null; then
+      echo "Error: no baked multiplexer registry for '${_rmrh_name}' in cage '${_rmrh_cage}' at ${_rmrh_dir_in_container} — multiplexer was not declared in the manifest used to build this image (ADR-001 fail-loud). Check \`msb inspect ${_rmrh_cage}\` and the manifest used during rc build." >&2
       return 1
     fi
 
     # Optional hook absent → return empty string (documented no-op).
-    if ! docker exec "${_rmrh_cage}" test -f "${_rmrh_hook_path_in_container}" 2>/dev/null; then
+    if ! _msb_exec "${_rmrh_cage}" -- test -f "${_rmrh_hook_path_in_container}" 2>/dev/null; then
       return 0
     fi
 
