@@ -241,6 +241,46 @@ _msb_denied_domains_from_trace_log() {
 }
 
 
+# _msb_secret_violations_from_trace_log NAME
+#
+# rip-cage-jlu4 (denial-visibility disambiguation): a SEPARATE, sibling
+# miner to _msb_denied_domains_from_trace_log above, for msb's DISTINCT
+# secret-violation guard (`--on-secret-violation block-and-log`). That
+# guard fires a WARN log line (`microsandbox_network::secrets::handler:
+# secret violation: placeholder detected for disallowed host
+# action=block-and-log ... host=<X> ...`) whenever a substituted
+# credential's placeholder is sent toward a DISALLOWED host -- shape
+# confirmed live in docs/2026-07-09-msb-spike-egress-observability.md §3
+# and history/2026-07-26-secret-posture-spikes.md S3. This is NOT a plain
+# egress denial: it is the secret-violation guard actively catching a
+# credential-misdirection / exfil attempt.
+#
+# Kept as a SEPARATE, distinctly-named list -- NEVER merged into
+# _msb_denied_domains_from_trace_log's output -- precisely so a consumer
+# can't conflate the two. In-guest, a secret-violation failure is
+# observationally identical to an ordinary denied-host failure (spike S3's
+# nuance); a caller that naively `rc allowlist add`s a mined
+# secret-violation host would CONVERT A CAUGHT EXFIL ATTEMPT INTO AN
+# ALLOWED ONE. Consumers (cli/doctor.sh's posture probe, cli/reload.sh's
+# dry-run fix-hint) MUST present this list as a WARNING and MUST NEVER
+# emit an allowlist suggestion for any host it contains.
+#
+# Echoes the disallowed destination host (the line's `host=` field), one
+# per line, deduplicated, in first-seen order. Empty (never errors) when
+# no violations occurred -- same pipefail-safety discipline as the DNS
+# miner above (rip-cage-5iti R7's regression class: the `|| true` guard
+# absorbs grep's exit-1-on-zero-matches so an unguarded
+# `x=$(_msb_secret_violations_from_trace_log ...)` assignment under a
+# caller's `set -euo pipefail` does not abort).
+_msb_secret_violations_from_trace_log() {
+  local name="$1"
+  msb logs "$name" --source system --json 2>/dev/null \
+    | { grep -o 'secret violation: placeholder detected for disallowed host action=block-and-log[^\\"]*' || true; } \
+    | sed -E 's/.*[[:space:]]host=([^[:space:]]*).*/\1/' \
+    | awk '!seen[$0]++'
+}
+
+
 # _msb_remove NAME -- remove a sandbox entirely (msb-side counterpart to
 # `docker rm -f NAME`).
 _msb_remove() {

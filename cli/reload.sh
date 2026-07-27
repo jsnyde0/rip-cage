@@ -149,6 +149,21 @@ cmd_reload() {
     while IFS= read -r _rl_d; do [[ -n "$_rl_d" ]] && log "    domain=${_rl_d}"; done <<<"$_rl_denied"
   fi
 
+  # rip-cage-jlu4 (denial-visibility disambiguation): a SEPARATE mined
+  # list for msb's secret-violation guard (`--on-secret-violation
+  # block-and-log` catching a substituted credential's placeholder sent
+  # toward a disallowed host — a caught credential-misdirection / exfil
+  # attempt). Presented as a DISTINCT WARNING, deliberately NEVER folded
+  # into the "Fix-hint: ... add to allowlist" flow above — an operator
+  # following an allowlist hint for one of these hosts would convert a
+  # caught exfil attempt into an allowed one.
+  local _rl_violations
+  _rl_violations=$(_msb_secret_violations_from_trace_log "$name" 2>/dev/null)
+  if [[ -n "$_rl_violations" ]]; then
+    log "WARNING: blocked credential misdirection detected on ${name} (secret-violation guard fired — NOT an allowlist candidate; allowlisting would convert a caught exfil attempt into an allowed one):"
+    while IFS= read -r _rl_v; do [[ -n "$_rl_v" ]] && log "    host=${_rl_v}"; done <<<"$_rl_violations"
+  fi
+
   if [[ "$dry_run" -eq 1 ]]; then
     log "(--dry-run: snapshot NOT updated, cage NOT recreated.)"
     return 0

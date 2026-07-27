@@ -414,6 +414,16 @@ _doctor_format_auth_probe() {
 # criterion 5's readable fix-hint,
 # _msb_denied_domains_from_trace_log) so an operator can see, at a glance,
 # what a stuck agent turn was actually blocked on.
+#
+# rip-cage-jlu4 (denial-visibility disambiguation): ALSO mines any RECENT
+# secret-violation blocks (_msb_secret_violations_from_trace_log — a
+# SEPARATE list, msb's `--on-secret-violation block-and-log` guard
+# catching a substituted credential's placeholder sent toward a
+# disallowed host, i.e. a caught credential-misdirection / exfil attempt)
+# and presents them as a DISTINCT WARNING clause. Deliberately NEVER
+# routed through _doctor_classify_denied_domain / an "rc allowlist add"
+# suggestion — allowlisting a secret-violation host would convert a caught
+# exfil attempt into an allowed one.
 # _doctor_classify_denied_domain DOMAIN EFFECTIVE_JSON
 #
 # ADR-021 D4 (rip-cage-tsf2.10.5): route a trace-log-mined denied domain through
@@ -484,7 +494,26 @@ _doctor_format_posture_probe() {
     done <<<"$denied"
     local IFS_SAVE="$IFS"; IFS=','; denied_summary="${_parts[*]}"; IFS="$IFS_SAVE"
   fi
-  echo "OK — net-default=${default_egress}, ${rule_count} allow-rule(s); recently denied: ${denied_summary}"
+
+  # rip-cage-jlu4: secret-violation clause — a SEPARATE mined list,
+  # presented as a WARNING, never routed through the allowlist classifier
+  # above (see the function-header comment: allowlisting a caught
+  # exfil-attempt host would defeat the guard that just blocked it).
+  local violations violation_clause=""
+  violations=$(_msb_secret_violations_from_trace_log "$name" 2>/dev/null)
+  local status_prefix="OK"
+  if [[ -n "$violations" ]]; then
+    status_prefix="WARN"
+    local _v _vparts=()
+    while IFS= read -r _v; do
+      [[ -z "$_v" ]] && continue
+      _vparts+=("$_v")
+    done <<<"$violations"
+    local IFS_SAVE2="$IFS"; IFS=','; local violation_hosts="${_vparts[*]}"; IFS="$IFS_SAVE2"
+    violation_clause="; SECRET-VIOLATION: blocked credential misdirection toward ${violation_hosts} (this is a CAUGHT exfil attempt, NOT an allowlist candidate — allowlisting it would convert a caught exfil into an allowed one)"
+  fi
+
+  echo "${status_prefix} — net-default=${default_egress}, ${rule_count} allow-rule(s); recently denied: ${denied_summary}${violation_clause}"
 }
 
 
