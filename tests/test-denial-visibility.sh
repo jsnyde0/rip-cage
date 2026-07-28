@@ -46,6 +46,14 @@
 #       the existing "Fix-hint: recently denied domain(s)" block for the
 #       DNS domain AND a distinct WARNING line naming the secret-violation
 #       host, and never suggests allowlisting the secret-violation host.
+#   D2  rip-cage-ffmc (doc path): _doctor_format_posture_probe ALWAYS
+#       carries a static note that a port-scoped denial on an already
+#       ALLOWED domain is invisible to this probe (msb logs nothing at
+#       the TCP-connect stage -- confirmed dead end, spike rip-cage-uuh9)
+#       and instead surfaces to the client as an immediate
+#       connection-refused, with a diagnosis pointer at the host's
+#       allowed port. Static text, present regardless of trace-log
+#       content -- proven here against the SAME mixed-log fixture D1 uses.
 #
 # Wired into tests/run-host.sh (host-only tier, no live cage needed).
 
@@ -195,6 +203,20 @@ if [[ "$D1_OUT" != *"allowlist add secret-violated.example.invalid"* ]]; then
   pass "D1d: posture probe NEVER suggests 'rc allowlist add' for the secret-violation host"
 else
   fail "D1d: posture probe NEVER suggests 'rc allowlist add' for the secret-violation host" "got: $D1_OUT"
+fi
+
+# D2 (rip-cage-ffmc): the posture probe always carries a static note that
+# port-scoped denials on an allowed domain are invisible to this probe and
+# surface client-side as connection-refused, with a diagnosis pointer.
+if [[ "$D1_OUT" == *"connection-refused"* || "$D1_OUT" == *"Connection refused"* ]]; then
+  pass "D2a: posture probe notes port-scoped denials surface as client-side connection-refused"
+else
+  fail "D2a: posture probe notes port-scoped denials surface as client-side connection-refused" "got: $D1_OUT"
+fi
+if [[ "$D1_OUT" == *"allowed port"* ]]; then
+  pass "D2b: posture probe points the diagnosis at the host's allowed port"
+else
+  fail "D2b: posture probe points the diagnosis at the host's allowed port" "got: $D1_OUT"
 fi
 
 echo ""

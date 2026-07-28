@@ -34,13 +34,15 @@ msb logs nothing for *allowed* flows — only denials. Rebuilding an "observe ev
 $ rc doctor my-cage
 ...
 Live probes:
-  posture        : OK — net-default=deny, 3 allow-rule(s); recently denied: files.example-cdn.net
+  posture        : OK — net-default=deny, 3 allow-rule(s); recently denied: files.example-cdn.net; NOTE: a port-scoped denial on an already-allowed domain will NOT appear above (msb logs nothing at the TCP-connect stage) — it surfaces client-side as an immediate connection-refused; check the host's allowed port in .rip-cage.yaml (default tcp:443)
 
 $ rc reload my-cage --dry-run
 Fix-hint: recently denied domain(s) on my-cage (not necessarily related to this diff):
     domain=files.example-cdn.net
 (--dry-run: snapshot NOT updated, cage NOT recreated.)
 ```
+
+**Wrong-port denials are a separate, undetectable-by-this-probe failure class.** If the *domain* is already on `network.allowed_hosts` but the *port* isn't (msb's egress is port-scoped — the default allow rule is `tcp:443`), the connection is dropped at the NIC before DNS or the TCP-connect stage ever produces a log line msb exposes at any verbosity (confirmed empirically against msb 0.6.4, spike `rip-cage-uuh9`; tracked as `rip-cage-ffmc`). The `posture` note above is therefore static, not a live signal — there is no fix-hint to mine for this class, only the mitigant that it's still self-diagnosable at the point of failure: the agent/client sees an immediate `Connection refused` (curl exit 7, no hang), rather than the fake-accepted hang a *host* denial produces. **Diagnosis:** if a request to an allowed domain refuses immediately instead of hanging, check whether the host's *port* (not just the domain) is covered. A bare host in `network.allowed_hosts` is scoped to `tcp:443` only (`cli/lib/msb_flags.sh`); a host that needs a different port must be written with an explicit port spec, e.g. `myhost.example.com:tcp:8080`, which is emitted unchanged instead of being narrowed to 443. Add/adjust the entry in `.rip-cage.yaml` (or the tool's manifest `egress:` list) and `rc reload`.
 
 **3. Add the host.** There are three fix shapes, depending on where the host belongs:
 

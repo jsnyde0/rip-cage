@@ -544,7 +544,16 @@ _doctor_format_posture_probe() {
     violation_clause="; SECRET-VIOLATION: blocked credential misdirection toward ${violation_hosts} (this is a CAUGHT exfil attempt, NOT an allowlist candidate — allowlisting it would convert a caught exfil into an allowed one)"
   fi
 
-  echo "${status_prefix} — net-default=${default_egress}, ${rule_count} allow-rule(s); recently denied: ${denied_summary}${violation_clause}"
+  # rip-cage-ffmc: static note, ALWAYS present (msb 0.6.4 logs nothing at
+  # the TCP-connect stage for this class — no trace-log line exists to key
+  # a proactive fix-hint off of, per
+  # _msb_denied_domains_from_trace_log's header, cli/lib/msb_runtime.sh:215-219).
+  # A port-scoped denial against an already-ALLOWED domain is therefore
+  # invisible to the miner above; it surfaces to the client as an
+  # immediate connection-refused instead of a fake-accepted hang.
+  local port_note="; NOTE: a port-scoped denial on an already-allowed domain will NOT appear above (msb logs nothing at the TCP-connect stage) — it surfaces client-side as an immediate connection-refused; check the host's allowed port in .rip-cage.yaml (default tcp:443)"
+
+  echo "${status_prefix} — net-default=${default_egress}, ${rule_count} allow-rule(s); recently denied: ${denied_summary}${violation_clause}${port_note}"
 }
 
 
