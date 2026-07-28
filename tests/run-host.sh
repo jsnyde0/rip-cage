@@ -589,7 +589,8 @@ _run_all_tests() {
   # tested the in-cage firewall startup self-test guard (init-firewall.sh /
   # rip_cage_egress.py's reserved endpoint), deleted per ADR-029 D2
   # (engine-deletion sweep, rip-cage-3vj2 / S4).
-  run_test "${SCRIPT_DIR}/test-scratch-cage-cleanup.sh"  # rip-cage-aqww: scratch-cage cleanup helper (D1 lib + D2 sweep) — needs docker daemon; self-skips without docker
+  run_test "${SCRIPT_DIR}/test-scratch-cage-cleanup.sh"  # rip-cage-aqww/neu7.9: scratch-cage cleanup — D1 register-array helper + D2 detect-and-warn (never destroys); needs msb daemon + cached alpine image, self-skips without either
+  run_test "${SCRIPT_DIR}/test-cleanup-failsafe.sh"      # rip-cage-neu7.9: committed repro — register-array CLEANUP fired on an EMPTY registry invokes the destroy command ZERO times (stubbed destroy, pure bash, no docker/msb dependency)
   run_test "${SCRIPT_DIR}/test-agent-readability.sh"     # rip-cage-7wc: host-side fixture tests for agent *.md readability classification
   run_test "${SCRIPT_DIR}/test-agent-mail-concurrent.sh" # rip-cage-swv: two concurrent pi agents coordinate via am CLI (NEEDS_CONTAINER + RC_E2E)
   run_test "${SCRIPT_DIR}/test-multiplexer-agent-e2e.sh" # rip-cage-w621.7: pi agent through tmux mux surface with >=2 distinct tool invocations (NEEDS_CONTAINER + RC_E2E)
@@ -674,18 +675,31 @@ fi
 source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
 
 # ---------------------------------------------------------------------------
-# Self-healing sweep (rip-cage-aqww D2): reap leaked scratch-cage containers
-# whose rc.source.path label is under the OS temp root.
+# Self-healing DETECT-AND-WARN (rip-cage-neu7.9, post code-personal destroy
+# incident; formerly rip-cage-aqww D2's enumerate-and-destroy sweep): flag
+# leaked scratch-cage containers whose rc.source.path label is under the OS
+# temp root — READ-ONLY, never destroys.
 #
-# DISCRIMINATOR: every cage carries an rc.source.path label (rc:4196); the value
-# is already realpath-resolved at creation (rc:504/3685).  On macOS $TMPDIR is
-# /var/folders/... but the label is /private/var/folders/... — resolve the temp
-# root before comparing, NOT the label (the cage workspace dir may already be
-# deleted, and BSD realpath returns empty on missing paths, which would miss it).
+# INCIDENT CONTEXT: the prior D2 sweep enumerated every msb sandbox (`msb
+# list`) and destroyed any whose rc.source.path label PREFIX-matched a temp
+# root — a computed/glob match against every cage, not an explicit
+# this-run-created-name allowlist. Adversarial review (rip-cage-neu7.9)
+# judged that fragile SHAPE (not just the earlier /*-glob degeneration
+# already patched in rip-cage-neu7.8) unsafe in principle: a cage the runner
+# did not create must be structurally unreachable by any destroy call. The
+# brain's ruling: rely on per-run self-reap (individual tests already destroy
+# their own cages by explicit name / register-array — see
+# tests/_scratch-cage-lib.sh, the exemplar this converts toward) and replace
+# this cross-run reconciler with a read-only detect-and-warn: name the
+# leftover cage + its source path + a suggested `rc destroy --force <name>`
+# command a human can run, and stop there.
 #
-# This mirrors the existing idiom in test-multiplexer-agent-e2e.sh:163-179.
-# Uses `rc destroy --force` (rc:4882) to remove BOTH rc-state-<name> and
-# rc-history-<name> volumes — no hand-rolled volume removal.
+# DISCRIMINATOR (unchanged from the former sweep): every cage carries an
+# rc.source.path label (rc:4196); the value is already realpath-resolved at
+# creation (rc:504/3685).  On macOS $TMPDIR is /var/folders/... but the label
+# is /private/var/folders/... — resolve the temp root before comparing, NOT
+# the label (the cage workspace dir may already be deleted, and BSD realpath
+# returns empty on missing paths, which would miss it).
 # ---------------------------------------------------------------------------
 _SWEEP_TEMP_ROOTS=()
 _sweep_init_temp_roots() {
@@ -711,10 +725,13 @@ _sweep_init_temp_roots
 # filter), so this enumerates every sandbox name via `msb list --format
 # json` and reads each one's `rc.source.path` label via `msb inspect`
 # (mirrors _msb_label's `.config.labels[$k]` shape) -- same discriminator
-# (label value must be under one of the swept temp roots) as before, so
-# sandboxes belonging to other concurrent worktrees/sessions (labeled with
-# their own non-temp-root workspace paths) are never touched.
-_sweep_scratch_cages() {
+# (label value must be under one of the swept temp roots) as before.
+#
+# rip-cage-neu7.9: this function used to run `rc destroy --force "$_cname"`
+# here. It no longer does — READ-ONLY, prints a loud warning (name + source
+# path + suggested destroy command) to stderr and moves on. No enumeration
+# result is ever fed to a destroy call in this function's body.
+_warn_leftover_scratch_cages() {
   if ! command -v msb >/dev/null 2>&1; then
     return 0
   fi
@@ -724,7 +741,9 @@ _sweep_scratch_cages() {
     [[ -z "$_raw_sp" ]] && continue
     for _root in "${_SWEEP_TEMP_ROOTS[@]+"${_SWEEP_TEMP_ROOTS[@]}"}"; do
       if [[ "$_raw_sp" == "${_root}"/* || "$_raw_sp" == "${_root}" ]]; then
-        "${SCRIPT_DIR}/../rc" destroy --force "$_cname" >/dev/null 2>&1 || true
+        echo "WARNING: leftover scratch cage detected: ${_cname} (source path: ${_raw_sp})" >&2
+        echo "  This test runner did not create it this run and will NOT destroy it." >&2
+        echo "  If it is stale debris, clean it up yourself: rc destroy --force ${_cname}" >&2
         break
       fi
     done
@@ -736,13 +755,18 @@ _sweep_scratch_cages() {
 # at it (same ${VAR:-default} precedence as before this extraction).
 _host_sandbox_setup
 
-# Run the sweep at START of run to reap any residue from a previous aborted run.
-_sweep_scratch_cages
+# Run the detector at START of run to flag any residue from a previous
+# aborted run (read-only — never destroys; see the function's header comment).
+_warn_leftover_scratch_cages
 
-# Combined EXIT/INT/TERM handler: config-fixture cleanup + scratch-cage sweep.
+# EXIT/INT/TERM handler: config-fixture cleanup ONLY. rip-cage-neu7.9: the
+# former scratch-cage sweep is NOT run here — it ran an enumerate-and-destroy
+# pass on every EXIT/INT/TERM (the highest run-frequency call site of the
+# dangerous shape). Individual tests self-reap their own cages by explicit
+# name (tests/_scratch-cage-lib.sh's register-array trap); this cleanup path
+# must never enumerate-and-destroy a cage the runner did not create.
 _run_host_cleanup() {
   _host_sandbox_cleanup
-  _sweep_scratch_cages
 }
 trap '_run_host_cleanup' EXIT INT TERM
 

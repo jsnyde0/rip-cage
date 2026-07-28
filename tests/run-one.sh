@@ -13,8 +13,8 @@
 # trustworthy as a full-suite run.
 #
 # Usage:
-#   bash tests/run-one.sh <test-file>                 # sandboxed run (no scratch-cage sweep)
-#   bash tests/run-one.sh --sweep <test-file>          # + leaked-scratch-cage sweep (slower)
+#   bash tests/run-one.sh <test-file>                 # sandboxed run (no scratch-cage detect)
+#   bash tests/run-one.sh --sweep <test-file>          # + leaked-scratch-cage detect-and-warn (read-only, slower)
 #   RC_E2E=1 bash tests/run-one.sh <test-file>          # pass through to the test
 #   RC_TEST_CONTAINER=name RC_IMAGE=tag bash tests/run-one.sh <test-file>  # pass through
 #
@@ -64,13 +64,22 @@ fi
 source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
 _host_sandbox_setup
 
-# rip-cage-aqww D2: same self-healing scratch-cage sweep run-host.sh runs on
-# every invocation, gated behind --sweep here (default OFF) — a single-file
-# wrapper is meant for fast red/green cycles; a full docker ps/inspect sweep
-# adds real wall-clock cost most single-file runs don't need. run-host.sh's
-# own sweep is unaffected (it always sweeps; not touched by this bead).
-_run_one_sweep_scratch_cages() {
-  if ! command -v docker >/dev/null 2>&1; then
+# rip-cage-neu7.9 (post code-personal destroy incident; formerly rip-cage-aqww
+# D2's enumerate-and-destroy sweep, gated behind --sweep here): converted to
+# a READ-ONLY msb-native detect-and-warn, mirroring run-host.sh's
+# _warn_leftover_scratch_cages exactly (same discriminator: enumerate every
+# sandbox via `msb list --format json`, read each one's rc.source.path label
+# via `msb inspect`, compare the RAW label against the realpath'd temp root).
+# It NEVER destroys — it names the leftover cage + its source path + a
+# suggested `rc destroy --force <name>` command and stops there. A cage this
+# wrapper did not create must be structurally unreachable by any destroy
+# call. Still gated behind --sweep (default OFF): a single-file wrapper is
+# meant for fast red/green cycles; even a read-only msb list/inspect pass
+# adds wall-clock cost most single-file runs don't need. The stale
+# `docker ps -a`-based enumeration is dropped (msb, not docker, is the
+# runtime now).
+_run_one_warn_leftover_scratch_cages() {
+  if ! command -v msb >/dev/null 2>&1; then
     return 0
   fi
   local _cname _raw_sp _root _rt
@@ -84,12 +93,14 @@ _run_one_sweep_scratch_cages() {
     done
     [[ "$_already" -eq 0 ]] && _roots+=("$_lit")
   done
-  for _cname in $(docker ps -a --filter "label=rc.source.path" --format '{{.Names}}' 2>/dev/null || true); do
-    _raw_sp=$(docker inspect --format '{{ index .Config.Labels "rc.source.path" }}' "$_cname" 2>/dev/null || true)
+  for _cname in $(msb list --format json 2>/dev/null | jq -r '.[].name' 2>/dev/null || true); do
+    _raw_sp=$(msb inspect "$_cname" --format json 2>/dev/null | jq -r '.config.labels["rc.source.path"] // empty' 2>/dev/null || true)
     [[ -z "$_raw_sp" ]] && continue
     for _root in "${_roots[@]+"${_roots[@]}"}"; do
       if [[ "$_raw_sp" == "${_root}"/* || "$_raw_sp" == "${_root}" ]]; then
-        "${SCRIPT_DIR}/../rc" destroy --force "$_cname" >/dev/null 2>&1 || true
+        echo "WARNING: leftover scratch cage detected: ${_cname} (source path: ${_raw_sp})" >&2
+        echo "  This wrapper did not create it this run and will NOT destroy it." >&2
+        echo "  If it is stale debris, clean it up yourself: rc destroy --force ${_cname}" >&2
         break
       fi
     done
@@ -100,13 +111,13 @@ _run_one_sweep_scratch_cages() {
 _run_one_cleanup() {
   _host_sandbox_cleanup
   if [[ "$RO_SWEEP" == "true" ]]; then
-    _run_one_sweep_scratch_cages
+    _run_one_warn_leftover_scratch_cages
   fi
 }
 trap '_run_one_cleanup' EXIT INT TERM
 
 if [[ "$RO_SWEEP" == "true" ]]; then
-  _run_one_sweep_scratch_cages
+  _run_one_warn_leftover_scratch_cages
 fi
 
 # Exec-and-propagate: run the ONE test file under the sandbox, with RC_E2E /

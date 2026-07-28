@@ -1,28 +1,38 @@
 #!/usr/bin/env bash
 # tests/test-scratch-cage-cleanup.sh — Harness for rip-cage-aqww scratch-cage cleanup.
 #
-# Tests the D1 helper (_scratch-cage-lib.sh) and D2 driver sweep (run-host.sh).
+# Tests the D1 helper (_scratch-cage-lib.sh, register-array destroy-by-name —
+# already fail-safe) and the D2 driver DETECT-AND-WARN (run-host.sh).
+#
+# rip-cage-neu7.9 (post code-personal destroy incident): the D2 mechanism used
+# to be an enumerate-and-destroy sweep. It is now READ-ONLY — it names a
+# leftover temp-root cage in a loud warning (with a suggested `rc destroy
+# --force <name>` command) and NEVER destroys it. A cage the runner did not
+# create must be structurally unreachable by any destroy call; individual
+# tests self-reap their own cages via the D1 helper / explicit teardown.
 #
 # Cases:
 #  (1) Normal-exit and SIGTERM-mid-run of a real scratch-cage test: assert zero
-#      residual containers + volumes under the test temp root.
+#      residual containers + volumes under the test temp root (D1 helper).
 #  (2) Daemon-death residue: construct an Exited container (with volumes) whose
 #      label is under the temp root, and a second whose workspace dir is DELETED
-#      before the sweep; both must be reaped by the D2 sweep.
-#  (3) Positive controls: container labeled OUTSIDE temp root survives; a real
-#      cage's dangling rc-history-* volume (container removed) survives.
+#      before the warn detector runs; both must be NAMED in the warning output
+#      and both must STILL EXIST afterward (D2 never destroys).
+#  (3) Positive controls: a container labeled OUTSIDE temp root survives and is
+#      NOT named; a real cage's dangling rc-history-* volume (container removed)
+#      survives (no blanket volume sweep).
 #  (4) macOS realpath case: label carries realpath form (/private/var/folders/...)
-#      is matched when sweep realpaths the temp root (but NOT the label).
+#      is matched (NAMED, not destroyed) when the temp root is realpath'd (but
+#      NOT the label).
 #  (5) Trap composition: a shell with a pre-existing EXIT trap sources the helper
-#      and registers a cage; BOTH the prior cleanup and scratch cleanup fire.
+#      and registers a cage; BOTH the prior cleanup and scratch cleanup fire
+#      (D1 helper — unaffected by the D2 detect-and-warn conversion).
 #
 # Exit: $FAILURES (silent-red guard per rip-cage-test-fail-prose-without-exit-silent-red).
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="${SCRIPT_DIR}/.."
-RC="${REPO_ROOT}/rc"
 
 FAILURES=0
 PASS_COUNT=0
@@ -106,29 +116,36 @@ teardown_fixture() {
   msb volume remove "rc-history-${_cname}" >/dev/null 2>&1 || true
 }
 
-# Run the D2 sweep inline (mirrors run-host.sh's _sweep_scratch_cages exactly).
+# Run the D2 detect-and-warn inline (mirrors run-host.sh's
+# _warn_leftover_scratch_cages exactly). READ-ONLY: enumerates via `msb list`
+# same as before, but NEVER destroys — prints a warning naming each leftover
+# temp-root cage (name + source path + a suggested `rc destroy --force`
+# command) to stderr instead. rip-cage-neu7.9: replaces the former
+# enumerate-and-destroy sweep (a leftover cage the runner did not create must
+# be structurally unreachable by any destroy call).
 # Args: $1=temp_root (already realpath-resolved)
-run_sweep() {
+run_warn() {
   local _root="$1"
   local _cname _raw_sp
-  local _sweep_roots=()
-  _sweep_roots+=("$_root")
+  local _warn_roots=()
+  _warn_roots+=("$_root")
   for _lit in "/private/var/folders" "/tmp" "/private/tmp"; do
     local _already=0
     local _existing
-    for _existing in "${_sweep_roots[@]+"${_sweep_roots[@]}"}"; do
+    for _existing in "${_warn_roots[@]+"${_warn_roots[@]}"}"; do
       [[ "$_existing" == "$_lit" ]] && _already=1
     done
-    [[ "$_already" -eq 0 ]] && _sweep_roots+=("$_lit")
+    [[ "$_already" -eq 0 ]] && _warn_roots+=("$_lit")
   done
 
   for _cname in $(msb list --format json 2>/dev/null | jq -r '.[].name' 2>/dev/null || true); do
     _raw_sp=$(msb inspect "$_cname" --format json 2>/dev/null | jq -r '.config.labels["rc.source.path"] // empty' 2>/dev/null || true)
     [[ -z "$_raw_sp" ]] && continue
     local _root2
-    for _root2 in "${_sweep_roots[@]+"${_sweep_roots[@]}"}"; do
+    for _root2 in "${_warn_roots[@]+"${_warn_roots[@]}"}"; do
       if [[ "$_raw_sp" == "${_root2}"/* || "$_raw_sp" == "${_root2}" ]]; then
-        "${RC}" destroy --force "$_cname" >/dev/null 2>&1 || true
+        echo "WARNING: leftover scratch cage detected: ${_cname} (source path: ${_raw_sp})" >&2
+        echo "  Suggested cleanup: rc destroy --force ${_cname}" >&2
         break
       fi
     done
@@ -232,46 +249,47 @@ C2A_WS=$(make_scratch_workspace)
 C2A_NAME="rip-cage-cleanup-test-2a-$$"
 create_fixture_container "$C2A_NAME" "$C2A_WS"
 
-run_sweep "$TEST_TEMP_ROOT"
+_warn_out=$(run_warn "$TEST_TEMP_ROOT" 2>&1)
 
 _cexists=0
 sandbox_exists "$C2A_NAME" && _cexists=1 || true
 _vols=$(count_volumes_for "$C2A_NAME")
 
-if [[ "$_cexists" -eq 0 && "$_vols" -eq 0 ]]; then
-  pass "Case 2a: sweep reaps Exited container (dir exists) + both volumes"
+if [[ "$_cexists" -eq 1 && "$_vols" -eq 2 && "$_warn_out" == *"$C2A_NAME"* ]]; then
+  pass "Case 2a: warn NAMES the leftover cage (dir exists) but does NOT destroy it (container+both volumes still present)"
 else
-  fail "Case 2a: sweep missed Exited container (dir exists) — container_exists=$_cexists volumes=$_vols"
-  teardown_fixture "$C2A_NAME"
+  fail "Case 2a: expected warn-and-survive — container_exists=$_cexists volumes=$_vols named=$([[ "$_warn_out" == *"$C2A_NAME"* ]] && echo yes || echo no)"
 fi
+teardown_fixture "$C2A_NAME"
 rm -rf "$C2A_WS"
 
-# Case 2b: workspace dir DELETED before sweep — this is the load-bearing case.
-# A correct sweep reads the label as a RAW STRING and compares to the realpath'd
-# temp root WITHOUT realpaths-ing the label.  If the sweep were to realpath the
-# label, BSD realpath would return empty on the missing path → silent miss.
+# Case 2b: workspace dir DELETED before warn — this is the load-bearing case.
+# A correct detector reads the label as a RAW STRING and compares to the
+# realpath'd temp root WITHOUT realpath-ing the label.  If it were to realpath
+# the label, BSD realpath would return empty on the missing path → silent miss.
 C2B_WS=$(make_scratch_workspace)
 C2B_NAME="rip-cage-cleanup-test-2b-$$"
 create_fixture_container "$C2B_NAME" "$C2B_WS"
-# DELETE the workspace dir before running the sweep.
+# DELETE the workspace dir before running the warn detector.
 rm -rf "$C2B_WS"
 
-run_sweep "$TEST_TEMP_ROOT"
+_warn_out=$(run_warn "$TEST_TEMP_ROOT" 2>&1)
 
 _cexists=0
 sandbox_exists "$C2B_NAME" && _cexists=1 || true
 _vols=$(count_volumes_for "$C2B_NAME")
 
-if [[ "$_cexists" -eq 0 && "$_vols" -eq 0 ]]; then
-  pass "Case 2b: sweep reaps Exited container (workspace dir ALREADY DELETED) + both volumes"
+if [[ "$_cexists" -eq 1 && "$_vols" -eq 2 && "$_warn_out" == *"$C2B_NAME"* ]]; then
+  pass "Case 2b: warn NAMES the leftover cage (workspace dir ALREADY DELETED) but does NOT destroy it"
 else
-  fail "Case 2b: sweep MISSED Exited container whose workspace was deleted — this catches the realpath-label bug; container_exists=$_cexists volumes=$_vols"
-  teardown_fixture "$C2B_NAME"
+  fail "Case 2b: MISSED — this catches the realpath-label bug; container_exists=$_cexists volumes=$_vols named=$([[ "$_warn_out" == *"$C2B_NAME"* ]] && echo yes || echo no)"
 fi
+teardown_fixture "$C2B_NAME"
 
 # ============================================================================
 # Case (3): Positive controls — discriminator safety.
-#           (3a) Container labeled OUTSIDE the temp root survives the sweep.
+#           (3a) Container labeled OUTSIDE the temp root survives and is NOT
+#                named in the warn output.
 #           (3b) A dangling rc-history-* volume (no container) survives — proves
 #                the blanket volume sweep is absent.
 # ============================================================================
@@ -286,15 +304,15 @@ msb create -n "$C3A_NAME" alpine \
   --label "rc.source.path=${C3A_OUTSIDE}" \
   -q >/dev/null 2>&1
 
-run_sweep "$TEST_TEMP_ROOT"
+_warn_out=$(run_warn "$TEST_TEMP_ROOT" 2>&1)
 
 _cexists=0
 sandbox_exists "$C3A_NAME" && _cexists=1 || true
 
-if [[ "$_cexists" -eq 1 ]]; then
-  pass "Case 3a: container labeled OUTSIDE temp root SURVIVES sweep"
+if [[ "$_cexists" -eq 1 && "$_warn_out" != *"$C3A_NAME"* ]]; then
+  pass "Case 3a: container labeled OUTSIDE temp root SURVIVES and is NOT named in warn output"
 else
-  fail "Case 3a: sweep incorrectly reaped container labeled outside temp root (discriminator over-reach)"
+  fail "Case 3a: discriminator over-reach — container_exists=$_cexists named=$([[ "$_warn_out" == *"$C3A_NAME"* ]] && echo yes || echo no)"
 fi
 # Cleanup 3a.
 msb remove --force "$C3A_NAME" >/dev/null 2>&1 || true
@@ -303,15 +321,15 @@ msb remove --force "$C3A_NAME" >/dev/null 2>&1 || true
 C3B_VOL="rc-history-rip-cage-cleanup-test-3b-$$"
 msb volume create "$C3B_VOL" >/dev/null 2>&1
 
-run_sweep "$TEST_TEMP_ROOT"
+run_warn "$TEST_TEMP_ROOT" >/dev/null 2>&1
 
 _vexists=0
 msb volume inspect "$C3B_VOL" >/dev/null 2>&1 && _vexists=1 || true
 
 if [[ "$_vexists" -eq 1 ]]; then
-  pass "Case 3b: dangling rc-history-* volume (no container) SURVIVES sweep — blanket volume sweep is absent"
+  pass "Case 3b: dangling rc-history-* volume (no container) SURVIVES — blanket volume sweep is absent"
 else
-  fail "Case 3b: sweep incorrectly removed a dangling volume without a matching container (blanket sweep present — design violation)"
+  fail "Case 3b: dangling volume without a matching container vanished (blanket sweep present — design violation)"
 fi
 # Cleanup 3b.
 msb volume remove "$C3B_VOL" >/dev/null 2>&1 || true
@@ -319,9 +337,10 @@ msb volume remove "$C3B_VOL" >/dev/null 2>&1 || true
 # ============================================================================
 # Case (4): macOS realpath case.
 #           The cage label carries the realpath form (/private/var/folders/...)
-#           The sweep must match it when the temp root is realpath-resolved.
-#           This proves: (a) the temp root IS realpath'd before compare,
-#                        (b) the label is NOT realpath'd at sweep time.
+#           The warn detector must match it when the temp root is
+#           realpath-resolved. This proves: (a) the temp root IS realpath'd
+#           before compare, (b) the label is NOT realpath'd at detect time,
+#           (c) a match is NAMED, never destroyed.
 # ============================================================================
 echo ""
 echo "--- Case 4: macOS realpath form (/private/var/folders/...) ---"
@@ -334,18 +353,18 @@ C4_NAME="rip-cage-cleanup-test-4-$$"
 # Create fixture with the label set to the ALREADY-realpath'd form (as rc does at cage creation).
 create_fixture_container "$C4_NAME" "$C4_WS"
 
-run_sweep "$TEST_TEMP_ROOT"
+_warn_out=$(run_warn "$TEST_TEMP_ROOT" 2>&1)
 
 _cexists=0
 sandbox_exists "$C4_NAME" && _cexists=1 || true
 _vols=$(count_volumes_for "$C4_NAME")
 
-if [[ "$_cexists" -eq 0 && "$_vols" -eq 0 ]]; then
-  pass "Case 4: macOS realpath label form is matched and reaped by sweep"
+if [[ "$_cexists" -eq 1 && "$_vols" -eq 2 && "$_warn_out" == *"$C4_NAME"* ]]; then
+  pass "Case 4: macOS realpath label form is matched and NAMED, but NOT destroyed"
 else
-  fail "Case 4: sweep missed container with realpath label form — container_exists=$_cexists volumes=$_vols"
-  teardown_fixture "$C4_NAME"
+  fail "Case 4: missed container with realpath label form — container_exists=$_cexists volumes=$_vols named=$([[ "$_warn_out" == *"$C4_NAME"* ]] && echo yes || echo no)"
 fi
+teardown_fixture "$C4_NAME"
 rm -rf "$C4_WS"
 
 # ============================================================================
