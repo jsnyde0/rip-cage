@@ -14,10 +14,11 @@
 #   2 — container not running (`reload` promises the cage sees the change now)
 #   3 — concurrent reload in progress (flock unavailable)
 cmd_reload() {
-  local name="" dry_run=0
+  local name="" dry_run=0 allow_transcript_loss=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dry-run) dry_run=1; shift ;;
+      --allow-transcript-loss) allow_transcript_loss=1; shift ;;
       *) name="$1"; shift ;;
     esac
   done
@@ -164,9 +165,24 @@ cmd_reload() {
     while IFS= read -r _rl_v; do [[ -n "$_rl_v" ]] && log "    host=${_rl_v}"; done <<<"$_rl_violations"
   fi
 
+  # rip-cage-aa4t: pre-reload transcript-persistence guard. `rc reload` is a
+  # COLD-RECREATE (stop -> remove -> cmd_up below): a cage predating the
+  # host-bind ~/.claude/projects mount (current `rc up` always adds it,
+  # cli/up.sh:999 — this only fires for genuinely-old cages) keeps
+  # caged-claude conversation transcripts ONLY on the guest's ephemeral
+  # rootfs overlay, which the recreate destroys — silently, since herdr
+  # faithfully restores the pane layout and the operator only discovers the
+  # loss when a restored pane's `claude --resume` reports no conversation.
+  # Evaluated BEFORE the dry-run early-return so --dry-run can report what
+  # the guard WOULD do without ever refusing (real enforcement only happens
+  # on a real, non-dry-run recreate attempt below).
   if [[ "$dry_run" -eq 1 ]]; then
+    _reload_report_transcript_guard "$name"
     log "(--dry-run: snapshot NOT updated, cage NOT recreated.)"
     return 0
+  fi
+  if ! _reload_enforce_transcript_guard "$name" "$allow_transcript_loss"; then
+    exit 1
   fi
 
   # rip-cage-4c5.3 Fix 4 (evolved, ADR-029 D2): IOC check still fires on rc
@@ -227,6 +243,72 @@ cmd_reload() {
   _config_write_applied "$name" "$live_cfg" "$_rl_mem"
 
   log "Reloaded $name."
+}
+
+
+# _reload_enforce_transcript_guard NAME ALLOW_TRANSCRIPT_LOSS
+#
+# rip-cage-aa4t: real (non-dry-run) enforcement half of the pre-reload
+# transcript-persistence guard. Calls _cage_claude_projects_host_bound
+# (cli/lib/msb_runtime.sh) and:
+#   host-bound (0)        -- silent, proceed.
+#   not host-bound (1)     -- refuse loud (echo to stderr, return 1) UNLESS
+#                             ALLOW_TRANSCRIPT_LOSS is "1", in which case
+#                             print a one-line WARNING and proceed.
+#   couldn't check (2, or  -- WARN (transient inspect hiccup must not
+#   any other non-zero)       spuriously block a reload) and proceed.
+_reload_enforce_transcript_guard() {
+  local name="$1" allow_loss="$2"
+  local _tg_rc=0
+  _cage_claude_projects_host_bound "$name" || _tg_rc=$?
+  case "$_tg_rc" in
+    0)
+      return 0
+      ;;
+    1)
+      if [[ "$allow_loss" -eq 1 ]]; then
+        log "WARNING: ~/.claude/projects is NOT host-bound on ${name} — proceeding with --allow-transcript-loss (any in-flight caged-claude conversation transcripts will be LOST by this cold-recreate)."
+        return 0
+      fi
+      echo "Error: refusing to reload ${name} — ~/.claude/projects is not host-bound on this (legacy) cage." >&2
+      echo "       'rc reload' cold-recreates the cage (stop -> remove -> recreate); the guest's ephemeral" >&2
+      echo "       rootfs overlay is destroyed, which would silently DESTROY any in-flight caged-claude" >&2
+      echo "       conversation transcripts (they are not persisted to the host on this cage today)." >&2
+      echo "       Recreating gains host session persistence going forward (current 'rc up' always" >&2
+      echo "       host-binds ~/.claude/projects)." >&2
+      echo "       Override (you have confirmed there is no conversation to lose, or accept the loss):" >&2
+      echo "         rc reload ${name} --allow-transcript-loss" >&2
+      return 1
+      ;;
+    *)
+      log "WARNING: could not determine whether ~/.claude/projects is host-bound on ${name} (msb inspect check failed) — proceeding without the transcript-loss guard."
+      return 0
+      ;;
+  esac
+}
+
+
+# _reload_report_transcript_guard NAME
+#
+# rip-cage-aa4t: --dry-run half of the pre-reload transcript-persistence
+# guard. Reports what a REAL invocation would do (refuse / proceed / warn)
+# WITHOUT ever refusing or mutating anything — --dry-run's whole point is
+# "show me, don't do it".
+_reload_report_transcript_guard() {
+  local name="$1"
+  local _tg_rc=0
+  _cage_claude_projects_host_bound "$name" || _tg_rc=$?
+  case "$_tg_rc" in
+    0)
+      log "(--dry-run) transcript-persistence guard: ~/.claude/projects is host-bound on ${name} — a real reload would proceed normally."
+      ;;
+    1)
+      log "(--dry-run) transcript-persistence guard: ~/.claude/projects is NOT host-bound on ${name} — a real reload would REFUSE (override with --allow-transcript-loss)."
+      ;;
+    *)
+      log "(--dry-run) transcript-persistence guard: could not determine host-bind status for ~/.claude/projects on ${name} (msb inspect check failed) — a real reload would WARN and proceed."
+      ;;
+  esac
 }
 
 

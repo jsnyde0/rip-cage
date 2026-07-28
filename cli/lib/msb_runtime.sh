@@ -281,6 +281,42 @@ _msb_secret_violations_from_trace_log() {
 }
 
 
+# _cage_claude_projects_host_bound NAME
+#
+# rip-cage-aa4t: predicate for the pre-reload transcript-persistence guard.
+# `rc reload` cold-recreates a cage (stop -> remove -> cmd_up); the guest's
+# ephemeral rootfs overlay is destroyed by that recreate. Current `rc up`
+# always host-binds ~/.claude/projects (cli/up.sh:999), so caged-claude
+# conversation transcripts survive a recreate -- but a cage created by a
+# pre-2026-07-08 `rc` predates that mount and keeps its transcripts ONLY on
+# the doomed overlay. This predicate distinguishes that legacy state from
+# the current one by reading the same `msb inspect NAME --format json`
+# `.config.mounts[]` shape _doctor_dead_file_mounts already reads (`host`/
+# `guest` fields; only `type == "Bind"` entries carry `host` at all).
+#
+# Returns:
+#   0 -- host-bound (a mounts[] entry has host != null and
+#        guest == "/home/agent/.claude/projects")
+#   1 -- NOT host-bound (mounts[] readable, no such entry -- the legacy,
+#        transcript-loss-risk state this bead guards against)
+#   2 -- COULDN'T CHECK (msb inspect itself failed, e.g. cage gone or
+#        unresponsive) -- deliberately DISTINCT from 1 so callers (the
+#        reload guard, the doctor probe) can warn-and-proceed instead of
+#        spuriously refusing/failing on a transient inspect hiccup.
+_cage_claude_projects_host_bound() {
+  local name="$1"
+  local raw
+  raw=$(_msb_inspect_json "$name") || return 2
+  local mounts_json
+  mounts_json=$(jq -c '.config.mounts // []' <<<"$raw" 2>/dev/null) || return 2
+  if jq -e '.[]? | select(.host != null and .guest == "/home/agent/.claude/projects")' \
+      <<<"$mounts_json" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+
 # _msb_remove NAME -- remove a sandbox entirely (msb-side counterpart to
 # `docker rm -f NAME`).
 _msb_remove() {

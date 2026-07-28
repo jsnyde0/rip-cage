@@ -37,6 +37,18 @@
 #        (absent-in-snapshot + live==schema-default → non-drift, rip-cage-1f59.9)
 #   C12  Generality: same absent-default suppression for mounts.symlinks.scope
 #   C13  In-cage invocation negative test — rc not on cage PATH
+#   C15  rip-cage-aa4t pre-reload transcript-persistence guard: NOT
+#        host-bound + no override -> refuse loud (exit 1), names the
+#        --allow-transcript-loss override, snapshot NOT mutated
+#   C16  rip-cage-aa4t guard: NOT host-bound + --allow-transcript-loss ->
+#        guard does not refuse (proceeds past the guard; the subsequent
+#        cold-recreate attempt against a stubbed msb is expected to fail
+#        for unrelated reasons, so this only asserts the guard's own
+#        decision, distinguished from the guard's own refusal wording)
+#   C17  rip-cage-aa4t guard: host-bound -> guard does not refuse
+#        (same distinguishing strategy as C16)
+#   C18  rip-cage-aa4t guard: --dry-run reports what the guard WOULD do
+#        without ever refusing, whether host-bound or not
 #
 # Tests stub `msb` via PATH shim so no real msb daemon is required for
 # C1-C12. C13 is docker-conditional (requires rip-cage:latest image, still
@@ -89,8 +101,13 @@ trap cleanup EXIT
 #   $2 cname      — expected sandbox name
 #   $3 state      — "running" or "exited" (or "missing" to fail the existence check)
 #   $4 workspace  — value for rc.source.path label
+#   $5 mounts_json (optional) — raw JSON array for .config.mounts (default
+#      "[]" — NOT host-bound, matching this stub's pre-rip-cage-aa4t
+#      behavior of omitting the mounts field entirely; `.config.mounts //
+#      []` reads either the same way).
 make_msb_stub() {
   local stub_dir="$1" cname="$2" state="$3" workspace="$4"
+  local mounts_json="${5:-[]}"
   local status_json
   case "$state" in
     running) status_json="Running" ;;
@@ -106,7 +123,7 @@ esac
 case " \$* " in
   *" inspect "*"${cname}"*)
     [[ "${state}" == "missing" ]] && exit 1
-    echo '{"status":"${status_json}","config":{"labels":{"rc.source.path":"${workspace}"}}}'
+    echo '{"status":"${status_json}","config":{"labels":{"rc.source.path":"${workspace}"},"mounts":${mounts_json}}}'
     exit 0
     ;;
   *)
@@ -117,6 +134,10 @@ esac
 STUB
   chmod +x "${stub_dir}/msb"
 }
+
+# rip-cage-aa4t: mounts[] entry shape for a host-bound ~/.claude/projects
+# mount (the current, non-legacy state — cli/up.sh:999).
+_RC_RELOAD_PROJECTS_HOST_BOUND_MOUNTS='[{"type":"bind","host":"/Users/jonatanpi/.claude/projects","guest":"/home/agent/.claude/projects"}]'
 
 # Build a sandbox HOME and workspace. Writes the named fixture as project config.
 # Globals set: TEST_HOME, WS, CACHE_DIR, STUB_DIR, CNAME
@@ -596,6 +617,84 @@ echo "$c14_out" | grep -qi "converges automatically" || { c14_ok=false; c14_reas
 echo "$c14_out" | grep -q "rc up --reload" && { c14_ok=false; c14_reason="${c14_reason:+$c14_reason; }hint still names retired '--reload' flag"; }
 if [[ "$c14_ok" == "true" ]]; then pass 14 "eligible-drift hint offers 'rc reload' now + names the default-on 'rc up' converge (no --reload flag needed)"
 else fail 14 "eligible-drift hint text" "$c14_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# C15: rip-cage-aa4t pre-reload transcript-persistence guard — NOT host-bound
+# + no override -> refuse loud (exit 1), snapshot NOT mutated, message names
+# the --allow-transcript-loss override.
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox "config-project-network-allowed-hosts.yaml"
+make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS" '[]'
+write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+c15_pre_snap_sum=$(shasum "${CACHE_DIR}/config-applied.json" | awk '{print $1}')
+
+c15_out=$(run_rc reload "$CNAME" 2>&1)
+c15_exit=$?
+c15_post_snap_sum=$(shasum "${CACHE_DIR}/config-applied.json" | awk '{print $1}')
+c15_ok=true c15_reason=""
+[[ "$c15_exit" -ne 1 ]] && c15_ok=false && c15_reason="exit $c15_exit (want 1)"
+echo "$c15_out" | grep -qi "not host-bound\|host-bound" || { c15_ok=false; c15_reason="${c15_reason:+$c15_reason; }no host-bound wording"; }
+echo "$c15_out" | grep -q -- "--allow-transcript-loss" || { c15_ok=false; c15_reason="${c15_reason:+$c15_reason; }no --allow-transcript-loss override hint"; }
+[[ "$c15_pre_snap_sum" != "$c15_post_snap_sum" ]] && c15_ok=false && c15_reason="${c15_reason:+$c15_reason; }snapshot was mutated"
+if [[ "$c15_ok" == "true" ]]; then pass 15 "not host-bound + no override -> refuse loud (exit 1), names --allow-transcript-loss"
+else fail 15 "transcript guard refusal" "$c15_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# C16: rip-cage-aa4t guard — NOT host-bound + --allow-transcript-loss ->
+# guard does NOT refuse (the distinguishing assertion: absence of the C15
+# refusal wording, plus the one-line override warning). The subsequent
+# cold-recreate attempt against a stubbed msb/cmd_up is expected to fail for
+# unrelated environment reasons (no real image/manifest pipeline here) —
+# this case only asserts the guard's own decision, not a full recreate.
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox "config-project-network-allowed-hosts.yaml"
+make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS" '[]'
+write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+
+c16_out=$(run_rc reload "$CNAME" --allow-transcript-loss 2>&1) || true
+c16_ok=true c16_reason=""
+echo "$c16_out" | grep -q "refusing to reload" && { c16_ok=false; c16_reason="guard still refused despite --allow-transcript-loss"; }
+echo "$c16_out" | grep -qi "proceeding" || { c16_ok=false; c16_reason="${c16_reason:+$c16_reason; }no proceeding/override warning printed"; }
+if [[ "$c16_ok" == "true" ]]; then pass 16 "not host-bound + --allow-transcript-loss -> guard does not refuse (proceeds past the guard)"
+else fail 16 "transcript guard override" "$c16_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# C17: rip-cage-aa4t guard — host-bound -> guard does not refuse (same
+# distinguishing strategy as C16: absence of the refusal wording).
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox "config-project-network-allowed-hosts.yaml"
+make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS" "$_RC_RELOAD_PROJECTS_HOST_BOUND_MOUNTS"
+write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+
+c17_out=$(run_rc reload "$CNAME" 2>&1) || true
+c17_ok=true c17_reason=""
+echo "$c17_out" | grep -q "refusing to reload" && { c17_ok=false; c17_reason="guard refused despite host-bound mount"; }
+if [[ "$c17_ok" == "true" ]]; then pass 17 "host-bound -> guard does not refuse"
+else fail 17 "transcript guard host-bound" "$c17_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# C18: rip-cage-aa4t guard — --dry-run reports what the guard WOULD do
+# without ever refusing (exit 0), whether host-bound or not.
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox "config-project-network-allowed-hosts.yaml"
+make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS" '[]'
+write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+
+c18_out=$(run_rc reload "$CNAME" --dry-run 2>&1)
+c18_exit=$?
+c18_ok=true c18_reason=""
+[[ "$c18_exit" -ne 0 ]] && c18_ok=false && c18_reason="exit $c18_exit (want 0 — dry-run must never refuse)"
+echo "$c18_out" | grep -qi "would refuse\|would REFUSE" || { c18_ok=false; c18_reason="${c18_reason:+$c18_reason; }dry-run doesn't report what the guard would do"; }
+if [[ "$c18_ok" == "true" ]]; then pass 18 "--dry-run reports the guard's would-be decision without ever refusing"
+else fail 18 "transcript guard dry-run report" "$c18_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------

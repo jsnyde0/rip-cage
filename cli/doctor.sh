@@ -401,6 +401,37 @@ _doctor_format_auth_probe() {
 }
 
 
+# _doctor_format_transcript_persistence_probe NAME
+#
+# rip-cage-aa4t: reports whether this cage's ~/.claude/projects is
+# host-bound, via _cage_claude_projects_host_bound (cli/lib/msb_runtime.sh).
+# Current `rc up` always host-binds this mount (cli/up.sh:999) -- a "not
+# host-bound" result names a genuinely-old cage predating that change.
+# WARN, never FAIL: this is a legacy/edge state, not a broken cage -- the
+# cage itself is otherwise fine, it just cannot survive a cold-recreate
+# (`rc reload`) without losing in-flight caged-claude conversation
+# transcripts (rip-cage-reload.sh's pre-reload guard refuses that path by
+# default; --allow-transcript-loss overrides it). A "couldn't check"
+# result (msb inspect itself failed) is reported as INFO, not WARN -- a
+# transient inspect hiccup must not read as "this cage lost persistence".
+_doctor_format_transcript_persistence_probe() {
+  local name="$1"
+  local _tp_rc=0
+  _cage_claude_projects_host_bound "$name" || _tp_rc=$?
+  case "$_tp_rc" in
+    0)
+      echo "OK — ~/.claude/projects is host-bound (conversations persist across rc reload)"
+      ;;
+    1)
+      echo "WARN — ~/.claude/projects is NOT host-bound on this (legacy) cage; recreate via 'rc up' to gain host session persistence — a 'rc reload' on this cage would lose in-flight caged-claude conversations (override with --allow-transcript-loss)"
+      ;;
+    *)
+      echo "INFO — could not determine host-bind status for ~/.claude/projects (msb inspect check failed)"
+      ;;
+  esac
+}
+
+
 # _doctor_format_posture_probe NAME
 #
 # rip-cage-rj68 (S6): the doctor's NEW msb-side posture-inspection story
@@ -547,6 +578,12 @@ cmd_doctor() {
   # in-cage egress engine — retained under its legacy label name).
   egress_config_override_label=$(_msb_label "$name" "rc.egress.config-override" || true)
   [[ -z "$egress_config_override_label" ]] && egress_config_override_label="false"
+
+  # rip-cage-aa4t: transcript-persistence probe. Reads mount config only (no
+  # live exec needed), so — like state/labels above — it works on stopped
+  # cages too, unlike the running-only exec-based probes below.
+  local transcript_persistence_probe
+  transcript_persistence_probe=$(_doctor_format_transcript_persistence_probe "$name")
 
   local running=0
   [[ "$state" == "running" ]] && running=1
@@ -734,6 +771,7 @@ cmd_doctor() {
       --arg workspace_probe "$workspace_probe" \
       --arg bd_version_probe "$bd_version_probe" \
       --arg egress_config_override "$egress_config_override_label" \
+      --arg transcript_persistence_probe "$transcript_persistence_probe" \
       '{
         name: $name,
         state: $state,
@@ -747,6 +785,7 @@ cmd_doctor() {
           beads_server: $beads_probe,
           auth: $auth_probe,
           dead_mounts: $dead_mounts_probe,
+          transcript_persistence: $transcript_persistence_probe,
           skills_mount: $skills_probe,
           cwd: $cwd_probe,
           workspace_resolution: $workspace_probe,
@@ -762,6 +801,7 @@ cmd_doctor() {
     echo "  rc.egress.config-override = $egress_config_override_label"
     echo ""
     echo "Live probes:"
+    echo "  transcript-persist : $transcript_persistence_probe"
     echo "  posture        : $posture_probe"
     echo "  beads-server   : $beads_probe"
     echo "  auth           : $auth_probe"
