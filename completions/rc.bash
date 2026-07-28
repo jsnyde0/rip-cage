@@ -1,6 +1,22 @@
 # Bash completion for rc
 # Compatible with Bash 3.2 (macOS default) — no associative arrays, no ${var,,}
 
+# _rc_completion_cage_names -- rip-cage-tsf2.5: enumerate rc-managed cage
+# names for tab completion via the same msb/rc-native path `rc ls` itself
+# uses, replacing the retired docker-based `ps` lookup (there is no docker daemon behind
+# cages post-msb-cutover). Shells out to `rc --output json ls` (the real
+# enumeration logic — label filtering, msb inspection -- lives there once;
+# completion just consumes it) and extracts names with jq. Pass
+# --running-only to restrict to cages with status "running" (mirrors the old
+# docker's running-only vs all-containers `ps` split for attach/exec/down/test/reload vs
+# destroy/doctor). Fails silently (empty completions) if rc or jq are
+# unavailable -- same degrade-gracefully behavior as the old docker-based call.
+_rc_completion_cage_names() {
+  local _filter='.[].name'
+  [[ "${1:-}" == "--running-only" ]] && _filter='.[] | select(.status=="running") | .name'
+  command rc --output json ls 2>/dev/null | jq -r "$_filter" 2>/dev/null
+}
+
 _rc_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
@@ -16,12 +32,12 @@ _rc_complete() {
   case "$prev" in
     attach|exec|down|test|reload)
       local containers
-      containers=$(docker ps --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null)
+      containers=$(_rc_completion_cage_names --running-only)
       COMPREPLY=( $(compgen -W "$containers" -- "$cur") )
       ;;
     destroy|doctor)
       local containers
-      containers=$(docker ps -a --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null)
+      containers=$(_rc_completion_cage_names)
       COMPREPLY=( $(compgen -W "$containers" -- "$cur") )
       ;;
     up)

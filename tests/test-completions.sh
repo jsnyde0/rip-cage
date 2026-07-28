@@ -100,6 +100,22 @@ if [[ $missing -eq 0 ]]; then
   pass "subcommand sync: all schema commands present in bash completions"
 fi
 
+# --- rip-cage-tsf2.5: cage-name completion must not shell out to `docker ps` ---
+# post-msb-cutover, docker ps is a dead call (no docker daemon backs cages
+# anymore); completion must enumerate via the msb/rc-native path instead.
+
+if grep -q "docker ps" "${SCRIPT_DIR}/../completions/rc.bash"; then
+  fail "completions/rc.bash still shells out to docker ps (dead post-cutover call)"
+else
+  pass "completions/rc.bash does not call docker ps"
+fi
+
+if grep -q "docker ps" "${SCRIPT_DIR}/../completions/_rc"; then
+  fail "completions/_rc still shells out to docker ps (dead post-cutover call)"
+else
+  pass "completions/_rc does not call docker ps"
+fi
+
 # --- rc setup idempotency (non-interactive) ---
 
 tmpdir=$(mktemp -d)
