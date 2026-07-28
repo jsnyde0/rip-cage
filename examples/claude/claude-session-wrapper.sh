@@ -113,6 +113,38 @@ if [[ ! -f "${SESSION_DIR}/.claude.json" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Pre-accept the bypass-permissions disclaimer (rip-cage-k8vi).
+#
+# bypassPermissions is already the cage's DECLARED policy (cage/agent/
+# settings.json permissions.defaultMode=bypassPermissions). Claude still gates a
+# one-time "Bypass Permissions mode" accept dialog on the global config field
+# `bypassPermissionsModeAccepted` in $CLAUDE_CONFIG_DIR/.claude.json. Because the
+# host ~/.claude.json is a READ-ONLY virtiofs mount, an in-session accept can
+# never persist, so the dialog reappears on EVERY cold boot/recreate — blocking
+# every restored/spawned agent pane until a human accepts per pane (defeats
+# walk-away autonomy). The per-session ${SESSION_DIR}/.claude.json is a WRITABLE
+# copy (NOT the ro mount), so pre-seeding the acceptance here only re-affirms
+# declared policy — it is not a weakening of the ro posture, and not an
+# auto-approver watching panes. Runs every invocation (OUTSIDE the seed-once
+# block above) so an already-seeded session dir that survives a resume is
+# retrofitted too. Fully guarded: a jq/write failure must never block the claude
+# launch — worst case degrades to the pre-existing dialog, never a broken exec.
+{
+  _rc_bypass_json="${SESSION_DIR}/.claude.json"
+  if command -v jq >/dev/null 2>&1 && [[ -f "$_rc_bypass_json" ]] \
+     && [[ "$(jq -r '.bypassPermissionsModeAccepted // false' "$_rc_bypass_json" 2>/dev/null)" != "true" ]]; then
+    _rc_bypass_tmp="${_rc_bypass_json}.k8vi.tmp"
+    if jq '.bypassPermissionsModeAccepted = true' "$_rc_bypass_json" > "$_rc_bypass_tmp" 2>/dev/null \
+       && [[ -s "$_rc_bypass_tmp" ]]; then
+      mv -f "$_rc_bypass_tmp" "$_rc_bypass_json"
+    else
+      rm -f "$_rc_bypass_tmp"
+    fi
+  fi
+} || true
+unset _rc_bypass_json _rc_bypass_tmp 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
 # Env hygiene (rip-cage-46s5, S4 spike trap): an inherited
 # CLAUDE_CODE_CHILD_SESSION marker silently disables transcript saving in
 # interactive panes (docs/2026-07-27-msb-spike-roster-resume.md, S4 footgun

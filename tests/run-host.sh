@@ -540,6 +540,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-doctor-dead-mount.sh"     # rip-cage-uben: generic dead-handle detection over single-file bind mounts — stubbed docker, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-cage-claude-projects-host-bound.sh" # rip-cage-aa4t: _cage_claude_projects_host_bound predicate — stubbed msb, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-doctor-transcript-persistence.sh"   # rip-cage-aa4t: rc doctor transcript-persistence probe — stubbed msb, host-only, no live cage needed
+  run_test "${SCRIPT_DIR}/test-claude-bypass-preaccept.sh"         # rip-cage-k8vi: claude-session-wrapper pre-accepts bypassPermissionsModeAccepted in the writable per-session .claude.json — real wrapper on host via RC_REAL_CLAUDE_BIN stub, host-only, no live cage
   run_test "${SCRIPT_DIR}/test-denial-visibility.sh"     # rip-cage-jlu4: denial-visibility disambiguation (DNS-denial vs secret-violation) — stubbed msb, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-extract-credentials.sh"   # rip-cage-towm: keychain-extraction warning gated on no-usable-existing-creds — security shim + sandboxed HOME, host-only
   run_test "${SCRIPT_DIR}/test-doctor-runnability.sh"    # rip-cage-2cks: rc doctor cwd-floor + workspace-resolution live-cage checks (NEEDS_CONTAINER; guards rip-cage-0rng + rip-cage-aq70; schema-error sub-case additionally gated behind RC_DOCTOR_STALE_BD_IMAGE, self-skips visibly otherwise)
