@@ -260,13 +260,13 @@ echo "--- Case 4: grep-anchored call-site probe (phase-awareness) ---"
 # drift elsewhere in rc. A "no exit 1 on resume" *behavioral* check alone
 # would pass vacuously (the call site could simply be absent everywhere) —
 # this probe instead pins presence-exactly-once AND position.
-_c4_call_count=$(grep -c '_up_resolve_placeholder_env_file "\$path"' "$RC")
-_c4_call_line=$(grep -n '_up_resolve_placeholder_env_file "\$path"' "$RC" | head -1 | cut -d: -f1)
-_c4_prepare_env_line=$(grep -n '_up_prepare_environment "\$path" "\$port" "\$env_file"' "$RC" | head -1 | cut -d: -f1)
-_c4_create_start_line=$(grep -n '# New container — provision image now if absent/stale (ADR-008 D6)\.' "$RC" | head -1 | cut -d: -f1)
-_c4_dryrun_start_line=$(grep -n '^  if \[\[ "\$DRY_RUN" == "true" \]\]; then$' "$RC" | head -1 | cut -d: -f1)
-_c4_resume_running_start_line=$(grep -n '^  if \[\[ "\$state" == "running" \]\]; then$' "$RC" | head -1 | cut -d: -f1)
-_c4_resume_stopped_start_line=$(grep -n '^  elif \[\[ "\$state" == "exited" \]\] || \[\[ "\$state" == "created" \]\]; then$' "$RC" | head -1 | cut -d: -f1)
+_c4_call_count=$(grep -c '_up_resolve_placeholder_env_file "\$path"' "${REPO_ROOT}/cli/up.sh")
+_c4_call_line=$(grep -n '_up_resolve_placeholder_env_file "\$path"' "${REPO_ROOT}/cli/up.sh" | head -1 | cut -d: -f1)
+_c4_prepare_env_line=$(grep -n '_up_prepare_environment "\$path" "\$port" "\$env_file"' "${REPO_ROOT}/cli/up.sh" | head -1 | cut -d: -f1)
+_c4_create_start_line=$(grep -n '# New container — provision image now if absent/stale (ADR-008 D6)\.' "${REPO_ROOT}/cli/up.sh" | head -1 | cut -d: -f1)
+_c4_dryrun_start_line=$(grep -n '^  if \[\[ "\$DRY_RUN" == "true" \]\]; then$' "${REPO_ROOT}/cli/up.sh" | head -1 | cut -d: -f1)
+_c4_resume_running_start_line=$(grep -n '^  if \[\[ "\$state" == "running" \]\]; then$' "${REPO_ROOT}/cli/up.sh" | head -1 | cut -d: -f1)
+_c4_resume_stopped_start_line=$(grep -n '^  elif \[\[ "\$state" == "exited" \]\] || \[\[ "\$state" == "created" \]\]; then$' "${REPO_ROOT}/cli/up.sh" | head -1 | cut -d: -f1)
 
 _c4_ok=true
 _c4_reason=""
@@ -287,19 +287,19 @@ else
 
   # Absent from the dry-run block (cmd_up's own, first occurrence -> the
   # resume-running block start is the block's upper bound).
-  _c4_dryrun_hits=$(sed -n "${_c4_dryrun_start_line},${_c4_resume_running_start_line}p" "$RC" | grep -c '_up_resolve_placeholder_env_file' || true)
+  _c4_dryrun_hits=$(sed -n "${_c4_dryrun_start_line},${_c4_resume_running_start_line}p" "${REPO_ROOT}/cli/up.sh" | grep -c '_up_resolve_placeholder_env_file' || true)
   if [[ "${_c4_dryrun_hits:-0}" -ne 0 ]]; then
     _c4_ok=false; _c4_reason="${_c4_reason:+$_c4_reason; }found in dry-run block (${_c4_dryrun_hits} hits)"
   fi
 
   # Absent from the resume-running branch.
-  _c4_resume_running_hits=$(sed -n "${_c4_resume_running_start_line},${_c4_resume_stopped_start_line}p" "$RC" | grep -c '_up_resolve_placeholder_env_file' || true)
+  _c4_resume_running_hits=$(sed -n "${_c4_resume_running_start_line},${_c4_resume_stopped_start_line}p" "${REPO_ROOT}/cli/up.sh" | grep -c '_up_resolve_placeholder_env_file' || true)
   if [[ "${_c4_resume_running_hits:-0}" -ne 0 ]]; then
     _c4_ok=false; _c4_reason="${_c4_reason:+$_c4_reason; }found in resume-running branch (${_c4_resume_running_hits} hits)"
   fi
 
   # Absent from the resume-stopped branch.
-  _c4_resume_stopped_hits=$(sed -n "${_c4_resume_stopped_start_line},${_c4_create_start_line}p" "$RC" | grep -c '_up_resolve_placeholder_env_file' || true)
+  _c4_resume_stopped_hits=$(sed -n "${_c4_resume_stopped_start_line},${_c4_create_start_line}p" "${REPO_ROOT}/cli/up.sh" | grep -c '_up_resolve_placeholder_env_file' || true)
   if [[ "${_c4_resume_stopped_hits:-0}" -ne 0 ]]; then
     _c4_ok=false; _c4_reason="${_c4_reason:+$_c4_reason; }found in resume-stopped branch (${_c4_resume_stopped_hits} hits)"
   fi
@@ -310,7 +310,7 @@ else
   # behavior would NOT reflect what rc's real create path actually does.
   # Assert the literal copy line appears between the call site and the real
   # _up_prepare_environment call.
-  _c4_copyback_hits=$(sed -n "${_c4_call_line},${_c4_prepare_env_line}p" "$RC" | grep -c 'env_file="\$_UP_PLACEHOLDER_ENV_FILE"' || true)
+  _c4_copyback_hits=$(sed -n "${_c4_call_line},${_c4_prepare_env_line}p" "${REPO_ROOT}/cli/up.sh" | grep -c 'env_file="\$_UP_PLACEHOLDER_ENV_FILE"' || true)
   if [[ "${_c4_copyback_hits:-0}" -eq 0 ]]; then
     _c4_ok=false; _c4_reason="${_c4_reason:+$_c4_reason; }call-site copy (env_file=\"\$_UP_PLACEHOLDER_ENV_FILE\") missing between resolver call and _up_prepare_environment"
   fi

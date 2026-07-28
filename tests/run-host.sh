@@ -544,6 +544,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-claude-bypass-preaccept.sh"         # rip-cage-k8vi: claude-session-wrapper pre-accepts bypassPermissionsModeAccepted in the writable per-session .claude.json — real wrapper on host via RC_REAL_CLAUDE_BIN stub, host-only, no live cage
   run_test "${SCRIPT_DIR}/test-denial-visibility.sh"     # rip-cage-jlu4: denial-visibility disambiguation (DNS-denial vs secret-violation) — stubbed msb, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-extract-credentials.sh"   # rip-cage-towm: keychain-extraction warning gated on no-usable-existing-creds — security shim + sandboxed HOME, host-only
+  run_test "${SCRIPT_DIR}/test-placeholder-env-file.sh"  # rip-cage-b9to/rip-cage-tsf2.4: auth.placeholder_env_file resolution (Case1-3,5) + phase-awareness call-site probe (Case4, host-only, no docker/msb)
   run_test "${SCRIPT_DIR}/test-doctor-runnability.sh"    # rip-cage-2cks: rc doctor cwd-floor + workspace-resolution live-cage checks (NEEDS_CONTAINER; guards rip-cage-0rng + rip-cage-aq70; schema-error sub-case additionally gated behind RC_DOCTOR_STALE_BD_IMAGE, self-skips visibly otherwise)
   run_test "${SCRIPT_DIR}/test-dcg-policy.sh"            # rip-cage-hhh.11.2: DCG host-adoptable policy (ADR-025 D1/D5)
   run_test "${SCRIPT_DIR}/test-auto-seed.sh"             # rip-cage-j86: rc up auto-seeds global config on first run
