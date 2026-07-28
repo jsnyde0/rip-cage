@@ -27,10 +27,11 @@
 #   T2  a genuinely fresh `rc up` auto-seeds a global config.yaml on disk
 #       whose network.allowed_hosts contains exactly the 3 curated hosts
 #   T3  _up_build_egress_config_json (the REAL S6 create-path translator,
-#       unchanged) returns allowed_hosts == the curated 3-host array for a
-#       workspace with NO project .rip-cage.yaml, once the global config has
-#       been auto-seeded -- i.e. the real create path picks up the shipped
-#       defaults, not a re-implementation of the same claim
+#       unchanged) returns allowed_hosts == the curated defaults UNION the
+#       floor-manifest egress hosts for a workspace with NO project
+#       .rip-cage.yaml, once the global config has been auto-seeded -- i.e.
+#       the real create path picks up the shipped defaults unioned with the
+#       baked-tool manifest egress, not a re-implementation of the same claim
 #   T4  that JSON round-trips through the REAL _msb_flags_generate contract
 #       (S2, unchanged) into --net-default deny + one --net-rule allow@
 #       per curated host
@@ -55,10 +56,13 @@ TOTAL=0
 pass() { TOTAL=$((TOTAL + 1)); echo "PASS  [$TOTAL] $1"; }
 fail() { TOTAL=$((TOTAL + 1)); echo "FAIL  [$TOTAL] $1 -- ${2:-}"; FAILURES=$((FAILURES + 1)); }
 
-# The curated default -- single literal source of truth for this test file,
-# independent of cli/lib/config.sh's own implementation (an expected-value
-# literal, not a recomputation of what the code does).
-EXPECTED_HOSTS_JSON='["api.anthropic.com","mcp-proxy.anthropic.com","http-intake.logs.us5.datadoghq.com"]'
+# The curated defaults UNION the floor-manifest egress hosts -- single
+# literal source of truth for this test file, independent of
+# cli/lib/config.sh's own implementation (an expected-value literal, not a
+# recomputation of what the code does). The 3 curated D4 hosts come first,
+# followed by the baked-tool manifest egress (beads->api.github.com,
+# dolt->doltremoteapi.dolthub.com, gh->api.github.com+github.com), unique+sorted.
+EXPECTED_HOSTS_JSON='["api.anthropic.com","mcp-proxy.anthropic.com","http-intake.logs.us5.datadoghq.com","api.github.com","doltremoteapi.dolthub.com","github.com"]'
 
 TEST_HOME=""
 cleanup() { [[ -n "${TEST_HOME:-}" && -d "$TEST_HOME" ]] && rm -rf "$TEST_HOME"; }
@@ -111,7 +115,7 @@ T3_RC=$?
 if [[ "$T3_RC" -eq 0 ]]; then
   T3_HOSTS=$(jq -c '.allowed_hosts' <<<"$T3_OUT")
   if [[ "$T3_HOSTS" == "$EXPECTED_HOSTS_JSON" ]]; then
-    pass "T3: _up_build_egress_config_json returns exactly the curated defaults for an unconfigured workspace"
+    pass "T3: _up_build_egress_config_json returns curated defaults UNION floor-manifest egress for an unconfigured workspace"
   else
     fail "T3: unexpected allowed_hosts" "got=$T3_HOSTS want=$EXPECTED_HOSTS_JSON"
   fi
