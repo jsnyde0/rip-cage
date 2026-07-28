@@ -16,7 +16,7 @@ A TOOL entry declares:
 - **`archetype: TOOL`** — signals the plain-tool install path
 - **`version_pin`** — a human-readable version string (used in labels and drift detection; does not drive any auto-download — your `install_cmd` is the source of truth)
 - **`install_cmd`** — shell fragment executed inside a Dockerfile `RUN` step as root in the runtime stage. `rc build` wraps it with `apt-get update && <install_cmd> && rm -rf /var/lib/apt/lists/*` when apt packages are involved; a non-apt `install_cmd` (curl, copy) runs as-is.
-- **`egress`** — list of hostnames the `install_cmd` must reach at build time (used for documentation; enforced by the build host's normal network, not by the cage firewall)
+- **`egress`** — list of hostnames the `install_cmd` must reach at build time. This field is safety-relevant, not documentation-only: each declared host is (a) checked against the IOC denylist at `rc build`/`rc up`/`rc reload` (`_manifest_check_ioc_egress`) and (b) unioned into the cage's runtime egress allowlist (`_up_build_egress_config_json` → `_manifest_egress_hosts_json`), becoming an msb `--net-rule allow@<host>` at create/reload time. Declaring a host both permits the build-time fetch and grants that tool runtime egress in the running cage.
 - **`mounts`** — list of host-path → cage-path bind mounts needed at runtime (may be empty)
 
 ```yaml
