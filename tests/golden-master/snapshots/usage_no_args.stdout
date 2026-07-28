@@ -15,7 +15,10 @@ Commands:
   exec <cage> -- <cmd...>                      Run a one-off command in the container (non-interactive safe)
   down [name]                                  Stop a container
   destroy [-f|--force] [name]                   Remove container and volumes
-  reload [name] [--dry-run]                     Hot-reload .rip-cage.yaml allowlist changes (network.allowed_hosts)
+  reload [name] [--dry-run] [--allow-transcript-loss]
+                                                Hot-reload .rip-cage.yaml allowlist changes (network.allowed_hosts);
+                                                refuses if a legacy cage's ~/.claude/projects isn't host-bound
+                                                (--allow-transcript-loss overrides)
   allowlist add <host> [--cage=<name>]         Append host to network.allowed_hosts (idempotent; --output json)
   allowlist show [--effective] [--observed]    Show configured/effective/observed blocked hosts
   allowlist promote --from-observed [--cage]   Merge observed blocked hosts + flip mode=block + rc reload

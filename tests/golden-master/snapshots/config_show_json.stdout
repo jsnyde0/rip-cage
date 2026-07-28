@@ -4,6 +4,7 @@
     "mounts": {
       "denylist": [],
       "allow_risky": null,
+      "mask": [],
       "config_mode": "ro",
       "symlinks": {
         "on_dangling": "follow",
@@ -35,6 +36,7 @@
     "version": "global",
     "mounts.denylist": "global",
     "mounts.allow_risky": "default",
+    "mounts.mask": "default",
     "mounts.config_mode": "default",
     "mounts.symlinks.on_dangling": "default",
     "mounts.symlinks.scope": "default",
@@ -53,7 +55,7 @@
     "global": "<GM_ROOT>/home/.config/rip-cage/config.yaml",
     "project": null
   },
-  "sha256": "165839fa930c444afde52deabb8af347514f9aae5d18ee5379b4b4a60428ddef",
+  "sha256": "db2b2f9fae5a254b4ff7d7dc0cfbdf3fd42c5d0db87ea633225cf4b5288e10ac",
   "manifest_egress": {
     "beads": [
       "api.github.com"

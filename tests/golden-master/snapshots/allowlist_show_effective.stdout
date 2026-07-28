@@ -7,6 +7,7 @@ version: 2               # from project
 mounts:
   denylist: []                 # from global
   allow_risky: null               # from default
+  mask: []                 # from default
   config_mode: ro               # from default
   symlinks:
     on_dangling: follow               # from default
