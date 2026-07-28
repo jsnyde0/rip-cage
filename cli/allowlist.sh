@@ -8,7 +8,11 @@
 # Subcommands:
 #   add <host> [--cage=<name>] [--config-file=<path>] [--output json]
 #     Append host to network.allowed_hosts in .rip-cage.yaml (idempotent).
-#     If --cage given, run rc reload <cage> after editing to apply live.
+#     If --cage given, the edit target is resolved from the CAGE's recorded
+#     workspace (rc.source.path label — the same file `rc reload` diffs),
+#     regardless of CWD, then `rc reload <cage>` applies it live (rip-cage-e25p).
+#     Passing both --cage and a divergent --config-file fails loud (an edit the
+#     reload's diff can't see would silently no-op).
 #
 #   show [--effective] [--observed] [--cage=<name>] [--config-file=<path>] [--log-file=<path>]
 #     Default (JSON): list configured network.allowed_hosts.
@@ -83,6 +87,44 @@ _allowlist_resolve_config_file() {
 }
 
 
+# _allowlist_resolve_cage_workspace: resolve a cage NAME to its recorded
+# workspace directory via the SAME source `rc reload` diffs — the
+# rc.source.path label (set at cmd_up create-time). rip-cage-e25p: `rc allowlist
+# add --cage` previously ignored this and derived the edit target from CWD,
+# writing a stray ${PWD}/.rip-cage.yaml while the cage's real config went
+# untouched and the auto-reload no-op'd (its diff reads rc.source.path). Emits
+# the workspace path on stdout; on failure prints an error to stderr and
+# returns 1 (callers must abort loud, never silently fall back to CWD).
+_allowlist_resolve_cage_workspace() {
+  local cage_name="$1"
+  local rn
+  rn=$(resolve_name "$cage_name") || return 1
+  if ! _msb_exists "$rn"; then
+    echo "Error: cage '${cage_name}' not found — cannot resolve its workspace to edit .rip-cage.yaml." >&2
+    return 1
+  fi
+  local ws
+  ws=$(_msb_label "$rn" "rc.source.path" 2>/dev/null || true)
+  if [[ -z "$ws" || ! -d "$ws" ]]; then
+    echo "Error: cannot resolve workspace for cage '${cage_name}' (rc.source.path label missing or path gone)." >&2
+    return 1
+  fi
+  printf '%s\n' "$ws"
+}
+
+
+# _allowlist_canon_path: canonicalize a path whose PARENT dir exists (the file
+# itself may not exist yet). Portable (no realpath-on-missing, which errors on
+# macOS): resolve the parent via `cd … && pwd -P`, re-append the basename.
+# Falls back to the input unchanged if the parent can't be resolved.
+_allowlist_canon_path() {
+  local p="$1" d b
+  d=$(cd "$(dirname "$p")" 2>/dev/null && pwd -P) || { printf '%s\n' "$p"; return 0; }
+  b=$(basename "$p")
+  printf '%s/%s\n' "$d" "$b"
+}
+
+
 # _allowlist_add_host_to_yaml: idempotently add <host> to network.allowed_hosts
 # in the given YAML file. Creates the file with version: 2 if absent.
 # Returns 0=added, 1=skipped (already present).
@@ -142,8 +184,42 @@ _allowlist_add() {
     _allowlist_refuse_in_cage "add"
   fi
 
+  # Resolve the edit target. rip-cage-e25p: when --cage is given, the edit
+  # target MUST be the cage's recorded workspace config — the SAME file
+  # `rc reload <cage>` diffs (rc.source.path label) — regardless of CWD.
+  # Otherwise the add and the auto-reload read two different files: the add
+  # succeeds against one, the diff sees no change in the other, and the apply
+  # silently no-ops.
   local yaml_file
-  yaml_file=$(_allowlist_resolve_config_file "$config_file")
+  if [[ -n "$cage" ]]; then
+    local cage_ws cage_yaml
+    cage_ws=$(_allowlist_resolve_cage_workspace "$cage") || exit 1
+    cage_yaml="${cage_ws}/.rip-cage.yaml"
+    if [[ -n "$config_file" ]]; then
+      # Both --cage and --config-file supplied: fail loud if they diverge. An
+      # edit to a --config-file that isn't the cage's workspace config would
+      # land where the reload diff can't see it — the exact e25p silent-no-op
+      # class (edit-target vs diff-source divergence). Refuse BEFORE writing so
+      # there is no stray partial edit.
+      local _cf_canon _cy_canon
+      _cf_canon=$(_allowlist_canon_path "$config_file")
+      _cy_canon=$(_allowlist_canon_path "$cage_yaml")
+      if [[ "$_cf_canon" != "$_cy_canon" ]]; then
+        echo "Error: --config-file and --cage '${cage}' resolve to different files:" >&2
+        echo "         --config-file : ${_cf_canon}" >&2
+        echo "         --cage config : ${_cy_canon}" >&2
+        echo "       'rc reload ${cage}' diffs the cage's workspace config, so editing --config-file" >&2
+        echo "       would apply to a file the reload can't see (silent no-op). Omit --config-file to" >&2
+        echo "       edit the cage's own config, or omit --cage to edit --config-file without reloading." >&2
+        exit 1
+      fi
+      yaml_file="$config_file"
+    else
+      yaml_file="$cage_yaml"
+    fi
+  else
+    yaml_file=$(_allowlist_resolve_config_file "$config_file")
+  fi
 
   local added_or_skipped="added"
   if ! _allowlist_add_host_to_yaml "$host" "$yaml_file"; then

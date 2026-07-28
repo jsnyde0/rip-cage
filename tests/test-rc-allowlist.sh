@@ -88,6 +88,38 @@ write_egress_log() {
 JSONL
 }
 
+# Create a PATH-shim `msb` stub in $1 that answers `msb inspect <cage>` with a
+# recorded rc.source.path label = $3 (workspace) and status $4 (default Stopped,
+# so the auto-reload sub-call early-exits cleanly rather than recreating).
+# Any cage name != $2 -> inspect fails (not found). rip-cage-e25p.
+make_msb_stub() {
+  local stubdir="$1" cage="$2" ws="$3" status="${4:-Stopped}"
+  mkdir -p "$stubdir"
+  cat > "${stubdir}/msb" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+  *" inspect "*)
+    if printf '%s ' "\$@" | grep -q -- "${cage}"; then
+      printf '%s\n' '{"status":"${status}","config":{"labels":{"rc.source.path":"${ws}"}}}'
+      exit 0
+    fi
+    exit 1 ;;
+  *) echo "stub msb: unhandled: \$*" >&2; exit 1 ;;
+esac
+STUB
+  chmod +x "${stubdir}/msb"
+}
+
+# Run rc from a given CWD with the msb-stub dir prepended to PATH (child
+# `rc reload` inherits both). Globals: TEST_HOME.
+run_rc_from() {
+  local cwd="$1" stubdir="$2"; shift 2
+  ( cd "$cwd" && HOME="$TEST_HOME" \
+      XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+      PATH="${stubdir}:$PATH" \
+      "$RC" "$@" )
+}
+
 # ---------------------------------------------------------------------------
 # A1: allowlist add appends a host to .rip-cage.yaml (new file created)
 # ---------------------------------------------------------------------------
@@ -354,6 +386,103 @@ if [[ "$a13_ok" == "true" ]]; then
 fi
 if [[ "$a13_ok" == "true" ]]; then pass 13 "allowlist show --output json has allowed_hosts key"
 else fail 13 "allowlist show json shape" "$a13_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# A14: allowlist add --cage resolves the cage's WORKSPACE config, NOT CWD
+#      (rip-cage-e25p). Run from a CWD that is NOT the workspace; the host must
+#      land in <workspace>/.rip-cage.yaml and NO stray <CWD>/.rip-cage.yaml is
+#      created.
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox
+STUBDIR="${TEST_HOME}/stub"
+CWD_DIR="${TEST_HOME}/elsewhere"; mkdir -p "$CWD_DIR"
+make_msb_stub "$STUBDIR" "cage1" "$WS" "Stopped"
+
+a14_out=$(run_rc_from "$CWD_DIR" "$STUBDIR" allowlist add "httpbin.org" --cage cage1 2>&1)
+a14_exit=$?
+a14_ok=true a14_reason=""
+[[ "$a14_exit" -ne 0 ]] && a14_ok=false && a14_reason="exit $a14_exit; out: $a14_out"
+if [[ "$a14_ok" == "true" ]]; then
+  grep -q "httpbin.org" "${WS}/.rip-cage.yaml" 2>/dev/null || {
+    a14_ok=false; a14_reason="httpbin.org NOT in cage workspace config ${WS}/.rip-cage.yaml"; }
+fi
+if [[ "$a14_ok" == "true" && -f "${CWD_DIR}/.rip-cage.yaml" ]]; then
+  a14_ok=false; a14_reason="stray CWD config created at ${CWD_DIR}/.rip-cage.yaml (the e25p bug)"
+fi
+if [[ "$a14_ok" == "true" ]]; then pass 14 "allowlist add --cage edits cage workspace config regardless of CWD"
+else fail 14 "allowlist add --cage workspace resolution" "$a14_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# A15: the resolved edit target matches rc reload's diff source — the JSON
+#      config_file field points at <workspace>/.rip-cage.yaml (same file the
+#      reload diffs), not CWD. (edit-target == diff-source alignment.)
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox
+STUBDIR="${TEST_HOME}/stub"
+CWD_DIR="${TEST_HOME}/elsewhere"; mkdir -p "$CWD_DIR"
+make_msb_stub "$STUBDIR" "cage1" "$WS" "Stopped"
+
+a15_out=$(run_rc_from "$CWD_DIR" "$STUBDIR" --output json allowlist add "httpbin.org" --cage cage1 2>/dev/null)
+a15_cf=$(echo "$a15_out" | jq -r '.config_file' 2>/dev/null)
+a15_ok=true a15_reason=""
+# Canonicalize both for a robust compare (WS may contain symlinked tmp on macOS).
+a15_want=$(cd "$WS" && pwd -P)/.rip-cage.yaml
+a15_got_dir=$(cd "$(dirname "$a15_cf")" 2>/dev/null && pwd -P || echo "?")
+a15_got="${a15_got_dir}/$(basename "$a15_cf")"
+[[ "$a15_got" != "$a15_want" ]] && a15_ok=false && a15_reason="config_file=$a15_got (want $a15_want)"
+if [[ "$a15_ok" == "true" ]]; then pass 15 "allowlist add --cage reports cage workspace config as the edit target (== reload diff source)"
+else fail 15 "allowlist add --cage edit-target report" "$a15_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# A16: --cage + a DIVERGENT --config-file fails loud (the edit would land where
+#      rc reload's diff can't see it — the e25p failure class). rip-cage-e25p.
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox
+STUBDIR="${TEST_HOME}/stub"
+OTHER_DIR="${TEST_HOME}/other"; mkdir -p "$OTHER_DIR"
+make_msb_stub "$STUBDIR" "cage1" "$WS" "Stopped"
+
+a16_out=$(run_rc_from "$TEST_HOME" "$STUBDIR" allowlist add "httpbin.org" \
+  --cage cage1 --config-file "${OTHER_DIR}/.rip-cage.yaml" 2>&1)
+a16_exit=$?
+a16_ok=true a16_reason=""
+[[ "$a16_exit" -eq 0 ]] && a16_ok=false && a16_reason="exit 0 (want non-zero — divergent edit-target vs diff-source must fail loud)"
+echo "$a16_out" | grep -qi "different file\|diverge\|reload" || {
+  a16_ok=false; a16_reason="${a16_reason:+$a16_reason; }no divergence message in: $a16_out"; }
+# And it must NOT have written the divergent file (no silent partial edit).
+if [[ "$a16_ok" == "true" && -f "${OTHER_DIR}/.rip-cage.yaml" ]]; then
+  a16_ok=false; a16_reason="divergent --config-file was edited despite the fail-loud"
+fi
+if [[ "$a16_ok" == "true" ]]; then pass 16 "allowlist add --cage + divergent --config-file fails loud (no silent no-op)"
+else fail 16 "allowlist add divergence guard" "$a16_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# A17: --cage + --config-file pointing at the SAME file (the cage's own
+#      workspace config) is allowed — no false divergence error.
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox
+STUBDIR="${TEST_HOME}/stub"
+make_msb_stub "$STUBDIR" "cage1" "$WS" "Stopped"
+
+a17_out=$(run_rc_from "$TEST_HOME" "$STUBDIR" allowlist add "httpbin.org" \
+  --cage cage1 --config-file "${WS}/.rip-cage.yaml" 2>&1)
+a17_exit=$?
+a17_ok=true a17_reason=""
+[[ "$a17_exit" -ne 0 ]] && a17_ok=false && a17_reason="exit $a17_exit (same-file should NOT trip the divergence guard); out: $a17_out"
+if [[ "$a17_ok" == "true" ]]; then
+  grep -q "httpbin.org" "${WS}/.rip-cage.yaml" 2>/dev/null || {
+    a17_ok=false; a17_reason="host not added to the cage config"; }
+fi
+if [[ "$a17_ok" == "true" ]]; then pass 17 "allowlist add --cage + matching --config-file is allowed (no false divergence)"
+else fail 17 "allowlist add same-file allowed" "$a17_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
