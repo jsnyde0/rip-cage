@@ -1344,7 +1344,7 @@ _up_short_image_id() {
 
 
 # _up_image_drift_status (rip-cage-jnvb / D-a) — compare the image ID a
-# container is pinned to (docker inspect --format '{{.Image}}') against the
+# container is pinned to (msb inspect, _msb_sandbox_image_digest) against the
 # currently resolved $IMAGE (honors $IMAGE/RC_IMAGE, rc:45 — never hardcode
 # rip-cage:latest). Both formats always return a sha256:... ID (reviewer-
 # confirmed: no "<no value>" shape risk), so comparing by ID is robust to the
@@ -1352,9 +1352,9 @@ _up_short_image_id() {
 #
 # ROOT CAUSE this guards against: `rc build` creates a new image, but an
 # already-existing stopped container stays pinned to the OLD image ID.
-# Blind-resuming ran the NEW image's resume logic (e.g. mediator init
-# docker-execs a script baked into the image, rc:3839) against the OLD
-# container's filesystem -> raw OCI "stat ... no such file" crash + self-stop.
+# Blind-resuming ran the NEW image's resume logic (e.g. init execs a script
+# baked into the image via msb exec, rc:3839) against the OLD container's
+# filesystem -> raw OCI "stat ... no such file" crash + self-stop.
 #
 # SCOPE BOUND (design D-a): this only catches image/container ID drift. It
 # does NOT catch "rc script updated without rebuild" (same image ID,
@@ -1362,12 +1362,12 @@ _up_short_image_id() {
 #
 # Single-sourced comparator behind two thin per-branch wrappers (mirrors the
 # mode-arg-or-thin-wrappers guidance in the design):
-#   _up_resolve_resume_image_drift_stopped — abort loud, before docker start
+#   _up_resolve_resume_image_drift_stopped — abort loud, before msb start
 #   _up_resolve_resume_image_drift_running — warn-only, proceed
 #
 # This comparator NEVER calls exit/json_error itself (post-review M2
 # hardening) — the abort-vs-warn decision belongs entirely to the calling
-# wrapper. A transient docker-inspect failure on the CONTAINER (e.g. a
+# wrapper. A transient msb-inspect failure on the CONTAINER (e.g. a
 # TOCTOU race — the container was removed between cmd_up's state-check and
 # this guard) must hard-abort on the stopped branch (unchanged, matches
 # every sibling resolver's fail-loud idiom) but must NOT abort on the
@@ -1380,7 +1380,7 @@ _up_short_image_id() {
 # Sets _UP_IMAGE_DRIFT_STORED / _UP_IMAGE_DRIFT_CURRENT (short IDs, for
 # message reuse by the wrappers above; empty on status 3).
 # Returns: 0 = match, 1 = mismatch, 2 = current image ($IMAGE) not found,
-#          3 = docker inspect failed for the CONTAINER itself.
+#          3 = msb inspect failed for the CONTAINER itself.
 # Parameters: $1 name
 _up_image_drift_status() {
   local _name="$1"
@@ -1403,9 +1403,9 @@ _up_image_drift_status() {
 
 
 # _up_resolve_resume_image_drift_stopped (rip-cage-jnvb / D-b, D-f) — abort
-# loud BEFORE docker start when the stopped container's pinned image drifted
+# loud BEFORE msb start when the stopped container's pinned image drifted
 # from (or the current image is missing relative to) $IMAGE. Slotted with the
-# other _up_resolve_resume_* guards, before the single docker start call site
+# other _up_resolve_resume_* guards, before the single msb start call site
 # (rc cmd_up stopped-branch — D-g entrypoint sweep confirmed only one). No
 # auto-destroy/auto-recreate: abort-loud matches the label-lock guard family
 # (ADR-021 D4a/D5). Resume must NEVER itself trigger a pull/build
@@ -1425,7 +1425,7 @@ _up_resolve_resume_image_drift_stopped() {
     # Container-inspect itself failed. Unchanged from the pre-M2-hardening
     # behavior (this used to live inline in the comparator) — the stopped
     # path still has no safe default here and aborts, matching every sibling
-    # _up_resolve_resume_* resolver's docker-inspect-failure idiom.
+    # _up_resolve_resume_* resolver's msb-inspect-failure idiom.
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       json_error "msb inspect failed for $_name" "MSB_ERROR"
     fi
@@ -1463,13 +1463,13 @@ _up_resolve_resume_image_drift_stopped() {
 
 # _up_resolve_resume_image_drift_running (rip-cage-jnvb / D-c) — warn-only on
 # a running container with a drifted image, then proceed. The running branch
-# never calls mediator/firewall init or docker start on resume (it only execs
-# into the container's OWN filesystem) — no crash path exists here, so
+# never calls the init script or msb start on resume (it only execs into
+# the container's OWN filesystem) — no crash path exists here, so
 # refusing attach would interrupt a live agent session for no safety benefit
 # (ADR-002 D5 autonomy).
 #
 # Post-review M2 hardening: ALL non-zero comparator statuses — including 3
-# (the container's own docker-inspect call failed, e.g. a transient error or
+# (the container's own msb-inspect call failed, e.g. a transient error or
 # a TOCTOU race where the container vanished between cmd_up's state-check
 # and this guard) — are warn-and-proceed here, never abort. A live agent
 # session must not be interrupted just because the drift check itself
@@ -2732,7 +2732,7 @@ cmd_up() {
     # rip-cage-3y9g: RESUME-GUARDS-REAL-RUNNING BEGIN (mirrored by the
     # dry-run running sub-branch above — see RESUME-GUARDS-DRY-RUN-RUNNING)
     # rip-cage-jnvb / D-c: image-ID drift is warn-only on the running branch —
-    # no crash path exists here (no docker start, no mediator/firewall init;
+    # no crash path exists here (no msb start, no init script re-run;
     # exec runs against the container's OWN filesystem) — refusing attach
     # would interrupt a live agent session for no safety benefit (ADR-002 D5).
     _up_resolve_resume_image_drift_running "$name" "$path"
@@ -2867,10 +2867,10 @@ cmd_up() {
     # rip-cage-3y9g: RESUME-GUARDS-REAL-STOPPED BEGIN (mirrored by the
     # dry-run stopped sub-branch above — see RESUME-GUARDS-DRY-RUN-STOPPED)
     # rip-cage-jnvb / D-b, D-f: image-ID drift guard — FIRST, before any other
-    # resume machinery and before docker start (rc:4409-and-friends below).
+    # resume machinery and before msb start (rc:4409-and-friends below).
     # `rc build` creates a new image but an already-existing stopped container
     # stays pinned to the OLD image ID; blind-resuming ran the NEW image's
-    # resume logic (e.g. mediator init execs a script baked into the image)
+    # resume logic (e.g. init execs a script baked into the image via msb exec)
     # against the OLD container's filesystem -> raw OCI stat crash + self-stop.
     # Aborts loud on mismatch or a missing current image — never fail-open.
     _up_resolve_resume_image_drift_stopped "$name" "$path"

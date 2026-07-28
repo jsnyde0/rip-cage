@@ -1,9 +1,9 @@
 <!-- begin:rip-cage-topology -->
 ## Rip-Cage Network Topology (cage-authored)
 
-You are running inside a **rip-cage** Docker container on the user's host (macOS
-or Linux). This section tells you where things are and how to reach them from
-*inside* the cage.
+You are running inside a **rip-cage** sandbox (msb / libkrun microVM) on the
+user's host (macOS or Linux). This section tells you where things are and how
+to reach them from *inside* the cage.
 
 ### Filesystem
 

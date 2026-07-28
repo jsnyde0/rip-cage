@@ -169,16 +169,31 @@ _doctor_bd_version_compare() {
 # and is dispatched here so the existing JSON/help wiring is shared.
 # _doctor_dead_file_mounts <name>
 #
-# rip-cage-uben: generic dead-handle detection for single-FILE Docker bind
-# mounts. A host atomic-rename (write tmp + rename over — the standard
-# safe-rewrite idiom, e.g. a host Claude Code session rewriting
-# ~/.claude/.credentials.json) severs the inode a single-file bind mount
-# tracks: `docker inspect` keeps listing the mount, but the in-cage
-# destination path goes ENOENT (dead handle). DIRECTORY mounts do NOT have
-# this problem (the dentry re-resolves) — only DIRECTORY-sourced mounts are
-# skipped up front (host `-d`, no docker-exec probe issued — no stat storm);
+# rip-cage-uben: generic dead-handle detection for single-FILE msb `-v`
+# mounts (was a Docker bind mount pre-cutover; same class of mount shape). A
+# host atomic-rename (write tmp + rename over — the standard safe-rewrite
+# idiom, e.g. a host Claude Code session rewriting
+# ~/.claude/.credentials.json) severing the inode a single-file bind mount
+# tracks — the mount listing (`docker inspect` pre-cutover; `msb inspect`
+# now, see `_msb_inspect_json` below) keeps showing the mount, but the
+# in-cage destination path goes ENOENT (dead handle) — is CONFIRMED for the
+# pre-cutover Docker single-file bind shape but UNVERIFIED for msb virtiofs
+# (ADR-010 D4 / ADR-029 "re-verify"; live re-verify tracked in
+# rip-cage-9mbw). Directory-mount coherence under virtiofs was separately
+# measured clean (an inode-changing delete-and-recreate propagated
+# correctly, ~19ms, zero staleness — see
+# docs/2026-07-09-msb-spike-lifecycle.md §8), but that spike exercised a
+# DIRECTORY mount, not this function's single-file shape, so it does not by
+# itself confirm or refute the single-file hazard on msb. This probe exists
+# as the defensive catch regardless of which way that re-verify lands: it
+# does NOT assume the hazard fires on msb, it just checks whether the
+# destination is currently alive. DIRECTORY mounts do NOT have this problem
+# (the dentry re-resolves) — only DIRECTORY-sourced mounts are skipped up
+# front (host source is a dir, no msb-exec probe issued — no stat storm);
 # everything else (regular file, socket, or a host path that no longer
-# exists at all) gets exactly one docker-exec destination probe.
+# exists at all) gets exactly one msb-exec destination probe
+# (`_msb_exec ... -- test -e`, msb-side counterpart to the old docker-exec
+# probe).
 #
 # DESTINATION-FIRST predicate (rip-cage-uben live-negative-control fix,
 # 2026-07-06): the in-cage DESTINATION is probed BEFORE looking at the host
