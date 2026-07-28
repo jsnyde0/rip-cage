@@ -68,9 +68,11 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/.claude"
 
 # A harmless real-claude stub (never touches the network); the patched wrapper's
-# final `exec` lands here so the invocation exits cleanly.
+# final `exec` lands here so the invocation exits cleanly. It records the argv it
+# was exec'd with so we can assert the wrapper's flag injection (rip-cage-k8vi).
 STUB_CLAUDE="$WORK/stub-claude"
-printf '#!/usr/bin/env bash\n:\n' > "$STUB_CLAUDE"
+STUB_ARGS="$WORK/stub-args.txt"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "%s"\n' "$STUB_ARGS" > "$STUB_CLAUDE"
 chmod +x "$STUB_CLAUDE"
 
 # Copy the canonical wrapper and patch ONLY REAL_CLAUDE to the stub (source
@@ -93,14 +95,16 @@ cat > "$FIXTURE" <<'EOF'
 EOF
 
 # Run the wrapper against a named session dir. Returns via the seeded file.
-# $1 = session dir name under $WORK/.claude-sessions
+# $1 = session dir name under $WORK/.claude-sessions; $2.. = claude args
+# (default: --version). The stub records its exec'd argv into $STUB_ARGS.
 run_wrapper() {
-  local _sess="$1"
+  local _sess="$1"; shift
+  local _args=("$@"); [[ ${#_args[@]} -eq 0 ]] && _args=(--version)
   HOME="$WORK" \
   RC_P1P_JSON_BASE="$FIXTURE" \
   CLAUDE_CONFIG_DIR="$WORK/.claude-sessions/$_sess" \
   TMUX="" HERDR_SESSION="" \
-  "$WRAPPER_UNDER_TEST" --version >/dev/null 2>&1
+  "$WRAPPER_UNDER_TEST" "${_args[@]}" >/dev/null 2>&1
 }
 
 field_of() { jq -r '.bypassPermissionsModeAccepted // "ABSENT"' "$1" 2>/dev/null; }
@@ -169,6 +173,32 @@ if jq -e . "$FRESH_JSON" >/dev/null 2>&1 && [[ "$(field_of "$FRESH_JSON")" == "t
   pass "C5 second wrapper run is idempotent (valid JSON, field still true)"
 else
   fail "C5 second run produced invalid JSON or lost the field" "field: $(field_of "$FRESH_JSON")"
+fi
+
+# ---------------------------------------------------------------------------
+# C6: argv-level flag injection (rip-cage-k8vi ruling) -- the wrapper must pass
+# --dangerously-skip-permissions to the exec'd claude so the interactive dialog
+# is killed HYPOTHESIS-INDEPENDENTLY (works even if the per-session field isn't
+# honored / the launcher bypasses CLAUDE_CONFIG_DIR).
+# ---------------------------------------------------------------------------
+rm -f "$STUB_ARGS"
+run_wrapper "flagcase"
+if [[ -f "$STUB_ARGS" ]] && grep -qx -- '--dangerously-skip-permissions' "$STUB_ARGS"; then
+  pass "C6 wrapper injects --dangerously-skip-permissions into the exec'd claude argv"
+else
+  fail "C6 flag not injected" "stub argv: $(tr '\n' ' ' < "$STUB_ARGS" 2>/dev/null)"
+fi
+
+# ---------------------------------------------------------------------------
+# C7: idempotent -- when the caller already passes the flag, it is NOT doubled.
+# ---------------------------------------------------------------------------
+rm -f "$STUB_ARGS"
+run_wrapper "flagcase" --dangerously-skip-permissions -p "hi"
+_flag_count=$(grep -cx -- '--dangerously-skip-permissions' "$STUB_ARGS" 2>/dev/null)
+if [[ "$_flag_count" -eq 1 ]]; then
+  pass "C7 caller-supplied --dangerously-skip-permissions is not doubled"
+else
+  fail "C7 flag doubled or missing (count=$_flag_count)" "stub argv: $(tr '\n' ' ' < "$STUB_ARGS" 2>/dev/null)"
 fi
 
 echo ""

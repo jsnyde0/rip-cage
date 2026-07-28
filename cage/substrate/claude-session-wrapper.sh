@@ -157,6 +157,35 @@ unset _rc_bypass_json _rc_bypass_tmp 2>/dev/null || true
 unset CLAUDE_CODE_CHILD_SESSION
 
 # ---------------------------------------------------------------------------
+# Kill the bypass-permissions accept dialog at argv level (rip-cage-k8vi).
+#
+# bypassPermissions is already the cage's DECLARED policy (cage/agent/
+# settings.json permissions.defaultMode=bypassPermissions). Claude still gates a
+# one-time "Bypass Permissions mode" accept dialog on the global field
+# bypassPermissionsModeAccepted — which cannot persist (host ~/.claude.json is a
+# ro virtiofs mount) and, observed live (rip-cage-k8vi), is NOT reliably honored
+# from the per-session config for the interactive dialog. Passing
+# --dangerously-skip-permissions states at argv what the cage already declares,
+# suppressing the dialog HYPOTHESIS-INDEPENDENTLY: it works whether the field is
+# read from the per-session config or not, and whether a launcher goes through
+# CLAUDE_CONFIG_DIR or not. This wrapper is the single PATH chokepoint every
+# launch resolves through (herdr agent start/restore drives the pane shell so
+# `claude` -> this wrapper; human `claude`; scripted-attach `claude --resume`).
+# The per-session field-seed above stays as belt-and-suspenders for wrapper-path
+# launches. Idempotent: only prepend when absent, so an explicit caller flag is
+# never doubled. (bypassPermissions being declared policy, this is alignment,
+# not a new grant.)
+_rc_skip_flag="--dangerously-skip-permissions"
+_rc_have_skip=0
+for _rc_a in "$@"; do
+  if [[ "$_rc_a" == "$_rc_skip_flag" ]]; then _rc_have_skip=1; break; fi
+done
+if [[ "$_rc_have_skip" -eq 0 ]]; then
+  set -- "$_rc_skip_flag" "$@"
+fi
+unset _rc_skip_flag _rc_have_skip _rc_a
+
+# ---------------------------------------------------------------------------
 # Exec the real Claude binary — avoid recursion (this wrapper is at /usr/local/bin/claude)
 # ---------------------------------------------------------------------------
 exec "$REAL_CLAUDE" "$@"
