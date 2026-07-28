@@ -451,11 +451,12 @@ check "SSH BatchMode=yes resolved" "$([[ "$ssh_batchmode" == "batchmode yes" ]] 
 ssh_strict=$(ssh -G github.com 2>/dev/null | grep -E '^stricthostkeychecking ' || true)
 check "SSH StrictHostKeyChecking=yes resolved" "$(echo "$ssh_strict" | grep -qE '^stricthostkeychecking (yes|true)$' && echo pass || echo fail)" "$ssh_strict"
 
-# SSH_N3. UserKnownHostsFile is the dual-file form (ADR-022 D4 / rip-cage-g2q):
-# filtered user-path file first (entries from ssh.allowed_hosts) + system-path
-# floor (image-baked github.com pins). Both paths must appear in ssh -G output.
+# SSH_N3. UserKnownHostsFile is the single-file form (post-msb-cutover:
+# ssh.allowed_hosts host-key scoping and its filtered user-path known_hosts
+# mount are retired — ADR-029 D3 / ADR-022 D6): only the image-baked
+# system-path floor (github.com pins) appears in ssh -G output.
 ssh_ukhf=$(ssh -G github.com 2>/dev/null | grep -E '^userknownhostsfile ' || true)
-check "SSH UserKnownHostsFile dual-file (user filtered + system floor)" "$([[ "$ssh_ukhf" == "userknownhostsfile /home/agent/.ssh/known_hosts /etc/ssh/ssh_known_hosts" ]] && echo pass || echo fail)" "$ssh_ukhf"
+check "SSH UserKnownHostsFile single-file (system floor)" "$([[ "$ssh_ukhf" == "userknownhostsfile /etc/ssh/ssh_known_hosts" ]] && echo pass || echo fail)" "$ssh_ukhf"
 
 # SSH_N4. GlobalKnownHostsFile points to pinned file
 ssh_gkhf=$(ssh -G github.com 2>/dev/null | grep -E '^globalknownhostsfile ' || true)

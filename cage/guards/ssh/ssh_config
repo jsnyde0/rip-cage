@@ -3,15 +3,12 @@
 # NOTE (post-msb-cutover): per-cage ssh.allowed_hosts host-key scoping is
 # RETIRED (ADR-029 D3 / ADR-022 D6 — cli/lib/config.sh loud-rejects the field).
 # The filtered user-path known_hosts mount (~/.cache/rip-cage/<cname>/known_hosts)
-# no longer exists, so the /home/agent/.ssh/known_hosts entry below is a
-# harmless vestige; only the image-baked system-path github.com floor
-# (/etc/ssh/ssh_known_hosts) is load-bearing now. Git authenticates over
-# HTTPS + msb --secret; this config only pins the host key for any ssh
-# composed on top. (Tightening the UserKnownHostsFile line to single-file +
-# its test-safety-stack.sh assertion is folded into rip-cage-5iti, which owns
-# that suite's msb migration and rebuild/re-probe.)
+# no longer exists, so UserKnownHostsFile is single-file now: only the
+# image-baked system-path github.com floor (/etc/ssh/ssh_known_hosts) is
+# load-bearing. Git authenticates over HTTPS + msb --secret; this config
+# only pins the host key for any ssh composed on top.
 Match final Host *
-    UserKnownHostsFile /home/agent/.ssh/known_hosts /etc/ssh/ssh_known_hosts
+    UserKnownHostsFile /etc/ssh/ssh_known_hosts
     GlobalKnownHostsFile /etc/ssh/ssh_known_hosts
     StrictHostKeyChecking yes
     BatchMode yes
