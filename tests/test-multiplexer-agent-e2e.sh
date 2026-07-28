@@ -163,15 +163,29 @@ echo "=== test-multiplexer-agent-e2e.sh ==="
 # ---------------------------------------------------------------------------
 MUX_AGENT_TMP=""
 
+# rip-cage-neu7.9 (fail-safe cleanup, post 2026-07-28 code-personal
+# cage-destroy incident): MUX_AGENT_CREATED_CAGES holds ONLY the cage names
+# this run actually created, appended via _mux_agent_track_cage at the
+# `rc up` call site below. CLEANUP destroys ONLY these names — never a
+# docker ps -a enumeration matched by rc.source.path prefix/glob (the
+# incident shape: an empty/degenerate match variable glob-matched and
+# destroyed an unrelated live cage). Declared BEFORE the trap is armed.
+MUX_AGENT_CREATED_CAGES=()
+_mux_agent_track_cage() {
+  [[ -n "${1:-}" ]] && MUX_AGENT_CREATED_CAGES+=("$1")
+}
+
 CLEANUP() {
-  local c sp
-  # Remove the cage spun by this test (keyed on rc.source.path label)
-  for c in $(docker ps -a --filter "label=rc.source.path" --format '{{.Names}}' 2>/dev/null); do
-    sp=$(docker inspect --format '{{index .Config.Labels "rc.source.path"}}' "$c" 2>/dev/null || true)
-    if [[ -n "$MUX_AGENT_TMP" ]] && [[ "$sp" == "${MUX_AGENT_TMP}"/* ]]; then
-      docker rm -f "$c" >/dev/null 2>&1 || true
-      docker volume rm "rc-state-${c}" >/dev/null 2>&1 || true
-    fi
+  local c
+  # FAIL-SAFE SHAPE (rip-cage-neu7.9): iterate ONLY
+  # MUX_AGENT_CREATED_CAGES — no enumerate, no glob/prefix match. The
+  # "${arr[@]:-}" form is REQUIRED: this test runs under `set -uo
+  # pipefail`, and a bare [@] on an empty array aborts on macOS bash 3.2
+  # (would abort CLEANUP before it can even remove MUX_AGENT_TMP).
+  for c in "${MUX_AGENT_CREATED_CAGES[@]:-}"; do
+    [[ -n "$c" ]] || continue
+    docker rm -f "$c" >/dev/null 2>&1 || true
+    docker volume rm "rc-state-${c}" >/dev/null 2>&1 || true
   done
   [[ -n "$MUX_AGENT_TMP" ]] && rm -rf "$MUX_AGENT_TMP"
 }
@@ -270,6 +284,7 @@ echo ""
 echo "=== Spin up tmux cage (${CAGE}) ==="
 
 "$RC" up "$WORKSPACE" </dev/null >/tmp/rc-mux-agent-e2e-up.out 2>&1 || true
+_mux_agent_track_cage "$CAGE"
 
 CAGE_STARTED=false
 if docker inspect "$CAGE" >/dev/null 2>&1; then

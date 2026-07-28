@@ -277,16 +277,29 @@ _dcg_herdr_pi_restore_latest() {
 #   parent: rc-mux  base: herdr-test → container: rc-mux-herdr-test
 MUX_TMP=""
 
+# rip-cage-neu7.9 (fail-safe cleanup, post 2026-07-28 code-personal
+# cage-destroy incident): MUX_CREATED_CAGES holds ONLY the cage names this
+# run actually created, appended via _mux_track_cage at each `rc up` call
+# site below. CLEANUP destroys ONLY these names — never a docker ps -a /
+# msb-list enumeration matched by rc.source.path prefix/glob (the incident
+# shape: an empty/degenerate match variable glob-matched and destroyed an
+# unrelated live cage). Declared BEFORE the trap is armed.
+MUX_CREATED_CAGES=()
+_mux_track_cage() {
+  [[ -n "${1:-}" ]] && MUX_CREATED_CAGES+=("$1")
+}
+
 CLEANUP() {
   local c
-  # Destroy all scratch cages spun by this test (keyed on rc.source.path label).
-  for c in $(docker ps -a --filter "label=rc.source.path" --format '{{.Names}}' 2>/dev/null); do
-    local sp
-    sp=$(docker inspect --format '{{index .Config.Labels "rc.source.path"}}' "$c" 2>/dev/null || true)
-    if [[ -n "$MUX_TMP" ]] && [[ "$sp" == "${MUX_TMP}"/* ]]; then
-      docker rm -f "$c" >/dev/null 2>&1 || true
-      docker volume rm "rc-state-${c}" >/dev/null 2>&1 || true
-    fi
+  # FAIL-SAFE SHAPE (rip-cage-neu7.9): iterate ONLY MUX_CREATED_CAGES — no
+  # enumerate, no glob/prefix match. The "${arr[@]:-}" form is REQUIRED:
+  # these tests run under `set -uo pipefail`, and a bare [@] on an empty
+  # array aborts on macOS bash 3.2 (would abort CLEANUP before it can even
+  # remove MUX_TMP).
+  for c in "${MUX_CREATED_CAGES[@]:-}"; do
+    [[ -n "$c" ]] || continue
+    docker rm -f "$c" >/dev/null 2>&1 || true
+    docker volume rm "rc-state-${c}" >/dev/null 2>&1 || true
   done
   [[ -n "$MUX_TMP" ]] && rm -rf "$MUX_TMP"
   # Restore rip-cage:latest if we swapped it for the combined build.
@@ -526,6 +539,7 @@ echo ""
 echo "--- Spinning up multiplexer=none cage (${NONE_CAGE}) ---"
 _create_workspace "$NONE_WS" "none"
 "$RC" up "$NONE_WS" </dev/null >/tmp/rc-mux-none-up.out 2>&1 || true
+_mux_track_cage "$NONE_CAGE"
 NONE_STARTED=false
 if docker inspect "$NONE_CAGE" >/dev/null 2>&1; then
   NONE_STARTED=true
@@ -538,6 +552,7 @@ fi
 echo "--- Spinning up multiplexer=tmux cage (${TMUX_CAGE}) ---"
 _create_workspace "$TMUX_WS" "tmux"
 "$RC" up "$TMUX_WS" </dev/null >/tmp/rc-mux-tmux-up.out 2>&1 || true
+_mux_track_cage "$TMUX_CAGE"
 TMUX_STARTED=false
 if docker inspect "$TMUX_CAGE" >/dev/null 2>&1; then
   TMUX_STARTED=true
@@ -550,6 +565,7 @@ fi
 echo "--- Spinning up multiplexer=herdr cage (${HERDR_CAGE}) ---"
 _create_workspace "$HERDR_WS" "herdr"
 "$RC" up "$HERDR_WS" </dev/null >/tmp/rc-mux-herdr-up.out 2>&1 || true
+_mux_track_cage "$HERDR_CAGE"
 HERDR_STARTED=false
 if docker inspect "$HERDR_CAGE" >/dev/null 2>&1; then
   HERDR_STARTED=true
@@ -1098,6 +1114,7 @@ else
   # cage boots from DCG_HERDR_PI_IMAGE regardless of what rip-cage:latest points
   # to (load-bearing when DCGHP_IMAGE_TAG overrides away from rip-cage:latest).
   RC_IMAGE="$DCG_HERDR_PI_IMAGE" "$RC" up "$DCG_HERDR_PI_WS" </dev/null >/tmp/rc-l72i7-dcghp-up.out 2>&1 || true
+  _mux_track_cage "$DCG_HERDR_PI_CAGE"
   if docker inspect "$DCG_HERDR_PI_CAGE" >/dev/null 2>&1; then
     _L72I7_CAGE_STARTED=true
     pass "(l72i7) DCG+herdr+pi cage started: ${DCG_HERDR_PI_CAGE}"
