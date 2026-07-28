@@ -378,9 +378,9 @@ This merges the previous Phase 1a (devcontainer) and Phase 1b (`rc` CLI) into a 
 
 > [ADR-029 D2: re-mechanized — `/.dockerenv` is absent in msb guests (Docker runtime retired), so the decompose-time open item this banner flagged is now resolved below: rip-cage-r5f9 blesses `/etc/rip-cage/release` as the canonical in-guest marker.]
 
-**Firmness: FLEXIBLE**
+**Firmness: FIRM**
 
-**Added:** 2026-03-27 (manual testing). **Re-mechanized:** 2026-07-28 (rip-cage-r5f9, msb cutover).
+**Added:** 2026-03-27 (manual testing). **Re-mechanized:** 2026-07-28 (rip-cage-r5f9, msb cutover — mechanism updated in place per ADR-029 D2's edit ledger; firmness held at the original FIRM pending an explicit firmness ruling).
 
 The canonical in-guest "inside the cage" marker is a root-owned baked sentinel file, `/etc/rip-cage/release` (root:root, mode 0444), created in `cage/Dockerfile` at image build time and present in every built cage from first boot. `rc` checks `[[ -f /etc/rip-cage/release ]]` at startup and exits with a helpful message if running inside a cage; the in-cage D10 host-only-command guards (`rc allowlist add/promote`, `rc config set/add/remove`) key on the same marker. This prevents confusing errors when the bind-mounted workspace includes `rc` and a user (or agent) tries to run it inside the container, and stops a prompt-injected agent from forging "I'm on the host" by writing an agent-owned marker file.
 
