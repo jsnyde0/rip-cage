@@ -26,11 +26,11 @@
 #   C9  post-edit validation failure (set version 1) -> byte-identical restore
 #   C10 verb on absent project file -> file created with version: 2
 #   C11 remove on mounts.denylist -> refuses citing ADR-023 D2
-#   C12 in-cage invocation -> refused (RC_TEST_FAKE_DOCKERENV=1)
+#   C12 in-cage invocation -> refused (RC_TEST_FAKE_CAGE_MARKER=1)
 #   C13 rc allowlist add delegation parity (idempotency + created version: 2)
 #
 # Runs entirely host-side (no docker). D10 in-cage guard simulated by
-# RC_TEST_FAKE_DOCKERENV=1 (same pattern as test-rc-allowlist.sh).
+# RC_TEST_FAKE_CAGE_MARKER=1 (same pattern as test-rc-allowlist.sh).
 #
 # ADRs: ADR-021 D8 (write verbs), D2 (merge/tag model), ADR-023 D2 (denylist
 # additive-only), ADR-024/D7 (host-side-only threat model).
@@ -63,7 +63,7 @@ teardown_sandbox() {
 # rc invocation, host-side (no in-cage simulation).
 run_rc() { HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" "$RC" "$@"; }
 # rc invocation with in-cage simulation.
-run_rc_in_cage() { HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_TEST_FAKE_DOCKERENV=1 "$RC" "$@"; }
+run_rc_in_cage() { HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_TEST_FAKE_CAGE_MARKER=1 "$RC" "$@"; }
 
 # Write the canonical comment-bearing fixture to $1.
 write_fixture() {
@@ -362,7 +362,7 @@ if [[ "$c11_ok" == "true" ]]; then pass 11 "remove on mounts.denylist refuses ci
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# C12: in-cage invocation -> refused, non-zero (RC_TEST_FAKE_DOCKERENV=1).
+# C12: in-cage invocation -> refused, non-zero (RC_TEST_FAKE_CAGE_MARKER=1).
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1)); setup_sandbox
 write_fixture "${WS}/.rip-cage.yaml"

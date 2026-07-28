@@ -50,8 +50,13 @@ if [[ "${1:-}" == "completions" ]]; then
   esac
 fi
 
-# Bail out if running inside a container — rc is a host-only tool
-if [[ -f /.dockerenv ]]; then
+# Bail out if running inside a container — rc is a host-only tool.
+# Marker: /etc/rip-cage/release, a root-owned (root:root, 0444) sentinel baked
+# into every built cage image (ADR-002 D14, rip-cage-r5f9). Replaces the
+# retired /.dockerenv check — msb microVM guests have no Docker runtime at
+# all, so /.dockerenv is never present there. Root ownership matters: an
+# agent-writable marker would be forgeable by a prompt-injected agent.
+if [[ -f /etc/rip-cage/release ]]; then
   echo "Error: rc is a host tool — it manages containers from outside." >&2
   echo "You're already inside a rip-cage container. Run commands directly here." >&2
   exit 1
@@ -112,7 +117,7 @@ unset _rc_mod
 # When sourced (e.g., by tests), skip dispatch — expose functions only.
 # BASH_SOURCE[0] is the script file; $0 is the invoking shell when sourced.
 # When piped via `bash -s --` (test-auth-refresh.sh's run_rc, to bypass the
-# /.dockerenv guard) BASH_SOURCE is empty — that's NOT sourced, so we fall
+# /etc/rip-cage/release guard) BASH_SOURCE is empty — that's NOT sourced, so we fall
 # through to dispatch instead of trying to `return` at top-level.
 [[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
 

@@ -376,25 +376,27 @@ This merges the previous Phase 1a (devcontainer) and Phase 1b (`rc` CLI) into a 
 
 ### D14: Container self-detection in `rc`
 
-> [ADR-029 D2: RETIRED-WITH-MECHANISM — `/.dockerenv` is absent in msb guests, so this decision's detection mechanism does not fire there. The "rc is a host tool" property it protects still needs an in-guest marker of some kind under msb — flagged as a decompose-time item, not decided here.]
+> [ADR-029 D2: re-mechanized — `/.dockerenv` is absent in msb guests (Docker runtime retired), so the decompose-time open item this banner flagged is now resolved below: rip-cage-r5f9 blesses `/etc/rip-cage/release` as the canonical in-guest marker.]
 
-**Firmness: FIRM**
+**Firmness: FLEXIBLE**
 
-**Added:** 2026-03-27 (manual testing)
+**Added:** 2026-03-27 (manual testing). **Re-mechanized:** 2026-07-28 (rip-cage-r5f9, msb cutover).
 
-The `rc` script checks for `/.dockerenv` at startup and exits with a helpful message if running inside a container. This prevents confusing errors when the bind-mounted workspace includes `rc` and a user (or agent) tries to run it inside the container.
+The canonical in-guest "inside the cage" marker is a root-owned baked sentinel file, `/etc/rip-cage/release` (root:root, mode 0444), created in `cage/Dockerfile` at image build time and present in every built cage from first boot. `rc` checks `[[ -f /etc/rip-cage/release ]]` at startup and exits with a helpful message if running inside a cage; the in-cage D10 host-only-command guards (`rc allowlist add/promote`, `rc config set/add/remove`) key on the same marker. This prevents confusing errors when the bind-mounted workspace includes `rc` and a user (or agent) tries to run it inside the container, and stops a prompt-injected agent from forging "I'm on the host" by writing an agent-owned marker file.
 
-**Rationale:** `rc` calls Docker CLI commands to manage containers — it's inherently a host tool. Inside a container, Docker is not installed, so every `rc` command fails with `docker: command not found`. The `/.dockerenv` check is a Docker standard (not rip-cage-specific), so it catches the error regardless of which container the script ends up in.
+**Rationale:** `rc` is inherently a host tool — under msb there is no in-guest Docker CLI to fail loudly, so the guard is load-bearing rather than a nicety. Root ownership is the actual security property being bought here: the sandbox agent's sudo grant is scoped (`/etc/sudoers.d/agent`, package-manager + specific chown targets only — see `cage/Dockerfile`), so it cannot create or chmod a root-owned `/etc/` file. An agent-owned marker (e.g. the existing `/etc/rip-cage/cage-env`, `chown agent:agent`) or an env var would be forgeable by a prompt-injected agent trying to convince itself (or a nested tool) that it's outside the cage; a root:root 0444 baked file is not. This mirrors the "root-owned `/etc/` artifact as strong-artifact idiom" already established by the DCG weld (ADR-027 D1/D3).
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **`/.dockerenv` check** | Docker standard, catches any container | Could false-positive in non-rip-cage containers |
-| Check `rc.source.path` label | Rip-cage-specific | Requires Docker CLI inside container (the problem we're solving) |
-| `command -v docker` check | Direct capability test | Fails differently if Docker is installed but broken |
+| **Root-owned baked sentinel `/etc/rip-cage/release` (root:root, 0444)** | Unforgeable given the agent's scoped-only sudo; present from build, no runtime step; matches the DCG root-`/etc/` strong-artifact idiom | One more baked file to keep in the image |
+| `/.dockerenv` check (retired) | Docker standard, catches any container | Absent under msb — no Docker runtime in the guest at all |
+| `ENV RIP_CAGE=1` | Simple, no file needed | msb env-var propagation to the guest was unverified at decision time; trivially forgeable by anything that can set env (no ownership check possible) |
+| Reuse existing `/etc/rip-cage/cage-env` | Already present, no new file | `chown agent:agent` — agent-writable, so forgeable by a prompt-injected agent; defeats the purpose |
+| Check `rc.source.path` label / `command -v docker` | Direct capability tests | Both assume a host-side Docker CLI, which the guard's whole point is to detect the *absence* of |
 
-**What would invalidate this:** Need to run `rc` inside a container (e.g., nested containers, Docker-in-Docker). In that case, install Docker CLI in the image and remove this guard.
+**What would invalidate this:** msb ships a verified, non-guest-writable env-var propagation channel *and* a reason to prefer it over a file (e.g., filesystem-write restrictions in some future guest mode) — re-open and compare against the sentinel-file mechanism above. Absent that, the sentinel stands.
 
 ### D15: Auto-select single container for name-required commands
 

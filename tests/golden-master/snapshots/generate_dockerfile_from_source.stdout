@@ -131,6 +131,17 @@ RUN mkdir -p /etc/rip-cage \
     && chown agent:agent /etc/rip-cage/cage-env \
     && chmod 0644 /etc/rip-cage/cage-env
 
+# Canonical in-guest "inside the cage" marker (ADR-002 D14, rip-cage-r5f9):
+# root-owned, root:root 0444 — deliberately NOT agent-writable like cage-env
+# above. The whole point is injection-resistance: the agent's sudo grant is
+# scoped (see the sudoers.d/agent line below) and cannot touch a root-owned
+# /etc/ file, so this is unforgeable by a prompt-injected agent trying to
+# convince a tool it's on the host. Replaces the retired /.dockerenv check
+# (absent in msb guests — no Docker runtime in-guest at all).
+RUN : > /etc/rip-cage/release \
+    && chown root:root /etc/rip-cage/release \
+    && chmod 0444 /etc/rip-cage/release
+
 # Copy rip-cage files — stable files first (fewer cache busts), frequently-edited last
 RUN mkdir -p /etc/ssh/ssh_config.d
 COPY cage/guards/ssh/known_hosts.github /etc/ssh/ssh_known_hosts

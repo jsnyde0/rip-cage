@@ -303,15 +303,15 @@ echo ""
 # a mount parent). Host-only: sources rc directly against a fake HOME/asset
 # dir, mirroring tests/test-symlink-follow.sh's `source "$RC"` convention.
 #
-# Host-vs-in-cage detection: /.dockerenv is the repo-wide canonical in-cage
-# signal (rc:50 itself hard-exits on it; test-auth-refresh.sh, test-rc-
-# allowlist.sh, test-ssh-resolver.sh all gate the same way). This script is
+# Host-vs-in-cage detection: /etc/rip-cage/release is the repo-wide canonical
+# in-cage signal (rc:54 itself hard-exits on it, ADR-002 D14 / rip-cage-r5f9;
+# test-auth-refresh.sh, test-rc-allowlist.sh gate the same way). This script is
 # also invoked in-cage as the canonical path (cli/test.sh:138, docker exec
 # .../test-skills.sh), where ${_TS_DIR}/../rc resolves to /usr/local/lib/rc —
 # not baked into the image — so sourcing it there is a guaranteed exit=127,
 # not a real check of anything (rip-cage-7atw.8). Skip cleanly in that case
 # rather than false-failing on a missing host artifact.
-if [[ -f /.dockerenv ]]; then
+if [[ -f /etc/rip-cage/release ]]; then
   echo "SKIP (in-cage): broken symlink under skills dir check — host-only, sources ${_TS_DIR}/../rc which isn't baked into the image (rip-cage-7atw.8)"
 else
   _bsw_rc="${_TS_DIR}/../rc"

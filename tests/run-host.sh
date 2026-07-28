@@ -17,7 +17,7 @@
 # lifetime kills runs at ~1hr) while --ledger-summary's zero-row detection
 # proves the union is complete. Default invocation (no flags) is unchanged.
 #
-# HOST-ONLY INVARIANT: rc exits immediately when /.dockerenv is present.
+# HOST-ONLY INVARIANT: rc exits immediately when /etc/rip-cage/release is present.
 # This script will never succeed from inside a rip-cage container.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

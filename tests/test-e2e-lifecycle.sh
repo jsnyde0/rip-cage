@@ -3,7 +3,7 @@
 # ADR-013 D1/D3 (FIRM). Supersedes test-integration.sh.
 #
 # Runtime: ~90-180s warm cache. Set RC_E2E_REBUILD=1 to force rc build first.
-# Run from host only; rc hard-exits when /.dockerenv is present.
+# Run from host only; rc hard-exits when /etc/rip-cage/release is present.
 #
 # NAMING: rc container_name() derives from parent+basename of the workspace
 # path, so we stage workspaces under /var/folders/.../rc/e2e-test to produce

@@ -20,12 +20,12 @@
 #   A10 allowlist promote --from-observed never mutates .rip-cage.yaml — the
 #       retirement guard fires before any log read or config write, so there
 #       is no silent partial apply
-#   A11 add refuses when /.dockerenv present (simulated D10 host-side-only guard)
-#   A12 promote refuses when /.dockerenv present (simulated D10 guard)
+#   A11 add refuses when /etc/rip-cage/release present (simulated D10 host-side-only guard)
+#   A12 promote refuses when /etc/rip-cage/release present (simulated D10 guard)
 #   A13 allowlist show --output json shape: {allowed_hosts: [...]}
 #
 # Tests run entirely host-side (no docker required). D10 guard simulated by
-# setting RC_TEST_FAKE_DOCKERENV=1 (same pattern as test-rc-reload.sh would use
+# setting RC_TEST_FAKE_CAGE_MARKER=1 (same pattern as test-rc-reload.sh would use
 # for the in-cage environment detection).
 #
 # ADRs: ADR-003 D1/D4/D5 (agent-first CLI), ADR-021 D4 (effective-config provenance),
@@ -68,11 +68,11 @@ run_rc() {
     "$RC" "$@"
 }
 
-# Run rc with fake dockerenv detection (simulates in-cage).
+# Run rc with fake in-cage-marker detection (simulates in-cage).
 run_rc_in_cage() {
   HOME="$TEST_HOME" \
     XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    RC_TEST_FAKE_DOCKERENV=1 \
+    RC_TEST_FAKE_CAGE_MARKER=1 \
     "$RC" "$@"
 }
 
@@ -330,7 +330,7 @@ else fail 10 "allowlist promote --from-observed no-mutation" "$a10_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# A11: allowlist add refuses when RC_TEST_FAKE_DOCKERENV=1 (D10 host-side-only guard)
+# A11: allowlist add refuses when RC_TEST_FAKE_CAGE_MARKER=1 (D10 host-side-only guard)
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 setup_sandbox
@@ -346,7 +346,7 @@ else fail 11 "allowlist add D10 guard" "$a11_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# A12: allowlist promote refuses when RC_TEST_FAKE_DOCKERENV=1 (D10 guard)
+# A12: allowlist promote refuses when RC_TEST_FAKE_CAGE_MARKER=1 (D10 guard)
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
 setup_sandbox

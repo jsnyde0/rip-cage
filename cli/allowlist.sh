@@ -29,9 +29,9 @@
 #     exits non-zero instead of silently applying nothing. Fast-follow
 #     (redesign/removal) tracked at rip-cage-tsf2.2.
 #
-# D10 host-side-only: add and promote are refused when RC_TEST_FAKE_DOCKERENV=1
+# D10 host-side-only: add and promote are refused when RC_TEST_FAKE_CAGE_MARKER=1
 # (host-unit-test simulation of in-cage; real in-cage is blocked by the global
-# /.dockerenv guard at rc startup).
+# /etc/rip-cage/release guard at rc startup, ADR-002 D14 / rip-cage-r5f9).
 # show is allowed in-cage (read-only).
 #
 # ADRs: ADR-003 D1/D4/D5, ADR-021 D4, ADR-022 D6, epic D10/D11.
@@ -55,10 +55,10 @@ cmd_allowlist() {
 
 
 # _allowlist_is_in_cage: returns 0 if we should refuse (in-cage simulation for test OR real in-cage
-# via the global /.dockerenv guard which fires before we get here in real usage).
-# For unit-test purposes: simulated by RC_TEST_FAKE_DOCKERENV=1.
+# via the global /etc/rip-cage/release guard which fires before we get here in real usage).
+# For unit-test purposes: simulated by RC_TEST_FAKE_CAGE_MARKER=1.
 _allowlist_is_in_cage() {
-  [[ "${RC_TEST_FAKE_DOCKERENV:-}" == "1" ]]
+  [[ "${RC_TEST_FAKE_CAGE_MARKER:-}" == "1" ]]
 }
 
 

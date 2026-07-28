@@ -20,7 +20,7 @@ FAILURES=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
-# Helper: run rc with the /.dockerenv guard bypassed (for testing inside containers)
+# Helper: run rc with the /etc/rip-cage/release guard bypassed (for testing inside containers)
 #
 # Piping the shim through `bash -s --` makes ${BASH_SOURCE[0]:-$0} resolve to
 # "bash" (BASH_SOURCE is empty under piped-exec), so rc's _resolve_script_dir
@@ -34,7 +34,7 @@ fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 # piped call only -- it doesn't change the outer test script's CWD.
 run_rc() {
   local rc_script
-  rc_script=$(sed 's|if \[\[ -f /\.dockerenv \]\]|if false|' "$RC")
+  rc_script=$(sed 's|if \[\[ -f /etc/rip-cage/release \]\]|if false|' "$RC")
   (cd "${SCRIPT_DIR}/.." && echo "$rc_script" | bash -s -- "$@")
 }
 
@@ -106,7 +106,7 @@ if [[ "$(uname)" != "Darwin" ]]; then
   # Source the helper and call it directly
   extract_exit=0
   bash -c '
-    # Source just the function from rc (bypass the dockerenv guard and main dispatch)
+    # Source just the function from rc (bypass the host-guard and main dispatch)
     eval "$(sed -n "/_extract_credentials()/,/^}/p" "'"$RC_SRC"'")"
     _extract_credentials
   ' 2>/dev/null
