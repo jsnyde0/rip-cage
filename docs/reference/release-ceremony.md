@@ -1,6 +1,6 @@
 # Release ceremony
 
-The single agent-facing checklist for cutting a rip-cage release. The global `/release` skill does **not** know the rip-cage-specific steps (GHCR visibility flip, `scripts/update-formula-sha.sh`, multi-arch manifest smoke, the two-repo Homebrew tap sync) — this doc is the source of truth for them.
+The single agent-facing checklist for cutting a rip-cage release. The global `/release` skill does **not** know the rip-cage-specific steps (GHCR visibility flip, `packaging/scripts/update-formula-sha.sh`, multi-arch manifest smoke, the two-repo Homebrew tap sync) — this doc is the source of truth for them.
 
 > **Why this exists:** the ceremony used to be scattered across `CHANGELOG.md`, ADR-008 (D6/D8), and a closed bead's design. A new agent tagging a release reconstructed the steps from those fragments. This is the consolidation.
 
@@ -68,10 +68,10 @@ Set visibility to **Public**:
 ### 5. Pin the Homebrew formula sha
 
 ```bash
-./scripts/update-formula-sha.sh
+./packaging/scripts/update-formula-sha.sh
 ```
 
-This waits for the source tarball to be downloadable, then patches **both** the versioned tarball `url` tag **and** the `sha256` in `Formula/rip-cage.rb`, and syncs the copy to the sibling tap clone (`../homebrew-rip-cage/`) if present.
+This waits for the source tarball to be downloadable, then patches **both** the versioned tarball `url` tag **and** the `sha256` in `packaging/Formula/rip-cage.rb`, and syncs the copy to the sibling tap clone (`../homebrew-rip-cage/`, where it lands at `Formula/rip-cage.rb`) if present.
 
 > **The `url` and `sha256` MUST move together** *(v0.9.0 lesson C / `rip-cage-homebrew-formula-url-sha-coupling`)*: a stale `url` against a fresh `sha256` ships a formula whose tarball fails checksum and breaks `brew install` for **every** user on that release. This shipped broken on v0.5.0/v0.5.1 before the script was fixed to `sed` the `url` from `VERSION` alongside the `sha256`.
 
@@ -82,7 +82,7 @@ The actual breakage point is `brew`'s own download+checksum, not the formula tex
 ```bash
 # (a) cross-check the live tarball sha against the pinned sha
 curl -sL "https://github.com/jsnyde0/rip-cage/archive/refs/tags/v$(cat VERSION).tar.gz" | shasum -a 256
-#     ^ must equal the sha256 in Formula/rip-cage.rb
+#     ^ must equal the sha256 in packaging/Formula/rip-cage.rb
 
 # (b) fast-forward the LOCAL tap clone so brew verifies the pushed formula, not a stale local copy
 git -C "$(brew --repository)/Library/Taps/jsnyde0/homebrew-rip-cage" pull --ff-only
@@ -91,7 +91,9 @@ git -C "$(brew --repository)/Library/Taps/jsnyde0/homebrew-rip-cage" pull --ff-o
 brew fetch jsnyde0/rip-cage/rip-cage   # exit 0 == tarball downloads and checksum matches
 ```
 
-> The ceremony spans **two repos** — the main repo's `Formula/rip-cage.rb` and the sibling `../homebrew-rip-cage` tap. `update-formula-sha.sh` patches and syncs both but does **not** run `brew fetch` — that stays a manual gate (step 6c).
+> The ceremony spans **two repos** — the main repo's `packaging/Formula/rip-cage.rb` and the sibling `../homebrew-rip-cage` tap. `update-formula-sha.sh` patches and syncs both but does **not** run `brew fetch` — that stays a manual gate (step 6c).
+>
+> **Step 6c runs AFTER step 7's push, not before it.** `brew fetch` resolves the formula through the local tap clone, which step 6b fast-forwards from the *remote* tap — so the formula has to be pushed first or 6b just re-pulls the old copy. Steps 6a (the sha cross-check, which is the substantive url/sha coupling gate) and 6b/6c straddle the push: do 6a here, push, then 6b/6c.
 
 ### 7. Commit and push the formula pin
 

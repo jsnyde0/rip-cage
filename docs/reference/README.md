@@ -320,7 +320,7 @@ tools:
 ### Operations
 | File | What it covers |
 |---|---|
-| [release-ceremony.md](release-ceremony.md) | Release steps: GHCR publish, Homebrew formula pin, pre-tag gates, `scripts/update-formula-sha.sh`, two-repo tap sync |
+| [release-ceremony.md](release-ceremony.md) | Release steps: GHCR publish, Homebrew formula pin, pre-tag gates, `packaging/scripts/update-formula-sha.sh`, two-repo tap sync |
 | [devcontainer.md](devcontainer.md) | Dev Containers (VS Code) — removed in rip-cage-kt25; `rc up` is the only supported path |
 
 ---
