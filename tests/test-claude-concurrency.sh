@@ -14,8 +14,9 @@
 # NEGATIVE CONTROL: two concurrent claude -p pointed at ONE config dir MUST show
 # corruption/error — proves the harness can detect the bug under isolation failure.
 #
-# Pre-conditions: docker available; rip-cage:latest built; a running cage exists
-# (container name passed as RC_TEST_CONTAINER or auto-detected via docker ps).
+# Pre-conditions: docker available (image build only); rip-cage:latest built;
+# a running msb cage exists (name passed as RC_TEST_CONTAINER or auto-detected
+# via `rc ls --output json`).
 #
 # Wired into tests/run-host.sh as NEEDS_CONTAINER per ADR-013.
 #
@@ -26,6 +27,10 @@
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="${SCRIPT_DIR}/.."
+RC="${REPO_ROOT}/rc"
+
 FAILURES=0
 
 pass() { echo "PASS: $1"; }
@@ -33,6 +38,8 @@ fail() { echo "FAIL: $1${2:+  -- $2}"; FAILURES=$((FAILURES + 1)); }
 
 # ---------------------------------------------------------------------------
 # Guard: skip if docker unavailable
+# (docker still builds the rip-cage image; msb runs it — this guard is about
+# the image build tool, not cage resolution/exec, which are msb-native below)
 # ---------------------------------------------------------------------------
 if ! command -v docker >/dev/null 2>&1; then
   echo "SKIP: docker not available"
@@ -49,10 +56,11 @@ fi
 
 # ---------------------------------------------------------------------------
 # Resolve test container: prefer explicit RC_TEST_CONTAINER; else find running
+# (msb-native: cages are invisible to docker ps/exec)
 # ---------------------------------------------------------------------------
 CONTAINER="${RC_TEST_CONTAINER:-}"
 if [[ -z "$CONTAINER" ]]; then
-  CONTAINER=$(docker ps --format '{{.Names}}' --filter 'ancestor=rip-cage:latest' | head -1)
+  CONTAINER=$("$RC" ls --output json | jq -r '.[] | select(.status=="running") | .name' | head -1)
 fi
 if [[ -z "$CONTAINER" ]]; then
   echo "SKIP: no running rip-cage container found; pass RC_TEST_CONTAINER=<name> or start one with rc up"
@@ -66,7 +74,7 @@ echo "Container: $CONTAINER"
 # ---------------------------------------------------------------------------
 
 # Run a command inside the container as agent user
-cexec() { docker exec "$CONTAINER" "$@"; }
+cexec() { "$RC" exec "$CONTAINER" -- "$@"; }
 
 # Snapshot the list of files directly under ~/.claude (not recursing into subdirs
 # we explicitly symlink like projects/sessions — those aren't session-written).
@@ -92,7 +100,7 @@ _shared_root_files() {
 # use); fall back to an in-cage credentials-file presence check when the
 # label is absent (e.g. a container not created via `rc up`).
 # ---------------------------------------------------------------------------
-CRED_MOUNTS_LABEL=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts.claude" }}' "$CONTAINER" 2>/dev/null || true)
+CRED_MOUNTS_LABEL=$(msb inspect "$CONTAINER" --format json 2>/dev/null | jq -r '.config.labels["rc.auth.credential-mounts.claude"] // empty')
 if [[ "$CRED_MOUNTS_LABEL" == "none" ]]; then
   POSSESSION=false
 elif [[ -n "$CRED_MOUNTS_LABEL" ]]; then
@@ -146,16 +154,16 @@ OUT_A=$(mktemp)
 OUT_B=$(mktemp)
 
 # Background both simultaneously — this exercises the race window
-docker exec \
+msb exec \
   -e CLAUDE_CONFIG_DIR=/home/agent/.claude-sessions/conctest-a \
-  "$CONTAINER" \
+  "$CONTAINER" -- \
   claude -p "print the word READY and nothing else" \
   >"$OUT_A" 2>&1 &
 PID_A=$!
 
-docker exec \
+msb exec \
   -e CLAUDE_CONFIG_DIR=/home/agent/.claude-sessions/conctest-b \
-  "$CONTAINER" \
+  "$CONTAINER" -- \
   claude -p "print the word READY and nothing else" \
   >"$OUT_B" 2>&1 &
 PID_B=$!
@@ -316,9 +324,9 @@ else
       # Seed a fresh session using the wrapper WITHOUT RC_P1P_JSON_BASE override,
       # so it uses the snapshot (R4 path — ~/.claude/.claude.json.seed).
       cexec rm -rf "$MCP_SEED_DIR"
-      docker exec \
+      msb exec \
         -e CLAUDE_CONFIG_DIR="$MCP_SEED_DIR" \
-        "$CONTAINER" \
+        "$CONTAINER" -- \
         /usr/local/bin/claude --version >/dev/null 2>&1 || true
 
       # Assert oauthAccount is present in the seeded session
@@ -383,10 +391,10 @@ if [[ "$_sentinel_in_fixture" != "$MCP_SENTINEL_KEY" ]]; then
 else
   # Seed a fresh session dir with RC_P1P_JSON_BASE pointing at the fixture
   cexec rm -rf "$MCP_SENTINEL_DIR"
-  docker exec \
+  msb exec \
     -e CLAUDE_CONFIG_DIR="$MCP_SENTINEL_DIR" \
     -e RC_P1P_JSON_BASE="$MCP_FIXTURE" \
-    "$CONTAINER" \
+    "$CONTAINER" -- \
     /usr/local/bin/claude --version >/dev/null 2>&1 || true
 
   # Assert the sentinel survived the copy into the session dir
@@ -464,9 +472,9 @@ else
     # The wrapper resolves: snapshot (~/.claude/.claude.json.seed) takes precedence
     # over the live mount. Guard key present ⟹ snapshot was used.
     cexec rm -rf "$R4_GUARD_DIR"
-    docker exec \
+    msb exec \
       -e CLAUDE_CONFIG_DIR="$R4_GUARD_DIR" \
-      "$CONTAINER" \
+      "$CONTAINER" -- \
       /usr/local/bin/claude --version >/dev/null 2>&1 || true
 
     # Assert: session .claude.json exists and is non-empty
@@ -525,9 +533,9 @@ echo "=== Step 5: Single-agent no-regression ==="
 
 OUT_SINGLE=$(mktemp)
 EXIT_SINGLE=0
-docker exec \
+msb exec \
   -e CLAUDE_CONFIG_DIR=/home/agent/.claude-sessions/conctest-singleagent \
-  "$CONTAINER" \
+  "$CONTAINER" -- \
   claude -p "print the word READY and nothing else" \
   >"$OUT_SINGLE" 2>&1 || EXIT_SINGLE=$?
 
@@ -587,11 +595,11 @@ cexec bash -c "
 # (TMUX explicitly unset so the zshrc tmux-branch can't shadow the herdr
 # branch). Append a sentinel marker so completion is detected deterministically
 # rather than by polling/timing.
-_git_commit_out=$(docker exec \
+_git_commit_out=$(msb exec \
   -e HERDR_SESSION="$GIT_SESSION" \
   -e TMUX="" \
   -u agent \
-  "$CONTAINER" \
+  "$CONTAINER" -- \
   zsh -ic "cd $GIT_TEST_DIR && git commit -m 'test-commit-from-agent'; echo GIT_COMMIT_DONE_$$" 2>&1)
 
 _commit_landed=false
@@ -663,16 +671,16 @@ OUT_NEG_X=$(mktemp)
 OUT_NEG_Y=$(mktemp)
 
 # Background BOTH against the SAME shared dir — real binary, no wrapper isolation.
-docker exec \
+msb exec \
   -e CLAUDE_CONFIG_DIR="$SHARED_DIR" \
-  "$CONTAINER" \
+  "$CONTAINER" -- \
   timeout 30 /usr/bin/claude -p "print the word READY and nothing else" \
   >"$OUT_NEG_X" 2>&1 &
 PID_NEG_X=$!
 
-docker exec \
+msb exec \
   -e CLAUDE_CONFIG_DIR="$SHARED_DIR" \
-  "$CONTAINER" \
+  "$CONTAINER" -- \
   timeout 30 /usr/bin/claude -p "print the word READY and nothing else" \
   >"$OUT_NEG_Y" 2>&1 &
 PID_NEG_Y=$!
@@ -771,10 +779,10 @@ cexec rm -rf "${MUX_TEST_BASE}/mux-test-herdr-session"
 # check for the .claude.json presence after (idempotent seeding means if it
 # already exists we just confirm presence).
 cexec rm -rf "${MUX_TEST_BASE}/default"
-docker exec -u agent \
+msb exec -u agent \
   -e TMUX="" \
   -e HERDR_SESSION="" \
-  "$CONTAINER" \
+  "$CONTAINER" -- \
   /usr/local/bin/claude --version >/dev/null 2>&1 || true
 
 if cexec test -f "${MUX_TEST_BASE}/default/.claude.json"; then
@@ -799,11 +807,11 @@ fi
 MUX_HERDR_LIVE_SESSION="mux-test-herdr-live"
 cexec rm -rf "${MUX_TEST_BASE}/${MUX_HERDR_LIVE_SESSION}"
 
-_mux_herdr_live_out=$(docker exec \
+_mux_herdr_live_out=$(msb exec \
   -e HERDR_SESSION="$MUX_HERDR_LIVE_SESSION" \
   -e TMUX="" \
   -u agent \
-  "$CONTAINER" \
+  "$CONTAINER" -- \
   zsh -ic "/usr/local/bin/claude --version > /dev/null 2>&1; echo MUX_HERDR_LIVE_DONE_$$" 2>&1)
 
 if ! echo "$_mux_herdr_live_out" | grep -q "MUX_HERDR_LIVE_DONE_$$"; then
@@ -822,10 +830,10 @@ cexec rm -rf "${MUX_TEST_BASE}/${MUX_HERDR_LIVE_SESSION}"
 # session dir is derived from HERDR_SESSION, NOT the 'default' fallback.
 HERDR_TEST_SESSION="mux-test-herdr-session"
 cexec rm -rf "${MUX_TEST_BASE}/${HERDR_TEST_SESSION}"
-docker exec -u agent \
+msb exec -u agent \
   -e TMUX="" \
   -e HERDR_SESSION="$HERDR_TEST_SESSION" \
-  "$CONTAINER" \
+  "$CONTAINER" -- \
   /usr/local/bin/claude --version >/dev/null 2>&1 || true
 
 if cexec test -f "${MUX_TEST_BASE}/${HERDR_TEST_SESSION}/.claude.json"; then

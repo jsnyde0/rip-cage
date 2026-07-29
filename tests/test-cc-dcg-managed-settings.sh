@@ -54,6 +54,10 @@
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="${SCRIPT_DIR}/.."
+RC="${REPO_ROOT}/rc"
+
 FAILURES=0
 TOTAL=0
 
@@ -155,10 +159,11 @@ fi
 
 # ---------------------------------------------------------------------------
 # Resolve test container
+# (msb-native: cages are invisible to docker ps/exec)
 # ---------------------------------------------------------------------------
 CONTAINER="${RC_TEST_CONTAINER:-}"
 if [[ -z "$CONTAINER" ]]; then
-  CONTAINER=$(docker ps --format '{{.Names}}' --filter 'ancestor=rip-cage:latest' | head -1)
+  CONTAINER=$("$RC" ls --output json | jq -r '.[] | select(.status=="running") | .name' | head -1)
 fi
 if [[ -z "$CONTAINER" ]]; then
   echo "SKIP: no running rip-cage container found; pass RC_TEST_CONTAINER=<name> or start one with rc up"
@@ -170,8 +175,8 @@ echo ""
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-cexec()      { docker exec "$CONTAINER" "$@"; }
-cexec_root() { docker exec --user root "$CONTAINER" "$@"; }
+cexec()      { "$RC" exec "$CONTAINER" -- "$@"; }
+cexec_root() { msb exec -u root "$CONTAINER" -- "$@"; }
 
 # ---------------------------------------------------------------------------
 # STEP 0: STRUCTURAL ASSERTIONS
@@ -267,7 +272,7 @@ CRED_FILE_PRESENT=$(cexec bash -c '
 # docker inspect, cheap and not forgeable by an in-cage agent), then
 # CLAUDE_CODE_OAUTH_TOKEN in-cage (tests/test-safety-stack.sh:186-190 idiom).
 if [[ "$CRED_FILE_PRESENT" == "absent" ]]; then
-  CRED_MOUNTS_CLAUDE_LABEL=$(docker inspect --format '{{ index .Config.Labels "rc.auth.credential-mounts.claude" }}' "$CONTAINER" 2>/dev/null || true)
+  CRED_MOUNTS_CLAUDE_LABEL=$(msb inspect "$CONTAINER" --format json 2>/dev/null | jq -r '.config.labels["rc.auth.credential-mounts.claude"] // empty')
   if [[ "$CRED_MOUNTS_CLAUDE_LABEL" == "none" ]]; then
     CRED_FILE_PRESENT="non-possession-label"
   elif cexec bash -c 'test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"' >/dev/null 2>&1; then
@@ -316,9 +321,9 @@ cexec bash -c "
 
 AUTH_OUT=$(mktemp)
 run_with_timeout 45 "$AUTH_OUT" \
-  docker exec \
+  msb exec \
     -e CLAUDE_CONFIG_DIR="$AUTH_CHECK_DIR" \
-    "$CONTAINER" \
+    "$CONTAINER" -- \
     /usr/local/bin/claude -p "print only the word AUTH_OK, nothing else, no tools"
 
 AUTH_EXIT=$RWT_EXIT
@@ -500,9 +505,9 @@ echo "-- Section 1: Positive control (text, no tools) --"
 
 POS_CTRL_OUT=$(mktemp)
 run_with_timeout 60 "$POS_CTRL_OUT" \
-  docker exec \
+  msb exec \
     -e CLAUDE_CONFIG_DIR="$PROBE_SESSION_DIR" \
-    "$CONTAINER" \
+    "$CONTAINER" -- \
     /usr/local/bin/claude -p "print only the phrase PROBE_DCG_ALLOWED, nothing else, do not use any tools"
 
 POS_CTRL_EXIT=$RWT_EXIT
@@ -546,9 +551,9 @@ cexec rm -f "$BASH_ALLOWED_WITNESS" 2>/dev/null || true
 
 BASH_CTRL_OUT=$(mktemp)
 run_with_timeout 90 "$BASH_CTRL_OUT" \
-  docker exec \
+  msb exec \
     -e CLAUDE_CONFIG_DIR="$PROBE_SESSION_DIR" \
-    "$CONTAINER" \
+    "$CONTAINER" -- \
     /usr/local/bin/claude -p "Use the Bash tool to run exactly this command and nothing else: touch ${BASH_ALLOWED_WITNESS}"
 
 BASH_CTRL_EXIT=$RWT_EXIT
@@ -632,9 +637,9 @@ printf 'Use the Bash tool to run exactly this compound command in a single Bash 
 
 DESTRUCTIVE_OUT=$(mktemp)
 run_with_timeout 90 "$DESTRUCTIVE_OUT" \
-  docker exec \
+  msb exec \
     -e CLAUDE_CONFIG_DIR="$PROBE_SESSION_DIR" \
-    "$CONTAINER" \
+    "$CONTAINER" -- \
     /usr/local/bin/claude -p "$(cat "$DESTRUCTIVE_PROMPT_FILE")"
 
 DESTRUCTIVE_EXIT=$RWT_EXIT
