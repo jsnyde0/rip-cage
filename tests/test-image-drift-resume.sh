@@ -14,7 +14,9 @@
 # NAME --format json` and the current image's digest via `msb image list
 # --format json` (`cli/lib/msb_runtime.sh`'s `_msb_sandbox_state` /
 # `_msb_label` / `_msb_sandbox_image_digest` / `_msb_current_image_digest`),
-# never `docker`. The comparator (`_up_image_drift_status`), the two
+# never `docker`. The comparator (`_up_image_drift_status` at the time --
+# renamed/moved to `cli/lib/msb_runtime.sh`'s `_msb_image_drift_status` by a
+# later bead, rip-cage-syzk, so cli/reload.sh could share it too), the two
 # abort/warn wrappers, and every message template are UNCHANGED by the
 # re-target — only the substrate the stored/current values are read from
 # moved (from Docker container-ID/image-ID inspection to msb's own sandbox
@@ -98,21 +100,27 @@ trap cleanup EXIT
 #                                 (msb's `.config.manifest_digest`)
 #   DRIFT_CURRENT_IMAGE          sha256:... — the resolved $IMAGE's digest in
 #                                 msb's local image cache; empty = missing
-#   DRIFT_CONTAINER_INSPECT_FAIL "true" — the THIRD `msb inspect` call in the
-#     run (the sandbox's own image-digest check, inside
-#     _up_resolve_resume_image_drift_running) fails, while the first
-#     (existing_path label-read, cli/up.sh:2461), the second (state check,
-#     cli/up.sh:2496), and every later label-read call still succeed.
-#     Simulates a transient msb-inspect failure / TOCTOU race (sandbox
-#     removed between the state-check and the drift guard) — T7 (M2 review
-#     finding). Docker's fake shim could target this via a distinct
+#   DRIFT_CONTAINER_INSPECT_FAIL "true" — the DRIFT_INSPECT_FAIL_AT'th `msb
+#     inspect` call in the run fails, every other call (before and after)
+#     still succeeds. Simulates a transient msb-inspect failure / TOCTOU
+#     race (sandbox removed between an earlier check and a later guard) —
+#     T7 (M2 review finding), and R7 status-3 (rip-cage-syzk, reload's own
+#     comparator call). Docker's fake shim could target this via a distinct
 #     `--format` value ('{{.Image}}' vs '{{.State.Status}}'); msb's
 #     `inspect NAME --format json` returns one undifferentiated JSON blob
 #     per call, so the msb-native translation is call-count-based instead
-#     (DRIFT_INSPECT_COUNT_FILE, reset per call by
-#     run_rc_up).
+#     (DRIFT_INSPECT_COUNT_FILE, reset per call by run_rc_up/run_rc_reload).
+#   DRIFT_INSPECT_FAIL_AT         which inspect call (1-based) to fail when
+#     DRIFT_CONTAINER_INSPECT_FAIL="true". Default 3 -- T7's `rc up` running
+#     branch: the sandbox's own image-digest check, inside
+#     _up_resolve_resume_image_drift_running, is the THIRD call (existing_path
+#     label-read cli/up.sh:2461 is the first, the state check cli/up.sh:2496
+#     the second). R7 (rip-cage-syzk) sets this to 4 for `rc reload`'s flow:
+#     _msb_exists (1st), verify_rc_container's label read (2nd), the state
+#     check (3rd), then _msb_image_drift_status's own
+#     _msb_sandbox_image_digest read (4th) is the one that fails.
 #   DRIFT_INSPECT_COUNT_FILE     scratch file the stub uses to count `inspect`
-#     invocations within one `rc up` run (reset per call by run_rc_up).
+#     invocations within one run (reset per call by run_rc_up/run_rc_reload).
 # Written ONCE; every test reuses it by varying the env vars per call.
 # ---------------------------------------------------------------------------
 STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-drift-stub-XXXXXX")
@@ -137,15 +145,25 @@ case "${1:-}" in
       [[ -f "$DRIFT_INSPECT_COUNT_FILE" ]] && _n=$(cat "$DRIFT_INSPECT_COUNT_FILE")
       _n=$((_n + 1))
       echo "$_n" > "$DRIFT_INSPECT_COUNT_FILE"
-      if [[ "${DRIFT_CONTAINER_INSPECT_FAIL:-}" == "true" && "$_n" -eq 3 ]]; then
+      _fail_at="${DRIFT_INSPECT_FAIL_AT:-3}"
+      if [[ "${DRIFT_CONTAINER_INSPECT_FAIL:-}" == "true" && "$_n" -eq "$_fail_at" ]]; then
         echo "Error: no such sandbox: ${_name}" >&2
         exit 1
       fi
     fi
     _status="Stopped"
     [[ "${DRIFT_STATE:-}" == "running" ]] && _status="Running"
-    jq -nc --arg status "$_status" --arg digest "${DRIFT_STORED_IMAGE:-}" \
-      '{status: $status, config: {manifest_digest: $digest, labels: {}}}'
+    # rip-cage-syzk: a real rc.source.path label (not the old empty-object
+    # `labels: {}`) -- verify_rc_container (cli/lib/container.sh) and
+    # cmd_reload's own workspace resolution both hard-require a non-empty
+    # label, which `labels: {}` failed BEFORE any of cmd_reload's own gates
+    # ever ran. DRIFT_WORKSPACE is set per-invocation by the run_rc_* helpers
+    # below (real $TEST_WS, so a case that falls through to workspace
+    # resolution -- e.g. R7's status-2/3 exits actually happen even earlier,
+    # at the running-gate, so they don't need this to be a real directory --
+    # gets a directory that genuinely exists).
+    jq -nc --arg status "$_status" --arg digest "${DRIFT_STORED_IMAGE:-}" --arg ws "${DRIFT_WORKSPACE:-}" \
+      '{status: $status, config: {manifest_digest: $digest, labels: {"rc.source.path": $ws}}}'
     exit 0
     ;;
   image)
@@ -234,7 +252,50 @@ run_rc_up() {
     DRIFT_STORED_IMAGE="$_stored" DRIFT_CURRENT_IMAGE="$_current" \
     DRIFT_CONTAINER_INSPECT_FAIL="$_inspect_fail" \
     DRIFT_INSPECT_COUNT_FILE="$_count_file" \
+    DRIFT_WORKSPACE="$TEST_WS" \
     "$RC" "${_flags[@]}" up "$TEST_WS" >"$_outfile" 2>"$_errfile" < /dev/null
+  RC_EXIT=$?
+  set -e 2>/dev/null || true
+  set +e
+  RC_OUT=$(cat "$_outfile")
+  RC_ERR=$(cat "$_errfile")
+  rm -f "$_outfile" "$_errfile" "$_count_file"
+}
+
+# run_rc_reload (rip-cage-syzk / R7) — sibling to run_rc_up: drives the REAL
+# `rc reload <name>` through the same fake-msb PATH shim + call-counting
+# infrastructure, so R7's drift-status-2/status-3 cases (the sub-cases the
+# comparator's OWN failure modes produce, distinct from a plain mismatch)
+# can reuse T5/T7's exact digest-fixture + call-count machinery instead of a
+# second, divergent reimplementation. Args: $1 state ("exited" — R7 only
+# exercises the stopped branch), $2 stored_image, $3 current_image (empty =
+# missing, i.e. drift status 2), $4 sandbox-inspect-fail ("true"/"false" —
+# drift status 3, call-count-targeted at the SECOND inspect call: cmd_reload's
+# own state-check is the first, _msb_image_drift_status's
+# _msb_sandbox_image_digest read is the second).
+# Sets RC_OUT, RC_ERR, RC_EXIT, RC_LOG (same shape as run_rc_up).
+run_rc_reload() {
+  local _state="$1" _stored="$2" _current="$3" _inspect_fail="${4:-false}" _fail_at="${5:-4}"
+  local _cname
+  _cname=$(_expected_container_name "$TEST_WS")
+  RC_LOG=$(mktemp "${TMPDIR:-/tmp}/rc-drift-log-XXXXXX")
+  : > "$RC_LOG"
+  local _count_file
+  _count_file=$(mktemp "${TMPDIR:-/tmp}/rc-drift-count-XXXXXX")
+  : > "$_count_file"
+  local _outfile _errfile
+  _outfile=$(mktemp) _errfile=$(mktemp)
+
+  set +e
+  PATH="${STUB_DIR}:${PATH}" \
+    HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_ALLOWED_ROOTS="$TEST_WS" \
+    DRIFT_LOG="$RC_LOG" DRIFT_STATE="$_state" \
+    DRIFT_STORED_IMAGE="$_stored" DRIFT_CURRENT_IMAGE="$_current" \
+    DRIFT_CONTAINER_INSPECT_FAIL="$_inspect_fail" DRIFT_INSPECT_FAIL_AT="$_fail_at" \
+    DRIFT_INSPECT_COUNT_FILE="$_count_file" \
+    DRIFT_WORKSPACE="$TEST_WS" \
+    "$RC" reload "$_cname" >"$_outfile" 2>"$_errfile" < /dev/null
   RC_EXIT=$?
   set -e 2>/dev/null || true
   set +e
@@ -245,8 +306,14 @@ run_rc_up() {
 
 # ===========================================================================
 # T1 — stopped sandbox + mismatched image digests -> abort BEFORE msb start,
-# non-zero exit, message names container + both short IDs + destroy/re-up +
-# RC_IMAGE remedies, no other override promised.
+# non-zero exit, message names container + both short IDs + the rc reload
+# repair + RC_IMAGE remedies, no other override promised.
+#
+# rip-cage-syzk (point 4): repointed. This message used to sell `rc destroy
+# && rc up` as the repair; it now sells `rc reload` (volume-preserving) and
+# no longer offers `rc destroy` at all -- R5/R11 assert the same repoint via
+# pure grep over the source; this is the live end-to-end proof that the
+# ACTUAL message emitted at abort time matches.
 # ===========================================================================
 setup_sandbox
 _t1_name=$(_expected_container_name "$TEST_WS")
@@ -268,21 +335,24 @@ fi
 if ! echo "$RC_ERR" | grep -qF "$SHORT_B"; then
   _t1_ok=false; _t1_reason="${_t1_reason:+$_t1_reason; }message did not name the current (new) short image ID ($SHORT_B)"
 fi
-if ! echo "$RC_ERR" | grep -qi "rc destroy"; then
-  _t1_ok=false; _t1_reason="${_t1_reason:+$_t1_reason; }message did not include 'rc destroy' remedy"
+if ! echo "$RC_ERR" | grep -qi "rc reload"; then
+  _t1_ok=false; _t1_reason="${_t1_reason:+$_t1_reason; }message did not include the 'rc reload' repair"
+fi
+if echo "$RC_ERR" | grep -qi "rc destroy"; then
+  _t1_ok=false; _t1_reason="${_t1_reason:+$_t1_reason; }message still offers 'rc destroy' as the stale-image repair (should be repointed to rc reload)"
 fi
 if ! echo "$RC_ERR" | grep -qi "rc up"; then
-  _t1_ok=false; _t1_reason="${_t1_reason:+$_t1_reason; }message did not include 're-up' ('rc up') remedy"
+  _t1_ok=false; _t1_reason="${_t1_reason:+$_t1_reason; }message did not include the custom-pinned-cage 'rc up' escape"
 fi
 if ! echo "$RC_ERR" | grep -qi "RC_IMAGE"; then
   _t1_ok=false; _t1_reason="${_t1_reason:+$_t1_reason; }message did not include the RC_IMAGE re-run nuance for custom-pinned cages"
 fi
-if echo "$RC_ERR" | grep -qi "rc reload\|--force\|--allow-"; then
-  _t1_ok=false; _t1_reason="${_t1_reason:+$_t1_reason; }message promised an override mechanism the check does not consult (reload/--force/--allow-*)"
+if echo "$RC_ERR" | grep -qi -- "--force\|--allow-"; then
+  _t1_ok=false; _t1_reason="${_t1_reason:+$_t1_reason; }message promised an override mechanism the check does not consult (--force/--allow-*)"
 fi
 
 if [[ "$_t1_ok" == "true" ]]; then
-  pass T1 "stopped + mismatched image digests -> abort BEFORE msb start, names container+IDs+remedies, no other override promised"
+  pass T1 "stopped + mismatched image digests -> abort BEFORE msb start, names container+IDs+rc-reload-repair, no rc destroy, no other override promised"
 else
   fail T1 "stopped + mismatched image digests abort" "$_t1_reason (exit=$RC_EXIT stderr=$RC_ERR)"
 fi
@@ -412,8 +482,11 @@ _t4_ok=true _t4_reason=""
 if ! echo "$_t4_err" | grep -qF "stale-cage"; then
   _t4_ok=false; _t4_reason="warning did not name the stale-pinned sandbox 'stale-cage'"
 fi
-if ! echo "$_t4_err" | grep -qi "rc destroy stale-cage"; then
-  _t4_ok=false; _t4_reason="${_t4_reason:+$_t4_reason; }warning did not include the 'rc destroy stale-cage' remedy"
+if ! echo "$_t4_err" | grep -qi "rc reload stale-cage"; then
+  _t4_ok=false; _t4_reason="${_t4_reason:+$_t4_reason; }warning did not include the 'rc reload stale-cage' repair (rip-cage-syzk repoint)"
+fi
+if echo "$_t4_err" | grep -qi "rc destroy"; then
+  _t4_ok=false; _t4_reason="${_t4_reason:+$_t4_reason; }warning still offers 'rc destroy' as the stale-image repair"
 fi
 if echo "$_t4_err" | grep -qF "current-cage"; then
   _t4_ok=false; _t4_reason="${_t4_reason:+$_t4_reason; }positive control failed: 'current-cage' (same image digest) was warned about"
@@ -476,8 +549,11 @@ fi
 if grep -qx "start" "$RC_LOG"; then
   _t6_ok=false; _t6_reason="${_t6_reason:+$_t6_reason; }msb start was called under --dry-run (must never happen)"
 fi
-if ! echo "$RC_ERR" | grep -qi "rc destroy"; then
-  _t6_ok=false; _t6_reason="${_t6_reason:+$_t6_reason; }dry-run message did not include the 'rc destroy' remedy"
+if ! echo "$RC_ERR" | grep -qi "rc reload"; then
+  _t6_ok=false; _t6_reason="${_t6_reason:+$_t6_reason; }dry-run message did not include the 'rc reload' repair"
+fi
+if echo "$RC_ERR" | grep -qi "rc destroy"; then
+  _t6_ok=false; _t6_reason="${_t6_reason:+$_t6_reason; }dry-run message still offers 'rc destroy' as the stale-image repair"
 fi
 if ! echo "$RC_ERR" | grep -qi "RC_IMAGE"; then
   _t6_ok=false; _t6_reason="${_t6_reason:+$_t6_reason; }dry-run message did not include the RC_IMAGE remedy"
@@ -497,7 +573,7 @@ teardown_sandbox
 # stderr, proceeds, exit 0. A hard abort here would contradict D-c: the
 # running branch must never interrupt a live agent session. Positive proof
 # that the leniency lives in _up_resolve_resume_image_drift_running, not by
-# forking _up_image_drift_status (the comparator is still single-sourced —
+# forking _msb_image_drift_status (the comparator is still single-sourced —
 # T1/T5 already prove the STOPPED wrapper still aborts on its own failure
 # modes, unchanged).
 # ===========================================================================
@@ -521,6 +597,198 @@ else
   fail T7 "running + sandbox-inspect failure warn-only" "$_t7_reason (exit=$RC_EXIT stderr=$RC_ERR)"
 fi
 teardown_sandbox
+
+# ===========================================================================
+# R7a (rip-cage-syzk) — stopped cage + drift status 2 (current image absent
+# from msb's local cache) -> `rc reload` exits 2 (NOT a new code), with an
+# extra diagnostic line that does NOT reuse the base running-gate's "Use 'rc
+# up' to start it" remedy (rc up refuses in this same condition too).
+# Reuses run_rc_reload/T5's exact digest-fixture shape (DRIFT_CURRENT_IMAGE
+# empty = "image list" stub arm returns []).
+# ===========================================================================
+setup_sandbox
+run_rc_reload "exited" "$IMG_A" ""
+
+_r7a_ok=true _r7a_reason=""
+if [[ "$RC_EXIT" -ne 2 ]]; then
+  _r7a_ok=false; _r7a_reason="rc reload exited $RC_EXIT (want 2)"
+fi
+if ! echo "$RC_ERR" | grep -qi "not found"; then
+  _r7a_ok=false; _r7a_reason="${_r7a_reason:+$_r7a_reason; }message did not say the current image was not found"
+fi
+if ! echo "$RC_ERR" | grep -qi "rc build"; then
+  _r7a_ok=false; _r7a_reason="${_r7a_reason:+$_r7a_reason; }message did not include the 'rc build' remedy"
+fi
+if echo "$RC_ERR" | grep -q "Use 'rc up' to start it"; then
+  _r7a_ok=false; _r7a_reason="${_r7a_reason:+$_r7a_reason; }status-2 message wrongly reused the base running-gate's 'Use rc up to start it' remedy"
+fi
+if grep -qx "remove" "$RC_LOG"; then
+  _r7a_ok=false; _r7a_reason="${_r7a_reason:+$_r7a_reason; }msb remove WAS reached (recreate path must not run when staleness couldn't be verified)"
+fi
+
+if [[ "$_r7a_ok" == "true" ]]; then
+  pass R7a "stopped + drift status 2 (current image absent from cache) -> exit 2 with its own diagnostic, no recreate"
+else
+  fail R7a "stopped + drift status 2" "$_r7a_reason (exit=$RC_EXIT stderr=$RC_ERR)"
+fi
+teardown_sandbox
+
+# ===========================================================================
+# R7b (rip-cage-syzk) — stopped cage + drift status 3 (msb inspect failed
+# for the sandbox's OWN image-digest read, the comparator's 4th inspect call
+# in cmd_reload's flow) -> `rc reload` exits 2, own diagnostic, no reuse of
+# the base remedy line, no recreate.
+# ===========================================================================
+setup_sandbox
+run_rc_reload "exited" "$IMG_A" "$IMG_A" "true" "4"
+
+_r7b_ok=true _r7b_reason=""
+if [[ "$RC_EXIT" -ne 2 ]]; then
+  _r7b_ok=false; _r7b_reason="rc reload exited $RC_EXIT (want 2)"
+fi
+if ! echo "$RC_ERR" | grep -qi "msb inspect failed"; then
+  _r7b_ok=false; _r7b_reason="${_r7b_reason:+$_r7b_reason; }message did not say msb inspect failed"
+fi
+if echo "$RC_ERR" | grep -q "Use 'rc up' to start it"; then
+  _r7b_ok=false; _r7b_reason="${_r7b_reason:+$_r7b_reason; }status-3 message wrongly reused the base running-gate's 'Use rc up to start it' remedy"
+fi
+if grep -qx "remove" "$RC_LOG"; then
+  _r7b_ok=false; _r7b_reason="${_r7b_reason:+$_r7b_reason; }msb remove WAS reached (recreate path must not run when staleness couldn't be verified)"
+fi
+
+if [[ "$_r7b_ok" == "true" ]]; then
+  pass R7b "stopped + drift status 3 (sandbox's own image-digest inspect failed) -> exit 2 with its own diagnostic, no recreate"
+else
+  fail R7b "stopped + drift status 3" "$_r7b_reason (exit=$RC_EXIT stderr=$RC_ERR)"
+fi
+teardown_sandbox
+
+# ===========================================================================
+# R5 (rip-cage-syzk) — message-repoint grep, no cage needed. cli/up.sh's
+# stale-image (status-1 mismatch) abort, cli/up.sh's running-cage drift
+# warning, and cli/build.sh's post-build sweep warning (the FIRST of the
+# three an operator sees) all name `rc reload`; NONE of them offers `rc
+# destroy` as the stale-image repair any more. Both halves are PER-LINE
+# predicates: a repaired message legitimately contains both `rc reload` and
+# `rc up` (the custom-pinned-cage escape), so "the escape names rc up" is
+# only evaluated on the escape's own line. The rc-destroy-absence check is
+# scoped to the STALE-IMAGE (status-1) abort block ONLY -- cli/up.sh's
+# status-2 ("current image not found") abort, a few lines above it,
+# legitimately KEEPS an rc destroy offer (R11 below covers what that one
+# must additionally say).
+#
+# Adversarial-review finding F11 (fresh-context review of rip-cage-syzk):
+# the extracted block starts AT the sed range's own anchor comment (cli/up.sh's
+# "# _status == 1: mismatch." lead-in, a 7-line explanatory comment that
+# itself says "rc reload" twice while explaining the repoint) -- the
+# positive "names rc reload" check could pass on THAT PROSE ALONE, never
+# reaching the actual echo/json_error lines. Fixed: strip comment-only
+# lines (grep -v '^\s*#') before either check runs, so both are scoped to
+# the CODE, not commentary about the code.
+# ===========================================================================
+_r5_ok=true _r5_reason=""
+
+_r5_stale_block_raw=$(sed -n '/# _status == 1: mismatch\./,/^}/p' "${SCRIPT_DIR}/../cli/up.sh")
+_r5_stale_block=$(echo "$_r5_stale_block_raw" | grep -v '^[[:space:]]*#')
+if [[ -z "$_r5_stale_block" ]]; then
+  _r5_ok=false; _r5_reason="could not locate the stale-image (status-1) abort block in cli/up.sh"
+fi
+if echo "$_r5_stale_block" | grep -qi "rc destroy"; then
+  _r5_ok=false; _r5_reason="${_r5_reason:+$_r5_reason; }stale-image abort still offers 'rc destroy' on one of its own lines"
+fi
+if ! echo "$_r5_stale_block" | grep -qi "rc reload"; then
+  _r5_ok=false; _r5_reason="${_r5_reason:+$_r5_reason; }stale-image abort does not name 'rc reload'"
+fi
+# Per-line: the custom-pinned-cage escape (the line naming RC_IMAGE=) names
+# rc up ON ITS OWN LINE, and is NOT worded as an rc reload invocation
+# (rejected in review -- with the original image there is no drift, so `rc
+# reload` would just hit the unrelaxed running-gate and exit 2).
+_r5_escape_line=$(echo "$_r5_stale_block" | grep -i "RC_IMAGE=")
+if [[ -z "$_r5_escape_line" ]] || ! echo "$_r5_escape_line" | grep -qi "rc up"; then
+  _r5_ok=false; _r5_reason="${_r5_reason:+$_r5_reason; }custom-pinned-cage escape line does not name 'rc up' on its own line"
+fi
+if echo "$_r5_escape_line" | grep -qi "rc reload"; then
+  _r5_ok=false; _r5_reason="${_r5_reason:+$_r5_reason; }custom-pinned-cage escape is worded as an rc reload invocation"
+fi
+
+# cli/up.sh's running-cage drift warning: names rc reload (via rc down &&
+# rc reload), not rc destroy.
+_r5_running_line=$(grep "is running an older image" "${SCRIPT_DIR}/../cli/up.sh")
+if [[ -z "$_r5_running_line" ]]; then
+  _r5_ok=false; _r5_reason="${_r5_reason:+$_r5_reason; }could not locate the running-cage drift warning in cli/up.sh"
+fi
+if ! echo "$_r5_running_line" | grep -qi "rc reload"; then
+  _r5_ok=false; _r5_reason="${_r5_reason:+$_r5_reason; }running-cage drift warning does not name rc reload"
+fi
+if echo "$_r5_running_line" | grep -qi "rc destroy"; then
+  _r5_ok=false; _r5_reason="${_r5_reason:+$_r5_reason; }running-cage drift warning still offers rc destroy"
+fi
+
+# cli/build.sh's post-build sweep warning (the FIRST message an operator sees).
+_r5_build_line=$(grep "was created from a different image than the one just built" "${SCRIPT_DIR}/../cli/build.sh")
+if [[ -z "$_r5_build_line" ]]; then
+  _r5_ok=false; _r5_reason="${_r5_reason:+$_r5_reason; }could not locate the build post-success sweep warning in cli/build.sh"
+fi
+if ! echo "$_r5_build_line" | grep -qi "rc reload"; then
+  _r5_ok=false; _r5_reason="${_r5_reason:+$_r5_reason; }build sweep warning does not name rc reload"
+fi
+if echo "$_r5_build_line" | grep -qi "rc destroy"; then
+  _r5_ok=false; _r5_reason="${_r5_reason:+$_r5_reason; }build sweep warning still offers rc destroy"
+fi
+
+if [[ "$_r5_ok" == "true" ]]; then
+  pass R5 "message repoint: up.sh stale-image abort + running-cage warning + build.sh sweep warning all name rc reload, none names rc destroy; the custom-pinned escape stays rc up on its own line"
+else
+  fail R5 "message repoint grep" "$_r5_reason"
+fi
+
+# ===========================================================================
+# R11 (rip-cage-syzk) — every message that offers `rc destroy` as a remedy
+# in an image- or reload-refusal context ALSO names rc-state- and
+# rc-history- (so an operator is never silently routed into volume loss by
+# a message chain that opened with "your volumes will survive"): reload's
+# no-snapshot message, reload's refuse-loud (non-eligible-diff) message,
+# and cli/up.sh's status-2 ("current image not found") abort.
+# ===========================================================================
+_r11_ok=true _r11_reason=""
+
+_r11_no_snapshot=$(grep "to rebaseline" "${SCRIPT_DIR}/../cli/reload.sh")
+if [[ -z "$_r11_no_snapshot" ]] || ! echo "$_r11_no_snapshot" | grep -q "rc-state-" || ! echo "$_r11_no_snapshot" | grep -q "rc-history-"; then
+  _r11_ok=false; _r11_reason="${_r11_reason:+$_r11_reason; }reload's no-snapshot message does not name rc-state-/rc-history-"
+fi
+
+_r11_refuse_loud=$(grep "to apply non-reload-eligible fields" "${SCRIPT_DIR}/../cli/reload.sh")
+if [[ -z "$_r11_refuse_loud" ]] || ! echo "$_r11_refuse_loud" | grep -q "rc-state-" || ! echo "$_r11_refuse_loud" | grep -q "rc-history-"; then
+  _r11_ok=false; _r11_reason="${_r11_reason:+$_r11_reason; }reload's refuse-loud message does not name rc-state-/rc-history-"
+fi
+
+# The status-2 ("current image not found") abort block, WITHIN
+# _up_resolve_resume_image_drift_stopped specifically (that same "$_status"
+# -eq 2 check also appears, harmlessly, in the sibling running-branch
+# resolver further down the file -- restrict to the stopped resolver's own
+# function body first so a naive range-match doesn't run past it) -- every
+# line inside it that offers rc destroy must also name rc-state-/rc-history-.
+_r11_stopped_fn=$(sed -n '/^_up_resolve_resume_image_drift_stopped()/,/^}/p' "${SCRIPT_DIR}/../cli/up.sh")
+_r11_status2_block=$(echo "$_r11_stopped_fn" | sed -n '/_status" -eq 2 \]\]; then/,/^  fi$/p')
+# Exclude comment-only lines (prose ABOUT the remedy, not the remedy text
+# itself, can legitimately say "rc destroy" without also saying rc-state-).
+_r11_status2_destroy_lines=$(echo "$_r11_status2_block" | grep -v '^\s*#' | grep -i "rc destroy")
+if [[ -z "$_r11_status2_destroy_lines" ]]; then
+  _r11_ok=false; _r11_reason="${_r11_reason:+$_r11_reason; }could not locate an 'rc destroy' remedy in up.sh's status-2 abort block"
+else
+  while IFS= read -r _r11_line; do
+    [[ -z "$_r11_line" ]] && continue
+    if ! echo "$_r11_line" | grep -q "rc-state-" || ! echo "$_r11_line" | grep -q "rc-history-"; then
+      _r11_ok=false; _r11_reason="${_r11_reason:+$_r11_reason; }up.sh status-2 abort's rc-destroy line does not name rc-state-/rc-history-: ${_r11_line}"
+    fi
+  done <<<"$_r11_status2_destroy_lines"
+fi
+
+if [[ "$_r11_ok" == "true" ]]; then
+  pass R11 "every rc-destroy-as-remedy message in an image-/reload-refusal context names rc-state-/rc-history-"
+else
+  fail R11 "volume-cost naming grep" "$_r11_reason"
+fi
 
 echo ""
 echo "--- Results: ${FAILURES} failure(s) ---"

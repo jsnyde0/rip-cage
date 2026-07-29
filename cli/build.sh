@@ -138,7 +138,10 @@ cmd_build() {
 # `rc build`, warn (informational, non-blocking) about existing rc-managed
 # cages still pinned to an older image than the one just built. `rc up`
 # will refuse to resume them (_up_resolve_resume_image_drift_stopped) until
-# `rc destroy` + `rc up` (or the correct RC_IMAGE).
+# `rc reload` (rip-cage-syzk: volume-preserving repair, repointed off `rc
+# destroy` — this is the FIRST of the three sites an operator sees this
+# message at, right after the `rc build` that caused the drift) or the
+# correct RC_IMAGE.
 #
 # rip-cage-tsf2.1: REWRITTEN onto msb — was `docker ps -a --filter
 # label=rc.source.path` + `docker inspect --format '{{.Image}}'`. Enumerates
@@ -146,8 +149,8 @@ cmd_build() {
 # _msb_inspect_json), and compares each real cage's STORED image digest
 # (_msb_sandbox_image_digest) against the just-built image's REAL current
 # digest in msb's local cache (_msb_current_image_digest) — the same digest
-# comparator cli/up.sh's _up_image_drift_status already trusts for the
-# single-cage resume-time check.
+# comparator cli/lib/msb_runtime.sh's _msb_image_drift_status already trusts
+# for the single-cage resume-time check.
 _build_warn_stale_containers() {
   local _just_built_digest
   _just_built_digest=$(_msb_current_image_digest "$IMAGE" 2>/dev/null) || return 0
@@ -160,7 +163,7 @@ _build_warn_stale_containers() {
     [[ -z "$_bwsc_name" ]] && continue
     _bwsc_src=$(_msb_label "$_bwsc_name" "rc.source.path" 2>/dev/null || true)
     [[ -z "$_bwsc_src" ]] && continue  # not rc-managed
-    # Deliberately NOT _up_image_drift_status here: that resolver is shaped
+    # Deliberately NOT _msb_image_drift_status here: that comparator is shaped
     # for a single named container with an abort/warn decision (per D-b/D-c),
     # not a fan-out enumeration over every rc container — a silent `continue`
     # on inspect failure is the right per-container fallback for a warning
@@ -169,7 +172,7 @@ _build_warn_stale_containers() {
     # rip-cage-jnvb (bd memory rip-cage-mount-shape-label-lock-pattern family).
     _bwsc_digest=$(_msb_sandbox_image_digest "$_bwsc_name" 2>/dev/null) || continue
     if [[ -n "$_bwsc_digest" && "$_bwsc_digest" != "$_just_built_digest" ]]; then
-      echo "Warning: container '${_bwsc_name}' was created from a different image than the one just built — rc up will refuse to resume it (rc destroy ${_bwsc_name} first); if a cage was intentionally pinned via RC_IMAGE, ignore this for it." >&2
+      echo "Warning: container '${_bwsc_name}' was created from a different image than the one just built — rc up will refuse to resume it (rc reload ${_bwsc_name} moves it onto the current image; named volumes and host mounts survive, the guest's ephemeral overlay does not); if a cage was intentionally pinned via RC_IMAGE, ignore this for it." >&2
     fi
   done < <(jq -r '.[].name' <<<"$_names_json" 2>/dev/null)
 }

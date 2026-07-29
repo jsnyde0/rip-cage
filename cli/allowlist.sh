@@ -227,9 +227,25 @@ _allowlist_add() {
   fi
 
   # If --cage given and we added (or even skipped), run rc reload to apply.
+  #
+  # rip-cage-syzk (adversarial-review finding F6): `rc reload` on a STOPPED
+  # cage with a drifted image now cold-recreates it and leaves it RUNNING
+  # (image drift is a reload-repairable trigger as of this bead) -- before,
+  # a stopped cage's `rc reload` was always an exit-2 no-op (swallowed by
+  # `|| true` below), so this auto-apply convenience call never had a
+  # cage-lifecycle side effect. Preserve that: only auto-apply via reload
+  # when the cage is actually RUNNING; a stopped cage's edit is saved to
+  # its .rip-cage.yaml (already done above) but the cage itself is left
+  # alone -- `rc allowlist add --cage` must not become a hidden `rc up`.
   if [[ -n "$cage" && "$added_or_skipped" == "added" ]]; then
-    log "Running rc reload $cage to apply..."
-    "$0" reload "$cage" || true
+    local _al_state
+    _al_state=$(_msb_sandbox_state "$cage" 2>/dev/null || true)
+    if [[ "$_al_state" == "running" ]]; then
+      log "Running rc reload $cage to apply..."
+      "$0" reload "$cage" || true
+    else
+      log "Cage $cage is not running (state: ${_al_state:-unknown}) -- edit saved to $yaml_file, but not auto-applied. Run 'rc up' or 'rc reload $cage' when ready."
+    fi
   fi
 
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then

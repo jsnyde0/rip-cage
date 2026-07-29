@@ -1333,75 +1333,6 @@ _up_resolve_resume_config_mode() {
 }
 
 
-# _up_short_image_id -- strip the sha256: prefix and truncate to 12 hex chars,
-# matching docker's own short-ID convention (what `docker images` displays).
-# Used only for human/JSON message formatting — comparisons always use the
-# full sha256:... IDs (_up_image_drift_status below).
-_up_short_image_id() {
-  local _id="${1#sha256:}"
-  echo "${_id:0:12}"
-}
-
-
-# _up_image_drift_status (rip-cage-jnvb / D-a) — compare the image ID a
-# container is pinned to (msb inspect, _msb_sandbox_image_digest) against the
-# currently resolved $IMAGE (honors $IMAGE/RC_IMAGE, rc:45 — never hardcode
-# rip-cage:latest). Both formats always return a sha256:... ID (reviewer-
-# confirmed: no "<no value>" shape risk), so comparing by ID is robust to the
-# old image becoming untagged/dangling after a rebuild.
-#
-# ROOT CAUSE this guards against: `rc build` creates a new image, but an
-# already-existing stopped container stays pinned to the OLD image ID.
-# Blind-resuming ran the NEW image's resume logic (e.g. init execs a script
-# baked into the image via msb exec, rc:3839) against the OLD container's
-# filesystem -> raw OCI "stat ... no such file" crash + self-stop.
-#
-# SCOPE BOUND (design D-a): this only catches image/container ID drift. It
-# does NOT catch "rc script updated without rebuild" (same image ID,
-# different resume logic) — that adjacent class is rip-cage-h2hl.
-#
-# Single-sourced comparator behind two thin per-branch wrappers (mirrors the
-# mode-arg-or-thin-wrappers guidance in the design):
-#   _up_resolve_resume_image_drift_stopped — abort loud, before msb start
-#   _up_resolve_resume_image_drift_running — warn-only, proceed
-#
-# This comparator NEVER calls exit/json_error itself (post-review M2
-# hardening) — the abort-vs-warn decision belongs entirely to the calling
-# wrapper. A transient msb-inspect failure on the CONTAINER (e.g. a
-# TOCTOU race — the container was removed between cmd_up's state-check and
-# this guard) must hard-abort on the stopped branch (unchanged, matches
-# every sibling resolver's fail-loud idiom) but must NOT abort on the
-# running branch (D-c: never interrupt a live agent session over an
-# unverifiable-but-not-necessarily-broken drift check). Forking the compare
-# logic per branch would violate the single-sourced-comparator design intent
-# — instead, the failure is reported via a distinct status code and each
-# wrapper decides what to do with it.
-#
-# Sets _UP_IMAGE_DRIFT_STORED / _UP_IMAGE_DRIFT_CURRENT (short IDs, for
-# message reuse by the wrappers above; empty on status 3).
-# Returns: 0 = match, 1 = mismatch, 2 = current image ($IMAGE) not found,
-#          3 = msb inspect failed for the CONTAINER itself.
-# Parameters: $1 name
-_up_image_drift_status() {
-  local _name="$1"
-  local _stored_image
-  if ! _stored_image=$(_msb_sandbox_image_digest "$_name"); then
-    _UP_IMAGE_DRIFT_STORED=""
-    _UP_IMAGE_DRIFT_CURRENT=""
-    return 3
-  fi
-  _UP_IMAGE_DRIFT_STORED=$(_up_short_image_id "$_stored_image")
-  local _current_image
-  if ! _current_image=$(_msb_current_image_digest "$IMAGE"); then
-    _UP_IMAGE_DRIFT_CURRENT=""
-    return 2
-  fi
-  _UP_IMAGE_DRIFT_CURRENT=$(_up_short_image_id "$_current_image")
-  [[ "$_stored_image" == "$_current_image" ]] && return 0
-  return 1
-}
-
-
 # _up_resolve_resume_image_drift_stopped (rip-cage-jnvb / D-b, D-f) — abort
 # loud BEFORE msb start when the stopped container's pinned image drifted
 # from (or the current image is missing relative to) $IMAGE. Slotted with the
@@ -1418,7 +1349,7 @@ _up_resolve_resume_image_drift_stopped() {
   # `|| _status=$?` (not a bare call + separate `$?` read) — under set -e,
   # a plain non-conditional statement that returns non-zero aborts the
   # script right there, before `_status=$?` ever runs.
-  _up_image_drift_status "$_name" || _status=$?
+  _msb_image_drift_status "$_name" || _status=$?
   [[ "$_status" -eq 0 ]] && return 0
 
   if [[ "$_status" -eq 3 ]]; then
@@ -1434,28 +1365,37 @@ _up_resolve_resume_image_drift_stopped() {
   fi
 
   if [[ "$_status" -eq 2 ]]; then
+    # rip-cage-syzk (point 3): reachable from the same stranded-cage incident
+    # as the stale-image abort below, so it must name the volume cost of the
+    # rc destroy remedy too (R11).
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Current image '${IMAGE}' not found — cannot verify container ${_name} is compatible with it. Run: rc build (then retry rc up ${_path}), or re-run with the RC_IMAGE this cage was created from, or rc destroy ${_name} && rc up ${_path}." "RESUME_IMAGE_NOT_FOUND"
+      json_error "Current image '${IMAGE}' not found — cannot verify container ${_name} is compatible with it. Run: rc build (then retry rc up ${_path}), or re-run with the RC_IMAGE this cage was created from, or rc destroy ${_name} && rc up ${_path} (deletes this cage's rc-state-${_name} and rc-history-${_name} volumes)." "RESUME_IMAGE_NOT_FOUND"
     fi
     echo "Error: current image '${IMAGE}' not found — cannot verify container ${_name} is compatible with it." >&2
     echo "       Resuming would risk running mismatched resume logic against this container's filesystem (ADR-001: no safe default when compatibility is unverifiable)." >&2
     echo "       Options:" >&2
     echo "         rc build                                    (build the image, then retry: rc up ${_path})" >&2
     echo "         RC_IMAGE=<original image> rc up ${_path}    (if this cage was created from a custom-pinned image)" >&2
-    echo "         rc destroy ${_name} && rc up ${_path}        (recreate from scratch)" >&2
+    echo "         rc destroy ${_name} && rc up ${_path}        (recreate from scratch — deletes this cage's rc-state-${_name} and rc-history-${_name} volumes)" >&2
     exit 1
   fi
 
-  # _status == 1: mismatch.
+  # _status == 1: mismatch. rip-cage-syzk (point 4): repointed at `rc reload`
+  # (the volume-preserving repair, now that reload treats a stopped cage's
+  # image drift as a recreate trigger) instead of the old destroy-then-up
+  # dance; the custom-pinned-cage escape stays an `rc up` invocation (with
+  # the original image there is no drift, so `rc reload` would just hit the
+  # unrelaxed running-gate and exit 2 -- see the design's "Rejected in
+  # review" list).
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    json_error "Container ${_name} was created from image ${_UP_IMAGE_DRIFT_STORED} but the current image ${IMAGE} is ${_UP_IMAGE_DRIFT_CURRENT} — rc up refuses to blind-resume a container pinned to a stale image. Run: rc destroy ${_name} && rc up ${_path}; or if this cage was intentionally created from a custom image, re-run with the same RC_IMAGE it was created with." "IMAGE_DRIFT_STALE_CONTAINER"
+    json_error "Container ${_name} was created from image ${_RC_IMAGE_DRIFT_STORED} but the current image ${IMAGE} is ${_RC_IMAGE_DRIFT_CURRENT} — rc up refuses to blind-resume a container pinned to a stale image. Run: rc reload ${_name} (moves the cage onto the current image; named volumes and host mounts survive, only the guest's ephemeral overlay does not); or if this cage was intentionally created from a custom image, re-run rc up with the same RC_IMAGE it was created with." "IMAGE_DRIFT_STALE_CONTAINER"
   fi
-  echo "Error: container ${_name} was created from image ${_UP_IMAGE_DRIFT_STORED}, but the current image ${IMAGE} is ${_UP_IMAGE_DRIFT_CURRENT}." >&2
+  echo "Error: container ${_name} was created from image ${_RC_IMAGE_DRIFT_STORED}, but the current image ${IMAGE} is ${_RC_IMAGE_DRIFT_CURRENT}." >&2
   echo "       rc up refuses to blind-resume a container pinned to a stale image — a rebuilt image's resume logic (e.g. mediator init) can crash against this container's older filesystem." >&2
   echo "       Run:" >&2
-  echo "         rc destroy ${_name}" >&2
-  echo "         rc up ${_path}" >&2
-  echo "       If this cage was intentionally created from a custom-pinned image, re-run with the same RC_IMAGE it was created with instead of destroying it:" >&2
+  echo "         rc reload ${_name}" >&2
+  echo "       (moves the cage onto the current image; named volumes rc-state-${_name}/rc-history-${_name} and host mounts survive -- only the guest's ephemeral overlay does not)" >&2
+  echo "       If this cage was intentionally created from a custom-pinned image, re-run rc up with the same RC_IMAGE it was created with instead:" >&2
   echo "         RC_IMAGE=<original image> rc up ${_path}" >&2
   exit 1
 }
@@ -1480,7 +1420,7 @@ _up_resolve_resume_image_drift_stopped() {
 _up_resolve_resume_image_drift_running() {
   local _name="$1" _path="$2"
   local _status=0
-  _up_image_drift_status "$_name" || _status=$?
+  _msb_image_drift_status "$_name" || _status=$?
   [[ "$_status" -eq 0 ]] && return 0
 
   if [[ "$_status" -eq 3 ]]; then
@@ -1493,7 +1433,12 @@ _up_resolve_resume_image_drift_running() {
     return 0
   fi
 
-  echo "Warning: container ${_name} is running an older image (created from ${_UP_IMAGE_DRIFT_STORED}, current is ${_UP_IMAGE_DRIFT_CURRENT}) — the last 'rc build' will not apply until: rc destroy ${_name} && rc up ${_path} (or re-run with the RC_IMAGE this cage was created with, if intentionally pinned)." >&2
+  # rip-cage-syzk (point 4): a running cage is never auto-recreated (ADR-029
+  # D4), so its own image drift still has no in-place repair -- pointed at
+  # `rc down && rc reload` (down first, since reload's stopped-only trigger
+  # scoping rule means it won't fire on a still-running cage) instead of the
+  # old `rc destroy && rc up`.
+  echo "Warning: container ${_name} is running an older image (created from ${_RC_IMAGE_DRIFT_STORED}, current is ${_RC_IMAGE_DRIFT_CURRENT}) — the last 'rc build' will not apply until: rc down ${_name} && rc reload ${_name} (or re-run with the RC_IMAGE this cage was created with, if intentionally pinned)." >&2
   return 0
 }
 

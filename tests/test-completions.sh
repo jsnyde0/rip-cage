@@ -116,6 +116,23 @@ else
   pass "completions/_rc does not call docker ps"
 fi
 
+# --- rip-cage-syzk: `reload` cage-name completion must NOT be --running-only
+# any more -- it also repairs a STOPPED cage's stale image now, so a stopped
+# cage must tab-complete too.
+
+for _f in rc.bash _rc; do
+  if grep -qF "attach|exec|down|test|reload)" "${SCRIPT_DIR}/../completions/${_f}"; then
+    fail "completions/${_f}: 'reload' is still grouped with the --running-only cage-name set"
+  else
+    pass "completions/${_f}: 'reload' is not grouped with the --running-only cage-name set"
+  fi
+  if grep -qF "destroy|doctor|reload)" "${SCRIPT_DIR}/../completions/${_f}"; then
+    pass "completions/${_f}: 'reload' is grouped with the all-cages (destroy|doctor) completion set"
+  else
+    fail "completions/${_f}: 'reload' is not grouped with the all-cages (destroy|doctor) completion set"
+  fi
+done
+
 # --- rc setup idempotency (non-interactive) ---
 
 tmpdir=$(mktemp -d)

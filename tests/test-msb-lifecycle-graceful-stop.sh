@@ -40,14 +40,21 @@ pass() { TOTAL=$((TOTAL + 1)); echo "PASS  [$TOTAL] $1"; }
 fail() { TOTAL=$((TOTAL + 1)); echo "FAIL  [$TOTAL] $1 -- ${2:-}"; FAILURES=$((FAILURES + 1)); }
 
 # ---------------------------------------------------------------------------
-# STRUCT: rc never invokes a forced stop anywhere in cli/up.sh or
-# cli/lib/msb_runtime.sh.
+# STRUCT: rc never invokes a forced stop anywhere in cli/*.sh or
+# cli/lib/*.sh.
+#
+# rip-cage-syzk (R9): widened from "cli/up.sh cli/lib/msb_runtime.sh" to the
+# full cli/*.sh + cli/lib/*.sh file set -- the original two-file scope
+# predates cli/reload.sh owning its OWN _msb_stop_graceful/_msb_remove call
+# (this bead's changed seam: image-drift-as-recreate-trigger reuses that
+# same cold-recreate call pair), so a forced-stop regression introduced in
+# cli/reload.sh (or any other module) was invisible to this guard until now.
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== STRUCT: rc's own code never invokes 'msb stop --force'/-f ==="
-STRUCT_HITS=$(grep -nE '^\s*[^#]*msb stop[^|;]*(--force|-f\b)' "${REPO_ROOT}/cli/up.sh" "${REPO_ROOT}/cli/lib/msb_runtime.sh" 2>/dev/null || true)
+echo "=== STRUCT: rc's own code never invokes 'msb stop --force'/-f (all of cli/*.sh + cli/lib/*.sh) ==="
+STRUCT_HITS=$(grep -nE '^\s*[^#]*msb stop[^|;]*(--force|-f\b)' "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh 2>/dev/null || true)
 if [[ -z "$STRUCT_HITS" ]]; then
-  pass "STRUCT: zero occurrences of 'msb stop --force'/-f in cli/up.sh or cli/lib/msb_runtime.sh"
+  pass "STRUCT: zero occurrences of 'msb stop --force'/-f across cli/*.sh + cli/lib/*.sh"
 else
   fail "STRUCT: found a forced-stop invocation" "$STRUCT_HITS"
 fi
@@ -58,6 +65,52 @@ if [[ "$STRUCT_FN_COUNT" -eq 1 && "$STRUCT_GRACEFUL_ONLY" -eq 1 ]]; then
   pass "STRUCT: msb_runtime.sh exposes exactly ONE stop primitive, and it is the graceful one (no forced-stop sibling to misuse)"
 else
   fail "STRUCT: expected exactly one _msb_stop* function (the graceful one)" "count=${STRUCT_FN_COUNT}"
+fi
+
+# ---------------------------------------------------------------------------
+# R12 (rip-cage-syzk) -- invariant 2's proof over the changed seam: in
+# cli/reload.sh, every _msb_remove call is immediately preceded by an
+# unconditional _msb_stop_graceful on the same code path -- no intervening
+# conditional, no early-return between them. R9 above (STRUCT) catches a
+# *forced* stop; this catches an *absent* stop before a forced *remove* --
+# the hazard a future "skip the stop when already stopped" optimisation
+# would introduce (rejected in review, rip-cage-syzk design). With that
+# optimisation rejected, the two calls are adjacent non-comment lines, so
+# this assertion is a cheap adjacency check.
+#
+# Adversarial-review finding F2 (fresh-context review of rip-cage-syzk): the
+# original version only grepped the previous line for the SUBSTRING
+# '_msb_stop_graceful ' -- a one-liner-guarded mutation like
+# `[[ "$image_drift" -ne 1 ]] && _msb_stop_graceful "$name"` (literally the
+# rejected "skip the stop when already stopped" shape) STILL contains that
+# substring, so it passed. Fixed: the previous line must be an UNCONDITIONAL
+# call -- after stripping leading whitespace it must START with
+# `_msb_stop_graceful` (nothing else -- no `[[`, no `if`, no `&&`/`||`
+# guard token -- ahead of the call on that line).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== R12: cli/reload.sh -- every _msb_remove call is immediately preceded by an unconditional _msb_stop_graceful ==="
+_R12_RELOAD_CODE_LINES=$(grep -v '^\s*#' "${REPO_ROOT}/cli/reload.sh" | grep -v '^\s*$')
+_R12_REMOVE_LINE_COUNT=$(echo "$_R12_RELOAD_CODE_LINES" | grep -c '_msb_remove ')
+if [[ "$_R12_REMOVE_LINE_COUNT" -eq 0 ]]; then
+  fail "R12: expected at least one _msb_remove call in cli/reload.sh (did the cold-recreate call site move/get removed?)" "(none found)"
+else
+  _r12_ok=true
+  _r12_bad_lines=""
+  while IFS= read -r _r12_lineno; do
+    [[ -z "$_r12_lineno" ]] && continue
+    _r12_prev_lineno=$((_r12_lineno - 1))
+    _r12_prev_line=$(echo "$_R12_RELOAD_CODE_LINES" | sed -n "${_r12_prev_lineno}p")
+    if ! echo "$_r12_prev_line" | grep -qE '^[[:space:]]*_msb_stop_graceful([[:space:]]|$)'; then
+      _r12_ok=false
+      _r12_bad_lines="${_r12_bad_lines} line${_r12_lineno}(prev='${_r12_prev_line}')"
+    fi
+  done < <(echo "$_R12_RELOAD_CODE_LINES" | grep -n '_msb_remove ' | cut -d: -f1)
+  if [[ "$_r12_ok" == "true" ]]; then
+    pass "R12: every _msb_remove call in cli/reload.sh is immediately preceded (same code path, no intervening conditional/early-return) by _msb_stop_graceful"
+  else
+    fail "R12: an _msb_remove call in cli/reload.sh is NOT immediately preceded by _msb_stop_graceful" "${_r12_bad_lines}"
+  fi
 fi
 
 if ! command -v msb >/dev/null 2>&1; then

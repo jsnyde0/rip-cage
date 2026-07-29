@@ -8,10 +8,30 @@
 # per ADR-029 D3/D4). Today: network.allowed_hosts content only
 # (network.mode retired as vestigial at the v2 schema bump, ADR-021 D9;
 # the ssh.allowed_hosts-specific reload mechanism retired at the msb
-# cutover, rip-cage-f1qo S5). Refuses loud on anything else. Exit codes:
+# cutover, rip-cage-f1qo S5). Refuses loud on anything else.
+#
+# rip-cage-syzk: a STOPPED cage whose pinned image has drifted from the
+# current $IMAGE (`rc build` ran since this cage was created or last
+# repaired) is ALSO reload-repairable now: the same cold-recreate this verb
+# already does for network.allowed_hosts drift moves the cage onto the
+# current image too, without touching its rc-state-/rc-history- named
+# volumes (rc up's own stale-image refusal, cli/up.sh, points here). Image
+# drift is a STOPPED-cage-only trigger -- a RUNNING cage's own image drift
+# still has no in-place repair (ADR-029 D4: never auto-recreate a running
+# cage); down it first, then reload. Repairing a stopped cage this way
+# leaves it RUNNING afterward (the recreate's cmd_up takes the create path).
+#
+# Exit codes:
 #   0 — applied (or no-op when live matches snapshot)
-#   1 — refuse-loud (non-reload-eligible field changed)
-#   2 — container not running (`reload` promises the cage sees the change now)
+#   1 — refuse-loud (non-reload-eligible field changed, no applied-config
+#       snapshot, or the pre-reload transcript-persistence guard refused)
+#   2 — container not running AND not stopped-with-repairable-image-drift.
+#       Covers "genuinely not running" (state exited with a matching or
+#       unknown-unverifiable image, or state unknown/other) as well as
+#       "stopped, but image staleness itself could not be checked" (current
+#       image missing from msb's local cache, or msb inspect failed for the
+#       sandbox) -- a caller keying on this code alone cannot distinguish
+#       those sub-cases; read stderr for which one fired.
 #   3 — concurrent reload in progress (flock unavailable)
 cmd_reload() {
   local name="" dry_run=0 allow_transcript_loss=0
@@ -34,11 +54,57 @@ cmd_reload() {
   fi
   verify_rc_container "$name"
 
+  # rip-cage-syzk: image_drift is read (unguarded) by the empty-diff
+  # suppression far below on EVERY path but assigned only inside the
+  # state == "exited" sub-branch just below -- rc runs set -euo pipefail
+  # (rc:6; cli/reload.sh:3 records the shim-owns-strict-mode discipline), so
+  # declaring it here keeps the running path (image_drift never touched)
+  # bit-identical to pre-rip-cage-syzk behavior instead of an
+  # unbound-variable abort.
+  local image_drift=0
   local state
   state=$(_msb_sandbox_state "$name" 2>/dev/null || true)
   if [[ "$state" != "running" ]]; then
-    echo "Error: container $name is not running (state: $state). Use 'rc up' to start it." >&2
-    exit 2
+    if [[ "$state" == "exited" ]]; then
+      # rip-cage-syzk: image drift is a STOPPED-cage-only recreate trigger
+      # (scoping rule 1 -- the design's R8 is the regression guard that a
+      # RUNNING cage's own drift never reaches this comparator call).
+      local _rl_drift_status=0
+      _msb_image_drift_status "$name" || _rl_drift_status=$?
+      case "$_rl_drift_status" in
+        1)
+          # Mismatch: fall through into the normal reload body below --
+          # the empty-diff early return is suppressed for this case (see
+          # "Empty-diff" below) so a config-identical stopped cage still
+          # recreates onto the current image.
+          image_drift=1
+          ;;
+        2)
+          # Current image missing from msb's local cache -- staleness itself
+          # could not be checked. Its OWN message: must NOT reuse the base
+          # gate's "Use 'rc up' to start it" remedy (rc up refuses in this
+          # same condition too, cli/up.sh).
+          echo "Error: container $name is not running (state: $state), and image staleness could not be checked: current image '${IMAGE}' was not found in msb's local cache. Run: rc build." >&2
+          exit 2
+          ;;
+        3)
+          # msb inspect failed for the sandbox itself -- staleness could not
+          # be checked. Same rule: does not reuse the base remedy line.
+          echo "Error: container $name is not running (state: $state), and image staleness could not be checked: msb inspect failed for $name (is msb reachable?)." >&2
+          exit 2
+          ;;
+        *)
+          # 0 (digests match) -- message byte-identical to today's.
+          echo "Error: container $name is not running (state: $state). Use 'rc up' to start it." >&2
+          exit 2
+          ;;
+      esac
+    else
+      # "unknown" (or any other non-running/non-exited status) -- verbatim,
+      # unchanged; cmd_up itself treats unknown as fail-loud too.
+      echo "Error: container $name is not running (state: $state). Use 'rc up' to start it." >&2
+      exit 2
+    fi
   fi
 
   # Workspace path comes from the container label (set by cmd_up create-time).
@@ -78,7 +144,11 @@ cmd_reload() {
   local applied_cfg
   if ! applied_cfg=$(_config_read_applied "$name" 2>/dev/null); then
     echo "Error: container $name predates rc reload support (no applied-config snapshot)." >&2
-    echo "       Run: rc destroy $name && rc up   (to rebaseline)." >&2
+    # rip-cage-syzk (point 3): this refusal is now reachable downstream of a
+    # message (rc up's stale-image abort) that promises rc reload as a
+    # volume-preserving repair -- an operator following that pointer here
+    # must not be silently routed into rc destroy's volume loss.
+    echo "       Run: rc destroy $name && rc up   (to rebaseline -- NOTE: this deletes this cage's rc-state-$name and rc-history-$name volumes)." >&2
     exit 1
   fi
 
@@ -103,16 +173,28 @@ cmd_reload() {
   unset _schema_defaults_reload
 
   if [[ -z "$diff_paths" ]]; then
-    log "No changes since last apply — nothing to reload."
-    return 0
+    if [[ "$image_drift" -eq 1 ]]; then
+      # rip-cage-syzk: the empty-diff early return is suppressed ONLY when
+      # image drift is the reason we're here (a stopped cage, drift status
+      # 1 above) -- config-identical but image-stale still recreates.
+      log "No config changes since last apply; recreating to move onto the current image."
+    else
+      log "No changes since last apply — nothing to reload."
+      return 0
+    fi
   fi
 
-  # Refuse loud on any non-reload-eligible path.
+  # Refuse loud on any non-reload-eligible path. rip-cage-syzk: this gate is
+  # UNCHANGED on the image-drift path too (R3 -- image drift never bypasses
+  # it; the rev-1 warn-and-proceed relaxation was rejected in review).
   if ! printf '%s\n' "$diff_paths" | _config_paths_all_reload_eligible; then
     echo "Error: 'rc reload' only handles reload-eligible field changes today (${_RC_RELOAD_ELIGIBLE_PATHS})." >&2
     echo "       Detected differing paths:" >&2
     while IFS= read -r p; do [[ -n "$p" ]] && echo "         - $p" >&2; done <<<"$diff_paths"
-    echo "       Run: rc destroy $name && rc up   (to apply non-reload-eligible fields)." >&2
+    # rip-cage-syzk (point 3): same volume-cost naming as the no-snapshot
+    # refusal above -- this is also reachable downstream of rc up's
+    # rc-reload-as-repair pointer.
+    echo "       Run: rc destroy $name && rc up   (to apply non-reload-eligible fields -- NOTE: this deletes this cage's rc-state-$name and rc-history-$name volumes)." >&2
     exit 1
   fi
 
@@ -215,7 +297,16 @@ cmd_reload() {
   # NOW-current .rip-cage.yaml" (graceful stop -> remove -> cmd_up) rather
   # than a hand-rolled parallel mount-rebuild path, so create/resume/reload
   # never drift onto three separate mount-declaration implementations.
-  log "Recreating ${name} to apply the amended net-rule set (cold-recreate; ADR-029 D4)..."
+  # rip-cage-syzk (adversarial-review finding F4): on the PURE image-drift
+  # path (no config diff at all -- diff_paths empty, image_drift==1) there
+  # is no amended net-rule set; the recreate's only job is moving the cage
+  # onto the current image. Say so, instead of the net-rule-set wording
+  # that only makes sense when network.allowed_hosts actually changed.
+  if [[ -z "$diff_paths" && "$image_drift" -eq 1 ]]; then
+    log "Recreating ${name} to move it onto the current image (image drift; cold-recreate; ADR-029 D4)..."
+  else
+    log "Recreating ${name} to apply the amended net-rule set (cold-recreate; ADR-029 D4)..."
+  fi
   _msb_stop_graceful "$name"
   _msb_remove "$name"
   # Force JSON mode for the inner create call regardless of the outer

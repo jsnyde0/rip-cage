@@ -149,7 +149,7 @@ fi
 
 
 # ---------------------------------------------------------------------------
-# R6: image-digest readers (_up_image_drift_status's msb-side data source).
+# R6: image-digest readers (_msb_image_drift_status's data source).
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== R6: image-digest readers ==="

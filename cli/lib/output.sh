@@ -59,6 +59,8 @@ Commands:
   destroy [-f|--force] [name]                   Remove container and volumes
   reload [name] [--dry-run] [--allow-transcript-loss]
                                                 Hot-reload .rip-cage.yaml allowlist changes (network.allowed_hosts);
+                                                also repairs a STOPPED cage's stale image (after 'rc build') without
+                                                touching its named volumes -- the repair leaves the cage running;
                                                 refuses if a legacy cage's ~/.claude/projects isn't host-bound
                                                 (--allow-transcript-loss overrides)
   allowlist add <host> [--cage=<name>]         Append host to network.allowed_hosts (idempotent; --output json)

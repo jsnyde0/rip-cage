@@ -128,9 +128,9 @@ _msb_exists() {
 # _msb_sandbox_image_digest NAME -- echoes the sha256:... digest of the
 # image a real sandbox was created from (`.config.manifest_digest`).
 # Returns non-zero with empty output when the sandbox is absent. Feeds
-# cli/up.sh's _up_image_drift_status (msb-side counterpart to comparing
-# `docker inspect --format '{{.Image}}'` against `docker image inspect
-# --format '{{.Id}}'`).
+# this module's own _msb_image_drift_status (msb-side counterpart to
+# comparing `docker inspect --format '{{.Image}}'` against `docker image
+# inspect --format '{{.Id}}'`).
 _msb_sandbox_image_digest() {
   local name="$1"
   local raw
@@ -150,6 +150,91 @@ _msb_current_image_digest() {
   digest=$(jq -r --arg img "$image" '.[] | select(.reference == $img) | .digest' <<<"$raw" 2>/dev/null | head -1)
   [[ -n "$digest" ]] || return 1
   echo "$digest"
+}
+
+
+# _msb_short_image_id -- strip the sha256: prefix and truncate to 12 hex
+# chars, matching docker's own short-ID convention (what `docker images`
+# displays). Used only for human/JSON message formatting — comparisons
+# always use the full sha256:... IDs (_msb_image_drift_status below).
+_msb_short_image_id() {
+  local _id="${1#sha256:}"
+  echo "${_id:0:12}"
+}
+
+
+# _msb_image_drift_status (rip-cage-jnvb / D-a; moved here from cli/up.sh by
+# rip-cage-syzk so cli/reload.sh can share it too --
+# tests/test-rc-decomposition-structure.sh:286-298 asserts cmd_up is the
+# ONLY cli/up.sh function cli/reload.sh may reference, so reload cannot call
+# an up.sh-resident comparator) — compare the image ID a sandbox is pinned
+# to (msb inspect, _msb_sandbox_image_digest) against the currently resolved
+# $IMAGE (honors $IMAGE/RC_IMAGE, rc:45 — never hardcode rip-cage:latest).
+# Both formats always return a sha256:... ID (reviewer-confirmed: no "<no
+# value>" shape risk), so comparing by ID is robust to the old image
+# becoming untagged/dangling after a rebuild.
+#
+# ROOT CAUSE this guards against: `rc build` creates a new image, but an
+# already-existing stopped container stays pinned to the OLD image ID.
+# Blind-resuming ran the NEW image's resume logic (e.g. init execs a script
+# baked into the image via msb exec, rc:3839) against the OLD container's
+# filesystem -> raw OCI "stat ... no such file" crash + self-stop.
+#
+# SCOPE BOUND (design D-a): this only catches image/container ID drift. It
+# does NOT catch "rc script updated without rebuild" (same image ID,
+# different resume logic) — that adjacent class is rip-cage-h2hl.
+#
+# Single-sourced comparator behind THREE thin per-caller wrappers (mirrors
+# the mode-arg-or-thin-wrappers guidance in the design):
+#   cli/up.sh _up_resolve_resume_image_drift_stopped — abort loud, before msb start
+#   cli/up.sh _up_resolve_resume_image_drift_running — warn-only, proceed
+#   cli/reload.sh cmd_reload's not-running branch (rip-cage-syzk) — a stopped
+#     cage's mismatch (status 1) is a NEW recreate trigger; status 0/2/3 all
+#     exit 2 (never a recreate) -- the comparator itself has no opinion on
+#     this, exactly like the two cli/up.sh wrappers.
+#
+# This comparator NEVER calls exit/json_error itself (post-review M2
+# hardening) — the abort-vs-warn-vs-recreate decision belongs entirely to
+# the caller. A transient msb-inspect failure on the CONTAINER (e.g. a
+# TOCTOU race — the container was removed between the caller's state-check
+# and this guard) must hard-abort on cli/up.sh's stopped branch (unchanged,
+# matches every sibling resolver's fail-loud idiom) but must NOT abort on
+# the running branch (D-c: never interrupt a live agent session over an
+# unverifiable-but-not-necessarily-broken drift check). Forking the compare
+# logic per caller would violate the single-sourced-comparator design intent
+# — instead, the failure is reported via a distinct status code and each
+# caller decides what to do with it.
+#
+# Sets _RC_IMAGE_DRIFT_STORED / _RC_IMAGE_DRIFT_CURRENT (short IDs, for
+# message reuse by the callers above; empty on status 3; renamed from
+# _UP_IMAGE_DRIFT_STORED/_CURRENT by rip-cage-syzk's move).
+# Returns: 0 = match, 1 = mismatch, 2 = current image ($IMAGE) not found,
+#          3 = msb inspect failed for the CONTAINER itself.
+# Parameters: $1 name
+_msb_image_drift_status() {
+  local _name="$1"
+  local _stored_image
+  if ! _stored_image=$(_msb_sandbox_image_digest "$_name"); then
+    _RC_IMAGE_DRIFT_STORED=""
+    _RC_IMAGE_DRIFT_CURRENT=""
+    return 3
+  fi
+  _RC_IMAGE_DRIFT_STORED=$(_msb_short_image_id "$_stored_image")
+  local _current_image
+  # IMAGE (the global set by rc:69, IMAGE="${RC_IMAGE:-rip-cage:latest}") is
+  # intentional here, not a typo for _msb_current_image_digest's own
+  # lowercase `image` PARAMETER (a different function's local, now in the
+  # same file post-move) -- this file-local coincidence is exactly what
+  # SC2153's heuristic false-positives on below; the pre-move code (cli/up.sh,
+  # no local `image` var in that file) never triggered it.
+  # shellcheck disable=SC2153
+  if ! _current_image=$(_msb_current_image_digest "$IMAGE"); then
+    _RC_IMAGE_DRIFT_CURRENT=""
+    return 2
+  fi
+  _RC_IMAGE_DRIFT_CURRENT=$(_msb_short_image_id "$_current_image")
+  [[ "$_stored_image" == "$_current_image" ]] && return 0
+  return 1
 }
 
 

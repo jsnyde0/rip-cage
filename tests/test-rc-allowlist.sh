@@ -486,6 +486,56 @@ else fail 17 "allowlist add same-file allowed" "$a17_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
+# A18 (rip-cage-syzk, adversarial-review finding F6): allowlist add --cage
+# on a STOPPED cage does NOT auto-apply via `rc reload` -- as of rip-cage-syzk,
+# `rc reload` on a stopped+drifted cage cold-recreates it and leaves it
+# RUNNING (a lifecycle side effect this convenience call must not trigger).
+# Before rip-cage-syzk, a stopped cage's `rc reload` sub-call was always an
+# exit-2 no-op; this preserves that observable behavior (the edit is still
+# saved, but the cage itself is left untouched -- no "Running rc reload"
+# attempt at all, only a message explaining the edit was saved but not
+# auto-applied).
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox
+STUBDIR="${TEST_HOME}/stub"
+make_msb_stub "$STUBDIR" "cage1" "$WS" "Stopped"
+
+a18_out=$(run_rc_from "$TEST_HOME" "$STUBDIR" allowlist add "httpbin.org" --cage cage1 2>&1)
+a18_exit=$?
+a18_ok=true a18_reason=""
+[[ "$a18_exit" -ne 0 ]] && a18_ok=false && a18_reason="exit $a18_exit; out: $a18_out"
+if [[ "$a18_ok" == "true" ]]; then
+  grep -q "httpbin.org" "${WS}/.rip-cage.yaml" 2>/dev/null || {
+    a18_ok=false; a18_reason="host not added to the cage config despite the cage being stopped"; }
+fi
+echo "$a18_out" | grep -qi "Running rc reload" && {
+  a18_ok=false; a18_reason="${a18_reason:+$a18_reason; }auto-reload was attempted on a STOPPED cage (F6 regression -- would now cold-recreate + boot it)"; }
+echo "$a18_out" | grep -qi "not running\|not auto-applied" || {
+  a18_ok=false; a18_reason="${a18_reason:+$a18_reason; }no message explaining the edit was saved but not auto-applied"; }
+if [[ "$a18_ok" == "true" ]]; then pass 18 "allowlist add --cage on a STOPPED cage saves the edit but does NOT auto-reload (F6: no hidden boot)"
+else fail 18 "allowlist add --cage stopped-cage no-op" "$a18_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
+# A19: positive control -- allowlist add --cage on a RUNNING cage still
+# attempts the auto-reload apply (pre-existing behavior, unchanged by F6's
+# fix -- the state check must not suppress the RUNNING case too).
+# ---------------------------------------------------------------------------
+TOTAL=$((TOTAL + 1))
+setup_sandbox
+STUBDIR="${TEST_HOME}/stub"
+make_msb_stub "$STUBDIR" "cage1" "$WS" "Running"
+
+a19_out=$(run_rc_from "$TEST_HOME" "$STUBDIR" allowlist add "httpbin.org" --cage cage1 2>&1)
+a19_ok=true a19_reason=""
+echo "$a19_out" | grep -qi "Running rc reload" || {
+  a19_ok=false; a19_reason="auto-reload was NOT attempted on a RUNNING cage (positive control regressed)"; }
+if [[ "$a19_ok" == "true" ]]; then pass 19 "allowlist add --cage on a RUNNING cage still attempts auto-reload (positive control)"
+else fail 19 "allowlist add --cage running-cage auto-reload" "$a19_reason"; fi
+teardown_sandbox
+
+# ---------------------------------------------------------------------------
 echo ""
 if [[ "$FAILURES" -gt 0 ]]; then
   echo "FAILED: $FAILURES of $TOTAL tests"

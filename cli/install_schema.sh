@@ -101,7 +101,8 @@ cmd_schema() {
     "reload": {
       "args": [{"name": "name", "type": "string", "required": false, "note": "auto-selected via CWD or singleton"}],
       "flags": {
-        "--dry-run": {"type": "bool", "default": false, "note": "print diff without mutating cache/snapshot"}
+        "--dry-run": {"type": "bool", "default": false, "note": "print diff without mutating cache/snapshot"},
+        "--allow-transcript-loss": {"type": "bool", "default": false, "note": "override the pre-reload transcript-persistence guard on a legacy (non-host-bound) cage"}
       }
     },
     "ls": {
