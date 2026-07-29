@@ -24,16 +24,19 @@ FAILURES=0
 TEST_WS=""
 CONTAINER=""
 CONTAINER2=""
+CREATED_CAGES=()
 
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1 — got: ${2:-}"; FAILURES=$((FAILURES + 1)); }
+
+_track() { CREATED_CAGES+=("$1"); }
 
 # Resolve the container name from the workspace label — robust against
 # rc's collision-hash fallback and tr/sed name normalization.
 _resolve_container() {
   local ws="${1:-$TEST_WS}"
-  docker ps -a --filter "label=rc.source.path=$(realpath "$ws" 2>/dev/null || echo "$ws")" \
-    --format '{{.Names}}' | head -1
+  "$RC" ls --output json | jq -r --arg ws "$(realpath "$ws" 2>/dev/null || echo "$ws")" \
+    '.[] | select(.source_path==$ws) | .name' | head -1
 }
 
 # ---- Guard: skip if docker or image not available ----
@@ -58,8 +61,22 @@ fi
 # how/where this test is invoked. Not nested under the real $HOME, so
 # teardown is a plain rm -rf (mirrors TEST_WS/TEST_WS2 cleanup below) — no
 # DCG home-path collision is possible.
+#
+# REAL_MSB_HOME: captured BEFORE the HOME override (msb-port note, mirrors
+# test-e2e-lifecycle.sh). msb derives its per-sandbox agent-relay Unix socket
+# path from $HOME by default, and macOS's mktemp default TMPDIR is long
+# enough that a temp-HOME override alone overflows the 104-byte AF_UNIX path
+# limit ("agent relay socket path is too long"). msb's local image cache is
+# ALSO keyed off $HOME, so a temp HOME sees an empty cache and would force a
+# doomed registry pull for rip-cage:latest. Pointing MSB_HOME at the real,
+# unmodified microsandbox home sidesteps both.
+REAL_MSB_HOME="${HOME}/.microsandbox"
 TEST_HOME_SANDBOX=$(mktemp -d)
 export HOME="$TEST_HOME_SANDBOX"
+# Exported (not just per-call) since every rc/msb invocation below (rc ls,
+# rc exec, rc destroy — not only rc up) must resolve against the real msb
+# sandboxes registry, not an empty one under the temp HOME.
+export MSB_HOME="$REAL_MSB_HOME"
 
 # ---- State backup/restore for ~/.pi/agent ----
 PI_AGENT_DIR="${HOME}/.pi/agent"
@@ -72,13 +89,10 @@ if [[ -d "$PI_AGENT_DIR" ]]; then
 fi
 
 cleanup() {
-  # Tear down any containers we started
-  if [[ -n "$CONTAINER" ]]; then
-    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-  fi
-  if [[ -n "$CONTAINER2" ]]; then
-    docker rm -f "$CONTAINER2" >/dev/null 2>&1 || true
-  fi
+  # Tear down any cages we started (register-array shape — never enumerate+glob)
+  for c in "${CREATED_CAGES[@]:-}"; do
+    [[ -n "$c" ]] && "$RC" destroy --force "$c" >/dev/null 2>&1 || true
+  done
   # Clean up test workspace dirs
   [[ -n "$TEST_WS" && -d "$TEST_WS" ]] && rm -rf "$TEST_WS"
   [[ -n "${TEST_WS2:-}" && -d "${TEST_WS2}" ]] && rm -rf "$TEST_WS2"
@@ -127,8 +141,9 @@ if [[ -z "$CONTAINER" ]]; then
   echo "$FAILURES test(s) FAILED (fatal — no container to inspect)."
   exit "$FAILURES"
 fi
+_track "$CONTAINER"
 
-content=$(docker exec "$CONTAINER" cat /home/agent/.pi/agent/auth.json 2>/dev/null || true)
+content=$("$RC" exec "$CONTAINER" -- cat /home/agent/.pi/agent/auth.json 2>/dev/null || true)
 if echo "$content" | grep -q "fake"; then
   pass "/home/agent/.pi/agent/auth.json readable and contains expected content"
 else
@@ -141,7 +156,7 @@ fi
 echo ""
 echo "=== Test 2: /home/agent/.pi/agent/auth.json owned by agent:agent ==="
 
-ownership=$(docker exec "$CONTAINER" stat -c '%U:%G' /home/agent/.pi/agent/auth.json 2>/dev/null || true)
+ownership=$("$RC" exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent/auth.json 2>/dev/null || true)
 if [[ "$ownership" == "agent:agent" ]]; then
   pass "/home/agent/.pi/agent/auth.json owner = agent:agent"
 else
@@ -154,7 +169,7 @@ fi
 echo ""
 echo "=== Test 3: PI_CODING_AGENT_DIR=/home/agent/.pi/agent in container env ==="
 
-pi_env=$(docker exec "$CONTAINER" env 2>/dev/null | grep '^PI_CODING_AGENT_DIR=' || true)
+pi_env=$("$RC" exec "$CONTAINER" -- env 2>/dev/null | grep '^PI_CODING_AGENT_DIR=' || true)
 if [[ "$pi_env" == "PI_CODING_AGENT_DIR=/home/agent/.pi/agent" ]]; then
   pass "PI_CODING_AGENT_DIR=/home/agent/.pi/agent in container env"
 else
@@ -167,7 +182,7 @@ fi
 echo ""
 echo "=== Test 4: CAGE_HOST_ADDR present in container env ==="
 
-cage_addr_line=$(docker exec "$CONTAINER" env 2>/dev/null | grep '^CAGE_HOST_ADDR=' || true)
+cage_addr_line=$("$RC" exec "$CONTAINER" -- env 2>/dev/null | grep '^CAGE_HOST_ADDR=' || true)
 if [[ "${cage_addr_line#CAGE_HOST_ADDR=}" != "" ]]; then
   pass "CAGE_HOST_ADDR present and non-empty in container env ('$cage_addr_line')"
 else
@@ -254,6 +269,7 @@ rc_output=$(RC_ALLOWED_ROOTS="$TEST_WS2" RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS2
 CONTAINER2=$(_resolve_container "$TEST_WS2")
 
 if [[ -n "$CONTAINER2" ]]; then
+  _track "$CONTAINER2"
   pass "rc up succeeded without ~/.pi/agent (container came up)"
 else
   fail "rc up failed when ~/.pi/agent absent (should warn, not fatal)" "exit=$rc_exit"
@@ -289,7 +305,7 @@ echo ""
 echo "=== Test 7: Container-local pi dir — bin/ not host-mounted ==="
 
 # Verify the container-local dir exists as agent:agent and is independent of host
-pi_dir_stat=$(docker exec "$CONTAINER" stat -c '%U:%G' /home/agent/.pi/agent 2>/dev/null || true)
+pi_dir_stat=$("$RC" exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent 2>/dev/null || true)
 if [[ "$pi_dir_stat" == "agent:agent" ]]; then
   pass "/home/agent/.pi/agent dir exists as agent:agent in container"
 else
@@ -302,7 +318,7 @@ fi
 mkdir -p "$PI_AGENT_DIR/bin"
 printf 'host-sentinel' > "$PI_AGENT_DIR/bin/host-marker.txt"
 # Container was started before this file existed — if bin/ is not mounted, it won't appear
-bin_content=$(docker exec "$CONTAINER" cat /home/agent/.pi/agent/bin/host-marker.txt 2>/dev/null || true)
+bin_content=$("$RC" exec "$CONTAINER" -- cat /home/agent/.pi/agent/bin/host-marker.txt 2>/dev/null || true)
 if [[ -z "$bin_content" ]]; then
   pass "bin/ is NOT host-mounted (container-local; host sentinel not visible)"
 else
@@ -321,7 +337,7 @@ echo "=== Test 8: auth.json RW round-trip (write inside cage visible on host) ==
 host_inode_before=$(stat -f '%i' "$PI_AGENT_DIR/auth.json" 2>/dev/null || stat -c '%i' "$PI_AGENT_DIR/auth.json" 2>/dev/null || true)
 
 # Write new content inside the container (in-place overwrite, same as OAuth refresh)
-docker exec "$CONTAINER" bash -c 'printf "{\"fake\":true,\"roundtrip\":true}\n" > /home/agent/.pi/agent/auth.json' 2>/dev/null
+"$RC" exec "$CONTAINER" -- bash -c 'printf "{\"fake\":true,\"roundtrip\":true}\n" > /home/agent/.pi/agent/auth.json' 2>/dev/null
 
 # Read on host
 roundtrip_content=$(cat "$PI_AGENT_DIR/auth.json" 2>/dev/null || true)
@@ -376,7 +392,7 @@ echo ""
 echo "=== Test 9: agent pi extensions/ dir exists, is agent-owned, and is writable ==="
 
 # 9a: dir must exist (baked in Dockerfile line: RUN mkdir -p /home/agent/.pi/agent/extensions)
-ext_dir_stat=$(docker exec "$CONTAINER" stat -c '%U:%G' /home/agent/.pi/agent/extensions 2>/dev/null || true)
+ext_dir_stat=$("$RC" exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent/extensions 2>/dev/null || true)
 if [[ "$ext_dir_stat" == "agent:agent" ]]; then
   pass "/home/agent/.pi/agent/extensions dir exists as agent:agent in container"
 else
@@ -384,7 +400,7 @@ else
 fi
 
 # 9b: dir must be writable by agent user (agent's own extension space — ADR-027 rw)
-write_test=$(docker exec "$CONTAINER" bash -c 'touch /home/agent/.pi/agent/extensions/.write-test && echo ok && rm /home/agent/.pi/agent/extensions/.write-test' 2>/dev/null || true)
+write_test=$("$RC" exec "$CONTAINER" -- bash -c 'touch /home/agent/.pi/agent/extensions/.write-test && echo ok && rm /home/agent/.pi/agent/extensions/.write-test' 2>/dev/null || true)
 if [[ "$write_test" == "ok" ]]; then
   pass "/home/agent/.pi/agent/extensions dir is writable by agent user"
 else
@@ -393,9 +409,9 @@ fi
 
 # 9c: a marker file dropped into the dir is readable by the agent user
 #     (confirms the agent extension space is not blocked by permissions or mount shadowing)
-docker exec "$CONTAINER" bash -c 'printf "// marker\nexport default {};\n" > /home/agent/.pi/agent/extensions/marker-test.js' 2>/dev/null
-marker_content=$(docker exec "$CONTAINER" cat /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true)
-docker exec "$CONTAINER" rm -f /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true
+"$RC" exec "$CONTAINER" -- bash -c 'printf "// marker\nexport default {};\n" > /home/agent/.pi/agent/extensions/marker-test.js' 2>/dev/null
+marker_content=$("$RC" exec "$CONTAINER" -- cat /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true)
+"$RC" exec "$CONTAINER" -- rm -f /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true
 if echo "$marker_content" | grep -q "marker"; then
   pass "marker file dropped in extensions/ is readable by agent user (agent extension space writable)"
 else

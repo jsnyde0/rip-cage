@@ -8,22 +8,22 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RC="${SCRIPT_DIR}/../rc"
 FAILURES=0
 TEST_WS=""
-CONTAINER=""
+CREATED_CAGES=()
 
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1${2:+ -- $2}"; FAILURES=$((FAILURES + 1)); }
 
+_track() { CREATED_CAGES+=("$1"); }
+
 _resolve_container() {
-  docker ps -a \
-    --filter "label=rc.source.path=$(realpath "$TEST_WS")" \
-    --format '{{.Names}}' | head -1
+  "$RC" ls --output json | jq -r --arg ws "$(realpath "$TEST_WS")" \
+    '.[] | select(.source_path==$ws) | .name' | head -1
 }
 
 cleanup() {
-  if [[ -n "$CONTAINER" ]]; then
-    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-    docker volume rm "rc-state-${CONTAINER}" >/dev/null 2>&1 || true
-  fi
+  for c in "${CREATED_CAGES[@]:-}"; do
+    [[ -n "$c" ]] && "$RC" destroy --force "$c" >/dev/null 2>&1 || true
+  done
   if [[ -n "$TEST_WS" ]]; then
     rm -rf "$TEST_WS"
   fi
@@ -52,9 +52,10 @@ if [[ -z "$CONTAINER" ]]; then
   fail "container did not come up"
   exit $FAILURES
 fi
+_track "$CONTAINER"
 
 # Step 3: Run pi -p with 30s timeout
-_output=$(docker exec "$CONTAINER" timeout 30 pi -p \
+_output=$("$RC" exec "$CONTAINER" -- timeout 30 pi -p \
   'Reply with the literal string PI_E2E_OK and nothing else' \
   2>&1 || true)
 

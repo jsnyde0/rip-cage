@@ -47,11 +47,14 @@ fi
 
 # -----------------------------------------------
 # Resolve a running rip-cage container for Tests 3/4 (up-time shape).
-# Prefer explicit RC_TEST_CONTAINER; else auto-detect via docker ps.
+# Prefer explicit RC_TEST_CONTAINER; else auto-detect any running rc cage.
 # -----------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+RC="${SCRIPT_DIR}/../rc"
+
 CONTAINER="${RC_TEST_CONTAINER:-}"
 if [[ -z "$CONTAINER" ]]; then
-  CONTAINER=$(docker ps --format '{{.Names}}' --filter 'ancestor=rip-cage:latest' | head -1)
+  CONTAINER=$("$RC" ls --output json | jq -r '.[] | select(.status=="running") | .name' | head -1)
 fi
 
 # -----------------------------------------------
@@ -64,7 +67,7 @@ echo "=== Test 3: /home/agent/.pi/agent owned by agent:agent (running cage) ==="
 if [[ -z "$CONTAINER" ]]; then
   echo "SKIP: no running rip-cage container found; pass RC_TEST_CONTAINER=<name> or start one with rc up"
 else
-  ownership=$(docker exec "$CONTAINER" stat -c '%U:%G' /home/agent/.pi/agent 2>&1 || true)
+  ownership=$("$RC" exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent 2>&1 || true)
   if [[ "$ownership" == "agent:agent" ]]; then
     pass "/home/agent/.pi/agent ownership is agent:agent"
   else
@@ -82,7 +85,7 @@ echo "=== Test 4: /home/agent/.pi/agent/extensions exists (running cage) ==="
 if [[ -z "$CONTAINER" ]]; then
   echo "SKIP: no running rip-cage container found; pass RC_TEST_CONTAINER=<name> or start one with rc up"
 else
-  ext_stat=$(docker exec "$CONTAINER" stat -c '%U:%G' /home/agent/.pi/agent/extensions 2>&1 || true)
+  ext_stat=$("$RC" exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent/extensions 2>&1 || true)
   if [[ "$ext_stat" == "agent:agent" ]]; then
     pass "/home/agent/.pi/agent/extensions exists and is agent:agent"
   else

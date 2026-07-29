@@ -38,12 +38,14 @@
 #
 # Usage (host-side):
 #   RC_TEST_CONTAINER=<container-name> bash tests/test-pi-no-extensions.sh
-#   # Or with a running cage: auto-detected via rip-cage:latest ancestor
+#   # Or with a running cage: auto-detected via the first `rc ls` running cage
 #
-# Classification: NEEDS_CONTAINER (runs docker exec, requires a running rip-cage cage)
+# Classification: NEEDS_CONTAINER (runs rc exec / msb exec, requires a running rip-cage cage)
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+RC="${SCRIPT_DIR}/../rc"
 FAILURES=0
 TOTAL=0
 PROBE_SUFFIX=$$
@@ -104,7 +106,7 @@ fi
 # ---------------------------------------------------------------------------
 CONTAINER="${RC_TEST_CONTAINER:-}"
 if [[ -z "$CONTAINER" ]]; then
-  CONTAINER=$(docker ps --format '{{.Names}}' --filter 'ancestor=rip-cage:latest' | head -1)
+  CONTAINER=$("$RC" ls --output json | jq -r '.[] | select(.status=="running") | .name' | head -1)
 fi
 if [[ -z "$CONTAINER" ]]; then
   echo "SKIP: no running rip-cage container found; pass RC_TEST_CONTAINER=<name> or start one with rc up"
@@ -116,7 +118,7 @@ echo ""
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-cexec() { docker exec "$CONTAINER" "$@"; }
+cexec() { "$RC" exec "$CONTAINER" -- "$@"; }
 
 # ---------------------------------------------------------------------------
 # Guard: skip if pi not installed in the container
@@ -262,11 +264,12 @@ cexec mkdir -p "$PI_SESSION_DIR"
 # evil.ts should be loaded (EVIL_EXT_LOADED appears). Proves detection works.
 POS_OUT=$(mktemp)
 run_with_timeout 30 "$POS_OUT" \
-  docker exec \
+  msb exec \
     -e HOME=/home/agent \
     -e PI_CODING_AGENT_DIR=/home/agent/.pi/agent \
     -w /workspace \
     "$CONTAINER" \
+    -- \
     /usr/bin/pi \
       --no-session \
       --session-dir "$PI_SESSION_DIR" \
@@ -294,11 +297,12 @@ fi
 # evil.ts in /workspace/.pi/extensions/ must NOT be loaded (no EVIL_EXT_LOADED in output).
 MAIN_OUT=$(mktemp)
 run_with_timeout 30 "$MAIN_OUT" \
-  docker exec \
+  msb exec \
     -e HOME=/home/agent \
     -e PI_CODING_AGENT_DIR=/home/agent/.pi/agent \
     -w /workspace \
     "$CONTAINER" \
+    -- \
     /usr/local/bin/pi \
       --session-dir "$PI_SESSION_DIR" \
       --help
