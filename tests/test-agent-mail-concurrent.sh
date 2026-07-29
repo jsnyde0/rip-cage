@@ -59,6 +59,19 @@ FIXTURES="${SCRIPT_DIR}/fixtures"
 # to avoid any blast radius on the shared T2d manifest-agent-mail.yaml.
 FIXTURE_FILE="${FIXTURES}/manifest-agent-mail-concurrent.yaml"
 
+# REAL_MSB_HOME (msb-port note, rip-cage-neu7.13 Batch D — mirrors
+# test-mount-mode-e2e.sh / test-multiplexer-lifecycle.sh): the build below
+# overrides HOME to isolate the fixture manifest (tools.yaml) into a
+# throwaway dir. `rc build`'s `_build_msb_load` step keys msb's local image
+# cache off $HOME at call time; without pinning MSB_HOME, the freshly-built
+# am+herdr fixture image gets `msb load`-ed into the throwaway (then-deleted)
+# HOME's msb state dir instead of the real one — so the later `rc up`
+# (running under the real HOME) silently boots from whatever image was
+# ALREADY cached in msb's real home (stale), not this test's fixture.
+# Pinning MSB_HOME to the real, unmodified microsandbox home for the build
+# call sidesteps it.
+REAL_MSB_HOME="${HOME}/.microsandbox"
+
 FAILURES=0
 
 pass() { echo "PASS: $1"; }
@@ -69,6 +82,21 @@ fail() { echo "FAIL: $1${2:+  -- $2}"; FAILURES=$((FAILURES + 1)); }
 # ---------------------------------------------------------------------------
 if [[ "${RC_E2E:-}" != "1" && "${RUN_E2E:-}" != "1" ]]; then
   echo "SKIP (NEEDS_CONTAINER / e2e): test-agent-mail-concurrent.sh — set RC_E2E=1 to run"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Guard: docker / msb unavailable
+# rip-cage-neu7.13 (Batch D): docker still builds the fixture image (rc
+# build), but the cage itself is now created + driven msb-natively (rc up ->
+# msb create; rc exec / msb exec) — both runtimes must be present.
+# ---------------------------------------------------------------------------
+if ! command -v docker >/dev/null 2>&1; then
+  echo "SKIP: docker not available"
+  exit 0
+fi
+if ! command -v msb >/dev/null 2>&1; then
+  echo "SKIP: msb not available"
   exit 0
 fi
 
@@ -139,11 +167,36 @@ fi
 SENTINEL_BODY="swv-sentinel-$(date +%s)-$$"
 
 # ---------------------------------------------------------------------------
+# rip-cage-neu7.13 (Batch D, msb-port note): unique-per-run herdr agent
+# session names. Discovered during msb verification: herdr's own agent
+# roster reports "agent_name_taken" for a bare "mail-b"/"mail-a" on a second
+# run against the same deterministic cage name (rc-am-concurrent-mail-
+# fixture) — a herdr-side state-persistence fact unrelated to this bead's
+# docker->msb port (rc destroy --force correctly tears down the msb sandbox
+# + its rc-state/rc-history volumes each run; this is orthogonal). Suffixing
+# with $$ (mirrors SENTINEL_BODY's existing uniqueness convention) sidesteps
+# it without touching herdr/msb internals.
+# ---------------------------------------------------------------------------
+MAIL_A_SESSION="mail-a-$$"
+MAIL_B_SESSION="mail-b-$$"
+
+# ---------------------------------------------------------------------------
 # Shared state
 # ---------------------------------------------------------------------------
 T2_BUILD_MANIFEST_HOME=""
 CONTAINER_NAME=""
 WORKSPACE=""
+AM_TMP=""
+# rip-cage-neu7.13 (Batch D, incident-hardened cleanup shape — see
+# /tmp/msb-port-canonical.md): AM_CREATED_CAGES holds ONLY the cage names
+# this run actually created, appended via _am_track_cage at the `rc up` call
+# site below. cleanup() destroys ONLY these names — never a docker ps -a /
+# msb-list enumeration matched by rc.source.path prefix/glob. Declared BEFORE
+# the trap is armed.
+AM_CREATED_CAGES=()
+_am_track_cage() {
+  [[ -n "${1:-}" ]] && AM_CREATED_CAGES+=("$1")
+}
 # rip-cage-7atw.9: IMAGE-CLOBBER GUARD state. The build below overwrites
 # rip-cage:latest with this fixture's image (am + herdr baked in); these
 # track the pre-build state so cleanup() can restore rip-cage:latest to be
@@ -157,18 +210,23 @@ AM_HAD_LATEST=0
 # Cleanup trap
 # ---------------------------------------------------------------------------
 cleanup() {
-  if [[ -n "${CONTAINER_NAME:-}" ]]; then
-    # herdr agent panes are ephemeral (self-close when the spawned process
-    # exits/is killed) — no explicit per-session kill needed before teardown,
-    # unlike tmux's persistent sessions. docker stop below reaps everything.
-    docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
-  fi
+  local c
+  # FAIL-SAFE SHAPE (rip-cage-neu7.13, mirrors rip-cage-neu7.9): iterate ONLY
+  # AM_CREATED_CAGES — no enumerate, no glob/prefix match. The "${arr[@]:-}"
+  # form is REQUIRED: this test runs under `set -uo pipefail`, and a bare [@]
+  # on an empty array aborts on macOS bash 3.2.
+  for c in "${AM_CREATED_CAGES[@]:-}"; do
+    [[ -n "$c" ]] || continue
+    "$RC" destroy --force "$c" >/dev/null 2>&1 || true
+  done
   if [[ -n "${T2_BUILD_MANIFEST_HOME:-}" ]]; then
     rm -rf "$T2_BUILD_MANIFEST_HOME"
   fi
   if [[ -n "${WORKSPACE:-}" ]]; then
     rm -rf "$WORKSPACE"
+  fi
+  if [[ -n "${AM_TMP:-}" ]]; then
+    rm -rf "$AM_TMP"
   fi
   # rip-cage-7atw.9 IMAGE-CLOBBER GUARD: restore rip-cage:latest to its
   # pre-test state (byte-identical) — see _mux_restore_latest.
@@ -207,7 +265,7 @@ cp "${FIXTURE_FILE}" "${T2_BUILD_MANIFEST_HOME}/.config/rip-cage/tools.yaml"
 
 build_rc=0
 echo "[setup] Building cage image with swv concurrent manifest (may take a moment if not cached)..."
-build_out=$(HOME="$T2_BUILD_MANIFEST_HOME" \
+build_out=$(HOME="$T2_BUILD_MANIFEST_HOME" MSB_HOME="$REAL_MSB_HOME" \
   XDG_CONFIG_HOME="${T2_BUILD_MANIFEST_HOME}/.config" \
   "${RC}" build 2>&1) || build_rc=$?
 
@@ -240,25 +298,59 @@ fi
 pass "Setup: herdr binary present in fixture image ($herdr_check)"
 
 # ---------------------------------------------------------------------------
-# Start the cage container with pi auth mounted
+# Start the cage via `rc up` (rip-cage-neu7.13 Batch D REDESIGN — was a raw
+# `docker run -d --name ... sleep infinity` + manual `docker exec
+# init-rip-cage.sh`; msb has no `docker create`/`start`-without-init analog,
+# and `rc up` already does everything that hand-rolled sequence did:
+#   - mounts WORKSPACE at /workspace (same as the -v above)
+#   - mounts the REAL host ~/.pi/agent/auth.json read-only (ADR-019 D5
+#     credential-mounts; PI_AUTH_FILE below IS that exact host path, so this
+#     is the identical file, just via rc's own auth-mount flow instead of an
+#     ad-hoc -v)
+#   - sets PI_CODING_AGENT_DIR=/home/agent/.pi/agent unconditionally
+#     (cli/up.sh:893 — matches the -e above exactly)
+#   - resolves RC_MULTIPLEXER from .rip-cage.yaml's session.multiplexer
+#     (cli/up.sh:3120-3136) — set to herdr below, replacing -e RC_MULTIPLEXER=herdr
+#   - runs init-rip-cage.sh itself as part of provisioning (cli/up.sh:1275-1277)
+#     — the manual docker exec init-rip-cage.sh call is no longer needed
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== Setup: Start cage container ==="
+echo "=== Setup: Start cage container (rc up) ==="
 
-WORKSPACE=$(mktemp -d "${TMPDIR:-/tmp}/rc-am-concurrent-ws-XXXXXX")
-CONTAINER_NAME="rc-am-concurrent-$$"
+AM_TMP=$(mktemp -d "${TMPDIR:-/tmp}/rc-am-concurrent-XXXXXX")
+AM_TMP=$(realpath "$AM_TMP")
+mkdir -p "${AM_TMP}/rc-am-concurrent"
+WORKSPACE="${AM_TMP}/rc-am-concurrent/mail-fixture"
+mkdir -p "$WORKSPACE"
+git -C "$WORKSPACE" init -q 2>/dev/null
+# rip-cage-neu7.13 (Batch D, msb-port note): both pi agents in this test are
+# driven via --provider openrouter (see header rationale). openrouter.ai is
+# NOT in the curated default egress allowlist (cli/lib/config.sh's
+# _config_default_global_yaml — ADR-029 D4). Under Docker (pre-cutover)
+# there was no egress restriction so this never mattered; under msb's
+# default-deny egress it must be declared explicitly or pi's LLM call gets a
+# fake-accepted zero-byte connection ("Connection error"). Lists union
+# across config layers (ADR-021 D2), so this only ADDS to the curated
+# default, never narrows it.
+printf 'version: 2\nsession:\n  multiplexer: herdr\nnetwork:\n  allowed_hosts:\n    - openrouter.ai\n' > "${WORKSPACE}/.rip-cage.yaml"
 
-docker run -d --name "$CONTAINER_NAME" \
-  -v "${WORKSPACE}:/workspace" \
-  -v "${PI_AUTH_FILE}:/home/agent/.pi/agent/auth.json:ro" \
-  -e PI_CODING_AGENT_DIR=/home/agent/.pi/agent \
-  -e RC_MULTIPLEXER=herdr \
-  rip-cage:latest sleep infinity >/dev/null
+export RC_ALLOWED_ROOTS="${AM_TMP}"
 
-# Run init to start the daemon and set up the cage. RC_MULTIPLEXER=herdr
-# (above) makes init-rip-cage.sh dispatch the baked herdr MULTIPLEXER start
-# hook, which starts 'herdr server' in the background (rip-cage-7atw.9).
-docker exec "$CONTAINER_NAME" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1
+# Container name: derived from workspace parent/basename by rc container_name()
+CONTAINER_NAME="rc-am-concurrent-mail-fixture"
+
+# Pre-cleanup: remove any leftover cage of this exact deterministic name from
+# a prior aborted run (never an enumerate/glob match).
+"$RC" destroy --force "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+"$RC" up "$WORKSPACE" </dev/null >/tmp/rc-am-concurrent-up.out 2>&1 || true
+_am_track_cage "$CONTAINER_NAME"
+
+if ! "$RC" ls --output json | jq -e --arg n "$CONTAINER_NAME" '.[] | select(.name==$n and .status=="running")' >/dev/null 2>&1; then
+  fail "SETUP: cage did NOT come up via rc up" "see /tmp/rc-am-concurrent-up.out"
+  exit $FAILURES
+fi
+pass "Setup: cage started via rc up: ${CONTAINER_NAME}"
 
 # ---------------------------------------------------------------------------
 # PRECONDITION 2b (LOUD-FAIL): herdr server must be up before any agent spawn
@@ -271,7 +363,7 @@ echo "=== Precondition: herdr server health ==="
 
 herdr_server_up=false
 for _i in $(seq 1 15); do
-  if docker exec -u agent "$CONTAINER_NAME" herdr agent list >/dev/null 2>&1; then
+  if "$RC" exec "$CONTAINER_NAME" -- herdr agent list >/dev/null 2>&1; then
     herdr_server_up=true
     break
   fi
@@ -279,7 +371,7 @@ for _i in $(seq 1 15); do
 done
 
 if [[ "$herdr_server_up" != "true" ]]; then
-  herdr_log=$(docker exec "$CONTAINER_NAME" cat /tmp/rip-cage-mux-herdr.log 2>/dev/null | head -20)
+  herdr_log=$("$RC" exec "$CONTAINER_NAME" -- cat /tmp/rip-cage-mux-herdr.log 2>/dev/null | head -20)
   fail "PRECONDITION: herdr server NOT reachable after 15s" "log: ${herdr_log}"
   exit $FAILURES
 fi
@@ -293,7 +385,7 @@ echo "=== Precondition: Daemon health ==="
 
 daemon_healthy=false
 for _i in $(seq 1 15); do
-  if docker exec "$CONTAINER_NAME" timeout 5 curl -sf http://127.0.0.1:8765/healthz >/dev/null 2>&1; then
+  if "$RC" exec "$CONTAINER_NAME" -- timeout 5 curl -sf http://127.0.0.1:8765/healthz >/dev/null 2>&1; then
     daemon_healthy=true
     break
   fi
@@ -301,12 +393,12 @@ for _i in $(seq 1 15); do
 done
 
 if [[ "$daemon_healthy" != "true" ]]; then
-  daemon_log=$(docker exec "$CONTAINER_NAME" cat /tmp/rip-cage-daemon-agent-mail.log 2>/dev/null | head -20)
+  daemon_log=$("$RC" exec "$CONTAINER_NAME" -- cat /tmp/rip-cage-daemon-agent-mail.log 2>/dev/null | head -20)
   fail "PRECONDITION: agent_mail daemon NOT healthy after 30s" "log: ${daemon_log}"
   exit $FAILURES
 fi
 
-health_body=$(docker exec "$CONTAINER_NAME" timeout 5 curl -sf http://127.0.0.1:8765/healthz 2>/dev/null)
+health_body=$("$RC" exec "$CONTAINER_NAME" -- timeout 5 curl -sf http://127.0.0.1:8765/healthz 2>/dev/null)
 pass "Precondition: daemon healthy (body='${health_body:0:60}')"
 
 # ---------------------------------------------------------------------------
@@ -316,8 +408,8 @@ pass "Precondition: daemon healthy (body='${health_body:0:60}')"
 echo ""
 echo "=== Precondition: Verify am mail flag surface ==="
 
-send_help=$(docker exec "$CONTAINER_NAME" am mail send --help 2>&1)
-inbox_help=$(docker exec "$CONTAINER_NAME" am mail inbox --help 2>&1)
+send_help=$("$RC" exec "$CONTAINER_NAME" -- am mail send --help 2>&1)
+inbox_help=$("$RC" exec "$CONTAINER_NAME" -- am mail inbox --help 2>&1)
 
 if echo "$send_help" | grep -q -- "--from"; then
   pass "Precondition: am mail send --from flag present"
@@ -341,7 +433,7 @@ else
 fi
 
 # Verify daemon accepts CLI calls (distinguishes am serve-http --no-auth from mcp-agent-mail serve)
-cli_compat_check=$(docker exec "$CONTAINER_NAME" curl -sf -X POST "http://127.0.0.1:8765/mcp/session" \
+cli_compat_check=$("$RC" exec "$CONTAINER_NAME" -- curl -sf -X POST "http://127.0.0.1:8765/mcp/session" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"health_check","arguments":{}}}' 2>/dev/null)
 if echo "$cli_compat_check" | grep -q '"result"'; then
@@ -357,7 +449,7 @@ fi
 echo ""
 echo "=== Setup: Register agents ==="
 
-AGENT_A_NAME=$(docker exec "$CONTAINER_NAME" am agents register \
+AGENT_A_NAME=$("$RC" exec "$CONTAINER_NAME" -- am agents register \
   --project /workspace --program pi --model "${RC_TEST_AGENT_MODEL_NATIVE}" --json 2>/dev/null \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('name',''))" 2>/dev/null)
 
@@ -367,7 +459,7 @@ if [[ -z "$AGENT_A_NAME" ]]; then
 fi
 pass "Setup: agent A registered as '${AGENT_A_NAME}'"
 
-AGENT_B_NAME=$(docker exec "$CONTAINER_NAME" am agents register \
+AGENT_B_NAME=$("$RC" exec "$CONTAINER_NAME" -- am agents register \
   --project /workspace --program pi --model "${RC_TEST_AGENT_MODEL_NATIVE}" --json 2>/dev/null \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('name',''))" 2>/dev/null)
 
@@ -421,7 +513,7 @@ PROMPT_A_PATH="/tmp/rc-am-swv-prompt-a.txt"
 # special characters in the prompt text.
 # ---------------------------------------------------------------------------
 
-docker exec -i "$CONTAINER_NAME" tee "$PROMPT_B_PATH" > /dev/null <<PROMPT_B_EOF
+"$RC" exec "$CONTAINER_NAME" -- tee "$PROMPT_B_PATH" > /dev/null <<PROMPT_B_EOF
 You are agent ${AGENT_B_NAME}. Poll your inbox for a message, using your bash tool for each step.
 
 Follow these steps, up to 20 times total:
@@ -458,7 +550,7 @@ PROMPT_B_EOF
 # A's pi runs am mail send as its own bash tool call.
 # ---------------------------------------------------------------------------
 
-docker exec -i "$CONTAINER_NAME" tee "$PROMPT_A_PATH" > /dev/null <<PROMPT_A_EOF
+"$RC" exec "$CONTAINER_NAME" -- tee "$PROMPT_A_PATH" > /dev/null <<PROMPT_A_EOF
 You are agent ${AGENT_A_NAME}. Send one mail message using your bash tool.
 
 Run this bash command:
@@ -487,7 +579,7 @@ PROMPT_A_EOF
 # ---------------------------------------------------------------------------
 hread() {
   local target="$1" lines="${2:-300}"
-  docker exec "$CONTAINER_NAME" herdr agent read "$target" --source visible --lines "$lines" 2>/dev/null \
+  "$RC" exec "$CONTAINER_NAME" -- herdr agent read "$target" --source visible --lines "$lines" 2>/dev/null \
     | python3 -c "
 import json, sys
 try:
@@ -506,7 +598,7 @@ except Exception:
 echo ""
 echo "=== Step 1: Spawn agent B (${AGENT_B_NAME}) to iteratively poll inbox ==="
 
-B_PROMPT_CONTENT=$(docker exec "$CONTAINER_NAME" cat "$PROMPT_B_PATH" 2>/dev/null)
+B_PROMPT_CONTENT=$("$RC" exec "$CONTAINER_NAME" -- cat "$PROMPT_B_PATH" 2>/dev/null)
 
 # rc agent was retired in rip-cage-1f59 (ADR-006 D7). tmux was un-baked from
 # the base image (commit af7a1ce); use herdr's 'agent start' (session-spawner
@@ -514,14 +606,14 @@ B_PROMPT_CONTENT=$(docker exec "$CONTAINER_NAME" cat "$PROMPT_B_PATH" 2>/dev/nul
 # passthrough, no shell reinterpretation of the prompt text). The trailing
 # 'sleep 600' keeps the pane alive well past B's own polling window (up to
 # 20 * 5s + reasoning time) so later steps can still read its scrollback.
-docker exec "$CONTAINER_NAME" herdr agent start mail-b --cwd /workspace \
+"$RC" exec "$CONTAINER_NAME" -- herdr agent start "$MAIL_B_SESSION" --cwd /workspace \
   -- bash -c "pi --provider openrouter --model ${RC_TEST_AGENT_MODEL} -p \"\$1\"; sleep 600" _ "$B_PROMPT_CONTENT"
 EXIT_B=$?
 
 if [[ $EXIT_B -eq 0 ]]; then
-  pass "Step 1: herdr agent start mail-b spawned (exit 0)"
+  pass "Step 1: herdr agent start ${MAIL_B_SESSION} spawned (exit 0)"
 else
-  fail "Step 1: herdr agent start mail-b failed" "exit=${EXIT_B}"
+  fail "Step 1: herdr agent start ${MAIL_B_SESSION} failed" "exit=${EXIT_B}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -546,23 +638,23 @@ while [[ $_waited -lt $_timeout ]]; do
   _waited=$((_waited + 5))
 
   # Primary liveness gate: pi wrote POLL_1 to the poll log via its bash tool
-  POLL_LOG_CONTENT=$(docker exec "$CONTAINER_NAME" cat "$B_POLL_LOG" 2>/dev/null)
+  POLL_LOG_CONTENT=$("$RC" exec "$CONTAINER_NAME" -- cat "$B_POLL_LOG" 2>/dev/null)
   if echo "$POLL_LOG_CONTENT" | grep -qE "^POLL_[0-9]+$"; then
     B_WORKING=true
     break
   fi
 
   # Secondary: pi startup marker visible (confirms pi process is live)
-  PANE_B=$(hread mail-b 200)
+  PANE_B=$(hread "$MAIL_B_SESSION" 200)
   if echo "$PANE_B" | grep -qE "escape interrupt|pi v0\.|openrouter"; then
     B_STARTUP_SEEN=true
   fi
 done
 
 echo "B poll log after ${_waited}s:"
-docker exec "$CONTAINER_NAME" cat "$B_POLL_LOG" 2>/dev/null | head -5 | sed 's/^/  /'
+"$RC" exec "$CONTAINER_NAME" -- cat "$B_POLL_LOG" 2>/dev/null | head -5 | sed 's/^/  /'
 echo "B pane (last 15 lines after ${_waited}s wait):"
-hread mail-b 15 | sed 's/^/  /'
+hread "$MAIL_B_SESSION" 15 | sed 's/^/  /'
 
 if [[ "$B_WORKING" == "true" ]]; then
   pass "Step 2: agent B is WORKING — pi ran am mail inbox (poll log has POLL_1 entry)"
@@ -582,20 +674,20 @@ fi
 echo ""
 echo "=== Step 3: Spawn agent A (${AGENT_A_NAME}) to send sentinel ==="
 
-A_PROMPT_CONTENT=$(docker exec "$CONTAINER_NAME" cat "$PROMPT_A_PATH" 2>/dev/null)
+A_PROMPT_CONTENT=$("$RC" exec "$CONTAINER_NAME" -- cat "$PROMPT_A_PATH" 2>/dev/null)
 
 # rc agent was retired in rip-cage-1f59 (ADR-006 D7). tmux was un-baked from
 # the base image (commit af7a1ce); use herdr's 'agent start' — see Step 1's
 # comment for the argv/pane-persistence rationale (sleep tail keeps A's pane
 # readable through Step 6, well after A's own one-shot task completes).
-docker exec "$CONTAINER_NAME" herdr agent start mail-a --cwd /workspace \
+"$RC" exec "$CONTAINER_NAME" -- herdr agent start "$MAIL_A_SESSION" --cwd /workspace \
   -- bash -c "pi --provider openrouter --model ${RC_TEST_AGENT_MODEL} -p \"\$1\"; sleep 600" _ "$A_PROMPT_CONTENT"
 EXIT_A=$?
 
 if [[ $EXIT_A -eq 0 ]]; then
-  pass "Step 3: herdr agent start mail-a spawned (exit 0)"
+  pass "Step 3: herdr agent start ${MAIL_A_SESSION} spawned (exit 0)"
 else
-  fail "Step 3: herdr agent start mail-a failed" "exit=${EXIT_A}"
+  fail "Step 3: herdr agent start ${MAIL_A_SESSION} failed" "exit=${EXIT_A}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -612,7 +704,7 @@ while [[ $_waited -lt $_timeout ]]; do
   sleep 5
   _waited=$((_waited + 5))
 
-  PANE_A=$(hread mail-a 300)
+  PANE_A=$(hread "$MAIL_A_SESSION" 300)
 
   if echo "$PANE_A" | grep -q "SENT:OK"; then
     A_SENT=true
@@ -621,7 +713,7 @@ while [[ $_waited -lt $_timeout ]]; do
 done
 
 echo "A pane (last 15 lines after ${_waited}s wait):"
-hread mail-a 15 | sed 's/^/  /'
+hread "$MAIL_A_SESSION" 15 | sed 's/^/  /'
 
 if [[ "$A_SENT" == "true" ]]; then
   pass "Step 4: agent A confirmed send (SENT:OK seen in pane)"
@@ -650,7 +742,7 @@ while [[ $_waited -lt $_timeout ]]; do
   sleep 5
   _waited=$((_waited + 5))
 
-  RESULT_CONTENT=$(docker exec "$CONTAINER_NAME" cat "$B_RESULT_FILE" 2>/dev/null)
+  RESULT_CONTENT=$("$RC" exec "$CONTAINER_NAME" -- cat "$B_RESULT_FILE" 2>/dev/null)
 
   # Non-empty and not TIMEOUT means pi received and wrote inbox JSON
   if [[ -n "$RESULT_CONTENT" && "$RESULT_CONTENT" != "TIMEOUT" ]]; then
@@ -680,11 +772,11 @@ print(bodies[0] if bodies else '')
 done
 
 echo "B pane (last 20 lines after ${_waited}s wait):"
-hread mail-b 20 | sed 's/^/  /'
+hread "$MAIL_B_SESSION" 20 | sed 's/^/  /'
 echo "B result file content (first 10 lines):"
-docker exec "$CONTAINER_NAME" cat "$B_RESULT_FILE" 2>/dev/null | head -10 | sed 's/^/  /'
+"$RC" exec "$CONTAINER_NAME" -- cat "$B_RESULT_FILE" 2>/dev/null | head -10 | sed 's/^/  /'
 echo "B poll log (all entries):"
-docker exec "$CONTAINER_NAME" cat "$B_POLL_LOG" 2>/dev/null | sed 's/^/  /'
+"$RC" exec "$CONTAINER_NAME" -- cat "$B_POLL_LOG" 2>/dev/null | sed 's/^/  /'
 
 if [[ "$B_RECEIVED" == "true" ]]; then
   pass "Step 5: agent B received a message (inbox JSON written by pi's own bash tool call)"
@@ -710,7 +802,7 @@ fi
 echo ""
 echo "=== Step 6: Assert pi iterated (≥2 am mail inbox calls in B's poll log) ==="
 
-POLL_LOG_FINAL=$(docker exec "$CONTAINER_NAME" cat "$B_POLL_LOG" 2>/dev/null)
+POLL_LOG_FINAL=$("$RC" exec "$CONTAINER_NAME" -- cat "$B_POLL_LOG" 2>/dev/null)
 POLL_COUNT=$(echo "$POLL_LOG_FINAL" | grep -cE "^POLL_[0-9]+$" 2>/dev/null || echo "0")
 
 echo "  Poll log entries: ${POLL_COUNT}"
@@ -725,7 +817,7 @@ else
 fi
 
 # Also check pane for pi process evidence (belt-and-suspenders)
-PANE_B_FINAL=$(hread mail-b 2000)
+PANE_B_FINAL=$(hread "$MAIL_B_SESSION" 2000)
 
 # Verify real pi process in mail-b (not a bare shell invocation)
 B_HAS_PI=false
@@ -744,7 +836,7 @@ else
 fi
 
 # Verify real pi process in mail-a
-PANE_A_FINAL=$(hread mail-a 2000)
+PANE_A_FINAL=$(hread "$MAIL_A_SESSION" 2000)
 A_HAS_PI=false
 if echo "$PANE_A_FINAL" | grep -qE "escape interrupt|pi v0\.|openrouter|SENT:OK"; then
   A_HAS_PI=true
@@ -760,13 +852,13 @@ fi
 # 'rc sessions' was RETIRED (ADR-006 D7): spawn/list/kill moved to being the
 # in-cage multiplexer's native surface — 'herdr agent list' for the herdr
 # choice (ADR-006 D7/:101). Same grep-on-raw-JSON style as the old check.
-AGENT_LIST_JSON=$(docker exec "$CONTAINER_NAME" herdr agent list 2>/dev/null)
+AGENT_LIST_JSON=$("$RC" exec "$CONTAINER_NAME" -- herdr agent list 2>/dev/null)
 A_SESSION_LISTED=false
 B_SESSION_LISTED=false
-if echo "$AGENT_LIST_JSON" | grep -q '"name":"mail-a"'; then
+if echo "$AGENT_LIST_JSON" | grep -qF "\"name\":\"${MAIL_A_SESSION}\""; then
   A_SESSION_LISTED=true
 fi
-if echo "$AGENT_LIST_JSON" | grep -q '"name":"mail-b"'; then
+if echo "$AGENT_LIST_JSON" | grep -qF "\"name\":\"${MAIL_B_SESSION}\""; then
   B_SESSION_LISTED=true
 fi
 

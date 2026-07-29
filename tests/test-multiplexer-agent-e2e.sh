@@ -86,10 +86,17 @@ if [[ "${RC_E2E:-}" != "1" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Guard: docker unavailable
+# Guard: docker / msb unavailable
+# rip-cage-neu7.13 (Batch D): docker still builds the image (rc build), but
+# cage resolution/exec/cleanup are msb-native (rc up -> msb create) — both
+# runtimes must be present for this test's full lifecycle.
 # ---------------------------------------------------------------------------
 if ! command -v docker >/dev/null 2>&1; then
   echo "SKIP: docker not available"
+  exit 0
+fi
+if ! command -v msb >/dev/null 2>&1; then
+  echo "SKIP: msb not available"
   exit 0
 fi
 
@@ -184,8 +191,7 @@ CLEANUP() {
   # (would abort CLEANUP before it can even remove MUX_AGENT_TMP).
   for c in "${MUX_AGENT_CREATED_CAGES[@]:-}"; do
     [[ -n "$c" ]] || continue
-    docker rm -f "$c" >/dev/null 2>&1 || true
-    docker volume rm "rc-state-${c}" >/dev/null 2>&1 || true
+    "$RC" destroy --force "$c" >/dev/null 2>&1 || true
   done
   [[ -n "$MUX_AGENT_TMP" ]] && rm -rf "$MUX_AGENT_TMP"
 }
@@ -205,16 +211,24 @@ SEED_FIRST_LINE="hello-from-mux-agent-e2e-$(date +%s)"
 printf '%s\nline2\nline3\n' "$SEED_FIRST_LINE" > "${WORKSPACE}/SEED.txt"
 
 # .rip-cage.yaml: session.multiplexer: tmux (the surface under test)
-printf 'version: 2\nsession:\n  multiplexer: tmux\n' > "${WORKSPACE}/.rip-cage.yaml"
+# rip-cage-neu7.13 (Batch D, msb-port note): this test drives a real pi agent
+# via --provider openrouter (see header rationale). openrouter.ai is NOT in
+# the curated default egress allowlist (cli/lib/config.sh's
+# _config_default_global_yaml — ADR-029 D4). Under Docker (pre-cutover)
+# there was no egress restriction so this never mattered; under msb's
+# default-deny egress it must be declared explicitly or pi's LLM call gets a
+# fake-accepted zero-byte connection. Lists union across config layers
+# (ADR-021 D2), so this only ADDS to the curated default, never narrows it.
+printf 'version: 2\nsession:\n  multiplexer: tmux\nnetwork:\n  allowed_hosts:\n    - openrouter.ai\n' > "${WORKSPACE}/.rip-cage.yaml"
 
 export RC_ALLOWED_ROOTS="${MUX_AGENT_TMP}"
 
 # Container name: derived from workspace parent/basename by rc container_name()
 CAGE="rc-mux-agent-fixture"
 
-# Pre-cleanup: remove leftover cage from prior aborted runs
-docker rm -f "$CAGE" >/dev/null 2>&1 || true
-docker volume rm "rc-state-${CAGE}" >/dev/null 2>&1 || true
+# Pre-cleanup: remove leftover cage from prior aborted runs. Bounded to this
+# test's own fixed, deterministic cage name (never an enumerate/glob match).
+"$RC" destroy --force "$CAGE" >/dev/null 2>&1 || true
 
 echo "MUX_AGENT_TMP=${MUX_AGENT_TMP}"
 echo "WORKSPACE=${WORKSPACE}"
@@ -287,7 +301,7 @@ echo "=== Spin up tmux cage (${CAGE}) ==="
 _mux_agent_track_cage "$CAGE"
 
 CAGE_STARTED=false
-if docker inspect "$CAGE" >/dev/null 2>&1; then
+if "$RC" ls --output json | jq -e --arg n "$CAGE" '.[] | select(.name==$n)' >/dev/null 2>&1; then
   CAGE_STARTED=true
   pass "Cage started: ${CAGE}"
 else
@@ -307,7 +321,7 @@ echo "=== Wait for tmux session 'rip-cage' ==="
 
 TMUX_READY=false
 for _i in $(seq 1 20); do
-  if docker exec "$CAGE" tmux list-sessions 2>/dev/null | grep -q 'rip-cage'; then
+  if "$RC" exec "$CAGE" -- tmux list-sessions 2>/dev/null | grep -q 'rip-cage'; then
     TMUX_READY=true
     break
   fi
@@ -317,7 +331,7 @@ done
 if [[ "$TMUX_READY" == "true" ]]; then
   pass "tmux session 'rip-cage' is ready"
 else
-  TMUX_SESSIONS=$(docker exec "$CAGE" tmux list-sessions 2>/dev/null || echo "(none)")
+  TMUX_SESSIONS=$("$RC" exec "$CAGE" -- tmux list-sessions 2>/dev/null || echo "(none)")
   fail "tmux session 'rip-cage' did NOT appear after 40s" "sessions: ${TMUX_SESSIONS}"
 fi
 
@@ -328,7 +342,7 @@ fi
 # ---------------------------------------------------------------------------
 # Verify tmux multiplexer label
 # ---------------------------------------------------------------------------
-MUX_LABEL=$(docker inspect --format '{{index .Config.Labels "rc.session.multiplexer"}}' "$CAGE" 2>/dev/null || true)
+MUX_LABEL=$(msb inspect "$CAGE" --format json 2>/dev/null | jq -r '.config.labels["rc.session.multiplexer"] // empty' 2>/dev/null || true)
 if [[ "$MUX_LABEL" == "tmux" ]]; then
   pass "rc.session.multiplexer label = 'tmux'"
 else
@@ -344,7 +358,7 @@ fi
 echo ""
 echo "=== Dispatch pi through tmux send-keys (the mux attach surface) ==="
 
-docker exec "$CAGE" tmux send-keys -t rip-cage "bash /workspace/run-pi.sh" Enter
+"$RC" exec "$CAGE" -- tmux send-keys -t rip-cage "bash /workspace/run-pi.sh" Enter
 
 pass "tmux send-keys dispatched pi into rip-cage session"
 
@@ -364,7 +378,7 @@ while [[ $POLL_ELAPSED -lt $POLL_TIMEOUT ]]; do
   sleep $POLL_INTERVAL
   POLL_ELAPSED=$((POLL_ELAPSED + POLL_INTERVAL))
 
-  RESULT_EXISTS=$(docker exec "$CAGE" test -f /workspace/RESULT.txt 2>/dev/null && echo "yes" || echo "no")
+  RESULT_EXISTS=$("$RC" exec "$CAGE" -- test -f /workspace/RESULT.txt 2>/dev/null && echo "yes" || echo "no")
 
   if [[ "$RESULT_EXISTS" == "yes" ]]; then
     RESULT_FOUND=true
@@ -374,13 +388,13 @@ while [[ $POLL_ELAPSED -lt $POLL_TIMEOUT ]]; do
   # Periodic diagnostics
   if [[ $((POLL_ELAPSED % 30)) -eq 0 ]]; then
     echo "  [t=${POLL_ELAPSED}s] Still waiting... pane (last 5 lines):"
-    docker exec "$CAGE" tmux capture-pane -p -t rip-cage -S -5 2>/dev/null | sed 's/^/    /'
+    "$RC" exec "$CAGE" -- tmux capture-pane -p -t rip-cage -S -5 2>/dev/null | sed 's/^/    /'
   fi
 done
 
 # Always show final pane state for diagnostics
 echo "Pane (last 20 lines after ${POLL_ELAPSED}s):"
-docker exec "$CAGE" tmux capture-pane -p -t rip-cage -S -20 2>/dev/null | sed 's/^/  /'
+"$RC" exec "$CAGE" -- tmux capture-pane -p -t rip-cage -S -20 2>/dev/null | sed 's/^/  /'
 
 if [[ "$RESULT_FOUND" == "true" ]]; then
   pass "RESULT.txt appeared after ${POLL_ELAPSED}s (pi completed via tmux surface)"
@@ -423,7 +437,7 @@ echo ""
 echo "=== Assertion (a): >=2 distinct pi tool invocations (with distinct tool names) ==="
 
 # Find the session JSONL in /workspace/.pi-sessions
-SESSION_JSONL=$(docker exec "$CAGE" find /workspace/.pi-sessions -name "*.jsonl" 2>/dev/null | head -1)
+SESSION_JSONL=$("$RC" exec "$CAGE" -- find /workspace/.pi-sessions -name "*.jsonl" 2>/dev/null | head -1)
 echo "  Session JSONL: ${SESSION_JSONL:-<not found>}"
 
 TOOL_CALL_COUNT=0
@@ -434,7 +448,7 @@ HAS_NON_BASH_TOOL="false"
 if [[ -n "$SESSION_JSONL" ]]; then
   # Extract all toolCall names from the JSONL session
   # Format: {"type":"toolCall","name":"read","arguments":{...}}
-  JSONL_ANALYSIS=$(docker exec "$CAGE" \
+  JSONL_ANALYSIS=$("$RC" exec "$CAGE" -- \
     python3 -c "
 import sys, json
 total_calls = 0
@@ -494,7 +508,7 @@ else
 fi
 
 # Belt-and-suspenders: TOOL_LOG bash-call evidence
-TOOL_LOG_CONTENT=$(docker exec "$CAGE" cat /workspace/TOOL_LOG.txt 2>/dev/null || echo "")
+TOOL_LOG_CONTENT=$("$RC" exec "$CAGE" -- cat /workspace/TOOL_LOG.txt 2>/dev/null || echo "")
 # Use awk for counting to avoid grep -c exit-1-on-zero-matches bug with pipefail
 BASH_TOOL_COUNT=$(echo "$TOOL_LOG_CONTENT" | awk '/^TOOL_[0-9]+$/{count++} END{print count+0}' 2>/dev/null || echo "0")
 echo "  TOOL_LOG content (bash-call evidence):"
@@ -551,7 +565,7 @@ fi
 echo ""
 echo "=== Assertion (b): RESULT.txt content == expected first line ==="
 
-RESULT_CONTENT=$(docker exec "$CAGE" cat /workspace/RESULT.txt 2>/dev/null | head -1 || echo "")
+RESULT_CONTENT=$("$RC" exec "$CAGE" -- cat /workspace/RESULT.txt 2>/dev/null | head -1 || echo "")
 RESULT_TRIMMED=$(echo "$RESULT_CONTENT" | tr -d '[:space:]')
 EXPECTED_TRIMMED=$(echo "$SEED_FIRST_LINE" | tr -d '[:space:]')
 
