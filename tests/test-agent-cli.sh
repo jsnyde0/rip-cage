@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-if ! command -v docker > /dev/null 2>&1; then
-  echo "SKIP: Docker not available -- skipping $(basename "$0")"
+# rip-cage-neu7.12 (Batch C): docker still builds the image (rc build), but
+# cage resolution/exec/cleanup are msb-native (rc up -> msb create) -- both
+# runtimes must be present/responsive for this test's full lifecycle to run.
+if ! command -v docker > /dev/null 2>&1 || ! docker info > /dev/null 2>&1; then
+  echo "SKIP: Docker not available/responsive -- skipping $(basename "$0")"
+  exit 0
+fi
+if ! command -v msb > /dev/null 2>&1; then
+  echo "SKIP: msb not available -- skipping $(basename "$0")"
   exit 0
 fi
 set -euo pipefail
@@ -18,11 +25,16 @@ export RC_ALLOWED_ROOTS="$TEST_DIR"
 # Track container name for cleanup
 CONTAINER_NAME=""
 
+# Register-array cleanup shape (incident-hardened, rip-cage-neu7.12): every
+# cage this test creates is tracked here and destroyed via `rc destroy
+# --force` -- never enumerated/pattern-matched (see /tmp/msb-port-canonical.md).
+CREATED_CAGES=()
+_track() { CREATED_CAGES+=("$1"); }
+
 cleanup() {
-  if [[ -n "$CONTAINER_NAME" ]]; then
-    docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
-    docker volume rm "rc-state-$CONTAINER_NAME" "rc-history-$CONTAINER_NAME" 2>/dev/null || true
-  fi
+  for c in "${CREATED_CAGES[@]:-}"; do
+    [[ -n "$c" ]] && "$RC" destroy --force "$c" >/dev/null 2>&1 || true
+  done
   rm -rf "$TEST_DIR"
 }
 trap cleanup EXIT
@@ -128,6 +140,7 @@ ACTION=$(echo "$RESULT" | jq -r .action 2>/dev/null || echo "")
 check "rc up creates container (action=created)" "$ACTION" "created"
 
 if [[ -n "$CONTAINER_NAME" ]]; then
+  _track "$CONTAINER_NAME"
   # Test 9: rc --output json ls shows the container
   RESULT=$($RC --output json ls 2>/dev/null)
   FOUND=$(echo "$RESULT" | jq -r ".[].name" 2>/dev/null | grep -c "$CONTAINER_NAME" || echo "0")
@@ -149,7 +162,7 @@ if [[ -n "$CONTAINER_NAME" ]]; then
   check "rc destroy --dry-run has dry_run=true" "$DRY" "true"
 
   # Verify container still exists after dry-run (dry-run must not remove anything)
-  if docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+  if "$RC" ls --output json | jq -e --arg n "$CONTAINER_NAME" '.[] | select(.name==$n)' >/dev/null 2>&1; then
     echo "Test: container still exists after destroy --dry-run... PASS"; PASS=$((PASS + 1))
   else
     echo "Test: container still exists after destroy --dry-run... FAIL (container was removed!)"; FAIL=$((FAIL + 1))

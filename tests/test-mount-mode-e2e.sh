@@ -3,8 +3,10 @@
 # ADR-027 D1 (per-asset ro/rw mount).
 #
 # ALL TESTS ARE GATED BEHIND RC_E2E=1.
-# These tests require a running Docker daemon and the ability to build and spin up
-# a rip-cage cage. They are skipped when RC_E2E is not set.
+# These tests require a running Docker daemon (image build/inspect only --
+# rip-cage:latest is still docker-built), msb as the cage runtime (`rc up`
+# creates msb sandboxes, invisible to docker ps/exec), and the ability to
+# spin up a rip-cage cage. They are skipped when RC_E2E is not set.
 #
 # What is proven at Tier-2:
 #
@@ -40,6 +42,15 @@ REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 FAILURES=0
 
+# REAL_MSB_HOME (msb-port note, mirrors test-e2e-lifecycle.sh /
+# test-pi-auth-mount.sh): _spin_up_cage below overrides HOME per-invocation
+# to a throwaway per-cage tmpdir for config isolation. msb derives its
+# per-sandbox agent-relay Unix socket path from $HOME by default, and the
+# tmpdir path is long enough on macOS to overflow the 104-byte AF_UNIX path
+# limit ("agent relay socket path is too long"). Pointing MSB_HOME at the
+# real, unmodified microsandbox home for that same invocation sidesteps it.
+REAL_MSB_HOME="${HOME}/.microsandbox"
+
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
@@ -72,21 +83,27 @@ else
   echo "Using existing rip-cage:latest (set RC_E2E_REBUILD=1 to rebuild)"
 fi
 
+# docker still builds/holds the image (checked above); msb is the cage
+# runtime `rc up` drives now (rip-cage-neu7.12, Batch C).
+if ! command -v msb >/dev/null 2>&1; then
+  echo "SKIP: msb not available — cannot spin up cages for RE1-RE3"
+  exit 0
+fi
+
 echo "=== test-mount-mode-e2e.sh — real-cage ro/rw mount behavioral probes (rip-cage-wlwc.3) ==="
 echo ""
 
-# Cleanup tracker for cage containers
-_CAGES_TO_CLEAN=()
-_VOLS_TO_CLEAN=()
+# Register-array cleanup shape (incident-hardened, rip-cage-neu7.12): every
+# cage this test creates is tracked here and destroyed via `rc destroy
+# --force` (which also removes its rc-state/rc-history volumes) -- never
+# enumerated/pattern-matched (see /tmp/msb-port-canonical.md).
+CREATED_CAGES=()
+_track() { CREATED_CAGES+=("$1"); }
 
 _e2e_cleanup() {
-  local cage vol
-  for cage in "${_CAGES_TO_CLEAN[@]:-}"; do
-    docker stop "$cage" 2>/dev/null || true
-    docker rm "$cage" 2>/dev/null || true
-  done
-  for vol in "${_VOLS_TO_CLEAN[@]:-}"; do
-    docker volume rm "$vol" 2>/dev/null || true
+  local cage
+  for cage in "${CREATED_CAGES[@]:-}"; do
+    [[ -n "$cage" ]] && "${RC}" destroy --force "$cage" >/dev/null 2>&1 || true
   done
 }
 trap _e2e_cleanup EXIT
@@ -124,16 +141,55 @@ YAML
   ws_real=$(realpath "$ws_base" 2>/dev/null) || ws_real="$ws_base"
 
   # rc up in non-TTY context — ignore the attach exit code but verify container running.
-  HOME="$home_dir" XDG_CONFIG_HOME="${home_dir}/.config" \
+  # MSB_HOME pinned to the real microsandbox home (see REAL_MSB_HOME note above)
+  # so the per-cage HOME override doesn't overflow msb's AF_UNIX socket path limit.
+  #
+  # rc up's own stdout+stderr is redirected to a log file, NOT left to leak
+  # into this function's return value: _spin_up_cage's caller captures its
+  # stdout via `$(...)` to get the cage name, and `rc up` (human mode)
+  # prints many diagnostic lines (init log, warnings, etc.) — leaving those
+  # unredirected corrupts the captured name into a multi-line blob (a
+  # pre-existing bug, predates this msb port; caught while verifying the
+  # port here since it blocks RE1-RE3 from ever reaching a real cage).
+  local up_log
+  up_log=$(mktemp)
+  HOME="$home_dir" MSB_HOME="$REAL_MSB_HOME" XDG_CONFIG_HOME="${home_dir}/.config" \
     RC_MANIFEST_GLOBAL="${home_dir}/.config/rip-cage/tools.yaml" \
     RC_CONFIG_GLOBAL="${home_dir}/.config/rip-cage/config.yaml" \
     RC_ALLOWED_ROOTS="$ws_real" \
-    "${RC}" up "${ws}" 2>&1 || true
+    "${RC}" up "${ws}" >"$up_log" 2>&1 || true
 
-  _CAGES_TO_CLEAN+=("$cage_name")
-  _VOLS_TO_CLEAN+=("rc-state-${cage_name}" "rc-history-${cage_name}" "rc-mise-cache")
+  # Resolve the ACTUAL cage name by workspace/source_path (canonical port
+  # idiom, /tmp/msb-port-canonical.md) rather than trusting $cage_name as
+  # given to `rc up`: container_name() derives the real name from the last
+  # two path components of $ws ("rc" + "$cage_name"), which prepends an
+  # extra "rc-" here since $cage_name already starts with "rc-" — a
+  # pre-existing naming quirk in this helper's workspace staging (predates
+  # this msb port), not something the port should silently paper over by
+  # assuming a name. Resolving by source_path sidesteps it and matches
+  # whatever `rc up` actually created, so cleanup destroys the right cage.
+  local ws_full_real
+  ws_full_real=$(realpath "$ws" 2>/dev/null) || ws_full_real="$ws"
+  local real_cage_name
+  real_cage_name=$("${RC}" ls --output json 2>/dev/null | jq -r --arg ws "$ws_full_real" \
+    '.[] | select(.source_path==$ws) | .name' | head -1)
+  if [[ -z "$real_cage_name" ]]; then
+    echo "_spin_up_cage(${suffix}): could not resolve cage by source_path=${ws_full_real}; rc up output:" >&2
+    cat "$up_log" >&2
+    real_cage_name="$cage_name"  # fallback: makes the readiness-poll fail loudly below
+  fi
+  rm -f "$up_log"
 
-  echo "$cage_name"
+  # NOTE: _track is NOT called here. Callers capture this function's stdout
+  # via `$(...)` (e.g. `_re1_cage=$(_spin_up_cage ...)`), which forks a
+  # subshell — a `_track` call in this scope would mutate a subshell-local
+  # copy of CREATED_CAGES that vanishes when the subshell exits, silently
+  # leaving the cleanup trap's array empty (a real leak: verified via `rc ls`
+  # after a full green run while porting this test, rip-cage-neu7.12 — same
+  # subshell trap existed in the pre-port docker `_CAGES_TO_CLEAN` array).
+  # Callers MUST call `_track "$real_cage_name"` themselves, in the parent
+  # shell, right after capturing this function's output.
+  echo "$real_cage_name"
 }
 
 # ---------------------------------------------------------------------------
@@ -165,12 +221,13 @@ YAML
 )
 
 _re1_cage=$(_spin_up_cage "re1" "$_re1_manifest" "$_re1_tmpdir")
+_track "$_re1_cage"  # parent-shell tracking — see _spin_up_cage's subshell note above
 
 # Wait briefly for the container to start
 _re1_ready=0
 for _i in 1 2 3 4 5; do
-  _re1_state=$(docker inspect "$_re1_cage" --format '{{.State.Status}}' 2>/dev/null || true)
-  if [[ "$_re1_state" == "running" ]]; then
+  _re1_state=$(msb inspect "$_re1_cage" --format json 2>/dev/null | jq -r '.status // empty')
+  if [[ "$_re1_state" == "Running" ]]; then
     _re1_ready=1
     break
   fi
@@ -181,9 +238,9 @@ if [[ "$_re1_ready" -eq 0 ]]; then
   fail "RE1 cage '${_re1_cage}' is not running — cannot probe ro write"
 else
   # Probe: attempt to write a file to the ro-mounted path as the agent user.
-  # The write must fail (non-zero exit from docker exec).
+  # The write must fail (non-zero exit from rc exec).
   _re1_write_rc=0
-  _re1_write_out=$(docker exec --user agent "$_re1_cage" \
+  _re1_write_out=$("${RC}" exec "$_re1_cage" -- \
     sh -c "echo hostile > /home/agent/ro-asset/hostile.txt 2>&1") || _re1_write_rc=$?
 
   if [[ "$_re1_write_rc" -ne 0 ]]; then
@@ -194,7 +251,7 @@ else
 
   # Verify the sentinel is still readable (positive: the mount is working, not just absent).
   _re1_read_rc=0
-  _re1_read_out=$(docker exec --user agent "$_re1_cage" \
+  _re1_read_out=$("${RC}" exec "$_re1_cage" -- \
     cat /home/agent/ro-asset/sentinel.txt 2>&1) || _re1_read_rc=$?
   if [[ "$_re1_read_rc" -eq 0 ]] && grep -q "ro-sentinel" <<<"$_re1_read_out"; then
     pass "RE1 ro mount: sentinel file readable inside cage (mount is active, not just absent)"
@@ -234,12 +291,13 @@ YAML
 )
 
 _re2_cage=$(_spin_up_cage "re2" "$_re2_manifest" "$_re2_tmpdir")
+_track "$_re2_cage"  # parent-shell tracking — see _spin_up_cage's subshell note above
 
 # Wait for container
 _re2_ready=0
 for _i in 1 2 3 4 5; do
-  _re2_state=$(docker inspect "$_re2_cage" --format '{{.State.Status}}' 2>/dev/null || true)
-  if [[ "$_re2_state" == "running" ]]; then
+  _re2_state=$(msb inspect "$_re2_cage" --format json 2>/dev/null | jq -r '.status // empty')
+  if [[ "$_re2_state" == "Running" ]]; then
     _re2_ready=1
     break
   fi
@@ -252,7 +310,7 @@ else
   # Write a file inside the cage as the agent user.
   _re2_sentinel_content="rw-write-through-proof-$$"
   _re2_write_rc=0
-  _re2_write_out=$(docker exec --user agent "$_re2_cage" \
+  _re2_write_out=$("${RC}" exec "$_re2_cage" -- \
     sh -c "echo '${_re2_sentinel_content}' > /home/agent/rw-asset/written-by-agent.txt 2>&1") || _re2_write_rc=$?
 
   if [[ "$_re2_write_rc" -ne 0 ]]; then
@@ -313,12 +371,13 @@ YAML
 )
 
 _re3_cage=$(_spin_up_cage "re3" "$_re3_manifest" "$_re3_tmpdir")
+_track "$_re3_cage"  # parent-shell tracking — see _spin_up_cage's subshell note above
 
 # Wait for container
 _re3_ready=0
 for _i in 1 2 3 4 5; do
-  _re3_state=$(docker inspect "$_re3_cage" --format '{{.State.Status}}' 2>/dev/null || true)
-  if [[ "$_re3_state" == "running" ]]; then
+  _re3_state=$(msb inspect "$_re3_cage" --format json 2>/dev/null | jq -r '.status // empty')
+  if [[ "$_re3_state" == "Running" ]]; then
     _re3_ready=1
     break
   fi
@@ -330,7 +389,7 @@ if [[ "$_re3_ready" -eq 0 ]]; then
 else
   # (a) ro guard: write must FAIL
   _re3_guard_write_rc=0
-  docker exec --user agent "$_re3_cage" \
+  "${RC}" exec "$_re3_cage" -- \
     sh -c "echo hostile > /home/agent/ro-guard/hostile.txt 2>&1" || _re3_guard_write_rc=$?
   if [[ "$_re3_guard_write_rc" -ne 0 ]]; then
     pass "RE3(a) ro guard: write attempt FAILS (exit=${_re3_guard_write_rc}) — floor-lock holds"
@@ -341,7 +400,7 @@ else
   # (b) rw skill: write must SUCCEED and propagate to host
   _re3_sentinel="re3-rw-proof-$$"
   _re3_skill_write_rc=0
-  docker exec --user agent "$_re3_cage" \
+  "${RC}" exec "$_re3_cage" -- \
     sh -c "echo '${_re3_sentinel}' > /home/agent/rw-skill/agent-edit.txt 2>&1" || _re3_skill_write_rc=$?
   if [[ "$_re3_skill_write_rc" -ne 0 ]]; then
     fail "RE3(b) rw skill: write inside cage FAILED (exit=${_re3_skill_write_rc})"
@@ -356,7 +415,7 @@ else
 
   # Positive control: ro guard sentinel is still readable (mount is active)
   _re3_read_rc=0
-  _re3_read_out=$(docker exec --user agent "$_re3_cage" \
+  _re3_read_out=$("${RC}" exec "$_re3_cage" -- \
     cat /home/agent/ro-guard/guard.txt 2>&1) || _re3_read_rc=$?
   if [[ "$_re3_read_rc" -eq 0 ]] && grep -q "guard-sentinel" <<<"$_re3_read_out"; then
     pass "RE3(c) ro guard: sentinel readable inside cage (mount active, not just absent)"

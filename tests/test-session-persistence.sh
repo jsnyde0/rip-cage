@@ -40,9 +40,16 @@ E2E_TMP=""
 CONTAINER_NAME=""
 HOST_PROJECTS_DIR=""
 
+# Register-array cleanup shape (incident-hardened, rip-cage-neu7.12): every
+# cage this test creates is tracked here and destroyed via `rc destroy
+# --force` -- never enumerated/pattern-matched (see /tmp/msb-port-canonical.md).
+CREATED_CAGES=()
+_track() { CREATED_CAGES+=("$1"); }
+
 CLEANUP() {
-  [[ -n "$CONTAINER_NAME" ]] && docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-  [[ -n "$CONTAINER_NAME" ]] && docker volume rm "rc-state-${CONTAINER_NAME}" >/dev/null 2>&1 || true
+  for c in "${CREATED_CAGES[@]:-}"; do
+    [[ -n "$c" ]] && "$RC" destroy --force "$c" >/dev/null 2>&1 || true
+  done
   [[ -n "$HOST_PROJECTS_DIR" && "$HOST_PROJECTS_DIR" == "$HOME/.claude/projects/"*"-rc-dn2-test"* ]] && rm -rf "$HOST_PROJECTS_DIR"
   [[ -n "$DRY_TMP"  ]] && rm -rf "$DRY_TMP"
   [[ -n "$E2E_TMP"  ]] && rm -rf "$E2E_TMP"
@@ -76,6 +83,8 @@ fi
 
 echo ""
 echo "=== Phase 2: E2E lifecycle ==="
+# docker still builds/holds the image (image-level check below is kept as-is,
+# rip-cage:latest is docker-built); msb is the cage runtime rc up drives now.
 if ! command -v docker >/dev/null 2>&1; then
   echo "SKIP: Docker not available"
   echo ""
@@ -84,6 +93,12 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 if ! docker image inspect rip-cage:latest >/dev/null 2>&1; then
   echo "SKIP: rip-cage:latest not present (run ./rc build)"
+  echo ""
+  echo "$PASS/$TOTAL passed, $FAIL failed"
+  exit $FAIL
+fi
+if ! command -v msb >/dev/null 2>&1; then
+  echo "SKIP: msb not available"
   echo ""
   echo "$PASS/$TOTAL passed, $FAIL failed"
   exit $FAIL
@@ -101,14 +116,15 @@ E2E_PROJECT_RESOLVED=$(cd "$E2E_PROJECT" && pwd -P)
 HOST_KEY=$(printf '%s' "$E2E_PROJECT_RESOLVED" | tr '/.' '-')
 HOST_PROJECTS_DIR="$HOME/.claude/projects/$HOST_KEY"
 
-docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-docker volume rm "rc-state-${CONTAINER_NAME}" >/dev/null 2>&1 || true
+# Pre-clean any leftover cage from a prior run of this exact deterministic name.
+"$RC" destroy --force "$CONTAINER_NAME" >/dev/null 2>&1 || true
 rm -rf "$HOST_PROJECTS_DIR"
 
 UP_OUT=$(mktemp)
 RC_ALLOWED_ROOTS="$E2E_RESOLVED" "$RC" up "$E2E_PROJECT" </dev/null >"$UP_OUT" 2>&1 || true
+_track "$CONTAINER_NAME"
 
-if docker ps --filter "name=^${CONTAINER_NAME}\$" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+if "$RC" ls --output json | jq -e --arg n "$CONTAINER_NAME" '.[] | select(.name==$n and .status=="running")' >/dev/null 2>&1; then
   check "rc up brings container up" pass
 else
   check "rc up brings container up" fail "(see $UP_OUT)"
@@ -119,19 +135,19 @@ else
 fi
 
 # Bind-mount check via /proc/mounts (mountpoint(1) not guaranteed inside image)
-if docker exec "$CONTAINER_NAME" awk '$2 == "/home/agent/.claude/projects" { found=1; exit } END { exit !found }' /proc/mounts; then
+if "$RC" exec "$CONTAINER_NAME" -- awk '$2 == "/home/agent/.claude/projects" { found=1; exit } END { exit !found }' /proc/mounts; then
   check "~/.claude/projects is a mountpoint inside container" pass
 else
   check "~/.claude/projects is a mountpoint inside container" fail
 fi
-if docker exec "$CONTAINER_NAME" awk '$2 == "/home/agent/.claude/sessions" { found=1; exit } END { exit !found }' /proc/mounts; then
+if "$RC" exec "$CONTAINER_NAME" -- awk '$2 == "/home/agent/.claude/sessions" { found=1; exit } END { exit !found }' /proc/mounts; then
   check "~/.claude/sessions is a mountpoint inside container" pass
 else
   check "~/.claude/sessions is a mountpoint inside container" fail
 fi
 
 # Symlink target check
-LINK_TARGET=$(docker exec "$CONTAINER_NAME" readlink /home/agent/.claude/projects/-workspace 2>/dev/null || true)
+LINK_TARGET=$("$RC" exec "$CONTAINER_NAME" -- readlink /home/agent/.claude/projects/-workspace 2>/dev/null || true)
 if [[ "$LINK_TARGET" == "$HOST_KEY" ]]; then
   check "-workspace symlink resolves to host project key" pass "$HOST_KEY"
 else
@@ -139,7 +155,7 @@ else
 fi
 
 # RC_HOST_PROJECT_KEY env propagated
-ENV_KEY=$(docker exec "$CONTAINER_NAME" printenv RC_HOST_PROJECT_KEY 2>/dev/null || true)
+ENV_KEY=$("$RC" exec "$CONTAINER_NAME" -- printenv RC_HOST_PROJECT_KEY 2>/dev/null || true)
 if [[ "$ENV_KEY" == "$HOST_KEY" ]]; then
   check "RC_HOST_PROJECT_KEY env set in container" pass
 else
@@ -148,7 +164,7 @@ fi
 
 # Write a session-like file from inside the container, via the -workspace symlink.
 # This simulates Claude Code writing a session keyed by the container's cwd (/workspace).
-docker exec "$CONTAINER_NAME" sh -c \
+"$RC" exec "$CONTAINER_NAME" -- sh -c \
   'echo "{\"type\":\"test\",\"msg\":\"rip-cage-dn2 persistence\"}" \
      > /home/agent/.claude/projects/-workspace/dn2-probe.jsonl' \
   >/dev/null 2>&1 \
@@ -162,10 +178,9 @@ else
 fi
 
 # Now destroy and verify file survives
-"$RC" destroy -f "$CONTAINER_NAME" >/dev/null 2>&1 || \
-  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1
+"$RC" destroy -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
-if docker ps -a --filter "name=^${CONTAINER_NAME}\$" --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+if "$RC" ls --output json | jq -e --arg n "$CONTAINER_NAME" '.[] | select(.name==$n)' >/dev/null 2>&1; then
   check "rc destroy removes container" fail
 else
   check "rc destroy removes container" pass
@@ -176,7 +191,8 @@ else
   check "session file survives rc destroy" fail "lost $HOST_PROJECTS_DIR/dn2-probe.jsonl"
 fi
 
-# Don't reset CONTAINER_NAME — the trap cleanup uses it (idempotent rm -f).
+# Don't clear CONTAINER_NAME from CREATED_CAGES — the trap cleanup re-attempts
+# `rc destroy --force` on it, which is an idempotent no-op once already destroyed.
 rm -f "$UP_OUT"
 
 echo ""
