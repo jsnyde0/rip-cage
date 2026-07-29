@@ -10,7 +10,8 @@ There is also an earlier, expected transient: between the version's PRs **mergin
 
 ## Prerequisites
 
-- `VERSION` already bumped to the target `X.Y.Z` on `main` (the `/release` skill or a prior bump did this — `release.yml` verifies the tag matches `VERSION`).
+- `VERSION` already bumped to the target `X.Y.Z` on `main` (the `/release` skill or a prior bump did this — `release.yml` verifies the tag matches `VERSION`). **Verify it rather than assuming it** — `cat VERSION`. The v0.13.1 cut found `VERSION` still on the *previous* release's number; if it's stale, do the bump here (VERSION + a `CHANGELOG.md` section for the new version) before step 1.
+- **If you bumped `VERSION`, regenerate the two golden-master snapshots that embed the version string** — `tests/golden-master/snapshots/version_flag.stdout` and `.../up_dry_run_json_absent_create_image_absent.stdout`. Nothing else in the tree hard-codes it. `bash tests/golden-master/capture.sh --check` names any mismatch; fix those two files by hand rather than `--record`-ing all 55 (a blanket re-record silently absorbs unrelated drift). *Skipping this is why CI was red on both of v0.13.0's own release commits* — the bump landed without the snapshots and every later run inherited the failure.
 - All PRs targeting this version merged to `main`.
 - You are on a clean `main` (`git status` clean, `git pull` current).
 
