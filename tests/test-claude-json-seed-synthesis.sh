@@ -47,15 +47,38 @@ REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 WRAPPER_SRC="${REPO_ROOT}/examples/claude/claude-session-wrapper.sh"
 
+# REAL_MSB_HOME (msb-port note, rip-cage-neu7.14 Batch E — mirrors
+# test-mount-mode-e2e.sh / test-multiplexer-lifecycle.sh /
+# test-agent-mail-concurrent.sh): each cage setup below overrides HOME to a
+# throwaway mktemp dir to isolate that cage's ~/.claude.json fixture. msb
+# keys its own sandbox-relay-socket state dir off $HOME at `rc up` call
+# time; with HOME pointed at a deep mktemp path, the derived AF_UNIX relay
+# socket path overflows the 104-byte Unix socket path limit ("agent relay
+# socket path is too long"), and `rc up` fails to create the container
+# outright (verified live during this port). Pinning MSB_HOME to the real,
+# unmodified microsandbox home for every `rc up` call below sidesteps it.
+REAL_MSB_HOME="${HOME}/.microsandbox"
+
 FAILURES=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
 
 # ---------------------------------------------------------------------------
 # Guards
+#
+# msb-port note (rip-cage-neu7.14, Batch E): `rc up` now creates msb
+# sandboxes invisible to docker ps/exec/cp/stop -- cage resolution, exec,
+# stdin-file transfer, and stop/resume below are rewired onto the msb-native
+# surface (canonical pattern: /tmp/msb-port-canonical.md). `docker image
+# inspect rip-cage:latest` stays: it is an image-level check (the image is
+# still `docker build`-produced), not a cage-runtime check.
 # ---------------------------------------------------------------------------
 if ! command -v docker >/dev/null 2>&1; then
   echo "SKIP: docker not available"
+  exit 0
+fi
+if ! command -v msb >/dev/null 2>&1; then
+  echo "SKIP: msb not available"
   exit 0
 fi
 if ! docker image inspect rip-cage:latest >/dev/null 2>&1; then
@@ -69,19 +92,24 @@ NP_HOME=""; NP_WS_ROOT=""; NP_NAME=""
 PC_HOME=""; PC_WS_ROOT=""; PC_NAME=""
 NN_HOME=""; NN_WS_ROOT=""; NN_NAME=""
 
+# HARDENED CLEANUP SHAPE (rip-cage-neu7.14, Batch E msb port; incident
+# guardrail — see /tmp/msb-port-canonical.md). CREATED_CAGES holds ONLY the
+# cage names this run actually created, appended via _track in THIS (parent)
+# shell right after each cage's name is resolved below — never inside a
+# $(...) subshell (rip-cage-neu7.12 lesson: array mutations inside a
+# captured subshell never propagate to the trap). cleanup() destroys ONLY
+# these tracked names via a single `rc destroy --force` each (replaces the
+# separate `docker rm -f` + `docker volume rm rc-state-*` pair — rc destroy
+# removes the sandbox AND its rc-state/rc-history volumes together). NEVER
+# an `rc ls`/`msb list` enumeration matched by pattern/glob.
+CREATED_CAGES=()
+_track() { [[ -n "${1:-}" ]] && CREATED_CAGES+=("$1"); }
+
 cleanup() {
-  if [[ -n "$NP_NAME" ]]; then
-    docker rm -f "$NP_NAME" >/dev/null 2>&1 || true
-    docker volume rm "rc-state-${NP_NAME}" >/dev/null 2>&1 || true
-  fi
-  if [[ -n "$PC_NAME" ]]; then
-    docker rm -f "$PC_NAME" >/dev/null 2>&1 || true
-    docker volume rm "rc-state-${PC_NAME}" >/dev/null 2>&1 || true
-  fi
-  if [[ -n "$NN_NAME" ]]; then
-    docker rm -f "$NN_NAME" >/dev/null 2>&1 || true
-    docker volume rm "rc-state-${NN_NAME}" >/dev/null 2>&1 || true
-  fi
+  local c
+  for c in "${CREATED_CAGES[@]:-}"; do
+    [[ -n "$c" ]] && "$RC" destroy --force "$c" >/dev/null 2>&1 || true
+  done
   [[ -n "$NP_HOME" && -d "$NP_HOME" ]] && rm -rf "$NP_HOME"
   [[ -n "$NP_WS_ROOT" && -d "$NP_WS_ROOT" ]] && rm -rf "$NP_WS_ROOT"
   [[ -n "$PC_HOME" && -d "$PC_HOME" ]] && rm -rf "$PC_HOME"
@@ -107,19 +135,20 @@ NP_ENVFILE="${NP_WS_ROOT}/np.env"
 printf 'CLAUDE_CODE_OAUTH_TOKEN=placeholder-token-vwka\n' > "$NP_ENVFILE"
 chmod 600 "$NP_ENVFILE"
 NP_UP_OUT="${NP_WS_ROOT}/np-up.out"
-HOME="$NP_HOME" \
+HOME="$NP_HOME" MSB_HOME="$REAL_MSB_HOME" \
   RC_SKIP_KEYCHAIN_EXTRACTION=1 \
   ANTHROPIC_API_KEY="" \
   RC_ALLOWED_ROOTS="$(realpath "$NP_WS_ROOT")" \
   RIP_CAGE_EGRESS=off \
   "$RC" up "$NP_WS" --env-file "$NP_ENVFILE" </dev/null >"$NP_UP_OUT" 2>&1 || true
-NP_NAME=$(docker ps -a --filter "label=rc.source.path=$(realpath "$NP_WS")" \
-  --format '{{.Names}}' 2>/dev/null | head -1)
+NP_NAME=$("$RC" ls --output json | jq -r --arg ws "$(realpath "$NP_WS")" \
+  '.[] | select(.source_path==$ws) | .name' | head -1)
 
 NP_LIVE=false
 if [[ -z "$NP_NAME" ]]; then
   fail "non-possession cage did not start (see $NP_UP_OUT)"
 else
+  _track "$NP_NAME"
   NP_LOG=$(cat "$NP_UP_OUT" 2>/dev/null || true)
   # Gate on the init sentinel so an absence assertion below can't pass
   # vacuously against an empty capture (rip-cage-igm discipline).
@@ -137,7 +166,7 @@ fi
 if [[ "$NP_LIVE" == "true" ]]; then
   echo ""
   echo "=== V1: seed synthesized when mount absent ==="
-  NP_SEED=$(docker exec "$NP_NAME" cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
+  NP_SEED=$("$RC" exec "$NP_NAME" -- cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
   if [[ -z "$NP_SEED" ]]; then
     fail "V1: /home/agent/.claude/.claude.json.seed missing or empty in non-possession cage"
   else
@@ -165,7 +194,9 @@ fi
 
 # ---------------------------------------------------------------------------
 # V2: synthesis never clobbers an existing seed. Overwrite the seed with a
-# sentinel, then drive a REAL resume (docker stop + rc up) — the same call
+# sentinel, then drive a REAL resume (msb stop + rc up — msb-port note,
+# rip-cage-neu7.14: `docker stop` has no docker analog under msb; state-
+# preserving stop is `msb stop`, resume is still `rc up`) — the same call
 # site (_up_init_container) that runs on the possession-case ordering — and
 # confirm the sentinel survives untouched.
 # ---------------------------------------------------------------------------
@@ -173,10 +204,10 @@ if [[ "$NP_LIVE" == "true" ]]; then
   echo ""
   echo "=== V2: synthesis never clobbers an existing seed ==="
   V2_SENTINEL='{"sentinel-vwka":"do-not-clobber","hasCompletedOnboarding":true}'
-  docker exec "$NP_NAME" sh -c "printf '%s' '${V2_SENTINEL}' > /home/agent/.claude/.claude.json.seed"
-  docker stop "$NP_NAME" >/dev/null 2>&1
+  "$RC" exec "$NP_NAME" -- sh -c "printf '%s' '${V2_SENTINEL}' > /home/agent/.claude/.claude.json.seed"
+  msb stop "$NP_NAME" >/dev/null 2>&1
   NP_RESUME_OUT="${NP_WS_ROOT}/np-resume.out"
-  HOME="$NP_HOME" \
+  HOME="$NP_HOME" MSB_HOME="$REAL_MSB_HOME" \
     RC_SKIP_KEYCHAIN_EXTRACTION=1 \
     ANTHROPIC_API_KEY="" \
     RC_ALLOWED_ROOTS="$(realpath "$NP_WS_ROOT")" \
@@ -186,7 +217,7 @@ if [[ "$NP_LIVE" == "true" ]]; then
   if ! printf '%s\n' "$NP_RESUME_LOG" | grep -q '\[rip-cage\] pi '; then
     fail "V2: resume init sentinel absent — cannot trust post-resume seed state" "(see $NP_RESUME_OUT)"
   else
-    NP_SEED_AFTER=$(docker exec "$NP_NAME" cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
+    NP_SEED_AFTER=$("$RC" exec "$NP_NAME" -- cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
     if [[ "$NP_SEED_AFTER" == "$V2_SENTINEL" ]]; then
       pass "V2: pre-existing seed sentinel survived a second init run (resume) unchanged"
     else
@@ -203,16 +234,20 @@ fi
 if [[ "$NP_LIVE" == "true" ]]; then
   echo ""
   echo "=== V4: claude-wrapper WARNING does not fire when a seed is present ==="
-  if docker cp "$WRAPPER_SRC" "${NP_NAME}:/tmp/wrapper-under-test.sh" >/dev/null 2>&1; then
-    # docker cp always writes as root regardless of the container's default
-    # user; /tmp's sticky bit then blocks the agent user's sed -i rename.
-    # chown to agent first so the rest of this block runs as a normal
-    # non-root exec, matching every other docker exec in this file.
-    docker exec -u root "$NP_NAME" chown agent:agent /tmp/wrapper-under-test.sh
-    docker exec "$NP_NAME" sed -i 's#^REAL_CLAUDE=/usr/bin/claude#REAL_CLAUDE=/bin/true#' /tmp/wrapper-under-test.sh
-    docker exec "$NP_NAME" chmod +x /tmp/wrapper-under-test.sh
-    docker exec "$NP_NAME" rm -rf /home/agent/.claude-sessions/vwka-v4-test
-    V4_OUT=$(docker exec -e CLAUDE_CONFIG_DIR=/home/agent/.claude-sessions/vwka-v4-test "$NP_NAME" /tmp/wrapper-under-test.sh --version 2>&1)
+  # msb-port note (rip-cage-neu7.14, Batch E): `docker cp` has no msb
+  # equivalent. Routed via `msb exec ... tee <dst> < <src>` (msb exec
+  # forwards stdin) instead. Bonus simplification over the docker-cp path:
+  # `docker cp` always wrote as root regardless of the container's default
+  # user (hence the old `docker exec -u root chown` step below it); `msb
+  # exec` with no `-u` runs as the sandbox's own default user, which is
+  # already `agent` (verified live: a probe file written this way lands
+  # `-rw-r--r-- agent agent`) — so the chown workaround is dropped, not
+  # forced-ported.
+  if msb exec "$NP_NAME" -- tee /tmp/wrapper-under-test.sh < "$WRAPPER_SRC" >/dev/null 2>&1; then
+    "$RC" exec "$NP_NAME" -- sed -i 's#^REAL_CLAUDE=/usr/bin/claude#REAL_CLAUDE=/bin/true#' /tmp/wrapper-under-test.sh
+    "$RC" exec "$NP_NAME" -- chmod +x /tmp/wrapper-under-test.sh
+    "$RC" exec "$NP_NAME" -- rm -rf /home/agent/.claude-sessions/vwka-v4-test
+    V4_OUT=$(msb exec -e CLAUDE_CONFIG_DIR=/home/agent/.claude-sessions/vwka-v4-test "$NP_NAME" -- /tmp/wrapper-under-test.sh --version 2>&1)
     V4_EXIT=$?
     if [[ $V4_EXIT -ne 0 ]]; then
       fail "V4: patched wrapper invocation failed (exit $V4_EXIT)" "$V4_OUT"
@@ -224,9 +259,9 @@ if [[ "$NP_LIVE" == "true" ]]; then
 
     echo ""
     echo "=== V5: genuinely-broken case — WARNING still fires when no seed exists ==="
-    docker exec "$NP_NAME" sh -c "mv /home/agent/.claude/.claude.json.seed /tmp/seed-moved-aside-vwka.json"
-    docker exec "$NP_NAME" rm -rf /home/agent/.claude-sessions/vwka-v5-test
-    V5_OUT=$(docker exec -e CLAUDE_CONFIG_DIR=/home/agent/.claude-sessions/vwka-v5-test "$NP_NAME" /tmp/wrapper-under-test.sh --version 2>&1)
+    "$RC" exec "$NP_NAME" -- sh -c "mv /home/agent/.claude/.claude.json.seed /tmp/seed-moved-aside-vwka.json"
+    "$RC" exec "$NP_NAME" -- rm -rf /home/agent/.claude-sessions/vwka-v5-test
+    V5_OUT=$(msb exec -e CLAUDE_CONFIG_DIR=/home/agent/.claude-sessions/vwka-v5-test "$NP_NAME" -- /tmp/wrapper-under-test.sh --version 2>&1)
     V5_EXIT=$?
     if [[ $V5_EXIT -ne 0 ]]; then
       fail "V5: patched wrapper invocation failed (exit $V5_EXIT)" "$V5_OUT"
@@ -236,7 +271,7 @@ if [[ "$NP_LIVE" == "true" ]]; then
       fail "V5: WARNING did not fire despite no seed existing" "$V5_OUT"
     fi
   else
-    fail "V4/V5: docker cp of the canonical wrapper into the cage failed"
+    fail "V4/V5: msb exec tee of the canonical wrapper into the cage failed"
   fi
 fi
 
@@ -254,19 +289,20 @@ git -C "$PC_WS" init -q
 PC_SENTINEL='{"possession-sentinel-vwka":"abc123","hasCompletedOnboarding":true}'
 printf '%s' "$PC_SENTINEL" > "${PC_HOME}/.claude.json"
 PC_UP_OUT="${PC_WS_ROOT}/pc-up.out"
-HOME="$PC_HOME" \
+HOME="$PC_HOME" MSB_HOME="$REAL_MSB_HOME" \
   RC_SKIP_KEYCHAIN_EXTRACTION=1 \
   ANTHROPIC_API_KEY=sk-test-vwka-pc \
   RC_ALLOWED_ROOTS="$(realpath "$PC_WS_ROOT")" \
   RIP_CAGE_EGRESS=off \
   "$RC" up "$PC_WS" </dev/null >"$PC_UP_OUT" 2>&1 || true
-PC_NAME=$(docker ps -a --filter "label=rc.source.path=$(realpath "$PC_WS")" \
-  --format '{{.Names}}' 2>/dev/null | head -1)
+PC_NAME=$("$RC" ls --output json | jq -r --arg ws "$(realpath "$PC_WS")" \
+  '.[] | select(.source_path==$ws) | .name' | head -1)
 
 PC_LIVE=false
 if [[ -z "$PC_NAME" ]]; then
   fail "possession-control cage did not start (see $PC_UP_OUT)"
 else
+  _track "$PC_NAME"
   PC_LOG=$(cat "$PC_UP_OUT" 2>/dev/null || true)
   if printf '%s\n' "$PC_LOG" | grep -q '\[rip-cage\] pi '; then
     PC_LIVE=true
@@ -283,7 +319,7 @@ fi
 if [[ "$PC_LIVE" == "true" ]]; then
   echo ""
   echo "=== V3: positive control — possession path still snapshots ==="
-  PC_SEED=$(docker exec "$PC_NAME" cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
+  PC_SEED=$("$RC" exec "$PC_NAME" -- cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
   if [[ "$PC_SEED" == "$PC_SENTINEL" ]]; then
     pass "V3: possession-posture seed is byte-identical to the live ~/.claude.json mount"
   else
@@ -314,19 +350,20 @@ NN_ENVFILE="${NN_WS_ROOT}/nn.env"
 printf 'CLAUDE_CODE_OAUTH_TOKEN=placeholder-token-t7cu\n' > "$NN_ENVFILE"
 chmod 600 "$NN_ENVFILE"
 NN_UP_OUT="${NN_WS_ROOT}/nn-up.out"
-HOME="$NN_HOME" \
+HOME="$NN_HOME" MSB_HOME="$REAL_MSB_HOME" \
   RC_SKIP_KEYCHAIN_EXTRACTION=1 \
   ANTHROPIC_API_KEY="" \
   RC_ALLOWED_ROOTS="$(realpath "$NN_WS_ROOT")" \
   RIP_CAGE_EGRESS=off \
   "$RC" up "$NN_WS" --env-file "$NN_ENVFILE" </dev/null >"$NN_UP_OUT" 2>&1 || true
-NN_NAME=$(docker ps -a --filter "label=rc.source.path=$(realpath "$NN_WS")" \
-  --format '{{.Names}}' 2>/dev/null | head -1)
+NN_NAME=$("$RC" ls --output json | jq -r --arg ws "$(realpath "$NN_WS")" \
+  '.[] | select(.source_path==$ws) | .name' | head -1)
 
 NN_LIVE=false
 if [[ -z "$NN_NAME" ]]; then
   fail "non-possession-with-fixture cage did not start (see $NN_UP_OUT)"
 else
+  _track "$NN_NAME"
   NN_LOG=$(cat "$NN_UP_OUT" 2>/dev/null || true)
   if printf '%s\n' "$NN_LOG" | grep -q '\[rip-cage\] pi '; then
     NN_LIVE=true
@@ -342,7 +379,7 @@ fi
 if [[ "$NN_LIVE" == "true" ]]; then
   echo ""
   echo "=== V6: none + host ~/.claude.json present -> mount carried, snapshot NOT synthesized ==="
-  NN_SEED=$(docker exec "$NN_NAME" cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
+  NN_SEED=$("$RC" exec "$NN_NAME" -- cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
   if [[ "$NN_SEED" == "$NN_SENTINEL" ]]; then
     pass "V6: non-possession seed is byte-identical to the host ~/.claude.json fixture (real snapshot, not the synthesized fallback)"
   else
@@ -356,7 +393,7 @@ if [[ "$NN_LIVE" == "true" ]]; then
 
   echo ""
   echo "=== V6b: the carried ~/.claude.json mount is actually read-only in-cage ==="
-  NN_WRITE_OUT=$(docker exec "$NN_NAME" sh -c 'echo blocked >> /home/agent/.claude.json' 2>&1)
+  NN_WRITE_OUT=$("$RC" exec "$NN_NAME" -- sh -c 'echo blocked >> /home/agent/.claude.json' 2>&1)
   NN_WRITE_EXIT=$?
   if [[ $NN_WRITE_EXIT -ne 0 ]] && echo "$NN_WRITE_OUT" | grep -qi 'read-only\|permission denied'; then
     pass "V6b: write to /home/agent/.claude.json in-cage fails (read-only mount, non-possession posture)"
@@ -364,7 +401,7 @@ if [[ "$NN_LIVE" == "true" ]]; then
     fail "V6b: write to /home/agent/.claude.json in-cage unexpectedly succeeded" "exit=$NN_WRITE_EXIT out=$NN_WRITE_OUT"
   fi
 
-  NN_CREDS=$(docker exec "$NN_NAME" sh -c 'test -f /home/agent/.claude/.credentials.json && echo present || echo absent' 2>/dev/null || true)
+  NN_CREDS=$("$RC" exec "$NN_NAME" -- sh -c 'test -f /home/agent/.claude/.credentials.json && echo present || echo absent' 2>/dev/null || true)
   if [[ "$NN_CREDS" == "absent" ]]; then
     pass "V6: .credentials.json still absent in-cage under none (positive control)"
   else

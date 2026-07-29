@@ -3,8 +3,9 @@
 # probes (rip-cage-2cks): cwd floor (guards rip-cage-0rng), workspace
 # resolution (guards rip-cage-aq70), bd version skew.
 #
-# NEEDS_CONTAINER: spins real cages via `rc up` + `docker run`. Self-skips
-# (SKIP, exit 0) when docker or host `bd` is unavailable.
+# NEEDS_CONTAINER: spins real cages via `rc up` + `msb create` (rip-cage-neu7.14,
+# Batch E msb port -- was `docker run -d --name`). Self-skips (SKIP, exit 0)
+# when docker, msb, or host `bd` is unavailable.
 #
 # Coverage:
 #   D1  correct fresh cage: cwd probe is OK, workspace-resolution probe is OK
@@ -27,10 +28,29 @@
 # lane that keeps such an image around) to exercise it. See the bead's
 # report for the real command + output captured against
 # rip-cage:aq70-old-fixture during implementation.
+#
+# msb-port note (rip-cage-neu7.14, Batch E): D2/D3's fixtures bypass `rc up`
+# ON PURPOSE to force a broken container shape (WorkingDir override / a
+# schema-skewed bd binary) that `rc doctor` should catch -- there is no `rc
+# up` flag for either, by design (rc up always creates a correct cage). The
+# mechanical analog to `docker run -d --name X --workdir Y --label K=V -v
+# SRC:DST IMAGE sleep infinity` is `msb create --name X --workdir Y --label
+# K=V -v SRC:DST IMAGE` (verified live against rip-cage:latest during this
+# port -- msb create boots the image's own entrypoint/agentd, no trailing
+# command needed; `msb create --help` documents both -w/--workdir and
+# --label as first-class flags, so the broken-fixture shape ports cleanly).
+# D3's image is a raw `docker build` artifact never routed through `rc
+# build`, so it also needs the same docker-save -> msb-load conversion `rc
+# build` does for the real image (cli/build.sh's _build_msb_load) before
+# `msb create` can see it -- ported below, still gated the same way.
 set -uo pipefail
 
 if ! command -v docker > /dev/null 2>&1; then
   echo "SKIP: Docker not available -- skipping $(basename "$0")"
+  exit 0
+fi
+if ! command -v msb > /dev/null 2>&1; then
+  echo "SKIP: msb not available -- skipping $(basename "$0")"
   exit 0
 fi
 if ! command -v bd > /dev/null 2>&1; then
@@ -113,18 +133,23 @@ fi
 # D2: WorkingDir forced to /home/agent -- cwd probe FAILS loud.
 # Reuses the same rip-cage:latest image + fixture workspace as D1, but bypasses
 # `rc up` to force the broken WorkingDir directly (mirrors the bead's fixture
-# recipe: a container from the image with WorkingDir overridden).
+# recipe: a sandbox from the image with its workdir overridden). msb-port
+# note (rip-cage-neu7.14, Batch E): `docker run -d --name X --workdir Y
+# --label K=V -v SRC:DST IMAGE sleep infinity` has no docker analog under
+# msb, but `msb create` expresses the same broken shape directly
+# (--workdir/--label are first-class create flags; msb create boots the
+# image's own entrypoint, no trailing "sleep infinity" needed).
 # ---------------------------------------------------------------------------
 echo ""
 echo "-- D2: cwd forced to /home/agent --"
 
 CWD_BROKEN_CAGE="rc-doctor-cwdbroken-$$"
-docker rm -f "$CWD_BROKEN_CAGE" > /dev/null 2>&1 || true
-if docker run -d --name "$CWD_BROKEN_CAGE" \
+"$RC" destroy --force "$CWD_BROKEN_CAGE" > /dev/null 2>&1 || true
+if msb create --name "$CWD_BROKEN_CAGE" \
     --label "rc.source.path=${FIXTURE_WS}" \
     --workdir /home/agent \
     -v "${FIXTURE_WS}:/workspace" \
-    rip-cage:latest sleep infinity > /dev/null 2>&1; then
+    rip-cage:latest > /dev/null 2>&1; then
   scratch_cage_register "$CWD_BROKEN_CAGE"
   D2_JSON=$("$RC" --output json doctor "$CWD_BROKEN_CAGE" 2>&1) || true
   d2_cwd=$(echo "$D2_JSON" | jq -r '.probes.cwd // empty' 2>/dev/null)
@@ -134,7 +159,7 @@ if docker run -d --name "$CWD_BROKEN_CAGE" \
     fail "D2 cwd probe FAILS loud on /home/agent-workdir cage" "got: $d2_cwd"
   fi
 else
-  fail "D2 create cwd-broken cage" "docker run failed (is rip-cage:latest built?)"
+  fail "D2 create cwd-broken cage" "msb create failed (is rip-cage:latest built + msb-loaded? run ./rc build)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -146,23 +171,36 @@ echo "-- D3: stale-bd schema-error cage (gated) --"
 
 if [[ -n "${RC_DOCTOR_STALE_BD_IMAGE:-}" ]] && docker image inspect "$RC_DOCTOR_STALE_BD_IMAGE" > /dev/null 2>&1; then
   SCHEMA_ERR_CAGE="rc-doctor-schemaerr-$$"
-  docker rm -f "$SCHEMA_ERR_CAGE" > /dev/null 2>&1 || true
-  if docker run -d --name "$SCHEMA_ERR_CAGE" \
-      --label "rc.source.path=${FIXTURE_WS}" \
-      --workdir /workspace \
-      -v "${FIXTURE_WS}:/workspace" \
-      "$RC_DOCTOR_STALE_BD_IMAGE" sleep infinity > /dev/null 2>&1; then
-    scratch_cage_register "$SCHEMA_ERR_CAGE"
-    D3_JSON=$("$RC" --output json doctor "$SCHEMA_ERR_CAGE" 2>&1) || true
-    d3_ws=$(echo "$D3_JSON" | jq -r '.probes.workspace_resolution // empty' 2>/dev/null)
-    if [[ "$d3_ws" == FAIL* ]]; then
-      pass "D3 workspace-resolution probe FAILS on stale-bd schema-error cage ($d3_ws)"
+  "$RC" destroy --force "$SCHEMA_ERR_CAGE" > /dev/null 2>&1 || true
+  # msb-port note (rip-cage-neu7.14, Batch E): $RC_DOCTOR_STALE_BD_IMAGE is a
+  # raw `docker build` artifact that never went through `rc build`, so
+  # unlike rip-cage:latest it is NOT yet in msb's own local image cache --
+  # `msb create` cannot see a docker-daemon-only image. Convert it the same
+  # way rc build does for the real image (cli/build.sh's _build_msb_load:
+  # docker save -> msb load --tag) before creating the fixture cage.
+  STALE_BD_TAR="$(mktemp "${TMPDIR:-/tmp}/rc-doctor-stale-bd-XXXXXX.tar")"
+  if docker save "$RC_DOCTOR_STALE_BD_IMAGE" -o "$STALE_BD_TAR" > /dev/null 2>&1 \
+      && msb load --tag "$RC_DOCTOR_STALE_BD_IMAGE" -i "$STALE_BD_TAR" > /dev/null 2>&1; then
+    if msb create --name "$SCHEMA_ERR_CAGE" \
+        --label "rc.source.path=${FIXTURE_WS}" \
+        --workdir /workspace \
+        -v "${FIXTURE_WS}:/workspace" \
+        "$RC_DOCTOR_STALE_BD_IMAGE" > /dev/null 2>&1; then
+      scratch_cage_register "$SCHEMA_ERR_CAGE"
+      D3_JSON=$("$RC" --output json doctor "$SCHEMA_ERR_CAGE" 2>&1) || true
+      d3_ws=$(echo "$D3_JSON" | jq -r '.probes.workspace_resolution // empty' 2>/dev/null)
+      if [[ "$d3_ws" == FAIL* ]]; then
+        pass "D3 workspace-resolution probe FAILS on stale-bd schema-error cage ($d3_ws)"
+      else
+        fail "D3 workspace-resolution probe FAILS on stale-bd schema-error cage" "got: $d3_ws"
+      fi
     else
-      fail "D3 workspace-resolution probe FAILS on stale-bd schema-error cage" "got: $d3_ws"
+      fail "D3 create schema-error cage" "msb create failed against \$RC_DOCTOR_STALE_BD_IMAGE"
     fi
   else
-    fail "D3 create schema-error cage" "docker run failed against \$RC_DOCTOR_STALE_BD_IMAGE"
+    fail "D3 msb-load stale-bd image" "docker save | msb load failed for \$RC_DOCTOR_STALE_BD_IMAGE"
   fi
+  rm -f "$STALE_BD_TAR" 2>/dev/null || true
 else
   echo "SKIP: RC_DOCTOR_STALE_BD_IMAGE not set (or image absent) -- schema-error live fixture not exercised (see file header)"
 fi

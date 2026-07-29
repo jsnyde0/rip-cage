@@ -118,7 +118,7 @@ NEEDS_CONTAINER=(
   "test-pi-auth-mount.sh"    # calls rc up to create a live container; inspects container env + mounts
   "test-pi-cage-context.sh"  # calls rc up to create a live container; inspects CLAUDE.md inside cage
   "test-claude-concurrency.sh" # requires a live rip-cage container with Claude auth (ANTHROPIC_API_KEY or OAuth)
-  "test-claude-json-seed-synthesis.sh" # rip-cage-vwka: spins its own real cages via rc up (non-possession + possession) to verify R4 seed synthesis; requires docker + a pre-built rip-cage image
+  "test-claude-json-seed-synthesis.sh" # rip-cage-vwka: spins its own real cages via rc up (non-possession + possession) to verify R4 seed synthesis; requires docker + msb + a pre-built rip-cage image
   "test-multiplexer-lifecycle.sh" # requires a live rip-cage container; exercises multiplexer lifecycle (none/tmux/herdr) + retirement + config-isolation (rip-cage-1f59.8)
   "test-agent-mail-concurrent.sh" # requires RC_E2E=1 + pi auth + agent_mail fixture image; proves two concurrent pi agents coordinate via am CLI
   "test-session-persistence.sh" # Phase 3 calls rc up + docker exec for dn2 projects/sessions persist-to-host (rip-cage-b6ia)
@@ -130,7 +130,7 @@ NEEDS_CONTAINER=(
   "test-cc-managed-settings-probe.sh" # rip-cage-wlwc.1: D8 CC managed-settings anchor probe — requires live authed cage + API call; self-skips if no cage or unauthed (NEEDS_CONTAINER+AUTH)
   "test-cc-dcg-managed-settings.sh"  # rip-cage-r9n4: DCG managed-settings regression — proves managed deny survives stripping ALL agent-writable layers; requires live authed cage (NEEDS_CONTAINER+AUTH)
   "test-mount-mode-e2e.sh"           # rip-cage-wlwc.3: real-cage ro/rw behavioral probes (RE1-RE3); self-skips without RC_E2E=1
-  "test-doctor-runnability.sh"       # rip-cage-2cks: spins live cages (rc up + docker run) to exercise rc doctor's cwd/workspace-resolution probes; self-skips without docker or host bd
+  "test-doctor-runnability.sh"       # rip-cage-2cks: spins live cages (rc up + msb create) to exercise rc doctor's cwd/workspace-resolution probes; self-skips without docker, msb, or host bd
   "test-msb-boot-smoke.sh"           # rip-cage-7dkq (S1, msb migration): needs live docker + live msb + a pre-built rip-cage:latest image to actually boot a cage; self-skips (SKIP:, exit 0) without any of the three
 )
 
