@@ -1699,9 +1699,20 @@ _manifest_build_dockerfile_path() {
 # /home/agent/.zshrc at build time.
 #
 # Mechanism: bake at BUILD time via a Dockerfile RUN step that appends the
-# eval line to .zshrc using printf.  This is consistent with ADR-005 D7
-# (install = build-time) and keeps this function parallel-safe with cmd_up
-# (C3 / rip-cage-4c5.3 owns the cmd_up site; this function does NOT touch it).
+# comment header + eval line to .zshrc as a single base64-encoded block
+# (decoded with `base64 -d` at build time).  This is consistent with ADR-005
+# D7 (install = build-time) and keeps this function parallel-safe with
+# cmd_up (C3 / rip-cage-4c5.3 owns the cmd_up site; this function does NOT
+# touch it).
+#
+# Escaping safety (rip-cage-l906): the block is built HOST-SIDE with real
+# $'\n' newlines and base64-encoded whole, so there is no printf-escaping
+# level left to get wrong -- a prior version built the comment header via
+# `printf '\\n...\\n'` inside a Dockerfile RUN string, which bash
+# double-quote collapsing turned into a literal backslash-n that printf
+# then rendered as literal text instead of a newline, mashing the comment
+# header and the eval line onto one unparseable .zshrc line so the eval
+# line never executed.
 #
 # Injection safety: shell_init is validated to be a single line (no embedded
 # newlines) before it is baked into a RUN step and a .zshrc echo.  The manifest
@@ -1711,7 +1722,7 @@ _manifest_build_dockerfile_path() {
 # SHELL-INTEGRATION entries), this function emits NOTHING.
 #
 # Output: zero or more Dockerfile RUN steps of the form:
-#   RUN printf '\n# manifest SHELL-INTEGRATION: <name>\neval "..."\n' >> /home/agent/.zshrc
+#   RUN echo '<base64 of: \n# manifest SHELL-INTEGRATION: <name>\neval "..."\n>' | base64 -d >> /home/agent/.zshrc
 # one per SHELL-INTEGRATION entry.
 _manifest_generate_shell_init_zshrc_steps() {
   local manifest_json
@@ -1752,14 +1763,25 @@ _manifest_generate_shell_init_zshrc_steps() {
     fi
 
     # Emit a Dockerfile RUN step that appends the eval line to .zshrc.
-    # Quote-safe mechanism: base64-encode shell_init so the Dockerfile RUN step
-    # is safe against ANY single-line content (single-quotes, double-quotes, $, parens, etc.).
-    # base64 output is quote/newline-safe by construction.
-    # The generated step decodes at build time and appends to .zshrc.
-    local b64_shell_init
-    b64_shell_init=$(printf '%s' "$shell_init" | base64 | tr -d '\n')
+    #
+    # Quote-safe AND escaping-safe mechanism: base64-encode the WHOLE block
+    # (comment header + shell_init), built host-side with REAL newlines via
+    # $'\n' concatenation (NOT command substitution -- $(...) strips trailing
+    # newlines, which would silently eat the block's own trailing newline).
+    # A single `echo '<b64>' | base64 -d >> .zshrc` then decodes at build
+    # time with zero escaping levels left to get wrong -- this replaces the
+    # old two-escaping-level `printf '\\n...\\n'` mechanism, where bash
+    # double-quote collapsing turned the intended newline into a LITERAL
+    # backslash-n that printf then rendered as literal text, mashing the
+    # comment header and the eval line onto one unparseable .zshrc line so
+    # the eval line never executed (rip-cage-l906). base64 output is
+    # quote/newline-safe by construction against ANY single-line shell_init
+    # content (single-quotes, double-quotes, $, parens, etc.).
+    local zshrc_block b64_zshrc_block
+    zshrc_block=$'\n'"# rip-cage manifest SHELL-INTEGRATION: ${name}"$'\n'"${shell_init}"$'\n'
+    b64_zshrc_block=$(printf '%s' "$zshrc_block" | base64 | tr -d '\n')
     steps+="RUN # manifest SHELL-INTEGRATION: ${name}"$'\n'
-    steps+="RUN printf '\\\\n# rip-cage manifest SHELL-INTEGRATION: ${name}\\\\n' >> /home/agent/.zshrc && echo '${b64_shell_init}' | base64 -d >> /home/agent/.zshrc && echo >> /home/agent/.zshrc"$'\n'
+    steps+="RUN echo '${b64_zshrc_block}' | base64 -d >> /home/agent/.zshrc"$'\n'
   done
 
   # Strip trailing newline for clean output; caller appends to Dockerfile.

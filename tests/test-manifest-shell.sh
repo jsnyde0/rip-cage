@@ -73,20 +73,24 @@ test_t1a_with_shell_integration_steps_present() {
   stderr_file=$(mktemp)
   exit_code=0
   out=$(run_manifest_generate_shell_init_steps "$stderr_file") || exit_code=$?
-  # Positive sentinel: the generated step must encode the eval line via base64.
-  # With base64-safe baking (Fix 1), the raw eval string is not embedded verbatim;
-  # instead we verify that the base64 payload in the step decodes to the expected line.
-  # SC2016 intentional: we want the literal string 'eval "$(fake-tool init zsh)"' for grep.
+  # Positive sentinel: the generated step must encode the WHOLE .zshrc block
+  # (comment header + shell_init, joined by REAL newlines -- rip-cage-l906
+  # fix) via base64. The expected value here is an INDEPENDENT literal built
+  # with $'\n' concatenation, not recomputed the way the generator computes
+  # it -- so this test can actually disagree with a regression (e.g. the old
+  # printf-escaping bug, which would decode to a single mashed line here).
+  # SC2016 intentional: literal '$(...)' wanted, not command substitution.
   # shellcheck disable=SC2016
-  local expected_eval='eval "$(fake-tool init zsh)"'
+  local expected_block=$'\n''# rip-cage manifest SHELL-INTEGRATION: fake-tool'$'\n''eval "$(fake-tool init zsh)"'$'\n'
   # Extract the base64 payload from the step (single-quoted echo arg before '| base64 -d')
   local b64_payload decoded
   b64_payload=$(echo "$out" | grep -o "'[A-Za-z0-9+/=]*'" | tr -d "'" | head -1)
-  decoded=$(echo "$b64_payload" | base64 -d 2>/dev/null) || true
-  if [[ "$exit_code" -eq 0 ]] && echo "$out" | grep -q "base64" && [[ "$decoded" == "$expected_eval" ]]; then
-    pass "T1a WITH SHELL-INTEGRATION: generated steps encode eval line via base64 (decodes to '${expected_eval}')"
+  decoded=$(printf '%s' "$b64_payload" | base64 -d 2>/dev/null; echo x)
+  decoded="${decoded%x}"
+  if [[ "$exit_code" -eq 0 ]] && echo "$out" | grep -q "base64" && [[ "$decoded" == "$expected_block" ]]; then
+    pass "T1a WITH SHELL-INTEGRATION: generated step base64-encodes the comment header + eval line as separate real-newline-terminated lines"
   else
-    fail "T1a WITH SHELL-INTEGRATION: expected base64-encoded eval line in output. exit=${exit_code} decoded='${decoded}' expected='${expected_eval}' stdout='${out}' stderr=$(cat "$stderr_file")"
+    fail "T1a WITH SHELL-INTEGRATION: expected base64-encoded block with real newlines separating comment header and eval line (literal-backslash-n regression check). exit=${exit_code} decoded=$(printf '%q' "$decoded") expected=$(printf '%q' "$expected_block") stdout='${out}' stderr=$(cat "$stderr_file")"
   fi
   rm -f "$stderr_file"
   teardown_manifest_sandbox
@@ -437,6 +441,95 @@ test_t1f_build_dockerfile_path_includes_shell_init() {
 }
 
 # ---------------------------------------------------------------------------
+# T1g — GENERATOR-LEVEL regression guard (host-only, NO image build): the
+# emitted Dockerfile RUN step, when actually EXECUTED (not grepped), must
+# produce REAL newlines separating the comment header from the shell_init
+# eval line in /home/agent/.zshrc — not a literal backslash-n.
+#
+# Root cause this guards against (rip-cage-l906): the old generator built the
+# comment header via `printf '\\n# ...\\n'` inside a Dockerfile RUN string.
+# Bash double-quote collapsing meant the Dockerfile line carried a literal
+# two-character `\n` (backslash + n), which `printf` then rendered as literal
+# text, NOT a newline — the comment header and the eval line were mashed onto
+# one unparseable .zshrc line and the eval line never executed. grep-based
+# assertions (T1a/T1b/T1d/T1f) could not catch this because the shell_init
+# TEXT was present in the output either way — only executing the emitted
+# shell fragment and inspecting real byte structure reveals the defect.
+#
+# Mechanism: extract the RUN step that appends to .zshrc, strip the leading
+# 'RUN ' Dockerfile directive, rewrite the hardcoded /home/agent/.zshrc path
+# to a scratch temp file, execute the resulting shell body with `sh -c`
+# (materializing exactly what Docker's RUN would write, without a docker
+# build), then assert BYTE-LEVEL (mapfile real-newline split + exact line
+# equality, od -c included as diagnostic evidence) that the comment header
+# and the shell_init eval line each land on their own real-newline-terminated
+# line. Must FAIL against the old buggy generator, PASS against the fixed one.
+# ---------------------------------------------------------------------------
+test_t1g_generator_emits_real_newlines_not_literal_backslash_n() {
+  setup_manifest_sandbox "manifest-with-shell-integration.yaml"
+  local stderr_file out exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  out=$(run_manifest_generate_shell_init_steps "$stderr_file") || exit_code=$?
+  if [[ "$exit_code" -ne 0 ]]; then
+    fail "T1g Generator-level regression guard: generator failed. exit=${exit_code} stderr=$(cat "$stderr_file")"
+    rm -f "$stderr_file"
+    teardown_manifest_sandbox
+    return
+  fi
+
+  # Isolate the RUN step that actually appends to .zshrc (not the separate
+  # comment-only 'RUN # manifest SHELL-INTEGRATION: <name>' marker line).
+  local zshrc_run_step
+  zshrc_run_step=$(echo "$out" | grep '^RUN ' | grep -F '/home/agent/.zshrc' | head -1)
+  if [[ -z "$zshrc_run_step" ]]; then
+    fail "T1g Generator-level regression guard: no RUN step appending to /home/agent/.zshrc found in generator output. out='${out}'"
+    rm -f "$stderr_file"
+    teardown_manifest_sandbox
+    return
+  fi
+
+  # Strip 'RUN ' and rewrite the hardcoded .zshrc path to a scratch temp file,
+  # then EXECUTE the body — materializes what the Dockerfile RUN step writes.
+  local body tmp_zshrc
+  body="${zshrc_run_step#RUN }"
+  tmp_zshrc=$(mktemp "${TMPDIR:-/tmp}/rc-t1g-zshrc-XXXXXX")
+  : > "$tmp_zshrc"
+  body="${body//\/home\/agent\/.zshrc/$tmp_zshrc}"
+  if ! sh -c "$body"; then
+    fail "T1g Generator-level regression guard: executing the rewritten RUN step body failed (body='${body}')"
+    rm -f "$tmp_zshrc" "$stderr_file"
+    teardown_manifest_sandbox
+    return
+  fi
+
+  # Byte-level assertion (real-newline split + exact line equality — NOT
+  # grep/substring matching, which is exactly what let this bug hide for
+  # weeks): the comment header and the eval line must each be a COMPLETE,
+  # standalone line in the materialized file.
+  local expected_comment='# rip-cage manifest SHELL-INTEGRATION: fake-tool'
+  # shellcheck disable=SC2016
+  local expected_eval='eval "$(fake-tool init zsh)"'
+  local lines comment_line_found eval_line_found l
+  mapfile -t lines < "$tmp_zshrc"
+  comment_line_found=0
+  eval_line_found=0
+  for l in "${lines[@]}"; do
+    [[ "$l" == "$expected_comment" ]] && comment_line_found=1
+    [[ "$l" == "$expected_eval" ]] && eval_line_found=1
+  done
+
+  if [[ "$comment_line_found" -eq 1 && "$eval_line_found" -eq 1 ]]; then
+    pass "T1g Generator-level regression guard: comment header and shell_init eval line each land on their own real-newline-terminated line in materialized .zshrc"
+  else
+    fail "T1g Generator-level regression guard FAILED (literal-backslash-n regression): comment header and/or eval line are not standalone real-newline-terminated lines. od -c: $(od -c "$tmp_zshrc" | head -10)"
+  fi
+
+  rm -f "$tmp_zshrc" "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # T2 — E2E (NEEDS_CONTAINER / RC_E2E=1)
 #
 # Build a cage image WITH a SHELL-INTEGRATION entry using a binary already
@@ -509,46 +602,65 @@ test_t2_e2e_shell_integration_fires_interactively() {
   # Discriminating probe: zsh -lic (login + interactive) loads .zshrc
   # The eval line in .zshrc sets alias __rc_shell_hook_fired=true
   # A non-interactive zsh -c would NOT load the hook.
-  local probe_with_interactive
-  probe_with_interactive=$(docker run --rm "$image_with" zsh -lic "alias __rc_shell_hook_fired 2>/dev/null && echo HOOK_FIRED" 2>/dev/null) || true
+  #
+  # stderr is captured (NOT discarded) on every docker-run probe below
+  # (rip-cage-l906 F3): a prior version of this test used `2>/dev/null` on
+  # the outer `docker run`, so a T2a failure reported an empty probe string
+  # with no diagnosis -- that cost two triage rounds tracking down the
+  # printf-escaping bug. The INNER `alias ... 2>/dev/null` (part of the
+  # probed shell command itself) is deliberately kept: it silences the
+  # expected "no such alias" message from zsh's `alias` builtin when the
+  # hook has NOT fired, which is normal control flow for this probe, not a
+  # diagnostic signal.
+  local probe_with_interactive probe_with_interactive_stderr_file
+  probe_with_interactive_stderr_file=$(mktemp)
+  probe_with_interactive=$(docker run --rm "$image_with" zsh -lic "alias __rc_shell_hook_fired 2>/dev/null && echo HOOK_FIRED" 2>"$probe_with_interactive_stderr_file") || true
   if echo "$probe_with_interactive" | grep -q "HOOK_FIRED"; then
     pass "T2a SHELL-INTEGRATION hook fires in interactive shell (zsh -lic): eval line loaded from .zshrc"
   else
-    fail "T2a SHELL-INTEGRATION hook NOT firing interactively. probe='${probe_with_interactive}'"
+    fail "T2a SHELL-INTEGRATION hook NOT firing interactively. probe='${probe_with_interactive}' docker_stderr='$(cat "$probe_with_interactive_stderr_file")'"
   fi
+  rm -f "$probe_with_interactive_stderr_file"
 
   # Verify non-interactive zsh DOES NOT fire the hook (proving it's rc-dependent)
-  local probe_with_noninteractive
-  probe_with_noninteractive=$(docker run --rm "$image_with" zsh -c "alias __rc_shell_hook_fired 2>/dev/null && echo HOOK_FIRED" 2>/dev/null) || true
+  local probe_with_noninteractive probe_with_noninteractive_stderr_file
+  probe_with_noninteractive_stderr_file=$(mktemp)
+  probe_with_noninteractive=$(docker run --rm "$image_with" zsh -c "alias __rc_shell_hook_fired 2>/dev/null && echo HOOK_FIRED" 2>"$probe_with_noninteractive_stderr_file") || true
   if ! echo "$probe_with_noninteractive" | grep -q "HOOK_FIRED"; then
     pass "T2b Hook does NOT fire in non-interactive shell (zsh -c): proves hook is .zshrc-dependent (not a plain binary)"
   else
-    fail "T2b Hook fires even in non-interactive shell — this means it's not rc-dependent. probe='${probe_with_noninteractive}'"
+    fail "T2b Hook fires even in non-interactive shell — this means it's not rc-dependent. probe='${probe_with_noninteractive}' docker_stderr='$(cat "$probe_with_noninteractive_stderr_file")'"
   fi
+  rm -f "$probe_with_noninteractive_stderr_file"
 
   # Counterfactual: WITHOUT entry, .zshrc has no eval line for hook
-  local probe_without_interactive
-  probe_without_interactive=$(docker run --rm "$image_without" zsh -lic "alias __rc_shell_hook_fired 2>/dev/null && echo HOOK_FIRED" 2>/dev/null) || true
+  local probe_without_interactive probe_without_interactive_stderr_file
+  probe_without_interactive_stderr_file=$(mktemp)
+  probe_without_interactive=$(docker run --rm "$image_without" zsh -lic "alias __rc_shell_hook_fired 2>/dev/null && echo HOOK_FIRED" 2>"$probe_without_interactive_stderr_file") || true
   if ! echo "$probe_without_interactive" | grep -q "HOOK_FIRED"; then
     pass "T2c SHELL-INTEGRATION absent in WITHOUT-entry image: hook NOT fired in interactive shell (counterfactual holds)"
   else
-    fail "T2c Hook fired even WITHOUT SHELL-INTEGRATION entry — counterfactual FAILED. probe='${probe_without_interactive}'"
+    fail "T2c Hook fired even WITHOUT SHELL-INTEGRATION entry — counterfactual FAILED. probe='${probe_without_interactive}' docker_stderr='$(cat "$probe_without_interactive_stderr_file")'"
   fi
+  rm -f "$probe_without_interactive_stderr_file"
 
   # Verify .zshrc contains eval line WITH entry but not WITHOUT
-  local zshrc_with zshrc_without
-  zshrc_with=$(docker run --rm "$image_with" cat /home/agent/.zshrc 2>/dev/null) || true
-  zshrc_without=$(docker run --rm "$image_without" cat /home/agent/.zshrc 2>/dev/null) || true
+  local zshrc_with zshrc_without zshrc_with_stderr_file zshrc_without_stderr_file
+  zshrc_with_stderr_file=$(mktemp)
+  zshrc_without_stderr_file=$(mktemp)
+  zshrc_with=$(docker run --rm "$image_with" cat /home/agent/.zshrc 2>"$zshrc_with_stderr_file") || true
+  zshrc_without=$(docker run --rm "$image_without" cat /home/agent/.zshrc 2>"$zshrc_without_stderr_file") || true
   if echo "$zshrc_with" | grep -q "__rc_shell_hook_fired"; then
     pass "T2d .zshrc in WITH-entry image contains the eval line"
   else
-    fail "T2d .zshrc in WITH-entry image does NOT contain the eval line. zshrc='${zshrc_with}'"
+    fail "T2d .zshrc in WITH-entry image does NOT contain the eval line. zshrc='${zshrc_with}' docker_stderr='$(cat "$zshrc_with_stderr_file")'"
   fi
   if ! echo "$zshrc_without" | grep -q "__rc_shell_hook_fired"; then
     pass "T2e .zshrc in WITHOUT-entry image does NOT contain the eval line (eval line absent without entry)"
   else
-    fail "T2e .zshrc in WITHOUT-entry image CONTAINS the eval line — contaminated build. zshrc='${zshrc_without}'"
+    fail "T2e .zshrc in WITHOUT-entry image CONTAINS the eval line — contaminated build. zshrc='${zshrc_without}' docker_stderr='$(cat "$zshrc_without_stderr_file")'"
   fi
+  rm -f "$zshrc_with_stderr_file" "$zshrc_without_stderr_file"
 }
 
 # ---------------------------------------------------------------------------
@@ -574,6 +686,7 @@ test_t1e4_validator_rejects_multiline_install_cmd_shell_integration
 test_t1e5_single_line_install_cmd_shell_integration_accepted_and_baked
 test_t1e6_strict_parse_rejects_hostile_build_source_shell_integration
 test_t1f_build_dockerfile_path_includes_shell_init
+test_t1g_generator_emits_real_newlines_not_literal_backslash_n
 
 echo ""
 echo "--- T2: E2E counterfactual (NEEDS_CONTAINER) ---"
