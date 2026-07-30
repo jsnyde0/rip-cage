@@ -440,11 +440,36 @@ test_t1f_build_dockerfile_path_includes_shell_init() {
   teardown_manifest_sandbox
 }
 
+# _t1g_comment_precedes_eval_line FILE EXPECTED_COMMENT EXPECTED_EVAL
+# Order-and-adjacency check (rip-cage-l906.4 review F5): reads FILE line-by-
+# line with a bash-3.2-compatible `while IFS= read -r` loop (NOT `mapfile`,
+# which does not exist on the macOS system bash — rip-cage-l906.4 review F3 —
+# and NOT a `$(...)` command-substitution + IFS split, which would silently
+# strip the file's real trailing newline before the split ever sees it,
+# masking exactly the kind of newline-handling regression this check exists
+# to catch). Returns 0 (echoes nothing) only if EXPECTED_EVAL's line is the
+# line IMMEDIATELY AFTER EXPECTED_COMMENT's line — membership of both lines
+# ANYWHERE in the file is NOT sufficient (a reversed-order or junk-interleaved
+# block would satisfy mere membership but must FAIL this check).
+_t1g_comment_precedes_eval_line() {
+  local file="$1" expected_comment="$2" expected_eval="$3"
+  local idx=0 comment_idx=-1 eval_idx=-1 l
+  while IFS= read -r l; do
+    [[ "$l" == "$expected_comment" ]] && comment_idx=$idx
+    [[ "$l" == "$expected_eval" ]] && eval_idx=$idx
+    idx=$((idx + 1))
+  done < "$file"
+  [[ "$comment_idx" -ge 0 && "$eval_idx" -eq $((comment_idx + 1)) ]]
+}
+
 # ---------------------------------------------------------------------------
 # T1g — GENERATOR-LEVEL regression guard (host-only, NO image build): the
 # emitted Dockerfile RUN step, when actually EXECUTED (not grepped), must
 # produce REAL newlines separating the comment header from the shell_init
-# eval line in /home/agent/.zshrc — not a literal backslash-n.
+# eval line in /home/agent/.zshrc — not a literal backslash-n — AND the eval
+# line must be PRECEDED BY its comment header ON ITS OWN LINE, immediately
+# adjacent (order matters, not mere membership — rip-cage-l906.4 review F5;
+# see the parent bead's acceptance bullet 1).
 #
 # Root cause this guards against (rip-cage-l906): the old generator built the
 # comment header via `printf '\\n# ...\\n'` inside a Dockerfile RUN string.
@@ -460,10 +485,10 @@ test_t1f_build_dockerfile_path_includes_shell_init() {
 # 'RUN ' Dockerfile directive, rewrite the hardcoded /home/agent/.zshrc path
 # to a scratch temp file, execute the resulting shell body with `sh -c`
 # (materializing exactly what Docker's RUN would write, without a docker
-# build), then assert BYTE-LEVEL (mapfile real-newline split + exact line
-# equality, od -c included as diagnostic evidence) that the comment header
-# and the shell_init eval line each land on their own real-newline-terminated
-# line. Must FAIL against the old buggy generator, PASS against the fixed one.
+# build), then assert BYTE-LEVEL (real-newline split + exact line equality +
+# ADJACENT ORDER, od -c included as diagnostic evidence) via
+# _t1g_comment_precedes_eval_line. Must FAIL against the old buggy generator,
+# PASS against the fixed one.
 # ---------------------------------------------------------------------------
 test_t1g_generator_emits_real_newlines_not_literal_backslash_n() {
   setup_manifest_sandbox "manifest-with-shell-integration.yaml"
@@ -478,16 +503,26 @@ test_t1g_generator_emits_real_newlines_not_literal_backslash_n() {
     return
   fi
 
-  # Isolate the RUN step that actually appends to .zshrc (not the separate
-  # comment-only 'RUN # manifest SHELL-INTEGRATION: <name>' marker line).
-  local zshrc_run_step
-  zshrc_run_step=$(echo "$out" | grep '^RUN ' | grep -F '/home/agent/.zshrc' | head -1)
-  if [[ -z "$zshrc_run_step" ]]; then
-    fail "T1g Generator-level regression guard: no RUN step appending to /home/agent/.zshrc found in generator output. out='${out}'"
+  # Isolate the RUN step(s) that actually append to .zshrc (not the separate
+  # comment-only 'RUN # manifest SHELL-INTEGRATION: <name>' marker line(s)).
+  # The fixture carries exactly ONE SHELL-INTEGRATION entry, so exactly ONE
+  # such RUN step is expected. Fail loud (not `head -1`) if that count is
+  # ever anything other than 1 — silently truncating to the first match would
+  # leave a future multi-entry (or multi-step-per-entry) emission only
+  # PARTIALLY checked (rip-cage-l906.4 review F5).
+  local zshrc_run_lines zshrc_run_line_count
+  zshrc_run_lines=$(echo "$out" | grep '^RUN ' | grep -F '/home/agent/.zshrc')
+  zshrc_run_line_count=0
+  if [[ -n "$zshrc_run_lines" ]]; then
+    zshrc_run_line_count=$(echo "$zshrc_run_lines" | grep -c '.')
+  fi
+  if [[ "$zshrc_run_line_count" -ne 1 ]]; then
+    fail "T1g Generator-level regression guard: expected exactly 1 RUN step appending to /home/agent/.zshrc (fixture has exactly 1 SHELL-INTEGRATION entry), found ${zshrc_run_line_count}. out='${out}'"
     rm -f "$stderr_file"
     teardown_manifest_sandbox
     return
   fi
+  local zshrc_run_step="$zshrc_run_lines"
 
   # Strip 'RUN ' and rewrite the hardcoded .zshrc path to a scratch temp file,
   # then EXECUTE the body — materializes what the Dockerfile RUN step writes.
@@ -503,29 +538,104 @@ test_t1g_generator_emits_real_newlines_not_literal_backslash_n() {
     return
   fi
 
-  # Byte-level assertion (real-newline split + exact line equality — NOT
-  # grep/substring matching, which is exactly what let this bug hide for
-  # weeks): the comment header and the eval line must each be a COMPLETE,
-  # standalone line in the materialized file.
+  # Byte-level, ORDER-SENSITIVE assertion (real-newline split + exact line
+  # equality + adjacency — NOT grep/substring matching, and NOT independent
+  # membership flags, either of which let a reversed-order or junk-
+  # interleaved block silently pass; rip-cage-l906.4 review F5).
   local expected_comment='# rip-cage manifest SHELL-INTEGRATION: fake-tool'
   # shellcheck disable=SC2016
   local expected_eval='eval "$(fake-tool init zsh)"'
-  local lines comment_line_found eval_line_found l
-  mapfile -t lines < "$tmp_zshrc"
-  comment_line_found=0
-  eval_line_found=0
-  for l in "${lines[@]}"; do
-    [[ "$l" == "$expected_comment" ]] && comment_line_found=1
-    [[ "$l" == "$expected_eval" ]] && eval_line_found=1
-  done
 
-  if [[ "$comment_line_found" -eq 1 && "$eval_line_found" -eq 1 ]]; then
-    pass "T1g Generator-level regression guard: comment header and shell_init eval line each land on their own real-newline-terminated line in materialized .zshrc"
+  if _t1g_comment_precedes_eval_line "$tmp_zshrc" "$expected_comment" "$expected_eval"; then
+    pass "T1g Generator-level regression guard: shell_init eval line is on its own real-newline-terminated line, immediately preceded by its comment header on its own line, in materialized .zshrc"
   else
-    fail "T1g Generator-level regression guard FAILED (literal-backslash-n regression): comment header and/or eval line are not standalone real-newline-terminated lines. od -c: $(od -c "$tmp_zshrc" | head -10)"
+    fail "T1g Generator-level regression guard FAILED (literal-backslash-n and/or order regression): eval line is not immediately preceded by its comment header as two standalone real-newline-terminated lines. od -c: $(od -c "$tmp_zshrc" | head -10)"
   fi
 
   rm -f "$tmp_zshrc" "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
+# T1h — Order-check REGRESSION GUARD for _t1g_comment_precedes_eval_line
+# itself (rip-cage-l906.4 review F5): a prior version of T1g set two
+# INDEPENDENT membership flags (comment-found, eval-found) rather than
+# checking order/adjacency — a materialized .zshrc with the comment and eval
+# lines REVERSED, or with junk interleaved between them, would still satisfy
+# that membership-only check. This test feeds
+# _t1g_comment_precedes_eval_line synthetic (non-generator) inputs to prove
+# it actually enforces order, not just membership: PASS on well-ordered
+# input, FAIL on reversed-order input, FAIL on junk-interleaved input.
+# ---------------------------------------------------------------------------
+test_t1h_order_check_rejects_reversed_and_interleaved_lines() {
+  local comment='# rip-cage manifest SHELL-INTEGRATION: fake-tool'
+  # shellcheck disable=SC2016
+  local eval_line='eval "$(fake-tool init zsh)"'
+  local tmp
+
+  # Case 1 (positive control): correct order → PASS.
+  tmp=$(mktemp "${TMPDIR:-/tmp}/rc-t1h-ok-XXXXXX")
+  printf '%s\n%s\n' "$comment" "$eval_line" > "$tmp"
+  if _t1g_comment_precedes_eval_line "$tmp" "$comment" "$eval_line"; then
+    pass "T1h Order-check helper: correctly-ordered comment-then-eval PASSES (positive control)"
+  else
+    fail "T1h SENTINEL FAILED: order-check helper rejected correctly-ordered input — cannot trust the negative cases below"
+  fi
+  rm -f "$tmp"
+
+  # Case 2: REVERSED order (eval line before comment) → must FAIL.
+  tmp=$(mktemp "${TMPDIR:-/tmp}/rc-t1h-reversed-XXXXXX")
+  printf '%s\n%s\n' "$eval_line" "$comment" > "$tmp"
+  if _t1g_comment_precedes_eval_line "$tmp" "$comment" "$eval_line"; then
+    fail "T1h Order-check helper ACCEPTED reversed-order input (eval line before its comment header) — membership-only check regression (rip-cage-l906.4 F5)"
+  else
+    pass "T1h Order-check helper correctly REJECTS reversed-order input (eval line before its comment header)"
+  fi
+  rm -f "$tmp"
+
+  # Case 3: junk line INTERLEAVED between comment and eval → must FAIL
+  # (adjacency, not just "eval appears somewhere after comment").
+  tmp=$(mktemp "${TMPDIR:-/tmp}/rc-t1h-interleaved-XXXXXX")
+  printf '%s\n%s\n%s\n' "$comment" "RUN rm -rf /" "$eval_line" > "$tmp"
+  if _t1g_comment_precedes_eval_line "$tmp" "$comment" "$eval_line"; then
+    fail "T1h Order-check helper ACCEPTED junk interleaved between comment header and eval line — adjacency regression (rip-cage-l906.4 F5)"
+  else
+    pass "T1h Order-check helper correctly REJECTS junk interleaved between comment header and eval line"
+  fi
+  rm -f "$tmp"
+}
+
+# ---------------------------------------------------------------------------
+# T1i — Injection safety: a SHELL-INTEGRATION 'name' containing an embedded
+# newline cannot inject an arbitrary Dockerfile directive via the
+# 'RUN # manifest SHELL-INTEGRATION: <name>' marker line
+# (rip-cage-l906.4 F2). Reviewer's live repro:
+#   name: "good\nRUN touch /pwned"
+# emits `RUN touch /pwned` as its own real Dockerfile RUN directive — the
+# a4d0e37 fix base64-encoded the .zshrc PAYLOAD line but left this marker
+# line's ${name} interpolation raw.
+#
+# Fix shape: reject the hostile name at VALIDATION time (a shared
+# [a-z0-9_-] allowlist applied to 'name' for every archetype, rip-cage-l906.4)
+# so the generator — which only ever runs via _manifest_load, which validates
+# first — never sees it, rather than base64-encoding yet another call site
+# (escaping-level-counting, the defect class rip-cage-l906 itself was).
+# ---------------------------------------------------------------------------
+test_t1i_injection_hostile_newline_name_rejected_before_marker_bake() {
+  setup_manifest_sandbox "manifest-hostile-name-newline-shell-integration.yaml"
+  local stderr_file out exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  out=$(run_manifest_generate_shell_init_steps "$stderr_file") || exit_code=$?
+  local err_output
+  err_output=$(cat "$stderr_file")
+
+  if [[ "$exit_code" -ne 0 ]] && echo "$err_output" | grep -qi "name"; then
+    pass "T1i SHELL-INTEGRATION name with embedded newline is rejected before the marker-line bake (names 'name' in the error)"
+  else
+    fail "T1i expected non-zero exit + 'name' named in error (hostile newline-name must be rejected, not baked). exit=${exit_code} stdout='${out}' stderr='${err_output}'"
+  fi
+  rm -f "$stderr_file"
   teardown_manifest_sandbox
 }
 
@@ -687,6 +797,8 @@ test_t1e5_single_line_install_cmd_shell_integration_accepted_and_baked
 test_t1e6_strict_parse_rejects_hostile_build_source_shell_integration
 test_t1f_build_dockerfile_path_includes_shell_init
 test_t1g_generator_emits_real_newlines_not_literal_backslash_n
+test_t1h_order_check_rejects_reversed_and_interleaved_lines
+test_t1i_injection_hostile_newline_name_rejected_before_marker_bake
 
 echo ""
 echo "--- T2: E2E counterfactual (NEEDS_CONTAINER) ---"

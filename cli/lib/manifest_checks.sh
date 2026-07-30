@@ -400,6 +400,27 @@ _manifest_validate() {
       return 1
     fi
 
+    # Name-format check (ALL archetypes, rip-cage-l906.4): 'name' is baked
+    # RAW into generated Dockerfile RUN lines by multiple generators with NO
+    # archetype filter — the IN-CAGE-DAEMON MCP-fragment merge step embeds it
+    # inside a single-quoted `jq --arg name '<name>'` (a single-quote in name
+    # closes that quote and lets the rest of 'name' execute as shell at
+    # `docker build` time), and the SHELL-INTEGRATION marker line embeds it
+    # in a bare `RUN # manifest SHELL-INTEGRATION: <name>` line (a newline in
+    # name emits an arbitrary extra Dockerfile directive). Rather than escape
+    # 'name' correctly at every one of those call sites (escaping-level-
+    # counting — the exact defect class that caused rip-cage-l906 in the
+    # first place), enforce ONE conservative allowlist ONCE, here, before any
+    # archetype-specific logic runs. In-repo names are lowercase alphanumeric
+    # plus hyphen/underscore only (manifest/default-tools.yaml, every
+    # tests/fixtures/*.yaml, every examples/ recipe) so this is not expected
+    # to break any legitimate manifest. Mirrors (and now supersedes) the
+    # MULTIPLEXER-only version of this check that used to live further down.
+    if [[ ! "$name" =~ ^[a-z0-9_-]+$ ]]; then
+      echo "Error: manifest '${file}' tools[${idx}] ('${name}'): 'name' contains characters outside [a-z0-9_-] — names are baked raw into generated Dockerfile RUN lines by multiple generators (IN-CAGE-DAEMON MCP-fragment jq --arg, SHELL-INTEGRATION marker line, MULTIPLEXER directory path, ...) and must be lowercase alphanumeric, hyphens, or underscores only (ADR-001 fail-loud; name-format check; rip-cage-l906.4)." >&2
+      return 1
+    fi
+
     # 'archetype' is required and must be one of the three valid values
     local archetype
     archetype=$(jq -r '.archetype // "___RC_ABSENT___"' <<<"$entry" 2>/dev/null)
@@ -792,15 +813,13 @@ _manifest_validate() {
         # Hook-bounds check: each hook command is statically asserted to not weaken the
         # safety floor (ADR-005 D10/D11, ADR-001 fail-loud). Parse, never run.
 
-        # Name format check: MULTIPLEXER names are used as directory components under
-        # /etc/rip-cage/multiplexers/<name>/ in the image. Only [a-z0-9_-] is safe —
-        # quotes, backticks, spaces, slashes, or other metacharacters produce malformed
-        # Dockerfile RUN/echo steps that fail docker build with an opaque syntax error.
-        # Fail loud here with a clear message (ADR-001) rather than letting docker fail later.
-        if [[ ! "$name" =~ ^[a-z0-9_-]+$ ]]; then
-          echo "Error: manifest '${file}' tools[${idx}] ('${name}'): MULTIPLEXER name '${name}' contains characters outside [a-z0-9_-] — names are used as directory components in the image registry (/etc/rip-cage/multiplexers/<name>) and must be lowercase alphanumeric, hyphens, or underscores only (ADR-001 fail-loud; name-format check)." >&2
-          return 1
-        fi
+        # Name format check: MOVED to the universal, ALL-archetypes check
+        # near the top of this loop (rip-cage-l906.4) — MULTIPLEXER names are
+        # ALSO used as directory components under
+        # /etc/rip-cage/multiplexers/<name>/ in the image, but the
+        # [a-z0-9_-] allowlist is now enforced once, for every archetype, not
+        # just this one (T1n in test-manifest-multiplexer-validate.sh still
+        # covers this archetype's behavior via the shared check).
 
         # Strict-parse: reject unknown/extra top-level fields on MULTIPLEXER entries.
         # Known fields: name, archetype, version_pin, hooks
@@ -1715,8 +1734,17 @@ _manifest_build_dockerfile_path() {
 # line never executed.
 #
 # Injection safety: shell_init is validated to be a single line (no embedded
-# newlines) before it is baked into a RUN step and a .zshrc echo.  The manifest
-# is host-only (lower risk) but we do not bake unvalidated input.
+# newlines) before it is baked into a RUN step and a .zshrc echo, and the
+# WHOLE .zshrc block (comment header + shell_init) is base64-encoded, so
+# quote/newline content in shell_init cannot break Dockerfile RUN-string
+# syntax.  'name' is ALSO baked raw into this function's marker line (`RUN #
+# manifest SHELL-INTEGRATION: ${name}`) and, via the sibling
+# _manifest_generate_daemon_mcp_dockerfile_steps, into a single-quoted `jq
+# --arg` -- both call sites are protected not by per-call-site escaping but
+# by a single shared name-format allowlist ([a-z0-9_-] only) enforced once,
+# for every archetype, in _manifest_validate before any generator ever sees
+# the entry (rip-cage-l906.4).  The manifest is host-only (lower risk) but we
+# do not bake unvalidated input.
 #
 # D8 byte-for-byte contract: when the default manifest is in effect (no
 # SHELL-INTEGRATION entries), this function emits NOTHING.

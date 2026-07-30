@@ -1,0 +1,6 @@
+version: 1
+tools:
+  - name: "good\nRUN touch /pwned"
+    archetype: SHELL-INTEGRATION
+    version_pin: "1.0.0"
+    shell_init: 'eval "$(fake-tool init zsh)"'

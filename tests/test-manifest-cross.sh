@@ -114,12 +114,61 @@ test_h1_default_manifest_returns_original_dockerfile() {
 # bridge IP). A host-side structural proxy that does not discriminate isolation
 # is worse than none. Deleted per R3 finding (rip-cage-4c5.8 adversarial review).
 
+# ---------------------------------------------------------------------------
+# H3 — Manifest 'name' with an embedded newline is REJECTED at validation
+# time, for EVERY archetype (TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON,
+# MULTIPLEXER) — not silently baked (rip-cage-l906.4).
+#
+# 'name' is interpolated raw into generated Dockerfile RUN lines by multiple
+# generators with no archetype filter (daemon/MCP jq --arg line, the
+# SHELL-INTEGRATION marker line, ...). A newline in 'name' lets a hostile
+# tools.yaml author inject an arbitrary Dockerfile directive at `rc build`
+# time. Prior to the fix, only MULTIPLEXER names were format-checked (and
+# only for the [a-z0-9_-] charset, at generation-adjacent validation, not
+# specifically newlines) — TOOL/SHELL-INTEGRATION/IN-CAGE-DAEMON names had NO
+# format guard at all. This test proves the guard is a single shared
+# validator applied uniformly, not a per-archetype patch.
+# ---------------------------------------------------------------------------
+test_h3_name_with_newline_rejected_every_archetype() {
+  local archetype fixture
+  for archetype in TOOL SHELL-INTEGRATION IN-CAGE-DAEMON MULTIPLEXER; do
+    case "$archetype" in
+      TOOL) fixture="manifest-hostile-name-newline-tool.yaml" ;;
+      SHELL-INTEGRATION) fixture="manifest-hostile-name-newline-shell-integration.yaml" ;;
+      IN-CAGE-DAEMON) fixture="manifest-hostile-name-newline-daemon.yaml" ;;
+      MULTIPLEXER) fixture="manifest-hostile-name-newline-multiplexer.yaml" ;;
+    esac
+
+    local test_home stderr_file exit_code
+    test_home=$(mktemp -d "${TMPDIR:-/tmp}/rc-cross-h3-XXXXXX")
+    mkdir -p "${test_home}/.config/rip-cage"
+    cp "${FIXTURES}/${fixture}" "${test_home}/.config/rip-cage/tools.yaml"
+    stderr_file=$(mktemp)
+    exit_code=0
+    HOME="$test_home" XDG_CONFIG_HOME="${test_home}/.config" \
+      bash -c "source '${RC}'; _manifest_validate '${test_home}/.config/rip-cage/tools.yaml'" \
+      >/dev/null 2>"$stderr_file" || exit_code=$?
+
+    local err_output
+    err_output=$(cat "$stderr_file")
+    rm -rf "$test_home"
+    rm -f "$stderr_file"
+
+    if [[ "$exit_code" -ne 0 ]] && echo "$err_output" | grep -qi "name"; then
+      pass "H3 ${archetype}: 'name' with embedded newline rejected at validation time (names 'name' in the error)"
+    else
+      fail "H3 ${archetype}: expected non-zero exit + 'name' named in error. exit=${exit_code} stderr='${err_output}'"
+    fi
+  done
+}
+
 echo "=== test-manifest-cross.sh — cross-cutting manifest regressions (rip-cage-4c5.8) ==="
 echo ""
 echo "--- HOST-ONLY: Structural regression checks (no container needed) ---"
 test_h1_default_manifest_returns_original_dockerfile
 # H2 removed (see comment above): was a vacuous storage-driver check, not a real
 # network-namespace probe. C3 (e2e) is the real loopback isolation runtime proof.
+test_h3_name_with_newline_rejected_every_archetype
 
 # =============================================================================
 # E2E TESTS (NEEDS_CONTAINER / RC_E2E=1)

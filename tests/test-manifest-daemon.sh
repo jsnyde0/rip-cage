@@ -508,6 +508,38 @@ test_t1e2_without_mcp_fragment_no_step() {
 }
 
 # ---------------------------------------------------------------------------
+# T1e3 — Injection safety: an IN-CAGE-DAEMON 'name' containing a single-quote
+# cannot break out of the single-quoted `jq --arg name '<name>'` that
+# _manifest_generate_daemon_mcp_dockerfile_steps bakes into a Dockerfile RUN
+# line (rip-cage-l906.4 F1). Reviewer's live repro:
+#   name: "d'; touch /pwned; echo '"
+# closes the single quote and executes `touch /pwned` at `docker build` time.
+#
+# Fix shape: reject the hostile name at VALIDATION time (a shared
+# [a-z0-9_-] allowlist applied to 'name' for every archetype, rip-cage-l906.4)
+# so the generator — which only ever runs via _manifest_load, which validates
+# first — never sees it. Proves the malformed RUN line is never emitted, not
+# merely that its exploit shape is escaped.
+# ---------------------------------------------------------------------------
+test_t1e3_injection_hostile_quote_name_rejected_before_mcp_bake() {
+  setup_manifest_sandbox "manifest-hostile-daemon-mcp-quote-name.yaml"
+  local stderr_file out exit_code
+  stderr_file=$(mktemp)
+  exit_code=0
+  out=$(run_manifest_generate_daemon_mcp_steps "$stderr_file") || exit_code=$?
+  local err_output
+  err_output=$(cat "$stderr_file")
+
+  if [[ "$exit_code" -ne 0 ]] && echo "$err_output" | grep -qi "name"; then
+    pass "T1e3 IN-CAGE-DAEMON name with embedded single-quote is rejected before the MCP-fragment bake (names 'name' in the error)"
+  else
+    fail "T1e3 expected non-zero exit + 'name' named in error (hostile quote-name must be rejected, not baked). exit=${exit_code} stdout='${out}' stderr='${err_output}'"
+  fi
+  rm -f "$stderr_file"
+  teardown_manifest_sandbox
+}
+
+# ---------------------------------------------------------------------------
 # T1f — _manifest_build_dockerfile_path includes daemon config step (WITH daemon)
 #         and returns ORIGINAL Dockerfile for default manifest (D8 invariant).
 # ---------------------------------------------------------------------------
@@ -937,6 +969,7 @@ test_t1d6_single_line_install_cmd_daemon_accepted_and_baked
 test_t1d7_strict_parse_rejects_hostile_build_source
 test_t1e_with_mcp_fragment_step_present
 test_t1e2_without_mcp_fragment_no_step
+test_t1e3_injection_hostile_quote_name_rejected_before_mcp_bake
 test_t1f_build_dockerfile_path_with_daemon
 test_t1f2_daemon_config_step_position
 test_t1g_d8_default_manifest_original_dockerfile
