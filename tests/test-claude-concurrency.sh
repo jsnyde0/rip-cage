@@ -11,8 +11,11 @@
 #   5. Single-agent no-regression — one-agent claude -p succeeds; auth-bootstrap intact
 #   6. Git-author proof        — herdr session (HERDR_SESSION) sets GIT_AUTHOR_NAME=<handle>
 #
-# NEGATIVE CONTROL: two concurrent claude -p pointed at ONE config dir MUST show
-# corruption/error — proves the harness can detect the bug under isolation failure.
+# NEGATIVE CONTROL: manufactures the sticky-miss trigger state directly (not
+# a real race — concurrency is not load-bearing for it) and asserts the
+# harness's own sticky-miss detector (_sticky_miss_detected, shared with
+# Step 1) actually recognizes the real claude binary's output — a detector
+# validation, not a race reproduction.
 #
 # Pre-conditions: docker available (image build only); rip-cage:latest built;
 # a running msb cage exists (name passed as RC_TEST_CONTAINER or auto-detected
@@ -81,6 +84,21 @@ cexec() { "$RC" exec "$CONTAINER" -- "$@"; }
 # Returns sorted list of filenames.
 _shared_root_files() {
   cexec find /home/agent/.claude -maxdepth 1 -not -name '.' 2>/dev/null | sort || true
+}
+
+# Shared sticky-miss clobber predicate (rip-cage-7atw.22 acceptance criterion
+# 4, round-2 review Ruling 2): the ONE place that defines what counts as
+# evidence of the sticky-miss "configuration file not found" bug. Step 1's
+# detector (below) and the NEGATIVE CONTROL both call this SAME function —
+# they must never each carry their own copy of the pattern, or they drift
+# apart (round 2's exact finding: the control's pattern had grown broader
+# and case-insensitive relative to the detector it was meant to validate,
+# so it could go green on text the real detector would never see). Case-
+# sensitive, single literal — matches the exact phrase documented as the
+# trigger text (examples/claude/claude-session-wrapper.sh:111) and nothing
+# broader.
+_sticky_miss_detected() {
+  grep -q 'configuration file not found' "$1"
 }
 
 # ---------------------------------------------------------------------------
@@ -214,12 +232,12 @@ fi
 
 # Only assert "no loop" if we have the positive sentinel (both ran and printed READY)
 if [[ "$BOTH_READY" == "true" ]]; then
-  if grep -q 'configuration file not found' "$OUT_A"; then
+  if _sticky_miss_detected "$OUT_A"; then
     fail "Agent A stdout contains 'configuration file not found' (the clobber bug!)" ""
   else
     pass "Agent A stdout: no 'configuration file not found' loop"
   fi
-  if grep -q 'configuration file not found' "$OUT_B"; then
+  if _sticky_miss_detected "$OUT_B"; then
     fail "Agent B stdout contains 'configuration file not found' (the clobber bug!)" ""
   else
     pass "Agent B stdout: no 'configuration file not found' loop"
@@ -526,7 +544,10 @@ fi
 # ---------------------------------------------------------------------------
 # Step 5: Single-agent no-regression
 # One-agent claude -p still succeeds
-# Also verify auth-bootstrap intact: ~/.claude.json still exists (for init check)
+# Also verify auth-bootstrap intact: EITHER the live ~/.claude.json mount OR
+# its ~/.claude/.claude.json.seed snapshot is present and non-empty (see the
+# classification comment below — mirrors cli/doctor.sh's HEALTHY/SEEDED/DEAD
+# model, not a stricter invariant of this test file's own invention).
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Step 5: Single-agent no-regression ==="
@@ -551,15 +572,121 @@ else
   fail "Single-agent stdout does NOT contain READY" "$(cat "$OUT_SINGLE" | head -5)"
 fi
 
-# Auth-bootstrap check: init-rip-cage.sh reads ~/.claude.json (the base, host-mounted)
-# Under uniform D2, the base is still present (it's the host-mounted file)
-if cexec test -f /home/agent/.claude.json; then
-  pass "Base ~/.claude.json still present (auth-bootstrap not broken by isolation)"
+# Auth-bootstrap check: init-rip-cage.sh maintains TWO valid carriers of
+# auth-bootstrap state -- the live ~/.claude.json mount and its
+# ~/.claude/.claude.json.seed snapshot. Asserting ~/.claude.json
+# unconditionally is a FALSE FAILURE whenever only the seed carrier exists
+# (rip-cage-7atw.22 item 4) -- that unconditional check IS the bug this item
+# exists to fix, not coverage to preserve (round-3 review correction: an
+# earlier round of this fix treated the old assertion's strictness as
+# something to keep; the strictness itself was the bug).
+#
+# Pass/fail boundary: live-ok OR seed-ok. Matches cli/doctor.sh's SEEDED
+# classification -- "benign by design ... zero functional impact": init
+# snapshots the mount once at boot while intact, and every runtime consumer
+# reads the snapshot, never the live mount again, so a present seed means
+# auth-bootstrap genuinely IS intact regardless of whether the live handle
+# is currently healthy. This assertion's job is "is auth-bootstrap state
+# present" -- NOT "was the mount composed correctly," which is a DIFFERENT
+# question needing a DIFFERENT oracle (Step 5b below, kept separate on
+# purpose: round-3 review found that folding a mount-composed check into
+# THIS branch's pass/fail boundary produces no new coverage at all --
+# algebraically `(mount-present AND (live-ok OR seed-ok)) OR (mount-absent
+# AND seed-ok)` reduces to plain `live-ok OR seed-ok` -- while ALSO risking
+# exactly the false-failure this item was filed to fix, if the mount-check
+# were ever tightened back into a gate here).
+#
+# The mount-composed signal (/proc/mounts -- empirically confirmed: a
+# carried-mount cage's /proc/mounts contains a line whose field 2 is
+# exactly /home/agent/.claude.json; cli/up.sh:704-711 only adds the -v arg
+# when the host file exists at cage-creation time) is kept here PURELY for
+# labeling/observability -- distinguishing "mount was composed, then went
+# dead" (SEEDED) from "no mount was ever composed" (pure-synthesized) in
+# the output is worth having even though it does not move the pass/fail
+# boundary. CLAUDE_JSON_MOUNTED is also reused by Step 5b below, which DOES
+# use it as a gate -- for a different assertion, against a different oracle.
+if cexec bash -c 'grep -q " /home/agent/.claude.json " /proc/mounts'; then
+  CLAUDE_JSON_MOUNTED=true
+  echo "  .claude.json mount-table entry: present (mount was composed at cage creation)"
 else
-  fail "Base ~/.claude.json MISSING — auth-bootstrap may be broken"
+  CLAUDE_JSON_MOUNTED=false
+  echo "  .claude.json mount-table entry: absent (no host ~/.claude.json at cage creation)"
+fi
+
+if cexec test -s /home/agent/.claude.json; then
+  if [[ "$CLAUDE_JSON_MOUNTED" == "true" ]]; then
+    pass "Base ~/.claude.json present and non-empty (HEALTHY per cli/doctor.sh's classification)"
+  else
+    pass "Base ~/.claude.json present and non-empty (no mount-table entry found, but the live file itself is present and non-empty)"
+  fi
+elif cexec test -s /home/agent/.claude/.claude.json.seed; then
+  if [[ "$CLAUDE_JSON_MOUNTED" == "true" ]]; then
+    pass "Mount composed but live handle is dead/empty; seed .claude/.claude.json.seed present and non-empty (SEEDED per cli/doctor.sh's classification — benign by design, runtime reads the snapshot)"
+  else
+    pass "Seed .claude/.claude.json.seed present and non-empty (pure-synthesized posture; auth-bootstrap carried via synthesized seed, no live mount was ever composed)"
+  fi
+else
+  fail "Neither ~/.claude.json nor ~/.claude/.claude.json.seed is present and non-empty — auth-bootstrap is genuinely broken (DEAD per cli/doctor.sh's classification)"
 fi
 
 rm -f "$OUT_SINGLE"
+
+# ---------------------------------------------------------------------------
+# Step 5b: Mount-composition regression guard (round-3 review — the
+# coverage the round-2 reviewer was right to want restored, with the
+# correct oracle this time)
+#
+# Step 5 above answers "is auth-bootstrap state present" (satisfied by
+# EITHER carrier — correct, per doctor.sh's SEEDED semantics, and NOT
+# re-litigated here). This is a DIFFERENT assertion: "did rc's mount-
+# composition code do what the HOST state says it should have done." The
+# only oracle that can see a mount-composition regression is host state,
+# because THIS test runs on the host (not just in-cage) -- host state is
+# ground truth for what SHOULD have been mounted at cage-creation time
+# (cli/up.sh:704-711 only adds the ~/.claude.json -v arg when
+# `[[ -f "${HOME}/.claude.json" ]]` at `rc up` time; mounts are fixed at
+# creation, never re-evaluated on resume).
+#
+# Constructible both ways -- unlike a mount-composed check folded into Step
+# 5's own boundary (shown above to algebraically add no new fail path
+# beyond "neither carrier"), this one has a genuine, distinct red case:
+#   host ~/.claude.json present + mount entry present -> pass (composed as expected)
+#   host ~/.claude.json absent  + mount entry absent  -> pass (nothing to compose)
+#   host ~/.claude.json present + mount entry ABSENT  -> FAIL LOUD: a
+#     genuine mount-composition regression -- host state says this cage
+#     should carry a live mount and the running cage has no such entry.
+#   host ~/.claude.json absent  + mount entry present -> also reported loud
+#     (not silently accepted): under normal `rc up` semantics this can't
+#     happen (nothing without a host source gets mounted), so if it's ever
+#     observed, something about this signal or this cage is anomalous and
+#     deserves attention rather than a silent pass.
+#
+# Caveat: reads $HOME on the machine running THIS test script, not
+# necessarily the $HOME that created $CONTAINER. Matches the common case
+# (operator runs this test against a cage they just `rc up`'d in the same
+# shell); a container resolved via RC_TEST_CONTAINER from a different $HOME
+# would need that $HOME exported here too.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Step 5b: Mount-composition regression guard (host state vs mount table) ==="
+
+_host_claude_json_present=false
+if [[ -f "${HOME}/.claude.json" && -s "${HOME}/.claude.json" ]]; then
+  _host_claude_json_present=true
+fi
+echo "  Host \${HOME}/.claude.json: $([[ "$_host_claude_json_present" == "true" ]] && echo present || echo absent) (HOME=$HOME)"
+
+if [[ "$_host_claude_json_present" == "true" && "$CLAUDE_JSON_MOUNTED" == "true" ]]; then
+  pass "Mount-composition guard: host ~/.claude.json present and the cage's mount table shows the entry — composed as expected"
+elif [[ "$_host_claude_json_present" == "false" && "$CLAUDE_JSON_MOUNTED" == "false" ]]; then
+  pass "Mount-composition guard: host ~/.claude.json absent and the cage's mount table shows no entry — nothing was supposed to be mounted"
+elif [[ "$_host_claude_json_present" == "true" && "$CLAUDE_JSON_MOUNTED" == "false" ]]; then
+  fail "Mount-composition guard: host ~/.claude.json is present and non-empty, but the cage's mount table has NO /home/agent/.claude.json entry" \
+    "genuine mount-composition regression — rc up should have mounted this at cage creation"
+else
+  fail "Mount-composition guard: host ~/.claude.json is absent, but the cage's mount table SHOWS a /home/agent/.claude.json entry" \
+    "anomalous state — a mount with no host source should not be possible under normal rc up semantics"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 6: Git-author proof
@@ -637,103 +764,200 @@ fi
 cexec rm -rf "$GIT_TEST_DIR"
 
 # ---------------------------------------------------------------------------
-# NEGATIVE CONTROL (Fix 1 — real concurrent shared-config): Two concurrent
-# claude -p processes both pointed at ONE SHARED config dir (bypassing the wrapper
-# so isolation is NOT applied). The non-atomic .claude.json rewrite means at least
-# one process must experience the clobber (non-zero exit, config-not-found message,
-# or missing/empty .claude.json after the run).
+# NEGATIVE CONTROL (Fix 1 — detector validation via a manufactured trigger
+# state): this block does NOT reproduce a genuine concurrent race — the
+# setup below manufactures the sticky-miss trigger state directly (backup
+# present, .claude.json absent) before either process runs, so the
+# "configuration file not found" symptom is satisfiable by a SINGLE process;
+# concurrency is not load-bearing for it (round-2 review Ruling 3 — an
+# earlier version of this header/pass-string overclaimed "at least one
+# process must experience the clobber" / "harness CAN detect the race bug",
+# implying a real race was reproduced and won here, which is not what this
+# block demonstrates or needs to demonstrate). What it DOES genuinely
+# demonstrate, and what is actually useful: given the documented sticky-miss
+# trigger state, the REAL claude binary emits the "configuration file not
+# found" message, and the harness's own detector (_sticky_miss_detected,
+# the same function Step 1 uses) recognizes it. Two real processes are run
+# concurrently anyway (matching the actual production shape this control is
+# modeled on — two agents racing a shared, non-wrapper-isolated config dir),
+# but the assertion below is a detector-validation, not a race
+# reproduction — labeled as such throughout.
 #
 # The shared dir is seeded with a backups/ entry (the documented sticky-miss trigger:
 # .claude.json absent + backup present = loop). Both processes use the REAL /usr/bin/claude
 # binary — NOT the wrapper, which would fix the dir.
 #
-# Hard assertion: if BOTH processes exit 0 AND neither output contains the error AND
-# the shared .claude.json is intact, the harness CANNOT detect the race — FAILURES++.
-# There is NO soft-pass branch. (Fix 1)
+# Hard assertion: FAILURES++ unless the mechanism-specific clobber evidence is
+# present. There is NO soft-pass branch. (Fix 1)
+#
+# Posture (rip-cage-7atw.22 item 4, second half): the backup seed used to come
+# from the live ~/.claude.json, which genuinely does not exist under
+# pure-synthesized posture (cp fails with "cannot stat", the exact symptom
+# the bead named) -- a vacuous setup failure that this control's own "no
+# soft-pass" framing was never designed to distinguish from a real
+# detection miss. Seed the backup from ~/.claude/.claude.json.seed instead:
+# the actual guarantee that this file is present and non-empty is init-rip-
+# cage.sh's R4 snapshot logic (cage/init/init-rip-cage.sh:~490-501), which
+# runs on every successful init and either copies the live mount, preserves
+# an existing seed, or synthesizes a minimal placeholder -- not Step 5 above,
+# whose HEALTHY branch never re-checks the seed at all (it only checks it in
+# the SEEDED/DEAD fallback, so Step 5 passing does not by itself guarantee a
+# seed exists). It is valid config-shaped JSON either way, so the sticky-miss
+# trigger condition (.claude.json absent + backup present) is reproduced
+# identically regardless of posture. The .credentials.json symlink is gated
+# on the file's existing POSSESSION signal (computed once, top of file) --
+# the same signal Step 2's identical symlink assertion already uses --
+# rather than inventing a second posture check: under non-possession there
+# is nothing to link (mirrors the wrapper's own behavior, examples/claude/
+# claude-session-wrapper.sh:77-89), and the race this control proves is
+# about the .claude.json sticky-miss loop, not credentials.
+#
+# Adversarial-review findings closed here (rip-cage-7atw.22, round 2):
+#   F5 (setup silently tolerated): the seeding step runs inside `cexec bash -c
+#       "set -e ..."` -- `set -e` only aborts the GUEST shell; the OUTER
+#       cexec call's own exit status was never checked (this file runs
+#       `set -uo pipefail`, no `-e`), so a failed `cp`/`mkdir` left an
+#       unarmed trigger and the control still ran and could still pass via
+#       one of the OR'd conditions below. Now captured explicitly and
+#       failed loud, plus a positive-sentinel check that the backup file
+#       itself actually landed before the race is allowed to run.
+#   F6 (satisfiable by non-clobber causes): bare non-zero exit and bare
+#       "shared .claude.json missing" were each independently sufficient to
+#       report detection. Both are true for reasons that have NOTHING to do
+#       with the clobber: exit is non-zero on ANY auth failure or on the
+#       30s `timeout` firing for any reason, and "missing after the run" is
+#       true BY CONSTRUCTION (SHARED_DIR is seeded with no .claude.json --
+#       that is the trigger state itself, not evidence anything happened
+#       during the run). The ONLY evidence that actually identifies the
+#       sticky-miss mechanism specifically is the "configuration file not
+#       found / restore manually" message. That message is now the SOLE
+#       pass criterion; exit codes and the missing/empty-file check are
+#       still gathered and printed as corroborating detail but can no
+#       longer flip NEG_CLOBBER on their own.
+#   Working-auth precondition: without confirmed-working auth, a non-zero
+#       exit or absent output is indistinguishable from an auth failure --
+#       gated below on BOTH_READY (Step 1's own signal: both concurrent
+#       claude -p calls showed READY in their merged stdout/stderr text —
+#       independent of exit code, lines ~193-213), reusing an existing
+#       signal in this file rather than inventing a new auth probe. Both
+#       deviations from a stricter "exited 0 AND showed READY" precondition
+#       err toward red (a text-only match is a LOOSER bar to fail, not a
+#       looser bar to pass, so this cannot manufacture a false precondition-
+#       met). If auth was never confirmed working, this control cannot
+#       honestly claim anything and fails loud on the missing precondition
+#       instead of silently passing.
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== NEGATIVE CONTROL: Two concurrent /usr/bin/claude -p on ONE shared config dir (must show clobber) ==="
+echo "=== NEGATIVE CONTROL: sticky-miss detector validation (manufactured trigger state, ONE shared config dir) ==="
 
-SHARED_DIR=/home/agent/.claude-sessions/conctest-shared
-cexec rm -rf "$SHARED_DIR"
-cexec bash -c "
-  set -e
-  mkdir -p ${SHARED_DIR}/backups
-  # .claude.json is ABSENT — this is the exact bug trigger state.
-  # A backup IS present (the documented sticky-miss condition):
-  # when Claude finds a backup but no .claude.json, it loops with
-  # 'configuration file not found' instead of recreating the file.
-  cp /home/agent/.claude.json '${SHARED_DIR}/backups/.claude.json.backup.1780000000000'
-  ln -sfn /home/agent/.claude/.credentials.json ${SHARED_DIR}/.credentials.json
-"
-
-OUT_NEG_X=$(mktemp)
-OUT_NEG_Y=$(mktemp)
-
-# Background BOTH against the SAME shared dir — real binary, no wrapper isolation.
-msb exec \
-  -e CLAUDE_CONFIG_DIR="$SHARED_DIR" \
-  "$CONTAINER" -- \
-  timeout 30 /usr/bin/claude -p "print the word READY and nothing else" \
-  >"$OUT_NEG_X" 2>&1 &
-PID_NEG_X=$!
-
-msb exec \
-  -e CLAUDE_CONFIG_DIR="$SHARED_DIR" \
-  "$CONTAINER" -- \
-  timeout 30 /usr/bin/claude -p "print the word READY and nothing else" \
-  >"$OUT_NEG_Y" 2>&1 &
-PID_NEG_Y=$!
-
-NEG_EXIT_X=0
-NEG_EXIT_Y=0
-wait $PID_NEG_X || NEG_EXIT_X=$?
-wait $PID_NEG_Y || NEG_EXIT_Y=$?
-
-echo "  Shared-dir process X exit: $NEG_EXIT_X"
-echo "  Shared-dir process Y exit: $NEG_EXIT_Y"
-echo "  Process X output (first 3 lines):"
-head -3 "$OUT_NEG_X" | sed 's/^/    /'
-echo "  Process Y output (first 3 lines):"
-head -3 "$OUT_NEG_Y" | sed 's/^/    /'
-
-# Detect clobber evidence in either process
-NEG_CLOBBER=false
-if [[ $NEG_EXIT_X -ne 0 ]]; then
-  NEG_CLOBBER=true
-  echo "  Evidence: process X exited $NEG_EXIT_X (non-zero)"
-fi
-if [[ $NEG_EXIT_Y -ne 0 ]]; then
-  NEG_CLOBBER=true
-  echo "  Evidence: process Y exited $NEG_EXIT_Y (non-zero)"
-fi
-if grep -qi 'configuration file not found\|Claude configuration file\|restore manually' "$OUT_NEG_X" 2>/dev/null; then
-  NEG_CLOBBER=true
-  echo "  Evidence: process X output contains config-not-found message"
-fi
-if grep -qi 'configuration file not found\|Claude configuration file\|restore manually' "$OUT_NEG_Y" 2>/dev/null; then
-  NEG_CLOBBER=true
-  echo "  Evidence: process Y output contains config-not-found message"
-fi
-# Also check if shared .claude.json ended up missing or empty
-if ! cexec test -f "${SHARED_DIR}/.claude.json" 2>/dev/null; then
-  NEG_CLOBBER=true
-  echo "  Evidence: shared .claude.json is missing after concurrent run"
-elif cexec bash -c "[ ! -s '${SHARED_DIR}/.claude.json' ]" 2>/dev/null; then
-  NEG_CLOBBER=true
-  echo "  Evidence: shared .claude.json is empty/truncated after concurrent run"
-fi
-
-if [[ "$NEG_CLOBBER" == "true" ]]; then
-  pass "NEGATIVE CONTROL: clobber detected on shared config dir — harness CAN detect the race bug"
+if [[ "$BOTH_READY" != "true" ]]; then
+  fail "NEGATIVE CONTROL: working-auth precondition not met — Step 1's two concurrent claude -p calls did not both show READY in their output (BOTH_READY: a merged-stdout/stderr text match, independent of exit code), so a clobber cannot be distinguished from an auth failure here" \
+    "this control requires confirmed-working auth; re-run against a cage where Step 1 passes"
 else
-  # BOTH processes completed cleanly on ONE shared dir — the harness cannot detect the bug.
-  # This is a HARD FAILURE: no soft-pass. The harness is vacuous for the race.
-  fail "NEGATIVE CONTROL: both processes greened over ONE shared config dir — harness CANNOT detect the clobber race" \
-    "X_exit=$NEG_EXIT_X Y_exit=$NEG_EXIT_Y — fix the control"
-fi
+  SHARED_DIR=/home/agent/.claude-sessions/conctest-shared
+  cexec rm -rf "$SHARED_DIR"
+  _neg_setup_out=$(cexec bash -c "
+    set -e
+    mkdir -p ${SHARED_DIR}/backups
+    # .claude.json is ABSENT — this is the exact bug trigger state.
+    # A backup IS present (the documented sticky-miss condition):
+    # when Claude finds a backup but no .claude.json, it loops with
+    # 'configuration file not found' instead of recreating the file.
+    # Seeded from the seed snapshot (guaranteed by init-rip-cage.sh's R4
+    # logic), not the live ~/.claude.json (absent under pure-synthesized
+    # posture).
+    cp /home/agent/.claude/.claude.json.seed '${SHARED_DIR}/backups/.claude.json.backup.1780000000000'
+    if [ '$POSSESSION' = 'true' ]; then
+      ln -sfn /home/agent/.claude/.credentials.json ${SHARED_DIR}/.credentials.json
+    fi
+  " 2>&1)
+  _neg_setup_rc=$?
 
-rm -f "$OUT_NEG_X" "$OUT_NEG_Y"
+  if [[ $_neg_setup_rc -ne 0 ]]; then
+    fail "NEGATIVE CONTROL: setup failed (exit $_neg_setup_rc) — the sticky-miss trigger was never armed, so this run proves nothing" "$_neg_setup_out"
+  elif ! cexec test -s "${SHARED_DIR}/backups/.claude.json.backup.1780000000000"; then
+    fail "NEGATIVE CONTROL: setup reported success but the backup file is absent/empty — the sticky-miss trigger was never armed" ""
+  else
+    OUT_NEG_X=$(mktemp)
+    OUT_NEG_Y=$(mktemp)
+
+    # Background BOTH against the SAME shared dir — real binary, no wrapper isolation.
+    msb exec \
+      -e CLAUDE_CONFIG_DIR="$SHARED_DIR" \
+      "$CONTAINER" -- \
+      timeout 30 /usr/bin/claude -p "print the word READY and nothing else" \
+      >"$OUT_NEG_X" 2>&1 &
+    PID_NEG_X=$!
+
+    msb exec \
+      -e CLAUDE_CONFIG_DIR="$SHARED_DIR" \
+      "$CONTAINER" -- \
+      timeout 30 /usr/bin/claude -p "print the word READY and nothing else" \
+      >"$OUT_NEG_Y" 2>&1 &
+    PID_NEG_Y=$!
+
+    NEG_EXIT_X=0
+    NEG_EXIT_Y=0
+    wait $PID_NEG_X || NEG_EXIT_X=$?
+    wait $PID_NEG_Y || NEG_EXIT_Y=$?
+
+    echo "  Shared-dir process X exit: $NEG_EXIT_X"
+    echo "  Shared-dir process Y exit: $NEG_EXIT_Y"
+    echo "  Process X output (first 3 lines):"
+    head -3 "$OUT_NEG_X" | sed 's/^/    /'
+    echo "  Process Y output (first 3 lines):"
+    head -3 "$OUT_NEG_Y" | sed 's/^/    /'
+
+    # PRIMARY evidence — the ONLY thing that identifies the sticky-miss
+    # clobber mechanism specifically, so it is the sole pass criterion (F6).
+    # Calls the SAME _sticky_miss_detected function Step 1's detector uses
+    # (round-2 review Ruling 2, acceptance criterion 4) rather than its own
+    # copy of the pattern: a copied-and-widened pattern is exactly how this
+    # control drifted from the detector it exists to validate last round
+    # (case-insensitive, two extra alternations with no anchor in real
+    # emitted text) — a shared function is what keeps them from drifting
+    # apart again.
+    NEG_CLOBBER=false
+    if _sticky_miss_detected "$OUT_NEG_X"; then
+      NEG_CLOBBER=true
+      echo "  Evidence (PRIMARY): process X output contains config-not-found message"
+    fi
+    if _sticky_miss_detected "$OUT_NEG_Y"; then
+      NEG_CLOBBER=true
+      echo "  Evidence (PRIMARY): process Y output contains config-not-found message"
+    fi
+
+    # Corroborating-only evidence — printed for diagnostic value, but NEVER
+    # by itself sets NEG_CLOBBER: a non-zero exit is equally explained by an
+    # auth failure or the 30s timeout firing, and "shared .claude.json
+    # missing" is true BY CONSTRUCTION (the seeded trigger state has no
+    # .claude.json at all, regardless of whether the race ever ran).
+    if [[ $NEG_EXIT_X -ne 0 ]]; then
+      echo "  Evidence (corroborating, non-decisive): process X exited $NEG_EXIT_X (non-zero)"
+    fi
+    if [[ $NEG_EXIT_Y -ne 0 ]]; then
+      echo "  Evidence (corroborating, non-decisive): process Y exited $NEG_EXIT_Y (non-zero)"
+    fi
+    if ! cexec test -f "${SHARED_DIR}/.claude.json" 2>/dev/null; then
+      echo "  Evidence (corroborating, non-decisive): shared .claude.json is missing after concurrent run"
+    elif cexec bash -c "[ ! -s '${SHARED_DIR}/.claude.json' ]" 2>/dev/null; then
+      echo "  Evidence (corroborating, non-decisive): shared .claude.json is empty/truncated after concurrent run"
+    fi
+
+    if [[ "$NEG_CLOBBER" == "true" ]]; then
+      pass "NEGATIVE CONTROL: claude emitted the sticky-miss message given the seeded trigger state, and the harness's own detector (_sticky_miss_detected) sees it — detector validated"
+    else
+      # Neither process's output showed the sticky-miss message — the
+      # harness's detector would not have caught this. This is a HARD
+      # FAILURE: no soft-pass, and corroborating-only evidence (exit codes,
+      # missing-file) does NOT substitute for the mechanism-specific message.
+      fail "NEGATIVE CONTROL: neither process showed the config-not-found sticky-miss message — the harness's detector (_sticky_miss_detected) is NOT validated by this run" \
+        "X_exit=$NEG_EXIT_X Y_exit=$NEG_EXIT_Y — fix the control"
+    fi
+
+    rm -f "$OUT_NEG_X" "$OUT_NEG_Y"
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # Step 7: Multiplexer-agnostic config-dir derivation proof (rip-cage-1f59.4)
