@@ -138,13 +138,35 @@
 #       image is already in the store), `rc build -o ...` must NOT reach a
 #       state where docker is invoked and a built/success status is
 #       reported -- it must fail loud BEFORE the docker call, every time.
-#   T40 rc build --build-arg RC_VERSION=evil -> rejected (separate-arg): a
-#       caller override of RC_VERSION could spoof _image_is_current's
-#       staleness-check label comparison.
+#   T40 rc build --build-arg RC_VERSION=evil -> rejected (separate-arg).
 #   T41 rc build --build-arg=RC_VERSION=evil -> rejected (equals form).
-#   T42 (positive control) rc build --build-arg OTHER_KEY=value -> ADMITTED,
-#       passes through alongside rc's own --build-arg RC_VERSION=... (two
-#       distinct-key --build-arg occurrences, not co-tag-style collapsed).
+#
+# --- rip-cage-zqjz.2 F1 (round 2, adversarial-review fresh-context finding):
+#     --build-arg REJECTED WHOLESALE, not admitted with an RC_VERSION-only
+#     carve-out ---
+#   The round-1 admit ("only ever feeds _image_is_current's staleness
+#   heuristic") was falsified via the flag's VALUE namespace, not its name:
+#   --build-arg BUILDKIT_SYNTAX=<image> replaces the Dockerfile FRONTEND
+#   BuildKit uses to interpret the Dockerfile at all (verified live, docker
+#   29.4.0), making _manifest_check_build_isolation's static text analysis of
+#   rc's own Dockerfile vacuous -- a different frontend can interpret
+#   whatever text it likes. A second channel: cage/Dockerfile interpolates
+#   caller-settable ARGs into RUN shell strings (DOLT_VERSION et al.), so an
+#   admitted --build-arg is build-time command injection into rip-cage:latest.
+#   No in-repo caller and no manifest build-arg mechanism exists to preserve.
+#   Ruling: reject --build-arg outright, same treatment as -f/-o.
+#   T42 (POLICY FLIP from round-1's positive control) rc build --build-arg
+#       OTHER_KEY=value -> now REJECTED (was admitted).
+#   T59 (the motivating case) rc build --build-arg BUILDKIT_SYNTAX=<image> ->
+#       rejected before any docker call.
+#   T60 rc build --build-arg SOME_KEY (bare, no "=" -- docker's documented
+#       inherit-from-environment form) -> rejected. Closes F2: round-1's
+#       RC_VERSION carve-out matched only "== RC_VERSION=*", which requires
+#       the "=" and so admitted this bare spelling; wholesale rejection
+#       closes the gap by construction (no narrower guard survives to be
+#       spelling-incomplete).
+#   T61 rc build --build-arg=SOME_KEY (equals-attached, still the bare
+#       inherit-from-env form) -> rejected.
 #   T43 rc build --no-cache -> admitted, passes through (regression guard,
 #       same case as T9 but via the new explicit admit path).
 #   T44 rc build --pull -> admitted, passes through.
@@ -1224,7 +1246,23 @@ setup_sandbox
 setup_fake_docker
 CALL_LOG=$(mktemp)
 _tfg_rc=0
-_tfg_out=$(RC_TEST_OUTPUT_FORMAT=json run_cmd_build -o type=local,dest=/tmp/rc-test-fg-out 2>&1) || _tfg_rc=$?
+# T-FGc's false-green check MUST inspect stdout alone (matches T39c/T39d's
+# already-correct pattern) -- a combined 2>&1 capture is structurally
+# unfalsifiable: log()/seed-drift notices routinely land on that same stream
+# alongside the JSON, so `jq -e` on the combined text fails to PARSE (exit
+# 5, not "selector didn't match") on almost every run regardless of what the
+# JSON actually says, and the `else` branch (a bare parse failure) always
+# reads as "pass". Verified live: at fb79d10, this same scenario emits the
+# literal false green {"image":"rip-cage:latest","action":"built","status":
+# "success"} on stdout with human-mode "Building ..." noise mixed onto the
+# combined stream by 2>&1 -- the OLD combined-capture assertion still
+# reported PASS. Capturing stdout separately makes T-FGc's jq -e see only
+# the real JSON payload, so it can actually go red on this bug.
+_tfg_stderr_file=$(mktemp)
+_tfg_stdout=$(RC_TEST_OUTPUT_FORMAT=json run_cmd_build -o type=local,dest=/tmp/rc-test-fg-out 2>"$_tfg_stderr_file") || _tfg_rc=$?
+_tfg_stderr=$(cat "$_tfg_stderr_file")
+rm -f "$_tfg_stderr_file"
+_tfg_out="${_tfg_stdout}${_tfg_stderr:+$'\n'}${_tfg_stderr}"
 
 if [[ "$_tfg_rc" -ne 0 ]]; then
   pass "T-FGa: cmd_build returns non-zero for -o (never reaches a 'built' report)"
@@ -1236,18 +1274,16 @@ if [[ ! -s "$CALL_LOG" ]]; then
 else
   fail "T-FGb: expected no docker calls" "$(cat "$CALL_LOG")"
 fi
-if echo "$_tfg_out" | jq -e 'select(.status == "success" or .action == "built")' >/dev/null 2>&1; then
-  fail "T-FGc: FALSE GREEN -- JSON output reports a built/success status for a redirected build" "$_tfg_out"
+if echo "$_tfg_stdout" | jq -e 'select(.status == "success" or .action == "built")' >/dev/null 2>&1; then
+  fail "T-FGc: FALSE GREEN -- JSON output reports a built/success status for a redirected build" "$_tfg_stdout"
 else
   pass "T-FGc: no false-green built/success status reported"
 fi
 cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
 
 # ---------------------------------------------------------------------------
-# T40 (rip-cage-zqjz.2): rc build --build-arg RC_VERSION=evil -- rejected.
-#     A caller override of the RC_VERSION build-arg key could spoof
-#     _image_is_current's org.opencontainers.image.version label comparison
-#     (the staleness heuristic that gates rc up's auto-provision path).
+# T40 (rip-cage-zqjz.2, re-judged rip-cage-zqjz.2 F1 round 2): rc build
+#     --build-arg RC_VERSION=evil -- rejected.
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== T40: rc build --build-arg RC_VERSION=evil -> rejected ==="
@@ -1261,33 +1297,67 @@ echo "=== T41: rc build --build-arg=RC_VERSION=evil -> rejected ==="
 assert_unallowed_rejected T41 --build-arg=RC_VERSION=evil
 
 # ---------------------------------------------------------------------------
-# T42 (positive control): rc build --build-arg OTHER_KEY=value -- a
-#     DIFFERENT --build-arg key -- must be ADMITTED and pass through
-#     alongside rc's own --build-arg RC_VERSION=... (two distinct-key
-#     --build-arg occurrences in the constructed argv, per fb79d10's
-#     "must stay repeatable for a manifest fragment's own distinct-key
-#     build args" judgment).
+# T42 (rip-cage-zqjz.2 F1, round 2: POLICY FLIP -- was a positive control for
+#     admission; --build-arg is now rejected WHOLESALE, not just its
+#     RC_VERSION key): rc build --build-arg OTHER_KEY=value -- a DIFFERENT
+#     --build-arg key -- must now be REJECTED too.
+#
+#     Round-1 judged this benign because "--build-arg only ever feeds
+#     _image_is_current's staleness heuristic" -- true of the flag's NAME,
+#     false of its VALUE namespace: `--build-arg BUILDKIT_SYNTAX=<image>`
+#     replaces the Dockerfile FRONTEND BuildKit uses to interpret the
+#     Dockerfile at all, so an admitted --build-arg lets a caller substitute
+#     an arbitrary frontend and make _manifest_check_build_isolation's static
+#     analysis of rc's OWN Dockerfile text vacuous (verified live against
+#     docker 29.4.0: `docker build --build-arg BUILDKIT_SYNTAX=rip-cage-
+#     bogus-frontend/nope:zzz -f Dockerfile .` -> "resolve image config for
+#     docker-image://docker.io/rip-cage-bogus-frontend/nope:zzz", no `#
+#     syntax=` pin in cage/Dockerfile contests it). A second, independent
+#     channel: cage/Dockerfile interpolates several ARGs into RUN shell
+#     strings (DOLT_VERSION, MISE_VERSION, BUN_VERSION, ...), so an admitted
+#     caller --build-arg is build-time command injection into the image
+#     tagged rip-cage:latest. No in-repo caller and no manifest build-arg
+#     mechanism exists to preserve (grep across cli/lib/manifest*.sh,
+#     manifest/, docs/reference/*.md returns nothing) -- so the ruling is
+#     REJECT OUTRIGHT, same treatment as -f/-o, not a narrower RC_VERSION-only
+#     carve-out. See T59-T61 below for the specific value-namespace and
+#     bare-inherit-form cases this closes.
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== T42 (positive control): rc build --build-arg OTHER_KEY=value -> admitted, passes through ==="
-setup_sandbox
-setup_fake_docker
-CALL_LOG=$(mktemp)
-run_cmd_build --build-arg OTHER_KEY=value >/dev/null 2>&1 || true
+echo "=== T42: rc build --build-arg OTHER_KEY=value -> now rejected (policy flip, F1) ==="
+assert_unallowed_rejected T42 --build-arg OTHER_KEY=value
 
-_t42_build_line=$(grep '^docker build' "$CALL_LOG" || true)
-_t42_ba_count=$(grep -o -- '--build-arg' <<<"$_t42_build_line" | wc -l | tr -d ' ')
-if [[ "$_t42_ba_count" -eq 2 ]]; then
-  pass "T42a: exactly two --build-arg occurrences (rc's own RC_VERSION + the caller's distinct key)"
-else
-  fail "T42a: expected 2 --build-arg occurrences, got $_t42_ba_count" "$_t42_build_line"
-fi
-if [[ "$_t42_build_line" == *"OTHER_KEY=value"* ]]; then
-  pass "T42b: the caller's OTHER_KEY=value build-arg passed through unmodified"
-else
-  fail "T42b: expected OTHER_KEY=value in the constructed argv" "$_t42_build_line"
-fi
-cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+# ---------------------------------------------------------------------------
+# T59 (rip-cage-zqjz.2 F1, THE motivating case): rc build --build-arg
+#     BUILDKIT_SYNTAX=rip-cage-bogus-frontend/nope:zzz -- rejected before any
+#     docker call. This is the exact value that hijacks the Dockerfile
+#     frontend (see T42's comment) -- must never reach docker.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T59: rc build --build-arg BUILDKIT_SYNTAX=<image> -> rejected before any docker call ==="
+assert_unallowed_rejected T59 --build-arg BUILDKIT_SYNTAX=rip-cage-bogus-frontend/nope:zzz
+
+# ---------------------------------------------------------------------------
+# T60: rc build --build-arg SOME_KEY (bare, no "=" -- docker's documented
+#     inherit-from-the-caller's-environment form: `docker build --build-arg
+#     V=good --build-arg V` yields V unset, verified live) -- rejected.
+#     Round-1's RC_VERSION carve-out matched only "== RC_VERSION=*", which
+#     REQUIRES the "=" -- this bare spelling would have slipped past it
+#     (rip-cage-zqjz.2 F2). Wholesale rejection (F1's ruling) closes this
+#     spelling gap too, by construction: there is no narrower guard left to
+#     be spelling-incomplete.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T60: rc build --build-arg SOME_KEY (bare inherit-from-env form) -> rejected ==="
+assert_unallowed_rejected T60 --build-arg SOME_KEY
+
+# ---------------------------------------------------------------------------
+# T61: rc build --build-arg=SOME_KEY (equals-attached, still the bare
+#     inherit-from-env form -- no embedded "=" after the key) -- rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T61: rc build --build-arg=SOME_KEY (equals-attached inherit-from-env form) -> rejected ==="
+assert_unallowed_rejected T61 --build-arg=SOME_KEY
 
 # ---------------------------------------------------------------------------
 # T43 (regression guard): rc build --no-cache -- boolean, admitted (same
@@ -1516,6 +1586,144 @@ assert_unallowed_rejected T57 --some-brand-new-docker-flag x
 echo ""
 echo "=== T58: rc build /tmp/not-a-flag (stray positional) -> rejected ==="
 assert_unallowed_rejected T58 /tmp/not-a-flag
+
+# ---------------------------------------------------------------------------
+# T62 (adversarial-review minor 1): rc build --output=json -- still REJECTED
+#     (the safety posture holds: -o/--output is rejected regardless of its
+#     value), but the error message must distinguish this from a genuine
+#     BuildKit-output-redirect attempt -- "--output=json" is a plausible way
+#     for a caller to ask for rc's own JSON display mode (rc's usage() and
+#     cli-reference.md document `rc --output json <command>` / `rc build
+#     --output json`, two SEPARATE words -- that spelling is intercepted
+#     upstream by rc's OWN global flag scanner before cmd_build ever runs,
+#     and is NOT rejected at all; only the single-token `--output=json`
+#     equals-form and the short `-o json`/`-o=json`/`-ojson` spellings reach
+#     this rejection). The message should name that escape hatch so the
+#     caller isn't left thinking JSON output is unsupported for `rc build`.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T62: rc build --output=json -> still rejected, but message distinguishes rc's own --output json ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t62_rc=0
+_t62_out=$(run_cmd_build --output=json 2>&1) || _t62_rc=$?
+if [[ "$_t62_rc" -ne 0 ]]; then
+  pass "T62a: cmd_build returns non-zero"
+else
+  fail "T62a: expected non-zero exit" "$_t62_out"
+fi
+if [[ ! -s "$CALL_LOG" ]]; then
+  pass "T62b: docker was never invoked"
+else
+  fail "T62b: expected no docker calls" "$(cat "$CALL_LOG")"
+fi
+if [[ "$_t62_out" == *"rc --output json"* || "$_t62_out" == *"rc build --output json"* ]]; then
+  pass "T62c: error message points to rc's own --output json (two-word) form"
+else
+  fail "T62c: expected a hint pointing to rc's own --output json flag" "$_t62_out"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T63 (same as T62, short-flag spelling): rc build -o json -- rejected, same
+#     distinguishing hint (a caller might plausibly try the short flag
+#     thinking it mirrors rc's own global -o... except rc has no global -o
+#     short spelling at all -- only --output; the hint should still fire
+#     since the VALUE is "json").
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T63: rc build -o json -> still rejected, same distinguishing hint ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t63_rc=0
+_t63_out=$(run_cmd_build -o json 2>&1) || _t63_rc=$?
+if [[ "$_t63_rc" -ne 0 ]]; then
+  pass "T63a: cmd_build returns non-zero"
+else
+  fail "T63a: expected non-zero exit" "$_t63_out"
+fi
+if [[ ! -s "$CALL_LOG" ]]; then
+  pass "T63b: docker was never invoked"
+else
+  fail "T63b: expected no docker calls" "$(cat "$CALL_LOG")"
+fi
+if [[ "$_t63_out" == *"rc --output json"* || "$_t63_out" == *"rc build --output json"* ]]; then
+  pass "T63c: error message points to rc's own --output json (two-word) form"
+else
+  fail "T63c: expected a hint pointing to rc's own --output json flag" "$_t63_out"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T64 (regression guard): rc build -o type=local,dest=/tmp/x -- the REAL
+#     BuildKit-output-redirect attempt, value != "json" -- must NOT get the
+#     "did you mean --output json" hint (would be actively misleading for
+#     the false-green scenario this reject exists for).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T64 (regression guard): rc build -o type=local,dest=/tmp/x -> rejected, NO json hint ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t64_out=$(run_cmd_build -o type=local,dest=/tmp/rc-test-t64-out 2>&1) || true
+if [[ "$_t64_out" != *"rc --output json"* && "$_t64_out" != *"rc build --output json"* ]]; then
+  pass "T64: no spurious --output-json hint for a real BuildKit output-redirect value"
+else
+  fail "T64: unexpected --output-json hint for a non-json value" "$_t64_out"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T65 (adversarial-review minor 2): rc build -f <path> (separate-arg
+#     spelling) -- the -f/--file rejection message must name the allowlist
+#     section AND the rc generate-dockerfile escape hatch, same as every
+#     other rejection message added by rip-cage-zqjz.2 (-o, --build-arg, the
+#     catch-all default). It was the one reject site NOT updated when those
+#     were added (it predates rip-cage-zqjz.2, from rip-cage-zqjz).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T65: rc build -f <path> (separate-arg) -> message names allowlist + escape hatch ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t65_out=$(run_cmd_build -f /tmp/rc-test-t65-dockerfile 2>&1) || true
+if [[ "$_t65_out" == *"flag allowlist"* ]]; then
+  pass "T65a: message names the allowlist section"
+else
+  fail "T65a: expected message to name 'flag allowlist'" "$_t65_out"
+fi
+if [[ "$_t65_out" == *"generate-dockerfile"* ]]; then
+  pass "T65b: message names the rc generate-dockerfile escape hatch"
+else
+  fail "T65b: expected message to name 'generate-dockerfile'" "$_t65_out"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T66 (adversarial-review minor 2, cluster-regex reject site): rc build
+#     -Df<path> (boolean-prefixed cluster, attached value) -- same message
+#     consistency requirement as T65, but for the SECOND -f reject site (the
+#     catch-all regex branch), which had the identical staleness.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T66: rc build -Df<path> (cluster) -> message names allowlist + escape hatch ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t66_out=$(run_cmd_build -Df/tmp/rc-test-t66-dockerfile 2>&1) || true
+if [[ "$_t66_out" == *"flag allowlist"* ]]; then
+  pass "T66a: message names the allowlist section"
+else
+  fail "T66a: expected message to name 'flag allowlist'" "$_t66_out"
+fi
+if [[ "$_t66_out" == *"generate-dockerfile"* ]]; then
+  pass "T66b: message names the rc generate-dockerfile escape hatch"
+else
+  fail "T66b: expected message to name 'generate-dockerfile'" "$_t66_out"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
 
 # ---------------------------------------------------------------------------
 # T-DASHDASH (closes a real hole found while implementing this bead): rc

@@ -47,8 +47,10 @@ Commands:
     -t, --tag <ref>     Tag the built image as <ref> instead of rip-cage:latest (overrides, does not add a second tag; rip-cage:latest is left untouched)
     -f, --file           REJECTED (any spelling): rc resolves the Dockerfile from the manifest; a caller-supplied one would bypass the build-isolation validator
     -o, --output         REJECTED (any spelling): can redirect the build result away from the image store, letting the safety validators pass against a stale image
-    --build-arg, --no-cache, --pull, --progress, -D/--debug, -q/--quiet   Admitted (verified benign against the safety floor); --build-arg RC_VERSION=... is REJECTED
+    --build-arg           REJECTED (any spelling, including the bare inherit-from-environment form): can override the Dockerfile frontend (BUILDKIT_SYNTAX) or inject content into RUN steps
+    --no-cache, --pull, --progress, -D/--debug, -q/--quiet   Admitted (verified benign against the safety floor)
     (anything else)      REJECTED before any docker call -- run 'rc generate-dockerfile' + your own 'docker build' instead, explicitly outside rc's safety floor
+  generate-dockerfile                           Print the manifest-composed Dockerfile to stdout (escape hatch for flags rc build's allowlist rejects; invoke docker build yourself, outside rc's safety floor)
   up [path] [options]                           Start or resume a container (default: .)
     --port PORT         Expose a port
     --env-file FILE     Load env vars from file
