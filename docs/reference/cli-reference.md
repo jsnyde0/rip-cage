@@ -4,7 +4,7 @@
 
 | Command | Description |
 |---------|-------------|
-| `rc build [docker-args...] [-t/--tag <ref>]` | Build the rip-cage Docker image. A caller-supplied `-t`/`--tag` (either spelling, incl. `--tag=<ref>`) **overrides** the image built/tagged — it does not add a second tag alongside the default `rip-cage:latest`, so `rip-cage:latest` is left untouched by a custom-tagged build (rip-cage-fo4z: previously docker applied *both* tags to the same image, silently re-tagging — and clobbering any composed bake on — `rip-cage:latest`). Repeated `-t`/`--tag`: last one wins. |
+| `rc build [docker-args...] [-t/--tag <ref>]` | Build the rip-cage Docker image. A caller-supplied `-t`/`--tag` **overrides** the image built/tagged — it does not add a second tag alongside the default `rip-cage:latest`, so `rip-cage:latest` is left untouched by a custom-tagged build (rip-cage-fo4z: previously docker applied *both* tags to the same image, silently re-tagging — and clobbering any composed bake on — `rip-cage:latest`). See [`rc build -t`/`--tag` details](#rc-build---t---tag-details) below for every accepted spelling, the fail-loud cases, and precedence vs `RC_IMAGE`. |
 | `rc up <path> [--port PORT] [--env-file FILE] [--new] [--session NAME]` | Start or resume a container |
 | `rc ls` | List rip-cage containers |
 | `rc attach [name]` | Attach to a running container (multiplexer-neutral — plain shell under `none`, tmux attach under `tmux`, supervisor view under `herdr`) |
@@ -27,6 +27,35 @@
 | `--output json` | Machine-readable JSON output (human messages go to stderr) |
 | `--dry-run` | Preview what would happen without executing (supported for `up`, `destroy`, and `reload`) |
 | `--version` | Print version |
+
+### `rc build -t`/`--tag` details
+
+`rc build`'s hardcoded docker invocation always leads with `-t "$IMAGE"` (default `rip-cage:latest`, or `RC_IMAGE` if set). A caller-supplied `-t`/`--tag` **overrides** `$IMAGE` for the whole build — the docker call, the post-build root-owned validators, the fail-closed untag-on-violation cleanup — rather than being appended as a second tag (rip-cage-fo4z).
+
+**Accepted spellings** — all of docker's own flag forms are recognized, not just the two obvious ones:
+
+| Spelling | Example |
+|----------|---------|
+| Separate-arg, short | `-t custom:tag` |
+| Separate-arg, long | `--tag custom:tag` |
+| Equals-attached, long | `--tag=custom:tag` |
+| Equals-attached, short | `-t=custom:tag` |
+| Value-attached, short (no equals) | `-tcustom:tag` |
+| Clustered behind docker's other boolean short flags (`-D`/`-q`) | `-qt custom:tag`, `-Dqt=custom:tag` |
+
+Any of these left unrecognized and passed through unmodified would reproduce the original co-tag clobber, so all are parsed out and normalized to a single override — any leading `-D`/`-q` boolean flags in a cluster are preserved as their own token so their effect (debug/quiet) still reaches docker.
+
+**Precedence:** `-t`/`--tag` wins over `RC_IMAGE` (both ultimately just set the effective `$IMAGE` for the build; the flag is parsed last and always takes priority when both are present).
+
+**Repeated `-t`/`--tag`:** last occurrence wins (only ever a single effective tag — rc's `-t` does not accumulate the way docker's own `stringArray` semantics would).
+
+**Fails loud, before any docker call, for:**
+- A missing value (`-t` / `--tag` as the last argument with nothing after it).
+- An **explicitly empty** value (`-t ""`, `--tag=`, `-t=`, …) — this is distinguished from "not supplied" internally; treating them the same was a real regression risk (an empty tag would otherwise silently fall back to building/tagging the default `rip-cage:latest`, rather than erroring the way plain `docker build -t ""` does).
+
+**`--`:** stops rc from scanning further arguments for `-t`/`--tag`, but is **not** a general verbatim-pass-through escape hatch — `cmd_build` always appends the build context path as its own final positional after `"$@"`, so any non-empty content placed after `--` yields two or more positionals and `docker build` hard-errors (`requires 1 argument`) rather than doing something unexpected. Fails loud; does not clobber.
+
+**Stale-container warning:** `rc build`'s informational "container was created from a different image" warning (about existing cages `rc up` will refuse to resume) is skipped when a custom `-t`/`--tag` was supplied — that warning's premise ("cages running the image you just rebuilt") doesn't hold for a scratch/throwaway-tagged build, and every real cage is still pinned to whatever image it actually was, untouched by the custom-tagged build.
 
 ### `rc up` — denylist and `--allow-risky-mount`
 

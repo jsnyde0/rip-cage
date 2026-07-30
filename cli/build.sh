@@ -59,13 +59,41 @@ cmd_build() {
   # Degenerate cases:
   #   - -t / --tag with no following value: fail loud, before any docker
   #     call (mirrors docker's own "flag needs an argument" behavior).
+  #   - -t / --tag with an EXPLICITLY EMPTY value (`-t ""`, `--tag=`, `-t=`,
+  #     ...): ALSO fail loud, before any docker call (rip-cage-fo4z F2,
+  #     round 2). Pre-round-2 this was already a hard docker error
+  #     ("invalid tag \"\": repository name must have at least one
+  #     component"); round-1's `${_bt_tag:-$IMAGE}` treated "supplied
+  #     empty" the same as "not supplied" and silently fell back to
+  #     building/tagging/validating/msb-loading the DEFAULT rip-cage:latest
+  #     instead -- i.e. it converted a hard failure into a silent clobber of
+  #     exactly the tag this bead exists to protect. `_bt_tag_set` (set the
+  #     instant ANY -t/--tag spelling is recognized, regardless of the
+  #     value) is what lets the empty-value check below distinguish "not
+  #     supplied" from "supplied empty" -- `${_bt_tag:-...}` cannot.
   #   - -t given more than once: last occurrence wins (standard "last flag
   #     wins" convention; also what `getopts`/most CLIs do for repeated
   #     flags).
-  #   - `--`: not scanned further -- everything after it is passed through
-  #     verbatim (docker's own argv separator convention; a caller placing
-  #     -t after -- is explicitly opting out of rc's parsing of it).
-  local _bt_remaining=() _bt_tag=""
+  #   - `--`: rc stops scanning for -t/--tag at this point, but this is NOT
+  #     a general "pass everything after verbatim" escape hatch (round-1's
+  #     comment overclaimed this). cmd_build always appends $SCRIPT_DIR as
+  #     its OWN final positional after "$@" (see the two `docker build`
+  #     calls below) -- so any non-empty content placed after `--` yields
+  #     2+ positionals and `docker build` hard-errors ("requires 1
+  #     argument") rather than silently doing something unexpected. Fails
+  #     loud, doesn't clobber -- but it does not achieve verbatim pass-
+  #     through; correcting the claim here rather than trying to make `--`
+  #     actually work (out of this bead's scope, rip-cage-fo4z F4/round 2).
+  #   - Docker (pflag) accepts several OTHER spellings of -t/--tag beyond
+  #     the two above: an attached short-flag value (`-tVALUE`), an
+  #     attached-with-equals short-flag value (`-t=VALUE`), and -t clustered
+  #     behind docker build's OTHER boolean short flags (`-qt VALUE`,
+  #     `-Dqt=VALUE`, ...). Any of these reaching docker unmodified
+  #     alongside rc's own leading `-t "$IMAGE"` reproduces the exact co-tag
+  #     clobber this bead exists to fix, so they are parsed out too -- see
+  #     the dedicated comment on the regex branch below (rip-cage-fo4z F1,
+  #     round 2).
+  local _bt_remaining=() _bt_tag="" _bt_tag_set=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -t|--tag)
@@ -77,10 +105,12 @@ cmd_build() {
           return 1
         fi
         _bt_tag="$2"
+        _bt_tag_set=1
         shift 2
         ;;
       --tag=*)
         _bt_tag="${1#--tag=}"
+        _bt_tag_set=1
         shift
         ;;
       --)
@@ -92,14 +122,92 @@ cmd_build() {
         done
         ;;
       *)
-        _bt_remaining+=("$1")
-        shift
+        # rip-cage-fo4z F1 (round 2): docker build's short-flag surface,
+        # confirmed live against `docker build --help` on docker 29.4.0, is
+        # exactly 5 flags: -D/--debug and -q/--quiet (boolean), -f/--file,
+        # -o/--output, and -t/--tag (each value-taking). pflag's shorthand
+        # clustering algorithm (also verified live against real `docker
+        # build` invocations for every shape below) walks a single-dash
+        # token left to right: a boolean flag consumes one character and
+        # continues; the FIRST value-taking flag it hits consumes the REST
+        # of the token as its value (stripping one leading "=" if present),
+        # or -- if nothing is left in the token -- the NEXT argv word.
+        #
+        # The regex below is a deterministic, verified replica of that
+        # algorithm restricted to "does this token set -t": zero or more
+        # boolean D/q characters, then the literal `t`, then whatever
+        # follows. It is exhaustive over docker build's CURRENT short-flag
+        # surface. A future docker release adding another boolean short
+        # flag would need this pattern revisited -- flagged here rather
+        # than silently assumed complete forever.
+        #
+        # Deliberately NOT matched (left to pass through to docker
+        # unmodified, on purpose): any cluster where -f or -o precedes the
+        # `t` character. In real docker parsing, -f/-o (also value-taking)
+        # consumes the REST of the token first, so `t` is never actually
+        # treated as the tag flag there (e.g. `-ft` sets -f's value to
+        # "t"; it does not set a tag at all) -- nothing to intercept, and
+        # nothing ambiguous about it. That shape belongs to rip-cage-zqjz's
+        # separate -f/--file clobber bug; left alone here per that bead's
+        # scope. Anything else this doesn't recognize (e.g. an unknown
+        # shorthand flag before `t`) is left untouched too: docker's own
+        # parser rejects it outright ("unknown shorthand flag"), so there
+        # is no silent-clobber path through an unrecognized spelling.
+        if [[ "$1" =~ ^-[Dq]*t(.*)$ ]]; then
+          local _bt_prefix="${1%%t*}"
+          local _bt_rest="${BASH_REMATCH[1]}"
+          # Re-emit any leading boolean flags (-D/-q) as their own token so
+          # docker still sees them -- only the tag portion is intercepted.
+          if [[ "$_bt_prefix" != "-" ]]; then
+            _bt_remaining+=("$_bt_prefix")
+          fi
+          if [[ -z "$_bt_rest" ]]; then
+            # -t / -qt / -Dqt / ... with nothing attached: value is the
+            # NEXT argv word (mirrors the -t|--tag case arm above).
+            if [[ $# -lt 2 ]]; then
+              if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+                json_error "rc build: ${1} requires a value" "BUILD_TAG_MISSING_VALUE"
+              fi
+              echo "Error: ${1} requires a value" >&2
+              return 1
+            fi
+            _bt_tag="$2"
+            _bt_tag_set=1
+            shift 2
+          else
+            _bt_tag="${_bt_rest#=}"
+            _bt_tag_set=1
+            shift
+          fi
+        else
+          _bt_remaining+=("$1")
+          shift
+        fi
         ;;
     esac
   done
   set -- "${_bt_remaining[@]+"${_bt_remaining[@]}"}"
+
+  if [[ "$_bt_tag_set" -eq 1 && -z "$_bt_tag" ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      json_error "rc build: -t/--tag value must not be empty" "BUILD_TAG_EMPTY_VALUE"
+    fi
+    echo "Error: -t/--tag value must not be empty" >&2
+    return 1
+  fi
+
   # shellcheck disable=SC2034  # read via dynamic scope by every helper cmd_build calls below
-  local IMAGE="${_bt_tag:-$IMAGE}"
+  # NOTE: the RHS `$IMAGE` here is evaluated against the OUTER (not-yet-
+  # shadowed) variable at `local` declaration time -- standard bash
+  # behavior for `local X="$X"`. Splitting the declaration and the
+  # conditional assignment into two separate statements would instead read
+  # back the (already-shadowed, empty) local on the second statement --
+  # verified live while writing this fix (T3/T16 regressed to an empty tag
+  # until this was combined into one statement).
+  local IMAGE="$IMAGE"
+  if [[ "$_bt_tag_set" -eq 1 ]]; then
+    IMAGE="$_bt_tag"
+  fi
 
   # Ensure the manifest is seeded (first-run: writes defaults to ~/.config/rip-cage/tools.yaml).
   _manifest_ensure_seeded
@@ -170,7 +278,18 @@ cmd_build() {
       # stdout JSON stays parseable) when existing rc containers are pinned
       # to a different image than the one just built — rc up will refuse to
       # resume them (see _up_resolve_resume_image_drift_stopped).
-      _build_warn_stale_containers
+      #
+      # rip-cage-fo4z F7 (round 2): skip this when the caller supplied a
+      # custom -t/--tag. The warning's premise is "cages running the image
+      # you just rebuilt" -- that reasoning does not hold for a scratch/
+      # fixture/test build under a throwaway tag, and every real cage is
+      # still pinned to whatever image it actually was (rip-cage:latest or
+      # an explicit RC_IMAGE), untouched by this build. Without this guard,
+      # a second build of the SAME custom tag (already loaded into msb's
+      # cache from the prior run) makes every real cage's digest mismatch
+      # the fixture image, and the warning would wrongly advise `rc reload`
+      # (a COLD RECREATE) on cages that are perfectly current.
+      [[ "$_bt_tag_set" -eq 0 ]] && _build_warn_stale_containers
       # rip-cage-7dkq (S1, msb migration testability root): one-time
       # docker save -> msb load conversion. Best-effort (see _build_msb_load);
       # its exit code is deliberately not propagated into rc build's own.
@@ -193,8 +312,10 @@ cmd_build() {
         docker image rm "$IMAGE" 2>/dev/null || true
         return 1
       fi
-      # rip-cage-jnvb / D-d: same informational warning on the human-mode build path.
-      _build_warn_stale_containers
+      # rip-cage-jnvb / D-d: same informational warning on the human-mode
+      # build path. rip-cage-fo4z F7 (round 2): same custom-tag skip as the
+      # JSON path above -- see that comment for the full rationale.
+      [[ "$_bt_tag_set" -eq 0 ]] && _build_warn_stale_containers
       # rip-cage-7dkq (S1, msb migration testability root): one-time
       # docker save -> msb load conversion. Best-effort (see _build_msb_load);
       # its exit code is deliberately not propagated into rc build's own.

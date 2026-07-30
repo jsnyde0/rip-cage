@@ -623,6 +623,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-reload-exit-trap-seam.sh"  # §3(vi): cmd_reload's EXIT-trap lock_dir cleanup (golden-master-invisible filesystem effect)
   run_test "${SCRIPT_DIR}/test-generate-dockerfile.sh"    # §4 gap-fill: rc generate-dockerfile (bundled + from-source structural assertions)
   run_test "${SCRIPT_DIR}/test-build-msb-load.sh"         # rip-cage-7dkq (S1, msb migration): _build_msb_load unit tests (fake docker+msb PATH shims, host-only, no live daemon)
+  run_test "${SCRIPT_DIR}/test-build-tag-override.sh"     # rip-cage-fo4z: rc build -t/--tag overrides (not co-tags) the effective image -- every accepted spelling incl. clustered/attached short-flag forms, empty-value fail-loud, stale-container-warning scoping (fake docker+msb PATH shims, host-only)
   run_test "${SCRIPT_DIR}/test-msb-boot-smoke.sh"         # rip-cage-7dkq (S1, msb migration): effect-based docker-save->msb-load->boot->in-guest-exec smoke root + negative control (NEEDS_CONTAINER+NEEDS_MSB; self-skips without docker/msb/pre-built image)
   run_test "${SCRIPT_DIR}/test-rc-setup.sh"               # §4 gap-fill: rc setup idempotency (zsh/bash, relaxed eval-line match)
   run_test "${SCRIPT_DIR}/test-manifest-reconcile-verb.sh" # §4 gap-fill: rc manifest reconcile backup-before-overwrite + validation-abort
