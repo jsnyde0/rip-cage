@@ -41,6 +41,7 @@ An empty/null file passes (treated as "use defaults").
 | Condition | Error (key text) |
 |---|---|
 | `name` missing/empty | `required field 'name' is missing` |
+| `name` outside `[a-z0-9_-]` | `'name' contains characters outside [a-z0-9_-] — names are baked raw into generated Dockerfile RUN lines by multiple generators (IN-CAGE-DAEMON MCP-fragment jq --arg, SHELL-INTEGRATION marker line, MULTIPLEXER directory path, ...) and must be lowercase alphanumeric, hyphens, or underscores only` — enforced **once, for every archetype**, before any archetype-specific logic runs (rip-cage-l906.4; closes a build-time command-injection route through two generators that bake `name` unescaped) |
 | `archetype` missing | `required field 'archetype' is missing` |
 | `archetype` not one of the allowed set | `unknown 'archetype' value '<v>'. Allowed: TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON, MULTIPLEXER` |
 | `version_pin` missing | `required field 'version_pin' is missing (… use "bundled" for image-bundled tools)` |
@@ -106,9 +107,10 @@ An empty/null file passes (treated as "use defaults").
 
 ### MULTIPLEXER entries
 
+MULTIPLEXER names have an extra reason the universal `[a-z0-9_-]` name-format rule (see **Every entry, any archetype** above) matters for this archetype specifically: they also become registry directory components (`/etc/rip-cage/multiplexers/<name>`) in the image, so a metacharacter here would additionally produce a malformed path, not just a malformed Dockerfile directive. The rule itself is enforced once, for every archetype — not re-checked here.
+
 | Condition | Error (key text) |
 |---|---|
-| name outside `[a-z0-9_-]` | `name … must be lowercase alphanumeric, hyphens, or underscores only` (names become registry dir components `/etc/rip-cage/multiplexers/<name>`) |
 | unknown top-level field | `unknown field '<k>' (strict-parse — only name/archetype/version_pin/hooks are allowed)` |
 | `hooks` missing / not an object | `required field 'hooks' is missing` / `must be an object` |
 | `hooks.start` or `hooks.attach` missing | `required field 'hooks.start' is missing (… start hook is required)` / same for `attach` |

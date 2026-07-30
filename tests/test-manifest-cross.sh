@@ -162,6 +162,63 @@ test_h3_name_with_newline_rejected_every_archetype() {
   done
 }
 
+# ---------------------------------------------------------------------------
+# H4 — A hostile 'name' is rejected through the REAL production entrypoint
+# chain (`rc generate-dockerfile` → cmd_generate_dockerfile →
+# _manifest_build_dockerfile_path → the generators), not just via a direct
+# call to _manifest_validate (rip-cage-l906.4 second-round-review coverage
+# gap: H3 above and the T1e3/T1i generator-level tests all call the
+# generators/validator directly — nothing drove a hostile name through the
+# entrypoint an operator/CI actually runs, so a future refactor that piped
+# pre-parsed manifest data into a generator instead of having it call
+# _manifest_load itself could silently reopen the injection with every
+# existing test still green).
+#
+# Reuses the existing manifest-hostile-daemon-mcp-quote-name.yaml fixture
+# (F1 site: _manifest_generate_daemon_mcp_dockerfile_steps' single-quoted
+# `jq --arg name '<name>'` line) rather than adding a new fixture. The
+# payload embedded in that fixture's name — 'touch /pwned' — is a repo-wide
+# convention (also used by T1e3/T1i/H3): it is HARMLESS here because this
+# is a host-only test that only runs `rc generate-dockerfile` (stdout
+# codegen), never `docker build` — the payload text is asserted absent from
+# the generated output, never executed. Belt-and-suspenders: also assert the
+# literal path was never created on the host, and remove it if it somehow
+# were (defends the test itself against a future regression that DID let
+# generate-dockerfile shell out).
+# ---------------------------------------------------------------------------
+test_h4_hostile_name_rejected_through_real_entrypoint() {
+  local fixture="${FIXTURES}/manifest-hostile-daemon-mcp-quote-name.yaml"
+  local sentinel="/pwned"
+  rm -f "$sentinel" 2>/dev/null || true
+
+  local stdout_file stderr_file exit_code
+  stdout_file=$(mktemp)
+  stderr_file=$(mktemp)
+  exit_code=0
+  RC_MANIFEST_GLOBAL="$fixture" "${RC}" generate-dockerfile \
+    >"$stdout_file" 2>"$stderr_file" || exit_code=$?
+
+  local stdout_output stderr_output
+  stdout_output=$(cat "$stdout_file")
+  stderr_output=$(cat "$stderr_file")
+  rm -f "$stdout_file" "$stderr_file"
+
+  local sentinel_leaked=0
+  [[ -e "$sentinel" ]] && sentinel_leaked=1
+  rm -f "$sentinel" 2>/dev/null || true
+
+  if [[ "$exit_code" -ne 0 ]] \
+    && echo "$stderr_output" | grep -qi "name" \
+    && echo "$stderr_output" | grep -q '\[a-z0-9_-\]' \
+    && ! echo "$stdout_output" | grep -qF "touch /pwned" \
+    && [[ -z "$stdout_output" ]] \
+    && [[ "$sentinel_leaked" -eq 0 ]]; then
+    pass "H4 hostile name rejected through the real 'rc generate-dockerfile' entrypoint (exit=${exit_code}, no injected directive in generated output, no host-side sentinel leak)"
+  else
+    fail "H4 expected non-zero exit + name-format error + no injected directive in stdout + no sentinel leak. exit=${exit_code} stdout='${stdout_output}' stderr='${stderr_output}' sentinel_leaked=${sentinel_leaked}"
+  fi
+}
+
 echo "=== test-manifest-cross.sh — cross-cutting manifest regressions (rip-cage-4c5.8) ==="
 echo ""
 echo "--- HOST-ONLY: Structural regression checks (no container needed) ---"
@@ -169,6 +226,7 @@ test_h1_default_manifest_returns_original_dockerfile
 # H2 removed (see comment above): was a vacuous storage-driver check, not a real
 # network-namespace probe. C3 (e2e) is the real loopback isolation runtime proof.
 test_h3_name_with_newline_rejected_every_archetype
+test_h4_hostile_name_rejected_through_real_entrypoint
 
 # =============================================================================
 # E2E TESTS (NEEDS_CONTAINER / RC_E2E=1)
