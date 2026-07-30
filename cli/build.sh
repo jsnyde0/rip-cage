@@ -28,6 +28,23 @@ cmd_generate_dockerfile() {
 }
 
 
+# _build_reject_arg <message> <json_code> -- shared fail-loud emitter for
+# cmd_build's fail-closed argument allowlist (rip-cage-zqjz.2). Prints via
+# json_error (JSON mode -- which itself calls `exit 1`, terminating the
+# process immediately, matching every pre-existing reject site's behavior)
+# or a plain `Error: ...` line on stderr (human mode). A bash function's own
+# `return` cannot force its CALLER to return, so every call site must follow
+# this with an explicit `return 1` of its own (a no-op in JSON mode, since
+# json_error already exited).
+_build_reject_arg() {
+  local _msg="$1" _code="$2"
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    json_error "$_msg" "$_code"
+  fi
+  echo "Error: $_msg" >&2
+}
+
+
 cmd_build() {
   # rip-cage-fo4z: parse a caller-supplied -t/--tag OUT of "$@" and let it
   # OVERRIDE the effective image name for the REST of this function, rather
@@ -93,6 +110,54 @@ cmd_build() {
   #     clobber this bead exists to fix, so they are parsed out too -- see
   #     the dedicated comment on the regex branch below (rip-cage-fo4z F1,
   #     round 2).
+  #
+  # rip-cage-zqjz.2 -- POLICY INVERSION: fail-closed ALLOWLIST, not a
+  # per-flag reject list.
+  #
+  # A THIRD distinct validator-defeat was found in this exact seam, with a
+  # THIRD distinct mechanism (-t: additive; -f: last-wins; -o: BuildKit
+  # output-redirection -- `docker build -t X -o type=local,dest=DIR .` exits
+  # 0 and exports the build result to the filesystem WITHOUT loading it into
+  # the docker image store; if a prior $IMAGE already existed, the
+  # post-build root-owned validators below silently pass against the STALE
+  # image while `rc build` reports status "built" -- a false green on the
+  # safety floor, not a UX surprise). Three distinct mechanisms in three
+  # passes means an open pass-through with a growing per-flag reject list is
+  # unwinnable by construction: docker's flag surface evolves outside rc's
+  # control, and each new flag is a fresh chance at a fresh mechanism.
+  #
+  # So the seam inverts: every token in "$@" is now classified into exactly
+  # one of four buckets, decided BEFORE any docker call:
+  #   1. Intercepted -t/--tag (every spelling above) -- overrides $IMAGE.
+  #   2. Rejected -f/--file (every spelling) -- rip-cage-zqjz, unchanged.
+  #   3. Rejected -o/--output (every spelling) -- THIS bead, closes the
+  #      false-green above.
+  #   4. An explicit ADMIT list: flags verified against docker 29.4.0's
+  #      REAL `docker build --help` surface to (a) be unable to touch image
+  #      identity, the Dockerfile source, the build context, the output
+  #      destination/image-store load, or any image metadata the floor
+  #      later reads, and (b) have stable, known semantics. Passed through
+  #      unmodified. See the ADMIT case arms below for the one-line
+  #      rationale on each.
+  #   5. EVERYTHING ELSE -- every other named docker flag (--target,
+  #      --label, --secret, --push, --platform, ...; see the catch-all
+  #      branch's comment for the full reject table), any genuinely
+  #      unrecognized/future docker flag, a stray build-context positional
+  #      (rc supplies its own -- see the two `docker build ... "$@"
+  #      "$SCRIPT_DIR"` call sites below), and a bare `--` (previously a
+  #      literal unfiltered-passthrough hole: a51b5da/fb79d10 dumped
+  #      everything after `--` into the constructed argv VERBATIM,
+  #      bypassing every one of the checks above, including this bead's own
+  #      -o rejection -- closed by removing that special case entirely, so
+  #      `--` itself now falls into this same fail-closed bucket) -- ALL
+  #      fail loud here, before any docker call, naming the allowlist and
+  #      the `rc generate-dockerfile` escape hatch (compose the Dockerfile
+  #      yourself, invoke `docker build` yourself, explicitly outside rc's
+  #      safety floor).
+  # This also closes rip-cage-fo4z's own forward-compat caveat ("if docker
+  # build ever gains a new boolean short flag, a cluster using it could
+  # again slip past the pattern") -- an unrecognized flag now fails closed
+  # by construction, rather than silently reaching docker.
   local _bt_remaining=() _bt_tag="" _bt_tag_set=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -134,13 +199,87 @@ cmd_build() {
         echo "Error: -f/--file is not accepted — rc resolves the Dockerfile from the manifest; a caller-supplied Dockerfile would bypass the build-isolation validator (ADR-005 D9 / ADR-024), which only ever audits rc's own resolved Dockerfile" >&2
         return 1
         ;;
-      --)
+      -o|--output|--output=*)
+        # rip-cage-zqjz.2: REJECT outright, fail loud, BEFORE any docker
+        # call -- same shape as -f/--file just above (there is no
+        # legitimate rc build -o/--output use and no override-then-audit
+        # fix: rc's docker-build call sites below have no "-o" of their own
+        # to override, and BuildKit's -o/--output governs where the build
+        # RESULT lands -- filesystem, registry, or the local image store --
+        # independently of -t/--tag. `docker build -t X -o
+        # type=local,dest=DIR .` exits 0 and exports to DIR WITHOUT loading
+        # X into the docker image store; if a prior X already existed, the
+        # post-build root-owned validators below (_manifest_check_
+        # binary_root_owned / _manifest_check_mount_root_owned) silently
+        # pass against the STALE X while `rc build` reports status "built"
+        # -- a false green on the safety floor (ADR-005 D9/D11, ADR-024,
+        # ADR-027 D1), not a UX surprise. This is THE bead this reject
+        # exists for.
+        _build_reject_arg "rc build: -o/--output is not accepted — it can redirect the build result away from the local docker image store (filesystem, registry, ...), which would let the post-build safety-floor validators silently pass against a STALE previously-built image while rc reports the build as successful. There is no legitimate rc build -o/--output use. See 'rc build flag allowlist' in docs/reference/cli-reference.md. Escape hatch: run 'rc generate-dockerfile > Dockerfile.composed' and invoke docker build yourself, explicitly outside rc's safety floor." "BUILD_OUTPUT_REJECTED"
+        return 1
+        ;;
+      --build-arg)
+        # ADMIT (rip-cage-fo4z, re-judged rip-cage-zqjz.2): --build-arg only
+        # ever feeds _image_is_current's staleness heuristic (an
+        # org.opencontainers.image.version label comparison) -- it never
+        # reaches _manifest_check_build_isolation or either root-owned
+        # validator, and repeated distinct-key --build-arg flags must stay
+        # repeatable for a manifest fragment's own build args. EXCEPTION:
+        # the RC_VERSION key specifically is carved out and rejected -- rc's
+        # own docker-build calls below already set
+        # `--build-arg "RC_VERSION=${RC_VERSION}"` unconditionally, and a
+        # caller override would win (BuildKit's build-arg map is
+        # last-value-wins per key), spoofing the version label
+        # _image_is_current compares against. Not a root-owned-validator
+        # bypass, but a real integrity gap on the versioning surface this
+        # bead is the fresh-eyes moment for (per fo4z's own deferred note).
+        # Matched case-sensitively against rc's own literal ARG key name.
+        if [[ $# -lt 2 ]]; then
+          _build_reject_arg "rc build: ${1} requires a value" "BUILD_ARG_MISSING_VALUE"
+          return 1
+        fi
+        if [[ "$2" == RC_VERSION=* ]]; then
+          _build_reject_arg "rc build: --build-arg RC_VERSION=... is not accepted — rc sets RC_VERSION itself on every build; a caller override could spoof the org.opencontainers.image.version label _image_is_current compares against. Other --build-arg keys are admitted." "BUILD_ARG_RC_VERSION_REJECTED"
+          return 1
+        fi
+        _bt_remaining+=("$1" "$2")
+        shift 2
+        ;;
+      --build-arg=*)
+        local _bt_ba_val="${1#--build-arg=}"
+        if [[ "$_bt_ba_val" == RC_VERSION=* ]]; then
+          _build_reject_arg "rc build: --build-arg=RC_VERSION=... is not accepted — rc sets RC_VERSION itself on every build; a caller override could spoof the org.opencontainers.image.version label _image_is_current compares against. Other --build-arg keys are admitted." "BUILD_ARG_RC_VERSION_REJECTED"
+          return 1
+        fi
         _bt_remaining+=("$1")
         shift
-        while [[ $# -gt 0 ]]; do
-          _bt_remaining+=("$1")
-          shift
-        done
+        ;;
+      --no-cache|--pull|--debug|--quiet)
+        # ADMIT: --no-cache/--pull only affect cache/base-image freshness;
+        # --debug/--quiet (long forms of -D/-q, handled for short/clustered
+        # forms by the pure-boolean regex in the catch-all below) only
+        # affect docker's OWN log verbosity. None of the four can touch
+        # image identity, the Dockerfile source, the build context, the
+        # output destination, or any image metadata the floor reads. -q's
+        # stdout-suppression is safe here specifically because neither
+        # docker-build call site below parses docker's own stdout (the JSON
+        # branch redirects it to /dev/null; the plain branch lets it go
+        # straight to the terminal).
+        _bt_remaining+=("$1")
+        shift
+        ;;
+      --progress)
+        # ADMIT: output-formatting only.
+        if [[ $# -lt 2 ]]; then
+          _build_reject_arg "rc build: ${1} requires a value" "BUILD_PROGRESS_MISSING_VALUE"
+          return 1
+        fi
+        _bt_remaining+=("$1" "$2")
+        shift 2
+        ;;
+      --progress=*)
+        _bt_remaining+=("$1")
+        shift
         ;;
       *)
         # rip-cage-fo4z F1 (round 2): docker build's short-flag surface,
@@ -162,20 +301,16 @@ cmd_build() {
         # flag would need this pattern revisited -- flagged here rather
         # than silently assumed complete forever.
         #
-        # Deliberately NOT matched by the -t branch below (left to the -f
-        # branch just above it, or passed through untouched): any cluster
-        # where -f or -o precedes the `t` character. In real docker
-        # parsing, -f/-o (also value-taking) consumes the REST of the
-        # token first, so `t` is never actually treated as the tag flag
-        # there (e.g. `-ft` sets -f's value to "t"; it does not set a tag
-        # at all) -- that shape is rip-cage-zqjz's -f/--file clobber bug,
-        # handled by the -f branch immediately below (it matches `-ft`
+        # Deliberately NOT matched by the -t branch below (left to the -f/-o
+        # branches, or to the pure-boolean/fail-closed branches further
+        # down): any cluster where -f or -o precedes the `t` character. In
+        # real docker parsing, -f/-o (also value-taking) consumes the REST
+        # of the token first, so `t` is never actually treated as the tag
+        # flag there (e.g. `-ft` sets -f's value to "t"; it does not set a
+        # tag at all) -- that shape is rip-cage-zqjz's -f/--file clobber
+        # bug, handled by the -f branch immediately below (it matches `-ft`
         # first, since `f` -- not `t` -- is the leftmost value-taking
-        # character). Anything else this doesn't recognize (e.g. an
-        # unknown shorthand flag before `t`) is left untouched too:
-        # docker's own parser rejects it outright ("unknown shorthand
-        # flag"), so there is no silent-clobber path through an
-        # unrecognized spelling.
+        # character).
         #
         # rip-cage-zqjz: -f/--file is checked FIRST (before -t) so that a
         # cluster where `f` is the leftmost value-taking character (e.g.
@@ -187,11 +322,50 @@ cmd_build() {
         # legitimate override to perform, so ANY match (value attached or
         # not) is rejected outright, before any docker call and before any
         # temp-Dockerfile work (this scan runs first in cmd_build).
-        if [[ "$1" =~ ^-[Dq]*f(.*)$ ]]; then
+        #
+        # rip-cage-zqjz.2: under the fail-closed allowlist, three more
+        # branches were added below the original two:
+        #   - a stray non-flag positional (rc supplies the build-context
+        #     positional itself -- see the two `docker build ... "$@"
+        #     "$SCRIPT_DIR"` call sites -- a caller-supplied one would
+        #     otherwise become a second positional docker itself would
+        #     hard-error on; rc now fails loud on it directly instead),
+        #     checked FIRST since it's not a `-`-prefixed token at all;
+        #   - a -o/--output cluster (same regex shape as -f's, restricted
+        #     to `o`), rejected for the same "first value-taking char in
+        #     the token wins" reason -- this bead's own false-green fix;
+        #   - a pure boolean short cluster (`^-[Dq]+$`, i.e. every char is
+        #     D or q and there's at least one) -- the ADMIT case for -D/-q
+        #     appearing standalone or clustered together with no value
+        #     character at all (e.g. `-q`, `-D`, `-Dq`, `-qD`).
+        # ANYTHING ELSE reaching the final `else` -- any other named docker
+        # flag (--target/--label/--secret/--ssh/--push/--load/--platform/
+        # --add-host/--allow/--annotation/--attest/--build-context/
+        # --builder/--cache-from/--cache-to/--call/--check/--cgroup-parent/
+        # --iidfile/--metadata-file/--network/--no-cache-filter/--policy/
+        # --provenance/--sbom/--shm-size/--ulimit/...), any genuinely
+        # unrecognized/future docker flag, or a bare `--` (no longer
+        # special-cased into verbatim passthrough -- see the comment above
+        # `local _bt_remaining=` for why) -- now fails loud here too,
+        # instead of being silently passed through to docker. This is the
+        # fail-closed default the allowlist inversion exists for: docker's
+        # flag surface evolves outside rc's control, so "unrecognized"
+        # means "rejected", not "assumed safe". Per-flag rationale for the
+        # explicitly-named rejects above lives in this bead's commit
+        # message and docs/reference/cli-reference.md's allowlist table,
+        # not repeated per-flag here (one shared message covers all of
+        # them, naming the actual token via `$1`).
+        if [[ "$1" != -* ]]; then
+          _build_reject_arg "rc build: unexpected argument '$1' — rc build does not accept a build-context positional; rc supplies it itself. See 'rc build flag allowlist' in docs/reference/cli-reference.md. Escape hatch: run 'rc generate-dockerfile > Dockerfile.composed' and invoke docker build yourself, explicitly outside rc's safety floor." "BUILD_EXTRA_POSITIONAL"
+          return 1
+        elif [[ "$1" =~ ^-[Dq]*f(.*)$ ]]; then
           if [[ "$OUTPUT_FORMAT" == "json" ]]; then
             json_error "rc build: -f/--file is not accepted — rc resolves the Dockerfile from the manifest; a caller-supplied Dockerfile would bypass the build-isolation validator (ADR-005 D9 / ADR-024), which only ever audits rc's own resolved Dockerfile" "BUILD_FILE_REJECTED"
           fi
           echo "Error: -f/--file is not accepted — rc resolves the Dockerfile from the manifest; a caller-supplied Dockerfile would bypass the build-isolation validator (ADR-005 D9 / ADR-024), which only ever audits rc's own resolved Dockerfile" >&2
+          return 1
+        elif [[ "$1" =~ ^-[Dq]*o(.*)$ ]]; then
+          _build_reject_arg "rc build: -o/--output is not accepted — it can redirect the build result away from the local docker image store, which would let the post-build safety-floor validators silently pass against a STALE previously-built image while rc reports the build as successful. See 'rc build flag allowlist' in docs/reference/cli-reference.md. Escape hatch: run 'rc generate-dockerfile > Dockerfile.composed' and invoke docker build yourself, explicitly outside rc's safety floor." "BUILD_OUTPUT_REJECTED"
           return 1
         elif [[ "$1" =~ ^-[Dq]*t(.*)$ ]]; then
           local _bt_prefix="${1%%t*}"
@@ -219,9 +393,15 @@ cmd_build() {
             _bt_tag_set=1
             shift
           fi
-        else
+        elif [[ "$1" =~ ^-[Dq]+$ ]]; then
+          # ADMIT: a pure boolean short cluster (-D/-q only, no value
+          # character at all) -- see the --debug/--quiet case arm above for
+          # the rationale, which applies identically to the short spellings.
           _bt_remaining+=("$1")
           shift
+        else
+          _build_reject_arg "rc build: '$1' is not on rc's build-flag allowlist and cannot be passed to docker build — see 'rc build flag allowlist' in docs/reference/cli-reference.md for what is (and isn't) accepted and why. Escape hatch: run 'rc generate-dockerfile > Dockerfile.composed' and invoke docker build yourself, explicitly outside rc's safety floor." "BUILD_ARG_NOT_ALLOWED"
+          return 1
         fi
         ;;
     esac

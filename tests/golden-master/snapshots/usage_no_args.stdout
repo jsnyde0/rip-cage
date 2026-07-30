@@ -1,9 +1,12 @@
 Usage: rc [--output json] [--dry-run] <command> [args]
 
 Commands:
-  build [docker-args...]                       Build the rip-cage image
+  build [allowed docker flags...]               Build the rip-cage image (fail-closed allowlist, not a pass-through -- see docs/reference/cli-reference.md)
     -t, --tag <ref>     Tag the built image as <ref> instead of rip-cage:latest (overrides, does not add a second tag; rip-cage:latest is left untouched)
     -f, --file           REJECTED (any spelling): rc resolves the Dockerfile from the manifest; a caller-supplied one would bypass the build-isolation validator
+    -o, --output         REJECTED (any spelling): can redirect the build result away from the image store, letting the safety validators pass against a stale image
+    --build-arg, --no-cache, --pull, --progress, -D/--debug, -q/--quiet   Admitted (verified benign against the safety floor); --build-arg RC_VERSION=... is REJECTED
+    (anything else)      REJECTED before any docker call -- run 'rc generate-dockerfile' + your own 'docker build' instead, explicitly outside rc's safety floor
   up [path] [options]                           Start or resume a container (default: .)
     --port PORT         Expose a port
     --env-file FILE     Load env vars from file

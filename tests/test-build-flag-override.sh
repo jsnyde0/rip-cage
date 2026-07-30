@@ -6,7 +6,34 @@
 # renamed and broadened under rip-cage-zqjz to also cover -f/--file, which
 # shares the exact same "caller arg collides with an rc-set flag" seam and
 # the exact same fake-docker+fake-msb host-only harness -- a second parallel
-# test file would just duplicate this fixture machinery.
+# test file would just duplicate this fixture machinery. Broadened again
+# under rip-cage-zqjz.2 (see below) to cover the seam's POLICY INVERSION:
+# from an open pass-through with a per-flag reject list, to a fail-closed
+# ALLOWLIST.
+#
+# --- rip-cage-zqjz.2: -o/--output, and the allowlist inversion ---
+# A THIRD distinct validator-defeat was found in the same seam: `docker
+# build -t X -o type=local,dest=DIR .` exits 0 and exports the build result
+# to the filesystem WITHOUT loading it into the docker image store. If a
+# prior $IMAGE already existed (from an earlier real build), the post-build
+# root-owned validators silently pass against the STALE image while `rc
+# build` reports status "built" -- a FALSE GREEN on the safety floor, not
+# merely a UX surprise (this is the acceptance-critical scenario: see T-FG
+# below).
+#
+# Three distinct mechanisms in three passes (-t additive, -f last-wins, -o
+# output-redirection) is unwinnable as a per-flag reject list -- docker's
+# flag surface evolves outside rc's control. The fix inverts the seam to a
+# FAIL-CLOSED ALLOWLIST: a small set of flags verified benign against
+# docker's REAL current flag surface (docker 29.4.0 `docker build --help`)
+# are explicitly admitted (pass through unmodified); -t is intercepted as
+# before; -f/-o are explicitly rejected as before/newly; and EVERYTHING ELSE
+# -- every other named docker flag AND any genuinely unrecognized/future
+# flag AND a stray build-context positional AND a bare `--` (previously a
+# literal unfiltered-passthrough hole, see T-DASHDASH) -- fails loud BEFORE
+# any docker call, naming the allowlist and the `rc generate-dockerfile`
+# escape hatch. See cli/build.sh's cmd_build for the full per-flag
+# admit/reject rationale.
 #
 # --- -t/--tag (rip-cage-fo4z) ---
 # Bug: cli/build.sh's docker build invocations hardcode `-t "$IMAGE"` (default
@@ -89,6 +116,74 @@
 #       to _manifest_check_build_isolation AND to the real docker build -f
 #       argument (forces a manifest-generated temp Dockerfile via a
 #       from-source TOOL fixture so the validator is actually invoked).
+#
+# --- rip-cage-zqjz.2 (-o/--output rejection + allowlist inversion) ---
+#   T29 rc build -o <value> (separate-arg) -> rejected before any docker call.
+#   T30 rc build --output <value> (long-form separate-arg) -> rejected.
+#   T31 rc build --output=<value> (long-form equals) -> rejected.
+#   T32 rc build -o=<value> (single-dash equals) -> rejected.
+#   T33 rc build -o<value> (single-dash attached, no equals) -> rejected.
+#   T34 rc build -Do<value> (boolean-prefixed cluster, attached) -> rejected.
+#   T35 rc build -qo <value> (boolean-prefixed cluster, value from next arg)
+#       -> rejected.
+#   T36 rc build -Dqo <value> (multi-boolean-prefixed cluster) -> rejected.
+#   T37 (directional) rc build -ot -> rejected -- this IS -o (value "t").
+#   T38 (directional, regression guard) rc build -to -> still LEGAL, tag="o"
+#       -- this is -t (value "o"), NOT -o.
+#   T39 rc build --output json -o <value> -> single well-formed JSON error
+#       object, stable error code BUILD_OUTPUT_REJECTED, docker never invoked.
+#   T-FG (acceptance criterion 1/2, THE motivating false-green): with a
+#       stale $IMAGE already "existing" (validators stubbed as a positive
+#       control, simulating a validator that would happily inspect whatever
+#       image is already in the store), `rc build -o ...` must NOT reach a
+#       state where docker is invoked and a built/success status is
+#       reported -- it must fail loud BEFORE the docker call, every time.
+#   T40 rc build --build-arg RC_VERSION=evil -> rejected (separate-arg): a
+#       caller override of RC_VERSION could spoof _image_is_current's
+#       staleness-check label comparison.
+#   T41 rc build --build-arg=RC_VERSION=evil -> rejected (equals form).
+#   T42 (positive control) rc build --build-arg OTHER_KEY=value -> ADMITTED,
+#       passes through alongside rc's own --build-arg RC_VERSION=... (two
+#       distinct-key --build-arg occurrences, not co-tag-style collapsed).
+#   T43 rc build --no-cache -> admitted, passes through (regression guard,
+#       same case as T9 but via the new explicit admit path).
+#   T44 rc build --pull -> admitted, passes through.
+#   T45 rc build --progress=quiet -> admitted, passes through.
+#   T46 rc build --progress plain -> admitted, passes through (value from
+#       next arg).
+#   T47 rc build -q -> admitted (bare boolean short flag), passes through.
+#   T48 rc build -D -> admitted (bare boolean short flag), passes through.
+#   T49 rc build -Dq -> admitted (pure boolean short cluster), passes
+#       through.
+#   T50 rc build --debug -> admitted (long form of -D), passes through.
+#   T51 rc build --quiet -> admitted (long form of -q), passes through.
+#   T52 rc build --target foo -> rejected (named: can skip stages that
+#       install the safety floor -- verified against cage/Dockerfile's
+#       go-builder / runtime stage split).
+#   T53 rc build --label rc.multiplexers=herdr -> rejected (named: forges
+#       the SOLE authoritative multiplexer-registry label,
+#       cli/lib/config.sh:159).
+#   T54 rc build --secret id=x -> rejected (named: build-time credential
+#       injection, ADR-005 D9 / ADR-024).
+#   T55 rc build --push -> rejected (named: registry side effect).
+#   T56 rc build --platform linux/amd64 -> rejected (named: could produce an
+#       image this host cannot run while validators still inspect it).
+#   T57 (forward-compat closure) rc build --some-brand-new-docker-flag x ->
+#       rejected via the GENERIC fail-closed default, not a named case --
+#       proves an unknown future docker flag fails closed instead of
+#       silently reaching docker (closes rip-cage-fo4z's forward-compat
+#       caveat).
+#   T58 (stray positional) rc build /tmp/not-a-flag -> rejected -- rc
+#       supplies the build-context positional itself; a caller-supplied one
+#       must fail loud in rc, not reach docker as a second positional.
+#   T-DASHDASH (closes a real hole found while implementing this bead) rc
+#       build -- -o type=local,dest=/tmp/x -> still rejected. Pre-existing
+#       `--` handling (a51b5da/fb79d10) dumped everything after `--` into
+#       the constructed argv UNFILTERED -- a caller could bypass the entire
+#       allowlist (including the -o false-green) by prefixing it with `--`.
+#       Closed by removing the special-cased verbatim-passthrough branch;
+#       `--` now falls through to the same fail-closed default as any other
+#       unrecognized token.
 
 set -uo pipefail
 
@@ -215,6 +310,69 @@ assert_file_rejected() {
     pass "${label}c: error message names the rejected flag"
   else
     fail "${label}c: expected error message to name -f/--file" "$_afr_out"
+  fi
+  cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+}
+
+# assert_output_rejected <label> <cmd_build args...> -- shared assertion for
+# every -o/--output spelling (rip-cage-zqjz.2): cmd_build must return
+# non-zero, never invoke docker, and name -o/--output in its error output.
+# Same shape as assert_file_rejected above.
+assert_output_rejected() {
+  local label="$1"
+  shift
+  setup_sandbox
+  setup_fake_docker
+  CALL_LOG=$(mktemp)
+  local _aor_rc=0
+  local _aor_out
+  _aor_out=$(run_cmd_build "$@" 2>&1) || _aor_rc=$?
+
+  if [[ "$_aor_rc" -ne 0 ]]; then
+    pass "${label}a: cmd_build returns non-zero"
+  else
+    fail "${label}a: expected non-zero exit" "$_aor_out"
+  fi
+  if [[ ! -s "$CALL_LOG" ]]; then
+    pass "${label}b: docker was never invoked"
+  else
+    fail "${label}b: expected no docker calls" "$(cat "$CALL_LOG")"
+  fi
+  if [[ "$_aor_out" == *"-o"* || "$_aor_out" == *"--output"* ]]; then
+    pass "${label}c: error message names the rejected flag"
+  else
+    fail "${label}c: expected error message to name -o/--output" "$_aor_out"
+  fi
+  cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+}
+
+# assert_unallowed_rejected <label> <cmd_build args...> -- generic
+# fail-closed-allowlist rejection assertion (rip-cage-zqjz.2): cmd_build
+# must return non-zero and never invoke docker. Used for named-reject
+# flags (--target, --label, ...) and for genuinely unrecognized/future
+# flags/positionals routed through the allowlist's single fail-closed
+# default -- deliberately does NOT assert the exact wording of the
+# rejected token (that's covered by the more specific assert_*_rejected
+# helpers above for -f/-o), just the fail-closed shape.
+assert_unallowed_rejected() {
+  local label="$1"
+  shift
+  setup_sandbox
+  setup_fake_docker
+  CALL_LOG=$(mktemp)
+  local _aur_rc=0
+  local _aur_out
+  _aur_out=$(run_cmd_build "$@" 2>&1) || _aur_rc=$?
+
+  if [[ "$_aur_rc" -ne 0 ]]; then
+    pass "${label}a: cmd_build returns non-zero"
+  else
+    fail "${label}a: expected non-zero exit" "$_aur_out"
+  fi
+  if [[ ! -s "$CALL_LOG" ]]; then
+    pass "${label}b: docker was never invoked"
+  else
+    fail "${label}b: expected no docker calls" "$(cat "$CALL_LOG")"
   fi
   cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
 }
@@ -910,6 +1068,469 @@ else
   fail "T28d: expected a manifest-generated temp Dockerfile, got the original cage/Dockerfile" "$_t28_isolation_path"
 fi
 cleanup; TEST_HOME=""; CALL_LOG=""; ISOLATION_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T29 (rip-cage-zqjz.2): rc build -o <value> -- separate-arg spelling -- must
+#     be REJECTED before any docker call. `docker build -t X -o
+#     type=local,dest=DIR .` exits 0 and exports the build result to the
+#     filesystem WITHOUT loading it into the docker image store.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T29: rc build -o <value> -> rejected before any docker call ==="
+assert_output_rejected T29 -o type=local,dest=/tmp/rc-test-t29-out
+
+# ---------------------------------------------------------------------------
+# T30: rc build --output <value> -- long-form separate-arg -- rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T30: rc build --output <value> -> rejected before any docker call ==="
+assert_output_rejected T30 --output type=local,dest=/tmp/rc-test-t30-out
+
+# ---------------------------------------------------------------------------
+# T31: rc build --output=<value> -- long-form equals -- rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T31: rc build --output=<value> -> rejected before any docker call ==="
+assert_output_rejected T31 --output=type=local,dest=/tmp/rc-test-t31-out
+
+# ---------------------------------------------------------------------------
+# T32: rc build -o=<value> -- single-dash equals -- rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T32: rc build -o=<value> (single-dash equals form) -> rejected ==="
+assert_output_rejected T32 -o=type=local,dest=/tmp/rc-test-t32-out
+
+# ---------------------------------------------------------------------------
+# T33: rc build -o<value> -- single-dash attached (no equals) -- rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T33: rc build -o<value> (attached, no equals) -> rejected ==="
+assert_output_rejected T33 -otype=local,dest=/tmp/rc-test-t33-out
+
+# ---------------------------------------------------------------------------
+# T34: rc build -Do<value> -- boolean-prefixed cluster (-D debug), attached
+#      value -- rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T34: rc build -Do<value> (boolean-prefixed cluster, attached) -> rejected ==="
+assert_output_rejected T34 -Dotype=local,dest=/tmp/rc-test-t34-out
+
+# ---------------------------------------------------------------------------
+# T35: rc build -qo <value> -- boolean-prefixed cluster (-q quiet), value
+#      from the NEXT argv word -- rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T35: rc build -qo <value> (boolean-prefixed cluster, value from next arg) -> rejected ==="
+assert_output_rejected T35 -qo type=local,dest=/tmp/rc-test-t35-out
+
+# ---------------------------------------------------------------------------
+# T36: rc build -Dqo <value> -- multi-boolean-prefixed cluster -- rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T36: rc build -Dqo <value> (multi-boolean-prefixed cluster) -> rejected ==="
+assert_output_rejected T36 -Dqo type=local,dest=/tmp/rc-test-t36-out
+
+# ---------------------------------------------------------------------------
+# T37 (directional): rc build -ot -- ILLEGAL. This is -o with attached value
+#     "t", NOT -t with value "o" -- docker's cluster-parsing walks left to
+#     right, so the FIRST value-taking flag character (o, here) consumes the
+#     rest of the token. Must be rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T37 (directional): rc build -ot -> rejected (this is -o, value \"t\") ==="
+assert_output_rejected T37 -ot
+
+# ---------------------------------------------------------------------------
+# T38 (directional, regression guard): rc build -to -- LEGAL. This is -t with
+#     attached value "o" (t is the first value-taking flag character in the
+#     cluster), NOT -o with value "t" -- must NOT be rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T38 (directional, regression guard): rc build -to -> still legal, tag=\"o\" ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t38_rc=0
+_t38_out=$(run_cmd_build -to 2>&1) || _t38_rc=$?
+
+if [[ "$_t38_rc" -eq 0 ]]; then
+  pass "T38a: cmd_build succeeds for -to (not rejected)"
+else
+  fail "T38a: expected zero exit for -to" "$_t38_out"
+fi
+_t38_build_line=$(grep '^docker build' "$CALL_LOG" || true)
+_t38_count=$(count_tag_flags "$_t38_build_line")
+_t38_value=$(extract_tag_value "$_t38_build_line")
+if [[ "$_t38_count" -eq 1 && "$_t38_value" == "o" ]]; then
+  pass "T38b: -to yields exactly one -t with value \"o\""
+else
+  fail "T38b: expected count=1 value='o', got count=$_t38_count value='$_t38_value'" "$_t38_build_line"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T39: rc build --output json -o <value> -- JSON mode -- single well-formed
+#      JSON error object with a stable error code (BUILD_OUTPUT_REJECTED).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T39: rc build --output json -o <value> -> well-formed JSON error, docker never invoked ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t39_rc=0
+_t39_out=$(RC_TEST_OUTPUT_FORMAT=json run_cmd_build -o type=local,dest=/tmp/rc-test-t39-out) || _t39_rc=$?
+
+if [[ "$_t39_rc" -ne 0 ]]; then
+  pass "T39a: cmd_build returns non-zero in JSON mode"
+else
+  fail "T39a: expected non-zero exit" "$_t39_out"
+fi
+if [[ ! -s "$CALL_LOG" ]]; then
+  pass "T39b: docker was never invoked in JSON mode"
+else
+  fail "T39b: expected no docker calls" "$(cat "$CALL_LOG")"
+fi
+if echo "$_t39_out" | jq -e . >/dev/null 2>&1; then
+  pass "T39c: stdout is well-formed JSON"
+else
+  fail "T39c: expected well-formed JSON on stdout" "$_t39_out"
+fi
+_t39_code=$(echo "$_t39_out" | jq -r '.code // empty' 2>/dev/null)
+if [[ "$_t39_code" == "BUILD_OUTPUT_REJECTED" ]]; then
+  pass "T39d: JSON error code is BUILD_OUTPUT_REJECTED"
+else
+  fail "T39d: expected code=BUILD_OUTPUT_REJECTED, got '$_t39_code'" "$_t39_out"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T-FG (rip-cage-zqjz.2, acceptance criteria 1+2, THE motivating false-green):
+#     a build whose output is redirected via -o must NOT reach a state where
+#     docker is invoked (and therefore must never report a built/success
+#     status) -- even with the post-build root-owned validators stubbed as
+#     an always-pass positive control (simulating a validator that would
+#     happily inspect whatever image already happens to be sitting in the
+#     store, stale or not). Pre-fix (fb79d10), cmd_build passed -o straight
+#     through to docker: the fake docker "succeeds" (exit 0) regardless of
+#     its args, the stubbed validators pass, and rc reports action:"built"/
+#     status:"success" on stdout -- a false green structurally identical to
+#     the real one (real docker would have exited 0 too, having exported to
+#     a filesystem path instead of the image store, while a STALE prior
+#     $IMAGE sat in the store for the validators to "pass" against).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T-FG: rc build -o ... never reaches a docker call or a built/success report ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_tfg_rc=0
+_tfg_out=$(RC_TEST_OUTPUT_FORMAT=json run_cmd_build -o type=local,dest=/tmp/rc-test-fg-out 2>&1) || _tfg_rc=$?
+
+if [[ "$_tfg_rc" -ne 0 ]]; then
+  pass "T-FGa: cmd_build returns non-zero for -o (never reaches a 'built' report)"
+else
+  fail "T-FGa: expected non-zero exit" "$_tfg_out"
+fi
+if [[ ! -s "$CALL_LOG" ]]; then
+  pass "T-FGb: docker was never invoked -- no build could have redirected output away from the image store while a stale \$IMAGE sat there for the validators to pass against"
+else
+  fail "T-FGb: expected no docker calls" "$(cat "$CALL_LOG")"
+fi
+if echo "$_tfg_out" | jq -e 'select(.status == "success" or .action == "built")' >/dev/null 2>&1; then
+  fail "T-FGc: FALSE GREEN -- JSON output reports a built/success status for a redirected build" "$_tfg_out"
+else
+  pass "T-FGc: no false-green built/success status reported"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T40 (rip-cage-zqjz.2): rc build --build-arg RC_VERSION=evil -- rejected.
+#     A caller override of the RC_VERSION build-arg key could spoof
+#     _image_is_current's org.opencontainers.image.version label comparison
+#     (the staleness heuristic that gates rc up's auto-provision path).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T40: rc build --build-arg RC_VERSION=evil -> rejected ==="
+assert_unallowed_rejected T40 --build-arg RC_VERSION=evil
+
+# ---------------------------------------------------------------------------
+# T41: rc build --build-arg=RC_VERSION=evil -- equals form -- rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T41: rc build --build-arg=RC_VERSION=evil -> rejected ==="
+assert_unallowed_rejected T41 --build-arg=RC_VERSION=evil
+
+# ---------------------------------------------------------------------------
+# T42 (positive control): rc build --build-arg OTHER_KEY=value -- a
+#     DIFFERENT --build-arg key -- must be ADMITTED and pass through
+#     alongside rc's own --build-arg RC_VERSION=... (two distinct-key
+#     --build-arg occurrences in the constructed argv, per fb79d10's
+#     "must stay repeatable for a manifest fragment's own distinct-key
+#     build args" judgment).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T42 (positive control): rc build --build-arg OTHER_KEY=value -> admitted, passes through ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+run_cmd_build --build-arg OTHER_KEY=value >/dev/null 2>&1 || true
+
+_t42_build_line=$(grep '^docker build' "$CALL_LOG" || true)
+_t42_ba_count=$(grep -o -- '--build-arg' <<<"$_t42_build_line" | wc -l | tr -d ' ')
+if [[ "$_t42_ba_count" -eq 2 ]]; then
+  pass "T42a: exactly two --build-arg occurrences (rc's own RC_VERSION + the caller's distinct key)"
+else
+  fail "T42a: expected 2 --build-arg occurrences, got $_t42_ba_count" "$_t42_build_line"
+fi
+if [[ "$_t42_build_line" == *"OTHER_KEY=value"* ]]; then
+  pass "T42b: the caller's OTHER_KEY=value build-arg passed through unmodified"
+else
+  fail "T42b: expected OTHER_KEY=value in the constructed argv" "$_t42_build_line"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T43 (regression guard): rc build --no-cache -- boolean, admitted (same
+#     case as T9, now exercised via the explicit admit path rather than
+#     blanket unrecognized-flag passthrough).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T43: rc build --no-cache -> admitted, passes through ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t43_rc=0
+_t43_out=$(run_cmd_build --no-cache 2>&1) || _t43_rc=$?
+_t43_build_line=$(grep '^docker build' "$CALL_LOG" || true)
+if [[ "$_t43_rc" -eq 0 && "$_t43_build_line" == *"--no-cache"* ]]; then
+  pass "T43: --no-cache admitted and present in the constructed argv"
+else
+  fail "T43: expected --no-cache to pass through, rc=$_t43_rc" "$_t43_out / $_t43_build_line"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T44: rc build --pull -- boolean, admitted.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T44: rc build --pull -> admitted, passes through ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t44_rc=0
+_t44_out=$(run_cmd_build --pull 2>&1) || _t44_rc=$?
+_t44_build_line=$(grep '^docker build' "$CALL_LOG" || true)
+if [[ "$_t44_rc" -eq 0 && "$_t44_build_line" == *"--pull"* ]]; then
+  pass "T44: --pull admitted and present in the constructed argv"
+else
+  fail "T44: expected --pull to pass through, rc=$_t44_rc" "$_t44_out / $_t44_build_line"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T45: rc build --progress=quiet -- equals form, admitted.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T45: rc build --progress=quiet -> admitted, passes through ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t45_rc=0
+_t45_out=$(run_cmd_build --progress=quiet 2>&1) || _t45_rc=$?
+_t45_build_line=$(grep '^docker build' "$CALL_LOG" || true)
+if [[ "$_t45_rc" -eq 0 && "$_t45_build_line" == *"--progress=quiet"* ]]; then
+  pass "T45: --progress=quiet admitted and present in the constructed argv"
+else
+  fail "T45: expected --progress=quiet to pass through, rc=$_t45_rc" "$_t45_out / $_t45_build_line"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T46: rc build --progress plain -- separate-arg form, admitted.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T46: rc build --progress plain -> admitted, passes through ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t46_rc=0
+_t46_out=$(run_cmd_build --progress plain 2>&1) || _t46_rc=$?
+_t46_build_line=$(grep '^docker build' "$CALL_LOG" || true)
+if [[ "$_t46_rc" -eq 0 && "$_t46_build_line" == *"--progress plain"* ]]; then
+  pass "T46: --progress plain admitted and present in the constructed argv"
+else
+  fail "T46: expected --progress plain to pass through, rc=$_t46_rc" "$_t46_out / $_t46_build_line"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T47: rc build -q -- bare boolean short flag, admitted.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T47: rc build -q -> admitted, passes through ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t47_rc=0
+_t47_out=$(run_cmd_build -q 2>&1) || _t47_rc=$?
+_t47_build_line=$(grep '^docker build' "$CALL_LOG" || true)
+if [[ "$_t47_rc" -eq 0 && " $_t47_build_line " == *" -q "* ]]; then
+  pass "T47: -q admitted and present as its own token in the constructed argv"
+else
+  fail "T47: expected a standalone -q token, rc=$_t47_rc" "$_t47_out / $_t47_build_line"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T48: rc build -D -- bare boolean short flag, admitted.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T48: rc build -D -> admitted, passes through ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t48_rc=0
+_t48_out=$(run_cmd_build -D 2>&1) || _t48_rc=$?
+_t48_build_line=$(grep '^docker build' "$CALL_LOG" || true)
+if [[ "$_t48_rc" -eq 0 && " $_t48_build_line " == *" -D "* ]]; then
+  pass "T48: -D admitted and present as its own token in the constructed argv"
+else
+  fail "T48: expected a standalone -D token, rc=$_t48_rc" "$_t48_out / $_t48_build_line"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T49: rc build -Dq -- pure boolean short cluster (no value-taking flag),
+#      admitted.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T49: rc build -Dq -> admitted, passes through ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t49_rc=0
+_t49_out=$(run_cmd_build -Dq 2>&1) || _t49_rc=$?
+_t49_build_line=$(grep '^docker build' "$CALL_LOG" || true)
+if [[ "$_t49_rc" -eq 0 && " $_t49_build_line " == *" -Dq "* ]]; then
+  pass "T49: -Dq admitted and present as its own token in the constructed argv"
+else
+  fail "T49: expected a standalone -Dq token, rc=$_t49_rc" "$_t49_out / $_t49_build_line"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T50: rc build --debug -- long form of -D, admitted.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T50: rc build --debug -> admitted, passes through ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t50_rc=0
+_t50_out=$(run_cmd_build --debug 2>&1) || _t50_rc=$?
+_t50_build_line=$(grep '^docker build' "$CALL_LOG" || true)
+if [[ "$_t50_rc" -eq 0 && "$_t50_build_line" == *"--debug"* ]]; then
+  pass "T50: --debug admitted and present in the constructed argv"
+else
+  fail "T50: expected --debug to pass through, rc=$_t50_rc" "$_t50_out / $_t50_build_line"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T51: rc build --quiet -- long form of -q, admitted.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T51: rc build --quiet -> admitted, passes through ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t51_rc=0
+_t51_out=$(run_cmd_build --quiet 2>&1) || _t51_rc=$?
+_t51_build_line=$(grep '^docker build' "$CALL_LOG" || true)
+if [[ "$_t51_rc" -eq 0 && "$_t51_build_line" == *"--quiet"* ]]; then
+  pass "T51: --quiet admitted and present in the constructed argv"
+else
+  fail "T51: expected --quiet to pass through, rc=$_t51_rc" "$_t51_out / $_t51_build_line"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T52 (named reject): rc build --target foo -- can skip stages that install
+#     the safety floor (verified: cage/Dockerfile's go-builder stage vs. the
+#     final debian:trixie runtime stage -- --target go-builder would build
+#     ONLY the go compiler stage, never reaching the runtime stage that sets
+#     up the non-root agent user / safety-stack assets the validators check).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T52: rc build --target foo -> rejected ==="
+assert_unallowed_rejected T52 --target foo
+
+# ---------------------------------------------------------------------------
+# T53 (named reject): rc build --label rc.multiplexers=herdr -- forges the
+#     SOLE authoritative multiplexer-registry label (cli/lib/config.sh:159).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T53: rc build --label rc.multiplexers=herdr -> rejected ==="
+assert_unallowed_rejected T53 --label rc.multiplexers=herdr
+
+# ---------------------------------------------------------------------------
+# T54 (named reject): rc build --secret id=x -- build-time credential
+#     injection (ADR-005 D9 / ADR-024).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T54: rc build --secret id=x -> rejected ==="
+assert_unallowed_rejected T54 --secret id=x
+
+# ---------------------------------------------------------------------------
+# T55 (named reject): rc build --push -- registry side effect.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T55: rc build --push -> rejected ==="
+assert_unallowed_rejected T55 --push
+
+# ---------------------------------------------------------------------------
+# T56 (named reject): rc build --platform linux/amd64 -- could produce an
+#     image this host cannot run while validators still inspect it.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T56: rc build --platform linux/amd64 -> rejected ==="
+assert_unallowed_rejected T56 --platform linux/amd64
+
+# ---------------------------------------------------------------------------
+# T57 (forward-compat closure): rc build --some-brand-new-docker-flag x --
+#     rejected via the GENERIC fail-closed default (not a named case) --
+#     proves an unrecognized/future docker flag fails closed instead of
+#     silently reaching docker (closes rip-cage-fo4z's forward-compat
+#     caveat: "if docker build ever gains a new boolean short flag...").
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T57 (forward-compat): rc build --some-brand-new-docker-flag x -> rejected ==="
+assert_unallowed_rejected T57 --some-brand-new-docker-flag x
+
+# ---------------------------------------------------------------------------
+# T58 (stray positional): rc build /tmp/not-a-flag -- rc supplies the build
+#     context positional itself; a caller-supplied one must fail loud in rc,
+#     not silently become a second positional docker would otherwise
+#     hard-error on.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T58: rc build /tmp/not-a-flag (stray positional) -> rejected ==="
+assert_unallowed_rejected T58 /tmp/not-a-flag
+
+# ---------------------------------------------------------------------------
+# T-DASHDASH (closes a real hole found while implementing this bead): rc
+#     build -- -o type=local,dest=/tmp/x -- must ALSO be rejected. Prior `--`
+#     handling (a51b5da/fb79d10) dumped every token after `--` into the
+#     constructed argv UNFILTERED (no -t/-f interception, and -- pre-dates
+#     this bead's -o check too) -- a caller could bypass the entire
+#     allowlist, including the -o false-green, just by prefixing it with
+#     `--`. Closed by removing the special-cased verbatim-passthrough
+#     branch: `--` now falls through to the same fail-closed default as any
+#     other unrecognized token.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T-DASHDASH: rc build -- -o type=local,dest=/tmp/x -> still rejected (no bypass via --) ==="
+assert_unallowed_rejected T-DASHDASH -- -o type=local,dest=/tmp/rc-test-dashdash-out
 
 echo ""
 if (( FAILURES > 0 )); then

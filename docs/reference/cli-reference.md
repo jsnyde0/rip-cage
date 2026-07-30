@@ -4,7 +4,7 @@
 
 | Command | Description |
 |---------|-------------|
-| `rc build [docker-args...] [-t/--tag <ref>]` | Build the rip-cage Docker image. A caller-supplied `-t`/`--tag` **overrides** the image built/tagged — it does not add a second tag alongside the default `rip-cage:latest`, so `rip-cage:latest` is left untouched by a custom-tagged build (rip-cage-fo4z: previously docker applied *both* tags to the same image, silently re-tagging — and clobbering any composed bake on — `rip-cage:latest`). See [`rc build -t`/`--tag` details](#rc-build---t---tag-details) below for every accepted spelling, the fail-loud cases, and precedence vs `RC_IMAGE`. A caller-supplied `-f`/`--file` (any spelling) is **rejected outright**, before any docker call — see [`rc build -f`/`--file` is rejected](#rc-build--f---file-is-rejected) below. |
+| `rc build [allowed docker flags...] [-t/--tag <ref>]` | Build the rip-cage Docker image. **Not a pass-through**: `rc build`'s docker-flag surface is a fail-closed **allowlist** (rip-cage-zqjz.2) — see [`rc build` flag allowlist](#rc-build-flag-allowlist) below for the full admit/reject table and rationale. A caller-supplied `-t`/`--tag` **overrides** the image built/tagged — it does not add a second tag alongside the default `rip-cage:latest`, so `rip-cage:latest` is left untouched by a custom-tagged build (rip-cage-fo4z: previously docker applied *both* tags to the same image, silently re-tagging — and clobbering any composed bake on — `rip-cage:latest`). See [`rc build -t`/`--tag` details](#rc-build---t---tag-details) below for every accepted spelling, the fail-loud cases, and precedence vs `RC_IMAGE`. A caller-supplied `-f`/`--file` or `-o`/`--output` (any spelling) is **rejected outright**, before any docker call — see [`rc build -f`/`--file` is rejected](#rc-build--f---file-is-rejected) and [`rc build -o`/`--output` is rejected](#rc-build--o---output-is-rejected) below. |
 | `rc up <path> [--port PORT] [--env-file FILE] [--new] [--session NAME]` | Start or resume a container |
 | `rc ls` | List rip-cage containers |
 | `rc attach [name]` | Attach to a running container (multiplexer-neutral — plain shell under `none`, tmux attach under `tmux`, supervisor view under `herdr`) |
@@ -73,6 +73,51 @@ Unlike `-t`, there is no legitimate `rc build -f` use and no override-then-audit
 | Clustered behind docker's other boolean short flags (`-D`/`-q`) | `-qf path/to/Dockerfile`, `-Dqf=path/to/Dockerfile` |
 
 Cluster parsing follows the same left-to-right rule as `-t`'s: whichever value-taking short flag (`f`/`o`/`t`) appears first in a token wins. `-ft` is `-f` with value `"t"` (rejected); `-tf` is `-t` with value `"f"` (still a legal tag override, not a file flag) — the two are distinguished, not conflated.
+
+### `rc build -o`/`--output` is rejected
+
+`docker build`'s BuildKit backend supports `-o`/`--output`, which controls where the build **result** lands — a filesystem directory, a registry, or (the default) the local docker image store. `docker build -t X -o type=local,dest=DIR .` exits **0** and exports the build result to `DIR` **without loading `X` into the docker image store**.
+
+That is a false-green risk specific to this flag, distinct from `-f`'s clobber and `-t`'s co-tag bug: if a prior `X` already existed in the image store (from an earlier real build), `rc build`'s post-build root-owned validators (`_manifest_check_binary_root_owned` / `_manifest_check_mount_root_owned`, ADR-005 D9/D11, ADR-024, ADR-027 D1) silently pass against the **stale** `X`, while `rc build` reports `status: "built"` — the operator has no signal that anything is wrong (rip-cage-zqjz.2).
+
+There is no legitimate `rc build -o` use — rc's contract is "produce a tagged image in the local image store this host can run" — so every spelling of `-o`/`--output` is **rejected outright**, fail-loud, before any docker call, using the identical spelling/clustering rules as `-f`/`--file` above (separate-arg, `--output=`, `-o=`, `-ovalue`, and boolean-prefixed clusters). Directionally: `-ot` is `-o` with value `"t"` (rejected); `-to` is `-t` with value `"o"` (still a legal tag override, not an output flag).
+
+### `rc build` flag allowlist
+
+rip-cage-fo4z (`-t`, additive co-tag), rip-cage-zqjz (`-f`, last-wins Dockerfile swap), and rip-cage-zqjz.2 (`-o`, BuildKit output-redirection false-green) found **three distinct validator-defeat mechanisms** in the same six lines of `cmd_build`'s docker invocation, in three consecutive passes. An open pass-through with a growing per-flag reject list is unwinnable by construction — docker's flag surface evolves outside rc's control, and each new flag is a fresh chance at a fresh mechanism.
+
+So `rc build`'s docker-flag surface is a **fail-closed allowlist**, not a pass-through: every caller-supplied token is classified BEFORE any docker call. `-t`/`--tag` is intercepted (see above); `-f`/`--file` and `-o`/`--output` are rejected (see above); a small set of flags verified benign against docker 29.4.0's real flag surface is admitted; **everything else — including a bare `--`, which previously bypassed this scanning entirely — fails loud**, naming this section and the escape hatch below.
+
+**Admitted** (pass through to `docker build` unmodified):
+
+| Flag | Rationale |
+|------|-----------|
+| `--build-arg <KEY>=<VALUE>` (any key **except** `RC_VERSION`) | Only ever feeds `_image_is_current`'s staleness heuristic (an image-label comparison); never reaches the isolation gate or either root-owned validator. Repeatable, so a manifest fragment's own distinct-key build args still work. `--build-arg RC_VERSION=...` is **rejected**: rc's own docker-build calls already set `RC_VERSION` unconditionally, and BuildKit's build-arg map is last-value-wins per key, so a caller override would win and could spoof the version label `_image_is_current` compares against. |
+| `--no-cache`, `--pull` | Booleans; affect cache/base-image freshness only, touch nothing the floor reads. |
+| `--progress=<mode>` | Output formatting only. |
+| `-q`/`--quiet`, `-D`/`--debug` | Booleans; only affect docker's own log verbosity. Safe specifically because neither `docker build` call site parses docker's own stdout (the JSON branch redirects it to `/dev/null`; the plain branch lets it go straight to the terminal). |
+
+**Rejected by name** (each would violate the admission test — touching image identity, the Dockerfile source, the build context, the output destination/image-store load, or image metadata the floor reads):
+
+| Flag | Why rejected |
+|------|--------------|
+| `-f`/`--file` | Dockerfile source (see above). |
+| `-o`/`--output` | Output destination / image-store load (see above). |
+| `--target` | Selects a build stage — can skip stages that install the safety floor (verified against `cage/Dockerfile`: `--target go-builder` would build only the Go compiler stage, never reaching the runtime stage that sets up the safety-stack assets the validators check). |
+| `--label` | Forges image metadata the floor reads: `cli/lib/config.sh`'s `rc.multiplexers` label is the SOLE authoritative source for the multiplexer registry. |
+| `--secret`, `--ssh` | Build-time credential injection (ADR-005 D9 / ADR-024). |
+| `--push`, `--load` | Registry/image-store side effects (redundant with `rc build`'s own default store-load; part of the same `-o`/output family this bead closes). |
+| `--platform` | Could produce an image this host cannot run while the validators still inspect it; no legitimate `rc build`-path need found (the multi-arch release build uses `docker/build-push-action` directly, not `rc build`). |
+| `--build-context`, `--builder`, `--cache-from` | Build context / build-execution-environment surface: an alternate context directory, a redirected (possibly remote/untrusted) builder instance, or cache-import content that could substitute layer content without re-running the Dockerfile's own steps. |
+| `--add-host`, `--allow`, `--network`, `--cgroup-parent` | Build-isolation surface: `--allow` explicitly grants privileged entitlements (`network.host`, `security.insecure`, `device`); `--network=host` and custom `--add-host` mappings similarly extend a builder stage's reach beyond the isolated build container (ADR-005 D9 / ADR-024). |
+| `--call`, `--check` | Changes the fundamental build action from "build" to "check"/"outline"/"targets" — the same false-green shape as `-o`: may exit 0 without ever producing a built-and-loaded image. |
+| `--cache-to`, `--iidfile`, `--metadata-file`, `--annotation`, `--attest`, `--provenance`, `--sbom`, `--policy` | Output/metadata-adjacent surfaces with no compelling `rc build`-path need; default reject. |
+| `--no-cache-filter`, `--shm-size`, `--ulimit` | No compelling need; default reject (fail-closed). |
+| A bare `--` | Previously (a51b5da/fb79d10) dumped every subsequent token into the docker invocation **unfiltered**, bypassing this entire allowlist — closed by removing that special case; `--` now falls into the same fail-closed default as any other unrecognized token. |
+| A build-context positional | `rc build` supplies the build context itself (the final argument to both `docker build` call sites) — a caller-supplied one fails loud in `rc`, rather than reaching docker as an unexpected second positional. |
+| Anything else not named above | **Unknown → rejected.** An unrecognized/future docker flag fails closed instead of silently reaching docker — this closes rip-cage-fo4z's own forward-compat caveat. |
+
+**Escape hatch:** if you need a docker flag `rc build` doesn't admit, run `rc generate-dockerfile > Dockerfile.composed` and invoke `docker build` yourself — explicitly outside `rc`'s safety floor.
 
 ### `rc up` — denylist and `--allow-risky-mount`
 

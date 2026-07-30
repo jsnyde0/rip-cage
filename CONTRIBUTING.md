@@ -45,12 +45,14 @@ The Docker image is multi-stage (Go → Rust → Debian runtime) and takes 5-10 
 ./rc build
 ```
 
-Pass extra arguments directly to `docker build` if needed:
+`rc build`'s docker-flag surface is a fail-closed **allowlist**, not a pass-through (rip-cage-zqjz.2 — see [`rc build` flag allowlist](docs/reference/cli-reference.md#rc-build-flag-allowlist) for the full admit/reject table). A few flags verified benign are admitted:
 
 ```bash
 ./rc build --no-cache
 ./rc build --progress=plain
 ```
+
+Anything not on the allowlist fails loud before any docker call, naming the escape hatch: `rc generate-dockerfile > Dockerfile.composed` + your own `docker build`, explicitly outside rc's safety floor.
 
 The built image is tagged `rip-cage:latest` locally. To bypass the GHCR pull and always build locally during development:
 

@@ -235,11 +235,26 @@ fi
 
 # ---------------------------------------------------------------------------
 # T4: structural wiring check -- cmd_build's body actually calls _build_msb_load
+#
+# rip-cage-zqjz.2: captured into a variable FIRST, rather than piped straight
+# into `grep -q` -- under this file's own `set -uo pipefail` (line 40), a
+# live `awk ... | grep -q ...` pipe is a real SIGPIPE race: `grep -q` exits
+# on its FIRST match and closes its read end, and if awk still has more
+# output queued (true once cmd_build's body -- now much larger under the
+# rip-cage-zqjz.2 allowlist -- mentions `_build_msb_load` more than once,
+# e.g. in an explanatory comment before the real call), awk can be killed by
+# SIGPIPE on its next write. Under `pipefail`, that non-zero (128+SIGPIPE)
+# awk exit status becomes the PIPELINE's exit status, overriding grep's own
+# 0 -- so `if pipeline; then` reads false even though grep genuinely
+# matched. Reproduced deterministically post-rip-cage-zqjz.2 (100% of runs,
+# not flaky); a plain command-substitution capture has no live pipe for
+# `grep -q` to race against, so this is immune regardless of how many times
+# `_build_msb_load` appears in the extracted range going forward.
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== T4: cmd_build calls _build_msb_load (wiring) ==="
-if awk '/^cmd_build\(\)/{flag=1} flag && /^}/{print; exit} flag' "${REPO_ROOT}/cli/build.sh" \
-  | grep -q '_build_msb_load'; then
+_t4_cmd_build_body=$(awk '/^cmd_build\(\)/{flag=1} flag && /^}/{print; exit} flag' "${REPO_ROOT}/cli/build.sh")
+if grep -q '_build_msb_load' <<<"$_t4_cmd_build_body"; then
   pass "T4: cmd_build's body calls _build_msb_load"
 else
   fail "T4: _build_msb_load call not found inside cmd_build()" "$(grep -n 'cmd_build' "${REPO_ROOT}/cli/build.sh")"
