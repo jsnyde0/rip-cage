@@ -59,6 +59,18 @@
 #   4. Poll for RESULT.txt appearance (pi's own write tool action).
 #   5. Count toolCall entries in the session JSONL (>=2 = agency proven).
 #
+# Fixture image (rip-cage-uc8b item 3): tmux was un-baked from rip-cage:latest
+# in af7a1ce (2026-06-15) — `rc up` now rejects `session.multiplexer: tmux`
+# against the default image ("tmux not in baked multiplexer registry"). This
+# test's PURPOSE is the tmux attach surface, so it builds its own throwaway
+# fixture from tests/fixtures/manifest-tmux-provider.yaml (the same tmux-bin
+# TOOL + tmux MULTIPLEXER two-entry pattern test-multiplexer-lifecycle.sh's
+# combined fixture uses) and targets it via RC_IMAGE — mirroring
+# _mux_build_combined_image in test-multiplexer-lifecycle.sh (save/tag/restore
+# rip-cage:latest around the build, MSB_HOME pinned to the real microsandbox
+# home so the freshly-built image lands in msb's real local cache, not a
+# throwaway one — see REAL_MSB_HOME comment below).
+#
 # Run:
 #   RC_E2E=1 bash tests/test-multiplexer-agent-e2e.sh
 #   RC_E2E=1 RC_E2E_REBUILD=1 bash tests/test-multiplexer-agent-e2e.sh
@@ -118,6 +130,139 @@ if ! docker image inspect rip-cage:latest >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
+# rip-cage-uc8b item 3: build the tmux-carrying fixture image.
+#
+# tmux is no longer baked into rip-cage:latest (ADR-005 D12 / af7a1ce), so
+# `rc up` with `session.multiplexer: tmux` against the default image fails
+# config-validate. Build a throwaway fixture from
+# tests/fixtures/manifest-tmux-provider.yaml (tmux-bin TOOL + tmux
+# MULTIPLEXER — the same two-entry pattern test-multiplexer-lifecycle.sh's
+# combined fixture uses for its tmux surface) and target it via RC_IMAGE.
+#
+# RC_IMAGE-native build (rip-cage-2mpn pattern, mirrors
+# test-multiplexer-lifecycle.sh's _dcg_herdr_pi_build_image RC_IMAGE-override
+# branch — NOT its default/rip-cage:latest-swap branch): `rc build` reads
+# RC_IMAGE at call time and tags/msb-loads THAT name directly, so
+# rip-cage:latest is never touched and no save/tag/restore dance is needed.
+#
+# Live-verified footgun this sidesteps (empirical run during rip-cage-uc8b):
+# an EARLIER version of this function built onto rip-cage:latest (no RC_IMAGE)
+# and then did a plain `docker tag rip-cage:latest "$MUX_AGENT_IMAGE"` — that
+# only creates a DOCKER-side alias; it never runs `_build_msb_load` against
+# the new tag, so msb's local image cache never gets an entry for it. `rc up`
+# --RC_IMAGE=$MUX_AGENT_IMAGE then found the tag absent from `msb image list`
+# and fell through to _pull_or_build, which pulled the PLAIN GHCR release
+# image (no tmux) under that name, and msb's own create then tried (and
+# failed: "Not authorized") to pull it AGAIN from a remote registry. Building
+# directly onto the unique RC_IMAGE tag (this version) avoids the gap
+# entirely — `rc build`'s docker-tag and msb-load both target the same name
+# in one pass.
+#
+# REAL_MSB_HOME (msb-port note, mirrors test-multiplexer-lifecycle.sh /
+# test-mount-mode-e2e.sh / test-e2e-lifecycle.sh / test-pi-auth-mount.sh):
+# the HOME override below isolates the fixture manifest (tools.yaml) into a
+# throwaway dir. `rc build`'s `_build_msb_load` step keys msb's local image
+# cache off $HOME at call time; without pinning MSB_HOME, the freshly-built
+# image gets `msb load`-ed into the throwaway (then-deleted) HOME's msb state
+# dir instead of the real one — so the later `rc up` (running under the real
+# HOME) silently boots from whatever image was ALREADY cached in msb's real
+# home (stale), not this test's fixture. Pinning MSB_HOME to the real,
+# unmodified microsandbox home for the build call sidesteps it.
+# ---------------------------------------------------------------------------
+REAL_MSB_HOME="${HOME}/.microsandbox"
+MUX_AGENT_FIXTURE="${SCRIPT_DIR}/fixtures/manifest-tmux-provider.yaml"
+MUX_AGENT_IMAGE=""
+
+_mux_agent_build_tmux_image() {
+  if [[ -n "${MUX_AGENT_IMAGE:-}" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$MUX_AGENT_FIXTURE" ]]; then
+    echo "FATAL: tmux-provider fixture not found at ${MUX_AGENT_FIXTURE}"
+    exit 1
+  fi
+
+  local unique_suffix target_image
+  unique_suffix="$(date +%s)-$$"
+  target_image="rip-cage:mux-agent-e2e-${unique_suffix}"
+
+  local mux_agent_build_home
+  mux_agent_build_home=$(mktemp -d)
+  mkdir -p "${mux_agent_build_home}/.config/rip-cage"
+  cp "$MUX_AGENT_FIXTURE" "${mux_agent_build_home}/.config/rip-cage/tools.yaml"
+  echo "=== Building tmux-provider fixture image (manifest-tmux-provider.yaml) -> ${target_image} ==="
+  local mux_agent_build_rc=0
+  RC_IMAGE="$target_image" HOME="$mux_agent_build_home" MSB_HOME="$REAL_MSB_HOME" XDG_CONFIG_HOME="${mux_agent_build_home}/.config" \
+    "$RC" build >/tmp/rc-mux-agent-e2e-fixture-build.out 2>&1 || mux_agent_build_rc=$?
+  rm -rf "$mux_agent_build_home"
+
+  if [[ "$mux_agent_build_rc" -ne 0 ]]; then
+    fail "tmux-provider fixture image build FAILED (see /tmp/rc-mux-agent-e2e-fixture-build.out)"
+    echo "FATAL: cannot run multiplexer-agent e2e test without the tmux fixture image"
+    exit 1
+  fi
+
+  MUX_AGENT_IMAGE="$target_image"
+  pass "tmux-provider fixture image built: ${MUX_AGENT_IMAGE} (tmux MULTIPLEXER baked, RC_IMAGE override — rip-cage:latest untouched)"
+}
+
+_mux_agent_restore_latest() {
+  # RC_IMAGE-override build (see _mux_agent_build_tmux_image above) never
+  # touches rip-cage:latest — only the throwaway custom-tagged image itself
+  # needs reaping. Removes from BOTH docker's store and msb's local cache
+  # (mirrors _build_msb_load's dual-store write).
+  if [[ -n "${MUX_AGENT_IMAGE:-}" ]]; then
+    docker image rm "${MUX_AGENT_IMAGE}" 2>/dev/null || true
+    msb image remove "${MUX_AGENT_IMAGE}" 2>/dev/null || true
+    MUX_AGENT_IMAGE=""
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Scratch workspace / cage-tracking state + CLEANUP trap.
+#
+# Declared and armed HERE — BEFORE _mux_agent_build_tmux_image is called
+# below — so an interrupt during the build still reaps the throwaway image
+# tag (mirrors test-multiplexer-lifecycle.sh's arm-before-first-mutation
+# ordering). MUX_AGENT_TMP is still empty at this point, so the cage-cleanup
+# loop in CLEANUP is a safe no-op; _mux_agent_restore_latest handles the image.
+# ---------------------------------------------------------------------------
+MUX_AGENT_TMP=""
+
+# rip-cage-neu7.9 (fail-safe cleanup, post 2026-07-28 code-personal
+# cage-destroy incident): MUX_AGENT_CREATED_CAGES holds ONLY the cage names
+# this run actually created, appended via _mux_agent_track_cage at the
+# `rc up` call site below. CLEANUP destroys ONLY these names — never a
+# docker ps -a enumeration matched by rc.source.path prefix/glob (the
+# incident shape: an empty/degenerate match variable glob-matched and
+# destroyed an unrelated live cage). Declared BEFORE the trap is armed.
+MUX_AGENT_CREATED_CAGES=()
+_mux_agent_track_cage() {
+  [[ -n "${1:-}" ]] && MUX_AGENT_CREATED_CAGES+=("$1")
+}
+
+CLEANUP() {
+  local c
+  # FAIL-SAFE SHAPE (rip-cage-neu7.9): iterate ONLY
+  # MUX_AGENT_CREATED_CAGES — no enumerate, no glob/prefix match. The
+  # "${arr[@]:-}" form is REQUIRED: this test runs under `set -uo
+  # pipefail`, and a bare [@] on an empty array aborts on macOS bash 3.2
+  # (would abort CLEANUP before it can even remove MUX_AGENT_TMP).
+  for c in "${MUX_AGENT_CREATED_CAGES[@]:-}"; do
+    [[ -n "$c" ]] || continue
+    "$RC" destroy --force "$c" >/dev/null 2>&1 || true
+  done
+  [[ -n "$MUX_AGENT_TMP" ]] && rm -rf "$MUX_AGENT_TMP"
+  # Restore rip-cage:latest if we swapped it for the tmux-provider fixture
+  # build. _mux_agent_restore_latest is idempotent (no-ops when
+  # MUX_AGENT_SAVED_LATEST is empty).
+  _mux_agent_restore_latest
+}
+trap CLEANUP EXIT INT TERM
+
+_mux_agent_build_tmux_image
+
+# ---------------------------------------------------------------------------
 # Guard: openrouter auth must be present and usable (LOUD-FAIL — not silent-skip)
 #
 # This test pins --provider openrouter (static API key) to avoid the volatile
@@ -167,35 +312,9 @@ echo "=== test-multiplexer-agent-e2e.sh ==="
 # ---------------------------------------------------------------------------
 # Scratch workspace (disposable fixture — NOT a real repo)
 # Under RC_ALLOWED_ROOTS so rc up accepts it.
+# (MUX_AGENT_TMP / MUX_AGENT_CREATED_CAGES / CLEANUP / trap are declared and
+# armed earlier, above the _mux_agent_build_tmux_image call.)
 # ---------------------------------------------------------------------------
-MUX_AGENT_TMP=""
-
-# rip-cage-neu7.9 (fail-safe cleanup, post 2026-07-28 code-personal
-# cage-destroy incident): MUX_AGENT_CREATED_CAGES holds ONLY the cage names
-# this run actually created, appended via _mux_agent_track_cage at the
-# `rc up` call site below. CLEANUP destroys ONLY these names — never a
-# docker ps -a enumeration matched by rc.source.path prefix/glob (the
-# incident shape: an empty/degenerate match variable glob-matched and
-# destroyed an unrelated live cage). Declared BEFORE the trap is armed.
-MUX_AGENT_CREATED_CAGES=()
-_mux_agent_track_cage() {
-  [[ -n "${1:-}" ]] && MUX_AGENT_CREATED_CAGES+=("$1")
-}
-
-CLEANUP() {
-  local c
-  # FAIL-SAFE SHAPE (rip-cage-neu7.9): iterate ONLY
-  # MUX_AGENT_CREATED_CAGES — no enumerate, no glob/prefix match. The
-  # "${arr[@]:-}" form is REQUIRED: this test runs under `set -uo
-  # pipefail`, and a bare [@] on an empty array aborts on macOS bash 3.2
-  # (would abort CLEANUP before it can even remove MUX_AGENT_TMP).
-  for c in "${MUX_AGENT_CREATED_CAGES[@]:-}"; do
-    [[ -n "$c" ]] || continue
-    "$RC" destroy --force "$c" >/dev/null 2>&1 || true
-  done
-  [[ -n "$MUX_AGENT_TMP" ]] && rm -rf "$MUX_AGENT_TMP"
-}
-trap CLEANUP EXIT INT TERM
 
 # Resolve to realpath immediately (macOS /var vs /private/var symlink)
 MUX_AGENT_TMP=$(mktemp -d)
@@ -294,10 +413,12 @@ echo ""
 # Spin up the tmux cage
 # rc up mounts WORKSPACE at /workspace inside the cage.
 # The cage starts sleep infinity; init-rip-cage.sh runs + starts tmux.
+# RC_IMAGE targets the tmux-provider fixture built above (rip-cage-uc8b item
+# 3) — rip-cage:latest itself doesn't bake tmux (ADR-005 D12).
 # ---------------------------------------------------------------------------
 echo "=== Spin up tmux cage (${CAGE}) ==="
 
-"$RC" up "$WORKSPACE" </dev/null >/tmp/rc-mux-agent-e2e-up.out 2>&1 || true
+RC_IMAGE="$MUX_AGENT_IMAGE" "$RC" up "$WORKSPACE" </dev/null >/tmp/rc-mux-agent-e2e-up.out 2>&1 || true
 _mux_agent_track_cage "$CAGE"
 
 CAGE_STARTED=false
