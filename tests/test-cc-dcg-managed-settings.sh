@@ -185,6 +185,98 @@ cexec_root() { msb exec -u root "$CONTAINER" -- "$@"; }
 # ---------------------------------------------------------------------------
 echo "-- Step 0: Structural assertions --"
 
+# ---------------------------------------------------------------------------
+# LIVENESS PROBE: prove the cexec channel itself works before interpreting
+# ANY predicate result below as "file absent" (rip-cage-7atw.22 review F7).
+#
+# `cexec` is `rc exec`, which returns non-zero for reasons that have NOTHING
+# to do with the guest filesystem: the cage isn't running, cage-name
+# resolution failed, or msb exec itself errored (cli/attach_exec.sh). Without
+# this probe, `cexec test -x /usr/local/bin/claude` returning non-zero is
+# AMBIGUOUS between "the probe ran and the wrapper is absent" (real SKIP) and
+# "the probe never ran at all" (broken harness invocation) -- and the old code
+# silently folded the second case into a clean-looking skip. Fail loud, not
+# skip, if the channel itself is down; only once `cexec true` has actually
+# succeeded is a subsequent non-zero `test -x`/`test -f` meaningful.
+if ! cexec true; then
+  echo ""
+  echo "FATAL: cannot exec into container '$CONTAINER' — the probe channel itself is broken."
+  echo "  (cage not running, cage-name resolution failed, or msb exec errored.)"
+  echo "  This is NOT evidence the claude-recipe wasn't composed -- cexec could not even run 'true'."
+  echo "  Check: rc ls   /   msb list   /   rc doctor $CONTAINER"
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# PRECONDITION: is the claude-recipe composed into this image at all?
+#
+# managed-settings.json is NOT baked into the floor image (ADR-005 D12 /
+# ADR-027 D3) -- it ships via the opt-in examples/claude recipe's install_cmd.
+# Under a plain './rc build' with the in-repo floor-only manifest, the file is
+# LEGITIMATELY absent, and the old FATAL-on-absent below is simply wrong for
+# that case (rip-cage-7atw.22 item 1).
+#
+# The trap: gating the skip on managed-settings.json itself (the artifact the
+# assertions below are ABOUT) would collapse two different states into one --
+# "recipe never composed" (skip is correct) and "recipe composed, but the file
+# was deleted / the floor-lock broke post-build" (a real regression that MUST
+# fail loud). A skip keyed on the asserted artifact turns the second into a
+# silent pass.
+#
+# Independent signal used instead: /usr/local/bin/claude, the session-
+# isolation wrapper the SAME recipe provisions (examples/claude/README.md).
+# It is NOT written by the floor Dockerfile -- the floor npm-installs the real
+# binary at /usr/bin/claude; only the claude-recipe's install_cmd
+# (manifest/default-tools.yaml:91) writes a wrapper to /usr/local/bin/claude
+# (which precedes /usr/bin/claude on PATH). So its presence is a reliable
+# COMPOSITION signal -- "was this recipe's install_cmd run at build time" --
+# without being the artifact under test. It is NOT a tamper-resistance claim:
+# the agent holds a NOPASSWD sudo grant for /usr/bin/dpkg (cage/Dockerfile:110),
+# an unrestricted root write primitive, so a motivated in-cage adversary could
+# forge or remove both this wrapper and managed-settings.json. That adversary
+# is explicitly out of this project's threat model (CLAUDE.md: accidents and
+# prompt-injection, not a motivated adversary) -- this signal targets
+# accidental/config-drift absence, not tamper detection.
+#
+# Residual false-green window (named, not papered over): the wrapper and
+# managed-settings.json are written by the SAME install_cmd RUN step, which is
+# a single '&&' chain -- if that step failed at BUILD time, the whole `docker
+# build` would have failed and there would be no image to test at all, so
+# "recipe composed but install_cmd partially failed" cannot occur for a live
+# image. The residual gap is the opposite direction: if something removes
+# ONLY /usr/local/bin/claude from a live cage (leaving managed-settings.json
+# intact), this probe would SKIP even though the floor-lock is actually fine
+# -- a missed run, not a false GREEN on a real regression. No clean signal
+# fully independent of the recipe's own install_cmd exists today (no generic
+# per-TOOL "composed" image label -- only rc.multiplexers exists, for the
+# MULTIPLEXER archetype; and /etc/rip-cage/safety-stack-asserted is only
+# populated for manifest entries carrying required:true, which claude-recipe
+# does not set in manifest/default-tools.yaml today).
+#
+# SECOND residual, NOT fixable from inside this file (rip-cage-pow0, filed
+# separately -- do not attempt to solve it here): tests/run-host.sh's suite
+# ledger records any exit-0 as PASS and cannot distinguish a genuine pass from
+# this SKIP. At TOTALS level, under the repo's default floor-only build, this
+# probe currently contributes a silent PASS forever. The "SKIP:" marker below
+# is made maximally loud/greppable on stdout as the only mitigation available
+# from this file; the ledger-level fix belongs to rip-cage-pow0.
+if ! cexec test -x /usr/local/bin/claude; then
+  echo ""
+  echo "############################################################"
+  echo "### SKIP SKIP SKIP: claude-recipe NOT composed into this image"
+  echo "############################################################"
+  echo "SKIP: /usr/local/bin/claude (the session-wrapper the recipe provisions) is absent, so"
+  echo "SKIP: managed-settings.json is legitimately absent too (ADR-005 D12 / ADR-027 D3 -- the"
+  echo "SKIP: DCG floor-lock is an opt-in recipe, not part of the floor image)."
+  echo "SKIP: This probe only applies when the claude-recipe is composed into the manifest used"
+  echo "SKIP: for './rc build'. See examples/claude/README.md to opt in."
+  echo "SKIP: NOTE (rip-cage-pow0): this SKIP exits 0 and tests/run-host.sh's suite ledger cannot"
+  echo "SKIP: currently distinguish a SKIP from a PASS at the TOTALS line -- read this stdout"
+  echo "SKIP: marker directly, don't infer composition status from a green suite run."
+  echo "############################################################"
+  exit 0
+fi
+
 if cexec test -f /etc/claude-code/managed-settings.json; then
   pass "managed-settings.json exists at /etc/claude-code/"
 else
