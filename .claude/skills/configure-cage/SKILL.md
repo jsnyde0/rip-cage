@@ -71,6 +71,13 @@ per `CLAUDE.md`, `.rip-cage.yaml` is read-only inside the cage by design — tha
 `rc reload` that picks it up happen on the host, not from inside a running cage. Most requests
 this skill handles land in the image-manifest layer; know when one doesn't.
 
+**A manifest entry's `name:` — strict grammar, fail-loud.** Every entry's `name`, in every
+archetype (TOOL, GUARD, MULTIPLEXER, mounts-only), must match `^[a-z0-9_-]+$` — lowercase
+alphanumeric, hyphens, underscores only. Uppercase and dots are **rejected at validation**
+(`MyTool`, `python3.12` hard-fail `rc build`/`rc up`): names are baked into generated
+Dockerfile lines and registry paths, and the allowlist doubles as an injection guard
+(rip-cage-l906.4, 2026-07-30). Write `python312`, `my-tool` shapes instead.
+
 **Composing a tool's `egress:` list — how it reaches the cage.** A tool entry's `egress:` field
 in `tools.yaml` feeds schema validation, the build-time IOC-denylist gate, AND (since
 rip-cage-tsf2.8) the running cage's runtime allow-rules: at cage create / `rc reload` those hosts
