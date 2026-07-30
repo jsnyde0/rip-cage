@@ -113,6 +113,27 @@ cmd_build() {
         _bt_tag_set=1
         shift
         ;;
+      -f|--file|--file=*)
+        # rip-cage-zqjz: REJECT outright, fail loud, BEFORE any docker call
+        # (and before any temp-Dockerfile work below -- this scan runs first
+        # in cmd_build, so no $_tmp_dockerfile exists yet to leak). Unlike
+        # -t/--tag (fo4z), there is no legitimate rc build -f/--file use and
+        # no "override-then-audit" fix shape: rc's own -f "$_dockerfile"
+        # comes before "$@" in both docker-build call sites below, and a
+        # duplicate -f is LAST-WINS in docker (unlike -t, which is
+        # additive) -- so a caller -f would silently swap the caller's file
+        # in for the ACTUAL build while _manifest_check_build_isolation
+        # (ADR-005 D9 / ADR-024) still only ever audits rc's own
+        # manifest-resolved $_dockerfile. Accepting an override just
+        # reopens the same bypass in the other direction, since there is no
+        # "effective Dockerfile" concept to swap to (brain-ruled on the
+        # bead: resolving the Dockerfile from the manifest IS rc's job).
+        if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+          json_error "rc build: -f/--file is not accepted — rc resolves the Dockerfile from the manifest; a caller-supplied Dockerfile would bypass the build-isolation validator (ADR-005 D9 / ADR-024), which only ever audits rc's own resolved Dockerfile" "BUILD_FILE_REJECTED"
+        fi
+        echo "Error: -f/--file is not accepted — rc resolves the Dockerfile from the manifest; a caller-supplied Dockerfile would bypass the build-isolation validator (ADR-005 D9 / ADR-024), which only ever audits rc's own resolved Dockerfile" >&2
+        return 1
+        ;;
       --)
         _bt_remaining+=("$1")
         shift
@@ -141,19 +162,38 @@ cmd_build() {
         # flag would need this pattern revisited -- flagged here rather
         # than silently assumed complete forever.
         #
-        # Deliberately NOT matched (left to pass through to docker
-        # unmodified, on purpose): any cluster where -f or -o precedes the
-        # `t` character. In real docker parsing, -f/-o (also value-taking)
-        # consumes the REST of the token first, so `t` is never actually
-        # treated as the tag flag there (e.g. `-ft` sets -f's value to
-        # "t"; it does not set a tag at all) -- nothing to intercept, and
-        # nothing ambiguous about it. That shape belongs to rip-cage-zqjz's
-        # separate -f/--file clobber bug; left alone here per that bead's
-        # scope. Anything else this doesn't recognize (e.g. an unknown
-        # shorthand flag before `t`) is left untouched too: docker's own
-        # parser rejects it outright ("unknown shorthand flag"), so there
-        # is no silent-clobber path through an unrecognized spelling.
-        if [[ "$1" =~ ^-[Dq]*t(.*)$ ]]; then
+        # Deliberately NOT matched by the -t branch below (left to the -f
+        # branch just above it, or passed through untouched): any cluster
+        # where -f or -o precedes the `t` character. In real docker
+        # parsing, -f/-o (also value-taking) consumes the REST of the
+        # token first, so `t` is never actually treated as the tag flag
+        # there (e.g. `-ft` sets -f's value to "t"; it does not set a tag
+        # at all) -- that shape is rip-cage-zqjz's -f/--file clobber bug,
+        # handled by the -f branch immediately below (it matches `-ft`
+        # first, since `f` -- not `t` -- is the leftmost value-taking
+        # character). Anything else this doesn't recognize (e.g. an
+        # unknown shorthand flag before `t`) is left untouched too:
+        # docker's own parser rejects it outright ("unknown shorthand
+        # flag"), so there is no silent-clobber path through an
+        # unrecognized spelling.
+        #
+        # rip-cage-zqjz: -f/--file is checked FIRST (before -t) so that a
+        # cluster where `f` is the leftmost value-taking character (e.g.
+        # -ft, -fVALUE, -Dqf) is rejected as -f, not misread as -t. This
+        # mirrors real docker/pflag left-to-right cluster parsing: whichever
+        # value-taking character (f/o/t) appears first in the token wins,
+        # and everything after it is that flag's value, not another flag.
+        # Same regex shape as -t's, restricted to `f`; unlike -t there is no
+        # legitimate override to perform, so ANY match (value attached or
+        # not) is rejected outright, before any docker call and before any
+        # temp-Dockerfile work (this scan runs first in cmd_build).
+        if [[ "$1" =~ ^-[Dq]*f(.*)$ ]]; then
+          if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+            json_error "rc build: -f/--file is not accepted — rc resolves the Dockerfile from the manifest; a caller-supplied Dockerfile would bypass the build-isolation validator (ADR-005 D9 / ADR-024), which only ever audits rc's own resolved Dockerfile" "BUILD_FILE_REJECTED"
+          fi
+          echo "Error: -f/--file is not accepted — rc resolves the Dockerfile from the manifest; a caller-supplied Dockerfile would bypass the build-isolation validator (ADR-005 D9 / ADR-024), which only ever audits rc's own resolved Dockerfile" >&2
+          return 1
+        elif [[ "$1" =~ ^-[Dq]*t(.*)$ ]]; then
           local _bt_prefix="${1%%t*}"
           local _bt_rest="${BASH_REMATCH[1]}"
           # Re-emit any leading boolean flags (-D/-q) as their own token so

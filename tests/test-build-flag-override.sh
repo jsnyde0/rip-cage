@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
-# tests/test-build-tag-override.sh -- rip-cage-fo4z: `rc build -t <tag>` must
-# produce an image tagged ONLY <tag>; rip-cage:latest must be untouched.
+# tests/test-build-flag-override.sh -- cmd_build's docker-build argv
+# construction: caller-supplied flags that COLLIDE with flags rc's own
+# `docker build -t "$IMAGE" ... -f "$_dockerfile" ...` invocation already
+# sets. Originally test-build-tag-override.sh (rip-cage-fo4z, -t only);
+# renamed and broadened under rip-cage-zqjz to also cover -f/--file, which
+# shares the exact same "caller arg collides with an rc-set flag" seam and
+# the exact same fake-docker+fake-msb host-only harness -- a second parallel
+# test file would just duplicate this fixture machinery.
 #
+# --- -t/--tag (rip-cage-fo4z) ---
 # Bug: cli/build.sh's docker build invocations hardcode `-t "$IMAGE"` (default
 # rip-cage:latest) FIRST, then append caller args ("$@") -- so `rc build -t
 # custom:tag` becomes `docker build -t rip-cage:latest -t custom:tag ...` and
@@ -16,11 +23,24 @@
 # validators, and the fail-closed untag-on-violation cleanup) -- not passed
 # through as a second, additional tag.
 #
+# --- -f/--file (rip-cage-zqjz) ---
+# Bug: the same two docker-build call sites hardcode `-f "$_dockerfile"`
+# (rc's manifest-resolved, isolation-audited Dockerfile) BEFORE caller args
+# ("$@"). Unlike -t, a duplicate -f is LAST-WINS in docker (empirically
+# verified: `docker build -f A -f B .` builds ONLY from B) -- so `rc build -f
+# <path>` would silently replace rc's audited Dockerfile with the caller's
+# file for the ACTUAL build, while _manifest_check_build_isolation (the
+# pre-build isolation gate, ADR-005 D9 / ADR-024) still only ever inspects
+# rc's own resolved path. That's a safety-floor validator bypass, not a UX
+# surprise. Fix under test: every spelling of -f/--file is REJECTED outright
+# (fail-loud, ADR-001 style, brain-ruled on the bead) BEFORE any docker call
+# -- there is no "effective Dockerfile" to override to, unlike -t's IMAGE.
+#
 # Host-only unit tests: fake docker on PATH, call-logged to a scratch file so
 # the constructed `docker build` argv is asserted directly -- no image build
 # needed (same pattern as tests/test-build-msb-load.sh / test-manifest-mount-mode.sh
 # MG1/MG2: source rc directly, call cmd_build, override the manifest validators
-# as no-op positive controls since this suite is about tag plumbing, not the
+# as no-op positive controls since this suite is about flag plumbing, not the
 # validators themselves).
 #
 # Coverage:
@@ -40,6 +60,35 @@
 #       removes the EFFECTIVE (custom) image, not the default -- otherwise the
 #       fail-closed untag would remove the WRONG image (ADR-001 regression).
 #   T9  Non-tag caller args (e.g. --no-cache) still pass through untouched.
+#   T10 -t=<value> (single-dash equals form).
+#   T11 -t<value> (single-dash attached, no equals).
+#   T12 -qt <value> (boolean-prefixed cluster, -q survives as its own token).
+#   T13 -t "" (explicit empty value) -> fails loud, not a silent default fallback.
+#   T14 --tag= (explicit empty value, equals form) -> fails loud.
+#   T15 custom -t build does NOT warn about unrelated stale cages.
+#   T16 (positive control) default-tag build STILL warns about a stale cage.
+#   T17 rc build -f <path> (separate-arg) -> rejected before any docker call
+#       (rip-cage-zqjz).
+#   T18 rc build --file <path> (long-form separate-arg) -> rejected.
+#   T19 rc build --file=<path> (long-form equals) -> rejected.
+#   T20 rc build -f=<path> (single-dash equals) -> rejected.
+#   T21 rc build -f<path> (single-dash attached, no equals) -> rejected.
+#   T22 rc build -Df<path> (boolean-prefixed cluster, attached) -> rejected.
+#   T23 rc build -qf <path> (boolean-prefixed cluster, value from next arg)
+#       -> rejected.
+#   T24 rc build -Dqf <path> (multi-boolean-prefixed cluster) -> rejected.
+#   T25 (directional) rc build -ft -> rejected -- this IS -f (value "t"), the
+#       false-negative risk the bead calls out explicitly.
+#   T26 (directional, regression guard) rc build -tf -> still LEGAL, tag="f"
+#       -- this is -t (value "f"), NOT -f; a fix rejecting this would be a
+#       false positive breaking a legal invocation.
+#   T27 rc build --output json -f <path> -> single well-formed JSON error
+#       object, stable error code BUILD_FILE_REJECTED, docker never invoked.
+#   T28 (positive control, acceptance criterion 2b) with NO caller -f, the
+#       SAME manifest-resolved Dockerfile path is the only one ever passed
+#       to _manifest_check_build_isolation AND to the real docker build -f
+#       argument (forces a manifest-generated temp Dockerfile via a
+#       from-source TOOL fixture so the validator is actually invoked).
 
 set -uo pipefail
 
@@ -55,11 +104,13 @@ fail() { TOTAL=$((TOTAL + 1)); echo "FAIL  [$TOTAL] $1 -- ${2:-}"; FAILURES=$((F
 TEST_HOME=""
 CALL_LOG=""
 VALIDATOR_LOG=""
+ISOLATION_LOG=""
 
 cleanup() {
   [[ -n "${TEST_HOME:-}" && -d "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME"
   [[ -n "${CALL_LOG:-}" ]] && rm -f "$CALL_LOG"
   [[ -n "${VALIDATOR_LOG:-}" ]] && rm -f "$VALIDATOR_LOG"
+  [[ -n "${ISOLATION_LOG:-}" ]] && rm -f "$ISOLATION_LOG"
   [[ -n "${MOCK_BIN:-}" && -d "${MOCK_BIN:-}" ]] && rm -rf "$MOCK_BIN"
 }
 trap cleanup EXIT
@@ -136,6 +187,38 @@ FAKEEOF
   chmod +x "${MOCK_BIN}/msb"
 }
 
+# assert_file_rejected <label> <cmd_build args...> -- shared assertion for
+# every -f/--file spelling (rip-cage-zqjz): cmd_build must return non-zero,
+# never invoke docker, and name -f/--file in its error output. Runs its own
+# setup_sandbox/setup_fake_docker/CALL_LOG/cleanup so each case is isolated.
+assert_file_rejected() {
+  local label="$1"
+  shift
+  setup_sandbox
+  setup_fake_docker
+  CALL_LOG=$(mktemp)
+  local _afr_rc=0
+  local _afr_out
+  _afr_out=$(run_cmd_build "$@" 2>&1) || _afr_rc=$?
+
+  if [[ "$_afr_rc" -ne 0 ]]; then
+    pass "${label}a: cmd_build returns non-zero"
+  else
+    fail "${label}a: expected non-zero exit" "$_afr_out"
+  fi
+  if [[ ! -s "$CALL_LOG" ]]; then
+    pass "${label}b: docker was never invoked"
+  else
+    fail "${label}b: expected no docker calls" "$(cat "$CALL_LOG")"
+  fi
+  if [[ "$_afr_out" == *"-f"* || "$_afr_out" == *"--file"* ]]; then
+    pass "${label}c: error message names the rejected flag"
+  else
+    fail "${label}c: expected error message to name -f/--file" "$_afr_out"
+  fi
+  cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+}
+
 # Count the number of -t / --tag(=...) occurrences in a logged `docker build`
 # argv line, by re-tokenizing it (avoids substring false-positives like
 # "-test" or "--target").
@@ -170,6 +253,24 @@ extract_tag_value() {
   echo ""
 }
 
+# Extract the value immediately following a bare -f token in a logged
+# `docker build` argv line (rc's own -f "$_dockerfile" -- there is exactly
+# one -f in the constructed argv in the no-caller-override positive control,
+# since a caller-supplied -f is rejected before ever reaching this point).
+extract_file_value() {
+  local line="$1"
+  local -a toks
+  # shellcheck disable=SC2206
+  toks=($line)
+  local i n="${#toks[@]}"
+  for ((i = 0; i < n; i++)); do
+    case "${toks[$i]}" in
+      -f) echo "${toks[$((i + 1))]}"; return 0 ;;
+    esac
+  done
+  echo ""
+}
+
 # Run cmd_build in a subshell with the fake docker on PATH and manifest
 # validators stubbed as positive controls (this suite is about tag plumbing,
 # not the validators). Captures stdout+stderr and exit code.
@@ -192,15 +293,26 @@ run_cmd_build() {
   RC_TEST_MSB_IMAGE_LIST="${RC_TEST_MSB_IMAGE_LIST:-[]}" \
   RC_TEST_MSB_LIST="${RC_TEST_MSB_LIST:-[]}" \
   RC_TEST_MSB_INSPECT="${RC_TEST_MSB_INSPECT:-$_default_empty_obj}" \
+  RC_TEST_OUTPUT_FORMAT="${RC_TEST_OUTPUT_FORMAT:-}" \
+  RC_TEST_ISOLATION_LOG="${ISOLATION_LOG:-/dev/null}" \
   bash -c '
     source "'"${RC}"'"
     SCRIPT_DIR="'"${repo_root}"'"
-    OUTPUT_FORMAT=""
+    OUTPUT_FORMAT="${RC_TEST_OUTPUT_FORMAT:-}"
     _manifest_check_binary_root_owned() {
       [[ -n "${RC_TEST_VALIDATOR_LOG:-}" ]] && echo "binary_root_owned:$1" >> "$RC_TEST_VALIDATOR_LOG"
       return "${RC_TEST_VALIDATOR_EXIT:-0}"
     }
     _manifest_check_mount_root_owned() { return 0; }
+    # rip-cage-zqjz T28: positive-control stub (same convention as the two
+    # root-owned validators above -- this suite is about flag plumbing, not
+    # the validators own logic) that LOGS the Dockerfile path it was called
+    # with, so T28 can assert it is the identical path handed to the real
+    # docker build -f argument below.
+    _manifest_check_build_isolation() {
+      [[ -n "${RC_TEST_ISOLATION_LOG:-}" ]] && echo "$1" >> "$RC_TEST_ISOLATION_LOG"
+      return 0
+    }
     cmd_build "$@"
   ' rc-test-build "${args[@]+"${args[@]}"}"
 }
@@ -591,9 +703,217 @@ else
 fi
 cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
 
+# ---------------------------------------------------------------------------
+# T17 (rip-cage-zqjz): rc build -f <path> -- separate-arg spelling -- must be
+#     REJECTED before any docker call. Caller -f would silently swap rc's
+#     manifest-resolved, isolation-audited Dockerfile out from under
+#     _manifest_check_build_isolation (docker's -f is LAST-WINS, unlike -t).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T17: rc build -f <path> -> rejected before any docker call ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t17_rc=0
+_t17_out=$(run_cmd_build -f /tmp/evil.Dockerfile 2>&1) || _t17_rc=$?
+
+if [[ "$_t17_rc" -ne 0 ]]; then
+  pass "T17a: cmd_build returns non-zero when -f is supplied"
+else
+  fail "T17a: expected non-zero exit" "$_t17_out"
+fi
+if [[ ! -s "$CALL_LOG" ]]; then
+  pass "T17b: docker was never invoked when -f was supplied"
+else
+  fail "T17b: expected no docker calls" "$(cat "$CALL_LOG")"
+fi
+if [[ "$_t17_out" == *"-f"* || "$_t17_out" == *"--file"* ]]; then
+  pass "T17c: error message names the rejected flag"
+else
+  fail "T17c: expected error message to name -f/--file" "$_t17_out"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T18: rc build --file <path> -- long-form separate-arg spelling -- rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T18: rc build --file <path> -> rejected before any docker call ==="
+assert_file_rejected T18 --file /tmp/evil.Dockerfile
+
+# ---------------------------------------------------------------------------
+# T19: rc build --file=<path> -- long-form equals spelling -- rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T19: rc build --file=<path> -> rejected before any docker call ==="
+assert_file_rejected T19 --file=/tmp/evil.Dockerfile
+
+# ---------------------------------------------------------------------------
+# T20: rc build -f=<path> -- single-dash EQUALS-attached spelling -- rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T20: rc build -f=<path> (single-dash equals form) -> rejected ==="
+assert_file_rejected T20 -f=/tmp/evil.Dockerfile
+
+# ---------------------------------------------------------------------------
+# T21: rc build -f<path> -- single-dash ATTACHED (no equals) spelling --
+#      rejected (mirrors the -t<value> attached spelling, T11).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T21: rc build -f<path> (attached, no equals) -> rejected ==="
+assert_file_rejected T21 -fevil.Dockerfile
+
+# ---------------------------------------------------------------------------
+# T22: rc build -Df<path> -- boolean-prefixed cluster (-D debug), ATTACHED
+#      value -- rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T22: rc build -Df<path> (boolean-prefixed cluster, attached) -> rejected ==="
+assert_file_rejected T22 -Dfevil.Dockerfile
+
+# ---------------------------------------------------------------------------
+# T23: rc build -qf <path> -- boolean-prefixed cluster (-q quiet), value from
+#      the NEXT argv word -- rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T23: rc build -qf <path> (boolean-prefixed cluster, value from next arg) -> rejected ==="
+assert_file_rejected T23 -qf /tmp/evil.Dockerfile
+
+# ---------------------------------------------------------------------------
+# T24: rc build -Dqf <path> -- multi-boolean-prefixed cluster (-D -q), value
+#      from the NEXT argv word -- rejected.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T24: rc build -Dqf <path> (multi-boolean-prefixed cluster) -> rejected ==="
+assert_file_rejected T24 -Dqf /tmp/evil.Dockerfile
+
+# ---------------------------------------------------------------------------
+# T25 (directional): rc build -ft -- ILLEGAL. This is -f with attached value
+#     "t", NOT -t with value "f" -- docker's own cluster-parsing walks left to
+#     right, so the FIRST value-taking flag character (f, here) consumes the
+#     rest of the token. Must be rejected (this is exactly the false-negative
+#     risk called out on the bead: a fix that treats -ft as a legal tag would
+#     miss the real -f clobber).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T25 (directional): rc build -ft -> rejected (this is -f, value \"t\") ==="
+assert_file_rejected T25 -ft
+
+# ---------------------------------------------------------------------------
+# T26 (directional, regression guard): rc build -tf -- LEGAL. This is -t with
+#     attached value "f" (t is the first value-taking flag character in the
+#     cluster), NOT -f with value "t" -- must NOT be rejected (a false
+#     positive here would break a legal invocation). Positive control proving
+#     the -f rejection and the pre-existing -t override coexist correctly.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T26 (directional, regression guard): rc build -tf -> still legal, tag=\"f\" ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t26_rc=0
+_t26_out=$(run_cmd_build -tf 2>&1) || _t26_rc=$?
+
+if [[ "$_t26_rc" -eq 0 ]]; then
+  pass "T26a: cmd_build succeeds for -tf (not rejected)"
+else
+  fail "T26a: expected zero exit for -tf" "$_t26_out"
+fi
+_t26_build_line=$(grep '^docker build' "$CALL_LOG" || true)
+_t26_count=$(count_tag_flags "$_t26_build_line")
+_t26_value=$(extract_tag_value "$_t26_build_line")
+if [[ "$_t26_count" -eq 1 && "$_t26_value" == "f" ]]; then
+  pass "T26b: -tf yields exactly one -t with value \"f\""
+else
+  fail "T26b: expected count=1 value='f', got count=$_t26_count value='$_t26_value'" "$_t26_build_line"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T27: rc build --output json -f <path> -- JSON mode -- single well-formed
+#      JSON error object with a stable error code (BUILD_FILE_REJECTED),
+#      consistent with the existing BUILD_TAG_* codes.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T27: rc build --output json -f <path> -> well-formed JSON error, docker never invoked ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+_t27_rc=0
+_t27_out=$(RC_TEST_OUTPUT_FORMAT=json run_cmd_build -f /tmp/evil.Dockerfile) || _t27_rc=$?
+
+if [[ "$_t27_rc" -ne 0 ]]; then
+  pass "T27a: cmd_build returns non-zero in JSON mode"
+else
+  fail "T27a: expected non-zero exit" "$_t27_out"
+fi
+if [[ ! -s "$CALL_LOG" ]]; then
+  pass "T27b: docker was never invoked in JSON mode"
+else
+  fail "T27b: expected no docker calls" "$(cat "$CALL_LOG")"
+fi
+if echo "$_t27_out" | jq -e . >/dev/null 2>&1; then
+  pass "T27c: stdout is well-formed JSON"
+else
+  fail "T27c: expected well-formed JSON on stdout" "$_t27_out"
+fi
+_t27_code=$(echo "$_t27_out" | jq -r '.code // empty' 2>/dev/null)
+if [[ "$_t27_code" == "BUILD_FILE_REJECTED" ]]; then
+  pass "T27d: JSON error code is BUILD_FILE_REJECTED"
+else
+  fail "T27d: expected code=BUILD_FILE_REJECTED, got '$_t27_code'" "$_t27_out"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T28 (rip-cage-zqjz, acceptance criterion 2b, positive control): with NO
+#     caller -f, the SAME manifest-resolved Dockerfile is the only one ever
+#     passed to _manifest_check_build_isolation AND to the real docker build
+#     -f argument. Forces a manifest-generated temp Dockerfile (a
+#     build_source/from-source TOOL entry -- the only path that produces a
+#     non-empty $_tmp_dockerfile and thus actually invokes the isolation
+#     validator) so this is a real path-identity assertion, not vacuously
+#     true because the validator was skipped.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T28 (positive control): isolation validator and docker -f see the SAME path ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+ISOLATION_LOG=$(mktemp)
+cp "${REPO_ROOT}/tests/fixtures/manifest-with-from-source-tool.yaml" "${TEST_HOME}/.config/rip-cage/tools.yaml"
+_t28_rc=0
+_t28_out=$(run_cmd_build 2>&1) || _t28_rc=$?
+
+if [[ "$_t28_rc" -eq 0 ]]; then
+  pass "T28a: cmd_build succeeds (positive-control isolation stub passes)"
+else
+  fail "T28a: expected zero exit" "$_t28_out"
+fi
+_t28_isolation_calls=$(grep -c . "$ISOLATION_LOG" 2>/dev/null || echo 0)
+if [[ "$_t28_isolation_calls" -eq 1 ]]; then
+  pass "T28b: _manifest_check_build_isolation was invoked exactly once (manifest-generated Dockerfile path confirmed taken)"
+else
+  fail "T28b: expected exactly one isolation-validator invocation, got $_t28_isolation_calls" "$(cat "$ISOLATION_LOG")"
+fi
+_t28_isolation_path=$(head -1 "$ISOLATION_LOG" 2>/dev/null)
+_t28_build_line=$(grep '^docker build' "$CALL_LOG" || true)
+_t28_docker_f_value=$(extract_file_value "$_t28_build_line")
+if [[ -n "$_t28_isolation_path" && "$_t28_isolation_path" == "$_t28_docker_f_value" ]]; then
+  pass "T28c: isolation validator and docker build -f received the identical path"
+else
+  fail "T28c: expected identical paths, got isolation='$_t28_isolation_path' docker_f='$_t28_docker_f_value'" "$_t28_build_line"
+fi
+if [[ "$_t28_isolation_path" != "${REPO_ROOT}/cage/Dockerfile" ]]; then
+  pass "T28d: the shared path is the manifest-generated temp Dockerfile, not the original (proves the manifest path was genuinely taken)"
+else
+  fail "T28d: expected a manifest-generated temp Dockerfile, got the original cage/Dockerfile" "$_t28_isolation_path"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; ISOLATION_LOG=""; MOCK_BIN=""
+
 echo ""
 if (( FAILURES > 0 )); then
-  echo "=== test-build-tag-override.sh: ${FAILURES}/${TOTAL} failure(s) ==="
+  echo "=== test-build-flag-override.sh: ${FAILURES}/${TOTAL} failure(s) ==="
   exit 1
 fi
-echo "=== test-build-tag-override.sh: all ${TOTAL} tests passed ==="
+echo "=== test-build-flag-override.sh: all ${TOTAL} tests passed ==="

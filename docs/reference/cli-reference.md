@@ -4,7 +4,7 @@
 
 | Command | Description |
 |---------|-------------|
-| `rc build [docker-args...] [-t/--tag <ref>]` | Build the rip-cage Docker image. A caller-supplied `-t`/`--tag` **overrides** the image built/tagged — it does not add a second tag alongside the default `rip-cage:latest`, so `rip-cage:latest` is left untouched by a custom-tagged build (rip-cage-fo4z: previously docker applied *both* tags to the same image, silently re-tagging — and clobbering any composed bake on — `rip-cage:latest`). See [`rc build -t`/`--tag` details](#rc-build---t---tag-details) below for every accepted spelling, the fail-loud cases, and precedence vs `RC_IMAGE`. |
+| `rc build [docker-args...] [-t/--tag <ref>]` | Build the rip-cage Docker image. A caller-supplied `-t`/`--tag` **overrides** the image built/tagged — it does not add a second tag alongside the default `rip-cage:latest`, so `rip-cage:latest` is left untouched by a custom-tagged build (rip-cage-fo4z: previously docker applied *both* tags to the same image, silently re-tagging — and clobbering any composed bake on — `rip-cage:latest`). See [`rc build -t`/`--tag` details](#rc-build---t---tag-details) below for every accepted spelling, the fail-loud cases, and precedence vs `RC_IMAGE`. A caller-supplied `-f`/`--file` (any spelling) is **rejected outright**, before any docker call — see [`rc build -f`/`--file` is rejected](#rc-build--f---file-is-rejected) below. |
 | `rc up <path> [--port PORT] [--env-file FILE] [--new] [--session NAME]` | Start or resume a container |
 | `rc ls` | List rip-cage containers |
 | `rc attach [name]` | Attach to a running container (multiplexer-neutral — plain shell under `none`, tmux attach under `tmux`, supervisor view under `herdr`) |
@@ -56,6 +56,23 @@ Any of these left unrecognized and passed through unmodified would reproduce the
 **`--`:** stops rc from scanning further arguments for `-t`/`--tag`, but is **not** a general verbatim-pass-through escape hatch — `cmd_build` always appends the build context path as its own final positional after `"$@"`, so any non-empty content placed after `--` yields two or more positionals and `docker build` hard-errors (`requires 1 argument`) rather than doing something unexpected. Fails loud; does not clobber.
 
 **Stale-container warning:** `rc build`'s informational "container was created from a different image" warning (about existing cages `rc up` will refuse to resume) is skipped when a custom `-t`/`--tag` was supplied — that warning's premise ("cages running the image you just rebuilt") doesn't hold for a scratch/throwaway-tagged build, and every real cage is still pinned to whatever image it actually was, untouched by the custom-tagged build.
+
+### `rc build -f`/`--file` is rejected
+
+`rc build`'s hardcoded docker invocation always leads with `-f "$_dockerfile"` (rc's own manifest-resolved Dockerfile — the one `_manifest_check_build_isolation`, the pre-build build-isolation gate, ADR-005 D9 / ADR-024, actually audits). Unlike `-t` (additive — docker applies both), a duplicate `-f` is **last-wins** in docker: `docker build -f A -f B .` builds only from `B`. So a caller-supplied `-f`/`--file` would silently replace rc's audited Dockerfile with the caller's file for the *actual* build, while the isolation gate would still only ever have inspected rc's own resolved path — a safety-floor validator bypass, not a UX surprise (rip-cage-zqjz).
+
+Unlike `-t`, there is no legitimate `rc build -f` use and no override-then-audit fix: resolving the Dockerfile from the manifest **is** rc's job, and there is no "effective Dockerfile" concept to swap to. So every spelling of `-f`/`--file` is **rejected outright**, fail-loud, before any docker call:
+
+| Spelling | Example |
+|----------|---------|
+| Separate-arg, short | `-f path/to/Dockerfile` |
+| Separate-arg, long | `--file path/to/Dockerfile` |
+| Equals-attached, long | `--file=path/to/Dockerfile` |
+| Equals-attached, short | `-f=path/to/Dockerfile` |
+| Value-attached, short (no equals) | `-fpath/to/Dockerfile` |
+| Clustered behind docker's other boolean short flags (`-D`/`-q`) | `-qf path/to/Dockerfile`, `-Dqf=path/to/Dockerfile` |
+
+Cluster parsing follows the same left-to-right rule as `-t`'s: whichever value-taking short flag (`f`/`o`/`t`) appears first in a token wins. `-ft` is `-f` with value `"t"` (rejected); `-tf` is `-t` with value `"f"` (still a legal tag override, not a file flag) — the two are distinguished, not conflated.
 
 ### `rc up` — denylist and `--allow-risky-mount`
 

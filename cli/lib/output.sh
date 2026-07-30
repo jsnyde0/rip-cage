@@ -45,6 +45,7 @@ Usage: rc [--output json] [--dry-run] <command> [args]
 Commands:
   build [docker-args...]                       Build the rip-cage image
     -t, --tag <ref>     Tag the built image as <ref> instead of rip-cage:latest (overrides, does not add a second tag; rip-cage:latest is left untouched)
+    -f, --file           REJECTED (any spelling): rc resolves the Dockerfile from the manifest; a caller-supplied one would bypass the build-isolation validator
   up [path] [options]                           Start or resume a container (default: .)
     --port PORT         Expose a port
     --env-file FILE     Load env vars from file
