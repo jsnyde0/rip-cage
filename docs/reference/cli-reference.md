@@ -4,7 +4,7 @@
 
 | Command | Description |
 |---------|-------------|
-| `rc build [docker-args...]` | Build the rip-cage Docker image |
+| `rc build [docker-args...] [-t/--tag <ref>]` | Build the rip-cage Docker image. A caller-supplied `-t`/`--tag` (either spelling, incl. `--tag=<ref>`) **overrides** the image built/tagged — it does not add a second tag alongside the default `rip-cage:latest`, so `rip-cage:latest` is left untouched by a custom-tagged build (rip-cage-fo4z: previously docker applied *both* tags to the same image, silently re-tagging — and clobbering any composed bake on — `rip-cage:latest`). Repeated `-t`/`--tag`: last one wins. |
 | `rc up <path> [--port PORT] [--env-file FILE] [--new] [--session NAME]` | Start or resume a container |
 | `rc ls` | List rip-cage containers |
 | `rc attach [name]` | Attach to a running container (multiplexer-neutral — plain shell under `none`, tmux attach under `tmux`, supervisor view under `herdr`) |

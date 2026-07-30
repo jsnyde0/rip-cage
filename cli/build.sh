@@ -29,6 +29,78 @@ cmd_generate_dockerfile() {
 
 
 cmd_build() {
+  # rip-cage-fo4z: parse a caller-supplied -t/--tag OUT of "$@" and let it
+  # OVERRIDE the effective image name for the REST of this function, rather
+  # than being passed through to `docker build` as a second tag.
+  #
+  # Why: the docker build invocations below hardcode `-t "$IMAGE"` (default
+  # rip-cage:latest) FIRST. If a caller's own -t/--tag were left in "$@" and
+  # appended after it, docker would apply BOTH tags to the SAME image --
+  # `-t` reads as "build as this tag instead" but docker's actual semantics
+  # are "also tag this". `rc build -t custom:tag` would then silently
+  # re-tag (clobber) rip-cage:latest with whatever manifest/HOME the custom
+  # build happened to use -- observed live 2026-07-29, stripping an
+  # operator's composed `rc.multiplexers` bake off the default tag.
+  #
+  # $IMAGE is not only the docker tag -- it's the handle the post-build
+  # root-owned validators inspect (_manifest_check_binary_root_owned /
+  # _manifest_check_mount_root_owned below) and the handle the fail-closed
+  # `docker image rm` cleanup untags on a violation (ADR-001), plus the
+  # handle _build_warn_stale_containers / _build_msb_load read afterwards.
+  # So the fix is NOT "strip -t from $@" alone -- it's "let a caller -t
+  # override $IMAGE for this whole call". `local IMAGE=` below shadows the
+  # global for the rest of this function's dynamic scope (bash resolves
+  # unqualified $IMAGE reads in every function called from here -- the
+  # validators, _build_warn_stale_containers, _build_msb_load -- against
+  # this local, since none of them re-declare their own local IMAGE), so
+  # every one of those call sites sees the EFFECTIVE image automatically,
+  # without threading a new parameter through each of them.
+  #
+  # Degenerate cases:
+  #   - -t / --tag with no following value: fail loud, before any docker
+  #     call (mirrors docker's own "flag needs an argument" behavior).
+  #   - -t given more than once: last occurrence wins (standard "last flag
+  #     wins" convention; also what `getopts`/most CLIs do for repeated
+  #     flags).
+  #   - `--`: not scanned further -- everything after it is passed through
+  #     verbatim (docker's own argv separator convention; a caller placing
+  #     -t after -- is explicitly opting out of rc's parsing of it).
+  local _bt_remaining=() _bt_tag=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -t|--tag)
+        if [[ $# -lt 2 ]]; then
+          if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+            json_error "rc build: ${1} requires a value" "BUILD_TAG_MISSING_VALUE"
+          fi
+          echo "Error: ${1} requires a value" >&2
+          return 1
+        fi
+        _bt_tag="$2"
+        shift 2
+        ;;
+      --tag=*)
+        _bt_tag="${1#--tag=}"
+        shift
+        ;;
+      --)
+        _bt_remaining+=("$1")
+        shift
+        while [[ $# -gt 0 ]]; do
+          _bt_remaining+=("$1")
+          shift
+        done
+        ;;
+      *)
+        _bt_remaining+=("$1")
+        shift
+        ;;
+    esac
+  done
+  set -- "${_bt_remaining[@]+"${_bt_remaining[@]}"}"
+  # shellcheck disable=SC2034  # read via dynamic scope by every helper cmd_build calls below
+  local IMAGE="${_bt_tag:-$IMAGE}"
+
   # Ensure the manifest is seeded (first-run: writes defaults to ~/.config/rip-cage/tools.yaml).
   _manifest_ensure_seeded
 
