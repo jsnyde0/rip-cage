@@ -40,8 +40,8 @@ Feedback mechanisms available in this repo. The agent picks what fits the task; 
 The repo splits tests into three tiers. See `tests/run-host.sh` for the canonical host-only runner and ADR-013 for the coverage policy.
 
 ### `make test` — host-only smoke tier
-- **What it is:** Makefile target; runs `test-prerequisites.sh`, `test-rc-commands.sh`, `test-json-output.sh`
-- **Speed:** ~10-30s (no container, no docker build)
+- **What it is:** Makefile target; runs `test-prerequisites.sh`, `test-docker-daemon-hang.sh`, `test-rc-commands.sh`, `test-json-output.sh`
+- **Speed:** ~40s for 3 of the 4 scripts; NOT hermetic as a whole — `test-rc-commands.sh` performs 3 real `docker build` calls (`FROM alpine:3.19`) and takes ~2-3min (measured 2026-08-09). For a hermetic gate see the Refactoring fit profile below.
 - **Catches:** `rc` CLI arg parsing, usage output, prerequisite detection, `--output json` contract breaks
 - **Useful when:** editing `rc` subcommand dispatch, usage text, JSON output shape
 - **Less useful when:** touching anything that runs *inside* the container
@@ -324,3 +324,12 @@ When no existing mechanism fits, build one of these:
 - `tests/run-host.sh` — canonical host-test runner
 - `docs/ROADMAP.md` + `docs/decisions/` — where to go for "why"
 - `.beads/` — issue state (dolt-backed; `bd prime` loads context)
+
+## Refactoring fit profile (gate manifest — dotpi-aut6.8, 2026-08-09)
+
+Per the ratified agent-first refactoring principles (dotpi-2114 notes; charter amendment V2 on dotpi-aut6.5). The files named below are GATE FILES — a refactor diff must not touch them; a needed gate edit raises to the granting brain.
+
+- **Gate command (dispatch-time, hermetic — ran green 2026-08-09, each leg ≤40s):** `shellcheck -x <the Makefile BASH_SCRIPTS list> && bash tests/test-prerequisites.sh && bash tests/test-docker-daemon-hang.sh && bash tests/test-json-output.sh`. Use the direct `shellcheck` binary at the Makefile's pinned version (0.11.0) — `make lint` shells to docker (network image pull on a cold sandbox). Deliberately excludes `tests/test-rc-commands.sh` (3 real docker builds, ~2.5min, non-hermetic).
+- **Gate files (fail-closed):** ALL `tests/test-*.sh` (139 files), `Makefile` (BASH_SCRIPTS + lint/test targets), `tests/run-host.sh`, `tests/golden-master/**`.
+- **D3 conformance:** hermetic subset conforms (stable CLI boundary, deterministic, <2min total). Not covered vs full CI: docker image build, full host suite (network-fetched deps), container/e2e tiers. Known gap: `make lint` shellchecks only 50/139 test files (~180 findings in the rest, 108 of them SC2329 indirect-invocation notes; coverage bead filed 2026-08-09).
+- **Green-at-dispatch:** checked by the dispatching brain; result recorded on the dispatched bead.
