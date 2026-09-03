@@ -264,10 +264,18 @@ if [[ "$D4_EXIT" -eq 0 ]]; then
 else
   fail "D4z build succeeds cleanly" "exit=$D4_EXIT stderr=$D4_ERR"
 fi
-if [[ -z "$D4_ERR" ]]; then
-  pass "D4 vanilla unconfigured manifest produces zero drift-related stderr output"
+# rip-cage-auzj: scoped to drift/reconcile wording (the thing under test),
+# not raw stderr emptiness -- an unrelated pre-existing cage triggers rc's
+# own "created from a different image than the one just built" warning
+# (cli/build.sh's _build_warn_stale_containers) on any host with a live
+# cage whose pinned image digest predates this fixture's rebuild, which is
+# not itself manifest drift. Same grep vocabulary as D2's assertion above,
+# so a genuine drift/reconcile warning still fails this check (negative
+# control retained).
+if ! printf '%s' "$D4_ERR" | grep -qi "reconcile\|seed-fingerprint\|dist/default-tools"; then
+  pass "D4 vanilla unconfigured manifest produces zero drift/reconcile wording on stderr"
 else
-  fail "D4 vanilla unconfigured manifest produces zero drift-related stderr output" "stderr=$D4_ERR"
+  fail "D4 vanilla unconfigured manifest produces zero drift/reconcile wording on stderr" "stderr=$D4_ERR"
 fi
 
 echo ""
@@ -302,10 +310,13 @@ if [[ "$D4B_EXIT" -eq 0 ]]; then
 else
   fail "D4Bz build succeeds cleanly" "exit=$D4B_EXIT stderr=$D4B_ERR"
 fi
-if [[ -z "$D4B_ERR" ]]; then
-  pass "D4B intersecting-entries-all-match manifest produces zero drift-related stderr output"
+# rip-cage-auzj: same scoping as D4 above -- key on drift/reconcile
+# vocabulary, not raw stderr emptiness, so an unrelated pre-existing cage's
+# image-mismatch warning doesn't false-red this assertion.
+if ! printf '%s' "$D4B_ERR" | grep -qi "reconcile\|seed-fingerprint\|dist/default-tools"; then
+  pass "D4B intersecting-entries-all-match manifest produces zero drift/reconcile wording on stderr"
 else
-  fail "D4B intersecting-entries-all-match manifest produces zero drift-related stderr output" "stderr=$D4B_ERR"
+  fail "D4B intersecting-entries-all-match manifest produces zero drift/reconcile wording on stderr" "stderr=$D4B_ERR"
 fi
 
 echo ""
