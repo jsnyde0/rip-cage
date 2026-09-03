@@ -11,11 +11,27 @@
 #   bash tests/run-host.sh --ledger PATH        # append PASS/FAIL/SKIP+duration rows to PATH (or set RC_TEST_LEDGER)
 #   bash tests/run-host.sh --dry-run            # with --batch/--only/--ledger: record selection without executing tests
 #   bash tests/run-host.sh --ledger-summary PATH...  # union ledger files against the full enumeration; report never-run files + totals
+#   bash tests/run-host.sh --expect-no-skip 'glob,glob'  # or RC_TEST_EXPECT_NO_SKIP: a body-decided SKIP on a
+#                                                # matching basename ledgers FAIL instead -- declares "this probe
+#                                                # MUST run (not self-skip) under today's configuration"
 #
 # rip-cage-7atw.13: --batch/--only/--ledger/--ledger-summary let a full-suite
 # run be split into resumable, unioned slices (mac-mini background-task
 # lifetime kills runs at ~1hr) while --ledger-summary's zero-row detection
 # proves the union is complete. Default invocation (no flags) is unchanged.
+#
+# rip-cage-pow0: a test file can exit 0 for two different reasons -- "I ran
+# and proved my guarantee" (PASS) or "my precondition is absent, I checked
+# nothing" (SKIP). The suite ledger used to fold both into PASS. A test whose
+# stdout has a line starting "SKIP" followed by a space, colon, or open paren
+# (matches "SKIP:", "SKIP (NEEDS_CONTAINER / RC_E2E):", "SKIP C6:", etc --
+# every self-skip spelling actually in use in tests/ as of rip-cage-pow0
+# round 2; deliberately does NOT match "SKIPPED"/"SKIPS"/"SKIP_"-prefixed
+# identifiers) AND never prints a single "PASS"-prefixed line is treated as a
+# body-decided SKIP, not a PASS -- see run_test's classification block.
+# --expect-no-skip closes the "a SKIP column alone is cosmetic" gap: without
+# it, a probe silently switching from PASS to SKIP (e.g. an asset relocation)
+# is still a green suite. Name it there and the same event becomes a FAIL.
 #
 # HOST-ONLY INVARIANT: rc exits immediately when /etc/rip-cage/release is present.
 # This script will never succeed from inside a rip-cage container.
@@ -37,6 +53,7 @@ RH_BATCH_K=""
 RH_BATCH_N=""
 RH_ONLY_FILTER=""
 RH_LEDGER_PATH="${RC_TEST_LEDGER:-}"
+RH_EXPECT_NO_SKIP_FILTER="${RC_TEST_EXPECT_NO_SKIP:-}"
 RH_DRY_RUN=false
 RH_LIST_MODE=false
 RH_LEDGER_SUMMARY_MODE=false
@@ -79,6 +96,14 @@ while [[ $# -gt 0 ]]; do
       RH_LEDGER_PATH="$2"
       shift 2
       ;;
+    --expect-no-skip)
+      if [[ -z "${2:-}" ]]; then
+        echo "ERROR: --expect-no-skip requires a comma-separated basename/glob list" >&2
+        exit 2
+      fi
+      RH_EXPECT_NO_SKIP_FILTER="$2"
+      shift 2
+      ;;
     --dry-run)
       RH_DRY_RUN=true
       shift
@@ -108,6 +133,15 @@ done
 # the rest — a thrashing trap for CI where each red cycle costs ~12min). The
 # driver runs every test, collects the failures, and exits non-zero at the end.
 FAILED_TESTS=()
+
+# rip-cage-pow0: PASS_COUNT/SKIP_COUNT/SKIPPED_TESTS give a normal (non
+# --ledger-summary) run its own TOTALS line -- FAIL's count is
+# ${#FAILED_TESTS[@]}, already tracked above. SKIPPED_TESTS names every
+# skipped basename (dry-run, needs-container, AND body-decided self-skip) so
+# a permanently-skipping probe is visible at a glance, not just counted.
+PASS_COUNT=0
+SKIP_COUNT=0
+SKIPPED_TESTS=()
 
 # Tests that REQUIRE a running rip-cage container or live API key.
 # Each entry carries a one-line comment explaining why.
@@ -425,27 +459,76 @@ run_test() {
 
   if [[ "$RH_DRY_RUN" == "true" ]]; then
     echo "SKIP (dry-run): $base"
+    SKIP_COUNT=$((SKIP_COUNT + 1))
+    SKIPPED_TESTS+=("$base")
     _rh_ledger_row "$base" "SKIP" "dry-run" 0
     return 0
   fi
 
   if [[ "$HOST_ONLY_MODE" == "true" ]] && _is_needs_container "$test_file"; then
     echo "SKIP (needs container): $base"
+    SKIP_COUNT=$((SKIP_COUNT + 1))
+    SKIPPED_TESTS+=("$base")
     _rh_ledger_row "$base" "SKIP" "needs-container" 0
     return 0
   fi
 
-  local t0 t1
+  local t0 t1 rc out_file
   t0=$(date +%s)
-  # `if !` keeps set -e from aborting the suite; record the failure and continue.
-  if ! bash "$test_file"; then
+  out_file="$(mktemp "${TMPDIR:-/tmp}/rh-test-out.XXXXXX")"
+  rc=0
+  # `|| rc=$?` (not `if !`) keeps set -e from aborting the suite while still
+  # capturing the pipefail-adjusted exit status of the test body itself --
+  # tee always succeeds, so pipefail (from `set -euo pipefail` at file top)
+  # surfaces bash's exit code here, not tee's.
+  bash "$test_file" | tee "$out_file" || rc=$?
+  t1=$(date +%s)
+
+  if [[ "$rc" -ne 0 ]]; then
     FAILED_TESTS+=("$base")
-    t1=$(date +%s)
     _rh_ledger_row "$base" "FAIL" "" "$((t1 - t0))"
+  elif grep -q '^SKIP[[:space:]:(]' "$out_file" 2>/dev/null && ! grep -q '^PASS' "$out_file" 2>/dev/null; then
+    # rip-cage-pow0: exit 0 + a "SKIP" stdout sentinel at column 0 -- either
+    # the repo's original "SKIP:" convention (test-msb-boot-smoke.sh comment
+    # above) or one of the other in-repo spellings ("SKIP (NEEDS_CONTAINER /
+    # RC_E2E): ...", "SKIP (reserved-scratch): ...", "SKIP C6: ...", etc --
+    # rip-cage-pow0 round 2's blast-radius measurement found 21 files using a
+    # non-colon spelling that the original '^SKIP:' match missed) -- plus
+    # zero "PASS"-prefixed lines means the test body declared "precondition
+    # absent, nothing checked" -- not "I ran and proved my guarantee". Ledger
+    # SKIP, never PASS. The character class after SKIP (space, colon, open
+    # paren) is deliberately narrow: it must NOT match "SKIPPED", "SKIPS", or
+    # "SKIP_"-prefixed identifiers, which are prose/var-name usages, not a
+    # skip sentinel.
+    local _expect_no_skip=false
+    if [[ -n "${RH_EXPECT_NO_SKIP_FILTER:-}" ]]; then
+      local -a _epat
+      IFS=',' read -ra _epat <<< "${RH_EXPECT_NO_SKIP_FILTER:-}"
+      local _ep
+      for _ep in "${_epat[@]}"; do
+        # shellcheck disable=SC2254 # intentional glob match, mirrors _rh_matches_only
+        case "$base" in
+          $_ep) _expect_no_skip=true; break ;;
+        esac
+      done
+    fi
+    if $_expect_no_skip; then
+      # A probe declared EXPECTED-TO-RUN in this configuration self-skipped
+      # instead -- that is itself a regression (rip-cage-pow0's "the part
+      # that actually protects coverage"), not a legitimate SKIP.
+      echo "FAIL (expected to run, but self-skipped): $base"
+      FAILED_TESTS+=("$base")
+      _rh_ledger_row "$base" "FAIL" "expected-no-skip" "$((t1 - t0))"
+    else
+      SKIP_COUNT=$((SKIP_COUNT + 1))
+      SKIPPED_TESTS+=("$base")
+      _rh_ledger_row "$base" "SKIP" "self-skip" "$((t1 - t0))"
+    fi
   else
-    t1=$(date +%s)
+    PASS_COUNT=$((PASS_COUNT + 1))
     _rh_ledger_row "$base" "PASS" "" "$((t1 - t0))"
   fi
+  rm -f "$out_file"
 }
 
 run_pytest() {
@@ -472,26 +555,59 @@ run_pytest() {
 
   if [[ "$RH_DRY_RUN" == "true" ]]; then
     echo "SKIP (dry-run): $base"
+    SKIP_COUNT=$((SKIP_COUNT + 1))
+    SKIPPED_TESTS+=("$base")
     _rh_ledger_row "$base" "SKIP" "dry-run" 0
     return 0
   fi
 
   if [[ "$HOST_ONLY_MODE" == "true" ]] && _is_needs_container "$test_file"; then
     echo "SKIP (needs container): $base"
+    SKIP_COUNT=$((SKIP_COUNT + 1))
+    SKIPPED_TESTS+=("$base")
     _rh_ledger_row "$base" "SKIP" "needs-container" 0
     return 0
   fi
 
-  local t0 t1
+  local t0 t1 rc out_file
   t0=$(date +%s)
-  if ! uv run "$@"; then
+  out_file="$(mktemp "${TMPDIR:-/tmp}/rh-test-out.XXXXXX")"
+  rc=0
+  uv run "$@" | tee "$out_file" || rc=$?
+  t1=$(date +%s)
+
+  if [[ "$rc" -ne 0 ]]; then
     FAILED_TESTS+=("$base")
-    t1=$(date +%s)
     _rh_ledger_row "$base" "FAIL" "" "$((t1 - t0))"
+  elif grep -q '^SKIP[[:space:]:(]' "$out_file" 2>/dev/null && ! grep -q '^PASS' "$out_file" 2>/dev/null; then
+    # rip-cage-pow0: same body-decided-SKIP classification as run_test above
+    # (see that block's comment for the widened-spelling rationale).
+    local _expect_no_skip=false
+    if [[ -n "${RH_EXPECT_NO_SKIP_FILTER:-}" ]]; then
+      local -a _epat
+      IFS=',' read -ra _epat <<< "${RH_EXPECT_NO_SKIP_FILTER:-}"
+      local _ep
+      for _ep in "${_epat[@]}"; do
+        # shellcheck disable=SC2254 # intentional glob match, mirrors _rh_matches_only
+        case "$base" in
+          $_ep) _expect_no_skip=true; break ;;
+        esac
+      done
+    fi
+    if $_expect_no_skip; then
+      echo "FAIL (expected to run, but self-skipped): $base"
+      FAILED_TESTS+=("$base")
+      _rh_ledger_row "$base" "FAIL" "expected-no-skip" "$((t1 - t0))"
+    else
+      SKIP_COUNT=$((SKIP_COUNT + 1))
+      SKIPPED_TESTS+=("$base")
+      _rh_ledger_row "$base" "SKIP" "self-skip" "$((t1 - t0))"
+    fi
   else
-    t1=$(date +%s)
+    PASS_COUNT=$((PASS_COUNT + 1))
     _rh_ledger_row "$base" "PASS" "" "$((t1 - t0))"
   fi
+  rm -f "$out_file"
 }
 
 # rip-cage-7atw.13: --list / --ledger-summary are enumerate-only modes --
@@ -648,6 +764,8 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-session-persistence.sh"  # dn2 projects/sessions persist-to-host (Phase 3 container)
   run_test "${SCRIPT_DIR}/test-pi-no-extensions.sh"     # rip-cage-sn1h: LOCKED-VARIANT-ONLY probe (evil.ts NOT loaded + DCG still denies); self-skips under the shipped OPEN default (rip-cage-p35a.1 / ADR-027 D1)
   run_test "${SCRIPT_DIR}/test-skills.sh"               # meta-skill MCP handshake + cage-path/settings inside cage
+  run_test "${SCRIPT_DIR}/test-rh-expected-skip-fixture.sh" # rip-cage-pow0: deterministic always-self-skip fixture proving the SKIP-vs-PASS ledger classification + --expect-no-skip's SKIP-becomes-FAIL assertion; host-only, no container
+  run_test "${SCRIPT_DIR}/test-rh-non-colon-skip-fixture.sh" # rip-cage-pow0 round 2: deterministic always-self-skip fixture using a non-colon "SKIP (...)" sentinel spelling, regression-protecting the widened '^SKIP[[:space:]:(]' match; host-only, no container
 }
 
 if [[ "$RH_LIST_MODE" == "true" ]]; then
@@ -780,6 +898,14 @@ _RH_MODE="run"
 _RH_CALL_INDEX=0
 _run_all_tests
 
+echo ""
+echo "TOTALS: PASS=${PASS_COUNT} FAIL=${#FAILED_TESTS[@]} SKIP=${SKIP_COUNT}"
+if [[ ${#SKIPPED_TESTS[@]} -gt 0 ]]; then
+  echo "  SKIPPED:"
+  for _st in "${SKIPPED_TESTS[@]}"; do
+    echo "    - ${_st}"
+  done
+fi
 echo "=== run-host.sh complete ==="
 
 if [[ ${#FAILED_TESTS[@]} -gt 0 ]]; then
