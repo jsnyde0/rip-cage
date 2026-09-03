@@ -43,12 +43,14 @@ if ! msb image list --format json 2>/dev/null | grep -qF "$IMAGE"; then
   exit 0
 fi
 
+# shellcheck source=tests/_scratch-cage-lib.sh
+source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+
 TEST_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-lifecycle-doctor-XXXXXX")
 WS="${TEST_HOME}/workspace"
 mkdir -p "${TEST_HOME}/.config/rip-cage" "$WS"
 CAGE_NAME=""
 cleanup() {
-  [[ -n "$CAGE_NAME" ]] && msb remove --force "$CAGE_NAME" >/dev/null 2>&1 || true
   rm -rf "$TEST_HOME"
 }
 trap cleanup EXIT
@@ -77,6 +79,7 @@ if [[ "$CR_RC" -ne 0 ]]; then
   exit 1
 fi
 CAGE_NAME=$(echo "$CR_OUT" | tail -1 | jq -r '.name' 2>/dev/null)
+scratch_cage_register "$CAGE_NAME"
 pass "setup: rc up created ${CAGE_NAME}"
 
 # Trigger a real denial so the posture probe's fix-hint has real content.
