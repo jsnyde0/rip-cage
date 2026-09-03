@@ -82,6 +82,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=tests/_agent-model-lib.sh
 source "${SCRIPT_DIR}/_agent-model-lib.sh"
+# shellcheck source=tests/_scratch-cage-lib.sh
+source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
 RC="${SCRIPT_DIR}/../rc"
 FAILURES=0
 
@@ -420,6 +422,7 @@ echo "=== Spin up tmux cage (${CAGE}) ==="
 
 RC_IMAGE="$MUX_AGENT_IMAGE" "$RC" up "$WORKSPACE" </dev/null >/tmp/rc-mux-agent-e2e-up.out 2>&1 || true
 _mux_agent_track_cage "$CAGE"
+scratch_cage_register "$CAGE"
 
 CAGE_STARTED=false
 if "$RC" ls --output json | jq -e --arg n "$CAGE" '.[] | select(.name==$n)' >/dev/null 2>&1; then

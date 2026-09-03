@@ -16,6 +16,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 
+# shellcheck source=tests/_scratch-cage-lib.sh
+source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+
 # Create isolated temp project directory
 TEST_DIR=$(mktemp -d)
 mkdir -p "$TEST_DIR/test-project"
@@ -141,6 +144,7 @@ check "rc up creates container (action=created)" "$ACTION" "created"
 
 if [[ -n "$CONTAINER_NAME" ]]; then
   _track "$CONTAINER_NAME"
+  scratch_cage_register "$CONTAINER_NAME"
   # Test 9: rc --output json ls shows the container
   RESULT=$($RC --output json ls 2>/dev/null)
   FOUND=$(echo "$RESULT" | jq -r ".[].name" 2>/dev/null | grep -c "$CONTAINER_NAME" || echo "0")

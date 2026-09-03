@@ -92,6 +92,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# shellcheck source=tests/_scratch-cage-lib.sh
+# Sourced unconditionally (harmless -- scratch_cage_register only arms its
+# trap on first actual registration call). Used by the C1/C6/C10 real-`rc up`
+# arms below; the later L1-L3 tier re-sources this same file locally (see
+# that block) -- safe because by the time it runs, C1/C6/C10's cages are
+# already destroyed inline (registration only covers the interrupt window).
+source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+
 # Build an msb stub that responds to the `msb inspect NAME --format json`
 # call cmd_reload's _msb_exists/_msb_sandbox_state/_msb_label all compose on
 # (cli/lib/msb_runtime.sh's _msb_inspect_json — a single call shape, so one
@@ -252,6 +260,7 @@ YML
     fail 1 "happy path" "live setup: rc up failed (exit $rcl_up_exit): $rcl_up_out"
   else
     RCL_CAGE=$(echo "$rcl_up_out" | tail -1 | jq -r '.name' 2>/dev/null)
+    scratch_cage_register "$RCL_CAGE"
     # Add switch.berlin to allowed_hosts, then reload for real.
     cat > "${RCL_WS}/.rip-cage.yaml" <<'YML'
 version: 2
@@ -270,7 +279,7 @@ YML
     else fail 1 "happy path" "$c1_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
-  [[ -n "$RCL_CAGE" ]] && msb remove --force "$RCL_CAGE" >/dev/null 2>&1
+  [[ -n "$RCL_CAGE" ]] && "$RC" destroy --force "$RCL_CAGE" >/dev/null 2>&1
   rm -rf "$RCL_HOME"
 fi
 
@@ -395,6 +404,7 @@ YML
     fail 6 "inode preservation" "live setup: rc up failed (exit $rcl_up_exit): $rcl_up_out"
   else
     RCL_CAGE=$(echo "$rcl_up_out" | tail -1 | jq -r '.name' 2>/dev/null)
+    scratch_cage_register "$RCL_CAGE"
     RCL_SNAP="${HOME}/.cache/rip-cage/${RCL_CAGE}/config-applied.json"
     c6_pre_inode=$(stat -c %i "$RCL_SNAP" 2>/dev/null || stat -f %i "$RCL_SNAP")
     cat > "${RCL_WS}/.rip-cage.yaml" <<'YML'
@@ -412,7 +422,7 @@ YML
     else fail 6 "inode preservation" "$c6_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
-  [[ -n "$RCL_CAGE" ]] && msb remove --force "$RCL_CAGE" >/dev/null 2>&1
+  [[ -n "$RCL_CAGE" ]] && "$RC" destroy --force "$RCL_CAGE" >/dev/null 2>&1
   rm -rf "$RCL_HOME"
 fi
 
@@ -525,6 +535,7 @@ YML
     fail 10 "mode preservation" "live setup: rc up failed (exit $rcl_up_exit): $rcl_up_out"
   else
     RCL_CAGE=$(echo "$rcl_up_out" | tail -1 | jq -r '.name' 2>/dev/null)
+    scratch_cage_register "$RCL_CAGE"
     RCL_SNAP="${HOME}/.cache/rip-cage/${RCL_CAGE}/config-applied.json"
     chmod 0644 "$RCL_SNAP"
     c10_pre_mode=$(stat -c %a "$RCL_SNAP" 2>/dev/null || stat -f %Mp%Lp "$RCL_SNAP")
@@ -544,7 +555,7 @@ YML
     else fail 10 "mode preservation" "$c10_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
-  [[ -n "$RCL_CAGE" ]] && msb remove --force "$RCL_CAGE" >/dev/null 2>&1
+  [[ -n "$RCL_CAGE" ]] && "$RC" destroy --force "$RCL_CAGE" >/dev/null 2>&1
   rm -rf "$RCL_HOME"
 fi
 

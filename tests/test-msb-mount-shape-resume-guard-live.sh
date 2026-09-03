@@ -66,13 +66,14 @@ if ! msb image list --format json 2>/dev/null | grep -qF "$IMAGE"; then
   exit 0
 fi
 
+# shellcheck source=tests/_scratch-cage-lib.sh
+source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+
 TEST_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-mount-shape-live-XXXXXX")
 WS="${TEST_HOME}/workspace"
 mkdir -p "${TEST_HOME}/.config/rip-cage" "$WS"
 CAGE_A="" CAGE_B=""
 cleanup() {
-  [[ -n "$CAGE_A" ]] && msb remove --force "$CAGE_A" >/dev/null 2>&1 || true
-  [[ -n "$CAGE_B" ]] && msb remove --force "$CAGE_B" >/dev/null 2>&1 || true
   rm -rf "$TEST_HOME"
 }
 trap cleanup EXIT
@@ -122,6 +123,7 @@ CR_OUT=$(run_rc_up --output json up "$WS" 2>&1)
 CR_RC=$?
 CAGE_A=$(echo "$CR_OUT" | tail -1 | jq -r '.name' 2>/dev/null)
 if [[ "$CR_RC" -eq 0 && -n "$CAGE_A" ]]; then
+  scratch_cage_register "$CAGE_A"
   pass "SETUP: cage A created (${CAGE_A})"
 else
   fail "SETUP: cage A create failed" "rc=$CR_RC out='$CR_OUT'"
@@ -241,6 +243,7 @@ CRB_OUT=$(run_rc_up_b --output json up "$WS_B" 2>&1)
 CRB_RC=$?
 CAGE_B=$(echo "$CRB_OUT" | tail -1 | jq -r '.name' 2>/dev/null)
 if [[ "$CRB_RC" -eq 0 && -n "$CAGE_B" ]]; then
+  scratch_cage_register "$CAGE_B"
   pass "B-SETUP: cage B created with mounts.config_mode: rw (${CAGE_B})"
 else
   fail "B-SETUP: cage B create failed" "rc=$CRB_RC out='$CRB_OUT'"

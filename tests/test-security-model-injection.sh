@@ -140,11 +140,13 @@ echo ""
 # ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
+# shellcheck source=tests/_scratch-cage-lib.sh
+source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+
 TEST_HOME=""
 CAGE_NAME=""
 # shellcheck disable=SC2329
 CLEANUP() {
-  [[ -n "$CAGE_NAME" ]] && msb remove --force "$CAGE_NAME" >/dev/null 2>&1 || true
   [[ -n "$TEST_HOME" && -d "$TEST_HOME" ]] && rm -rf "$TEST_HOME"
 }
 trap CLEANUP EXIT
@@ -315,6 +317,7 @@ if [[ -z "$CAGE_NAME" || "$CAGE_NAME" == "null" ]]; then
   echo "=== Summary: $FAILURES/$TOTAL failed ==="
   exit 1
 fi
+scratch_cage_register "$CAGE_NAME"
 check "Setup: rc up creates cage" "pass" "cage=${CAGE_NAME}"
 echo ""
 

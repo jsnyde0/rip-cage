@@ -113,6 +113,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# shellcheck source=tests/_scratch-cage-lib.sh
+# Sourced unconditionally (harmless -- scratch_cage_register only arms its
+# trap on first actual registration call). Used by _live_setup_cage below,
+# the single creation point for every LIVE-tier (L1-L4) cage.
+source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+
 # msb stub — answers the single `msb inspect NAME --format json` shape that
 # _msb_exists/_msb_sandbox_state/_msb_label all compose on.
 make_msb_stub() {
@@ -383,6 +389,7 @@ YML
   up_out=$(XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --output json up "$RCL_WS" 2>&1) || return 1
   cage=$(echo "$up_out" | tail -1 | jq -r '.name' 2>/dev/null)
   [[ -z "$cage" || "$cage" == "null" ]] && return 1
+  scratch_cage_register "$cage"
   if [[ "$leave" == "stopped" ]]; then
     msb stop "$cage" >/dev/null 2>&1 || true
   fi
@@ -436,7 +443,7 @@ else
     else fail 8 "LIVE default-converge" "$l1_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
-  [[ -n "${RCL_CAGE:-}" ]] && msb remove --force "$RCL_CAGE" >/dev/null 2>&1
+  [[ -n "${RCL_CAGE:-}" ]] && "$RC" destroy --force "$RCL_CAGE" >/dev/null 2>&1
   rm -rf "${RCL_HOME:-}"
 fi
 
@@ -471,7 +478,7 @@ else
     else fail 9 "LIVE --no-reload opt-out" "$l2_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
-  [[ -n "${RCL_CAGE:-}" ]] && msb remove --force "$RCL_CAGE" >/dev/null 2>&1
+  [[ -n "${RCL_CAGE:-}" ]] && "$RC" destroy --force "$RCL_CAGE" >/dev/null 2>&1
   rm -rf "${RCL_HOME:-}"
 fi
 
@@ -512,7 +519,7 @@ else
     else fail 10 "LIVE running never-recreates" "$l3_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
-  [[ -n "${RCL_CAGE:-}" ]] && msb remove --force "$RCL_CAGE" >/dev/null 2>&1
+  [[ -n "${RCL_CAGE:-}" ]] && "$RC" destroy --force "$RCL_CAGE" >/dev/null 2>&1
   rm -rf "${RCL_HOME:-}"
 fi
 
@@ -557,7 +564,7 @@ else
     else fail 11 "LIVE dry-run converge preview" "$l4_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
-  [[ -n "${RCL_CAGE:-}" ]] && msb remove --force "$RCL_CAGE" >/dev/null 2>&1
+  [[ -n "${RCL_CAGE:-}" ]] && "$RC" destroy --force "$RCL_CAGE" >/dev/null 2>&1
   rm -rf "${RCL_HOME:-}"
 fi
 
