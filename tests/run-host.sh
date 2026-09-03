@@ -707,6 +707,8 @@ _run_all_tests() {
   # (engine-deletion sweep, rip-cage-3vj2 / S4).
   run_test "${SCRIPT_DIR}/test-scratch-cage-cleanup.sh"  # rip-cage-aqww/neu7.9: scratch-cage cleanup — D1 register-array helper + D2 detect-and-warn (never destroys); needs msb daemon + cached alpine image, self-skips without either
   run_test "${SCRIPT_DIR}/test-cleanup-failsafe.sh"      # rip-cage-neu7.9: committed repro — register-array CLEANUP fired on an EMPTY registry invokes the destroy command ZERO times (stubbed destroy, pure bash, no docker/msb dependency)
+  run_test "${SCRIPT_DIR}/test-scratch-cage-teardown-guard.sh"  # rip-cage-4cuh/22hn/qg25: static recurrence guard — an unpaired msb-remove teardown on an rc-up cage leaks rc-state-*/rc-history-* forever; volume-attachment gated (a direct msb-create cage has no volumes to orphan), host-only
+  run_test "${SCRIPT_DIR}/test-seed-drift-stderr-scoping.sh"    # rip-cage-auzj: permanent regression proof for D4/D4B's stderr-scoping fix — positive (forced unrelated warning passes), negative control (genuine drift still fails), regression-direction (old raw-emptiness logic reds); host-only, fake docker+msb PATH shims
   run_test "${SCRIPT_DIR}/test-agent-readability.sh"     # rip-cage-7wc: host-side fixture tests for agent *.md readability classification
   run_test "${SCRIPT_DIR}/test-agent-mail-concurrent.sh" # rip-cage-swv: two concurrent pi agents coordinate via am CLI (NEEDS_CONTAINER + RC_E2E)
   run_test "${SCRIPT_DIR}/test-multiplexer-agent-e2e.sh" # rip-cage-w621.7: pi agent through tmux mux surface with >=2 distinct tool invocations (NEEDS_CONTAINER + RC_E2E)

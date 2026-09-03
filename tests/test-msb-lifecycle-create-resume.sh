@@ -126,7 +126,12 @@ if ! msb inspect "$PF_CAGE_NAME" --format json >/dev/null 2>&1; then
   pass "PF: no sandbox was created (preflight ran BEFORE msb create)"
 else
   fail "PF: a sandbox was created despite the unset source_env -- silent-empty-secret footgun"
-  msb remove --force "$PF_CAGE_NAME" >/dev/null 2>&1 || true
+  # rip-cage-4cuh: this branch only fires when the preflight guard has already
+  # failed, but an unexpected sandbox here came from `rc up` and therefore
+  # carries the rc-state-/rc-history- named volumes. A bare `msb remove` would
+  # drop the cage and orphan both. Register it so the EXIT trap reaps it via
+  # `rc destroy --force` (by verified registered name, never a sweep).
+  scratch_cage_register "$PF_CAGE_NAME"
 fi
 
 # ---------------------------------------------------------------------------
