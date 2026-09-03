@@ -129,7 +129,7 @@ The image is multi-stage. Changes to earlier stages invalidate the build cache f
 
 ### Hooks and settings
 
-`hooks/block-ssh-bypass.sh` is the source asset for the ssh-bypass composable recipe (`examples/ssh-bypass/`). `settings.json` controls base-image permissions and deny rules. Changes to either require careful review. Any change that weakens the safety stack must include an explicit rationale. Note: `block-ssh-bypass.sh` is **not** baked into the base image — it is opt-in via the composable recipe (ADR-025 D2, ADR-026 D2). The recipe's `manifest-fragment.yaml` carries the base64-encoded hook; update it via `examples/ssh-bypass/build-fragment.sh` after editing the source.
+DCG (Dangerous Command Guard) is the composable command-guard recipe (`examples/dcg/`) — not baked into the base image (ADR-025 D2, ADR-026 D2). `cage/agent/settings.json` controls base-image permissions and deny rules. Changes to either require careful review. Any change that weakens the safety stack must include an explicit rationale. A recipe's `manifest-fragment.yaml` carries base64-encoded config payloads generated from source assets via that recipe's own `build-fragment.sh` — never hand-edit the base64; edit the source and re-run the generator, then check `manifest/default-tools.yaml`'s matching entry for drift (rip-cage-bqm8: a stale copy-pasted blob shipped a dangling hook reference undetected for weeks because a plain `grep` of base64 finds nothing). (The former ssh-bypass command-guard sibling — `hooks/block-ssh-bypass.sh`, `examples/ssh-bypass/` — is retired per [ADR-029](docs/decisions/ADR-029-msb-migration.md) D3; git's canonical in-cage transport is now HTTPS + `--secret`.)
 
 ### Test script
 

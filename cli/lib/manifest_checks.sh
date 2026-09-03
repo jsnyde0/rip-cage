@@ -704,6 +704,15 @@ _manifest_validate() {
             echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — 'init' sets PATH=, which can PATH-shadow safety binaries (dcg, dcg-policy, block-ssh-bypass) and weakens the safety floor (floor-weakening; ADR-005 D10/D11, ADR-001 fail-loud). Remove PATH manipulation from the init command." >&2
             return 1
           fi
+          # block-ssh-bypass(.sh) stays in this regex deliberately (rip-cage-bqm8
+          # sweep): the hook binary itself is RETIRED (ADR-029 D3), but the
+          # regex's job is closing a PATH-shadow/overwrite attack SHAPE at a
+          # specific path, not asserting the target is currently provisioned.
+          # Dropping the name would silently narrow this defensive check with
+          # zero benefit, and tests/test-manifest-multiplexer-validate.sh T1k
+          # pins a hostile fixture writing to exactly this retired path — that
+          # regression coverage is worth keeping even though the guarded name
+          # is no longer a live binary.
           if echo "$tool_init_raw" | grep -qE '/(usr/local/lib/rip-cage/(bin|hooks)|usr/local/bin|usr/bin)/(dcg-guard|dcg|dcg-policy|block-ssh-bypass(\.sh)?)'; then
             echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — 'init' writes to a safety binary path (/usr/local/lib/rip-cage/bin/dcg-guard or similar), which would replace a safety floor binary (floor-weakening; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the init command." >&2
             return 1
@@ -954,6 +963,14 @@ _manifest_validate() {
           # Covers /usr/local/lib/rip-cage/bin/dcg-guard (the policy-enforcing wrapper),
           # /usr/local/lib/rip-cage/hooks/block-ssh-bypass.sh (ssh-bypass blocker),
           # and the /usr/local/bin / /usr/bin paths for dcg, dcg-policy, block-ssh-bypass.
+          #
+          # block-ssh-bypass(.sh) stays in this regex deliberately (rip-cage-bqm8
+          # sweep): the hook binary itself is RETIRED (ADR-029 D3), but this check
+          # closes a PATH-shadow/overwrite attack SHAPE at a specific path, not an
+          # assertion that the target is currently provisioned. Dropping the name
+          # would silently narrow the check for no benefit, and
+          # tests/test-manifest-multiplexer-validate.sh T1k pins a hostile fixture
+          # writing to exactly this retired path — worth keeping the coverage.
           if echo "$mux_hook_cmd" | grep -qE '/(usr/local/lib/rip-cage/(bin|hooks)|usr/local/bin|usr/bin)/(dcg-guard|dcg|dcg-policy|block-ssh-bypass(\.sh)?)'; then
             echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — hook '${mux_hook_name}' writes to a safety binary path (/usr/local/lib/rip-cage/bin/dcg-guard or similar), which would replace a safety floor binary (floor-weakening; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the hook command." >&2
             return 1

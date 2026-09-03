@@ -271,7 +271,12 @@ echo "=== Settings Merge Idempotency Check ==="
 echo ""
 
 # 11. PreToolUse hooks not doubled (catches the resume re-merge bug)
-# On fresh init: 2 hooks (dcg + block-ssh-bypass). Compound blocker removed rip-cage-4r8.
+# On fresh init today: 0 PreToolUse hooks baked into THIS file. Historically
+# it carried dcg (moved to the root-owned managed-settings.json floor-lock at
+# wlwc/rip-cage-r9n4, ADR-027 D3) then block-ssh-bypass alone (deleted
+# wholesale with the ssh cluster, ADR-029 D3) -- so the count is now whatever
+# the composed manifest's recipes add here, not a fixed number. Compound
+# blocker removed rip-cage-4r8.
 # Source of truth: /etc/rip-cage/settings.json shipped with the image.
 # If init-rip-cage.sh was re-run with the old ~/.claude/settings.json as merge
 # source, hooks would double on each resume. This test catches that by counting
