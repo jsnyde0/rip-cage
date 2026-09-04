@@ -52,8 +52,8 @@ The shim implements the same `list`/`show`/`load` tools as the host `ms` binary.
 
 - Skills that are broken symlinks inside the container (host-only paths) are skipped at startup
 - **Skill-source symlinks (projection contract, rip-cage-1pgp.1):** rc's floor auto-mounts each
-  skill-symlink target's parent dir `ro` at its **host-absolute** path (`_collect_symlink_parents`,
-  rc:939-975) — that fixes **absolute** symlinks. **Relative** symlinks (e.g.
+  skill-symlink target's parent dir `ro` at its **host-absolute** path (`_collect_symlink_parents`
+  in `cli/up.sh`) — that fixes **absolute** symlinks. **Relative** symlinks (e.g.
   `../../code/personal/dotpi/agent/skills/<name>`) resolve against the cage home instead
   (`/home/agent/code/...` from `~/.rc-context/skills`, same 2-level depth as `~/.claude/skills`),
   so they need the operator to compose a `ro` mount of the skills repo at that cage-side
