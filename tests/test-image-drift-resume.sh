@@ -123,6 +123,11 @@ trap cleanup EXIT
 #     invocations within one run (reset per call by run_rc_up/run_rc_reload).
 # Written ONCE; every test reuses it by varying the env vars per call.
 # ---------------------------------------------------------------------------
+# Real VERSION file content (rip-cage-7bs3, T8's docker stub default) --
+# read once so the fake docker's version-label response matches whatever
+# the real docker was implicitly providing pre-T8 (RC_VERSION, cli/rc:93),
+# keeping _image_is_current's "current" verdict unchanged for T1-T7.
+_drift_real_version=$(cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo "unknown")
 STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-drift-stub-XXXXXX")
 cat > "${STUB_DIR}/msb" <<'STUB'
 #!/usr/bin/env bash
@@ -175,6 +180,19 @@ case "${1:-}" in
       fi
       exit 0
     fi
+    if [[ "${2:-}" == "inspect" ]]; then
+      # rip-cage-7bs3 (T8): msb-side probe for the layer-diff_id comparator
+      # (_msb_image_layer_drift_status). Unset -> exit 1 (image not found in
+      # msb's cache), matching the real contract on an absent image and
+      # keeping every T1-T7 case (which never set this) at comparator
+      # status 3 -- silent, since this suite's real-docker `rc up` call
+      # already covers _image_absent separately.
+      if [[ -n "${DRIFT_MSB_LAYER_INSPECT:-}" ]]; then
+        echo "$DRIFT_MSB_LAYER_INSPECT"
+        exit 0
+      fi
+      exit 1
+    fi
     exit 0
     ;;
   create|start|stop|exec|remove|volume|list) exit 0 ;;
@@ -182,6 +200,54 @@ case "${1:-}" in
 esac
 STUB
 chmod +x "${STUB_DIR}/msb"
+
+# Fake docker (rip-cage-7bs3, T8): this file deliberately left the REAL
+# docker on PATH for T1-T7 (see the file header's END-TO-END REQUIREMENT
+# note) -- check_docker's `docker info` preflight and up.sh's `_image_absent`
+# computation (cli/up.sh:2473) ran against a genuinely reachable daemon and
+# a genuinely present, version-current `rip-cage:latest`. T8 needs a
+# CONTROLLABLE docker-side layer list for the new image-layer-drift
+# comparator, so this stub now shadows docker too -- but its DEFAULTS
+# reproduce exactly what the real docker was providing (image present,
+# version label == the real VERSION file's content), so T1-T7 stay on the
+# identical resume path they were on before this stub existed.
+cat > "${STUB_DIR}/docker" <<STUB
+#!/usr/bin/env bash
+set -u
+case "\${1:-}" in
+  info) exit "\${DRIFT_DOCKER_INFO_EXIT:-0}" ;;
+  image)
+    case "\${2:-}" in
+      inspect)
+        shift 2
+        _fmt="" _prev=""
+        for _a in "\$@"; do
+          [[ "\$_prev" == "--format" ]] && _fmt="\$_a"
+          _prev="\$_a"
+        done
+        case "\$_fmt" in
+          *RootFS.Layers*)
+            echo "\${DRIFT_DOCKER_LAYERS:-[]}"
+            exit 0
+            ;;
+          *version*)
+            echo "\${DRIFT_DOCKER_VERSION_LABEL:-${_drift_real_version}}"
+            exit "\${DRIFT_DOCKER_IMAGE_ABSENT:-0}"
+            ;;
+          *)
+            # Bare existence check (up.sh:2473, no --format).
+            exit "\${DRIFT_DOCKER_IMAGE_ABSENT:-0}"
+            ;;
+        esac
+        ;;
+      rm) exit 0 ;;
+    esac
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "${STUB_DIR}/docker"
 
 # Fixed-pattern fake image digests — distinct 12-char short forms so message
 # assertions can look for the exact short ID substring.
@@ -595,6 +661,57 @@ if [[ "$_t7_ok" == "true" ]]; then
   pass T7 "running + sandbox-inspect failure (transient/TOCTOU) -> warn on stderr, proceeds, exit 0 (M2)"
 else
   fail T7 "running + sandbox-inspect failure warn-only" "$_t7_reason (exit=$RC_EXIT stderr=$RC_ERR)"
+fi
+teardown_sandbox
+
+# ===========================================================================
+# T8 (rip-cage-7bs3) — msb's cached $IMAGE vs. docker's local $IMAGE, the
+# NEW layer-diff_id comparator (_msb_image_layer_drift_status /
+# _msb_warn_image_layer_drift, cli/lib/msb_runtime.sh) wired into `rc up`'s
+# image-present branch (cli/up.sh, right after the _image_absent
+# computation). Driven through the REAL cmd_up via this file's fake-docker+
+# fake-msb PATH shim (this file's own END-TO-END REQUIREMENT, see header) —
+# not an isolated call to the comparator/emitter.
+#
+# T8a positive control: matching diff_id lists -> silence, exit 0.
+# T8b the divergence case: differing diff_id lists -> the loud warning
+#     fires on stderr, exit 0 (advisory, never fail-closed).
+# ===========================================================================
+setup_sandbox
+DRIFT_DOCKER_LAYERS='["sha256:layer1","sha256:layer2"]' \
+DRIFT_MSB_LAYER_INSPECT='{"layers":[{"diff_id":"sha256:layer1"},{"diff_id":"sha256:layer2"}]}' \
+  run_rc_up "running" "$IMG_A" "$IMG_A" "human" "false"
+
+_t8a_ok=true _t8a_reason=""
+if [[ "$RC_EXIT" -ne 0 ]]; then
+  _t8a_ok=false; _t8a_reason="rc up exited non-zero ($RC_EXIT) on matching layer diff_ids"
+fi
+if echo "$RC_ERR" | grep -qi "STALE"; then
+  _t8a_ok=false; _t8a_reason="${_t8a_reason:+$_t8a_reason; }image-layer-drift warning fired despite matching diff_id lists"
+fi
+if [[ "$_t8a_ok" == "true" ]]; then
+  pass T8a "matching layer diff_ids -> no image-layer-drift warning (positive control), exit 0"
+else
+  fail T8a "positive control: matching diff_ids should stay silent" "$_t8a_reason (exit=$RC_EXIT stderr=$RC_ERR)"
+fi
+teardown_sandbox
+
+setup_sandbox
+DRIFT_DOCKER_LAYERS='["sha256:layer1","sha256:layer2"]' \
+DRIFT_MSB_LAYER_INSPECT='{"layers":[{"diff_id":"sha256:layer1"},{"diff_id":"sha256:DIFFERENT"}]}' \
+  run_rc_up "running" "$IMG_A" "$IMG_A" "human" "false"
+
+_t8b_ok=true _t8b_reason=""
+if [[ "$RC_EXIT" -ne 0 ]]; then
+  _t8b_ok=false; _t8b_reason="rc up exited non-zero ($RC_EXIT) on a layer-drift divergence (advisory only, must stay exit 0)"
+fi
+if ! echo "$RC_ERR" | grep -qi "STALE"; then
+  _t8b_ok=false; _t8b_reason="${_t8b_reason:+$_t8b_reason; }no image-layer-drift warning found on stderr"
+fi
+if [[ "$_t8b_ok" == "true" ]]; then
+  pass T8b "divergent layer diff_ids -> loud image-layer-drift warning through REAL cmd_up, exit 0"
+else
+  fail T8b "rc up layer-drift wiring" "$_t8b_reason (exit=$RC_EXIT stderr=$RC_ERR)"
 fi
 teardown_sandbox
 

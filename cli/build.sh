@@ -558,6 +558,12 @@ cmd_build() {
       # docker save -> msb load conversion. Best-effort (see _build_msb_load);
       # its exit code is deliberately not propagated into rc build's own.
       _build_msb_load || true
+      # rip-cage-7bs3: AFTER _build_msb_load, not before -- pre-load, msb's
+      # cache still holds the PREVIOUS build, so a pre-load compare is
+      # divergent by construction on every successful build. Post-load,
+      # this IS the acceptance's "rc build's msb-load is verified to have
+      # landed". Advisory only (see _msb_warn_image_layer_drift's header).
+      _msb_warn_image_layer_drift
       jq -nc --arg img "$IMAGE" '{image: $img, action: "built", status: "success"}'
     else
       [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
@@ -584,6 +590,9 @@ cmd_build() {
       # docker save -> msb load conversion. Best-effort (see _build_msb_load);
       # its exit code is deliberately not propagated into rc build's own.
       _build_msb_load || true
+      # rip-cage-7bs3: same AFTER-load placement and rationale as the JSON
+      # path above.
+      _msb_warn_image_layer_drift
     fi
   fi
   [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"

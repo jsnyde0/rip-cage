@@ -238,6 +238,93 @@ _msb_image_drift_status() {
 }
 
 
+# _msb_image_layer_drift_status (rip-cage-7bs3) — detects msb's local image
+# cache for $IMAGE holding DIFFERENT layer content than docker's local image
+# store for the SAME $IMAGE, so a cage boot from msb's cache can't silently
+# run stale bits `rc build`/`docker build` already replaced. Sibling
+# comparator to _msb_image_drift_status above (that one compares a SANDBOX's
+# pinned image against the current $IMAGE; this one compares the two
+# STORES' notion of $IMAGE itself), copying its no-opinion contract exactly
+# (see that function's header): this NEVER calls exit/json_error — the
+# abort-vs-warn decision belongs entirely to the caller (here, always warn;
+# see _msb_warn_image_layer_drift below).
+#
+# MECHANISM CORRECTION (rip-cage-7bs3 bead notes, probed live 2026-09-04):
+# the acceptance text says "digest", but docker's and msb's own image
+# digests (OCI manifest digest vs. docker's config-blob .Id) are computed
+# over DIFFERENT encodings of the same image and are NEVER equal, even for
+# the image in both stores from the SAME `rc build` (verified live: 0/1
+# pairs equal). A literal digest compare would fire on every build — as
+# useless as never firing. What IS byte-identical across both stores is the
+# UNCOMPRESSED LAYER DIFF_ID LIST (content-addressed on the raw layer tars,
+# verified live 35/35 layers equal): `docker image inspect $IMAGE --format
+# '{{json .RootFS.Layers}}'` vs. `msb image inspect $IMAGE --format json |
+# jq -c '[.layers[].diff_id]'`. This function implements the acceptance's
+# INTENT (detect a stale msb-cached $IMAGE) via that comparator, not the
+# literal digest wording — do not "fix" this back to a digest compare.
+#
+# Returns: 0 = both stores hold $IMAGE and the diff_id lists match, 1 = both
+#          hold it and the lists differ (the divergence this bead exists to
+#          catch), 2 = docker does not have $IMAGE, 3 = msb does not have
+#          $IMAGE or `msb image inspect` failed.
+# Parameters: none (uses global $IMAGE, same as _msb_image_drift_status).
+_msb_image_layer_drift_status() {
+  local _docker_layers
+  # IMAGE is the global set by rc:69 (IMAGE="${RC_IMAGE:-rip-cage:latest}")
+  # -- see _msb_image_drift_status's own SC2153 note above for why this
+  # file-local `image` coincidence needs the disable.
+  # shellcheck disable=SC2153
+  if ! _docker_layers=$(docker image inspect "$IMAGE" --format '{{json .RootFS.Layers}}' 2>/dev/null); then
+    return 2
+  fi
+  _docker_layers=$(jq -c '.' <<<"$_docker_layers" 2>/dev/null)
+  [[ -z "$_docker_layers" || "$_docker_layers" == "null" ]] && return 2
+
+  local _msb_raw _msb_layers
+  if ! _msb_raw=$(msb image inspect "$IMAGE" --format json 2>/dev/null); then
+    return 3
+  fi
+  _msb_layers=$(jq -c '[.layers[].diff_id]' <<<"$_msb_raw" 2>/dev/null)
+  [[ -z "$_msb_layers" || "$_msb_layers" == "null" ]] && return 3
+
+  [[ "$_docker_layers" == "$_msb_layers" ]] && return 0
+  return 1
+}
+
+
+# _msb_warn_image_layer_drift (rip-cage-7bs3) — shared warn-emitter over
+# _msb_image_layer_drift_status, called from both `rc build` (AFTER
+# _build_msb_load, both the JSON and human-output call sites — cli/build.sh)
+# and `rc up` (the image-present branch only — cli/up.sh; when the image is
+# absent, _pull_or_build already re-provisions and ends in _build_msb_load,
+# so there is nothing to warn about there). Single-sourced so the message is
+# never written twice.
+#
+# POSTURE (brain:rip-cage ruling 2026-09-03, binding on this bead too):
+# advisory, fail-LOUD, never fail-closed — this function never changes an
+# exit code, gates a build, or refuses a boot; it only ever prints to
+# stderr (so stdout JSON stays parseable, the same idiom
+# _build_warn_stale_containers / _build_msb_load already use) and returns 0.
+#
+# NOTHING TO CHECK (silent, matching _build_msb_load's own precedent at
+# cli/build.sh:673 and rip-cage-5jrt's msb-absent carve-out): docker or msb
+# is not installed at all, so there is no pair of stores to compare.
+# Status 2/3 (one store doesn't have $IMAGE) are ALSO silent here -- that
+# state is already covered by _image_absent's own re-provisioning at the
+# `rc up` call site and by _build_msb_load's own loud failure message at
+# the `rc build` call site; this emitter's only job is status 1.
+_msb_warn_image_layer_drift() {
+  command -v docker >/dev/null 2>&1 || return 0
+  command -v msb >/dev/null 2>&1 || return 0
+  local _status=0
+  _msb_image_layer_drift_status || _status=$?
+  if [[ "$_status" -eq 1 ]]; then
+    echo "Warning: msb's cached '${IMAGE}' image has different layer content than docker's local '${IMAGE}' image — a cage booted from msb's cache would run a STALE image. Run 'docker save ${IMAGE} | msb load --tag ${IMAGE}' (or re-run 'rc build') to resync msb's cache." >&2
+  fi
+  return 0
+}
+
+
 # _msb_exec NAME ARGS... -- run a real command in a running sandbox
 # non-interactively (msb-side counterpart to `docker exec NAME ARGS...`).
 # stdout/stderr pass through; exit code propagates.

@@ -2476,6 +2476,17 @@ cmd_up() {
     _image_absent=true
   fi
 
+  # rip-cage-7bs3: image-present branch ONLY. When the image is absent,
+  # _pull_or_build below already re-provisions and ends in _build_msb_load
+  # (S1's docker-save/msb-load conversion), so there is nothing to warn
+  # about on that path -- this is what catches the bead's actual repro
+  # instead: someone runs `docker build` directly, never enters `rc build`,
+  # and every fresh cage boots msb's stale cached image. Advisory only, see
+  # _msb_warn_image_layer_drift's own header (cli/lib/msb_runtime.sh).
+  if [[ "$_image_absent" == false ]]; then
+    _msb_warn_image_layer_drift
+  fi
+
   local name_disambiguated=false
 
   local name

@@ -261,7 +261,26 @@ case "${1:-}" in
   build) exit 0 ;;
   image)
     case "${2:-}" in
-      inspect) echo '{}'; exit 0 ;;
+      inspect)
+        shift 2
+        # rip-cage-7bs3: detect the RootFS.Layers --format template (the
+        # diff_id-list comparator's docker-side probe) so it can be served
+        # a distinct fixture from every other `docker image inspect
+        # --format ...` caller, which keeps getting the plain '{}' default.
+        # Content-keyed (matches the golden-master fake-bin/docker idiom),
+        # not positional, so this survives any future caller reordering.
+        _fmt="" _prev=""
+        for _a in "$@"; do
+          [[ "$_prev" == "--format" ]] && _fmt="$_a"
+          _prev="$_a"
+        done
+        if [[ "$_fmt" == *"RootFS.Layers"* ]]; then
+          echo "${RC_TEST_DOCKER_IMAGE_LAYERS:-[]}"
+        else
+          echo '{}'
+        fi
+        exit 0
+        ;;
       rm) exit 0 ;;
     esac
     exit 0
@@ -292,6 +311,20 @@ case "${1:-}" in
   image)
     case "${2:-}" in
       list) echo "${RC_TEST_MSB_IMAGE_LIST:-[]}"; exit 0 ;;
+      inspect)
+        # rip-cage-7bs3: the layer-diff_id comparator's msb-side probe
+        # (`msb image inspect $IMAGE --format json`). Unset/empty ->
+        # exit 1 (image not found in msb's cache), matching the real
+        # `msb image inspect` contract on an absent image (probed live,
+        # see the bead notes) and keeping every pre-existing case in this
+        # file silent (comparator status 3 -> the shared warn-emitter's
+        # nothing-to-warn-about branch).
+        if [[ -n "${RC_TEST_MSB_IMAGE_INSPECT:-}" ]]; then
+          echo "$RC_TEST_MSB_IMAGE_INSPECT"
+          exit 0
+        fi
+        exit 1
+        ;;
     esac
     exit 0
     ;;
@@ -473,6 +506,8 @@ run_cmd_build() {
   RC_TEST_MSB_IMAGE_LIST="${RC_TEST_MSB_IMAGE_LIST:-[]}" \
   RC_TEST_MSB_LIST="${RC_TEST_MSB_LIST:-[]}" \
   RC_TEST_MSB_INSPECT="${RC_TEST_MSB_INSPECT:-$_default_empty_obj}" \
+  RC_TEST_DOCKER_IMAGE_LAYERS="${RC_TEST_DOCKER_IMAGE_LAYERS:-}" \
+  RC_TEST_MSB_IMAGE_INSPECT="${RC_TEST_MSB_IMAGE_INSPECT:-}" \
   RC_TEST_OUTPUT_FORMAT="${RC_TEST_OUTPUT_FORMAT:-}" \
   RC_TEST_ISOLATION_LOG="${ISOLATION_LOG:-/dev/null}" \
   bash -c '
@@ -1781,6 +1816,94 @@ if [[ "$_t67_rc" -eq 0 ]]; then
 else
   fail "T67b: expected exit 0" "$_t67_rc"
 fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T68 (rip-cage-7bs3, positive control): msb's cached image and docker's
+#     local image report the SAME layer diff_id list -- no image-layer-
+#     drift warning fires. Exercises the human-output call site
+#     (cli/build.sh:586, AFTER _build_msb_load).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T68 (rip-cage-7bs3, positive control): matching layer diff_ids -> silence ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+RC_TEST_DOCKER_IMAGE_LAYERS='["sha256:layer1","sha256:layer2"]'
+RC_TEST_MSB_IMAGE_INSPECT='{"layers":[{"diff_id":"sha256:layer1"},{"diff_id":"sha256:layer2"}]}'
+_t68_out=$(run_cmd_build 2>&1) || true
+unset RC_TEST_DOCKER_IMAGE_LAYERS RC_TEST_MSB_IMAGE_INSPECT
+
+if [[ "$_t68_out" != *"STALE"* ]]; then
+  pass "T68: matching diff_id lists -> no image-layer-drift warning"
+else
+  fail "T68: expected silence on the layer-drift check" "$_t68_out"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T69 (rip-cage-7bs3, the divergence case): msb's cached image and docker's
+#     local image report DIFFERENT layer diff_id lists -- the loud
+#     image-layer-drift warning must fire on stderr, and `rc build`'s exit
+#     code must stay 0 (advisory, never fail-closed).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T69 (rip-cage-7bs3): divergent layer diff_ids -> loud warning, exit 0 ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+RC_TEST_DOCKER_IMAGE_LAYERS='["sha256:layer1","sha256:layer2"]'
+RC_TEST_MSB_IMAGE_INSPECT='{"layers":[{"diff_id":"sha256:layer1"},{"diff_id":"sha256:DIFFERENT"}]}'
+_t69_rc=0
+_t69_out=$(run_cmd_build 2>&1) || _t69_rc=$?
+unset RC_TEST_DOCKER_IMAGE_LAYERS RC_TEST_MSB_IMAGE_INSPECT
+
+if [[ "$_t69_out" == *"STALE"* ]]; then
+  pass "T69a: divergent layer diff_ids -> loud image-layer-drift warning fires"
+else
+  fail "T69a: expected the loud image-layer-drift warning" "$_t69_out"
+fi
+if [[ "$_t69_rc" -eq 0 ]]; then
+  pass "T69b: rc build exit code unchanged (0) despite the loud warning -- advisory, never fail-closed"
+else
+  fail "T69b: expected exit 0" "$_t69_rc"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
+
+# ---------------------------------------------------------------------------
+# T70 (rip-cage-7bs3): the SAME divergence case through the JSON-output call
+#     site (cli/build.sh:560) -- the warning must land on stderr only, so
+#     stdout stays well-formed, parseable `rc build` JSON (the same
+#     stdout/stderr split _build_warn_stale_containers already relies on).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T70 (rip-cage-7bs3): JSON-output call site also warns, stdout stays clean JSON ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+RC_TEST_DOCKER_IMAGE_LAYERS='["sha256:layer1","sha256:layer2"]'
+RC_TEST_MSB_IMAGE_INSPECT='{"layers":[{"diff_id":"sha256:layer1"},{"diff_id":"sha256:DIFFERENT"}]}'
+_t70_stdout=$(mktemp) _t70_stderr=$(mktemp)
+_t70_rc=0
+RC_TEST_OUTPUT_FORMAT=json run_cmd_build >"$_t70_stdout" 2>"$_t70_stderr" || _t70_rc=$?
+unset RC_TEST_DOCKER_IMAGE_LAYERS RC_TEST_MSB_IMAGE_INSPECT
+
+if grep -q "STALE" "$_t70_stderr"; then
+  pass "T70a: JSON-output call site also emits the image-layer-drift warning, on stderr"
+else
+  fail "T70a: expected the image-layer-drift warning on stderr" "$(cat "$_t70_stderr")"
+fi
+if jq -e . <"$_t70_stdout" >/dev/null 2>&1 && ! grep -q "STALE" "$_t70_stdout"; then
+  pass "T70b: stdout stays well-formed JSON, warning does not leak into it"
+else
+  fail "T70b: expected clean JSON stdout with no warning text" "$(cat "$_t70_stdout")"
+fi
+if [[ "$_t70_rc" -eq 0 ]]; then
+  pass "T70c: rc build exit code unchanged (0) despite the loud warning"
+else
+  fail "T70c: expected exit 0" "$_t70_rc"
+fi
+rm -f "$_t70_stdout" "$_t70_stderr"
 cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
 
 echo ""
