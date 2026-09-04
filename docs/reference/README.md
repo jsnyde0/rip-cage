@@ -245,7 +245,7 @@ tools:
     mcp_fragment: { type: http, url: "http://127.0.0.1:8765/mcp/" }  # optional; nested mapping, not a JSON string
 ```
 
-**Worked example:** [in-cage-daemon.md](in-cage-daemon.md) — the generic archetype walkthrough including the DAEMON-vs-TOOL(-init-hook) decision aid; [agent-mail-daemon.md](agent-mail-daemon.md) — the concrete instance (agent_mail, pinned source, CLI + MCP reach paths).
+**Worked example:** [in-cage-daemon.md](in-cage-daemon.md) — the generic archetype walkthrough including the DAEMON-vs-TOOL(-init-hook) decision aid; [agent-mail-daemon.md](agent-mail-daemon.md) — the concrete instance (agent_mail, pinned source, CLI + MCP reach paths); [examples/postgres-pgvector/](../../examples/postgres-pgvector/README.md) — a copy-paste recipe (Postgres 17 + pgvector as a plain in-cage process, first-start `initdb`, no `mcp_fragment`).
 
 ---
 

@@ -29,6 +29,16 @@ Multiplexers provide the terminal session layer (persistence, attach/detach) abo
 
 ---
 
+## Daemon recipes
+
+Long-running localhost services in-cage agents talk to. Each is one `IN-CAGE-DAEMON` entry: installed at build, started at init, **fail-warn** (a broken daemon never bricks the cage), strictly in-cage — no cross-cage reach. ([ADR-005 D7/D8/D10](../docs/decisions/ADR-005-ecosystem-tools.md), walkthrough: [in-cage-daemon.md](../docs/reference/in-cage-daemon.md))
+
+| Recipe | Seam | What it provides |
+|---|---|---|
+| [examples/postgres-pgvector/](postgres-pgvector/) | IN-CAGE-DAEMON | Postgres 17 + pgvector 0.8.0 as a plain unprivileged process, so a caged agent can run a DB-backed test suite with no docker in the cage and no containment-floor change. Installs from Debian trixie main (~53MB, no third-party apt repo); `initdb` on first start so `state_dir` stays repointable. See [postgres-pgvector/README.md](postgres-pgvector/README.md). |
+
+---
+
 ## Mediator recipes — DROPPED
 
 > **The manifest-declared MEDIATOR archetype and its launch machinery are deleted, not merely undocumented** ([ADR-029](../docs/decisions/ADR-029-msb-migration.md) D2/D5). `examples/iron-proxy/`, `examples/mitmproxy/`, `compose-rc-with-iron-proxy.md`, and `compose-rc-with-mitmproxy.md` — which documented `network.egress.mediator` + `network.http.forward_to` + a `docker exec -u root`-launched, uid-exempted co-located proxy — are removed from this tree. There is no `rc`-side mediator launch, selection, or HTTP-CONNECT handoff surface left to recipe against; `network.egress.mediator`/`network.http.forward_to` are gone from the config schema (retained only as inert legacy fields, see [config.md](../docs/reference/config.md)).
