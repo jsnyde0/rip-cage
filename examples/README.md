@@ -35,7 +35,7 @@ Long-running localhost services in-cage agents talk to. Each is one `IN-CAGE-DAE
 
 | Recipe | Seam | What it provides |
 |---|---|---|
-| [examples/postgres-pgvector/](postgres-pgvector/) | IN-CAGE-DAEMON | Postgres 17 + pgvector 0.8.0 as a plain unprivileged process, so a caged agent can run a DB-backed test suite with no docker in the cage and no containment-floor change. Installs from Debian trixie main (~53MB, no third-party apt repo); `initdb` on first start so `state_dir` stays repointable. See [postgres-pgvector/README.md](postgres-pgvector/README.md). |
+| [examples/postgres-pgvector/](postgres-pgvector/) | IN-CAGE-DAEMON | Postgres 17 + pgvector 0.8.0 as a plain unprivileged process, so a caged agent can run a DB-backed test suite with no docker in the cage and no containment-floor change. Installs from Debian trixie main (+87 MiB, no third-party apt repo); `initdb` on first start so `state_dir` stays repointable. See [postgres-pgvector/README.md](postgres-pgvector/README.md). |
 
 ---
 

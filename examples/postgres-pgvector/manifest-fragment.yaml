@@ -14,12 +14,13 @@ version: 1
 #   no change to the containment floor. Same pattern GitHub Actions runner images use.
 #
 #   install_cmd (build time, root)  — postgresql-17 + postgresql-17-pgvector from Debian
-#     trixie main (the cage base image, cage/Dockerfile:13). ~53MB. No third-party apt
+#     trixie main (the cage base image, cage/Dockerfile:13). +87 MiB on the built image,
+#     measured (935.5 -> 1022.1 MiB). No third-party apt
 #     repo or signing key: trixie main carries postgresql-17 17.11 and
 #     postgresql-17-pgvector 0.8.0 for both arm64 and amd64. Use PGDG only if you need a
 #     version trixie does not ship. Also disables postgresql-common's default "main"
 #     cluster (it would sit unused on the same port) and bakes the launcher + smoke test.
-#   start   —  + the launcher at its root-owned path. The exec prefix is LOAD-BEARING:
+#   start   — the launcher at its root-owned path, prefixed with exec. That prefix is LOAD-BEARING:
 #     init records the backgrounded job's PID as the daemon PID and later liveness-checks it
 #     with kill -0. Without exec, bash forks a wrapper shell, the recorded PID is the
 #     WRAPPER, and the wrapper outlives a crashed postmaster — so a dead cluster reports

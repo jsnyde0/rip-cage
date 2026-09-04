@@ -19,7 +19,7 @@ One `IN-CAGE-DAEMON` manifest entry ([seam 8](../../docs/reference/README.md), w
 
 | Field | What it does |
 |---|---|
-| `install_cmd` | Installs `postgresql-17` + `postgresql-17-pgvector` from **Debian trixie main** at image build (~53 MB), disables postgresql-common's unused default cluster, and bakes the launcher + smoke test at root-owned paths. |
+| `install_cmd` | Installs `postgresql-17` + `postgresql-17-pgvector` from **Debian trixie main** at image build (**+87 MiB**, measured), disables postgresql-common's unused default cluster, and bakes the launcher + smoke test at root-owned paths. |
 | `start` | `exec /usr/local/lib/rip-cage/postgres-pgvector-start.sh` — runs as the agent user, `initdb`s on first start only, then becomes the postmaster on `127.0.0.1:5432`. The `exec` prefix is load-bearing; see below. |
 | `health` | Polls `pg_isready` inside the probe's own budget, so a first boot that includes `initdb` earns no spurious fail-warn. |
 | `state_dir` | `/var/lib/rip-cage-daemon/postgres-pgvector` — the PGDATA directory. |
