@@ -209,14 +209,18 @@ AM_IMAGE_TAG=""
 # Cleanup trap
 # ---------------------------------------------------------------------------
 cleanup() {
-  local c
+  local c _d_out _d_rc
   # FAIL-SAFE SHAPE (rip-cage-neu7.13, mirrors rip-cage-neu7.9): iterate ONLY
   # AM_CREATED_CAGES — no enumerate, no glob/prefix match. The "${arr[@]:-}"
   # form is REQUIRED: this test runs under `set -uo pipefail`, and a bare [@]
   # on an empty array aborts on macOS bash 3.2.
   for c in "${AM_CREATED_CAGES[@]:-}"; do
     [[ -n "$c" ]] || continue
-    "$RC" destroy --force "$c" >/dev/null 2>&1 || true
+    _d_out=$("$RC" destroy --force "$c" 2>&1)
+    _d_rc=$?
+    if [[ "$_d_rc" -ne 0 ]]; then
+      echo "WARNING: failed to destroy '$c' (exit ${_d_rc}): ${_d_out}" >&2
+    fi
   done
   if [[ -n "${T2_BUILD_MANIFEST_HOME:-}" ]]; then
     rm -rf "$T2_BUILD_MANIFEST_HOME"
@@ -333,6 +337,7 @@ CONTAINER_NAME="rc-am-concurrent-mail-fixture"
 
 # Pre-cleanup: remove any leftover cage of this exact deterministic name from
 # a prior aborted run (never an enumerate/glob match).
+# swallow-ok(rip-cage-54q3.6.6): pre-emptive stale-cage cleanup; non-zero means there was nothing to destroy.
 "$RC" destroy --force "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
 # rip-cage-or84: boot from the scratch AM_IMAGE_TAG via RC_IMAGE — this cage

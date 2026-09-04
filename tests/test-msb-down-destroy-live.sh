@@ -171,6 +171,7 @@ else
   fail "DESTROY1 setup: expected rc-state-/rc-history- volumes to exist pre-destroy" "$PRE_VOLS"
 fi
 
+# swallow-ok(rip-cage-54q3.6.6): status IS read (DESTROY_RC=$? on the next line) and reported -- via fail() at line 179, this file's own pass/fail test-report convention (echoes "FAIL ..." to stdout, not a raw stderr echo) -- so the detector's stderr-anchored shape-(b) heuristic doesn't recognize it even though nothing is silently swallowed.
 DESTROY_OUT=$(run_rc destroy --force "$CAGE_NAME" 2>&1)
 DESTROY_RC=$?
 if [[ "$DESTROY_RC" -eq 0 ]]; then
@@ -197,6 +198,7 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== DESTROY2: rc destroy against an already-absent cage fails loud ==="
+# swallow-ok(rip-cage-54q3.6.6): a non-zero exit here is the expected/asserted outcome (this case tests that destroy against an already-absent cage fails loud); status IS read (DESTROY2_RC=$? on the next line) and reported via fail() at line 206, this file's own pass/fail test-report convention (stdout, not a raw stderr echo).
 DESTROY2_OUT=$(run_rc destroy --force "$CAGE_NAME" 2>&1)
 DESTROY2_RC=$?
 DESTROY2_CODE=$(echo "$DESTROY2_OUT" | jq -r '.code' 2>/dev/null)

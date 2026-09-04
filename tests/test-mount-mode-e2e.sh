@@ -101,9 +101,15 @@ CREATED_CAGES=()
 _track() { CREATED_CAGES+=("$1"); }
 
 _e2e_cleanup() {
-  local cage
+  local cage _d_out _d_rc
   for cage in "${CREATED_CAGES[@]:-}"; do
-    [[ -n "$cage" ]] && "${RC}" destroy --force "$cage" >/dev/null 2>&1 || true
+    if [[ -n "$cage" ]]; then
+      _d_out=$("${RC}" destroy --force "$cage" 2>&1)
+      _d_rc=$?
+      if [[ "$_d_rc" -ne 0 ]]; then
+        echo "WARNING: failed to destroy '$cage' (exit ${_d_rc}): ${_d_out}" >&2
+      fi
+    fi
   done
 }
 trap _e2e_cleanup EXIT

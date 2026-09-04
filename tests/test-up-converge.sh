@@ -443,7 +443,13 @@ else
     else fail 8 "LIVE default-converge" "$l1_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
-  [[ -n "${RCL_CAGE:-}" ]] && "$RC" destroy --force "$RCL_CAGE" >/dev/null 2>&1
+  if [[ -n "${RCL_CAGE:-}" ]]; then
+    _d_out=$("$RC" destroy --force "$RCL_CAGE" 2>&1)
+    _d_rc=$?
+    if [[ "$_d_rc" -ne 0 ]]; then
+      echo "WARNING: failed to destroy '$RCL_CAGE' (exit ${_d_rc}): ${_d_out}" >&2
+    fi
+  fi
   rm -rf "${RCL_HOME:-}"
 fi
 
@@ -478,7 +484,13 @@ else
     else fail 9 "LIVE --no-reload opt-out" "$l2_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
-  [[ -n "${RCL_CAGE:-}" ]] && "$RC" destroy --force "$RCL_CAGE" >/dev/null 2>&1
+  if [[ -n "${RCL_CAGE:-}" ]]; then
+    _d_out=$("$RC" destroy --force "$RCL_CAGE" 2>&1)
+    _d_rc=$?
+    if [[ "$_d_rc" -ne 0 ]]; then
+      echo "WARNING: failed to destroy '$RCL_CAGE' (exit ${_d_rc}): ${_d_out}" >&2
+    fi
+  fi
   rm -rf "${RCL_HOME:-}"
 fi
 
@@ -519,7 +531,13 @@ else
     else fail 10 "LIVE running never-recreates" "$l3_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
-  [[ -n "${RCL_CAGE:-}" ]] && "$RC" destroy --force "$RCL_CAGE" >/dev/null 2>&1
+  if [[ -n "${RCL_CAGE:-}" ]]; then
+    _d_out=$("$RC" destroy --force "$RCL_CAGE" 2>&1)
+    _d_rc=$?
+    if [[ "$_d_rc" -ne 0 ]]; then
+      echo "WARNING: failed to destroy '$RCL_CAGE' (exit ${_d_rc}): ${_d_out}" >&2
+    fi
+  fi
   rm -rf "${RCL_HOME:-}"
 fi
 
@@ -564,7 +582,13 @@ else
     else fail 11 "LIVE dry-run converge preview" "$l4_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
-  [[ -n "${RCL_CAGE:-}" ]] && "$RC" destroy --force "$RCL_CAGE" >/dev/null 2>&1
+  if [[ -n "${RCL_CAGE:-}" ]]; then
+    _d_out=$("$RC" destroy --force "$RCL_CAGE" 2>&1)
+    _d_rc=$?
+    if [[ "$_d_rc" -ne 0 ]]; then
+      echo "WARNING: failed to destroy '$RCL_CAGE' (exit ${_d_rc}): ${_d_out}" >&2
+    fi
+  fi
   rm -rf "${RCL_HOME:-}"
 fi
 

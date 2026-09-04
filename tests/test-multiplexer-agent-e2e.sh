@@ -244,7 +244,7 @@ _mux_agent_track_cage() {
 }
 
 CLEANUP() {
-  local c
+  local c _d_out _d_rc
   # FAIL-SAFE SHAPE (rip-cage-neu7.9): iterate ONLY
   # MUX_AGENT_CREATED_CAGES — no enumerate, no glob/prefix match. The
   # "${arr[@]:-}" form is REQUIRED: this test runs under `set -uo
@@ -252,7 +252,11 @@ CLEANUP() {
   # (would abort CLEANUP before it can even remove MUX_AGENT_TMP).
   for c in "${MUX_AGENT_CREATED_CAGES[@]:-}"; do
     [[ -n "$c" ]] || continue
-    "$RC" destroy --force "$c" >/dev/null 2>&1 || true
+    _d_out=$("$RC" destroy --force "$c" 2>&1)
+    _d_rc=$?
+    if [[ "$_d_rc" -ne 0 ]]; then
+      echo "WARNING: failed to destroy '$c' (exit ${_d_rc}): ${_d_out}" >&2
+    fi
   done
   [[ -n "$MUX_AGENT_TMP" ]] && rm -rf "$MUX_AGENT_TMP"
   # Restore rip-cage:latest if we swapped it for the tmux-provider fixture

@@ -154,7 +154,11 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== LS3: after rc destroy, rc ls no longer lists the cage ==="
-run_rc destroy --force "$CAGE_NAME" >/dev/null 2>&1
+_d_out=$(run_rc destroy --force "$CAGE_NAME" 2>&1)
+_d_rc=$?
+if [[ "$_d_rc" -ne 0 ]]; then
+  echo "WARNING: failed to destroy '$CAGE_NAME' (exit ${_d_rc}): ${_d_out}" >&2
+fi
 LS3_OUT=$(run_rc ls 2>&1)
 LS3_PRESENT=$(echo "$LS3_OUT" | jq -e --arg n "$CAGE_NAME" '.[] | select(.name == $n)' >/dev/null 2>&1; echo $?)
 if [[ "$LS3_PRESENT" -ne 0 ]]; then
