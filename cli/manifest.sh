@@ -13,6 +13,19 @@
 # silently (ADR-005 D12 — the manifest composition is the operator's): the
 # previous file is backed up before being replaced, and the new file is
 # validated before it is ever moved into place.
+
+# _manifest_reconcile_usage — shared by --help (stdout, exit 0) and the
+# unrecognised-argument refusal (stderr, exit 2) in _manifest_reconcile
+# below (rip-cage-xrcr).
+_manifest_reconcile_usage() {
+  cat <<'USAGE'
+Usage: rc manifest reconcile
+  Re-seed default-derived entries in ~/.config/rip-cage/tools.yaml from the
+  current manifest/default-tools.yaml, preserving any custom (non-default) entries.
+  Backs up the previous file first; never overwrites silently.
+USAGE
+}
+
 cmd_manifest() {
   local subcmd="${1:-}"
   shift || true
@@ -31,9 +44,53 @@ cmd_manifest() {
 
 # _manifest_reconcile — see cmd_manifest header above for the design.
 _manifest_reconcile() {
+  # rip-cage-xrcr DEFECT 1: parse args at the TOP, before any filesystem
+  # work or yq/jq dependency probing below -- an unrecognised trailing
+  # token (including --help/--dry-run) used to fall straight through into
+  # the real merge instead of being rejected.
+  local _mr_arg
+  for _mr_arg in "$@"; do
+    case "$_mr_arg" in
+      --help|-h)
+        _manifest_reconcile_usage
+        exit 0
+        ;;
+      *)
+        echo "Error: rc manifest reconcile: unrecognised argument '${_mr_arg}' -- refusing to run." >&2
+        echo "" >&2
+        _manifest_reconcile_usage >&2
+        exit 2
+        ;;
+    esac
+  done
+
   local _local_path _dist_path
   _local_path=$(_manifest_global_path)
   _dist_path=$(_manifest_dist_path)
+
+  # rip-cage-xrcr DEFECT 2: when the local manifest path is a symlink, the
+  # write below must go THROUGH the link (so the symlink survives and the
+  # resolved target's content changes) rather than `mv` replacing the
+  # symlink itself with a regular file. Resolve now, before any write, so
+  # every write-side use below (_tmp_path, backup, mv) targets the real
+  # file. macOS has no GNU `readlink -f`; bare `realpath` (already used
+  # elsewhere in this codebase, e.g. cli/lib/path.sh, cli/config.sh) is the
+  # portable resolver -- verified on this machine to resolve a symlink
+  # chain to its real target without requiring a `-f`/`-e` flag.
+  local _write_path="$_local_path"
+  if [[ -L "$_local_path" ]]; then
+    local _mr_resolved _mr_home_real
+    if ! _mr_resolved=$(realpath "$_local_path" 2>/dev/null); then
+      echo "Error: '${_local_path}' is a symlink but its target could not be resolved (broken link?) -- refusing to reconcile." >&2
+      return 1
+    fi
+    _mr_home_real=$(realpath "$HOME" 2>/dev/null) || _mr_home_real="$HOME"
+    if [[ "$_mr_resolved" != "$_mr_home_real" && "$_mr_resolved" != "$_mr_home_real"/* ]]; then
+      echo "Error: '${_local_path}' is a symlink pointing outside \$HOME, at '${_mr_resolved}' -- refusing to reconcile through it. Resolve or replace the symlink yourself first." >&2
+      return 1
+    fi
+    _write_path="$_mr_resolved"
+  fi
 
   if [[ ! -f "$_dist_path" ]]; then
     echo "Error: shipped default manifest not found at ${_dist_path} — cannot reconcile." >&2
@@ -98,7 +155,12 @@ _manifest_reconcile() {
   local _dist_hash
   _dist_hash=$(_manifest_seed_fingerprint_hash "$_dist_path")
 
-  local _tmp_path="${_local_path}.rc-reconcile-tmp.$$"
+  # rip-cage-xrcr DEFECT 2: $_tmp_path/$_backup_path/the final mv all target
+  # $_write_path (the resolved real file when $_local_path is a symlink, or
+  # $_local_path itself otherwise) -- see the resolution above. $_local_path
+  # stays the path named in operator-facing messages below (it's the one the
+  # operator actually configured/reads).
+  local _tmp_path="${_write_path}.rc-reconcile-tmp.$$"
   {
     echo "# rc-seed-fingerprint: sha256:${_dist_hash}"
     echo "# Reconciled from $(basename "$_dist_path") by 'rc manifest reconcile' on $(date -u +%Y-%m-%dT%H:%M:%SZ)."
@@ -112,17 +174,17 @@ _manifest_reconcile() {
   fi
 
   local _backup_path=""
-  if [[ -f "$_local_path" ]]; then
-    _backup_path="${_local_path}.bak-$(date -u +%Y%m%d%H%M%S)"
-    if ! cp "$_local_path" "$_backup_path"; then
+  if [[ -f "$_write_path" ]]; then
+    _backup_path="${_write_path}.bak-$(date -u +%Y%m%d%H%M%S)"
+    if ! cp "$_write_path" "$_backup_path"; then
       echo "Error: failed to back up '${_local_path}' before reconciling — aborting; nothing was changed." >&2
       rm -f "$_tmp_path"
       return 1
     fi
   fi
 
-  mkdir -p "$(dirname "$_local_path")"
-  mv "$_tmp_path" "$_local_path"
+  mkdir -p "$(dirname "$_write_path")"
+  mv "$_tmp_path" "$_write_path"
 
   local _added _updated _preserved
   _added=$(jq -r '.added | join(", ")' <<<"$_summary")
