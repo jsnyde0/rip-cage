@@ -13,10 +13,20 @@
 # - TRAP COMPOSITION: captures current EXIT/INT/TERM body via `trap -p` before
 #   installing; installs a combined handler that runs the prior body (if any) AND
 #   the scratch cleanup. `trap -p` is EMPTY when no trap exists — handled cleanly.
-# - set -e DISCIPLINE: each `rc destroy --force` runs under `|| true`; the handler
-#   preserves $? (entry status captured on first line, restored before return) so
-#   a failing destroy (e.g. daemon down) never alters the test's real exit status
-#   (ADR-001 D1: fail-loud on the TEST's real result; cleanup never masks it).
+# - TRAP ORDER (rip-cage-54q3): the scratch cleanup (cage destroy) runs BEFORE
+#   the prior trap body, not after. A prior body commonly deletes the test's own
+#   mktemp workspace dir; running that first, while the cage is still up, leaves
+#   a running cage whose /workspace virtiofs mount source no longer exists (a
+#   dead mount — msb then reports every later exec as spawn-ENOENT against the
+#   program name, not the missing cwd). Destroying the cage first closes that
+#   window.
+# - LOUDNESS (rip-cage-54q3): each `rc destroy --force` output and exit status
+#   are captured; a failed destroy is named on stderr (cage name + destroy
+#   output) and counted, with a summary line when any failed. This is a REPORT,
+#   not a gate: the handler preserves $? (entry status captured on first line,
+#   restored before return) so a failing destroy (e.g. daemon down) never
+#   alters the test's real exit status (ADR-001 D1: fail-loud on the TEST's
+#   real result; cleanup never masks it).
 # - rc location: ${SCRIPT_DIR}/../rc (sibling-test idiom, not bare `rc` on PATH).
 #   SCRIPT_DIR must be set in the sourcing test (standard pattern across tests/).
 
@@ -33,13 +43,28 @@ _SCRATCH_CAGE_NAMES=()
 _SCRATCH_CAGE_TRAP_ARMED=0
 
 # _scratch_cage_cleanup — iterates _SCRATCH_CAGE_NAMES and destroys each.
-# Preserves $? across the handler so the test's real exit status is not altered.
+# Preserves $? across the handler so the test's real exit status is not
+# altered. rip-cage-54q3 SEAM 2: a failed destroy is never swallowed silently
+# (a leak must not look like a clean run) — capture its exit status and
+# output, name the cage and quote the output in ONE line on stderr, and count
+# failures for a trailing summary line. This is a REPORT, not a gate: even
+# when every destroy fails, the function still returns the caller's real
+# entry $? (ADR-001 D1 — cleanup never masks the test's result).
 _scratch_cage_cleanup() {
   local _exit_status=$?
-  local _name
+  local _name _out _rc
+  local _failures=0
   for _name in "${_SCRATCH_CAGE_NAMES[@]+"${_SCRATCH_CAGE_NAMES[@]}"}"; do
-    "${SCRIPT_DIR}/../rc" destroy --force "$_name" >/dev/null 2>&1 || true
+    _out=$("${SCRIPT_DIR}/../rc" destroy --force "$_name" 2>&1)
+    _rc=$?
+    if [[ "$_rc" -ne 0 ]]; then
+      echo "_scratch-cage-lib.sh: WARNING: failed to destroy scratch cage '${_name}' (exit ${_rc}): ${_out}" >&2
+      _failures=$((_failures + 1))
+    fi
   done
+  if [[ "$_failures" -gt 0 ]]; then
+    echo "_scratch-cage-lib.sh: WARNING: ${_failures} scratch cage(s) failed to destroy -- see warning(s) above (this cage will leak until destroyed manually)" >&2
+  fi
   return "$_exit_status"
 }
 
@@ -68,26 +93,33 @@ scratch_cage_register() {
   _prior_int=$(trap -p INT 2>/dev/null | sed -n "s/^trap -- '\\(.*\\)' INT$/\\1/p" || true)
   _prior_term=$(trap -p TERM 2>/dev/null | sed -n "s/^trap -- '\\(.*\\)' TERM$/\\1/p" || true)
 
-  # Install combined EXIT handler.
+  # Install combined EXIT handler. rip-cage-54q3 SEAM 1: the scratch cleanup
+  # (cage destroy) must run BEFORE the prior trap body, not after — a prior
+  # body that deletes the test's own mktemp workspace must never get a chance
+  # to run while the cage it backs is still up (that race is exactly how
+  # 54q3's dead-virtiofs-mount leak happened). $?-preservation is unaffected
+  # by this reordering: bash restores the pre-trap exit status once the whole
+  # composed trap command finishes, regardless of what runs inside it or in
+  # which order (verified empirically under this fix — see ship-record).
   if [[ -n "$_prior_exit" ]]; then
     # shellcheck disable=SC2064
-    trap "${_prior_exit}; _scratch_cage_cleanup" EXIT
+    trap "_scratch_cage_cleanup; ${_prior_exit}" EXIT
   else
     trap '_scratch_cage_cleanup' EXIT
   fi
 
-  # Install combined INT handler.
+  # Install combined INT handler (same ordering rationale as EXIT above).
   if [[ -n "$_prior_int" ]]; then
     # shellcheck disable=SC2064
-    trap "${_prior_int}; _scratch_cage_cleanup" INT
+    trap "_scratch_cage_cleanup; ${_prior_int}" INT
   else
     trap '_scratch_cage_cleanup' INT
   fi
 
-  # Install combined TERM handler.
+  # Install combined TERM handler (same ordering rationale as EXIT above).
   if [[ -n "$_prior_term" ]]; then
     # shellcheck disable=SC2064
-    trap "${_prior_term}; _scratch_cage_cleanup" TERM
+    trap "_scratch_cage_cleanup; ${_prior_term}" TERM
   else
     trap '_scratch_cage_cleanup' TERM
   fi

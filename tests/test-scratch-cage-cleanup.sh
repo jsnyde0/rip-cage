@@ -27,12 +27,22 @@
 #  (5) Trap composition: a shell with a pre-existing EXIT trap sources the helper
 #      and registers a cage; BOTH the prior cleanup and scratch cleanup fire
 #      (D1 helper — unaffected by the D2 detect-and-warn conversion).
+#  (6) rip-cage-54q3 SEAM 1 (order): the composed trap must run the scratch
+#      cleanup (cage destroy) BEFORE the prior trap body, so a prior trap that
+#      deletes the workspace dir never races a still-running cage's destroy.
+#      Uses a fake `rc` (mirrors test-cleanup-failsafe.sh's stub mechanism)
+#      that appends a marker instead of a real msb sandbox — no msb dependency
+#      for this case specifically.
+#  (7) rip-cage-54q3 SEAM 2 (loudness): a failed `rc destroy` must be reported
+#      on stderr naming the cage, and must never alter the test's real exit
+#      status (ADR-001 D1). Same fake-`rc` stub mechanism as Case 6.
 #
 # Exit: $FAILURES (silent-red guard per rip-cage-test-fail-prose-without-exit-silent-red).
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REAL_LIB="${SCRIPT_DIR}/_scratch-cage-lib.sh"
 
 FAILURES=0
 PASS_COUNT=0
@@ -409,6 +419,91 @@ else
   teardown_fixture "$C5_NAME"
 fi
 rm -rf "$C5_WS"
+
+# ============================================================================
+# Case (6): rip-cage-54q3 SEAM 1 — trap ORDER. The composed trap must run the
+#           scratch cleanup (cage destroy) BEFORE the prior trap body, so a
+#           prior trap that deletes the test's own workspace dir cannot race
+#           ahead of a still-running cage's destroy (which is exactly the
+#           leaked-scratch-cage defect 54q3 diagnoses). Uses a fake `rc` (same
+#           stub mechanism as tests/test-cleanup-failsafe.sh) that appends a
+#           marker line instead of touching msb — no real cage involved.
+# ============================================================================
+echo ""
+echo "--- Case 6: SEAM 1 — cleanup runs BEFORE the prior EXIT trap body ---"
+
+C6_STUB_DIR=$(mktemp -d)
+mkdir -p "${C6_STUB_DIR}/nested"
+C6_MARKERS="${C6_STUB_DIR}/markers.log"
+
+# Fake `rc`: `destroy --force <name>` appends a DESTROY marker.
+cat > "${C6_STUB_DIR}/rc" <<STUBEOF
+#!/usr/bin/env bash
+echo "DESTROY" >> "${C6_MARKERS}"
+STUBEOF
+chmod +x "${C6_STUB_DIR}/rc"
+
+# Subprocess: pre-existing EXIT trap appends a PRIOR marker, THEN sources the
+# lib and registers a cage. On exit both fire; order is what's under test.
+bash -c "
+  SCRIPT_DIR='${C6_STUB_DIR}/nested'
+  MARKERS='${C6_MARKERS}'
+  trap 'echo PRIOR >> \"\$MARKERS\"' EXIT
+  source '${REAL_LIB}'
+  scratch_cage_register 'case6-cage'
+  exit 0
+" >/dev/null 2>&1
+
+C6_LINE1=$(sed -n '1p' "$C6_MARKERS" 2>/dev/null || true)
+C6_LINE2=$(sed -n '2p' "$C6_MARKERS" 2>/dev/null || true)
+
+if [[ "$C6_LINE1" == "DESTROY" && "$C6_LINE2" == "PRIOR" ]]; then
+  pass "Case 6: scratch cleanup (destroy) marker lands BEFORE the prior-trap marker"
+else
+  fail "Case 6: wrong order — markers file contains: $(tr '\n' ',' < "$C6_MARKERS" 2>/dev/null)"
+fi
+rm -rf "$C6_STUB_DIR"
+
+# ============================================================================
+# Case (7): rip-cage-54q3 SEAM 2 — LOUD FAILURE. A failed `rc destroy` must be
+#           reported on stderr naming the cage, and must NEVER alter the
+#           test's real exit status (ADR-001 D1 — cleanup never masks the
+#           test's result; a report, not a gate). Same fake-`rc` stub
+#           mechanism as Case 6.
+# ============================================================================
+echo ""
+echo "--- Case 7: SEAM 2 — a failed destroy is reported loud, never fail-closed ---"
+
+C7_STUB_DIR=$(mktemp -d)
+mkdir -p "${C7_STUB_DIR}/nested"
+C7_NAME="case7-cage"
+
+# Fake `rc`: `destroy --force <name>` always fails, loudly, on its own stderr.
+cat > "${C7_STUB_DIR}/rc" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "stub destroy exploded" >&2
+exit 3
+STUBEOF
+chmod +x "${C7_STUB_DIR}/rc"
+
+C7_STDERR=$(mktemp)
+bash -c "
+  SCRIPT_DIR='${C7_STUB_DIR}/nested'
+  source '${REAL_LIB}'
+  scratch_cage_register '${C7_NAME}'
+  exit 0
+" >/dev/null 2>"$C7_STDERR"
+C7_ACTUAL_EXIT=$?
+
+C7_NAME_LINES=$(grep -c "$C7_NAME" "$C7_STDERR" 2>/dev/null || true)
+C7_NAME_LINES="${C7_NAME_LINES:-0}"
+
+if [[ "$C7_ACTUAL_EXIT" -eq 0 && "$C7_NAME_LINES" -eq 1 ]]; then
+  pass "Case 7: failed destroy is named once on stderr AND the real exit status (0) is untouched"
+else
+  fail "Case 7: exit=$C7_ACTUAL_EXIT (expected 0) name_lines=$C7_NAME_LINES (expected 1) -- stderr: $(cat "$C7_STDERR" 2>/dev/null)"
+fi
+rm -rf "$C7_STUB_DIR" "$C7_STDERR"
 
 # ============================================================================
 # Summary
