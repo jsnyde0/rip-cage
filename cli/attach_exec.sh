@@ -108,45 +108,49 @@ cmd_exec() {
   # non-interactive by default (no -i concept, unlike docker exec); pass
   # -t/--tty only when a real TTY is present (interactive use).
   #
-  # rip-cage-uod6 (charted from rip-cage-54q3's root cause): the
-  # non-interactive path captures the wrapped command's stderr to a temp
-  # file (instead of letting it stream straight through) so an ENOENT-shaped
-  # failure can be checked and, when the cage's workspace source was
-  # deleted, prefixed with a fix-hint before msb's own (misleading -- msb
-  # chdir()s to Workdir=/workspace before spawning and reports the
-  # resulting ENOENT against the *program* name) text. Not done on the
-  # interactive (-t) path: a pty session merges stdout/stderr into one
-  # stream, so there is no separate stderr to inspect there.
+  # WORKSPACE-SOURCE HINT (rip-cage-uod6, charted from rip-cage-54q3's root
+  # cause): when a cage's host workspace dir is deleted while the cage runs,
+  # /workspace becomes a dead virtiofs mount; msb chdir()s to
+  # Workdir=/workspace before spawning and reports the resulting ENOENT
+  # against the *program* name, so the raw error reads "spawn <prog>: not
+  # found" and sends readers hunting a missing binary.
+  # rip-cage-uod6, revised by driver drift-review (2026-09-04): the
+  # workspace-source check runs BEFORE the exec rather than by capturing the
+  # wrapped command's stderr and grepping it for ENOENT. Capturing meant
+  # BUFFERING that stderr until the command exited, so a long-running
+  # `rc exec` lost all live progress output -- which most tools write to
+  # stderr. The pre-check costs one label read, leaves both streams
+  # untouched and streaming, puts the hint ahead of msb's misleading text by
+  # construction rather than by reordering, and reaches the interactive
+  # (pty) path too, which stderr capture could not.
+  #
+  # It fires whether or not THIS command fails, and that is deliberate: once
+  # the host source dir is gone the /workspace virtiofs mount is already
+  # dead, and every later exec fails against it. msb's flip is not instant
+  # (~15s observed), so a command that still succeeds inside that window is
+  # exactly when naming the cause is most useful.
+  local _exec_source_hint
+  if _exec_source_hint=$(_rc_source_path_missing_hint "$name"); then
+    echo "$_exec_source_hint" >&2
+  fi
+
   local exec_exit=0
-  local _exec_stderr_capture
-  _exec_stderr_capture=$(mktemp)
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     # ADR-003 D1: in JSON mode stdout carries ONLY the JSON envelope.
     # Route the wrapped command's stdout to stderr so a human still sees it,
-    # while the JSON channel (stdout) stays clean.
+    # keeping stdout clean for the envelope emitted below.
     if [[ -t 0 && -t 1 ]]; then
       _msb_exec_interactive "$name" -- "${exec_cmd[@]}" >&2 || exec_exit=$?
     else
-      _msb_exec "$name" -- "${exec_cmd[@]}" >&2 2>"$_exec_stderr_capture" || exec_exit=$?
+      _msb_exec "$name" -- "${exec_cmd[@]}" >&2 || exec_exit=$?
     fi
   else
     if [[ -t 0 && -t 1 ]]; then
       _msb_exec_interactive "$name" -- "${exec_cmd[@]}" || exec_exit=$?
     else
-      _msb_exec "$name" -- "${exec_cmd[@]}" 2>"$_exec_stderr_capture" || exec_exit=$?
+      _msb_exec "$name" -- "${exec_cmd[@]}" || exec_exit=$?
     fi
   fi
-
-  if [[ ! -t 0 || ! -t 1 ]]; then
-    if [[ "$exec_exit" -ne 0 ]] && grep -qi 'ENOENT' "$_exec_stderr_capture" 2>/dev/null; then
-      local _exec_source_hint
-      if _exec_source_hint=$(_rc_source_path_missing_hint "$name"); then
-        echo "$_exec_source_hint" >&2
-      fi
-    fi
-    [[ -s "$_exec_stderr_capture" ]] && cat "$_exec_stderr_capture" >&2
-  fi
-  rm -f "$_exec_stderr_capture"
 
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local _cmd_str

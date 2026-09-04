@@ -33,6 +33,10 @@
 #   E1  rc exec <cage> -- true: source dir removed, `msb exec` fails with
 #       the real ENOENT-shaped message from rip-cage-54q3's report -> hint
 #       printed BEFORE msb's own text, exit code still propagates.
+#   E3  rc exec <cage> -- true: source dir removed but the command
+#       SUCCEEDS -> the hint still fires (pre-exec check semantics)
+#   E4  regression guard: the wrapped command's stderr STREAMS live and is
+#       never buffered until exit (the first uod6 implementation buffered it)
 #   E2  rc exec <cage> -- true: source dir present, exec succeeds -> no
 #       hint, no spurious text, exit 0 (negative control).
 #
@@ -90,6 +94,12 @@ case "${1:-}" in
   exec)
     if [[ -n "${FAKE_MSB_EXEC_STDERR:-}" ]]; then
       printf '%s\n' "$FAKE_MSB_EXEC_STDERR" >&2
+    fi
+    # FAKE_MSB_EXEC_SLEEP holds the process open AFTER writing stderr, so a
+    # caller can observe whether that stderr reached the terminal live or was
+    # buffered until exit (E4).
+    if [[ -n "${FAKE_MSB_EXEC_SLEEP:-}" ]]; then
+      sleep "$FAKE_MSB_EXEC_SLEEP"
     fi
     exit "${FAKE_MSB_EXEC_EXIT:-0}"
     ;;
@@ -208,6 +218,85 @@ if [[ "$E2_RC" -eq 0 ]]; then
   pass "E2b rc exec exits 0"
 else
   fail "E2b rc exec exits 0" "got exit $E2_RC; output: $E2_OUT"
+fi
+
+# ---------------------------------------------------------------------------
+# E3: rc exec, deleted workspace source, but the wrapped command SUCCEEDS.
+#
+# The hint must still fire. This pins the semantics chosen when the driver's
+# drift-review replaced the original stderr-capture-and-grep-for-ENOENT
+# approach with a pre-exec check: a deleted host source dir means the
+# /workspace virtiofs mount is ALREADY dead and every later exec will fail
+# against it. msb's flip to a hard failure is not instant (~15s observed), so
+# a command that still succeeds inside that window is precisely when naming
+# the cause earns its keep. Under the old capture approach this case printed
+# nothing at all.
+# ---------------------------------------------------------------------------
+echo "-- E3: rc exec <cage> -- true, source dir removed, command SUCCEEDS -- hint still printed --"
+export FAKE_MSB_STATE="Running"
+export FAKE_MSB_SOURCE_PATH="$MISSING_SOURCE"
+export FAKE_MSB_EXEC_EXIT=0
+export FAKE_MSB_EXEC_STDERR=""
+E3_OUT=$(run_rc exec e3-cage -- true 2>&1)
+E3_RC=$?
+unset FAKE_MSB_STATE FAKE_MSB_SOURCE_PATH FAKE_MSB_EXEC_EXIT FAKE_MSB_EXEC_STDERR
+
+if echo "$E3_OUT" | grep -qF "Fix-hint: workspace source deleted"; then
+  pass "E3a hint fires on a deleted source even when the command succeeds"
+else
+  fail "E3a hint fires on a deleted source even when the command succeeds" "got: $E3_OUT"
+fi
+if [[ "$E3_RC" -eq 0 ]]; then
+  pass "E3b the hint does not alter a successful exec's exit code"
+else
+  fail "E3b the hint does not alter a successful exec's exit code" "got exit $E3_RC; output: $E3_OUT"
+fi
+
+# ---------------------------------------------------------------------------
+# E4: the wrapped command's stderr STREAMS -- it is not buffered until exit.
+#
+# REGRESSION GUARD (driver drift-review on rip-cage-uod6, 2026-09-04): the
+# first implementation of the hint captured the wrapped command's stderr to a
+# temp file so it could be grepped for ENOENT, and cat-ed it only after the
+# command exited. That silently turned every `rc exec` into a buffered one --
+# a long-running command inside a cage lost all live progress output, and
+# most tools write progress to stderr. This arm fails if anything
+# reintroduces that buffering.
+#
+# Method: the fake msb writes its stderr line and then holds the process open
+# for FAKE_MSB_EXEC_SLEEP seconds. We start `rc exec` in the background with
+# stderr redirected to a file, wait a fraction of that window, and require the
+# line to have ALREADY landed. Margins are deliberately wide (write at t=0,
+# observe at t=1s, process exits at t=4s) so an ordinary loaded machine does
+# not flake.
+# ---------------------------------------------------------------------------
+echo "-- E4: rc exec streams the wrapped command's stderr, never buffers it to exit --"
+export FAKE_MSB_STATE="Running"
+export FAKE_MSB_SOURCE_PATH="$HEALTHY_SOURCE"
+export FAKE_MSB_EXEC_EXIT=0
+export FAKE_MSB_EXEC_STDERR="STREAM-PROBE: emitted at t=0"
+export FAKE_MSB_EXEC_SLEEP=4
+_e4_err=$(mktemp)
+run_rc exec e4-cage -- true >/dev/null 2>"$_e4_err" &
+_e4_pid=$!
+sleep 1
+_e4_seen_early=0
+grep -qF "STREAM-PROBE" "$_e4_err" 2>/dev/null && _e4_seen_early=1
+wait "$_e4_pid" || true
+_e4_seen_final=0
+grep -qF "STREAM-PROBE" "$_e4_err" 2>/dev/null && _e4_seen_final=1
+rm -f "$_e4_err"
+unset FAKE_MSB_STATE FAKE_MSB_SOURCE_PATH FAKE_MSB_EXEC_EXIT FAKE_MSB_EXEC_STDERR FAKE_MSB_EXEC_SLEEP
+
+if [[ "$_e4_seen_final" -eq 1 ]]; then
+  pass "E4a the wrapped command's stderr reaches the caller at all"
+else
+  fail "E4a the wrapped command's stderr reaches the caller at all" "stderr file never contained STREAM-PROBE"
+fi
+if [[ "$_e4_seen_early" -eq 1 ]]; then
+  pass "E4b that stderr arrives WHILE the command is still running (not buffered until exit)"
+else
+  fail "E4b that stderr arrives WHILE the command is still running (not buffered until exit)" "STREAM-PROBE was absent 1s in but present after exit -- rc exec is buffering the wrapped command's stderr again"
 fi
 
 echo ""
