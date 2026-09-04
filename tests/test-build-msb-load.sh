@@ -131,6 +131,15 @@ case "${1:-}" in
         fi
         exit 1
         ;;
+      list)
+        # rip-cage-12f2: the discriminator verb _msb_image_layer_drift_status
+        # falls back to when `msb image inspect` exits non-zero -- tells
+        # apart "msb genuinely doesn't have $IMAGE" (status 3, list omits
+        # it -- the default here) from "$IMAGE IS in msb's cache but
+        # inspect itself is unusable" (status 4, list includes it).
+        echo "${RC_TEST_MSB_IMAGE_LIST:-[]}"
+        exit 0
+        ;;
     esac
     exit 0
     ;;
@@ -562,6 +571,61 @@ if [[ "$_t10_rc" -eq 0 ]]; then
   pass "T10c: cmd_build still returns 0"
 else
   fail "T10c: expected cmd_build exit 0, got $_t10_rc" "$_t10_stderr"
+fi
+
+# ---------------------------------------------------------------------------
+# T11 (rip-cage-12f2): a REAL build whose `msb load` reported success, but
+# `msb image inspect --format json` is UNUSABLE on this msb build (verb/flag
+# unsupported -- exits non-zero) even though msb's cache genuinely DOES hold
+# $IMAGE (`msb image list` lists it). Before this bead this hit the SAME
+# comparator status (3) as T6's "load did not land" case and printed the
+# SAME "could not be verified after 'msb load' reported success" / resync
+# message -- misleading, since the image did land; the problem is msb's
+# inspect verb, not the load. Must now be its own status (4) with its own
+# message, and must NOT print T6's did-not-land wording.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T11: msb load reported success, image IS in msb's cache, but 'msb image inspect' is unusable -> distinct inspect-unusable message, not the did-not-land one ==="
+: > "$CALL_LOG"
+_t11_rc=0
+_t11_out=$(PATH="$FAKE_BIN:$PATH" RC_TEST_CALL_LOG="$CALL_LOG" MSB_LOAD_EXIT=0 \
+  RC_TEST_DOCKER_IMAGE_LAYERS='["sha256:aaaaaa","sha256:bbbbbb"]' \
+  RC_TEST_MSB_IMAGE_LIST='[{"reference":"rip-cage:latest"}]' \
+  bash -c "source '${RC}' 2>/dev/null; IMAGE=rip-cage:latest; _build_msb_load; _msb_warn_image_layer_drift" 2>&1) || _t11_rc=$?
+
+# Precondition guard (same idiom as T7): prove the comparator really lands on
+# status 4 here, not 3 -- otherwise the message assertions below could pass
+# vacuously against the wrong (or no) branch.
+_t11_status=0
+PATH="$FAKE_BIN:$PATH" RC_TEST_CALL_LOG="$CALL_LOG" \
+  RC_TEST_DOCKER_IMAGE_LAYERS='["sha256:aaaaaa","sha256:bbbbbb"]' \
+  RC_TEST_MSB_IMAGE_LIST='[{"reference":"rip-cage:latest"}]' \
+  bash -c "source '${RC}' 2>/dev/null; IMAGE=rip-cage:latest; _msb_image_layer_drift_status" >/dev/null 2>&1 || _t11_status=$?
+if [[ "$_t11_status" -eq 4 ]]; then
+  pass "T11: the comparator reaches status 4 (inspect unusable, image IS listed) -- not 3"
+else
+  fail "T11: expected _msb_image_layer_drift_status 4, got $_t11_status" "message assertions below would be unreliable"
+fi
+
+if grep -q "^msb load" "$CALL_LOG"; then
+  pass "T11b: msb load WAS invoked (this is the real-build path, not a fixture skip)"
+else
+  fail "T11b: expected msb load to have been invoked" "$(cat "$CALL_LOG")"
+fi
+if echo "$_t11_out" | grep -qi "unusable"; then
+  pass "T11c: stderr carries the distinct inspect-unusable message"
+else
+  fail "T11c: expected an inspect-unusable warning" "$_t11_out"
+fi
+if echo "$_t11_out" | grep -qi "could not be verified"; then
+  fail "T11d: the did-not-land ('could not be verified') message must NOT fire for an inspect-unusable host" "$_t11_out"
+else
+  pass "T11d: the did-not-land message does not fire (status 3 and 4 stay distinct)"
+fi
+if [[ "$_t11_rc" -eq 0 ]]; then
+  pass "T11e: advisory only -- the sequence still returns 0"
+else
+  fail "T11e: expected exit 0, got $_t11_rc" "$_t11_out"
 fi
 
 # ---------------------------------------------------------------------------

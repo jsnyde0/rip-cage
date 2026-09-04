@@ -266,7 +266,24 @@ _msb_image_drift_status() {
 # Returns: 0 = both stores hold $IMAGE and the diff_id lists match, 1 = both
 #          hold it and the lists differ (the divergence this bead exists to
 #          catch), 2 = docker does not have $IMAGE, 3 = msb does not have
-#          $IMAGE or `msb image inspect` failed.
+#          $IMAGE, 4 = `msb image inspect` is unusable (rip-cage-12f2 —
+#          verb/`--format json` unsupported, or a successful inspect whose
+#          output carries no `layers[].diff_id`).
+#
+# DECISION (rip-cage-12f2, driver:rip-cage-54q3.6, 2026-09-04): status 3 used
+# to collapse THREE distinct mechanisms — msb genuinely lacking $IMAGE, `msb
+# image inspect` exiting non-zero because the verb/flag is unsupported, and a
+# zero-exit inspect whose JSON shape lacks `layers[].diff_id`. `msb image
+# inspect` exiting non-zero is ITSELF ambiguous between "msb does not hold
+# the image" and "the verb/flag is unsupported on this msb build" — a more
+# basic verb (`msb image list --format json`, already used by cli/up.sh's
+# image-absent probe) discriminates the two: $IMAGE listed there but inspect
+# still failed means inspect itself is unusable (4); not listed means msb
+# genuinely doesn't have it (3). No msb version floor is declared — nothing
+# in this repo or verified on this host establishes which msb release
+# introduced `image inspect --format json`, so a floor number would be an
+# invented fact (see the bead's DESIGN and its binding comment for the full
+# reasoning). Do not re-collapse 3 and 4 back together.
 # Parameters: none (uses global $IMAGE, same as _msb_image_drift_status).
 _msb_image_layer_drift_status() {
   local _docker_layers
@@ -282,10 +299,17 @@ _msb_image_layer_drift_status() {
 
   local _msb_raw _msb_layers
   if ! _msb_raw=$(msb image inspect "$IMAGE" --format json 2>/dev/null); then
+    # Non-zero exit is ambiguous by itself (msb exits non-zero both when it
+    # lacks $IMAGE and when the verb/flag is unsupported) — fall back to a
+    # more basic verb to tell the two apart.
+    if msb image list --format json 2>/dev/null | jq -e --arg img "$IMAGE" \
+        'any(.[]?; .reference == $img)' >/dev/null 2>&1; then
+      return 4
+    fi
     return 3
   fi
   _msb_layers=$(jq -c '[.layers[].diff_id]' <<<"$_msb_raw" 2>/dev/null)
-  [[ -z "$_msb_layers" || "$_msb_layers" == "null" ]] && return 3
+  [[ -z "$_msb_layers" || "$_msb_layers" == "null" ]] && return 4
 
   [[ "$_docker_layers" == "$_msb_layers" ]] && return 0
   return 1
@@ -370,7 +394,16 @@ _msb_warn_image_layer_drift() {
   local _status=0
   _msb_image_layer_drift_status || _status=$?
   if [[ "$_status" -eq 3 && "${_RC_MSB_LOAD_SUCCEEDED:-0}" -eq 1 ]]; then
-    echo "Warning: msb's image cache for '${IMAGE}' could not be verified after 'msb load' reported success — msb does not report holding that image (or 'msb image inspect' failed), so a cage booted from msb's cache would run a STALE image or fail to start. Run 'docker save ${IMAGE} | msb load --tag ${IMAGE}' (or re-run 'rc build') to resync msb's cache." >&2
+    echo "Warning: msb's image cache for '${IMAGE}' could not be verified after 'msb load' reported success — msb does not report holding that image, so a cage booted from msb's cache would run a STALE image or fail to start. Run 'docker save ${IMAGE} | msb load --tag ${IMAGE}' (or re-run 'rc build') to resync msb's cache." >&2
+    return 0
+  fi
+  if [[ "$_status" -eq 4 && "${_RC_MSB_LOAD_SUCCEEDED:-0}" -eq 1 ]]; then
+    # rip-cage-12f2: msb DOES hold $IMAGE (or a successful inspect returned
+    # unusable JSON) — this is a portability gap in `msb image inspect`
+    # itself, not evidence the load didn't land, so it must not print the
+    # status-3 "could not be verified" / resync wording (that would send an
+    # operator chasing a non-existent stale-cache problem).
+    echo "Warning: 'msb image inspect ${IMAGE} --format json' is unusable on this msb build (unsupported verb/flag, or its output carries no layers[].diff_id) — rip-cage cannot verify whether msb's cached '${IMAGE}' matches docker's local image. This is a msb version/feature gap, not a sign the load failed; upgrade msb if you want this check to run." >&2
     return 0
   fi
   if [[ "$_status" -eq 1 ]]; then
