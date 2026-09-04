@@ -61,8 +61,15 @@ fail() { TOTAL=$((TOTAL + 1)); echo "FAIL  [$TOTAL] $1 -- ${2:-}"; FAILURES=$((F
 # cli/lib/config.sh's own implementation (an expected-value literal, not a
 # recomputation of what the code does). The 3 curated D4 hosts come first,
 # followed by the baked-tool manifest egress (beads->api.github.com,
-# dolt->doltremoteapi.dolthub.com, gh->api.github.com+github.com), unique+sorted.
-EXPECTED_HOSTS_JSON='["api.anthropic.com","mcp-proxy.anthropic.com","http-intake.logs.us5.datadoghq.com","api.github.com","doltremoteapi.dolthub.com","github.com"]'
+# dolt->doltremoteapi.dolthub.com, gh->api.github.com+github.com,
+# uv->pypi.org+files.pythonhosted.org), unique+sorted.
+#
+# uv's two hosts joined this list in rip-cage-0s1g: uv is installed in
+# cage/Dockerfile at the same floor tier as beads/dolt/gh but had no manifest
+# entry, so nothing declared its egress and a floor cage could not `uv add`
+# anything. Proven live on a real cage before the fix -- `uv add requests`
+# died with "failed to lookup address information" for pypi.org.
+EXPECTED_HOSTS_JSON='["api.anthropic.com","mcp-proxy.anthropic.com","http-intake.logs.us5.datadoghq.com","api.github.com","doltremoteapi.dolthub.com","files.pythonhosted.org","github.com","pypi.org"]'
 
 TEST_HOME=""
 cleanup() { [[ -n "${TEST_HOME:-}" && -d "$TEST_HOME" ]] && rm -rf "$TEST_HOME"; }
@@ -162,6 +169,61 @@ else
   fail "T5: unexpected host in generated flags" "$T5_OUT"
 fi
 cleanup
+
+# ---------------------------------------------------------------------------
+# T6: a genuinely FRESH host -- one with no ~/.config/rip-cage/tools.yaml --
+# gets pypi.org and files.pythonhosted.org in its effective allowlist, so a
+# floor cage can `uv add` without any project .rip-cage.yaml edit
+# (rip-cage-0s1g).
+#
+# WHY THIS IS NOT COVERED BY T3: T3 exercises the manifest-ABSENT branch (its
+# `rc up --dry-run` never seeds a manifest), so it only ever sees the hardcoded
+# floor-egress fallback. The seeded path is a different branch and is the one a
+# real `rc up` takes. That gap is exactly how pypi's absence survived: uv is
+# baked into cage/Dockerfile at the same floor tier as beads/dolt/gh, but had
+# no manifest entry, so nothing ever declared its egress.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T6: a freshly-seeded host's effective allowlist reaches pypi (rip-cage-0s1g) ==="
+setup_sandbox
+T6_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
+  source '${RC}' 2>/dev/null
+  _manifest_ensure_seeded
+  _config_ensure_global_seeded 2>/dev/null
+  _up_build_egress_config_json '${TEST_WS}'
+" 2>/tmp/t6-default-allowlist.err)
+T6_HOSTS=$(jq -r '.allowed_hosts[]?' <<<"$T6_OUT" 2>/dev/null)
+if printf '%s\n' "$T6_HOSTS" | grep -qx "pypi.org" \
+  && printf '%s\n' "$T6_HOSTS" | grep -qx "files.pythonhosted.org"; then
+  pass "T6: a freshly-seeded host allows pypi.org + files.pythonhosted.org (uv can install)"
+else
+  fail "T6: freshly-seeded host cannot reach pypi" "hosts=$(echo "$T6_HOSTS" | tr '\n' ' ') err=$(cat /tmp/t6-default-allowlist.err)"
+fi
+cleanup
+
+# ---------------------------------------------------------------------------
+# T7: the TWO shipped copies of the floor manifest agree on uv.
+#
+# rip-cage ships the floor tool set twice: as data in
+# manifest/default-tools.yaml (what `rc manifest reconcile` diffs an EXISTING
+# host against) and as a heredoc in cli/lib/manifest_checks.sh's
+# _manifest_default_yaml (what seeds a BRAND-NEW host). A floor tool present in
+# one and missing from the other means one class of host silently loses that
+# tool's egress -- the seed-drift family rip-cage-6vt9 exists to catch. This
+# arm pins the pair for uv specifically, since that asymmetry is what
+# rip-cage-0s1g had to untangle.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T7: both shipped copies of the floor manifest declare uv's egress ==="
+T7_DIST="${REPO_ROOT}/manifest/default-tools.yaml"
+T7_SEED=$(bash -c "source '${RC}' 2>/dev/null; _manifest_default_yaml")
+T7_DIST_UV=$(yq -r '.tools[] | select(.name == "uv") | .egress[]' "$T7_DIST" 2>/dev/null | sort | tr '\n' ' ')
+T7_SEED_UV=$(printf '%s\n' "$T7_SEED" | yq -r '.tools[] | select(.name == "uv") | .egress[]' 2>/dev/null | sort | tr '\n' ' ')
+if [[ -n "$T7_DIST_UV" && "$T7_DIST_UV" == "$T7_SEED_UV" ]]; then
+  pass "T7: uv's egress matches in manifest/default-tools.yaml and _manifest_default_yaml (${T7_DIST_UV})"
+else
+  fail "T7: uv egress differs between the two shipped floor manifests" "dist='${T7_DIST_UV}' seed='${T7_SEED_UV}'"
+fi
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

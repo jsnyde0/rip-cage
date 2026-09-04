@@ -69,6 +69,20 @@ tools:
       - github.com
     mounts: []
 
+  # uv — Python package manager, installed in cage/Dockerfile at the same floor
+  # tier as beads/dolt/gh (rip-cage-0s1g). MUST stay byte-identical to the `uv`
+  # entry in manifest/default-tools.yaml: this heredoc seeds a brand-new host's
+  # tools.yaml, that file is what `rc manifest reconcile` diffs an existing
+  # host against, and a floor tool present in one but not the other is exactly
+  # the seed-drift rip-cage-6vt9 exists to catch.
+  - name: uv
+    archetype: TOOL
+    version_pin: "bundled"
+    egress:
+      - pypi.org
+      - files.pythonhosted.org
+    mounts: []
+
   # claude, pi, dcg, ssh-bypass are NOT floor — they are composable recipes.
   # See examples/{claude,pi,dcg,ssh-bypass}/ for recipe fragments.
   # The published image composes them via manifest/default-tools.yaml (rip-cage-wlwc.12).

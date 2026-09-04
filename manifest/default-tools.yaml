@@ -56,6 +56,25 @@ tools:
       - github.com
     mounts: []
 
+  # uv -- the Python package manager, installed in cage/Dockerfile at the same
+  # floor tier as beads/dolt/gh (rip-cage-0s1g). Its egress lives HERE and not
+  # in cli/lib/config.sh's curated global seed, because that seed only writes a
+  # global config.yaml that does not exist yet: on any host that already has
+  # one -- every existing install -- a host added there never reaches a cage.
+  # Manifest egress is unioned into every cage unconditionally, which is why
+  # the other bundled tools declare theirs here. It also keeps the entry as
+  # DATA rather than an rc-code blessing of a tool (ADR-005 D12).
+  #   pypi.org                the index uv resolves against
+  #   files.pythonhosted.org  where pypi serves the actual wheels/sdists;
+  #                           without it resolution succeeds and download fails
+  - name: uv
+    archetype: TOOL
+    version_pin: "bundled"
+    egress:
+      - pypi.org
+      - files.pythonhosted.org
+    mounts: []
+
   # ---------------------------------------------------------------------------
   # CC + PI BINARY TOOLS - npm-installed in base Dockerfile; no install_cmd.
   # The claude-recipe and pi-recipe entries below add wrappers + guards on top.

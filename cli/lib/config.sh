@@ -241,6 +241,13 @@ _config_global_path() {
 #                                      free defaults, ADR-029 D4)
 #   - http-intake.logs.us5.datadoghq.com  attempted-but-nonblocking (client
 #                                      telemetry) — same rationale
+#
+# NOT here: pypi.org / files.pythonhosted.org (rip-cage-0s1g). This function
+# only SEEDS a global config.yaml that does not exist yet, so anything added
+# here never reaches a host that already has one — which is every existing
+# install. A bundled floor tool's egress belongs on its manifest entry
+# instead, where it is unioned into every cage unconditionally; see the `uv`
+# entry in manifest/default-tools.yaml, alongside beads / dolt / gh.
 _config_default_global_yaml() {
   cat <<'YAML'
 version: 2
