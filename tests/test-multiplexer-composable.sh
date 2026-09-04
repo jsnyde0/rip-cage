@@ -152,9 +152,8 @@ echo ""
 # ---------------------------------------------------------------------------
 # E1 state — throwaway image + scratch cage + crash-safe cleanup
 # ---------------------------------------------------------------------------
-FM_IMAGE=""          # throwaway image tag
-FM_SAVED_TAG=""      # saved rip-cage:latest (if any)
-FM_HAD_LATEST=0      # 1 if rip-cage:latest existed before our build
+FM_IMAGE=""          # throwaway image tag (rip-cage-d2bo: built to DIRECTLY via -t,
+                     # never rip-cage:latest -- nothing to save/restore any more)
 FM_TMP=""            # temp dir for scratch workspace
 FM_CAGE=""           # scratch cage name
 
@@ -174,21 +173,11 @@ _fm_cleanup() {
     FM_CAGE=""
   fi
 
-  # Destroy throwaway image
+  # Destroy throwaway image (rip-cage-d2bo: exact-name reap, never a wildcard;
+  # nothing to restore since rip-cage:latest was never touched)
   if [[ -n "${FM_IMAGE:-}" ]]; then
     docker image rm "${FM_IMAGE}" >/dev/null 2>&1 || true
     FM_IMAGE=""
-  fi
-
-  # Restore rip-cage:latest
-  if [[ -n "${FM_SAVED_TAG:-}" ]]; then
-    if [[ "${FM_HAD_LATEST:-0}" -eq 1 ]]; then
-      docker tag "${FM_SAVED_TAG}" rip-cage:latest 2>/dev/null || true
-    else
-      docker image rm rip-cage:latest 2>/dev/null || true
-    fi
-    docker image rm "${FM_SAVED_TAG}" 2>/dev/null || true
-    FM_SAVED_TAG=""
   fi
 
   # Remove temp workspace
@@ -196,19 +185,15 @@ _fm_cleanup() {
   FM_TMP=""
 }
 
-# Arm crash-safe trap BEFORE the first mutation (build tags rip-cage:latest).
+# Arm crash-safe trap BEFORE the first mutation (build creates FM_IMAGE).
 trap '_fm_cleanup' EXIT INT TERM
 
 # ---------------------------------------------------------------------------
-# Build: save existing rip-cage:latest, build fakemux image, tag throwaway.
+# Build: build fakemux image straight to its own pinned scratch tag via -t
+# (rip-cage-d2bo) -- never rip-cage:latest, so no save/restore dance needed.
 # ---------------------------------------------------------------------------
 _fm_unique_suffix="$(date +%s)-$$"
-FM_SAVED_TAG="rip-cage:fakemux-composable-saved-${_fm_unique_suffix}"
-FM_HAD_LATEST=0
-
-if docker image inspect rip-cage:latest >/dev/null 2>&1; then
-  docker tag rip-cage:latest "${FM_SAVED_TAG}" 2>/dev/null && FM_HAD_LATEST=1
-fi
+FM_IMAGE="rip-cage:fakemux-composable-${_fm_unique_suffix}"
 
 FAKEMUX_FIXTURE="${FIXTURES}/manifest-fakemux.yaml"
 if [[ ! -f "${FAKEMUX_FIXTURE}" ]]; then
@@ -217,9 +202,9 @@ if [[ ! -f "${FAKEMUX_FIXTURE}" ]]; then
   exit 1
 fi
 
-echo "=== E1: Building fakemux cage image from ${FAKEMUX_FIXTURE} ==="
+echo "=== E1: Building fakemux cage image from ${FAKEMUX_FIXTURE} to pinned tag ${FM_IMAGE} ==="
 _fm_build_rc=0
-RC_MANIFEST_GLOBAL="${FAKEMUX_FIXTURE}" "${RC}" build \
+RC_MANIFEST_GLOBAL="${FAKEMUX_FIXTURE}" "${RC}" build -t "${FM_IMAGE}" \
   >/tmp/rc-fakemux-composable-build.out 2>&1 || _fm_build_rc=$?
 
 if [[ "${_fm_build_rc}" -ne 0 ]]; then
@@ -229,8 +214,6 @@ if [[ "${_fm_build_rc}" -ne 0 ]]; then
   exit 1
 fi
 
-FM_IMAGE="rip-cage:fakemux-composable-${_fm_unique_suffix}"
-docker tag rip-cage:latest "${FM_IMAGE}" 2>/dev/null || true
 pass "E1 rc build succeeded with fakemux manifest: ${FM_IMAGE}"
 
 # ---------------------------------------------------------------------------
@@ -376,6 +359,7 @@ docker volume rm "rc-history-${FM_CAGE}" >/dev/null 2>&1 || true
 echo "  Spinning up fakemux cage: ${FM_CAGE} (image: ${FM_IMAGE})"
 _e1d_up_rc=0
 RC_MANIFEST_GLOBAL="${FAKEMUX_FIXTURE}" \
+  RC_IMAGE="${FM_IMAGE}" \
   "${RC}" up "${FM_TMP}/fakemux-workspace" \
   </dev/null >/tmp/rc-fakemux-composable-up.out 2>&1 || _e1d_up_rc=$?
 

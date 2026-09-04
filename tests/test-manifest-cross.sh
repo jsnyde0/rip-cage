@@ -418,8 +418,11 @@ fi
 #      adds a new tool-manifest check or at minimum keeps the same count — it
 #      MUST NOT regress below the default count).
 #
-# NOTE: This OVERWRITES rip-cage:latest with a fixture-manifest build.
-#       Sequenced AFTER C2 for this reason.
+# NOTE (rip-cage-d2bo): builds to its OWN pinned scratch tag (never
+#       rip-cage:latest) -- see _c1_image_tag below. Previously overwrote
+#       rip-cage:latest; sequencing after C2 is kept for the same
+#       cage-registration-and-reference-count reasons C2's own comment states,
+#       not because of image pollution anymore.
 # ---------------------------------------------------------------------------
 
 echo ""
@@ -430,11 +433,17 @@ _CROSS_TMPDIRS+=("$_c1_manifest_home")
 mkdir -p "${_c1_manifest_home}/.config/rip-cage"
 cp "${FIXTURES}/manifest-with-scratch-tool.yaml" "${_c1_manifest_home}/.config/rip-cage/tools.yaml"
 
-echo "C1: Building cage WITH manifest TOOL (ripgrep)..."
+# Pinned per-run image tag (rip-cage-d2bo, same rip-cage-7atw.19 idiom as C2:
+# never trust/overwrite ambient rip-cage:latest -- build and up from this tag only).
+_c1_image_tag="rip-cage-test:manifest-cross-c1-$$-$(date +%s)"
+_CROSS_IMAGES+=("$_c1_image_tag")
+
+echo "C1: Building cage WITH manifest TOOL (ripgrep) to pinned tag ${_c1_image_tag}..."
 _c1_build_out=""
 _c1_build_rc=0
 _c1_build_out=$(HOME="$_c1_manifest_home" XDG_CONFIG_HOME="${_c1_manifest_home}/.config" \
   RC_MANIFEST_GLOBAL="${_c1_manifest_home}/.config/rip-cage/tools.yaml" \
+  RC_IMAGE="$_c1_image_tag" \
   "${RC}" build 2>&1) || _c1_build_rc=$?
 
 if [[ "$_c1_build_rc" -ne 0 ]]; then
@@ -462,6 +471,7 @@ else
   # with .name so we get the actual container name (handles disambiguation).
   _c1_up_out=$(RC_ALLOWED_ROOTS="$_c1_ws_resolved" \
     RC_MANIFEST_GLOBAL="${_c1_manifest_home}/.config/rip-cage/tools.yaml" \
+    RC_IMAGE="$_c1_image_tag" \
     "${RC}" --output json up "$_c1_ws" 2>&1) || _c1_up_rc=$?
 
   # Extract container name from JSON
@@ -552,11 +562,19 @@ _CROSS_TMPDIRS+=("$_c3_manifest_home")
 mkdir -p "${_c3_manifest_home}/.config/rip-cage"
 cp "${FIXTURES}/manifest-with-trivial-daemon.yaml" "${_c3_manifest_home}/.config/rip-cage/tools.yaml"
 
-echo "C3: Building cage with trivial-daemon manifest (--bind 127.0.0.1 :17843)..."
+# Pinned per-run image tag (rip-cage-d2bo, same rip-cage-7atw.19 idiom as C2 --
+# never trust/overwrite ambient rip-cage:latest -- build and docker run from
+# this tag only; C3 uses `docker run` directly, not `rc up`, so the tag is
+# threaded into the two docker run invocations below instead of RC_IMAGE).
+_c3_image_tag="rip-cage-test:manifest-cross-c3-$$-$(date +%s)"
+_CROSS_IMAGES+=("$_c3_image_tag")
+
+echo "C3: Building cage with trivial-daemon manifest (--bind 127.0.0.1 :17843) to pinned tag ${_c3_image_tag}..."
 _c3_build_out=""
 _c3_build_rc=0
 _c3_build_out=$(HOME="$_c3_manifest_home" XDG_CONFIG_HOME="${_c3_manifest_home}/.config" \
   RC_MANIFEST_GLOBAL="${_c3_manifest_home}/.config/rip-cage/tools.yaml" \
+  RC_IMAGE="$_c3_image_tag" \
   "${RC}" build 2>&1) || _c3_build_rc=$?
 
 if [[ "$_c3_build_rc" -ne 0 ]]; then
@@ -585,7 +603,7 @@ else
 
   docker run -d --name "$_c3a_container" \
     -v "${_c3a_ws}:/workspace" \
-    "rip-cage:latest" sleep infinity >/dev/null 2>&1 || true
+    "$_c3_image_tag" sleep infinity >/dev/null 2>&1 || true
   _CROSS_CONTAINERS+=("$_c3a_container")
 
   docker exec "$_c3a_container" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || true
@@ -597,7 +615,7 @@ else
 
   docker run -d --name "$_c3b_container" \
     -v "${_c3b_ws}:/workspace" \
-    "rip-cage:latest" sleep infinity >/dev/null 2>&1 || true
+    "$_c3_image_tag" sleep infinity >/dev/null 2>&1 || true
   _CROSS_CONTAINERS+=("$_c3b_container")
 
   docker exec "$_c3b_container" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || true

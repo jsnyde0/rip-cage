@@ -124,6 +124,7 @@ YAML
 D1_STUB_DIR=$(_msd_new_stub_dir)
 D1_ERR_FILE="${MSD_TMP}/d1-err"
 D1_EXIT=0
+# rip-cage-d2bo kind-1 (harmless): PATH-prefixed with _msd_new_stub_dir's fake docker shim (defined above) -- no real docker build/run ever executes.
 PATH="${D1_STUB_DIR}:$PATH" \
   RC_MANIFEST_GLOBAL="$D1_MANIFEST" \
   bash "$RC" build >/dev/null 2>"$D1_ERR_FILE" || D1_EXIT=$?
@@ -168,6 +169,7 @@ YAML
 D2_STUB_DIR=$(_msd_new_stub_dir)
 D2_ERR_FILE="${MSD_TMP}/d2-err"
 D2_EXIT=0
+# rip-cage-d2bo kind-1 (harmless): PATH-prefixed with _msd_new_stub_dir's fake docker shim (defined above) -- no real docker build/run ever executes.
 PATH="${D2_STUB_DIR}:$PATH" \
   RC_MANIFEST_GLOBAL="$D2_MANIFEST" \
   bash "$RC" build >/dev/null 2>"$D2_ERR_FILE" || D2_EXIT=$?
@@ -215,6 +217,7 @@ YAML
 D3_STUB_DIR=$(_msd_new_stub_dir)
 D3_ERR_FILE="${MSD_TMP}/d3-err"
 D3_EXIT=0
+# rip-cage-d2bo kind-1 (harmless): PATH-prefixed with _msd_new_stub_dir's fake docker shim (defined above) -- no real docker build/run ever executes.
 PATH="${D3_STUB_DIR}:$PATH" \
   RC_MANIFEST_GLOBAL="$D3_MANIFEST" \
   bash "$RC" build >/dev/null 2>"$D3_ERR_FILE" || D3_EXIT=$?
@@ -254,6 +257,7 @@ bash -c "source '$RC' 2>/dev/null; _manifest_default_yaml" > "$D4_MANIFEST"
 D4_STUB_DIR=$(_msd_new_stub_dir)
 D4_ERR_FILE="${MSD_TMP}/d4-err"
 D4_EXIT=0
+# rip-cage-d2bo kind-1 (harmless): PATH-prefixed with _msd_new_stub_dir's fake docker shim (defined above) -- no real docker build/run ever executes.
 PATH="${D4_STUB_DIR}:$PATH" \
   RC_MANIFEST_GLOBAL="$D4_MANIFEST" \
   bash "$RC" build >/dev/null 2>"$D4_ERR_FILE" || D4_EXIT=$?
@@ -300,6 +304,7 @@ jq -n --argjson gh "$D4B_DIST_GH_JSON" --argjson custom "$D4B_CUSTOM_JSON" \
 D4B_STUB_DIR=$(_msd_new_stub_dir)
 D4B_ERR_FILE="${MSD_TMP}/d4b-err"
 D4B_EXIT=0
+# rip-cage-d2bo kind-1 (harmless): PATH-prefixed with _msd_new_stub_dir's fake docker shim (defined above) -- no real docker build/run ever executes.
 PATH="${D4B_STUB_DIR}:$PATH" \
   RC_MANIFEST_GLOBAL="$D4B_MANIFEST" \
   bash "$RC" build >/dev/null 2>"$D4B_ERR_FILE" || D4B_EXIT=$?
@@ -348,6 +353,7 @@ YAML
 D4C_STUB_DIR=$(_msd_new_stub_dir)
 D4C_ERR_FILE="${MSD_TMP}/d4c-err"
 D4C_EXIT=0
+# rip-cage-d2bo kind-1 (harmless): PATH-prefixed with _msd_new_stub_dir's fake docker shim (defined above) -- no real docker build/run ever executes.
 PATH="${D4C_STUB_DIR}:$PATH" \
   RC_MANIFEST_GLOBAL="$D4C_MANIFEST" \
   bash "$RC" build >/dev/null 2>"$D4C_ERR_FILE" || D4C_EXIT=$?
@@ -391,6 +397,7 @@ echo "-- D5: RC_MANIFEST_GLOBAL=manifest/default-tools.yaml bypasses the check -
 D5_STUB_DIR=$(_msd_new_stub_dir)
 D5_ERR_FILE="${MSD_TMP}/d5-err"
 D5_EXIT=0
+# rip-cage-d2bo kind-1 (harmless): PATH-prefixed with _msd_new_stub_dir's fake docker shim (defined above) -- no real docker build/run ever executes.
 PATH="${D5_STUB_DIR}:$PATH" \
   RC_MANIFEST_GLOBAL="$DIST_MANIFEST" \
   bash "$RC" build >/dev/null 2>"$D5_ERR_FILE" || D5_EXIT=$?
@@ -522,6 +529,7 @@ fi
 D6B_STUB_DIR=$(_msd_new_stub_dir)
 D6B_ERR_FILE="${MSD_TMP}/d6b-err"
 D6B_EXIT=0
+# rip-cage-d2bo kind-1 (harmless): PATH-prefixed with _msd_new_stub_dir's fake docker shim (defined above) -- no real docker build/run ever executes.
 PATH="${D6B_STUB_DIR}:$PATH" \
   RC_MANIFEST_GLOBAL="$D6_MANIFEST" \
   bash "$RC" build >/dev/null 2>"$D6B_ERR_FILE" || D6B_EXIT=$?

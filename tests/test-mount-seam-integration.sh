@@ -444,6 +444,10 @@ test_se_tier2_composed_cage_suite() {
   local _SE_CONTAINERS=()
   local _SE_TMPDIRS=()
 
+  # rip-cage-d2bo: pinned per-run scratch tag -- never rip-cage:latest. Reaped
+  # by exact name in _se_cleanup below, never a wildcard.
+  local _SE_IMAGE_TAG=""
+
   # shellcheck disable=SC2329  # invoked indirectly via trap
   _se_cleanup() {
     local c d
@@ -455,6 +459,9 @@ test_se_tier2_composed_cage_suite() {
     for d in "${_SE_TMPDIRS[@]+"${_SE_TMPDIRS[@]}"}"; do
       rm -rf "$d"
     done
+    if [[ -n "${_SE_IMAGE_TAG:-}" ]]; then
+      docker rmi "$_SE_IMAGE_TAG" >/dev/null 2>&1 || true
+    fi
   }
   trap _se_cleanup RETURN
 
@@ -467,11 +474,14 @@ test_se_tier2_composed_cage_suite() {
   # Seed the manifest/default-tools.yaml as the manifest for this build.
   cp "${REPO_ROOT}/manifest/default-tools.yaml" "${se_manifest_home}/.config/rip-cage/tools.yaml"
 
-  echo "SE: Building cage from manifest/default-tools.yaml (fresh+cold, composed image)..."
+  _SE_IMAGE_TAG="rip-cage-test:mount-seam-se-$$-$(date +%s)"
+
+  echo "SE: Building cage from manifest/default-tools.yaml (fresh+cold, composed image) to pinned tag ${_SE_IMAGE_TAG}..."
   local se_build_out se_build_rc
   se_build_rc=0
   se_build_out=$(HOME="$se_manifest_home" XDG_CONFIG_HOME="${se_manifest_home}/.config" \
     RC_MANIFEST_GLOBAL="${se_manifest_home}/.config/rip-cage/tools.yaml" \
+    RC_IMAGE="$_SE_IMAGE_TAG" \
     "${RC}" build 2>&1) || se_build_rc=$?
 
   if [[ "$se_build_rc" -ne 0 ]]; then
@@ -498,6 +508,7 @@ test_se_tier2_composed_cage_suite() {
   se_up_rc=0
   se_up_out=$(RC_ALLOWED_ROOTS="$se_ws_resolved" \
     RC_MANIFEST_GLOBAL="${se_manifest_home}/.config/rip-cage/tools.yaml" \
+    RC_IMAGE="$_SE_IMAGE_TAG" \
     "${RC}" --output json up "$se_ws" 2>&1) || se_up_rc=$?
 
   se_container=$(echo "$se_up_out" | grep -o '"name":"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"' || true)

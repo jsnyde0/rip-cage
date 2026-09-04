@@ -53,21 +53,14 @@ TEST_HOME=""
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
+# rip-cage-d2bo: T2_IMAGE is built to DIRECTLY via -t, never rip-cage:latest --
+# exact-name reap only, nothing to save/restore any more.
 # shellcheck disable=SC2329  # invoked indirectly via trap
 cleanup() {
   [[ -n "${TEST_HOME:-}" && -d "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME"
   if [[ -n "${T2_IMAGE:-}" ]]; then
     docker image rm "${T2_IMAGE}" 2>/dev/null || true
     T2_IMAGE=""
-  fi
-  if [[ -n "${T2_SAVED_TAG:-}" ]]; then
-    if [[ "${T2_HAD_LATEST:-0}" -eq 1 ]]; then
-      docker tag "${T2_SAVED_TAG}" rip-cage:latest 2>/dev/null || true
-    else
-      docker image rm rip-cage:latest 2>/dev/null || true
-    fi
-    docker image rm "${T2_SAVED_TAG}" 2>/dev/null || true
-    T2_SAVED_TAG=""
   fi
 }
 trap cleanup EXIT INT TERM
@@ -370,10 +363,10 @@ echo "--- T2: E2E assertions (NEEDS_CONTAINER / RC_E2E=1) ---"
 # T2 state — shared baked image (built once, used by T2a-T2e)
 # ---------------------------------------------------------------------------
 T2_IMAGE=""
-T2_SAVED_TAG=""
-T2_HAD_LATEST=0
 T2_BUILD_FAILED=0
 
+# rip-cage-d2bo: builds straight to its own pinned scratch tag via -t; never
+# touches rip-cage:latest, so there is nothing to save/restore.
 _t2_build_mux_registry_image() {
   if [[ -n "${T2_IMAGE:-}" ]]; then
     return 0
@@ -382,22 +375,17 @@ _t2_build_mux_registry_image() {
     return 1
   fi
 
-  # Save existing rip-cage:latest (if any) so we can restore it on cleanup.
   local unique_suffix
   unique_suffix="$(date +%s)-$$"
-  T2_SAVED_TAG="rip-cage:mux-bake-saved-${unique_suffix}"
-  T2_HAD_LATEST=0
-  if docker image inspect rip-cage:latest >/dev/null 2>&1; then
-    docker tag rip-cage:latest "${T2_SAVED_TAG}" 2>/dev/null && T2_HAD_LATEST=1
-  fi
+  local target_tag="rip-cage:mux-bake-test-${unique_suffix}"
 
   local fixture_file="${FIXTURES}/manifest-multiplexer-valid.yaml"
-  echo "[T2 setup] Building rip-cage image with fixture MULTIPLEXER tool (manifest-multiplexer-valid.yaml)..."
+  echo "[T2 setup] Building rip-cage image with fixture MULTIPLEXER tool (manifest-multiplexer-valid.yaml) to pinned tag ${target_tag}..."
   echo "[T2 setup] This bakes test-mux hooks into /etc/rip-cage/multiplexers/test-mux/ ..."
 
   local build_out build_rc=0
   build_out=$(RC_MANIFEST_GLOBAL="$fixture_file" \
-    "${REPO_ROOT}/rc" build 2>&1) || build_rc=$?
+    "${REPO_ROOT}/rc" build -t "$target_tag" 2>&1) || build_rc=$?
 
   if [[ "$build_rc" -ne 0 ]]; then
     local build_tail
@@ -408,10 +396,8 @@ _t2_build_mux_registry_image() {
     return 1
   fi
 
-  # Tag to unique throwaway tag for our assertions.
-  T2_IMAGE="rip-cage:mux-bake-test-${unique_suffix}"
-  docker tag rip-cage:latest "${T2_IMAGE}" 2>/dev/null || true
-  echo "[T2 setup] Image built and tagged: ${T2_IMAGE}"
+  T2_IMAGE="$target_tag"
+  echo "[T2 setup] Image built: ${T2_IMAGE}"
   return 0
 }
 
@@ -478,40 +464,28 @@ test_t2b_undeclared_hook_file_absent() {
 
   # The main T2 image is built from manifest-multiplexer-valid.yaml (which has test-mux with all hooks).
   # For T2b, we need the start-attach-only fixture (test-mux-minimal).
-  # Build a second throwaway image for this assertion.
+  # Build a second throwaway image for this assertion, straight to its own
+  # pinned scratch tag via -t (rip-cage-d2bo) -- never rip-cage:latest, so
+  # there is nothing to save/restore.
   local t2b_fixture="${FIXTURES}/manifest-multiplexer-start-attach-only.yaml"
-  local t2b_image="rip-cage:mux-bake-t2b-$$"
-  local t2b_saved_tag="rip-cage:mux-bake-t2b-saved-$$"
-  local t2b_had_latest=0
-
-  # Save rip-cage:latest (may be the T2a image; save it)
-  if docker image inspect rip-cage:latest >/dev/null 2>&1; then
-    docker tag rip-cage:latest "${t2b_saved_tag}" 2>/dev/null && t2b_had_latest=1
-  fi
+  local t2b_image
+  t2b_image="rip-cage:mux-bake-t2b-$$-$(date +%s)"
 
   # shellcheck disable=SC2329  # invoked via RETURN trap
   _t2b_cleanup() {
     docker image rm "${t2b_image}" 2>/dev/null || true
-    if [[ "${t2b_had_latest}" -eq 1 ]]; then
-      docker tag "${t2b_saved_tag}" rip-cage:latest 2>/dev/null || true
-    else
-      docker image rm rip-cage:latest 2>/dev/null || true
-    fi
-    docker image rm "${t2b_saved_tag}" 2>/dev/null || true
   }
   trap _t2b_cleanup RETURN
 
-  echo "[T2b] Building start-attach-only fixture image (test-mux-minimal)..."
+  echo "[T2b] Building start-attach-only fixture image (test-mux-minimal) to pinned tag ${t2b_image}..."
   local t2b_build_out t2b_build_rc=0
   t2b_build_out=$(RC_MANIFEST_GLOBAL="$t2b_fixture" \
-    "${REPO_ROOT}/rc" build 2>&1) || t2b_build_rc=$?
+    "${REPO_ROOT}/rc" build -t "$t2b_image" 2>&1) || t2b_build_rc=$?
 
   if [[ "$t2b_build_rc" -ne 0 ]]; then
     fail "T2b start-attach-only build failed (exit=${t2b_build_rc}): ${t2b_build_out:0:200}"
     return
   fi
-
-  docker tag rip-cage:latest "${t2b_image}" 2>/dev/null || true
 
   # start and attach must be present for test-mux-minimal
   local start_rc=0

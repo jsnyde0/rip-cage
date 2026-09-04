@@ -197,6 +197,8 @@ bash -c "source '$RC' 2>/dev/null; _manifest_default_yaml" > "$VANILLA_MANIFEST"
 
 POS_ERR_FILE="${WORK}/pos-err"
 POS_EXIT=0
+# rip-cage-d2bo kind-1 (harmless): PATH-prefixed with _new_docker_stub_dir's
+# fake docker shim (defined above) -- no real docker build/run ever executes.
 PATH="${POS_STUB_DIR}:$PATH" \
   RC_MANIFEST_GLOBAL="$VANILLA_MANIFEST" \
   bash "$RC" build >/dev/null 2>"$POS_ERR_FILE" || POS_EXIT=$?
@@ -280,6 +282,8 @@ YAML
 
 NEG_ERR_FILE="${WORK}/neg-err"
 NEG_EXIT=0
+# rip-cage-d2bo kind-1 (harmless): PATH-prefixed with _new_docker_stub_dir's
+# fake docker shim (defined above) -- no real docker build/run ever executes.
 PATH="${NEG_STUB_DIR}:$PATH" \
   RC_MANIFEST_GLOBAL="$STALE_MANIFEST" \
   bash "$RC" build >/dev/null 2>"$NEG_ERR_FILE" || NEG_EXIT=$?

@@ -486,14 +486,24 @@ echo ""
 #     carries -t/--tag OR sets RC_IMAGE= (rc:69 -- both set the same $IMAGE
 #     cmd_build acts on; RC_IMAGE is the env-var spelling of the same escape).
 #
-#     SCOPE: this bead's fix reaches the four e2e files named in its producer
-#     inventory. A repo-wide sweep (same detector, run over ALL of tests/)
-#     found additional bare `rc build` sites in ~13 other test files outside
-#     that inventory -- structurally the same defect, but out of this bead's
-#     authorized touch-set (some are explicitly off-limits to the agent that
-#     wrote this guard: test-agent-mail-concurrent.sh, test-rc-commands.sh,
-#     test-multiplexer-lifecycle.sh). Those are reported below as NOTEs, not
-#     failures -- fixing them is follow-up work, not silently expanded scope.
+#     SCOPE: originally the four e2e files named in rip-cage-q4t6's producer
+#     inventory; rip-cage-d2bo widened this ratchet, per-site, onto 7 more
+#     files with GENUINE bare-build defects (test-manifest-cross.sh,
+#     test-manifest-herdr.sh, test-manifest-source.sh,
+#     test-mount-seam-integration.sh, test-multiplexer-composable.sh,
+#     test-multiplexer-config-dynamic.sh, test-multiplexer-registry-bake.sh --
+#     each now builds to a pinned per-run scratch tag via -t/RC_IMAGE, reaped
+#     by exact name, never rip-cage:latest). rip-cage-d2bo also read every
+#     OTHER out-of-scope site repo-wide and classified each: harmless
+#     (fake-docker-shim on PATH, or a manifest that fails cmd_build's
+#     pre-Docker validation, so no real `docker build` ever runs) or opt-in
+#     (gated behind an explicit RC_E2E_REBUILD=1 operator flag, where
+#     rebuilding :latest is exactly what was asked for) -- each such site now
+#     carries an inline justification comment at the site itself (never in a
+#     lookup table here). Two sites remain unclassified/untouched by design:
+#     test-rc-commands.sh's T19/T20 stage-and-restore-the-live-cache sites are
+#     carved out to child bead rip-cage-d2bo.2 (different mechanism: it stages
+#     msb's actual image cache, not a bare untagged build).
 #     A single exemption inside the in-scope set is real and intentional:
 #     test-manifest-security.sh's BE2/BE5 hostile arms deliberately build to
 #     :latest (no -t) to prove cmd_build's own untag-on-violation safety net
@@ -519,10 +529,13 @@ BEGIN { buf=""; startno=0 }
 _h_invoke_re='(\$\{REPO_ROOT\}/rc|\$\{RC\}|\$RC)"?[[:space:]]+build([[:space:]]|$)|\./rc[[:space:]]+build([[:space:]]|$)'
 _h_exclude_re='echo|printf|pass[[:space:]]*"|fail[[:space:]]*"|check[[:space:]]*"'
 _h_safe_re='(--tag|[[:space:]]-t[[:space:]]|RC_IMAGE=)'
-_h_in_scope_files="test-manifest-daemon.sh test-manifest-agent-mail.sh test-manifest-cm.sh test-manifest-security.sh"
+_h_in_scope_files="test-manifest-daemon.sh test-manifest-agent-mail.sh test-manifest-cm.sh test-manifest-security.sh test-manifest-cross.sh test-manifest-herdr.sh test-manifest-source.sh test-mount-seam-integration.sh test-multiplexer-composable.sh test-multiplexer-config-dynamic.sh test-multiplexer-registry-bake.sh"
+
+_h_justify_re='(rip-cage-[a-z0-9.]+ kind-[12] \(|build-ok\()'
 
 _h_in_scope_hits=""
 _h_out_of_scope_hits=""
+_h_justified_count=0
 
 for _h_file in "${REPO_ROOT}"/tests/*.sh; do
   _h_base=$(basename "$_h_file")
@@ -538,6 +551,29 @@ for _h_file in "${REPO_ROOT}"/tests/*.sh; do
     if sed -n "$(( _h_lineno > 6 ? _h_lineno - 6 : 1 )),${_h_lineno}p" "$_h_file" | grep -q "rip-cage-q4t6-exempt"; then
       continue
     fi
+    # JUSTIFIED-IN-CODE (rip-cage-d2bo): a site the audit read and cleared as
+    # kind 1 (fake-shim on PATH, or a manifest that fails cmd_build's
+    # pre-Docker validation, so no real `docker build` runs) or kind 2 (gated
+    # behind an explicit operator flag, where rebuilding :latest is the point)
+    # carries its reasoning as a comment AT THE SITE. Recognising the marker is
+    # what makes that reasoning load-bearing instead of decorative: without it
+    # every cleared site stayed in the NOTE forever, so the NOTE said nothing
+    # about whether a site had been thought about, and a NEW untagged site
+    # arriving tomorrow would have been indistinguishable from the 16 already
+    # cleared. Deliberately NOT a filename list here -- rip-cage-4cuh's
+    # standing constraint is that exemptions live in the code, never in a
+    # lookup table the guard carries.
+    #
+    # Window is 8 raw lines because these justifications are prose blocks and
+    # the marker is their FIRST line. Both spellings are accepted: the
+    # `<bead-id> kind-N (` form the audit wrote, and a shorter `build-ok(<bead-id>)`
+    # for new sites, matching the `swallow-ok(<bead-id>)` convention the
+    # scratch-cage teardown guard already uses.
+    if sed -n "$(( _h_lineno > 8 ? _h_lineno - 8 : 1 )),${_h_lineno}p" "$_h_file" \
+         | grep -qE "$_h_justify_re"; then
+      _h_justified_count=$((_h_justified_count + 1))
+      continue
+    fi
     if [[ " ${_h_in_scope_files} " == *" ${_h_base} "* ]]; then
       _h_in_scope_hits="${_h_in_scope_hits}${_h_base}:${_h_lineno}: ${_h_content}"$'\n'
     else
@@ -546,9 +582,12 @@ for _h_file in "${REPO_ROOT}"/tests/*.sh; do
   done < <(awk "$_h_join_awk" "$_h_file")
 done
 
+echo "    (h): ${_h_justified_count} out-of-scope site(s) cleared by an inline kind-1/kind-2 justification at the site."
+
 if [[ -n "$_h_out_of_scope_hits" ]]; then
-  echo "NOTE (h): bare rc build found OUTSIDE this bead's scoped files (follow-up, not a failure here):"
+  echo "NOTE (h): bare rc build found OUTSIDE this bead's scoped files, with NO inline justification (follow-up, not a failure here):"
   echo "$_h_out_of_scope_hits" | sed '/^$/d' | sed 's/^/    /'
+  echo "    fix: tag the build (-t/--tag/RC_IMAGE, reaped by exact name), or justify it at the site with a '<bead-id> kind-1 (harmless)' / 'build-ok(<bead-id>)' comment in the 8 lines above."
 fi
 
 if [[ -z "$_h_in_scope_hits" ]]; then

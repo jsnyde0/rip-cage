@@ -125,6 +125,12 @@ fi
 echo ""
 echo "=== Test 3: Docker daemon not running gives helpful error ==="
 
+# rip-cage-d2bo kind-1 (harmless): $FAKE_BIN/docker (defined above) exits 1
+# with "Is the docker daemon running?" on `docker info` specifically (any
+# other subcommand, including `build`, is a silent exit-0 no-op) -- `rc
+# build`'s dispatch runs check_docker first (rc:195), which calls `docker
+# info` and exits loud on that failure BEFORE cmd_build ever reaches a real
+# `docker build`. This is Test 3's whole point.
 output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" build 2>&1 || true)
 if echo "$output" | grep -qi "docker"; then
   pass "docker not running: error mentions 'docker'"
@@ -172,6 +178,9 @@ rm -rf "$FAKE_MSB_BIN"
 echo ""
 echo "=== Test 4: Docker check runs for build; msb check runs for the msb-rewired verbs ==="
 
+# rip-cage-d2bo kind-1 (harmless): same $FAKE_BIN/docker shim as Test 3 above
+# -- `docker info` exits 1, check_docker (rc:195) exits loud on that BEFORE
+# cmd_build ever reaches a real `docker build`.
 output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" build 2>&1 || true)
 if echo "$output" | grep -qi "docker"; then
   pass "docker check for 'rc build'"

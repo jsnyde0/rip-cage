@@ -58,8 +58,13 @@ cleanup() {
     rm -rf "$T2_BUILD_MANIFEST_HOME"
     T2_BUILD_MANIFEST_HOME=""
   fi
+  # rip-cage-d2bo: reap the pinned scratch tag by exact name, never a wildcard.
+  if [[ -n "${T2_IMAGE_TAG:-}" ]]; then
+    docker rmi "$T2_IMAGE_TAG" >/dev/null 2>&1 || true
+    T2_IMAGE_TAG=""
+  fi
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 # E2E flag from command line
 if [[ "${1:-}" == "--e2e" ]]; then
@@ -306,6 +311,9 @@ echo "--- T2: E2E assertions (NEEDS_CONTAINER / RC_E2E=1) ---"
 # ---------------------------------------------------------------------------
 T2_BUILD_MANIFEST_HOME=""
 T2_BUILD_FAILED=0
+# rip-cage-d2bo: pinned per-run scratch tag -- never rip-cage:latest. Reaped
+# by exact name in cleanup() below (EXIT trap), never by wildcard.
+T2_IMAGE_TAG=""
 
 _t2_build_herdr_image() {
   if [[ -n "${T2_BUILD_MANIFEST_HOME:-}" ]]; then
@@ -323,12 +331,14 @@ _t2_build_herdr_image() {
   # init-rip-cage.sh registry dispatch (ADR-005 D12) would exit 1 at T2c/T2d.
   cp "${T2_FIXTURE_FILE}" "${T2_BUILD_MANIFEST_HOME}/.config/rip-cage/tools.yaml"
 
+  T2_IMAGE_TAG="rip-cage:herdr-e2e-$$-$(date +%s)"
+
   local build_out build_rc
   build_rc=0
-  echo "[T2 setup] Building cage image with herdr two-entry manifest (TOOL+MULTIPLEXER, downloads prebuilt binary — may take ~1min)..."
+  echo "[T2 setup] Building cage image with herdr two-entry manifest (TOOL+MULTIPLEXER, downloads prebuilt binary — may take ~1min) to pinned tag ${T2_IMAGE_TAG}..."
   build_out=$(HOME="$T2_BUILD_MANIFEST_HOME" \
     XDG_CONFIG_HOME="${T2_BUILD_MANIFEST_HOME}/.config" \
-    "${REPO_ROOT}/rc" build 2>&1) || build_rc=$?
+    "${REPO_ROOT}/rc" build -t "$T2_IMAGE_TAG" 2>&1) || build_rc=$?
 
   if [[ "$build_rc" -ne 0 ]]; then
     local build_tail
@@ -341,7 +351,7 @@ _t2_build_herdr_image() {
     return 1
   fi
 
-  echo "[T2 setup] Image built: rip-cage:latest"
+  echo "[T2 setup] Image built: ${T2_IMAGE_TAG}"
   return 0
 }
 
@@ -357,7 +367,7 @@ test_t2a_herdr_binary_installed() {
   fi
 
   local herdr_path
-  herdr_path=$(docker run --rm rip-cage:latest which herdr 2>&1)
+  herdr_path=$(docker run --rm "$T2_IMAGE_TAG" which herdr 2>&1)
   if echo "$herdr_path" | grep -q "/herdr"; then
     pass "T2a herdr binary present in cage image at: ${herdr_path}"
   else
@@ -367,7 +377,7 @@ test_t2a_herdr_binary_installed() {
   # Version check
   local version_out version_rc
   version_rc=0
-  version_out=$(docker run --rm rip-cage:latest herdr --version 2>&1) || version_rc=$?
+  version_out=$(docker run --rm "$T2_IMAGE_TAG" herdr --version 2>&1) || version_rc=$?
   if [[ "$version_rc" -eq 0 ]]; then
     pass "T2a herdr --version exits 0 in cage: '${version_out:0:60}'"
   else
@@ -388,7 +398,7 @@ test_t2b_herdr_binary_root_owned() {
 
   local stat_out stat_rc
   stat_rc=0
-  stat_out=$(docker run --rm rip-cage:latest stat -c "%U %G %a" /usr/local/bin/herdr 2>&1) || stat_rc=$?
+  stat_out=$(docker run --rm "$T2_IMAGE_TAG" stat -c "%U %G %a" /usr/local/bin/herdr 2>&1) || stat_rc=$?
 
   if [[ "$stat_rc" -ne 0 ]]; then
     fail "T2b stat /usr/local/bin/herdr FAILED: exit=${stat_rc} out='${stat_out}'"
@@ -442,7 +452,7 @@ test_t2c_herdr_server_starts_with_multiplexer() {
   docker run -d --name "$container_name" \
     -e RC_MULTIPLEXER=herdr \
     -v "${workspace}:/workspace" \
-    rip-cage:latest sleep infinity >/dev/null 2>&1 || true
+    "$T2_IMAGE_TAG" sleep infinity >/dev/null 2>&1 || true
 
   # Run init to trigger the herdr server start
   docker exec "$container_name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || true
@@ -513,7 +523,7 @@ test_t2d_herdr_integrations_auto_installed_by_init() {
   docker run -d --name "$container_name" \
     -e RC_MULTIPLEXER=herdr \
     -v "${workspace}:/workspace" \
-    rip-cage:latest sleep infinity >/dev/null 2>&1 || true
+    "$T2_IMAGE_TAG" sleep infinity >/dev/null 2>&1 || true
 
   # Run init — this is the ONLY thing that should install the integrations
   docker exec "$container_name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || true

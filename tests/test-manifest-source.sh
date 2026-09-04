@@ -452,41 +452,27 @@ test_se1_real_build_binary_present_toolchain_absent() {
   # Fixture: manifest declaring a from-source tool (alpine:3.19 builder, build-hello-from-source.sh,
   # output at /usr/local/bin/hello-from-source). The fixture has NO install_cmd.
   local se1_fixture="${FIXTURES}/manifest-with-from-source-tool.yaml"
-  local se1_image="rip-cage:se1-test"
+  # rip-cage-d2bo: pinned per-run scratch tag, built to DIRECTLY via -t -- never
+  # touches rip-cage:latest, so there is nothing to save/restore any more.
+  local se1_image
+  se1_image="rip-cage:se1-test-$$-$(date +%s)"
 
-  # Save the current rip-cage:latest so we can restore it after the build.
-  local se1_saved_tag="rip-cage:se1-saved-$(date +%s)"
-  local se1_had_latest=0
-  if docker image inspect rip-cage:latest >/dev/null 2>&1; then
-    docker tag rip-cage:latest "$se1_saved_tag" 2>/dev/null && se1_had_latest=1
-  fi
-
-  # Cleanup on any exit path: remove test image, remove our temp tag, restore latest.
+  # Cleanup on any exit path: remove test image only.
   # shellcheck disable=SC2329
   _se1_cleanup() {
     docker image rm "$se1_image" 2>/dev/null || true
-    if [[ "$se1_had_latest" -eq 1 ]]; then
-      docker tag "$se1_saved_tag" rip-cage:latest 2>/dev/null || true
-    else
-      docker image rm rip-cage:latest 2>/dev/null || true
-    fi
-    docker image rm "$se1_saved_tag" 2>/dev/null || true
   }
   trap _se1_cleanup RETURN
 
-  # Run rc build with the from-source fixture.
+  # Run rc build with the from-source fixture, straight to the pinned tag.
   local build_out build_rc=0
   build_out=$(RC_MANIFEST_GLOBAL="$se1_fixture" \
-    "${RC}" build 2>&1) || build_rc=$?
+    "${RC}" build -t "$se1_image" 2>&1) || build_rc=$?
 
   if [[ "$build_rc" -ne 0 ]]; then
     fail "SE1 rc build failed (exit=${build_rc}): ${build_out:0:400}"
     return
   fi
-
-  # Tag the built image as se1_image for assertions (and to distinguish it from
-  # any subsequent build that may overwrite rip-cage:latest).
-  docker tag rip-cage:latest "$se1_image" 2>/dev/null || true
 
   # (a) Binary PRESENT at runtime path and RUNS.
   local runtime_path="/usr/local/bin/hello-from-source"

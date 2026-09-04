@@ -102,6 +102,13 @@ teardown_manifest_sandbox() {
 }
 
 # Run rc build inside the sandbox, capturing both stdout and stderr.
+# rip-cage-d2bo kind-1 (harmless, no real docker build ever runs): the only
+# two callers (E1, E1b below) always pass an IOC-hostile manifest fixture
+# (manifest-hostile-ioc-egress*.yaml). cmd_build's _manifest_check_ioc_egress
+# fires and exit 1's BEFORE either `docker build` invocation in cli/build.sh
+# (see cli/build.sh: the ioc-egress check precedes both `docker build` call
+# sites) -- so this never reaches a real docker build, let alone overwrites
+# rip-cage:latest. E1/E1b's whole assertion IS that build fails loud pre-Docker.
 run_rc_build() {
   HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \

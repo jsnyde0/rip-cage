@@ -274,6 +274,11 @@ echo ""
 # -----------------------------------------------------------------------------
 
 # Check 1: RC_E2E_REBUILD guard
+# rip-cage-d2bo kind-2 (opt-in and correct): this `rc build` overwrites
+# rip-cage:latest ON PURPOSE and only when the operator explicitly opts in via
+# RC_E2E_REBUILD=1 -- without it, this whole branch is skipped and the SKIP
+# arm below reuses whatever image is already local. Rebuilding :latest is
+# exactly what was asked for here (same idiom as test-multiplexer-lifecycle.sh:88).
 if [[ "${RC_E2E_REBUILD:-0}" == "1" ]]; then
   if "$RC" build > /dev/null 2>&1; then
     check "rc build succeeds" "pass"

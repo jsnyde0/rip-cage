@@ -54,27 +54,18 @@ fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 # Cleanup
 # ---------------------------------------------------------------------------
 # shellcheck disable=SC2329
+# rip-cage-d2bo: T2_IMAGE is built to DIRECTLY via -t, never rip-cage:latest --
+# exact-name reap only, nothing to save/restore any more.
 cleanup_on_exit() {
   [[ -n "${TEST_HOME:-}" && -d "${TEST_HOME:-}" ]] && rm -rf "${TEST_HOME}"
   if [[ -n "${T2_IMAGE:-}" ]]; then
     docker image rm "${T2_IMAGE}" 2>/dev/null || true
     T2_IMAGE=""
   fi
-  if [[ -n "${T2_SAVED_TAG:-}" ]]; then
-    if [[ "${T2_HAD_LATEST:-0}" -eq 1 ]]; then
-      docker tag "${T2_SAVED_TAG}" rip-cage:latest 2>/dev/null || true
-    else
-      docker image rm rip-cage:latest 2>/dev/null || true
-    fi
-    docker image rm "${T2_SAVED_TAG}" 2>/dev/null || true
-    T2_SAVED_TAG=""
-  fi
 }
 trap cleanup_on_exit EXIT INT TERM
 
 T2_IMAGE=""
-T2_SAVED_TAG=""
-T2_HAD_LATEST=0
 T2_BUILD_FAILED=0
 
 # ---------------------------------------------------------------------------
@@ -319,7 +310,8 @@ fi
 
 # ---------------------------------------------------------------------------
 # T2 image setup — build once, use for T2a-T2c.
-# Saves + restores existing rip-cage:latest; uses a throwaway tag.
+# rip-cage-d2bo: builds straight to its own pinned scratch tag via -t; never
+# touches rip-cage:latest, so there is nothing to save/restore.
 # ---------------------------------------------------------------------------
 _t2_build_test_image() {
   if [[ -n "${T2_IMAGE:-}" ]]; then
@@ -331,27 +323,22 @@ _t2_build_test_image() {
 
   local unique_suffix
   unique_suffix="$(date +%s)-$$"
-  T2_SAVED_TAG="rip-cage:mux-config-dyn-saved-${unique_suffix}"
-  T2_HAD_LATEST=0
-  if docker image inspect rip-cage:latest >/dev/null 2>&1; then
-    docker tag rip-cage:latest "${T2_SAVED_TAG}" 2>/dev/null && T2_HAD_LATEST=1
-  fi
+  T2_IMAGE="rip-cage:mux-config-dyn-test-${unique_suffix}"
 
   local fixture_file="${FIXTURES}/manifest-multiplexer-valid.yaml"
-  echo "[T2 setup] Building rip-cage image with manifest-multiplexer-valid.yaml (test-mux)..."
+  echo "[T2 setup] Building rip-cage image with manifest-multiplexer-valid.yaml (test-mux) to pinned tag ${T2_IMAGE}..."
 
   local build_rc=0
-  RC_MANIFEST_GLOBAL="${fixture_file}" "${REPO_ROOT}/rc" build >/tmp/rc-mux-config-dyn-build.out 2>&1 || build_rc=$?
+  RC_MANIFEST_GLOBAL="${fixture_file}" "${REPO_ROOT}/rc" build -t "${T2_IMAGE}" >/tmp/rc-mux-config-dyn-build.out 2>&1 || build_rc=$?
 
   if [[ "$build_rc" -ne 0 ]]; then
     echo "[T2 setup] FAIL: rc build failed (exit=${build_rc}). See /tmp/rc-mux-config-dyn-build.out" >&2
+    T2_IMAGE=""
     T2_BUILD_FAILED=1
     return 1
   fi
 
-  T2_IMAGE="rip-cage:mux-config-dyn-test-${unique_suffix}"
-  docker tag rip-cage:latest "${T2_IMAGE}" 2>/dev/null || true
-  echo "[T2 setup] Image built and tagged: ${T2_IMAGE}"
+  echo "[T2 setup] Image built: ${T2_IMAGE}"
   return 0
 }
 
