@@ -56,12 +56,31 @@ cmd_destroy() {
   done
   name=$(resolve_name "$name") || exit 1
 
-  # Verify sandbox exists and is managed by rc
-  if ! _msb_exists "$name"; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
-    echo "Error: container $name not found" >&2; exit 1
+  # rip-cage-o5ie: a sandbox that has ALREADY been removed (e.g. a prior
+  # `msb remove`, or a test's own EXIT-trap teardown racing a host-side
+  # destroy) must not short-circuit destroy here -- its rc-state-<name>/
+  # rc-history-<name> volumes (msb `remove` never deletes volumes, see this
+  # file's header comment) would otherwise leak forever. Only verify the
+  # rc.source.path label (verify_rc_container) when a sandbox actually
+  # exists to check; there is nothing to verify once it's already gone.
+  # Either way the two volume names below are derived STRICTLY from the
+  # resolved $name -- NEVER an enumerate/wildcard sweep over existing
+  # volumes (tests/test-cleanup-failsafe.sh is the incident repro for that
+  # class of mistake).
+  local sandbox_exists=0
+  if _msb_exists "$name"; then
+    sandbox_exists=1
+    verify_rc_container "$name"
+  else
+    # No sandbox AND no leftover volume under this exact name -- genuinely
+    # nothing to destroy. Fail loud here (before any confirmation/dry-run
+    # prompt), same as the original "container not found" short-circuit.
+    if ! msb volume inspect "rc-state-${name}" >/dev/null 2>&1 \
+        && ! msb volume inspect "rc-history-${name}" >/dev/null 2>&1; then
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
+      echo "Error: container $name not found" >&2; exit 1
+    fi
   fi
-  verify_rc_container "$name"
 
   # Interactive confirmation for destructive operation (skip in JSON/non-TTY/--force)
   if [[ "$force" -eq 0 ]] && [[ "$DRY_RUN" != "true" ]] && [[ "$OUTPUT_FORMAT" != "json" ]] && [[ -t 0 ]]; then
@@ -92,13 +111,18 @@ cmd_destroy() {
     return 0
   fi
 
-  # msb remove --force stops (if running) then removes the sandbox.
-  if ! _msb_remove "$name" >/dev/null 2>&1; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
-    echo "Error: container $name not found" >&2; exit 1
+  # msb remove --force stops (if running) then removes the sandbox. Only
+  # attempted when a sandbox actually exists (rip-cage-o5ie): when it's
+  # already absent, skip straight to the volume-removal loop below instead
+  # of erroring out before reaching it.
+  if [[ "$sandbox_exists" -eq 1 ]]; then
+    if ! _msb_remove "$name" >/dev/null 2>&1; then
+      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
+      echo "Error: container $name not found" >&2; exit 1
+    fi
+    # Clean up worktree gitfile if it exists
+    rm -f "${HOME}/.cache/rc/${name}.gitfile"
   fi
-  # Clean up worktree gitfile if it exists
-  rm -f "${HOME}/.cache/rc/${name}.gitfile"
   # `msb remove` (above) does NOT delete named volumes (no volume-deletion
   # flag on that command — a separate finding from the migration spike, see
   # this file's own header comment). Explicitly delete this cage's two
