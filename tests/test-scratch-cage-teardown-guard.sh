@@ -235,6 +235,195 @@ _scan_one_file() {
 }
 
 # ============================================================================
+# SECOND DETECTOR (rip-cage-54q3.6.4): silently-swallowed `<rc-wrapper>
+# destroy --force` call sites under tests/*.sh.
+#
+# ROOT CAUSE this guards against: rip-cage-54q3's fix (d63d388) made
+# tests/_scratch-cage-lib.sh's OWN `rc destroy --force` loud (reads $?,
+# names the cage + exit code on stderr, counts failures). That loudness only
+# reaches files that actually source the lib. ~40 other `rc destroy --force`
+# call sites across tests/*.sh still swallow the result -- output redirected
+# to /dev/null and the status discarded via `|| true` (or a bare
+# `[[ -n "$VAR" ]] && ... >/dev/null 2>&1` with no status read). A failed
+# destroy at one of those sites leaves a running cage and looks exactly like
+# a clean run.
+#
+# THE RULE (per call site found, never a file allowlist -- rip-cage-4cuh's
+# standing constraint against exception lists, restated by rip-cage-d2bo):
+# a real (non-comment, non-prose) invocation of `<rc-wrapper> destroy
+# --force` in a tests/*.sh file is a SILENT SWALLOW unless at least one of:
+#   (a) the file sources tests/_scratch-cage-lib.sh AND the destroyed
+#       variable is also passed to `scratch_cage_register` in that same
+#       file (the lib's own `rc destroy --force` at _scratch-cage-lib.sh:58
+#       is the exemplar for shape (b) below, not (a) -- it reads $? and
+#       reports itself; a CALLER that sources the lib and separately
+#       registers the same variable is what (a) exempts), or
+#   (b) the call's exit status is READ and a failure is reported to stderr
+#       naming the cage and the exit code -- e.g. `OUT=$(... 2>&1); RC=$?`
+#       followed by a non-zero branch that echoes to `>&2`, or an
+#       `if ! ... ; then echo "...$name...$?..." >&2; fi` shape, or
+#   (c) the site carries an INLINE justification comment on the line
+#       immediately above, in the fixed machine-recognisable form
+#       `# swallow-ok(<bead-id>): <reason>` -- for a site where a non-zero
+#       destroy is genuinely expected (e.g. pre-emptive cleanup of a cage
+#       that may not exist). The justification lives in the code at the
+#       site, never in a lookup table this guard carries.
+#
+# Match anchoring: same command-boundary technique as MSB_REMOVE_RE above
+# (line start, or after `;&|({\`!` with optional whitespace) so prose inside
+# a string literal, a fail() reason, or a comment is never counted as an
+# invocation. tests/run-one.sh:103, tests/run-host.sh:921 and
+# tests/test-scratch-cage-cleanup.sh:158 are exactly this false-positive
+# class (they PRINT the string `rc destroy --force ...` as operator advice,
+# with a colon-space before `rc`, never a command-boundary character) --
+# they must not be flagged.
+#
+# Shape (b) detection is a WINDOWED heuristic, not full semantic
+# verification (bash regex cannot prove control flow): it looks at the
+# matched line plus the next few lines for (i) a `$?`-capture assignment or
+# an `if ! <call>; then` inline status test, AND (ii) a non-comment
+# echo/printf line redirecting to stderr (`>&2`) nearby. This mirrors this
+# file's existing structural-not-exhaustive style (see the
+# VOLUME-ATTACHMENT GATE comment above) and is deliberately scoped to what
+# this bead's mandatory fixtures require, not to catch every conceivable
+# reporting idiom.
+DESTROY_FORCE_RE='(^[[:space:]]*|[;&|({`!][[:space:]]*)("?\$\{?RC\}?"?|run_rc|"?[^[:space:]"]*/rc"?)[[:space:]]+destroy[[:space:]]+--force([[:space:]]|$)'
+
+# Opening line of a heredoc: `<<DELIM`, `<<'DELIM'`, `<<"DELIM"` or the
+# `<<-` tab-stripping variants, with the delimiter ending the line. `<<<`
+# (herestring) never matches -- the third `<` is not a valid delimiter
+# start. See the heredoc skip in _scan_one_file_for_destroy_swallows.
+HEREDOC_OPEN_RE='<<-?[[:space:]]*['"'"'\"]?([A-Za-z_][A-Za-z0-9_]*)['"'"'\"]?[[:space:]]*$'
+
+# Inline justification marker for shape (c). Documented spelling: a comment
+# on the line immediately above the destroy call, of the form
+# `# swallow-ok(<bead-id>): <reason>`.
+SWALLOW_OK_RE='^#[[:space:]]*swallow-ok\([^)]+\):'
+
+# scan_dir_for_destroy_swallows <dir> -- populates the DESTROY_SWALLOW_LINES
+# array (global) with one "relpath:line: trimmed-text" entry per silently
+# swallowed `<rc-wrapper> destroy --force` call found in <dir>/*.sh.
+scan_dir_for_destroy_swallows() {
+  local dir="$1"
+  DESTROY_SWALLOW_LINES=()
+  local f
+  for f in "$dir"/*.sh; do
+    [[ -f "$f" ]] || continue
+    _scan_one_file_for_destroy_swallows "$f"
+  done
+}
+
+# _destroy_site_status_reported <idx> <n> -- shape (b) windowed heuristic.
+# Reads the caller's local `_flines` array (bash dynamic scoping: a
+# function-local array declared by the caller is visible to a function it
+# calls, so no array-passing/nameref plumbing is needed here).
+_destroy_site_status_reported() {
+  local idx="$1" n="$2"
+  local win_end=$((idx + 8))
+  ((win_end >= n)) && win_end=$((n - 1))
+  local j status_captured=0 stderr_reported=0 t
+  for ((j = idx; j <= win_end; j++)); do
+    if [[ "${_flines[j]}" =~ ^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=\$\?([[:space:]]|$) ]]; then
+      status_captured=1
+    fi
+    if [[ "$j" -eq "$idx" && "${_flines[j]}" =~ ^[[:space:]]*if[[:space:]]+! ]]; then
+      status_captured=1
+    fi
+  done
+  [[ "$status_captured" -eq 1 ]] || return 1
+  for ((j = idx; j <= win_end; j++)); do
+    [[ "${_flines[j]}" == *'>&2'* ]] || continue
+    t="${_flines[j]#"${_flines[j]%%[![:space:]]*}"}"
+    [[ "$t" == \#* ]] && continue
+    if [[ "$t" =~ ^(echo|printf)([[:space:]]|\() ]]; then
+      stderr_reported=1
+      break
+    fi
+  done
+  [[ "$stderr_reported" -eq 1 ]]
+}
+
+_scan_one_file_for_destroy_swallows() {
+  local f="$1"
+  local base
+  base=$(basename "$f")
+
+  # Whole-file line array for shape (b)'s lookahead window.
+  local -a _flines=()
+  local _l
+  while IFS= read -r _l || [[ -n "$_l" ]]; do
+    _flines+=("$_l")
+  done < "$f"
+  local _n=${#_flines[@]}
+
+  # (a) precondition: does this file source the shared lib, and which
+  # variables does it pass to scratch_cage_register anywhere in the file?
+  local _sources_lib=0
+  grep -qE '(^[[:space:]]*|[;&|({`][[:space:]]*)(\.|source)[[:space:]]+.*_scratch-cage-lib\.sh' "$f" 2>/dev/null \
+    && _sources_lib=1
+  local -A _registered=()
+  local _rv
+  while IFS= read -r _rv; do
+    [[ -n "$_rv" ]] && _registered["$_rv"]=1
+  done < <(grep -oE 'scratch_cage_register[[:space:]]+.?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' "$f" 2>/dev/null \
+             | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' | tr -d '${}')
+
+  local _idx lineno line trimmed prev_trimmed var
+  local _heredoc_delim=""
+  for ((_idx = 0; _idx < _n; _idx++)); do
+    lineno=$((_idx + 1))
+    line="${_flines[_idx]}"
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+
+    # HEREDOC BODIES ARE DATA, NOT CALL SITES (driver fold on rip-cage-54q3.6.4,
+    # 2026-09-04). Several tests -- THIS GUARD ABOVE ALL -- write throwaway
+    # fixture scripts with `cat > "$f" <<'"'"'FIXEOF'"'"' ... FIXEOF`. A destroy line
+    # inside such a body is text this file WRITES, never a teardown this file
+    # RUNS. Counting it put a phantom entry in the NOTE list that no conversion
+    # bead could ever fix, and would make this guard fail on itself the moment
+    # its own filename entered the enforced-scope ratchet.
+    # Deliberately naive: one delimiter at a time, no nesting, no unquoted
+    # interpolation subtleties -- that is the only heredoc shape this repo'"'"'s
+    # fixtures use, and a scanner that guessed more would be guessing.
+    if [[ -n "$_heredoc_delim" ]]; then
+      [[ "$trimmed" == "$_heredoc_delim" ]] && _heredoc_delim=""
+      continue
+    fi
+    if [[ "$line" =~ $HEREDOC_OPEN_RE ]]; then
+      _heredoc_delim="${BASH_REMATCH[1]}"
+      continue
+    fi
+
+    [[ -z "$trimmed" || "$trimmed" == \#* ]] && continue
+
+    echo "$line" | grep -qE "$DESTROY_FORCE_RE" || continue
+
+    var=$(echo "$line" | sed -E 's/.*destroy[[:space:]]+--force[[:space:]]+//' \
+            | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' | head -1 | tr -d '${}')
+
+    # (c) inline justification on the line immediately above.
+    if [[ "$_idx" -gt 0 ]]; then
+      prev_trimmed="${_flines[_idx-1]#"${_flines[_idx-1]%%[![:space:]]*}"}"
+      if [[ "$prev_trimmed" =~ $SWALLOW_OK_RE ]]; then
+        continue
+      fi
+    fi
+
+    # (a) file sources the lib AND this same variable is also registered.
+    if [[ "$_sources_lib" -eq 1 && -n "$var" && -n "${_registered[$var]:-}" ]]; then
+      continue
+    fi
+
+    # (b) status read and reported (windowed heuristic).
+    if _destroy_site_status_reported "$_idx" "$_n"; then
+      continue
+    fi
+
+    DESTROY_SWALLOW_LINES+=("${base}:${lineno}: ${trimmed}")
+  done
+}
+
+# ============================================================================
 # Case 1: NEGATIVE CONTROL + POSITIVE (clean) fixtures.
 #
 # A guard with no proof it can fail is worthless. This case writes a
@@ -247,7 +436,8 @@ echo ""
 echo "--- Case 1: detector self-test (negative control + clean fixtures) ---"
 
 FIXTURE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-teardown-guard-selftest-XXXXXX")
-trap 'rm -rf "$FIXTURE_DIR"' EXIT
+DESTROY_FIXTURE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-destroy-swallow-selftest-XXXXXX")
+trap 'rm -rf "$FIXTURE_DIR" "$DESTROY_FIXTURE_DIR"' EXIT
 
 # 1a. LEAKING fixture: a REAL rc-up-shaped cage (name read back from the
 # creation call's JSON via `jq -r '.name'` -- the volume-bearing idiom, per
@@ -437,7 +627,147 @@ else
   fail "positive controls: detector false-positived on a correctly-paired or prose-only fixture" "$_clean_flagged"
 fi
 
-rm -rf "$FIXTURE_DIR"
+# ----------------------------------------------------------------------------
+# Case 1 (continued, rip-cage-54q3.6.4): `<rc-wrapper> destroy --force`
+# swallow-detector self-test -- same negative-control + clean-fixture shape
+# as above, scanned in its own throwaway dir so its fixtures never mix with
+# the msb-remove detector's fixtures above.
+# ----------------------------------------------------------------------------
+
+# 1k. LEAKING: bare `|| true`, no register, no status read -> MUST be flagged.
+cat > "${DESTROY_FIXTURE_DIR}/test-fixture-destroy-leaking-bare.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+C="fake-destroy-leak-cage-$$"
+"$RC" destroy --force "$C" >/dev/null 2>&1 || true
+FIXEOF
+
+# 1l. LEAKING: `[[ -n "$C" ]] && ... >/dev/null 2>&1` -- status discarded by
+# the `&&` chain (no `|| true` even, just never checked) -> MUST be flagged.
+cat > "${DESTROY_FIXTURE_DIR}/test-fixture-destroy-leaking-and-chain.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+C="fake-destroy-leak-bare-cage-$$"
+[[ -n "$C" ]] && "$RC" destroy --force "$C" >/dev/null 2>&1
+FIXEOF
+
+# 1m. CLEAN via (a): sources tests/_scratch-cage-lib.sh AND registers the
+# SAME variable that is also manually destroyed mid-test.
+cat > "${DESTROY_FIXTURE_DIR}/test-fixture-destroy-clean-lib-registered.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+C="fake-destroy-clean-registered-$$"
+scratch_cage_register "$C"
+"$RC" destroy --force "$C" >/dev/null 2>&1 || true
+FIXEOF
+
+# 1n. CLEAN via (b): captures output + $? and echoes a named failure to
+# stderr (the tests/_scratch-cage-lib.sh:58 shape).
+cat > "${DESTROY_FIXTURE_DIR}/test-fixture-destroy-clean-status-reported.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+C="fake-destroy-clean-reported-$$"
+DESTROY_OUT=$("$RC" destroy --force "$C" 2>&1)
+DESTROY_RC=$?
+if [[ "$DESTROY_RC" -ne 0 ]]; then
+  echo "destroy failed for cage $C (exit $DESTROY_RC): $DESTROY_OUT" >&2
+fi
+FIXEOF
+
+# 1o. CLEAN via (b), the `if ! ...; then echo ... >&2; fi` shape.
+cat > "${DESTROY_FIXTURE_DIR}/test-fixture-destroy-clean-if-bang.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+C="fake-destroy-clean-ifbang-$$"
+if ! "$RC" destroy --force "$C" >/dev/null 2>&1; then
+  echo "destroy failed for cage $C (exit $?)" >&2
+fi
+FIXEOF
+
+# 1p. CLEAN via (c): inline `# swallow-ok(<bead-id>): <reason>` justification
+# on the line immediately above.
+cat > "${DESTROY_FIXTURE_DIR}/test-fixture-destroy-clean-justified.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+C="fake-destroy-clean-justified-$$"
+# swallow-ok(rip-cage-54q3.6.4): pre-emptive cleanup of a cage that may not exist yet
+"$RC" destroy --force "$C" >/dev/null 2>&1 || true
+FIXEOF
+
+# 1q. CLEAN prose-only control (mirrors tests/run-one.sh:103,
+# tests/run-host.sh:921, tests/test-scratch-cage-cleanup.sh:158): a line
+# that merely PRINTS "rc destroy --force $x" as operator advice -- a
+# colon-space before `rc`, never a command-boundary character -- must never
+# be mistaken for an invocation.
+cat > "${DESTROY_FIXTURE_DIR}/test-fixture-destroy-clean-prose-only.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+# doc note: cleanup advice mentions `rc destroy --force` as a manual remedy
+echo "  If it is stale debris, clean it up yourself: rc destroy --force ${_cname}"
+FIXEOF
+
+# CLEAN fixture: a swallowed destroy that lives inside a HEREDOC BODY -- i.e.
+# text this file WRITES into a throwaway fixture, not a teardown this file
+# RUNS. This guard is itself the biggest instance of the shape (every Case 1
+# and Case 2 fixture above is a heredoc), and before the skip landed the live
+# scan reported a phantom site inside its own fixture text.
+cat > "${DESTROY_FIXTURE_DIR}/test-fixture-destroy-clean-heredoc-body.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+# The destroy below is DATA: it is written into a child script, never run here.
+cat > "${T}/inner-fixture.sh" <<'INNEREOF'
+"$RC" destroy --force "$INNER_CAGE" >/dev/null 2>&1 || true
+INNEREOF
+echo "wrote a fixture; destroyed nothing"
+FIXEOF
+
+scan_dir_for_destroy_swallows "$DESTROY_FIXTURE_DIR"
+
+_dbare_flagged=0
+_dand_flagged=0
+_dclean_flagged=""
+for _entry in "${DESTROY_SWALLOW_LINES[@]+"${DESTROY_SWALLOW_LINES[@]}"}"; do
+  case "$_entry" in
+    test-fixture-destroy-leaking-bare.sh:*) _dbare_flagged=1 ;;
+    test-fixture-destroy-leaking-and-chain.sh:*) _dand_flagged=1 ;;
+    test-fixture-destroy-clean-*) _dclean_flagged="${_dclean_flagged}${_entry}; " ;;
+  esac
+done
+
+if [[ "$_dbare_flagged" -eq 1 ]]; then
+  pass "destroy-swallow negative control: bare '|| true' with no register/status-read REDS (proves the detector can fail)"
+else
+  fail "destroy-swallow negative control: the bare '|| true' swallow fixture was NOT flagged -- detector is not red-capable"
+fi
+
+if [[ "$_dand_flagged" -eq 1 ]]; then
+  pass "destroy-swallow negative control: bare '&&'-chained call with discarded status REDS"
+else
+  fail "destroy-swallow negative control: the '&&'-chained swallow fixture was NOT flagged"
+fi
+
+_dheredoc_flagged=0
+for _entry in "${DESTROY_SWALLOW_LINES[@]+"${DESTROY_SWALLOW_LINES[@]}"}"; do
+  case "$_entry" in
+    test-fixture-destroy-clean-heredoc-body.sh:*) _dheredoc_flagged=1 ;;
+  esac
+done
+if [[ "$_dheredoc_flagged" -eq 0 ]]; then
+  pass "destroy-swallow positive control: a swallowed destroy inside a HEREDOC BODY is data, not a call site, and stays clean"
+else
+  fail "destroy-swallow positive control: detector counted a heredoc-body line as a real call site (this guard's own fixtures are heredocs -- it would flag itself)"
+fi
+
+if [[ -z "$_dclean_flagged" ]]; then
+  pass "destroy-swallow positive controls: lib-registered / status-reported / if-bang / justified / prose-only / heredoc-body fixtures are all correctly left clean"
+else
+  fail "destroy-swallow positive controls: detector false-positived on a correctly-handled or prose-only fixture" "$_dclean_flagged"
+fi
+
+rm -rf "$FIXTURE_DIR" "$DESTROY_FIXTURE_DIR"
 trap - EXIT
 
 # ============================================================================
@@ -463,6 +793,58 @@ else
        "fix: either scratch_cage_register the cage in tests/_scratch-cage-lib.sh, or pair the msb remove with an explicit msb volume remove by name (never a rc-state-*/rc-history-* wildcard sweep)"
   for _entry in "${LEAK_LINES[@]}"; do
     echo "  LEAK: ${_entry}"
+  done
+fi
+
+echo ""
+
+# ============================================================================
+# Case 3 (rip-cage-54q3.6.4): live scan of tests/*.sh for silently-swallowed
+# `<rc-wrapper> destroy --force` call sites -- RATCHETED, same shape as
+# tests/test-rc-decomposition-structure.sh case (h) (rip-cage-q4t6).
+#
+# DESTROY_ENFORCED_SCOPE_FILES is a RATCHET, not an exemption list: it
+# starts EMPTY on purpose, so this guard lands green today with zero call
+# sites converted. Sibling conversion beads move a file into this list, one
+# file at a time, once every swallow site in that file has been converted
+# to a recognized clean shape ((a)/(b)/(c) above). Everything still outside
+# the ratchet is reported as a non-failing NOTE with a total count -- never
+# silently dropped, never a reason to fail this guard.
+# ============================================================================
+echo "--- Case 3: live scan of tests/*.sh for silently-swallowed rc destroy --force (ratchet) ---"
+
+DESTROY_ENFORCED_SCOPE_FILES=()
+
+scan_dir_for_destroy_swallows "$SCRIPT_DIR"
+
+_d3_in_scope=""
+_d3_out_of_scope=""
+_d3_out_count=0
+for _entry in "${DESTROY_SWALLOW_LINES[@]+"${DESTROY_SWALLOW_LINES[@]}"}"; do
+  _d3_file="${_entry%%:*}"
+  _d3_hit=0
+  for _sf in "${DESTROY_ENFORCED_SCOPE_FILES[@]+"${DESTROY_ENFORCED_SCOPE_FILES[@]}"}"; do
+    [[ "$_d3_file" == "$_sf" ]] && _d3_hit=1 && break
+  done
+  if [[ "$_d3_hit" -eq 1 ]]; then
+    _d3_in_scope="${_d3_in_scope}${_entry}"$'\n'
+  else
+    _d3_out_of_scope="${_d3_out_of_scope}${_entry}"$'\n'
+    _d3_out_count=$((_d3_out_count + 1))
+  fi
+done
+
+if [[ -n "$_d3_out_of_scope" ]]; then
+  echo "NOTE (Case 3): ${_d3_out_count} silently-swallowed rc destroy --force site(s) found OUTSIDE the enforced-scope ratchet (follow-up conversion work, not a failure here):"
+  echo "$_d3_out_of_scope" | sed '/^$/d' | sed 's/^/    /'
+fi
+
+if [[ -z "$_d3_in_scope" ]]; then
+  pass "live scan (Case 3): zero silently-swallowed rc destroy --force call(s) in the enforced-scope ratchet"
+else
+  fail "live scan (Case 3): silently-swallowed rc destroy --force call(s) in enforced-scope files -- fix: (a) scratch_cage_register the same variable after sourcing tests/_scratch-cage-lib.sh, (b) read the status and report a named stderr failure, or (c) an inline # swallow-ok(<bead-id>): <reason> comment on the line above"
+  echo "$_d3_in_scope" | sed '/^$/d' | while IFS= read -r _d3_line; do
+    echo "  SWALLOW: ${_d3_line}"
   done
 fi
 
