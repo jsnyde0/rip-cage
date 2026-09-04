@@ -58,6 +58,10 @@ RH_DRY_RUN=false
 RH_LIST_MODE=false
 RH_LEDGER_SUMMARY_MODE=false
 RH_LEDGER_SUMMARY_FILES=()
+# rip-cage-or84: image_digest captured at run START (by _rh_ledger_write_
+# header, regardless of whether a ledger is configured) so the run-end
+# CAVEAT check below has something to compare against.
+RH_START_IMAGE_DIGEST=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -252,6 +256,28 @@ _rh_ledger_row() {
   printf '%s|%s|%s|%s|%s\n' "$base" "$status" "$dur" "$reason" "$ts" >> "$RH_LEDGER_PATH"
 }
 
+# rip-cage-or84: shared rip-cage:latest image-digest resolver, used for both
+# the ledger header's START value (_rh_ledger_write_header below) and the
+# run-end CAVEAT comparison (_rh_check_image_tag_moved). Docker-unreachable
+# falls back to "unavailable" rather than aborting (set -e safe: the
+# fallback assignment always leaves the function's own exit status 0).
+# Honors RC_TEST_STAMP_IMAGE_DIGEST (rip-cage-7atw.15) so a pinned
+# batch-capture run compares its fixed pin against itself (never a spurious
+# CAVEAT) instead of against live docker state the pin exists to decouple
+# from.
+_rh_resolve_image_digest() {
+  if [[ -n "${RC_TEST_STAMP_IMAGE_DIGEST:-}" ]]; then
+    echo "$RC_TEST_STAMP_IMAGE_DIGEST"
+    return 0
+  fi
+  local digest="unavailable"
+  if command -v docker >/dev/null 2>&1; then
+    digest="$(docker image inspect --format '{{.Id}}' rip-cage:latest 2>/dev/null || true)"
+    [[ -z "$digest" ]] && digest="unavailable"
+  fi
+  echo "$digest"
+}
+
 # One header line per invocation, stamping commit + rip-cage:latest image
 # digest + RC_E2E on/off + timestamp. Docker-unreachable must not crash the
 # driver — falls back to "unavailable".
@@ -265,26 +291,47 @@ _rh_ledger_row() {
 # coherence check even though every file ran against the SAME intended
 # baseline. Pinning lets the capturer fix one identity for the whole run.
 # Unset (the default) = today's per-invocation auto-derivation, unchanged.
+#
+# rip-cage-or84: RH_START_IMAGE_DIGEST is captured HERE unconditionally
+# (even with no --ledger configured) so _rh_check_image_tag_moved at run end
+# always has a START value to compare against — the ledger-file write itself
+# still only happens when RH_LEDGER_PATH is set.
 _rh_ledger_write_header() {
-  [[ -z "$RH_LEDGER_PATH" ]] && return 0
   local commit img_digest e2e_flag ts
   if [[ -n "${RC_TEST_STAMP_COMMIT:-}" ]]; then
     commit="$RC_TEST_STAMP_COMMIT"
   else
     commit="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
   fi
-  if [[ -n "${RC_TEST_STAMP_IMAGE_DIGEST:-}" ]]; then
-    img_digest="$RC_TEST_STAMP_IMAGE_DIGEST"
-  else
-    img_digest="unavailable"
-    if command -v docker >/dev/null 2>&1; then
-      img_digest="$(docker image inspect --format '{{.Id}}' rip-cage:latest 2>/dev/null || true)"
-      [[ -z "$img_digest" ]] && img_digest="unavailable"
-    fi
-  fi
+  img_digest="$(_rh_resolve_image_digest)"
+  RH_START_IMAGE_DIGEST="$img_digest"
+  [[ -z "$RH_LEDGER_PATH" ]] && return 0
   e2e_flag="${RC_E2E:-0}"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf '#RUN commit=%s image_digest=%s rc_e2e=%s timestamp=%s\n' "$commit" "$img_digest" "$e2e_flag" "$ts" >> "$RH_LEDGER_PATH"
+}
+
+# rip-cage-or84: run-end counterpart to the ledger header's START
+# image_digest. Re-resolves the digest AFTER _run_all_tests has finished and,
+# if it differs from the START value captured in _rh_ledger_write_header,
+# prints an advisory CAVEAT naming the mid-run tag move as a named condition
+# -- so any image-dependent probe failure in this run is not read as a bare,
+# uninformative red (rip-cage-or84 / rip-cage-sw6s).
+#
+# Advisory only: this function only ever echoes; it never sets FAILURES,
+# never touches PASS_COUNT/FAILED_TESTS, and never exits. A tag move must
+# not turn a PASS into a FAIL or otherwise change run-host.sh's exit status.
+_rh_check_image_tag_moved() {
+  local end_digest
+  end_digest="$(_rh_resolve_image_digest)"
+  if [[ -n "$RH_START_IMAGE_DIGEST" && "$RH_START_IMAGE_DIGEST" != "unavailable" \
+        && -n "$end_digest" && "$end_digest" != "unavailable" \
+        && "$RH_START_IMAGE_DIGEST" != "$end_digest" ]]; then
+    echo ""
+    echo "CAVEAT: rip-cage:latest MOVED during this run (image_digest ${RH_START_IMAGE_DIGEST} at start -> ${end_digest} at end)."
+    echo "        Any image-dependent probe failure above may be attributable to that mid-run tag move, not to the code under test."
+    echo "        See rip-cage-or84 (this guard) and rip-cage-sw6s (the incident it closes)."
+  fi
 }
 
 # A batched real-world run (e.g. a multi-hour, kill-resumable baseline
@@ -913,6 +960,9 @@ if [[ ${#SKIPPED_TESTS[@]} -gt 0 ]]; then
     echo "    - ${_st}"
   done
 fi
+# rip-cage-or84: advisory-only, never touches exit status (see the
+# function's own header comment).
+_rh_check_image_tag_moved
 echo "=== run-host.sh complete ==="
 
 if [[ ${#FAILED_TESTS[@]} -gt 0 ]]; then

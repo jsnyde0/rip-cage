@@ -197,14 +197,13 @@ AM_CREATED_CAGES=()
 _am_track_cage() {
   [[ -n "${1:-}" ]] && AM_CREATED_CAGES+=("$1")
 }
-# rip-cage-7atw.9: IMAGE-CLOBBER GUARD state. The build below overwrites
-# rip-cage:latest with this fixture's image (am + herdr baked in); these
-# track the pre-build state so cleanup() can restore rip-cage:latest to be
-# BYTE-IDENTICAL to what it was before this test ran. Mirrors
-# test-multiplexer-lifecycle.sh's MUX_SAVED_LATEST/MUX_HAD_LATEST +
-# _mux_restore_latest save/restore pattern (:112-169).
-AM_SAVED_LATEST=""
-AM_HAD_LATEST=0
+# rip-cage-or84: the build below now targets a scratch RC_IMAGE tag directly
+# (never rip-cage:latest) — same conversion applied to
+# test-multiplexer-lifecycle.sh's _mux_build_combined_image. rip-cage:latest
+# is never inspected/tagged/moved by this test, so there is no pre-build
+# state to save and no post-test restore. AM_IMAGE_TAG holds the scratch tag
+# so cleanup() can reap it.
+AM_IMAGE_TAG=""
 
 # ---------------------------------------------------------------------------
 # Cleanup trap
@@ -228,29 +227,22 @@ cleanup() {
   if [[ -n "${AM_TMP:-}" ]]; then
     rm -rf "$AM_TMP"
   fi
-  # rip-cage-7atw.9 IMAGE-CLOBBER GUARD: restore rip-cage:latest to its
-  # pre-test state (byte-identical) — see _mux_restore_latest.
-  if [[ -n "${AM_SAVED_LATEST:-}" ]]; then
-    if [[ "${AM_HAD_LATEST:-0}" -eq 1 ]]; then
-      docker tag "${AM_SAVED_LATEST}" rip-cage:latest 2>/dev/null || true
-    else
-      docker image rm rip-cage:latest 2>/dev/null || true
-    fi
-    docker image rm "${AM_SAVED_LATEST}" 2>/dev/null || true
-    AM_SAVED_LATEST=""
+  # rip-cage-or84: rip-cage:latest is never touched by this test's build (see
+  # AM_IMAGE_TAG below) — this only reaps the scratch image tag.
+  if [[ -n "${AM_IMAGE_TAG:-}" ]]; then
+    docker image rm "${AM_IMAGE_TAG}" 2>/dev/null || true
+    AM_IMAGE_TAG=""
   fi
 }
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# rip-cage-7atw.9 IMAGE-CLOBBER GUARD: save rip-cage:latest BEFORE the build
-# below overwrites it. Mirrors test-multiplexer-lifecycle.sh :123-127.
+# rip-cage-or84: build the fixture image under its own scratch tag rather
+# than into rip-cage:latest. Mirrors test-multiplexer-lifecycle.sh's
+# _mux_build_combined_image RC_IMAGE-pinned build.
 # ---------------------------------------------------------------------------
 _am_tag_suffix="$(date +%s)-$$"
-if docker image inspect rip-cage:latest >/dev/null 2>&1; then
-  AM_SAVED_LATEST="rip-cage:am-concurrent-saved-${_am_tag_suffix}"
-  docker tag rip-cage:latest "${AM_SAVED_LATEST}" 2>/dev/null && AM_HAD_LATEST=1
-fi
+AM_IMAGE_TAG="rip-cage:am-concurrent-${_am_tag_suffix}"
 
 # ---------------------------------------------------------------------------
 # Build the agent_mail fixture image using swv's own concurrent fixture
@@ -265,7 +257,7 @@ cp "${FIXTURE_FILE}" "${T2_BUILD_MANIFEST_HOME}/.config/rip-cage/tools.yaml"
 
 build_rc=0
 echo "[setup] Building cage image with swv concurrent manifest (may take a moment if not cached)..."
-build_out=$(HOME="$T2_BUILD_MANIFEST_HOME" MSB_HOME="$REAL_MSB_HOME" \
+build_out=$(RC_IMAGE="$AM_IMAGE_TAG" HOME="$T2_BUILD_MANIFEST_HOME" MSB_HOME="$REAL_MSB_HOME" \
   XDG_CONFIG_HOME="${T2_BUILD_MANIFEST_HOME}/.config" \
   "${RC}" build 2>&1) || build_rc=$?
 
@@ -273,15 +265,15 @@ if [[ "$build_rc" -ne 0 ]]; then
   fail "SETUP: cage image build failed" "exit=${build_rc} last30: $(echo "$build_out" | tail -30)"
   exit $FAILURES
 fi
-echo "[setup] Image built: rip-cage:latest"
+echo "[setup] Image built: ${AM_IMAGE_TAG} (rip-cage:latest untouched)"
 
 # ---------------------------------------------------------------------------
 # Positive fixture-built sentinel: verify am binary is in the built image
 # ---------------------------------------------------------------------------
 am_check=""
-am_check=$(docker run --rm rip-cage:latest which am 2>/dev/null)
+am_check=$(docker run --rm "$AM_IMAGE_TAG" which am 2>/dev/null)
 if [[ -z "$am_check" ]]; then
-  fail "SETUP: am binary not found in rip-cage:latest after build — fixture image missing am"
+  fail "SETUP: am binary not found in ${AM_IMAGE_TAG} after build — fixture image missing am"
   exit $FAILURES
 fi
 pass "Setup: am binary present in fixture image ($am_check)"
@@ -290,9 +282,9 @@ pass "Setup: am binary present in fixture image ($am_check)"
 # this fixture now bakes herdr (see manifest-agent-mail-concurrent.yaml) as
 # the session-spawner INFRA for the two concurrent named pi agents below.
 herdr_check=""
-herdr_check=$(docker run --rm rip-cage:latest which herdr 2>/dev/null)
+herdr_check=$(docker run --rm "$AM_IMAGE_TAG" which herdr 2>/dev/null)
 if [[ -z "$herdr_check" ]]; then
-  fail "SETUP: herdr binary not found in rip-cage:latest after build — fixture image missing herdr"
+  fail "SETUP: herdr binary not found in ${AM_IMAGE_TAG} after build — fixture image missing herdr"
   exit $FAILURES
 fi
 pass "Setup: herdr binary present in fixture image ($herdr_check)"
@@ -343,7 +335,11 @@ CONTAINER_NAME="rc-am-concurrent-mail-fixture"
 # a prior aborted run (never an enumerate/glob match).
 "$RC" destroy --force "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
-"$RC" up "$WORKSPACE" </dev/null >/tmp/rc-am-concurrent-up.out 2>&1 || true
+# rip-cage-or84: boot from the scratch AM_IMAGE_TAG via RC_IMAGE — this cage
+# must be addressed with the same RC_IMAGE for its whole lifetime (cli/up.sh's
+# image-drift guard), but every other call site below is "$RC" exec/destroy
+# on an already-running cage by name, which does not consult RC_IMAGE.
+RC_IMAGE="$AM_IMAGE_TAG" "$RC" up "$WORKSPACE" </dev/null >/tmp/rc-am-concurrent-up.out 2>&1 || true
 _am_track_cage "$CONTAINER_NAME"
 
 if ! "$RC" ls --output json | jq -e --arg n "$CONTAINER_NAME" '.[] | select(.name==$n and .status=="running")' >/dev/null 2>&1; then

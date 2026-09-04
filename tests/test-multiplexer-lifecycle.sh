@@ -109,8 +109,6 @@ fi
 # ---------------------------------------------------------------------------
 MUX_COMBINED_FIXTURE="${SCRIPT_DIR}/fixtures/manifest-mux-combined.yaml"
 MUX_COMBINED_IMAGE=""
-MUX_SAVED_LATEST=""
-MUX_HAD_LATEST=0
 
 # ---------------------------------------------------------------------------
 # rip-cage-l72i.7: DCG+herdr+pi composed fixture (three-conjunction test)
@@ -118,18 +116,23 @@ MUX_HAD_LATEST=0
 #
 # rip-cage-2mpn: RC_IMAGE override, same shape as tests/test-manifest-tool-
 # init-hook.sh's T2a/T2b (RC_IMAGE="$image_name" ... "$RC" build) and rc's own
-# `IMAGE="${RC_IMAGE:-rip-cage:latest}"` default (rc:45). Default (RC_IMAGE
-# unset) resolves to rip-cage:latest — zero behavior change: the build still
-# tags rip-cage:latest and the existing save/tag/restore dance below still
-# runs. When the caller sets RC_IMAGE to a dedicated tag, the DCGHP build
-# targets that tag DIRECTLY (rc build honors RC_IMAGE natively) and
-# rip-cage:latest is never read or written by the build, so the epic-close
-# gate can run RC_E2E_DCGHP_ONLY=1 without clobbering the daily driver.
+# `IMAGE="${RC_IMAGE:-rip-cage:latest}"` default (rc:45). When the caller sets
+# RC_IMAGE to a dedicated tag, the DCGHP build targets that tag DIRECTLY (rc
+# build honors RC_IMAGE natively); rip-cage:latest is never read or written
+# by the build, so the epic-close gate can run RC_E2E_DCGHP_ONLY=1 without
+# clobbering the daily driver.
+#
+# rip-cage-or84: when the caller leaves RC_IMAGE unset, _dcg_herdr_pi_build_
+# image now generates its OWN scratch tag rather than falling through to the
+# old save-:latest-aside/build-untagged/retag/restore dance — the mid-run
+# rip-cage:latest move (and the false-red probe failures it produced
+# elsewhere in the suite) was the defect this bead exists to close, and it
+# fired on this default path too, not only when a caller opted in via
+# RC_IMAGE. DCGHP_IMAGE_TAG stays a plain marker for "did the caller
+# override?" (see _dcg_herdr_pi_build_image below).
 # ---------------------------------------------------------------------------
 DCG_HERDR_PI_FIXTURE="${SCRIPT_DIR}/fixtures/manifest-dcg-herdr-pi.yaml"
 DCG_HERDR_PI_IMAGE=""
-DCG_HERDR_PI_SAVED_LATEST=""
-DCG_HERDR_PI_HAD_LATEST=0
 DCGHP_IMAGE_TAG="${RC_IMAGE:-rip-cage:latest}"
 
 _mux_build_combined_image() {
@@ -143,51 +146,45 @@ _mux_build_combined_image() {
 
   local unique_suffix
   unique_suffix="$(date +%s)-$$"
-  MUX_SAVED_LATEST="rip-cage:mux-lifecycle-saved-${unique_suffix}"
-  MUX_HAD_LATEST=0
-  if docker image inspect rip-cage:latest >/dev/null 2>&1; then
-    docker tag rip-cage:latest "${MUX_SAVED_LATEST}" 2>/dev/null && MUX_HAD_LATEST=1
-  fi
+  local mux_image_tag="rip-cage:mux-lifecycle-combined-${unique_suffix}"
 
   local mux_build_home
   mux_build_home=$(mktemp -d)
   mkdir -p "${mux_build_home}/.config/rip-cage"
   cp "$MUX_COMBINED_FIXTURE" "${mux_build_home}/.config/rip-cage/tools.yaml"
-  echo "=== Building combined tmux+herdr registry image (manifest-mux-combined.yaml) ==="
+  echo "=== Building combined tmux+herdr registry image (manifest-mux-combined.yaml) -> ${mux_image_tag} ==="
   local mux_build_rc=0
-  HOME="$mux_build_home" MSB_HOME="$REAL_MSB_HOME" XDG_CONFIG_HOME="${mux_build_home}/.config" \
+  # rip-cage-or84: RC_IMAGE-pinned build — same shape as the DCGHP override
+  # arm below (rip-cage-2mpn). rip-cage:latest is never inspected, tagged, or
+  # overwritten by this build, so there is nothing to save aside or restore:
+  # a mid-run tag move of the operator's own rip-cage:latest was the defect
+  # (rip-cage-or84) — a concurrent host suite run (or the operator's own `rc
+  # build`) racing against the old save/retag/restore dance is what produced
+  # the false-red pi-install failure that opened this bead.
+  RC_IMAGE="$mux_image_tag" HOME="$mux_build_home" MSB_HOME="$REAL_MSB_HOME" XDG_CONFIG_HOME="${mux_build_home}/.config" \
     "$RC" build >/tmp/rc-mux-lifecycle-combined-build.out 2>&1 || mux_build_rc=$?
   rm -rf "$mux_build_home"
 
   if [[ "$mux_build_rc" -ne 0 ]]; then
     fail "combined mux registry image build FAILED (see /tmp/rc-mux-lifecycle-combined-build.out)"
     echo "FATAL: cannot run mux lifecycle tests without the combined registry image"
-    # Restore rip-cage:latest so we leave the user's system in a good state
-    if [[ "${MUX_HAD_LATEST}" -eq 1 ]]; then
-      docker tag "${MUX_SAVED_LATEST}" rip-cage:latest 2>/dev/null || true
-    fi
-    docker image rm "${MUX_SAVED_LATEST}" 2>/dev/null || true
+    docker image rm "${mux_image_tag}" 2>/dev/null || true
     exit 1
   fi
 
-  MUX_COMBINED_IMAGE="rip-cage:mux-lifecycle-combined-${unique_suffix}"
-  docker tag rip-cage:latest "${MUX_COMBINED_IMAGE}" 2>/dev/null || true
+  MUX_COMBINED_IMAGE="$mux_image_tag"
   pass "combined mux registry image built: ${MUX_COMBINED_IMAGE} (tmux+herdr MULTIPLEXER providers baked)"
 }
 
 _mux_restore_latest() {
+  # rip-cage-or84: _mux_build_combined_image now targets a scratch RC_IMAGE
+  # tag directly and never touches rip-cage:latest (see comment above), so
+  # there is nothing to restore here — only the scratch tag itself needs
+  # cleanup. Name kept (call site + trap comments reference it) even though
+  # "restore" no longer describes what it does.
   if [[ -n "${MUX_COMBINED_IMAGE:-}" ]]; then
     docker image rm "${MUX_COMBINED_IMAGE}" 2>/dev/null || true
     MUX_COMBINED_IMAGE=""
-  fi
-  if [[ -n "${MUX_SAVED_LATEST:-}" ]]; then
-    if [[ "${MUX_HAD_LATEST:-0}" -eq 1 ]]; then
-      docker tag "${MUX_SAVED_LATEST}" rip-cage:latest 2>/dev/null || true
-    else
-      docker image rm rip-cage:latest 2>/dev/null || true
-    fi
-    docker image rm "${MUX_SAVED_LATEST}" 2>/dev/null || true
-    MUX_SAVED_LATEST=""
   fi
 }
 
@@ -198,13 +195,13 @@ _mux_restore_latest() {
 # pattern). Called lazily (once) before the three-conjunction test. Idempotent:
 # returns 0 immediately if already built.
 #
-# rip-cage-2mpn: branches on DCGHP_IMAGE_TAG (RC_IMAGE override, default
-# rip-cage:latest).
-#   - Override set (DCGHP_IMAGE_TAG != rip-cage:latest): rc build targets the
-#     override tag directly; rip-cage:latest is never touched.
-#   - Override unset (default): mirrors _mux_build_combined_image exactly —
-#     saves rip-cage:latest, builds (which tags rip-cage:latest), tags the
-#     result, restores the saved image on build failure.
+# rip-cage-2mpn / rip-cage-or84: DCGHP_IMAGE_TAG carries the caller's RC_IMAGE
+# override when set. Either way (override or not), the build below always
+# targets a concrete, non-":latest" tag via RC_IMAGE — rip-cage:latest is
+# NEVER inspected, tagged, or overwritten by this build. rip-cage-or84 closed
+# the last case that used to fall through to a save-:latest-aside/build-
+# untagged/retag/restore dance (the unset-RC_IMAGE default): it now generates
+# its own scratch tag instead, the same way _mux_build_combined_image does.
 # ---------------------------------------------------------------------------
 _dcg_herdr_pi_build_image() {
   if [[ -n "${DCG_HERDR_PI_IMAGE:-}" ]]; then
@@ -218,73 +215,41 @@ _dcg_herdr_pi_build_image() {
   local unique_suffix
   unique_suffix="$(date +%s)-$$-dcghp"
 
+  local dcghp_image_tag="$DCGHP_IMAGE_TAG"
+  if [[ "$dcghp_image_tag" == "rip-cage:latest" ]]; then
+    # No caller override — generate our own scratch tag rather than building
+    # into rip-cage:latest (rip-cage-or84).
+    dcghp_image_tag="rip-cage:l72i7-dcghp-${unique_suffix}"
+  fi
+
   local dcghp_build_home
   dcghp_build_home=$(mktemp -d)
   mkdir -p "${dcghp_build_home}/.config/rip-cage"
   cp "$DCG_HERDR_PI_FIXTURE" "${dcghp_build_home}/.config/rip-cage/tools.yaml"
-  echo "=== Building DCG+herdr+pi composed image (manifest-dcg-herdr-pi.yaml) -> ${DCGHP_IMAGE_TAG} ==="
-
-  # rip-cage-2mpn: RC_IMAGE override path — rc build tags DCGHP_IMAGE_TAG
-  # directly. rip-cage:latest is never inspected/tagged, so there is nothing
-  # to save or restore around this build.
-  if [[ "$DCGHP_IMAGE_TAG" != "rip-cage:latest" ]]; then
-    local dcghp_build_rc=0
-    RC_IMAGE="$DCGHP_IMAGE_TAG" HOME="$dcghp_build_home" MSB_HOME="$REAL_MSB_HOME" XDG_CONFIG_HOME="${dcghp_build_home}/.config" \
-      "$RC" build >/tmp/rc-l72i7-dcghp-build.out 2>&1 || dcghp_build_rc=$?
-    rm -rf "$dcghp_build_home"
-
-    if [[ "$dcghp_build_rc" -ne 0 ]]; then
-      fail "(l72i7) DCG+herdr+pi image build FAILED (see /tmp/rc-l72i7-dcghp-build.out)"
-      echo "FATAL: cannot run l72i7 three-conjunction test without the composed image"
-      return 1
-    fi
-
-    DCG_HERDR_PI_IMAGE="$DCGHP_IMAGE_TAG"
-    pass "(l72i7) DCG+herdr+pi composed image built: ${DCG_HERDR_PI_IMAGE} (RC_IMAGE override — rip-cage:latest untouched)"
-    return 0
-  fi
-
-  # Default path (RC_IMAGE unset): unchanged from prior behavior — rc build
-  # tags rip-cage:latest, so we save/restore it around the build.
-  DCG_HERDR_PI_SAVED_LATEST="rip-cage:l72i7-saved-${unique_suffix}"
-  DCG_HERDR_PI_HAD_LATEST=0
-  if docker image inspect rip-cage:latest >/dev/null 2>&1; then
-    docker tag rip-cage:latest "${DCG_HERDR_PI_SAVED_LATEST}" 2>/dev/null && DCG_HERDR_PI_HAD_LATEST=1
-  fi
+  echo "=== Building DCG+herdr+pi composed image (manifest-dcg-herdr-pi.yaml) -> ${dcghp_image_tag} ==="
 
   local dcghp_build_rc=0
-  HOME="$dcghp_build_home" MSB_HOME="$REAL_MSB_HOME" XDG_CONFIG_HOME="${dcghp_build_home}/.config" \
+  RC_IMAGE="$dcghp_image_tag" HOME="$dcghp_build_home" MSB_HOME="$REAL_MSB_HOME" XDG_CONFIG_HOME="${dcghp_build_home}/.config" \
     "$RC" build >/tmp/rc-l72i7-dcghp-build.out 2>&1 || dcghp_build_rc=$?
   rm -rf "$dcghp_build_home"
 
   if [[ "$dcghp_build_rc" -ne 0 ]]; then
     fail "(l72i7) DCG+herdr+pi image build FAILED (see /tmp/rc-l72i7-dcghp-build.out)"
     echo "FATAL: cannot run l72i7 three-conjunction test without the composed image"
-    if [[ "${DCG_HERDR_PI_HAD_LATEST}" -eq 1 ]]; then
-      docker tag "${DCG_HERDR_PI_SAVED_LATEST}" rip-cage:latest 2>/dev/null || true
-    fi
-    docker image rm "${DCG_HERDR_PI_SAVED_LATEST}" 2>/dev/null || true
+    docker image rm "${dcghp_image_tag}" 2>/dev/null || true
     return 1
   fi
 
-  DCG_HERDR_PI_IMAGE="rip-cage:l72i7-dcghp-${unique_suffix}"
-  docker tag rip-cage:latest "${DCG_HERDR_PI_IMAGE}" 2>/dev/null || true
-  pass "(l72i7) DCG+herdr+pi composed image built: ${DCG_HERDR_PI_IMAGE}"
+  DCG_HERDR_PI_IMAGE="$dcghp_image_tag"
+  pass "(l72i7) DCG+herdr+pi composed image built: ${DCG_HERDR_PI_IMAGE} (rip-cage:latest untouched)"
 }
 
 _dcg_herdr_pi_restore_latest() {
-  # Only clean up the DCG+herdr+pi side-tag; rip-cage:latest restore is owned by
-  # _mux_restore_latest (which restores the user's original pre-test image).
-  # DCG_HERDR_PI_SAVED_LATEST points to the combined-mux image (what was
-  # rip-cage:latest when the DCG+herdr+pi build ran) — that image is managed
-  # as MUX_COMBINED_IMAGE by _mux_restore_latest, so we only clean the saved copy.
+  # rip-cage-or84: rip-cage:latest is never touched by this build (see
+  # _dcg_herdr_pi_build_image) — this only reaps the scratch image tag.
   if [[ -n "${DCG_HERDR_PI_IMAGE:-}" ]]; then
     docker image rm "${DCG_HERDR_PI_IMAGE}" 2>/dev/null || true
     DCG_HERDR_PI_IMAGE=""
-  fi
-  if [[ -n "${DCG_HERDR_PI_SAVED_LATEST:-}" ]]; then
-    docker image rm "${DCG_HERDR_PI_SAVED_LATEST}" 2>/dev/null || true
-    DCG_HERDR_PI_SAVED_LATEST=""
   fi
 }
 
@@ -322,17 +287,17 @@ CLEANUP() {
     "$RC" destroy --force "$c" >/dev/null 2>&1 || true
   done
   [[ -n "$MUX_TMP" ]] && rm -rf "$MUX_TMP"
-  # Restore rip-cage:latest if we swapped it for the combined build.
-  # _mux_restore_latest is idempotent (no-ops when MUX_SAVED_LATEST is empty).
+  # rip-cage-or84: rip-cage:latest is never touched by the combined build
+  # (see _mux_build_combined_image) — this only reaps the scratch image tag.
+  # _mux_restore_latest is idempotent (no-ops when MUX_COMBINED_IMAGE is empty).
   _mux_restore_latest
-  # Restore rip-cage:latest for the DCG+herdr+pi composed build (l72i7).
+  # Reap the DCG+herdr+pi composed build's scratch tag (l72i7).
   # _dcg_herdr_pi_restore_latest is idempotent.
   _dcg_herdr_pi_restore_latest
 }
-# Arm the trap BEFORE the first mutation (_mux_build_combined_image tags aside and
-# overwrites rip-cage:latest). An interrupt during the build would otherwise strand
-# a modified rip-cage:latest. MUX_TMP is still empty at this point, so the cage-
-# cleanup loop in CLEANUP is a safe no-op; _mux_restore_latest handles the image.
+# Arm the trap BEFORE the first mutation. MUX_TMP is still empty at this
+# point, so the cage-cleanup loop in CLEANUP is a safe no-op;
+# _mux_restore_latest/_dcg_herdr_pi_restore_latest handle their scratch tags.
 trap CLEANUP EXIT INT TERM
 
 # ---------------------------------------------------------------------------
@@ -388,10 +353,12 @@ done
 unset _c
 
 # Pre-cleanup: reap orphan l72i7 image tags from prior aborted DCGHP runs
-# (rip-cage-2mpn). rip-cage:l72i7-saved-*/l72i7-dcghp-* are throwaway side-tags
-# normally removed by _dcg_herdr_pi_restore_latest on a clean exit; a killed
-# run (SIGKILL, OOM) can strand one. Reaping is scoped to the l72i7- prefix so
-# it never touches rip-cage:latest or an unrelated image.
+# (rip-cage-2mpn / rip-cage-or84). rip-cage:l72i7-dcghp-* (and the retired
+# l72i7-saved-* prefix, kept in the pattern for leftovers from before or84's
+# fix) are throwaway side-tags normally removed by _dcg_herdr_pi_restore_
+# latest on a clean exit; a killed run (SIGKILL, OOM) can strand one. Reaping
+# is scoped to the l72i7- prefix so it never touches rip-cage:latest or an
+# unrelated image.
 for _orphan_tag in $(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E '^rip-cage:l72i7-(saved|dcghp)-' || true); do
   docker image rm "$_orphan_tag" >/dev/null 2>&1 || true
 done
@@ -569,7 +536,9 @@ echo ""
 # ---- none cage ----
 echo "--- Spinning up multiplexer=none cage (${NONE_CAGE}) ---"
 _create_workspace "$NONE_WS" "none"
-"$RC" up "$NONE_WS" </dev/null >/tmp/rc-mux-none-up.out 2>&1 || true
+# rip-cage-or84: boot from the combined-mux scratch tag via RC_IMAGE —
+# rip-cage:latest is never repointed to it (see _mux_build_combined_image).
+RC_IMAGE="$MUX_COMBINED_IMAGE" "$RC" up "$NONE_WS" </dev/null >/tmp/rc-mux-none-up.out 2>&1 || true
 _mux_track_cage "$NONE_CAGE"
 NONE_STARTED=false
 if "$RC" ls --output json | jq -e --arg n "$NONE_CAGE" '.[] | select(.name==$n)' >/dev/null 2>&1; then
@@ -582,7 +551,8 @@ fi
 # ---- tmux cage ----
 echo "--- Spinning up multiplexer=tmux cage (${TMUX_CAGE}) ---"
 _create_workspace "$TMUX_WS" "tmux"
-"$RC" up "$TMUX_WS" </dev/null >/tmp/rc-mux-tmux-up.out 2>&1 || true
+# rip-cage-or84: see NONE_WS up call above — same RC_IMAGE-pinned boot.
+RC_IMAGE="$MUX_COMBINED_IMAGE" "$RC" up "$TMUX_WS" </dev/null >/tmp/rc-mux-tmux-up.out 2>&1 || true
 _mux_track_cage "$TMUX_CAGE"
 TMUX_STARTED=false
 if "$RC" ls --output json | jq -e --arg n "$TMUX_CAGE" '.[] | select(.name==$n)' >/dev/null 2>&1; then
@@ -595,7 +565,8 @@ fi
 # ---- herdr cage ----
 echo "--- Spinning up multiplexer=herdr cage (${HERDR_CAGE}) ---"
 _create_workspace "$HERDR_WS" "herdr"
-"$RC" up "$HERDR_WS" </dev/null >/tmp/rc-mux-herdr-up.out 2>&1 || true
+# rip-cage-or84: see NONE_WS up call above — same RC_IMAGE-pinned boot.
+RC_IMAGE="$MUX_COMBINED_IMAGE" "$RC" up "$HERDR_WS" </dev/null >/tmp/rc-mux-herdr-up.out 2>&1 || true
 _mux_track_cage "$HERDR_CAGE"
 HERDR_STARTED=false
 if "$RC" ls --output json | jq -e --arg n "$HERDR_CAGE" '.[] | select(.name==$n)' >/dev/null 2>&1; then
@@ -1154,13 +1125,13 @@ else
     fail "(l72i7) DCG+herdr+pi cage failed to start (see /tmp/rc-l72i7-dcghp-up.out)"
   fi
 
-  # Restore the combined-mux image as rip-cage:latest after the DCG+herdr+pi build
-  # swapped it. The combined-mux image is still needed by the herdr lifecycle tests
-  # above (already run), but we want rip-cage:latest to refer to the combined-mux
-  # image for any remaining assertions. Re-tag it.
-  if [[ -n "${MUX_COMBINED_IMAGE:-}" ]]; then
-    docker tag "${MUX_COMBINED_IMAGE}" rip-cage:latest 2>/dev/null || true
-  fi
+  # rip-cage-or84: no rip-cage:latest re-tag needed here. Both builds above
+  # now target scratch RC_IMAGE tags directly (_mux_build_combined_image /
+  # _dcg_herdr_pi_build_image's RC_IMAGE-override arm) and nothing downstream
+  # in this file resolves rip-cage:latest for correctness — re-tagging it
+  # here would itself be exactly the mid-run move this bead exists to stop
+  # (and would defeat rip-cage-2mpn's whole point when the caller has set
+  # RC_IMAGE, since :latest was never swapped away in that case).
 fi
 
 if [[ "$_L72I7_CAGE_STARTED" == "true" ]]; then
