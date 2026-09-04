@@ -107,7 +107,19 @@ cmd_exec() {
   # Run the command via msb exec, propagating its exit code. msb exec is
   # non-interactive by default (no -i concept, unlike docker exec); pass
   # -t/--tty only when a real TTY is present (interactive use).
+  #
+  # rip-cage-uod6 (charted from rip-cage-54q3's root cause): the
+  # non-interactive path captures the wrapped command's stderr to a temp
+  # file (instead of letting it stream straight through) so an ENOENT-shaped
+  # failure can be checked and, when the cage's workspace source was
+  # deleted, prefixed with a fix-hint before msb's own (misleading -- msb
+  # chdir()s to Workdir=/workspace before spawning and reports the
+  # resulting ENOENT against the *program* name) text. Not done on the
+  # interactive (-t) path: a pty session merges stdout/stderr into one
+  # stream, so there is no separate stderr to inspect there.
   local exec_exit=0
+  local _exec_stderr_capture
+  _exec_stderr_capture=$(mktemp)
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     # ADR-003 D1: in JSON mode stdout carries ONLY the JSON envelope.
     # Route the wrapped command's stdout to stderr so a human still sees it,
@@ -115,15 +127,26 @@ cmd_exec() {
     if [[ -t 0 && -t 1 ]]; then
       _msb_exec_interactive "$name" -- "${exec_cmd[@]}" >&2 || exec_exit=$?
     else
-      _msb_exec "$name" -- "${exec_cmd[@]}" >&2 || exec_exit=$?
+      _msb_exec "$name" -- "${exec_cmd[@]}" >&2 2>"$_exec_stderr_capture" || exec_exit=$?
     fi
   else
     if [[ -t 0 && -t 1 ]]; then
       _msb_exec_interactive "$name" -- "${exec_cmd[@]}" || exec_exit=$?
     else
-      _msb_exec "$name" -- "${exec_cmd[@]}" || exec_exit=$?
+      _msb_exec "$name" -- "${exec_cmd[@]}" 2>"$_exec_stderr_capture" || exec_exit=$?
     fi
   fi
+
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    if [[ "$exec_exit" -ne 0 ]] && grep -qi 'ENOENT' "$_exec_stderr_capture" 2>/dev/null; then
+      local _exec_source_hint
+      if _exec_source_hint=$(_rc_source_path_missing_hint "$name"); then
+        echo "$_exec_source_hint" >&2
+      fi
+    fi
+    [[ -s "$_exec_stderr_capture" ]] && cat "$_exec_stderr_capture" >&2
+  fi
+  rm -f "$_exec_stderr_capture"
 
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local _cmd_str

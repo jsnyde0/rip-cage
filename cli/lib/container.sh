@@ -133,6 +133,41 @@ _rc_uptime_from_state() {
 }
 
 
+# _rc_source_path_missing_hint NAME [SOURCE_PATH] -- checks whether a cage's
+# rc.source.path label points at a host directory that no longer exists.
+# Echoes ONE "Fix-hint: ..." line naming the missing path and the destroy
+# remedy when it doesn't, echoes nothing and returns 1 when the path is
+# present OR the label itself is unset (nothing to check). Same underlying
+# "label missing or path gone" condition cli/reload.sh:112-114 and
+# cli/allowlist.sh:107-109 already abort loud on, but phrased as a
+# diagnostic "Fix-hint:" (the doctor.sh/reload.sh established prefix for a
+# repair suggestion, not an abort) and naming the actual path — those two
+# sites deliberately don't, since bead rip-cage-uod6 asks this hint to name
+# the missing path explicitly. SOURCE_PATH is optional: pass the caller's
+# already-resolved label (cmd_doctor already has it) to skip a second `msb
+# inspect` round-trip; omit it (or pass "") to have this helper resolve it
+# itself (cmd_exec's ENOENT path, which has no reason to have read the label
+# yet).
+#
+# Charted from rip-cage-54q3's root cause and shared by cmd_doctor's host-
+# workspace check and cmd_exec's ENOENT-shaped-failure hint (rip-cage-uod6):
+# a deleted host workspace leaves /workspace a dead virtiofs mount, and msb
+# chdir()s into Workdir=/workspace before spawning, so the raw exec error
+# reports ENOENT against the *program* name -- misleading. This hint names
+# the real cause instead.
+_rc_source_path_missing_hint() {
+  local name="$1" source_path="${2:-}"
+  if [[ -z "$source_path" ]]; then
+    source_path=$(_msb_label "$name" "rc.source.path" 2>/dev/null || true)
+  fi
+  if [[ -z "$source_path" || -d "$source_path" ]]; then
+    return 1
+  fi
+  echo "Fix-hint: workspace source deleted — '${source_path}' no longer exists on the host; remedy: rc destroy --force ${name}"
+  return 0
+}
+
+
 verify_rc_container() {
   local name="$1"
   local label

@@ -594,6 +594,14 @@ cmd_doctor() {
   local egress_config_override_label
   state=$(_msb_sandbox_state "$name" 2>/dev/null || echo "unknown")
   source_path=$(_msb_label "$name" "rc.source.path" || true)
+  # rip-cage-uod6 (charted from rip-cage-54q3's root cause): a host-side
+  # check, so it runs unconditionally here (works on stopped cages too,
+  # unlike the live exec-based probes below which only run when running).
+  # Empty when the path exists or the label is unset — nothing printed in
+  # that case (negative-control requirement: a healthy cage prints neither
+  # this hint nor cmd_exec's).
+  local source_path_missing_hint
+  source_path_missing_hint=$(_rc_source_path_missing_hint "$name" "$source_path" || true)
   # updated_at is the closest msb-side counterpart to docker's
   # State.StartedAt for uptime display (it changes on start/stop
   # transitions) — not a byte-identical semantic, an honest approximation.
@@ -820,6 +828,7 @@ cmd_doctor() {
     echo "Container:  $name"
     echo "State:      $state${running:+}$([[ $running -eq 1 ]] && echo " (up $uptime)")"
     echo "Workspace:  ${source_path:-<unset>}"
+    [[ -n "$source_path_missing_hint" ]] && echo "$source_path_missing_hint"
     echo ""
     echo "Labels:"
     echo "  rc.egress.config-override = $egress_config_override_label"
