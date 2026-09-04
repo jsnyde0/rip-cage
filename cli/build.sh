@@ -608,27 +608,95 @@ cmd_build() {
 # digest in msb's local cache (_msb_current_image_digest) — the same digest
 # comparator cli/lib/msb_runtime.sh's _msb_image_drift_status already trusts
 # for the single-cage resume-time check.
+#
+# rip-cage-5jrt: FAIL-LOUD rewrite. Before this bead, every early return
+# below had the same shape — "missing reference data == nothing to warn
+# about" — so a host where `msb image list` came back empty while live
+# rc-managed cages existed produced total silence: image provenance was
+# unverifiable and the operator was never told. Advisory posture is
+# unchanged (brain:rip-cage ruling, 2026-09-03): this function must still
+# NEVER change `rc build`'s exit code, gate the build, or abort — only its
+# SILENCE on a data-unavailable path is the bug, not its non-blocking
+# nature. Every early exit below is now classified inline as either
+# "nothing to check" (legitimately silent — there is genuinely nothing to
+# warn about) or "cannot check" (the data needed to answer the question is
+# missing/unreadable — must emit, naming the affected cage(s) and why).
+#
+# The caller-side `[[ "$_bt_tag_set" -eq 0 ]] &&` guard at cli/build.sh:556
+# and :582 (skip this whole function on a custom-tag build) was also
+# classified during this bead's sweep and deliberately LEFT ALONE — it is
+# rip-cage-fo4z F7's scope guard, not an early return inside this function,
+# and out of this bead's scope.
 _build_warn_stale_containers() {
-  local _just_built_digest
-  _just_built_digest=$(_msb_current_image_digest "$IMAGE" 2>/dev/null) || return 0
-  [[ -z "$_just_built_digest" ]] && return 0
+  # NOTHING TO CHECK: msb isn't installed at all, so no msb-backed rc cage
+  # could exist to warn about (matches _build_msb_load's own precedent,
+  # cli/build.sh:673 `command -v msb >/dev/null 2>&1 || return 0` — without
+  # this carve-out, every build on a Docker-only host would emit a spurious
+  # "cannot determine" warning below).
+  command -v msb >/dev/null 2>&1 || return 0
+
+  # CANNOT CHECK: the just-built image's digest could not be read from
+  # msb's local image cache — either `msb image list` itself failed/came
+  # back empty (empty msb image index) or the digest lookup for $IMAGE
+  # specifically came back empty. Do NOT return here: the whole point of
+  # this bead is that a missing digest must still be reported, and doing so
+  # requires naming the live cage(s) it affects — so fall through into the
+  # same single-sourced enumeration used for the normal digest-compare path
+  # below, and let the per-cage loop emit instead of bailing out blind.
+  local _just_built_digest _bwsc_digest_unknown=0
+  if ! _just_built_digest=$(_msb_current_image_digest "$IMAGE" 2>/dev/null); then
+    _bwsc_digest_unknown=1
+  elif [[ -z "$_just_built_digest" ]]; then
+    _bwsc_digest_unknown=1
+  fi
+
   local _names_json
-  _names_json=$(msb list --format json 2>/dev/null) || return 0
+  if ! _names_json=$(msb list --format json 2>/dev/null); then
+    # CANNOT CHECK: `msb list` itself failed (msb is present per the carve-out
+    # above, so this means something else — daemon down, transient error).
+    # Unlike the digest-unknown case, there is no cage list to fall through
+    # with here: enumeration is impossible, so no per-cage naming is
+    # possible either. Emit one generic loud line rather than going silent.
+    echo "Warning: could not determine image provenance for any rc-managed sandboxes — 'msb list' failed, so existing cages could not be enumerated to check whether they are pinned to a stale image." >&2
+    return 0
+  fi
+  # NOTHING TO CHECK: msb reports zero sandboxes of any kind — there is
+  # nothing (rc-managed or not) to warn about.
   [[ -z "$_names_json" || "$_names_json" == "[]" ]] && return 0
+
   local _bwsc_name _bwsc_src _bwsc_digest
   while IFS= read -r _bwsc_name; do
     [[ -z "$_bwsc_name" ]] && continue
     _bwsc_src=$(_msb_label "$_bwsc_name" "rc.source.path" 2>/dev/null || true)
-    [[ -z "$_bwsc_src" ]] && continue  # not rc-managed
+    # NOTHING TO CHECK: no rc.source.path label means this sandbox isn't
+    # rc-managed at all — it's not this function's concern either way.
+    [[ -z "$_bwsc_src" ]] && continue
+
+    if [[ "$_bwsc_digest_unknown" -eq 1 ]]; then
+      echo "Warning: image provenance for container '${_bwsc_name}' could not be determined — the just-built image's digest could not be read from msb's local image cache (empty msb image index, or the digest lookup failed); run 'msb image list' to check, then re-run 'rc build' to refresh this warning." >&2
+      continue
+    fi
+
     # Deliberately NOT _msb_image_drift_status here: that comparator is shaped
     # for a single named container with an abort/warn decision (per D-b/D-c),
-    # not a fan-out enumeration over every rc container — a silent `continue`
-    # on inspect failure is the right per-container fallback for a warning
-    # sweep, which doesn't fit the resolver's status-code contract. Do not
-    # "fix" this into a third derivation of the compare — see the M1 note on
-    # rip-cage-jnvb (bd memory rip-cage-mount-shape-label-lock-pattern family).
-    _bwsc_digest=$(_msb_sandbox_image_digest "$_bwsc_name" 2>/dev/null) || continue
-    if [[ -n "$_bwsc_digest" && "$_bwsc_digest" != "$_just_built_digest" ]]; then
+    # not a fan-out enumeration over every rc container — a per-container
+    # fallback that still EMITS (rip-cage-5jrt; was a silent `continue`) on
+    # inspect failure is the right shape for a warning sweep, which doesn't
+    # fit the resolver's status-code contract. Do not "fix" this into a
+    # third derivation of the compare — see the M1 note on rip-cage-jnvb
+    # (bd memory rip-cage-mount-shape-label-lock-pattern family).
+    if ! _bwsc_digest=$(_msb_sandbox_image_digest "$_bwsc_name" 2>/dev/null); then
+      # CANNOT CHECK (per-cage): msb inspect failed for this one sandbox
+      # (e.g. removed between `msb list` and this inspect — a TOCTOU race).
+      echo "Warning: image provenance for container '${_bwsc_name}' could not be determined — 'msb inspect' failed for this sandbox." >&2
+      continue
+    fi
+    if [[ -z "$_bwsc_digest" ]]; then
+      # CANNOT CHECK (per-cage): inspect succeeded but returned no digest.
+      echo "Warning: image provenance for container '${_bwsc_name}' could not be determined — 'msb inspect' returned an empty image digest for this sandbox." >&2
+      continue
+    fi
+    if [[ "$_bwsc_digest" != "$_just_built_digest" ]]; then
       echo "Warning: container '${_bwsc_name}' was created from a different image than the one just built — rc up will refuse to resume it (rc reload ${_bwsc_name} moves it onto the current image; named volumes and host mounts survive, the guest's ephemeral overlay does not); if a cage was intentionally pinned via RC_IMAGE, ignore this for it." >&2
     fi
   done < <(jq -r '.[].name' <<<"$_names_json" 2>/dev/null)

@@ -881,6 +881,16 @@ if [[ "$_t16_out" == *"Warning: container 'existing-cage'"* ]]; then
 else
   fail "T16: expected the stale-container warning to still fire on the default path" "$_t16_out"
 fi
+# T16b (rip-cage-5jrt, acceptance criterion 2, negative control): a
+# POPULATED msb image index is the digest-known path -- the new
+# "could not be determined" cannot-check line (T67 below) must NOT appear
+# here, so the two branches (known-digest drift warning vs. unknown-digest
+# cannot-check warning) stay mutually exclusive.
+if [[ "$_t16_out" != *"could not be determined"* ]]; then
+  pass "T16b: no cannot-determine warning leaks into the known-digest drift-warning path"
+else
+  fail "T16b: expected no cannot-determine warning with a populated msb image index" "$_t16_out"
+fi
 cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
 
 # ---------------------------------------------------------------------------
@@ -1739,6 +1749,39 @@ cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
 echo ""
 echo "=== T-DASHDASH: rc build -- -o type=local,dest=/tmp/x -> still rejected (no bypass via --) ==="
 assert_unallowed_rejected T-DASHDASH -- -o type=local,dest=/tmp/rc-test-dashdash-out
+
+# ---------------------------------------------------------------------------
+# T67 (rip-cage-5jrt, acceptance criterion 1): rc build with an EMPTY msb
+#     image index and >=1 live rc-managed cage -- the just-built image's
+#     digest cannot be read from msb's local cache, so
+#     _build_warn_stale_containers must fail LOUD (name the affected cage,
+#     say why) instead of the pre-5jrt fail-open silence. RC_TEST_MSB_IMAGE_
+#     LIST is left UNSET here -- setup_fake_msb's own comment notes its
+#     default ("[]") IS the empty-index trigger, so no override is needed.
+#     Exit code must stay unchanged (advisory, never fail-closed).
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T67 (rip-cage-5jrt): empty msb image index -> loud cannot-determine warning naming the cage ==="
+setup_sandbox
+setup_fake_docker
+CALL_LOG=$(mktemp)
+RC_TEST_MSB_LIST='[{"name":"existing-cage"}]'
+RC_TEST_MSB_INSPECT='{"config":{"labels":{"rc.source.path":"/some/path"},"manifest_digest":"sha256:bbbb"}}'
+_t67_rc=0
+_t67_out=$(run_cmd_build 2>&1) || _t67_rc=$?
+unset RC_TEST_MSB_LIST RC_TEST_MSB_INSPECT
+
+if [[ "$_t67_out" == *"existing-cage"* && "$_t67_out" == *"could not be determined"* ]]; then
+  pass "T67a: empty msb image index warns loudly, naming the live rc-managed cage"
+else
+  fail "T67a: expected a loud cannot-determine warning naming existing-cage" "$_t67_out"
+fi
+if [[ "$_t67_rc" -eq 0 ]]; then
+  pass "T67b: rc build exit code unchanged (0) despite the loud warning -- advisory, never fail-closed"
+else
+  fail "T67b: expected exit 0" "$_t67_rc"
+fi
+cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
 
 echo ""
 if (( FAILURES > 0 )); then
