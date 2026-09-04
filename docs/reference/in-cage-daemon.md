@@ -35,7 +35,7 @@ tools:
 
 Required fields (enforced fail-closed by `_manifest_validate` — see [manifest-validator.md](manifest-validator.md)):
 
-- **`start`** — the launch command. It is run via `eval` in the background at init, so an env-assignment prefix (`STATE_ROOT=… cmd`) works. Make it headless (`--no-tui` or equivalent); stdout is not a TTY.
+- **`start`** — the launch command. It is run via `eval` in the background at init, so an env-assignment prefix (`STATE_ROOT=… cmd`) works. Make it headless (`--no-tui` or equivalent); stdout is not a TTY. **Prefix it with `exec`** — see [the exec prefix](#the-exec-prefix-on-start) below for what that buys and the one ordering gotcha.
 - **`health`** — a cheap probe command (typically `curl -sf` against a health endpoint). Init runs it with `timeout 5`, up to 3 attempts 1s apart; a wedged daemon cannot hang cage start.
 - **`state_dir`** — absolute path for the daemon's state. Validated as a strict path token: must start with `/`, no whitespace, no shell metacharacters. Pre-created at image build (root `mkdir -p` + `chown agent:agent`) so init, running as the agent user, needs no write access to the parent; init `mkdir -p`s it again idempotently. **State is cage-lifetime** — wiped on `rc destroy` (ADR-019 D1 container-local pattern). If you need durable state, point `state_dir` under `/workspace`.
 
@@ -44,6 +44,26 @@ Optional fields:
 - **`mcp_fragment`** — a **nested YAML mapping** (never a quoted JSON string — see the gotcha in [agent-mail-daemon.md](agent-mail-daemon.md)) merged into `/etc/rip-cage/settings.json` `mcpServers` at build time, so MCP-capable agents (Claude Code) auto-discover the daemon.
 - **`egress`** — hosts the daemon reaches at runtime; unioned into the cage allowlist and IOC-checked like any entry's. A localhost-only daemon declares `egress: []`.
 - **`required: true` + `assert_loaded: "<check>"`** — opt the daemon into the baked presence assertion (ADR-005 D13). Non-TOOL archetypes have no declarable binary path, so `required: true` on a daemon **must** carry an explicit `assert_loaded` or the validator rejects it.
+
+## The exec prefix on `start`
+
+Write `start` with an `exec` prefix. The recommended forms:
+
+```yaml
+start: "exec /usr/local/lib/rip-cage/my-daemon-start.sh"   # script path
+start: "exec my-daemon serve --no-tui"                     # simple command
+start: "STATE_ROOT=/var/lib/… exec my-daemon serve --no-tui"  # env-prefixed
+```
+
+**Env assignments go BEFORE `exec`, never after.** `exec VAR=1 cmd` does not set `VAR` and run `cmd` — `exec` takes `VAR=1` as the program name, so the daemon never launches and the process is gone immediately (measured). `VAR=1 exec cmd` is the working form.
+
+**What the prefix buys.** Init launches the daemon with `eval "$start" >log 2>&1 &` and records `$!` as the daemon's PID. Backgrounding an `eval` always forks a wrapper shell that bash does not optimise away, so **without `exec` the recorded PID is that wrapper, not the daemon** — and this is true for *every* start shape: a script path, a plain simple command, an env-prefixed command, an absolute binary path. There is no exempt shape. With `exec`, the wrapper replaces itself with the daemon and the recorded PID is the daemon's own.
+
+Measured on the cage's runtime (Debian trixie, bash 5.2.37) against a real Postgres 17 cluster: without `exec`, recorded PID `20` (`comm=bash`) while `postmaster.pid` held `22`; with `exec`, recorded PID `36` (`comm=postgres`) matched `postmaster.pid` exactly.
+
+**This is not a false-healthy bug today — it is a dependency you don't want.** Init's only use of the recorded PID is `kill -0` on resume. The wrapper sits blocked waiting on its single child, so it dies when the daemon dies: SIGKILLing the daemon ended the recorded wrapper in every non-exec shape measured. Liveness therefore reports correctly either way *given init's current behaviour*. The `exec` prefix is recommended because it removes that dependency — the moment anything signals, inspects, or restarts by the recorded PID, wrapper-identity stops being harmless. Worked example shipping the exec form: [`examples/postgres-pgvector/`](../../examples/postgres-pgvector/).
+
+Nothing enforces this: `_manifest_validate` does not reject a bare `start`. A fail-closed gate over a failure the runtime does not currently exhibit would be machinery without a defect behind it, and the ordering rule above (`VAR=1 exec cmd`) is the kind of thing a syntax rule gets wrong. If init's liveness semantics ever do change — PID reuse, signal-based restart — the fix belongs in init (`eval exec "$start"`), not in a per-entry manifest rule.
 
 ## How it flows through rc
 

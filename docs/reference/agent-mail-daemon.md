@@ -162,6 +162,12 @@ init machinery). The `start` env-assignment prefix is evaluated by `eval "$start
 in `init-rip-cage.sh`, so the `STORAGE_ROOT=...` prefix works. The value must match
 `state_dir` exactly so the pre-created, correctly-owned directory is used.
 
+**The `exec` rule applies here too** — a simple command is not exempt. The entry above
+records a wrapper shell's PID rather than agent_mail's, exactly as a script-path `start`
+would; the recommended form is `STORAGE_ROOT=… exec mcp-agent-mail serve --no-tui`
+(env assignments before `exec`, never after). See
+[in-cage-daemon.md — the exec prefix](in-cage-daemon.md#the-exec-prefix-on-start).
+
 **`health: "curl -sf http://127.0.0.1:8765/healthz"`**
 
 Health endpoints (`/healthz`, `/health/liveness`, `/health`, `/health/readiness`)

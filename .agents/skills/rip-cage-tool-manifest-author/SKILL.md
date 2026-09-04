@@ -151,7 +151,7 @@ Required fields:
   - name: <tool-name>
     archetype: IN-CAGE-DAEMON
     version_pin: "<version>"
-    start: "<command to start the daemon>"
+    start: "exec <command to start the daemon>"
     health: "<command that exits 0 when daemon is healthy>"
     state_dir: "/absolute/path/to/state"   # must be absolute, no spaces, no metacharacters
 ```
@@ -159,6 +159,13 @@ Required fields:
 Optional field: `mcp_fragment` — an MCP server config fragment to inject into the
 cage's `settings.json`.
 
+- `start` should carry an `exec` prefix. Init launches it with `eval "$start" &` and
+  records `$!`; without `exec` that PID is a forked wrapper shell rather than the daemon,
+  for *every* start shape — script path, simple command, env-prefixed command alike. There
+  is no exempt shape. Put env assignments before `exec` (`VAR=1 exec cmd`), never after
+  (`exec VAR=1 cmd` tries to run `VAR=1` as the program). Nothing validates this; see
+  `docs/reference/in-cage-daemon.md` for the measurement and why it is a recommendation
+  rather than a gate.
 - `state_dir` must be an absolute path starting with `/`, no whitespace, no shell
   metacharacters.
 
@@ -391,7 +398,7 @@ tools:              # required list
     shell_init: "..."                 # required; single line
 
     # IN-CAGE-DAEMON archetype only:
-    start: "..."                      # required
+    start: "exec ..."                 # required; prefix with exec (env vars BEFORE exec)
     health: "..."                     # required
     state_dir: "/absolute/path"       # required; absolute, no spaces/metacharacters
     mcp_fragment: ...                 # optional
