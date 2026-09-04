@@ -143,10 +143,25 @@ ${output}"
       '{name: $name, checks: $checks, overall: $overall}'
   else
     echo "$preflight_line"
-    _msb_exec "$name" -- /usr/local/lib/rip-cage/test-safety-stack.sh
-    _msb_exec "$name" -- /usr/local/lib/rip-cage/test-skills.sh
-    _msb_exec "$name" -- /usr/local/lib/rip-cage/test-bd-roundtrip.sh
-    _msb_exec "$name" -- /usr/local/lib/rip-cage/run-recipe-smokes.sh
+    # Collect each suite's exit status and run all four unconditionally --
+    # rc runs `set -euo pipefail`, so a bare (unguarded) call here would
+    # abort this function on the first suite that exits non-zero, and
+    # later suites (in particular run-recipe-smokes.sh) would never run.
+    # Mirrors the json branch above, which already gets this right.
+    local overall_rc=0 suite_rc
+    suite_rc=0
+    _msb_exec "$name" -- /usr/local/lib/rip-cage/test-safety-stack.sh || suite_rc=$?
+    [[ "$suite_rc" -ne 0 ]] && overall_rc=1
+    suite_rc=0
+    _msb_exec "$name" -- /usr/local/lib/rip-cage/test-skills.sh || suite_rc=$?
+    [[ "$suite_rc" -ne 0 ]] && overall_rc=1
+    suite_rc=0
+    _msb_exec "$name" -- /usr/local/lib/rip-cage/test-bd-roundtrip.sh || suite_rc=$?
+    [[ "$suite_rc" -ne 0 ]] && overall_rc=1
+    suite_rc=0
+    _msb_exec "$name" -- /usr/local/lib/rip-cage/run-recipe-smokes.sh || suite_rc=$?
+    [[ "$suite_rc" -ne 0 ]] && overall_rc=1
+    return "$overall_rc"
   fi
 }
 
