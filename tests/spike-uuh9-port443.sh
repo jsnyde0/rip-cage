@@ -50,10 +50,41 @@ set -uo pipefail
 # (e.g. a KVM-capable Linux runner) where a live authed credential isn't
 # available/desired. Q1 (real generative-turn parity) stays a manual/gated
 # run on a box with a real credential.
+# rip-cage-ej6s: an UNRECOGNISED flag must never fall through into a real
+# run. This script boots real cages and (without --q2-only) spends a real
+# generative claude -p turn, so "silently ignore what I don't understand" is
+# the most expensive possible default -- it has fired twice, both times on
+# someone probing `--help` to find out what the script does before running
+# it. --help/-h exits 0 having done nothing; anything else unrecognised
+# exits 2. --q2-only's behaviour is deliberately untouched: it is CI's entry
+# point (.github/workflows/linux-kvm-port-tight-proof.yml).
+_usage() {
+  cat <<'USAGE'
+Usage: bash tests/spike-uuh9-port443.sh [--q2-only]
+
+ADR-029 D6 permanent regression guard: does scoping the default egress
+allowlist's net-rules to tcp:443 break any legitimate default traffic?
+
+  --q2-only   Run ONLY the credential-free Q2 port-scope proof. This is the
+              entry point CI uses; it skips Q1 and spends no model tokens.
+  --help,-h   Print this and exit 0 without running anything.
+
+With NO flags this runs the FULL suite: it boots real cages AND spends a
+real generative `claude -p` turn against a live credential. That is a
+deliberate, manual, gated operation -- not a way to find out what the
+script does.
+USAGE
+}
+
 Q2_ONLY=0
 for _arg in "$@"; do
   case "$_arg" in
     --q2-only) Q2_ONLY=1 ;;
+    --help|-h) _usage; exit 0 ;;
+    *) echo "ERROR: unrecognised argument '$_arg' -- refusing to run." >&2
+       echo "" >&2
+       _usage >&2
+       exit 2 ;;
   esac
 done
 
