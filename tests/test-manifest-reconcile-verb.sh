@@ -268,6 +268,58 @@ else
   fail "R6e preserved entry" "my-symlinked-custom-tool missing from the reconciled target"
 fi
 
+# ---------------------------------------------------------------------------
+# R7: the local manifest path is a SYMLINK whose target resolves OUTSIDE
+# $HOME (rip-cage-xrcr DEFECT 2's refuse branch -- R6 above covers the
+# inside-$HOME write-through; this covers the other branch: reconcile must
+# refuse rather than write to a file outside the sandbox, leaving both the
+# symlink and its target untouched).
+# ---------------------------------------------------------------------------
+gm_sandbox_reset
+R7_OUTSIDE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-xrcr-outside-home-XXXXXX")
+R7_OUTSIDE_TARGET="${R7_OUTSIDE_DIR}/tools.yaml"
+R7_ORIGINAL_CONTENT='version: 1
+tools:
+  - name: my-outside-custom-tool
+    archetype: TOOL
+    version_pin: "1.0.0"
+    egress: []
+    mounts: []
+    install_cmd: "true"
+'
+printf '%s' "$R7_ORIGINAL_CONTENT" > "$R7_OUTSIDE_TARGET"
+rm -f "${GM_XDG}/rip-cage/tools.yaml"
+ln -s "$R7_OUTSIDE_TARGET" "${GM_XDG}/rip-cage/tools.yaml"
+
+gm_capture manifest reconcile
+
+if [[ "$GM_EXIT" -ne 0 ]]; then
+  pass "R7: reconcile against a symlink resolving outside \$HOME refuses (non-zero exit)"
+else
+  fail "R7 exit" "expected non-zero, got 0"
+fi
+if [[ -L "${GM_XDG}/rip-cage/tools.yaml" ]]; then
+  pass "R7b: the local manifest path is STILL a symlink after the refused reconcile"
+else
+  fail "R7b symlink survived" "${GM_XDG}/rip-cage/tools.yaml is no longer a symlink after reconcile"
+fi
+if [[ -f "$R7_OUTSIDE_TARGET" ]] && diff -q <(printf '%s' "$R7_ORIGINAL_CONTENT") "$R7_OUTSIDE_TARGET" >/dev/null 2>&1; then
+  pass "R7c: the outside-\$HOME target's content is byte-identical to before the refused reconcile"
+else
+  fail "R7c target untouched" "the outside-\$HOME target changed (or is missing) after the refused reconcile:
+$(diff <(printf '%s' "$R7_ORIGINAL_CONTENT") "$R7_OUTSIDE_TARGET" 2>&1)"
+fi
+# realpath, not the raw mktemp path: manifest.sh's refuse message names
+# the REALPATH-resolved target (macOS /tmp -> /private/tmp symlink means
+# these two strings legitimately differ on this OS).
+R7_OUTSIDE_TARGET_REAL=$(realpath "$R7_OUTSIDE_TARGET" 2>/dev/null || echo "$R7_OUTSIDE_TARGET")
+if echo "$GM_ERR" | grep -qF "$R7_OUTSIDE_TARGET_REAL"; then
+  pass "R7d: stderr names the link target path"
+else
+  fail "R7d error names target" "stderr did not name the link target '${R7_OUTSIDE_TARGET_REAL}': $GM_ERR"
+fi
+rm -rf "$R7_OUTSIDE_DIR"
+
 echo ""
 echo "--- Results: ${FAILURES} failure(s) ---"
 exit "$FAILURES"
