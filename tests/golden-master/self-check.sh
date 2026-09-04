@@ -34,7 +34,13 @@ WORK_B=$(mktemp -d "${TMPDIR:-/tmp}/rc-gm-selfcheck-b-XXXXXX")
 # can unconditionally reference it as a backstop even if the script exits
 # before part (b) runs -- `rm -rf ""` is a safe no-op.
 CANARY_ROOT=""
-cleanup() { rm -rf "$WORK_A" "$WORK_B" "$CANARY_ROOT"; }
+# UNDERSCRUB_DIFF is assigned below (part (a)) via mktemp, per-invocation
+# (rip-cage-k13u: a fixed shared /tmp path here let 8 concurrent
+# self-check.sh invocations race -- whoever finished first deleted the
+# shared file out from under the others). Declared empty here for the same
+# cleanup()-backstop reason as CANARY_ROOT above.
+UNDERSCRUB_DIFF=""
+cleanup() { rm -rf "$WORK_A" "$WORK_B" "$CANARY_ROOT" "$UNDERSCRUB_DIFF"; }
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
@@ -50,13 +56,14 @@ GM_ROOT_OVERRIDE="${WORK_A}/gm-root" GM_SNAPSHOT_DIR_OVERRIDE="$SNAP_A" \
 GM_ROOT_OVERRIDE="${WORK_B}/gm-root" GM_SNAPSHOT_DIR_OVERRIDE="$SNAP_B" \
   bash "${GM_DIR}/capture.sh" --record >/dev/null
 
-if diff -rq "$SNAP_A" "$SNAP_B" >/tmp/rc-gm-selfcheck-underscrub.diff 2>&1; then
+UNDERSCRUB_DIFF=$(mktemp "${TMPDIR:-/tmp}/rc-gm-selfcheck-underscrub-diff-XXXXXX")
+if diff -rq "$SNAP_A" "$SNAP_B" >"$UNDERSCRUB_DIFF" 2>&1; then
   pass "under-scrub: two independent scratch-root recordings are byte-identical"
 else
   fail "under-scrub" "recordings differ (missing scrub) -- see:
-$(cat /tmp/rc-gm-selfcheck-underscrub.diff)"
+$(cat "$UNDERSCRUB_DIFF")"
 fi
-rm -f /tmp/rc-gm-selfcheck-underscrub.diff
+rm -f "$UNDERSCRUB_DIFF"
 
 # ---------------------------------------------------------------------------
 # (b) Over-scrub / mutation canary: perturb manifest/default-tools.yaml's first

@@ -651,7 +651,16 @@ else
   # Idempotent: BACKUP_VERSION_FILE restore is a no-op when the backup does not exist.
   # Cleared after the normal-path restore so it does not fire spuriously.
   REPO_VERSION_FILE="${REPO_ROOT}/VERSION"
-  BACKUP_VERSION_FILE="${REPO_ROOT}/VERSION.t20bak"
+  # rip-cage-k13u: per-process NAME (not mktemp) -- a naive mktemp swap
+  # would pre-create the backup file immediately at assignment time, and
+  # the crash-safety trap below does `[[ -f "$BACKUP_VERSION_FILE" ]] && mv
+  # ...`; if that pre-created (empty) file existed before the real
+  # backup-mv further down runs, an early interrupt would restore an EMPTY
+  # file over the real VERSION file. $$ is this top-level script's own
+  # stable PID, gives a unique name without creating anything, and two
+  # overlapping test-rc-commands.sh runs no longer collide on one fixed
+  # repo-root path.
+  BACKUP_VERSION_FILE="${REPO_ROOT}/VERSION.t20bak.$$"
   trap '
     _restore_msb_cache_image
     [[ -f "${BACKUP_VERSION_FILE:-}" ]] && mv "$BACKUP_VERSION_FILE" "$REPO_VERSION_FILE" 2>/dev/null || true
