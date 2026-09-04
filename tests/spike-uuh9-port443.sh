@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
-# tests/spike-uuh9-port443.sh -- THROWAWAY empirical spike for bead
-# rip-cage-uuh9 (ADR-029 D4 floor call): does scoping the default egress
-# allowlist's net-rules to tcp:443 break any legitimate default traffic?
+# tests/spike-uuh9-port443.sh -- empirical proof for bead rip-cage-uuh9
+# (ADR-029 D4 floor call): does scoping the default egress allowlist's
+# net-rules to tcp:443 break any legitimate default traffic?
 #
-# NOT wired into the test suite. Does NOT edit any shipped config, the
-# generator, or .rip-cage.yaml / the global config -- the port-scope
-# transform happens ONLY on a runtime copy of the FLAGS array produced by
-# the real generator chain, inside this script.
+# PERMANENT REGRESSION GUARD (ADR-029 D6): its --q2-only entry point is run
+# by .github/workflows/linux-kvm-port-tight-proof.yml on every PR/push that
+# touches the Dockerfile, the net-rule generator, this script, or
+# .rip-cage.yaml -- it is ADR-029:91's cited evidence for the FIRM
+# port-tight egress default. Do not edit its --q2-only CLI surface without
+# also updating that workflow. NOT wired into tests/run-host.sh (Q1 needs a
+# live authed credential and burns real tokens; the workflow above is its
+# harness, not the local host suite).
+#
+# Does NOT edit any shipped config, the generator, or .rip-cage.yaml / the
+# global config -- the port-scope transform happens ONLY on a runtime copy
+# of the FLAGS array produced by the real generator chain, inside this
+# script.
 #
 # Per the msb fake-accept confound (bd memory
 # msb-netstack-fake-accepts-tcp-connect-not-egress): connect()-success on a
@@ -56,6 +65,16 @@ RUN_ID="$$"
 FAILURES=0
 TOTAL=0
 
+# shellcheck source=tests/_scratch-cage-lib.sh
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+# rc.source.path label value for the three cages this script creates directly
+# via `msb run`/`msb create` (bypassing `rc up`) -- required by
+# verify_rc_container so `rc destroy --force` (below) recognizes them as
+# rc-managed. Not a real workspace, just a non-empty attribution value
+# (mirrors tests/test-doctor-runnability.sh's D2/D3 fixtures).
+SPIKE_SOURCE_LABEL="${REPO_ROOT}"
+
 pass() { TOTAL=$((TOTAL + 1)); echo "PASS  [$TOTAL] $1"; }
 fail() { TOTAL=$((TOTAL + 1)); echo "FAIL  [$TOTAL] $1 -- ${2:-}"; FAILURES=$((FAILURES + 1)); }
 
@@ -90,11 +109,21 @@ REAL_CLAUDE_MTIME_BEFORE=$(stat -f "%m" "${HOME}/.claude/.credentials.json" 2>/d
 fi
 
 echo ""
-echo "=== Sweep: removing any leftover spike-uuh9-* cages from a prior run ==="
+echo "=== Sweep: detecting (never destroying) any leftover spike-uuh9-* cages from a prior run ==="
+# rip-cage-ej6s (mirrors tests/run-host.sh's _warn_leftover_scratch_cages,
+# the rip-cage-neu7.9 fix for the exact same incident shape): this used to
+# enumerate every msb sandbox and destroy any name-prefix match -- an
+# enumerate-and-destroy sweep over cages this run did NOT itself create,
+# the fragile shape tests/test-cleanup-failsafe.sh now guards against.
+# READ-ONLY from here down: names the leftover + a suggested `rc destroy
+# --force` command, and stops. This run's own three cages are torn down by
+# explicit registered name via tests/_scratch-cage-lib.sh below -- never by
+# enumeration.
 while IFS= read -r _leftover; do
   [[ -z "$_leftover" ]] && continue
-  echo "  removing leftover: $_leftover"
-  msb remove -f "$_leftover" >/dev/null 2>&1 || true
+  echo "WARNING: leftover scratch cage detected: ${_leftover}" >&2
+  echo "  This run did not create it and will NOT destroy it." >&2
+  echo "  If it is stale debris from an aborted prior run, clean it up yourself: rc destroy --force ${_leftover}" >&2
 done < <(msb list --format json 2>/dev/null | jq -r '.[].name' 2>/dev/null | grep '^spike-uuh9-' || true)
 
 CAGE_Q1="spike-uuh9-q1-${RUN_ID}"
@@ -104,14 +133,25 @@ TEST_HOME=""
 SCRATCH=""
 
 cleanup() {
-  msb remove -f "$CAGE_Q1" >/dev/null 2>&1 || true
-  msb remove -f "$CAGE_Q2_BASELINE" >/dev/null 2>&1 || true
-  msb remove -f "$CAGE_Q2_SCOPED" >/dev/null 2>&1 || true
   [[ -n "${TEST_HOME:-}" && -d "$TEST_HOME" ]] && rm -rf "$TEST_HOME"
   [[ -n "${SCRATCH:-}" && -d "$SCRATCH" ]] && rm -rf "$SCRATCH"
   rm -f /tmp/spike-uuh9-*.err /tmp/spike-uuh9-*.out
 }
 trap cleanup EXIT
+
+# Register all three cage names up front (unconditionally, before any create
+# attempt) so the EXIT/INT/TERM trap tears each down by verified registered
+# name via `rc destroy --force` (tests/_scratch-cage-lib.sh, the established
+# pattern from rip-cage-4cuh/qg25) -- never bare `msb remove`, which leaves
+# rc-state-<name>/rc-history-<name> volumes orphaned. Composes with the
+# `cleanup` trap installed just above (lib captures + chains the prior EXIT
+# body on first registration). Safe to register a name whose cage creation
+# later fails: `rc destroy --force` on a nonexistent cage errors, and the
+# lib swallows that error same as the removed bare `msb remove -f ... || true`
+# calls did.
+scratch_cage_register "$CAGE_Q1"
+scratch_cage_register "$CAGE_Q2_BASELINE"
+scratch_cage_register "$CAGE_Q2_SCOPED"
 
 if [[ "$Q2_ONLY" -ne 1 ]]; then
 # ===========================================================================
@@ -204,6 +244,7 @@ fi
 echo ""
 echo "=== Q1 setup: booting defaults-only cage with PORT-SCOPED (:tcp:443) net-rules ==="
 if msb run -d --name "$CAGE_Q1" --replace --timeout 90s --log-level trace "${FLAGS443[@]}" \
+  --label "rc.source.path=${SPIKE_SOURCE_LABEL}" \
   -v "${SCRATCH}/claude-dir:/home/agent/.claude" \
   --mount-file "${SCRATCH}/claude.json:/home/agent/.claude.json" \
   -w /home/agent "$IMAGE" -- sleep 300 >/tmp/spike-uuh9-q1-boot.err 2>&1; then
@@ -344,7 +385,7 @@ else
   fail "Gap-A denials: one of the newly-exercised hosts WAS denied" "$GAPA_HIT"
 fi
 
-msb remove -f "$CAGE_Q1" >/dev/null 2>&1 || true
+"$RC" destroy --force "$CAGE_Q1" >/dev/null 2>&1 || true
 fi # Q2_ONLY
 
 # ===========================================================================
@@ -354,6 +395,7 @@ fi # Q2_ONLY
 echo ""
 echo "=== Q2-baseline: example.com with allow@example.com (all ports), probing :80 ==="
 if msb create "$IMAGE" --name "$CAGE_Q2_BASELINE" --log-level trace \
+    --label "rc.source.path=${SPIKE_SOURCE_LABEL}" \
     --net-default deny --net-rule "allow@example.com" >/tmp/spike-uuh9-q2base-boot.err 2>&1; then
   pass "Q2-baseline setup: cage boots with allow@example.com (all ports)"
 else
@@ -368,7 +410,7 @@ if [[ "$Q2_BASE_80_CODE" == "200" && "$Q2_BASE_80_SIZE" -gt 0 ]]; then
 else
   fail "Q2-baseline: expected real data from example.com:80 under the all-ports allow rule" "${Q2_BASE_80} err=$(cat /tmp/spike-uuh9-q2base-80.err)"
 fi
-msb remove -f "$CAGE_Q2_BASELINE" >/dev/null 2>&1 || true
+"$RC" destroy --force "$CAGE_Q2_BASELINE" >/dev/null 2>&1 || true
 
 # ===========================================================================
 # Q2-scoped: example.com, :tcp:443 ONLY (hand-built). Positive control on
@@ -377,6 +419,7 @@ msb remove -f "$CAGE_Q2_BASELINE" >/dev/null 2>&1 || true
 echo ""
 echo "=== Q2-scoped: example.com with allow@example.com:tcp:443 ==="
 if msb create "$IMAGE" --name "$CAGE_Q2_SCOPED" --log-level trace \
+    --label "rc.source.path=${SPIKE_SOURCE_LABEL}" \
     --net-default deny --net-rule "allow@example.com:tcp:443" >/tmp/spike-uuh9-q2scoped-boot.err 2>&1; then
   pass "Q2-scoped setup: cage boots with allow@example.com:tcp:443"
 else
@@ -485,7 +528,7 @@ else
 fi
 echo "----------------------------------------------------------------------------"
 
-msb remove -f "$CAGE_Q2_SCOPED" >/dev/null 2>&1 || true
+"$RC" destroy --force "$CAGE_Q2_SCOPED" >/dev/null 2>&1 || true
 
 # ===========================================================================
 # Safety corroboration: real ~/.claude untouched. Only meaningful when Q1
