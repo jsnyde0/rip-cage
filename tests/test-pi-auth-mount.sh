@@ -39,6 +39,33 @@ _resolve_container() {
     '.[] | select(.source_path==$ws) | .name' | head -1
 }
 
+# _pi_agent_identity_snapshot <dir> -- top-level entry names, types
+# (symlink/dir/file), and — for symlinks — the raw unresolved link target.
+# Identity-only, not full content hashing (unrelated agents/tools may be
+# legitimately touching files under a live ~/.pi/agent during this run, and
+# hashing those would produce false failures unrelated to this test). A
+# symlink silently being replaced by a regular file is exactly the shape
+# rip-cage-bh0r's incident took, and is exactly what this catches. Shared
+# with the identical helper in test-pi-cage-context.sh (rip-cage-bh0r).
+_pi_agent_identity_snapshot() {
+  local dir="$1"
+  if [[ ! -e "$dir" ]]; then
+    echo "ABSENT"
+    return
+  fi
+  find "$dir" -mindepth 1 -maxdepth 1 2>/dev/null | sort | while IFS= read -r entry; do
+    local name
+    name=$(basename "$entry")
+    if [[ -L "$entry" ]]; then
+      echo "SYMLINK $name -> $(readlink "$entry")"
+    elif [[ -d "$entry" ]]; then
+      echo "DIR $name"
+    else
+      echo "FILE $name"
+    fi
+  done
+}
+
 # ---- Guard: skip if docker or image not available ----
 if ! command -v docker >/dev/null 2>&1; then
   echo "SKIP: docker not available"
@@ -70,7 +97,15 @@ fi
 # ALSO keyed off $HOME, so a temp HOME sees an empty cache and would force a
 # doomed registry pull for rip-cage:latest. Pointing MSB_HOME at the real,
 # unmodified microsandbox home sidesteps both.
-REAL_MSB_HOME="${HOME}/.microsandbox"
+#
+# REAL-HOME SAFETY SNAPSHOT (rip-cage-bh0r acceptance #2, belt-and-braces):
+# captured BEFORE the HOME override, against the REAL, un-sandboxed
+# ~/.pi/agent, so the assertion in cleanup() below holds even if the
+# sandboxing above this comment has a bug.
+REAL_HOME="$HOME"
+REAL_HOME_PI_AGENT="${REAL_HOME}/.pi/agent"
+BEFORE_REAL_HOME_SNAPSHOT=$(_pi_agent_identity_snapshot "$REAL_HOME_PI_AGENT")
+REAL_MSB_HOME="${REAL_HOME}/.microsandbox"
 TEST_HOME_SANDBOX=$(mktemp -d)
 export HOME="$TEST_HOME_SANDBOX"
 # Exported (not just per-call) since every rc/msb invocation below (rc ls,
@@ -89,6 +124,7 @@ if [[ -d "$PI_AGENT_DIR" ]]; then
 fi
 
 cleanup() {
+  local prior_exit=$?
   # Tear down any cages we started (register-array shape — never enumerate+glob)
   for c in "${CREATED_CAGES[@]:-}"; do
     [[ -n "$c" ]] && "$RC" destroy --force "$c" >/dev/null 2>&1 || true
@@ -118,6 +154,19 @@ cleanup() {
   # rm -rf is safe here too — the whole point of the sandbox is that
   # discarding it can never touch the operator's real ~/.pi/agent.
   [[ -n "${TEST_HOME_SANDBOX:-}" && -d "$TEST_HOME_SANDBOX" ]] && rm -rf "$TEST_HOME_SANDBOX"
+
+  # ---- REAL-HOME SAFETY ASSERTION (rip-cage-bh0r acceptance #1/#2) ----
+  local after_snapshot
+  after_snapshot=$(_pi_agent_identity_snapshot "$REAL_HOME_PI_AGENT")
+  if [[ "$after_snapshot" == "$BEFORE_REAL_HOME_SNAPSHOT" ]]; then
+    echo "PASS: real \$HOME/.pi/agent identity unchanged (entries/types/symlink-targets match before/after)"
+  else
+    echo "FAIL: real \$HOME/.pi/agent was mutated by this test run"
+    echo "  before: $BEFORE_REAL_HOME_SNAPSHOT"
+    echo "  after:  $after_snapshot"
+    prior_exit=1
+  fi
+  exit "$prior_exit"
 }
 trap cleanup EXIT
 

@@ -36,18 +36,112 @@ _resolve_container() {
     '.[] | select(.source_path==$ws) | .name' | head -1
 }
 
-cleanup() {
+# ---- Self-isolate HOME (rip-cage-bh0r) ----
+# This test stages a fake AGENTS.md + auth.json under $PI_AGENT_DIR and, in
+# Test 7, temporarily moves that dir aside. It must NEVER do either against
+# the operator's REAL ~/.pi/agent: on a host where ~/.pi/agent/AGENTS.md is
+# a symlink into a sibling checkout (e.g. dotpi), an in-place overwrite
+# follows the symlink and clobbers that repo's tracked file (verified on
+# disk 2026-09-04, rip-cage-bh0r — 85 lines of dotpi's AGENTS.md were lost
+# this way). The old cp -a/mv "backup" this test used to run against the
+# real dir was never a sandbox: cp -a copies the SYMLINK, not its target,
+# so restoring it puts the symlink back while the already-clobbered target
+# stays clobbered. Point HOME at a throwaway dir for the lifetime of this
+# script BEFORE deriving PI_AGENT_DIR, so every operation below lands in
+# the sandbox regardless of how/where this test is invoked — mirrors the
+# identical fix already shipped in test-pi-auth-mount.sh (rip-cage-7atw.3):
+# same shape, same remedy.
+#
+# REAL_HOME / REAL_MSB_HOME: captured BEFORE the HOME override. msb derives
+# its per-sandbox agent-relay Unix socket path from $HOME by default, and
+# macOS's mktemp default TMPDIR is long enough that a temp-HOME override
+# alone overflows the 104-byte AF_UNIX path limit ("agent relay socket path
+# is too long"). msb's local image cache is ALSO keyed off $HOME, so a temp
+# HOME sees an empty cache and would force a doomed registry pull for
+# rip-cage:latest. Pointing MSB_HOME at the real, unmodified microsandbox
+# home sidesteps both (mirrors test-pi-auth-mount.sh / test-e2e-lifecycle.sh).
+REAL_HOME="$HOME"
+REAL_MSB_HOME="${REAL_HOME}/.microsandbox"
+REAL_HOME_PI_AGENT="${REAL_HOME}/.pi/agent"
+
+# _pi_agent_identity_snapshot <dir> -- top-level entry names, types
+# (symlink/dir/file), and — for symlinks — the raw unresolved link target.
+# Identity-only, not full content hashing: unrelated agents/tools may be
+# legitimately touching files under a live ~/.pi/agent (sessions/, cache
+# manifests) during this run, and hashing those would produce false
+# failures unrelated to this test. What actually broke on 2026-09-03 was a
+# SYMLINK BEING REPLACED BY A REGULAR FILE (AGENTS.md stopped being a
+# symlink into dotpi) — that is exactly the identity-level change this
+# snapshot is built to catch, and it needs no knowledge of which sibling
+# repo (if any) a symlink happens to resolve into.
+_pi_agent_identity_snapshot() {
+  local dir="$1"
+  if [[ ! -e "$dir" ]]; then
+    echo "ABSENT"
+    return
+  fi
+  find "$dir" -mindepth 1 -maxdepth 1 2>/dev/null | sort | while IFS= read -r entry; do
+    local name
+    name=$(basename "$entry")
+    if [[ -L "$entry" ]]; then
+      echo "SYMLINK $name -> $(readlink "$entry")"
+    elif [[ -d "$entry" ]]; then
+      echo "DIR $name"
+    else
+      echo "FILE $name"
+    fi
+  done
+}
+
+# Captured before the HOME override, against the REAL, un-sandboxed
+# ~/.pi/agent — so the final assertion in cleanup_all holds even if the
+# sandboxing below has a bug.
+BEFORE_REAL_HOME_SNAPSHOT=$(_pi_agent_identity_snapshot "$REAL_HOME_PI_AGENT")
+
+TEST_HOME_SANDBOX=$(mktemp -d)
+export HOME="$TEST_HOME_SANDBOX"
+# Exported (not just per-call) since every rc/msb invocation below (rc ls,
+# rc exec, rc destroy — not only rc up) must resolve against the real msb
+# sandboxes registry, not an empty one under the temp HOME.
+export MSB_HOME="$REAL_MSB_HOME"
+
+CLEANUP_DONE=false
+cleanup_all() {
+  local prior_exit=$?
+  [[ "$CLEANUP_DONE" == "true" ]] && return
+  CLEANUP_DONE=true
+
   for c in "${CREATED_CAGES[@]:-}"; do
     [[ -n "$c" ]] && "$RC" destroy --force "$c" >/dev/null 2>&1 || true
   done
-  if [[ -n "$TEST_WS" && -d "$TEST_WS" ]]; then
-    rm -rf "$TEST_WS"
+  [[ -n "$TEST_WS" && -d "$TEST_WS" ]] && rm -rf "$TEST_WS"
+  [[ -n "$TEST_WS2" && -d "$TEST_WS2" ]] && rm -rf "$TEST_WS2"
+
+  # Everything under $PI_AGENT_DIR (set below) lives inside
+  # $TEST_HOME_SANDBOX, never the real $HOME, so a plain rm -rf of the
+  # whole sandbox is always sufficient teardown — no restore dance needed
+  # (contrast the old cp -a/mv "backup" this test used to run against the
+  # REAL ~/.pi/agent, which was never actually a sandbox).
+  [[ -n "${TEST_HOME_SANDBOX:-}" && -d "$TEST_HOME_SANDBOX" ]] && rm -rf "$TEST_HOME_SANDBOX"
+
+  # ---- REAL-HOME SAFETY ASSERTION (rip-cage-bh0r acceptance #1) ----
+  # Runs on every exit path — pass, fail, the fatal container-didn't-come-up
+  # exit, or the SKIP guards below — since this trap is registered before
+  # all of them.
+  local after_snapshot
+  after_snapshot=$(_pi_agent_identity_snapshot "$REAL_HOME_PI_AGENT")
+  if [[ "$after_snapshot" == "$BEFORE_REAL_HOME_SNAPSHOT" ]]; then
+    echo "PASS: real \$HOME/.pi/agent identity unchanged (entries/types/symlink-targets match before/after)"
+  else
+    echo "FAIL: real \$HOME/.pi/agent was mutated by this test run"
+    echo "  before: $BEFORE_REAL_HOME_SNAPSHOT"
+    echo "  after:  $after_snapshot"
+    prior_exit=1
   fi
-  if [[ -n "$TEST_WS2" && -d "$TEST_WS2" ]]; then
-    rm -rf "$TEST_WS2"
-  fi
+
+  exit "$prior_exit"
 }
-trap cleanup EXIT
+trap cleanup_all EXIT
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "SKIP: docker not available"
@@ -58,17 +152,10 @@ if ! docker image inspect rip-cage:latest >/dev/null 2>&1; then
   exit 0
 fi
 
-# ---- Set up fake ~/.pi/agent state (auth.json + AGENTS.md) ----
+# ---- Set up fake ~/.pi/agent state (auth.json + AGENTS.md), all under the
+# sandboxed $HOME set above ----
 PI_AGENT_DIR="${HOME}/.pi/agent"
-PI_AGENT_BACKUP=""
-PI_AGENT_EXISTED=false
-if [[ -d "$PI_AGENT_DIR" ]]; then
-  PI_AGENT_EXISTED=true
-  PI_AGENT_BACKUP=$(mktemp -d)
-  cp -a "$PI_AGENT_DIR/." "$PI_AGENT_BACKUP/"
-else
-  mkdir -p "$PI_AGENT_DIR"
-fi
+mkdir -p "$PI_AGENT_DIR"
 
 # Ensure AGENTS.md exists with known content so we can compare it later
 AGENTS_MD_PATH="${PI_AGENT_DIR}/AGENTS.md"
@@ -77,18 +164,6 @@ printf '%s\n' "$AGENTS_MD_SENTINEL" > "$AGENTS_MD_PATH"
 
 # Also create a fake auth.json so rc up doesn't skip the mount
 printf '{"fake":true}\n' > "${PI_AGENT_DIR}/auth.json"
-
-cleanup_pi() {
-  cleanup
-  if [[ "$PI_AGENT_EXISTED" == "true" && -n "$PI_AGENT_BACKUP" ]]; then
-    mv "$PI_AGENT_DIR" "${PI_AGENT_DIR}.evicting" 2>/dev/null || true
-    mv "$PI_AGENT_BACKUP" "$PI_AGENT_DIR"
-    rm -rf "${PI_AGENT_DIR}.evicting" 2>/dev/null || true
-  elif [[ "$PI_AGENT_EXISTED" == "false" && -d "$PI_AGENT_DIR" ]]; then
-    rm -rf "$PI_AGENT_DIR"
-  fi
-}
-trap cleanup_pi EXIT
 
 # Capture host AGENTS.md content and mtime BEFORE rc up
 AGENTS_CONTENT_BEFORE=$(cat "$AGENTS_MD_PATH")
