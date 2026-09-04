@@ -32,14 +32,39 @@ trap cleanup EXIT
 
 # Step 1: Skip if rip-cage image not built
 if ! docker image inspect rip-cage:latest >/dev/null 2>&1; then
-  echo "[skip] rip-cage:latest not built — run ./rc build first"
+  echo "SKIP: rip-cage:latest not built — run ./rc build first"
   exit 0
 fi
 
-# Step 1b: Skip if no host auth.json
+# Step 1b: Skip if no host auth.json at all (cheap pre-check before the
+# more expensive credential-usability probe below).
 if [[ ! -f "${HOME}/.pi/agent/auth.json" ]]; then
-  echo "[skip] no pi auth on host; run 'pi /login' first"
+  echo "SKIP: no pi auth on host (${HOME}/.pi/agent/auth.json absent); run 'pi /login' first"
   exit 0
+fi
+
+# Step 1c (rip-cage-sw6s, Defect A): file-existence is NOT the same
+# precondition as "the provider pi -p will actually use has a usable
+# credential" -- auth.json can exist and structurally contain a top-level
+# key for a provider while that provider's OAuth token is expired/invalid,
+# which surfaces at runtime as "No API key for provider: <name>" instead of
+# a clean skip. `pi -p` here is invoked with no --provider/--model, so it
+# resolves whatever its own implicit default is; the only concrete evidence
+# of that default on this host is the observed failure naming "anthropic"
+# (baseline.log:772). Preflight THAT provider's usability with `pi auth
+# check`, which performs the same refresh attempt pi -p does internally, so
+# a token that is present-but-invalid is caught here instead of surfacing as
+# an unexplained smoke-test FAIL. --json (no --credentials) reports only
+# status, never the credential value. If the host has no `pi` binary to run
+# this preflight with, fall through to the old file-existence-only signal
+# rather than skipping on an unverifiable precondition.
+if command -v pi >/dev/null 2>&1; then
+  _e2e_auth_check_json=$(pi auth check --provider anthropic --json 2>&1)
+  _e2e_auth_check_rc=$?
+  if [[ $_e2e_auth_check_rc -ne 0 ]]; then
+    echo "SKIP: pi auth check --provider anthropic reports not usable (${_e2e_auth_check_json}); run 'pi /login' to refresh"
+    exit 0
+  fi
 fi
 
 # Step 2: Create temp project and start container

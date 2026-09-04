@@ -10,7 +10,17 @@
 #   - /etc/rip-cage/cage-pi.md is readable inside the cage
 #   - init exits 0 when pi auth mount is absent
 #
-# Requires docker + the rip-cage image already built (./rc build).
+# Requires docker + the rip-cage image already built (./rc build). The fence
+# itself, and therefore /etc/rip-cage/cage-pi.md and /etc/rip-cage/cage-claude.md,
+# are provisioned by the examples/claude/ and examples/pi/ recipes'
+# install_cmd -- deliberately NOT baked into the base image (ADR-005 D12 /
+# rip-cage-wlwc.2.2, cage/Dockerfile:144-146). A floor-only image build (the
+# repo default; no tools.yaml composing those recipes) never gets the fence
+# written at all (cage/init/init-rip-cage.sh:133 gates the whole append on
+# /etc/rip-cage/cage-claude.md existing). Tests 2a/2b/3/4/7c below depend on
+# that fence/file and SKIP with a named reason (rip-cage-sw6s) when it is
+# absent; Test 1 is host-side and Tests 5/6/7/7b/7d already tolerate the
+# absence, so they still run and are expected to PASS either way.
 
 set -uo pipefail
 
@@ -18,6 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 FAILURES=0
+SKIPPED=0
 TEST_WS=""
 TEST_WS2=""
 CONTAINER=""
@@ -25,6 +36,7 @@ CREATED_CAGES=()
 
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1 — got: ${2:-}"; FAILURES=$((FAILURES + 1)); }
+skip() { echo "SKIP: $1"; SKIPPED=$((SKIPPED + 1)); }
 
 _track() { CREATED_CAGES+=("$1"); }
 
@@ -152,6 +164,25 @@ if ! docker image inspect rip-cage:latest >/dev/null 2>&1; then
   exit 0
 fi
 
+# Guard (rip-cage-sw6s): probe the image itself (not a per-test cage) for the
+# recipe artifact that gates the whole topology-fence append
+# (cage/init/init-rip-cage.sh:133). Inspect stderr rather than discard it —
+# a docker-level failure here (as opposed to a clean "file not found") would
+# look like the same absence and should not be silently folded into it.
+RECIPE_COMPOSED=true
+_recipe_probe_err=$(mktemp)
+if ! docker run --rm rip-cage:latest test -f /etc/rip-cage/cage-claude.md 2>"$_recipe_probe_err"; then
+  RECIPE_COMPOSED=false
+  if [[ -s "$_recipe_probe_err" ]]; then
+    echo "  Note: recipe-composed probe stderr: $(cat "$_recipe_probe_err")"
+  fi
+fi
+rm -f "$_recipe_probe_err"
+if [[ "$RECIPE_COMPOSED" == "false" ]]; then
+  echo "  examples/claude + examples/pi recipes not composed into this image (no /etc/rip-cage/cage-claude.md) — Tests 2a/2b/3/4/7c below will SKIP"
+fi
+
+
 # ---- Set up fake ~/.pi/agent state (auth.json + AGENTS.md), all under the
 # sandboxed $HOME set above ----
 PI_AGENT_DIR="${HOME}/.pi/agent"
@@ -209,32 +240,42 @@ fi
 echo ""
 echo "=== Test 2: Cage ~/.claude/CLAUDE.md contains /etc/rip-cage/cage-pi.md inside topology fence ==="
 
+RECIPE_ABSENT_REASON="examples/claude + examples/pi recipes not composed into this image (no /etc/rip-cage/cage-claude.md, ADR-005 D12 / rip-cage-wlwc.2.2) — the topology fence was never written into ~/.claude/CLAUDE.md"
+
 # Check the reference string is present anywhere in CLAUDE.md
-if "$RC" exec "$CONTAINER" -- grep -q '/etc/rip-cage/cage-pi.md' /home/agent/.claude/CLAUDE.md; then
+if [[ "$RECIPE_COMPOSED" == "false" ]]; then
+  skip "Test 2a — $RECIPE_ABSENT_REASON"
+elif "$RC" exec "$CONTAINER" -- grep -q '/etc/rip-cage/cage-pi.md' /home/agent/.claude/CLAUDE.md; then
   pass "Test 2a: /etc/rip-cage/cage-pi.md reference found in ~/.claude/CLAUDE.md"
 else
   fail "Test 2a: /etc/rip-cage/cage-pi.md reference missing from ~/.claude/CLAUDE.md"
 fi
 
 # Check the reference is inside the rip-cage-topology fence (not outside it)
-inside_fence=$("$RC" exec "$CONTAINER" -- awk '
-  /^<!-- begin:rip-cage-topology -->/ { inside=1; next }
-  /^<!-- end:rip-cage-topology -->/   { inside=0; next }
-  inside && /\/etc\/rip-cage\/cage-pi\.md/ { found=1 }
-  END { print (found ? "yes" : "no") }
-' /home/agent/.claude/CLAUDE.md 2>/dev/null || true)
-
-if [[ "$inside_fence" == "yes" ]]; then
-  pass "Test 2b: /etc/rip-cage/cage-pi.md reference is inside the rip-cage-topology fence"
+if [[ "$RECIPE_COMPOSED" == "false" ]]; then
+  skip "Test 2b — $RECIPE_ABSENT_REASON"
 else
-  fail "Test 2b: /etc/rip-cage/cage-pi.md reference is NOT inside the rip-cage-topology fence"
+  inside_fence=$("$RC" exec "$CONTAINER" -- awk '
+    /^<!-- begin:rip-cage-topology -->/ { inside=1; next }
+    /^<!-- end:rip-cage-topology -->/   { inside=0; next }
+    inside && /\/etc\/rip-cage\/cage-pi\.md/ { found=1 }
+    END { print (found ? "yes" : "no") }
+  ' /home/agent/.claude/CLAUDE.md 2>/dev/null || true)
+
+  if [[ "$inside_fence" == "yes" ]]; then
+    pass "Test 2b: /etc/rip-cage/cage-pi.md reference is inside the rip-cage-topology fence"
+  else
+    fail "Test 2b: /etc/rip-cage/cage-pi.md reference is NOT inside the rip-cage-topology fence"
+  fi
 fi
 
 # ---- Test 3: /etc/rip-cage/cage-pi.md is readable inside the cage ----
 echo ""
 echo "=== Test 3: /etc/rip-cage/cage-pi.md is readable inside the cage ==="
 
-if "$RC" exec "$CONTAINER" -- test -r /etc/rip-cage/cage-pi.md; then
+if [[ "$RECIPE_COMPOSED" == "false" ]]; then
+  skip "Test 3 — examples/pi recipe not composed into this image (no /etc/rip-cage/cage-pi.md, ADR-005 D12 / rip-cage-wlwc.2.2)"
+elif "$RC" exec "$CONTAINER" -- test -r /etc/rip-cage/cage-pi.md; then
   pass "Test 3: /etc/rip-cage/cage-pi.md is readable inside the cage"
 else
   fail "Test 3: /etc/rip-cage/cage-pi.md not readable inside the cage"
@@ -244,13 +285,17 @@ fi
 echo ""
 echo "=== Test 4: CLAUDE.md has exactly one begin:rip-cage-topology (unsuffixed) marker ==="
 
-# Count the unsuffixed marker (must not match -pi suffix markers separately)
-claude_count=$("$RC" exec "$CONTAINER" -- grep -c '^<!-- begin:rip-cage-topology -->' /home/agent/.claude/CLAUDE.md 2>/dev/null || true)
-[[ -z "$claude_count" ]] && claude_count=0
-if [[ "$claude_count" -eq 1 ]]; then
-  pass "Test 4: exactly one begin:rip-cage-topology marker in CLAUDE.md"
+if [[ "$RECIPE_COMPOSED" == "false" ]]; then
+  skip "Test 4 — $RECIPE_ABSENT_REASON, so no marker was ever written to count"
 else
-  fail "Test 4: expected 1 marker, got $claude_count" "$claude_count"
+  # Count the unsuffixed marker (must not match -pi suffix markers separately)
+  claude_count=$("$RC" exec "$CONTAINER" -- grep -c '^<!-- begin:rip-cage-topology -->' /home/agent/.claude/CLAUDE.md 2>/dev/null || true)
+  [[ -z "$claude_count" ]] && claude_count=0
+  if [[ "$claude_count" -eq 1 ]]; then
+    pass "Test 4: exactly one begin:rip-cage-topology marker in CLAUDE.md"
+  else
+    fail "Test 4: expected 1 marker, got $claude_count" "$claude_count"
+  fi
 fi
 
 # ---- Test 5: No pi-topology fence markers in CLAUDE.md (pi path is reference-only) ----
@@ -316,8 +361,13 @@ else
     fail "Test 7b: /home/agent/.pi/agent/AGENTS.md exists but mount was skipped — init wrote to it"
   fi
 
-  # 7c: /etc/rip-cage/cage-pi.md must still be readable (it's image-baked)
-  if "$RC" exec "$CONTAINER2" -- test -r /etc/rip-cage/cage-pi.md; then
+  # 7c: /etc/rip-cage/cage-pi.md must still be readable when it's actually
+  # image-baked (recipe composed). On a floor-only image it is not baked at
+  # all (see the RECIPE_COMPOSED guard above), so this check SKIPs there
+  # rather than asserting a file the image never shipped.
+  if [[ "$RECIPE_COMPOSED" == "false" ]]; then
+    skip "Test 7c — examples/pi recipe not composed into this image (no /etc/rip-cage/cage-pi.md, ADR-005 D12 / rip-cage-wlwc.2.2)"
+  elif "$RC" exec "$CONTAINER2" -- test -r /etc/rip-cage/cage-pi.md; then
     pass "Test 7c: /etc/rip-cage/cage-pi.md still readable even without pi mount"
   else
     fail "Test 7c: /etc/rip-cage/cage-pi.md not readable in mount-absent container"
@@ -338,10 +388,12 @@ fi
 # ---- Summary ----
 echo ""
 # recount: 1a=1,1b=2,2a=3,2b=4,3=5,4=6,5=7,6=8,7=9,7b=10,7c=11,7d=12 = 12 total
+# (2a/2b/3/4/7c report SKIP instead of PASS/FAIL when the recipe artifact
+# that provisions the topology fence is absent — rip-cage-sw6s.)
 TOTAL=12
 if [[ "$FAILURES" -eq 0 ]]; then
-  echo "All $TOTAL pi-cage-context tests passed."
+  echo "$((TOTAL - SKIPPED)) of $TOTAL pi-cage-context tests passed, $SKIPPED skipped."
 else
-  echo "$FAILURES of $TOTAL test(s) FAILED."
+  echo "$FAILURES of $TOTAL test(s) FAILED ($SKIPPED skipped)."
   exit 1
 fi

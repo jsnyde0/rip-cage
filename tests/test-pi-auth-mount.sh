@@ -440,31 +440,72 @@ printf '{"fake":true}\n' > "$PI_AGENT_DIR/auth.json"
 echo ""
 echo "=== Test 9: agent pi extensions/ dir exists, is agent-owned, and is writable ==="
 
-# 9a: dir must exist (baked in Dockerfile line: RUN mkdir -p /home/agent/.pi/agent/extensions)
-ext_dir_stat=$("$RC" exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent/extensions 2>/dev/null || true)
-if [[ "$ext_dir_stat" == "agent:agent" ]]; then
-  pass "/home/agent/.pi/agent/extensions dir exists as agent:agent in container"
+# Guard (rip-cage-sw6s): /home/agent/.pi/agent/extensions is created by the
+# examples/pi recipe's TOOL 'init' agent-context boot-hook (rip-cage-p35a.3),
+# NOT by base init-rip-cage.sh and NOT baked into the image any more (see
+# cage/init/init-rip-cage.sh:46-49 — the mkdir was relocated out of base
+# infra). A floor-only image (no tools.yaml composing examples/pi, as on the
+# repo-default build) never runs that hook, so the dir is legitimately
+# absent here. That is a DIFFERENT cause from a broken exec channel
+# (rip-cage-54q3: "failed to exec ... -> not found: spawn ... ENOENT" for
+# EVERY command on a live cage) — both would otherwise look like the same
+# empty output under `2>/dev/null`, so 9a inspects stderr instead of
+# discarding it, to keep a future exec-channel regression visibly
+# distinguishable from this expected, named absence.
+_ext_stderr_file=$(mktemp)
+ext_dir_stat=$("$RC" exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent/extensions 2>"$_ext_stderr_file")
+ext_dir_rc=$?
+ext_dir_stderr="$(cat "$_ext_stderr_file")"
+rm -f "$_ext_stderr_file"
+
+_ext_broken_channel=false
+_ext_recipe_absent=false
+if [[ $ext_dir_rc -ne 0 ]] && echo "$ext_dir_stderr" | grep -qE 'failed to exec|spawn "|\(ENOENT\)'; then
+  _ext_broken_channel=true
+elif [[ $ext_dir_rc -ne 0 ]] && echo "$ext_dir_stderr" | grep -q 'No such file or directory'; then
+  _ext_recipe_absent=true
+fi
+
+if [[ "$_ext_broken_channel" == "true" ]]; then
+  # A genuine defect (rip-cage-54q3 shape) — must never be skip-guarded.
+  fail "9a: extensions dir check aborted — exec channel looks broken (rip-cage-54q3 shape), not a missing prerequisite" "$ext_dir_stderr"
+elif [[ "$ext_dir_stat" == "agent:agent" ]]; then
+  pass "9a: /home/agent/.pi/agent/extensions dir exists as agent:agent in container"
+elif [[ "$_ext_recipe_absent" == "true" ]]; then
+  echo "SKIP: 9a extensions dir check — examples/pi recipe not composed into this image, so its TOOL init boot-hook (rip-cage-p35a.3) that creates the dir never ran"
 else
-  fail "/home/agent/.pi/agent/extensions dir missing or wrong ownership (got: '$ext_dir_stat')" ""
+  fail "9a: extensions dir missing or wrong ownership (got: '$ext_dir_stat')" "$ext_dir_stderr"
 fi
 
 # 9b: dir must be writable by agent user (agent's own extension space — ADR-027 rw)
-write_test=$("$RC" exec "$CONTAINER" -- bash -c 'touch /home/agent/.pi/agent/extensions/.write-test && echo ok && rm /home/agent/.pi/agent/extensions/.write-test' 2>/dev/null || true)
-if [[ "$write_test" == "ok" ]]; then
-  pass "/home/agent/.pi/agent/extensions dir is writable by agent user"
+if [[ "$_ext_broken_channel" == "true" ]]; then
+  fail "9b: extensions writability check skipped — exec channel looks broken (rip-cage-54q3 shape)" "$ext_dir_stderr"
+elif [[ "$_ext_recipe_absent" == "true" ]]; then
+  echo "SKIP: 9b extensions writability check — examples/pi recipe not composed into this image, extensions dir does not exist"
 else
-  fail "/home/agent/.pi/agent/extensions dir is NOT writable by agent user" "$write_test"
+  write_test=$("$RC" exec "$CONTAINER" -- bash -c 'touch /home/agent/.pi/agent/extensions/.write-test && echo ok && rm /home/agent/.pi/agent/extensions/.write-test' 2>/dev/null || true)
+  if [[ "$write_test" == "ok" ]]; then
+    pass "9b: /home/agent/.pi/agent/extensions dir is writable by agent user"
+  else
+    fail "9b: /home/agent/.pi/agent/extensions dir is NOT writable by agent user" "$write_test"
+  fi
 fi
 
 # 9c: a marker file dropped into the dir is readable by the agent user
 #     (confirms the agent extension space is not blocked by permissions or mount shadowing)
-"$RC" exec "$CONTAINER" -- bash -c 'printf "// marker\nexport default {};\n" > /home/agent/.pi/agent/extensions/marker-test.js' 2>/dev/null
-marker_content=$("$RC" exec "$CONTAINER" -- cat /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true)
-"$RC" exec "$CONTAINER" -- rm -f /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true
-if echo "$marker_content" | grep -q "marker"; then
-  pass "marker file dropped in extensions/ is readable by agent user (agent extension space writable)"
+if [[ "$_ext_broken_channel" == "true" ]]; then
+  fail "9c: extensions marker-readability check skipped — exec channel looks broken (rip-cage-54q3 shape)" "$ext_dir_stderr"
+elif [[ "$_ext_recipe_absent" == "true" ]]; then
+  echo "SKIP: 9c extensions marker-readability check — examples/pi recipe not composed into this image, extensions dir does not exist"
 else
-  fail "marker file in extensions/ not readable — agent extension space may be blocked" "$marker_content"
+  "$RC" exec "$CONTAINER" -- bash -c 'printf "// marker\nexport default {};\n" > /home/agent/.pi/agent/extensions/marker-test.js' 2>/dev/null
+  marker_content=$("$RC" exec "$CONTAINER" -- cat /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true)
+  "$RC" exec "$CONTAINER" -- rm -f /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true
+  if echo "$marker_content" | grep -q "marker"; then
+    pass "9c: marker file dropped in extensions/ is readable by agent user (agent extension space writable)"
+  else
+    fail "9c: marker file in extensions/ not readable — agent extension space may be blocked" "$marker_content"
+  fi
 fi
 
 # ================================================================
