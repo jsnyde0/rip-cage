@@ -462,6 +462,96 @@ rm -rf "$_scratch_bin" "$_unrelated_cwd"
 echo ""
 
 # ---------------------------------------------------------------------------
+# (h) rip-cage-q4t6: no real `rc build` invocation in the manifest-daemon /
+#     agent-mail / cm / security e2e test files builds straight to
+#     rip-cage:latest (no -t/--tag, no RC_IMAGE). A bare `rc build` overwrites
+#     the operator's working image -- every cage on the host boots from it --
+#     so an e2e arm that forgets to scratch-tag its build silently mutates it
+#     mid-run. Sibling defect: rip-cage-or84 (consumers trusting :latest
+#     mid-run).
+#
+#     Detection is line-continuation-joined + filtered, not a bare grep, so it
+#     is robust against comments, `echo`/`pass`/`fail` prose strings, and the
+#     many non-invocation mentions of "rc build" elsewhere in tests/ (see
+#     tests/run-host.sh, tests/test-build-flag-override.sh for the noise this
+#     guards against). A build counts as SAFE if the joined invocation line
+#     carries -t/--tag OR sets RC_IMAGE= (rc:69 -- both set the same $IMAGE
+#     cmd_build acts on; RC_IMAGE is the env-var spelling of the same escape).
+#
+#     SCOPE: this bead's fix reaches the four e2e files named in its producer
+#     inventory. A repo-wide sweep (same detector, run over ALL of tests/)
+#     found additional bare `rc build` sites in ~13 other test files outside
+#     that inventory -- structurally the same defect, but out of this bead's
+#     authorized touch-set (some are explicitly off-limits to the agent that
+#     wrote this guard: test-agent-mail-concurrent.sh, test-rc-commands.sh,
+#     test-multiplexer-lifecycle.sh). Those are reported below as NOTEs, not
+#     failures -- fixing them is follow-up work, not silently expanded scope.
+#     A single exemption inside the in-scope set is real and intentional:
+#     test-manifest-security.sh's BE2/BE5 hostile arms deliberately build to
+#     :latest (no -t) to prove cmd_build's own untag-on-violation safety net
+#     against the DEFAULT $IMAGE -- marked inline with `rip-cage-q4t6-exempt`.
+# ---------------------------------------------------------------------------
+echo "=== (h) rc build invocations in tests/ always pass -t/--tag/RC_IMAGE (rip-cage-q4t6) ==="
+
+_h_join_awk='
+BEGIN { buf=""; startno=0 }
+{
+  if (buf == "") startno = NR
+  cur = $0
+  if (buf != "") { cur = buf " " cur }
+  if (cur ~ /\\[ \t]*$/) {
+    sub(/\\[ \t]*$/, "", cur)
+    buf = cur
+    next
+  }
+  print startno ":" cur
+  buf = ""
+}
+'
+_h_invoke_re='(\$\{REPO_ROOT\}/rc|\$\{RC\}|\$RC)"?[[:space:]]+build([[:space:]]|$)|\./rc[[:space:]]+build([[:space:]]|$)'
+_h_exclude_re='echo|printf|pass[[:space:]]*"|fail[[:space:]]*"|check[[:space:]]*"'
+_h_safe_re='(--tag|[[:space:]]-t[[:space:]]|RC_IMAGE=)'
+_h_in_scope_files="test-manifest-daemon.sh test-manifest-agent-mail.sh test-manifest-cm.sh test-manifest-security.sh"
+
+_h_in_scope_hits=""
+_h_out_of_scope_hits=""
+
+for _h_file in "${REPO_ROOT}"/tests/*.sh; do
+  _h_base=$(basename "$_h_file")
+  [[ "$_h_base" == "test-rc-decomposition-structure.sh" ]] && continue
+  while IFS=: read -r _h_lineno _h_content; do
+    _h_trimmed="${_h_content#"${_h_content%%[![:space:]]*}"}"
+    [[ "$_h_trimmed" == \#* ]] && continue
+    [[ "$_h_content" =~ $_h_invoke_re ]] || continue
+    [[ "$_h_content" =~ $_h_exclude_re ]] && continue
+    [[ "$_h_content" =~ $_h_safe_re ]] && continue
+    # Exemption: a `rip-cage-q4t6-exempt` marker within the 6 raw lines above
+    # the match (BE2/BE5's deliberate :latest-targeting builds).
+    if sed -n "$(( _h_lineno > 6 ? _h_lineno - 6 : 1 )),${_h_lineno}p" "$_h_file" | grep -q "rip-cage-q4t6-exempt"; then
+      continue
+    fi
+    if [[ " ${_h_in_scope_files} " == *" ${_h_base} "* ]]; then
+      _h_in_scope_hits="${_h_in_scope_hits}${_h_base}:${_h_lineno}: ${_h_content}"$'\n'
+    else
+      _h_out_of_scope_hits="${_h_out_of_scope_hits}${_h_base}:${_h_lineno}: ${_h_content}"$'\n'
+    fi
+  done < <(awk "$_h_join_awk" "$_h_file")
+done
+
+if [[ -n "$_h_out_of_scope_hits" ]]; then
+  echo "NOTE (h): bare rc build found OUTSIDE this bead's scoped files (follow-up, not a failure here):"
+  echo "$_h_out_of_scope_hits" | sed '/^$/d' | sed 's/^/    /'
+fi
+
+if [[ -z "$_h_in_scope_hits" ]]; then
+  pass "(h)" "no bare (untagged, no RC_IMAGE) rc build invocation in the rip-cage-q4t6 scoped e2e files"
+else
+  fail "(h)" "bare rc build invocation(s) in rip-cage-q4t6 scoped files -- would overwrite rip-cage:latest" "$(echo "$_h_in_scope_hits" | sed '/^$/d' | tr '\n' '; ')"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
 echo "=== Results ==="

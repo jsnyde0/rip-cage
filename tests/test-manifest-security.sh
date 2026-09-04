@@ -456,40 +456,28 @@ test_be1_real_build_compliant_tool_passes() {
   echo "BE1 RC_E2E=1: real build with manifest-with-from-source-tool.yaml (chmod 755) — expect PASS ..."
 
   local be1_fixture="${FIXTURES}/manifest-with-from-source-tool.yaml"
-  local be1_image="rip-cage:be1-test"
-
-  # Save rip-cage:latest for restore.
-  local be1_saved_tag
-  be1_saved_tag="rip-cage:be1-saved-$(date +%s)"
-  local be1_had_latest=0
-  if docker image inspect rip-cage:latest >/dev/null 2>&1; then
-    docker tag rip-cage:latest "$be1_saved_tag" 2>/dev/null && be1_had_latest=1
-  fi
+  # rip-cage-q4t6: builds to its OWN scratch tag, never rip-cage:latest — this
+  # compliant-fixture happy-path build has no need to touch the operator's working
+  # image at all (unlike BE2/BE3/BE5, which deliberately exercise :latest's own
+  # untag-on-violation behavior and legitimately need to build to :latest to prove
+  # it — those three are intentionally left alone).
+  local be1_image="rip-cage:be1-test-$$"
 
   # shellcheck disable=SC2329
   _be1_cleanup() {
     docker image rm "$be1_image" 2>/dev/null || true
-    if [[ "$be1_had_latest" -eq 1 ]]; then
-      docker tag "$be1_saved_tag" rip-cage:latest 2>/dev/null || true
-    else
-      docker image rm rip-cage:latest 2>/dev/null || true
-    fi
-    docker image rm "$be1_saved_tag" 2>/dev/null || true
   }
   trap _be1_cleanup RETURN
 
-  # rc build with the compliant fixture (chmod 755 output).
+  # rc build with the compliant fixture (chmod 755 output), to its own scratch tag.
   local build_out build_rc=0
   build_out=$(RC_MANIFEST_GLOBAL="$be1_fixture" \
-    "${RC}" build 2>&1) || build_rc=$?
+    "${RC}" build -t "$be1_image" 2>&1) || build_rc=$?
 
   if [[ "$build_rc" -ne 0 ]]; then
     fail "BE1 rc build with compliant fixture failed (exit=${build_rc}): ${build_out:0:400}"
     return
   fi
-
-  # Tag for assertions.
-  docker tag rip-cage:latest "$be1_image" 2>/dev/null || true
 
   # Effect assertion: stat the binary inside the built image — must be root-owned, mode 755.
   local runtime_path="/usr/local/bin/hello-from-source"
@@ -561,6 +549,10 @@ test_be2_crafted_bad_agent_writable_rejected() {
 
   # -----------------------------------------------------------------------
   # Step 1: rc build with hostile fixture — must FAIL (binary-root-owned check fires)
+  # rip-cage-q4t6-exempt: this build deliberately targets rip-cage:latest (no -t) —
+  # it proves cmd_build's own untag-on-violation safety net (docker image rm "$IMAGE",
+  # ADR-005 D9/F1) against the DEFAULT $IMAGE, which -t/RC_IMAGE would substitute out
+  # from under the assertion below. Save/restore of the pre-test :latest brackets this.
   # -----------------------------------------------------------------------
   local be2_step1_out be2_step1_rc=0
   be2_step1_out=$(RC_MANIFEST_GLOBAL="$be2_fixture" \
@@ -1076,37 +1068,27 @@ test_be4_real_build_compliant_prebuilt_passes() {
   echo "BE4 RC_E2E=1: real build with manifest-prebuilt-compliant.yaml (root-owned 755) — expect PASS ..."
 
   local be4_fixture="${FIXTURES}/manifest-prebuilt-compliant.yaml"
-  local be4_image="rip-cage:be4-test"
-
-  local be4_saved_tag
-  be4_saved_tag="rip-cage:be4-saved-$(date +%s)"
-  local be4_had_latest=0
-  if docker image inspect rip-cage:latest >/dev/null 2>&1; then
-    docker tag rip-cage:latest "$be4_saved_tag" 2>/dev/null && be4_had_latest=1
-  fi
+  # rip-cage-q4t6: builds to its OWN scratch tag, never rip-cage:latest — this
+  # compliant-fixture happy-path build has no need to touch the operator's working
+  # image at all (unlike BE2/BE3/BE5, which deliberately exercise :latest's own
+  # untag-on-violation behavior and legitimately need to build to :latest to prove
+  # it — those three are intentionally left alone).
+  local be4_image="rip-cage:be4-test-$$"
 
   # shellcheck disable=SC2329
   _be4_cleanup() {
     docker image rm "$be4_image" 2>/dev/null || true
-    if [[ "$be4_had_latest" -eq 1 ]]; then
-      docker tag "$be4_saved_tag" rip-cage:latest 2>/dev/null || true
-    else
-      docker image rm rip-cage:latest 2>/dev/null || true
-    fi
-    docker image rm "$be4_saved_tag" 2>/dev/null || true
   }
   trap _be4_cleanup RETURN
 
   local build_out build_rc=0
   build_out=$(RC_MANIFEST_GLOBAL="$be4_fixture" \
-    "${RC}" build 2>&1) || build_rc=$?
+    "${RC}" build -t "$be4_image" 2>&1) || build_rc=$?
 
   if [[ "$build_rc" -ne 0 ]]; then
     fail "BE4 rc build with compliant prebuilt fixture failed (exit=${build_rc}): ${build_out:0:400}"
     return
   fi
-
-  docker tag rip-cage:latest "$be4_image" 2>/dev/null || true
 
   # Effect assertion: stat the binary inside the built image — must be root-owned, mode 755.
   local runtime_path="/usr/local/bin/hello-prebuilt"
@@ -1168,6 +1150,10 @@ test_be5_crafted_bad_prebuilt_rejected() {
 
   # -----------------------------------------------------------------------
   # Step 1: rc build with hostile prebuilt fixture — must FAIL
+  # rip-cage-q4t6-exempt: this build deliberately targets rip-cage:latest (no -t) —
+  # it proves cmd_build's own untag-on-violation safety net (docker image rm "$IMAGE",
+  # ADR-005 D9/F1) against the DEFAULT $IMAGE, which -t/RC_IMAGE would substitute out
+  # from under the assertion below. Save/restore of the pre-test :latest brackets this.
   # -----------------------------------------------------------------------
   local be5_step1_out be5_step1_rc=0
   be5_step1_out=$(RC_MANIFEST_GLOBAL="$be5_fixture" \

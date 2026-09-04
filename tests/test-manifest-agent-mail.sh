@@ -74,8 +74,13 @@ cleanup() {
     rm -rf "$T2_BUILD_MANIFEST_HOME"
     T2_BUILD_MANIFEST_HOME=""
   fi
+  # rip-cage-q4t6: reap the shared T2 scratch image by EXACT tag on EXIT/INT/TERM,
+  # never rip-cage:latest — a no-op harmlessly if the build never ran.
+  if [[ -n "${T2_AGENT_MAIL_IMAGE:-}" ]]; then
+    docker rmi "$T2_AGENT_MAIL_IMAGE" >/dev/null 2>&1 || true
+  fi
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 # Build a sandbox HOME for manifest tests.
 setup_manifest_sandbox() {
@@ -389,7 +394,9 @@ YAML
 #   - All failures increment FAILURES and produce non-zero exit.
 # ---------------------------------------------------------------------------
 
-T2_AGENT_MAIL_IMAGE="rip-cage:latest"
+# rip-cage-q4t6: builds to its OWN scratch tag, never rip-cage:latest — this shared
+# T2 build must not mutate the operator's working image. Reaped by cleanup() above.
+T2_AGENT_MAIL_IMAGE="rip-cage:agent-mail-test-$$"
 T2_BUILD_MANIFEST_HOME=""
 T2_BUILD_FAILED=0  # set to 1 after first build failure; prevents retrying
 
@@ -427,7 +434,7 @@ _t2_build_agent_mail_image() {
   echo "[T2 setup] Building cage image with agent-mail manifest (downloads prebuilt binary — may take a moment)..."
   build_out=$(HOME="$T2_BUILD_MANIFEST_HOME" \
     XDG_CONFIG_HOME="${T2_BUILD_MANIFEST_HOME}/.config" \
-    "${REPO_ROOT}/rc" build 2>&1) || build_rc=$?
+    "${REPO_ROOT}/rc" build -t "$T2_AGENT_MAIL_IMAGE" 2>&1) || build_rc=$?
 
   if [[ "$build_rc" -ne 0 ]]; then
     # Show the last 30 lines of build output to identify the failing step.
@@ -865,8 +872,11 @@ PYEOF
   rm -rf "$workspace"
 }
 
-# T2 cleanup: remove the shared build manifest home if it was created.
-# Does NOT remove the image (rip-cage:latest is shared and rebuilt intentionally).
+# T2 cleanup: remove the shared build manifest home if it was created. Unused —
+# the top-level cleanup() trap (EXIT/INT/TERM) already handles this, plus reaping
+# the scratch image tag by exact name (rip-cage-q4t6). Kept for symmetry with the
+# other test-manifest-*.sh files; safe to remove in a future pass.
+# shellcheck disable=SC2317  # unreachable (defined, never invoked) — see note above
 _t2_cleanup() {
   if [[ -n "${T2_BUILD_MANIFEST_HOME:-}" ]]; then
     rm -rf "$T2_BUILD_MANIFEST_HOME"

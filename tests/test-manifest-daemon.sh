@@ -77,6 +77,10 @@ RC="${REPO_ROOT}/rc"
 FIXTURES="${SCRIPT_DIR}/fixtures"
 FAILURES=0
 TEST_HOME=""
+# rip-cage-q4t6: every scratch image tag built by a T2 test is registered here so
+# EXIT/INT/TERM cleanup can reap it by EXACT name even if a test is interrupted
+# before its own inline cleanup runs. Never wildcard-removed.
+SCRATCH_IMAGES=()
 
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
@@ -84,8 +88,13 @@ fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 # shellcheck disable=SC2329  # invoked indirectly via trap
 cleanup() {
   [[ -n "${TEST_HOME:-}" && -d "${TEST_HOME:-}" ]] && rm -rf "$TEST_HOME"
+  local img
+  for img in "${SCRATCH_IMAGES[@]:-}"; do
+    [[ -n "$img" ]] && docker rmi "$img" >/dev/null 2>&1
+  done
+  return 0
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 # Build a sandbox HOME for manifest tests.
 setup_manifest_sandbox() {
@@ -673,7 +682,8 @@ test_t2a_health_passes_positive_sentinel() {
   if skip_if_not_e2e "T2a daemon health passes (positive sentinel)"; then return 0; fi
 
   # This test requires a cage image built with manifest-with-trivial-daemon-mcp.yaml.
-  # rc build always tags its output as rip-cage:latest (IMAGE var in rc).
+  # Builds to its OWN scratch tag, never rip-cage:latest (rip-cage-q4t6) — this test
+  # must not mutate the operator's working image.
   # The fixture daemon is python3 -m http.server on port 17843.
   # Health check: curl -sf http://127.0.0.1:17843/
   # Positive sentinel: daemon must RESPOND (not merely absence-of-error).
@@ -683,7 +693,8 @@ test_t2a_health_passes_positive_sentinel() {
   # This matches the T2c/T2d pattern — the container must be alive when we probe it.
 
   local container_name="rc-daemon-test-t2a-$$"
-  local image_name="rip-cage:latest"
+  local image_name="rip-cage:t2a-$$"
+  SCRATCH_IMAGES+=("$image_name")
   local workspace
   workspace=$(mktemp -d "${TMPDIR:-/tmp}/rc-daemon-e2e-XXXXXX")
   local manifest_home
@@ -696,13 +707,14 @@ test_t2a_health_passes_positive_sentinel() {
   t2a_cleanup() {
     docker stop "$container_name" 2>/dev/null || true
     docker rm "$container_name" 2>/dev/null || true
+    docker rmi "$image_name" 2>/dev/null || true
     rm -rf "$workspace" "$manifest_home"
   }
 
-  # Build image with daemon manifest
+  # Build image with daemon manifest, to its own scratch tag (rip-cage-q4t6).
   local build_out
   if ! build_out=$(HOME="$manifest_home" XDG_CONFIG_HOME="${manifest_home}/.config" \
-       "${REPO_ROOT}/rc" build 2>&1); then
+       "${REPO_ROOT}/rc" build -t "$image_name" 2>&1); then
     fail "T2a Could not build cage image with daemon manifest: ${build_out}"
     t2a_cleanup
     return
@@ -754,7 +766,10 @@ test_t2b_broken_daemon_cage_still_starts() {
   if skip_if_not_e2e "T2b broken daemon → cage still starts (fail-warn)"; then return 0; fi
 
   local container_name="rc-daemon-test-t2b-$$"
-  local image_name="rip-cage:latest"
+  # Builds to its OWN scratch tag, never rip-cage:latest (rip-cage-q4t6) — this test
+  # must not mutate the operator's working image.
+  local image_name="rip-cage:t2b-$$"
+  SCRATCH_IMAGES+=("$image_name")
   local workspace
   workspace=$(mktemp -d "${TMPDIR:-/tmp}/rc-daemon-e2e-XXXXXX")
   local manifest_home
@@ -763,11 +778,16 @@ test_t2b_broken_daemon_cage_still_starts() {
   cp "${FIXTURES}/manifest-with-broken-daemon.yaml" \
      "${manifest_home}/.config/rip-cage/tools.yaml"
 
+  t2b_cleanup() {
+    docker rmi "$image_name" 2>/dev/null || true
+    rm -rf "$workspace" "$manifest_home"
+  }
+
   local build_out
   if ! build_out=$(HOME="$manifest_home" XDG_CONFIG_HOME="${manifest_home}/.config" \
-       "${REPO_ROOT}/rc" build 2>&1); then
+       "${REPO_ROOT}/rc" build -t "$image_name" 2>&1); then
     fail "T2b Could not build cage image with broken daemon manifest: ${build_out}"
-    rm -rf "$workspace" "$manifest_home"
+    t2b_cleanup
     return
   fi
 
@@ -787,14 +807,18 @@ test_t2b_broken_daemon_cage_still_starts() {
     fail "T2b Broken daemon: cage started but no WARNING logged. output='${init_out}'"
   fi
 
-  rm -rf "$workspace" "$manifest_home"
+  t2b_cleanup
 }
 
 test_t2c_init_idempotency_pid_unchanged() {
   if skip_if_not_e2e "T2c init idempotency: PID unchanged on re-run"; then return 0; fi
 
   local container_name="rc-daemon-test-t2c-$$"
-  local image_name="rip-cage:latest"
+  # Builds to its OWN scratch tag, never rip-cage:latest (rip-cage-q4t6, the bead's
+  # named defect site: this arm used to build straight to :latest and overwrite the
+  # operator's working image on any RC_E2E=1 host-suite run).
+  local image_name="rip-cage:t2c-$$"
+  SCRATCH_IMAGES+=("$image_name")
   local workspace
   workspace=$(mktemp -d "${TMPDIR:-/tmp}/rc-daemon-e2e-XXXXXX")
   local manifest_home
@@ -807,12 +831,13 @@ test_t2c_init_idempotency_pid_unchanged() {
   t2c_cleanup() {
     docker stop "$container_name" 2>/dev/null || true
     docker rm "$container_name" 2>/dev/null || true
+    docker rmi "$image_name" 2>/dev/null || true
     rm -rf "$workspace" "$manifest_home"
   }
 
   local build_out
   if ! build_out=$(HOME="$manifest_home" XDG_CONFIG_HOME="${manifest_home}/.config" \
-       "${REPO_ROOT}/rc" build 2>&1); then
+       "${REPO_ROOT}/rc" build -t "$image_name" 2>&1); then
     fail "T2c Could not build cage image: ${build_out}"
     t2c_cleanup
     return
@@ -866,7 +891,10 @@ test_t2d_state_dir_placement() {
   if skip_if_not_e2e "T2d state-dir placement (container-local, ADR-019 D1)"; then return 0; fi
 
   local container_name="rc-daemon-test-t2d-$$"
-  local image_name="rip-cage:latest"
+  # Builds to its OWN scratch tag, never rip-cage:latest (rip-cage-q4t6) — this test
+  # must not mutate the operator's working image.
+  local image_name="rip-cage:t2d-$$"
+  SCRATCH_IMAGES+=("$image_name")
   local workspace
   workspace=$(mktemp -d "${TMPDIR:-/tmp}/rc-daemon-e2e-XXXXXX")
   local manifest_home
@@ -879,12 +907,13 @@ test_t2d_state_dir_placement() {
   t2d_cleanup() {
     docker stop "$container_name" 2>/dev/null || true
     docker rm "$container_name" 2>/dev/null || true
+    docker rmi "$image_name" 2>/dev/null || true
     rm -rf "$workspace" "$manifest_home"
   }
 
   local build_out
   if ! build_out=$(HOME="$manifest_home" XDG_CONFIG_HOME="${manifest_home}/.config" \
-       "${REPO_ROOT}/rc" build 2>&1); then
+       "${REPO_ROOT}/rc" build -t "$image_name" 2>&1); then
     fail "T2d Could not build cage image: ${build_out}"
     t2d_cleanup
     return
@@ -920,7 +949,10 @@ test_t2e_mcp_fragment_discoverable() {
   if skip_if_not_e2e "T2e MCP fragment discoverable in settings.json"; then return 0; fi
 
   local container_name="rc-daemon-test-t2e-$$"
-  local image_name="rip-cage:latest"
+  # Builds to its OWN scratch tag, never rip-cage:latest (rip-cage-q4t6) — this test
+  # must not mutate the operator's working image.
+  local image_name="rip-cage:t2e-$$"
+  SCRATCH_IMAGES+=("$image_name")
   local workspace
   workspace=$(mktemp -d "${TMPDIR:-/tmp}/rc-daemon-e2e-XXXXXX")
   local manifest_home
@@ -929,11 +961,16 @@ test_t2e_mcp_fragment_discoverable() {
   cp "${FIXTURES}/manifest-with-trivial-daemon-mcp.yaml" \
      "${manifest_home}/.config/rip-cage/tools.yaml"
 
+  t2e_cleanup() {
+    docker rmi "$image_name" 2>/dev/null || true
+    rm -rf "$workspace" "$manifest_home"
+  }
+
   local build_out
   if ! build_out=$(HOME="$manifest_home" XDG_CONFIG_HOME="${manifest_home}/.config" \
-       "${REPO_ROOT}/rc" build 2>&1); then
+       "${REPO_ROOT}/rc" build -t "$image_name" 2>&1); then
     fail "T2e Could not build cage image: ${build_out}"
-    rm -rf "$workspace" "$manifest_home"
+    t2e_cleanup
     return
   fi
 
@@ -948,7 +985,7 @@ test_t2e_mcp_fragment_discoverable() {
     fail "T2e MCP fragment: 'trivial-test-daemon' NOT in settings.json mcpServers. keys='${mcp_check}'"
   fi
 
-  rm -rf "$workspace" "$manifest_home"
+  t2e_cleanup
 }
 
 # ---------------------------------------------------------------------------
@@ -993,6 +1030,7 @@ test_t2f_dead_daemon_not_skipped_as_running() {
 
   local container_name="rc-daemon-test-t2f-$$"
   local image_name="rip-cage:t2f-$$"
+  SCRATCH_IMAGES+=("$image_name")
   local pidfile="/tmp/rip-cage-daemon-trivial-test-daemon.pid"
   local workspace manifest_home
   workspace=$(mktemp -d "${TMPDIR:-/tmp}/rc-daemon-e2e-XXXXXX")
@@ -1002,7 +1040,7 @@ test_t2f_dead_daemon_not_skipped_as_running() {
      "${manifest_home}/.config/rip-cage/tools.yaml"
 
   # Builds to its OWN tag, never rip-cage:latest — this test must not mutate the
-  # operator's working image (sibling T2c does; that is rip-cage-z40e's to fix).
+  # operator's working image (all T2 siblings now do the same, rip-cage-q4t6).
   t2f_cleanup() {
     docker stop "$container_name" 2>/dev/null || true
     docker rm "$container_name" 2>/dev/null || true

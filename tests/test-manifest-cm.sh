@@ -73,6 +73,10 @@ T2_CONTAINER_NAME=""
 T2_WORKSPACE_BASE=""  # parent of workspace (for RC_ALLOWED_ROOTS)
 T2_WORKSPACE=""       # the actual workspace dir passed to rc up
 T2_WS_RESOLVED=""     # realpath of T2_WORKSPACE_BASE for RC_ALLOWED_ROOTS
+# rip-cage-q4t6: the cm-enabled T2 build goes to its OWN scratch tag, never
+# rip-cage:latest — this test must not mutate the operator's working image.
+# Reaped by cleanup() on EXIT/INT/TERM below, by exact tag name.
+T2_SCRATCH_IMAGE="rip-cage:cm-test-$$"
 
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
@@ -93,8 +97,11 @@ cleanup() {
     rm -rf "$T2_HOME"
     T2_HOME=""
   fi
+  if [[ -n "${T2_SCRATCH_IMAGE:-}" ]]; then
+    docker rmi "$T2_SCRATCH_IMAGE" >/dev/null 2>&1 || true
+  fi
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 # E2E flag from command line (matches test-manifest-cross.sh convention).
 if [[ "${1:-}" == "--e2e" ]]; then
@@ -290,18 +297,19 @@ fi
 # rc up expands ~ → T2_HOME, so the mount comes from the manifest consumer —
 # NOT from a direct "docker run -v" bypass (rip-cage-buuo.5 false-green fix).
 #
-# NOTE: rc build hardcodes IMAGE="rip-cage:latest" — this overwrites the default
-# image. A clean rebuild (./rc build) after this test restores the default.
+# rip-cage-q4t6: builds to T2_SCRATCH_IMAGE (its OWN scratch tag), never
+# rip-cage:latest — the image is reaped by cleanup() above. rc up below is
+# pinned to the same tag via RC_IMAGE for this cage's whole lifetime.
 # ---------------------------------------------------------------------------
 
 # Build a cm-enabled image via rc build with RC_MANIFEST_GLOBAL.
-echo "[T2 setup] Building cm-enabled rip-cage:latest via rc build + cm manifest..."
+echo "[T2 setup] Building cm-enabled scratch image (${T2_SCRATCH_IMAGE}) via rc build + cm manifest..."
 _build_home=$(mktemp -d "${TMPDIR:-/tmp}/rc-cm-t2-build-home-XXXXXX")
 mkdir -p "${_build_home}/.config/rip-cage"
 _build_rc=0
 _build_out=$(HOME="$_build_home" XDG_CONFIG_HOME="${_build_home}/.config" \
   RC_MANIFEST_GLOBAL="${REPO_ROOT}/tests/fixtures/manifest-cm-example.yaml" \
-  "${REPO_ROOT}/rc" build 2>&1) || _build_rc=$?
+  "${REPO_ROOT}/rc" build -t "$T2_SCRATCH_IMAGE" 2>&1) || _build_rc=$?
 rm -rf "$_build_home"
 
 if [[ "$_build_rc" -ne 0 ]]; then
@@ -310,18 +318,18 @@ if [[ "$_build_rc" -ne 0 ]]; then
   echo "Results: FAILURES=${FAILURES}"
   exit 1
 fi
-echo "[T2 setup] cm-enabled image built"
+echo "[T2 setup] cm-enabled image built (${T2_SCRATCH_IMAGE})"
 
 # Verify cm is in the newly built image (early gate before proceeding).
 _cm_check_rc=0
-docker run --rm rip-cage:latest /bin/bash -c 'command -v cm' >/dev/null 2>&1 || _cm_check_rc=$?
+docker run --rm "$T2_SCRATCH_IMAGE" /bin/bash -c 'command -v cm' >/dev/null 2>&1 || _cm_check_rc=$?
 if [[ "$_cm_check_rc" -ne 0 ]]; then
-  fail "T2 setup FAIL: cm NOT found in rip-cage:latest after build with cm manifest — image build did not include cm"
+  fail "T2 setup FAIL: cm NOT found in ${T2_SCRATCH_IMAGE} after build with cm manifest — image build did not include cm"
   echo ""
   echo "Results: FAILURES=${FAILURES}"
   exit 1
 fi
-echo "[T2 setup] cm binary verified in rip-cage:latest"
+echo "[T2 setup] cm binary verified in ${T2_SCRATCH_IMAGE}"
 
 # Create a throwaway HOME with .cass-memory store inside.
 # ~ expands to T2_HOME at rc-up time, so ~/.cass-memory = T2_HOME/.cass-memory.
@@ -334,7 +342,7 @@ mkdir -p "${T2_HOME}/.config/rip-cage"
 _seed_rc=0
 docker run --rm \
   -v "${T2_HOME}/.cass-memory:/tmp/seed-store" \
-  rip-cage:latest \
+  "$T2_SCRATCH_IMAGE" \
   /bin/bash -c "CASS_MEMORY_HOME=/tmp/seed-store cm init --no-interactive" >/dev/null 2>&1 || _seed_rc=$?
 
 if [[ "$_seed_rc" -ne 0 ]]; then
@@ -363,9 +371,12 @@ T2_WS_RESOLVED=$(realpath "$T2_WORKSPACE_BASE" 2>/dev/null) || T2_WS_RESOLVED="$
 # container starts successfully. We capture output, ignore the exit code, and
 # check container state directly (ME1 pattern from test-manifest-mounts.sh).
 echo "[T2 setup] Starting container ${T2_CONTAINER_NAME} via rc up (manifest consumer path)..."
+# RC_IMAGE pins this cage to the scratch tag built above (rip-cage-q4t6) — never
+# rip-cage:latest.
 HOME="$T2_HOME" XDG_CONFIG_HOME="${T2_HOME}/.config" \
   RC_MANIFEST_GLOBAL="${REPO_ROOT}/tests/fixtures/manifest-cm-example.yaml" \
   RC_ALLOWED_ROOTS="$T2_WS_RESOLVED" \
+  RC_IMAGE="$T2_SCRATCH_IMAGE" \
   "${REPO_ROOT}/rc" up "$T2_WORKSPACE" >"${T2_WORKSPACE_BASE}/rc-up.log" 2>&1 || true
 _up_out=$(cat "${T2_WORKSPACE_BASE}/rc-up.log" 2>/dev/null || true)
 
@@ -391,7 +402,7 @@ _version_out=$(docker exec "$T2_CONTAINER_NAME" \
 if [[ "$_version_rc" -eq 0 ]] && [[ -n "$_version_out" ]]; then
   pass "T2a cm --version exits 0, version='${_version_out}'"
 else
-  fail "T2a cm --version FAILED: exit=${_version_rc} out='${_version_out}' — cm binary broken or missing in rip-cage:latest (was image built with the cm manifest?)"
+  fail "T2a cm --version FAILED: exit=${_version_rc} out='${_version_out}' — cm binary broken or missing in ${T2_SCRATCH_IMAGE} (was image built with the cm manifest?)"
 fi
 
 # ---------------------------------------------------------------------------
