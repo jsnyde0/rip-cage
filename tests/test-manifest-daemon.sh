@@ -974,12 +974,137 @@ test_t1f_build_dockerfile_path_with_daemon
 test_t1f2_daemon_config_step_position
 test_t1g_d8_default_manifest_original_dockerfile
 
+# ---------------------------------------------------------------------------
+# T2f — rip-cage-893l: a DEAD daemon must not be skipped as "already running".
+#
+# WHY THIS EXISTS. init used to decide liveness with `kill -0 <recorded pid>` alone.
+# Nothing in a cage reaps orphans (msb's PID 1 leaves exited children in state Z;
+# `sleep infinity` as PID 1 here reproduces that exactly), and `kill -0` on a ZOMBIE
+# SUCCEEDS — so a dead daemon reported "already running — skipping" forever while its
+# port answered nothing, and ADR-005 D10's fail-warn never fired. Measured in a live
+# cage, 2026-09-04.
+#
+# The zombie precondition is ASSERTED, not assumed (T2f-2). If the killed PID were
+# reaped, the pre-fix code would pass T2f-3 for the wrong reason and this guard would
+# be vacuous.
+# ---------------------------------------------------------------------------
+test_t2f_dead_daemon_not_skipped_as_running() {
+  if skip_if_not_e2e "T2f dead daemon is not skipped as 'already running' (rip-cage-893l)"; then return 0; fi
+
+  local container_name="rc-daemon-test-t2f-$$"
+  local image_name="rip-cage:t2f-$$"
+  local pidfile="/tmp/rip-cage-daemon-trivial-test-daemon.pid"
+  local workspace manifest_home
+  workspace=$(mktemp -d "${TMPDIR:-/tmp}/rc-daemon-e2e-XXXXXX")
+  manifest_home=$(mktemp -d "${TMPDIR:-/tmp}/rc-daemon-e2e-home-XXXXXX")
+  mkdir -p "${manifest_home}/.config/rip-cage"
+  cp "${FIXTURES}/manifest-with-trivial-daemon-mcp.yaml" \
+     "${manifest_home}/.config/rip-cage/tools.yaml"
+
+  # Builds to its OWN tag, never rip-cage:latest — this test must not mutate the
+  # operator's working image (sibling T2c does; that is rip-cage-z40e's to fix).
+  t2f_cleanup() {
+    docker stop "$container_name" 2>/dev/null || true
+    docker rm "$container_name" 2>/dev/null || true
+    docker rmi "$image_name" 2>/dev/null || true
+    rm -r -f "$workspace" "$manifest_home"
+  }
+
+  local build_out
+  if ! build_out=$(HOME="$manifest_home" XDG_CONFIG_HOME="${manifest_home}/.config" \
+       "${REPO_ROOT}/rc" build -t "$image_name" 2>&1); then
+    fail "T2f Could not build cage image: $(tail -3 <<<"${build_out}")"
+    t2f_cleanup
+    return
+  fi
+
+  # PID 1 is `sleep infinity`, which does not reap — the same orphan handling msb's
+  # init.krun has, and the whole reason this defect exists.
+  if ! docker run -d --name "$container_name" -v "${workspace}:/workspace" \
+       "$image_name" sleep infinity >/dev/null 2>&1; then
+    fail "T2f Could not start container"
+    t2f_cleanup
+    return
+  fi
+
+  docker exec "$container_name" /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || true
+  sleep 2
+
+  local pid1
+  pid1=$(docker exec "$container_name" cat "$pidfile" 2>/dev/null) || pid1=""
+  if [[ -z "$pid1" ]]; then
+    fail "T2f Could not capture daemon PID after first init"
+    t2f_cleanup
+    return
+  fi
+
+  # --- true-positive arm: a LIVE daemon is still a true no-op (ADR-005 D8) ---
+  local live_out pid_live
+  live_out=$(docker exec "$container_name" /usr/local/bin/init-rip-cage.sh 2>&1) || true
+  pid_live=$(docker exec "$container_name" cat "$pidfile" 2>/dev/null) || pid_live=""
+  if grep -q "already running" <<<"$live_out" && [[ "$pid_live" == "$pid1" ]]; then
+    pass "T2f-1 live daemon still skips as an idempotent no-op, PID unchanged (${pid1}) — no second binder"
+  else
+    fail "T2f-1 live daemon should skip unchanged. pid_before=${pid1} pid_after=${pid_live} out='$(tr '\n' ' ' <<<"${live_out}" | tail -c 200)'"
+  fi
+
+  # --- the defect: kill the daemon, assert the zombie precondition, re-init ---
+  #
+  # Kill the SERVING process, not merely the recorded PID. The fixture's `start` is a
+  # bare simple command, so init recorded the eval-wrapper shell and the real python
+  # server is its child (rip-cage-6zlo). Killing only the recorded PID leaves the
+  # server bound to 17843, the health probe legitimately passes, and init is RIGHT to
+  # skip — which is how the first draft of this test failed against a correct fix.
+  # Killing the whole tree reproduces the real shape: the server dies, the wrapper
+  # exits, and the recorded PID lingers as an unreaped zombie.
+  docker exec "$container_name" sh -c "pkill -9 -P ${pid1} 2>/dev/null; kill -9 ${pid1} 2>/dev/null; exit 0" || true
+  sleep 2
+
+  # The port must actually be dead, or the rest of this test proves nothing.
+  if docker exec "$container_name" curl -sf --max-time 3 http://127.0.0.1:17843/ >/dev/null 2>&1; then
+    fail "T2f-0 the daemon is STILL SERVING after the kill — the teardown missed the real process, so T2f-3 below cannot distinguish the fix from the bug"
+  else
+    pass "T2f-0 daemon is genuinely dead: nothing answers on 127.0.0.1:17843"
+  fi
+
+  local zstate kill0
+  zstate=$(docker exec "$container_name" sh -c "awk '{print \$3}' /proc/${pid1}/stat 2>/dev/null" 2>/dev/null | tr -d '[:space:]')
+  if docker exec "$container_name" kill -0 "$pid1" 2>/dev/null; then kill0=succeeds; else kill0=fails; fi
+
+  if [[ "$zstate" == "Z" && "$kill0" == "succeeds" ]]; then
+    pass "T2f-2 precondition holds: killed PID ${pid1} is an unreaped zombie and 'kill -0' still SUCCEEDS (this is what made the old check lie)"
+  else
+    fail "T2f-2 precondition NOT reproduced (state='${zstate}' kill-0=${kill0}) — without it a T2f-3 pass is vacuous, since it could not tell the fix from the bug"
+  fi
+
+  local dead_out
+  dead_out=$(docker exec "$container_name" /usr/local/bin/init-rip-cage.sh 2>&1) || true
+
+  if grep -q "already running" <<<"$dead_out"; then
+    fail "T2f-3 init skipped a DEAD daemon as 'already running' — the rip-cage-893l defect. out='$(tr '\n' ' ' <<<"${dead_out}" | tail -c 200)'"
+  else
+    pass "T2f-3 init did NOT skip the dead daemon as 'already running'"
+  fi
+
+  # ADR-005 D10: it must end either serving or fail-warned, never silently healthy.
+  if docker exec "$container_name" curl -sf http://127.0.0.1:17843/ >/dev/null 2>&1; then
+    pass "T2f-4 daemon is serving again after the re-init (restarted, not falsely skipped)"
+  elif grep -qi "WARNING: daemon" <<<"$dead_out"; then
+    pass "T2f-4 daemon could not be revived but init emitted the ADR-005 D10 fail-warn (never silently healthy)"
+  else
+    fail "T2f-4 daemon is neither serving nor fail-warned after re-init — a silent failure, which is exactly what rip-cage-893l forbids"
+  fi
+
+  t2f_cleanup
+}
+
 # T2 e2e tests (NEEDS_CONTAINER / RC_E2E=1)
 test_t2a_health_passes_positive_sentinel
 test_t2b_broken_daemon_cage_still_starts
 test_t2c_init_idempotency_pid_unchanged
 test_t2d_state_dir_placement
 test_t2e_mcp_fragment_discoverable
+test_t2f_dead_daemon_not_skipped_as_running
 
 echo ""
 echo "Results: FAILURES=${FAILURES}"

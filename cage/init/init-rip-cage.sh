@@ -651,16 +651,47 @@ if [[ -f "$_rc_daemon_config" ]] && command -v jq >/dev/null 2>&1; then
       mkdir -p "$_rc_daemon_state_dir" 2>/dev/null || true
     fi
 
-    # Idempotency: if PID file exists and the process is still running, skip.
+    # Idempotency: if the PID file names a process that is still SERVING, skip.
     # This is a TRUE no-op (PID unchanged) — not kill-and-restart.
+    #
+    # `kill -0` ALONE IS NOT A LIVENESS CHECK HERE (rip-cage-893l, measured in a live
+    # cage). Nothing inside a cage reaps orphans — msb's PID 1 leaves an exited daemon
+    # in state Z indefinitely — and `kill -0` on a zombie SUCCEEDS. Trusting it alone
+    # made a dead daemon report "already running" forever while its port answered
+    # nothing, and ADR-005 D10's fail-warn never fired: strictly worse than a visible
+    # crash. PID reuse is the same bug by another route. So the PID is only a cheap
+    # pre-filter; the entry's own `health` command is the authority, since that is the
+    # liveness signal the manifest already requires every daemon to declare.
     if [[ -f "$_rc_daemon_pidfile" ]]; then
       _rc_existing_pid=$(cat "$_rc_daemon_pidfile" 2>/dev/null || echo "")
       if [[ -n "$_rc_existing_pid" ]] && kill -0 "$_rc_existing_pid" 2>/dev/null; then
-        echo "[rip-cage] daemon '${_rc_daemon_name}' already running (PID=$_rc_existing_pid) — skipping (idempotent no-op)"
-        unset _rc_existing_pid
-        continue
+        # Recorded process exists (or is an unreaped zombie). Ask the daemon itself.
+        # Two attempts: one transient probe blip must not cost a healthy daemon a
+        # restart, and a restart is the expensive wrong answer here (see below).
+        _rc_skip_health_ok=0
+        for _rc_skip_attempt in 1 2; do
+          if timeout 5 bash -c "$_rc_daemon_health" >/dev/null 2>&1; then
+            _rc_skip_health_ok=1
+            break
+          fi
+          sleep 1
+        done
+        if [[ "$_rc_skip_health_ok" -eq 1 ]]; then
+          echo "[rip-cage] daemon '${_rc_daemon_name}' already running (PID=$_rc_existing_pid) — skipping (idempotent no-op)"
+          unset _rc_existing_pid _rc_skip_health_ok _rc_skip_attempt
+          continue
+        fi
+        # Recorded PID exists but the daemon is not serving: a zombie, a wedged
+        # process, or a reused PID belonging to something else entirely.
+        echo "[rip-cage] daemon '${_rc_daemon_name}' recorded PID=$_rc_existing_pid exists but failed its health check — treating as dead and restarting (rip-cage-893l)" >&2
+        # Terminate it before restarting, or a merely-wedged (not dead) daemon would
+        # still hold the port and we would start a SECOND binder — the exact thing
+        # ADR-005 D8's "a re-run spawns no second binder" forbids. A zombie ignores
+        # this harmlessly; it is already dead.
+        kill "$_rc_existing_pid" 2>/dev/null || true
+        unset _rc_skip_health_ok _rc_skip_attempt
       fi
-      # Stale PID file (process gone) — remove and restart.
+      # Stale PID file (process gone, zombie, or unhealthy) — remove and restart.
       rm -f "$_rc_daemon_pidfile"
       unset _rc_existing_pid
     fi
