@@ -99,7 +99,40 @@ case "${1:-}" in
     ;;
 
   volume)
-    exit 0
+    # rip-cage-sw6s: this branch used to be a bare `exit 0` for EVERY volume
+    # invocation, which broke this shim's own two rules — dispatch on WHAT is
+    # being inspected (never a blanket answer), and fail LOUD on anything
+    # unrecognised. It was harmless only while no caller asked about a
+    # volume's existence. rip-cage-o5ie made `rc destroy` do exactly that
+    # (it now probes rc-state-/rc-history-<name> to decide whether an
+    # already-absent sandbox still has volumes worth reaping), and the blanket
+    # success made the shim answer "yes, both volumes exist" for a cage the
+    # same shim reports as absent — an incoherent world, which surfaced as
+    # destroy_dry_run_absent flipping from exit 1 to exit 0.
+    #
+    # Volumes accompany their cage, so existence defaults to GM_DOCKER_STATE.
+    # GM_MSB_VOLUME_STATE overrides it, which is what makes o5ie's real case
+    # (sandbox already gone, volumes still present) expressible here.
+    shift
+    case "${1:-}" in
+      inspect)
+        if [[ "${GM_MSB_VOLUME_STATE:-${GM_DOCKER_STATE:-absent}}" == "absent" ]]; then
+          exit 1
+        fi
+        exit 0
+        ;;
+      remove|rm)
+        exit 0
+        ;;
+      list|ls)
+        echo "[]"
+        exit 0
+        ;;
+      *)
+        echo "fake-msb: unhandled 'volume' invocation: $*" >&2
+        exit 1
+        ;;
+    esac
     ;;
 
   list)
