@@ -90,7 +90,7 @@ While a cage is up read-write on a repo, **bd writes should happen from exactly 
 
 ## Harness inventory
 
-See [`.claude/harness.md`](.claude/harness.md) for the catalog of verification mechanisms in this repo (shell syntax checks, shellcheck, tiered test suites, `rc test` / `rc test --e2e` / `rc doctor`, egress probes, ADRs). Consult it when picking a feedback loop for a task.
+See [`.claude/verification.md`](.claude/verification.md) for the catalog of verification mechanisms in this repo (shell syntax checks, shellcheck, tiered test suites, `rc test` / `rc test --e2e` / `rc doctor`, egress probes, ADRs). Consult it when picking a feedback loop for a task.
 
 ## Testing changes
 

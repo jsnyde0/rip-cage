@@ -291,7 +291,7 @@ seed_symlink_auth_json() {
 # "other.json" is not) -> _up_prepare_docker_mounts exits 1 before either
 # CM4b's or CM15's assertions can observe real mount output. No non-reserved
 # writable top-level exists for a non-root Linux user (/mnt, /srv, /opt are
-# root-owned — see .claude/harness.md), so this can't be fixed by relocating
+# root-owned — see .claude/verification.md), so this can't be fixed by relocating
 # the fixture. Key the skip on this ACTUAL reserved-ness condition (not a
 # uname/OS check) — same idiom as test-secret-path-denylist.sh l-1/l-2a/l-2b.
 _rc_reserved_top_levels() {

@@ -95,7 +95,7 @@ The `bash tests/run-host.sh --host-only` job is the "no container" tier. On a fr
 
 Live-container assertions are not lost: the full `run-host.sh` (no flag) runs them locally with a container present, and a future DinD / self-hosted job (rip-cage-rat) can run them in CI.
 
-**Rationale:** the maintainer's environment — macOS + BSD coreutils + `rip-cage:latest` always present + warm Docker cache — masks these failures by construction; a fresh Linux CI runner (GNU coreutils + no image + cold cache + Docker Hub rate limits) does not. Determinism in the host-only tier is what makes CI a trustworthy gate rather than a flaky one. The cross-platform divergence checklist lives in `.claude/harness.md` ("Local-vs-CI divergence checklist").
+**Rationale:** the maintainer's environment — macOS + BSD coreutils + `rip-cage:latest` always present + warm Docker cache — masks these failures by construction; a fresh Linux CI runner (GNU coreutils + no image + cold cache + Docker Hub rate limits) does not. Determinism in the host-only tier is what makes CI a trustworthy gate rather than a flaky one. The cross-platform divergence checklist lives in `.claude/verification.md` ("Local-vs-CI divergence checklist").
 
 **Alternatives considered:**
 

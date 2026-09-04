@@ -306,7 +306,7 @@ case_allowlist_show_effective() {
 }
 
 # --- auth refresh (non-macOS path; lib/fake-bin/uname always reports
-# Linux -- see rip-cage-5fsy in .claude/harness.md) ------------------------
+# Linux -- see rip-cage-5fsy in .claude/verification.md) ------------------------
 
 case_auth_refresh_human() { gm_capture auth refresh; }
 case_auth_refresh_json() { gm_capture --output json auth refresh; }

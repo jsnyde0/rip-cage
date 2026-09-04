@@ -97,7 +97,7 @@ root.
 | `scripts/refresh-github-known-hosts.sh` | `packaging/scripts/refresh-github-known-hosts.sh` (dev tooling for the ssh guard; low-confidence home — could go `cage/guards/ssh/`) |
 | `examples/`, `tests/`, `docs/` | unchanged (`tests/` MUST stay at root — baked by Dockerfile, F7) |
 | `history/` (40 tracked files, F1) | STAYS AT ROOT, unchanged (design/fixes history; docs-adjacent) |
-| `.agents/ .beads/ .claude/ .codex/ .github/` (F2) | STAY AT ROOT, unchanged (`.claude/harness.md` + `.github/workflows/` are load-bearing — see checklist) |
+| `.agents/ .beads/ .claude/ .codex/ .github/` (F2) | STAY AT ROOT, unchanged (`.claude/verification.md` + `.github/workflows/` are load-bearing — see checklist) |
 | root project docs, `Makefile`, `VERSION`, `.gitignore`, `.rip-cage.yaml` | unchanged (root) |
 
 ## `rc` decomposition

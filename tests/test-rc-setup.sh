@@ -48,7 +48,7 @@ else
 fi
 
 # The file must be UNCHANGED (content-equality, not mtime -- rip-cage-woow
-# mtime-flake lesson in .claude/harness.md: mtime is a flaky idempotency
+# mtime-flake lesson in .claude/verification.md: mtime is a flaky idempotency
 # proxy, content equality is the true invariant).
 BEFORE_CONTENT=$(cat "${GM_HOME}/.zshrc")
 GM_SHELL_OVERRIDE="/bin/zsh" gm_capture setup
