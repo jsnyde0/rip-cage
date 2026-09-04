@@ -10,6 +10,16 @@
 #
 # Run directly: docker exec <container> /usr/local/lib/rip-cage/test-skills.sh
 # Or via:       rc test <container>  (if called by test-safety-stack.sh)
+#
+# Runs on the host too (tests/run-host.sh) — this file is single-sourced:
+# cli/test.sh already invokes it in-cage as
+# /usr/local/lib/rip-cage/test-skills.sh, so a second host-only copy would
+# fork coverage that is already runnable. Instead the cage-only tier (checks
+# probing /usr/local/lib/rip-cage/skill-server.py, the ~/.claude/agents
+# in-cage symlink projection, and the shipped /etc/rip-cage/settings.json
+# baseline) self-skips on the host with a "SKIP (cage-only): ..." line naming
+# the missing prerequisite; the host-valid checks still run and must still
+# pass (rip-cage-dovx).
 
 set -euo pipefail
 
@@ -20,6 +30,14 @@ _TS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 # shellcheck source=./_agent-readability.sh
 # shellcheck disable=SC1091
 source "${_TS_DIR}/_agent-readability.sh"
+
+# In-cage detection (rip-cage-dovx). /etc/rip-cage/release is the repo-wide
+# canonical in-cage sentinel (rc:54 itself hard-exits on it, ADR-002 D14 /
+# rip-cage-r5f9; test-auth-refresh.sh, test-rc-allowlist.sh gate the same
+# way, and the broken-symlink check below already used this exact test
+# before this variable existed).
+_TS_IN_CAGE=false
+[[ -f /etc/rip-cage/release ]] && _TS_IN_CAGE=true
 
 PASS=0
 FAIL=0
@@ -37,6 +55,17 @@ check() {
   fi
 }
 
+# skip_check: ledgers a cage-only check as SKIP on the host instead of
+# probing a path/process that only exists inside a cage. Does NOT touch
+# PASS/FAIL/TOTAL — it never ran, so it isn't a pass or a fail. The line
+# shape ("SKIP (cage-only): ...") matches tests/run-host.sh's body-decided
+# SKIP sentinel ('^SKIP[[:space:]:(]') so a suite run classifies it
+# correctly once this worktree picks up that classifier (rip-cage-pow0).
+skip_check() {
+  local name="$1" reason="$2"
+  echo "SKIP (cage-only): ${name} — ${reason}"
+}
+
 echo "=== Skills Discovery Check ==="
 echo ""
 echo "-- Skill Files --"
@@ -44,7 +73,7 @@ echo "-- Skill Files --"
 skills_dir="${HOME}/.claude/skills"
 
 # 1. ~/.claude/skills/ directory exists (directory or symlink to directory)
-check "~/.claude/skills/ exists" "$([[ -d "${skills_dir}" ]] && echo pass || echo fail)"
+check "\$HOME/.claude/skills/ exists" "$([[ -d "${skills_dir}" ]] && echo pass || echo fail)"
 
 # 2. At least one SKILL.md present
 # NOTE: find counts broken symlinks as matches, but skill-server.py skips them.
@@ -88,14 +117,24 @@ if "${mcp_configured}"; then
 
   server_py="/usr/local/lib/rip-cage/skill-server.py"
 
-  # 4. skill-server.py exists
-  check "skill-server.py exists" "$([[ -f "${server_py}" ]] && echo pass || echo fail)" "${server_py}"
+  if ! $_TS_IN_CAGE; then
+    # 4-7. skill-server.py and the live MCP protocol handshake only exist
+    # inside a cage (/usr/local/lib/rip-cage/skill-server.py is baked into
+    # the image, not present on the host) — self-skip rather than false-FAIL.
+    skip_check "skill-server.py exists" "cage-only path ${server_py} — run inside a rip-cage container (rc test <cage> or docker exec ... test-skills.sh)"
+    skip_check "MCP initialize handshake" "requires the in-cage skill-server.py — run inside a rip-cage container"
+    skip_check "MCP tools/list exposes list tool" "requires the in-cage skill-server.py — run inside a rip-cage container"
+    skip_check "MCP tools/call list returns skills" "requires the in-cage skill-server.py — run inside a rip-cage container"
+  else
 
-  # 5-7. Full MCP protocol exchange: initialize → tools/list → tools/call list
-  if [[ -f "${server_py}" ]]; then
-    # Write a temp Python test script — avoids heredoc-inside-heredoc quoting issues
-    tmp_py=$(mktemp /tmp/mcp-test-XXXXXX.py)
-    cat > "${tmp_py}" << 'PYTHON'
+    # 4. skill-server.py exists
+    check "skill-server.py exists" "$([[ -f "${server_py}" ]] && echo pass || echo fail)" "${server_py}"
+
+    # 5-7. Full MCP protocol exchange: initialize → tools/list → tools/call list
+    if [[ -f "${server_py}" ]]; then
+      # Write a temp Python test script — avoids heredoc-inside-heredoc quoting issues
+      tmp_py=$(mktemp /tmp/mcp-test-XXXXXX.py)
+      cat > "${tmp_py}" << 'PYTHON'
 #!/usr/bin/env python3
 """
 MCP protocol smoke test for skill-server.py.
@@ -171,41 +210,44 @@ except Exception as e:
     sys.exit(1)
 PYTHON
 
-    mcp_result=$(python3 "${tmp_py}" "${server_py}" 2>&1 || true)
-    rm -f "${tmp_py}"
+      mcp_result=$(python3 "${tmp_py}" "${server_py}" 2>&1 || true)
+      rm -f "${tmp_py}"
 
-    # Parse tagged output
-    if echo "${mcp_result}" | grep -q "^INIT_OK"; then
-      detail=$(echo "${mcp_result}" | grep "^INIT_OK" | sed 's/^INIT_OK //')
-      check "MCP initialize handshake" "pass" "${detail}"
+      # Parse tagged output
+      if echo "${mcp_result}" | grep -q "^INIT_OK"; then
+        detail=$(echo "${mcp_result}" | grep "^INIT_OK" | sed 's/^INIT_OK //')
+        check "MCP initialize handshake" "pass" "${detail}"
+      else
+        detail=$(echo "${mcp_result}" | grep "^INIT_FAIL\|^EXCEPTION" | head -1 | sed 's/^[^:]*: //')
+        check "MCP initialize handshake" "fail" "${detail:-no response}"
+      fi
+
+      if echo "${mcp_result}" | grep -q "^TOOLS_OK"; then
+        detail=$(echo "${mcp_result}" | grep "^TOOLS_OK" | sed 's/^TOOLS_OK //')
+        check "MCP tools/list exposes list tool" "pass" "${detail}"
+      else
+        detail=$(echo "${mcp_result}" | grep "^TOOLS_FAIL\|^EXCEPTION" | head -1 | sed 's/^[^:]*: //')
+        check "MCP tools/list exposes list tool" "fail" "${detail:-no response}"
+      fi
+
+      if echo "${mcp_result}" | grep -q "^LIST_OK"; then
+        detail=$(echo "${mcp_result}" | grep "^LIST_OK" | sed 's/^LIST_OK //')
+        check "MCP tools/call list returns skills" "pass" "${detail}"
+      else
+        detail=$(echo "${mcp_result}" | grep "^LIST_FAIL\|^EXCEPTION" | head -1 | sed 's/^[^:]*: //')
+        check "MCP tools/call list returns skills" "fail" "${detail:-no response}"
+      fi
     else
-      detail=$(echo "${mcp_result}" | grep "^INIT_FAIL\|^EXCEPTION" | head -1 | sed 's/^[^:]*: //')
-      check "MCP initialize handshake" "fail" "${detail:-no response}"
+      # skill-server.py missing — fail the remaining MCP tests explicitly
+      check "MCP initialize handshake" "fail" "skill-server.py not found"
+      check "MCP tools/list exposes list tool" "fail" "skill-server.py not found"
+      check "MCP tools/call list returns skills" "fail" "skill-server.py not found"
     fi
 
-    if echo "${mcp_result}" | grep -q "^TOOLS_OK"; then
-      detail=$(echo "${mcp_result}" | grep "^TOOLS_OK" | sed 's/^TOOLS_OK //')
-      check "MCP tools/list exposes list tool" "pass" "${detail}"
-    else
-      detail=$(echo "${mcp_result}" | grep "^TOOLS_FAIL\|^EXCEPTION" | head -1 | sed 's/^[^:]*: //')
-      check "MCP tools/list exposes list tool" "fail" "${detail:-no response}"
-    fi
-
-    if echo "${mcp_result}" | grep -q "^LIST_OK"; then
-      detail=$(echo "${mcp_result}" | grep "^LIST_OK" | sed 's/^LIST_OK //')
-      check "MCP tools/call list returns skills" "pass" "${detail}"
-    else
-      detail=$(echo "${mcp_result}" | grep "^LIST_FAIL\|^EXCEPTION" | head -1 | sed 's/^[^:]*: //')
-      check "MCP tools/call list returns skills" "fail" "${detail:-no response}"
-    fi
-  else
-    # skill-server.py missing — fail the remaining MCP tests explicitly
-    check "MCP initialize handshake" "fail" "skill-server.py not found"
-    check "MCP tools/list exposes list tool" "fail" "skill-server.py not found"
-    check "MCP tools/call list returns skills" "fail" "skill-server.py not found"
-  fi
+  fi # _TS_IN_CAGE (checks 4-7)
 
   # 8. settings.json registers server as "meta-skill" (ADR-002 D18: name matches host)
+  # Host-valid: reads the same real ~/.claude/settings.json on both host and cage.
   if jq -e '.mcpServers["meta-skill"]' "${HOME}/.claude/settings.json" >/dev/null 2>&1; then
     check "MCP server registered as meta-skill" "pass" "meta-skill found in mcpServers"
   else
@@ -231,17 +273,24 @@ echo ""
 agents_dir="${HOME}/.claude/agents"
 
 # 9. ~/.claude/agents/ symlink exists and points to .rc-context/agents
-if [[ -L "${agents_dir}" ]]; then
-  link_target=$(readlink "${agents_dir}")
-  if [[ "${link_target}" == *".rc-context/agents"* ]]; then
-    check "~/.claude/agents symlink points to .rc-context/agents" "pass" "-> ${link_target}"
+# Cage-only: in-cage init projects ~/.claude/agents as a symlink into
+# .rc-context/agents; on the host ~/.claude/agents (if present at all) is a
+# real directory belonging to the host's own Claude Code install.
+if $_TS_IN_CAGE; then
+  if [[ -L "${agents_dir}" ]]; then
+    link_target=$(readlink "${agents_dir}")
+    if [[ "${link_target}" == *".rc-context/agents"* ]]; then
+      check "\$HOME/.claude/agents symlink points to .rc-context/agents" "pass" "-> ${link_target}"
+    else
+      check "\$HOME/.claude/agents symlink points to .rc-context/agents" "fail" "-> ${link_target}"
+    fi
+  elif [[ -d "${agents_dir}" ]]; then
+    check "\$HOME/.claude/agents symlink points to .rc-context/agents" "fail" "is real dir, not a symlink"
   else
-    check "~/.claude/agents symlink points to .rc-context/agents" "fail" "-> ${link_target}"
+    check "\$HOME/.claude/agents symlink points to .rc-context/agents" "fail" "missing"
   fi
-elif [[ -d "${agents_dir}" ]]; then
-  check "~/.claude/agents symlink points to .rc-context/agents" "fail" "is real dir, not a symlink"
 else
-  check "~/.claude/agents symlink points to .rc-context/agents" "fail" "missing"
+  skip_check "\$HOME/.claude/agents symlink points to .rc-context/agents" "cage-only projection — the host's .claude/agents is a real directory, not the in-cage .rc-context/agents symlink; run inside a rip-cage container"
 fi
 
 # 10. Agent .md files readable — classify ALL *.md entries:
@@ -283,18 +332,24 @@ echo ""
 # against the shipped baseline rather than a hardcoded number.
 settings_file="${HOME}/.claude/settings.json"
 shipped_file="/etc/rip-cage/settings.json"
-if [[ -f "${settings_file}" && -f "${shipped_file}" ]]; then
-  pretooluse_count=$(jq '[.hooks.PreToolUse[]?.hooks[]?] | length' "${settings_file}" 2>/dev/null || echo "-1")
-  expected_count=$(jq '[.hooks.PreToolUse[]?.hooks[]?] | length' "${shipped_file}" 2>/dev/null || echo "-1")
-  if [[ "${pretooluse_count}" -eq "${expected_count}" ]]; then
-    check "PreToolUse hooks not doubled after init" "pass" "${pretooluse_count} hook(s) — matches shipped baseline"
-  elif [[ "${pretooluse_count}" -gt "${expected_count}" ]]; then
-    check "PreToolUse hooks not doubled after init" "fail" "${pretooluse_count} hook(s) — init re-merged and doubled hooks (expected ${expected_count})"
+# Cage-only: the shipped baseline (${shipped_file}) is a cage-image artifact
+# and never exists on the host, so this check has no host-valid meaning.
+if $_TS_IN_CAGE; then
+  if [[ -f "${settings_file}" && -f "${shipped_file}" ]]; then
+    pretooluse_count=$(jq '[.hooks.PreToolUse[]?.hooks[]?] | length' "${settings_file}" 2>/dev/null || echo "-1")
+    expected_count=$(jq '[.hooks.PreToolUse[]?.hooks[]?] | length' "${shipped_file}" 2>/dev/null || echo "-1")
+    if [[ "${pretooluse_count}" -eq "${expected_count}" ]]; then
+      check "PreToolUse hooks not doubled after init" "pass" "${pretooluse_count} hook(s) — matches shipped baseline"
+    elif [[ "${pretooluse_count}" -gt "${expected_count}" ]]; then
+      check "PreToolUse hooks not doubled after init" "fail" "${pretooluse_count} hook(s) — init re-merged and doubled hooks (expected ${expected_count})"
+    else
+      check "PreToolUse hooks not doubled after init" "fail" "could not read hook count (${pretooluse_count}/${expected_count})"
+    fi
   else
-    check "PreToolUse hooks not doubled after init" "fail" "could not read hook count (${pretooluse_count}/${expected_count})"
+    check "PreToolUse hooks not doubled after init" "fail" "settings.json or shipped baseline missing"
   fi
 else
-  check "PreToolUse hooks not doubled after init" "fail" "settings.json or shipped baseline missing"
+  skip_check "PreToolUse hooks not doubled after init" "cage-only baseline ${shipped_file} does not exist on the host; run inside a rip-cage container"
 fi
 
 echo ""
@@ -308,15 +363,14 @@ echo ""
 # a mount parent). Host-only: sources rc directly against a fake HOME/asset
 # dir, mirroring tests/test-symlink-follow.sh's `source "$RC"` convention.
 #
-# Host-vs-in-cage detection: /etc/rip-cage/release is the repo-wide canonical
-# in-cage signal (rc:54 itself hard-exits on it, ADR-002 D14 / rip-cage-r5f9;
-# test-auth-refresh.sh, test-rc-allowlist.sh gate the same way). This script is
-# also invoked in-cage as the canonical path (cli/test.sh:138, docker exec
+# Host-vs-in-cage detection: reuses _TS_IN_CAGE (top of file), which tests
+# the same /etc/rip-cage/release sentinel this block always used. This script
+# is also invoked in-cage as the canonical path (cli/test.sh:138, docker exec
 # .../test-skills.sh), where ${_TS_DIR}/../rc resolves to /usr/local/lib/rc —
 # not baked into the image — so sourcing it there is a guaranteed exit=127,
 # not a real check of anything (rip-cage-7atw.8). Skip cleanly in that case
 # rather than false-failing on a missing host artifact.
-if [[ -f /etc/rip-cage/release ]]; then
+if $_TS_IN_CAGE; then
   echo "SKIP (in-cage): broken symlink under skills dir check — host-only, sources ${_TS_DIR}/../rc which isn't baked into the image (rip-cage-7atw.8)"
 else
   _bsw_rc="${_TS_DIR}/../rc"
