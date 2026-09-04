@@ -49,12 +49,15 @@ _rc() {
       ;;
     args)
       case $line[1] in
-        attach|exec|down|test|reload)
+        attach|exec|down|test)
           local -a containers
           containers=($(_rc_completion_cage_names --running-only))
           _describe 'container' containers
           ;;
-        destroy|doctor)
+        destroy|doctor|reload)
+          # rip-cage-syzk: reload now also repairs a STOPPED cage's stale
+          # image (not just a running cage's allowlist drift) -- complete
+          # against ALL cages, not just running ones.
           local -a containers
           containers=($(_rc_completion_cage_names))
           _describe 'container' containers

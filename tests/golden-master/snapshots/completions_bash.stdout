@@ -30,12 +30,15 @@ _rc_complete() {
   fi
 
   case "$prev" in
-    attach|exec|down|test|reload)
+    attach|exec|down|test)
       local containers
       containers=$(_rc_completion_cage_names --running-only)
       COMPREPLY=( $(compgen -W "$containers" -- "$cur") )
       ;;
-    destroy|doctor)
+    destroy|doctor|reload)
+      # rip-cage-syzk: reload now also repairs a STOPPED cage's stale image
+      # (not just a running cage's allowlist drift) -- complete against ALL
+      # cages, not just running ones.
       local containers
       containers=$(_rc_completion_cage_names)
       COMPREPLY=( $(compgen -W "$containers" -- "$cur") )
