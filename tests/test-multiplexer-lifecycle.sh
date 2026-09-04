@@ -282,9 +282,14 @@ CLEANUP() {
   # these tests run under `set -uo pipefail`, and a bare [@] on an empty
   # array aborts on macOS bash 3.2 (would abort CLEANUP before it can even
   # remove MUX_TMP).
+  local _d_out _d_rc
   for c in "${MUX_CREATED_CAGES[@]:-}"; do
     [[ -n "$c" ]] || continue
-    "$RC" destroy --force "$c" >/dev/null 2>&1 || true
+    _d_out=$("$RC" destroy --force "$c" 2>&1)
+    _d_rc=$?
+    if [[ "$_d_rc" -ne 0 ]]; then
+      echo "WARNING: failed to destroy '$c' (exit ${_d_rc}): ${_d_out}" >&2
+    fi
   done
   [[ -n "$MUX_TMP" ]] && rm -rf "$MUX_TMP"
   # rip-cage-or84: rip-cage:latest is never touched by the combined build
@@ -348,6 +353,7 @@ DCG_HERDR_PI_CAGE="rc-mux-dcghp-test"
 # test's own fixed, deterministic cage names (never an enumerate/glob match —
 # see the hardened-cleanup-shape note on MUX_CREATED_CAGES above).
 for _c in "$NONE_CAGE" "$TMUX_CAGE" "$HERDR_CAGE" "$DCG_HERDR_PI_CAGE"; do
+  # swallow-ok(rip-cage-54q3.6.5): pre-emptive stale-cage cleanup; non-zero means there was nothing to destroy.
   "$RC" destroy --force "$_c" >/dev/null 2>&1 || true
 done
 unset _c

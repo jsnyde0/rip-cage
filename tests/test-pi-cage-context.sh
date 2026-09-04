@@ -123,8 +123,15 @@ cleanup_all() {
   [[ "$CLEANUP_DONE" == "true" ]] && return
   CLEANUP_DONE=true
 
+  local _d_out _d_rc
   for c in "${CREATED_CAGES[@]:-}"; do
-    [[ -n "$c" ]] && "$RC" destroy --force "$c" >/dev/null 2>&1 || true
+    if [[ -n "$c" ]]; then
+      _d_out=$("$RC" destroy --force "$c" 2>&1)
+      _d_rc=$?
+      if [[ "$_d_rc" -ne 0 ]]; then
+        echo "WARNING: failed to destroy '$c' (exit ${_d_rc}): ${_d_out}" >&2
+      fi
+    fi
   done
   [[ -n "$TEST_WS" && -d "$TEST_WS" ]] && rm -rf "$TEST_WS"
   [[ -n "$TEST_WS2" && -d "$TEST_WS2" ]] && rm -rf "$TEST_WS2"
@@ -382,7 +389,11 @@ else
     pass "Test 7d: init log line correctly absent on no-pi-mount container"
   fi
 
-  "$RC" destroy --force "$CONTAINER2" >/dev/null 2>&1 || true
+  _d_out=$("$RC" destroy --force "$CONTAINER2" 2>&1)
+  _d_rc=$?
+  if [[ "$_d_rc" -ne 0 ]]; then
+    echo "WARNING: failed to destroy '$CONTAINER2' (exit ${_d_rc}): ${_d_out}" >&2
+  fi
 fi
 
 # ---- Summary ----

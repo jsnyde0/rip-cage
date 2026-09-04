@@ -21,8 +21,15 @@ _resolve_container() {
 }
 
 cleanup() {
+  local c _d_out _d_rc
   for c in "${CREATED_CAGES[@]:-}"; do
-    [[ -n "$c" ]] && "$RC" destroy --force "$c" >/dev/null 2>&1 || true
+    if [[ -n "$c" ]]; then
+      _d_out=$("$RC" destroy --force "$c" 2>&1)
+      _d_rc=$?
+      if [[ "$_d_rc" -ne 0 ]]; then
+        echo "WARNING: failed to destroy '$c' (exit ${_d_rc}): ${_d_out}" >&2
+      fi
+    fi
   done
   if [[ -n "$TEST_WS" ]]; then
     rm -rf "$TEST_WS"

@@ -228,8 +228,15 @@ CLEANUP() {
   local c
   # `${...[@]:-}` keeps this safe under `set -u` on bash 3.2 when CREATED_CAGES
   # is empty (early-exit before any cage) -- expands to nothing, loop skips.
+  local _d_out _d_rc
   for c in "${CREATED_CAGES[@]:-}"; do
-    [[ -n "$c" ]] && "$RC" destroy --force "$c" >/dev/null 2>&1 || true
+    if [[ -n "$c" ]]; then
+      _d_out=$("$RC" destroy --force "$c" 2>&1)
+      _d_rc=$?
+      if [[ "$_d_rc" -ne 0 ]]; then
+        echo "WARNING: failed to destroy '$c' (exit ${_d_rc}): ${_d_out}" >&2
+      fi
+    fi
   done
   [[ -n "$E2E_TMP"  ]] && rm -rf "$E2E_TMP"
   [[ -n "$E2E_TMP2" ]] && rm -rf "$E2E_TMP2"
@@ -243,6 +250,7 @@ trap CLEANUP EXIT
 
 # Pre-cleanup: remove any leftover state from a prior aborted run so we
 # don't accidentally hit the name-collision code path.
+# swallow-ok(rip-cage-54q3.6.5): pre-emptive stale-cage cleanup; non-zero means there was nothing to destroy.
 "$RC" destroy --force "$CONTAINER_NAME" > /dev/null 2>&1 || true
 
 echo "=== E2E Lifecycle Checks (msb) ==="
@@ -472,7 +480,11 @@ else
   else
     check "auth-warn case 1: Claude API key set → no WARNING" "fail" "(container=$_ac1_name)"
   fi
-  "$RC" destroy --force "$_ac1_name" > /dev/null 2>&1 || true
+  _d_out=$("$RC" destroy --force "$_ac1_name" 2>&1)
+  _d_rc=$?
+  if [[ "$_d_rc" -ne 0 ]]; then
+    echo "WARNING: failed to destroy '$_ac1_name' (exit ${_d_rc}): ${_d_out}" >&2
+  fi
 fi
 
 # Case 2: Pi auth present, no Claude env auth → warn depends on host credential file state.
@@ -517,7 +529,11 @@ else
       check "auth-warn case 2: pi auth only, no Claude auth → WARNING present (intentional per D2)" "fail" "(container=$_ac2_name)"
     fi
   fi
-  "$RC" destroy --force "$_ac2_name" > /dev/null 2>&1 || true
+  _d_out=$("$RC" destroy --force "$_ac2_name" 2>&1)
+  _d_rc=$?
+  if [[ "$_d_rc" -ne 0 ]]; then
+    echo "WARNING: failed to destroy '$_ac2_name' (exit ${_d_rc}): ${_d_out}" >&2
+  fi
 fi
 
 # Case 3: Neither Claude env auth nor pi auth → warn depends on host credential file state.
@@ -549,7 +565,11 @@ else
       check "auth-warn case 3: neither Claude nor pi auth → WARNING" "fail" "(container=$_ac3_name)"
     fi
   fi
-  "$RC" destroy --force "$_ac3_name" > /dev/null 2>&1 || true
+  _d_out=$("$RC" destroy --force "$_ac3_name" 2>&1)
+  _d_rc=$?
+  if [[ "$_d_rc" -ne 0 ]]; then
+    echo "WARNING: failed to destroy '$_ac3_name' (exit ${_d_rc}): ${_d_out}" >&2
+  fi
 fi
 
 # Case 4: Both Claude API key and pi auth → no 'WARNING: No auth'.
@@ -574,7 +594,11 @@ else
   else
     check "auth-warn case 4: Claude API key + pi auth → no WARNING" "fail" "(container=$_ac4_name)"
   fi
-  "$RC" destroy --force "$_ac4_name" > /dev/null 2>&1 || true
+  _d_out=$("$RC" destroy --force "$_ac4_name" 2>&1)
+  _d_rc=$?
+  if [[ "$_d_rc" -ne 0 ]]; then
+    echo "WARNING: failed to destroy '$_ac4_name' (exit ${_d_rc}): ${_d_out}" >&2
+  fi
 fi
 
 # Case 5: No Claude auth at all (no keychain, no env, no host cred files) → WARNING present.
@@ -616,7 +640,11 @@ else
   else
     check "auth-warn case 5: no Claude auth → WARNING present (rip-cage-f4i)" "fail" "(container=$_ac5_name)"
   fi
-  "$RC" destroy --force "$_ac5_name" > /dev/null 2>&1 || true
+  _d_out=$("$RC" destroy --force "$_ac5_name" 2>&1)
+  _d_rc=$?
+  if [[ "$_d_rc" -ne 0 ]]; then
+    echo "WARNING: failed to destroy '$_ac5_name' (exit ${_d_rc}): ${_d_out}" >&2
+  fi
 fi
 rm -rf "$_ac5_home"
 
@@ -654,7 +682,11 @@ else
   else
     check "auth-warn case 6: CLAUDE_CODE_OAUTH_TOKEN set (non-possession) → no WARNING (rip-cage-df1c)" "fail" "(container=$_ac6_name)"
   fi
-  "$RC" destroy --force "$_ac6_name" > /dev/null 2>&1 || true
+  _d_out=$("$RC" destroy --force "$_ac6_name" 2>&1)
+  _d_rc=$?
+  if [[ "$_d_rc" -ne 0 ]]; then
+    echo "WARNING: failed to destroy '$_ac6_name' (exit ${_d_rc}): ${_d_out}" >&2
+  fi
 fi
 rm -rf "$_ac6_home"
 
@@ -800,8 +832,18 @@ else
 fi
 
 # Cleanup collision container + primary re-up.
-[[ -n "$collision_name" ]] && "$RC" destroy --force "$collision_name" > /dev/null 2>&1 || true
-"$RC" destroy --force "$CONTAINER_NAME" > /dev/null 2>&1 || true
+if [[ -n "$collision_name" ]]; then
+  _d_out=$("$RC" destroy --force "$collision_name" 2>&1)
+  _d_rc=$?
+  if [[ "$_d_rc" -ne 0 ]]; then
+    echo "WARNING: failed to destroy '$collision_name' (exit ${_d_rc}): ${_d_out}" >&2
+  fi
+fi
+_d_out=$("$RC" destroy --force "$CONTAINER_NAME" 2>&1)
+_d_rc=$?
+if [[ "$_d_rc" -ne 0 ]]; then
+  echo "WARNING: failed to destroy '$CONTAINER_NAME' (exit ${_d_rc}): ${_d_out}" >&2
+fi
 
 # -----------------------------------------------------------------------------
 # Egress-off variant
@@ -939,7 +981,13 @@ else
 fi
 
 # Cleanup DCG fixture container.
-[[ -n "$_dcg_container" ]] && "$RC" destroy --force "$_dcg_container" > /dev/null 2>&1 || true
+if [[ -n "$_dcg_container" ]]; then
+  _d_out=$("$RC" destroy --force "$_dcg_container" 2>&1)
+  _d_rc=$?
+  if [[ "$_d_rc" -ne 0 ]]; then
+    echo "WARNING: failed to destroy '$_dcg_container' (exit ${_d_rc}): ${_d_out}" >&2
+  fi
+fi
 
 # -----------------------------------------------------------------------------
 # Mise toolchain provisioning (ADR-015 D3, ported from test-integration.sh 14-16)
@@ -1008,7 +1056,13 @@ fi
 
 # Check 27: mise cache reuse — re-run mise install against the same workspace on
 # a fresh container; cache hit should be fast (<5000ms). Warn-only on slow hit.
-[[ -n "$_nvmrc_container" ]] && "$RC" destroy --force "$_nvmrc_container" > /dev/null 2>&1 || true
+if [[ -n "$_nvmrc_container" ]]; then
+  _d_out=$("$RC" destroy --force "$_nvmrc_container" 2>&1)
+  _d_rc=$?
+  if [[ "$_d_rc" -ne 0 ]]; then
+    echo "WARNING: failed to destroy '$_nvmrc_container' (exit ${_d_rc}): ${_d_out}" >&2
+  fi
+fi
 
 _cache_ws="${MISE_TMP}/rc-mise/cache-test"
 mkdir -p "$_cache_ws"
@@ -1044,7 +1098,11 @@ else
     check "mise: cache reuse — second install fast (<5000ms) (ADR-015 D2)" "pass" \
       "WARN: slow cache hit ${mise_elapsed}ms (>5000ms threshold; cache volume may be absent)"
   fi
-  "$RC" destroy --force "$_cache_container" > /dev/null 2>&1 || true
+  _d_out=$("$RC" destroy --force "$_cache_container" 2>&1)
+  _d_rc=$?
+  if [[ "$_d_rc" -ne 0 ]]; then
+    echo "WARNING: failed to destroy '$_cache_container' (exit ${_d_rc}): ${_d_out}" >&2
+  fi
 fi
 
 # Check 28: mise provisions yarn via packageManager field in package.json (ADR-015 D3)
@@ -1094,7 +1152,11 @@ else
     check "mise: packageManager=yarn@1.22.22 → yarn 1.22.22 provisioned (ADR-015 D3)" "fail" \
       "expected 1.22.22, got '${yarn_ver:-<empty>}'"
   fi
-  "$RC" destroy --force "$_yarn_container" > /dev/null 2>&1 || true
+  _d_out=$("$RC" destroy --force "$_yarn_container" 2>&1)
+  _d_rc=$?
+  if [[ "$_d_rc" -ne 0 ]]; then
+    echo "WARNING: failed to destroy '$_yarn_container' (exit ${_d_rc}): ${_d_out}" >&2
+  fi
 fi
 
 # -----------------------------------------------------------------------------

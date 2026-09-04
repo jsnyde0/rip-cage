@@ -813,7 +813,7 @@ echo ""
 # ============================================================================
 echo "--- Case 3: live scan of tests/*.sh for silently-swallowed rc destroy --force (ratchet) ---"
 
-DESTROY_ENFORCED_SCOPE_FILES=()
+DESTROY_ENFORCED_SCOPE_FILES=("test-e2e-lifecycle.sh" "test-session-persistence.sh" "test-pi-cage-context.sh" "test-multiplexer-lifecycle.sh" "test-claude-json-seed-synthesis.sh" "test-pi-e2e.sh" "test-pi-auth-mount.sh")
 
 scan_dir_for_destroy_swallows "$SCRIPT_DIR"
 
