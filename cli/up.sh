@@ -2465,10 +2465,12 @@ cmd_up() {
   # See _image_is_current / _pull_or_build / ADR-008 D6. rip-cage-rj68 (S6):
   # ALSO requires the image be present in msb's LOCAL cache — the actual
   # runtime `msb create` boots from below — not just docker's, since
-  # _pull_or_build's docker-side provisioning always ends with the
-  # docker-save/msb-load conversion step (_build_msb_load, S1) that puts it
-  # there; a docker image present but never `rc build`-provisioned into msb
-  # (e.g. a stale pre-cutover local image) must still trigger provisioning.
+  # `rc up`'s own provisioning always ends with the docker-save/msb-load
+  # conversion step (_build_msb_load, S1, called just after _pull_or_build
+  # succeeds — rip-cage-0v47) that puts it there; a docker image present but
+  # never `rc build`- or `rc up`-provisioned into msb (e.g. a stale
+  # pre-cutover local image, or one built by a plain `docker build` outside
+  # rc entirely) must still trigger provisioning.
   local _image_absent=false
   if ! docker image inspect "$IMAGE" > /dev/null 2>&1 || ! _image_is_current \
       || ! msb image list --format json 2>/dev/null | jq -e --arg img "$IMAGE" \
@@ -2476,13 +2478,17 @@ cmd_up() {
     _image_absent=true
   fi
 
-  # rip-cage-7bs3: image-present branch ONLY. When the image is absent,
-  # _pull_or_build below already re-provisions and ends in _build_msb_load
-  # (S1's docker-save/msb-load conversion), so there is nothing to warn
-  # about on that path -- this is what catches the bead's actual repro
-  # instead: someone runs `docker build` directly, never enters `rc build`,
+  # rip-cage-7bs3: image-present branch ONLY. This catches the bead's actual
+  # repro: someone runs `docker build` directly, never enters `rc build`,
   # and every fresh cage boots msb's stale cached image. Advisory only, see
   # _msb_warn_image_layer_drift's own header (cli/lib/msb_runtime.sh).
+  #
+  # rip-cage-0v47: the image-ABSENT branch is handled separately, further
+  # below at the new-container provisioning block -- `_pull_or_build` there
+  # is immediately followed by `_build_msb_load` and this same emitter,
+  # called AFTER the load so the two branches never race and the emitter
+  # never runs twice in one invocation. Do not also call it here on the
+  # absent path.
   if [[ "$_image_absent" == false ]]; then
     _msb_warn_image_layer_drift
   fi
@@ -2960,6 +2966,29 @@ cmd_up() {
         exit 1
       fi
     fi
+    # rip-cage-0v47: _pull_or_build's success legs -- the local-build leg
+    # (_pull_or_build_local) and the GHCR pull+tag leg (cli/build.sh
+    # ~975-979) -- never themselves convert the image into msb's cache;
+    # unlike `cmd_build`, `rc up` does not route through _build_msb_load at
+    # all. Placed HERE at the caller (_pull_or_build's one and only caller)
+    # rather than inside _pull_or_build_local so it dominates BOTH legs, not
+    # just the local-build one -- a GHCR-pulled image is exactly as absent
+    # from msb's cache as a built one. Best-effort, following cmd_build's own
+    # idiom (cli/build.sh:560, :592): its exit code is deliberately not
+    # propagated into rc up's own.
+    _build_msb_load || true
+    # rip-cage-0v47: AFTER _build_msb_load, never before -- same ordering
+    # rip-cage-7bs3 already enforces at cli/build.sh:561 (pre-load, msb's
+    # cache still holds whatever it held before, so a pre-load compare is
+    # divergent by construction). This is the image-ABSENT counterpart to the
+    # image-PRESENT emitter call below -- a deliberate posture change
+    # (rip-cage-0v47 acceptance criterion 2): a load that reports success but
+    # doesn't land is now surfaced on the `rc up` path too, not just
+    # `rc build`. Stays advisory -- stderr only, exit status untouched. The
+    # status-3 branch inside _msb_warn_image_layer_drift stays gated on
+    # _RC_MSB_LOAD_SUCCEEDED, so a Docker-only host, or any of
+    # _build_msb_load's never-attempted-load paths, still emits nothing here.
+    _msb_warn_image_layer_drift
   fi
 
   log "Creating container $name for $path..."

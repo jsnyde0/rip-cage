@@ -295,24 +295,34 @@ _msb_image_layer_drift_status() {
 # _msb_warn_image_layer_drift (rip-cage-7bs3) — shared warn-emitter over
 # _msb_image_layer_drift_status, called from both `rc build` (AFTER
 # _build_msb_load, both the JSON and human-output call sites — cli/build.sh)
-# and `rc up` (the image-present branch only — cli/up.sh). Single-sourced so
+# and `rc up` (BOTH branches — cli/up.sh: the image-present branch, and,
+# since rip-cage-0v47, the image-absent/new-container branch too, called
+# there AFTER the new _build_msb_load call site it added). Single-sourced so
 # the message is never written twice.
 #
-# CORRECTION (rip-cage-528o fix round, adversarial finding F1): this header
-# used to justify the `rc up` image-ABSENT path with "_pull_or_build already
-# re-provisions and ends in _build_msb_load, so there is nothing to warn
-# about there". That claim is FALSE. _build_msb_load is invoked from exactly
-# two places — cli/build.sh:560 and :592, both inside cmd_build. On the
-# image-absent path _pull_or_build delegates to _pull_or_build_local
-# (cli/build.sh), which runs `docker build`, runs the two root-owned
-# validators, and returns — it never converts the result into msb's cache.
-# So `rc up`'s auto-provisioning genuinely never loads the image into msb.
-# That is a real gap, not something this emitter covers; it is filed
-# separately as rip-cage-0v47 (which also owns the same false claim mirrored
-# at cli/up.sh:2468-2469 and :2480). What remains TRUE about this call site
-# is only the narrower fact stated in the status-3 paragraph below: `rc up`
-# never runs _build_msb_load, so it never sets _RC_MSB_LOAD_SUCCEEDED, so
-# the status-3 branch is inert there by construction.
+# CORRECTION (rip-cage-528o fix round, adversarial finding F1) — HISTORY,
+# kept for the record: this header used to justify the `rc up` image-ABSENT
+# path with "_pull_or_build already re-provisions and ends in
+# _build_msb_load, so there is nothing to warn about there". That claim was
+# FALSE at the time: _build_msb_load was invoked from exactly two places —
+# cli/build.sh:560 and :592, both inside cmd_build. On the image-absent path
+# _pull_or_build delegated to _pull_or_build_local, which ran `docker
+# build`, ran the two root-owned validators, and returned — it never
+# converted the result into msb's cache. So `rc up`'s auto-provisioning
+# genuinely never loaded the image into msb, and this emitter was
+# unreachable from that path by construction (`_RC_MSB_LOAD_SUCCEEDED` was
+# never set there, so the status-3 branch below was permanently inert on
+# `rc up`). That gap was filed separately as rip-cage-0v47 (which also owned
+# the same false claim mirrored at cli/up.sh:2468-2469 and :2480).
+#
+# CLOSED (rip-cage-0v47): `rc up`'s new-container provisioning block
+# (cli/up.sh, immediately after a successful `_pull_or_build`) now calls
+# _build_msb_load itself, then calls this emitter — the same
+# after-the-load ordering `rc build` already used. None of the three
+# statements above are true anymore: `rc up` now runs _build_msb_load on
+# its image-absent path, sets _RC_MSB_LOAD_SUCCEEDED there like `rc build`
+# does, and the status-3 branch below is reachable — and thus meaningful —
+# from `rc up` too, not just `rc build`.
 #
 # POSTURE (brain:rip-cage ruling 2026-09-03, binding on this bead too):
 # advisory, fail-LOUD, never fail-closed — this function never changes an
@@ -341,10 +351,15 @@ _msb_image_layer_drift_status() {
 # (cli/build.sh): it is 1 ONLY when a real-sized archive was handed to a
 # real `msb load` that reported success. In THAT state, status 3 means the
 # load reported success but did not land -- the image cache is unverified
-# and a cage could boot from a stale image -- so it must be loud. The `rc
-# up` call site never sets the flag, so this branch is inert there by
-# construction. Default 0 via ${...:-0} keeps this safe under `set -u` when
-# _build_msb_load never ran at all.
+# and a cage could boot from a stale image -- so it must be loud. `rc up`'s
+# image-PRESENT call site never runs _build_msb_load in that same
+# invocation, so the flag there is whatever a prior process last left it at
+# (almost always unset/0 in a fresh shell) and this branch stays inert there
+# in practice. `rc up`'s image-ABSENT call site (rip-cage-0v47) DOES run
+# _build_msb_load first, in the same process, so this branch IS live there:
+# a load that reports success but doesn't land is now loud on `rc up` too,
+# not just `rc build`. Default 0 via ${...:-0} keeps this safe under
+# `set -u` when _build_msb_load never ran at all.
 #
 # POSTURE REMINDER for the status-3 branch: still advisory. It prints to
 # stderr and this function still returns 0 -- `rc build`'s exit code is
