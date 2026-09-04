@@ -195,6 +195,56 @@ cexec() { "$RC" exec "$CONTAINER" -- "$@"; }
 cexec_root() { msb exec -u root "$CONTAINER" -- "$@"; }
 
 # ---------------------------------------------------------------------------
+# LIVENESS PROBE: prove the cexec channel itself works before interpreting a
+# subsequent non-zero result as "artifact absent" (mirrors
+# test-cc-dcg-managed-settings.sh's rip-cage-7atw.22 review F7 fix — the same
+# ambiguity applies here: `cexec test -x ...` returning non-zero is
+# indistinguishable between "ran and the wrapper is absent" and "never ran
+# because the channel itself is broken" without this probe). Fail loud, not
+# skip, if the channel itself is down.
+# ---------------------------------------------------------------------------
+if ! cexec true; then
+  echo ""
+  echo "FATAL: cannot exec into container '$CONTAINER' — the probe channel itself is broken."
+  echo "  (cage not running, cage-name resolution failed, or msb exec errored.)"
+  echo "  This is NOT evidence the claude-recipe wasn't composed -- cexec could not even run 'true'."
+  echo "  Check: rc ls   /   msb list   /   rc doctor $CONTAINER"
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# PRECONDITION: is the claude-recipe composed into this image at all?
+#
+# rip-cage-sw6s: every claude invocation in this file hardcodes
+# /usr/local/bin/claude (the claude-recipe's session-isolation wrapper,
+# examples/claude/README.md) rather than the bare `claude` on PATH. Under a
+# floor-only build (the repo default; ADR-005 D12 / ADR-027 D3) that path is
+# legitimately absent — the floor image installs the real binary at
+# /usr/bin/claude only. Without this guard, the first hardcoded invocation
+# (the auth pre-flight below) fails with "failed to exec /usr/local/bin/claude"
+# (ENOENT) and gets MISREPORTED as an auth failure ("Run: rc auth <workspace>
+# to refresh") — the wrong diagnosis for a missing-binary condition. This
+# probe distinguishes the two causes before any claude invocation runs, using
+# the same independent composition signal test-cc-dcg-managed-settings.sh
+# uses (see that file's PRECONDITION comment for the full false-green
+# analysis, which applies unchanged here).
+if ! cexec test -x /usr/local/bin/claude; then
+  echo ""
+  echo "############################################################"
+  echo "### SKIP SKIP SKIP: claude-recipe NOT composed into this image"
+  echo "############################################################"
+  echo "SKIP: /usr/local/bin/claude (the session-wrapper this probe hardcodes for every claude"
+  echo "SKIP: invocation) is absent, so this probe cannot run under a floor-only build"
+  echo "SKIP: (ADR-005 D12 / ADR-027 D3 -- the claude-recipe is opt-in, not part of the floor"
+  echo "SKIP: image). See examples/claude/README.md to opt in."
+  echo "SKIP: NOTE (rip-cage-pow0): this SKIP exits 0; tests/run-host.sh's suite ledger"
+  echo "SKIP: classifies a stdout SKIP line + zero PASS lines as SKIP, not PASS -- read this"
+  echo "SKIP: stdout marker directly, don't infer composition status from a green suite run."
+  echo "############################################################"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # EARLY AUTH CHECK
 # Detect missing/invalid auth fast; fail loudly with exact missing artifact.
 # Per guardrail: do NOT hang the full timeout on bad auth.

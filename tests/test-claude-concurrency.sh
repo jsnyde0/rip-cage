@@ -102,6 +102,47 @@ _sticky_miss_detected() {
 }
 
 # ---------------------------------------------------------------------------
+# COMPOSITION PROBE (rip-cage-sw6s): is the claude-recipe composed into this
+# image at all?
+#
+# Several steps below hardcode /usr/local/bin/claude — the claude-recipe's
+# session-isolation wrapper (examples/claude/README.md) — to specifically
+# exercise ITS derivation/seeding logic (Step 0, Step 3a/3b/3c's seed-by-copy
+# fixture invocations, Step 7's multiplexer-derivation proof). Under a
+# floor-only build (the repo default; ADR-005 D12 / ADR-027 D3) that path is
+# legitimately absent: the floor image installs the real binary at
+# /usr/bin/claude only. Empirically confirmed (rip-cage-sw6s): the OTHER
+# steps in this file (1, 2's file/inode checks, 4, 5, 5b, 6, the negative
+# control) invoke the bare `claude` (PATH-resolved) or /usr/bin/claude
+# directly and run correctly with no wrapper at all — CLAUDE_CONFIG_DIR
+# isolation and the R4 snapshot seed are native/floor mechanisms, not
+# wrapper-only. So this probe gates ONLY the wrapper-specific steps, not the
+# whole file (a blanket file-level SKIP would silently drop real,
+# host-valid coverage — see tests/run-host.sh's SKIP classifier: a file
+# with genuinely-passing checks must ledger PASS, not SKIP).
+#
+# Liveness-probe-first, same as test-cc-dcg-managed-settings.sh's
+# PRECONDITION block: `cexec test -x ...` returning non-zero is otherwise
+# ambiguous between "ran, wrapper absent" and "never ran, channel broken".
+if ! cexec true; then
+  echo ""
+  echo "FATAL: cannot exec into container '$CONTAINER' — the probe channel itself is broken."
+  echo "  (cage not running, cage-name resolution failed, or msb exec errored.)"
+  echo "  This is NOT evidence the claude-recipe wasn't composed -- cexec could not even run 'true'."
+  echo "  Check: rc ls   /   msb list   /   rc doctor $CONTAINER"
+  exit 1
+fi
+COMPOSED=false
+if cexec test -x /usr/local/bin/claude; then
+  COMPOSED=true
+fi
+if [[ "$COMPOSED" == "true" ]]; then
+  echo "Composition: claude-recipe composed (/usr/local/bin/claude present)"
+else
+  echo "Composition: claude-recipe NOT composed (/usr/local/bin/claude absent — floor-only build, ADR-005 D12 / ADR-027 D3)"
+fi
+
+# ---------------------------------------------------------------------------
 # Posture detection: possession vs non-possession (rip-cage-7atw.10)
 #
 # The concurrency test predates the non-possession credential machinery and
@@ -139,11 +180,15 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Step 0: claude wrapper on PATH ==="
-WRAPPER_PATH=$(cexec which claude)
-if [[ "$WRAPPER_PATH" == "/usr/local/bin/claude" ]]; then
-  pass "claude wrapper is at /usr/local/bin/claude (precedes /usr/bin/claude)"
+if [[ "$COMPOSED" != "true" ]]; then
+  echo "SKIP: Step 0 — claude-recipe not composed (/usr/local/bin/claude absent); nothing to assert on PATH precedence"
 else
-  fail "claude wrapper not at /usr/local/bin/claude" "which claude = $WRAPPER_PATH"
+  WRAPPER_PATH=$(cexec which claude)
+  if [[ "$WRAPPER_PATH" == "/usr/local/bin/claude" ]]; then
+    pass "claude wrapper is at /usr/local/bin/claude (precedes /usr/bin/claude)"
+  else
+    fail "claude wrapper not at /usr/local/bin/claude" "which claude = $WRAPPER_PATH"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -339,34 +384,49 @@ else
       _base_mcp_keys=$(cexec bash -c "jq -r '(.mcpServers // {}) | keys | sort | .[]' /home/agent/.claude/.claude.json.seed 2>/dev/null" || true)
       echo "  Base snapshot: oauthAccount=present, mcpServers keys: [$(echo "$_base_mcp_keys" | tr '\n' ' ' | sed 's/ $//'  )]"
 
-      # Seed a fresh session using the wrapper WITHOUT RC_P1P_JSON_BASE override,
-      # so it uses the snapshot (R4 path — ~/.claude/.claude.json.seed).
-      cexec rm -rf "$MCP_SEED_DIR"
-      msb exec \
-        -e CLAUDE_CONFIG_DIR="$MCP_SEED_DIR" \
-        "$CONTAINER" -- \
-        /usr/local/bin/claude --version >/dev/null 2>&1 || true
+      # rip-cage-sw6s: seeding a fresh session here is the claude-recipe
+      # wrapper's OWN mechanism (examples/claude/claude-session-wrapper.sh
+      # copies the R4 snapshot into a fresh CLAUDE_CONFIG_DIR) — the
+      # hardcoded /usr/local/bin/claude invocation below only exists to
+      # trigger it. Without the recipe composed, that invocation fails to
+      # exec entirely (ENOENT) and every downstream assertion would read a
+      # never-created session file, misreporting a missing-binary condition
+      # as "seed-by-copy broken". Gate on composition; the base-snapshot
+      # assertions above (oauthAccount presence in the snapshot itself) are
+      # floor-level (R4, cage/init/init-rip-cage.sh) and already ran
+      # unconditionally above.
+      if [[ "$COMPOSED" != "true" ]]; then
+        echo "SKIP: Step 3a session-seed assertion — claude-recipe not composed (/usr/local/bin/claude absent); base-snapshot oauthAccount check above already ran"
+      else
+        # Seed a fresh session using the wrapper WITHOUT RC_P1P_JSON_BASE override,
+        # so it uses the snapshot (R4 path — ~/.claude/.claude.json.seed).
+        cexec rm -rf "$MCP_SEED_DIR"
+        msb exec \
+          -e CLAUDE_CONFIG_DIR="$MCP_SEED_DIR" \
+          "$CONTAINER" -- \
+          /usr/local/bin/claude --version >/dev/null 2>&1 || true
 
-      # Assert oauthAccount is present in the seeded session
-      _session_oauth=$(cexec bash -c "jq -r 'if .oauthAccount then \"present\" else \"absent\" end' '${MCP_SEED_DIR}/.claude.json' 2>/dev/null" || echo "jq-failed")
-      # Assert mcpServers set-equality
-      _session_mcp_keys=$(cexec bash -c "jq -r '(.mcpServers // {}) | keys | sort | .[]' '${MCP_SEED_DIR}/.claude.json' 2>/dev/null" || true)
+        # Assert oauthAccount is present in the seeded session
+        _session_oauth=$(cexec bash -c "jq -r 'if .oauthAccount then \"present\" else \"absent\" end' '${MCP_SEED_DIR}/.claude.json' 2>/dev/null" || echo "jq-failed")
+        # Assert mcpServers set-equality
+        _session_mcp_keys=$(cexec bash -c "jq -r '(.mcpServers // {}) | keys | sort | .[]' '${MCP_SEED_DIR}/.claude.json' 2>/dev/null" || true)
 
-      echo "  Session: oauthAccount=$_session_oauth, mcpServers keys: [$(echo "$_session_mcp_keys" | tr '\n' ' ' | sed 's/ $//')]"
+        echo "  Session: oauthAccount=$_session_oauth, mcpServers keys: [$(echo "$_session_mcp_keys" | tr '\n' ' ' | sed 's/ $//')]"
 
-      _3a_ok=true
-      if [[ "$_session_oauth" != "present" ]]; then
-        fail "Step 3a: seeded session .claude.json has no oauthAccount — seed-by-copy dropped account connectors" \
-          "session file: ${MCP_SEED_DIR}/.claude.json"
-        _3a_ok=false
-      fi
-      if [[ "$_base_mcp_keys" != "$_session_mcp_keys" ]]; then
-        fail "Step 3a: seeded session mcpServers keys differ from base snapshot" \
-          "base: [$(echo "$_base_mcp_keys" | tr '\n' ',')] | session: [$(echo "$_session_mcp_keys" | tr '\n' ',')]"
-        _3a_ok=false
-      fi
-      if [[ "$_3a_ok" == "true" ]]; then
-        pass "Step 3a: seeded session carries oauthAccount (non-empty) and mcpServers == base snapshot"
+        _3a_ok=true
+        if [[ "$_session_oauth" != "present" ]]; then
+          fail "Step 3a: seeded session .claude.json has no oauthAccount — seed-by-copy dropped account connectors" \
+            "session file: ${MCP_SEED_DIR}/.claude.json"
+          _3a_ok=false
+        fi
+        if [[ "$_base_mcp_keys" != "$_session_mcp_keys" ]]; then
+          fail "Step 3a: seeded session mcpServers keys differ from base snapshot" \
+            "base: [$(echo "$_base_mcp_keys" | tr '\n' ',')] | session: [$(echo "$_session_mcp_keys" | tr '\n' ',')]"
+          _3a_ok=false
+        fi
+        if [[ "$_3a_ok" == "true" ]]; then
+          pass "Step 3a: seeded session carries oauthAccount (non-empty) and mcpServers == base snapshot"
+        fi
       fi
     fi
   fi
@@ -406,6 +466,14 @@ cexec bash -c "
 _sentinel_in_fixture=$(cexec bash -c "jq -r '.mcpServers | keys[] | select(. == \"$MCP_SENTINEL_KEY\")' $MCP_FIXTURE 2>/dev/null" || true)
 if [[ "$_sentinel_in_fixture" != "$MCP_SENTINEL_KEY" ]]; then
   fail "Step 3b: sentinel injection into fixture failed" ""
+elif [[ "$COMPOSED" != "true" ]]; then
+  # rip-cage-sw6s: the seed-by-copy step this assertion is ABOUT is the
+  # claude-recipe wrapper's own mechanism, triggered here only via the
+  # hardcoded /usr/local/bin/claude invocation below. Without the recipe
+  # composed that exec fails (ENOENT) before any seeding happens, which
+  # would otherwise misreport a missing-binary condition as "seed-by-copy
+  # broken".
+  echo "SKIP: Step 3b — claude-recipe not composed (/usr/local/bin/claude absent); sentinel fixture created above but seed-by-copy cannot run"
 else
   # Seed a fresh session dir with RC_P1P_JSON_BASE pointing at the fixture
   cexec rm -rf "$MCP_SENTINEL_DIR"
@@ -484,6 +552,16 @@ else
   if [[ "$_guard_in_snapshot" != "$R4_GUARD_KEY" ]]; then
     fail "Step 3c: guard key injection into snapshot failed — cannot run R4 guard" ""
     # Restore original before continuing
+    cexec cp "$R4_ORIGINAL_BACKUP" /home/agent/.claude/.claude.json.seed
+  elif [[ "$COMPOSED" != "true" ]]; then
+    # rip-cage-sw6s: the seed-from-snapshot behavior this guard is ABOUT is
+    # the claude-recipe wrapper's own mechanism, triggered here only via the
+    # hardcoded /usr/local/bin/claude invocation below. Without the recipe
+    # composed that exec fails (ENOENT) before any seeding happens, which
+    # would otherwise misreport a missing-binary condition as "wrapper may
+    # have fallen to live mount".
+    echo "SKIP: Step 3c — claude-recipe not composed (/usr/local/bin/claude absent); guard-key injection into snapshot above already ran"
+    # Restore the original clean snapshot (without guard key)
     cexec cp "$R4_ORIGINAL_BACKUP" /home/agent/.claude/.claude.json.seed
   else
     # Seed a fresh session with NO RC_P1P_JSON_BASE override.
@@ -986,6 +1064,20 @@ fi
 echo ""
 echo "=== Step 7: Multiplexer-agnostic config-dir derivation (none/herdr-live-shell/herdr-direct) ==="
 
+if [[ "$COMPOSED" != "true" ]]; then
+  # rip-cage-sw6s: Step 7 in its entirety unit-tests the claude-recipe
+  # wrapper's OWN three-way CLAUDE_CONFIG_DIR derivation logic (examples/
+  # claude/claude-session-wrapper.sh) — every sub-step (7a/7b/7c) invokes
+  # the hardcoded /usr/local/bin/claude path specifically to exercise that
+  # code, not the native CLI. There is no derivation logic to prove without
+  # the wrapper composed; a floor-only /usr/bin/claude has no such
+  # derivation branches at all. (7c's header note "must PASS, not skip"
+  # refers to a resolved D7 ambiguity about HERDR_SESSION support once the
+  # recipe IS composed — it is not a claim that this step must run
+  # regardless of composition.)
+  echo "SKIP: Step 7 (7a/7b/7c) — claude-recipe not composed (/usr/local/bin/claude absent); this step unit-tests the wrapper's own derivation logic, which does not exist without it"
+else
+
 MUX_TEST_BASE=/home/agent/.claude-sessions
 
 # Cleanup stale derivation test dirs
@@ -1084,6 +1176,8 @@ fi
 # Cleanup step 7 dirs
 cexec rm -rf "${MUX_TEST_BASE}/mux-test-default"
 cexec rm -rf "${MUX_TEST_BASE}/${HERDR_TEST_SESSION}"
+
+fi  # COMPOSED (Step 7)
 
 # ---------------------------------------------------------------------------
 # Summary
