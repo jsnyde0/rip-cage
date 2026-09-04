@@ -742,15 +742,93 @@ _build_warn_stale_containers() {
 # real, so `docker save` fails/returns near-nothing on those fixtures);
 # regression-guarded by tests/test-build-msb-load.sh T5.
 #
+# rip-cage-528o: publishes _RC_MSB_LOAD_SUCCEEDED (0/1) as the
+# "was this a REAL build whose load actually ran and reported success?"
+# signal consumed by _msb_warn_image_layer_drift (cli/lib/msb_runtime.sh).
+# It is set to 0 at entry and to 1 on exactly ONE path -- the one below
+# where `msb load` returned success. That is what lets the post-load
+# emitter distinguish "the load silently failed to land" (loud) from "this
+# was a fixture/Docker-only host that never produced a real archive"
+# (silent), which is the tension this bead's DESIGN names. Every early
+# return below therefore leaves it 0 on purpose.
+#
 # Parameters: none (uses global $IMAGE).
-# Returns: 0 if msb is absent, the saved archive is implausibly small (not a
-# real build), or the load succeeded. 1 (with a loud stderr warning naming
-# the image) if msb is present, the archive looks real, but the load failed.
+# Returns: 0 on ALL FIVE non-failure paths, enumerated here one-for-one with
+# the classified early exits in the body below (rip-cage-528o fix round,
+# adversarial finding F2 -- this line previously named only three of them,
+# silently omitting the two the classification block counts as paths 2 and
+# 3): (1) msb is absent, (2) mktemp could not create the scratch archive,
+# (3) `docker save` failed, (4) the saved archive is implausibly small (not
+# a real build), or (5) the load succeeded. 1 -- the ONLY non-zero return,
+# and the only one that emits from this function -- with a loud stderr
+# warning naming the image, if msb is present and the archive looks real but
+# `msb load` itself failed.
+#
+# Every early exit below is classified inline as either "nothing to check"
+# or "cannot check", the same way rip-cage-5jrt classified every early exit
+# in _build_warn_stale_containers. rip-cage-528o's cut widened this sweep
+# from the two paths its DESIGN named to all FOUR that exist here -- leaving
+# mktemp/docker-save unclassified would repeat the exact gap 5jrt closed.
+#
+# WHAT SEPARATES THE TWO LABELS HERE (rip-cage-528o fix round, adversarial
+# finding F4 -- previously carried by framing alone, now stated outright):
+# all four early exits share the same OUTCOME -- no archive was handed to
+# msb, so no load was attempted -- so the outcome cannot be the
+# discriminator. The discriminator is whether the step that produced that
+# outcome was SUPPOSED to succeed:
+#
+#   NOTHING TO CHECK -- the EXPECTED shape of a legitimate situation, in
+#     which the question "did the load land?" never arises at all. `msb`
+#     absent is a Docker-only host (there is no msb cache to load into); a
+#     sub-_MSB_LOAD_MIN_BYTES archive is a fixture whose fake `docker save`
+#     never implemented `save` for real (there is no image to load). Nothing
+#     went wrong; there is genuinely nothing to load.
+#
+#   CANNOT CHECK -- an UNEXPECTED failure of a step that should have worked.
+#     `mktemp` and `docker save` both succeed on any real build host, so a
+#     failure there means the question DOES arise but its answer is
+#     unavailable: we cannot know whether msb's cache is current, because
+#     the conversion never got far enough to find out.
+#
+# Both classes stay SILENT and return 0. That is where this sweep
+# deliberately departs from rip-cage-5jrt's own "cannot check => must emit"
+# rider in _build_warn_stale_containers -- and the departure needs stating
+# accurately, because 5jrt's rider does NOT depend on having something to
+# name: its `msb list` failure branch (cli/build.sh, the "could not
+# determine image provenance for any rc-managed sandboxes" line) emits
+# precisely when no cage can be enumerated at all. So the reason this
+# function stays quiet is not "nothing to name" but WHAT WAS AT RISK: over
+# there, live cages already exist and may be silently pinned to a stale
+# image, so an unanswerable question is itself the warning. Here the
+# conversion simply never ran, the Docker image (the primary build
+# artifact) is built and intact, nothing has yet booted from msb's cache,
+# and _RC_MSB_LOAD_SUCCEEDED stays 0 -- so the downstream emitter stays
+# quiet too. A never-attempted load must not be reported to the operator as
+# a load that failed to land.
 _build_msb_load() {
+  _RC_MSB_LOAD_SUCCEEDED=0
+
+  # NOTHING TO CHECK (path 1): msb isn't installed at all, so there is no
+  # msb image cache to load into and nothing downstream could consume the
+  # result -- the EXPECTED shape of a Docker-only host, not a build failure
+  # (see the best-effort note above).
   command -v msb >/dev/null 2>&1 || return 0
 
   local _tar
+  # CANNOT CHECK (path 2): no writable temp file, so the save->load
+  # conversion cannot even be attempted -- an UNEXPECTED failure of a step
+  # that should have worked. Deliberately silent and non-fatal: the Docker
+  # image (the primary build artifact) is already built and intact, and the
+  # post-load emitter stays quiet because the flag is still 0 -- a
+  # never-attempted load must not be reported as a load that failed to land.
   _tar=$(mktemp -t "rc-msb-load.XXXXXX") || return 0
+
+  # CANNOT CHECK (path 3): `docker save` itself failed, so there is no
+  # archive to hand to msb. Same reasoning as the mktemp path -- an
+  # UNEXPECTED failure of a step that succeeds on any real build host, so
+  # the question "is msb's cache current?" is live but unanswerable. Silent
+  # and non-fatal for the same reason: the conversion never ran, so there is
+  # nothing to verify and nothing actionable to say.
   if ! docker save "$IMAGE" -o "$_tar" >/dev/null 2>&1; then
     rm -f "$_tar"
     return 0
@@ -759,6 +837,24 @@ _build_msb_load() {
   local _tar_bytes
   _tar_bytes=$(wc -c < "$_tar" 2>/dev/null | tr -d ' ')
   local _min_bytes="${_MSB_LOAD_MIN_BYTES:-1048576}"
+  # NOTHING TO CHECK (path 4): the archive is implausibly small, i.e. "not
+  # a real build" -- the fake-docker PATH-shim shape described in the
+  # header. A real build's `docker save` is many MB.
+  #
+  # HONEST CAVEAT on the expected/unexpected axis: paths 1-3 read their
+  # class off an observable (msb missing; mktemp failed; docker save
+  # returned non-zero). This one does not. All the code sees is a byte
+  # count, and a real host CAN reach the same byte count via a `docker save`
+  # that exits 0 after a short or truncated write -- which by the axis above
+  # would be CANNOT CHECK. NOTHING TO CHECK is therefore a PRESUMPTION here
+  # (the fixture cause is overwhelmingly the common one), not a derivation.
+  # It costs nothing today because both classes are silent and both leave
+  # the flag 0; if this path ever gains behaviour that differs by class, the
+  # presumption is the thing to revisit first -- distinguishing the two
+  # would need a signal `wc -c` cannot give.
+  #
+  # Silent by design (there is nothing actionable to tell the operator), and
+  # the flag stays 0 so the post-load emitter is silent too.
   if [[ -z "$_tar_bytes" || "$_tar_bytes" -lt "$_min_bytes" ]]; then
     rm -f "$_tar"
     return 0
@@ -770,6 +866,11 @@ _build_msb_load() {
     return 1
   fi
   rm -f "$_tar"
+  # The ONLY path that sets the flag: a real-sized archive was handed to a
+  # real `msb load` and it reported success. From here on, msb NOT holding
+  # $IMAGE is a genuine "the load did not land" -- see rip-cage-528o's
+  # status-3 branch in _msb_warn_image_layer_drift.
+  _RC_MSB_LOAD_SUCCEEDED=1
   return 0
 }
 

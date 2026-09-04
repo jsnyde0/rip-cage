@@ -295,10 +295,24 @@ _msb_image_layer_drift_status() {
 # _msb_warn_image_layer_drift (rip-cage-7bs3) — shared warn-emitter over
 # _msb_image_layer_drift_status, called from both `rc build` (AFTER
 # _build_msb_load, both the JSON and human-output call sites — cli/build.sh)
-# and `rc up` (the image-present branch only — cli/up.sh; when the image is
-# absent, _pull_or_build already re-provisions and ends in _build_msb_load,
-# so there is nothing to warn about there). Single-sourced so the message is
-# never written twice.
+# and `rc up` (the image-present branch only — cli/up.sh). Single-sourced so
+# the message is never written twice.
+#
+# CORRECTION (rip-cage-528o fix round, adversarial finding F1): this header
+# used to justify the `rc up` image-ABSENT path with "_pull_or_build already
+# re-provisions and ends in _build_msb_load, so there is nothing to warn
+# about there". That claim is FALSE. _build_msb_load is invoked from exactly
+# two places — cli/build.sh:560 and :592, both inside cmd_build. On the
+# image-absent path _pull_or_build delegates to _pull_or_build_local
+# (cli/build.sh), which runs `docker build`, runs the two root-owned
+# validators, and returns — it never converts the result into msb's cache.
+# So `rc up`'s auto-provisioning genuinely never loads the image into msb.
+# That is a real gap, not something this emitter covers; it is filed
+# separately as rip-cage-0v47 (which also owns the same false claim mirrored
+# at cli/up.sh:2468-2469 and :2480). What remains TRUE about this call site
+# is only the narrower fact stated in the status-3 paragraph below: `rc up`
+# never runs _build_msb_load, so it never sets _RC_MSB_LOAD_SUCCEEDED, so
+# the status-3 branch is inert there by construction.
 #
 # POSTURE (brain:rip-cage ruling 2026-09-03, binding on this bead too):
 # advisory, fail-LOUD, never fail-closed — this function never changes an
@@ -307,17 +321,43 @@ _msb_image_layer_drift_status() {
 # _build_warn_stale_containers / _build_msb_load already use) and returns 0.
 #
 # NOTHING TO CHECK (silent, matching _build_msb_load's own precedent at
-# cli/build.sh:673 and rip-cage-5jrt's msb-absent carve-out): docker or msb
-# is not installed at all, so there is no pair of stores to compare.
-# Status 2/3 (one store doesn't have $IMAGE) are ALSO silent here -- that
-# state is already covered by _image_absent's own re-provisioning at the
-# `rc up` call site and by _build_msb_load's own loud failure message at
-# the `rc build` call site; this emitter's only job is status 1.
+# cli/build.sh and rip-cage-5jrt's msb-absent carve-out): docker or msb is
+# not installed at all, so there is no pair of stores to compare.
+#
+# NOTHING TO CHECK: status 2 (docker does not have $IMAGE) stays silent --
+# there is no just-built image to compare against, and at the `rc up` call
+# site _image_absent's own re-provisioning already covers it.
+#
+# CANNOT CHECK (rip-cage-528o -- this branch REPLACES 7bs3's original
+# "status 2/3 are ALSO silent" posture, which was only ever right for
+# status 2): status 3 means msb does not hold $IMAGE, or `msb image
+# inspect` failed. Read cold that is ambiguous, which is why 7bs3 left it
+# silent: on a Docker-only host, or after any of _build_msb_load's
+# never-attempted-load paths (msb absent, mktemp failure, docker save
+# failure, sub-threshold "not a real build" archive), status 3 is expected
+# and saying anything would make every fake-docker PATH-shim fixture in
+# this repo newly emit -- breaking the suites that assert clean/scoped
+# `rc build` stderr. The disambiguator is _RC_MSB_LOAD_SUCCEEDED
+# (cli/build.sh): it is 1 ONLY when a real-sized archive was handed to a
+# real `msb load` that reported success. In THAT state, status 3 means the
+# load reported success but did not land -- the image cache is unverified
+# and a cage could boot from a stale image -- so it must be loud. The `rc
+# up` call site never sets the flag, so this branch is inert there by
+# construction. Default 0 via ${...:-0} keeps this safe under `set -u` when
+# _build_msb_load never ran at all.
+#
+# POSTURE REMINDER for the status-3 branch: still advisory. It prints to
+# stderr and this function still returns 0 -- `rc build`'s exit code is
+# unchanged (rip-cage-528o acceptance criterion 1).
 _msb_warn_image_layer_drift() {
   command -v docker >/dev/null 2>&1 || return 0
   command -v msb >/dev/null 2>&1 || return 0
   local _status=0
   _msb_image_layer_drift_status || _status=$?
+  if [[ "$_status" -eq 3 && "${_RC_MSB_LOAD_SUCCEEDED:-0}" -eq 1 ]]; then
+    echo "Warning: msb's image cache for '${IMAGE}' could not be verified after 'msb load' reported success — msb does not report holding that image (or 'msb image inspect' failed), so a cage booted from msb's cache would run a STALE image or fail to start. Run 'docker save ${IMAGE} | msb load --tag ${IMAGE}' (or re-run 'rc build') to resync msb's cache." >&2
+    return 0
+  fi
   if [[ "$_status" -eq 1 ]]; then
     echo "Warning: msb's cached '${IMAGE}' image has different layer content than docker's local '${IMAGE}' image — a cage booted from msb's cache would run a STALE image. Run 'docker save ${IMAGE} | msb load --tag ${IMAGE}' (or re-run 'rc build') to resync msb's cache." >&2
   fi
