@@ -8,13 +8,19 @@
 #   - init-rip-cage.sh runs this via `eval "$start" >/tmp/rip-cage-daemon-<name>.log 2>&1 &`
 #     as the AGENT user, and records $! as the daemon PID, which it later liveness-checks
 #     with `kill -0`. THE MANIFEST'S `start` MUST THEREFORE BE `exec <this script>`, NOT a
-#     bare path. Measured in a live cage (rip-cage-z40e): with a bare path, bash forks a
-#     wrapper shell, $! records THAT wrapper, and the wrapper outlives a crashed postmaster
-#     — so `kill -0` reports a dead cluster as healthy forever and init never restarts it.
-#     With `exec` in front, the backgrounded shell is replaced by this script, this script
-#     execs the postmaster, and the recorded PID is the postmaster. Verified: recorded PID
-#     == PGDATA/postmaster.pid. Daemon authors whose `start` is a SCRIPT PATH rather than a
-#     simple command hit this; a simple command (agent_mail's shape) does not.
+#     bare path — the prefix buys PID IDENTITY. Backgrounding an eval always forks a wrapper
+#     shell, so without exec $! records THAT wrapper rather than the postmaster; with exec the
+#     backgrounded shell is replaced by this script, this script execs the postmaster, and the
+#     recorded PID is the postmaster. Verified in a live cage: recorded PID ==
+#     PGDATA/postmaster.pid on first start and again after a resume.
+#     THIS HOLDS FOR EVERY START SHAPE — script path, simple command, env-prefixed command
+#     alike. There is no exempt shape; an earlier revision of this header claimed agent_mail's
+#     simple command was exempt, and that is wrong (measured, rip-cage-6zlo).
+#   - THE PREFIX IS NOT A LIVENESS FIX. A SIGKILLed daemon becomes an unreaped zombie under
+#     msb's PID 1, its PID still passes `kill -0`, and a re-run of init in the same boot skips
+#     it as "already running" while the cluster is down — identically with and without exec.
+#     That defect is rip-cage-893l and is init-side; nothing written here closes it. Full
+#     measurement: docs/reference/in-cage-daemon.md "The exec prefix on start".
 #   - state_dir is pre-created at build as root then chown'd agent:agent. It arrives mode
 #     0755; initdb sets it to 0700 itself, so no chmod is needed here (verified on
 #     debian:trixie, rip-cage-z40e probe).

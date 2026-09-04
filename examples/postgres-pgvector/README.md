@@ -35,20 +35,32 @@ image's own apt sources: no signing key, no extra repo, no build-time network be
 
 ## Why `start` begins with `exec` — read this before writing your own daemon recipe
 
-Init launches the daemon with `eval "$start" … &` and records the backgrounded job's PID,
-which it later liveness-checks with `kill -0`. **If `start` is a bare script path, bash forks a
-wrapper shell and the recorded PID is the wrapper, not the daemon.** The wrapper outlives a
-crashed postmaster, so `kill -0` succeeds forever: init reports "already running — skipping" on
-every resume and a dead cluster is never restarted. That is worse than a crash, because it looks
-healthy.
+Init launches the daemon with `eval "$start" … &` and records the backgrounded job's PID, which it
+later liveness-checks with `kill -0`. Backgrounding an `eval` always forks a wrapper shell, so
+**without `exec` the recorded PID is that wrapper, not the daemon.** With `exec`, the wrapper
+replaces itself and the recorded PID is the daemon's own. Verified in a live cage: recorded PID
+equals `PGDATA/postmaster.pid` on first start and again after an `rc down`/`rc up` resume.
 
-Measured in a live cage while building this recipe: with a bare path, the recorded PID was
-`init-rip-cage.sh` itself and survived killing the postmaster. With `exec` in front, the recorded
-PID equals `PGDATA/postmaster.pid` and dies with the cluster.
+**There is no exempt start shape.** A script path, a plain simple command and an env-prefixed
+command all record a wrapper without `exec` — including agent_mail's
+`STORAGE_ROOT=… mcp-agent-mail serve --no-tui`. An earlier version of this section said simple
+commands were fine; that was wrong, and measuring it is what produced `rip-cage-6zlo`. Put env
+assignments *before* `exec` (`VAR=1 exec cmd`); `exec VAR=1 cmd` tries to run `VAR=1` as the program.
 
-**This bites any daemon whose `start` is a script path.** A daemon whose `start` is a simple
-command (agent_mail's `STORAGE_ROOT=… mcp-agent-mail serve --no-tui`) is fine, because bash
-execs it directly. If you write a launcher script, prefix it with `exec`.
+**What `exec` does not buy: it is not a liveness fix.** Kill this cluster and the recorded PID
+becomes an unreaped zombie — msb's PID 1 never reaps — and `kill -0` on a zombie succeeds. A re-run
+of init in the same boot then reports `already running — skipping` while the database is down. That
+happens with and without `exec`, so the prefix is not a defence against it. The defect is init-side
+and tracked as `rip-cage-893l`.
+
+Original observation, for the record: this recipe's `exec` prefix was first added after a live-cage
+run appeared to show a wrapper outliving a killed postmaster. That measurement was taken during the
+**first-start bootstrap window**, where `pg_ctl -w start` daemonises a postmaster outside the
+launcher's process tree — killing that one leaves the launcher alive. Sound observation, wrong
+inference. The prefix is still right, for PID identity.
+
+Full measurement and the archetype-level rule:
+[`docs/reference/in-cage-daemon.md`](../../docs/reference/in-cage-daemon.md) — "The exec prefix on `start`".
 
 ## Why `initdb` at first start, not at image build
 

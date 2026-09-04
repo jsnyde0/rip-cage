@@ -12,12 +12,16 @@
 #    already has such a guard, and this recipe is the second generated fragment in the
 #    tree. Same rot, same guard.
 #
-# 2. EXEC-PREFIX REGRESSION. The manifest's `start` MUST begin with `exec`. Without it,
-#    init records a forked wrapper shell's PID instead of the postmaster's, that wrapper
-#    outlives a crashed cluster, and `kill -0` reports a dead database as healthy forever
-#    (measured live, rip-cage-z40e). That defect is INVISIBLE to a start-then-health-check
-#    test — both the healthy path and the idempotent-no-op path look correct — so a plain
-#    lifecycle test would not catch its return. This assertion is the only cheap guard.
+# 2. EXEC-PREFIX REGRESSION. The manifest's `start` MUST begin with `exec`. Without it, init
+#    records a forked wrapper shell's PID instead of the postmaster's — backgrounding an eval
+#    always forks, for every start shape, so there is no exempt shape (rip-cage-6zlo; an
+#    earlier version of this comment claimed simple commands were exempt). The prefix buys PID
+#    IDENTITY, verified live: recorded PID == PGDATA/postmaster.pid on first start and after a
+#    resume. It is NOT a liveness fix — a killed daemon zombies under msb's PID 1 and still
+#    passes `kill -0` with or without exec; that is rip-cage-893l, init-side. PID identity is
+#    invisible to a start-then-health-check test (both the healthy path and the
+#    idempotent-no-op path look correct), so a plain lifecycle test would not catch a
+#    regression here. This assertion is the only cheap guard.
 #
 # 3. NEVER-BLESSED. ADR-005 D12 (FIRM): the recipe lives in examples/ only. It must never
 #    reach manifest/default-tools.yaml, and rc source must never name it.

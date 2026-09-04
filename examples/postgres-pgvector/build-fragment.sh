@@ -58,12 +58,18 @@ version: 1
 #     postgresql-17-pgvector 0.8.0 for both arm64 and amd64. Use PGDG only if you need a
 #     version trixie does not ship. Also disables postgresql-common's default "main"
 #     cluster (it would sit unused on the same port) and bakes the launcher + smoke test.
-#   start   — the launcher at its root-owned path, prefixed with exec. That prefix is LOAD-BEARING:
-#     init records the backgrounded job's PID as the daemon PID and later liveness-checks it
-#     with kill -0. Without exec, bash forks a wrapper shell, the recorded PID is the
-#     WRAPPER, and the wrapper outlives a crashed postmaster — so a dead cluster reports
-#     healthy forever and init never restarts it. Measured in a live cage (rip-cage-z40e);
-#     a daemon whose start is a SCRIPT PATH hits this, a simple command does not.
+#   start   — the launcher at its root-owned path, prefixed with exec. The prefix buys PID
+#     IDENTITY: init records the backgrounded job's PID and liveness-checks it with kill -0,
+#     and backgrounding an eval always forks a wrapper shell, so without exec the recorded
+#     PID is the WRAPPER rather than the postmaster. That holds for EVERY start shape — a
+#     script path, a simple command, an env-prefixed command alike; there is no exempt shape
+#     (an earlier revision of this comment claimed simple commands were exempt — they are not,
+#     rip-cage-6zlo). Verified in a live cage: recorded PID == PGDATA/postmaster.pid on first
+#     start and again after a resume.
+#     The prefix is NOT a liveness fix. A SIGKILLed daemon becomes an unreaped zombie under
+#     msb's PID 1, its PID still passes kill -0, and init skips it as "already running" —
+#     identically with and without exec. That defect is rip-cage-893l and is init-side; see
+#     docs/reference/in-cage-daemon.md "The exec prefix on start" for the full measurement.
 #     Runs as the agent user; initdbs on first start only.
 #   health  — polls pg_isready inside the probe's own 5s budget, so a first boot that
 #     includes initdb does not earn a spurious fail-warn WARNING. -U/-d are named so the
