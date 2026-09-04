@@ -57,10 +57,17 @@ version: 1
 #     postgresql-17-pgvector 0.8.0 for both arm64 and amd64. Use PGDG only if you need a
 #     version trixie does not ship. Also disables postgresql-common's default "main"
 #     cluster (it would sit unused on the same port) and bakes the launcher + smoke test.
-#   start   — the launcher at its root-owned path. Runs as the agent user, becomes the
-#     postmaster via exec, and initdbs on first start only.
+#   start   — `exec` + the launcher at its root-owned path. The exec prefix is LOAD-BEARING:
+#     init records the backgrounded job's PID as the daemon PID and later liveness-checks it
+#     with kill -0. Without exec, bash forks a wrapper shell, the recorded PID is the
+#     WRAPPER, and the wrapper outlives a crashed postmaster — so a dead cluster reports
+#     healthy forever and init never restarts it. Measured in a live cage (rip-cage-z40e);
+#     a daemon whose start is a SCRIPT PATH hits this, a simple command does not.
+#     Runs as the agent user; initdbs on first start only.
 #   health  — polls pg_isready inside the probe's own 5s budget, so a first boot that
-#     includes initdb does not earn a spurious fail-warn WARNING.
+#     includes initdb does not earn a spurious fail-warn WARNING. -U/-d are named so the
+#     probe does not default to the OS user's name for both and log a FATAL on every
+#     check — noise that reads like a real fault to whoever opens the daemon log next.
 #   state_dir — PGDATA. Cage-lifetime, wiped on rc destroy (in-cage-daemon.md:40).
 #     For a cluster that survives destroy, point it under /workspace instead — that is a
 #     one-line change here and nowhere else, which is why initdb runs at first start
@@ -79,8 +86,8 @@ tools:
     archetype: IN-CAGE-DAEMON
     version_pin: "17.11+pgvector0.8.0"
     install_cmd: '${INSTALL_CMD}'
-    start: "/usr/local/lib/rip-cage/postgres-pgvector-start.sh"
-    health: "timeout 4 bash -c 'until /usr/lib/postgresql/17/bin/pg_isready -q -h 127.0.0.1 -p 5432; do sleep 0.25; done'"
+    start: "exec /usr/local/lib/rip-cage/postgres-pgvector-start.sh"
+    health: "timeout 4 bash -c 'until /usr/lib/postgresql/17/bin/pg_isready -q -h 127.0.0.1 -p 5432 -U postgres -d test; do sleep 0.25; done'"
     state_dir: "/var/lib/rip-cage-daemon/postgres-pgvector"
     egress: []
     mounts: []

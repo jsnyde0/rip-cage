@@ -6,9 +6,15 @@
 #
 # Contract with the IN-CAGE-DAEMON seam (docs/reference/in-cage-daemon.md):
 #   - init-rip-cage.sh runs this via `eval "$start" >/tmp/rip-cage-daemon-<name>.log 2>&1 &`
-#     as the AGENT user, and records $! as the daemon PID. So this script must become the
-#     postmaster (exec), not fork one and exit — a PID that dies makes the idempotency
-#     check restart the cluster on every resume.
+#     as the AGENT user, and records $! as the daemon PID, which it later liveness-checks
+#     with `kill -0`. THE MANIFEST'S `start` MUST THEREFORE BE `exec <this script>`, NOT a
+#     bare path. Measured in a live cage (rip-cage-z40e): with a bare path, bash forks a
+#     wrapper shell, $! records THAT wrapper, and the wrapper outlives a crashed postmaster
+#     — so `kill -0` reports a dead cluster as healthy forever and init never restarts it.
+#     With `exec` in front, the backgrounded shell is replaced by this script, this script
+#     execs the postmaster, and the recorded PID is the postmaster. Verified: recorded PID
+#     == PGDATA/postmaster.pid. Daemon authors whose `start` is a SCRIPT PATH rather than a
+#     simple command hit this; a simple command (agent_mail's shape) does not.
 #   - state_dir is pre-created at build as root then chown'd agent:agent. It arrives mode
 #     0755; initdb sets it to 0700 itself, so no chmod is needed here (verified on
 #     debian:trixie, rip-cage-z40e probe).
@@ -68,6 +74,18 @@ if [[ ! -s "$PGDATA/PG_VERSION" ]]; then
 
   _bootstrap_rc=0
   "$PGBIN/createdb" -h /tmp -U "$PGSUPERUSER" "$PGDB" || _bootstrap_rc=$?
+
+  # A role matching the cage's OS user, so `psql test` works with no flags from the agent
+  # shell. Without it every unqualified connection — including the health probe's — logs
+  # `FATAL: role "agent" does not exist`, which is noise that looks like a real fault when
+  # someone reads the daemon log to diagnose something else (observed, rip-cage-z40e).
+  # Superuser because this is a throwaway test cluster on loopback, not a shared database.
+  _os_user="$(id -un)"
+  if [[ -n "$_os_user" && "$_os_user" != "$PGSUPERUSER" ]]; then
+    "$PGBIN/createuser" -h /tmp -U "$PGSUPERUSER" --superuser "$_os_user" \
+      || log "WARNING: could not create role '$_os_user'; connect with -U $PGSUPERUSER instead"
+  fi
+
   "$PGBIN/pg_ctl" -D "$PGDATA" -w -t 60 stop || true
 
   if [[ "$_bootstrap_rc" -ne 0 ]]; then
