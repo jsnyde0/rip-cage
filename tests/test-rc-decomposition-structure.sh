@@ -704,8 +704,19 @@ echo ""
 #     standing constraint as cases (h)/(i) above, rip-cage-4cuh): a new file
 #     that drives the driver reds until someone writes the marker and thereby
 #     states, in the file, that it is manual-only and why. Unlike (h)/(i)
-#     there is no scope ratchet -- every tests/test-*.sh is in scope from day
+#     there is no scope ratchet -- every scanned file is in scope from day
 #     one, because the rule is absolute rather than progressively converted.
+#
+#     SCOPE is "every file the driver executes", not "every file named
+#     test-*.sh". Those differ: the driver's run_test/run_pytest list also
+#     registers tests/golden-master/capture.sh and tests/test_skill_server.py,
+#     which the test-*.sh glob misses. Keying the scan on a NAMING CONVENTION
+#     rather than on what the driver actually runs would leave exactly the
+#     hole this case exists to close, so both are scanned explicitly. Neither
+#     references the driver today; the scan is what keeps that true. If a
+#     future registration adds another non-test-*.sh entry, add it here --
+#     `grep -E '^[[:space:]]*(run_test|run_pytest) ' tests/run-host.sh` is the
+#     authoritative list.
 #
 #     The driver's path is assembled from parts below rather than written as
 #     one literal. That is not obfuscation: it is this guard obeying its own
@@ -715,16 +726,18 @@ echo ""
 #     (false).
 # ---------------------------------------------------------------------------
 _j_driver="run-host"
-echo "=== (j) ${_j_driver}.sh probes are manual-only -- no tests/test-*.sh may invoke the driver (rip-cage-t0j0) ==="
+echo "=== (j) ${_j_driver}.sh probes are manual-only -- no file the driver runs may invoke the driver (rip-cage-t0j0) ==="
 
 _j_path_re="${_j_driver}\\.sh"
 _j_marker="manual-only-probe(${_j_driver}.sh)"
 _j_hits=""
 _j_exempt_count=0
 
-for _j_file in "${REPO_ROOT}"/tests/test-*.sh; do
+for _j_file in "${REPO_ROOT}"/tests/test-*.sh \
+                "${REPO_ROOT}"/tests/golden-master/capture.sh \
+                "${REPO_ROOT}"/tests/test_skill_server.py; do
   [[ -f "$_j_file" ]] || continue
-  _j_base=$(basename "$_j_file")
+  _j_base=${_j_file#"${REPO_ROOT}"/}
   _j_file_hits=$(grep -nE "$_j_path_re" "$_j_file" 2>/dev/null \
     | grep -vE '^[0-9]+:[[:space:]]*#' \
     | grep -vE '^[0-9]+:[[:space:]]*(echo|printf|pass|fail|warn|skip)[[:space:]]' || true)
@@ -742,10 +755,10 @@ done
 echo "    (j): ${_j_exempt_count} file(s) exempt via an inline ${_j_marker} marker."
 
 if [[ -z "$_j_hits" ]]; then
-  pass "(j)" "no tests/test-*.sh references the ${_j_driver}.sh path outside comments/output without declaring itself a manual-only probe"
+  pass "(j)" "no file the ${_j_driver}.sh driver runs references its path outside comments/output without declaring itself a manual-only probe"
 else
   echo "    fix: do not drive the ${_j_driver}.sh driver from a file the driver runs. If the file is a probe whose subject IS the driver, keep it out of every automated path and declare that at the top of the file with a ${_j_marker} header block stating why (see tests/test-run-host-driver.sh)."
-  fail "(j)" "tests/test-*.sh file(s) reference the ${_j_driver}.sh path with no manual-only-probe marker -- a nested driver run contaminates the shared msb daemon" "$(echo "$_j_hits" | sed '/^$/d' | tr '\n' '; ')"
+  fail "(j)" "file(s) the driver runs reference the ${_j_driver}.sh path with no manual-only-probe marker -- a nested driver run contaminates the shared msb daemon" "$(echo "$_j_hits" | sed '/^$/d' | tr '\n' '; ')"
 fi
 
 echo ""
