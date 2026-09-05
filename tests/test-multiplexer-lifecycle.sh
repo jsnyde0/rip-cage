@@ -121,7 +121,7 @@ MUX_COMBINED_IMAGE=""
 #
 # rip-cage-2mpn: RC_IMAGE override, same shape as tests/test-manifest-tool-
 # init-hook.sh's T2a/T2b (RC_IMAGE="$image_name" ... "$RC" build) and rc's own
-# `IMAGE="${RC_IMAGE:-rip-cage:latest}"` default (rc:45). When the caller sets
+# `IMAGE="${RC_IMAGE:-rip-cage:latest}"` default (rc:'RC_IMAGE:-rip-cage:latest'). When the caller sets
 # RC_IMAGE to a dedicated tag, the DCGHP build targets that tag DIRECTLY (rc
 # build honors RC_IMAGE natively); rip-cage:latest is never read or written
 # by the build, so the epic-close gate can run RC_E2E_DCGHP_ONLY=1 without

@@ -169,7 +169,7 @@ _msb_short_image_id() {
 # ONLY cli/up.sh function cli/reload.sh may reference, so reload cannot call
 # an up.sh-resident comparator) — compare the image ID a sandbox is pinned
 # to (msb inspect, _msb_sandbox_image_digest) against the currently resolved
-# $IMAGE (honors $IMAGE/RC_IMAGE, rc:45 — never hardcode rip-cage:latest).
+# $IMAGE (honors $IMAGE/RC_IMAGE, rc:'RC_IMAGE:-rip-cage:latest' — never hardcode rip-cage:latest).
 # Both formats always return a sha256:... ID (reviewer-confirmed: no "<no
 # value>" shape risk), so comparing by ID is robust to the old image
 # becoming untagged/dangling after a rebuild.

@@ -134,14 +134,14 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
-# (d) Predicate-sync: the guard predicate at rc:2 (header) must be textually
+# (d) Predicate-sync: the guard predicate at rc:'Apply strict mode' (header) must be textually
 #     identical to the dispatch-skip predicate at rc:']] && return 0'. If they drift apart,
 #     the sourced-vs-invoked classification could diverge between the two sites.
 #
 #     We extract the common substring from each line and assert both are present.
 #     The canonical substring is: [[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]]
 # ---------------------------------------------------------------------------
-echo "=== (d) Predicate-sync: rc:2 guard identical to rc:']] && return 0' dispatch-skip ==="
+echo "=== (d) Predicate-sync: rc:'Apply strict mode' guard identical to rc:']] && return 0' dispatch-skip ==="
 
 # shellcheck disable=SC2016  # single quotes intentional: we want the literal string for grep -F
 PREDICATE='[[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]]'
@@ -150,7 +150,7 @@ PREDICATE='[[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]]'
 predicate_count=$(grep -cF "$PREDICATE" "$RC")
 
 if [[ "$predicate_count" -ge 2 ]]; then
-  pass "(d)" "canonical predicate appears in both the rc:2 guard and rc:']] && return 0' dispatch-skip (count=${predicate_count})"
+  pass "(d)" "canonical predicate appears in both the rc:'Apply strict mode' guard and rc:']] && return 0' dispatch-skip (count=${predicate_count})"
 else
   fail "(d)" "canonical predicate does not appear in both guard sites (count=${predicate_count})" \
     "expected >=2 occurrences of: ${PREDICATE}"

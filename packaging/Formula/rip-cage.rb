@@ -36,7 +36,7 @@ class RipCage < Formula
   test do
     # Basic wiring: rc --version prints the VERSION file contents.
     assert_match version.to_s, shell_output("#{bin}/rc --version")
-    # Layout: _resolve_script_dir (rc:6-16) follows the bin/rc symlink to
+    # Layout: _resolve_script_dir (rc:_resolve_script_dir) follows the bin/rc symlink to
     # libexec/. The Dockerfile and friends must be reachable from there for
     # cmd_build to find them — verify the layout is intact.
     assert_predicate libexec/"cage/Dockerfile", :exist?

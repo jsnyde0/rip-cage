@@ -146,7 +146,7 @@ _config_replace_paths() {
 #
 # rip-cage-61al.4
 _config_mux_derive_allowed_set() {
-  # Default to $IMAGE (rc:45) so an RC_IMAGE override (custom-tag/scratch cage)
+  # Default to $IMAGE (rc:'RC_IMAGE:-rip-cage:latest') so an RC_IMAGE override (custom-tag/scratch cage)
   # validates against ITS OWN baked registry, not rip-cage:latest's. The
   # explicit RC_MUX_INSPECT_IMAGE env override still wins (rip-cage-gkc7).
   local image="${RC_MUX_INSPECT_IMAGE:-$IMAGE}"

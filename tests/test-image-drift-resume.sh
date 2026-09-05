@@ -58,7 +58,7 @@
 # Wired into tests/run-host.sh (host-only tier — no live msb sandbox
 # needed; the fake msb on PATH replaces the real binary entirely. The real
 # `docker` binary stays on PATH unshadowed — `rc up` still runs
-# check_docker first (rc:188) and this suite relies on a real, reachable
+# check_docker first (rc:'build) check_docker') and this suite relies on a real, reachable
 # docker daemon for that preflight to pass; it never calls docker beyond
 # the preflight).
 
@@ -125,7 +125,7 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 # Real VERSION file content (rip-cage-7bs3, T8's docker stub default) --
 # read once so the fake docker's version-label response matches whatever
-# the real docker was implicitly providing pre-T8 (RC_VERSION, cli/rc:93),
+# the real docker was implicitly providing pre-T8 (RC_VERSION, rc:'RC_VERSION='),
 # keeping _image_is_current's "current" verdict unchanged for T1-T7.
 _drift_real_version=$(cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo "unknown")
 STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-drift-stub-XXXXXX")
