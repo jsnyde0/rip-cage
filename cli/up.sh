@@ -271,7 +271,7 @@ _collect_symlink_parents() {
 # would be dangling inside the cage (i.e. their targets are not under the
 # root path itself).
 #
-# NEW HELPER — distinct from _collect_symlink_parents (rc:794-830) which returns
+# NEW HELPER — distinct from _collect_symlink_parents (cli/up.sh:_collect_symlink_parents) which returns
 # parent dirs of asset symlink targets. This helper enumerates (link, target)
 # tuples for use in the symlink-follow mount synthesis (rip-cage-c1p.2).
 # The existing helper has 6 callers and its semantics MUST NOT be modified.
@@ -1008,7 +1008,7 @@ _up_prepare_docker_mounts() {
   # _manifest_build_mount_args emits "host:dest:mode" lines (no -v prefix); we add
   # -v as a separate array element for the two-element docker run form.
   # mode defaults to 'ro' (rip-cage-wlwc.3 / ADR-027 D1); rw opt-in is explicit.
-  # The denylist pre-check at cmd_up already fired (rc:4048); this consumer runs
+  # The denylist pre-check at cmd_up already fired (cli/up.sh:_manifest_check_mounts_denylist); this consumer runs
   # after that gate so denylist denials here are impossible in normal flow.
   local _mba_out _mba_rc=0
   _mba_out=$(_manifest_build_mount_args "$_path") || _mba_rc=$?
@@ -1340,7 +1340,7 @@ _up_resolve_resume_config_mode() {
 # (rc cmd_up stopped-branch — D-g entrypoint sweep confirmed only one). No
 # auto-destroy/auto-recreate: abort-loud matches the label-lock guard family
 # (ADR-021 D4a/D5). Resume must NEVER itself trigger a pull/build
-# (rc:4550-4552 invariant) — this function only compares and aborts/returns,
+# (cli/up.sh:'Resuming stopped container' invariant) — this function only compares and aborts/returns,
 # it never calls _pull_or_build.
 # Parameters: $1 name, $2 path
 _up_resolve_resume_image_drift_stopped() {
@@ -2152,7 +2152,7 @@ _probe_tcp() {
 # Validates .beads/dolt-server.port content BEFORE it is used to build the
 # BEADS_DOLT_SERVER_PORT env-injection arg (rc:~1891 residual, rip-cage-a0h
 # item (a) — ADR-007 D8 rescope). Mirrors the validation predicate already
-# used by the host preflight (_bd_host_preflight, rc:4372) for consistency:
+# used by the host preflight (_bd_host_preflight, cli/up.sh) for consistency:
 # an integer in 1-65535.
 #
 # On missing file: emits nothing (existing behavior — no file, no injection).
@@ -2871,7 +2871,7 @@ cmd_up() {
     # rip-cage-3y9g: RESUME-GUARDS-REAL-STOPPED BEGIN (mirrored by the
     # dry-run stopped sub-branch above — see RESUME-GUARDS-DRY-RUN-STOPPED)
     # rip-cage-jnvb / D-b, D-f: image-ID drift guard — FIRST, before any other
-    # resume machinery and before msb start (rc:4409-and-friends below).
+    # resume machinery and before msb start (the _up_resolve_resume_* guards below in cli/up.sh).
     # `rc build` creates a new image but an already-existing stopped container
     # stays pinned to the OLD image ID; blind-resuming ran the NEW image's
     # resume logic (e.g. init execs a script baked into the image via msb exec)

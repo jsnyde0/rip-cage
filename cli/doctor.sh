@@ -380,7 +380,7 @@ _doctor_format_dead_mounts() {
 #   1. Existing credentials file / ANTHROPIC_API_KEY (today's healthy paths,
 #      unchanged).
 #   2. The rc.auth.credential-mounts.claude=none container label (stamped at
-#      create time, rc:5129) — host-side `docker inspect`, cheap and not
+#      create time, cli/up.sh:'rc.auth.credential-mounts.claude=') — host-side `docker inspect`, cheap and not
 #      forgeable by an in-cage agent. Checked before the env var per the
 #      scoping review (label preferred, env second).
 #   3. CLAUDE_CODE_OAUTH_TOKEN present in-cage — mirrors the check

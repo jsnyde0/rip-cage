@@ -177,7 +177,7 @@ _msb_short_image_id() {
 # ROOT CAUSE this guards against: `rc build` creates a new image, but an
 # already-existing stopped container stays pinned to the OLD image ID.
 # Blind-resuming ran the NEW image's resume logic (e.g. init execs a script
-# baked into the image via msb exec, rc:3839) against the OLD container's
+# baked into the image via msb exec, cli/up.sh:'/usr/local/bin/init-rip-cage.sh') against the OLD container's
 # filesystem -> raw OCI "stat ... no such file" crash + self-stop.
 #
 # SCOPE BOUND (design D-a): this only catches image/container ID drift. It

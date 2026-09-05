@@ -704,7 +704,7 @@ _manifest_validate() {
           fi
           # Hook-bounds check (ADR-005 D10/D11, ADR-001 fail-loud) — the exact
           # floor-weakening patterns enforced on MULTIPLEXER hooks
-          # (rc:6995-7068), STATICALLY applied to the TOOL 'init' hook command.
+          # (cli/lib/manifest_checks.sh:'hook-bounds violation — hook'), STATICALLY applied to the TOOL 'init' hook command.
           # Parse, never run (validate-config-by-parsing-not-by-running-fail-open-consumer).
           if echo "$tool_init_raw" | grep -qE '\.config/dcg/'; then
             echo "Error: manifest '${file}' tools[${idx}] ('${name}'): hook-bounds violation — 'init' references '.config/dcg/' path, which is the DCG safety floor config (floor-weakening write; ADR-005 D10/D11, ADR-001 fail-loud). Remove this from the init command." >&2

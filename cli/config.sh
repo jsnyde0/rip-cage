@@ -230,7 +230,7 @@ cmd_config_get() {
   # "not present" (false) instead of a jq exit-5 crash that — under this
   # script's `set -euo pipefail` (rc:6) — would abort rc entirely before the
   # `present != "true"` check below ever runs. Precedent for guarding this
-  # construct against errexit: rc:11575 (`... 2>/dev/null || echo
+  # construct against errexit: cli/lib/config.sh:_config_unknown_version_classify (`... 2>/dev/null || echo
   # "___RC_ABSENT___"`). Belt-and-suspenders: the shell-side `|| printf
   # 'false'` covers a non-jq failure of the assignment too.
   local present

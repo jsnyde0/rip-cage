@@ -192,7 +192,7 @@ unset _rc_asset
 # ADR-027 D1: mounts are :ro (host→cage); symlinks here are cage-internal only.
 # JUSTIFICATION: the host-side mount projection this loop consumes
 # (.rc-context/pi-*) is staged by `rc up` UNCONDITIONALLY whenever
-# ${HOME}/.pi/agent exists on the HOST (rc:1461) — completely decoupled from
+# ${HOME}/.pi/agent exists on the HOST (cli/up.sh:'_SFL_SCAN_ROOTS') — completely decoupled from
 # whether the pi-recipe TOOL entry is composed in the cage's manifest.
 # Relocating this loop into pi-recipe's 'init' hook would silently break
 # substrate projection for any cage that has host pi substrate mounted but

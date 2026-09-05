@@ -48,7 +48,7 @@ cmd_test() {
   local preflight_skip_line=""  # if set, skip _bd_host_preflight and use this line
   if [[ -n "$ws_source" ]]; then
     preflight_beads_dir="${ws_source}/.beads"
-    # Mirror D6 semantics (rc:881-931): check for .beads/redirect first,
+    # Mirror D6 semantics (cli/up.sh:_up_detect_worktree): check for .beads/redirect first,
     # then fall back to worktree auto-redirect with _path_under_allowed_roots guard.
     if [[ -f "${preflight_beads_dir}/redirect" ]]; then
       local redirect_target
