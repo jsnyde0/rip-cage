@@ -69,7 +69,7 @@
 #   * Script ends with [[ $FAILURES -eq 0 ]] || exit $FAILURES.
 #   * Arbitrary-name compose is the primary seam-purity proof (hardcoded list fails it).
 #   * Real temp dirs for mount-seam probe (vacuous skip-if-missing cannot mask failures).
-#   * effect-not-presence; ownership-not-presence (harness.md:258).
+#   * effect-not-presence; ownership-not-presence (.claude/verification.md).
 #   * Tier-2 loud-fail: if RC_E2E=1 but precondition (auth/cage) missing → FAIL, not skip.
 
 set -uo pipefail
