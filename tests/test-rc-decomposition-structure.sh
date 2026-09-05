@@ -679,6 +679,78 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
+# (j) rip-cage-t0j0: tests/run-host.sh must never be invoked by a file that
+#     run-host.sh itself runs. Two suite runs sharing one msb daemon
+#     contaminate each other -- they share the mutable `rip-cage:latest` tag
+#     and the `T-tmp.*` scratch-cage namespace, so probes go red for reasons
+#     that are not defects (.claude/verification.md, "Shared-host
+#     concurrency"). A nested invocation makes that contamination structural
+#     rather than accidental, and it muddies the ledger besides (the child
+#     prints its own TOTALS block into the parent's output). RULED
+#     2026-09-05: probes whose subject IS the driver stay MANUAL-ONLY.
+#
+#     Detection is FILE-level, not line-level, and that is what makes it
+#     complete: a file cannot invoke the driver without naming its path
+#     somewhere, either directly at the call site or in a variable the call
+#     site expands (both existing probes use the variable form, so a grep for
+#     `bash .*run-host` alone would miss every real call site). So any
+#     path-position reference anywhere in the file flags the whole file.
+#     Comment lines and output statements (echo/printf/pass/fail/warn/skip)
+#     are stripped first -- ~40 test files mention the driver in prose, which
+#     is not an invocation.
+#
+#     EXEMPTION is the inline marker `manual-only-probe(<driver>)` anywhere in
+#     the file, and nothing else. Deliberately NOT a filename list (same
+#     standing constraint as cases (h)/(i) above, rip-cage-4cuh): a new file
+#     that drives the driver reds until someone writes the marker and thereby
+#     states, in the file, that it is manual-only and why. Unlike (h)/(i)
+#     there is no scope ratchet -- every tests/test-*.sh is in scope from day
+#     one, because the rule is absolute rather than progressively converted.
+#
+#     The driver's path is assembled from parts below rather than written as
+#     one literal. That is not obfuscation: it is this guard obeying its own
+#     rule. Spelling the path literally in a path position here would make
+#     THIS file a hit, and the only ways out would be a filename exemption
+#     (forbidden) or a marker claiming this file is a manual-only probe
+#     (false).
+# ---------------------------------------------------------------------------
+_j_driver="run-host"
+echo "=== (j) ${_j_driver}.sh probes are manual-only -- no tests/test-*.sh may invoke the driver (rip-cage-t0j0) ==="
+
+_j_path_re="${_j_driver}\\.sh"
+_j_marker="manual-only-probe(${_j_driver}.sh)"
+_j_hits=""
+_j_exempt_count=0
+
+for _j_file in "${REPO_ROOT}"/tests/test-*.sh; do
+  [[ -f "$_j_file" ]] || continue
+  _j_base=$(basename "$_j_file")
+  _j_file_hits=$(grep -nE "$_j_path_re" "$_j_file" 2>/dev/null \
+    | grep -vE '^[0-9]+:[[:space:]]*#' \
+    | grep -vE '^[0-9]+:[[:space:]]*(echo|printf|pass|fail|warn|skip)[[:space:]]' || true)
+  [[ -z "$_j_file_hits" ]] && continue
+  if grep -qF "$_j_marker" "$_j_file"; then
+    _j_exempt_count=$((_j_exempt_count + 1))
+    continue
+  fi
+  while IFS=: read -r _j_lineno _j_content; do
+    [[ -n "$_j_lineno" ]] || continue
+    _j_hits="${_j_hits}${_j_base}:${_j_lineno}: ${_j_content}"$'\n'
+  done <<< "$_j_file_hits"
+done
+
+echo "    (j): ${_j_exempt_count} file(s) exempt via an inline ${_j_marker} marker."
+
+if [[ -z "$_j_hits" ]]; then
+  pass "(j)" "no tests/test-*.sh references the ${_j_driver}.sh path outside comments/output without declaring itself a manual-only probe"
+else
+  echo "    fix: do not drive the ${_j_driver}.sh driver from a file the driver runs. If the file is a probe whose subject IS the driver, keep it out of every automated path and declare that at the top of the file with a ${_j_marker} header block stating why (see tests/test-run-host-driver.sh)."
+  fail "(j)" "tests/test-*.sh file(s) reference the ${_j_driver}.sh path with no manual-only-probe marker -- a nested driver run contaminates the shared msb daemon" "$(echo "$_j_hits" | sed '/^$/d' | tr '\n' '; ')"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
 echo "=== Results ==="

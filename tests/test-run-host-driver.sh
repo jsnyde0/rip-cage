@@ -2,6 +2,30 @@
 # Unit/integration tests for tests/run-host.sh's batch-selection + ledger +
 # aggregator support (rip-cage-7atw.13).
 #
+# MANUAL-ONLY PROBE -- marker: manual-only-probe(run-host.sh)
+#
+# This file is run BY HAND and is wired into NO automated path: it is not in
+# run-host.sh's own `run_test` list, not in `make test`, not in CI. That
+# exclusion is deliberate (ruled 2026-09-05, rip-cage-t0j0), not drift.
+#
+# Why: run-host.sh must never be invoked by a file that run-host.sh itself
+# runs. Two suite runs on one host share the msb daemon, the mutable
+# `rip-cage:latest` tag and the `T-tmp.*` scratch-cage namespace, so each
+# contaminates the other and probes go red for reasons that are not defects --
+# see the "Shared-host concurrency" section of `.claude/verification.md` (the
+# `###` heading at .claude/verification.md:56), which also lists this file
+# under its manual-only probes row. Registering this file would make that
+# contamination structural rather than accidental, and the child run's own
+# TOTALS block would land inside the parent's ledger besides.
+#
+# Run it by hand from the repo root:
+#
+#     bash tests/test-run-host-driver.sh
+#
+# Enforced by case (j) of tests/test-rc-decomposition-structure.sh: any
+# tests/test-*.sh that names run-host.sh's path outside comments and output
+# statements fails that case unless it carries the marker above.
+#
 # These tests invoke run-host.sh as a real subprocess (never source it — it
 # has top-level side effects). They stay fast/host-only by using --list
 # (enumeration only, no test execution) and --dry-run (selection + ledger

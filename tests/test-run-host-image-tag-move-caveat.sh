@@ -5,6 +5,32 @@
 # run-host.sh reports a named TAG-MOVED condition (a "CAVEAT" line) rather
 # than a bare, uninformative probe failure.
 #
+# MANUAL-ONLY PROBE -- marker: manual-only-probe(run-host.sh)
+#
+# This file is run BY HAND and is wired into NO automated path: it is not in
+# run-host.sh's own `run_test` list, not in `make test`, not in CI. That
+# exclusion is deliberate (ruled 2026-09-05, rip-cage-t0j0), not drift -- the
+# same ruling covers tests/test-run-host-driver.sh.
+#
+# Why: run-host.sh must never be invoked by a file that run-host.sh itself
+# runs. Two suite runs on one host share the msb daemon, the mutable
+# `rip-cage:latest` tag and the `T-tmp.*` scratch-cage namespace, so each
+# contaminates the other and probes go red for reasons that are not defects --
+# see the "Shared-host concurrency" section of `.claude/verification.md` (the
+# `###` heading at .claude/verification.md:56), which also lists this file
+# under its manual-only probes row. That is the very contamination class this
+# probe's own subject (the CAVEAT line) exists to make legible, so nesting it
+# inside a suite run would be self-defeating as well as unsafe; the child
+# run's TOTALS block landing in the parent's ledger is the smaller cost.
+#
+# Run it by hand from the repo root:
+#
+#     bash tests/test-run-host-image-tag-move-caveat.sh
+#
+# Enforced by case (j) of tests/test-rc-decomposition-structure.sh: any
+# tests/test-*.sh that names run-host.sh's path outside comments and output
+# statements fails that case unless it carries the marker above.
+#
 # Background: rip-cage-sw6s's cause-classification pass found
 # tests/test-pi-install.sh going RED with "pi: executable file not found",
 # root-caused to a concurrent build repointing the shared rip-cage:latest tag
