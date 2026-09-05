@@ -66,6 +66,10 @@
     "gh": [
       "api.github.com",
       "github.com"
+    ],
+    "uv": [
+      "pypi.org",
+      "files.pythonhosted.org"
     ]
   },
   "manifest_egress_source": "pending"

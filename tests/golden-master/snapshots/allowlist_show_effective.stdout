@@ -33,3 +33,5 @@ auth:
 #   doltremoteapi.dolthub.com               # manifest:dolt
 #   api.github.com               # manifest:gh
 #   github.com               # manifest:gh
+#   pypi.org               # manifest:uv
+#   files.pythonhosted.org               # manifest:uv
