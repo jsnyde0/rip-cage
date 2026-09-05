@@ -83,7 +83,7 @@ Integration tests (`rc test`) require Docker-in-Docker or a self-hosted runner. 
 
 **Firmness: FIRM**
 
-The `rc` script must work with bash 3.2 (macOS default). Any bash 4+ syntax is a bug. Currently, only `rc:928` (`${var,,}`) uses bash 4+ syntax.
+The `rc` script must work with bash 3.2 (macOS default). Any bash 4+ syntax is a bug. The one known offender (`${var,,}`) was removed by rip-cage-m7c; the rule is restated at `CONTRIBUTING.md:'Bash 3.2 compatibility is required'`.
 
 **Rationale:** macOS ships bash 3.2 due to GPLv3 licensing of bash 4+. Requiring users to install bash 4+ just to run `rc` is unnecessary friction. The `rc` script uses only basic bash features; the one 4+ usage is easily replaced with `tr`.
 

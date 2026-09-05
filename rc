@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Apply strict mode only when executed, not when sourced by a test harness.
-# Mirror the dispatch-skip predicate at the bottom of this file (rc:9482) so the
+# Mirror the dispatch-skip predicate at the bottom of this file (rc:']] && return 0') so the
 # two stay in sync. Piped exec (`bash -s --`, BASH_SOURCE empty) counts as invoked.
 if ! { [[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]]; }; then
   set -euo pipefail

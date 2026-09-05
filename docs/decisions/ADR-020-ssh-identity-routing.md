@@ -264,7 +264,7 @@ If github.com is unreachable (egress firewall, no network), the sentinel records
 
 Sibling to ADR-017 D2's `--no-forward-ssh`. Skips config translation, pubkey mount, and identity preflight. Cage behaves exactly as today: forwarded agent (per ADR-017/018), no config, first-key-wins. Persisted as `rc.ssh-config=on|off` label so resume preserves posture.
 
-**`--no-forward-ssh` implies `--no-ssh-config` by default.** A user reaching for ADR-014 containment finds `--no-forward-ssh`; without the implicit chain, they'd end up with a cage that has translated config + pubkey mounts but no agent — confusing posture ("I asked for no SSH, why does my cage have my pubkey files?"). Mirrors the existing `_UP_NO_HOST_AGENT` auto-relabel pattern at `rc:1097-1107`. To opt out of the implication (forward agent off, but ssh-config on), pass `--no-forward-ssh --ssh-config` explicitly.
+**`--no-forward-ssh` implies `--no-ssh-config` by default.** A user reaching for ADR-014 containment finds `--no-forward-ssh`; without the implicit chain, they'd end up with a cage that has translated config + pubkey mounts but no agent — confusing posture ("I asked for no SSH, why does my cage have my pubkey files?"). Mirrors the `_UP_NO_HOST_AGENT` auto-relabel pattern as it stood then (host ssh-agent forwarding has since been retired — `cli/ls.sh:'are RETIRED labels'`). To opt out of the implication (forward agent off, but ssh-config on), pass `--no-forward-ssh --ssh-config` explicitly.
 
 Use cases for opting out:
 - ADR-014 containment posture (`--no-forward-ssh` alone gets you both off, atomically).
