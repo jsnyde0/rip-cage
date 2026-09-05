@@ -178,7 +178,8 @@ if [[ -n "${RC_DOCTOR_STALE_BD_IMAGE:-}" ]] && docker image inspect "$RC_DOCTOR_
   # `msb create` cannot see a docker-daemon-only image. Convert it the same
   # way rc build does for the real image (cli/build.sh's _build_msb_load:
   # docker save -> msb load --tag) before creating the fixture cage.
-  STALE_BD_TAR="$(mktemp "${TMPDIR:-/tmp}/rc-doctor-stale-bd-XXXXXX.tar")"
+  STALE_BD_TAR_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rc-doctor-stale-bd-XXXXXX")"
+  STALE_BD_TAR="${STALE_BD_TAR_DIR}/image.tar"
   if docker save "$RC_DOCTOR_STALE_BD_IMAGE" -o "$STALE_BD_TAR" > /dev/null 2>&1 \
       && msb load --tag "$RC_DOCTOR_STALE_BD_IMAGE" -i "$STALE_BD_TAR" > /dev/null 2>&1; then
     if msb create --name "$SCHEMA_ERR_CAGE" \
@@ -200,7 +201,7 @@ if [[ -n "${RC_DOCTOR_STALE_BD_IMAGE:-}" ]] && docker image inspect "$RC_DOCTOR_
   else
     fail "D3 msb-load stale-bd image" "docker save | msb load failed for \$RC_DOCTOR_STALE_BD_IMAGE"
   fi
-  rm -f "$STALE_BD_TAR" 2>/dev/null || true
+  rm -rf "$STALE_BD_TAR_DIR" 2>/dev/null || true
 else
   echo "SKIP: RC_DOCTOR_STALE_BD_IMAGE not set (or image absent) -- schema-error live fixture not exercised (see file header)"
 fi

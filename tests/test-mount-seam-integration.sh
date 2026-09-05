@@ -121,7 +121,7 @@ test_si1_codegen_seam_arbitrary_tool() {
   setup_manifest_sandbox
 
   local tmp_manifest
-  tmp_manifest=$(mktemp "${TMPDIR:-/tmp}/rc-seam-manifest-XXXXXX.yaml")
+  tmp_manifest=$(mktemp "${TMPDIR:-/tmp}/rc-seam-manifest-XXXXXX")
   cat > "$tmp_manifest" <<YAML
 version: 1
 tools:
@@ -187,7 +187,7 @@ test_si2_mount_seam_arbitrary_tool() {
   rw_src=$(mktemp -d "${TMPDIR:-/tmp}/rc-seam-rw-XXXXXX")
 
   local tmp_manifest
-  tmp_manifest=$(mktemp "${TMPDIR:-/tmp}/rc-seam-mount-manifest-XXXXXX.yaml")
+  tmp_manifest=$(mktemp "${TMPDIR:-/tmp}/rc-seam-mount-manifest-XXXXXX")
   cat > "$tmp_manifest" <<YAML
 version: 1
 tools:
@@ -246,7 +246,7 @@ test_si3_root_owned_required_validator_fires() {
 
   # Compose a tool with root_owned_required: true on a mount; simulate agent-owned stat.
   local tmp_manifest
-  tmp_manifest=$(mktemp "${TMPDIR:-/tmp}/rc-seam-ror-XXXXXX.yaml")
+  tmp_manifest=$(mktemp "${TMPDIR:-/tmp}/rc-seam-ror-XXXXXX")
   cat > "$tmp_manifest" <<'YAML'
 version: 1
 tools:
@@ -305,7 +305,7 @@ test_si4_rw_extension_validator_fires() {
   # Compose a MULTIPLEXER fixture with a hook that shadows the DCG floor config.
   # This is the MD1 thin-reference: hook-bounds validator must reject it (D11 floor-protection).
   local tmp_manifest
-  tmp_manifest=$(mktemp "${TMPDIR:-/tmp}/rc-seam-rw-ext-XXXXXX.yaml")
+  tmp_manifest=$(mktemp "${TMPDIR:-/tmp}/rc-seam-rw-ext-XXXXXX")
   cat > "$tmp_manifest" <<'YAML'
 version: 1
 tools:
@@ -556,7 +556,7 @@ test_se_tier2_composed_cage_suite() {
 
   # dcg: dcg-guard DENIES a known-destructive command (effect, not bare command -v).
   local dcg_deny_result dcg_payload
-  dcg_payload=$(mktemp "${TMPDIR:-/tmp}/se1-dcg-deny-XXXXXX.json")
+  dcg_payload=$(mktemp "${TMPDIR:-/tmp}/se1-dcg-deny-XXXXXX")
   _SE_TMPDIRS+=("$dcg_payload")
   # Use a command dcg actually denies (core.filesystem:rm-rf-root-home). A /tmp path is NOT
   # destructive-root-home and dcg correctly ALLOWS it (empty hook output) — which would false-FAIL
@@ -614,7 +614,7 @@ test_se_tier2_composed_cage_suite() {
   # dcg smoke: destructive command denied (already tested in SE1; echo thin reference).
   # Re-use the same probe but via the full hook path to confirm hook wiring.
   local dcg_smoke_payload dcg_smoke_result
-  dcg_smoke_payload=$(mktemp "${TMPDIR:-/tmp}/se3-dcg-smoke-XXXXXX.json")
+  dcg_smoke_payload=$(mktemp "${TMPDIR:-/tmp}/se3-dcg-smoke-XXXXXX")
   _SE_TMPDIRS+=("$dcg_smoke_payload")
   # Denied form must hit a dcg destructive rule (rm-rf-root-home); /tmp paths are allowed.
   printf '{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}' > "$dcg_smoke_payload"

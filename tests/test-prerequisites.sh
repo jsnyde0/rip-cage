@@ -92,8 +92,8 @@ echo ""
 echo "=== Test 2: session.multiplexer=tmux without manifest declaration fails loud ==="
 
 T2_WKSP=$(mktemp -d)
-T2_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-prereq-t2-XXXXXX.yaml")
-T2_MANIFEST=$(mktemp "${TMPDIR:-/tmp}/rc-prereq-t2-manifest-XXXXXX.yaml")
+T2_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-prereq-t2-XXXXXX")
+T2_MANIFEST=$(mktemp "${TMPDIR:-/tmp}/rc-prereq-t2-manifest-XXXXXX")
 mkdir -p "${T2_WKSP}/.git"
 printf 'version: 2\nsession:\n  multiplexer: tmux\nmounts:\n  denylist: []\n' > "${T2_WKSP}/.rip-cage.yaml"
 printf 'version: 2\nmounts:\n  denylist: []\n' > "$T2_GLOBAL_CFG"

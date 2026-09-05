@@ -155,7 +155,7 @@ PYEOF
 if [[ ! -x "$BUILD_FRAGMENT_SH" && ! -f "$BUILD_FRAGMENT_SH" ]]; then
   fail "CHECK A generator missing" "expected ${BUILD_FRAGMENT_SH}"
 else
-  fresh_fragment="$(mktemp "${TMPDIR:-/tmp}/rc-payload-audit-fresh-XXXXXX.yaml")"
+  fresh_fragment="$(mktemp "${TMPDIR:-/tmp}/rc-payload-audit-fresh-XXXXXX")"
   TMP_FILES+=("$fresh_fragment")
   if bash "$BUILD_FRAGMENT_SH" > "$fresh_fragment" 2>/tmp/rc-payload-audit-genstderr; then
     if diff -q "$CLAUDE_FRAGMENT" "$fresh_fragment" >/dev/null 2>&1; then
@@ -209,7 +209,7 @@ fi
 # ---------------------------------------------------------------------------
 neg_json='{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"/usr/local/lib/rip-cage/hooks/totally-fake-nonexistent-hook.sh"}]}]}}'
 neg_blob="$(printf '%s' "$neg_json" | base64 | tr -d '\n')"
-neg_file="$(mktemp "${TMPDIR:-/tmp}/rc-payload-audit-negctl-XXXXXX.yaml")"
+neg_file="$(mktemp "${TMPDIR:-/tmp}/rc-payload-audit-negctl-XXXXXX")"
 TMP_FILES+=("$neg_file")
 cat > "$neg_file" <<YAML
 version: 1

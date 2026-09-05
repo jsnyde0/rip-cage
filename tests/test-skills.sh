@@ -133,7 +133,7 @@ if "${mcp_configured}"; then
     # 5-7. Full MCP protocol exchange: initialize → tools/list → tools/call list
     if [[ -f "${server_py}" ]]; then
       # Write a temp Python test script — avoids heredoc-inside-heredoc quoting issues
-      tmp_py=$(mktemp /tmp/mcp-test-XXXXXX.py)
+      tmp_py=$(mktemp /tmp/mcp-test-XXXXXX)
       cat > "${tmp_py}" << 'PYTHON'
 #!/usr/bin/env python3
 """

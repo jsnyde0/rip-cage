@@ -734,7 +734,7 @@ test_t2e_dcg_still_fires_under_guard_hook() {
   # Uses variable expansion via FORCEFLAG assembly to avoid spelling the destructive
   # command in the test file itself (host-level DCG would intercept literal strings).
   local dcg_probe
-  dcg_probe=$(mktemp "${TMPDIR:-/tmp}/rc-am-t2e-probe-XXXXXX.sh")
+  dcg_probe=$(mktemp "${TMPDIR:-/tmp}/rc-am-t2e-probe-XXXXXX")
   uv run python - "$dcg_probe" <<'PYEOF'
 import sys
 probe_path = sys.argv[1]

@@ -890,7 +890,7 @@ run_schema_validate_inline() {
   local yaml_content="$1"
   local stderr_file="${2:-/dev/null}"
   local tmp_yaml
-  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-manifest-XXXXXX.yaml")
+  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-manifest-XXXXXX")
   printf '%s\n' "$yaml_content" > "$tmp_yaml"
 
   local exit_code=0
@@ -1005,7 +1005,7 @@ test_bs1d_binary_path_multiline_rejected() {
 
   # Use printf to embed a real newline in the YAML value.
   local tmp_yaml
-  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-schema-XXXXXX.yaml")
+  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-schema-XXXXXX")
   printf 'version: 1\ntools:\n  - name: test-prebuilt-newline\n    archetype: TOOL\n    version_pin: "1.0.0"\n    install_cmd: "apt-get install -y jq"\n    binary_path: "/usr/local/bin/tool1\\n/usr/local/bin/tool2"\n    egress: []\n    mounts: []\n' > "$tmp_yaml"
 
   local exit_code2=0

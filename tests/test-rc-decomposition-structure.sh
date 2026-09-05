@@ -606,6 +606,79 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
+# (i) rip-cage-043d: mktemp templates whose trailing X-run is followed by a
+#     literal suffix are NOT substituted on macOS/BSD mktemp -- the file is
+#     created with the literal Xs still in the name, so the "temp" path is
+#     actually CONSTANT across runs (collision-prone under shared-host
+#     concurrency, see .claude/verification.md's shared-host concurrency
+#     row). GNU coreutils mktemp takes a suffix via its own flag and
+#     substitutes correctly there, which is why this reads as fine to anyone
+#     who learned it on Linux -- this repo runs on macOS/BSD mktemp, so that
+#     GNU-only suffix flag must never be reached for here either.
+#
+#     Detection: any `mktemp` invocation (outside comments) whose trailing
+#     X-run (3+ X's) is immediately followed by a literal character -- not
+#     the closing quote/paren/backtick or whitespace that legitimately ends
+#     a suffix-free template, and not another X. This catches the
+#     historically-seen `.ext` form AND any future no-separator suffix like
+#     `-XXXXXXbak` -- the match is purely "is there a literal character
+#     right after the X-run", not a filename-based extension list.
+#
+#     SCOPE: ratcheted file by file as each site converts (rip-cage-043d),
+#     same enforced-scope shape as case (h) above -- an in-scope hit fails,
+#     an out-of-scope hit is a NOTE only (follow-up, not a failure here). A
+#     site that genuinely needs a fixed path (not convertible to a temp dir
+#     + fixed-named child) can opt out with an inline `mktemp-ok(<bead-id>)`
+#     justification comment on the line itself or the 3 lines above it.
+#     Deliberately NOT a filename-based EXEMPTION list -- only the inline
+#     marker excuses a site; the enforced-scope list below only widens which
+#     files are checked at all (mirroring case (h)'s ratchet, not a bypass).
+# ---------------------------------------------------------------------------
+echo "=== (i) mktemp templates substitute correctly on macOS/BSD (rip-cage-043d) ==="
+
+_i_suffix_re='mktemp[^|;&]*X{3,}[^X"'"'"')`[:space:]]'
+_i_justify_re='mktemp-ok\([a-zA-Z0-9.-]+\)'
+_i_in_scope_files="test-skills.sh test-manifest-agent-mail.sh test-manifest-mount-mode.sh test-rc-commands.sh test-mount-seam-integration.sh test-manifest-payload-audit.sh test-manifest-security.sh test-doctor-runnability.sh test-prerequisites.sh"
+
+_i_in_scope_hits=""
+_i_out_of_scope_hits=""
+_i_justified_count=0
+
+for _i_file in "${REPO_ROOT}"/tests/*.sh "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh "${REPO_ROOT}"/rc; do
+  [[ -f "$_i_file" ]] || continue
+  _i_base=$(basename "$_i_file")
+  while IFS=: read -r _i_lineno _i_content; do
+    _i_trimmed="${_i_content#"${_i_content%%[![:space:]]*}"}"
+    [[ "$_i_trimmed" == \#* ]] && continue
+    if sed -n "$(( _i_lineno > 3 ? _i_lineno - 3 : 1 )),${_i_lineno}p" "$_i_file" | grep -qE "$_i_justify_re"; then
+      _i_justified_count=$((_i_justified_count + 1))
+      continue
+    fi
+    if [[ " ${_i_in_scope_files} " == *" ${_i_base} "* ]]; then
+      _i_in_scope_hits="${_i_in_scope_hits}${_i_base}:${_i_lineno}: ${_i_content}"$'\n'
+    else
+      _i_out_of_scope_hits="${_i_out_of_scope_hits}${_i_base}:${_i_lineno}: ${_i_content}"$'\n'
+    fi
+  done < <(grep -nE "$_i_suffix_re" "$_i_file" 2>/dev/null)
+done
+
+echo "    (i): ${_i_justified_count} site(s) cleared by an inline mktemp-ok(<bead-id>) justification."
+
+if [[ -n "$_i_out_of_scope_hits" ]]; then
+  echo "NOTE (i): mktemp template(s) with a literal suffix found OUTSIDE this bead's scoped files, with NO inline justification (follow-up, not a failure here):"
+  echo "$_i_out_of_scope_hits" | sed '/^$/d' | sed 's/^/    /'
+  echo "    fix: drop the suffix (X-run at the end), or mktemp -d then a fixed-named child file, or justify it at the site with an 'mktemp-ok(<bead-id>)' comment in the 3 lines above."
+fi
+
+if [[ -z "$_i_in_scope_hits" ]]; then
+  pass "(i)" "no mktemp template with a literal suffix after the X-run in the rip-cage-043d scoped files"
+else
+  fail "(i)" "mktemp template(s) with a literal suffix after the X-run -- not substituted on macOS/BSD, path is constant across runs" "$(echo "$_i_in_scope_hits" | sed '/^$/d' | tr '\n' '; ')"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
 echo "=== Results ==="

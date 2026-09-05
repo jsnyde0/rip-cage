@@ -82,7 +82,7 @@ run_manifest_validate_inline() {
   local yaml_content="$1"
   local stderr_file="${2:-/dev/null}"
   local tmp_yaml
-  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-mount-mode-XXXXXX.yaml")
+  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-mount-mode-XXXXXX")
   printf '%s\n' "$yaml_content" > "$tmp_yaml"
   local exit_code=0
   setup_manifest_sandbox ""
@@ -100,7 +100,7 @@ run_build_mount_args_inline() {
   local workspace="$2"
   local stderr_file="${3:-/dev/null}"
   local tmp_yaml
-  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-mount-mode-XXXXXX.yaml")
+  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-mount-mode-XXXXXX")
   printf '%s\n' "$yaml_content" > "$tmp_yaml"
   setup_manifest_sandbox ""
   local out exit_code=0
@@ -123,7 +123,7 @@ run_check_mount_root_owned_with_mock() {
   local stderr_file="${3:-/dev/null}"
 
   local tmp_yaml
-  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-mount-mode-XXXXXX.yaml")
+  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-mount-mode-XXXXXX")
   printf '%s\n' "$yaml_content" > "$tmp_yaml"
 
   setup_manifest_sandbox ""
@@ -762,7 +762,7 @@ test_mg1_cmd_build_gate_wired_to_mount_root_owned() {
   exit_code=0
 
   local tmp_yaml
-  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-mount-mode-mg1-XXXXXX.yaml")
+  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-mount-mode-mg1-XXXXXX")
   printf '%s\n' "$(cat <<'YAML'
 version: 1
 tools:
@@ -847,7 +847,7 @@ test_mg2_cmd_build_gate_wired_positive_control() {
   exit_code=0
 
   local tmp_yaml
-  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-mount-mode-mg2-XXXXXX.yaml")
+  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-mount-mode-mg2-XXXXXX")
   printf '%s\n' "$(cat <<'YAML'
 version: 1
 tools:
@@ -926,7 +926,7 @@ test_mg3_pull_or_build_local_gate_wired() {
   exit_code=0
 
   local tmp_yaml
-  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-mount-mode-mg3-XXXXXX.yaml")
+  tmp_yaml=$(mktemp "${TMPDIR:-/tmp}/rc-test-mount-mode-mg3-XXXXXX")
   printf '%s\n' "$(cat <<'YAML'
 version: 1
 tools:
