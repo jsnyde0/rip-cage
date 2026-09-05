@@ -2490,6 +2490,48 @@ cmd_up() {
   # never runs twice in one invocation. Do not also call it here on the
   # absent path.
   if [[ "$_image_absent" == false ]]; then
+    # rip-cage-7yvy (RULING 2026-09-05, brain:rip-cage, option (a)): this
+    # branch only reaches "present" because _image_absent's own probe above
+    # already required msb to list $IMAGE BY NAME (cli/up.sh:2474-2478) --
+    # exactly the presence-by-reference gap this bead exists to close: a
+    # name match here can still hide DIFFERENT layer content. Call the
+    # comparator ONCE, ourselves, to decide whether an auto-resync is owed
+    # (status 1). The SECOND call inside _msb_warn_image_layer_drift just
+    # below is deliberate, not duplicated work -- it re-checks AFTER the
+    # resync attempt (same after-the-load ordering rip-cage-7bs3/0v47
+    # already enforce at cli/build.sh:561 and cli/up.sh:2988 below), so ITS
+    # status-1/status-3 branches report the POST-resync state: a load that
+    # failed, or reported success but didn't verifiably land, falls through
+    # to that existing loud status-3/528o warning on its own -- never a
+    # second copy of this notice.
+    local _drift_status=0
+    _msb_image_layer_drift_status || _drift_status=$?
+    if [[ "$_drift_status" -eq 1 ]]; then
+      local _drift_docker_digest _drift_msb_digest_before
+      # `|| true` on both: display-only lookups for the notice text below,
+      # guarded against `set -e` (rc:6, applied whenever `rc` is EXECUTED
+      # rather than sourced) -- a failed digest lookup must never abort
+      # `rc up` itself, only fall back to "unknown" in the message.
+      _drift_docker_digest=$(docker image inspect "$IMAGE" --format '{{.Id}}' 2>/dev/null) || true
+      _drift_msb_digest_before=$(_msb_current_image_digest "$IMAGE" 2>/dev/null) || true
+      # rip-cage-0v47's mechanism, reused verbatim: msb-load docker's image.
+      # THE SUBSHELL TRAP (tests/test-up-msb-load-wiring.sh's header): this
+      # call must run in THIS shell, unwrapped -- _build_msb_load's success
+      # signal is the _RC_MSB_LOAD_SUCCEEDED global, and a `( ... )` or `|`
+      # around this call would still run a real `msb load` but silently
+      # lose that global to the subshell, making the status-3 fallback
+      # below go permanently quiet even on a genuinely failed resync.
+      _build_msb_load || true
+      if [[ "${_RC_MSB_LOAD_SUCCEEDED:-0}" -eq 1 ]]; then
+        # "ran ... to resync", not "resynced": _RC_MSB_LOAD_SUCCEEDED only
+        # says the 'msb load' COMMAND reported success, not that the cache
+        # verifiably landed -- that verification is exactly what the
+        # _msb_warn_image_layer_drift call below (its status-3 branch)
+        # exists to catch, so this notice must not overclaim a completed
+        # fact the next line may immediately contradict.
+        echo "Notice: msb's cached '${IMAGE}' image (was $(_msb_short_image_id "${_drift_msb_digest_before:-unknown}")) had different layer content than docker's local image ($(_msb_short_image_id "${_drift_docker_digest:-unknown}")) -- ran 'msb load' to resync msb's cache from docker. Run 'rc doctor' if this recurs." >&2
+      fi
+    fi
     _msb_warn_image_layer_drift
   fi
 
