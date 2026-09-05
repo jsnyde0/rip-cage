@@ -270,7 +270,7 @@ CRED_FILE_PRESENT=$(cexec bash -c '
 # mediator injects the real secret on egress) has neither a mounted
 # credentials file nor ANTHROPIC_API_KEY by design — the checks above
 # correctly come back "absent" for it. Before declaring FATAL, mirror rc's
-# _doctor_format_auth_probe (rc:6873-6890): check the
+# _doctor_format_auth_probe (cli/doctor.sh:_doctor_format_auth_probe): check the
 # rc.auth.credential-mounts.claude=none container label first (host-side
 # docker inspect, cheap and not forgeable by an in-cage agent), then
 # CLAUDE_CODE_OAUTH_TOKEN in-cage (tests/test-safety-stack.sh:186-190 idiom).

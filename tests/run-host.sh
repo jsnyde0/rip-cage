@@ -164,7 +164,7 @@ NEEDS_CONTAINER=(
   "test-skills.sh"            # live meta-skill MCP handshake + cage-path/settings assertions inside a container (rip-cage-b6ia)
   "test-multiplexer-agent-e2e.sh" # requires RC_E2E=1 + pi auth; proves pi agent does real work THROUGH the tmux attach surface with >=2 distinct tool invocations (rip-cage-w621.7)
   "test-multiplexer-composable.sh" # E1 tier builds + runs a cage; G1 host-only grep-guards run always (rip-cage-61al.8)
-  "test-symlink-follow.sh"    # needs a non-reserved writable scratch dir for symlink targets; on Linux every writable top-level (/home,/tmp,/var) is in rc's FHS-reserved set (rc:1511-1513), so it only runs on macOS (mktemp→/private/var dodges rc's deliberate non-canonicalization). Not "needs a cage" but host-only-Linux-incompatible (rip-cage-woow)
+  "test-symlink-follow.sh"    # needs a non-reserved writable scratch dir for symlink targets; on Linux every writable top-level (/home,/tmp,/var) is in rc's FHS-reserved set (cli/up.sh:'_SFL_RESERVED_CAGE_PATHS'), so it only runs on macOS (mktemp→/private/var dodges rc's deliberate non-canonicalization). Not "needs a cage" but host-only-Linux-incompatible (rip-cage-woow)
   "test-cc-managed-settings-probe.sh" # rip-cage-wlwc.1: D8 CC managed-settings anchor probe — requires live authed cage + API call; self-skips if no cage or unauthed (NEEDS_CONTAINER+AUTH)
   "test-cc-dcg-managed-settings.sh"  # rip-cage-r9n4: DCG managed-settings regression — proves managed deny survives stripping ALL agent-writable layers; requires live authed cage (NEEDS_CONTAINER+AUTH)
   "test-mount-mode-e2e.sh"           # rip-cage-wlwc.3: real-cage ro/rw behavioral probes (RE1-RE3); self-skips without RC_E2E=1
@@ -871,8 +871,8 @@ source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
 # command a human can run, and stop there.
 #
 # DISCRIMINATOR (unchanged from the former sweep): every cage carries an
-# rc.source.path label (rc:4196); the value is already realpath-resolved at
-# creation (rc:504/3685).  On macOS $TMPDIR is /var/folders/... but the label
+# rc.source.path label (cli/up.sh:'rc.source.path='); the value is already realpath-resolved at
+# creation (cli/lib/path.sh:validate_path).  On macOS $TMPDIR is /var/folders/... but the label
 # is /private/var/folders/... — resolve the temp root before comparing, NOT
 # the label (the cage workspace dir may already be deleted, and BSD realpath
 # returns empty on missing paths, which would miss it).

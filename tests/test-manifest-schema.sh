@@ -435,7 +435,7 @@ test_m13_newline_in_install_cmd_rejected() {
 # ---------------------------------------------------------------------------
 # M11 — missing version_pin aborts non-zero + names 'version_pin' field
 # version_pin is documented-required for all three archetypes (see comment
-# block ~rc:6089-6091).  A TOOL/SHELL-INTEGRATION/IN-CAGE-DAEMON entry with
+# block cli/lib/manifest_checks.sh:'required fields: name, archetype').  A TOOL/SHELL-INTEGRATION/IN-CAGE-DAEMON entry with
 # no version_pin must be rejected by the validator (fail-closed contract).
 # ---------------------------------------------------------------------------
 test_m11_missing_version_pin_aborts() {

@@ -43,7 +43,7 @@ set -uo pipefail
 
 # tests/run-host.sh exports RC_CONFIG_GLOBAL pointing to an empty-denylist fixture
 # for the whole suite. RC_CONFIG_GLOBAL takes precedence over XDG_CONFIG_HOME in
-# _config_global_path (rc:6207-6208), so per-call XDG sandboxes get silently
+# _config_global_path (cli/lib/config.sh:_config_global_path), so per-call XDG sandboxes get silently
 # shadowed — S20/S22/S22b see an empty denylist and fail. Unset here so per-call
 # XDG sandboxes resolve correctly.
 # Mirror of the fix in tests/test-secret-path-denylist.sh (see run-host.sh:102-109).
@@ -67,7 +67,7 @@ trap cleanup EXIT
 setup_sandbox() {
   # Fixtures live in the default temp dir. On macOS this resolves to
   # /var/folders/... (i.e. /private/var/...), which rc's symlink-reserved-path
-  # check deliberately does NOT canonicalize (rc:1543), so the targets are
+  # check deliberately does NOT canonicalize (cli/up.sh:'not /var or /tmp'), so the targets are
   # permitted. On a Linux host this test is NOT run under --host-only: every
   # writable top-level (/home, /tmp, /var) is in rc's FHS-reserved set, leaving
   # no non-reserved scratch dir — see the NEEDS_CONTAINER entry in run-host.sh.
@@ -596,7 +596,7 @@ test_s14_fhs_reserved_collision() {
 # ---------------------------------------------------------------------------
 # S24: Reserved-path collision under on_dangling=skip → skipped, exit 0, warning
 # (rip-cage-hcdn: on_dangling=skip actually skips a reserved-path-resolving
-# symlink instead of aborting — the error message at rc:1519 has always told
+# symlink instead of aborting — the error message at cli/up.sh:'resolves to reserved cage path' has always told
 # the user to set on_dangling=skip to unblock; this proves it now works.)
 # ---------------------------------------------------------------------------
 test_s24_reserved_collision_skip() {

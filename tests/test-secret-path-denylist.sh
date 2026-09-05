@@ -613,11 +613,11 @@ test_i_shellcheck_rc_clean() {
 # ---------------------------------------------------------------------------
 # Reserved-scratch predicate (rip-cage-vnbd).
 #
-# rc's symlink-follow reserved-path guard (rc:1312-1365) refuses to mount any
+# rc's symlink-follow reserved-path guard (cli/up.sh:'_SFL_RESERVED_CAGE_PATHS') refuses to mount any
 # symlink target resolving under a Debian FHS reserved top-level (checked
-# literally, not canonicalized — rc:1344-1346 deliberately excludes /var and
+# literally, not canonicalized — cli/up.sh:'not /var or /tmp' deliberately excludes /var and
 # /tmp from canonicalization to avoid macOS /private/var false positives).
-# That guard runs BEFORE the denylist check (rc:1399), so when this test's
+# That guard runs BEFORE the denylist check (cli/up.sh:'resolves to reserved cage path'), so when this test's
 # fixture scratch dir (mktemp under "${TMPDIR:-/tmp}") itself resolves under
 # a reserved top-level, the reserved-path guard preempts the denylist check
 # subtests (l-1/l-2a/l-2b) are designed to exercise.
@@ -693,7 +693,7 @@ test_l_scope_parent_denylist_checks_parent_dir() {
 
   # rip-cage-vnbd: when the fixture scratch dir itself resolves under an
   # rc-reserved FHS top-level (e.g. /tmp or /home on Linux CI, where TMPDIR
-  # is typically unset), rc's reserved-path guard (rc:1362) preempts the
+  # is typically unset), rc's reserved-path guard (cli/up.sh:'_SFL_RESERVED_CAGE_PATHS') preempts the
   # denylist check that l-1/l-2a/l-2b are designed to exercise. Gate those
   # three subtests behind a visible SKIP in that case; l-3 uses a different
   # code path (_symlink_follow_fingerprint, no reserved guard) and always runs.
@@ -743,7 +743,7 @@ YAML
   ) || exit_l1=$?
 
   if $_l_reserved_scratch; then
-    echo "SKIP (reserved-scratch): (l-1) scope=parent denylist — fixture target under an rc-reserved top-level; rc's reserved-path guard (rc:1362) preempts the denylist check on Linux. Runs on macOS + full local suite. See bead rip-cage-vnbd."
+    echo "SKIP (reserved-scratch): (l-1) scope=parent denylist — fixture target under an rc-reserved top-level; rc's reserved-path guard (cli/up.sh:'_SFL_RESERVED_CAGE_PATHS') preempts the denylist check on Linux. Runs on macOS + full local suite. See bead rip-cage-vnbd."
   elif printf '%s' "$stderr_l1" | grep -q "matched secret-path denylist pattern"; then
     pass "(l-1) scope=parent: parent dir under .aws is denied, warn-and-skip fires"
   else
@@ -786,7 +786,7 @@ YAML
   has_skip_l2_parent=$(printf '%s' "$out_l2_parent" | grep -c "matched secret-path denylist pattern" || true)
 
   if $_l_reserved_scratch; then
-    echo "SKIP (reserved-scratch): (l-2a) scope=parent denylist — fixture target under an rc-reserved top-level; rc's reserved-path guard (rc:1362) preempts the denylist check on Linux. Runs on macOS + full local suite. See bead rip-cage-vnbd."
+    echo "SKIP (reserved-scratch): (l-2a) scope=parent denylist — fixture target under an rc-reserved top-level; rc's reserved-path guard (cli/up.sh:'_SFL_RESERVED_CAGE_PATHS') preempts the denylist check on Linux. Runs on macOS + full local suite. See bead rip-cage-vnbd."
   elif [[ "$has_mount_l2_parent" -gt 0 && "$has_skip_l2_parent" -eq 0 ]]; then
     pass "(l-2a) scope=parent: leaf 'credentials' in safe parent → mount proceeds (parent is the gate)"
   else
@@ -819,7 +819,7 @@ YAML
   has_skip_l2_file=$(printf '%s' "$out_l2_file" | grep -c "matched secret-path denylist pattern" || true)
 
   if $_l_reserved_scratch; then
-    echo "SKIP (reserved-scratch): (l-2b) scope=file denylist — fixture target under an rc-reserved top-level; rc's reserved-path guard (rc:1362) preempts the denylist check on Linux. Runs on macOS + full local suite. See bead rip-cage-vnbd."
+    echo "SKIP (reserved-scratch): (l-2b) scope=file denylist — fixture target under an rc-reserved top-level; rc's reserved-path guard (cli/up.sh:'_SFL_RESERVED_CAGE_PATHS') preempts the denylist check on Linux. Runs on macOS + full local suite. See bead rip-cage-vnbd."
   elif [[ "$has_skip_l2_file" -gt 0 ]]; then
     pass "(l-2b) scope=file: leaf 'credentials' → warn-and-skip fires (file-scope behavior unchanged)"
   else

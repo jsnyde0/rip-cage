@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/test-up-validate-warning-seam.sh — rip-cage-9oyh §3(iii): the
-# RC_VALIDATE_WARNING write (validate_path, rc:601 non-interactive minimum-
-# grant path) -> read (_up_json_output, rc:4769) seam. This is a dedicated,
+# RC_VALIDATE_WARNING write (cli/lib/path.sh:validate_path, non-interactive minimum-
+# grant path) -> read (cli/up.sh:_up_json_output) seam. This is a dedicated,
 # independently-inspectable assertion on top of the byte-diff coverage
 # already folded into tests/golden-master/cases.sh's
 # `up_validate_warning_seam` case (per harness spec §3(iii): "Folds into
@@ -9,7 +9,7 @@
 #
 # Reachability preconditions (harness spec §3(iii), F3): RC_ALLOWED_ROOTS
 # must be UNSET (not merely empty) and non-interactive (no TTY) so
-# validate_path's rc:601 branch fires and sets RC_VALIDATE_WARNING; a
+# validate_path's minimum-grant branch (cli/lib/path.sh:validate_path) fires and sets RC_VALIDATE_WARNING; a
 # RUNNING container (would_attach) reaches the `_up_json_output` branch that
 # reads it back unconditionally (the `would_create && image_absent` skip
 # only applies to the would_create action).
@@ -48,7 +48,7 @@ fi
 
 ACTUAL_WARNING=$(printf '%s' "$GM_OUT" | jq -r '.warning // empty' 2>/dev/null || true)
 if [[ "$ACTUAL_WARNING" == "$EXPECTED_WARNING" ]]; then
-  pass "RC_VALIDATE_WARNING write (rc:601) -> JSON 'warning' field read (rc:4769): exact string propagates"
+  pass "RC_VALIDATE_WARNING write (cli/lib/path.sh:validate_path) -> JSON 'warning' field read (cli/up.sh:_up_json_output): exact string propagates"
 else
   fail "warning field exact string" "expected: [$EXPECTED_WARNING]
 got:      [$ACTUAL_WARNING]

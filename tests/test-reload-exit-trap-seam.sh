@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # tests/test-reload-exit-trap-seam.sh — rip-cage-9oyh §3(vi): the reload
-# EXIT-trap side effect (rc:5988 `trap "rmdir '$lock_dir' ..." EXIT` in
+# EXIT-trap side effect (cli/reload.sh:'rmdir' `trap "rmdir '$lock_dir' ..." EXIT` in
 # cmd_reload) is a FILESYSTEM effect the stdout/stderr/exit golden master
 # cannot see. A split that drops or rescopes the trap leaks $lock_dir, and
-# the NEXT `rc reload` hits the lock guard (rc:5981-5984) -> exit 3.
+# the NEXT `rc reload` hits the lock guard (cli/reload.sh:'another rc reload is in progress') -> exit 3.
 #
 # Two rev.2 construction requirements this test honors:
 #   (1) The trap is reachable only AFTER the reload docker gates (container
@@ -20,7 +20,7 @@
 # `cmd_reload` naturally terminates (via `exit`, not `return`) once it hits
 # `_config_read_applied`'s "container predates rc reload support" branch
 # (no applied-config snapshot in our fixture) -- AFTER the trap is set
-# (rc:5988), which is exactly what this test needs: it doesn't require a
+# (cli/reload.sh:'rmdir'), which is exactly what this test needs: it doesn't require a
 # full successful reload, only that execution passes the trap-set line.
 #
 # Wired into tests/run-host.sh (host-only tier).
@@ -75,7 +75,7 @@ run_cmd_reload() {
 }
 
 # ---------------------------------------------------------------------------
-# Run 1: cmd_reload reaches the trap-set line (rc:5988) and then exits
+# Run 1: cmd_reload reaches the trap-set line (cli/reload.sh:'rmdir') and then exits
 # (naturally, via the "predates rc reload support" no-applied-snapshot
 # branch) -- assert $lock_dir is ABSENT afterward.
 # ---------------------------------------------------------------------------
@@ -103,7 +103,7 @@ RUN2_EXIT=$(run_cmd_reload)
 if [[ "$RUN2_EXIT" -ne 3 ]]; then
   pass "run 2 (separate process): does not hit exit 3 -- run 1's lock did not leak across the two-run boundary"
 else
-  fail "run 2 exit code" "got exit 3 (lock contention) -- run 1 leaked \$lock_dir, meaning the EXIT trap (rc:5988) did not fire or was dropped"
+  fail "run 2 exit code" "got exit 3 (lock contention) -- run 1 leaked \$lock_dir, meaning the EXIT trap (cli/reload.sh:'rmdir') did not fire or was dropped"
 fi
 
 if [[ ! -d "$LOCK_DIR" ]]; then

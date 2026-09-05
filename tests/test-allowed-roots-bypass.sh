@@ -8,7 +8,7 @@
 #
 # Coverage:
 #   (1) workspace path that is a SYMLINK to a target OUTSIDE allowed roots
-#       → rejected by validate_path after realpath (rc:750)
+#       → rejected by validate_path after realpath (cli/lib/path.sh:validate_path)
 #   (2) --env-file that is a SYMLINK to a path OUTSIDE allowed roots
 #       → rejected after realpath (validate_path on dirname of resolved env)
 #   (3) .beads/redirect with ../ traversal resolving OUTSIDE allowed roots
@@ -170,7 +170,7 @@ teardown_sandbox
 # ---------------------------------------------------------------------------
 # GRACEFUL-IGNORE (3): .beads/redirect with ../ traversal resolving OUTSIDE
 #
-# The _up_prepare_environment function (rc:1725-1755) resolves the redirect,
+# The _up_prepare_environment function (cli/up.sh:_up_prepare_environment) resolves the redirect,
 # detects it is outside allowed roots, logs a warning, and CONTINUES without
 # mounting the bad target. This is NOT a hard reject.
 #

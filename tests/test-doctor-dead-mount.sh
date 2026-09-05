@@ -52,7 +52,7 @@
 #       "atomic-rename" string variant -- that diagnosis requires the host
 #       path to still resolve to a regular file).
 #   D5  Mounts array with MULTIPLE single-file binds, mixed dead/healthy ->
-#       both dead destinations reported (join-logic at rc:6721-6723), the
+#       both dead destinations reported (join-logic at cli/doctor.sh:_doctor_format_dead_mounts), the
 #       healthy one in the same array is not flagged; same stub also proves
 #       the empty-Mounts-array branch ("no single-file bind mounts to check").
 #   D6  REGRESSION (live negative-control, ssh-agent socket): host source
@@ -365,7 +365,7 @@ rm -rf "${D4_STUB_DIR}"
 
 # ---------------------------------------------------------------------------
 # D5: Mounts array with MULTIPLE single-file binds -- two dead, one healthy.
-# Covers the join-logic at rc:6721-6723 (dead_list joined "path1, path2") and
+# Covers the join-logic at cli/doctor.sh:_doctor_format_dead_mounts (dead_list joined "path1, path2") and
 # the mixed-array path (a healthy sibling in the SAME array must not be
 # flagged). Reuses the same stub for the empty-Mounts-array branch too (swaps
 # only the mounts-json fixture file content -- no second stub dir needed).

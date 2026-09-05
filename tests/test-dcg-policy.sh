@@ -457,7 +457,7 @@ teardown_sandbox
 #
 # When python3 is absent from PATH entirely, _up_validate_dcg_config must
 # return 0 (graceful degrade — matching the existing missing-tomllib path at
-# rc:3354). The authoritative fail-closed gate is init-rip-cage.sh:256-267
+# cli/up.sh:_up_validate_dcg_config). The authoritative fail-closed gate is init-rip-cage.sh:256-267
 # (container-side, python3 + tomllib guaranteed in image — ADR-025 D5).
 #
 # Discrimination: C6 (malformed TOML + python3 present → fail-closed) is the
@@ -476,7 +476,7 @@ _c11_py3_check=$(PATH="$_c11_no_py3_path" command -v python3 2>/dev/null || true
 if [[ -n "$_c11_py3_check" ]]; then
   fail 11 "missing-python3 graceful degrade" "python3 still found in sanitized PATH: $_c11_py3_check — test is not discriminating"
 else
-  # Use the baked valid TOML config so the [[ -f ]] precondition (rc:3340) is satisfied.
+  # Use the baked valid TOML config so the [[ -f ]] precondition (cli/up.sh:_up_validate_dcg_config) is satisfied.
   _c11_valid_cfg="${SCRIPT_DIR}/../cage/guards/dcg/default-config.toml"
 
   PATH="$_c11_no_py3_path" bash -c "

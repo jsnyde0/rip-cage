@@ -107,7 +107,7 @@ case_generate_dockerfile_from_source() {
 
 # --- up --dry-run --output json: all 8 container states --------------------
 # Image present+current for every state (see cases.sh comment above --
-# rc:4769's `warning`-omitting would_create+image-absent branch is the only
+# cli/up.sh:_up_json_output's `warning`-omitting would_create+image-absent branch is the only
 # state where image-absence changes the JSON *shape*; a dedicated case below
 # covers that combination explicitly).
 
@@ -148,10 +148,10 @@ case_up_dry_run_human_absent_create() {
 # --- §3(iii) RC_VALIDATE_WARNING seam (folds into the dry-run-json matrix
 # per harness spec §3(iii): "Folds into §1(a)'s dry-run-json matrix (with
 # the image-present precondition)"). RC_ALLOWED_ROOTS UNSET (not merely
-# empty) so validate_path's non-interactive minimum-grant branch (rc:601)
+# empty) so validate_path's non-interactive minimum-grant branch (cli/lib/path.sh:validate_path)
 # fires and sets RC_VALIDATE_WARNING; a running container (would_attach)
 # reaches the `_up_json_output` branch that reads it back into the JSON
-# `warning` field (rc:4769) unconditionally of image state, per the actual
+# `warning` field (cli/up.sh:_up_json_output) unconditionally of image state, per the actual
 # guard structure (`would_create && image_absent` is the ONLY case that
 # skips it) -- so this case exercises the seam without needing the
 # image-present precondition (image state is left at the shim default).

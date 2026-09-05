@@ -20,7 +20,7 @@
 # call-order position -- so this test is robust to the decomposition
 # reordering or adding/removing docker/msb calls, as long as their CONTENT
 # is unchanged. `--output json` pins the JSON branch's `json_error` ->
-# `exit 1` (rc:2005-2015/71) so `msb create` failing (the shim's `create`
+# `exit 1` (cli/up.sh:_up_start_container + cli/lib/output.sh:json_error) so `msb create` failing (the shim's `create`
 # handler always exits 1 after capturing argv, mirroring the pre-migration
 # `docker run` shim's same deterministic-failure design) terminates
 # deterministically.
@@ -113,7 +113,7 @@ run_real_up() {
 
 # ---------------------------------------------------------------------------
 # E1: the create path reaches `msb create` (proves the full argv-assembly
-# chain rc:5136->5408->_up_start_container:5410 actually executes end to
+# chain cli/up.sh:'Creating container' -> cli/up.sh:_up_start_container actually executes end to
 # end through the REAL cmd_up, not a hand-replica).
 # ---------------------------------------------------------------------------
 setup_sandbox

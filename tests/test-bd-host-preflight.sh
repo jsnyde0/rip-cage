@@ -128,7 +128,7 @@ echo "==="
 
 # _bd_dolt_port_inject_arg — validates .beads/dolt-server.port content BEFORE
 # it is used to build the BEADS_DOLT_SERVER_PORT env-injection arg (rc:~1891
-# residual). Mirrors the validation predicate in _bd_host_preflight (rc:4372).
+# residual). Mirrors the validation predicate in _bd_host_preflight (cli/up.sh:_bd_host_preflight).
 # On invalid content: warns (naming the file) to stderr, emits NOTHING on
 # stdout (skip injection), and returns 0 (warn-not-fail — ADR-007 D8; bd is
 # optional and must never block the container). Exercised via the hidden

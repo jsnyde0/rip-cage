@@ -2,7 +2,7 @@
 # test-container-name.sh — regression tests for container_name() collision-hash
 # disambiguation (rip-cage-a0h item (c)).
 #
-# The disambiguation logic already exists (rc:506-513 container_name,
+# The disambiguation logic already exists (cli/lib/container.sh:container_name,
 # rc:~4594-4618 the cmd_up disambiguation block) — this file only ADDS the
 # missing regression test proving:
 #   T1  Two paths with identical parent/basename both derive the SAME base

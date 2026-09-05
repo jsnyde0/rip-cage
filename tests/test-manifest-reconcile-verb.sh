@@ -78,7 +78,7 @@ fi
 # ---------------------------------------------------------------------------
 # R2: no pre-existing local manifest -> no backup file, reconcile still
 # succeeds (first-run case; backup is conditional on the local file existing
-# per rc:9004 `if [[ -f "$_local_path" ]]`).
+# per cli/manifest.sh:_manifest_reconcile `if [[ -f "$_local_path" ]]`).
 # ---------------------------------------------------------------------------
 gm_sandbox_reset
 rm -f "${GM_XDG}/rip-cage/tools.yaml"
@@ -99,7 +99,7 @@ fi
 # ---------------------------------------------------------------------------
 # R3: an INVALID local manifest (custom TOOL entry missing required
 # install_cmd) fails validation -- the original file is left UNTOUCHED (no
-# backup, no overwrite; rc:8998's explicit "aborting; the original manifest
+# backup, no overwrite; cli/manifest.sh:_manifest_reconcile's explicit "aborting; the original manifest
 # ... is untouched" contract).
 # ---------------------------------------------------------------------------
 gm_sandbox_reset

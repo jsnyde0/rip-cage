@@ -16,7 +16,7 @@
 #   SI2 — Mount seam: ARBITRARY TOOL's mounts emit :ro and :rw.
 #           Same arbitrary tool, real temp dirs as mount sources. Call
 #           _manifest_build_mount_args (RC_MANIFEST_GLOBAL=temp); assert the tool's ro mount
-#           emits `:ro` and its rw mount emits `:rw`. Real dirs required: rc:8798 skips
+#           emits `:ro` and its rw mount emits `:rw`. Real dirs required: cli/up.sh:'Skip-if-host-missing' skips
 #           host-missing mount sources (nonexistent → vacuously emit nothing → false-pass).
 #
 #   SI3 — root_owned_required validator fires on composed-recipe mount (thin reference).
@@ -181,7 +181,7 @@ test_si2_mount_seam_arbitrary_tool() {
 
   setup_manifest_sandbox
 
-  # REAL temp dirs as mount sources (rc:8798 skips host-missing dirs → vacuous false-pass otherwise).
+  # REAL temp dirs as mount sources (cli/up.sh:'Skip-if-host-missing' skips host-missing dirs → vacuous false-pass otherwise).
   local ro_src rw_src
   ro_src=$(mktemp -d "${TMPDIR:-/tmp}/rc-seam-ro-XXXXXX")
   rw_src=$(mktemp -d "${TMPDIR:-/tmp}/rc-seam-rw-XXXXXX")

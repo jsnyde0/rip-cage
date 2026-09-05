@@ -356,9 +356,9 @@ echo ""
 echo "=== Broken Symlink Warning Check (rip-cage-a0h item (b)) ==="
 echo ""
 
-# _collect_symlink_parents (rc:958-985) used to skip broken symlinks under
-# ~/.claude/skills / ~/.claude/agents SILENTLY (rc:965 realpath-fails path,
-# rc:966 [[ -e ]]-false path). Both must now warn to stderr naming the broken
+# _collect_symlink_parents (cli/up.sh:_collect_symlink_parents) used to skip broken symlinks under
+# ~/.claude/skills / ~/.claude/agents SILENTLY (cli/up.sh:'realpath "$entry"' realpath-fails path,
+# cli/up.sh:'[[ ! -e "$target" ]]' [[ -e ]]-false path). Both must now warn to stderr naming the broken
 # link (existing skip behavior is preserved — the link still isn't emitted as
 # a mount parent). Host-only: sources rc directly against a fake HOME/asset
 # dir, mirroring tests/test-symlink-follow.sh's `source "$RC"` convention.
