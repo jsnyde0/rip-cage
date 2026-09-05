@@ -30,6 +30,11 @@
 #       naming the missing path and 'rc destroy --force <cage>'.
 #   D2  rc doctor <cage>: source dir present (healthy) -> prints NEITHER
 #       this hint nor anything resembling one (negative control).
+#   J1  rc doctor --output json <cage>: source dir removed -> carries a
+#       source_path_missing_hint field naming the missing path
+#       (rip-cage-u625, Surface 2 of rip-cage-uod6's follow-up).
+#   J2  rc doctor --output json <cage>: source dir present (healthy) ->
+#       carries NO source_path_missing_hint key at all (negative control).
 #   E1  rc exec <cage> -- true: source dir removed, `msb exec` fails with
 #       the real ENOENT-shaped message from rip-cage-54q3's report -> hint
 #       printed BEFORE msb's own text, exit code still propagates.
@@ -159,6 +164,54 @@ if [[ "$D2_RC" -eq 0 ]]; then
   pass "D2b rc doctor exits 0"
 else
   fail "D2b rc doctor exits 0" "got exit $D2_RC"
+fi
+
+# ---------------------------------------------------------------------------
+# J1: rc doctor --output json, deleted workspace source -> hint field present,
+#     naming the missing path (rip-cage-u625, scope narrowed to Surface 2
+#     only -- see the bead's NARROWED comment). Parse with jq, not substring
+#     matching of raw output.
+# ---------------------------------------------------------------------------
+echo "-- J1: rc doctor --output json <cage>, source dir removed -- hint field present --"
+export FAKE_MSB_STATE="Stopped"
+export FAKE_MSB_SOURCE_PATH="$MISSING_SOURCE"
+J1_OUT=$(run_rc --output json doctor j1-cage 2>&1)
+J1_RC=$?
+unset FAKE_MSB_STATE FAKE_MSB_SOURCE_PATH
+
+J1_HINT=$(echo "$J1_OUT" | jq -r '.source_path_missing_hint // empty' 2>/dev/null)
+if [[ "$J1_HINT" == "Fix-hint: workspace source deleted — '${MISSING_SOURCE}' no longer exists on the host; remedy: rc destroy --force j1-cage" ]]; then
+  pass "J1a rc doctor --output json carries a hint field naming the missing source path"
+else
+  fail "J1a rc doctor --output json carries a hint field naming the missing source path" "got: $J1_OUT"
+fi
+if [[ "$J1_RC" -eq 0 ]]; then
+  pass "J1b rc doctor --output json still exits 0"
+else
+  fail "J1b rc doctor --output json still exits 0" "got exit $J1_RC; output: $J1_OUT"
+fi
+
+# ---------------------------------------------------------------------------
+# J2: rc doctor --output json, healthy workspace source -> negative control:
+#     no hint field at all (not merely an empty-string value -- a healthy
+#     cage's JSON must not carry the key).
+# ---------------------------------------------------------------------------
+echo "-- J2: rc doctor --output json <cage>, source dir present -- no hint field (negative control) --"
+export FAKE_MSB_STATE="Stopped"
+export FAKE_MSB_SOURCE_PATH="$HEALTHY_SOURCE"
+J2_OUT=$(run_rc --output json doctor j2-cage 2>&1)
+J2_RC=$?
+unset FAKE_MSB_STATE FAKE_MSB_SOURCE_PATH
+
+if echo "$J2_OUT" | jq -e 'has("source_path_missing_hint")' >/dev/null 2>&1; then
+  fail "J2a rc doctor --output json carries no hint field for a healthy workspace source" "got: $J2_OUT"
+else
+  pass "J2a rc doctor --output json carries no hint field for a healthy workspace source"
+fi
+if [[ "$J2_RC" -eq 0 ]]; then
+  pass "J2b rc doctor --output json exits 0"
+else
+  fail "J2b rc doctor --output json exits 0" "got exit $J2_RC; output: $J2_OUT"
 fi
 
 # ---------------------------------------------------------------------------

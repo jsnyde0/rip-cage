@@ -789,6 +789,15 @@ cmd_doctor() {
   uptime=$(_rc_uptime_from_state "$running" "$updated_at")
 
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    # rip-cage-u625 (Surface 2 of rip-cage-uod6's follow-up): mirror the
+    # human branch's "Fix-hint: ..." line (below, guarded the same way) into
+    # the JSON as source_path_missing_hint, a top-level field next to
+    # source_path -- the field it explains. `--arg` always binds a string,
+    # so an absent hint would otherwise arrive as "" rather than as a
+    # missing key; the trailing `+ (if ... then {} else {...} end)` merges
+    # the key in only when non-empty, so a healthy cage's JSON carries no
+    # source_path_missing_hint key at all (not merely an empty-string
+    # value) -- same negative-control contract the human branch already has.
     jq -nc \
       --arg name "$name" \
       --arg state "$state" \
@@ -804,6 +813,7 @@ cmd_doctor() {
       --arg bd_version_probe "$bd_version_probe" \
       --arg egress_config_override "$egress_config_override_label" \
       --arg transcript_persistence_probe "$transcript_persistence_probe" \
+      --arg source_path_missing_hint "$source_path_missing_hint" \
       '{
         name: $name,
         state: $state,
@@ -823,7 +833,9 @@ cmd_doctor() {
           workspace_resolution: $workspace_probe,
           bd_version_skew: $bd_version_probe
         }
-      }'
+      }
+      + (if $source_path_missing_hint == "" then {}
+         else {source_path_missing_hint: $source_path_missing_hint} end)'
   else
     echo "Container:  $name"
     echo "State:      $state${running:+}$([[ $running -eq 1 ]] && echo " (up $uptime)")"
