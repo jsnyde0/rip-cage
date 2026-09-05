@@ -764,6 +764,83 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
+# (k) rip-cage-kdni: no LIVE surface may carry a shim-line citation of the
+#     form <shim>:NNNN whose NNNN is past the end of the shim. The rc
+#     monolith was split into cli/*.sh + cli/lib/*.sh at cbfdfb4 and rc is
+#     now a thin entrypoint shim, so a citation written against the monolith
+#     points past the end of a file that no longer holds that code -- the
+#     reader lands on nothing, or worse, on unrelated shim text.
+#
+#     The repointing form is the owning module plus a function name or a
+#     grep-able anchor string (cli/up.sh:_collect_symlink_parents), and NEVER
+#     a fresh line number: the line number IS the defect, not the file name.
+#     Live proof, 2026-09-04 -- citations into the host driver written with
+#     exact line numbers were off by one within 24 hours because an unrelated
+#     wave inserted two rows above them.
+#
+#     The dead set is RECOMPUTED on every run against the shim's current
+#     length, never read from a list. A frozen list of line numbers inside a
+#     guard about stale line numbers would rot the way its subject did.
+#
+#     SCOPE is every scanned surface EXCEPT the frozen ones: history/ and the
+#     dated docs/20NN-* + docs/design/20NN-* design docs are frozen records
+#     of the tree as it stood, so "fixing" them falsifies history -- a red,
+#     not an overdelivery. docs/decisions/ADR-* is explicitly IN scope (RULED
+#     2026-09-05, brain:rip-cage): ADRs evolve by in-place edit and are still
+#     in force, so a dead pointer there is ordinary maintenance, and decision
+#     substrate is the highest-cost place to leave one.
+#
+#     The frozen tally is printed below rather than silently dropped, because
+#     the failure mode this guard is most likely to be lied to by is a sweep
+#     that ALSO rewrote history: that shows up as zero dead citations
+#     repo-wide, which is indistinguishable from success unless the frozen
+#     rows are counted separately and seen to still be there.
+#
+#     The citation prefix is assembled from a variable below rather than
+#     written as one literal, for the same reason case (j) assembles the
+#     driver path: this file carries citations of its own, and a guard that
+#     flagged itself would need either a filename exemption (forbidden) or a
+#     marker falsely claiming it is exempt.
+# ---------------------------------------------------------------------------
+_k_shim="rc"
+echo "=== (k) no dead ${_k_shim}:NNNN line citation on a live surface (rip-cage-kdni) ==="
+
+_k_max="$(wc -l < "$RC")"
+_k_max="${_k_max//[[:space:]]/}"
+_k_sep=":${_k_shim}:"
+_k_cite_re="\\b${_k_shim}:[0-9]+"
+_k_frozen_re="^(history/|docs/20[0-9][0-9]-|docs/design/20[0-9][0-9]-)"
+_k_hits=""
+_k_frozen_count=0
+
+while IFS= read -r _k_row; do
+  [[ -n "$_k_row" ]] || continue
+  _k_num="${_k_row##*"$_k_sep"}"
+  [[ "$_k_num" =~ ^[0-9]+$ ]] || continue
+  (( _k_num > _k_max )) || continue
+  _k_loc="${_k_row%"$_k_sep"*}"
+  _k_loc="${_k_loc#./}"
+  if [[ "$_k_loc" =~ $_k_frozen_re ]]; then
+    _k_frozen_count=$((_k_frozen_count + 1))
+    continue
+  fi
+  _k_hits="${_k_hits}${_k_loc} cites ${_k_shim} line ${_k_num}"$'\n'
+done < <(cd "$REPO_ROOT" && grep -rnoE "$_k_cite_re" \
+  --exclude-dir=.git --exclude-dir=.beads --exclude-dir=.pi \
+  --exclude-dir=worktrees . 2>/dev/null || true)
+
+echo "    (k): ${_k_frozen_count} dead citation(s) under the frozen history/ + dated design docs, EXCLUDED by design -- a run reporting zero dead citations repo-wide means the sweep rewrote history instead of repointing live surfaces."
+
+if [[ -z "$_k_hits" ]]; then
+  pass "(k)" "no live surface cites a ${_k_shim} line past the end of the ${_k_max}-line shim"
+else
+  echo "    fix: cite the owning cli/*.sh or cli/lib/*.sh module plus a function name or a grep-able anchor string (cli/up.sh:_collect_symlink_parents), and drop the line number entirely -- resolve the old number with the decomposition map doc and the pre-split blob."
+  fail "(k)" "live surface(s) cite a ${_k_shim} line past the end of the ${_k_max}-line shim -- that code moved to cli/ at cbfdfb4" "$(echo "$_k_hits" | sed '/^$/d' | tr '\n' '; ')"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
 echo "=== Results ==="
