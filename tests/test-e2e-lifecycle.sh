@@ -140,7 +140,7 @@ REAL_MSB_HOME="${HOME}/.microsandbox"
 
 unset RC_CONFIG_GLOBAL
 unset XDG_CONFIG_HOME
-GLOBAL_CFG_TMP=$(mktemp -d)
+GLOBAL_CFG_TMP=$(_host_scratch_mktemp_d cfg)
 mkdir -p "${GLOBAL_CFG_TMP}/rip-cage"
 cat > "${GLOBAL_CFG_TMP}/rip-cage/config.yaml" <<'YAML'
 version: 2
@@ -265,7 +265,7 @@ echo "=== E2E Lifecycle Checks (msb) ==="
 echo ""
 
 # Stage workspaces so container_name() = "rc-e2e-test". Parent dir must be "rc".
-E2E_TMP=$(mktemp -d)
+E2E_TMP=$(_host_scratch_mktemp_d e2e)
 mkdir -p "${E2E_TMP}/rc"
 TEST_WS="${E2E_TMP}/rc/e2e-test"
 mkdir -p "$TEST_WS"
@@ -454,7 +454,7 @@ fi
 #   - Host credential files are mounted automatically; test adapts to host state.
 # Cases 2 and 3 differ only in pi auth state; since the warn-block ignores pi auth (D2 FIRM),
 # both produce the same Claude-warn outcome — we verify this is intentional.
-AUTH_TMP=$(mktemp -d)
+AUTH_TMP=$(_host_scratch_mktemp_d auth)
 AUTH_TMP_RESOLVED=$(realpath "$AUTH_TMP")
 
 # Detect whether host credential files exist (they are auto-mounted by rc up).
@@ -629,7 +629,7 @@ fi
 # that is expected and fine.
 _aws5="${AUTH_TMP}/rc-auth/case5"
 _ac5_out="${AUTH_TMP}/case5-up.out"
-_ac5_home=$(mktemp -d)
+_ac5_home=$(_host_scratch_mktemp_d h5)
 mkdir -p "$_aws5"
 git -C "$_aws5" init > /dev/null 2>&1
 HOME="$_ac5_home" \
@@ -669,7 +669,7 @@ rm -rf "$_ac5_home"
 # (rip-cage-73bz).
 _aws6="${AUTH_TMP}/rc-auth/case6"
 _ac6_out="${AUTH_TMP}/case6-up.out"
-_ac6_home=$(mktemp -d)
+_ac6_home=$(_host_scratch_mktemp_d h6)
 _ac6_envfile="${AUTH_TMP}/case6.env"
 mkdir -p "$_aws6"
 git -C "$_aws6" init > /dev/null 2>&1
@@ -823,7 +823,7 @@ fi
 
 # Check 20: Second workspace whose parent+base would compute the SAME raw name
 # triggers rc's collision handling (-XXXX suffix appended).
-E2E_TMP2=$(mktemp -d)
+E2E_TMP2=$(_host_scratch_mktemp_d e2b)
 mkdir -p "${E2E_TMP2}/rc"
 COLLIDE_WS="${E2E_TMP2}/rc/e2e-test"
 mkdir -p "$COLLIDE_WS"
@@ -903,7 +903,7 @@ fi
 # -----------------------------------------------------------------------------
 
 # Check 23 setup: create fixture workspace under a dedicated staging root.
-DCG_TMP=$(mktemp -d)
+DCG_TMP=$(_host_scratch_mktemp_d dcg)
 mkdir -p "${DCG_TMP}/rc-dcg"
 _dcg_ws="${DCG_TMP}/rc-dcg/e2e-test"
 mkdir -p "$_dcg_ws"
@@ -1023,7 +1023,7 @@ fi
 # regression.
 # -----------------------------------------------------------------------------
 
-MISE_TMP=$(mktemp -d)
+MISE_TMP=$(_host_scratch_mktemp_d mise)
 MISE_TMP_RESOLVED=$(realpath "$MISE_TMP")
 mkdir -p "${MISE_TMP}/rc-mise"
 

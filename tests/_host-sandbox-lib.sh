@@ -82,6 +82,26 @@ _host_scratch_root_setup() {
 
 _host_scratch_root_setup
 
+# _host_scratch_mktemp_d [NAME_HINT] — mktemp -d inside the short root.
+#
+# REQUIRED for any temp dir that becomes a cage WORKSPACE or a `HOME` handed
+# to `rc up`. A bare `mktemp -d` is not enough on macOS: BSD mktemp ignores
+# $TMPDIR when called with no template and uses the Darwin per-user temp dir
+# (/var/folders/<32-char>/T/) regardless. Only an explicit template honors
+# the root, which is what this helper supplies.
+#
+# Echoes the created directory. Falls back to a plain `mktemp -d` if the
+# short root is unavailable, so a test never dies here — it just loses the
+# short-root guarantee, which its own `rc up` will then report loudly.
+_host_scratch_mktemp_d() {
+  local _hint="${1:-t}"
+  if [[ -z "${_HOST_SCRATCH_ROOT:-}" ]]; then
+    mktemp -d
+    return $?
+  fi
+  mktemp -d "${_HOST_SCRATCH_ROOT}/${_hint}.XXXXXX"
+}
+
 _HOST_SANDBOX_CFG_DIR=""
 
 # _host_sandbox_setup — build the benign config-fixture sandbox and export
