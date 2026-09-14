@@ -178,7 +178,7 @@ When `--output json` is set, structured output goes to stdout. Human-readable me
 
 ## `rc doctor --output json` fields
 
-`rc doctor <name> --output json` (equivalently `rc --output json doctor <name>`) emits the fields below at the **top level** of its JSON object — the per-cage diagnostic emitter in `cli/doctor.sh`'s `cmd_doctor`. `rc doctor --host --output json` is a **separate** diagnostic emitted from a different code path in the same file (`_doctor_host`) and is out of scope for this table — its top-level shape (`scope`, `daemon`, `docker_info_rc`, `timeout_seconds`, `docker_path`, `msb`, `msb_rc`, `msb_path`, `yq`, `global_config`) does not overlap with the per-cage fields below.
+`rc doctor <name> --output json` (equivalently `rc --output json doctor <name>`) emits the fields below at the **top level** of its JSON object — the per-cage diagnostic emitter in `cli/doctor.sh`'s `cmd_doctor`. `rc doctor --host --output json` is a **separate** diagnostic emitted from a different code path in the same file (`_doctor_host`) — its top-level shape does not overlap with the per-cage fields below; see the [`rc doctor --host --output json` fields](#rc-doctor---host---output-json-fields) table further down.
 
 | Key | Type | Presence | Meaning |
 |---|---|---|---|
@@ -189,6 +189,23 @@ When `--output json` is set, structured output goes to stdout. Human-readable me
 | `labels` | object | always | Nested object of cage labels. Currently one sub-key: `rc.egress.config-override` (string `"true"`/`"false"` — ADR-024 D1 workspace base-URL-override posture, retained under its legacy label name). |
 | `probes` | object | always | Nested object of the nine live-probe status strings: `posture`, `beads_server`, `auth`, `dead_mounts`, `transcript_persistence`, `skills_mount`, `cwd`, `workspace_resolution`, `bd_version_skew`. Each sub-value is the literal `"not running, no live probe"` when the cage isn't running; otherwise an `OK —`/`WARN —`/`FAIL —`/`INFO —`-prefixed status-and-detail string. |
 | `source_path_missing_hint` | string | conditional — present only when `source_path`'s label is set but the recorded host path no longer exists on disk | Fix-hint text mirroring the human-mode `Fix-hint: ...` line. Absent (key omitted entirely, not an empty-string value) on a healthy cage — same negative-control contract as the human-readable branch (rip-cage-u625). |
+
+## `rc doctor --host --output json` fields
+
+`rc doctor --host --output json` (equivalently `rc --output json doctor --host`) emits the fields below at the **top level** of its JSON object — the host-scope diagnostic emitter in `cli/doctor.sh`'s `_doctor_host` (daemon/runtime liveness; no container involved). This is a **separate, disjoint** emitter from `cmd_doctor`'s per-cage shape documented above — no key names overlap (rip-cage-pou6, ruling: a shipped `--output json` flag is a field contract whether or not anyone calls it internal).
+
+| Key | Type | Presence | Meaning |
+|---|---|---|---|
+| `scope` | string | always | Literal `"host"` — distinguishes this shape from the per-cage one when both are logged/parsed together. |
+| `daemon` | string | always | Docker daemon reachability status string, `OK —`/`FAIL —`-prefixed (e.g. daemon reachable, unresponsive within the timeout, `docker info` exited non-zero, or the docker CLI isn't installed). |
+| `docker_info_rc` | number | always | Exit code of the `docker info` probe (`127` when the docker CLI isn't installed, `124` on timeout, or `docker info`'s own exit code). `0` means the daemon is reachable. |
+| `timeout_seconds` | number | always | Bound applied to the `docker info` probe, in seconds — `RC_DOCKER_PREFLIGHT_TIMEOUT` if set, else `3`. |
+| `docker_path` | string | always | Resolved path to the `docker` binary; empty string if the docker CLI isn't installed. |
+| `msb` | string | always | msb reachability status string, `OK —`/`FAIL —`-prefixed (e.g. reachable, unresponsive within the timeout, `msb --version` exited non-zero, or the msb CLI isn't installed). |
+| `msb_rc` | number | always | Exit code of the `msb --version` probe (`127` when the msb CLI isn't installed, `124` on timeout, or `msb --version`'s own exit code). `0` means msb is reachable. |
+| `msb_path` | string | always | Resolved path to the `msb` binary; empty string if the msb CLI isn't installed. |
+| `yq` | string | always | `yq` prerequisite status string, `OK —`/`WARNING —`-prefixed (rip-cage-j86) — resolved path if found on `PATH`, else an install hint (mikefarah's `yq`, not apt's incompatible one). |
+| `global_config` | string | always | Global config file prerequisite status string, `OK —`/`WARNING —`-prefixed (rip-cage-j86) — the resolved path if it exists, else a note that the first `rc up` will auto-seed it. |
 
 ## Container resolution
 
