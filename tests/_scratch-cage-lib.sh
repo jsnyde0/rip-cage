@@ -53,10 +53,8 @@ _SCRATCH_CAGE_NAMES=()
 # unreachable") true for every consumer.
 #
 # Consumers today: tests/test-pi-install.sh, which uses it to refuse a foreign
-# running cage. A cross-run DESTROY sweep over this file is deliberately NOT
-# written here — neu7.9 ruled the runner's cleanup paths read-only after a
-# real destroy incident, and relaxing "this run" to "any run of this harness"
-# is a decision above this file (raised on rip-cage-sygz.2).
+# running cage, and scratch_cage_sweep_registry below, which destroys what a
+# killed run stranded.
 _scratch_cage_registry_path() {
   echo "${RC_TEST_CAGE_REGISTRY:-${RC_TEST_TMPDIR:-${HOME}/.cache/rc-t}/created-cages}"
 }
@@ -82,6 +80,102 @@ _scratch_cage_registry_remove() {
   _tmp="${_rf}.$$"
   grep -vxF "$1" "$_rf" > "$_tmp" 2>/dev/null
   mv "$_tmp" "$_rf" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# CROSS-RUN SWEEP (rip-cage-sygz.2, granter ruling 2026-09-14)
+#
+# The trap below reaps the cages of a run that ENDS. A SIGKILL runs no trap
+# (the OS low-memory reaper killed run-host.sh twice on 2026-09-14), so those
+# cages outlive the run that made them. The sweep is the second chance: at the
+# START of the next run, destroy what the last one stranded.
+#
+# TWO INDEPENDENT GUARDS, both required. rip-cage-neu7.9 followed a real
+# incident — a degenerate glob in a cleanup path ran `rc destroy --force
+# code-personal` on the human's own cage and its volumes — and its ruling is
+# that a cage this harness did not create must be STRUCTURALLY unreachable by
+# any destroy call:
+#   1. NAMES COME ONLY FROM THE REGISTRY FILE. No enumeration, no glob, no
+#      computed name. A foreign cage cannot enter the file, because only
+#      scratch_cage_register writes it.
+#   2. A NAME MUST CARRY A HARNESS SCRATCH PREFIX. Guard 1 alone trusts the
+#      file; this one does not, so a corrupted or hand-edited registry still
+#      cannot reach an operator cage.
+# Only neu7.9's TEMPORAL qualifier is relaxed, from "created this run" to
+# "created by a run of this harness".
+#
+# _scratch_cage_name_is_ours <name> — true for the two name shapes a cage
+# workspace can produce. `rc` derives a cage name from the last two components
+# of its workspace path (cli/lib/container.sh:container_name), and a test
+# workspace is always a mktemp dir under the short scratch root
+# (~/.cache/rc-t/<hint>.XXXXXX -> "rc-t-<hint>.XXXXXX") or, when that root is
+# unavailable, under the macOS per-user temp dir (.../T/tmp.XXXXXX ->
+# "T-tmp.XXXXXX").
+#
+# KNOWN, DELIBERATE GAP: a test that registers a name of its own invention
+# (tests/spike-uuh9-port443.sh names its cages "spike-uuh9-*") fails this
+# guard and is refused rather than swept. That is the fail-safe direction —
+# the cost is one cage the operator destroys by hand, against a class of bug
+# whose last instance cost the human their own cage.
+_scratch_cage_name_is_ours() {
+  case "$1" in
+    rc-t-*|T-tmp.*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# _scratch_cage_exists <name> — does this EXACT sandbox exist? `msb inspect`
+# takes the one name it is given; nothing is listed, matched or expanded.
+_scratch_cage_exists() {
+  msb inspect "$1" --format json >/dev/null 2>&1
+}
+
+# scratch_cage_sweep_registry — destroy the cages a killed run stranded.
+#
+# Per registry line:
+#   - fails the prefix guard  -> REFUSED, named loudly on stderr, line KEPT
+#     (a tampered registry must stay visible, not be quietly tidied away)
+#   - cage no longer exists   -> line dropped SILENTLY (the common case after
+#     a clean run; warning about it would cry wolf every single run)
+#   - cage exists             -> `rc destroy --force <exact name>`, named on
+#     stderr; line dropped on success, KEPT on failure (it is still out there)
+#
+# Never a gate: a sweep that cannot do its job costs hygiene, never a test
+# result. Returns 0 unconditionally.
+scratch_cage_sweep_registry() {
+  local _rf _tmp _name _out _rc
+  _rf=$(_scratch_cage_registry_path)
+  [[ -f "$_rf" ]] || return 0
+  # No msb means no way to tell a live cage from a stale line, and dropping
+  # lines on that guess would throw away the record. Leave the file alone.
+  command -v msb >/dev/null 2>&1 || return 0
+
+  _tmp="${_rf}.sweep.$$"
+  : > "$_tmp" 2>/dev/null || return 0
+  while IFS= read -r _name || [[ -n "$_name" ]]; do
+    [[ -z "$_name" ]] && continue
+    if ! _scratch_cage_name_is_ours "$_name"; then
+      echo "_scratch-cage-lib.sh: REFUSING to sweep '${_name}' -- not a name this harness creates; the registry has been corrupted or hand-edited. Line kept for inspection; destroy it yourself if you mean to." >&2
+      echo "$_name" >> "$_tmp"
+      continue
+    fi
+    if ! _scratch_cage_exists "$_name"; then
+      continue
+    fi
+    # `|| _rc=$?` rather than a bare `_rc=$?` on the next line: this function's
+    # one caller, tests/run-host.sh, runs under `set -e`, where a plain failing
+    # assignment would kill the whole suite over a cleanup miss.
+    _rc=0
+    _out=$("${SCRIPT_DIR}/../rc" destroy --force "$_name" 2>&1) || _rc=$?
+    if [[ "$_rc" -ne 0 ]]; then
+      echo "_scratch-cage-lib.sh: WARNING: failed to sweep stranded scratch cage '${_name}' (exit ${_rc}): ${_out}" >&2
+      echo "$_name" >> "$_tmp"
+    else
+      echo "_scratch-cage-lib.sh: swept stranded scratch cage from an earlier run: ${_name}" >&2
+    fi
+  done < "$_rf"
+  mv "$_tmp" "$_rf" 2>/dev/null || rm -f "$_tmp" 2>/dev/null
+  return 0
 }
 
 # Track whether the combined trap has already been installed (idempotent).

@@ -44,6 +44,16 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REAL_LIB="${SCRIPT_DIR}/_scratch-cage-lib.sh"
 
+# Point the persisted cage registry at a throwaway file (rip-cage-sygz.2).
+# Several cases below register INVENTED names ("case6-cage", "case7-cage")
+# against stub `rc` binaries. Those names would otherwise land in the real
+# registry, and Case 7's stub destroy fails on purpose, so its line survives
+# the run forever. The cross-run sweep then reports a refusal for a cage that
+# never existed, on every single run. Scoping the file keeps the harness from
+# polluting its own evidence.
+export RC_TEST_CAGE_REGISTRY="${TMPDIR:-/tmp}/rc-cleanup-test-registry.$$"
+trap 'rm -f "$RC_TEST_CAGE_REGISTRY"' EXIT
+
 FAILURES=0
 PASS_COUNT=0
 

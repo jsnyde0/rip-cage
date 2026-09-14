@@ -19,11 +19,16 @@
 #       registry, never from "whatever is running". A foreign cage is
 #       structurally unreachable: only scratch_cage_register writes the file.
 #
-# NOT IN SCOPE HERE: a cross-run sweep that DESTROYS the stranded names.
-# rip-cage-neu7.9 made every runner cleanup path read-only after a real
-# incident (a degenerate glob destroyed the human's own `code-personal` cage
-# and its volumes), and relaxing its "names it created THIS run" rule to "any
-# run of this harness" is a decision above this file. Raised on rip-cage-sygz.2.
+#   (c) the cross-run SWEEP: run-host.sh destroys, at run start, the cages a
+#       killed run stranded. rip-cage-neu7.9 made every runner cleanup path
+#       read-only after a real incident (a degenerate glob destroyed the
+#       human's own `code-personal` cage and its volumes), so the sweep was
+#       raised rather than written. The granter ruled it in on 2026-09-14 with
+#       a structural guard: names come ONLY from the registry file this
+#       harness wrote (no enumeration, no glob, no computed names), AND a name
+#       that does not carry a harness scratch prefix is refused even if it is
+#       sitting in the registry. neu7.9's property survives; only its temporal
+#       qualifier relaxes from "this run" to "a run of this harness".
 #
 # Host-only. No live cage, no live docker: `rc` is faked by running a SYMLINK
 # to the real test-pi-install.sh out of a scratch tree whose `../rc` is a stub,
@@ -39,6 +44,17 @@
 #       SKIPs 3/4, exits 0, and never runs `rc exec` against the foreign name
 #   T6  NEGATIVE CONTROL for T5: the same running cage listed in the registry
 #       IS selected, and 3/4 really execute against it
+#   T7  the sweep destroys a stranded harness cage by EXACT name and drops it
+#   T8  NEGATIVE CONTROL 1: a foreign name planted in the registry is REFUSED,
+#       logged, and its line kept — no destroy call ever names it
+#   T9  NEGATIVE CONTROL 2: a registry entry whose cage is gone is dropped
+#       SILENTLY — no destroy call, no warning
+#   T10 one mixed registry, one pass: both prefixes, both controls together
+#   T11 the prefix guard matches a PREFIX, not a substring
+#   T12 the sweep never enumerates — `msb list` is never called
+#   T13 a failed destroy is loud, keeps its line, and never aborts the
+#       `set -e` caller (run-host.sh) over a cleanup miss
+#   T14 run-host.sh really calls the sweep, and calls it BEFORE the warn
 
 set -uo pipefail
 
@@ -254,6 +270,254 @@ if [[ "$t6_rc" -eq 0 ]]; then
   pass "T6c: the file still exits 0 on the happy path"
 else
   fail "T6c: expected exit 0, got $t6_rc" "$t6_out"
+fi
+
+# ---------------------------------------------------------------------------
+# T7-T12: the cross-run DESTROY sweep (scratch_cage_sweep_registry).
+#
+# Host-only, and deliberately so: the human's own `code-personal` cage is live
+# on this machine while these run. Nothing here may reach a real cage, so `rc`
+# is the stub below and `msb` is faked on PATH — the fake decides which names
+# "exist" via $MSB_FAKE_EXISTING and logs every call it is given, which is how
+# T12 proves the sweep never enumerated.
+# ---------------------------------------------------------------------------
+SWEEP_ROOT="${WORK}/sweep"
+mkdir -p "${SWEEP_ROOT}/tests"
+ln -sf "${REPO_ROOT}/tests/_scratch-cage-lib.sh" "${SWEEP_ROOT}/tests/_scratch-cage-lib.sh"
+cat > "${SWEEP_ROOT}/rc" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "rc $*" >> "$RC_STUB_LOG"
+exit "${RC_STUB_EXIT:-0}"
+STUBEOF
+chmod +x "${SWEEP_ROOT}/rc"
+
+SWEEP_BIN="${WORK}/sweepbin"
+mkdir -p "$SWEEP_BIN"
+cat > "${SWEEP_BIN}/msb" <<'FAKEEOF'
+#!/usr/bin/env bash
+echo "msb $*" >> "$RC_STUB_LOG"
+if [[ "${1:-}" == "inspect" ]]; then
+  for _n in ${MSB_FAKE_EXISTING:-}; do
+    [[ "$_n" == "${2:-}" ]] && exit 0
+  done
+  exit 1
+fi
+exit 0
+FAKEEOF
+chmod +x "${SWEEP_BIN}/msb"
+
+# run_registry_sweep <registry-file> <call-log> <space-separated names that "exist">
+# Echoes the sweep's combined stdout+stderr.
+run_registry_sweep() {
+  PATH="${SWEEP_BIN}:$PATH" \
+  RC_TEST_CAGE_REGISTRY="$1" \
+  RC_STUB_LOG="$2" \
+  MSB_FAKE_EXISTING="$3" \
+  bash -c '
+    SCRIPT_DIR="'"${SWEEP_ROOT}/tests"'"
+    source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+    scratch_cage_sweep_registry
+  ' 2>&1
+}
+
+echo ""
+echo "=== T7: a stranded harness cage is destroyed by EXACT name and dropped ==="
+REG7="${WORK}/reg7"
+echo "T-tmp.stranded" > "$REG7"
+LOG7="${WORK}/log7"
+: > "$LOG7"
+t7_out=$(run_registry_sweep "$REG7" "$LOG7" "T-tmp.stranded")
+if grep -qF "rc destroy --force T-tmp.stranded" "$LOG7"; then
+  pass "T7: the sweep called destroy by exact name"
+else
+  fail "T7: expected 'rc destroy --force T-tmp.stranded' in the call log" "$(cat "$LOG7"); sweep said: ${t7_out}"
+fi
+if grep -qxF "T-tmp.stranded" "$REG7"; then
+  fail "T7b: a destroyed cage must not keep its registry line" "$(cat "$REG7")"
+else
+  pass "T7b: the destroyed name is gone from the registry"
+fi
+if echo "$t7_out" | grep -q "T-tmp.stranded"; then
+  pass "T7c: the sweep names what it destroyed"
+else
+  fail "T7c: the sweep destroyed a cage without saying so" "$t7_out"
+fi
+
+echo ""
+echo "=== T8 (NEGATIVE CONTROL 1): a foreign name in the registry is REFUSED ==="
+REG8="${WORK}/reg8"
+echo "code-personal" > "$REG8"
+LOG8="${WORK}/log8"
+: > "$LOG8"
+t8_out=$(run_registry_sweep "$REG8" "$LOG8" "code-personal")
+if grep -qF "destroy" "$LOG8"; then
+  fail "T8: a destroy call was made against a foreign name — the guard is not load-bearing" "$(cat "$LOG8")"
+else
+  pass "T8: no destroy call of any kind was made"
+fi
+if echo "$t8_out" | grep -qi "refus" && echo "$t8_out" | grep -q "code-personal"; then
+  pass "T8b: the refusal is logged and names the offending entry"
+else
+  fail "T8b: expected a logged refusal naming code-personal" "$t8_out"
+fi
+if grep -qxF "code-personal" "$REG8"; then
+  pass "T8c: the refused line is KEPT, so a tampered registry stays visible"
+else
+  fail "T8c: the refused line was silently dropped — the tampering evidence is gone" "$(cat "$REG8")"
+fi
+
+echo ""
+echo "=== T9 (NEGATIVE CONTROL 2): an entry whose cage is gone is dropped SILENTLY ==="
+REG9="${WORK}/reg9"
+echo "T-tmp.gone" > "$REG9"
+LOG9="${WORK}/log9"
+: > "$LOG9"
+t9_out=$(run_registry_sweep "$REG9" "$LOG9" "")
+if grep -qF "destroy" "$LOG9"; then
+  fail "T9: a cage that does not exist must not be destroyed" "$(cat "$LOG9")"
+else
+  pass "T9: no destroy call for a cage that is already gone"
+fi
+if [[ -s "$REG9" ]]; then
+  fail "T9b: the stale entry should have been dropped" "$(cat "$REG9")"
+else
+  pass "T9b: the stale entry is dropped"
+fi
+if echo "$t9_out" | grep -q "T-tmp.gone"; then
+  fail "T9c: dropping a stale entry must be SILENT — every run would cry wolf" "$t9_out"
+else
+  pass "T9c: the drop is silent"
+fi
+
+echo ""
+echo "=== T10: one mixed registry, one pass — both prefixes, both controls ==="
+REG10="${WORK}/reg10"
+printf 'rc-t-t.AbCdEf\ncode-personal\nT-tmp.gone\nT-tmp.live\n' > "$REG10"
+LOG10="${WORK}/log10"
+: > "$LOG10"
+t10_out=$(run_registry_sweep "$REG10" "$LOG10" "rc-t-t.AbCdEf code-personal T-tmp.live")
+t10_destroys=$(grep -cF "rc destroy --force" "$LOG10" 2>/dev/null || true)
+t10_destroys="${t10_destroys:-0}"
+if [[ "$t10_destroys" -eq 2 ]] \
+  && grep -qF "rc destroy --force rc-t-t.AbCdEf" "$LOG10" \
+  && grep -qF "rc destroy --force T-tmp.live" "$LOG10"; then
+  pass "T10: exactly the two harness-prefixed live cages were destroyed (rc-t- and T-tmp. both)"
+else
+  fail "T10: expected exactly 2 destroys, for rc-t-t.AbCdEf and T-tmp.live" "count=${t10_destroys}; log: $(cat "$LOG10")"
+fi
+if [[ "$(cat "$REG10")" == "code-personal" ]]; then
+  pass "T10b: the registry is left holding exactly the refused foreign name"
+else
+  fail "T10b: expected the registry to hold only 'code-personal'" "$(cat "$REG10")"
+fi
+# The pass that DID destroy two cages must still have said no to the third.
+# This is what makes T8 a control rather than a coincidence: same code path,
+# same run, one name destroyed and one refused.
+if echo "$t10_out" | grep -qi "refus" && echo "$t10_out" | grep -q "code-personal"; then
+  pass "T10c: the same pass that destroyed two cages refused the foreign one out loud"
+else
+  fail "T10c: expected a refusal naming code-personal in the mixed pass" "$t10_out"
+fi
+
+echo ""
+echo "=== T11: the prefix guard matches a PREFIX, not a substring ==="
+REG11="${WORK}/reg11"
+printf 'evil-T-tmp.x\nnot-rc-t-y\n' > "$REG11"
+LOG11="${WORK}/log11"
+: > "$LOG11"
+t11_out=$(run_registry_sweep "$REG11" "$LOG11" "evil-T-tmp.x not-rc-t-y")
+if grep -qF "destroy" "$LOG11"; then
+  fail "T11: a name that merely CONTAINS the prefix was swept" "$(cat "$LOG11")"
+else
+  pass "T11: names that only contain the prefix are refused, not swept"
+fi
+if [[ "$(cat "$REG11")" == "$(printf 'evil-T-tmp.x\nnot-rc-t-y')" ]]; then
+  pass "T11b: both refused lines are kept"
+else
+  fail "T11b: expected both lines kept verbatim" "$(cat "$REG11")"
+fi
+# T11a/T11b above are "nothing happened" assertions, which a missing sweep
+# would also satisfy. This one is not: it requires the sweep to have run and
+# to have said NO to each name by name.
+if echo "$t11_out" | grep -q "evil-T-tmp.x" && echo "$t11_out" | grep -q "not-rc-t-y"; then
+  pass "T11c: the sweep actually ran and refused each name out loud"
+else
+  fail "T11c: expected a refusal naming each entry" "$t11_out"
+fi
+
+echo ""
+echo "=== T12: the sweep never enumerates ==="
+if grep -qF "msb list" "$LOG10"; then
+  fail "T12: the sweep enumerated sandboxes — neu7.9's banned shape" "$(cat "$LOG10")"
+else
+  pass "T12: no 'msb list' call; every name came from the registry file"
+fi
+
+echo ""
+echo "=== T13: a failed destroy is loud, keeps its line, and does NOT kill a set -e caller ==="
+# run-host.sh runs under `set -euo pipefail`. A sweep that aborted its caller
+# on a failed destroy would turn a cleanup miss into a dead suite, so this runs
+# the sweep in a shell with the same strict mode the real caller uses.
+REG13="${WORK}/reg13"
+echo "T-tmp.wontdie" > "$REG13"
+LOG13="${WORK}/log13"
+: > "$LOG13"
+t13_rc=0
+t13_out=$(
+  PATH="${SWEEP_BIN}:$PATH" \
+  RC_TEST_CAGE_REGISTRY="$REG13" \
+  RC_STUB_LOG="$LOG13" \
+  RC_STUB_EXIT=7 \
+  MSB_FAKE_EXISTING="T-tmp.wontdie" \
+  bash -c '
+    set -euo pipefail
+    SCRIPT_DIR="'"${SWEEP_ROOT}/tests"'"
+    source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+    scratch_cage_sweep_registry
+    echo "CALLER-SURVIVED"
+  ' 2>&1
+) || t13_rc=$?
+if echo "$t13_out" | grep -q "CALLER-SURVIVED" && [[ "$t13_rc" -eq 0 ]]; then
+  pass "T13: a failed destroy never aborts the strict-mode caller"
+else
+  fail "T13: the set -e caller died on a failed destroy (exit ${t13_rc})" "$t13_out"
+fi
+if echo "$t13_out" | grep -q "T-tmp.wontdie"; then
+  pass "T13b: the failure is named out loud"
+else
+  fail "T13b: a cage leaked without a word on stderr" "$t13_out"
+fi
+if grep -qxF "T-tmp.wontdie" "$REG13"; then
+  pass "T13c: the line is KEPT — the cage is still out there, so the record must be too"
+else
+  fail "T13c: a cage that survived its destroy lost its registry line" "$(cat "$REG13")"
+fi
+
+echo ""
+echo "=== T14: run-host.sh actually calls the sweep, before the read-only warn ==="
+# The driver's path is assembled from parts rather than written as one
+# literal, exactly as test-rc-decomposition-structure.sh case (j) assembles its
+# own. That case flags any file the driver runs which names the driver's path
+# in a path position, because such a file is usually about to INVOKE it and a
+# nested run contaminates the shared msb daemon. This file only READS the
+# driver, and it must keep running in the suite, so the manual-only-probe
+# exemption would be a false claim.
+_rh_driver="run-host"
+RH="${REPO_ROOT}/tests/${_rh_driver}.sh"
+rh_sweep_line=$(grep -n '^scratch_cage_sweep_registry$' "$RH" | head -1 | cut -d: -f1)
+rh_warn_line=$(grep -n '^_warn_leftover_scratch_cages$' "$RH" | head -1 | cut -d: -f1)
+# shellcheck disable=SC2016  # the single quotes are the point: this is a
+# literal grep pattern for the source line as it appears in the driver, not an
+# expansion.
+if [[ -n "$rh_sweep_line" ]] && grep -q '^source "\${SCRIPT_DIR}/_scratch-cage-lib.sh"$' "$RH"; then
+  pass "T14: run-host.sh sources the lib and calls scratch_cage_sweep_registry"
+else
+  fail "T14: the sweep is written but never wired into the runner" "sweep_line='${rh_sweep_line}'"
+fi
+if [[ -n "$rh_sweep_line" && -n "$rh_warn_line" && "$rh_sweep_line" -lt "$rh_warn_line" ]]; then
+  pass "T14b: the sweep runs BEFORE the warn, so the warning names only what is really left"
+else
+  fail "T14b: expected sweep before warn" "sweep=${rh_sweep_line} warn=${rh_warn_line}"
 fi
 
 echo ""

@@ -936,8 +936,22 @@ _warn_leftover_scratch_cages() {
 # at it (same ${VAR:-default} precedence as before this extraction).
 _host_sandbox_setup
 
-# Run the detector at START of run to flag any residue from a previous
-# aborted run (read-only — never destroys; see the function's header comment).
+# Both residue passes run at START of run, sweep before warn so the warning
+# names only what is actually left (rip-cage-sygz.2):
+#
+#   1. scratch_cage_sweep_registry — DESTROYS the cages a killed run stranded
+#      (a SIGKILL runs no EXIT trap, so they outlive the run that made them).
+#      Names come only from the registry file this harness itself wrote, and
+#      each one must still carry a harness scratch prefix to be touched at
+#      all. Both guards, and why rip-cage-neu7.9 permits this at all, are in
+#      tests/_scratch-cage-lib.sh's own header.
+#   2. _warn_leftover_scratch_cages — READ-ONLY. It ENUMERATES, so it may
+#      never destroy (neu7.9). It is the backstop for what the sweep refuses
+#      or never knew about: a cage from before the registry existed, or one
+#      whose registry file was wiped.
+# shellcheck source=tests/_scratch-cage-lib.sh
+source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+scratch_cage_sweep_registry
 _warn_leftover_scratch_cages
 
 # EXIT/INT/TERM handler: config-fixture cleanup ONLY. rip-cage-neu7.9: the
