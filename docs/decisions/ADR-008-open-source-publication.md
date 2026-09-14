@@ -85,7 +85,7 @@ Integration tests (`rc test`) require Docker-in-Docker or a self-hosted runner. 
 
 The `rc` script must work with bash 3.2 (macOS default). Any bash 4+ syntax is a bug. The one known offender (`${var,,}`) was removed by rip-cage-m7c; the rule is restated at `CONTRIBUTING.md:'Bash 3.2 compatibility is required'`.
 
-**Rationale:** macOS ships bash 3.2 due to GPLv3 licensing of bash 4+. Requiring users to install bash 4+ just to run `rc` is unnecessary friction. The `rc` script uses only basic bash features; the one 4+ usage is easily replaced with `tr`.
+**Rationale:** macOS ships bash 3.2 due to GPLv3 licensing of bash 4+. Requiring users to install bash 4+ just to run `rc` is unnecessary friction. The `rc` script uses only basic bash features; the one 4+ usage that existed when this was written was cheaply replaced with `tr` (rip-cage-m7c), and holding the line has cost nothing since. *(Tense corrected 2026-09-14, rip-cage-o5be: the clause read "the one 4+ usage is easily replaced with `tr`" in the present tense, implying an offender the decision body one line above already records as removed. `direct:` `grep -rn ',,}' rc cli/` returns nothing.)*
 
 ### D6: Pre-built Docker image on GHCR
 
