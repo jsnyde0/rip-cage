@@ -1219,7 +1219,12 @@ _up_start_container() {
     return 1
   fi
   local _egress_flags=()
-  [[ -n "$_egress_out" ]] && mapfile -t _egress_flags <<< "$_egress_out"
+  if [[ -n "$_egress_out" ]]; then
+    local _egress_line
+    while IFS= read -r _egress_line; do
+      _egress_flags+=("$_egress_line")
+    done <<< "$_egress_out"
+  fi
 
   local _translate_out _translate_rc=0
   _translate_out=$(_up_translate_docker_args_to_msb "${_UP_RUN_ARGS[@]}") || _translate_rc=$?
@@ -1230,7 +1235,12 @@ _up_start_container() {
     return 1
   fi
   local _translated_flags=()
-  [[ -n "$_translate_out" ]] && mapfile -t _translated_flags <<< "$_translate_out"
+  if [[ -n "$_translate_out" ]]; then
+    local _translated_line
+    while IFS= read -r _translated_line; do
+      _translated_flags+=("$_translated_line")
+    done <<< "$_translate_out"
+  fi
 
   local msb_stderr
   if ! msb_stderr=$(msb create --name "$_name" --log-level trace \
@@ -1837,8 +1847,9 @@ _UP_DCG_CONFIG_PATH=""
 # `-v SRC:DST[:OPTIONS]` and msb's `-v SOURCE:DEST[:OPTIONS]` share the same
 # grammar) — this function only transforms the small set of genuine
 # differences. Echoes one output token per line (mirrors msb_flags.sh's own
-# output convention — `mapfile -t FLAGS < <(_up_translate_docker_args_to_msb
-# "${_UP_RUN_ARGS[@]}")`).
+# output convention — callers collect it into an array with
+# `while IFS= read -r line; do FLAGS+=("$line"); done < <(_up_translate_docker_args_to_msb
+# "${_UP_RUN_ARGS[@]}")`), bash-3.2-safe per ADR-008 D5.
 #
 # Handles (see module-level docs in tests/test-up-msb-args-translate.sh for
 # the full behavior matrix): -v (strips :delegated, msb doesn't recognize

@@ -74,7 +74,7 @@
 # Output contract: msb argv TOKENS, one per line, on stdout (mirrors
 # tests/golden-master's up-run-args-*.argv convention -- flag and its value
 # are separate lines -- so callers do
-# `mapfile -t FLAGS < <(_msb_flags_generate "$json")` then
+# `while IFS= read -r line; do FLAGS+=("$line"); done < <(_msb_flags_generate "$json")` then
 # `msb run "${FLAGS[@]}" ...`). Deterministic: identical input -> byte-
 # identical output (declared-order preserved throughout; no unordered
 # iteration over the input).
@@ -243,7 +243,8 @@ _msb_flags_generate() {
   # is hardcoded here -- the operator's config names the target var (ADR-005
   # D12). The `$MSB_` value is emitted literally (never shell-expanded here):
   # it reaches `msb run` as a verbatim argv token via the caller's
-  # `mapfile`/`"${FLAGS[@]}"`, and msb sets the guest var to that literal.
+  # array-building read loop and `"${FLAGS[@]}"`, and msb sets the guest var
+  # to that literal.
   local bcred_count bidx
   bcred_count=$(jq '.credentials // [] | length' <<<"$cfg")
   for (( bidx=0; bidx<bcred_count; bidx++ )); do
