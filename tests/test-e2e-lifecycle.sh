@@ -198,6 +198,25 @@ _find_cage_by_source_path() {
 #   - "DNS resolution (github.com)" -- depends on github.com being egress-
 #     allowed for THIS workspace; can legitimately fail on a workspace
 #     whose .rip-cage.yaml doesn't carry it.
+#   - "At least one skill present" -- zero skills is CORRECT under this
+#     script's own isolated-config fixture, which ships a ZERO-BYTE
+#     tools.yaml (see the XDG_CONFIG_HOME setup above). Attributed by
+#     direct measurement on a fixture cage (rip-cage-6v34.10): the floor
+#     mount is healthy and delivers all 36 entries, but ~/.claude/skills
+#     entries are RELATIVE symlinks (`../../code/personal/dotpi/agent/
+#     skills/<name>`) that resolve cage-side to /home/agent/code/..., a
+#     path that only exists when the operator's manifest mounts it there.
+#     Under an empty manifest that TOOL entry is absent, the path does not
+#     exist, and all 36 resolve to nothing -- `rc doctor` reports it
+#     exactly: "skills-mount : WARN -- 36 entries, 36 broken symlink(s)"
+#     (the same cage on the real manifest reports 1 broken of 36). This is
+#     the documented projection contract (CLAUDE.md, "Skill-source
+#     symlinks", rip-cage-1pgp.1) behaving as designed, not a regression.
+#     Note the arm is HOST-COMPOSITION-DEPENDENT either way: on a host
+#     whose ~/.claude/skills held real directories it would pass under the
+#     same fixture. That dependence is why a lifecycle-focused check must
+#     not assert on it -- covering skills delivery is test-skills.sh's job,
+#     against a fixture that actually composes a skills mount.
 # This exact pair is the documented finding from the msb migration itself
 # (tests/test-msb-test-live-probe.sh's header comment, bead rip-cage-
 # tsf2.1): "a real, expected consequence of the stricter msb network
@@ -208,7 +227,7 @@ _find_cage_by_source_path() {
 _rc_test_only_known_exceptions_failed() {
   local outfile="$1" real_fails
   grep -qE '^PASS' "$outfile" || return 1
-  real_fails=$(grep '^FAIL' "$outfile" | grep -vE 'CAGE_HOST_ADDR resolves|DNS resolution \(github\.com\)' || true)
+  real_fails=$(grep '^FAIL' "$outfile" | grep -vE 'CAGE_HOST_ADDR resolves|DNS resolution \(github\.com\)|At least one skill present' || true)
   [[ -z "$real_fails" ]]
 }
 
@@ -350,12 +369,12 @@ fi
 
 # Check 7: rc test passes all in-container suites (unchanged: cmd_test
 # already routes through _msb_exec internally, cli/test.sh). Tolerates ONLY
-# the documented msb-network-model exceptions (see
+# the documented fixture-scoped exceptions (see
 # _rc_test_only_known_exceptions_failed above) -- any OTHER FAIL is a real
 # regression and still fails this check.
 "$RC" test "$CONTAINER_NAME" > /tmp/rc-e2e-rctest.out 2>&1 || true
 if _rc_test_only_known_exceptions_failed /tmp/rc-e2e-rctest.out; then
-  check "rc test passes in-container suites (documented msb-network-model exceptions excluded, rip-cage-tsf2.1)" "pass"
+  check "rc test passes in-container suites (documented fixture-scoped exceptions excluded, rip-cage-tsf2.1 + rip-cage-6v34.10)" "pass"
 else
   check "rc test passes in-container suites" "fail" \
     "unexpected FAIL line(s): $(grep '^FAIL' /tmp/rc-e2e-rctest.out | grep -vE 'CAGE_HOST_ADDR resolves|DNS resolution \(github\.com\)' | tr '\n' ';' || true) (see /tmp/rc-e2e-rctest.out)"
@@ -742,7 +761,7 @@ fi
 # msb-network-model exceptions tolerated as check 7 above).
 "$RC" test "$CONTAINER_NAME" > /tmp/rc-e2e-rctest2.out 2>&1 || true
 if _rc_test_only_known_exceptions_failed /tmp/rc-e2e-rctest2.out; then
-  check "rc test passes after restart (documented msb-network-model exceptions excluded, rip-cage-tsf2.1)" "pass"
+  check "rc test passes after restart (documented fixture-scoped exceptions excluded, rip-cage-tsf2.1 + rip-cage-6v34.10)" "pass"
 else
   check "rc test passes after restart" "fail" \
     "unexpected FAIL line(s): $(grep '^FAIL' /tmp/rc-e2e-rctest2.out | grep -vE 'CAGE_HOST_ADDR resolves|DNS resolution \(github\.com\)' | tr '\n' ';' || true) (see /tmp/rc-e2e-rctest2.out)"
