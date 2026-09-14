@@ -703,6 +703,8 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-doctor-version-skew.sh"   # rip-cage-2cks: _doctor_bd_version_compare unit tests (host-only, no docker)
   run_test "${SCRIPT_DIR}/test-doctor-dead-mount.sh"     # rip-cage-uben: generic dead-handle detection over single-file bind mounts — stubbed docker, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-doctor-exec-source-deleted.sh"   # rip-cage-uod6 (charted from rip-cage-54q3): rc doctor/rc exec name a deleted host workspace source with a Fix-hint instead of msb's misleading ENOENT-against-the-program-name text — fake msb PATH shim, host-only, no live cage needed
+  run_test "${SCRIPT_DIR}/test-cage-host-bridge-probe.sh"       # rip-cage-woox: _rc_probe_host_bridge preset-honoring + msb-first probe order, stubbed getent via RC_INIT_LIB_ONLY-guarded sourcing, host-only, no live cage needed
+  run_test "${SCRIPT_DIR}/test-host-scratch-root.sh"            # rip-cage-6v34.6: the suite's own scratch root stays short enough for msb's 104-byte socket budget and symlink-free; host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-rc-test-suite-continuation.sh" # rip-cage-83y6: rc test's non-json path runs all four in-cage suites even when an earlier one fails — stubbed msb, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-cage-claude-projects-host-bound.sh" # rip-cage-aa4t: _cage_claude_projects_host_bound predicate — stubbed msb, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-doctor-transcript-persistence.sh"   # rip-cage-aa4t: rc doctor transcript-persistence probe — stubbed msb, host-only, no live cage needed

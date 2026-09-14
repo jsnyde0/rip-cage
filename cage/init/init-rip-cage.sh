@@ -5,16 +5,77 @@ set -euo pipefail
 # init-firewall.sh's firewall-env file) retired with the deleted in-cage
 # engine (ADR-029 D2) -- containment is msb's job now.
 
+# --- Host-bridge probe (rip-cage-woox) --------------------------------------
+# Extracted here, at the very top of the file before any side-effecting init
+# work runs, so a host-side test can source ONLY these two function
+# definitions (via the RC_INIT_LIB_ONLY guard directly below) and unit-test
+# the resolution order with a stubbed resolver -- without executing the rest
+# of this script (bind-mount chowns, mise install, Claude Code bootstrap,
+# etc.) on the bare host. Real invocation is unchanged in place further down
+# (originally ADR-016 D2's "7a. Host-bridge preflight probe").
+#
+# _rc_host_bridge_resolves: thin wrapper around `getent hosts` so a test can
+# redefine just this one function after sourcing to stub resolution, without
+# touching _rc_probe_host_bridge's resolution-order logic.
+_rc_host_bridge_resolves() {
+  getent hosts "$1" >/dev/null 2>&1
+}
+
+# _rc_probe_host_bridge: resolves CAGE_HOST_ADDR. Prints the chosen address on
+# stdout; sets _RC_HOST_BRIDGE_STATUS (preset / resolved / fallback-literal)
+# as a side-channel global the caller reads to decide what to log. A pre-set
+# $CAGE_HOST_ADDR (rc up already computed the right value -- cli/up.sh:963)
+# is honored verbatim and never overwritten. Otherwise probes
+# host.microsandbox.internal first (the runtime is msb, not Docker --
+# ADR-029), falling back to the legacy Docker/OrbStack bridge names so a
+# Docker-runtime dev checkout still resolves.
+# NOTE (ADR-029 D6 + the 2026-07-09 spike): host.microsandbox.internal
+# RESOLVES in the guest but is known to fake-accept TCP under msb on
+# macOS/HVF -- resolvability is not reachability. Don't upgrade any message
+# below (or elsewhere) to claim "reachable".
+_rc_probe_host_bridge() {
+  if [ -n "${CAGE_HOST_ADDR:-}" ]; then
+    _RC_HOST_BRIDGE_STATUS="preset"
+    printf '%s\n' "$CAGE_HOST_ADDR"
+    return 0
+  fi
+
+  local _rc_hbp_candidate
+  for _rc_hbp_candidate in host.microsandbox.internal host.docker.internal host.orb.internal; do
+    if _rc_host_bridge_resolves "$_rc_hbp_candidate"; then
+      _RC_HOST_BRIDGE_STATUS="resolved"
+      printf '%s\n' "$_rc_hbp_candidate"
+      return 0
+    fi
+  done
+
+  _RC_HOST_BRIDGE_STATUS="fallback-literal"
+  echo "[rip-cage] WARNING: no host bridge resolvable -- using literal 'host.microsandbox.internal' as fallback (host services will be unreachable)" >&2
+  printf '%s\n' "host.microsandbox.internal"
+}
+
+# Sourcing guard: when a host test sources this file with RC_INIT_LIB_ONLY
+# set, stop here -- before any of the imperative init work below runs -- so
+# only the two function definitions above get loaded. Chosen over extracting
+# a sourced sibling file because the Dockerfile COPYs this script alone into
+# the image (cage/Dockerfile:148); a sibling file would need its own COPY
+# line to reach the same path in the baked image, whereas this guard needs no
+# Dockerfile change and travels with the single file the image already bakes
+# in. Real cage boot never sets RC_INIT_LIB_ONLY, so this is a no-op there.
+if [ -n "${RC_INIT_LIB_ONLY:-}" ]; then
+  return 0
+fi
+
 echo "[rip-cage] Initializing..."
 
 # Beads: determine storage mode from project's metadata.json
 # Embedded mode (default): bd uses in-process Dolt on the bind mount — no server needed
-# Server mode: connect to host's Dolt server via host.docker.internal
+# Server mode: connect to host's Dolt server via host.microsandbox.internal
 if [[ -f /workspace/.beads/metadata.json ]]; then
   _beads_dolt_mode=$(jq -r '.dolt_mode // empty' /workspace/.beads/metadata.json 2>/dev/null || true)
   if [[ "$_beads_dolt_mode" != "embedded" ]] && [[ -n "$_beads_dolt_mode" ]]; then
     export BEADS_DOLT_SERVER_MODE=1
-    export BEADS_DOLT_SERVER_HOST="${BEADS_DOLT_SERVER_HOST:-host.docker.internal}"
+    export BEADS_DOLT_SERVER_HOST="${BEADS_DOLT_SERVER_HOST:-host.microsandbox.internal}"
     echo "[rip-cage] Beads: server mode (dolt_mode=$_beads_dolt_mode)"
   else
     echo "[rip-cage] Beads: embedded mode — no Dolt server connection"
@@ -409,29 +470,43 @@ if [ -r /workspace ]; then
   unset _toolfiles _found_tool
 fi
 
-# 7a. Host-bridge preflight probe (ADR-016 D2).
-# DNS-only probe of well-known host-bridge hostnames. First resolvable wins.
-# If none resolve (air-gapped, unusual runtime), fall back to the literal
-# `host.docker.internal` and log a warning — agents will discover it doesn't
-# resolve when they try to use it. This matches the fallback contract in
+# 7a. Host-bridge preflight probe (ADR-016 D2; rip-cage-woox).
+# Resolution order + preset-honoring logic lives in _rc_probe_host_bridge, at
+# the top of this file (extracted so a host-side test can unit-test it with
+# a stubbed resolver — see tests/test-cage-host-bridge-probe.sh). A pre-set
+# $CAGE_HOST_ADDR (rc up already computed the right value — cli/up.sh:963)
+# is honored verbatim, never overwritten. Otherwise probes
+# host.microsandbox.internal first, then the legacy Docker/OrbStack bridge
+# names; if none resolve, falls back to the literal `host.microsandbox.internal`
+# and logs a WARNING — agents will discover it doesn't reach anything when
+# they try to use it. This matches the fallback contract in
 # /etc/rip-cage/cage-claude.md ("set by init; falls back to literal ...").
 # Writes CAGE_HOST_ADDR to /etc/rip-cage/cage-env so every interactive shell,
 # multiplexer pane, and Claude-Code child process gets a uniform surface.
-_cage_host_addr=""
-_cage_probe_status="resolved"
-for _candidate in host.docker.internal host.orb.internal; do
-  if getent hosts "$_candidate" >/dev/null 2>&1; then
-    _cage_host_addr="$_candidate"
-    break
-  fi
-done
-if [ -z "$_cage_host_addr" ]; then
-  _cage_host_addr="host.docker.internal"
-  _cage_probe_status="fallback-literal"
-  echo "[rip-cage] WARNING: no host bridge resolvable — using literal '$_cage_host_addr' as fallback (host services will be unreachable)" >&2
-else
-  echo "[rip-cage] Host bridge: $_cage_host_addr"
-fi
+
+# NOTE: deliberately not `_cage_host_addr="$(_rc_probe_host_bridge)"` --
+# command substitution forks a subshell, and _rc_probe_host_bridge's
+# _RC_HOST_BRIDGE_STATUS side-channel write would be lost when that subshell
+# exits (verified: the same trap the unit test's _run_probe helper avoids).
+# Route stdout through a temp file instead so the plain (non-subshelled)
+# function call runs in this shell and the status write survives.
+_cage_host_bridge_tmp="$(mktemp /tmp/host-bridge-addr.XXXXXX)"
+_rc_probe_host_bridge > "$_cage_host_bridge_tmp"
+_cage_host_addr="$(cat "$_cage_host_bridge_tmp")"
+rm -f "$_cage_host_bridge_tmp"
+unset _cage_host_bridge_tmp
+_cage_probe_status="$_RC_HOST_BRIDGE_STATUS"
+case "$_cage_probe_status" in
+  preset)
+    echo "[rip-cage] Host bridge: $_cage_host_addr (preset by rc up)"
+    ;;
+  resolved)
+    echo "[rip-cage] Host bridge: $_cage_host_addr"
+    ;;
+  fallback-literal)
+    : # _rc_probe_host_bridge already emitted the WARNING on stderr
+    ;;
+esac
 # Direct truncate-and-write. /etc/rip-cage/cage-env is pre-created
 # agent-writable by the Dockerfile (so no sudo needed); the parent dir stays
 # root-owned (so mv-rename would fail). The written payload is <50 bytes and
@@ -458,7 +533,7 @@ if [ -f ~/.claude/settings.json ]; then
   fi
   unset _cage_settings_tmp
 fi
-unset _cage_host_addr _candidate _cage_probe_status
+unset _cage_host_addr _cage_probe_status _RC_HOST_BRIDGE_STATUS
 
 # R4: Snapshot ~/.claude.json → ~/.claude/.claude.json.seed (rip-cage-p1p)
 # MUST run BEFORE the first `claude` invocation below — when the claude-recipe is
