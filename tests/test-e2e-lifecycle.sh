@@ -66,6 +66,14 @@ REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 IMAGE="rip-cage:latest"
 
+# Short, symlink-free TMPDIR before the first mktemp below (rip-cage-6v34.6).
+# This file deliberately builds its OWN config sandbox (the a5dk block further
+# down), so it sources the lib for the scratch-root export ONLY and never calls
+# _host_sandbox_setup. See tests/_host-sandbox-lib.sh for why macOS's default
+# /var/folders root breaks cage creation on msb >= 0.6.9.
+# shellcheck source=tests/_host-sandbox-lib.sh
+source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
+
 PASS=0; FAIL=0; TOTAL=0
 check() {
   local name="$1" result="$2" detail="${3:-}"
