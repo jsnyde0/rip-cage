@@ -135,13 +135,27 @@ else
 fi
 
 # --- O1: --only <glob> selects exactly the matching basenames ---
-only_out="$(bash "$RUN_HOST" --only 'test-ssh-*.sh' --list 2>/dev/null)"
-expected_only="$(printf '%s\n' "$list_out" | grep -E '^test-ssh-.*\.sh$' | sort)"
+# The glob is DERIVED from --list, never hardcoded (rip-cage-f2y2). A literal
+# cluster glob goes vacuous the moment that cluster is retired wholesale: the
+# original 'test-ssh-*.sh' fixture stopped matching anything at cfa2a33
+# (ADR-029 D3 deleted the ssh cluster), expected and actual then agreed at
+# empty, and the -n non-emptiness arm below failed the case on the emptiness.
+# Derivation: the first 'test-<token>-' basename prefix that --list itself
+# returns with >= 2 matches. Keeps the -n arm -- it is what makes the
+# assertion falsifiable; without it the case passes when --only selects
+# nothing at all.
+only_prefix="$(printf '%s\n' "$list_out" \
+  | sed -n 's/^\(test-[^-]*-\).*\.sh$/\1/p' \
+  | awk '{ if (!($0 in c)) order[++n]=$0; c[$0]++ }
+         END { for (i=1;i<=n;i++) if (c[order[i]] >= 2) { print order[i]; exit } }')"
+only_glob="${only_prefix}*.sh"
+only_out="$(bash "$RUN_HOST" --only "$only_glob" --list 2>/dev/null)"
+expected_only="$(printf '%s\n' "$list_out" | grep -E "^${only_prefix}.*\.sh$" | sort)"
 actual_only="$(printf '%s\n' "$only_out" | sort)"
-if [[ "$actual_only" == "$expected_only" && -n "$actual_only" ]]; then
-  pass "O1 --only 'test-ssh-*.sh' selects exactly the matching basenames"
+if [[ -n "$only_prefix" && "$actual_only" == "$expected_only" && -n "$actual_only" ]]; then
+  pass "O1 --only '$only_glob' (derived from --list) selects exactly the matching basenames"
 else
-  fail "O1 --only 'test-ssh-*.sh' selects exactly the matching basenames" "expected=[$expected_only] actual=[$actual_only]"
+  fail "O1 --only '$only_glob' (derived from --list) selects exactly the matching basenames" "prefix=[$only_prefix] expected=[$expected_only] actual=[$actual_only]"
 fi
 
 # --- D1: --dry-run + --ledger writes one SKIP(dry-run) row per selected
