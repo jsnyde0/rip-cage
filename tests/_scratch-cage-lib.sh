@@ -39,6 +39,51 @@ fi
 # Accumulate registered container names (space-separated, shell array).
 _SCRATCH_CAGE_NAMES=()
 
+# PERSISTED REGISTRY (rip-cage-sygz.2). The array above lives only in this
+# process, so a SIGKILL (the OS low-memory reaper is the observed cause)
+# strands every cage it holds. Each registered name is ALSO appended, one per
+# line, to a file that outlives the process, so a later reader can tell apart
+# "a cage this harness created" from "a cage that belongs to someone else".
+#
+# SCOPE OF THE FILE — read this before adding a consumer. It is an identity
+# record, not a destroy list: names enter it from scratch_cage_register only,
+# i.e. only ever a cage a test just created. Nothing enumerates cages into it,
+# nothing pattern-matches a name into it. That is what keeps neu7.9's
+# fail-safe property ("a cage the harness did not create is STRUCTURALLY
+# unreachable") true for every consumer.
+#
+# Consumers today: tests/test-pi-install.sh, which uses it to refuse a foreign
+# running cage. A cross-run DESTROY sweep over this file is deliberately NOT
+# written here — neu7.9 ruled the runner's cleanup paths read-only after a
+# real destroy incident, and relaxing "this run" to "any run of this harness"
+# is a decision above this file (raised on rip-cage-sygz.2).
+_scratch_cage_registry_path() {
+  echo "${RC_TEST_CAGE_REGISTRY:-${RC_TEST_TMPDIR:-${HOME}/.cache/rc-t}/created-cages}"
+}
+
+# _scratch_cage_registry_add <name> — append one name. Best-effort: a
+# registry that cannot be written must never fail a test (it only costs the
+# foreign-cage discrimination, which every consumer treats as "skip", never
+# as "proceed anyway").
+_scratch_cage_registry_add() {
+  local _rf _rd
+  _rf=$(_scratch_cage_registry_path)
+  _rd=$(dirname "$_rf")
+  mkdir -p "$_rd" 2>/dev/null || return 0
+  echo "$1" >> "$_rf" 2>/dev/null || true
+}
+
+# _scratch_cage_registry_remove <name> — drop every line equal to <name>.
+# Exact whole-line equality (grep -x -F), never a prefix or a glob.
+_scratch_cage_registry_remove() {
+  local _rf _tmp
+  _rf=$(_scratch_cage_registry_path)
+  [[ -f "$_rf" ]] || return 0
+  _tmp="${_rf}.$$"
+  grep -vxF "$1" "$_rf" > "$_tmp" 2>/dev/null
+  mv "$_tmp" "$_rf" 2>/dev/null || true
+}
+
 # Track whether the combined trap has already been installed (idempotent).
 _SCRATCH_CAGE_TRAP_ARMED=0
 
@@ -60,6 +105,11 @@ _scratch_cage_cleanup() {
     if [[ "$_rc" -ne 0 ]]; then
       echo "_scratch-cage-lib.sh: WARNING: failed to destroy scratch cage '${_name}' (exit ${_rc}): ${_out}" >&2
       _failures=$((_failures + 1))
+    else
+      # Destroyed: it is no longer a live cage this harness owns, so drop it
+      # from the persisted registry (rip-cage-sygz.2). A failed destroy keeps
+      # its line — the cage is still out there.
+      _scratch_cage_registry_remove "$_name"
     fi
   done
   if [[ "$_failures" -gt 0 ]]; then
@@ -79,6 +129,7 @@ scratch_cage_register() {
   fi
 
   _SCRATCH_CAGE_NAMES+=("$_cname")
+  _scratch_cage_registry_add "$_cname"
 
   if [[ "$_SCRATCH_CAGE_TRAP_ARMED" -eq 1 ]]; then
     return 0
