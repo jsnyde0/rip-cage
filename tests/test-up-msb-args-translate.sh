@@ -196,6 +196,83 @@ else
   fail "T14: expected non-zero exit naming the flag" "rc=$T14_RC err='$T14_ERR'"
 fi
 
+# ---------------------------------------------------------------------------
+# T15-T20 (rip-cage-6v34.7): HOST-SOURCE PATH RESOLUTION.
+#
+# msb >= 0.6.16 refuses any bind mount whose host source traverses a symlink,
+# killing guest boot with `mount <tag>: Not a directory (os error 20)` — a
+# message that names the GUEST mount point, never the offending host path.
+# The translator resolves the source half to its physical path so the spec
+# msb receives is symlink-free.
+#
+# T15 is the negative control for the whole group: delete the resolution call
+# in cli/up.sh and T15 is the case that goes red.
+# ---------------------------------------------------------------------------
+_MR_TMP=$(mktemp -d)
+_MR_REAL=$(cd "$_MR_TMP" && pwd -P)
+mkdir -p "${_MR_REAL}/realdir"
+ln -sfn "${_MR_REAL}/realdir" "${_MR_REAL}/linkdir"
+printf 'x' > "${_MR_REAL}/realdir/afile"
+trap 'rm -rf "$_MR_TMP"' EXIT
+
+echo ""
+echo "=== T15: -v through a symlinked host dir -> physical source (NEGATIVE CONTROL) ==="
+T15_OUT=$(run_translate -v "${_MR_REAL}/linkdir:/workspace")
+T15_EXPECT=$'-v\n'"${_MR_REAL}/realdir:/workspace"
+if [[ "$T15_OUT" == "$T15_EXPECT" ]]; then
+  pass "T15: symlinked host source resolved to its physical path"
+else
+  fail "T15: source not resolved" "got='$T15_OUT' want='$T15_EXPECT'"
+fi
+
+echo ""
+echo "=== T16: named volume source is left alone ==="
+T16_OUT=$(run_translate -v "rc-state-mycage:/home/agent/.claude-state")
+if [[ "$T16_OUT" == $'-v\nrc-state-mycage:/home/agent/.claude-state' ]]; then
+  pass "T16: named volume (no leading /) untouched"
+else
+  fail "T16: named volume was rewritten" "$T16_OUT"
+fi
+
+echo ""
+echo "=== T17: SRC == DST projection mount is left alone ==="
+# The symlink-follow / skill-source mounts deliberately place a host-absolute
+# path at that SAME path inside the cage, because in-cage symlinks resolve
+# against it. Rewriting only the source half would break the pairing.
+T17_OUT=$(run_translate -v "${_MR_REAL}/linkdir:${_MR_REAL}/linkdir:ro")
+if [[ "$T17_OUT" == $'-v\n'"${_MR_REAL}/linkdir:${_MR_REAL}/linkdir:ro" ]]; then
+  pass "T17: host-absolute projection mount (SRC==DST) passed through verbatim"
+else
+  fail "T17: projection mount was rewritten" "$T17_OUT"
+fi
+
+echo ""
+echo "=== T18: absent host source emitted verbatim (fail-loud, ADR-001) ==="
+T18_OUT=$(run_translate -v "${_MR_REAL}/does-not-exist:/workspace")
+if [[ "$T18_OUT" == $'-v\n'"${_MR_REAL}/does-not-exist:/workspace" ]]; then
+  pass "T18: absent source not swallowed — msb reports the real condition"
+else
+  fail "T18: absent source was rewritten" "$T18_OUT"
+fi
+
+echo ""
+echo "=== T19: :ro option survives resolution ==="
+T19_OUT=$(run_translate -v "${_MR_REAL}/linkdir:/guest:ro")
+if [[ "$T19_OUT" == $'-v\n'"${_MR_REAL}/realdir:/guest:ro" ]]; then
+  pass "T19: options preserved through source resolution"
+else
+  fail "T19: options lost or source unresolved" "$T19_OUT"
+fi
+
+echo ""
+echo "=== T20: --mount long-form src is resolved too ==="
+T20_OUT=$(run_translate --mount "type=bind,src=${_MR_REAL}/linkdir/afile,dst=/usr/local/lib/rip-cage/dcg/config.toml,ro")
+if [[ "$T20_OUT" == $'--mount-file\n'"${_MR_REAL}/realdir/afile:/usr/local/lib/rip-cage/dcg/config.toml:ro" ]]; then
+  pass "T20: --mount-file host source resolved (single-file DCG-config path)"
+else
+  fail "T20: --mount-file source unresolved" "$T20_OUT"
+fi
+
 echo ""
 echo "=== test-up-msb-args-translate.sh: ${FAILURES}/${TOTAL} failure(s) ==="
 [[ "$FAILURES" -eq 0 ]]

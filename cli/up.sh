@@ -1874,6 +1874,79 @@ _UP_DCG_CONFIG_PATH=""
 # ADR-001 fail-loud: an unrecognized flag aborts loud rather than being
 # silently dropped or silently passed through unmodified (either of which
 # could hide a real msb/docker behavior gap).
+# _up_resolve_mount_source_path SPEC
+#
+# rip-cage-6v34.7: msb >= 0.6.16 REFUSES any bind mount whose HOST source
+# path traverses a symlink. The guest dies at boot stage `mount` with
+# `mount <tag>: Not a directory (os error 20)` — a message that names the
+# GUEST mount point (the tag hashes the guest path), so it never points at
+# the host path that is actually at fault. Measured on 0.6.18: the same
+# guest target with host `~/.cache/rc-t/link/d1` (a symlink) fails and with
+# `~/.cache/rc-t/real/d1` boots clean.
+#
+# On macOS this bites any workspace or $HOME under `mktemp -d`, because
+# `/var` is a symlink to `/private/var`.
+#
+# Takes a `SRC:DST[:OPTIONS]` spec, echoes it back with SRC replaced by its
+# physical path. Two cases are deliberately left alone:
+#
+#   NAMED VOLUMES — a SRC with no leading `/` is an msb volume name
+#     (rc-state-*, rc-history-*, rc-mise-cache), not a host path.
+#   SRC == DST — the symlink-follow projection (cli/up.sh's `_sfl_mount_src`)
+#     and the skill-source parent mounts deliberately mount a host-absolute
+#     path AT THAT SAME PATH inside the cage, because in-cage symlinks
+#     resolve against it (CLAUDE.md, projection contract rip-cage-1pgp.1).
+#     Rewriting only the source half would silently break that pairing, so
+#     the spec is passed through unchanged and msb's own error stands.
+#
+# This runs in the TRANSLATOR, after every validation pass (mount denylist,
+# RC_ALLOWED_ROOTS, secret-path checks) has already read the ORIGINAL path —
+# so it cannot widen what rc admits. It changes how an already-admitted
+# inode is NAMED to msb, not which inode is mounted.
+#
+# `cd && pwd -P` is the bash-3.2-portable resolver (BSD realpath has no -m,
+# and ADR-008 D5 is FIRM on bash 3.2).
+_up_resolve_mount_source_path() {
+  local _spec="$1"
+  case "$_spec" in
+    /*) ;;
+    *) printf '%s' "$_spec"; return 0 ;;
+  esac
+
+  local _src="${_spec%%:*}"
+  local _rest="${_spec#*:}"
+  # No `:` at all (not a valid mount spec) — hand it back untouched.
+  if [[ "$_rest" == "$_spec" ]]; then
+    printf '%s' "$_spec"
+    return 0
+  fi
+
+  # SRC == DST: host-absolute projection mount, see the note above.
+  if [[ "$_rest" == "$_src" || "$_rest" == "${_src}:"* ]]; then
+    printf '%s' "$_spec"
+    return 0
+  fi
+
+  local _real=""
+  if [[ -d "$_src" ]]; then
+    _real=$(cd "$_src" 2>/dev/null && pwd -P) || _real=""
+  elif [[ -e "$_src" ]]; then
+    local _dir _base
+    _dir=$(cd "$(dirname "$_src")" 2>/dev/null && pwd -P) || _dir=""
+    _base=$(basename "$_src")
+    [[ -n "$_dir" ]] && _real="${_dir}/${_base}"
+  fi
+
+  # Source absent or unresolvable: emit it verbatim so msb reports the real
+  # condition rather than rc swallowing it (ADR-001 fail-loud).
+  if [[ -z "$_real" ]]; then
+    printf '%s' "$_spec"
+    return 0
+  fi
+
+  printf '%s' "${_real}:${_rest}"
+}
+
 _up_translate_docker_args_to_msb() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1882,6 +1955,7 @@ _up_translate_docker_args_to_msb() {
         # Strip a trailing ":delegated" (macOS Docker Desktop cache hint;
         # msb has no such option and does not recognize the token).
         _spec="${_spec%:delegated}"
+        _spec=$(_up_resolve_mount_source_path "$_spec")
         # printf, not echo: several flags translated here (-v, -e, -p) are
         # literally "-e"/"-p" — bash's echo builtin interprets a bare "-e"
         # (or "-n"/"-E") as ITS OWN option when it is the sole/first
@@ -1905,7 +1979,8 @@ _up_translate_docker_args_to_msb() {
             ro) _mro=":ro" ;;
           esac
         done
-        printf '%s\n' "--mount-file" "${_msrc}:${_mdst}${_mro}"
+        # Same host-source resolution as -v (rip-cage-6v34.7).
+        printf '%s\n' "--mount-file" "$(_up_resolve_mount_source_path "${_msrc}:${_mdst}${_mro}")"
         shift 2
         ;;
       --cpus=*|--memory=*)

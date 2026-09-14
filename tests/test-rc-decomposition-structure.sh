@@ -235,7 +235,18 @@ echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 
 #   cli/manifest.sh (1): _manifest_reconcile_usage (the usage block shared
 #     by the --help arm, which exits 0, and the unknown-flag arm, which
 #     exits 2; both now return BEFORE any filesystem or yq/jq work).
-EXPECTED_FN_COUNT=213
+# Bumped 213 -> 214 by rip-cage-6v34.7 (msb >= 0.6.16 refuses any bind mount
+# whose HOST source path traverses a symlink, killing guest boot with `mount
+# <tag>: Not a directory (os error 20)` -- a message that names the GUEST
+# mount point, so it never points at the host path at fault): 1 function
+# ADDED, 0 removed.
+#   cli/up.sh (1): _up_resolve_mount_source_path (resolves the source half of
+#     a `SRC:DST[:OPTIONS]` spec to its physical path inside
+#     _up_translate_docker_args_to_msb, skipping named volumes and the
+#     SRC==DST host-absolute projection mounts; covered by
+#     tests/test-up-msb-args-translate.sh T15-T20, T15 being the negative
+#     control for the whole group).
+EXPECTED_FN_COUNT=214
 _actual_fn_count=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh 2>/dev/null | wc -l | tr -d ' ')
 
 if [[ "$_actual_fn_count" -eq "$EXPECTED_FN_COUNT" ]]; then
