@@ -1,6 +1,6 @@
 ---
 name: configure-cage
-description: Compose a rip-cage host manifest (~/.config/rip-cage/tools.yaml) by judgment — delta against manifest/default-tools.yaml, recipes read fresh from examples/. Use when the human wants to set up or configure a cage, or compose tools.yaml before rc build.
+description: "Compose a rip-cage host manifest (~/.config/rip-cage/tools.yaml) by judgment — delta against the default manifest, recipes from examples/. Use to set up a cage or compose tools.yaml before `rc build`."
 ---
 
 # Configure a rip-cage cage
