@@ -176,6 +176,20 @@ See [`docs/reference/egress.md`](egress.md) and [ADR-029](../decisions/ADR-029-m
 
 When `--output json` is set, structured output goes to stdout. Human-readable messages (progress, warnings) go to stderr. Error responses include `"error"` and `"code"` fields.
 
+## `rc doctor --output json` fields
+
+`rc doctor <name> --output json` (equivalently `rc --output json doctor <name>`) emits the fields below at the **top level** of its JSON object — the per-cage diagnostic emitter in `cli/doctor.sh`'s `cmd_doctor`. `rc doctor --host --output json` is a **separate** diagnostic emitted from a different code path in the same file (`_doctor_host`) and is out of scope for this table — its top-level shape (`scope`, `daemon`, `docker_info_rc`, `timeout_seconds`, `docker_path`, `msb`, `msb_rc`, `msb_path`, `yq`, `global_config`) does not overlap with the per-cage fields below.
+
+| Key | Type | Presence | Meaning |
+|---|---|---|---|
+| `name` | string | always | Resolved cage name. |
+| `state` | string | always | Cage lifecycle state, translated from msb's own vocabulary: `running` (msb `Running`), `exited` (msb `Stopped`), or `unknown` (any other status msb reports, or a status msb doesn't recognize — defensive; no msb release has been observed to report one). |
+| `uptime` | string | always | Humanized uptime since the last start/stop transition (`Xm`, `Xh Ym`, `Xd Yh`), or `—` when not running or the timestamp is unavailable — msb exposes only one transition timestamp, so a never-started and a stopped-after-running cage are not distinguished. |
+| `source_path` | string | always | Host path recorded in the `rc.source.path` label at cage-creation time; empty string if the label is unset. |
+| `labels` | object | always | Nested object of cage labels. Currently one sub-key: `rc.egress.config-override` (string `"true"`/`"false"` — ADR-024 D1 workspace base-URL-override posture, retained under its legacy label name). |
+| `probes` | object | always | Nested object of the nine live-probe status strings: `posture`, `beads_server`, `auth`, `dead_mounts`, `transcript_persistence`, `skills_mount`, `cwd`, `workspace_resolution`, `bd_version_skew`. Each sub-value is the literal `"not running, no live probe"` when the cage isn't running; otherwise an `OK —`/`WARN —`/`FAIL —`/`INFO —`-prefixed status-and-detail string. |
+| `source_path_missing_hint` | string | conditional — present only when `source_path`'s label is set but the recorded host path no longer exists on disk | Fix-hint text mirroring the human-mode `Fix-hint: ...` line. Absent (key omitted entirely, not an empty-string value) on a healthy cage — same negative-control contract as the human-readable branch (rip-cage-u625). |
+
 ## Container resolution
 
 Commands that target a container (`attach`, `down`, `destroy`, `reload`, `test`) resolve the name in order:

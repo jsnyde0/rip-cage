@@ -817,6 +817,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-mount-seam-integration.sh" # rip-cage-wlwc.6: integration harness capstone (SI1-SI6 host-only Tier-1; SE1-SE5 self-skip via RC_E2E gate)
   run_test "${SCRIPT_DIR}/test-image-drift-resume.sh"    # rip-cage-jnvb: rc up image-ID drift guard on resume — full-rc-through-fake-docker-shim T1-T6, host-only, no live container needed
   run_test "${SCRIPT_DIR}/test-dry-run-resume-guards.sh" # rip-cage-3y9g: rc up --dry-run runs the same _up_resolve_resume_* guard set/order as a real resume (P1a/P1b parity + B1 behavioral), host-only
+  run_test "${SCRIPT_DIR}/test-doctor-json-doc.sh"       # rip-cage-bbjn: rc doctor --output json top-level field set derived from cli/doctor.sh vs documented in docs/reference/cli-reference.md, both directions, host-only static check
   # Container-tier (NEEDS_CONTAINER above; self-skip under --host-only, run on full invocation):
   run_test "${SCRIPT_DIR}/test-session-persistence.sh"  # dn2 projects/sessions persist-to-host (Phase 3 container)
   run_test "${SCRIPT_DIR}/test-pi-no-extensions.sh"     # rip-cage-sn1h: LOCKED-VARIANT-ONLY probe (evil.ts NOT loaded + DCG still denies); self-skips under the shipped OPEN default (rip-cage-p35a.1 / ADR-027 D1)
