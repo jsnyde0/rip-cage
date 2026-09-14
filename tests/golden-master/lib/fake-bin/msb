@@ -136,6 +136,17 @@ case "${1:-}" in
     ;;
 
   list)
+    # GM_MSB_LIST_NAMES: newline-separated sandbox names for `rc ls`'s
+    # populated case (rip-cage-dcok). Each listed name is inspected via the
+    # SAME single-set GM_DOCKER_STATE/GM_DOCKER_LABEL_* vars the `inspect`
+    # branch above reads -- there is no per-name state, so multi-name lists
+    # all share one status/labels row shape. Default (unset): empty list,
+    # matching every pre-existing case's "no cages" expectation.
+    if [[ -n "${GM_MSB_LIST_NAMES:-}" ]]; then
+      jq -nc --arg names "$GM_MSB_LIST_NAMES" \
+        '[$names | split("\n")[] | select(length > 0) | {name: .}]'
+      exit 0
+    fi
     echo "[]"
     exit 0
     ;;

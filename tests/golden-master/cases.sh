@@ -40,6 +40,7 @@ GM_CASES=(
   reload_dry_run_not_running
   ls_human_empty
   ls_json_empty
+  ls_human_populated
   config_show_yaml
   config_show_json
   config_get_raw
@@ -195,6 +196,16 @@ case_reload_dry_run_not_running() {
 
 case_ls_human_empty() { gm_capture ls; }
 case_ls_json_empty() { gm_capture --output json ls; }
+
+# rip-cage-dcok: one real cage row, pinning the human-mode column layout
+# (NAME/STATUS/UPTIME/EGRESS/MODE/SOURCE PATH) -- the bug this case guards
+# against put $_ls_uptime under STATUS and never printed $_ls_status at all.
+case_ls_human_populated() {
+  GM_MSB_LIST_NAMES="mycage" \
+  GM_DOCKER_STATE=running \
+  GM_DOCKER_LABEL_SOURCE_PATH="$(gm_ws_realpath)" \
+    gm_capture ls
+}
 
 # --- config show/get/init ----------------------------------------------
 

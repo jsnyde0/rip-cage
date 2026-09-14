@@ -103,7 +103,15 @@ EOF
   else
     # rip-cage-hhh FIX1: MODE column derived from source path's .rip-cage.yaml (live),
     # not the immutable rc.egress.mode label. Build per-row with a while-read loop.
-    echo -e "NAME\tSTATUS\tEGRESS\tMODE\tSOURCE PATH"
+    #
+    # rip-cage-dcok: STATUS and UPTIME are distinct columns -- $_ls_status
+    # (running/exited/unknown) belongs under STATUS, $_ls_uptime (humanized
+    # duration) under its own UPTIME column. Prior to this fix the printf
+    # below put $_ls_uptime in the STATUS slot and never printed $_ls_status
+    # at all; docs/reference/cli-reference.md documents no fixed rc-ls-human
+    # column example to defer to, so both values are kept (no information
+    # dropped) rather than picking one to discard.
+    echo -e "NAME\tSTATUS\tUPTIME\tEGRESS\tMODE\tSOURCE PATH"
     local _ls_raw_txt
     _ls_raw_txt=$(_rc_ls_enumerate)
     while IFS=$'\t' read -r _ls_name _ls_status _ls_uptime _ls_src _ls_egress; do
@@ -113,8 +121,8 @@ EOF
       if [[ "$_ls_egress" == "" ]]; then _ls_egress_out="legacy"
       elif [[ "$_ls_egress" == "on" || "$_ls_egress" == "off" ]]; then _ls_egress_out="$_ls_egress"
       else _ls_egress_out="invalid:${_ls_egress}"; fi
-      printf '%s\t%s\t%s\t%s\t%s\n' \
-        "$_ls_name" "$_ls_uptime" "$_ls_egress_out" "$_ls_mode" "$_ls_src"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$_ls_name" "$_ls_status" "$_ls_uptime" "$_ls_egress_out" "$_ls_mode" "$_ls_src"
     done <<EOF
 ${_ls_raw_txt}
 EOF
