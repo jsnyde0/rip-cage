@@ -1284,6 +1284,38 @@ else
   fail "prereq section lacks reference to baked hooks — add a comment explaining mux prereqs are hook responsibility"
 fi
 
+# --- Test 53: _rc_uptime_from_state parses updated_at as UTC, not local zone (rip-cage-cf6f) ---
+echo ""
+echo "=== Test 53: _rc_uptime_from_state does not inflate uptime by the host UTC offset ==="
+# rip-cage-cf6f: msb records updated_at in UTC. The BSD `date -j -f` arm in
+# _rc_uptime_from_state was missing `-u`, so it read the UTC string as if it
+# were in the LOCAL zone -- a cage 2 minutes old was reported as "2h 4m" on a
+# CEST (+2h) host. TZ=Europe/Berlin below pins a non-UTC offset so this case
+# is red on the bug regardless of the CI runner's own zone (a UTC runner
+# would make the bug invisible without this pin).
+t53_out=$(TZ=Europe/Berlin bash -c '
+  source "'"${REPO_ROOT}"'/cli/lib/container.sh"
+  now_epoch=$(date +%s)
+  target_epoch=$((now_epoch - 120))
+  updated_at=$(date -u -j -f %s "$target_epoch" +"%Y-%m-%dT%H:%M:%S" 2>/dev/null \
+    || date -u -d "@$target_epoch" +"%Y-%m-%dT%H:%M:%S")
+  result=$(_rc_uptime_from_state 1 "$updated_at")
+  echo "RESULT:$result"
+' 2>&1)
+t53_result=$(echo "$t53_out" | sed -n 's/^RESULT://p')
+if [[ "$t53_result" == "2m" ]]; then
+  pass "_rc_uptime_from_state: 120s-old UTC updated_at yields 2m (got: $t53_result)"
+else
+  fail "_rc_uptime_from_state: expected 2m, got: $t53_result (full output: $t53_out)"
+fi
+# NEGATIVE CONTROL: reverting the fix reintroduces the "Nh" form on an
+# offset host, so this case cannot pass vacuously.
+if echo "$t53_result" | grep -q "h"; then
+  fail "_rc_uptime_from_state: result contains 'h' -- offset leaked into uptime (got: $t53_result)"
+else
+  pass "_rc_uptime_from_state: result does not contain 'h' (got: $t53_result)"
+fi
+
 # --- Cleanup ---
 rm -rf "$SYMLINK_SKILLS_DIR" "$SYMLINK_TARGET_DIR" "$SYMLINK_SKILLS_DIR2" "$HOME_TARGET_DIR" "$SIBLING_DIR"
 
