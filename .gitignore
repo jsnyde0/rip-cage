@@ -70,3 +70,6 @@ docs/tmp/*
 
 # Claude Code agent worktrees (transient, per-subagent isolation)
 .claude/worktrees/
+
+# pi harness hook scratch — one JSON file per session id, machine-local, never committed
+.pi/
