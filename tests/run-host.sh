@@ -684,8 +684,6 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-pi-auth-mount.sh"
   run_test "${SCRIPT_DIR}/test-pi-cage-context.sh"
   run_test "${SCRIPT_DIR}/test-pi-e2e.sh"
-  run_test "${SCRIPT_DIR}/test-secret-path-denylist.sh"  # tests/test-secret-path-denylist.sh
-  run_test "${SCRIPT_DIR}/test-workspace-mask.sh"        # rip-cage-goaz / ADR-030 D4-D6: mounts.mask workspace-mask primitive (host-only a-e; (f) real in-cage behavior self-skips via RC_E2E gate)
   run_test "${SCRIPT_DIR}/test-workspace-trust.sh"       # rip-cage-hhh.5: workspace base-URL redirect validator
   # test-egress-rules-gen.sh / test_egress_proxy.py / test_dns_decide.py /
   # test-firewall-tcp22.sh retired: they tested the in-cage egress
@@ -693,12 +691,7 @@ _run_all_tests() {
   # (engine-deletion sweep, rip-cage-3vj2 / S4).
   run_pytest "${SCRIPT_DIR}/test_skill_server.py" --with pytest python -m pytest "${SCRIPT_DIR}/test_skill_server.py" -v   # rip-cage-nu91: skill-server MCP shim unit tests
   run_test "${SCRIPT_DIR}/test-rc-reload.sh"             # rip-cage-hhh.4: rc reload snapshot format + diff generalization
-  run_test "${SCRIPT_DIR}/test-up-converge.sh"           # rip-cage-tsf2.9 / rip-cage-y0u0: rc up converge-on-up, DEFAULT-ON for stopped cages (--no-reload opts out; RC_UP_CONVERGE retired)
-  run_test "${SCRIPT_DIR}/test-rc-allowlist.sh"          # rip-cage-hhh.6: rc allowlist add/show/promote + D10 host-side guard
-  run_test "${SCRIPT_DIR}/test-config-verbs.sh"          # rip-cage-tsf2.10.4: rc config set/add/remove surgical write verbs (ADR-021 D8) + allowlist-add delegation
-  run_test "${SCRIPT_DIR}/test-config-effective-view.sh" # rip-cage-tsf2.10.5: manifest_egress loader-contract split (ADR-021 D4) — SEPARATE field, applied/pending source, consumer convergence, requires-rebuild
   run_test "${SCRIPT_DIR}/test-up-msb-egress-config.sh"  # rip-cage-tsf2.8/tsf2.10.5: _up_build_egress_config_json config∪manifest egress union + post-split runtime-invariant regression (r1-F1: was missing from run-host.sh)
-  run_test "${SCRIPT_DIR}/test-default-allowlist.sh"     # rip-cage-o2h0/rip-cage-neu7.1: curated D4 default egress allowlist content (host-only T1-T5; was missing from run-host.sh)
   run_test "${SCRIPT_DIR}/test-ls-mode-source.sh"        # rip-cage-hhh.6: rc ls/doctor mode read from source .rip-cage.yaml not stale label
   run_test "${SCRIPT_DIR}/test-doctor-version-skew.sh"   # rip-cage-2cks: _doctor_bd_version_compare unit tests (host-only, no docker)
   run_test "${SCRIPT_DIR}/test-doctor-dead-mount.sh"     # rip-cage-uben: generic dead-handle detection over single-file bind mounts — stubbed docker, host-only, no live cage needed
@@ -711,10 +704,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-claude-bypass-preaccept.sh"         # rip-cage-k8vi: claude-session-wrapper pre-accepts bypassPermissionsModeAccepted in the writable per-session .claude.json — real wrapper on host via RC_REAL_CLAUDE_BIN stub, host-only, no live cage
   run_test "${SCRIPT_DIR}/test-denial-visibility.sh"     # rip-cage-jlu4: denial-visibility disambiguation (DNS-denial vs secret-violation) — stubbed msb, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-extract-credentials.sh"   # rip-cage-towm: keychain-extraction warning gated on no-usable-existing-creds — security shim + sandboxed HOME, host-only
-  run_test "${SCRIPT_DIR}/test-placeholder-env-file.sh"  # rip-cage-b9to/rip-cage-tsf2.4: auth.placeholder_env_file resolution (Case1-3,5) + phase-awareness call-site probe (Case4, host-only, no docker/msb)
   run_test "${SCRIPT_DIR}/test-doctor-runnability.sh"    # rip-cage-2cks: rc doctor cwd-floor + workspace-resolution live-cage checks (NEEDS_CONTAINER; guards rip-cage-0rng + rip-cage-aq70; schema-error sub-case additionally gated behind RC_DOCTOR_STALE_BD_IMAGE, self-skips visibly otherwise)
-  run_test "${SCRIPT_DIR}/test-dcg-policy.sh"            # rip-cage-hhh.11.2: DCG host-adoptable policy (ADR-025 D1/D5)
-  run_test "${SCRIPT_DIR}/test-auto-seed.sh"             # rip-cage-j86: rc up auto-seeds global config on first run
   run_test "${SCRIPT_DIR}/test-manifest-seed-drift.sh"   # rip-cage-6vt9: manifest seed-drift detection (rc build) + rc manifest reconcile — sibling of rip-cage-jnvb (stale image on resume)
   run_test "${SCRIPT_DIR}/test-pi-cold-start-seed.sh"   # rip-cage-wo9: rc up seeds ~/.pi/agent/auth.json on cold start
   run_test "${SCRIPT_DIR}/test-manifest-schema.sh"       # rip-cage-4c5.1: tool manifest schema/loader (host-only)
@@ -738,13 +728,11 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-mount-mode-e2e.sh"       # rip-cage-wlwc.3: real-cage ro/rw behavioral probes (RE1-RE3; NEEDS_CONTAINER/RC_E2E, self-skips without RC_E2E=1)
   run_test "${SCRIPT_DIR}/test-manifest-multiplexer-validate.sh" # rip-cage-61al.1: MULTIPLEXER archetype validation (T1a-T1m host-only)
   run_test "${SCRIPT_DIR}/test-multiplexer-registry-bake.sh"     # rip-cage-61al.2: MULTIPLEXER registry bake + label + reference reader (T1a-T1g host-only; T2a-T2e self-skip via RC_E2E gate)
-  run_test "${SCRIPT_DIR}/test-multiplexer-config-dynamic.sh"    # rip-cage-61al.4: dynamic session.multiplexer schema + config-validate (T1a-T1e host-only; T2a-T2c self-skip via RC_E2E gate)
   run_test "${SCRIPT_DIR}/test-multiplexer-composable.sh"        # rip-cage-61al.8: composability integration harness — live fakemux e2e + exhaustive grep-guard (G1 host-only; E1a-E1g self-skip via RC_E2E gate)
   # test-mediator-manifest.sh / test-mediator-lifecycle.sh /
   # test-mediator-validator.sh retired: the MEDIATOR archetype + its launch
   # machinery were deleted per ADR-029 D2 (engine-deletion sweep,
   # rip-cage-3vj2 / S4).
-  run_test "${SCRIPT_DIR}/test-credential-mounts.sh"             # rip-cage-seqc.4: config-gated credential mounts — schema / mount-absence / symlink-follow-leaf / fingerprint / extraction-skip / resume-guard (CM1-CM11 host-only)
   run_test "${SCRIPT_DIR}/test-skill-manifest-author.sh" # rip-cage-buuo.4: repo-shipped skill — skill well-formed + cm worked example passes _manifest_validate (SA1-SA7 host-only)
   run_test "${SCRIPT_DIR}/test-claude-concurrency.sh"    # rip-cage-p1p: per-session Claude config isolation (NEEDS_CONTAINER; self-skips if no running cage)
   run_test "${SCRIPT_DIR}/test-claude-json-seed-synthesis.sh" # rip-cage-vwka: R4 seed-synthesis for non-possession postures — synthesized-when-absent, not-clobbered, possession positive control, wrapper WARNING no-longer-fires/genuinely-broken-still-fires (NEEDS_CONTAINER; spins own cages, self-skips without docker/image)
@@ -770,7 +758,6 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-agent-readability.sh"     # rip-cage-7wc: host-side fixture tests for agent *.md readability classification
   run_test "${SCRIPT_DIR}/test-agent-mail-concurrent.sh" # rip-cage-swv: two concurrent pi agents coordinate via am CLI (NEEDS_CONTAINER + RC_E2E)
   run_test "${SCRIPT_DIR}/test-multiplexer-agent-e2e.sh" # rip-cage-w621.7: pi agent through tmux mux surface with >=2 distinct tool invocations (NEEDS_CONTAINER + RC_E2E)
-  run_test "${SCRIPT_DIR}/test-allowed-roots-bypass.sh"  # rip-cage-36j: RC_ALLOWED_ROOTS bypass regression net (symlink/redirect cases)
 
   # rip-cage-9oyh: rc behavior-preservation golden-master harness (baseline
   # captured at HEAD) + §3/§4 seam and gap-fill tests. All container-free
@@ -795,7 +782,6 @@ _run_all_tests() {
   # real `--net-default deny` egress flag, neither of which the retired
   # replica ever modeled) -- no separate helper-level companion needed.
   run_test "${SCRIPT_DIR}/test-up-run-args-e2e.sh"        # §3(i) CRITICAL gate, e2e: real cmd_up through the content-keyed docker+msb shims
-  run_test "${SCRIPT_DIR}/test-up-validate-warning-seam.sh" # §3(iii): RC_VALIDATE_WARNING write (validate_path) -> read (_up_json_output) seam
   run_test "${SCRIPT_DIR}/test-reload-exit-trap-seam.sh"  # §3(vi): cmd_reload's EXIT-trap lock_dir cleanup (golden-master-invisible filesystem effect)
   run_test "${SCRIPT_DIR}/test-generate-dockerfile.sh"    # §4 gap-fill: rc generate-dockerfile (bundled + from-source structural assertions)
   run_test "${SCRIPT_DIR}/test-build-msb-load.sh"         # rip-cage-7dkq (S1, msb migration): _build_msb_load unit tests (fake docker+msb PATH shims, host-only, no live daemon)
@@ -804,7 +790,6 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-msb-boot-smoke.sh"         # rip-cage-7dkq (S1, msb migration): effect-based docker-save->msb-load->boot->in-guest-exec smoke root + negative control (NEEDS_CONTAINER+NEEDS_MSB; self-skips without docker/msb/pre-built image)
   run_test "${SCRIPT_DIR}/test-rc-setup.sh"               # §4 gap-fill: rc setup idempotency (zsh/bash, relaxed eval-line match)
   run_test "${SCRIPT_DIR}/test-manifest-reconcile-verb.sh" # §4 gap-fill: rc manifest reconcile backup-before-overwrite + validation-abort
-  run_test "${SCRIPT_DIR}/test-rc-install.sh"             # §4 gap-fill: rc install idempotency + --yes/--force/no-TTY matrix
   run_test "${SCRIPT_DIR}/test-attach-exec-errors.sh"     # §4 gap-fill: attach/exec error-path matrix
 
   # rip-cage-b6ia: previously-dark test files, audited 2026-06-09 and wired.
@@ -812,15 +797,11 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-bd-host-preflight.sh"    # _bd_host_preflight dolt-server preflight helper (host-only)
   run_test "${SCRIPT_DIR}/test-container-name.sh"       # rip-cage-a0h item (c): container_name() collision-hash disambiguation regression — docker PATH-shim + real cmd_up --dry-run, host-only
   run_test "${SCRIPT_DIR}/test-lfs-warning.sh"          # rc --dry-run up LFS pointer-stub scan + silent-exit-1 regression
-  run_test "${SCRIPT_DIR}/test-denylist-matching.sh"    # _check_secret_path_denylist component-match (unsets RC_CONFIG_GLOBAL per driver-fixture trap)
   run_test "${SCRIPT_DIR}/test-pi-substrate-mounts.sh"  # rip-cage-kstk: pi substrate projection mount args + denylist + init symlinks + floor-protection
   run_test "${SCRIPT_DIR}/test-symlink-follow.sh"       # symlink-follow scanner + fingerprint + denylist gating (unsets RC_CONFIG_GLOBAL)
-  run_test "${SCRIPT_DIR}/test-config-loader.sh"        # layered config additive/select merge + provenance matrix (unsets RC_CONFIG_GLOBAL)
-  run_test "${SCRIPT_DIR}/test-config-ro-mount.sh"      # rip-cage-cw51: .rip-cage.yaml ro shadow-mount (ADR-021 D7) — schema + mount-arg + label-lock (unsets RC_CONFIG_GLOBAL)
   run_test "${SCRIPT_DIR}/test-dcg-demotion.sh"          # rip-cage-wlwc.10: dcg demoted from base image to composable recipe (DS1-DS4 host-only structural; DB1-DB2 RC_E2E-gated)
   run_test "${SCRIPT_DIR}/test-mount-seam-integration.sh" # rip-cage-wlwc.6: integration harness capstone (SI1-SI6 host-only Tier-1; SE1-SE5 self-skip via RC_E2E gate)
   run_test "${SCRIPT_DIR}/test-image-drift-resume.sh"    # rip-cage-jnvb: rc up image-ID drift guard on resume — full-rc-through-fake-docker-shim T1-T6, host-only, no live container needed
-  run_test "${SCRIPT_DIR}/test-dry-run-resume-guards.sh" # rip-cage-3y9g: rc up --dry-run runs the same _up_resolve_resume_* guard set/order as a real resume (P1a/P1b parity + B1 behavioral), host-only
   run_test "${SCRIPT_DIR}/test-doctor-json-doc.sh"       # rip-cage-bbjn: rc doctor --output json top-level field set derived from cli/doctor.sh vs documented in docs/reference/cli-reference.md, both directions, host-only static check
   run_test "${SCRIPT_DIR}/test-adr-evolution-notes.sh"  # rip-cage-ely4.8: every decision ADR-031 evolves/honors/retires cites ADR-031 in place, and INDEX.md lists it; host-only static check over docs/decisions/
   # Container-tier (NEEDS_CONTAINER above; self-skip under --host-only, run on full invocation):

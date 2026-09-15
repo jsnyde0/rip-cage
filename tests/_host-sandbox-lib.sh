@@ -122,16 +122,14 @@ _HOST_SANDBOX_CFG_DIR=""
 _host_sandbox_setup() {
   _HOST_SANDBOX_CFG_DIR=$(mktemp -d)
   mkdir -p "${_HOST_SANDBOX_CFG_DIR}/rip-cage"
-  cat > "${_HOST_SANDBOX_CFG_DIR}/rip-cage/config.yaml" <<'YAML'
-version: 2
-mounts:
-  denylist: []
-  allow_risky: null
-YAML
   # Empty tools.yaml: seeded once at sandbox-setup level; zero-byte = default bundled stack.
   touch "${_HOST_SANDBOX_CFG_DIR}/rip-cage/tools.yaml"
 
-  export RC_CONFIG_GLOBAL="${RC_CONFIG_GLOBAL:-${_HOST_SANDBOX_CFG_DIR}/rip-cage/config.yaml}"
+  # No config.yaml / RC_CONFIG_GLOBAL to seed here: the rip-cage config schema
+  # (global config.yaml, RC_CONFIG_GLOBAL) retired per ADR-031 D2 in favor of
+  # one native msb --conf file per project plus the shipped protected-paths
+  # floor (rip-cage-ely4.9).
+
   # XDG_CONFIG_HOME: default to the sandbox dir so rc invocations without an explicit
   # HOME/XDG sandbox read from this fixture. Tests that set HOME+XDG_CONFIG_HOME
   # explicitly in their subprocess calls (all test-manifest-*.sh) override this.

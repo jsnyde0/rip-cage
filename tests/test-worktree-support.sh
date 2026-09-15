@@ -49,9 +49,11 @@ check "Rejects control characters in .git file content" \
 check "Distinguishes worktrees from submodules via /worktrees/ path" \
   "$(grep_check '"/worktrees/"')"
 
-# Test 5: RC_ALLOWED_ROOTS validation for main git dir
-check "Validates main .git/ against RC_ALLOWED_ROOTS" \
-  "$(grep_check '_path_under_allowed_roots.*resolved_git_dir')"
+# Test 5 (RETIRED, rip-cage-ely4.9 / ADR-003-agent-friendly-cli.md D3): used to
+# assert cmd_up validated the main .git dir against RC_ALLOWED_ROOTS via
+# _path_under_allowed_roots. That guard is deleted whole (mounts are explicit
+# lines now) -- cli/up.sh's resolved_git_dir is realpath'd and used directly,
+# with no allowed-roots check left to assert on.
 
 # Test 6: Sets wt_name from basename of gitdir
 check "Sets wt_name from basename of host_gitdir" \
@@ -180,9 +182,10 @@ check "Auto-redirect checks for absence of dolt/ dir" \
 check "Auto-redirect checks for absence of embeddeddolt/ dir" \
   "$(awk '/Resolve beads redirect/,/Determine beads storage mode/' "$RC_FILE" | grep -q 'embeddeddolt' && echo true || echo false)"
 
-# Test 28: Auto-redirect validates against RC_ALLOWED_ROOTS (ADR-003 D3)
-check "Auto-redirect validates resolved main beads dir against allowed roots" \
-  "$(awk '/Resolve beads redirect/,/Determine beads storage mode/' "$RC_FILE" | grep -qE '_path_under_allowed_roots.*resolved_main_beads' && echo true || echo false)"
+# Test 28 (RETIRED, rip-cage-ely4.9 / ADR-003-agent-friendly-cli.md D3): used
+# to assert the auto-redirect path validated resolved_main_beads against
+# RC_ALLOWED_ROOTS via _path_under_allowed_roots. Both the guard and the
+# function are deleted whole -- nothing left to assert on.
 
 # Test 29: Auto-redirect uses the same mount mechanism as explicit redirect
 check "Auto-redirect mounts main repo .beads/ over /workspace/.beads" \
@@ -196,9 +199,11 @@ check "Auto-redirect applies realpath to main_beads_dir" \
 check "Auto-redirect warns when main .beads/ not found" \
   "$(awk '/Resolve beads redirect/,/Determine beads storage mode/' "$RC_FILE" | grep -qE 'Warning.*main repo .beads.*not found' && echo true || echo false)"
 
-# Test 29d: Auto-redirect logs warning when main .beads/ outside allowed roots
-check "Auto-redirect warns when main .beads/ outside allowed roots" \
-  "$(awk '/Resolve beads redirect/,/Determine beads storage mode/' "$RC_FILE" | grep -qE 'Warning.*outside RC_ALLOWED_ROOTS' && echo true || echo false)"
+# Test 29d (RETIRED, rip-cage-ely4.9 / ADR-003-agent-friendly-cli.md D3): used
+# to assert a "Warning...outside RC_ALLOWED_ROOTS" log line existed for the
+# auto-redirect path. The allowed-roots guard (and its warning text) is
+# deleted whole -- only the "main repo .beads/ not found" warning (Test 29c,
+# above) remains.
 
 # Test 30: Explicit .beads/redirect still takes precedence (elif branch)
 check "Explicit .beads/redirect has precedence (elif branch for auto)" \

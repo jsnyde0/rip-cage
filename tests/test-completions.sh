@@ -63,28 +63,28 @@ else
   fail "rc completions fish leaked to stdout: $stdout"
 fi
 
-# --- Subcommand sync: zsh completions must list all commands in schema ---
-# Parse schema JSON via rc schema to get canonical command list
+# --- Subcommand sync: zsh completions must list all commands rc dispatches ---
+# `rc schema` retired with the rip-cage config schema (rip-cage-ely4.9 /
+# ADR-031 D2 / ADR-003-agent-friendly-cli.md D5), so the canonical command
+# list is now read straight from rc's own "Main dispatch" case statement
+# instead of a schema JSON dump -- same ground truth (the verbs rc actually
+# dispatches), one seam closer to the source. __bd-*-test entries are
+# internal test hooks, not user-facing verbs, so they're excluded.
 
-schema_cmds=$("$RC" schema 2>/dev/null | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-for cmd in sorted(d['commands'].keys()):
-    print(cmd)
-")
+dispatch_cmds=$(awk '/^# Main dispatch/,0' "$RC" | grep -oE '^\s*[a-zA-Z][a-zA-Z0-9_-]*\)' | sed 's/^[[:space:]]*//;s/)$//' | grep -v '^__')
 
 missing=0
 while IFS= read -r cmd; do
   if ! "$RC" completions zsh 2>/dev/null | grep -q "'${cmd}:"; then
-    fail "subcommand sync: '$cmd' in schema but missing from zsh completions"
+    fail "subcommand sync: '$cmd' in rc's dispatch but missing from zsh completions"
     missing=$((missing + 1))
   fi
-done <<< "$schema_cmds"
+done <<< "$dispatch_cmds"
 if [[ $missing -eq 0 ]]; then
-  pass "subcommand sync: all schema commands present in zsh completions"
+  pass "subcommand sync: all dispatched commands present in zsh completions"
 fi
 
-# --- Subcommand sync: bash completions must list all commands in schema ---
+# --- Subcommand sync: bash completions must list all commands rc dispatches ---
 # Extract static subcommand list from the COMPREPLY line in completions/rc.bash
 
 bash_cmds=$(grep 'local subcommands=' "${SCRIPT_DIR}/../completions/rc.bash" | sed 's/.*subcommands="\([^"]*\)".*/\1/' | tr ' ' '\n' | sort)
@@ -92,12 +92,12 @@ bash_cmds=$(grep 'local subcommands=' "${SCRIPT_DIR}/../completions/rc.bash" | s
 missing=0
 while IFS= read -r cmd; do
   if ! echo "$bash_cmds" | grep -qx "$cmd"; then
-    fail "subcommand sync: '$cmd' in schema but missing from bash completions"
+    fail "subcommand sync: '$cmd' in rc's dispatch but missing from bash completions"
     missing=$((missing + 1))
   fi
-done <<< "$schema_cmds"
+done <<< "$dispatch_cmds"
 if [[ $missing -eq 0 ]]; then
-  pass "subcommand sync: all schema commands present in bash completions"
+  pass "subcommand sync: all dispatched commands present in bash completions"
 fi
 
 # --- rip-cage-tsf2.5: cage-name completion must not shell out to `docker ps` ---
@@ -174,12 +174,17 @@ else
 fi
 rm -rf "$tmpdir"
 
-# --- rc schema includes setup ---
+# --- rc dispatches setup ---
+# `rc schema` retired with the rip-cage config schema (rip-cage-ely4.9 /
+# ADR-031 D2) -- setup's presence is already covered by the dispatch-derived
+# subcommand-sync checks above (dispatch_cmds), so this is now a direct,
+# narrower check on rc's own dispatch case statement (see rc's "Main
+# dispatch" comment).
 
-if "$RC" schema 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'setup' in d['commands']"; then
-  pass "rc schema includes setup"
+if printf '%s\n' "$dispatch_cmds" | grep -qx "setup"; then
+  pass "rc dispatches setup"
 else
-  fail "rc schema missing setup"
+  fail "rc does not dispatch setup"
 fi
 
 # --- Summary ---

@@ -209,16 +209,23 @@ done
 rm -rf "$FAKE_MSB_BIN"
 
 # -----------------------------------------------
-# Test 5: rc schema (no docker needed) does NOT trigger docker check
+# Test 5: rc completions (no docker needed) does NOT trigger docker check
 # -----------------------------------------------
+# `rc schema` (the original docker-independent verb this smoke used) retired
+# with the rip-cage config schema (rip-cage-ely4.9 / ADR-031 D2). `rc
+# completions bash` is the replacement: like schema, it is dispatched without
+# ever reaching the check_docker/check_msb preflight case block in rc (see
+# rc's "prerequisite checks" comment above the "Main dispatch" case), so it
+# proves the same thing -- a verb that needs neither docker nor msb still
+# works against the fake, daemon-not-running docker on PATH.
 echo ""
-echo "=== Test 5: rc schema does not require docker ==="
+echo "=== Test 5: rc completions does not require docker ==="
 
-output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" schema 2>&1 || true)
-if echo "$output" | grep -q '"version"'; then
-  pass "rc schema works without docker daemon"
+output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" completions bash 2>&1 || true)
+if echo "$output" | grep -q '_rc_complete'; then
+  pass "rc completions works without docker daemon"
 else
-  fail "rc schema should work without docker daemon" "$output"
+  fail "rc completions should work without docker daemon" "$output"
 fi
 
 # -----------------------------------------------

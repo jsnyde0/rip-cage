@@ -9,7 +9,6 @@ set -u
 GM_CASES=(
   usage_no_args
   usage_unknown_verb
-  schema
   completions_zsh
   completions_bash
   completions_missing_shell
@@ -41,13 +40,8 @@ GM_CASES=(
   ls_human_empty
   ls_json_empty
   ls_human_populated
-  config_show_yaml
-  config_show_json
-  config_get_raw
-  config_init_no_ssh_detected
   doctor_host
   manifest_reconcile
-  install_yes
   setup_zsh_first_run
   setup_bash_first_run
   setup_fish_unsupported
@@ -58,9 +52,6 @@ GM_CASES=(
   exec_extra_arg_before_separator
   exec_not_running_human
   exec_not_running_json
-  allowlist_add_new
-  allowlist_add_skip_existing
-  allowlist_show_effective
   auth_refresh_human
   auth_refresh_json
 )
@@ -76,9 +67,11 @@ case_flag_output_json_unsupported_verb_setup() { gm_capture --output json setup;
 case_flag_output_json_unsupported_verb_attach() { gm_capture --output json attach; }
 case_version_flag() { gm_capture --version; }
 
-# --- schema / completions ---------------------------------------------------
+# --- completions -------------------------------------------------------------
+# `rc schema` retired with the rip-cage config schema (rip-cage-ely4.9 /
+# ADR-031 D2 / ADR-003-agent-friendly-cli.md D5) -- the `case_schema` golden-
+# master case that lived here is gone with it.
 
-case_schema() { gm_capture schema; }
 case_completions_zsh() { gm_capture completions zsh; }
 case_completions_bash() { gm_capture completions bash; }
 case_completions_missing_shell() { gm_capture completions; }
@@ -207,17 +200,10 @@ case_ls_human_populated() {
     gm_capture ls
 }
 
-# --- config show/get/init ----------------------------------------------
-
-case_config_show_yaml() { gm_capture config show "$GM_WS"; }
-case_config_show_json() { gm_capture config show "$GM_WS" --json; }
-case_config_get_raw() { gm_capture config get mounts.denylist "$GM_WS"; }
-
-case_config_init_no_ssh_detected() {
-  # No .ssh dir / no git remotes in the fixture workspace -> the
-  # deterministic "nothing to lock down" early-exit branch.
-  gm_capture_in "$GM_WS" config init
-}
+# `rc config show`/`rc config get`/`rc config init` retired with the rip-cage
+# config schema (rip-cage-ely4.9 / ADR-031 D2) -- the case_config_show_yaml /
+# case_config_show_json / case_config_get_raw / case_config_init_no_ssh_detected
+# golden-master cases that lived here are gone with them.
 
 # --- doctor --host -------------------------------------------------------
 
@@ -241,12 +227,9 @@ YAML
   gm_capture manifest reconcile
 }
 
-# --- install --yes -------------------------------------------------------
-
-case_install_yes() {
-  rm -f "${GM_XDG}/rip-cage/config.yaml"
-  gm_capture install --yes
-}
+# `rc install` retired with the rip-cage config schema (rip-cage-ely4.9 /
+# ADR-031 D2) -- the case_install_yes golden-master case that lived here is
+# gone with it.
 
 # --- setup (zsh/bash/fish/unset) ------------------------------------------
 
@@ -298,23 +281,11 @@ case_exec_not_running_json() {
   GM_DOCKER_STATE=absent gm_capture --output json exec some-cage -- echo hi
 }
 
-# --- allowlist show/add --------------------------------------------------
-
-case_allowlist_add_new() {
-  gm_capture allowlist add example.com "--config-file=${GM_WS}/.rip-cage.yaml"
-}
-
-case_allowlist_add_skip_existing() {
-  mkdir -p "$GM_WS"
-  printf 'version: 2\nnetwork:\n  allowed_hosts:\n    - example.com\n' > "${GM_WS}/.rip-cage.yaml"
-  gm_capture --output json allowlist add example.com "--config-file=${GM_WS}/.rip-cage.yaml"
-}
-
-case_allowlist_show_effective() {
-  mkdir -p "$GM_WS"
-  printf 'version: 2\nnetwork:\n  allowed_hosts:\n    - example.com\n' > "${GM_WS}/.rip-cage.yaml"
-  gm_capture allowlist show --effective "--config-file=${GM_WS}/.rip-cage.yaml"
-}
+# `rc allowlist` retired with the rip-cage config schema (rip-cage-ely4.9 /
+# ADR-031 D2 -- adding an egress host is now a line in the project's native
+# msb --conf file, then `rc up --replace`) -- the case_allowlist_add_new /
+# case_allowlist_add_skip_existing / case_allowlist_show_effective
+# golden-master cases that lived here are gone with it.
 
 # --- auth refresh (non-macOS path; lib/fake-bin/uname always reports
 # Linux -- see rip-cage-5fsy in .claude/verification.md) ------------------------
