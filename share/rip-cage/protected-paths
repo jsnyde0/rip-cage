@@ -1,0 +1,68 @@
+# rip-cage protected paths — the mount-side containment floor (ADR-031 D2/D5(d)).
+#
+# WHERE rc READS THIS FROM: `rc up` takes the first of $RC_PROTECTED_PATHS,
+# ~/.config/rip-cage/protected-paths, then this shipped default beside the rc
+# script itself (<rc install dir>/share/rip-cage/protected-paths) — always a
+# host-side path outside every cage mount, never a path a caged agent can edit.
+#
+# This is DEFAULT CONFIGURATION, not code. Copy it to
+# ~/.config/rip-cage/protected-paths and edit it there; a new credential store
+# is a line in your copy, never an `rc` change.
+#
+# WHAT rc DOES WITH EACH LINE — one name per line, matched by exact path
+# COMPONENT (not a glob, not a substring):
+#
+#   (a) a cage config that mounts a listed path DIRECTLY makes `rc up` refuse
+#       to launch, before any msb call;
+#   (b) a listed path found INSIDE a mounted tree is auto-covered — a file with
+#       an empty read-only file mount, a directory with an empty tmpfs mount —
+#       so the cage sees the name but none of the content;
+#   (c) if this file cannot be read, `rc up` aborts before any msb call. There
+#       is no fail-open path and no opt-out.
+#
+# If a cover cannot be expressed for an entry, `rc up` refuses rather than
+# launching uncovered.
+#
+# SCAN DEPTH: the (b) scan walks each mounted tree to a bounded depth
+# (RC_PROTECTED_SCAN_DEPTH, default 2) — deep enough for a credential at a
+# project root or one level into a monorepo package, shallow enough that
+# mounting a large tree does not stall every launch. Depth is a latency
+# tradeoff, not a claim of exhaustive reach.
+#
+# Blank lines and lines starting with '#' are ignored. Leading/trailing
+# whitespace is stripped.
+
+# --- SSH ---------------------------------------------------------------
+.ssh
+id_rsa
+id_ed25519
+id_ecdsa
+private_key
+
+# --- Cloud providers ---------------------------------------------------
+.aws
+.azure
+.gcloud
+.kube
+.docker
+
+# --- Signing and package registries ------------------------------------
+.gnupg
+.gpg
+.netrc
+.npmrc
+.pypirc
+
+# --- Generic credential files ------------------------------------------
+credentials
+.secret
+
+# --- Environment files -------------------------------------------------
+# ADR-023 D4 kept .env OUT of the old denylist because the only response
+# available then was a refusal, and refusing every project that carries a .env
+# would have been hostile to normal work. Under ADR-031 D2 a .env inside a
+# mounted tree is auto-covered instead of refused, so the cost of listing it is
+# an empty file where a secret used to be — not a blocked launch.
+.env
+.env.local
+.envrc

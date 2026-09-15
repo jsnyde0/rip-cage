@@ -1,0 +1,105 @@
+# rip-cage project config — a native microsandbox (msb) `--conf` file.
+#
+# WHERE rc READS THIS FROM: `rc up` takes the first of `rc up --conf <path>`,
+# $RC_CAGE_CONF, then ~/.config/rip-cage/projects/<cage-name>.yaml — always a
+# host-side path outside every cage mount, never a path a caged agent can edit.
+# This TEMPLATE ships beside the rc script itself
+# (<rc install dir>/share/rip-cage/cage.yaml.template); copy it, fill in the
+# <ANGLE-BRACKET> placeholders, and save it under that projects/ directory.
+# The `cage-config` skill does the copying and editing — rc never writes it.
+#
+# THIS FILE IS THE WHOLE PROJECT CONFIG (ADR-031 D2). It carries its lists in
+# full and `rc` merges nothing: msb overlays two `--conf` files per FIELD but
+# REPLACES lists, so a defaults file plus a project overlay would silently drop
+# the session mounts and the allowlist. One file, lists complete.
+#
+# WHAT rc ADDS AT LAUNCH, because no config file can hold it: --name,
+# --log-level trace, --replace, the keychain -> --secret credential bridge, the
+# read-only parent mounts computed from your skill symlinks, and the
+# protected-paths covers. Everything else belongs here.
+#
+# Every host path must be ABSOLUTE and must not traverse a symlink: msb does
+# not follow a host-side symlink in a bind source, and the mount fails at boot
+# rather than at validation (on macOS, write /private/tmp/..., never /tmp/...).
+
+# --- image and resources -----------------------------------------------
+# `image:` selects the image. rc does not pass an image argument.
+image: rip-cage:latest
+cpus: 2
+memory: 4G
+workdir: /workspace
+
+labels:
+  rc.managed: "true"
+
+# --- mounts -------------------------------------------------------------
+# Form: "HOST_PATH:GUEST_PATH[:ro]".
+mounts:
+  # The project itself. File changes sync both ways, live.
+  - "<ABSOLUTE_PATH_TO_YOUR_PROJECT>:/workspace"
+
+  # THE TWO LINES THAT MAKE A CLAUDE SESSION SURVIVE A COLD RECREATE.
+  # Adding a host to the allowlist below recreates the cage; without these
+  # mounts the running session is gone with it.
+  - "<ABSOLUTE_PATH_TO_YOUR_HOME>/.claude/projects:/home/agent/.claude/projects"
+  - "<ABSOLUTE_PATH_TO_YOUR_HOME>/.claude/sessions:/home/agent/.claude/sessions"
+
+  # Host skills, read-only. rc adds the extra read-only parent mounts that any
+  # SYMLINKED skill target needs; this line covers the skills directory itself.
+  - "<ABSOLUTE_PATH_TO_YOUR_HOME>/.claude/skills:/home/agent/.claude/skills:ro"
+
+  # --- named volumes (map form) ------------------------------------------
+  # State msb owns rather than the host filesystem. `create: ensure-exists`
+  # makes the volume during `msb create`, so a fresh machine needs no setup.
+  # Substitute your cage name for <CAGE-NAME> in the two per-cage volumes;
+  # rc-mise-cache is deliberately shared across cages.
+  - named: "rc-state-<CAGE-NAME>"
+    target: /home/agent/.claude-state
+    create: ensure-exists
+  - named: "rc-history-<CAGE-NAME>"
+    target: /commandhistory
+    create: ensure-exists
+  - named: "rc-mise-cache"
+    target: /home/agent/.local/share/mise
+    create: ensure-exists
+
+  # --- secret covers (ADR-030 class-C masking, as plain config) ----------
+  # An empty read-only file mounted over a secret the cage has no business
+  # reading. The cage sees the name and zero bytes. Point the source at any
+  # empty file you keep for the purpose.
+  #
+  # These are BELT AND BRACES: rc's protected-paths rule already auto-covers
+  # the names in share/rip-cage/protected-paths. Declare a line here for a
+  # secret whose name is NOT on that list and is specific to this project.
+  #
+  # - "<ABSOLUTE_PATH_TO_AN_EMPTY_FILE>:/workspace/config/local-secrets.toml:ro"
+
+# --- egress --------------------------------------------------------------
+# `policy: none` is msb's default-DENY: nothing leaves the cage except the
+# hosts named below. Each entry uses the port-443 convention
+# "<host>:tcp:443" — name the port, never leave it open.
+#
+# When the cage hits a denied host, `rc doctor <cage>` mines the trace log and
+# prints the exact line to add here. Add it, then `rc up --replace <project>`.
+network:
+  policy: none
+  allow:
+    # Claude Code itself. Without this the agent cannot talk to anything.
+    - "api.anthropic.com:tcp:443"
+    - "mcp-proxy.anthropic.com:tcp:443"
+    - "http-intake.logs.us5.datadoghq.com:tcp:443"
+
+    # Git over HTTPS, and the package registries a coding agent reaches for.
+    - "github.com:tcp:443"
+    - "api.github.com:tcp:443"
+    - "objects.githubusercontent.com:tcp:443"
+    - "codeload.github.com:tcp:443"
+    - "registry.npmjs.org:tcp:443"
+    - "pypi.org:tcp:443"
+    - "files.pythonhosted.org:tcp:443"
+    - "proxy.golang.org:tcp:443"
+    - "crates.io:tcp:443"
+    - "static.crates.io:tcp:443"
+
+    # Beads sync (Dolt remote), if this project tracks work in beads.
+    - "doltremoteapi.dolthub.com:tcp:443"
