@@ -36,6 +36,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 FAILURES=0
 TEST_HOME=""
 STUB_DIR=""
@@ -210,7 +213,7 @@ test_t2_disambiguation_fires() {
   local out exit_code=0
   out=$(PATH="${STUB_DIR}:${PATH}" \
     HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    RC_ALLOWED_ROOTS="$WS_B" \
+    RC_CAGE_CONF="$(cage_conf_for "$WS_B")" \
     CN_EXISTING_NAME="$base_name" CN_EXISTING_PATH="$WS_A" \
     "$RC" --output json --dry-run up "$WS_B" 2>&1) || exit_code=$?
 
@@ -235,64 +238,49 @@ test_t2_disambiguation_fires() {
 }
 
 # ===========================================================================
-# T3 — the resulting rc-state-<name> / rc-history-<name> volume mount args
-# (as produced by the REAL _up_prepare_docker_mounts) are distinct for
-# project A's name ("proj-foo") and project B's disambiguated name (from T2).
+# T3 — per-cage state volumes are KEYED ON THE CAGE NAME, so two colliding
+# projects cannot share them.
+#
+# RE-POINTED TWICE by rip-cage-ely4.9, and the second move is the honest one.
+# This case used to read volume flags out of _up_prepare_docker_mounts. rc no
+# longer emits them: spike rip-cage-ely4.16 Q4 measured msb 0.6.18 accepting a
+# named volume in a --conf file, so the shipped template declares them and the
+# launcher generates nothing (ADR-031 D2). The obvious replacement — assert on
+# `rc destroy --dry-run` — does not work: destroy refuses a cage that does not
+# exist, and standing up two real cages to check a naming rule is a live-cage
+# cost this host-only suite should not pay.
+#
+# So the assertion lands on the shipped template, which is where the keying
+# decision now lives. This is NOT a restatement of T2: T2 proves rc derives
+# distinct NAMES, and this proves the template spends those names on the
+# volumes, which is the step that makes the state actually separate. The
+# regression it catches is real and quiet — a template edit that hardcodes
+# `rc-state-cage` would give every project one shared state volume, and
+# nothing else in the suite would notice.
 # ===========================================================================
 test_t3_distinct_state_history_volumes() {
-  if [[ -z "$NAME_B_DISAMBIGUATED" ]]; then
-    fail "T3" "distinct rc-state-*/rc-history-* volumes" "skipped: T2 did not produce a disambiguated name"
+  local template="${REPO_ROOT}/share/rip-cage/cage.yaml.template"
+
+  if [[ ! -f "$template" ]]; then
+    fail "T3" "per-cage volume keying" "shipped template not found at $template"
     return
   fi
 
-  setup_sandbox
+  local state_keyed history_keyed mise_keyed
+  state_keyed=$(grep -c 'named: "rc-state-<CAGE-NAME>"' "$template" || true)
+  history_keyed=$(grep -c 'named: "rc-history-<CAGE-NAME>"' "$template" || true)
+  # rc-mise-cache is deliberately NOT keyed: a package cache is safe to share
+  # across cages and re-downloading it per project is pure waste. Asserting its
+  # ABSENCE from the keyed set is what stops this check from passing by a blanket
+  # "every volume has a placeholder" rule that would miss the real distinction.
+  mise_keyed=$(grep -c 'named: "rc-mise-cache-<CAGE-NAME>"' "$template" || true)
 
-  local name_a="proj-foo"
-  local name_b="$NAME_B_DISAMBIGUATED"
-
-  local mounts_a mounts_b
-  mounts_a=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
-    source '$RC'
-    _UP_RUN_ARGS=()
-    wt_detected=false
-    _up_prepare_docker_mounts '$WS_A' '$name_a'
-    _prev=''
-    for a in \"\${_UP_RUN_ARGS[@]}\"; do
-      [[ \"\$_prev\" == '-v' ]] && echo \"MOUNT: \$a\"
-      _prev=\"\$a\"
-    done
-  " 2>/dev/null)
-  mounts_b=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
-    source '$RC'
-    _UP_RUN_ARGS=()
-    wt_detected=false
-    _up_prepare_docker_mounts '$WS_B' '$name_b'
-    _prev=''
-    for a in \"\${_UP_RUN_ARGS[@]}\"; do
-      [[ \"\$_prev\" == '-v' ]] && echo \"MOUNT: \$a\"
-      _prev=\"\$a\"
-    done
-  " 2>/dev/null)
-
-  local state_a state_b history_a history_b
-  state_a=$(echo "$mounts_a" | grep -c "rc-state-${name_a}:" || true)
-  state_b=$(echo "$mounts_b" | grep -c "rc-state-${name_b}:" || true)
-  history_a=$(echo "$mounts_a" | grep -c "rc-history-${name_a}:" || true)
-  history_b=$(echo "$mounts_b" | grep -c "rc-history-${name_b}:" || true)
-
-  local cross_a cross_b
-  cross_a=$(echo "$mounts_a" | grep -c "rc-state-${name_b}:" || true)
-  cross_b=$(echo "$mounts_b" | grep -c "rc-state-${name_a}:" || true)
-
-  if [[ "$state_a" -gt 0 && "$state_b" -gt 0 && "$history_a" -gt 0 && "$history_b" -gt 0 \
-     && "$cross_a" -eq 0 && "$cross_b" -eq 0 && "$name_a" != "$name_b" ]]; then
-    pass "T3" "rc-state-*/rc-history-* volumes distinct: A='rc-state-${name_a}' B='rc-state-${name_b}'"
+  if [[ "$state_keyed" -gt 0 && "$history_keyed" -gt 0 && "$mise_keyed" -eq 0 ]]; then
+    pass "T3" "template keys rc-state/rc-history on the cage name; rc-mise-cache stays shared"
   else
-    fail "T3" "distinct rc-state-*/rc-history-* volumes" \
-      "name_a=$name_a name_b=$name_b state_a=$state_a state_b=$state_b history_a=$history_a history_b=$history_b mounts_a=$mounts_a mounts_b=$mounts_b"
+    fail "T3" "per-cage volume keying in the shipped template" \
+      "state_keyed=$state_keyed history_keyed=$history_keyed mise_keyed=$mise_keyed template=$template"
   fi
-
-  teardown_sandbox
 }
 
 # ---------------------------------------------------------------------------

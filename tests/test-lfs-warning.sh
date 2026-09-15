@@ -7,6 +7,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
 FAILURES=0
 
 pass() { echo "PASS: $1"; }
@@ -33,12 +35,13 @@ EOF
 }
 
 run_rc_up_dry() {
-  # Run `rc up --dry-run` and capture stderr. Use RC_ALLOWED_ROOTS so validate_path
-  # doesn't TTY-prompt. Tolerate non-zero exit (image-build path); we only want stderr.
+  # Run `rc up --dry-run` and capture stderr. The scratch project needs a
+  # native cage config or rc refuses before it ever reaches the LFS check
+  # (ADR-031 D2). Tolerate non-zero exit (image-build path); we only want stderr.
   local dir="$1"
-  local parent
-  parent=$(dirname "$dir")
-  { RC_ALLOWED_ROOTS="$parent" "$RC" --dry-run up "$dir" >/dev/null; } 2>&1 || true
+  local conf
+  conf=$(cage_conf_for "$dir")
+  { RC_CAGE_CONF="$conf" "$RC" --dry-run up "$dir" >/dev/null; } 2>&1 || true
 }
 
 # --- Test 1: LFS repo with stub file → warning fires ---
@@ -126,7 +129,7 @@ EOF
 echo "not-an-lfs-pointer" > "$TEST_DIR/small1.txt"
 echo "also-not-lfs" > "$TEST_DIR/small2.txt"
 parent=$(dirname "$TEST_DIR")
-RC_ALLOWED_ROOTS="$parent" "$RC" --dry-run up "$TEST_DIR" >/dev/null 2>&1
+RC_CAGE_CONF="$(cage_conf_for "$TEST_DIR")" "$RC" --dry-run up "$TEST_DIR" >/dev/null 2>&1
 rc=$?
 if [[ $rc -eq 0 ]]; then
   pass "rc up --dry-run exited 0"

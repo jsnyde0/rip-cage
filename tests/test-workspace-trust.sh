@@ -14,6 +14,16 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RC="${SCRIPT_DIR}/../rc"
+
+# This suite sandboxes HOME so rc reads a fixture config tree. Docker resolves
+# its CONTEXT through $HOME/.docker, so a sandboxed HOME makes `docker info`
+# fail and every case below reports a daemon error instead of testing workspace
+# trust. Point DOCKER_CONFIG at the real one: the isolation this suite needs is
+# over rip-cage's own config, not over the container runtime.
+RC_TEST_REAL_DOCKER_CONFIG="${DOCKER_CONFIG:-${HOME}/.docker}"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 FAILURES=0
 TEST_TMPDIR=""
 
@@ -62,9 +72,10 @@ test_a_no_settings_json_ok() {
   local exit_code=0
   stderr_out=$(
     HOME="$TEST_HOME" \
+    DOCKER_CONFIG="${RC_TEST_REAL_DOCKER_CONFIG}" \
     XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
-    RC_ALLOWED_ROOTS="${TEST_WS}" \
+    RC_CAGE_CONF="$(cage_conf_for "${TEST_WS}")" \
     bash "$RC" up --dry-run "$TEST_WS" 2>&1 >/dev/null
   ) || exit_code=$?
 
@@ -100,9 +111,10 @@ JSON
   local exit_code=0
   stderr_out=$(
     HOME="$TEST_HOME" \
+    DOCKER_CONFIG="${RC_TEST_REAL_DOCKER_CONFIG}" \
     XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
-    RC_ALLOWED_ROOTS="${TEST_WS}" \
+    RC_CAGE_CONF="$(cage_conf_for "${TEST_WS}")" \
     bash "$RC" up --dry-run "$TEST_WS" 2>&1 >/dev/null
   ) || exit_code=$?
 
@@ -134,9 +146,10 @@ JSON
   local exit_code=0
   stderr_out=$(
     HOME="$TEST_HOME" \
+    DOCKER_CONFIG="${RC_TEST_REAL_DOCKER_CONFIG}" \
     XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
-    RC_ALLOWED_ROOTS="${TEST_WS}" \
+    RC_CAGE_CONF="$(cage_conf_for "${TEST_WS}")" \
     bash "$RC" up --dry-run "$TEST_WS" 2>&1 >/dev/null
   ) || exit_code=$?
 
@@ -170,9 +183,10 @@ JSON
   local exit_code=0
   stderr_out=$(
     HOME="$TEST_HOME" \
+    DOCKER_CONFIG="${RC_TEST_REAL_DOCKER_CONFIG}" \
     XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
-    RC_ALLOWED_ROOTS="${TEST_WS}" \
+    RC_CAGE_CONF="$(cage_conf_for "${TEST_WS}")" \
     bash "$RC" up --dry-run "$TEST_WS" 2>&1 >/dev/null
   ) || exit_code=$?
 
@@ -206,9 +220,10 @@ JSON
   local exit_code=0
   stderr_out=$(
     HOME="$TEST_HOME" \
+    DOCKER_CONFIG="${RC_TEST_REAL_DOCKER_CONFIG}" \
     XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
-    RC_ALLOWED_ROOTS="${TEST_WS}" \
+    RC_CAGE_CONF="$(cage_conf_for "${TEST_WS}")" \
     bash "$RC" up --dry-run --allow-config-override "$TEST_WS" 2>&1 >/dev/null
   ) || exit_code=$?
 

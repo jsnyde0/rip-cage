@@ -12,6 +12,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 FAILURES=0
 
 pass() { echo "PASS: $1"; }
@@ -60,7 +63,7 @@ trap 'cleanup; cleanup_target' EXIT
 # -----------------------------------------------------------------------------
 echo ""
 echo "=== Test 1: --dry-run with default registry → would_pull ==="
-output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$(dirname "$TARGET")" \
+output=$(PATH="$FAKE_BIN:$PATH" RC_CAGE_CONF="$(cage_conf_for "$TARGET")" \
   "$RC" --output json --dry-run up "$TARGET" 2>&1 || true)
 
 if echo "$output" | grep -q '"would_pull":true'; then
@@ -84,7 +87,7 @@ fi
 # -----------------------------------------------------------------------------
 echo ""
 echo "=== Test 2: --dry-run with RIP_CAGE_IMAGE_REGISTRY='' → would_build ==="
-output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$(dirname "$TARGET")" \
+output=$(PATH="$FAKE_BIN:$PATH" RC_CAGE_CONF="$(cage_conf_for "$TARGET")" \
   RIP_CAGE_IMAGE_REGISTRY="" \
   "$RC" --output json --dry-run up "$TARGET" 2>&1 || true)
 
@@ -104,7 +107,7 @@ fi
 # -----------------------------------------------------------------------------
 echo ""
 echo "=== Test 3: --dry-run human-mode with default registry ==="
-output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$(dirname "$TARGET")" \
+output=$(PATH="$FAKE_BIN:$PATH" RC_CAGE_CONF="$(cage_conf_for "$TARGET")" \
   "$RC" --dry-run up "$TARGET" 2>&1 || true)
 
 if echo "$output" | grep -qi "would pull"; then
@@ -123,7 +126,7 @@ fi
 # -----------------------------------------------------------------------------
 echo ""
 echo "=== Test 4: --dry-run human-mode with empty registry ==="
-output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$(dirname "$TARGET")" \
+output=$(PATH="$FAKE_BIN:$PATH" RC_CAGE_CONF="$(cage_conf_for "$TARGET")" \
   RIP_CAGE_IMAGE_REGISTRY="" \
   "$RC" --dry-run up "$TARGET" 2>&1 || true)
 

@@ -8,6 +8,9 @@ PASS=0; FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 
 pass() { echo "PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "FAIL: $1"; FAIL=$((FAIL + 1)); }
@@ -19,41 +22,46 @@ PROJECT_DIR="$ALLOWED_DIR/myproject"
 mkdir -p "$PROJECT_DIR"
 echo "test" > "$PROJECT_DIR/README.md"
 
-# Create a real env file outside allowed roots
-echo "FOO=bar" > "$OUTSIDE_DIR/secrets.env"
-
-# Create a symlink inside allowed roots pointing to the outside file
-ln -s "$OUTSIDE_DIR/secrets.env" "$PROJECT_DIR/.env"
-
-GLOBAL_CONFIG_DIR=$(mktemp -d)
-cat > "$GLOBAL_CONFIG_DIR/config.yaml" <<'YAML'
-mounts:
-  denylist: []
-  allow_risky: null
-YAML
+# A credential store outside the project, and a symlink inside it that
+# resolves there. Realpath-first matching (ADR-023 D7) is what makes the
+# symlink irrelevant: the check sees the RESOLVED path, so a .aws/credentials
+# reached through an innocuous-looking name is refused exactly as the literal
+# path would be.
+mkdir -p "$OUTSIDE_DIR/.aws"
+echo "FOO=bar" > "$OUTSIDE_DIR/.aws/credentials"
+ln -s "$OUTSIDE_DIR/.aws/credentials" "$PROJECT_DIR/.env"
 
 cleanup() {
-  rm -rf "$ALLOWED_DIR" "$OUTSIDE_DIR" "$GLOBAL_CONFIG_DIR"
+  rm -rf "$ALLOWED_DIR" "$OUTSIDE_DIR"
 }
 trap cleanup EXIT
 
-export RC_ALLOWED_ROOTS="$ALLOWED_DIR"
-export RC_CONFIG_GLOBAL="$GLOBAL_CONFIG_DIR/config.yaml"
+# The scratch project needs a native cage config or rc refuses before it
+# reaches the env-file surface these cases are about (ADR-031 D2).
+export RC_CAGE_CONF
+RC_CAGE_CONF="$(cage_conf_for "$PROJECT_DIR")"
 
 echo "=== Security Hardening Tests ==="
 echo ""
 
-# --- Test 1: Symlink env-file pointing outside allowed roots is rejected ---
-echo "-- Test 1: env-file symlink bypass is blocked --"
-# The symlink $PROJECT_DIR/.env resolves to $OUTSIDE_DIR/secrets.env
-# which is outside RC_ALLOWED_ROOTS. This MUST be rejected.
+# --- Test 1: env-file symlink resolving to a protected path is rejected ---
+# RE-POINTED by rip-cage-ely4.9. This case used to assert the allowed-roots
+# guard, which ADR-031 D2 deletes: every mount is an explicit line in the
+# project's own config now, so there is no surrounding root for a path to be
+# "outside" of. The protection that DID survive, and that this surface still
+# needs, is the protected-paths rule (ADR-023 D2 evolved in place) — so the
+# case keeps its shape and changes its subject rather than being deleted for
+# convenience or, worse, kept as a vacuous pass.
+echo "-- Test 1: env-file symlink to a protected path is blocked --"
+# $PROJECT_DIR/.env resolves to $OUTSIDE_DIR/.aws/credentials. Both '.aws' and
+# 'credentials' are on the shipped protected-paths list.
 OUTPUT=$("$RC" --dry-run up "$PROJECT_DIR" --env-file "$PROJECT_DIR/.env" 2>&1) || EXIT_CODE=$?
 EXIT_CODE=${EXIT_CODE:-0}
 
 if [[ "$EXIT_CODE" -ne 0 ]]; then
-  pass "env-file symlink outside allowed roots rejected (exit $EXIT_CODE)"
+  pass "env-file symlink to a protected path rejected (exit $EXIT_CODE)"
 else
-  fail "env-file symlink outside allowed roots was NOT rejected (exit 0)"
+  fail "env-file symlink to a protected path was NOT rejected (exit 0)"
   echo "  Output: $OUTPUT"
 fi
 
