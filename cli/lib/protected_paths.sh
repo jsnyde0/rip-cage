@@ -113,6 +113,43 @@ _protected_paths_load() {
 }
 
 # --------------------------------------------------------------------------
+# _protected_paths_path_match PATH
+#
+# If any COMPONENT of PATH equals a protected entry, echo that entry and
+# return 0; otherwise echo nothing and return 1. Matching is component-equals,
+# never substring (ADR-023 D4's rule, kept).
+#
+# This is the single-path form, for the generated mounts rc computes from the
+# host filesystem rather than reads from the cage config -- today, the
+# read-only parent mounts behind a symlinked skill or agent. Those keep
+# ADR-023 D6's warn-and-skip treatment: they are a best-effort decoration
+# surface, so a protected parent drops out of the mount set with a warning
+# rather than failing the launch. The config's own mount list is the strict
+# surface; that is _protected_paths_enforce.
+# --------------------------------------------------------------------------
+_protected_paths_path_match() {
+  local _path="$1"
+  local _entries _entry _component
+  _entries="$(_protected_paths_load)" || return 1
+
+  while IFS= read -r _entry; do
+    [[ -z "${_entry}" ]] && continue
+    local _oldifs="$IFS"
+    IFS='/'
+    # shellcheck disable=SC2206
+    local -a _parts=(${_path})
+    IFS="$_oldifs"
+    for _component in "${_parts[@]}"; do
+      if [[ "${_component}" == "${_entry}" ]]; then
+        printf '%s' "${_entry}"
+        return 0
+      fi
+    done
+  done <<< "${_entries}"
+  return 1
+}
+
+# --------------------------------------------------------------------------
 # _protected_paths_conf_bind_mounts CONF_FILE
 #
 # Echo one TAB-separated "HOST<TAB>GUEST" row per BIND mount declared in the

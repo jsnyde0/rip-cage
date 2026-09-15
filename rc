@@ -66,6 +66,13 @@ fi
 # IMAGE is read throughout cli/up.sh + cli/build.sh -- shellcheck can't follow
 # the loop-based dynamic `source` below (hence the SC1090 disable there), so
 # it can no longer see those cross-file reads and flags this as unused.
+#
+# SCOPE NOTE (ADR-031 D2): `rc up` no longer passes an image to msb -- the
+# cage config's own `image:` key selects it, and rc appends no image argument.
+# IMAGE survives for `rc build`/`rc test` (which tag and probe the built image)
+# and as RC_IMAGE, a TEST-ONLY override that lets the suite point those verbs at
+# a scratch tag. It is not a supported way to change what a cage runs; edit the
+# config's `image:` line for that.
 IMAGE="${RC_IMAGE:-rip-cage:latest}"
 
 # GHCR registry for pre-built images (ADR-008 D6, implemented at v0.2.0).
@@ -73,23 +80,8 @@ IMAGE="${RC_IMAGE:-rip-cage:latest}"
 # useful for local Dockerfile dev. Unset uses the default.
 RIP_CAGE_IMAGE_REGISTRY="${RIP_CAGE_IMAGE_REGISTRY-ghcr.io/jsnyde0/rip-cage}"
 
-# Load config file if present (sets defaults for RC_ALLOWED_ROOTS, etc.)
-# Config location: ~/.config/rip-cage/rc.conf or $RC_CONFIG
-_rc_conf="${RC_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/rc.conf}"
-if [[ -f "$_rc_conf" ]]; then
-  # shellcheck source=/dev/null
-  source "$_rc_conf"
-fi
-unset _rc_conf
-
 OUTPUT_FORMAT="human"
 DRY_RUN=false
-# shellcheck disable=SC2034
-# RC_VALIDATE_WARNING is written by validate_path (cli/lib/path.sh) and read
-# by cmd_up (cli/up.sh) -- same cross-file-shellcheck-can't-follow reason as
-# IMAGE above.
-RC_VALIDATE_WARNING=""
-
 RC_VERSION="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || echo "unknown")"
 
 
@@ -101,13 +93,13 @@ RC_VERSION="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || echo "unknown")"
 # flat file. None of the sourced files set -euo pipefail themselves -- this
 # shim is the ONLY place strict mode is toggled (map hazard 2); it is owned
 # here, once, so sourcing a module never leaks -e onto the caller.
-for _rc_lib in output docker msb_runtime msb_flags container path config config_edit manifest_checks; do
+for _rc_lib in output docker msb_runtime msb_flags container path protected_paths manifest_checks; do
   # shellcheck disable=SC1090
   source "${SCRIPT_DIR}/cli/lib/${_rc_lib}.sh"
 done
 unset _rc_lib
 
-for _rc_mod in build up ls attach_exec down_destroy reload allowlist test doctor setup manifest config auth install_schema; do
+for _rc_mod in build up ls attach_exec down_destroy reload test doctor setup manifest auth; do
   # shellcheck disable=SC1090
   source "${SCRIPT_DIR}/cli/${_rc_mod}.sh"
 done
@@ -156,8 +148,8 @@ fi
 if [[ "$OUTPUT_FORMAT" == "json" ]]; then
   case "${1:-}" in
     build|ls|up|down|destroy|test|doctor|auth|exec) ;;  # supported
-    attach|schema|completions|setup|config|__bd-preflight-test|__bd-port-inject-test|"")
-      echo "Error: --output json is not supported for '${1:-}' (use 'rc config show --json' for config JSON)" >&2
+    attach|completions|setup|__bd-preflight-test|__bd-port-inject-test|"")
+      echo "Error: --output json is not supported for '${1:-}'" >&2
       exit 1
       ;;
   esac
@@ -213,17 +205,13 @@ case "${1:-}" in
   down)     shift; cmd_down "$@" ;;
   destroy)  shift; cmd_destroy "$@" ;;
   reload)    shift; cmd_reload "$@" ;;
-  allowlist) shift; cmd_allowlist "$@" ;;
   test)      shift; cmd_test "$@" ;;
   doctor)    shift; cmd_doctor "$@" ;;
   auth)      shift; cmd_auth "$@" ;;
-  config)    shift; cmd_config "$@" ;;
   manifest)  shift; cmd_manifest "$@" ;;
   # completions: handled by fast-path above (before container guard); unreachable here
   completions) echo "Usage: rc completions <shell>" >&2; echo "Shells: zsh, bash" >&2; exit 1 ;;
-  install)     shift; cmd_install "$@" ;;
   setup)       shift; cmd_setup "$@" ;;
-  schema)  cmd_schema ;;
   __bd-preflight-test) shift; _bd_host_preflight "${1:-}" "${2:-}" --test-mode ;;
   __bd-port-inject-test) shift; _bd_dolt_port_inject_arg "${1:-}" ;;
   generate-dockerfile) shift; cmd_generate_dockerfile "$@" ;;

@@ -3,23 +3,19 @@
 # NOTE: sourced by the rc shim; must NOT set -euo pipefail (shim owns strict mode once).
 
 
-# _path_under_allowed_roots RESOLVED_PATH
-# Returns 0 (true) if RESOLVED_PATH is under one of the RC_ALLOWED_ROOTS, 1 otherwise.
-# IMPORTANT: Match exact root OR root/ prefix to prevent /code matching /code-evil.
-_path_under_allowed_roots() {
-  local _resolved="$1"
-  local IFS=':'
-  local root resolved_root
-  for root in ${RC_ALLOWED_ROOTS:-}; do
-    resolved_root=$(realpath "$root" 2>/dev/null) || continue
-    if [[ "$_resolved" == "$resolved_root" ]] || [[ "$_resolved" == "$resolved_root"/* ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-
+# validate_path RAW_PATH
+#
+# Shape check on a path argument: no control characters, exists, is a
+# directory. Publishes the resolved path as VALIDATED_PATH.
+#
+# THE ALLOWED-ROOTS GUARD IS GONE (ADR-031 D2, ADR-003 D3 evolved in place).
+# It existed to stop `rc up` being pointed at a surprising directory back when
+# `rc` assembled the mount set itself from flags and a layered config. Every
+# mount is now an explicit line in the project's own msb config file, authored
+# host-side outside every cage mount, so there is no longer a surprising
+# directory for the guard to catch — and the mount-side floor that DOES still
+# matter is the protected-paths rule (cli/lib/protected_paths.sh), which reads
+# the real mount list rather than one path argument.
 validate_path() {
   local raw_path="$1"
 
@@ -52,54 +48,6 @@ validate_path() {
     exit 1
   fi
 
-  # Check RC_ALLOWED_ROOTS is set
-  if [[ -z "${RC_ALLOWED_ROOTS:-}" ]]; then
-    if [[ -t 0 ]] && [[ "$OUTPUT_FORMAT" != "json" ]]; then
-      # Interactive: prompt user, write rc.conf, continue
-      local _home
-      _home="$(realpath "$HOME")"
-      local _chosen=""
-      local _input=""
-      local _attempts=0
-      while [[ $_attempts -lt 3 ]]; do
-        _attempts=$((_attempts + 1))
-        printf "rip-cage: no allowed roots configured.\nAllow projects under [%s]: " "$_home" >&2
-        read -r _input
-        _chosen="${_input:-$_home}"
-        if [[ -d "$_chosen" ]]; then
-          _chosen="$(realpath "$_chosen")"
-          break
-        else
-          printf "rip-cage: '%s' does not exist or is not a directory. Use a full absolute path.\n" "$_chosen" >&2
-          _chosen=""
-        fi
-      done
-      if [[ -z "$_chosen" ]]; then
-        echo "Error: no valid allowed root provided after 3 attempts" >&2
-        exit 1
-      fi
-      mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage"
-      local _conf="${XDG_CONFIG_HOME:-$HOME/.config}/rip-cage/rc.conf"
-      # shellcheck disable=SC2016  # literal ${RC_ALLOWED_ROOTS:-...} written to config file
-      printf 'RC_ALLOWED_ROOTS="${RC_ALLOWED_ROOTS:-%s}"\n' "$_chosen" >> "$_conf"
-      RC_ALLOWED_ROOTS="$_chosen"
-    else
-      # Non-interactive (no TTY or --output json): minimum grant for this path only
-      local _warn_msg="RC_ALLOWED_ROOTS unset — allowing $resolved only."
-      echo "Warning: $_warn_msg" >&2
-      echo "Set RC_ALLOWED_ROOTS in ~/.config/rip-cage/rc.conf for permanent access." >&2
-      RC_ALLOWED_ROOTS="$resolved"
-      RC_VALIDATE_WARNING="${RC_VALIDATE_WARNING:-}${RC_VALIDATE_WARNING:+ }$_warn_msg"
-    fi
-  fi
-
-  # Check path is under an allowed root
-  if ! _path_under_allowed_roots "$resolved"; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Path resolves outside allowed roots" "PATH_INVALID"
-    echo "Error: $resolved is outside allowed roots ($RC_ALLOWED_ROOTS)" >&2
-    exit 1
-  fi
-
   # Return resolved path via VALIDATED_PATH global -- read by callers in
   # other modules (e.g. cli/up.sh), which shellcheck can't see from here.
   # shellcheck disable=SC2034
@@ -107,117 +55,13 @@ validate_path() {
 }
 
 
-# _check_secret_path_denylist <resolved-path> [workspace]
-#
-# Returns 0 (deny) when any component of RESOLVED_PATH (split on '/') exactly
-# equals a pattern in the effective mounts.denylist AND the path is NOT present
-# in mounts.allow_risky AND NOT present in RC_ALLOW_RISKY_MOUNT array.
-# Returns 1 (allow) otherwise.
-#
-# Matching is component-equals, NOT substring — per ADR-023 D4.
-# WORKSPACE defaults to '.' (current directory) when not supplied.
-#
-# Globals read (optional):
-#   RC_ALLOW_RISKY_MOUNT  — bash array of literal resolved paths to allow
-#                           despite denylist match (populated by --allow-risky-mount)
-_check_secret_path_denylist() {
-  local resolved_path="$1"
-  local workspace="${2:-.}"
-
-  # Load effective config for denylist + allow_risky.
-  local eff_json
-  if ! eff_json=$(_load_effective_config "$workspace" 2>/dev/null); then
-    # Config load failed (e.g. yq missing) — fail open (allow).
-    return 1
-  fi
-
-  # Extract effective denylist as newline-separated patterns.
-  local denylist_json
-  denylist_json=$(jq -r '.config.mounts.denylist // [] | .[]' <<<"$eff_json" 2>/dev/null)
-
-  # Empty denylist → allow.
-  if [[ -z "$denylist_json" ]]; then
-    return 1
-  fi
-
-  # Check RC_ALLOW_RISKY_MOUNT (in-process array bypass).
-  if [[ -n "${RC_ALLOW_RISKY_MOUNT+set}" ]] && (( ${#RC_ALLOW_RISKY_MOUNT[@]} > 0 )); then
-    local arm_entry
-    for arm_entry in "${RC_ALLOW_RISKY_MOUNT[@]}"; do
-      if [[ "$arm_entry" == "$resolved_path" ]]; then
-        return 1
-      fi
-    done
-  fi
-
-  # Check mounts.allow_risky (config bypass).
-  local allow_risky_list
-  allow_risky_list=$(jq -r '.config.mounts.allow_risky // [] | .[]' <<<"$eff_json" 2>/dev/null)
-  if [[ -n "$allow_risky_list" ]]; then
-    local ar_entry
-    while IFS= read -r ar_entry; do
-      [[ -z "$ar_entry" ]] && continue
-      if [[ "$ar_entry" == "$resolved_path" ]]; then
-        return 1
-      fi
-    done <<<"$allow_risky_list"
-  fi
-
-  # Component-equals matching: split resolved path on '/' and check each component.
-  local pattern
-  while IFS= read -r pattern; do
-    [[ -z "$pattern" ]] && continue
-    # Split path on '/' and check each component.
-    local component
-    local IFS='/'
-    for component in $resolved_path; do
-      [[ -z "$component" ]] && continue
-      if [[ "$component" == "$pattern" ]]; then
-        return 0
-      fi
-    done
-  done <<<"$denylist_json"
-
-  return 1
-}
-
-
-# _secret_path_denylist_matched_pattern <resolved-path> [workspace]
-#
-# If _check_secret_path_denylist would deny RESOLVED_PATH, emit the first
-# matching pattern on stdout. If no match, emit nothing and return 1.
-# Used by call sites that need the pattern name for the D6 error message.
-#
-# WORKSPACE defaults to '.' when not supplied.
-_secret_path_denylist_matched_pattern() {
-  local resolved_path="$1"
-  local workspace="${2:-.}"
-
-  local eff_json
-  if ! eff_json=$(_load_effective_config "$workspace" 2>/dev/null); then
-    return 1
-  fi
-
-  local denylist_json
-  denylist_json=$(jq -r '.config.mounts.denylist // [] | .[]' <<<"$eff_json" 2>/dev/null)
-  [[ -z "$denylist_json" ]] && return 1
-
-  local pattern
-  while IFS= read -r pattern; do
-    [[ -z "$pattern" ]] && continue
-    local component
-    local IFS='/'
-    for component in $resolved_path; do
-      [[ -z "$component" ]] && continue
-      if [[ "$component" == "$pattern" ]]; then
-        printf '%s' "$pattern"
-        return 0
-      fi
-    done
-  done <<<"$denylist_json"
-
-  return 1
-}
+# THE SECRET-PATH DENYLIST MOVED (ADR-023 D2, evolved in place by ADR-031 D2).
+# _check_secret_path_denylist and _secret_path_denylist_matched_pattern used to
+# pattern-match ONE path argument against a denylist read out of the layered
+# rip-cage config, and they failed OPEN when that config could not be loaded.
+# Both properties are gone. The rule now reads the cage's own mount list, covers
+# what it finds rather than only refusing, and fails CLOSED when its list is
+# unreadable: see cli/lib/protected_paths.sh.
 
 
 # _lexical_normalize_path PATH
@@ -275,7 +119,7 @@ _lexical_normalize_path() {
 # Returns 0 (true) if NORMALIZED_DEST is exactly or nested under one of the
 # agent-writable allowlist roots: /home/agent or /workspace.
 # Uses boundary-safe prefix matching (== or prefix/*) to prevent /home/agentEVIL
-# from matching /home/agent (reuses the same logic as _path_under_allowed_roots).
+# from matching /home/agent.
 #
 # Called by manifest dest-allowlist checks (rip-cage-rc09).
 _manifest_dest_in_allowed_roots() {

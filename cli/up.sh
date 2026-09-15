@@ -209,13 +209,16 @@ _up_detect_worktree() {
   local resolved_git_dir
   resolved_git_dir=$(realpath "$main_git_dir" 2>/dev/null) || true
 
-  if _path_under_allowed_roots "$resolved_git_dir"; then
+  # The allowed-roots containment check that used to gate this retired with the
+  # guard (ADR-031 D2). What still has to hold is that the path resolved: a
+  # worktree pointing at a .git/ that does not exist leaves git broken inside.
+  if [[ -n "$resolved_git_dir" && -d "$resolved_git_dir" ]]; then
     wt_detected=true
     wt_main_git="$resolved_git_dir"
     log "Worktree detected: ${wt_name} (main .git/ at ${wt_main_git})"
   else
-    log "Warning: worktree's main .git/ at $main_git_dir is outside allowed roots — git will not work"
-    wt_error="main .git/ at $main_git_dir is outside allowed roots"
+    log "Warning: worktree's main .git/ at $main_git_dir could not be resolved — git will not work"
+    wt_error="main .git/ at $main_git_dir could not be resolved"
   fi
 }
 
@@ -371,9 +374,9 @@ _symlink_follow_fingerprint() {
       else
         mount_src="$target"
       fi
-      # ADR-023 D2 FIRM: exclude denylist-skipped mount sources from the hash.
-      # Silent skip here — the warning belongs at the mount site (Surface 1 only).
-      if _check_secret_path_denylist "$mount_src" "$workspace" 2>/dev/null; then
+      # ADR-023 D2 FIRM: exclude protected-path-skipped mount sources from the
+      # hash. Silent skip here — the warning belongs at the mount site.
+      if _protected_paths_path_match "$mount_src" >/dev/null 2>&1; then
         continue
       fi
       lines+="${link} → ${mount_src} (${mode})"$'\n'
@@ -466,8 +469,8 @@ _seed_claude_home_dirs() {
 _up_prepare_docker_mounts() {
   local _path="$1" _name="$2"
 
-  # Workspace mount
-  _UP_RUN_ARGS+=(-v "${_path}:/workspace:delegated")
+  # The workspace mount is a line in the cage's own config file now, not a
+  # flag rc appends -- emitting it here too would declare /workspace twice.
 
   # Land every in-cage entry mode in the repo, not /home/agent. The image WORKDIR is
   # /home/agent — correct for build-time RUN/CMD, but /workspace is a runtime-only bind
@@ -479,117 +482,13 @@ _up_prepare_docker_mounts() {
   # with the mount so it only applies when /workspace is actually mounted. (rip-cage-0rng)
   _UP_RUN_ARGS+=(--workdir /workspace)
 
-  # ADR-021 D7: .rip-cage.yaml ro shadow-mount.
-  # If the project config file exists and effective mounts.config_mode is not "rw",
-  # add a more-specific nested :ro bind-mount over /workspace/.rip-cage.yaml.
-  # This prevents a prompt-injected in-cage agent from writing containment-weakening
-  # lines that a human would rubber-stamp on rc reload/rc up (ADR-024 buried-edit threat).
-  # The global config (~/.config/rip-cage/config.yaml) is never mounted in-cage — untouched.
-  # D5 regression contract: skip entirely when the project file is absent (no shadow-mount
-  # means a new file can be authored via the rw workspace mount, which is reviewed wholesale).
-  if [[ -f "${_path}/.rip-cage.yaml" ]]; then
-    local _cfg_mode="ro"
-    if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "${_path}")" ]]; then
-      local _cm_cfg_result
-      if _cm_cfg_result=$(_load_effective_config "${_path}" 2>/dev/null); then
-        _cfg_mode=$(jq -r '.config.mounts.config_mode // "ro"' <<<"$_cm_cfg_result")
-      fi
-      unset _cm_cfg_result
-    fi
-    if [[ "$_cfg_mode" != "rw" ]]; then
-      _UP_RUN_ARGS+=(-v "${_path}/.rip-cage.yaml:/workspace/.rip-cage.yaml:ro")
-      log ".rip-cage.yaml: ro shadow-mount added (mounts.config_mode=${_cfg_mode})"
-    else
-      log ".rip-cage.yaml: writable via workspace mount (mounts.config_mode=rw)"
-    fi
-    unset _cfg_mode
-  fi
-
-  # ADR-030 D4/D5/D6: mounts.mask — Tier-1 workspace-mask primitive.
-  # Operator-declared workspace-relative paths get a nested :ro overmount
-  # presenting a legible breadcrumb (D6), shadowing the real content while
-  # the rest of the workspace stays rw (same nesting mechanics as the
-  # .rip-cage.yaml shadow-mount above). Default empty — Tier 0 (nothing
-  # masked) stays the true default (ADR-030 D2).
-  #
-  # D5 fail-loud: a declared mask path that does not exist on the host (or
-  # is not a regular file — msb --mount-file / spike S1 validated only
-  # single-file overmounts) MUST abort rc up, never fall through to msb's
-  # silent bind-source-becomes-empty-directory failure mode. This check runs
-  # BEFORE any mask mount is added to _UP_RUN_ARGS.
-  #
-  # D1 / ADR-005 D12: mounts.mask is pure config DATA — rc never guesses
-  # which paths to mask; the operator declares the list.
-  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "${_path}")" ]]; then
-    local _mask_cfg_result
-    if _mask_cfg_result=$(_load_effective_config "${_path}" 2>/dev/null); then
-      local _mask_list
-      _mask_list=$(jq -r '.config.mounts.mask[]? // empty' <<<"$_mask_cfg_result")
-      if [[ -n "$_mask_list" ]]; then
-        # D6: a single rc-owned breadcrumb source file, shared across every
-        # masked destination in this cage — the content is a constant
-        # string, so one file can be bind-mounted read-only at N distinct
-        # guest destinations simultaneously; no per-path scratch file needed.
-        local _mask_cache_dir="${HOME}/.cache/rip-cage/${_name}"
-        mkdir -p "$_mask_cache_dir"
-        local _mask_breadcrumb="${_mask_cache_dir}/mask-breadcrumb.txt"
-        printf 'masked by rip-cage\n' > "$_mask_breadcrumb"
-        local _mask_path
-        while IFS= read -r _mask_path; do
-          [[ -z "$_mask_path" ]] && continue
-
-          # ADR-030 D4: mounts.mask entries are workspace-RELATIVE paths —
-          # an absolute entry, or one with a '..' component, would resolve
-          # outside /workspace on the guest side (dest
-          # /workspace/<path> escaping the workspace root) despite the host
-          # source lexically resolving to a real, existing, regular file
-          # (e.g. a host-absolute /etc/hosts, or ../sibling-repo/.env) — a
-          # fixture that would otherwise sail past the D5 existence/regular-
-          # file checks below. Pure lexical check on the DECLARED path, no
-          # realpath-against-host needed: the contract is "workspace-
-          # relative", not "resolves somewhere safe after the fact".
-          if [[ "$_mask_path" == /* ]]; then
-            [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "mounts.mask declares '${_mask_path}', which is an absolute path — mounts.mask entries must be workspace-relative (ADR-030 D4)" "MASK_PATH_NOT_WORKSPACE_RELATIVE"
-            echo "Error: mounts.mask declares '${_mask_path}', which is an absolute path — mounts.mask entries must be workspace-relative (ADR-030 D4). Use a path relative to the workspace root instead." >&2
-            return 1
-          fi
-          local _mask_dotdot=false _mask_component
-          local -a _mask_components=()
-          IFS='/' read -ra _mask_components <<<"$_mask_path"
-          for _mask_component in "${_mask_components[@]}"; do
-            if [[ "$_mask_component" == ".." ]]; then
-              _mask_dotdot=true
-              break
-            fi
-          done
-          if [[ "$_mask_dotdot" == "true" ]]; then
-            [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "mounts.mask declares '${_mask_path}', which contains a '..' component — mounts.mask entries must be workspace-relative (ADR-030 D4)" "MASK_PATH_NOT_WORKSPACE_RELATIVE"
-            echo "Error: mounts.mask declares '${_mask_path}', which contains a '..' component — mounts.mask entries must be workspace-relative (ADR-030 D4) and may not escape the workspace root. Use a path relative to the workspace root instead." >&2
-            return 1
-          fi
-          unset _mask_dotdot _mask_component _mask_components
-
-          local _mask_host_src="${_path%/}/${_mask_path}"
-          if [[ ! -e "$_mask_host_src" ]]; then
-            [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "mounts.mask declares '${_mask_path}' but no such path exists at ${_mask_host_src} — refusing to mask a nonexistent source (ADR-030 D5)" "MASK_SOURCE_MISSING"
-            echo "Error: mounts.mask declares '${_mask_path}' but no such path exists at ${_mask_host_src} — refusing to mask a nonexistent source (ADR-030 D5). Fix the typo in mounts.mask, or remove the entry if the file was relocated/deleted." >&2
-            return 1
-          fi
-          if [[ ! -f "$_mask_host_src" ]]; then
-            [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "mounts.mask declares '${_mask_path}' (${_mask_host_src}) but it is not a regular file — single-file overmounts only" "MASK_SOURCE_NOT_A_FILE"
-            echo "Error: mounts.mask declares '${_mask_path}' (${_mask_host_src}) but it is not a regular file — the workspace-mask primitive only supports single-file overmounts (msb --mount-file is regular-files-only; ADR-030 mechanism note)." >&2
-            return 1
-          fi
-          _UP_RUN_ARGS+=(-v "${_mask_breadcrumb}:/workspace/${_mask_path}:ro")
-          log "mounts.mask: shadowed ${_mask_path} with rc-owned breadcrumb (ro)"
-        done <<< "$_mask_list"
-        unset _mask_path _mask_breadcrumb _mask_cache_dir
-      fi
-      unset _mask_list
-    fi
-    unset _mask_cfg_result
-  fi
-
+  # THE WORKSPACE MOUNT, THE CONFIG SHADOW-MOUNT AND mounts.mask ALL LEFT HERE
+  # (ADR-031 D2). The cage's own msb config file declares the workspace mount,
+  # the session-surviving ~/.claude mounts, the skills mount and any masking
+  # line, and it lives host-side outside every cage mount -- so there is no
+  # in-tree policy file left to shadow read-only, and no mask list for rc to
+  # read. What rc still generates here is only what no config file can hold:
+  # mounts computed from the host filesystem at launch.
   # D11: .git/hooks read-only — physical enforcement against container escape
   # Worktree mode handles hooks separately (see worktree mount block below)
   if [[ "$wt_detected" != "true" ]] && [[ -d "${_path}/.git/hooks" ]]; then
@@ -640,12 +539,10 @@ _up_prepare_docker_mounts() {
     # absolute path so those symlinks resolve correctly.
     # ADR-023 D6 warn-and-skip: denied symlink-target parents are skipped with a
     # stderr warning; rc up continues (best-effort decoration surface).
-    local _asset_tdir
+    local _asset_tdir _skill_pat
     while IFS= read -r _asset_tdir; do
-      if _check_secret_path_denylist "$_asset_tdir" "$_path"; then
-        local _skill_pat
-        _skill_pat=$(_secret_path_denylist_matched_pattern "$_asset_tdir" "$_path" 2>/dev/null || true)
-        echo "Warning: skipping skill symlink mount ${_asset_tdir} — matched secret-path denylist pattern '${_skill_pat:-<unknown>}'" >&2
+      if _skill_pat=$(_protected_paths_path_match "$_asset_tdir"); then
+        echo "Warning: skipping skill symlink mount ${_asset_tdir} — it is a protected path ('${_skill_pat}', see the protected-paths list)" >&2
         continue
       fi
       _UP_RUN_ARGS+=(-v "${_asset_tdir}:${_asset_tdir}:ro")
@@ -656,12 +553,10 @@ _up_prepare_docker_mounts() {
   fi
   if [[ -d "${HOME}/.claude/agents" ]]; then
     _UP_RUN_ARGS+=(-v "${HOME}/.claude/agents:/home/agent/.rc-context/agents:ro")
-    local _agent_tdir
+    local _agent_tdir _agent_pat
     while IFS= read -r _agent_tdir; do
-      if _check_secret_path_denylist "$_agent_tdir" "$_path"; then
-        local _agent_pat
-        _agent_pat=$(_secret_path_denylist_matched_pattern "$_agent_tdir" "$_path" 2>/dev/null || true)
-        echo "Warning: skipping agent symlink mount ${_agent_tdir} — matched secret-path denylist pattern '${_agent_pat:-<unknown>}'" >&2
+      if _agent_pat=$(_protected_paths_path_match "$_agent_tdir"); then
+        echo "Warning: skipping agent symlink mount ${_agent_tdir} — it is a protected path ('${_agent_pat}', see the protected-paths list)" >&2
         continue
       fi
       _UP_RUN_ARGS+=(-v "${_agent_tdir}:${_agent_tdir}:ro")
@@ -742,16 +637,12 @@ _up_prepare_docker_mounts() {
     /usr /var /tmp /workspace
   )
 
-  # Load effective config for symlinks settings (D5: skip if no config files).
+  # Symlink-follow settings are constants now (ADR-031 D2). They used to be
+  # mounts.symlinks.{on_dangling,scope,mode} in the retired rip-cage schema,
+  # and these are that schema's own defaults — so an unconfigured cage behaves
+  # exactly as it did before. ADR-031 D2's alternatives table carries the
+  # ruling that nothing remained to put in an rc-scoped config file.
   local _sfl_on_dangling="follow" _sfl_scope="file" _sfl_mode="rw"
-  local _sfl_cfg_result
-  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "${_path}")" ]]; then
-    if _sfl_cfg_result=$(_load_effective_config "${_path}" 2>/dev/null); then
-      _sfl_on_dangling=$(jq -r '.config.mounts.symlinks.on_dangling // "follow"' <<<"$_sfl_cfg_result")
-      _sfl_scope=$(jq -r '.config.mounts.symlinks.scope // "file"' <<<"$_sfl_cfg_result")
-      _sfl_mode=$(jq -r '.config.mounts.symlinks.mode // "rw"' <<<"$_sfl_cfg_result")
-    fi
-  fi
 
   local _sfl_root _sfl_link _sfl_target _sfl_collected
   for _sfl_root in "${_SFL_SCAN_ROOTS[@]+"${_SFL_SCAN_ROOTS[@]}"}"; do
@@ -843,10 +734,9 @@ _up_prepare_docker_mounts() {
       # ADR-023 D7 FIRM: check what actually mounts — _sfl_mount_src (parent dir under
       # scope=parent, leaf under scope=file), not the leaf $_sfl_target unconditionally.
       # Warn-and-skip (not fail-loud) — dangling dotfile symlinks are incidental surfaces.
-      if _check_secret_path_denylist "$_sfl_mount_src" "$_path"; then
-        local _sfl_denied_pat
-        _sfl_denied_pat=$(_secret_path_denylist_matched_pattern "$_sfl_mount_src" "$_path" 2>/dev/null || true)
-        echo "Warning: skipping symlink-follow mount ${_sfl_mount_src} — matched secret-path denylist pattern '${_sfl_denied_pat:-<unknown>}'" >&2
+      local _sfl_denied_pat
+      if _sfl_denied_pat=$(_protected_paths_path_match "$_sfl_mount_src"); then
+        echo "Warning: skipping symlink-follow mount ${_sfl_mount_src} — it is a protected path ('${_sfl_denied_pat}', see the protected-paths list)" >&2
         continue
       fi
 
@@ -934,9 +824,8 @@ _up_prepare_docker_mounts() {
       # Resolve realpath so relative dotpi symlinks mount the actual target
       _pi_host_real=$(realpath "${_pi_host_raw}" 2>/dev/null || echo "${_pi_host_raw}")
       # ADR-023 denylist: warn-and-skip on match
-      if _check_secret_path_denylist "${_pi_host_real}" "${_path}"; then
-        _pi_pat=$(_secret_path_denylist_matched_pattern "${_pi_host_real}" "${_path}" 2>/dev/null || true)
-        echo "Warning: skipping pi substrate mount ${_pi_host_real} — matched secret-path denylist pattern '${_pi_pat:-<unknown>}'" >&2
+      if _pi_pat=$(_protected_paths_path_match "${_pi_host_real}"); then
+        echo "Warning: skipping pi substrate mount ${_pi_host_real} — it is a protected path ('${_pi_pat}', see the protected-paths list)" >&2
         continue
       fi
       _UP_RUN_ARGS+=(-v "${_pi_host_real}:/home/agent/.rc-context/${_pi_cage_name}:ro")
@@ -1083,21 +972,18 @@ _up_prepare_environment() {
       resolved_beads=$(realpath "${_path}/${redirect_target}" 2>/dev/null || true)
       if [[ -n "$resolved_beads" && -d "$resolved_beads" ]]; then
         # Validate resolved path is under an allowed root (ADR-003 D3)
-        if _path_under_allowed_roots "$resolved_beads"; then
-          # ADR-023 D6: denylist check on .beads/redirect resolved target.
-          if _check_secret_path_denylist "$resolved_beads" "$_path"; then
-            local _beads_pat
-            _beads_pat=$(_secret_path_denylist_matched_pattern "$resolved_beads" "$_path" 2>/dev/null || true)
-            _emit_denylist_denial "$resolved_beads" "${_beads_pat:-<unknown>}"
-            exit 1
-          fi
-          log "Beads: resolved redirect → $resolved_beads"
-          beads_dir="$resolved_beads"
-          # Mount the real .beads/ over the worktree's redirect
-          _UP_RUN_ARGS+=(-v "${resolved_beads}:/workspace/.beads:delegated")
-        else
-          log "Warning: .beads/redirect resolves to $resolved_beads which is outside allowed roots — ignoring"
+        # The allowed-roots gate that used to wrap this is gone with the guard
+        # itself (ADR-031 D2); the protected-paths check is what still refuses a
+        # redirect aimed at a credential store.
+        local _beads_pat
+        if _beads_pat=$(_protected_paths_path_match "$resolved_beads"); then
+          _emit_denylist_denial "$resolved_beads" "${_beads_pat}"
+          exit 1
         fi
+        log "Beads: resolved redirect → $resolved_beads"
+        beads_dir="$resolved_beads"
+        # Mount the real .beads/ over the worktree's redirect
+        _UP_RUN_ARGS+=(-v "${resolved_beads}:/workspace/.beads:delegated")
       else
         log "Warning: .beads/redirect points to $redirect_target but could not resolve"
       fi
@@ -1116,14 +1002,16 @@ _up_prepare_environment() {
     local main_repo_root main_beads_dir resolved_main_beads
     main_repo_root=$(dirname "$wt_main_git")
     main_beads_dir="${main_repo_root}/.beads"
-    # Resolve symlinks before the allowed-roots check (ADR-003 D3): a
-    # .beads/ symlink pointing outside allowed roots would pass a string
-    # check while the bind-mount would follow the symlink to the real target.
+    # Resolve symlinks first: a .beads/ symlink is followed by the bind-mount,
+    # so the resolved target is what actually gets shown into the cage. The
+    # allowed-roots check that used to follow retired with the guard
+    # (ADR-031 D2); the protected-paths rule is what still refuses a target
+    # aimed at a credential store.
     resolved_main_beads=$(realpath "$main_beads_dir" 2>/dev/null || true)
     if [[ -z "$resolved_main_beads" || ! -d "$resolved_main_beads" ]]; then
       log "Warning: worktree auto-redirect — main repo .beads/ not found at $main_beads_dir; bd will fail inside the container (see wrapper diagnostic)"
-    elif ! _path_under_allowed_roots "$resolved_main_beads"; then
-      log "Warning: worktree auto-redirect — main repo .beads/ at $resolved_main_beads is outside RC_ALLOWED_ROOTS; refusing to mount (ADR-003 D3)"
+    elif _wt_beads_pat=$(_protected_paths_path_match "$resolved_main_beads"); then
+      log "Warning: worktree auto-redirect — main repo .beads/ at $resolved_main_beads is a protected path ('${_wt_beads_pat}'); refusing to mount"
     else
       log "Beads: worktree has no runtime data — auto-redirecting to main repo .beads/ ($resolved_main_beads)"
       beads_dir="$resolved_main_beads"
@@ -1289,60 +1177,6 @@ _up_init_container() {
 }
 
 
-# _up_resolve_resume_config_mode -- read and validate the rc.config-mode
-# label on resume; abort loud if current effective config's mounts.config_mode
-# differs from the label (ro↔rw is a mount-shape transition — the nested
-# :ro shadow-mount either exists or doesn't; immutable on resume).
-#
-# ADR-021 D7: mounts.config_mode toggles whether a nested :ro bind-mount is
-# added over /workspace/.rip-cage.yaml. Silently re-using a stale mount would
-# leave the agent with a mount shape inconsistent with what the user configured.
-#
-# Missing label (legacy container, pre-cw51): treated as "ro" (the default);
-# if current effective config is also ro (or absent), no mismatch.
-# Parameters: $1 name, $2 path
-_up_resolve_resume_config_mode() {
-  local _name="$1" _path="$2"
-  local _label
-  if ! _label=$(_msb_label "$_name" "rc.config-mode"); then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "msb inspect failed for $_name" "MSB_ERROR"
-    fi
-    echo "Error: msb inspect failed for $_name (is msb reachable?)" >&2
-    exit 1
-  fi
-  # Empty label = legacy container; treat as "ro" (the default, matches the
-  # shadow-mount-added-by-default posture of pre-label containers).
-  local _stored_mode
-  if [[ -z "$_label" ]]; then
-    _stored_mode="ro"
-  else
-    _stored_mode="$_label"
-  fi
-
-  # Compute current effective mounts.config_mode from on-disk config.
-  local _eff_result _current
-  _eff_result=$(_load_effective_config "$_path" 2>/dev/null || true)
-  if [[ -z "$_eff_result" ]]; then
-    _current="ro"
-  else
-    _current=$(jq -r '.config.mounts.config_mode // "ro"' <<<"$_eff_result" 2>/dev/null || echo "ro")
-  fi
-
-  if [[ "$_stored_mode" != "$_current" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Container $_name was created with rc.config-mode=${_stored_mode} but current effective config has mounts.config_mode=${_current}. Mount shape is immutable on resume — run: rc destroy $_name && rc up $_path to apply the change." "CONFIG_MODE_MOUNT_SHAPE_CHANGED"
-    fi
-    echo "Error: container $_name was created with rc.config-mode=${_stored_mode} but current effective config has mounts.config_mode=${_current}." >&2
-    echo "       The /workspace/.rip-cage.yaml :ro shadow-mount is wired at create time; toggling mounts.config_mode between ro and rw requires recreating the container." >&2
-    echo "       Run:" >&2
-    echo "         rc destroy $_name" >&2
-    echo "         rc up $_path" >&2
-    exit 1
-  fi
-}
-
-
 # _up_resolve_resume_image_drift_stopped (rip-cage-jnvb / D-b, D-f) — abort
 # loud BEFORE msb start when the stopped container's pinned image drifted
 # from (or the current image is missing relative to) $IMAGE. Slotted with the
@@ -1468,78 +1302,6 @@ _up_resolve_effective_credential_mounts_for_tool() {
 }
 
 
-# _up_resolve_resume_credential_mounts (rip-cage-seqc.4 / B1, per-tool grain
-# rip-cage-xhgr / D5a) — clone of _up_resolve_resume_config_mode.
-# auth.credential_mounts (+ per-tool overrides) is a create-time mount-shape
-# decision (which host credential files get bind-mounted); it is not covered
-# by mounts.config_mode's guard. Without this, flipping the effective value
-# for a tool between create and resume would silently carry the create-time
-# mount shape (a real cage resumed as "none" would keep believing it has no
-# credentials mounted while the container still has them — or vice versa).
-#
-# Legacy derivation ladder per tool (D5a): stored(T) = the per-tool label
-# (rc.auth.credential-mounts.claude / .pi) if present, ELSE the stored global
-# label (rc.auth.credential-mounts) if present, ELSE "real" (the pre-seqc.4
-# historical default). This means a container created BEFORE this bead (no
-# per-tool labels at all) resumes clean as long as its effective per-tool
-# values are unchanged from its stored global label — upgrading rc never
-# bricks a running cage. Mismatch on EITHER tool refuses loud, naming the
-# tool so the operator knows which one changed.
-# Parameters: $1 name, $2 path
-_up_resolve_resume_credential_mounts() {
-  local _name="$1" _path="$2"
-
-  local _label_global
-  if ! _label_global=$(_msb_label "$_name" "rc.auth.credential-mounts"); then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "msb inspect failed for $_name" "MSB_ERROR"
-    fi
-    echo "Error: msb inspect failed for $_name (is msb reachable?)" >&2
-    exit 1
-  fi
-  local _label_claude _label_pi
-  _label_claude=$(_msb_label "$_name" "rc.auth.credential-mounts.claude" || true)
-  _label_pi=$(_msb_label "$_name" "rc.auth.credential-mounts.pi" || true)
-
-  # Empty global label = legacy container (pre-seqc.4); treat as "real".
-  local _stored_global="real"
-  [[ -n "$_label_global" ]] && _stored_global="$_label_global"
-
-  # Per-tool label wins over the stored global label when both present.
-  local _stored_claude="$_stored_global" _stored_pi="$_stored_global"
-  [[ -n "$_label_claude" ]] && _stored_claude="$_label_claude"
-  [[ -n "$_label_pi" ]] && _stored_pi="$_label_pi"
-
-  # Compute current effective per-tool values from on-disk config.
-  local _eff_result _current_claude="real" _current_pi="real"
-  _eff_result=$(_load_effective_config "$_path" 2>/dev/null || true)
-  if [[ -n "$_eff_result" ]]; then
-    _current_claude=$(_up_resolve_effective_credential_mounts_for_tool "claude" "$_eff_result")
-    _current_pi=$(_up_resolve_effective_credential_mounts_for_tool "pi" "$_eff_result")
-  fi
-
-  local _tool _stored _current
-  for _tool in claude pi; do
-    if [[ "$_tool" == "claude" ]]; then
-      _stored="$_stored_claude"; _current="$_current_claude"
-    else
-      _stored="$_stored_pi"; _current="$_current_pi"
-    fi
-    if [[ "$_stored" != "$_current" ]]; then
-      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        json_error "Container $_name was created with effective auth.credential_mounts for ${_tool}=${_stored} but current effective config has ${_tool}=${_current}. Credential mounts are immutable on resume — run: rc destroy $_name && rc up $_path to apply the change." "CREDENTIAL_MOUNTS_MOUNT_SHAPE_CHANGED"
-      fi
-      echo "Error: container $_name was created with effective auth.credential_mounts for ${_tool}=${_stored} but current effective config has ${_tool}=${_current}." >&2
-      echo "       Credential mounts are wired at create time; toggling auth.credential_mounts (or auth.per_tool.${_tool}) between real and none requires recreating the container." >&2
-      echo "       Run:" >&2
-      echo "         rc destroy $_name" >&2
-      echo "         rc up $_path" >&2
-      exit 1
-    fi
-  done
-}
-
-
 # _up_resolve_resume_symlink_fingerprint -- compare the rc.symlink-follow-fingerprint
 # label on the existing container against the current host state. Abort loud if
 # mismatch (mount-shape change — requires destroy and re-up per D4 FIRM).
@@ -1612,190 +1374,6 @@ _up_resolve_resume_symlink_fingerprint() {
 }
 
 
-
-# _up_validate_dcg_config — validate a generated DCG TOML config file parses.
-#
-# ADR-025 D5: fail-closed. A malformed DCG_CONFIG silently re-opens the
-# user-layer config hole (config.rs:2417). Must exit non-zero on parse failure.
-#
-# Parameters:
-#   $1  config_path — path to the TOML file to validate
-_up_validate_dcg_config() {
-  local _config_path="$1"
-  if [[ ! -f "$_config_path" ]]; then
-    echo "Error: DCG config file not found at ${_config_path}" >&2
-    return 1
-  fi
-  # Guard: if python3 is absent entirely, gracefully degrade (matching the
-  # missing-tomllib path inside the script at sys.exit(0) below). The host
-  # check is best-effort; the authoritative fail-closed gate is
-  # init-rip-cage.sh:256-267 (container-side, python3+tomllib guaranteed in
-  # the image — ADR-025 D5). exit 127 (command-not-found) must not be treated
-  # as a TOML parse error.
-  if ! command -v python3 > /dev/null 2>&1; then
-    return 0
-  fi
-  # Try tomllib (Python 3.11+) then tomli backport; gracefully degrade when
-  # neither is available (host may have Python 3.9 — container init catches it).
-  # Uses python3 -c with newlines joined as semicolons (shellcheck-safe).
-  local _dcg_py_ok
-  _dcg_py_ok=0
-  python3 -c "
-import sys; p=sys.argv[1]
-try:
-    import tomllib
-except ImportError:
-    try:
-        import tomli as tomllib
-    except ImportError:
-        sys.exit(0)
-try:
-    tomllib.load(open(p,'rb'))
-except Exception as e:
-    sys.stderr.write('TOML parse error: ' + str(e) + '\n')
-    sys.exit(1)
-" "${_config_path}" || _dcg_py_ok=1
-  if [[ "$_dcg_py_ok" -ne 0 ]]; then
-    echo "Error: generated DCG config at ${_config_path} is malformed TOML — refusing to launch (ADR-025 D5 fail-closed)" >&2
-    echo "  Fix dcg.* in your .rip-cage.yaml and retry." >&2
-    return 1
-  fi
-}
-
-
-# _up_resolve_dcg_config — translate dcg.* from effective config into a
-# merged DCG TOML config file written to the per-container cache directory.
-#
-# ADR-025 D1/D5: host-adoptable additive policy. Merges the baked default
-# (core pack floor) with extra packs and custom_paths from dcg.packs /
-# dcg.custom_rule_paths. Writes the file only when dcg.* is non-empty;
-# safe-by-default: no file written, _UP_DCG_CONFIG_PATH empty when no dcg.*.
-#
-# Validates the generated config parses (fail-closed per D5); exits non-zero
-# and does NOT launch the container on parse failure.
-#
-# Globals written: _UP_DCG_CONFIG_PATH (empty = no override mount needed)
-# Parameters:
-#   $1  workspace   — project directory (for _load_effective_config)
-#   $2  cache_dir   — per-container cache dir (dcg-config.toml written here)
-_up_resolve_dcg_config() {
-  local _workspace="$1" _cache_dir="$2"
-  _UP_DCG_CONFIG_PATH=""
-
-  # Load effective config. Fall back gracefully when no config files are present.
-  local _eff_result _eff_config
-  _eff_result=$(_load_effective_config "$_workspace" 2>/dev/null) || true
-
-  if [[ -z "$_eff_result" ]]; then
-    # No config files present — safe-by-default: use baked default.
-    return 0
-  fi
-
-  _eff_config=$(jq -c '.config' <<<"$_eff_result")
-
-  # Extract dcg.packs and dcg.custom_rule_paths from effective config.
-  local _dcg_packs _dcg_paths
-  _dcg_packs=$(jq -r '.dcg.packs // [] | .[]' <<<"$_eff_config" 2>/dev/null || true)
-  _dcg_paths=$(jq -r '.dcg.custom_rule_paths // [] | .[]' <<<"$_eff_config" 2>/dev/null || true)
-
-  # Safe-by-default: if both are empty, no override needed.
-  if [[ -z "$_dcg_packs" && -z "$_dcg_paths" ]]; then
-    return 0
-  fi
-
-  # Build the merged enabled packs list: always start with "core" (floor),
-  # then add extra packs from dcg.packs (additive only; deduplication via sort -u).
-  local _all_packs="core"
-  while IFS= read -r _pack; do
-    [[ -z "$_pack" ]] && continue
-    _all_packs="${_all_packs}"$'\n'"${_pack}"
-  done <<<"$_dcg_packs"
-  # Sort and deduplicate; format as TOML array elements.
-  local _packs_toml
-  _packs_toml=$(echo "$_all_packs" | sort -u | while IFS= read -r _p; do
-    [[ -z "$_p" ]] && continue
-    printf '"%s", ' "$_p"
-  done | sed 's/, $//')
-
-  # Build custom_paths lines: resolve workspace-relative globs to /workspace paths.
-  # ADR-023 D7 realpath-first convention: normalize .. components lexically and
-  # reject any entry whose resolved container path escapes /workspace/.
-  # This runs on the HOST where /workspace does not exist, so we normalize the
-  # conceptual container path (/workspace/<glob>) purely via string manipulation
-  # (no realpath against host filesystem).
-  local _custom_paths_toml=""
-  while IFS= read -r _glob; do
-    [[ -z "$_glob" ]] && continue
-    # Lexically normalize /workspace/<glob> by resolving .. components.
-    # Builds a stack of path components; ".." pops the top (bash 3.2-compat:
-    # uses slice-to-trim rather than negative-index unset).
-    local _raw_path="/workspace/${_glob}"
-    local _norm_path=""
-    local _oldIFS="$IFS"
-    IFS="/"
-    local _parts=()
-    read -ra _parts <<< "$_raw_path"
-    IFS="$_oldIFS"
-    local _stack=() _slen=0 _c
-    for _c in "${_parts[@]}"; do
-      case "$_c" in
-        ""|".")  ;;
-        "..")
-          if [[ $_slen -gt 0 ]]; then
-            _stack=("${_stack[@]:0:$((_slen - 1))}")
-            _slen=$((_slen - 1))
-          fi
-          ;;
-        *)
-          _stack[_slen]="$_c"
-          _slen=$((_slen + 1))
-          ;;
-      esac
-    done
-    # Reconstruct normalized path from stack.
-    _norm_path="/"
-    local _i
-    for (( _i = 0; _i < _slen; _i++ )); do
-      _norm_path="${_norm_path}${_stack[$_i]}/"
-    done
-    _norm_path="${_norm_path%/}"  # strip trailing /
-
-    # Warn-and-skip if the normalized path escapes /workspace (ADR-023 D6 incidental tier).
-    if [[ "$_norm_path" != /workspace/* && "$_norm_path" != "/workspace" ]]; then
-      echo "[rc] Warning: dcg.custom_rule_paths entry '${_glob}' escapes /workspace after .. normalization (normalized: '${_norm_path}') — skipping" >&2
-      continue
-    fi
-
-    # Emit the normalized path (realpath-first, ADR-023 D7): a non-escaping
-    # interior ".." (e.g. a/../b) is collapsed to /workspace/b rather than
-    # handed to DCG raw, so the path DCG loads matches the path we vetted.
-    _custom_paths_toml="${_custom_paths_toml}\"${_norm_path}\", "
-  done <<<"$_dcg_paths"
-  _custom_paths_toml="${_custom_paths_toml%, }"  # strip trailing ", "
-
-  # Write merged TOML config to cache.
-  local _config_path="${_cache_dir}/dcg-config.toml"
-  mkdir -p "$_cache_dir"
-
-  {
-    echo "# Rip Cage merged DCG policy config (ADR-025 D1/D5)"
-    echo "# Generated by rc up from .rip-cage.yaml dcg.* fields."
-    echo "# floor: core pack always present; additive only."
-    echo ""
-    echo "[packs]"
-    echo "enabled = [${_packs_toml}]"
-    if [[ -n "$_custom_paths_toml" ]]; then
-      echo "custom_paths = [${_custom_paths_toml}]"
-    fi
-  } > "$_config_path"
-
-  # Validate fail-closed (ADR-025 D5).
-  if ! _up_validate_dcg_config "$_config_path"; then
-    return 1
-  fi
-
-  _UP_DCG_CONFIG_PATH="$_config_path"
-}
 
 # Global: path to the per-cage DCG config override (empty = use baked default).
 # Set by _up_resolve_dcg_config; consumed by cmd_up to add RO mount.
@@ -2204,10 +1782,9 @@ _up_resolve_placeholder_env_file() {
   # runs on the RAW pointer (D2e: no realpath), so a symlink to a denylisted
   # secret bypasses it here while the CLI path (which realpaths first) would
   # catch it. Host-authored config, accident model — out of threat scope.
-  if _check_secret_path_denylist "$_pef_pointer" "$_pef_path"; then
-    local _pef_denied_pattern
-    _pef_denied_pattern=$(_secret_path_denylist_matched_pattern "$_pef_pointer" "$_pef_path")
-    _emit_denylist_denial "$_pef_pointer" "${_pef_denied_pattern:-<unknown>}"
+  local _pef_denied_pattern
+  if _pef_denied_pattern=$(_protected_paths_path_match "$_pef_pointer"); then
+    _emit_denylist_denial "$_pef_pointer" "${_pef_denied_pattern}"
     exit 1
   fi
 
@@ -2346,51 +1923,6 @@ Continuing anyway — bd calls inside the container will fail until resolved."
 }
 
 
-# rip-cage-tsf2.9: converge-on-up decision (PURE — no side effects but echo).
-# Echoes the newline-separated drifted config paths and returns 0 IFF the cage
-# $1 has a config-applied snapshot, live config ($2's .rip-cage.yaml) differs
-# from it, AND every differing path is reload-eligible (network.* today,
-# _RC_RELOAD_ELIGIBLE_PATHS). Returns 1 (echoes nothing) on no-snapshot / no-drift
-# / any non-eligible drift — the caller then falls through to the existing
-# _config_emit_hint + abort-loud resume guards, which already own the
-# non-eligible/mount-shape drift classes (review F4: never double-handle).
-#
-# Gated on the SAME comparator `rc reload` uses (the applied-config snapshot
-# diff), NEVER `msb inspect` — inspect cannot read back --secret bindings and a
-# rule readback is only a count (review F1). Absent-in-snapshot + live==schema-
-# default fields are suppressed as non-drift (rip-cage-1f59.9), same as reload.
-_up_eligible_drift_paths() {
-  local name="$1" workspace="$2"
-  local live_result live_cfg applied_cfg
-  live_result=$(_load_effective_config "$workspace" 2>/dev/null) || return 1
-  live_cfg=$(jq -c '.config' <<<"$live_result")
-  applied_cfg=$(_config_read_applied "$name" 2>/dev/null) || return 1
-  local _schema_defaults diff_paths
-  _schema_defaults=$(_config_schema_defaults_json 2>/dev/null || echo '{}')
-  diff_paths=$(_config_diff_paths "$live_cfg" "$applied_cfg" "$_schema_defaults" 2>/dev/null || true)
-  [[ -z "$diff_paths" ]] && return 1
-  printf '%s\n' "$diff_paths" | _config_paths_all_reload_eligible || return 1
-  printf '%s\n' "$diff_paths"
-  return 0
-}
-
-# rip-cage-y0u0: loud converge announcement (STOPPED cage only, default-on).
-# Names the drifted paths and makes the cold-recreate tradeoff — what
-# survives, what's lost, how to opt out — plus the stopped/running asymmetry
-# legible (review F7, carried forward from tsf2.9). $1 = cage name,
-# $2 = newline-separated paths.
-_up_announce_converge() {
-  local name="$1" paths="$2" _p
-  log "Converging ${name}: .rip-cage.yaml has reload-eligible drift since this cage was created —"
-  while IFS= read -r _p; do [[ -n "$_p" ]] && log "  - $_p"; done <<<"$paths"
-  log "  Cold-recreating (ADR-029 D4): the guest's ephemeral scratch overlay is discarded."
-  log "  Survives: the workspace mount, ~/.claude/{projects,sessions} (your Claude session"
-  log "  resumes, it is not lost), and the named volumes (rc-state-*, rc-history-*, rc-mise-cache)."
-  log "  (A RUNNING cage is NEVER auto-recreated — this cage is stopped, so converging now."
-  log "  To skip this and resume stale instead, use: rc up --no-reload)"
-}
-
-
 cmd_up() {
   local path="" port="" env_file=""
   local rc_cpus="2" rc_memory="4g" rc_pids_limit="500"
@@ -2501,11 +2033,9 @@ cmd_up() {
     validate_path "$(dirname "$resolved_env")"
     # ADR-023 D6: denylist check — env-file surface (FIRM insertion-point discipline:
     # inside env-file branch only, after realpath, NOT at top of validate_path).
-    if _check_secret_path_denylist "$resolved_env" "$path"; then
-      # _check_secret_path_denylist returns 0 when the path is DENIED.
-      local _denied_pattern
-      _denied_pattern=$(_secret_path_denylist_matched_pattern "$resolved_env" "$path")
-      _emit_denylist_denial "$resolved_env" "${_denied_pattern:-<unknown>}"
+    local _denied_pattern
+    if _denied_pattern=$(_protected_paths_path_match "$resolved_env"); then
+      _emit_denylist_denial "$resolved_env" "${_denied_pattern}"
       exit 1
     fi
     env_file="$resolved_env"
@@ -2785,10 +2315,9 @@ cmd_up() {
         echo "Would mount ~/.claude/skills -> /home/agent/.rc-context/skills:ro"
         local _dry_tdir
         while IFS= read -r _dry_tdir; do
-          if _check_secret_path_denylist "$_dry_tdir" "$path"; then
-            local _dry_skill_pat
-            _dry_skill_pat=$(_secret_path_denylist_matched_pattern "$_dry_tdir" "$path" 2>/dev/null || true)
-            echo "Warning: skipping skill symlink mount ${_dry_tdir} — matched secret-path denylist pattern '${_dry_skill_pat:-<unknown>}'" >&2
+          local _dry_skill_pat
+          if _dry_skill_pat=$(_protected_paths_path_match "$_dry_tdir"); then
+            echo "Warning: skipping skill symlink mount ${_dry_tdir} — it is a protected path ('${_dry_skill_pat}', see the protected-paths list)" >&2
             continue
           fi
           echo "Would mount ${_dry_tdir} -> ${_dry_tdir}:ro (skill symlink target)"
@@ -2799,10 +2328,9 @@ cmd_up() {
         echo "Would mount ~/.claude/agents -> /home/agent/.rc-context/agents:ro"
         local _dry_agent_tdir
         while IFS= read -r _dry_agent_tdir; do
-          if _check_secret_path_denylist "$_dry_agent_tdir" "$path"; then
-            local _dry_agent_pat
-            _dry_agent_pat=$(_secret_path_denylist_matched_pattern "$_dry_agent_tdir" "$path" 2>/dev/null || true)
-            echo "Warning: skipping agent symlink mount ${_dry_agent_tdir} — matched secret-path denylist pattern '${_dry_agent_pat:-<unknown>}'" >&2
+          local _dry_agent_pat
+          if _dry_agent_pat=$(_protected_paths_path_match "$_dry_agent_tdir"); then
+            echo "Warning: skipping agent symlink mount ${_dry_agent_tdir} — it is a protected path ('${_dry_agent_pat}', see the protected-paths list)" >&2
             continue
           fi
           echo "Would mount ${_dry_agent_tdir} -> ${_dry_agent_tdir}:ro (agent symlink target)"
@@ -3375,34 +2903,6 @@ cmd_up() {
 }
 
 
-# Auto-seed the global config on first run (rip-cage-j86 / ADR-023 D6 evolution).
-# If the file already exists: silent no-op (idempotent — returns 0 immediately).
-# If absent: mkdir -p its directory, write the default denylist YAML, and emit a
-# one-line stderr notice so the user knows what happened.
-# ORDERING IS LOAD-BEARING: call this BEFORE _config_validate_or_abort in cmd_up
-# so the yq-presence check inside the validator covers the freshly-seeded config.
-# Seeding is the safe direction — it only adds blocking, never widens capability.
-_config_ensure_global_seeded() {
-  local _path
-  _path=$(_config_global_path)
-  if [[ -f "$_path" ]]; then
-    return 0
-  fi
-  # Fail-loud, self-enforcing presence guarantee (ADR-001): do NOT rely on the
-  # caller's `set -e`. The denylist matcher fails open without a valid config, so
-  # a silent seed-failure here would re-open the very hole this seeding closes.
-  if ! mkdir -p "$(dirname "$_path")"; then
-    echo "Error: failed to create config directory for ${_path}." >&2
-    exit 1
-  fi
-  if ! _config_default_global_yaml > "$_path" || [[ ! -s "$_path" ]]; then
-    echo "Error: failed to seed default secret-path denylist at ${_path}. The denylist matcher fails open without a valid config; refusing to continue (ADR-023 D6 / ADR-001)." >&2
-    exit 1
-  fi
-  echo "rip-cage: seeded default secret-path denylist at ${_path} (first run; run 'rc config show' to view, or edit to customize)." >&2
-}
-
-
 # _manifest_egress_hosts_json — collect all egress: hosts declared across all
 # manifest entries into a JSON array (ADR-005 D3). The in-cage engine that
 # used to consume this union (the deleted egress router) is retired per
@@ -3508,10 +3008,9 @@ _manifest_build_mount_args() {
       resolved_host=$(realpath "$expanded_host" 2>/dev/null) || resolved_host="$expanded_host"
 
       # ADR-023 D1/D6: denylist check — fail-loud for manifest-managed mounts.
-      if _check_secret_path_denylist "$resolved_host" "$_workspace"; then
-        local _denied_pattern
-        _denied_pattern=$(_secret_path_denylist_matched_pattern "$resolved_host" "$_workspace" 2>/dev/null || true)
-        echo "Error: manifest-declared mount for tool '${tool_name}': '${resolved_host}' matched secret-path denylist pattern '${_denied_pattern:-<unknown>}'. Remove this path from the manifest mounts: declaration or add to mounts.allow_risky in .rip-cage.yaml. (ADR-023 D1/D6)" >&2
+      local _denied_pattern
+      if _denied_pattern=$(_protected_paths_path_match "$resolved_host"); then
+        echo "Error: manifest-declared mount for tool '${tool_name}': '${resolved_host}' is a protected path ('${_denied_pattern}'). Remove this path from the manifest's mounts: declaration, or remove '${_denied_pattern}' from your protected-paths list if you have decided it is not a secret. (ADR-031 D2)" >&2
         return 1
       fi
 
@@ -3591,86 +3090,5 @@ _ensure_pi_auth_seed() {
     return 0
   fi
   echo "rip-cage: Seeded empty ${HOME}/.pi/agent/auth.json for first-run pi login persistence (rip-cage-wo9)." >&2
-}
-
-
-# Compute the rc.config-loaded label value for a workspace. Returns the
-# sha256 from _load_effective_config (cheap to call; same value used by
-# `rc config show`). Empty string on loader error — but callers MUST first
-# pass through _config_validate_or_abort, which converts the loader-error
-# case into a hard exit, so reaching the empty-string branch here implies
-# yq-absent + no-config-file (substrate is silent in that case).
-_config_label_value() {
-  local workspace="$1"
-  local result
-  result=$(_load_effective_config "$workspace" 2>/dev/null) || return 0
-  jq -r '.sha256' <<<"$result"
-}
-
-
-# First-run / drift hint emitter (D5 informational output, extended for ocn).
-# Called from cmd_up after container exists. Strategy:
-#   1) If the per-container "applied config" snapshot exists (post-rip-cage-ocn
-#      containers, including any container that has gone through cmd_up resume
-#      since the snapshot was introduced), diff live vs snapshot. Reload-eligible
-#      diffs → suggest `rc reload`; non-eligible → suggest `rc destroy && rc up`;
-#      no diff → silent.
-#   2) Else (legacy container without snapshot), fall back to the original
-#      label-sha comparison (rc.config-loaded label).
-#
-# No-ops silently when yq is absent (substrate must not break existing flows
-# for users without yq) or when neither config file exists (per D5).
-_config_emit_hint() {
-  local workspace="$1" container_name="$2"
-  command -v yq &>/dev/null || return 0
-  local result
-  result=$(_load_effective_config "$workspace" 2>/dev/null) || return 0
-  local g_layer p_layer
-  g_layer=$(jq -r '.layers.global' <<<"$result")
-  p_layer=$(jq -r '.layers.project' <<<"$result")
-  if [[ "$g_layer" == "null" && "$p_layer" == "null" ]]; then
-    return 0
-  fi
-  local current_sha live_cfg
-  current_sha=$(jq -r '.sha256' <<<"$result")
-  live_cfg=$(jq -c '.config' <<<"$result")
-
-  local applied_cfg
-  if applied_cfg=$(_config_read_applied "$container_name" 2>/dev/null); then
-    # Snapshot-aware path (rip-cage-ocn).
-    # Pass schema defaults so absent-in-snapshot + live==default fields are non-drift
-    # (handles old snapshots written before a new defaulted field was introduced — rip-cage-1f59.9).
-    local _schema_defaults diff_paths
-    _schema_defaults=$(_config_schema_defaults_json 2>/dev/null || echo '{}')
-    diff_paths=$(_config_diff_paths "$live_cfg" "$applied_cfg" "$_schema_defaults" 2>/dev/null || true)
-    if [[ -z "$diff_paths" ]]; then
-      return 0  # silent — cage state matches live config
-    fi
-    if printf '%s\n' "$diff_paths" | _config_paths_all_reload_eligible; then
-      log "Notice: .rip-cage.yaml has reload-eligible changes since last apply:"
-      while IFS= read -r p; do [[ -n "$p" ]] && log "  - $p"; done <<<"$diff_paths"
-      # rip-cage-y0u0: this hint only fires when the caller did NOT converge —
-      # either ${container_name} is RUNNING (converge-on-up only applies to
-      # stopped cages) or a stopped cage's drift was skipped via --no-reload.
-      # Name both paths forward: `rc reload` applies it right now (works on a
-      # running cage too); or the NEXT plain 'rc up' converges automatically
-      # once ${container_name} is stopped (--no-reload is a one-shot opt-out).
-      log "  Run: rc reload ${container_name}   (or just 'rc up' again once ${container_name} is stopped — it converges automatically now)"
-    else
-      log "Notice: .rip-cage.yaml has changes since this container was created (paths: $(echo "$diff_paths" | tr '\n' ',' | sed 's/,$//'))."
-      log "  Some fields require 'rc destroy ${container_name} && rc up' to take effect (see 'rc config show')."
-    fi
-    return 0
-  fi
-
-  # Legacy fallback: no snapshot file. Use label sha comparison (pre-ocn behavior).
-  local existing_label
-  existing_label=$(_msb_label "$container_name" "rc.config-loaded" || true)
-  if [[ -z "$existing_label" ]]; then
-    log "Loaded .rip-cage.yaml (sha256:${current_sha:0:12}). Run 'rc config show' to inspect."
-  elif [[ "$existing_label" != "$current_sha" ]]; then
-    log "Notice: .rip-cage.yaml has changed since this container was created (label=${existing_label:0:12}, current=${current_sha:0:12})."
-    log "  Some fields may require 'rc destroy && rc up' to take effect (see 'rc config show')."
-  fi
 }
 

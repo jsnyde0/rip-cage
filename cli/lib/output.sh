@@ -51,7 +51,10 @@ Commands:
     --no-cache, --pull, --progress, -D/--debug, -q/--quiet   Admitted (verified benign against the safety floor)
     (anything else)      REJECTED before any docker call -- run 'rc generate-dockerfile' + your own 'docker build' instead, explicitly outside rc's safety floor
   generate-dockerfile                           Print the manifest-composed Dockerfile to stdout (escape hatch for flags rc build's allowlist rejects; invoke docker build yourself, outside rc's safety floor)
-  up [path] [options]                           Start or resume a container (default: .)
+  up [path] [options]                           Start or resume a cage (default: .)
+    --conf FILE         Native msb cage config to launch with. Default:
+                        ~/.config/rip-cage/projects/<cage-name>.yaml. Must
+                        resolve outside every mount the config declares.
     --port PORT         Expose a port
     --env-file FILE     Load env vars from file
     --cpus N            CPU limit (default: 2)
@@ -65,14 +68,11 @@ Commands:
   down [name]                                  Stop a container
   destroy [-f|--force] [name]                   Remove container and volumes
   reload [name] [--dry-run] [--allow-transcript-loss]
-                                                Hot-reload .rip-cage.yaml allowlist changes (network.allowed_hosts);
-                                                also repairs a STOPPED cage's stale image (after 'rc build') without
-                                                touching its named volumes -- the repair leaves the cage running;
-                                                refuses if a legacy cage's ~/.claude/projects isn't host-bound
-                                                (--allow-transcript-loss overrides)
-  allowlist add <host> [--cage=<name>]         Append host to network.allowed_hosts (idempotent; --output json)
-  allowlist show [--effective] [--observed]    Show configured/effective/observed blocked hosts
-  allowlist promote --from-observed [--cage]   Merge observed blocked hosts + flip mode=block + rc reload
+                                                Cold-recreate a cage against its current config file
+                                                (graceful stop, remove, recreate). Also repairs a STOPPED
+                                                cage's stale image (after 'rc build') without touching its
+                                                named volumes; refuses if a legacy cage's ~/.claude/projects
+                                                isn't host-bound (--allow-transcript-loss overrides)
   test [name]                                  Run in-container safety stack tests
   test --host                                  Run all host-side tests (host-only; not usable inside container)
   test --e2e                                   Full lifecycle e2e test (slow; RC_E2E_REBUILD=1 to rebuild image)
@@ -80,16 +80,16 @@ Commands:
   doctor [name]                                Per-container diagnostic — labels + live probes
   doctor --host                                Daemon-liveness probe (no container required)
   auth refresh                                 Refresh credentials from host keychain
-  config show [path] [--json]                  Print effective .rip-cage.yaml config (ADR-021); path defaults to pwd
-  config get <key> [path] [--json]             Print one effective config value (dotted.key; rip-cage-08q)
-  config set <key> <value> --scope S           Set a scalar/enum (S=global|project; surgical, comment-preserving; ADR-021 D8)
-  config add <key> <item> --scope S            Add a list item (S=global|project)
-  config remove <key> <item> --scope S         Remove a list item (S=global|project)
   manifest reconcile                           Re-seed default-derived tools.yaml entries from current
                                                 manifest/default-tools.yaml, preserving custom entries (rip-cage-6vt9)
-  schema                                       Print machine-readable command schema
   completions <shell>                          Print shell completion script (zsh|bash)
   setup                                        Interactive shell integration setup
+
+Cage config: one native microsandbox config file per project. Copy the shipped
+template (share/rip-cage/cage.yaml.template) to
+~/.config/rip-cage/projects/<cage-name>.yaml and edit it -- rc reads it and
+never writes it. Adding an egress host is a line in that file's network.allow,
+then 'rc up --replace'.
 
 Global flags:
   --output json    Emit machine-readable JSON
