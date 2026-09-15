@@ -17,11 +17,13 @@
 # of the FLAGS array produced by the real generator chain, inside this
 # script.
 #
-# Per the msb fake-accept confound (bd memory
-# msb-netstack-fake-accepts-tcp-connect-not-egress): connect()-success on a
-# disallowed port/host proves NOTHING (msb fake-accepts TCP connects; :443
-# is grabbed by the TLS interceptor then dropped, :53 is answered by msb's
-# own DNS forwarder). Every ALLOW verdict below rests on real bidirectional
+# Per the msb-verification discipline (bd memory
+# msb-netstack-fake-accepts-tcp-connect-not-egress; msb <0.6.10 ONLY for the
+# mechanic it is named for -- on 0.6.18 a denied destination fails
+# immediately instead, rip-cage-6v34.9): connect()-success on a disallowed
+# port/host still proves NOTHING, because :443 is grabbed by the TLS
+# interceptor then dropped and :53 is answered by msb's own DNS forwarder.
+# Every ALLOW verdict below rests on real bidirectional
 # application data (real generative claude output, or a real HTTP body with
 # size>0). Every BLOCK verdict rests on ZERO bytes WITH a same-context
 # positive control proving the network/host is otherwise live.

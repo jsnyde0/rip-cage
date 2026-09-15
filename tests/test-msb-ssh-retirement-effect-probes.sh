@@ -10,9 +10,10 @@
 # rc's create verb -- that's S6's job; this is the S4<->S6/S5<->S6
 # non-circularity pattern documented in docs/2026-07-10-tsf2-decomposition.md).
 #
-# Per the msb fake-accept confound (bd memory
-# msb-netstack-fake-accepts-tcp-connect-not-egress), the push/PR proof here
-# is never connect()-success or exit-0 alone: "the push landed" is proven by
+# Per the msb-verification discipline (bd memory
+# msb-netstack-fake-accepts-tcp-connect-not-egress; msb <0.6.10 ONLY for the
+# mechanic it is named for, durable for the discipline), the push/PR proof
+# here is never connect()-success or exit-0 alone: "the push landed" is proven by
 # the REMOTE REF ACTUALLY MOVING, read back independently from the HOST via
 # `gh api` (outside the guest, real bidirectional GitHub API data), before
 # vs after. The real token never enters the guest (msb `--secret`

@@ -9,9 +9,9 @@
 # Every claim below is a REAL msb effect (a real boot, a real label read
 # back via `msb inspect`, a real command executed in-guest via `msb exec`)
 # -- never a bare exit-code check on its own (msb-verification discipline,
-# bd memory msb-netstack-fake-accepts-tcp-connect-not-egress; though that
-# memory is about network fake-accepts specifically, the same "prove it,
-# don't assume it" discipline applies to state/label reads here).
+# bd memory msb-netstack-fake-accepts-tcp-connect-not-egress; msb <0.6.10
+# ONLY for the network mechanic it is named for, but the same "prove it,
+# don't assume it" half is durable and applies to state/label reads here).
 #
 # NEEDS_MSB: requires a live msb binary + the rip-cage:latest image already
 # loaded into msb's local cache (`msb image list`). Self-skips (exit 0,

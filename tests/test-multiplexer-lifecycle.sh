@@ -399,8 +399,9 @@ _create_workspace() {
     # api.anthropic.com/mcp-proxy.anthropic.com/datadoghq are seeded).
     # Under Docker (pre-cutover) there was no egress restriction so this
     # never mattered; under msb's default-deny egress it must be declared
-    # explicitly or pi's LLM call gets a fake-accepted zero-byte connection
-    # ("Connection error"). Lists union across config layers (ADR-021 D2),
+    # explicitly or pi's LLM call fails to reach it ("Connection error" --
+    # on msb 0.6.18 the denied domain fails DNS resolution client-side,
+    # rip-cage-6v34.9). Lists union across config layers (ADR-021 D2),
     # so this only ADDS to the curated default, never narrows it.
     printf 'version: 2\nsession:\n  multiplexer: %s\nnetwork:\n  allowed_hosts:\n    - openrouter.ai\n' "$mux" > "${ws}/.rip-cage.yaml"
   fi

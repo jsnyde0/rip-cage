@@ -14,11 +14,13 @@
 # content or S2/S6's wiring regresses, this test exercises the actual
 # shipped path and fails against it directly.
 #
-# Per the msb fake-accept confound (bd memory
-# msb-netstack-fake-accepts-tcp-connect-not-egress): the ALLOW claim rests
-# on a REAL Claude Code completion -- generative content only Anthropic's
-# API can produce, the strongest available anti-fake-accept confound
-# (mirrors rip-cage-cmqb / rip-cage-1ujn) -- never connect()-success. The
+# Per the msb-verification discipline (bd memory
+# msb-netstack-fake-accepts-tcp-connect-not-egress; msb <0.6.10 ONLY for the
+# mechanic it is named for, durable for the discipline): the ALLOW claim
+# rests on a REAL Claude Code completion -- generative content only
+# Anthropic's API can produce, the strongest available proof that real
+# application data crossed (mirrors rip-cage-cmqb / rip-cage-1ujn) -- never
+# connect()-success. The
 # DENY claim rests on zero bytes returned by curl to a host outside the
 # curated defaults, on the SAME booted cage (positive+negative control,
 # rules out a dead-network false positive).
@@ -142,8 +144,8 @@ fi
 
 # ===========================================================================
 # AC1: real basic claude -p turn completes end to end on the defaults-only
-# cage -- real generative output (anti-fake-accept confound), not
-# connect-success.
+# cage -- real generative output (proof that real application data crossed),
+# not connect-success.
 # ===========================================================================
 echo ""
 echo "=== AC1: real claude -p turn on a defaults-only cage ==="

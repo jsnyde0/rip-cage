@@ -33,8 +33,9 @@
 #     `docker exec` into the nested container (that path hangs on a nested
 #     TTY/stream issue per findings §10b).
 #
-# Per the msb fake-accept confound (bd memory
-# msb-netstack-fake-accepts-tcp-connect-not-egress) and this bead's own
+# Per the msb-verification discipline (bd memory
+# msb-netstack-fake-accepts-tcp-connect-not-egress; msb <0.6.10 ONLY for the
+# mechanic it is named for, durable for the discipline) and this bead's own
 # acceptance text, every assertion here is a REAL effect -- an actual
 # written-then-read-back value, a REAL overlay2 mount error, a REAL
 # same-PID liveness check -- never a container "healthy" status or

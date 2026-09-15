@@ -21,12 +21,13 @@
 # mechanics dotpi-3bi's drover/herdr automation depends on
 # (docs/2026-07-07-microvm-spike-findings.md §8a/§8a-follow-up).
 #
-# DESIGN FINDING (Fable ruling 4 -- fake-accept limit is a design finding,
-# not a thing to test around): this entire drive path is HOST->GUEST only
-# -- the host runs `msb exec`/`msb exec -t` into the guest CLI, and the
-# herdr control surface itself is a guest-local UNIX domain socket, never
-# TCP. No leg of the socket-API pane run/read path requires guest->host
-# TCP, so msb's fake-accept-on-denied-TCP property is simply not
+# DESIGN FINDING (Fable ruling 4 -- the denied-TCP limit is a design
+# finding, not a thing to test around): this entire drive path is
+# HOST->GUEST only -- the host runs `msb exec`/`msb exec -t` into the guest
+# CLI, and the herdr control surface itself is a guest-local UNIX domain
+# socket, never TCP. No leg of the socket-API pane run/read path requires
+# guest->host TCP, so how msb treats a denied TCP destination
+# (fake-accept on msb <0.6.10, immediate failure on 0.6.18) is simply not
 # implicated here. (A *future* factory leg that needed the cage to reach a
 # host-side service directly -- e.g. the parked host-service beads seam,
 # ADR-029 D7 -- would be the trigger for that finding, not this one.)

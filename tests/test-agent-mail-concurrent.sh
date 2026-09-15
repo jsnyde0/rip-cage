@@ -324,8 +324,9 @@ git -C "$WORKSPACE" init -q 2>/dev/null
 # NOT in the curated default egress allowlist (cli/lib/config.sh's
 # _config_default_global_yaml — ADR-029 D4). Under Docker (pre-cutover)
 # there was no egress restriction so this never mattered; under msb's
-# default-deny egress it must be declared explicitly or pi's LLM call gets a
-# fake-accepted zero-byte connection ("Connection error"). Lists union
+# default-deny egress it must be declared explicitly or pi's LLM call fails
+# to reach it ("Connection error" -- on msb 0.6.18 the denied domain fails
+# DNS resolution client-side, rip-cage-6v34.9). Lists union
 # across config layers (ADR-021 D2), so this only ADDS to the curated
 # default, never narrows it.
 printf 'version: 2\nsession:\n  multiplexer: herdr\nnetwork:\n  allowed_hosts:\n    - openrouter.ai\n' > "${WORKSPACE}/.rip-cage.yaml"

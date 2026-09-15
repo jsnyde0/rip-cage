@@ -14,8 +14,11 @@
 # SURVIVES a real stop+resume cycle on the recreated cage, not just the
 # immediate post-reload state.
 #
-# msb fake-accepts denied/unreachable TCP (connect() succeeds, zero bytes)
-# -- every claim below rests on REAL bidirectional application data (a
+# A denied/unreachable destination yields zero bytes either way -- on msb
+# 0.6.18 it fails immediately (DNS-stage for a denied domain, connect-stage
+# for a denied IP, rip-cage-6v34.9); msb <0.6.10 instead fake-accepted the
+# connect and delivered nothing. So every claim below rests on REAL
+# bidirectional application data (a
 # nonzero HTTP response body), never connect-success alone, plus a
 # POSITIVE CONTROL (an always-allowed host) on the SAME booted cage at
 # every stage, ruling out a dead-network false positive.

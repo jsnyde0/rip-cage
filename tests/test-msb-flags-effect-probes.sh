@@ -7,9 +7,10 @@
 # rc's create verb -- that's S6's job; this is the S4<->S6 non-circularity
 # pattern documented in docs/2026-07-10-tsf2-decomposition.md). Proves the
 # generator's output actually WORKS as containment, not merely that it
-# parses -- per the msb fake-accept confound (bd memory
-# msb-netstack-fake-accepts-tcp-connect-not-egress) every assertion here is
-# real bidirectional application data or its documented absence, NEVER
+# parses -- per the msb-verification discipline (bd memory
+# msb-netstack-fake-accepts-tcp-connect-not-egress; msb <0.6.10 ONLY for the
+# mechanic it is named for, durable for the discipline) every assertion here
+# is real bidirectional application data or its documented absence, NEVER
 # connect()-success or a rule appearing in `msb inspect`.
 #
 # No real secrets are used anywhere -- all "credential" values are synthetic

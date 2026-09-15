@@ -11,9 +11,10 @@
 # pattern documented in docs/2026-07-10-tsf2-decomposition.md). This keeps
 # S4 independently verifiable before S6's lifecycle verbs exist.
 #
-# Per the msb fake-accept confound (bd memory
-# msb-netstack-fake-accepts-tcp-connect-not-egress) every reachability claim
-# here is real bidirectional application data, and every deny claim is
+# Per the msb-verification discipline (bd memory
+# msb-netstack-fake-accepts-tcp-connect-not-egress; msb <0.6.10 ONLY for the
+# mechanic it is named for, durable for the discipline) every reachability
+# claim here is real bidirectional application data, and every deny claim is
 # zero-bytes evidence -- never connect()-success or exit-0 alone.
 #
 # Coverage (mirrors the bead's acceptance criteria):

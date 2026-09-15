@@ -11,9 +11,11 @@
 # chowns, mise install, or Claude Code bootstrap) and stub the resolver.
 #
 # NOTE (ADR-029 D6 + the 2026-07-09 spike): host.microsandbox.internal
-# RESOLVES in the guest but is known to fake-accept TCP under msb on
-# macOS/HVF -- resolvability is not reachability. These tests only assert
-# "resolves"/"is chosen", never "is reachable".
+# RESOLVES in the guest -- resolvability is not reachability. The spike
+# measured a fake-accepted TCP connect to it on msb <0.6.10 under macOS/HVF;
+# that mechanic is gone on 0.6.18 (rip-cage-6v34.9) and guest->host
+# reachability has not been re-measured since. Either way these tests only
+# assert "resolves"/"is chosen", never "is reachable".
 #
 # _run_probe (below) calls _rc_probe_host_bridge as a plain (non-substituted)
 # command, redirecting its stdout/stderr to temp files. Capturing via

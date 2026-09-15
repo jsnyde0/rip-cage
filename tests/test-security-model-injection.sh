@@ -18,10 +18,13 @@
 #   B6  Hostile .claude/settings.json (ANTHROPIC_BASE_URL) -> rc up refuses
 #       (host-side dry-run preflight -- runtime-agnostic, unchanged).
 #   B8  Host-agent repair cycle (D11 load-bearing seam): a not-yet-allowed
-#       host returns ZERO bytes (msb fake-accepts the TCP connect and
-#       delivers nothing -- NOT a connection-refused/RST, per the
-#       fake-accept confound, bd memory
-#       msb-netstack-fake-accepts-tcp-connect-not-egress); the denial
+#       host returns ZERO bytes -- on msb 0.6.18 the denied domain fails DNS
+#       resolution client-side and curl never connects (rip-cage-6v34.9);
+#       msb <0.6.10 instead fake-accepted the connect and delivered nothing
+#       (msb <0.6.10 only; bd memory
+#       msb-netstack-fake-accepts-tcp-connect-not-egress, msb <0.6.10
+#       banner). The assertion is on bytes transferred, which holds
+#       under both. The denial
 #       surfaces as a readable fix-hint via the msb trace-log miner
 #       (_msb_denied_domains_from_trace_log); `rc allowlist add` +
 #       `rc reload` (a COLD-RECREATE under msb, ADR-029 D4 -- no
@@ -324,10 +327,14 @@ echo ""
 # ---------------------------------------------------------------------------
 # B8: Host-agent repair cycle (D11 load-bearing seam), msb-native.
 #
-# 1. curl a not-yet-allowed host from inside the cage -> ZERO bytes (msb
-#    fake-accepts the TCP connect; this is NOT connection-refused/RST, so
-#    the assertion is on bytes transferred, never on curl's exit code alone
-#    -- msb-netstack-fake-accepts-tcp-connect-not-egress).
+# 1. curl a not-yet-allowed host from inside the cage -> ZERO bytes. On msb
+#    0.6.18 the denied DOMAIN fails DNS resolution client-side (curl exit 6)
+#    and a denied IP fails at TCP connect in ~0-2ms (curl exit 7), measured
+#    rip-cage-6v34.9. msb <0.6.10 instead fake-accepted the connect and
+#    delivered zero bytes (memory
+#    msb-netstack-fake-accepts-tcp-connect-not-egress, msb <0.6.10 only).
+#    The assertion stays on bytes transferred, never on curl's exit code,
+#    so it holds under both mechanics.
 # 2. The denial surfaces as a readable fix-hint: source rc to get
 #    _msb_denied_domains_from_trace_log (cli/lib/msb_runtime.sh), the SAME
 #    miner cli/doctor.sh's posture probe and cli/reload.sh's dry-run use.
@@ -340,7 +347,8 @@ echo "=== B8: Host-agent repair cycle (D11), msb-native ==="
 
 B8_HOST="example.net"
 
-# Step 1: curl the not-yet-allowed host -> zero bytes (fake-accept, not RST).
+# Step 1: curl the not-yet-allowed host -> zero bytes (DNS resolution fails
+# client-side on msb 0.6.18; assert on bytes, not on curl's exit code).
 B8_DENY=$(msb exec "$CAGE_NAME" -- curl -sS -o /dev/null -w '%{http_code} %{size_download}' --max-time 8 "https://${B8_HOST}" 2>/dev/null)
 if [[ "$B8_DENY" == "000 0" ]]; then
   check "B8 step1: curl new host → ZERO bytes (not connect-success)" "pass" "HTTP ${B8_DENY}"
@@ -385,7 +393,8 @@ else
   check "B8 step4b: recreated cage's declared policy includes the new host" "fail" "$B8_POLICY"
 fi
 
-# Step 5: retry curl → real bidirectional data (not zero bytes, not fake-accept).
+# Step 5: retry curl → real bidirectional data (HTTP 200 with size>0, never
+# a bare exit-0).
 B8_RETRY=$(msb exec "$CAGE_NAME" -- curl -sS -o /dev/null -w '%{http_code} %{size_download}' --max-time 10 "https://${B8_HOST}" 2>/dev/null)
 B8_RETRY_SIZE="${B8_RETRY#* }"
 if [[ "$B8_RETRY" == 200\ * && "$B8_RETRY_SIZE" -gt 0 ]]; then

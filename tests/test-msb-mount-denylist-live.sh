@@ -9,10 +9,11 @@
 # (_check_secret_path_denylist, cli/lib/path.sh) is host-side, pre-flight,
 # and msb-independent -- this test proves the PIPELINE it gates (host check
 # -> generator -> a REAL msb cage) still holds the invariant end to end, per
-# the msb fake-accept confound (bd memory
-# msb-netstack-fake-accepts-tcp-connect-not-egress; the same "don't trust
-# the mechanism, prove the effect" discipline applies to mount
-# presence/absence, not just network): a denied path's content must be
+# the msb-verification discipline (bd memory
+# msb-netstack-fake-accepts-tcp-connect-not-egress; msb <0.6.10 ONLY for the
+# network mechanic it is named for, but its "don't trust the mechanism,
+# prove the effect" half is durable): that discipline applies to mount
+# presence/absence, not just network -- a denied path's content must be
 # UNREADABLE FROM INSIDE A REAL GUEST, never merely "the host validator
 # returned an error".
 #

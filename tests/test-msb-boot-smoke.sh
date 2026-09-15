@@ -5,8 +5,10 @@
 # This is the bead's "harness target" made literal: docker save a current rc
 # image, msb load it, boot a cage from it, and run a REAL in-guest command
 # that returns its REAL output value -- never accept `msb load` exit-0, an
-# image-list entry, or a connect()-success as evidence (msb fake-accepts
-# things; bd memory msb-netstack-fake-accepts-tcp-connect-not-egress).
+# image-list entry, or a connect()-success as evidence (prove-the-effect
+# discipline, bd memory
+# msb-netstack-fake-accepts-tcp-connect-not-egress -- msb <0.6.10 ONLY for
+# the mechanic it is named for, durable for the discipline).
 #
 # Coverage (mirrors the bead's three acceptance criteria exactly):
 #   B1  docker save + msb load produces a cage that BOOTS (real in-guest
