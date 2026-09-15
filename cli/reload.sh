@@ -328,14 +328,8 @@ _reload_report_transcript_guard() {
 }
 
 
-# Reload-eligible JSON path set (rip-cage-ocn / ADR-022 D6; ssh.allowed_hosts
-# retired at the msb cutover, ADR-029 D3 — rip-cage-f1qo S5).
-# Paths listed here can be mutated by `rc reload` without container recreation.
-# Anything else triggers refuse-loud (exit 1) at reload time and a recreate
-# hint from _config_emit_hint when label/snapshot drift is detected.
-# network.allowed_hosts is the sole reload-eligible path post-schema-v2 (ADR-021
-# D9): network.mode is a retired vestigial field (ADR-029, egress is msb default-
-# deny — there is no observe/block mode). A change to network.allowed_hosts is
-# applied by rc reload's cold-recreate against the now-current cage config.
-_RC_RELOAD_ELIGIBLE_PATHS='network.allowed_hosts'
+# The reload-eligible path set retired with the config diff it gated
+# (ADR-031 D2). It named which merged-config fields `rc reload` would accept
+# and which made it refuse; with one unmerged file read fresh at every launch
+# there is no merge to classify fields of, and reload recreates unconditionally.
 

@@ -91,7 +91,7 @@ YAML
 }
 
 
-# Auto-seed the manifest on first run. Mirrors _config_ensure_global_seeded.
+# Auto-seed the manifest on first run.
 # If the file already exists: silent no-op (idempotent — returns 0 immediately).
 # If absent: mkdir -p its directory, write the default manifest YAML, emit a
 # one-line stderr notice.

@@ -48,8 +48,11 @@ cmd_test() {
   local preflight_skip_line=""  # if set, skip _bd_host_preflight and use this line
   if [[ -n "$ws_source" ]]; then
     preflight_beads_dir="${ws_source}/.beads"
-    # Mirror D6 semantics (cli/up.sh:_up_detect_worktree): check for .beads/redirect first,
-    # then fall back to worktree auto-redirect with _path_under_allowed_roots guard.
+    # Mirror D6 semantics (cli/up.sh:_up_detect_worktree): check for
+    # .beads/redirect first, then fall back to worktree auto-redirect. The
+    # allowed-roots guard that used to gate the fallback retired with
+    # ADR-031 D2; the protected-paths rule is what still refuses a redirect
+    # aimed at a credential store.
     if [[ -f "${preflight_beads_dir}/redirect" ]]; then
       local redirect_target
       redirect_target=$(cat "${preflight_beads_dir}/redirect")

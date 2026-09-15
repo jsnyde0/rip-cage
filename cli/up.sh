@@ -2339,19 +2339,13 @@ cmd_up() {
       # rip-cage-jnvb / D-b: image-ID drift hard-stop surfaced here too —
       # dry-run planners must see the same refusal the real resume would hit.
       # rip-cage-tsf2.9 (code-review F1) / rip-cage-y0u0 (default-on flip):
-      # preview a converge HONESTLY, and do so in the SAME ORDER the real
-      # stopped branch runs it (RESUME-GUARDS-REAL-STOPPED) — converge FIRST,
-      # before the abort-loud guards. This preserves the dry-run<->real mirror
-      # invariant: on the real path a converge cold-recreates and RETURNS
-      # before the guards ever run (the recreate lands on the current image,
-      # so e.g. image-ID drift is resolved, not aborted). A dry-run that ran
-      # the image-drift guard first would falsely predict an abort for a
-      # stopped cage that has BOTH image drift (invisible to
-      # _up_eligible_drift_paths — not a config field) AND an eligible
-      # allowed_hosts edit. The comparator is read-only (snapshot + config
-      # compare), so this stays --dry-run-safe (no mutation). Converge is now
-      # the DEFAULT for a stopped cage with eligible drift; --no-reload opts
-      # out (RC_UP_CONVERGE is retired).
+      # preview a converge HONESTLY, and in the SAME ORDER the real stopped
+      # branch runs it — converge FIRST, before the abort-loud guards. That
+      # ordering keeps the dry-run and the real path mirrored: on the real
+      # path a converge cold-recreates and RETURNS before the guards run, so
+      # a dry-run that ran the image-drift guard first would predict an abort
+      # for a cage the recreate would have fixed. Converge is the DEFAULT for
+      # a stopped cage (ADR-031 D3); --no-reload opts out.
       # ADR-031 D3: a STOPPED cage is recreated against the current config
       # on a plain `rc up`. There is no drift comparison left to make — the
       # config file is read fresh at every launch, so "has it changed?" has
@@ -2844,11 +2838,11 @@ cmd_up() {
   _UP_RUN_ARGS+=(--label "rc.symlink-follow-fingerprint=${_sfl_fingerprint}")
   unset _sfl_mode_for_fp _sfl_on_dangling_for_fp _sfl_scope_for_fp _sfl_fingerprint
 
-  # rip-cage-1f59.1: resolve session.multiplexer from effective config (ADR-021 D6).
-  # Defaults to "none" when unset. Invalid enum values are already caught by
-  # _config_validate_or_abort (upstream) per ADR-001 fail-loud contract.
-  # Threaded into the container as RC_MULTIPLEXER env var (read by init-rip-cage.sh)
-  # and stamped as rc.session.multiplexer label (for attach helpers + rc ls).
+  # rip-cage-1f59.1: which multiplexer this cage runs, threaded in as
+  # RC_MULTIPLEXER (read by init-rip-cage.sh) and stamped as the
+  # rc.session.multiplexer label (for attach helpers + rc ls). The provider
+  # contract is unchanged; rc names no multiplexer, it forwards the name it
+  # is given (ADR-005 D12).
   # session.multiplexer retired with the schema (ADR-031 D2). "none" was its
   # default and stays the default: a plain shell, no multiplexer started.
   # $RC_MULTIPLEXER selects a provider for a caller that wants one; the
