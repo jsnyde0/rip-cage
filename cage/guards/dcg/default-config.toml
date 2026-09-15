@@ -6,10 +6,13 @@
 # (config.rs:2417 — user layer loads only if explicit_layer.is_none()).
 #
 # The `core` pack is force-enabled by DCG regardless of this file
-# (config.rs:946-947). Additional packs and custom rules injected via
-# .rip-cage.yaml dcg.* fields are merged into a runtime copy of this file
-# by `rc up` / init-rip-cage.sh. DO NOT DELETE — a missing or malformed
-# DCG_CONFIG silently re-opens the user-layer config hole (ADR-025 D5).
+# (config.rs:946-947). `rc up` used to merge additional packs and custom rules
+# from the retired rip-cage schema's dcg.* fields into a runtime copy of this
+# file; it no longer does (ADR-031 D2 — DCG policy is the recipe's business,
+# and ADR-025 D1's transport note has it riding the recipe's own mount). A
+# recipe that wants a richer policy declares a read-only mount over this path
+# in its cage config. DO NOT DELETE — a missing or malformed DCG_CONFIG
+# silently re-opens the user-layer config hole (ADR-025 D5).
 
 [packs]
 enabled = ["core"]
