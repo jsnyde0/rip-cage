@@ -74,6 +74,29 @@ mounts:
   #
   # - "<ABSOLUTE_PATH_TO_AN_EMPTY_FILE>:/workspace/config/local-secrets.toml:ro"
 
+# --- credentials the cage never possesses --------------------------------
+# A `secrets:` entry binds a credential to the hosts it may be injected
+# toward. LEAVE `value:` OUT. Omitted, msb takes the real value from the HOST
+# env var of the same name at boot and the guest only ever sees the
+# placeholder "$MSB_<NAME>" -- on disk, in its environment, in /proc. Writing
+# a `value:` here would put the secret in this file, which is the one thing
+# this shape exists to avoid.
+#
+# rc fills that host env var for you at launch, reading it from
+# ~/.config/rip-cage/secrets/<NAME> when that file exists (host-side, outside
+# every cage mount). Otherwise export <NAME> yourself before `rc up`, or msb
+# fails loud naming it.
+#
+# The `env:` line below is what makes the binding reach the tool: Claude Code
+# reads a fixed variable, so it gets the placeholder under that name.
+secrets:
+  CCTOK:
+    allow:
+      - "api.anthropic.com"
+
+env:
+  CLAUDE_CODE_OAUTH_TOKEN: "$MSB_CCTOK"
+
 # --- egress --------------------------------------------------------------
 # `policy: none` is msb's default-DENY: nothing leaves the cage except the
 # hosts named below. Each entry uses the port-443 convention

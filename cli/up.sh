@@ -522,8 +522,10 @@ _up_prepare_docker_mounts() {
   # independently suppressible.
   local _UP_CRED_MOUNTS_CLAUDE="${_UP_CRED_MOUNTS_CLAUDE:-real}"
   local _UP_CRED_MOUNTS_PI="${_UP_CRED_MOUNTS_PI:-real}"
-  if [[ "$_UP_CRED_MOUNTS_CLAUDE" == "none" ]]; then
-    log "auth.credential_mounts=none — Claude keychain extraction intentionally skipped (non-possession posture)"
+  if [[ "${_UP_DRY_RUN_NO_SIDE_EFFECTS:-0}" == "1" ]]; then
+    : # --dry-run assembles the argv without ever reaching the keychain.
+  elif [[ "$_UP_CRED_MOUNTS_CLAUDE" == "none" ]]; then
+    log "credential mounts none — Claude keychain extraction intentionally skipped (non-possession posture)"
   else
     # Extract OAuth credentials from macOS keychain to file (if on macOS)
     _extract_credentials || true
@@ -912,10 +914,13 @@ _up_prepare_docker_mounts() {
   done <<<"$_mba_out"
   unset _mba_line _mba_out _mba_rc
 
-  # State volumes
-  _UP_RUN_ARGS+=(-v "rc-state-${_name}:/home/agent/.claude-state")
-  _UP_RUN_ARGS+=(-v "rc-history-${_name}:/commandhistory")
-  _UP_RUN_ARGS+=(-v "rc-mise-cache:/home/agent/.local/share/mise")
+  # THE NAMED VOLUMES MOVED INTO THE CAGE CONFIG (ADR-031 D2). ely4.1 reported
+  # that a named volume had no config-file form, which is why rc generated
+  # these three flags; spike rip-cage-ely4.16 Q4 measured the map form working
+  # on msb 0.6.18 (`named:` + `target:` + `create: ensure-exists`), so the
+  # shipped template declares them and rc generates nothing. `rc destroy` still
+  # removes rc-state-<cage> and rc-history-<cage> by name — it owns their
+  # lifecycle either way, because msb remove alone orphans them.
 }
 
 
@@ -2055,6 +2060,8 @@ cmd_up() {
   local rc_up_reload="" rc_up_no_reload=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --conf) [[ $# -ge 2 ]] || { echo "Error: --conf requires a path" >&2; exit 1; }; _UP_CONF_FLAG="$2"; shift 2 ;;
+      --replace) _UP_MSB_REPLACE="true"; shift ;;
       --port) [[ $# -ge 2 ]] || { echo "Error: --port requires a value" >&2; exit 1; }; port="$2"; shift 2 ;;
       --env-file) [[ $# -ge 2 ]] || { echo "Error: --env-file requires a value" >&2; exit 1; }; env_file="$2"; shift 2 ;;
       --cpus) [[ $# -ge 2 ]] || { echo "Error: --cpus requires a value" >&2; exit 1; }; rc_cpus="$2"; shift 2 ;;
@@ -2455,6 +2462,27 @@ cmd_up() {
       _dry_host_key=$(printf '%s' "$path" | tr '/.' '-')
       echo "Would set RC_HOST_PROJECT_KEY=${_dry_host_key} (unifies -workspace sessions with host project key)"
       [[ "$would_action" != "would_attach" ]] && echo "Would run init script"
+
+      # THE ARGV IS THE LAUNCHER'S CONTRACT. The "Would mount" lines above are
+      # a readable summary; this is the exact command. It is assembled by the
+      # same _up_build_msb_create_argv the real create runs, so a dry-run that
+      # prints something the real launch would not do is not possible by
+      # construction — not a second rendering that can drift from the first.
+      #
+      # _UP_DRY_RUN_NO_SIDE_EFFECTS keeps the mount preparation read-only:
+      # --dry-run must never reach the macOS keychain.
+      if [[ "$would_action" == "would_create" || "$would_action" == "would_converge" ]]; then
+        local _UP_RUN_ARGS=()
+        local _UP_DRY_RUN_NO_SIDE_EFFECTS=1
+        local _UP_MSB_ARGV=()
+        if _up_prepare_docker_mounts "$path" "$name" >/dev/null 2>&1 \
+            && _up_prepare_environment "$path" "$port" "$env_file" "$rc_cpus" "$rc_memory" "$rc_pids_limit" >/dev/null 2>&1 \
+            && _up_build_msb_create_argv "$name" "$path"; then
+          echo "Would run: ${_UP_MSB_ARGV[*]}"
+        else
+          echo "Would run: msb create --conf ${_UP_CAGE_CONF} --name ${name} --log-level trace [mounts]"
+        fi
+      fi
     fi
     return 0
   fi
