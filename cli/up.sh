@@ -2322,6 +2322,25 @@ cmd_up() {
     state=""
   fi
 
+  # `rc up --replace` ON A RUNNING CAGE is the EXPLICIT graceful-stop-then-
+  # recreate (ADR-031 D3). A running cage is never recreated implicitly —
+  # that kills a live agent session, and agent autonomy is the product
+  # (ADR-029 D4's stopped-only rule, kept). Asking for it by name is the
+  # whole difference, so it happens here, before the state branch: stop,
+  # remove, and let the create path below run as if the cage were absent.
+  # Under --dry-run this is announced and NOT performed.
+  if [[ "${_UP_MSB_REPLACE:-false}" == "true" && "$state" == "running" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+      log "Would graceful-stop and recreate running cage ${name} (--replace)"
+    else
+      log "Recreating running cage ${name} (--replace): graceful stop, remove, create against the current config."
+      _msb_stop_graceful "$name"
+      _msb_remove "$name"
+    fi
+    state=""
+    _inspect_exit=0
+  fi
+
   if [[ "$DRY_RUN" == "true" ]]; then
     local would_action
     if [[ "$state" == "running" ]]; then
