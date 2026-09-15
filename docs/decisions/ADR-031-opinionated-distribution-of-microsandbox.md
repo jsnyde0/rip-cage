@@ -4,7 +4,7 @@
 
 **Firmness:** per-decision, see each Dn. D1, D2, D4, D5, D7 are FIRM; D3 is split (the rule FIRM, the verb set FLEXIBLE).
 
-**Citation form:** this repo has its own ADR-011 (shell completions) and its own ADR-013 (test coverage), which collide with the global methodology corpus. Every citation below carries its corpus prefix — `rip-cage ADR-NNN Dk` or `dotclaude ADR-NNN Dk` — per dotclaude ADR-008 D9.
+**Citation form:** this repo's ADR numbers collide with the global methodology corpus across the whole low range — both corpora run from ADR-001, so a bare `ADR-011` is genuinely ambiguous (shell completions here, the in-place-evolution rule there), and so is `ADR-013`, `ADR-008`, and every other number both corpora use. Every citation below therefore carries its corpus prefix — `rip-cage ADR-NNN Dk` or `dotclaude ADR-NNN Dk` — or is a markdown link to the file, per dotclaude ADR-008 D9.
 
 ## Context
 
@@ -16,7 +16,7 @@ The honest name for what remains is a **distribution**. A Linux distribution doe
 
 **Decision numbering.** D1–D5 and D7 below carry the epic `rip-cage-ely4.7`'s decisions of the same numbers, one-to-one, so a citation of "epic D4" and a citation of "rip-cage ADR-031 D4" name the same decision. The gap at D6 is deliberate: the epic's D6 (three skills — `cage-config`, `cage-image`, `cage-ops`) is FLEXIBLE product-surface shaping, not a cross-cutting load-bearing decision, and stays in the epic and its child `rip-cage-ely4.13`. The epic's D8 (roadmap) is EXPLORATORY fog and stays there too.
 
-**Why a new file rather than an in-place edit.** dotclaude ADR-008 D7's five-dimension overlap scan was run before this file was created (fresh-context, 2026-09-15). It scored **5/5 against rip-cage ADR-021** and recommended folding in, on the ground that D2 below is a direct reversal of ADR-021's three-layer merge, provenance view and write verbs. That recommendation is recorded and **not taken**, for two reasons: (1) a *reversal* is not shared decision space — ADR-021 answers "how do rip-cage's own config layers compose", which is a question this ADR deletes rather than re-answers; and (2) ADR-021 **retires whole** under D2 below, so folding a six-decision positioning record into it would home live canon inside a retired document. The human ratified a new ADR at the next free number explicitly (`rip-cage-ely4.8` decision list, 2026-09-15). The scan's residual point is honored instead: ADR-021's row and Status line state the retirement and point here, so a reader who lands on the old model is one hop from the new one.
+**Why a new file rather than an in-place edit.** dotclaude ADR-008 D7's five-dimension overlap scan was run before this file was created (fresh-context, 2026-09-15). It scored **5/5 against rip-cage ADR-021** and recommended folding in, on the ground that D2 below is a direct reversal of rip-cage ADR-021's three-layer merge, provenance view and write verbs. That recommendation is recorded and **not taken**, for two reasons: (1) a *reversal* is not shared decision space — rip-cage ADR-021 answers "how do rip-cage's own config layers compose", which is a question this ADR deletes rather than re-answers; and (2) rip-cage ADR-021 **retires whole** under D2 below, so folding a six-decision positioning record into it would home live canon inside a retired document. The new-file-at-the-next-free-number choice is the one recorded in `rip-cage-ely4.8`'s decision list, filed out of the ratified brainstorm; it is a filing decision made there, not separately ruled on by the human, and is noted as such rather than claimed as a human ruling. The scan's residual point is honored instead: rip-cage ADR-021's row and Status line state the retirement and point here, so a reader who lands on the old model is one hop from the new one.
 
 ## Terms
 
@@ -44,7 +44,7 @@ Three opinions carry the positioning, and they are the thing rip-cage is actuall
 
 The buyer is a developer running Claude Code or pi with permissions off, on their own machine.
 
-The two-column table is canon, not decoration: **msb provides** the microVM boundary, default-deny egress and DNS, `--secret` non-possession, read-only mounts, snapshot-fast recreate, and the config schema. **rip-cage adds** the curated agent image and its init, the keychain→`--secret` credential bootstrap, the denial→fix→relaunch repair loop, session continuity across a recreate, the floor probe, the proving suite, and the operating knowledge in the skills.
+The two-column table is canon, not decoration: **msb provides** the microVM boundary, default-deny egress and DNS, `--secret` non-possession, read-only mounts, recreate-with-the-same-mounts, and the config schema. **rip-cage adds** the curated agent image and its init, the keychain→`--secret` credential bootstrap, the denial→fix→relaunch repair loop, the floor probe, the proving suite, and the operating knowledge in the skills — the survivor list `rip-cage-ely4.1` left standing. **Session continuity is deliberately absent from the right-hand column:** it is `msb create --replace` plus the same mounts, which is one of the four differentiators the assessment collapsed, and putting it back under "rip-cage adds" is the exact claim this decision forbids.
 
 **Rationale:** `direct:` `rip-cage-ely4.1` (stamped) — what survives the collapse is "closer to a curated, tested, opinionated setup that already knows the answers" than to a product with its own isolation technology. `external:` the 2026-09-14 landscape survey — the microVM headline is owned territory, while all three opinions above are unclaimed. `reasoned:` naming the subtraction honestly is cheaper to maintain than defending four claims that a twenty-minute reproduction defeats.
 
@@ -62,7 +62,7 @@ The two-column table is canon, not decoration: **msb provides** the microVM boun
 
 ### D2: One native msb config file per project is the whole project config
 
-**Firmness: FIRM** (the FIRM-to-FIRM mutation of rip-cage ADR-021 this implies was signed off by the human in-pane, 2026-09-15)
+**Firmness: FIRM** (the FIRM-to-FIRM mutation of rip-cage ADR-021 this implies was signed off by the human in-pane on **2026-09-14**, sitting 1 — "ADR-021 D1/D2/D4/D8 must be evolved … human said yes in-pane"; the protected-paths half was ratified 2026-09-15)
 
 The project file is msb's own `--conf` schema. It is produced by the `cage-config` skill from a template rip-cage ships — image, resources, the mount set that makes sessions survive a recreate, the curated allowlist, and the mount lines that cover the usual secret files inside a mounted project. The file **is** the consolidation: it carries its lists in full, and `rc` merges nothing.
 
@@ -99,7 +99,7 @@ If msb cannot express the cover for a given entry, `rc up` refuses rather than p
 **The set, FLEXIBLE:** `rc up`, `rc auth`, `rc doctor`, `rc build`, `rc test`, `rc destroy`.
 
 - **`rc up`** — the keychain→`--secret` bootstrap, the flags no config file holds (`--name`, `--log-level trace`, `--replace`, the symlink-parent read-only mounts computed from the host filesystem, the protected-paths check), then `msb create`, then attach. **`rc reload` folds into `rc up`**: a *stopped* cage is recreated against the current config on a plain `rc up` (today's converge-on-up behavior); a *running* cage is never recreated implicitly, because that kills the live session (rip-cage ADR-029 D4) — `rc up --replace` is the explicit graceful-stop-then-recreate.
-- **`rc auth`** — pulls the Claude login from the macOS keychain, and standalone re-applies a refreshed token to an existing cage without the operator recreating it by hand.
+- **`rc auth`** — pulls the Claude login from the macOS keychain, and standalone re-applies a refreshed token to an existing cage without the operator recreating it by hand. *(Whether msb applies a secret change to a live sandbox or only on restart is still open — spike `rip-cage-ely4.16` Q5. The verb exists either way; only how quiet the re-apply is depends on the answer.)*
 - **`rc doctor`** — mines the trace log for denied hosts and prints the exact config line to add.
 - **`rc build`** — `docker build` of a host-side Dockerfile, then load into msb's image cache.
 - **`rc test`** — the proving suite, including the floor probe.
@@ -117,7 +117,7 @@ The agent-first contract on the surviving verbs — `--output json` everywhere, 
 |---|---|
 | Keep the pass-through verbs for convenience | `reasoned:` convenience never earns a seam exception — rip-cage ADR-005 D12. A pass-through is a second way to do the thing, which drifts from the first. |
 | Fold `rc auth` into `rc doctor` | `reasoned:` refreshing a credential on a live cage without recreating it is a distinct *action* an unattended agent needs; `doctor` is diagnostic. Merging them makes a mutating operation hide inside a read-only-sounding verb. |
-| Keep `rc completions` / `rc setup` | `direct:` they exist to complete verb and container names — a nine-verb surface that is now six, and a `ls` that is now an msb one-liner. The completion target largely evaporated with the verbs. |
+| Keep `rc completions` / `rc setup` | `reasoned:` what they complete is mostly being deleted — `completions/rc.bash` declares fifteen subcommands and `rc` dispatches nineteen, of which six survive, and the container-name completion they also offered is now an msb one-liner. A completion surface for six memorable verbs earns less than it costs to keep honest. (Not among the epic's own enumerated alternatives; recorded here because the verb is deleted and a reader will ask.) |
 | Thin to fewer than six by dropping `rc test` | `reasoned:` opinion 3 in D1 *is* the proving suite; deleting its entry point deletes the opinion. |
 
 **What would invalidate this:** the rule fires the wrong way — an operator or agent repeatedly reaching for a shell incantation long enough to get wrong, which is the cue that it should have been a verb. Conversely, a surviving verb whose body reduces to a single msb call after the refactor has stopped earning its place. Either cue re-opens the *set*; the rule itself only falls if `rc` stops having a skill alongside it.
@@ -126,7 +126,7 @@ The agent-first contract on the surviving verbs — `--output json` everywhere, 
 
 **Firmness: FIRM** (human-ratified 2026-09-14 after a three-agent design-it-twice pass)
 
-Users extend the published base image with `FROM ghcr.io/jsnyde0/rip-cage:latest` in their own Dockerfile. Deleted: `tools.yaml`, the `rc build` codegen, the manifest validator, reconcile and seed-drift, the build-flag allowlist, and the manifest test corpus — roughly 4,344 lines of implementation plus 12,238 lines of tests plus about 80 hostile fixtures.
+Users extend the published base image with `FROM ghcr.io/jsnyde0/rip-cage:latest` in their own Dockerfile. Deleted: `tools.yaml`, the `rc build` codegen, the manifest validator, reconcile and seed-drift, the build-flag allowlist, and the manifest test corpus — roughly 4,344 lines of implementation plus 12,238 lines of tests plus 1,200 further lines, spanning about 80 hostile fixtures.
 
 **One** small declarative **boot descriptor** stays (`daemons`: start / health / state_dir; `multiplexers`: start / attach), read by init's existing generic loop. That loop is the invariant that keeps base init tool-agnostic, which is what rip-cage ADR-005 D12 was protecting all along. A recipe becomes a Dockerfile snippet plus a boot-descriptor fragment.
 
@@ -174,7 +174,7 @@ The per-tool launch wrapper that `rc build` used to assemble from manifest `laun
 
 **Firmness: FIRM**
 
-Publication waits for three things in order: the subtracted codebase (the code children of `rip-cage-ely4.7`), a refactor pass against Unix design (`rip-cage-sygz`, re-planned on this outcome — stage 2, where the agent-first CLI contract from D3 lands), and days of the human's own dogfooding on the thinned product. The README, ADR and ROADMAP prose lands on the thinned product, not on today's code. Dogfood-and-publish is its own child (`rip-cage-ely4.17`), human-owned, with a checkable done-condition.
+Publication waits for three things in order (the publication *mechanics* — versioning, the CI gate, the release ceremony — are rip-cage ADR-008's and are untouched by this decision; D7 only says when that ceremony may start): the subtracted codebase (the code children of `rip-cage-ely4.7`), a refactor pass against Unix design (`rip-cage-sygz`, re-planned on this outcome — stage 2, where the agent-first CLI contract from D3 lands), and days of the human's own dogfooding on the thinned product. The README, ADR and ROADMAP prose lands on the thinned product, not on today's code. Dogfood-and-publish is its own child (`rip-cage-ely4.17`), human-owned, with a checkable done-condition.
 
 **Rationale:** `direct:` human, 2026-09-15 — "(b) subtract first … test drive the hell out of it … then publish". `reasoned:` prose written against code that is about to be deleted is prose that has to be written twice, and a release tag on an undogfooded subtraction is the most expensive place to discover the subtraction went too far.
 
@@ -186,7 +186,7 @@ Publication waits for three things in order: the subtracted codebase (the code c
 | Skip the refactor stage, dogfood the raw subtraction | `reasoned:` the agent-first contract was deliberately moved out of the subtraction children into the refactor stage; dogfooding before it lands would measure the wrong surface. |
 | Skip dogfooding, gate publication on the test suite alone | `reasoned:` the suite proves the floor, not the ergonomics — and "it's annoying" is the design signal this project explicitly listens to. |
 
-**What would invalidate this:** an external deadline that makes publication time-boxed rather than readiness-gated. Nothing internal fires this — a subtraction that turns out to be wrong shortens the dogfooding loop, it does not skip it.
+**What would invalidate this:** the dogfooding stage stops producing findings — several days of real use on the thinned product turning up nothing the earlier stages had not already caught is the cue that the gate has become ceremony, and that the sequence should collapse to subtract → refactor → publish. The opposite cue also fires: dogfooding that keeps surfacing subtraction regressions past the point where fixes converge says the subtraction went too far and D3's verb set, not the sequence, needs re-opening. An external publication deadline would override the sequence without invalidating it, and should be recorded as an override rather than a revision.
 
 ## Sibling reconciliation (the edits this ADR anchors)
 
@@ -194,7 +194,7 @@ Every edit below is an in-place evolution per dotclaude ADR-011 D1, dated 2026-0
 
 - **rip-cage ADR-021** (layered rip-cage config) — **retires whole** per D2.
 - **rip-cage ADR-011** (shell completions — this repo's ADR-011, not dotclaude's) — **retires whole** per D3.
-- **rip-cage ADR-005** (ecosystem tools) — D1, D3, D4, D7, D8, D9, D11, D14 revised per D4 and D5; **D12 and D13 explicitly HONORED** (FROM-extension *is* composition by agents; the floor probe *is* D13's presence assertion in artifact form).
+- **rip-cage ADR-005** (ecosystem tools) — D1, D3, D4, D7, D8, D9, D11, D14 revised per D4 and D5; **D12 and D13 explicitly HONORED** (FROM-extension *is* composition by agents; a `RUN which <tool>` line in the operator's own Dockerfile *is* D13's presence assertion, failing the build exactly as the declared check failed it).
 - **rip-cage ADR-002** D3 (lifecycle verbs) — `down` deleted, `destroy` kept, per D3.
 - **rip-cage ADR-003** D3 (allowed-roots guard deleted) and D5 (`rc schema` retires), per D2 and D3. D1 (`--output json`) is honored and re-homed to D7 stage 2.
 - **rip-cage ADR-009** D7 (first-run prompt deleted) per D3. D1 (harm-reduction positioning) is honored.
@@ -229,6 +229,7 @@ Not touched, deliberately: rip-cage ADR-024 (the prompt-injection threat model i
 - `docs/decisions/ADR-027-agent-substrate-projection.md` (rip-cage) — skills projection stays as `rc up` generated mounts; D4 launch-wrapper mechanism evolved per D4 here, principle honored.
 - `docs/decisions/ADR-030-classify-by-use-secret-posture.md` (rip-cage) — D8 masking re-homed per D2 here.
 - `docs/decisions/ADR-024-prompt-injection-threat-model.md` (rip-cage) — threat model honored unchanged; D5(a) is a new layer under it.
+- `docs/decisions/ADR-026-containment-mediation-identity.md` (rip-cage) — untouched: msb is still the delegate, and nothing here re-opens the containment/mediation split.
 - `docs/decisions/ADR-008-open-source-publication.md` (rip-cage) — D5 bash 3.2 and D6/D7/D8 publication mechanics bind D7 here's publish stage.
 - `~/.claude/docs/decisions/ADR-011-*.md` (dotclaude) D1 — ADRs reflect target architecture and evolve in place; the rule this ADR's sibling reconciliation follows.
 - `~/.claude/docs/decisions/ADR-008-adr-predicates-and-plan.md` (dotclaude) D1 (per-decision predicates), D5 (`canonical_refs` mandate), D8 (signal-shaped invalidation), D9 (corpus-prefixed citation form).

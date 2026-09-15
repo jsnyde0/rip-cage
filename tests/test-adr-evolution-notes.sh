@@ -63,7 +63,8 @@ ADR-023-secret-path-mount-denylist.md|D2|patterns move to the shipped protected-
 ADR-025-host-adoptable-dcg-policy.md|D1|transport note only: DCG policy rides the recipe's own mount
 ADR-027-agent-substrate-projection.md|D4|launch-wrapper mechanism moves to base image + descriptor
 ADR-029-msb-migration.md|D4|rc reload folds into rc up --replace
-ADR-030-classify-by-use-secret-posture.md|D8|masking becomes template mount lines + auto-cover
+ADR-030-classify-by-use-secret-posture.md|D4|FIRM retirement -- the mounts.mask key itself; Tier 1 splits into template lines + auto-cover
+ADR-030-classify-by-use-secret-posture.md|D8|masking residual re-scoped by auto-cover
 "
 
 # Print the Status: block of an ADR (the line and any continuation up to the
@@ -77,12 +78,21 @@ extract_status() {
 }
 
 # Print one decision section: the '### D<k>' heading through the line before
-# the next '### ' heading (or EOF). The boundary char class keeps D1 from
-# matching D11/D12/D14 and keeps D4 from matching ADR-021's D4a.
+# the next '### ' heading, the next '## ' heading, or EOF. The boundary char
+# class keeps D1 from matching D11/D12/D14 and keeps D4 from matching
+# ADR-021's D4a.
+#
+# The '## ' boundary is load-bearing, not tidiness. Without it the LAST '### Dk'
+# in a file runs to EOF, swallowing '## Consequences' / '## canonical_refs' /
+# '## Related' -- and canonical_refs is exactly where a later ADR-031 pointer
+# would naturally be added, so five pairs (ADR-003 D5, ADR-005 D14, ADR-009 D7,
+# ADR-027 D4, ADR-030 D8) would have passed on a citation nowhere near their
+# own decision. Reproduced on a scratch copy before this line was added.
 extract_decision() {
   awk -v want="$2" '
     $0 ~ ("^### " want "([:.,)( ]|$)") { inblock = 1; print; next }
     inblock && /^### / { exit }
+    inblock && /^## / { exit }
     inblock { print }
   ' "$1"
 }
@@ -104,6 +114,23 @@ if grep -q "${NEW_ADR_FILE}" "${INDEX_FILE}" 2>/dev/null; then
 else
   fail "INDEX.md does not list ${NEW_ADR_FILE}"
 fi
+
+# --- Every touched ADR's INDEX row states its retired/evolved status ------
+# rip-cage-ely4.8's third decision: "INDEX.md rows for every touched ADR
+# rewritten so a reader sees retired/evolved status". A note landing in the ADR
+# while its INDEX row still reads as live canon is the drift this index exists
+# to prevent -- and it happened on two rows before review caught it, which is
+# why it is asserted rather than trusted.
+for n in 002 003 005 009 010 011 021 023 025 027 029 030; do
+  row="$(grep "^| \[${n}\](" "${INDEX_FILE}")"
+  if [ -z "${row}" ]; then
+    fail "INDEX.md has no row for ADR-${n}"
+  elif printf '%s\n' "${row}" | grep -q "${NEW_ADR_NUM}"; then
+    pass "INDEX.md row for ADR-${n} states its ${NEW_ADR_NUM} disposition"
+  else
+    fail "INDEX.md row for ADR-${n} does not mention ${NEW_ADR_NUM} [reader sees retired/evolved canon as live]"
+  fi
+done
 
 # --- Every pair cites the new ADR ----------------------------------------
 while IFS='|' read -r adr target why; do
