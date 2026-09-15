@@ -1492,10 +1492,6 @@ _up_resolve_resume_symlink_fingerprint() {
 
 
 
-# Global: path to the per-cage DCG config override (empty = use baked default).
-# Set by _up_resolve_dcg_config; consumed by cmd_up to add RO mount.
-_UP_DCG_CONFIG_PATH=""
-
 # _up_resolve_placeholder_env_file <path> <cli_env_file> (rip-cage-b9to)
 #
 # auth.placeholder_env_file is a PERSISTED POINTER to a host env file carrying
@@ -2801,10 +2797,6 @@ cmd_up() {
   local _rc_cache_dir="${HOME}/.cache/rip-cage/${name}"
   mkdir -p "$_rc_cache_dir"
 
-  # DCG policy left rc entirely (ADR-031 D2): it is the DCG recipe's business
-  # and rides the recipe's own mount (ADR-025 D1, transport note). rc no longer
-  # translates dcg.* into a config file, because there is no dcg.* to read.
-  _UP_DCG_CONFIG_PATH=""
 
   # auth.credential_mounts (rip-cage-seqc.4 / E2) + auth.per_tool.{claude,pi}
   # (rip-cage-xhgr / D1): resolve the effective values BEFORE the
@@ -2888,12 +2880,12 @@ cmd_up() {
   # in-cage router — mode was the router's observe/block posture.)
   _UP_RUN_ARGS+=(--label "rc.egress.config-override=${rc_allow_config_override:-false}")
 
-  # ADR-025 D1/D5: mount translated DCG config RO over the wrapper's pinned path.
-  # Only added when dcg.* is configured; safe-by-default when absent.
-  if [[ -n "${_UP_DCG_CONFIG_PATH:-}" ]]; then
-    _UP_RUN_ARGS+=(--mount "type=bind,src=${_UP_DCG_CONFIG_PATH},dst=/usr/local/lib/rip-cage/dcg/config.toml,ro")
-    log "DCG policy: merged config mounted at /usr/local/lib/rip-cage/dcg/config.toml (ADR-025 D1)"
-  fi
+  # DCG POLICY RIDES THE RECIPE'S OWN MOUNT NOW (ADR-025 D1 transport note, as
+  # ADR-031 D2 puts it: DCG policy is the recipe's business and was never rc's).
+  # rc used to translate dcg.* from the retired schema into a merged TOML and
+  # mount it here; with no dcg.* to read, a recipe that wants a policy file
+  # declares the mount line in its own cage config — the same place every other
+  # mount is declared, rather than a special case inside the launcher.
 
   # rip-cage-rj68 (S6): NO trailing "$IMAGE sleep infinity" positional here
   # (docker-specific CMD override — msb create has no command-override
