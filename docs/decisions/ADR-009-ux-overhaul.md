@@ -111,6 +111,8 @@ Agent-facing features (`--output json`, `--dry-run`, container naming rules) liv
 
 ### D7: Zero-config first run via `rc.conf` auto-generation
 
+**RETIRED in place 2026-09-15 — [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D3** (human-ratified in-pane, `rip-cage-ely4` sittings 1–2, 2026-09-14/15): the first-run **interactive prompt is deleted**, and `rc.conf` is deleted with the rip-cage config schema ([ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D2). The reason is the one this project's philosophy already states: **agent-first means no prompts.** A TTY dialog on first run is exactly the shape that forces human intervention on a legitimate operation, which defeats the point of a cage an operator can walk away from. Zero-config-first-run as a *goal* is honored differently and better — the `cage-config` skill writes a working project config from a shipped template, so the first run has a config rather than being asked to invent one. **D1 (harm-reduction positioning) is honored, not retired**; [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D1 restates it as crediting msb by name for the isolation rip-cage does not itself provide.
+
 **Firmness: FIRM**
 
 When `RC_ALLOWED_ROOTS` is unset and stdin is a TTY, prompt the user once:

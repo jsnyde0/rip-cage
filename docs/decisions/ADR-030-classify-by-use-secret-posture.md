@@ -177,6 +177,10 @@ If a masked path is **git-tracked**, an in-cage commit would capture the breadcr
 
 ### D8: Named residuals — accepted, not closed here
 
+**Masking mechanism evolved in place 2026-09-15 — [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D2** (human-ratified in-pane, `rip-cage-ely4` sittings 1–2, 2026-09-14/15). **The classify-by-use model (D1), the effort gradient (D2) and the Tier-2 judgment criterion (D3) are untouched.** What changes is how Tier 1 is expressed. The `mounts.mask` config key retires with the rip-cage config schema, and masking becomes **two things instead of one key**: (a) **template mount lines** — the shipped project-config template carries the mount lines that cover the usual secret files inside a mounted project, so the common case is configured rather than coded; and (b) the **auto-cover half of the protected-paths rule** ([ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D2b) — `rc up` covers any *listed credential path* it finds inside a mounted tree without being asked, an empty read-only file mount for a file and an empty tmpfs mount for a directory.
+
+This narrows one residual and sharpens the boundary. (b) is **not** a general masking engine: it covers only paths on the shipped protected-paths list, which is the known-credential-location set, and it fails closed — if msb cannot express the cover for an entry, `rc up` refuses rather than proceeding. Everything outside that list stays operator judgment expressed as (a), which is exactly the "classification is agent judgment, never rc machinery" line D1 draws. D5's fail-loud-on-missing-source and D6's legible-breadcrumb properties apply to (a); (b)'s covers are empty by design and announce themselves in the launch output.
+
 **Firmness: FLEXIBLE**
 
 The posture reduces blast radius; it does not eliminate secret risk (CLAUDE.md "layers not walls"). The following residuals are **named and accepted**, several with active follow-up beads; none is closed by this ADR:

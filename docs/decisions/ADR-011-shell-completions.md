@@ -1,6 +1,6 @@
 # ADR-011: Shell Completions for `rc` CLI
 
-**Status:** Proposed
+**Status:** **RETIRED WHOLE — 2026-09-15, [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D3** (human-ratified in-pane over `rip-cage-ely4`'s two sittings, 2026-09-14/15). Every decision here retires, including the FIRM D1/D3/D4: the `rc` surface thins to six verbs and `rc completions` / `rc setup` are both deleted, so the shell-integration consent problem D3 solved no longer has a subject. Two-thirds of what completion completed is gone with it — `rc ls` is now a plain msb one-liner taught by the `cage-ops` skill, and the verb list it completed is six names long. Nothing here is re-homed; the retirement is a deletion, not a move. (Note for readers arriving from the global corpus: this is **rip-cage** ADR-011, shell completions — *not* dotclaude ADR-011, which is the in-place-evolution rule this retirement is written under.) Prior status: Proposed
 **Date:** 2026-04-16
 **Design:** [Shell Completions](../../history/2026-04-16-shell-completions-design.md)
 **Related:** [ADR-003](ADR-003-agent-friendly-cli.md) (agent-friendly CLI), [ADR-008](ADR-008-open-source-publication.md) (open-source publication)

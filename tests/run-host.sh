@@ -822,6 +822,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-image-drift-resume.sh"    # rip-cage-jnvb: rc up image-ID drift guard on resume — full-rc-through-fake-docker-shim T1-T6, host-only, no live container needed
   run_test "${SCRIPT_DIR}/test-dry-run-resume-guards.sh" # rip-cage-3y9g: rc up --dry-run runs the same _up_resolve_resume_* guard set/order as a real resume (P1a/P1b parity + B1 behavioral), host-only
   run_test "${SCRIPT_DIR}/test-doctor-json-doc.sh"       # rip-cage-bbjn: rc doctor --output json top-level field set derived from cli/doctor.sh vs documented in docs/reference/cli-reference.md, both directions, host-only static check
+  run_test "${SCRIPT_DIR}/test-adr-evolution-notes.sh"  # rip-cage-ely4.8: every decision ADR-031 evolves/honors/retires cites ADR-031 in place, and INDEX.md lists it; host-only static check over docs/decisions/
   # Container-tier (NEEDS_CONTAINER above; self-skip under --host-only, run on full invocation):
   run_test "${SCRIPT_DIR}/test-session-persistence.sh"  # dn2 projects/sessions persist-to-host (Phase 3 container)
   run_test "${SCRIPT_DIR}/test-pi-no-extensions.sh"     # rip-cage-sn1h: LOCKED-VARIANT-ONLY probe (evil.ts NOT loaded + DCG still denies); self-skips under the shipped OPEN default (rip-cage-p35a.1 / ADR-027 D1)

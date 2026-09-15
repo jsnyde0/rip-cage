@@ -52,6 +52,8 @@ Add `--dry-run` to `rc up` and `rc destroy`. Runs all validation, reports what w
 
 ### D3: Input hardening with allowed roots
 
+**RETIRED in place 2026-09-15 — [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D2** (human-ratified in-pane, `rip-cage-ely4` sittings 1–2, 2026-09-14/15): the allowed-roots guard is **deleted, not re-homed**. Its job was to bound what a path argument could turn into a mount while mounts were being derived on rip-cage's behalf. With one native msb config file per project, **every mount is an explicit line an operator or agent wrote host-side** ([ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D5a), so there is no derivation left to guard — a root allowlist would be checking a decision that has already been made in full view. The containment concern it shared a border with does *not* go away and is now carried by the shipped **protected-paths** rule at `rc up` ([ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D2): refuse a config that mounts a listed credential path directly, auto-cover a listed path found inside a mounted tree, abort before any msb call if the list is unreadable. That rule is about *what* is mounted, which is the real risk; allowed-roots was about *where from*, which stopped discriminating once mounts became explicit.
+
 **Firmness: FIRM** (allowlist model); **FLEXIBLE** (default behavior)
 
 Validate all path arguments against an allowed-roots list. Reject paths with control
@@ -115,6 +117,8 @@ Add rules for AI agents invoking `rc` programmatically to the project's `CLAUDE.
 **What would invalidate this:** MCP surface with tool descriptions replaces the need for file-based agent context.
 
 ### D5: `rc schema` for agent-readable command signatures
+
+**RETIRED in place 2026-09-15 — [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D3:** `rc schema` is deleted with no successor verb. Two things removed its subject. The command surface it described is now **six verbs** whose signatures a `--help` states in full, and the rip-cage config schema it also described **no longer exists** — the project config is msb's own `--conf` schema, documented upstream ([ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D2). The need this decision was really serving — an agent reading the CLI rather than guessing at it — is honored and re-homed to the agent-first contract on the surviving verbs (`--output json` everywhere, an exit-code table, machine-readable errors), which lands in the refactor stage ([ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D7 stage 2, `rip-cage-sygz`). **D1 (`--output json`) is honored, not retired** — it is the part of this ADR the refactor stage extends rather than removes.
 
 **Firmness: FLEXIBLE**
 

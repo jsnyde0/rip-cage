@@ -18,6 +18,8 @@ Rip-cage's Phase 1 delivered a safety stack (DCG + compound command blocker) ins
 
 ### D1: Ecosystem tools are integrated at build time, not via runtime plugins
 
+**Evolved in place 2026-09-15 — [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D4** (human-ratified in-pane, `rip-cage-ely4` sittings 1–2, 2026-09-14/15): build-time integration **survives as the FIRM core**, but its mechanism is no longer a rip-cage-owned manifest. Users extend the published base image with `FROM ghcr.io/jsnyde0/rip-cage:latest` in their own Dockerfile, which is build time by construction. The manifest named here as the realized tool-inclusion mechanism retires with it.
+
 **Firmness: FIRM** (statement revised 2026-06-14 — the per-tool `ARG INCLUDE_<TOOL>=true|false` toggle was never realized; the host-only manifest [D7] is the tool-inclusion mechanism. The FIRM core — install at build time, never a runtime plugin/download — is unchanged.)
 
 Ecosystem tools are installed at **build time** — never via a runtime plugin system, dynamic download, or post-start installation. This build-time-not-runtime rule is the FIRM, load-bearing invariant; it is what D7's manifest and D11's builder stage inherit.
@@ -61,6 +63,8 @@ The bundled-default bar is **"integral to operating the cage."** The safety stac
 
 ### D3: Tool versions are pinned, never floating
 
+**Evolved in place 2026-09-15 — [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D4:** the pin-never-float rule **survives as the FIRM core**; the place it is written moves. With the manifest retired there is no `version_pin` field — a user tool's version is pinned in the user's own Dockerfile, the same way the base image pins its own. The rule is now enforced by the ordinary discipline of reading a Dockerfile diff rather than by a validator reading a declaration.
+
 **Firmness: FIRM** (statement revised 2026-06-14 — no `versions.env` file was built; bundled-tool versions are hardcoded Dockerfile `ARG` defaults and user-tool versions live in the manifest `version_pin` field [D7]. The FIRM core — versions are pinned, never floating `latest` — is unchanged.)
 
 Tool versions are **pinned, never floating `latest`** — the FIRM, load-bearing invariant (reproducible builds, no silent upstream breakage).
@@ -83,6 +87,8 @@ Tool versions are **pinned, never floating `latest`** — the FIRM, load-bearing
 **What would invalidate this:** Tool count grows large enough that a proper dependency resolver (like Nix) would be more appropriate than a flat env file.
 
 ### D4: `rc` is the primary interface for tool selection (specific `--with` flags deferred)
+
+**REVERSED in place 2026-09-15 — [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D4:** `rc` is **no longer** the interface for tool selection. The Dockerfile is. The deferred `--with/--full/--minimal` surface is now deleted rather than deferred, and `rc build` takes exactly one user input — a host-side Dockerfile path ([ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D5c). The intent this decision protected — users should not hand-write Docker `--build-arg` syntax — is honored differently: they write a Dockerfile, which is the ordinary artifact for the job, not a rip-cage-specific flag grammar.
 
 **Firmness: FIRM** (statement revised 2026-06-14 — the `--with/--full/--minimal` flag surface is DEFERRED, not shipped: per-cage tool selection layers onto the host-only manifest [Open-decision 8 / rip-cage-4c5], `rc`:6852–6854. The FIRM core — `rc` is the primary interface; users shouldn't hand-write Docker `--build-arg` syntax — is unchanged as intent.)
 
@@ -160,6 +166,8 @@ When a tool publishes pre-built binaries for linux/arm64 and linux/amd64, downlo
 
 ### D7: Tool composability is a declarative, host-only manifest with four archetypes
 
+**RETIRED in place 2026-09-15 — [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D4:** the manifest and all four archetypes retire; `tools.yaml`, the `rc build` codegen, reconcile/seed-drift and the manifest test corpus are deleted. Two things survive, deliberately separated. **The storage-location half is FIRM and re-homed**: composition inputs still live host-side, outside every cage mount — that is [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D5(a), preserved as a *location* rule rather than a format. **The boot-time contribution half survives as one small declarative boot descriptor** (`daemons`: start/health/state_dir; `multiplexers`: start/attach, plus an optional `launch` field), read by init's existing generic loop — which is the invariant that kept base init tool-agnostic and is the reason the descriptor was not collapsed into the Dockerfile. The plain-TOOL `init` hook added here in 2026-07-02 has no successor; a tool that needs boot-time work either does it in its Dockerfile layer or declares a daemon.
+
 **Firmness: storage-location FIRM (host-only `~/.config/rip-cage/`); schema/format EXPLORATORY** (added 2026-06-05; storage-location resolved 2026-06-05; MULTIPLEXER added as the fourth archetype 2026-06-15, rip-cage-61al)
 
 A declarative manifest — stored **host-side under `~/.config/rip-cage/`, agent-inaccessible**, consumed by `rc build` at build time, with the current bundled stack as its defaults — lets users add tools without forking the Dockerfile. It generalizes D3 (`versions.env` pinning) and D5 (the 4-point integration pattern) from a maintainer checklist into a user-facing composition surface. Each entry is one of four **archetypes**, defined by integration surface, that other beads and contributors reference as a constraint:
@@ -194,6 +202,8 @@ Tools are **installed at build time** (consistent with D1 — no runtime downloa
 
 ### D8: The manifest composes within ONE cage and never reaches across cages
 
+**Evolved in place 2026-09-15 — [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D4:** the one-cage scope **survives as the FIRM core**, re-homed to the artifacts that replace the manifest. A user Dockerfile builds one image and a boot descriptor configures one cage's boot; neither has a cross-cage vocabulary, so the property this decision defended now holds by construction rather than by a rule. Cross-cage coordination remains out of scope for rip-cage entirely — it is the orchestrator's business (dotpi's), per [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D1's rejection of the fleet vision.
+
 **Firmness: FIRM** (added 2026-06-05)
 
 Everything a manifest tool does happens inside one cage's isolation boundary: no shared-volume-across-containers, no cross-cage networking, no cross-cage coordination. An in-cage daemon binds its port once per cage (Docker gives each cage its own network namespace, so the same port in two cages is independent); init is idempotent (re-running init, or — once ADR-006 Tier 1a ships — a second in-cage agent, spawns no second binder). agent_mail therefore coordinates agents *within* a cage (co-tenants already sharing `/workspace`), adding no trust surface beyond the existing bind mount.
@@ -214,6 +224,8 @@ Everything a manifest tool does happens inside one cage's isolation boundary: no
 **Clarification — what "byte-for-byte" scopes (FLEXIBLE).** The D8 byte-for-byte default-image invariant means "manifest-unchanged → no Dockerfile delta → no image change *from the manifest*." It is a statement about the *manifest's contribution* to the image, not absolute image immutability across intentional base changes. A deliberate base-image bump (ADR-002 D2a, debian:trixie) changes the image independently of the manifest; that does not violate D8, because the manifest contributed nothing to the change. The invariant the manifest owes is: an unchanged manifest must not, by itself, alter the built image.
 
 ### D9: The manifest composes tool *availability* including command-guard recipes — but can never touch the welded CONTAINMENT floor; every composed hook is bounded by D11's validator (revised 2026-06-17)
+
+**Evolved in place 2026-09-15 — [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D5:** the **can-never-touch-the-floor rule is FIRM and unchanged**; what changes is who enforces it. The floor is no longer protected by a validator reading the manifest's declarations before a build — it is protected by a **fail-closed floor probe on the BUILT image**, run by init at boot and by `rc test` ([ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D5b). That is strictly stronger for this decision's purpose: a declaration validator cannot see a `USER root` the Dockerfile ends with, and a probe on the artifact can. The floor's mount-side half — the secret-path rule in the enumeration above — becomes the shipped protected-paths list checked at `rc up` ([ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D2), and the egress/DNS/secret/read-only-mount members stay msb config emitted by `rc up` per [ADR-029](ADR-029-msb-migration.md) D2. Command-string guards stay composable default-on recipes, unchanged.
 
 **Firmness: FIRM** (added 2026-06-05; revised 2026-06-17 — wlwc / [ADR-025 D2](ADR-025-host-adoptable-dcg-policy.md), [ADR-026 D1/D2](ADR-026-containment-mediation-identity.md), [ADR-027 D2/D3](ADR-027-agent-substrate-projection.md): the welded floor is now **CONTAINMENT**, not a named list that includes DCG/PreToolUse-hooks/ssh-bypass. Command-string guards are demoted to composable default-on **recipes** the manifest may compose, BOUNDED by D11's fail-closed validator and protected by D7's host-only manifest property. The forbidden-touch set is rewritten in place to the containment floor; the user has explicitly confirmed this reclassification.)
 
@@ -281,6 +293,8 @@ A missing or broken safety interceptor (DCG, ssh-blocker, egress proxy) must ref
 
 ### D11: Tool fitting is agent-authorable host-side, build-validated, via one generic from-source builder stage
 
+**RETIRED in place 2026-09-15 — [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D4/D5:** the generic from-source builder stage and the fail-closed **declaration** validator both retire with the manifest. The premise correction that fired this is the human's, 2026-09-14: **no human reviews builds** — agents author the Dockerfile — so a validator whose stated job was "simulate the review a real Dockerfile diff gets for free" was simulating a reviewer who does not exist, against a real Dockerfile that now exists. Two of this decision's three properties survive, re-homed: **agent-authorable host-side** becomes [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D5(a) (composition inputs live outside every cage mount), and **build-validated** becomes [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D5(b), the fail-closed floor probe on the built image. A from-source build is now an ordinary multi-stage Dockerfile, which is what the generic stage was a constrained imitation of. The entrypoint-completeness clause (every build path runs the check, not only `rc build`) survives in the probe's boot-time leg, which is a stronger form of it — the check runs whether or not `rc build` was the thing that produced the image.
+
 **Firmness: asymmetric across the three mechanisms** (added 2026-06-10) — mechanism 2 (the validator) is **FIRM**: it is the enforcement arm of D9 (FIRM), and is not skippable. Mechanism 1 (the generic builder stage) is **FLEXIBLE**: the "builder image + script + output" shape may iterate. Mechanism 3 (the host-side authoring skill) is **EXPLORATORY**: an unproven UX that will move. The FIRM/FLEXIBLE/EXPLORATORY split matters because lumping all three as EXPLORATORY would wrongly imply the safety validator is optional.
 
 Three mechanisms turn D7's host-only manifest into an **agent-first composability surface** — so that adding any tool is a manifest entry a user (or their agent) writes, never bespoke rip-cage support for a named tool. cm is the worked example throughout.
@@ -308,6 +322,8 @@ Three mechanisms turn D7's host-only manifest into an **agent-first composabilit
 **What would invalidate this:** a from-source tool whose build genuinely cannot be expressed as "builder image + script + output" (e.g. needs the host filesystem, or multi-stage interdependence) — which would *extend* the builder mechanism, not abandon it; or the validator's contract proving insufficient against a real injected-tool vector — which would harden the contract, not drop the gate.
 
 ### D12: rip-cage is a composable seam, not a bundler
+
+**HONORED, not evolved — 2026-09-15, [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D4:** this decision **governs** the manifest retirement rather than being touched by it. Extending the base image with a user `FROM` Dockerfile *is* composition performed by the agent — it is the seam in its most ordinary form, with rip-cage naming and blessing nothing. The thing D12 forbids is unchanged and now cheaper to hold: there is no default manifest for an optional tool to leak into. The protected-paths list ([ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D2) is deliberately shipped as operator-editable **data**, not a hardcoded set, for the same reason.
 
 **Firmness: FIRM** (added 2026-06-15; agentic-composition premise made explicit 2026-06-23)
 
@@ -338,6 +354,8 @@ rip-cage owns the **composition interfaces** (the tool manifest and its archetyp
 **Manifest-entry name grammar (interface detail, consolidated 2026-07-30).** As part of the manifest interface this decision owns, every entry's `name` — across *all* archetypes (TOOL, SHELL-INTEGRATION, IN-CAGE-DAEMON, MULTIPLEXER) — must match `^[a-z0-9_-]+$`, enforced once at validation time (`_manifest_validate`, `cli/lib/manifest_checks.sh`). This is the long-standing MULTIPLEXER-only convention (shipped 2026-06-15) generalized to all archetypes and hoisted ahead of archetype-specific logic to close a build-time command-injection route (names are baked raw into generated Dockerfile RUN lines, so the grammar is security-load-bearing, not style; rip-cage-l906.4, commit c32af83). It *consolidates an already-de-facto convention* — every shipped and example manifest name already conforms — rather than introducing a new constraint; the only behavioral edge is that a previously-accepted uppercase/dotted name in a non-MULTIPLEXER archetype now hard-fails `rc build`/`rc up`. Full rules live in `docs/reference/manifest-validator.md`.
 
 ### D13: A TOOL may declare itself `required`; the default image asserts its declared required-set is present+loaded
+
+**HONORED, not evolved — 2026-09-15, [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D5:** the property this decision exists for — the image **asserts** that what must be present is present, and fails loud when it is not — is exactly what the fail-closed floor probe does ([ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D5b). The probe is D13's presence assertion, moved from a manifest-declared required-set to a fixed floor check on the built image. The declaration mechanics retire with the manifest (no `required:` field, no `assert_loaded`, no baked `/etc/rip-cage/safety-stack-asserted` lines), and with them the silent-guard-loss gap closes more directly: the probe does not depend on a tool having remembered to declare itself.
 
 **Firmness: FLEXIBLE** (added 2026-06-24, rip-cage-wlwc.6; generalized in place 2026-06-24, rip-cage-m8zc — guard-specific `floor_assert: <guard-id>` → generic per-tool `required` + `assert_loaded`)
 
@@ -374,6 +392,8 @@ So *which* tools a default image guarantees is **DATA in the manifest that compo
 **What would invalidate this:** a required tool whose present+loaded cannot be cheaply asserted by a root-owned-presence check or a single-line `assert_loaded` (forcing per-tool probe logic the lib cannot host generically — at which point that tool's check belongs in the separate behavioral checks, not the generic mechanism), or a validated need to assert required tools *across* cages (which D8 forecloses).
 
 ### D14: `rc build`'s docker-flag surface is a fail-closed allowlist, not a pass-through
+
+**Admission test revised in place 2026-09-15 — [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D5(c). The POSTURE survives untouched:** fixed argv, nothing else reaches docker, unknown and future flags reject. What changes is the roster, which this decision already labelled a maintained implementation detail. `rc build` now accepts **exactly one user input — the host-side Dockerfile path** — so `-f` moves from the explicitly-rejected bucket to the one admitted input, and `rc build` passes docker exactly `-f <path> -t <tag> <context>`. The admitted path carries its own fail-closed condition in place of the old rejection: it must resolve **outside every cage mount**, with no opt-out, because a caged agent that can point `rc build` at a path it controls has written its own image. The value-level reasoning that defeated this decision's first draft is unchanged and is why the surface did not simply widen: `--build-arg`, `-o` and everything else still reject.
 
 **Firmness: FIRM — scoped to the posture** (added 2026-07-31, rip-cage-zqjz.2)
 

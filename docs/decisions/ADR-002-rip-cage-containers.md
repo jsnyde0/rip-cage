@@ -89,6 +89,8 @@ The runtime base is **debian:trixie** (glibc 2.41); the builder stages are **gol
 
 ### D3: Persistent containers with manual lifecycle
 
+**Evolved in place 2026-09-15 — [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D3** (human-ratified in-pane, `rip-cage-ely4` sittings 1–2, 2026-09-14/15): the **FIRM core survives** — a cage persists across sessions and its lifecycle is the operator's to drive, never implicit. The verb set shrinks. **`rc down` is deleted** (stopping a cage is an msb one-liner the `cage-ops` skill teaches, and a wrapper around it earns nothing per [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D3's rule); **`rc destroy` is kept**, because `msb remove` alone orphans the named volumes `rc` created, which is work no one-liner does. `rc up` absorbs the recreate leg: a *stopped* cage converges against the current config on a plain `rc up`, and a *running* cage is recreated only on the explicit `rc up --replace` — never implicitly, because that kills the live session ([ADR-029](ADR-029-msb-migration.md) D4). `rc ls`, `rc attach` and `rc exec` are deleted alongside `rc down`, same rule.
+
 > [ADR-029 D2/D4: EVOLVED — the persistent-cage concept survives; the "cheap-recreate" story (`rc destroy` + `rc up` is fast) re-mechanizes as ADR-029 D4's snapshot-amend (0.783s) / cold-recreate (0.303s) plus session resume, both markedly faster than the Docker-era destroy+up cycle this decision described.]
 
 **Firmness: FIRM**

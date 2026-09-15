@@ -18,6 +18,8 @@ The current workaround is `rc destroy` + `rc up`, which destroys the Claude Code
 
 ### D1: `rc auth refresh` command
 
+**HONORED, not evolved — 2026-09-15, [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D3** (human-ratified in-pane, `rip-cage-ely4` sittings 1–2, 2026-09-14/15): `rc auth` **survives the thinning to six verbs, on function.** It was reviewed against [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D3's rule — a verb exists only where plain shell plus a skill cannot do the job identically every run — and passes on both legs: reaching the macOS keychain is not a shell one-liner, and re-applying a refreshed token to an **existing** cage without recreating it by hand is a distinct action an unattended agent needs. The alternative of folding it into `rc doctor` was considered and rejected: `doctor` is diagnostic, and hiding a mutating operation inside a read-only-sounding verb is the wrong seam. The **target** of the refresh still shifts under non-possession per [ADR-029](ADR-029-msb-migration.md) D5 — that earlier evolution is unchanged by this one.
+
 > [ADR-029 D5: EVOLVED — under credential non-possession, the refresh *target* shifts: rather than re-extracting into a file the guest possesses, the natural target becomes the host-side secret store feeding msb `--secret`, refreshed via `msb modify --secret` (proven as a live-rotation primitive). This is an EXPLORATORY direction only — capture, not build-on-pull; the possession-mode fallback (real credentials mounted, per-tool per ADR-026 D7) keeps this decision's file-refresh path, with D4's inode semantics needing re-verification on msb virtiofs (see D4's disposition).]
 
 **Firmness: FIRM**

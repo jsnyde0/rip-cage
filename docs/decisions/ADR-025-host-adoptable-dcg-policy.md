@@ -25,6 +25,8 @@ Per CLAUDE.md's "layers, not walls" / "80/20" philosophy, this is blast-radius r
 
 ### D1: Host-adoptable additive DCG policy via `.rip-cage.yaml` config substrate
 
+**Transport note, 2026-09-15 — [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D2. Substance untouched:** the additive-only policy floor, the CWD-anchor wrapper and the pinned `DCG_CONFIG` all stand exactly as written. Only the **transport** changes. `.rip-cage.yaml` retires with the rip-cage config schema, and DCG policy was ruled never `rc`'s business (human, in-pane 2026-09-15: DCG is a recipe, so its policy lives in the recipe) — so the policy reaches the cage as the **DCG recipe's own mount line** in the project's native msb config, rather than as a rip-cage config key `rc` reads and re-emits. This is the same host-side, agent-unwritable placement the decision already required; it is one line in a file instead of a key in a schema.
+
 **Firmness: FIRM**
 
 Users supply extra DCG policy — enable additional packs and/or add custom YAML rule packs — through a `dcg`-namespaced field in `.rip-cage.yaml`, typed as `additive_list` per ADR-021 D2 merge rules. Effective policy = global list ∪ project list (global first, then project additions); project EXPANDS coverage, never contracts it. Default-on: the mechanism is active out of the box (with an empty additive list, the effective policy is just the baked core floor — D5).
