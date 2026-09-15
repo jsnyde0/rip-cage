@@ -1,7 +1,0 @@
-version: 2
-mounts:
-  allow_risky:
-    - /opt/personal
-network:
-  allowed_hosts:
-    - switch.berlin

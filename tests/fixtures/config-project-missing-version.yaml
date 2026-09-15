@@ -1,3 +1,0 @@
-network:
-  allowed_hosts:
-    - example.com

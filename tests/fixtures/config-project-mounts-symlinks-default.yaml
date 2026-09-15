@@ -1,6 +1,0 @@
-version: 2
-mounts:
-  symlinks:
-    on_dangling: follow
-    scope: file
-    mode: rw

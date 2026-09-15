@@ -1,4 +1,0 @@
-version: 99
-network:
-  allowed_hosts:
-    - newhost.example

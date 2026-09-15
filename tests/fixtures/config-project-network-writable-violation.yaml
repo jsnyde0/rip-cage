@@ -1,7 +1,0 @@
-version: 2
-network:
-  allowed_hosts:
-    - api.github.com
-  writable_hosts:
-    - api.github.com
-    - evil.example.com

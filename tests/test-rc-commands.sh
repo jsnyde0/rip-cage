@@ -16,6 +16,35 @@ FAILURES=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
+
+# rc up launches from a native msb --conf file now (ADR-031 D2), so a scratch
+# project needs one before any `rc up` — including a dry run. This writes the
+# smallest config that boots: an image, the workspace mount, and a default-deny
+# egress policy. Echoes the config path for the caller to pass as RC_CAGE_CONF.
+rc_test_write_cage_conf() {
+  local _proj="$1"
+  local _image="${2:-rip-cage:latest}"
+  # OUTSIDE the project, deliberately: rc refuses a config that resolves inside
+  # a tree it mounts (ADR-031 D5(a)), so a fixture written into the project
+  # would be refused before any test got to its own subject.
+  # BSD mktemp only accepts the X's at the END of a template, so make a
+  # directory and name the file inside it rather than templating a suffix.
+  local _confdir _conf
+  _confdir=$(mktemp -d "${TMPDIR:-/tmp}/rc-test-cage-XXXXXX")
+  _conf="${_confdir}/cage.yaml"
+  cat > "$_conf" <<RC_TEST_CONF
+image: ${_image}
+workdir: /workspace
+mounts:
+  - "${_proj}:/workspace"
+network:
+  policy: none
+  allow:
+    - "api.anthropic.com:tcp:443"
+RC_TEST_CONF
+  printf '%s\n' "$_conf"
+}
+
 # --- Test 1: Usage includes build but not init (rc init removed in rip-cage-kt25) ---
 echo "=== Test 1: Usage text includes build, does not include init ==="
 usage_output=$("$RC" 2>&1 || true)
@@ -403,15 +432,15 @@ STUB_EOF
   if [[ $? -ne 0 ]]; then
     fail "Test 14 setup: stub image build failed — cannot test agents mount"
   else
-    # ADR-023: rc up requires a global config. Provide a minimal one via RC_CONFIG_GLOBAL.
-    T14_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t14-cfg-XXXXXX")
-    printf 'version: 2\nmounts:\n  denylist: []\n' > "$T14_GLOBAL_CFG"
+    # rc up launches from a native msb --conf file (ADR-031 D2), so the
+    # scratch project needs one. The stub image goes in the config's own
+    # image: key AND in RC_IMAGE, which now only steers rc's own image probes.
+    T14_CFG=$(rc_test_write_cage_conf "$TEST_DIR_T14" "$T14_FIXTURE_TAG")
     T14_FAKE_MSB_DIR=$(mktemp -d)
     _make_fake_msb_dir "$T14_FAKE_MSB_DIR" "$T14_FIXTURE_TAG"
     dry_run_output=$(PATH="${T14_FAKE_MSB_DIR}:${PATH}" RC_IMAGE="$T14_FIXTURE_TAG" \
-      RC_ALLOWED_ROOTS="$TEST_DIR_T14" RC_CONFIG_GLOBAL="$T14_GLOBAL_CFG" \
+      RC_CAGE_CONF="$T14_CFG" \
       "$RC" up --dry-run "$TEST_DIR_T14" 2>&1 || true)
-    rm -f "$T14_GLOBAL_CFG"
     rm -rf "$T14_FAKE_MSB_DIR"
 
     # Teardown by EXACT fixture tag. rip-cage:latest was never written, so
@@ -568,10 +597,10 @@ else
     _make_fake_msb_dir "$T19_FAKE_MSB_DIR" "$T19_STALE_TAG"
     TEST_DIR_T19=$(mktemp -d)
     mkdir -p "${TEST_DIR_T19}/.git"
-    # ADR-023: rc up requires a global config. Provide a minimal one via RC_CONFIG_GLOBAL.
+    # Native cage config per ADR-031 D2 (see rc_test_write_cage_conf).
     T19_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t19-cfg-XXXXXX")
     printf 'version: 2\nmounts:\n  denylist: []\n' > "$T19_GLOBAL_CFG"
-    stale_dry_run_output=$(PATH="${T19_FAKE_MSB_DIR}:${PATH}" RC_IMAGE="$T19_STALE_TAG" RIP_CAGE_IMAGE_REGISTRY="" RC_ALLOWED_ROOTS="$TEST_DIR_T19" RC_CONFIG_GLOBAL="$T19_GLOBAL_CFG" \
+    stale_dry_run_output=$(PATH="${T19_FAKE_MSB_DIR}:${PATH}" RC_IMAGE="$T19_STALE_TAG" RIP_CAGE_IMAGE_REGISTRY="" RC_CAGE_CONF="$(rc_test_write_cage_conf "$TEST_DIR_T19" "$T19_STALE_TAG")" \
       "$RC" up --dry-run "$TEST_DIR_T19" 2>&1 || true)
     rm -f "$T19_GLOBAL_CFG"
 
@@ -658,7 +687,7 @@ else
 
   T20_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t20-cfg-XXXXXX")
   printf 'version: 2\nmounts:\n  denylist: []\n' > "$T20_GLOBAL_CFG"
-  unknown_dry_run_output=$(PATH="${T20_FAKE_MSB_DIR}:${PATH}" RC_IMAGE="$T20_STUB_TAG" RIP_CAGE_IMAGE_REGISTRY="" RC_ALLOWED_ROOTS="$TEST_DIR_T20" RC_CONFIG_GLOBAL="$T20_GLOBAL_CFG" \
+  unknown_dry_run_output=$(PATH="${T20_FAKE_MSB_DIR}:${PATH}" RC_IMAGE="$T20_STUB_TAG" RIP_CAGE_IMAGE_REGISTRY="" RC_CAGE_CONF="$(rc_test_write_cage_conf "$TEST_DIR_T20" "$T20_STUB_TAG")" \
     "$RC" up --dry-run "$TEST_DIR_T20" 2>&1 || true)
   rm -f "$T20_GLOBAL_CFG"
 
@@ -760,14 +789,14 @@ echo ""
 echo "=== Test 22: rc up --new --session exits 2 with usage message ==="
 TEST_DIR_T22=$(mktemp -d)
 mkdir -p "${TEST_DIR_T22}/.git"
-mutex_output=$(RC_ALLOWED_ROOTS="$TEST_DIR_T22" "$RC" up --dry-run --new --session "myname" "$TEST_DIR_T22" 2>&1 || true)
+mutex_output=$("$RC" up --dry-run --new --session "myname" "$TEST_DIR_T22" 2>&1 || true)
 if echo "$mutex_output" | grep -qi "mutually exclusive\|cannot use.*together\|--new.*--session\|--session.*--new"; then
   pass "rc up --new --session shows mutually exclusive usage message"
 else
   fail "rc up --new --session should show mutually exclusive error (got: $mutex_output)"
 fi
 # exit code should be 2 (usage error)
-actual_exit=$(RC_ALLOWED_ROOTS="$TEST_DIR_T22" "$RC" up --dry-run --new --session "myname" "$TEST_DIR_T22" 2>/dev/null; echo $?)
+actual_exit=$("$RC" up --dry-run --new --session "myname" "$TEST_DIR_T22" 2>/dev/null; echo $?)
 if [[ "$actual_exit" == "2" ]]; then
   pass "rc up --new --session exits with code 2"
 else
@@ -775,74 +804,40 @@ else
 fi
 rm -rf "$TEST_DIR_T22"
 
-# --- Test 23: rc up --dry-run does not show picker output ---
-echo ""
-echo "=== Test 23: rc up --dry-run skips picker (no 'Pick [' output) ==="
-TEST_DIR_T23=$(mktemp -d)
-mkdir -p "${TEST_DIR_T23}/.git"
-# --dry-run must not show picker prompt even if piped stdin would trigger picker
-dry_run_picker_out=$(RC_ALLOWED_ROOTS="$TEST_DIR_T23" "$RC" up --dry-run "$TEST_DIR_T23" 2>&1 </dev/null || true)
-if echo "$dry_run_picker_out" | grep -q "Pick \["; then
-  fail "rc up --dry-run should not show picker prompt (got: $dry_run_picker_out)"
-else
-  pass "rc up --dry-run does not show picker prompt"
-fi
-rm -rf "$TEST_DIR_T23"
+# --- Tests 23 + 24: RETIRED with the allowed-roots picker (rip-cage-ely4.9) ---
+# Both asserted that `rc up` never shows the interactive "Pick [" prompt the
+# allowed-roots guard used to raise when RC_ALLOWED_ROOTS was unset. ADR-031 D2
+# deletes that guard: every mount is an explicit line in the project's own
+# config, so there is no root to pick and no prompt to suppress. Keeping the
+# assertions would have been worse than deleting them — with the producing code
+# gone they pass no matter what the launcher does, which is the vacuous-negative
+# shape this suite is careful about elsewhere. The agent-first "no prompts ever"
+# property they were really defending is now asserted where a prompt could
+# actually reappear: ADR-031 D3's first-run-prompt deletion, checked by
+# tests/test-adr-evolution-notes.sh (ADR-009 D7).
 
-# --- Test 24: Non-TTY (piped stdin) skips picker ---
+# --- Tests 25 + 26: retired verbs stay absent (re-homed off `rc schema`) ---
+# These asserted that `rc sessions` and `rc agent` no longer appear in
+# `rc schema`'s command table. `rc schema` itself retired with the config
+# schema (ADR-003 D5 / ADR-031 D2), so the assertion re-homes onto the usage
+# text — still the surface a reader meets, still non-vacuous: a re-added verb
+# would have to be listed there to be discoverable at all.
 echo ""
-echo "=== Test 24: rc up with non-TTY stdin skips picker ==="
-TEST_DIR_T24=$(mktemp -d)
-mkdir -p "${TEST_DIR_T24}/.git"
-# Pipe stdin from /dev/null so -t 0 is false — must not show picker
-nontty_out=$(RC_ALLOWED_ROOTS="$TEST_DIR_T24" "$RC" up --dry-run "$TEST_DIR_T24" 2>&1 </dev/null || true)
-if echo "$nontty_out" | grep -q "Pick \["; then
-  fail "rc up with non-TTY stdin should not show picker (got: $nontty_out)"
+echo "=== Tests 25 + 26: retired verbs absent from usage ==="
+usage_t25=$("$RC" 2>&1 || true)
+for _retired_verb in sessions agent config allowlist schema install; do
+  if printf '%s\n' "$usage_t25" | grep -qE "^  ${_retired_verb}( |$)"; then
+    fail "usage still lists the retired verb '${_retired_verb}'"
+  else
+    pass "usage does not list the retired verb '${_retired_verb}'"
+  fi
+done
+# NEGATIVE CONTROL: a surviving verb IS listed, so the loop above cannot pass
+# by matching nothing at all.
+if printf '%s\n' "$usage_t25" | grep -qE "^  up( |$)"; then
+  pass "usage lists the surviving verb 'up' (the retired-verb loop is not vacuous)"
 else
-  pass "rc up with non-TTY stdin skips picker"
-fi
-rm -rf "$TEST_DIR_T24"
-
-# --- Test 25: rc sessions is retired — absent from rc schema (rip-cage-1f59.3) ---
-# NON-VACUOUS: would fail if cmd_sessions were still present in rc schema.
-# A still-present cmd_sessions would appear in 'rc schema | jq .commands' keys.
-# A docker error on an unknown container also exits non-zero, so exit-code alone
-# is vacuous — absence-from-schema is the discriminating assertion.
-echo ""
-echo "=== Test 25: rc sessions absent from rc schema (retired rip-cage-1f59.3) ==="
-schema_t25=$("$RC" schema 2>/dev/null || true)
-if echo "$schema_t25" | jq -e '.commands | has("sessions")' >/dev/null 2>&1; then
-  fail "rc schema still contains sessions key (should be retired per rip-cage-1f59.3)"
-else
-  pass "rc schema does not contain sessions key (correctly retired)"
-fi
-# Paired exit-code check: retirement also means non-zero on invocation
-sessions_exit_t25=0
-"$RC" sessions no-such-container-xyz >/dev/null 2>&1 || sessions_exit_t25=$?
-if [[ "$sessions_exit_t25" -ne 0 ]]; then
-  pass "rc sessions invocation exits non-zero (unknown command)"
-else
-  fail "rc sessions should exit non-zero (command was retired), got exit 0"
-fi
-
-# --- Test 26: rc agent is retired — absent from rc schema (rip-cage-1f59.3) ---
-# NON-VACUOUS: would fail if cmd_agent were still present in rc schema.
-# This is new coverage — rc agent retirement was not previously tested at all.
-echo ""
-echo "=== Test 26: rc agent absent from rc schema (retired rip-cage-1f59.3) ==="
-schema_t26=$("$RC" schema 2>/dev/null || true)
-if echo "$schema_t26" | jq -e '.commands | has("agent")' >/dev/null 2>&1; then
-  fail "rc schema still contains agent key (should be retired per rip-cage-1f59.3)"
-else
-  pass "rc schema does not contain agent key (correctly retired)"
-fi
-# Paired exit-code check
-agent_exit_t26=0
-"$RC" agent no-such-container-xyz >/dev/null 2>&1 || agent_exit_t26=$?
-if [[ "$agent_exit_t26" -ne 0 ]]; then
-  pass "rc agent invocation exits non-zero (unknown command)"
-else
-  fail "rc agent should exit non-zero (command was retired), got exit 0"
+  fail "usage does not list 'up' — the retired-verb assertions above prove nothing"
 fi
 
 # --- Test 27: rc agent is retired — absent from rc --help (rip-cage-1f59.3) ---
@@ -898,7 +893,7 @@ echo ""
 echo "=== Test 32: rc up --new flag recognized ==="
 TEST_DIR_T32=$(mktemp -d)
 mkdir -p "${TEST_DIR_T32}/.git"
-new_flag_out=$(RC_ALLOWED_ROOTS="$TEST_DIR_T32" "$RC" up --dry-run --new "$TEST_DIR_T32" 2>&1 </dev/null || true)
+new_flag_out=$("$RC" up --dry-run --new "$TEST_DIR_T32" 2>&1 </dev/null || true)
 if echo "$new_flag_out" | grep -qi "unknown.*flag\|invalid.*option\|unrecognized"; then
   fail "rc up --new flag not recognized (got: $new_flag_out)"
 else
@@ -911,7 +906,7 @@ echo ""
 echo "=== Test 33: rc up --session flag recognized ==="
 TEST_DIR_T33=$(mktemp -d)
 mkdir -p "${TEST_DIR_T33}/.git"
-session_flag_out=$(RC_ALLOWED_ROOTS="$TEST_DIR_T33" "$RC" up --dry-run --session "rip-cage" "$TEST_DIR_T33" 2>&1 </dev/null || true)
+session_flag_out=$("$RC" up --dry-run --session "rip-cage" "$TEST_DIR_T33" 2>&1 </dev/null || true)
 if echo "$session_flag_out" | grep -qi "unknown.*flag\|invalid.*option\|unrecognized"; then
   fail "rc up --session flag not recognized (got: $session_flag_out)"
 else
@@ -1206,15 +1201,13 @@ else
   fail "rc usage does not mention exec subcommand"
 fi
 
-# --- Test 49: rc exec is listed in rc schema ---
-echo ""
-echo "=== Test 49: rc exec in rc schema ==="
-schema_t49=$("$RC" schema 2>/dev/null || true)
-if echo "$schema_t49" | jq -e '.commands | has("exec")' >/dev/null 2>&1; then
-  pass "rc schema contains exec command"
-else
-  fail "rc schema does not contain exec command (got: $schema_t49)"
-fi
+# --- Test 49: RETIRED with `rc schema` (rip-cage-ely4.9) ---
+# `rc schema` printed a machine-readable command table generated from the
+# rip-cage config schema. ADR-003 D5, evolved in place by ADR-031 D2: the verb
+# retires with that schema. The agent-first machine-readable contract it
+# gestured at is not lost — it is refactor work under ADR-031 D7 stage 2
+# (--output json on the surviving verbs, an exit-code table), tracked by
+# rip-cage-sygz, not something this test was ever asserting.
 
 # --- Test 50: rc exec --output json is in the json allowlist (no 'not supported' error) ---
 echo ""
@@ -1310,6 +1303,192 @@ if echo "$t53_result" | grep -q "h"; then
   fail "_rc_uptime_from_state: result contains 'h' -- offset leaked into uptime (got: $t53_result)"
 else
   pass "_rc_uptime_from_state: result does not contain 'h' (got: $t53_result)"
+fi
+
+
+# ===========================================================================
+# rip-cage-ely4.9 — the native cage config and the protected-paths floor
+# (ADR-031 D2 / D5(a)+(d); ADR-023 D2 evolved in place).
+#
+# These four cases ARE the bead's verification target. Two of them — the
+# refusals — have exactly one honest observable: whether rc reached msb at
+# all. A fail-OPEN launcher would sail past the check and create a cage, and
+# a test that only asserted a non-zero exit code could not tell that apart
+# from a refusal. So every case runs with a PATH shim in front of the real
+# msb that RECORDS what it was asked to do. The shim answers `--version`
+# (rc's own preflight legitimately calls it before dispatch) and, for any
+# other subcommand, drops a sentinel file and fails. The assertion is the
+# sentinel's absence, not the exit code alone.
+# ===========================================================================
+echo ""
+echo "=== Test 60: native cage config + protected-paths floor (rip-cage-ely4.9) ==="
+
+# /private/tmp, never /tmp: msb does not follow a host-side symlink in a bind
+# source, and on macOS /tmp IS a symlink to /private/tmp (measured, msb 0.6.18,
+# spike rip-cage-ely4.16). A fixture under /tmp would fail at boot, not here.
+E49_ROOT="$(mktemp -d /private/tmp/rc-ely49-XXXXXX)"
+E49_HOME="${E49_ROOT}/home"
+E49_PROJ="${E49_ROOT}/proj"
+E49_BIN="${E49_ROOT}/bin"
+E49_LOG="${E49_ROOT}/msb-invocations.log"
+E49_SENTINEL="${E49_ROOT}/MSB_WAS_SPAWNED"
+mkdir -p "$E49_HOME" "$E49_PROJ/.ssh" "$E49_BIN"
+
+# A project carrying both cover shapes: a protected FILE and a protected
+# DIRECTORY, each inside a tree the config legitimately mounts.
+printf 'SENTINEL_NOT_A_REAL_SECRET=1\n' > "${E49_PROJ}/.env"
+printf 'not-a-real-key\n' > "${E49_PROJ}/.ssh/id_ed25519"
+
+cat > "${E49_BIN}/msb" <<'E49_SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${E49_LOG}"
+case "${1:-}" in
+  --version) echo "msb 0.6.18-test-shim"; exit 0 ;;
+esac
+: > "${E49_SENTINEL}"
+echo "test shim: msb was invoked with: $*" >&2
+exit 1
+E49_SHIM
+chmod +x "${E49_BIN}/msb"
+
+e49_conf() {
+  # $1 = destination path, $2 = the mounts: block body
+  cat > "$1" <<E49_CONF
+image: rip-cage:latest
+workdir: /workspace
+mounts:
+${2}
+network:
+  policy: none
+  allow:
+    - "api.anthropic.com:tcp:443"
+E49_CONF
+}
+
+# Every invocation runs with the shim first on PATH and a THROWAWAY XDG config
+# dir, so nothing here can read or write the real ~/.config/rip-cage —
+# $XDG_CONFIG_HOME is the only place rc looks for a cage config or a
+# protected-paths list.
+#
+# HOME is deliberately NOT overridden. Docker resolves its context and socket
+# through $HOME, so a fake one makes rc's docker preflight fail and every case
+# below reports a daemon error instead of testing its own subject. The
+# protected-path fixture is therefore a fake ".ssh" under the scratch root
+# rather than the real ~/.ssh — matching is by path COMPONENT, so it exercises
+# the identical branch without ever naming the operator's own key directory.
+e49_run_rc() {
+  ( export PATH="${E49_BIN}:${PATH}"
+    export XDG_CONFIG_HOME="${E49_HOME}/.config"
+    export E49_LOG E49_SENTINEL
+    "$@" ) 2>&1
+}
+
+# --- (a) the dry-run argv carries --conf and --log-level trace -------------
+e49_conf "${E49_ROOT}/ok.yaml" "  - \"${E49_PROJ}:/workspace\""
+rm -f "$E49_SENTINEL" "$E49_LOG"
+t60a_out=$(e49_run_rc env RC_CAGE_CONF="${E49_ROOT}/ok.yaml" "$RC" up --dry-run "$E49_PROJ")
+t60a_argv=$(printf '%s\n' "$t60a_out" | grep '^Would run: msb create' || true)
+
+if [[ -n "$t60a_argv" ]]; then
+  pass "60a: rc up --dry-run prints the msb create argv"
+else
+  fail "60a: rc up --dry-run printed no msb create argv (output: ${t60a_out})"
+fi
+if printf '%s\n' "$t60a_argv" | grep -q -- "--conf ${E49_ROOT}/ok.yaml"; then
+  pass "60a: argv contains --conf pointing at the cage config"
+else
+  fail "60a: argv is missing '--conf ${E49_ROOT}/ok.yaml' (argv: ${t60a_argv})"
+fi
+if printf '%s\n' "$t60a_argv" | grep -q -- "--log-level trace"; then
+  pass "60a: argv contains --log-level trace (the deny-trace the repair loop mines)"
+else
+  fail "60a: argv is missing '--log-level trace' (argv: ${t60a_argv})"
+fi
+# The image positional retired with ADR-031 D2 — the config's image: key
+# selects the image. An argv ending in a bare image ref would mean rc is still
+# overriding it.
+if printf '%s\n' "$t60a_argv" | grep -qE 'rip-cage:latest$'; then
+  fail "60a: argv still ends with an image positional — the config's image: key should select the image (argv: ${t60a_argv})"
+else
+  pass "60a: argv carries no image positional"
+fi
+
+# --- (c) covers for a protected file and a protected directory -------------
+# This is the half a refuse-only check would miss: the credential sitting
+# INSIDE a tree you legitimately mount gets covered, not refused.
+if printf '%s\n' "$t60a_argv" | grep -q -- "--mount-file .*:/workspace/.env:ro"; then
+  pass "60c: a protected FILE inside the mounted tree gets an empty read-only file cover"
+else
+  fail "60c: no read-only file cover for /workspace/.env in the argv (argv: ${t60a_argv})"
+fi
+if printf '%s\n' "$t60a_argv" | grep -q -- "--tmpfs /workspace/.ssh"; then
+  pass "60c: a protected DIRECTORY inside the mounted tree gets an empty tmpfs cover"
+else
+  fail "60c: no tmpfs cover for /workspace/.ssh in the argv (argv: ${t60a_argv})"
+fi
+# NEGATIVE CONTROL: a cover nested under a directory cover would try to mount
+# INTO a tmpfs msb just created, which aborts the boot. The id_ed25519 under
+# the covered .ssh/ must NOT get its own cover.
+if printf '%s\n' "$t60a_argv" | grep -q "/workspace/.ssh/id_ed25519"; then
+  fail "60c: emitted a nested cover under an already-tmpfs-covered directory (argv: ${t60a_argv})"
+else
+  pass "60c: no nested cover under the tmpfs-covered directory"
+fi
+
+# --- (b) a config that mounts ~/.ssh is refused, with no msb spawned -------
+E49_FAKE_SSH="${E49_ROOT}/fake-home/.ssh"
+mkdir -p "$E49_FAKE_SSH"
+e49_conf "${E49_ROOT}/bad.yaml" "  - \"${E49_PROJ}:/workspace\"
+  - \"${E49_FAKE_SSH}:/home/agent/.ssh:ro\""
+rm -f "$E49_SENTINEL" "$E49_LOG"
+e49_run_rc env RC_CAGE_CONF="${E49_ROOT}/bad.yaml" "$RC" up "$E49_PROJ" >/dev/null 2>&1
+t60b_rc=$?
+
+if [[ "$t60b_rc" -ne 0 ]]; then
+  pass "60b: a config that mounts a protected path makes rc up exit non-zero (exit ${t60b_rc})"
+else
+  fail "60b: rc up exited 0 on a config that mounts ${E49_FAKE_SSH}"
+fi
+if [[ -f "$E49_SENTINEL" ]]; then
+  fail "60b: msb WAS spawned before the refusal — the check is fail-open (invocations: $(cat "$E49_LOG" 2>/dev/null))"
+else
+  pass "60b: no msb subcommand ran — rc refused before the cage could exist"
+fi
+
+# --- (d) an unreadable protected-paths list refuses, with no msb spawned ---
+# The fail-CLOSED direction is the whole point: the retired pre-flight failed
+# OPEN when its config would not load, which meant a broken policy file
+# silently produced an unprotected cage.
+E49_UNREADABLE="${E49_ROOT}/unreadable-protected-paths"
+printf '.ssh\n.env\n' > "$E49_UNREADABLE"
+chmod 000 "$E49_UNREADABLE"
+rm -f "$E49_SENTINEL" "$E49_LOG"
+e49_run_rc env RC_CAGE_CONF="${E49_ROOT}/ok.yaml" RC_PROTECTED_PATHS="$E49_UNREADABLE" \
+  "$RC" up "$E49_PROJ" >/dev/null 2>&1
+t60d_rc=$?
+chmod 644 "$E49_UNREADABLE"
+
+if [[ "$t60d_rc" -ne 0 ]]; then
+  pass "60d: an unreadable protected-paths list makes rc up exit non-zero (exit ${t60d_rc})"
+else
+  fail "60d: rc up exited 0 with an unreadable protected-paths list — fail-open"
+fi
+if [[ -f "$E49_SENTINEL" ]]; then
+  fail "60d: msb WAS spawned despite an unreadable protected-paths list (invocations: $(cat "$E49_LOG" 2>/dev/null))"
+else
+  pass "60d: no msb subcommand ran — rc aborted before the cage could exist"
+fi
+
+# NEGATIVE CONTROL for the whole block: with the list readable again, the same
+# config must launch. Without this, 60b and 60d could both pass because rc
+# refuses everything.
+rm -f "$E49_SENTINEL" "$E49_LOG"
+t60e_out=$(e49_run_rc env RC_CAGE_CONF="${E49_ROOT}/ok.yaml" RC_PROTECTED_PATHS="$E49_UNREADABLE" \
+  "$RC" up --dry-run "$E49_PROJ")
+if printf '%s\n' "$t60e_out" | grep -q '^Would run: msb create'; then
+  pass "60e: the same config with a READABLE list reaches the launch — 60b/60d are not vacuous"
+else
+  fail "60e: rc refused even with a readable list — 60b and 60d prove nothing (output: ${t60e_out})"
 fi
 
 # --- Cleanup ---

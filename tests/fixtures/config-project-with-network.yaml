@@ -1,5 +1,0 @@
-version: 2
-network:
-  allowed_hosts:
-    - registry.npmjs.org
-  # Note: writable_hosts removed in rip-cage-ta1o.1 (write-gate deleted)

@@ -1,4 +1,0 @@
-version: 2
-dcg:
-  custom_rule_paths:
-    - ../../etc/passwd

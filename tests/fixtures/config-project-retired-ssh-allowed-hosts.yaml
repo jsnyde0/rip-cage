@@ -1,4 +1,0 @@
-version: 2
-ssh:
-  allowed_hosts:
-    - github.com
