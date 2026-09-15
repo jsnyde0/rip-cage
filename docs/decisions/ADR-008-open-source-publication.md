@@ -87,6 +87,8 @@ The `rc` script must work with bash 3.2 (macOS default). Any bash 4+ syntax is a
 
 **Rationale:** macOS ships bash 3.2 due to GPLv3 licensing of bash 4+. Requiring users to install bash 4+ just to run `rc` is unnecessary friction. The `rc` script uses only basic bash features; the one 4+ usage that existed when this was written was cheaply replaced with `tr` (rip-cage-m7c), and holding the line has cost nothing since. *(Tense corrected 2026-09-14, rip-cage-o5be: the clause read "the one 4+ usage is easily replaced with `tr`" in the present tense, implying an offender the decision body one line above already records as removed. `direct:` `grep -rn ',,}' rc cli/` returns nothing.)*
 
+**What would invalidate this:** Watch for the constraint starting to cost something. This decision's rationale rests on "holding the line has cost nothing since" — so the first cue is a change where the bash 3.2 workaround is materially worse than the bash 4 construct it replaces, or where `tests/test-bash32-constructs.sh` (run by `make lint`) blocks a legitimate change rather than catching an accident. The second cue is the target losing its user: a supported macOS release whose `/bin/bash` is no longer 3.2, or `rc`'s documented entrypoint no longer resolving to macOS's system bash. Either cue surfacing is the signal to re-open D5 — not to quietly break compatibility. *(Predicate added 2026-09-15, rip-cage-nsnw: D5 predated the ADR-008 D1 requirement that every decision carry one. Landed through the FIRM alignment gate on the human's explicit yes to this wording; D5's firmness and decision text are untouched.)*
+
 ### D6: Pre-built Docker image on GHCR
 
 **Firmness: FLEXIBLE**
