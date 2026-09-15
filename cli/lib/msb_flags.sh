@@ -403,11 +403,11 @@ _msb_flags_preflight_secret_env() {
       # non-empty. The PATH is named in the error (a path is not secret); the
       # file CONTENTS are never read into the message.
       if [[ ! -r "$source_file" || ! -s "$source_file" ]]; then
-        echo "Error: msb_flags preflight: credentials[${idx}].source_file '${source_file}' is missing, unreadable, or empty. Provide a readable, non-empty file holding the real secret value, or remove this credential binding from .rip-cage.yaml. Refusing to boot a cage that would carry a placeholder-substituted empty secret." >&2
+        echo "Error: msb_flags preflight: credentials[${idx}].source_file '${source_file}' is missing, unreadable, or empty. Provide a readable, non-empty file holding the real secret value, or remove this credential binding. Refusing to boot a cage that would carry a placeholder-substituted empty secret." >&2
         return 1
       fi
     elif [[ -z "${!source_env:-}" ]]; then
-      echo "Error: msb_flags preflight: credentials[${idx}].source_env '${source_env}' is unset or empty in the host environment. Export a real value for ${source_env} before running this command (e.g. 'export ${source_env}=...'), declare a source_file, or remove this credential binding from .rip-cage.yaml. Refusing to boot a cage that would carry a placeholder-substituted empty secret." >&2
+      echo "Error: msb_flags preflight: credentials[${idx}].source_env '${source_env}' is unset or empty in the host environment. Export a real value for ${source_env} before running this command (e.g. 'export ${source_env}=...'), declare a source_file, or remove this credential binding. Refusing to boot a cage that would carry a placeholder-substituted empty secret." >&2
       return 1
     fi
   done

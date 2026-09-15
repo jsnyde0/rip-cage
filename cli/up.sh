@@ -80,7 +80,7 @@ _emit_denylist_denial() {
   local _rpath="$1" _pattern="$2"
   echo "Error: refusing to mount ${_rpath} — matched secret-path denylist pattern '${_pattern}'." >&2
   echo "  Override (one-shot):   rc up --allow-risky-mount ${_rpath} ..." >&2
-  echo "  Override (persistent): add to .rip-cage.yaml under mounts.allow_risky:" >&2
+  echo "  Override (persistent): remove that name from your protected-paths list:" >&2
   echo "                           mounts:" >&2
   echo "                             allow_risky:" >&2
   echo "                               - ${_rpath}" >&2
@@ -317,7 +317,7 @@ _collect_dangling_symlinks() {
         echo "Warning: symlink at '$link' could not be resolved (broken symlink chain); skipping (mounts.symlinks.on_dangling=skip)." >&2
         continue
       fi
-      echo "Error: symlink at '$link' could not be resolved (broken symlink chain). Set mounts.symlinks.on_dangling=skip in .rip-cage.yaml to unblock." >&2
+      echo "Error: symlink at '$link' could not be resolved (broken symlink chain). Repair or remove the symlink to unblock." >&2
       return 1
     fi
     # Skip if target is under the root itself (not dangling from cage POV).
@@ -754,7 +754,7 @@ _up_prepare_docker_mounts() {
           echo "[rip-cage] Warning: dangling symlink at '${_sfl_link}' → '${_sfl_target}'; skipping mount (mounts.symlinks.on_dangling=skip)." >&2
           ;;
         error)
-          echo "[rip-cage] Error: dangling symlink at '${_sfl_link}' targets '${_sfl_target}'; set mounts.symlinks.on_dangling=follow or skip in .rip-cage.yaml to unblock." >&2
+          echo "[rip-cage] Error: dangling symlink at '${_sfl_link}' targets '${_sfl_target}'; repair or remove the symlink to unblock." >&2
           exit 1
           ;;
       esac
@@ -1077,6 +1077,126 @@ _up_prepare_environment() {
 #             (for the egress-config JSON build)
 # Returns non-zero on failure (human mode); JSON mode calls json_error,
 # which exits internally and never returns.
+# _up_resolve_conf PATH NAME
+#
+# Echo the native msb config file rc will launch with. Precedence, first hit
+# wins: `rc up --conf <path>`, then $RC_CAGE_CONF, then
+# $XDG_CONFIG_HOME/rip-cage/projects/<NAME>.yaml. Fails loud, naming exactly
+# what to copy, when nothing resolves -- there is no implicit default cage.
+#
+# ADR-031 D2/D5(a): wherever it comes from, the file must sit OUTSIDE every
+# mount it declares. That is _protected_paths_conf_outside_mounts, called from
+# cmd_up before any msb call.
+_up_resolve_conf() {
+  local _path="$1" _name="$2"
+
+  local _conf=""
+  if [[ -n "${_UP_CONF_FLAG:-}" ]]; then
+    _conf="${_UP_CONF_FLAG}"
+  elif [[ -n "${RC_CAGE_CONF:-}" ]]; then
+    _conf="${RC_CAGE_CONF}"
+  else
+    _conf="${XDG_CONFIG_HOME:-${HOME}/.config}/rip-cage/projects/${_name}.yaml"
+  fi
+
+  if [[ ! -e "$_conf" ]]; then
+    echo "Error: no cage config at ${_conf}. rip-cage launches from one native microsandbox config file per project (ADR-031 D2). Copy the shipped template and edit it:" >&2
+    echo "    mkdir -p $(dirname "$_conf")" >&2
+    echo "    cp ${SCRIPT_DIR}/share/rip-cage/cage.yaml.template ${_conf}" >&2
+    echo "  Then fill in its <ANGLE-BRACKET> placeholders (this project is ${_path})." >&2
+    return 1
+  fi
+  if [[ ! -r "$_conf" ]]; then
+    echo "Error: the cage config at ${_conf} exists but is not readable. Refusing to launch." >&2
+    return 1
+  fi
+  printf '%s\n' "$_conf"
+}
+
+
+# _up_prepare_conf_secret_env CONF
+#
+# For every credential the config's `secrets:` block declares, put the real
+# value in the host env var msb reads at boot. MUST run in this shell, never
+# via $(...) -- a subshell would discard the exports.
+#
+# WHY rc DOES THIS AT ALL. A `secrets:` entry deliberately carries no `value:`
+# (that would put the secret in the config file); msb takes it from the host
+# env var of the same name instead. Requiring the operator to export it by hand
+# before every launch would put a human in the loop on an unattended run, which
+# is the property ADR-029 D5's `source_file` field existed to protect. rc reads
+# the value from a host-side file instead, by CONVENTION over its own config
+# location rather than through any config schema:
+#
+#     $XDG_CONFIG_HOME/rip-cage/secrets/<NAME>
+#
+# Same ADR-031 D5(a) class as the protected-paths list: host-side, outside every
+# cage mount, never a path the cage config can point at. When the file is absent
+# the host env var must already be set, and msb fails loud naming it.
+_up_prepare_conf_secret_env() {
+  local _conf="$1"
+  local _secret_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/rip-cage/secrets"
+  local _sname _sfile _svalue
+
+  command -v yq &>/dev/null || return 0
+  [[ -r "$_conf" ]] || return 0
+
+  while IFS= read -r _sname; do
+    [[ -z "$_sname" ]] && continue
+    # Already exported by the operator: leave it alone.
+    [[ -n "${!_sname:-}" ]] && continue
+    _sfile="${_secret_dir}/${_sname}"
+    [[ -f "$_sfile" ]] || continue
+    if [[ ! -r "$_sfile" ]]; then
+      echo "Warning: ${_sfile} holds the value for secret '${_sname}' but is not readable — msb will fail loud unless ${_sname} is exported." >&2
+      continue
+    fi
+    _svalue="$(cat "$_sfile")"
+    export "${_sname}=${_svalue}"
+    log "secrets: ${_sname} sourced from ${_sfile} (the value never enters the guest)"
+  done < <(yq -r '.secrets // {} | keys | .[]' "$_conf" 2>/dev/null)
+}
+
+
+# _up_build_msb_create_argv NAME PATH
+#
+# Populate the global array _UP_MSB_ARGV with the exact `msb create` argv.
+# This is the launcher's contract: the real create runs THIS array and
+# `rc up --dry-run` prints it, so what the dry-run shows is what runs.
+#
+# rc generates only what no config file can hold (ADR-031 D3): --name, the
+# trace log level the deny->fix->reload loop mines, --replace, the mounts
+# computed from the host filesystem, and the protected-paths covers. There is
+# NO image positional -- the config's own `image:` key selects the image.
+#
+# Reads globals: _UP_CAGE_CONF, _UP_MSB_REPLACE, _UP_RUN_ARGS,
+# _UP_PROTECTED_COVERS.
+_up_build_msb_create_argv() {
+  local _name="$1" _path="$2"
+
+  _UP_MSB_ARGV=(msb create --conf "${_UP_CAGE_CONF}" --name "$_name" --log-level trace)
+  [[ "${_UP_MSB_REPLACE:-false}" == "true" ]] && _UP_MSB_ARGV+=(--replace)
+
+  local _egress_cfg _egress_out _translate_out _line
+  _egress_cfg=$(_up_build_egress_config_json "$_path")
+  _egress_out=$(_msb_flags_generate "$_egress_cfg") || return 1
+  if [[ -n "$_egress_out" ]]; then
+    while IFS= read -r _line; do _UP_MSB_ARGV+=("$_line"); done <<< "$_egress_out"
+  fi
+
+  _translate_out=$(_up_translate_docker_args_to_msb "${_UP_RUN_ARGS[@]+"${_UP_RUN_ARGS[@]}"}") || return 1
+  if [[ -n "$_translate_out" ]]; then
+    while IFS= read -r _line; do _UP_MSB_ARGV+=("$_line"); done <<< "$_translate_out"
+  fi
+
+  # Covers go last: each is a more-specific mount over a tree declared above.
+  if [[ -n "${_UP_PROTECTED_COVERS[*]:-}" ]]; then
+    _UP_MSB_ARGV+=("${_UP_PROTECTED_COVERS[@]}")
+  fi
+  return 0
+}
+
+
 _up_start_container() {
   local _name="$1" _path="$2"
 
@@ -1096,6 +1216,10 @@ _up_start_container() {
   # placeholder name. MUST run in this shell (never via $(...), which would
   # run in a subshell and discard the exports) per its own contract.
   _msb_flags_prepare_secret_env "$_egress_cfg"
+
+  # The cage config's own `secrets:` block: put each real value in the host env
+  # var msb reads at boot. Same in-shell requirement as the call above.
+  _up_prepare_conf_secret_env "${_UP_CAGE_CONF}"
 
   local _egress_out _egress_rc=0
   _egress_out=$(_msb_flags_generate "$_egress_cfg") || _egress_rc=$?
@@ -1130,9 +1254,14 @@ _up_start_container() {
     done <<< "$_translate_out"
   fi
 
+  local _UP_MSB_ARGV=()
+  if ! _up_build_msb_create_argv "$_name" "$_path"; then
+    echo "Error: failed to assemble the msb create argv for $_name" >&2
+    return 1
+  fi
+
   local msb_stderr
-  if ! msb_stderr=$(msb create --name "$_name" --log-level trace \
-      "${_translated_flags[@]}" "${_egress_flags[@]}" "$IMAGE" 2>&1 >/dev/null); then
+  if ! msb_stderr=$("${_UP_MSB_ARGV[@]}" 2>&1 >/dev/null); then
     if echo "$msb_stderr" | grep -q "sandbox already exists"; then
       if [[ "$OUTPUT_FORMAT" == "json" ]]; then
         json_error "Container name $_name is already in use" "NAME_CONFLICT"
@@ -1294,7 +1423,7 @@ _up_resolve_resume_image_drift_running() {
 # resolution rule (per_tool.T if set, else the global credential_mounts, else
 # "real") never drifts between call sites.
 # Parameters: $1 tool ("claude"|"pi"), $2 effective-config JSON (the object
-#             returned by _load_effective_config, i.e. has a top-level .config)
+#             (retired parameter; kept for the caller's signature)
 # Output: "real" or "none" on stdout.
 _up_resolve_effective_credential_mounts_for_tool() {
   local _tool="$1" _cfg_json="$2"
@@ -1316,28 +1445,11 @@ _up_resolve_resume_symlink_fingerprint() {
   # Compute current fingerprint — include mode, on_dangling, and scope so that
   # policy changes (not just symlink-set changes) produce fingerprint drift.
   local _sfl_cur_mode="rw" _sfl_cur_on_dangling="follow" _sfl_cur_scope="file"
-  # rip-cage-seqc.4 / B1a call-site 2, effective(pi) (rip-cage-xhgr / D5b):
-  # also read current effective(pi) — NEVER effective(claude); this
-  # fingerprint's scan root is ~/.pi/agent only — so the recomputed
-  # fingerprint reflects the SAME F1 leaf-filter the (immutable) create-time
-  # mount set was built with. A pi flip (global or per_tool.pi) then changes
-  # this fingerprint too — defense-in-depth alongside the dedicated
-  # _up_resolve_resume_credential_mounts guard (B1), both fail loud, no
-  # silent drift. Using effective(pi) here (not the bare global) is what
-  # keeps a stable {claude:real, pi:none} cage's resume-side recompute
-  # symmetric with its create-time fingerprint.
+  # The policy inputs are constants now (ADR-031 D2), matching create time, so
+  # the recompute below differs from the stored label only when the MOUNT SET
+  # itself changed on the host filesystem — which is the drift this guard was
+  # always really about.
   local _sfl_cur_cred_mounts="real"
-  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "${_path}")" ]]; then
-    if command -v yq &>/dev/null; then
-      local _sfl_cur_cfg
-      if _sfl_cur_cfg=$(_load_effective_config "${_path}" 2>/dev/null); then
-        _sfl_cur_mode=$(jq -r '.config.mounts.symlinks.mode // "rw"' <<<"$_sfl_cur_cfg")
-        _sfl_cur_on_dangling=$(jq -r '.config.mounts.symlinks.on_dangling // "follow"' <<<"$_sfl_cur_cfg")
-        _sfl_cur_scope=$(jq -r '.config.mounts.symlinks.scope // "file"' <<<"$_sfl_cur_cfg")
-        _sfl_cur_cred_mounts=$(_up_resolve_effective_credential_mounts_for_tool "pi" "$_sfl_cur_cfg")
-      fi
-    fi
-  fi
   local _current_fp
   _current_fp=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_cur_mode" "$_sfl_cur_on_dangling" "$_sfl_cur_scope" "$_path" "$_sfl_cur_cred_mounts")
 
@@ -1478,7 +1590,7 @@ _UP_DCG_CONFIG_PATH=""
 #     the spec is passed through unchanged and msb's own error stands.
 #
 # This runs in the TRANSLATOR, after every validation pass (mount denylist,
-# RC_ALLOWED_ROOTS, secret-path checks) has already read the ORIGINAL path —
+# the protected-paths check) has already read the ORIGINAL path —
 # so it cannot widen what rc admits. It changes how an already-admitted
 # inode is NAMED to msb, not which inode is mounted.
 #
@@ -1594,7 +1706,7 @@ _up_translate_docker_args_to_msb() {
 # _up_build_egress_config_json PATH
 #
 # rip-cage-rj68 (S6 of the msb migration epic rip-cage-tsf2): translates the
-# effective .rip-cage.yaml config into the normalized JSON contract
+# manifest-declared tool egress into the normalized JSON contract
 # cli/lib/msb_flags.sh's _msb_flags_generate expects (S2, rip-cage-kl4r,
 # APPROVED as-is per the 2026-07-12 Fable fold — this function feeds it,
 # does not reshape it).
@@ -1630,16 +1742,15 @@ _up_translate_docker_args_to_msb() {
 # keeps this floor-egress default safe, not an empty allowlist.
 _up_build_egress_config_json() {
   local _uec_path="$1"
+  # BOTH CONFIG CONTRIBUTIONS ARE THE CAGE CONFIG'S OWN NOW (ADR-031 D2).
+  # Egress hosts are its `network.allow` list and credential bindings are its
+  # `secrets:` block, so msb reads both straight off the --conf file and rc
+  # generates neither. What IS still generated here is the MANIFEST union
+  # below: a composed tool declares the hosts it needs, and those have no home
+  # in the project's own config file. Measured on msb 0.6.18: CLI --net-rule
+  # flags UNION with the --conf allow list rather than replacing it, so the
+  # manifest union still lands.
   local _uec_allowed_hosts='[]' _uec_credentials='[]'
-  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$_uec_path")" ]]; then
-    if command -v yq &>/dev/null; then
-      local _uec_cfg_result
-      if _uec_cfg_result=$(_load_effective_config "$_uec_path" 2>/dev/null); then
-        _uec_allowed_hosts=$(jq -c '.config.network.allowed_hosts // []' <<<"$_uec_cfg_result")
-        _uec_credentials=$(jq -c '.config.auth.credentials // []' <<<"$_uec_cfg_result")
-      fi
-    fi
-  fi
 
   # rip-cage-tsf2.8: union manifest-declared tool egress: hosts into
   # allowed_hosts (ADR-005 D3 — a composed tool declares the hosts it needs to
@@ -1748,16 +1859,11 @@ _up_resolve_placeholder_env_file() {
   local _pef_path="$1" _pef_cli_env_file="${2:-}"
   _UP_PLACEHOLDER_ENV_FILE=""
 
-  local _pef_pointer="null"
-  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "${_pef_path}")" ]]; then
-    if command -v yq &>/dev/null; then
-      local _pef_cfg
-      if _pef_cfg=$(_load_effective_config "${_pef_path}" 2>/dev/null); then
-        _pef_pointer=$(jq -r '.config.auth.placeholder_env_file // "null"' <<<"$_pef_cfg")
-      fi
-      unset _pef_cfg
-    fi
-  fi
+  # auth.placeholder_env_file retired with the schema (ADR-031 D2). A cage
+  # that wants extra guest env vars declares them in its own config's `env:`
+  # block, which msb reads directly. $RC_PLACEHOLDER_ENV_FILE keeps the
+  # host-side pointer available for a caller that still needs one.
+  local _pef_pointer="${RC_PLACEHOLDER_ENV_FILE:-null}"
   if [[ -z "$_pef_pointer" || "$_pef_pointer" == "null" ]]; then
     return 0
   fi
@@ -1937,7 +2043,7 @@ cmd_up() {
   # When set, validator emits a warning instead of refusing.
   local rc_allow_config_override=""
   # rip-cage-y0u0: converge-on-up is DEFAULT-ON for a STOPPED cage with
-  # eligible config drift — cold-recreates to the current .rip-cage.yaml via
+  # a stopped cage — cold-recreates against the current cage config via
   # the existing cold-recreate pipeline (loud announcement); a no-op harmless
   # plain `up` when there is no eligible drift. --no-reload opts out (the old
   # resume-stale-with-a-hint behavior tsf2.9 shipped as the default). --reload
@@ -1978,40 +2084,48 @@ cmd_up() {
     path="."
   fi
 
-  # Non-TTY minimum grant: when RC_ALLOWED_ROOTS is unset and an env-file is provided,
-  # pre-set RC_ALLOWED_ROOTS to cover both the workspace path and the env-file dirname.
-  # This prevents the second validate_path call from seeing a different effective root.
-  if [[ -z "${RC_ALLOWED_ROOTS:-}" ]] && [[ -n "$env_file" ]] && ! { [[ -t 0 ]] && [[ "$OUTPUT_FORMAT" != "json" ]]; }; then
-    local _pre_ws _pre_env_dir
-    _pre_ws=$(realpath "$path" 2>/dev/null) || _pre_ws="$path"
-    if [[ -e "$env_file" ]]; then
-      local _pre_ef
-      _pre_ef=$(realpath "$env_file" 2>/dev/null) || _pre_ef="$env_file"
-      _pre_env_dir=$(dirname "$_pre_ef")
-      RC_ALLOWED_ROOTS="${_pre_ws}:${_pre_env_dir}"
-      RC_VALIDATE_WARNING="RC_ALLOWED_ROOTS unset — allowing $_pre_ws only."
-      echo "Warning: RC_ALLOWED_ROOTS unset — allowing $_pre_ws only." >&2
-      echo "Set RC_ALLOWED_ROOTS in ~/.config/rip-cage/rc.conf for permanent access." >&2
-    fi
-  fi
-
   validate_path "$path"
   path="$VALIDATED_PATH"
 
-  # rip-cage-j86 / ADR-023 D6 evolution: auto-seed the global config on first run
-  # BEFORE _config_validate_or_abort so the yq-presence check inside the
-  # validator covers the freshly-seeded config. Seeding is the safe direction —
-  # it only adds blocking, never widens capability (denylist-only config). The
-  # old hard-stop that required a separate `rc install` step is removed; seeding
-  # guarantees the file is present before the validator runs.
-  _config_ensure_global_seeded
+  # ---------------------------------------------------------------------
+  # THE MOUNT-SIDE FLOOR. Everything in this block runs BEFORE any msb call
+  # — before the image probes, before any label read, before create. That
+  # ordering is the whole point: a config that would show a credential store
+  # into a cage, or a protected-paths list rc cannot read, must stop rc
+  # while the cage still does not exist (ADR-031 D2, D5(a)/D5(d)).
+  # ---------------------------------------------------------------------
+  local _conf_name
+  _conf_name=$(container_name "$path")
+  if [[ -z "$_conf_name" ]]; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cannot derive container name from path: $path" "PATH_INVALID"
+    echo "Error: path components produce an empty container name: $path" >&2
+    exit 1
+  fi
 
-  # ADR-021 D3 + ADR-001: validate .rip-cage.yaml posture BEFORE any docker
-  # side-effects. Aborts loud on selection-list+future-version (silent skip
-  # would silently expand capability past user intent — ADR-001:13) or on
-  # yq-missing-with-config-present (no silent degradation per ADR-021
-  # implementation notes). No config file ⇒ silent no-op (D5).
-  _config_validate_or_abort "$path"
+  if ! _UP_CAGE_CONF=$(_up_resolve_conf "$path" "$_conf_name"); then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "No readable cage config for $path" "CAGE_CONFIG_MISSING"
+    exit 1
+  fi
+
+  if ! _protected_paths_conf_outside_mounts "$_UP_CAGE_CONF"; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage config ${_UP_CAGE_CONF} resolves inside a tree it mounts" "CAGE_CONFIG_INSIDE_MOUNT"
+    exit 1
+  fi
+
+  # The covers this produces are appended to the create argv; a refusal here
+  # exits non-zero with nothing spawned.
+  local _covers_out
+  if ! _covers_out=$(_protected_paths_enforce "$_UP_CAGE_CONF"); then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Protected-paths check refused the cage config ${_UP_CAGE_CONF}" "PROTECTED_PATH_REFUSED"
+    exit 1
+  fi
+  _UP_PROTECTED_COVERS=()
+  if [[ -n "$_covers_out" ]]; then
+    local _cover_line
+    while IFS= read -r _cover_line; do
+      _UP_PROTECTED_COVERS+=("$_cover_line")
+    done <<< "$_covers_out"
+  fi
 
   # LFS advisory: warn if the project uses git-lfs and has unmaterialized
   # pointer stubs. rip-cage cannot fetch blobs (ADR-014); user must run
@@ -2210,12 +2324,10 @@ cmd_up() {
     if [[ "$state" == "running" ]]; then
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-RUNNING BEGIN (mirrors the real
       # running branch below — see RESUME-GUARDS-REAL-RUNNING). All guards
-      # here are read-only (label read + _load_effective_config + compare) —
+      # here are read-only (label read + recompute + compare) —
       # safe under --dry-run.
       _up_resolve_resume_image_drift_running "$name" "$path"
-      _up_resolve_resume_config_mode "$name" "$path"
       _up_resolve_resume_symlink_fingerprint "$name" "$path"
-      _up_resolve_resume_credential_mounts "$name" "$path"
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-RUNNING END
       would_action="would_attach"
     elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
@@ -2237,19 +2349,20 @@ cmd_up() {
       # compare), so this stays --dry-run-safe (no mutation). Converge is now
       # the DEFAULT for a stopped cage with eligible drift; --no-reload opts
       # out (RC_UP_CONVERGE is retired).
-      if [[ -z "$rc_up_no_reload" ]] \
-          && _up_eligible_drift_paths "$name" "$path" >/dev/null; then
+      # ADR-031 D3: a STOPPED cage is recreated against the current config
+      # on a plain `rc up`. There is no drift comparison left to make — the
+      # config file is read fresh at every launch, so "has it changed?" has
+      # no cheaper answer than recreating. --no-reload opts out.
+      if [[ -z "$rc_up_no_reload" ]]; then
         would_action="would_converge"
       else
         # No converge -> mirror the real path's plain-resume: run the abort-loud
         # guards (read-only here) so planners see the same hard stops.
         # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-STOPPED BEGIN (mirrors the real
         # stopped branch below — see RESUME-GUARDS-REAL-STOPPED). All guards
-        # here are read-only (label read + _load_effective_config + compare).
+        # here are read-only (label read + recompute + compare).
         _up_resolve_resume_image_drift_stopped "$name" "$path"
-        _up_resolve_resume_config_mode "$name" "$path"
         _up_resolve_resume_symlink_fingerprint "$name" "$path"
-        _up_resolve_resume_credential_mounts "$name" "$path"
         # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-STOPPED END
         would_action="would_resume"
       fi
@@ -2355,14 +2468,12 @@ cmd_up() {
     # would interrupt a live agent session for no safety benefit (ADR-002 D5).
     _up_resolve_resume_image_drift_running "$name" "$path"
     # ADR-021 D7: config-mode mount-shape guard applies to running containers too.
-    _up_resolve_resume_config_mode "$name" "$path"
     # rip-cage-c1p.2 D4: fingerprint label-lock applies to running containers too.
     # A policy change (on_dangling, scope, mode) must block resume regardless of
     # whether the container is stopped or running — the mount shape is immutable.
     _up_resolve_resume_symlink_fingerprint "$name" "$path"
     # rip-cage-seqc.4 / B1: credential-mounts mount-shape guard applies to
     # running containers too — same rationale as the two guards above.
-    _up_resolve_resume_credential_mounts "$name" "$path"
     # rip-cage-yid0: mediator CA env guard applies to running containers too
     # — CA trust env vars are frozen at container-create time, same rationale.
     # rip-cage-3y9g: RESUME-GUARDS-REAL-RUNNING END
@@ -2375,13 +2486,12 @@ cmd_up() {
     # cage instead (review F7); the explicit recreate verb for a running cage
     # is `rc reload`, which the operator invokes knowingly.
     if [[ -n "$rc_up_reload" ]]; then
-      if _up_eligible_drift_paths "$name" "$path" >/dev/null; then
+      if [[ -z "$rc_up_no_reload" ]]; then
         log "Notice: ${name} is RUNNING — NOT auto-recreating despite --reload"
         log "  (a running cage keeps its live session; only a STOPPED cage auto-converges)."
         log "  To apply the drift to this running cage now, cold-recreate explicitly: rc reload ${name}"
       fi
     fi
-    _config_emit_hint "$path" "$name"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       _up_json_output "$name" "attached" "$path" "running"
       return
@@ -2432,7 +2542,7 @@ cmd_up() {
     # rip-cage-y0u0: converge-on-up is DEFAULT-ON for a STOPPED cage with
     # eligible config drift (flipped from tsf2.9's opt-in --reload/RC_UP_CONVERGE
     # after a soak period — human sign-off 2026-07-21). Unless --no-reload opts
-    # out, cold-recreate against the now-current .rip-cage.yaml INSTEAD of
+    # out, cold-recreate against the now-current cage config INSTEAD of
     # resuming with stale creation-time rules. --reload remains accepted as an
     # explicit-intent synonym for the default (it also gates the RUNNING-cage
     # "not auto-recreating" notice above). This only converges the
@@ -2447,8 +2557,8 @@ cmd_up() {
     # forces json because it must NOT attach; up must).
     if [[ -z "$rc_up_no_reload" ]]; then
       local _conv_paths
-      if _conv_paths=$(_up_eligible_drift_paths "$name" "$path"); then
-        _up_announce_converge "$name" "$_conv_paths"
+      if [[ -z "$rc_up_no_reload" ]]; then
+        log "Converging ${name}: cold-recreating against the current cage config (ADR-031 D3). Host mounts and named volumes survive; only the guest's ephemeral rootfs scratch is lost."
         _msb_stop_graceful "$name" 2>/dev/null || true
         _msb_remove "$name"
         # Cage now absent -> the recursive cmd_up takes the create path (which
@@ -2492,15 +2602,13 @@ cmd_up() {
     # against the OLD container's filesystem -> raw OCI stat crash + self-stop.
     # Aborts loud on mismatch or a missing current image — never fail-open.
     _up_resolve_resume_image_drift_stopped "$name" "$path"
-    # ADR-021 D7: config-mode mount-shape guard — abort loud if mounts.config_mode
+    # (the config-mode mount-shape guard retired with the file it guarded)
     # was toggled between ro and rw since the container was created.
-    _up_resolve_resume_config_mode "$name" "$path"
     # rip-cage-c1p.2 D4: symlink-follow fingerprint label-lock — abort loud if
     # the dangling-symlink set (or mode) changed since create time.
     _up_resolve_resume_symlink_fingerprint "$name" "$path"
     # rip-cage-seqc.4 / B1: credential-mounts mount-shape guard — abort loud if
     # auth.credential_mounts was toggled between real and none since create.
-    _up_resolve_resume_credential_mounts "$name" "$path"
     # rip-cage-3y9g: RESUME-GUARDS-REAL-STOPPED END
     # rip-cage-rj68 (S6): msb re-resolves every --secret binding's real
     # value from the host env at START time, not just at create time (live-
@@ -2536,7 +2644,6 @@ cmd_up() {
       _msb_stop_graceful "$name"
       exit 1
     fi
-    _config_emit_hint "$path" "$name"
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       _up_json_output "$name" "resumed" "$path" "running" "success"
       return
@@ -2666,16 +2773,10 @@ cmd_up() {
   local _rc_cache_dir="${HOME}/.cache/rip-cage/${name}"
   mkdir -p "$_rc_cache_dir"
 
-  # ADR-025 D1/D5: translate dcg.* from effective config into a merged DCG
-  # config file. Fail-closed on malformed TOML (D5). Safe-by-default: no file
-  # written and _UP_DCG_CONFIG_PATH stays empty when no dcg.* configured.
+  # DCG policy left rc entirely (ADR-031 D2): it is the DCG recipe's business
+  # and rides the recipe's own mount (ADR-025 D1, transport note). rc no longer
+  # translates dcg.* into a config file, because there is no dcg.* to read.
   _UP_DCG_CONFIG_PATH=""
-  if ! _up_resolve_dcg_config "$path" "$_rc_cache_dir"; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "DCG config translation failed — check dcg.* in .rip-cage.yaml (ADR-025 D5 fail-closed)" "DCG_CONFIG_INVALID"
-    fi
-    exit 1
-  fi
 
   # auth.credential_mounts (rip-cage-seqc.4 / E2) + auth.per_tool.{claude,pi}
   # (rip-cage-xhgr / D1): resolve the effective values BEFORE the
@@ -2690,49 +2791,20 @@ cmd_up() {
   _UP_CREDENTIAL_MOUNTS="real"
   _UP_CRED_MOUNTS_CLAUDE="real"
   _UP_CRED_MOUNTS_PI="real"
-  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
-    if command -v yq &>/dev/null; then
-      local _cred_mounts_cfg
-      if _cred_mounts_cfg=$(_load_effective_config "$path" 2>/dev/null); then
-        _UP_CREDENTIAL_MOUNTS=$(jq -r '.config.auth.credential_mounts // "real"' <<<"$_cred_mounts_cfg")
-        _UP_CRED_MOUNTS_CLAUDE=$(_up_resolve_effective_credential_mounts_for_tool "claude" "$_cred_mounts_cfg")
-        _UP_CRED_MOUNTS_PI=$(_up_resolve_effective_credential_mounts_for_tool "pi" "$_cred_mounts_cfg")
-      fi
-      unset _cred_mounts_cfg
-    fi
-  fi
+  # auth.credential_mounts / auth.per_tool retired with the schema
+  # (ADR-031 D2); "real" was that schema's own default, so an unconfigured
+  # cage keeps today's posture. A cage that wants NON-POSSESSION declares a
+  # `secrets:` binding in its own config instead — msb injects the real value
+  # on the wire and the guest holds only the placeholder, which is a stronger
+  # posture than suppressing the mount ever was (ADR-029 D3/D5).
   _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts=${_UP_CREDENTIAL_MOUNTS}")
   _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts.claude=${_UP_CRED_MOUNTS_CLAUDE}")
   _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts.pi=${_UP_CRED_MOUNTS_PI}")
 
-  # ADR-021 D7: persist effective mounts.config_mode as a container label so
-  # resume can detect ro↔rw mount-shape transitions and abort loud rather than
-  # silently presenting a stale mount shape.
-  local _cm_label_mode="ro"
-  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
-    if command -v yq &>/dev/null; then
-      local _cm_label_cfg
-      if _cm_label_cfg=$(_load_effective_config "$path" 2>/dev/null); then
-        _cm_label_mode=$(jq -r '.config.mounts.config_mode // "ro"' <<<"$_cm_label_cfg")
-      fi
-      unset _cm_label_cfg
-    fi
-  fi
-  _UP_RUN_ARGS+=(--label "rc.config-mode=${_cm_label_mode}")
-  unset _cm_label_mode
-
-  # ADR-021 D5: persist effective .rip-cage.yaml content sha as a container
-  # label — but ONLY when at least one config file exists. D5 forbids new
-  # labels in the both-absent case (cage posture must be byte-identical to
-  # pre-loader). _config_validate_or_abort upstream guarantees that if any
-  # file is present, yq + D3 validation already passed.
-  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
-    local _rc_config_sha
-    _rc_config_sha=$(_config_label_value "$path")
-    if [[ -n "$_rc_config_sha" ]]; then
-      _UP_RUN_ARGS+=(--label "rc.config-loaded=${_rc_config_sha}")
-    fi
-  fi
+  # The rc.config-mode and rc.config-loaded labels are gone with the file they
+  # described (ADR-031 D2). rc.cage-conf replaces them: which config file this
+  # cage was launched from, so `rc doctor` and a resume can say where to look.
+  _UP_RUN_ARGS+=(--label "rc.cage-conf=${_UP_CAGE_CONF}")
 
   # rip-cage-c1p.2 D4: persist symlink-follow fingerprint as a container label
   # so resume can detect mount-shape drift and abort loud. Computed from sorted
@@ -2740,44 +2812,34 @@ cmd_up() {
   # so that policy changes also produce fingerprint drift.
   # Emitted unconditionally so the label is always present for resume checks.
   # Follows the rc.config-mode label-lock precedent above.
+  # Policy inputs are the retired schema's own defaults now, matching
+  # _up_prepare_docker_mounts. The fingerprint still earns its place: the
+  # MOUNT SET it hashes is computed from the live host filesystem at every
+  # launch, so it drifts even with the policy frozen.
   local _sfl_mode_for_fp="rw" _sfl_on_dangling_for_fp="follow" _sfl_scope_for_fp="file"
-  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
-    if command -v yq &>/dev/null; then
-      local _sfl_fp_cfg
-      if _sfl_fp_cfg=$(_load_effective_config "$path" 2>/dev/null); then
-        _sfl_mode_for_fp=$(jq -r '.config.mounts.symlinks.mode // "rw"' <<<"$_sfl_fp_cfg")
-        _sfl_on_dangling_for_fp=$(jq -r '.config.mounts.symlinks.on_dangling // "follow"' <<<"$_sfl_fp_cfg")
-        _sfl_scope_for_fp=$(jq -r '.config.mounts.symlinks.scope // "file"' <<<"$_sfl_fp_cfg")
-      fi
-    fi
-  fi
   # effective(pi), NEVER effective(claude) (rip-cage-xhgr / D5b) — this
   # fingerprint's scan root is ~/.pi/agent only.
   local _sfl_fingerprint
   _sfl_fingerprint=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_mode_for_fp" "$_sfl_on_dangling_for_fp" "$_sfl_scope_for_fp" "$path" "$_UP_CRED_MOUNTS_PI")
   _UP_RUN_ARGS+=(--label "rc.symlink-follow-fingerprint=${_sfl_fingerprint}")
-  unset _sfl_mode_for_fp _sfl_on_dangling_for_fp _sfl_scope_for_fp _sfl_fp_cfg _sfl_fingerprint
+  unset _sfl_mode_for_fp _sfl_on_dangling_for_fp _sfl_scope_for_fp _sfl_fingerprint
 
   # rip-cage-1f59.1: resolve session.multiplexer from effective config (ADR-021 D6).
   # Defaults to "none" when unset. Invalid enum values are already caught by
   # _config_validate_or_abort (upstream) per ADR-001 fail-loud contract.
   # Threaded into the container as RC_MULTIPLEXER env var (read by init-rip-cage.sh)
   # and stamped as rc.session.multiplexer label (for attach helpers + rc ls).
-  local _rc_multiplexer="none"
-  if [[ -f "$(_config_global_path)" || -f "$(_config_project_path "$path")" ]]; then
-    if command -v yq &>/dev/null; then
-      local _mux_eff_result
-      if _mux_eff_result=$(_load_effective_config "$path" 2>/dev/null); then
-        _rc_multiplexer=$(jq -r '.config.session.multiplexer // "none"' <<<"$_mux_eff_result")
-      fi
-    fi
-  fi
+  # session.multiplexer retired with the schema (ADR-031 D2). "none" was its
+  # default and stays the default: a plain shell, no multiplexer started.
+  # $RC_MULTIPLEXER selects a provider for a caller that wants one; the
+  # provider contract itself is unchanged (ADR-005 D12 — rc names no
+  # multiplexer, it only forwards the name it is given).
+  local _rc_multiplexer="${RC_MULTIPLEXER:-none}"
   _UP_RUN_ARGS+=(-e "RC_MULTIPLEXER=${_rc_multiplexer}")
   _UP_RUN_ARGS+=(--label "rc.session.multiplexer=${_rc_multiplexer}")
   log "session.multiplexer: ${_rc_multiplexer}"
   # rip-cage-1f59.2: _rc_multiplexer intentionally NOT unset here — used by the new-container
   # attach block below. It is unset after that block.
-  unset _mux_eff_result
 
   _up_prepare_docker_mounts "$path" "$name"
 
@@ -2832,34 +2894,11 @@ cmd_up() {
     exit 1
   fi
 
-  # ADR-022 D6 / rip-cage-ocn: write applied-config snapshot so future
-  # `rc reload` invocations can diff against create-time intent and
-  # `_config_emit_hint` can suppress false-positive drift after a reload.
-  # Best-effort: do nothing if yq absent or no config files (sha-only hint
-  # path is still correct in that case).
-  if command -v yq &>/dev/null; then
-    local _ocn_result _ocn_cfg
-    if _ocn_result=$(_load_effective_config "$path" 2>/dev/null); then
-      local _ocn_g _ocn_p
-      _ocn_g=$(jq -r '.layers.global' <<<"$_ocn_result")
-      _ocn_p=$(jq -r '.layers.project' <<<"$_ocn_result")
-      if [[ "$_ocn_g" != "null" || "$_ocn_p" != "null" ]]; then
-        _ocn_cfg=$(jq -c '.config' <<<"$_ocn_result")
-        # ADR-021 D4 (rip-cage-tsf2.10.5): also record the per-tool manifest
-        # egress map that was applied to the msb rules at this create moment —
-        # derived from the same host manifest union the runtime builder used
-        # (_up_build_egress_config_json / _manifest_egress_hosts_json), kept as a
-        # per-tool map in a sibling snapshot file (NOT folded into the config
-        # snapshot). Closes the validate-passes/runtime-fails hole: the cage's
-        # applied egress state is now inspectable independently of a drifted
-        # host tools.yaml.
-        local _ocn_mem
-        _ocn_mem=$(_config_manifest_egress_map 2>/dev/null || echo '{}')
-        _config_write_applied "$name" "$_ocn_cfg" "$_ocn_mem"
-      fi
-    fi
-  fi
-  _config_emit_hint "$path" "$name"
+  # The applied-config snapshot is gone with the thing it snapshotted
+  # (ADR-031 D2). It existed so `rc reload` could diff a MERGED effective
+  # config against create-time intent; with one unmerged file read fresh at
+  # every launch, the file on disk IS the current intent and the rc.cage-conf
+  # label says which file that is.
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     _up_json_output "$name" "created" "$path" "running" "success"
     return

@@ -184,6 +184,40 @@ _protected_paths_conf_bind_mounts() {
 }
 
 # --------------------------------------------------------------------------
+# _protected_paths_conf_outside_mounts CONF_FILE
+#
+# Refuse (non-zero, reason on stderr) when the cage config file itself resolves
+# INSIDE one of the trees it mounts. ADR-031 D5(a): the composition inputs are
+# authored where the caged agent cannot reach them. A config that mounts its own
+# directory hands the agent inside the cage an edit on the file that decides
+# what the next cage mounts -- which makes every other rule here advisory.
+#
+# The protected-paths LIST FILE is the fourth D5(a) input and gets the same
+# treatment structurally rather than by a check: _protected_paths_resolve only
+# ever looks at rc's own install directory or the operator's host config
+# directory, never at a path derived from the cage config.
+# --------------------------------------------------------------------------
+_protected_paths_conf_outside_mounts() {
+  local _conf="$1"
+  local _conf_real
+  _conf_real="$(cd "$(dirname "${_conf}")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "${_conf}")")" || _conf_real="${_conf}"
+
+  local _mounts _host _guest _host_real
+  _mounts="$(_protected_paths_conf_bind_mounts "${_conf}")" || return 1
+  [[ -z "${_mounts}" ]] && return 0
+
+  while IFS=$'\t' read -r _host _guest; do
+    [[ -z "${_host}" ]] && continue
+    _host_real="$(cd "${_host}" 2>/dev/null && pwd -P)" || continue
+    if [[ "${_conf_real}" == "${_host_real}" || "${_conf_real}" == "${_host_real}"/* ]]; then
+      echo "Error: the cage config ${_conf} sits inside ${_host}, which that same config mounts into the cage. Refusing to launch before any msb call: an agent inside the cage could edit the file that decides what the next cage mounts (ADR-031 D5(a)). Move the config to ${XDG_CONFIG_HOME:-${HOME}/.config}/rip-cage/projects/ and point rc at it there." >&2
+      return 1
+    fi
+  done <<< "${_mounts}"
+  return 0
+}
+
+# --------------------------------------------------------------------------
 # _protected_paths_breadcrumb
 #
 # Echo the path of the rc-owned empty file used as a read-only cover over a

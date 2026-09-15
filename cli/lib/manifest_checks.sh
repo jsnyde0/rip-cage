@@ -2587,7 +2587,7 @@ _manifest_expand_mount_host() {
 # container.
 #
 # Parameters:
-#   $1  workspace  — workspace path (for _load_effective_config / denylist)
+#   $1  workspace  — workspace path (kept for the caller's signature)
 _manifest_check_mounts_denylist() {
   local _workspace="${1:-.}"
 
@@ -2627,10 +2627,9 @@ _manifest_check_mounts_denylist() {
       resolved_path=$(realpath "$expanded_path" 2>/dev/null) || resolved_path="$expanded_path"
 
       # Check against the denylist.
-      if _check_secret_path_denylist "$resolved_path" "$_workspace"; then
-        local _denied_pattern
-        _denied_pattern=$(_secret_path_denylist_matched_pattern "$resolved_path" "$_workspace" 2>/dev/null || true)
-        echo "Error: manifest-declared mount for tool '${tool_name}': '${resolved_path}' matched secret-path denylist pattern '${_denied_pattern:-<unknown>}'. Remove this path from the manifest mounts: declaration or add to mounts.allow_risky in .rip-cage.yaml. (ADR-023 D1/D6)" >&2
+      local _denied_pattern
+      if _denied_pattern=$(_protected_paths_path_match "$resolved_path"); then
+        echo "Error: manifest-declared mount for tool '${tool_name}': '${resolved_path}' is a protected path ('${_denied_pattern}'). Remove this path from the manifest's mounts: declaration, or remove '${_denied_pattern}' from your protected-paths list if you have decided it is not a secret. (ADR-031 D2)" >&2
         return 1
       fi
 

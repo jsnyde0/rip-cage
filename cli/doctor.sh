@@ -69,12 +69,19 @@ _doctor_host() {
   else
     _yq_status="WARNING — yq not found on PATH (install: brew install yq / mikefarah releases binary — apt's yq is incompatible)"
   fi
-  local _global_cfg_path _global_cfg_status
-  _global_cfg_path=$(_config_global_path)
-  if [[ -f "$_global_cfg_path" ]]; then
-    _global_cfg_status="OK — ${_global_cfg_path}"
+  # There is no global config to check any more (ADR-031 D2). What a
+  # fresh device still needs before its first `rc up` is the protected-paths
+  # list — the mount-side floor, which fails the launch closed when it cannot
+  # be read. Report which copy rc would use.
+  local _protected_path _global_cfg_status
+  if _protected_path=$(_protected_paths_resolve 2>/dev/null); then
+    if [[ -r "$_protected_path" ]]; then
+      _global_cfg_status="OK — protected paths: ${_protected_path}"
+    else
+      _global_cfg_status="ERROR — protected-paths list at ${_protected_path} is not readable; every rc up will refuse to launch"
+    fi
   else
-    _global_cfg_status="WARNING — not found at ${_global_cfg_path} (first rc up will auto-seed)"
+    _global_cfg_status="ERROR — no protected-paths list found; every rc up will refuse to launch"
   fi
 
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -447,63 +454,6 @@ _doctor_format_transcript_persistence_probe() {
 }
 
 
-# _doctor_format_posture_probe NAME
-#
-# rip-cage-rj68 (S6): the doctor's NEW msb-side posture-inspection story
-# (bead criterion 4 — the old in-cage engine-process probe is gone per S4;
-# containment is an msb-runtime property now, verified by the msb effect-
-# probe test suite, not by a live process check here). Reports the
-# declared network policy (default action + rule count, read from `msb
-# inspect`'s own config — a DECLARATION read, not a live enforcement
-# claim; live enforcement is what tests/test-msb-*-effect-probes.sh prove)
-# and any RECENT denied-egress domains mined from the trace log (bead
-# criterion 5's readable fix-hint,
-# _msb_denied_domains_from_trace_log) so an operator can see, at a glance,
-# what a stuck agent turn was actually blocked on.
-#
-# rip-cage-jlu4 (denial-visibility disambiguation): ALSO mines any RECENT
-# secret-violation blocks (_msb_secret_violations_from_trace_log — a
-# SEPARATE list, msb's `--on-secret-violation block-and-log` guard
-# catching a substituted credential's placeholder sent toward a
-# disallowed host, i.e. a caught credential-misdirection / exfil attempt)
-# and presents them as a DISTINCT WARNING clause. Deliberately NEVER
-# routed through _doctor_classify_denied_domain / an "rc allowlist add"
-# suggestion — allowlisting a secret-violation host would convert a caught
-# exfil attempt into an allowed one.
-# _doctor_classify_denied_domain DOMAIN EFFECTIVE_JSON
-#
-# ADR-021 D4 (rip-cage-tsf2.10.5): route a trace-log-mined denied domain through
-# the ONE loader contract (config ∪ manifest_egress) so the fix-hint never
-# suggests adding a host that is ALREADY reachable, and distinguishes a
-# baked-but-applied manifest host from a pending/unbaked one. $2 is the loader
-# result JSON for the cage in scope ({config, manifest_egress, manifest_egress_source}).
-# Echoes exactly one classification token:
-#   reachable        — already in .config.network.allowed_hosts OR in the APPLIED
-#                      manifest egress: no `rc allowlist add` needed.
-#   requires-rebuild — matches a manifest tool's egress that is PENDING (not
-#                      applied to this cage): the remedy is edit-manifest + rc
-#                      build + recreate, NOT `rc allowlist add`.
-#   add              — not reachable anywhere: suggest `rc allowlist add`.
-_doctor_classify_denied_domain() {
-  local domain="$1" eff="$2"
-  if jq -e --arg d "$domain" '(.config.network.allowed_hosts // []) | index($d) != null' <<<"$eff" >/dev/null 2>&1; then
-    echo "reachable"; return 0
-  fi
-  local in_manifest src
-  in_manifest=$(jq -r --arg d "$domain" '[ (.manifest_egress // {}) | .[][] ] | index($d) != null' <<<"$eff" 2>/dev/null || echo "false")
-  src=$(jq -r '.manifest_egress_source // "none"' <<<"$eff" 2>/dev/null || echo "none")
-  if [[ "$in_manifest" == "true" ]]; then
-    if [[ "$src" == "applied" ]]; then
-      echo "reachable"
-    else
-      echo "requires-rebuild"
-    fi
-    return 0
-  fi
-  echo "add"
-}
-
-
 _doctor_format_posture_probe() {
   local name="$1"
   local workspace="${2:-}"
@@ -516,29 +466,23 @@ _doctor_format_posture_probe() {
   denied=$(_msb_denied_domains_from_trace_log "$name" 2>/dev/null)
   local denied_summary="none observed"
   if [[ -n "$denied" ]]; then
-    # ADR-021 D4: annotate each denied domain via the loader contract so the
-    # fix-hint routes through config ∪ manifest_egress (nobody re-derives the
-    # merge). Only when a workspace is resolvable + yq is present; otherwise
-    # fall back to the plain domain list.
-    local eff=""
-    if [[ -n "$workspace" ]] && command -v yq &>/dev/null; then
-      eff=$(_load_effective_config "$workspace" "$name" 2>/dev/null || true)
-    fi
-    local _d _cls _parts=()
+    # THE FIX-HINT NAMES THE LINE TO ADD (ADR-031 D2/D3). It used to classify
+    # each denied domain against a merged effective config, because a host
+    # could already be reachable through a layer the operator was not looking
+    # at. With one unmerged config file there is no other layer to be
+    # surprised by: the cage config's own `network.allow` list is the whole
+    # answer, so the hint is the exact line to paste into it.
+    local _cage_conf
+    _cage_conf=$(_msb_label "$name" "rc.cage-conf" 2>/dev/null || true)
+    local _d _parts=()
     while IFS= read -r _d; do
       [[ -z "$_d" ]] && continue
-      if [[ -n "$eff" ]]; then
-        _cls=$(_doctor_classify_denied_domain "$_d" "$eff")
-        case "$_cls" in
-          reachable)        _parts+=("${_d} (already reachable — no add needed)") ;;
-          requires-rebuild) _parts+=("${_d} (manifest egress pending — requires rebuild)") ;;
-          *)                _parts+=("${_d} (rc allowlist add ${_d})") ;;
-        esac
-      else
-        _parts+=("$_d")
-      fi
+      _parts+=("${_d} (add \"${_d}:tcp:443\" under network.allow)")
     done <<<"$denied"
     local IFS_SAVE="$IFS"; IFS=','; denied_summary="${_parts[*]}"; IFS="$IFS_SAVE"
+    if [[ -n "$_cage_conf" ]]; then
+      denied_summary="${denied_summary}  [config: ${_cage_conf} — then: rc up --replace]"
+    fi
   fi
 
   # rip-cage-jlu4: secret-violation clause — a SEPARATE mined list,
@@ -571,7 +515,7 @@ _doctor_format_posture_probe() {
   # 0.6.18 (rip-cage-6v34.9) a full host denial ALSO refuses immediately,
   # so an instant client-side failure alone no longer distinguishes the
   # two -- this list's absence is the remaining tell.
-  local port_note="; NOTE: a port-scoped denial on an already-allowed domain will NOT appear above (msb logs nothing at the TCP-connect stage) — it still surfaces client-side as an immediate connection-refused, but so does a full host denial as of msb 0.6.18, so that alone no longer distinguishes the two; check the host's allowed port in .rip-cage.yaml (default tcp:443)"
+  local port_note="; NOTE: a port-scoped denial on an already-allowed domain will NOT appear above (msb logs nothing at the TCP-connect stage) — it still surfaces client-side as an immediate connection-refused, but so does a full host denial as of msb 0.6.18, so that alone no longer distinguishes the two; check the host's allowed port in the cage config's network.allow (default tcp:443)"
 
   echo "${status_prefix} — net-default=${default_egress}, ${rule_count} allow-rule(s); recently denied: ${denied_summary}${violation_clause}${port_note}"
 }

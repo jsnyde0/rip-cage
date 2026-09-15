@@ -62,7 +62,7 @@ _rc_ls_enumerate() {
 
 cmd_ls() {
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    # rip-cage-hhh FIX1: mode derived from source path's .rip-cage.yaml (live),
+    # rip-cage-hhh FIX1: mode derived from the cage's own config (live),
     # not the immutable rc.egress.mode label. Compute mode per-row via
     # _rc_ls_mode_from_source_path.
     local _ls_raw _ls_json
@@ -101,7 +101,7 @@ EOF
     _ls_json="${_ls_json}]"
     echo "$_ls_json"
   else
-    # rip-cage-hhh FIX1: MODE column derived from source path's .rip-cage.yaml (live),
+    # rip-cage-hhh FIX1: MODE column derived from the cage's own config (live),
     # not the immutable rc.egress.mode label. Build per-row with a while-read loop.
     #
     # rip-cage-dcok: STATUS and UPTIME are distinct columns -- $_ls_status
