@@ -214,7 +214,12 @@ H4_DOCKER
   stdout_file=$(mktemp)
   stderr_file=$(mktemp)
   exit_code=0
+  # -t a throwaway tag, never bare: a bare `rc build` names rip-cage:latest,
+  # and the structure suite's (h) guard refuses that in a test file on sight
+  # (it cannot see that the fake docker below would never complete a build).
+  # Nothing is built either way -- this run must refuse at the validator.
   PATH="${h4_bin}:${PATH}" RC_MANIFEST_GLOBAL="$fixture" "${RC}" build \
+    -t rip-cage-h4-hostile-name-probe:test \
     >"$stdout_file" 2>"$stderr_file" || exit_code=$?
 
   local stdout_output stderr_output h4_build_calls

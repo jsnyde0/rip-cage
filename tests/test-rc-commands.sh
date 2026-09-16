@@ -1420,6 +1420,121 @@ else
   fail "60e: rc refused even with a readable list — 60b and 60d prove nothing (output: ${t60e_out})"
 fi
 
+# ===========================================================================
+# Test 61: `rc up --replace` against a STOPPED cage (rip-cage-ely4.10,
+# ADR-031 D3 -- the verb `rc reload` folded into).
+#
+# WHY A STOPPED CAGE IS THE CASE. A plain `rc up` already recreates a stopped
+# cage when its CONFIG changed. The other repairable drift -- a stale pinned
+# image after `rc build` -- leaves the config hash untouched, so the plain
+# resume hits the image-drift hard stop instead, and that stop has to name a
+# remedy. `rc reload` was that remedy; with the verb gone, `--replace` is, and
+# it only helps if it covers a cage that is not running.
+#
+# It did not. `--replace` cleared the cage's state string but left the
+# absent-cage signal saying "present", so the state branch fell past every arm
+# into the unrecognized-state fail-loud: rc removed the cage and then refused
+# to recreate it. Measured on the branch as written; fixed in cli/up.sh.
+#
+# The observable is the dry-run plan, which is honest here precisely because
+# it is assembled by the same code the real launch runs (Test 60a). Under
+# --dry-run nothing may be stopped or removed, and the shim's log is what
+# proves that -- an exit code could not tell a plan apart from a recreate.
+# ===========================================================================
+echo ""
+echo "=== Test 61: rc up --replace recreates a STOPPED cage (rip-cage-ely4.10) ==="
+
+T61_ROOT="$(mktemp -d /private/tmp/rc-ely410-XXXXXX)"
+T61_BIN="${T61_ROOT}/bin"
+T61_PROJ="${T61_ROOT}/proj"
+T61_LOG="${T61_ROOT}/msb-invocations.log"
+mkdir -p "$T61_BIN" "$T61_PROJ" "${T61_ROOT}/home"
+
+# A fake msb reporting one STOPPED rc-managed cage for this workspace, and
+# logging every subcommand it is asked for.
+cat > "${T61_BIN}/msb" <<'T61_SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "${1:-}" >> "${T61_LOG}"
+case "${1:-}" in
+  --version) echo "msb 0.6.18-test-shim"; exit 0 ;;
+  inspect)
+    cat <<JSON
+{"status":"Stopped","config":{"manifest_digest":"sha256:t61matchingdigest","labels":{"rc.source.path":"${T61_PROJ}","rc.cage-conf-sha":"${T61_CONF_SHA}"}}}
+JSON
+    exit 0 ;;
+  image) echo '[{"reference":"rip-cage:latest","digest":"sha256:t61matchingdigest"}]'; exit 0 ;;
+  stop|remove) exit 0 ;;
+  *) echo "test shim: unhandled msb subcommand: $*" >&2; exit 1 ;;
+esac
+T61_SHIM
+chmod +x "${T61_BIN}/msb"
+
+cat > "${T61_ROOT}/cage.yaml" <<T61_CONF
+image: rip-cage:latest
+workdir: /workspace
+mounts:
+  - "${T61_PROJ}:/workspace"
+network:
+  policy: none
+  allow:
+    - "api.anthropic.com:tcp:443"
+T61_CONF
+
+# The stub must report the cage's config hash as the CURRENT one, and its image
+# digest as MATCHING the current image, or a plain `rc up` converges on config
+# drift or aborts on image drift and 61d's negative control measures the wrong
+# thing. Same computation cli/up.sh's _up_cage_conf_sha does.
+T61_CONF_SHA=$(shasum -a 256 "${T61_ROOT}/cage.yaml" | awk '{print $1}')
+
+t61_run_rc() {
+  ( export PATH="${T61_BIN}:${PATH}"
+    export XDG_CONFIG_HOME="${T61_ROOT}/home/.config"
+    export RC_CAGE_CONF="${T61_ROOT}/cage.yaml"
+    export T61_LOG T61_PROJ T61_CONF_SHA
+    "$RC" "$@" ) 2>&1
+}
+
+: > "$T61_LOG"
+t61_out=$(t61_run_rc up --replace --dry-run "$T61_PROJ")
+
+if printf '%s\n' "$t61_out" | grep -q "recreate stopped cage"; then
+  pass "61a: --replace announces the recreate for a STOPPED cage"
+else
+  fail "61a: --replace did not announce a recreate for a stopped cage (output: ${t61_out})"
+fi
+if printf '%s\n' "$t61_out" | grep -q "^Would create container"; then
+  pass "61b: --replace reaches the create path (the unrecognized-state fail-loud is gone)"
+else
+  fail "61b: --replace did not reach the create path — the cage would be removed and not recreated (output: ${t61_out})"
+fi
+if printf '%s\n' "$t61_out" | grep -qi "unrecognized state"; then
+  fail "61b: --replace fell into the unrecognized-state fail-loud (output: ${t61_out})"
+else
+  pass "61b: no unrecognized-state error"
+fi
+for _t61_verb in stop remove; do
+  if grep -qx "$_t61_verb" "$T61_LOG"; then
+    fail "61c: msb ${_t61_verb} ran under --dry-run — a preview must preview (log: $(tr '\n' ' ' < "$T61_LOG"))"
+  else
+    pass "61c: msb ${_t61_verb} was not called under --dry-run"
+  fi
+done
+
+# NEGATIVE CONTROL: the SAME stopped cage WITHOUT --replace, and with a config
+# hash that matches its label, resumes instead of recreating. Without this,
+# 61a/61b would pass against an `rc up` that recreated everything on sight —
+# which is exactly what ADR-029 D4's stopped-only rule exists to bound.
+: > "$T61_LOG"
+t61_plain=$(t61_run_rc up --dry-run "$T61_PROJ")
+if printf '%s\n' "$t61_plain" | grep -q "^Would resume container"; then
+  pass "61d: a plain rc up on the same stopped cage resumes — 61a/61b are not vacuous"
+else
+  fail "61d: a plain rc up on the same stopped cage did not resume (output: ${t61_plain})"
+fi
+
+rm -rf "$T61_ROOT"
+
+
 # --- Cleanup ---
 rm -rf "$SYMLINK_SKILLS_DIR" "$SYMLINK_TARGET_DIR" "$SYMLINK_SKILLS_DIR2" "$HOME_TARGET_DIR" "$SIBLING_DIR"
 
