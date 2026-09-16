@@ -72,7 +72,7 @@ tools:
   # uv — Python package manager, installed in cage/Dockerfile at the same floor
   # tier as beads/dolt/gh (rip-cage-0s1g). MUST stay byte-identical to the `uv`
   # entry in manifest/default-tools.yaml: this heredoc seeds a brand-new host's
-  # tools.yaml, that file is what `rc manifest reconcile` diffs an existing
+  # tools.yaml, that file is what an operator diffs an existing
   # host against, and a floor tool present in one but not the other is exactly
   # the seed-drift rip-cage-6vt9 exists to catch.
   - name: uv
@@ -131,21 +131,21 @@ _manifest_ensure_seeded() {
 # manifest/default-tools.yaml.
 #
 # DETECTION SUBSTRATE: a seed-provenance STAMP (`# rc-seed-fingerprint:
-# sha256:<hash>` comment line, written by `rc manifest reconcile`), not a
+# sha256:<hash>` comment line, written by the retired `rc manifest reconcile`), not a
 # raw content-diff of local-vs-dist — a content-diff would false-fire on
 # legitimate user customization (any hand-edit looks like drift to a naive
 # diff). The stamp records dist's hash AT RECONCILE TIME; `rc build`
 # compares it to dist's CURRENT hash.
 #
 # UNSTAMPED manifests (every manifest in the wild before this bead, and any
-# hand-authored one that never ran `rc manifest reconcile`) have no
+# hand-authored one that predates any reconcile) have no
 # ground truth to compare against. Rather than risk a false-fire content
 # heuristic, this is split by the one case we CAN judge safely:
 #   - byte-identical to the floor-only in-repo default (_manifest_default_yaml)
 #     -> nothing was ever composed from dist; there is nothing to reconcile;
 #        stay completely silent (an unconfigured `rc build` must never warn).
 #   - anything else (composed/hand-edited, no stamp) -> a soft, distinctly-
-#     worded "provenance unknown" notice pointing at `rc manifest reconcile`
+#     worded "provenance unknown" notice pointing at manifest/default-tools.yaml
 #     to adopt tracking. Never the hard "stale" wording — we don't actually
 #     know it's stale, only that we can't tell.
 # =============================================================================
@@ -211,7 +211,7 @@ _manifest_check_seed_drift() {
     local _current_hash
     _current_hash=$(_manifest_seed_fingerprint_hash "$_dist_path")
     if [[ "$_stamp" != "$_current_hash" ]]; then
-      echo "Warning: ${_manifest_path} was seeded/reconciled from an older manifest/default-tools.yaml layout — the shipped defaults changed since (sibling drift-detection family: rip-cage-jnvb, stale image on resume). Run 'rc manifest reconcile' to pull the update (preserves your custom entries)." >&2
+      echo "Warning: ${_manifest_path} was seeded/reconciled from an older manifest/default-tools.yaml layout — the shipped defaults changed since (sibling drift-detection family: rip-cage-jnvb, stale image on resume). Refresh it by hand against manifest/default-tools.yaml — copy the changed default entries across and leave your own alone (rc no longer has a reconcile verb: ADR-031 D3)." >&2
     fi
     return 0
   fi
@@ -250,7 +250,7 @@ _manifest_check_seed_drift() {
   if [[ "$_intersecting_json" == "[]" || -z "$_intersecting_json" ]]; then
     # Zero overlap with dist by name — an all-custom manifest. Nothing to
     # compare; fall back to the same soft "provenance unknown" notice.
-    echo "Notice: ${_manifest_path} has no seed-fingerprint stamp (composed before this rc version, or hand-authored) — its freshness vs the shipped manifest/default-tools.yaml defaults is unknown. Run 'rc manifest reconcile' to adopt tracking (preserves your custom entries)." >&2
+    echo "Notice: ${_manifest_path} has no seed-fingerprint stamp (composed before this rc version, or hand-authored) — its freshness vs the shipped manifest/default-tools.yaml defaults is unknown. Compare it against manifest/default-tools.yaml by hand if you want to know (rc no longer has a reconcile verb: ADR-031 D3)." >&2
     return 0
   fi
 
@@ -262,7 +262,7 @@ _manifest_check_seed_drift() {
   ' 2>/dev/null)
 
   if [[ -n "$_differing_names" ]]; then
-    echo "Warning: ${_manifest_path}: entries also present in the shipped manifest/default-tools.yaml no longer match it — [${_differing_names}] differ from the current dist defaults (customized, or seeded by an older rc — a stale seed silently bakes superseded recipe layouts). Run 'rc manifest reconcile' to refresh defaults (preserves custom entries, backs up the old file, stamps provenance)." >&2
+    echo "Warning: ${_manifest_path}: entries also present in the shipped manifest/default-tools.yaml no longer match it — [${_differing_names}] differ from the current dist defaults (customized, or seeded by an older rc — a stale seed silently bakes superseded recipe layouts). Refresh those entries by hand against manifest/default-tools.yaml and leave your own alone (rc no longer has a reconcile verb: ADR-031 D3)." >&2
   fi
   # All name-intersecting entries byte/structurally match current dist —
   # provably current. Stay completely silent (no notice at all): this is

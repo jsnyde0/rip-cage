@@ -5,6 +5,10 @@
 #
 # TIER-1 (host-side, auth-free, every change):
 #   SI1 — Codegen seam: ARBITRARY never-seen TOOL name composes through codegen.
+#         (Drove `cmd_generate_dockerfile` until that verb retired with the
+#          six-verb thinning, rip-cage-ely4.10 / ADR-031 D3; now calls the
+#          builder that verb wrapped, _manifest_build_dockerfile_path, which is
+#          the same function `rc build` composes with.)
 #           Compose a temp manifest with an inert TOOL named zzz-seam-probe-<rand>
 #           carrying an install_cmd; run generate-dockerfile (cmd_generate_dockerfile);
 #           assert the arbitrary tool's install_cmd step appears in the generated Dockerfile.
@@ -111,7 +115,7 @@ teardown_manifest_sandbox() {
 }
 
 # ---------------------------------------------------------------------------
-# SI1 — Codegen seam: ARBITRARY TOOL composes through generate-dockerfile
+# SI1 — Codegen seam: ARBITRARY TOOL composes through the Dockerfile builder
 # ---------------------------------------------------------------------------
 test_si1_codegen_seam_arbitrary_tool() {
   local rand_suffix="${RANDOM}"
@@ -139,13 +143,14 @@ YAML
   generated_df=$(HOME="${TEST_HOME}" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="$tmp_manifest" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
-    bash -c "source '${RC}'; cmd_generate_dockerfile" 2>"$stderr_file") || exit_code=$?
+    bash -c "source '${RC}'; _si1_df=\$(_manifest_build_dockerfile_path '${REPO_ROOT}/cage/Dockerfile') && cat \"\$_si1_df\"" \
+    2>"$stderr_file") || exit_code=$?
 
   rm -f "$tmp_manifest" "$stderr_file"
   teardown_manifest_sandbox
 
   if [[ "$exit_code" -ne 0 ]]; then
-    fail "SI1 codegen seam: generate-dockerfile failed for arbitrary TOOL '${probe_name}' (exit=${exit_code})"
+    fail "SI1 codegen seam: the Dockerfile builder failed for arbitrary TOOL '${probe_name}' (exit=${exit_code})"
     return
   fi
 

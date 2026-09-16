@@ -185,10 +185,14 @@ if [[ "$D1_FMT" == *"$D1_DST"* ]]; then
 else
   fail "D1d formatted probe names the dead destination path" "got: $D1_FMT"
 fi
-if [[ "$D1_FMT" == *"rc down"* && "$D1_FMT" == *"rc up"* ]]; then
-  pass "D1e formatted probe includes the repair hint (rc down / rc up)"
+# The hint used to read "rc down <name> && rc up <path>". `rc down` retired with
+# the six-verb thinning (rip-cage-ely4.10 / ADR-031 D3) and the stop-then-start
+# pair folded into one explicit recreate, so the hint now names `rc up --replace`.
+# The property is unchanged: a dead mount handle must be told how to re-bind.
+if [[ "$D1_FMT" == *"rc up --replace"* ]]; then
+  pass "D1e formatted probe includes the repair hint (rc up --replace)"
 else
-  fail "D1e formatted probe includes the repair hint (rc down / rc up)" "got: $D1_FMT"
+  fail "D1e formatted probe includes the repair hint (rc up --replace)" "got: $D1_FMT"
 fi
 if [[ "$D1_FMT_EXIT" -eq 0 ]]; then
   pass "D1f formatter itself exits 0 (matches cmd_doctor's exit-code convention: probe FAIL text, not process abort)"

@@ -37,51 +37,22 @@ else
   fail "usage does not mention --output"
 fi
 
-# --- Test 3: --output json ls returns valid JSON array ---
-echo ""
-echo "=== Test 3: --output json ls returns valid JSON array ==="
-# This works even without Docker running — docker ps returns error which
-# we need to handle, or if Docker IS running, returns empty array
-ls_output=$("$RC" --output json ls 2>/dev/null) || true
-if echo "$ls_output" | jq -e 'type == "array"' >/dev/null 2>&1; then
-  pass "--output json ls returns JSON array"
-else
-  fail "--output json ls did not return JSON array. Got: $ls_output"
-fi
-
-# --- Test 4: rc ls (no --output flag) returns human table format ---
-echo ""
-echo "=== Test 4: rc ls without --output returns human table format ==="
-ls_human=$("$RC" ls 2>/dev/null) || true
-# Human output starts with NAMES (docker table header) or is empty
-# It should NOT be a JSON array
-if echo "$ls_human" | jq -e 'type == "array"' >/dev/null 2>&1; then
-  fail "rc ls without flag returned JSON (should be human format)"
-else
-  pass "rc ls without flag returns human format (not JSON)"
-fi
+# --- Tests 3 + 4 + 6: RETIRED with `rc ls` (rip-cage-ely4.10 / ADR-031 D3) ---
+# These asserted that `--output json ls` returns a JSON array, that bare `rc ls`
+# returns the human table instead, and that a global flag placed before the
+# subcommand reaches it. The verb is deleted -- listing cages is `msb list`.
+# The surviving half, "a global flag before the subcommand reaches it", is
+# re-homed onto `rc up` in Test 7 just below, which already passes
+# `--dry-run --output json` in exactly that position.
 
 # --- Test 5: --output requires 'json' argument ---
 echo ""
 echo "=== Test 5: --output without json argument errors ==="
-bad_output=$("$RC" --output foo ls 2>&1) || true
+bad_output=$("$RC" --output foo doctor 2>&1) || true
 if echo "$bad_output" | grep -qi "error\|requires"; then
   pass "--output foo produces error"
 else
   fail "--output foo did not produce error. Got: $bad_output"
-fi
-
-# --- Test 6: Global flags must come before subcommand ---
-echo ""
-echo "=== Test 6: Global flags before subcommand ==="
-# rc --output json ls should work (tested above in test 3)
-# rc ls --output json should NOT work (treated as unknown arg to ls)
-# We just verify that the correct order works
-ls_correct=$("$RC" --output json ls 2>/dev/null) || true
-if echo "$ls_correct" | jq -e 'type == "array"' >/dev/null 2>&1; then
-  pass "global flags before subcommand works"
-else
-  fail "global flags before subcommand failed. Got: $ls_correct"
 fi
 
 # --- Test 7: rc up with no path defaults to current directory (dry-run) ---
@@ -155,37 +126,21 @@ trap - EXIT
 # --- Test 10: --dry-run flag is accepted (parsed without error) ---
 echo ""
 echo "=== Test 10: --dry-run flag is accepted ==="
-# --dry-run should be rejected for ls (only supported on up/destroy)
+# --dry-run is supported on up and destroy only; every other verb rejects it.
+# `ls` was this case's subject until it retired (rip-cage-ely4.10); `doctor` is
+# a surviving verb on the same rejecting side of that split.
 dryrun_exit=0
-dryrun_output=$("$RC" --dry-run ls 2>&1) || dryrun_exit=$?
+dryrun_output=$("$RC" --dry-run doctor 2>&1) || dryrun_exit=$?
 if [[ $dryrun_exit -ne 0 ]]; then
-  pass "--dry-run correctly rejected for ls command"
+  pass "--dry-run correctly rejected for the doctor command"
 else
-  fail "--dry-run should be rejected for ls, but was accepted"
+  fail "--dry-run should be rejected for doctor, but was accepted"
 fi
 
-# --- Test 11: --output json ls includes 'mode' field (rip-cage-hhh.6 D2) ---
-echo ""
-echo "=== Test 11: --output json ls includes mode field ==="
-# rc ls returns an array; even when empty, the jq schema check applies to elements if any exist.
-# We check that the schema emits a mode field. With no containers the array may be empty,
-# so we verify either: array is empty (acceptable) OR every element has a mode key.
-ls11_output=$("$RC" --output json ls 2>/dev/null) || true
-if echo "$ls11_output" | jq -e 'type == "array"' >/dev/null 2>&1; then
-  ls11_count=$(echo "$ls11_output" | jq 'length' 2>/dev/null || echo 0)
-  if [[ "$ls11_count" -eq 0 ]]; then
-    pass "ls --output json mode key: no containers, schema not yet testable (structural check deferred)"
-  else
-    # At least one container: verify all have mode key
-    if echo "$ls11_output" | jq -e 'all(has("mode"))' >/dev/null 2>&1; then
-      pass "ls --output json: all containers have mode key"
-    else
-      fail "ls --output json: missing mode key in one or more container objects. Got: $ls11_output"
-    fi
-  fi
-else
-  fail "ls --output json: did not return a JSON array. Got: $ls11_output"
-fi
+# --- Test 11: RETIRED with `rc ls` (rip-cage-ely4.10 / ADR-031 D3) ---
+# Asserted that every row of `rc ls --output json` carries a `mode` key. The
+# verb is deleted; the per-cage depth it summarised is `rc doctor`, whose own
+# JSON schema is pinned by tests/test-doctor-json-doc.sh.
 
 # --- Test 12: --output json doctor labels carry rc.egress.config-override
 # (rip-cage-hhh.6 D1 evolved by rip-cage-3vj2 / S4, ADR-029 D2) ---
@@ -197,9 +152,11 @@ fi
 echo ""
 echo "=== Test 12: --output json doctor labels include rc.egress.config-override ==="
 # rc doctor requires a running or stopped rc-managed container.
-# Use rc ls to find the first available container name, if any.
+# `rc ls` used to name the first available cage; it retired with the six-verb
+# thinning (rip-cage-ely4.10), so this reads the same fleet from msb directly —
+# which is exactly the successor the deleted verb points at.
 _doctor_test_name=$(
-  "$RC" --output json ls 2>/dev/null | jq -r '.[0].name // empty' 2>/dev/null || true
+  msb list --format json 2>/dev/null | jq -r '(.sandboxes // . )[0].name // empty' 2>/dev/null || true
 )
 if [[ -n "$_doctor_test_name" ]]; then
   doctor12_output=$("$RC" --output json doctor "$_doctor_test_name" 2>/dev/null) || true

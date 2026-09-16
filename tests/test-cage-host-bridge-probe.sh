@@ -53,6 +53,7 @@ echo "=== cage-host-bridge-probe unit tests ==="
 # Source ONLY the function definitions -- RC_INIT_LIB_ONLY makes
 # init-rip-cage.sh return right after defining _rc_host_bridge_resolves /
 # _rc_probe_host_bridge, before any of its imperative init work runs.
+# shellcheck source=cage/init/init-rip-cage.sh
 RC_INIT_LIB_ONLY=1 source "$INIT_SCRIPT"
 
 if ! declare -F _rc_probe_host_bridge >/dev/null 2>&1; then

@@ -61,7 +61,6 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
-RC="${REPO_ROOT}/rc"
 MSB_LIB="${REPO_ROOT}/cli/lib/msb_runtime.sh"
 FAILURES=0
 TOTAL=0
@@ -222,83 +221,19 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
-# R1: cli/reload.sh's `rc reload --dry-run`, mixed log.
+# R1 RETIRED with `rc reload` (rip-cage-ely4.10 / ADR-031 D3).
+#
+# It asserted that `rc reload --dry-run` prints the DNS-denied fix-hint and the
+# secret-violation WARNING as two SEPARATE things, never folding the second into
+# an allowlist suggestion -- following an allowlist hint for a
+# secret-violation host converts a caught exfil attempt into an allowed one.
+#
+# That property is not lost and did not move to `rc up`: ADR-031 D3 names
+# `rc doctor` as the verb that mines the trace log, and the D1 block above
+# asserts the same disambiguation against the doctor posture probe, including
+# the never-suggest-allowlist half (D1d). `rc up` deliberately carries no
+# copy -- a second miner would be a second thing to keep honest.
 # ---------------------------------------------------------------------------
-echo "-- R1: rc reload --dry-run distinguishes the two denial kinds --"
-
-R1_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-denial-visibility-reload-XXXXXX")
-R1_WS="${R1_HOME}/workspace"
-R1_CNAME="dv-reload-cage"
-R1_CACHE_DIR="${R1_HOME}/.cache/rip-cage/${R1_CNAME}"
-mkdir -p "$R1_WS" "${R1_HOME}/.config/rip-cage" "$R1_CACHE_DIR"
-
-cat > "${R1_WS}/.rip-cage.yaml" <<'YML'
-version: 2
-network:
-  allowed_hosts: [switch.berlin]
-YML
-
-# msb stub for the reload invocation: `inspect` must report a RUNNING cage
-# whose rc.source.path label resolves to R1_WS (cmd_reload's live gates),
-# `logs` echoes the SAME mixed log as above.
-R1_STUB_DIR="${R1_HOME}/stub"
-mkdir -p "$R1_STUB_DIR"
-cat > "${R1_STUB_DIR}/msb" <<STUB
-#!/usr/bin/env bash
-case "\${1:-}" in
-  --version) echo "msb 0.0.0-stub"; exit 0 ;;
-  logs) cat <<'LOG'
-${MIXED_LOG_JSON}
-LOG
-    exit 0 ;;
-esac
-case " \$* " in
-  *" inspect "*"${R1_CNAME}"*)
-    echo '{"status":"Running","config":{"labels":{"rc.source.path":"${R1_WS}"}}}'
-    exit 0 ;;
-  *)
-    echo "stub: unhandled msb args: \$*" >&2
-    exit 1 ;;
-esac
-STUB
-chmod +x "${R1_STUB_DIR}/msb"
-
-# Snapshot with no allowed_hosts yet, so the dry-run has a real diff to
-# print (mirrors test-rc-reload.sh's C4 dry-run fixture pattern).
-cat > "${R1_CACHE_DIR}/config-applied.json" <<'JSON'
-{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}
-JSON
-
-R1_OUT=$(PATH="${R1_STUB_DIR}:$PATH" HOME="$R1_HOME" XDG_CONFIG_HOME="${R1_HOME}/.config" "$RC" reload "$R1_CNAME" --dry-run 2>&1)
-R1_EXIT=$?
-
-if [[ "$R1_EXIT" -eq 0 ]]; then
-  pass "R1a: rc reload --dry-run exits 0 against the mixed-log stub"
-else
-  fail "R1a: rc reload --dry-run exits 0 against the mixed-log stub" "exit=${R1_EXIT} out: $R1_OUT"
-fi
-if echo "$R1_OUT" | grep -q "domain=denied-dns.example.invalid"; then
-  pass "R1b: reload dry-run still prints the existing DNS-denied fix-hint"
-else
-  fail "R1b: reload dry-run still prints the existing DNS-denied fix-hint" "got: $R1_OUT"
-fi
-if echo "$R1_OUT" | grep -q "secret-violated.example.invalid"; then
-  pass "R1c: reload dry-run names the secret-violation host"
-else
-  fail "R1c: reload dry-run names the secret-violation host" "got: $R1_OUT"
-fi
-if echo "$R1_OUT" | grep -qi "WARNING"; then
-  pass "R1d: reload dry-run marks the secret-violation line as a WARNING"
-else
-  fail "R1d: reload dry-run marks the secret-violation line as a WARNING" "got: $R1_OUT"
-fi
-if [[ "$R1_OUT" != *"allowlist add secret-violated.example.invalid"* ]]; then
-  pass "R1e: reload dry-run NEVER suggests 'rc allowlist add' for the secret-violation host"
-else
-  fail "R1e: reload dry-run NEVER suggests 'rc allowlist add' for the secret-violation host" "got: $R1_OUT"
-fi
-
-rm -rf "$R1_HOME"
 
 echo ""
 echo "=== test-denial-visibility.sh: ${FAILURES}/${TOTAL} failure(s) ==="

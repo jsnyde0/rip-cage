@@ -110,10 +110,17 @@ if [[ "$T2_OUT" == *"rc up"* ]]; then
 else
   fail "T2b names the 'rc up' recreate remedy" "got: $T2_OUT"
 fi
-if [[ "$T2_OUT" == *"--allow-transcript-loss"* ]]; then
-  pass "T2c names the --allow-transcript-loss override"
+# `rc reload` REFUSED on a legacy cage unless --allow-transcript-loss was
+# passed. The verb folded into `rc up --replace` (rip-cage-ely4.10 / ADR-031 D3)
+# and the refusal became a loud WARNING with no override flag: a flag an
+# operator must pass to complete an operation they already named by hand is the
+# human-in-the-loop shape this CLI is shedding. So the probe must still tell the
+# reader the recreate would COST something -- that is the load-bearing half --
+# rather than name a flag that no longer exists.
+if [[ "$T2_OUT" == *"lose"* || "$T2_OUT" == *"LOST"* ]]; then
+  pass "T2c says the recreate would lose in-flight conversations"
 else
-  fail "T2c names the --allow-transcript-loss override" "got: $T2_OUT"
+  fail "T2c says the recreate would lose in-flight conversations" "got: $T2_OUT"
 fi
 rm -rf "${T2_STUB_DIR}"
 

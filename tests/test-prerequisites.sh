@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+#
+# Every case here scopes PATH to ONE invocation on purpose -- a per-command
+# prefix, or a `( export PATH=...; ... )` subshell where several variables
+# travel together. Shellcheck reads the subshell as an accident ("that change
+# might be lost") and then flags every later per-command prefix as a leak from
+# it. Both readings are wrong for this file: nothing here wants a PATH change
+# to outlive its own case, because a leaked fake binary would silently poison
+# the next one. (File-level, so it must sit above the first command.)
+# shellcheck disable=SC2030,SC2031
 set -uo pipefail
 
 # Test prerequisite checks in rc

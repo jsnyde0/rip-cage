@@ -5,11 +5,12 @@
 # Workdir=/workspace before spawning, gets ENOENT, and reports it against
 # the *program* name -- misleading (four investigations chased a missing
 # binary before 54q3 found the real cause). `rc doctor <cage>` and
-# `rc exec <cage> -- <cmd>` now check the cage's rc.source.path label
-# against the host and print one "Fix-hint: ..." line naming the missing
-# path and the 'rc destroy --force <cage>' remedy.
+# checks the cage's rc.source.path label against the host and prints one
+# "Fix-hint: ..." line naming the missing path and the
+# 'rc destroy --force <cage>' remedy. (`rc exec` carried the same check until
+# that verb retired -- rip-cage-ely4.10 / ADR-031 D3.)
 #
-# Host-only: drives the REAL `rc` binary (doctor + exec verbs) against a
+# Host-only: drives the REAL `rc` binary (the doctor verb) against a
 # fake `msb` on PATH -- no live cage, no docker, no msb daemon, no `rc
 # build`/`msb load`/`msb create`. Mirrors the FAKE_BIN / RC_TEST_CALL_LOG
 # PATH-shim idiom from tests/test-build-msb-load.sh and the setup_fake_msb
@@ -22,8 +23,6 @@
 # stopped cage, and a stopped cage lets the fake msb skip every live-probe
 # `msb exec` shape (beads/auth/skills/cwd/workspace/bd-version), keeping
 # this shim minimal and honest about what the check actually depends on.
-# `rc exec` requires a RUNNING cage (cmd_exec's own state guard), so those
-# cases use Running state and a configurable `msb exec` outcome instead.
 #
 # Coverage:
 #   D1  rc doctor <cage>: source dir removed -> prints the Fix-hint line
@@ -35,15 +34,9 @@
 #       (rip-cage-u625, Surface 2 of rip-cage-uod6's follow-up).
 #   J2  rc doctor --output json <cage>: source dir present (healthy) ->
 #       carries NO source_path_missing_hint key at all (negative control).
-#   E1  rc exec <cage> -- true: source dir removed, `msb exec` fails with
-#       the real ENOENT-shaped message from rip-cage-54q3's report -> hint
-#       printed BEFORE msb's own text, exit code still propagates.
-#   E3  rc exec <cage> -- true: source dir removed but the command
-#       SUCCEEDS -> the hint still fires (pre-exec check semantics)
-#   E4  regression guard: the wrapped command's stderr STREAMS live and is
-#       never buffered until exit (the first uod6 implementation buffered it)
-#   E2  rc exec <cage> -- true: source dir present, exec succeeds -> no
-#       hint, no spurious text, exit 0 (negative control).
+#   E1-E4  RETIRED with the `rc exec` verb (rip-cage-ely4.10) -- see the
+#       block at the end of this file for what they covered and where the
+#       surviving half lives.
 #
 # Wired into tests/run-host.sh (host-only tier).
 
@@ -215,142 +208,26 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# E1: rc exec, deleted workspace source, real ENOENT-shaped msb failure ->
-#     hint printed BEFORE msb's own (misleading) text.
-# ---------------------------------------------------------------------------
-echo "-- E1: rc exec <cage> -- true, source dir removed -- hint before msb's ENOENT text --"
-export FAKE_MSB_STATE="Running"
-export FAKE_MSB_SOURCE_PATH="$MISSING_SOURCE"
-export FAKE_MSB_EXEC_EXIT=1
-export FAKE_MSB_EXEC_STDERR='error: failed to exec "true" -> not found: spawn "true": No such file or directory (os error 2) (ENOENT)'
-E1_OUT=$(run_rc exec e1-cage -- true 2>&1)
-E1_RC=$?
-unset FAKE_MSB_STATE FAKE_MSB_SOURCE_PATH FAKE_MSB_EXEC_EXIT FAKE_MSB_EXEC_STDERR
-
-if echo "$E1_OUT" | grep -qF "Fix-hint: workspace source deleted — '${MISSING_SOURCE}' no longer exists on the host"; then
-  pass "E1a rc exec names the missing source path"
-else
-  fail "E1a rc exec names the missing source path" "got: $E1_OUT"
-fi
-if echo "$E1_OUT" | grep -qF "rc destroy --force e1-cage"; then
-  pass "E1b rc exec names the destroy remedy"
-else
-  fail "E1b rc exec names the destroy remedy" "got: $E1_OUT"
-fi
-_e1_hint_line=$(echo "$E1_OUT" | grep -n "Fix-hint" | head -1 | cut -d: -f1)
-_e1_enoent_line=$(echo "$E1_OUT" | grep -n "ENOENT" | head -1 | cut -d: -f1)
-if [[ -n "$_e1_hint_line" && -n "$_e1_enoent_line" && "$_e1_hint_line" -lt "$_e1_enoent_line" ]]; then
-  pass "E1c hint line precedes msb's raw ENOENT text"
-else
-  fail "E1c hint line precedes msb's raw ENOENT text" "hint_line=$_e1_hint_line enoent_line=$_e1_enoent_line; got: $E1_OUT"
-fi
-if [[ "$E1_RC" -eq 1 ]]; then
-  pass "E1d rc exec still propagates msb's real exit code (1)"
-else
-  fail "E1d rc exec still propagates msb's real exit code (1)" "got exit $E1_RC"
-fi
-
-# ---------------------------------------------------------------------------
-# E2: rc exec, healthy workspace source, exec succeeds -> negative control
-# ---------------------------------------------------------------------------
-echo "-- E2: rc exec <cage> -- true, source dir present -- no hint (negative control) --"
-export FAKE_MSB_STATE="Running"
-export FAKE_MSB_SOURCE_PATH="$HEALTHY_SOURCE"
-export FAKE_MSB_EXEC_EXIT=0
-export FAKE_MSB_EXEC_STDERR=""
-E2_OUT=$(run_rc exec e2-cage -- true 2>&1)
-E2_RC=$?
-unset FAKE_MSB_STATE FAKE_MSB_SOURCE_PATH FAKE_MSB_EXEC_EXIT FAKE_MSB_EXEC_STDERR
-
-if ! echo "$E2_OUT" | grep -qF "Fix-hint"; then
-  pass "E2a rc exec prints no Fix-hint for a healthy workspace source"
-else
-  fail "E2a rc exec prints no Fix-hint for a healthy workspace source" "got: $E2_OUT"
-fi
-if [[ "$E2_RC" -eq 0 ]]; then
-  pass "E2b rc exec exits 0"
-else
-  fail "E2b rc exec exits 0" "got exit $E2_RC; output: $E2_OUT"
-fi
-
-# ---------------------------------------------------------------------------
-# E3: rc exec, deleted workspace source, but the wrapped command SUCCEEDS.
+# E1-E4 RETIRED with `rc exec` (rip-cage-ely4.10 / ADR-031 D3).
 #
-# The hint must still fire. This pins the semantics chosen when the driver's
-# drift-review replaced the original stderr-capture-and-grep-for-ENOENT
-# approach with a pre-exec check: a deleted host source dir means the
-# /workspace virtiofs mount is ALREADY dead and every later exec will fail
-# against it. msb's flip to a hard failure is not instant (~15s observed), so
-# a command that still succeeds inside that window is precisely when naming
-# the cause earns its keep. Under the old capture approach this case printed
-# nothing at all.
-# ---------------------------------------------------------------------------
-echo "-- E3: rc exec <cage> -- true, source dir removed, command SUCCEEDS -- hint still printed --"
-export FAKE_MSB_STATE="Running"
-export FAKE_MSB_SOURCE_PATH="$MISSING_SOURCE"
-export FAKE_MSB_EXEC_EXIT=0
-export FAKE_MSB_EXEC_STDERR=""
-E3_OUT=$(run_rc exec e3-cage -- true 2>&1)
-E3_RC=$?
-unset FAKE_MSB_STATE FAKE_MSB_SOURCE_PATH FAKE_MSB_EXEC_EXIT FAKE_MSB_EXEC_STDERR
-
-if echo "$E3_OUT" | grep -qF "Fix-hint: workspace source deleted"; then
-  pass "E3a hint fires on a deleted source even when the command succeeds"
-else
-  fail "E3a hint fires on a deleted source even when the command succeeds" "got: $E3_OUT"
-fi
-if [[ "$E3_RC" -eq 0 ]]; then
-  pass "E3b the hint does not alter a successful exec's exit code"
-else
-  fail "E3b the hint does not alter a successful exec's exit code" "got exit $E3_RC; output: $E3_OUT"
-fi
-
-# ---------------------------------------------------------------------------
-# E4: the wrapped command's stderr STREAMS -- it is not buffered until exit.
+# They asserted that `rc exec <cage> -- <cmd>` prints the Fix-hint BEFORE msb's
+# misleading ENOENT text, that the hint fires even when the command succeeds,
+# that a healthy source produces no hint, and that the wrapped command's stderr
+# STREAMS rather than buffering until exit (a real regression the first uod6
+# implementation shipped).
 #
-# REGRESSION GUARD (driver drift-review on rip-cage-uod6, 2026-09-04): the
-# first implementation of the hint captured the wrapped command's stderr to a
-# temp file so it could be grepped for ENOENT, and cat-ed it only after the
-# command exited. That silently turned every `rc exec` into a buffered one --
-# a long-running command inside a cage lost all live progress output, and
-# most tools write progress to stderr. This arm fails if anything
-# reintroduces that buffering.
+# The verb is deleted -- a one-off command in a cage is `msb exec <cage> --
+# <cmd>` -- so rc no longer wraps that call and has nowhere to put a hint or a
+# stream to buffer. What is NOT lost is the diagnosis itself: `rc doctor <cage>`
+# prints the same Fix-hint from the same predicate, and D1/D2/J1/J2 above cover
+# it in both human and JSON form, including both negative controls.
 #
-# Method: the fake msb writes its stderr line and then holds the process open
-# for FAKE_MSB_EXEC_SLEEP seconds. We start `rc exec` in the background with
-# stderr redirected to a file, wait a fraction of that window, and require the
-# line to have ALREADY landed. Margins are deliberately wide (write at t=0,
-# observe at t=1s, process exits at t=4s) so an ordinary loaded machine does
-# not flake.
+# The four investigations this file exists to prevent chased a missing binary
+# because msb reports a dead /workspace against the PROGRAM name. An operator
+# running `msb exec` directly still sees that misleading text -- `rc doctor` is
+# now the only place rc can explain it, which is worth knowing before anyone
+# decides this file is fully covered.
 # ---------------------------------------------------------------------------
-echo "-- E4: rc exec streams the wrapped command's stderr, never buffers it to exit --"
-export FAKE_MSB_STATE="Running"
-export FAKE_MSB_SOURCE_PATH="$HEALTHY_SOURCE"
-export FAKE_MSB_EXEC_EXIT=0
-export FAKE_MSB_EXEC_STDERR="STREAM-PROBE: emitted at t=0"
-export FAKE_MSB_EXEC_SLEEP=4
-_e4_err=$(mktemp)
-run_rc exec e4-cage -- true >/dev/null 2>"$_e4_err" &
-_e4_pid=$!
-sleep 1
-_e4_seen_early=0
-grep -qF "STREAM-PROBE" "$_e4_err" 2>/dev/null && _e4_seen_early=1
-wait "$_e4_pid" || true
-_e4_seen_final=0
-grep -qF "STREAM-PROBE" "$_e4_err" 2>/dev/null && _e4_seen_final=1
-rm -f "$_e4_err"
-unset FAKE_MSB_STATE FAKE_MSB_SOURCE_PATH FAKE_MSB_EXEC_EXIT FAKE_MSB_EXEC_STDERR FAKE_MSB_EXEC_SLEEP
-
-if [[ "$_e4_seen_final" -eq 1 ]]; then
-  pass "E4a the wrapped command's stderr reaches the caller at all"
-else
-  fail "E4a the wrapped command's stderr reaches the caller at all" "stderr file never contained STREAM-PROBE"
-fi
-if [[ "$_e4_seen_early" -eq 1 ]]; then
-  pass "E4b that stderr arrives WHILE the command is still running (not buffered until exit)"
-else
-  fail "E4b that stderr arrives WHILE the command is still running (not buffered until exit)" "STREAM-PROBE was absent 1s in but present after exit -- rc exec is buffering the wrapped command's stderr again"
-fi
 
 echo ""
 echo "=== test-doctor-exec-source-deleted.sh: ${FAILURES}/${TOTAL} failure(s) ==="

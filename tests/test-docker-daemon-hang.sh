@@ -9,11 +9,14 @@ set -uo pipefail
 # present but never replies). Lower RC_DOCKER_PREFLIGHT_TIMEOUT so each case
 # runs in ~1s.
 #
-# rip-cage-tsf2.1: `rc ls`/`rc down` moved from check_docker to check_msb
-# (ADR-029 D1 hard cutover). Tests 1/2 below now exercise a fake `msb` that
-# hangs on `--version` (check_msb's own preflight call) instead of a fake
+# rip-cage-tsf2.1: the msb-preflight verbs moved from check_docker to
+# check_msb (ADR-029 D1 hard cutover). Tests 1/2 below exercise a fake `msb`
+# that hangs on `--version` (check_msb's own preflight call) instead of a fake
 # `docker` — otherwise identical wedge-detection shape, msb-side error code
-# (MSB_UNREACHABLE, not DOCKER_DAEMON_UNREACHABLE). Tests 3-6 (`rc doctor
+# (MSB_UNREACHABLE, not DOCKER_DAEMON_UNREACHABLE). Their subjects were
+# `rc ls` and `rc down`, which retired with the six-verb thinning
+# (rip-cage-ely4.10); `rc destroy` and `rc test` are what is left behind that
+# preflight arm, so the two cases move onto them. Tests 3-6 (`rc doctor
 # --host`) are UNCHANGED: that verb's job is specifically to diagnose the
 # DOCKER daemon (ADR-029 D1's docker-build path is still real docker), so
 # it stays fake-docker-driven.
@@ -76,12 +79,12 @@ export RC_DOCKER_PREFLIGHT_TIMEOUT=1
 export RC_MSB_PREFLIGHT_TIMEOUT=1
 
 # -----------------------------------------------
-# Test 1: rc ls against a wedged msb runtime → MSB_UNREACHABLE, JSON
+# Test 1: rc destroy against a wedged msb runtime → MSB_UNREACHABLE, JSON
 # -----------------------------------------------
 echo ""
-echo "=== Test 1: rc ls --output json against wedged msb ==="
+echo "=== Test 1: rc destroy --output json against wedged msb ==="
 start=$(date +%s)
-output=$(PATH="$MSB_HANG_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" --output json ls 2>&1 || true)
+output=$(PATH="$MSB_HANG_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" --output json destroy 2>&1 || true)
 elapsed=$(( $(date +%s) - start ))
 
 if echo "$output" | grep -q '"code":"MSB_UNREACHABLE"'; then
@@ -95,21 +98,21 @@ else
   fail "wedged msb: message should explain wedge/unresponsive" "$output"
 fi
 if (( elapsed <= 4 )); then
-  pass "wedged msb: rc ls returns in <=4s (was ${elapsed}s)"
+  pass "wedged msb: rc destroy returns in <=4s (was ${elapsed}s)"
 else
-  fail "wedged msb: rc ls should not hang (was ${elapsed}s)" ""
+  fail "wedged msb: rc destroy should not hang (was ${elapsed}s)" ""
 fi
 
 # -----------------------------------------------
-# Test 2: rc down against a wedged msb runtime — same fail-loud
+# Test 2: rc test against a wedged msb runtime — same fail-loud
 # -----------------------------------------------
 echo ""
-echo "=== Test 2: rc down --output json against wedged msb ==="
-output=$(PATH="$MSB_HANG_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" --output json down 2>&1 || true)
+echo "=== Test 2: rc test --output json against wedged msb ==="
+output=$(PATH="$MSB_HANG_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" --output json test 2>&1 || true)
 if echo "$output" | grep -q '"code":"MSB_UNREACHABLE"'; then
-  pass "wedged msb (down): JSON error code is MSB_UNREACHABLE"
+  pass "wedged msb (test): JSON error code is MSB_UNREACHABLE"
 else
-  fail "wedged msb (down): expected MSB_UNREACHABLE" "$output"
+  fail "wedged msb (test): expected MSB_UNREACHABLE" "$output"
 fi
 
 # -----------------------------------------------

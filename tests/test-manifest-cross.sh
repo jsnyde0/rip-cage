@@ -164,44 +164,65 @@ test_h3_name_with_newline_rejected_every_archetype() {
 
 # ---------------------------------------------------------------------------
 # H4 — A hostile 'name' is rejected through the REAL production entrypoint
-# chain (`rc generate-dockerfile` → cmd_generate_dockerfile →
-# _manifest_build_dockerfile_path → the generators), not just via a direct
+# chain (`rc build` -> cmd_build -> _manifest_validate /
+# _manifest_build_dockerfile_path -> the generators), not just via a direct
 # call to _manifest_validate (rip-cage-l906.4 second-round-review coverage
 # gap: H3 above and the T1e3/T1i generator-level tests all call the
-# generators/validator directly — nothing drove a hostile name through the
+# generators/validator directly -- nothing drove a hostile name through the
 # entrypoint an operator/CI actually runs, so a future refactor that piped
 # pre-parsed manifest data into a generator instead of having it call
 # _manifest_load itself could silently reopen the injection with every
 # existing test still green).
 #
+# The entrypoint was `rc generate-dockerfile` until that verb retired with the
+# six-verb thinning (rip-cage-ely4.10 / ADR-031 D3). `rc build` is the only
+# surviving production caller of the same chain, and driving it makes this case
+# STRICTER, not weaker: a fake `docker` on PATH records every invocation, so the
+# assertion now also covers "the refusal happened before docker was reached".
+#
 # Reuses the existing manifest-hostile-daemon-mcp-quote-name.yaml fixture
 # (F1 site: _manifest_generate_daemon_mcp_dockerfile_steps' single-quoted
 # `jq --arg name '<name>'` line) rather than adding a new fixture. The
-# payload embedded in that fixture's name — 'touch /pwned' — is a repo-wide
-# convention (also used by T1e3/T1i/H3): it is HARMLESS here because this
-# is a host-only test that only runs `rc generate-dockerfile` (stdout
-# codegen), never `docker build` — the payload text is asserted absent from
-# the generated output, never executed. Belt-and-suspenders: also assert the
-# literal path was never created on the host, and remove it if it somehow
-# were (defends the test itself against a future regression that DID let
-# generate-dockerfile shell out).
+# payload embedded in that fixture's name -- 'touch /pwned' -- is a repo-wide
+# convention (also used by T1e3/T1i/H3): it is HARMLESS here because the fake
+# docker never runs a real build and the payload text is asserted absent from
+# the GENERATED output, never executed. stderr is deliberately NOT checked for
+# it: the refusal quotes the offending name back, which is the fail-loud
+# behaviour, not a leak. Belt-and-suspenders: also assert the literal path was
+# never created on the host, and remove it if it somehow were.
 # ---------------------------------------------------------------------------
 test_h4_hostile_name_rejected_through_real_entrypoint() {
   local fixture="${FIXTURES}/manifest-hostile-daemon-mcp-quote-name.yaml"
   local sentinel="/pwned"
   rm -f "$sentinel" 2>/dev/null || true
 
+  local h4_bin h4_docker_log
+  h4_bin=$(mktemp -d)
+  h4_docker_log=$(mktemp)
+  cat > "${h4_bin}/docker" <<H4_DOCKER
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${h4_docker_log}"
+# 'info' must succeed so check_docker passes and the run reaches the manifest
+# validator -- a daemon error here would make this case pass for the wrong
+# reason. Everything else fails, so no real build can run.
+[[ "\${1:-}" == "info" ]] && exit 0
+exit 1
+H4_DOCKER
+  chmod +x "${h4_bin}/docker"
+
   local stdout_file stderr_file exit_code
   stdout_file=$(mktemp)
   stderr_file=$(mktemp)
   exit_code=0
-  RC_MANIFEST_GLOBAL="$fixture" "${RC}" generate-dockerfile \
+  PATH="${h4_bin}:${PATH}" RC_MANIFEST_GLOBAL="$fixture" "${RC}" build \
     >"$stdout_file" 2>"$stderr_file" || exit_code=$?
 
-  local stdout_output stderr_output
+  local stdout_output stderr_output h4_build_calls
   stdout_output=$(cat "$stdout_file")
   stderr_output=$(cat "$stderr_file")
-  rm -f "$stdout_file" "$stderr_file"
+  h4_build_calls=$(grep -c '^build' "$h4_docker_log" 2>/dev/null) || h4_build_calls=0
+  rm -f "$stdout_file" "$stderr_file" "$h4_docker_log" "${h4_bin}/docker"
+  rmdir "$h4_bin" 2>/dev/null || true
 
   local sentinel_leaked=0
   [[ -e "$sentinel" ]] && sentinel_leaked=1
@@ -211,11 +232,11 @@ test_h4_hostile_name_rejected_through_real_entrypoint() {
     && echo "$stderr_output" | grep -qi "name" \
     && echo "$stderr_output" | grep -q '\[a-z0-9_-\]' \
     && ! echo "$stdout_output" | grep -qF "touch /pwned" \
-    && [[ -z "$stdout_output" ]] \
+    && [[ "$h4_build_calls" -eq 0 ]] \
     && [[ "$sentinel_leaked" -eq 0 ]]; then
-    pass "H4 hostile name rejected through the real 'rc generate-dockerfile' entrypoint (exit=${exit_code}, no injected directive in generated output, no host-side sentinel leak)"
+    pass "H4 hostile name rejected through the real 'rc build' entrypoint (exit=${exit_code}, no docker build reached, no injected directive in output, no host-side sentinel leak)"
   else
-    fail "H4 expected non-zero exit + name-format error + no injected directive in stdout + no sentinel leak. exit=${exit_code} stdout='${stdout_output}' stderr='${stderr_output}' sentinel_leaked=${sentinel_leaked}"
+    fail "H4 expected non-zero exit + name-format error + no docker build + no injected directive + no sentinel leak. exit=${exit_code} docker_build_calls=${h4_build_calls} stdout='${stdout_output}' stderr='${stderr_output}' sentinel_leaked=${sentinel_leaked}"
   fi
 }
 

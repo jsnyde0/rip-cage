@@ -40,10 +40,7 @@
 #       CI/release compose path) -> drift check bypassed entirely (it IS
 #       dist; comparing it to itself is meaningless, and CI must never see
 #       this warning).
-#   D6  `rc manifest reconcile` preserves a custom (non-default) entry AND
-#       refreshes a stale default-derived entry to match current dist,
-#       backs up the previous file, and stamps the new file with the
-#       current dist hash.
+#   D6  RETIRED with the `rc manifest reconcile` verb (rip-cage-ely4.10).
 #
 # All `rc build` cases drive the REAL `cmd_build` end-to-end through a
 # permissive fake-docker PATH shim (no real docker build/run) — proving the
@@ -140,10 +137,14 @@ if printf '%s' "$D1_ERR" | grep -qF "$D1_MANIFEST"; then
 else
   fail "D1a warning names the drifted manifest file" "stderr=$D1_ERR"
 fi
-if printf '%s' "$D1_ERR" | grep -q "rc manifest reconcile"; then
-  pass "D1b warning points at 'rc manifest reconcile'"
+# The warning used to point at `rc manifest reconcile`; that verb retired with
+# the six-verb thinning (rip-cage-ely4.10 / ADR-031 D3), so it points at the
+# shipped defaults file the operator now edits against by hand. The property is
+# unchanged: a drift warning must name where the fix lives.
+if printf '%s' "$D1_ERR" | grep -q "manifest/default-tools.yaml"; then
+  pass "D1b warning points at manifest/default-tools.yaml as the refresh source"
 else
-  fail "D1b warning points at 'rc manifest reconcile'" "stderr=$D1_ERR"
+  fail "D1b warning points at manifest/default-tools.yaml as the refresh source" "stderr=$D1_ERR"
 fi
 
 echo ""
@@ -228,10 +229,10 @@ if [[ "$D3_EXIT" -eq 0 ]]; then
 else
   fail "D3z build still succeeds (soft notice is informational, not blocking)" "exit=$D3_EXIT stderr=$D3_ERR"
 fi
-if printf '%s' "$D3_ERR" | grep -q "rc manifest reconcile"; then
-  pass "D3a soft notice points at 'rc manifest reconcile'"
+if printf '%s' "$D3_ERR" | grep -q "manifest/default-tools.yaml"; then
+  pass "D3a soft notice points at manifest/default-tools.yaml"
 else
-  fail "D3a soft notice points at 'rc manifest reconcile'" "stderr=$D3_ERR"
+  fail "D3a soft notice points at manifest/default-tools.yaml" "stderr=$D3_ERR"
 fi
 if printf '%s' "$D3_ERR" | grep -qi "provenance\|no seed-fingerprint stamp"; then
   pass "D3b soft notice uses provenance-unknown wording"
@@ -374,10 +375,10 @@ if printf '%s' "$D4C_ERR" | grep -qi "customized, or seeded by an older rc\|stal
 else
   fail "D4Cb strengthened warning names the staleness stake (not just 'provenance unknown')" "stderr=$D4C_ERR"
 fi
-if printf '%s' "$D4C_ERR" | grep -q "rc manifest reconcile"; then
-  pass "D4Cc strengthened warning points at 'rc manifest reconcile'"
+if printf '%s' "$D4C_ERR" | grep -q "manifest/default-tools.yaml"; then
+  pass "D4Cc strengthened warning points at manifest/default-tools.yaml as the refresh source"
 else
-  fail "D4Cc strengthened warning points at 'rc manifest reconcile'" "stderr=$D4C_ERR"
+  fail "D4Cc strengthened warning points at manifest/default-tools.yaml as the refresh source" "stderr=$D4C_ERR"
 fi
 if printf '%s' "$D4C_ERR" | grep -qi "^Notice:.*provenance"; then
   fail "D4Cd strengthened warning must NOT read as the plain 'provenance unknown' soft notice" "stderr=$D4C_ERR"
@@ -417,128 +418,20 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
-# D6: `rc manifest reconcile` preserves a custom entry, refreshes a stale
-#     default-derived entry to current dist, backs up the old file, and
-#     stamps the new file with the current dist hash.
-# ---------------------------------------------------------------------------
-echo "-- D6: rc manifest reconcile preserves custom entries + updates stale defaults --"
-
-D6_MANIFEST="${MSD_TMP}/d6-tools.yaml"
-cat > "$D6_MANIFEST" <<'YAML'
-version: 1
-tools:
-  - name: gh
-    archetype: TOOL
-    version_pin: "bundled"
-    egress:
-      - api.github.com
-    mounts: []
-
-  - name: my-org-tool
-    archetype: TOOL
-    version_pin: "bundled"
-    egress:
-      - example.internal
-    mounts: []
-YAML
-D6_ORIGINAL_CONTENT=$(cat "$D6_MANIFEST")
-
-D6_EXIT=0
-D6_OUT_FILE="${MSD_TMP}/d6-out"
-D6_ERR_FILE="${MSD_TMP}/d6-err"
-RC_MANIFEST_GLOBAL="$D6_MANIFEST" \
-  bash "$RC" manifest reconcile >"$D6_OUT_FILE" 2>"$D6_ERR_FILE" || D6_EXIT=$?
-D6_OUT=$(cat "$D6_OUT_FILE" 2>/dev/null || true)
-D6_ERR=$(cat "$D6_ERR_FILE" 2>/dev/null || true)
-
-if [[ "$D6_EXIT" -eq 0 ]]; then
-  pass "D6z reconcile exits 0"
-else
-  fail "D6z reconcile exits 0" "exit=$D6_EXIT stdout=$D6_OUT stderr=$D6_ERR"
-fi
-
-# The custom entry (not present in dist by name) must be preserved verbatim.
-if grep -q "my-org-tool" "$D6_MANIFEST" && grep -q "example.internal" "$D6_MANIFEST"; then
-  pass "D6a custom entry 'my-org-tool' preserved in the reconciled manifest"
-else
-  fail "D6a custom entry 'my-org-tool' preserved in the reconciled manifest" "manifest=$(cat "$D6_MANIFEST" 2>/dev/null)"
-fi
-
-# The stale 'gh' entry must now match dist's CURRENT gh entry (independent
-# oracle: pull dist's gh entry via yq directly, not via rc's own logic).
-D6_DIST_GH_EGRESS=$(yq '.tools[] | select(.name == "gh") | .egress' "$DIST_MANIFEST" 2>/dev/null)
-D6_LOCAL_GH_EGRESS=$(yq '.tools[] | select(.name == "gh") | .egress' "$D6_MANIFEST" 2>/dev/null)
-if [[ "$D6_DIST_GH_EGRESS" == "$D6_LOCAL_GH_EGRESS" ]]; then
-  pass "D6b stale 'gh' entry refreshed to match dist's current 'gh' entry"
-else
-  fail "D6b stale 'gh' entry refreshed to match dist's current 'gh' entry" "dist_egress=$D6_DIST_GH_EGRESS local_egress=$D6_LOCAL_GH_EGRESS"
-fi
-
-# A backup of the pre-reconcile file must exist, with the OLD content.
-D6_BACKUP=$(find "$MSD_TMP" -maxdepth 1 -name 'd6-tools.yaml.bak-*' 2>/dev/null | head -1)
-if [[ -n "$D6_BACKUP" && -f "$D6_BACKUP" ]]; then
-  if [[ "$(cat "$D6_BACKUP")" == "$D6_ORIGINAL_CONTENT" ]]; then
-    pass "D6c backup file created with the pre-reconcile content"
-  else
-    fail "D6c backup file created with the pre-reconcile content" "backup=$(cat "$D6_BACKUP")"
-  fi
-else
-  fail "D6c backup file created with the pre-reconcile content" "no backup found matching d6-tools.yaml.bak-* in $MSD_TMP"
-fi
-
-# The reconciled file must now carry a seed-fingerprint stamp matching the
-# CURRENT dist hash (independent oracle: shasum computed directly here).
-D6_STAMP=$(grep -m1 '^# rc-seed-fingerprint: sha256:' "$D6_MANIFEST" | sed -n 's/^# rc-seed-fingerprint: sha256:\([0-9a-f]*\).*/\1/p')
-if [[ "$D6_STAMP" == "$DIST_HASH" ]]; then
-  pass "D6d reconciled manifest is stamped with the current dist hash"
-else
-  fail "D6d reconciled manifest is stamped with the current dist hash" "stamp=$D6_STAMP expected=$DIST_HASH"
-fi
-
-# Summary output should name what changed.
-if printf '%s%s' "$D6_OUT" "$D6_ERR" | grep -qi "my-org-tool"; then
-  pass "D6e reconcile summary mentions the preserved custom entry"
-else
-  fail "D6e reconcile summary mentions the preserved custom entry" "stdout=$D6_OUT stderr=$D6_ERR"
-fi
-if printf '%s%s' "$D6_OUT" "$D6_ERR" | grep -qi "\bgh\b"; then
-  pass "D6f reconcile summary mentions the updated 'gh' entry"
-else
-  fail "D6f reconcile summary mentions the updated 'gh' entry" "stdout=$D6_OUT stderr=$D6_ERR"
-fi
-
-# F2 (rip-cage-6vt9 review fold): the yq JSON round-trip used to render the
-# merged manifest strips YAML comments — including any operator comment
-# living INSIDE a preserved custom entry. The reconcile summary must
-# disclose this honestly (not silently), and name that the backup retains
-# the original (with comments intact) as the recovery path.
-if printf '%s%s' "$D6_OUT" "$D6_ERR" | grep -qi "comment"; then
-  pass "D6h reconcile summary discloses that comments are not preserved"
-else
-  fail "D6h reconcile summary discloses that comments are not preserved" "stdout=$D6_OUT stderr=$D6_ERR"
-fi
-if printf '%s%s' "$D6_OUT" "$D6_ERR" | grep -qi "backup.*original\|original.*backup"; then
-  pass "D6i reconcile summary points at the backup as where the original (with comments) lives"
-else
-  fail "D6i reconcile summary points at the backup as where the original (with comments) lives" "stdout=$D6_OUT stderr=$D6_ERR"
-fi
-
-# A subsequent `rc build` against the freshly-reconciled (now stamped,
-# matching-dist) manifest must be silent (closes the loop: reconcile ->
-# no more drift warning until dist changes again).
-D6B_STUB_DIR=$(_msd_new_stub_dir)
-D6B_ERR_FILE="${MSD_TMP}/d6b-err"
-D6B_EXIT=0
-# rip-cage-d2bo kind-1 (harmless): PATH-prefixed with _msd_new_stub_dir's fake docker shim (defined above) -- no real docker build/run ever executes.
-PATH="${D6B_STUB_DIR}:$PATH" \
-  RC_MANIFEST_GLOBAL="$D6_MANIFEST" \
-  bash "$RC" build >/dev/null 2>"$D6B_ERR_FILE" || D6B_EXIT=$?
-D6B_ERR=$(cat "$D6B_ERR_FILE" 2>/dev/null || true)
-if [[ "$D6B_EXIT" -eq 0 ]] && ! printf '%s' "$D6B_ERR" | grep -qi "reconcile\|seed-fingerprint\|provenance"; then
-  pass "D6g rc build against the freshly-reconciled manifest is silent (no drift warning)"
-else
-  fail "D6g rc build against the freshly-reconciled manifest is silent (no drift warning)" "exit=$D6B_EXIT stderr=$D6B_ERR"
-fi
+# D6 RETIRED with `rc manifest reconcile` (rip-cage-ely4.10 / ADR-031 D3).
+#
+# It drove the verb end to end: preserve a custom entry, refresh a stale
+# default-derived one, back the old file up, stamp the new one with the current
+# dist hash, disclose that YAML comments do not survive the round-trip, and go
+# quiet on the next `rc build`. The verb is deleted -- its successor is editing
+# the file -- so every one of those is now the operator's own edit, and there is
+# no rc behaviour left to assert.
+#
+# The DETECTION half, which is what this file is really for, is untouched:
+# D1-D5 above still prove `rc build` warns on a stale stamp, stays silent on a
+# matching one, soft-notices an unstamped file, and never warns when
+# RC_MANIFEST_GLOBAL points at dist itself. The manifest layer retires whole in
+# rip-cage-ely4.11 (ADR-031 D4), which is when the rest of this file goes.
 
 echo ""
 if [[ "$FAILURES" -eq 0 ]]; then

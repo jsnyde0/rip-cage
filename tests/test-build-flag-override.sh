@@ -31,7 +31,7 @@
 # -- every other named docker flag AND any genuinely unrecognized/future
 # flag AND a stray build-context positional AND a bare `--` (previously a
 # literal unfiltered-passthrough hole, see T-DASHDASH) -- fails loud BEFORE
-# any docker call, naming the allowlist and the `rc generate-dockerfile`
+# any docker call, naming the allowlist and the fixed-argv rule
 # escape hatch. See cli/build.sh's cmd_build for the full per-flag
 # admit/reject rationale.
 #
@@ -1723,10 +1723,16 @@ cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
 # ---------------------------------------------------------------------------
 # T65 (adversarial-review minor 2): rc build -f <path> (separate-arg
 #     spelling) -- the -f/--file rejection message must name the allowlist
-#     section AND the rc generate-dockerfile escape hatch, same as every
-#     other rejection message added by rip-cage-zqjz.2 (-o, --build-arg, the
-#     catch-all default). It was the one reject site NOT updated when those
-#     were added (it predates rip-cage-zqjz.2, from rip-cage-zqjz).
+#     section AND the no-escape-hatch statement, same as every other rejection
+#     message added by rip-cage-zqjz.2 (-o, --build-arg, the catch-all
+#     default). It was the one reject site NOT updated when those were added
+#     (it predates rip-cage-zqjz.2, from rip-cage-zqjz).
+#
+#     The escape hatch these messages used to offer was `rc generate-dockerfile`,
+#     which retired with the six-verb thinning (rip-cage-ely4.10 / ADR-031 D3,
+#     D5(c): rc build passes docker a fixed argv). So the assertion flips from
+#     "names the hatch" to "says there is none" -- the reader still has to learn
+#     where the boundary is, which is the property both forms carry.
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== T65: rc build -f <path> (separate-arg) -> message names allowlist + escape hatch ==="
@@ -1739,10 +1745,10 @@ if [[ "$_t65_out" == *"flag allowlist"* ]]; then
 else
   fail "T65a: expected message to name 'flag allowlist'" "$_t65_out"
 fi
-if [[ "$_t65_out" == *"generate-dockerfile"* ]]; then
-  pass "T65b: message names the rc generate-dockerfile escape hatch"
+if [[ "$_t65_out" == *"no escape hatch"* ]]; then
+  pass "T65b: message states there is no escape hatch (fixed argv, ADR-031 D5(c))"
 else
-  fail "T65b: expected message to name 'generate-dockerfile'" "$_t65_out"
+  fail "T65b: expected message to state there is no escape hatch" "$_t65_out"
 fi
 cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
 
@@ -1763,10 +1769,10 @@ if [[ "$_t66_out" == *"flag allowlist"* ]]; then
 else
   fail "T66a: expected message to name 'flag allowlist'" "$_t66_out"
 fi
-if [[ "$_t66_out" == *"generate-dockerfile"* ]]; then
-  pass "T66b: message names the rc generate-dockerfile escape hatch"
+if [[ "$_t66_out" == *"no escape hatch"* ]]; then
+  pass "T66b: message states there is no escape hatch (fixed argv, ADR-031 D5(c))"
 else
-  fail "T66b: expected message to name 'generate-dockerfile'" "$_t66_out"
+  fail "T66b: expected message to state there is no escape hatch" "$_t66_out"
 fi
 cleanup; TEST_HOME=""; CALL_LOG=""; MOCK_BIN=""
 
