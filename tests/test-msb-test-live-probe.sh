@@ -112,10 +112,14 @@ pass "setup: rc up created a real running msb sandbox ${CAGE_NAME}"
 echo ""
 echo "=== TEST1: rc test (human) relays REAL named in-guest PASS lines ==="
 T1_OUT=$(run_rc_human test "$CAGE_NAME" 2>&1)
-if echo "$T1_OUT" | grep -q "PASS  \[1\] Container user is agent"; then
-  pass "TEST1: real in-guest check 'Container user is agent' relayed verbatim (msb exec reached the real script)"
+# The first script `rc test` runs in-guest is the floor probe, whose first check
+# names the real runtime user. "Container user is agent" used to be asserted here;
+# it moved INTO the probe as `floor: runtime-user` (rip-cage-ely4.12), so this
+# line follows it rather than asserting a check that no longer exists.
+if echo "$T1_OUT" | grep -q "PASS  \[1\] floor: runtime-user"; then
+  pass "TEST1: real in-guest check 'floor: runtime-user' relayed verbatim (msb exec reached the real script)"
 else
-  fail "TEST1: expected the real named safety-stack PASS line" "$T1_OUT"
+  fail "TEST1: expected the real named floor-probe PASS line" "$T1_OUT"
 fi
 if echo "$T1_OUT" | grep -qE "PASS[[:space:]]+\[[0-9]+\] git identity set"; then
   pass "TEST1: real in-guest check 'git identity set' relayed (a DIFFERENT script, test-safety-stack.sh, reached for real)"
@@ -135,9 +139,9 @@ if [[ "$T2_CHECK_COUNT" -gt 30 ]]; then
 else
   fail "TEST2: expected a substantial real checks array (>30 entries)" "count=${T2_CHECK_COUNT} out=${T2_OUT}"
 fi
-T2_NAMED=$(echo "$T2_OUT" | tail -1 | jq -e '.checks[] | select(.name == "Container user is agent")' >/dev/null 2>&1; echo $?)
+T2_NAMED=$(echo "$T2_OUT" | tail -1 | jq -e '.checks[] | select(.name == "floor: runtime-user")' >/dev/null 2>&1; echo $?)
 if [[ "$T2_NAMED" -eq 0 ]]; then
-  pass "TEST2: the real named check 'Container user is agent' is present in the parsed JSON checks array"
+  pass "TEST2: the real named check 'floor: runtime-user' is present in the parsed JSON checks array"
 else
   fail "TEST2: expected the real named check in the JSON checks array" "$T2_OUT"
 fi

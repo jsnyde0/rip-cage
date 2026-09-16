@@ -145,6 +145,11 @@ echo ""
 # ---------------------------------------------------------------------------
 # Dropped 155 -> 143 by rip-cage-ely4.10 (ADR-031 D3, the six-verb thinning).
 # Dropped 143 -> 111 by rip-cage-ely4.11 (ADR-031 D4, the manifest retirement).
+# Raised 111 -> 112 by rip-cage-ely4.12 (ADR-031 D5b, the floor probe).
+#     cli/test.sh (1 new): _test_floor_probe_missing_line (says, in one legible
+#       line, that a cage's image predates the floor probe -- otherwise `rc test`
+#       reports msb's ENOENT against the program name, which reads as a tooling
+#       failure rather than the real finding).
 # 35 functions REMOVED -- the whole cli/lib/manifest_checks.sh validator and
 # codegen surface, cli/manifest.sh's hook resolver, rc up's manifest mount and
 # egress collectors, and the three mount-dest helpers in cli/lib/path.sh that
@@ -166,7 +171,7 @@ echo ""
 # _up_warn_transcript_loss (the WARN half of `rc reload`'s transcript-loss
 # guard, now on every recreate path) and _up_check_multiplexer_available
 # (rip-cage-ely4.7.2's pre-create refusal). Net -12.
-echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 111) ==="
+echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 112) ==="
 
 # Bumped 178 -> 179 by Fable ruling 6 (msb cutover merge window): cli/lib/config.sh
 # gained _config_retired_fields (the retired-config-field loud-reject table).
@@ -328,7 +333,7 @@ echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 
 #       _up_prepare_conf_secret_env (the --conf-driven secret-env preflight,
 #       config.sh's `_up_prepare_resume_secrets` counterpart for the new
 #       config surface).
-EXPECTED_FN_COUNT=111
+EXPECTED_FN_COUNT=112
 _actual_fn_count=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh 2>/dev/null | wc -l | tr -d ' ')
 
 if [[ "$_actual_fn_count" -eq "$EXPECTED_FN_COUNT" ]]; then
@@ -353,11 +358,11 @@ echo ""
 # ---------------------------------------------------------------------------
 # (c) declare -F reachability: after sourcing the shim (exposing functions
 #     only -- no dispatch, since rc is sourced not executed here), every one
-#     of the 111 currently rc-reachable functions must be `declare -F`-
+#     of the 112 currently rc-reachable functions must be `declare -F`-
 #     reachable. rip-cage-rj68 (S6): cli/lib/msb_flags.sh is now in rc's
 #     source list (previously it was not -- see (b)'s comment), so the
 #     stale "151 reachable out of 156 on disk" gap is closed; on-disk count
-#     and reachable count are the SAME number (111, since rip-cage-ely4.11's
+#     and reachable count are the SAME number (112, since rip-cage-ely4.11's
 #     drop) from here on. A loud, per-name failure (not just a count) so a
 #     reviewer can see exactly which module dropped/misfiled a function.
 # ---------------------------------------------------------------------------

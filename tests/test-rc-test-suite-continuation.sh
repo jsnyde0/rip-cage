@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # tests/test-rc-test-suite-continuation.sh -- regression guard for
 # rip-cage-83y6: `rc test <cage>` (human/non-json output path) must run
-# ALL FOUR in-cage suites (test-safety-stack.sh, test-skills.sh,
-# test-bd-roundtrip.sh, run-recipe-smokes.sh) even when an earlier one
+# ALL FIVE in-cage suites (floor-probe.sh, test-safety-stack.sh,
+# test-skills.sh, test-bd-roundtrip.sh, run-recipe-smokes.sh) even when one
 # fails, and must still exit non-zero overall when any of them failed.
 #
 # Root cause: `rc` runs `set -euo pipefail`; cli/test.sh's non-json branch
-# called the four suites bare (`_msb_exec ... suiteN.sh`, no `||`/`if`
+# called the suites bare (`_msb_exec ... suiteN.sh`, no `||`/`if`
 # guard), so a non-zero exit from an earlier suite aborted the function
 # before later suites -- in particular run-recipe-smokes.sh -- ever ran.
 # The json branch immediately above already collected exit status per
@@ -17,18 +17,21 @@
 # that causes the bug is in effect) against a PATH-stubbed `msb` binary --
 # HOST_ONLY, no live cage, no credentials, no composed image (bead
 # rip-cage-83y6's hard constraint). `msb exec ... <suite>.sh` is stubbed to
-# print a distinctive header line for each of the four suites and exit
+# print a distinctive header line for each of the five suites and exit
 # with a caller-controlled status, so each scenario below can force any
 # suite red without depending on the real in-guest scripts at all.
 #
 # Coverage:
-#   T1 suite 1 (test-safety-stack.sh) forced red -> all four suite headers
-#      still appear in stdout, AND `rc test` exits non-zero overall.
-#   T2 all four suites green -> exit 0 (positive control: the fix must not
+#   T1 an early suite (test-safety-stack.sh) forced red -> all five suite
+#      headers still appear in stdout, AND `rc test` exits non-zero overall.
+#   T2 all five suites green -> exit 0 (positive control: the fix must not
 #      turn a genuinely all-passing run into a false failure).
-#   T3 suite 4 (run-recipe-smokes.sh) forced red, suites 1-3 green -> all
-#      four headers still appear (guards against a fix that only handles
+#   T3 the LAST suite (run-recipe-smokes.sh) forced red, the rest green ->
+#      all five headers still appear (guards against a fix that only handles
 #      the FIRST suite's exit status) AND exit non-zero.
+#
+# rip-cage-ely4.12 added the floor probe as the suite that runs FIRST; it is
+# stubbed here like the others so this guard covers the shape, not a count.
 
 set -uo pipefail
 
@@ -66,6 +69,10 @@ case " $* " in
 {"status":"Running","config":{"labels":{"rc.source.path":"${WS_SOURCE_PATH}"}}}
 JSON
     exit 0
+    ;;
+  *"floor-probe.sh"*)
+    echo "=== STUB HEADER: floor-probe.sh ==="
+    exit "${RTC_SUITE0_EXIT:-0}"
     ;;
   *"test-safety-stack.sh"*)
     echo "=== STUB HEADER: test-safety-stack.sh ==="
@@ -109,7 +116,7 @@ export RTC_SUITE1_EXIT RTC_SUITE2_EXIT RTC_SUITE3_EXIT RTC_SUITE4_EXIT
 T1_EXIT=0
 T1_OUT=$(_run_rc_test 2>&1) || T1_EXIT=$?
 
-for hdr in "test-safety-stack.sh" "test-skills.sh" "test-bd-roundtrip.sh" "run-recipe-smokes.sh"; do
+for hdr in "floor-probe.sh" "test-safety-stack.sh" "test-skills.sh" "test-bd-roundtrip.sh" "run-recipe-smokes.sh"; do
   if echo "$T1_OUT" | grep -q "STUB HEADER: ${hdr}"; then
     pass "T1 suite header present despite earlier red: ${hdr}"
   else
@@ -124,19 +131,19 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# T2: all four suites green (positive control).
+# T2: all five suites green (positive control).
 # ---------------------------------------------------------------------------
 echo ""
-echo "-- T2: all four suites green (positive control) --"
+echo "-- T2: all five suites green (positive control) --"
 RTC_SUITE1_EXIT=0 RTC_SUITE2_EXIT=0 RTC_SUITE3_EXIT=0 RTC_SUITE4_EXIT=0
 export RTC_SUITE1_EXIT RTC_SUITE2_EXIT RTC_SUITE3_EXIT RTC_SUITE4_EXIT
 T2_EXIT=0
 T2_OUT=$(_run_rc_test 2>&1) || T2_EXIT=$?
 
 if [[ "$T2_EXIT" -eq 0 ]]; then
-  pass "T2 rc test exits 0 when all four suites pass"
+  pass "T2 rc test exits 0 when all five suites pass"
 else
-  fail "T2 rc test exits 0 when all four suites pass" "got exit $T2_EXIT; output: $T2_OUT"
+  fail "T2 rc test exits 0 when all five suites pass" "got exit $T2_EXIT; output: $T2_OUT"
 fi
 
 # ---------------------------------------------------------------------------
@@ -149,7 +156,7 @@ export RTC_SUITE1_EXIT RTC_SUITE2_EXIT RTC_SUITE3_EXIT RTC_SUITE4_EXIT
 T3_EXIT=0
 T3_OUT=$(_run_rc_test 2>&1) || T3_EXIT=$?
 
-for hdr in "test-safety-stack.sh" "test-skills.sh" "test-bd-roundtrip.sh" "run-recipe-smokes.sh"; do
+for hdr in "floor-probe.sh" "test-safety-stack.sh" "test-skills.sh" "test-bd-roundtrip.sh" "run-recipe-smokes.sh"; do
   if echo "$T3_OUT" | grep -q "STUB HEADER: ${hdr}"; then
     pass "T3 suite header present when a later suite is red: ${hdr}"
   else
