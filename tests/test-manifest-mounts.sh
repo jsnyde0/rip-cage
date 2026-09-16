@@ -41,6 +41,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 
 # These suites sandbox HOME so rc reads a fixture config tree. Docker resolves
 # its CONTEXT through $HOME/.docker, so a sandboxed HOME makes `docker info`
@@ -268,13 +271,17 @@ test_md1_denylisted_host_in_object_shape_rejected() {
   out=$(HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
-    RC_ALLOWED_ROOTS="$tmpdir" \
+    RC_CAGE_CONF="$(cage_conf_for "$tmpdir")" \
     "${RC}" up "$tmpdir" 2>&1) || exit_code=$?
 
-  # Specific EFFECT sentinel: the error must mention manifest-declared mount + denylist
-  # in the exact format produced by _manifest_check_mounts_denylist.
+  # Specific EFFECT sentinel: the error must name the manifest-declared mount
+  # AND the reason it was refused, in the form _manifest_check_mounts_denylist
+  # produces. The wording moved with the rule (rip-cage-ely4.9): the denylist
+  # became the protected-paths list, so the message says "is a protected path"
+  # where it used to say "matched secret-path denylist pattern". Both spellings
+  # are accepted so this tracks the PROPERTY, not one release's phrasing.
   local denied_signal
-  denied_signal=$(grep -iE "manifest.*(mount|declared).*(denylist|denied|refusing)|denylist.*(manifest|declared).*mount" <<<"$out" | head -1)
+  denied_signal=$(grep -iE "manifest.*(mount|declared).*(protected path|denylist|denied|refusing)" <<<"$out" | head -1)
 
   if [[ "$exit_code" -ne 0 ]] && [[ -n "$denied_signal" ]]; then
     pass "MD1 EFFECT: denylisted .host in new object shape REJECTED by denylist check (exit=$exit_code)"
@@ -327,12 +334,15 @@ YAML
   out=$(HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
-    RC_ALLOWED_ROOTS="$tmpdir" \
+    RC_CAGE_CONF="$(cage_conf_for "$tmpdir")" \
     "${RC}" up "$tmpdir" 2>&1) || exit_code=$?
 
   # Specific EFFECT sentinel: denylist-refusal message must be present.
   local denied_signal
-  denied_signal=$(grep -iE "manifest.*(mount|declared).*(denylist|denied|refusing)|denylist.*(manifest|declared).*mount" <<<"$out" | head -1)
+  # Same wording move as MD1 above (rip-cage-ely4.9): "is a protected path"
+  # replaced "matched secret-path denylist pattern"; both are accepted so the
+  # assertion tracks the property rather than the phrasing.
+  denied_signal=$(grep -iE "manifest.*(mount|declared).*(protected path|denylist|denied|refusing)" <<<"$out" | head -1)
 
   if [[ "$exit_code" -ne 0 ]] && [[ -n "$denied_signal" ]]; then
     pass "MD2 SECURITY: tilde-expanded ~/.ssh REJECTED by denylist (expansion feeds denylist, not bypasses it — exit=$exit_code)"
@@ -659,7 +669,7 @@ YAML
   out=$(HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
-    RC_ALLOWED_ROOTS="$tmpdir" \
+    RC_CAGE_CONF="$(cage_conf_for "$tmpdir")" \
     "${RC}" up "$tmpdir" 2>&1) || exit_code=$?
 
   local denied_signal
@@ -706,7 +716,7 @@ YAML
   out=$(HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
-    RC_ALLOWED_ROOTS="$tmpdir" \
+    RC_CAGE_CONF="$(cage_conf_for "$tmpdir")" \
     "${RC}" up "$tmpdir" 2>&1) || exit_code=$?
 
   local denied_signal
@@ -752,7 +762,7 @@ YAML
   out=$(HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
-    RC_ALLOWED_ROOTS="$tmpdir" \
+    RC_CAGE_CONF="$(cage_conf_for "$tmpdir")" \
     "${RC}" up "$tmpdir" 2>&1) || exit_code=$?
 
   local denied_signal
@@ -906,7 +916,7 @@ YAML
   out=$(HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
-    RC_ALLOWED_ROOTS="$tmpdir" \
+    RC_CAGE_CONF="$(cage_conf_for "$tmpdir")" \
     "${RC}" up "$tmpdir" 2>&1) || exit_code=$?
 
   # The rc09 allowlist error message must be present.
