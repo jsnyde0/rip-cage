@@ -1,6 +1,8 @@
 # Building a Tool from Source (the generic builder stage)
 
-This walkthrough covers **ADR-005 D11 mechanism 1** (FLEXIBLE): the single generic from-source builder stage that lets a TOOL manifest entry compile a binary at `rc build` when no prebuilt release exists for the cage's architecture. Prefer prebuilt binaries when they exist ([ADR-005 D6](../decisions/ADR-005-ecosystem-tools.md); see [adding-a-tool.md](adding-a-tool.md)) — from-source is the fallback, most commonly hit on linux-arm64 (Apple Silicon hosts), where many upstreams publish no release.
+> **RETIRED 2026-09-16 (`rip-cage-ely4.11`, [ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D4).** This page documents a **tools-manifest archetype**, and the tools manifest no longer exists. Extend the published base image with your own Dockerfile instead, and declare anything that has to *start* in the image's boot descriptor — [in-cage-daemon.md](in-cage-daemon.md) carries the descriptor's schema, and [`examples/base/`](../../examples/base/) is the smallest worked example. Kept for now as a record of the mechanism; the full rewrite of this directory is `rip-cage-ely4.14`'s.
+
+This walkthrough covers **ADR-005 D11 mechanism 1** (FLEXIBLE): the single generic from-source builder stage that lets a TOOL manifest entry compile a binary at `rc build` when no prebuilt release exists for the cage's architecture. Prefer prebuilt binaries when they exist ([ADR-005 D6](../decisions/ADR-005-ecosystem-tools.md); see `examples/base/` (the retired adding-a-tool.md walkthrough)) — from-source is the fallback, most commonly hit on linux-arm64 (Apple Silicon hosts), where many upstreams publish no release.
 
 **ADR-005 D12 (FIRM):** rip-cage supports no *specific* tool's build. The mechanism is one generic stage parameterized entirely by your manifest entry; the per-tool build intelligence lives in **your build script**, which `rc` copies and runs but never interprets. DCG is referenced below as the live instance in this repo — it is a composable recipe, not a blessed tool.
 
@@ -25,7 +27,7 @@ tools:
       output_path: "/usr/local/bin/my-tool"        # the binary the script must produce
 ```
 
-All three sub-fields are required, single-line (newlines would inject Dockerfile directives — rejected fail-closed), and `build_script` must be a **relative path inside the build context** (repo root): absolute paths and any `../` traversal are rejected by the validator with a named error before Docker can fail opaquely. See [manifest-validator.md](manifest-validator.md) for the exact messages.
+All three sub-fields are required, single-line (newlines would inject Dockerfile directives — rejected fail-closed), and `build_script` must be a **relative path inside the build context** (repo root): absolute paths and any `../` traversal are rejected by the validator with a named error before Docker can fail opaquely. See the retired manifest validator for the exact messages.
 
 The build script carries all the judgment: clone/fetch the pinned source, build for the current platform, place the artifact at `output_path`. rip-cage has no build DSL and adds no flags.
 
@@ -67,7 +69,7 @@ The historical first instance was cm (CASSMS) — a Bun-compiled binary with no 
 
 ## See also
 
-- [adding-a-tool.md](adding-a-tool.md) — the prebuilt (`install_cmd`) path; try that first
-- [manifest-validator.md](manifest-validator.md) — every check a `build_source` entry passes, with error messages
+- `examples/base/` (the retired adding-a-tool.md walkthrough) — the prebuilt (`install_cmd`) path; try that first
+- the retired manifest validator — every check a `build_source` entry passes, with error messages
 - [docs/reference/README.md](README.md) — seam catalog
 - [ADR-005 D6/D11/D12](../decisions/ADR-005-ecosystem-tools.md) — prefer-prebuilt, the three D11 mechanisms and their firmness split, illustration-only rule

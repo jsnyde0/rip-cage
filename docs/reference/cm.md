@@ -1,5 +1,7 @@
 # cm — Host L2A Store in the Cage
 
+> **RETIRED 2026-09-16 (`rip-cage-ely4.11`, [ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D4).** This page documents a **tools-manifest archetype**, and the tools manifest no longer exists. Extend the published base image with your own Dockerfile instead, and declare anything that has to *start* in the image's boot descriptor — [in-cage-daemon.md](in-cage-daemon.md) carries the descriptor's schema, and [`examples/base/`](../../examples/base/) is the smallest worked example. Kept for now as a record of the mechanism; the full rewrite of this directory is `rip-cage-ely4.14`'s.
+
 `cm` is the **cass-memory CLI** (`github.com/Dicklesworthstone/cass_memory_system`). When the operator's
 host has a cm store, rip-cage bind-mounts it read-write into the cage at
 `/home/agent/.cass-memory` so the in-cage agent can read from and write to the **same**

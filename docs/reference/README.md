@@ -33,7 +33,7 @@ tools:
 
 `rc build` reads `tools.yaml`, generates Dockerfile `RUN` steps from `install_cmd`, and stamps an `rc.tools` image label listing every installed tool name. Adding a tool is a manifest entry — zero `rc` source edits ([ADR-005 D7](../decisions/ADR-005-ecosystem-tools.md)).
 
-**Worked example:** [docs/reference/adding-a-tool.md](adding-a-tool.md) — a generic plain-TOOL walkthrough (ripgrep used as illustration; never baked/blessed by rip-cage). Real tool fragments to cross-reference: [examples/dcg/manifest-fragment.yaml](../../examples/dcg/manifest-fragment.yaml) (from-source build), [examples/herdr/manifest-fragment.yaml](../../examples/herdr/manifest-fragment.yaml) (binary download + MULTIPLEXER companion), [examples/tmux/manifest-fragment.yaml](../../examples/tmux/manifest-fragment.yaml) (apt install).
+**Worked example:** [`examples/base/`](../../examples/base/) — extend the published base image with your own Dockerfile and add nothing, then add a line (ripgrep as illustration; never baked or blessed by rip-cage). Real tool fragments to cross-reference: [examples/dcg/manifest-fragment.yaml](../../examples/dcg/manifest-fragment.yaml) (from-source build), [examples/herdr/manifest-fragment.yaml](../../examples/herdr/manifest-fragment.yaml) (binary download + MULTIPLEXER companion), [examples/tmux/manifest-fragment.yaml](../../examples/tmux/manifest-fragment.yaml) (apt install).
 
 ---
 
@@ -278,7 +278,7 @@ tools:
 
 **Manifest/config shape:** none — it is not composed, it bounds composition. Author entries to satisfy it.
 
-**Doc:** [manifest-validator.md](manifest-validator.md) — the complete catalog of checks and error messages (by `rc` function name), so a manifest author can predict failures without reading `rc` source.
+**Doc:** RETIRED with the validator itself (ADR-031 D4). The floor is checked on the BUILT IMAGE now, not on a declaration describing it — a check that reads a description can be lied to by the description. See ADR-031 D5(b); the probe is `rip-cage-ely4.12`'s. Earlier text: the complete catalog of checks and error messages (by `rc` function name), so a manifest author could predict failures without reading `rc` source.
 
 ---
 
@@ -309,12 +309,12 @@ tools:
 | File | What it covers |
 |---|---|
 | [composition-seam.md](composition-seam.md) | **Mostly retired** — the manifest MEDIATOR provider archetype and its `network.http.forward_to` launch seam are deleted ([ADR-029](../decisions/ADR-029-msb-migration.md) D2/D5); the page now points at the current `auth.credentials`/`--secret` non-possession path and notes that L7 content-policy composition is fully operator-driven and unwired today |
-| [adding-a-tool.md](adding-a-tool.md) | Step-by-step: add a plain binary-on-PATH tool via a TOOL manifest entry; apt-install and curl/binary paths; runtime mounts |
+| [`examples/base/`](../../examples/base/) | **Replaces adding-a-tool.md** (deleted, ADR-031 D4): add a tool with a `RUN` line in your own Dockerfile, and assert it landed with `RUN which <tool>` |
 | [shell-integration.md](shell-integration.md) | SHELL-INTEGRATION archetype walkthrough: eval-into-shell mechanics, the two-entry (TOOL + SHELL-INTEGRATION) pattern, interactive-shell scope |
-| [in-cage-daemon.md](in-cage-daemon.md) | Generic IN-CAGE-DAEMON archetype walkthrough: install-at-build/start-at-init/fail-warn contract, manifest shape, DAEMON-vs-TOOL decision aid |
+| [in-cage-daemon.md](in-cage-daemon.md) | Running a daemon in a cage: install-at-build/start-at-init/fail-warn contract, the BOOT DESCRIPTOR's schema, the exec-prefix pid-identity and zombie-reaping measurements, daemon-vs-simpler decision aid |
 | [agent-mail-daemon.md](agent-mail-daemon.md) | IN-CAGE-DAEMON worked example: `mcp-agent-mail` running as a manifest-declared in-cage daemon (the C5 archetype) |
 | [building-from-source.md](building-from-source.md) | From-source TOOL builds: the `build_source` generic builder stage, `rc build` flow, isolation gates, honest limits (ADR-005 D11 mechanism 1) |
-| [manifest-validator.md](manifest-validator.md) | The fail-closed manifest validator contract: every check and error message, by `rc` function name (ADR-005 D11 mechanism 2, FIRM) |
+| ~~manifest-validator.md~~ | **Deleted** (ADR-031 D4): the validator checked a declaration, and there is no declaration left. ADR-031 D5(b)'s floor probe checks the built image instead (ADR-005 D11 mechanism 2, FIRM) |
 | [cm.md](cm.md) | Mounting a host cm (CASSMS) store read-write into the cage via manifest opt-in |
 
 ### Operations

@@ -1,115 +1,163 @@
-# Running an In-Cage Daemon (IN-CAGE-DAEMON archetype)
+# Running an In-Cage Daemon
 
-This is the **generic archetype walkthrough** for the IN-CAGE-DAEMON manifest entry ([ADR-005 D7](../decisions/ADR-005-ecosystem-tools.md)): a long-running localhost service that in-cage agents talk to. The concrete worked instance is [agent-mail-daemon.md](agent-mail-daemon.md) (`mcp-agent-mail` — pinned source, CLI surface, MCP fragment gotchas); read this doc for the archetype contract and manifest shape, that one for a real tool wired end to end.
+How to give a cage a long-running localhost service that in-cage agents talk to —
+a database, a mail daemon, anything with a resident process.
 
-**ADR-005 D12 (FIRM):** no daemon is blessed or seeded by default — agent_mail itself ships as docs + test fixtures, never in the default manifest (ADR-005 D7 clarification). Any daemon named here is illustration only.
+**No daemon is blessed or seeded by default** (ADR-005 D12 FIRM). rip-cage ships
+none; every daemon named here is illustration. The worked recipe you can build
+today is [`examples/postgres-pgvector/`](../../examples/postgres-pgvector/).
 
 ---
 
-## The archetype contract
+## The contract
 
-Three lifecycle rules define the archetype; they come straight from ADR-005:
+Three lifecycle rules, straight from ADR-005:
 
-1. **Install at build, start at init** (D1 FIRM + D7). The daemon's binary is baked into the image by its `install_cmd` at `rc build`. Its *process* is launched by `init-rip-cage.sh` at cage start — the same lifecycle the cage already uses for the egress proxy and ssh-agent-filter. "Install = build-time, start = init-time"; there is no runtime download path.
-2. **Fail-warn, never brick** (D10). A daemon that fails its health check produces a `WARNING: daemon '<name>' health check FAILED … cage continues without it` line — and the cage runs. Only *safety interceptors* fail-closed; a user daemon is not load-bearing, and bricking the cage over it would defeat agent autonomy.
-3. **In-cage only** (D8 FIRM). The daemon binds localhost inside one cage's network namespace. No cross-cage volume, network, or coordination — two cages each run their own independent instance on the same port. Init is idempotent: a re-run (or a second in-cage agent) spawns no second binder.
+1. **Install at build, start at init** (D1 FIRM + D7). The binary is baked into
+   the image by your Dockerfile. Its *process* is launched by
+   `init-rip-cage.sh` at cage start. There is no runtime download path.
+2. **Fail-warn, never brick** (D10). A daemon that fails its health check prints
+   `WARNING: daemon '<name>' health check FAILED … cage continues without it` —
+   and the cage runs. Only safety interceptors fail closed; bricking a cage over
+   a user daemon would defeat agent autonomy.
+3. **In-cage only** (D8 FIRM). The daemon binds localhost inside one cage's
+   network namespace. No cross-cage volume, network or coordination — two cages
+   each run their own instance on the same port. Init is idempotent: a re-run, or
+   a second in-cage agent, spawns no second binder.
 
-## Manifest shape
+## The boot descriptor
 
-```yaml
-# ~/.config/rip-cage/tools.yaml — shape reference (see agent-mail-daemon.md for a real entry)
-version: 1
-tools:
-  - name: my-daemon
-    archetype: IN-CAGE-DAEMON
-    version_pin: "1.2.3"
-    install_cmd: "curl -fsSL https://…/my-daemon.tar.gz | tar -xz -C /usr/local/bin my-daemon"
-    start: "STATE_ROOT=/var/lib/rip-cage-daemon/my-daemon my-daemon serve --no-tui"
-    health: "curl -sf http://127.0.0.1:8765/healthz"
-    state_dir: "/var/lib/rip-cage-daemon/my-daemon"
-    egress: []
-    mcp_fragment:          # optional — only for daemons exposing an MCP endpoint
-      type: http
-      url: "http://127.0.0.1:8765/mcp/"
+**`/etc/rip-cage/boot.json`** — one declarative JSON file inside the image, read
+by init at boot (ADR-031 D4). Three optional top-level arrays; a required field
+missing makes init exit non-zero naming the field and the entry:
+`daemons[]` (`name`, `start`, `health` required, `state_dir` optional),
+`multiplexers[]` (`name`, `start`, `attach` required, `exec`/`new_session`/`teardown` optional),
+`tools[]` (`name` required, `launch`/`init` optional). Every value is a shell
+command string run with `sh -c`. The file's own `_readme` key is the schema's
+other home; there is no third copy to drift.
+
+A daemon entry, in the fragment your Dockerfile merges in:
+
+```json
+{
+  "daemons": [
+    {
+      "name": "my-daemon",
+      "start": "STATE_ROOT=/var/lib/rip-cage-daemon/my-daemon exec my-daemon serve --no-tui",
+      "health": "curl -sf http://127.0.0.1:8765/healthz",
+      "state_dir": "/var/lib/rip-cage-daemon/my-daemon"
+    }
+  ]
+}
 ```
 
-Required fields (enforced fail-closed by `_manifest_validate` — see [manifest-validator.md](manifest-validator.md)):
+- **`start`** — the launch command, run in the background at init. Make it
+  headless (`--no-tui` or equivalent); stdout is not a TTY. **Prefix the real
+  server with `exec`** — see below for what that buys.
+- **`health`** — a cheap probe. Init runs it with `timeout 5`, up to 3 attempts
+  a second apart, so a wedged daemon cannot hang cage start. This is the
+  **liveness authority**, not the pid; see the zombie note below.
+- **`state_dir`** — absolute path for the daemon's state. Pre-create it in your
+  Dockerfile (root `mkdir -p` then `chown agent:agent`) so init, running as the
+  agent, needs no write on the parent. **State is cage-lifetime** — wiped on
+  `rc destroy`. For durable state, point `state_dir` under `/workspace`.
 
-- **`start`** — the launch command. It is run via `eval` in the background at init, so an env-assignment prefix (`STATE_ROOT=… cmd`) works. Make it headless (`--no-tui` or equivalent); stdout is not a TTY. **Prefix it with `exec`** — see [the exec prefix](#the-exec-prefix-on-start) below for what that buys and the one ordering gotcha.
-- **`health`** — a cheap probe command (typically `curl -sf` against a health endpoint). Init runs it with `timeout 5`, up to 3 attempts 1s apart; a wedged daemon cannot hang cage start.
-- **`state_dir`** — absolute path for the daemon's state. Validated as a strict path token: must start with `/`, no whitespace, no shell metacharacters. Pre-created at image build (root `mkdir -p` + `chown agent:agent`) so init, running as the agent user, needs no write access to the parent; init `mkdir -p`s it again idempotently. **State is cage-lifetime** — wiped on `rc destroy` (ADR-019 D1 container-local pattern). If you need durable state, point `state_dir` under `/workspace`.
+Getting the fragment into the image is two lines in your Dockerfile:
 
-Optional fields:
-
-- **`mcp_fragment`** — a **nested YAML mapping** (never a quoted JSON string — see the gotcha in [agent-mail-daemon.md](agent-mail-daemon.md)) merged into `/etc/rip-cage/settings.json` `mcpServers` at build time, so MCP-capable agents (Claude Code) auto-discover the daemon.
-- **`egress`** — hosts the daemon reaches at runtime; unioned into the cage allowlist and IOC-checked like any entry's. A localhost-only daemon declares `egress: []`.
-- **`required: true` + `assert_loaded: "<check>"`** — opt the daemon into the baked presence assertion (ADR-005 D13). Non-TOOL archetypes have no declarable binary path, so `required: true` on a daemon **must** carry an explicit `assert_loaded` or the validator rejects it.
-
-## The exec prefix on `start`
-
-Write `start` with an `exec` prefix. The recommended forms:
-
-```yaml
-start: "exec /usr/local/lib/rip-cage/my-daemon-start.sh"   # script path
-start: "exec my-daemon serve --no-tui"                     # simple command
-start: "STATE_ROOT=/var/lib/… exec my-daemon serve --no-tui"  # env-prefixed
+```dockerfile
+USER root
+COPY boot-fragment.json /tmp/f.json
+RUN rc-boot-merge /tmp/f.json && rm -f /tmp/f.json
+USER agent
 ```
 
-**Env assignments go BEFORE `exec`, never after.** `exec VAR=1 cmd` does not set `VAR` and run `cmd` — `exec` takes `VAR=1` as the program name, so the daemon never launches and the process is gone immediately (measured). `VAR=1 exec cmd` is the working form.
+`rc-boot-merge` appends your daemons and multiplexers and replaces a `tools[]`
+entry of the same name. **End on `USER agent`** — an extension that ends on root
+boots a root shell with every mount stranded, silently (measured, msb 0.6.18).
 
-**What the prefix buys.** Init launches the daemon with `eval "$start" >log 2>&1 &` and records `$!` as the daemon's PID. Backgrounding an `eval` always forks a wrapper shell that bash does not optimise away, so **without `exec` the recorded PID is that wrapper, not the daemon** — and this is true for *every* start shape: a script path, a plain simple command, an env-prefixed command, an absolute binary path. There is no exempt shape. With `exec`, the wrapper replaces itself with the daemon and the recorded PID is the daemon's own.
+## The `exec` prefix on `start`
 
-Measured on the cage's runtime (Debian trixie, bash 5.2.37) against a real Postgres 17 cluster: without `exec`, recorded PID `20` (`comm=bash`) while `postmaster.pid` held `22`; with `exec`, recorded PID `36` (`comm=postgres`) matched `postmaster.pid` exactly.
+```json
+"start": "exec /usr/local/lib/rip-cage/my-daemon-start.sh"
+"start": "exec my-daemon serve --no-tui"
+"start": "STATE_ROOT=/var/lib/… exec my-daemon serve --no-tui"
+```
 
-Worked example shipping the exec form: [`examples/postgres-pgvector/`](../../examples/postgres-pgvector/). Measured in a live cage, that recipe's recorded PID matches `postmaster.pid` on first start and again after an `rc down`/`rc up` resume.
+**Env assignments go BEFORE `exec`, never after.** `exec VAR=1 cmd` does not set
+`VAR` and run `cmd` — `exec` takes `VAR=1` as the program name, so the daemon
+never launches and the process is gone immediately (measured). `VAR=1 exec cmd`
+is the working form.
 
-**What `exec` does NOT fix: a dead daemon can still report healthy.** Init's liveness check is `kill -0 <recorded PID>`, and inside a cage nothing reaps orphans — msb's PID 1 (`init.krun`) leaves them as zombies indefinitely. `kill -0` on a zombie **succeeds**. Measured in a live cage: SIGKILL the postmaster, and the recorded PID stays in state `Z` with `pg_isready` reporting the database down; re-running init in that boot prints `daemon '<name>' already running (PID=…) — skipping (idempotent no-op)` and the database stays down. Both start shapes behave identically here — a wrapper PID and an exec'd daemon PID both linger as zombies — so `exec` is not a defence against this. See [ADR-005 D10](../decisions/ADR-005-ecosystem-tools.md) fail-warn: this is the one case where the warning never fires. Tracked as `rip-cage-893l` — the fix is init-side, so nothing you write in a manifest entry closes it.
+**What the prefix buys: pid identity.** Init launches the daemon in the
+background and records `$!` as its pid. Backgrounding always forks a wrapper
+shell that bash does not optimise away, so **without `exec` the recorded pid is
+that wrapper, not the daemon** — true for *every* start shape: a script path, a
+plain simple command, an env-prefixed command, an absolute binary path. There is
+no exempt shape. With `exec`, the wrapper replaces itself with the daemon and the
+recorded pid is the daemon's own.
 
-The blast radius is bounded by where the PID file lives: `/tmp/rip-cage-daemon-<name>.pid` is wiped by the fresh kernel boot every msb resume performs, so the stale-zombie skip does **not** survive a resume (measured: a resumed cage starts the daemon afresh rather than skipping). It fires when init re-runs *within one boot* — `rc up` against an already-running cage, a second in-cage agent, any re-init.
+Measured on the cage's runtime (Debian trixie, bash 5.2.37) against a real
+Postgres 17 cluster: without `exec`, recorded pid `20` (`comm=bash`) while
+`postmaster.pid` held `22`; with `exec`, recorded pid `36` (`comm=postgres`)
+matched `postmaster.pid` exactly. Re-measured 2026-09-16 on the descriptor:
+recorded pid `310` == `postmaster.pid` `310`.
 
-Nothing enforces the prefix: `_manifest_validate` does not reject a bare `start`, and it should not — the false-healthy case above is indifferent to the start shape, so a syntax rule would gate the wrong thing while looking like a fix. (It would also have to encode the `VAR=1 exec cmd` ordering rule correctly, which is easy to get wrong.) Write `exec` for PID identity; the liveness gap is init's to close, not a per-entry manifest rule's.
+**What `exec` does NOT fix: a dead daemon can still look alive.** Inside a cage
+nothing reaps orphans — msb's PID 1 (`init.krun`) leaves them as zombies
+indefinitely, and `kill -0` on a zombie **succeeds**. Measured in a live cage:
+SIGKILL the postmaster and the recorded pid stays in state `Z` while
+`pg_isready` reports the database down. Both start shapes behave identically
+here, so `exec` is no defence.
 
-## How it flows through rc
+That is why init treats the pid as a **cheap pre-filter only** and asks the
+entry's own `health` command before deciding a daemon is already running
+(`rip-cage-893l`). A recorded pid that exists but fails its health check is
+treated as dead: init terminates it and restarts, rather than skipping.
 
-At **`rc build`**: the manifest is host-only, so everything the cage needs at runtime is baked. `_manifest_generate_daemon_config_dockerfile_steps` writes each daemon's `{name, start, health, state_dir, mcp_fragment}` into `/etc/rip-cage/daemon-config.json` (root-owned) and pre-creates `state_dir`; `_manifest_generate_daemon_mcp_dockerfile_steps` merges any `mcp_fragment` into settings. A manifest with no daemons emits nothing (D8 byte-for-byte contract).
+The blast radius is bounded by where the pid file lives:
+`/tmp/rip-cage-daemon-<name>.pid` is wiped by the fresh kernel boot every msb
+resume performs, so a stale skip never survives a resume.
 
-At **cage init**: `init-rip-cage.sh` reads the baked config and, per daemon: creates `state_dir`; checks the PID file (`/tmp/rip-cage-daemon-<name>.pid`) — if the recorded process is alive it **skips as a true no-op** (never kill-and-restart); otherwise launches `start` in the background (log: `/tmp/rip-cage-daemon-<name>.log`), writes the PID file, and runs the `health` probe. Health OK → one log line; health failed → the fail-warn WARNING and the cage continues.
+Nothing enforces the `exec` prefix, deliberately. The false-healthy case above is
+indifferent to the start shape, so a syntax rule would gate the wrong thing while
+looking like a fix — and it would have to encode the `VAR=1 exec cmd` ordering
+correctly, which is easy to get wrong.
 
-## How agents reach the daemon (two paths)
-
-Per ADR-019 D9, the `mcp_fragment` reaches **MCP-capable agents only**:
+## How agents reach the daemon
 
 | Agent class | Reach mechanism |
 |---|---|
-| MCP-capable (Claude Code) | MCP client via the baked `mcp_fragment` |
+| MCP-capable (Claude Code) | an `mcpServers` entry in the image's `settings.json`, written by your Dockerfile |
 | Bash-only (pi — no MCP bridge) | the daemon's **own CLI over the bash tool** |
 
-A daemon that wants to serve bash-only agents must ship a CLI; `mcp_fragment` alone is not enough. agent_mail's `am` CLI is the worked example (including the auth-mode gotcha where the CLI path needs a different serve mode — see [agent-mail-daemon.md](agent-mail-daemon.md)).
+A daemon that wants to serve bash-only agents must ship a CLI; an MCP endpoint
+alone is not enough (ADR-019 D9).
 
-## DAEMON vs TOOL — which archetype do you need?
+## A daemon, or something simpler?
 
-The lifecycle decides it, not the tool's size or importance:
+The lifecycle decides it, not the tool's size:
 
-| Your tool… | Archetype |
+| Your tool… | What it is |
 |---|---|
-| Is a binary the agent invokes per-call; no resident process | **TOOL** ([adding-a-tool.md](adding-a-tool.md)) |
-| Needs a one-shot setup step at cage boot (mkdir, config seed) and then just gets invoked | **TOOL with an `init` hook** (ADR-005 D7 boot hook — one-shot, agent-context, *not* a process) |
-| Runs continuously and serves requests from in-cage agents over localhost | **IN-CAGE-DAEMON** (this doc) |
-| Hooks the interactive shell via an rc-file eval line | **SHELL-INTEGRATION** ([shell-integration.md](shell-integration.md)) |
-| Is a terminal session the agent's interactive session runs *inside* | **MULTIPLEXER** (seam catalog entry 4, [README.md](README.md)) |
+| A binary the agent invokes per call; no resident process | just a `RUN` line in your Dockerfile — nothing to declare |
+| Needs a one-shot setup at cage boot, then just gets invoked | a `tools[]` entry with an `init` command (one-shot, agent context, no sudo, fail-warn) |
+| Runs continuously and answers requests over localhost | a `daemons[]` entry (this doc) |
+| A terminal session the agent's session runs *inside* | a `multiplexers[]` entry — see [`examples/tmux/`](../../examples/tmux/) |
 
-The former **MEDIATOR** archetype (an egress proxy mediating the cage's outbound traffic) is **deleted, not just undocumented** — msb's `--net-rule`/`--secret` absorbed that role as runtime primitives, not a manifest-declared, `rc`-launched process. See [composition-seam.md](composition-seam.md).
+The common confusion is row two versus row three: an `init` hook is a **one-shot
+command that exits**; a daemon `start` is a **process that stays up and answers a
+health probe**. A "daemon" that exits after its setup earns you a failed health
+check and a spurious warning at every cage start.
 
-The common confusion is the second row vs. this archetype: a TOOL `init` hook is a **one-shot command that exits**; a DAEMON `start` is a **process that stays up and answers a health probe**. If your "daemon" would exit immediately after doing its setup, it is a TOOL `init` hook — declaring it as a DAEMON just earns you a failed health check and a spurious fail-warn at every cage start.
-
-Also worth ruling out: if the process should serve *multiple cages* or the host, no archetype fits — the manifest never reaches across cages (D8 FIRM), and that is a deliberate structural answer, not a missing feature.
+Also worth ruling out: a process meant to serve *multiple* cages or the host
+fits nothing here. The cage boundary does not reach across cages (D8 FIRM) —
+that is a deliberate structural answer, not a missing feature.
 
 ---
 
 ## See also
 
-- [agent-mail-daemon.md](agent-mail-daemon.md) — the concrete worked instance (real manifest entry, CLI surface, MCP fragment pitfalls, egress caveats)
-- [manifest-validator.md](manifest-validator.md) — the exact checks and error messages a daemon entry must pass
+- [`examples/postgres-pgvector/`](../../examples/postgres-pgvector/) — a real daemon recipe, built and booted
+- [`tests/test-boot-descriptor.sh`](../../tests/test-boot-descriptor.sh) — the descriptor contract, asserted in a live cage
 - [docs/reference/README.md](README.md) — the full seam catalog
-- `tests/fixtures/manifest-agent-mail.yaml` / `tests/fixtures/manifest-agent-mail-concurrent.yaml` — annotated fixtures exercised by the harness
-- [ADR-005 D7/D8/D10/D12](../decisions/ADR-005-ecosystem-tools.md), [ADR-019 D9](../decisions/ADR-019-pi-coding-agent-support.md)
+- [ADR-005 D7/D8/D10/D12](../decisions/ADR-005-ecosystem-tools.md), [ADR-031 D4](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md), [ADR-019 D9](../decisions/ADR-019-pi-coding-agent-support.md)

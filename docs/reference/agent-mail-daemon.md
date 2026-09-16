@@ -1,5 +1,7 @@
 # agent_mail — IN-CAGE-DAEMON Worked Example
 
+> **RETIRED 2026-09-16 (`rip-cage-ely4.11`, [ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D4).** This page documents a **tools-manifest archetype**, and the tools manifest no longer exists. Extend the published base image with your own Dockerfile instead, and declare anything that has to *start* in the image's boot descriptor — [in-cage-daemon.md](in-cage-daemon.md) carries the descriptor's schema, and [`examples/base/`](../../examples/base/) is the smallest worked example. Kept for now as a record of the mechanism; the full rewrite of this directory is `rip-cage-ely4.14`'s.
+
 This document covers running `mcp-agent-mail` as an `IN-CAGE-DAEMON` manifest entry.
 It is the worked example that validates the C5 archetype against a real third-party tool.
 
