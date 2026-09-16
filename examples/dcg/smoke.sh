@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # examples/dcg/smoke.sh — Behavioral smoke test for the DCG recipe.
 #
-# Installed by the dcg recipe's install_cmd into:
+# Installed by the dcg recipe's Dockerfile COPY line into:
 #   /usr/local/lib/rip-cage/recipe-tests/dcg-smoke.sh
 # as root:root 0755, run by the generic runner (run-recipe-smokes.sh).
 #

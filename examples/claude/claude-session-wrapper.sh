@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # claude-session-wrapper.sh — Per-session Claude config isolation (rip-cage-p1p)
 #
-# Placed at /usr/local/bin/claude (precedes /usr/bin/claude on PATH).
-# Resolves CLAUDE_CONFIG_DIR and seeds the session dir before exec-ing the real
-# Claude binary at /usr/bin/claude.
+# Baked at /usr/local/lib/rip-cage/claude-session-wrapper.sh and wired as the
+# "claude" tool's tools[].launch command in the boot descriptor (ADR-031 D4) —
+# the base image's generic per-tool launch wrapper (cage/boot/tool-launch-wrapper)
+# execs this script in place of the real binary. Resolves CLAUDE_CONFIG_DIR and
+# seeds the session dir before exec-ing the real Claude binary.
 #
 # Resolution precedence (D4, updated rip-cage-1f59.4 — multiplexer-agnostic):
 #   1. Explicit CLAUDE_CONFIG_DIR env var — use as-is.
@@ -20,7 +22,7 @@
 
 set -euo pipefail
 
-REAL_CLAUDE=/usr/bin/claude
+REAL_CLAUDE=/usr/local/lib/rip-cage/bin/claude-real
 SESSIONS_BASE="${HOME}/.claude-sessions"
 CLAUDE_BASE="${HOME}/.claude"
 # Seed source resolution (R4 — rip-cage-p1p):
@@ -186,6 +188,9 @@ fi
 unset _rc_skip_flag _rc_have_skip _rc_a
 
 # ---------------------------------------------------------------------------
-# Exec the real Claude binary — avoid recursion (this wrapper is at /usr/local/bin/claude)
+# Exec the real Claude binary. The base image moves the npm-installed binary to
+# REAL_CLAUDE and puts its own generic tool-launch-wrapper at the original PATH
+# name; that wrapper invokes THIS script as tools[].launch for "claude"
+# (ADR-031 D4) — so there is no recursion risk regardless of where this file lives.
 # ---------------------------------------------------------------------------
 exec "$REAL_CLAUDE" "$@"

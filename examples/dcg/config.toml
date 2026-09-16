@@ -1,0 +1,18 @@
+# Rip Cage baked DCG floor config (ADR-025 D5)
+#
+# This file is the cage-owned pinned DCG_CONFIG. Its sole job is to parse
+# successfully so that DCG_CONFIG is non-None, which suppresses the
+# agent-writable user-layer ~/.config/dcg/config.toml entirely
+# (config.rs:2417 — user layer loads only if explicit_layer.is_none()).
+#
+# The `core` pack is force-enabled by DCG regardless of this file
+# (config.rs:946-947). `rc up` used to merge additional packs and custom rules
+# from the retired rip-cage schema's dcg.* fields into a runtime copy of this
+# file; it no longer does (ADR-031 D2 — DCG policy is the recipe's business,
+# and ADR-025 D1's transport note has it riding the recipe's own mount). A
+# recipe that wants a richer policy declares a read-only mount over this path
+# in its cage config. DO NOT DELETE — a missing or malformed DCG_CONFIG
+# silently re-opens the user-layer config hole (ADR-025 D5).
+
+[packs]
+enabled = ["core"]

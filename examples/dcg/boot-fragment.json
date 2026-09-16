@@ -1,0 +1,8 @@
+{
+  "tools": [
+    {
+      "name": "pi",
+      "launch": "/usr/local/lib/rip-cage/bin/pi-real -e /etc/rip-cage/pi/dcg-gate.ts"
+    }
+  ]
+}

@@ -67,13 +67,12 @@ GM_WS="${GM_ROOT}/workspace"
 
 # gm_sandbox_reset — wipe and recreate the fixture tree: global config
 # (denylist floor, matches tests/run-host.sh driver fixture), an empty
-# (bundled-default) tools.yaml, and a bare workspace directory with no
+# host config dir, and a bare workspace directory with no
 # .rip-cage.yaml (each case seeds project-level fixtures itself as needed).
 gm_sandbox_reset() {
   rm -rf "$GM_ROOT"
   mkdir -p "${GM_XDG}/rip-cage"
   mkdir -p "$GM_WS"
-  touch "${GM_XDG}/rip-cage/tools.yaml"
 
   # The cage config `rc up` launches from (ADR-031 D2, rip-cage-ely4.9).
   # Without it every up-* case records a CAGE_CONFIG_MISSING refusal instead of
@@ -135,7 +134,7 @@ gm_capture() {
   # so it inherits the calling process's FULL environment. That's fine for
   # most vars (e.g. tests/run-host.sh's own driver fixture legitimately
   # wants ambient ordinary vars to pass through), but it means an ambient
-  # RC_CONFIG_GLOBAL/RC_MANIFEST_GLOBAL/etc (e.g. run-host.sh ~line 193
+  # RC_CONFIG_GLOBAL/RC_CAGE_CONF/etc (e.g. run-host.sh ~line 193
   # exports RC_CONFIG_GLOBAL for ITS OWN fixture) silently overrides the
   # config golden-master cases resolve against -- capture.sh --check was
   # 55/55 standalone but red inside the full run-host.sh suite. Explicitly
@@ -158,7 +157,6 @@ gm_capture() {
     _env+=("RC_ALLOWED_ROOTS=${GM_ALLOWED_ROOTS:-$GM_WS}")
   fi
   [[ -n "${GM_SHELL_OVERRIDE+x}" ]] && _env+=("SHELL=${GM_SHELL_OVERRIDE}")
-  [[ -n "${GM_MANIFEST_GLOBAL:-}" ]] && _env+=("RC_MANIFEST_GLOBAL=${GM_MANIFEST_GLOBAL}")
   [[ -n "${GM_CONFIG_GLOBAL:-}" ]] && _env+=("RC_CONFIG_GLOBAL=${GM_CONFIG_GLOBAL}")
   # Forward every currently-set GM_DOCKER_*/GM_MSB_* configuration var to
   # the child (the fake docker/msb shims read these directly -- rip-cage-

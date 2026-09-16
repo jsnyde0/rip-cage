@@ -1,0 +1,30 @@
+# herdr multiplexer — paste into your own Dockerfile, between FROM and USER agent.
+#
+# herdr is a headless agent-supervisor with a unix-socket control surface and a
+# TUI attach client. USER root is required (the binary and the scripted-attach
+# helper are root-owned so the agent can execute but not replace them). Switch
+# BACK to agent at the end of your Dockerfile — an extension that ends on root
+# boots a root shell with every mount stranded (measured, rip-cage-ely4.16).
+#
+# Pinned release: github.com/ogulcancelik/herdr v0.7.5. Prebuilt binaries:
+# herdr-linux-x86_64, herdr-linux-aarch64. SHA-256 checksums independently
+# verified against the GitHub release API's asset digest field.
+
+USER root
+RUN ARCH=$(uname -m) \
+    && if [ "$ARCH" = "aarch64" ]; then TARGET=aarch64; EXPECTED_SHA=32e763a1499a6b694b1d708e4f062b743be1da9f34fcfa4d212d6db6fe09a8b9; \
+       else TARGET=x86_64; EXPECTED_SHA=3dc83288073e4c2d3c679a30e7be97bcca9141c6fd17dbbb9219142e95c59253; fi \
+    && curl -fsSL "https://github.com/ogulcancelik/herdr/releases/download/v0.7.5/herdr-linux-${TARGET}" -o /tmp/herdr \
+    && echo "${EXPECTED_SHA}  /tmp/herdr" | sha256sum -c - \
+    && install -m 755 /tmp/herdr /usr/local/bin/herdr \
+    && rm -f /tmp/herdr
+
+# Headless-PTY-attach helper (see README): triggers herdr's native roster
+# restore, which does not fire on server start alone.
+COPY scripted-attach.py /usr/local/bin/herdr-scripted-attach.py
+RUN chown root:root /usr/local/bin/herdr-scripted-attach.py \
+    && chmod 0755 /usr/local/bin/herdr-scripted-attach.py
+
+COPY boot-fragment.json /tmp/herdr-boot.json
+RUN rc-boot-merge /tmp/herdr-boot.json && rm -f /tmp/herdr-boot.json
+USER agent

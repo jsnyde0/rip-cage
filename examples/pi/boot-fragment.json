@@ -1,0 +1,8 @@
+{
+  "tools": [
+    {
+      "name": "pi",
+      "init": "_rc_pi_ext_dir=\"${PI_CODING_AGENT_DIR:-/home/agent/.pi/agent}/extensions\"; if ! mkdir -p \"$_rc_pi_ext_dir\" 2>/tmp/rc-pi-ext-mkdir-err; then echo \"[rip-cage] WARNING: could not create ${_rc_pi_ext_dir} (herdr's boot-time 'integration install pi' will fail with 'extension directory not found', rip-cage-fwp3): $(cat /tmp/rc-pi-ext-mkdir-err 2>/dev/null)\" >&2; fi; rm -f /tmp/rc-pi-ext-mkdir-err; true"
+    }
+  ]
+}

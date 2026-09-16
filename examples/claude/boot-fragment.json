@@ -1,0 +1,5 @@
+{
+  "tools": [
+    { "name": "claude", "launch": "/usr/local/lib/rip-cage/claude-session-wrapper.sh" }
+  ]
+}

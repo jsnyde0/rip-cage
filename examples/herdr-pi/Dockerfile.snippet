@@ -1,0 +1,37 @@
+# herdr-pi — compose herdr's semantic-status pi extension alongside the DCG
+# guard, both loaded into pi's launch. Paste into your own Dockerfile AFTER
+# examples/herdr/Dockerfile.snippet (needs the herdr binary already installed
+# to run `herdr integration install pi`) and AFTER examples/dcg/Dockerfile.snippet
+# (needs dcg-gate.ts already baked at /etc/rip-cage/pi/dcg-gate.ts).
+#
+# IMPORTANT: when composing this recipe, DROP the final two lines of BOTH
+# examples/herdr/Dockerfile.snippet and examples/dcg/Dockerfile.snippet — the
+# `COPY boot-fragment.json ... / RUN rc-boot-merge ...` pair each of those
+# snippets ends with. This recipe's own boot-fragment.json below is the ONE
+# merge that declares both the herdr multiplexer AND pi's combined launch
+# line — running the other two recipes' own merges first is harmless (this
+# one's merge replaces "pi" wholesale and re-declares "herdr" idempotently)
+# but is wasted work. See README for why `rc-boot-merge` cannot combine two
+# fragments' `launch` values for the same tool on its own.
+
+USER root
+
+# Generates herdr's pi extension via its own public CLI (never hand-authored),
+# then relocates the generated file to a root-owned cage path — only the
+# LOCATION is cage-dictated, the content is 100% herdr-generated. herdr's CLI
+# writes to <PI_CODING_AGENT_DIR>/extensions/, defaulting to ~/.pi/agent/extensions/
+# when unset; inside this root build stage that resolves under /root, which
+# stays mode 0700 (root-only) in the final image — no cleanup needed, the
+# agent user can never read it.
+RUN mkdir -p /root/.pi/agent/extensions /etc/rip-cage/pi/herdr-ext \
+    && herdr integration install pi \
+    && cp /root/.pi/agent/extensions/herdr-agent-state.ts /etc/rip-cage/pi/herdr-ext/ \
+    && chown -R root:root /etc/rip-cage/pi/herdr-ext \
+    && chmod 0644 /etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts
+
+# The one merge that matters: declares the herdr multiplexer AND pi's combined
+# launch line (both -e flags) in a single fragment.
+COPY boot-fragment.json /tmp/herdr-pi-boot.json
+RUN rc-boot-merge /tmp/herdr-pi-boot.json && rm -f /tmp/herdr-pi-boot.json
+
+USER agent

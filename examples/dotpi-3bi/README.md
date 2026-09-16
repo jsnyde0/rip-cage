@@ -4,12 +4,12 @@ This recipe documents how the dotpi-3bi self-driving bead factory (a dotpi-side 
 see `docs/decisions/ADR-006-multi-agent-architecture.md` and
 `docs/decisions/ADR-027-agent-substrate-projection.md` §"in-cage drover dogfood") drives a
 rip-cage cage's herdr multiplexer via the **socket-API pane run/read path**, not interactive
-attach. It composes on top of [`examples/herdr/`](../herdr/) — no new manifest archetype, no
-rc source edits (ADR-005 D12). Per the epic (`rip-cage-tsf2`), dotpi-3bi is **one cage
-config/recipe here, not the product**; dogfooding the full drover orchestrator is the next
-step after migration. This recipe captures the drive mechanics validated in
-`tests/test-msb-factory-socket-api-drive.sh` (bead `rip-cage-lczu`, S14) so the pattern is
-reproducible without re-discovering the two headless-herdr gotchas from scratch.
+attach. It composes on top of [`examples/herdr/`](../herdr/) — a Dockerfile snippet plus a
+boot-descriptor fragment, no rc source edits (ADR-005 D12). Per the epic (`rip-cage-tsf2`),
+dotpi-3bi is **one cage config/recipe here, not the product**; dogfooding the full drover
+orchestrator is the next step after migration. This recipe captures the drive mechanics
+validated in `tests/test-msb-factory-socket-api-drive.sh` (bead `rip-cage-lczu`, S14) so the
+pattern is reproducible without re-discovering the two headless-herdr gotchas from scratch.
 
 ## Why not `rc attach` / interactive attach?
 
@@ -22,11 +22,14 @@ read`), and it's what this recipe composes.
 
 ## Compose steps
 
-1. Add the `herdr-bin` (TOOL) + `herdr` (MULTIPLEXER) entries from
-   [`examples/herdr/manifest-fragment.yaml`](../herdr/manifest-fragment.yaml) to your
-   `tools.yaml`, per [`compose-rc-with-herdr.md`](../compose-rc-with-herdr.md).
-2. `rc build` — bakes the herdr binary + start/attach hooks into the image.
-3. Set `session.multiplexer: herdr` in the workspace `.rip-cage.yaml`, and `rc up` as usual —
+1. Paste [`examples/herdr/Dockerfile.snippet`](../herdr/Dockerfile.snippet) into
+   your own Dockerfile (outside every cage-mounted directory, ADR-031 D5(a)) and
+   copy `boot-fragment.json` + `scripted-attach.py` next to it, per
+   [`examples/herdr/README.md`](../herdr/README.md).
+2. `RC_IMAGE=my-cage:latest rc build --file <your Dockerfile>` — bakes the herdr
+   binary + start/attach hooks into the image.
+3. Point your project's cage config at the built image and add the durable
+   state mount from `examples/herdr/README.md`, then `RC_MULTIPLEXER=herdr rc up` —
    the baked `start` hook launches a herdr server.
 4. For the **factory drive path specifically** (as opposed to `rc attach`), the orchestrator
    drives herdr with an explicit `--session NAME` rather than the default session, and drives

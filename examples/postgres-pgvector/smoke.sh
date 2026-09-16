@@ -2,8 +2,8 @@
 # smoke.sh — behavioural smoke test for the postgres-pgvector recipe (rip-cage-z40e).
 #
 # Baked to /usr/local/lib/rip-cage/recipe-tests/postgres-pgvector-smoke.sh (root:root 0755)
-# by the recipe's install_cmd, and run in-cage by the generic name-free runner
-# (tests/run-recipe-smokes.sh) as part of `rc test`. Contract: exit 0 = PASS.
+# by the recipe's Dockerfile COPY line, and run in-cage by the generic name-free
+# runner (tests/run-recipe-smokes.sh) as part of `rc test`. Contract: exit 0 = PASS.
 #
 # ANTI-VACUITY: "postgres is running" is not what this recipe promises. The promise is a
 # WORKING pgvector, so the test creates a real vector column, runs a real distance query,

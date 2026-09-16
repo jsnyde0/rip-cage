@@ -52,7 +52,7 @@
 #
 # S5 (rip-cage-jmhn): a CANARY-FILE-RACE regression check, orthogonal to
 # S1-S4. self-check.sh's over-scrub/mutation-canary probe (b) mutates the
-# real, repo-tracked manifest/default-tools.yaml IN PLACE (backup -> mutate
+# real, repo-tracked canary file IN PLACE (backup -> mutate
 # -> capture.sh --check -> restore) on the SHARED checkout path -- unlike
 # S1/S2's GM_ROOT, this file is not process-scoped at all. Two overlapping
 # self-check.sh invocations race: one process's mutate can fire between
@@ -170,21 +170,26 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# S3: ambient RC_CONFIG_GLOBAL / RC_MANIFEST_GLOBAL must not leak into the
-# sandboxed `rc` child that gm_capture() launches. Run capture.sh --check
-# with bogus values of both exported in this process's environment; it must
-# report 0 failure(s), same as a clean run.
+# S3: ambient rc environment must not leak into the sandboxed `rc` child that
+# gm_capture() launches. Run capture.sh --check with bogus values exported in
+# this process's environment; it must report 0 failure(s), same as a clean run.
+#
+# The pair moved (rip-cage-ely4.11): RC_MANIFEST_GLOBAL retired with the tools
+# manifest (ADR-031 D4) and RC_CONFIG_GLOBAL with the layered config (D2), so
+# bogus values of either would leak into nothing and the case would pass
+# vacuously. The two vars that CAN steer a launch today are RC_CAGE_CONF (which
+# config rc up launches from) and RC_IMAGE (which image it tags and probes).
 # ---------------------------------------------------------------------------
 CAPTURE_SH="${SCRIPT_DIR}/golden-master/capture.sh"
-S3_OUT=$(RC_CONFIG_GLOBAL=/tmp/bogus-leak-9odv/config.yaml \
-  RC_MANIFEST_GLOBAL=/tmp/bogus-leak-9odv/manifest.yaml \
+S3_OUT=$(RC_CAGE_CONF=/tmp/bogus-leak-9odv/cage.yaml \
+  RC_IMAGE=bogus-leak-9odv:nope \
   bash "$CAPTURE_SH" --check 2>&1)
 S3_SUMMARY=$(printf '%s\n' "$S3_OUT" | grep -E '^=== capture\.sh \(check\):' || true)
 
 if printf '%s' "$S3_SUMMARY" | grep -q ', 0 failure(s)'; then
-  pass "S3: ambient RC_CONFIG_GLOBAL/RC_MANIFEST_GLOBAL does not leak into sandboxed rc (${S3_SUMMARY})"
+  pass "S3: ambient RC_CAGE_CONF/RC_IMAGE does not leak into sandboxed rc (${S3_SUMMARY})"
 else
-  fail "S3 ambient env-leak isolation" "capture.sh --check with ambient RC_CONFIG_GLOBAL/RC_MANIFEST_GLOBAL set did not report 0 failure(s): ${S3_SUMMARY:-<no summary line found>}"
+  fail "S3 ambient env-leak isolation" "capture.sh --check with ambient RC_CAGE_CONF/RC_IMAGE set did not report 0 failure(s): ${S3_SUMMARY:-<no summary line found>}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -223,8 +228,11 @@ fi
 
 
 # ---------------------------------------------------------------------------
-# S5 (rip-cage-jmhn): concurrent self-check.sh invocations race on the
-# shared, repo-tracked manifest/default-tools.yaml mutation canary. Run
+# S5 (rip-cage-jmhn): concurrent self-check.sh invocations race on the shared,
+# repo-tracked file that self-check.sh's over-scrub canary mutates. That file is
+# cli/lib/output.sh since rip-cage-ely4.11 re-anchored the canary onto a usage
+# line (manifest/default-tools.yaml, the old anchor, retired with the
+# manifest). The race and the property being guarded are unchanged. Run
 # SC_WORKERS self-check.sh processes in parallel; every one must exit 0
 # (canary setup/teardown must not observe a sibling's in-flight mutation) and
 # the real checked-out file must be byte-identical to its pre-test content
@@ -232,7 +240,7 @@ fi
 # ---------------------------------------------------------------------------
 SC_WORKERS=8
 SELF_CHECK_SH="${SCRIPT_DIR}/golden-master/self-check.sh"
-CANARY_REAL="${SCRIPT_DIR}/../manifest/default-tools.yaml"
+CANARY_REAL="${SCRIPT_DIR}/../cli/lib/output.sh"
 CANARY_REAL_BACKUP=$(mktemp)
 cp "$CANARY_REAL" "$CANARY_REAL_BACKUP"
 
@@ -278,9 +286,9 @@ else
 fi
 
 if diff -q "$CANARY_REAL_BACKUP" "$CANARY_REAL" >/dev/null 2>&1; then
-  pass "S5: real manifest/default-tools.yaml is byte-identical after concurrent self-check.sh runs (no leaked mutation)"
+  pass "S5: the real cli/lib/output.sh is byte-identical after concurrent self-check.sh runs (no leaked mutation)"
 else
-  fail "S5 canary-file corruption" "manifest/default-tools.yaml differs from its pre-test content after concurrent self-check.sh runs -- a mutation leaked into the real checkout:
+  fail "S5 canary-file corruption" "cli/lib/output.sh differs from its pre-test content after concurrent self-check.sh runs -- a mutation leaked into the real checkout:
 $(diff "$CANARY_REAL_BACKUP" "$CANARY_REAL" 2>&1)"
 fi
 

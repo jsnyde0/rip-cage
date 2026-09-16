@@ -2,7 +2,8 @@
 # postgres-start.sh — IN-CAGE-DAEMON launcher for the postgres-pgvector recipe (rip-cage-z40e).
 #
 # Baked to /usr/local/lib/rip-cage/postgres-pgvector-start.sh (root:root 0755) by the
-# recipe's install_cmd. The manifest entry's `start` field invokes it; nothing else does.
+# recipe's Dockerfile COPY line. The boot descriptor's `daemons[].start` field
+# invokes it; nothing else does.
 #
 # Contract with the IN-CAGE-DAEMON seam (docs/reference/in-cage-daemon.md):
 #   - init-rip-cage.sh runs this via `eval "$start" >/tmp/rip-cage-daemon-<name>.log 2>&1 &`

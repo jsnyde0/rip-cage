@@ -1,1 +1,0 @@
-Notice: <GM_ROOT>/home/.config/rip-cage/tools.yaml has no seed-fingerprint stamp (composed before this rc version, or hand-authored) — its freshness vs the shipped manifest/default-tools.yaml defaults is unknown. Compare it against manifest/default-tools.yaml by hand if you want to know (rc no longer has a reconcile verb: ADR-031 D3).

@@ -1,13 +1,15 @@
 Usage: rc [--output json] [--dry-run] <command> [args]
 
 Commands:
-  build [allowed docker flags...]               Build the rip-cage image (fail-closed allowlist, not a pass-through -- see docs/reference/cli-reference.md)
-    -t, --tag <ref>     Tag the built image as <ref> instead of rip-cage:latest (overrides, does not add a second tag; rip-cage:latest is left untouched)
-    -f, --file           REJECTED (any spelling): rc resolves the Dockerfile from the manifest; a caller-supplied one would bypass the build-isolation validator
-    -o, --output         REJECTED (any spelling): can redirect the build result away from the image store, letting the safety validators pass against a stale image
-    --build-arg           REJECTED (any spelling, including the bare inherit-from-environment form): can override the Dockerfile frontend (BUILDKIT_SYNTAX) or inject content into RUN steps
-    --no-cache, --pull, --progress, -D/--debug, -q/--quiet   Admitted (verified benign against the safety floor)
-    (anything else)      REJECTED before any docker call
+  build [--file PATH]                           Build the cage image from ONE host-side Dockerfile
+    --file PATH         The Dockerfile to build. Default: rc's own base image.
+                        Must resolve outside every cage mount -- fail-closed,
+                        no opt-out. Context: that file's directory (the rc
+                        checkout root for rc's own base Dockerfile).
+    (anything else)     REJECTED before any docker call. rc build takes exactly
+                        one input and hands docker a fixed argv; express the
+                        rest in the Dockerfile, which is yours to write. Set
+                        RC_IMAGE to build under a different tag.
   up [path] [options]                           Start or resume a cage (default: .)
     --conf FILE         Native msb cage config to launch with. Default:
                         ~/.config/rip-cage/projects/<cage-name>.yaml. Must

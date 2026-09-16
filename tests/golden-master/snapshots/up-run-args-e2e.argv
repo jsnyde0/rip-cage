@@ -6,16 +6,6 @@
 trace
 --net-default
 deny
---net-rule
-allow@api.github.com:tcp:443
---net-rule
-allow@doltremoteapi.dolthub.com:tcp:443
---net-rule
-allow@files.pythonhosted.org:tcp:443
---net-rule
-allow@github.com:tcp:443
---net-rule
-allow@pypi.org:tcp:443
 --label
 rc.source.path=<TEST_HOME>/workspace
 --label

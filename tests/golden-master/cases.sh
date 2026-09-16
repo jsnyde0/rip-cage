@@ -55,7 +55,7 @@ case_version_flag() { gm_capture --version; }
 # --- build ------------------------------------------------------------------
 
 case_build_bundled() {
-  # Bundled default manifest (empty tools.yaml -> _manifest_default_yaml
+  # No tool list anywhere: the manifest retired (ADR-031 D4) (was: empty tools.yaml
   # floor). `docker build`/`docker run` are faked (see lib/fake-bin/docker);
   # the binary-root-owned assertion's `docker run --rm stat ...` calls fail
   # under the shim by construction (§3(i) contract: `docker run` -> exit 1),

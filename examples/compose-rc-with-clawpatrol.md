@@ -7,11 +7,14 @@ its architectural relationship to rip-cage and when each approach applies.
 > **Historical note:** this page originally explained why clawpatrol couldn't plug into
 > rip-cage's **MEDIATOR** manifest archetype (`network.http.forward_to` HTTP-CONNECT
 > handoff to a co-located proxy). **That archetype is deleted, not just undocumented**
-> ([ADR-029](../docs/decisions/ADR-029-msb-migration.md) D2/D5) — there is no `rc`-side
-> mediator seam left for *any* appliance to plug into, clawpatrol included. The
-> `compose-rc-with-iron-proxy.md`/`compose-rc-with-mitmproxy.md` recipes this page used
-> to point at are removed (see [examples/README.md](README.md#mediator-recipes--dropped)).
-> The architectural point below (clawpatrol's WG-only ingress vs. a transparent-proxy
+> ([ADR-029](../docs/decisions/ADR-029-msb-migration.md) D2/D5,
+> [ADR-031](../docs/decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D2/D4)
+> — there is no `rc`-side mediator seam left for *any* appliance to plug into,
+> clawpatrol included, and no manifest or `.rip-cage.yaml` layer left to declare
+> one against either way. The `compose-rc-with-iron-proxy.md`/
+> `compose-rc-with-mitmproxy.md` recipes this page used to point at are removed
+> (see [examples/README.md](README.md#mediator-recipes--dropped)). The
+> architectural point below (clawpatrol's WG-only ingress vs. a transparent-proxy
 > chokepoint) still holds as a general appliance-classification argument even though the
 > specific rip-cage seam it was contrasted against no longer exists.
 
@@ -39,15 +42,22 @@ instead-of rip-cage's own default-deny egress).
 
 ---
 
-## Today's composition path: `auth.credentials` + msb `--secret`
+## Today's composition path: cage-config `secrets:` + msb `--secret`
 
-Post-cutover, the credential non-possession property clawpatrol/iron-proxy/mitmproxy
-used to provide via a composed mediator is a **default platform property**: declare
-`auth.credentials: [{source_env, hosts}]` in `.rip-cage.yaml` and msb injects the real
-secret on the wire toward the bound host(s) only ([ADR-029](../docs/decisions/ADR-029-msb-migration.md)
-D5, [egress.md](../docs/reference/egress.md)). If you need L7 content policy beyond a
-per-host secret binding, that remains fully operator-composed and unwired — run
-something yourself, outside `rc`'s declared composition surface.
+The credential non-possession property clawpatrol/iron-proxy/mitmproxy used to
+provide via a composed mediator is a **default platform property**: declare a
+`secrets:` entry in your project's cage config
+(`~/.config/rip-cage/projects/<cage>.yaml`) with `value:` deliberately
+omitted, plus the matching line in that config's `env:` block — msb resolves
+the real value from a same-named host variable at boot and injects it on the
+wire toward the bound host(s) only, while the guest holds just a placeholder
+([ADR-031](../docs/decisions/ADR-031-opinionated-distribution-of-microsandbox.md)
+D2's 2026-09-15 amendment, [ADR-029](../docs/decisions/ADR-029-msb-migration.md)
+D5, [egress.md](../docs/reference/egress.md)). It ships by default in
+[`share/rip-cage/cage.yaml.template`](../share/rip-cage/cage.yaml.template).
+If you need L7 content policy beyond a per-host secret binding, that remains
+fully operator-composed and unwired — run something yourself, outside `rc`'s
+declared composition surface.
 
 ---
 
@@ -78,5 +88,5 @@ operated and force-capture is less critical than gateway-managed policy.
 - [ADR-029](../docs/decisions/ADR-029-msb-migration.md) D2/D5 — the msb-runtime egress/credential model that retired the MEDIATOR archetype
 - [ADR-026](../docs/decisions/ADR-026-containment-mediation-identity.md) — containment-vs-mediation identity (clawpatrol reclassification rationale in D5, pre-cutover)
 - [ADR-005 D12](../docs/decisions/ADR-005-ecosystem-tools.md) — rip-cage as composable seam, not bundler
-- [egress.md](../docs/reference/egress.md) — `auth.credentials`/`--secret` non-possession, the current default
+- [egress.md](../docs/reference/egress.md) — cage-config `secrets:`/`--secret` non-possession, the current default
 - [github.com/denoland/clawpatrol](https://github.com/denoland/clawpatrol) — clawpatrol upstream

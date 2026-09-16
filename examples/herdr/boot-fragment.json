@@ -1,0 +1,9 @@
+{
+  "multiplexers": [
+    {
+      "name": "herdr",
+      "start": "export HERDR_SOCKET_PATH=/tmp/rip-cage-herdr.sock; mkdir -p \"${HOME}/.config/herdr\" && { [ -d /workspace ] && export HERDR_STARTUP_CWD=/workspace || true; } && herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 & echo \"[rip-cage] herdr server started (PID=$!)\" && sleep 1 && for _agent in pi claude; do if command -v \"${_agent}\" > /dev/null 2>&1; then _out=$(herdr integration install \"${_agent}\" 2>&1); _rc=$?; if [ \"$_rc\" -eq 0 ]; then echo \"[rip-cage] herdr integration installed: ${_agent}\"; else echo \"[rip-cage] WARNING: herdr integration install ${_agent} failed (exit=${_rc}): ${_out}\" >&2; fi; fi; done && python3 /usr/local/bin/herdr-scripted-attach.py --wait-seconds 15 > /tmp/rip-cage-herdr-scripted-attach.log 2>&1 || echo \"[rip-cage] WARNING: herdr scripted-attach exited non-zero -- roster restore may not have been triggered (see /tmp/rip-cage-herdr-scripted-attach.log)\" >&2",
+      "attach": "export HERDR_SOCKET_PATH=/tmp/rip-cage-herdr.sock; exec herdr"
+    }
+  ]
+}

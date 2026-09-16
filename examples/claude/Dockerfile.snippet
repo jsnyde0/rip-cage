@@ -1,0 +1,40 @@
+# claude session-isolation + DCG floor-lock — paste into your own Dockerfile,
+# between FROM and USER agent.
+#
+# USER root is required: the session wrapper, the managed-settings floor-lock and
+# the cage-topology doc are all root-owned so the agent can run/read them but not
+# replace or edit them. Switch BACK to agent at the end of your Dockerfile — an
+# extension that ends on root boots a root shell with every mount stranded
+# (measured, rip-cage-ely4.16). Resolve by ABSOLUTE PATH only in anything you add
+# here — do not prepend to PATH to shadow the base image's own `claude`.
+
+USER root
+
+# Session-isolation wrapper. Wired as the "claude" tool's tools[].launch command
+# (boot-fragment.json below), so the base image's generic per-tool launch wrapper
+# execs this in place of the real binary — see docs on cage/boot/tool-launch-wrapper.
+COPY claude-session-wrapper.sh /usr/local/lib/rip-cage/claude-session-wrapper.sh
+RUN chown root:root /usr/local/lib/rip-cage/claude-session-wrapper.sh \
+    && chmod 0755 /usr/local/lib/rip-cage/claude-session-wrapper.sh
+
+# DCG floor-lock slot. /etc/claude-code/managed-settings.json is Claude Code's
+# managed-settings path — hooks here merge un-suppressibly with user/project
+# hooks, and PreToolUse is deny-wins. This delivers the DCG guard hook via a layer
+# the in-cage agent cannot edit or unregister. Parent dir is root-owned too
+# (unix-dir-ownership-is-the-write-gate). The hook calls dcg-guard unconditionally;
+# without the dcg recipe composed too, dcg-guard finds no binary and fails open
+# (see examples/dcg/README.md) — compose both for the guard to actually block.
+RUN mkdir -p /etc/claude-code && chown root:root /etc/claude-code && chmod 0755 /etc/claude-code
+COPY managed-settings.json /etc/claude-code/managed-settings.json
+RUN chown root:root /etc/claude-code/managed-settings.json \
+    && chmod 0644 /etc/claude-code/managed-settings.json
+
+# Cage-topology doc, surfaced via a reference in ~/.claude/CLAUDE.md.
+COPY cage-claude.md /etc/rip-cage/cage-claude.md
+RUN mkdir -p /etc/rip-cage \
+    && chown root:root /etc/rip-cage/cage-claude.md && chmod 0644 /etc/rip-cage/cage-claude.md
+
+COPY boot-fragment.json /tmp/claude-boot.json
+RUN rc-boot-merge /tmp/claude-boot.json && rm -f /tmp/claude-boot.json
+
+USER agent

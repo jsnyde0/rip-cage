@@ -44,6 +44,16 @@ if ! docker image inspect "${RC_BOOTDESC_BASE_TAG:-rip-cage:latest}" >/dev/null 
   echo "SKIP: no ${RC_BOOTDESC_BASE_TAG:-rip-cage:latest} to extend -- run 'rc build' first (NEEDS_CONTAINER)."
   exit 0
 fi
+# The base image must itself predate nothing: an image built before the boot
+# descriptor landed carries no rc-boot-merge, so every case below would fail on
+# the fixture rather than on the contract. Skip loudly, naming the fix -- a red
+# suite that means "your local image is old" teaches people to ignore red.
+if ! docker run --rm --entrypoint sh "${RC_BOOTDESC_BASE_TAG:-rip-cage:latest}" \
+     -c 'command -v rc-boot-merge' >/dev/null 2>&1; then
+  echo "SKIP: ${RC_BOOTDESC_BASE_TAG:-rip-cage:latest} predates the boot descriptor (no rc-boot-merge in it)."
+  echo "      Rebuild it with 'rc build', or point this at a scratch base: RC_BOOTDESC_BASE_TAG=<tag> bash $0"
+  exit 0
+fi
 
 # The image under test is rip-cage:latest by default. RC_BOOTDESC_BASE_TAG
 # points this at a scratch base tag instead, which is how the descriptor gets

@@ -1,0 +1,23 @@
+# pi cage-topology + extensions-dir hook — paste into your own Dockerfile,
+# between FROM and USER agent.
+#
+# The pi binary itself is npm-installed in the base image already; this recipe
+# adds only the cage-topology doc and one boot-time hook. USER root is required
+# (the doc is root-owned so the agent can read but not edit it). Switch BACK to
+# agent at the end of your Dockerfile — an extension that ends on root boots a
+# root shell with every mount stranded (measured, rip-cage-ely4.16).
+#
+# WANT THE DCG GUARD ON pi TOO? Compose examples/dcg/ as well — its own
+# boot-fragment.json owns pi's tools[].launch field. See examples/dcg/README.md
+# and this file's own README for how the two combine.
+
+USER root
+
+COPY cage-pi.md /etc/rip-cage/cage-pi.md
+RUN mkdir -p /etc/rip-cage \
+    && chown root:root /etc/rip-cage/cage-pi.md && chmod 0644 /etc/rip-cage/cage-pi.md
+
+COPY boot-fragment.json /tmp/pi-boot.json
+RUN rc-boot-merge /tmp/pi-boot.json && rm -f /tmp/pi-boot.json
+
+USER agent

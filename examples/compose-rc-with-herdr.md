@@ -1,100 +1,91 @@
 # Compose rip-cage with herdr
 
-This recipe shows how to add the herdr multiplexer provider to a rip-cage manifest.
-herdr is a headless agent-supervisor; see [ADR-019](../../docs/decisions/ADR-019-herdr-multiplexer.md)
-and [ADR-006](../../docs/decisions/ADR-006-semantic-status.md) for design rationale.
+This is a step-by-step walkthrough of adding the herdr multiplexer to a cage.
+For the recipe itself (files, the provider contract, the durable-state mount,
+and the two measured herdr gotchas), see
+[`examples/herdr/README.md`](herdr/README.md) — this file only sequences the
+steps; that one is the source of truth for the mechanics.
+
+herdr is a headless agent-supervisor; see
+[ADR-019](../docs/decisions/ADR-019-herdr-multiplexer.md) and
+[ADR-006](../docs/decisions/ADR-006-semantic-status.md) for design rationale.
 
 ## Steps
 
-### 1. Add the herdr tool entries to your manifest
+### 1. Paste the recipe into your own Dockerfile
 
-Edit `~/.config/rip-cage/tools.yaml` (global) or a project-level `tools.yaml`.
-**Two entries are required** — one TOOL (installs the binary) and one MULTIPLEXER (bakes the hooks):
-
-```yaml
-version: 1
-tools:
-  # TOOL entry: installs the herdr binary at image build time.
-  - name: herdr-bin
-    archetype: TOOL
-    version_pin: "v0.7.0"
-    install_cmd: "ARCH=$(uname -m) && ..."  # see manifest-fragment.yaml for full command (SHA-256 computed from the downloaded release binaries)
-    egress:
-      - github.com
-    mounts: []
-
-  # MULTIPLEXER entry: bakes start/attach hooks into /etc/rip-cage/multiplexers/herdr/.
-  - name: herdr
-    archetype: MULTIPLEXER
-    version_pin: "bundled"
-    hooks:
-      start: "mkdir -p \"${HOME}/.config/herdr\" && herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 & ..."
-      attach: "herdr"
-```
-
-Or copy the full entries from `examples/herdr/manifest-fragment.yaml`.
+Write your own Dockerfile outside every directory your cage config mounts —
+`rc build` refuses one inside a cage mount, fail-closed, no opt-out
+(ADR-031 D5(a)). Paste [`examples/herdr/Dockerfile.snippet`](herdr/Dockerfile.snippet)
+between your `FROM ghcr.io/jsnyde0/rip-cage:latest` line and `USER agent`, and
+copy `boot-fragment.json` + `scripted-attach.py` next to your Dockerfile.
 
 ### 2. Build the image with herdr baked in
 
 ```bash
-rc build
+RC_IMAGE=my-cage:latest rc build --file ~/.config/rip-cage/images/Dockerfile
 ```
 
-This installs the herdr binary and bakes the hook scripts into
-`/etc/rip-cage/multiplexers/herdr/` in the image.
+This installs the herdr binary and merges the `multiplexers[]` start/attach
+hooks into `/etc/rip-cage/boot.json` in the image.
 
-### 3. Configure a workspace to use herdr
-
-In the workspace `.rip-cage.yaml`:
+### 3. Point your project's cage config at the image, and add the state mount
 
 ```yaml
-version: 1
-session:
-  multiplexer: herdr
+image: my-cage:latest
+mounts:
+  - "<ABSOLUTE_HOST_DIR>/herdr-<cage-name>:/home/agent/.config/herdr"
 ```
 
-### 4. Start the cage
+The mount line is required for the roster to survive a restart — see
+[`examples/herdr/README.md`](herdr/README.md#the-durable-state-mount-required-for-restart-survival).
+
+### 4. Start the cage with herdr selected
 
 ```bash
-rc up /path/to/workspace
+RC_MULTIPLEXER=herdr rc up
 ```
 
-On first boot, `init-rip-cage.sh` runs the baked `start` hook, which:
-- Creates `~/.config/herdr/` in the container
-- Starts `herdr server` in the background (logs to `/tmp/rip-cage-mux-herdr.log`)
-- Installs herdr integrations for any coding agents found on PATH (pi, claude)
+On first boot, init runs the baked `start` hook, which creates
+`~/.config/herdr/`, starts `herdr server` in the background (logs to
+`/tmp/rip-cage-mux-herdr.log`), installs herdr integrations for any coding
+agents found on PATH, and triggers herdr's native roster restore via a
+scripted headless attach.
 
 ### 5. Attach to the cage
 
 ```bash
-rc attach
+rc up
 ```
 
-This dispatches through the baked `attach` hook, opening the herdr TUI client
-over the unix socket at `~/.config/herdr/herdr.sock`.
+Against an already-running cage with `RC_MULTIPLEXER=herdr` selected, this
+dispatches through the baked `attach` hook, opening the herdr TUI client over
+the relocated unix socket.
 
 ## Herdr CLI control surface (ADR-019 D9)
 
-Inside the cage (or via `rc exec`), use herdr's bash CLI:
+Inside the cage (or via `msb exec`), use herdr's bash CLI:
 
 ```bash
 herdr agent start <name> -- pi ...   # start an agent under herdr supervision
 herdr agent list                      # list agents + semantic status
 herdr pane <name>                     # open a pane
-herdr workspace <name>               # switch workspace
+herdr workspace <name>                # switch workspace
 ```
-
-The `HERDR_ENV=1` variable is set in managed panes.
 
 ## Semantic status integration (ADR-006 D8)
 
-The `start` hook installs herdr integrations for pi and claude.
-Once installed, `herdr agent list` reports `agent_status=working` with
-`screen_detection_skipped=true` (integration path, not process-detection fallback).
+The `start` hook installs herdr integrations for pi and claude. Once
+installed, `herdr agent list` reports `agent_status=working` with
+`screen_detection_skipped=true` (integration path, not process-detection
+fallback). For pi specifically, [`examples/herdr-pi/`](herdr-pi/) bakes the
+integration extension in explicitly rather than relying on the boot-time
+install alone — read it if you also want the DCG guard composed.
 
 ## Troubleshooting
 
-- **herdr server not starting**: Check `/tmp/rip-cage-mux-herdr.log` inside the cage.
-- **Integration install failed**: herdr may not have been present at install time;
-  re-run `herdr integration install pi` or `herdr integration install claude` manually.
-- **Socket not found**: Ensure herdr was started before attaching; `rc up` triggers init.
+- **herdr server not starting**: check `/tmp/rip-cage-mux-herdr.log` inside the cage.
+- **Integration install failed**: re-run `herdr integration install pi` or
+  `herdr integration install claude` by hand.
+- **Socket not found**: confirm the cage actually finished booting past init
+  before attaching — the relocated socket only exists once `start` has run.
