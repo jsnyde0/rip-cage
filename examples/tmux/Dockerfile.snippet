@@ -1,0 +1,19 @@
+# tmux multiplexer — paste into your own Dockerfile, between FROM and USER agent.
+#
+# Two lines of work: install the binary, declare the provider. There is no
+# registry to bake and no schema to satisfy — the descriptor fragment beside
+# this file IS the declaration, and rc-boot-merge is the only mechanical step.
+#
+# USER root is required (the descriptor is root-owned, deliberately: a cage whose
+# agent can edit it decides what starts in its own cage). Switch BACK to agent at
+# the end of your Dockerfile — an extension that ends on root boots a root shell
+# with every mount stranded (measured, rip-cage-ely4.16).
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tmux \
+    && rm -rf /var/lib/apt/lists/*
+COPY tmux.conf /etc/rip-cage/tmux.conf
+COPY boot-fragment.json /tmp/tmux-boot.json
+RUN rc-boot-merge /tmp/tmux-boot.json && rm -f /tmp/tmux-boot.json
+USER agent

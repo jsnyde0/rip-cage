@@ -1,0 +1,34 @@
+# The smallest real recipe: extend the base image, add nothing.
+#
+# This IS a complete Dockerfile. Copy it to a directory outside every cage mount
+# — ~/.config/rip-cage/images/ is a good home — and build it. Start here, then
+# add lines from the other recipes.
+
+FROM ghcr.io/jsnyde0/rip-cage:latest
+
+# Add what your project needs. Anything root has to do goes between USER root and
+# USER agent. The two rules that bite:
+#
+#   1. END ON USER agent. An extension that ends on root boots a root shell with
+#      every mount stranded under /home/agent, silently (measured, msb 0.6.18).
+#   2. DO NOT PREPEND TO PATH to shadow a base-image tool. A PATH prepend in an
+#      extension survives into the interactive shell; the base image's own
+#      wrappers resolve by absolute path and will not notice, so you get half of
+#      each (measured, rip-cage-ely4.16).
+#
+# USER root
+# RUN apt-get update \
+#     && apt-get install -y --no-install-recommends ripgrep \
+#     && rm -rf /var/lib/apt/lists/*
+# USER agent
+#
+# A tool that needs to START something (a server, a multiplexer) also needs a
+# boot-descriptor fragment — see ../postgres-pgvector/ and ../tmux/. A tool you
+# just want on PATH needs nothing but the RUN line above.
+#
+# ASSERT THE TOOL IS THERE, in the Dockerfile itself. This is the presence check
+# the manifest's declared-capability field used to stand in for (ADR-005 D13):
+# a RUN that fails the build is a stronger claim than a line saying it should be
+# present, because it is checked against the artifact.
+#
+# RUN which ripgrep

@@ -1,0 +1,10 @@
+{
+  "daemons": [
+    {
+      "name": "postgres-pgvector",
+      "start": "exec /usr/local/lib/rip-cage/postgres-pgvector-start.sh",
+      "health": "timeout 4 bash -c 'until /usr/lib/postgresql/17/bin/pg_isready -q -h 127.0.0.1 -p 5432 -U postgres -d test; do sleep 0.25; done'",
+      "state_dir": "/var/lib/rip-cage-daemon/postgres-pgvector"
+    }
+  ]
+}
