@@ -144,7 +144,7 @@ echo ""
 echo "-- D2: cwd forced to /home/agent --"
 
 CWD_BROKEN_CAGE="rc-doctor-cwdbroken-$$"
-"$RC" destroy --force "$CWD_BROKEN_CAGE" > /dev/null 2>&1 || true
+"$RC" destroy "$CWD_BROKEN_CAGE" > /dev/null 2>&1 || true
 if msb create --name "$CWD_BROKEN_CAGE" \
     --label "rc.source.path=${FIXTURE_WS}" \
     --workdir /home/agent \
@@ -171,7 +171,7 @@ echo "-- D3: stale-bd schema-error cage (gated) --"
 
 if [[ -n "${RC_DOCTOR_STALE_BD_IMAGE:-}" ]] && docker image inspect "$RC_DOCTOR_STALE_BD_IMAGE" > /dev/null 2>&1; then
   SCHEMA_ERR_CAGE="rc-doctor-schemaerr-$$"
-  "$RC" destroy --force "$SCHEMA_ERR_CAGE" > /dev/null 2>&1 || true
+  "$RC" destroy "$SCHEMA_ERR_CAGE" > /dev/null 2>&1 || true
   # msb-port note (rip-cage-neu7.14, Batch E): $RC_DOCTOR_STALE_BD_IMAGE is a
   # raw `docker build` artifact that never went through `rc build`, so
   # unlike rip-cage:latest it is NOT yet in msb's own local image cache --

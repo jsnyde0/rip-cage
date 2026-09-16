@@ -7,7 +7,7 @@
 # binary before 54q3 found the real cause). `rc doctor <cage>` and
 # checks the cage's rc.source.path label against the host and prints one
 # "Fix-hint: ..." line naming the missing path and the
-# 'rc destroy --force <cage>' remedy. (`rc exec` carried the same check until
+# 'rc destroy <cage>' remedy. (`rc exec` carried the same check until
 # that verb retired -- rip-cage-ely4.10 / ADR-031 D3.)
 #
 # Host-only: drives the REAL `rc` binary (the doctor verb) against a
@@ -26,7 +26,7 @@
 #
 # Coverage:
 #   D1  rc doctor <cage>: source dir removed -> prints the Fix-hint line
-#       naming the missing path and 'rc destroy --force <cage>'.
+#       naming the missing path and 'rc destroy <cage>'.
 #   D2  rc doctor <cage>: source dir present (healthy) -> prints NEITHER
 #       this hint nor anything resembling one (negative control).
 #   J1  rc doctor --output json <cage>: source dir removed -> carries a
@@ -127,7 +127,7 @@ if echo "$D1_OUT" | grep -qF "Fix-hint: workspace source deleted — '${MISSING_
 else
   fail "D1a rc doctor names the missing source path" "got: $D1_OUT"
 fi
-if echo "$D1_OUT" | grep -qF "rc destroy --force d1-cage"; then
+if echo "$D1_OUT" | grep -qF "rc destroy d1-cage"; then
   pass "D1b rc doctor names the destroy remedy"
 else
   fail "D1b rc doctor names the destroy remedy" "got: $D1_OUT"
@@ -173,7 +173,7 @@ J1_RC=$?
 unset FAKE_MSB_STATE FAKE_MSB_SOURCE_PATH
 
 J1_HINT=$(echo "$J1_OUT" | jq -r '.source_path_missing_hint // empty' 2>/dev/null)
-if [[ "$J1_HINT" == "Fix-hint: workspace source deleted — '${MISSING_SOURCE}' no longer exists on the host; remedy: rc destroy --force j1-cage" ]]; then
+if [[ "$J1_HINT" == "Fix-hint: workspace source deleted — '${MISSING_SOURCE}' no longer exists on the host; remedy: rc destroy j1-cage" ]]; then
   pass "J1a rc doctor --output json carries a hint field naming the missing source path"
 else
   fail "J1a rc doctor --output json carries a hint field naming the missing source path" "got: $J1_OUT"

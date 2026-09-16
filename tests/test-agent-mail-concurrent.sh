@@ -172,7 +172,7 @@ SENTINEL_BODY="swv-sentinel-$(date +%s)-$$"
 # roster reports "agent_name_taken" for a bare "mail-b"/"mail-a" on a second
 # run against the same deterministic cage name (rc-am-concurrent-mail-
 # fixture) — a herdr-side state-persistence fact unrelated to this bead's
-# docker->msb port (rc destroy --force correctly tears down the msb sandbox
+# docker->msb port (rc destroy correctly tears down the msb sandbox
 # + its rc-state/rc-history volumes each run; this is orthogonal). Suffixing
 # with $$ (mirrors SENTINEL_BODY's existing uniqueness convention) sidesteps
 # it without touching herdr/msb internals.
@@ -216,7 +216,7 @@ cleanup() {
   # on an empty array aborts on macOS bash 3.2.
   for c in "${AM_CREATED_CAGES[@]:-}"; do
     [[ -n "$c" ]] || continue
-    _d_out=$("$RC" destroy --force "$c" 2>&1)
+    _d_out=$("$RC" destroy "$c" 2>&1)
     _d_rc=$?
     if [[ "$_d_rc" -ne 0 ]]; then
       echo "WARNING: failed to destroy '$c' (exit ${_d_rc}): ${_d_out}" >&2
@@ -339,7 +339,7 @@ CONTAINER_NAME="rc-am-concurrent-mail-fixture"
 # Pre-cleanup: remove any leftover cage of this exact deterministic name from
 # a prior aborted run (never an enumerate/glob match).
 # swallow-ok(rip-cage-54q3.6.6): pre-emptive stale-cage cleanup; non-zero means there was nothing to destroy.
-"$RC" destroy --force "$CONTAINER_NAME" >/dev/null 2>&1 || true
+"$RC" destroy "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
 # rip-cage-or84: boot from the scratch AM_IMAGE_TAG via RC_IMAGE — this cage
 # must be addressed with the same RC_IMAGE for its whole lifetime (cli/up.sh's

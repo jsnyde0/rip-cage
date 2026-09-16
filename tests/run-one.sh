@@ -71,7 +71,7 @@ _host_sandbox_setup
 # sandbox via `msb list --format json`, read each one's rc.source.path label
 # via `msb inspect`, compare the RAW label against the realpath'd temp root).
 # It NEVER destroys — it names the leftover cage + its source path + a
-# suggested `rc destroy --force <name>` command and stops there. A cage this
+# suggested `rc destroy <name>` command and stops there. A cage this
 # wrapper did not create must be structurally unreachable by any destroy
 # call. Still gated behind --sweep (default OFF): a single-file wrapper is
 # meant for fast red/green cycles; even a read-only msb list/inspect pass
@@ -100,7 +100,7 @@ _run_one_warn_leftover_scratch_cages() {
       if [[ "$_raw_sp" == "${_root}"/* || "$_raw_sp" == "${_root}" ]]; then
         echo "WARNING: leftover scratch cage detected: ${_cname} (source path: ${_raw_sp})" >&2
         echo "  This wrapper did not create it this run and will NOT destroy it." >&2
-        echo "  If it is stale debris, clean it up yourself: rc destroy --force ${_cname}" >&2
+        echo "  If it is stale debris, clean it up yourself: rc destroy ${_cname}" >&2
         break
       fi
     done

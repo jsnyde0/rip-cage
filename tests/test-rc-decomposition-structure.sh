@@ -956,47 +956,46 @@ echo ""
 #     loops, which consume a pipe and block nothing. Matching those would make
 #     this case noise and it would be turned off, which is how a guard dies.
 #
-#     EXEMPTION, by inline marker only (never a filename list -- a list goes
-#     stale silently and exempts whatever later moves into the named file):
-#     a guarded block may carry `rc-allow-tty-read:` in a comment, followed by
-#     why the read cannot block an agent. Today there is exactly one --
-#     `rc destroy`'s confirm-before-you-delete prompt, which an agent never
-#     reaches because an agent's stdin is a pipe, so `-t 0` is false.
+#     NO EXEMPTIONS (brain:rip-cage ruling, 2026-09-16). An earlier draft let a
+#     guarded block carry an `rc-allow-tty-read:` marker naming why its read
+#     could not block an agent, and `rc destroy`'s confirm-before-you-delete
+#     prompt claimed it. The ruling deleted the prompt instead: ADR-031 D3 says
+#     agent-first means no prompts, `rc destroy` already takes an exact cage
+#     name, and the TTY branch was exactly the interactive shape that decision
+#     retires. With nothing left to exempt, the exemption machinery went too --
+#     a facility with no user is a door held open for the next prompt.
+#
+#     If a genuinely non-blocking TTY read ever appears (the bead's own
+#     invalidation clause names a secret piped in interactively), it takes an
+#     ADR-031 D3 ruling first, and the exemption that lands is an inline
+#     marker -- never a filename list, which goes stale silently and exempts
+#     whatever later moves into the named file.
 # ---------------------------------------------------------------------------
 echo "=== (l) no TTY-guarded read under rc + cli/ (the one shape that can block an agent) ==="
 
 _l_files=("$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh)
 _l_window=10
 _l_offenders=""
-_l_exempted=""
 
 for _l_file in "${_l_files[@]}"; do
   [[ -f "$_l_file" ]] || continue
   while IFS=: read -r _l_lineno _l_text; do
     [[ -n "$_l_lineno" ]] || continue
-    # The guard line itself may carry the marker, or any line in the window
-    # above it (the marker is normally a comment block just before the `if`).
-    _l_marker_scope=$(sed -n "$(( _l_lineno > _l_window ? _l_lineno - _l_window : 1 )),$(( _l_lineno + _l_window ))p" "$_l_file")
     _l_body=$(sed -n "${_l_lineno},$(( _l_lineno + _l_window ))p" "$_l_file")
     # A bare `read` call, not a `... | read` pipe-loop header.
     if printf '%s\n' "$_l_body" | grep -qE '(^|;|\bthen\b|&&|\|\|)[[:space:]]*(local[[:space:]]+[A-Za-z_]+[[:space:]]*;[[:space:]]*)?read([[:space:]]|$)'; then
-      if printf '%s\n' "$_l_marker_scope" | grep -q 'rc-allow-tty-read:'; then
-        _l_exempted="${_l_exempted} $(basename "$_l_file"):${_l_lineno}"
-      else
-        _l_offenders="${_l_offenders} $(basename "$_l_file"):${_l_lineno}"
-      fi
+      _l_offenders="${_l_offenders} $(basename "$_l_file"):${_l_lineno}"
     fi
   done < <(grep -nE '\[\[[^]]*-t[[:space:]]+[01]' "$_l_file" || true)
 done
 
 _l_offenders="${_l_offenders# }"
-_l_exempted="${_l_exempted# }"
 
 if [[ -z "$_l_offenders" ]]; then
-  pass "(l)" "no unexempted TTY-guarded read under rc + cli/ (exempted, by inline marker: ${_l_exempted:-none})"
+  pass "(l)" "no TTY-guarded read anywhere under rc + cli/"
 else
-  echo "    fix: delete the prompt, or -- if the read genuinely cannot block an agent -- put 'rc-allow-tty-read:' in a comment beside the guard, with the reason."
-  fail "(l)" "TTY-guarded read(s) with no inline exemption marker -- an agent hitting one waits forever" "${_l_offenders}"
+  echo "    fix: delete the prompt. If you believe this read genuinely cannot block an agent, that is an ADR-031 D3 ruling, not a code comment."
+  fail "(l)" "TTY-guarded read(s) under rc + cli/ -- an agent hitting one waits forever" "${_l_offenders}"
 fi
 
 # NEGATIVE CONTROL: the detector must actually fire. Plant the forbidden shape

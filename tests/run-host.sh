@@ -751,7 +751,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-seed-drift-stderr-scoping.sh"    # rip-cage-auzj: permanent regression proof for D4/D4B's stderr-scoping fix — positive (forced unrelated warning passes), negative control (genuine drift still fails), regression-direction (old raw-emptiness logic reds); host-only, fake docker+msb PATH shims
   run_test "${SCRIPT_DIR}/test-manifest-payload-audit.sh"      # rip-cage-bqm8: decodes every base64 config payload in manifest/default-tools.yaml and fails on a reference to a script absent from the image/repo — asserting on ENCODED text is how the retired ssh-bypass hook rotted unnoticed; host-only
   run_test "${SCRIPT_DIR}/test-manifest-postgres-pgvector-fragment.sh"  # rip-cage-z40e/rip-cage-fkbm: postgres-pgvector recipe guards — generated-fragment freshness, the exec prefix on start (buys PID identity: without it the recorded PID is a wrapper shell, for every start shape; NOT a liveness fix — that is rip-cage-893l), egress-stays-empty, and never-blessed-by-default; host-only
-  run_test "${SCRIPT_DIR}/test-destroy-orphaned-volumes.sh" # rip-cage-o5ie: rc destroy --force reaps rc-state-/rc-history- volumes by exact derived name even when the sandbox is already absent; exact-name-only cleanup + negative-control decoy volume, no sandbox boot needed, self-skips without msb
+  run_test "${SCRIPT_DIR}/test-destroy-orphaned-volumes.sh" # rip-cage-o5ie: rc destroy reaps rc-state-/rc-history- volumes by exact derived name even when the sandbox is already absent; exact-name-only cleanup + negative-control decoy volume, no sandbox boot needed, self-skips without msb
   run_test "${SCRIPT_DIR}/test-agent-readability.sh"     # rip-cage-7wc: host-side fixture tests for agent *.md readability classification
   run_test "${SCRIPT_DIR}/test-agent-mail-concurrent.sh" # rip-cage-swv: two concurrent pi agents coordinate via am CLI (NEEDS_CONTAINER + RC_E2E)
   run_test "${SCRIPT_DIR}/test-multiplexer-agent-e2e.sh" # rip-cage-w621.7: pi agent through tmux mux surface with >=2 distinct tool invocations (NEEDS_CONTAINER + RC_E2E)
@@ -846,7 +846,7 @@ source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
 # their own cages by explicit name / register-array — see
 # tests/_scratch-cage-lib.sh, the exemplar this converts toward) and replace
 # this cross-run reconciler with a read-only detect-and-warn: name the
-# leftover cage + its source path + a suggested `rc destroy --force <name>`
+# leftover cage + its source path + a suggested `rc destroy <name>`
 # command a human can run, and stop there.
 #
 # DISCRIMINATOR (unchanged from the former sweep): every cage carries an
@@ -882,7 +882,7 @@ _sweep_init_temp_roots
 # (mirrors _msb_label's `.config.labels[$k]` shape) -- same discriminator
 # (label value must be under one of the swept temp roots) as before.
 #
-# rip-cage-neu7.9: this function used to run `rc destroy --force "$_cname"`
+# rip-cage-neu7.9: this function used to run `rc destroy "$_cname"`
 # here. It no longer does — READ-ONLY, prints a loud warning (name + source
 # path + suggested destroy command) to stderr and moves on. No enumeration
 # result is ever fed to a destroy call in this function's body.
@@ -898,7 +898,7 @@ _warn_leftover_scratch_cages() {
       if [[ "$_raw_sp" == "${_root}"/* || "$_raw_sp" == "${_root}" ]]; then
         echo "WARNING: leftover scratch cage detected: ${_cname} (source path: ${_raw_sp})" >&2
         echo "  This test runner did not create it this run and will NOT destroy it." >&2
-        echo "  If it is stale debris, clean it up yourself: rc destroy --force ${_cname}" >&2
+        echo "  If it is stale debris, clean it up yourself: rc destroy ${_cname}" >&2
         break
       fi
     done

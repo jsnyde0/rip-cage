@@ -123,10 +123,10 @@ elif grep -qxF "T-tmp.bbbb" "$REG2"; then
 else
   fail "T2: the untouched name T-tmp.bbbb was dropped too" "$(cat "$REG2")"
 fi
-if grep -qF "rc destroy --force T-tmp.aaaa" "$LOG2"; then
+if grep -qF "rc destroy T-tmp.aaaa" "$LOG2"; then
   pass "T2b: destroy was called by EXACT name (no enumeration, no glob)"
 else
-  fail "T2b: expected 'rc destroy --force T-tmp.aaaa' in the call log" "$(cat "$LOG2")"
+  fail "T2b: expected 'rc destroy T-tmp.aaaa' in the call log" "$(cat "$LOG2")"
 fi
 
 echo ""
@@ -327,10 +327,10 @@ echo "T-tmp.stranded" > "$REG7"
 LOG7="${WORK}/log7"
 : > "$LOG7"
 t7_out=$(run_registry_sweep "$REG7" "$LOG7" "T-tmp.stranded")
-if grep -qF "rc destroy --force T-tmp.stranded" "$LOG7"; then
+if grep -qF "rc destroy T-tmp.stranded" "$LOG7"; then
   pass "T7: the sweep called destroy by exact name"
 else
-  fail "T7: expected 'rc destroy --force T-tmp.stranded' in the call log" "$(cat "$LOG7"); sweep said: ${t7_out}"
+  fail "T7: expected 'rc destroy T-tmp.stranded' in the call log" "$(cat "$LOG7"); sweep said: ${t7_out}"
 fi
 if grep -qxF "T-tmp.stranded" "$REG7"; then
   fail "T7b: a destroyed cage must not keep its registry line" "$(cat "$REG7")"
@@ -399,8 +399,8 @@ t10_out=$(run_registry_sweep "$REG10" "$LOG10" "rc-t-t.AbCdEf code-personal T-tm
 t10_destroys=$(grep -cF "rc destroy --force" "$LOG10" 2>/dev/null || true)
 t10_destroys="${t10_destroys:-0}"
 if [[ "$t10_destroys" -eq 2 ]] \
-  && grep -qF "rc destroy --force rc-t-t.AbCdEf" "$LOG10" \
-  && grep -qF "rc destroy --force T-tmp.live" "$LOG10"; then
+  && grep -qF "rc destroy rc-t-t.AbCdEf" "$LOG10" \
+  && grep -qF "rc destroy T-tmp.live" "$LOG10"; then
   pass "T10: exactly the two harness-prefixed live cages were destroyed (rc-t- and T-tmp. both)"
 else
   fail "T10: expected exactly 2 destroys, for rc-t-t.AbCdEf and T-tmp.live" "count=${t10_destroys}; log: $(cat "$LOG10")"

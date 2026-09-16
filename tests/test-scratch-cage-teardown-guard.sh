@@ -27,7 +27,7 @@
 #   (a) registers the cage via `scratch_cage_register <name>`
 #       (tests/_scratch-cage-lib.sh -- its EXIT/INT/TERM trap runs
 #       `rc destroy --force`, which DOES reap both named volumes), or
-#   (b) tears the SAME variable down via `<rc-wrapper> destroy --force VAR`
+#   (b) tears the SAME variable down via `<rc-wrapper> destroy VAR`
 #       instead of/in addition to `msb remove` (rc destroy's own
 #       volume-deletion loop reaps it), or
 #   (c) pairs the SAME variable's volumes explicitly: an
@@ -125,7 +125,7 @@ _scan_one_file() {
   # while building this guard): `rc destroy` only reaps volumes when the
   # msb sandbox is STILL PRESENT (cli/down_destroy.sh's volume-deletion
   # loop runs after a presence check; CONTAINER_NOT_FOUND exits loud
-  # BEFORE it). A `destroy --force $VAR` call AFTER a bare `msb remove
+  # BEFORE it). A `destroy $VAR` call AFTER a bare `msb remove
   # $VAR` already ran is a no-op for volumes -- the cage is already gone.
   # So this only counts as pairing for an `msb remove` occurrence at line
   # L if a destroy call for the SAME var exists at a line strictly BEFORE
@@ -274,7 +274,7 @@ _scan_one_file() {
 # a string literal, a fail() reason, or a comment is never counted as an
 # invocation. tests/run-one.sh:103, tests/run-host.sh:921 and
 # tests/test-scratch-cage-cleanup.sh:158 are exactly this false-positive
-# class (they PRINT the string `rc destroy --force ...` as operator advice,
+# class (they PRINT the string `rc destroy ...` as operator advice,
 # with a colon-space before `rc`, never a command-boundary character) --
 # they must not be flagged.
 #
@@ -287,7 +287,12 @@ _scan_one_file() {
 # VOLUME-ATTACHMENT GATE comment above) and is deliberately scoped to what
 # this bead's mandatory fixtures require, not to catch every conceivable
 # reporting idiom.
-DESTROY_FORCE_RE='(^[[:space:]]*|[;&|({`!][[:space:]]*)("?\$\{?RC\}?"?|run_rc|"?[^[:space:]"]*/rc"?)[[:space:]]+destroy[[:space:]]+--force([[:space:]]|$)'
+# `--force` is OPTIONAL in this pattern, and after rip-cage-ely4.10 it is never
+# present: the flag retired with `rc destroy`'s confirmation prompt (ADR-031 D3,
+# ruled 2026-09-16). It stays in the alternation so this ratchet still catches a
+# stale call site nobody has swept yet -- a pattern matching only the retired
+# spelling would have gone silently vacuous the moment the flag went.
+DESTROY_FORCE_RE='(^[[:space:]]*|[;&|({`!][[:space:]]*)("?\$\{?RC\}?"?|run_rc|"?[^[:space:]"]*/rc"?)[[:space:]]+destroy([[:space:]]+--force)?([[:space:]]|$)'
 
 # Opening line of a heredoc: `<<DELIM`, `<<'DELIM'`, `<<"DELIM"` or the
 # `<<-` tab-stripping variants, with the delimiter ending the line. `<<<`
@@ -324,6 +329,15 @@ _destroy_site_status_reported() {
   local j status_captured=0 stderr_reported=0 t
   for ((j = idx; j <= win_end; j++)); do
     if [[ "${_flines[j]}" =~ ^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=\$\?([[:space:]]|$) ]]; then
+      status_captured=1
+    fi
+    # The TRAILING form, on the call line itself: `... || _rc=$?`. It is not a
+    # lesser idiom -- tests/_scratch-cage-lib.sh uses it precisely BECAUSE its
+    # caller runs under `set -e`, where a plain failing assignment on the next
+    # line would kill the whole suite over a cleanup miss. Recognising only the
+    # line-start form flagged that site as a swallow while it was reading and
+    # reporting status three lines later (rip-cage-ely4.10).
+    if [[ "${_flines[j]}" =~ \|\|[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=\$\?([[:space:]]|$) ]]; then
       status_captured=1
     fi
     if [[ "$j" -eq "$idx" && "${_flines[j]}" =~ ^[[:space:]]*if[[:space:]]+! ]]; then
@@ -398,7 +412,7 @@ _scan_one_file_for_destroy_swallows() {
 
     echo "$line" | grep -qE "$DESTROY_FORCE_RE" || continue
 
-    var=$(echo "$line" | sed -E 's/.*destroy[[:space:]]+--force[[:space:]]+//' \
+    var=$(echo "$line" | sed -E 's/.*destroy([[:space:]]+--force)?[[:space:]]+//' \
             | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' | head -1 | tr -d '${}')
 
     # (c) inline justification on the line immediately above.
@@ -481,7 +495,7 @@ cat > "${FIXTURE_DIR}/test-fixture-clean-destroy.sh" <<'FIXEOF'
 #!/usr/bin/env bash
 set -uo pipefail
 CAGE_NAME="fake-clean-destroy-cage-$$"
-run_rc destroy --force "$CAGE_NAME" >/dev/null 2>&1 || true
+run_rc destroy "$CAGE_NAME" >/dev/null 2>&1 || true
 msb remove --force "$CAGE_NAME" >/dev/null 2>&1 || true
 FIXEOF
 
@@ -545,7 +559,7 @@ set -uo pipefail
 UP_OUT=$(run_rc up "$WS" 2>&1)
 RCL_CAGE=$(echo "$UP_OUT" | tail -1 | jq -r '.name' 2>/dev/null)
 msb remove --force "$RCL_CAGE" >/dev/null 2>&1
-[[ -n "$RCL_CAGE" ]] && "$RC" destroy --force "$RCL_CAGE" >/dev/null 2>&1
+[[ -n "$RCL_CAGE" ]] && "$RC" destroy "$RCL_CAGE" >/dev/null 2>&1
 FIXEOF
 
 # 1i. CLEAN fixture: an AMBIGUOUS-provenance var (name swept from `msb
@@ -639,7 +653,7 @@ cat > "${DESTROY_FIXTURE_DIR}/test-fixture-destroy-leaking-bare.sh" <<'FIXEOF'
 #!/usr/bin/env bash
 set -uo pipefail
 C="fake-destroy-leak-cage-$$"
-"$RC" destroy --force "$C" >/dev/null 2>&1 || true
+"$RC" destroy "$C" >/dev/null 2>&1 || true
 FIXEOF
 
 # 1l. LEAKING: `[[ -n "$C" ]] && ... >/dev/null 2>&1` -- status discarded by
@@ -648,7 +662,7 @@ cat > "${DESTROY_FIXTURE_DIR}/test-fixture-destroy-leaking-and-chain.sh" <<'FIXE
 #!/usr/bin/env bash
 set -uo pipefail
 C="fake-destroy-leak-bare-cage-$$"
-[[ -n "$C" ]] && "$RC" destroy --force "$C" >/dev/null 2>&1
+[[ -n "$C" ]] && "$RC" destroy "$C" >/dev/null 2>&1
 FIXEOF
 
 # 1m. CLEAN via (a): sources tests/_scratch-cage-lib.sh AND registers the
@@ -661,7 +675,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
 C="fake-destroy-clean-registered-$$"
 scratch_cage_register "$C"
-"$RC" destroy --force "$C" >/dev/null 2>&1 || true
+"$RC" destroy "$C" >/dev/null 2>&1 || true
 FIXEOF
 
 # 1n. CLEAN via (b): captures output + $? and echoes a named failure to
@@ -670,7 +684,7 @@ cat > "${DESTROY_FIXTURE_DIR}/test-fixture-destroy-clean-status-reported.sh" <<'
 #!/usr/bin/env bash
 set -uo pipefail
 C="fake-destroy-clean-reported-$$"
-DESTROY_OUT=$("$RC" destroy --force "$C" 2>&1)
+DESTROY_OUT=$("$RC" destroy "$C" 2>&1)
 DESTROY_RC=$?
 if [[ "$DESTROY_RC" -ne 0 ]]; then
   echo "destroy failed for cage $C (exit $DESTROY_RC): $DESTROY_OUT" >&2
@@ -682,7 +696,7 @@ cat > "${DESTROY_FIXTURE_DIR}/test-fixture-destroy-clean-if-bang.sh" <<'FIXEOF'
 #!/usr/bin/env bash
 set -uo pipefail
 C="fake-destroy-clean-ifbang-$$"
-if ! "$RC" destroy --force "$C" >/dev/null 2>&1; then
+if ! "$RC" destroy "$C" >/dev/null 2>&1; then
   echo "destroy failed for cage $C (exit $?)" >&2
 fi
 FIXEOF
@@ -694,19 +708,19 @@ cat > "${DESTROY_FIXTURE_DIR}/test-fixture-destroy-clean-justified.sh" <<'FIXEOF
 set -uo pipefail
 C="fake-destroy-clean-justified-$$"
 # swallow-ok(rip-cage-54q3.6.4): pre-emptive cleanup of a cage that may not exist yet
-"$RC" destroy --force "$C" >/dev/null 2>&1 || true
+"$RC" destroy "$C" >/dev/null 2>&1 || true
 FIXEOF
 
 # 1q. CLEAN prose-only control (mirrors tests/run-one.sh:103,
 # tests/run-host.sh:921, tests/test-scratch-cage-cleanup.sh:158): a line
-# that merely PRINTS "rc destroy --force $x" as operator advice -- a
+# that merely PRINTS "rc destroy $x" as operator advice -- a
 # colon-space before `rc`, never a command-boundary character -- must never
 # be mistaken for an invocation.
 cat > "${DESTROY_FIXTURE_DIR}/test-fixture-destroy-clean-prose-only.sh" <<'FIXEOF'
 #!/usr/bin/env bash
 set -uo pipefail
 # doc note: cleanup advice mentions `rc destroy --force` as a manual remedy
-echo "  If it is stale debris, clean it up yourself: rc destroy --force ${_cname}"
+echo "  If it is stale debris, clean it up yourself: rc destroy ${_cname}"
 FIXEOF
 
 # CLEAN fixture: a swallowed destroy that lives inside a HEREDOC BODY -- i.e.
@@ -719,7 +733,7 @@ cat > "${DESTROY_FIXTURE_DIR}/test-fixture-destroy-clean-heredoc-body.sh" <<'FIX
 set -uo pipefail
 # The destroy below is DATA: it is written into a child script, never run here.
 cat > "${T}/inner-fixture.sh" <<'INNEREOF'
-"$RC" destroy --force "$INNER_CAGE" >/dev/null 2>&1 || true
+"$RC" destroy "$INNER_CAGE" >/dev/null 2>&1 || true
 INNEREOF
 echo "wrote a fixture; destroyed nothing"
 FIXEOF
@@ -811,7 +825,7 @@ echo ""
 # the ratchet is reported as a non-failing NOTE with a total count -- never
 # silently dropped, never a reason to fail this guard.
 # ============================================================================
-echo "--- Case 3: live scan of tests/*.sh for silently-swallowed rc destroy --force (ratchet) ---"
+echo "--- Case 3: live scan of tests/*.sh for silently-swallowed rc destroy (ratchet) ---"
 
 DESTROY_ENFORCED_SCOPE_FILES=("test-e2e-lifecycle.sh" "test-session-persistence.sh" "test-pi-cage-context.sh" "test-multiplexer-lifecycle.sh" "test-claude-json-seed-synthesis.sh" "test-pi-e2e.sh" "test-pi-auth-mount.sh" "test-agent-cli.sh" "test-agent-mail-concurrent.sh" "test-destroy-orphaned-volumes.sh" "test-mount-mode-e2e.sh" "test-msb-down-destroy-live.sh" "test-msb-ls-build-live-probes.sh" "test-multiplexer-agent-e2e.sh" "test-up-converge.sh")
 
@@ -835,14 +849,14 @@ for _entry in "${DESTROY_SWALLOW_LINES[@]+"${DESTROY_SWALLOW_LINES[@]}"}"; do
 done
 
 if [[ -n "$_d3_out_of_scope" ]]; then
-  echo "NOTE (Case 3): ${_d3_out_count} silently-swallowed rc destroy --force site(s) found OUTSIDE the enforced-scope ratchet (follow-up conversion work, not a failure here):"
+  echo "NOTE (Case 3): ${_d3_out_count} silently-swallowed rc destroy site(s) found OUTSIDE the enforced-scope ratchet (follow-up conversion work, not a failure here):"
   echo "$_d3_out_of_scope" | sed '/^$/d' | sed 's/^/    /'
 fi
 
 if [[ -z "$_d3_in_scope" ]]; then
-  pass "live scan (Case 3): zero silently-swallowed rc destroy --force call(s) in the enforced-scope ratchet"
+  pass "live scan (Case 3): zero silently-swallowed rc destroy call(s) in the enforced-scope ratchet"
 else
-  fail "live scan (Case 3): silently-swallowed rc destroy --force call(s) in enforced-scope files -- fix: (a) scratch_cage_register the same variable after sourcing tests/_scratch-cage-lib.sh, (b) read the status and report a named stderr failure, or (c) an inline # swallow-ok(<bead-id>): <reason> comment on the line above"
+  fail "live scan (Case 3): silently-swallowed rc destroy call(s) in enforced-scope files -- fix: (a) scratch_cage_register the same variable after sourcing tests/_scratch-cage-lib.sh, (b) read the status and report a named stderr failure, or (c) an inline # swallow-ok(<bead-id>): <reason> comment on the line above"
   echo "$_d3_in_scope" | sed '/^$/d' | while IFS= read -r _d3_line; do
     echo "  SWALLOW: ${_d3_line}"
   done

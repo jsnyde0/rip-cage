@@ -104,7 +104,7 @@ _e2e_cleanup() {
   local cage _d_out _d_rc
   for cage in "${CREATED_CAGES[@]:-}"; do
     if [[ -n "$cage" ]]; then
-      _d_out=$("${RC}" destroy --force "$cage" 2>&1)
+      _d_out=$("${RC}" destroy "$cage" 2>&1)
       _d_rc=$?
       if [[ "$_d_rc" -ne 0 ]]; then
         echo "WARNING: failed to destroy '$cage' (exit ${_d_rc}): ${_d_out}" >&2

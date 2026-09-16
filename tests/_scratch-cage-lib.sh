@@ -91,7 +91,7 @@ _scratch_cage_registry_remove() {
 # START of the next run, destroy what the last one stranded.
 #
 # TWO INDEPENDENT GUARDS, both required. rip-cage-neu7.9 followed a real
-# incident — a degenerate glob in a cleanup path ran `rc destroy --force
+# incident — a degenerate glob in a cleanup path ran `rc destroy
 # code-personal` on the human's own cage and its volumes — and its ruling is
 # that a cage this harness did not create must be STRUCTURALLY unreachable by
 # any destroy call:
@@ -137,7 +137,7 @@ _scratch_cage_exists() {
 #     (a tampered registry must stay visible, not be quietly tidied away)
 #   - cage no longer exists   -> line dropped SILENTLY (the common case after
 #     a clean run; warning about it would cry wolf every single run)
-#   - cage exists             -> `rc destroy --force <exact name>`, named on
+#   - cage exists             -> `rc destroy <exact name>`, named on
 #     stderr; line dropped on success, KEPT on failure (it is still out there)
 #
 # Never a gate: a sweep that cannot do its job costs hygiene, never a test
@@ -166,7 +166,7 @@ scratch_cage_sweep_registry() {
     # one caller, tests/run-host.sh, runs under `set -e`, where a plain failing
     # assignment would kill the whole suite over a cleanup miss.
     _rc=0
-    _out=$("${SCRIPT_DIR}/../rc" destroy --force "$_name" 2>&1) || _rc=$?
+    _out=$("${SCRIPT_DIR}/../rc" destroy "$_name" 2>&1) || _rc=$?
     if [[ "$_rc" -ne 0 ]]; then
       echo "_scratch-cage-lib.sh: WARNING: failed to sweep stranded scratch cage '${_name}' (exit ${_rc}): ${_out}" >&2
       echo "$_name" >> "$_tmp"
@@ -194,7 +194,7 @@ _scratch_cage_cleanup() {
   local _name _out _rc
   local _failures=0
   for _name in "${_SCRATCH_CAGE_NAMES[@]+"${_SCRATCH_CAGE_NAMES[@]}"}"; do
-    _out=$("${SCRIPT_DIR}/../rc" destroy --force "$_name" 2>&1)
+    _out=$("${SCRIPT_DIR}/../rc" destroy "$_name" 2>&1)
     _rc=$?
     if [[ "$_rc" -ne 0 ]]; then
       echo "_scratch-cage-lib.sh: WARNING: failed to destroy scratch cage '${_name}' (exit ${_rc}): ${_out}" >&2

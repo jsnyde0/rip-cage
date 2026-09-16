@@ -159,11 +159,11 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# DESTROY1: rc destroy --force removes the REAL sandbox AND its named
+# DESTROY1: rc destroy removes the REAL sandbox AND its named
 # volumes (verified by real independent absence).
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== DESTROY1: rc destroy --force removes the sandbox + named volumes (real absence) ==="
+echo "=== DESTROY1: rc destroy removes the sandbox + named volumes (real absence) ==="
 PRE_VOLS=$(msb volume list --format json 2>/dev/null | jq -r '.[].name')
 if echo "$PRE_VOLS" | grep -qF "rc-state-${CAGE_NAME}" && echo "$PRE_VOLS" | grep -qF "rc-history-${CAGE_NAME}"; then
   pass "DESTROY1 setup: the cage's named volumes genuinely exist before destroy"
@@ -172,12 +172,12 @@ else
 fi
 
 # swallow-ok(rip-cage-54q3.6.6): status IS read (DESTROY_RC=$? on the next line) and reported -- via fail() at line 179, this file's own pass/fail test-report convention (echoes "FAIL ..." to stdout, not a raw stderr echo) -- so the detector's stderr-anchored shape-(b) heuristic doesn't recognize it even though nothing is silently swallowed.
-DESTROY_OUT=$(run_rc destroy --force "$CAGE_NAME" 2>&1)
+DESTROY_OUT=$(run_rc destroy "$CAGE_NAME" 2>&1)
 DESTROY_RC=$?
 if [[ "$DESTROY_RC" -eq 0 ]]; then
-  pass "DESTROY1: rc destroy --force exits 0"
+  pass "DESTROY1: rc destroy exits 0"
 else
-  fail "DESTROY1: rc destroy --force failed" "rc=$DESTROY_RC out=$DESTROY_OUT"
+  fail "DESTROY1: rc destroy failed" "rc=$DESTROY_RC out=$DESTROY_OUT"
 fi
 
 if ! msb inspect "$CAGE_NAME" --format json >/dev/null 2>&1; then
@@ -199,7 +199,7 @@ fi
 echo ""
 echo "=== DESTROY2: rc destroy against an already-absent cage fails loud ==="
 # swallow-ok(rip-cage-54q3.6.6): a non-zero exit here is the expected/asserted outcome (this case tests that destroy against an already-absent cage fails loud); status IS read (DESTROY2_RC=$? on the next line) and reported via fail() at line 206, this file's own pass/fail test-report convention (stdout, not a raw stderr echo).
-DESTROY2_OUT=$(run_rc destroy --force "$CAGE_NAME" 2>&1)
+DESTROY2_OUT=$(run_rc destroy "$CAGE_NAME" 2>&1)
 DESTROY2_RC=$?
 DESTROY2_CODE=$(echo "$DESTROY2_OUT" | jq -r '.code' 2>/dev/null)
 if [[ "$DESTROY2_RC" -ne 0 && "$DESTROY2_CODE" == "CONTAINER_NOT_FOUND" ]]; then

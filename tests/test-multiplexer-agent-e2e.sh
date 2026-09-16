@@ -257,7 +257,7 @@ CLEANUP() {
   # (would abort CLEANUP before it can even remove MUX_AGENT_TMP).
   for c in "${MUX_AGENT_CREATED_CAGES[@]:-}"; do
     [[ -n "$c" ]] || continue
-    _d_out=$("$RC" destroy --force "$c" 2>&1)
+    _d_out=$("$RC" destroy "$c" 2>&1)
     _d_rc=$?
     if [[ "$_d_rc" -ne 0 ]]; then
       echo "WARNING: failed to destroy '$c' (exit ${_d_rc}): ${_d_out}" >&2
@@ -359,7 +359,7 @@ CAGE="rc-mux-agent-fixture"
 
 # Pre-cleanup: remove leftover cage from prior aborted runs. Bounded to this
 # test's own fixed, deterministic cage name (never an enumerate/glob match).
-"$RC" destroy --force "$CAGE" >/dev/null 2>&1 || true
+"$RC" destroy "$CAGE" >/dev/null 2>&1 || true
 
 echo "MUX_AGENT_TMP=${MUX_AGENT_TMP}"
 echo "WORKSPACE=${WORKSPACE}"

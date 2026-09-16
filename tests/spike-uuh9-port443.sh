@@ -156,7 +156,7 @@ while IFS= read -r _leftover; do
   [[ -z "$_leftover" ]] && continue
   echo "WARNING: leftover scratch cage detected: ${_leftover}" >&2
   echo "  This run did not create it and will NOT destroy it." >&2
-  echo "  If it is stale debris from an aborted prior run, clean it up yourself: rc destroy --force ${_leftover}" >&2
+  echo "  If it is stale debris from an aborted prior run, clean it up yourself: rc destroy ${_leftover}" >&2
 done < <(msb list --format json 2>/dev/null | jq -r '.[].name' 2>/dev/null | grep '^spike-uuh9-' || true)
 
 CAGE_Q1="spike-uuh9-q1-${RUN_ID}"
@@ -418,7 +418,7 @@ else
   fail "Gap-A denials: one of the newly-exercised hosts WAS denied" "$GAPA_HIT"
 fi
 
-"$RC" destroy --force "$CAGE_Q1" >/dev/null 2>&1 || true
+"$RC" destroy "$CAGE_Q1" >/dev/null 2>&1 || true
 fi # Q2_ONLY
 
 # ===========================================================================
@@ -443,7 +443,7 @@ if [[ "$Q2_BASE_80_CODE" == "200" && "$Q2_BASE_80_SIZE" -gt 0 ]]; then
 else
   fail "Q2-baseline: expected real data from example.com:80 under the all-ports allow rule" "${Q2_BASE_80} err=$(cat /tmp/spike-uuh9-q2base-80.err)"
 fi
-"$RC" destroy --force "$CAGE_Q2_BASELINE" >/dev/null 2>&1 || true
+"$RC" destroy "$CAGE_Q2_BASELINE" >/dev/null 2>&1 || true
 
 # ===========================================================================
 # Q2-scoped: example.com, :tcp:443 ONLY (hand-built). Positive control on
@@ -561,7 +561,7 @@ else
 fi
 echo "----------------------------------------------------------------------------"
 
-"$RC" destroy --force "$CAGE_Q2_SCOPED" >/dev/null 2>&1 || true
+"$RC" destroy "$CAGE_Q2_SCOPED" >/dev/null 2>&1 || true
 
 # ===========================================================================
 # Safety corroboration: real ~/.claude untouched. Only meaningful when Q1

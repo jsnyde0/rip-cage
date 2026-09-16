@@ -106,17 +106,17 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Case: rc destroy --force against a name whose sandbox is absent but whose
+# Case: rc destroy against a name whose sandbox is absent but whose
 # volumes still exist.
 # ---------------------------------------------------------------------------
 # swallow-ok(rip-cage-54q3.6.6): status IS read (DESTROY_RC=$? on the next line) and reported -- via fail() at line 118, which increments FAILURES and echoes "FAIL: ..." (this file's own pass/fail test-report convention, not a raw stderr echo) -- so the detector's stderr-anchored shape-(b) heuristic doesn't recognize it even though nothing is silently swallowed.
-DESTROY_OUT=$("$RC" destroy --force "$CAGE_NAME" 2>&1)
+DESTROY_OUT=$("$RC" destroy "$CAGE_NAME" 2>&1)
 DESTROY_RC=$?
 
 if [[ "$DESTROY_RC" -eq 0 ]]; then
-  pass "rc destroy --force exits 0 against an already-sandbox-absent cage with leftover volumes"
+  pass "rc destroy exits 0 against an already-sandbox-absent cage with leftover volumes"
 else
-  fail "rc destroy --force did not exit 0 (rc=$DESTROY_RC out=$DESTROY_OUT)"
+  fail "rc destroy did not exit 0 (rc=$DESTROY_RC out=$DESTROY_OUT)"
 fi
 
 if ! volume_exists "$VOL_STATE"; then

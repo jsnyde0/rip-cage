@@ -53,7 +53,7 @@ CLEANUP() {
   local _d_out _d_rc
   for c in "${CREATED_CAGES[@]:-}"; do
     if [[ -n "$c" ]]; then
-      _d_out=$("$RC" destroy --force "$c" 2>&1)
+      _d_out=$("$RC" destroy "$c" 2>&1)
       _d_rc=$?
       if [[ "$_d_rc" -ne 0 ]]; then
         echo "WARNING: failed to destroy '$c' (exit ${_d_rc}): ${_d_out}" >&2
@@ -128,7 +128,7 @@ HOST_PROJECTS_DIR="$HOME/.claude/projects/$HOST_KEY"
 
 # Pre-clean any leftover cage from a prior run of this exact deterministic name.
 # swallow-ok(rip-cage-54q3.6.5): pre-emptive stale-cage cleanup; non-zero means there was nothing to destroy.
-"$RC" destroy --force "$CONTAINER_NAME" >/dev/null 2>&1 || true
+"$RC" destroy "$CONTAINER_NAME" >/dev/null 2>&1 || true
 rm -rf "$HOST_PROJECTS_DIR"
 
 UP_OUT=$(mktemp)
@@ -189,7 +189,11 @@ else
 fi
 
 # Now destroy and verify file survives
-"$RC" destroy -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+# This line spelled the flag `-f`, which the old ratchet pattern never matched;
+# normalising it away (rip-cage-ely4.10, the flag retired with the prompt) is
+# what let the scan finally see it.
+# swallow-ok(rip-cage-ely4.10): the exit code is redundant -- the next line asserts the POST-CONDITION (the cage is gone from the fleet), which is the stronger claim.
+"$RC" destroy "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
 if "$RC" ls --output json | jq -e --arg n "$CONTAINER_NAME" '.[] | select(.name==$n)' >/dev/null 2>&1; then
   check "rc destroy removes container" fail

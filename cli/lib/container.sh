@@ -163,7 +163,7 @@ _rc_source_path_missing_hint() {
   if [[ -z "$source_path" || -d "$source_path" ]]; then
     return 1
   fi
-  echo "Fix-hint: workspace source deleted — '${source_path}' no longer exists on the host; remedy: rc destroy --force ${name}"
+  echo "Fix-hint: workspace source deleted — '${source_path}' no longer exists on the host; remedy: rc destroy ${name}"
   return 0
 }
 

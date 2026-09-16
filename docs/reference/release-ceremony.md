@@ -173,7 +173,7 @@ docker builder prune -f
 for c in $(msb list --format json 2>/dev/null | jq -r '.[].name'); do
   sp=$(msb inspect "$c" --format json 2>/dev/null | jq -r '.config.labels["rc.source.path"] // empty')
   case "$sp" in
-    /private/var/folders/*|/var/folders/*|/tmp/*|/private/tmp/*) ./rc destroy --force "$c" || true ;;
+    /private/var/folders/*|/var/folders/*|/tmp/*|/private/tmp/*) ./rc destroy "$c" || true ;;
   esac
 done
 ```

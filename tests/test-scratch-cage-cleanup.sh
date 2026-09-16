@@ -165,7 +165,7 @@ run_warn() {
     for _root2 in "${_warn_roots[@]+"${_warn_roots[@]}"}"; do
       if [[ "$_raw_sp" == "${_root2}"/* || "$_raw_sp" == "${_root2}" ]]; then
         echo "WARNING: leftover scratch cage detected: ${_cname} (source path: ${_raw_sp})" >&2
-        echo "  Suggested cleanup: rc destroy --force ${_cname}" >&2
+        echo "  Suggested cleanup: rc destroy ${_cname}" >&2
         break
       fi
     done
@@ -197,7 +197,7 @@ C1A_NAME="rip-cage-cleanup-test-1a-$$"
 create_fixture_container "$C1A_NAME" "$C1A_WS"
 
 # Run a subprocess that sources the lib and registers the container, then exits 0.
-# The lib's EXIT trap should call rc destroy --force on the container.
+# The lib's EXIT trap should call rc destroy on the container.
 bash -c "
   SCRIPT_DIR='${SCRIPT_DIR}'
   source '${SCRIPT_DIR}/_scratch-cage-lib.sh'
@@ -446,7 +446,7 @@ C6_STUB_DIR=$(mktemp -d)
 mkdir -p "${C6_STUB_DIR}/nested"
 C6_MARKERS="${C6_STUB_DIR}/markers.log"
 
-# Fake `rc`: `destroy --force <name>` appends a DESTROY marker.
+# Fake `rc`: `destroy <name>` appends a DESTROY marker.
 cat > "${C6_STUB_DIR}/rc" <<STUBEOF
 #!/usr/bin/env bash
 echo "DESTROY" >> "${C6_MARKERS}"
@@ -488,7 +488,7 @@ C7_STUB_DIR=$(mktemp -d)
 mkdir -p "${C7_STUB_DIR}/nested"
 C7_NAME="case7-cage"
 
-# Fake `rc`: `destroy --force <name>` always fails, loudly, on its own stderr.
+# Fake `rc`: `destroy <name>` always fails, loudly, on its own stderr.
 cat > "${C7_STUB_DIR}/rc" <<'STUBEOF'
 #!/usr/bin/env bash
 echo "stub destroy exploded" >&2

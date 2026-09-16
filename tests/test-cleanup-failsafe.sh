@@ -43,7 +43,7 @@ echo "=== test-cleanup-failsafe.sh ==="
 # command ZERO times.
 # ----------------------------------------------------------------------------
 STUB_DIR=$(mktemp -d)
-# _scratch_cage_cleanup destroys via "${SCRIPT_DIR}/../rc destroy --force
+# _scratch_cage_cleanup destroys via "${SCRIPT_DIR}/../rc destroy
 # <name>". Point the inner SCRIPT_DIR at a nested dir so that path resolves
 # to STUB_DIR/rc — our logging stub, never the real rc.
 mkdir -p "${STUB_DIR}/nested"

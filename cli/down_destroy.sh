@@ -24,11 +24,26 @@
 # removing the sandbox cleans its volumes.
 
 
+# THE CONFIRM PROMPT AND `--force` ARE BOTH GONE (ADR-031 D3, ruled
+# 2026-09-16). `rc destroy` used to stop at a TTY and ask "Destroy? [y/N]"
+# unless --force was passed. Agent-first means no prompts: the verb already
+# takes an exact cage name, so the prompt guarded nothing an operator had not
+# already typed, and --force existed only to switch it off. With the prompt
+# deleted --force reads nothing, so it is deleted too rather than left as an
+# accepted no-op that silently means less than it says.
+#
+# An unknown flag now fails loud instead of being taken as a cage name: the
+# parser's old catch-all would have read `--force` as the name to destroy.
 cmd_destroy() {
-  local name="" force=0
+  local name=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --force|-f) force=1; shift ;;
+      -*)
+        [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "rc destroy takes a cage name, not the flag '$1'" "DESTROY_FLAG_UNKNOWN"
+        echo "Error: rc destroy takes a cage name, not '$1'." >&2
+        echo "       It accepts no flags. (-f/--force retired with the confirmation prompt: ADR-031 D3, agent-first means no prompts.)" >&2
+        exit 1
+        ;;
       *) name="$1"; shift ;;
     esac
   done
@@ -60,29 +75,9 @@ cmd_destroy() {
     fi
   fi
 
-  # Interactive confirmation for destructive operation (skip in JSON/non-TTY/--force)
-  #
-  # rc-allow-tty-read: a human at a terminal confirming an irreversible delete.
-  # This is the one TTY-guarded read rc still contains, and it cannot block an
-  # agent: an agent's stdin is a pipe, so `-t 0` is false and the whole block is
-  # skipped. tests/test-rc-decomposition-structure.sh scans for this shape and
-  # honors this marker (ADR-031 D3 deleted the first-run prompt, which had no
-  # such property -- it fired on a path an agent takes).
-  if [[ "$force" -eq 0 ]] && [[ "$DRY_RUN" != "true" ]] && [[ "$OUTPUT_FORMAT" != "json" ]] && [[ -t 0 ]]; then
-    local source_path
-    source_path=$(_msb_label "$name" "rc.source.path" 2>/dev/null || true)
-    echo "This will permanently remove:"
-    echo "  Container:  $name"
-    [[ -n "$source_path" ]] && echo "  Workspace:  $source_path"
-    echo "  Volumes:    rc-state-$name, rc-history-$name"
-    printf "Destroy? [y/N] "
-    local reply
-    read -r reply
-    if [[ "$reply" != [yY] ]]; then
-      echo "Aborted."
-      return 0
-    fi
-  fi
+  # (the interactive confirmation lived here -- see this function's header for
+  # why it and --force were deleted. `rc destroy --dry-run` is what shows you
+  # what would go, and it is not a prompt.)
 
   if [[ "$DRY_RUN" == "true" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then

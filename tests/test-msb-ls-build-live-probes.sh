@@ -154,7 +154,7 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== LS3: after rc destroy, rc ls no longer lists the cage ==="
-_d_out=$(run_rc destroy --force "$CAGE_NAME" 2>&1)
+_d_out=$(run_rc destroy "$CAGE_NAME" 2>&1)
 _d_rc=$?
 if [[ "$_d_rc" -ne 0 ]]; then
   echo "WARNING: failed to destroy '$CAGE_NAME' (exit ${_d_rc}): ${_d_out}" >&2
