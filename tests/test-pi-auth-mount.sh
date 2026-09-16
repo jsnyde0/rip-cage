@@ -20,6 +20,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 FAILURES=0
 TEST_WS=""
 CONTAINER=""
@@ -112,6 +115,11 @@ export HOME="$TEST_HOME_SANDBOX"
 # rc exec, rc destroy — not only rc up) must resolve against the real msb
 # sandboxes registry, not an empty one under the temp HOME.
 export MSB_HOME="$REAL_MSB_HOME"
+# Docker resolves its CONTEXT through $HOME/.docker, and HOME is sandboxed
+# above, so without this `docker info` fails and every case reports a daemon
+# error instead of its own subject. The isolation this suite needs is over
+# rip-cage's own config, not over the container runtime.
+export DOCKER_CONFIG="${REAL_HOME}/.docker"
 
 # ---- State backup/restore for ~/.pi/agent ----
 PI_AGENT_DIR="${HOME}/.pi/agent"
@@ -189,7 +197,7 @@ TEST_WS=$(mktemp -d)
 echo ""
 echo "=== Test 1: /home/agent/.pi/agent/auth.json is mounted and readable ==="
 
-RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
+RC_CAGE_CONF="$(cage_conf_for "$TEST_WS")" RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
 CONTAINER=$(_resolve_container "$TEST_WS")
 
 if [[ -z "$CONTAINER" ]]; then
@@ -320,7 +328,7 @@ mv "$PI_AGENT_DIR" "${PI_AGENT_DIR}.bak-test"
 TEST_WS2=$(mktemp -d)
 rc_output=""
 rc_exit=0
-rc_output=$(RC_ALLOWED_ROOTS="$TEST_WS2" RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS2" </dev/null 2>&1) || rc_exit=$?
+rc_output=$(RC_CAGE_CONF="$(cage_conf_for "$TEST_WS2")" RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS2" </dev/null 2>&1) || rc_exit=$?
 
 CONTAINER2=$(_resolve_container "$TEST_WS2")
 

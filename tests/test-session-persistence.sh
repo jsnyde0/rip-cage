@@ -20,6 +20,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 
 PASS=0; FAIL=0; TOTAL=0
 check() {
@@ -68,7 +71,7 @@ DRY_TMP=$(mktemp -d)
 DRY_PROJECT="$DRY_TMP/dryrun-fixture"
 mkdir -p "$DRY_PROJECT"
 DRY_PARENT_RESOLVED=$(cd "$DRY_TMP" && pwd -P)
-DRY_OUT=$(RC_ALLOWED_ROOTS="$DRY_PARENT_RESOLVED" "$RC" --dry-run up "$DRY_PROJECT" 2>&1 || true)
+DRY_OUT=$(RC_CAGE_CONF="$(cage_conf_for "$DRY_PROJECT")" "$RC" --dry-run up "$DRY_PROJECT" 2>&1 || true)
 DRY_PROJECT_RESOLVED=$(cd "$DRY_PROJECT" && pwd -P)
 EXPECTED_DRY_KEY=$(printf '%s' "$DRY_PROJECT_RESOLVED" | tr '/.' '-')
 
@@ -129,7 +132,7 @@ HOST_PROJECTS_DIR="$HOME/.claude/projects/$HOST_KEY"
 rm -rf "$HOST_PROJECTS_DIR"
 
 UP_OUT=$(mktemp)
-RC_ALLOWED_ROOTS="$E2E_RESOLVED" "$RC" up "$E2E_PROJECT" </dev/null >"$UP_OUT" 2>&1 || true
+RC_CAGE_CONF="$(cage_conf_for "$E2E_PROJECT")" "$RC" up "$E2E_PROJECT" </dev/null >"$UP_OUT" 2>&1 || true
 _track "$CONTAINER_NAME"
 
 if "$RC" ls --output json | jq -e --arg n "$CONTAINER_NAME" '.[] | select(.name==$n and .status=="running")' >/dev/null 2>&1; then

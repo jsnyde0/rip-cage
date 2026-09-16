@@ -45,6 +45,18 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+
+# This suite sandboxes HOME so rc reads a fixture tree. Docker resolves its
+# CONTEXT through $HOME/.docker, so a sandboxed HOME makes `docker info` fail
+# and cases report a daemon error instead of their own subject. Point
+# DOCKER_CONFIG at the real one: the isolation needed is over rip-cage's own
+# config, not over the container runtime.
+RC_TEST_REAL_DOCKER_CONFIG="${DOCKER_CONFIG:-${HOME}/.docker}"
+export RC_TEST_REAL_DOCKER_CONFIG
+
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 WRAPPER_SRC="${REPO_ROOT}/examples/claude/claude-session-wrapper.sh"
 
 # REAL_MSB_HOME (msb-port note, rip-cage-neu7.14 Batch E — mirrors
@@ -141,10 +153,10 @@ NP_ENVFILE="${NP_WS_ROOT}/np.env"
 printf 'CLAUDE_CODE_OAUTH_TOKEN=placeholder-token-vwka\n' > "$NP_ENVFILE"
 chmod 600 "$NP_ENVFILE"
 NP_UP_OUT="${NP_WS_ROOT}/np-up.out"
-HOME="$NP_HOME" MSB_HOME="$REAL_MSB_HOME" \
+HOME="$NP_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_HOME" \
   RC_SKIP_KEYCHAIN_EXTRACTION=1 \
   ANTHROPIC_API_KEY="" \
-  RC_ALLOWED_ROOTS="$(realpath "$NP_WS_ROOT")" \
+  RC_CAGE_CONF="$(cage_conf_for "$NP_WS")" \
   RIP_CAGE_EGRESS=off \
   "$RC" up "$NP_WS" --env-file "$NP_ENVFILE" </dev/null >"$NP_UP_OUT" 2>&1 || true
 NP_NAME=$("$RC" ls --output json | jq -r --arg ws "$(realpath "$NP_WS")" \
@@ -213,10 +225,10 @@ if [[ "$NP_LIVE" == "true" ]]; then
   "$RC" exec "$NP_NAME" -- sh -c "printf '%s' '${V2_SENTINEL}' > /home/agent/.claude/.claude.json.seed"
   msb stop "$NP_NAME" >/dev/null 2>&1
   NP_RESUME_OUT="${NP_WS_ROOT}/np-resume.out"
-  HOME="$NP_HOME" MSB_HOME="$REAL_MSB_HOME" \
+  HOME="$NP_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_HOME" \
     RC_SKIP_KEYCHAIN_EXTRACTION=1 \
     ANTHROPIC_API_KEY="" \
-    RC_ALLOWED_ROOTS="$(realpath "$NP_WS_ROOT")" \
+    RC_CAGE_CONF="$(cage_conf_for "$NP_WS")" \
     RIP_CAGE_EGRESS=off \
     "$RC" up "$NP_WS" </dev/null >"$NP_RESUME_OUT" 2>&1 || true
   NP_RESUME_LOG=$(cat "$NP_RESUME_OUT" 2>/dev/null || true)
@@ -295,10 +307,10 @@ git -C "$PC_WS" init -q
 PC_SENTINEL='{"possession-sentinel-vwka":"abc123","hasCompletedOnboarding":true}'
 printf '%s' "$PC_SENTINEL" > "${PC_HOME}/.claude.json"
 PC_UP_OUT="${PC_WS_ROOT}/pc-up.out"
-HOME="$PC_HOME" MSB_HOME="$REAL_MSB_HOME" \
+HOME="$PC_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_HOME" \
   RC_SKIP_KEYCHAIN_EXTRACTION=1 \
   ANTHROPIC_API_KEY=sk-test-vwka-pc \
-  RC_ALLOWED_ROOTS="$(realpath "$PC_WS_ROOT")" \
+  RC_CAGE_CONF="$(cage_conf_for "$PC_WS")" \
   RIP_CAGE_EGRESS=off \
   "$RC" up "$PC_WS" </dev/null >"$PC_UP_OUT" 2>&1 || true
 PC_NAME=$("$RC" ls --output json | jq -r --arg ws "$(realpath "$PC_WS")" \
@@ -356,10 +368,10 @@ NN_ENVFILE="${NN_WS_ROOT}/nn.env"
 printf 'CLAUDE_CODE_OAUTH_TOKEN=placeholder-token-t7cu\n' > "$NN_ENVFILE"
 chmod 600 "$NN_ENVFILE"
 NN_UP_OUT="${NN_WS_ROOT}/nn-up.out"
-HOME="$NN_HOME" MSB_HOME="$REAL_MSB_HOME" \
+HOME="$NN_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_HOME" \
   RC_SKIP_KEYCHAIN_EXTRACTION=1 \
   ANTHROPIC_API_KEY="" \
-  RC_ALLOWED_ROOTS="$(realpath "$NN_WS_ROOT")" \
+  RC_CAGE_CONF="$(cage_conf_for "$NN_WS")" \
   RIP_CAGE_EGRESS=off \
   "$RC" up "$NN_WS" --env-file "$NN_ENVFILE" </dev/null >"$NN_UP_OUT" 2>&1 || true
 NN_NAME=$("$RC" ls --output json | jq -r --arg ws "$(realpath "$NN_WS")" \
