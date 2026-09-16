@@ -75,7 +75,9 @@ After building, spin up a container against any project directory and run the te
 
 The test suite (`tests/test-safety-stack.sh`) runs 30+ checks organized into sections:
 
-**User & Environment** — verifies the container agent runs as the `agent` user (uid 1000, not root) and that `/workspace` is mounted and writable.
+**Floor probe** — runs first, before any other suite. This is the fail-closed containment floor on the BUILT image ([ADR-031](docs/decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D5b): the runtime user and `$HOME`, the scoped sudo grant, every root-owned guard file's owner *and* mode bits, the `bd` wrapper, where the floor's wrappers resolve to in the interactive shell's `PATH`, the `.git/hooks` deny rule in the baked settings template, the ssh host-key pin, `python3`, and the mise trust path. The same script runs at every cage boot, where any failure refuses the boot. Its file header (`cage/floor/floor-probe.sh`) lists every check with the `cage/Dockerfile` line it guards — read that before adding a floor property.
+
+**User & Environment** — verifies `/workspace` is mounted and writable, and that a fresh shell starts there. (The "runs as the `agent` user, not root" check moved into the floor probe above.)
 
 **Settings & Safety Stack** — verifies `settings.json` is present, valid JSON, has `bypassPermissions` mode, and has the `.git/hooks` write deny rule. When the DCG and ssh-bypass recipes are composed, also verifies those hooks are wired.
 
@@ -89,7 +91,7 @@ The test suite (`tests/test-safety-stack.sh`) runs 30+ checks organized into sec
 
 **Beads functional** — if the workspace has a `.beads/` directory, verifies `bd list` returns a valid response.
 
-**Beads wrapper** — verifies the `bd` wrapper script blocks `dolt start` in server mode and that `--verbose` flag bypass is prevented.
+**Beads wrapper** — verifies the `bd` wrapper script blocks `dolt start` in server mode and that `--verbose` flag bypass is prevented. (That the wrapper *exists* and is the real indirection is the floor probe's `bd-wrapper` check; what it *does* is here.)
 
 **Network & Disk** — verifies DNS resolution for github.com and at least 1GB free disk space on `/workspace`.
 
@@ -100,11 +102,16 @@ The test suite (`tests/test-safety-stack.sh`) runs 30+ checks organized into sec
 Expected output when everything passes:
 
 ```
+=== Rip Cage floor probe (ADR-031 D5b) ===
+PASS  [1] floor: runtime-user — agent (uid 1000)
+PASS  [2] floor: agent-home — /home/agent
+...
+=== Floor: N passed, 0 failed (of N) ===
+
 === Rip Cage Health Check ===
 
 -- User & Environment --
-PASS  [1] Container user is agent — agent
-PASS  [2] Not running as root — uid=1000
+PASS  [1] /workspace is mounted
 ...
 === Results: N passed, 0 failed (of N) ===
 ```
