@@ -7,6 +7,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 FAILURES=0
 
 pass() { echo "PASS: $1"; }
@@ -77,50 +80,26 @@ else
 fi
 
 # -----------------------------------------------
-# Test 2: session.multiplexer=tmux without manifest declaration fails loud.
-# rip-cage-61al.4: tmux is now manifest/registry-derived, not a static enum.
-# Without a MULTIPLEXER entry in the manifest, tmux fails at config-validate
-# with a fix-naming message (ADR-001 fail-loud).
+# Test 2: RETIRED -- see rip-cage-ely4.7.2 for the gap it leaves.
+# RETIRED by rip-cage-ely4.9: Test 2 asserted that `session.multiplexer: tmux`
+# in a per-project rip-cage config fails loud at CONFIG-VALIDATE time when the
+# manifest declares no matching MULTIPLEXER entry. Both halves of that sentence
+# are gone: ADR-031 D2 retires the config schema (the multiplexer is selected
+# by RC_MULTIPLEXER now) and with it `_config_validate_or_abort`, which is
+# where the enum was checked against the baked registry.
 #
-# Isolation (rip-cage-61al.4 review, Finding 2):
-#   RC_MUX_INSPECT_IMAGE is pinned to a nonexistent tag so _config_mux_derive_allowed_set
-#   takes the image-absent path deterministically (not the host's rip-cage:latest label).
-#   RC_MANIFEST_GLOBAL is pinned to a controlled empty manifest (no MULTIPLEXER entries)
-#   so the manifest fallback does not read the developer's real ~/.config/rip-cage/tools.yaml.
-# -----------------------------------------------
-echo ""
-echo "=== Test 2: session.multiplexer=tmux without manifest declaration fails loud ==="
+# THIS LEAVES A REAL GAP, filed rather than buried: nothing now refuses BEFORE
+# `msb create` when the requested multiplexer is absent from the image, so the
+# cage is created and only fails at attach. That is an ADR-001 fail-loud
+# regression and it is tracked as its own bead — a pre-create check needs the
+# image-inspect machinery the deleted validator carried, which is new code
+# rather than a line this bead removed.
+#
+# The gap is tracked as rip-cage-ely4.7.2. Reinstating a version of this case
+# is that bead's job, not a rewrite here:
+# a test kept alive against a validator that no longer exists would either
+# assert nothing or assert the wrong layer.
 
-T2_WKSP=$(mktemp -d)
-T2_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-prereq-t2-XXXXXX")
-T2_MANIFEST=$(mktemp "${TMPDIR:-/tmp}/rc-prereq-t2-manifest-XXXXXX")
-mkdir -p "${T2_WKSP}/.git"
-printf 'version: 2\nsession:\n  multiplexer: tmux\nmounts:\n  denylist: []\n' > "${T2_WKSP}/.rip-cage.yaml"
-printf 'version: 2\nmounts:\n  denylist: []\n' > "$T2_GLOBAL_CFG"
-# Empty manifest: no tools / no MULTIPLEXER entries.
-printf 'version: 1\ntools: []\n' > "$T2_MANIFEST"
-output=$(RC_ALLOWED_ROOTS="$T2_WKSP" RC_CONFIG_GLOBAL="$T2_GLOBAL_CFG" \
-  RC_MUX_INSPECT_IMAGE="rip-cage:nonexistent-isolation-prereq-t2" \
-  RC_MANIFEST_GLOBAL="$T2_MANIFEST" \
-  "$RC" up "$T2_WKSP" 2>&1 || true)
-rm -f "$T2_GLOBAL_CFG" "$T2_MANIFEST"
-if echo "$output" | grep -qi "tmux"; then
-  pass "missing tmux manifest entry: error mentions 'tmux'"
-else
-  fail "missing tmux manifest entry: error should mention 'tmux'" "$output"
-fi
-if echo "$output" | grep -q "rc build"; then
-  pass "missing tmux manifest entry: error names the fix ('rc build')"
-else
-  fail "missing tmux manifest entry: error should name the fix 'rc build'" "$output"
-fi
-
-# -----------------------------------------------
-# Test 3: Docker daemon not running — rc build fails with helpful message
-# rip-cage-tsf2.1: `rc ls` moved from check_docker to check_msb (ADR-029 D1
-# hard cutover). `rc build` is the one remaining verb that genuinely still
-# runs `docker build`, so it's the real check_docker exerciser now; Test 3b
-# below covers `rc ls`'s new msb-side daemon-error surfacing.
 # -----------------------------------------------
 echo ""
 echo "=== Test 3: Docker daemon not running gives helpful error ==="

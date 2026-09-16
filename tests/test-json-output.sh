@@ -11,6 +11,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 FAILURES=0
 
 pass() { echo "PASS: $1"; }
@@ -87,13 +90,11 @@ echo "=== Test 7: --output json up with no path defaults to current directory ==
 # rc up with no path should default to '.' — verify via dry-run (no Docker needed)
 TEST_ALLOWED_DIR=$(mktemp -d)
 TEST_GLOBAL_CFG_DIR=$(mktemp -d)
-cat > "$TEST_GLOBAL_CFG_DIR/config.yaml" <<'YAML'
-mounts:
-  denylist: []
-  allow_risky: null
-YAML
+# The cage config must be resolved for the directory rc will default to,
+# which is the cwd -- that IS what this case is checking (ADR-031 D2).
+TEST_CAGE_CONF=$(cage_conf_for "$TEST_ALLOWED_DIR")
 cd "$TEST_ALLOWED_DIR"
-up_default=$(RC_ALLOWED_ROOTS="$TEST_ALLOWED_DIR" RC_CONFIG_GLOBAL="$TEST_GLOBAL_CFG_DIR/config.yaml" "$RC" --dry-run --output json up 2>/dev/null) || true
+up_default=$(RC_CAGE_CONF="$TEST_CAGE_CONF" "$RC" --dry-run --output json up 2>/dev/null) || true
 up_action=$(echo "$up_default" | jq -r '.action // empty' 2>/dev/null || true)
 if [[ "$up_action" == would_* ]]; then
   pass "--output json up with no path defaults to '.' (dry_run action=$up_action)"

@@ -22,7 +22,7 @@ _rc_complete() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  local subcommands="build up ls attach exec down destroy reload test doctor auth config schema completions setup"
+  local subcommands="build up ls attach exec down destroy reload test doctor auth manifest completions setup generate-dockerfile"
 
   if [[ $COMP_CWORD -eq 1 ]]; then
     COMPREPLY=( $(compgen -W "$subcommands" -- "$cur") )
