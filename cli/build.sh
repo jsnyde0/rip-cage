@@ -3,29 +3,13 @@
 # NOTE: sourced by the rc shim; must NOT set -euo pipefail (shim owns strict mode once).
 
 
-cmd_generate_dockerfile() {
-  # Expose the composed Dockerfile for CI/release use (rip-cage-wlwc.12).
-  # Reads RC_MANIFEST_GLOBAL (default: ~/.config/rip-cage/tools.yaml) and emits
-  # the composed Dockerfile to stdout. The caller redirects to a file and passes
-  # it to docker build --file.
-  #
-  # This is NOT a compose mechanism — it simply exposes _manifest_build_dockerfile_path
-  # (already used by cmd_build) so that CI can generate the composed Dockerfile without
-  # also running docker build. No auto-wiring; no config-merge; the agent/CI provides
-  # the manifest, this function outputs the Dockerfile.
-  #
-  # Usage: RC_MANIFEST_GLOBAL=manifest/default-tools.yaml ./rc generate-dockerfile > Dockerfile.composed
-  local _df_path
-  _df_path=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/cage/Dockerfile") || {
-    echo "Error: failed to resolve composed Dockerfile from manifest." >&2
-    return 1
-  }
-  cat "$_df_path"
-  # Clean up temp file if one was created (path differs from original Dockerfile).
-  if [[ "$_df_path" != "${SCRIPT_DIR}/cage/Dockerfile" ]]; then
-    rm -f "$_df_path"
-  fi
-}
+# THE `generate-dockerfile` VERB IS GONE (ADR-031 D3). It printed the
+# manifest-composed Dockerfile to stdout so CI, or an operator wanting a flag
+# rc build's allowlist rejects, could run `docker build` themselves. It retires
+# with the manifest it composed (ADR-031 D4, rip-cage-ely4.11): once users
+# extend the published base image with their own Dockerfile, there is no
+# composed artifact left to print. _manifest_build_dockerfile_path, the
+# function it exposed, is still called by cmd_build below.
 
 
 # _build_reject_arg <message> <json_code> -- shared fail-loud emitter for
@@ -161,10 +145,9 @@ cmd_build() {
   #      bypassing every one of the checks above, including this bead's own
   #      -o rejection -- closed by removing that special case entirely, so
   #      `--` itself now falls into this same fail-closed bucket) -- ALL
-  #      fail loud here, before any docker call, naming the allowlist and
-  #      the `rc generate-dockerfile` escape hatch (compose the Dockerfile
-  #      yourself, invoke `docker build` yourself, explicitly outside rc's
-  #      safety floor).
+  #      fail loud here, before any docker call, naming the allowlist.
+  #      The `rc generate-dockerfile` escape hatch these messages used to
+  #      offer retired with the verb (ADR-031 D3/D5(c)).
   # This also closes rip-cage-fo4z's own forward-compat caveat ("if docker
   # build ever gains a new boolean short flag, a cluster using it could
   # again slip past the pattern") -- an unrecognized flag now fails closed
@@ -205,12 +188,12 @@ cmd_build() {
         # "effective Dockerfile" concept to swap to (brain-ruled on the
         # bead: resolving the Dockerfile from the manifest IS rc's job).
         # rip-cage-zqjz.2 round 2 (adversarial-review minor 2): this was the
-        # one reject site NOT updated to name the allowlist section and the
-        # rc generate-dockerfile escape hatch when every other reject
-        # message (-o, --build-arg, the catch-all default) gained them —
+        # one reject site NOT updated to name the allowlist section when
+        # every other reject message (-o, --build-arg, the catch-all
+        # default) gained it —
         # it predates rip-cage-zqjz.2, from rip-cage-zqjz. Made consistent
         # here; wording otherwise unchanged.
-        _build_reject_arg "rc build: -f/--file is not accepted — rc resolves the Dockerfile from the manifest; a caller-supplied Dockerfile would bypass the build-isolation validator (ADR-005 D9 / ADR-024), which only ever audits rc's own resolved Dockerfile. See 'rc build flag allowlist' in docs/reference/cli-reference.md. Escape hatch: run 'rc generate-dockerfile > Dockerfile.composed' and invoke docker build yourself, explicitly outside rc's safety floor." "BUILD_FILE_REJECTED"
+        _build_reject_arg "rc build: -f/--file is not accepted — rc resolves the Dockerfile from the manifest; a caller-supplied Dockerfile would bypass the build-isolation validator (ADR-005 D9 / ADR-024), which only ever audits rc's own resolved Dockerfile. See 'rc build flag allowlist' in docs/reference/cli-reference.md. There is no escape hatch: rc build passes docker a fixed argv (ADR-031 D5(c))." "BUILD_FILE_REJECTED"
         return 1
         ;;
       -o|--output|--output=*)
@@ -249,7 +232,7 @@ cmd_build() {
         if [[ "$_bt_out_val" == "json" ]]; then
           _build_reject_arg "rc build: -o/--output is not accepted here — it can redirect the build result away from the local docker image store, which would let the post-build safety-floor validators silently pass against a STALE previously-built image while rc reports the build as successful. Looks like you wanted rc's own JSON output mode instead: use 'rc --output json build' or 'rc build --output json' (two SEPARATE words, not '--output=json' or '-o json') — that spelling is rc's documented global flag, handled upstream of this rejection entirely. See 'rc build flag allowlist' in docs/reference/cli-reference.md." "BUILD_OUTPUT_REJECTED"
         else
-          _build_reject_arg "rc build: -o/--output is not accepted — it can redirect the build result away from the local docker image store (filesystem, registry, ...), which would let the post-build safety-floor validators silently pass against a STALE previously-built image while rc reports the build as successful. There is no legitimate rc build -o/--output use. See 'rc build flag allowlist' in docs/reference/cli-reference.md. Escape hatch: run 'rc generate-dockerfile > Dockerfile.composed' and invoke docker build yourself, explicitly outside rc's safety floor." "BUILD_OUTPUT_REJECTED"
+          _build_reject_arg "rc build: -o/--output is not accepted — it can redirect the build result away from the local docker image store (filesystem, registry, ...), which would let the post-build safety-floor validators silently pass against a STALE previously-built image while rc reports the build as successful. There is no legitimate rc build -o/--output use. See 'rc build flag allowlist' in docs/reference/cli-reference.md. There is no escape hatch: rc build passes docker a fixed argv (ADR-031 D5(c))." "BUILD_OUTPUT_REJECTED"
         fi
         return 1
         ;;
@@ -294,7 +277,7 @@ cmd_build() {
         # rc's OWN `--build-arg "RC_VERSION=${RC_VERSION}"` is set internally
         # by the two docker-build call sites below, not routed through this
         # allowlist scan at all -- unaffected by this rejection.
-        _build_reject_arg "rc build: --build-arg is not accepted — a caller-supplied build-arg value can override the Dockerfile frontend via BUILDKIT_SYNTAX=<image> (an arbitrary caller-named image then interprets the Dockerfile, making _manifest_check_build_isolation's static analysis of rc's own resolved Dockerfile vacuous), or be interpolated into a RUN shell command in cage/Dockerfile (build-time command injection). rc sets its own --build-arg RC_VERSION=... internally; that is unaffected. There is no legitimate rc build --build-arg use and no manifest build-arg mechanism to preserve. See 'rc build flag allowlist' in docs/reference/cli-reference.md. Escape hatch: run 'rc generate-dockerfile > Dockerfile.composed' and invoke docker build yourself, explicitly outside rc's safety floor." "BUILD_BUILD_ARG_REJECTED"
+        _build_reject_arg "rc build: --build-arg is not accepted — a caller-supplied build-arg value can override the Dockerfile frontend via BUILDKIT_SYNTAX=<image> (an arbitrary caller-named image then interprets the Dockerfile, making _manifest_check_build_isolation's static analysis of rc's own resolved Dockerfile vacuous), or be interpolated into a RUN shell command in cage/Dockerfile (build-time command injection). rc sets its own --build-arg RC_VERSION=... internally; that is unaffected. There is no legitimate rc build --build-arg use and no manifest build-arg mechanism to preserve. See 'rc build flag allowlist' in docs/reference/cli-reference.md. There is no escape hatch: rc build passes docker a fixed argv (ADR-031 D5(c))." "BUILD_BUILD_ARG_REJECTED"
         return 1
         ;;
       --no-cache|--pull|--debug|--quiet)
@@ -399,17 +382,17 @@ cmd_build() {
         # not repeated per-flag here (one shared message covers all of
         # them, naming the actual token via `$1`).
         if [[ "$1" != -* ]]; then
-          _build_reject_arg "rc build: unexpected argument '$1' — rc build does not accept a build-context positional; rc supplies it itself. See 'rc build flag allowlist' in docs/reference/cli-reference.md. Escape hatch: run 'rc generate-dockerfile > Dockerfile.composed' and invoke docker build yourself, explicitly outside rc's safety floor." "BUILD_EXTRA_POSITIONAL"
+          _build_reject_arg "rc build: unexpected argument '$1' — rc build does not accept a build-context positional; rc supplies it itself. See 'rc build flag allowlist' in docs/reference/cli-reference.md. There is no escape hatch: rc build passes docker a fixed argv (ADR-031 D5(c))." "BUILD_EXTRA_POSITIONAL"
           return 1
         elif [[ "$1" =~ ^-[Dq]*f(.*)$ ]]; then
           # rip-cage-zqjz.2 round 2 (adversarial-review minor 2): same
           # consistency fix as the explicit -f|--file|--file=* case arm
           # above — name the allowlist section and the escape hatch here
           # too, this being the SECOND -f reject site (cluster spellings).
-          _build_reject_arg "rc build: -f/--file is not accepted — rc resolves the Dockerfile from the manifest; a caller-supplied Dockerfile would bypass the build-isolation validator (ADR-005 D9 / ADR-024), which only ever audits rc's own resolved Dockerfile. See 'rc build flag allowlist' in docs/reference/cli-reference.md. Escape hatch: run 'rc generate-dockerfile > Dockerfile.composed' and invoke docker build yourself, explicitly outside rc's safety floor." "BUILD_FILE_REJECTED"
+          _build_reject_arg "rc build: -f/--file is not accepted — rc resolves the Dockerfile from the manifest; a caller-supplied Dockerfile would bypass the build-isolation validator (ADR-005 D9 / ADR-024), which only ever audits rc's own resolved Dockerfile. See 'rc build flag allowlist' in docs/reference/cli-reference.md. There is no escape hatch: rc build passes docker a fixed argv (ADR-031 D5(c))." "BUILD_FILE_REJECTED"
           return 1
         elif [[ "$1" =~ ^-[Dq]*o(.*)$ ]]; then
-          _build_reject_arg "rc build: -o/--output is not accepted — it can redirect the build result away from the local docker image store, which would let the post-build safety-floor validators silently pass against a STALE previously-built image while rc reports the build as successful. See 'rc build flag allowlist' in docs/reference/cli-reference.md. Escape hatch: run 'rc generate-dockerfile > Dockerfile.composed' and invoke docker build yourself, explicitly outside rc's safety floor." "BUILD_OUTPUT_REJECTED"
+          _build_reject_arg "rc build: -o/--output is not accepted — it can redirect the build result away from the local docker image store, which would let the post-build safety-floor validators silently pass against a STALE previously-built image while rc reports the build as successful. See 'rc build flag allowlist' in docs/reference/cli-reference.md. There is no escape hatch: rc build passes docker a fixed argv (ADR-031 D5(c))." "BUILD_OUTPUT_REJECTED"
           return 1
         elif [[ "$1" =~ ^-[Dq]*t(.*)$ ]]; then
           local _bt_prefix="${1%%t*}"
@@ -444,7 +427,7 @@ cmd_build() {
           _bt_remaining+=("$1")
           shift
         else
-          _build_reject_arg "rc build: '$1' is not on rc's build-flag allowlist and cannot be passed to docker build — see 'rc build flag allowlist' in docs/reference/cli-reference.md for what is (and isn't) accepted and why. Escape hatch: run 'rc generate-dockerfile > Dockerfile.composed' and invoke docker build yourself, explicitly outside rc's safety floor." "BUILD_ARG_NOT_ALLOWED"
+          _build_reject_arg "rc build: '$1' is not on rc's build-flag allowlist and cannot be passed to docker build — see 'rc build flag allowlist' in docs/reference/cli-reference.md for what is (and isn't) accepted and why. There is no escape hatch: rc build passes docker a fixed argv (ADR-031 D5(c))." "BUILD_ARG_NOT_ALLOWED"
           return 1
         fi
         ;;
@@ -551,7 +534,7 @@ cmd_build() {
       # an explicit RC_IMAGE), untouched by this build. Without this guard,
       # a second build of the SAME custom tag (already loaded into msb's
       # cache from the prior run) makes every real cage's digest mismatch
-      # the fixture image, and the warning would wrongly advise `rc reload`
+      # the fixture image, and the warning would wrongly advise a recreate
       # (a COLD RECREATE) on cages that are perfectly current.
       [[ "$_bt_tag_set" -eq 0 ]] && _build_warn_stale_containers
       # rip-cage-7dkq (S1, msb migration testability root): one-time
@@ -604,14 +587,14 @@ cmd_build() {
 # `rc build`, warn (informational, non-blocking) about existing rc-managed
 # cages still pinned to an older image than the one just built. `rc up`
 # will refuse to resume them (_up_resolve_resume_image_drift_stopped) until
-# `rc reload` (rip-cage-syzk: volume-preserving repair, repointed off `rc
-# destroy` — this is the FIRST of the three sites an operator sees this
-# message at, right after the `rc build` that caused the drift) or the
-# correct RC_IMAGE.
+# `rc up --replace` (rip-cage-syzk: volume-preserving repair, repointed off
+# `rc destroy`, and off the retired `rc reload` by rip-cage-ely4.10 — this is
+# the FIRST of the three sites an operator sees this message at, right after
+# the `rc build` that caused the drift) or the correct RC_IMAGE.
 #
 # rip-cage-tsf2.1: REWRITTEN onto msb — was `docker ps -a --filter
 # label=rc.source.path` + `docker inspect --format '{{.Image}}'`. Enumerates
-# via the same msb primitives cli/ls.sh's _rc_ls_enumerate uses (msb list +
+# via the same msb primitives the retired `rc ls` used (msb list +
 # _msb_inspect_json), and compares each real cage's STORED image digest
 # (_msb_sandbox_image_digest) against the just-built image's REAL current
 # digest in msb's local cache (_msb_current_image_digest) — the same digest
@@ -706,7 +689,7 @@ _build_warn_stale_containers() {
       continue
     fi
     if [[ "$_bwsc_digest" != "$_just_built_digest" ]]; then
-      echo "Warning: container '${_bwsc_name}' was created from a different image than the one just built — rc up will refuse to resume it (rc reload ${_bwsc_name} moves it onto the current image; named volumes and host mounts survive, the guest's ephemeral overlay does not); if a cage was intentionally pinned via RC_IMAGE, ignore this for it." >&2
+      echo "Warning: container '${_bwsc_name}' was created from a different image than the one just built — rc up will refuse to resume it (rc up --replace <its workspace> moves it onto the current image; named volumes and host mounts survive, the guest's ephemeral overlay does not); if a cage was intentionally pinned via RC_IMAGE, ignore this for it." >&2
     fi
   done < <(jq -r '.[].name' <<<"$_names_json" 2>/dev/null)
 }

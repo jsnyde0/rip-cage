@@ -6,11 +6,14 @@
 # was docker inspect/stop/rm/volume rm. down/destroy drive a cage created
 # by the msb-backed `rc up` (S6, rip-cage-rj68).
 #
+# THE `down` VERB IS GONE (ADR-031 D3). Stopping a cage is one msb command —
+# `msb stop <cage>` — so the wrapper earned nothing. The file keeps its name
+# because `destroy` still lives here.
+#
 # ADR-029 D4 lifecycle corollary (FIRM): any cage-stop path that must
-# preserve state uses graceful stop only. `cmd_down` calls
-# `_msb_stop_graceful` (msb_runtime.sh's ONLY stop primitive — see that
-# module's own comment for why there is deliberately no forced-stop
-# sibling to misuse here).
+# preserve state uses graceful stop only (`_msb_stop_graceful`, msb_runtime.sh's
+# ONLY stop primitive — see that module's own comment for why there is
+# deliberately no forced-stop sibling to misuse here).
 #
 # msb behavioral fact (migration spike): `msb remove` has NO volume-
 # deletion flag -- a cage's named volumes (rc-state-<name>,
@@ -19,31 +22,6 @@
 # explicitly ran `docker volume rm` per volume) therefore ALSO calls the
 # distinct `_msb_volume_remove` primitive per volume -- never assumes
 # removing the sandbox cleans its volumes.
-
-
-cmd_down() {
-  local name
-  name=$(resolve_name "${1:-}") || exit 1
-  local state
-  state=$(_msb_sandbox_state "$name" 2>/dev/null || true)
-  if [[ -z "$state" ]]; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
-    echo "Error: container $name not found" >&2; exit 1
-  fi
-  verify_rc_container "$name"
-  if [[ "$state" != "running" ]]; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is not running (state: $state)" "CONTAINER_NOT_RUNNING"
-    echo "Error: container $name is not running (state: $state)" >&2; exit 1
-  fi
-  # Graceful stop ONLY (ADR-029 D4 FIRM) -- see module comment above.
-  _msb_stop_graceful "$name" >/dev/null 2>&1
-  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    jq -nc --arg name "$name" --arg action "stopped" --arg status "exited" \
-      '{name: $name, action: $action, status: $status}'
-  else
-    echo "Container $name stopped."
-  fi
-}
 
 
 cmd_destroy() {
@@ -83,6 +61,13 @@ cmd_destroy() {
   fi
 
   # Interactive confirmation for destructive operation (skip in JSON/non-TTY/--force)
+  #
+  # rc-allow-tty-read: a human at a terminal confirming an irreversible delete.
+  # This is the one TTY-guarded read rc still contains, and it cannot block an
+  # agent: an agent's stdin is a pipe, so `-t 0` is false and the whole block is
+  # skipped. tests/test-rc-decomposition-structure.sh scans for this shape and
+  # honors this marker (ADR-031 D3 deleted the first-run prompt, which had no
+  # such property -- it fired on a path an agent takes).
   if [[ "$force" -eq 0 ]] && [[ "$DRY_RUN" != "true" ]] && [[ "$OUTPUT_FORMAT" != "json" ]] && [[ -t 0 ]]; then
     local source_path
     source_path=$(_msb_label "$name" "rc.source.path" 2>/dev/null || true)

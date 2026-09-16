@@ -1139,6 +1139,109 @@ _up_converge_needed() {
 }
 
 
+# _up_warn_transcript_loss NAME
+#
+# rip-cage-ely4.10: the surviving half of `rc reload`'s transcript-persistence
+# guard (rip-cage-aa4t). Every recreate path — `--replace` and the stopped-cage
+# converge — destroys the guest's ephemeral rootfs overlay. A cage created
+# before rc host-bound ~/.claude/projects keeps its caged-claude conversation
+# transcripts only there, so the recreate loses them silently: herdr restores
+# the pane layout faithfully and the operator finds out when `claude --resume`
+# reports no conversation.
+#
+# WARNS, never refuses. `rc reload` refused unless --allow-transcript-loss was
+# passed; that flag retired with the verb. The loud line is what the operator
+# actually needed; the refusal made an operation they had already named by hand
+# require a second flag to complete, which is the interruption shape ADR-031 D3
+# is removing. Current `rc up` always host-binds ~/.claude/projects, so this
+# only ever fires for genuinely old cages.
+#
+# A check that cannot reach msb says so and stays quiet about the rest — a
+# transient inspect hiccup must not produce a scary line about data loss.
+# _up_check_multiplexer_available CONF
+#
+# rip-cage-ely4.7.2: refuse, before any msb call, when $RC_MULTIPLEXER names a
+# multiplexer the image does not carry.
+#
+# THE REGRESSION THIS CLOSES. Until the config layer retired, an out-of-set
+# multiplexer was refused at config-validate time and no cage was created.
+# After, the cage was created, init ran, and the failure surfaced only at
+# attach — rc built something it then could not use, and left the cage behind.
+# That is the fail-loud contract (ADR-001) inverted: a cheap refusal moved
+# behind an expensive side effect.
+#
+# WHAT IT READS. The built image's `rc.multiplexers` label, which `rc build`
+# stamps from the manifest's MULTIPLEXER entries
+# (_manifest_generate_multiplexer_label). An ABSENT label means the image
+# declares no multiplexers at all — the honest reading of "no entries", since
+# that generator deliberately emits nothing in that case. The image reference
+# comes from the cage config's own `image:` key, because that is what msb will
+# boot (ADR-031 D2: rc passes no image argument).
+#
+# NO msb, BY CONSTRUCTION. The lookup is `docker image inspect`, so this runs
+# inside cmd_up's pre-msb floor block and the refusal happens while the cage
+# still does not exist. rc names no multiplexer itself, here or anywhere — it
+# compares the name it was handed against the set the image declares (ADR-005
+# D12 FIRM).
+#
+# RC_MULTIPLEXER=none — the default, and what almost every cage runs — costs
+# nothing: the function returns before reading anything. A probe on every
+# launch for a feature almost nobody uses is its own kind of wrong.
+_up_check_multiplexer_available() {
+  local _conf="$1"
+  local _mux="${RC_MULTIPLEXER:-none}"
+  [[ -z "$_mux" || "$_mux" == "none" ]] && return 0
+
+  local _img=""
+  if [[ -n "$_conf" && -r "$_conf" ]]; then
+    _img=$(yq -r '.image // ""' "$_conf" 2>/dev/null) || _img=""
+    [[ "$_img" == "null" ]] && _img=""
+  fi
+  [[ -z "$_img" ]] && _img="$IMAGE"
+
+  local _labels=""
+  if ! _labels=$(docker image inspect "$_img" \
+      --format '{{ index .Config.Labels "rc.multiplexers" }}' 2>/dev/null); then
+    # Cannot read the image, so cannot tell. Fail closed: an operator who asked
+    # for a multiplexer by name gets told to build the image that would carry
+    # it, rather than a cage that boots and then cannot attach.
+    echo "Error: multiplexer '${_mux}' was requested via RC_MULTIPLEXER, but image '${_img}' is not available locally to check what it carries." >&2
+    echo "       Run: rc build   (then retry; the build stamps the image's multiplexer registry)" >&2
+    return 1
+  fi
+  [[ "$_labels" == "<no value>" ]] && _labels=""
+
+  # Boundary-safe membership in a comma-separated list: ",herdrx," must not
+  # match "herdr".
+  if [[ ",${_labels}," == *",${_mux},"* ]]; then
+    return 0
+  fi
+
+  local _declared="${_labels:-(none)}"
+  echo "Error: multiplexer '${_mux}' was requested via RC_MULTIPLEXER, but image '${_img}' does not carry it — its baked multiplexer registry declares: ${_declared}." >&2
+  echo "       Declare '${_mux}' in the manifest used to build the image, then run: rc build" >&2
+  echo "       Refusing before any msb call, so no cage is created (ADR-001 fail-loud)." >&2
+  return 1
+}
+
+
+_up_warn_transcript_loss() {
+  local _name="$1"
+  local _tl_rc=0
+  _cage_claude_projects_host_bound "$_name" || _tl_rc=$?
+  case "$_tl_rc" in
+    0) return 0 ;;
+    1)
+      log "WARNING: ~/.claude/projects is NOT host-bound on ${_name} (a legacy cage) — this recreate discards the guest's ephemeral overlay, so any in-flight caged-claude conversation transcripts on it are LOST. The recreated cage gains host session persistence going forward."
+      ;;
+    *)
+      log "WARNING: could not determine whether ~/.claude/projects is host-bound on ${_name} (msb inspect check failed) — proceeding with the recreate without the transcript-loss check."
+      ;;
+  esac
+  return 0
+}
+
+
 _up_resolve_conf() {
   local _path="$1" _name="$2"
 
@@ -1422,20 +1525,19 @@ _up_resolve_resume_image_drift_stopped() {
     return 0
   fi
 
-  # _status == 1: mismatch. rip-cage-syzk (point 4): repointed at `rc reload`
-  # (the volume-preserving repair, now that reload treats a stopped cage's
-  # image drift as a recreate trigger) instead of the old destroy-then-up
-  # dance; the custom-pinned-cage escape stays an `rc up` invocation (with
-  # the original image there is no drift, so `rc reload` would just hit the
-  # unrelaxed running-gate and exit 2 -- see the design's "Rejected in
-  # review" list).
+  # _status == 1: mismatch. rip-cage-syzk (point 4) pointed this at the
+  # volume-preserving repair rather than the old destroy-then-up dance;
+  # rip-cage-ely4.10 repoints it again, onto `rc up --replace`, which is where
+  # `rc reload` folded (ADR-031 D3). The custom-pinned-cage escape stays a
+  # plain `rc up` invocation: with the original image there is no drift, so a
+  # recreate would be work for nothing.
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    json_error "Container ${_name} was created from image ${_RC_IMAGE_DRIFT_STORED} but the current image ${IMAGE} is ${_RC_IMAGE_DRIFT_CURRENT} — rc up refuses to blind-resume a container pinned to a stale image. Run: rc reload ${_name} (moves the cage onto the current image; named volumes and host mounts survive, only the guest's ephemeral overlay does not); or if this cage was intentionally created from a custom image, re-run rc up with the same RC_IMAGE it was created with." "IMAGE_DRIFT_STALE_CONTAINER"
+    json_error "Container ${_name} was created from image ${_RC_IMAGE_DRIFT_STORED} but the current image ${IMAGE} is ${_RC_IMAGE_DRIFT_CURRENT} — rc up refuses to blind-resume a container pinned to a stale image. Run: rc up --replace ${_path} (moves the cage onto the current image; named volumes and host mounts survive, only the guest's ephemeral overlay does not); or if this cage was intentionally created from a custom image, re-run rc up with the same RC_IMAGE it was created with." "IMAGE_DRIFT_STALE_CONTAINER"
   fi
   echo "Error: container ${_name} was created from image ${_RC_IMAGE_DRIFT_STORED}, but the current image ${IMAGE} is ${_RC_IMAGE_DRIFT_CURRENT}." >&2
   echo "       rc up refuses to blind-resume a container pinned to a stale image — a rebuilt image's resume logic (e.g. mediator init) can crash against this container's older filesystem." >&2
   echo "       Run:" >&2
-  echo "         rc reload ${_name}" >&2
+  echo "         rc up --replace ${_path}" >&2
   echo "       (moves the cage onto the current image; named volumes rc-state-${_name}/rc-history-${_name} and host mounts survive -- only the guest's ephemeral overlay does not)" >&2
   echo "       If this cage was intentionally created from a custom-pinned image, re-run rc up with the same RC_IMAGE it was created with instead:" >&2
   echo "         RC_IMAGE=<original image> rc up ${_path}" >&2
@@ -1475,12 +1577,11 @@ _up_resolve_resume_image_drift_running() {
     return 0
   fi
 
-  # rip-cage-syzk (point 4): a running cage is never auto-recreated (ADR-029
-  # D4), so its own image drift still has no in-place repair -- pointed at
-  # `rc down && rc reload` (down first, since reload's stopped-only trigger
-  # scoping rule means it won't fire on a still-running cage) instead of the
-  # old `rc destroy && rc up`.
-  echo "Warning: container ${_name} is running an older image (created from ${_RC_IMAGE_DRIFT_STORED}, current is ${_RC_IMAGE_DRIFT_CURRENT}) — the last 'rc build' will not apply until: rc down ${_name} && rc reload ${_name} (or re-run with the RC_IMAGE this cage was created with, if intentionally pinned)." >&2
+  # rip-cage-syzk (point 4): a running cage is never auto-recreated implicitly
+  # (ADR-029 D4), so its own image drift has no in-place repair. rip-cage-ely4.10
+  # repoints the remedy off the retired `rc down && rc reload` pair onto the one
+  # verb that now names the recreate out loud.
+  echo "Warning: container ${_name} is running an older image (created from ${_RC_IMAGE_DRIFT_STORED}, current is ${_RC_IMAGE_DRIFT_CURRENT}) — the last 'rc build' will not apply until: rc up --replace ${_path} (or re-run with the RC_IMAGE this cage was created with, if intentionally pinned)." >&2
   return 0
 }
 
@@ -1830,14 +1931,15 @@ _up_build_egress_config_json() {
   # tools.yaml, which cmd_up seeds with the floor default if absent). Tool
   # BINARIES are baked into the image at `rc build`; egress RULES are runtime
   # msb flags. But those rules materialize ONLY at cage CREATE (this builder ->
-  # _msb_create net flags) and at `rc reload` (a cold-recreate through this same
-  # machinery, rip-cage-rj68) — NOT on a plain `rc up` that resumes a stopped
-  # cage: the resume path (_up_prepare_resume_secrets) consumes only the
-  # secret-env side of this builder, and `_msb_start` keeps the creation-time
-  # net rules verbatim. So a host-side tools.yaml egress edit takes effect on
-  # the next `rc reload` / fresh create, but a plain resume boots with the OLD
-  # rules. The two can legitimately diverge; the host tools.yaml is
-  # authoritative for egress at create/reload, the baked image for the binary.
+  # _msb_create net flags) and at any recreate that goes through this same
+  # machinery (`rc up --replace`, or the stopped-cage converge) — NOT on a
+  # plain `rc up` that resumes a stopped cage unchanged: the resume path
+  # (_up_prepare_resume_secrets) consumes only the secret-env side of this
+  # builder, and `_msb_start` keeps the creation-time net rules verbatim. So a
+  # host-side tools.yaml egress edit takes effect on the next recreate or fresh
+  # create, but a plain resume boots with the OLD rules. The two can
+  # legitimately diverge; the host tools.yaml is authoritative for egress at
+  # create/recreate, the baked image for the binary.
   #
   # The `-f` guard is defensive (builder called before the manifest exists);
   # it is NOT a deny-all gate — cmd_up SEEDS the floor manifest before this runs
@@ -2174,6 +2276,15 @@ cmd_up() {
     exit 1
   fi
 
+  # rip-cage-ely4.7.2: a multiplexer the image does not carry is refused HERE,
+  # in the same before-any-msb-call block as the mount-side floor, so the cage
+  # never exists. See _up_check_multiplexer_available for why the check reads
+  # the image label rather than a created cage.
+  if ! _up_check_multiplexer_available "$_UP_CAGE_CONF"; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Requested multiplexer '${RC_MULTIPLEXER:-none}' is not carried by the cage image — run rc build" "MULTIPLEXER_NOT_IN_IMAGE"
+    exit 1
+  fi
+
   if ! _protected_paths_conf_outside_mounts "$_UP_CAGE_CONF"; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage config ${_UP_CAGE_CONF} resolves inside a tree it mounts" "CAGE_CONFIG_INSIDE_MOUNT"
     exit 1
@@ -2386,23 +2497,47 @@ cmd_up() {
     state=""
   fi
 
-  # `rc up --replace` ON A RUNNING CAGE is the EXPLICIT graceful-stop-then-
-  # recreate (ADR-031 D3). A running cage is never recreated implicitly —
-  # that kills a live agent session, and agent autonomy is the product
-  # (ADR-029 D4's stopped-only rule, kept). Asking for it by name is the
-  # whole difference, so it happens here, before the state branch: stop,
+  # `rc up --replace` IS THE EXPLICIT graceful-stop-then-recreate (ADR-031 D3),
+  # and it is what `rc reload` folded into. A running cage is never recreated
+  # implicitly — that kills a live agent session, and agent autonomy is the
+  # product (ADR-029 D4's stopped-only rule, kept). Asking for it by name is
+  # the whole difference, so it happens here, before the state branch: stop,
   # remove, and let the create path below run as if the cage were absent.
+  #
+  # It covers a STOPPED cage too, not only a running one (rip-cage-ely4.10).
+  # A stopped cage converges on a plain `rc up` only when its CONFIG changed;
+  # the other repairable drift — a stale pinned image after `rc build` — leaves
+  # the config hash untouched, so the plain resume hits the image-drift
+  # hard-stop instead. `rc reload` used to be that cage's repair; with the verb
+  # gone, --replace has to be, or the hard-stop would name no remedy at all.
   # Under --dry-run this is announced and NOT performed.
-  if [[ "${_UP_MSB_REPLACE:-false}" == "true" && "$state" == "running" ]]; then
+  if [[ "${_UP_MSB_REPLACE:-false}" == "true" ]] \
+      && { [[ "$state" == "running" ]] || [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; }; then
+    local _replace_state_word="running"
+    [[ "$state" != "running" ]] && _replace_state_word="stopped"
     if [[ "$DRY_RUN" == "true" ]]; then
-      log "Would graceful-stop and recreate running cage ${name} (--replace)"
+      log "Would graceful-stop and recreate ${_replace_state_word} cage ${name} (--replace)"
     else
-      log "Recreating running cage ${name} (--replace): graceful stop, remove, create against the current config."
+      # rip-cage-ely4.10: the transcript-persistence warning `rc reload` used to
+      # own. A recreate destroys the guest's ephemeral rootfs overlay, and a
+      # cage predating the host-bound ~/.claude/projects mount keeps its
+      # caged-claude conversation transcripts only there. reload REFUSED unless
+      # --allow-transcript-loss was passed; --replace WARNS instead. The
+      # refusal's override flag was one more surface, and a flag an operator
+      # must pass to complete an operation they already asked for by name is
+      # exactly the human-in-the-loop shape this CLI is shedding.
+      _up_warn_transcript_loss "$name"
+      log "Recreating ${_replace_state_word} cage ${name} (--replace): graceful stop, remove, create against the current config."
       _msb_stop_graceful "$name"
       _msb_remove "$name"
     fi
+    # _inspect_exit=1, not 0 (rip-cage-ely4.10 fix). The state branch below
+    # reads "absent" as `_inspect_exit != 0`, not as an empty state string:
+    # with 0 here, a cleared state fell past every arm into the
+    # unrecognized-state fail-loud, so `rc up --replace` removed the cage and
+    # then refused to recreate it. Verified against the branch as written.
     state=""
-    _inspect_exit=0
+    _inspect_exit=1
   fi
 
   if [[ "$DRY_RUN" == "true" ]]; then
@@ -2587,13 +2722,14 @@ cmd_up() {
     # stays hint-only (via _config_emit_hint below), same as before the flip —
     # the default only applies to STOPPED cages. This notice only fires when
     # the operator EXPLICITLY asked to reload (--reload) and got a running
-    # cage instead (review F7); the explicit recreate verb for a running cage
-    # is `rc reload`, which the operator invokes knowingly.
+    # cage instead (review F7); the explicit recreate for a running cage is
+    # `rc up --replace`, which the operator invokes knowingly (ADR-031 D3 —
+    # `rc reload` folded into exactly that flag).
     if [[ -n "$rc_up_reload" ]]; then
       if [[ -z "$rc_up_no_reload" ]]; then
         log "Notice: ${name} is RUNNING — NOT auto-recreating despite --reload"
         log "  (a running cage keeps its live session; only a STOPPED cage auto-converges)."
-        log "  To apply the drift to this running cage now, cold-recreate explicitly: rc reload ${name}"
+        log "  To apply the drift to this running cage now, cold-recreate explicitly: rc up --replace ${path}"
       fi
     fi
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -2612,7 +2748,7 @@ cmd_up() {
         if [[ -t 0 && -t 1 ]]; then
           _msb_exec_interactive "$name" -- zsh
         else
-          echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
+          echo "Container $name is running (multiplexer=none). Shell into it with: msb exec $name -- zsh" >&2
         fi
         ;;
       *)
@@ -2637,7 +2773,7 @@ cmd_up() {
           # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
           _msb_exec_interactive "$name" -- sh "$_up_run_hook_path" "${rc_up_session_name:-}"
         else
-          echo "Container $name is running (multiplexer=${_up_run_mux}). Attach with: rc attach $name" >&2
+          echo "Container $name is running (multiplexer=${_up_run_mux}). Attach from a terminal with: rc up $path" >&2
         fi
         ;;
     esac
@@ -2663,6 +2799,7 @@ cmd_up() {
         # Same split as the dry-run mirror above: stale is converge-able,
         # absent and unverifiable are not.
         _up_resolve_resume_image_drift_stopped "$name" "$path" "true"
+        _up_warn_transcript_loss "$name"
         log "Converging ${name}: cold-recreating against the current cage config (ADR-031 D3). Host mounts and named volumes survive; only the guest's ephemeral rootfs scratch is lost."
         _msb_stop_graceful "$name" 2>/dev/null || true
         _msb_remove "$name"
@@ -2765,7 +2902,7 @@ cmd_up() {
         if [[ -t 0 && -t 1 ]]; then
           _msb_exec_interactive "$name" -- zsh
         else
-          echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
+          echo "Container $name is running (multiplexer=none). Shell into it with: msb exec $name -- zsh" >&2
         fi
         ;;
       *)
@@ -2787,7 +2924,7 @@ cmd_up() {
           # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
           _msb_exec_interactive "$name" -- sh "$_up_resume_hook_path" "${rc_up_session_name:-}"
         else
-          echo "Container $name is running (multiplexer=${_up_resume_mux}). Attach with: rc attach $name" >&2
+          echo "Container $name is running (multiplexer=${_up_resume_mux}). Attach from a terminal with: rc up $path" >&2
         fi
         ;;
     esac
@@ -3020,7 +3157,7 @@ cmd_up() {
       if [[ -t 0 && -t 1 ]]; then
         _msb_exec_interactive "$name" -- zsh
       else
-        echo "Container $name is running (multiplexer=none). Exec with: rc exec $name -- <cmd>" >&2
+        echo "Container $name is running (multiplexer=none). Shell into it with: msb exec $name -- zsh" >&2
       fi
       ;;
     *)
@@ -3043,7 +3180,7 @@ cmd_up() {
         # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
         _msb_exec_interactive "$name" -- sh "$_up_new_hook_path" "${rc_up_session_name:-}"
       else
-        echo "Container $name is running (multiplexer=${_rc_multiplexer:-none}). Attach with: rc attach $name" >&2
+        echo "Container $name is running (multiplexer=${_rc_multiplexer:-none}). Attach from a terminal with: rc up" >&2
       fi
       ;;
   esac

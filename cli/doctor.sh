@@ -4,14 +4,14 @@
 
 
 # cmd_completions() removed — the fast-path at the top of the script is the
-# canonical handler for `rc completions`. It intercepts every invocation before
+# host-only guard. It intercepts every invocation before
 # reaching this dispatch table (and before the container guard), so this
 # function was unreachable dead code.
 
 # _doctor_host — daemon/runtime-level diagnostic (no container required).
 #
 # rip-cage-rj68 (S6): reports BOTH docker (still needed for `rc build`/`rc
-# ls`/`rc attach`/`rc exec`/`rc down`/`rc destroy`/`rc test`, out of this
+# destroy`/`rc test`, out of this
 # bead's scope) AND msb (the lifecycle-verb runtime as of this bead)
 # reachability, with the same bounded-timeout discipline the preflights
 # use. Intentionally bypasses check_docker/check_msb (the dispatcher skips
@@ -157,7 +157,7 @@ _doctor_bd_version_compare() {
 
 # cmd_doctor — per-container diagnostic view.
 #
-# Complements `rc ls` (fleet view) with depth for a single container: posture
+# Complements `msb list` (fleet view) with depth for a single container: posture
 # labels (rc.egress.config-override, rc.source.path) plus live probes when
 # the container is running (msb posture/deny-visibility, beads port, auth
 # creds, skills, cwd floor, workspace resolution, bd version skew —
@@ -170,7 +170,7 @@ _doctor_bd_version_compare() {
 # carryover, ADR-029 D3 — the ssh cluster is retired).
 # Labels are readable whether the container is running or stopped; live probes
 # report "not running, no live probe" when the container is stopped.
-# Resolves via resolve_name (CWD convention — same as rc attach/down/destroy).
+# Resolves via resolve_name (CWD convention — same as rc up/destroy).
 #
 # `rc doctor --host` is a separate mode (no container, daemon liveness only)
 # and is dispatched here so the existing JSON/help wiring is shared.
@@ -345,7 +345,7 @@ _doctor_format_dead_mounts() {
     local joined
     joined=$(printf '%s, ' "${dead_list[@]}")
     joined="${joined%, }"
-    echo "FAIL — dead handle(s): ${joined} (host file was replaced by atomic rename; the mount still points at the old inode; fix: rc down ${name} && rc up ${src_path:-<path>} to re-bind)"
+    echo "FAIL — dead handle(s): ${joined} (host file was replaced by atomic rename; the mount still points at the old inode; fix: rc up --replace ${src_path:-<path>} to re-bind)"
   elif [[ ${#dead_other_list[@]} -gt 0 ]]; then
     local ojoined
     ojoined=$(printf '%s, ' "${dead_other_list[@]}")
@@ -431,7 +431,7 @@ _doctor_format_auth_probe() {
 # host-bound" result names a genuinely-old cage predating that change.
 # WARN, never FAIL: this is a legacy/edge state, not a broken cage -- the
 # cage itself is otherwise fine, it just cannot survive a cold-recreate
-# (`rc reload`) without losing in-flight caged-claude conversation
+# (`rc up --replace`) without losing in-flight caged-claude conversation
 # transcripts (rip-cage-reload.sh's pre-reload guard refuses that path by
 # default; --allow-transcript-loss overrides it). A "couldn't check"
 # result (msb inspect itself failed) is reported as INFO, not WARN -- a
@@ -442,10 +442,10 @@ _doctor_format_transcript_persistence_probe() {
   _cage_claude_projects_host_bound "$name" || _tp_rc=$?
   case "$_tp_rc" in
     0)
-      echo "OK — ~/.claude/projects is host-bound (conversations persist across rc reload)"
+      echo "OK — ~/.claude/projects is host-bound (conversations persist across a recreate)"
       ;;
     1)
-      echo "WARN — ~/.claude/projects is NOT host-bound on this (legacy) cage; recreate via 'rc up' to gain host session persistence — a 'rc reload' on this cage would lose in-flight caged-claude conversations (override with --allow-transcript-loss)"
+      echo "WARN — ~/.claude/projects is NOT host-bound on this (legacy) cage; recreate via 'rc up --replace' to gain host session persistence — that recreate warns loudly first, because it would lose any in-flight caged-claude conversations on this cage"
       ;;
     *)
       echo "INFO — could not determine host-bind status for ~/.claude/projects (msb inspect check failed)"
@@ -639,7 +639,7 @@ cmd_doctor() {
     if [[ "$_cwd_actual" == "/workspace" ]]; then
       cwd_probe="OK — fresh exec cwd is /workspace"
     else
-      cwd_probe="FAIL — fresh exec cwd is '${_cwd_actual:-<unknown>}', not /workspace (likely fix: recreate the container — 'rc destroy' + 'rc up', not 'rc down'/'up' reuse; --workdir only applies at container create time)"
+      cwd_probe="FAIL — fresh exec cwd is '${_cwd_actual:-<unknown>}', not /workspace (likely fix: recreate the container — 'rc up --replace', not a plain stop/start reuse; --workdir only applies at container create time)"
     fi
 
     # rip-cage-2cks D2: workspace-resolution probe. Guards rip-cage-aq70: bd

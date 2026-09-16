@@ -544,7 +544,7 @@ _msb_secret_violations_from_trace_log() {
 # _cage_claude_projects_host_bound NAME
 #
 # rip-cage-aa4t: predicate for the pre-reload transcript-persistence guard.
-# `rc reload` cold-recreates a cage (stop -> remove -> cmd_up); the guest's
+# `rc up --replace` cold-recreates a cage (stop -> remove -> create); the guest's
 # ephemeral rootfs overlay is destroyed by that recreate. Current `rc up`
 # always host-binds ~/.claude/projects (cli/up.sh:999), so caged-claude
 # conversation transcripts survive a recreate -- but a cage created by a
