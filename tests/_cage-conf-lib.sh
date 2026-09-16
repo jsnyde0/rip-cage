@@ -29,7 +29,13 @@
 # with one allowed host) so a test asserting on the launch argv sees a
 # representative one, not a degenerate one.
 cage_conf_for() {
-  local _proj="$1"
+  local _proj
+  # RESOLVE the project path before writing it into a mount line. msb does not
+  # follow a host-side symlink in a bind source, and on macOS $TMPDIR lives
+  # under /var, which IS a symlink to /private/var — an unresolved path boots
+  # to "mount ...: Not a directory (os error 20)" (measured, msb 0.6.18, spike
+  # rip-cage-ely4.16). The shipped template says the same thing to operators.
+  _proj=$(cd "$1" 2>/dev/null && pwd -P) || _proj="$1"
   local _image="${2:-rip-cage:latest}"
 
   # WHERE this lands is load-bearing for two separate reasons.
@@ -58,5 +64,56 @@ network:
     - "api.anthropic.com:tcp:443"
 CAGE_CONF
 
+  printf '%s\n' "$_conf"
+}
+
+# cage_conf_install <project-dir> <xdg-config-home> [image-ref]
+#
+# Write the cage config at the DEFAULT path rc resolves —
+# <xdg>/rip-cage/projects/<cage-name>.yaml — and echo it.
+#
+# Use this instead of cage_conf_for when a test drives verbs OTHER than
+# `rc up <path>`: `rc reload <cage>` takes a cage NAME, recreates through
+# cmd_up, and has no workspace argument to derive a config from. Seeding the
+# default path is what makes every verb in a suite find the same config
+# without threading RC_CAGE_CONF through each call.
+#
+# The cage name is derived by rc's own container_name(), not reimplemented
+# here — a second copy of that rule would drift from the first.
+cage_conf_install() {
+  local _proj _xdg="$2" _image="${3:-rip-cage:latest}"
+  local _name _dir _conf
+  # Same symlink resolution as cage_conf_for above, same reason.
+  _proj=$(cd "$1" 2>/dev/null && pwd -P) || _proj="$1"
+
+  _name=$(bash -c "source '${REPO_ROOT}/rc' 2>/dev/null; container_name '$_proj'") || return 1
+  [[ -n "$_name" ]] || return 1
+
+  _dir="${_xdg}/rip-cage/projects"
+  mkdir -p "$_dir" || return 1
+  _conf="${_dir}/${_name}.yaml"
+
+  # The named volumes are declared here, not left out, because suites that use
+  # this installer assert they SURVIVE a cold recreate (test-rc-reload L1).
+  # They moved from generated rc flags into the config with rip-cage-ely4.9, so
+  # a fixture config without them produces a cage with no persistent state and
+  # the survival property becomes untestable — which is exactly how a real
+  # operator config composed without these lines would behave.
+  cat > "$_conf" <<CAGE_CONF
+image: ${_image}
+workdir: /workspace
+mounts:
+  - "${_proj}:/workspace"
+  - named: "rc-state-${_name}"
+    target: /home/agent/.claude-state
+    create: ensure-exists
+  - named: "rc-history-${_name}"
+    target: /commandhistory
+    create: ensure-exists
+network:
+  policy: none
+  allow:
+    - "api.anthropic.com:tcp:443"
+CAGE_CONF
   printf '%s\n' "$_conf"
 }

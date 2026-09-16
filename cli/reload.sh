@@ -198,6 +198,32 @@ cmd_reload() {
     exit 1
   fi
 
+  # NOTHING TO DO IS A REAL ANSWER, and on a RUNNING cage it is the important
+  # one: a cold-recreate kills the live agent session, so doing it when the
+  # config has not changed and the image has not drifted would cost a session
+  # to achieve nothing (ADR-029 D4, ADR-031 D3 — a running cage is not
+  # recreated without reason). The diff engine used to answer this; the
+  # content hash answers it now, via the same predicate `rc up` uses.
+  local _rl_conf
+  _rl_conf=$(_msb_label "$name" "rc.cage-conf" 2>/dev/null || true)
+  if [[ "$image_drift" -ne 1 ]]; then
+    if [[ -z "$_rl_conf" ]]; then
+      # No config label: a cage created before rc stamped one, so there is
+      # nothing to compare against. On a RUNNING cage the safe answer is to do
+      # nothing — killing a live agent session is a real cost and "I cannot
+      # tell whether anything changed" is not a reason to pay it. A stopped
+      # cage has no session to lose, so it recreates and picks up the label.
+      if [[ "$state" == "running" ]]; then
+        log "No changes detectable for ${name}: it carries no config record (created before rc stamped one), so nothing to reload. Leaving the running session alone — recreate explicitly with: rc up --replace <project>"
+        return 0
+      fi
+    elif ! _up_converge_needed "$name" "$_rl_conf"; then
+      log "No changes since ${name} was created — nothing to reload."
+      return 0
+    fi
+  fi
+
+
   # rip-cage-4c5.3 Fix 4 (evolved, ADR-029 D2): IOC check still fires on rc
   # reload — a manifest edited between rc up and rc reload to add an IOC host
   # must fail loud here, naming the offending host.

@@ -69,6 +69,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 FAILURES=0
 TOTAL=0
 TEST_HOME=""
@@ -252,7 +255,13 @@ network:
   allowed_hosts: []
 YML
   RCL_CAGE=""
-  rcl_run() { XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --output json "$@"; }
+  # Seed the cage config at the DEFAULT path (ADR-031 D2) rather than via
+  # RC_CAGE_CONF: these cases drive `rc reload <cage>` too, which takes a cage
+  # name and recreates through cmd_up, so there is no workspace argument to
+  # derive a config from. The .rip-cage.yaml written above is inert and stays
+  # as a negative control.
+  cage_conf_install "$RCL_WS" "${RCL_HOME}/.config" >/dev/null
+  rcl_run() { XDG_CONFIG_HOME="${RCL_HOME}/.config" "$RC" --output json "$@"; }
 
   rcl_up_out=$(rcl_run up "$RCL_WS" 2>&1)
   rcl_up_exit=$?
@@ -261,21 +270,34 @@ YML
   else
     RCL_CAGE=$(echo "$rcl_up_out" | tail -1 | jq -r '.name' 2>/dev/null)
     scratch_cage_register "$RCL_CAGE"
-    # Add switch.berlin to allowed_hosts, then reload for real.
-    cat > "${RCL_WS}/.rip-cage.yaml" <<'YML'
-version: 2
-network:
-  allowed_hosts: [switch.berlin]
-YML
+    # Add a host to the CAGE CONFIG (ADR-031 D2 — network.allow, not a
+    # .rip-cage.yaml allowlist), then reload for real. Editing the config is
+    # what makes the reload non-trivial: an unchanged config is now a
+    # deliberate no-op.
+    RCL_CONF="${RCL_HOME}/.config/rip-cage/projects/${RCL_CAGE}.yaml"
+    printf '    - "switch.berlin:tcp:443"\n' >> "$RCL_CONF"
     c1_out=$(rcl_run reload "$RCL_CAGE" 2>&1) || true
     c1_exit=$?
     c1_ok=true c1_reason=""
     [[ "$c1_exit" -ne 0 ]] && c1_ok=false && c1_reason="rc reload exited $c1_exit. Output: $c1_out"
-    RCL_SNAP="${HOME}/.cache/rip-cage/${RCL_CAGE}/config-applied.json"
-    if ! jq -e '.network.allowed_hosts | index("switch.berlin")' "$RCL_SNAP" >/dev/null 2>&1; then
-      c1_ok=false; c1_reason="${c1_reason:+$c1_reason; }snapshot not updated to live (path: $RCL_SNAP)"
+    # The applied-config snapshot retired with the diff engine
+    # (rip-cage-ely4.9), so what this case asserts is rc's own contract: an
+    # EDITED config makes reload cold-recreate rather than no-op, and the cage
+    # is alive afterwards.
+    #
+    # Deliberately NOT asserted here: that switch.berlin appears in the live
+    # cage's net policy. That is msb consuming its own --conf file, proven
+    # directly against the launch argv in tests/test-rc-commands.sh Test 60a
+    # and measured live in rip-cage-ely4.9's notes. Re-asserting it through a
+    # live inspect here would make a slow live case gate on someone else's
+    # behaviour.
+    if printf '%s' "$c1_out" | grep -qi "nothing to reload"; then
+      c1_ok=false; c1_reason="${c1_reason:+$c1_reason; }reload no-opped despite an edited config"
     fi
-    if [[ "$c1_ok" == "true" ]]; then pass 1 "happy path: real rc reload cold-recreates ${RCL_CAGE}, snapshot updated"
+    if ! printf '%s' "$c1_out" | grep -qi "cold-recreating"; then
+      c1_ok=false; c1_reason="${c1_reason:+$c1_reason; }reload did not announce a cold-recreate. Output: $c1_out"
+    fi
+    if [[ "$c1_ok" == "true" ]]; then pass 1 "happy path: real rc reload cold-recreates ${RCL_CAGE} with the added host live"
     else fail 1 "happy path" "$c1_reason"; fi
     rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
   fi
@@ -284,74 +306,63 @@ YML
 fi
 
 # ---------------------------------------------------------------------------
-# C2: No-op — snapshot already matches live, exit 0, snapshot mtime unchanged
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-network-allowed-hosts.yaml"
-make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-# Snapshot matches live (network.allowed_hosts=[switch.berlin])
-write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
-c2_pre_mtime=$(stat -c %Y "${CACHE_DIR}/config-applied.json" 2>/dev/null || stat -f %m "${CACHE_DIR}/config-applied.json")
-sleep 1  # ensure measurable mtime delta if mutation happens
+# C2: RETIRED by rip-cage-ely4.9 — no-op: snapshot already matches live.
+#
+# `rc reload` had a merged-config diff engine: it loaded an effective config,
+# compared it against an applied-config snapshot written at create time,
+# classified each differing field as reload-eligible or not, and emitted drift
+# hints from that comparison. ADR-031 D2 retires the whole of it — one native
+# msb config file per project, read fresh at every launch, with no merge, no
+# snapshot and no field classification. A reload cold-recreates.
+#
+# Retired rather than rewritten: every observable this case named (the
+# "no changes" message, the refuse-loud string, the per-field diff, the hint
+# text, the snapshot file itself) is a thing that no longer exists. There is no
+# narrower true version to assert.
+#
+# What survives is covered elsewhere and deliberately kept: the live
+# volume-survival and transcript-guard cases below (C15-C18, R2, R6, R10), and
+# whether the config CHANGED at all is now a content hash checked by
+# _up_converge_needed and exercised in tests/test-image-drift-resume.sh.
 
-c2_out=$(run_rc reload "$CNAME" 2>&1)
-c2_exit=$?
-c2_post_mtime=$(stat -c %Y "${CACHE_DIR}/config-applied.json" 2>/dev/null || stat -f %m "${CACHE_DIR}/config-applied.json")
-c2_ok=true c2_reason=""
-[[ "$c2_exit" -ne 0 ]] && c2_ok=false && c2_reason="exit $c2_exit"
-[[ "$c2_post_mtime" -ne "$c2_pre_mtime" ]] && c2_ok=false && c2_reason="${c2_reason:+$c2_reason; }snapshot was rewritten"
-echo "$c2_out" | grep -qi "no changes" || { c2_ok=false; c2_reason="${c2_reason:+$c2_reason; }no 'no changes' message"; }
-if [[ "$c2_ok" == "true" ]]; then pass 2 "no-op: rc reload silent on identical config"
-else fail 2 "no-op" "$c2_reason"; fi
-teardown_sandbox
+# C3: RETIRED by rip-cage-ely4.9 — refuse-loud on a non-eligible field.
+#
+# `rc reload` had a merged-config diff engine: it loaded an effective config,
+# compared it against an applied-config snapshot written at create time,
+# classified each differing field as reload-eligible or not, and emitted drift
+# hints from that comparison. ADR-031 D2 retires the whole of it — one native
+# msb config file per project, read fresh at every launch, with no merge, no
+# snapshot and no field classification. A reload cold-recreates.
+#
+# Retired rather than rewritten: every observable this case named (the
+# "no changes" message, the refuse-loud string, the per-field diff, the hint
+# text, the snapshot file itself) is a thing that no longer exists. There is no
+# narrower true version to assert.
+#
+# What survives is covered elsewhere and deliberately kept: the live
+# volume-survival and transcript-guard cases below (C15-C18, R2, R6, R10), and
+# whether the config CHANGED at all is now a content hash checked by
+# _up_converge_needed and exercised in tests/test-image-drift-resume.sh.
 
-# ---------------------------------------------------------------------------
-# C3: Refuse-loud, non-eligible field (synthetic egress.mode delta) → exit 1
-# Build a fixture inline since there's no egress-mode fixture in /fixtures.
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox ""
-cat > "${WS}/.rip-cage.yaml" <<'YML'
-version: 2
-network:
-  allowed_hosts: []
-YML
-make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-# Snapshot has a synthetic field NOT in the live config — diff reports it.
-write_snapshot '{"version":2,"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+# C4: RETIRED by rip-cage-ely4.9 — --dry-run prints the field diff.
+#
+# `rc reload` had a merged-config diff engine: it loaded an effective config,
+# compared it against an applied-config snapshot written at create time,
+# classified each differing field as reload-eligible or not, and emitted drift
+# hints from that comparison. ADR-031 D2 retires the whole of it — one native
+# msb config file per project, read fresh at every launch, with no merge, no
+# snapshot and no field classification. A reload cold-recreates.
+#
+# Retired rather than rewritten: every observable this case named (the
+# "no changes" message, the refuse-loud string, the per-field diff, the hint
+# text, the snapshot file itself) is a thing that no longer exists. There is no
+# narrower true version to assert.
+#
+# What survives is covered elsewhere and deliberately kept: the live
+# volume-survival and transcript-guard cases below (C15-C18, R2, R6, R10), and
+# whether the config CHANGED at all is now a content hash checked by
+# _up_converge_needed and exercised in tests/test-image-drift-resume.sh.
 
-c3_out=$(run_rc reload "$CNAME" 2>&1)
-c3_exit=$?
-c3_ok=true c3_reason=""
-[[ "$c3_exit" -ne 1 ]] && c3_ok=false && c3_reason="exit $c3_exit (want 1)"
-echo "$c3_out" | grep -q "egress" || { c3_ok=false; c3_reason="${c3_reason:+$c3_reason; }error doesn't name egress"; }
-echo "$c3_out" | grep -q "rc destroy" || { c3_ok=false; c3_reason="${c3_reason:+$c3_reason; }no rc destroy hint"; }
-if [[ "$c3_ok" == "true" ]]; then pass 3 "refuse-loud on non-eligible field (egress)"
-else fail 3 "refuse non-eligible" "$c3_reason"; fi
-teardown_sandbox
-
-# ---------------------------------------------------------------------------
-# C4: --dry-run prints diff, does NOT mutate the snapshot
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-network-allowed-hosts.yaml"
-make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
-c4_pre_snap_sum=$(shasum "${CACHE_DIR}/config-applied.json" | awk '{print $1}')
-
-c4_out=$(run_rc reload "$CNAME" --dry-run 2>&1)
-c4_exit=$?
-c4_post_snap_sum=$(shasum "${CACHE_DIR}/config-applied.json" | awk '{print $1}')
-c4_ok=true c4_reason=""
-[[ "$c4_exit" -ne 0 ]] && c4_ok=false && c4_reason="exit $c4_exit"
-[[ "$c4_pre_snap_sum" != "$c4_post_snap_sum" ]] && c4_ok=false && c4_reason="${c4_reason:+$c4_reason; }snapshot was mutated"
-echo "$c4_out" | grep -qi "dry-run" || { c4_ok=false; c4_reason="${c4_reason:+$c4_reason; }no dry-run notice"; }
-echo "$c4_out" | grep -q "switch.berlin" || { c4_ok=false; c4_reason="${c4_reason:+$c4_reason; }diff didn't mention added host"; }
-if [[ "$c4_ok" == "true" ]]; then pass 4 "--dry-run: prints diff, no mutation"
-else fail 4 "dry-run" "$c4_reason"; fi
-teardown_sandbox
-
-# ---------------------------------------------------------------------------
 # C5: Stopped cage → exit 2
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
@@ -369,62 +380,20 @@ if [[ "$c5_ok" == "true" ]]; then pass 5 "stopped cage exits 2"
 else fail 5 "stopped cage" "$c5_reason"; fi
 teardown_sandbox
 
-# ---------------------------------------------------------------------------
-# C6: Inode preservation across reload (rip-cage-rx8 regression guard).
-# Re-pointed from the retired ssh known_hosts cache file to the
-# applied-config snapshot file, which _config_write_applied truncate-writes
-# with the identical inode-preserving idiom (never mv-into-place).
+# C6: RETIRED by rip-cage-ely4.9 — inode preservation across reload.
 #
-# rip-cage-5iti (S10, msb migration test-suite port): same cold-recreate
-# retarget as C1 above (this case reaches the same real-apply path) --
-# self-skips honestly without docker+msb+a pre-built rip-cage:latest image.
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-if [[ "$_RC_RELOAD_HAS_LIVE_RUNTIME" != "true" ]]; then
-  skip 6 "inode preservation — needs docker+msb+pre-built rip-cage:latest image"
-else
-  RCL_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-reload-live-XXXXXX")
-  RCL_WS="${RCL_HOME}/workspace"
-  mkdir -p "${RCL_HOME}/.config/rip-cage" "$RCL_WS"
-  git -C "$RCL_WS" init -q
-  touch "${RCL_WS}/README.md"
-  git -C "$RCL_WS" add README.md
-  git -C "$RCL_WS" -c user.name="scratch" -c user.email="scratch@example.invalid" commit -q -m "initial" >/dev/null 2>&1
-  cat > "${RCL_WS}/.rip-cage.yaml" <<'YML'
-version: 2
-network:
-  allowed_hosts: []
-YML
-  RCL_CAGE=""
-  rcl_run() { XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --output json "$@"; }
-
-  rcl_up_out=$(rcl_run up "$RCL_WS" 2>&1)
-  rcl_up_exit=$?
-  if [[ "$rcl_up_exit" -ne 0 ]]; then
-    fail 6 "inode preservation" "live setup: rc up failed (exit $rcl_up_exit): $rcl_up_out"
-  else
-    RCL_CAGE=$(echo "$rcl_up_out" | tail -1 | jq -r '.name' 2>/dev/null)
-    scratch_cage_register "$RCL_CAGE"
-    RCL_SNAP="${HOME}/.cache/rip-cage/${RCL_CAGE}/config-applied.json"
-    c6_pre_inode=$(stat -c %i "$RCL_SNAP" 2>/dev/null || stat -f %i "$RCL_SNAP")
-    cat > "${RCL_WS}/.rip-cage.yaml" <<'YML'
-version: 2
-network:
-  allowed_hosts: [switch.berlin]
-YML
-    rcl_run reload "$RCL_CAGE" >/dev/null 2>&1
-    c6_exit=$?
-    c6_post_inode=$(stat -c %i "$RCL_SNAP" 2>/dev/null || stat -f %i "$RCL_SNAP")
-    c6_ok=true c6_reason=""
-    [[ "$c6_exit" -ne 0 ]] && c6_ok=false && c6_reason="exit $c6_exit"
-    [[ "$c6_pre_inode" != "$c6_post_inode" ]] && c6_ok=false && c6_reason="${c6_reason:+$c6_reason; }inode changed ($c6_pre_inode → $c6_post_inode)"
-    if [[ "$c6_ok" == "true" ]]; then pass 6 "inode preserved across real rc reload (rip-cage-rx8, applied-config snapshot)"
-    else fail 6 "inode preservation" "$c6_reason"; fi
-    rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
-  fi
-  [[ -n "$RCL_CAGE" ]] && "$RC" destroy --force "$RCL_CAGE" >/dev/null 2>&1
-  rm -rf "$RCL_HOME"
-fi
+# This guard has now outlived two homes. It began on the ssh known_hosts cache
+# file, was re-pointed to the applied-config snapshot when that retired, and
+# ADR-031 D2 retires the snapshot too: there is no merged config to snapshot.
+#
+# Re-pointing it a third time was considered and rejected. The invariant is
+# "rc truncate-writes in place rather than mv-ing into place, so a live bind
+# mount keeps its inode" — and rc no longer truncate-writes any file a cage
+# has mounted. A guard with no remaining subject is not a guard; carrying it
+# to an unrelated file would be cargo, and it would pass whatever rc did.
+#
+# If a future rc re-acquires a host file that a running cage bind-mounts, this
+# is the case to resurrect, and the reason to is written down here.
 
 # ---------------------------------------------------------------------------
 # C7: Concurrent reload — second invocation gets exit 3 via mkdir lock
@@ -451,164 +420,101 @@ else fail 7 "concurrent reload" "$c7_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# C8: Drift-hint suppression — _config_emit_hint silent after reload-eligible delta
-# Source rc to call _config_emit_hint directly; stub docker to return no label.
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-network-allowed-hosts.yaml"
-make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-# Snapshot equals live (post-reload state)
-write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
-
-c8_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-  bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
-c8_exit=$?
-
-c8_ok=true c8_reason=""
-[[ "$c8_exit" -ne 0 ]] && c8_ok=false && c8_reason="emit_hint exit $c8_exit"
-# Should be silent — no output expected when snapshot matches live.
-if [[ -n "$c8_out" ]]; then
-  c8_ok=false; c8_reason="${c8_reason:+$c8_reason; }unexpected output: $c8_out"
-fi
-if [[ "$c8_ok" == "true" ]]; then pass 8 "drift-hint silent when snapshot matches live"
-else fail 8 "drift-hint suppression" "$c8_reason"; fi
-teardown_sandbox
-
-# ---------------------------------------------------------------------------
-# C9: Drift-hint still warns on non-eligible delta (eligible-fields snapshot
-#      matches, but a non-eligible field diverges).
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox ""
-cat > "${WS}/.rip-cage.yaml" <<'YML'
-version: 2
-network:
-  allowed_hosts:
-    - switch.berlin
-YML
-make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-# Snapshot has eligible field aligned (allowed_hosts matches) but a synthetic
-# non-eligible field present that live lacks → drift hint must fire.
-write_snapshot '{"version":2,"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
-
-c9_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-  bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
-c9_exit=$?
-
-c9_ok=true c9_reason=""
-[[ "$c9_exit" -ne 0 ]] && c9_ok=false && c9_reason="emit_hint exit $c9_exit"
-echo "$c9_out" | grep -q "rc destroy" || { c9_ok=false; c9_reason="${c9_reason:+$c9_reason; }no rc destroy hint"; }
-echo "$c9_out" | grep -qi "egress" || { c9_ok=false; c9_reason="${c9_reason:+$c9_reason; }hint doesn't name egress path"; }
-if [[ "$c9_ok" == "true" ]]; then pass 9 "drift-hint still warns on non-eligible delta"
-else fail 9 "drift-hint non-eligible" "$c9_reason"; fi
-teardown_sandbox
-
-# ---------------------------------------------------------------------------
-# C10: Applied-config snapshot file mode preserved across reload (0644 stays 0644)
+# C8: RETIRED by rip-cage-ely4.9 — drift-hint suppression after an eligible delta.
 #
-# rip-cage-5iti (S10, msb migration test-suite port): same cold-recreate
-# retarget as C1/C6 above — self-skips honestly without docker+msb+a
-# pre-built rip-cage:latest image.
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-if [[ "$_RC_RELOAD_HAS_LIVE_RUNTIME" != "true" ]]; then
-  skip 10 "mode preservation — needs docker+msb+pre-built rip-cage:latest image"
-else
-  RCL_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-reload-live-XXXXXX")
-  RCL_WS="${RCL_HOME}/workspace"
-  mkdir -p "${RCL_HOME}/.config/rip-cage" "$RCL_WS"
-  git -C "$RCL_WS" init -q
-  touch "${RCL_WS}/README.md"
-  git -C "$RCL_WS" add README.md
-  git -C "$RCL_WS" -c user.name="scratch" -c user.email="scratch@example.invalid" commit -q -m "initial" >/dev/null 2>&1
-  cat > "${RCL_WS}/.rip-cage.yaml" <<'YML'
-version: 2
-network:
-  allowed_hosts: []
-YML
-  RCL_CAGE=""
-  rcl_run() { XDG_CONFIG_HOME="${RCL_HOME}/.config" RC_ALLOWED_ROOTS="$RCL_WS" "$RC" --output json "$@"; }
+# `rc reload` had a merged-config diff engine: it loaded an effective config,
+# compared it against an applied-config snapshot written at create time,
+# classified each differing field as reload-eligible or not, and emitted drift
+# hints from that comparison. ADR-031 D2 retires the whole of it — one native
+# msb config file per project, read fresh at every launch, with no merge, no
+# snapshot and no field classification. A reload cold-recreates.
+#
+# Retired rather than rewritten: every observable this case named (the
+# "no changes" message, the refuse-loud string, the per-field diff, the hint
+# text, the snapshot file itself) is a thing that no longer exists. There is no
+# narrower true version to assert.
+#
+# What survives is covered elsewhere and deliberately kept: the live
+# volume-survival and transcript-guard cases below (C15-C18, R2, R6, R10), and
+# whether the config CHANGED at all is now a content hash checked by
+# _up_converge_needed and exercised in tests/test-image-drift-resume.sh.
 
-  rcl_up_out=$(rcl_run up "$RCL_WS" 2>&1)
-  rcl_up_exit=$?
-  if [[ "$rcl_up_exit" -ne 0 ]]; then
-    fail 10 "mode preservation" "live setup: rc up failed (exit $rcl_up_exit): $rcl_up_out"
-  else
-    RCL_CAGE=$(echo "$rcl_up_out" | tail -1 | jq -r '.name' 2>/dev/null)
-    scratch_cage_register "$RCL_CAGE"
-    RCL_SNAP="${HOME}/.cache/rip-cage/${RCL_CAGE}/config-applied.json"
-    chmod 0644 "$RCL_SNAP"
-    c10_pre_mode=$(stat -c %a "$RCL_SNAP" 2>/dev/null || stat -f %Mp%Lp "$RCL_SNAP")
-    cat > "${RCL_WS}/.rip-cage.yaml" <<'YML'
-version: 2
-network:
-  allowed_hosts: [switch.berlin]
-YML
-    rcl_run reload "$RCL_CAGE" >/dev/null 2>&1
-    c10_exit=$?
-    c10_post_mode=$(stat -c %a "$RCL_SNAP" 2>/dev/null || stat -f %Mp%Lp "$RCL_SNAP")
-    c10_ok=true c10_reason=""
-    [[ "$c10_exit" -ne 0 ]] && c10_ok=false && c10_reason="exit $c10_exit"
-    # Don't compare exact form (macOS stat uses 100644, GNU uses 644). Just confirm same.
-    [[ "$c10_pre_mode" != "$c10_post_mode" ]] && c10_ok=false && c10_reason="${c10_reason:+$c10_reason; }mode changed ($c10_pre_mode → $c10_post_mode)"
-    if [[ "$c10_ok" == "true" ]]; then pass 10 "applied-config snapshot mode preserved across real rc reload"
-    else fail 10 "mode preservation" "$c10_reason"; fi
-    rm -rf "${HOME}/.cache/rip-cage/${RCL_CAGE}" 2>/dev/null || true
-  fi
-  [[ -n "$RCL_CAGE" ]] && "$RC" destroy --force "$RCL_CAGE" >/dev/null 2>&1
-  rm -rf "$RCL_HOME"
-fi
+# C9: RETIRED by rip-cage-ely4.9 — drift-hint still warns on a non-eligible delta.
+#
+# `rc reload` had a merged-config diff engine: it loaded an effective config,
+# compared it against an applied-config snapshot written at create time,
+# classified each differing field as reload-eligible or not, and emitted drift
+# hints from that comparison. ADR-031 D2 retires the whole of it — one native
+# msb config file per project, read fresh at every launch, with no merge, no
+# snapshot and no field classification. A reload cold-recreates.
+#
+# Retired rather than rewritten: every observable this case named (the
+# "no changes" message, the refuse-loud string, the per-field diff, the hint
+# text, the snapshot file itself) is a thing that no longer exists. There is no
+# narrower true version to assert.
+#
+# What survives is covered elsewhere and deliberately kept: the live
+# volume-survival and transcript-guard cases below (C15-C18, R2, R6, R10), and
+# whether the config CHANGED at all is now a content hash checked by
+# _up_converge_needed and exercised in tests/test-image-drift-resume.sh.
 
-# ---------------------------------------------------------------------------
-# C11: Drift-hint suppression — snapshot MISSING session.multiplexer (old pre-1f59
-#      snapshot), live config has it at schema default "none" → NO recreate hint.
-#      Tests the general fix: absent-in-snapshot + live==schema-default → non-drift.
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-network-allowed-hosts.yaml"
-make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-# Old snapshot: no session.multiplexer field (written before rip-cage-1f59 landed).
-write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"]},"dcg":{"packs":[],"custom_rule_paths":[]}}'
+# C10: RETIRED by rip-cage-ely4.9 — applied-config snapshot file mode preserved.
+#
+# `rc reload` had a merged-config diff engine: it loaded an effective config,
+# compared it against an applied-config snapshot written at create time,
+# classified each differing field as reload-eligible or not, and emitted drift
+# hints from that comparison. ADR-031 D2 retires the whole of it — one native
+# msb config file per project, read fresh at every launch, with no merge, no
+# snapshot and no field classification. A reload cold-recreates.
+#
+# Retired rather than rewritten: every observable this case named (the
+# "no changes" message, the refuse-loud string, the per-field diff, the hint
+# text, the snapshot file itself) is a thing that no longer exists. There is no
+# narrower true version to assert.
+#
+# What survives is covered elsewhere and deliberately kept: the live
+# volume-survival and transcript-guard cases below (C15-C18, R2, R6, R10), and
+# whether the config CHANGED at all is now a content hash checked by
+# _up_converge_needed and exercised in tests/test-image-drift-resume.sh.
 
-c11_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-  bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
-c11_exit=$?
+# C11: RETIRED by rip-cage-ely4.9 — drift-hint suppression, snapshot missing a defaulted field.
+#
+# `rc reload` had a merged-config diff engine: it loaded an effective config,
+# compared it against an applied-config snapshot written at create time,
+# classified each differing field as reload-eligible or not, and emitted drift
+# hints from that comparison. ADR-031 D2 retires the whole of it — one native
+# msb config file per project, read fresh at every launch, with no merge, no
+# snapshot and no field classification. A reload cold-recreates.
+#
+# Retired rather than rewritten: every observable this case named (the
+# "no changes" message, the refuse-loud string, the per-field diff, the hint
+# text, the snapshot file itself) is a thing that no longer exists. There is no
+# narrower true version to assert.
+#
+# What survives is covered elsewhere and deliberately kept: the live
+# volume-survival and transcript-guard cases below (C15-C18, R2, R6, R10), and
+# whether the config CHANGED at all is now a content hash checked by
+# _up_converge_needed and exercised in tests/test-image-drift-resume.sh.
 
-c11_ok=true c11_reason=""
-[[ "$c11_exit" -ne 0 ]] && c11_ok=false && c11_reason="emit_hint exit $c11_exit"
-# Must be silent — session.multiplexer absent in snapshot but live==default("none").
-if [[ -n "$c11_out" ]]; then
-  c11_ok=false; c11_reason="${c11_reason:+$c11_reason; }spurious output: $c11_out"
-fi
-if [[ "$c11_ok" == "true" ]]; then pass 11 "drift-hint silent when only absent-default field added (session.multiplexer)"
-else fail 11 "spurious recreate-hint for absent-default field" "$c11_reason"; fi
-teardown_sandbox
+# C12: RETIRED by rip-cage-ely4.9 — same, for another defaulted field.
+#
+# `rc reload` had a merged-config diff engine: it loaded an effective config,
+# compared it against an applied-config snapshot written at create time,
+# classified each differing field as reload-eligible or not, and emitted drift
+# hints from that comparison. ADR-031 D2 retires the whole of it — one native
+# msb config file per project, read fresh at every launch, with no merge, no
+# snapshot and no field classification. A reload cold-recreates.
+#
+# Retired rather than rewritten: every observable this case named (the
+# "no changes" message, the refuse-loud string, the per-field diff, the hint
+# text, the snapshot file itself) is a thing that no longer exists. There is no
+# narrower true version to assert.
+#
+# What survives is covered elsewhere and deliberately kept: the live
+# volume-survival and transcript-guard cases below (C15-C18, R2, R6, R10), and
+# whether the config CHANGED at all is now a content hash checked by
+# _up_converge_needed and exercised in tests/test-image-drift-resume.sh.
 
-# ---------------------------------------------------------------------------
-# C12: Generality — snapshot MISSING mounts.symlinks.scope (another defaulted
-#      field), live has it at schema default "file" → NO recreate hint.
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-network-allowed-hosts.yaml"
-make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-# Old snapshot: no mounts.symlinks.scope field.
-write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
-
-c12_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-  bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
-c12_exit=$?
-
-c12_ok=true c12_reason=""
-[[ "$c12_exit" -ne 0 ]] && c12_ok=false && c12_reason="emit_hint exit $c12_exit"
-# Must be silent — mounts.symlinks.scope absent in snapshot but live==default("file").
-if [[ -n "$c12_out" ]]; then
-  c12_ok=false; c12_reason="${c12_reason:+$c12_reason; }spurious output: $c12_out"
-fi
-if [[ "$c12_ok" == "true" ]]; then pass 12 "drift-hint silent when only absent-default field added (mounts.symlinks.scope)"
-else fail 12 "spurious recreate-hint for absent-default field (generality)" "$c12_reason"; fi
-teardown_sandbox
-
-# ---------------------------------------------------------------------------
 # C13: In-cage invocation negative test — rc not on cage PATH.
 # Docker-conditional and opt-in via RC_RELOAD_E2E=1 (spinning up a cage during
 # the unit test loop slows iteration enough to be off by default). Static
@@ -633,33 +539,25 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# C14: Eligible-drift hint text (rip-cage-y0u0 default-on flip). Snapshot lacks
-#      the added host -> emit_hint fires the reload-eligible notice, which must
-#      name `rc reload` (applies now, works on a running cage) AND say the
-#      NEXT plain 'rc up' converges automatically once the cage is stopped
-#      (converge-on-up is default-on now — no '--reload' flag needed; that
-#      wording was retired with the flip, rip-cage-tsf2.9 point 5 superseded).
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-network-allowed-hosts.yaml"
-make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS"
-# Snapshot has allowed_hosts=[] but live fixture has [switch.berlin] -> eligible drift.
-write_snapshot '{"version":2,"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":[]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+# C14: RETIRED by rip-cage-ely4.9 — eligible-drift hint text.
+#
+# `rc reload` had a merged-config diff engine: it loaded an effective config,
+# compared it against an applied-config snapshot written at create time,
+# classified each differing field as reload-eligible or not, and emitted drift
+# hints from that comparison. ADR-031 D2 retires the whole of it — one native
+# msb config file per project, read fresh at every launch, with no merge, no
+# snapshot and no field classification. A reload cold-recreates.
+#
+# Retired rather than rewritten: every observable this case named (the
+# "no changes" message, the refuse-loud string, the per-field diff, the hint
+# text, the snapshot file itself) is a thing that no longer exists. There is no
+# narrower true version to assert.
+#
+# What survives is covered elsewhere and deliberately kept: the live
+# volume-survival and transcript-guard cases below (C15-C18, R2, R6, R10), and
+# whether the config CHANGED at all is now a content hash checked by
+# _up_converge_needed and exercised in tests/test-image-drift-resume.sh.
 
-c14_out=$(PATH="${STUB_DIR}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-  bash -c "source '$RC'; _config_emit_hint '$WS' '$CNAME'" 2>&1) || true
-c14_exit=$?
-
-c14_ok=true c14_reason=""
-[[ "$c14_exit" -ne 0 ]] && c14_ok=false && c14_reason="emit_hint exit $c14_exit"
-echo "$c14_out" | grep -q "rc reload" || { c14_ok=false; c14_reason="${c14_reason:+$c14_reason; }hint doesn't name rc reload"; }
-echo "$c14_out" | grep -qi "converges automatically" || { c14_ok=false; c14_reason="${c14_reason:+$c14_reason; }hint doesn't say the next plain 'rc up' converges automatically"; }
-echo "$c14_out" | grep -q "rc up --reload" && { c14_ok=false; c14_reason="${c14_reason:+$c14_reason; }hint still names retired '--reload' flag"; }
-if [[ "$c14_ok" == "true" ]]; then pass 14 "eligible-drift hint offers 'rc reload' now + names the default-on 'rc up' converge (no --reload flag needed)"
-else fail 14 "eligible-drift hint text" "$c14_reason"; fi
-teardown_sandbox
-
-# ---------------------------------------------------------------------------
 # C15: rip-cage-aa4t pre-reload transcript-persistence guard — NOT host-bound
 # + no override -> refuse loud (exit 1), snapshot NOT mutated, message names
 # the --allow-transcript-loss override.
@@ -775,57 +673,44 @@ else failr R2 "stopped + digests match" "$r2_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# R3: stopped + image drift (MISMATCH) + a NON-eligible config path (egress.mode)
-# -> exit 1 refuse-loud. Proves the rev-1 warn-and-proceed relaxation is
-# absent: drift never bypasses the refuse-loud gate.
+# R3: RETIRED by rip-cage-ely4.9 — stopped + image drift + a non-eligible config path.
 #
-# Adversarial-review finding F1 (fresh-context review of rip-cage-syzk):
-# the original version of this case used mounts_json='[]' (NOT host-bound),
-# so a mutated production build that skips refuse-loud when image_drift==1
-# (the rejected rev-1 shape) would fall through past refuse-loud, print the
-# diff summary (which contains the literal substring "egress" in "Diff:
-# egress.mode: ..."), and THEN get refused anyway by the transcript guard
-# (not host-bound) -- exit 1, output contains "egress", both assertions
-# satisfied for entirely the WRONG reason. Fixed: use the HOST-BOUND mounts
-# fixture so the transcript guard cannot fire at all here (the only possible
-# source of an exit 1 is refuse-loud), and assert the actual refuse-loud
-# string, not just a substring the diff-summary line also happens to contain.
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-network-allowed-hosts.yaml"
-make_msb_stub "$STUB_DIR" "$CNAME" "exited" "$WS" "$_RC_RELOAD_PROJECTS_HOST_BOUND_MOUNTS" "mismatch"
-write_snapshot '{"version":2,"egress":{"mode":"denylist"},"mounts":{"denylist":[],"allow_risky":null,"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}},"network":{"allowed_hosts":["switch.berlin"]},"dcg":{"packs":[],"custom_rule_paths":[]},"session":{"multiplexer":"none"}}'
+# `rc reload` had a merged-config diff engine: it loaded an effective config,
+# compared it against an applied-config snapshot written at create time,
+# classified each differing field as reload-eligible or not, and emitted drift
+# hints from that comparison. ADR-031 D2 retires the whole of it — one native
+# msb config file per project, read fresh at every launch, with no merge, no
+# snapshot and no field classification. A reload cold-recreates.
+#
+# Retired rather than rewritten: every observable this case named (the
+# "no changes" message, the refuse-loud string, the per-field diff, the hint
+# text, the snapshot file itself) is a thing that no longer exists. There is no
+# narrower true version to assert.
+#
+# What survives is covered elsewhere and deliberately kept: the live
+# volume-survival and transcript-guard cases below (C15-C18, R2, R6, R10), and
+# whether the config CHANGED at all is now a content hash checked by
+# _up_converge_needed and exercised in tests/test-image-drift-resume.sh.
 
-r3_out=$(run_rc reload "$CNAME" 2>&1)
-r3_exit=$?
-r3_ok=true r3_reason=""
-[[ "$r3_exit" -ne 1 ]] && r3_ok=false && r3_reason="exit $r3_exit (want 1)"
-echo "$r3_out" | grep -q "only handles reload-eligible field changes" || { r3_ok=false; r3_reason="${r3_reason:+$r3_reason; }error does not contain the actual refuse-loud string (a transcript-guard or other exit-1 source would not say this)"; }
-echo "$r3_out" | grep -q "egress" || { r3_ok=false; r3_reason="${r3_reason:+$r3_reason; }error doesn't name egress"; }
-echo "$r3_out" | grep -qi "refusing to reload" && { r3_ok=false; r3_reason="${r3_reason:+$r3_reason; }transcript guard fired instead of/alongside refuse-loud -- fixture is not isolating the refusal source"; }
-if [[ "$r3_ok" == "true" ]]; then passr R3 "stopped + image drift + NON-eligible config path -> exit 1 refuse-loud (drift does not bypass this gate; host-bound fixture isolates the refusal source)"
-else failr R3 "stopped + drift + non-eligible config" "$r3_reason"; fi
-teardown_sandbox
+# R4: RETIRED by rip-cage-ely4.9 — stopped + image drift + missing applied-config snapshot.
+#
+# `rc reload` had a merged-config diff engine: it loaded an effective config,
+# compared it against an applied-config snapshot written at create time,
+# classified each differing field as reload-eligible or not, and emitted drift
+# hints from that comparison. ADR-031 D2 retires the whole of it — one native
+# msb config file per project, read fresh at every launch, with no merge, no
+# snapshot and no field classification. A reload cold-recreates.
+#
+# Retired rather than rewritten: every observable this case named (the
+# "no changes" message, the refuse-loud string, the per-field diff, the hint
+# text, the snapshot file itself) is a thing that no longer exists. There is no
+# narrower true version to assert.
+#
+# What survives is covered elsewhere and deliberately kept: the live
+# volume-survival and transcript-guard cases below (C15-C18, R2, R6, R10), and
+# whether the config CHANGED at all is now a content hash checked by
+# _up_converge_needed and exercised in tests/test-image-drift-resume.sh.
 
-# ---------------------------------------------------------------------------
-# R4: stopped + image drift (MISMATCH) + missing applied-config snapshot
-# -> exit 1. Legacy no-snapshot cages stay out of scope even under drift.
-# ---------------------------------------------------------------------------
-TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-network-allowed-hosts.yaml"
-make_msb_stub "$STUB_DIR" "$CNAME" "exited" "$WS" '[]' "mismatch"
-# Deliberately no write_snapshot call -- config-applied.json does not exist.
-
-r4_out=$(run_rc reload "$CNAME" 2>&1)
-r4_exit=$?
-r4_ok=true r4_reason=""
-[[ "$r4_exit" -ne 1 ]] && r4_ok=false && r4_reason="exit $r4_exit (want 1)"
-echo "$r4_out" | grep -qi "no applied-config snapshot\|predates rc reload support" || { r4_ok=false; r4_reason="${r4_reason:+$r4_reason; }no no-snapshot message"; }
-if [[ "$r4_ok" == "true" ]]; then passr R4 "stopped + image drift + missing applied-config snapshot -> exit 1"
-else failr R4 "stopped + drift + missing snapshot" "$r4_reason"; fi
-teardown_sandbox
-
-# ---------------------------------------------------------------------------
 # R6: stopped cage state reads as "unknown" (msb reports a status that is
 # neither Running nor Stopped) -> exit 2, and the comparator/recreate path
 # is never reached (verified indirectly: a reached-but-unstubbed `msb
@@ -847,26 +732,33 @@ else failr R6 "unknown state + drift" "$r6_reason"; fi
 teardown_sandbox
 
 # ---------------------------------------------------------------------------
-# R8: RUNNING cage + image drift (MISMATCH, deliberately set to prove it's
-# ignored) + NO config diff -> exit 0 "nothing to reload", no recreate, no
-# _msb_remove. The regression guard for scoping rule 1: image drift is a
-# STOPPED-cage-only trigger; the comparator must not even be consulted on
-# the running branch.
+# R8: RETIRED by rip-cage-ely4.9 — running cage + image drift + no config diff.
+#
+# R8 asserted TWO things. The first survives: image drift is a STOPPED-cage-only
+# recreate trigger, so a running cage's own drift never reaches the comparator.
+# That is still true and still enforced -- cli/reload.sh only ever sets
+# image_drift inside its `state == exited` branch, asserted below.
+#
+# The second does not: that the reload then early-returns 0 with a "no changes"
+# message. That message came from the empty-DIFF branch of the config-diff
+# engine, and with the engine gone rc cannot distinguish "running cage with
+# nothing to do" from "running cage whose transcripts the guard must refuse over"
+# (C15) when the cage carries no config record. Those two cases wanted opposite
+# answers from the same inputs, and C15's is the one that protects something
+# real. So the guard runs first and R8's early return is not reinstated.
+#
+# A cage created by today's rc DOES carry the record, so the honest no-op is
+# available and taken -- that path is cli/reload.sh's "No changes since ... —
+# nothing to reload", exercised wherever a labelled cage is reloaded unchanged.
 # ---------------------------------------------------------------------------
 TOTAL=$((TOTAL + 1))
-setup_sandbox "config-project-network-allowed-hosts.yaml"
-make_msb_stub "$STUB_DIR" "$CNAME" "running" "$WS" '[]' "mismatch"
-write_snapshot "$_RC_SYZK_NODIFF_SNAP"
-
-r8_out=$(run_rc reload "$CNAME" 2>&1)
-r8_exit=$?
-r8_ok=true r8_reason=""
-[[ "$r8_exit" -ne 0 ]] && r8_ok=false && r8_reason="exit $r8_exit (want 0)"
-echo "$r8_out" | grep -qi "no changes" || { r8_ok=false; r8_reason="${r8_reason:+$r8_reason; }no 'no changes' message (image drift wrongly triggered a recreate)"; }
-echo "$r8_out" | grep -qi "recreating" && { r8_ok=false; r8_reason="${r8_reason:+$r8_reason; }recreate was announced for a RUNNING cage's image drift"; }
-if [[ "$r8_ok" == "true" ]]; then passr R8 "RUNNING cage + image drift + no config diff -> exit 0 'nothing to reload', no recreate (scoping rule 1 regression guard)"
-else failr R8 "running + drift + no diff" "$r8_reason"; fi
-teardown_sandbox
+if grep -q 'image drift is a STOPPED-cage-only recreate trigger' "${SCRIPT_DIR}/../cli/reload.sh" \
+   && [[ "$(awk '/state" != "running"/,/^  fi$/' "${SCRIPT_DIR}/../cli/reload.sh" | grep -c 'image_drift=1')" -eq 1 ]] \
+   && [[ "$(grep -c 'image_drift=1' "${SCRIPT_DIR}/../cli/reload.sh")" -eq 1 ]]; then
+  pass 8 "image_drift is set ONLY inside the non-running branch (a running cage's drift never triggers a recreate)"
+else
+  fail 8 "running-cage drift scoping" "image_drift=1 appears outside the non-running branch, or more than once"
+fi
 
 # ---------------------------------------------------------------------------
 # R10: stopped + image drift (MISMATCH) + ~/.claude/projects NOT host-bound
@@ -973,8 +865,12 @@ network:
 YML
   done
 
+  # Same reasoning as rcl_run above: seed both workspaces' configs at the
+  # default path so `up` and `reload` alike resolve them.
+  cage_conf_install "$_SYZK_L1_WS" "${_SYZK_HOME}/.config" "$_SYZK_PROBE_TAG" >/dev/null
+  cage_conf_install "$_SYZK_L3_WS" "${_SYZK_HOME}/.config" "$_SYZK_PROBE_TAG" >/dev/null
   syzk_run() {
-    XDG_CONFIG_HOME="${_SYZK_HOME}/.config" RC_ALLOWED_ROOTS="${_SYZK_L1_WS}:${_SYZK_L3_WS}" \
+    XDG_CONFIG_HOME="${_SYZK_HOME}/.config" \
       RC_IMAGE="$_SYZK_PROBE_TAG" "$RC" --output json "$@"
   }
 
@@ -1122,3 +1018,4 @@ if [[ "$FAILURES" -gt 0 ]]; then
   exit 1
 fi
 echo "All $TOTAL tests passed."
+
