@@ -98,11 +98,20 @@ RUN for i in 1 2 3; do \
       echo "pi-coding-agent npm install failed (attempt $i/3); retrying in 10s" && sleep 10; \
     done
 
-# CC session-isolation wrapper and pi launch-hardening wrapper are provisioned by
-# composable recipes (examples/claude/ and examples/pi/) via install_cmd at build time.
-# Un-baked from base image per rip-cage-wlwc.2.2 (ADR-005 D12 / ADR-027 D1/D3).
-# The binaries (npm-installed claude + pi) remain in the base image; only the
-# wrappers and floor-lock assets are recipe-provisioned.
+# Per-tool launch wrappers (ADR-027 D4, ADR-031 D4). The manifest's launch_args
+# codegen is gone; the wrapper is baked here for claude and pi instead, and an
+# extension contributes its launch command through the boot descriptor's
+# tools[].launch field. ONE generic file serves both — it names no tool (its own
+# basename selects the descriptor entry), so the base image stays tool-agnostic
+# (ADR-005 D12) and no cross-recipe path is hardcoded in any launch leg.
+# npm installs each agent at /usr/local/bin/<tool>; move it aside to <tool>-real
+# and put the wrapper in its place, the same shape bd/bd-real already uses.
+COPY cage/boot/tool-launch-wrapper /usr/local/lib/rip-cage/tool-launch-wrapper
+RUN for _t in claude pi; do \
+      mv "/usr/local/bin/${_t}" "/usr/local/bin/${_t}-real"; \
+      cp /usr/local/lib/rip-cage/tool-launch-wrapper "/usr/local/bin/${_t}"; \
+      chmod 0755 "/usr/local/bin/${_t}" "/usr/local/bin/${_t}-real"; \
+    done
 
 # Non-root user
 RUN groupadd -g 1000 agent \
@@ -145,6 +154,17 @@ COPY cage/agent/settings.json /etc/rip-cage/settings.json
 # composable recipes (examples/claude/, examples/pi/) via root-owned install_cmd.
 # Un-baked from base image per rip-cage-wlwc.2.2 (ADR-005 D12; floor-lock preserved:
 # install_cmd runs as root, writes chown root:root, parent dir root-owned — ADR-027 D3).
+# Boot descriptor (ADR-031 D4) — the one declarative file init reads at boot,
+# at the fixed path /etc/rip-cage/boot.json. Root-owned and not agent-writable:
+# it declares what starts inside the cage, so an agent that could edit it could
+# start whatever it liked. Extensions merge fragments in at BUILD time via
+# rc-boot-merge (root context, before USER agent). Schema: the file's own
+# _readme key, and one line in docs/reference/in-cage-daemon.md.
+COPY cage/boot/boot.json /etc/rip-cage/boot.json
+COPY cage/boot/rc-boot-merge /usr/local/bin/rc-boot-merge
+RUN chmod 0755 /usr/local/bin/rc-boot-merge \
+    && chown root:root /etc/rip-cage/boot.json \
+    && chmod 0444 /etc/rip-cage/boot.json
 COPY cage/init/init-rip-cage.sh /usr/local/bin/init-rip-cage.sh
 COPY cage/substrate/skill-server.py /usr/local/lib/rip-cage/skill-server.py
 COPY tests/test-skills.sh /usr/local/lib/rip-cage/test-skills.sh

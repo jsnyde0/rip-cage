@@ -110,23 +110,56 @@ fi
 # by the "1b. TOOL archetype agent-context init hooks" block below. It no
 # longer lives here: base init names no specific tool (ADR-005 D12).
 
-# 1b. TOOL archetype agent-context init hooks (rip-cage-p35a.2, ADR-005 D7).
-# Reads the baked config from /etc/rip-cage/tool-init-config.json (written at
-# build time by _manifest_generate_tool_init_config_dockerfile_steps in rc).
-# Each declared TOOL 'init' command runs ONCE at cage boot, in agent context
-# (no sudo) — this is the generic per-recipe agent-context boot-contribution
-# seam: a TOOL recipe can run boot-time setup here without rc/init-rip-cage.sh
-# naming it (ADR-005 D12 — manifest DATA only, no tool-name literal gates this
-# loop). Distinct from IN-CAGE-DAEMON 'start' (section 12 below), which
-# launches a long-lived background service, not a one-shot hook.
+# =============================================================================
+# THE BOOT DESCRIPTOR (ADR-031 D4) — sections 1b, 11 and 12 below all read it.
+#
+# /etc/rip-cage/boot.json is the one declarative file that says what starts
+# inside this cage: daemons[], multiplexers[], tools[]. Its schema lives in the
+# file's own _readme key and in one line of docs/reference/in-cage-daemon.md.
+# It replaces the retired tools manifest's three baked artifacts (the
+# multiplexer registry under /etc/rip-cage/multiplexers/,
+# /etc/rip-cage/daemon-config.json, and /etc/rip-cage/tool-init-config.json).
+#
+# The loops below name NO tool (ADR-005 D12 FIRM) — every command they run comes
+# out of the descriptor. A declaration missing a required field fails the boot
+# loud, naming the field; that is a composition error the operator must fix, and
+# is distinct from a daemon that starts and then fails its health check (still
+# fail-WARN per ADR-005 D10).
+# =============================================================================
+_rc_boot_descriptor="${RC_BOOT_DESCRIPTOR:-/etc/rip-cage/boot.json}"
+
+# _rc_boot_require <entry_json> <field> <kind> <index>
+# Print the field's value, or fail the boot loud naming the missing field.
+_rc_boot_require() {
+  _rbr_val=$(jq -r --arg f "$2" '.[$f] // ""' <<<"$1" 2>/dev/null)
+  if [ -z "$_rbr_val" ] || [ "$_rbr_val" = "null" ]; then
+    echo "[rip-cage] ERROR: boot descriptor ${_rc_boot_descriptor}: ${3}[${4}] is missing required field '${2}' (ADR-001 fail-loud). Fix the descriptor fragment your Dockerfile merged in, rebuild the image, and recreate the cage." >&2
+    exit 1
+  fi
+  printf '%s' "$_rbr_val"
+  unset _rbr_val
+}
+
+if [ -f "$_rc_boot_descriptor" ] && ! jq -e . "$_rc_boot_descriptor" >/dev/null 2>&1; then
+  echo "[rip-cage] ERROR: boot descriptor ${_rc_boot_descriptor} is not valid JSON (ADR-001 fail-loud). A Dockerfile that edits it by hand should use rc-boot-merge instead." >&2
+  exit 1
+fi
+
+# 1b. Per-tool agent-context init hooks (rip-cage-p35a.2, ADR-005 D7; re-homed
+# onto the boot descriptor by rip-cage-ely4.11).
+# Reads tools[].init from the boot descriptor. Each declared 'init' command runs
+# ONCE at cage boot, in agent context (no sudo) — the generic per-recipe
+# agent-context boot-contribution seam: a recipe can run boot-time setup here
+# without rc or init-rip-cage.sh naming it (ADR-005 D12 — descriptor DATA only,
+# no tool-name literal gates this loop). Distinct from a daemon 'start'
+# (section 12), which launches a long-lived service, not a one-shot hook.
 # FAIL-WARN on a failing init hook — cage still starts (ADR-005 D10 / ADR-001
 # asymmetry: safety floor fails-closed, user tool contribution fails-warn).
-_rc_tool_init_config="/etc/rip-cage/tool-init-config.json"
-if [[ -f "$_rc_tool_init_config" ]] && command -v jq >/dev/null 2>&1; then
-  _rc_tool_init_count=$(jq '.tool_inits | length' "$_rc_tool_init_config" 2>/dev/null || echo "0")
+if [[ -f "$_rc_boot_descriptor" ]] && command -v jq >/dev/null 2>&1; then
+  _rc_tool_init_count=$(jq '(.tools // []) | length' "$_rc_boot_descriptor" 2>/dev/null || echo "0")
   for (( _rc_tii=0; _rc_tii<_rc_tool_init_count; _rc_tii++ )); do
-    _rc_tool_init_entry=$(jq -c ".tool_inits[${_rc_tii}]" "$_rc_tool_init_config" 2>/dev/null)
-    _rc_tool_init_name=$(jq -r '.name // "unknown"' <<<"$_rc_tool_init_entry" 2>/dev/null)
+    _rc_tool_init_entry=$(jq -c ".tools[${_rc_tii}]" "$_rc_boot_descriptor" 2>/dev/null)
+    _rc_tool_init_name=$(_rc_boot_require "$_rc_tool_init_entry" "name" "tools" "$_rc_tii") || exit 1
     _rc_tool_init_cmd=$(jq -r '.init // ""' <<<"$_rc_tool_init_entry" 2>/dev/null)
 
     if [[ -z "$_rc_tool_init_cmd" ]]; then
@@ -144,7 +177,6 @@ if [[ -f "$_rc_tool_init_config" ]] && command -v jq >/dev/null 2>&1; then
   done
   unset _rc_tii _rc_tool_init_count
 fi
-unset _rc_tool_init_config
 
 # ssh-agent forwarding + key-filter socket wiring (ADR-017/018/022) retired
 # at the msb cutover — git in cages authenticates over HTTPS + msb `--secret`
@@ -653,46 +685,42 @@ if [[ -f /etc/rip-cage/cage-env ]]; then
   fi
 fi
 
-# 11. Multiplexer-server lifecycle (rip-cage-1f59.1 / ADR-021 D6 / rip-cage-61al.3)
+# 11. Multiplexer-server lifecycle (rip-cage-1f59.1 / rip-cage-61al.3; re-homed
+# onto the boot descriptor by rip-cage-ely4.11)
 # RC_MULTIPLEXER is threaded in by cmd_up via -e RC_MULTIPLEXER=<value>.
-# Valid values: none, or any multiplexer name declared in the manifest (default: none).
-# Dispatch routes through the baked registry at /etc/rip-cage/multiplexers/<name>/start
-# (ADR-005 D12 FIRM — no hardcoded optional-mux names in rc or init-rip-cage.sh).
-# An unrecognised value from rc is caught by _config_validate_or_abort before
-# launch (ADR-001 fail-loud); any residual invalid value here fails loud too.
+# Valid values: none, or any name declared in the descriptor's multiplexers[].
 _rc_mux="${RC_MULTIPLEXER:-none}"
 case "$_rc_mux" in
   none)
     # No multiplexer server — plain terminal semantics.
-    echo "[rip-cage] session.multiplexer=none: no multiplexer server started"
+    echo "[rip-cage] multiplexer=none: no multiplexer server started"
     ;;
   *)
-    # Registry dispatch: run the baked 'start' hook for the declared multiplexer.
-    # The hook was written to /etc/rip-cage/multiplexers/<name>/start at rc build time
-    # from the MULTIPLEXER-archetype manifest entry. If the registry dir is absent,
-    # the multiplexer was not declared in the manifest at build time — fail loud (ADR-001).
-    _rc_mux_start_hook="/etc/rip-cage/multiplexers/${_rc_mux}/start"
-    _rc_mux_registry_dir="/etc/rip-cage/multiplexers/${_rc_mux}"
-    if [ ! -d "$_rc_mux_registry_dir" ]; then
-      echo "[rip-cage] ERROR: multiplexer '${_rc_mux}' was not declared in the manifest used to build this image — no registry dir at ${_rc_mux_registry_dir} (ADR-001 fail-loud). Add a MULTIPLEXER manifest entry for '${_rc_mux}' (see examples/${_rc_mux}/) and rebuild, or set session.multiplexer: none." >&2
+    _rc_mux_entry=""
+    if [ -f "$_rc_boot_descriptor" ]; then
+      _rc_mux_entry=$(jq -c --arg n "$_rc_mux" '((.multiplexers // []) | map(select(.name == $n)) | first) // empty' "$_rc_boot_descriptor" 2>/dev/null || echo "")
+    fi
+    if [ -z "$_rc_mux_entry" ]; then
+      echo "[rip-cage] ERROR: multiplexer '${_rc_mux}' is not declared in ${_rc_boot_descriptor} (ADR-001 fail-loud). Add a multiplexers[] entry for '${_rc_mux}' to the descriptor fragment your Dockerfile merges (see examples/${_rc_mux}/), rebuild the image, or launch with RC_MULTIPLEXER=none." >&2
       exit 1
     fi
-    if [ ! -f "$_rc_mux_start_hook" ]; then
-      echo "[rip-cage] ERROR: multiplexer '${_rc_mux}' has no 'start' hook at ${_rc_mux_start_hook} — the manifest entry must declare hooks.start (ADR-001 fail-loud)." >&2
-      exit 1
-    fi
-    echo "[rip-cage] session.multiplexer=${_rc_mux}: running start hook..."
-    sh "$_rc_mux_start_hook"
-    echo "[rip-cage] session.multiplexer=${_rc_mux}: start hook completed"
-    unset _rc_mux_start_hook _rc_mux_registry_dir
+    _rc_mux_index=$(jq -r --arg n "$_rc_mux" '((.multiplexers // []) | map(.name) | index($n))' "$_rc_boot_descriptor" 2>/dev/null)
+    # attach is required too: a multiplexer nobody can attach to is a dead end,
+    # and the host side (rc up) resolves it from this same entry.
+    _rc_boot_require "$_rc_mux_entry" "attach" "multiplexers" "$_rc_mux_index" >/dev/null || exit 1
+    _rc_mux_start=$(_rc_boot_require "$_rc_mux_entry" "start" "multiplexers" "$_rc_mux_index") || exit 1
+    echo "[rip-cage] multiplexer=${_rc_mux}: running start command..."
+    sh -c "$_rc_mux_start"
+    echo "[rip-cage] multiplexer=${_rc_mux}: start command completed"
+    unset _rc_mux_entry _rc_mux_start _rc_mux_index
     ;;
 esac
 unset _rc_mux
 
-# 12. IN-CAGE DAEMON lifecycle block (rip-cage-4c5.5)
+# 12. IN-CAGE DAEMON lifecycle block (rip-cage-4c5.5; re-homed onto the boot
+# descriptor by rip-cage-ely4.11)
 #
-# Read the baked daemon config from /etc/rip-cage/daemon-config.json (written at
-# build time by _manifest_generate_daemon_config_dockerfile_steps in rc).
+# Read daemons[] from the boot descriptor (see the block above section 11).
 # For each daemon entry:
 #   1. Create state_dir (container-local, ADR-019 D1 extensions pattern).
 #   2. Idempotency: if PID file exists and process is alive, SKIP (true no-op —
@@ -705,21 +733,19 @@ unset _rc_mux
 #
 # Supervisor model: init-script-start (NOT host-exec), fork+PID-parse+fail-warn.
 # PID file: /tmp/rip-cage-daemon-<name>.pid (transient, cage-lifetime).
-_rc_daemon_config="/etc/rip-cage/daemon-config.json"
-if [[ -f "$_rc_daemon_config" ]] && command -v jq >/dev/null 2>&1; then
-  _rc_daemon_count=$(jq '.daemons | length' "$_rc_daemon_config" 2>/dev/null || echo "0")
+if [[ -f "$_rc_boot_descriptor" ]] && command -v jq >/dev/null 2>&1; then
+  _rc_daemon_count=$(jq '(.daemons // []) | length' "$_rc_boot_descriptor" 2>/dev/null || echo "0")
   for (( _rc_di=0; _rc_di<_rc_daemon_count; _rc_di++ )); do
-    _rc_daemon_entry=$(jq -c ".daemons[${_rc_di}]" "$_rc_daemon_config" 2>/dev/null)
-    _rc_daemon_name=$(jq -r '.name // "unknown"' <<<"$_rc_daemon_entry" 2>/dev/null)
-    _rc_daemon_start=$(jq -r '.start // ""' <<<"$_rc_daemon_entry" 2>/dev/null)
-    _rc_daemon_health=$(jq -r '.health // ""' <<<"$_rc_daemon_entry" 2>/dev/null)
+    _rc_daemon_entry=$(jq -c ".daemons[${_rc_di}]" "$_rc_boot_descriptor" 2>/dev/null)
+    # name/start/health are REQUIRED: a daemon declaration missing one of them
+    # is a composition error, not a runtime hiccup, so it fails the boot loud
+    # rather than being skipped with a warning the operator scrolls past
+    # (ADR-031 D4). state_dir stays optional.
+    _rc_daemon_name=$(_rc_boot_require "$_rc_daemon_entry" "name" "daemons" "$_rc_di") || exit 1
+    _rc_daemon_start=$(_rc_boot_require "$_rc_daemon_entry" "start" "daemons" "$_rc_di") || exit 1
+    _rc_daemon_health=$(_rc_boot_require "$_rc_daemon_entry" "health" "daemons" "$_rc_di") || exit 1
     _rc_daemon_state_dir=$(jq -r '.state_dir // ""' <<<"$_rc_daemon_entry" 2>/dev/null)
     _rc_daemon_pidfile="/tmp/rip-cage-daemon-${_rc_daemon_name}.pid"
-
-    if [[ -z "$_rc_daemon_start" || -z "$_rc_daemon_health" ]]; then
-      echo "[rip-cage] WARNING: daemon '${_rc_daemon_name}' missing start or health — skipping." >&2
-      continue
-    fi
 
     # Create state_dir (container-local; mkdir -p is idempotent).
     if [[ -n "$_rc_daemon_state_dir" ]]; then
@@ -736,7 +762,7 @@ if [[ -f "$_rc_daemon_config" ]] && command -v jq >/dev/null 2>&1; then
     # nothing, and ADR-005 D10's fail-warn never fired: strictly worse than a visible
     # crash. PID reuse is the same bug by another route. So the PID is only a cheap
     # pre-filter; the entry's own `health` command is the authority, since that is the
-    # liveness signal the manifest already requires every daemon to declare.
+    # liveness signal the boot descriptor requires every daemon to declare.
     if [[ -f "$_rc_daemon_pidfile" ]]; then
       _rc_existing_pid=$(cat "$_rc_daemon_pidfile" 2>/dev/null || echo "")
       if [[ -n "$_rc_existing_pid" ]] && kill -0 "$_rc_existing_pid" 2>/dev/null; then
@@ -807,6 +833,6 @@ if [[ -f "$_rc_daemon_config" ]] && command -v jq >/dev/null 2>&1; then
   done
   unset _rc_di _rc_daemon_count
 fi
-unset _rc_daemon_config
+unset _rc_boot_descriptor
 
 echo "[rip-cage] Initialization complete"
