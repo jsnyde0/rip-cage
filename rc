@@ -84,15 +84,16 @@ RC_VERSION="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null || echo "unknown")"
 # flat file. None of the sourced files set -euo pipefail themselves -- this
 # shim is the ONLY place strict mode is toggled (map hazard 2); it is owned
 # here, once, so sourcing a module never leaks -e onto the caller.
-for _rc_lib in output docker msb_runtime msb_flags container path protected_paths manifest_checks; do
+for _rc_lib in output docker msb_runtime msb_flags container path protected_paths; do
   # shellcheck disable=SC1090
   source "${SCRIPT_DIR}/cli/lib/${_rc_lib}.sh"
 done
 unset _rc_lib
 
-# cli/manifest.sh survives the verb deletion: `rc up` still calls
-# _rc_mux_resolve_hook_path from it. Its `rc manifest` verb body is gone.
-for _rc_mod in build up down_destroy test doctor manifest auth; do
+# cli/manifest.sh is gone with the tools manifest itself (ADR-031 D4). Its one
+# surviving function, the multiplexer hook resolver, moved to cli/lib/container.sh
+# and reads the image's boot descriptor instead of a baked registry.
+for _rc_mod in build up down_destroy test doctor auth; do
   # shellcheck disable=SC1090
   source "${SCRIPT_DIR}/cli/${_rc_mod}.sh"
 done

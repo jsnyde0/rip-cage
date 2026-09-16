@@ -1,0 +1,38 @@
+{
+  "_readme": [
+    "BOOT DESCRIPTOR — /etc/rip-cage/boot.json (ADR-031 D4). The one declarative",
+    "file init reads at boot. JSON, because jq is the base image's only parser and",
+    "init already depends on it; JSON has no comment syntax, so this _readme key IS",
+    "the header comment. Every reader ignores unknown keys.",
+    "",
+    "SCHEMA — three optional top-level arrays; a listed field marked (req) missing or",
+    "empty makes init exit non-zero naming the field and the entry (ADR-001 fail-loud):",
+    "  daemons[]      name (req)  start (req)  health (req)  state_dir",
+    "  multiplexers[] name (req)  start (req)  attach (req)  exec  new_session  teardown",
+    "  tools[]        name (req)  launch  init",
+    "",
+    "Every start/health/attach/launch/init value is a shell command string, run",
+    "with `sh -c`. Multiplexer hooks receive the --session name as $1.",
+    "",
+    "tools[].launch wraps how the tool STARTS (the base image bakes one generic",
+    "wrapper per agent binary; the entry supplies its command). tools[].init is a",
+    "one-shot agent-context hook run once at boot — no sudo, fail-warn.",
+    "",
+    "DAEMON GOTCHA, carried verbatim from the manifest era (rip-cage-893l): init",
+    "backgrounds `start` and records $! as the daemon's PID. A start command that",
+    "does setup work before launching the server records the WRAPPER's pid, not the",
+    "daemon's — prefix the real server with `exec` so the recorded pid is the one",
+    "that serves. And nothing inside a cage reaps orphans (msb's PID 1 leaves an",
+    "exited daemon in state Z forever, where `kill -0` still succeeds), so `health`",
+    "— not the pid — is the liveness authority. See docs/reference/in-cage-daemon.md.",
+    "",
+    "EXTENDING: your Dockerfile merges a fragment in with `rc-boot-merge <file>`.",
+    "rip-cage never edits this file for you — composition is yours (ADR-005 D12)."
+  ],
+  "daemons": [],
+  "multiplexers": [],
+  "tools": [
+    { "name": "claude" },
+    { "name": "pi" }
+  ]
+}

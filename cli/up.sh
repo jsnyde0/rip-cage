@@ -803,7 +803,7 @@ _up_prepare_docker_mounts() {
   #
   # NOTE (rip-cage-l72i.3): pi extension mounts are NO LONGER hardcoded here.
   # Extensions are declared as manifest mounts in the relevant recipe fragment
-  # and assembled by _manifest_build_mount_args below (ADR-005 D12 / ADR-027 D3/D4).
+  # and are declared in the project's own cage config mounts: block (ADR-031 D2/D4).
   if [[ -d "${HOME}/.pi/agent" ]]; then
     local _pi_substrate_entry _pi_host_raw _pi_cage_name _pi_host_real _pi_pat
     local _pi_substrate_table
@@ -893,25 +893,12 @@ _up_prepare_docker_mounts() {
   mkdir -p "${HOME}/.claude/projects/${_host_project_key}"
   _UP_RUN_ARGS+=(-e "RC_HOST_PROJECT_KEY=${_host_project_key}")
 
-  # Manifest-declared data mounts (rip-cage-buuo.1 / ADR-005 D7, D9).
-  # Turn each manifest tool's mounts: [{host, dest, mode, root_owned_required}, ...] into -v args.
-  # _manifest_build_mount_args emits "host:dest:mode" lines (no -v prefix); we add
-  # -v as a separate array element for the two-element docker run form.
-  # mode defaults to 'ro' (rip-cage-wlwc.3 / ADR-027 D1); rw opt-in is explicit.
-  # The denylist pre-check at cmd_up already fired (cli/up.sh:_manifest_check_mounts_denylist); this consumer runs
-  # after that gate so denylist denials here are impossible in normal flow.
-  local _mba_out _mba_rc=0
-  _mba_out=$(_manifest_build_mount_args "$_path") || _mba_rc=$?
-  if [[ "$_mba_rc" -ne 0 ]]; then
-    echo "[rip-cage] Error: manifest mount denied by denylist — rc up refused. (ADR-023 D1/D6)" >&2
-    exit 1
-  fi
-  local _mba_line
-  while IFS= read -r _mba_line; do
-    [[ -z "$_mba_line" ]] && continue
-    _UP_RUN_ARGS+=(-v "$_mba_line")
-  done <<<"$_mba_out"
-  unset _mba_line _mba_out _mba_rc
+  # THE TOOL-DECLARED DATA MOUNTS WENT WITH THE MANIFEST (ADR-031 D4). A tool
+  # that needs a host directory now gets it from the project's own cage config
+  # mounts: block -- the same place every other mount is declared, host-side and
+  # outside every cage mount (ADR-031 D5(a)). rc generates none of them, and the
+  # protected-paths rule in this same command is what keeps a config from
+  # showing credentials into a cage.
 
   # THE NAMED VOLUMES MOVED INTO THE CAGE CONFIG (ADR-031 D2). ely4.1 reported
   # that a named volume had no config-file form, which is why rc generated
@@ -1170,19 +1157,24 @@ _up_converge_needed() {
 # That is the fail-loud contract (ADR-001) inverted: a cheap refusal moved
 # behind an expensive side effect.
 #
-# WHAT IT READS. The built image's `rc.multiplexers` label, which `rc build`
-# stamps from the manifest's MULTIPLEXER entries
-# (_manifest_generate_multiplexer_label). An ABSENT label means the image
-# declares no multiplexers at all — the honest reading of "no entries", since
-# that generator deliberately emits nothing in that case. The image reference
-# comes from the cage config's own `image:` key, because that is what msb will
-# boot (ADR-031 D2: rc passes no image argument).
+# WHAT IT READS. The image's own boot descriptor, /etc/rip-cage/boot.json, and
+# specifically its multiplexers[] names (ADR-031 D4). This USED to read an
+# `rc.multiplexers` image label that `rc build` stamped from the manifest; with
+# the manifest gone, rc build hands docker a fixed argv and stamps no labels, so
+# a label would have to be re-declared by hand in the operator's Dockerfile and
+# would drift from the descriptor that actually decides what starts. Reading the
+# descriptor keeps ONE source of truth.
 #
-# NO msb, BY CONSTRUCTION. The lookup is `docker image inspect`, so this runs
-# inside cmd_up's pre-msb floor block and the refusal happens while the cage
-# still does not exist. rc names no multiplexer itself, here or anywhere — it
-# compares the name it was handed against the set the image declares (ADR-005
-# D12 FIRM).
+# Reading a file out of an image means starting a throwaway container for it.
+# THIS IS NOT DOCKER BACK IN THE RUNTIME PATH (ADR-029 D1): the cage itself is
+# an msb microVM, created below and unaffected; this is an inspection of an
+# image rc built, on a branch almost no launch takes. The image reference comes
+# from the cage config's own `image:` key, because that is what msb will boot
+# (ADR-031 D2: rc passes no image argument).
+#
+# NO msb, BY CONSTRUCTION — the refusal happens while the cage still does not
+# exist. rc names no multiplexer itself, here or anywhere: it compares the name
+# it was handed against the set the image declares (ADR-005 D12 FIRM).
 #
 # RC_MULTIPLEXER=none — the default, and what almost every cage runs — costs
 # nothing: the function returns before reading anything. A probe on every
@@ -1199,27 +1191,25 @@ _up_check_multiplexer_available() {
   fi
   [[ -z "$_img" ]] && _img="$IMAGE"
 
-  local _labels=""
-  if ! _labels=$(docker image inspect "$_img" \
-      --format '{{ index .Config.Labels "rc.multiplexers" }}' 2>/dev/null); then
+  local _desc=""
+  if ! _desc=$(docker run --rm --entrypoint sh "$_img" -c 'cat /etc/rip-cage/boot.json' 2>/dev/null); then
     # Cannot read the image, so cannot tell. Fail closed: an operator who asked
     # for a multiplexer by name gets told to build the image that would carry
     # it, rather than a cage that boots and then cannot attach.
-    echo "Error: multiplexer '${_mux}' was requested via RC_MULTIPLEXER, but image '${_img}' is not available locally to check what it carries." >&2
-    echo "       Run: rc build   (then retry; the build stamps the image's multiplexer registry)" >&2
+    echo "Error: multiplexer '${_mux}' was requested via RC_MULTIPLEXER, but image '${_img}' could not be read to check what it carries." >&2
+    echo "       Run: rc build   (then retry)" >&2
     return 1
   fi
-  [[ "$_labels" == "<no value>" ]] && _labels=""
 
-  # Boundary-safe membership in a comma-separated list: ",herdrx," must not
-  # match "herdr".
-  if [[ ",${_labels}," == *",${_mux},"* ]]; then
+  local _declared
+  _declared=$(jq -r '[(.multiplexers // [])[].name] | join(", ")' <<<"$_desc" 2>/dev/null) || _declared=""
+
+  if jq -e --arg n "$_mux" '(.multiplexers // []) | any(.name == $n)' <<<"$_desc" >/dev/null 2>&1; then
     return 0
   fi
 
-  local _declared="${_labels:-(none)}"
-  echo "Error: multiplexer '${_mux}' was requested via RC_MULTIPLEXER, but image '${_img}' does not carry it — its baked multiplexer registry declares: ${_declared}." >&2
-  echo "       Declare '${_mux}' in the manifest used to build the image, then run: rc build" >&2
+  echo "Error: multiplexer '${_mux}' was requested via RC_MULTIPLEXER, but image '${_img}' does not declare it — its boot descriptor declares: ${_declared:-(none)}." >&2
+  echo "       Add a multiplexers[] entry for '${_mux}' to the descriptor fragment your Dockerfile merges (see examples/${_mux}/), then run: rc build --file <your Dockerfile>" >&2
   echo "       Refusing before any msb call, so no cage is created (ADR-001 fail-loud)." >&2
   return 1
 }
@@ -1949,26 +1939,11 @@ _up_build_egress_config_json() {
   # unioned unconditionally). The IOC denylist gate — not an empty allowlist —
   # is the guard that keeps floor egress safe.
   #
-  # IOC interplay: the build/up-time IOC denylist gate (_manifest_check_ioc_
-  # egress) walks the manifest INDEPENDENTLY and fires BEFORE this builder runs
-  # (cmd_build cli/build.sh, cmd_up cli/up.sh:2292, cmd_reload cli/reload.sh —
-  # all before the sandbox is created / _up_start_container). A denylisted host
-  # aborts the whole command up front, so it can never reach this union. The
-  # union only ever sees hosts the gate already cleared.
-  if [[ -f "$(_manifest_global_path)" ]] && command -v yq &>/dev/null; then
-    local _uec_manifest_hosts
-    _uec_manifest_hosts=$(_manifest_egress_hosts_json 2>/dev/null) || _uec_manifest_hosts='[]'
-    if [[ -n "$_uec_manifest_hosts" && "$_uec_manifest_hosts" != '[]' ]]; then
-      # Order-stable dedup: config hosts keep their positions (first), then any
-      # manifest host not already present, in SORTED order (_manifest_egress_
-      # hosts_json ends in `jq unique`, which sorts). This dedup itself does NOT
-      # re-sort — it preserves config order then appends new manifest hosts as
-      # they arrive; the generator emits --net-rule in that input order verbatim.
-      _uec_allowed_hosts=$(jq -c --argjson mh "$_uec_manifest_hosts" \
-        'reduce (. + $mh)[] as $h ([]; if index($h) then . else . + [$h] end)' \
-        <<<"$_uec_allowed_hosts")
-    fi
-  fi
+  # THE MANIFEST EGRESS UNION IS GONE (ADR-031 D4). Tool egress used to arrive
+  # as a second declaration source unioned in here; the cage config's own
+  # network.allow list is the only source now, so what an operator reads in the
+  # config is exactly what msb enforces. Its floor entries ship in the config
+  # template rather than being merged in behind the operator's back.
 
   jq -nc --argjson hosts "$_uec_allowed_hosts" --argjson creds "$_uec_credentials" \
     '{allowed_hosts: $hosts, credentials: $creds}'
@@ -2346,27 +2321,6 @@ cmd_up() {
     fi
   fi
 
-  # rip-cage-4c5.3: manifest IOC egress check — BEFORE any Docker call.
-  # Reject any manifest egress: entry naming a host on the IOC denylist.
-  # Fires loudly naming the offending host (ADR-005 D3 / ADR-012 D1).
-  _manifest_ensure_seeded
-  if ! _manifest_check_ioc_egress "${SCRIPT_DIR}/cage/egress/egress-rules.yaml"; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Manifest declares an IOC-denylisted egress host — rc up refused (ADR-005 D3 / ADR-012 D1)" "MANIFEST_IOC_EGRESS_DENIED"
-    fi
-    exit 1
-  fi
-
-  # rip-cage-4c5.3: manifest mounts denylist check — BEFORE any Docker call.
-  # Reject any manifest mounts: entry that targets a denylisted secret path.
-  # Realpath-first, fail-loud (ADR-023 D1/D6).
-  if ! _manifest_check_mounts_denylist "$path"; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Manifest declares a mount that matches the secret-path denylist — rc up refused (ADR-023 D1/D6)" "MANIFEST_MOUNT_DENYLIST_DENIED"
-    fi
-    exit 1
-  fi
-
   # Check image exists and is current — pull from GHCR (with local-build
   # fallback) if missing or version label mismatches RC_VERSION (stale).
   # Provisioning fires only on the new-container (absent) path; see below.
@@ -2736,9 +2690,9 @@ cmd_up() {
       _up_json_output "$name" "attached" "$path" "running"
       return
     fi
-    # rip-cage-1f59.2 / rip-cage-61al.3: dispatch on the multiplexer label via the baked registry.
+    # rip-cage-1f59.2 / rip-cage-61al.3: dispatch on the multiplexer label via the boot descriptor.
     # No hardcoded mux names — any declared-in-manifest provider is dispatched through
-    # _rc_mux_resolve_hook_path (ADR-005 D12 FIRM).
+    # _container_mux_hook_cmd (ADR-005 D12 FIRM).
     local _up_run_mux
     _up_run_mux=$(_container_multiplexer "$name")
     case "$_up_run_mux" in
@@ -2752,26 +2706,26 @@ cmd_up() {
         fi
         ;;
       *)
-        # Registry dispatch: resolve the hook path from the baked registry and invoke it.
+        # Descriptor dispatch: resolve the hook command from the boot descriptor and run it.
         # Fails loud if the mux was not declared in the manifest used to build this image
         # (ADR-001 fail-loud; ADR-005 D12 — no hardcoded optional-mux names in rc).
-        local _up_run_hook_path
+        local _up_run_hook_cmd
         if [[ -n "$rc_up_new_session" ]]; then
-          _up_run_hook_path=$(_rc_mux_resolve_hook_path "$_up_run_mux" "new_session" "$name") || return 1
-          if [[ -z "$_up_run_hook_path" ]]; then
+          _up_run_hook_cmd=$(_container_mux_hook_cmd "$_up_run_mux" "new_session" "$name") || return 1
+          if [[ -z "$_up_run_hook_cmd" ]]; then
             echo "warning: multiplexer '${_up_run_mux}' has no new_session hook — falling back to attach" >&2
-            _up_run_hook_path=$(_rc_mux_resolve_hook_path "$_up_run_mux" "attach" "$name") || return 1
+            _up_run_hook_cmd=$(_container_mux_hook_cmd "$_up_run_mux" "attach" "$name") || return 1
           fi
         else
-          _up_run_hook_path=$(_rc_mux_resolve_hook_path "$_up_run_mux" "attach" "$name") || return 1
+          _up_run_hook_cmd=$(_container_mux_hook_cmd "$_up_run_mux" "attach" "$name") || return 1
         fi
-        if [[ -z "$_up_run_hook_path" ]]; then
-          echo "Error: multiplexer '${_up_run_mux}' has no attach hook in registry for cage '$name'." >&2
+        if [[ -z "$_up_run_hook_cmd" ]]; then
+          echo "Error: multiplexer '${_up_run_mux}' has no attach hook declared in the boot descriptor for cage '$name'." >&2
           return 1
         fi
         if [[ -t 0 && -t 1 ]]; then
           # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
-          _msb_exec_interactive "$name" -- sh "$_up_run_hook_path" "${rc_up_session_name:-}"
+          _msb_exec_interactive "$name" -- sh -c "$_up_run_hook_cmd" rc-mux-hook "${rc_up_session_name:-}"
         else
           echo "Container $name is running (multiplexer=${_up_run_mux}). Attach from a terminal with: rc up $path" >&2
         fi
@@ -2892,7 +2846,7 @@ cmd_up() {
       _up_json_output "$name" "resumed" "$path" "running" "success"
       return
     fi
-    # rip-cage-1f59.2 / rip-cage-61al.3: dispatch via baked registry (resumed cage label is immutable).
+    # rip-cage-1f59.2 / rip-cage-61al.3: dispatch via the boot descriptor (resumed cage label is immutable).
     local _up_resume_mux
     _up_resume_mux=$(_container_multiplexer "$name")
     case "$_up_resume_mux" in
@@ -2906,23 +2860,23 @@ cmd_up() {
         fi
         ;;
       *)
-        local _up_resume_hook_path
+        local _up_resume_hook_cmd
         if [[ -n "$rc_up_new_session" ]]; then
-          _up_resume_hook_path=$(_rc_mux_resolve_hook_path "$_up_resume_mux" "new_session" "$name") || return 1
-          if [[ -z "$_up_resume_hook_path" ]]; then
+          _up_resume_hook_cmd=$(_container_mux_hook_cmd "$_up_resume_mux" "new_session" "$name") || return 1
+          if [[ -z "$_up_resume_hook_cmd" ]]; then
             echo "warning: multiplexer '${_up_resume_mux}' has no new_session hook — falling back to attach" >&2
-            _up_resume_hook_path=$(_rc_mux_resolve_hook_path "$_up_resume_mux" "attach" "$name") || return 1
+            _up_resume_hook_cmd=$(_container_mux_hook_cmd "$_up_resume_mux" "attach" "$name") || return 1
           fi
         else
-          _up_resume_hook_path=$(_rc_mux_resolve_hook_path "$_up_resume_mux" "attach" "$name") || return 1
+          _up_resume_hook_cmd=$(_container_mux_hook_cmd "$_up_resume_mux" "attach" "$name") || return 1
         fi
-        if [[ -z "$_up_resume_hook_path" ]]; then
-          echo "Error: multiplexer '${_up_resume_mux}' has no attach hook in registry for cage '$name'." >&2
+        if [[ -z "$_up_resume_hook_cmd" ]]; then
+          echo "Error: multiplexer '${_up_resume_mux}' has no attach hook declared in the boot descriptor for cage '$name'." >&2
           return 1
         fi
         if [[ -t 0 && -t 1 ]]; then
           # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
-          _msb_exec_interactive "$name" -- sh "$_up_resume_hook_path" "${rc_up_session_name:-}"
+          _msb_exec_interactive "$name" -- sh -c "$_up_resume_hook_cmd" rc-mux-hook "${rc_up_session_name:-}"
         else
           echo "Container $name is running (multiplexer=${_up_resume_mux}). Attach from a terminal with: rc up $path" >&2
         fi
@@ -3149,7 +3103,7 @@ cmd_up() {
     _up_json_output "$name" "created" "$path" "running" "success"
     return
   fi
-  # rip-cage-1f59.2 / rip-cage-61al.3: dispatch via baked registry (new container — value still in _rc_multiplexer).
+  # rip-cage-1f59.2 / rip-cage-61al.3: dispatch via the boot descriptor (new container — value still in _rc_multiplexer).
   case "${_rc_multiplexer:-none}" in
     none)
       [[ -n "$rc_up_new_session" || -n "$rc_up_session_name" ]] && \
@@ -3161,24 +3115,24 @@ cmd_up() {
       fi
       ;;
     *)
-      local _up_new_hook_path
+      local _up_new_hook_cmd
       if [[ -n "$rc_up_new_session" ]]; then
-        _up_new_hook_path=$(_rc_mux_resolve_hook_path "${_rc_multiplexer:-none}" "new_session" "$name") || { unset _rc_multiplexer; return 1; }
-        if [[ -z "$_up_new_hook_path" ]]; then
+        _up_new_hook_cmd=$(_container_mux_hook_cmd "${_rc_multiplexer:-none}" "new_session" "$name") || { unset _rc_multiplexer; return 1; }
+        if [[ -z "$_up_new_hook_cmd" ]]; then
           echo "warning: multiplexer '${_rc_multiplexer:-none}' has no new_session hook — falling back to attach" >&2
-          _up_new_hook_path=$(_rc_mux_resolve_hook_path "${_rc_multiplexer:-none}" "attach" "$name") || { unset _rc_multiplexer; return 1; }
+          _up_new_hook_cmd=$(_container_mux_hook_cmd "${_rc_multiplexer:-none}" "attach" "$name") || { unset _rc_multiplexer; return 1; }
         fi
       else
-        _up_new_hook_path=$(_rc_mux_resolve_hook_path "${_rc_multiplexer:-none}" "attach" "$name") || { unset _rc_multiplexer; return 1; }
+        _up_new_hook_cmd=$(_container_mux_hook_cmd "${_rc_multiplexer:-none}" "attach" "$name") || { unset _rc_multiplexer; return 1; }
       fi
-      if [[ -z "$_up_new_hook_path" ]]; then
-        echo "Error: multiplexer '${_rc_multiplexer:-none}' has no attach hook in registry for cage '$name'." >&2
+      if [[ -z "$_up_new_hook_cmd" ]]; then
+        echo "Error: multiplexer '${_rc_multiplexer:-none}' has no attach hook declared in the boot descriptor for cage '$name'." >&2
         unset _rc_multiplexer
         return 1
       fi
       if [[ -t 0 && -t 1 ]]; then
         # Forward --session NAME to the hook as $1 (mux-agnostic; hook may ignore if not applicable).
-        _msb_exec_interactive "$name" -- sh "$_up_new_hook_path" "${rc_up_session_name:-}"
+        _msb_exec_interactive "$name" -- sh -c "$_up_new_hook_cmd" rc-mux-hook "${rc_up_session_name:-}"
       else
         echo "Container $name is running (multiplexer=${_rc_multiplexer:-none}). Attach from a terminal with: rc up" >&2
       fi
@@ -3187,163 +3141,6 @@ cmd_up() {
   unset _rc_multiplexer
 }
 
-
-# _manifest_egress_hosts_json — collect all egress: hosts declared across all
-# manifest entries into a JSON array (ADR-005 D3). The in-cage engine that
-# used to consume this union (the deleted egress router) is retired per
-# ADR-029 D2. This collector is now the declare-time data source that
-# _up_build_egress_config_json unions into the msb-flags generator's
-# allowed_hosts input (rip-cage-tsf2.8) — every manifest-declared tool egress
-# host becomes an msb --net-rule allow entry. Reads the HOST manifest
-# (_manifest_global_path); see _up_build_egress_config_json for the
-# baked-binary-vs-runtime-rule divergence note.
-#
-# Returns a JSON array of strings on stdout (may be empty: []).
-_manifest_egress_hosts_json() {
-  local manifest_json
-  if ! manifest_json=$(_manifest_load 2>/dev/null); then
-    echo "[]"
-    return 0
-  fi
-
-  local count
-  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
-  if [[ -z "$count" || "$count" -eq 0 ]]; then
-    echo "[]"
-    return 0
-  fi
-
-  # Collect all egress hosts from all entries (deduplicated).
-  jq -c '[.tools[].egress // [] | .[]] | unique' <<<"$manifest_json" 2>/dev/null || echo "[]"
-}
-
-
-# _manifest_build_mount_args — build the -v docker run args for all manifest
-# mounts: entries (rip-cage-buuo.1 / rip-cage-wlwc.3).
-#
-# For each tool entry in the manifest:
-#   - Iterates over mounts[] entries (objects {host, dest[, mode][, root_owned_required]}).
-#   - Skips entries whose .host dir does not exist on the host (skip-if-missing).
-#   - Applies realpath to resolve the host path (ADR-023 D6 FIRM).
-#   - Checks against the secret-path denylist (ADR-023 D1/D6 FIRM) — fail-loud.
-#   - Reads per-asset .mode field ('ro' or 'rw'; default 'ro' per ADR-027 D1).
-#   - Emits "<resolved_host>:<dest>:<mode>" to stdout (one per line).
-#
-# The caller (_up_prepare_docker_mounts) collects these into _UP_RUN_ARGS via -v.
-#
-# Mounts DIRECTORIES only — never a single-file bind (host-atomic-rename tripwire).
-#
-# Parameters:
-#   $1  workspace — passed to _check_secret_path_denylist as the workspace root
-#
-# Stdout: zero or more "<host>:<dest>:<mode>" lines (one per mount)
-# Stderr: skip/error messages
-# Returns: 0 on success, 1 on denylist-denied mount (fail-loud).
-_manifest_build_mount_args() {
-  local _workspace="${1:-.}"
-
-  # Load manifest (fail-closed if invalid).
-  local manifest_json
-  if ! manifest_json=$(_manifest_load); then
-    return 1
-  fi
-
-  local count
-  count=$(jq '.tools | length' <<<"$manifest_json" 2>/dev/null)
-  if [[ -z "$count" || "$count" -eq 0 ]]; then
-    return 0
-  fi
-
-  local idx
-  for (( idx=0; idx<count; idx++ )); do
-    local entry mounts_count midx
-    entry=$(jq -c ".tools[${idx}]" <<<"$manifest_json" 2>/dev/null)
-
-    mounts_count=$(jq '.mounts | length' <<<"$entry" 2>/dev/null)
-    [[ -z "$mounts_count" || "$mounts_count" -eq 0 ]] && continue
-
-    local tool_name
-    tool_name=$(jq -r '.name // "unknown"' <<<"$entry" 2>/dev/null)
-
-    for (( midx=0; midx<mounts_count; midx++ )); do
-      local mount_host mount_dest expanded_host
-      mount_host=$(jq -r ".mounts[${midx}].host" <<<"$entry" 2>/dev/null)
-      mount_dest=$(jq -r ".mounts[${midx}].dest" <<<"$entry" 2>/dev/null)
-
-      # Skip entries with missing/null host or dest (validator should have caught these,
-      # but be defensive at the consumer level).
-      [[ -z "$mount_host" || "$mount_host" == "null" ]] && continue
-      [[ -z "$mount_dest" || "$mount_dest" == "null" ]] && continue
-
-      # Expand ~/  and $HOME/${HOME} before existence check (rip-cage-buuo.5).
-      # bash does NOT tilde-expand variables, so "~/.foo" in a manifest literal
-      # would fail [[ -d ]] without this step.
-      expanded_host=$(_manifest_expand_mount_host "$mount_host")
-
-      # Skip-if-host-missing: if the host path does not exist, skip this mount.
-      # This allows tools to declare mounts for optional data dirs — if the dir
-      # doesn't exist on the host, no mount is added (no error).
-      if [[ ! -d "$expanded_host" ]]; then
-        echo "manifest mount for '${tool_name}': host dir '${mount_host}' not found — skipping (skip-if-host-missing)" >&2
-        continue
-      fi
-
-      # Realpath-first: resolve before denylist check (ADR-023 D6 FIRM).
-      local resolved_host
-      resolved_host=$(realpath "$expanded_host" 2>/dev/null) || resolved_host="$expanded_host"
-
-      # ADR-023 D1/D6: denylist check — fail-loud for manifest-managed mounts.
-      local _denied_pattern
-      if _denied_pattern=$(_protected_paths_path_match "$resolved_host"); then
-        echo "Error: manifest-declared mount for tool '${tool_name}': '${resolved_host}' is a protected path ('${_denied_pattern}'). Remove this path from the manifest's mounts: declaration, or remove '${_denied_pattern}' from your protected-paths list if you have decided it is not a secret. (ADR-031 D2)" >&2
-        return 1
-      fi
-
-      # rip-cage-rc09: dest-allowlist check — fail-loud for non-agent-writable dests.
-      # CARVE-OUT (honest): root_owned_required: true mounts are exempt from
-      # the dest-allowlist ONLY IF the resolved HOST SOURCE is genuinely
-      # root-owned (uid 0, not group/other-writable).
-      #
-      # If root_owned_required: true but the source is NOT root-owned, the
-      # exemption is NOT granted — fall through to the normal allowlist check.
-      # This closes the bypass: a fragment with root_owned_required: true +
-      # dest: /etc/rip-cage/pi + host: <agent-writable dir> is NOT exempt
-      # (host uid != 0 → no exemption → allowlist rejects the system dest).
-      # Cite: rip-cage-rc09 / ADR-027 D1.
-      local _mba_root_owned_req _mba_allowlist_exempt=0
-      _mba_root_owned_req=$(jq -r ".mounts[${midx}].root_owned_required // false" <<<"$entry" 2>/dev/null)
-      if [[ "$_mba_root_owned_req" == "true" ]] && _host_source_is_root_owned "$resolved_host"; then
-        _mba_allowlist_exempt=1
-      fi
-      if [[ "$_mba_allowlist_exempt" -ne 1 ]]; then
-        local _norm_mount_dest
-        _norm_mount_dest=$(_lexical_normalize_path "$mount_dest")
-        if ! _manifest_dest_in_allowed_roots "$_norm_mount_dest"; then
-          echo "Error: manifest-declared mount for tool '${tool_name}': dest '${mount_dest}' (normalized: '${_norm_mount_dest}') is outside the agent-writable allowlist (/home/agent, /workspace). Mounts must land in agent-writable space, or declare root_owned_required: true with a root-owned host source (ADR-027 D1). (rip-cage-rc09)" >&2
-          return 1
-        fi
-      fi
-
-      # Per-asset ro/rw mode (rip-cage-wlwc.3 / ADR-027 D1).
-      # Default is 'ro' — opt-in write-through requires explicit mode: rw.
-      local mount_mode
-      mount_mode=$(jq -r ".mounts[${midx}].mode // \"ro\"" <<<"$entry" 2>/dev/null)
-      [[ "$mount_mode" != "rw" ]] && mount_mode="ro"
-
-      # Emit host:dest:mode (caller adds -v as a separate array element — two-element form).
-      echo "${resolved_host}:${mount_dest}:${mount_mode}"
-    done
-  done
-
-  return 0
-}
-
-
-# =============================================================================
-# End manifest egress+mounts floor (rip-cage-4c5.3)
-# End manifest binary-ownership + build-isolation assertions (rip-cage-buuo.3)
-# End per-asset ro/rw mount mode + root_owned_required validator (rip-cage-wlwc.3)
-# =============================================================================
 
 # _ensure_pi_auth_seed — cold-start seeding for pi auth (rip-cage-wo9 / ADR-019 D1).
 # Creates ~/.pi/agent/auth.json containing '{}' when it is absent so that an

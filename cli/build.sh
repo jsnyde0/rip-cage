@@ -3,23 +3,13 @@
 # NOTE: sourced by the rc shim; must NOT set -euo pipefail (shim owns strict mode once).
 
 
-# THE `generate-dockerfile` VERB IS GONE (ADR-031 D3). It printed the
-# manifest-composed Dockerfile to stdout so CI, or an operator wanting a flag
-# rc build's allowlist rejects, could run `docker build` themselves. It retires
-# with the manifest it composed (ADR-031 D4, rip-cage-ely4.11): once users
-# extend the published base image with their own Dockerfile, there is no
-# composed artifact left to print. _manifest_build_dockerfile_path, the
-# function it exposed, is still called by cmd_build below.
-
-
 # _build_reject_arg <message> <json_code> -- shared fail-loud emitter for
-# cmd_build's fail-closed argument allowlist (rip-cage-zqjz.2). Prints via
-# json_error (JSON mode -- which itself calls `exit 1`, terminating the
-# process immediately, matching every pre-existing reject site's behavior)
-# or a plain `Error: ...` line on stderr (human mode). A bash function's own
-# `return` cannot force its CALLER to return, so every call site must follow
-# this with an explicit `return 1` of its own (a no-op in JSON mode, since
-# json_error already exited).
+# cmd_build's argument checks (rip-cage-zqjz.2). Prints via json_error (JSON
+# mode -- which itself calls `exit 1`, terminating the process immediately,
+# matching every pre-existing reject site's behavior) or a plain `Error: ...`
+# line on stderr (human mode). A bash function's own `return` cannot force its
+# CALLER to return, so every call site must follow this with an explicit
+# `return 1` of its own (a no-op in JSON mode, since json_error already exited).
 _build_reject_arg() {
   local _msg="$1" _code="$2"
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
@@ -29,556 +19,207 @@ _build_reject_arg() {
 }
 
 
+# _build_cage_config_paths -- echo every cage config rc can see on this host,
+# one per line. $RC_CAGE_CONF when set, otherwise every *.yaml / *.yml under the
+# operator's host config dir. Silent when there are none.
+_build_cage_config_paths() {
+  if [[ -n "${RC_CAGE_CONF:-}" ]]; then
+    [[ -f "${RC_CAGE_CONF}" ]] && printf '%s\n' "${RC_CAGE_CONF}"
+    return 0
+  fi
+  local _dir="${XDG_CONFIG_HOME:-${HOME}/.config}/rip-cage/projects"
+  [[ -d "$_dir" ]] || return 0
+  local _f
+  for _f in "$_dir"/*.yaml "$_dir"/*.yml; do
+    [[ -f "$_f" ]] && printf '%s\n' "$_f"
+  done
+  return 0
+}
+
+
+# _build_dockerfile_outside_cage_mounts <resolved_dockerfile_path>
+#
+# ADR-031 D5(a)/D5(c), FIRM: the Dockerfile is a composition input, so it is
+# authored where the caged agent cannot reach it. Refuse -- non-zero, before any
+# docker call, with NO opt-out flag -- when the path resolves inside a tree some
+# cage config mounts into a cage. The opt-out IS the vector: an agent that can
+# point `rc build` at a path it controls has written its own image.
+#
+# Sibling of _protected_paths_conf_outside_mounts, which enforces the same rule
+# on the cage config itself; it supplies the mount reader, so the two agree on
+# what "a cage mount" means by construction rather than by two parsers staying
+# in step.
+#
+# FAIL-CLOSED on unreadable data too: a cage config whose mounts cannot be
+# parsed leaves the question unanswered, and an unanswered containment question
+# is a refusal, not a pass.
+_build_dockerfile_outside_cage_mounts() {
+  local _df_real="$1"
+  local _conf _mounts _host _guest _host_real
+
+  while IFS= read -r _conf; do
+    [[ -z "$_conf" ]] && continue
+    if ! _mounts="$(_protected_paths_conf_bind_mounts "$_conf" 2>/dev/null)"; then
+      _build_reject_arg "rc build: could not read the mounts declared in the cage config ${_conf}, so it cannot be shown that '${_df_real}' sits outside every cage mount. Refusing before any docker call (ADR-031 D5(a), fail-closed, no opt-out). Fix the config's mounts: block, or move the Dockerfile somewhere no cage config can reach." "BUILD_FILE_MOUNT_CHECK_UNREADABLE"
+      return 1
+    fi
+    [[ -z "$_mounts" ]] && continue
+    while IFS=$'\t' read -r _host _guest; do
+      [[ -z "$_host" ]] && continue
+      _host_real="$(cd "$_host" 2>/dev/null && pwd -P)" || continue
+      if [[ "$_df_real" == "$_host_real" || "$_df_real" == "$_host_real"/* ]]; then
+        _build_reject_arg "rc build: the Dockerfile '${_df_real}' sits inside ${_host}, which the cage config ${_conf} mounts into a cage. Refusing before any docker call: an agent inside that cage could write the Dockerfile its own next image is built from (ADR-031 D5(a)). There is no opt-out flag -- move the Dockerfile outside every cage mount, for example to ${XDG_CONFIG_HOME:-${HOME}/.config}/rip-cage/images/." "BUILD_FILE_INSIDE_CAGE_MOUNT"
+        return 1
+      fi
+    done <<< "$_mounts"
+  done < <(_build_cage_config_paths)
+  return 0
+}
+
+
+# cmd_build -- build the cage image from ONE host-side Dockerfile.
+#
+# ADR-031 D5(c), FIRM: rc build accepts EXACTLY ONE user input, the Dockerfile
+# path (`--file`, default: rc's own base Dockerfile), and hands docker a FIXED
+# argv. Everything else in "$@" is rejected, fail-closed, before any docker call.
+#
+# WHY A FIXED ARGV RATHER THAN AN ALLOWLIST. The allowlist this replaces was
+# defeated three times in three passes by three different mechanisms (-t is
+# additive, so a caller tag co-tagged the default image; -f is last-wins, so a
+# caller file swapped the recipe out from under the validator; -o redirects the
+# build result away from the image store, so the post-build checks passed
+# against a stale image while rc reported success). A fourth was found at the
+# VALUE level, which no name-level allowlist can see: --build-arg
+# BUILDKIT_SYNTAX=<image> replaces the Dockerfile frontend, i.e. the thing that
+# interprets the Dockerfile. docker's flag surface evolves outside rc's control,
+# so "unrecognized" has to mean "rejected".
+#
+# THE EXACT ARGV DOCKER RECEIVES:
+#     docker build -f <path> --build-arg RC_VERSION=<version> -t <tag> <context>
+# RC_VERSION is rc's own, read from the VERSION file beside rc, and is not
+# reachable from any caller -- it is part of the fixed argv, not an exception to
+# it (ADR-031 D5(c), clarified in place 2026-09-16; the label it bakes is what
+# ADR-008 D6's staleness check reads). The tag is rc's $IMAGE. `rc build -t` is
+# gone with the rest of the allowlist; RC_IMAGE is the documented test-only
+# override that points the verb at a scratch tag.
+#
+# THE BUILD CONTEXT, in one sentence: the directory holding the resolved
+# Dockerfile -- except when that resolved path IS rc's own base Dockerfile, whose
+# context is the rc checkout root, because its COPY lines read cage/ and tests/.
+# Keyed on the RESOLVED path, so `rc build --file <that same file>` behaves
+# identically to plain `rc build`.
 cmd_build() {
-  # rip-cage-fo4z: parse a caller-supplied -t/--tag OUT of "$@" and let it
-  # OVERRIDE the effective image name for the REST of this function, rather
-  # than being passed through to `docker build` as a second tag.
-  #
-  # Why: the docker build invocations below hardcode `-t "$IMAGE"` (default
-  # rip-cage:latest) FIRST. If a caller's own -t/--tag were left in "$@" and
-  # appended after it, docker would apply BOTH tags to the SAME image --
-  # `-t` reads as "build as this tag instead" but docker's actual semantics
-  # are "also tag this". `rc build -t custom:tag` would then silently
-  # re-tag (clobber) rip-cage:latest with whatever manifest/HOME the custom
-  # build happened to use -- observed live 2026-07-29, stripping an
-  # operator's composed `rc.multiplexers` bake off the default tag.
-  #
-  # $IMAGE is not only the docker tag -- it's the handle the post-build
-  # root-owned validators inspect (_manifest_check_binary_root_owned /
-  # _manifest_check_mount_root_owned below) and the handle the fail-closed
-  # `docker image rm` cleanup untags on a violation (ADR-001), plus the
-  # handle _build_warn_stale_containers / _build_msb_load read afterwards.
-  # So the fix is NOT "strip -t from $@" alone -- it's "let a caller -t
-  # override $IMAGE for this whole call". `local IMAGE=` below shadows the
-  # global for the rest of this function's dynamic scope (bash resolves
-  # unqualified $IMAGE reads in every function called from here -- the
-  # validators, _build_warn_stale_containers, _build_msb_load -- against
-  # this local, since none of them re-declare their own local IMAGE), so
-  # every one of those call sites sees the EFFECTIVE image automatically,
-  # without threading a new parameter through each of them.
-  #
-  # Degenerate cases:
-  #   - -t / --tag with no following value: fail loud, before any docker
-  #     call (mirrors docker's own "flag needs an argument" behavior).
-  #   - -t / --tag with an EXPLICITLY EMPTY value (`-t ""`, `--tag=`, `-t=`,
-  #     ...): ALSO fail loud, before any docker call (rip-cage-fo4z F2,
-  #     round 2). Pre-round-2 this was already a hard docker error
-  #     ("invalid tag \"\": repository name must have at least one
-  #     component"); round-1's `${_bt_tag:-$IMAGE}` treated "supplied
-  #     empty" the same as "not supplied" and silently fell back to
-  #     building/tagging/validating/msb-loading the DEFAULT rip-cage:latest
-  #     instead -- i.e. it converted a hard failure into a silent clobber of
-  #     exactly the tag this bead exists to protect. `_bt_tag_set` (set the
-  #     instant ANY -t/--tag spelling is recognized, regardless of the
-  #     value) is what lets the empty-value check below distinguish "not
-  #     supplied" from "supplied empty" -- `${_bt_tag:-...}` cannot.
-  #   - -t given more than once: last occurrence wins (standard "last flag
-  #     wins" convention; also what `getopts`/most CLIs do for repeated
-  #     flags).
-  #   - `--`: rc stops scanning for -t/--tag at this point, but this is NOT
-  #     a general "pass everything after verbatim" escape hatch (round-1's
-  #     comment overclaimed this). cmd_build always appends $SCRIPT_DIR as
-  #     its OWN final positional after "$@" (see the two `docker build`
-  #     calls below) -- so any non-empty content placed after `--` yields
-  #     2+ positionals and `docker build` hard-errors ("requires 1
-  #     argument") rather than silently doing something unexpected. Fails
-  #     loud, doesn't clobber -- but it does not achieve verbatim pass-
-  #     through; correcting the claim here rather than trying to make `--`
-  #     actually work (out of this bead's scope, rip-cage-fo4z F4/round 2).
-  #   - Docker (pflag) accepts several OTHER spellings of -t/--tag beyond
-  #     the two above: an attached short-flag value (`-tVALUE`), an
-  #     attached-with-equals short-flag value (`-t=VALUE`), and -t clustered
-  #     behind docker build's OTHER boolean short flags (`-qt VALUE`,
-  #     `-Dqt=VALUE`, ...). Any of these reaching docker unmodified
-  #     alongside rc's own leading `-t "$IMAGE"` reproduces the exact co-tag
-  #     clobber this bead exists to fix, so they are parsed out too -- see
-  #     the dedicated comment on the regex branch below (rip-cage-fo4z F1,
-  #     round 2).
-  #
-  # rip-cage-zqjz.2 -- POLICY INVERSION: fail-closed ALLOWLIST, not a
-  # per-flag reject list.
-  #
-  # A THIRD distinct validator-defeat was found in this exact seam, with a
-  # THIRD distinct mechanism (-t: additive; -f: last-wins; -o: BuildKit
-  # output-redirection -- `docker build -t X -o type=local,dest=DIR .` exits
-  # 0 and exports the build result to the filesystem WITHOUT loading it into
-  # the docker image store; if a prior $IMAGE already existed, the
-  # post-build root-owned validators below silently pass against the STALE
-  # image while `rc build` reports status "built" -- a false green on the
-  # safety floor, not a UX surprise). Three distinct mechanisms in three
-  # passes means an open pass-through with a growing per-flag reject list is
-  # unwinnable by construction: docker's flag surface evolves outside rc's
-  # control, and each new flag is a fresh chance at a fresh mechanism.
-  #
-  # So the seam inverts: every token in "$@" is now classified into exactly
-  # one of four buckets, decided BEFORE any docker call:
-  #   1. Intercepted -t/--tag (every spelling above) -- overrides $IMAGE.
-  #   2. Rejected -f/--file (every spelling) -- rip-cage-zqjz, unchanged.
-  #   3. Rejected -o/--output (every spelling) -- THIS bead, closes the
-  #      false-green above.
-  #   3b. Rejected --build-arg (every spelling, including the bare
-  #      inherit-from-environment form) -- rip-cage-zqjz.2 round 2
-  #      (adversarial-review F1). Originally ADMITTED with an RC_VERSION-only
-  #      carve-out; re-judged and rejected wholesale once verified that
-  #      --build-arg's VALUE namespace (not just its name) can override the
-  #      Dockerfile FRONTEND (BUILDKIT_SYNTAX) or inject content into
-  #      cage/Dockerfile's RUN shell strings. See the case arm below for the
-  #      full rationale.
-  #   4. An explicit ADMIT list: flags verified against docker 29.4.0's
-  #      REAL `docker build --help` surface to (a) be unable to touch image
-  #      identity, the Dockerfile source, the build context, the output
-  #      destination/image-store load, or any image metadata the floor
-  #      later reads, and (b) have stable, known semantics -- (a) is judged
-  #      against BOTH the flag's name AND its value namespace (rip-cage-
-  #      zqjz.2 round 2's method lesson: a flag can be name-safe and still
-  #      reach the floor through a caller-controlled value, as --build-arg
-  #      did). Passed through unmodified. See the ADMIT case arms below for
-  #      the one-line rationale on each.
-  #   5. EVERYTHING ELSE -- every other named docker flag (--target,
-  #      --label, --secret, --push, --platform, ...; see the catch-all
-  #      branch's comment for the full reject table), any genuinely
-  #      unrecognized/future docker flag, a stray build-context positional
-  #      (rc supplies its own -- see the two `docker build ... "$@"
-  #      "$SCRIPT_DIR"` call sites below), and a bare `--` (previously a
-  #      literal unfiltered-passthrough hole: a51b5da/fb79d10 dumped
-  #      everything after `--` into the constructed argv VERBATIM,
-  #      bypassing every one of the checks above, including this bead's own
-  #      -o rejection -- closed by removing that special case entirely, so
-  #      `--` itself now falls into this same fail-closed bucket) -- ALL
-  #      fail loud here, before any docker call, naming the allowlist.
-  #      The `rc generate-dockerfile` escape hatch these messages used to
-  #      offer retired with the verb (ADR-031 D3/D5(c)).
-  # This also closes rip-cage-fo4z's own forward-compat caveat ("if docker
-  # build ever gains a new boolean short flag, a cluster using it could
-  # again slip past the pattern") -- an unrecognized flag now fails closed
-  # by construction, rather than silently reaching docker.
-  local _bt_remaining=() _bt_tag="" _bt_tag_set=0
+  local _bf_file="" _bf_file_set=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -t|--tag)
+      -f|--file)
         if [[ $# -lt 2 ]]; then
-          if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-            json_error "rc build: ${1} requires a value" "BUILD_TAG_MISSING_VALUE"
-          fi
-          echo "Error: ${1} requires a value" >&2
+          _build_reject_arg "rc build: ${1} requires a value" "BUILD_FILE_MISSING_VALUE"
           return 1
         fi
-        _bt_tag="$2"
-        _bt_tag_set=1
+        _bf_file="$2"
+        _bf_file_set=1
         shift 2
         ;;
-      --tag=*)
-        _bt_tag="${1#--tag=}"
-        _bt_tag_set=1
+      --file=*)
+        _bf_file="${1#--file=}"
+        _bf_file_set=1
         shift
         ;;
-      -f|--file|--file=*)
-        # rip-cage-zqjz: REJECT outright, fail loud, BEFORE any docker call
-        # (and before any temp-Dockerfile work below -- this scan runs first
-        # in cmd_build, so no $_tmp_dockerfile exists yet to leak). Unlike
-        # -t/--tag (fo4z), there is no legitimate rc build -f/--file use and
-        # no "override-then-audit" fix shape: rc's own -f "$_dockerfile"
-        # comes before "$@" in both docker-build call sites below, and a
-        # duplicate -f is LAST-WINS in docker (unlike -t, which is
-        # additive) -- so a caller -f would silently swap the caller's file
-        # in for the ACTUAL build while _manifest_check_build_isolation
-        # (ADR-005 D9 / ADR-024) still only ever audits rc's own
-        # manifest-resolved $_dockerfile. Accepting an override just
-        # reopens the same bypass in the other direction, since there is no
-        # "effective Dockerfile" concept to swap to (brain-ruled on the
-        # bead: resolving the Dockerfile from the manifest IS rc's job).
-        # rip-cage-zqjz.2 round 2 (adversarial-review minor 2): this was the
-        # one reject site NOT updated to name the allowlist section when
-        # every other reject message (-o, --build-arg, the catch-all
-        # default) gained it —
-        # it predates rip-cage-zqjz.2, from rip-cage-zqjz. Made consistent
-        # here; wording otherwise unchanged.
-        _build_reject_arg "rc build: -f/--file is not accepted — rc resolves the Dockerfile from the manifest; a caller-supplied Dockerfile would bypass the build-isolation validator (ADR-005 D9 / ADR-024), which only ever audits rc's own resolved Dockerfile. See 'rc build flag allowlist' in docs/reference/cli-reference.md. There is no escape hatch: rc build passes docker a fixed argv (ADR-031 D5(c))." "BUILD_FILE_REJECTED"
-        return 1
-        ;;
-      -o|--output|--output=*)
-        # rip-cage-zqjz.2: REJECT outright, fail loud, BEFORE any docker
-        # call -- same shape as -f/--file just above (there is no
-        # legitimate rc build -o/--output use and no override-then-audit
-        # fix: rc's docker-build call sites below have no "-o" of their own
-        # to override, and BuildKit's -o/--output governs where the build
-        # RESULT lands -- filesystem, registry, or the local image store --
-        # independently of -t/--tag. `docker build -t X -o
-        # type=local,dest=DIR .` exits 0 and exports to DIR WITHOUT loading
-        # X into the docker image store; if a prior X already existed, the
-        # post-build root-owned validators below (_manifest_check_
-        # binary_root_owned / _manifest_check_mount_root_owned) silently
-        # pass against the STALE X while `rc build` reports status "built"
-        # -- a false green on the safety floor (ADR-005 D9/D11, ADR-024,
-        # ADR-027 D1), not a UX surprise. This is THE bead this reject
-        # exists for.
-        # rip-cage-zqjz.2 round 2 (adversarial-review minor 1): `--output`
-        # is ALSO rc's own GLOBAL --output json flag name (rc:129-135
-        # intercepts the exact bare two-word `--output json` spelling
-        # upstream of cmd_build entirely -- that spelling is NOT rejected,
-        # it's rc's documented JSON-mode selector). Only the single-token
-        # `--output=json` equals-form and the short `-o`/`-o=`/`-o<val>`
-        # spellings ever reach THIS rejection with value "json" -- a
-        # plausible, understandable typo for "give me JSON output", not a
-        # BuildKit-output-redirect attempt. Still rejected outright (the
-        # safety posture doesn't bend on the value), but the message points
-        # at the real escape hatch instead of leaving the caller thinking
-        # `rc build` cannot emit JSON at all.
-        local _bt_out_val=""
-        case "$1" in
-          --output=*) _bt_out_val="${1#--output=}" ;;
-          *) [[ $# -ge 2 ]] && _bt_out_val="$2" ;;
-        esac
-        if [[ "$_bt_out_val" == "json" ]]; then
-          _build_reject_arg "rc build: -o/--output is not accepted here — it can redirect the build result away from the local docker image store, which would let the post-build safety-floor validators silently pass against a STALE previously-built image while rc reports the build as successful. Looks like you wanted rc's own JSON output mode instead: use 'rc --output json build' or 'rc build --output json' (two SEPARATE words, not '--output=json' or '-o json') — that spelling is rc's documented global flag, handled upstream of this rejection entirely. See 'rc build flag allowlist' in docs/reference/cli-reference.md." "BUILD_OUTPUT_REJECTED"
-        else
-          _build_reject_arg "rc build: -o/--output is not accepted — it can redirect the build result away from the local docker image store (filesystem, registry, ...), which would let the post-build safety-floor validators silently pass against a STALE previously-built image while rc reports the build as successful. There is no legitimate rc build -o/--output use. See 'rc build flag allowlist' in docs/reference/cli-reference.md. There is no escape hatch: rc build passes docker a fixed argv (ADR-031 D5(c))." "BUILD_OUTPUT_REJECTED"
-        fi
-        return 1
-        ;;
-      --build-arg|--build-arg=*)
-        # REJECT WHOLESALE (rip-cage-fo4z admitted it; rip-cage-zqjz.2 round 1
-        # narrowed to an RC_VERSION-only carve-out; rip-cage-zqjz.2 round 2,
-        # fresh-context adversarial review F1, rejects OUTRIGHT — same
-        # treatment as -f/-o).
-        #
-        # The round-1 admit ("only ever feeds _image_is_current's staleness
-        # heuristic") was judged against the flag's NAME via `docker build
-        # --help`. It is false via the flag's VALUE namespace, which --help
-        # never shows:
-        #   - BUILDKIT_SYNTAX replaces the Dockerfile FRONTEND -- the thing
-        #     that INTERPRETS the Dockerfile. Verified live on docker 29.4.0:
-        #     `docker build --build-arg BUILDKIT_SYNTAX=rip-cage-bogus-
-        #     frontend/nope:zzz -f Dockerfile .` -> BuildKit resolves and
-        #     hands the Dockerfile + build context to that arbitrary
-        #     caller-named image. cage/Dockerfile has no `# syntax=` pin, so
-        #     nothing contests the override. _manifest_check_build_isolation
-        #     is pure STATIC TEXT analysis of rc's own resolved Dockerfile --
-        #     if a different frontend interprets that text, the audit is
-        #     vacuous, exactly the "audits rc's own Dockerfile while the
-        #     build uses another recipe" shape -f's rejection exists for.
-        #   - A second, independent channel: cage/Dockerfile interpolates
-        #     several caller-settable ARGs (DOLT_VERSION, MISE_VERSION,
-        #     BUN_VERSION, ...) into RUN shell strings piped to `bash`/`sh`.
-        #     An admitted caller --build-arg is build-time command injection
-        #     into the image tagged rip-cage:latest, after which only the two
-        #     narrow root-owned validators run.
-        # No in-repo caller and no manifest build-arg mechanism exists to
-        # preserve (grep across cli/lib/manifest*.sh, manifest/,
-        # docs/reference/*.md returns nothing) -- the fail-closed posture
-        # this seam exists for cannot coexist with a flag through which a
-        # caller supplies build recipe or content, so it is rejected
-        # outright rather than re-narrowed to a second bespoke carve-out.
-        # This also independently closes F2 (round-1's `== RC_VERSION=*`
-        # guard required the "=" and so admitted the bare `--build-arg
-        # RC_VERSION` inherit-from-environment spelling) — wholesale
-        # rejection has no narrower guard left to be spelling-incomplete.
-        #
-        # rc's OWN `--build-arg "RC_VERSION=${RC_VERSION}"` is set internally
-        # by the two docker-build call sites below, not routed through this
-        # allowlist scan at all -- unaffected by this rejection.
-        _build_reject_arg "rc build: --build-arg is not accepted — a caller-supplied build-arg value can override the Dockerfile frontend via BUILDKIT_SYNTAX=<image> (an arbitrary caller-named image then interprets the Dockerfile, making _manifest_check_build_isolation's static analysis of rc's own resolved Dockerfile vacuous), or be interpolated into a RUN shell command in cage/Dockerfile (build-time command injection). rc sets its own --build-arg RC_VERSION=... internally; that is unaffected. There is no legitimate rc build --build-arg use and no manifest build-arg mechanism to preserve. See 'rc build flag allowlist' in docs/reference/cli-reference.md. There is no escape hatch: rc build passes docker a fixed argv (ADR-031 D5(c))." "BUILD_BUILD_ARG_REJECTED"
-        return 1
-        ;;
-      --no-cache|--pull|--debug|--quiet)
-        # ADMIT: --no-cache/--pull only affect cache/base-image freshness;
-        # --debug/--quiet (long forms of -D/-q, handled for short/clustered
-        # forms by the pure-boolean regex in the catch-all below) only
-        # affect docker's OWN log verbosity. None of the four can touch
-        # image identity, the Dockerfile source, the build context, the
-        # output destination, or any image metadata the floor reads. -q's
-        # stdout-suppression is safe here specifically because neither
-        # docker-build call site below parses docker's own stdout (the JSON
-        # branch redirects it to /dev/null; the plain branch lets it go
-        # straight to the terminal).
-        _bt_remaining+=("$1")
+      -f=*)
+        _bf_file="${1#-f=}"
+        _bf_file_set=1
         shift
         ;;
-      --progress)
-        # ADMIT: output-formatting only.
-        if [[ $# -lt 2 ]]; then
-          _build_reject_arg "rc build: ${1} requires a value" "BUILD_PROGRESS_MISSING_VALUE"
-          return 1
-        fi
-        _bt_remaining+=("$1" "$2")
-        shift 2
-        ;;
-      --progress=*)
-        _bt_remaining+=("$1")
+      -f*)
+        # Attached short-flag value (`-fVALUE`), docker/pflag's own spelling.
+        _bf_file="${1#-f}"
+        _bf_file_set=1
         shift
         ;;
       *)
-        # rip-cage-fo4z F1 (round 2): docker build's short-flag surface,
-        # confirmed live against `docker build --help` on docker 29.4.0, is
-        # exactly 5 flags: -D/--debug and -q/--quiet (boolean), -f/--file,
-        # -o/--output, and -t/--tag (each value-taking). pflag's shorthand
-        # clustering algorithm (also verified live against real `docker
-        # build` invocations for every shape below) walks a single-dash
-        # token left to right: a boolean flag consumes one character and
-        # continues; the FIRST value-taking flag it hits consumes the REST
-        # of the token as its value (stripping one leading "=" if present),
-        # or -- if nothing is left in the token -- the NEXT argv word.
-        #
-        # The regex below is a deterministic, verified replica of that
-        # algorithm restricted to "does this token set -t": zero or more
-        # boolean D/q characters, then the literal `t`, then whatever
-        # follows. It is exhaustive over docker build's CURRENT short-flag
-        # surface. A future docker release adding another boolean short
-        # flag would need this pattern revisited -- flagged here rather
-        # than silently assumed complete forever.
-        #
-        # Deliberately NOT matched by the -t branch below (left to the -f/-o
-        # branches, or to the pure-boolean/fail-closed branches further
-        # down): any cluster where -f or -o precedes the `t` character. In
-        # real docker parsing, -f/-o (also value-taking) consumes the REST
-        # of the token first, so `t` is never actually treated as the tag
-        # flag there (e.g. `-ft` sets -f's value to "t"; it does not set a
-        # tag at all) -- that shape is rip-cage-zqjz's -f/--file clobber
-        # bug, handled by the -f branch immediately below (it matches `-ft`
-        # first, since `f` -- not `t` -- is the leftmost value-taking
-        # character).
-        #
-        # rip-cage-zqjz: -f/--file is checked FIRST (before -t) so that a
-        # cluster where `f` is the leftmost value-taking character (e.g.
-        # -ft, -fVALUE, -Dqf) is rejected as -f, not misread as -t. This
-        # mirrors real docker/pflag left-to-right cluster parsing: whichever
-        # value-taking character (f/o/t) appears first in the token wins,
-        # and everything after it is that flag's value, not another flag.
-        # Same regex shape as -t's, restricted to `f`; unlike -t there is no
-        # legitimate override to perform, so ANY match (value attached or
-        # not) is rejected outright, before any docker call and before any
-        # temp-Dockerfile work (this scan runs first in cmd_build).
-        #
-        # rip-cage-zqjz.2: under the fail-closed allowlist, three more
-        # branches were added below the original two:
-        #   - a stray non-flag positional (rc supplies the build-context
-        #     positional itself -- see the two `docker build ... "$@"
-        #     "$SCRIPT_DIR"` call sites -- a caller-supplied one would
-        #     otherwise become a second positional docker itself would
-        #     hard-error on; rc now fails loud on it directly instead),
-        #     checked FIRST since it's not a `-`-prefixed token at all;
-        #   - a -o/--output cluster (same regex shape as -f's, restricted
-        #     to `o`), rejected for the same "first value-taking char in
-        #     the token wins" reason -- this bead's own false-green fix;
-        #   - a pure boolean short cluster (`^-[Dq]+$`, i.e. every char is
-        #     D or q and there's at least one) -- the ADMIT case for -D/-q
-        #     appearing standalone or clustered together with no value
-        #     character at all (e.g. `-q`, `-D`, `-Dq`, `-qD`).
-        # ANYTHING ELSE reaching the final `else` -- any other named docker
-        # flag (--target/--label/--secret/--ssh/--push/--load/--platform/
-        # --add-host/--allow/--annotation/--attest/--build-context/
-        # --builder/--cache-from/--cache-to/--call/--check/--cgroup-parent/
-        # --iidfile/--metadata-file/--network/--no-cache-filter/--policy/
-        # --provenance/--sbom/--shm-size/--ulimit/...), any genuinely
-        # unrecognized/future docker flag, or a bare `--` (no longer
-        # special-cased into verbatim passthrough -- see the comment above
-        # `local _bt_remaining=` for why) -- now fails loud here too,
-        # instead of being silently passed through to docker. This is the
-        # fail-closed default the allowlist inversion exists for: docker's
-        # flag surface evolves outside rc's control, so "unrecognized"
-        # means "rejected", not "assumed safe". Per-flag rationale for the
-        # explicitly-named rejects above lives in this bead's commit
-        # message and docs/reference/cli-reference.md's allowlist table,
-        # not repeated per-flag here (one shared message covers all of
-        # them, naming the actual token via `$1`).
-        if [[ "$1" != -* ]]; then
-          _build_reject_arg "rc build: unexpected argument '$1' — rc build does not accept a build-context positional; rc supplies it itself. See 'rc build flag allowlist' in docs/reference/cli-reference.md. There is no escape hatch: rc build passes docker a fixed argv (ADR-031 D5(c))." "BUILD_EXTRA_POSITIONAL"
-          return 1
-        elif [[ "$1" =~ ^-[Dq]*f(.*)$ ]]; then
-          # rip-cage-zqjz.2 round 2 (adversarial-review minor 2): same
-          # consistency fix as the explicit -f|--file|--file=* case arm
-          # above — name the allowlist section and the escape hatch here
-          # too, this being the SECOND -f reject site (cluster spellings).
-          _build_reject_arg "rc build: -f/--file is not accepted — rc resolves the Dockerfile from the manifest; a caller-supplied Dockerfile would bypass the build-isolation validator (ADR-005 D9 / ADR-024), which only ever audits rc's own resolved Dockerfile. See 'rc build flag allowlist' in docs/reference/cli-reference.md. There is no escape hatch: rc build passes docker a fixed argv (ADR-031 D5(c))." "BUILD_FILE_REJECTED"
-          return 1
-        elif [[ "$1" =~ ^-[Dq]*o(.*)$ ]]; then
-          _build_reject_arg "rc build: -o/--output is not accepted — it can redirect the build result away from the local docker image store, which would let the post-build safety-floor validators silently pass against a STALE previously-built image while rc reports the build as successful. See 'rc build flag allowlist' in docs/reference/cli-reference.md. There is no escape hatch: rc build passes docker a fixed argv (ADR-031 D5(c))." "BUILD_OUTPUT_REJECTED"
-          return 1
-        elif [[ "$1" =~ ^-[Dq]*t(.*)$ ]]; then
-          local _bt_prefix="${1%%t*}"
-          local _bt_rest="${BASH_REMATCH[1]}"
-          # Re-emit any leading boolean flags (-D/-q) as their own token so
-          # docker still sees them -- only the tag portion is intercepted.
-          if [[ "$_bt_prefix" != "-" ]]; then
-            _bt_remaining+=("$_bt_prefix")
-          fi
-          if [[ -z "$_bt_rest" ]]; then
-            # -t / -qt / -Dqt / ... with nothing attached: value is the
-            # NEXT argv word (mirrors the -t|--tag case arm above).
-            if [[ $# -lt 2 ]]; then
-              if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-                json_error "rc build: ${1} requires a value" "BUILD_TAG_MISSING_VALUE"
-              fi
-              echo "Error: ${1} requires a value" >&2
-              return 1
-            fi
-            _bt_tag="$2"
-            _bt_tag_set=1
-            shift 2
-          else
-            _bt_tag="${_bt_rest#=}"
-            _bt_tag_set=1
-            shift
-          fi
-        elif [[ "$1" =~ ^-[Dq]+$ ]]; then
-          # ADMIT: a pure boolean short cluster (-D/-q only, no value
-          # character at all) -- see the --debug/--quiet case arm above for
-          # the rationale, which applies identically to the short spellings.
-          _bt_remaining+=("$1")
-          shift
-        else
-          _build_reject_arg "rc build: '$1' is not on rc's build-flag allowlist and cannot be passed to docker build — see 'rc build flag allowlist' in docs/reference/cli-reference.md for what is (and isn't) accepted and why. There is no escape hatch: rc build passes docker a fixed argv (ADR-031 D5(c))." "BUILD_ARG_NOT_ALLOWED"
-          return 1
-        fi
+        _build_reject_arg "rc build: '$1' is not accepted -- rc build takes exactly one input, --file <path to a host-side Dockerfile>, and passes docker a fixed argv (ADR-031 D5(c)). There is no escape hatch and no flag passthrough: put whatever you were trying to express INTO the Dockerfile, which is yours to write. To build under a different tag, set RC_IMAGE." "BUILD_ARG_NOT_ALLOWED"
+        return 1
         ;;
     esac
   done
-  set -- "${_bt_remaining[@]+"${_bt_remaining[@]}"}"
 
-  if [[ "$_bt_tag_set" -eq 1 && -z "$_bt_tag" ]]; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "rc build: -t/--tag value must not be empty" "BUILD_TAG_EMPTY_VALUE"
-    fi
-    echo "Error: -t/--tag value must not be empty" >&2
+  if [[ "$_bf_file_set" -eq 1 && -z "$_bf_file" ]]; then
+    _build_reject_arg "rc build: --file value must not be empty" "BUILD_FILE_EMPTY_VALUE"
     return 1
   fi
 
-  # shellcheck disable=SC2034  # read via dynamic scope by every helper cmd_build calls below
-  # NOTE: the RHS `$IMAGE` here is evaluated against the OUTER (not-yet-
-  # shadowed) variable at `local` declaration time -- standard bash
-  # behavior for `local X="$X"`. Splitting the declaration and the
-  # conditional assignment into two separate statements would instead read
-  # back the (already-shadowed, empty) local on the second statement --
-  # verified live while writing this fix (T3/T16 regressed to an empty tag
-  # until this was combined into one statement).
-  local IMAGE="$IMAGE"
-  if [[ "$_bt_tag_set" -eq 1 ]]; then
-    IMAGE="$_bt_tag"
-  fi
+  local _bf_default="${SCRIPT_DIR}/cage/Dockerfile"
+  [[ "$_bf_file_set" -eq 0 ]] && _bf_file="$_bf_default"
 
-  # Ensure the manifest is seeded (first-run: writes defaults to ~/.config/rip-cage/tools.yaml).
-  _manifest_ensure_seeded
-
-  # rip-cage-6vt9: seed-drift detection — informational, never blocks the
-  # build. Warns when the manifest's seed provenance stamp is stale relative
-  # to the CURRENT shipped manifest/default-tools.yaml (or, unstamped, when its
-  # freshness is simply unknown). See the section header above
-  # _manifest_check_seed_drift for the full design.
-  _manifest_check_seed_drift "$(_manifest_global_path)"
-
-  # rip-cage-4c5.3: IOC pre-build check — reject any manifest egress: entry naming
-  # a host on the IOC denylist BEFORE any Docker call (ADR-005 D3 / ADR-012 D1).
-  # Fires fail-loud, naming the offending host, so the human knows what to fix.
-  if ! _manifest_check_ioc_egress "${SCRIPT_DIR}/cage/egress/egress-rules.yaml"; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Manifest declares an IOC-denylisted egress host — rc build refused (ADR-005 D3 / ADR-012 D1)" "MANIFEST_IOC_EGRESS_DENIED"
-    fi
+  if [[ ! -f "$_bf_file" ]]; then
+    _build_reject_arg "rc build: no Dockerfile at '${_bf_file}'." "BUILD_FILE_NOT_FOUND"
     return 1
   fi
 
-  # Resolve the Dockerfile to use: original when all tools are bundled (D8),
-  # or a temp Dockerfile with extra manifest-generated RUN steps for non-bundled tools.
-  local _dockerfile _tmp_dockerfile
-  _dockerfile=""
-  _tmp_dockerfile=""
-  _dockerfile=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/cage/Dockerfile") || {
-    echo "Error: failed to resolve Dockerfile from manifest." >&2
+  # Resolve to a real path BEFORE the containment check -- a relative path or a
+  # symlink that lands inside a cage mount must be caught by where it resolves,
+  # not by how it was spelled (the realpath-first rule ADR-023 D6 already
+  # applies to mount sources).
+  local _bf_dir _bf_real
+  if ! _bf_dir="$(cd "$(dirname "$_bf_file")" 2>/dev/null && pwd -P)"; then
+    _build_reject_arg "rc build: could not resolve the directory of '${_bf_file}'." "BUILD_FILE_UNRESOLVABLE"
     return 1
-  }
-  # Track a temp file for cleanup (empty means original was used).
-  if [[ "$_dockerfile" != "${SCRIPT_DIR}/cage/Dockerfile" ]]; then
-    _tmp_dockerfile="$_dockerfile"
+  fi
+  _bf_real="${_bf_dir}/$(basename "$_bf_file")"
+
+  local _bf_default_real="$_bf_default"
+  local _bf_default_dir
+  if _bf_default_dir="$(cd "$(dirname "$_bf_default")" 2>/dev/null && pwd -P)"; then
+    _bf_default_real="${_bf_default_dir}/$(basename "$_bf_default")"
   fi
 
-  # rip-cage-buuo.3: build-isolation assertion — BEFORE docker build.
-  # Assert that the generated builder stages do not bind-mount host paths.
-  # Only applies when a manifest-generated Dockerfile was produced (non-bundled tools).
-  # The original (unmodified) Dockerfile has no rc-builder-* stages, so this check
-  # is a no-op when all tools are bundled (no temp Dockerfile → skipped).
-  if [[ -n "$_tmp_dockerfile" ]]; then
-    if ! _manifest_check_build_isolation "$_tmp_dockerfile"; then
-      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-        json_error "Manifest builder stage violates build-isolation invariant — rc build refused (ADR-005 D9 / ADR-024 build-isolation)" "MANIFEST_BUILD_ISOLATION_VIOLATED"
-      fi
-      [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
-      return 1
-    fi
+  local _bf_context
+  if [[ "$_bf_real" == "$_bf_default_real" ]]; then
+    _bf_context="$SCRIPT_DIR"
+  else
+    _bf_context="$_bf_dir"
   fi
 
-  log "Building $IMAGE from ${_dockerfile}..."
+  # FAIL-CLOSED, before any docker call, no opt-out (ADR-031 D5(a)).
+  _build_dockerfile_outside_cage_mounts "$_bf_real" || return 1
+
+  log "Building $IMAGE from ${_bf_real}..."
   local _build_ok=0
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    if docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_dockerfile" "$@" "$SCRIPT_DIR" >/dev/null 2>&1; then
-      # rip-cage-buuo.3: binary-root-owned assertion — AFTER successful docker build.
-      # Inspect the actual installed binary in the built image.
-      # rip-cage-wlwc.3: ALSO assert per-asset root_owned_required mount ownership-effect
-      # (ADR-027 D1) — sibling to _manifest_check_binary_root_owned, same gate, same
-      # fail-closed semantics. Both validators run on every build entrypoint.
-      if ! _manifest_check_binary_root_owned "$IMAGE" || ! _manifest_check_mount_root_owned "$IMAGE"; then
-        [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
-        # Untag the violating image so a subsequent `rc up` / `docker run rip-cage:latest`
-        # cannot use the tainted build. Fail-closed: remove before aborting (ADR-001).
-        docker image rm "$IMAGE" 2>/dev/null || true
-        json_error "Manifest tool binary is not root-owned/agent-writable, or a root_owned_required mount asset is not root-owned — safety floor violated (ADR-005 D9/D11, ADR-024, ADR-027 D1)" "MANIFEST_BINARY_NOT_ROOT_OWNED"
-      fi
+    if docker build -f "$_bf_real" --build-arg "RC_VERSION=${RC_VERSION}" -t "$IMAGE" "$_bf_context" >/dev/null 2>&1; then
       # rip-cage-jnvb / D-d: informational, non-blocking warning (stderr, so
-      # stdout JSON stays parseable) when existing rc containers are pinned
-      # to a different image than the one just built — rc up will refuse to
-      # resume them (see _up_resolve_resume_image_drift_stopped).
+      # stdout JSON stays parseable) when existing rc cages are pinned to a
+      # different image than the one just built -- rc up will refuse to resume
+      # them (see _up_resolve_resume_image_drift_stopped).
       #
-      # rip-cage-fo4z F7 (round 2): skip this when the caller supplied a
-      # custom -t/--tag. The warning's premise is "cages running the image
-      # you just rebuilt" -- that reasoning does not hold for a scratch/
-      # fixture/test build under a throwaway tag, and every real cage is
-      # still pinned to whatever image it actually was (rip-cage:latest or
-      # an explicit RC_IMAGE), untouched by this build. Without this guard,
-      # a second build of the SAME custom tag (already loaded into msb's
-      # cache from the prior run) makes every real cage's digest mismatch
-      # the fixture image, and the warning would wrongly advise a recreate
-      # (a COLD RECREATE) on cages that are perfectly current.
-      [[ "$_bt_tag_set" -eq 0 ]] && _build_warn_stale_containers
-      # rip-cage-7dkq (S1, msb migration testability root): one-time
-      # docker save -> msb load conversion. Best-effort (see _build_msb_load);
-      # its exit code is deliberately not propagated into rc build's own.
+      # Skipped under RC_IMAGE: the warning's premise is "cages running the
+      # image you just rebuilt", which does not hold for a scratch or fixture
+      # tag. Every real cage is still pinned to whatever it actually runs,
+      # untouched by this build. (Was keyed on a caller -t/--tag, rip-cage-fo4z
+      # F7; that flag retired with the allowlist, RC_IMAGE is the same signal.)
+      [[ -z "${RC_IMAGE:-}" ]] && _build_warn_stale_containers
+      # rip-cage-7dkq (S1): one-time docker save -> msb load conversion.
+      # Best-effort (see _build_msb_load); its exit code is deliberately not
+      # propagated into rc build's own.
       _build_msb_load || true
       # rip-cage-7bs3: AFTER _build_msb_load, not before -- pre-load, msb's
       # cache still holds the PREVIOUS build, so a pre-load compare is
-      # divergent by construction on every successful build. Post-load,
-      # this IS the acceptance's "rc build's msb-load is verified to have
-      # landed". Advisory only (see _msb_warn_image_layer_drift's header).
+      # divergent by construction on every successful build. Advisory only.
       _msb_warn_image_layer_drift
       jq -nc --arg img "$IMAGE" '{image: $img, action: "built", status: "success"}'
     else
-      [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
       json_error "Build failed" "BUILD_FAILED"
     fi
   else
-    docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_dockerfile" "$@" "$SCRIPT_DIR" || _build_ok=$?
-    # rip-cage-buuo.3: binary-root-owned assertion — AFTER successful docker build.
-    # rip-cage-wlwc.3: ALSO assert per-asset root_owned_required mount ownership-effect
-    # (ADR-027 D1) — entrypoint-completeness: same two validators on all build paths.
+    docker build -f "$_bf_real" --build-arg "RC_VERSION=${RC_VERSION}" -t "$IMAGE" "$_bf_context" || _build_ok=$?
     if [[ "$_build_ok" -eq 0 ]]; then
-      if ! _manifest_check_binary_root_owned "$IMAGE" || ! _manifest_check_mount_root_owned "$IMAGE"; then
-        [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
-        # Untag the violating image so a subsequent `rc up` / `docker run rip-cage:latest`
-        # cannot use the tainted build. Fail-closed: remove before aborting (ADR-001).
-        docker image rm "$IMAGE" 2>/dev/null || true
-        return 1
-      fi
-      # rip-cage-jnvb / D-d: same informational warning on the human-mode
-      # build path. rip-cage-fo4z F7 (round 2): same custom-tag skip as the
-      # JSON path above -- see that comment for the full rationale.
-      [[ "$_bt_tag_set" -eq 0 ]] && _build_warn_stale_containers
-      # rip-cage-7dkq (S1, msb migration testability root): one-time
-      # docker save -> msb load conversion. Best-effort (see _build_msb_load);
-      # its exit code is deliberately not propagated into rc build's own.
+      # Same informational warning and same RC_IMAGE skip as the JSON path.
+      [[ -z "${RC_IMAGE:-}" ]] && _build_warn_stale_containers
       _build_msb_load || true
-      # rip-cage-7bs3: same AFTER-load placement and rationale as the JSON
-      # path above.
       _msb_warn_image_layer_drift
     fi
   fi
-  [[ -n "$_tmp_dockerfile" ]] && rm -f "$_tmp_dockerfile"
   return "$_build_ok"
 }
 
@@ -883,60 +524,18 @@ _image_is_current() {
 
 # _pull_or_build — auto-provision the rip-cage image, pulling from GHCR when
 # RIP_CAGE_IMAGE_REGISTRY is set (default ghcr.io/jsnyde0/rip-cage), falling
-# back to local docker build on pull failure. Used by cmd_up's auto-build
-# branch. Explicit `rc build` (cmd_build) is unchanged and always builds.
-# ADR-008 D6.
+# back to a local build on pull failure. Used by cmd_up's auto-build branch.
+# Explicit `rc build` (cmd_build) is unchanged and always builds. ADR-008 D6.
 #
-# Manifest integration (rip-cage-4c5.2): the local-build fallback resolves the
-# Dockerfile through _manifest_build_dockerfile_path so that any manifest-defined
-# non-bundled TOOL entries are baked in.  The pull path is unaffected (the pulled
-# image is a pre-built release image; manifest-driven tools require an explicit
-# `rc build`).
-# _pull_or_build_local — shared from-source local build helper for _pull_or_build.
-# Resolves the Dockerfile, runs BOTH D11 validators (build-isolation pre-build and
-# binary-root-owned post-build) with the same fail-closed semantics as cmd_build,
-# then returns the build exit code.
-# rip-cage-buuo.6 F1: wires the ADR-005 D11 FIRM validators into the auto-build path
-# so that `rc up` without a prior `rc build` never bypasses D9/D11 enforcement.
+# _pull_or_build_local — the from-source fallback. Builds rc's OWN base
+# Dockerfile only: this path exists so `rc up` on a fresh host gets a working
+# base image, and an operator's extension image is never something rc decides to
+# build behind their back. Same fixed argv as cmd_build (ADR-031 D5(c)); the
+# containment check cmd_build runs is not repeated here because the path is rc's
+# own, not a caller's.
 _pull_or_build_local() {
-  local _pob_dockerfile _pob_tmp
-  _pob_dockerfile=""
-  _pob_tmp=""
-  _pob_dockerfile=$(_manifest_build_dockerfile_path "${SCRIPT_DIR}/cage/Dockerfile") || {
-    echo "Error: failed to resolve Dockerfile from manifest." >&2
-    return 1
-  }
-  if [[ "$_pob_dockerfile" != "${SCRIPT_DIR}/cage/Dockerfile" ]]; then
-    _pob_tmp="$_pob_dockerfile"
-  fi
-
-  # rip-cage-buuo.6 F1: build-isolation assertion — BEFORE docker build.
-  # Same semantics as cmd_build: only fires when a manifest-generated Dockerfile
-  # was produced (non-bundled tools; _pob_tmp non-empty).
-  if [[ -n "$_pob_tmp" ]]; then
-    if ! _manifest_check_build_isolation "$_pob_tmp"; then
-      echo "Error: Manifest builder stage violates build-isolation invariant — rc up auto-build refused (ADR-005 D9 / ADR-024 build-isolation)" >&2
-      [[ -n "$_pob_tmp" ]] && rm -f "$_pob_tmp"
-      return 1
-    fi
-  fi
-
   local _pob_exit=0
-  docker build -t "$IMAGE" --build-arg "RC_VERSION=${RC_VERSION}" -f "$_pob_dockerfile" "$SCRIPT_DIR" || _pob_exit=$?
-
-  # rip-cage-buuo.6 F1: binary-root-owned assertion — AFTER docker build.
-  # rip-cage-wlwc.3: ALSO assert per-asset root_owned_required mount ownership-effect
-  # (ADR-027 D1) — both validators on all build paths (entrypoint-completeness).
-  # Same semantics as cmd_build: untag tainted image on failure (fail-closed, ADR-001).
-  if [[ "$_pob_exit" -eq 0 ]]; then
-    if ! _manifest_check_binary_root_owned "$IMAGE" || ! _manifest_check_mount_root_owned "$IMAGE"; then
-      [[ -n "$_pob_tmp" ]] && rm -f "$_pob_tmp"
-      docker image rm "$IMAGE" 2>/dev/null || true
-      return 1
-    fi
-  fi
-
-  [[ -n "$_pob_tmp" ]] && rm -f "$_pob_tmp"
+  docker build -f "${SCRIPT_DIR}/cage/Dockerfile" --build-arg "RC_VERSION=${RC_VERSION}" -t "$IMAGE" "$SCRIPT_DIR" || _pob_exit=$?
   return "$_pob_exit"
 }
 
@@ -976,97 +575,3 @@ _pull_or_build() {
   _pull_or_build_local
   return $?
 }
-
-
-# _manifest_check_build_isolation — ADR-005 D9 / ADR-024 / rip-cage-buuo.3
-#
-# Assert that the generated Dockerfile's builder stages cannot reach the host.
-# Specifically: within any rc-builder-* stage, there must be NO:
-#   - RUN --mount=type=bind with an absolute src= path (host-path leak)
-#   - VOLUME directive (host-path leak via Docker volume mount)
-#
-# The builder stage today uses only COPY <build_script> /rc-build/build.sh
-# (copies from the build context, NOT a host bind mount) and RUN sh /rc-build/build.sh
-# (runs inside the isolated layer). This assertion guards against a future
-# manifest/codegen path that would BREAK that isolation (ADR-002 multi-stage).
-#
-# Fires BEFORE docker build — static analysis of the generated Dockerfile.
-#
-# Parameters:
-#   $1  dockerfile_path — path to the generated Dockerfile to inspect
-#
-# Returns: 0 if isolated clean, 1 with fail-loud error if a host-access path found.
-_manifest_check_build_isolation() {
-  local _dockerfile="${1:-}"
-
-  if [[ -z "$_dockerfile" || ! -f "$_dockerfile" ]]; then
-    # No manifest-generated Dockerfile (all bundled, D8) — nothing to check.
-    return 0
-  fi
-
-  # Track whether we are inside an rc-builder-* stage so we check only
-  # the isolated builder stages, not the runtime stage.
-  local _in_builder_stage=0
-  local _stage_name=""
-  local _line_no=0
-  local _violation=0
-
-  while IFS= read -r _line; do
-    _line_no=$(( _line_no + 1 ))
-
-    # Detect stage transitions: "FROM ... AS <name>"
-    if [[ "$_line" =~ ^[[:space:]]*FROM[[:space:]] ]]; then
-      local _as_label
-      # Extract the AS label if present (case-insensitive AS).
-      _as_label=$(printf '%s' "$_line" | grep -oiE 'AS [a-z0-9_-]+' | awk '{print $2}' | tr '[:upper:]' '[:lower:]' || true)
-      if [[ "$_as_label" == rc-builder-* ]]; then
-        _in_builder_stage=1
-        _stage_name="$_as_label"
-      else
-        _in_builder_stage=0
-        _stage_name=""
-      fi
-      continue
-    fi
-
-    [[ "$_in_builder_stage" -eq 0 ]] && continue
-
-    # Check for RUN --mount=type=bind with an absolute src= path (host-path leak).
-    # Pattern: RUN --mount=type=bind,src=/ or RUN --mount=type=bind,...,src=/...
-    # An absolute src= means the build daemon is binding a HOST path into the build step.
-    if [[ "$_line" =~ ^[[:space:]]*RUN[[:space:]].*--mount=type=bind ]]; then
-      # Extract src= value.
-      local _src_val
-      _src_val=$(printf '%s' "$_line" | grep -oE 'src=[^, ]+' | head -1 | cut -d= -f2 || true)
-      if [[ "$_src_val" == /* ]]; then
-        echo "Error: manifest builder stage '${_stage_name}' (line ${_line_no}) contains RUN --mount=type=bind,src=${_src_val} — absolute host path in builder stage violates build-isolation invariant (ADR-005 D9 / ADR-024 build-isolation). Builder stages must not bind-mount host paths." >&2
-        _violation=1
-      fi
-    fi
-
-    # Check for RUN --mount=type=ssh (injects host SSH agent socket into build step).
-    # This gives the builder stage direct access to the host SSH agent — a host-resource
-    # access vector that violates build-isolation (ADR-005 D9 / ADR-024).
-    if [[ "$_line" =~ ^[[:space:]]*RUN[[:space:]].*--mount=type=ssh ]]; then
-      echo "Error: manifest builder stage '${_stage_name}' (line ${_line_no}) contains RUN --mount=type=ssh — SSH agent socket injection in a builder stage violates build-isolation invariant (ADR-005 D9 / ADR-024 build-isolation). Builder stages must not access host resources." >&2
-      _violation=1
-    fi
-
-    # Check for RUN --mount=type=secret (exposes host build secrets into build step).
-    # This gives the builder stage access to host secrets (API keys, credentials, etc.) —
-    # a host-resource access vector that violates build-isolation (ADR-005 D9 / ADR-024).
-    if [[ "$_line" =~ ^[[:space:]]*RUN[[:space:]].*--mount=type=secret ]]; then
-      echo "Error: manifest builder stage '${_stage_name}' (line ${_line_no}) contains RUN --mount=type=secret — host secret injection in a builder stage violates build-isolation invariant (ADR-005 D9 / ADR-024 build-isolation). Builder stages must not access host resources." >&2
-      _violation=1
-    fi
-
-    # Check for VOLUME directive inside a builder stage (host-volume access path).
-    if [[ "$_line" =~ ^[[:space:]]*VOLUME[[:space:]] ]]; then
-      echo "Error: manifest builder stage '${_stage_name}' (line ${_line_no}) contains a VOLUME directive — VOLUME in a builder stage introduces host-path access (ADR-005 D9 / ADR-024 build-isolation). Builder stages must be fully isolated." >&2
-      _violation=1
-    fi
-  done < "$_dockerfile"
-
-  [[ "$_violation" -eq 0 ]]
-}
-

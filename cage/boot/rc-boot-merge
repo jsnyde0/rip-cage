@@ -1,0 +1,70 @@
+#!/bin/sh
+# rc-boot-merge <fragment.json> [<fragment.json> ...]
+#
+# Merge boot-descriptor fragments into /etc/rip-cage/boot.json, in place.
+# Runs at IMAGE BUILD TIME, from an extension Dockerfile:
+#
+#   COPY boot-fragment.json /tmp/f.json
+#   RUN rc-boot-merge /tmp/f.json && rm /tmp/f.json
+#
+# WHY THIS EXISTS AND WHY IT IS NOT "AUTO-WIRING" (ADR-005 D12): the merge rule
+# is mechanical and identical every run — append each fragment's daemons and
+# multiplexers, replace a tools[] entry of the same name. What to declare stays
+# entirely the composing agent's judgment; this tool names no tool and blesses
+# none. Without it every recipe would copy-paste the same 200-character jq
+# expression, where one typo silently drops a daemon.
+#
+# Fail-loud (ADR-001): a missing file, unparseable JSON, or an unwritable
+# descriptor aborts the build rather than producing a half-merged image.
+set -eu
+
+DESC="${RC_BOOT_DESCRIPTOR:-/etc/rip-cage/boot.json}"
+
+if [ "$#" -eq 0 ]; then
+  echo "rc-boot-merge: usage: rc-boot-merge <fragment.json> [<fragment.json> ...]" >&2
+  exit 2
+fi
+
+if [ ! -f "$DESC" ]; then
+  echo "rc-boot-merge: ERROR: boot descriptor '$DESC' not found — is this image built FROM the rip-cage base image?" >&2
+  exit 1
+fi
+
+for _frag in "$@"; do
+  if [ ! -f "$_frag" ]; then
+    echo "rc-boot-merge: ERROR: fragment '$_frag' not found." >&2
+    exit 1
+  fi
+  if ! jq -e . "$_frag" >/dev/null 2>&1; then
+    echo "rc-boot-merge: ERROR: fragment '$_frag' is not valid JSON." >&2
+    exit 1
+  fi
+
+  _out="${DESC}.merging.$$"
+  # daemons/multiplexers append; tools replace-by-name (so an extension can give
+  # an existing tool a launch wrapper without duplicating its entry).
+  if ! jq -s '
+        .[0] as $b | .[1] as $f
+        | $b
+        | .daemons      = (($b.daemons      // []) + ($f.daemons      // []))
+        | .multiplexers = (($b.multiplexers // []) + ($f.multiplexers // []))
+        | .tools        = (
+            [ ($b.tools // [])[]
+              | . as $t
+              | (($f.tools // []) | map(select(.name == $t.name)) | first) // $t ]
+            + (($f.tools // []) | map(select(.name as $n | (($b.tools // []) | any(.name == $n)) | not)))
+          )
+      ' "$DESC" "$_frag" > "$_out"; then
+    rm -f "$_out"
+    echo "rc-boot-merge: ERROR: merge of '$_frag' into '$DESC' failed." >&2
+    exit 1
+  fi
+  mv "$_out" "$DESC"
+  # Restore the descriptor's shipped ownership/mode — the merge wrote a fresh
+  # file, and a descriptor an agent can edit is a descriptor that decides what
+  # starts in its own cage. Best-effort: a non-root build stage leaves it alone
+  # rather than failing the merge.
+  chown root:root "$DESC" 2>/dev/null || true
+  chmod 0444 "$DESC" 2>/dev/null || true
+  echo "rc-boot-merge: merged '$_frag' into '$DESC'"
+done

@@ -1,0 +1,40 @@
+#!/bin/sh
+# Generic per-tool launch wrapper (ADR-027 D4, ADR-031 D4).
+#
+# Baked into the base image as /usr/local/bin/<tool> for each agent binary the
+# base image ships; the real binary sits beside it as /usr/local/bin/<tool>-real.
+# Invoked-as is the tool name, so ONE file serves every tool — it names none of
+# them, which is what keeps the base image tool-agnostic (ADR-005 D12).
+#
+# WHAT IT DOES: reads the boot descriptor's tools[] entry matching its own
+# basename. An entry with a `launch` command means an extension wants the tool
+# started through that command (the DCG guard recipe is the worked example);
+# the wrapper execs it with "$@" appended. No entry, or no `launch`, and the
+# wrapper execs <tool>-real directly — the base image's own behaviour, unchanged.
+#
+# ADR-027 D4's FIRM principle holds: no cross-recipe path is hardcoded anywhere
+# in this leg. The guard's path lives in the recipe's own descriptor fragment.
+#
+# Resolution is by absolute path, never PATH order (an extension that prepends
+# to PATH must not be able to shadow the real binary out from under the wrapper).
+set -eu
+
+_tool=$(basename "$0")
+_real="/usr/local/bin/${_tool}-real"
+_desc="${RC_BOOT_DESCRIPTOR:-/etc/rip-cage/boot.json}"
+
+if [ ! -x "$_real" ]; then
+  echo "[rip-cage] ERROR: ${_tool} launch wrapper found no real binary at ${_real} — the base image installs the tool as <name>-real and this wrapper as <name>. (ADR-031 D4)" >&2
+  exit 1
+fi
+
+_launch=""
+if [ -f "$_desc" ] && command -v jq >/dev/null 2>&1; then
+  _launch=$(jq -r --arg n "$_tool" '((.tools // []) | map(select(.name == $n)) | first | .launch) // ""' "$_desc" 2>/dev/null || echo "")
+fi
+
+if [ -n "$_launch" ]; then
+  exec sh -c "${_launch} \"\$@\"" "$_tool" "$@"
+fi
+
+exec "$_real" "$@"

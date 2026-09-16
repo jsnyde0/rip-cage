@@ -96,6 +96,65 @@ _container_multiplexer() {
 }
 
 
+# _container_mux_hook_cmd <name> <hook> [<cage_name>]
+#
+# Resolve one multiplexer hook to the shell command that runs it, out of the
+# cage's boot descriptor (/etc/rip-cage/boot.json, ADR-031 D4). Prints the
+# command on stdout; the caller runs it with `sh -c` inside the cage.
+#
+#   name:  multiplexer name (a name declared in the descriptor's multiplexers[])
+#   hook:  start | attach | exec | new_session | teardown
+#   cage_name: (optional) running cage, for host-side callers such as rc up.
+#              Present -> the descriptor is read INSIDE the cage via msb exec.
+#              Absent   -> the LOCAL file is read (in-cage callers, and
+#                          host-tier unit tests pointing RC_BOOT_DESCRIPTOR at a
+#                          temp descriptor with no cage anywhere).
+#
+# Behavior, unchanged in contract from the baked-registry resolver this replaces
+# (rip-cage-61al.2): the multiplexer not being declared at all is FAIL LOUD
+# (ADR-001) and never a silent fall-through to a default; a declared
+# multiplexer missing an OPTIONAL hook prints nothing and returns 0, a
+# documented no-op the caller answers with its own fallback.
+_container_mux_hook_cmd() {
+  local _cmhc_name="${1:-}"
+  local _cmhc_hook="${2:-}"
+  local _cmhc_cage="${3:-}"
+
+  if [[ -z "$_cmhc_name" ]]; then
+    echo "Error: _container_mux_hook_cmd: multiplexer name is required." >&2
+    return 1
+  fi
+  if [[ -z "$_cmhc_hook" ]]; then
+    echo "Error: _container_mux_hook_cmd: hook name is required." >&2
+    return 1
+  fi
+
+  local _cmhc_desc_path="${RC_BOOT_DESCRIPTOR:-/etc/rip-cage/boot.json}"
+  local _cmhc_json=""
+  if [[ -n "$_cmhc_cage" ]]; then
+    if ! _cmhc_json=$(_msb_exec "$_cmhc_cage" -- cat "$_cmhc_desc_path" 2>/dev/null); then
+      echo "Error: could not read the boot descriptor ${_cmhc_desc_path} in cage '${_cmhc_cage}' (ADR-001 fail-loud). Check \`msb inspect ${_cmhc_cage}\` and the image it was created from." >&2
+      return 1
+    fi
+  else
+    if [[ ! -f "$_cmhc_desc_path" ]]; then
+      echo "Error: no boot descriptor at ${_cmhc_desc_path} (ADR-001 fail-loud)." >&2
+      return 1
+    fi
+    _cmhc_json=$(cat "$_cmhc_desc_path")
+  fi
+
+  if ! jq -e --arg n "$_cmhc_name" '(.multiplexers // []) | any(.name == $n)' <<<"$_cmhc_json" >/dev/null 2>&1; then
+    echo "Error: multiplexer '${_cmhc_name}' is not declared in ${_cmhc_desc_path}${_cmhc_cage:+ (cage '${_cmhc_cage}')} — the image was built without it (ADR-001 fail-loud). Add a multiplexers[] entry to the descriptor fragment your Dockerfile merges, then rebuild." >&2
+    return 1
+  fi
+
+  jq -r --arg n "$_cmhc_name" --arg h "$_cmhc_hook" \
+    '((.multiplexers // []) | map(select(.name == $n)) | first | .[$h]) // ""' \
+    <<<"$_cmhc_json" 2>/dev/null | tr -d '\n'
+}
+
+
 # _rc_uptime_from_state RUNNING(0|1) UPDATED_AT -- humanized uptime string
 # derived from `updated_at` (msb's closest counterpart to docker's
 # State.StartedAt for uptime display — it changes on start/stop
