@@ -340,19 +340,18 @@ _collect_dangling_symlinks() {
 #   $2  mode       — ro|rw
 #   $3  on_dangling — follow|skip|warn|error (default: follow)
 #   $4  scope      — file|parent (default: file)
-#   $5  workspace  — workspace path for denylist check (default: ".")
-#                    ADR-023 D2 FIRM: fingerprint reflects post-denylist mount set.
-#                    Denylist-skipped targets are silently excluded from the hash.
-#   $6  cred_mounts — real|none (default: real). F1 (rip-cage-seqc.4): when
+#   $5  cred_mounts — real|none (default: real). F1 (rip-cage-seqc.4): when
 #                    none, excludes the pi_root/auth.json leaf from the hash —
 #                    IDENTICAL predicate to the mount-loop leaf-filter in
 #                    _up_prepare_docker_mounts, so the fingerprint never drifts
 #                    from the honest post-filter mount set (label-lock /
-#                    filter-the-fingerprint-too, mirrors the existing ADR-023 D2
-#                    denylist exclusion above).
+#                    filter-the-fingerprint-too). ADR-023 D2 FIRM still holds:
+#                    the fingerprint reflects the POST-protected-paths mount set,
+#                    since skipped targets never reach the hash. That check needs
+#                    no workspace — the protected-paths list is host-global.
 # Output: sha256 hex string on stdout (always; empty set hashes to a fixed value)
 _symlink_follow_fingerprint() {
-  local pi_root="$1" mode="$2" on_dangling="${3:-follow}" scope="${4:-file}" workspace="${5:-.}" cred_mounts="${6:-real}"
+  local pi_root="$1" mode="$2" on_dangling="${3:-follow}" scope="${4:-file}" cred_mounts="${5:-real}"
   # Prepend a policy header so that policy changes produce a different
   # fingerprint even when the scanned symlink set is identical.
   local lines="policy: on_dangling=${on_dangling}, scope=${scope}, mode=${mode}"$'\n'
@@ -1521,7 +1520,7 @@ _up_resolve_resume_symlink_fingerprint() {
   # always really about.
   local _sfl_cur_cred_mounts="real"
   local _current_fp
-  _current_fp=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_cur_mode" "$_sfl_cur_on_dangling" "$_sfl_cur_scope" "$_path" "$_sfl_cur_cred_mounts")
+  _current_fp=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_cur_mode" "$_sfl_cur_on_dangling" "$_sfl_cur_scope" "$_sfl_cur_cred_mounts")
 
   # Missing label: pre-c1p.2 container. Only block if current state has
   # dangling symlinks (non-trivial fingerprint would mean a new second mount
@@ -1531,7 +1530,7 @@ _up_resolve_resume_symlink_fingerprint() {
     # B1a call-site 3: pi_root is empty so the loop body never runs and the
     # cred_mounts filter is INERT here — pass current for signature
     # consistency only (behavior is identical either way).
-    _empty_fp=$(_symlink_follow_fingerprint "" "rw" "follow" "file" "." "$_sfl_cur_cred_mounts")  # empty set fp
+    _empty_fp=$(_symlink_follow_fingerprint "" "rw" "follow" "file" "$_sfl_cur_cred_mounts")  # empty set fp
     if [[ "$_current_fp" == "$_empty_fp" ]]; then
       return 0  # Both empty — no mismatch
     fi
@@ -2930,7 +2929,7 @@ cmd_up() {
   # effective(pi), NEVER effective(claude) (rip-cage-xhgr / D5b) — this
   # fingerprint's scan root is ~/.pi/agent only.
   local _sfl_fingerprint
-  _sfl_fingerprint=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_mode_for_fp" "$_sfl_on_dangling_for_fp" "$_sfl_scope_for_fp" "$path" "$_UP_CRED_MOUNTS_PI")
+  _sfl_fingerprint=$(_symlink_follow_fingerprint "${HOME}/.pi/agent" "$_sfl_mode_for_fp" "$_sfl_on_dangling_for_fp" "$_sfl_scope_for_fp" "$_UP_CRED_MOUNTS_PI")
   _UP_RUN_ARGS+=(--label "rc.symlink-follow-fingerprint=${_sfl_fingerprint}")
   unset _sfl_mode_for_fp _sfl_on_dangling_for_fp _sfl_scope_for_fp _sfl_fingerprint
 

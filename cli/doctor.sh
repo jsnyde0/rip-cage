@@ -456,7 +456,6 @@ _doctor_format_transcript_persistence_probe() {
 
 _doctor_format_posture_probe() {
   local name="$1"
-  local workspace="${2:-}"
   local cfg_json
   cfg_json=$(_msb_inspect_json "$name") || { echo "INFO — could not read posture (msb inspect failed)"; return; }
   local default_egress rule_count
@@ -585,7 +584,7 @@ cmd_doctor() {
   local posture_probe="not running, no live probe"
 
   if [[ "$running" -eq 1 ]]; then
-    posture_probe=$(_doctor_format_posture_probe "$name" "$source_path")
+    posture_probe=$(_doctor_format_posture_probe "$name")
 
     # Beads server probe: look for dolt-server.port + process.
     local port_file_exists=0 port_val="" dolt_running=0

@@ -25,7 +25,7 @@
 # blast-radius posture, stated rather than papered over -- this layer stops the
 # accident and the injected instruction, not the motivated attacker.
 #
-# Bash 3.2 compatible (ADR-008 D5): no associative arrays, no mapfile.
+# Bash 3.2 compatible (ADR-008 D5): no bash-4-only builtins or array types.
 
 # --------------------------------------------------------------------------
 # Dependencies. yq reads the native msb config; jq normalizes its mount list.
