@@ -323,7 +323,7 @@ done
 rm -rf "$FAKE_MSB_BIN"
 
 # -----------------------------------------------
-# Test 5: rc completions (no docker needed) does NOT trigger docker check
+# Test 5: a verb needing neither runtime does NOT trigger the docker check
 # -----------------------------------------------
 # `rc schema` (the original docker-independent verb this smoke used) retired
 # with the rip-cage config schema (rip-cage-ely4.9 / ADR-031 D2), and its

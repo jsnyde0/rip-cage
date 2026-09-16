@@ -9,7 +9,9 @@
 #               two rc exec / rc attach terminals concurrently independent; close-one-leaves-other.
 #   (b) tmux  — started session survives a detach/reattach cycle.
 #   (c) retirement — rc agent / rc sessions gone from dispatch, --help, schema,
-#                    completions, and --output json allowlist.
+#                    completions, and --output json allowlist. RETIRED and
+#                    re-homed onto tests/test-rc-commands.sh Test 1/1b
+#                    (rip-cage-ely4.10) -- see the note where it lived.
 #   (d) config-isolation — reuse p1p probe (test-claude-concurrency.sh, READ-only)
 #                          green under none+tmux; gating under herdr (now installable).
 #   herdr spawn — herdr server starts + a herdr session is reachable.
@@ -411,96 +413,21 @@ _create_workspace() {
 if [[ "${RC_E2E_DCGHP_ONLY:-0}" != "1" ]]; then
 
 # ---------------------------------------------------------------------------
-# (c) RETIREMENT: rc agent / rc sessions gone from dispatch, --help,
-#     schema, completions, --output json allowlist.
-# This is a host-only check — no container needed. Assert it first so the
-# retirement evidence is present even when e2e container spins fail.
+# (c) RETIRED and RE-HOMED (rip-cage-ely4.10 / ADR-031 D3).
+#
+# It asserted that `rc agent` and `rc sessions` are gone from five surfaces:
+# dispatch, --help, `rc schema`, `rc completions zsh`, and the --output json
+# allowlist. Three of those surfaces no longer exist -- `rc schema` retired with
+# the config schema (rip-cage-ely4.9) and `rc completions` with the six-verb
+# thinning -- and the schema cases had already gone VACUOUS: `$RC schema`
+# returns empty, so "does not contain agent" passed no matter what rc did.
+#
+# The two live surfaces are covered better elsewhere. tests/test-rc-commands.sh
+# Test 1 asserts the help table equals the six-verb set exactly, which catches
+# any retired verb reappearing AND any seventh verb arriving; Test 1b sweeps
+# every deleted verb through the usage arm and checks its exit code. Neither is
+# a per-name grep that can rot into a vacuous pass.
 # ---------------------------------------------------------------------------
-echo "=== (c) Retirement assertions (host-only) ==="
-
-# rc agent exits non-zero (unknown command)
-RC_AGENT_EXIT=0
-"$RC" agent rc-mux-none-test >/dev/null 2>&1 || RC_AGENT_EXIT=$?
-if [[ $RC_AGENT_EXIT -ne 0 ]]; then
-  pass "(c) rc agent exits non-zero (retired from dispatch)"
-else
-  fail "(c) rc agent exited 0 — should be an unknown command (not yet retired?)"
-fi
-
-# rc sessions exits non-zero (unknown command)
-RC_SESSIONS_EXIT=0
-"$RC" sessions rc-mux-none-test >/dev/null 2>&1 || RC_SESSIONS_EXIT=$?
-if [[ $RC_SESSIONS_EXIT -ne 0 ]]; then
-  pass "(c) rc sessions exits non-zero (retired from dispatch)"
-else
-  fail "(c) rc sessions exited 0 — should be an unknown command (not yet retired?)"
-fi
-
-# rc --help / usage does NOT list 'agent' or 'sessions' as top-level commands.
-# Check for the command-line usage pattern: a line starting with whitespace,
-# then 'agent' or 'sessions' as the first word (the commands section of usage).
-# Avoids false-positive on 'ssh-agent' which legitimately appears in flag text.
-RC_HELP_OUT=$("$RC" --help 2>&1 || true)
-if [[ -z "$RC_HELP_OUT" ]]; then
-  fail "(c) rc --help produced no output — cannot assert retirement"
-else
-  if echo "$RC_HELP_OUT" | grep -Eq '^\s+agent\b'; then
-    fail "(c) rc --help still lists 'agent' as a top-level command"
-  else
-    pass "(c) rc --help does NOT list 'agent' as a top-level command"
-  fi
-  if echo "$RC_HELP_OUT" | grep -Eq '^\s+sessions\b'; then
-    fail "(c) rc --help still lists 'sessions' as a top-level command"
-  else
-    pass "(c) rc --help does NOT list 'sessions' as a top-level command"
-  fi
-fi
-
-# rc schema does NOT contain 'agent' or 'sessions' keys
-RC_SCHEMA_OUT=$("$RC" schema 2>/dev/null || true)
-if echo "$RC_SCHEMA_OUT" | grep -q '"agent"'; then
-  fail "(c) rc schema contains 'agent' key"
-else
-  pass "(c) rc schema does NOT contain 'agent' key"
-fi
-if echo "$RC_SCHEMA_OUT" | grep -q '"sessions"'; then
-  fail "(c) rc schema contains 'sessions' key"
-else
-  pass "(c) rc schema does NOT contain 'sessions' key"
-fi
-
-# rc completions zsh does NOT mention 'agent' or 'sessions' as completion tokens.
-# Word-anchored grep avoids false-positives on e.g. 'ssh-agent' in flag descriptions.
-RC_COMPLETIONS_ZSH=$("$RC" completions zsh 2>/dev/null || true)
-if [[ -z "$RC_COMPLETIONS_ZSH" ]]; then
-  fail "(c) rc completions zsh produced no output — cannot assert retirement"
-else
-  if echo "$RC_COMPLETIONS_ZSH" | grep -Eq '\bagent\b'; then
-    fail "(c) rc completions zsh contains 'agent'"
-  else
-    pass "(c) rc completions zsh does NOT contain 'agent'"
-  fi
-  if echo "$RC_COMPLETIONS_ZSH" | grep -Eq '\bsessions\b'; then
-    fail "(c) rc completions zsh contains 'sessions'"
-  else
-    pass "(c) rc completions zsh does NOT contain 'sessions'"
-  fi
-fi
-
-# rc --output json ls does NOT surface 'agent'/'sessions' in the allowed command set
-# (probe via schema which is the machine-readable surface)
-if echo "$RC_SCHEMA_OUT" | python3 -c "
-import sys, json
-schema = json.load(sys.stdin)
-cmds = list(schema.get('commands', {}).keys())
-print('schema_commands:', cmds)
-if 'agent' in cmds or 'sessions' in cmds:
-    sys.exit(1)
-" 2>/dev/null; then
-  pass "(c) --output json schema allowlist does NOT contain agent/sessions"
-else
-  fail "(c) --output json schema allowlist still contains agent or sessions"
-fi
 
 # ---------------------------------------------------------------------------
 # rip-cage-61al.3: grep-guard — no tmux|herdr literals in rc or init-rip-cage.sh
