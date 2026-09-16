@@ -1535,6 +1535,116 @@ fi
 rm -rf "$T61_ROOT"
 
 
+# --- T62: rc build's one input, and the containment rule on it (rip-cage-ely4.11) ---
+#
+# ADR-031 D5(a)/D5(c): the Dockerfile is a composition input, authored where the
+# caged agent cannot reach it. A path inside a cage mount is refused BEFORE any
+# docker call, fail-closed, with no opt-out flag -- the opt-out is the vector.
+#
+# THE SHIM IS THE WHOLE POINT. "Refused before docker runs" is not observable
+# from an exit code: a build that ran and then failed also exits non-zero. So a
+# `docker` on PATH appends every invocation to a file, and the assertion is that
+# NO `docker build` appears in it. Without the shim, these cases would pass just
+# as green with the containment check running AFTER the build.
+#
+# "No build" rather than "empty log", deliberately: rc legitimately runs
+# `docker info` as a prerequisite check before any verb body, so an empty log
+# would be asserting that rc skipped its own preflight. 62e is the control that
+# keeps the weaker predicate honest -- it proves a `build` line DOES appear when
+# the Dockerfile is acceptable.
+echo ""
+echo "=== T62: rc build takes one input, and refuses a Dockerfile inside a cage mount ==="
+T62_ROOT=$(mktemp -d)
+T62_SHIM="${T62_ROOT}/bin"
+T62_LOG="${T62_ROOT}/docker-invocations.log"
+mkdir -p "$T62_SHIM"
+cat > "${T62_SHIM}/docker" <<SHIM
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${T62_LOG}"
+exit 0
+SHIM
+chmod +x "${T62_SHIM}/docker"
+: > "$T62_LOG"
+
+# A project the cage config mounts, with the Dockerfile sitting inside it --
+# exactly the shape an agent inside that cage could write to.
+T62_PROJ="${T62_ROOT}/proj"
+mkdir -p "$T62_PROJ"
+printf 'FROM rip-cage:latest\n' > "${T62_PROJ}/Dockerfile"
+T62_PROJ_REAL=$(cd "$T62_PROJ" && pwd -P)
+T62_CONF="${T62_ROOT}/cage.yaml"
+cat > "$T62_CONF" <<CONF
+image: rip-cage:latest
+mounts:
+  - ${T62_PROJ_REAL}:/workspace
+CONF
+
+t62_rc=0
+t62_out=$(PATH="${T62_SHIM}:${PATH}" RC_CAGE_CONF="$T62_CONF" \
+  "$RC" build --file "${T62_PROJ}/Dockerfile" 2>&1) || t62_rc=$?
+
+if [[ "$t62_rc" -ne 0 ]]; then
+  pass "62a: rc build refused a Dockerfile inside a cage mount"
+else
+  fail "62a: rc build accepted a Dockerfile inside a cage mount (output: ${t62_out})"
+fi
+if ! grep -q "build" "$T62_LOG" 2>/dev/null; then
+  pass "62b: no docker build ran — the refusal is genuinely pre-docker"
+else
+  fail "62b: docker build WAS invoked before the refusal: $(cat "$T62_LOG")"
+fi
+if grep -q "sits inside" <<<"$t62_out"; then
+  pass "62c: the refusal names the mount the Dockerfile sits inside"
+else
+  fail "62c: the refusal did not explain itself (output: ${t62_out})"
+fi
+if grep -qi "no opt-out" <<<"$t62_out"; then
+  pass "62d: the refusal states there is no opt-out, so nobody goes hunting for a flag"
+else
+  fail "62d: the refusal did not say there is no opt-out (output: ${t62_out})"
+fi
+
+# NEGATIVE CONTROL for 62b: same shim, a Dockerfile OUTSIDE every mount. docker
+# must be invoked here, or 62b's empty log proves nothing.
+: > "$T62_LOG"
+T62_OUTSIDE="${T62_ROOT}/outside"
+mkdir -p "$T62_OUTSIDE"
+printf 'FROM rip-cage:latest\n' > "${T62_OUTSIDE}/Dockerfile"
+PATH="${T62_SHIM}:${PATH}" RC_CAGE_CONF="$T62_CONF" RC_IMAGE="rip-cage-t62:1" \
+  "$RC" build --file "${T62_OUTSIDE}/Dockerfile" >/dev/null 2>&1 || true
+if grep -q "build" "$T62_LOG" 2>/dev/null; then
+  pass "62e: a Dockerfile outside every mount DOES reach docker — 62b is not vacuous"
+else
+  fail "62e: docker was never invoked even for a legitimate Dockerfile — 62b proves nothing"
+fi
+# And the argv docker receives is the fixed one (ADR-031 D5(c)).
+if grep -qE 'build -f .*/outside/Dockerfile --build-arg RC_VERSION=.* -t rip-cage-t62:1 .*/outside' "$T62_LOG"; then
+  pass "62f: docker received exactly -f <path> --build-arg RC_VERSION -t <tag> <context>"
+else
+  fail "62f: docker's argv was not the fixed one: $(cat "$T62_LOG")"
+fi
+
+# The one-input rule: anything other than --file is refused, pre-docker.
+: > "$T62_LOG"
+t62_flag_rc=0
+t62_flag=$(PATH="${T62_SHIM}:${PATH}" RC_CAGE_CONF="$T62_CONF" "$RC" build --no-cache 2>&1) || t62_flag_rc=$?
+if [[ "$t62_flag_rc" -ne 0 ]] && ! grep -q "build" "$T62_LOG" 2>/dev/null; then
+  pass "62g: a docker flag other than --file is refused before docker runs"
+else
+  fail "62g: --no-cache was not refused pre-docker (output: ${t62_flag})"
+fi
+: > "$T62_LOG"
+t62_tag_rc=0
+t62_tag=$(PATH="${T62_SHIM}:${PATH}" RC_CAGE_CONF="$T62_CONF" "$RC" build -t evil:latest 2>&1) || t62_tag_rc=$?
+if [[ "$t62_tag_rc" -ne 0 ]] && ! grep -q "build" "$T62_LOG" 2>/dev/null; then
+  pass "62h: -t/--tag is refused too — the tag is rc's own, set via RC_IMAGE"
+else
+  fail "62h: -t was not refused pre-docker (output: ${t62_tag})"
+fi
+
+rm -rf "$T62_ROOT"
+
+
 # --- Cleanup ---
 rm -rf "$SYMLINK_SKILLS_DIR" "$SYMLINK_TARGET_DIR" "$SYMLINK_SKILLS_DIR2" "$HOME_TARGET_DIR" "$SIBLING_DIR"
 

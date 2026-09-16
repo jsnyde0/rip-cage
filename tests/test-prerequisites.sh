@@ -192,7 +192,7 @@ fi
 # The default must cost nothing: most cages run no multiplexer, and a probe on
 # every launch for a feature almost nobody uses is its own kind of wrong. The
 # observable is a docker shim that records every invocation: `docker image
-# inspect` for the multiplexer label must not appear under `none`.
+# read of the image's boot descriptor must not appear under `none`.
 T2_DOCKER_LOG="${T2_ROOT}/docker-invocations.log"
 # The shim records, then hands off to the REAL docker by absolute path (resolved
 # now, while T2_BIN is not yet on PATH) — rc's other docker calls must still
@@ -210,11 +210,11 @@ rm -f "$T2_SENTINEL" "$T2_LOG"
 : > "$T2_DOCKER_LOG"
 t2_run_rc none up --dry-run "$T2_PROJ" >/dev/null 2>&1
 
-t2_label_probes=$(grep -c 'rc.multiplexers' "$T2_DOCKER_LOG" 2>/dev/null) || t2_label_probes=0
-if [[ "$t2_label_probes" -eq 0 ]]; then
-  pass "2b: RC_MULTIPLEXER=none performs no multiplexer-label image inspection"
+t2_desc_probes=$(grep -c 'boot.json' "$T2_DOCKER_LOG" 2>/dev/null) || t2_desc_probes=0
+if [[ "$t2_desc_probes" -eq 0 ]]; then
+  pass "2b: RC_MULTIPLEXER=none reads no boot descriptor out of the image"
 else
-  fail "2b: RC_MULTIPLEXER=none inspected the image for the multiplexer label" "$(cat "$T2_DOCKER_LOG")"
+  fail "2b: RC_MULTIPLEXER=none read the image's boot descriptor" "$(cat "$T2_DOCKER_LOG")"
 fi
 
 # NEGATIVE CONTROL for 2b: the SAME run with a named multiplexer must produce
@@ -224,11 +224,11 @@ rm -f "$T2_SENTINEL" "$T2_LOG"
 : > "$T2_DOCKER_LOG"
 t2_run_rc rc-ely472-nosuchmux up "$T2_PROJ" >/dev/null 2>&1
 
-t2_named_probes=$(grep -c 'rc.multiplexers' "$T2_DOCKER_LOG" 2>/dev/null) || t2_named_probes=0
+t2_named_probes=$(grep -c 'boot.json' "$T2_DOCKER_LOG" 2>/dev/null) || t2_named_probes=0
 if [[ "$t2_named_probes" -gt 0 ]]; then
-  pass "2b: a NAMED multiplexer does inspect the image label — 2b is not vacuous"
+  pass "2b: a NAMED multiplexer does read the image's descriptor — 2b is not vacuous"
 else
-  fail "2b: a named multiplexer produced no label inspection either — 2b proves nothing" "$(cat "$T2_DOCKER_LOG")"
+  fail "2b: a named multiplexer read no descriptor either — 2b proves nothing" "$(cat "$T2_DOCKER_LOG")"
 fi
 
 rm -f "${T2_BIN}/docker"

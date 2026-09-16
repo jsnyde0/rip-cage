@@ -144,6 +144,15 @@ echo ""
 #       by cmd_ls's JSON and human branches).
 # ---------------------------------------------------------------------------
 # Dropped 155 -> 143 by rip-cage-ely4.10 (ADR-031 D3, the six-verb thinning).
+# Dropped 143 -> 111 by rip-cage-ely4.11 (ADR-031 D4, the manifest retirement).
+# 35 functions REMOVED -- the whole cli/lib/manifest_checks.sh validator and
+# codegen surface, cli/manifest.sh's hook resolver, rc up's manifest mount and
+# egress collectors, and the three mount-dest helpers in cli/lib/path.sh that
+# had nothing left to police. 3 ADDED, all in the seam that replaced it:
+# _build_cage_config_paths and _build_dockerfile_outside_cage_mounts (rc build's
+# fail-closed host-side Dockerfile rule, ADR-031 D5(a)) and
+# _container_mux_hook_cmd (the hook resolver, re-homed onto the boot descriptor).
+# Net -32.
 # 14 functions deleted with their verbs -- cmd_ls, _rc_ls_enumerate,
 # _rc_ls_mode_from_source_path (cli/ls.sh, whole file); cmd_attach, cmd_exec
 # (cli/attach_exec.sh, whole file); cmd_reload, _reload_enforce_transcript_guard,
@@ -157,7 +166,7 @@ echo ""
 # _up_warn_transcript_loss (the WARN half of `rc reload`'s transcript-loss
 # guard, now on every recreate path) and _up_check_multiplexer_available
 # (rip-cage-ely4.7.2's pre-create refusal). Net -12.
-echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 143) ==="
+echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 111) ==="
 
 # Bumped 178 -> 179 by Fable ruling 6 (msb cutover merge window): cli/lib/config.sh
 # gained _config_retired_fields (the retired-config-field loud-reject table).
@@ -319,7 +328,7 @@ echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 
 #       _up_prepare_conf_secret_env (the --conf-driven secret-env preflight,
 #       config.sh's `_up_prepare_resume_secrets` counterpart for the new
 #       config surface).
-EXPECTED_FN_COUNT=143
+EXPECTED_FN_COUNT=111
 _actual_fn_count=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh 2>/dev/null | wc -l | tr -d ' ')
 
 if [[ "$_actual_fn_count" -eq "$EXPECTED_FN_COUNT" ]]; then
@@ -344,17 +353,17 @@ echo ""
 # ---------------------------------------------------------------------------
 # (c) declare -F reachability: after sourcing the shim (exposing functions
 #     only -- no dispatch, since rc is sourced not executed here), every one
-#     of the 153 currently rc-reachable functions must be `declare -F`-
+#     of the 111 currently rc-reachable functions must be `declare -F`-
 #     reachable. rip-cage-rj68 (S6): cli/lib/msb_flags.sh is now in rc's
 #     source list (previously it was not -- see (b)'s comment), so the
 #     stale "151 reachable out of 156 on disk" gap is closed; on-disk count
-#     and reachable count are the SAME number (153, since rip-cage-ely4.9's
+#     and reachable count are the SAME number (111, since rip-cage-ely4.11's
 #     drop) from here on. A loud, per-name failure (not just a count) so a
 #     reviewer can see exactly which module dropped/misfiled a function.
 # ---------------------------------------------------------------------------
-echo "=== (c) declare -F reachability: all 153 rc-reachable functions defined after sourcing rc ==="
+echo "=== (c) declare -F reachability: all 111 rc-reachable functions defined after sourcing rc ==="
 
-ALL_193_NAMES="_bd_dolt_port_inject_arg _bd_host_preflight _build_msb_load _build_reject_arg _build_warn_stale_containers _cage_claude_projects_host_bound _check_lfs_stubs _check_workspace_config_base_url _collect_dangling_symlinks _collect_symlink_parents _container_multiplexer _docker_call _doctor_bd_version_compare _doctor_dead_file_mounts _doctor_format_auth_probe _doctor_format_dead_mounts _doctor_format_posture_probe _doctor_format_transcript_persistence_probe _doctor_host _emit_denylist_denial _emit_workspace_config_base_url_error _emit_workspace_config_base_url_warning _ensure_pi_auth_seed _extract_credentials _extract_credentials_has_usable_existing _host_source_is_root_owned _image_is_current _lexical_normalize_path _manifest_build_dockerfile_path _manifest_build_mount_args _manifest_check_binary_root_owned _manifest_check_build_isolation _manifest_check_build_source_subfields _manifest_check_install_cmd_single_line _manifest_check_ioc_egress _manifest_check_mount_root_owned _manifest_check_mounts_denylist _manifest_check_seed_drift _manifest_default_yaml _manifest_dest_in_allowed_roots _manifest_dist_path _manifest_egress_hosts_json _manifest_ensure_seeded _manifest_expand_mount_host _manifest_extract_seed_fingerprint _manifest_generate_daemon_config_dockerfile_steps _manifest_generate_daemon_mcp_dockerfile_steps _manifest_generate_extra_dockerfile_steps _manifest_generate_launch_args _manifest_generate_multiplexer_label _manifest_generate_multiplexer_registry_steps _manifest_generate_pi_shim_steps _manifest_generate_safety_stack_asserted_steps _manifest_generate_shell_init_zshrc_steps _manifest_generate_source_builder_stages _manifest_generate_tool_init_config_dockerfile_steps _manifest_global_path _manifest_load _manifest_seed_fingerprint_hash _manifest_validate _msb_call _msb_current_image_digest _msb_denied_domains_from_trace_log _msb_exec _msb_exec_interactive _msb_exists _msb_flags_emit_dind_volume _msb_flags_emit_mount _msb_flags_generate _msb_flags_preflight_secret_env _msb_flags_prepare_secret_env _msb_flags_synth_secret_env_name _msb_image_drift_status _msb_image_layer_drift_status _msb_inspect_json _msb_label _msb_remove _msb_sandbox_image_digest _msb_sandbox_state _msb_secret_violations_from_trace_log _msb_short_image_id _msb_start _msb_stop_graceful _msb_volume_remove _msb_warn_image_layer_drift _prereq_error _probe_tcp _protected_paths_breadcrumb _protected_paths_check_deps _protected_paths_conf_bind_mounts _protected_paths_conf_outside_mounts _protected_paths_enforce _protected_paths_load _protected_paths_path_match _protected_paths_resolve _pull_or_build _pull_or_build_local _rc_mux_resolve_hook_path _rc_source_path_missing_hint _rc_uptime_from_state _resolve_script_dir _run_with_timeout _seed_claude_home_dirs _symlink_follow_fingerprint _up_build_egress_config_json _up_build_msb_create_argv _up_cage_conf_sha _up_check_multiplexer_available _up_converge_needed _up_detect_worktree _up_init_container _up_json_output _up_prepare_conf_secret_env _up_prepare_docker_mounts _up_prepare_environment _up_prepare_resume_secrets _up_resolve_conf _up_resolve_effective_credential_mounts_for_tool _up_resolve_mount_source_path _up_resolve_placeholder_env_file _up_resolve_resume_image_drift_running _up_resolve_resume_image_drift_stopped _up_resolve_resume_symlink_fingerprint _up_start_container _up_translate_docker_args_to_msb _up_warn_transcript_loss check_docker check_jq check_msb cmd_auth cmd_auth_refresh cmd_build cmd_destroy cmd_doctor cmd_test cmd_up container_name json_error log resolve_name usage validate_path verify_rc_container"
+ALL_193_NAMES="_bd_dolt_port_inject_arg _bd_host_preflight _build_cage_config_paths _build_dockerfile_outside_cage_mounts _build_msb_load _build_reject_arg _build_warn_stale_containers _cage_claude_projects_host_bound _check_lfs_stubs _check_workspace_config_base_url _collect_dangling_symlinks _collect_symlink_parents _container_multiplexer _container_mux_hook_cmd _docker_call _doctor_bd_version_compare _doctor_dead_file_mounts _doctor_format_auth_probe _doctor_format_dead_mounts _doctor_format_posture_probe _doctor_format_transcript_persistence_probe _doctor_host _emit_denylist_denial _emit_workspace_config_base_url_error _emit_workspace_config_base_url_warning _ensure_pi_auth_seed _extract_credentials _extract_credentials_has_usable_existing _image_is_current _msb_call _msb_current_image_digest _msb_denied_domains_from_trace_log _msb_exec _msb_exec_interactive _msb_exists _msb_flags_emit_dind_volume _msb_flags_emit_mount _msb_flags_generate _msb_flags_preflight_secret_env _msb_flags_prepare_secret_env _msb_flags_synth_secret_env_name _msb_image_drift_status _msb_image_layer_drift_status _msb_inspect_json _msb_label _msb_remove _msb_sandbox_image_digest _msb_sandbox_state _msb_secret_violations_from_trace_log _msb_short_image_id _msb_start _msb_stop_graceful _msb_volume_remove _msb_warn_image_layer_drift _prereq_error _probe_tcp _protected_paths_breadcrumb _protected_paths_check_deps _protected_paths_conf_bind_mounts _protected_paths_conf_outside_mounts _protected_paths_enforce _protected_paths_load _protected_paths_path_match _protected_paths_resolve _pull_or_build _pull_or_build_local _rc_source_path_missing_hint _rc_uptime_from_state _resolve_script_dir _run_with_timeout _seed_claude_home_dirs _symlink_follow_fingerprint _up_build_egress_config_json _up_build_msb_create_argv _up_cage_conf_sha _up_check_multiplexer_available _up_converge_needed _up_detect_worktree _up_init_container _up_json_output _up_prepare_conf_secret_env _up_prepare_docker_mounts _up_prepare_environment _up_prepare_resume_secrets _up_resolve_conf _up_resolve_effective_credential_mounts_for_tool _up_resolve_mount_source_path _up_resolve_placeholder_env_file _up_resolve_resume_image_drift_running _up_resolve_resume_image_drift_stopped _up_resolve_resume_symlink_fingerprint _up_start_container _up_translate_docker_args_to_msb _up_warn_transcript_loss check_docker check_jq check_msb cmd_auth cmd_auth_refresh cmd_build cmd_destroy cmd_doctor cmd_test cmd_up container_name json_error log resolve_name usage validate_path verify_rc_container"
 
 _missing=""
 _missing_count=0
@@ -368,7 +377,7 @@ for _fn in $ALL_193_NAMES; do
 done
 
 if [[ "$_missing_count" -eq 0 ]]; then
-  pass "(c)" "all 153 rc-reachable functions are declare -F reachable after sourcing rc"
+  pass "(c)" "all 111 rc-reachable functions are declare -F reachable after sourcing rc"
 else
   fail "(c)" "${_missing_count} function(s) NOT reachable after sourcing rc" "missing:${_missing}"
 fi
