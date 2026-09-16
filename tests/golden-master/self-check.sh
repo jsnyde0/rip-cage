@@ -66,23 +66,33 @@ fi
 rm -f "$UNDERSCRUB_DIFF"
 
 # ---------------------------------------------------------------------------
-# (b) Over-scrub / mutation canary: perturb manifest/default-tools.yaml's first
-# tool entry's name, so `rc manifest reconcile`'s "Added (new in dist): ..."
-# summary genuinely differs, then --check against the real (unmutated)
-# baseline. Must go RED. IMPORTANT: reuse the SAME (default) GM_ROOT the
-# real committed baseline was recorded under -- NOT a fresh override. A
-# different scratch-root directory NAME would itself perturb every
-# up/destroy/reload case's container_name() (derived from the last two path
-# components, not a full-path string a plain substring-scrub can catch),
+# (b) Over-scrub / mutation canary: perturb one egress host in rc's inline
+# default manifest, so the emitted `msb create` argv genuinely differs, then
+# --check against the real (unmutated) baseline. Must go RED.
+#
+# IMPORTANT: reuse the SAME (default) GM_ROOT the real committed baseline was
+# recorded under -- NOT a fresh override. A different scratch-root directory
+# NAME would itself perturb every up/destroy case's container_name() (derived
+# from the last two path components, not a full-path string a plain
+# substring-scrub can catch),
 # which is a self-check-harness artifact, not a real over-scrub gap (the
 # production GM_ROOT literal is hardcoded in lib/sandbox.sh, so it never
 # varies machine-to-machine in the first place).
 #
-# Mutation targets manifest/default-tools.yaml (generate-dockerfile's
-# BUNDLED case reads rc's own inline _manifest_default_yaml, not
-# manifest/default-tools.yaml -- `rc manifest reconcile` is the case that
-# actually reads manifest/default-tools.yaml, so it is the correct,
-# load-bearing canary target).
+# Mutation targets rc's INLINE default manifest (_manifest_default_yaml, in
+# cli/lib/manifest_checks.sh), NOT the repo's manifest/default-tools.yaml. A
+# fresh GM_HOME has no ~/.config/rip-cage/tools.yaml, so `rc up` seeds one from
+# the inline copy -- measured 2026-09-16: perturbing the on-disk
+# manifest/default-tools.yaml changes no surviving snapshot at all, so it would
+# be a vacuous canary. The anchor is an EGRESS HOST, because that host is
+# emitted into `up_dry_run_human_absent_create`'s "Would run: msb create ...
+# --net-rule allow@<host>:tcp:443" line -- the same line the GM_ROOT/REPO_ROOT
+# path scrub rewrites. A scrub broad enough to swallow real content would
+# swallow this, which is exactly the failure mode this canary exists to catch.
+#
+# (The previous anchor was `rc manifest reconcile`, the one case that read
+# manifest/default-tools.yaml. That verb retired with the six-verb thinning,
+# rip-cage-ely4.10 / ADR-031 D3, taking its snapshot with it.)
 #
 # rip-cage-jmhn (S12 de-flake): mutating the REAL, repo-tracked
 # manifest/default-tools.yaml in place (the original design) is a race under
@@ -103,13 +113,13 @@ rm -f "$UNDERSCRUB_DIFF"
 # ---------------------------------------------------------------------------
 CANARY_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/rc-gm-selfcheck-canary-XXXXXX")
 rsync -a --exclude='.git' "${REPO_ROOT}/" "${CANARY_ROOT}/"
-CANARY_FILE="${CANARY_ROOT}/manifest/default-tools.yaml"
+CANARY_FILE="${CANARY_ROOT}/cli/lib/manifest_checks.sh"
 
-if grep -q '^  - name: beads$' "$CANARY_FILE"; then
-  sed -i.bak 's/^  - name: beads$/  - name: beadsGOLDENMASTERCANARY/' "$CANARY_FILE"
+if grep -q 'doltremoteapi\.dolthub\.com' "$CANARY_FILE"; then
+  sed -i.bak 's/doltremoteapi\.dolthub\.com/goldenmastercanary.invalid/' "$CANARY_FILE"
   rm -f "${CANARY_FILE}.bak"
 else
-  fail "over-scrub setup" "manifest/default-tools.yaml did not contain the expected 'name: beads' anchor line -- cannot mount the mutation canary"
+  fail "over-scrub setup" "cli/lib/manifest_checks.sh did not contain the expected 'doltremoteapi.dolthub.com' egress anchor -- cannot mount the mutation canary"
   rm -rf "$CANARY_ROOT"
   echo ""
   echo "=== self-check.sh: ${FAILURES} failure(s) ==="
@@ -120,10 +130,10 @@ CANARY_OUT=$(bash "${CANARY_ROOT}/tests/golden-master/capture.sh" --check 2>&1)
 CANARY_EXIT=$?
 rm -rf "$CANARY_ROOT"
 
-if [[ "$CANARY_EXIT" -ne 0 ]] && echo "$CANARY_OUT" | grep -q "FAIL manifest_reconcile"; then
-  pass "over-scrub (mutation canary): perturbed manifest/default-tools.yaml -> manifest_reconcile snapshot goes RED"
+if [[ "$CANARY_EXIT" -ne 0 ]] && echo "$CANARY_OUT" | grep -q "FAIL up_dry_run_human_absent_create"; then
+  pass "over-scrub (mutation canary): perturbed inline-default egress host -> up_dry_run_human_absent_create snapshot goes RED"
 else
-  fail "over-scrub (mutation canary)" "expected capture.sh --check to go RED (and name manifest_reconcile) on a genuinely-different reconcile summary; got exit=${CANARY_EXIT}
+  fail "over-scrub (mutation canary)" "expected capture.sh --check to go RED (and name up_dry_run_human_absent_create) on a genuinely-different egress host in the emitted msb create argv; got exit=${CANARY_EXIT}
 $CANARY_OUT"
 fi
 

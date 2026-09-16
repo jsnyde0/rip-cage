@@ -143,7 +143,21 @@ echo ""
 #       `msb list` + per-sandbox `_msb_inspect_json`/label reads; shared
 #       by cmd_ls's JSON and human branches).
 # ---------------------------------------------------------------------------
-echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 155) ==="
+# Dropped 155 -> 143 by rip-cage-ely4.10 (ADR-031 D3, the six-verb thinning).
+# 14 functions deleted with their verbs -- cmd_ls, _rc_ls_enumerate,
+# _rc_ls_mode_from_source_path (cli/ls.sh, whole file); cmd_attach, cmd_exec
+# (cli/attach_exec.sh, whole file); cmd_reload, _reload_enforce_transcript_guard,
+# _reload_report_transcript_guard (cli/reload.sh, whole file); cmd_setup
+# (cli/setup.sh, whole file); cmd_down (from cli/down_destroy.sh, whose
+# cmd_destroy survives); cmd_manifest, _manifest_reconcile,
+# _manifest_reconcile_usage (from cli/manifest.sh, whose
+# _rc_mux_resolve_hook_path survives because `rc up` still calls it);
+# cmd_generate_dockerfile (from cli/build.sh). 2 functions ADDED, both in
+# cli/up.sh, both carrying a deleted verb's surviving behaviour:
+# _up_warn_transcript_loss (the WARN half of `rc reload`'s transcript-loss
+# guard, now on every recreate path) and _up_check_multiplexer_available
+# (rip-cage-ely4.7.2's pre-create refusal). Net -12.
+echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 143) ==="
 
 # Bumped 178 -> 179 by Fable ruling 6 (msb cutover merge window): cli/lib/config.sh
 # gained _config_retired_fields (the retired-config-field loud-reject table).
@@ -305,7 +319,7 @@ echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 
 #       _up_prepare_conf_secret_env (the --conf-driven secret-env preflight,
 #       config.sh's `_up_prepare_resume_secrets` counterpart for the new
 #       config surface).
-EXPECTED_FN_COUNT=155
+EXPECTED_FN_COUNT=143
 _actual_fn_count=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh 2>/dev/null | wc -l | tr -d ' ')
 
 if [[ "$_actual_fn_count" -eq "$EXPECTED_FN_COUNT" ]]; then
@@ -340,7 +354,7 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "=== (c) declare -F reachability: all 153 rc-reachable functions defined after sourcing rc ==="
 
-ALL_193_NAMES="_bd_dolt_port_inject_arg _bd_host_preflight _build_msb_load _build_reject_arg _build_warn_stale_containers _cage_claude_projects_host_bound _check_lfs_stubs _check_workspace_config_base_url _collect_dangling_symlinks _collect_symlink_parents _container_multiplexer _docker_call _doctor_bd_version_compare _doctor_dead_file_mounts _doctor_format_auth_probe _doctor_format_dead_mounts _doctor_format_posture_probe _doctor_format_transcript_persistence_probe _doctor_host _emit_denylist_denial _emit_workspace_config_base_url_error _emit_workspace_config_base_url_warning _ensure_pi_auth_seed _extract_credentials _extract_credentials_has_usable_existing _host_source_is_root_owned _image_is_current _lexical_normalize_path _manifest_build_dockerfile_path _manifest_build_mount_args _manifest_check_binary_root_owned _manifest_check_build_isolation _manifest_check_build_source_subfields _manifest_check_install_cmd_single_line _manifest_check_ioc_egress _manifest_check_mount_root_owned _manifest_check_mounts_denylist _manifest_check_seed_drift _manifest_default_yaml _manifest_dest_in_allowed_roots _manifest_dist_path _manifest_egress_hosts_json _manifest_ensure_seeded _manifest_expand_mount_host _manifest_extract_seed_fingerprint _manifest_generate_daemon_config_dockerfile_steps _manifest_generate_daemon_mcp_dockerfile_steps _manifest_generate_extra_dockerfile_steps _manifest_generate_launch_args _manifest_generate_multiplexer_label _manifest_generate_multiplexer_registry_steps _manifest_generate_pi_shim_steps _manifest_generate_safety_stack_asserted_steps _manifest_generate_shell_init_zshrc_steps _manifest_generate_source_builder_stages _manifest_generate_tool_init_config_dockerfile_steps _manifest_global_path _manifest_load _manifest_reconcile _manifest_reconcile_usage _manifest_seed_fingerprint_hash _manifest_validate _msb_call _msb_current_image_digest _msb_denied_domains_from_trace_log _msb_exec _msb_exec_interactive _msb_exists _msb_flags_emit_dind_volume _msb_flags_emit_mount _msb_flags_generate _msb_flags_preflight_secret_env _msb_flags_prepare_secret_env _msb_flags_synth_secret_env_name _msb_image_drift_status _msb_image_layer_drift_status _msb_inspect_json _msb_label _msb_remove _msb_sandbox_image_digest _msb_sandbox_state _msb_secret_violations_from_trace_log _msb_short_image_id _msb_start _msb_stop_graceful _msb_volume_remove _msb_warn_image_layer_drift _prereq_error _probe_tcp _protected_paths_breadcrumb _protected_paths_check_deps _protected_paths_conf_bind_mounts _protected_paths_conf_outside_mounts _protected_paths_enforce _protected_paths_load _protected_paths_path_match _protected_paths_resolve _pull_or_build _pull_or_build_local _rc_ls_enumerate _rc_ls_mode_from_source_path _rc_mux_resolve_hook_path _rc_source_path_missing_hint _rc_uptime_from_state _reload_enforce_transcript_guard _reload_report_transcript_guard _resolve_script_dir _run_with_timeout _seed_claude_home_dirs _symlink_follow_fingerprint _up_build_egress_config_json _up_build_msb_create_argv _up_cage_conf_sha _up_converge_needed _up_detect_worktree _up_init_container _up_json_output _up_prepare_conf_secret_env _up_prepare_docker_mounts _up_prepare_environment _up_prepare_resume_secrets _up_resolve_conf _up_resolve_effective_credential_mounts_for_tool _up_resolve_mount_source_path _up_resolve_placeholder_env_file _up_resolve_resume_image_drift_running _up_resolve_resume_image_drift_stopped _up_resolve_resume_symlink_fingerprint _up_start_container _up_translate_docker_args_to_msb check_docker check_jq check_msb cmd_attach cmd_auth cmd_auth_refresh cmd_build cmd_destroy cmd_doctor cmd_down cmd_exec cmd_generate_dockerfile cmd_ls cmd_manifest cmd_reload cmd_setup cmd_test cmd_up container_name json_error log resolve_name usage validate_path verify_rc_container"
+ALL_193_NAMES="_bd_dolt_port_inject_arg _bd_host_preflight _build_msb_load _build_reject_arg _build_warn_stale_containers _cage_claude_projects_host_bound _check_lfs_stubs _check_workspace_config_base_url _collect_dangling_symlinks _collect_symlink_parents _container_multiplexer _docker_call _doctor_bd_version_compare _doctor_dead_file_mounts _doctor_format_auth_probe _doctor_format_dead_mounts _doctor_format_posture_probe _doctor_format_transcript_persistence_probe _doctor_host _emit_denylist_denial _emit_workspace_config_base_url_error _emit_workspace_config_base_url_warning _ensure_pi_auth_seed _extract_credentials _extract_credentials_has_usable_existing _host_source_is_root_owned _image_is_current _lexical_normalize_path _manifest_build_dockerfile_path _manifest_build_mount_args _manifest_check_binary_root_owned _manifest_check_build_isolation _manifest_check_build_source_subfields _manifest_check_install_cmd_single_line _manifest_check_ioc_egress _manifest_check_mount_root_owned _manifest_check_mounts_denylist _manifest_check_seed_drift _manifest_default_yaml _manifest_dest_in_allowed_roots _manifest_dist_path _manifest_egress_hosts_json _manifest_ensure_seeded _manifest_expand_mount_host _manifest_extract_seed_fingerprint _manifest_generate_daemon_config_dockerfile_steps _manifest_generate_daemon_mcp_dockerfile_steps _manifest_generate_extra_dockerfile_steps _manifest_generate_launch_args _manifest_generate_multiplexer_label _manifest_generate_multiplexer_registry_steps _manifest_generate_pi_shim_steps _manifest_generate_safety_stack_asserted_steps _manifest_generate_shell_init_zshrc_steps _manifest_generate_source_builder_stages _manifest_generate_tool_init_config_dockerfile_steps _manifest_global_path _manifest_load _manifest_seed_fingerprint_hash _manifest_validate _msb_call _msb_current_image_digest _msb_denied_domains_from_trace_log _msb_exec _msb_exec_interactive _msb_exists _msb_flags_emit_dind_volume _msb_flags_emit_mount _msb_flags_generate _msb_flags_preflight_secret_env _msb_flags_prepare_secret_env _msb_flags_synth_secret_env_name _msb_image_drift_status _msb_image_layer_drift_status _msb_inspect_json _msb_label _msb_remove _msb_sandbox_image_digest _msb_sandbox_state _msb_secret_violations_from_trace_log _msb_short_image_id _msb_start _msb_stop_graceful _msb_volume_remove _msb_warn_image_layer_drift _prereq_error _probe_tcp _protected_paths_breadcrumb _protected_paths_check_deps _protected_paths_conf_bind_mounts _protected_paths_conf_outside_mounts _protected_paths_enforce _protected_paths_load _protected_paths_path_match _protected_paths_resolve _pull_or_build _pull_or_build_local _rc_mux_resolve_hook_path _rc_source_path_missing_hint _rc_uptime_from_state _resolve_script_dir _run_with_timeout _seed_claude_home_dirs _symlink_follow_fingerprint _up_build_egress_config_json _up_build_msb_create_argv _up_cage_conf_sha _up_check_multiplexer_available _up_converge_needed _up_detect_worktree _up_init_container _up_json_output _up_prepare_conf_secret_env _up_prepare_docker_mounts _up_prepare_environment _up_prepare_resume_secrets _up_resolve_conf _up_resolve_effective_credential_mounts_for_tool _up_resolve_mount_source_path _up_resolve_placeholder_env_file _up_resolve_resume_image_drift_running _up_resolve_resume_image_drift_stopped _up_resolve_resume_symlink_fingerprint _up_start_container _up_translate_docker_args_to_msb _up_warn_transcript_loss check_docker check_jq check_msb cmd_auth cmd_auth_refresh cmd_build cmd_destroy cmd_doctor cmd_test cmd_up container_name json_error log resolve_name usage validate_path verify_rc_container"
 
 _missing=""
 _missing_count=0
@@ -362,55 +376,20 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
-# (d) up<->reload coupling (harness 3ii): historically, a function DEFINED in
-#     the up-block (cli/up.sh, per the "do not sub-split cmd_up" constraint)
-#     was CALLED by cmd_reload (cli/reload.sh) -- first the firewall trio
-#     (_up_reload_tcp22_allowlist / _up_reload_egress_proxy /
-#     _up_resolve_egress_rules, deleted with the in-cage egress engine per
-#     rip-cage-3vj2 / S4), then _filter_known_hosts (the ssh known_hosts
-#     filter, deleted with the entire ssh cluster per rip-cage-f1qo / S5,
-#     ADR-029 D3). That original coupling was RETIRED, not re-pointed, by S5.
+# (d) RETIRED: the up<->reload coupling canary (rip-cage-ely4.10 / ADR-031 D3).
 #
-#     rip-cage-rj68 (S6) reintroduces a coupling MEMBER -- an intentional,
-#     documented one, not a regression: cmd_reload's net-rule repair action
-#     (ADR-029 D4, cold-recreate DESIGN DECISION -- see cli/reload.sh's own
-#     comment) invokes `cmd_up "$workspace"` directly rather than
-#     hand-rolling a second, parallel mount/env-rebuild implementation --
-#     "the SAME create pipeline, invoked again against the now-current
-#     .rip-cage.yaml". `cmd_up` is the ONLY up.sh-defined name reload.sh may
-#     depend on; any OTHER up.sh function reappearing in reload.sh (e.g. an
-#     internal `_up_*` helper called directly, bypassing cmd_up's own
-#     validation/label/guard machinery) would be exactly the kind of
-#     under-the-radar re-coupling this canary exists to catch.
+#     It watched for up.sh-defined functions creeping into cli/reload.sh, which
+#     was allowed exactly two: `cmd_up` (reload's cold-recreate re-entered the
+#     one create pipeline instead of hand-rolling a second one) and
+#     `_up_converge_needed` (both sides asked "has this config changed?" of the
+#     same predicate).
+#
+#     `rc reload` folded into `rc up --replace` and cli/reload.sh is deleted, so
+#     there is no second module left to couple: the property this canary
+#     defended -- one create pipeline, one has-it-changed predicate -- now holds
+#     by construction rather than by assertion. Check (c)'s reachability
+#     enumeration is what would catch a resurrected reload helper.
 # ---------------------------------------------------------------------------
-# rip-cage-ely4.9 adds a SECOND intentional member: _up_converge_needed.
-# reload asks the same question `rc up` asks -- has this cage's config changed
-# since it was created? -- and the whole point is that both get the SAME answer
-# from the SAME predicate. A private copy in reload.sh is exactly the drift this
-# canary exists to catch, so the coupling is declared rather than avoided.
-echo "=== (d) up<->reload coupling: exactly TWO intentional members (cmd_up, _up_converge_needed) ==="
-
-_up_fn_names=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "${REPO_ROOT}/cli/up.sh" | sed 's/()$//')
-_reload_real_calls=$(grep -v '^\s*#' "${REPO_ROOT}/cli/reload.sh" | grep -oE '\b[a-zA-Z_][a-zA-Z0-9_]*\b' | sort -u)
-
-_surviving_coupling=""
-for _fn in $_up_fn_names; do
-  if printf '%s\n' "$_reload_real_calls" | grep -qx "$_fn"; then
-    _surviving_coupling="${_surviving_coupling} ${_fn}"
-  fi
-done
-# Trim leading/trailing whitespace for a clean equality check.
-_surviving_coupling="${_surviving_coupling# }"
-
-if [[ "$_surviving_coupling" == "_up_converge_needed cmd_up" ]]; then
-  pass "(d)" "reload.sh depends on exactly the two documented up.sh members (cmd_up for the cold-recreate, _up_converge_needed for the shared has-it-changed predicate) -- nothing else has crept back in"
-elif [[ -z "$_surviving_coupling" ]]; then
-  fail "(d)" "expected cmd_up + _up_converge_needed as coupling members but found none -- did cli/reload.sh's cold-recreate call get removed/renamed without updating this canary?" "(none found)"
-else
-  fail "(d)" "up.sh-defined function(s) beyond the documented cmd_up coupling appear in reload.sh -- update this canary to name/verify the new coupling member(s), or fix the unintended coupling" "${_surviving_coupling}"
-fi
-
-echo ""
 
 # ---------------------------------------------------------------------------
 # (e) Source-order + top-level globals (harness 3v): after sourcing the shim,
@@ -546,23 +525,54 @@ else
   fail "(g1)" "symlink-invoked rc failed to dispatch from an unrelated cwd" "exit=${_symlink_exit} output=${_symlink_result}"
 fi
 
-# A verb that requires reading cli/lib content also needs to resolve
-# correctly. `rc schema` (retired with the config schema, rip-cage-ely4.9 /
-# ADR-031 D2) used to be the container-free, pure-lib-dependent smoke here;
-# `rc generate-dockerfile` (cli/build.sh) is its replacement -- it is still
-# container-free (no docker/msb call) and still pure-lib-dependent (resolves
-# the manifest + every cli/lib/manifest-generation helper into a composed
-# Dockerfile on stdout). It additionally needs manifest/, examples/, and
-# cage/ on disk (unlike schema, which needed only cli/lib/), so this scratch
-# tree copies those three dirs too -- schema needed none of them.
+# A verb that reads DATA relative to SCRIPT_DIR also needs to resolve
+# correctly -- g1 only proves the cli/ sourcing works. `rc schema` was the
+# original container-free smoke here; it retired with the config schema
+# (rip-cage-ely4.9 / ADR-031 D2), `rc generate-dockerfile` replaced it, and
+# that verb retired too (rip-cage-ely4.10 / ADR-031 D3).
+#
+# The successor is `rc up --dry-run`, which is the RIGHT subject rather than
+# merely the remaining one: the protected-paths list it reads
+# (share/rip-cage/protected-paths) is a composition input resolved from rc's
+# OWN install directory (ADR-031 D5(a)), so a symlinked install that resolved
+# it wrong would silently launch cages with no mount-side floor at all. That
+# failure is worse than anything the two retired verbs could have shown.
+#
+# msb is faked (a PATH shim answering only --version) so nothing here reaches a
+# real runtime; --dry-run stops before any create anyway.
 cp -R "${REPO_ROOT}/manifest" "${_scratch_libexec}/manifest"
 cp -R "${REPO_ROOT}/examples" "${_scratch_libexec}/examples"
 cp -R "${REPO_ROOT}/cage" "${_scratch_libexec}/cage"
-_symlink_gd_result=$(cd "$_unrelated_cwd" && HOME="$_unrelated_cwd" "${_scratch_bin}/rc" generate-dockerfile >/dev/null 2>&1; echo $?)
-if [[ "$_symlink_gd_result" == "0" ]]; then
-  pass "(g2)" "rc generate-dockerfile (manifest+cli/lib-dependent verb) works via libexec symlink from unrelated cwd"
+cp -R "${REPO_ROOT}/share" "${_scratch_libexec}/share"
+
+_g2_proj="${_unrelated_cwd}/proj"
+mkdir -p "$_g2_proj" "${_unrelated_cwd}/bin"
+cat > "${_unrelated_cwd}/bin/msb" <<'G2_SHIM'
+#!/usr/bin/env bash
+case "${1:-}" in --version) echo "msb 0.6.18-test-shim"; exit 0 ;; esac
+exit 1
+G2_SHIM
+chmod +x "${_unrelated_cwd}/bin/msb"
+cat > "${_unrelated_cwd}/cage.yaml" <<G2_CONF
+image: rip-cage:latest
+workdir: /workspace
+mounts:
+  - "${_g2_proj}:/workspace"
+network:
+  policy: none
+  allow:
+    - "api.anthropic.com:tcp:443"
+G2_CONF
+
+_symlink_up_out=$(cd "$_unrelated_cwd" \
+  && PATH="${_unrelated_cwd}/bin:${PATH}" \
+     XDG_CONFIG_HOME="${_unrelated_cwd}/.config" \
+     RC_CAGE_CONF="${_unrelated_cwd}/cage.yaml" \
+     "${_scratch_bin}/rc" up --dry-run "$_g2_proj" 2>&1)
+if printf '%s\n' "$_symlink_up_out" | grep -q '^Would run: msb create'; then
+  pass "(g2)" "rc up --dry-run (reads share/rip-cage/protected-paths + cage/ + manifest/ via SCRIPT_DIR) works through a libexec symlink from an unrelated cwd"
 else
-  fail "(g2)" "rc generate-dockerfile failed via libexec symlink from unrelated cwd" "exit=${_symlink_gd_result}"
+  fail "(g2)" "rc up --dry-run failed through the libexec symlink from an unrelated cwd" "output=${_symlink_up_out}"
 fi
 
 rm -rf "$_scratch_bin" "$_unrelated_cwd"
@@ -929,6 +939,120 @@ if [[ -z "$_k_hits" ]]; then
 else
   echo "    fix: cite the owning cli/*.sh or cli/lib/*.sh module plus a function name or a grep-able anchor string (cli/up.sh:_collect_symlink_parents), and drop the line number entirely -- resolve the old number with the decomposition map doc and the pre-split blob."
   fail "(k)" "live surface(s) cite a ${_k_shim} line past the end of the ${_k_max}-line shim -- that code moved to cli/ at cbfdfb4" "$(echo "$_k_hits" | sed '/^$/d' | tr '\n' '; ')"
+fi
+
+echo ""
+
+# ---------------------------------------------------------------------------
+# (l) No TTY-guarded read anywhere under rc + cli/ (rip-cage-ely4.10 /
+#     ADR-031 D3, ADR-009 D7).
+#
+#     THE SHAPE THIS CATCHES, and only this shape: a `read` sitting inside a
+#     block guarded by `-t 0` or `-t 1`. That is the one pattern that can stop
+#     an agent dead -- rc waits at a terminal for an answer nobody is there to
+#     give. The deleted first-run prompt was exactly it.
+#
+#     NOT every `read -r`: the repo has dozens of `while IFS= read -r` pipe
+#     loops, which consume a pipe and block nothing. Matching those would make
+#     this case noise and it would be turned off, which is how a guard dies.
+#
+#     EXEMPTION, by inline marker only (never a filename list -- a list goes
+#     stale silently and exempts whatever later moves into the named file):
+#     a guarded block may carry `rc-allow-tty-read:` in a comment, followed by
+#     why the read cannot block an agent. Today there is exactly one --
+#     `rc destroy`'s confirm-before-you-delete prompt, which an agent never
+#     reaches because an agent's stdin is a pipe, so `-t 0` is false.
+# ---------------------------------------------------------------------------
+echo "=== (l) no TTY-guarded read under rc + cli/ (the one shape that can block an agent) ==="
+
+_l_files=("$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh)
+_l_window=10
+_l_offenders=""
+_l_exempted=""
+
+for _l_file in "${_l_files[@]}"; do
+  [[ -f "$_l_file" ]] || continue
+  while IFS=: read -r _l_lineno _l_text; do
+    [[ -n "$_l_lineno" ]] || continue
+    # The guard line itself may carry the marker, or any line in the window
+    # above it (the marker is normally a comment block just before the `if`).
+    _l_marker_scope=$(sed -n "$(( _l_lineno > _l_window ? _l_lineno - _l_window : 1 )),$(( _l_lineno + _l_window ))p" "$_l_file")
+    _l_body=$(sed -n "${_l_lineno},$(( _l_lineno + _l_window ))p" "$_l_file")
+    # A bare `read` call, not a `... | read` pipe-loop header.
+    if printf '%s\n' "$_l_body" | grep -qE '(^|;|\bthen\b|&&|\|\|)[[:space:]]*(local[[:space:]]+[A-Za-z_]+[[:space:]]*;[[:space:]]*)?read([[:space:]]|$)'; then
+      if printf '%s\n' "$_l_marker_scope" | grep -q 'rc-allow-tty-read:'; then
+        _l_exempted="${_l_exempted} $(basename "$_l_file"):${_l_lineno}"
+      else
+        _l_offenders="${_l_offenders} $(basename "$_l_file"):${_l_lineno}"
+      fi
+    fi
+  done < <(grep -nE '\[\[[^]]*-t[[:space:]]+[01]' "$_l_file" || true)
+done
+
+_l_offenders="${_l_offenders# }"
+_l_exempted="${_l_exempted# }"
+
+if [[ -z "$_l_offenders" ]]; then
+  pass "(l)" "no unexempted TTY-guarded read under rc + cli/ (exempted, by inline marker: ${_l_exempted:-none})"
+else
+  echo "    fix: delete the prompt, or -- if the read genuinely cannot block an agent -- put 'rc-allow-tty-read:' in a comment beside the guard, with the reason."
+  fail "(l)" "TTY-guarded read(s) with no inline exemption marker -- an agent hitting one waits forever" "${_l_offenders}"
+fi
+
+# NEGATIVE CONTROL: the detector must actually fire. Plant the forbidden shape
+# in a scratch file and confirm it is reported; without this, (l) would pass
+# just as happily against a broken matcher.
+_l_canary_dir=$(mktemp -d)
+cat > "${_l_canary_dir}/canary.sh" <<'L_CANARY'
+#!/usr/bin/env bash
+if [[ -t 0 ]]; then
+  printf "Pick one: "
+  read -r reply
+fi
+L_CANARY
+_l_canary_hit=0
+while IFS=: read -r _l_lineno _l_text; do
+  [[ -n "$_l_lineno" ]] || continue
+  _l_body=$(sed -n "${_l_lineno},$(( _l_lineno + _l_window ))p" "${_l_canary_dir}/canary.sh")
+  if printf '%s\n' "$_l_body" | grep -qE '(^|;|\bthen\b|&&|\|\|)[[:space:]]*(local[[:space:]]+[A-Za-z_]+[[:space:]]*;[[:space:]]*)?read([[:space:]]|$)'; then
+    _l_canary_hit=1
+  fi
+done < <(grep -nE '\[\[[^]]*-t[[:space:]]+[01]' "${_l_canary_dir}/canary.sh" || true)
+rm -f "${_l_canary_dir}/canary.sh"
+rmdir "${_l_canary_dir}"
+
+if [[ "$_l_canary_hit" -eq 1 ]]; then
+  pass "(l2)" "the detector fires on a planted TTY-guarded read -- (l) is not vacuous"
+else
+  fail "(l2)" "the detector did NOT fire on a planted TTY-guarded read -- (l) proves nothing" "canary missed"
+fi
+
+# NEGATIVE CONTROL 2: a plain pipe-loop `while IFS= read -r` inside a -t guard
+# is NOT the blocking shape and must not be reported, or the case becomes noise.
+_l_pipe_dir=$(mktemp -d)
+cat > "${_l_pipe_dir}/pipe.sh" <<'L_PIPE'
+#!/usr/bin/env bash
+if [[ -t 0 && -t 1 ]]; then
+  while IFS= read -r line; do
+    echo "$line"
+  done < /dev/null
+fi
+L_PIPE
+_l_pipe_hit=0
+while IFS=: read -r _l_lineno _l_text; do
+  [[ -n "$_l_lineno" ]] || continue
+  _l_body=$(sed -n "${_l_lineno},$(( _l_lineno + _l_window ))p" "${_l_pipe_dir}/pipe.sh")
+  if printf '%s\n' "$_l_body" | grep -qE '(^|;|\bthen\b|&&|\|\|)[[:space:]]*(local[[:space:]]+[A-Za-z_]+[[:space:]]*;[[:space:]]*)?read([[:space:]]|$)'; then
+    _l_pipe_hit=1
+  fi
+done < <(grep -nE '\[\[[^]]*-t[[:space:]]+[01]' "${_l_pipe_dir}/pipe.sh" || true)
+rm -f "${_l_pipe_dir}/pipe.sh"
+rmdir "${_l_pipe_dir}"
+
+if [[ "$_l_pipe_hit" -eq 0 ]]; then
+  pass "(l3)" "a pipe-loop read inside a -t guard is not reported -- the matcher is narrow enough to survive"
+else
+  fail "(l3)" "the detector fired on a harmless pipe-loop read -- too broad to keep" "false positive"
 fi
 
 echo ""

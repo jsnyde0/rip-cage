@@ -679,7 +679,6 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-code-review-fixes.sh"
   run_test "${SCRIPT_DIR}/test-dg6.2.sh"
   run_test "${SCRIPT_DIR}/test-auth-refresh.sh"
-  run_test "${SCRIPT_DIR}/test-completions.sh"
   run_test "${SCRIPT_DIR}/test-pi-install.sh"
   run_test "${SCRIPT_DIR}/test-pi-auth-mount.sh"
   run_test "${SCRIPT_DIR}/test-pi-cage-context.sh"
@@ -690,9 +689,7 @@ _run_all_tests() {
   # router/DNS-resolver/firewall engine, deleted per ADR-029 D2
   # (engine-deletion sweep, rip-cage-3vj2 / S4).
   run_pytest "${SCRIPT_DIR}/test_skill_server.py" --with pytest python -m pytest "${SCRIPT_DIR}/test_skill_server.py" -v   # rip-cage-nu91: skill-server MCP shim unit tests
-  run_test "${SCRIPT_DIR}/test-rc-reload.sh"             # rip-cage-hhh.4: rc reload snapshot format + diff generalization
   run_test "${SCRIPT_DIR}/test-up-msb-egress-config.sh"  # rip-cage-tsf2.8/tsf2.10.5: _up_build_egress_config_json config∪manifest egress union + post-split runtime-invariant regression (r1-F1: was missing from run-host.sh)
-  run_test "${SCRIPT_DIR}/test-ls-mode-source.sh"        # rip-cage-hhh.6: rc ls/doctor mode read from source .rip-cage.yaml not stale label
   run_test "${SCRIPT_DIR}/test-doctor-version-skew.sh"   # rip-cage-2cks: _doctor_bd_version_compare unit tests (host-only, no docker)
   run_test "${SCRIPT_DIR}/test-doctor-dead-mount.sh"     # rip-cage-uben: generic dead-handle detection over single-file bind mounts — stubbed docker, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-doctor-exec-source-deleted.sh"   # rip-cage-uod6 (charted from rip-cage-54q3): rc doctor/rc exec name a deleted host workspace source with a Fix-hint instead of msb's misleading ENOENT-against-the-program-name text — fake msb PATH shim, host-only, no live cage needed
@@ -782,15 +779,10 @@ _run_all_tests() {
   # real `--net-default deny` egress flag, neither of which the retired
   # replica ever modeled) -- no separate helper-level companion needed.
   run_test "${SCRIPT_DIR}/test-up-run-args-e2e.sh"        # §3(i) CRITICAL gate, e2e: real cmd_up through the content-keyed docker+msb shims
-  run_test "${SCRIPT_DIR}/test-reload-exit-trap-seam.sh"  # §3(vi): cmd_reload's EXIT-trap lock_dir cleanup (golden-master-invisible filesystem effect)
-  run_test "${SCRIPT_DIR}/test-generate-dockerfile.sh"    # §4 gap-fill: rc generate-dockerfile (bundled + from-source structural assertions)
   run_test "${SCRIPT_DIR}/test-build-msb-load.sh"         # rip-cage-7dkq (S1, msb migration): _build_msb_load unit tests (fake docker+msb PATH shims, host-only, no live daemon)
   run_test "${SCRIPT_DIR}/test-up-msb-load-wiring.sh"     # rip-cage-0v47: rc up's new-container/image-absent provisioning block calls _build_msb_load then _msb_warn_image_layer_drift IN THE SAME SHELL right after a successful _pull_or_build (fake docker+msb PATH shims + extract-and-eval against scratch-mutated copies, host-only, no live daemon, never a real cage)
   run_test "${SCRIPT_DIR}/test-build-flag-override.sh"    # rip-cage-fo4z/rip-cage-zqjz/rip-cage-zqjz.2 (incl. round 2, adversarial-review F1-F3 + minors): rc build's docker-flag seam is a fail-closed ALLOWLIST. -t/--tag overrides (not co-tags) the effective image; -f/--file, -o/--output, and --build-arg (every spelling, incl. the bare inherit-from-environment form) are REJECTED outright before any docker call -- -f would swap the isolation-audited Dockerfile past _manifest_check_build_isolation, -o would redirect the build result away from the image store so the post-build root-owned validators silently pass against a STALE image (false green, T-FG -- capture-bug-fixed to actually catch it), --build-arg can override the Dockerfile FRONTEND via BUILDKIT_SYNTAX or inject content into cage/Dockerfile's RUN steps; a small verified-benign ADMIT list (--no-cache, --pull, --progress, -D/-q, each re-checked against its VALUE namespace, not just its name) passes through, everything else (named or unrecognized) fails loud, and a bare `--` no longer bypasses the allowlist (fake docker+msb PATH shims, host-only)
   run_test "${SCRIPT_DIR}/test-msb-boot-smoke.sh"         # rip-cage-7dkq (S1, msb migration): effect-based docker-save->msb-load->boot->in-guest-exec smoke root + negative control (NEEDS_CONTAINER+NEEDS_MSB; self-skips without docker/msb/pre-built image)
-  run_test "${SCRIPT_DIR}/test-rc-setup.sh"               # §4 gap-fill: rc setup idempotency (zsh/bash, relaxed eval-line match)
-  run_test "${SCRIPT_DIR}/test-manifest-reconcile-verb.sh" # §4 gap-fill: rc manifest reconcile backup-before-overwrite + validation-abort
-  run_test "${SCRIPT_DIR}/test-attach-exec-errors.sh"     # §4 gap-fill: attach/exec error-path matrix
 
   # rip-cage-b6ia: previously-dark test files, audited 2026-06-09 and wired.
   # Host-tier (run on every invocation):

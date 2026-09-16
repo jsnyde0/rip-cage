@@ -45,18 +45,58 @@ RC_TEST_CONF
   printf '%s\n' "$_conf"
 }
 
-# --- Test 1: Usage includes build but not init (rc init removed in rip-cage-kt25) ---
-echo "=== Test 1: Usage text includes build, does not include init ==="
-usage_output=$("$RC" 2>&1 || true)
-if echo "$usage_output" | grep -q "build"; then
-  pass "usage mentions build"
+# --- Test 1: the six-verb table (rip-cage-ely4.10 / ADR-031 D3) ---
+#
+# THIS IS THE SURFACE CONTRACT. `rc` lists exactly six verbs, and every verb
+# this release (or ely4.9 before it) deleted prints plain usage and exits 1.
+# Two halves, because each catches what the other cannot: the help table would
+# still read right if a deleted verb were quietly left dispatchable, and an
+# exit-1 sweep would still pass if help grew a seventh line nothing dispatches.
+echo "=== Test 1: rc --help lists exactly the six verbs ==="
+usage_output=$("$RC" --help 2>&1 || true)
+
+# The verb column is the two-space-indented left edge of the Commands: block.
+# Flag lines are indented four spaces, so they never enter this set; a verb
+# with several usage lines (test, doctor) collapses to one name via sort -u.
+listed_verbs=$(printf '%s\n' "$usage_output" \
+  | sed -n '/^Commands:/,/^$/p' \
+  | grep -E '^  [a-z][a-z-]*' \
+  | awk '{print $1}' | sort -u)
+expected_verbs=$(printf '%s\n' auth build destroy doctor test up)
+
+if [[ "$listed_verbs" == "$expected_verbs" ]]; then
+  pass "rc --help lists exactly six verbs: $(printf '%s' "$listed_verbs" | tr '\n' ' ')"
 else
-  fail "usage does not mention build"
+  fail "rc --help verb list is not the six-verb table.
+  expected: $(printf '%s' "$expected_verbs" | tr '\n' ' ')
+  got:      $(printf '%s' "$listed_verbs" | tr '\n' ' ')"
 fi
-if echo "$usage_output" | grep -q "^  init"; then
-  fail "usage still lists init (rc init was removed in rip-cage-kt25)"
+
+echo ""
+echo "=== Test 1b: every deleted verb prints plain usage and exits 1 ==="
+# One case per deleted verb. `ls`, `attach`, `exec`, `down` and `reload` went
+# with this bead; `allowlist`, `config`, `schema` and `install` went with the
+# config schema (rip-cage-ely4.9); `completions`, `setup`, `manifest` and
+# `generate-dockerfile` went with this bead too. All thirteen reach the same
+# `*)` arm, so the assertion is the same for each: usage on stdout, exit 1.
+for _deleted_verb in ls attach exec down reload allowlist config schema \
+                     completions setup manifest install generate-dockerfile; do
+  _dv_out=$("$RC" "$_deleted_verb" 2>&1)
+  _dv_exit=$?
+  if [[ "$_dv_exit" -eq 1 ]] && printf '%s\n' "$_dv_out" | head -1 | grep -q "^Usage: rc "; then
+    pass "rc ${_deleted_verb} -> plain usage, exit 1"
+  else
+    fail "rc ${_deleted_verb} -> expected usage + exit 1, got exit ${_dv_exit}: $(printf '%s' "$_dv_out" | head -1)"
+  fi
+done
+
+# NEGATIVE CONTROL: a surviving verb must NOT print usage, or the loop above
+# would pass against an `rc` that had become usage-only.
+_surv_out=$("$RC" --output json doctor --host 2>&1 || true)
+if printf '%s\n' "$_surv_out" | grep -q "^Usage: rc "; then
+  fail "a surviving verb (doctor --host) fell through to usage — Test 1b proves nothing"
 else
-  pass "usage does not list init command"
+  pass "a surviving verb does not fall through to usage (Test 1b is not vacuous)"
 fi
 
 # --- Test 7: rc build uses SCRIPT_DIR to find Dockerfile ---
@@ -110,7 +150,7 @@ else
 fi
 rm -rf "$FAKE_DOCKER_DIR"
 
-# --- Test 8b: check_msb surfaces msb daemon errors for rc down (rip-cage-tsf2.1) ---
+# --- Test 8b: check_msb surfaces msb daemon errors for rc destroy (rip-cage-tsf2.1) ---
 echo ""
 echo "=== Test 8b: check_msb surfaces msb errors when the runtime is not running ==="
 FAKE_MSB_DIR=$(mktemp -d)
@@ -120,12 +160,15 @@ echo "msb: connection refused" >&2
 exit 1
 FAKE
 chmod +x "$FAKE_MSB_DIR/msb"
-# Call rc down with the fake msb on PATH — check_msb runs first (down was
+# Call rc destroy with the fake msb on PATH — check_msb runs first (destroy was
 # rewired onto msb by rip-cage-tsf2.1; no fake docker needed here — the
 # real docker on this host is fine, only msb is faked unreachable).
-msb_err_output=$(PATH="$FAKE_MSB_DIR:$PATH" "$RC" down 2>&1 || true)
+# `rc down` was this case's original subject; it retired with the six-verb
+# thinning (rip-cage-ely4.10), so the assertion moves onto destroy, which sits
+# behind the same check_msb preflight arm.
+msb_err_output=$(PATH="$FAKE_MSB_DIR:$PATH" "$RC" destroy 2>&1 || true)
 if echo "$msb_err_output" | grep -qi "msb"; then
-  pass "check_msb surfaces msb error message for rc down"
+  pass "check_msb surfaces msb error message for rc destroy"
 else
   fail "check_msb did not surface msb failure: $msb_err_output"
 fi
@@ -256,15 +299,10 @@ else
   fail "deduplication failed — expected 1 parent mount, got $dedup_count (output: $dedup_output)"
 fi
 
-# --- Test 10: rc init is gone — verify it returns unknown-command error ---
-echo ""
-echo "=== Test 10: rc init returns unknown-command (removed in rip-cage-kt25) ==="
-init_exit_output=$("$RC" init 2>&1 || true)
-if echo "$init_exit_output" | grep -q "build"; then
-  pass "rc init falls through to usage (unknown command)"
-else
-  fail "rc init did not produce usage output: $init_exit_output"
-fi
+# --- Test 10: RETIRED into Test 1b (rip-cage-ely4.10) ---
+# Asserted that `rc init` (removed in rip-cage-kt25) falls through to usage.
+# Test 1b now sweeps every deleted verb through the same `*)` arm and checks
+# the exit code too, which this case never did.
 
 # --- Test 11: _collect_symlink_parents handles file symlinks ---
 echo ""
@@ -816,41 +854,12 @@ rm -rf "$TEST_DIR_T22"
 # actually reappear: ADR-031 D3's first-run-prompt deletion, checked by
 # tests/test-adr-evolution-notes.sh (ADR-009 D7).
 
-# --- Tests 25 + 26: retired verbs stay absent (re-homed off `rc schema`) ---
-# These asserted that `rc sessions` and `rc agent` no longer appear in
-# `rc schema`'s command table. `rc schema` itself retired with the config
-# schema (ADR-003 D5 / ADR-031 D2), so the assertion re-homes onto the usage
-# text — still the surface a reader meets, still non-vacuous: a re-added verb
-# would have to be listed there to be discoverable at all.
-echo ""
-echo "=== Tests 25 + 26: retired verbs absent from usage ==="
-usage_t25=$("$RC" 2>&1 || true)
-for _retired_verb in sessions agent config allowlist schema install; do
-  if printf '%s\n' "$usage_t25" | grep -qE "^  ${_retired_verb}( |$)"; then
-    fail "usage still lists the retired verb '${_retired_verb}'"
-  else
-    pass "usage does not list the retired verb '${_retired_verb}'"
-  fi
-done
-# NEGATIVE CONTROL: a surviving verb IS listed, so the loop above cannot pass
-# by matching nothing at all.
-if printf '%s\n' "$usage_t25" | grep -qE "^  up( |$)"; then
-  pass "usage lists the surviving verb 'up' (the retired-verb loop is not vacuous)"
-else
-  fail "usage does not list 'up' — the retired-verb assertions above prove nothing"
-fi
-
-# --- Test 27: rc agent is retired — absent from rc --help (rip-cage-1f59.3) ---
-# NON-VACUOUS: would fail if cmd_agent were still listed in the usage heredoc.
-# Symmetric with test 36 (which covers sessions absence from --help).
-echo ""
-echo "=== Test 27: rc agent absent from rc --help (retired rip-cage-1f59.3) ==="
-usage_t27=$("$RC" 2>&1 || true)
-if echo "$usage_t27" | grep -q "^  agent"; then
-  fail "rc usage still mentions agent subcommand (should be removed per rip-cage-1f59.3)"
-else
-  pass "rc usage does not mention agent subcommand (correctly retired)"
-fi
+# --- Tests 25 + 26 + 27: RETIRED into Test 1 (rip-cage-ely4.10) ---
+# These asserted that individual retired verbs (sessions, agent, config,
+# allowlist, schema, install) are absent from the usage text, one grep each.
+# Test 1 now asserts the whole verb column equals the six-verb set, which
+# covers every absent verb at once and also catches a SEVENTH verb appearing —
+# something a per-name absence grep could never see.
 
 # --- Test 28: tmux.conf contains remain-on-exit setting ---
 echo ""
@@ -966,15 +975,9 @@ else
   fail "_tmux_picker attach N=0: stderr should mention 'rc up' (got: $t35_out)"
 fi
 
-# --- Test 36: rc sessions is NOT listed in usage (rip-cage-1f59.3: sessions retired) ---
-echo ""
-echo "=== Test 36: rc sessions in usage text ==="
-usage_out=$("$RC" 2>&1 || true)
-if echo "$usage_out" | grep -q "^  sessions"; then
-  fail "rc usage still mentions sessions subcommand (should be removed per rip-cage-1f59.3)"
-else
-  pass "rc usage does not mention sessions subcommand (correctly retired)"
-fi
+# --- Test 36: RETIRED into Test 1 (rip-cage-ely4.10) ---
+# Same subject as Tests 25-27: one retired verb's absence from usage, now
+# covered by Test 1's exact-set assertion.
 
 # --- Test 37: ADR-006 contains Tier 1a (parallel tmux sessions) ---
 echo ""
@@ -1056,47 +1059,12 @@ else
   fail "CHANGELOG.md missing picker/rc sessions in Unreleased section"
 fi
 
-# --- Test 45: rc agent and rc sessions absent from both completion files (rip-cage-1f59.3) ---
-# NON-VACUOUS: would fail if completions/rc.bash or completions/_rc still listed
-# agent or sessions as subcommands. A still-present command would appear as a
-# literal token in the completion arrays — absence is the discriminating assertion.
-echo ""
-echo "=== Test 45: rc agent and rc sessions absent from completion files (rip-cage-1f59.3) ==="
-BASH_COMP="${REPO_ROOT}/completions/rc.bash"
-ZSH_COMP="${REPO_ROOT}/completions/_rc"
-t45_fail=0
-if grep -q "\bsessions\b" "$BASH_COMP" 2>/dev/null; then
-  fail "completions/rc.bash still contains 'sessions' token (should be retired)"
-  t45_fail=1
-else
-  pass "completions/rc.bash does not contain 'sessions' token (correctly retired)"
-fi
-if grep -q "\bagent\b" "$BASH_COMP" 2>/dev/null; then
-  fail "completions/rc.bash still contains 'agent' token (should be retired)"
-  t45_fail=1
-else
-  pass "completions/rc.bash does not contain 'agent' token (correctly retired)"
-fi
-if grep -q "\bsessions\b" "$ZSH_COMP" 2>/dev/null; then
-  fail "completions/_rc still contains 'sessions' token (should be retired)"
-  t45_fail=1
-else
-  pass "completions/_rc does not contain 'sessions' token (correctly retired)"
-fi
-if grep -q "\bagent\b" "$ZSH_COMP" 2>/dev/null; then
-  fail "completions/_rc still contains 'agent' token (should be retired)"
-  t45_fail=1
-else
-  pass "completions/_rc does not contain 'agent' token (correctly retired)"
-fi
-# Paired exit-code: --output json on a retired command must not return exit 0
-sessions_json_exit_t45=0
-"$RC" --output json sessions no-such-container-xyz >/dev/null 2>&1 || sessions_json_exit_t45=$?
-if [[ "$sessions_json_exit_t45" -ne 0 ]]; then
-  pass "rc sessions --output json: unknown-command, non-zero exit"
-else
-  fail "rc sessions --output json: expected non-zero exit (command was retired), got exit 0"
-fi
+# --- Test 45: RETIRED with completions/ (rip-cage-ely4.10 / ADR-031 D3) ---
+# Asserted that retired verbs left no token behind in completions/rc.bash and
+# completions/_rc. The whole completions/ tree is deleted — a completion
+# surface for six memorable verbs earns less than it costs to keep honest —
+# so there is no file left to grep. The paired half of this case, "a retired
+# verb with --output json still exits non-zero", is Test 1b's sweep now.
 
 # --- Test 46: picker EOF on stdin exits 1 with expected stderr message (AC-5b) ---
 echo ""
@@ -1191,15 +1159,12 @@ else
   fail "picker whitespace-only input: expected 'selected:rip-cage', got: $t47_result"
 fi
 
-# --- Test 48: rc exec is listed in usage ---
-echo ""
-echo "=== Test 48: rc exec in usage text ==="
-usage_t48=$("$RC" 2>&1 || true)
-if echo "$usage_t48" | grep -q "^  exec"; then
-  pass "rc usage mentions exec subcommand"
-else
-  fail "rc usage does not mention exec subcommand"
-fi
+# --- Tests 48 + 50 + 51: RETIRED with `rc exec` (rip-cage-ely4.10 / ADR-031 D3) ---
+# These asserted that `rc exec` is listed in usage, is in the --output json
+# allowlist, and dispatches rather than falling through to usage. The verb is
+# deleted: a one-off command in a cage is `msb exec <cage> -- <cmd>`. All three
+# properties now invert, and Test 1b asserts the inverted form for exec along
+# with every other deleted verb.
 
 # --- Test 49: RETIRED with `rc schema` (rip-cage-ely4.9) ---
 # `rc schema` printed a machine-readable command table generated from the
@@ -1208,42 +1173,6 @@ fi
 # gestured at is not lost — it is refactor work under ADR-031 D7 stage 2
 # (--output json on the surviving verbs, an exit-code table), tracked by
 # rip-cage-sygz, not something this test was ever asserting.
-
-# --- Test 50: rc exec --output json is in the json allowlist (no 'not supported' error) ---
-echo ""
-echo "=== Test 50: rc exec --output json is in the json allowlist ==="
-# rc exec must exist and --output json must not be rejected by the allowlist guard
-# (if exec doesn't exist yet, it falls through to usage with exit 1 — the key test is
-#  that it does NOT print the "not supported for 'exec'" allowlist rejection message)
-exec_json_t50=$("$RC" --output json exec no-such-container-xyz -- echo hi 2>&1 || true)
-if echo "$exec_json_t50" | grep -q "not supported for 'exec'"; then
-  fail "rc exec --output json wrongly rejected by allowlist guard"
-else
-  # Also confirm the command is recognized (not falling through to usage unknown-cmd)
-  if echo "$exec_json_t50" | jq -e '.code // empty' >/dev/null 2>&1; then
-    pass "rc exec --output json: recognized command, JSON error shape returned (not in usage)"
-  else
-    # It may print usage if exec doesn't exist — that's a FAIL
-    if echo "$exec_json_t50" | grep -q "^  exec "; then
-      fail "rc exec not yet implemented — falls through to usage"
-    else
-      pass "rc exec --output json is in json allowlist (not rejected)"
-    fi
-  fi
-fi
-
-# --- Test 51: rc exec -- separator is parsed ---
-echo ""
-echo "=== Test 51: rc exec command is dispatched (not treated as unknown) ==="
-# Verify rc exec is dispatched (not a usage-fallthrough). With no such container, it should
-# produce an error about the container (not just "usage"). Best proxy: output must NOT be
-# the general usage text (which starts with "Usage: rc").
-exec_t51=$("$RC" exec no-such-container-xyz -- echo hi 2>&1 || true)
-if echo "$exec_t51" | grep -q "^Usage: rc"; then
-  fail "rc exec falls through to usage (command not dispatched)"
-else
-  pass "rc exec dispatched (no usage fallthrough)"
-fi
 
 # --- Test 52: mux prereq checks delegated to baked hooks (rip-cage-61al.3) ---
 echo ""

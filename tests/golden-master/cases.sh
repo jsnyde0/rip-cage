@@ -9,18 +9,10 @@ set -u
 GM_CASES=(
   usage_no_args
   usage_unknown_verb
-  completions_zsh
-  completions_bash
-  completions_missing_shell
-  completions_unknown_shell
   flag_output_requires_json
   flag_dry_run_unsupported_verb
-  flag_output_json_unsupported_verb_setup
-  flag_output_json_unsupported_verb_attach
   version_flag
   build_bundled
-  generate_dockerfile_bundled
-  generate_dockerfile_from_source
   up_dry_run_json_running
   up_dry_run_json_exited_resume
   up_dry_run_json_created_resume
@@ -32,26 +24,9 @@ GM_CASES=(
   up_dry_run_json_absent_create_image_absent
   up_dry_run_human_absent_create
   up_validate_warning_seam
-  down_not_found
   destroy_dry_run_absent
   destroy_dry_run_running_json
-  reload_dry_run_absent
-  reload_dry_run_not_running
-  ls_human_empty
-  ls_json_empty
-  ls_human_populated
   doctor_host
-  manifest_reconcile
-  setup_zsh_first_run
-  setup_bash_first_run
-  setup_fish_unsupported
-  setup_shell_unset
-  attach_not_running
-  exec_missing_separator
-  exec_no_command_after_separator
-  exec_extra_arg_before_separator
-  exec_not_running_human
-  exec_not_running_json
   auth_refresh_human
   auth_refresh_json
 )
@@ -63,21 +38,21 @@ case_usage_unknown_verb() { gm_capture bogus-verb; }
 
 case_flag_output_requires_json() { gm_capture --output foo ls; }
 case_flag_dry_run_unsupported_verb() { gm_capture --dry-run ls; }
-case_flag_output_json_unsupported_verb_setup() { gm_capture --output json setup; }
-case_flag_output_json_unsupported_verb_attach() { gm_capture --output json attach; }
 case_version_flag() { gm_capture --version; }
 
-# --- completions -------------------------------------------------------------
+# --- retired verbs ------------------------------------------------------------
 # `rc schema` retired with the rip-cage config schema (rip-cage-ely4.9 /
 # ADR-031 D2 / ADR-003-agent-friendly-cli.md D5) -- the `case_schema` golden-
 # master case that lived here is gone with it.
+#
+# `rc completions` retired with the six-verb thinning (rip-cage-ely4.10 /
+# ADR-031 D3) -- case_completions_zsh / _bash / _missing_shell / _unknown_shell
+# are gone with it, as are case_flag_output_json_unsupported_verb_setup and
+# _attach: the verbs those two named now reach plain usage, which
+# case_usage_unknown_verb already pins.
 
-case_completions_zsh() { gm_capture completions zsh; }
-case_completions_bash() { gm_capture completions bash; }
-case_completions_missing_shell() { gm_capture completions; }
-case_completions_unknown_shell() { gm_capture completions fish; }
 
-# --- build / generate-dockerfile --------------------------------------------
+# --- build ------------------------------------------------------------------
 
 case_build_bundled() {
   # Bundled default manifest (empty tools.yaml -> _manifest_default_yaml
@@ -89,15 +64,6 @@ case_build_bundled() {
   gm_capture build
 }
 
-case_generate_dockerfile_bundled() {
-  gm_capture generate-dockerfile
-}
-
-case_generate_dockerfile_from_source() {
-  GM_MANIFEST_GLOBAL="${REPO_ROOT}/tests/fixtures/manifest-with-from-source-tool.yaml" \
-    gm_capture generate-dockerfile
-  unset GM_MANIFEST_GLOBAL
-}
 
 # --- up --dry-run --output json: all 8 container states --------------------
 # Image present+current for every state (see cases.sh comment above --
@@ -161,11 +127,12 @@ case_up_validate_warning_seam() {
     gm_capture --dry-run --output json up "$ws"
 }
 
-# --- down / destroy / reload --dry-run --------------------------------------
+# --- destroy --dry-run ------------------------------------------------------
+# `rc down` and `rc reload` retired with the six-verb thinning
+# (rip-cage-ely4.10 / ADR-031 D3): stopping a cage is `msb stop`, and the
+# cold-recreate folded into `rc up --replace`. case_down_not_found,
+# case_reload_dry_run_absent and case_reload_dry_run_not_running are gone.
 
-case_down_not_found() {
-  GM_DOCKER_STATE=absent gm_capture down some-cage
-}
 
 case_destroy_dry_run_absent() {
   GM_DOCKER_STATE=absent gm_capture --dry-run --output json destroy some-cage
@@ -176,29 +143,12 @@ case_destroy_dry_run_running_json() {
     gm_capture --dry-run --output json destroy some-cage
 }
 
-case_reload_dry_run_absent() {
-  GM_DOCKER_STATE=absent gm_capture --dry-run reload some-cage
-}
 
-case_reload_dry_run_not_running() {
-  GM_DOCKER_STATE=exited GM_DOCKER_LABEL_SOURCE_PATH="$(gm_ws_realpath)" \
-    gm_capture --dry-run reload some-cage
-}
-
-# --- ls ----------------------------------------------------------------
-
-case_ls_human_empty() { gm_capture ls; }
-case_ls_json_empty() { gm_capture --output json ls; }
-
-# rip-cage-dcok: one real cage row, pinning the human-mode column layout
-# (NAME/STATUS/UPTIME/EGRESS/MODE/SOURCE PATH) -- the bug this case guards
-# against put $_ls_uptime under STATUS and never printed $_ls_status at all.
-case_ls_human_populated() {
-  GM_MSB_LIST_NAMES="mycage" \
-  GM_DOCKER_STATE=running \
-  GM_DOCKER_LABEL_SOURCE_PATH="$(gm_ws_realpath)" \
-    gm_capture ls
-}
+# --- retired fleet/config verbs ------------------------------------------
+# `rc ls` retired with the six-verb thinning (rip-cage-ely4.10 / ADR-031 D3) --
+# listing cages is `msb list`. case_ls_human_empty, case_ls_json_empty and
+# case_ls_human_populated (which pinned the human column layout
+# NAME/STATUS/UPTIME/EGRESS/MODE/SOURCE PATH) are gone with it.
 
 # `rc config show`/`rc config get`/`rc config init` retired with the rip-cage
 # config schema (rip-cage-ely4.9 / ADR-031 D2) -- the case_config_show_yaml /
@@ -209,77 +159,25 @@ case_ls_human_populated() {
 
 case_doctor_host() { gm_capture doctor --host; }
 
-# --- manifest reconcile (§4 gap-fill folds into §1(a); see also the
-# dedicated tests/test-manifest-reconcile-verb.sh for the backup-before-
-# overwrite assertion in isolation) --------------------------------------
-
-case_manifest_reconcile() {
-  cat > "${GM_XDG}/rip-cage/tools.yaml" <<'YAML'
-version: 1
-tools:
-  - name: my-custom-tool
-    archetype: TOOL
-    version_pin: "1.0.0"
-    egress: []
-    mounts: []
-    install_cmd: "true"
-YAML
-  gm_capture manifest reconcile
-}
+# `rc manifest reconcile` retired with the six-verb thinning (rip-cage-ely4.10
+# / ADR-031 D3) -- its successor is editing the file. case_manifest_reconcile
+# is gone with it, and so is case_generate_dockerfile_bundled /
+# _from_source, whose verb retires with the manifest it composed.
 
 # `rc install` retired with the rip-cage config schema (rip-cage-ely4.9 /
 # ADR-031 D2) -- the case_install_yes golden-master case that lived here is
 # gone with it.
 
-# --- setup (zsh/bash/fish/unset) ------------------------------------------
+# `rc setup` retired with the six-verb thinning (rip-cage-ely4.10 / ADR-031
+# D3) -- case_setup_zsh_first_run / _bash_first_run / _fish_unsupported /
+# _shell_unset are gone with it.
 
-case_setup_zsh_first_run() {
-  GM_SHELL_OVERRIDE="/bin/zsh" gm_capture setup
-}
 
-case_setup_bash_first_run() {
-  GM_SHELL_OVERRIDE="/bin/bash" gm_capture setup
-}
+# `rc attach` and `rc exec` retired with the six-verb thinning
+# (rip-cage-ely4.10 / ADR-031 D3) -- a shell in a cage is `msb exec <cage> --
+# zsh`. case_attach_not_running and the whole case_exec_* error-path matrix
+# are gone with them.
 
-case_setup_fish_unsupported() {
-  GM_SHELL_OVERRIDE="/usr/bin/fish" gm_capture setup
-}
-
-case_setup_shell_unset() {
-  # An explicit EMPTY assignment (not an unset env var) -- see
-  # lib/sandbox.sh's gm_capture: some environments re-populate an unset
-  # SHELL via bash's own startup path resolution, which would make this
-  # case flaky across hosts. An empty SHELL="" reaches the identical
-  # `"${SHELL:-}"` empty-string branch deterministically everywhere.
-  GM_SHELL_OVERRIDE="" gm_capture setup
-}
-
-# --- attach / exec error-path matrix (§4 gap-fill folds into §1(a); see
-# also tests/test-attach-exec-errors.sh for the fuller matrix) ------------
-
-case_attach_not_running() {
-  GM_DOCKER_STATE=absent gm_capture attach some-cage
-}
-
-case_exec_missing_separator() {
-  gm_capture exec some-cage echo hi
-}
-
-case_exec_no_command_after_separator() {
-  gm_capture exec some-cage --
-}
-
-case_exec_extra_arg_before_separator() {
-  gm_capture exec some-cage extra-arg --
-}
-
-case_exec_not_running_human() {
-  GM_DOCKER_STATE=absent gm_capture exec some-cage -- echo hi
-}
-
-case_exec_not_running_json() {
-  GM_DOCKER_STATE=absent gm_capture --output json exec some-cage -- echo hi
-}
 
 # `rc allowlist` retired with the rip-cage config schema (rip-cage-ely4.9 /
 # ADR-031 D2 -- adding an egress host is now a line in the project's native

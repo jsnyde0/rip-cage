@@ -19,9 +19,11 @@ fail() { echo "FAIL: $1 — got: ${2:-}"; FAILURES=$((FAILURES + 1)); }
 FAKE_BIN=$(mktemp -d)
 SYMLINK_BIN=$(mktemp -d)   # symlink farm for PATH without jq
 T2_WKSP=""                 # initialized here so cleanup() can safely remove it
+T2_ROOT=""                 # ditto — the rip-cage-ely4.7.2 fixture root
 cleanup() {
   rm -rf "$FAKE_BIN" "$SYMLINK_BIN"
   [[ -n "$T2_WKSP" ]] && rm -rf "$T2_WKSP"
+  [[ -n "$T2_ROOT" ]] && rm -rf "$T2_ROOT"
 }
 trap cleanup EXIT
 
@@ -61,13 +63,16 @@ _build_nojq_path() {
 NOJQ_BIN=$(_build_nojq_path "$SYMLINK_BIN" "jq")
 
 # -----------------------------------------------
-# Test 1: Missing jq — rc ls --output json fails with helpful message
+# Test 1: Missing jq — rc doctor --output json fails with helpful message
 # -----------------------------------------------
 echo ""
 echo "=== Test 1: Missing jq gives helpful error for --output json ==="
 
 # Use the symlink-farm PATH that has everything except jq
-output=$(RC_ALLOWED_ROOTS="$HOME" PATH="$NOJQ_BIN" "$RC" ls --output json 2>&1 || true)
+# `rc ls` was this case's original subject; it retired with the six-verb
+# thinning (rip-cage-ely4.10). `rc doctor` sits behind the same check_jq
+# preflight arm, so the assertion is unchanged.
+output=$(RC_ALLOWED_ROOTS="$HOME" PATH="$NOJQ_BIN" "$RC" doctor --output json 2>&1 || true)
 if echo "$output" | grep -qi "jq"; then
   pass "missing jq: error mentions 'jq'"
 else
@@ -80,25 +85,144 @@ else
 fi
 
 # -----------------------------------------------
-# Test 2: RETIRED -- see rip-cage-ely4.7.2 for the gap it leaves.
-# RETIRED by rip-cage-ely4.9: Test 2 asserted that `session.multiplexer: tmux`
-# in a per-project rip-cage config fails loud at CONFIG-VALIDATE time when the
-# manifest declares no matching MULTIPLEXER entry. Both halves of that sentence
-# are gone: ADR-031 D2 retires the config schema (the multiplexer is selected
-# by RC_MULTIPLEXER now) and with it `_config_validate_or_abort`, which is
-# where the enum was checked against the baked registry.
+# Test 2: a multiplexer the image does not carry is refused BEFORE any msb
+# call (rip-cage-ely4.7.2 / ADR-001 fail-loud, ADR-005 D12).
 #
-# THIS LEAVES A REAL GAP, filed rather than buried: nothing now refuses BEFORE
-# `msb create` when the requested multiplexer is absent from the image, so the
-# cage is created and only fails at attach. That is an ADR-001 fail-loud
-# regression and it is tracked as its own bead — a pre-create check needs the
-# image-inspect machinery the deleted validator carried, which is new code
-# rather than a line this bead removed.
+# THE REGRESSION THIS PINS. The original Test 2 asserted that an out-of-set
+# `session.multiplexer` failed at config-validate time, before any cage
+# existed. rip-cage-ely4.9 retired the config schema and its validator, and
+# the check went with them: `rc up` created the cage, ran init, and only
+# failed at attach -- leaving a real stray cage behind on a plain repair run.
 #
-# The gap is tracked as rip-cage-ely4.7.2. Reinstating a version of this case
-# is that bead's job, not a rewrite here:
-# a test kept alive against a validator that no longer exists would either
-# assert nothing or assert the wrong layer.
+# "No cage was created" is the WHOLE property, and an exit-code assertion
+# cannot see it: a refusal and a create-then-fail both exit non-zero. So each
+# case runs with a PATH shim in front of msb that RECORDS what it was asked to
+# do, drops a sentinel for any real subcommand, and answers only `--version`
+# (rc's own preflight legitimately calls that before dispatch). The assertion
+# is the sentinel's absence.
+# -----------------------------------------------
+echo ""
+echo "=== Test 2: RC_MULTIPLEXER naming a multiplexer the image lacks refuses pre-create ==="
+
+# /private/tmp, never /tmp: msb does not follow a host-side symlink in a bind
+# source, and on macOS /tmp IS a symlink to /private/tmp.
+T2_ROOT="$(mktemp -d /private/tmp/rc-ely472-XXXXXX)"
+T2_BIN="${T2_ROOT}/bin"
+T2_PROJ="${T2_ROOT}/proj"
+T2_LOG="${T2_ROOT}/msb-invocations.log"
+T2_SENTINEL="${T2_ROOT}/MSB_WAS_SPAWNED"
+mkdir -p "$T2_BIN" "$T2_PROJ" "${T2_ROOT}/home"
+
+cat > "${T2_BIN}/msb" <<'T2_SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${T2_LOG}"
+case "${1:-}" in
+  --version) echo "msb 0.6.18-test-shim"; exit 0 ;;
+esac
+: > "${T2_SENTINEL}"
+echo "test shim: msb was invoked with: $*" >&2
+exit 1
+T2_SHIM
+chmod +x "${T2_BIN}/msb"
+
+cat > "${T2_ROOT}/cage.yaml" <<T2_CONF
+image: rip-cage:latest
+workdir: /workspace
+mounts:
+  - "${T2_PROJ}:/workspace"
+network:
+  policy: none
+  allow:
+    - "api.anthropic.com:tcp:443"
+T2_CONF
+
+# Throwaway XDG config dir so nothing here reads or writes the real
+# ~/.config/rip-cage. HOME is deliberately NOT overridden -- docker resolves
+# its context and socket through $HOME, and a fake one makes rc's docker
+# preflight fail, which would make every case below report a daemon error
+# instead of testing its own subject.
+t2_run_rc() {
+  ( export PATH="${T2_BIN}:${PATH}"
+    export XDG_CONFIG_HOME="${T2_ROOT}/home/.config"
+    export RC_CAGE_CONF="${T2_ROOT}/cage.yaml"
+    export T2_LOG T2_SENTINEL T2_DOCKER_LOG
+    export RC_MULTIPLEXER="$1"
+    shift
+    "$RC" "$@" ) 2>&1
+}
+
+# --- (a) an absent multiplexer refuses, names itself, names rc build -------
+# The name is deliberately one no manifest would ever declare, so this cannot
+# pass by accident on an operator image that happens to bake several.
+rm -f "$T2_SENTINEL" "$T2_LOG"
+t2_out=$(t2_run_rc rc-ely472-nosuchmux up "$T2_PROJ")
+t2_exit=$?
+
+if [[ "$t2_exit" -ne 0 ]]; then
+  pass "2a: rc up exits non-zero for a multiplexer the image does not carry (exit ${t2_exit})"
+else
+  fail "2a: rc up exited 0 with RC_MULTIPLEXER naming a multiplexer no image carries" "$t2_out"
+fi
+if printf '%s\n' "$t2_out" | grep -q "rc-ely472-nosuchmux"; then
+  pass "2a: the refusal names the requested multiplexer"
+else
+  fail "2a: the refusal does not name the requested multiplexer" "$t2_out"
+fi
+if printf '%s\n' "$t2_out" | grep -q "rc build"; then
+  pass "2a: the refusal names 'rc build' as the fix"
+else
+  fail "2a: the refusal does not name 'rc build' as the fix" "$t2_out"
+fi
+if [[ -f "$T2_SENTINEL" ]]; then
+  fail "2a: msb WAS spawned before the refusal — the check is fail-open" "invocations: $(cat "$T2_LOG" 2>/dev/null)"
+else
+  pass "2a: no msb subcommand ran — rc refused before the cage could exist"
+fi
+
+# --- (b) RC_MULTIPLEXER=none inspects no image ----------------------------
+# The default must cost nothing: most cages run no multiplexer, and a probe on
+# every launch for a feature almost nobody uses is its own kind of wrong. The
+# observable is a docker shim that records every invocation: `docker image
+# inspect` for the multiplexer label must not appear under `none`.
+T2_DOCKER_LOG="${T2_ROOT}/docker-invocations.log"
+# The shim records, then hands off to the REAL docker by absolute path (resolved
+# now, while T2_BIN is not yet on PATH) — rc's other docker calls must still
+# behave, or this stops measuring the multiplexer probe and starts measuring a
+# broken docker.
+T2_REAL_DOCKER="$(command -v docker)"
+cat > "${T2_BIN}/docker" <<T2_DOCKER
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${T2_DOCKER_LOG}"
+exec "${T2_REAL_DOCKER}" "\$@"
+T2_DOCKER
+chmod +x "${T2_BIN}/docker"
+
+rm -f "$T2_SENTINEL" "$T2_LOG"
+: > "$T2_DOCKER_LOG"
+t2_run_rc none up --dry-run "$T2_PROJ" >/dev/null 2>&1
+
+t2_label_probes=$(grep -c 'rc.multiplexers' "$T2_DOCKER_LOG" 2>/dev/null) || t2_label_probes=0
+if [[ "$t2_label_probes" -eq 0 ]]; then
+  pass "2b: RC_MULTIPLEXER=none performs no multiplexer-label image inspection"
+else
+  fail "2b: RC_MULTIPLEXER=none inspected the image for the multiplexer label" "$(cat "$T2_DOCKER_LOG")"
+fi
+
+# NEGATIVE CONTROL for 2b: the SAME run with a named multiplexer must produce
+# exactly that probe. Without this, 2b would pass against a check that was
+# simply never wired up.
+rm -f "$T2_SENTINEL" "$T2_LOG"
+: > "$T2_DOCKER_LOG"
+t2_run_rc rc-ely472-nosuchmux up "$T2_PROJ" >/dev/null 2>&1
+
+t2_named_probes=$(grep -c 'rc.multiplexers' "$T2_DOCKER_LOG" 2>/dev/null) || t2_named_probes=0
+if [[ "$t2_named_probes" -gt 0 ]]; then
+  pass "2b: a NAMED multiplexer does inspect the image label — 2b is not vacuous"
+else
+  fail "2b: a named multiplexer produced no label inspection either — 2b proves nothing" "$(cat "$T2_DOCKER_LOG")"
+fi
+
+rm -f "${T2_BIN}/docker"
 
 # -----------------------------------------------
 echo ""
@@ -123,8 +247,9 @@ else
 fi
 
 # -----------------------------------------------
-# Test 3b: msb runtime not reachable — rc ls fails with a helpful,
-# msb-specific message (rip-cage-tsf2.1).
+# Test 3b: msb runtime not reachable — rc destroy fails with a helpful,
+# msb-specific message (rip-cage-tsf2.1; subject moved off the retired
+# `rc ls` by rip-cage-ely4.10 — same check_msb preflight arm).
 # -----------------------------------------------
 echo ""
 echo "=== Test 3b: msb not reachable gives a helpful msb-specific error ==="
@@ -137,7 +262,7 @@ exit 1
 FAKEMSB
 chmod +x "$FAKE_MSB_BIN/msb"
 
-output=$(PATH="$FAKE_MSB_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" ls 2>&1 || true)
+output=$(PATH="$FAKE_MSB_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" destroy 2>&1 || true)
 if echo "$output" | grep -qi "msb"; then
   pass "msb not reachable: error mentions 'msb'"
 else
@@ -152,7 +277,9 @@ rm -rf "$FAKE_MSB_BIN"
 
 # -----------------------------------------------
 # Test 4: Commands that need docker check it (build); commands rewired onto
-# msb by rip-cage-tsf2.1 check msb instead (ls, attach, down, destroy, test)
+# msb by rip-cage-tsf2.1 check msb instead. That list was ls/attach/down/
+# destroy/test; the six-verb thinning (rip-cage-ely4.10) leaves destroy and
+# test, which is the whole surviving msb-preflight set.
 # -----------------------------------------------
 echo ""
 echo "=== Test 4: Docker check runs for build; msb check runs for the msb-rewired verbs ==="
@@ -175,9 +302,8 @@ exit 1
 FAKEMSB
 chmod +x "$FAKE_MSB_BIN/msb"
 
-# ls gets a clean error; attach/down/destroy/test need an arg but still hit
-# the msb check first.
-for cmd in ls attach down destroy test; do
+# Both need an arg, but the msb check runs first.
+for cmd in destroy test; do
   output=$(PATH="$FAKE_MSB_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" $cmd 2>&1 || true)
   if echo "$output" | grep -qi "msb"; then
     pass "msb check for 'rc $cmd'"
@@ -191,34 +317,29 @@ rm -rf "$FAKE_MSB_BIN"
 # Test 5: rc completions (no docker needed) does NOT trigger docker check
 # -----------------------------------------------
 # `rc schema` (the original docker-independent verb this smoke used) retired
-# with the rip-cage config schema (rip-cage-ely4.9 / ADR-031 D2). `rc
-# completions bash` is the replacement: like schema, it is dispatched without
-# ever reaching the check_docker/check_msb preflight case block in rc (see
-# rc's "prerequisite checks" comment above the "Main dispatch" case), so it
-# proves the same thing -- a verb that needs neither docker nor msb still
-# works against the fake, daemon-not-running docker on PATH.
+# with the rip-cage config schema (rip-cage-ely4.9 / ADR-031 D2), and its
+# replacement `rc completions bash` retired with the six-verb thinning
+# (rip-cage-ely4.10 / ADR-031 D3). `rc --version` is what is left, and it
+# proves the same thing: a path dispatched without ever reaching the
+# check_docker/check_msb preflight case block in rc (see rc's "prerequisite
+# checks" comment above the "Main dispatch" case) still works against the
+# fake, daemon-not-running docker on PATH.
 echo ""
-echo "=== Test 5: rc completions does not require docker ==="
+echo "=== Test 5: a verb needing neither runtime does not require docker ==="
 
-output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" completions bash 2>&1 || true)
-if echo "$output" | grep -q '_rc_complete'; then
-  pass "rc completions works without docker daemon"
+output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" --version 2>&1 || true)
+if echo "$output" | grep -q '^rc version '; then
+  pass "rc --version works without docker daemon"
 else
-  fail "rc completions should work without docker daemon" "$output"
+  fail "rc --version should work without docker daemon" "$output"
 fi
 
 # -----------------------------------------------
-# Test 6: rc init is removed — verify it errors (rip-cage-kt25)
+# Test 6: RETIRED into tests/test-rc-commands.sh Test 1b (rip-cage-ely4.10)
 # -----------------------------------------------
-echo ""
-echo "=== Test 6: rc init returns unknown-command (removed in rip-cage-kt25) ==="
-
-output=$("$RC" init 2>&1 || true)
-if echo "$output" | grep -q "build"; then
-  pass "rc init falls through to usage (unknown command)"
-else
-  fail "rc init did not produce usage output: $output"
-fi
+# Asserted that `rc init` falls through to usage. Test 1b there now sweeps
+# every deleted verb through the same `*)` arm and checks the exit code too,
+# which this case never did.
 
 # -----------------------------------------------
 # Summary

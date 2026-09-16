@@ -1,1 +1,1 @@
-Error: --dry-run is only supported for 'up', 'destroy', and 'reload'
+Error: --dry-run is only supported for 'up' and 'destroy'
