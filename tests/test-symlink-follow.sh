@@ -49,9 +49,46 @@ set -uo pipefail
 # Mirror of the fix in tests/test-secret-path-denylist.sh (see run-host.sh:102-109).
 unset RC_CONFIG_GLOBAL
 
+# ===========================================================================
+# RESCOPED BY rip-cage-ely4.9 (ADR-031 D2). Read this before adding a case.
+#
+# mounts.symlinks.{on_dangling,scope,mode} and mounts.denylist retired with the
+# rip-cage config schema. Each became the retired schema's OWN DEFAULT --
+# follow / file / rw -- and the denylist became the SHIPPED, host-global
+# protected-paths list. So symlink-follow behaviour still exists; what no
+# longer exists is the ability to VARY it per project.
+#
+# That split is the whole rule for this file:
+#   KEPT (14)      the observable survives with the retired default, and the
+#                  case never needed the knob: S1-S5 (collector units),
+#                  S8/S11/S13 (the three surviving defaults), S14, S15*, S18,
+#                  S21, S23, S25, Sadr019.
+#   RESCOPED (3)   the observable survives but the fixture drove it through a
+#                  deleted surface: S20/S22/S22b now rely on the shipped list
+#                  (.aws is on it) and, for S22b, on RC_PROTECTED_PATHS
+#                  pointing at a list that omits it.
+#   RETIRED (8)    the case only varied a deleted knob: S6, S7, S10, S12, S16,
+#                  S24, S-SCHEMA, and S19 -- each says so at its own banner,
+#                  with what replaced it or what coverage was lost.
+#   SKIPPED (1)    S17, on its own pre-existing precondition.
+#
+# Two fixtures were re-homed ABOVE the cases while doing this: _print_mounts'
+# writer and make_msb_stub_symlink both sat under a retired case's banner, so
+# deleting that case took them with it and every surviving case that used them
+# died with exit 127. A shared fixture under a case banner is a trap for the
+# next retirement -- keep them up here.
+# ===========================================================================
+
+
+# Captured before any case sandboxes HOME (see S19).
+REAL_DOCKER_CONFIG="${DOCKER_CONFIG:-${HOME}/.docker}"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 FAILURES=0
 TEST_HOME=""
 
@@ -86,6 +123,55 @@ teardown_sandbox() {
 source_rc() {
   source "$RC"
 }
+
+# ---------------------------------------------------------------------------
+# SHARED HELPERS — restored by rip-cage-ely4.9.
+#
+# These two lived physically between two case banners that this bead retired,
+# so a banner-to-banner deletion took them with it and every surviving case
+# that called them died with exit 127. They are helpers, not cases: re-homed
+# here, above the cases, so the next retirement cannot repeat the mistake.
+# ---------------------------------------------------------------------------
+
+# Helper script for printing -v mount args inside bash -c invocations.
+# Written as a separate file so it can be sourced without shell expansion
+# issues. Re-homed above the cases by rip-cage-ely4.9: it used to sit under the
+# S6 banner, so retiring S6 deleted the writer and every surviving case that
+# sourced it died with exit 127. A shared fixture under a case banner is a trap
+# for the next retirement.
+_MOUNT_PRINT_HELPER=/tmp/rc-sfl-mount-print-helper.sh
+cat > "$_MOUNT_PRINT_HELPER" <<'HELPER_EOF'
+_print_mounts() {
+  local _pmf_prev=""
+  for _pmf_a in "${_UP_RUN_ARGS[@]+"${_UP_RUN_ARGS[@]}"}"; do
+    if [[ "$_pmf_prev" == "-v" ]]; then echo "MOUNT: $_pmf_a"; fi
+    _pmf_prev="$_pmf_a"
+  done
+}
+HELPER_EOF
+make_msb_stub_symlink() {
+  local stub_dir="$1" cname="$2" state="$3" workspace="$4"
+  cat > "${stub_dir}/msb" <<STUB
+#!/usr/bin/env bash
+case "\${1:-}" in
+  inspect)
+    if [[ "\${2:-}" != "${cname}" || "${state}" == "missing" ]]; then
+      echo "Error: no such sandbox: \${2:-}" >&2
+      exit 1
+    fi
+    _status="Stopped"
+    [[ "${state}" == "running" ]] && _status="Running"
+    echo "{\"status\":\"\${_status}\",\"config\":{\"manifest_digest\":\"\",\"labels\":{\"rc.source.path\":\"${workspace}\"}}}"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+STUB
+  chmod +x "${stub_dir}/msb"
+}
+
 
 # ---------------------------------------------------------------------------
 # S1: _collect_dangling_symlinks returns (link|target) for absolute symlinks
@@ -203,109 +289,32 @@ test_s5_workspace_not_scanned() {
 }
 
 # ---------------------------------------------------------------------------
-# S6: on_dangling=skip — no mount added, warning logged
-# (acc 4)
-# ---------------------------------------------------------------------------
-# Helper script for printing -v mount args inside bash -c invocations.
-# Written as a separate file so it can be sourced without shell expansion issues.
-_MOUNT_PRINT_HELPER=/tmp/rc-sfl-mount-print-helper.sh
-cat > "$_MOUNT_PRINT_HELPER" <<'HELPER_EOF'
-_print_mounts() {
-  local _pmf_prev=""
-  for _pmf_a in "${_UP_RUN_ARGS[@]+"${_UP_RUN_ARGS[@]}"}"; do
-    if [[ "$_pmf_prev" == "-v" ]]; then echo "MOUNT: $_pmf_a"; fi
-    _pmf_prev="$_pmf_a"
-  done
-}
-HELPER_EOF
+# S6: RETIRED by rip-cage-ely4.9 — on_dangling=skip.
+#
+# ADR-031 D2 retires the rip-cage config schema, and mounts.symlinks.{on_dangling,
+# scope,mode} went with it: each became the retired schema's OWN DEFAULT
+# (follow / file / rw), so an unconfigured cage behaves exactly as before. This
+# case is retired because `skip` was one of four values of a knob that no longer exists — the observable it asserted can no longer be
+# produced, so there is no narrower true version to keep.
+#
+# Everything that survives the retirement is still covered: S1-S5 (the
+# collector, never config-driven), S8/S11/S13 (the three surviving defaults),
+# S14 (reserved-path collision), S15* (fingerprint determinism), and the
+# rescoped S19/S20/S22/S22b below.
 
-test_s6_on_dangling_skip() {
-  setup_sandbox
-  local target_dir="${TEST_HOME}/canonical"
-  mkdir -p "$target_dir"
-  echo "hello" > "${target_dir}/AGENTS.md"
-  ln -sf "${target_dir}/AGENTS.md" "${TEST_HOME}/.pi/agent/AGENTS.md"
-  local norm_target
-  norm_target=$(readlink -f "${target_dir}/AGENTS.md" 2>/dev/null || echo "${target_dir}/AGENTS.md")
+# S7: RETIRED by rip-cage-ely4.9 — on_dangling=error.
+#
+# ADR-031 D2 retires the rip-cage config schema, and mounts.symlinks.{on_dangling,
+# scope,mode} went with it: each became the retired schema's OWN DEFAULT
+# (follow / file / rw), so an unconfigured cage behaves exactly as before. This
+# case is retired because `error` was one of four values of a knob that no longer exists — the observable it asserted can no longer be
+# produced, so there is no narrower true version to keep.
+#
+# Everything that survives the retirement is still covered: S1-S5 (the
+# collector, never config-driven), S8/S11/S13 (the three surviving defaults),
+# S14 (reserved-path collision), S15* (fingerprint determinism), and the
+# rescoped S19/S20/S22/S22b below.
 
-  # Write project config with on_dangling=skip
-  local ws="${TEST_HOME}/workspace"
-  mkdir -p "$ws"
-  cat > "${ws}/.rip-cage.yaml" <<YAML
-version: 2
-mounts:
-  symlinks:
-    on_dangling: skip
-    scope: file
-    mode: rw
-YAML
-
-  local out exit_code=0
-  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
-    source '$RC'
-    _UP_RUN_ARGS=()
-    wt_detected=false
-    _up_prepare_docker_mounts '$ws' 'testcage'
-    source "/tmp/rc-sfl-mount-print-helper.sh"; _print_mounts
-  " 2>&1) || exit_code=$?
-
-  # Check: no MOUNT for norm_target (mirror format), but SFL-specific skip warning logged.
-  # Use the mirror-mount format (norm_target:norm_target) — same as S8 — so that the
-  # intentional pi-substrate mount (norm_target:/home/agent/.rc-context/pi-AGENTS.md:ro)
-  # is NOT counted as a symlink-follow mirror mount (they differ in destination format).
-  # Grep for the SFL-specific "on_dangling=skip" marker to avoid matching the unrelated
-  # OAuth-file-missing "skipping mount" warnings (.claude.json, .credentials.json).
-  local has_target_mount has_warning
-  has_target_mount=$(echo "$out" | grep "MOUNT:" | grep -c "${norm_target}:${norm_target}" || true)
-  has_warning=$(echo "$out" | grep -c "on_dangling=skip" || true)
-
-  if [[ "$has_target_mount" -eq 0 && "$has_warning" -gt 0 ]]; then
-    pass "6" "on_dangling=skip: no second mount added, warning logged"
-  else
-    fail "6" "on_dangling=skip behavior" "has_target_mount=$has_target_mount has_warning=$has_warning exit=$exit_code"
-  fi
-  teardown_sandbox
-}
-
-# ---------------------------------------------------------------------------
-# S7: on_dangling=error — rc up aborts loud
-# (acc 5)
-# ---------------------------------------------------------------------------
-test_s7_on_dangling_error() {
-  setup_sandbox
-  local target_dir="${TEST_HOME}/canonical"
-  mkdir -p "$target_dir"
-  echo "hello" > "${target_dir}/AGENTS.md"
-  ln -sf "${target_dir}/AGENTS.md" "${TEST_HOME}/.pi/agent/AGENTS.md"
-
-  local ws="${TEST_HOME}/workspace"
-  mkdir -p "$ws"
-  cat > "${ws}/.rip-cage.yaml" <<'YAML'
-version: 2
-mounts:
-  symlinks:
-    on_dangling: error
-    scope: file
-    mode: rw
-YAML
-
-  local out exit_code=0
-  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
-    source '$RC'
-    _UP_RUN_ARGS=()
-    wt_detected=false
-    _up_prepare_docker_mounts '$ws' 'testcage'
-  " 2>&1) || exit_code=$?
-
-  if [[ "$exit_code" -ne 0 ]] && echo "$out" | grep -q "dangling symlink"; then
-    pass "7" "on_dangling=error: rc up aborts loud with actionable message"
-  else
-    fail "7" "on_dangling=error behavior" "exit=$exit_code out=$out"
-  fi
-  teardown_sandbox
-}
-
-# ---------------------------------------------------------------------------
 # S8: on_dangling=follow — second bind mount added (default behavior)
 # (acc 3 + 20)
 # ---------------------------------------------------------------------------
@@ -390,50 +399,19 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
-# S10: mode=ro — bind mount spec includes :ro suffix
-# (acc 7)
-# ---------------------------------------------------------------------------
-test_s10_mode_ro() {
-  setup_sandbox
-  local target_dir="${TEST_HOME}/canonical"
-  mkdir -p "$target_dir"
-  echo "hello" > "${target_dir}/AGENTS.md"
-  ln -sf "${target_dir}/AGENTS.md" "${TEST_HOME}/.pi/agent/AGENTS.md"
-  local norm_target
-  norm_target=$(readlink -f "${target_dir}/AGENTS.md" 2>/dev/null || echo "${target_dir}/AGENTS.md")
+# S10: RETIRED by rip-cage-ely4.9 — mode=ro.
+#
+# ADR-031 D2 retires the rip-cage config schema, and mounts.symlinks.{on_dangling,
+# scope,mode} went with it: each became the retired schema's OWN DEFAULT
+# (follow / file / rw), so an unconfigured cage behaves exactly as before. This
+# case is retired because `ro` was the non-default half of a knob that no longer exists; S11 covers the surviving `rw` behaviour — the observable it asserted can no longer be
+# produced, so there is no narrower true version to keep.
+#
+# Everything that survives the retirement is still covered: S1-S5 (the
+# collector, never config-driven), S8/S11/S13 (the three surviving defaults),
+# S14 (reserved-path collision), S15* (fingerprint determinism), and the
+# rescoped S19/S20/S22/S22b below.
 
-  local ws="${TEST_HOME}/workspace"
-  mkdir -p "$ws"
-  cat > "${ws}/.rip-cage.yaml" <<'YAML'
-version: 2
-mounts:
-  symlinks:
-    on_dangling: follow
-    scope: file
-    mode: ro
-YAML
-
-  local out exit_code=0
-  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
-    source '$RC'
-    _UP_RUN_ARGS=()
-    wt_detected=false
-    _up_prepare_docker_mounts '$ws' 'testcage'
-    source "/tmp/rc-sfl-mount-print-helper.sh"; _print_mounts
-  " 2>&1) || exit_code=$?
-
-  local has_ro_mount
-  has_ro_mount=$(echo "$out" | grep "MOUNT:" | grep -c "${norm_target}:${norm_target}:ro" || true)
-
-  if [[ "$exit_code" -eq 0 && "$has_ro_mount" -gt 0 ]]; then
-    pass "10" "mode=ro: bind mount spec includes :ro suffix"
-  else
-    fail "10" "mode=ro bind mount spec" "exit=$exit_code has_ro_mount=$has_ro_mount mounts=$(echo "$out" | grep "MOUNT:")"
-  fi
-  teardown_sandbox
-}
-
-# ---------------------------------------------------------------------------
 # S11: mode=rw — bind mount spec omits :ro suffix
 # (acc 8)
 # ---------------------------------------------------------------------------
@@ -473,53 +451,19 @@ test_s11_mode_rw() {
 }
 
 # ---------------------------------------------------------------------------
-# S12: scope=parent — mount source is dirname of target
-# (acc 9)
-# ---------------------------------------------------------------------------
-test_s12_scope_parent() {
-  setup_sandbox
-  local target_dir="${TEST_HOME}/canonical"
-  mkdir -p "$target_dir"
-  echo "hello" > "${target_dir}/AGENTS.md"
-  ln -sf "${target_dir}/AGENTS.md" "${TEST_HOME}/.pi/agent/AGENTS.md"
-  local norm_target norm_parent
-  norm_target=$(readlink -f "${target_dir}/AGENTS.md" 2>/dev/null || echo "${target_dir}/AGENTS.md")
-  norm_parent=$(dirname "$norm_target")
+# S12: RETIRED by rip-cage-ely4.9 — scope=parent.
+#
+# ADR-031 D2 retires the rip-cage config schema, and mounts.symlinks.{on_dangling,
+# scope,mode} went with it: each became the retired schema's OWN DEFAULT
+# (follow / file / rw), so an unconfigured cage behaves exactly as before. This
+# case is retired because `parent` was the non-default half of a knob that no longer exists; S13 covers the surviving `file` behaviour — the observable it asserted can no longer be
+# produced, so there is no narrower true version to keep.
+#
+# Everything that survives the retirement is still covered: S1-S5 (the
+# collector, never config-driven), S8/S11/S13 (the three surviving defaults),
+# S14 (reserved-path collision), S15* (fingerprint determinism), and the
+# rescoped S19/S20/S22/S22b below.
 
-  local ws="${TEST_HOME}/workspace"
-  mkdir -p "$ws"
-  cat > "${ws}/.rip-cage.yaml" <<'YAML'
-version: 2
-mounts:
-  symlinks:
-    on_dangling: follow
-    scope: parent
-    mode: rw
-YAML
-
-  local out exit_code=0
-  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
-    source '$RC'
-    _UP_RUN_ARGS=()
-    wt_detected=false
-    _up_prepare_docker_mounts '$ws' 'testcage'
-    source "/tmp/rc-sfl-mount-print-helper.sh"; _print_mounts
-  " 2>&1) || exit_code=$?
-
-  # scope=parent: mount source should be the containing dir, not the leaf file
-  local has_parent_mount has_leaf_mount
-  has_parent_mount=$(echo "$out" | grep "MOUNT:" | grep -c "${norm_parent}:${norm_parent}" || true)
-  has_leaf_mount=$(echo "$out" | grep "MOUNT:" | grep -c "${norm_target}:${norm_target}" || true)
-
-  if [[ "$exit_code" -eq 0 && "$has_parent_mount" -gt 0 && "$has_leaf_mount" -eq 0 ]]; then
-    pass "12" "scope=parent: mount source is dirname of target"
-  else
-    fail "12" "scope=parent mount source" "exit=$exit_code has_parent=$has_parent_mount has_leaf=$has_leaf_mount norm_parent=$norm_parent mounts=$(echo "$out" | grep "MOUNT:")"
-  fi
-  teardown_sandbox
-}
-
-# ---------------------------------------------------------------------------
 # S13: scope=file (default) — mount source is the leaf target file
 # (acc 20)
 # ---------------------------------------------------------------------------
@@ -594,49 +538,19 @@ test_s14_fhs_reserved_collision() {
 }
 
 # ---------------------------------------------------------------------------
-# S24: Reserved-path collision under on_dangling=skip → skipped, exit 0, warning
-# (rip-cage-hcdn: on_dangling=skip actually skips a reserved-path-resolving
-# symlink instead of aborting — the error message at cli/up.sh:'resolves to reserved cage path' has always told
-# the user to set on_dangling=skip to unblock; this proves it now works.)
-# ---------------------------------------------------------------------------
-test_s24_reserved_collision_skip() {
-  setup_sandbox
-  if [[ -f /etc/hosts ]]; then
-    ln -sf /etc/hosts "${TEST_HOME}/.pi/agent/etc-link.md"
+# S24: RETIRED by rip-cage-ely4.9 — reserved-path collision under on_dangling=skip.
+#
+# ADR-031 D2 retires the rip-cage config schema, and mounts.symlinks.{on_dangling,
+# scope,mode} went with it: each became the retired schema's OWN DEFAULT
+# (follow / file / rw), so an unconfigured cage behaves exactly as before. This
+# case is retired because the collision abort itself survives and is covered by S14; only the `skip` variant's knob is gone — the observable it asserted can no longer be
+# produced, so there is no narrower true version to keep.
+#
+# Everything that survives the retirement is still covered: S1-S5 (the
+# collector, never config-driven), S8/S11/S13 (the three surviving defaults),
+# S14 (reserved-path collision), S15* (fingerprint determinism), and the
+# rescoped S19/S20/S22/S22b below.
 
-    local ws="${TEST_HOME}/workspace"
-    mkdir -p "$ws"
-    cat > "${ws}/.rip-cage.yaml" <<'YAML'
-version: 2
-mounts:
-  symlinks:
-    on_dangling: skip
-    scope: file
-    mode: rw
-YAML
-
-    local out exit_code=0
-    out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
-      source '$RC'
-      _UP_RUN_ARGS=()
-      wt_detected=false
-      _up_prepare_docker_mounts '$ws' 'testcage'
-    " 2>&1) || exit_code=$?
-
-    if [[ "$exit_code" -eq 0 ]] && echo "$out" | grep -q "etc-link.md" \
-       && echo "$out" | grep -q "on_dangling=skip" \
-       && ! echo "$out" | grep -q "refuse to mount"; then
-      pass "24" "reserved-path collision under on_dangling=skip: skipped (mount never attempted), exit 0, warning logged"
-    else
-      fail "24" "reserved-path collision under on_dangling=skip" "exit=$exit_code out=$out"
-    fi
-  else
-    pass "24" "reserved-path collision under on_dangling=skip test skipped (no /etc/hosts on this platform)"
-  fi
-  teardown_sandbox
-}
-
-# ---------------------------------------------------------------------------
 # S25: Broken symlink chain under on_dangling=skip → collector skips, exit 0
 # (rip-cage-hcdn sibling fold: _collect_dangling_symlinks honors on_dangling
 # so a broken-chain link is skipped WITHOUT truncating links found after it.)
@@ -739,190 +653,44 @@ test_s15_fingerprint_deterministic() {
 }
 
 # ---------------------------------------------------------------------------
-# S16: rc reload refuses loud when mounts.symlinks.* changes
-# (acc 11 — extend test-rc-reload.sh pattern)
-# ---------------------------------------------------------------------------
-
-# Build a fake msb for reload tests (rip-cage-qzsx, S8 of the msb migration
-# epic rip-cage-tsf2: cli/reload.sh was rewritten onto msb by rip-cage-rj68
-# (S6) — `_msb_exists`/`_msb_sandbox_state`/`_msb_label`, all backed by one
-# `msb inspect NAME --format json` call, never `docker inspect --format
-# ...`). One JSON response covers every label reload.sh reads
-# (rc.source.path); state absent (state=="missing") makes inspect fail,
-# matching _msb_exists's "sandbox does not exist" contract.
-make_msb_stub_symlink() {
-  local stub_dir="$1" cname="$2" state="$3" workspace="$4"
-  cat > "${stub_dir}/msb" <<STUB
-#!/usr/bin/env bash
-case "\${1:-}" in
-  inspect)
-    if [[ "\${2:-}" != "${cname}" || "${state}" == "missing" ]]; then
-      echo "Error: no such sandbox: \${2:-}" >&2
-      exit 1
-    fi
-    _status="Stopped"
-    [[ "${state}" == "running" ]] && _status="Running"
-    echo "{\"status\":\"\${_status}\",\"config\":{\"manifest_digest\":\"\",\"labels\":{\"rc.source.path\":\"${workspace}\"}}}"
-    exit 0
-    ;;
-  *)
-    exit 0
-    ;;
-esac
-STUB
-  chmod +x "${stub_dir}/msb"
-}
-
-test_s16_rc_reload_refuses_mounts_symlinks_change() {
-  local test_home stub_dir ws cname cache_dir
-  test_home=$(mktemp -d)
-  ws="${test_home}/workspace"
-  cname="rc-sfl-reload-test"
-  cache_dir="${test_home}/.cache/rip-cage/${cname}"
-  stub_dir="${test_home}/stub"
-  mkdir -p "$ws" "$cache_dir" "$stub_dir" "${test_home}/.ssh"
-
-  make_msb_stub_symlink "$stub_dir" "$cname" "running" "$ws"
-
-  # Write initial applied-config snapshot with mounts.symlinks.mode=rw
-  cat > "${cache_dir}/config-applied.json" <<'JSON'
-{"version":1,"ssh":{"allowed_keys":null,"allowed_hosts":[]},"mounts":{"symlinks":{"on_dangling":"follow","scope":"file","mode":"rw"}}}
-JSON
-
-  # Write live .rip-cage.yaml with mounts.symlinks.mode changed to ro
-  cat > "${ws}/.rip-cage.yaml" <<YAML
-version: 2
-mounts:
-  symlinks:
-    on_dangling: follow
-    scope: file
-    mode: ro
-YAML
-
-  local out exit_code=0
-  out=$(PATH="${stub_dir}:$PATH" HOME="$test_home" XDG_CONFIG_HOME="${test_home}/.config" \
-    "$RC" reload "$cname" 2>&1) || exit_code=$?
-
-  if [[ "$exit_code" -ne 0 ]] && echo "$out" | grep -q "reload-eligible"; then
-    pass "16" "rc reload refuses loud when mounts.symlinks.* changes (not reload-eligible)"
-  else
-    fail "16" "rc reload should refuse mounts.symlinks.* change" "exit=$exit_code out=$out"
-  fi
-
-  rm -rf "$test_home"
-}
+# S16: RETIRED by rip-cage-ely4.9 — rc reload refuses on mounts.symlinks.* change.
+#
+# ADR-031 D2 retires the rip-cage config schema, and mounts.symlinks.{on_dangling,
+# scope,mode} went with it: each became the retired schema's OWN DEFAULT
+# (follow / file / rw), so an unconfigured cage behaves exactly as before. This
+# case is retired because both halves are gone — the config key AND reload's refuse-loud, which belonged to the retired diff engine — the observable it asserted can no longer be
+# produced, so there is no narrower true version to keep.
+#
+# Everything that survives the retirement is still covered: S1-S5 (the
+# collector, never config-driven), S8/S11/S13 (the three surviving defaults),
+# S14 (reserved-path collision), S15* (fingerprint determinism), and the
+# rescoped S19/S20/S22/S22b below.
 
 # ---------------------------------------------------------------------------
-# S19: rc up for a *running* container refuses loud when fingerprint drifts
-# (label-lock must fire for both running and exited state, not just exited).
-# Uses the same msb stub + HOME override pattern as S16 — re-targeted onto
-# msb (rip-cage-qzsx, S8): `rc up`'s running-branch resolvers
-# (_up_resolve_resume_image_drift_running / _up_resolve_resume_config_mode /
-# _up_resolve_resume_symlink_fingerprint), all rewritten onto msb by
-# rip-cage-rj68 (S6), read every one of these values from a SINGLE `msb
-# inspect NAME --format json` call's `.status` / `.config.labels[...]` /
-# `.config.manifest_digest` — never `docker inspect --format ...`.
-# ---------------------------------------------------------------------------
-
-# Build a fake msb for running-state fingerprint tests. One JSON response
-# carries every label the running-branch resolvers read
-# (rc.source.path, rc.symlink-follow-fingerprint, rc.config-mode); a bare
-# `msb --version` / `msb image list` are handled generically (this bead
-# is the ONLY caller of _up_resolve_resume_image_drift_running here and
-# that resolver is warn-only on any inspect/image-list failure, so an
-# unhandled `image list` call is a safe no-op for this test's purposes).
-make_msb_stub_fingerprint() {
-  local stub_dir="$1" cname="$2" state="$3" workspace="$4" stored_fp="$5"
-  cat > "${stub_dir}/msb" <<STUB
-#!/usr/bin/env bash
-case "\${1:-}" in
-  --version)
-    echo "microsandbox 0.6.4 (fake)"
-    exit 0
-    ;;
-  inspect)
-    if [[ "\${2:-}" != "${cname}" || "${state}" == "missing" ]]; then
-      echo "Error: no such sandbox: \${2:-}" >&2
-      exit 1
-    fi
-    _status="Stopped"
-    [[ "${state}" == "running" ]] && _status="Running"
-    echo "{\"status\":\"\${_status}\",\"config\":{\"manifest_digest\":\"\",\"labels\":{\"rc.source.path\":\"${workspace}\",\"rc.symlink-follow-fingerprint\":\"${stored_fp}\",\"rc.config-mode\":\"ro\"}}}"
-    exit 0
-    ;;
-  image)
-    [[ "\${2:-}" == "list" ]] && { echo "[]"; exit 0; }
-    exit 0
-    ;;
-  *)
-    exit 0
-    ;;
-esac
-STUB
-  chmod +x "${stub_dir}/msb"
-}
-
-test_s19_fingerprint_lock_fires_for_running_container() {
-  local test_home stub_dir ws ws_real cname pi_agent
-  test_home=$(mktemp -d)
-  # Use a deterministic workspace path so container_name() produces a predictable name.
-  # container_name() uses last two path components: parent-base.
-  # Must use realpath for ws_real so stub rc.source.path label matches VALIDATED_PATH.
-  ws="${test_home}/workspace"
-  mkdir -p "$ws"
-  ws_real=$(realpath "$ws" 2>/dev/null)
-  local ws_slug ws_parent_slug
-  ws_slug=$(basename "$ws_real")
-  ws_parent_slug=$(basename "$(dirname "$ws_real")")
-  cname="${ws_parent_slug}-${ws_slug}"
-  stub_dir="${test_home}/stub"
-  pi_agent="${test_home}/.pi/agent"
-  mkdir -p "$stub_dir" "${test_home}/.ssh" "$pi_agent"
-
-  # Write a benign global config (no denylist patterns) so rc up preflight passes.
-  mkdir -p "${test_home}/.config/rip-cage"
-  cat > "${test_home}/.config/rip-cage/config.yaml" <<'YAML'
-version: 2
-mounts:
-  denylist: []
-YAML
-
-  # Create a dangling symlink in the fake pi/agent dir
-  local fake_target="${test_home}/dotpi-fake/AGENTS.md"
-  mkdir -p "$(dirname "$fake_target")"
-  ln -sf "$fake_target" "${pi_agent}/AGENTS.md"
-  # target does not exist → dangling
-
-  # Compute the fingerprint as it would have been at create time: follow policy.
-  # Pass workspace so fingerprint matches what cmd_up would compute (D2 FIRM).
-  local stored_fp
-  stored_fp=$(HOME="$test_home" XDG_CONFIG_HOME="${test_home}/.config" bash -c "source '$RC'; _symlink_follow_fingerprint '${pi_agent}' 'rw' 'follow' 'file' '$ws_real'")
-
-  # Create the msb stub. rc.source.path must match VALIDATED_PATH (realpath of ws).
-  make_msb_stub_fingerprint "$stub_dir" "$cname" "running" "$ws_real" "$stored_fp"
-
-  # Write .rip-cage.yaml with on_dangling changed to skip
-  cat > "${ws}/.rip-cage.yaml" <<YAML
-version: 2
-mounts:
-  symlinks:
-    on_dangling: skip
-YAML
-
-  local out exit_code=0
-  out=$(PATH="${stub_dir}:$PATH" HOME="$test_home" XDG_CONFIG_HOME="${test_home}/.config" \
-    RC_CONFIG_GLOBAL="${test_home}/.config/rip-cage/config.yaml" \
-    RC_ALLOWED_ROOTS="$(dirname "$ws_real")" \
-    "$RC" up "$ws" 2>&1) || exit_code=$?
-
-  if [[ "$exit_code" -ne 0 ]] && echo "$out" | grep -q "destroy and re-up"; then
-    pass "19" "fingerprint label-lock fires for running container on policy drift (follow→skip)"
-  else
-    fail "19" "rc up (running container, follow→skip) should refuse loud with destroy-and-re-up" "exit=$exit_code out=$out"
-  fi
-
-  rm -rf "$test_home"
-}
+# S19: RETIRED by rip-cage-ely4.9 — running-container fingerprint label-lock.
+#
+# It drove drift by flipping mounts.symlinks.on_dangling from follow to skip.
+# That knob retired with the schema (ADR-031 D2) and is now the constant
+# `follow`, so the original trigger cannot be produced.
+#
+# I TRIED TO RESCOPE IT and could not do so honestly, which is why this is a
+# retirement WITH A NOTE rather than a quietly-deleted case. The intended
+# replacement trigger was real host-side drift -- add a dangling symlink after
+# the fingerprint is stored -- because the mount set is computed from the live
+# filesystem at every launch. Measured directly (rip-cage-ely4.9):
+#
+#   fp(one dangling symlink) == fp(two dangling symlinks)
+#
+# Adding a symlink did not move the fingerprint with this fixture's shape, so a
+# rescoped S19 would assert a refusal that never fires. A test that passes for
+# a reason I cannot explain is worse than no test.
+#
+# WHAT THIS COSTS, plainly: the running-branch label-lock
+# (_up_resolve_resume_symlink_fingerprint against a RUNNING cage) has no live
+# coverage now. The guard itself is untouched code. S15/S15b/S15c/S15d still
+# cover fingerprint determinism and the stopped-branch resolvers are exercised
+# by tests/test-image-drift-resume.sh. The gap AND the fingerprint-
+# insensitivity observation above are handed up rather than absorbed.
 
 # ---------------------------------------------------------------------------
 # S17: ADR-021 D5 invariant — both configs absent
@@ -975,26 +743,14 @@ test_s18_cage_claude_md_unchanged() {
 }
 
 # ---------------------------------------------------------------------------
-# S-SCHEMA: Additional schema regression — existing tests should still pass
-# after adding 3 new schema fields (regression guard)
-# ---------------------------------------------------------------------------
-test_s_schema_regression() {
-  # Quick regression check: source rc and verify the schema field TYPES resolve
-  # under the v2 model (ADR-021 D2, rip-cage-tsf2.10.3): the v1 selection_list
-  # split retired -> list-shaped members become `list`, enum-scalars become
-  # `enum`. The _config_schema_selection_list_keys helper is gone; probe the
-  # per-field type via _config_schema_field_type instead.
-  local ar_type od_type md_type
-  ar_type=$(HOME="/tmp" bash -c "source '$RC'; _config_schema_field_type mounts.allow_risky")
-  od_type=$(HOME="/tmp" bash -c "source '$RC'; _config_schema_field_type mounts.symlinks.on_dangling")
-  md_type=$(HOME="/tmp" bash -c "source '$RC'; _config_schema_field_type mounts.symlinks.mode")
-
-  if [[ "$ar_type" == "list" && "$od_type" == "enum" && "$md_type" == "enum" ]]; then
-    pass "schema" "schema field types resolve under v2 (allow_risky=list, symlinks enums)"
-  else
-    fail "schema" "schema field-type regression" "got allow_risky=$ar_type on_dangling=$od_type mode=$md_type"
-  fi
-}
+# S-SCHEMA: RETIRED by rip-cage-ely4.9.
+#
+# It resolved per-field TYPES out of the rip-cage config schema
+# (_config_schema_field_type on mounts.allow_risky and two mounts.symlinks
+# enums) as a regression guard on the v2 type model. ADR-031 D2 retires the
+# schema, the loader and that helper together, so there are no field types left
+# to resolve. A guard over a type system that no longer exists cannot fail, and
+# a check that cannot fail is worse than no check.
 
 # ---------------------------------------------------------------------------
 # ADR-019 D1 alignment: auth.json narrow sub-mount present (hhh.12 evolved topology)
@@ -1033,32 +789,20 @@ test_s_adr019_pi_mount_preserved() {
 # ADR-023 D5/D6 (incidental surface: warn-and-skip, not fail-loud).
 # Acceptance #1, #3: check runs against readlink -f resolved target.
 # ---------------------------------------------------------------------------
-# write_denylist_config writes the 16 default patterns to a test config dir.
+# RESCOPED by rip-cage-ely4.9. These cases used to write a 16-pattern
+# mounts.denylist into a per-test config; ADR-031 D2 replaces that with the
+# SHIPPED protected-paths list, which is host-global and already contains
+# .aws. So the fixture writes nothing and the behaviour holds by default --
+# which is a stronger setup, because the cases now exercise the list an
+# operator actually gets rather than one the test invented.
+#
+# write_denylist_config is kept as a NO-OP shim so the four call sites stay
+# legible as "this case depends on .aws being protected" rather than silently
+# depending on a default.
 write_denylist_config() {
-  local config_dir="$1"
-  mkdir -p "$config_dir"
-  cat > "${config_dir}/config.yaml" <<'YAML'
-version: 2
-mounts:
-  denylist:
-    - .ssh
-    - .gnupg
-    - .gpg
-    - .aws
-    - .azure
-    - .gcloud
-    - .kube
-    - .docker
-    - credentials
-    - .netrc
-    - .npmrc
-    - .pypirc
-    - id_rsa
-    - id_ed25519
-    - private_key
-    - .secret
-YAML
+  : "${1:?}"  # the protected-paths list is shipped; nothing to write
 }
+
 
 test_s20_denylist_blocks_aws_symlink_target() {
   setup_sandbox
@@ -1089,7 +833,10 @@ test_s20_denylist_blocks_aws_symlink_target() {
 
   local has_target_mount has_denylist_warning
   has_target_mount=$(echo "$out" | grep "MOUNT:" | grep -c "${norm_target}" || true)
-  has_denylist_warning=$(echo "$out" | grep -c "matched secret-path denylist pattern" || true)
+  # Wording moved with the rule (rip-cage-ely4.9): the denylist became the
+  # protected-paths list, so the skip warning says "is a protected path". Both
+  # spellings match so this tracks the property, not one release's phrasing.
+  has_denylist_warning=$(echo "$out" | grep -cE "is a protected path|matched secret-path denylist pattern" || true)
 
   if [[ "$exit_code" -eq 0 && "$has_target_mount" -eq 0 && "$has_denylist_warning" -gt 0 ]]; then
     pass "20" "denylist blocks .aws symlink target: not mounted, warn emitted"
@@ -1173,37 +920,38 @@ test_s22_fingerprint_excludes_denylisted_targets() {
   local fp_with_denylist
   fp_with_denylist=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
     source '$RC'
-    _symlink_follow_fingerprint '${TEST_HOME}/.pi/agent' 'rw' 'follow' 'file' '$TEST_HOME/workspace'
+    _symlink_follow_fingerprint '${TEST_HOME}/.pi/agent' 'rw' 'follow' 'file'
   ")
 
-  # Write global config with NO denylist (both targets included)
-  cat > "${TEST_HOME}/.config/rip-cage/config.yaml" <<'YAML'
-version: 2
-mounts:
-  denylist: []
-YAML
+  # RESCOPED by rip-cage-ely4.9: the comparison list is no longer a per-project
+  # config key but an operator-editable FILE (ADR-031 D2). Point
+  # RC_PROTECTED_PATHS at a list that omits .aws — the same "what if this target
+  # were not protected?" question, asked of the surface that now answers it.
+  local nolist="${TEST_HOME}/protected-paths-without-aws"
+  printf '.ssh\n.gnupg\ncredentials\n' > "$nolist"
 
   local fp_without_denylist
-  fp_without_denylist=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
+  fp_without_denylist=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+    RC_PROTECTED_PATHS="$nolist" bash -c "
     source '$RC'
-    _symlink_follow_fingerprint '${TEST_HOME}/.pi/agent' 'rw' 'follow' 'file' '$TEST_HOME/workspace'
+    _symlink_follow_fingerprint '${TEST_HOME}/.pi/agent' 'rw' 'follow' 'file'
   ")
 
-  # The fingerprints must differ (denylist changes what's included in the hash)
+  # The fingerprints must differ: a protected target is excluded from the hash.
   if [[ "$fp_with_denylist" != "$fp_without_denylist" && -n "$fp_with_denylist" && -n "$fp_without_denylist" ]]; then
-    pass "22" "fingerprint differs when denylist excludes a target (denylist changes fp)"
+    pass "22" "fingerprint differs when a target is protected vs not (protection changes fp)"
   else
-    fail "22" "fingerprint should differ with vs without denylist" "with_denylist=$fp_with_denylist without_denylist=$fp_without_denylist"
+    fail "22" "fingerprint should differ with vs without protection" "protected=$fp_with_denylist unprotected=$fp_without_denylist"
   fi
 
-  # Also verify: flipping denylist to skip a previously-included target → drift
-  # Scenario: create-time had no denylist (both targets in fp), now .aws is denied
-  # The stored create-time fp = fp_without_denylist; current resume fp = fp_with_denylist
-  # They differ → drift detection fires
+  # 22b: the same difference read as DRIFT. A cage created while .aws was not
+  # protected stores fp_without; after the operator adds .aws to the list, the
+  # resume-side recompute yields fp_with — so the label-lock fires rather than
+  # silently resuming a cage whose mount set has quietly changed.
   if [[ "$fp_without_denylist" != "$fp_with_denylist" ]]; then
-    pass "22b" "fingerprint drift: flipping denylist changes fp (resume would detect drift)"
+    pass "22b" "fingerprint drift: editing the protected-paths list changes fp (resume detects it)"
   else
-    fail "22b" "stored vs current fp should differ when denylist changes" "stored=$fp_without_denylist current=$fp_with_denylist"
+    fail "22b" "stored vs current fp should differ when the protected-paths list changes" "stored=$fp_without_denylist current=$fp_with_denylist"
   fi
 
   teardown_sandbox
@@ -1231,7 +979,7 @@ test_s23_fingerprint_gate_is_silent() {
   local fp_stderr
   fp_stderr=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
     source '$RC'
-    _symlink_follow_fingerprint '${TEST_HOME}/.pi/agent' 'rw' 'follow' 'file' '$ws'
+    _symlink_follow_fingerprint '${TEST_HOME}/.pi/agent' 'rw' 'follow' 'file'
   " 2>&1 1>/dev/null)
 
   # No warning should come from the fingerprint function itself
@@ -1253,27 +1001,19 @@ test_s2_skip_relative_symlinks
 test_s3_skip_inroot_symlinks
 test_s4_broken_symlink_chain_aborts
 test_s5_workspace_not_scanned
-test_s6_on_dangling_skip
-test_s7_on_dangling_error
 test_s8_on_dangling_follow
 test_s9_on_dangling_warn
-test_s10_mode_ro
 test_s11_mode_rw
-test_s12_scope_parent
 test_s13_scope_file
 test_s14_fhs_reserved_collision
 test_s15_fingerprint_deterministic
-test_s16_rc_reload_refuses_mounts_symlinks_change
-test_s19_fingerprint_lock_fires_for_running_container
 test_s17_d5_label_invariant
 test_s18_cage_claude_md_unchanged
-test_s_schema_regression
 test_s_adr019_pi_mount_preserved
 test_s20_denylist_blocks_aws_symlink_target
 test_s21_denylist_allows_non_matching_target
 test_s22_fingerprint_excludes_denylisted_targets
 test_s23_fingerprint_gate_is_silent
-test_s24_reserved_collision_skip
 test_s25_broken_chain_skip
 
 echo ""
@@ -1284,3 +1024,4 @@ else
   echo "$FAILURES test(s) failed."
   exit 1
 fi
+
