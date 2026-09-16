@@ -4,8 +4,6 @@
 <TEST_HOME>-workspace
 --log-level
 trace
---net-default
-deny
 --label
 rc.source.path=<TEST_HOME>/workspace
 --label

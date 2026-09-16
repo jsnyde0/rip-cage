@@ -1215,6 +1215,55 @@ _up_check_multiplexer_available() {
 }
 
 
+# _up_check_network_policy CONF
+#
+# rip-cage-ely4.7.7: refuse, before any msb call, a cage config that does not
+# declare `network.policy: none`.
+#
+# WHY THIS GUARD EXISTS AT ALL. Default-deny egress at the VM boundary is FIRM
+# (ADR-029 D2). rc used to enforce it by generating a `--net-default deny` flag
+# on every create, which meant no config could get it wrong. That flag had to
+# go: measured on msb 0.6.18 (rip-cage-ely4.7.6), a CLI --net-default REPLACES
+# the allow list the --conf file carries, so the very flag meant to deny
+# everything-but also denied the allowed hosts. The deny now lives in the
+# config's own `network.policy: none` (ADR-031 D2 -- one native config carries
+# the whole network posture).
+#
+# Moving a FIRM property out of generated argv and into an operator-edited file
+# is only safe if rc still refuses the file that omits it. Otherwise a cage
+# whose config lost its `network:` block -- or set `policy: allow` -- boots with
+# OPEN egress and nothing says so. That is the one failure this cannot have, so
+# the check is fail-CLOSED: anything that is not literally `none` is refused,
+# including an unreadable or unparseable config (yq failing yields an empty
+# value, which is not `none`).
+#
+# NO OPT-OUT, by construction -- no flag, no env var. A cage that needs another
+# host adds it to the config's `network.allow` list; it never turns the policy
+# off (the deny->fix->reload loop, ADR-029 D4).
+_up_check_network_policy() {
+  local _conf="$1"
+  local _policy=""
+  if [[ -n "$_conf" && -r "$_conf" ]]; then
+    _policy=$(yq -r '.network.policy // ""' "$_conf" 2>/dev/null) || _policy=""
+    [[ "$_policy" == "null" ]] && _policy=""
+  fi
+  [[ "$_policy" == "none" ]] && return 0
+
+  local _seen="(absent)"
+  [[ -n "$_policy" ]] && _seen="'${_policy}'"
+  echo "Error: the cage config ${_conf} does not set network.policy to 'none' — it reads ${_seen}." >&2
+  echo "       'policy: none' is microsandbox's default-DENY: nothing leaves the cage except the hosts listed under network.allow. Default-deny egress at the VM boundary is not optional (ADR-029 D2)." >&2
+  echo "       Fix — add to ${_conf}:" >&2
+  echo "           network:" >&2
+  echo "             policy: none" >&2
+  echo "             allow:" >&2
+  echo "               - \"api.anthropic.com:tcp:443\"" >&2
+  echo "       (see share/rip-cage/cage.yaml.template for the full floor list). There is no opt-out flag." >&2
+  echo "       Refusing before any msb call, so no cage is created (ADR-001 fail-loud)." >&2
+  return 1
+}
+
+
 _up_warn_transcript_loss() {
   local _name="$1"
   local _tl_rc=0
@@ -2248,6 +2297,15 @@ cmd_up() {
 
   if ! _UP_CAGE_CONF=$(_up_resolve_conf "$path" "$_conf_name"); then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "No readable cage config for $path" "CAGE_CONFIG_MISSING"
+    exit 1
+  fi
+
+  # rip-cage-ely4.7.7: the egress floor. rc no longer generates a default-deny
+  # flag (it wiped the config's own allow list), so the config has to carry
+  # `network.policy: none` itself — and a config that does not is refused here,
+  # in the same before-any-msb-call block, rather than booting open.
+  if ! _up_check_network_policy "$_UP_CAGE_CONF"; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage config ${_UP_CAGE_CONF} does not declare network.policy: none (default-deny egress is not optional, ADR-029 D2)" "NETWORK_POLICY_NOT_DENY"
     exit 1
   fi
 

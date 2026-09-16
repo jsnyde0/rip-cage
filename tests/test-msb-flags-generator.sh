@@ -15,9 +15,11 @@
 # which needs a live docker+msb+image and self-skips otherwise.
 #
 # This file covers:
-#   T1  allowed_hosts only -> --net-default deny + one --net-rule allow@host
-#       per host, in declared order
-#   T2  empty config -> --net-default deny only (no rules, no crash)
+#   T1  allowed_hosts only -> one --net-rule allow@host per host, in declared
+#       order, and NO --net-default token (rip-cage-ely4.7.7: that flag
+#       REPLACED the --conf file's own allow list; the deny lives in the
+#       config's network.policy: none now)
+#   T2  empty config -> NO output at all (no rules, no crash)
 #   T3  a single credential/single host -> one --secret <SYNTH>@<host> flag,
 #       SYNTH is a bare token (no '=' in it) derived from source_env
 #   T4  one credential -> two hosts emits two DISTINCT --secret ENV@HOST
@@ -69,44 +71,53 @@ source "$GEN"
 # T1: allowed_hosts only
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== T1: allowed_hosts -> --net-default deny + --net-rule allow@host per host, in order ==="
+echo "=== T1: allowed_hosts -> --net-rule allow@host per host, in order, no --net-default ==="
 T1_CFG='{"allowed_hosts": ["github.com", "api.anthropic.com"]}'
 T1_OUT=$(_msb_flags_generate "$T1_CFG")
 T1_RC=$?
-T1_EXPECTED=$'--net-default\ndeny\n--net-rule\nallow@github.com:tcp:443\n--net-rule\nallow@api.anthropic.com:tcp:443'
+T1_EXPECTED=$'--net-rule\nallow@github.com:tcp:443\n--net-rule\nallow@api.anthropic.com:tcp:443'
 if [[ "$T1_RC" -eq 0 ]]; then
   pass "T1: exits 0"
 else
   fail "T1: expected exit 0, got $T1_RC" "$T1_OUT"
 fi
 if [[ "$T1_OUT" == "$T1_EXPECTED" ]]; then
-  pass "T1b: emits --net-default deny + one --net-rule allow@host per host, in declared order"
+  pass "T1b: emits one --net-rule allow@host per host, in declared order"
 else
   fail "T1b: argv mismatch" "expected:
 $T1_EXPECTED
 got:
 $T1_OUT"
 fi
+# THE REGRESSION GUARD (rip-cage-ely4.7.7). A --net-default token anywhere in
+# this output REPLACES the allow list the --conf file carries, which is how
+# every cage booted from HEAD ended up reaching nothing. Asserted separately
+# from the equality above so the failure says WHICH property broke.
+if printf '%s\n' "$T1_OUT" | grep -qx -- "--net-default"; then
+  fail "T1c: --net-default is back in the argv — it REPLACES the --conf allow list (rip-cage-ely4.7.7)" "$T1_OUT"
+else
+  pass "T1c: no --net-default token — the deny comes from the config's network.policy: none"
+fi
 
 
 # ---------------------------------------------------------------------------
-# T2: empty config -> --net-default deny only (no rules, no crash)
+# T2: empty config -> no output at all (no rules, no crash)
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== T2: empty config -> --net-default deny only ==="
+echo "=== T2: empty config -> no flags at all ==="
 T2_OUT=$(_msb_flags_generate '{}')
 T2_RC=$?
-T2_EXPECTED=$'--net-default\ndeny'
+T2_EXPECTED=''
 if [[ "$T2_RC" -eq 0 ]]; then
   pass "T2: exits 0 on empty config"
 else
   fail "T2: expected exit 0, got $T2_RC" "$T2_OUT"
 fi
 if [[ "$T2_OUT" == "$T2_EXPECTED" ]]; then
-  pass "T2b: emits exactly --net-default deny, nothing else"
+  pass "T2b: emits nothing — an empty config contributes no flags"
 else
   fail "T2b: argv mismatch" "expected:
-$T2_EXPECTED
+(empty)
 got:
 $T2_OUT"
 fi
@@ -232,7 +243,7 @@ echo ""
 echo "=== T7: mounts (kind=dir) -> --mount-dir SRC:DST; ordered after possession_mounts ==="
 T7_CFG='{"possession_mounts": [{"host_path": "/h/auth.json", "guest_path": "/g/auth.json", "kind": "file"}], "mounts": [{"host_path": "/h/workspace", "guest_path": "/workspace"}]}'
 T7_OUT=$(_msb_flags_generate "$T7_CFG")
-T7_EXPECTED=$'--net-default\ndeny\n--mount-file\n/h/auth.json:/g/auth.json\n--mount-dir\n/h/workspace:/workspace'
+T7_EXPECTED=$'--mount-file\n/h/auth.json:/g/auth.json\n--mount-dir\n/h/workspace:/workspace'
 if [[ "$T7_OUT" == "$T7_EXPECTED" ]]; then
   pass "T7: possession_mounts then mounts, --mount-dir for default kind"
 else
@@ -334,7 +345,9 @@ gm_check_case() {
 GM_FULL_CFG='{"allowed_hosts": ["github.com", "api.anthropic.com"], "credentials": [{"source_env": "GH_TOKEN", "hosts": ["github.com", "api.github.com"]}], "possession_mounts": [{"host_path": "/h/.pi/agent/auth.json", "guest_path": "/g/.pi/agent/auth.json", "kind": "file"}], "mounts": [{"host_path": "/h/workspace", "guest_path": "/workspace"}], "tls_body_rewrite": true}'
 gm_check_case "full-chain" "$GM_FULL_CFG"
 
-# Case: minimal -- empty config (the S1-boot-only floor: default-deny, nothing else).
+# Case: minimal -- empty config. Emits NOTHING since rip-cage-ely4.7.7: the
+# default-deny is the cage config's own `network.policy: none`, not a flag rc
+# generates, so a config contributing no hosts contributes no flags.
 gm_check_case "minimal" '{}'
 
 # Case: secret-only-nonpossession -- D5 default posture, single host binding.
@@ -672,7 +685,7 @@ echo "=== T17: port-tight default -- colon-free host gets :tcp:443, explicit-por
 # T17a: colon-free host -> allow@<host>:tcp:443
 T17A_CFG='{"allowed_hosts": ["github.com"]}'
 T17A_OUT=$(_msb_flags_generate "$T17A_CFG")
-T17A_EXPECTED=$'--net-default\ndeny\n--net-rule\nallow@github.com:tcp:443'
+T17A_EXPECTED=$'--net-rule\nallow@github.com:tcp:443'
 if [[ "$T17A_OUT" == "$T17A_EXPECTED" ]]; then
   pass "T17a: colon-free host emits allow@<host>:tcp:443 (port-tight default)"
 else
@@ -685,7 +698,7 @@ fi
 # T17b: host WITH an explicit port -> preserved verbatim, no double-suffix.
 T17B_CFG='{"allowed_hosts": ["registry.local:tcp:5000"]}'
 T17B_OUT=$(_msb_flags_generate "$T17B_CFG")
-T17B_EXPECTED=$'--net-default\ndeny\n--net-rule\nallow@registry.local:tcp:5000'
+T17B_EXPECTED=$'--net-rule\nallow@registry.local:tcp:5000'
 if [[ "$T17B_OUT" == "$T17B_EXPECTED" ]]; then
   pass "T17b: host given with an explicit port is preserved verbatim (C2 overridable-port, no double-suffix)"
 else

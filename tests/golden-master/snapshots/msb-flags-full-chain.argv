@@ -1,5 +1,3 @@
---net-default
-deny
 --net-rule
 allow@github.com:tcp:443
 --net-rule

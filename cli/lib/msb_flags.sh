@@ -191,9 +191,25 @@ _msb_flags_generate() {
   # verbatim (no sorting) -- jq array iteration and bash for-loops over an
   # index range are both deterministic for identical input.
 
-  # 1. Network: default-deny + one allow rule per allowed host.
-  echo "--net-default"
-  echo "deny"
+  # 1. Network: one allow rule per allowed host. NO --net-default.
+  #
+  # WHY THE DEFAULT-DENY FLAG IS NOT HERE (rip-cage-ely4.7.7). Measured on msb
+  # 0.6.18 by rip-cage-ely4.7.6: a CLI `--net-default` REPLACES the allow list
+  # the `--conf` file carries (`msb inspect` then shows `rules: []`), while a
+  # CLI `--net-rule` APPENDS to it. Since rip-cage-ely4.9 moved the allowlist
+  # into the cage config itself (ADR-031 D2), emitting `--net-default deny`
+  # here silently wiped every allowed host in that config -- DNS for each one
+  # came back "denied by network policy" and the cage reached nothing.
+  #
+  # The default-deny has not been dropped, it moved: the config's own
+  # `network.policy: none` IS msb's default-deny (ADR-029 D2 FIRM), proven by
+  # the same spike -- allowed hosts resolve and connect, example.com does not.
+  # cmd_up refuses, before any msb call, a config that does not carry it
+  # (_up_check_network_policy, cli/up.sh) -- so the deny is enforced by the
+  # config, and its presence is enforced by that guard.
+  #
+  # The --net-rule entries below STAY: they append, so they are still the only
+  # way an egress host with no home in the config file gets through.
   local host_count h
   host_count=$(jq '.allowed_hosts // [] | length' <<<"$cfg")
   for (( h=0; h<host_count; h++ )); do

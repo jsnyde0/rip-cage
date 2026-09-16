@@ -1645,6 +1645,164 @@ fi
 rm -rf "$T62_ROOT"
 
 
+# ===========================================================================
+# Test 63: the egress floor — no generated --net-default, and a config that
+# does not declare `network.policy: none` is refused before any msb call
+# (rip-cage-ely4.7.7; ADR-029 D2 FIRM, ADR-031 D2).
+#
+# THE BUG THIS CLOSES. rc generated `--net-default deny` on every create. On
+# msb 0.6.18 that flag REPLACES the allow list the `--conf` file carries
+# (measured, rip-cage-ely4.7.6: `msb inspect` then shows `rules: []`), while
+# `--net-rule` APPENDS to it. Once rip-cage-ely4.9 moved the allowlist into the
+# cage config, the deny flag wiped it — every cage booted from HEAD resolved
+# nothing, including the hosts its own config listed.
+#
+# WHY THE GUARD IS THE OTHER HALF. Dropping the flag moves a FIRM property out
+# of argv rc controls and into a file an operator edits. That is only safe if rc
+# refuses the file that omits it — otherwise the same edit that used to be
+# harmless now silently produces an open cage. So (b) and (c) below assert the
+# refusal, and they use Test 60's PATH-shim discipline: the honest observable is
+# whether rc reached msb AT ALL, which an exit code alone cannot show.
+# ===========================================================================
+echo ""
+echo "=== Test 63: no --net-default in the argv; a config without network.policy: none is refused ==="
+
+# /private/tmp for the same reason as Test 60: on macOS /tmp is a symlink and
+# msb does not follow one in a bind source.
+T63_ROOT="$(mktemp -d /private/tmp/rc-ely477-XXXXXX)"
+T63_HOME="${T63_ROOT}/home"
+T63_PROJ="${T63_ROOT}/proj"
+T63_BIN="${T63_ROOT}/bin"
+T63_LOG="${T63_ROOT}/msb-invocations.log"
+T63_SENTINEL="${T63_ROOT}/MSB_WAS_SPAWNED"
+mkdir -p "$T63_HOME" "$T63_PROJ" "$T63_BIN"
+
+cat > "${T63_BIN}/msb" <<'T63_SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${T63_LOG}"
+case "${1:-}" in
+  --version) echo "msb 0.6.18-test-shim"; exit 0 ;;
+esac
+: > "${T63_SENTINEL}"
+echo "test shim: msb was invoked with: $*" >&2
+exit 1
+T63_SHIM
+chmod +x "${T63_BIN}/msb"
+
+# t63_conf <dest> <network-block-body-or-empty>
+t63_conf() {
+  cat > "$1" <<T63_CONF
+image: rip-cage:latest
+workdir: /workspace
+mounts:
+  - "${T63_PROJ}:/workspace"
+${2}
+T63_CONF
+}
+
+t63_run_rc() {
+  ( export PATH="${T63_BIN}:${PATH}"
+    export XDG_CONFIG_HOME="${T63_HOME}/.config"
+    export T63_LOG T63_SENTINEL
+    "$@" ) 2>&1
+}
+
+# --- (a) the dry-run argv carries NO --net-default token -------------------
+t63_conf "${T63_ROOT}/ok.yaml" 'network:
+  policy: none
+  allow:
+    - "api.anthropic.com:tcp:443"'
+rm -f "$T63_SENTINEL" "$T63_LOG"
+t63a_out=$(t63_run_rc env RC_CAGE_CONF="${T63_ROOT}/ok.yaml" "$RC" up --dry-run "$T63_PROJ")
+t63a_argv=$(printf '%s\n' "$t63a_out" | grep '^Would run: msb create' || true)
+
+if [[ -n "$t63a_argv" ]]; then
+  pass "63a: rc up --dry-run prints the msb create argv"
+else
+  fail "63a: rc up --dry-run printed no msb create argv (output: ${t63a_out})"
+fi
+if printf '%s\n' "$t63a_argv" | grep -q -- "--net-default"; then
+  fail "63a: the argv still carries --net-default — it REPLACES the config's own allow list (argv: ${t63a_argv})"
+else
+  pass "63a: the argv carries no --net-default token"
+fi
+# The --conf the deny now comes from must still be there, or 63a passes for the
+# wrong reason (an argv with neither flag nor config denies by accident).
+if printf '%s\n' "$t63a_argv" | grep -q -- "--conf ${T63_ROOT}/ok.yaml"; then
+  pass "63a: the argv still points msb at the cage config that carries the policy"
+else
+  fail "63a: argv is missing '--conf ${T63_ROOT}/ok.yaml' (argv: ${t63a_argv})"
+fi
+
+# --- (b) a config with network.policy: allow is refused, no msb spawned ----
+t63_conf "${T63_ROOT}/allow.yaml" 'network:
+  policy: allow
+  allow:
+    - "api.anthropic.com:tcp:443"'
+rm -f "$T63_SENTINEL" "$T63_LOG"
+t63b_out=$(t63_run_rc env RC_CAGE_CONF="${T63_ROOT}/allow.yaml" "$RC" up "$T63_PROJ")
+t63b_rc=$?
+
+if [[ "$t63b_rc" -ne 0 ]]; then
+  pass "63b: network.policy: allow makes rc up exit non-zero (exit ${t63b_rc})"
+else
+  fail "63b: rc up exited 0 on a config with network.policy: allow"
+fi
+if [[ -f "$T63_SENTINEL" ]]; then
+  fail "63b: msb WAS spawned before the refusal — the guard is fail-open (invocations: $(cat "$T63_LOG" 2>/dev/null))"
+else
+  pass "63b: no msb subcommand ran — rc refused before the cage could exist"
+fi
+if grep -q "network.policy" <<<"$t63b_out"; then
+  pass "63b: the refusal names the key that is wrong (network.policy)"
+else
+  fail "63b: the refusal did not name network.policy (output: ${t63b_out})"
+fi
+if grep -qi "no opt-out" <<<"$t63b_out"; then
+  pass "63b: the refusal states there is no opt-out, so nobody goes hunting for a flag"
+else
+  fail "63b: the refusal did not say there is no opt-out (output: ${t63b_out})"
+fi
+
+# --- (c) a config with NO network: block at all is refused too -------------
+# The likelier accident: a config written before the policy key mattered, or one
+# an editor trimmed. Absence must be as loud as a wrong value.
+t63_conf "${T63_ROOT}/absent.yaml" ''
+rm -f "$T63_SENTINEL" "$T63_LOG"
+t63c_out=$(t63_run_rc env RC_CAGE_CONF="${T63_ROOT}/absent.yaml" "$RC" up "$T63_PROJ")
+t63c_rc=$?
+
+if [[ "$t63c_rc" -ne 0 ]]; then
+  pass "63c: a config with no network: block makes rc up exit non-zero (exit ${t63c_rc})"
+else
+  fail "63c: rc up exited 0 on a config with no network: block"
+fi
+if [[ -f "$T63_SENTINEL" ]]; then
+  fail "63c: msb WAS spawned despite an absent network.policy (invocations: $(cat "$T63_LOG" 2>/dev/null))"
+else
+  pass "63c: no msb subcommand ran — rc refused before the cage could exist"
+fi
+if grep -q "network.policy" <<<"$t63c_out"; then
+  pass "63c: the refusal names network.policy rather than failing obscurely"
+else
+  fail "63c: the refusal did not name network.policy (output: ${t63c_out})"
+fi
+
+# --- (d) NEGATIVE CONTROL: policy: none reaches the launch -----------------
+# Without this, 63b and 63c could both pass because rc refuses everything. This
+# runs the REAL `rc up` (not --dry-run), so the observable is the shim's own log
+# proving rc got as far as calling msb.
+rm -f "$T63_SENTINEL" "$T63_LOG"
+t63_run_rc env RC_CAGE_CONF="${T63_ROOT}/ok.yaml" "$RC" up "$T63_PROJ" >/dev/null 2>&1 || true
+if [[ -f "$T63_SENTINEL" ]]; then
+  pass "63d: a config WITH network.policy: none reaches msb — 63b and 63c are not vacuous"
+else
+  fail "63d: rc never reached msb even with a valid policy — 63b and 63c prove nothing (invocations: $(cat "$T63_LOG" 2>/dev/null))"
+fi
+
+rm -rf "$T63_ROOT"
+
+
 # --- Cleanup ---
 rm -rf "$SYMLINK_SKILLS_DIR" "$SYMLINK_TARGET_DIR" "$SYMLINK_SKILLS_DIR2" "$HOME_TARGET_DIR" "$SIBLING_DIR"
 
