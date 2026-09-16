@@ -185,33 +185,81 @@ if [[ -z "$FLOOR_FAILED" ]]; then
 else
   fail "rc test reported failing floor lines: ${FLOOR_FAILED}"
 fi
-# Everything ELSE `rc test` reports must be green too, with three named
-# exceptions, none of which is a property of the IMAGE this case is about:
+# Everything ELSE `rc test` reports must be green too, with two named
+# exceptions, neither of which is a property of the IMAGE this case is about:
 #
 #   Cage topology section / At least one skill present -- both assert an artifact
 #     a COMPOSED RECIPE or the host provides (the topology block comes from
 #     examples/claude; the skills come from the host's own ~/.claude/skills), so
 #     a MINIMAL cage legitimately has neither and both hard-fail on it anyway.
 #     That mis-tiering is rip-cage-ely4.7.5.
-#   DNS resolution (github.com) -- red even with `github.com:tcp:443` listed in
-#     this cage's own allow list (the line appended above). Whether that is the
-#     wrong allow FORM or a real gap is an open question, spiked by
-#     rip-cage-ely4.7.6; it is not something the floor probe can answer.
+#
+# `DNS resolution (github.com)` USED to be a third entry here: red even with
+# `github.com:tcp:443` in this cage's own allow list. rip-cage-ely4.7.6 found the
+# cause -- rc generated a `--net-default deny` flag that REPLACED the allow list
+# the --conf file carried -- and rip-cage-ely4.7.7 dropped that flag, so the line
+# resolves now and the exception retired with it.
 #
 # The assertion is deliberately "nothing OUTSIDE this set fails", not "these
-# three fail": a NEW red still fails this case, and the day those beads land and
+# two fail": a NEW red still fails this case, and the day those beads land and
 # these go green, this check stays green with no edit.
 KNOWN_MINIMAL_CAGE_REDS='Cage topology section present (exactly one marker pair)
-At least one skill present
-DNS resolution (github.com)'
+At least one skill present'
 UNEXPECTED_REDS=$(jq -r '.checks[] | select(.status == "fail") | .name' <<<"$RC_TEST_JSON" 2>/dev/null \
   | grep -vxF "$KNOWN_MINIMAL_CAGE_REDS" || true)
 RC_TEST_OVERALL=$(jq -r '.overall // "?"' <<<"$RC_TEST_JSON" 2>/dev/null || echo "?")
 if [[ -z "$UNEXPECTED_REDS" ]]; then
-  pass "rc test reports no failure outside the three known non-image checks (overall='${RC_TEST_OVERALL}')"
+  pass "rc test reports no failure outside the two known non-image checks (overall='${RC_TEST_OVERALL}')"
 else
   fail "rc test reports failures beyond the known non-image set"
   jq -r '.checks[] | select(.status == "fail") | "    " + .name + " — " + .detail' <<<"$RC_TEST_JSON" >&2 2>/dev/null
+fi
+
+# --------------------------------------------------------------------------
+# F1-egress: the live proof that the cage config's allow list is what msb
+# actually enforces (rip-cage-ely4.7.7).
+#
+# WHY IT LIVES HERE. This case already has the exact cage the proof needs: one
+# booted from the shipped fixture, whose allow list names api.anthropic.com and
+# github.com and nothing else. `rc test`'s own DNS line above proves ONE allowed
+# host resolves; it cannot show that a host OUTSIDE the list is still denied, and
+# without that control a cage with egress wide open would look identical.
+#
+# THREE OBSERVABLES, in the order they distinguish things:
+#   resolve+connect each allowed host  -- the regression this bead fixed
+#   fail to resolve a host not on the list -- that the deny is still on
+# The connect half matters separately from the resolve half: DNS succeeding
+# proves the allow list reached msb's resolver, an HTTP status proves the packet
+# path is open too.
+#
+# EVERY GUEST COMMAND CARRIES ITS OWN TIMEOUT. An `msb exec` against a live cage
+# can wedge on this host, and macOS ships no `timeout` binary to wrap it in --
+# so the bound has to be inside the command (curl --max-time, getent's own fast
+# failure against a denied name).
+echo ""
+echo "--- F1-egress: allowed hosts resolve and connect, a denied host does not ---"
+for _eh in api.anthropic.com github.com; do
+  if msb exec "$STOCK_CAGE" -- getent hosts "$_eh" >/dev/null 2>&1; then
+    pass "F1-egress: ${_eh} (on the cage's allow list) RESOLVES"
+  else
+    fail "F1-egress: ${_eh} is on this cage's allow list but does not resolve — the allow list is not reaching msb"
+  fi
+  _code=$(msb exec "$STOCK_CAGE" -- curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "https://${_eh}" 2>/dev/null | tr -d '[:space:]')
+  # Any HTTP response is the proof. 200/301/403 all mean the TCP+TLS path is
+  # open; only "000" (curl's no-response code) or an empty string means blocked.
+  if [[ -n "$_code" && "$_code" != "000" ]]; then
+    pass "F1-egress: ${_eh}:443 CONNECTS — HTTP ${_code}"
+  else
+    fail "F1-egress: ${_eh}:443 returned no HTTP status (got '${_code:-<empty>}') — egress to an allowed host is blocked"
+  fi
+done
+# THE DENIED CONTROL. example.com is on no allow list anywhere in this fixture.
+# Without this, every assertion above would pass just as happily on a cage with
+# no egress restriction at all.
+if msb exec "$STOCK_CAGE" -- getent hosts example.com >/dev/null 2>&1; then
+  fail "F1-egress: example.com RESOLVED — it is on no allow list, so egress is not actually restricted"
+else
+  pass "F1-egress: example.com does NOT resolve — the default-deny is still on"
 fi
 
 drop_cage
