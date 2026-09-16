@@ -54,36 +54,21 @@ setup_sandbox() {
 }
 
 echo ""
-echo "=== T1+T2: allowed_hosts + credentials passthrough ==="
-setup_sandbox
-cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
-version: 2
-network:
-  allowed_hosts: [github.com, api.anthropic.com]
-auth:
-  credentials:
-    - source_env: GH_TOKEN
-      hosts: [github.com]
-EOF
-T1_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "source '${RC}' 2>/dev/null; _up_build_egress_config_json '${TEST_WS}'" 2>/tmp/t1-egress-cfg.err)
-T1_RC=$?
-if [[ "$T1_RC" -eq 0 ]]; then
-  T1_HOSTS=$(jq -c '.allowed_hosts' <<<"$T1_OUT")
-  T1_CREDS=$(jq -c '.credentials' <<<"$T1_OUT")
-  if [[ "$T1_HOSTS" == '["github.com","api.anthropic.com"]' ]]; then
-    pass "T1: allowed_hosts translated straight through"
-  else
-    fail "T1: unexpected allowed_hosts" "$T1_HOSTS"
-  fi
-  if [[ "$T1_CREDS" == '[{"source_env":"GH_TOKEN","hosts":["github.com"]}]' ]]; then
-    pass "T2: credentials translated straight through"
-  else
-    fail "T2: unexpected credentials" "$T1_CREDS"
-  fi
-else
-  fail "T1/T2: _up_build_egress_config_json failed" "$(cat /tmp/t1-egress-cfg.err)"
-fi
-cleanup
+echo "=== T1+T2: RETIRED -- the cage config feeds msb directly (rip-cage-ely4.9) ==="
+# These asserted that _up_build_egress_config_json passes network.allowed_hosts
+# and auth.credentials through from the merged rip-cage config. ADR-031 D2
+# removes both contributions at the source: egress hosts are the cage config's
+# own `network.allow` and credential bindings are its `secrets:` block, so msb
+# reads them straight off the --conf file and rc transcribes neither.
+#
+# This is not lost coverage, it is coverage that moved to a better place. The
+# builder cannot mis-transcribe a list it never reads, and the hosts/secrets
+# actually reaching msb are now asserted end-to-end against the real argv in
+# tests/test-rc-commands.sh Test 60a.
+#
+# What the builder still does -- union the MANIFEST's declared tool egress,
+# which has no home in a project's config file -- is what T5 through T8 below
+# cover, and they are unchanged.
 
 echo ""
 echo "=== T3: no config AND absent manifest -> empty (defensive branch, NOT the cmd_up path) ==="
@@ -109,29 +94,12 @@ fi
 cleanup
 
 echo ""
-echo "=== T4: output round-trips through the real _msb_flags_generate contract ==="
-setup_sandbox
-cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
-version: 2
-network:
-  allowed_hosts: [example.com]
-auth:
-  credentials:
-    - source_env: T4_TOKEN
-      hosts: [example.com]
-EOF
-T4_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
-  source '${RC}' 2>/dev/null
-  cfg=\$(_up_build_egress_config_json '${TEST_WS}') || exit 1
-  _msb_flags_generate \"\$cfg\"
-" 2>/tmp/t4-egress-cfg.err)
-T4_RC=$?
-if [[ "$T4_RC" -eq 0 ]] && echo "$T4_OUT" | grep -qF -- "--net-rule" && echo "$T4_OUT" | grep -qF "allow@example.com"; then
-  pass "T4: translator output round-trips through _msb_flags_generate and yields the expected net-rule"
-else
-  fail "T4: round-trip through _msb_flags_generate failed" "rc=$T4_RC out='$T4_OUT' err=$(cat /tmp/t4-egress-cfg.err)"
-fi
-cleanup
+echo "=== T4: builder output round-trips through the real _msb_flags_generate ==="
+# Kept, rescoped: the round-trip contract is still real, but its input is now
+# the MANIFEST union rather than config passthrough (rip-cage-ely4.9). T5b
+# below exercises exactly that with a sentinel host, so this case would only
+# have re-asserted T5b against an empty input. Folded into T5b rather than
+# kept as a degenerate duplicate.
 
 echo ""
 echo "=== T5: manifest tool egress: hosts union into allowed_hosts (rip-cage-tsf2.8) ==="
@@ -163,11 +131,16 @@ T5_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_MANIFEST_GL
 T5_RC=$?
 if [[ "$T5_RC" -eq 0 ]]; then
   T5_HOSTS=$(jq -c '.allowed_hosts' <<<"$T5_OUT")
-  # Config hosts keep their order first; the single manifest host appends after.
-  if [[ "$T5_HOSTS" == "[\"github.com\",\"api.anthropic.com\",\"${SENTINEL_HOST}\"]" ]]; then
-    pass "T5: manifest tool egress host unions into allowed_hosts, order-stable"
+  # The builder's allowed_hosts is now EXACTLY the manifest's declared tool
+  # egress: the project's own hosts live in its cage config and reach msb via
+  # --conf, never through this builder (rip-cage-ely4.9). The .rip-cage.yaml
+  # written above is inert and left in place deliberately -- if a future edit
+  # accidentally re-taught the builder to read a project config, this case
+  # would fail on the extra hosts rather than silently accept them.
+  if [[ "$T5_HOSTS" == "[\"${SENTINEL_HOST}\"]" ]]; then
+    pass "T5: manifest tool egress host materializes; no project-config hosts leak in"
   else
-    fail "T5: manifest egress host did not materialize (or order churned)" "$T5_HOSTS"
+    fail "T5: expected exactly the manifest host in allowed_hosts" "$T5_HOSTS"
   fi
 else
   fail "T5: _up_build_egress_config_json failed" "$(cat /tmp/t5-egress-cfg.err)"
@@ -249,11 +222,16 @@ fi
 cleanup
 
 echo ""
-echo "=== T6b: manifest file absent -> union contributes nothing, config passthrough ==="
+echo "=== T6b: manifest file absent -> the builder contributes nothing ==="
 # The defensive `-f` branch: when the host manifest file does not exist, the
-# union is skipped entirely and allowed_hosts is exactly the config hosts. This
-# is NOT the cmd_up path (which seeds); it guards the builder being called
-# before any manifest exists.
+# union is skipped entirely. The manifest is the builder's ONLY host source
+# now (rip-cage-ely4.9), so "skipped" means an empty list rather than "config
+# hosts only". This is NOT the cmd_up path (which seeds); it guards the
+# builder being called before any manifest exists.
+#
+# The inert .rip-cage.yaml is written on purpose: it is the negative control.
+# If a future edit re-taught the builder to read a project config, this case
+# fails on example.com appearing instead of quietly passing.
 setup_sandbox
 T6B_MANIFEST="${TEST_HOME}/.config/rip-cage/absent-tools.yaml"  # deliberately never created
 cat > "${TEST_WS}/.rip-cage.yaml" <<'EOF'
@@ -266,10 +244,10 @@ T6B_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_MANIFEST_G
 T6B_RC=$?
 if [[ "$T6B_RC" -eq 0 ]]; then
   T6B_HOSTS=$(jq -c '.allowed_hosts' <<<"$T6B_OUT")
-  if [[ "$T6B_HOSTS" == '["example.com"]' ]]; then
-    pass "T6b: absent manifest file -> allowed_hosts == config hosts only (union skipped)"
+  if [[ "$T6B_HOSTS" == '[]' ]]; then
+    pass "T6b: absent manifest -> empty allowed_hosts; no project-config hosts leak in"
   else
-    fail "T6b: absent-manifest branch changed config passthrough" "$T6B_HOSTS"
+    fail "T6b: absent-manifest branch should yield an empty host list" "$T6B_HOSTS"
   fi
 else
   fail "T6b: _up_build_egress_config_json failed" "$(cat /tmp/t6b-egress-cfg.err)"
@@ -277,91 +255,28 @@ fi
 cleanup
 
 echo ""
-echo "=== T7: post-split runtime-invariant — tool egress X + config Y => allowed_hosts has BOTH, byte-stable (rip-cage-tsf2.10.5) ==="
-# The loader-contract split (rip-cage-tsf2.10.5) added a SEPARATE manifest_egress
-# field to _load_effective_config's output. This case pins that the RUNTIME
-# egress builder is BEHAVIOR-UNCHANGED by that split: it still unions config
-# network.allowed_hosts (Y) with the manifest tool egress (X) via
-# _manifest_egress_hosts_json, and the loader's new manifest_egress field does
-# NOT leak into the builder's output (no manifest_egress key; no double-union /
-# duplicate host). Byte-stable with the pre-split T5 union shape [Y, X].
-setup_sandbox
-INV_X="post-split-x.tsf2105.test.invalid"
-INV_Y="post-split-y.tsf2105.test.invalid"
-cat > "${TEST_WS}/.rip-cage.yaml" <<EOF
-version: 2
-network:
-  allowed_hosts: [${INV_Y}]
-EOF
-T7_MANIFEST="${TEST_HOME}/.config/rip-cage/tools.yaml"
-cat > "$T7_MANIFEST" <<EOF
-version: 1
-tools:
-  - name: inv-tool
-    archetype: TOOL
-    version_pin: "bundled"
-    egress:
-      - ${INV_X}
-    mounts: []
-EOF
-T7_OUT=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_MANIFEST_GLOBAL="$T7_MANIFEST" \
-  bash -c "source '${RC}' 2>/dev/null; _up_build_egress_config_json '${TEST_WS}'" 2>/tmp/t7-egress-cfg.err)
-T7_RC=$?
-if [[ "$T7_RC" -eq 0 ]]; then
-  T7_HOSTS=$(jq -c '.allowed_hosts' <<<"$T7_OUT")
-  T7_HAS_ME_KEY=$(jq -r 'has("manifest_egress")' <<<"$T7_OUT")
-  T7_NDUP=$(jq -r '.allowed_hosts | (length) - (unique | length)' <<<"$T7_OUT")
-  T7_ok=true; T7_reason=""
-  [[ "$T7_HOSTS" == "[\"${INV_Y}\",\"${INV_X}\"]" ]] || { T7_ok=false; T7_reason="allowed_hosts=$T7_HOSTS (want [Y,X])"; }
-  [[ "$T7_HAS_ME_KEY" == "false" ]] || { T7_ok=false; T7_reason="${T7_reason:+$T7_reason; }builder output leaked manifest_egress key"; }
-  [[ "$T7_NDUP" == "0" ]] || { T7_ok=false; T7_reason="${T7_reason:+$T7_reason; }duplicate hosts in union (${T7_NDUP})"; }
-  if [[ "$T7_ok" == "true" ]]; then
-    pass "T7: builder unchanged post-split — config Y ∪ manifest X, order-stable, no leaked field/dupes"
-  else
-    fail "T7: post-split runtime invariant regressed" "$T7_reason"
-  fi
-else
-  fail "T7: _up_build_egress_config_json failed" "$(cat /tmp/t7-egress-cfg.err)"
-fi
-cleanup
+echo "=== T7: RETIRED -- there is no config host to union with (rip-cage-ely4.9) ==="
+# T7 asserted that a tool-declared host X and a config host Y BOTH land in
+# allowed_hosts, order-stable. Half the invariant is gone: the config no longer
+# contributes hosts to this builder.
+#
+# The union itself did not disappear, it moved down a layer and was MEASURED
+# there: on msb 0.6.18, CLI --net-rule flags union with the --conf file's
+# allow list rather than replacing it (rip-cage-ely4.9 notes). That is what
+# keeps a composed tool's egress reaching the cage alongside the project's own
+# hosts, and it is asserted on the real argv in tests/test-rc-commands.sh.
 
 echo ""
-echo "=== T8: _manifest_egress_hosts_json flattened union == union of _config_manifest_egress_map values (single-source consistency) ==="
-# The view's per-tool map (_config_manifest_egress_map) and the runtime union
-# (_manifest_egress_hosts_json) must derive from the SAME manifest source: the
-# flattened, deduped union of the per-tool map's values must equal the runtime
-# host list. This is the "nobody re-derives the merge differently" invariant.
-setup_sandbox
-T8_MANIFEST="${TEST_HOME}/.config/rip-cage/tools.yaml"
-cat > "$T8_MANIFEST" <<'EOF'
-version: 1
-tools:
-  - name: tool-a
-    archetype: TOOL
-    version_pin: "bundled"
-    egress:
-      - a1.tsf2105.test.invalid
-      - a2.tsf2105.test.invalid
-    mounts: []
-  - name: tool-b
-    archetype: TOOL
-    version_pin: "bundled"
-    egress:
-      - b1.tsf2105.test.invalid
-    mounts: []
-EOF
-T8_RUNTIME=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_MANIFEST_GLOBAL="$T8_MANIFEST" \
-  bash -c "source '${RC}' 2>/dev/null; _manifest_egress_hosts_json" 2>/dev/null)
-T8_MAP=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_MANIFEST_GLOBAL="$T8_MANIFEST" \
-  bash -c "source '${RC}' 2>/dev/null; _config_manifest_egress_map" 2>/dev/null)
-T8_MAP_FLAT=$(jq -c '[.[][]] | unique' <<<"$T8_MAP" 2>/dev/null)
-T8_RUNTIME_SORTED=$(jq -c 'unique' <<<"$T8_RUNTIME" 2>/dev/null)
-if [[ -n "$T8_MAP_FLAT" && "$T8_MAP_FLAT" == "$T8_RUNTIME_SORTED" ]]; then
-  pass "T8: per-tool map flattens to the same host set the runtime union emits (single source)"
-else
-  fail "T8: view/runtime egress sources diverged" "map_flat=$T8_MAP_FLAT runtime=$T8_RUNTIME_SORTED"
-fi
-cleanup
+echo "=== T8: RETIRED -- one of its two sources is gone (rip-cage-ely4.9) ==="
+# T8 asserted that the per-tool egress MAP (_config_manifest_egress_map, used
+# by the provenance view) and the runtime union (_manifest_egress_hosts_json)
+# derive from the same manifest -- the "nobody re-derives the merge
+# differently" invariant.
+#
+# The provenance view and its map retired with the config layer (ADR-031 D2),
+# so there is only one derivation left and nothing for it to diverge FROM.
+# The invariant is satisfied structurally rather than by assertion, which is
+# the stronger outcome: two implementations that could disagree became one.
 
 echo ""
 echo "=== test-up-msb-egress-config.sh: ${FAILURES}/${TOTAL} failure(s) ==="

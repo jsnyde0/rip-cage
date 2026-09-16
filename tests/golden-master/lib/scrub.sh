@@ -85,6 +85,14 @@ gm_scrub_root_script() {
   _script="${_script}s|$(_gm_sed_escape "$_raw")|<${_name}>|g; "
   _script="${_script}s|$(_gm_sed_escape "$(printf '%s' "$_raw" | tr '/.' '-')")|<${_name}_SLUG>|g"
 
+  # rc.cage-conf-sha is a CONTENT hash of the cage config, and that content
+  # legitimately contains the per-run sandbox path this function is already
+  # scrubbing. Scrubbing the path but not the hash derived from it would make
+  # every run differ on a value the caller never chose (rip-cage-ely4.9).
+  # Normalized here rather than at each call site so the recorded snapshots and
+  # the live comparisons agree by construction.
+  _script="${_script}; s|rc\\.cage-conf-sha=[0-9a-f]{64}|rc.cage-conf-sha=<SHA256>|g"
+
   if [[ "$_also_basename" == "true" ]]; then
     local _base_raw _base_real
     _base_raw=$(basename "$_raw")

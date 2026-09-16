@@ -32,11 +32,20 @@ cage_conf_for() {
   local _proj="$1"
   local _image="${2:-rip-cage:latest}"
 
-  # BSD mktemp only accepts the X-run at the END of a template, so make a
-  # directory and name the file inside it rather than templating a suffix.
-  local _dir _conf
-  _dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-cage-conf-XXXXXX") || return 1
-  _conf="${_dir}/cage.yaml"
+  # WHERE this lands is load-bearing for two separate reasons.
+  #
+  # Beside the project, never inside it: rc refuses a config that resolves
+  # inside a tree that same config mounts (ADR-031 D5(a)), so a fixture written
+  # into the workspace would be refused before the test reached its subject.
+  #
+  # Beside the project, never in a fresh mktemp dir: the config path appears IN
+  # the launch argv, and suites that assert argv determinism scrub volatile
+  # paths relative to their own sandbox root (test-up-run-args-e2e E4). A path
+  # under TMPDIR sits outside that root, survives scrubbing, and makes every
+  # run differ on a path the caller never chose. The project's parent is inside
+  # the sandbox, so the existing scrubber handles it.
+  local _conf
+  _conf="$(dirname "$_proj")/.rc-test-cage-$(basename "$_proj").yaml"
 
   cat > "$_conf" <<CAGE_CONF
 image: ${_image}

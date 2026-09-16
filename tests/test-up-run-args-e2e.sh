@@ -46,6 +46,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 GM_FAKEBIN="${SCRIPT_DIR}/golden-master/lib/fake-bin"
 # shellcheck source=golden-master/lib/scrub.sh
 source "${SCRIPT_DIR}/golden-master/lib/scrub.sh"
@@ -99,7 +102,7 @@ run_real_up() {
   set +e
   PATH="${GM_FAKEBIN}:${PATH}" \
     HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    RC_ALLOWED_ROOTS="$TEST_WS" \
+    RC_CAGE_CONF="$(cage_conf_for "$TEST_WS")" \
     GM_DOCKER_IMAGE_VERSION="$(cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo unknown)" \
     GM_MSB_CREATE_CAPTURE="$RUN_CAPTURE" \
     "$RC" --output json up "$TEST_WS" >"$_outfile" 2>"$_errfile" < /dev/null
@@ -145,17 +148,23 @@ fi
 # E3: the captured argv ends in the image name (proves the FULL chain ran
 # -- an early abort would leave the capture file absent, already caught by
 # E1; this additionally proves the array wasn't truncated mid-build).
-# rip-cage-5iti (S10): `msb create` has no trailing command argument the
-# way `docker run ... IMAGE sleep infinity` did -- an msb sandbox's
+# rip-cage-5iti (S10): `msb create` has no trailing command argument the way
+# `docker run ... IMAGE sleep infinity` did -- an msb sandbox's
 # persistent-background boot is msb's own responsibility, not a
-# caller-supplied keep-alive command (_up_start_container's own call:
-# `msb create --name NAME --log-level trace <flags...> IMAGE`, IMAGE is the
-# LAST positional arg, no tail after it).
+# caller-supplied keep-alive command.
+#
+# REVISED by rip-cage-ely4.9: there is no trailing IMAGE either. The cage
+# config's `image:` key selects the image and rc appends no positional at all
+# (ADR-031 D2), so the argv now ENDS in a flag. Asserting the absence of an
+# image positional is the stronger form of the same completeness check -- a
+# regression that re-added one would be caught here rather than silently
+# overriding every project's declared image.
 # ---------------------------------------------------------------------------
-if [[ -f "$RUN_CAPTURE" ]] && [[ "$(tail -1 "$RUN_CAPTURE" 2>/dev/null)" == "rip-cage:latest" ]]; then
-  pass "E3: captured msb-create argv ends in the expected image name"
+_e3_last=$(tail -1 "$RUN_CAPTURE" 2>/dev/null)
+if [[ -f "$RUN_CAPTURE" ]] && grep -qx -- "--conf" "$RUN_CAPTURE" && [[ "$_e3_last" != *"rip-cage:latest"* ]]; then
+  pass "E3: captured msb-create argv carries --conf and no trailing image positional"
 else
-  fail "E3: argv completeness" "captured argv does not end in 'rip-cage:latest': $(cat "$RUN_CAPTURE" 2>/dev/null)"
+  fail "E3: argv completeness" "expected --conf present and no trailing image positional; last token was '${_e3_last}'. full argv: $(cat "$RUN_CAPTURE" 2>/dev/null)"
 fi
 
 # ---------------------------------------------------------------------------

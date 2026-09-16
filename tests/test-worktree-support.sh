@@ -87,13 +87,24 @@ check "Mounts corrected .git file at /workspace/.git:ro" \
 check "Mounts hooks at /workspace/.git-main/hooks:ro" \
   "$(grep_check '\.git-main/hooks.*:ro')"
 
-# Test 14: Worktree mount args are AFTER workspace mount (line ordering)
-ws_line=$(grep -n 'workspace:delegated' "$RC_FILE" | head -1 | cut -d: -f1)
+# Test 14: the NESTED worktree mount is added after the tree it nests inside.
+#
+# REVISED by rip-cage-ely4.9. This compared source-line numbers of the
+# workspace mount and the .git-main mount. The workspace mount is no longer in
+# the source at all -- it is a line in the project's own cage config
+# (ADR-031 D2) -- so the old grep matched nothing and the case failed on its
+# own premise rather than on the invariant.
+#
+# The invariant that survives is the one rc still controls: hooks mount INSIDE
+# .git-main, so rc must emit .git-main before .git-main/hooks, or the more
+# specific mount is shadowed by the less specific one landing on top of it.
+# Both lines are rc's own, so source order is still the right observable.
 wt_line=$(grep -n 'git-main:delegated' "$RC_FILE" | head -1 | cut -d: -f1)
-if [[ -n "$ws_line" && -n "$wt_line" && "$wt_line" -gt "$ws_line" ]]; then
-  check "Worktree mounts added after workspace mount" "true"
+hooks_line=$(grep -n 'git-main/hooks' "$RC_FILE" | head -1 | cut -d: -f1)
+if [[ -n "$wt_line" && -n "$hooks_line" && "$hooks_line" -gt "$wt_line" ]]; then
+  check "Nested hooks mount added after the .git-main mount it nests inside" "true"
 else
-  check "Worktree mounts added after workspace mount" "false"
+  check "Nested hooks mount added after the .git-main mount it nests inside" "false"
 fi
 
 # Test 15: Worktree mounts are BEFORE credential extraction (call-site order).

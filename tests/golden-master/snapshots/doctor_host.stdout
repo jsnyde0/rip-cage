@@ -4,4 +4,4 @@ Daemon:       OK — daemon reachable within 3s
 msb path:     <REPO_ROOT>/tests/golden-master/lib/fake-bin/msb
 msb:          OK — reachable within 5s
 yq:           OK — <YQ_PATH>/yq
-Global config: OK — <GM_ROOT>/home/.config/rip-cage/config.yaml
+Global config: OK — protected paths: <REPO_ROOT>/share/rip-cage/protected-paths

@@ -73,13 +73,32 @@ gm_sandbox_reset() {
   rm -rf "$GM_ROOT"
   mkdir -p "${GM_XDG}/rip-cage"
   mkdir -p "$GM_WS"
-  cat > "${GM_XDG}/rip-cage/config.yaml" <<'YAML'
-version: 2
-mounts:
-  denylist: []
-  allow_risky: null
-YAML
   touch "${GM_XDG}/rip-cage/tools.yaml"
+
+  # The cage config `rc up` launches from (ADR-031 D2, rip-cage-ely4.9).
+  # Without it every up-* case records a CAGE_CONFIG_MISSING refusal instead of
+  # the plan it exists to pin -- that would be a golden master of the fixture
+  # being wrong, not of rc's behaviour, and re-recording it would bless a
+  # broken baseline.
+  #
+  # It lands at the DEFAULT path rc resolves (projects/<cage-name>.yaml) rather
+  # than via RC_CAGE_CONF, so these cases exercise the resolution order an
+  # operator actually gets. The retired global config.yaml is gone from this
+  # fixture with the schema that defined it.
+  #
+  # Outside the workspace it mounts: rc refuses a config that resolves inside a
+  # tree that same config mounts (ADR-031 D5(a)).
+  mkdir -p "${GM_XDG}/rip-cage/projects"
+  cat > "${GM_XDG}/rip-cage/projects/$(basename "$GM_ROOT")-workspace.yaml" <<YAML
+image: rip-cage:latest
+workdir: /workspace
+mounts:
+  - "${GM_WS}:/workspace"
+network:
+  policy: none
+  allow:
+    - "api.anthropic.com:tcp:443"
+YAML
 }
 
 # gm_capture VERB [ARGS...] — invoke the real `rc` under the sandbox env +
