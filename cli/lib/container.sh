@@ -145,7 +145,9 @@ _container_mux_hook_cmd() {
   fi
 
   if ! jq -e --arg n "$_cmhc_name" '(.multiplexers // []) | any(.name == $n)' <<<"$_cmhc_json" >/dev/null 2>&1; then
-    echo "Error: multiplexer '${_cmhc_name}' is not declared in ${_cmhc_desc_path}${_cmhc_cage:+ (cage '${_cmhc_cage}')} — the image was built without it (ADR-001 fail-loud). Add a multiplexers[] entry to the descriptor fragment your Dockerfile merges, then rebuild." >&2
+    local _cmhc_where="$_cmhc_desc_path"
+    [[ -n "$_cmhc_cage" ]] && _cmhc_where="${_cmhc_desc_path} in cage ${_cmhc_cage}"
+    echo "Error: multiplexer '${_cmhc_name}' is not declared in ${_cmhc_where} — the image was built without it (ADR-001 fail-loud). Add a multiplexers[] entry to the descriptor fragment your Dockerfile merges, then rebuild." >&2
     return 1
   fi
 
