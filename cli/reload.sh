@@ -149,7 +149,6 @@ cmd_reload() {
   # ADR-031 D3 folds this verb into `rc up --replace`; the verb itself is
   # rip-cage-ely4.10's to delete. What lands here is only the removal of its
   # dependence on the retired config layer.
-  log "Reloading ${name}: cold-recreating against its current cage config."
 
   # rip-cage-rj68 (S6, ADR-029 D2's re-homed deny-visibility / bead
   # criterion 5): surface any recently-denied domains as the fix-hint the
@@ -263,6 +262,11 @@ cmd_reload() {
   else
     log "Recreating ${name} against its current cage config (cold-recreate; ADR-029 D4)..."
   fi
+  # Announced HERE, not earlier: the transcript guard above can still refuse,
+  # and the no-op check can still decide there is nothing to do. Saying
+  # "cold-recreating" before either had its say meant rc announced work it then
+  # declined to perform.
+  log "Reloading ${name}: cold-recreating against its current cage config."
   _msb_stop_graceful "$name"
   _msb_remove "$name"
   # Force JSON mode for the inner create call regardless of the outer

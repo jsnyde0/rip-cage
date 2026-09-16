@@ -82,9 +82,14 @@ else
   fail "rc up did not reject control characters. Got: $ctrl_err"
 fi
 
-# --- Test 8: validate_path accepts valid path under allowed root ---
+# --- Test 8: validate_path accepts a valid path ---
 echo ""
-echo "=== Test 8: rc up accepts valid path under allowed root (dry-run, no Docker side-effects) ==="
+echo "=== Test 8: rc up accepts a valid path (dry-run, no Docker side-effects) ==="
+# $test_dir used to be created by Test 2, which retired with the allowed-roots
+# guard (rip-cage-ely4.9). Created here instead, where it is actually used --
+# a fixture that outlives the case that made it is how a retirement leaves an
+# unbound variable behind.
+test_dir=$(mktemp -d)
 # --dry-run: validation passes, no docker pull/build/create; image-agnostic.
 valid_err=$(RC_CAGE_CONF="$(cage_conf_for "$test_dir")" "$RC" --dry-run up "$test_dir" 2>&1) || true
 # Should NOT contain path validation errors
