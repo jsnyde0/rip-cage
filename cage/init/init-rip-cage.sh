@@ -68,6 +68,29 @@ fi
 
 echo "[rip-cage] Initializing..."
 
+# 0. THE FLOOR PROBE (ADR-031 D5b, FIRM) — runs FIRST, before any side-effecting
+# init work, and refuses the boot on any failure. It reads the BUILT image, which
+# is the one part of the cage an extension Dockerfile can change; everything else
+# on the floor is msb config `rc up` emitted before this guest existed.
+#
+# BEFORE section 1 on purpose. Section 1 chowns the bind-mounted dirs, and the
+# probe deliberately stats nothing under the mounted home — it reads the baked
+# settings TEMPLATE at /etc/rip-cage/settings.json, never ~/.claude/settings.json
+# — so it needs no chown to have run and can be the first thing that happens.
+#
+# NO ESCAPE HATCH. No env var, no flag, no skip file: a probe an operator (or a
+# prompt-injected agent editing a config) can turn off is not fail-closed. A
+# missing probe is itself a failure — an image built without it is an image whose
+# floor is unverified.
+if [ ! -x /usr/local/lib/rip-cage/floor-probe.sh ]; then
+  echo "FAIL: floor: probe-present — /usr/local/lib/rip-cage/floor-probe.sh is missing or not executable" >&2
+  echo "[rip-cage] This image ships no floor probe, so its containment floor is unverified. Refusing to start the agent shell (ADR-031 D5b)." >&2
+  exit 1
+fi
+if ! /usr/local/lib/rip-cage/floor-probe.sh; then
+  exit 1
+fi
+
 # Beads: determine storage mode from project's metadata.json
 # Embedded mode (default): bd uses in-process Dolt on the bind mount — no server needed
 # Server mode: connect to host's Dolt server via host.microsandbox.internal
@@ -396,12 +419,8 @@ if [ -x /usr/local/bin/dcg ]; then
   echo "[rip-cage] dcg-guard wrapper verified (CWD-anchor + pinned DCG_CONFIG active)"
 fi
 # NOTE: compound blocker removed in rip-cage-4r8 — DCG is chaining-robust.
-# Verify python3 (required for skill-server.py MCP shim)
-if ! command -v python3 > /dev/null 2>&1; then
-  echo "[rip-cage] ERROR: python3 not found — skill discovery (skill-server.py) will not work" >&2
-  exit 1
-fi
-echo "[rip-cage] python3 found (skill-server.py will be available)"
+# The python3 presence check moved to the floor probe's `python3` check
+# (section 0) — one script owns the floor list (ADR-031 D5b).
 echo "[rip-cage] Hooks verified"
 # 5b. Verify pi-cage guard (dcg-gate.ts extension) — when dcg IS composed AND guard recipe is present.
 # PI_CODING_AGENT_DIR=/home/agent/.pi/agent is set unconditionally by rc up for ALL cages.

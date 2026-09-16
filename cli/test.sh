@@ -12,6 +12,24 @@
 # shape required).
 
 
+# _test_floor_probe_missing_line NAME -- when the cage's image predates the floor
+# probe (ADR-031 D5b), running it yields msb's ENOENT against the program name,
+# which reads as a tooling failure rather than the real finding. Detect the case
+# first and return a legible FAIL line naming the fix. Prints nothing and returns
+# 1 when the probe IS present.
+#
+# An image with no probe is an image whose floor is unverified, so this is a FAIL
+# and not a skip -- same posture init takes at boot.
+_test_floor_probe_missing_line() {
+  local _name="$1"
+  if _msb_exec "$_name" -- test -x /usr/local/lib/rip-cage/floor-probe.sh >/dev/null 2>&1; then
+    return 1
+  fi
+  echo "FAIL  [0] floor: probe-present — this cage's image has no /usr/local/lib/rip-cage/floor-probe.sh, so its containment floor is unverified (ADR-031 D5b). Rebuild the image with 'rc build' and recreate the cage."
+  return 0
+}
+
+
 cmd_test() {
   if [[ "${1:-}" == "--host" ]]; then
     shift
@@ -106,8 +124,20 @@ cmd_test() {
 
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
     local output
-    output=$(_msb_exec "$name" -- bash -c \
-      '/usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-bd-roundtrip.sh' 2>&1) || true
+    # The floor probe (ADR-031 D5b) runs FIRST here for the same reason init runs
+    # it first: when the image's floor is broken, that is the finding, and every
+    # later suite's result is downstream of it. Same file, same PASS/FAIL line
+    # shape, so the parser below needs no special case.
+    local floor_missing_line
+    if floor_missing_line=$(_test_floor_probe_missing_line "$name"); then
+      output=$(_msb_exec "$name" -- bash -c \
+        '/usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-bd-roundtrip.sh' 2>&1) || true
+      output="${floor_missing_line}
+${output}"
+    else
+      output=$(_msb_exec "$name" -- bash -c \
+        '/usr/local/lib/rip-cage/floor-probe.sh; /usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-bd-roundtrip.sh' 2>&1) || true
+    fi
     # run-recipe-smokes.sh: run separately to capture non-zero exit AND stdout.
     # Its per-smoke PASS/FAIL lines are parsed by the loop below; additionally,
     # a non-zero runner exit injects a synthetic FAIL line so the JSON overall
@@ -146,12 +176,21 @@ ${output}"
       '{name: $name, checks: $checks, overall: $overall}'
   else
     echo "$preflight_line"
-    # Collect each suite's exit status and run all four unconditionally --
+    # Collect each suite's exit status and run all five unconditionally --
     # rc runs `set -euo pipefail`, so a bare (unguarded) call here would
     # abort this function on the first suite that exits non-zero, and
     # later suites (in particular run-recipe-smokes.sh) would never run.
     # Mirrors the json branch above, which already gets this right.
     local overall_rc=0 suite_rc
+    local floor_missing_line
+    if floor_missing_line=$(_test_floor_probe_missing_line "$name"); then
+      echo "$floor_missing_line"
+      overall_rc=1
+    else
+      suite_rc=0
+      _msb_exec "$name" -- /usr/local/lib/rip-cage/floor-probe.sh || suite_rc=$?
+      [[ "$suite_rc" -ne 0 ]] && overall_rc=1
+    fi
     suite_rc=0
     _msb_exec "$name" -- /usr/local/lib/rip-cage/test-safety-stack.sh || suite_rc=$?
     [[ "$suite_rc" -ne 0 ]] && overall_rc=1

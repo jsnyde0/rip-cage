@@ -49,13 +49,11 @@ echo ""
 # --- User & Environment ---
 echo "-- User & Environment --"
 
-# 1. Container user is agent
-user=$(whoami 2>/dev/null || echo "unknown")
-check "Container user is agent" "$([[ "$user" == "agent" ]] && echo pass || echo fail)" "$user"
-
-# 2. Not running as root
-uid=$(id -u 2>/dev/null || echo "0")
-check "Not running as root" "$([[ "$uid" != "0" ]] && echo pass || echo fail)" "uid=$uid"
+# 1-2. The "container user is agent" and "not running as root" checks LIFTED to
+# the floor probe (cage/floor/floor-probe.sh, properties runtime-user and
+# agent-home) — one script owns the floor list (ADR-031 D5b). The probe's version
+# is strictly stronger: it also asserts $HOME is the floor user's home, which is
+# what a `USER <anyone>` extension actually breaks (rip-cage-ely4.16 Q2).
 
 # 3. /workspace is mounted
 check "/workspace is mounted" "$([[ -d /workspace ]] && echo pass || echo fail)"
@@ -310,12 +308,10 @@ fi
 echo ""
 echo "-- Beads Wrapper --"
 
-# 26. bd is a shell script (shebang check — file command not available in container)
-bd_shebang=$(head -c 2 /usr/local/bin/bd 2>/dev/null || true)
-check "bd is a shell script (shebang check)" "$([[ "$bd_shebang" == "#!" ]] && echo pass || echo fail)" "$bd_shebang"
-
-# 27. bd-real exists and is executable
-check "bd-real exists and is executable" "$([[ -x /usr/local/bin/bd-real ]] && echo pass || echo fail)"
+# 26-27. The wrapper INDIRECTION checks (bd is a script, bd-real is executable)
+# LIFTED to the floor probe's `bd-wrapper` property, along with both files'
+# ownership and mode. What stays here is what the wrapper DOES — policy behavior,
+# not image floor.
 
 # 28. bd dolt start is blocked when BEADS_DOLT_SERVER_MODE=1
 wrapper_block=$(BEADS_DOLT_SERVER_MODE=1 /usr/local/bin/bd dolt start 2>&1 || true)
@@ -462,8 +458,9 @@ check "SSH UserKnownHostsFile single-file (system floor)" "$([[ "$ssh_ukhf" == "
 ssh_gkhf=$(ssh -G github.com 2>/dev/null | grep -E '^globalknownhostsfile ' || true)
 check "SSH GlobalKnownHostsFile=/etc/ssh/ssh_known_hosts" "$([[ "$ssh_gkhf" == "globalknownhostsfile /etc/ssh/ssh_known_hosts" ]] && echo pass || echo fail)" "$ssh_gkhf"
 
-# SSH_N5. Pinned ED25519 key present in known_hosts
-check "SSH pinned github.com ED25519 key present" "$(grep -q '^github.com ssh-ed25519 ' /etc/ssh/ssh_known_hosts 2>/dev/null && echo pass || echo fail)"
+# SSH_N5. Pin PRESENCE lifted to the floor probe's `ssh-host-key-pin` property.
+# SSH_N9 below keeps the FINGERPRINT assertion, which is a regression test on
+# upstream's published key, not a containment-floor property.
 
 # SSH_N6: baseline posture holds when no user ~/.ssh/config is present.
 # Verifies the system-provided /etc/ssh/ssh_config.d/00-rip-cage.conf applies
@@ -493,14 +490,10 @@ expected_fp="SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
 actual_fp=$(ssh-keygen -l -f /etc/ssh/ssh_known_hosts 2>/dev/null | awk '$NF=="(ED25519)" && /github\.com/ {print $2}' | head -1)
 check "SSH pinned github.com ED25519 fingerprint matches" "$([[ "$actual_fp" == "$expected_fp" ]] && echo pass || echo fail)" "$actual_fp"
 
-# SSH_N10. /etc/ssh/ssh_config.d/00-rip-cage.conf exists with mode 0644
-ssh_conf="/etc/ssh/ssh_config.d/00-rip-cage.conf"
-if [[ -f "$ssh_conf" ]]; then
-    ssh_conf_mode=$(stat -c '%a' "$ssh_conf" 2>/dev/null || stat -f '%Lp' "$ssh_conf" 2>/dev/null || echo "?")
-    check "SSH config file exists with mode 0644" "$([[ "$ssh_conf_mode" == "644" ]] && echo pass || echo fail)" "mode=$ssh_conf_mode"
-else
-    check "SSH config file exists with mode 0644" "fail" "missing: $ssh_conf"
-fi
+# SSH_N10. The ssh config file's existence and mode LIFTED to the floor probe's
+# `guard-file /etc/ssh/ssh_config.d/00-rip-cage.conf` check, which asserts the
+# property that matters (root-owned, no group/other write bit) rather than one
+# exact mode value.
 
 echo ""
 echo "-- Mise (ADR-015) --"
@@ -522,15 +515,10 @@ else
   check "mise activate zsh in .zshrc" "fail"
 fi
 
-# MISE_TRUSTED_CONFIG_PATHS env var set to /workspace
-check "MISE_TRUSTED_CONFIG_PATHS=/workspace" "$([[ "${MISE_TRUSTED_CONFIG_PATHS:-}" == "/workspace" ]] && echo pass || echo fail)" "${MISE_TRUSTED_CONFIG_PATHS:-unset}"
-
-# sudoers permits chown of mise cache dir
-if sudo -n -l 2>/dev/null | grep -q 'chown.*agent.*mise'; then
-  check "sudoers permits chown of mise cache dir" "pass"
-else
-  check "sudoers permits chown of mise cache dir" "fail"
-fi
+# MISE_TRUSTED_CONFIG_PATHS lifted to the floor probe's `mise-trusted-path`.
+# The mise-cache sudoers line lifted to the probe's `sudo-scope`, which asserts
+# the WHOLE effective grant equals the baked one — stronger than grepping for
+# one entry, and it catches a second /etc/sudoers.d file granting more.
 
 # mise cache dir exists (created by Dockerfile RUN mkdir or volume mount)
 check "mise cache dir exists" "$([[ -d /home/agent/.local/share/mise ]] && echo pass || echo fail)"

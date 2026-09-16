@@ -175,6 +175,15 @@ COPY cage/boot/rc-boot-merge /usr/local/bin/rc-boot-merge
 RUN chmod 0755 /usr/local/bin/rc-boot-merge \
     && chown root:root /etc/rip-cage/boot.json \
     && chmod 0444 /etc/rip-cage/boot.json
+# The fail-closed floor probe (ADR-031 D5b) — replaces the retired declaration
+# validator (ADR-005 D11). init runs it FIRST at every boot and refuses to start
+# the agent shell on any FAIL; `rc test` runs the same file. Root-owned and 0555
+# (read+execute, no write for anyone): an agent that could edit the probe could
+# edit away the property it is about to fail. Its check list is derived from THIS
+# file — add a floor property here, add its check there in the same change.
+COPY cage/floor/floor-probe.sh /usr/local/lib/rip-cage/floor-probe.sh
+RUN chown root:root /usr/local/lib/rip-cage/floor-probe.sh \
+    && chmod 0555 /usr/local/lib/rip-cage/floor-probe.sh
 COPY cage/init/init-rip-cage.sh /usr/local/bin/init-rip-cage.sh
 COPY cage/substrate/skill-server.py /usr/local/lib/rip-cage/skill-server.py
 COPY tests/test-skills.sh /usr/local/lib/rip-cage/test-skills.sh
