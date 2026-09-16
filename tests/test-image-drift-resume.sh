@@ -605,33 +605,40 @@ fi
 teardown_sandbox
 
 # ===========================================================================
-# T6 — `rc up --dry-run` on a drifted stopped sandbox surfaces the same
-# hard stop (would_resume path).
+# T6 — `rc up --dry-run` on a drifted stopped sandbox PREVIEWS THE CONVERGE.
+#
+# REVISED by rip-cage-ely4.9. This case used to demand the same hard stop the
+# real path produced, because `rc up` had no way to fix stale-image drift and
+# could only tell the operator to run `rc reload` by hand. ADR-031 D3 folds
+# that repair INTO `rc up`: a stopped cage cold-recreates against its current
+# config, and the recreate lands on the current image — so the drift is
+# resolved rather than refused, and an abort here would be predicting a
+# failure that no longer happens.
+#
+# What must still hold, and is what this case now guards: the preview does not
+# touch anything. No `msb start`, no stop, no remove under --dry-run.
 # ===========================================================================
 setup_sandbox
-run_rc_up "exited" "$IMG_A" "$IMG_B" "human" "true"
+run_rc_up "exited" "$IMG_A" "$IMG_B" "json" "true"
 
 _t6_ok=true _t6_reason=""
-if [[ "$RC_EXIT" -eq 0 ]]; then
-  _t6_ok=false; _t6_reason="rc up --dry-run exited 0 on a drifted stopped sandbox (should surface the same hard stop)"
+if [[ "$RC_EXIT" -ne 0 ]]; then
+  _t6_ok=false; _t6_reason="rc up --dry-run exited ${RC_EXIT} on a drifted stopped sandbox (the converge resolves the drift; nothing to abort)"
 fi
-if grep -qx "start" "$RC_LOG"; then
-  _t6_ok=false; _t6_reason="${_t6_reason:+$_t6_reason; }msb start was called under --dry-run (must never happen)"
+if ! echo "$RC_OUT" | jq -e '.action == "would_converge"' >/dev/null 2>&1; then
+  _t6_ok=false; _t6_reason="${_t6_reason:+$_t6_reason; }dry-run did not report would_converge (got: ${RC_OUT})"
 fi
-if ! echo "$RC_ERR" | grep -qi "rc reload"; then
-  _t6_ok=false; _t6_reason="${_t6_reason:+$_t6_reason; }dry-run message did not include the 'rc reload' repair"
-fi
-if echo "$RC_ERR" | grep -qi "rc destroy"; then
-  _t6_ok=false; _t6_reason="${_t6_reason:+$_t6_reason; }dry-run message still offers 'rc destroy' as the stale-image repair"
-fi
-if ! echo "$RC_ERR" | grep -qi "RC_IMAGE"; then
-  _t6_ok=false; _t6_reason="${_t6_reason:+$_t6_reason; }dry-run message did not include the RC_IMAGE remedy"
-fi
+# The whole point of a preview: it previews.
+for _t6_verb in start stop remove create; do
+  if grep -qx "$_t6_verb" "$RC_LOG"; then
+    _t6_ok=false; _t6_reason="${_t6_reason:+$_t6_reason; }msb ${_t6_verb} was called under --dry-run (must never happen)"
+  fi
+done
 
 if [[ "$_t6_ok" == "true" ]]; then
-  pass T6 "rc up --dry-run on drifted stopped sandbox surfaces the same hard stop (would_resume path)"
+  pass T6 "rc up --dry-run on a drifted stopped sandbox previews would_converge and mutates nothing"
 else
-  fail T6 "dry-run drift hard-stop" "$_t6_reason (exit=$RC_EXIT stderr=$RC_ERR)"
+  fail T6 "dry-run converge preview" "$_t6_reason (exit=$RC_EXIT stdout=$RC_OUT stderr=$RC_ERR)"
 fi
 teardown_sandbox
 
@@ -872,15 +879,12 @@ fi
 # ===========================================================================
 _r11_ok=true _r11_reason=""
 
-_r11_no_snapshot=$(grep "to rebaseline" "${SCRIPT_DIR}/../cli/reload.sh")
-if [[ -z "$_r11_no_snapshot" ]] || ! echo "$_r11_no_snapshot" | grep -q "rc-state-" || ! echo "$_r11_no_snapshot" | grep -q "rc-history-"; then
-  _r11_ok=false; _r11_reason="${_r11_reason:+$_r11_reason; }reload's no-snapshot message does not name rc-state-/rc-history-"
-fi
-
-_r11_refuse_loud=$(grep "to apply non-reload-eligible fields" "${SCRIPT_DIR}/../cli/reload.sh")
-if [[ -z "$_r11_refuse_loud" ]] || ! echo "$_r11_refuse_loud" | grep -q "rc-state-" || ! echo "$_r11_refuse_loud" | grep -q "rc-history-"; then
-  _r11_ok=false; _r11_reason="${_r11_reason:+$_r11_reason; }reload's refuse-loud message does not name rc-state-/rc-history-"
-fi
+# Two of R11's three original sites are gone with the machinery that produced
+# them (rip-cage-ely4.9 / ADR-031 D2): reload's "no applied-config snapshot"
+# refusal and its "non-reload-eligible fields" refusal both belonged to the
+# config-diff engine. Neither message can route an operator into volume loss
+# any more, because neither is reachable. The rule R11 encodes is unchanged
+# and still enforced on the site that survives, below.
 
 # The status-2 ("current image not found") abort block, WITHIN
 # _up_resolve_resume_image_drift_stopped specifically (that same "$_status"

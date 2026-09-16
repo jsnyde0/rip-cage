@@ -1118,8 +1118,22 @@ _up_cage_conf_sha() {
 # the recreate stamps the hash.
 _up_converge_needed() {
   local _name="$1" _conf="$2"
+
+  # RE-ENTRY GUARD, and it is structural rather than advisory. A converge ends
+  # in a recursive cmd_up; if that inner call could converge again, the only
+  # thing stopping an infinite loop would be the outer remove having worked.
+  # A failed remove, or a cage whose label never lands, would spin forever.
+  # One converge per invocation, enforced here, makes that impossible no
+  # matter what any label says.
+  if [[ "${_UP_CONVERGE_DONE:-false}" == "true" ]]; then
+    return 1
+  fi
+
   local _stored _current
   _stored=$(_msb_label "$_name" "rc.cage-conf-sha" 2>/dev/null || true)
+  # No stored hash: a cage created before this label existed. Converge once —
+  # it lands the cage on the current config and self-heals, because the
+  # recreate stamps the hash.
   [[ -z "$_stored" ]] && return 0
   _current=$(_up_cage_conf_sha "$_conf")
   [[ "$_stored" != "$_current" ]]
@@ -2653,6 +2667,9 @@ cmd_up() {
         log "Converging ${name}: cold-recreating against the current cage config (ADR-031 D3). Host mounts and named volumes survive; only the guest's ephemeral rootfs scratch is lost."
         _msb_stop_graceful "$name" 2>/dev/null || true
         _msb_remove "$name"
+        # Exported, not just set: the recreate re-enters cmd_up, and under
+        # --output json it does so in a subshell.
+        export _UP_CONVERGE_DONE=true
         # Cage now absent -> the recursive cmd_up takes the create path (which
         # rebaselines the config-applied snapshot) and, in a TTY, attaches.
         # rip-cage-tsf2.9 (review F2): forward THIS invocation's own runtime
