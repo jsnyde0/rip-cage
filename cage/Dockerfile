@@ -104,14 +104,24 @@ RUN for i in 1 2 3; do \
 # tools[].launch field. ONE generic file serves both — it names no tool (its own
 # basename selects the descriptor entry), so the base image stays tool-agnostic
 # (ADR-005 D12) and no cross-recipe path is hardcoded in any launch leg.
-# npm installs each agent at /usr/local/bin/<tool>; move it aside to <tool>-real
-# and put the wrapper in its place, the same shape bd/bd-real already uses.
+# The real binary moves to a fixed rip-cage-owned path and the wrapper takes its
+# place, so NOTHING here depends on PATH order: the wrapper IS the binary at the
+# name npm installed, and it resolves the real one by absolute path. (An
+# extension that prepends to PATH must not be able to shadow either half --
+# measured hazard, rip-cage-ely4.16.) `command -v` finds wherever npm's prefix
+# actually put it rather than assuming a directory, and <tool>-real is an
+# ABSOLUTE symlink to the resolved target: npm's own bin entry is a RELATIVE
+# symlink, which would dangle the moment it moved to another directory.
 COPY cage/boot/tool-launch-wrapper /usr/local/lib/rip-cage/tool-launch-wrapper
-RUN for _t in claude pi; do \
-      mv "/usr/local/bin/${_t}" "/usr/local/bin/${_t}-real"; \
-      cp /usr/local/lib/rip-cage/tool-launch-wrapper "/usr/local/bin/${_t}"; \
-      chmod 0755 "/usr/local/bin/${_t}" "/usr/local/bin/${_t}-real"; \
-    done
+RUN mkdir -p /usr/local/lib/rip-cage/bin \
+    && for _t in claude pi; do \
+         _p="$(command -v "${_t}")" || { echo "base image: ${_t} not on PATH after install" >&2; exit 1; }; \
+         _real="$(readlink -f "${_p}")"; \
+         ln -sfn "${_real}" "/usr/local/lib/rip-cage/bin/${_t}-real"; \
+         rm -f "${_p}"; \
+         cp /usr/local/lib/rip-cage/tool-launch-wrapper "${_p}"; \
+         chmod 0755 "${_p}"; \
+       done
 
 # Non-root user
 RUN groupadd -g 1000 agent \

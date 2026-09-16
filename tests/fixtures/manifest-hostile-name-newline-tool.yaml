@@ -1,7 +1,0 @@
-version: 1
-tools:
-  - name: "good\nRUN touch /pwned"
-    archetype: TOOL
-    version_pin: "bundled"
-    egress: []
-    mounts: []

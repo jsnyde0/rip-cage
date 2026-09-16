@@ -23,14 +23,12 @@
 #   ... run test(s) ...
 #
 # Provides:
-#   _host_sandbox_setup()    — creates a mktemp dir seeded with an
-#                               empty-denylist config.yaml + zero-byte
-#                               tools.yaml, and exports RC_CONFIG_GLOBAL +
-#                               XDG_CONFIG_HOME to point at it (unless the
-#                               caller's environment already set them —
-#                               same ${VAR:-default} precedence as the
-#                               original run-host.sh code). Records the
-#                               created directory in _HOST_SANDBOX_CFG_DIR
+#   _host_sandbox_setup()    — creates a mktemp dir and points
+#                               XDG_CONFIG_HOME at it (unless the caller's
+#                               environment already set it — same
+#                               ${VAR:-default} precedence as the original
+#                               run-host.sh code). Records the created
+#                               directory in _HOST_SANDBOX_CFG_DIR
 #                               for _host_sandbox_cleanup to remove.
 #   _host_sandbox_cleanup()  — rm -rf the directory _host_sandbox_setup
 #                               created (no-op if setup was never called or
@@ -104,45 +102,24 @@ _host_scratch_mktemp_d() {
 
 _HOST_SANDBOX_CFG_DIR=""
 
-# _host_sandbox_setup — build the benign config-fixture sandbox and export
-# the env vars that make `rc` resolve its global config/manifest against it
-# instead of the real ~/.config/rip-cage/.
+# _host_sandbox_setup — build the benign config-fixture sandbox and export the
+# env vars that make `rc` resolve its host config against it instead of the
+# real ~/.config/rip-cage/.
 #
-# rip-cage-4c5.8: seeds a benign empty tools.yaml so any rc invocation that
-# derives its manifest path from XDG_CONFIG_HOME (the default path) reads a
-# known-safe default (empty file = bundled-only default stack, D8 contract)
-# rather than the developer's real ~/.config/rip-cage/tools.yaml.
+# The tools.yaml this used to seed went with the manifest (ADR-031 D4,
+# rip-cage-ely4.11). rc reads no tool list at all now, so there is nothing left
+# to shadow on that path; XDG_CONFIG_HOME still points at the sandbox because
+# rc build's own containment check and the protected-paths resolver both read
+# the operator's host config dir, and neither may reach the developer's real one.
 #
-# ADR-023 secret-path denylist (rip-cage-3gu.2): rc up requires a global
-# config file at $RC_CONFIG_GLOBAL or ~/.config/rip-cage/config.yaml.
-# Provide a default empty-denylist fixture so tests don't all need to set
-# RC_CONFIG_GLOBAL individually. Tests that verify the missing-config
-# preflight (e.g. test-secret-path-denylist.sh case j) override this with
-# their own local export.
+# No config.yaml / RC_CONFIG_GLOBAL to seed either: the layered rip-cage config
+# schema retired per ADR-031 D2 in favor of one native msb --conf file per
+# project plus the shipped protected-paths floor (rip-cage-ely4.9).
 _host_sandbox_setup() {
   _HOST_SANDBOX_CFG_DIR=$(mktemp -d)
   mkdir -p "${_HOST_SANDBOX_CFG_DIR}/rip-cage"
-  # Empty tools.yaml: seeded once at sandbox-setup level; zero-byte = default bundled stack.
-  touch "${_HOST_SANDBOX_CFG_DIR}/rip-cage/tools.yaml"
 
-  # No config.yaml / RC_CONFIG_GLOBAL to seed here: the rip-cage config schema
-  # (global config.yaml, RC_CONFIG_GLOBAL) retired per ADR-031 D2 in favor of
-  # one native msb --conf file per project plus the shipped protected-paths
-  # floor (rip-cage-ely4.9).
-
-  # XDG_CONFIG_HOME: default to the sandbox dir so rc invocations without an explicit
-  # HOME/XDG sandbox read from this fixture. Tests that set HOME+XDG_CONFIG_HOME
-  # explicitly in their subprocess calls (all test-manifest-*.sh) override this.
   export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${_HOST_SANDBOX_CFG_DIR}}"
-
-  # ISOLATION: RC_MANIFEST_GLOBAL is NOT exported at the sandbox level because it has
-  # higher priority than XDG_CONFIG_HOME in _manifest_global_path(), and exporting
-  # it would override the per-test sandbox HOME/XDG_CONFIG_HOME used by test-manifest-
-  # schema.sh, test-manifest-tool.sh, etc. Those tests correctly isolate their
-  # fixture loading via explicit HOME+XDG_CONFIG_HOME in subprocess calls. The
-  # sandbox fixture works through XDG_CONFIG_HOME (exported above) which those tests
-  # then override per-call. New tests that invoke rc without a sandboxed HOME/XDG
-  # inherit the sandbox XDG_CONFIG_HOME and thus the empty tools.yaml.
 }
 
 # _host_sandbox_cleanup — remove the sandbox directory created by
