@@ -11,6 +11,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 FAILURES=0
 
 pass() { echo "PASS: $1"; }
@@ -28,43 +31,23 @@ fi
 # Part B: Input hardening (validate_path)
 # =============================================
 
-# --- Test 2: validate_path rejects when RC_ALLOWED_ROOTS is unset ---
-echo ""
-echo "=== Test 2: rc up warns when RC_ALLOWED_ROOTS is unset ==="
-test_dir=$(mktemp -d)
-unset RC_ALLOWED_ROOTS 2>/dev/null || true
-up_err=$(RC_CONFIG=/dev/null env -u RC_ALLOWED_ROOTS "$RC" --dry-run up "$test_dir" 2>&1) || true
-if echo "$up_err" | grep -q "RC_ALLOWED_ROOTS"; then
-  pass "rc up mentions RC_ALLOWED_ROOTS when unset"
-else
-  fail "rc up did not mention RC_ALLOWED_ROOTS. Got: $up_err"
-fi
-
-# --- Test 3: validate_path rejects path outside allowed roots ---
-echo ""
-echo "=== Test 3: rc up rejects path outside allowed roots ==="
-outside_err=$(RC_ALLOWED_ROOTS="$test_dir" "$RC" up /tmp 2>&1) || true
-if echo "$outside_err" | grep -q "outside allowed roots"; then
-  pass "rc up rejects path outside allowed roots"
-else
-  fail "rc up did not reject outside path. Got: $outside_err"
-fi
-
-# --- Test 4: validate_path rejects path prefix attack ---
-echo ""
-echo "=== Test 4: rc up rejects path prefix attack ==="
-# Create a dir and a sibling with the same prefix + "-evil" to test prefix matching
-code_dir=$(mktemp -d)
-evil_dir="${code_dir}-evil"
-mkdir -p "$evil_dir"
-prefix_err=$(RC_ALLOWED_ROOTS="$code_dir" "$RC" up "$evil_dir" 2>&1) || true
-if echo "$prefix_err" | grep -q "outside allowed roots"; then
-  pass "rc up rejects prefix attack (code-evil vs code)"
-else
-  fail "rc up did not reject prefix attack. Got: $prefix_err"
-fi
-rmdir "$evil_dir" 2>/dev/null || true
-rmdir "$code_dir" 2>/dev/null || true
+# --- Tests 2, 3, 4: RETIRED with the allowed-roots guard (rip-cage-ely4.9) ---
+# They asserted that `rc up` warns when RC_ALLOWED_ROOTS is unset, rejects a
+# path outside the roots, and rejects a /code-evil prefix attack against
+# /code. ADR-031 D2 deletes the guard: every mount is an explicit line in the
+# project's own config now, authored host-side, so there is no surrounding
+# root for a path argument to be outside OF and no prefix to attack.
+#
+# What replaced it is not a narrower version of the same check — it is a
+# different one on a better surface. The protected-paths rule reads the cage
+# config's whole mount list and refuses a credential store outright, which is
+# the accident these three were really aimed at. Its coverage lives in
+# tests/test-rc-commands.sh Test 60 (60b in particular), where the assertion
+# is "no msb subcommand ran", not merely a non-zero exit.
+#
+# Tests 5-7 below survive unchanged: validate_path still rejects a
+# non-existent path, a non-directory, and control characters. Those are shape
+# checks on the argument itself and never depended on the roots.
 
 # --- Test 5: validate_path rejects non-existent path ---
 echo ""
@@ -103,9 +86,9 @@ fi
 echo ""
 echo "=== Test 8: rc up accepts valid path under allowed root (dry-run, no Docker side-effects) ==="
 # --dry-run: validation passes, no docker pull/build/create; image-agnostic.
-valid_err=$(RC_ALLOWED_ROOTS="$(dirname "$test_dir")" "$RC" --dry-run up "$test_dir" 2>&1) || true
+valid_err=$(RC_CAGE_CONF="$(cage_conf_for "$test_dir")" "$RC" --dry-run up "$test_dir" 2>&1) || true
 # Should NOT contain path validation errors
-if echo "$valid_err" | grep -q "outside allowed roots\|RC_ALLOWED_ROOTS not set\|does not exist\|not a directory\|control characters"; then
+if echo "$valid_err" | grep -q "does not exist\|not a directory\|control characters"; then
   fail "rc up rejected valid path. Got: $valid_err"
 else
   pass "rc up accepted valid path (dry-run previews action without Docker)"
@@ -115,7 +98,14 @@ fi
 echo ""
 echo "=== Test 9: rc up --output json produces JSON error for invalid path ==="
 # json_error writes to stdout; human errors go to stderr. Capture both.
-json_err=$(RC_ALLOWED_ROOTS="$test_dir" "$RC" --output json up /tmp 2>/dev/null) || true
+# The subject is validate_path's OWN rejection, so the path must be invalid on
+# its own terms. /tmp used to qualify only because it sat outside the allowed
+# roots, which is no longer a thing a path can be. A regular FILE is the
+# shape-invalid case that still maps to PATH_INVALID (a non-existent path
+# returns PATH_NOT_FOUND, a different code with its own case above).
+_t9_file=$(mktemp)
+json_err=$("$RC" --output json up "$_t9_file" 2>/dev/null) || true
+rm -f "$_t9_file"
 if echo "$json_err" | jq -e '.code == "PATH_INVALID"' >/dev/null 2>&1; then
   pass "--output json produces PATH_INVALID error code"
 else
@@ -130,7 +120,7 @@ fi
 echo ""
 echo "=== Test 10: rc up --dry-run prints what would happen ==="
 dryrun_dir=$(mktemp -d)
-dryrun_out=$(RC_ALLOWED_ROOTS="$(dirname "$dryrun_dir")" "$RC" --dry-run up "$dryrun_dir" 2>&1) || true
+dryrun_out=$(RC_CAGE_CONF="$(cage_conf_for "$dryrun_dir")" "$RC" --dry-run up "$dryrun_dir" 2>&1) || true
 if echo "$dryrun_out" | grep -q "Would create\|would_create\|Would build"; then
   pass "--dry-run reports what would happen"
 else
@@ -142,7 +132,7 @@ rmdir "$dryrun_dir" 2>/dev/null || true
 echo ""
 echo "=== Test 11: rc up --dry-run --output json produces JSON ==="
 dryrun_dir2=$(mktemp -d)
-dryrun_json=$(RC_ALLOWED_ROOTS="$(dirname "$dryrun_dir2")" "$RC" --dry-run --output json up "$dryrun_dir2" 2>/dev/null) || true
+dryrun_json=$(RC_CAGE_CONF="$(cage_conf_for "$dryrun_dir2")" "$RC" --dry-run --output json up "$dryrun_dir2" 2>/dev/null) || true
 # Accept any would_*_create action: would_create (image present), would_build_and_create
 # (no registry, builds locally), or would_pull_and_create (registry configured + image
 # absent — the CI default). The original assertion omitted would_pull_and_create, which
@@ -205,19 +195,11 @@ else
   fail "rc init did not produce usage output: $init_err"
 fi
 
-# --- Test 17: rc up warns when RC_ALLOWED_ROOTS unset (dry-run, stderr warning) ---
-echo ""
-echo "=== Test 17: rc up --dry-run warns when RC_ALLOWED_ROOTS unset ==="
-warn_json_dir=$(mktemp -d)
-# --dry-run stops at post-validation without docker side-effects (image-agnostic).
-# The RC_ALLOWED_ROOTS warning is emitted to stderr regardless of --output format.
-warn_out=$(RC_CONFIG=/dev/null env -u RC_ALLOWED_ROOTS "$RC" --dry-run up "$warn_json_dir" 2>&1) || true
-if echo "$warn_out" | grep -q "RC_ALLOWED_ROOTS"; then
-  pass "rc up --dry-run warns when RC_ALLOWED_ROOTS unset"
-else
-  fail "rc up --dry-run did not warn about RC_ALLOWED_ROOTS. Got: $warn_out"
-fi
-rmdir "$warn_json_dir" 2>/dev/null || true
+# --- Test 17: RETIRED with the allowed-roots warning (rip-cage-ely4.9) ---
+# It asserted that an unset RC_ALLOWED_ROOTS produces a stderr warning naming
+# the variable. The variable is inert and the warning is gone (ADR-031 D2):
+# there is no implicit root grant left to warn about, because there are no
+# implicit mounts left to grant.
 
 # --- Test 18: --output json --env-file outside workspace does not fail with 'outside allowed roots' ---
 echo ""

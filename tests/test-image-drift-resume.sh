@@ -67,6 +67,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
 FAILURES=0
 TEST_HOME=""
 TEST_WS=""
@@ -313,7 +316,7 @@ run_rc_up() {
   set +e
   PATH="${STUB_DIR}:${PATH}" \
     HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    RC_ALLOWED_ROOTS="$TEST_WS" \
+    RC_CAGE_CONF="$(cage_conf_for "$TEST_WS")" \
     DRIFT_LOG="$RC_LOG" DRIFT_STATE="$_state" \
     DRIFT_STORED_IMAGE="$_stored" DRIFT_CURRENT_IMAGE="$_current" \
     DRIFT_CONTAINER_INSPECT_FAIL="$_inspect_fail" \
@@ -355,7 +358,7 @@ run_rc_reload() {
   set +e
   PATH="${STUB_DIR}:${PATH}" \
     HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    RC_ALLOWED_ROOTS="$TEST_WS" \
+    RC_CAGE_CONF="$(cage_conf_for "$TEST_WS")" \
     DRIFT_LOG="$RC_LOG" DRIFT_STATE="$_state" \
     DRIFT_STORED_IMAGE="$_stored" DRIFT_CURRENT_IMAGE="$_current" \
     DRIFT_CONTAINER_INSPECT_FAIL="$_inspect_fail" DRIFT_INSPECT_FAIL_AT="$_fail_at" \
