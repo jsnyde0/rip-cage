@@ -41,6 +41,15 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+
+# These suites sandbox HOME so rc reads a fixture config tree. Docker resolves
+# its CONTEXT through $HOME/.docker, so a sandboxed HOME makes `docker info`
+# fail and every case reports a daemon error instead of its own subject. Point
+# DOCKER_CONFIG at the real one: the isolation needed here is over rip-cage's
+# own config, not over the container runtime.
+RC_TEST_REAL_DOCKER_CONFIG="${DOCKER_CONFIG:-${HOME}/.docker}"
+export RC_TEST_REAL_DOCKER_CONFIG
+
 FIXTURES="${SCRIPT_DIR}/fixtures"
 FAILURES=0
 TEST_HOME=""
@@ -96,7 +105,7 @@ teardown_manifest_sandbox() {
 # Run _manifest_load in the sandbox. Outputs JSON on stdout; stderr to file if given.
 run_manifest_load() {
   local stderr_file="${1:-/dev/null}"
-  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     bash -c "source '${RC}'; _manifest_load" 2>"$stderr_file"
 }
 
@@ -104,7 +113,7 @@ run_manifest_load() {
 run_manifest_validate() {
   local manifest_file="$1"
   local stderr_file="${2:-/dev/null}"
-  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     bash -c "source '${RC}'; _manifest_validate '${manifest_file}'" 2>"$stderr_file"
 }
 
@@ -112,7 +121,7 @@ run_manifest_validate() {
 run_manifest_check_denylist() {
   local workspace="$1"
   local stderr_file="${2:-/dev/null}"
-  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
     bash -c "source '${RC}'; _manifest_check_mounts_denylist '${workspace}'" 2>"$stderr_file"
 }
@@ -122,7 +131,7 @@ run_manifest_check_denylist() {
 run_manifest_build_mount_args() {
   local workspace="$1"
   local stderr_file="${2:-/dev/null}"
-  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
     bash -c "source '${RC}'; _manifest_build_mount_args '${workspace}'" 2>"$stderr_file"
 }
@@ -256,7 +265,7 @@ test_md1_denylisted_host_in_object_shape_rejected() {
   local out exit_code
   exit_code=0
   # Run rc up with the sandbox manifest and workspace
-  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  out=$(HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
     RC_ALLOWED_ROOTS="$tmpdir" \
@@ -315,7 +324,7 @@ YAML
   tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/rc-up-md2-test-XXXXXX")
   exit_code=0
   # Run rc up: the tilde expands to $TEST_HOME/.ssh (which is denylisted).
-  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  out=$(HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
     RC_ALLOWED_ROOTS="$tmpdir" \
@@ -647,7 +656,7 @@ YAML
   local tmpdir out exit_code
   tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma1-ws-XXXXXX")
   exit_code=0
-  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  out=$(HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
     RC_ALLOWED_ROOTS="$tmpdir" \
@@ -694,7 +703,7 @@ YAML
   local tmpdir out exit_code
   tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma2-ws-XXXXXX")
   exit_code=0
-  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  out=$(HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
     RC_ALLOWED_ROOTS="$tmpdir" \
@@ -740,7 +749,7 @@ YAML
   local tmpdir out exit_code
   tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma3-ws-XXXXXX")
   exit_code=0
-  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  out=$(HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
     RC_ALLOWED_ROOTS="$tmpdir" \
@@ -790,7 +799,7 @@ YAML
   # (the full rc up would need docker).  Call the check function directly.
   local stderr_file
   stderr_file=$(mktemp)
-  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
     bash -c "source '${RC}'; _manifest_check_mounts_denylist '${tmpdir}'" 2>"$stderr_file" || exit_code=$?
 
@@ -845,7 +854,7 @@ YAML
   exit_code=0
   local stderr_file
   stderr_file=$(mktemp)
-  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
     bash -c "source '${RC}'; _manifest_check_mounts_denylist '${tmpdir}'" 2>"$stderr_file" || exit_code=$?
 
@@ -894,7 +903,7 @@ YAML
   local tmpdir out exit_code
   tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/rc-ma6-ws-XXXXXX")
   exit_code=0
-  out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  out=$(HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
     RC_ALLOWED_ROOTS="$tmpdir" \

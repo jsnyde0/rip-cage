@@ -1092,6 +1092,40 @@ _up_prepare_environment() {
 # ADR-031 D2/D5(a): wherever it comes from, the file must sit OUTSIDE every
 # mount it declares. That is _protected_paths_conf_outside_mounts, called from
 # cmd_up before any msb call.
+# _up_cage_conf_sha CONF -- content hash of the cage config, or "" if unreadable.
+_up_cage_conf_sha() {
+  local _conf="$1"
+  [[ -r "$_conf" ]] || { printf ''; return 0; }
+  shasum -a 256 "$_conf" 2>/dev/null | awk '{print $1}'
+}
+
+
+# _up_converge_needed NAME CONF
+#
+# True when a STOPPED cage's config file differs from the one it was created
+# from. ADR-031 D3 keeps today's converge-on-up behaviour for a stopped cage;
+# with the merge engine gone, "did it change?" is a content hash of ONE file
+# rather than a field-by-field diff of a merged structure.
+#
+# THIS IS NOT AN OPTIMISATION, it is a correctness requirement. Converging
+# unconditionally would mean (a) a stopped cage could never simply be resumed
+# — every `rc up` would destroy and recreate it — and (b) the recursive
+# cmd_up that performs the recreate would have no termination condition but
+# "the remove succeeded", so a failed remove would loop forever.
+#
+# A cage with no stored hash predates this label: converge, which is the safe
+# direction (it lands the cage on the current config) and self-heals, since
+# the recreate stamps the hash.
+_up_converge_needed() {
+  local _name="$1" _conf="$2"
+  local _stored _current
+  _stored=$(_msb_label "$_name" "rc.cage-conf-sha" 2>/dev/null || true)
+  [[ -z "$_stored" ]] && return 0
+  _current=$(_up_cage_conf_sha "$_conf")
+  [[ "$_stored" != "$_current" ]]
+}
+
+
 _up_resolve_conf() {
   local _path="$1" _name="$2"
 
@@ -1321,8 +1355,20 @@ _up_init_container() {
 # (cli/up.sh:'Resuming stopped container' invariant) — this function only compares and aborts/returns,
 # it never calls _pull_or_build.
 # Parameters: $1 name, $2 path
+# _up_resolve_resume_image_drift_stopped NAME PATH [CONVERGE_FOLLOWS]
+#
+# CONVERGE_FOLLOWS ("true") says a cold-recreate is about to run. That changes
+# what "drift" means, not whether the other failures matter:
+#   status 1 (stale image)  -- the recreate lands on the CURRENT image, which
+#                              is the repair this guard used to tell the
+#                              operator to run by hand. Return 0 and let it.
+#   status 2 (image absent) -- a recreate cannot conjure an image. Still abort.
+#   status 3 (inspect fail) -- still abort; nothing is verifiable.
+# Without this split, making converge unconditional (ADR-031 D3) would have
+# swallowed the absent-image diagnostic and failed later, at `msb create`,
+# with a worse message.
 _up_resolve_resume_image_drift_stopped() {
-  local _name="$1" _path="$2"
+  local _name="$1" _path="$2" _converge_follows="${3:-false}"
   local _status=0
   # `|| _status=$?` (not a bare call + separate `$?` read) — under set -e,
   # a plain non-conditional statement that returns non-zero aborts the
@@ -1356,6 +1402,11 @@ _up_resolve_resume_image_drift_stopped() {
     echo "         RC_IMAGE=<original image> rc up ${_path}    (if this cage was created from a custom-pinned image)" >&2
     echo "         rc destroy ${_name} && rc up ${_path}        (recreate from scratch — deletes this cage's rc-state-${_name} and rc-history-${_name} volumes)" >&2
     exit 1
+  fi
+
+  if [[ "$_converge_follows" == "true" ]]; then
+    log "Notice: ${_name} was created from a now-stale image; the cold-recreate below moves it onto the current one."
+    return 0
   fi
 
   # _status == 1: mismatch. rip-cage-syzk (point 4): repointed at `rc reload`
@@ -2366,10 +2417,13 @@ cmd_up() {
       # for a cage the recreate would have fixed. Converge is the DEFAULT for
       # a stopped cage (ADR-031 D3); --no-reload opts out.
       # ADR-031 D3: a STOPPED cage is recreated against the current config
-      # on a plain `rc up`. There is no drift comparison left to make — the
-      # config file is read fresh at every launch, so "has it changed?" has
-      # no cheaper answer than recreating. --no-reload opts out.
-      if [[ -z "$rc_up_no_reload" ]]; then
+      # when that config has CHANGED since the cage was created, which is a
+      # content hash of one file now rather than a merged-structure diff
+      # (_up_converge_needed). --no-reload opts out.
+      if [[ -z "$rc_up_no_reload" ]] && _up_converge_needed "$name" "$_UP_CAGE_CONF"; then
+        # A recreate fixes a STALE image but cannot fix an ABSENT one, so the
+        # guard still runs — it just stops treating staleness as fatal.
+        _up_resolve_resume_image_drift_stopped "$name" "$path" "true"
         would_action="would_converge"
       else
         # No converge -> mirror the real path's plain-resume: run the abort-loud
@@ -2592,9 +2646,10 @@ cmd_up() {
     # -> recreate), but recurses cmd_up in the CURRENT output format so an
     # interactive `rc up` still attaches after the cage comes back (cmd_reload
     # forces json because it must NOT attach; up must).
-    if [[ -z "$rc_up_no_reload" ]]; then
-      local _conv_paths
-      if [[ -z "$rc_up_no_reload" ]]; then
+    if [[ -z "$rc_up_no_reload" ]] && _up_converge_needed "$name" "$_UP_CAGE_CONF"; then
+        # Same split as the dry-run mirror above: stale is converge-able,
+        # absent and unverifiable are not.
+        _up_resolve_resume_image_drift_stopped "$name" "$path" "true"
         log "Converging ${name}: cold-recreating against the current cage config (ADR-031 D3). Host mounts and named volumes survive; only the guest's ephemeral rootfs scratch is lost."
         _msb_stop_graceful "$name" 2>/dev/null || true
         _msb_remove "$name"
@@ -2623,11 +2678,10 @@ cmd_up() {
         done
         cmd_up "${_conv_args[@]}" "$path"
         return
-      fi
-      # else: no eligible drift -> fall through to a plain resume (harmless
-      # by default, safe to habituate). emit_hint below still surfaces any
-      # non-eligible drift.
     fi
+    # else: the config is unchanged since this cage was created (or the
+    # operator passed --no-reload) -> plain resume. This is the branch that
+    # makes `rc up` on a stopped cage cheap: start it, do not rebuild it.
     log "Resuming stopped container $name..."
     # rip-cage-3y9g: RESUME-GUARDS-REAL-STOPPED BEGIN (mirrored by the
     # dry-run stopped sub-branch above — see RESUME-GUARDS-DRY-RUN-STOPPED)
@@ -2838,6 +2892,12 @@ cmd_up() {
   # described (ADR-031 D2). rc.cage-conf replaces them: which config file this
   # cage was launched from, so `rc doctor` and a resume can say where to look.
   _UP_RUN_ARGS+=(--label "rc.cage-conf=${_UP_CAGE_CONF}")
+  # ...and its CONTENT hash. This is what makes "has the config changed since
+  # this cage was created?" answerable without a merge engine: one file, one
+  # sha. It is the termination condition for converge-on-resume (below) and
+  # the reason a stopped cage with an unchanged config is RESUMED rather than
+  # recreated.
+  _UP_RUN_ARGS+=(--label "rc.cage-conf-sha=$(_up_cage_conf_sha "${_UP_CAGE_CONF}")")
 
   # rip-cage-c1p.2 D4: persist symlink-follow fingerprint as a container label
   # so resume can detect mount-shape drift and abort loud. Computed from sorted

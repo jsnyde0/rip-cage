@@ -46,6 +46,18 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
+
+# These suites sandbox HOME so rc reads a fixture config tree. Docker resolves
+# its CONTEXT through $HOME/.docker, so a sandboxed HOME makes `docker info`
+# fail and every case reports a daemon error instead of its own subject. Point
+# DOCKER_CONFIG at the real one: the isolation needed here is over rip-cage's
+# own config, not over the container runtime.
+RC_TEST_REAL_DOCKER_CONFIG="${DOCKER_CONFIG:-${HOME}/.docker}"
+export RC_TEST_REAL_DOCKER_CONFIG
+
 FIXTURES="${SCRIPT_DIR}/fixtures"
 FAILURES=0
 TEST_HOME=""
@@ -110,7 +122,7 @@ teardown_manifest_sandbox() {
 # sites) -- so this never reaches a real docker build, let alone overwrites
 # rip-cage:latest. E1/E1b's whole assertion IS that build fails loud pre-Docker.
 run_rc_build() {
-  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
     "${RC}" build 2>&1
@@ -121,10 +133,10 @@ run_rc_build() {
 # patterns rather than the driver-level empty denylist.
 run_rc_up() {
   local workspace="$1"
-  HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  HOME="$TEST_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
     RC_MANIFEST_GLOBAL="${TEST_HOME}/.config/rip-cage/tools.yaml" \
     RC_CONFIG_GLOBAL="${TEST_HOME}/.config/rip-cage/config.yaml" \
-    RC_ALLOWED_ROOTS="$workspace" \
+    RC_CAGE_CONF="$(cage_conf_for "$workspace")" \
     "${RC}" up "$workspace" 2>&1
 }
 
@@ -238,10 +250,15 @@ test_e3_denylisted_mount_refused() {
   exit_code=0
   out=$(run_rc_up "$tmpdir") || exit_code=$?
 
-  # Specific sentinel: error must mention the manifest-declared mount and
-  # the denylist refusal in a way produced ONLY by _manifest_check_mounts_denylist.
+  # Specific sentinel: the error must name the manifest-declared mount AND the
+  # protected path it hit, in a form produced ONLY by
+  # _manifest_check_mounts_denylist. The wording moved with the rule
+  # (rip-cage-ely4.9): the denylist became the protected-paths list, so the
+  # message says "is a protected path" where it used to say "matched
+  # secret-path denylist pattern". Both spellings are accepted here so the
+  # assertion tracks the PROPERTY, not one release's phrasing.
   local denied_signal
-  denied_signal=$(grep -iE "manifest.*(mount|declared).*(denylist|denied|refusing)|denylist.*(manifest|declared).*mount" <<<"$out" | head -1)
+  denied_signal=$(grep -iE "manifest.*(mount|declared).*(protected path|denylist|denied|refusing)" <<<"$out" | head -1)
 
   if [[ "$exit_code" -ne 0 ]] && [[ -n "$denied_signal" ]]; then
     pass "E3 Denylisted manifest mount refused: exit=$exit_code"
