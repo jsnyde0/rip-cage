@@ -396,7 +396,12 @@ printf 'rc-t-t.AbCdEf\ncode-personal\nT-tmp.gone\nT-tmp.live\n' > "$REG10"
 LOG10="${WORK}/log10"
 : > "$LOG10"
 t10_out=$(run_registry_sweep "$REG10" "$LOG10" "rc-t-t.AbCdEf code-personal T-tmp.live")
-t10_destroys=$(grep -cF "rc destroy --force" "$LOG10" 2>/dev/null || true)
+# Counts `rc destroy ` lines, not `rc destroy --force` (rip-cage-ely4.10: the
+# flag retired with the confirmation prompt, ADR-031 D3). The old spelling made
+# this counter read 0 and T10 go red -- worth noting that it failed LOUD rather
+# than passing vacuously, because the expected count is an exact 2, not a
+# lower bound. The trailing space keeps `rc destroyx` out of the count.
+t10_destroys=$(grep -cF "rc destroy " "$LOG10" 2>/dev/null || true)
 t10_destroys="${t10_destroys:-0}"
 if [[ "$t10_destroys" -eq 2 ]] \
   && grep -qF "rc destroy rc-t-t.AbCdEf" "$LOG10" \

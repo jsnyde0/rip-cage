@@ -178,7 +178,7 @@ for c in $(msb list --format json 2>/dev/null | jq -r '.[].name'); do
 done
 ```
 
-> **What about the volume-prune step?** `rc destroy --force` removes a cage's `rc-state-<name>`/`rc-history-<name>` named volumes together with the cage itself, so step 3 above leaves no orphaned-scratch-volume tail to sweep separately — unlike the old Docker path, there is no `docker volume prune -f` step here. msb also has no blanket volume-prune verb (only `msb volume list` / `msb volume remove`), which is a feature, not a gap: volumes carry no `rc.source.path` label, so a blanket sweep can't be temp-root-scoped and would risk silently removing a real cage's intentionally-kept volume (rip-cage-aqww D2/D3). The label-scoped, non-blanket sweep in step 3 is the safe path end to end — no separate manual volume step is needed.
+> **What about the volume-prune step?** `rc destroy` removes a cage's `rc-state-<name>`/`rc-history-<name>` named volumes together with the cage itself, so step 3 above leaves no orphaned-scratch-volume tail to sweep separately — unlike the old Docker path, there is no `docker volume prune -f` step here. msb also has no blanket volume-prune verb (only `msb volume list` / `msb volume remove`), which is a feature, not a gap: volumes carry no `rc.source.path` label, so a blanket sweep can't be temp-root-scoped and would risk silently removing a real cage's intentionally-kept volume (rip-cage-aqww D2/D3). The label-scoped, non-blanket sweep in step 3 is the safe path end to end — no separate manual volume step is needed.
 
 ## canonical_refs
 
