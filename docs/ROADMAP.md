@@ -1,148 +1,41 @@
 # Rip Cage Roadmap
 
-**Last updated:** 2026-06-26
-**Philosophy:** Build → test → learn → adjust. This roadmap is directional, not a contract. Expect changes as we gain real experience using the tool.
+**Last updated:** 2026-09-17
+**Status:** pre-publication. Directional, not a contract.
+
+Rip cage is a distribution of [microsandbox](https://github.com/microsandbox/microsandbox) — a curated agent image, one native msb config per project, a six-verb launcher, three skills, and a suite that proves the cage holds. The positioning and its consequences are [ADR-031](decisions/ADR-031-opinionated-distribution-of-microsandbox.md).
 
 ---
 
-## Now — near-term backlog (post-v0.9.0)
+## Shipped — the subtracted distribution
 
-**Latest release:** v0.9.0 (2026-06-25) — composable agent-substrate seam (agents, command-guards, and substrate all collapse to `TOOL` recipes + per-asset ro/rw mounts; dcg + ssh-bypass demoted to composable recipes, un-baked from the base image) + egress reshaped into a pure SNI destination router. Phase 1 hardening is effectively complete.
+msb 0.6.18 ships natively what rip-cage used to claim as its own: the microVM boundary, default-deny egress and DNS, destination-bound `--secret` credentials, read-only mounts, and a config schema. So the work was subtraction — removing everything that reimplemented msb, and keeping only what msb does not do.
 
-Ordered by what to pull next (bead IDs in parens):
+- **Six verbs** — `up`, `auth`, `doctor`, `build`, `test`, `destroy`. A verb exists only where plain shell plus a skill cannot do the job identically every run. Twelve verbs were deleted; the `cage-ops` skill is the sole home of each one's successor ([ADR-031](decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D3).
+- **One config file per project** — msb's own `--conf` schema, host-side, read by `rc up`. No rip-cage schema, no three-layer merge, no provenance view. The file carries its lists in full ([ADR-031](decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D2).
+- **A shipped protected-paths list** — known credential locations, as data an operator may edit. `rc up` refuses a config that mounts one, covers any found inside a mounted tree, and aborts before any msb call if the list is unreadable.
+- **Images extend the base** — `FROM rip-cage:latest` plus one small boot descriptor naming daemons and multiplexers. The tools manifest, its codegen, its validator and its ~12k-line test corpus are gone ([ADR-031](decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D4).
+- **A fail-closed floor probe on the built image** — it inspects the artifact, not a declaration describing it, and runs at every boot and at the head of `rc test`, with no opt-out ([ADR-031](decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D5).
+- **Three skills as the front door** — [`cage-config`](../.claude/skills/cage-config/SKILL.md) writes the config, [`cage-image`](../.claude/skills/cage-image/SKILL.md) writes the Dockerfile, [`cage-ops`](../.claude/skills/cage-ops/SKILL.md) runs and repairs a live cage.
 
-1. **UX papercuts** — OAuth-flavored warnings for pi / API-key users (`5kt`), tmux clipboard relay + modern defaults (`q5i`, `dr6`), spurious recreate-hint (`1f59.9`). One polish session.
-2. **Security hardening pass** — DNS non-QUERY opcode bypass (`d9d3`), ssh-bypass `/proc/self/root` path-aliasing probe (`ar90`), symlink-follow fingerprint asymmetry (`6uz`). None accident-exploitable today; batch as one deliberate pass.
-3. **Mini cage-host setup** (when standing up the mini for concurrent cages) — per-cage RAM sizing (`vjs`), Rosetta doc (`oc8`), Login Items cleanup (`i6w`).
+## In flight
 
-**Needs a decision (not implementer work):** drop the VS Code devcontainer path? (`kt25`); auth seam — keep imperative vs. design a manifest facet (`6h2e`, the last wlwc residual).
+1. **Refactor pass against Unix design** (`rip-cage-sygz`) — where the agent-first CLI contract lands: `--output json` everywhere, an exit-code table, an ANSI/stderr policy, machine-readable errors.
+2. **Dogfood** (`rip-cage-ely4.17`) — several days of the human's own real work on the thinned product. Human-owned, and the gate publication waits behind ([ADR-031](decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D7).
+3. **Publish** — the ceremony itself is unchanged ([release-ceremony.md](reference/release-ceremony.md), [ADR-008](decisions/ADR-008-open-source-publication.md)); D7 only says when it may start.
 
-**Quick wins anytime:** cross-harness ADR ref rip-cage ADR-019 → dotpi ADR-002 (`e0w`), ADR number-namespace collision (`bwwm`).
+## Next — fog, not charted
 
-**Backlog (pull as needed):** iptables→nft migration (`ikvr`), mount-hygiene fail-loud cleanups (`a0h`), `rc config show/get` sugar (`08q`), Mise test migration (`o2u`), per-project tool manifest (`26dm`), historical doc-ref fix (`7tu`).
+Each line is a direction, not a plan. None has a bead tree yet.
 
-> Recently shipped (cleared from this list): release-ceremony consolidation (`ynv`), Dolt-remote reconcile (`v43q`), wlwc stale/dark test cleanup (`n7q5`, `nu91`).
+- **Generalized credential discovery.** Today rip-cage finds one login: Claude's, in the macOS keychain. Next is pi's OpenAI Codex login — currently a file mount plus env forwarding, never refreshed by `rc auth`. After that, 1Password and `gh auth`. Until this lands, opinion 1 is a single-vendor trick, and the README says so.
+- **The floor probe as a publishable artifact.** It proves containment properties of any image, not just rip-cage's. Whether that is worth shipping on its own is open.
+- **Restart cages from a list after a host reboot.** A launchd or systemd unit looping `msb start`. This is the whole of "fleet" today; it lives under `rip-cage-tncg`.
+- **An in-cage read-only denial feed.** So a caged agent can name the exact host it was denied, instead of asking the human to go read the trace log.
+- **A known-good msb pin plus a compatibility gate.** Every egress fact rip-cage documents is measured against one msb version; nothing today catches an upstream change that moves them.
+- **A black-box recorder recipe.** Capture what an unattended cage did, for the morning after.
 
----
-
-## Phase 1: Hardening (current)
-
-### Network egress firewall + observe mode (ADR-012) — shipped 2026-05-27 (v0.4.0)
-
-- [x] `network.*` config schema ([ADR-012](decisions/ADR-012-egress-firewall.md))
-- [x] Per-cage egress-rules pipeline — generate + mount at `rc up` / `rc reload`
-- [x] Default-deny whitelist with `observe` / `block` / legacy modes
-- [x] `network.allowed_hosts` default-deny whitelist (method-axis `writable_hosts` write-gating **removed** in rip-cage-ta1o.1 — egress is now a pure SNI destination router with no method axis; [ADR-012 D2](decisions/ADR-012-egress-firewall.md))
-- [x] DNS-exfil resolver sidecar + transparent port-53 REDIRECT, plus the `network.dns.forward_to` forward-to-specialist seam (rip-cage-ta1o.2; [ADR-012 D9](decisions/ADR-012-egress-firewall.md)) *(historical: the in-cage DNS engine and `network.dns.forward_to` are retired under the msb cutover — see [ADR-029](decisions/ADR-029-msb-migration.md), and `network.dns.forward_to` is now a loud-reject retired field per [ADR-021 D9](decisions/ADR-021-layered-rip-cage-config.md))*
-- [x] Egress reshaped into a pluggable containment chokepoint — pure SNI router (no TLS-MITM), tool-agnostic MEDIATOR composition seam (`network.http.forward_to` + `network.egress.mediator`), mitmproxy (proof) + iron-proxy (recommended adopt) reference providers ([ADR-026](decisions/ADR-026-containment-mediation-identity.md); rip-cage-ta1o.1/.2/.3/.5; clawpatrol reclassified to alternative appliance) *(historical: the MEDIATOR archetype, `network.http.forward_to`, and `network.egress.mediator` are all retired/deleted under the msb cutover — [ADR-029](decisions/ADR-029-msb-migration.md) D2/D5, [ADR-021 D9](decisions/ADR-021-layered-rip-cage-config.md))*
-- [x] `rc allowlist add/show/promote` agent-first CLI; `rc doctor` egress sections; `rc ls` mode column
-- [x] Workspace-trust validator — refuse hostile base-URL redirect at cage start
-- [x] Injection-exfil integration harness (`rc test --e2e-security`)
-
-### SSH host + key allowlist + hot-reload (ADR-022) — shipped 2026-05-12/13
-
-- [x] `ssh.allowed_hosts` (additive_list) + `ssh.allowed_keys` (selection_list) schema ([ADR-022 D1](decisions/ADR-022-ssh-allowlist.md)) *(v1-era vocabulary and retired feature: the ssh cluster is gone under the msb cutover ([ADR-029](decisions/ADR-029-msb-migration.md) D3), and the `additive_list`/`selection_list` schema-type names were retired in the config-model v2 rework — see [ADR-021 D2](decisions/ADR-021-layered-rip-cage-config.md) (lists now union by default; enum-shaped scalars are type `enum`))*
-- [x] ssh-agent-filter (agent half) + bash/openssl host half make the allowlist load-bearing
-- [x] Hook-layer guard closes the OpenSSH CLI-override bypass class
-- [x] `rc reload <cage>` host-side hot-reload for `allowed_hosts` content changes ([ADR-022 D6](decisions/ADR-022-ssh-allowlist.md))
-
-### Secret-path mount denylist (ADR-023) — shipped 2026-05-13 (v0.3.0)
-
-- [x] `mounts.denylist` schema + realpath-first matcher ([ADR-023](decisions/ADR-023-secret-path-mount-denylist.md))
-- [x] `mounts.allow_risky` config bypass + `rc up --allow-risky-mount` one-shot override
-- [x] Host-side preflight validation on `--env-file` / `.beads` redirect; `rc install`
-
-### Prompt-injection threat model (ADR-024) — landed 2026-05-22
-
-- [x] Name the threat class: a non-adversarial agent following hostile instructions in content ([ADR-024](decisions/ADR-024-prompt-injection-threat-model.md))
-
-### Cage host-network awareness (ADR-016)
-
-- [x] Ship `/etc/rip-cage/cage-claude.md` in image; append under fenced markers in init ([ADR-016 D1](decisions/ADR-016-cage-host-network-awareness.md))
-- [x] Preflight probe writes `CAGE_HOST_ADDR` to `/etc/rip-cage/cage-env`; source from `~/.zshrc` ([ADR-016 D2](decisions/ADR-016-cage-host-network-awareness.md))
-- [x] Inject `CAGE_HOST_ADDR` via settings.json `env` block for Claude Code child processes ([ADR-016 D2](decisions/ADR-016-cage-host-network-awareness.md))
-- [x] `rc test` asserts `$CAGE_HOST_ADDR` set + exactly one `begin:rip-cage-topology` marker in `~/.claude/CLAUDE.md`
-
-**Design:** [Cage Host-Network Awareness](2026-04-22-cage-host-network-awareness-design.md)
-
-### Toolchain provisioning (ADR-015)
-
-- [ ] Install mise in runtime stage of Dockerfile ([ADR-015 D1](decisions/ADR-015-mise-toolchain-provisioning.md))
-- [ ] Add `rc-mise-cache` shared named volume to `rc up` mounts ([ADR-015 D2](decisions/ADR-015-mise-toolchain-provisioning.md))
-- [ ] `init-rip-cage.sh` runs `mise install` when workspace declares a toolchain ([ADR-015 D3](decisions/ADR-015-mise-toolchain-provisioning.md))
-- [ ] Set `MISE_TRUSTED_CONFIG_PATHS=/workspace` in image ([ADR-015 D4](decisions/ADR-015-mise-toolchain-provisioning.md))
-- [ ] Tier 1 + Tier 2 test coverage per ADR-013
-
-**Design:** [Toolchain Provisioning](2026-04-22-toolchain-provisioning-design.md)
-
-### Existing Phase 1 items
-
-Get the existing implementation working end-to-end and solid.
-
-- [x] Validate Dockerfile builds cleanly (CI builds + publishes the image per release)
-- [x] Connect container bd to host Dolt server ([ADR-004 D1](decisions/ADR-004-phase1-hardening.md))
-- [ ] Add container resource limits ([ADR-004 D2](decisions/ADR-004-phase1-hardening.md))
-- [ ] Credential health check on start ([ADR-004 D3](decisions/ADR-004-phase1-hardening.md))
-- [ ] Expand `rc test` to 15+ checks ([ADR-004 D4](decisions/ADR-004-phase1-hardening.md))
-- [ ] Richer zshrc ([ADR-004 D5](decisions/ADR-004-phase1-hardening.md))
-- [ ] First real agent session in the container
-- [x] Add `rc test --e2e` lifecycle suite ([ADR-013 D1](decisions/ADR-013-test-coverage.md))
-- [x] Fix + wire host-side tests via `rc test --host`; CI = lint+build+host-only ([ADR-013 D2](decisions/ADR-013-test-coverage.md), [D5/D6](decisions/ADR-013-test-coverage.md))
-- [x] Expand egress perimeter tests (IPv6, WebSocket, non-HTTP ports, DoH) ([ADR-013 D4](decisions/ADR-013-test-coverage.md))
-
-**Design:** [Phase 1 Hardening](2026-03-27-phase1-hardening-design.md), [Test Coverage](2026-04-20-test-coverage-design.md)
-
-## Phase 1b: First Ecosystem Tool
-
-Add UBS (bug scanner) as the first external tool. Validates the integration pattern.
-
-> **Superseded (2026-06-14, rip-cage-hqvk):** the build-arg customization layer this phase originally planned — per-tool `INCLUDE_<TOOL>` toggles, `versions.env`, `--with` flags — was never built. The host-only tool manifest ([ADR-005 D7–D11](decisions/ADR-005-ecosystem-tools.md)) is the realized tool-inclusion + version-pin surface. The items below are kept for history with their realized status.
-
-- [x] Build-time (not runtime) tool inclusion — realized via the host-only manifest, not per-tool build-arg toggles ([ADR-005 D1](decisions/ADR-005-ecosystem-tools.md))
-- [x] Add UBS as default tool — baked unconditionally ([ADR-005 D2](decisions/ADR-005-ecosystem-tools.md))
-- [ ] Per-cage tool selection (the `--with` role) — **deferred** onto the manifest (Open-decision 8 / rip-cage-4c5) ([ADR-005 D4](decisions/ADR-005-ecosystem-tools.md))
-- [x] Version pinning — bundled tools as hardcoded Dockerfile `ARG` defaults, user tools via manifest `version_pin`; no `versions.env` ([ADR-005 D3](decisions/ADR-005-ecosystem-tools.md))
-- [x] Standard integration pattern — generalized into the manifest archetypes ([ADR-005 D5](decisions/ADR-005-ecosystem-tools.md))
-
-**Design:** [Ecosystem Tools](2026-03-27-ecosystem-tools-design.md)
-
-## Phase 2a: Optional Tools
-
-Add RANO (network monitoring) and CASS (session search) as optional tools.
-
-- [ ] RANO as optional build-arg
-- [ ] `rc monitor <name>` command wrapping RANO
-- [ ] CASS as optional build-arg
-- [ ] Session indexing in init script
-
-## Phase 2b: Multi-Agent Foundations
-
-Enable basic multi-agent workflows.
-
-- [ ] Container labels for agent identity ([ADR-006 D3](decisions/ADR-006-multi-agent-architecture.md))
-- [ ] `rc up --label` support
-- [ ] `rc ls` filtering by label
-- [ ] Optional `bv` (beads viewer) and `cm` (CASS memory) tools
-- [ ] Document Tier 1b multi-agent workflow (shared bind mount + git)
-
-**Design:** [Multi-Agent Architecture](2026-03-27-multi-agent-architecture.md)
-
-## Phase 2c: Swarm Grouping (Tier 2)
-
-Named groups of containers with lifecycle management.
-
-- [ ] `rc swarm create/ls/down/destroy`
-- [ ] Broadcast messaging
-- [ ] Optional worktree isolation per agent
-
-## Phase 3: Coordinated Agents (Tier 3)
-
-Structured multi-agent coordination.
-
-- [ ] Agent Mail integration (file reservations + messaging)
-- [ ] SLB integration (peer approval for dangerous commands)
-- [ ] `rc dashboard` TUI
-- [ ] VPS / clone mode support
+**Not planned: a Composefile.** msb 0.6.18 has no `msb compose` — six reserved keys and one reverted attempt — and sandboxes cannot reach each other by name. A second sandbox per project (a browser or database sidecar) would be rip-cage's to compose, and is parked until a project needs one.
 
 ---
 
@@ -150,41 +43,11 @@ Structured multi-agent coordination.
 
 | Document | What |
 |----------|------|
-| [Flywheel Investigation](2026-03-27-flywheel-investigation.md) | Full analysis of 18 Emanuel ecosystem tools |
-| [Phase 1 Hardening Design](2026-03-27-phase1-hardening-design.md) | Host Dolt connection, resource limits, health checks, zshrc |
-| [Ecosystem Tools Design](2026-03-27-ecosystem-tools-design.md) | Build-arg toggles, UBS, tool integration pattern |
-| [Multi-Agent Architecture](2026-03-27-multi-agent-architecture.md) | 3-tier progressive model, coordination, monitoring |
-| [ADR-004](decisions/ADR-004-phase1-hardening.md) | Phase 1 hardening decisions |
-| [ADR-005](decisions/ADR-005-ecosystem-tools.md) | Ecosystem tools integration decisions |
-| [ADR-006](decisions/ADR-006-multi-agent-architecture.md) | Multi-agent architecture decisions |
-| [ADR-015](decisions/ADR-015-mise-toolchain-provisioning.md) | Project toolchain provisioning via mise |
-| [ADR-016](decisions/ADR-016-cage-host-network-awareness.md) | Cage host-network awareness (CLAUDE.md + preflight probe) |
-| [ADR-012](decisions/ADR-012-egress-firewall.md) | Network egress firewall — L7 proxy, observe/block modes, DNS exfil heuristic |
-| [ADR-022](decisions/ADR-022-ssh-allowlist.md) | SSH host + key allowlist; `rc reload` hot-reload |
-| [ADR-023](decisions/ADR-023-secret-path-mount-denylist.md) | Secret-path mount denylist; `--allow-risky-mount` override |
+| [ADR-031](decisions/ADR-031-opinionated-distribution-of-microsandbox.md) | The distribution positioning and everything it subtracts |
+| [ADR-029](decisions/ADR-029-msb-migration.md) | The Docker → microsandbox cutover |
 | [ADR-024](decisions/ADR-024-prompt-injection-threat-model.md) | Prompt-injection threat model |
+| [ADR-009](decisions/ADR-009-ux-overhaul.md) | Harm-reduction positioning |
+| [ADR-008](decisions/ADR-008-open-source-publication.md) | Versioning, CI gate, release ceremony |
+| [decisions/INDEX.md](decisions/INDEX.md) | Every ADR, with retired-or-evolved status |
 
-## Flywheel Research Repos
-
-Rip-cage draws on several tools from [Dicklesworthstone's agentic coding flywheel](https://github.com/Dicklesworthstone/agentic_coding_flywheel_setup). The table below lists upstream repos relevant to the roadmap.
-
-| Upstream | What |
-|----------|------|
-| `Dicklesworthstone/ntm` | Named Tmux Manager — multi-agent session orchestration |
-| `Dicklesworthstone/simultaneous_launch_button` | SLB — two-person rule for dangerous commands |
-| `Dicklesworthstone/mcp_agent_mail` | Agent Mail — inter-agent communication + file reservations |
-| `Dicklesworthstone/coding_agent_account_manager` | CAAM — credential management + rotation |
-| `Dicklesworthstone/coding_agent_session_search` | CASS — unified session search |
-| `Dicklesworthstone/cass_memory_system` | CM — procedural memory with confidence decay |
-| `Dicklesworthstone/cross_agent_session_resumer` | CASR — session portability across providers |
-| `Dicklesworthstone/beads_rust` | br — Rust beads (JSONL, no Dolt) |
-| `Dicklesworthstone/beads_viewer` | bv — graph-aware TUI for beads |
-| `Dicklesworthstone/ultimate_bug_scanner` | UBS — bug scanner, 9 languages |
-| `Dicklesworthstone/meta_skill` | ms — knowledge management with semantic search |
-| `Dicklesworthstone/process_triage` | pt — Bayesian zombie process cleanup |
-| `Dicklesworthstone/wezterm_automata` | FrankenTerm — swarm terminal platform |
-| `Dicklesworthstone/system_resource_protection_script` | SRPS — workstation resource protection |
-| `Dicklesworthstone/toon_rust` | TOON — token-optimized notation |
-| `Dicklesworthstone/rano` | RANO — network observer for AI CLIs |
-| `Dicklesworthstone/post_compact_reminder` | Post-compact context reminder hook |
-| `Dicklesworthstone/agent_settings_backup_script` | asb — agent config backup (NOT for rip-cage) |
+Design docs from earlier phases stay in `docs/2026-*.md` and `history/` with their original mechanism text. They are history, not instruction.

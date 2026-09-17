@@ -1,83 +1,112 @@
 # Rip Cage
 
-Running Claude Code with `--dangerously-skip-permissions` is never safe. Rip cage doesn't change that.
+Rip cage is a tested **distribution** of [**microsandbox**](https://github.com/microsandbox/microsandbox) for running Claude Code and pi with permissions off.
 
-But many of us do it anyway. If that's you, at least put your Claude in a cage.
+It finds your Anthropic login in your keychain and hands it to msb's `--secret`, so the token never enters the VM. It turns a blocked host into a one-line fix. And it ships the suite that proves your cage holds.
 
-Rip cage wraps your project in a [microsandbox](https://github.com/microsandbox/microsandbox) (msb, libkrun microVM) that intercepts every shell command and outbound connection. It won't make your agent safe — it limits the blast radius when it goes wrong. And it's **your existing Claude Code (or pi) workflow, caged** — your repo, credentials, skills, and tools come with you. Nothing to migrate.
+Running Claude Code with `--dangerously-skip-permissions` is never safe. Rip cage doesn't change that. But many of us do it anyway. If that's you, at least put your Claude in a cage.
+
+## What msb provides, what rip-cage adds
+
+microsandbox (`msb`) boots an OCI image as a libkrun microVM — its own kernel, its own network stack — from a small YAML config. That is the isolation. Rip cage is the curation on top of it.
+
+| msb provides | rip-cage adds |
+|---|---|
+| The microVM boundary — own kernel, own network stack | The curated agent image and its init |
+| Default-deny egress and DNS at that boundary | The keychain → `--secret` credential bootstrap |
+| `--secret`: a credential the guest never holds | The denial → fix → relaunch repair loop |
+| Read-only mounts | The floor probe, run on *your* built image |
+| Recreate a sandbox with the same mounts | The proving suite (`rc test`) |
+| The config schema | The operating knowledge, in three skills |
+
+Rip cage never reimplements what msb ships, and never claims msb's isolation as its own.
+
+## Where this sits
+
+Anthropic's [sandbox environments guide](https://code.claude.com/docs/en/sandbox-environments) compares six ways to isolate Claude Code, from the built-in Bash sandbox up to a virtual machine, and says to run `--dangerously-skip-permissions` inside a container, a VM, or the sandbox runtime.
+
+Rip cage is the **virtual machine** row: a full operating system with its own kernel. That row's listed cost is *setup effort: high*. Removing that cost is the whole job.
 
 ## Quick start
 
-**1. Install** (macOS / Linux — needs both Docker (image build) and msb (runtime), with Claude Code authenticated on your host):
+**1. Install.** macOS or Linux. You need Docker (to build the image) and msb (to run it), with Claude Code already authenticated on your host.
 
 ```bash
 brew install jsnyde0/rip-cage/rip-cage
 ```
 
-**2. Compose your cage.** Ask your agent — the [`cage-config`](.claude/skills/cage-config/SKILL.md) skill writes a **reviewable cage config** at `~/.config/rip-cage/projects/<cage>.yaml` (mounts, secrets, egress allowlist), and [`cage-image`](.claude/skills/cage-image/SKILL.md) writes the Dockerfile when a cage needs a tool the base image lacks. Review both, then `rc build`.
+**2. Write the cage config.** Ask your agent: the [`cage-config`](.claude/skills/cage-config/SKILL.md) skill writes one reviewable file at `~/.config/rip-cage/projects/<cage>.yaml` — mounts, secrets, egress allowlist. That file is the whole project config; `rc` merges nothing into it.
 
-**3. Run it:**
+**3. Build the image and run:**
 
 ```bash
+rc build
 cd ~/projects/my-app
-rc up .          # then run: claude
+rc up .          # then, in the caged shell: claude
 ```
-
-You're in a caged shell — run `claude` (or `pi`) and let it rip.
-
-> **Just kicking the tires?** Skip step 2 — `rc up .` pulls a ready-made default cage (Claude Code + pi + destructive-command guard) from GHCR. Compose your own when you need more. First run asks which directories cages may touch.
 
 New here? [Getting Started](docs/guides/getting-started.md) walks a first run end to end.
 
-## Composable, not bundled
-
-Rip cage welds a containment floor and blesses nothing above it (ADR-005 D12): agents, command guards, multiplexers, and plain tools are all **recipes you compose into the image** via your own Dockerfile — never `rc` source edits. Adding a Postgres CLI is a few lines you (or the [`cage-image`](.claude/skills/cage-image/SKILL.md) skill) paste from a [recipe](examples/README.md); the composition surface is a small set of documented [seams](docs/reference/README.md).
-
-Config layers so you set host-wide defaults once and override per project — global `~/.config/rip-cage/config.yaml` + per-project `<repo>/.rip-cage.yaml`, merged on every `rc up` (`rc config show` prints the merged result with each field's source). See [layered config](docs/reference/config.md).
+Need a tool the base image lacks? The [`cage-image`](.claude/skills/cage-image/SKILL.md) skill writes a Dockerfile that starts `FROM rip-cage:latest`. Something blocked or broken at runtime? [`cage-ops`](.claude/skills/cage-ops/SKILL.md).
 
 ## The safety model
 
-**Layers, not walls.** No single layer stops a motivated attacker — together they contain the blast radius of an agent that goes wrong, including one following instructions injected via a fetched web page or README (ADR-024).
+**Layers, not walls.** No single layer stops a motivated attacker. Together they contain the blast radius of an agent that goes wrong — including one following instructions injected via a fetched web page or README ([ADR-024](docs/decisions/ADR-024-prompt-injection-threat-model.md)).
 
-- **Containment floor — always on.** The msb host/VM boundary, default-deny egress + DNS (every connection denied unless explicitly allowed), filesystem sandbox, non-root user, secret-path denylist, read-only `.git/hooks`. Welded in; never composable away.
-- **Command guards — default-on recipe.** DCG blocks destructive commands (`rm -rf /` → `DENIED`; chaining with `&&`/`;` doesn't slip past).
-- **Egress: default-deny + curated allowlist.** Fresh cages ship with a small curated allowlist (the hosts a basic Claude turn needs); anything else is denied and logged. Add a host with `rc allowlist add <host> --cage <name>` (or the agent surfaces the request in prose) and `rc reload` to apply — see [egress.md](docs/reference/egress.md) for the deny→fix→reload repair loop.
-- **Credential non-possession — default for the dominant secrets.** Declare `auth.credentials: [{source_env, hosts}]` and the agent runs on a placeholder token while msb `--secret` injects the real value on the wire toward the named host(s) only, so a prompt-injected agent has nothing to exfiltrate. No proxy to compose.
+- **The microVM boundary.** msb runs the cage as a separate kernel on virtualized hardware. Never composable away.
+- **Egress: default-deny.** Nothing leaves the cage except the hosts your config names. A denied host fails at DNS, client-side, in milliseconds — `rc doctor` reads the trace and prints the exact line to add.
+- **Credentials the cage never holds.** The config binds a credential name to the hosts it may travel to; msb injects the real value on the wire and the guest sees only a placeholder. This is msb's `--secret`. What rip-cage adds is finding the value for you — today, the Claude login in your macOS keychain.
+- **A mount floor you don't write.** `rc up` reads a shipped list of credential locations and refuses to launch a config that mounts one, covering any it finds inside a mounted tree.
+- **A floor probe on the built image.** It inspects the artifact — non-root user, sudo scope, PATH resolution, guard-file ownership — not a declaration describing it. It runs at every boot and at the head of `rc test`, with no opt-out.
 
-Git authenticates over HTTPS with a per-cage token (there is no ssh cluster). Full stack: [safety-stack.md](docs/reference/safety-stack.md), [egress.md](docs/reference/egress.md).
+Full stack: [safety-stack.md](docs/reference/safety-stack.md) · [egress.md](docs/reference/egress.md) · [secret-posture.md](docs/reference/secret-posture.md).
+
+## Composable, not bundled
+
+Rip cage welds a containment floor and blesses nothing above it ([ADR-005 D12](docs/decisions/ADR-005-ecosystem-tools.md)). Agents, command guards, multiplexers and plain tools are all things you compose into your own image:
+
+```dockerfile
+FROM rip-cage:latest
+RUN ...
+```
+
+Adding a Postgres client is a few lines you (or the [`cage-image`](.claude/skills/cage-image/SKILL.md) skill) paste from a [recipe](examples/README.md). A long-running process or a multiplexer also drops a small boot-descriptor fragment into the image, which init reads at start. No `rc` source edits, ever.
 
 ## Everyday commands
 
+Six verbs. Each does something plain shell cannot do identically every run.
+
 | Command | What it does |
 |---|---|
-| `rc up [path]` / `rc down` / `rc destroy` | Start-or-resume / stop / remove a cage |
-| `rc ls` / `rc attach [name]` | List / re-attach to cages |
-| `rc exec <cage> -- <cmd>` | Run a one-off command in a cage |
-| `rc doctor [name]` | Diagnose a cage (`--host` for daemon liveness) |
-| `rc config show \| get \| set \| add \| remove` · `rc allowlist show \| add` | Inspect the effective config (provenance view) · edit it host-side (surgical, comment-preserving) · manage the egress allowlist |
+| `rc up [path]` | Start or resume a cage (`--replace` to recreate a running one against the current config) |
+| `rc build [--file PATH]` | Build the image from one host-side Dockerfile, then load it into msb |
+| `rc doctor [name]` | Diagnose a cage — including which host it was just denied |
+| `rc test [name]` | Run the proving suite against your composed image |
+| `rc auth refresh` | Re-pull the Claude login from your keychain |
+| `rc destroy <name>` | Remove the cage and the volumes `rc` created for it |
 
-Every command, flag, and JSON output: [CLI reference](docs/reference/cli-reference.md).
+Everything else is an msb one-liner or a file edit; the [`cage-ops`](.claude/skills/cage-ops/SKILL.md) skill is the sole home of the table that says which. Every flag and JSON output: [CLI reference](docs/reference/cli-reference.md).
 
 ## The worktree workflow
 
-Git worktrees let you run multiple caged agents at once, each in its own container:
+Git worktrees let you run several caged agents at once, each in its own microVM:
 
 ```bash
 git worktree add ../worktrees/feature-auth
 rc up ../worktrees/feature-auth   # meanwhile you stay on main
 ```
 
-Changes sync instantly (bind mount, no git push). Spin up as many as you want.
+Changes sync live over the mount — no git push. Each worktree needs its own cage config.
 
 ## Going further
 
-- [Recipe catalog](examples/README.md) · [reference + seam catalog](docs/reference/README.md)
-- [Walk-away / headless cages](examples/compose-walk-away-cage.md) — unattended runs
-- [Credential non-possession](docs/reference/egress.md) — `auth.credentials` + msb `--secret`, the default platform property that replaced composed mediators ([composition-seam.md](docs/reference/composition-seam.md) has the retirement details)
-- [Auth](docs/reference/auth.md) — OAuth, Keychain, and pi's Codex/Anthropic/Gemini providers
+- [Recipe catalog](examples/README.md) · [reference index](docs/reference/README.md) · [roadmap](docs/ROADMAP.md)
+- [Config](docs/reference/config.md) — the one file a cage launches from, field by field
+- [Egress](docs/reference/egress.md) — the denied-host repair loop
+- [Auth](docs/reference/auth.md) — OAuth, keychain, and pi's Codex / Anthropic / Gemini providers
 - [Multi-account rotation](docs/guides/multi-account-rotation.md) — spread rate limits across accounts
 
-**pi is first-class** alongside Claude Code in the same image — same guards, isolation, and egress firewall. Want a batteries-included dev environment instead? [ClaudeBox](https://github.com/RchGrav/claudebox) may fit better — rip cage cages the workflow you already have.
+**pi is first-class** alongside Claude Code in the same image — same floor, same isolation, same egress policy. Want a batteries-included dev environment instead? [ClaudeBox](https://github.com/RchGrav/claudebox) may fit better.
 
 ## Contributing · License
 
