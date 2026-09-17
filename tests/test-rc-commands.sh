@@ -1056,14 +1056,14 @@ else
   fail "multi-agent-architecture.md missing Tier 1b rename"
 fi
 
-# --- Test 40: ROADMAP.md line 76 area has Tier 1b (not bare Tier 1) ---
-echo ""
-echo "=== Test 40: ROADMAP.md multi-agent workflow line uses Tier 1b ==="
-if grep -q "Tier 1b" "${REPO_ROOT}/docs/ROADMAP.md"; then
-  pass "ROADMAP.md contains Tier 1b reference"
-else
-  fail "ROADMAP.md missing Tier 1b (line 76 should be updated)"
-fi
+# --- Test 40: RETIRED (rip-cage-ely4.14) ---
+# Asserted that docs/ROADMAP.md carried the "Tier 1b" tier name, as bookkeeping
+# for the v0.3 Tier 1a/1b rename. The ROADMAP's multi-agent phase plan was
+# deleted when the roadmap was rewritten to the distribution positioning
+# (ADR-031 D1/D8): those phases planned a product this repo is not building.
+# Tests 38 and 39 above still assert the rename in its durable homes --
+# ADR-006 and docs/2026-03-27-multi-agent-architecture.md -- which is where a
+# historical rename belongs. A living roadmap is the wrong place to pin one.
 
 # --- Test 41: cli-reference.md Running multiple agents section lacks v0.3 forward-pointer ---
 echo ""

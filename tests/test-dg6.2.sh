@@ -181,14 +181,12 @@ else
   fail "AGENTS.md does not mention --output json"
 fi
 
-# --- Test 15: AGENTS.md mentions RC_ALLOWED_ROOTS ---
-echo ""
-echo "=== Test 15: AGENTS.md mentions RC_ALLOWED_ROOTS ==="
-if grep -q "RC_ALLOWED_ROOTS" "${REPO_ROOT}/AGENTS.md"; then
-  pass "AGENTS.md mentions RC_ALLOWED_ROOTS"
-else
-  fail "AGENTS.md does not mention RC_ALLOWED_ROOTS"
-fi
+# --- Test 15: RETIRED (rip-cage-ely4.14) ---
+# Asserted that AGENTS.md told a calling agent to set RC_ALLOWED_ROOTS before
+# rc up. The allowed-roots guard is deleted (ADR-031 D2: there is nothing left
+# to guard once every mount is an explicit line in the cage config), so the
+# variable is read by nothing. The assertion had inverted into a control that
+# would only stay green while the agent docs kept teaching a dead variable.
 
 # --- Test 16: rc init is removed — verify it returns unknown-command (rip-cage-kt25) ---
 echo ""
