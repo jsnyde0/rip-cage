@@ -76,14 +76,31 @@ _emit_workspace_config_base_url_warning() {
 # _emit_denylist_denial <resolved-path> <matched-pattern>
 #
 # Print the ADR-023 D6 error message to stderr. Does not exit — caller must exit.
+#
+# The persistent override NAMES THE FILE THIS RUN READ (rip-cage-ely4.7.14).
+# It used to print a risky-mount-exemption YAML block from the retired rip-cage
+# config schema — a key nothing reads, so an operator who followed the hint
+# edited a no-op and concluded the cage was broken rather than the hint. The
+# protected-paths list is a plain one-name-per-line file and its location
+# depends on $RC_PROTECTED_PATHS / $XDG_CONFIG_HOME, so the message resolves it
+# rather than describing the search order and leaving the operator to guess.
 _emit_denylist_denial() {
   local _rpath="$1" _pattern="$2"
+  local _list
+  _list=$(_protected_paths_resolve 2>/dev/null) || _list=""
   echo "Error: refusing to mount ${_rpath} — matched secret-path denylist pattern '${_pattern}'." >&2
   echo "  Override (one-shot):   rc up --allow-risky-mount ${_rpath} ..." >&2
-  echo "  Override (persistent): remove that name from your protected-paths list:" >&2
-  echo "                           mounts:" >&2
-  echo "                             allow_risky:" >&2
-  echo "                               - ${_rpath}" >&2
+  if [[ -n "$_list" ]]; then
+    echo "  Override (persistent): drop that mount line from this cage's config, or — if you have" >&2
+    echo "                         decided '${_pattern}' is not a secret — remove that line from the" >&2
+    echo "                         protected-paths list this run read:" >&2
+    echo "                           ${_list}" >&2
+  else
+    echo "  Override (persistent): drop that mount line from this cage's config, or remove" >&2
+    echo "                         '${_pattern}' from your protected-paths list (\$RC_PROTECTED_PATHS," >&2
+    echo "                         \$XDG_CONFIG_HOME/rip-cage/protected-paths, or the copy shipped" >&2
+    echo "                         beside rc)." >&2
+  fi
 }
 
 
@@ -1908,18 +1925,8 @@ _up_translate_docker_args_to_msb() {
 # net-rule/secret/tls concern is genuinely new (msb primitives with no
 # pre-msb docker equivalent) and belongs in this JSON contract.
 #
-# D5 regression contract (scoped to CONFIG hosts): with no config files
-# present, the CONFIG contribution to allowed_hosts is empty and credentials
-# is empty. It is NOT a whole-cage deny-all claim: rip-cage-tsf2.8 unions the
-# manifest's declared tool egress in (see below), and cmd_up SEEDS the default
-# floor manifest (_manifest_ensure_seeded, up.sh:2336) BEFORE this builder
-# runs — so a real unconfigured cage boots reachable to exactly the floor
-# manifest's declared egress hosts (beads/dolt/gh -> api.github.com,
-# doltremoteapi.dolthub.com, github.com) and ZERO config hosts. The genuinely-
-# empty {"allowed_hosts":[],"credentials":[]} output only occurs when the
-# manifest file is absent AND no config — a defensive branch not reachable via
-# normal cmd_up (seeding precedes the builder). The IOC denylist gate is what
-# keeps this floor-egress default safe, not an empty allowlist.
+# WHAT THIS RETURNS NOW: always the empty contract. Both of its former
+# contributions moved into the cage config (ADR-031 D2/D4) — see the body.
 _up_build_egress_config_json() {
   local _uec_path="$1"
   # BOTH CONFIG CONTRIBUTIONS ARE THE CAGE CONFIG'S OWN NOW (ADR-031 D2).
@@ -1932,42 +1939,16 @@ _up_build_egress_config_json() {
   # manifest union still lands.
   local _uec_allowed_hosts='[]' _uec_credentials='[]'
 
-  # rip-cage-tsf2.8: union manifest-declared tool egress: hosts into
-  # allowed_hosts (ADR-005 D3 — a composed tool declares the hosts it needs to
-  # reach; those must materialize as msb --net-rule allow entries, not silently
-  # vanish unless the operator re-types them into network.allowed_hosts). This
-  # is the wiring _manifest_egress_hosts_json's own comment claimed but never
-  # had — the pre-cutover rip-cage-4c5.3 union, re-homed onto the msb net-rules
-  # path.
-  #
-  # WHICH FILE GOVERNS (baked-vs-runtime divergence): the union source is the
-  # HOST manifest at up-time (_manifest_global_path -> ~/.config/rip-cage/
-  # tools.yaml, which cmd_up seeds with the floor default if absent). Tool
-  # BINARIES are baked into the image at `rc build`; egress RULES are runtime
-  # msb flags. But those rules materialize ONLY at cage CREATE (this builder ->
-  # _msb_create net flags) and at any recreate that goes through this same
-  # machinery (`rc up --replace`, or the stopped-cage converge) — NOT on a
-  # plain `rc up` that resumes a stopped cage unchanged: the resume path
-  # (_up_prepare_resume_secrets) consumes only the secret-env side of this
-  # builder, and `_msb_start` keeps the creation-time net rules verbatim. So a
-  # host-side tools.yaml egress edit takes effect on the next recreate or fresh
-  # create, but a plain resume boots with the OLD rules. The two can
-  # legitimately diverge; the host tools.yaml is authoritative for egress at
-  # create/recreate, the baked image for the binary.
-  #
-  # The `-f` guard is defensive (builder called before the manifest exists);
-  # it is NOT a deny-all gate — cmd_up SEEDS the floor manifest before this runs
-  # (up.sh:2336), so in production the guard always passes and an unconfigured
-  # cage reaches exactly the floor manifest's declared egress (beads/dolt/gh)
-  # plus zero config hosts. This restores pre-cutover semantics (rip-cage-4c5.3
-  # unioned unconditionally). The IOC denylist gate — not an empty allowlist —
-  # is the guard that keeps floor egress safe.
-  #
   # THE MANIFEST EGRESS UNION IS GONE (ADR-031 D4). Tool egress used to arrive
-  # as a second declaration source unioned in here; the cage config's own
-  # network.allow list is the only source now, so what an operator reads in the
-  # config is exactly what msb enforces. Its floor entries ship in the config
-  # template rather than being merged in behind the operator's back.
+  # here as a second declaration source unioned into allowed_hosts; the cage
+  # config's own network.allow list is the only source now, so what an operator
+  # reads in the config is exactly what msb enforces. Its floor entries ship in
+  # the config template rather than being merged in behind the operator's back.
+  #
+  # Egress is default-deny at the VM boundary either way (ADR-029 D2/D4, FIRM).
+  # An empty contract here is therefore SAFE, not permissive: msb allows only
+  # what the --conf file names. There is no denylist gate in rip-cage and never
+  # was one — the default-deny floor is the guard.
 
   jq -nc --argjson hosts "$_uec_allowed_hosts" --argjson creds "$_uec_credentials" \
     '{allowed_hosts: $hosts, credentials: $creds}'

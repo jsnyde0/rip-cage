@@ -1420,7 +1420,7 @@ mkdir -p "$E49_FAKE_SSH"
 e49_conf "${E49_ROOT}/bad.yaml" "  - \"${E49_PROJ}:/workspace\"
   - \"${E49_FAKE_SSH}:/home/agent/.ssh:ro\""
 rm -f "$E49_SENTINEL" "$E49_LOG"
-e49_run_rc env RC_CAGE_CONF="${E49_ROOT}/bad.yaml" "$RC" up "$E49_PROJ" >/dev/null 2>&1
+t60b_out=$(e49_run_rc env RC_CAGE_CONF="${E49_ROOT}/bad.yaml" "$RC" up "$E49_PROJ" 2>&1)
 t60b_rc=$?
 
 if [[ "$t60b_rc" -ne 0 ]]; then
@@ -1432,6 +1432,29 @@ if [[ -f "$E49_SENTINEL" ]]; then
   fail "60b: msb WAS spawned before the refusal — the check is fail-open (invocations: $(cat "$E49_LOG" 2>/dev/null))"
 else
   pass "60b: no msb subcommand ran — rc refused before the cage could exist"
+fi
+
+# --- (f) the refusal's persistent override points at a file that EXISTS ----
+# rip-cage-ely4.7.14: the hint used to print a YAML block from the retired
+# rip-cage config schema, so an operator who followed it edited a key nothing
+# reads. Two halves, and the SHAPE check is the one that catches a regression:
+# naming the resolved list file is only useful if no retired-schema block is
+# sitting next to it saying something different.
+#
+# The shipped list is the resolved one here because the scratch XDG dir has no
+# operator copy and this suite sets no RC_PROTECTED_PATHS — so asserting on the
+# path rc PRINTED, then checking that path exists, proves it resolved rather
+# than guessed.
+t60f_list=$(printf '%s\n' "$t60b_out" | sed -n 's/.*protected-paths list this run read: //p' | head -1)
+if [[ -n "$t60f_list" && -f "$t60f_list" ]]; then
+  pass "60f: the refusal names a protected-paths list file that exists (${t60f_list})"
+else
+  fail "60f: the refusal named no readable protected-paths list (named: '${t60f_list}'; message: ${t60b_out})"
+fi
+if printf '%s\n' "$t60b_out" | grep -q 'allow_risky'; then
+  fail "60f: the refusal still prints the retired mounts.allow_risky override (message: ${t60b_out})"
+else
+  pass "60f: the refusal prints no retired-schema override key"
 fi
 
 # --- (d) an unreadable protected-paths list refuses, with no msb spawned ---

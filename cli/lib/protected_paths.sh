@@ -264,6 +264,13 @@ _protected_paths_enforce() {
   local _entries
   _entries="$(_protected_paths_load)" || return 1
 
+  # NAME THE FILE THIS RUN READ in any refusal below (rip-cage-ely4.7.14). The
+  # list's location depends on $RC_PROTECTED_PATHS / $XDG_CONFIG_HOME, so
+  # "your protected-paths list" alone leaves the operator guessing which of the
+  # three candidates rc actually resolved.
+  local _list
+  _list="$(_protected_paths_resolve 2>/dev/null)" || _list=""
+
   local _mounts
   _mounts="$(_protected_paths_conf_bind_mounts "${_conf}")" || return 1
   [[ -z "${_mounts}" ]] && return 0
@@ -298,7 +305,7 @@ _protected_paths_enforce() {
       IFS="$_oldifs"
       for _component in "${_parts[@]}"; do
         if [[ "${_component}" == "${_entry}" ]]; then
-          echo "Error: the cage config ${_conf} mounts ${_host}, which is a protected path ('${_entry}' — see the protected-paths list). Refusing to launch before any msb call: rip-cage does not show a credential store into a cage (ADR-031 D2a). Remove that mount line, or remove '${_entry}' from your protected-paths list if you have decided it is not a secret." >&2
+          echo "Error: the cage config ${_conf} mounts ${_host}, which is a protected path ('${_entry}'). Refusing to launch before any msb call: rip-cage does not show a credential store into a cage (ADR-031 D2a). Remove that mount line from ${_conf}, or — if you have decided '${_entry}' is not a secret — remove that line from the protected-paths list this run read: ${_list:-\$RC_PROTECTED_PATHS, \$XDG_CONFIG_HOME/rip-cage/protected-paths, or the copy shipped beside rc}" >&2
           return 1
         fi
       done
