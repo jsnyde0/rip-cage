@@ -729,11 +729,27 @@ export RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}"
 # Lifecycle — stop/resume
 # -----------------------------------------------------------------------------
 
-# Check 12: rc down exits 0 (msb-native graceful stop -- ADR-029 D4)
-if "$RC" down "$CONTAINER_NAME" > /dev/null 2>&1; then
-  check "rc down exits 0" "pass"
+# Check 12: the cage stops cleanly, so Check 13 has a STOPPED cage to resume.
+#
+# `rc down` retired with the six-verb thinning (ADR-031 D3, rip-cage-ely4.7.3);
+# a one-off stop is `msb stop <cage>` now. The old JSON envelope it returned
+# ({name, action:"stopped", status:"exited"}) has no msb equivalent, so the
+# assertion reads the cage's actual STATE rather than a response shape — which
+# is the better question anyway: what this check is really for is giving
+# Check 13 a stopped cage, and a stop that reports success without stopping
+# anything would make that resume vacuous.
+msb stop "$CONTAINER_NAME" > /dev/null 2>&1 || true
+_e2e_stopped_state=""
+for _e2e_i in 1 2 3 4 5 6 7 8 9 10; do
+  _e2e_stopped_state=$(_msb_sandbox_state "$CONTAINER_NAME" 2>/dev/null || true)
+  [[ "$_e2e_stopped_state" != "running" ]] && break
+  sleep 1
+done
+if [[ -n "$_e2e_stopped_state" && "$_e2e_stopped_state" != "running" ]]; then
+  check "msb stop leaves the cage not-running" "pass"
 else
-  check "rc down exits 0" "fail"
+  check "msb stop leaves the cage not-running" "fail" \
+    "state='${_e2e_stopped_state:-missing}'"
 fi
 
 # Check 13: rc up on same workspace resumes the STOPPED cage — cage is
