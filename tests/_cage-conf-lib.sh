@@ -44,7 +44,7 @@ _cage_conf_claude_json_line() {
   printf '  - "%s/.claude.json:/home/agent/.claude.json:ro"\n' "$_home"
 }
 
-# cage_conf_for <project-dir> [image-ref]
+# cage_conf_for <project-dir> [image-ref] [host ...]
 #
 # Write a minimal-but-real cage config for PROJECT-DIR and echo its path.
 # Minimal-but-real matters: it carries the four things every cage needs (an
@@ -54,6 +54,14 @@ _cage_conf_claude_json_line() {
 # read-only host-Claude-config mount when this HOME has that file, so fixtures
 # match what ships (rip-cage-ely4.7.10) — see _cage_conf_claude_json_line for
 # the HOME-at-call-time rule that comes with it.
+#
+# HOSTS are bare domains, one `<host>:tcp:443` network.allow line each, same as
+# cage_conf_install's tail. A case whose cage must REACH something (a toolchain
+# download, a package registry) passes them here (rip-cage-ely4.7.11). Egress is
+# default-deny at the VM boundary and this config is the only thing that opens
+# it (ADR-031 D2), so a case that skips this fails on a DNS deny rather than on
+# its own subject. Default when none are passed: api.anthropic.com alone.
+# Pass "" for IMAGE-REF to take the default image and still supply hosts.
 cage_conf_for() {
   local _proj
   # RESOLVE the project path before writing it into a mount line. msb does not
@@ -62,7 +70,13 @@ cage_conf_for() {
   # to "mount ...: Not a directory (os error 20)" (measured, msb 0.6.18, spike
   # rip-cage-ely4.16). The shipped template says the same thing to operators.
   _proj=$(cd "$1" 2>/dev/null && pwd -P) || _proj="$1"
-  local _image="${2:-rip-cage:latest}"
+  local _image="${2:-}"
+  [[ -n "$_image" ]] || _image="rip-cage:latest"
+  # bash 3.2: `shift 2` fails outright when fewer than 2 args were passed, so
+  # only shift what is there before collecting the variadic host list.
+  if [[ "$#" -ge 2 ]]; then shift 2; else shift "$#"; fi
+  local -a _hosts=("${@:-}")
+  [[ "$#" -gt 0 ]] || _hosts=("api.anthropic.com")
 
   # WHERE this lands is load-bearing for two separate reasons.
   #
@@ -88,8 +102,11 @@ $(_cage_conf_claude_json_line)
 network:
   policy: none
   allow:
-    - "api.anthropic.com:tcp:443"
 CAGE_CONF
+  local _h
+  for _h in "${_hosts[@]}"; do
+    printf '    - "%s:tcp:443"\n' "$_h" >> "$_conf"
+  done
 
   printf '%s\n' "$_conf"
 }

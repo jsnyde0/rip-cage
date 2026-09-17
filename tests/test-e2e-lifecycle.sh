@@ -144,6 +144,25 @@ fi
 # credential-hiding $HOME override.
 REAL_MSB_HOME="${HOME}/.microsandbox"
 
+# Same problem, same shape, for DOCKER (rip-cage-ely4.7.11, measured 2026-09-17).
+# `rc up` preflights the docker daemon, and docker resolves its context -- on
+# macOS the Docker Desktop / OrbStack socket -- through $HOME/.docker. Under the
+# credential-hiding scratch HOME below, that directory does not exist, the
+# preflight fails with "Docker daemon is not reachable", and auth-warn cases 5
+# and 6 never start a cage at all: they failed on the fixture, not on the
+# auth-warn behaviour they exist to check. Symptom was identical to a stopped
+# daemon, and their log lived in a dir CLEANUP wiped, so the evidence vanished
+# every run (see _keep_log above).
+#
+# _link_real_docker <scratch-home> gives that HOME the real docker context and
+# NOTHING else. The point of the scratch HOME is that ~/.claude, ~/.claude.json
+# and ~/.pi are absent; a symlink to ~/.docker leaves all three absent.
+REAL_DOCKER_CFG="${HOME}/.docker"
+_link_real_docker() {
+  [[ -e "$REAL_DOCKER_CFG" ]] || return 0
+  ln -sfn "$REAL_DOCKER_CFG" "${1}/.docker" 2>/dev/null || true
+}
+
 unset RC_CONFIG_GLOBAL
 unset XDG_CONFIG_HOME
 GLOBAL_CFG_TMP=$(_host_scratch_mktemp_d cfg)
@@ -280,6 +299,22 @@ CLEANUP() {
   # NOTE: do NOT remove rc-mise-cache -- it is host-scoped (ADR-015 D2)
 }
 trap CLEANUP EXIT
+
+# _keep_log <src> -- copy a per-case log out of the staging root CLEANUP wipes,
+# into KEPT_LOGS, and echo the surviving path (rip-cage-ely4.7.11).
+#
+# WHY THIS EXISTS. The auth-warn cases write their `rc up` transcript under
+# AUTH_TMP, which CLEANUP removes on EXIT. A failing case therefore printed a
+# path that no longer existed by the time anyone read the failure, so the one
+# artifact that says WHY the cage did not start was gone every run. Failure
+# details name the kept copy.
+KEPT_LOGS=$(mktemp -d "${TMPDIR:-/tmp}/rc-e2e-logs-XXXXXX")
+_keep_log() {
+  local _src="$1" _dst
+  _dst="${KEPT_LOGS}/$(basename "$_src")"
+  cp "$_src" "$_dst" 2>/dev/null || return 0
+  printf '%s\n' "$_dst"
+}
 
 # Pre-cleanup: remove any leftover state from a prior aborted run so we
 # don't accidentally hit the name-collision code path.
@@ -692,6 +727,7 @@ fi
 _aws5="${AUTH_TMP}/rc-auth/case5"
 _ac5_out="${AUTH_TMP}/case5-up.out"
 _ac5_home=$(_host_scratch_mktemp_d h5)
+_link_real_docker "$_ac5_home"
 mkdir -p "$_aws5"
 git -C "$_aws5" init > /dev/null 2>&1
 HOME="$_ac5_home" \
@@ -704,7 +740,7 @@ HOME="$_ac5_home" \
 _ac5_name=$(_find_cage_by_source_path "$(realpath "$_aws5")")
 _track_cage "$_ac5_name"
 if [[ -z "$_ac5_name" ]]; then
-  check "auth-warn case 5: no Claude auth → WARNING present (rip-cage-f4i)" "fail" "container did not start (see $_ac5_out)"
+  check "auth-warn case 5: no Claude auth → WARNING present (rip-cage-f4i)" "fail" "container did not start (log kept at $(_keep_log "$_ac5_out"))"
 else
   # Assert on captured rc up stdout, gated on an init sentinel so an empty capture
   # fails loud instead of trivially passing the absence-of-WARNING check (rip-cage-igm).
@@ -733,6 +769,7 @@ rm -rf "$_ac5_home"
 _aws6="${AUTH_TMP}/rc-auth/case6"
 _ac6_out="${AUTH_TMP}/case6-up.out"
 _ac6_home=$(_host_scratch_mktemp_d h6)
+_link_real_docker "$_ac6_home"
 _ac6_envfile="${AUTH_TMP}/case6.env"
 mkdir -p "$_aws6"
 git -C "$_aws6" init > /dev/null 2>&1
@@ -748,7 +785,7 @@ HOME="$_ac6_home" \
 _ac6_name=$(_find_cage_by_source_path "$(realpath "$_aws6")")
 _track_cage "$_ac6_name"
 if [[ -z "$_ac6_name" ]]; then
-  check "auth-warn case 6: CLAUDE_CODE_OAUTH_TOKEN set (non-possession) → no WARNING (rip-cage-df1c)" "fail" "container did not start (see $_ac6_out)"
+  check "auth-warn case 6: CLAUDE_CODE_OAUTH_TOKEN set (non-possession) → no WARNING (rip-cage-df1c)" "fail" "container did not start (log kept at $(_keep_log "$_ac6_out"))"
 else
   # See case 1: assert on captured rc up stdout, gated on an init sentinel (rip-cage-igm).
   _ac6_log=$(cat "$_ac6_out" 2>/dev/null || true)
@@ -994,6 +1031,12 @@ mkdir -p "$_dcg_ws"
 git -C "$_dcg_ws" init > /dev/null 2>&1
 
 # Write .rip-cage.yaml with dcg.custom_rule_paths pointing at workspace rule pack.
+# HEADS-UP for whoever composes the dcg recipe and un-skips checks 24-25: `rc`
+# reads nothing from .rip-cage.yaml any more (ADR-031 D2 retired the schema), so
+# this declaration is inert and the RO-mount it is supposed to drive will not
+# happen. Re-express the custom-rule mount as a `mounts:` line in the cage config
+# before trusting a green here. Left as-is rather than half-fixed blind: the
+# chain cannot be proven on an image without the recipe (rip-cage-ely4.7.11).
 cat > "${_dcg_ws}/.rip-cage.yaml" << 'RIPCAGEYAML'
 version: 2
 dcg:
@@ -1037,6 +1080,25 @@ else
     "container not found -- rc up may have failed (see /tmp/rc-e2e-dcg-up.out)"
 fi
 
+# RECIPE-PRESENCE GATE (rip-cage-ely4.7.11, the ely4.7.5 shape). Checks 24-25
+# assert on dcg-guard, and dcg is an OPT-IN composable recipe (ADR-005 D12) --
+# the base image deliberately does not carry it. Against a stock rip-cage:latest
+# the chain has nothing to fire, which is a correct base image, not a
+# regression. An absent recipe SKIPS with its reason named; it never FAILs, and
+# it never silently passes. The gate probes the live cage rather than the
+# config, because what these checks need is the binary at its runtime path.
+_dcg_recipe_present=false
+if [[ -n "$_dcg_container" ]] \
+   && msb exec "$_dcg_container" -- test -x /usr/local/lib/rip-cage/bin/dcg-guard >/dev/null 2>&1; then
+  _dcg_recipe_present=true
+fi
+
+if [[ "$_dcg_recipe_present" != "true" ]]; then
+  echo "SKIP: DCG custom-rule chain (checks 24-25) — the dcg recipe is not composed into ${IMAGE}"
+  echo "      (/usr/local/lib/rip-cage/bin/dcg-guard absent). dcg is opt-in (ADR-005 D12); compose"
+  echo "      examples/dcg/ into your image to exercise this chain."
+fi
+
 # Check 24: dcg-guard DENIES the sentinel command via the mounted custom config.
 # The dcg-guard wrapper: cd /usr/local/lib/rip-cage, sets DCG_CONFIG, strips
 # DCG_* overrides, then exec /usr/local/bin/dcg "$@".
@@ -1044,13 +1106,15 @@ fi
 # from stdin and outputs JSON with permissionDecision: "deny" on block.
 _dcg_deny_result=""
 _dcg_deny_stderr=""
-if [[ -n "$_dcg_container" ]]; then
+if [[ "$_dcg_recipe_present" == "true" ]]; then
   _dcg_deny_result=$(msb exec "$_dcg_container" -- bash -c \
     'echo "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ripcagetestsentinel --e2e-test\"}}" | /usr/local/lib/rip-cage/bin/dcg-guard' \
     2>/tmp/rc-e2e-dcg-deny.err)
   _dcg_deny_stderr=$(cat /tmp/rc-e2e-dcg-deny.err 2>/dev/null)
 fi
-if echo "$_dcg_deny_result" | grep -qE '"permissionDecision".*"deny"'; then
+if [[ "$_dcg_recipe_present" != "true" ]]; then
+  : # skipped above, with its reason
+elif echo "$_dcg_deny_result" | grep -qE '"permissionDecision".*"deny"'; then
   check "DCG custom rule fires via rc-up->RO-mount->dcg-guard chain (rip-cage-hhh.13)" "pass"
 else
   # Distinguish a broken chain (RO-mount missing) from a genuine allow, so a
@@ -1066,16 +1130,16 @@ fi
 
 # Check 25: dcg-guard ALLOWS a benign command (proves chain functional, not fail-closed).
 _dcg_allow_result="no-output-expected"
-if [[ -n "$_dcg_container" ]]; then
+if [[ "$_dcg_recipe_present" == "true" ]]; then
   _dcg_allow_result=$(msb exec "$_dcg_container" -- bash -c \
     'echo "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls -la /tmp\"}}" | /usr/local/lib/rip-cage/bin/dcg-guard' \
     2>/dev/null)
-fi
-if [[ -z "$_dcg_allow_result" ]]; then
-  check "DCG allows benign command (chain not fail-closed) (rip-cage-hhh.13)" "pass"
-else
-  check "DCG allows benign command (chain not fail-closed) (rip-cage-hhh.13)" "fail" \
-    "expected empty (allow), got: ${_dcg_allow_result}"
+  if [[ -z "$_dcg_allow_result" ]]; then
+    check "DCG allows benign command (chain not fail-closed) (rip-cage-hhh.13)" "pass"
+  else
+    check "DCG allows benign command (chain not fail-closed) (rip-cage-hhh.13)" "fail" \
+      "expected empty (allow), got: ${_dcg_allow_result}"
+  fi
 fi
 
 # Cleanup DCG fixture container.
@@ -1098,33 +1162,55 @@ fi
 # these sub-tests passed `RIP_CAGE_EGRESS=off`, which disabled ALL egress
 # filtering -- mise could reach any host it needed with no declared
 # allowlist. Under msb there is no such escape hatch (default-deny at the
-# VM boundary, ADR-029 D4) -- RIP_CAGE_EGRESS is retired and would be a
-# no-op even if kept. Each workspace below therefore carries its own
-# .rip-cage.yaml declaring the SPECIFIC hosts mise/node/yarn provisioning
-# actually needs on the wire (discovered live via the
-# _msb_denied_domains_from_trace_log fix-hint miner against a real cage,
-# same miner cli/doctor.sh's posture probe uses) -- omitting this would
-# make every mise check below fail closed on a DNS deny, not a real
-# regression.
+# VM boundary, ADR-029 D4). Each case below therefore declares the SPECIFIC
+# hosts mise/node/yarn provisioning needs on the wire (discovered live via
+# the _msb_denied_domains_from_trace_log fix-hint miner against a real cage,
+# same miner cli/doctor.sh's posture probe uses) -- omitting this would make
+# every mise check below fail closed on a DNS deny, not a real regression.
+#
+# WHERE THOSE HOSTS GO (rip-cage-ely4.7.11, measured cause of three failures).
+# They used to be written into a per-workspace `.rip-cage.yaml` with the v2
+# `network.allowed_hosts` schema. ADR-031 D2 retired that file whole: `rc` reads
+# NOTHING from it, so the declarations were a no-op and these cages booted with
+# only the fixture default (api.anthropic.com) allowed. Every mise download then
+# failed on a DNS deny while the test read it as a provisioning regression. The
+# hosts now ride cage_conf_for's variadic tail, which is the live config.
 # -----------------------------------------------------------------------------
 
 MISE_TMP=$(_host_scratch_mktemp_d mise)
 MISE_TMP_RESOLVED=$(realpath "$MISE_TMP")
 mkdir -p "${MISE_TMP}/rc-mise"
 
+# _mise_conf_for <workspace> <host...> -- cage_conf_for plus the shared mise
+# cache volume the shipped template carries (share/rip-cage/cage.yaml.template:
+# named rc-mise-cache at /home/agent/.local/share/mise, host-scoped by design,
+# ADR-015 D2). The bare fixture declares no named volumes, so check 27's whole
+# subject -- a second cage reusing the first's downloads -- had nothing to hit.
+# Inserted after the workspace mount line rather than duplicating the template
+# here, so the fixture keeps tracking cage_conf_for.
+_mise_conf_for() {
+  local _mw="$1"; shift
+  local _mc
+  _mc=$(cage_conf_for "$_mw" "$IMAGE" "$@") || return 1
+  awk '
+    { print }
+    /:\/workspace"$/ && !done {
+      print "  - named: \"rc-mise-cache\""
+      print "    target: /home/agent/.local/share/mise"
+      print "    create: ensure-exists"
+      done = 1
+    }
+  ' "$_mc" > "${_mc}.mise" && mv "${_mc}.mise" "$_mc"
+  printf '%s\n' "$_mc"
+}
+
 # Check 26: mise provisions node version declared in .nvmrc (ADR-015 D3)
 _nvmrc_ws="${MISE_TMP}/rc-mise/nvmrc-test"
 mkdir -p "$_nvmrc_ws"
 printf '20.18.0\n' > "${_nvmrc_ws}/.nvmrc"
 git -C "$_nvmrc_ws" init > /dev/null 2>&1
-cat > "${_nvmrc_ws}/.rip-cage.yaml" << 'RIPCAGEYAML'
-version: 2
-network:
-  allowed_hosts:
-    - nodejs.org
-RIPCAGEYAML
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${DCG_TMP_RESOLVED}:${MISE_TMP_RESOLVED}" \
-  RC_CAGE_CONF="$(cage_conf_for "$_nvmrc_ws" "$IMAGE")" \
+  RC_CAGE_CONF="$(_mise_conf_for "$_nvmrc_ws" nodejs.org mise-versions.jdx.dev)" \
   "$RC" up "$_nvmrc_ws" < /dev/null > /tmp/rc-e2e-mise-nvmrc-up.out 2>&1 || true
 _nvmrc_resolved=$(realpath "$_nvmrc_ws")
 _nvmrc_container=$(_find_cage_by_source_path "$_nvmrc_resolved")
@@ -1171,14 +1257,8 @@ git -C "$_cache_ws" init > /dev/null 2>&1
 # miss would fail CLOSED on a DNS deny fast enough to slip under the
 # <5000ms threshold, making this check a false positive (fast failure
 # mistaken for a fast cache hit).
-cat > "${_cache_ws}/.rip-cage.yaml" << 'RIPCAGEYAML'
-version: 2
-network:
-  allowed_hosts:
-    - nodejs.org
-RIPCAGEYAML
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${DCG_TMP_RESOLVED}:${MISE_TMP_RESOLVED}" \
-  RC_CAGE_CONF="$(cage_conf_for "$_cache_ws" "$IMAGE")" \
+  RC_CAGE_CONF="$(_mise_conf_for "$_cache_ws" nodejs.org mise-versions.jdx.dev)" \
   "$RC" up "$_cache_ws" < /dev/null > /tmp/rc-e2e-mise-cache-up.out 2>&1 || true
 _cache_resolved=$(realpath "$_cache_ws")
 _cache_container=$(_find_cage_by_source_path "$_cache_resolved")
@@ -1221,21 +1301,11 @@ git -C "$_yarn_ws" init > /dev/null 2>&1
 # classic.yarnpkg.com, with mise-versions.jdx.dev consulted for version
 # resolution (all four discovered live via the trace-log deny-miner
 # against a real cage -- see the section header above).
-cat > "${_yarn_ws}/.rip-cage.yaml" << 'RIPCAGEYAML'
-version: 2
-network:
-  allowed_hosts:
-    - nodejs.org
-    - classic.yarnpkg.com
-    - mise-versions.jdx.dev
-    - release-assets.githubusercontent.com
-    - github.com
-    - api.github.com
-    - codeload.github.com
-    - objects.githubusercontent.com
-RIPCAGEYAML
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${DCG_TMP_RESOLVED}:${MISE_TMP_RESOLVED}" \
-  RC_CAGE_CONF="$(cage_conf_for "$_yarn_ws" "$IMAGE")" \
+  RC_CAGE_CONF="$(_mise_conf_for "$_yarn_ws" \
+      nodejs.org classic.yarnpkg.com mise-versions.jdx.dev \
+      release-assets.githubusercontent.com github.com api.github.com \
+      codeload.github.com objects.githubusercontent.com)" \
   "$RC" up "$_yarn_ws" < /dev/null > /tmp/rc-e2e-mise-yarn-up.out 2>&1 || true
 _yarn_resolved=$(realpath "$_yarn_ws")
 _yarn_container=$(_find_cage_by_source_path "$_yarn_resolved")
