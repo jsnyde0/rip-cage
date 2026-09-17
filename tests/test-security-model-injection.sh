@@ -26,14 +26,13 @@
 #       banner). The assertion is on bytes transferred, which holds
 #       under both. The denial
 #       surfaces as a readable fix-hint via the msb trace-log miner
-#       (_msb_denied_domains_from_trace_log); `rc allowlist add` +
-#       `rc reload` (a COLD-RECREATE under msb, ADR-029 D4 -- no
-#       live-mutation path for net-rules exists) apply the change; the SAME
-#       host then returns REAL bidirectional data on retry.
-#   B9  `allowlist promote --from-observed` is retired: exits non-zero,
-#       stderr names ADR-029 + rip-cage-tsf2.2, never mutates
-#       .rip-cage.yaml (host-side only, no cage needed -- mirrors
-#       tests/test-rc-allowlist.sh A8-A10).
+#       (_msb_denied_domains_from_trace_log); the HUMAN adds the host to
+#       `network.allow` in the project's cage config and `rc up --replace`
+#       recreates the cage against it (ADR-031 D2/D3 -- the config is the
+#       one file a cage launches from, and recreate is the only way net
+#       rules change); the SAME host then returns REAL data on retry.
+#   B9  RETIRED with the `rc allowlist` verb (rip-cage-ely4.7.12 /
+#       ADR-031 D3) -- see the disposition below.
 #   B10 `rc ls --output json` mode column present per cage.
 #   B11 `rc doctor <cage> --output json` re-expressed for the msb shape:
 #       labels["rc.egress.config-override"] + probes.posture (a declared
@@ -60,8 +59,10 @@
 #             tests/test-msb-flags-effect-probes.sh (C2/C3)
 #       - DNS-exfil / denied-domain fix-hint visibility:
 #             tests/test-msb-deny-visibility.sh
-#       - the full deny -> fix -> reload -> real-data repair cycle:
-#             tests/test-msb-lifecycle-reload-repair-loop.sh
+#       - the full deny -> fix -> recreate -> real-data repair cycle:
+#             B8 in this file (its old home,
+#             tests/test-msb-lifecycle-reload-repair-loop.sh, retired with
+#             `rc reload` -- rip-cage-ely4.7.12 / ADR-031 D3)
 #   - O1/O2 (observe-mode "would-block" logging) -- observe mode is RETIRED,
 #     not ported. network.mode loud-rejects at schema v2 (ADR-021 D9); msb
 #     is default-deny at the VM boundary with NO egress modes (ADR-029 D4,
@@ -145,6 +146,8 @@ echo ""
 # ---------------------------------------------------------------------------
 # shellcheck source=tests/_scratch-cage-lib.sh
 source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+# shellcheck source=tests/_cage-conf-lib.sh
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
 
 TEST_HOME=""
 CAGE_NAME=""
@@ -175,12 +178,26 @@ cat > "${B6_WS}/.claude/settings.json" <<'JSON'
 }
 JSON
 
+# HOME IS DELIBERATELY NOT OVERRIDDEN (rip-cage-ely4.7.11/.12, measured).
+# Docker resolves its context and socket through $HOME, so a scratch HOME makes
+# rc's docker preflight fail and BOTH assertions below report "Docker daemon is
+# not reachable" instead of testing their own subject -- a false red that reads
+# like a broken guard. B11 further down carries the same rule for msb's own
+# sandbox visibility. XDG_CONFIG_HOME alone gives the isolation this case needs:
+# it is the only place rc looks for a cage config or a protected-paths list, and
+# the subject here is the WORKSPACE's .claude/settings.json, not the home one.
+# The workspace needs a real cage config: rc refuses with CAGE_CONFIG_MISSING
+# before it ever reaches the base-URL preflight (ADR-031 D2), and that refusal
+# is non-zero with a plausible-looking stderr, so without this the case would
+# "fail for the right exit code and the wrong reason".
+B6_CONF=$(cage_conf_for "$B6_WS")
+
 b6_stderr=""
 b6_exit=0
 b6_stderr=$(
   RC_ALLOWED_ROOTS="${B6_TMP_REAL}" \
-  HOME="$B6_TMP" \
   XDG_CONFIG_HOME="${B6_TMP}/.config" \
+  RC_CAGE_CONF="$B6_CONF" \
   "$RC" up --dry-run "$B6_WS" 2>&1 >/dev/null
 ) || b6_exit=$?
 
@@ -198,8 +215,8 @@ fi
 b6_override_exit=0
 b6_override_stderr=$(
   RC_ALLOWED_ROOTS="${B6_TMP_REAL}" \
-  HOME="$B6_TMP" \
   XDG_CONFIG_HOME="${B6_TMP}/.config" \
+  RC_CAGE_CONF="$B6_CONF" \
   "$RC" up --dry-run --allow-config-override "$B6_WS" 2>&1 >/dev/null
 ) || b6_override_exit=$?
 
@@ -214,75 +231,35 @@ rm -rf "$B6_TMP"
 echo ""
 
 # ---------------------------------------------------------------------------
-# B9: allowlist promote --from-observed is RETIRED (rip-cage-tsf2.2, ADR-029
-# D2/D3) -- the observe-mode would-block log this used to promote FROM was
-# re-homed to msb trace-level DNS-denial lines (see B8's fix-hint below); the
-# promote command that used to read the old in-cage JSONL log and mutate
-# .rip-cage.yaml no longer has a live source to promote from, so it fails
-# loud instead of silently promoting nothing. Host-side only -- no cage
-# needed. Mirrors tests/test-rc-allowlist.sh A8-A10.
+# B9: RETIRED with the `rc allowlist` verb (rip-cage-ely4.7.12 / ADR-031 D3).
+#
+# Its subject was that `allowlist promote --from-observed` failed loud instead
+# of silently promoting nothing. `rc allowlist` is not one of the six verbs any
+# more -- the whole command is gone, and with it the `.rip-cage.yaml` schema it
+# mutated (ADR-031 D2: one native msb config per project, which rc never
+# writes). "A retired flag under a retired verb still fails loud" is not a
+# property that survives the verb, and nothing about the security model rests
+# on it. Deleted, not re-expressed.
+#
+# What DID survive is the thing B9 protected -- that widening egress is a
+# host-side act. B8 below now proves it in its live form: the human edits
+# network.allow in the project's cage config and recreates the cage.
 # ---------------------------------------------------------------------------
-echo "=== B9: allowlist promote --from-observed is retired (loud-fail, no mutation) ==="
-
-B9_TMP=$(mktemp -d)
-B9_WS="${B9_TMP}/workspace"
-mkdir -p "$B9_WS"
-cat > "${B9_WS}/.rip-cage.yaml" <<'YAML'
-version: 2
-network:
-  allowed_hosts:
-    - already.allowed.example
-YAML
-
-b9_yaml_before=$(cat "${B9_WS}/.rip-cage.yaml")
-
-b9_promote_err=$(mktemp)
-HOME="$B9_TMP" XDG_CONFIG_HOME="${B9_TMP}/.config" \
-  "$RC" allowlist promote --from-observed \
-  --config-file "${B9_WS}/.rip-cage.yaml" >/dev/null 2>"$b9_promote_err"
-b9_promote_exit=$?
-
-# (a) exits non-zero — mirrors A8
-if [[ "$b9_promote_exit" -ne 0 ]]; then
-  check "B9 (a) promote --from-observed exits non-zero (retired)" "pass" \
-    "exit=${b9_promote_exit}"
-else
-  check "B9 (a) promote --from-observed exits non-zero (retired)" "fail" \
-    "exit=0 -- --from-observed must fail loud, not silently apply nothing"
-fi
-
-# (b) stderr names ADR-029 + rip-cage-tsf2.2 — mirrors A9
-b9_msg_ok=true b9_msg_reason=""
-grep -qi "retired" "$b9_promote_err" || { b9_msg_ok=false; b9_msg_reason="stderr does not say 'retired'"; }
-grep -q "ADR-029" "$b9_promote_err" || { b9_msg_ok=false; b9_msg_reason="${b9_msg_reason:+$b9_msg_reason; }stderr does not cite ADR-029"; }
-grep -q "rip-cage-tsf2.2" "$b9_promote_err" || { b9_msg_ok=false; b9_msg_reason="${b9_msg_reason:+$b9_msg_reason; }stderr does not point at fast-follow bead rip-cage-tsf2.2"; }
-if [[ "$b9_msg_ok" == "true" ]]; then
-  check "B9 (b) promote --from-observed message names ADR-029 + rip-cage-tsf2.2" "pass"
-else
-  check "B9 (b) promote --from-observed message names ADR-029 + rip-cage-tsf2.2" "fail" \
-    "${b9_msg_reason} -- stderr: $(cat "$b9_promote_err")"
-fi
-rm -f "$b9_promote_err"
-
-# (c) .rip-cage.yaml never mutated — no silent partial apply — mirrors A10
-b9_yaml_after=$(cat "${B9_WS}/.rip-cage.yaml")
-if [[ "$b9_yaml_before" == "$b9_yaml_after" ]]; then
-  check "B9 (c) promote --from-observed never mutates .rip-cage.yaml" "pass"
-else
-  check "B9 (c) promote --from-observed never mutates .rip-cage.yaml" "fail" \
-    ".rip-cage.yaml was mutated by a retired flag (silent partial apply)"
-fi
-
-rm -rf "$B9_TMP"
-echo ""
 
 # ---------------------------------------------------------------------------
-# Shared setup for B8/B10/B11: one real msb cage booted via the REAL `rc up`
-# verb (not a hand-rolled `msb run` -- unlike the S2/S5 generator-effect
-# templates, this file exists specifically to exercise rc's own lifecycle
-# verbs: up, allowlist add, reload, ls, doctor).
+# Shared setup for B8/B11: one real msb cage booted via the REAL `rc up` verb
+# (not a hand-rolled `msb run` -- this file exists specifically to exercise
+# rc's own lifecycle verbs: up, up --replace, doctor).
+#
+# The config is installed at the DEFAULT path rc resolves, under the scratch
+# XDG_CONFIG_HOME, because B8 both EDITS it (step 3) and recreates through it
+# (step 4) -- a config threaded via RC_CAGE_CONF would have to be re-threaded
+# through every call.
 # ---------------------------------------------------------------------------
 TEST_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-sec-inj-XXXXXX")
+# msb does not follow a host-side symlink in a bind source, and macOS mktemp
+# lands under /var -> /private/var. Resolve before anything writes a mount line.
+TEST_HOME=$(cd "$TEST_HOME" && pwd -P)
 WS="${TEST_HOME}/workspace"
 mkdir -p "${TEST_HOME}/.config/rip-cage" "$WS"
 git -C "$WS" init -q
@@ -290,13 +267,12 @@ touch "${WS}/README.md"
 git -C "$WS" add README.md
 git -C "$WS" -c user.name="scratch" -c user.email="scratch@example.invalid" commit -q -m "initial" >/dev/null 2>&1
 
-cat > "${WS}/.rip-cage.yaml" <<'YAML'
-version: 2
-network:
-  allowed_hosts:
-    - api.anthropic.com
-    - registry.npmjs.org
-YAML
+CAGE_CONF=$(cage_conf_install "$WS" "${TEST_HOME}/.config" "" api.anthropic.com registry.npmjs.org)
+if [[ -z "$CAGE_CONF" || ! -f "$CAGE_CONF" ]]; then
+  echo "FATAL: could not install a cage config for ${WS}."
+  echo "=== Summary: $FAILURES/$TOTAL failed ==="
+  exit 1
+fi
 
 run_rc() {
   XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_ALLOWED_ROOTS="$WS" "$RC" --output json "$@"
@@ -338,8 +314,11 @@ echo ""
 # 2. The denial surfaces as a readable fix-hint: source rc to get
 #    _msb_denied_domains_from_trace_log (cli/lib/msb_runtime.sh), the SAME
 #    miner cli/doctor.sh's posture probe and cli/reload.sh's dry-run use.
-# 3. Host-side: rc allowlist add <host> --config-file <workspace>/.rip-cage.yaml
-# 4. Host-side: rc reload <cage> -- a COLD-RECREATE under msb (ADR-029 D4:
+# 3. Host-side: add `<host>:tcp:443` to network.allow in the project's cage
+#    config. There is no rc verb for this and deliberately so -- the config is
+#    host-side, outside every cage mount, so an agent inside cannot widen its
+#    own egress (ADR-031 D2/D5a). This step IS the human's edit.
+# 4. Host-side: rc up --replace <workspace> -- a COLD-RECREATE (ADR-029 D4:
 #    no live-mutation path exists for net-rules on a running sandbox).
 # 5. Retry curl -> the SAME host now returns REAL bidirectional data.
 # ---------------------------------------------------------------------------
@@ -366,23 +345,22 @@ else
   check "B8 step2: denied host appears in the readable fix-hint (trace-log miner)" "fail" "fix-hint output: ${B8_HINT:0:300}"
 fi
 
-# Step 3: host-side rc allowlist add.
-B8_CONFIG="${WS}/.rip-cage.yaml"
-b8_add_out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" "$RC" allowlist add "$B8_HOST" --config-file "$B8_CONFIG" 2>&1)
-b8_add_exit=$?
-if [[ "$b8_add_exit" -eq 0 ]]; then
-  check "B8 step3: rc allowlist add new host → success" "pass"
+# Step 3: the human's host-side edit -- one line appended to network.allow in
+# the cage config. No rc verb does this (ADR-031 D2/D5a).
+printf '    - "%s:tcp:443"\n' "$B8_HOST" >> "$CAGE_CONF"
+if grep -qF "\"${B8_HOST}:tcp:443\"" "$CAGE_CONF"; then
+  check "B8 step3: host added to network.allow in the cage config" "pass" "config=${CAGE_CONF}"
 else
-  check "B8 step3: rc allowlist add new host → success" "fail" "exit=$b8_add_exit; out: $b8_add_out"
+  check "B8 step3: host added to network.allow in the cage config" "fail" "edit did not land in ${CAGE_CONF}"
 fi
 
-# Step 4: rc reload (cold-recreate, ADR-029 D4).
-b8_reload_out=$(cd "$WS" && run_rc reload "$CAGE_NAME" 2>&1)
-b8_reload_exit=$?
-if [[ "$b8_reload_exit" -eq 0 ]]; then
-  check "B8 step4: rc reload succeeds (cold-recreate)" "pass"
+# Step 4: rc up --replace (cold-recreate, ADR-029 D4 / ADR-031 D3).
+b8_replace_out=$(run_rc up --replace "$WS" 2>&1)
+b8_replace_exit=$?
+if [[ "$b8_replace_exit" -eq 0 ]]; then
+  check "B8 step4: rc up --replace succeeds (cold-recreate against the edited config)" "pass"
 else
-  check "B8 step4: rc reload succeeds (cold-recreate)" "fail" "exit=$b8_reload_exit; out: ${b8_reload_out:0:300}"
+  check "B8 step4: rc up --replace succeeds (cold-recreate against the edited config)" "fail" "exit=$b8_replace_exit; out: ${b8_replace_out:0:300}"
 fi
 
 # The recreated sandbox's DECLARED policy now includes the host.

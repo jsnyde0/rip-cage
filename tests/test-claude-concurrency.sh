@@ -131,7 +131,7 @@ if ! cexec true; then
   echo "FATAL: cannot exec into container '$CONTAINER' — the probe channel itself is broken."
   echo "  (cage not running, cage-name resolution failed, or msb exec errored.)"
   echo "  This is NOT evidence the claude-recipe wasn't composed -- cexec could not even run 'true'."
-  echo "  Check: rc ls   /   msb list   /   rc doctor $CONTAINER"
+  echo "  Check: msb list   /   rc doctor $CONTAINER"
   exit 1
 fi
 COMPOSED=false

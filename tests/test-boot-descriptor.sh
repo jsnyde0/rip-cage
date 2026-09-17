@@ -65,7 +65,14 @@ LIVE_CAGE=""
 
 cleanup() {
   [[ -n "$LIVE_CAGE" ]] && "$RC" destroy "$LIVE_CAGE" >/dev/null 2>&1
-  [[ "${#BUILT_TAGS[@]}" -gt 0 ]] && docker image rm -f "${BUILT_TAGS[@]}" >/dev/null 2>&1
+  # Both stores, not just docker. build_extension loads every scratch tag into
+  # msb's own cache as well, and msb keeps it independently -- a docker-only
+  # cleanup left rip-cage-x-bootdesc:1 and -bad:1 behind on every run (the
+  # human cleaned them by hand four times before this line existed).
+  if [[ "${#BUILT_TAGS[@]}" -gt 0 ]]; then
+    docker image rm -f "${BUILT_TAGS[@]}" >/dev/null 2>&1
+    msb image remove -f "${BUILT_TAGS[@]}" >/dev/null 2>&1
+  fi
   rm -rf "$WORK"
   return 0
 }

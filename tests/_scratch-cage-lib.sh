@@ -29,12 +29,20 @@
 #   real result; cleanup never masks it).
 # - rc location: ${SCRIPT_DIR}/../rc (sibling-test idiom, not bare `rc` on PATH).
 #   SCRIPT_DIR must be set in the sourcing test (standard pattern across tests/).
+#   PINNED AT SOURCE TIME, and that is load-bearing (rip-cage-ely4.7.12): a
+#   suite that later does `source "$RC"` — several do, to reach rc's internal
+#   helpers — gets SCRIPT_DIR REASSIGNED to rc's own directory, the repo root.
+#   `${SCRIPT_DIR}/../rc` then resolves one level above the repo, the cleanup
+#   destroy fails with exit 127, and the cage leaks with only a warning
+#   (observed on tests/test-security-model-injection.sh). Resolving once, here,
+#   is immune: nothing reassigns _SCRATCH_CAGE_RC.
 
 # Guard: SCRIPT_DIR must be set by the caller.
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
   echo "_scratch-cage-lib.sh: ERROR: SCRIPT_DIR is not set in the sourcing script." >&2
   return 1
 fi
+_SCRATCH_CAGE_RC="${SCRIPT_DIR}/../rc"
 
 # Accumulate registered container names (space-separated, shell array).
 _SCRATCH_CAGE_NAMES=()
@@ -166,7 +174,7 @@ scratch_cage_sweep_registry() {
     # one caller, tests/run-host.sh, runs under `set -e`, where a plain failing
     # assignment would kill the whole suite over a cleanup miss.
     _rc=0
-    _out=$("${SCRIPT_DIR}/../rc" destroy "$_name" 2>&1) || _rc=$?
+    _out=$("$_SCRATCH_CAGE_RC" destroy "$_name" 2>&1) || _rc=$?
     if [[ "$_rc" -ne 0 ]]; then
       echo "_scratch-cage-lib.sh: WARNING: failed to sweep stranded scratch cage '${_name}' (exit ${_rc}): ${_out}" >&2
       echo "$_name" >> "$_tmp"
@@ -194,7 +202,7 @@ _scratch_cage_cleanup() {
   local _name _out _rc
   local _failures=0
   for _name in "${_SCRATCH_CAGE_NAMES[@]+"${_SCRATCH_CAGE_NAMES[@]}"}"; do
-    _out=$("${SCRIPT_DIR}/../rc" destroy "$_name" 2>&1)
+    _out=$("$_SCRATCH_CAGE_RC" destroy "$_name" 2>&1)
     _rc=$?
     if [[ "$_rc" -ne 0 ]]; then
       echo "_scratch-cage-lib.sh: WARNING: failed to destroy scratch cage '${_name}' (exit ${_rc}): ${_out}" >&2

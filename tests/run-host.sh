@@ -187,6 +187,8 @@ NEEDS_CONTAINER=(
   "test-doctor-runnability.sh"       # rip-cage-2cks: spins live cages (rc up + msb create) to exercise rc doctor's cwd/workspace-resolution probes; self-skips without docker, msb, or host bd
   "test-msb-boot-smoke.sh"           # rip-cage-7dkq (S1, msb migration): needs live docker + live msb + a pre-built rip-cage:latest image to actually boot a cage; self-skips (SKIP:, exit 0) without any of the three
   "test-floor-probe.sh"              # rip-cage-ely4.12: builds two DELIBERATELY BROKEN extension images and boots a cage on each to prove the floor probe refuses them; needs live docker + msb + a base image carrying the probe; self-skips without any of the three
+  "test-boot-descriptor.sh"          # rip-cage-ely4.7.12: its own banner always said NEEDS_CONTAINER but it was never listed here, so --host-only ran it and it did a docker build + msb load + rc up on this host; needs live docker + msb + a base image carrying rc-boot-merge; self-skips without any of the three
+  "test-security-model-injection.sh" # rip-cage-ely4.7.12: prompt-injection probes (ADR-024) that boot a real cage on the native config and try to widen egress from inside; needs live docker + msb + a pre-built rip-cage image; self-skips without them
 )
 
 # Helper: check if a given test basename is in NEEDS_CONTAINER.
@@ -784,6 +786,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-doctor-runnability.sh"    # rip-cage-2cks: rc doctor cwd-floor + workspace-resolution live-cage checks (NEEDS_CONTAINER; guards rip-cage-0rng + rip-cage-aq70; schema-error sub-case additionally gated behind RC_DOCTOR_STALE_BD_IMAGE, self-skips visibly otherwise)
   run_test "${SCRIPT_DIR}/test-floor-probe.sh"          # rip-cage-ely4.12 / rip-cage-ely4.15: the fail-closed floor probe's contract against real images — the stock base boots and rc test reports every floor line; a USER-root extension and a chmod-o+w-guard extension each refuse the boot naming the property (NEEDS_CONTAINER, self-skips without docker+msb or on a base image predating the probe)
   run_test "${SCRIPT_DIR}/test-boot-descriptor.sh"      # rip-cage-ely4.11: the boot descriptor's contract in a LIVE cage — a declared daemon starts + health-checks + is a true no-op on re-init; a missing required field fails the boot naming it (NEEDS_CONTAINER, self-skips without docker+msb)
+  run_test "${SCRIPT_DIR}/test-security-model-injection.sh" # rip-cage-hhh.10 / rip-cage-ely4.7.12: the prompt-injection security model in a LIVE cage — a hostile workspace base-URL is refused host-side (B6), a not-yet-allowed host returns zero bytes and only a host-side config edit + rc up --replace opens it (B8), rc doctor reports the msb-native posture (B11) (NEEDS_CONTAINER, self-skips without docker+msb+image)
   run_test "${SCRIPT_DIR}/test-pi-cold-start-seed.sh"   # rip-cage-wo9: rc up seeds ~/.pi/agent/auth.json on cold start
   # Also retired with the manifest, for the same reason -- every case called a
   # deleted _manifest_* function: test-mount-seam-integration.sh,
