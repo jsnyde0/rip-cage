@@ -1,163 +1,163 @@
-# Network egress allowlist (msb)
+# Network egress
 
-> **Retired ([ADR-029](../decisions/ADR-029-msb-migration.md) D2/D4):** this page used to describe an in-cage engine — a pure SNI destination router, a DNS resolver sidecar, iptables REDIRECT rules, and an observe→promote→block workflow driven by JSONL traffic logs (`rip_cage_router.py`, `rip_cage_egress.py`, `rip_cage_dns.py`, `init-firewall.sh`). **That engine is deleted, not ported.** Egress control is now an msb host-side runtime primitive rip-cage *declares against*, not a process it runs. This page describes the current, msb-based behavior.
+Every cage boots **default-deny**. Nothing leaves it except the hosts its config names.
 
-Cages run on microsandbox (msb, libkrun microVMs). Every cage boots default-deny: the cage config's own `network.policy: none` **is** msb's deny-everything-not-listed, and its `network.allow` list names the exceptions. rc generates no `--net-default` flag — that flag REPLACES the allow list a `--conf` file carries, which is exactly how every cage briefly ended up reaching nothing (`rip-cage-ely4.7.6`/`.7.7`). `rc up` refuses, before any msb call, a config that does not declare `network.policy: none`. Hosts with no home in the config still arrive as appended `--net-rule allow@<host>` flags from `cli/lib/msb_flags.sh`. That set is the **union of two sources**:
+This is msb's, at the VM boundary — not a process rip-cage runs inside the cage. What rip-cage adds is the repair loop that makes default-deny livable: when something is blocked, `rc doctor` tells you the exact line to add.
 
-- **`network.allowed_hosts`** from `.rip-cage.yaml` — a `list` field that **unions** across the config layers (schema default, global, project) and is **`!replace`-narrowable** at any layer (see [config.md → merge rules](config.md#per-field-type-merge-rules-v2)).
-- **manifest tool egress** — every host declared under a tool's `egress:` list in the manifest (`tools.yaml`), so a composed tool that declares its egress hosts becomes reachable without duplicating those hosts into `network.allowed_hosts` (rip-cage-tsf2.8). This source is **additive and un-narrowable**: it travels with the tool, `!replace` on `network.allowed_hosts` does not touch it, and the only way to drop it is removing the tool from the manifest + `rc build`.
+## The allowlist
 
-Config hosts keep their order first; manifest hosts append (deduplicated). **`rc config show` / `rc allowlist show --effective` is the one provenance view** — it prints `network.allowed_hosts` with per-element `# global` / `# project` attribution and, in a separate block, the manifest egress attributed as `# manifest:<tool>`, so "what can this cage reach and WHY" is one command. A host not on the allow set is unreachable: msb refuses it **immediately** — a denied domain name fails DNS resolution client-side (`curl: (6) Could not resolve host`), a denied IP fails at TCP connect within a couple of milliseconds (`curl: (7) Failed to connect`) — measured on msb 0.6.18, `rip-cage-6v34.9`. Only the DNS-stage denial is refused and logged at the trace level; the connect-stage denial produces no log line at any verbosity, which is why the fix-hint miner is DNS-keyed. Older msb (<0.6.10) instead **fake-accepted** the TCP connect — `connect()` succeeded but zero application bytes ever flowed — per upstream msb #1365. There is no content-layer (method/path) policy or credential injection built in — that remains a composed-mediator concern (see [composition-seam.md](composition-seam.md)).
+```yaml
+network:
+  policy: none
+  allow:
+    - "api.anthropic.com:tcp:443"
+    - "github.com:tcp:443"
+```
 
-**When the rules materialize (create/reload/converge-on-up).** The allow rules are computed at cage **create**, at **`rc reload`**, and — for a **stopped** cage with reload-eligible drift — automatically on the next plain **`rc up`** (a cold-recreate, DEFAULT-ON since `rip-cage-y0u0`, 2026-07-21): editing `network.allowed_hosts` in `.rip-cage.yaml` and then just running `rc up` again converges the stopped cage to the new rules, loudly announcing the cold-recreate. `--no-reload` opts out of this for one invocation (resumes with the OLD, stale rules verbatim + a hint); `--reload` is an accepted explicit-intent synonym. A **running** cage never auto-recreates — a host-side edit to `network.allowed_hosts` **or** a tool's `egress:` list only takes effect on that running cage via `rc reload` (or the next time it's stopped and plain `rc up` converges it). (Tool *binaries* are baked at `rc build`; egress *rules* are runtime — a `tools.yaml` egress edit + `rc reload` widens the allowlist without a rebuild, but a newly-declared tool's binary stays absent until `rc build`.) One consequence: an unconfigured cage is **not** deny-all — `rc up` seeds the floor manifest (beads/dolt/gh) before boot, so those tools' declared egress (github/dolthub) is reachable out of the box. The [IOC floor](#the-ioc-floor), not an empty allowlist, is what keeps that default safe.
+`policy: none` **is** msb's deny-everything-not-listed. `rc up` refuses, before any msb call, a config that does not declare it.
 
----
+**The config's `allow` list is the only source.** The tools manifest used to union its own egress declarations into this set; that union is gone with the manifest ([ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D4), so what an operator reads in the config is exactly what msb enforces. The curated defaults every coding agent needs ship in the config template rather than being merged in behind your back.
+
+`rc` never emits `--net-default`. That flag **replaces** the allow list a `--conf` file carries, which is how every cage once briefly ended up reaching nothing.
+
+### Name the port
+
+Each entry is `<host>:tcp:<port>`. A **bare host records every port** — narrower is better, and `tcp:443` covers the HTTPS that nearly everything a coding agent does rides on.
+
+The DNS forwarder gates on the same list, so there is no separate `udp:53` rule to add.
 
 ## There is no observe mode
 
-msb logs nothing for *allowed* flows — only denials. Rebuilding an "observe everything, then promote" workflow on top of that would mean rebuilding the deleted in-cage engine, so it isn't done. Instead:
+msb logs nothing for *allowed* flows — only denials. Rebuilding an observe-everything-then-promote workflow on top of that would mean rebuilding the in-cage engine the msb cutover deleted, so it is not done.
 
-1. **A curated default allowlist** ships in the auto-seeded global config (`~/.config/rip-cage/config.yaml`, written on first `rc up`), so a fresh cage isn't denial whack-a-mole for the hosts every Claude Code turn needs: `api.anthropic.com` (hard requirement), `mcp-proxy.anthropic.com`, `http-intake.logs.us5.datadoghq.com` (both attempted-but-nonblocking, included for denial-log-noise-free defaults).
-2. **A fast deny→fix→reload repair loop** replaces observe→promote→block for everything else (below).
-
-**`github.com` (or any other git host) is NOT in the curated seed.** Add it explicitly — see the worked example below.
+What replaces it is a **curated default list** in the shipped config template (the hosts a basic Claude turn, a git push over HTTPS, and the common package registries need), plus the repair loop below for everything else.
 
 ---
 
-## The deny→fix→reload repair loop
+## The repair loop: deny → fix → relaunch
 
-**1. The agent hits a denied host.** A request against a host not on `network.allowed_hosts` fails immediately — a denied domain name fails DNS resolution, a denied IP fails at connect, both within a couple of milliseconds (measured on msb 0.6.18, `rip-cage-6v34.9`) — from inside the cage this looks like the host is down, not a clean 403.
+### 1. Something is blocked
 
-**2. Find out what was denied.** Two surfaces mine the sandbox's trace-level log for `DNS query denied by network policy domain=<X>` lines and turn them into a fix-hint (`_msb_denied_domains_from_trace_log`, `cli/lib/msb_runtime.sh` — only DNS-stage denials are covered; a right-domain-wrong-port TCP-connect denial logs nothing at any verbosity, a documented msb-side gap):
+From inside the cage it looks like the host is down, not like a clean refusal. Measured on msb 0.6.18:
+
+| Denial | Client-side symptom | Logged? |
+|---|---|---|
+| A denied **domain** | DNS resolution fails — `curl: (6) Could not resolve host` | **Yes**, at trace level |
+| A denied **IP** | TCP connect fails within a couple of milliseconds — `curl: (7) Failed to connect` | No, at any verbosity |
+| An allowed domain on a **denied port** | Dropped at the NIC; connection refused | No, at any verbosity |
+
+Both failures are immediate, which is a change: msb before 0.6.10 fake-accepted the connect on a full host denial and hung, delivering zero bytes.
+
+### 2. Find out what was denied
+
+`rc doctor` mines the cage's trace log for `DNS query denied by network policy domain=<host>` and turns it into a fix-hint:
 
 ```bash
 $ rc doctor my-cage
 ...
 Live probes:
-  posture        : OK — net-default=deny, 3 allow-rule(s); recently denied: files.example-cdn.net; NOTE: a port-scoped denial on an already-allowed domain will NOT appear above (msb logs nothing at the TCP-connect stage) — it still surfaces client-side as an immediate connection-refused, but so does a full host denial as of msb 0.6.18, so that alone no longer distinguishes the two; check the host's allowed port in .rip-cage.yaml (default tcp:443)
-
-$ rc reload my-cage --dry-run
-Fix-hint: recently denied domain(s) on my-cage (not necessarily related to this diff):
-    domain=files.example-cdn.net
-(--dry-run: snapshot NOT updated, cage NOT recreated.)
+  posture : OK — net-default=deny, 12 allow-rule(s); recently denied: files.example-cdn.net
 ```
 
-**Wrong-port denials are a separate, undetectable-by-this-probe failure class.** If the *domain* is already on `network.allowed_hosts` but the *port* isn't (msb's egress is port-scoped — the default allow rule is `tcp:443`), the connection is dropped at the NIC before DNS or the TCP-connect stage ever produces a log line msb exposes at any verbosity (confirmed empirically against msb 0.6.4, spike `rip-cage-uuh9`; tracked as `rip-cage-ffmc`; this NIC-level drop-silently mechanic is unaffected by the 0.6.18 client-symptom re-measurement below). The `posture` note above is therefore static, not a live signal — there is no fix-hint to mine for this class. **The old client-side tell is gone.** Through msb 0.6.9, a full host denial fake-accepted the connect and hung, while a wrong-port denial on an already-allowed host refused instantly (`Connection refused`, curl exit 7) — so an immediate refusal alone told you which case you were in. As of msb 0.6.18 (`rip-cage-6v34.9`) a full host denial **also** refuses immediately (DNS failure for a denied name, connect failure for a denied IP), so an instant client-side failure no longer distinguishes the two cases. **Diagnosis:** check `rc doctor <cage>`'s `posture` line (or `rc reload <cage> --dry-run`'s fix-hint) for the failing domain under "recently denied". If it's **listed there**, the domain itself isn't allowlisted — add it (below). If it's **NOT listed** there despite the domain already appearing in `network.allowed_hosts` (or a tool's manifest `egress:` list), the DNS-stage denial miner never saw anything to mine — the domain resolved fine and the drop happened silently at the NIC on the TCP-connect stage instead, which is the wrong-port signature. A bare host in `network.allowed_hosts` is scoped to `tcp:443` only (`cli/lib/msb_flags.sh`); a host that needs a different port must be written with an explicit port spec, e.g. `myhost.example.com:tcp:8080`, which is emitted unchanged instead of being narrowed to 443. Add/adjust the entry in `.rip-cage.yaml` (or the tool's manifest `egress:` list) and `rc reload`.
+**Only DNS-stage denials are mineable**, which is why the hint is DNS-keyed.
 
-**3. Add the host.** There are three fix shapes, depending on where the host belongs:
+### 3. Add the host
 
-- **A host this cage needs → `network.allowed_hosts`.** Use `rc config add network.allowed_hosts <host> --scope project` (or its sugar `rc allowlist add <host>`), or hand-edit `.rip-cage.yaml`. This is **reload-eligible**.
-- **A host a *tool* needs → the tool's `egress:` list in `tools.yaml`.** Editing a tool's egress widens the allow set on the next `rc reload` (no rebuild needed for the rule) — but a newly *declared* tool's binary still needs `rc build`. `rc doctor` / `rc reload` label a denied host that matches a *pending* (unbaked) manifest egress as **"requires rebuild"**, never as a plain allowlist add.
+Edit the cage config — `~/.config/rip-cage/projects/<cage>.yaml` — and add the line:
+
+```yaml
+network:
+  allow:
+    - "files.example-cdn.net:tcp:443"
+```
+
+This is host-side work. It is not reachable from inside the cage, on purpose: a prompt-injected agent must not be able to widen its own egress ([ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D5a). A caged agent that hits this wall surfaces the request in prose and waits.
+
+### 4. Relaunch
 
 ```bash
-rc allowlist add files.example-cdn.net --cage my-cage      # == rc config add network.allowed_hosts …
+rc up --replace ~/code/my-project
 ```
 
-**4. Apply it.** `rc allowlist add --cage` runs `rc reload` for you; if you hand-edited the file, run it yourself:
+**This is a cold recreate, not a hot reload.** msb's net rules have no live-mutation path on a running sandbox — `msb modify` carries no network parameter — so the cage is gracefully stopped, removed, and created again against the now-current config.
 
-```bash
-rc reload my-cage
-```
+- **Survives:** everything host-mounted or volume-backed — the workspace, `~/.claude/{projects,sessions}` (so the Claude session **resumes**), pi's `auth.json`, and the named volumes.
+- **Lost:** only the guest's own ephemeral rootfs overlay — an `apt-get install` you ran at runtime and never baked into the image.
 
-If `my-cage` is **stopped**, the next plain `rc up my-cage` converges it too (DEFAULT-ON since `rip-cage-y0u0` — no `--reload` flag needed; `rc reload` still works and is the only way to apply it to a **running** cage, or to apply it immediately without waiting for the next `rc up`). Use `rc up --no-reload` to resume a stopped cage without converging.
+A **stopped** cage converges on a plain `rc up`; `--no-reload` resumes it with the old rules instead. A **running** cage never recreates implicitly, because that would kill the live session.
 
-**`rc reload` is a COLD-RECREATE, not a hot-reload** (`rip-cage-rj68`, [ADR-029](../decisions/ADR-029-msb-migration.md) D4). msb's `--net-rule`/`--net-default` have no live-mutation path on a running sandbox (`msb modify` carries no network parameter — confirmed live, `docs/2026-07-09-msb-spike-egress-observability.md` Q1), so `rc reload` runs **graceful stop → remove → the same create pipeline `cmd_up` uses**, against the now-current `.rip-cage.yaml`:
+### 5. Retry
 
-- **Survives the recreate:** everything host-mounted or volume-backed — the workspace, `~/.claude/{projects,sessions}` (your Claude session **resumes**, it is not lost), pi's `auth.json`, and the named volumes (`rc-state-*`, `rc-history-*`, `rc-mise-cache`).
-- **Lost:** only the guest's own ephemeral rootfs overlay — state an in-cage process wrote that was never baked into the image or captured by a mount (e.g. an ad-hoc `apt-get install` at runtime). A narrow, documented tradeoff, not a session-continuity loss.
-
-**5. Retry.** The multiplexer/cockpit state re-registers automatically on every resume (every resume is a fresh kernel boot under msb).
+Every resume is a fresh kernel boot, so init re-runs and multiplexer state re-registers on its own.
 
 ---
 
-## Worked example: a project that pushes to GitHub over HTTPS
+## When the fix-hint says nothing
 
-Reachability and credential injection are **two separate declarations** — a host must be on `network.allowed_hosts` (or the connection is denied before any secret is ever considered), and a credential binding is needed for msb `--secret` to inject the real token on the wire:
+If the failing domain is **already** in `network.allow` and does not appear under "recently denied", the DNS-stage miner saw nothing to mine — the name resolved fine and the drop happened silently at the NIC. **That is the wrong-port signature.**
+
+Check the port on that host's entry. There is no log line to find and no fix-hint to mine for this class; it is an msb-side gap, tracked in `rip-cage-ffmc`.
+
+The old way of telling the two apart is gone. Through msb 0.6.9 a full host denial hung while a wrong-port denial refused instantly, so an instant refusal told you which case you were in. As of 0.6.18 both refuse instantly.
+
+---
+
+## Worked example: pushing to GitHub over HTTPS
+
+Reachability and credential injection are **two separate declarations**. A host must be on the allow list or the connection dies before any secret is considered; a `secrets:` entry is what puts the real token on the wire.
 
 ```yaml
-# <project>/.rip-cage.yaml
-version: 2
+# ~/.config/rip-cage/projects/<cage>.yaml
+secrets:
+  GH_TOKEN:                       # NO value: — msb reads the host env var of this name
+    allow:
+      - "github.com"
+
+env:
+  GH_TOKEN: "$MSB_GH_TOKEN"       # what git sees: the placeholder
+
 network:
-  allowed_hosts:
-    - github.com
-auth:
-  credentials:
-    - source_env: GH_TOKEN     # a host env var holding a scoped GitHub PAT
-      hosts: [github.com]
+  policy: none
+  allow:
+    - "github.com:tcp:443"
 ```
 
 ```bash
-export GH_TOKEN=ghp_your_scoped_token_here
+mkdir -p ~/.config/rip-cage/secrets
+printf %s 'ghp_your_scoped_token' > ~/.config/rip-cage/secrets/GH_TOKEN
+chmod 600 ~/.config/rip-cage/secrets/GH_TOKEN
 rc up ~/code/my-project
 ```
 
-Inside the cage, `git push` authenticates as `https://x-access-token:$GH_TOKEN@github.com/...` — the guest holds only a synthesized placeholder; msb injects the real token on the wire toward `github.com` only ([ADR-029](../decisions/ADR-029-msb-migration.md) D3/D5). In this two-field form `source_env` must be set and non-empty in the **host** environment at every `rc up`/`resume`/`reload` (msb re-resolves `--secret` from host env at every boot); an unset or empty var fails loud, naming the var, before any sandbox is created.
+Inside the cage, `git push` authenticates as `https://x-access-token:$GH_TOKEN@github.com/...`. The guest holds only the placeholder; msb substitutes the real token on the wire toward `github.com` and nowhere else ([ADR-029](../decisions/ADR-029-msb-migration.md) D3/D5). A placeholder sent toward any other host is blocked and logged.
 
-### The `source_file` + `target_env` form (no manual pre-export)
+**`rc up` fills the host variable for you** from `~/.config/rip-cage/secrets/<NAME>`, so an unattended run needs no pre-export. Without that file, export the variable yourself; msb fails loud naming it before any sandbox is created.
 
-Two optional fields (`rip-cage-9dlw`) cover the case where the real value already lives in a host file and the tool reads a *fixed* guest env var — this is how Claude's own non-possession binding is wired:
-
-```yaml
-auth:
-  credentials:
-    - source_env: CCTOK                                          # a logical NAME; msb synthesizes the guest secret var from it
-      source_file: /Users/you/.config/rip-cage/claude-setup-token # rc reads the real value from THIS host file — nothing to export by hand
-      hosts: [api.anthropic.com]                                 # the single host the token rides
-      target_env: [CLAUDE_CODE_OAUTH_TOKEN]                      # the guest var claude reads; it receives only the placeholder ($MSB_…)
-```
-
-- **`source_file`** replaces the manual `export` step: with it, `rc` reads the token from the named host file into the `--secret` machinery, so there is no pre-exported host env var to keep set. (Without `source_file`, the host-env requirement above applies.)
-- **`target_env`** bridges the placeholder to the exact guest variable a tool reads. It is **enforced single-host, loud**: a `target_env` binding must be bound to exactly one host — both config validation and the msb-flags generator abort naming the var otherwise. Split into one single-host credential per host if you need more.
-
-There is no ssh cluster to configure — ADR-017/018/020/022's mechanisms, `block-ssh-bypass.sh`, and `examples/ssh-bypass/` are all retired/deleted. See [auth.md](auth.md) for Claude/pi's own OAuth credential mounting (a separate, unrelated concern from git host tokens).
+There is no ssh cluster to configure — git goes over HTTPS ([ADR-029](../decisions/ADR-029-msb-migration.md) D3).
 
 ---
 
-## `rc allowlist` command reference
+## What this does not do
 
-| Command | Effect |
-|---|---|
-| `rc allowlist add <host> [--cage=<name>]` | Sugar over `rc config add network.allowed_hosts <host> --scope project` — **the same surgical, comment-preserving write engine** ([ADR-021 D8](../decisions/ADR-021-layered-rip-cage-config.md)), including its idempotency (skips if already present) and safety guards. With `--cage`, runs `rc reload <name>` to apply (cold-recreate). Supports `--output json`. Host-only. |
-| `rc allowlist show [--effective] [--cage=<name>]` | Default: list configured `network.allowed_hosts` from the project file. `--effective`: the full merged effective view with provenance (ADR-021 D4) — including the separate **manifest-egress block** attributed as `# manifest:<tool>` (`applied` when `--cage <name>` names a cage in scope, else `pending`). Read-only; works inside the cage too. |
-| `rc allowlist show --observed` / `rc allowlist promote --from-observed` | **Legacy, non-functional under msb.** These pre-cutover subcommands read `.rip-cage/egress.log` / `.rip-cage/egress-dns.log` — JSONL files the now-deleted in-cage router/DNS-sidecar used to write. Nothing writes those files anymore, so `--observed` always reports empty and `promote --from-observed` always has nothing to promote. The code paths still exist (`cli/allowlist.sh`) but are dead under the current runtime; use the `rc doctor` / `rc reload --dry-run` trace-log fix-hint instead (see the repair loop above). Flagged as a follow-up finding, not fixed here (docs-only sweep; see the bead notes). |
+msb's netstack allows and denies **by destination host**. It carries no content-layer policy, and the mediator seam that once composed one is deleted, not merely undocumented. You do not get:
 
-```bash
-# Add one host and apply it live (cold-recreate)
-rc allowlist add api.deepseek.com --cage my-cage
+- **Request-level policy** — method, path, or body rules; structured per-request refusals.
+- **Credential handling beyond a per-host `--secret` binding** — for instance a shared credential needing different treatment per request path.
+- **Human-in-the-loop approval**, or full request/response audit logging beyond msb's own denial log.
 
-# Inspect configured vs. effective (curated-seed + user) allowlist
-rc allowlist show
-rc allowlist show --effective
-```
-
-`--cage` resolves the workspace (and its log paths) from the container; without it, the commands operate on `.rip-cage.yaml` under the current directory.
-
----
-
-## Retired fields
-
-`network.mode`, `network.dns.forward_to`, and `network.http.forward_to` were **removed from the config schema** in the v1→v2 bump ([ADR-021 D9](../decisions/ADR-021-layered-rip-cage-config.md)) — they were vestigial post-msb-cutover (egress is msb default-deny at the VM boundary; there is no observe/block mode, and msb owns DNS with no host-side forward-to seam). A `.rip-cage.yaml` still carrying any of them now **aborts loud** naming the field and the fix, rather than silently ignoring it. See [config.md → Retired `network.*` fields](config.md#network----msb-egress-allowlist).
-
----
-
-## The IOC floor
-
-A curated denylist of known exfil sinks is enforced by the msb-runtime floor (re-homed from the deleted in-cage IOC check, [ADR-029](../decisions/ADR-029-msb-migration.md) D2) and **cannot be overridden** by `network.allowed_hosts`. The project allowlist can broaden but never shrink below this floor.
+If you need any of those, it is fully operator-composed and unwired today: there is no archetype, launch hook, or forward-to seam left to attach to. [clawpatrol](https://github.com/denoland/clawpatrol) is an **alternative appliance** — something you run instead of rip-cage's containment, not a composition target.
 
 ---
 
 ## Diagnosing
 
-- **`rc doctor <cage>`** reports the declared network policy (default action + rule count, read from `msb inspect`) and any recently denied domains mined from the trace log — a **declaration** read plus a **recent-denial** signal, not a live enforcement re-proof. Effect-based enforcement is what the msb-side test suite (`tests/test-msb-*-effect-probes.sh`) proves.
-- **`rc reload <cage> --dry-run`** shows the same denied-domain fix-hint and the pending config diff without applying anything.
-
----
+- **`rc doctor <cage>`** reads the declared policy from `msb inspect` (default action plus rule count) and reports recently denied domains from the trace log. That is a declaration read plus a recent-denial signal — not a live re-proof that enforcement works.
+- **Enforcement itself** is proven by the effect probes, `tests/test-msb-*-effect-probes.sh`, which send real traffic and check what arrives.
 
 ## See also
 
-- [ADR-029](../decisions/ADR-029-msb-migration.md) D2/D4 — full design rationale for the msb-runtime egress model and the deny→fix→reload repair loop
-- [config.md → `network.*`](config.md#network----msb-egress-allowlist) — the config schema
-- [CLI reference → `rc allowlist`](cli-reference.md#rc-allowlist----egress-allowlist) — command summary
-- [composition-seam.md](composition-seam.md) — opt-in composed mediators for L7 content policy / credential injection beyond `--secret` (compose-only, never rc-launched)
-- [auth.md](auth.md) — Claude/pi's own OAuth credential mounting (separate from git host tokens)
-- [secret-posture.md](secret-posture.md) — the opt-in Tier 0/1/2 project-secret gradient this page's `--secret` worked example is the Tier-2 entry point for; membership heuristics, the Tier-2 judgment criterion, dead zones, and the reflection residual
+- [config.md](config.md) — the whole config file, field by field
+- [secret-posture.md](secret-posture.md) — which credentials are worth the non-possession rework
+- [auth.md](auth.md) — Claude and pi's own logins, a separate concern from git host tokens
+- [ADR-029](../decisions/ADR-029-msb-migration.md) D2/D4 — the msb egress model and the repair loop it replaced observe mode with
+- [ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D2/D3 — one config file, and why the old hot-reload verb folded into `rc up --replace`

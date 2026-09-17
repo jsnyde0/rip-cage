@@ -2,7 +2,7 @@
 
 Rip cage is a tested **distribution** of [**microsandbox**](https://github.com/microsandbox/microsandbox) for running Claude Code and pi with permissions off.
 
-It finds your Anthropic login in your keychain and hands it to msb's `--secret`, so the token never enters the VM. It turns a blocked host into a one-line fix. And it ships the suite that proves your cage holds.
+It finds your Claude login in your macOS keychain, so a fresh cage starts authenticated with nothing for you to paste. It wires up msb's `--secret`, so a credential you nominate reaches its one allowed host without ever entering the VM. It turns a blocked host into a one-line fix. And it ships the suite that proves your cage holds.
 
 Running Claude Code with `--dangerously-skip-permissions` is never safe. Rip cage doesn't change that. But many of us do it anyway. If that's you, at least put your Claude in a cage.
 
@@ -13,11 +13,12 @@ microsandbox (`msb`) boots an OCI image as a libkrun microVM — its own kernel,
 | msb provides | rip-cage adds |
 |---|---|
 | The microVM boundary — own kernel, own network stack | The curated agent image and its init |
-| Default-deny egress and DNS at that boundary | The keychain → `--secret` credential bootstrap |
-| `--secret`: a credential the guest never holds | The denial → fix → relaunch repair loop |
+| Default-deny egress and DNS at that boundary | The denial → fix → relaunch repair loop |
+| `--secret`: a credential the guest never holds | Credential discovery — your Claude login, found in the keychain |
+| The config schema | The operating knowledge, in three skills |
 | Read-only mounts | The floor probe, run on *your* built image |
 | Recreate a sandbox with the same mounts | The proving suite (`rc test`) |
-| The config schema | The operating knowledge, in three skills |
+| The config schema | The protected-paths mount floor |
 
 Rip cage never reimplements what msb ships, and never claims msb's isolation as its own.
 
@@ -55,7 +56,7 @@ Need a tool the base image lacks? The [`cage-image`](.claude/skills/cage-image/S
 
 - **The microVM boundary.** msb runs the cage as a separate kernel on virtualized hardware. Never composable away.
 - **Egress: default-deny.** Nothing leaves the cage except the hosts your config names. A denied host fails at DNS, client-side, in milliseconds — `rc doctor` reads the trace and prints the exact line to add.
-- **Credentials the cage never holds.** The config binds a credential name to the hosts it may travel to; msb injects the real value on the wire and the guest sees only a placeholder. This is msb's `--secret`. What rip-cage adds is finding the value for you — today, the Claude login in your macOS keychain.
+- **Credentials the cage never holds.** The config binds a credential name to the hosts it may travel to; msb injects the real value on the wire and the guest sees only a placeholder. This is msb's `--secret`. Rip cage keeps it unattended-friendly: it reads the value from a host-side file outside every cage mount, so nobody has to export a variable before every launch. Separately, `rc up` finds your Claude login in the macOS keychain so a cage starts authenticated — that path mounts the credential file, and is possession, not non-possession. See [secret-posture.md](docs/reference/secret-posture.md) for which is which.
 - **A mount floor you don't write.** `rc up` reads a shipped list of credential locations and refuses to launch a config that mounts one, covering any it finds inside a mounted tree.
 - **A floor probe on the built image.** It inspects the artifact — non-root user, sudo scope, PATH resolution, guard-file ownership — not a declaration describing it. It runs at every boot and at the head of `rc test`, with no opt-out.
 

@@ -84,7 +84,7 @@ operated and force-capture is less critical than gateway-managed policy.
 
 ## See Also
 
-- [composition-seam.md](../docs/reference/composition-seam.md) — what replaced the retired MEDIATOR seam, and the historical record of how it worked
+- [egress.md → what this does not do](../docs/reference/egress.md#what-this-does-not-do) — the request-level policy, approval and audit surfaces msb does not provide, and why there is no seam left to compose one against
 - [ADR-029](../docs/decisions/ADR-029-msb-migration.md) D2/D5 — the msb-runtime egress/credential model that retired the MEDIATOR archetype
 - [ADR-026](../docs/decisions/ADR-026-containment-mediation-identity.md) — containment-vs-mediation identity (clawpatrol reclassification rationale in D5, pre-cutover)
 - [ADR-005 D12](../docs/decisions/ADR-005-ecosystem-tools.md) — rip-cage as composable seam, not bundler

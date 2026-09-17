@@ -1,10 +1,37 @@
 # Getting Started
 
-Your first caged session, end to end. Assumes `rc` is installed and Docker is running (see the [README](../../README.md#quick-start) for both).
+Your first caged session, end to end. Assumes `rc` is installed, Docker is running, and msb is installed (see the [README](../../README.md#quick-start)).
 
-## Try it on a throwaway first
+There are three steps, and the first two happen once per project.
 
-The safest way to see how the cage behaves is a scratch directory — the agent can't touch anything you care about:
+---
+
+## 1. Build the image
+
+```bash
+rc build
+```
+
+This builds rip-cage's base image with `docker build`, then loads it into msb's image cache. Those are two separate stores, and **cages boot from msb's** — so `rc build`, not a bare `docker build`, is what makes a new image reach your cages.
+
+If your project needs a tool the base image lacks, this is where a Dockerfile of your own comes in. Ask your agent for the [`cage-image`](../../.claude/skills/cage-image/SKILL.md) skill; it writes one that starts `FROM rip-cage:latest`, and then `rc build --file <path>` builds that instead.
+
+## 2. Write the cage config
+
+Every cage launches from one file, at `~/.config/rip-cage/projects/<cage>.yaml`. `rc up` refuses to launch without it — there is no implicit default, because what a cage mounts and what it can reach should be something you read before you run it.
+
+Ask your agent for the [`cage-config`](../../.claude/skills/cage-config/SKILL.md) skill. It copies the annotated template, fills in your paths, and hands you a file to review. Four things are worth reading before you run it:
+
+- **the mounts** — what of your machine this cage can see, and which lines are read-only;
+- **the two session mounts** — `~/.claude/projects` and `~/.claude/sessions`. They are what makes a Claude conversation survive a cage recreate;
+- **`secrets:`** — which credential may travel to which host;
+- **`network.allow`** — everything the cage is allowed to reach. Everything else is denied.
+
+Field-by-field reference: [config.md](../reference/config.md).
+
+## 3. Run it
+
+Start on a throwaway directory the first time. The agent cannot touch anything you care about, and you get to watch the cage behave before you trust it with real work:
 
 ```bash
 mkdir -p ~/scratch/rc-trial
@@ -13,43 +40,65 @@ git init
 rc up .
 ```
 
-> First run only: `rc` asks which directories it's allowed to mount, then pulls the pre-built image from GHCR (~30s, with a local-build fallback). Every run after that is near-instant.
+Your shell prompt changes — you are inside the microVM now. Type `claude` (or `pi`) and let it work.
 
-## What `rc up` does
+---
 
-1. Creates the container and bind-mounts your project at `/workspace` (file changes sync both ways instantly — no git push).
-2. Carries your existing setup in: credentials, `~/.claude/skills` and `agents`, the project's `CLAUDE.md`, git identity, and beads.
-3. Drops you into a **tmux session inside the cage**. Your shell prompt changes — you're now in the box.
+## What `rc up` just did
 
-Type `claude` (or `pi`) and let it work.
+1. Found your Claude login in the macOS keychain, so the cage starts authenticated.
+2. Read the shipped protected-paths list and refused — or covered — any credential location your config would have exposed.
+3. Created a libkrun microVM from your image, with your project mounted at `/workspace`. **File changes sync both ways, live.** No git push, no rebuild.
+4. Ran init inside the cage, which runs the floor probe before anything else.
+5. Attached you to it.
 
 ## See the cage earning its keep
 
-Inside the session, ask the agent to run something destructive:
+The cage's default posture is **deny everything outbound except the hosts your config names**. Ask the agent to fetch something you did not allowlist:
 
 ```
-rm -rf /              → DENIED by DCG
-echo hi && rm -rf ~   → DENIED (chaining doesn't bypass it)
+curl https://example.com
+→ curl: (6) Could not resolve host: example.com
 ```
 
-DCG fires on every command regardless of Claude Code's permission mode. Meanwhile the egress firewall logs everything the agent connects to — in observe mode it blocks nothing yet. After the agent has fetched something, detach and run `rc allowlist show --observed` on the host to see where it went.
+That is the egress wall, not a network problem. It fails in milliseconds rather than hanging.
+
+The repair loop is short, and it is the point:
+
+```bash
+rc doctor scratch-rc-trial            # names the denied host
+# add "example.com:tcp:443" under network.allow in the cage config
+rc up --replace ~/scratch/rc-trial
+```
+
+The recreate keeps your host mounts and named volumes — **your Claude session resumes** — and loses only whatever the guest wrote to its own ephemeral filesystem.
+
+If you composed a command guard into your image (`examples/dcg/` is one recipe), you can watch that fire too: a destructive command is refused, and chaining it behind a harmless one does not slip it past. A guard is something you compose, not something the base image bakes in.
+
+## Prove the cage holds
+
+```bash
+rc test scratch-rc-trial
+```
+
+This runs against **your** image, not a reference image someone else built. The floor probe goes first. A check that depends on a recipe you did not compose reports `SKIP` with a reason rather than failing.
 
 ## The commands you'll actually use
 
 | Action | Command |
 |---|---|
-| Start / resume a cage | `rc up <path>` |
-| Detach (leave it running) | `Ctrl-B` then `d` |
-| Re-attach later | `rc attach` |
-| See what's running | `rc ls` |
-| Stop a cage | `rc down <name>` |
-| Remove it entirely | `rc destroy <name>` |
+| Start or resume a cage | `rc up <path>` |
+| Recreate a running cage against the current config | `rc up --replace <path>` |
+| Find out why something is blocked | `rc doctor <cage>` |
+| Prove the cage holds | `rc test <cage>` |
+| Refresh expired credentials | `rc auth refresh` |
+| Remove a cage and its volumes | `rc destroy <cage>` |
 
-That's the whole daily loop. Everything else is occasional.
+That is the whole daily loop. To shell into a running cage, list what is running, or stop one, use msb directly — the [`cage-ops`](../../.claude/skills/cage-ops/SKILL.md) skill has the one-liners.
 
 ## Where to go next
 
-- **[CLI reference](../reference/cli-reference.md)** — every command and flag.
-- **[Network egress](../reference/egress.md)** — promoting observe-mode traffic into an allowlist and flipping to block mode.
-- **[The worktree workflow](../../README.md#the-worktree-workflow)** — running several caged agents in parallel.
-- **[Auth](../reference/auth.md)** — OAuth, Keychain, API-key fallback, and pi's Codex flow.
+- **[`cage-ops`](../../.claude/skills/cage-ops/SKILL.md)** — when something is blocked, broken, or will not start.
+- **[Network egress](../reference/egress.md)** — the full deny → fix → relaunch loop, and the one failure class the fix-hint cannot see.
+- **[Auth](../reference/auth.md)** — the two credential postures, and which one your cage is in.
+- **[The worktree workflow](../../README.md#the-worktree-workflow)** — several caged agents at once, one per git worktree.

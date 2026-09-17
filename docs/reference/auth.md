@@ -1,157 +1,129 @@
 # Auth
 
-Rip cage uses your existing Claude Code OAuth session — no API keys needed.
+Rip cage uses the login you already have. No API key required.
 
-## How it works
+There are **two postures**, and a cage can be in either. Knowing which one you are in is the whole of this page.
 
-OAuth tokens are the primary auth method. The `rc` script extracts tokens and mounts them into the container.
+| Posture | The credential is | Set up by |
+|---|---|---|
+| **Possession** (default) | a real token, in a file mounted into the cage | `rc up` finding your login and mounting it |
+| **Non-possession** | a placeholder in the guest; msb injects the real value on the wire | a `secrets:` entry in the cage config |
 
-- **macOS**: Tokens live in the system Keychain under `"Claude Code-credentials"`. The `rc` script extracts them to `~/.claude/.credentials.json` automatically.
-- **Linux**: `~/.claude/.credentials.json` (from a previous `claude /login`) is mounted directly.
-- **API key fallback**: Set `ANTHROPIC_API_KEY` in an env file and pass it with `rc up --env-file`.
+Non-possession is stronger — a prompt-injected agent has nothing to exfiltrate — but it is something **you** configure, not something you get by default. `rc doctor <cage>`'s `auth` probe names which one a live cage is in.
 
-## Auth flow by path
+> **The Claude login is possession today.** `rc auth` finds it in your keychain and `rc up` mounts the file; the two mechanisms below are not bridged. `--secret` carries credentials **you** nominate and whose value **you** put in place. Wiring the Claude login through `--secret` is charted as `rip-cage-ely4.7.17` and is not shipped — see [ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D1's realized-vs-charted note.
 
-| Path | Where extraction happens |
-|------|------------------------|
-| `rc up` | `cmd_up` function (runs on host before `msb create`) |
-| `rc auth refresh` | `cmd_auth_refresh` → `_extract_credentials` (host-side, updates file for all containers) |
-| `init-rip-cage.sh` | Reads the mounted `.credentials.json` — does NOT extract from Keychain (runs inside container) |
+---
 
-## Switching accounts
+## Possession — the default path
 
-When you switch Claude Code accounts or refresh auth on the host, the macOS
-Keychain updates but the file bind-mounted into containers does not. Run:
+`rc up` pulls the Claude login from the macOS keychain before the sandbox exists, writes it to `~/.claude/.credentials.json`, and mounts that file read-write into the cage at `/home/agent/.claude/.credentials.json`.
 
-    rc auth refresh
+- **macOS:** the token lives in the keychain under `"Claude Code-credentials"`. `rc` extracts it for you.
+- **Linux:** there is no keychain. `~/.claude/.credentials.json`, from a previous `claude /login`, is mounted directly.
+- **API key:** set `ANTHROPIC_API_KEY` in an env file and pass `rc up --env-file`.
 
-This re-extracts credentials from the Keychain. All running containers pick up
-the change immediately via bind mount — no restart needed.
+`rc up` also warns when the token has expired or expires within ten minutes, so a walk-away run fails at launch rather than an hour in.
 
-On Linux (no Keychain), update `~/.claude/.credentials.json` directly. Running
-containers see the change immediately.
+### Switching accounts
 
-### `auth.credential_mounts: none` (non-possession cages)
+Switching accounts on the host updates the keychain, not the mounted file. Run:
 
-`rc auth refresh` (and the `_extract_credentials` maintenance it runs) is
-**project-agnostic and unaffected** by `auth.credential_mounts` (or its
-per-tool overrides, `auth.per_tool.claude` / `auth.per_tool.pi`) — it always
-refreshes the host `~/.claude/.credentials.json` file regardless. What
-changes under `none` (global or per-tool) is that a cage's `rc up`
-**does not mount** the affected tool's credential files into that container
-at all (and, for claude, skips the per-cage keychain extraction step), even
-though the host-side refresh keeps maintaining the file for every other
-(real-mode) cage. `auth.per_tool.{claude,pi}` lets a single cage mix postures
-— e.g. claude non-possession alongside pi possession, the shape a caged `pi`
-needs since its providers have no long-lived static token to ride
-non-possession with. See [config.md](config.md) (`auth.credential_mounts`
-section) for the full field reference.
+```bash
+rc auth refresh
+```
 
-## Account rotation
+This re-extracts from the keychain. Running cages pick the change up **immediately** through the mount — no recreate. On Linux, edit `~/.claude/.credentials.json` directly; same effect.
 
-If you run multiple Claude Code accounts (e.g., to spread rate limits across profiles), any tool that rewrites `~/.claude/.credentials.json` on the host will propagate to all running containers instantly via the bind mount. No container restart needed.
+`rc auth refresh` writes **in place** (truncate-and-write, same inode) rather than renaming over the file. That matters — see the gotcha below.
 
-The workflow:
+For rotating between several accounts, see the [multi-account rotation guide](../guides/multi-account-rotation.md).
 
-1. Agent inside the cage hits a rate limit or auth error
-2. On the host, switch to a different account (update `~/.claude/.credentials.json`)
-3. The agent retries its API call and picks up the new credentials
+### Gotcha: an atomic rename on the host can sever a live single-file mount
 
-This works because rip-cage bind-mounts the credentials file read-write. The container sees host-side file changes immediately.
+The credential mount is a **single-file** mount. An external writer that does the standard safe-rewrite — write a temp file, rename over the target — allocates a **new inode**, and a single-file mount bound to the old one is left holding a dead handle. The host path looks perfectly normal; the in-cage path goes `ENOENT`.
 
-**Tools that can do the switch:**
+**Symptom:** the caged agent reports `Not logged in — Please run /login`, possibly an hour into a healthy session, whenever some host writer next rewrites the file.
 
-| Tool | Command | What it does |
-|------|---------|-------------|
-| `rc auth refresh` | `rc auth refresh` | Re-extracts current account from macOS Keychain |
-| [CAAM](https://github.com/jsnyde0/caam) | `caam activate claude <profile>` | Switches between named credential profiles |
-| Manual | Edit `~/.claude/.credentials.json` directly | Works on any platform |
+**Status: confirmed under the pre-cutover Docker bind mount; unverified under msb's virtiofs.** It was observed live on macOS: a host Claude Code session rewrote `.credentials.json` about 30 seconds after cage start, and the in-cage `claude` went to "Not logged in" while the mount still listed as present. Under msb the mount mechanic changed, and this single-file shape has not been re-tested — tracked in `rip-cage-9mbw`. A directory mount was separately measured clean through an inode-changing delete-and-recreate, but that is a different shape and settles nothing here. Treat the mechanism as the working assumption, not a proven-live msb fact.
 
-For a step-by-step guide to multi-account rotation with CAAM, see [Multi-account rotation guide](../guides/multi-account-rotation.md).
+**`rc`'s own writer never triggers it** — both `rc auth refresh` and `rc up`'s extraction truncate-and-write the same inode ([ADR-010](../decisions/ADR-010-auth-refresh.md) D4). The hazard is external writers.
 
-### Platform notes
+**Detection:** `rc doctor <cage>`. Its `dead_mounts` probe enumerates every single-file mount generically and checks the **in-cage destination first**:
 
-- **macOS + OrbStack/Docker Desktop (VirtioFS), pre-cutover Docker path:** Worked reliably in the common case. VirtioFS tracks file paths, so atomic file replacements (like CAAM's `mv`) propagated correctly, modulo a sub-second window during the atomic swap where the file briefly disappeared — Claude Code handled this naturally via retry.
-- **Linux (native Docker), pre-cutover Docker path:** Single-file bind mounts track inodes, not paths. An atomic `mv` (new inode) would NOT propagate. Directory-level bind mounts or in-place file writes (`cat > file`) avoided it.
+```
+Live probes:
+  dead-mounts    : FAIL — dead handle(s): /home/agent/.claude/.credentials.json
+                   (host file was replaced by atomic rename; the mount still points at the old inode)
+```
 
-> **Correction (rip-cage-uben, 2026-07-06, pre-cutover Docker path):** despite the "works reliably" claim above, atomic-rename severing of this exact mount WAS observed live on macOS + OrbStack/VirtioFS (host Claude Code session rewrote `.credentials.json` ~30s after cage start; in-cage `claude` went to "Not logged in" while `docker inspect` still listed the mount). The platform-safety claim above described the common case, not a guarantee — Docker's single-file bind mount was a Linux VFS-level bind to the inode resolved at container-CREATE time, independent of the host filesystem driver; it was host-write-timing dependent and intermittent on every platform. Don't infer safety from platform — run `rc doctor <cage>` (see the gotcha below) to check the actual mount state.
+Destination-first ordering is deliberate. Some legitimate mounts have a host source that is never host-visible — a forwarded socket materialized only inside the guest's mount namespace. Checking host-source existence first would warn on every one of those, on every healthy cage, forever.
 
-## Gotcha: host atomic-rename can silently sever a live single-file mount
+**Repair:** `rc up --replace <path>` — recreates the cage and re-binds every mount against the current inode. Nothing is lost; the cage never touched the credentials file.
 
-Rip-cage's credential mount (`~/.claude/.credentials.json` — same class as `~/.claude.json`) is a single-file **msb `-v` mount** (a Docker bind mount pre-cutover; same mount shape, different runtime — `cli/up.sh:717`). The hazard this section describes is an **external** atomic-rename (write tmp + rename over — the standard safe-rewrite idiom, e.g. a host Claude Code session refreshing its own token, or a third-party rotation tool like CAAM) severing the inode a single-file bind mount tracks at container-create time: the host path looks completely normal (`ls ~/.claude/.credentials.json` on the host shows a fresh, valid file), but if the mount's inode was severed the in-cage path would go ENOENT — a dead handle.
+**Why rip-cage does not snapshot this file** the way it snapshots `~/.claude.json`: credentials **expire**. A copy taken at boot goes stale the moment the host token refreshes, trading an intermittent *detectable* accident for a guaranteed-stale credential that `rc auth refresh` could no longer fix without a recreate. The live mount is what lets a host-side refresh reach a running cage. `~/.claude.json` is project state, not an expiring secret, so a boot-time snapshot costs nothing there — and it is mounted `:ro`, because read-write would hand a prompt-injected agent a write into the `mcpServers` and `hooks` your **host** Claude later executes.
 
-**Status: CONFIRMED on the pre-cutover Docker single-file bind, UNVERIFIED on msb virtiofs.** The correction above documents a live, observed occurrence of this exact severing under Docker. Under msb, the mount mechanic changed to virtiofs, and this specific single-file severing has **not yet been re-tested** post-cutover (ADR-010 D4 / ADR-029 flag it explicitly as "re-verify"; the live re-verify is tracked in **rip-cage-9mbw**). A related but distinct data point: virtiofs directory-mount coherence was separately measured clean — an inode-changing delete-and-recreate on a *directory* mount propagated correctly (~19ms, zero staleness; see `docs/2026-07-09-msb-spike-lifecycle.md` §8) — but that spike exercised a directory mount, not this single-file shape, so it does not by itself confirm or refute the hazard here. Treat the mechanism below as the historically-confirmed Docker behavior, carried forward as the working assumption pending rip-cage-9mbw, not as a proven-live msb fact.
+---
 
-**Symptom:** the agent inside the cage suddenly reports `Not logged in — Please run /login`, potentially minutes (or longer) into an otherwise-healthy session. This can happen at any point during a long-running cage's life — whenever a host writer next rewrites the file — not just at cage start.
+## Non-possession — the `--secret` path
 
-**Why rc's own writer doesn't trigger this:** `rc auth refresh` and the keychain-extraction step in `rc up` both truncate-and-write the SAME inode in place (ADR-010 D4, `cli/auth.sh:_extract_credentials`) rather than rename over it, so rc's own credential refresh never severs the mount — this is unaffected by the Docker-vs-msb question above, since it's about rc's own write idiom, not the mount mechanic.
+A `secrets:` entry in the cage config binds a credential **name** to the hosts it may be injected toward. msb injects the real value on the wire toward those hosts only; the guest holds the string `$MSB_<NAME>` — on disk, in its environment, in `/proc`.
 
-**Detection:** run `rc doctor <cage>`. Its dead-mounts probe is a live, msb-ported defensive check (`_msb_inspect_json` / `_msb_exec`, `cli/doctor.sh:246-336,644,817`) that enumerates every single-file bind mount on the container — generically, not hardcoded to `.credentials.json`, since `~/.claude.json` is the same class of mount under possession — and checks the **in-cage destination first**: a mount whose destination still resolves is reported healthy unconditionally, regardless of what the host source path looks like. Only a destination that has actually gone dead gets a further look at the host source, to give an honest diagnosis:
+```yaml
+secrets:
+  CCTOK:
+    allow:
+      - "api.anthropic.com"
 
-    Live probes:
-      dead-mounts    : FAIL — dead handle(s): /home/agent/.claude/.credentials.json (host file was replaced by atomic rename; the mount still points at the old inode; fix: rc down <cage> && rc up <path> to re-bind)
+env:
+  CLAUDE_CODE_OAUTH_TOKEN: "$MSB_CCTOK"
+```
 
-The destination-first order matters: some legitimate mounts (the ssh-agent-forwarding socket, `/run/host-services/ssh-auth.sock` on macOS/OrbStack) have a host source path that is never host-visible at all — OrbStack materializes it only inside the container's mount namespace — yet the mount works fine. Checking host-source-existence first would WARN on every one of those, on every healthy cage, forever; checking the destination first means a working mount is never flagged no matter what its host source looks like.
+**Leave `value:` out.** msb's schema has the field; filling it would put the secret in a file you edit, which is the one thing this shape exists to avoid. Omitted, msb resolves the value from the **host environment variable of the same name** at boot.
 
-**Repair:** `rc down <cage> && rc up <path>` — this recreates the container and re-binds every mount against the current inode. No data is lost; the credentials file itself was never touched by the cage.
+**Where that variable comes from, unattended.** Requiring you to export it before every launch would put a human in the loop on a walk-away run. So `rc up` reads the value from `$XDG_CONFIG_HOME/rip-cage/secrets/<NAME>` when that file exists and exports it for the launch — host-side, outside every cage mount, the same location class as the protected-paths list. If the file is absent, export the variable yourself; msb fails loud naming it.
 
-**Why rip-cage does NOT snapshot `.credentials.json`** the way it does for `~/.claude.json` (init-time seed synthesis, see the `rip-cage-single-file-mount-handle-breaks-on-host-atomic-rename` memory): credentials **expire**. A snapshot copied once at container-start would go stale the moment the host token refreshes — trading an intermittent, *detectable* accident (this one, caught by `rc doctor` regardless of whether it fires on Docker, msb, or both) for a *guaranteed-stale* credential that `rc auth refresh` could no longer fix without a full container recreate. The live mount is deliberate: it's what lets a host-side `rc auth refresh` (or CAAM, or any host token rotation) propagate a fresh token into a running cage without restarting it. `~/.claude.json` is a different case — it's project/session state, not an expiring secret, so a one-time init-time snapshot trades nothing away there.
+**Nothing bridges this to the keychain.** `rc auth` writes your Claude login to `~/.claude/.credentials.json`, which gets mounted; it does not write it into the secrets directory. So the example above puts a cage in non-possession **only if you put a token at `~/.config/rip-cage/secrets/CCTOK` yourself**. A cage whose config declares `CCTOK` while `rc up` also mounts the credentials file is still holding the real token in the guest — the mount is what Claude Code actually reads.
 
-**Non-possession retires this mount class entirely:** under `auth.per_tool.claude: none` (see [config.md](config.md)), `rc up` does not mount `.credentials.json` into the container at all, so this hazard — confirmed-or-not on msb — does not apply to non-possession cages.
+Closing that gap is `rip-cage-ely4.7.17`: `rc auth` writes the token under `rip-cage/secrets`, and `rc up` stops mounting the file once the secret is declared. Not shipped.
 
-## Pi auth
+`rc doctor` reports the posture:
 
-Pi (`@mariozechner/pi-coding-agent`) is also supported alongside Claude Code in the same image. This section covers auth, safety model, and related projects.
+```
+auth : OK — non-possession posture (CLAUDE_CODE_OAUTH_TOKEN present; msb --secret-injected auth)
+```
 
-### Auth file location
+Full design and the tiering judgment: [secret-posture.md](secret-posture.md).
 
-Pi stores credentials at `~/.pi/agent/auth.json` on the host (mode `0o600`, plain JSON, auto-refreshed via `proper-lockfile`). Inside the cage, `rc up` bind-mounts `~/.pi/agent/auth.json` read-write at `/home/agent/.pi/agent/auth.json` and sets `PI_CODING_AGENT_DIR=/home/agent/.pi/agent` (ADR-019 D1).
+---
 
-### First-time pi setup
+## pi auth
 
-On a fresh machine where `~/.pi/agent/auth.json` does not exist, `rc up` automatically seeds an empty `{}` file before binding it, so the bind mount always fires. Then, inside the cage, run:
+pi stores credentials at `~/.pi/agent/auth.json` (mode 0600, auto-refreshed). `rc up` mounts that file read-write at `/home/agent/.pi/agent/auth.json` and sets `PI_CODING_AGENT_DIR` ([ADR-019](../decisions/ADR-019-pi-coding-agent-support.md) D1).
 
-    pi /login
+**First run:** if the host file does not exist, `rc up` seeds an empty `{}` so the mount fires. Then, inside the cage:
 
-Complete the OAuth or API-key flow as prompted. Pi writes credentials in place to `/home/agent/.pi/agent/auth.json`, which is the bind-mounted host file — so the credentials persist back to `~/.pi/agent/auth.json` on the host immediately. On the next `rc destroy` + `rc up`, the same file is mounted and pi is already authenticated. No re-login is required across rebuilds.
+```
+pi /login
+```
 
-If seeding fails (e.g., the host has a dotpi-managed symlink at that path, or a permissions error), `rc up` logs a warning and skips the mount — pi will surface auth guidance on first request via its own `/login` UI (ADR-019 D2).
+pi writes in place to the mounted file, so the credential lands on the host immediately and survives every later recreate. If seeding fails — a symlink at that path, a permissions error — `rc up` warns and skips the mount; pi's own `/login` surfaces the problem on first request. Rip cage adds no startup auth banner: banners get banner-blind fast, and pi's own prompt is the right surface ([ADR-019](../decisions/ADR-019-pi-coding-agent-support.md) D2).
 
-Rip-cage does not add a startup auth-check for pi (ADR-019 D2): startup banners get banner-blind fast, and pi's own `/login` prompt is the right surface for "you're not authed."
+**Providers.** pi supports Anthropic, OpenAI (including Codex via ChatGPT OAuth), Gemini, Mistral, Groq, Cerebras, xAI, OpenRouter, Azure OpenAI and more — see [pi's provider docs](https://github.com/mariozechner/pi-coding-agent/blob/main/docs/providers.md). `rc up` forwards a fixed set of provider API-key variables from host to guest when they are set and non-empty. When `auth.json` is also present it wins, which is pi's own precedence.
 
-### Supported providers
+`rc auth refresh` is **Claude-only**. pi refreshes its own credentials against the mounted file; no rip-cage helper is involved. Generalizing credential discovery to pi's Codex login is [roadmap](../ROADMAP.md), not a claim.
 
-Pi supports a wide range of providers: Anthropic (Claude), OpenAI (including Codex via ChatGPT Plus/Pro OAuth), Gemini, Mistral, Groq, Cerebras, xAI, OpenRouter, Azure OpenAI, and others. See the [pi-mono providers documentation](https://github.com/mariozechner/pi-coding-agent/blob/main/docs/providers.md) for the full list and configuration details.
+### Subscription auth — read before using
 
-`rc up` forwards a fixed set of provider API key env vars from host to container (when set and non-empty): `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AZURE_OPENAI_API_KEY`, `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `GROQ_API_KEY`, `CEREBRAS_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, and others. When `auth.json` is also present, it takes priority (pi's own behavior).
-
-### Subscription auth (TOS callout)
-
-> **Note on terms of service:** Two subscription OAuth flows raise policy questions worth reading before use.
+> Two subscription OAuth flows raise policy questions.
 >
-> - **pi → OpenAI Codex (ChatGPT Plus/Pro):** Pi-mono's documentation includes a "Personal use only" statement for the Codex OAuth flow. Using it to drive automated coding-agent sessions sits in a gray area under the [OpenAI Service Terms](https://openai.com/policies/service-terms/).
-> - **pi → Anthropic OAuth (Claude Max/Pro):** This flow sends your Anthropic subscription credentials through a third-party harness (pi). Anthropic's January 2026 enforcement action against third-party Claude access tools applies here — review the [Anthropic Consumer Terms](https://www.anthropic.com/legal/consumer-terms) before use.
+> - **pi → OpenAI Codex (ChatGPT Plus/Pro):** pi's own docs carry a "personal use only" statement for this flow. Driving automated agent sessions with it sits in a gray area under the [OpenAI Service Terms](https://openai.com/policies/service-terms/).
+> - **pi → Anthropic OAuth (Claude Max/Pro):** this sends subscription credentials through a third-party harness. Anthropic's January 2026 enforcement action against third-party Claude access tools applies; review the [Anthropic Consumer Terms](https://www.anthropic.com/legal/consumer-terms).
 >
-> Rip-cage does not add a runtime banner for this (ADR-019 D6: startup banners get banner-blind fast; the user has already opted in by running `pi /login`). The callout lives here, in the docs, where it is findable and version-controlled.
+> There is no runtime banner for this ([ADR-019](../decisions/ADR-019-pi-coding-agent-support.md) D6) — you have already opted in by running `pi /login`. The callout lives here, findable and version-controlled.
 
-### Pi safety model
+### Why rip-cage ships no paranoid mode
 
-Inside the cage, pi can enforce the same destructive-command guard (DCG) as Claude Code, via the image-baked `dcg-gate.ts` extension (cage-owned path, root-owned, loaded via the pi-wrapper's explicit `-e` flag). `dcg-gate.ts` forwards bash tool calls to the shared `dcg` binary — which is provisioned by the composable DCG recipe (`examples/dcg/`, not baked in the base image). When the DCG recipe is composed, pi's destructive-command guard is active (ADR-019 D8; shipped in rip-cage-bl1). Container isolation, non-root user (`agent`, uid 1000), `--cap-drop=ALL --no-new-privileges`, and the L7 egress firewall (ADR-012) are active in the base image regardless of which recipes are composed.
+A related project takes the opposite approach: an `LD_PRELOAD` syscall firewall, a V8 filesystem hook, a SUID vault binary, and removal of `su`/`mount`/`passwd`. Rip cage deliberately declines all of it ([ADR-019](../decisions/ADR-019-pi-coding-agent-support.md) D7).
 
-There is no compound-command blocker on pi or Claude Code — it was removed 2026-06-03 because DCG matches over the whole command string regardless of `&&`/`;`/`||` chaining, which made the blocker redundant for destructive-command containment (ADR-002 D5).
-
-### Why rip-cage doesn't ship paranoid mode
-
-Pi-coding-agent-container is a related project that takes a different approach: `LD_PRELOAD` syscall firewall (`fs-vault.so`), a Node.js V8 fs hook (`app-firewall.js`), a SUID `gh-vault` binary, and removal of privilege-escalation binaries (`su`, `mount`, `passwd`).
-
-Rip-cage deliberately rejects these mitigations (ADR-019 D7). Pi-coding-agent-container targets a motivated-attacker threat model; rip-cage's threat model is "limit blast radius of an autonomous agent's accidents." Adversarial mitigations add complexity, fragility, and surface detection-evasion-flavored UX — when an agent's write is blocked at the `LD_PRELOAD` level it tends to retry and fail confusingly, which violates the autonomy-over-containment philosophy (see project CLAUDE.md). The layers rip-cage already runs catch the realistic failure modes.
-
-### Auth refresh
-
-`rc auth refresh` is Claude-only — it shells into the macOS Keychain and updates `~/.claude/.credentials.json`. Pi auto-refreshes its credentials via `proper-lockfile` against the mounted `auth.json`; no rip-cage helper is required. On Linux, both Claude and pi auth files are edited directly on the host and running containers see changes immediately via bind mount.
-
-### Related projects
-
-- **[pi-less-yolo](https://github.com/cjermain/pi-less-yolo)** — closest cousin; same single-bind-mount + `PI_CODING_AGENT_DIR` pattern; provider env-var passthrough list; no auth-warn startup banner.
-- **pi-coding-agent-container** — different (adversarial) threat model; uses `LD_PRELOAD`/V8 hooks; see "Why rip-cage doesn't ship paranoid mode" above.
-- **gondolin** — heavier sandbox (QEMU micro-VMs, host-side TS policies, allowlisted HTTP egress); useful as Phase 2+ reference for rip-cage if the threat model ever needs to escalate.
+That project targets a motivated attacker. Rip cage's threat model is an autonomous agent's *accidents*, plus injected instructions it follows in good faith. Adversarial mitigations add fragility and detection-evasion-flavored UX: a write blocked at the `LD_PRELOAD` level makes an agent retry and fail confusingly, which trades away the autonomy the cage exists to protect. The layers rip-cage already runs catch the realistic failure modes.

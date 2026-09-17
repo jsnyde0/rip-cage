@@ -159,5 +159,6 @@ that is a deliberate structural answer, not a missing feature.
 
 - [`examples/postgres-pgvector/`](../../examples/postgres-pgvector/) — a real daemon recipe, built and booted
 - [`tests/test-boot-descriptor.sh`](../../tests/test-boot-descriptor.sh) — the descriptor contract, asserted in a live cage
-- [docs/reference/README.md](README.md) — the full seam catalog
+- [docs/reference/README.md](README.md) — the reference index and the three things you compose
+- [`cage-image`](../../.claude/skills/cage-image/SKILL.md) — the skill that writes the Dockerfile and the boot fragment
 - [ADR-005 D7/D8/D10/D12](../decisions/ADR-005-ecosystem-tools.md), [ADR-031 D4](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md), [ADR-019 D9](../decisions/ADR-019-pi-coding-agent-support.md)

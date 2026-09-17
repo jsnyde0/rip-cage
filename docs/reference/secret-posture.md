@@ -1,6 +1,6 @@
 # Project-secret posture: the opt-in effort gradient (Class A / Tier 2)
 
-> Governing decision: [ADR-030](../decisions/ADR-030-classify-by-use-secret-posture.md) — classify-by-use project-secret posture. This page is the **recipe** for Tier 2 of that gradient: turning a project's own wire-bearer credential (a Class-A secret) into a non-possessed one, the same way [ADR-029 D5](../decisions/ADR-029-msb-migration.md) already does by default for the tool's own OAuth token. Evidence base: `history/2026-07-26-secret-posture-spikes.md` (S2/S3) and `history/2026-07-26-secret-posture-convergence.md`.
+> Governing decision: [ADR-030](../decisions/ADR-030-classify-by-use-secret-posture.md) — classify-by-use project-secret posture. This page is the **recipe** for Tier 2 of that gradient: turning a project's own wire-bearer credential (a Class-A secret) into a non-possessed one, using the `--secret` mechanism [ADR-029 D5](../decisions/ADR-029-msb-migration.md) specifies. Evidence base: `history/2026-07-26-secret-posture-spikes.md` (S2/S3) and `history/2026-07-26-secret-posture-convergence.md`.
 
 **Read this if:** a project's mounted workspace holds a live credential — an API key, a PAT, a bearer token — that the caged agent actually sends toward a known host, and you've decided the leak cost is high enough to be worth the rework. If that doesn't describe your situation, **you almost certainly want Tier 0 or Tier 1, not this page** — keep reading the next section before going further.
 
@@ -13,22 +13,24 @@ Per [ADR-030 D2](../decisions/ADR-030-classify-by-use-secret-posture.md) (FIRM),
 | Tier | What it costs | What it buys | Where |
 |---|---|---|---|
 | **Tier 0 — do nothing (the default)** | Zero authoring | The egress wall (default-deny + curated allowlist, [egress.md](egress.md)) already stops network exfil of anything in the tree, including secrets you never touched. | Nothing to configure — every cage starts here. |
-| **Tier 1 — `mounts.mask`** | A few lines per unneeded secret file | Boot-time `ro`-overmounts a Class-C secret (present in the tree, not needed by the caged task) so it isn't even *readable* in-cage — cheap, additive, per-file. | [config.md → `mounts.mask`](config.md#mountsmask--workspace-mask-primitive-tier-1-project-secret-posture) |
-| **Tier 2 — Class-A non-possession rework (this page)** | Per-credential: split the placeholder from the real value, wire an `auth.credentials` binding | The guest never holds the real credential bytes at all — msb substitutes them only on the wire toward the bound host. | Below. |
+| **Tier 1 — a secret cover** | One mount line per unneeded secret file | Mounts an empty read-only file over a Class-C secret (present in the tree, not needed by the caged task) so it isn't even *readable* in-cage — cheap, additive, per-file. | [config.md → secret covers](config.md#secret-covers) |
+| **Tier 2 — Class-A non-possession rework (this page)** | Per-credential: split the placeholder from the real value, wire a `secrets:` binding | The guest never holds the real credential bytes at all — msb substitutes them only on the wire toward the bound host. | Below. |
 
-The tiers are cumulative in effort, not in obligation: a project can live happily at Tier 0 forever, add a Tier 1 mask entry when a pooled mount surfaces an unneeded sibling-repo secret, and reserve Tier 2 for the one credential where a leak would actually hurt. Nothing forces a project up the gradient.
+The tiers are cumulative in effort, not in obligation: a project can live happily at Tier 0 forever, add a Tier 1 cover when a pooled mount surfaces an unneeded sibling-repo secret, and reserve Tier 2 for the one credential where a leak would actually hurt. Nothing forces a project up the gradient.
 
 ---
 
 ## The Class-A recipe (Tier 2)
 
+> **This page is about credentials YOU nominate.** Claude Code's own login is **not** one of them today: `rc auth` finds it in your keychain and `rc up` mounts the file, which is possession. Wiring it through `--secret` is charted as `rip-cage-ely4.7.17`, not shipped — see [auth.md](auth.md) for the two postures and [ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D1's realized-vs-charted note.
+
 **What "Class A" means:** a secret is *wire-bearer* if it is sent **verbatim** toward a known host — an API key in an `Authorization` header, a PAT used as a git password, a bearer token. That's the property msb's `--secret` mechanism substitutes: a literal placeholder string in the guest, the real bytes only on the TLS-intercepted wire toward the one host the credential is bound to ([ADR-029 D5](../decisions/ADR-029-msb-migration.md)).
 
-The recipe has three pieces, mirroring the egress worked example already documented in [egress.md § the `source_file` + `target_env` form](egress.md#the-source_file--target_env-form-no-manual-pre-export):
+The recipe has three pieces, and all three live in the cage config ([config.md](config.md)):
 
 1. **A placeholder value committed in the repo.** The project's `.env` (or wherever the credential lives) holds a literal placeholder — not the real key — checked into the repo like any other config.
-2. **The real value host-side only.** The actual credential lives in a host-side file (or host-exported env var), never committed, never mounted into the cage.
-3. **An `auth.credentials` binding** in `.rip-cage.yaml` naming the host env var, the `source_file` holding the real value, the bound `hosts`, and the `target_env` the guest-side tool actually reads.
+2. **The real value host-side only.** The actual credential lives in a host-side file outside every cage mount, never committed, never mounted into the cage.
+3. **A `secrets:` entry** naming the credential and the hosts it may travel to, plus an `env:` line that puts the placeholder under the name the guest-side tool actually reads.
 
 ### Worked example: a project sending an API key to one host
 
@@ -40,26 +42,32 @@ SERVICE_API_KEY=$MSB_SERVICE_KEY
 ```
 
 ```yaml
-# <project>/.rip-cage.yaml
-version: 2
+# ~/.config/rip-cage/projects/<cage>.yaml — the cage config
+secrets:
+  SERVICE_KEY:          # NO `value:` — msb takes it from the host env var of this name
+    allow:
+      - "api.example-service.com"   # single-host binding, enforced
+
+env:
+  SERVICE_API_KEY: "$MSB_SERVICE_KEY"   # the guest var the project's own code reads
+
 network:
-  allowed_hosts:
-    - api.example-service.com
-auth:
-  credentials:
-    - source_env: SERVICE_KEY                                    # logical name; msb synthesizes $MSB_SERVICE_KEY
-      source_file: /Users/you/.config/rip-cage/example-service-key  # host-only file holding the REAL key — never committed
-      hosts: [api.example-service.com]                           # single-host binding, enforced
-      target_env: [SERVICE_API_KEY]                               # the guest var the project's own code reads
+  policy: none
+  allow:
+    - "api.example-service.com:tcp:443"
 ```
 
 ```bash
-# host-side, once: put the real key where source_file points
-echo -n "sk_live_the_real_key_here" > ~/.config/rip-cage/example-service-key
+# host-side, once: put the real key where rc up will find it
+mkdir -p ~/.config/rip-cage/secrets
+printf %s "sk_live_the_real_key_here" > ~/.config/rip-cage/secrets/SERVICE_KEY
+chmod 600 ~/.config/rip-cage/secrets/SERVICE_KEY
 rc up ~/code/my-project
 ```
 
-Inside the cage, the project's own code reads `SERVICE_API_KEY` and sees only `$MSB_SERVICE_KEY` — in the env, in `/proc/self/environ`, in the `.env` file on disk, and in `msb inspect`'s at-rest config. When that code makes an HTTPS request to `api.example-service.com`, msb's TLS-intercepting proxy substitutes the real key on the wire; a request toward any *other* host carrying the placeholder is block-and-logged, not substituted. This is exactly the mechanism [ADR-029 D5](../decisions/ADR-029-msb-migration.md) already ships for Claude Code's own OAuth token, generalized to a project's credential — no `rc`/`cli` code changes, pure config.
+`rc up` reads that file and exports `SERVICE_KEY` for the launch, so an unattended run needs no pre-export. The directory is host-side, outside every cage mount, the same location class as the protected-paths list.
+
+Inside the cage, the project's own code reads `SERVICE_API_KEY` and sees only `$MSB_SERVICE_KEY` — in the env, in `/proc/self/environ`, in the `.env` file on disk, and in the cage config at rest. When that code makes an HTTPS request to `api.example-service.com`, msb's TLS-intercepting proxy substitutes the real key on the wire; a request toward any *other* host carrying the placeholder is block-and-logged, not substituted. This is exactly the mechanism [ADR-029 D5](../decisions/ADR-029-msb-migration.md) already ships for Claude Code's own OAuth token, generalized to a project's credential — no `rc`/`cli` code changes, pure config.
 
 **This is validated end-to-end, not theoretical.** `history/2026-07-26-secret-posture-spikes.md` S2 ran exactly this shape with a sentinel credential (`SPIKE_TOKEN`) bound to `httpbingo.org`: the guest env, `/proc/self/environ`, the on-disk `.env`, and the at-rest `msb inspect` config all held only the placeholder throughout; an echo endpoint confirmed the real sentinel value appeared on the wire toward the bound host and nowhere else on the guest filesystem. S3 is the matching negative control: the same placeholder sent toward a different, allowlisted-but-*unbound* host (`example.com`) was block-and-logged by msb's violation guard, not substituted — confirmed via the host-side `secret violation: placeholder detected for disallowed host` log line, not just an assumption that the deny worked.
 
@@ -139,9 +147,9 @@ The skill that writes those lines is **cage-config** (`.claude/skills/cage-confi
 ## See also
 
 - [ADR-030](../decisions/ADR-030-classify-by-use-secret-posture.md) — the governing decision: the classification model, the full D1–D8 decision set, and the named residual list this page's dead-zones/reflection sections summarize
-- [ADR-029 D5](../decisions/ADR-029-msb-migration.md) — the `--secret` mechanics this recipe reuses (placeholder/real-value split, `target_env`/`source_file`, the violation guard)
-- [config.md → `mounts.mask`](config.md#mountsmask--workspace-mask-primitive-tier-1-project-secret-posture) — Tier 1, the cheaper sibling of this page's Tier 2
-- [egress.md](egress.md) — the Tier-0 default (egress allowlist) and the existing `auth.credentials` worked example this page's recipe extends
+- [ADR-029 D5](../decisions/ADR-029-msb-migration.md) — the `--secret` mechanics this recipe reuses (the placeholder/real-value split and the violation guard); [ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D2 for how the binding became native `secrets:`
+- [config.md → secret covers](config.md#secret-covers) — Tier 1, the cheaper sibling of this page's Tier 2
+- [egress.md](egress.md) — the Tier-0 default: the egress allowlist that already stops network exfil of anything in the tree
 - [ADR-024](../decisions/ADR-024-prompt-injection-threat-model.md) — the exfil threat model the reflection residual belongs to
 - `history/2026-07-26-secret-posture-spikes.md` — S1–S4 spike evidence (S2/S3 are this page's load-bearing citations)
 - `history/2026-07-26-secret-posture-convergence.md`, `history/2026-07-26-secret-posture-community-scan.md` — the design convergence and the community-scan evidence base (TruffleHog, IETF RFCs) cited above

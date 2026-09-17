@@ -1,27 +1,35 @@
 # What's in the Box
 
-The rip-cage image is based on `debian:bookworm` with a multi-stage Dockerfile (Go → Rust → Debian runtime).
+The base image is `debian:trixie`, built by a two-stage Dockerfile: a Go builder stage that compiles `bd` (beads), then the Debian runtime.
 
-## Tools
+This is the **floor** — what every cage gets. Everything else is yours to add with `FROM rip-cage:latest` and a `RUN` line; see the [`cage-image`](../../.claude/skills/cage-image/SKILL.md) skill.
 
-| Tool | Purpose |
-|------|---------|
-| Claude Code | The agent itself |
-| pi-coding-agent | Multi-provider coding agent (Anthropic, OpenAI/Codex, Gemini, and more); installed version: see `pi --version` inside cage |
+## What the base image carries
+
+| Tool | Why it is floor |
+|---|---|
+| Claude Code | The agent |
+| pi-coding-agent | Multi-provider agent (Anthropic, OpenAI/Codex, Gemini, …); `pi --version` in the cage for the installed version |
 | Node 22 + Bun | JS/TS runtime |
-| Python 3 + uv | Python runtime + package manager |
-| Go (build stage only) | Compiles bd/beads — not available at runtime |
-| gh CLI | GitHub operations |
-| git | Version control |
-| DCG | Destructive command guard (Rust binary) — composable recipe (`examples/dcg/`), not baked in base image |
+| Python 3 + uv | Python runtime and package manager |
+| git + gh CLI | Version control, and GitHub over HTTPS |
 | Dolt + bd | Issue tracking (beads) |
-| tmux | Session persistence when `session.multiplexer: tmux` is configured (optional — not the default) |
-| zsh | Shell with sensible defaults |
+| mise | Per-project toolchain provisioning |
+| zsh | The interactive shell |
+| floor probe | The fail-closed containment check; see [safety-stack.md](safety-stack.md) |
 
-## Container user model
+Go is build-stage only — it compiles `bd` and is not present at runtime.
 
-The container runs as `agent` (uid 1000), not root. Sudo is restricted to exact paths:
-- `/usr/bin/apt-get`, `/usr/bin/dpkg` — install packages
-- `/bin/chown agent:agent /home/agent/.claude`, `/bin/chown agent:agent /home/agent/.claude-state` — fix bind-mount ownership
+**No multiplexer, and no command guard, are baked in.** `tmux`, `herdr` and a destructive-command guard are recipes in [`examples/`](../../examples/README.md); an image that declares one in its boot descriptor can be selected with `RC_MULTIPLEXER`. rip-cage blesses none of them ([ADR-005 D12](../decisions/ADR-005-ecosystem-tools.md)).
 
-npm global installs are not available at runtime — no sudo for npm. Global packages must be pre-installed in the Dockerfile. Sudo is defined in the Dockerfile's sudoers config with exact command paths (no wildcards).
+## The cage user model
+
+The cage runs as `agent` (uid 1000), never root. Sudo is restricted to exact command paths in `/etc/sudoers.d/agent`, with no wildcards:
+
+- `/usr/bin/apt-get`, `/usr/bin/dpkg` — install packages at runtime
+- `chown agent:agent` on `/home/agent/.claude`, `/home/agent/.claude-state`, `/home/agent/.pi/agent` — fix mount ownership at init
+- `chown -R agent:agent` on the mise data directory
+
+npm global installs are not available at runtime — there is no sudo for npm. Put global packages in your Dockerfile.
+
+Runtime `apt-get install`s live in the guest's ephemeral rootfs overlay, which does **not** survive a recreate. Anything you want to keep belongs in the image or behind a mount.

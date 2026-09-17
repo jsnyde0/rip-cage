@@ -47,7 +47,12 @@ Three skills are the front door, and the only home for their how-to: [`cage-conf
 
 ## Auth flow (for contributors)
 
-`rc up` pulls the Claude login from the macOS keychain on the host, before the sandbox exists, and hands it to msb as a `--secret` bound to `api.anthropic.com`. The guest holds only the `$MSB_<NAME>` placeholder. `init-rip-cage.sh` reads what the config mounted; it never touches a keychain. Full detail: [docs/reference/auth.md](docs/reference/auth.md).
+Two mechanisms, deliberately not yet bridged:
+
+1. **The Claude login — possession.** `rc up` (and `rc auth refresh`) pull it from the macOS keychain on the host, before the sandbox exists, write it to `~/.claude/.credentials.json`, and mount that file into the cage. The real token is in the guest.
+2. **`--secret` — non-possession.** A `secrets:` entry in the cage config binds a credential to its allowed hosts; msb injects the value on the wire and the guest holds only `$MSB_<NAME>`. `rc up` fills the host variable from `$XDG_CONFIG_HOME/rip-cage/secrets/<NAME>` so unattended runs need no pre-export. **The operator populates that file; rc does not put the keychain login there.**
+
+Wiring (1) through (2) is `rip-cage-ely4.7.17` — charted, not shipped. Do not describe the Claude login as non-possessed ([ADR-031](docs/decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D1's realized-vs-charted note). `init-rip-cage.sh` reads what the config mounted; it never touches a keychain. Full detail: [docs/reference/auth.md](docs/reference/auth.md).
 
 ## Skills in containers
 

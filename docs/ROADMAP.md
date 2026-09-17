@@ -28,7 +28,8 @@ msb 0.6.18 ships natively what rip-cage used to claim as its own: the microVM bo
 
 Each line is a direction, not a plan. None has a bead tree yet.
 
-- **Generalized credential discovery.** Today rip-cage finds one login: Claude's, in the macOS keychain. Next is pi's OpenAI Codex login — currently a file mount plus env forwarding, never refreshed by `rc auth`. After that, 1Password and `gh auth`. Until this lands, opinion 1 is a single-vendor trick, and the README says so.
+- **Bridge the keychain to `--secret`** (`rip-cage-ely4.7.17`). Today the Claude login rip-cage finds in your keychain reaches the cage as a **mounted file** — the token enters the VM. Making that one login ride `--secret` instead, so the guest holds only a placeholder, is the single change that turns opinion 1 from a convenience into a containment property.
+- **Generalized credential discovery.** After the bridge: pi's OpenAI Codex login — currently a file mount plus env forwarding, never refreshed by `rc auth`. Then 1Password and `gh auth`. Until those land, credential discovery is a single-vendor trick, and the README says so.
 - **The floor probe as a publishable artifact.** It proves containment properties of any image, not just rip-cage's. Whether that is worth shipping on its own is open.
 - **Restart cages from a list after a host reboot.** A launchd or systemd unit looping `msb start`. This is the whole of "fleet" today; it lives under `rip-cage-tncg`.
 - **An in-cage read-only denial feed.** So a caged agent can name the exact host it was denied, instead of asking the human to go read the trace log.

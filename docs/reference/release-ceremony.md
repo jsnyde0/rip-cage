@@ -4,9 +4,9 @@ The single agent-facing checklist for cutting a rip-cage release. The global `/r
 
 > **Why this exists:** the ceremony used to be scattered across `CHANGELOG.md`, ADR-008 (D6/D8), and a closed bead's design. A new agent tagging a release reconstructed the steps from those fragments. This is the consolidation.
 
-The post-tag sequence is **time-sensitive**: the Homebrew formula's stable `url` is broken between the tag push and the sha256-update commit (`brew install --HEAD` covers that window). Move through steps 4–7 promptly.
+The post-tag sequence is **time-sensitive**: the Homebrew formula's stable `url` is broken between the tag push and the sha256-update commit (`brew install --HEAD` covers that window). Move through steps 5–8 promptly.
 
-There is also an earlier, expected transient: between the version's PRs **merging to `main`** and the **tag being pushed** (step 3), a `brew install --HEAD` user's first `rc up` will try `docker pull ...:$VERSION`, get a 404, and fall back to a local build (~5–10 min). This is acceptable — `--HEAD` users opt into bleeding-edge — and resolves automatically once the tag publishes the image. No action needed; just don't be alarmed by 404s in that window.
+There is also an earlier, expected transient: between the version's PRs **merging to `main`** and the **tag being pushed** (step 4), a `brew install --HEAD` user's first `rc up` will try `docker pull ...:$VERSION`, get a 404, and fall back to a local build (~5–10 min). This is acceptable — `--HEAD` users opt into bleeding-edge — and resolves automatically once the tag publishes the image. No action needed; just don't be alarmed by 404s in that window.
 
 ## Prerequisites
 
@@ -42,7 +42,17 @@ bash tests/run-host.sh --host-only # the FULL ordered host suite — NOT a per-c
 >
 > and confirm the latest `host-only` job succeeded on the commit you're about to tag. If it's red and **pre-existing** (unrelated to this release's content — check `git log` for when it started failing), the release can still proceed (`release.yml` gates on lint + version + build, **not** the host-only job — ADR-008 D4) but **file the red as its own bead** rather than discovering it only in the post-tag Actions run (the v0.11.0 cut hit exactly this — `rip-cage-vnbd`).
 
-### 3. Tag and push
+### 3. Confirm the dogfood gate is open
+
+[ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D7 puts publication behind three things in order: the subtracted codebase, the refactor pass (`rip-cage-sygz`), and **several days of the maintainer's own real use on the thinned product**. That third one is a human-owned bead with a human-owned done-condition.
+
+```bash
+bd show rip-cage-ely4.17
+```
+
+**Do not tag until that bead is closed** and its close carries the maintainer's own "ship it". No suite can stand in for it: the suite proves the floor, not the ergonomics, and "it's annoying" is the signal this project explicitly listens for. A tag on an undogfooded subtraction is the most expensive place to discover the subtraction went too far.
+
+### 4. Tag and push
 
 ```bash
 git tag "v$(cat VERSION)"
@@ -51,12 +61,14 @@ git push origin "v$(cat VERSION)"
 
 This triggers `release.yml`, which:
 - verifies the tag matches `VERSION`,
-- builds **native per-arch** images (amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`) from the maintainer-composed default manifest (`RC_MANIFEST_GLOBAL=dist/default-tools.yaml ./rc generate-dockerfile`),
+- builds **native per-arch** images (amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`),
 - merges them into a multi-arch manifest and pushes `ghcr.io/jsnyde0/rip-cage:$VERSION` + `:latest`.
+
+> **Known blocker — `rip-cage-ely4.7.16`, P1, open.** The workflow's build leg still generates its Dockerfile through a deleted verb, reading a manifest file that is no longer in the tree, so this step fails and **no release can currently be cut**. It fails loudly rather than shipping a broken image, but it does fail. Read that bead — it names the exact workflow lines and the retired tokens — before step 4; if it is still open, fix it first.
 
 **Watch the run.** If CI fails, see [Troubleshooting](#troubleshooting-if-ci-fails) below before doing anything else.
 
-### 4. First-time-only — flip GHCR visibility to Public
+### 5. First-time-only — flip GHCR visibility to Public
 
 GHCR packages default to **private** on first push of a *new* package. Until flipped, unauthenticated `docker pull` from end users fails silently and falls back to a 5–10 min local build — defeating ADR-008 D6's first-run-fast promise.
 
@@ -66,7 +78,7 @@ Set visibility to **Public**:
 
 (Only needed once for the lifetime of the package, not per release.)
 
-### 5. Pin the Homebrew formula sha
+### 6. Pin the Homebrew formula sha
 
 ```bash
 ./packaging/scripts/update-formula-sha.sh
@@ -76,7 +88,7 @@ This waits for the source tarball to be downloadable, then patches **both** the 
 
 > **The `url` and `sha256` MUST move together** *(v0.9.0 lesson C / `rip-cage-homebrew-formula-url-sha-coupling`)*: a stale `url` against a fresh `sha256` ships a formula whose tarball fails checksum and breaks `brew install` for **every** user on that release. This shipped broken on v0.5.0/v0.5.1 before the script was fixed to `sed` the `url` from `VERSION` alongside the `sha256`.
 
-### 6. Verify the formula end-to-end (do NOT skip — eyeballing the diff is insufficient)
+### 7. Verify the formula end-to-end (do NOT skip — eyeballing the diff is insufficient)
 
 The actual breakage point is `brew`'s own download+checksum, not the formula text. Verify against the *pushed* formula:
 
@@ -92,11 +104,11 @@ git -C "$(brew --repository)/Library/Taps/jsnyde0/homebrew-rip-cage" pull --ff-o
 brew fetch jsnyde0/rip-cage/rip-cage   # exit 0 == tarball downloads and checksum matches
 ```
 
-> The ceremony spans **two repos** — the main repo's `packaging/Formula/rip-cage.rb` and the sibling `../homebrew-rip-cage` tap. `update-formula-sha.sh` patches and syncs both but does **not** run `brew fetch` — that stays a manual gate (step 6c).
+> The ceremony spans **two repos** — the main repo's `packaging/Formula/rip-cage.rb` and the sibling `../homebrew-rip-cage` tap. `update-formula-sha.sh` patches and syncs both but does **not** run `brew fetch` — that stays a manual gate (step 7c).
 >
-> **Step 6c runs AFTER step 7's push, not before it.** `brew fetch` resolves the formula through the local tap clone, which step 6b fast-forwards from the *remote* tap — so the formula has to be pushed first or 6b just re-pulls the old copy. Steps 6a (the sha cross-check, which is the substantive url/sha coupling gate) and 6b/6c straddle the push: do 6a here, push, then 6b/6c.
+> **Step 7c runs AFTER step 8's push, not before it.** `brew fetch` resolves the formula through the local tap clone, which step 7b fast-forwards from the *remote* tap — so the formula has to be pushed first or 7b just re-pulls the old copy. Steps 7a (the sha cross-check, which is the substantive url/sha coupling gate) and 7b/7c straddle the push: do 7a here, push, then 7b/7c.
 
-### 7. Commit and push the formula pin
+### 8. Commit and push the formula pin
 
 ```bash
 git commit -am "release: pin v$(cat VERSION) sha256"
@@ -105,7 +117,7 @@ git push
 
 (And `git -C ../homebrew-rip-cage push` if the script synced the sibling tap and it isn't auto-pushed.)
 
-### 8. Multi-arch smoke check
+### 9. Multi-arch smoke check
 
 ```bash
 docker manifest inspect "ghcr.io/jsnyde0/rip-cage:$(cat VERSION)"
@@ -115,7 +127,7 @@ docker manifest inspect "ghcr.io/jsnyde0/rip-cage:$(cat VERSION)"
 brew install jsnyde0/rip-cage/rip-cage
 ```
 
-### 9. Cut the GitHub release
+### 10. Cut the GitHub release
 
 ```bash
 gh release create "v$(cat VERSION)" --notes-from-tag

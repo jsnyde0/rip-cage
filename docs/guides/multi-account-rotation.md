@@ -78,20 +78,29 @@ rc auth refresh
 cp ~/backups/secondary-credentials.json ~/.claude/.credentials.json
 ```
 
-## Platform caveats
+## The one real hazard: atomic rename
 
-**macOS + OrbStack or Docker Desktop (VirtioFS):** Works out of the box. CAAM's atomic file swap (`mv`) propagates correctly through VirtioFS. There's a sub-second window during the swap where the file briefly disappears — Claude Code retries naturally.
+The credential mount is a **single-file** mount, and a rotation tool that swaps accounts the safe way — write a temp file, `mv` over the target — allocates a **new inode**. A single-file mount bound to the old one is left holding a dead handle: the host path looks perfectly fine, and the in-cage path goes `ENOENT`.
 
-**Linux (native Docker):** Single-file bind mounts track inodes, not paths. An atomic `mv` creates a new inode that the container won't see. Two workarounds:
+The caged agent's symptom is `Not logged in — Please run /login`, possibly long after the swap.
 
-1. Write credentials in-place: `cat new-creds.json > ~/.claude/.credentials.json`
-2. Bind-mount the directory (`~/.claude/`) instead of the single file (requires rip-cage configuration change)
+**This was confirmed live under the pre-cutover Docker bind mount, and has not been re-tested under msb's virtiofs** — tracked in `rip-cage-9mbw`. Treat it as the working assumption, not a proven msb fact. [auth.md](../reference/auth.md#gotcha-an-atomic-rename-on-the-host-can-sever-a-live-single-file-mount) has the full mechanism.
+
+**Avoid it** by writing in place rather than renaming:
+
+```bash
+cat new-creds.json > ~/.claude/.credentials.json
+```
+
+`rc auth refresh` already does this — it truncate-and-writes the same inode, so rip-cage's own rotation never severs the mount. The hazard is external writers.
+
+**Detect it** with `rc doctor <cage>`; its `dead_mounts` probe names any single-file mount whose in-cage destination has gone dead. **Repair it** with `rc up --replace <path>`, which re-binds every mount against the current inode.
 
 ## Tips
 
 - **Label your profiles clearly** — `primary`, `secondary`, or by purpose (`work`, `personal`)
-- **Back up after each `claude auth login`** — CAAM captures the current Keychain state
-- **Multiple containers share one credentials file** — switching affects all running agents simultaneously. If you need per-container accounts, that's a different pattern (not yet supported)
+- **Back up after each `claude auth login`** — CAAM captures the current keychain state
+- **Every cage shares one credentials file**, so switching affects all running agents at once. Per-cage accounts are a different pattern, and not supported today.
 
 ## See also
 

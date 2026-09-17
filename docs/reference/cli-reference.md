@@ -1,281 +1,161 @@
 # CLI Reference
 
+`rc` has six verbs. A verb exists only where plain shell plus a skill cannot do the job identically every run ([ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D3). An unknown verb prints usage and exits 1.
+
+Twelve verbs were deleted in the same pass. Each one's successor — an msb one-liner, a file edit, or nothing — is tabled in the [`cage-ops`](../../.claude/skills/cage-ops/SKILL.md) skill, which is its sole home.
+
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `rc build [allowed docker flags...] [-t/--tag <ref>]` | Build the rip-cage Docker image. **Not a pass-through**: `rc build`'s docker-flag surface is a fail-closed **allowlist** (rip-cage-zqjz.2) — see [`rc build` flag allowlist](#rc-build-flag-allowlist) below for the full admit/reject table and rationale. A caller-supplied `-t`/`--tag` **overrides** the image built/tagged — it does not add a second tag alongside the default `rip-cage:latest`, so `rip-cage:latest` is left untouched by a custom-tagged build (rip-cage-fo4z: previously docker applied *both* tags to the same image, silently re-tagging — and clobbering any composed bake on — `rip-cage:latest`). See [`rc build -t`/`--tag` details](#rc-build---t---tag-details) below for every accepted spelling, the fail-loud cases, and precedence vs `RC_IMAGE`. A caller-supplied `-f`/`--file`, `-o`/`--output`, or `--build-arg` (any spelling) is **rejected outright**, before any docker call — see [`rc build -f`/`--file` is rejected](#rc-build--f---file-is-rejected), [`rc build -o`/`--output` is rejected](#rc-build--o---output-is-rejected), and the [flag allowlist](#rc-build-flag-allowlist) below. |
-| `rc up <path> [--port PORT] [--env-file FILE] [--new] [--session NAME]` | Start or resume a container |
-| `rc ls` | List rip-cage containers |
-| `rc attach [name]` | Attach to a running container (multiplexer-neutral — plain shell under `none`, tmux attach under `tmux`, supervisor view under `herdr`) |
-| `rc exec <cage> -- <cmd...>` | Run a one-off command in a running container non-interactively (safe for CI and scripts); supports `--output json` |
-| `rc down [name]` | Stop a container |
-| `rc destroy [-f] [name]` | Remove a container and its volumes (prompts for confirmation) |
-| `rc reload [name] [--dry-run] [--allow-transcript-loss]` | Apply `network.allowed_hosts` changes from `.rip-cage.yaml` (the sole reload-eligible path post-schema-v2) — a **cold-recreate** post-cutover, not a hot in-place apply ([details](egress.md#the-denyfixreload-repair-loop)). Also repairs a **stopped** cage's stale image (`rc build` ran since it was created/last repaired) without touching its `rc-state-`/`rc-history-` named volumes — the repair leaves the cage **running** afterward, unlike an ordinary running-cage reload. A running cage's own image drift still has no in-place repair (`rc down <name> && rc reload <name>`). Refuses loud if the cage's `~/.claude/projects` isn't host-bound (a legacy, pre-2026-07-08 cage) — the recreate would silently destroy in-flight caged-claude conversation transcripts; `--allow-transcript-loss` overrides |
-| `rc allowlist add <host> [--cage=<name>]` | Append a host to `network.allowed_hosts` in `.rip-cage.yaml` (idempotent); `--cage` applies it via `rc reload` ([details](egress.md#rc-allowlist-command-reference)) |
-| `rc allowlist show [--effective]` | Show configured / effective egress hosts ([details](egress.md#rc-allowlist-command-reference)) |
-| `rc test [name]` | Run the safety stack smoke test inside a cage |
-| `rc doctor [name]` | Per-cage diagnostic — labels + live probes (msb egress posture + recently-denied domains, auth, beads, dead-mount detection) |
-| `rc config show [--json]` | Print effective `.rip-cage.yaml` config with provenance ([details](config.md)) |
+| Command | What it does |
+|---|---|
+| `rc up [path] [options]` | Create or resume the cage for `path` (default `.`), run init, attach |
+| `rc build [--file PATH]` | Build the image from one host-side Dockerfile, then load it into msb's cache |
+| `rc auth refresh` | Re-pull the Claude login from the host keychain and re-apply it |
+| `rc doctor [name]` · `rc doctor --host` | Per-cage diagnostic (labels + live probes) · host daemon/runtime liveness |
+| `rc test [name]` | Run the proving suite inside a cage (`--host`, `--e2e`, `--e2e-security` for the other tiers) |
+| `rc destroy <name>` | Remove the cage and the named volumes `rc` created for it |
 
-`rc config init` is **retired** (it bootstrapped `ssh.*` fields via `git remote -v` + `ssh -G` — ssh-cluster-specific detection logic that no longer applies, [ADR-029](../decisions/ADR-029-msb-migration.md) D3). `cmd_config` supports only `show`/`get` today; author `network.allowed_hosts`/`auth.credentials` by hand — see [config.md](config.md).
-
-## Flags
+## Global flags
 
 | Flag | Description |
-|------|-------------|
-| `--output json` | Machine-readable JSON output (human messages go to stderr) |
-| `--dry-run` | Preview what would happen without executing (supported for `up`, `destroy`, and `reload`) |
-| `--version` | Print version |
+|---|---|
+| `--output json` | Machine-readable JSON on stdout; human messages go to stderr. Errors carry `error` and `code`. Coverage is still landing under `rip-cage-sygz`. |
+| `--dry-run` | Print what would happen instead of doing it (`up`) |
+| `--version` / `-V` | Print the version |
 
-### `rc build -t`/`--tag` details
+---
 
-`rc build`'s hardcoded docker invocation always leads with `-t "$IMAGE"` (default `rip-cage:latest`, or `RC_IMAGE` if set). A caller-supplied `-t`/`--tag` **overrides** `$IMAGE` for the whole build — the docker call, the post-build root-owned validators, the fail-closed untag-on-violation cleanup — rather than being appended as a second tag (rip-cage-fo4z).
+## `rc up`
 
-**Accepted spellings** — all of docker's own flag forms are recognized, not just the two obvious ones:
+```
+rc up [path] [--conf FILE] [--replace] [--no-reload] [--port PORT] [--env-file FILE]
+      [--cpus N] [--memory SIZE] [--pids-limit N] [--new] [--session NAME]
+```
 
-| Spelling | Example |
-|----------|---------|
-| Separate-arg, short | `-t custom:tag` |
-| Separate-arg, long | `--tag custom:tag` |
-| Equals-attached, long | `--tag=custom:tag` |
-| Equals-attached, short | `-t=custom:tag` |
-| Value-attached, short (no equals) | `-tcustom:tag` |
-| Clustered behind docker's other boolean short flags (`-D`/`-q`) | `-qt custom:tag`, `-Dqt=custom:tag` |
-
-Any of these left unrecognized and passed through unmodified would reproduce the original co-tag clobber, so all are parsed out and normalized to a single override — any leading `-D`/`-q` boolean flags in a cluster are preserved as their own token so their effect (debug/quiet) still reaches docker.
-
-**Precedence:** `-t`/`--tag` wins over `RC_IMAGE` (both ultimately just set the effective `$IMAGE` for the build; the flag is parsed last and always takes priority when both are present).
-
-**Repeated `-t`/`--tag`:** last occurrence wins (only ever a single effective tag — rc's `-t` does not accumulate the way docker's own `stringArray` semantics would).
-
-**Fails loud, before any docker call, for:**
-- A missing value (`-t` / `--tag` as the last argument with nothing after it).
-- An **explicitly empty** value (`-t ""`, `--tag=`, `-t=`, …) — this is distinguished from "not supplied" internally; treating them the same was a real regression risk (an empty tag would otherwise silently fall back to building/tagging the default `rip-cage:latest`, rather than erroring the way plain `docker build -t ""` does).
-
-**`--`:** stops rc from scanning further arguments for `-t`/`--tag`, but is **not** a general verbatim-pass-through escape hatch — `cmd_build` always appends the build context path as its own final positional after `"$@"`, so any non-empty content placed after `--` yields two or more positionals and `docker build` hard-errors (`requires 1 argument`) rather than doing something unexpected. Fails loud; does not clobber.
-
-**Stale-container warning:** `rc build`'s informational "container was created from a different image" warning (about existing cages `rc up` will refuse to resume) is skipped when a custom `-t`/`--tag` was supplied — that warning's premise ("cages running the image you just rebuilt") doesn't hold for a scratch/throwaway-tagged build, and every real cage is still pinned to whatever image it actually was, untouched by the custom-tagged build.
-
-A custom tag is not the only thing that silences this warning, and it is the narrower case. The comparison reads the just-built image's digest out of **msb's** image cache — a store separate from docker's, populated by `rc build`'s deliberately best-effort `msb load` step — so the drift comparison itself can only fire when msb already holds the image the build just produced. On a host where msb's index does not have it (or `msb` itself is not installed), `rc build` no longer goes silent about it (rip-cage-5jrt): if msb is present but the just-built image's digest can't be read from its cache, and one or more live rc-managed cages exist, `rc build` emits a loud "image provenance ... could not be determined" line naming each affected cage instead of the drift-comparison warning — silence still means "nothing to check" only when `msb` isn't installed at all, or no rc-managed cages exist (`_build_warn_stale_containers`, `cli/build.sh`).
-
-**Stale msb image cache (msb vs docker):** the two image stores are separate, and a best-effort `msb load` step is what keeps them in sync — so a bare `docker build`, or a skipped/failed load, leaves msb's cache holding older layers than docker's store for the same tag. Because cages boot from **msb's** cache, that silently produces a stale cage. Two commands run that load step: `rc build`, and `rc up` when it has to auto-provision the image (rip-cage-0v47 — before that fix `rc up` provisioned the docker image and then booted from an msb cache that had never received it, and because `rc up`'s absent-check itself asks msb's cache, the condition was unchanged afterwards and every subsequent `rc up` re-provisioned and still booted the wrong image). Both then compare the two stores and emit a loud stderr warning naming the resync command when they disagree (rip-cage-7bs3, `_msb_warn_image_layer_drift` / `_msb_image_layer_drift_status`, `cli/lib/msb_runtime.sh`). On the `rc up` path the comparison runs on **both** branches — after the load when the image was absent, and directly when it was already present. On the already-present branch a detected divergence no longer only warns: `rc up` **auto-resyncs**, msb-loading docker's image and printing one notice naming both digests and pointing at `rc doctor` (rip-cage-7yvy, RULING 2026-09-05 option (a) — `rc up` boots what `rc build` built, the same invariant the absent branch already enforced). A failed or unverifiable resync falls through to the same loud advisory warning. `rc build`'s own posture is deliberately unchanged and stays warn-only. Never changes an exit code, gates a build, or refuses a boot.
-
-The comparison is over the images' **uncompressed layer IDs**, not their digests. Docker and msb each publish a digest for a cached image, but those hash different encodings of the same image and are never equal even for one `rc build`'s output in both stores — a literal digest comparison would fire on every build. The layer IDs are content-addressed on the raw layer tars and are identical across the two stores, which is what makes the comparison meaningful.
-
-### `rc build -f`/`--file` is rejected
-
-`rc build`'s hardcoded docker invocation always leads with `-f "$_dockerfile"` (rc's own manifest-resolved Dockerfile — the one `_manifest_check_build_isolation`, the pre-build build-isolation gate, ADR-005 D9 / ADR-024, actually audits). Unlike `-t` (additive — docker applies both), a duplicate `-f` is **last-wins** in docker: `docker build -f A -f B .` builds only from `B`. So a caller-supplied `-f`/`--file` would silently replace rc's audited Dockerfile with the caller's file for the *actual* build, while the isolation gate would still only ever have inspected rc's own resolved path — a safety-floor validator bypass, not a UX surprise (rip-cage-zqjz).
-
-Unlike `-t`, there is no legitimate `rc build -f` use and no override-then-audit fix: resolving the Dockerfile from the manifest **is** rc's job, and there is no "effective Dockerfile" concept to swap to. So every spelling of `-f`/`--file` is **rejected outright**, fail-loud, before any docker call:
-
-| Spelling | Example |
-|----------|---------|
-| Separate-arg, short | `-f path/to/Dockerfile` |
-| Separate-arg, long | `--file path/to/Dockerfile` |
-| Equals-attached, long | `--file=path/to/Dockerfile` |
-| Equals-attached, short | `-f=path/to/Dockerfile` |
-| Value-attached, short (no equals) | `-fpath/to/Dockerfile` |
-| Clustered behind docker's other boolean short flags (`-D`/`-q`) | `-qf path/to/Dockerfile`, `-Dqf=path/to/Dockerfile` |
-
-Cluster parsing follows the same left-to-right rule as `-t`'s: whichever value-taking short flag (`f`/`o`/`t`) appears first in a token wins. `-ft` is `-f` with value `"t"` (rejected); `-tf` is `-t` with value `"f"` (still a legal tag override, not a file flag) — the two are distinguished, not conflated.
-
-### `rc build -o`/`--output` is rejected
-
-`docker build`'s BuildKit backend supports `-o`/`--output`, which controls where the build **result** lands — a filesystem directory, a registry, or (the default) the local docker image store. `docker build -t X -o type=local,dest=DIR .` exits **0** and exports the build result to `DIR` **without loading `X` into the docker image store**.
-
-That is a false-green risk specific to this flag, distinct from `-f`'s clobber and `-t`'s co-tag bug: if a prior `X` already existed in the image store (from an earlier real build), `rc build`'s post-build root-owned validators (`_manifest_check_binary_root_owned` / `_manifest_check_mount_root_owned`, ADR-005 D9/D11, ADR-024, ADR-027 D1) silently pass against the **stale** `X`, while `rc build` reports `status: "built"` — the operator has no signal that anything is wrong (rip-cage-zqjz.2).
-
-There is no legitimate `rc build -o` use — rc's contract is "produce a tagged image in the local image store this host can run" — so every spelling of `-o`/`--output` is **rejected outright**, fail-loud, before any docker call, using the identical spelling/clustering rules as `-f`/`--file` above (separate-arg, `--output=`, `-o=`, `-ovalue`, and boolean-prefixed clusters). Directionally: `-ot` is `-o` with value `"t"` (rejected); `-to` is `-t` with value `"o"` (still a legal tag override, not an output flag).
-
-### `rc build` flag allowlist
-
-rip-cage-fo4z (`-t`, additive co-tag), rip-cage-zqjz (`-f`, last-wins Dockerfile swap), and rip-cage-zqjz.2 (`-o`, BuildKit output-redirection false-green) found **three distinct validator-defeat mechanisms** in the same six lines of `cmd_build`'s docker invocation, in three consecutive passes. An open pass-through with a growing per-flag reject list is unwinnable by construction — docker's flag surface evolves outside rc's control, and each new flag is a fresh chance at a fresh mechanism.
-
-So `rc build`'s docker-flag surface is a **fail-closed allowlist**, not a pass-through: every caller-supplied token is classified BEFORE any docker call. `-t`/`--tag` is intercepted (see above); `-f`/`--file` and `-o`/`--output` are rejected (see above); a small set of flags verified benign against docker 29.4.0's real flag surface is admitted; **everything else — including a bare `--`, which previously bypassed this scanning entirely — fails loud**, naming this section and the escape hatch below.
-
-**Admitted** (pass through to `docker build` unmodified):
-
-| Flag | Rationale |
-|------|-----------|
-| `--no-cache`, `--pull` | Booleans; affect cache/base-image freshness only, touch nothing the floor reads. |
-| `--progress=<mode>` | Output formatting only — a small enumerated set of literal display modes (`auto`, `none`, `plain`, `quiet`, `rawjson`, `tty`); an unrecognized value errors cleanly, no path/frontend/redirect content accepted. |
-| `-q`/`--quiet`, `-D`/`--debug` | Booleans; only affect docker's own log verbosity. Safe specifically because neither `docker build` call site parses docker's own stdout (the JSON branch redirects it to `/dev/null`; the plain branch lets it go straight to the terminal). |
-
-Each admitted flag above was re-verified (rip-cage-zqjz.2 round 2) against both its **name** *and* its **value namespace** — `docker build --help` only shows names, and `--build-arg` (below) was previously admitted on a name-level reading that its value namespace falsified.
-
-**Rejected by name** (each would violate the admission test — touching image identity, the Dockerfile source, the build context, the output destination/image-store load, or image metadata the floor reads):
-
-| Flag | Why rejected |
-|------|--------------|
-| `-f`/`--file` | Dockerfile source (see above). |
-| `-o`/`--output` | Output destination / image-store load (see above). |
-| `--build-arg` (any spelling, including the bare `--build-arg KEY` inherit-from-environment form) | **Rejected wholesale** — re-judged rip-cage-zqjz.2 round 2 (adversarial review). Originally admitted (rip-cage-fo4z) on the reasoning that it "only ever feeds `_image_is_current`'s staleness heuristic," narrowed in round 1 to reject only the `RC_VERSION` key. Both were name-level readings; the flag's *value* namespace defeats them: `--build-arg BUILDKIT_SYNTAX=<image>` replaces the Dockerfile **frontend** BuildKit uses to interpret the Dockerfile at all (verified live, docker 29.4.0 — an arbitrary caller-named image then interprets the Dockerfile; `cage/Dockerfile` has no `# syntax=` pin to contest it), making `_manifest_check_build_isolation`'s static text analysis of rc's own resolved Dockerfile vacuous. Independently, `cage/Dockerfile` interpolates several ARGs (`DOLT_VERSION`, `MISE_VERSION`, `BUN_VERSION`, ...) into `RUN` shell strings, so an admitted caller `--build-arg` is build-time command injection into the image tagged `rip-cage:latest`. No in-repo caller and no manifest build-arg mechanism exists to preserve. rc's own `--build-arg RC_VERSION=...` is set internally by both `docker build` call sites, not routed through this allowlist scan — unaffected. |
-| `--target` | Selects a build stage — can skip stages that install the safety floor (verified against `cage/Dockerfile`: `--target go-builder` would build only the Go compiler stage, never reaching the runtime stage that sets up the safety-stack assets the validators check). |
-| `--label` | Forges image metadata the floor reads: `cli/lib/config.sh`'s `rc.multiplexers` label is the SOLE authoritative source for the multiplexer registry. |
-| `--secret`, `--ssh` | Build-time credential injection (ADR-005 D9 / ADR-024). |
-| `--push`, `--load` | Registry/image-store side effects (redundant with `rc build`'s own default store-load; part of the same `-o`/output family this bead closes). |
-| `--platform` | Could produce an image this host cannot run while the validators still inspect it; no legitimate `rc build`-path need found (the multi-arch release build uses `docker/build-push-action` directly, not `rc build`). |
-| `--build-context`, `--builder`, `--cache-from` | Build context / build-execution-environment surface: an alternate context directory, a redirected (possibly remote/untrusted) builder instance, or cache-import content that could substitute layer content without re-running the Dockerfile's own steps. |
-| `--add-host`, `--allow`, `--network`, `--cgroup-parent` | Build-isolation surface: `--allow` explicitly grants privileged entitlements (`network.host`, `security.insecure`, `device`); `--network=host` and custom `--add-host` mappings similarly extend a builder stage's reach beyond the isolated build container (ADR-005 D9 / ADR-024). |
-| `--call`, `--check` | Changes the fundamental build action from "build" to "check"/"outline"/"targets" — the same false-green shape as `-o`: may exit 0 without ever producing a built-and-loaded image. |
-| `--cache-to`, `--iidfile`, `--metadata-file`, `--annotation`, `--attest`, `--provenance`, `--sbom`, `--policy` | Output/metadata-adjacent surfaces with no compelling `rc build`-path need; default reject. |
-| `--no-cache-filter`, `--shm-size`, `--ulimit` | No compelling need; default reject (fail-closed). |
-| A bare `--` | Previously (a51b5da/fb79d10) dumped every subsequent token into the docker invocation **unfiltered**, bypassing this entire allowlist — closed by removing that special case; `--` now falls into the same fail-closed default as any other unrecognized token. |
-| A build-context positional | `rc build` supplies the build context itself (the final argument to both `docker build` call sites) — a caller-supplied one fails loud in `rc`, rather than reaching docker as an unexpected second positional. |
-| Anything else not named above | **Unknown → rejected.** An unrecognized/future docker flag fails closed instead of silently reaching docker — this closes rip-cage-fo4z's own forward-compat caveat. |
-
-**Escape hatch:** if you need a docker flag `rc build` doesn't admit, run `rc generate-dockerfile > Dockerfile.composed` and invoke `docker build` yourself — explicitly outside `rc`'s safety floor.
-
-### `rc up` — denylist and `--allow-risky-mount`
-
-`rc up` runs a secret-path denylist check on every non-workspace mount surface (e.g. `--env-file`) before starting the container. If the path matches a default pattern (`.aws`, `.ssh`, `credentials`, etc.), `rc up` aborts with a fail-loud error naming the matched path, the matched pattern, and the available escape hatches.
+`rc up` does the things no config file can hold: it pulls the Claude login from the keychain and binds it to msb `--secret`, computes read-only parent mounts for your skill symlinks, runs the protected-paths check, and then calls `msb create --conf <file> --name <cage> --log-level trace`.
 
 | Flag | Description |
-|------|-------------|
-| `--allow-risky-mount <resolved-path>` | One-shot bypass: allow the named path to pass the denylist check for this invocation only. Accepts the **resolved (realpath)** form of the path — copy it from the error message. May be repeated for multiple paths. |
+|---|---|
+| `--conf FILE` | The native msb config to launch with. Default `~/.config/rip-cage/projects/<cage>.yaml`; `$RC_CAGE_CONF` sits between the two. Must resolve outside every mount the config declares. |
+| `--replace` | Graceful-stop and recreate a **running** cage against the current config. A running cage is never recreated implicitly, because that kills the live session. |
+| `--no-reload` | Resume a **stopped** cage as-is rather than converging it on the current config. |
+| `--port`, `--env-file`, `--cpus`, `--memory`, `--pids-limit` | Runtime overrides layered onto the config's own values. |
+| `--new` / `--session NAME` | Multiplexer session selection; see below. Mutually exclusive (exit 2 if both). |
+| `--allow-risky-mount <resolved-path>` | One-shot: let one protected path past the mount refusal for this invocation. Takes the **resolved** (realpath) form, which the error message prints. Repeatable. |
 
-Example:
-```bash
-# Allow a specific credential path for this invocation only
-rc up --allow-risky-mount /Users/alice/.aws/my-tools-creds \
-      --env-file /Users/alice/.aws/my-tools-creds \
-      /path/to/project
+### Which recreate am I doing?
+
+- A **stopped** cage converges on a plain `rc up` — it is recreated against the current config.
+- A **running** cage needs `rc up --replace`, explicitly.
+
+Either way the recreate is cold: it is a fresh kernel boot, not a resumed process tree. **Host mounts and named volumes survive** — so your Claude session resumes, because `~/.claude/projects` and `~/.claude/sessions` are mounts. **The guest's ephemeral rootfs overlay does not** — an `apt-get install` you ran at runtime and never baked into the image is gone.
+
+### The protected-paths refusal
+
+Before any msb call, `rc up` reads `share/rip-cage/protected-paths` — a shipped list of known credential locations — and:
+
+- **refuses to launch** a config that mounts a listed path directly;
+- **covers** any listed path found inside a mounted tree (an empty read-only file over a file, an empty tmpfs over a directory);
+- **aborts** if the list itself is unreadable.
+
+If msb cannot express the cover for an entry, `rc up` refuses rather than proceeding. Fail closed, never fail open ([ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D2/D5, [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md)). The list is operator-editable, resolved from `$RC_PROTECTED_PATHS`, then `$XDG_CONFIG_HOME/rip-cage/protected-paths`, then the copy shipped beside `rc` — never from a path any cage config can point at.
+
+### Multiplexer sessions
+
+`RC_MULTIPLEXER` selects a multiplexer; the image's boot descriptor must declare it, or `rc up` refuses before any msb call and names what the image does declare. The default is `none`: one shell process per `rc up`, and more agents means more cages.
+
+With a multiplexer that supports sessions, `--new` skips the picker and creates an auto-named session; `--session NAME` attaches `NAME` or creates it. Non-TTY invocations skip the picker entirely.
+
+---
+
+## `rc build`
+
+```
+rc build [--file PATH]
 ```
 
-For a persistent per-project allow, use `mounts.allow_risky` in `.rip-cage.yaml`. To add custom patterns on top of the global defaults, use `mounts.denylist` in `.rip-cage.yaml`. Run `rc config show` to see the effective denylist with provenance.
+Runs `docker build`, then loads the result into msb's image cache. Those are two separate stores, and **cages boot from msb's** — a bare `docker build` leaves cages running the old image. Both `rc build` and an auto-provisioning `rc up` run the load step and compare the stores afterward, warning loudly (and, on the `rc up` already-present branch, resyncing) when they disagree.
 
-See [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md) and [`docs/reference/config.md`](config.md#mountsdenylist-and-mountsallow_risky----secret-path-denylist) for the full denylist design.
+`--file PATH` names the Dockerfile. Default is rip-cage's own base Dockerfile. The path **must resolve outside every cage mount** — fail-closed, no opt-out, because a caged agent that could point `rc build` at a path it controls has written its own image.
 
-`rc up` also boot-time-masks any paths declared in `mounts.mask` — a nested `:ro` overmount presents a legible breadcrumb over each declared workspace-relative path, so the real content is unreadable in-cage while the rest of the workspace stays read-write. A declared path that doesn't exist on the host aborts `rc up` loud (never a silent no-op). See [`docs/reference/config.md`](config.md#mountsmask--workspace-mask-primitive-tier-1-project-secret-posture) and [ADR-030](../decisions/ADR-030-classify-by-use-secret-posture.md).
+**`rc build` takes exactly one input.** Docker receives a fixed argv — `-f <path> --build-arg RC_VERSION=<version> -t <tag> <context>` — and nothing else. Any other caller flag, including `-t`, is rejected before any docker call. Set `RC_IMAGE` to build under a different tag.
 
-### `rc allowlist` — egress allowlist
+The reason is not tidiness. Three consecutive reviews found three distinct validator-defeat mechanisms in the same six lines of the old pass-through: `-f` silently swapped the audited Dockerfile (docker's duplicate `-f` is last-wins), `-o type=local` exited 0 without loading the image so the post-build checks passed against a stale one, and `--build-arg BUILDKIT_SYNTAX=<image>` replaced the frontend that interprets the Dockerfile at all. An allowlist of flag *names* cannot catch the third — admission is a value-level question. Fixed argv is the only shape that holds ([ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D5c, [ADR-005 D14](../decisions/ADR-005-ecosystem-tools.md)).
 
-Manage the msb egress allowlist (`network.allowed_hosts` in `.rip-cage.yaml`). Cages boot **default-deny**; there is no observe mode post-cutover ([ADR-029](../decisions/ADR-029-msb-migration.md) D4) — see [egress.md](egress.md) for the deny→fix→reload repair loop that replaced it.
+Everything a docker flag used to express belongs in the Dockerfile, which is yours to write. See the [`cage-image`](../../.claude/skills/cage-image/SKILL.md) skill.
 
-`add` is **host-only** (it mutates effective config, and via `--cage`, runs `rc reload`); `show` is read-only and works inside the cage too.
+---
 
-| Subcommand | Description |
-|------|-------------|
-| `add <host> [--cage=<name>]` | Append `<host>` to `network.allowed_hosts` (idempotent). With `--cage`, runs `rc reload` to apply (cold-recreate). Supports `--output json`. |
-| `show [--effective]` | Default: configured `network.allowed_hosts`. `--effective`: merged allowlist with provenance. |
-| `show --observed` / `promote --from-observed` | **Legacy, non-functional under msb** — read JSONL log files the deleted in-cage engine used to write; nothing writes them anymore, so these always report/apply nothing. Use `rc doctor`/`rc reload --dry-run`'s trace-log fix-hint instead. See [egress.md](egress.md#rc-allowlist-command-reference). |
+## `rc test`
 
-```bash
-# Add one host and apply it (cold-recreate)
-rc allowlist add api.deepseek.com --cage my-cage
+| Invocation | Tier |
+|---|---|
+| `rc test [name]` | The in-cage safety-stack suite. The floor probe runs first, before any other check. |
+| `rc test --host` | Host-side suites only; not usable inside a cage. |
+| `rc test --e2e` | Full lifecycle end to end (slow; `RC_E2E_REBUILD=1` to rebuild first). |
+| `rc test --e2e-security` | Injection-exfil integration probes against real cages (slow). |
 
-# Inspect configured vs. effective allowlist
-rc allowlist show
-rc allowlist show --effective
+The suite runs against **your** composed image, not a reference image someone else built. Checks that depend on a recipe you did not compose report `SKIP` with a reason rather than failing.
+
+---
+
+## `rc destroy`
+
+```
+rc destroy <name>
 ```
 
-See [`docs/reference/egress.md`](egress.md) and [ADR-029](../decisions/ADR-029-msb-migration.md) D2/D4 for the full egress model.
+Removes the cage and the named volumes `rc` created for it — `msb remove` alone orphans them. No prompt, no flags.
 
-## JSON output
+`rc destroy` takes the name you type, or the cage the current directory names. Given neither, or a name that matches nothing, it **refuses with exit 2** and lists the cages it left standing. It never picks one for you.
 
-When `--output json` is set, structured output goes to stdout. Human-readable messages (progress, warnings) go to stderr. Error responses include `"error"` and `"code"` fields.
+---
 
-## `rc doctor --output json` fields
+## Cage names
 
-`rc doctor <name> --output json` (equivalently `rc --output json doctor <name>`) emits the fields below at the **top level** of its JSON object — the per-cage diagnostic emitter in `cli/doctor.sh`'s `cmd_doctor`. `rc doctor --host --output json` is a **separate** diagnostic emitted from a different code path in the same file (`_doctor_host`) — its top-level shape does not overlap with the per-cage fields below; see the [`rc doctor --host --output json` fields](#rc-doctor---host---output-json-fields) table further down.
+Names are derived from the last two path components of the project directory, with a 4-character hash suffix on collision. Read the `name` field from `rc up --output json`; don't construct one. `msb list` enumerates live cages.
+
+The read-only verbs (`doctor`, `test`) resolve a name in three steps: an explicit name, then a match on the current directory, then singleton auto-select when exactly one rc-managed cage exists. `rc destroy` deliberately stops after the second step.
+
+---
+
+## `rc doctor --output json` — per-cage fields
+
+Top-level keys of `rc doctor <name> --output json`:
 
 | Key | Type | Presence | Meaning |
 |---|---|---|---|
 | `name` | string | always | Resolved cage name. |
-| `state` | string | always | Cage lifecycle state, translated from msb's own vocabulary: `running` (msb `Running`), `exited` (msb `Stopped`), or `unknown` (any other status msb reports, or a status msb doesn't recognize — defensive; no msb release has been observed to report one). |
-| `uptime` | string | always | Humanized uptime since the last start/stop transition (`Xm`, `Xh Ym`, `Xd Yh`), or `—` when not running or the timestamp is unavailable — msb exposes only one transition timestamp, so a never-started and a stopped-after-running cage are not distinguished. |
-| `source_path` | string | always | Host path recorded in the `rc.source.path` label at cage-creation time; empty string if the label is unset. |
-| `labels` | object | always | Nested object of cage labels. Currently one sub-key: `rc.egress.config-override` (string `"true"`/`"false"` — ADR-024 D1 workspace base-URL-override posture, retained under its legacy label name). |
-| `probes` | object | always | Nested object of the nine live-probe status strings: `posture`, `beads_server`, `auth`, `dead_mounts`, `transcript_persistence`, `skills_mount`, `cwd`, `workspace_resolution`, `bd_version_skew`. Each sub-value is the literal `"not running, no live probe"` when the cage isn't running; otherwise an `OK —`/`WARN —`/`FAIL —`/`INFO —`-prefixed status-and-detail string. |
-| `source_path_missing_hint` | string | conditional — present only when `source_path`'s label is set but the recorded host path no longer exists on disk | Fix-hint text mirroring the human-mode `Fix-hint: ...` line. Absent (key omitted entirely, not an empty-string value) on a healthy cage — same negative-control contract as the human-readable branch (rip-cage-u625). |
+| `state` | string | always | `running` (msb `Running`), `exited` (msb `Stopped`), or `unknown` for any other status msb reports. |
+| `uptime` | string | always | Time since the last start/stop transition (`Xm`, `Xh Ym`, `Xd Yh`), or `—`. msb exposes one transition timestamp, so a never-started and a stopped-after-running cage are not distinguished. |
+| `source_path` | string | always | Host path recorded in the `rc.source.path` label at creation; empty string if unset. |
+| `labels` | object | always | One sub-key today: `rc.egress.config-override` (`"true"`/`"false"` — the workspace base-URL-override posture, [ADR-024](../decisions/ADR-024-prompt-injection-threat-model.md) D1). |
+| `probes` | object | always | Nine status strings: `posture`, `beads_server`, `auth`, `dead_mounts`, `transcript_persistence`, `skills_mount`, `cwd`, `workspace_resolution`, `bd_version_skew`. Each is the literal `"not running, no live probe"` when the cage is down, otherwise prefixed `OK —` / `WARN —` / `FAIL —` / `INFO —`. |
+| `source_path_missing_hint` | string | only when the recorded host path no longer exists | The fix-hint text. The key is **omitted entirely** on a healthy cage, not set to an empty string. |
 
-## `rc doctor --host --output json` fields
+The `posture` probe is where a recently-denied host surfaces: `rc doctor` mines the cage's trace log for `DNS query denied by network policy domain=<host>` and prints the exact config line to add. See [egress.md](egress.md).
 
-`rc doctor --host --output json` (equivalently `rc --output json doctor --host`) emits the fields below at the **top level** of its JSON object — the host-scope diagnostic emitter in `cli/doctor.sh`'s `_doctor_host` (daemon/runtime liveness; no container involved). This is a **separate, disjoint** emitter from `cmd_doctor`'s per-cage shape documented above — no key names overlap (rip-cage-pou6, ruling: a shipped `--output json` flag is a field contract whether or not anyone calls it internal).
+## `rc doctor --host --output json` — host fields
 
-| Key | Type | Presence | Meaning |
-|---|---|---|---|
-| `scope` | string | always | Literal `"host"` — distinguishes this shape from the per-cage one when both are logged/parsed together. |
-| `daemon` | string | always | Docker daemon reachability status string, `OK —`/`FAIL —`-prefixed (e.g. daemon reachable, unresponsive within the timeout, `docker info` exited non-zero, or the docker CLI isn't installed). |
-| `docker_info_rc` | number | always | Exit code of the `docker info` probe (`127` when the docker CLI isn't installed, `124` on timeout, or `docker info`'s own exit code). `0` means the daemon is reachable. |
-| `timeout_seconds` | number | always | Bound applied to the `docker info` probe, in seconds — `RC_DOCKER_PREFLIGHT_TIMEOUT` if set, else `3`. |
-| `docker_path` | string | always | Resolved path to the `docker` binary; empty string if the docker CLI isn't installed. |
-| `msb` | string | always | msb reachability status string, `OK —`/`FAIL —`-prefixed (e.g. reachable, unresponsive within the timeout, `msb --version` exited non-zero, or the msb CLI isn't installed). |
-| `msb_rc` | number | always | Exit code of the `msb --version` probe (`127` when the msb CLI isn't installed, `124` on timeout, or `msb --version`'s own exit code). `0` means msb is reachable. |
-| `msb_path` | string | always | Resolved path to the `msb` binary; empty string if the msb CLI isn't installed. |
-| `yq` | string | always | `yq` prerequisite status string, `OK —`/`WARNING —`-prefixed (rip-cage-j86) — resolved path if found on `PATH`, else an install hint (mikefarah's `yq`, not apt's incompatible one). |
-| `global_config` | string | always | Global config file prerequisite status string, `OK —`/`WARNING —`-prefixed (rip-cage-j86) — the resolved path if it exists, else a note that the first `rc up` will auto-seed it. |
+A separate emitter with no overlapping keys.
 
-## Container resolution
+| Key | Type | Meaning |
+|---|---|---|
+| `scope` | string | Literal `"host"`. |
+| `daemon` | string | Docker daemon reachability, prefixed `OK —` / `FAIL —`. |
+| `docker_info_rc` | number | Exit code of the `docker info` probe (`127` not installed, `124` timeout). `0` means reachable. |
+| `timeout_seconds` | number | Bound on that probe — `RC_DOCKER_PREFLIGHT_TIMEOUT` if set, else `3`. |
+| `docker_path` | string | Resolved path to `docker`; empty string if not installed. |
+| `msb` | string | msb reachability, prefixed `OK —` / `FAIL —`. |
+| `msb_rc` | number | Exit code of the `msb --version` probe. `0` means reachable. |
+| `msb_path` | string | Resolved path to `msb`; empty string if not installed. |
+| `yq` | string | `yq` prerequisite status — resolved path, or an install hint (mikefarah's `yq`, not apt's incompatible one). |
+| `global_config` | string | **Protected-paths list status**, despite the legacy key name: the resolved path, or an error saying every `rc up` will refuse to launch. |
 
-Commands that target a container (`attach`, `down`, `destroy`, `reload`, `test`) resolve the name in order:
+---
 
-1. **Explicit name** — if you pass a name, it's used directly
-2. **CWD match** — derives the expected name from your current directory (same logic as `rc up`) and checks if that container exists
-3. **Singleton fallback** — if only one rip-cage container exists, it's auto-selected
+## Running several agents
 
-This means `rc down` from a project directory targets that project's container, just like `rc up` does.
+One cage per project path is the shape rip-cage is built around; each has its own microVM, its own mounts and its own state. Git worktrees make that cheap — see [the worktree workflow](../../README.md#the-worktree-workflow).
 
-## Container naming
-
-Container names are derived from the last two path components of the project directory. When collisions occur, a 4-character hash suffix is appended. Use `rc ls --output json` to discover exact container names — do not construct them manually.
-
-## `rc attach` — multiplexer-neutral attach
-
-`rc attach [name]` attaches to a running container. Its behavior depends on the `session.multiplexer` config field ([details](config.md#sessionmultiplexer--in-cage-multiplexer)):
-
-| `session.multiplexer` | `rc attach` behavior |
-|---|---|
-| `none` (default) | Drops into a plain interactive shell; closing the window ends the process |
-| `tmux` | Attaches the tmux session (with a session picker when multiple sessions exist) |
-| `herdr` | Opens the herdr supervisor view |
-
-## `rc exec` — one-off commands
-
-```
-rc exec <cage> -- <cmd...>
-rc --output json exec <cage> -- <cmd...>
-```
-
-Runs a single command inside a running cage non-interactively. The `--` separator is required. Safe for CI pipelines, scripts, and host-side automation — does not open a TTY or attach a session.
-
-```bash
-# Run a test suite inside the cage
-rc exec my-cage -- pytest tests/
-
-# Get structured output from a command
-rc --output json exec my-cage -- cat /workspace/VERSION
-```
-
-`rc exec` is **container resolution**-aware (auto-selects the cage if only one is running).
-
-## Running multiple agents
-
-When `session.multiplexer` is set to `tmux`, a cage supports multiple independent tmux sessions. `rc up <path>` shows a numbered picker when one or more sessions already exist, letting you attach an existing session or spawn a new one. The first `rc up` on a fresh cage creates a session named `rip-cage` and attaches it directly (no picker — current behavior preserved).
-
-With the default `session.multiplexer: none`, each `rc up` connects a single shell process — multiple agents means multiple cages (one per workspace path).
-
-### Session picker (tmux multiplexer only)
-
-When `rc up <path>` finds one or more existing sessions, it renders a numbered list sorted by most-recently-attached first, with a `[new] new session` entry at the bottom. Pressing **Enter** (empty input) attaches the most-recently-attached session. Type a number to select. `rc attach <cage>` uses the same picker.
-
-On a cage with no sessions, `rc up` creates and attaches `rip-cage` with no picker.
-
-### `rc up` session flags
-
-| Flag | Behavior |
-|------|----------|
-| `--new` | Skip picker; always create a new auto-named session (`rip-cage-2`, `rip-cage-3`, …). |
-| `--session NAME` | Attach session `NAME` if it exists; create and attach it if not. |
-| `--dry-run` | Previews the container action; never shows the picker. |
-
-`--new` and `--session` are mutually exclusive (exits 2 if both are given).
-
-Non-TTY invocations (CI, piped stdin) skip the picker entirely and fall back to attaching `rip-cage` if it exists or creating it.
-
-### Other shapes still supported
-
-**Multiple windows in one cage (tmux multiplexer, one session, multiple windows).** From inside an attached cage with `session.multiplexer: tmux`, press `Ctrl-b c` to create a new tmux window, then run `claude` (or `pi`, etc.) in it. `Ctrl-b n` / `Ctrl-b p` switch between windows; `Ctrl-b 0..9` jumps directly. The windows share the same workspace bind mount, credentials, and tmux session — useful when you want a second agent slot without a separate terminal on the host.
-
-**Multiple cages (one per workspace).** `rc up <other-path>` from a second host terminal starts an independent cage on a different project path. Each cage has its own container and state. This is the right shape when you want full container isolation between agents — e.g. one cage per git worktree (see [Quick start → The worktree workflow](../../README.md#the-worktree-workflow)).
+Inside one cage, a multiplexer your image declares can carry several agent slots. Which multiplexer, and whether one at all, is yours to compose ([ADR-005 D12](../decisions/ADR-005-ecosystem-tools.md)); `rc` names none.
