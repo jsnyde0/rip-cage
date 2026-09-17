@@ -194,6 +194,52 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# PREREQUISITE GATE: every step below SPENDS a real Claude API call.
+#
+# On a cage with no usable Claude auth the agents come back "Not logged in ·
+# Please run /login" and eight checks go red — all of them reporting a missing
+# prerequisite as a defect. That is the shape rip-cage-ely4.7.5 corrected
+# elsewhere in the suite, and it is worse here: the reds look like a
+# concurrency regression.
+#
+# Gated at the STEP boundary, not the file: everything above this line —
+# the credential-posture read, the wrapper-precedence checks — is structural,
+# needs no API call, and has already run. A blanket file-level SKIP would
+# silently drop that genuinely-passing coverage (tests/run-host.sh's SKIP
+# classifier: a file with passing checks must ledger PASS, not SKIP).
+#
+# Usable auth is either possession (credentials reached the cage) or a key in
+# the cage's environment. Neither present means no live agent can run.
+# ---------------------------------------------------------------------------
+# WHAT THE PREREQUISITE ACTUALLY IS. Every step below runs claude with its own
+# CLAUDE_CONFIG_DIR — a FRESH per-session dir. Seeding auth into such a dir is
+# the claude-recipe wrapper's job (/usr/local/bin/claude), and that recipe is
+# composed, not baked (ADR-005 D12). Without it the per-session agents come
+# back "Not logged in" however healthy the cage's own credentials are, which is
+# why a credential-posture read is the wrong gate: a minimal cage reads as
+# possession and still cannot run a single one of these steps.
+#
+# $COMPOSED is the file's own detection, already made above.
+if [[ "$COMPOSED" != "true" ]]; then
+  echo ""
+  echo "SKIP (NEEDS_RECIPE): the live-agent steps need the claude-recipe composed."
+  echo "  Every step below runs claude under a fresh CLAUDE_CONFIG_DIR, and it is the"
+  echo "  recipe wrapper at /usr/local/bin/claude that seeds auth into a new session"
+  echo "  dir. It is absent here (floor-only cage), so each agent would return"
+  echo "  'Not logged in' — a missing prerequisite, not a concurrency defect."
+  echo "  Compose examples/claude into the cage image to run these."
+  echo "  The structural checks above ran and are counted."
+  echo ""
+  echo "=== test-claude-concurrency.sh complete (live-agent steps skipped: recipe absent) ==="
+  if [[ $FAILURES -eq 0 ]]; then
+    echo "All structural checks PASSED; the API-spending steps did not run."
+  else
+    echo "$FAILURES structural check(s) FAILED."
+  fi
+  exit $FAILURES
+fi
+
+# ---------------------------------------------------------------------------
 # Pre-step: clean up any stale test session dirs from prior runs
 # ---------------------------------------------------------------------------
 cexec rm -rf /home/agent/.claude-sessions/conctest-a
