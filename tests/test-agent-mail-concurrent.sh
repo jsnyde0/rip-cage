@@ -50,6 +50,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/_cage-lookup-lib.sh
+source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
 # shellcheck source=tests/_agent-model-lib.sh
 source "${SCRIPT_DIR}/_agent-model-lib.sh"
 REPO_ROOT="${SCRIPT_DIR}/.."
@@ -348,7 +350,7 @@ CONTAINER_NAME="rc-am-concurrent-mail-fixture"
 RC_IMAGE="$AM_IMAGE_TAG" "$RC" up "$WORKSPACE" </dev/null >/tmp/rc-am-concurrent-up.out 2>&1 || true
 _am_track_cage "$CONTAINER_NAME"
 
-if ! "$RC" ls --output json | jq -e --arg n "$CONTAINER_NAME" '.[] | select(.name==$n and .status=="running")' >/dev/null 2>&1; then
+if ! cage_is_running "$CONTAINER_NAME"; then
   fail "SETUP: cage did NOT come up via rc up" "see /tmp/rc-am-concurrent-up.out"
   exit $FAILURES
 fi
@@ -365,7 +367,7 @@ echo "=== Precondition: herdr server health ==="
 
 herdr_server_up=false
 for _i in $(seq 1 15); do
-  if "$RC" exec "$CONTAINER_NAME" -- herdr agent list >/dev/null 2>&1; then
+  if msb exec "$CONTAINER_NAME" -- herdr agent list >/dev/null 2>&1; then
     herdr_server_up=true
     break
   fi
@@ -373,7 +375,7 @@ for _i in $(seq 1 15); do
 done
 
 if [[ "$herdr_server_up" != "true" ]]; then
-  herdr_log=$("$RC" exec "$CONTAINER_NAME" -- cat /tmp/rip-cage-mux-herdr.log 2>/dev/null | head -20)
+  herdr_log=$(msb exec "$CONTAINER_NAME" -- cat /tmp/rip-cage-mux-herdr.log 2>/dev/null | head -20)
   fail "PRECONDITION: herdr server NOT reachable after 15s" "log: ${herdr_log}"
   exit $FAILURES
 fi
@@ -387,7 +389,7 @@ echo "=== Precondition: Daemon health ==="
 
 daemon_healthy=false
 for _i in $(seq 1 15); do
-  if "$RC" exec "$CONTAINER_NAME" -- timeout 5 curl -sf http://127.0.0.1:8765/healthz >/dev/null 2>&1; then
+  if msb exec "$CONTAINER_NAME" -- timeout 5 curl -sf http://127.0.0.1:8765/healthz >/dev/null 2>&1; then
     daemon_healthy=true
     break
   fi
@@ -395,12 +397,12 @@ for _i in $(seq 1 15); do
 done
 
 if [[ "$daemon_healthy" != "true" ]]; then
-  daemon_log=$("$RC" exec "$CONTAINER_NAME" -- cat /tmp/rip-cage-daemon-agent-mail.log 2>/dev/null | head -20)
+  daemon_log=$(msb exec "$CONTAINER_NAME" -- cat /tmp/rip-cage-daemon-agent-mail.log 2>/dev/null | head -20)
   fail "PRECONDITION: agent_mail daemon NOT healthy after 30s" "log: ${daemon_log}"
   exit $FAILURES
 fi
 
-health_body=$("$RC" exec "$CONTAINER_NAME" -- timeout 5 curl -sf http://127.0.0.1:8765/healthz 2>/dev/null)
+health_body=$(msb exec "$CONTAINER_NAME" -- timeout 5 curl -sf http://127.0.0.1:8765/healthz 2>/dev/null)
 pass "Precondition: daemon healthy (body='${health_body:0:60}')"
 
 # ---------------------------------------------------------------------------
@@ -410,8 +412,8 @@ pass "Precondition: daemon healthy (body='${health_body:0:60}')"
 echo ""
 echo "=== Precondition: Verify am mail flag surface ==="
 
-send_help=$("$RC" exec "$CONTAINER_NAME" -- am mail send --help 2>&1)
-inbox_help=$("$RC" exec "$CONTAINER_NAME" -- am mail inbox --help 2>&1)
+send_help=$(msb exec "$CONTAINER_NAME" -- am mail send --help 2>&1)
+inbox_help=$(msb exec "$CONTAINER_NAME" -- am mail inbox --help 2>&1)
 
 if echo "$send_help" | grep -q -- "--from"; then
   pass "Precondition: am mail send --from flag present"
@@ -435,7 +437,7 @@ else
 fi
 
 # Verify daemon accepts CLI calls (distinguishes am serve-http --no-auth from mcp-agent-mail serve)
-cli_compat_check=$("$RC" exec "$CONTAINER_NAME" -- curl -sf -X POST "http://127.0.0.1:8765/mcp/session" \
+cli_compat_check=$(msb exec "$CONTAINER_NAME" -- curl -sf -X POST "http://127.0.0.1:8765/mcp/session" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"health_check","arguments":{}}}' 2>/dev/null)
 if echo "$cli_compat_check" | grep -q '"result"'; then
@@ -451,7 +453,7 @@ fi
 echo ""
 echo "=== Setup: Register agents ==="
 
-AGENT_A_NAME=$("$RC" exec "$CONTAINER_NAME" -- am agents register \
+AGENT_A_NAME=$(msb exec "$CONTAINER_NAME" -- am agents register \
   --project /workspace --program pi --model "${RC_TEST_AGENT_MODEL_NATIVE}" --json 2>/dev/null \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('name',''))" 2>/dev/null)
 
@@ -461,7 +463,7 @@ if [[ -z "$AGENT_A_NAME" ]]; then
 fi
 pass "Setup: agent A registered as '${AGENT_A_NAME}'"
 
-AGENT_B_NAME=$("$RC" exec "$CONTAINER_NAME" -- am agents register \
+AGENT_B_NAME=$(msb exec "$CONTAINER_NAME" -- am agents register \
   --project /workspace --program pi --model "${RC_TEST_AGENT_MODEL_NATIVE}" --json 2>/dev/null \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('name',''))" 2>/dev/null)
 
@@ -515,7 +517,7 @@ PROMPT_A_PATH="/tmp/rc-am-swv-prompt-a.txt"
 # special characters in the prompt text.
 # ---------------------------------------------------------------------------
 
-"$RC" exec "$CONTAINER_NAME" -- tee "$PROMPT_B_PATH" > /dev/null <<PROMPT_B_EOF
+msb exec "$CONTAINER_NAME" -- tee "$PROMPT_B_PATH" > /dev/null <<PROMPT_B_EOF
 You are agent ${AGENT_B_NAME}. Poll your inbox for a message, using your bash tool for each step.
 
 Follow these steps, up to 20 times total:
@@ -552,7 +554,7 @@ PROMPT_B_EOF
 # A's pi runs am mail send as its own bash tool call.
 # ---------------------------------------------------------------------------
 
-"$RC" exec "$CONTAINER_NAME" -- tee "$PROMPT_A_PATH" > /dev/null <<PROMPT_A_EOF
+msb exec "$CONTAINER_NAME" -- tee "$PROMPT_A_PATH" > /dev/null <<PROMPT_A_EOF
 You are agent ${AGENT_A_NAME}. Send one mail message using your bash tool.
 
 Run this bash command:
@@ -581,7 +583,7 @@ PROMPT_A_EOF
 # ---------------------------------------------------------------------------
 hread() {
   local target="$1" lines="${2:-300}"
-  "$RC" exec "$CONTAINER_NAME" -- herdr agent read "$target" --source visible --lines "$lines" 2>/dev/null \
+  msb exec "$CONTAINER_NAME" -- herdr agent read "$target" --source visible --lines "$lines" 2>/dev/null \
     | python3 -c "
 import json, sys
 try:
@@ -600,7 +602,7 @@ except Exception:
 echo ""
 echo "=== Step 1: Spawn agent B (${AGENT_B_NAME}) to iteratively poll inbox ==="
 
-B_PROMPT_CONTENT=$("$RC" exec "$CONTAINER_NAME" -- cat "$PROMPT_B_PATH" 2>/dev/null)
+B_PROMPT_CONTENT=$(msb exec "$CONTAINER_NAME" -- cat "$PROMPT_B_PATH" 2>/dev/null)
 
 # rc agent was retired in rip-cage-1f59 (ADR-006 D7). tmux was un-baked from
 # the base image (commit af7a1ce); use herdr's 'agent start' (session-spawner
@@ -608,7 +610,7 @@ B_PROMPT_CONTENT=$("$RC" exec "$CONTAINER_NAME" -- cat "$PROMPT_B_PATH" 2>/dev/n
 # passthrough, no shell reinterpretation of the prompt text). The trailing
 # 'sleep 600' keeps the pane alive well past B's own polling window (up to
 # 20 * 5s + reasoning time) so later steps can still read its scrollback.
-"$RC" exec "$CONTAINER_NAME" -- herdr agent start "$MAIL_B_SESSION" --cwd /workspace \
+msb exec "$CONTAINER_NAME" -- herdr agent start "$MAIL_B_SESSION" --cwd /workspace \
   -- bash -c "pi --provider openrouter --model ${RC_TEST_AGENT_MODEL} -p \"\$1\"; sleep 600" _ "$B_PROMPT_CONTENT"
 EXIT_B=$?
 
@@ -640,7 +642,7 @@ while [[ $_waited -lt $_timeout ]]; do
   _waited=$((_waited + 5))
 
   # Primary liveness gate: pi wrote POLL_1 to the poll log via its bash tool
-  POLL_LOG_CONTENT=$("$RC" exec "$CONTAINER_NAME" -- cat "$B_POLL_LOG" 2>/dev/null)
+  POLL_LOG_CONTENT=$(msb exec "$CONTAINER_NAME" -- cat "$B_POLL_LOG" 2>/dev/null)
   if echo "$POLL_LOG_CONTENT" | grep -qE "^POLL_[0-9]+$"; then
     B_WORKING=true
     break
@@ -654,7 +656,7 @@ while [[ $_waited -lt $_timeout ]]; do
 done
 
 echo "B poll log after ${_waited}s:"
-"$RC" exec "$CONTAINER_NAME" -- cat "$B_POLL_LOG" 2>/dev/null | head -5 | sed 's/^/  /'
+msb exec "$CONTAINER_NAME" -- cat "$B_POLL_LOG" 2>/dev/null | head -5 | sed 's/^/  /'
 echo "B pane (last 15 lines after ${_waited}s wait):"
 hread "$MAIL_B_SESSION" 15 | sed 's/^/  /'
 
@@ -676,13 +678,13 @@ fi
 echo ""
 echo "=== Step 3: Spawn agent A (${AGENT_A_NAME}) to send sentinel ==="
 
-A_PROMPT_CONTENT=$("$RC" exec "$CONTAINER_NAME" -- cat "$PROMPT_A_PATH" 2>/dev/null)
+A_PROMPT_CONTENT=$(msb exec "$CONTAINER_NAME" -- cat "$PROMPT_A_PATH" 2>/dev/null)
 
 # rc agent was retired in rip-cage-1f59 (ADR-006 D7). tmux was un-baked from
 # the base image (commit af7a1ce); use herdr's 'agent start' — see Step 1's
 # comment for the argv/pane-persistence rationale (sleep tail keeps A's pane
 # readable through Step 6, well after A's own one-shot task completes).
-"$RC" exec "$CONTAINER_NAME" -- herdr agent start "$MAIL_A_SESSION" --cwd /workspace \
+msb exec "$CONTAINER_NAME" -- herdr agent start "$MAIL_A_SESSION" --cwd /workspace \
   -- bash -c "pi --provider openrouter --model ${RC_TEST_AGENT_MODEL} -p \"\$1\"; sleep 600" _ "$A_PROMPT_CONTENT"
 EXIT_A=$?
 
@@ -744,7 +746,7 @@ while [[ $_waited -lt $_timeout ]]; do
   sleep 5
   _waited=$((_waited + 5))
 
-  RESULT_CONTENT=$("$RC" exec "$CONTAINER_NAME" -- cat "$B_RESULT_FILE" 2>/dev/null)
+  RESULT_CONTENT=$(msb exec "$CONTAINER_NAME" -- cat "$B_RESULT_FILE" 2>/dev/null)
 
   # Non-empty and not TIMEOUT means pi received and wrote inbox JSON
   if [[ -n "$RESULT_CONTENT" && "$RESULT_CONTENT" != "TIMEOUT" ]]; then
@@ -776,9 +778,9 @@ done
 echo "B pane (last 20 lines after ${_waited}s wait):"
 hread "$MAIL_B_SESSION" 20 | sed 's/^/  /'
 echo "B result file content (first 10 lines):"
-"$RC" exec "$CONTAINER_NAME" -- cat "$B_RESULT_FILE" 2>/dev/null | head -10 | sed 's/^/  /'
+msb exec "$CONTAINER_NAME" -- cat "$B_RESULT_FILE" 2>/dev/null | head -10 | sed 's/^/  /'
 echo "B poll log (all entries):"
-"$RC" exec "$CONTAINER_NAME" -- cat "$B_POLL_LOG" 2>/dev/null | sed 's/^/  /'
+msb exec "$CONTAINER_NAME" -- cat "$B_POLL_LOG" 2>/dev/null | sed 's/^/  /'
 
 if [[ "$B_RECEIVED" == "true" ]]; then
   pass "Step 5: agent B received a message (inbox JSON written by pi's own bash tool call)"
@@ -804,7 +806,7 @@ fi
 echo ""
 echo "=== Step 6: Assert pi iterated (≥2 am mail inbox calls in B's poll log) ==="
 
-POLL_LOG_FINAL=$("$RC" exec "$CONTAINER_NAME" -- cat "$B_POLL_LOG" 2>/dev/null)
+POLL_LOG_FINAL=$(msb exec "$CONTAINER_NAME" -- cat "$B_POLL_LOG" 2>/dev/null)
 POLL_COUNT=$(echo "$POLL_LOG_FINAL" | grep -cE "^POLL_[0-9]+$" 2>/dev/null || echo "0")
 
 echo "  Poll log entries: ${POLL_COUNT}"
@@ -854,7 +856,7 @@ fi
 # 'rc sessions' was RETIRED (ADR-006 D7): spawn/list/kill moved to being the
 # in-cage multiplexer's native surface — 'herdr agent list' for the herdr
 # choice (ADR-006 D7/:101). Same grep-on-raw-JSON style as the old check.
-AGENT_LIST_JSON=$("$RC" exec "$CONTAINER_NAME" -- herdr agent list 2>/dev/null)
+AGENT_LIST_JSON=$(msb exec "$CONTAINER_NAME" -- herdr agent list 2>/dev/null)
 A_SESSION_LISTED=false
 B_SESSION_LISTED=false
 if echo "$AGENT_LIST_JSON" | grep -qF "\"name\":\"${MAIL_A_SESSION}\""; then

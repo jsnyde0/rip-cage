@@ -150,7 +150,17 @@ SKIPPED_TESTS=()
 # Tests that REQUIRE a running rip-cage container or live API key.
 # Each entry carries a one-line comment explaining why.
 NEEDS_CONTAINER=(
-  "test-agent-cli.sh"        # calls rc up to create a live container; exercises full lifecycle
+  # test-agent-cli.sh: RETIRED with the verbs it tested (rip-cage-ely4.7.3 /
+  # ADR-031 D3). Its subject was the agent-facing CLI contract, and six of its
+  # fifteen cases drove `rc ls` or `rc down`, plus one asserting an
+  # allowed-roots warning whose guard ADR-031 D2 deleted. Every SURVIVING
+  # subject is already covered in the HOST tier, which is strictly better --
+  # this file was container-gated and therefore invisible to --host-only:
+  # path hardening, the destroy dry-run and the AGENTS.md rules section in
+  # test-dg6.2.sh; `rc build --output json` in test-build-flag-override.sh and
+  # test-build-msb-load.sh; `rc test --output json` in test-rc-commands.sh
+  # (Test 15); `rc up --dry-run` JSON in test-json-output.sh. Nothing was
+  # dropped without a home.
   "test-pi-e2e.sh"           # calls rc up AND requires ~/.pi/agent/auth.json with valid pi credentials
   "test-pi-install.sh"       # runs docker run --rm rip-cage:latest; requires a pre-built rip-cage image
   "test-pi-auth-mount.sh"    # calls rc up to create a live container; inspects container env + mounts
@@ -676,7 +686,6 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-pull-first.sh"
   run_test "${SCRIPT_DIR}/test-dockerfile-sudoers.sh"
   run_test "${SCRIPT_DIR}/test-bd-wrapper.sh"
-  run_test "${SCRIPT_DIR}/test-agent-cli.sh"
   run_test "${SCRIPT_DIR}/test-code-review-fixes.sh"
   run_test "${SCRIPT_DIR}/test-dg6.2.sh"
   run_test "${SCRIPT_DIR}/test-auth-refresh.sh"
@@ -693,7 +702,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-up-msb-egress-config.sh"  # rip-cage-tsf2.8/tsf2.10.5: _up_build_egress_config_json config∪manifest egress union + post-split runtime-invariant regression (r1-F1: was missing from run-host.sh)
   run_test "${SCRIPT_DIR}/test-doctor-version-skew.sh"   # rip-cage-2cks: _doctor_bd_version_compare unit tests (host-only, no docker)
   run_test "${SCRIPT_DIR}/test-doctor-dead-mount.sh"     # rip-cage-uben: generic dead-handle detection over single-file bind mounts — stubbed docker, host-only, no live cage needed
-  run_test "${SCRIPT_DIR}/test-doctor-exec-source-deleted.sh"   # rip-cage-uod6 (charted from rip-cage-54q3): rc doctor/rc exec name a deleted host workspace source with a Fix-hint instead of msb's misleading ENOENT-against-the-program-name text — fake msb PATH shim, host-only, no live cage needed
+  run_test "${SCRIPT_DIR}/test-doctor-exec-source-deleted.sh"   # rip-cage-uod6 (charted from rip-cage-54q3; the rc exec half retired with the verb in rip-cage-ely4.10, so rc doctor carries the hint alone now): rc doctor names a deleted host workspace source with a Fix-hint instead of msb's misleading ENOENT-against-the-program-name text — fake msb PATH shim, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-cage-host-bridge-probe.sh"       # rip-cage-woox: _rc_probe_host_bridge preset-honoring + msb-first probe order, stubbed getent via RC_INIT_LIB_ONLY-guarded sourcing, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-host-scratch-root.sh"            # rip-cage-6v34.6: the suite's own scratch root stays short enough for msb's 104-byte socket budget and symlink-free; host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-rc-test-suite-continuation.sh" # rip-cage-83y6: rc test's non-json path runs all four in-cage suites even when an earlier one fails — stubbed msb, host-only, no live cage needed

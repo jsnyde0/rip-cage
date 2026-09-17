@@ -80,6 +80,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/_cage-lookup-lib.sh
+source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
 # shellcheck source=tests/_agent-model-lib.sh
 source "${SCRIPT_DIR}/_agent-model-lib.sh"
 # shellcheck source=tests/_scratch-cage-lib.sh
@@ -435,7 +437,7 @@ _mux_agent_track_cage "$CAGE"
 scratch_cage_register "$CAGE"
 
 CAGE_STARTED=false
-if "$RC" ls --output json | jq -e --arg n "$CAGE" '.[] | select(.name==$n)' >/dev/null 2>&1; then
+if cage_exists "$CAGE"; then
   CAGE_STARTED=true
   pass "Cage started: ${CAGE}"
 else
@@ -455,7 +457,7 @@ echo "=== Wait for tmux session 'rip-cage' ==="
 
 TMUX_READY=false
 for _i in $(seq 1 20); do
-  if "$RC" exec "$CAGE" -- tmux list-sessions 2>/dev/null | grep -q 'rip-cage'; then
+  if msb exec "$CAGE" -- tmux list-sessions 2>/dev/null | grep -q 'rip-cage'; then
     TMUX_READY=true
     break
   fi
@@ -465,7 +467,7 @@ done
 if [[ "$TMUX_READY" == "true" ]]; then
   pass "tmux session 'rip-cage' is ready"
 else
-  TMUX_SESSIONS=$("$RC" exec "$CAGE" -- tmux list-sessions 2>/dev/null || echo "(none)")
+  TMUX_SESSIONS=$(msb exec "$CAGE" -- tmux list-sessions 2>/dev/null || echo "(none)")
   fail "tmux session 'rip-cage' did NOT appear after 40s" "sessions: ${TMUX_SESSIONS}"
 fi
 
@@ -492,7 +494,7 @@ fi
 echo ""
 echo "=== Dispatch pi through tmux send-keys (the mux attach surface) ==="
 
-"$RC" exec "$CAGE" -- tmux send-keys -t rip-cage "bash /workspace/run-pi.sh" Enter
+msb exec "$CAGE" -- tmux send-keys -t rip-cage "bash /workspace/run-pi.sh" Enter
 
 pass "tmux send-keys dispatched pi into rip-cage session"
 
@@ -512,7 +514,7 @@ while [[ $POLL_ELAPSED -lt $POLL_TIMEOUT ]]; do
   sleep $POLL_INTERVAL
   POLL_ELAPSED=$((POLL_ELAPSED + POLL_INTERVAL))
 
-  RESULT_EXISTS=$("$RC" exec "$CAGE" -- test -f /workspace/RESULT.txt 2>/dev/null && echo "yes" || echo "no")
+  RESULT_EXISTS=$(msb exec "$CAGE" -- test -f /workspace/RESULT.txt 2>/dev/null && echo "yes" || echo "no")
 
   if [[ "$RESULT_EXISTS" == "yes" ]]; then
     RESULT_FOUND=true
@@ -522,13 +524,13 @@ while [[ $POLL_ELAPSED -lt $POLL_TIMEOUT ]]; do
   # Periodic diagnostics
   if [[ $((POLL_ELAPSED % 30)) -eq 0 ]]; then
     echo "  [t=${POLL_ELAPSED}s] Still waiting... pane (last 5 lines):"
-    "$RC" exec "$CAGE" -- tmux capture-pane -p -t rip-cage -S -5 2>/dev/null | sed 's/^/    /'
+    msb exec "$CAGE" -- tmux capture-pane -p -t rip-cage -S -5 2>/dev/null | sed 's/^/    /'
   fi
 done
 
 # Always show final pane state for diagnostics
 echo "Pane (last 20 lines after ${POLL_ELAPSED}s):"
-"$RC" exec "$CAGE" -- tmux capture-pane -p -t rip-cage -S -20 2>/dev/null | sed 's/^/  /'
+msb exec "$CAGE" -- tmux capture-pane -p -t rip-cage -S -20 2>/dev/null | sed 's/^/  /'
 
 if [[ "$RESULT_FOUND" == "true" ]]; then
   pass "RESULT.txt appeared after ${POLL_ELAPSED}s (pi completed via tmux surface)"
@@ -571,7 +573,7 @@ echo ""
 echo "=== Assertion (a): >=2 distinct pi tool invocations (with distinct tool names) ==="
 
 # Find the session JSONL in /workspace/.pi-sessions
-SESSION_JSONL=$("$RC" exec "$CAGE" -- find /workspace/.pi-sessions -name "*.jsonl" 2>/dev/null | head -1)
+SESSION_JSONL=$(msb exec "$CAGE" -- find /workspace/.pi-sessions -name "*.jsonl" 2>/dev/null | head -1)
 echo "  Session JSONL: ${SESSION_JSONL:-<not found>}"
 
 TOOL_CALL_COUNT=0
@@ -582,7 +584,7 @@ HAS_NON_BASH_TOOL="false"
 if [[ -n "$SESSION_JSONL" ]]; then
   # Extract all toolCall names from the JSONL session
   # Format: {"type":"toolCall","name":"read","arguments":{...}}
-  JSONL_ANALYSIS=$("$RC" exec "$CAGE" -- \
+  JSONL_ANALYSIS=$(msb exec "$CAGE" -- \
     python3 -c "
 import sys, json
 total_calls = 0
@@ -642,7 +644,7 @@ else
 fi
 
 # Belt-and-suspenders: TOOL_LOG bash-call evidence
-TOOL_LOG_CONTENT=$("$RC" exec "$CAGE" -- cat /workspace/TOOL_LOG.txt 2>/dev/null || echo "")
+TOOL_LOG_CONTENT=$(msb exec "$CAGE" -- cat /workspace/TOOL_LOG.txt 2>/dev/null || echo "")
 # Use awk for counting to avoid grep -c exit-1-on-zero-matches bug with pipefail
 BASH_TOOL_COUNT=$(echo "$TOOL_LOG_CONTENT" | awk '/^TOOL_[0-9]+$/{count++} END{print count+0}' 2>/dev/null || echo "0")
 echo "  TOOL_LOG content (bash-call evidence):"
@@ -699,7 +701,7 @@ fi
 echo ""
 echo "=== Assertion (b): RESULT.txt content == expected first line ==="
 
-RESULT_CONTENT=$("$RC" exec "$CAGE" -- cat /workspace/RESULT.txt 2>/dev/null | head -1 || echo "")
+RESULT_CONTENT=$(msb exec "$CAGE" -- cat /workspace/RESULT.txt 2>/dev/null | head -1 || echo "")
 RESULT_TRIMMED=$(echo "$RESULT_CONTENT" | tr -d '[:space:]')
 EXPECTED_TRIMMED=$(echo "$SEED_FIRST_LINE" | tr -d '[:space:]')
 

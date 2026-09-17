@@ -65,6 +65,8 @@ fi
 # only scratch_cage_register writes that file.
 # -----------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/_cage-lookup-lib.sh
+source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
 RC="${SCRIPT_DIR}/../rc"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
@@ -73,7 +75,7 @@ CONTAINER="${RC_TEST_CONTAINER:-}"
 if [[ -z "$CONTAINER" ]]; then
   _registry=$(_scratch_cage_registry_path)
   if [[ -f "$_registry" ]]; then
-    _running=$("$RC" ls --output json 2>/dev/null | jq -r '.[] | select(.status=="running") | .name')
+    _running=$(cage_names_running)
     while IFS= read -r _candidate; do
       [[ -z "$_candidate" ]] && continue
       if echo "$_running" | grep -qxF "$_candidate"; then
@@ -94,7 +96,7 @@ echo "=== Test 3: /home/agent/.pi/agent owned by agent:agent (running cage) ==="
 if [[ -z "$CONTAINER" ]]; then
   echo "SKIP: no harness-created running cage; pass RC_TEST_CONTAINER=<name> (a foreign running cage is deliberately not used — rip-cage-sygz.2)"
 else
-  ownership=$("$RC" exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent 2>&1 || true)
+  ownership=$(msb exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent 2>&1 || true)
   if [[ "$ownership" == "agent:agent" ]]; then
     pass "/home/agent/.pi/agent ownership is agent:agent"
   else
@@ -112,7 +114,7 @@ echo "=== Test 4: /home/agent/.pi/agent/extensions exists (running cage) ==="
 if [[ -z "$CONTAINER" ]]; then
   echo "SKIP: no harness-created running cage; pass RC_TEST_CONTAINER=<name> (a foreign running cage is deliberately not used — rip-cage-sygz.2)"
 else
-  ext_stat=$("$RC" exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent/extensions 2>&1 || true)
+  ext_stat=$(msb exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent/extensions 2>&1 || true)
   if [[ "$ext_stat" == "agent:agent" ]]; then
     pass "/home/agent/.pi/agent/extensions exists and is agent:agent"
   else

@@ -47,7 +47,7 @@ The repo splits tests into three tiers. See `tests/run-host.sh` for the canonica
 - **Less useful when:** touching anything that runs *inside* the container
 
 ### `bash tests/run-host.sh` — full host suite
-- **What it is:** all tests in the ordered list (host-only + container-needing). Runs every script in `tests/run-host.sh` including NEEDS_CONTAINER tests (test-agent-cli, test-pi-*).
+- **What it is:** all tests in the ordered list (host-only + container-needing). Runs every script in `tests/run-host.sh` including NEEDS_CONTAINER tests (test-pi-*, test-multiplexer-*).
 - **Speed:** ~1-3min for host-only tests; longer if container tests run (requires pre-built image)
 - **Catches:** broader regressions than `make test` — auth refresh flow, worktree detection, dg6.2 regression guards, completion output shape, egress rules, allowlist, reload, config-init, etc.
 - **Useful when:** before committing a change that touches `rc`, the init script, or shell integration
@@ -66,7 +66,7 @@ The repo splits tests into three tiers. See `tests/run-host.sh` for the canonica
 - **What keeps them out:** case (j) of `tests/test-rc-decomposition-structure.sh` (host-only, <1s). It flags any `tests/test-*.sh` that names `run-host.sh`'s path outside comments and output statements — file-level, because a call site usually reaches the driver through a variable, so the path assignment is the only reliable tell. The sole exemption is the inline `manual-only-probe(run-host.sh)` marker these two files carry in their headers; there is no filename exemption list, so a new file that drives the driver goes red until someone writes the marker and states why.
 
 ### `bash tests/run-host.sh --host-only` — CI mode (no container required)
-- **What it is:** same as above but skips the NEEDS_CONTAINER denylist (test-agent-cli, test-pi-e2e, test-pi-install, test-pi-auth-mount, test-pi-cage-context). Everything else runs. Prints `SKIP (needs container): <name>` per skipped test.
+- **What it is:** same as above but skips the NEEDS_CONTAINER denylist (test-pi-e2e, test-pi-install, test-pi-auth-mount, test-pi-cage-context). Everything else runs. Prints `SKIP (needs container): <name>` per skipped test.
 - **Speed:** ~1-3min (no docker image needed)
 - **Safe-failure design:** newly-added tests run by default (not silently dropped); if a new test actually needs a container it fails loudly in CI → author adds it to NEEDS_CONTAINER.
 - **Two skip granularities (rip-cage-ozt):** file-level via the NEEDS_CONTAINER denylist (above), AND sub-test-level via `RC_HOST_ONLY` — `--host-only` exports `RC_HOST_ONLY=1`, and a mostly-host-only test gates its few live-container blocks behind `[[ -n "$RC_HOST_ONLY" ]]` with a visible `SKIP (host-only): ...` line (e.g. test-code-review-fixes L2-a/b). Those blocks still run in the full `run-host.sh` (no flag).

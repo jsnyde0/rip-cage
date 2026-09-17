@@ -42,11 +42,10 @@ _track() { CREATED_CAGES+=("$1"); }
 
 # Resolve the container name from the workspace label — robust against
 # rc's collision-hash fallback and tr/sed name normalization.
-_resolve_container() {
-  local ws="${1:-$TEST_WS}"
-  "$RC" ls --output json | jq -r --arg ws "$(realpath "$ws" 2>/dev/null || echo "$ws")" \
-    '.[] | select(.source_path==$ws) | .name' | head -1
-}
+# shellcheck source=tests/_cage-lookup-lib.sh
+source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
+
+_resolve_container() { cage_name_for_source "${1:-$TEST_WS}"; }
 
 # ---- Self-isolate HOME (rip-cage-bh0r) ----
 # This test stages a fake AGENTS.md + auth.json under $PI_AGENT_DIR and, in
@@ -252,7 +251,7 @@ RECIPE_ABSENT_REASON="examples/claude + examples/pi recipes not composed into th
 # Check the reference string is present anywhere in CLAUDE.md
 if [[ "$RECIPE_COMPOSED" == "false" ]]; then
   skip "Test 2a — $RECIPE_ABSENT_REASON"
-elif "$RC" exec "$CONTAINER" -- grep -q '/etc/rip-cage/cage-pi.md' /home/agent/.claude/CLAUDE.md; then
+elif msb exec "$CONTAINER" -- grep -q '/etc/rip-cage/cage-pi.md' /home/agent/.claude/CLAUDE.md; then
   pass "Test 2a: /etc/rip-cage/cage-pi.md reference found in ~/.claude/CLAUDE.md"
 else
   fail "Test 2a: /etc/rip-cage/cage-pi.md reference missing from ~/.claude/CLAUDE.md"
@@ -262,7 +261,7 @@ fi
 if [[ "$RECIPE_COMPOSED" == "false" ]]; then
   skip "Test 2b — $RECIPE_ABSENT_REASON"
 else
-  inside_fence=$("$RC" exec "$CONTAINER" -- awk '
+  inside_fence=$(msb exec "$CONTAINER" -- awk '
     /^<!-- begin:rip-cage-topology -->/ { inside=1; next }
     /^<!-- end:rip-cage-topology -->/   { inside=0; next }
     inside && /\/etc\/rip-cage\/cage-pi\.md/ { found=1 }
@@ -282,7 +281,7 @@ echo "=== Test 3: /etc/rip-cage/cage-pi.md is readable inside the cage ==="
 
 if [[ "$RECIPE_COMPOSED" == "false" ]]; then
   skip "Test 3 — examples/pi recipe not composed into this image (no /etc/rip-cage/cage-pi.md, ADR-005 D12 / rip-cage-wlwc.2.2)"
-elif "$RC" exec "$CONTAINER" -- test -r /etc/rip-cage/cage-pi.md; then
+elif msb exec "$CONTAINER" -- test -r /etc/rip-cage/cage-pi.md; then
   pass "Test 3: /etc/rip-cage/cage-pi.md is readable inside the cage"
 else
   fail "Test 3: /etc/rip-cage/cage-pi.md not readable inside the cage"
@@ -296,7 +295,7 @@ if [[ "$RECIPE_COMPOSED" == "false" ]]; then
   skip "Test 4 — $RECIPE_ABSENT_REASON, so no marker was ever written to count"
 else
   # Count the unsuffixed marker (must not match -pi suffix markers separately)
-  claude_count=$("$RC" exec "$CONTAINER" -- grep -c '^<!-- begin:rip-cage-topology -->' /home/agent/.claude/CLAUDE.md 2>/dev/null || true)
+  claude_count=$(msb exec "$CONTAINER" -- grep -c '^<!-- begin:rip-cage-topology -->' /home/agent/.claude/CLAUDE.md 2>/dev/null || true)
   [[ -z "$claude_count" ]] && claude_count=0
   if [[ "$claude_count" -eq 1 ]]; then
     pass "Test 4: exactly one begin:rip-cage-topology marker in CLAUDE.md"
@@ -309,7 +308,7 @@ fi
 echo ""
 echo "=== Test 5: No rip-cage-topology-pi fence markers in CLAUDE.md ==="
 
-pi_in_claude=$("$RC" exec "$CONTAINER" -- grep -c 'begin:rip-cage-topology-pi' /home/agent/.claude/CLAUDE.md 2>/dev/null || true)
+pi_in_claude=$(msb exec "$CONTAINER" -- grep -c 'begin:rip-cage-topology-pi' /home/agent/.claude/CLAUDE.md 2>/dev/null || true)
 [[ -z "$pi_in_claude" ]] && pi_in_claude=0
 if [[ "$pi_in_claude" -eq 0 ]]; then
   pass "Test 5: no pi-topology fence markers in CLAUDE.md (reference-only path is clean)"
@@ -321,7 +320,7 @@ fi
 echo ""
 echo "=== Test 6: init log line mentions cage-pi.md when PI_CODING_AGENT_DIR=/home/agent/.pi/agent ==="
 
-init_log_output=$("$RC" exec "$CONTAINER" -- bash -c "PI_CODING_AGENT_DIR=/home/agent/.pi/agent /usr/local/bin/init-rip-cage.sh 2>&1" || true)
+init_log_output=$(msb exec "$CONTAINER" -- bash -c "PI_CODING_AGENT_DIR=/home/agent/.pi/agent /usr/local/bin/init-rip-cage.sh 2>&1" || true)
 if echo "$init_log_output" | grep -q '/etc/rip-cage/cage-pi.md'; then
   pass "Test 6: init log line mentions /etc/rip-cage/cage-pi.md when PI_CODING_AGENT_DIR=/home/agent/.pi/agent"
 else
@@ -353,7 +352,7 @@ else
   _track "$CONTAINER2"
   # Re-run init explicitly and capture exit code
   init_exit=0
-  "$RC" exec "$CONTAINER2" -- /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || init_exit=$?
+  msb exec "$CONTAINER2" -- /usr/local/bin/init-rip-cage.sh >/dev/null 2>&1 || init_exit=$?
   if [[ $init_exit -eq 0 ]]; then
     pass "Test 7: init exits 0 even when pi mount was not wired"
   else
@@ -362,7 +361,7 @@ else
 
   # 7b: /home/agent/.pi/agent/AGENTS.md must NOT exist when auth mount was skipped
   # (init must not create host files when the auth.json sub-mount is absent)
-  if ! "$RC" exec "$CONTAINER2" -- test -f /home/agent/.pi/agent/AGENTS.md; then
+  if ! msb exec "$CONTAINER2" -- test -f /home/agent/.pi/agent/AGENTS.md; then
     pass "Test 7b: /home/agent/.pi/agent/AGENTS.md not created when auth mount was skipped"
   else
     fail "Test 7b: /home/agent/.pi/agent/AGENTS.md exists but mount was skipped — init wrote to it"
@@ -374,7 +373,7 @@ else
   # rather than asserting a file the image never shipped.
   if [[ "$RECIPE_COMPOSED" == "false" ]]; then
     skip "Test 7c — examples/pi recipe not composed into this image (no /etc/rip-cage/cage-pi.md, ADR-005 D12 / rip-cage-wlwc.2.2)"
-  elif "$RC" exec "$CONTAINER2" -- test -r /etc/rip-cage/cage-pi.md; then
+  elif msb exec "$CONTAINER2" -- test -r /etc/rip-cage/cage-pi.md; then
     pass "Test 7c: /etc/rip-cage/cage-pi.md still readable even without pi mount"
   else
     fail "Test 7c: /etc/rip-cage/cage-pi.md not readable in mount-absent container"
@@ -382,7 +381,7 @@ else
 
   # 7d: Negative case — init log line must NOT be emitted when PI_CODING_AGENT_DIR is unset
   # (PI_CODING_AGENT_DIR unset means pi support is not active)
-  init_log_output2=$("$RC" exec "$CONTAINER2" -- bash -c "unset PI_CODING_AGENT_DIR; /usr/local/bin/init-rip-cage.sh 2>&1" || true)
+  init_log_output2=$(msb exec "$CONTAINER2" -- bash -c "unset PI_CODING_AGENT_DIR; /usr/local/bin/init-rip-cage.sh 2>&1" || true)
   if echo "$init_log_output2" | grep -q '/etc/rip-cage/cage-pi.md'; then
     fail "Test 7d: init log line emitted on no-pi-mount container (guard should suppress it)" "$init_log_output2"
   else

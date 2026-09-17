@@ -38,6 +38,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/_cage-lookup-lib.sh
+source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 FAILURES=0
@@ -177,8 +179,7 @@ YAML
   local ws_full_real
   ws_full_real=$(realpath "$ws" 2>/dev/null) || ws_full_real="$ws"
   local real_cage_name
-  real_cage_name=$("${RC}" ls --output json 2>/dev/null | jq -r --arg ws "$ws_full_real" \
-    '.[] | select(.source_path==$ws) | .name' | head -1)
+  real_cage_name=$(cage_name_for_source "$ws_full_real")
   if [[ -z "$real_cage_name" ]]; then
     echo "_spin_up_cage(${suffix}): could not resolve cage by source_path=${ws_full_real}; rc up output:" >&2
     cat "$up_log" >&2
@@ -246,7 +247,7 @@ else
   # Probe: attempt to write a file to the ro-mounted path as the agent user.
   # The write must fail (non-zero exit from rc exec).
   _re1_write_rc=0
-  _re1_write_out=$("${RC}" exec "$_re1_cage" -- \
+  _re1_write_out=$(msb exec "$_re1_cage" -- \
     sh -c "echo hostile > /home/agent/ro-asset/hostile.txt 2>&1") || _re1_write_rc=$?
 
   if [[ "$_re1_write_rc" -ne 0 ]]; then
@@ -257,7 +258,7 @@ else
 
   # Verify the sentinel is still readable (positive: the mount is working, not just absent).
   _re1_read_rc=0
-  _re1_read_out=$("${RC}" exec "$_re1_cage" -- \
+  _re1_read_out=$(msb exec "$_re1_cage" -- \
     cat /home/agent/ro-asset/sentinel.txt 2>&1) || _re1_read_rc=$?
   if [[ "$_re1_read_rc" -eq 0 ]] && grep -q "ro-sentinel" <<<"$_re1_read_out"; then
     pass "RE1 ro mount: sentinel file readable inside cage (mount is active, not just absent)"
@@ -316,7 +317,7 @@ else
   # Write a file inside the cage as the agent user.
   _re2_sentinel_content="rw-write-through-proof-$$"
   _re2_write_rc=0
-  _re2_write_out=$("${RC}" exec "$_re2_cage" -- \
+  _re2_write_out=$(msb exec "$_re2_cage" -- \
     sh -c "echo '${_re2_sentinel_content}' > /home/agent/rw-asset/written-by-agent.txt 2>&1") || _re2_write_rc=$?
 
   if [[ "$_re2_write_rc" -ne 0 ]]; then
@@ -395,7 +396,7 @@ if [[ "$_re3_ready" -eq 0 ]]; then
 else
   # (a) ro guard: write must FAIL
   _re3_guard_write_rc=0
-  "${RC}" exec "$_re3_cage" -- \
+  msb exec "$_re3_cage" -- \
     sh -c "echo hostile > /home/agent/ro-guard/hostile.txt 2>&1" || _re3_guard_write_rc=$?
   if [[ "$_re3_guard_write_rc" -ne 0 ]]; then
     pass "RE3(a) ro guard: write attempt FAILS (exit=${_re3_guard_write_rc}) — floor-lock holds"
@@ -406,7 +407,7 @@ else
   # (b) rw skill: write must SUCCEED and propagate to host
   _re3_sentinel="re3-rw-proof-$$"
   _re3_skill_write_rc=0
-  "${RC}" exec "$_re3_cage" -- \
+  msb exec "$_re3_cage" -- \
     sh -c "echo '${_re3_sentinel}' > /home/agent/rw-skill/agent-edit.txt 2>&1" || _re3_skill_write_rc=$?
   if [[ "$_re3_skill_write_rc" -ne 0 ]]; then
     fail "RE3(b) rw skill: write inside cage FAILED (exit=${_re3_skill_write_rc})"
@@ -421,7 +422,7 @@ else
 
   # Positive control: ro guard sentinel is still readable (mount is active)
   _re3_read_rc=0
-  _re3_read_out=$("${RC}" exec "$_re3_cage" -- \
+  _re3_read_out=$(msb exec "$_re3_cage" -- \
     cat /home/agent/ro-guard/guard.txt 2>&1) || _re3_read_rc=$?
   if [[ "$_re3_read_rc" -eq 0 ]] && grep -q "guard-sentinel" <<<"$_re3_read_out"; then
     pass "RE3(c) ro guard: sentinel readable inside cage (mount active, not just absent)"

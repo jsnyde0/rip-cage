@@ -13,12 +13,12 @@ CREATED_CAGES=()
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1${2:+ -- $2}"; FAILURES=$((FAILURES + 1)); }
 
+# shellcheck source=tests/_cage-lookup-lib.sh
+source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
+
 _track() { CREATED_CAGES+=("$1"); }
 
-_resolve_container() {
-  "$RC" ls --output json | jq -r --arg ws "$(realpath "$TEST_WS")" \
-    '.[] | select(.source_path==$ws) | .name' | head -1
-}
+_resolve_container() { cage_name_for_source "$TEST_WS"; }
 
 cleanup() {
   local c _d_out _d_rc
@@ -87,7 +87,7 @@ fi
 _track "$CONTAINER"
 
 # Step 3: Run pi -p with 30s timeout
-_output=$("$RC" exec "$CONTAINER" -- timeout 30 pi -p \
+_output=$(msb exec "$CONTAINER" -- timeout 30 pi -p \
   'Reply with the literal string PI_E2E_OK and nothing else' \
   2>&1 || true)
 

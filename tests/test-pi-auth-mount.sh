@@ -22,6 +22,8 @@ REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+# shellcheck source=tests/_cage-lookup-lib.sh
+source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
 
 FAILURES=0
 TEST_WS=""
@@ -36,11 +38,7 @@ _track() { CREATED_CAGES+=("$1"); }
 
 # Resolve the container name from the workspace label — robust against
 # rc's collision-hash fallback and tr/sed name normalization.
-_resolve_container() {
-  local ws="${1:-$TEST_WS}"
-  "$RC" ls --output json | jq -r --arg ws "$(realpath "$ws" 2>/dev/null || echo "$ws")" \
-    '.[] | select(.source_path==$ws) | .name' | head -1
-}
+_resolve_container() { cage_name_for_source "${1:-$TEST_WS}"; }
 
 # _pi_agent_identity_snapshot <dir> -- top-level entry names, types
 # (symlink/dir/file), and — for symlinks — the raw unresolved link target.
@@ -207,7 +205,7 @@ if [[ -z "$CONTAINER" ]]; then
 fi
 _track "$CONTAINER"
 
-content=$("$RC" exec "$CONTAINER" -- cat /home/agent/.pi/agent/auth.json 2>/dev/null || true)
+content=$(msb exec "$CONTAINER" -- cat /home/agent/.pi/agent/auth.json 2>/dev/null || true)
 if echo "$content" | grep -q "fake"; then
   pass "/home/agent/.pi/agent/auth.json readable and contains expected content"
 else
@@ -220,7 +218,7 @@ fi
 echo ""
 echo "=== Test 2: /home/agent/.pi/agent/auth.json owned by agent:agent ==="
 
-ownership=$("$RC" exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent/auth.json 2>/dev/null || true)
+ownership=$(msb exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent/auth.json 2>/dev/null || true)
 if [[ "$ownership" == "agent:agent" ]]; then
   pass "/home/agent/.pi/agent/auth.json owner = agent:agent"
 else
@@ -233,7 +231,7 @@ fi
 echo ""
 echo "=== Test 3: PI_CODING_AGENT_DIR=/home/agent/.pi/agent in container env ==="
 
-pi_env=$("$RC" exec "$CONTAINER" -- env 2>/dev/null | grep '^PI_CODING_AGENT_DIR=' || true)
+pi_env=$(msb exec "$CONTAINER" -- env 2>/dev/null | grep '^PI_CODING_AGENT_DIR=' || true)
 if [[ "$pi_env" == "PI_CODING_AGENT_DIR=/home/agent/.pi/agent" ]]; then
   pass "PI_CODING_AGENT_DIR=/home/agent/.pi/agent in container env"
 else
@@ -246,7 +244,7 @@ fi
 echo ""
 echo "=== Test 4: CAGE_HOST_ADDR present in container env ==="
 
-cage_addr_line=$("$RC" exec "$CONTAINER" -- env 2>/dev/null | grep '^CAGE_HOST_ADDR=' || true)
+cage_addr_line=$(msb exec "$CONTAINER" -- env 2>/dev/null | grep '^CAGE_HOST_ADDR=' || true)
 if [[ "${cage_addr_line#CAGE_HOST_ADDR=}" != "" ]]; then
   pass "CAGE_HOST_ADDR present and non-empty in container env ('$cage_addr_line')"
 else
@@ -369,7 +367,7 @@ echo ""
 echo "=== Test 7: Container-local pi dir — bin/ not host-mounted ==="
 
 # Verify the container-local dir exists as agent:agent and is independent of host
-pi_dir_stat=$("$RC" exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent 2>/dev/null || true)
+pi_dir_stat=$(msb exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent 2>/dev/null || true)
 if [[ "$pi_dir_stat" == "agent:agent" ]]; then
   pass "/home/agent/.pi/agent dir exists as agent:agent in container"
 else
@@ -382,7 +380,7 @@ fi
 mkdir -p "$PI_AGENT_DIR/bin"
 printf 'host-sentinel' > "$PI_AGENT_DIR/bin/host-marker.txt"
 # Container was started before this file existed — if bin/ is not mounted, it won't appear
-bin_content=$("$RC" exec "$CONTAINER" -- cat /home/agent/.pi/agent/bin/host-marker.txt 2>/dev/null || true)
+bin_content=$(msb exec "$CONTAINER" -- cat /home/agent/.pi/agent/bin/host-marker.txt 2>/dev/null || true)
 if [[ -z "$bin_content" ]]; then
   pass "bin/ is NOT host-mounted (container-local; host sentinel not visible)"
 else
@@ -401,7 +399,7 @@ echo "=== Test 8: auth.json RW round-trip (write inside cage visible on host) ==
 host_inode_before=$(stat -f '%i' "$PI_AGENT_DIR/auth.json" 2>/dev/null || stat -c '%i' "$PI_AGENT_DIR/auth.json" 2>/dev/null || true)
 
 # Write new content inside the container (in-place overwrite, same as OAuth refresh)
-"$RC" exec "$CONTAINER" -- bash -c 'printf "{\"fake\":true,\"roundtrip\":true}\n" > /home/agent/.pi/agent/auth.json' 2>/dev/null
+msb exec "$CONTAINER" -- bash -c 'printf "{\"fake\":true,\"roundtrip\":true}\n" > /home/agent/.pi/agent/auth.json' 2>/dev/null
 
 # Read on host
 roundtrip_content=$(cat "$PI_AGENT_DIR/auth.json" 2>/dev/null || true)
@@ -468,7 +466,7 @@ echo "=== Test 9: agent pi extensions/ dir exists, is agent-owned, and is writab
 # discarding it, to keep a future exec-channel regression visibly
 # distinguishable from this expected, named absence.
 _ext_stderr_file=$(mktemp)
-ext_dir_stat=$("$RC" exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent/extensions 2>"$_ext_stderr_file")
+ext_dir_stat=$(msb exec "$CONTAINER" -- stat -c '%U:%G' /home/agent/.pi/agent/extensions 2>"$_ext_stderr_file")
 ext_dir_rc=$?
 ext_dir_stderr="$(cat "$_ext_stderr_file")"
 rm -f "$_ext_stderr_file"
@@ -498,7 +496,7 @@ if [[ "$_ext_broken_channel" == "true" ]]; then
 elif [[ "$_ext_recipe_absent" == "true" ]]; then
   echo "SKIP: 9b extensions writability check — examples/pi recipe not composed into this image, extensions dir does not exist"
 else
-  write_test=$("$RC" exec "$CONTAINER" -- bash -c 'touch /home/agent/.pi/agent/extensions/.write-test && echo ok && rm /home/agent/.pi/agent/extensions/.write-test' 2>/dev/null || true)
+  write_test=$(msb exec "$CONTAINER" -- bash -c 'touch /home/agent/.pi/agent/extensions/.write-test && echo ok && rm /home/agent/.pi/agent/extensions/.write-test' 2>/dev/null || true)
   if [[ "$write_test" == "ok" ]]; then
     pass "9b: /home/agent/.pi/agent/extensions dir is writable by agent user"
   else
@@ -513,9 +511,9 @@ if [[ "$_ext_broken_channel" == "true" ]]; then
 elif [[ "$_ext_recipe_absent" == "true" ]]; then
   echo "SKIP: 9c extensions marker-readability check — examples/pi recipe not composed into this image, extensions dir does not exist"
 else
-  "$RC" exec "$CONTAINER" -- bash -c 'printf "// marker\nexport default {};\n" > /home/agent/.pi/agent/extensions/marker-test.js' 2>/dev/null
-  marker_content=$("$RC" exec "$CONTAINER" -- cat /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true)
-  "$RC" exec "$CONTAINER" -- rm -f /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true
+  msb exec "$CONTAINER" -- bash -c 'printf "// marker\nexport default {};\n" > /home/agent/.pi/agent/extensions/marker-test.js' 2>/dev/null
+  marker_content=$(msb exec "$CONTAINER" -- cat /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true)
+  msb exec "$CONTAINER" -- rm -f /home/agent/.pi/agent/extensions/marker-test.js 2>/dev/null || true
   if echo "$marker_content" | grep -q "marker"; then
     pass "9c: marker file dropped in extensions/ is readable by agent user (agent extension space writable)"
   else

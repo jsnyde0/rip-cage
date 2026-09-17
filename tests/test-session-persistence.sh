@@ -18,6 +18,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/_cage-lookup-lib.sh
+source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 # shellcheck source=/dev/null
@@ -135,7 +137,7 @@ UP_OUT=$(mktemp)
 RC_CAGE_CONF="$(cage_conf_for "$E2E_PROJECT")" "$RC" up "$E2E_PROJECT" </dev/null >"$UP_OUT" 2>&1 || true
 _track "$CONTAINER_NAME"
 
-if "$RC" ls --output json | jq -e --arg n "$CONTAINER_NAME" '.[] | select(.name==$n and .status=="running")' >/dev/null 2>&1; then
+if cage_is_running "$CONTAINER_NAME"; then
   check "rc up brings container up" pass
 else
   check "rc up brings container up" fail "(see $UP_OUT)"
@@ -146,19 +148,19 @@ else
 fi
 
 # Bind-mount check via /proc/mounts (mountpoint(1) not guaranteed inside image)
-if "$RC" exec "$CONTAINER_NAME" -- awk '$2 == "/home/agent/.claude/projects" { found=1; exit } END { exit !found }' /proc/mounts; then
+if msb exec "$CONTAINER_NAME" -- awk '$2 == "/home/agent/.claude/projects" { found=1; exit } END { exit !found }' /proc/mounts; then
   check "~/.claude/projects is a mountpoint inside container" pass
 else
   check "~/.claude/projects is a mountpoint inside container" fail
 fi
-if "$RC" exec "$CONTAINER_NAME" -- awk '$2 == "/home/agent/.claude/sessions" { found=1; exit } END { exit !found }' /proc/mounts; then
+if msb exec "$CONTAINER_NAME" -- awk '$2 == "/home/agent/.claude/sessions" { found=1; exit } END { exit !found }' /proc/mounts; then
   check "~/.claude/sessions is a mountpoint inside container" pass
 else
   check "~/.claude/sessions is a mountpoint inside container" fail
 fi
 
 # Symlink target check
-LINK_TARGET=$("$RC" exec "$CONTAINER_NAME" -- readlink /home/agent/.claude/projects/-workspace 2>/dev/null || true)
+LINK_TARGET=$(msb exec "$CONTAINER_NAME" -- readlink /home/agent/.claude/projects/-workspace 2>/dev/null || true)
 if [[ "$LINK_TARGET" == "$HOST_KEY" ]]; then
   check "-workspace symlink resolves to host project key" pass "$HOST_KEY"
 else
@@ -166,7 +168,7 @@ else
 fi
 
 # RC_HOST_PROJECT_KEY env propagated
-ENV_KEY=$("$RC" exec "$CONTAINER_NAME" -- printenv RC_HOST_PROJECT_KEY 2>/dev/null || true)
+ENV_KEY=$(msb exec "$CONTAINER_NAME" -- printenv RC_HOST_PROJECT_KEY 2>/dev/null || true)
 if [[ "$ENV_KEY" == "$HOST_KEY" ]]; then
   check "RC_HOST_PROJECT_KEY env set in container" pass
 else
@@ -175,7 +177,7 @@ fi
 
 # Write a session-like file from inside the container, via the -workspace symlink.
 # This simulates Claude Code writing a session keyed by the container's cwd (/workspace).
-"$RC" exec "$CONTAINER_NAME" -- sh -c \
+msb exec "$CONTAINER_NAME" -- sh -c \
   'echo "{\"type\":\"test\",\"msg\":\"rip-cage-dn2 persistence\"}" \
      > /home/agent/.claude/projects/-workspace/dn2-probe.jsonl' \
   >/dev/null 2>&1 \
@@ -195,7 +197,7 @@ fi
 # swallow-ok(rip-cage-ely4.10): the exit code is redundant -- the next line asserts the POST-CONDITION (the cage is gone from the fleet), which is the stronger claim.
 "$RC" destroy "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
-if "$RC" ls --output json | jq -e --arg n "$CONTAINER_NAME" '.[] | select(.name==$n)' >/dev/null 2>&1; then
+if cage_exists "$CONTAINER_NAME"; then
   check "rc destroy removes container" fail
 else
   check "rc destroy removes container" pass

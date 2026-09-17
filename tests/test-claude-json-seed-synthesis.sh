@@ -43,6 +43,8 @@ unset RC_CONFIG_GLOBAL
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/_cage-lookup-lib.sh
+source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 
@@ -159,8 +161,7 @@ HOME="$NP_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_
   RC_CAGE_CONF="$(cage_conf_for "$NP_WS")" \
   RIP_CAGE_EGRESS=off \
   "$RC" up "$NP_WS" --env-file "$NP_ENVFILE" </dev/null >"$NP_UP_OUT" 2>&1 || true
-NP_NAME=$("$RC" ls --output json | jq -r --arg ws "$(realpath "$NP_WS")" \
-  '.[] | select(.source_path==$ws) | .name' | head -1)
+NP_NAME=$(cage_name_for_source "$NP_WS")
 
 NP_LIVE=false
 if [[ -z "$NP_NAME" ]]; then
@@ -184,7 +185,7 @@ fi
 if [[ "$NP_LIVE" == "true" ]]; then
   echo ""
   echo "=== V1: seed synthesized when mount absent ==="
-  NP_SEED=$("$RC" exec "$NP_NAME" -- cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
+  NP_SEED=$(msb exec "$NP_NAME" -- cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
   if [[ -z "$NP_SEED" ]]; then
     fail "V1: /home/agent/.claude/.claude.json.seed missing or empty in non-possession cage"
   else
@@ -222,7 +223,7 @@ if [[ "$NP_LIVE" == "true" ]]; then
   echo ""
   echo "=== V2: synthesis never clobbers an existing seed ==="
   V2_SENTINEL='{"sentinel-vwka":"do-not-clobber","hasCompletedOnboarding":true}'
-  "$RC" exec "$NP_NAME" -- sh -c "printf '%s' '${V2_SENTINEL}' > /home/agent/.claude/.claude.json.seed"
+  msb exec "$NP_NAME" -- sh -c "printf '%s' '${V2_SENTINEL}' > /home/agent/.claude/.claude.json.seed"
   msb stop "$NP_NAME" >/dev/null 2>&1
   NP_RESUME_OUT="${NP_WS_ROOT}/np-resume.out"
   HOME="$NP_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_HOME" \
@@ -235,7 +236,7 @@ if [[ "$NP_LIVE" == "true" ]]; then
   if ! printf '%s\n' "$NP_RESUME_LOG" | grep -q '\[rip-cage\] pi '; then
     fail "V2: resume init sentinel absent — cannot trust post-resume seed state" "(see $NP_RESUME_OUT)"
   else
-    NP_SEED_AFTER=$("$RC" exec "$NP_NAME" -- cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
+    NP_SEED_AFTER=$(msb exec "$NP_NAME" -- cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
     if [[ "$NP_SEED_AFTER" == "$V2_SENTINEL" ]]; then
       pass "V2: pre-existing seed sentinel survived a second init run (resume) unchanged"
     else
@@ -262,9 +263,9 @@ if [[ "$NP_LIVE" == "true" ]]; then
   # `-rw-r--r-- agent agent`) — so the chown workaround is dropped, not
   # forced-ported.
   if msb exec "$NP_NAME" -- tee /tmp/wrapper-under-test.sh < "$WRAPPER_SRC" >/dev/null 2>&1; then
-    "$RC" exec "$NP_NAME" -- sed -i 's#^REAL_CLAUDE=/usr/bin/claude#REAL_CLAUDE=/bin/true#' /tmp/wrapper-under-test.sh
-    "$RC" exec "$NP_NAME" -- chmod +x /tmp/wrapper-under-test.sh
-    "$RC" exec "$NP_NAME" -- rm -rf /home/agent/.claude-sessions/vwka-v4-test
+    msb exec "$NP_NAME" -- sed -i 's#^REAL_CLAUDE=/usr/bin/claude#REAL_CLAUDE=/bin/true#' /tmp/wrapper-under-test.sh
+    msb exec "$NP_NAME" -- chmod +x /tmp/wrapper-under-test.sh
+    msb exec "$NP_NAME" -- rm -rf /home/agent/.claude-sessions/vwka-v4-test
     V4_OUT=$(msb exec -e CLAUDE_CONFIG_DIR=/home/agent/.claude-sessions/vwka-v4-test "$NP_NAME" -- /tmp/wrapper-under-test.sh --version 2>&1)
     V4_EXIT=$?
     if [[ $V4_EXIT -ne 0 ]]; then
@@ -277,8 +278,8 @@ if [[ "$NP_LIVE" == "true" ]]; then
 
     echo ""
     echo "=== V5: genuinely-broken case — WARNING still fires when no seed exists ==="
-    "$RC" exec "$NP_NAME" -- sh -c "mv /home/agent/.claude/.claude.json.seed /tmp/seed-moved-aside-vwka.json"
-    "$RC" exec "$NP_NAME" -- rm -rf /home/agent/.claude-sessions/vwka-v5-test
+    msb exec "$NP_NAME" -- sh -c "mv /home/agent/.claude/.claude.json.seed /tmp/seed-moved-aside-vwka.json"
+    msb exec "$NP_NAME" -- rm -rf /home/agent/.claude-sessions/vwka-v5-test
     V5_OUT=$(msb exec -e CLAUDE_CONFIG_DIR=/home/agent/.claude-sessions/vwka-v5-test "$NP_NAME" -- /tmp/wrapper-under-test.sh --version 2>&1)
     V5_EXIT=$?
     if [[ $V5_EXIT -ne 0 ]]; then
@@ -313,8 +314,7 @@ HOME="$PC_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_
   RC_CAGE_CONF="$(cage_conf_for "$PC_WS")" \
   RIP_CAGE_EGRESS=off \
   "$RC" up "$PC_WS" </dev/null >"$PC_UP_OUT" 2>&1 || true
-PC_NAME=$("$RC" ls --output json | jq -r --arg ws "$(realpath "$PC_WS")" \
-  '.[] | select(.source_path==$ws) | .name' | head -1)
+PC_NAME=$(cage_name_for_source "$PC_WS")
 
 PC_LIVE=false
 if [[ -z "$PC_NAME" ]]; then
@@ -337,7 +337,7 @@ fi
 if [[ "$PC_LIVE" == "true" ]]; then
   echo ""
   echo "=== V3: positive control — possession path still snapshots ==="
-  PC_SEED=$("$RC" exec "$PC_NAME" -- cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
+  PC_SEED=$(msb exec "$PC_NAME" -- cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
   if [[ "$PC_SEED" == "$PC_SENTINEL" ]]; then
     pass "V3: possession-posture seed is byte-identical to the live ~/.claude.json mount"
   else
@@ -374,8 +374,7 @@ HOME="$NN_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_
   RC_CAGE_CONF="$(cage_conf_for "$NN_WS")" \
   RIP_CAGE_EGRESS=off \
   "$RC" up "$NN_WS" --env-file "$NN_ENVFILE" </dev/null >"$NN_UP_OUT" 2>&1 || true
-NN_NAME=$("$RC" ls --output json | jq -r --arg ws "$(realpath "$NN_WS")" \
-  '.[] | select(.source_path==$ws) | .name' | head -1)
+NN_NAME=$(cage_name_for_source "$NN_WS")
 
 NN_LIVE=false
 if [[ -z "$NN_NAME" ]]; then
@@ -397,7 +396,7 @@ fi
 if [[ "$NN_LIVE" == "true" ]]; then
   echo ""
   echo "=== V6: none + host ~/.claude.json present -> mount carried, snapshot NOT synthesized ==="
-  NN_SEED=$("$RC" exec "$NN_NAME" -- cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
+  NN_SEED=$(msb exec "$NN_NAME" -- cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
   if [[ "$NN_SEED" == "$NN_SENTINEL" ]]; then
     pass "V6: non-possession seed is byte-identical to the host ~/.claude.json fixture (real snapshot, not the synthesized fallback)"
   else
@@ -411,7 +410,7 @@ if [[ "$NN_LIVE" == "true" ]]; then
 
   echo ""
   echo "=== V6b: the carried ~/.claude.json mount is actually read-only in-cage ==="
-  NN_WRITE_OUT=$("$RC" exec "$NN_NAME" -- sh -c 'echo blocked >> /home/agent/.claude.json' 2>&1)
+  NN_WRITE_OUT=$(msb exec "$NN_NAME" -- sh -c 'echo blocked >> /home/agent/.claude.json' 2>&1)
   NN_WRITE_EXIT=$?
   if [[ $NN_WRITE_EXIT -ne 0 ]] && echo "$NN_WRITE_OUT" | grep -qi 'read-only\|permission denied'; then
     pass "V6b: write to /home/agent/.claude.json in-cage fails (read-only mount, non-possession posture)"
@@ -419,7 +418,7 @@ if [[ "$NN_LIVE" == "true" ]]; then
     fail "V6b: write to /home/agent/.claude.json in-cage unexpectedly succeeded" "exit=$NN_WRITE_EXIT out=$NN_WRITE_OUT"
   fi
 
-  NN_CREDS=$("$RC" exec "$NN_NAME" -- sh -c 'test -f /home/agent/.claude/.credentials.json && echo present || echo absent' 2>/dev/null || true)
+  NN_CREDS=$(msb exec "$NN_NAME" -- sh -c 'test -f /home/agent/.claude/.credentials.json && echo present || echo absent' 2>/dev/null || true)
   if [[ "$NN_CREDS" == "absent" ]]; then
     pass "V6: .credentials.json still absent in-cage under none (positive control)"
   else

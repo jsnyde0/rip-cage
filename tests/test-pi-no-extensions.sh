@@ -45,6 +45,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/_cage-lookup-lib.sh
+source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
 RC="${SCRIPT_DIR}/../rc"
 FAILURES=0
 TOTAL=0
@@ -106,7 +108,7 @@ fi
 # ---------------------------------------------------------------------------
 CONTAINER="${RC_TEST_CONTAINER:-}"
 if [[ -z "$CONTAINER" ]]; then
-  CONTAINER=$("$RC" ls --output json | jq -r '.[] | select(.status=="running") | .name' | head -1)
+  CONTAINER=$(cage_names_running | head -1)
 fi
 if [[ -z "$CONTAINER" ]]; then
   echo "SKIP: no running rip-cage container found; pass RC_TEST_CONTAINER=<name> or start one with rc up"
@@ -118,7 +120,7 @@ echo ""
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-cexec() { "$RC" exec "$CONTAINER" -- "$@"; }
+cexec() { msb exec "$CONTAINER" -- "$@"; }
 
 # ---------------------------------------------------------------------------
 # Guard: skip if pi not installed in the container

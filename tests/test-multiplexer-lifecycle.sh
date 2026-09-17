@@ -36,6 +36,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=tests/_cage-lookup-lib.sh
+source "${SCRIPT_DIR}/_cage-lookup-lib.sh"
 # shellcheck source=tests/_agent-model-lib.sh
 source "${SCRIPT_DIR}/_agent-model-lib.sh"
 RC="${SCRIPT_DIR}/../rc"
@@ -480,7 +482,7 @@ _create_workspace "$NONE_WS" "none"
 RC_IMAGE="$MUX_COMBINED_IMAGE" "$RC" up "$NONE_WS" </dev/null >/tmp/rc-mux-none-up.out 2>&1 || true
 _mux_track_cage "$NONE_CAGE"
 NONE_STARTED=false
-if "$RC" ls --output json | jq -e --arg n "$NONE_CAGE" '.[] | select(.name==$n)' >/dev/null 2>&1; then
+if cage_exists "$NONE_CAGE"; then
   NONE_STARTED=true
   pass "(none) cage started: ${NONE_CAGE}"
 else
@@ -494,7 +496,7 @@ _create_workspace "$TMUX_WS" "tmux"
 RC_IMAGE="$MUX_COMBINED_IMAGE" "$RC" up "$TMUX_WS" </dev/null >/tmp/rc-mux-tmux-up.out 2>&1 || true
 _mux_track_cage "$TMUX_CAGE"
 TMUX_STARTED=false
-if "$RC" ls --output json | jq -e --arg n "$TMUX_CAGE" '.[] | select(.name==$n)' >/dev/null 2>&1; then
+if cage_exists "$TMUX_CAGE"; then
   TMUX_STARTED=true
   pass "(tmux) cage started: ${TMUX_CAGE}"
 else
@@ -508,7 +510,7 @@ _create_workspace "$HERDR_WS" "herdr"
 RC_IMAGE="$MUX_COMBINED_IMAGE" "$RC" up "$HERDR_WS" </dev/null >/tmp/rc-mux-herdr-up.out 2>&1 || true
 _mux_track_cage "$HERDR_CAGE"
 HERDR_STARTED=false
-if "$RC" ls --output json | jq -e --arg n "$HERDR_CAGE" '.[] | select(.name==$n)' >/dev/null 2>&1; then
+if cage_exists "$HERDR_CAGE"; then
   HERDR_STARTED=true
   pass "(herdr) cage started: ${HERDR_CAGE}"
 else
@@ -526,7 +528,7 @@ if [[ "$NONE_STARTED" == "true" ]]; then
   # Enumerate processes in the none cage.
   # EXPECTED process set under none: init (sleep infinity), sh/bash (init runner),
   # zsh/bash shells, and short-lived commands. NOT expected: tmux server, herdr server.
-  NONE_PROCS=$("$RC" exec "$NONE_CAGE" -- ps -eo comm 2>/dev/null || true)
+  NONE_PROCS=$(msb exec "$NONE_CAGE" -- ps -eo comm 2>/dev/null || true)
   echo "  Processes in none cage (ps -eo comm):"
   while IFS= read -r _proc; do echo "    $_proc"; done <<< "$NONE_PROCS"
 
@@ -560,7 +562,7 @@ if [[ "$NONE_STARTED" == "true" ]]; then
   SENT_A="/tmp/mux-lifecycle-sentinel-a-$$"
   echo "  Testing two independent rc exec sessions..."
   # Exec A: write sentinel
-  "$RC" exec "$NONE_CAGE" -- sh -c "echo mux-sentinel-ok > ${SENT_A}" 2>/dev/null
+  msb exec "$NONE_CAGE" -- sh -c "echo mux-sentinel-ok > ${SENT_A}" 2>/dev/null
   RC_EXEC_A_EXIT=$?
   if [[ $RC_EXEC_A_EXIT -eq 0 ]]; then
     pass "(a) none: first rc exec (sentinel write) exited 0"
@@ -569,7 +571,7 @@ if [[ "$NONE_STARTED" == "true" ]]; then
   fi
 
   # Exec B: read sentinel (independent from A)
-  SENT_A_CONTENT=$("$RC" exec "$NONE_CAGE" -- cat "${SENT_A}" 2>/dev/null || true)
+  SENT_A_CONTENT=$(msb exec "$NONE_CAGE" -- cat "${SENT_A}" 2>/dev/null || true)
   if [[ "$SENT_A_CONTENT" == "mux-sentinel-ok" ]]; then
     pass "(a) none: second exec session reads sentinel written by first (independent)"
   else
@@ -582,15 +584,15 @@ if [[ "$NONE_STARTED" == "true" ]]; then
   # We use an rc exec in the background that writes a second sentinel file after a sleep,
   # then verify it completes (the container is still running and no error).
   SENT_B="/tmp/mux-lifecycle-sentinel-b-$$"
-  "$RC" exec "$NONE_CAGE" -- sh -c "sleep 2; echo alive-after-close > ${SENT_B}" &
+  msb exec "$NONE_CAGE" -- sh -c "sleep 2; echo alive-after-close > ${SENT_B}" &
   BG_PID=$!
 
   # Exec A (short-lived) completes immediately:
-  "$RC" exec "$NONE_CAGE" -- sh -c "echo exec-a-done" >/dev/null 2>&1 || true
+  msb exec "$NONE_CAGE" -- sh -c "echo exec-a-done" >/dev/null 2>&1 || true
 
   # Wait for exec B to complete
   wait "$BG_PID" 2>/dev/null || true
-  SENT_B_CONTENT=$("$RC" exec "$NONE_CAGE" -- cat "${SENT_B}" 2>/dev/null || true)
+  SENT_B_CONTENT=$(msb exec "$NONE_CAGE" -- cat "${SENT_B}" 2>/dev/null || true)
   if [[ "$SENT_B_CONTENT" == "alive-after-close" ]]; then
     pass "(a) none: closing exec-A leaves exec-B running (container alive)"
   else
@@ -599,7 +601,7 @@ if [[ "$NONE_STARTED" == "true" ]]; then
   fi
 
   # Cleanup sentinels
-  "$RC" exec "$NONE_CAGE" -- rm -f "${SENT_A}" "${SENT_B}" 2>/dev/null || true
+  msb exec "$NONE_CAGE" -- rm -f "${SENT_A}" "${SENT_B}" 2>/dev/null || true
 
 else
   fail "(a) none: skipping assertions — none cage did not start"
@@ -623,7 +625,7 @@ if [[ "$TMUX_STARTED" == "true" ]]; then
 
   # tmux server is running in the cage.
   # tmux server appears as "tmux: server" in ps -eo comm output.
-  TMUX_PROCS=$("$RC" exec "$TMUX_CAGE" -- ps -eo comm 2>/dev/null || true)
+  TMUX_PROCS=$(msb exec "$TMUX_CAGE" -- ps -eo comm 2>/dev/null || true)
   if echo "$TMUX_PROCS" | grep -qE '^tmux'; then
     pass "(b) tmux: tmux server process is running in cage"
   else
@@ -631,7 +633,7 @@ if [[ "$TMUX_STARTED" == "true" ]]; then
   fi
 
   # 'rip-cage' session exists (created by init-rip-cage.sh tmux branch)
-  TMUX_SESSIONS=$("$RC" exec "$TMUX_CAGE" -- tmux list-sessions 2>/dev/null || true)
+  TMUX_SESSIONS=$(msb exec "$TMUX_CAGE" -- tmux list-sessions 2>/dev/null || true)
   if echo "$TMUX_SESSIONS" | grep -q 'rip-cage'; then
     pass "(b) tmux: 'rip-cage' session exists"
   else
@@ -641,12 +643,12 @@ if [[ "$TMUX_STARTED" == "true" ]]; then
   # Detach/reattach cycle: create a fresh test session, write a sentinel into it,
   # kill the client (simulate detach), then read the sentinel to confirm the session persisted.
   TMUX_TEST_SESSION="mux-lifecycle-reattach-$$"
-  "$RC" exec "$TMUX_CAGE" -- tmux kill-session -t "$TMUX_TEST_SESSION" 2>/dev/null || true
-  "$RC" exec "$TMUX_CAGE" -- tmux new-session -d -s "$TMUX_TEST_SESSION" 2>/dev/null
+  msb exec "$TMUX_CAGE" -- tmux kill-session -t "$TMUX_TEST_SESSION" 2>/dev/null || true
+  msb exec "$TMUX_CAGE" -- tmux new-session -d -s "$TMUX_TEST_SESSION" 2>/dev/null
 
   SENT_REATTACH="/tmp/mux-lifecycle-reattach-$$"
   # Write sentinel from inside the tmux session (send-keys)
-  "$RC" exec "$TMUX_CAGE" -- tmux send-keys -t "$TMUX_TEST_SESSION" \
+  msb exec "$TMUX_CAGE" -- tmux send-keys -t "$TMUX_TEST_SESSION" \
     "echo reattach-ok > ${SENT_REATTACH}; echo DONE_$$" Enter 2>/dev/null
 
   # Poll for sentinel (max 10s)
@@ -655,7 +657,7 @@ if [[ "$TMUX_STARTED" == "true" ]]; then
   while [[ $_waited -lt 10 ]]; do
     sleep 1
     _waited=$((_waited + 1))
-    _pane=$("$RC" exec "$TMUX_CAGE" -- tmux capture-pane -p -t "$TMUX_TEST_SESSION" 2>/dev/null || true)
+    _pane=$(msb exec "$TMUX_CAGE" -- tmux capture-pane -p -t "$TMUX_TEST_SESSION" 2>/dev/null || true)
     if echo "$_pane" | grep -q "DONE_$$"; then
       _reattach_ok=true
       break
@@ -669,7 +671,7 @@ if [[ "$TMUX_STARTED" == "true" ]]; then
   fi
 
   # Session still exists (simulate detach: session persists even without a client)
-  TMUX_SESSIONS_AFTER=$("$RC" exec "$TMUX_CAGE" -- tmux list-sessions 2>/dev/null || true)
+  TMUX_SESSIONS_AFTER=$(msb exec "$TMUX_CAGE" -- tmux list-sessions 2>/dev/null || true)
   if echo "$TMUX_SESSIONS_AFTER" | grep -q "$TMUX_TEST_SESSION"; then
     pass "(b) tmux: detach/reattach — session '${TMUX_TEST_SESSION}' persists (detach-safe)"
   else
@@ -678,7 +680,7 @@ if [[ "$TMUX_STARTED" == "true" ]]; then
   fi
 
   # Reattach: read the sentinel from outside tmux (rc exec) — session state survived
-  SENT_REATTACH_CONTENT=$("$RC" exec "$TMUX_CAGE" -- cat "${SENT_REATTACH}" 2>/dev/null || true)
+  SENT_REATTACH_CONTENT=$(msb exec "$TMUX_CAGE" -- cat "${SENT_REATTACH}" 2>/dev/null || true)
   if [[ "$SENT_REATTACH_CONTENT" == "reattach-ok" ]]; then
     pass "(b) tmux: reattach — sentinel content correct (session state persisted through detach)"
   else
@@ -687,21 +689,21 @@ if [[ "$TMUX_STARTED" == "true" ]]; then
   fi
 
   # Cleanup
-  "$RC" exec "$TMUX_CAGE" -- tmux kill-session -t "$TMUX_TEST_SESSION" 2>/dev/null || true
-  "$RC" exec "$TMUX_CAGE" -- rm -f "${SENT_REATTACH}" 2>/dev/null || true
+  msb exec "$TMUX_CAGE" -- tmux kill-session -t "$TMUX_TEST_SESSION" 2>/dev/null || true
+  msb exec "$TMUX_CAGE" -- rm -f "${SENT_REATTACH}" 2>/dev/null || true
 
   # rip-cage-61al.3: registry-dispatch probe — verify init dispatched through the baked hook.
   # The start hook at /etc/rip-cage/multiplexers/tmux/start must exist in the cage (baked at build).
   echo ""
   echo "--- (b) rip-cage-61al.3: registry-dispatch probe (tmux-from-examples) ---"
-  TMUX_HOOK_START=$("$RC" exec "$TMUX_CAGE" -- sh -c 'test -f /etc/rip-cage/multiplexers/tmux/start && echo "present" || echo "absent"' 2>/dev/null || echo "absent")
+  TMUX_HOOK_START=$(msb exec "$TMUX_CAGE" -- sh -c 'test -f /etc/rip-cage/multiplexers/tmux/start && echo "present" || echo "absent"' 2>/dev/null || echo "absent")
   if [[ "$TMUX_HOOK_START" == "present" ]]; then
     pass "(b-61al3) tmux start hook baked in registry: /etc/rip-cage/multiplexers/tmux/start"
   else
     fail "(b-61al3) tmux start hook NOT found in registry — combined-mux fixture may not have baked it"
   fi
 
-  TMUX_HOOK_ATTACH=$("$RC" exec "$TMUX_CAGE" -- sh -c 'test -f /etc/rip-cage/multiplexers/tmux/attach && echo "present" || echo "absent"' 2>/dev/null || echo "absent")
+  TMUX_HOOK_ATTACH=$(msb exec "$TMUX_CAGE" -- sh -c 'test -f /etc/rip-cage/multiplexers/tmux/attach && echo "present" || echo "absent"' 2>/dev/null || echo "absent")
   if [[ "$TMUX_HOOK_ATTACH" == "present" ]]; then
     pass "(b-61al3) tmux attach hook baked in registry: /etc/rip-cage/multiplexers/tmux/attach"
   else
@@ -716,7 +718,7 @@ if [[ "$TMUX_STARTED" == "true" ]]; then
   # The attach hook (tmux attach-session) exits non-zero in a non-TTY context; that's expected.
   # What we're probing is: (1) the hook file is readable, (2) the hook runs without rc context.
   # A tmux "no terminal" / "not a terminal" failure is acceptable (the hook requires a TTY).
-  TMUX_HOOK_CONTENT=$("$RC" exec "$TMUX_CAGE" -- cat /etc/rip-cage/multiplexers/tmux/attach 2>/dev/null || echo "")
+  TMUX_HOOK_CONTENT=$(msb exec "$TMUX_CAGE" -- cat /etc/rip-cage/multiplexers/tmux/attach 2>/dev/null || echo "")
   if [[ -n "$TMUX_HOOK_CONTENT" ]]; then
     pass "(b-61al3) self-containment: attach hook file readable, content: '${TMUX_HOOK_CONTENT}'"
   else
@@ -726,7 +728,7 @@ if [[ "$TMUX_STARTED" == "true" ]]; then
   # Verify the hook file runs via 'sh' without calling any rc functions.
   # We source rc in a subshell and unset all rc-internal functions, then run the hook.
   # If the hook references an undefined rc function, it would error.
-  SELFCONTAIN_PROBE_OUT=$("$RC" exec "$TMUX_CAGE" -- sh -c \
+  SELFCONTAIN_PROBE_OUT=$(msb exec "$TMUX_CAGE" -- sh -c \
     'unset -f _rc_mux_resolve_hook_path 2>/dev/null; unset -f _up_attach_tmux 2>/dev/null; sh /etc/rip-cage/multiplexers/tmux/attach 2>&1 || true' \
     2>/dev/null || echo "exec_failed")
   # If the hook tried to call an undefined rc function, it would output "command not found"
@@ -757,7 +759,7 @@ if [[ "$HERDR_STARTED" == "true" ]]; then
   fi
 
   # herdr binary is present
-  HERDR_WHICH=$("$RC" exec "$HERDR_CAGE" -- which herdr 2>/dev/null || true)
+  HERDR_WHICH=$(msb exec "$HERDR_CAGE" -- which herdr 2>/dev/null || true)
   if [[ -n "$HERDR_WHICH" ]]; then
     pass "(herdr) herdr binary is on PATH: ${HERDR_WHICH}"
   else
@@ -769,7 +771,7 @@ if [[ "$HERDR_STARTED" == "true" ]]; then
   _herdr_server_up=false
   _herdr_wait=0
   while [[ $_herdr_wait -lt 10 ]]; do
-    _herdr_procs=$("$RC" exec "$HERDR_CAGE" -- ps -eo comm 2>/dev/null || true)
+    _herdr_procs=$(msb exec "$HERDR_CAGE" -- ps -eo comm 2>/dev/null || true)
     if echo "$_herdr_procs" | grep -qE '^herdr$'; then
       _herdr_server_up=true
       break
@@ -786,14 +788,14 @@ if [[ "$HERDR_STARTED" == "true" ]]; then
   fi
 
   # rip-cage-61al.3: registry probe — verify herdr hooks are baked in the registry.
-  HERDR_HOOK_START=$("$RC" exec "$HERDR_CAGE" -- sh -c 'test -f /etc/rip-cage/multiplexers/herdr/start && echo "present" || echo "absent"' 2>/dev/null || echo "absent")
+  HERDR_HOOK_START=$(msb exec "$HERDR_CAGE" -- sh -c 'test -f /etc/rip-cage/multiplexers/herdr/start && echo "present" || echo "absent"' 2>/dev/null || echo "absent")
   if [[ "$HERDR_HOOK_START" == "present" ]]; then
     pass "(herdr-61al3) herdr start hook baked in registry: /etc/rip-cage/multiplexers/herdr/start"
   else
     fail "(herdr-61al3) herdr start hook NOT found in registry — combined-mux fixture may not have baked it"
   fi
 
-  HERDR_HOOK_ATTACH=$("$RC" exec "$HERDR_CAGE" -- sh -c 'test -f /etc/rip-cage/multiplexers/herdr/attach && echo "present" || echo "absent"' 2>/dev/null || echo "absent")
+  HERDR_HOOK_ATTACH=$(msb exec "$HERDR_CAGE" -- sh -c 'test -f /etc/rip-cage/multiplexers/herdr/attach && echo "present" || echo "absent"' 2>/dev/null || echo "absent")
   if [[ "$HERDR_HOOK_ATTACH" == "present" ]]; then
     pass "(herdr-61al3) herdr attach hook baked in registry: /etc/rip-cage/multiplexers/herdr/attach"
   else
@@ -803,18 +805,18 @@ if [[ "$HERDR_STARTED" == "true" ]]; then
   # herdr session reachable: check that the herdr unix socket exists
   # herdr server creates ~/.config/herdr/herdr.sock by default
   # shellcheck disable=SC2016  # single-quoted: must expand INSIDE the cage's guest shell (via rc exec/msb exec), not the host shell
-  HERDR_SOCK_EXISTS=$("$RC" exec "$HERDR_CAGE" -- bash -c \
+  HERDR_SOCK_EXISTS=$(msb exec "$HERDR_CAGE" -- bash -c \
     'test -S "${HOME}/.config/herdr/herdr.sock" && echo yes || echo no' 2>/dev/null || echo "no")
   if [[ "$HERDR_SOCK_EXISTS" == "yes" ]]; then
     pass "(herdr) herdr unix socket exists (server reachable)"
   else
     # Check if socket is at an alternate location
-    HERDR_SOCK_ALT=$("$RC" exec "$HERDR_CAGE" -- find /home/agent -name "herdr.sock" 2>/dev/null | head -1)
+    HERDR_SOCK_ALT=$(msb exec "$HERDR_CAGE" -- find /home/agent -name "herdr.sock" 2>/dev/null | head -1)
     if [[ -n "$HERDR_SOCK_ALT" ]]; then
       pass "(herdr) herdr unix socket found at alternate location: ${HERDR_SOCK_ALT}"
     else
       # Log the herdr startup output for diagnostics
-      HERDR_LOG=$("$RC" exec "$HERDR_CAGE" -- cat /tmp/rip-cage-mux-herdr.log 2>/dev/null || true)
+      HERDR_LOG=$(msb exec "$HERDR_CAGE" -- cat /tmp/rip-cage-mux-herdr.log 2>/dev/null || true)
       fail "(herdr) herdr unix socket NOT found at ~/.config/herdr/herdr.sock or alternate paths" \
         "herdr startup log: ${HERDR_LOG:-<empty>}"
     fi
@@ -848,7 +850,7 @@ if [[ "$HERDR_STARTED" == "true" ]]; then
   echo "--- (herdr) status-view render assertion (rip-cage-w621.9 / ADR-006 D8) ---"
 
   # Check openrouter auth in the cage (pi's auth.json, mounted by rc up per ADR-019 D5)
-  _HERDR_OR_KEY=$("$RC" exec "$HERDR_CAGE" -- python3 -c "
+  _HERDR_OR_KEY=$(msb exec "$HERDR_CAGE" -- python3 -c "
 import json, sys
 try:
     with open('/home/agent/.pi/agent/auth.json') as f:
@@ -869,7 +871,7 @@ except Exception:
     # Drive a brief pi agent THROUGH the herdr surface.
     # The multi-step prompt forces >=3 tool calls so the LLM+tool round-trip
     # takes enough wall time (5-30s) for the polling window to catch working state.
-    _HERDR_START_OUT=$("$RC" exec "$HERDR_CAGE" -- herdr agent start \
+    _HERDR_START_OUT=$(msb exec "$HERDR_CAGE" -- herdr agent start \
       status-view-probe \
       --cwd /workspace \
       -- pi \
@@ -890,7 +892,7 @@ except Exception:
     _HERDR_LAST_LIST=""
 
     while [[ $_HERDR_POLL_ELAPSED -lt $_HERDR_POLL_TIMEOUT ]]; do
-      _HERDR_LAST_LIST=$("$RC" exec "$HERDR_CAGE" -- herdr agent list 2>/dev/null || echo '{}')
+      _HERDR_LAST_LIST=$(msb exec "$HERDR_CAGE" -- herdr agent list 2>/dev/null || echo '{}')
 
       # Extract agent_status and screen_detection_skipped from the JSON array
       _HERDR_STATUS_CHECK=$(echo "$_HERDR_LAST_LIST" | python3 -c "
@@ -1057,7 +1059,7 @@ else
   # to (load-bearing when DCGHP_IMAGE_TAG overrides away from rip-cage:latest).
   RC_IMAGE="$DCG_HERDR_PI_IMAGE" "$RC" up "$DCG_HERDR_PI_WS" </dev/null >/tmp/rc-l72i7-dcghp-up.out 2>&1 || true
   _mux_track_cage "$DCG_HERDR_PI_CAGE"
-  if "$RC" ls --output json | jq -e --arg n "$DCG_HERDR_PI_CAGE" '.[] | select(.name==$n)' >/dev/null 2>&1; then
+  if cage_exists "$DCG_HERDR_PI_CAGE"; then
     _L72I7_CAGE_STARTED=true
     pass "(l72i7) DCG+herdr+pi cage started: ${DCG_HERDR_PI_CAGE}"
   else
@@ -1090,7 +1092,7 @@ if [[ "$_L72I7_CAGE_STARTED" == "true" ]]; then
 
   # (2a) dcg-guard binary + config.toml
   _L72I7_DCG_FLOOR=0
-  "$RC" exec "$DCG_HERDR_PI_CAGE" -- sh -c \
+  msb exec "$DCG_HERDR_PI_CAGE" -- sh -c \
     'test -x /usr/local/lib/rip-cage/bin/dcg-guard && test -f /usr/local/lib/rip-cage/dcg/config.toml' \
     2>/dev/null || _L72I7_DCG_FLOOR=$?
   if [[ $_L72I7_DCG_FLOOR -eq 0 ]]; then
@@ -1100,7 +1102,7 @@ if [[ "$_L72I7_CAGE_STARTED" == "true" ]]; then
   fi
 
   # (2b) /etc/rip-cage/pi/dcg-gate.ts owned by root
-  _L72I7_GATE_OWNER=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- sh -c \
+  _L72I7_GATE_OWNER=$(msb exec "$DCG_HERDR_PI_CAGE" -- sh -c \
     "stat -c '%U' /etc/rip-cage/pi/dcg-gate.ts 2>/dev/null || echo absent")
   echo "  dcg-gate.ts owner: ${_L72I7_GATE_OWNER}"
   if [[ "$_L72I7_GATE_OWNER" == "root" ]]; then
@@ -1110,7 +1112,7 @@ if [[ "$_L72I7_CAGE_STARTED" == "true" ]]; then
   fi
 
   # (2c) /usr/local/bin/pi owned by root
-  _L72I7_PI_OWNER=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- sh -c \
+  _L72I7_PI_OWNER=$(msb exec "$DCG_HERDR_PI_CAGE" -- sh -c \
     "stat -c '%U' /usr/local/bin/pi 2>/dev/null || echo absent")
   echo "  pi shim owner: ${_L72I7_PI_OWNER}"
   if [[ "$_L72I7_PI_OWNER" == "root" ]]; then
@@ -1122,7 +1124,7 @@ if [[ "$_L72I7_CAGE_STARTED" == "true" ]]; then
   # (2d) pi shim ASSEMBLED_ARGS: -e dcg-gate.ts present, --no-extensions ABSENT
   # (OPEN default, ADR-027 D1, FIRM — rip-cage-p35a.1). Decode the pi shim
   # (direct grep) to inspect ASSEMBLED_ARGS inline.
-  _L72I7_PI_ARGS=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- sh -c \
+  _L72I7_PI_ARGS=$(msb exec "$DCG_HERDR_PI_CAGE" -- sh -c \
     "grep 'ASSEMBLED_ARGS=' /usr/local/bin/pi 2>/dev/null || echo 'NOT_FOUND'")
   echo "  pi shim ASSEMBLED_ARGS line: ${_L72I7_PI_ARGS}"
   # Check the dcg-gate guard extension is declared. The shim bakes args as
@@ -1151,8 +1153,8 @@ if [[ "$_L72I7_CAGE_STARTED" == "true" ]]; then
   # clause). Positive control (D1) proves the guard ran and is responsive;
   # D2 proves the destructive command is actually blocked.
   _L72I7_DCG_GUARD="/usr/local/lib/rip-cage/bin/dcg-guard"
-  if "$RC" exec "$DCG_HERDR_PI_CAGE" -- test -x "$_L72I7_DCG_GUARD" 2>/dev/null; then
-    _L72I7_SAFE_OUT=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- sh -c \
+  if msb exec "$DCG_HERDR_PI_CAGE" -- test -x "$_L72I7_DCG_GUARD" 2>/dev/null; then
+    _L72I7_SAFE_OUT=$(msb exec "$DCG_HERDR_PI_CAGE" -- sh -c \
       "printf '{\"tool_name\":\"bash\",\"tool_input\":{\"command\":\"echo hello\"}}' | ${_L72I7_DCG_GUARD} 2>/dev/null || true")
     if echo "$_L72I7_SAFE_OUT" | grep -qE '"permissionDecision".*"deny"'; then
       fail "(l72i7/2e-a) POSITIVE CONTROL FAILED — safe command 'echo hello' was DENIED by dcg-guard (over-blocking)"
@@ -1160,7 +1162,7 @@ if [[ "$_L72I7_CAGE_STARTED" == "true" ]]; then
       pass "(l72i7/2e-a) POSITIVE CONTROL — safe command 'echo hello' is ALLOWED (guard ran and is responsive)"
     fi
 
-    _L72I7_DENY_OUT=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- sh -c \
+    _L72I7_DENY_OUT=$(msb exec "$DCG_HERDR_PI_CAGE" -- sh -c \
       "printf '{\"tool_name\":\"bash\",\"tool_input\":{\"command\":\"rm -rf /\"}}' | ${_L72I7_DCG_GUARD} 2>/dev/null || true")
     if echo "$_L72I7_DENY_OUT" | grep -qE '"permissionDecision".*"deny"'; then
       pass "(l72i7/2e-b) EFFECT — destructive 'rm -rf /' is DENIED by dcg-guard (open posture did not disarm command-guarding)"
@@ -1199,7 +1201,7 @@ if [[ "$_L72I7_CAGE_STARTED" == "true" ]]; then
   echo "--- (l72i7) Assertion (4): herdr integration install/status parity for pi (rip-cage-fwp3, headless) ---"
 
   # (4a) extensions/ directory exists and is agent-writable (the fix)
-  _L72I7_PI_EXT_DIR_STAT=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- sh -c \
+  _L72I7_PI_EXT_DIR_STAT=$(msb exec "$DCG_HERDR_PI_CAGE" -- sh -c \
     "stat -c '%U:%a' /home/agent/.pi/agent/extensions 2>/dev/null || echo absent")
   echo "  /home/agent/.pi/agent/extensions owner:mode = ${_L72I7_PI_EXT_DIR_STAT}"
   if [[ "$_L72I7_PI_EXT_DIR_STAT" == agent:* ]]; then
@@ -1211,7 +1213,7 @@ if [[ "$_L72I7_CAGE_STARTED" == "true" ]]; then
   # (4b) herdr integration status shows pi installed, at parity with claude
   # (this is the exact roster the smoketest observed as "available but not
   # installed" for pi while claude showed installed).
-  _L72I7_HERDR_STATUS=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- herdr integration status 2>&1 || true)
+  _L72I7_HERDR_STATUS=$(msb exec "$DCG_HERDR_PI_CAGE" -- herdr integration status 2>&1 || true)
   echo "  herdr integration status:"
   echo "$_L72I7_HERDR_STATUS" | while IFS= read -r _l72i7_status_line; do echo "    $_l72i7_status_line"; done
 
@@ -1229,7 +1231,7 @@ if [[ "$_L72I7_CAGE_STARTED" == "true" ]]; then
 
   # (4c) 'herdr integration install pi' run directly succeeds and the
   # "extension directory not found" error is gone (the exact smoketest symptom).
-  _L72I7_INSTALL_OUT=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- herdr integration install pi 2>&1)
+  _L72I7_INSTALL_OUT=$(msb exec "$DCG_HERDR_PI_CAGE" -- herdr integration install pi 2>&1)
   _L72I7_INSTALL_RC=$?
   echo "  herdr integration install pi (rc=${_L72I7_INSTALL_RC}): ${_L72I7_INSTALL_OUT}"
   if [[ "$_L72I7_INSTALL_RC" -eq 0 ]]; then
@@ -1249,7 +1251,7 @@ if [[ "$_L72I7_CAGE_STARTED" == "true" ]]; then
   # (1) + (3): auth-gated (require openrouter API key for pi to run)
   echo ""
   echo "--- (l72i7) Checking openrouter auth for assertions (1) + (3) ---"
-  _L72I7_OR_KEY=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- python3 -c "
+  _L72I7_OR_KEY=$(msb exec "$DCG_HERDR_PI_CAGE" -- python3 -c "
 import json, sys
 try:
     with open('/home/agent/.pi/agent/auth.json') as f:
@@ -1286,9 +1288,9 @@ except Exception:
     # module-load time (synchronous, before any tool call). Under the OPEN default
     # (no --no-extensions in the assembled shim), pi auto-discovers this extension
     # from its writable extensions/ dir → marker MUST appear when pi starts.
-    "$RC" exec "$DCG_HERDR_PI_CAGE" -- sh -c \
+    msb exec "$DCG_HERDR_PI_CAGE" -- sh -c \
       "mkdir -p '${_L72I7_CANARY_DIR}'" 2>/dev/null || true
-    "$RC" exec "$DCG_HERDR_PI_CAGE" -- sh -c \
+    msb exec "$DCG_HERDR_PI_CAGE" -- sh -c \
       "cat > '${_L72I7_CANARY_TS}'" <<'CANARY_EOF'
 // l72i7 canary extension — writes marker at load time (NOT a real tool)
 // If pi loads this extension via auto-discovery, the marker file appears.
@@ -1300,7 +1302,7 @@ try {
   fs.writeFileSync("/tmp/l72i7-canary-loaded", "l72i7-canary-was-loaded\n");
 } catch (_e) {}
 CANARY_EOF
-    _L72I7_CANARY_PLACED=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- sh -c \
+    _L72I7_CANARY_PLACED=$(msb exec "$DCG_HERDR_PI_CAGE" -- sh -c \
       "test -f '${_L72I7_CANARY_TS}' && echo yes || echo no" 2>/dev/null || echo "no")
     if [[ "$_L72I7_CANARY_PLACED" == "yes" ]]; then
       pass "(l72i7/3-setup) canary extension placed at ${_L72I7_CANARY_TS} (in pi auto-discovery path)"
@@ -1323,7 +1325,7 @@ CANARY_EOF
 
     # (1a) herdr-agent-state.ts present in cage (installed by herdr-pi fragment)
     _L72I7_HERDR_EXT_PATH="/etc/rip-cage/pi/herdr-ext/herdr-agent-state.ts"
-    _L72I7_HERDR_EXT_EXISTS=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- sh -c \
+    _L72I7_HERDR_EXT_EXISTS=$(msb exec "$DCG_HERDR_PI_CAGE" -- sh -c \
       "test -f '${_L72I7_HERDR_EXT_PATH}' && echo yes || echo no" 2>/dev/null || echo "no")
     echo "  herdr-agent-state.ts present: ${_L72I7_HERDR_EXT_EXISTS}"
     if [[ "$_L72I7_HERDR_EXT_EXISTS" == "yes" ]]; then
@@ -1333,7 +1335,7 @@ CANARY_EOF
     fi
 
     # (1b) pi shim ASSEMBLED_ARGS contains -e herdr-agent-state.ts
-    _L72I7_HERDR_IN_ARGS=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- sh -c \
+    _L72I7_HERDR_IN_ARGS=$(msb exec "$DCG_HERDR_PI_CAGE" -- sh -c \
       "grep -c 'herdr-agent-state.ts' /usr/local/bin/pi 2>/dev/null || echo 0")
     echo "  pi shim contains herdr-agent-state.ts in args: ${_L72I7_HERDR_IN_ARGS} occurrences"
     if [[ "${_L72I7_HERDR_IN_ARGS:-0}" -gt 0 ]]; then
@@ -1348,7 +1350,7 @@ CANARY_EOF
     # herdr server not up or agents list stays empty (headless harness limitation).
     echo ""
     echo "--- (l72i7/1-best-effort) Optional semantic poll (SKIP-not-FAIL if unobservable) ---"
-    _L72I7_HERDR_START_OUT=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- herdr agent start \
+    _L72I7_HERDR_START_OUT=$(msb exec "$DCG_HERDR_PI_CAGE" -- herdr agent start \
       l72i7-probe \
       --cwd /workspace \
       -- pi \
@@ -1363,7 +1365,7 @@ CANARY_EOF
     _l72i7_herdr_up=false
     while [[ $_l72i7_herdr_wait -lt 15 ]]; do
       # shellcheck disable=SC2016  # single-quoted: must expand INSIDE the cage's guest shell (via rc exec/msb exec), not the host shell
-      if "$RC" exec "$DCG_HERDR_PI_CAGE" -- bash -c \
+      if msb exec "$DCG_HERDR_PI_CAGE" -- bash -c \
           'test -S "${HOME}/.config/herdr/herdr.sock"' 2>/dev/null; then
         _l72i7_herdr_up=true
         break
@@ -1383,7 +1385,7 @@ CANARY_EOF
       _l72i7_poll_timeout=60
       _l72i7_last_list=""
       while [[ $_l72i7_poll_elapsed -lt $_l72i7_poll_timeout ]]; do
-        _l72i7_last_list=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- herdr agent list 2>/dev/null || echo '{}')
+        _l72i7_last_list=$(msb exec "$DCG_HERDR_PI_CAGE" -- herdr agent list 2>/dev/null || echo '{}')
         _l72i7_status_check=$(echo "$_l72i7_last_list" | python3 -c "
 import json, sys
 try:
@@ -1430,11 +1432,11 @@ except Exception as e:
     sleep 3
     echo ""
     echo "--- (l72i7) Assertion (3): canary extension IS loaded under the OPEN default ---"
-    _L72I7_CANARY_MARKER_EXISTS=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- sh -c \
+    _L72I7_CANARY_MARKER_EXISTS=$(msb exec "$DCG_HERDR_PI_CAGE" -- sh -c \
       "test -f '${_L72I7_CANARY_MARKER}' && echo yes || echo no" 2>/dev/null || echo "no")
     echo "  Canary marker exists: ${_L72I7_CANARY_MARKER_EXISTS}"
     if [[ "$_L72I7_CANARY_MARKER_EXISTS" == "yes" ]]; then
-      _L72I7_CANARY_CONTENT=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- cat "${_L72I7_CANARY_MARKER}" 2>/dev/null || echo "<unreadable>")
+      _L72I7_CANARY_CONTENT=$(msb exec "$DCG_HERDR_PI_CAGE" -- cat "${_L72I7_CANARY_MARKER}" 2>/dev/null || echo "<unreadable>")
       pass "(l72i7/3) canary extension IS loaded: marker present at ${_L72I7_CANARY_MARKER} with content '${_L72I7_CANARY_CONTENT}' (OPEN default preserves pi extension autonomy — ADR-027 D1)"
     else
       # POSITIVE CONTROL before declaring FAIL: the canary writes its marker
@@ -1443,7 +1445,7 @@ except Exception as e:
       # Same headless-harness limitation as the semantic poll above (herdr
       # agent list showed zero/idle agents the whole time): check whether pi
       # produced ANY of its requested output files as evidence it ran at all.
-      _L72I7_PI_RAN_EVIDENCE=$("$RC" exec "$DCG_HERDR_PI_CAGE" -- sh -c \
+      _L72I7_PI_RAN_EVIDENCE=$(msb exec "$DCG_HERDR_PI_CAGE" -- sh -c \
         "test -f /workspace/l72i7-hello.txt -o -f /workspace/l72i7-world.txt -o -f /workspace/l72i7-done.txt && echo yes || echo no" 2>/dev/null || echo "no")
       if [[ "$_L72I7_PI_RAN_EVIDENCE" == "yes" ]]; then
         fail "(l72i7/3) canary extension NOT loaded: marker absent at ${_L72I7_CANARY_MARKER} despite pi having demonstrably run (output files present) — expected auto-discovery to be live under the OPEN default (ADR-027 D1); pi shim may still carry --no-extensions (retired LOCKED-by-default posture)"
