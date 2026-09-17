@@ -1,123 +1,109 @@
 # Rip Cage — Agent Context
 
-You're working on **rip-cage**, a microsandbox (msb, libkrun microVM)-isolated sandbox for running Claude Code agents with a safety stack (the msb host/VM boundary + default-deny egress/DNS + `--secret` credential non-possession, plus the composable command-guard recipe DCG) so they can operate with bypassPermissions mode without nuking anything ([ADR-029](docs/decisions/ADR-029-msb-migration.md)). The cage image is still built from an OCI Dockerfile (`cage/Dockerfile`, via `docker build`) but *run* by msb, not `docker run`/`docker exec` — there is no Docker-runtime containment boundary anymore. DCG is a composable recipe (`examples/dcg/`) — not baked into the base image. (The former ssh-bypass command-guard sibling and its ssh cluster are retired — see [ADR-029](docs/decisions/ADR-029-msb-migration.md) D3; `block-ssh-bypass.sh` / `examples/ssh-bypass/` no longer exist.)
+You're working on **rip-cage**, an opinionated distribution of [microsandbox](https://github.com/microsandbox/microsandbox) (msb, libkrun microVM) for running Claude Code and pi with permissions off: a curated agent image, one native msb config per project, a six-verb launcher, three skills, and a suite that proves the cage holds ([ADR-031](docs/decisions/ADR-031-opinionated-distribution-of-microsandbox.md)).
+
+msb is the isolation — the microVM boundary, default-deny egress and DNS, `--secret` credential non-possession, read-only mounts. rip-cage never reimplements those and always credits them. The image is still built with `docker build`, but msb runs it; Docker is a build-time tool, not a containment boundary.
 
 ## Philosophy — read this before designing anything
 
-The cage **limits blast radius**. It does not prevent all danger, and it is not trying to. See the [README](README.md) — running with `--dangerously-skip-permissions` is never safe; rip-cage doesn't change that.
+The cage **limits blast radius**. It does not prevent all danger, and it is not trying to. Running with `--dangerously-skip-permissions` is never safe; rip-cage doesn't change that ([README](README.md), [ADR-009](docs/decisions/ADR-009-ux-overhaul.md) D1).
 
-What this means in practice when you propose changes:
+What this means when you propose changes:
 
-- **Agent autonomy is the product.** The point of the cage is that a human can walk away and let the agent keep working. Any design that forces human intervention on a legitimate operation (credential prompts, TTY dialogs, interactive approvals, "please run this on the host") defeats the purpose.
-- **Layers, not walls.** DCG (composable recipe), the msb microVM boundary, msb default-deny egress/DNS — each catches a class of accidents. None of them individually is a security boundary against a motivated attacker, and pretending they are leads to over-strict designs.
-- **80/20, not 100/0.** Egress defaults to a curated host allowlist ([ADR-029](docs/decisions/ADR-029-msb-migration.md) D4) — msb logs nothing for allowed traffic, so pre-cutover observe-mode is retired; a fast deny→fix→reload repair loop (`rc doctor`/`rc reload` surface a fix-hint from the denial trace log) replaces it. Same principle everywhere else: block the obvious accident, don't gate the legitimate work.
+- **Agent autonomy is the product.** A human should be able to walk away and let the agent keep working. Any design that forces human intervention on a legitimate operation — credential prompts, TTY dialogs, interactive approvals, "please run this on the host" — defeats the purpose.
+- **Layers, not walls.** The microVM boundary, default-deny egress, the protected-paths mount rule, the floor probe: each catches a class of accidents. None is a security boundary against a motivated attacker, and pretending otherwise leads to over-strict designs.
+- **80/20, not 100/0.** Egress is default-deny with a curated allowlist in the project config. msb logs nothing for allowed traffic, so there is no observe mode — a fast deny→fix→relaunch loop replaces it (`rc doctor` mines the denial trace into the exact config line). Block the obvious accident; don't gate the legitimate work.
 - **"It's annoying" is a design signal.** If an agent hits something the cage blocks and the right human response is "just turn it off," the default is probably wrong. Revisit the decision.
-- **rip-cage is a composable seam, not a bundler.** Per [ADR-005 D12](docs/decisions/ADR-005-ecosystem-tools.md), rc owns the composition *interfaces* (tool manifest, multiplexer provider contract, egress/mount declarations) and the safety floor — never specific optional tools. rc's code must never name, bundle, or "bless" an optional tool (no hardcoded multiplexer set, no built-in tool list); adding a tool — even a new multiplexer — is a manifest entry with zero rc edits. Defaults ship minimal; examples live *outside* the binary (`examples/`), never special-cased. **Convenience never earns a hardcoded exception in the seam** — if a tool feels like it should be on by default, it's either an opt-in example or genuinely *floor* (git/curl tier), never "blessed-optional." This is the principle agents keep drifting from (it's how herdr leaked into the default manifest); hold it.
-- **Built for the agentic era — composition is the agent's job.** rip-cage is deterministic about what's **invariant** — the containment floor (what must hold no matter what's inside) and the mechanical seams (identical every run: manifest format, `rc build`, mount mechanics). It pushes to the **agent** what **varies by situation** — which tools, whether a guard at all, how the pieces wire together. Help the agent generously on the invariant/mechanical side: CLIs, scripts, skills, and legible `examples/` recipes *are* the job. The drift is the inverse — freezing the *varying* part (the composition, the wiring) into deterministic machinery. A `compose:` directive / installer / auto-wire / config-merge step is the classic shape, but judge by the principle ("am I automating something that's the agent's judgment?"), not by matching that list. This is the sibling of "composable seam, not a bundler" above — that one says don't bless/bundle a *tool*; this one says don't automate the *wiring*. Rationale: [ADR-005 D12](docs/decisions/ADR-005-ecosystem-tools.md) (agentic-composition premise).
-- **The threat model includes prompt-injection.** Per [ADR-024](docs/decisions/ADR-024-prompt-injection-threat-model.md), "accident" now also covers a non-adversarial agent following hostile instructions injected via fetched READMEs, web pages, MCP output, or workspace files — not just honest mistakes. The egress allowlist, msb DNS default-deny, and the workspace-trust validator are the layers that target it. A motivated *adversarial* agent remains explicitly out of scope.
+- **rip-cage is a composable seam, not a bundler** ([ADR-005 D12](docs/decisions/ADR-005-ecosystem-tools.md)). rc owns the containment floor and the mechanical seams; it never names, bundles, or blesses an optional tool. Adding a tool is a `FROM rip-cage:latest` line in the operator's own Dockerfile, with zero rc edits. Defaults ship minimal; examples live outside the binary (`examples/`), never special-cased. **Convenience never earns a hardcoded exception in the seam.** This is the principle agents keep drifting from; hold it.
+- **Built for the agentic era — composition is the agent's job.** rip-cage is deterministic about what is **invariant** (the containment floor, and mechanical seams identical every run: the config schema, `rc build`, mount mechanics) and pushes to the **agent** what **varies** (which tools, whether a guard at all, how the pieces wire together). Help the agent generously on the invariant side — CLIs, scripts, skills, legible `examples/` recipes *are* the job. The drift is the inverse: freezing the composition into machinery. An installer / auto-wire / config-merge step is the classic shape, but judge by the principle ("am I automating something that is the agent's judgment?"), not by matching that list.
+- **The threat model includes prompt-injection** ([ADR-024](docs/decisions/ADR-024-prompt-injection-threat-model.md)). "Accident" covers a non-adversarial agent following hostile instructions injected via fetched READMEs, web pages, MCP output, or workspace files. The egress allowlist, msb's DNS default-deny, the host-side location rule for composition inputs, and the workspace-trust validator are the layers that target it. A motivated *adversarial* agent is explicitly out of scope.
 
-Containment-flavored language ("the thing inside the cage is not you") has shown up in past ADRs and is a trap — it reads as an adversarial threat model rip-cage is not trying to meet. When in doubt, optimize for autonomous uninterrupted runs over theoretical blast-radius reduction.
+Containment-flavored language ("the thing inside the cage is not you") reads as an adversarial threat model rip-cage is not trying to meet. When in doubt, optimize for autonomous uninterrupted runs over theoretical blast-radius reduction.
 
 ## Architecture
 
 ```
 Host (macOS/Linux)
-├── rc                      CLI entrypoint (bash), sourcing cli/*.sh + cli/lib/*.sh. Commands: build, up, ls, attach, exec, down, destroy, reload, allowlist, test, doctor, auth, config, schema, completions, setup
-├── cage/Dockerfile         Multi-stage: Go (beads) → Debian runtime, still built via `docker build` (msb runs the OCI image; Docker is a build-time tool only, not the runtime boundary)
-├── cage/init/init-rip-cage.sh   Runs inside the sandbox on start. Sets up auth, settings, git identity, beads
-├── cage/agent/settings.json     Claude Code config — bypassPermissions, deny rules
-├── examples/
-│   └── dcg/               Composable recipe: DCG destructive-command guard (not baked in base image).
-├── tests/                  Test scripts (test-safety-stack.sh, test-rc-commands.sh, test-msb-*-effect-probes.sh, etc.)
-└── cage/agent/zshrc        Minimal zshrc for the sandbox agent user
+├── rc                          CLI entrypoint (bash), sourcing cli/*.sh + cli/lib/*.sh.
+│                               Six verbs: up, auth, doctor, build, test, destroy.
+├── share/rip-cage/
+│   ├── cage.yaml.template      The shipped project-config template — a native msb --conf file
+│   └── protected-paths         Fail-closed list of credential locations rc refuses to mount
+├── cage/Dockerfile             The base image, built via `docker build`, loaded into msb
+├── cage/floor/floor-probe.sh   Fail-closed containment check ON THE BUILT IMAGE (20 checks)
+├── cage/boot/boot.json         Boot descriptor — daemons + multiplexers; schema in its _readme key
+├── cage/init/init-rip-cage.sh  Runs in the sandbox at start: floor probe first, then auth,
+│                               settings, git identity, beads
+├── cage/agent/settings.json    Claude Code config — bypassPermissions, deny rules
+├── examples/                   Composition recipes (Dockerfile.snippet + boot-fragment.json + README)
+└── tests/                      Tiered suites; `tests/run-host.sh --host-only` is the host gate
 ```
 
-**Usage:** `rc up` — CLI/headless mode (creates the msb sandbox, runs init, attaches — behavior depends on `session.multiplexer` config: plain shell under `none` (default), tmux attach under `tmux`, herdr supervisor view under `herdr`). The project directory is bind-mounted at `/workspace` — file changes sync instantly, no git push needed.
+Each project launches from **one file**: `~/.config/rip-cage/projects/<cage>.yaml`, msb's own `--conf` schema, carrying its lists in full. `rc` merges nothing into it ([ADR-031](docs/decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D2). Composition inputs — the Dockerfile, the boot descriptor, the config, the protected-paths list — all live host-side, outside every cage mount (D5a).
 
-> For installation, quickstart, auth, safety stack details, and full CLI reference, see [docs/reference/](docs/reference/). For the composable seams catalog (how to add tools, guards, multiplexers, mediators, and launch composition), see **[docs/reference/README.md](docs/reference/README.md)**.
+**Usage:** `rc up <project>` creates or resumes the cage, runs init, and attaches. The project directory is mounted at `/workspace`; file changes sync live, no git push. `RC_MULTIPLEXER` selects a multiplexer, which the image's boot descriptor must declare; the default is none.
+
+Three skills are the front door, and the only home for their how-to: [`cage-config`](.claude/skills/cage-config/SKILL.md) writes the config file, [`cage-image`](.claude/skills/cage-image/SKILL.md) writes the Dockerfile and boot fragment, [`cage-ops`](.claude/skills/cage-ops/SKILL.md) runs and repairs a live cage. Cite them; don't duplicate them. `docs/reference/` stays the mechanism reference.
 
 ## Auth flow (for contributors)
 
-If you're modifying auth logic, the flow is:
-1. `rc up`: keychain extraction happens in `cmd_up` before the msb sandbox is created (`rip-cage-rj68` — rewritten off `docker run` onto msb)
-2. `init-rip-cage.sh`: reads the mounted `.credentials.json` (inside the sandbox, no keychain access)
+`rc up` pulls the Claude login from the macOS keychain on the host, before the sandbox exists, and hands it to msb as a `--secret` bound to `api.anthropic.com`. The guest holds only the `$MSB_<NAME>` placeholder. `init-rip-cage.sh` reads what the config mounted; it never touches a keychain. Full detail: [docs/reference/auth.md](docs/reference/auth.md).
 
-See [docs/reference/auth.md](docs/reference/auth.md) for full details.
+## Skills in containers
 
-## Skills in Containers
+Host-mounted skills are discoverable inside a cage via a Python MCP shim (`cage/substrate/skill-server.py`), registered as `mcpServers.meta-skill` in `settings.json`. It implements the same `list`/`show`/`load` tools as the host `ms` binary. Skills that are broken symlinks inside the cage (host-only paths) are skipped at startup.
 
-Skills mounted from the host are discoverable inside containers via a Python MCP shim
-(`skill-server.py`) registered as `mcpServers.meta-skill` in `settings.json`.
-The shim implements the same `list`/`show`/`load` tools as the host `ms` binary.
+**Skill-source symlinks (projection contract, rip-cage-1pgp.1):** `rc up` auto-mounts each skill-symlink target's parent dir `ro` at its **host-absolute** path (`_collect_symlink_parents` in `cli/up.sh`), which fixes **absolute** symlinks. **Relative** symlinks resolve against the cage home instead, so they need an explicit `ro` mount line in the project config at that cage-side resolution path — composition, never an rc-blessed path. The contract is a cage-resolvable mount, not resolve-and-copy at init, so host live-edits stay visible. Existing cages gain a new mount on `rc up --replace`.
 
-- Skills that are broken symlinks inside the container (host-only paths) are skipped at startup
-- **Skill-source symlinks (projection contract, rip-cage-1pgp.1):** rc's floor auto-mounts each
-  skill-symlink target's parent dir `ro` at its **host-absolute** path (`_collect_symlink_parents`
-  in `cli/up.sh`) — that fixes **absolute** symlinks. **Relative** symlinks (e.g.
-  `../../code/personal/dotpi/agent/skills/<name>`) resolve against the cage home instead
-  (`/home/agent/code/...` from `~/.rc-context/skills`, same 2-level depth as `~/.claude/skills`),
-  so they need the operator to compose a `ro` mount of the skills repo at that cage-side
-  resolution path (a mounts-only TOOL entry in `tools.yaml` — composition, never an rc-blessed
-  path, ADR-005 D12). Contract: cage-resolvable mount, not resolve+copy at init — host live-edits
-  stay visible in cages. Mounts are runtime `-v` args: existing cages gain it on destroy+recreate.
-- Upgrade path: when `ms` publishes Linux binaries, swap `command`/`args` in `settings.json`
-  and remove `skill-server.py`; server name `meta-skill` stays unchanged
-- See: `history/2026-04-14-skills-in-containers-design.md` for full design rationale
+Upgrade path: when `ms` publishes Linux binaries, swap `command`/`args` in `settings.json` and delete the shim; the server name `meta-skill` stays. Design rationale: `history/2026-04-14-skills-in-containers-design.md`.
 
 ## Key gotchas
 
-- Bind/virtiofs mounts get their parent dirs created as root. That's why `init-rip-cage.sh` starts with `sudo chown agent:agent ~/.claude`.
-- `.devcontainer/` and `.vscode/` are gitignored (legacy; the VS Code devcontainer path was removed in rip-cage-kt25).
-- The `container_name()` function (`cli/lib/container.sh`) derives sandbox names from the last two path components. Collisions get a 4-char hash suffix.
-- Every sandbox resume is a fresh kernel boot under msb (processes die between stop/start, unlike a paused Docker container) — `rc` re-runs init and re-registers cockpit/multiplexer state on each resume (`rip-cage-1ujn`). With `session.multiplexer: none` (default), no multiplexer is started.
+- Mounts get their parent dirs created as root, which is why `init-rip-cage.sh` starts with `sudo chown agent:agent ~/.claude`.
+- `container_name()` (`cli/lib/container.sh`) derives cage names from the last two path components; collisions get a 4-char hash suffix.
+- Every resume is a fresh kernel boot under msb — processes die between stop and start, so `rc` re-runs init on each resume.
+- msb does not follow a host-side symlink in a mount source, and the mount fails at boot rather than at validation. On macOS write `/private/tmp/...`, never `/tmp/...`.
+- msb keeps its own image cache. `rc build` does `docker build` then loads into msb; a docker-only build leaves cages booting the old image.
 
-## When you need a new host allowed for egress inside the cage
+## When a host is denied egress inside the cage
 
-Cages run on microsandbox (msb): egress is **default-deny** at the VM boundary, plus a curated default allowlist (`api.anthropic.com`, `github.com`, package registries, …) declared in `.rip-cage.yaml` under `network.allowed_hosts` ([ADR-029](docs/decisions/ADR-029-msb-migration.md) D2/D4). Git authenticates over HTTPS with a per-cage token injected by msb `--secret` ([ADR-029](docs/decisions/ADR-029-msb-migration.md) D3) — there is no ssh cluster anymore (ADR-017/018/020/022's mechanisms are retired; `block-ssh-bypass.sh` and `examples/ssh-bypass/` are deleted).
+Egress is default-deny at the VM boundary, plus the allowlist in the project config's `network.allow`. A denied domain fails DNS resolution client-side in milliseconds; only that DNS-stage denial is logged, and `rc doctor` mines it into the exact line to add. A connect-stage denial (a raw IP) logs nothing at any verbosity.
 
-If you hit a denied-host wall (a request against a host not on the allowlist fails immediately — a denied domain name fails DNS resolution client-side, a denied IP fails at TCP connect within a couple of milliseconds; measured on msb 0.6.18, `rip-cage-6v34.9`. Only the DNS-stage denial is logged and mined into a fix-hint — a connect-stage denial logs nothing at any verbosity — msb <0.6.10 instead fake-accepted the connect and hung delivering zero bytes), that's the egress firewall, not an ssh trust gap:
+If you are **inside a cage** and hit this wall, you cannot fix it yourself: the config is host-side, outside every cage mount, by design ([ADR-031](docs/decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D5a) — a prompt-injected agent must not be able to widen its own egress. **Surface the request in prose** — "please add `<host>:tcp:443` to `network.allow` in this cage's config" — and wait. Done when the human reports the cage back up.
 
-1. **Surface the request in prose** — e.g. "please add `<host>` to `.rip-cage.yaml` under `network.allowed_hosts`". Do NOT attempt to edit `.rip-cage.yaml` directly inside the cage.
-2. The human (or a host-side assistant they relay to) edits `.rip-cage.yaml` on the host to add the host under `network.allowed_hosts` (or runs `rc allowlist add <host> --cage <name>`, which does both the edit and step 3). `rc doctor <cage>` / the reload dry-run surface any recently-denied domains mined from the sandbox's trace log as a fix-hint, so the human doesn't have to guess the exact hostname.
-3. The human runs on the host: `rc reload <cage>` — **this is a COLD-RECREATE, not a hot-reload** (`rip-cage-rj68` / [ADR-029](docs/decisions/ADR-029-msb-migration.md) D4, [ADR-022](docs/decisions/ADR-022-ssh-allowlist.md) D6's retirement note): msb's net rules have no live-mutation path on a running sandbox, so `rc reload` runs graceful-stop → remove → recreate against the now-current config. **Survives the recreate:** host mounts (the workspace, `~/.claude/{projects,sessions}` — your Claude session **resumes**, it is not lost) and named volumes (`rc-state-*`, `rc-history-*`, `rc-mise-cache`). **Lost:** only the guest's own ephemeral rootfs overlay scratch (e.g. an ad-hoc `apt-get install` you ran at runtime that wasn't baked into the image or captured by a mount) — a narrow, documented tradeoff, not a session-continuity loss.
-4. Retry the failing operation after the cage comes back up (the multiplexer/cockpit state re-registers automatically on every resume).
+If you are **on the host**, the loop is in [`cage-ops`](.claude/skills/cage-ops/SKILL.md): `rc doctor <cage>` names the host, you add the line, `rc up --replace <project>` recreates the cage against the current config. Host mounts and named volumes survive that recreate (the Claude session resumes); only the guest's ephemeral rootfs overlay is lost.
 
-**Why:** `.rip-cage.yaml` is **read-only inside the cage by default** ([ADR-021 D7](docs/decisions/ADR-021-layered-rip-cage-config.md) — `mounts.config_mode: ro`). This prevents a prompt-injected agent from burying a containment-weakening line in an otherwise-legitimate config edit. `rc reload` is host-side only and not on the cage's PATH — the human is the approval step. You cannot self-grant; surface the request and wait for the human to apply.
+## Beads over the msb mount — interim single-writer discipline
 
-## Beads over the msb virtiofs mount — interim single-writer discipline
-
-While a cage is up read-write on a repo, **bd writes should happen from exactly one side at a time** — in practice, let the in-cage agent do its own bookkeeping and have the host orchestrator batch writes for cage-idle windows (or relay through the in-cage agent) rather than both sides writing concurrently. This is **convention-enforced guidance, not a code-level lock**: msb virtiofs does not propagate `flock` across the guest/host boundary in either direction (version-independent — `rip-cage-9iab` Q2), so a genuine concurrent host+guest write race remains physically possible if this discipline is violated ([ADR-029](docs/decisions/ADR-029-msb-migration.md) D7, FLEXIBLE — interim posture, not a solved problem). Note this is not a msb regression: the pre-cutover Docker/OrbStack bind-mount path didn't propagate flock either (`rip-cage-606c` A1) — the race predates the migration.
+While a cage is up read-write on a repo, **bd writes should happen from one side at a time** — let the in-cage agent do its own bookkeeping, and have a host orchestrator batch writes for cage-idle windows. This is convention, not a lock: msb's virtiofs does not propagate `flock` across the guest/host boundary in either direction, so a concurrent host+guest write race stays physically possible ([ADR-029](docs/decisions/ADR-029-msb-migration.md) D7, FLEXIBLE). Not an msb regression — the Docker bind-mount path didn't propagate `flock` either.
 
 ## Harness inventory
 
-See [`.claude/verification.md`](.claude/verification.md) for the catalog of verification mechanisms in this repo (shell syntax checks, shellcheck, tiered test suites, `rc test` / `rc test --e2e` / `rc doctor`, egress probes, ADRs). Consult it when picking a feedback loop for a task.
+[`.claude/verification.md`](.claude/verification.md) catalogs this repo's verification mechanisms — shell syntax checks, shellcheck, tiered suites, `rc test`, `rc doctor`, egress probes, ADRs. Consult it when picking a feedback loop.
 
 ## Testing changes
 
-After modifying the Dockerfile or any file that gets COPY'd into the image:
+After touching the Dockerfile or any file it copies in:
+
 ```bash
 ./rc build
 ./rc up /path/to/test/project
-./rc test <container-name>    # expect all checks PASS (count grows with new safety-stack additions)
+./rc test <cage-name>          # expect all checks PASS; the floor probe runs first
 ```
 
-For changes to `rc` itself, you can test without rebuilding the image.
+Changes to `rc` itself need no rebuild. The host gate is `bash tests/run-host.sh --host-only`.
 
-## Releasing rip-cage
+## Releasing
 
-Cutting a release (tag → multi-arch GHCR publish → Homebrew formula pin) has rip-cage-specific steps the global `/release` skill does not know — GHCR visibility flip, `scripts/update-formula-sha.sh`, the two-repo tap sync, the pre-tag **full host suite** gate, and the formula `brew fetch` verification. The single source of truth is **[docs/reference/release-ceremony.md](docs/reference/release-ceremony.md)** — follow it step by step when tagging a version.
+Cutting a release has rip-cage-specific steps the global `/release` skill does not know. The single source of truth is [docs/reference/release-ceremony.md](docs/reference/release-ceremony.md) — follow it step by step.
 
-## Roadmap & design docs
+## Roadmap & decisions
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the phased plan, design docs, and ADRs.
+[docs/ROADMAP.md](docs/ROADMAP.md) for what's shipped and what's fog. [docs/decisions/INDEX.md](docs/decisions/INDEX.md) for every ADR with its retired-or-evolved status.
 
-## Beads read-authority (don't trust `issues.jsonl` for live state)
+## Beads read-authority
 
-`bd show` / `bd list` are the **authoritative** read — they hit the embedded Dolt store (`.beads/embeddeddolt/`, per `.beads/metadata.json`). `.beads/issues.jsonl` is a **lagging derived export**: it is NOT rewritten on `bd update`/`create`/`close`, so a direct file read can silently return stale bead state (this burned two fresh-context review rounds — rip-cage-u7f).
-
-- **Reading a bead** (subagents, reviewers, hooks, humans): use `bd show <id>` / `bd show <id> --json`, never a `grep` of `issues.jsonl`. Subagent and reviewer briefs must pass `bd show` output (or instruct the agent to run `bd show`), not point at the file.
-- **When a file reader genuinely needs current data**, flush it first: `bd export --all -o .beads/issues.jsonl` (writes to the file — `bd export` alone goes to stdout — and includes the `bd remember` memories, so it won't trip the shrink guard).
-- Auto-export (`export.auto`) is intentionally **off** here: its scope excludes memories, so it shrink-guard-fails on every write against rip-cage's memory-bearing export. See `.beads/config.yaml` for the full rationale.
+`bd show` / `bd list` read the embedded Dolt store and are authoritative. `.beads/issues.jsonl` is a lagging derived export, NOT rewritten on `bd update`/`create`/`close` — reading it returns stale state. If a file reader genuinely needs current data, flush first: `bd export --all -o .beads/issues.jsonl`. Auto-export is intentionally off here; `.beads/config.yaml` carries the rationale.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
 ## Beads Issue Tracker

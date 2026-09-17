@@ -1,23 +1,23 @@
 # Rules for AI Agents Calling rc
 
-These rules apply to AI agents that use `rc` programmatically (e.g., from automation scripts or other Claude Code instances).
+For agents driving `rc` programmatically — from a script, or from another Claude Code session.
+
+`rc` has six verbs: `up`, `auth`, `doctor`, `build`, `test`, `destroy`. Everything a deleted verb used to do is either an msb one-liner or a file edit; the [`cage-ops`](.claude/skills/cage-ops/SKILL.md) skill is the sole home of the table that says which. An unknown verb prints usage and exits 1.
 
 ## Behavioral rules
 
-- Always use `--output json` when parsing output programmatically
-- Always use `--dry-run` before `rc destroy` to confirm the target
-- Use `rc ls --output json` to discover containers before operating on them
-- Container names are derived from paths — use `rc ls` to get exact names, don't construct them
-- The `name` field in `rc up --output json` is the source of truth; names may include a hash suffix when disambiguation occurs
-- `rc up --output json` does NOT attach to tmux — use `rc attach` separately
-- `rc attach` has no `--output json` mode — use `rc ls --output json` to verify container status before calling attach
-- Never call `rc destroy` without confirming with the user first
-- Use `rc auth refresh` to update credentials without destroying containers
-- Set `RC_ALLOWED_ROOTS` to colon-separated absolute paths before calling `rc up`
+- Pass `--output json` when you parse output. Coverage is still landing (`rip-cage-sygz`) — if a verb gives you prose, read the prose rather than assuming the flag failed.
+- **Name the cage you mean.** `rc destroy <name>` takes the name you type, or the cage the current directory names. Given neither, it refuses with exit 2 and lists the cages it left standing — it never picks one for you. Confirm with the human before destroying.
+- Cage names are derived from the last two path components, with a 4-char hash suffix on collision. Read the `name` field from `rc up --output json`; don't construct one. `msb list` enumerates live cages.
+- `rc auth refresh` re-applies a refreshed credential without recreating the cage.
+- A **running** cage is never recreated implicitly, because that kills the live session. `rc up --replace <project>` is the explicit graceful-stop-then-recreate; a **stopped** cage converges on a plain `rc up`.
+- To reach a cage from the host, use msb directly (see `cage-ops`). `rc` has no `exec` or `attach` verb.
 
-## Technical reference
+## Where to read next
 
-For JSON output format, flag details, and container naming conventions, see [docs/reference/cli-reference.md](docs/reference/cli-reference.md).
+- Every flag and JSON shape: [docs/reference/cli-reference.md](docs/reference/cli-reference.md).
+- Writing or repairing the one config file a cage launches from: the [`cage-config`](.claude/skills/cage-config/SKILL.md) skill.
+- A denied host, a cage that won't start, expired credentials: the [`cage-ops`](.claude/skills/cage-ops/SKILL.md) skill.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
