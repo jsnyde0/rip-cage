@@ -62,6 +62,12 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# PINNED SEPARATELY, and that is load-bearing (rip-cage-ely4.7.3): this suite
+# `source`s rc further down, and rc sets SCRIPT_DIR to its OWN directory. Any
+# later "${SCRIPT_DIR}/<test lib>" therefore resolves to the repo root and the
+# source silently no-ops, leaving the helper undefined at call time. E2E_TESTS
+# is set before that happens and never reassigned.
+E2E_TESTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 IMAGE="rip-cage:latest"
@@ -293,7 +299,27 @@ mkdir -p "$TEST_WS"
 E2E_TMP_RESOLVED=$(realpath "$E2E_TMP")
 export RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}"
 
+# THE CAGE CONFIG (rip-cage-ely4.7.3). Without one, `rc up` refuses with
+# CAGE_CONFIG_MISSING before touching msb (ADR-031 D2) -- no cage boots, and
+# every check after this one fails on a missing cage rather than on its own
+# subject. Seeded at the DEFAULT path rc resolves, because this suite drives
+# verbs that take a cage NAME and have no workspace argument to derive a
+# config from; XDG_CONFIG_HOME already points at the sandboxed config dir
+# staged above.
+# shellcheck source=tests/_cage-conf-lib.sh
+source "${E2E_TESTS}/_cage-conf-lib.sh"
+_e2e_conf_err=$(mktemp)
+E2E_CAGE_CONF=$(REPO_ROOT="${E2E_TESTS}/.." cage_conf_install "$TEST_WS" "$XDG_CONFIG_HOME" "$IMAGE" 2>"$_e2e_conf_err")
+if [[ -z "$E2E_CAGE_CONF" || ! -f "$E2E_CAGE_CONF" ]]; then
+  echo "FATAL: could not seed a cage config -- every check below would fail on a" >&2
+  echo "       missing cage rather than on its own subject." >&2
+  cat "$_e2e_conf_err" >&2
+  exit 1
+fi
+rm -f "$_e2e_conf_err"
+
 echo "TEST_WS=$TEST_WS"
+echo "CAGE_CONF=$E2E_CAGE_CONF"
 echo ""
 
 # -----------------------------------------------------------------------------
@@ -380,15 +406,19 @@ else
     "unexpected FAIL line(s): $(grep '^FAIL' /tmp/rc-e2e-rctest.out | grep -vE 'CAGE_HOST_ADDR resolves|DNS resolution \(github\.com\)' | tr '\n' ';' || true) (see /tmp/rc-e2e-rctest.out)"
 fi
 
-# Check 8: rc ls source path matches realpath of TEST_WS
-rc_ls_path=$("$RC" --output json ls 2>/dev/null | jq -r \
-  --arg name "$CONTAINER_NAME" \
-  '.[] | select(.name == $name) | .source_path' 2>/dev/null || true)
+# Check 8: the cage's source-path label matches realpath of TEST_WS.
+#
+# `rc ls` retired with the six-verb thinning (ADR-031 D3, rip-cage-ely4.7.3),
+# and it is the LABEL this check was ever really about: rc ls only ever
+# reported that label back. msb list has no source_path field of its own, so
+# the label is read directly, the way this file's own
+# _find_cage_by_source_path already does it.
+rc_ls_path=$(_msb_label "$CONTAINER_NAME" "rc.source.path" 2>/dev/null || true)
 expected=$(realpath "$TEST_WS")
 if [[ "$rc_ls_path" == "$expected" ]]; then
-  check "rc ls source path matches realpath of TEST_WS" "pass"
+  check "cage source-path label matches realpath of TEST_WS" "pass"
 else
-  check "rc ls source path matches realpath of TEST_WS" "fail" \
+  check "cage source-path label matches realpath of TEST_WS" "fail" \
     "got '${rc_ls_path}' expected '${expected}'"
 fi
 
@@ -487,6 +517,11 @@ _host_has_claude_auth=$(( _host_has_claude_creds + _host_has_claude_json ))
 # Pattern: parent "rc-auth", base "caseN" → container "rc-auth-caseN"
 mkdir -p "${AUTH_TMP}/rc-auth"
 
+# Each auth case boots its OWN cage in its own workspace, so each needs its own
+# cage config: without one `rc up` refuses with CAGE_CONFIG_MISSING before
+# reaching the auth-warn behaviour this matrix is about (rip-cage-ely4.7.3).
+# cage_conf_for writes it BESIDE the workspace, which is where rc will accept
+# it from (ADR-031 D5(a)).
 # Case 1: Claude auth via ANTHROPIC_API_KEY → no 'WARNING: No auth' in log.
 _aws1="${AUTH_TMP}/rc-auth/case1"
 _ac1_out="${AUTH_TMP}/case1-up.out"
@@ -494,6 +529,7 @@ mkdir -p "$_aws1"
 git -C "$_aws1" init > /dev/null 2>&1
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
   ANTHROPIC_API_KEY=sk-test-case1 \
+  RC_CAGE_CONF="$(cage_conf_for "$_aws1" "$IMAGE")" \
   "$RC" up "$_aws1" </dev/null >"$_ac1_out" 2>&1 || true
 _ac1_name=$(_find_cage_by_source_path "$(realpath "$_aws1")")
 _track_cage "$_ac1_name"
@@ -536,6 +572,7 @@ _ac2_out="${AUTH_TMP}/case2-up.out"
 mkdir -p "$_aws2"
 git -C "$_aws2" init > /dev/null 2>&1
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
+  RC_CAGE_CONF="$(cage_conf_for "$_aws2" "$IMAGE")" \
   "$RC" up "$_aws2" </dev/null >"$_ac2_out" 2>&1 || true
 _ac2_name=$(_find_cage_by_source_path "$(realpath "$_aws2")")
 _track_cage "$_ac2_name"
@@ -574,6 +611,7 @@ _ac3_out="${AUTH_TMP}/case3-up.out"
 mkdir -p "$_aws3"
 git -C "$_aws3" init > /dev/null 2>&1
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
+  RC_CAGE_CONF="$(cage_conf_for "$_aws3" "$IMAGE")" \
   "$RC" up "$_aws3" </dev/null >"$_ac3_out" 2>&1 || true
 _ac3_name=$(_find_cage_by_source_path "$(realpath "$_aws3")")
 _track_cage "$_ac3_name"
@@ -611,6 +649,7 @@ mkdir -p "$_aws4"
 git -C "$_aws4" init > /dev/null 2>&1
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
   ANTHROPIC_API_KEY=sk-test-case4 \
+  RC_CAGE_CONF="$(cage_conf_for "$_aws4" "$IMAGE")" \
   "$RC" up "$_aws4" </dev/null >"$_ac4_out" 2>&1 || true
 _ac4_name=$(_find_cage_by_source_path "$(realpath "$_aws4")")
 _track_cage "$_ac4_name"
@@ -656,6 +695,7 @@ HOME="$_ac5_home" \
   RC_SKIP_KEYCHAIN_EXTRACTION=1 \
   ANTHROPIC_API_KEY="" \
   RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
+  RC_CAGE_CONF="$(cage_conf_for "$_aws5" "$IMAGE")" \
   "$RC" up "$_aws5" </dev/null >"$_ac5_out" 2>&1 || true
 _ac5_name=$(_find_cage_by_source_path "$(realpath "$_aws5")")
 _track_cage "$_ac5_name"
@@ -699,6 +739,7 @@ HOME="$_ac6_home" \
   RC_SKIP_KEYCHAIN_EXTRACTION=1 \
   ANTHROPIC_API_KEY="" \
   RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
+  RC_CAGE_CONF="$(cage_conf_for "$_aws6" "$IMAGE")" \
   "$RC" up "$_aws6" --env-file "$_ac6_envfile" </dev/null >"$_ac6_out" 2>&1 || true
 _ac6_name=$(_find_cage_by_source_path "$(realpath "$_aws6")")
 _track_cage "$_ac6_name"
@@ -872,7 +913,7 @@ export RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}"
 
 # Re-up the primary workspace so there's something to collide against.
 "$RC" up "$TEST_WS" < /dev/null > /dev/null 2>&1 || true
-"$RC" up "$COLLIDE_WS" < /dev/null > /dev/null 2>&1 || true
+RC_CAGE_CONF="$(cage_conf_for "$COLLIDE_WS" "$IMAGE")" "$RC" up "$COLLIDE_WS" < /dev/null > /dev/null 2>&1 || true
 
 collide_resolved=$(realpath "$COLLIDE_WS")
 collision_name=$(_find_cage_by_source_path "$collide_resolved")
@@ -979,6 +1020,7 @@ RULEFILE
 DCG_TMP_RESOLVED=$(realpath "$DCG_TMP")
 _dcg_ws_resolved=$(realpath "$_dcg_ws")
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${DCG_TMP_RESOLVED}" \
+  RC_CAGE_CONF="$(cage_conf_for "$_dcg_ws" "$IMAGE")" \
   "$RC" up "$_dcg_ws" < /dev/null > /tmp/rc-e2e-dcg-up.out 2>&1 || true
 _dcg_container=$(_find_cage_by_source_path "$_dcg_ws_resolved")
 _track_cage "$_dcg_container"
@@ -1078,6 +1120,7 @@ network:
     - nodejs.org
 RIPCAGEYAML
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${DCG_TMP_RESOLVED}:${MISE_TMP_RESOLVED}" \
+  RC_CAGE_CONF="$(cage_conf_for "$_nvmrc_ws" "$IMAGE")" \
   "$RC" up "$_nvmrc_ws" < /dev/null > /tmp/rc-e2e-mise-nvmrc-up.out 2>&1 || true
 _nvmrc_resolved=$(realpath "$_nvmrc_ws")
 _nvmrc_container=$(_find_cage_by_source_path "$_nvmrc_resolved")
@@ -1131,6 +1174,7 @@ network:
     - nodejs.org
 RIPCAGEYAML
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${DCG_TMP_RESOLVED}:${MISE_TMP_RESOLVED}" \
+  RC_CAGE_CONF="$(cage_conf_for "$_cache_ws" "$IMAGE")" \
   "$RC" up "$_cache_ws" < /dev/null > /tmp/rc-e2e-mise-cache-up.out 2>&1 || true
 _cache_resolved=$(realpath "$_cache_ws")
 _cache_container=$(_find_cage_by_source_path "$_cache_resolved")
@@ -1187,6 +1231,7 @@ network:
     - objects.githubusercontent.com
 RIPCAGEYAML
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${DCG_TMP_RESOLVED}:${MISE_TMP_RESOLVED}" \
+  RC_CAGE_CONF="$(cage_conf_for "$_yarn_ws" "$IMAGE")" \
   "$RC" up "$_yarn_ws" < /dev/null > /tmp/rc-e2e-mise-yarn-up.out 2>&1 || true
 _yarn_resolved=$(realpath "$_yarn_ws")
 _yarn_container=$(_find_cage_by_source_path "$_yarn_resolved")

@@ -66,13 +66,30 @@ if ! msb image list --format json 2>/dev/null | grep -qF "$IMAGE"; then
   exit 0
 fi
 
+# shellcheck source=tests/_scratch-cage-lib.sh
+source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+# shellcheck source=tests/_cage-conf-lib.sh
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+
+# Resolve the sandbox root: msb does not follow a host-side symlink in a bind
+# source, and on macOS $TMPDIR lives under /var, itself a symlink.
 TEST_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-test-live-probe-XXXXXX")
+TEST_HOME=$(cd "$TEST_HOME" && pwd -P)
 WS="${TEST_HOME}/workspace"
 mkdir -p "${TEST_HOME}/.config/rip-cage" "$WS"
 CAGE_NAME=""
 cleanup() {
-  [[ -n "$CAGE_NAME" ]] && msb remove --force "$CAGE_NAME" >/dev/null 2>&1 || true
-  [[ -n "$CAGE_NAME" ]] && msb volume remove "rc-state-${CAGE_NAME}" "rc-history-${CAGE_NAME}" >/dev/null 2>&1 || true
+  # rc destroy, by the EXACT name this probe created, never a bare msb remove:
+  # removing the sandbox without rc orphans its rc-state-/rc-history- volumes
+  # forever (the shape tests/test-scratch-cage-teardown-guard.sh exists to
+  # catch). rc destroy reaps both.
+  if [[ -n "$CAGE_NAME" ]]; then
+    _tlp_d_out=$("$RC" destroy "$CAGE_NAME" 2>&1)
+    _tlp_d_rc=$?
+    if [[ "$_tlp_d_rc" -ne 0 ]]; then
+      echo "WARNING: failed to destroy '${CAGE_NAME}' (exit ${_tlp_d_rc}): ${_tlp_d_out}" >&2
+    fi
+  fi
   rm -rf "$TEST_HOME"
 }
 trap cleanup EXIT
@@ -82,17 +99,23 @@ touch "${WS}/README.md"
 git -C "$WS" add README.md
 git -C "$WS" -c user.name="scratch" -c user.email="scratch@example.invalid" commit -q -m "initial"
 
-cat > "${WS}/.rip-cage.yaml" <<'EOF'
-version: 2
-network:
-  allowed_hosts: [example.com]
-EOF
+# THE FIXTURE CONFIG (rip-cage-ely4.7.3). This probe used to seed the legacy
+# per-project YAML inside the workspace and drive rc with the allowed-roots
+# override. ADR-031 D2/D3 retired both: rc reads ONE native msb config per
+# project and refuses with CAGE_CONFIG_MISSING when it cannot find one, so
+# this file failed at setup before reaching a single assertion. Seeded through
+# the shared helper every current suite uses.
+CAGE_CONF=$(cage_conf_install "$WS" "${TEST_HOME}/.config" "$IMAGE")
+if [[ -z "$CAGE_CONF" || ! -f "$CAGE_CONF" ]]; then
+  echo "SKIP: could not seed a cage config -- skipping $(basename "$0")"
+  exit 0
+fi
 
 run_rc() {
-  XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_ALLOWED_ROOTS="$WS" "$RC" --output json "$@"
+  XDG_CONFIG_HOME="${TEST_HOME}/.config" "$RC" --output json "$@"
 }
 run_rc_human() {
-  XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_ALLOWED_ROOTS="$WS" "$RC" "$@"
+  XDG_CONFIG_HOME="${TEST_HOME}/.config" "$RC" "$@"
 }
 
 CR_OUT=$(run_rc up "$WS" 2>&1)
@@ -104,6 +127,7 @@ if [[ "$CR_RC" -ne 0 ]]; then
   exit 1
 fi
 CAGE_NAME=$(echo "$CR_OUT" | tail -1 | jq -r '.name' 2>/dev/null)
+scratch_cage_register "$CAGE_NAME"
 pass "setup: rc up created a real running msb sandbox ${CAGE_NAME}"
 
 # ---------------------------------------------------------------------------

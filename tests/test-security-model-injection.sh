@@ -407,51 +407,22 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
-# B10: rc ls --output json mode column present per cage.
+# B10: RETIRED with `rc ls` (rip-cage-ely4.7.3 / ADR-031 D3).
+#
+# Its whole subject was the shape of `rc ls --output json`: that it returned an
+# array, that every cage object carried a `mode` key, and that this cage's mode
+# read back as the sentinel string. The verb is gone, `cli/ls.sh` with it, and
+# the case's own comment already recorded that the mode column had stopped
+# carrying a real value after the msb cutover and was kept only for CLI
+# stability. A column retained for the stability of a deleted CLI is not a
+# property worth re-expressing against `msb list` -- which has no mode field,
+# and no source_path either.
+#
+# Nothing of this file's SUBJECT is lost: B10 asserted an output shape, not a
+# security property. Enumerating cages is `msb list --format json`, and reading
+# the host dir a cage came from is its `rc.source.path` label via `msb inspect`
+# (tests/_cage-lookup-lib.sh holds that lookup once, for every suite).
 # ---------------------------------------------------------------------------
-echo "=== B10: rc ls --output json mode column ==="
-
-b10_ls=$("$RC" --output json ls 2>/dev/null || true)
-b10_is_array=$(echo "$b10_ls" | python3 -c "import json,sys; arr=json.loads(sys.stdin.read()); print('yes' if isinstance(arr, list) else 'no')" 2>/dev/null || true)
-if [[ "$b10_is_array" == "yes" ]]; then
-  check "B10 rc ls --output json returns array" "pass"
-else
-  check "B10 rc ls --output json returns array" "fail" "got: ${b10_ls:0:100}"
-fi
-
-b10_mode_ok=$(echo "$b10_ls" | python3 -c "
-import json, sys
-arr = json.loads(sys.stdin.read())
-if len(arr) == 0:
-    print('empty')
-    sys.exit(0)
-missing = [c.get('name','?') for c in arr if 'mode' not in c]
-print('ok' if not missing else 'missing:' + ','.join(missing))
-" 2>/dev/null || true)
-if [[ "$b10_mode_ok" == "ok" || "$b10_mode_ok" == "empty" ]]; then
-  check "B10 rc ls --output json: mode key present in all cage objects" "pass" "result: $b10_mode_ok"
-else
-  check "B10 rc ls --output json: mode key present in all cage objects" "fail" "cages missing mode key: $b10_mode_ok"
-fi
-
-# Our own cage specifically appears with the msb-cutover-vestigial "legacy" sentinel
-# (network.mode was dropped from the schema; _rc_ls_mode_from_source_path always
-# returns "legacy" today -- cli/ls.sh -- the column is retained for CLI stability,
-# no longer for a real mode value).
-b10_our_mode=$(echo "$b10_ls" | python3 -c "
-import json, sys
-arr = json.loads(sys.stdin.read())
-name = '${CAGE_NAME}'
-match = [c.get('mode') for c in arr if c.get('name') == name]
-print(match[0] if match else 'ABSENT')
-" 2>/dev/null || true)
-if [[ "$b10_our_mode" == "legacy" ]]; then
-  check "B10 rc ls: our cage's mode is the vestigial 'legacy' sentinel (no real modes post-msb)" "pass"
-else
-  check "B10 rc ls: our cage's mode is the vestigial 'legacy' sentinel (no real modes post-msb)" "fail" "got: ${b10_our_mode}"
-fi
-
-echo ""
 
 # ---------------------------------------------------------------------------
 # B11: rc doctor <cage> --output json -- re-expressed for the msb shape.
