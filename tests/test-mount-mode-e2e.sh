@@ -44,14 +44,6 @@ REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 FAILURES=0
 
-# REAL_MSB_HOME (msb-port note, mirrors test-e2e-lifecycle.sh /
-# test-pi-auth-mount.sh): _spin_up_cage below overrides HOME per-invocation
-# to a throwaway per-cage tmpdir for config isolation. msb derives its
-# per-sandbox agent-relay Unix socket path from $HOME by default, and the
-# tmpdir path is long enough on macOS to overflow the 104-byte AF_UNIX path
-# limit ("agent relay socket path is too long"). Pointing MSB_HOME at the
-# real, unmodified microsandbox home for that same invocation sidesteps it.
-REAL_MSB_HOME="${HOME}/.microsandbox"
 
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
@@ -125,32 +117,42 @@ trap _e2e_cleanup EXIT
 # ---------------------------------------------------------------------------
 _spin_up_cage() {
   local suffix="$1"
-  local manifest_yaml="$2"
+  local extra_mounts="$2"
   local ws_base="$3"
 
   local cage_name="rc-mount-mode-e2e-${suffix}"
   local ws="${ws_base}/rc/${cage_name}"
   mkdir -p "$ws"
 
-  local home_dir="${ws_base}/home-${suffix}"
-  mkdir -p "${home_dir}/.config/rip-cage"
-  printf '%s\n' "$manifest_yaml" > "${home_dir}/.config/rip-cage/tools.yaml"
-  cat > "${home_dir}/.config/rip-cage/config.yaml" <<'YAML'
-version: 2
-mounts:
-  denylist:
-    - ".ssh"
-    - ".gnupg"
-    - ".aws"
-  allow_risky: null
-YAML
+  # THE MOUNT DECLARATION MOVED (rip-cage-ely4.7.4, ADR-031 D2/D4). It used to
+  # be a tools.yaml entry carrying host/dest/mode, handed to rc through a
+  # manifest path override. The manifest retired; mounts are lines in the one
+  # native cage config now, in the "HOST:GUEST[:ro]" form the shipped template
+  # documents. EXTRA_MOUNTS is those lines, already indented -- and the
+  # per-asset ro/rw distinction this whole file exists to prove is carried by
+  # the presence or absence of the :ro suffix.
+  #
+  # The config is written BESIDE the workspace, never inside it: rc refuses,
+  # fail-closed, a config that resolves inside a tree that same config mounts
+  # (ADR-031 D5(a)), so a fixture written into $ws would be refused before any
+  # case reached its own subject.
+  local ws_pp conf
+  ws_pp=$(cd "$ws" && pwd -P) || ws_pp="$ws"
+  conf="${ws_base}/cage-${suffix}.yaml"
+  {
+    printf 'image: %s\n' "${RC_IMAGE:-rip-cage:latest}"
+    printf 'workdir: /workspace\n'
+    printf 'mounts:\n'
+    printf '  - "%s:/workspace"\n' "$ws_pp"
+    [[ -n "$extra_mounts" ]] && printf '%s\n' "$extra_mounts"
+    printf 'network:\n'
+    printf '  policy: none\n'
+    printf '  allow:\n'
+    printf '    - "api.anthropic.com:tcp:443"\n'
+  } > "$conf"
 
-  local ws_real
-  ws_real=$(realpath "$ws_base" 2>/dev/null) || ws_real="$ws_base"
-
-  # rc up in non-TTY context — ignore the attach exit code but verify container running.
-  # MSB_HOME pinned to the real microsandbox home (see REAL_MSB_HOME note above)
-  # so the per-cage HOME override doesn't overflow msb's AF_UNIX socket path limit.
+  # rc up in non-TTY context — ignore the attach exit code but verify the cage
+  # is running afterwards.
   #
   # rc up's own stdout+stderr is redirected to a log file, NOT left to leak
   # into this function's return value: _spin_up_cage's caller captures its
@@ -161,11 +163,11 @@ YAML
   # port here since it blocks RE1-RE3 from ever reaching a real cage).
   local up_log
   up_log=$(mktemp)
-  HOME="$home_dir" MSB_HOME="$REAL_MSB_HOME" XDG_CONFIG_HOME="${home_dir}/.config" \
-    RC_MANIFEST_GLOBAL="${home_dir}/.config/rip-cage/tools.yaml" \
-    RC_CONFIG_GLOBAL="${home_dir}/.config/rip-cage/config.yaml" \
-    RC_ALLOWED_ROOTS="$ws_real" \
-    "${RC}" up "${ws}" >"$up_log" 2>&1 || true
+  # The per-cage HOME / XDG override existed only to isolate the fixture
+  # manifest, and goes with it -- and so does the MSB_HOME workaround, which
+  # existed only to undo that override. RC_ALLOWED_ROOTS goes too: ADR-031 D2
+  # deleted the allowed-roots guard. What the cage mounts is in --conf now.
+  RC_CAGE_CONF="$conf" "${RC}" up "${ws}" </dev/null >"$up_log" 2>&1 || true
 
   # Resolve the ACTUAL cage name by workspace/source_path (canonical port
   # idiom, /tmp/msb-port-canonical.md) rather than trusting $cage_name as
@@ -185,7 +187,11 @@ YAML
     cat "$up_log" >&2
     real_cage_name="$cage_name"  # fallback: makes the readiness-poll fail loudly below
   fi
-  rm -f "$up_log"
+  if [[ -n "${RC_MOUNTMODE_KEEP_LOG:-}" ]]; then
+    echo "_spin_up_cage(${suffix}): rc up log at ${up_log}" >&2
+  else
+    rm -f "$up_log"
+  fi
 
   # NOTE: _track is NOT called here. Callers capture this function's stdout
   # via `$(...)` (e.g. `_re1_cage=$(_spin_up_cage ...)`), which forks a
@@ -211,23 +217,17 @@ _re1_tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/rc-e2e-re1-XXXXXX")
 _re1_ro_dir="${_re1_tmpdir}/ro-asset"
 mkdir -p "$_re1_ro_dir"
 echo "ro-sentinel" > "${_re1_ro_dir}/sentinel.txt"
+# RESOLVE the asset dir before it becomes a mount source. msb does not follow a
+# host-side symlink in a bind source, and on macOS $TMPDIR lives under /var,
+# itself a symlink to /private/var -- an unresolved path boots to
+# "mount ...: Not a directory (os error 20)" (same trap _cage-conf-lib.sh
+# documents for the workspace line).
+_re1_ro_dir=$(cd "$_re1_ro_dir" && pwd -P)
 
-_re1_manifest=$(cat <<YAML
-version: 1
-tools:
-  - name: ro-guard
-    archetype: TOOL
-    version_pin: "bundled"
-    egress: []
-    mounts:
-      - host: "${_re1_ro_dir}"
-        dest: "/home/agent/ro-asset"
-        mode: ro
-        root_owned_required: false
-YAML
-)
+# One extra mount, read-only. The :ro suffix IS the subject of this case.
+_re1_mounts=$(printf '  - "%s:/home/agent/ro-asset:ro"' "$_re1_ro_dir")
 
-_re1_cage=$(_spin_up_cage "re1" "$_re1_manifest" "$_re1_tmpdir")
+_re1_cage=$(_spin_up_cage "re1" "$_re1_mounts" "$_re1_tmpdir")
 _track "$_re1_cage"  # parent-shell tracking — see _spin_up_cage's subshell note above
 
 # Wait briefly for the container to start
@@ -282,22 +282,18 @@ _re2_rw_dir="${_re2_tmpdir}/rw-asset"
 mkdir -p "$_re2_rw_dir"
 # Make agent-writable (the host dir must be writable by the agent uid=1000)
 chmod 777 "$_re2_rw_dir"
+# RESOLVE the asset dir before it becomes a mount source. msb does not follow a
+# host-side symlink in a bind source, and on macOS $TMPDIR lives under /var,
+# itself a symlink to /private/var -- an unresolved path boots to
+# "mount ...: Not a directory (os error 20)" (same trap _cage-conf-lib.sh
+# documents for the workspace line).
+_re2_rw_dir=$(cd "$_re2_rw_dir" && pwd -P)
 
-_re2_manifest=$(cat <<YAML
-version: 1
-tools:
-  - name: rw-skill
-    archetype: TOOL
-    version_pin: "bundled"
-    egress: []
-    mounts:
-      - host: "${_re2_rw_dir}"
-        dest: "/home/agent/rw-asset"
-        mode: rw
-YAML
-)
+# One extra mount, read-WRITE: no :ro suffix. RE2's whole subject is that the
+# write lands on the host, so the absence of the suffix is the fixture.
+_re2_mounts=$(printf '  - "%s:/home/agent/rw-asset"' "$_re2_rw_dir")
 
-_re2_cage=$(_spin_up_cage "re2" "$_re2_manifest" "$_re2_tmpdir")
+_re2_cage=$(_spin_up_cage "re2" "$_re2_mounts" "$_re2_tmpdir")
 _track "$_re2_cage"  # parent-shell tracking — see _spin_up_cage's subshell note above
 
 # Wait for container
@@ -354,30 +350,20 @@ _re3_rw_dir="${_re3_tmpdir}/skill-asset"
 mkdir -p "$_re3_ro_dir" "$_re3_rw_dir"
 echo "guard-sentinel" > "${_re3_ro_dir}/guard.txt"
 chmod 777 "$_re3_rw_dir"
+# RESOLVE the asset dir before it becomes a mount source. msb does not follow a
+# host-side symlink in a bind source, and on macOS $TMPDIR lives under /var,
+# itself a symlink to /private/var -- an unresolved path boots to
+# "mount ...: Not a directory (os error 20)" (same trap _cage-conf-lib.sh
+# documents for the workspace line).
+_re3_ro_dir=$(cd "$_re3_ro_dir" && pwd -P)
+_re3_rw_dir=$(cd "$_re3_rw_dir" && pwd -P)
 
-_re3_manifest=$(cat <<YAML
-version: 1
-tools:
-  - name: ro-guard-tool
-    archetype: TOOL
-    version_pin: "bundled"
-    egress: []
-    mounts:
-      - host: "${_re3_ro_dir}"
-        dest: "/home/agent/ro-guard"
-        mode: ro
-  - name: rw-skill-tool
-    archetype: TOOL
-    version_pin: "bundled"
-    egress: []
-    mounts:
-      - host: "${_re3_rw_dir}"
-        dest: "/home/agent/rw-skill"
-        mode: rw
-YAML
-)
+# TWO extra mounts on separate paths, one read-only and one read-write, in ONE
+# cage. That simultaneity is RE3's subject: either mode alone is RE1 or RE2.
+_re3_mounts=$(printf '  - "%s:/home/agent/ro-guard:ro"\n  - "%s:/home/agent/rw-skill"' \
+  "$_re3_ro_dir" "$_re3_rw_dir")
 
-_re3_cage=$(_spin_up_cage "re3" "$_re3_manifest" "$_re3_tmpdir")
+_re3_cage=$(_spin_up_cage "re3" "$_re3_mounts" "$_re3_tmpdir")
 _track "$_re3_cage"  # parent-shell tracking — see _spin_up_cage's subshell note above
 
 # Wait for container
