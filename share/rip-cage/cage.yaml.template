@@ -48,6 +48,16 @@ mounts:
   # SYMLINKED skill target needs; this line covers the skills directory itself.
   - "<ABSOLUTE_PATH_TO_YOUR_HOME>/.claude/skills:/home/agent/.claude/skills:ro"
 
+  # Your host Claude config, READ-ONLY. Claude Code in the cage needs to read
+  # it once — init copies it to a seed file under ~/.claude at boot, and the
+  # in-cage agent works from that copy, so the host file is never written from
+  # inside. Read-write here would give an agent that followed injected
+  # instructions (ADR-024) a way to edit the config your HOST Claude later
+  # executes — mcpServers and hooks live in this file. Drop the line entirely
+  # if you do not run Claude Code in this cage; msb fails the boot if the path
+  # does not exist.
+  - "<ABSOLUTE_PATH_TO_YOUR_HOME>/.claude.json:/home/agent/.claude.json:ro"
+
   # --- named volumes (map form) ------------------------------------------
   # State msb owns rather than the host filesystem. `create: ensure-exists`
   # makes the volume during `msb create`, so a fresh machine needs no setup.

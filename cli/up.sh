@@ -505,26 +505,18 @@ _up_prepare_docker_mounts() {
     log "Worktree: mounted main .git/ and corrected .git pointer for ${wt_name}"
   fi
 
-  # auth.credential_mounts (rip-cage-seqc.4) + auth.per_tool.{claude,pi}
-  # (rip-cage-xhgr): real (default) preserves today's behavior bit-for-bit.
-  # none = non-possession posture — the per-cage keychain extraction is
-  # skipped so the cage never receives a host credential. _UP_CRED_MOUNTS_CLAUDE
-  # / _UP_CRED_MOUNTS_PI are each resolved once on the create path (see cmd_up,
-  # near the rc.symlink-follow-fingerprint label) via
-  # _up_resolve_effective_credential_mounts_for_tool (effective(T) = per_tool.T
-  # if set, else the global credential_mounts, else "real") and consumed here
-  # + at every other gated site below. Callers that don't set them (e.g.
-  # legacy paths) default to "real" so the unset case is byte-identical to
-  # today. Claude's credential surface (keychain extraction + CC .claude.json/
-  # .credentials.json) is gated on effective(claude); pi's (auth.json mount +
-  # symlink-follow leaf) is gated on effective(pi) — the two tools are
-  # independently suppressible.
-  local _UP_CRED_MOUNTS_CLAUDE="${_UP_CRED_MOUNTS_CLAUDE:-real}"
+  # auth.per_tool.pi (rip-cage-xhgr): real (default) preserves today's
+  # behavior bit-for-bit; none skips pi's credential surface (auth.json mount +
+  # symlink-follow leaf). Callers that don't set it default to "real".
+  # The Claude-side twin of this switch is gone (rip-cage-ely4.7.10): a cage
+  # that wants NON-POSSESSION declares a `secrets:` binding in its own config,
+  # which is stronger than suppressing a mount, and the one thing that switch
+  # still gated — the host Claude config file — is now an ordinary mount line
+  # in the cage config where an operator can read it (ADR-031 D2). See the
+  # mount block in share/rip-cage/cage.yaml.template for the line itself.
   local _UP_CRED_MOUNTS_PI="${_UP_CRED_MOUNTS_PI:-real}"
   if [[ "${_UP_DRY_RUN_NO_SIDE_EFFECTS:-0}" == "1" ]]; then
     : # --dry-run assembles the argv without ever reaching the keychain.
-  elif [[ "$_UP_CRED_MOUNTS_CLAUDE" == "none" ]]; then
-    log "credential mounts none — Claude keychain extraction intentionally skipped (non-possession posture)"
   else
     # Extract OAuth credentials from macOS keychain to file (if on macOS)
     _extract_credentials || true
@@ -585,35 +577,18 @@ _up_prepare_docker_mounts() {
     fi
   fi
 
-  # OAuth mounts (read-write, skip if missing to avoid Docker creating empty dirs)
-  # auth.credential_mounts=none (rip-cage-seqc.4) / effective(claude) (rip-cage-xhgr):
-  # rip-cage-t7cu re-scope — the gated-as-a-unit set is now .credentials.json
-  # (the token secret) + keychain extraction ONLY. ~/.claude.json holds no
-  # token-shaped fields (account metadata + workflow state, verified by full
-  # key-inventory audit) — it was swept into the original gate by association,
-  # not because it is a credential. Under non-possession it still mounts, but
-  # READ-ONLY (:ro): an RW bind would hand a prompt-injected in-cage agent
-  # (ADR-024 in-scope) a write primitive into the host's real-credential claude
-  # config (mcpServers/hooks poisoning, later executed by host claude with real
-  # creds); under possession RW is no escalation, so the mount stays RW there
-  # (bit-for-bit unchanged). Skip-if-missing semantics match possession.
-  if [[ -f "${HOME}/.claude.json" ]]; then
-    if [[ "$_UP_CRED_MOUNTS_CLAUDE" == "none" ]]; then
-      _UP_RUN_ARGS+=(-v "${HOME}/.claude.json:/home/agent/.claude.json:ro")
-    else
-      _UP_RUN_ARGS+=(-v "${HOME}/.claude.json:/home/agent/.claude.json")
-    fi
+  # OAuth mount (read-write, skip if missing to avoid creating an empty dir).
+  # The host Claude config file is NOT mounted here: it is a plain mount line
+  # in the cage config (share/rip-cage/cage.yaml.template), read-only, where an
+  # operator reading the config sees every path the cage receives — ADR-031 D2,
+  # rip-cage-ely4.7.10. Read-only is sufficient because init snapshots it into
+  # a seed file under ~/.claude at boot (cage/init/init-rip-cage.sh) and Claude
+  # Code in-cage reads that seed; read-write would hand a prompt-injected agent
+  # (ADR-024, in scope) a write into the host's real Claude config.
+  if [[ -f "${HOME}/.claude/.credentials.json" ]]; then
+    _UP_RUN_ARGS+=(-v "${HOME}/.claude/.credentials.json:/home/agent/.claude/.credentials.json")
   else
-    log "Warning: ${HOME}/.claude.json not found — skipping mount"
-  fi
-  if [[ "$_UP_CRED_MOUNTS_CLAUDE" == "none" ]]; then
-    log "auth.credential_mounts=none — Claude .credentials.json mount intentionally skipped (non-possession posture)"
-  else
-    if [[ -f "${HOME}/.claude/.credentials.json" ]]; then
-      _UP_RUN_ARGS+=(-v "${HOME}/.claude/.credentials.json:/home/agent/.claude/.credentials.json")
-    else
-      log "Warning: ${HOME}/.claude/.credentials.json not found — skipping mount (fine if you are not using Claude Code in this cage)"
-    fi
+    log "Warning: ${HOME}/.claude/.credentials.json not found — skipping mount (fine if you are not using Claude Code in this cage)"
   fi
 
   # Symlink-follow mount synthesis (rip-cage-c1p.2 / D1-D4 FIRM).
@@ -3035,13 +3010,15 @@ cmd_up() {
   # symlink-follow fingerprint call below (B1a) — the fingerprint's leaf-filter
   # (F1) must be computed with the SAME effective(pi) value that determines
   # the mount set, or the create-time fingerprint label would not match the
-  # honest post-filter mount set. _UP_CREDENTIAL_MOUNTS / _UP_CRED_MOUNTS_CLAUDE
-  # / _UP_CRED_MOUNTS_PI are globals (not `local`) so _up_prepare_docker_mounts
-  # can read them below. The global label stays unchanged (byte-identical to
-  # today); the two new per-tool labels are emitted unconditionally alongside
-  # it (D5a) so resume can detect a per-tool mount-shape flip.
+  # honest post-filter mount set. _UP_CREDENTIAL_MOUNTS / _UP_CRED_MOUNTS_PI
+  # are globals (not `local`) so _up_prepare_docker_mounts can read them below.
+  # The global label stays unchanged (byte-identical to today); the two
+  # per-tool labels are emitted unconditionally alongside it (D5a) so resume
+  # can detect a per-tool mount-shape flip. The claude one is now a constant:
+  # its switch went with the mount it gated (rip-cage-ely4.7.10), and readers
+  # of the label — cli/doctor.sh, the cc-managed-settings probes — keep the
+  # value they already expect.
   _UP_CREDENTIAL_MOUNTS="real"
-  _UP_CRED_MOUNTS_CLAUDE="real"
   _UP_CRED_MOUNTS_PI="real"
   # auth.credential_mounts / auth.per_tool retired with the schema
   # (ADR-031 D2); "real" was that schema's own default, so an unconfigured
@@ -3050,7 +3027,7 @@ cmd_up() {
   # on the wire and the guest holds only the placeholder, which is a stronger
   # posture than suppressing the mount ever was (ADR-029 D3/D5).
   _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts=${_UP_CREDENTIAL_MOUNTS}")
-  _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts.claude=${_UP_CRED_MOUNTS_CLAUDE}")
+  _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts.claude=real")
   _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts.pi=${_UP_CRED_MOUNTS_PI}")
 
   # The rc.config-mode and rc.config-loaded labels are gone with the file they

@@ -2,22 +2,30 @@
 # test-claude-json-seed-synthesis.sh — NEEDS_CONTAINER host-tier test
 #
 # Verifies init-rip-cage.sh's R4 seed-synthesis extension (rip-cage-vwka):
-# when the live ~/.claude.json mount is ABSENT (non-possession posture,
-# auth.per_tool.claude: none) and no ~/.claude/.claude.json.seed exists yet,
-# init writes a minimal synthesized seed carrying hasCompletedOnboarding:true
-# — so interactive claude skips the theme+login onboarding screens instead of
-# hitting an unusable-in-cage browser OAuth login wall (proven manually
-# 2026-07-06). The possession-case snapshot (rip-cage-p1p, R4) must stay
-# byte-identical, and synthesis must never clobber an existing seed.
+# when the host Claude config is NOT mounted and no ~/.claude/.claude.json.seed
+# exists yet, init writes a minimal synthesized seed carrying
+# hasCompletedOnboarding:true — so interactive claude skips the theme+login
+# onboarding screens instead of hitting an unusable-in-cage browser OAuth login
+# wall (proven manually 2026-07-06). When the config IS mounted, the snapshot
+# (rip-cage-p1p, R4) must stay byte-identical, and synthesis must never clobber
+# an existing seed.
 #
-# Coverage:
-#   V1  — seed synthesized when the live mount is absent (non-possession)
+# WHAT DECIDES WHICH CASE A CAGE IS IN (rip-cage-ely4.7.10): one mount line in
+# the cage's own config file, read-only — the line the shipped template carries
+# (share/rip-cage/cage.yaml.template) and tests/_cage-conf-lib.sh reproduces.
+# rc adds no Claude-config mount of its own, so a cage whose config omits the
+# line simply has no such file in-cage.
+#
+# Coverage, across two cages: NP (fixture HOME without the file, so the config
+# carries no mount line) and PC (fixture HOME with it, so the config mounts it
+# read-only).
+#   V1  — seed synthesized when the config carries no mount line (NP)
 #   V1b — synthesized seed carries no oauthAccount / credential-shaped fields
 #   V2  — synthesis never clobbers an existing seed: a sentinel written into
-#         the seed survives a second init run (real docker-stop + rc-up resume,
-#         same call site as the possession-case rip-cage-p1p ordering)
-#   V3  — positive control: possession path still snapshots byte-identical to
-#         the live ~/.claude.json mount (R4 ordering untouched)
+#         the seed survives a second init run (real msb-stop + rc-up resume,
+#         same call site as the rip-cage-p1p snapshot ordering)
+#   V3  — positive control: the mounted path still snapshots byte-identical to
+#         the host fixture (R4 ordering untouched) (PC)
 #   V4  — claude-wrapper 'no seed snapshot' WARNING does not fire once a seed
 #         is present. Copies the UNMODIFIED canonical wrapper
 #         (examples/claude/claude-session-wrapper.sh) into the cage and stubs
@@ -26,12 +34,9 @@
 #   V5  — genuinely-broken case: the WARNING still fires when no seed exists
 #         at all (keeps the wrapper's fail-loud fallback alive per the bead's
 #         explicit constraint — this is NOT a regression to fix away)
-#   V6  — rip-cage-t7cu: effective(claude)=none WITH a host ~/.claude.json
-#         fixture present -> the mount is now carried (read-only) instead of
-#         suppressed; init snapshots the mounted file byte-identical to the
-#         fixture, and the synthesized minimal fallback (V1's path) does NOT
-#         fire. V6b: the in-cage mount is actually read-only (write attempt
-#         fails).
+#   V6  — the synthesized fallback does NOT fire when the mount is present (PC)
+#   V6b — the in-cage file really is read-only: an append fails (PC)
+#   V6c — msb inspect reports the mount with the mode the config declared (PC)
 #
 # CRITICAL: run-host.sh exports RC_CONFIG_GLOBAL pointing to a benign fixture
 # for the whole suite. Standalone runs must not inherit a dev machine's real
@@ -104,7 +109,6 @@ echo "=== test-claude-json-seed-synthesis.sh ==="
 
 NP_HOME=""; NP_WS_ROOT=""; NP_NAME=""
 PC_HOME=""; PC_WS_ROOT=""; PC_NAME=""
-NN_HOME=""; NN_WS_ROOT=""; NN_NAME=""
 
 # HARDENED CLEANUP SHAPE (rip-cage-neu7.14, Batch E msb port; incident
 # guardrail — see /tmp/msb-port-canonical.md). CREATED_CAGES holds ONLY the
@@ -134,18 +138,16 @@ cleanup() {
   [[ -n "$NP_WS_ROOT" && -d "$NP_WS_ROOT" ]] && rm -rf "$NP_WS_ROOT"
   [[ -n "$PC_HOME" && -d "$PC_HOME" ]] && rm -rf "$PC_HOME"
   [[ -n "$PC_WS_ROOT" && -d "$PC_WS_ROOT" ]] && rm -rf "$PC_WS_ROOT"
-  [[ -n "$NN_HOME" && -d "$NN_HOME" ]] && rm -rf "$NN_HOME"
-  [[ -n "$NN_WS_ROOT" && -d "$NN_WS_ROOT" ]] && rm -rf "$NN_WS_ROOT"
 }
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# Setup: non-possession cage (no live ~/.claude.json mount, no credentials
-# file — the same non-possession shape as rip-cage-df1c's case 6: a
-# CLAUDE_CODE_OAUTH_TOKEN placeholder carried via --env-file).
+# Setup: NP cage — fixture HOME has no Claude config file, so its cage config
+# carries no mount line for one and the cage boots without it. A
+# CLAUDE_CODE_OAUTH_TOKEN placeholder rides in via --env-file.
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== Setup: non-possession cage (no live ~/.claude.json mount) ==="
+echo "=== Setup: NP cage (cage config carries no Claude-config mount) ==="
 NP_WS_ROOT=$(mktemp -d)
 NP_HOME=$(mktemp -d)
 NP_WS="${NP_WS_ROOT}/np-cage"
@@ -155,17 +157,24 @@ NP_ENVFILE="${NP_WS_ROOT}/np.env"
 printf 'CLAUDE_CODE_OAUTH_TOKEN=placeholder-token-vwka\n' > "$NP_ENVFILE"
 chmod 600 "$NP_ENVFILE"
 NP_UP_OUT="${NP_WS_ROOT}/np-up.out"
+# Generate the config in its own statement, with HOME pointed at the fixture:
+# the generator reads HOME to decide whether to carry the template's
+# host-Claude-config mount line, and burying that dependency in the env prefix
+# of the `rc up` call below hides it behind bash's assignment ordering. This
+# HOME has no such file, so the cage boots without the mount — the input V1
+# needs.
+NP_CONF=$(HOME="$NP_HOME" cage_conf_for "$NP_WS")
 HOME="$NP_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_HOME" \
   RC_SKIP_KEYCHAIN_EXTRACTION=1 \
   ANTHROPIC_API_KEY="" \
-  RC_CAGE_CONF="$(cage_conf_for "$NP_WS")" \
+  RC_CAGE_CONF="$NP_CONF" \
   RIP_CAGE_EGRESS=off \
   "$RC" up "$NP_WS" --env-file "$NP_ENVFILE" </dev/null >"$NP_UP_OUT" 2>&1 || true
 NP_NAME=$(cage_name_for_source "$NP_WS")
 
 NP_LIVE=false
 if [[ -z "$NP_NAME" ]]; then
-  fail "non-possession cage did not start (see $NP_UP_OUT)"
+  fail "NP cage did not start (see $NP_UP_OUT)"
 else
   _track "$NP_NAME"
   NP_LOG=$(cat "$NP_UP_OUT" 2>/dev/null || true)
@@ -173,9 +182,9 @@ else
   # vacuously against an empty capture (rip-cage-igm discipline).
   if printf '%s\n' "$NP_LOG" | grep -q '\[rip-cage\] pi '; then
     NP_LIVE=true
-    pass "non-possession cage booted (init sentinel present)"
+    pass "NP cage booted (init sentinel present)"
   else
-    fail "non-possession cage init sentinel absent — init output not captured" "(see $NP_UP_OUT)"
+    fail "NP cage init sentinel absent — init output not captured" "(see $NP_UP_OUT)"
   fi
 fi
 
@@ -187,7 +196,7 @@ if [[ "$NP_LIVE" == "true" ]]; then
   echo "=== V1: seed synthesized when mount absent ==="
   NP_SEED=$(msb exec "$NP_NAME" -- cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
   if [[ -z "$NP_SEED" ]]; then
-    fail "V1: /home/agent/.claude/.claude.json.seed missing or empty in non-possession cage"
+    fail "V1: /home/agent/.claude/.claude.json.seed missing or empty in the NP cage"
   else
     pass "V1: /home/agent/.claude/.claude.json.seed present and non-empty"
     if echo "$NP_SEED" | jq -e '.hasCompletedOnboarding == true' >/dev/null 2>&1; then
@@ -216,7 +225,7 @@ fi
 # sentinel, then drive a REAL resume (msb stop + rc up — msb-port note,
 # rip-cage-neu7.14: `docker stop` has no docker analog under msb; state-
 # preserving stop is `msb stop`, resume is still `rc up`) — the same call
-# site (_up_init_container) that runs on the possession-case ordering — and
+# site (_up_init_container) that runs on the mounted-case ordering — and
 # confirm the sentinel survives untouched.
 # ---------------------------------------------------------------------------
 if [[ "$NP_LIVE" == "true" ]]; then
@@ -229,7 +238,7 @@ if [[ "$NP_LIVE" == "true" ]]; then
   HOME="$NP_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_HOME" \
     RC_SKIP_KEYCHAIN_EXTRACTION=1 \
     ANTHROPIC_API_KEY="" \
-    RC_CAGE_CONF="$(cage_conf_for "$NP_WS")" \
+    RC_CAGE_CONF="$NP_CONF" \
     RIP_CAGE_EGRESS=off \
     "$RC" up "$NP_WS" </dev/null >"$NP_RESUME_OUT" 2>&1 || true
   NP_RESUME_LOG=$(cat "$NP_RESUME_OUT" 2>/dev/null || true)
@@ -246,7 +255,7 @@ if [[ "$NP_LIVE" == "true" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# V4 / V5: claude-wrapper WARNING behavior. Reuses the non-possession cage
+# V4 / V5: claude-wrapper WARNING behavior. Reuses the NP cage
 # (a seed is present after V1/V2). Copies the real, unmodified canonical
 # wrapper into the container and stubs only REAL_CLAUDE so exec is harmless.
 # ---------------------------------------------------------------------------
@@ -295,11 +304,12 @@ if [[ "$NP_LIVE" == "true" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Setup: possession-posture cage (live ~/.claude.json fixture mounted) —
-# positive control for V3.
+# Setup: mounted-config cage — the host Claude config fixture IS mounted,
+# read-only, because the cage config declares it (rip-cage-ely4.7.10). Positive
+# control for V3 and the subject of V6/V6b.
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== Setup: possession-posture cage (live ~/.claude.json mounted) ==="
+echo "=== Setup: cage whose config mounts the host Claude config file ==="
 PC_WS_ROOT=$(mktemp -d)
 PC_HOME=$(mktemp -d)
 PC_WS="${PC_WS_ROOT}/pc-cage"
@@ -308,121 +318,76 @@ git -C "$PC_WS" init -q
 PC_SENTINEL='{"possession-sentinel-vwka":"abc123","hasCompletedOnboarding":true}'
 printf '%s' "$PC_SENTINEL" > "${PC_HOME}/.claude.json"
 PC_UP_OUT="${PC_WS_ROOT}/pc-up.out"
+# Fixture written FIRST, then the config generated against that HOME: the
+# generator carries the mount line only when the file is there to mount.
+PC_CONF=$(HOME="$PC_HOME" cage_conf_for "$PC_WS")
 HOME="$PC_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_HOME" \
   RC_SKIP_KEYCHAIN_EXTRACTION=1 \
   ANTHROPIC_API_KEY=sk-test-vwka-pc \
-  RC_CAGE_CONF="$(cage_conf_for "$PC_WS")" \
+  RC_CAGE_CONF="$PC_CONF" \
   RIP_CAGE_EGRESS=off \
   "$RC" up "$PC_WS" </dev/null >"$PC_UP_OUT" 2>&1 || true
 PC_NAME=$(cage_name_for_source "$PC_WS")
 
 PC_LIVE=false
 if [[ -z "$PC_NAME" ]]; then
-  fail "possession-control cage did not start (see $PC_UP_OUT)"
+  fail "mounted-config cage did not start (see $PC_UP_OUT)"
 else
   _track "$PC_NAME"
   PC_LOG=$(cat "$PC_UP_OUT" 2>/dev/null || true)
   if printf '%s\n' "$PC_LOG" | grep -q '\[rip-cage\] pi '; then
     PC_LIVE=true
-    pass "possession-control cage booted (init sentinel present)"
+    pass "mounted-config cage booted (init sentinel present)"
   else
-    fail "possession-control cage init sentinel absent" "(see $PC_UP_OUT)"
+    fail "mounted-config cage init sentinel absent" "(see $PC_UP_OUT)"
   fi
 fi
 
 # ---------------------------------------------------------------------------
-# V3: positive control — possession path still snapshots (R4 / rip-cage-p1p
-# ordering untouched).
+# V3 / V6 / V6b: the config-declared mount, end to end (R4 / rip-cage-p1p
+# ordering untouched; mount relocated by rip-cage-ely4.7.10).
 # ---------------------------------------------------------------------------
 if [[ "$PC_LIVE" == "true" ]]; then
   echo ""
-  echo "=== V3: positive control — possession path still snapshots ==="
+  echo "=== V3: init snapshots the mounted host config byte-identical ==="
   PC_SEED=$(msb exec "$PC_NAME" -- cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
   if [[ "$PC_SEED" == "$PC_SENTINEL" ]]; then
-    pass "V3: possession-posture seed is byte-identical to the live ~/.claude.json mount"
+    pass "V3: seed is byte-identical to the mounted host Claude config fixture"
   else
-    fail "V3: possession-posture seed does not match the live mount" "expected=$PC_SENTINEL got=$PC_SEED"
+    fail "V3: seed does not match the mounted host fixture" "expected=$PC_SENTINEL got=$PC_SEED"
   fi
-fi
 
-# ---------------------------------------------------------------------------
-# Setup: non-possession cage WITH a host ~/.claude.json fixture present
-# (rip-cage-t7cu). auth.credential_mounts: none forces effective(claude)=none;
-# the host still has a ~/.claude.json, so the re-scoped gate now carries it
-# (read-only) instead of suppressing it.
-# ---------------------------------------------------------------------------
-echo ""
-echo "=== Setup: non-possession cage WITH host ~/.claude.json fixture (rip-cage-t7cu) ==="
-NN_WS_ROOT=$(mktemp -d)
-NN_HOME=$(mktemp -d)
-NN_WS="${NN_WS_ROOT}/nn-cage"
-mkdir -p "$NN_WS"
-git -C "$NN_WS" init -q
-NN_SENTINEL='{"nn-sentinel-t7cu":"xyz789","hasCompletedOnboarding":true}'
-printf '%s' "$NN_SENTINEL" > "${NN_HOME}/.claude.json"
-cat > "${NN_WS}/.rip-cage.yaml" <<'RIPCAGE_NN_YAML_EOF'
-auth:
-  credential_mounts: none
-RIPCAGE_NN_YAML_EOF
-NN_ENVFILE="${NN_WS_ROOT}/nn.env"
-printf 'CLAUDE_CODE_OAUTH_TOKEN=placeholder-token-t7cu\n' > "$NN_ENVFILE"
-chmod 600 "$NN_ENVFILE"
-NN_UP_OUT="${NN_WS_ROOT}/nn-up.out"
-HOME="$NN_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_HOME" \
-  RC_SKIP_KEYCHAIN_EXTRACTION=1 \
-  ANTHROPIC_API_KEY="" \
-  RC_CAGE_CONF="$(cage_conf_for "$NN_WS")" \
-  RIP_CAGE_EGRESS=off \
-  "$RC" up "$NN_WS" --env-file "$NN_ENVFILE" </dev/null >"$NN_UP_OUT" 2>&1 || true
-NN_NAME=$(cage_name_for_source "$NN_WS")
-
-NN_LIVE=false
-if [[ -z "$NN_NAME" ]]; then
-  fail "non-possession-with-fixture cage did not start (see $NN_UP_OUT)"
-else
-  _track "$NN_NAME"
-  NN_LOG=$(cat "$NN_UP_OUT" 2>/dev/null || true)
-  if printf '%s\n' "$NN_LOG" | grep -q '\[rip-cage\] pi '; then
-    NN_LIVE=true
-    pass "non-possession-with-fixture cage booted (init sentinel present)"
-  else
-    fail "non-possession-with-fixture cage init sentinel absent — init output not captured" "(see $NN_UP_OUT)"
-  fi
-fi
-
-# ---------------------------------------------------------------------------
-# V6 / V6b (rip-cage-t7cu)
-# ---------------------------------------------------------------------------
-if [[ "$NN_LIVE" == "true" ]]; then
   echo ""
-  echo "=== V6: none + host ~/.claude.json present -> mount carried, snapshot NOT synthesized ==="
-  NN_SEED=$(msb exec "$NN_NAME" -- cat /home/agent/.claude/.claude.json.seed 2>/dev/null || true)
-  if [[ "$NN_SEED" == "$NN_SENTINEL" ]]; then
-    pass "V6: non-possession seed is byte-identical to the host ~/.claude.json fixture (real snapshot, not the synthesized fallback)"
-  else
-    fail "V6: non-possession seed does not match the host fixture" "expected=$NN_SENTINEL got=$NN_SEED"
-  fi
-  if echo "$NN_SEED" | grep -q 'theme.*dark'; then
-    fail "V6: synthesized minimal fallback fired despite the host mount being present" "content: $NN_SEED"
+  echo "=== V6: the synthesized fallback does NOT fire when the mount is there ==="
+  if echo "$PC_SEED" | grep -q 'theme.*dark'; then
+    fail "V6: synthesized minimal fallback fired despite the mount being present" "content: $PC_SEED"
   else
     pass "V6: synthesized minimal fallback (theme:dark sentinel) did NOT fire"
   fi
 
   echo ""
-  echo "=== V6b: the carried ~/.claude.json mount is actually read-only in-cage ==="
-  NN_WRITE_OUT=$(msb exec "$NN_NAME" -- sh -c 'echo blocked >> /home/agent/.claude.json' 2>&1)
-  NN_WRITE_EXIT=$?
-  if [[ $NN_WRITE_EXIT -ne 0 ]] && echo "$NN_WRITE_OUT" | grep -qi 'read-only\|permission denied'; then
-    pass "V6b: write to /home/agent/.claude.json in-cage fails (read-only mount, non-possession posture)"
+  echo "=== V6b: the config declared the mount :ro, so in-cage writes fail ==="
+  PC_WRITE_OUT=$(msb exec "$PC_NAME" -- sh -c 'echo blocked >> /home/agent/.claude.json' 2>&1)
+  PC_WRITE_EXIT=$?
+  if [[ $PC_WRITE_EXIT -ne 0 ]] && echo "$PC_WRITE_OUT" | grep -qi 'read-only\|permission denied'; then
+    pass "V6b: write to the in-cage Claude config fails (mount is read-only)"
   else
-    fail "V6b: write to /home/agent/.claude.json in-cage unexpectedly succeeded" "exit=$NN_WRITE_EXIT out=$NN_WRITE_OUT"
+    fail "V6b: write to the in-cage Claude config unexpectedly succeeded" "exit=$PC_WRITE_EXIT out=$PC_WRITE_OUT"
   fi
 
-  NN_CREDS=$(msb exec "$NN_NAME" -- sh -c 'test -f /home/agent/.claude/.credentials.json && echo present || echo absent' 2>/dev/null || true)
-  if [[ "$NN_CREDS" == "absent" ]]; then
-    pass "V6: .credentials.json still absent in-cage under none (positive control)"
+  echo ""
+  echo "=== V6c: msb inspect reports the mount with the mode the config declared ==="
+  # msb reports a bind mount's mode as options.readonly, not as a ':ro' suffix
+  # on a string (measured, msb 0.6.18 — a mount entry is
+  # {"type":"Bind","guest":...,"host":...,"options":{"readonly":true,...}}).
+  PC_MOUNT_RO=$(msb inspect "$PC_NAME" --format json 2>/dev/null \
+    | jq -r '.config.mounts // [] | map(select(.guest == "/home/agent/.claude.json")) | .[0].options.readonly // empty')
+  if [[ -z "$PC_MOUNT_RO" ]]; then
+    fail "V6c: msb inspect shows no bind mount at the in-cage Claude config path"
+  elif [[ "$PC_MOUNT_RO" == "true" ]]; then
+    pass "V6c: msb inspect reports the mount readonly, as the config declared"
   else
-    fail "V6: .credentials.json unexpectedly present in-cage under none" "$NN_CREDS"
+    fail "V6c: msb inspect reports the mount writable despite the config's :ro" "readonly=$PC_MOUNT_RO"
   fi
 fi
 

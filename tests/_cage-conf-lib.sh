@@ -21,13 +21,39 @@
 # cage mounts. A fixture written into the project would be refused before the
 # test reached its own subject.
 
+# _cage_conf_claude_json_line
+#
+# Echo the read-only host-Claude-config mount line the shipped template
+# carries (share/rip-cage/cage.yaml.template, mounts block), or nothing when
+# this $HOME has no such file — msb fails the boot on a bind source that does
+# not exist, and plenty of fixture HOMEs deliberately have none.
+#
+# READS $HOME AT CALL TIME. A suite that sandboxes HOME per cage must call the
+# generator with that HOME set, in a statement of its own, e.g.
+#   CONF=$(HOME="$FIXTURE_HOME" cage_conf_for "$WS")
+# Generating the config inside the env prefix of the `rc up` call works too —
+# bash applies those assignments left to right — but it hides which HOME the
+# config was written against behind that ordering.
+_cage_conf_claude_json_line() {
+  [[ -f "${HOME}/.claude.json" ]] || return 0
+  # Resolve HOME for the same reason cage_conf_for resolves the project path:
+  # a mktemp HOME on macOS sits under /var, itself a symlink to /private/var,
+  # and msb does not follow a host-side symlink in a bind source.
+  local _home
+  _home=$(cd "$HOME" 2>/dev/null && pwd -P) || _home="$HOME"
+  printf '  - "%s/.claude.json:/home/agent/.claude.json:ro"\n' "$_home"
+}
+
 # cage_conf_for <project-dir> [image-ref]
 #
 # Write a minimal-but-real cage config for PROJECT-DIR and echo its path.
 # Minimal-but-real matters: it carries the four things every cage needs (an
 # image, a workspace mount, a working directory, a default-deny egress policy
 # with one allowed host) so a test asserting on the launch argv sees a
-# representative one, not a degenerate one.
+# representative one, not a degenerate one. It also carries the template's
+# read-only host-Claude-config mount when this HOME has that file, so fixtures
+# match what ships (rip-cage-ely4.7.10) — see _cage_conf_claude_json_line for
+# the HOME-at-call-time rule that comes with it.
 cage_conf_for() {
   local _proj
   # RESOLVE the project path before writing it into a mount line. msb does not
@@ -58,6 +84,7 @@ image: ${_image}
 workdir: /workspace
 mounts:
   - "${_proj}:/workspace"
+$(_cage_conf_claude_json_line)
 network:
   policy: none
   allow:
@@ -123,6 +150,7 @@ mounts:
   - named: "rc-history-${_name}"
     target: /commandhistory
     create: ensure-exists
+$(_cage_conf_claude_json_line)
 network:
   policy: none
   allow:

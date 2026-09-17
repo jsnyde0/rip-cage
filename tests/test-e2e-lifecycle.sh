@@ -497,16 +497,20 @@ fi
 #   3. ANTHROPIC_API_KEY set → no warn
 #   4. None of the above → "WARNING: No auth found"
 #
-# Host credential files (~/.claude/.credentials.json, ~/.claude.json) are auto-mounted
-# by rc up when present. We therefore use two dimensions to cover all four cases:
+# Host credential files reach the cage two different ways now
+# (rip-cage-ely4.7.10): rc up still mounts ~/.claude/.credentials.json itself,
+# while ~/.claude.json rides in as an ordinary read-only mount line that
+# cage_conf_for writes when this HOME has the file — the same line the shipped
+# template carries. Either way the cage sees them when the host has them, so
+# two dimensions cover all four cases:
 #   - ANTHROPIC_API_KEY env var controls "Claude auth via env" (passed through to container)
-#   - Host credential files are mounted automatically; test adapts to host state.
+#   - Host credential files follow host state; test adapts to it.
 # Cases 2 and 3 differ only in pi auth state; since the warn-block ignores pi auth (D2 FIRM),
 # both produce the same Claude-warn outcome — we verify this is intentional.
 AUTH_TMP=$(_host_scratch_mktemp_d auth)
 AUTH_TMP_RESOLVED=$(realpath "$AUTH_TMP")
 
-# Detect whether host credential files exist (they are auto-mounted by rc up).
+# Detect whether host credential files exist (each reaches the cage when it does).
 _host_has_claude_creds=0
 _host_has_claude_json=0
 if [ -f "${HOME}/.claude/.credentials.json" ]; then _host_has_claude_creds=1; fi
@@ -557,7 +561,7 @@ fi
 
 # Case 2: Pi auth present, no Claude env auth → warn depends on host credential file state.
 # Note: Claude warn-line intentionally present per ADR-019 D2 — pi auth uses its own /login UI.
-# If host has ~/.claude/.credentials.json or ~/.claude.json, those are auto-mounted → no warn.
+# If host has ~/.claude/.credentials.json or ~/.claude.json, those reach the cage → no warn.
 # If host has none of those, the warn fires — confirming pi auth alone doesn't suppress it (D2).
 #
 # EQUIVALENCE NOTE (rip-cage-f4i): Case 2 is behaviorally identical to case 3 — the rc up
