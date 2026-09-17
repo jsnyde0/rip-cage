@@ -47,7 +47,16 @@ cmd_destroy() {
       *) name="$1"; shift ;;
     esac
   done
-  name=$(resolve_name "$name") || exit 1
+  # NOT resolve_name: that one ends in singleton auto-select, which on an empty
+  # name destroys whatever single cage exists — how the human's daily cage went
+  # on 2026-09-17 (rip-cage-ely4.7.13). resolve_name_for_destroy takes the
+  # typed name or the cage this directory names, and refuses otherwise.
+  # Exit 2 is the plain-mode refusal code; a JSON caller reads .code, which
+  # json_error emits with its own exit 1.
+  if ! name=$(resolve_name_for_destroy "$name"); then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "rc destroy needs a cage name; it never picks one for you" "DESTROY_NAME_REQUIRED"
+    exit 2
+  fi
 
   # rip-cage-o5ie: a sandbox that has ALREADY been removed (e.g. a prior
   # `msb remove`, or a test's own EXIT-trap teardown racing a host-side
@@ -71,7 +80,12 @@ cmd_destroy() {
     if ! msb volume inspect "rc-state-${name}" >/dev/null 2>&1 \
         && ! msb volume inspect "rc-history-${name}" >/dev/null 2>&1; then
       [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
-      echo "Error: container $name not found" >&2; exit 1
+      # Same refusal shape as an unresolvable name (rip-cage-ely4.7.13): say
+      # which cages are still standing, so a typo reads as a typo rather than
+      # as "that cage is already gone".
+      _rc_destroy_refuse "container $name not found." \
+        "Nothing was removed."
+      exit 2
     fi
   fi
 

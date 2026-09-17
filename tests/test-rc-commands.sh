@@ -1860,6 +1860,128 @@ fi
 rm -rf "$T63_ROOT"
 
 
+# ---------------------------------------------------------------------------
+# DG1-DG4: rc destroy never picks a cage nobody named (rip-cage-ely4.7.13).
+#
+# THE INCIDENT THIS PINS (2026-09-17): a probe ran `rc destroy ""` after a name
+# lookup came back empty. resolve_name's last resort is singleton auto-select,
+# so rc took the machine's only rc-managed cage — the human's daily one — and
+# removed it with both of its named volumes. ADR-031 D3 had already deleted the
+# confirmation prompt and --force, leaving name resolution as the only guard.
+#
+# WHY A SHIM AND NOT A LIVE CAGE: the property is "no msb remove/stop call
+# happens at all", which a live run can only show by NOT destroying something —
+# an assertion that passes just as well when rc silently does nothing. A PATH
+# shim recording every msb invocation makes the absence checkable: the refusals
+# must leave a log with zero remove lines, and the one legitimate destroy must
+# leave exactly one, naming the cage that was asked for.
+echo ""
+echo "=== rc destroy name guard (rip-cage-ely4.7.13) ==="
+
+DG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-destroy-guard-XXXXXX")
+DG_LOG="${DG_DIR}/msb-calls.log"
+DG_CAGE="dg-registered-cage"
+
+cat > "${DG_DIR}/msb" <<DG_STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${DG_LOG}"
+case "\$1" in
+  --version) echo 'msb 0.0.0-dg-stub'; exit 0 ;;
+  list)
+    printf '%s\n' '[{"name":"${DG_CAGE}"}]'
+    exit 0 ;;
+  inspect)
+    if [[ "\$2" == "${DG_CAGE}" ]]; then
+      printf '%s\n' '{"config":{"labels":{"rc.source.path":"/tmp/dg-project"}}}'
+      exit 0
+    fi
+    exit 1 ;;
+  volume)
+    # 'volume inspect' finds nothing; 'volume remove' succeeds.
+    [[ "\$2" == "remove" ]] && exit 0
+    exit 1 ;;
+  remove|stop) exit 0 ;;
+  *) exit 1 ;;
+esac
+DG_STUB
+chmod +x "${DG_DIR}/msb"
+
+# _dg_run <case-label> <cwd> [args...] -- run rc destroy under the shim from
+# CWD with a fresh call log. Echoes the exit code; the log is at $DG_LOG.
+_dg_run() {
+  local _cwd="$2"
+  shift 2
+  : > "$DG_LOG"
+  ( cd "$_cwd" && PATH="${DG_DIR}:$PATH" "$RC" destroy "$@" >/dev/null 2>&1 )
+  echo $?
+}
+
+# _dg_remove_calls -- how many msb remove/stop calls the last run made.
+# `grep -c` prints the count and exits 1 when that count is zero, which is the
+# case every refusal here is asserting — `|| true` keeps the count, drops the
+# status. An `|| echo 0` fallback would print a SECOND line and break the
+# comparison it was meant to make safe.
+_dg_remove_calls() {
+  grep -cE '^(remove|stop|volume remove)' "$DG_LOG" 2>/dev/null || true
+}
+
+# A directory whose name derives to no registered cage, so the CWD branch
+# cannot match and the old code would have fallen through to auto-select.
+DG_ELSEWHERE="${DG_DIR}/unrelated/project"
+mkdir -p "$DG_ELSEWHERE"
+
+# DG1: empty name argument — the incident's exact shape.
+DG1_RC=$(_dg_run "DG1" "$DG_ELSEWHERE" "")
+DG1_CALLS=$(_dg_remove_calls)
+if [[ "$DG1_RC" -eq 2 && "$DG1_CALLS" -eq 0 ]]; then
+  pass "DG1: rc destroy '' refuses (exit 2) and makes no msb remove/stop call"
+else
+  fail "DG1: rc destroy '' must refuse without removing anything"
+  echo "     exit=$DG1_RC remove-calls=$DG1_CALLS" >&2
+fi
+
+# DG2: no argument at all, from a CWD that names no cage.
+DG2_RC=$(_dg_run "DG2" "$DG_ELSEWHERE")
+DG2_CALLS=$(_dg_remove_calls)
+if [[ "$DG2_RC" -eq 2 && "$DG2_CALLS" -eq 0 ]]; then
+  pass "DG2: rc destroy with no name, from an unmatched CWD, refuses and removes nothing"
+else
+  fail "DG2: rc destroy with no name must refuse without removing anything"
+  echo "     exit=$DG2_RC remove-calls=$DG2_CALLS" >&2
+fi
+
+# DG3: a name that resolves to no cage. Refusing here is what makes a typo read
+# as a typo instead of as a cage that was already gone.
+DG3_RC=$(_dg_run "DG3" "$DG_ELSEWHERE" "dg-no-such-cage")
+DG3_CALLS=$(_dg_remove_calls)
+if [[ "$DG3_RC" -eq 2 && "$DG3_CALLS" -eq 0 ]]; then
+  pass "DG3: rc destroy <unknown name> refuses and makes no msb remove/stop call"
+else
+  fail "DG3: rc destroy <unknown name> must refuse without removing anything"
+  echo "     exit=$DG3_RC remove-calls=$DG3_CALLS" >&2
+fi
+
+# DG4: POSITIVE CONTROL — the named cage IS destroyed. Without this, DG1-DG3
+# would pass just as well against an rc destroy that never works at all.
+DG4_RC=$(_dg_run "DG4" "$DG_ELSEWHERE" "$DG_CAGE")
+if [[ "$DG4_RC" -eq 0 ]] && grep -qE "^remove --force ${DG_CAGE}\$" "$DG_LOG"; then
+  pass "DG4: rc destroy <exact name> still removes that cage (refusals are not a dead verb)"
+else
+  fail "DG4: rc destroy <exact name> must still reach msb remove for that cage"
+  echo "     exit=$DG4_RC log:" >&2; cat "$DG_LOG" >&2
+fi
+
+# DG5: the refusal names the cages it left alone, so an operator can act on it.
+DG5_OUT=$( cd "$DG_ELSEWHERE" && PATH="${DG_DIR}:$PATH" "$RC" destroy "" 2>&1 >/dev/null )
+if echo "$DG5_OUT" | grep -q "$DG_CAGE" && echo "$DG5_OUT" | grep -qi 'untouched'; then
+  pass "DG5: the refusal lists the registered cage as untouched"
+else
+  fail "DG5: the refusal must name the cages it did not touch"
+  echo "     got: $DG5_OUT" >&2
+fi
+
+rm -rf "$DG_DIR"
+
 # --- Cleanup ---
 rm -rf "$SYMLINK_SKILLS_DIR" "$SYMLINK_TARGET_DIR" "$SYMLINK_SKILLS_DIR2" "$HOME_TARGET_DIR" "$SIBLING_DIR"
 _rc_cmds_drop_fixture_tag

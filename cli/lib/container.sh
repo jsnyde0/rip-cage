@@ -18,6 +18,95 @@ container_name() {
 
 
 
+# _rc_managed_cage_names -- newline-separated names of every msb sandbox
+# carrying the rc.source.path label, i.e. every cage rc created. Empty output
+# means none. Returns 1 only when msb itself cannot be asked.
+#
+# One copy of this loop, three callers: resolve_name's singleton auto-select
+# below, and both of rc destroy's refusal messages (which list these names as
+# the cages they did NOT touch).
+_rc_managed_cage_names() {
+  local sandboxes_json names="" _sbx _label
+  if ! sandboxes_json=$(msb list --format json 2>/dev/null); then
+    return 1
+  fi
+  while IFS= read -r _sbx; do
+    [[ -z "$_sbx" ]] && continue
+    _label=$(_msb_label "$_sbx" "rc.source.path" 2>/dev/null || true)
+    [[ -n "$_label" ]] && names+="${_sbx}"$'\n'
+  done < <(jq -r '.[].name' <<<"$sandboxes_json" 2>/dev/null)
+  printf '%s' "${names%$'\n'}"
+}
+
+
+# resolve_name_for_destroy [NAME] -- name resolution for a DESTRUCTIVE verb.
+#
+# WHY THIS EXISTS, SEPARATE FROM resolve_name (rip-cage-ely4.7.13, incident
+# 2026-09-17): resolve_name ends in singleton auto-select — when it is handed
+# nothing and the current directory names no cage, it picks whatever single
+# rc-managed cage exists. For a read-only verb (`rc doctor`, `rc test`) that is
+# a convenience. For `rc destroy` it is a way to delete a cage nobody named:
+# an empty argument from a failed lookup destroyed the machine's only cage, and
+# its two named volumes with it. ADR-031 D3 deleted the confirmation prompt and
+# --force, so name resolution is the ONLY guard left on this verb.
+#
+# So: the name the caller typed, or the cage THIS DIRECTORY names, and nothing
+# else. Prints the resolved name on stdout. On refusal, prints what it would
+# have needed — plus the cages it left alone — on stderr and returns 1; the
+# caller owns the exit code.
+resolve_name_for_destroy() {
+  local name="${1:-}"
+  if [[ -n "$name" ]]; then
+    echo "$name"
+    return 0
+  fi
+
+  # The current directory, and only if a cage of exactly that derived name is
+  # rc-managed. This is a match, not a guess: the caller is standing in the
+  # project whose cage this is.
+  local cwd_resolved cwd_candidate cwd_label
+  cwd_resolved=$(realpath "." 2>/dev/null) || true
+  if [[ -n "$cwd_resolved" ]]; then
+    cwd_candidate=$(container_name "$cwd_resolved")
+    if [[ -n "$cwd_candidate" ]]; then
+      cwd_label=$(_msb_label "$cwd_candidate" "rc.source.path" 2>/dev/null || true)
+      if [[ -n "$cwd_label" ]]; then
+        echo "$cwd_candidate"
+        return 0
+      fi
+    fi
+  fi
+
+  _rc_destroy_refuse "rc destroy needs a cage name." \
+    "No name was given and this directory names no rc-managed cage."
+  return 1
+}
+
+
+# _rc_destroy_refuse HEADLINE DETAIL -- the shared refusal message for a
+# destroy that will not happen. Lists the rc-managed cages as UNTOUCHED, so the
+# operator can read what survived and name the one they meant. Listing them is
+# the helpful half; choosing one of them is the thing this refusal exists to
+# not do.
+_rc_destroy_refuse() {
+  local headline="$1" detail="$2"
+  local cages
+  cages=$(_rc_managed_cage_names) || cages=""
+  {
+    echo "Error: ${headline}"
+    echo "       ${detail}"
+    echo "       rc destroy never picks a cage for you (rip-cage-ely4.7.13)."
+    if [[ -n "$cages" ]]; then
+      echo "       Untouched rc-managed cages:"
+      printf '         %s\n' "$cages"
+      echo "       Run: rc destroy <name>"
+    else
+      echo "       No rc-managed cages exist right now."
+    fi
+  } >&2
+}
+
+
 # rip-cage-rj68 (S6, ADR-029 D1 hard cutover): resolve_name/verify_rc_container/
 # _container_multiplexer are shared by cli/up.sh, cli/reload.sh, cli/doctor.sh
 # (all rewritten onto msb by this bead) AND by cli/attach_exec.sh,
@@ -55,20 +144,15 @@ resolve_name() {
   fi
 
   # Fallback: if no CWD match, use singleton auto-select over ALL real msb
-  # sandboxes carrying the rc.source.path label.
-  local sandboxes_json
-  if ! sandboxes_json=$(msb list --format json 2>/dev/null); then
+  # sandboxes carrying the rc.source.path label. READ-ONLY VERBS ONLY —
+  # `rc destroy` deliberately does not reach this point; it resolves through
+  # resolve_name_for_destroy above, which refuses instead of auto-selecting
+  # (rip-cage-ely4.7.13).
+  local containers
+  if ! containers=$(_rc_managed_cage_names); then
     echo "Error: failed to list sandboxes (is msb running?)" >&2
     return 1
   fi
-  local containers=""
-  local _rn_sbx_name _rn_label
-  while IFS= read -r _rn_sbx_name; do
-    [[ -z "$_rn_sbx_name" ]] && continue
-    _rn_label=$(_msb_label "$_rn_sbx_name" "rc.source.path" 2>/dev/null || true)
-    [[ -n "$_rn_label" ]] && containers+="${_rn_sbx_name}"$'\n'
-  done < <(jq -r '.[].name' <<<"$sandboxes_json" 2>/dev/null)
-  containers="${containers%$'\n'}"
   local count
   count=$(echo "$containers" | grep -c . || true)
   if [[ "$count" -eq 0 ]]; then
