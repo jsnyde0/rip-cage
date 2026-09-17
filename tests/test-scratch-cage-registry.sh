@@ -177,6 +177,11 @@ PI_ROOT="${WORK}/pi"
 mkdir -p "${PI_ROOT}/tests"
 ln -sf "${REPO_ROOT}/tests/test-pi-install.sh" "${PI_ROOT}/tests/test-pi-install.sh"
 ln -sf "${REPO_ROOT}/tests/_scratch-cage-lib.sh" "${PI_ROOT}/tests/_scratch-cage-lib.sh"
+# Every lib test-pi-install.sh sources has to be linked in, or it dies on a
+# missing source and this suite reads that as "the cage was skipped" —
+# T6's failure mode exactly. _cage-lookup-lib.sh arrived with rip-cage-ely4.7.3,
+# when cage discovery moved off the retired `rc ls`.
+ln -sf "${REPO_ROOT}/tests/_cage-lookup-lib.sh" "${PI_ROOT}/tests/_cage-lookup-lib.sh"
 
 FAKE_BIN="${WORK}/bin"
 mkdir -p "$FAKE_BIN"
@@ -188,19 +193,34 @@ exit 0
 FAKEEOF
 chmod +x "${FAKE_BIN}/docker"
 
-# The stub rc for the pi legs: `ls --output json` reports ONE running cage
-# named by $RC_STUB_RUNNING; `exec` answers agent:agent; anything else exits 0.
+# The stub msb for the pi legs (rip-cage-ely4.7.3): cage discovery and in-cage
+# exec moved off `rc ls` / `rc exec` onto msb when those verbs retired
+# (ADR-031 D3), so the stub that answers them has to move too, or T6b asserts
+# on a call nothing makes any more.
+#
+# `list --format json` reports ONE running cage named by $RC_STUB_RUNNING.
+# Note the CAPITALIZED status: that is msb's own vocabulary, and stubbing it
+# lowercase would let a discovery bug that only matches "running" pass here
+# while failing against a real msb.
+cat > "${FAKE_BIN}/msb" <<'MSBSTUBEOF'
+#!/usr/bin/env bash
+echo "msb $*" >> "$RC_STUB_LOG"
+case "${1:-}" in
+  list)
+    printf '[{"name":"%s","status":"Running"}]\n' "$RC_STUB_RUNNING"
+    exit 0 ;;
+  exec)
+    echo "agent:agent"
+    exit 0 ;;
+esac
+exit 0
+MSBSTUBEOF
+chmod +x "${FAKE_BIN}/msb"
+
+# The stub rc for the pi legs: everything the suite still routes through rc.
 cat > "${PI_ROOT}/rc" <<'STUBEOF'
 #!/usr/bin/env bash
 echo "rc $*" >> "$RC_STUB_LOG"
-if [[ "${1:-}" == "ls" ]]; then
-  printf '[{"name":"%s","status":"running"}]\n' "$RC_STUB_RUNNING"
-  exit 0
-fi
-if [[ "${1:-}" == "exec" ]]; then
-  echo "agent:agent"
-  exit 0
-fi
 exit 0
 STUBEOF
 chmod +x "${PI_ROOT}/rc"
@@ -261,10 +281,10 @@ if echo "$t6_out" | grep -q "SKIP: no harness-created running cage"; then
 else
   pass "T6: a registered running cage is selected (so T5's SKIP is a real discrimination)"
 fi
-if grep -qF "rc exec T-tmp.ours" "$LOG6"; then
+if grep -qF "msb exec T-tmp.ours" "$LOG6"; then
   pass "T6b: Tests 3/4 really executed against the registered cage"
 else
-  fail "T6b: expected 'rc exec T-tmp.ours' in the call log" "$(cat "$LOG6")"
+  fail "T6b: expected 'msb exec T-tmp.ours' in the call log" "$(cat "$LOG6")"
 fi
 if [[ "$t6_rc" -eq 0 ]]; then
   pass "T6c: the file still exits 0 on the happy path"

@@ -854,8 +854,22 @@ echo "=== (j) ${_j_driver}.sh probes are manual-only -- no file the driver runs 
 
 _j_path_re="${_j_driver}\\.sh"
 _j_marker="manual-only-probe(${_j_driver}.sh)"
+# SECOND EXEMPTION, narrower than the first (rip-cage-ely4.7.9). The hazard
+# this case guards is a NESTED DRIVER RUN: two drivers on one host share the
+# msb daemon, the mutable production tag and the scratch-cage namespace, so
+# each contaminates the other. A file that only READS the driver -- lifting a
+# function out of it to drive with synthetic values, say -- creates none of
+# that. It also must not claim the manual-only marker, because it is not
+# manual-only: it is meant to run in the driver, every time.
+#
+# The claim is VERIFIED, not taken on trust: a file carrying this marker is
+# checked below for any shape that would execute the driver, and fails louder
+# than a plain hit if it has one.
+_j_read_marker="reads-only-probe(${_j_driver}.sh)"
 _j_hits=""
 _j_exempt_count=0
+_j_read_exempt_count=0
+_j_liar_hits=""
 
 for _j_file in "${REPO_ROOT}"/tests/test-*.sh \
                 "${REPO_ROOT}"/tests/golden-master/capture.sh \
@@ -866,6 +880,18 @@ for _j_file in "${REPO_ROOT}"/tests/test-*.sh \
     | grep -vE '^[0-9]+:[[:space:]]*#' \
     | grep -vE '^[0-9]+:[[:space:]]*(echo|printf|pass|fail|warn|skip)[[:space:]]' || true)
   [[ -z "$_j_file_hits" ]] && continue
+  if grep -qF "$_j_read_marker" "$_j_file"; then
+    # Verify the read-only claim: nothing may put the driver in command
+    # position, directly or through an interpreter.
+    _j_exec_hits=$(grep -nE "(^|[;&|[:space:]])(bash|sh|zsh|source|\\.|exec)[[:space:]]+[^;|&]*${_j_path_re}" "$_j_file" 2>/dev/null \
+      | grep -vE '^[0-9]+:[[:space:]]*#' || true)
+    if [[ -n "$_j_exec_hits" ]]; then
+      _j_liar_hits="${_j_liar_hits}${_j_base}: claims ${_j_read_marker} but executes the driver:"$'\n'"${_j_exec_hits}"$'\n'
+    else
+      _j_read_exempt_count=$((_j_read_exempt_count + 1))
+    fi
+    continue
+  fi
   if grep -qF "$_j_marker" "$_j_file"; then
     _j_exempt_count=$((_j_exempt_count + 1))
     continue
@@ -877,6 +903,10 @@ for _j_file in "${REPO_ROOT}"/tests/test-*.sh \
 done
 
 echo "    (j): ${_j_exempt_count} file(s) exempt via an inline ${_j_marker} marker."
+echo "    (j): ${_j_read_exempt_count} file(s) exempt via an inline ${_j_read_marker} marker (read-only, verified)."
+if [[ -n "$_j_liar_hits" ]]; then
+  fail "(j)" "file(s) claim ${_j_read_marker} but EXECUTE the driver -- a nested driver run contaminates the shared msb daemon" $'\n'"${_j_liar_hits}"
+fi
 
 if [[ -z "$_j_hits" ]]; then
   pass "(j)" "no file the ${_j_driver}.sh driver runs references its path outside comments/output without declaring itself a manual-only probe"

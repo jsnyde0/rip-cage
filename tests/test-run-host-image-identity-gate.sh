@@ -19,6 +19,14 @@
 # lifts the comparison out of run-host.sh and drives it with synthetic values.
 # No docker, no msb, no cage, no image. That is what lets it run every time.
 #
+# READ-ONLY -- marker: reads-only-probe(run-host.sh)
+#
+# This file names run-host.sh's path and never executes it: it reads the file
+# and lifts one function out of it by text. Case (j) of
+# test-rc-decomposition-structure.sh VERIFIES that claim rather than trusting
+# the marker, and fails louder than a bare hit if this file ever grows a line
+# that puts the driver in command position.
+#
 # Coverage:
 #   G1  identical start/end -> silent, returns 0
 #   G2  unreadable at either end -> NOT reported as a move (docker or msb
