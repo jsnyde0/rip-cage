@@ -64,7 +64,7 @@ This triggers `release.yml`, which:
 - builds **native per-arch** images (amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`),
 - merges them into a multi-arch manifest and pushes `ghcr.io/jsnyde0/rip-cage:$VERSION` + `:latest`.
 
-> **Known blocker — `rip-cage-ely4.7.16`, P1, open.** The workflow's build leg still generates its Dockerfile through a deleted verb, reading a manifest file that is no longer in the tree, so this step fails and **no release can currently be cut**. It fails loudly rather than shipping a broken image, but it does fail. Read that bead — it names the exact workflow lines and the retired tokens — before step 4; if it is still open, fix it first.
+The published image is the **base image** — `cage/Dockerfile`, built the way `rc build` builds it (ADR-031 D5(c)). Tools are `FROM rip-cage:latest` recipes the operator composes, never baked in here.
 
 **Watch the run.** If CI fails, see [Troubleshooting](#troubleshooting-if-ci-fails) below before doing anything else.
 
@@ -138,7 +138,7 @@ gh release create "v$(cat VERSION)" --notes-from-tag
 
 ### CI tooling must be arch-matched *(v0.9.0 lesson B)*
 
-The v0.9.0 tag's first CI run **failed and published nothing**: the native arm64 build downloaded the **amd64** `yq` binary → `Exec format error` (exit 126) → the manifest-merge job skipped → no image. `yq` is a CI dependency of the `rc generate-dockerfile` path; v0.9.0 was the first release to exercise the native arm64 runner. The fix pins `yq_linux_${matrix.arch}` (see `ci-new-tool-dependency-needs-arch-matrix-coverage`). **Any new CI tool fetched by architecture must select per `matrix.arch`** — this is a `release.yml` invariant, surfaced here because it only bites on a real tag.
+The v0.9.0 tag's first CI run **failed and published nothing**: the native arm64 build downloaded the **amd64** `yq` binary → `Exec format error` (exit 126) → the manifest-merge job skipped → no image. v0.9.0 was the first release to exercise the native arm64 runner. That particular `yq` step is gone — the build leg it served retired with the tool manifest — but the lesson is the invariant, not the step: **any CI tool fetched by architecture must select per `matrix.arch`** (see `ci-new-tool-dependency-needs-arch-matrix-coverage`). Surfaced here because it only bites on a real tag.
 
 ### Re-pointing a tag is safe — but only while nothing has consumed it
 

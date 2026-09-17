@@ -97,28 +97,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install yq (mikefarah v4, required by rc generate-dockerfile)
-        run: |
-          # Arch-aware: each arch builds on its NATIVE runner, so the yq binary
-          # must match (matrix.arch is amd64|arm64, exactly mikefarah's asset
-          # suffix). Hardcoding amd64 here exec-format-errors on the arm64 runner.
-          sudo curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${{ matrix.arch }}"
-          sudo chmod +x /usr/local/bin/yq
-          yq --version
-
-      - name: Generate composed Dockerfile from manifest/default-tools.yaml
-        # rip-cage-wlwc.12: the published image is built from the maintainer-authored
-        # default-composed manifest (manifest/default-tools.yaml), which composes CC+pi+dcg+ssh-bypass.
-        # The composition mechanism is "agent/CI copies recipe fragments into the manifest,
-        # runs rc build" — no compose mechanism in rc code (ADR-005 D12).
-        run: RC_MANIFEST_GLOBAL=manifest/default-tools.yaml ./rc generate-dockerfile > /tmp/Dockerfile.composed
-
+      # The published image is the BASE image — cage/Dockerfile, built exactly
+      # the way `rc build` builds it host-side (ADR-031 D5(c)): the same
+      # Dockerfile, the repo root as context, RC_VERSION from the VERSION file
+      # (the prepare job already verified it against the tag). No codegen step:
+      # ADR-031 D4 retired the tool manifest and the verb that composed it, and
+      # under D4 the base image is the containment floor while every tool is a
+      # `FROM rip-cage:latest` recipe the operator composes (ADR-005 D12).
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: /tmp/Dockerfile.composed
+          file: cage/Dockerfile
           platforms: ${{ matrix.platform }}
           build-args: |
             RC_VERSION=${{ needs.prepare.outputs.version }}
