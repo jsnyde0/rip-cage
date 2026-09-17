@@ -167,12 +167,15 @@ NEEDS_CONTAINER=(
   "test-pi-cage-context.sh"  # calls rc up to create a live container; inspects CLAUDE.md inside cage
   "test-claude-concurrency.sh" # requires a live rip-cage container with Claude auth (ANTHROPIC_API_KEY or OAuth)
   "test-claude-json-seed-synthesis.sh" # rip-cage-vwka: spins its own real cages via rc up (non-possession + possession) to verify R4 seed synthesis; requires docker + msb + a pre-built rip-cage image
-  "test-multiplexer-lifecycle.sh" # requires a live rip-cage container; exercises multiplexer lifecycle (none/tmux/herdr) + retirement + config-isolation (rip-cage-1f59.8)
-  "test-agent-mail-concurrent.sh" # requires RC_E2E=1 + pi auth + agent_mail fixture image; proves two concurrent pi agents coordinate via am CLI
+  # test-multiplexer-lifecycle.sh, test-agent-mail-concurrent.sh and
+  # test-multiplexer-agent-e2e.sh: GONE with the manifest corpus they built
+  # their fixture images from (rip-cage-ely4.7.4 / ADR-031 D4). Two are
+  # retired outright, one is deferred to rip-cage-ely4.7.8. What each covered,
+  # and the one capability that goes with them, is recorded on ely4.7.4 --
+  # `bd show rip-cage-ely4.7.4`, not restated here.
   "test-session-persistence.sh" # Phase 3 calls rc up + docker exec for dn2 projects/sessions persist-to-host (rip-cage-b6ia)
   "test-pi-no-extensions.sh"  # rip-cage-sn1h: LOCKED-VARIANT-ONLY probe; requires running cage; self-skips under shipped OPEN default (rip-cage-p35a.1 / ADR-027 D1)
   "test-skills.sh"            # live meta-skill MCP handshake + cage-path/settings assertions inside a container (rip-cage-b6ia)
-  "test-multiplexer-agent-e2e.sh" # requires RC_E2E=1 + pi auth; proves pi agent does real work THROUGH the tmux attach surface with >=2 distinct tool invocations (rip-cage-w621.7)
   "test-multiplexer-composable.sh" # E1 tier builds + runs a cage; G1 host-only grep-guards run always (rip-cage-61al.8)
   "test-symlink-follow.sh"    # needs a non-reserved writable scratch dir for symlink targets; on Linux every writable top-level (/home,/tmp,/var) is in rc's FHS-reserved set (cli/up.sh:'_SFL_RESERVED_CAGE_PATHS'), so it only runs on macOS (mktemp→/private/var dodges rc's deliberate non-canonicalization). Not "needs a cage" but host-only-Linux-incompatible (rip-cage-woow)
   "test-cc-managed-settings-probe.sh" # rip-cage-wlwc.1: D8 CC managed-settings anchor probe — requires live authed cage + API call; self-skips if no cage or unauthed (NEEDS_CONTAINER+AUTH)
@@ -740,7 +743,6 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-claude-json-seed-synthesis.sh" # rip-cage-vwka: R4 seed-synthesis for non-possession postures — synthesized-when-absent, not-clobbered, possession positive control, wrapper WARNING no-longer-fires/genuinely-broken-still-fires (NEEDS_CONTAINER; spins own cages, self-skips without docker/image)
   run_test "${SCRIPT_DIR}/test-cc-managed-settings-probe.sh"  # rip-cage-wlwc.1: D8 CC managed-settings anchor probe — enforces un-suppressibly + deny-wins? (NEEDS_CONTAINER+AUTH; self-skips if no cage or unauthed)
   run_test "${SCRIPT_DIR}/test-cc-dcg-managed-settings.sh"   # rip-cage-r9n4: DCG managed-settings regression — managed deny survives stripping ALL agent-writable layers (NEEDS_CONTAINER+AUTH; self-skips if no cage or unauthed)
-  run_test "${SCRIPT_DIR}/test-multiplexer-lifecycle.sh"  # rip-cage-1f59.8: multiplexer lifecycle (none/tmux/herdr) + retirement + config-isolation (NEEDS_CONTAINER; self-skips without RC_E2E=1)
   # test-selftest-classifier.sh / test-selftest-mode-gating.sh /
   # test_selftest_endpoint.py / test-selftest-integration.sh retired: they
   # tested the in-cage firewall startup self-test guard (init-firewall.sh /
@@ -755,8 +757,6 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-shared-scratch-path-guard.sh"    # rip-cage-k13u: static recurrence guard — a FIXED shared scratch path (the golden-master under-scrub diff, the repo-root VERSION backup) makes concurrent invocations delete each other's files, so S5 flakes on timing instead of on truth; carries its own negative controls, host-only
   run_test "${SCRIPT_DIR}/test-destroy-orphaned-volumes.sh" # rip-cage-o5ie: rc destroy reaps rc-state-/rc-history- volumes by exact derived name even when the sandbox is already absent; exact-name-only cleanup + negative-control decoy volume, no sandbox boot needed, self-skips without msb
   run_test "${SCRIPT_DIR}/test-agent-readability.sh"     # rip-cage-7wc: host-side fixture tests for agent *.md readability classification
-  run_test "${SCRIPT_DIR}/test-agent-mail-concurrent.sh" # rip-cage-swv: two concurrent pi agents coordinate via am CLI (NEEDS_CONTAINER + RC_E2E)
-  run_test "${SCRIPT_DIR}/test-multiplexer-agent-e2e.sh" # rip-cage-w621.7: pi agent through tmux mux surface with >=2 distinct tool invocations (NEEDS_CONTAINER + RC_E2E)
 
   # rip-cage-9oyh: rc behavior-preservation golden-master harness (baseline
   # captured at HEAD) + §3/§4 seam and gap-fill tests. All container-free
