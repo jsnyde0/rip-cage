@@ -15,10 +15,9 @@ microsandbox (`msb`) boots an OCI image as a libkrun microVM — its own kernel,
 | The microVM boundary — own kernel, own network stack | The curated agent image and its init |
 | Default-deny egress and DNS at that boundary | The denial → fix → relaunch repair loop |
 | `--secret`: a credential the guest never holds | Credential discovery — your Claude login, found in the keychain |
+| Read-only mounts | The protected-paths mount floor |
+| Recreate a sandbox with the same mounts | The floor probe and the proving suite (`rc test`) |
 | The config schema | The operating knowledge, in three skills |
-| Read-only mounts | The floor probe, run on *your* built image |
-| Recreate a sandbox with the same mounts | The proving suite (`rc test`) |
-| The config schema | The protected-paths mount floor |
 
 Rip cage never reimplements what msb ships, and never claims msb's isolation as its own.
 
