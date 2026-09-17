@@ -16,6 +16,56 @@ FAILURES=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
+# THIS FILE MOVED THE OPERATOR'S PRODUCTION IMAGE (rip-cage-ely4.7.9). Traced
+# by bisecting the host-only tier with a docker audit shim; the sequence was
+#
+#   docker image inspect rip-cage:latest --format '…image.version'
+#   docker pull ghcr.io/jsnyde0/rip-cage:<v>
+#   docker tag  ghcr.io/jsnyde0/rip-cage:<v> rip-cage:latest
+#   docker save rip-cage:latest -o … ; msb load --tag rip-cage:latest
+#
+# That is not a test writing the tag -- no test text does, which is why the
+# static guard passed throughout. It is **rc's own pull-first provisioning**:
+# some case here reaches an rc path that reads the local image's version
+# label, judges it stale, and re-provisions from the registry. The retag and
+# the msb load are two steps of one mechanism, which is why BOTH stores moved
+# in the incident that found this.
+#
+# The lever is rc's own: IMAGE="${RC_IMAGE:-rip-cage:latest}" (rc:67). Pinning
+# RC_IMAGE for the whole file means no case in it can provision onto the
+# production tag, whatever path it takes -- strictly better than chasing the
+# one case, because the next case added here inherits the protection. Cases
+# that need their own fixture tag still set RC_IMAGE themselves; this is only
+# the floor. Nothing here asserts on the literal default tag.
+#
+# Do NOT "fix" this with RIP_CAGE_IMAGE_REGISTRY="" instead: that opts out of
+# the PULL and falls back to building locally (cli/build.sh:544) -- onto the
+# same production tag. It swaps one writer for another.
+export RC_IMAGE="${RC_IMAGE:-rip-cage-rccmds-fixture:test}"
+
+# The fixture tag has to resolve to a REAL image, or the cases that ask rc
+# whether a cage is compatible with its image fail on a missing one instead of
+# on their own subject. Point it at whatever the production tag holds: reading
+# that tag as a SOURCE is exactly what the write-guard's T4 case protects, and
+# the production tag itself is never an argument to anything that writes.
+# Removed at exit, so a run leaves no fixture tag behind.
+_rc_cmds_fixture_tag_made=0
+if [[ "$RC_IMAGE" == "rip-cage-rccmds-fixture:test" ]] \
+   && docker image inspect rip-cage:latest >/dev/null 2>&1; then
+  if docker tag rip-cage:latest "$RC_IMAGE" >/dev/null 2>&1; then
+    _rc_cmds_fixture_tag_made=1
+  fi
+fi
+# Dropped explicitly at the end of the file rather than from an EXIT trap:
+# several cases below set and then `trap - EXIT INT TERM` their own crash-safe
+# traps, which would disarm one installed here. A run that dies early leaves
+# the extra tag behind, and that is fine — it is a second name for an image
+# that already exists, costing no disk and shadowing nothing.
+_rc_cmds_drop_fixture_tag() {
+  [[ "$_rc_cmds_fixture_tag_made" -eq 1 ]] || return 0
+  docker image rm "$RC_IMAGE" >/dev/null 2>&1 || true
+}
+
 
 # rc up launches from a native msb --conf file now (ADR-031 D2), so a scratch
 # project needs one before any `rc up` — including a dry run. This writes the
@@ -1490,6 +1540,13 @@ t61_run_rc() {
   ( export PATH="${T61_BIN}:${PATH}"
     export XDG_CONFIG_HOME="${T61_ROOT}/home/.config"
     export RC_CAGE_CONF="${T61_ROOT}/cage.yaml"
+    # This case OVERRIDES the file-wide fixture tag back to the default name,
+    # and that is safe here precisely because nothing real is reachable: the
+    # msb shim above answers every subcommand, its image list and this case's
+    # cage.yaml both name rip-cage:latest, and the image-compat check under
+    # test compares those two names. The production tag is a STRING in a
+    # fixture here, never an argument to anything that writes.
+    export RC_IMAGE="rip-cage:latest"
     export T61_LOG T61_PROJ T61_CONF_SHA
     "$RC" "$@" ) 2>&1
 }
@@ -1805,6 +1862,7 @@ rm -rf "$T63_ROOT"
 
 # --- Cleanup ---
 rm -rf "$SYMLINK_SKILLS_DIR" "$SYMLINK_TARGET_DIR" "$SYMLINK_SKILLS_DIR2" "$HOME_TARGET_DIR" "$SIBLING_DIR"
+_rc_cmds_drop_fixture_tag
 
 echo ""
 echo "=== Results ==="

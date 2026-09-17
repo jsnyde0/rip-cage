@@ -46,6 +46,20 @@
 #     same text (tests/test-build-msb-load.sh, tests/test-up-msb-load-wiring.sh
 #     are full of them, all against a fake msb on PATH). rip-cage-d2bo.2 owns
 #     that surface and closed it by removing the mechanism, not by a scan.
+#     rip-cage-ely4.7.9 re-decided this and kept the exclusion: a scan here
+#     would fire on every one of those assertion lines while still missing the
+#     write it is after. msb's cache is guarded at RUNTIME instead, by
+#     tests/test-run-host-image-identity-gate.sh and the identity comparison
+#     it holds run-host.sh to -- which catches the write whatever spelled it.
+#
+#   * A test that makes **rc** provision onto the tag. This is the one that got
+#     us (rip-cage-ely4.7.9): no test text held `docker tag`, so every case in
+#     this file passed, while tests/test-rc-commands.sh reached an rc path that
+#     read the local image's version label, judged it stale, pulled the release
+#     and tagged it onto rip-cage:latest -- then saved it into msb's cache. A
+#     static scan of tests/ cannot see a write that happens inside cli/. The
+#     lever is RC_IMAGE, the runtime gate is the backstop, and neither is a
+#     scan; that is why this file stays narrow rather than growing heuristics.
 #
 # Host-only, static. No docker, no msb, no cage.
 #
@@ -79,12 +93,17 @@ PROD_TAG='rip-cage:latest'
 # default `bash tests/run-host.sh` with no env overrides never reaches it. T5
 # and T6 below hold both halves of that claim.
 #
-#   test-manifest-security.sh -- BE2/BE3/BE5 deliberately build onto the
-#   default tag to prove cmd_build's own untag-on-violation safety net fires
-#   on the real production tag. Restoring the operator's image afterwards is
-#   the point, so the `docker tag ... rip-cage:latest` restore lines are the
-#   fix, not the defect. Gated behind RC_E2E.
-_ALLOWLIST="test-manifest-security.sh"
+# THE LIST IS EMPTY, AND THAT IS THE DECISION (rip-cage-ely4.7.3, re-deciding
+# what T5 below asked to be re-decided). Its one entry was the manifest
+# security suite, allowed because its hostile arms built onto the default tag
+# on purpose, to prove cmd_build's own untag-on-violation safety net fired on
+# the real production tag. That suite retired with the manifest it tested
+# (rip-cage-ely4.11), and no surviving file has a reason to write the
+# production tag. So the rule is now unqualified: nothing under tests/ writes
+# it. Re-adding a name is a decision, not a formality -- the write is only
+# ever acceptable while a default `bash tests/run-host.sh` with no env
+# overrides cannot reach it, and T5/T6 below hold both halves of that claim.
+_ALLOWLIST=""
 
 # _scan_writes <dir> <exclude-basename> <apply-allowlist:0|1>
 # Prints one "file:line:text" per offending line. Two patterns, each written so
@@ -105,9 +124,12 @@ _scan_writes() {
     if [[ "$_use_allowlist" -eq 1 ]] && echo "$_ALLOWLIST" | grep -qw "$_base"; then
       continue
     fi
+    # `docker image tag` and `docker image build` are the same commands under
+    # docker's newer management-verb spelling; a scan that only knows the
+    # short form is one rename away from blind (rip-cage-ely4.7.9).
     grep -nE \
-      -e "docker[[:space:]]+tag[[:space:]]+[^[:space:]]+[[:space:]]+[\"']?${PROD_TAG}" \
-      -e "docker[[:space:]]+build[^#]*-t[[:space:]]+[\"']?${PROD_TAG}" \
+      -e "docker[[:space:]]+(image[[:space:]]+)?tag[[:space:]]+[^[:space:]]+[[:space:]]+[\"']?${PROD_TAG}" \
+      -e "docker[[:space:]]+(image[[:space:]]+)?build[^#]*-t[[:space:]]+[\"']?${PROD_TAG}" \
       "$_f" 2>/dev/null \
       | grep -vE '^[0-9]+:[[:space:]]*#' \
       | sed "s|^|${_base}:|"
@@ -139,6 +161,7 @@ cat > "${PLANT}/test-planted-violation.sh" <<PLANTEOF
 # This comment mentions docker tag STUB ${PROD_TAG} and must NOT be counted.
 docker tag "\$STUB" ${PROD_TAG}
 docker build -q -t ${PROD_TAG} - < Dockerfile
+docker image tag "\$STUB" ${PROD_TAG}
 PLANTEOF
 PLANT_HITS=$(_scan_writes "$PLANT" "$SELF" 1)
 
@@ -152,10 +175,21 @@ if echo "$PLANT_HITS" | grep -qE "docker[[:space:]]+build"; then
 else
   fail "T3b: scanner missed a planted 'docker build -t ${PROD_TAG}'" "$PLANT_HITS"
 fi
-if [[ "$(echo "$PLANT_HITS" | grep -c . )" -eq 2 ]]; then
-  pass "T3c: exactly 2 hits — the comment line naming the same shape was not counted"
+
+# rip-cage-ely4.7.9: the management-verb spelling is the same write. A scanner
+# that knows only `docker tag` passes a file that spells it `docker image tag`.
+if echo "$PLANT_HITS" | grep -qE "docker[[:space:]]+image[[:space:]]+tag"; then
+  pass "T3d: the 'docker image tag' spelling is detected too"
 else
-  fail "T3c: expected exactly 2 hits, got $(echo "$PLANT_HITS" | grep -c .)" "$PLANT_HITS"
+  fail "T3d: scanner missed a planted 'docker image tag ... ${PROD_TAG}'" "$PLANT_HITS"
+fi
+# Three planted writes, one planted comment. The count is asserted exactly so
+# an over-broad scanner that starts counting the comment line shows up here
+# rather than as a mysterious red in T1/T2 (third write added ely4.7.9).
+if [[ "$(echo "$PLANT_HITS" | grep -c . )" -eq 3 ]]; then
+  pass "T3c: exactly 3 hits — the comment line naming the same shape was not counted"
+else
+  fail "T3c: expected exactly 3 hits, got $(echo "$PLANT_HITS" | grep -c .)" "$PLANT_HITS"
 fi
 
 echo ""
@@ -175,6 +209,13 @@ fi
 
 echo ""
 echo "=== T5/T6: every allowlisted file still exists and still gates its write ==="
+# An empty allowlist makes the loop below iterate zero times, which would let
+# this whole section report nothing at all and read as green. Say the state out
+# loud instead: no exception is currently granted, which is the strictest
+# posture this guard can be in.
+if [[ -z "$_ALLOWLIST" ]]; then
+  pass "T5/T6: the allowlist is empty — no file is granted an exception to the no-production-tag-write rule"
+fi
 for _al in $_ALLOWLIST; do
   if [[ -f "${SCRIPT_DIR}/${_al}" ]]; then
     pass "T5: allowlisted file ${_al} is still on disk"

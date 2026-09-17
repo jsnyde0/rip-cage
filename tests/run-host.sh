@@ -62,6 +62,9 @@ RH_LEDGER_SUMMARY_FILES=()
 # header, regardless of whether a ledger is configured) so the run-end
 # CAVEAT check below has something to compare against.
 RH_START_IMAGE_DIGEST=""
+# rip-cage-ely4.7.9: the same, for msb's own copy of the image -- the store a
+# cage actually boots from.
+RH_START_MSB_IMAGE_DIGEST=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -292,6 +295,45 @@ _rh_resolve_image_digest() {
   echo "$digest"
 }
 
+# rip-cage-ely4.7.9: msb keeps its OWN copy of the production image, and that
+# copy is what a cage actually boots from. Watching only docker's tag missed
+# an overwrite of msb's cache entirely -- the 2026-09-17 incident left docker
+# correct and msb stale, which is the worse of the two failures: every probe
+# afterwards runs the wrong image while the obvious check says the image is
+# fine. This is the msb half of the same identity.
+_rh_resolve_msb_image_digest() {
+  if [[ -n "${RC_TEST_STAMP_MSB_IMAGE_DIGEST:-}" ]]; then
+    echo "$RC_TEST_STAMP_MSB_IMAGE_DIGEST"
+    return 0
+  fi
+  local digest="unavailable"
+  if command -v msb >/dev/null 2>&1; then
+    digest="$(msb image inspect rip-cage:latest --format json 2>/dev/null \
+      | jq -r '.config.digest // empty' 2>/dev/null || true)"
+    [[ -z "$digest" ]] && digest="unavailable"
+  fi
+  echo "$digest"
+}
+
+# _rh_image_identity_verdict <what> <start> <end>
+#
+# The comparison itself, split out from the reporting so it can be exercised
+# with synthetic values. Prints nothing and returns 0 when the identity held
+# or could not be read at either end; prints the report lines and returns 1
+# when it genuinely moved. An unreadable end is NOT a move -- docker or msb
+# being down mid-run is a different problem and must not be reported as a
+# clobber.
+_rh_image_identity_verdict() {
+  local _what="$1" _start="$2" _end="$3"
+  if [[ -z "$_start" || "$_start" == "unavailable" \
+     || -z "$_end"   || "$_end"   == "unavailable" \
+     || "$_start" == "$_end" ]]; then
+    return 0
+  fi
+  echo "MOVED: rip-cage:latest (${_what}) changed during this run: ${_start} -> ${_end}."
+  return 1
+}
+
 # One header line per invocation, stamping commit + rip-cage:latest image
 # digest + RC_E2E on/off + timestamp. Docker-unreachable must not crash the
 # driver — falls back to "unavailable".
@@ -319,6 +361,7 @@ _rh_ledger_write_header() {
   fi
   img_digest="$(_rh_resolve_image_digest)"
   RH_START_IMAGE_DIGEST="$img_digest"
+  RH_START_MSB_IMAGE_DIGEST="$(_rh_resolve_msb_image_digest)"
   [[ -z "$RH_LEDGER_PATH" ]] && return 0
   e2e_flag="${RC_E2E:-0}"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -332,19 +375,43 @@ _rh_ledger_write_header() {
 # -- so any image-dependent probe failure in this run is not read as a bare,
 # uninformative red (rip-cage-or84 / rip-cage-sw6s).
 #
-# Advisory only: this function only ever echoes; it never sets FAILURES,
-# never touches PASS_COUNT/FAILED_TESTS, and never exits. A tag move must
-# not turn a PASS into a FAIL or otherwise change run-host.sh's exit status.
+# NO LONGER ADVISORY (rip-cage-ely4.7.9). This was a CAVEAT that changed
+# nothing: it printed, the run still exited 0, and the operator was left to
+# notice a line in a thousand-line log. On 2026-09-17 it fired for real on a
+# --host-only run, and the caveat was read as noise until someone checked the
+# image by hand and found rip-cage:latest pointing at a months-old build with
+# no floor probe in it. A suite that silently rewrites the host-global image
+# every other run is not a suite anyone can cite as evidence.
+#
+# So a move now FAILS the run, over both stores: docker's tag and msb's cache
+# entry. Sets RH_IMAGE_MOVED, which the exit-status path reads.
+RH_IMAGE_MOVED=0
 _rh_check_image_tag_moved() {
-  local end_digest
+  local end_digest end_msb_digest _out _moved=0
   end_digest="$(_rh_resolve_image_digest)"
-  if [[ -n "$RH_START_IMAGE_DIGEST" && "$RH_START_IMAGE_DIGEST" != "unavailable" \
-        && -n "$end_digest" && "$end_digest" != "unavailable" \
-        && "$RH_START_IMAGE_DIGEST" != "$end_digest" ]]; then
+  end_msb_digest="$(_rh_resolve_msb_image_digest)"
+
+  if ! _out=$(_rh_image_identity_verdict "docker image id" \
+        "$RH_START_IMAGE_DIGEST" "$end_digest"); then
+    _moved=1
     echo ""
-    echo "CAVEAT: rip-cage:latest MOVED during this run (image_digest ${RH_START_IMAGE_DIGEST} at start -> ${end_digest} at end)."
-    echo "        Any image-dependent probe failure above may be attributable to that mid-run tag move, not to the code under test."
-    echo "        See rip-cage-or84 (this guard) and rip-cage-sw6s (the incident it closes)."
+    echo "$_out"
+  fi
+  if ! _out=$(_rh_image_identity_verdict "msb cache config digest" \
+        "$RH_START_MSB_IMAGE_DIGEST" "$end_msb_digest"); then
+    _moved=1
+    echo ""
+    echo "$_out"
+  fi
+
+  if [[ "$_moved" -eq 1 ]]; then
+    RH_IMAGE_MOVED=1
+    echo "        This run REWROTE the operator's production image. Every image-dependent"
+    echo "        result above is suspect, and the host is left in a state no one chose."
+    echo "        Restore before trusting anything: re-tag docker by digest, then"
+    echo "        'docker save rip-cage:latest | msb load --tag rip-cage:latest'."
+    echo "        A test needing its own image points rc at one with RC_IMAGE."
+    echo "        See rip-cage-ely4.7.9 (this gate), rip-cage-or84 and rip-cage-sw6s."
   fi
 }
 
@@ -752,6 +819,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-cleanup-failsafe.sh"      # rip-cage-neu7.9: committed repro — register-array CLEANUP fired on an EMPTY registry invokes the destroy command ZERO times (stubbed destroy, pure bash, no docker/msb dependency)
   run_test "${SCRIPT_DIR}/test-scratch-cage-registry.sh"        # rip-cage-sygz.2: the created-cage registry survives a SIGKILL that runs no trap, and test-pi-install.sh refuses a cage the suite did not create (stub rc + fake docker, host-only, no live cage)
   run_test "${SCRIPT_DIR}/test-production-image-tag-write-guard.sh"  # rip-cage-lh62: static recurrence guard — no un-allowlisted test may `docker tag`/`docker build -t` onto the operator's rip-cage:latest; carries its own negative controls, host-only, no docker call at all
+  run_test "${SCRIPT_DIR}/test-run-host-image-identity-gate.sh"  # rip-cage-ely4.7.9: a suite run must leave rip-cage:latest untouched in BOTH stores and FAIL when it does not; drives run-host's own comparison with synthetic values, so it needs no docker, no msb and no image
   run_test "${SCRIPT_DIR}/test-scratch-cage-teardown-guard.sh"  # rip-cage-4cuh/22hn/qg25: static recurrence guard — an unpaired msb-remove teardown on an rc-up cage leaks rc-state-*/rc-history-* forever; volume-attachment gated (a direct msb-create cage has no volumes to orphan), host-only
   run_test "${SCRIPT_DIR}/test-real-home-pi-write-guard.sh"     # rip-cage-bh0r: static recurrence guard — a write reaching a real, unsandboxed ${HOME}/.pi path clobbers a live symlink target (dotpi's tracked AGENTS.md, 2026-09-03); host-only
   run_test "${SCRIPT_DIR}/test-shared-scratch-path-guard.sh"    # rip-cage-k13u: static recurrence guard — a FIXED shared scratch path (the golden-master under-scrub diff, the repo-root VERSION backup) makes concurrent invocations delete each other's files, so S5 flakes on timing instead of on truth; carries its own negative controls, host-only
@@ -954,8 +1022,8 @@ if [[ ${#SKIPPED_TESTS[@]} -gt 0 ]]; then
     echo "    - ${_st}"
   done
 fi
-# rip-cage-or84: advisory-only, never touches exit status (see the
-# function's own header comment).
+# rip-cage-ely4.7.9: no longer advisory -- a move sets RH_IMAGE_MOVED and the
+# exit below reads it (see the function's own header comment).
 _rh_check_image_tag_moved
 echo "=== run-host.sh complete ==="
 
@@ -965,5 +1033,14 @@ if [[ ${#FAILED_TESTS[@]} -gt 0 ]]; then
   for _ft in "${FAILED_TESTS[@]}"; do
     echo "  FAILED: ${_ft}"
   done
+  exit 1
+fi
+
+# A clean sweep that moved the image is NOT a clean sweep. Reported and
+# exited separately from a test failure, because it is a different kind of
+# problem: nothing under tests/ is wrong, the RUN did damage.
+if [[ "$RH_IMAGE_MOVED" -eq 1 ]]; then
+  echo ""
+  echo "=== RUN FAILED: every test passed, but this run rewrote rip-cage:latest ==="
   exit 1
 fi
