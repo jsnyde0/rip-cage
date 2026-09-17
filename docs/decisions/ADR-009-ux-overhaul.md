@@ -75,6 +75,8 @@ Everything else lives in `docs/reference/`:
 
 **What would invalidate this:** If docs/ becomes a graveyard that nobody maintains. Mitigated by keeping docs minimal and linked from README.
 
+**Reconciled in place 2026-09-17 — [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D1** (`rip-cage-ely4.14`, ruled by `brain:rip-cage`): the *intent* holds — a focused landing page with reference one click away — and the two enumerations above are no longer the literal contract. The README additionally carries the two-column "what msb provides / what rip-cage adds" table and the isolation-ladder placement, which [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D1 (later, more specific, FIRM) requires permanently; the worktree-workflow section is gone with the pre-distribution roadmap; and the `docs/reference/` set is whatever `docs/reference/README.md` indexes (`devcontainer.md` was deleted with the VS Code path, `rip-cage-kt25`). Where the two lists and ADR-031 D1 differ, ADR-031 D1 governs.
+
 ### D4: Tests move to `tests/`
 
 **Firmness: FIRM**
