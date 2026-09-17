@@ -67,7 +67,7 @@ CAGE_CONF
   printf '%s\n' "$_conf"
 }
 
-# cage_conf_install <project-dir> <xdg-config-home> [image-ref]
+# cage_conf_install <project-dir> <xdg-config-home> [image-ref] [host ...]
 #
 # Write the cage config at the DEFAULT path rc resolves —
 # <xdg>/rip-cage/projects/<cage-name>.yaml — and echo it.
@@ -78,13 +78,26 @@ CAGE_CONF
 # default path is what makes every verb in a suite find the same config
 # without threading RC_CAGE_CONF through each call.
 #
+# HOSTS are the bare domains that become `network.allow` entries, one
+# `<host>:tcp:443` line each. Default: the single host cage_conf_for writes.
+# A suite that ASSERTS on the resulting rule count passes its own list here so
+# the count under test is one the fixture chose, not a helper default it would
+# still observe with the config ignored entirely (rip-cage-jgz2). Pass "" for
+# IMAGE-REF to take the default image and still supply hosts.
+#
 # The cage name is derived by rc's own container_name(), not reimplemented
 # here — a second copy of that rule would drift from the first.
 cage_conf_install() {
-  local _proj _xdg="$2" _image="${3:-rip-cage:latest}"
-  local _name _dir _conf
+  local _projarg="$1" _xdg="$2" _image="${3:-}"
+  local _proj _name _dir _conf
+  [[ -n "$_image" ]] || _image="rip-cage:latest"
+  # bash 3.2: `shift 3` fails outright when fewer than 3 args were passed, so
+  # only shift what is there before collecting the variadic host list.
+  if [[ "$#" -ge 3 ]]; then shift 3; else shift "$#"; fi
+  local -a _hosts=("${@:-}")
+  [[ "$#" -gt 0 ]] || _hosts=("api.anthropic.com")
   # Same symlink resolution as cage_conf_for above, same reason.
-  _proj=$(cd "$1" 2>/dev/null && pwd -P) || _proj="$1"
+  _proj=$(cd "$_projarg" 2>/dev/null && pwd -P) || _proj="$_projarg"
 
   _name=$(bash -c "source '${REPO_ROOT}/rc' 2>/dev/null; container_name '$_proj'") || return 1
   [[ -n "$_name" ]] || return 1
@@ -113,7 +126,10 @@ mounts:
 network:
   policy: none
   allow:
-    - "api.anthropic.com:tcp:443"
 CAGE_CONF
+  local _h
+  for _h in "${_hosts[@]}"; do
+    printf '    - "%s:tcp:443"\n' "$_h" >> "$_conf"
+  done
   printf '%s\n' "$_conf"
 }

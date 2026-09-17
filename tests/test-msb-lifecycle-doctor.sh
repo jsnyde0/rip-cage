@@ -45,8 +45,14 @@ fi
 
 # shellcheck source=tests/_scratch-cage-lib.sh
 source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+# shellcheck source=tests/_cage-conf-lib.sh
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
 
+# rip-cage-jgz2: resolve the sandbox root the same way cage_conf_for does.
+# msb does not follow a host-side symlink in a bind source, and on macOS
+# $TMPDIR lives under /var, itself a symlink to /private/var.
 TEST_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-lifecycle-doctor-XXXXXX")
+TEST_HOME=$(cd "$TEST_HOME" && pwd -P)
 WS="${TEST_HOME}/workspace"
 mkdir -p "${TEST_HOME}/.config/rip-cage" "$WS"
 CAGE_NAME=""
@@ -60,14 +66,31 @@ touch "${WS}/README.md"
 git -C "$WS" add README.md
 git -C "$WS" -c user.name="scratch" -c user.email="scratch@example.invalid" commit -q -m "initial"
 
-cat > "${WS}/.rip-cage.yaml" <<'EOF'
-version: 2
-network:
-  allowed_hosts: [example.com, api.anthropic.com]
-EOF
+# THE FIXTURE CONFIG, AND WHY ITS HOST COUNT IS PINNED TWICE (rip-cage-jgz2).
+#
+# This suite used to seed the legacy per-project YAML inside the workspace —
+# a schema-versioned file with its own allowed-hosts list — and drive rc with
+# the allowed-roots env override. ADR-031 D2/D3 retired all three: rc reads
+# ONE native msb config per project, and the allowed-roots guard is deleted
+# (the retired token names are in that ADR, not duplicated here, so a suite
+# auditing for their absence does not trip over this comment). That fixture
+# therefore configured nothing,
+# and the POSTURE case below was asserting about whatever default the runtime
+# happened to produce — a vacuous pass.
+#
+# The config is now seeded through the shared helper every current suite uses.
+# CONF_HOSTS is what the fixture declares; EXPECTED_ALLOW_RULES is an
+# INDEPENDENT literal, deliberately not computed from CONF_HOSTS. That
+# duplication is the point: changing the fixture's host count by one without
+# touching the literal is the mutation this suite has to go red on, and a
+# derived expectation would move with the fixture and stay green. Three hosts,
+# not one, so the observed count cannot coincide with a single-host default.
+CONF_HOSTS=(api.anthropic.com example.com github.com)
+EXPECTED_ALLOW_RULES=3
+CAGE_CONF=$(cage_conf_install "$WS" "${TEST_HOME}/.config" "$IMAGE" "${CONF_HOSTS[@]}")
 
 run_rc() {
-  XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_ALLOWED_ROOTS="$WS" "$RC" --output json "$@"
+  XDG_CONFIG_HOME="${TEST_HOME}/.config" "$RC" --output json "$@"
 }
 
 CR_OUT=$(run_rc up "$WS" 2>&1)
@@ -80,7 +103,7 @@ if [[ "$CR_RC" -ne 0 ]]; then
 fi
 CAGE_NAME=$(echo "$CR_OUT" | tail -1 | jq -r '.name' 2>/dev/null)
 scratch_cage_register "$CAGE_NAME"
-pass "setup: rc up created ${CAGE_NAME}"
+pass "setup: rc up created ${CAGE_NAME} from ${CAGE_CONF}"
 
 # Trigger a real denial so the posture probe's fix-hint has real content.
 msb exec "$CAGE_NAME" -- curl -sS --max-time 8 https://denied-doctor-probe.example.invalid >/dev/null 2>&1 || true
@@ -113,10 +136,19 @@ fi
 echo ""
 echo "=== POSTURE: the new posture probe reports real, non-placeholder content ==="
 POSTURE_TEXT=$(echo "$DOCTOR_OUT" | jq -r '.probes.posture' 2>/dev/null)
-if echo "$POSTURE_TEXT" | grep -q "net-default=deny" && echo "$POSTURE_TEXT" | grep -qE "[0-9]+ allow-rule"; then
-  pass "POSTURE: posture probe reports real net-default + rule-count: '${POSTURE_TEXT}'"
+if echo "$POSTURE_TEXT" | grep -q "net-default=deny"; then
+  pass "POSTURE: posture probe reports net-default=deny"
 else
-  fail "POSTURE: expected a real net-default/rule-count summary" "$POSTURE_TEXT"
+  fail "POSTURE: expected net-default=deny in the posture summary" "$POSTURE_TEXT"
+fi
+# The count is asserted EXACTLY, against the independent literal above -- a
+# `[0-9]+ allow-rule` regex passes on any number, including the number a cage
+# booted from a config rc never read would report (rip-cage-jgz2).
+OBSERVED_ALLOW_RULES=$(echo "$POSTURE_TEXT" | sed -n 's/.*net-default=[^,]*, \([0-9][0-9]*\) allow-rule.*/\1/p')
+if [[ "$OBSERVED_ALLOW_RULES" == "$EXPECTED_ALLOW_RULES" ]]; then
+  pass "POSTURE: allow-rule count is the ${EXPECTED_ALLOW_RULES} the fixture config declares"
+else
+  fail "POSTURE: expected exactly ${EXPECTED_ALLOW_RULES} allow-rule(s) (the fixture declares ${#CONF_HOSTS[@]} hosts), observed '${OBSERVED_ALLOW_RULES}'" "$POSTURE_TEXT"
 fi
 if echo "$POSTURE_TEXT" | grep -q "denied-doctor-probe.example.invalid"; then
   pass "POSTURE: the real triggered denial's domain appears in the doctor posture probe"
