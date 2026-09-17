@@ -79,12 +79,31 @@ check "\$HOME/.claude/skills/ exists" "$([[ -d "${skills_dir}" ]] && echo pass |
 # NOTE: find counts broken symlinks as matches, but skill-server.py skips them.
 # This check can pass (find count > 0) while the MCP server serves 0 skills.
 # Use the MCP list response below for the authoritative skill count.
-if [[ -d "${skills_dir}" ]]; then
-  skill_count=$(find -L "${skills_dir}" -name 'SKILL.md' -maxdepth 2 2>/dev/null | wc -l | tr -d ' ')
-  check "At least one skill present" "$([[ "${skill_count}" -gt 0 ]] && echo pass || echo fail)" "${skill_count} skill(s)"
+#
+# PRESENCE-GATED on what the HOST staged (rip-cage-ely4.7.5), the same shape
+# test-safety-stack.sh check 8 uses for recipe-provisioned artifacts. A cage
+# for a project with no skills is a valid cage: nothing staged means there is
+# no property to hold, so that reports INFO, not FAIL. The case still bites
+# where it was meant to — skills WERE staged (the directory has entries) but
+# none of them resolves to a readable SKILL.md, which is the broken-projection
+# regression, not an empty-by-design cage.
+skill_count=0
+if [[ ! -d "${skills_dir}" ]]; then
+  TOTAL=$((TOTAL + 1))
+  echo "INFO  [$TOTAL] skills dir absent (${skills_dir}) — skills are staged by the host into .rc-context/skills before the cage boots; this project staged none"
 else
-  check "At least one skill present" "fail" "skills dir missing"
-  skill_count=0
+  skill_count=$(find -L "${skills_dir}" -name 'SKILL.md' -maxdepth 2 2>/dev/null | wc -l | tr -d ' ')
+  skills_dir_entries=$(find "${skills_dir}" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "${skill_count}" -gt 0 ]]; then
+    check "At least one skill present" "pass" "${skill_count} skill(s)"
+  elif [[ "${skills_dir_entries}" -gt 0 ]]; then
+    check "At least one skill present" "fail" \
+      "${skills_dir_entries} entr(ies) staged under ${skills_dir} but none resolves to a readable SKILL.md"
+  else
+    TOTAL=$((TOTAL + 1))
+    echo "INFO  [$TOTAL] no skills present — ${skills_dir} is empty; skills are staged by the host into .rc-context/skills before the cage boots, and this project staged none"
+  fi
+  unset skills_dir_entries
 fi
 
 # 3. Skill files readable (not root-owned or permission-denied)

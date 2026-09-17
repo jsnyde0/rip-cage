@@ -605,17 +605,32 @@ if [ -f /home/agent/.zshrc ]; then
 fi
 
 # Cage-topology section present exactly once — catches double-append regressions.
-if [ -f ~/.claude/CLAUDE.md ]; then
-  begin_count=$(grep -c 'begin:rip-cage-topology' ~/.claude/CLAUDE.md || true)
-  end_count=$(grep -c 'end:rip-cage-topology' ~/.claude/CLAUDE.md || true)
-  if [ "$begin_count" = "1" ] && [ "$end_count" = "1" ]; then
-    check "Cage topology section present (exactly one marker pair)" "pass"
+#
+# PRESENCE-GATED on the artifact the recipe provisions (rip-cage-ely4.7.5), the
+# same shape check 8 above already uses. Init appends this section only when
+# /etc/rip-cage/cage-claude.md exists (cage/init/init-rip-cage.sh), and that
+# file comes from the examples/claude recipe — un-baked from the base image per
+# ADR-005 D12. On a cage without that recipe the section is CORRECTLY absent,
+# so an unconditional check reports a valid minimal cage as broken. The
+# double-append regression this case exists to catch is only observable when
+# the recipe IS composed; there, it still FAILs.
+if [ -f /etc/rip-cage/cage-claude.md ]; then
+  if [ -f ~/.claude/CLAUDE.md ]; then
+    begin_count=$(grep -c 'begin:rip-cage-topology' ~/.claude/CLAUDE.md || true)
+    end_count=$(grep -c 'end:rip-cage-topology' ~/.claude/CLAUDE.md || true)
+    if [ "$begin_count" = "1" ] && [ "$end_count" = "1" ]; then
+      check "Cage topology section present (exactly one marker pair)" "pass"
+    else
+      check "Cage topology section present (exactly one marker pair)" "fail" \
+        "begin=$begin_count end=$end_count"
+    fi
   else
     check "Cage topology section present (exactly one marker pair)" "fail" \
-      "begin=$begin_count end=$end_count"
+      "/etc/rip-cage/cage-claude.md is present but init wrote no ~/.claude/CLAUDE.md"
   fi
 else
-  check "Cage topology section present (exactly one marker pair)" "fail" "no CLAUDE.md"
+  TOTAL=$((TOTAL + 1))
+  echo "INFO  [$TOTAL] cage-topology section absent — /etc/rip-cage/cage-claude.md is provisioned by the examples/claude recipe (ADR-005 D12), not composed in this cage; nothing for init to append"
 fi
 
 echo ""

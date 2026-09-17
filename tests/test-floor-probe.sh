@@ -185,33 +185,31 @@ if [[ -z "$FLOOR_FAILED" ]]; then
 else
   fail "rc test reported failing floor lines: ${FLOOR_FAILED}"
 fi
-# Everything ELSE `rc test` reports must be green too, with two named
-# exceptions, neither of which is a property of the IMAGE this case is about:
+# Everything ELSE `rc test` reports must be green too -- with NO exceptions.
 #
-#   Cage topology section / At least one skill present -- both assert an artifact
-#     a COMPOSED RECIPE or the host provides (the topology block comes from
-#     examples/claude; the skills come from the host's own ~/.claude/skills), so
-#     a MINIMAL cage legitimately has neither and both hard-fail on it anyway.
-#     That mis-tiering is rip-cage-ely4.7.5.
+# This assertion used to carry an allowed-red list, because three lines went red
+# on a minimal cage for reasons that were never properties of the IMAGE this
+# case is about. All three are now gone:
 #
-# `DNS resolution (github.com)` USED to be a third entry here: red even with
-# `github.com:tcp:443` in this cage's own allow list. rip-cage-ely4.7.6 found the
-# cause -- rc generated a `--net-default deny` flag that REPLACED the allow list
-# the --conf file carried -- and rip-cage-ely4.7.7 dropped that flag, so the line
-# resolves now and the exception retired with it.
+#   `DNS resolution (github.com)` -- red even with `github.com:tcp:443` in this
+#     cage's own allow list. rip-cage-ely4.7.6 found the cause (rc generated a
+#     `--net-default deny` flag that REPLACED the allow list the --conf file
+#     carried) and rip-cage-ely4.7.7 dropped that flag.
+#   `Cage topology section` / `At least one skill present` -- both asserted an
+#     artifact a COMPOSED RECIPE or the host provides (the topology block comes
+#     from examples/claude; skills are staged by the host), so a minimal cage
+#     legitimately has neither. rip-cage-ely4.7.5 made both presence-gated:
+#     INFO when the artifact is absent, FAIL only when it is there and the
+#     property does not hold.
 #
-# The assertion is deliberately "nothing OUTSIDE this set fails", not "these
-# two fail": a NEW red still fails this case, and the day those beads land and
-# these go green, this check stays green with no edit.
-KNOWN_MINIMAL_CAGE_REDS='Cage topology section present (exactly one marker pair)
-At least one skill present'
-UNEXPECTED_REDS=$(jq -r '.checks[] | select(.status == "fail") | .name' <<<"$RC_TEST_JSON" 2>/dev/null \
-  | grep -vxF "$KNOWN_MINIMAL_CAGE_REDS" || true)
+# With the list empty, the honest assertion is the strict one: a minimal cage
+# from the shipped template is FULLY green, and any red at all fails this case.
+RC_TEST_REDS=$(jq -r '.checks[] | select(.status == "fail") | .name' <<<"$RC_TEST_JSON" 2>/dev/null || true)
 RC_TEST_OVERALL=$(jq -r '.overall // "?"' <<<"$RC_TEST_JSON" 2>/dev/null || echo "?")
-if [[ -z "$UNEXPECTED_REDS" ]]; then
-  pass "rc test reports no failure outside the two known non-image checks (overall='${RC_TEST_OVERALL}')"
+if [[ -z "$RC_TEST_REDS" && "$RC_TEST_OVERALL" == "pass" ]]; then
+  pass "rc test on a minimal cage is fully green -- no failing check, overall='${RC_TEST_OVERALL}'"
 else
-  fail "rc test reports failures beyond the known non-image set"
+  fail "rc test on a minimal cage reported a failing check (overall='${RC_TEST_OVERALL}')"
   jq -r '.checks[] | select(.status == "fail") | "    " + .name + " — " + .detail' <<<"$RC_TEST_JSON" >&2 2>/dev/null
 fi
 
