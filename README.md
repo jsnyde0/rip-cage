@@ -14,7 +14,7 @@ Rip cage wraps your project in a [microsandbox](https://github.com/microsandbox/
 brew install jsnyde0/rip-cage/rip-cage
 ```
 
-**2. Compose your cage.** Ask your agent — the [`/configure-cage`](.claude/skills/configure-cage/SKILL.md) skill reads the reference manifest and writes a **reviewable `~/.config/rip-cage/tools.yaml`** (your tools, guards, credential posture). Review it, then bake it in with `rc build`.
+**2. Compose your cage.** Ask your agent — the [`cage-config`](.claude/skills/cage-config/SKILL.md) skill writes a **reviewable cage config** at `~/.config/rip-cage/projects/<cage>.yaml` (mounts, secrets, egress allowlist), and [`cage-image`](.claude/skills/cage-image/SKILL.md) writes the Dockerfile when a cage needs a tool the base image lacks. Review both, then `rc build`.
 
 **3. Run it:**
 
@@ -31,7 +31,7 @@ New here? [Getting Started](docs/guides/getting-started.md) walks a first run en
 
 ## Composable, not bundled
 
-Rip cage welds a containment floor and blesses nothing above it (ADR-005 D12): agents, command guards, multiplexers, and plain tools are all **recipes you compose into the image** via the `tools.yaml` manifest — never `rc` source edits. Adding a Postgres CLI is a manifest entry you (or `/configure-cage`) copy from a [recipe](examples/README.md); the composition surface is a small set of documented [seams](docs/reference/README.md).
+Rip cage welds a containment floor and blesses nothing above it (ADR-005 D12): agents, command guards, multiplexers, and plain tools are all **recipes you compose into the image** via your own Dockerfile — never `rc` source edits. Adding a Postgres CLI is a few lines you (or the [`cage-image`](.claude/skills/cage-image/SKILL.md) skill) paste from a [recipe](examples/README.md); the composition surface is a small set of documented [seams](docs/reference/README.md).
 
 Config layers so you set host-wide defaults once and override per project — global `~/.config/rip-cage/config.yaml` + per-project `<repo>/.rip-cage.yaml`, merged on every `rc up` (`rc config show` prints the merged result with each field's source). See [layered config](docs/reference/config.md).
 

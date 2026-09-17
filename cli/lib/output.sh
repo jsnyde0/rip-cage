@@ -78,7 +78,11 @@ Commands:
     --pids-limit N      PID limit (default: 500)
     --new               Always start a new multiplexer session (auto-named; invokes new_session hook)
     --session NAME      Forward NAME to the multiplexer attach hook as $1
-  destroy [name]                                Remove container and volumes (no prompt, no flags)
+  destroy <name>                                Remove container and volumes (no prompt, no flags)
+    <name>              The cage to remove. Omit it only from the project's own
+                        directory, which names one cage. Otherwise rc destroy
+                        refuses (exit 2) and lists the cages it did not touch --
+                        it never picks one for you.
   test [name]                                  Run in-container safety stack tests
   test --host                                  Run all host-side tests (host-only; not usable inside container)
   test --e2e                                   Full lifecycle e2e test (slow; RC_E2E_REBUILD=1 to rebuild image)

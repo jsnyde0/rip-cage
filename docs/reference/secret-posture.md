@@ -132,7 +132,7 @@ Where the Tier-2 criterion's leak-cost half is driving the decision, pair the re
 
 Hand-classifying every secret across a large pooled workspace mount (dozens of sibling repos, each with its own `.env`) doesn't scale as a manual recipe-reading exercise. The intended answer is **agent judgment, not rc machinery** (per [ADR-005 D12](../decisions/ADR-005-ecosystem-tools.md)): an agent sweeps the workspace tree for secret-looking files, proposes a `mounts.mask` list for the ones the caged task doesn't need (Tier 1) and flags any credential that plausibly clears the Tier-2 criterion above for human review, the human approves a handful of lines, and the agent writes the resulting config.
 
-That sweep recipe lives in the **configure-cage skill** (`~/.claude/skills/configure-cage`), extended for exactly this purpose by `rip-cage-3npt` — see that skill for the full sweep walkthrough rather than duplicating it here.
+The skill that writes those lines is **cage-config** (`.claude/skills/cage-config/`): its SKILL.md covers secret covers — an empty read-only file mounted over a secret the cage has no business reading — and the protected-paths floor that already auto-covers the well-known names. Read it there rather than duplicating the walkthrough here.
 
 ---
 
