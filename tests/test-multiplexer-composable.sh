@@ -1,14 +1,54 @@
 #!/usr/bin/env bash
-# test-multiplexer-composable.sh — Composability integration harness (rip-cage-61al.8)
+# test-multiplexer-composable.sh — composability integration harness
+# (rip-cage-61al.8, ported to the boot descriptor by rip-cage-ely4.7.4).
 #
 # PRIMARY SIGNAL: proves "zero rc edits" for a new multiplexer.
 # A fixture mux named 'fakemux' — a name that appears NOWHERE in rc or
-# init-rip-cage.sh — drives the full lifecycle (build, config-validate, start,
+# init-rip-cage.sh — drives the full lifecycle (build, selection, start,
 # attach dispatch) with ZERO edits to the committed rc/init source.
 #
 # This is the ONLY signal that proves the composability claim: a unit test of
 # the hook parser would pass even if a hidden gate survived (round-1 review
 # Finding 12). The novel-name end-to-end probe is load-bearing.
+#
+# =============================================================================
+# WHAT THE PORT CHANGED, AND WHY EACH CASE STILL BITES
+# =============================================================================
+#
+# Every surface E1 used to probe retired with the tools manifest (ADR-031 D4)
+# and the six-verb thinning (D3). The fixture is no longer a manifest handed to
+# `rc build -t`; it is a Dockerfile that extends the base image and merges a
+# boot-descriptor fragment, built with `rc build --file` under RC_IMAGE. Case
+# by case:
+#
+#   E1a  was: two hook FILES under /etc/rip-cage/multiplexers/fakemux/.
+#        now: the image's boot descriptor declares a fakemux multiplexer whose
+#        start hook carries the sentinel. Same question — did the composed
+#        image really carry the mux — asked of the surface that now answers it.
+#
+#   E1b  RETIRED. It read the rc.multiplexers image label, which no longer
+#        exists. Re-expressing it against the descriptor would just restate
+#        E1a, so it goes rather than becoming a second copy of its neighbour.
+#
+#   E1c  was: `rc config show` accepting session.multiplexer: fakemux.
+#        now: `rc up --dry-run` with RC_MULTIPLEXER=fakemux is accepted and
+#        ghost-mux is REFUSED. This case got STRONGER: the old one validated a
+#        config field against an image label, while this one exercises the
+#        preflight that actually gates a boot, and the refusal names the
+#        multiplexers the image does declare.
+#
+#   E1d  was: docker inspect for a label, docker exec for the sentinel.
+#        now: the cage is an msb sandbox — `msb exec` for the sentinel, and the
+#        selection is read back from rc's own label on the sandbox.
+#
+#   E1e  was: _rc_mux_resolve_hook_path, deleted. Its successor is
+#        _container_mux_hook_cmd, which returns the hook's COMMAND STRING read
+#        out of the running cage's descriptor rather than a path. Same
+#        discriminator: it fail-louds on a mux the image does not declare.
+#
+#   E1f  runs that command string inside the cage. Under the old registry the
+#        hook was a file to execute; under the descriptor it is a command to
+#        run, so the assertion follows the hook, not the path.
 #
 # =============================================================================
 # Test structure
@@ -23,30 +63,29 @@
 #     G1d — no case-arm matching tmux or herdr literals in rc or init-rip-cage.sh
 #
 #   E1  (e2e, NEEDS_CONTAINER / RC_E2E=1):
-#     E1a — fakemux hooks baked: /etc/rip-cage/multiplexers/fakemux/start and
-#             /attach present in the built image
-#     E1b — rc.multiplexers image label contains 'fakemux'
-#     E1c — session.multiplexer: fakemux PASSES config-validate (a name rc has
-#             never heard of; accepted because it's baked in the image label)
-#     E1d — rc up (COLD cage) starts the container and init-rip-cage.sh runs the
-#             fakemux start hook: /tmp/fakemux-started sentinel present inside cage
-#     E1e — _rc_mux_resolve_hook_path resolves fakemux/attach from the cage
-#             (proves the registry dispatch routes through the baked hook)
-#     E1f — running the baked attach hook via docker exec writes /tmp/fakemux-attached
-#             (proves the attach hook executes and emits the expected marker)
-#     E1g — ALL of E1a-E1f happen with ZERO edits to rc/init (no rc/init touched
-#             by this test; the source under test is the committed repo)
+#     E1a — the built image's boot descriptor declares fakemux, with the
+#             sentinel-carrying start hook and an attach hook
+#     E1c — RC_MULTIPLEXER=fakemux is accepted by rc up's preflight; ghost-mux
+#             is refused, naming what the image does declare
+#     E1d — a real cage boots under fakemux and init ran its start hook:
+#             /tmp/fakemux-started present inside the cage
+#     E1e — _container_mux_hook_cmd resolves fakemux/attach from the running
+#             cage's descriptor, and fail-louds on ghost-mux
+#     E1f — running that attach command inside the cage emits the marker and
+#             writes /tmp/fakemux-attached
+#     E1g — ALL of the above happen with ZERO edits to rc/init
 #
 # =============================================================================
 # Conventions (load-bearing repo lessons):
 #   * FAILURES counter + [[ $FAILURES -eq 0 ]] || exit 1 — no prose-only red
 #     (per rip-cage-test-fail-prose-without-exit-silent-red).
-#   * Crash-safe trap armed BEFORE first mutation (docker build mutates
-#     rip-cage:latest — per test-mutating-shared-live-state-needs-crash-safe-trap).
-#   * Throwaway image tag, NOT rip-cage:latest.
-#   * RC_ALLOWED_ROOTS set for fixture cage (per rip-cage-validation-fixture-pattern).
-#   * RC_E2E=1 required for e2e tier (NEEDS_CONTAINER per ADR-013).
-#   * Source rc with explicit ./ prefix (per rip-cage-source-rc-bare-vs-explicit).
+#   * Crash-safe trap armed BEFORE the first mutation.
+#   * A throwaway image tag via RC_IMAGE, never rip-cage:latest — and the
+#     scratch tag is reaped from BOTH docker and msb, since `rc build` loads
+#     what it builds into msb's cache too.
+#   * The fixture Dockerfile lives OUTSIDE every tree the cage config mounts:
+#     rc refuses one that resolves inside a cage mount (ADR-031 D5(a)).
+#   * RC_E2E=1 required for the e2e tier (NEEDS_CONTAINER per ADR-013).
 # =============================================================================
 #
 # Run:
@@ -60,7 +99,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
-FIXTURES="${SCRIPT_DIR}/fixtures"
 FAILURES=0
 
 pass() { echo "PASS: $1"; }
@@ -148,14 +186,35 @@ fi
 
 echo "--- E1: live fakemux composability e2e (RC_E2E=1) ---"
 echo ""
-
 # ---------------------------------------------------------------------------
-# E1 state — throwaway image + scratch cage + crash-safe cleanup
+# E1 state — scratch extension image + scratch cage + crash-safe cleanup
 # ---------------------------------------------------------------------------
-FM_IMAGE=""          # throwaway image tag (rip-cage-d2bo: built to DIRECTLY via -t,
-                     # never rip-cage:latest -- nothing to save/restore any more)
-FM_TMP=""            # temp dir for scratch workspace
+BASE_TAG="${RC_FAKEMUX_BASE_TAG:-rip-cage:latest}"
+FM_IMAGE=""          # scratch extension tag; rip-cage:latest is never written
+FM_WORK=""           # build context — OUTSIDE every tree the cage config mounts
+FM_TMP=""            # temp dir holding the scratch workspace
 FM_CAGE=""           # scratch cage name
+
+# shellcheck source=tests/_cage-conf-lib.sh
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+# shellcheck source=tests/_scratch-cage-lib.sh
+source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
+
+if ! command -v msb >/dev/null 2>&1; then
+  echo "SKIP: msb not available — the cage runtime is msb now, not docker"
+  [[ $FAILURES -eq 0 ]] && exit 0 || exit 1
+fi
+if ! docker image inspect "$BASE_TAG" >/dev/null 2>&1; then
+  echo "SKIP: no ${BASE_TAG} to extend — run 'rc build' first"
+  [[ $FAILURES -eq 0 ]] && exit 0 || exit 1
+fi
+# An image built before the boot descriptor landed has no rc-boot-merge in it,
+# so every case below would fail on the FIXTURE rather than on the contract.
+# Say which it is (copied from test-boot-descriptor.sh's own guard).
+if ! docker run --rm --entrypoint sh "$BASE_TAG" -c 'command -v rc-boot-merge' >/dev/null 2>&1; then
+  echo "SKIP: ${BASE_TAG} predates the boot descriptor (no rc-boot-merge in it)"
+  [[ $FAILURES -eq 0 ]] && exit 0 || exit 1
+fi
 
 # Cleanup: idempotent, safe to call multiple times.
 # Note: 'local' is not valid at top-level in bash; use plain vars with guard.
@@ -164,234 +223,232 @@ _fm_cleanup() {
   if [[ "${_FM_CLEANUP_CALLED:-0}" -eq 1 ]]; then return; fi
   _FM_CLEANUP_CALLED=1
 
-  # Destroy scratch cage if created
+  # Destroy the scratch cage by its EXACT name — rc destroy, never an
+  # enumeration, and never a bare msb remove (which would orphan the cage's
+  # rc-state-/rc-history- volumes forever).
   if [[ -n "${FM_CAGE:-}" ]]; then
-    docker rm -f "${FM_CAGE}" >/dev/null 2>&1 || true
-    docker volume rm "rc-state-${FM_CAGE}" >/dev/null 2>&1 || true
-    docker volume rm "rc-history-${FM_CAGE}" >/dev/null 2>&1 || true
-    docker volume rm "rc-mise-cache" >/dev/null 2>&1 || true
+    _fm_d_out=$("${RC}" destroy "${FM_CAGE}" 2>&1)
+    _fm_d_rc=$?
+    if [[ "$_fm_d_rc" -ne 0 ]]; then
+      echo "WARNING: failed to destroy '${FM_CAGE}' (exit ${_fm_d_rc}): ${_fm_d_out}" >&2
+    fi
     FM_CAGE=""
   fi
 
-  # Destroy throwaway image (rip-cage-d2bo: exact-name reap, never a wildcard;
-  # nothing to restore since rip-cage:latest was never touched)
+  # Reap the scratch image from BOTH stores. `rc build` loads what it builds
+  # into msb's cache as well as docker's, so removing only the docker tag
+  # leaves a scratch image behind in the store cages actually boot from.
   if [[ -n "${FM_IMAGE:-}" ]]; then
     docker image rm "${FM_IMAGE}" >/dev/null 2>&1 || true
+    msb image remove "${FM_IMAGE}" >/dev/null 2>&1 || true
     FM_IMAGE=""
   fi
 
-  # Remove temp workspace
+  [[ -n "${FM_WORK:-}" ]] && rm -rf "${FM_WORK}"
+  FM_WORK=""
   [[ -n "${FM_TMP:-}" ]] && rm -rf "${FM_TMP}"
   FM_TMP=""
 }
 
-# Arm crash-safe trap BEFORE the first mutation (build creates FM_IMAGE).
+# Arm crash-safe trap BEFORE the first mutation (the build creates FM_IMAGE).
 trap '_fm_cleanup' EXIT INT TERM
 
 # ---------------------------------------------------------------------------
-# Build: build fakemux image straight to its own pinned scratch tag via -t
-# (rip-cage-d2bo) -- never rip-cage:latest, so no save/restore dance needed.
+# Build: a FROM-extension carrying one synthetic multiplexer.
+#
+# fakemux installs no binary on purpose. The whole subject is that a name rc
+# has never heard of works, so the hooks are an echo and a touch — the cheapest
+# thing that leaves observable evidence inside a real cage.
+#
+# The build context is a fresh mktemp dir, kept well away from the workspace
+# this test later mounts: rc refuses, fail-closed, a Dockerfile that resolves
+# inside a tree its own cage config mounts (ADR-031 D5(a)).
 # ---------------------------------------------------------------------------
 _fm_unique_suffix="$(date +%s)-$$"
-FM_IMAGE="rip-cage:fakemux-composable-${_fm_unique_suffix}"
+FM_IMAGE="rip-cage-fakemux-composable:${_fm_unique_suffix}"
 
-FAKEMUX_FIXTURE="${FIXTURES}/manifest-fakemux.yaml"
-if [[ ! -f "${FAKEMUX_FIXTURE}" ]]; then
-  fail "E1 FATAL: fakemux fixture not found at ${FAKEMUX_FIXTURE}"
-  echo "FATAL: fixture missing — cannot proceed with E1"
-  exit 1
-fi
+FM_WORK=$(mktemp -d)
+FM_WORK=$(cd "$FM_WORK" && pwd -P)
 
-echo "=== E1: Building fakemux cage image from ${FAKEMUX_FIXTURE} to pinned tag ${FM_IMAGE} ==="
+cat > "${FM_WORK}/boot-fragment.json" <<'FRAGMENT'
+{
+  "multiplexers": [
+    {
+      "name": "fakemux",
+      "start": "touch /tmp/fakemux-started && echo '[fakemux] start hook ran: sentinel at /tmp/fakemux-started'",
+      "attach": "echo 'fakemux-attach-marker' && touch /tmp/fakemux-attached"
+    }
+  ]
+}
+FRAGMENT
+
+cat > "${FM_WORK}/Dockerfile" <<DOCKERFILE
+FROM ${BASE_TAG}
+USER root
+COPY boot-fragment.json /tmp/fakemux-boot.json
+RUN rc-boot-merge /tmp/fakemux-boot.json && rm -f /tmp/fakemux-boot.json
+USER agent
+DOCKERFILE
+
+echo "=== E1: building the fakemux extension image -> ${FM_IMAGE} ==="
 _fm_build_rc=0
-RC_MANIFEST_GLOBAL="${FAKEMUX_FIXTURE}" "${RC}" build -t "${FM_IMAGE}" \
+RC_IMAGE="${FM_IMAGE}" "${RC}" build --file "${FM_WORK}/Dockerfile" \
   >/tmp/rc-fakemux-composable-build.out 2>&1 || _fm_build_rc=$?
 
 if [[ "${_fm_build_rc}" -ne 0 ]]; then
-  fail "E1 FATAL: rc build with fakemux fixture failed (exit=${_fm_build_rc})" \
+  fail "E1 FATAL: rc build --file failed for the fakemux extension (exit=${_fm_build_rc})" \
     "see /tmp/rc-fakemux-composable-build.out"
   echo "FATAL: cannot proceed with E1 without a successful image build"
   exit 1
 fi
+pass "E1 rc build --file produced the fakemux extension image: ${FM_IMAGE}"
 
-pass "E1 rc build succeeded with fakemux manifest: ${FM_IMAGE}"
+# `rc build` loads into msb best-effort. A cage cannot boot from an image msb
+# does not hold, so make the load explicit rather than discovering it as a
+# confusing rc up failure three cases later.
+if ! msb image inspect "${FM_IMAGE}" >/dev/null 2>&1; then
+  _fm_tar="${FM_WORK}/fakemux.tar"
+  docker save "${FM_IMAGE}" -o "${_fm_tar}" >/dev/null 2>&1 \
+    && msb load --tag "${FM_IMAGE}" -i "${_fm_tar}" >/dev/null 2>&1 || true
+  rm -f "${_fm_tar}"
+fi
+if msb image inspect "${FM_IMAGE}" >/dev/null 2>&1; then
+  pass "E1 the fakemux image is in msb's cache (a cage can boot from it)"
+else
+  fail "E1 FATAL: the fakemux image never reached msb's cache" \
+    "rc up below would fail on a missing image, not on the contract"
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
-# E1a — fakemux hooks baked in image: /etc/rip-cage/multiplexers/fakemux/start + /attach
+# E1a — the composed image's boot descriptor declares fakemux.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- E1a: fakemux hooks baked in image ---"
+echo "--- E1a: fakemux declared in the image's boot descriptor ---"
 
-_e1a_start_rc=0
-docker run --rm "${FM_IMAGE}" test -f /etc/rip-cage/multiplexers/fakemux/start 2>/dev/null || _e1a_start_rc=$?
-if [[ "${_e1a_start_rc}" -eq 0 ]]; then
-  pass "E1a /etc/rip-cage/multiplexers/fakemux/start hook file baked in image"
+_e1a_desc=$(docker run --rm --entrypoint sh "${FM_IMAGE}" -c 'cat /etc/rip-cage/boot.json' 2>/dev/null || true)
+if jq -e '(.multiplexers // []) | any(.name == "fakemux")' <<<"${_e1a_desc}" >/dev/null 2>&1; then
+  pass "E1a the descriptor declares a 'fakemux' multiplexer"
 else
-  fail "E1a /etc/rip-cage/multiplexers/fakemux/start ABSENT in image — registry bake failed"
+  fail "E1a no 'fakemux' entry in the image's descriptor — the fragment did not merge" \
+    "descriptor: ${_e1a_desc}"
 fi
 
-_e1a_attach_rc=0
-docker run --rm "${FM_IMAGE}" test -f /etc/rip-cage/multiplexers/fakemux/attach 2>/dev/null || _e1a_attach_rc=$?
-if [[ "${_e1a_attach_rc}" -eq 0 ]]; then
-  pass "E1a /etc/rip-cage/multiplexers/fakemux/attach hook file baked in image"
+_e1a_start=$(jq -r '(.multiplexers // [])[] | select(.name=="fakemux") | .start // ""' <<<"${_e1a_desc}" 2>/dev/null || true)
+if grep -q 'fakemux-started' <<<"${_e1a_start}"; then
+  pass "E1a the start hook carries the sentinel (merged verbatim, not mangled)"
 else
-  fail "E1a /etc/rip-cage/multiplexers/fakemux/attach ABSENT in image — registry bake failed"
+  fail "E1a the start hook does not reference 'fakemux-started': '${_e1a_start}'"
 fi
 
-# Verify start hook content references the sentinel command
-_e1a_start_content=$(docker run --rm "${FM_IMAGE}" cat /etc/rip-cage/multiplexers/fakemux/start 2>/dev/null || true)
-if echo "${_e1a_start_content}" | grep -q 'fakemux-started'; then
-  pass "E1a start hook content baked correctly (references 'fakemux-started' sentinel)"
+_e1a_attach=$(jq -r '(.multiplexers // [])[] | select(.name=="fakemux") | .attach // ""' <<<"${_e1a_desc}" 2>/dev/null || true)
+if [[ -n "${_e1a_attach}" ]]; then
+  pass "E1a the attach hook is present (the schema's second required field)"
 else
-  fail "E1a start hook content unexpected: '${_e1a_start_content}'"
+  fail "E1a the fakemux entry carries no attach hook"
 fi
 
-# ---------------------------------------------------------------------------
-# E1b — rc.multiplexers image label contains 'fakemux'
-# ---------------------------------------------------------------------------
-echo ""
-echo "--- E1b: rc.multiplexers label ---"
-
-_e1b_label=$(docker inspect --format '{{ index .Config.Labels "rc.multiplexers" }}' "${FM_IMAGE}" 2>/dev/null || true)
-if [[ -n "${_e1b_label}" ]]; then
-  pass "E1b rc.multiplexers label present: '${_e1b_label}'"
+# The base image must NOT already declare fakemux, or E1a proves nothing about
+# the fragment this test merged.
+_e1a_base_desc=$(docker run --rm --entrypoint sh "${BASE_TAG}" -c 'cat /etc/rip-cage/boot.json' 2>/dev/null || true)
+if jq -e '(.multiplexers // []) | any(.name == "fakemux")' <<<"${_e1a_base_desc}" >/dev/null 2>&1; then
+  fail "E1a the BASE image already declares fakemux — E1a cannot attribute it to the fragment"
 else
-  fail "E1b rc.multiplexers label ABSENT from built image"
-fi
-
-if echo "${_e1b_label}" | grep -q 'fakemux'; then
-  pass "E1b rc.multiplexers label contains 'fakemux': '${_e1b_label}'"
-else
-  fail "E1b rc.multiplexers label does NOT contain 'fakemux'. label='${_e1b_label}'"
+  pass "E1a negative control: the base image declares no fakemux, so the fragment is what added it"
 fi
 
 # ---------------------------------------------------------------------------
-# E1c — session.multiplexer: fakemux PASSES config-validate with the built image.
-# Uses RC_MUX_INSPECT_IMAGE override (same pattern as test-multiplexer-config-dynamic.sh).
+# E1c — rc up's multiplexer preflight accepts fakemux and refuses ghost-mux.
+#
+# This replaces the retired config-validate case, and asks a better question:
+# the preflight below is what actually gates a boot, and it reads the IMAGE's
+# descriptor rather than a label. A dry run is enough — the refusal happens
+# before anything is created.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- E1c: config-validate with session.multiplexer: fakemux ---"
+echo "--- E1c: RC_MULTIPLEXER preflight discriminates a declared mux from an unknown one ---"
 
-_e1c_sandbox=$(mktemp -d "${TMPDIR:-/tmp}/rc-fakemux-composable-config-XXXXXX")
-mkdir -p "${_e1c_sandbox}/.config/rip-cage"
-mkdir -p "${_e1c_sandbox}/workspace"
-cat > "${_e1c_sandbox}/.config/rip-cage/config.yaml" <<'YAML'
-version: 2
-mounts:
-  denylist: []
-YAML
-touch "${_e1c_sandbox}/.config/rip-cage/tools.yaml"
-cat > "${_e1c_sandbox}/workspace/.rip-cage.yaml" <<'YAML'
-version: 2
-session:
-  multiplexer: fakemux
-YAML
-
-_e1c_stderr=$(mktemp)
-_e1c_exit=0
-HOME="${_e1c_sandbox}" XDG_CONFIG_HOME="${_e1c_sandbox}/.config" \
-  RC_MUX_INSPECT_IMAGE="${FM_IMAGE}" \
-  RC_MANIFEST_GLOBAL="${FAKEMUX_FIXTURE}" \
-  bash -c "cd '${_e1c_sandbox}/workspace' && '${RC}' config show --json" \
-  >/dev/null 2>"${_e1c_stderr}" || _e1c_exit=$?
-
-if [[ "${_e1c_exit}" -eq 0 ]]; then
-  pass "E1c session.multiplexer=fakemux PASSES config-validate (baked image label authoritative)"
-else
-  fail "E1c session.multiplexer=fakemux FAILED config-validate — label-based derivation broken" \
-    "stderr: $(cat "${_e1c_stderr}")"
-fi
-
-# Belt-and-suspenders: ghost-mux (not in label) must FAIL loud
-cat > "${_e1c_sandbox}/workspace/.rip-cage.yaml" <<'YAML'
-version: 2
-session:
-  multiplexer: ghost-mux
-YAML
-_e1c_ghost_exit=0
-HOME="${_e1c_sandbox}" XDG_CONFIG_HOME="${_e1c_sandbox}/.config" \
-  RC_MUX_INSPECT_IMAGE="${FM_IMAGE}" \
-  RC_MANIFEST_GLOBAL="${FAKEMUX_FIXTURE}" \
-  bash -c "cd '${_e1c_sandbox}/workspace' && '${RC}' config show --json" \
-  >/dev/null 2>"${_e1c_stderr}" || _e1c_ghost_exit=$?
-
-if [[ "${_e1c_ghost_exit}" -ne 0 ]]; then
-  pass "E1c session.multiplexer=ghost-mux FAILS loud (not baked — config-validate discriminates)"
-else
-  fail "E1c session.multiplexer=ghost-mux should fail but exited 0 — config-validate is fail-open"
-fi
-
-rm -f "${_e1c_stderr}"
-rm -rf "${_e1c_sandbox}"
-
-# ---------------------------------------------------------------------------
-# E1d — rc up (COLD cage): start hook runs, /tmp/fakemux-started sentinel present.
-# ---------------------------------------------------------------------------
-echo ""
-echo "--- E1d: rc up (COLD cage) — fakemux start hook runs ---"
-
-# Create scratch workspace
 FM_TMP=$(mktemp -d)
-FM_TMP=$(realpath "${FM_TMP}")
+FM_TMP=$(cd "$FM_TMP" && pwd -P)
 mkdir -p "${FM_TMP}/fakemux-workspace"
 git -C "${FM_TMP}/fakemux-workspace" init -q 2>/dev/null
 printf '# fakemux composability test workspace\n' > "${FM_TMP}/fakemux-workspace/README"
 
-# .rip-cage.yaml: select fakemux multiplexer
-cat > "${FM_TMP}/fakemux-workspace/.rip-cage.yaml" <<'YAML'
-version: 2
-session:
-  multiplexer: fakemux
-YAML
+FM_CONF=$(cage_conf_for "${FM_TMP}/fakemux-workspace" "${FM_IMAGE}")
 
-export RC_ALLOWED_ROOTS="${FM_TMP}"
+_e1c_ok_err=$(mktemp)
+_e1c_ok_rc=0
+RC_CAGE_CONF="${FM_CONF}" RC_IMAGE="${FM_IMAGE}" RC_MULTIPLEXER="fakemux" \
+  "${RC}" up --dry-run "${FM_TMP}/fakemux-workspace" \
+  </dev/null >/dev/null 2>"${_e1c_ok_err}" || _e1c_ok_rc=$?
+if [[ "${_e1c_ok_rc}" -eq 0 ]]; then
+  pass "E1c a mux the image declares is accepted — 'fakemux' passes the preflight"
+else
+  fail "E1c 'fakemux' was refused even though the image declares it" \
+    "stderr: $(cat "${_e1c_ok_err}")"
+fi
 
-# Derive cage name (container_name uses last two path components of workspace).
-# FM_TMP/fakemux-workspace → last two: <parent-basename>/fakemux-workspace
-_fm_parent_base=$(basename "${FM_TMP}")
-FM_CAGE="${_fm_parent_base}-fakemux-workspace"
+_e1c_ghost_err=$(mktemp)
+_e1c_ghost_rc=0
+RC_CAGE_CONF="${FM_CONF}" RC_IMAGE="${FM_IMAGE}" RC_MULTIPLEXER="ghost-mux" \
+  "${RC}" up --dry-run "${FM_TMP}/fakemux-workspace" \
+  </dev/null >/dev/null 2>"${_e1c_ghost_err}" || _e1c_ghost_rc=$?
+if [[ "${_e1c_ghost_rc}" -ne 0 ]]; then
+  pass "E1c a mux the image does NOT declare is refused — 'ghost-mux' fails the preflight"
+else
+  fail "E1c 'ghost-mux' was accepted — the preflight is fail-open"
+fi
+# The refusal has to be actionable, or an operator cannot tell a typo from a
+# missing recipe.
+if grep -q 'fakemux' "${_e1c_ghost_err}"; then
+  pass "E1c the refusal names what the image DOES declare"
+else
+  fail "E1c the refusal does not name the declared multiplexers" \
+    "stderr: $(cat "${_e1c_ghost_err}")"
+fi
+rm -f "${_e1c_ok_err}" "${_e1c_ghost_err}"
 
-# Pre-cleanup: remove any leftover from prior aborted run
-docker rm -f "${FM_CAGE}" >/dev/null 2>&1 || true
-docker volume rm "rc-state-${FM_CAGE}" >/dev/null 2>&1 || true
-docker volume rm "rc-history-${FM_CAGE}" >/dev/null 2>&1 || true
+# ---------------------------------------------------------------------------
+# E1d — a real cage boots under fakemux and init ran its start hook.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- E1d: rc up (COLD cage) — the fakemux start hook runs inside a real cage ---"
+
+FM_CAGE="$(basename "${FM_TMP}")-fakemux-workspace"
+scratch_cage_register "${FM_CAGE}"
 
 echo "  Spinning up fakemux cage: ${FM_CAGE} (image: ${FM_IMAGE})"
 _e1d_up_rc=0
-RC_MANIFEST_GLOBAL="${FAKEMUX_FIXTURE}" \
-  RC_IMAGE="${FM_IMAGE}" \
+RC_CAGE_CONF="${FM_CONF}" RC_IMAGE="${FM_IMAGE}" RC_MULTIPLEXER="fakemux" \
   "${RC}" up "${FM_TMP}/fakemux-workspace" \
   </dev/null >/tmp/rc-fakemux-composable-up.out 2>&1 || _e1d_up_rc=$?
 
-# Check cage is running
-if docker inspect "${FM_CAGE}" >/dev/null 2>&1; then
-  pass "E1d fakemux cage started: ${FM_CAGE} (rc up exit=${_e1d_up_rc})"
+if msb inspect "${FM_CAGE}" >/dev/null 2>&1; then
+  pass "E1d fakemux cage created: ${FM_CAGE} (rc up exit=${_e1d_up_rc})"
 else
   fail "E1d fakemux cage failed to start" \
     "rc up exit=${_e1d_up_rc}; see /tmp/rc-fakemux-composable-up.out"
-  # Cannot proceed with sentinel checks
   echo "FATAL: cage not running — aborting E1d/e/f"
   echo ""
   echo "=== test-multiplexer-composable.sh complete ==="
-  [[ $FAILURES -eq 0 ]] || exit 1
-  exit 0
+  exit 1
 fi
 
-# Assert rc.session.multiplexer label is 'fakemux'
-_e1d_mux_label=$(docker inspect --format '{{index .Config.Labels "rc.session.multiplexer"}}' "${FM_CAGE}" 2>/dev/null || true)
+_e1d_mux_label=$(msb inspect "${FM_CAGE}" --format json 2>/dev/null \
+  | jq -r '.config.labels["rc.session.multiplexer"] // ""' 2>/dev/null || true)
 if [[ "${_e1d_mux_label}" == "fakemux" ]]; then
-  pass "E1d rc.session.multiplexer label = 'fakemux'"
+  pass "E1d the cage is stamped rc.session.multiplexer=fakemux"
 else
-  fail "E1d rc.session.multiplexer label = '${_e1d_mux_label}' (expected 'fakemux')"
+  fail "E1d rc.session.multiplexer = '${_e1d_mux_label}' (expected 'fakemux')"
 fi
 
-# Assert start hook ran: /tmp/fakemux-started sentinel present inside cage.
-# init-rip-cage.sh runs the start hook at container init time (via docker exec).
-# Allow up to 15s for init to complete (the hook runs early in the init sequence).
+# init runs the start hook early in the boot sequence; give it a bounded wait
+# rather than a fixed sleep. Each probe carries its own timeout because macOS
+# has no timeout(1) to wrap the whole thing in.
 _e1d_sentinel_found=false
 _e1d_waited=0
-while [[ "${_e1d_waited}" -lt 15 ]]; do
-  _e1d_sentinel=$(docker exec "${FM_CAGE}" sh -c 'test -f /tmp/fakemux-started && echo present || echo absent' 2>/dev/null || echo absent)
+while [[ "${_e1d_waited}" -lt 20 ]]; do
+  _e1d_sentinel=$(msb exec "${FM_CAGE}" -- sh -c 'test -f /tmp/fakemux-started && echo present || echo absent' 2>/dev/null || echo absent)
   if [[ "${_e1d_sentinel}" == "present" ]]; then
     _e1d_sentinel_found=true
     break
@@ -401,83 +458,75 @@ while [[ "${_e1d_waited}" -lt 15 ]]; do
 done
 
 if [[ "${_e1d_sentinel_found}" == "true" ]]; then
-  pass "E1d fakemux start hook ran: /tmp/fakemux-started sentinel present inside cage (init_hook dispatched via baked registry)"
+  pass "E1d the fakemux start hook RAN: /tmp/fakemux-started is present inside the cage"
 else
-  fail "E1d fakemux start hook did NOT run — /tmp/fakemux-started absent after ${_e1d_waited}s" \
-    "registry dispatch or init-rip-cage.sh start-case may be broken"
-  # Diagnostic: check init log
-  _e1d_init_log=$(docker exec "${FM_CAGE}" grep -i 'fakemux\|ERROR\|multiplexer' /var/log/rip-cage-init.log 2>/dev/null || true)
+  fail "E1d the fakemux start hook did NOT run — /tmp/fakemux-started absent after ${_e1d_waited}s" \
+    "init's descriptor dispatch may be broken"
+  _e1d_init_log=$(msb exec "${FM_CAGE}" -- sh -c 'grep -i "fakemux\|ERROR\|multiplexer" /var/log/rip-cage-init.log 2>/dev/null | tail -20' 2>/dev/null || true)
   echo "  Init log excerpt: ${_e1d_init_log:-<not available>}"
 fi
 
 # ---------------------------------------------------------------------------
-# E1e — _rc_mux_resolve_hook_path resolves fakemux/attach from the running cage.
-# Proves the registry dispatch routes through the baked hook (cage-aware path).
+# E1e — the hook resolver reads fakemux/attach out of the RUNNING cage.
+#
+# Successor to the deleted _rc_mux_resolve_hook_path. It returns the hook's
+# COMMAND STRING, read from the descriptor inside the cage, not a file path.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- E1e: registry dispatch — _rc_mux_resolve_hook_path resolves fakemux/attach ---"
+echo "--- E1e: _container_mux_hook_cmd resolves fakemux/attach from the running cage ---"
 
 _e1e_resolve_out=""
 _e1e_resolve_rc=0
-_e1e_resolve_out=$(bash -c "source '${RC}'; _rc_mux_resolve_hook_path 'fakemux' 'attach' '${FM_CAGE}'" 2>&1) || _e1e_resolve_rc=$?
+_e1e_resolve_out=$(bash -c "source '${RC}' 2>/dev/null; _container_mux_hook_cmd 'fakemux' 'attach' '${FM_CAGE}'" 2>&1) || _e1e_resolve_rc=$?
 
-if [[ "${_e1e_resolve_rc}" -eq 0 ]] && [[ -n "${_e1e_resolve_out}" ]]; then
-  pass "E1e _rc_mux_resolve_hook_path resolved 'fakemux/attach' via cage: '${_e1e_resolve_out}'"
+if [[ "${_e1e_resolve_rc}" -eq 0 && -n "${_e1e_resolve_out}" ]]; then
+  pass "E1e resolved fakemux/attach from the cage: '${_e1e_resolve_out}'"
 else
-  fail "E1e _rc_mux_resolve_hook_path FAILED to resolve 'fakemux/attach'" \
+  fail "E1e failed to resolve 'fakemux/attach' from the running cage" \
     "exit=${_e1e_resolve_rc} out='${_e1e_resolve_out}'"
 fi
-
-if echo "${_e1e_resolve_out}" | grep -q 'fakemux/attach'; then
-  pass "E1e resolved path contains expected 'fakemux/attach' component"
+if grep -q 'fakemux-attach-marker' <<<"${_e1e_resolve_out}"; then
+  pass "E1e the resolved command is the one the fragment declared"
 else
-  fail "E1e resolved path missing 'fakemux/attach': '${_e1e_resolve_out}'"
+  fail "E1e the resolved command is not the declared attach hook: '${_e1e_resolve_out}'"
 fi
 
-# Ghost-mux must fail loud (discriminating — fakemux image only has fakemux in label)
+# Discriminating half: a mux the cage does not carry must fail loud, or the
+# resolver would happily hand back nothing and the caller would run it.
 _e1e_ghost_out=""
 _e1e_ghost_rc=0
-_e1e_ghost_out=$(bash -c "source '${RC}'; _rc_mux_resolve_hook_path 'ghost-mux' 'attach' '${FM_CAGE}'" 2>&1) || _e1e_ghost_rc=$?
+_e1e_ghost_out=$(bash -c "source '${RC}' 2>/dev/null; _container_mux_hook_cmd 'ghost-mux' 'attach' '${FM_CAGE}'" 2>&1) || _e1e_ghost_rc=$?
 if [[ "${_e1e_ghost_rc}" -ne 0 ]]; then
-  pass "E1e _rc_mux_resolve_hook_path fails loud on 'ghost-mux' (not baked — discriminates)"
+  pass "E1e the resolver fails loud on 'ghost-mux' (it discriminates)"
 else
-  fail "E1e _rc_mux_resolve_hook_path should fail on 'ghost-mux' but exited 0" \
-    "out='${_e1e_ghost_out}'"
+  fail "E1e the resolver returned 0 for 'ghost-mux'" "out='${_e1e_ghost_out}'"
 fi
 
 # ---------------------------------------------------------------------------
-# E1f — running the baked attach hook via docker exec writes /tmp/fakemux-attached
-#        and emits the unique marker 'fakemux-attach-marker'.
+# E1f — running the resolved attach command inside the cage has its effect.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- E1f: attach hook executes and emits expected marker ---"
+echo "--- E1f: the resolved attach hook executes and emits its marker ---"
 
-# Resolve the baked hook path (already proven in E1e; use fresh resolution)
-_e1f_hook_path=""
-_e1f_hook_path=$(bash -c "source '${RC}'; _rc_mux_resolve_hook_path 'fakemux' 'attach' '${FM_CAGE}'" 2>/dev/null || true)
-
-if [[ -z "${_e1f_hook_path}" ]]; then
-  fail "E1f cannot run attach hook: path resolution failed (E1e must have also failed)"
+if [[ -z "${_e1e_resolve_out}" ]]; then
+  fail "E1f cannot run the attach hook: resolution failed (E1e is also red)"
 else
-  # Run the baked attach hook directly inside the cage (non-TTY, headless)
   _e1f_hook_out=""
   _e1f_hook_rc=0
-  _e1f_hook_out=$(docker exec "${FM_CAGE}" sh "${_e1f_hook_path}" 2>&1) || _e1f_hook_rc=$?
+  _e1f_hook_out=$(msb exec "${FM_CAGE}" -- sh -c "${_e1e_resolve_out}" 2>&1) || _e1f_hook_rc=$?
 
-  if echo "${_e1f_hook_out}" | grep -q 'fakemux-attach-marker'; then
-    pass "E1f baked attach hook emitted 'fakemux-attach-marker' (hook is self-contained; end-to-end dispatch resolution proven in E1e)"
+  if grep -q 'fakemux-attach-marker' <<<"${_e1f_hook_out}"; then
+    pass "E1f the attach hook emitted 'fakemux-attach-marker'"
   else
-    fail "E1f baked attach hook did NOT emit 'fakemux-attach-marker'" \
+    fail "E1f the attach hook did not emit its marker" \
       "exit=${_e1f_hook_rc} output='${_e1f_hook_out}'"
   fi
 
-  # Check /tmp/fakemux-attached sentinel written by attach hook
-  _e1f_sentinel=$(docker exec "${FM_CAGE}" sh -c 'test -f /tmp/fakemux-attached && echo present || echo absent' 2>/dev/null || echo absent)
+  _e1f_sentinel=$(msb exec "${FM_CAGE}" -- sh -c 'test -f /tmp/fakemux-attached && echo present || echo absent' 2>/dev/null || echo absent)
   if [[ "${_e1f_sentinel}" == "present" ]]; then
-    pass "E1f /tmp/fakemux-attached sentinel written by attach hook (hook executed fully)"
+    pass "E1f /tmp/fakemux-attached was written — the hook ran to completion, not just its first echo"
   else
-    fail "E1f /tmp/fakemux-attached sentinel NOT written" \
-      "hook output: '${_e1f_hook_out}'"
+    fail "E1f /tmp/fakemux-attached was NOT written" "hook output: '${_e1f_hook_out}'"
   fi
 fi
 
