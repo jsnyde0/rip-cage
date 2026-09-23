@@ -16,6 +16,8 @@ This pattern is borrowed from Mapular's ADR-001 (fail-loud error handling), whic
 
 ## Decision
 
+**Firmness:** FLEXIBLE *(assigned 2026-09-23 by normalisation; human may adjust)*
+
 `rc` uses a **fail-loud** error handling pattern for state mismatches: missing labels, missing scripts, image/container drift, and unknown configurations cause an immediate, descriptive error rather than a silent fallback.
 
 Specific behaviors:

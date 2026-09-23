@@ -106,7 +106,7 @@ The Dockerfile sets `ENV MISE_TRUSTED_CONFIG_PATHS=/workspace`, which causes mis
 
 ### D5: `bootstrap.sh` escape hatch is deferred, not rejected
 
-**Firmness: PROVISIONAL**
+**Firmness: EXPLORATORY** *(provisional; assigned to the nearest enum level by the 2026-09-23 firmness normalisation)*
 
 A `.rip-cage/bootstrap.sh` mechanism that runs arbitrary project-supplied shell at container start is **not** shipped in this ADR. It is also not permanently rejected. The leading use case (apt-level system libraries like `libpq-dev` / `ffmpeg`, or project-local binaries not in mise) is real but has not yet produced concrete demand.
 
