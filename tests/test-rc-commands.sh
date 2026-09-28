@@ -16,54 +16,73 @@ FAILURES=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
-# THIS FILE MOVED THE OPERATOR'S PRODUCTION IMAGE (rip-cage-ely4.7.9). Traced
-# by bisecting the host-only tier with a docker audit shim; the sequence was
+# THIS FILE NEVER WRITES A TAG IT DID NOT CREATE (rip-cage-e8xr, and
+# rip-cage-ely4.7.9 before it). Two earlier incidents moved the operator's
+# image through this file: an inherited RC_IMAGE was honoured, a case reached
+# rc's own pull-first provisioning, and the sequence
 #
-#   docker image inspect rip-cage:latest --format '…image.version'
 #   docker pull ghcr.io/jsnyde0/rip-cage:<v>
-#   docker tag  ghcr.io/jsnyde0/rip-cage:<v> rip-cage:latest
-#   docker save rip-cage:latest -o … ; msb load --tag rip-cage:latest
+#   docker tag  ghcr.io/jsnyde0/rip-cage:<v> $RC_IMAGE
+#   docker save $RC_IMAGE -o … ; msb load --tag $RC_IMAGE
 #
-# That is not a test writing the tag -- no test text does, which is why the
-# static guard passed throughout. It is **rc's own pull-first provisioning**:
-# some case here reaches an rc path that reads the local image's version
-# label, judges it stale, and re-provisions from the registry. The retag and
-# the msb load are two steps of one mechanism, which is why BOTH stores moved
-# in the incident that found this.
+# retagged whatever RC_IMAGE named, in both image stores. No test text wrote
+# the tag; rc's provisioning did. Three rules keep it from happening again:
 #
-# The lever is rc's own: IMAGE="${RC_IMAGE:-rip-cage:latest}" (rc:67). Pinning
-# RC_IMAGE for the whole file means no case in it can provision onto the
-# production tag, whatever path it takes -- strictly better than chasing the
-# one case, because the next case added here inherits the protection. Cases
-# that need their own fixture tag still set RC_IMAGE themselves; this is only
-# the floor. Nothing here asserts on the literal default tag.
+#  1. RC_IMAGE is set UNCONDITIONALLY to this file's own fixture tag. An
+#     inherited RC_IMAGE is ignored, and a case that needs its own tag sets it
+#     for that one call. rip-cage:latest appears only as a STRING inside a
+#     shim or config fixture whose subject is the default tag (Tests 60, 62);
+#     it is never an argument to anything that reaches an image store.
+#  2. The whole file runs behind fake docker and msb (fake_runtime_bin in
+#     tests/_fake-runtime-lib.sh), so every rc call -- `rc up`, `rc build`, the
+#     pull/build fallbacks -- lands on a shim that logs and exits 0. Cases that
+#     need a specific answer front the file-wide pair with their own shim
+#     (_make_fake_msb_dir, _make_fake_docker_dir) rather than building or
+#     tagging a real image.
+#  3. The audit log ($_RC_CMDS_RT_LOG) records every call that reaches the
+#     file-wide pair, and the closing check asserts two things: the log is
+#     non-empty (the pair really was first on PATH, so a broken prepend cannot
+#     pass with every call on the real binaries), and it holds no pull, tag,
+#     push, save, load, build, image removal, create, run, start or rm. The
+#     per-case shims (Tests 8/8b, 14, 19, 20, 60-63, the DG cases) front the
+#     pair for one call each and are NOT in that log; a case that needs a
+#     valid launch makes the image read present and current (Test 63) rather
+#     than exempting itself.
 #
-# Do NOT "fix" this with RIP_CAGE_IMAGE_REGISTRY="" instead: that opts out of
-# the PULL and falls back to building locally (cli/build.sh:544) -- onto the
-# same production tag. It swaps one writer for another.
-export RC_IMAGE="${RC_IMAGE:-rip-cage-rccmds-fixture:test}"
+#     The fake dir and log are removed on the normal end path only. Several
+#     cases install and then disarm their own EXIT traps, which precludes a
+#     file-level one; a run that dies early leaves two temp entries behind.
+#
+# Do NOT "fix" a provisioning path with RIP_CAGE_IMAGE_REGISTRY="": that opts
+# out of the PULL and falls back to a local build (cli/build.sh, _pull_or_build_local)
+# onto the same tag. It swaps one writer for another.
+export RC_IMAGE="rip-cage-rccmds-fixture:test"
 
-# The fixture tag has to resolve to a REAL image, or the cases that ask rc
-# whether a cage is compatible with its image fail on a missing one instead of
-# on their own subject. Point it at whatever the production tag holds: reading
-# that tag as a SOURCE is exactly what the write-guard's T4 case protects, and
-# the production tag itself is never an argument to anything that writes.
-# Removed at exit, so a run leaves no fixture tag behind.
-_rc_cmds_fixture_tag_made=0
-if [[ "$RC_IMAGE" == "rip-cage-rccmds-fixture:test" ]] \
-   && docker image inspect rip-cage:latest >/dev/null 2>&1; then
-  if docker tag rip-cage:latest "$RC_IMAGE" >/dev/null 2>&1; then
-    _rc_cmds_fixture_tag_made=1
-  fi
+# shellcheck source=tests/_fake-runtime-lib.sh
+source "${SCRIPT_DIR}/_fake-runtime-lib.sh"
+_RC_CMDS_RT_LOG=$(mktemp "${TMPDIR:-/tmp}/rc-cmds-runtime-log.XXXXXX")
+_RC_CMDS_RT_BIN=$(fake_runtime_bin "$_RC_CMDS_RT_LOG")
+export PATH="${_RC_CMDS_RT_BIN}:${PATH}"
+
+# A docker shim for the cases that need rc to read an image's version label
+# (Tests 14, 19, 20). It answers `image inspect <TAG>` with LABEL, exits 0
+# with no output for every other call. It fronts the file-wide pair for one rc
+# call, so its calls are not in the audit log.
+#
+# _make_fake_docker_dir DIR TAG LABEL -- writes DIR/docker. An empty LABEL
+# reads as the label key being absent ("<no value>", as docker prints it).
+_make_fake_docker_dir() {
+  local dir="$1" tag="$2" label="${3:-<no value>}"
+  cat > "${dir}/docker" <<FAKE_DOCKER
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" && "\${3:-}" == "${tag}" ]]; then
+  case "\$*" in
+    *Labels*) echo '${label}' ;;
+  esac
 fi
-# Dropped explicitly at the end of the file rather than from an EXIT trap:
-# several cases below set and then `trap - EXIT INT TERM` their own crash-safe
-# traps, which would disarm one installed here. A run that dies early leaves
-# the extra tag behind, and that is fine — it is a second name for an image
-# that already exists, costing no disk and shadowing nothing.
-_rc_cmds_drop_fixture_tag() {
-  [[ "$_rc_cmds_fixture_tag_made" -eq 1 ]] || return 0
-  docker image rm "$RC_IMAGE" >/dev/null 2>&1 || true
+exit 0
+FAKE_DOCKER
+  chmod +x "${dir}/docker"
 }
 
 
@@ -73,7 +92,7 @@ _rc_cmds_drop_fixture_tag() {
 # egress policy. Echoes the config path for the caller to pass as RC_CAGE_CONF.
 rc_test_write_cage_conf() {
   local _proj="$1"
-  local _image="${2:-rip-cage:latest}"
+  local _image="${2:-$RC_IMAGE}"
   # OUTSIDE the project, deliberately: rc refuses a config that resolves inside
   # a tree it mounts (ADR-031 D5(a)), so a fixture written into the project
   # would be refused before any test got to its own subject.
@@ -157,7 +176,7 @@ echo "=== Test 7: rc build finds Dockerfile via SCRIPT_DIR ==="
 # and check that it doesn't complain about missing Dockerfile
 # (it will fail because docker may not be running, but the error should
 # be about docker, not about missing Dockerfile)
-cd /tmp
+cd /tmp || exit 1
 # rip-cage-d2bo kind-1 (harmless): --help-test-sentinel is not on cmd_build's
 # flag allowlist, which is fail-closed and REJECTS an unrecognised flag before
 # any docker call is made (see `rc help`, build's flag table). No image is ever
@@ -459,12 +478,12 @@ rm -rf "$FILE_SYMLINK_TARGET_DIR" "$FILE_SYMLINK_AGENTS_DIR"
 #
 # _make_fake_msb_dir DIR [IMAGE_REF] -- writes a `msb` PATH shim into DIR that
 # answers `image list --format json` with a single IMAGE_REF entry (default
-# rip-cage:latest) and exits 0 on anything else (a no-op catch-all, never a
+# $RC_IMAGE) and exits 0 on anything else (a no-op catch-all, never a
 # real image mutation). Prefix PATH with DIR only for the `$RC up --dry-run`
 # subprocess call.
 _make_fake_msb_dir() {
   local dir="$1"
-  local ref="${2:-rip-cage:latest}"
+  local ref="${2:-$RC_IMAGE}"
   cat > "${dir}/msb" <<FAKE_MSB
 #!/usr/bin/env bash
 case "\${1:-}" in
@@ -490,35 +509,14 @@ if [[ -d "${HOME}/.claude/agents" ]]; then
   TEST_DIR_T14=$(mktemp -d)
   mkdir -p "${TEST_DIR_T14}/.git"
 
-  # rc up now checks the version label — ensure the image rc resolves is
-  # current so the test reaches the "Would mount" dry-run lines (not the
-  # stale-image early exit).
-  #
-  # rip-cage-lh62: this used to `docker tag <stub> rip-cage:latest`, run the
-  # dry-run, then tag the operator's real image back. That is a save/restore
-  # swap on the production tag — the docker-side twin of the msb-cache swap
-  # rip-cage-d2bo.2 already removed (see _make_fake_msb_dir's header). Two
-  # ways it loses: a kill between the two tags (the OS low-memory reaper
-  # killed this suite twice on 2026-09-14) leaves the operator booting cages
-  # from a stub, and two concurrent suite runs race on one host-global tag.
-  # No restore dance is careful enough; the swap itself is the defect.
-  #
-  # FIX: point rc at the stub through RC_IMAGE (rc:69,
-  # IMAGE="${RC_IMAGE:-rip-cage:latest}") and never write the production tag
-  # at all. The assertion is strictly stronger — it no longer depends on a
-  # restore step running.
+  # rc up checks the version label, so the image rc resolves has to read
+  # current for the test to reach the "Would mount" dry-run lines (not the
+  # stale-image early exit). A fake docker answers the label for the fixture
+  # tag; no image is built, tagged, or removed.
   RC_VER_T14=$("${REPO_ROOT}/rc" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
   T14_FIXTURE_TAG="rip-cage-test-fixture:t14-agents"
-  # alpine, not `FROM scratch`: a digest-only image is not inspectable under
-  # containerd (Docker 29.4.0, io.containerd.snapshotter.v1), so rc's label
-  # read would come back empty and the image would look stale. Same reason
-  # Tests 19/20 use alpine.
-  docker build -q -t "$T14_FIXTURE_TAG" - <<STUB_EOF >/dev/null 2>&1
-FROM alpine:3.19
-LABEL org.opencontainers.image.version="${RC_VER_T14}"
-STUB_EOF
-  if [[ $? -ne 0 ]]; then
-    fail "Test 14 setup: stub image build failed — cannot test agents mount"
+  if [[ -z "$RC_VER_T14" ]]; then
+    fail "Test 14 setup: could not read rc's version — cannot test agents mount"
   else
     # rc up launches from a native msb --conf file (ADR-031 D2), so the
     # scratch project needs one. The stub image goes in the config's own
@@ -526,14 +524,11 @@ STUB_EOF
     T14_CFG=$(rc_test_write_cage_conf "$TEST_DIR_T14" "$T14_FIXTURE_TAG")
     T14_FAKE_MSB_DIR=$(mktemp -d)
     _make_fake_msb_dir "$T14_FAKE_MSB_DIR" "$T14_FIXTURE_TAG"
+    _make_fake_docker_dir "$T14_FAKE_MSB_DIR" "$T14_FIXTURE_TAG" "$RC_VER_T14"
     dry_run_output=$(PATH="${T14_FAKE_MSB_DIR}:${PATH}" RC_IMAGE="$T14_FIXTURE_TAG" \
       RC_CAGE_CONF="$T14_CFG" \
       "$RC" up --dry-run "$TEST_DIR_T14" 2>&1 || true)
     rm -rf "$T14_FAKE_MSB_DIR"
-
-    # Teardown by EXACT fixture tag. rip-cage:latest was never written, so
-    # there is nothing to restore.
-    docker rmi "$T14_FIXTURE_TAG" >/dev/null 2>&1 || true
 
     if echo "$dry_run_output" | grep -q 'Would mount.*rc-context/agents'; then
       pass "rc up --dry-run shows agents mount"
@@ -549,7 +544,10 @@ fi
 # --- Test 15: beads-host-dolt in rc test (Tier 3: requires running rc container) ---
 echo ""
 echo "=== Test 15: beads-host-dolt check in rc test (Tier 3) ==="
-# Find a running rc container whose workspace is the rip-cage repo (embedded mode)
+# Find a running rc container whose workspace is the rip-cage repo (embedded mode).
+# The file-wide fake docker answers `docker ps` with nothing, so this case always
+# takes the skip branch below and the else branch is dead here (it was already
+# dead under msb, where no rc container is a docker container).
 RIPCAGE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 RC_CONTAINER_T15=$(docker ps --filter "label=rc.source.path=${RIPCAGE_ROOT}" --format "{{.Names}}" 2>/dev/null | head -1 || true)
 
@@ -642,71 +640,53 @@ rm -rf "$MISSING_BEADS"
 # --- Test 19: stale local image triggers re-provisioning in rc up --dry-run ---
 echo ""
 echo "=== Test 19: stale local image triggers re-provisioning ==="
-# Build a REAL tagged image (not FROM scratch — that digest is not inspectable under
-# containerd/io.containerd.snapshotter.v1 on Docker 29.4.0, causing docker tag to
-# silently no-op). We use alpine with a clearly stale version label so _image_is_current
-# returns non-current and the "would build" re-provision path fires.
-# rip-cage-lh62: the fixture lives under its OWN repository name
-# (rip-cage-test-fixture), and rc is pointed at it with RC_IMAGE. Nothing
-# here writes rip-cage:latest, so there is no save/restore dance and no
-# window in which a kill leaves the operator's production tag on a stub.
+# A fake docker answers the fixture tag with a clearly stale version label so
+# _image_is_current returns non-current and the "would build" re-provision path
+# fires. Nothing is built, tagged, or removed; rc is pointed at the fixture tag
+# with RC_IMAGE.
 T19_STALE_TAG="rip-cage-test-fixture:t19-stale"
-docker build -q -t "$T19_STALE_TAG" - <<'STALE_DOCKERFILE' >/dev/null 2>&1
-FROM alpine:3.19
-LABEL org.opencontainers.image.version="stale-test-0.0.0"
-LABEL description="stub image for stale-label test"
-STALE_DOCKERFILE
-T19_BUILD_EXIT=$?
-if [[ $T19_BUILD_EXIT -ne 0 ]]; then
-  fail "Test 19 setup: could not build stale stub image (exit $T19_BUILD_EXIT)"
+T19_FAKE_MSB_DIR=$(mktemp -d)
+_make_fake_docker_dir "$T19_FAKE_MSB_DIR" "$T19_STALE_TAG" "stale-test-0.0.0"
+# Crash-safe cleanup of the shim dir if interrupted; cleared after the
+# normal-path teardown so it does not fire spuriously.
+trap '
+  [[ -n "${T19_FAKE_MSB_DIR:-}" ]] && rm -rf "$T19_FAKE_MSB_DIR"
+' EXIT INT TERM
+
+# POSITIVE SENTINEL: verify the fixture really carries a stale label — it
+# must differ from RC_VERSION so _image_is_current returns false and the
+# staleness path fires.
+T19_CURRENT_RC_VERSION=$(cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo "unknown")
+T19_INSTALLED_LABEL=$(PATH="${T19_FAKE_MSB_DIR}:${PATH}" docker image inspect "$T19_STALE_TAG" \
+  --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null || true)
+if [[ "$T19_INSTALLED_LABEL" == "$T19_CURRENT_RC_VERSION" ]]; then
+  fail "Test 19 sentinel: stale fixture does not read as stale (label=${T19_INSTALLED_LABEL} == RC_VERSION=${T19_CURRENT_RC_VERSION}); the fake docker is not answering the label"
+  trap - EXIT INT TERM
 else
-  # Crash-safe cleanup: remove the fixture tag by EXACT name if interrupted.
-  # Cleared after the normal-path teardown so it does not fire spuriously.
-  trap '
-    [[ -n "${T19_FAKE_MSB_DIR:-}" ]] && rm -rf "$T19_FAKE_MSB_DIR"
-    docker rmi "${T19_STALE_TAG:-}" >/dev/null 2>&1 || true
-  ' EXIT INT TERM
+  # rip-cage-d2bo.2: drive the msb-side third clause of _image_absent
+  # through a fake-msb PATH shim instead of staging the live cache -- see
+  # the shared-helper comment above _make_fake_msb_dir for why.
+  _make_fake_msb_dir "$T19_FAKE_MSB_DIR" "$T19_STALE_TAG"
+  TEST_DIR_T19=$(mktemp -d)
+  mkdir -p "${TEST_DIR_T19}/.git"
+  # Native cage config per ADR-031 D2 (see rc_test_write_cage_conf).
+  T19_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t19-cfg-XXXXXX")
+  printf 'version: 2\nmounts:\n  denylist: []\n' > "$T19_GLOBAL_CFG"
+  stale_dry_run_output=$(PATH="${T19_FAKE_MSB_DIR}:${PATH}" RC_IMAGE="$T19_STALE_TAG" RIP_CAGE_IMAGE_REGISTRY="" RC_CAGE_CONF="$(rc_test_write_cage_conf "$TEST_DIR_T19" "$T19_STALE_TAG")" \
+    "$RC" up --dry-run "$TEST_DIR_T19" 2>&1 || true)
+  rm -f "$T19_GLOBAL_CFG"
 
-  # POSITIVE SENTINEL: verify the fixture really carries a stale label — it
-  # must differ from RC_VERSION so _image_is_current returns false and the
-  # staleness path fires.
-  T19_CURRENT_RC_VERSION=$(cat "${REPO_ROOT}/VERSION" 2>/dev/null || echo "unknown")
-  T19_INSTALLED_LABEL=$(docker image inspect "$T19_STALE_TAG" \
-    --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null || true)
-  if [[ "$T19_INSTALLED_LABEL" == "$T19_CURRENT_RC_VERSION" ]]; then
-    fail "Test 19 sentinel: stale fixture does not read as stale (label=${T19_INSTALLED_LABEL} == RC_VERSION=${T19_CURRENT_RC_VERSION}); the stub build may have silently no-oped"
-    docker rmi "$T19_STALE_TAG" >/dev/null 2>&1 || true
-    trap - EXIT INT TERM
+  rm -rf "$T19_FAKE_MSB_DIR"
+  rm -rf "$TEST_DIR_T19"
+  # Normal-path teardown complete — disarm the crash-safe trap.
+  trap - EXIT INT TERM
+
+  # POSITIVE ASSERTION: a stale image must route through _pull_or_build.
+  # With RIP_CAGE_IMAGE_REGISTRY="" the dry-run message is "would build".
+  if echo "$stale_dry_run_output" | grep -qi "would build\|would pull"; then
+    pass "stale image (mismatched version label) triggers re-provisioning (sentinel: installed=${T19_INSTALLED_LABEL}, rc=${T19_CURRENT_RC_VERSION})"
   else
-    # rip-cage-d2bo.2: drive the msb-side third clause of _image_absent
-    # through a fake-msb PATH shim instead of staging the live cache -- see
-    # the shared-helper comment above _make_fake_msb_dir for why.
-    T19_FAKE_MSB_DIR=$(mktemp -d)
-    _make_fake_msb_dir "$T19_FAKE_MSB_DIR" "$T19_STALE_TAG"
-    TEST_DIR_T19=$(mktemp -d)
-    mkdir -p "${TEST_DIR_T19}/.git"
-    # Native cage config per ADR-031 D2 (see rc_test_write_cage_conf).
-    T19_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t19-cfg-XXXXXX")
-    printf 'version: 2\nmounts:\n  denylist: []\n' > "$T19_GLOBAL_CFG"
-    stale_dry_run_output=$(PATH="${T19_FAKE_MSB_DIR}:${PATH}" RC_IMAGE="$T19_STALE_TAG" RIP_CAGE_IMAGE_REGISTRY="" RC_CAGE_CONF="$(rc_test_write_cage_conf "$TEST_DIR_T19" "$T19_STALE_TAG")" \
-      "$RC" up --dry-run "$TEST_DIR_T19" 2>&1 || true)
-    rm -f "$T19_GLOBAL_CFG"
-
-    # Teardown by EXACT fixture tag -- the msb shim was PATH-local and never
-    # touched the real cache, and rip-cage:latest was never written.
-    rm -rf "$T19_FAKE_MSB_DIR"
-    docker rmi "$T19_STALE_TAG" >/dev/null 2>&1 || true
-    rm -rf "$TEST_DIR_T19"
-    # Normal-path teardown complete — disarm the crash-safe trap.
-    trap - EXIT INT TERM
-
-    # POSITIVE ASSERTION: a stale image must route through _pull_or_build.
-    # With RIP_CAGE_IMAGE_REGISTRY="" the dry-run message is "would build".
-    if echo "$stale_dry_run_output" | grep -qi "would build\|would pull"; then
-      pass "stale image (mismatched version label) triggers re-provisioning (sentinel: installed=${T19_INSTALLED_LABEL}, rc=${T19_CURRENT_RC_VERSION})"
-    else
-      fail "stale image did NOT trigger re-provisioning (output: $stale_dry_run_output)"
-    fi
+    fail "stale image did NOT trigger re-provisioning (output: $stale_dry_run_output)"
   fi
 fi
 
@@ -717,92 +697,74 @@ echo "=== Test 20: RC_VERSION=unknown skips staleness check ==="
 # label should still be treated as current (not stale) so rc up doesn't
 # silently re-provision every time on a malformed checkout.
 #
-# Strategy: build a stub image with no version label under its own fixture
-# tag, point rc at it with RC_IMAGE, then invoke rc up --dry-run with the
+# Strategy: a fake docker answers the fixture tag with no version label ("<no
+# value>"), rc is pointed at it with RC_IMAGE, and rc up --dry-run runs with the
 # VERSION file temporarily renamed (so RC_VERSION="unknown") and
 # RIP_CAGE_IMAGE_REGISTRY="" so if re-provision fires the message is "build".
 # The dry-run output must NOT contain "would build" or "would pull" — it must
 # reach the normal dry-run lines ("Would create container..." / "Would mount...").
-#
-# NOTE: FROM scratch stubs are NOT inspectable under containerd (Docker 29.4.0,
-# io.containerd.snapshotter.v1), so their labels read back empty.
-# We use alpine with no version label (but a real -t tag) to get an inspectable image
-# whose label is missing so _image_is_current would return stale — but RC_VERSION=unknown
-# bypasses the check, so the staleness path still must NOT fire.
+# The missing label would read as stale, but RC_VERSION=unknown bypasses the
+# check, so the staleness path still must NOT fire. Nothing is built or tagged.
 T20_STUB_TAG="rip-cage-test-fixture:t20-unknown"
-docker build -q -t "$T20_STUB_TAG" - <<'STUB_DOCKERFILE_T20' >/dev/null 2>&1
-FROM alpine:3.19
-LABEL description="stub image for unknown-version test"
-STUB_DOCKERFILE_T20
-T20_BUILD_EXIT=$?
-if [[ $T20_BUILD_EXIT -ne 0 ]]; then
-  fail "Test 20 setup: could not build stub image (exit $T20_BUILD_EXIT)"
+T20_FAKE_MSB_DIR=$(mktemp -d)
+_make_fake_docker_dir "$T20_FAKE_MSB_DIR" "$T20_STUB_TAG"
+# Crash-safe cleanup: remove the shim dir and restore the VERSION file even
+# if interrupted.
+# Idempotent: BACKUP_VERSION_FILE restore is a no-op when the backup does not exist.
+# Cleared after the normal-path restore so it does not fire spuriously.
+REPO_VERSION_FILE="${REPO_ROOT}/VERSION"
+# rip-cage-k13u: per-process NAME (not mktemp) -- a naive mktemp swap
+# would pre-create the backup file immediately at assignment time, and
+# the crash-safety trap below does `[[ -f "$BACKUP_VERSION_FILE" ]] && mv
+# ...`; if that pre-created (empty) file existed before the real
+# backup-mv further down runs, an early interrupt would restore an EMPTY
+# file over the real VERSION file. $$ is this top-level script's own
+# stable PID, gives a unique name without creating anything, and two
+# overlapping test-rc-commands.sh runs no longer collide on one fixed
+# repo-root path.
+BACKUP_VERSION_FILE="${REPO_ROOT}/VERSION.t20bak.$$"
+trap '
+  [[ -n "${T20_FAKE_MSB_DIR:-}" ]] && rm -rf "$T20_FAKE_MSB_DIR"
+  [[ -f "${BACKUP_VERSION_FILE:-}" ]] && mv "$BACKUP_VERSION_FILE" "$REPO_VERSION_FILE" 2>/dev/null || true
+' EXIT INT TERM
+
+# rip-cage-d2bo.2: drive the msb-side third clause of _image_absent
+# through a fake-msb PATH shim instead of staging the live cache -- see
+# the shared-helper comment above _make_fake_msb_dir for why.
+_make_fake_msb_dir "$T20_FAKE_MSB_DIR" "$T20_STUB_TAG"
+
+TEST_DIR_T20=$(mktemp -d)
+mkdir -p "${TEST_DIR_T20}/.git"
+
+# Use rename of the VERSION file so rc reads RC_VERSION="unknown".
+mv "$REPO_VERSION_FILE" "$BACKUP_VERSION_FILE" 2>/dev/null || true
+
+T20_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t20-cfg-XXXXXX")
+printf 'version: 2\nmounts:\n  denylist: []\n' > "$T20_GLOBAL_CFG"
+unknown_dry_run_output=$(PATH="${T20_FAKE_MSB_DIR}:${PATH}" RC_IMAGE="$T20_STUB_TAG" RIP_CAGE_IMAGE_REGISTRY="" RC_CAGE_CONF="$(rc_test_write_cage_conf "$TEST_DIR_T20" "$T20_STUB_TAG")" \
+  "$RC" up --dry-run "$TEST_DIR_T20" 2>&1 || true)
+rm -f "$T20_GLOBAL_CFG"
+
+# Restore VERSION file before assertions (so any fail() calls don't leave repo damaged)
+mv "$BACKUP_VERSION_FILE" "$REPO_VERSION_FILE" 2>/dev/null || true
+
+rm -rf "$T20_FAKE_MSB_DIR"
+rm -rf "$TEST_DIR_T20"
+# Normal-path teardown complete — disarm the crash-safe trap.
+trap - EXIT INT TERM
+
+# When RC_VERSION is "unknown", staleness check must be skipped — dry-run
+# should NOT show "would build" / "would pull" (re-provisioning messages).
+if echo "$unknown_dry_run_output" | grep -qi "would build\|would pull"; then
+  fail "RC_VERSION=unknown should skip stale check but triggered re-provisioning (output: $unknown_dry_run_output)"
 else
-  # Crash-safe cleanup: remove the fixture tag and restore the VERSION file
-  # even if interrupted. rip-cage-lh62: rip-cage:latest is no longer part of
-  # this (rc is pointed at the fixture with RC_IMAGE), so the trap has one
-  # fewer host-global singleton to get right.
-  # Idempotent: BACKUP_VERSION_FILE restore is a no-op when the backup does not exist.
-  # Cleared after the normal-path restore so it does not fire spuriously.
-  REPO_VERSION_FILE="${REPO_ROOT}/VERSION"
-  # rip-cage-k13u: per-process NAME (not mktemp) -- a naive mktemp swap
-  # would pre-create the backup file immediately at assignment time, and
-  # the crash-safety trap below does `[[ -f "$BACKUP_VERSION_FILE" ]] && mv
-  # ...`; if that pre-created (empty) file existed before the real
-  # backup-mv further down runs, an early interrupt would restore an EMPTY
-  # file over the real VERSION file. $$ is this top-level script's own
-  # stable PID, gives a unique name without creating anything, and two
-  # overlapping test-rc-commands.sh runs no longer collide on one fixed
-  # repo-root path.
-  BACKUP_VERSION_FILE="${REPO_ROOT}/VERSION.t20bak.$$"
-  trap '
-    [[ -n "${T20_FAKE_MSB_DIR:-}" ]] && rm -rf "$T20_FAKE_MSB_DIR"
-    [[ -f "${BACKUP_VERSION_FILE:-}" ]] && mv "$BACKUP_VERSION_FILE" "$REPO_VERSION_FILE" 2>/dev/null || true
-    docker rmi "${T20_STUB_TAG:-}" >/dev/null 2>&1 || true
-  ' EXIT INT TERM
-
-  # rip-cage-d2bo.2: drive the msb-side third clause of _image_absent
-  # through a fake-msb PATH shim instead of staging the live cache -- see
-  # the shared-helper comment above _make_fake_msb_dir for why.
-  T20_FAKE_MSB_DIR=$(mktemp -d)
-  _make_fake_msb_dir "$T20_FAKE_MSB_DIR" "$T20_STUB_TAG"
-
-  TEST_DIR_T20=$(mktemp -d)
-  mkdir -p "${TEST_DIR_T20}/.git"
-
-  # Use rename of the VERSION file so rc reads RC_VERSION="unknown".
-  mv "$REPO_VERSION_FILE" "$BACKUP_VERSION_FILE" 2>/dev/null || true
-
-  T20_GLOBAL_CFG=$(mktemp "${TMPDIR:-/tmp}/rc-t20-cfg-XXXXXX")
-  printf 'version: 2\nmounts:\n  denylist: []\n' > "$T20_GLOBAL_CFG"
-  unknown_dry_run_output=$(PATH="${T20_FAKE_MSB_DIR}:${PATH}" RC_IMAGE="$T20_STUB_TAG" RIP_CAGE_IMAGE_REGISTRY="" RC_CAGE_CONF="$(rc_test_write_cage_conf "$TEST_DIR_T20" "$T20_STUB_TAG")" \
-    "$RC" up --dry-run "$TEST_DIR_T20" 2>&1 || true)
-  rm -f "$T20_GLOBAL_CFG"
-
-  # Restore VERSION file before assertions (so any fail() calls don't leave repo damaged)
-  mv "$BACKUP_VERSION_FILE" "$REPO_VERSION_FILE" 2>/dev/null || true
-
-  # Teardown by EXACT fixture tag -- the msb shim was PATH-local and never
-  # touched the real cache, and rip-cage:latest was never written.
-  rm -rf "$T20_FAKE_MSB_DIR"
-  docker rmi "$T20_STUB_TAG" >/dev/null 2>&1 || true
-  rm -rf "$TEST_DIR_T20"
-  # Normal-path teardown complete — disarm the crash-safe trap.
-  trap - EXIT INT TERM
-
-  # When RC_VERSION is "unknown", staleness check must be skipped — dry-run
-  # should NOT show "would build" / "would pull" (re-provisioning messages).
-  if echo "$unknown_dry_run_output" | grep -qi "would build\|would pull"; then
-    fail "RC_VERSION=unknown should skip stale check but triggered re-provisioning (output: $unknown_dry_run_output)"
+  # POSITIVE-BRANCH SENTINEL: the ELSE branch must be REACHED (not vacuously green from a
+  # swap failure). Confirm the output contains normal dry-run lines — "Would create" or
+  # "Would mount" — which only appear when the staleness skip path was actually taken.
+  if echo "$unknown_dry_run_output" | grep -qi "Would create\|Would mount\|Would start"; then
+    pass "RC_VERSION=unknown skips staleness check — normal dry-run lines observed (branch confirmed reached)"
   else
-    # POSITIVE-BRANCH SENTINEL: the ELSE branch must be REACHED (not vacuously green from a
-    # swap failure). Confirm the output contains normal dry-run lines — "Would create" or
-    # "Would mount" — which only appear when the staleness skip path was actually taken.
-    if echo "$unknown_dry_run_output" | grep -qi "Would create\|Would mount\|Would start"; then
-      pass "RC_VERSION=unknown skips staleness check — normal dry-run lines observed (branch confirmed reached)"
-    else
-      fail "RC_VERSION=unknown ELSE branch reached but normal dry-run output missing — swap may have silently no-oped or dry-run path broken (output: $unknown_dry_run_output)"
-    fi
+    fail "RC_VERSION=unknown ELSE branch reached but normal dry-run output missing — swap may have silently no-oped or dry-run path broken (output: $unknown_dry_run_output)"
   fi
 fi
 
@@ -875,9 +837,8 @@ fi
 # --- Test 22: --new --session mutex flag check in rc up ---
 # rip-cage-47gy: T22/T32/T33 check flag parsing only, so they run behind fake
 # docker + msb (tests/_fake-runtime-lib.sh) instead of the host's binaries.
-# shellcheck source=tests/_fake-runtime-lib.sh
-source "${SCRIPT_DIR}/_fake-runtime-lib.sh"
-_FLAGS_FAKE_RT=$(fake_runtime_bin)
+# The pair logs into the file-wide audit log, so the closing check covers it.
+_FLAGS_FAKE_RT=$(fake_runtime_bin "$_RC_CMDS_RT_LOG")
 echo ""
 echo "=== Test 22: rc up --new --session exits 2 with usage message ==="
 TEST_DIR_T22=$(mktemp -d)
@@ -1436,7 +1397,7 @@ fi
 if [[ -f "$E49_SENTINEL" ]]; then
   fail "60b: msb WAS spawned before the refusal — the check is fail-open (invocations: $(cat "$E49_LOG" 2>/dev/null))"
 else
-  pass "60b: no msb subcommand ran — rc refused before the cage could exist"
+  pass "60b: no msb subcommand past --version/image list ran — rc refused before the cage could exist"
 fi
 
 # --- (f) the refusal's persistent override points at a file that EXISTS ----
@@ -1540,7 +1501,7 @@ case "${1:-}" in
 {"status":"Stopped","config":{"manifest_digest":"sha256:t61matchingdigest","labels":{"rc.source.path":"${T61_PROJ}","rc.cage-conf-sha":"${T61_CONF_SHA}"}}}
 JSON
     exit 0 ;;
-  image) echo '[{"reference":"rip-cage:latest","digest":"sha256:t61matchingdigest"}]'; exit 0 ;;
+  image) echo '[{"reference":"rip-cage-rccmds-fixture:t61","digest":"sha256:t61matchingdigest"}]'; exit 0 ;;
   stop|remove) exit 0 ;;
   *) echo "test shim: unhandled msb subcommand: $*" >&2; exit 1 ;;
 esac
@@ -1548,7 +1509,7 @@ T61_SHIM
 chmod +x "${T61_BIN}/msb"
 
 cat > "${T61_ROOT}/cage.yaml" <<T61_CONF
-image: rip-cage:latest
+image: rip-cage-rccmds-fixture:t61
 workdir: /workspace
 mounts:
   - "${T61_PROJ}:/workspace"
@@ -1568,13 +1529,10 @@ t61_run_rc() {
   ( export PATH="${T61_BIN}:${PATH}"
     export XDG_CONFIG_HOME="${T61_ROOT}/home/.config"
     export RC_CAGE_CONF="${T61_ROOT}/cage.yaml"
-    # This case OVERRIDES the file-wide fixture tag back to the default name,
-    # and that is safe here precisely because nothing real is reachable: the
-    # msb shim above answers every subcommand, its image list and this case's
-    # cage.yaml both name rip-cage:latest, and the image-compat check under
-    # test compares those two names. The production tag is a STRING in a
-    # fixture here, never an argument to anything that writes.
-    export RC_IMAGE="rip-cage:latest"
+    # This case sets its own fixture tag: the msb shim's image list and this
+    # case's cage.yaml both name it, and the image-compat check under test
+    # compares those two names.
+    export RC_IMAGE="rip-cage-rccmds-fixture:t61"
     export T61_LOG T61_PROJ T61_CONF_SHA
     "$RC" "$@" ) 2>&1
 }
@@ -1760,6 +1718,7 @@ T63_PROJ="${T63_ROOT}/proj"
 T63_BIN="${T63_ROOT}/bin"
 T63_LOG="${T63_ROOT}/msb-invocations.log"
 T63_SENTINEL="${T63_ROOT}/MSB_WAS_SPAWNED"
+T63_CREATED="${T63_ROOT}/MSB_CREATE_CALLED"
 mkdir -p "$T63_HOME" "$T63_PROJ" "$T63_BIN"
 
 cat > "${T63_BIN}/msb" <<'T63_SHIM'
@@ -1767,17 +1726,25 @@ cat > "${T63_BIN}/msb" <<'T63_SHIM'
 printf '%s\n' "$*" >> "${T63_LOG}"
 case "${1:-}" in
   --version) echo "msb 0.6.18-test-shim"; exit 0 ;;
+  image) [[ "${2:-}" == "list" ]] && { echo "[{\"reference\":\"${RC_IMAGE}\"}]"; exit 0; } ;;
+  create) : > "${T63_CREATED}" ;;
 esac
 : > "${T63_SENTINEL}"
 echo "test shim: msb was invoked with: $*" >&2
 exit 1
 T63_SHIM
 chmod +x "${T63_BIN}/msb"
+# The image reads present and current (fake docker label + msb image list), so
+# the valid-policy launch in 63d does not enter rc's pull-first provisioning.
+# T63_SENTINEL marks any msb verb past --version/image list (63b/63c assert its
+# absence: refused before msb is touched); T63_CREATED marks `msb create`
+# alone, which is what 63d asserts -- the launch itself, not a probe.
+_make_fake_docker_dir "$T63_BIN" "$RC_IMAGE" "$(tr -d '[:space:]' < "${REPO_ROOT}/VERSION")"
 
 # t63_conf <dest> <network-block-body-or-empty>
 t63_conf() {
   cat > "$1" <<T63_CONF
-image: rip-cage:latest
+image: ${RC_IMAGE}
 workdir: /workspace
 mounts:
   - "${T63_PROJ}:/workspace"
@@ -1788,7 +1755,7 @@ T63_CONF
 t63_run_rc() {
   ( export PATH="${T63_BIN}:${PATH}"
     export XDG_CONFIG_HOME="${T63_HOME}/.config"
-    export T63_LOG T63_SENTINEL
+    export T63_LOG T63_SENTINEL T63_CREATED RC_IMAGE
     "$@" ) 2>&1
 }
 
@@ -1836,7 +1803,7 @@ fi
 if [[ -f "$T63_SENTINEL" ]]; then
   fail "63b: msb WAS spawned before the refusal — the guard is fail-open (invocations: $(cat "$T63_LOG" 2>/dev/null))"
 else
-  pass "63b: no msb subcommand ran — rc refused before the cage could exist"
+  pass "63b: no msb subcommand past --version/image list ran — rc refused before the cage could exist"
 fi
 if grep -q "network.policy" <<<"$t63b_out"; then
   pass "63b: the refusal names the key that is wrong (network.policy)"
@@ -1865,7 +1832,7 @@ fi
 if [[ -f "$T63_SENTINEL" ]]; then
   fail "63c: msb WAS spawned despite an absent network.policy (invocations: $(cat "$T63_LOG" 2>/dev/null))"
 else
-  pass "63c: no msb subcommand ran — rc refused before the cage could exist"
+  pass "63c: no msb subcommand past --version/image list ran — rc refused before the cage could exist"
 fi
 if grep -q "network.policy" <<<"$t63c_out"; then
   pass "63c: the refusal names network.policy rather than failing obscurely"
@@ -1875,14 +1842,14 @@ fi
 
 # --- (d) NEGATIVE CONTROL: policy: none reaches the launch -----------------
 # Without this, 63b and 63c could both pass because rc refuses everything. This
-# runs the REAL `rc up` (not --dry-run), so the observable is the shim's own log
-# proving rc got as far as calling msb.
-rm -f "$T63_SENTINEL" "$T63_LOG"
+# runs the REAL `rc up` (not --dry-run), so the observable is the T63_CREATED
+# marker, which only the shim's `msb create` arm sets.
+rm -f "$T63_SENTINEL" "$T63_CREATED" "$T63_LOG"
 t63_run_rc env RC_CAGE_CONF="${T63_ROOT}/ok.yaml" "$RC" up "$T63_PROJ" >/dev/null 2>&1 || true
-if [[ -f "$T63_SENTINEL" ]]; then
-  pass "63d: a config WITH network.policy: none reaches msb — 63b and 63c are not vacuous"
+if [[ -f "$T63_CREATED" ]]; then
+  pass "63d: a config WITH network.policy: none reaches msb create — 63b and 63c are not vacuous"
 else
-  fail "63d: rc never reached msb even with a valid policy — 63b and 63c prove nothing (invocations: $(cat "$T63_LOG" 2>/dev/null))"
+  fail "63d: rc never reached msb create even with a valid policy — 63b and 63c prove nothing (invocations: $(cat "$T63_LOG" 2>/dev/null))"
 fi
 
 rm -rf "$T63_ROOT"
@@ -2012,7 +1979,26 @@ rm -rf "$DG_DIR"
 
 # --- Cleanup ---
 rm -rf "$SYMLINK_SKILLS_DIR" "$SYMLINK_TARGET_DIR" "$SYMLINK_SKILLS_DIR2" "$HOME_TARGET_DIR" "$SIBLING_DIR"
-_rc_cmds_drop_fixture_tag
+
+# --- Audit: the fake pair was reached, and nothing above wrote an image store ---
+# The log holds every call that reached the file-wide pair (see rule 3 in the
+# header for what is NOT in it). Two assertions, because either alone can pass
+# vacuously: a non-empty log proves the PATH prepend worked (an empty one means
+# calls went to the real binaries), and the verb grep proves no case reached
+# rc's provisioning.
+if [[ -s "$_RC_CMDS_RT_LOG" ]]; then
+  pass "audit: the fake docker/msb pair was reached ($(wc -l < "$_RC_CMDS_RT_LOG" | tr -d ' ') calls logged)"
+else
+  fail "audit: the fake docker/msb pair logged no call — the PATH prepend is not in effect, so calls may be reaching the real binaries"
+fi
+_rc_cmds_writes=$(grep -E '^(docker|msb) (pull|tag|push|save|load|build|rmi|image (rm|load|tag|pull|push)|create|run|start|rm|remove)( |$)' "$_RC_CMDS_RT_LOG" || true)
+if [[ -z "$_rc_cmds_writes" ]]; then
+  pass "audit: no docker/msb write verb was issued by any case"
+else
+  fail "audit: a case issued a docker/msb write verb: $(printf '%s' "$_rc_cmds_writes" | tr '\n' ';')"
+fi
+# Normal end path only: cases above install and disarm their own EXIT traps.
+rm -rf "$_RC_CMDS_RT_BIN" "$_RC_CMDS_RT_LOG"
 
 echo ""
 echo "=== Results ==="
