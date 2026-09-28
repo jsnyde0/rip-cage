@@ -206,13 +206,46 @@ fi
 # instead (ADR-029 D3, rip-cage-f1qo S5). No agent socket is mounted or
 # chowned here anymore.
 
+# _rc_mount_holding PATH: prints the nearest mountpoint at PATH or at one of
+# its ancestors below "/", and returns 0; returns 1 when none is. A path under
+# such a mount may be a HOST directory, and init must never delete or replace
+# one (rip-cage-f08b). /proc/mounts field 2, same predicate as _is_mountpoint
+# below.
+_rc_mount_holding() {
+  local _p="$1"
+  while [ -n "$_p" ] && [ "$_p" != "/" ]; do
+    if awk -v p="$_p" '$2 == p { found=1 } END { exit !found }' /proc/mounts 2>/dev/null; then
+      printf '%s\n' "$_p"
+      return 0
+    fi
+    # A relative path has no "/" left to strip; stop rather than spin.
+    [ "${_p%/*}" != "$_p" ] || break
+    _p="${_p%/*}"
+  done
+  return 1
+}
+
+# _rc_leave_mounted DEST: returns 0 and prints one WARNING when DEST sits at or
+# under a cage-config mount -- a whole-~/.claude read-write mount makes
+# settings.json and CLAUDE.md the HOST's own files, and init must never
+# overwrite them (rip-cage-5fny). Returns 1 when DEST is cage-local.
+_rc_leave_mounted() {
+  local _rc_lm
+  _rc_lm="$(_rc_mount_holding "$1")" || return 1
+  echo "[rip-cage] WARNING: ${1/#\/home\/agent/\~} sits inside the cage-config mount ${_rc_lm}; leaving it in place, rc's write skipped"
+  return 0
+}
+
 # Install settings template — merge with workspace project settings if present to
 # preserve project-level mcpServers and hooks (rip-cage fields take precedence).
 # Source is /workspace/.claude/settings.json, NOT ~/.claude/settings.json, so that
 # re-running init on container resume doesn't re-merge rip-cage settings into
 # themselves (which doubled hooks and caused a jq precedence crash).
 mkdir -p ~/.claude
-if [ -f /workspace/.claude/settings.json ]; then
+_rc_settings_cage_local=1
+if _rc_leave_mounted /home/agent/.claude/settings.json; then
+  _rc_settings_cage_local=0
+elif [ -f /workspace/.claude/settings.json ]; then
   jq -s '
     .[0] as $project |
     .[1] as $rip_cage |
@@ -230,11 +263,15 @@ if [ -f /workspace/.claude/settings.json ]; then
 else
   cp /etc/rip-cage/settings.json ~/.claude/settings.json
 fi
-echo "[rip-cage] Settings installed"
+[ "$_rc_settings_cage_local" = 1 ] && echo "[rip-cage] Settings installed"
 
 # 2. Copy CLAUDE.md files (skip if source missing or empty)
 mkdir -p ~/.claude
-if [ -f /home/agent/.rc-context/global-claude.md ] && [ -s /home/agent/.rc-context/global-claude.md ]; then
+_rc_claude_md_cage_local=1
+_rc_leave_mounted /home/agent/.claude/CLAUDE.md && _rc_claude_md_cage_local=0
+if [ "$_rc_claude_md_cage_local" = 0 ]; then
+  :
+elif [ -f /home/agent/.rc-context/global-claude.md ] && [ -s /home/agent/.rc-context/global-claude.md ]; then
   cp /home/agent/.rc-context/global-claude.md ~/.claude/CLAUDE.md
   echo "[rip-cage] Global CLAUDE.md copied"
 else
@@ -246,7 +283,7 @@ fi
 # Append cage-authored network-topology section under fenced markers (ADR-016 D1).
 # Idempotent: strip any prior cage-topology block before re-appending, so repeat
 # `init-rip-cage.sh` runs across container resume do not stack duplicate sections.
-if [ -f /etc/rip-cage/cage-claude.md ]; then
+if [ "$_rc_claude_md_cage_local" = 1 ] && [ -f /etc/rip-cage/cage-claude.md ]; then
   # Anchor marker regex at start-of-line so an agent or skill that quotes the
   # marker verbatim in unrelated content doesn't trigger the strip.
   awk '
@@ -262,6 +299,7 @@ if [ -f /etc/rip-cage/cage-claude.md ]; then
   rm -f /tmp/claude-md-base
   echo "[rip-cage] Cage-topology section appended to ~/.claude/CLAUDE.md"
 fi
+unset _rc_claude_md_cage_local
 # BASE-INFRA (pi, rip-cage-p35a.3 audit): ADR-019 D3 (post-c1p.1/hhh.12):
 # cage-topology for pi is surfaced via reference in ~/.claude/CLAUDE.md
 # (cage-owned path) rather than appended to host AGENTS.md. Post-hhh.12:
@@ -283,25 +321,6 @@ if [ -f /home/agent/.rc-context/home-claude.md ] && [ -s /home/agent/.rc-context
 else
   echo "[rip-cage] No home CLAUDE.md (skipped)"
 fi
-
-# _rc_mount_holding PATH: prints the nearest mountpoint at PATH or at one of
-# its ancestors below "/", and returns 0; returns 1 when none is. A path under
-# such a mount may be a HOST directory, and init must never delete or replace
-# one (rip-cage-f08b). /proc/mounts field 2, same predicate as _is_mountpoint
-# below.
-_rc_mount_holding() {
-  local _p="$1"
-  while [ -n "$_p" ] && [ "$_p" != "/" ]; do
-    if awk -v p="$_p" '$2 == p { found=1 } END { exit !found }' /proc/mounts 2>/dev/null; then
-      printf '%s\n' "$_p"
-      return 0
-    fi
-    # A relative path has no "/" left to strip; stop rather than spin.
-    [ "${_p%/*}" != "$_p" ] || break
-    _p="${_p%/*}"
-  done
-  return 1
-}
 
 # 3. Link skills and commands from host (staged via .rc-context/)
 for _rc_asset in skills commands agents; do
@@ -426,6 +445,9 @@ elif [ -d /home/agent/.claude-state ]; then
     sudo chown agent:agent /home/agent/.claude-state 2>/dev/null || true
   fi
   for dir in projects sessions; do
+    # Under a whole-~/.claude mount these are the HOST's own dirs: sessions
+    # already persist there, and a link would land inside them (rip-cage-5fny).
+    _rc_leave_mounted "/home/agent/.claude/$dir" && continue
     mkdir -p /home/agent/.claude-state/$dir
     ln -sfn /home/agent/.claude-state/$dir ~/.claude/$dir
     echo "[rip-cage] Linked persistent $dir (legacy volume mode — sessions NOT on host)"
@@ -612,7 +634,7 @@ export CAGE_HOST_ADDR="$_cage_host_addr"
 # inherit $CAGE_HOST_ADDR without relying on an interactive shell. Fail-loud
 # (per ADR-001) if jq fails — a silent skip here produces a settings.json
 # that doesn't match cage-env, which the safety-stack test will also catch.
-if [ -f ~/.claude/settings.json ]; then
+if [ "$_rc_settings_cage_local" = 1 ] && [ -f ~/.claude/settings.json ]; then
   _cage_settings_tmp="$(mktemp /tmp/settings-with-env.XXXXXX)"
   if jq --arg v "$_cage_host_addr" \
         '.env = ((.env // {}) + {CAGE_HOST_ADDR: $v})' \
@@ -625,7 +647,7 @@ if [ -f ~/.claude/settings.json ]; then
   fi
   unset _cage_settings_tmp
 fi
-unset _cage_host_addr _cage_probe_status _RC_HOST_BRIDGE_STATUS
+unset _cage_host_addr _cage_probe_status _RC_HOST_BRIDGE_STATUS _rc_settings_cage_local
 
 # R4: Snapshot ~/.claude.json → ~/.claude/.claude.json.seed (rip-cage-p1p)
 # MUST run BEFORE the first `claude` invocation below — when the claude-recipe is
@@ -655,7 +677,9 @@ unset _cage_host_addr _cage_probe_status _RC_HOST_BRIDGE_STATUS
 # oauthAccount / claudeAiOauth fields. Proven sufficient 2026-07-06:
 # {"hasCompletedOnboarding": true, "theme": "dark"} makes interactive claude
 # skip theme+login and land on workspace-trust -> prompt -> model round-trip.
-if [ -f ~/.claude.json ] && [ -s ~/.claude.json ]; then
+if _rc_leave_mounted /home/agent/.claude/.claude.json.seed; then
+  :
+elif [ -f ~/.claude.json ] && [ -s ~/.claude.json ]; then
   cp ~/.claude.json ~/.claude/.claude.json.seed
   echo "[rip-cage] Snapshotted ~/.claude.json → ~/.claude/.claude.json.seed (R4 stable seed)"
 elif [ -s ~/.claude/.claude.json.seed ]; then

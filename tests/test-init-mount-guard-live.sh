@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/test-init-mount-guard-live.sh -- container-tier proof that init never
-# deletes a host directory that sits inside a cage-config mount
-# (rip-cage-f08b).
+# deletes, overwrites, or links into a host path that sits inside a
+# cage-config mount (rip-cage-f08b, rip-cage-5fny).
 #
 # One scratch cage under a temp HOME and XDG_CONFIG_HOME, two boots:
 #   G1-G2  shipped template: init exits 0 and ~/.claude/skills is rc's
@@ -11,6 +11,13 @@
 #          under HOME/.claude/skills: rc up (init included) exits 0, init
 #          prints the skip line naming the mount, the sentinel still exists
 #          on the host, and HOST ~/.claude/skills is still a real directory.
+#   G2b    template boot: rc's settings.json still installs (the 5fny guard
+#          does not fire on a normal cage).
+#   G7-G11 same whole-~/.claude boot (rip-cage-5fny): host sentinel
+#          settings.json and CLAUDE.md are byte-identical after init, no
+#          .claude.json.seed lands on the host, host projects/ and sessions/
+#          gain no legacy-volume link, and init printed a skip line for each
+#          of the five.
 #
 # No real credential is used: the config's CCTOK secret gets a fake value of
 # the setup-token shape, enough for msb to boot. Nothing here calls the API.
@@ -96,10 +103,23 @@ up_rc=$?
 if [[ $up_rc -eq 0 ]]; then pass "G1 template config: rc up (init included) exit 0"; else fail "G1 template rc up exit ${up_rc}" "log tail: $(tail -5 "$UP_LOG" | tr '\n' ' ')"; exit 1; fi
 skills_link=$(gexec 30 readlink /home/agent/.claude/skills 2>/dev/null)
 if [[ "$skills_link" == "/home/agent/.rc-context/skills" ]]; then pass "G2 ~/.claude/skills -> ${skills_link}"; else fail "G2 ~/.claude/skills is not the rc projection symlink" "readlink=${skills_link:-<none>}"; fi
+# rip-cage-5fny: the guard must not fire on a normal cage -- rc's settings
+# still install when nothing mounts ~/.claude itself.
+mode=$(gexec 30 jq -r '.permissions.defaultMode // empty' /home/agent/.claude/settings.json 2>/dev/null)
+if [[ "$mode" == "bypassPermissions" ]]; then pass "G2b template cage: rc's settings.json installed (defaultMode=${mode})"; else fail "G2b template cage: rc's settings.json not installed" "defaultMode=${mode:-<none>}"; fi
 
 # --- G3-G6: whole ~/.claude mounted read-write ---------------------------
 SENTINEL="${HOME}/.claude/skills/SENTINEL-f08b"
 echo "must survive init" > "$SENTINEL"
+# rip-cage-5fny: the host's own settings.json and CLAUDE.md sit inside the
+# same mount; init must leave both byte-identical and create no seed there.
+printf '{"host-sentinel": "5fny"}\n' > "${HOME}/.claude/settings.json"
+printf '# host CLAUDE.md sentinel (5fny)\n' > "${HOME}/.claude/CLAUDE.md"
+cp "${HOME}/.claude/settings.json" "${T}/settings.json.orig"
+cp "${HOME}/.claude/CLAUDE.md" "${T}/CLAUDE.md.orig"
+rm -f "${HOME}/.claude/.claude.json.seed"
+ls -A "${HOME}/.claude/projects" > "${T}/projects.ls.orig"
+ls -A "${HOME}/.claude/sessions" > "${T}/sessions.ls.orig"
 WHOLE_CONF="${T}/whole-claude.yaml"
 sed -e '\#/.claude/projects:/home/agent/.claude/projects"#d' \
     -e '\#/.claude/sessions:/home/agent/.claude/sessions"#d' \
@@ -122,6 +142,27 @@ else
   fi
   if [[ -f "$SENTINEL" ]]; then pass "G5 host sentinel survived init: ${SENTINEL}"; else fail "G5 host sentinel is GONE: ${SENTINEL}"; fi
   if [[ -d "${HOME}/.claude/skills" && ! -L "${HOME}/.claude/skills" ]]; then pass "G6 host ~/.claude/skills is still a real directory"; else fail "G6 host ~/.claude/skills was replaced" "$(ls -ld "${HOME}/.claude/skills" 2>&1)"; fi
+  if cmp -s "${T}/settings.json.orig" "${HOME}/.claude/settings.json"; then pass "G7 host ~/.claude/settings.json byte-identical after init"; else fail "G7 host ~/.claude/settings.json was overwritten" "now: $(head -c 120 "${HOME}/.claude/settings.json" 2>&1 | tr '\n' ' ')"; fi
+  if cmp -s "${T}/CLAUDE.md.orig" "${HOME}/.claude/CLAUDE.md"; then pass "G8 host ~/.claude/CLAUDE.md byte-identical after init"; else fail "G8 host ~/.claude/CLAUDE.md was overwritten" "now: $(head -c 120 "${HOME}/.claude/CLAUDE.md" 2>&1 | tr '\n' ' ')"; fi
+  if [[ ! -e "${HOME}/.claude/.claude.json.seed" ]]; then pass "G9 init wrote no .claude.json.seed into the host ~/.claude"; else fail "G9 init created ${HOME}/.claude/.claude.json.seed on the host"; fi
+  # shellcheck disable=SC2088  # literal text init prints, not a path
+  if grep -qF "~/.claude/settings.json sits inside the cage-config mount /home/agent/.claude;" "$W_LOG" \
+     && grep -qF "~/.claude/CLAUDE.md sits inside the cage-config mount /home/agent/.claude;" "$W_LOG" \
+     && grep -qF "~/.claude/.claude.json.seed sits inside the cage-config mount /home/agent/.claude;" "$W_LOG" \
+     && grep -qF "~/.claude/projects sits inside the cage-config mount /home/agent/.claude;" "$W_LOG" \
+     && grep -qF "~/.claude/sessions sits inside the cage-config mount /home/agent/.claude;" "$W_LOG"; then
+    pass "G10 init printed the skip lines for settings.json, CLAUDE.md, .claude.json.seed, projects and sessions"
+  else
+    fail "G10 a settings.json/CLAUDE.md/.claude.json.seed/projects/sessions skip line is absent from rc up output" "WARNING lines: $(grep -F 'WARNING' "$W_LOG" | head -5 | tr '\n' ' ')"
+  fi
+  _g11_ok=1
+  for _d in projects sessions; do
+    if [[ ! -d "${HOME}/.claude/${_d}" || -L "${HOME}/.claude/${_d}" ]] \
+       || ! ls -A "${HOME}/.claude/${_d}" | cmp -s "${T}/${_d}.ls.orig" -; then
+      _g11_ok=0
+    fi
+  done
+  if [[ $_g11_ok -eq 1 ]]; then pass "G11 host ~/.claude/projects and sessions untouched (no legacy-volume link)"; else fail "G11 init linked into host ~/.claude/projects or sessions" "$(ls -la "${HOME}/.claude/projects" "${HOME}/.claude/sessions" 2>&1 | tr '\n' ' ')"; fi
 fi
 
 echo ""
