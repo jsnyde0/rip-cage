@@ -873,18 +873,23 @@ else
 fi
 
 # --- Test 22: --new --session mutex flag check in rc up ---
+# rip-cage-47gy: T22/T32/T33 check flag parsing only, so they run behind fake
+# docker + msb (tests/_fake-runtime-lib.sh) instead of the host's binaries.
+# shellcheck source=tests/_fake-runtime-lib.sh
+source "${SCRIPT_DIR}/_fake-runtime-lib.sh"
+_FLAGS_FAKE_RT=$(fake_runtime_bin)
 echo ""
 echo "=== Test 22: rc up --new --session exits 2 with usage message ==="
 TEST_DIR_T22=$(mktemp -d)
 mkdir -p "${TEST_DIR_T22}/.git"
-mutex_output=$("$RC" up --dry-run --new --session "myname" "$TEST_DIR_T22" 2>&1 || true)
+mutex_output=$(PATH="${_FLAGS_FAKE_RT}:${PATH}" "$RC" up --dry-run --new --session "myname" "$TEST_DIR_T22" 2>&1 || true)
 if echo "$mutex_output" | grep -qi "mutually exclusive\|cannot use.*together\|--new.*--session\|--session.*--new"; then
   pass "rc up --new --session shows mutually exclusive usage message"
 else
   fail "rc up --new --session should show mutually exclusive error (got: $mutex_output)"
 fi
 # exit code should be 2 (usage error)
-actual_exit=$("$RC" up --dry-run --new --session "myname" "$TEST_DIR_T22" 2>/dev/null; echo $?)
+actual_exit=$(PATH="${_FLAGS_FAKE_RT}:${PATH}" "$RC" up --dry-run --new --session "myname" "$TEST_DIR_T22" 2>/dev/null; echo $?)
 if [[ "$actual_exit" == "2" ]]; then
   pass "rc up --new --session exits with code 2"
 else
@@ -952,7 +957,7 @@ echo ""
 echo "=== Test 32: rc up --new flag recognized ==="
 TEST_DIR_T32=$(mktemp -d)
 mkdir -p "${TEST_DIR_T32}/.git"
-new_flag_out=$("$RC" up --dry-run --new "$TEST_DIR_T32" 2>&1 </dev/null || true)
+new_flag_out=$(PATH="${_FLAGS_FAKE_RT}:${PATH}" "$RC" up --dry-run --new "$TEST_DIR_T32" 2>&1 </dev/null || true)
 if echo "$new_flag_out" | grep -qi "unknown.*flag\|invalid.*option\|unrecognized"; then
   fail "rc up --new flag not recognized (got: $new_flag_out)"
 else
@@ -965,13 +970,13 @@ echo ""
 echo "=== Test 33: rc up --session flag recognized ==="
 TEST_DIR_T33=$(mktemp -d)
 mkdir -p "${TEST_DIR_T33}/.git"
-session_flag_out=$("$RC" up --dry-run --session "rip-cage" "$TEST_DIR_T33" 2>&1 </dev/null || true)
+session_flag_out=$(PATH="${_FLAGS_FAKE_RT}:${PATH}" "$RC" up --dry-run --session "rip-cage" "$TEST_DIR_T33" 2>&1 </dev/null || true)
 if echo "$session_flag_out" | grep -qi "unknown.*flag\|invalid.*option\|unrecognized"; then
   fail "rc up --session flag not recognized (got: $session_flag_out)"
 else
   pass "rc up --session flag recognized (no unrecognized flag error)"
 fi
-rm -rf "$TEST_DIR_T33"
+rm -rf "$TEST_DIR_T33" "$_FLAGS_FAKE_RT"
 
 # --- Test 34: registry dispatch uses [[ -t 0 && -t 1 ]] TTY guard (rip-cage-61al.3) ---
 echo ""

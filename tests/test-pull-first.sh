@@ -52,6 +52,18 @@ esac
 FAKEEOF
 chmod +x "$FAKE_BIN/docker"
 
+# rip-cage-47gy: a fake msb beside it, so no case here reaches the host's real
+# msb. `--version` passes rc's preflight; everything else is empty/absent.
+cat > "$FAKE_BIN/msb" <<'FAKEEOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) echo "msb 0.0.0-fake"; exit 0 ;;
+  inspect) exit 1 ;;
+  *) exit 0 ;;
+esac
+FAKEEOF
+chmod +x "$FAKE_BIN/msb"
+
 # Need a real path inside an allowed root for rc up to accept. Use a temp dir
 # under $HOME (the default allowed root in test contexts).
 TARGET=$(mktemp -d -t "rc-pull-test.XXXXXX")

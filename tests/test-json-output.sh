@@ -65,7 +65,12 @@ TEST_GLOBAL_CFG_DIR=$(mktemp -d)
 # which is the cwd -- that IS what this case is checking (ADR-031 D2).
 TEST_CAGE_CONF=$(cage_conf_for "$TEST_ALLOWED_DIR")
 cd "$TEST_ALLOWED_DIR"
-up_default=$(RC_CAGE_CONF="$TEST_CAGE_CONF" "$RC" --dry-run --output json up 2>/dev/null) || true
+# rip-cage-47gy: behind fake docker + msb, never the host's real binaries.
+# shellcheck source=tests/_fake-runtime-lib.sh
+source "${SCRIPT_DIR}/_fake-runtime-lib.sh"
+_T7_FAKE_RT=$(fake_runtime_bin)
+up_default=$(PATH="${_T7_FAKE_RT}:${PATH}" RC_CAGE_CONF="$TEST_CAGE_CONF" "$RC" --dry-run --output json up 2>/dev/null) || true
+rm -rf "$_T7_FAKE_RT"
 up_action=$(echo "$up_default" | jq -r '.action // empty' 2>/dev/null || true)
 if [[ "$up_action" == would_* ]]; then
   pass "--output json up with no path defaults to '.' (dry_run action=$up_action)"

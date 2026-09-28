@@ -31,8 +31,15 @@ mkdir -p "$OUTSIDE_DIR/.aws"
 echo "FOO=bar" > "$OUTSIDE_DIR/.aws/credentials"
 ln -s "$OUTSIDE_DIR/.aws/credentials" "$PROJECT_DIR/.env"
 
+# rip-cage-47gy: the three `rc up --dry-run` calls below run behind fake
+# docker + msb (tests/_fake-runtime-lib.sh); the live-container checks further
+# down keep the real docker on PATH.
+# shellcheck source=tests/_fake-runtime-lib.sh
+source "${SCRIPT_DIR}/_fake-runtime-lib.sh"
+_FAKE_RT=$(fake_runtime_bin)
+
 cleanup() {
-  rm -rf "$ALLOWED_DIR" "$OUTSIDE_DIR"
+  rm -rf "$ALLOWED_DIR" "$OUTSIDE_DIR" "$_FAKE_RT"
 }
 trap cleanup EXIT
 
@@ -55,7 +62,7 @@ echo ""
 echo "-- Test 1: env-file symlink to a protected path is blocked --"
 # $PROJECT_DIR/.env resolves to $OUTSIDE_DIR/.aws/credentials. Both '.aws' and
 # 'credentials' are on the shipped protected-paths list.
-OUTPUT=$("$RC" --dry-run up "$PROJECT_DIR" --env-file "$PROJECT_DIR/.env" 2>&1) || EXIT_CODE=$?
+OUTPUT=$(PATH="${_FAKE_RT}:${PATH}" "$RC" --dry-run up "$PROJECT_DIR" --env-file "$PROJECT_DIR/.env" 2>&1) || EXIT_CODE=$?
 EXIT_CODE=${EXIT_CODE:-0}
 
 if [[ "$EXIT_CODE" -ne 0 ]]; then
@@ -69,7 +76,7 @@ fi
 echo ""
 echo "-- Test 2: env-file inside allowed roots is accepted --"
 echo "BAR=baz" > "$PROJECT_DIR/legit.env"
-OUTPUT=$("$RC" --dry-run up "$PROJECT_DIR" --env-file "$PROJECT_DIR/legit.env" 2>&1) || EXIT_CODE2=$?
+OUTPUT=$(PATH="${_FAKE_RT}:${PATH}" "$RC" --dry-run up "$PROJECT_DIR" --env-file "$PROJECT_DIR/legit.env" 2>&1) || EXIT_CODE2=$?
 EXIT_CODE2=${EXIT_CODE2:-0}
 
 if [[ "$EXIT_CODE2" -eq 0 ]]; then
@@ -82,7 +89,7 @@ fi
 # --- Test 3: Non-existent env-file is rejected ---
 echo ""
 echo "-- Test 3: non-existent env-file is rejected --"
-OUTPUT=$("$RC" --dry-run up "$PROJECT_DIR" --env-file "$PROJECT_DIR/nonexistent.env" 2>&1) || EXIT_CODE3=$?
+OUTPUT=$(PATH="${_FAKE_RT}:${PATH}" "$RC" --dry-run up "$PROJECT_DIR" --env-file "$PROJECT_DIR/nonexistent.env" 2>&1) || EXIT_CODE3=$?
 EXIT_CODE3=${EXIT_CODE3:-0}
 
 if [[ "$EXIT_CODE3" -ne 0 ]]; then

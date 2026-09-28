@@ -314,15 +314,17 @@ fi
 
 # extract_present_block <up.sh-shaped-file> -- same idiom as
 # extract_absent_block above, aimed at the OTHER branch: the outer
-# `if [[ "$_image_absent" == false ]]; then` is the only place in cli/up.sh
-# with this exact bare condition (the absent branch above compares against
+# `if [[ "$_image_absent" == false && "${DRY_RUN:-}" != "true" ]]; then`
+# (rip-cage-47gy added the DRY_RUN half; the block also carries the dry-run
+# elif, which never runs here because DRY_RUN is unset) is the only place in
+# cli/up.sh with this exact condition (the absent branch above compares against
 # "true", and the two would_action==would_create compound conditions are
 # never a bare-`false` match), and the terminating `  fi` at the same
 # 2-space indent is unique below it before any nested if/fi (those sit at
 # 4-, 6- and 8-space indent).
 extract_present_block() {
   awk '
-    /^  if \[\[ "\$_image_absent" == false \]\]; then$/ { flag=1 }
+    /^  if \[\[ "\$_image_absent" == false && "\$\{DRY_RUN:-\}" != "true" \]\]; then$/ { flag=1 }
     flag { print }
     flag && /^  fi$/ { exit }
   ' "$1"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for the LFS pointer-stub detection/warning path in `rc`.
-# Pure host-side check (no docker required) — exercised via `rc up --dry-run`.
+# Pure host-side check — exercised via `rc up --dry-run` behind fake docker +
+# msb (the rc dispatcher's docker/msb preflights run before the LFS check).
 
 set -uo pipefail
 
@@ -14,11 +15,13 @@ FAILURES=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 
-if ! command -v docker > /dev/null 2>&1; then
-  # Dry-run still needs docker image check to short-circuit; but the LFS
-  # warning fires *before* any docker call, so this test is docker-free.
-  :
-fi
+# rip-cage-47gy: every `rc up` in this file runs behind fake docker + msb
+# (tests/_fake-runtime-lib.sh), never the host's real binaries.
+# shellcheck source=tests/_fake-runtime-lib.sh
+source "${SCRIPT_DIR}/_fake-runtime-lib.sh"
+_FAKE_RT=$(fake_runtime_bin)
+export PATH="${_FAKE_RT}:${PATH}"
+trap 'rm -rf "$_FAKE_RT"' EXIT
 
 # LFS pointer file content (standard v1 pointer — matches real git-lfs stubs)
 LFS_POINTER_CONTENT="version https://git-lfs.github.com/spec/v1

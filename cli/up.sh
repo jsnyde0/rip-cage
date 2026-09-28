@@ -1226,7 +1226,13 @@ _up_check_multiplexer_available() {
   [[ -z "$_img" ]] && _img="$IMAGE"
 
   local _desc=""
-  if ! _desc=$(docker run --rm --entrypoint sh "$_img" -c 'cat /etc/rip-cage/boot.json' 2>/dev/null); then
+  # rip-cage-47gy: this read runs under --dry-run too, where a plain
+  # `docker run` of an absent image would PULL it. Under --dry-run only,
+  # --pull never makes absent read as "cannot read" (the branch below); the
+  # real path keeps docker's default pull.
+  local -a _mux_pull=()
+  [[ "${DRY_RUN:-}" == "true" ]] && _mux_pull=(--pull never)
+  if ! _desc=$(docker run --rm ${_mux_pull[@]+"${_mux_pull[@]}"} --entrypoint sh "$_img" -c 'cat /etc/rip-cage/boot.json' 2>/dev/null); then
     # Cannot read the image, so cannot tell. Fail closed: an operator who asked
     # for a multiplexer by name gets told to build the image that would carry
     # it, rather than a cage that boots and then cannot attach.
@@ -2525,7 +2531,18 @@ cmd_up() {
   # called AFTER the load so the two branches never race and the emitter
   # never runs twice in one invocation. Do not also call it here on the
   # absent path.
-  if [[ "$_image_absent" == false ]]; then
+  #
+  # rip-cage-47gy: A DRY RUN NEVER WRITES AN IMAGE STORE. The resync below is
+  # a real `docker save` + `msb load`, and this block sits BEFORE the
+  # --dry-run exit, so on 2026-09-28 a plain `rc up --dry-run` rewrote msb's
+  # rip-cage:latest. The real branch is therefore gated on DRY_RUN != true;
+  # under --dry-run the elif below runs the same read-only comparator and only
+  # SAYS it would resync on drift (status 1). The emitter stays in the real
+  # branch: its status-3/4 warnings are about a load that ran, and a dry run
+  # runs none. (Host-side prep -- the
+  # ~/.claude dir seeds, the worktree gitfile -- still runs under --dry-run;
+  # docker's and msb's image stores are what stay untouched.)
+  if [[ "$_image_absent" == false && "${DRY_RUN:-}" != "true" ]]; then
     # rip-cage-7yvy (RULING 2026-09-05, brain:rip-cage, option (a)): this
     # branch only reaches "present" because _image_absent's own probe above
     # already required msb to list $IMAGE BY NAME (cli/up.sh:2474-2478) --
@@ -2569,6 +2586,12 @@ cmd_up() {
       fi
     fi
     _msb_warn_image_layer_drift
+  elif [[ "$_image_absent" == false ]]; then
+    local _dry_drift_status=0
+    _msb_image_layer_drift_status || _dry_drift_status=$?
+    if [[ "$_dry_drift_status" -eq 1 ]]; then
+      echo "Would run 'msb load' to resync msb's cached '${IMAGE}' image from docker's (their layer content differs); --dry-run loads nothing." >&2
+    fi
   fi
 
   local name_disambiguated=false
@@ -2822,7 +2845,9 @@ cmd_up() {
       # prints something the real launch would not do is not possible by
       # construction — not a second rendering that can drift from the first.
       #
-      # _UP_DRY_RUN_NO_SIDE_EFFECTS keeps the mount preparation read-only.
+      # _UP_DRY_RUN_NO_SIDE_EFFECTS marks the mount preparation as a preview.
+      # It is not a full read-only guarantee: the host-side dir seeds and the
+      # worktree gitfile still get written (rip-cage-47gy review).
       # STALE CLAIM FIXED (rip-cage-ely4.7.17 fix round 3, finding 4): this
       # used to say "--dry-run must never reach the macOS keychain" -- that
       # guard's subject, the keychain-extraction possession path, is deleted

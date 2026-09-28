@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-if ! command -v docker > /dev/null 2>&1; then
-  echo "SKIP: Docker not available -- skipping $(basename "$0")"
-  exit 0
-fi
 set -uo pipefail
 
 # Tests for bead dg6.2: --dry-run, input hardening, agent context
@@ -13,6 +9,13 @@ REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+# rip-cage-47gy: every `rc up` in this file runs behind fake docker + msb
+# (tests/_fake-runtime-lib.sh), never the host's real binaries.
+# shellcheck source=tests/_fake-runtime-lib.sh
+source "${SCRIPT_DIR}/_fake-runtime-lib.sh"
+_FAKE_RT=$(fake_runtime_bin)
+export PATH="${_FAKE_RT}:${PATH}"
+trap 'rm -rf "$_FAKE_RT"' EXIT
 
 FAILURES=0
 

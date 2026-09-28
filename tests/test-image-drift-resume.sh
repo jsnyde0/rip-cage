@@ -56,11 +56,10 @@
 # idiom, msb substrate.
 #
 # Wired into tests/run-host.sh (host-only tier — no live msb sandbox
-# needed; the fake msb on PATH replaces the real binary entirely. The real
-# `docker` binary stays on PATH unshadowed — `rc up` still runs
-# check_docker first (rc:'build) check_docker') and this suite relies on a real, reachable
-# docker daemon for that preflight to pass; it never calls docker beyond
-# the preflight).
+# needed). Both binaries are shadowed: the fake msb replaces the real one
+# entirely, and since rip-cage-7bs3 T8 a fake docker does too (see its stub
+# below; `save`/`tag`/`pull` land in its catch-all exit 0). No case here
+# reaches the host's real docker or msb (rip-cage-47gy audit).
 
 set -uo pipefail
 

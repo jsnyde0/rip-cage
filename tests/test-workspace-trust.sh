@@ -30,8 +30,16 @@ TEST_TMPDIR=""
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
 
+# rip-cage-47gy: every `rc up` in this file runs behind fake docker + msb
+# (tests/_fake-runtime-lib.sh), never the host's real binaries.
+# shellcheck source=tests/_fake-runtime-lib.sh
+source "${SCRIPT_DIR}/_fake-runtime-lib.sh"
+_FAKE_RT=$(fake_runtime_bin)
+export PATH="${_FAKE_RT}:${PATH}"
+
 cleanup() {
   [[ -n "${TEST_TMPDIR:-}" && -d "${TEST_TMPDIR:-}" ]] && rm -rf "$TEST_TMPDIR"
+  rm -rf "$_FAKE_RT"
 }
 trap cleanup EXIT
 
