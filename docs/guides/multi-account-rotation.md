@@ -4,49 +4,34 @@ Running multiple Claude Code accounts lets you spread rate limits across profile
 
 ## How it works
 
-Rip-cage bind-mounts `~/.claude/.credentials.json` read-write into every container. Any change to that file on the host propagates instantly to all running containers. Agents pick up new credentials on their next API call — no restart needed.
+Claude's login reaches the cage through msb `--secret`: a `CCTOK` secret bound to `api.anthropic.com`, sourced from a `claude setup-token` value at `~/.config/rip-cage/secrets/CCTOK`. The value is read once, at launch — there is no live mount to rewrite, and a running cage does not pick up a changed file. Rotating accounts means "put a different token in that file, then recreate the cage." Full mechanism: [auth.md](../reference/auth.md).
 
-This means account rotation is just "rewrite the credentials file on the host."
+## Setup
 
-## Setup with CAAM
-
-[CAAM](https://github.com/jsnyde0/caam) (Coding Agent Account Manager) manages named credential profiles and handles the file swap atomically.
-
-### Install
+Get a long-lived token for each account, once:
 
 ```bash
-# macOS
-brew install jsnyde0/tap/caam
-
-# Or from source
-go install github.com/jsnyde0/caam@latest
+claude setup-token   # run once per account, logged in as that account
 ```
 
-### Create profiles
+Save each one under its own name, host-side:
 
-Log in to each Claude Code account and back up its credentials:
-
-```bash
-# Log in as your primary account
-claude auth login
-caam backup claude primary
-
-# Log in as your secondary account
-claude auth login
-caam backup claude secondary
 ```
+~/.config/rip-cage/secrets/CCTOK.primary
+~/.config/rip-cage/secrets/CCTOK.secondary
+```
+
+mode `0600` on each file.
 
 ### Switch accounts
 
 ```bash
-# Switch to a specific profile
-caam activate claude secondary
-
-# Or rotate to the next profile automatically
-caam next claude --auto
+cp ~/.config/rip-cage/secrets/CCTOK.secondary ~/.config/rip-cage/secrets/CCTOK
+chmod 600 ~/.config/rip-cage/secrets/CCTOK
+rc up --replace ~/projects/my-app
 ```
 
-All running rip-cage containers pick up the change immediately.
+`rc up --replace` graceful-stops and recreates the cage against the current config, which is what picks up the new secret value — msb reads `CCTOK` only at boot.
 
 ## The workflow
 
@@ -55,54 +40,27 @@ All running rip-cage containers pick up the change immediately.
 rc up ~/projects/my-app
 
 # 2. Agent works... eventually hits rate limit
-#    (you see "rate limit" errors in the tmux session)
+#    (you see "rate limit" errors in the session)
 
-# 3. On the host, switch accounts
-caam activate claude secondary
-# Or: caam next claude --auto
+# 3. On the host, switch the token and recreate
+cp ~/.config/rip-cage/secrets/CCTOK.secondary ~/.config/rip-cage/secrets/CCTOK
+rc up --replace ~/projects/my-app
 
-# 4. Agent retries → works with new credentials
-#    No container restart. No lost context.
+# 4. Attach again — the cage boots authenticated as the new account
 ```
 
-## Without CAAM
+This is a recreate, not a live hot-swap: the microVM restarts, though mounted state and volumes survive it ([ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D5(a)). A Claude Code session resumes from its mounted history; expect a short restart gap, not a silent mid-session swap.
 
-You don't need CAAM — any method that updates `~/.claude/.credentials.json` works:
+## Running two accounts at once
 
-```bash
-# Option A: rc auth refresh (re-extracts current account from macOS Keychain)
-claude auth login    # switch account in Claude Code first
-rc auth refresh
-
-# Option B: manual file replacement
-cp ~/backups/secondary-credentials.json ~/.claude/.credentials.json
-```
-
-## The one real hazard: atomic rename
-
-The credential mount is a **single-file** mount, and a rotation tool that swaps accounts the safe way — write a temp file, `mv` over the target — allocates a **new inode**. A single-file mount bound to the old one is left holding a dead handle: the host path looks perfectly fine, and the in-cage path goes `ENOENT`.
-
-The caged agent's symptom is `Not logged in — Please run /login`, possibly long after the swap.
-
-**This was confirmed live under the pre-cutover Docker bind mount, and has not been re-tested under msb's virtiofs** — tracked in `rip-cage-9mbw`. Treat it as the working assumption, not a proven msb fact. [auth.md](../reference/auth.md#gotcha-an-atomic-rename-on-the-host-can-sever-a-live-single-file-mount) has the full mechanism.
-
-**Avoid it** by writing in place rather than renaming:
-
-```bash
-cat new-creds.json > ~/.claude/.credentials.json
-```
-
-`rc auth refresh` already does this — it truncate-and-writes the same inode, so rip-cage's own rotation never severs the mount. The hazard is external writers.
-
-**Detect it** with `rc doctor <cage>`; its `dead_mounts` probe names any single-file mount whose in-cage destination has gone dead. **Repair it** with `rc up --replace <path>`, which re-binds every mount against the current inode.
+For genuinely parallel cages under different accounts — not rotation, but two cages up simultaneously — give each cage's config its own secret name (`CCTOK_WORK`, `CCTOK_PERSONAL`) instead of sharing `CCTOK`. That is the **cage-config** skill, [`recipes/multi-account.md`](../../.claude/skills/cage-config/recipes/multi-account.md).
 
 ## Tips
 
-- **Label your profiles clearly** — `primary`, `secondary`, or by purpose (`work`, `personal`)
-- **Back up after each `claude auth login`** — CAAM captures the current keychain state
-- **Every cage shares one credentials file**, so switching affects all running agents at once. Per-cage accounts are a different pattern, and not supported today.
+- **Name your saved tokens clearly** — `CCTOK.primary`, `CCTOK.secondary`, or by purpose (`CCTOK.work`, `CCTOK.personal`).
+- **Every cage that declares plain `CCTOK` shares one active token.** Rotating it affects every cage using that name the next time each one is recreated; cages already running keep whatever token they booted with until you `rc up --replace` them too.
 
 ## See also
 
-- [Auth reference](../reference/auth.md) — how rip-cage handles credentials
-- [CLI reference](../reference/cli-reference.md) — `rc auth refresh` details
+- [Auth reference](../reference/auth.md) — the `CCTOK` mechanism, `rc auth`, and switching accounts
+- [Multi-account cage-config recipe](../../.claude/skills/cage-config/recipes/multi-account.md) — parallel cages under different identities

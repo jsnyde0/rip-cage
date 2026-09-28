@@ -17,6 +17,7 @@ msb 0.6.18 ships natively what rip-cage used to claim as its own: the microVM bo
 - **Images extend the base** — `FROM rip-cage:latest` plus one small boot descriptor naming daemons and multiplexers. The tools manifest, its codegen, its validator and its ~12k-line test corpus are gone ([ADR-031](decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D4).
 - **A fail-closed floor probe on the built image** — it inspects the artifact, not a declaration describing it, and runs at every boot and at the head of `rc test`, with no opt-out ([ADR-031](decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D5).
 - **Three skills as the front door** — [`cage-config`](../.claude/skills/cage-config/SKILL.md) writes the config, [`cage-image`](../.claude/skills/cage-image/SKILL.md) writes the Dockerfile, [`cage-ops`](../.claude/skills/cage-ops/SKILL.md) runs and repairs a live cage.
+- **The Claude login rides `--secret`** (`rip-cage-ely4.7.17`). The one login rip-cage authenticates with reaches the cage the same way any other credential does — a `CCTOK` secret bound to `api.anthropic.com`, sourced from a `claude setup-token` value you save once, host-side. No credentials file enters the guest; `rc auth` is a no-prompt check, not a keychain extraction ([ADR-031](decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D1).
 
 ## In flight
 
@@ -28,8 +29,7 @@ msb 0.6.18 ships natively what rip-cage used to claim as its own: the microVM bo
 
 Each line is a direction, not a plan. None has a bead tree yet.
 
-- **Bridge the keychain to `--secret`** (`rip-cage-ely4.7.17`). Today the Claude login rip-cage finds in your keychain reaches the cage as a **mounted file** — the token enters the VM. Making that one login ride `--secret` instead, so the guest holds only a placeholder, is the single change that turns opinion 1 from a convenience into a containment property.
-- **Generalized credential discovery.** After the bridge: pi's OpenAI Codex login — currently a file mount plus env forwarding, never refreshed by `rc auth`. Then 1Password and `gh auth`. Until those land, credential discovery is a single-vendor trick, and the README says so.
+- **Generalized credential discovery.** pi's OpenAI Codex login — currently a file mount plus env forwarding, never refreshed by `rc auth`. Then 1Password and `gh auth`. Until those land, credential discovery is a single-vendor trick, and the README says so.
 - **The floor probe as a publishable artifact.** It proves containment properties of any image, not just rip-cage's. Whether that is worth shipping on its own is open.
 - **Restart cages from a list after a host reboot.** A launchd or systemd unit looping `msb start`. This is the whole of "fleet" today; it lives under `rip-cage-tncg`.
 - **An in-cage read-only denial feed.** So a caged agent can name the exact host it was denied, instead of asking the human to go read the trace log.

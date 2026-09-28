@@ -107,17 +107,24 @@ else
   check "Nested hooks mount added after the .git-main mount it nests inside" "false"
 fi
 
-# Test 15: Worktree mounts are BEFORE credential extraction (call-site order).
-# Credential extraction was refactored into _extract_credentials(); the runtime
-# order is what matters, so check the call-site inside _up_prepare_docker_mounts.
-# Scope to _up_prepare_docker_mounts so we compare the actual call-site ordering.
+# Test 15: Worktree mounts are added early in _up_prepare_docker_mounts,
+# before the generic skills/commands/agents mount block.
+#
+# This USED to compare against the macOS-keychain _extract_credentials() call
+# site, deleted with the possession path it fed (rip-cage-ely4.7.17 --
+# ADR-031 D1/D5(a) non-possession is the only mechanism now, and
+# _up_prepare_docker_mounts has no credential-extraction call site left to
+# order against). Same fix shape as Test 13 just above: retarget the
+# call-site-order check at the invariant rc still controls -- worktree
+# mounts land before the generic per-tool mount block that follows them in
+# source order, not after -- rather than deleting the check outright.
 mounts_fn=$(awk '/^_up_prepare_docker_mounts\(\)/,/^}/ { print NR": "$0 }' "$RC_FILE")
 wt_line=$(echo "$mounts_fn" | grep 'git-main:delegated' | head -1 | cut -d: -f1)
-cred_call_line=$(echo "$mounts_fn" | grep '_extract_credentials' | head -1 | cut -d: -f1)
-if [[ -n "$wt_line" && -n "$cred_call_line" && "$wt_line" -lt "$cred_call_line" ]]; then
-  check "Worktree mounts added before credential extraction" "true"
+skills_mount_line=$(echo "$mounts_fn" | grep 'rc-context/skills:ro' | head -1 | cut -d: -f1)
+if [[ -n "$wt_line" && -n "$skills_mount_line" && "$wt_line" -lt "$skills_mount_line" ]]; then
+  check "Worktree mounts added before the generic skills/commands/agents mount block" "true"
 else
-  check "Worktree mounts added before credential extraction" "false"
+  check "Worktree mounts added before the generic skills/commands/agents mount block" "false"
 fi
 
 # Test 16: Creation JSON includes worktree metadata (2 occurrences: dry-run + creation)

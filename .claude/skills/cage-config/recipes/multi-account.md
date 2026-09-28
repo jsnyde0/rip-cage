@@ -40,9 +40,15 @@ secrets:
   CCTOK_WORK:
     allow:
       - "api.anthropic.com"
+
+env:
+  CLAUDE_CODE_OAUTH_TOKEN: "$MSB_CCTOK_WORK"
 ```
 
-and in the other cage, `CCTOK_PERSONAL`. Both leave `value:` out.
+and in the other cage, `CCTOK_PERSONAL` bound the same way (`env:
+CLAUDE_CODE_OAUTH_TOKEN: "$MSB_CCTOK_PERSONAL"`). Both leave `value:` out. The
+`env:` line is not optional — without it the secret is injected on the wire
+but never lands in `CLAUDE_CODE_OAUTH_TOKEN` for Claude Code to read.
 
 Host-side, one file per name:
 
@@ -54,6 +60,12 @@ Host-side, one file per name:
 `rc` reads the one its config names and bridges only that one. The guest sees
 `$MSB_CCTOK_WORK` — a placeholder — and nothing about the other account exists
 in its environment, on its disk, or in `/proc`.
+
+**`rc auth` and the `rc up` pre-check only ever check the literal secret name
+`CCTOK`** — a renamed secret like `CCTOK_WORK` gets neither the host-side
+shape check nor the before-any-msb-call refusal; a bad or missing token
+under a renamed secret is caught later, by msb's own native validation at
+create time instead.
 
 *Done when:* each config names exactly one secret, each secret file exists
 host-side mode 600, and neither config mentions the other's name.
@@ -85,15 +97,14 @@ belongs to, and no line belongs to both.
 
 ## 4. Rotating one account's token
 
-Replace the value in `~/.config/rip-cage/secrets/<NAME>` and recreate that cage
-(`rc up --replace <project>`). Only the cage whose config names that secret is
-affected; the other keeps running.
+Get a fresh long-lived token for that account (`claude setup-token`, logged in
+as it), overwrite `~/.config/rip-cage/secrets/<NAME>`, `chmod 600`, and
+recreate that cage (`rc up --replace <project>`). Only the cage whose config
+names that secret is affected; the other keeps running.
 
-On macOS, `rc auth refresh` re-extracts Claude credentials from the keychain —
-but the keychain holds ONE logged-in Claude identity at a time, so it refreshes
-whichever account you are currently logged in as. For genuinely parallel
-accounts, keep the values in the per-name secret files above and do not rely on
-the keychain to distinguish them.
+Each account's token is independent — there is no shared keychain state to
+distinguish, and nothing to refresh. Keep the values in the per-name secret
+files above.
 
 *Done when:* the rotated cage reaches its API with the new value and the other
 cage is still up and unaffected (`msb list` shows both).

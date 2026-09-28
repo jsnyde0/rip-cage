@@ -1,128 +1,169 @@
 #!/usr/bin/env bash
 # cli/auth.sh -- extracted from rc (behavior-preserving decomposition, rip-cage-gto1).
 # NOTE: sourced by the rc shim; must NOT set -euo pipefail (shim owns strict mode once).
-
-
-# _extract_credentials — extract OAuth credentials from macOS Keychain to
-# ~/.claude/.credentials.json. No-op on Linux (no Keychain).
 #
-# Test seam: set RC_SKIP_KEYCHAIN_EXTRACTION=1 to bypass the macOS keychain
-# extraction entirely (used by e2e tests that need a deterministic no-auth cage).
-# Affects BOTH `rc up` and `rc auth refresh` (both call this fn). Default-off;
-# when set it warns loudly (below) so an accidental shell `export` surfaces
-# instead of silently starting a no-credentials cage. DO NOT export in a real shell.
+# rip-cage-ely4.7.17: the keychain -> mounted-credentials-file possession
+# path (extract, mount read-write) is RETIRED, no fallback. The Claude login
+# reaches the guest only via msb `--secret` non-possession (ADR-031 D1/D5(a)):
+# the shipped template declares `secrets: CCTOK` bound to api.anthropic.com,
+# `env: CLAUDE_CODE_OAUTH_TOKEN: "$MSB_CCTOK"`, and `_up_prepare_conf_secret_env`
+# (cli/up.sh) reads the real value from
+# $XDG_CONFIG_HOME/rip-cage/secrets/CCTOK. rip-cage-cmqb (closed, July)
+# measured that the long-lived `claude setup-token` value is the only shape
+# that survives a static --secret header swap -- a short-lived keychain
+# access token cannot, because it depends on a refresh flow a placeholder
+# cannot carry.
 #
-# Returns: 0 on success or on Linux, 1 on macOS extraction failure.
+# `rc auth` therefore does ONE thing: check that the operator has already put
+# a well-shaped token at that file. It never reads a keychain, never runs
+# `claude setup-token` itself, and never prompts -- CLAUDE.md philosophy is
+# agent-first / no human-in-the-loop prompts, and the one-time browser flow
+# `claude setup-token` drives is exactly that kind of prompt. `rc auth
+# refresh` is retired with the possession path it used to refresh (a
+# short-lived token needed hot-swapping; a long-lived setup-token does not).
 
-# _extract_credentials_has_usable_existing — rip-cage-towm: does a usable
-# credential file ALREADY exist at ~/.claude/.credentials.json? "Usable" =
-# exists, non-empty, and (best-effort) not expired per the same jq expiry
-# idiom used elsewhere (rc ~1345-1354, D3 credential health check). No jq, no
-# expiry field, or an unparsable expiry date all fall back to "usable"
-# (best-effort — see the design's own invalidation clause: a stale-but-present
-# file could theoretically suppress a warning that should fire; revisit if
-# that turns out to bite in practice). Used to decide whether a keychain
-# extraction failure is a genuine problem or a benign no-op (the existing
-# file gets mounted regardless of extraction outcome).
-_extract_credentials_has_usable_existing() {
-  local creds_file="${HOME}/.claude/.credentials.json"
-  [[ -s "$creds_file" ]] || return 1
-  command -v jq >/dev/null 2>&1 || return 0
-  local expiry
-  expiry=$(jq -r '.expiry // .expiresAt // empty' "$creds_file" 2>/dev/null || true)
-  [[ -z "$expiry" ]] && return 0
-  local expiry_epoch now_epoch
-  expiry_epoch=$(date -jf "%Y-%m-%dT%H:%M:%S" "${expiry%%[.+Z]*}" "+%s" 2>/dev/null || date -d "$expiry" "+%s" 2>/dev/null || true)
-  [[ -z "$expiry_epoch" ]] && return 0
-  now_epoch=$(date "+%s")
-  [[ "$expiry_epoch" -gt "$now_epoch" ]]
+# Setup-token shape floor. `claude setup-token` prints a long-lived OAuth
+# token with an "sk-ant-oat" prefix followed by ~108 characters drawn only
+# from [A-Za-z0-9_-] (observed shape); real tokens run to ~118 characters
+# total. 80 is chosen well below that observed length while staying far
+# above anything a truncated paste, an accidental short string, or an empty
+# placeholder would produce. Never used to validate anything but SHAPE --
+# the actual value is never printed, logged, or compared against a
+# known-good corpus (that would require reading a real token into a
+# log/diff surface).
+_AUTH_CCTOK_MIN_LEN=80
+
+# _auth_cctok_file — echo the resolved host-side secret file path for the
+# CCTOK secret (ADR-031 D5(a): host-side, outside every cage mount, never a
+# path the cage config can point at). Same $XDG_CONFIG_HOME convention as
+# _up_prepare_conf_secret_env (cli/up.sh) reads its value from -- one
+# location, cited not reimplemented.
+_auth_cctok_file() {
+  echo "${XDG_CONFIG_HOME:-${HOME}/.config}/rip-cage/secrets/CCTOK"
 }
 
+# _auth_file_mode FILE — echo FILE's permission bits as a bare octal string
+# ("600"), portable across BSD stat (macOS) and GNU stat (Linux). Echoes
+# nothing and returns non-zero if stat is unavailable or FILE vanished
+# between the caller's existence check and this call.
+_auth_file_mode() {
+  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+}
 
-_extract_credentials() {
-  # Test seam: skip keychain extraction when explicitly requested. Warn loudly so
-  # an accidental export surfaces instead of silently producing a no-auth cage.
-  if [[ "${RC_SKIP_KEYCHAIN_EXTRACTION:-0}" == "1" ]]; then
-    echo "Warning: RC_SKIP_KEYCHAIN_EXTRACTION=1 — skipping macOS keychain extraction (test seam); cage starts with whatever credentials already exist, possibly none." >&2
-    return 0
+# _auth_cctok_check — verify the CCTOK secret file: exists, is a regular
+# file, mode EXACTLY 0600, readable, and holds a setup-token-shaped value:
+# "sk-ant-oat" prefix, every character after it drawn only from
+# [A-Za-z0-9_-] (rejects a pasted URL, quoted value, or "key=value" line --
+# '.', '/', ':', '"', "'", '=' are all outside that charset), and total
+# length >= _AUTH_CCTOK_MIN_LEN. A single trailing newline is tolerated --
+# $(cat FILE) already strips exactly one before this function ever sees the
+# value, matching how an operator's editor or `>` redirect would save it; a
+# remaining embedded newline is a genuine second line and still malformed.
+#
+# NEVER prints, logs, or echoes the token value or any substring of it --
+# existence/mode/shape verdict only, everywhere this function or its callers
+# touch stdout/stderr.
+#
+# Sets _AUTH_CCTOK_REASON on failure to one of:
+#   missing | not_regular_file | bad_mode | not_readable | empty | malformed
+# Returns 0 (valid) or 1 (invalid, reason in _AUTH_CCTOK_REASON).
+_auth_cctok_check() {
+  local _file
+  _file=$(_auth_cctok_file)
+  _AUTH_CCTOK_REASON=""
+  if [[ ! -e "$_file" ]]; then
+    _AUTH_CCTOK_REASON="missing"
+    return 1
   fi
-  # Guard: Docker creates a dir at this path if the file didn't exist on a prior failed mount
-  if [[ -d "${HOME}/.claude/.credentials.json" ]]; then
-    rmdir "${HOME}/.claude/.credentials.json" 2>/dev/null || \
-      echo "Warning: ${HOME}/.claude/.credentials.json is a non-empty directory artifact — credentials will not be extracted" >&2
+  if [[ ! -f "$_file" ]]; then
+    _AUTH_CCTOK_REASON="not_regular_file"
+    return 1
   fi
-  if [[ "$(uname)" == "Darwin" ]]; then
-    local creds_tmp creds_target
-    creds_target="${HOME}/.claude/.credentials.json"
-    creds_tmp=$(mktemp) || { echo "Warning: failed to create temp file for credentials extraction" >&2; return 1; }
-    if security find-generic-password -s "Claude Code-credentials" -w > "$creds_tmp" 2>/dev/null; then
-      # Write in place (truncate+write) to preserve the inode. Docker's single-file
-      # bind mount on macOS tracks the original inode; mv (atomic rename) allocates
-      # a new inode and silently breaks every already-mounted container's view of
-      # this file. A non-atomic ~1 KB JSON write window is acceptable here.
-      if [[ ! -e "$creds_target" ]]; then
-        ( umask 077; : > "$creds_target" ) || {
-          rm -f "$creds_tmp"
-          echo "Warning: failed to create $creds_target" >&2
-          return 1
-        }
-      fi
-      if ! cat "$creds_tmp" > "$creds_target"; then
-        rm -f "$creds_tmp"
-        echo "Warning: failed to write credentials to $creds_target" >&2
-        return 1
-      fi
-      chmod 600 "$creds_target" 2>/dev/null || true
-      rm -f "$creds_tmp"
-    else
-      rm -f "$creds_tmp"
-      # rip-cage-towm: only warn when there's no usable existing credential
-      # file to fall back on. A usable file gets mounted regardless of this
-      # extraction outcome, so the warning would be a false alarm — silent
-      # here (info-level, not printed, to avoid adding routine noise on every
-      # `rc up` for a host with no keychain item that's actually fine).
-      if ! _extract_credentials_has_usable_existing; then
-        echo "Warning: failed to extract Claude credentials from macOS keychain — fine if you are not using Claude Code in this cage" >&2
-        echo "  If you are using Claude Code, run 'claude auth login' on the host to set up credentials, or set ANTHROPIC_API_KEY" >&2
-      fi
-      return 1
-    fi
+  local _mode
+  _mode=$(_auth_file_mode "$_file")
+  if [[ "$_mode" != "600" ]]; then
+    _AUTH_CCTOK_REASON="bad_mode"
+    return 1
+  fi
+  if [[ ! -r "$_file" ]]; then
+    _AUTH_CCTOK_REASON="not_readable"
+    return 1
+  fi
+  local _value
+  _value="$(cat "$_file" 2>/dev/null)"
+  if [[ -z "$_value" ]]; then
+    _AUTH_CCTOK_REASON="empty"
+    return 1
+  fi
+  # $(...) already stripped a trailing newline; a REMAINING embedded newline
+  # means a genuine second line, which is malformed for a one-line token file.
+  if [[ "$_value" == *$'\n'* ]]; then
+    _AUTH_CCTOK_REASON="malformed"
+    return 1
+  fi
+  if [[ ! "$_value" =~ ^sk-ant-oat[A-Za-z0-9_-]*$ ]]; then
+    _AUTH_CCTOK_REASON="malformed"
+    return 1
+  fi
+  if [[ "${#_value}" -lt "$_AUTH_CCTOK_MIN_LEN" ]]; then
+    _AUTH_CCTOK_REASON="malformed"
+    return 1
   fi
   return 0
 }
 
-
-cmd_auth() {
-  case "${1:-}" in
-    refresh) shift; cmd_auth_refresh "$@" ;;
-    *) echo "Usage: rc auth refresh" >&2; exit 1 ;;
+# _auth_cctok_fail_message REASON — the operator-facing remediation text for
+# a _auth_cctok_check failure. Names the exact file path and the one-time
+# human step; never the token value. One message home: shared verbatim by
+# `rc auth` and the `rc up` pre-check (_up_check_cctok_secret, cli/up.sh) so
+# the operator sees identical text no matter which command caught it.
+_auth_cctok_fail_message() {
+  local _reason="$1" _file
+  _file=$(_auth_cctok_file)
+  case "$_reason" in
+    missing) echo "No Claude auth token found at ${_file}." ;;
+    not_regular_file) echo "${_file} exists but is not a regular file." ;;
+    bad_mode) echo "${_file} exists but is not mode 0600 (found $(_auth_file_mode "$_file" 2>/dev/null || echo '?'))." ;;
+    not_readable) echo "${_file} exists but rc cannot read it." ;;
+    empty) echo "${_file} exists but is empty." ;;
+    malformed) echo "${_file} exists but does not hold a setup-token-shaped value ('sk-ant-oat' prefix, only [A-Za-z0-9_-] after it, at least ${_AUTH_CCTOK_MIN_LEN} characters total)." ;;
+    *) echo "${_file}: auth check failed." ;;
   esac
+  echo "One-time human step:"
+  echo "  1. Run 'claude setup-token' in a terminal (prints a long-lived OAuth token)."
+  echo "  2. Save the printed token to ${_file}"
+  echo "  3. chmod 600 ${_file}"
+  echo "To use ANTHROPIC_API_KEY instead, delete the secrets: CCTOK block and the CLAUDE_CODE_OAUTH_TOKEN env line from this cage's config."
 }
 
-
-cmd_auth_refresh() {
-  if [[ "$(uname)" != "Darwin" ]]; then
+# cmd_auth — bare `rc auth` only; any subcommand/arg is a usage error. The
+# old hot-swap subcommand is retired with the possession path it served (a
+# short-lived keychain token needed hot-swapping; the long-lived
+# claude-setup-token value this checks does not).
+cmd_auth() {
+  if [[ $# -gt 0 ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      jq -nc '{"status": "ok", "action": "no_op", "message": "On Linux, update ~/.claude/.credentials.json directly."}'
+      json_error "Usage: rc auth (takes no subcommand or argument; it only checks the host CCTOK secrets file)" "AUTH_USAGE"
+    fi
+    echo "Usage: rc auth" >&2
+    echo "  rc auth takes no subcommand or argument; it only checks the host CCTOK secrets file (ADR-031 D1/D5(a))." >&2
+    exit 1
+  fi
+  if _auth_cctok_check; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      jq -nc --arg file "$(_auth_cctok_file)" '{"status": "ok", "file": $file}'
     else
-      echo "On Linux, update ~/.claude/.credentials.json directly." >&2
-      echo "Running containers will see the change immediately via bind mount." >&2
+      echo "OK — $(_auth_cctok_file) (0600, setup-token-shaped)"
     fi
     return 0
   fi
-  if _extract_credentials; then
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      jq -nc '{"status": "ok", "action": "credentials_refreshed", "credentials_updated": true}'
-    else
-      log "Credentials refreshed. Running containers will pick up the change on next API call."
-    fi
+  local _msg
+  _msg=$(_auth_cctok_fail_message "$_AUTH_CCTOK_REASON")
+  if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+    json_error "$_msg" "AUTH_CCTOK_INVALID"
   else
-    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Failed to extract credentials from macOS Keychain. Run 'claude auth login' first." "KEYCHAIN_EXTRACTION_FAILED"
-    else
-      echo "Error: Failed to extract credentials from macOS Keychain. Run 'claude auth login' first." >&2
-      exit 1
-    fi
+    echo "Error: Claude auth check failed." >&2
+    echo "$_msg" >&2
+    exit 1
   fi
 }
-

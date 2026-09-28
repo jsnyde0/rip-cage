@@ -526,31 +526,27 @@ fi
 # combinations. These document expected behavior; they do not add
 # pi-specific auth checks.
 #
-# The auth-warn block inside the container checks (in order):
-#   1. ~/.claude/.credentials.json present → "OAuth credentials found" (no warn)
-#   2. ~/.claude.json present → no warn (API key flow)
-#   3. ANTHROPIC_API_KEY set → no warn
-#   4. None of the above → "WARNING: No auth found"
+# The auth-warn block inside the container checks, post rip-cage-ely4.7.17
+# (the keychain -> mounted ~/.claude/.credentials.json possession path is
+# retired, no fallback -- ADR-031 D1/D5(a) non-possession is the only
+# mechanism now, and there is no credentials file left in-cage to check
+# FIRST or at all):
+#   1. CLAUDE_CODE_OAUTH_TOKEN set → no warn (msb --secret-injected placeholder)
+#   2. ANTHROPIC_API_KEY set → no warn
+#   3. Neither → "WARNING: No auth found"
 #
-# Host credential files reach the cage two different ways now
-# (rip-cage-ely4.7.10): rc up still mounts ~/.claude/.credentials.json itself,
-# while ~/.claude.json rides in as an ordinary read-only mount line that
-# cage_conf_for writes when this HOME has the file — the same line the shipped
-# template carries. Either way the cage sees them when the host has them, so
-# two dimensions cover all four cases:
-#   - ANTHROPIC_API_KEY env var controls "Claude auth via env" (passed through to container)
-#   - Host credential files follow host state; test adapts to it.
+# ~/.claude.json (an ordinary read-only mount line cage_conf_for writes when
+# this HOME has the file, unrelated to the OAuth credential) no longer
+# factors into the warn at all -- the simplification drops that branch
+# along with the credentials-file one, per the "warning fires when neither
+# CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set" contract. So a
+# single dimension now covers every case: ANTHROPIC_API_KEY (or
+# CLAUDE_CODE_OAUTH_TOKEN, case 6 below) env var controls the outcome; host
+# credential-file state is no longer a variable this matrix needs to detect.
 # Cases 2 and 3 differ only in pi auth state; since the warn-block ignores pi auth (D2 FIRM),
 # both produce the same Claude-warn outcome — we verify this is intentional.
 AUTH_TMP=$(_host_scratch_mktemp_d auth)
 AUTH_TMP_RESOLVED=$(realpath "$AUTH_TMP")
-
-# Detect whether host credential files exist (each reaches the cage when it does).
-_host_has_claude_creds=0
-_host_has_claude_json=0
-if [ -f "${HOME}/.claude/.credentials.json" ]; then _host_has_claude_creds=1; fi
-if [ -f "${HOME}/.claude.json" ]; then _host_has_claude_json=1; fi
-_host_has_claude_auth=$(( _host_has_claude_creds + _host_has_claude_json ))
 
 # Each case gets its own workspace to avoid container-name collisions.
 # Pattern: parent "rc-auth", base "caseN" → container "rc-auth-caseN"
@@ -594,14 +590,17 @@ else
   fi
 fi
 
-# Case 2: Pi auth present, no Claude env auth → warn depends on host credential file state.
+# Case 2: Pi auth present, no Claude env auth → WARNING always fires now.
 # Note: Claude warn-line intentionally present per ADR-019 D2 — pi auth uses its own /login UI.
-# If host has ~/.claude/.credentials.json or ~/.claude.json, those reach the cage → no warn.
-# If host has none of those, the warn fires — confirming pi auth alone doesn't suppress it (D2).
+# Post rip-cage-ely4.7.17 the warn no longer has a host-credential-file
+# dimension to depend on (see the matrix comment above) — with neither
+# CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY set, the warning fires
+# unconditionally, regardless of what ~/.claude.json or the (deleted)
+# ~/.claude/.credentials.json mount used to contribute.
 #
 # EQUIVALENCE NOTE (rip-cage-f4i): Case 2 is behaviorally identical to case 3 — the rc up
 # invocation is the same and the warn-block inside the cage checks ONLY Claude auth state
-# (credentials.json / .claude.json / ANTHROPIC_API_KEY).  Pi auth presence does not affect
+# (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY).  Pi auth presence does not affect
 # the Claude warn-block outcome (ADR-019 D2 FIRM).  The duplication is intentional: case 2
 # documents that "pi auth is present but still gets a Claude warning" is the EXPECTED behavior,
 # not a regression.  Any future change to the warn-block that suppresses Claude warnings for
@@ -611,6 +610,7 @@ _ac2_out="${AUTH_TMP}/case2-up.out"
 mkdir -p "$_aws2"
 git -C "$_aws2" init > /dev/null 2>&1
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
+  ANTHROPIC_API_KEY="" \
   RC_CAGE_CONF="$(cage_conf_for "$_aws2" "$IMAGE")" \
   "$RC" up "$_aws2" </dev/null >"$_ac2_out" 2>&1 || true
 _ac2_name=$(_find_cage_by_source_path "$(realpath "$_aws2")")
@@ -622,15 +622,9 @@ else
   _ac2_log=$(cat "$_ac2_out" 2>/dev/null || true)
   if ! printf '%s\n' "$_ac2_log" | grep -q '\[rip-cage\] pi '; then
     check "auth-warn case 2" "fail" "init output not captured (see $_ac2_out)"
-  elif [ "$_host_has_claude_auth" -gt 0 ]; then
-    # Host creds auto-mounted → no warn expected (D2: pi auth doesn't add a warn either)
-    if ! printf '%s\n' "$_ac2_log" | grep -q 'WARNING: No auth'; then
-      check "auth-warn case 2: pi auth + host Claude creds → no WARNING (host creds dominate)" "pass"
-    else
-      check "auth-warn case 2: pi auth + host Claude creds → no WARNING (host creds dominate)" "fail" "(container=$_ac2_name)"
-    fi
   else
-    # No host creds → warn expected; pi auth alone does NOT suppress Claude warn (D2 FIRM)
+    # No CLAUDE_CODE_OAUTH_TOKEN, no ANTHROPIC_API_KEY → warn expected; pi auth
+    # alone does NOT suppress the Claude warn (D2 FIRM)
     if printf '%s\n' "$_ac2_log" | grep -q 'WARNING: No auth'; then
       check "auth-warn case 2: pi auth only, no Claude auth → WARNING present (intentional per D2)" "pass"
     else
@@ -644,12 +638,15 @@ else
   fi
 fi
 
-# Case 3: Neither Claude env auth nor pi auth → warn depends on host credential file state.
+# Case 3: Neither Claude env auth nor pi auth → WARNING always fires now
+# (same simplification as case 2 above — no host-credential-file dimension
+# left to depend on post rip-cage-ely4.7.17).
 _aws3="${AUTH_TMP}/rc-auth/case3"
 _ac3_out="${AUTH_TMP}/case3-up.out"
 mkdir -p "$_aws3"
 git -C "$_aws3" init > /dev/null 2>&1
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
+  ANTHROPIC_API_KEY="" \
   RC_CAGE_CONF="$(cage_conf_for "$_aws3" "$IMAGE")" \
   "$RC" up "$_aws3" </dev/null >"$_ac3_out" 2>&1 || true
 _ac3_name=$(_find_cage_by_source_path "$(realpath "$_aws3")")
@@ -661,12 +658,6 @@ else
   _ac3_log=$(cat "$_ac3_out" 2>/dev/null || true)
   if ! printf '%s\n' "$_ac3_log" | grep -q '\[rip-cage\] pi '; then
     check "auth-warn case 3" "fail" "init output not captured (see $_ac3_out)"
-  elif [ "$_host_has_claude_auth" -gt 0 ]; then
-    if ! printf '%s\n' "$_ac3_log" | grep -q 'WARNING: No auth'; then
-      check "auth-warn case 3: no env auth, host Claude creds present → no WARNING" "pass"
-    else
-      check "auth-warn case 3: no env auth, host Claude creds present → no WARNING" "fail" "(container=$_ac3_name)"
-    fi
   else
     if printf '%s\n' "$_ac3_log" | grep -q 'WARNING: No auth'; then
       check "auth-warn case 3: neither Claude nor pi auth → WARNING" "pass"
@@ -711,12 +702,13 @@ else
   fi
 fi
 
-# Case 5: No Claude auth at all (no keychain, no env, no host cred files) → WARNING present.
-# Uses RC_SKIP_KEYCHAIN_EXTRACTION=1 (test seam in rc) to prevent macOS keychain extraction,
-# plus a temp HOME with no ~/.claude/.credentials.json and no ~/.claude.json.  With ANTHROPIC_API_KEY
-# unset and no host cred files, the in-cage auth-warn block MUST emit "WARNING: No auth found".
-# This is the deterministic no-auth branch that was previously gated by _host_has_claude_auth==0
-# and therefore never executed on a normal dev host (rip-cage-f4i).
+# Case 5: No Claude auth at all (no env vars) → WARNING present. A fresh temp
+# HOME (no ~/.claude/.credentials.json possession mount exists to skip
+# anymore post rip-cage-ely4.7.17; no ~/.claude.json either) plus
+# ANTHROPIC_API_KEY unset means the in-cage auth-warn block MUST emit
+# "WARNING: No auth found". This is the deterministic no-auth branch that
+# was previously gated by _host_has_claude_auth==0 and therefore never
+# executed on a normal dev host (rip-cage-f4i).
 #
 # IMPORTANT: the temp HOME means rc up will create fresh config dirs under it. The isolated
 # XDG_CONFIG_HOME/RC_CONFIG_GLOBAL from the a5dk setup above are already exported and take
@@ -732,7 +724,6 @@ mkdir -p "$_aws5"
 git -C "$_aws5" init > /dev/null 2>&1
 HOME="$_ac5_home" \
   MSB_HOME="$REAL_MSB_HOME" \
-  RC_SKIP_KEYCHAIN_EXTRACTION=1 \
   ANTHROPIC_API_KEY="" \
   RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
   RC_CAGE_CONF="$(cage_conf_for "$_aws5" "$IMAGE")" \
@@ -777,7 +768,6 @@ printf 'CLAUDE_CODE_OAUTH_TOKEN=placeholder-token-case6\n' > "$_ac6_envfile"
 chmod 600 "$_ac6_envfile"
 HOME="$_ac6_home" \
   MSB_HOME="$REAL_MSB_HOME" \
-  RC_SKIP_KEYCHAIN_EXTRACTION=1 \
   ANTHROPIC_API_KEY="" \
   RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
   RC_CAGE_CONF="$(cage_conf_for "$_aws6" "$IMAGE")" \

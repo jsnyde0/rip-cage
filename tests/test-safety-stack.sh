@@ -185,40 +185,28 @@ fi
 echo ""
 echo "-- Auth --"
 
-# 13. Auth present (credentials file, API key, or OAuth token env var).
-# CLAUDE_CODE_OAUTH_TOKEN is the auth path under credential non-possession
-# (auth.per_tool.claude: none — agent holds a placeholder, a composed mediator
-# injects the real secret on egress; rip-cage-73bz).
-if [[ -s ~/.claude/.credentials.json ]]; then
-  check_auth "Auth present" "pass" "OAuth"
+# 13. Auth present (API key, or OAuth token env var).
+# CLAUDE_CODE_OAUTH_TOKEN is the msb --secret-injected placeholder under
+# credential non-possession (ADR-031 D1/D5(a)). The credentials-file branch
+# this check used to carry first is retired with the possession path that
+# mounted it, no fallback (rip-cage-ely4.7.17) -- a built cage never has
+# ~/.claude/.credentials.json to check for anymore, so there is nothing left
+# to check FIRST; this mirrors init-rip-cage.sh's own no-auth-warning logic.
+if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+  check_auth "Auth present" "pass" "OAuth token env"
 elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   check_auth "Auth present" "pass" "API key"
-elif [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
-  check_auth "Auth present" "pass" "OAuth token env"
 else
-  check_auth "Auth present" "fail" "no credentials file, no ANTHROPIC_API_KEY, no CLAUDE_CODE_OAUTH_TOKEN"
+  check_auth "Auth present" "fail" "no ANTHROPIC_API_KEY, no CLAUDE_CODE_OAUTH_TOKEN"
 fi
 
-# 14. Token not expired (skip if using API key only)
-if [[ -s ~/.claude/.credentials.json ]] && command -v jq &>/dev/null; then
-  expiry=$(jq -r '.expiry // .expiresAt // empty' ~/.claude/.credentials.json 2>/dev/null || true)
-  if [[ -n "$expiry" ]]; then
-    expiry_epoch=$(date -d "$expiry" "+%s" 2>/dev/null || date -jf "%Y-%m-%dT%H:%M:%S" "${expiry%%.*}" "+%s" 2>/dev/null || true)
-    now_epoch=$(date "+%s")
-    if [[ -n "$expiry_epoch" ]] && [[ "$expiry_epoch" -gt "$now_epoch" ]]; then
-      remaining=$(( (expiry_epoch - now_epoch) / 60 ))
-      check_auth "Token not expired" "pass" "${remaining}m remaining"
-    elif [[ -n "$expiry_epoch" ]]; then
-      check_auth "Token not expired" "fail" "expired"
-    else
-      check_auth "Token not expired" "pass" "could not parse expiry (skipped)"
-    fi
-  else
-    check_auth "Token not expired" "pass" "no expiry field (skipped)"
-  fi
-else
-  check_auth "Token not expired" "pass" "no credentials file (skipped)"
-fi
+# 14. Token-expiry check retired with the credentials-file possession path
+# (rip-cage-ely4.7.17) -- CLAUDE_CODE_OAUTH_TOKEN is an msb --secret
+# placeholder with no expiry field of its own to inspect, and there is no
+# other token shape left in-cage to check. Kept as a pass/skip line (rather
+# than deleted) so the check numbering and output shape stay stable for
+# anything that greps this script's output by line count.
+check_auth "Token not expired" "pass" "no expiring credentials file in-cage (non-possession, rip-cage-ely4.7.17)"
 
 echo ""
 echo "-- Git --"

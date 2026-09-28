@@ -2,7 +2,7 @@
 
 Rip cage is a tested **distribution** of [**microsandbox**](https://github.com/microsandbox/microsandbox) for running Claude Code and pi with permissions off.
 
-It finds your Claude login in your macOS keychain, so a fresh cage starts authenticated with nothing for you to paste. It wires up msb's `--secret`, so a credential you nominate reaches its one allowed host without ever entering the VM. It turns a blocked host into a one-line fix. And it ships the suite that proves your cage holds.
+It wires your Claude login through msb's `--secret`, so a fresh cage starts authenticated and the token never enters the VM. The same mechanism carries any other credential you nominate to its one allowed host. It turns a blocked host into a one-line fix. And it ships the suite that proves your cage holds.
 
 Running Claude Code with `--dangerously-skip-permissions` is never safe. Rip cage doesn't change that. But many of us do it anyway. If that's you, at least put your Claude in a cage.
 
@@ -14,7 +14,7 @@ microsandbox (`msb`) boots an OCI image as a libkrun microVM — its own kernel,
 |---|---|
 | The microVM boundary — own kernel, own network stack | The curated agent image and its init |
 | Default-deny egress and DNS at that boundary | The denial → fix → relaunch repair loop |
-| `--secret`: a credential the guest never holds | Credential discovery — your Claude login, found in the keychain |
+| `--secret`: a credential the guest never holds | Your Claude login, bridged to `--secret` with a one-time `claude setup-token` |
 | Read-only mounts | The protected-paths mount floor |
 | Recreate a sandbox with the same mounts | The floor probe and the proving suite (`rc test`) |
 | The config schema | The operating knowledge, in three skills |
@@ -55,7 +55,7 @@ Need a tool the base image lacks? The [`cage-image`](.claude/skills/cage-image/S
 
 - **The microVM boundary.** msb runs the cage as a separate kernel on virtualized hardware. Never composable away.
 - **Egress: default-deny.** Nothing leaves the cage except the hosts your config names. A denied host fails at DNS, client-side, in milliseconds — `rc doctor` reads the trace and prints the exact line to add.
-- **Credentials the cage never holds.** The config binds a credential name to the hosts it may travel to; msb injects the real value on the wire and the guest sees only a placeholder. This is msb's `--secret`. Rip cage keeps it unattended-friendly: it reads the value from a host-side file outside every cage mount, so nobody has to export a variable before every launch. Separately, `rc up` finds your Claude login in the macOS keychain so a cage starts authenticated — that path mounts the credential file, and is possession, not non-possession. See [secret-posture.md](docs/reference/secret-posture.md) for which is which.
+- **Credentials the cage never holds.** The config binds a credential name to the hosts it may travel to; msb injects the real value on the wire and the guest sees only a placeholder. This is msb's `--secret`, and it is how your Claude login reaches the cage too — one setup-token, saved once, host-side. Rip cage keeps it unattended-friendly: it reads the value from a host-side file outside every cage mount, so nobody has to export a variable before every launch. See [auth.md](docs/reference/auth.md) for Claude, [secret-posture.md](docs/reference/secret-posture.md) for a credential you nominate yourself.
 - **A mount floor you don't write.** `rc up` reads a shipped list of credential locations and refuses to launch a config that mounts one, covering any it finds inside a mounted tree.
 - **A floor probe on the built image.** It inspects the artifact — non-root user, sudo scope, PATH resolution, guard-file ownership — not a declaration describing it. It runs at every boot and at the head of `rc test`, with no opt-out.
 
@@ -82,7 +82,7 @@ Six verbs. Each does something plain shell cannot do identically every run.
 | `rc build [--file PATH]` | Build the image from one host-side Dockerfile, then load it into msb |
 | `rc doctor [name]` | Diagnose a cage — including which host it was just denied |
 | `rc test [name]` | Run the proving suite against your composed image |
-| `rc auth refresh` | Re-pull the Claude login from your keychain |
+| `rc auth` | No-prompt check that your CCTOK setup-token file is present and well-shaped |
 | `rc destroy <name>` | Remove the cage and the volumes `rc` created for it |
 
 Everything else is an msb one-liner or a file edit; the [`cage-ops`](.claude/skills/cage-ops/SKILL.md) skill is the sole home of the table that says which. Every flag and JSON output: [CLI reference](docs/reference/cli-reference.md).
@@ -103,7 +103,7 @@ Changes sync live over the mount — no git push. Each worktree needs its own ca
 - [Recipe catalog](examples/README.md) · [reference index](docs/reference/README.md) · [roadmap](docs/ROADMAP.md)
 - [Config](docs/reference/config.md) — the one file a cage launches from, field by field
 - [Egress](docs/reference/egress.md) — the denied-host repair loop
-- [Auth](docs/reference/auth.md) — OAuth, keychain, and pi's Codex / Anthropic / Gemini providers
+- [Auth](docs/reference/auth.md) — the Claude `--secret` bridge, and pi's Codex / Anthropic / Gemini providers
 - [Multi-account rotation](docs/guides/multi-account-rotation.md) — spread rate limits across accounts
 
 **pi is first-class** alongside Claude Code in the same image — same floor, same isolation, same egress policy. Want a batteries-included dev environment instead? [ClaudeBox](https://github.com/RchGrav/claudebox) may fit better.

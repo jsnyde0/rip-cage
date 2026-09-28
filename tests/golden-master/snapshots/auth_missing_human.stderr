@@ -1,0 +1,7 @@
+Error: Claude auth check failed.
+No Claude auth token found at <GM_ROOT>/home/.config/rip-cage/secrets/CCTOK.
+One-time human step:
+  1. Run 'claude setup-token' in a terminal (prints a long-lived OAuth token).
+  2. Save the printed token to <GM_ROOT>/home/.config/rip-cage/secrets/CCTOK
+  3. chmod 600 <GM_ROOT>/home/.config/rip-cage/secrets/CCTOK
+To use ANTHROPIC_API_KEY instead, delete the secrets: CCTOK block and the CLAUDE_CODE_OAUTH_TOKEN env line from this cage's config.

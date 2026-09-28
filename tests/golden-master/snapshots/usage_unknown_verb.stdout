@@ -36,7 +36,7 @@ Commands:
   test --e2e-security                          Injection-exfil integration probes (slow; real cages; RC_E2E_REBUILD=1 to rebuild)
   doctor [name]                                Per-container diagnostic — labels + live probes
   doctor --host                                Daemon-liveness probe (no container required)
-  auth refresh                                 Refresh credentials from host keychain
+  auth                                          Check the Claude auth token file (no prompt, no keychain)
 
 Cage config: one native microsandbox config file per project. Copy the shipped
 template (share/rip-cage/cage.yaml.template) to

@@ -532,12 +532,10 @@ _up_prepare_docker_mounts() {
   # in the cage config where an operator can read it (ADR-031 D2). See the
   # mount block in share/rip-cage/cage.yaml.template for the line itself.
   local _UP_CRED_MOUNTS_PI="${_UP_CRED_MOUNTS_PI:-real}"
-  if [[ "${_UP_DRY_RUN_NO_SIDE_EFFECTS:-0}" == "1" ]]; then
-    : # --dry-run assembles the argv without ever reaching the keychain.
-  else
-    # Extract OAuth credentials from macOS keychain to file (if on macOS)
-    _extract_credentials || true
-  fi
+  # rip-cage-ely4.7.17: the macOS-keychain extraction that used to run here
+  # (real launch only, skipped under _UP_DRY_RUN_NO_SIDE_EFFECTS) is deleted
+  # with the possession path it fed -- non-possession has no host-side
+  # extraction step for `rc up` to perform before the mount block below.
 
   # Skills and commands: mount host's ~/.claude/skills and ~/.claude/commands read-only
   # Staged via .rc-context/ so init-rip-cage.sh can symlink them into ~/.claude/
@@ -573,40 +571,14 @@ _up_prepare_docker_mounts() {
     done < <(_collect_symlink_parents "${HOME}/.claude/agents")
   fi
 
-  # D3: Credential health check — warn on expired or soon-to-expire tokens
-  if [[ -s "${HOME}/.claude/.credentials.json" ]] && command -v jq &>/dev/null; then
-    local expiry
-    expiry=$(jq -r '.expiry // .expiresAt // empty' "${HOME}/.claude/.credentials.json" 2>/dev/null || true)
-    if [[ -n "$expiry" ]]; then
-      local expiry_epoch now_epoch
-      expiry_epoch=$(date -jf "%Y-%m-%dT%H:%M:%S" "${expiry%%[.+Z]*}" "+%s" 2>/dev/null || date -d "$expiry" "+%s" 2>/dev/null || true)
-      now_epoch=$(date "+%s")
-      if [[ -n "$expiry_epoch" ]]; then
-        local remaining=$(( expiry_epoch - now_epoch ))
-        if [[ "$remaining" -lt 0 ]]; then
-          echo "Warning: Claude OAuth token is EXPIRED (expired $(( -remaining / 60 )) minutes ago) — fine if you are not using Claude Code in this cage" >&2
-          echo "  If you are using Claude Code, run 'claude auth login' on the host to refresh, or set ANTHROPIC_API_KEY" >&2
-        elif [[ "$remaining" -lt 600 ]]; then
-          echo "Warning: OAuth token expires in $(( remaining / 60 )) minutes" >&2
-          echo "  Consider running 'claude auth login' on the host to refresh" >&2
-        fi
-      fi
-    fi
-  fi
-
-  # OAuth mount (read-write, skip if missing to avoid creating an empty dir).
-  # The host Claude config file is NOT mounted here: it is a plain mount line
-  # in the cage config (share/rip-cage/cage.yaml.template), read-only, where an
-  # operator reading the config sees every path the cage receives — ADR-031 D2,
-  # rip-cage-ely4.7.10. Read-only is sufficient because init snapshots it into
-  # a seed file under ~/.claude at boot (cage/init/init-rip-cage.sh) and Claude
-  # Code in-cage reads that seed; read-write would hand a prompt-injected agent
-  # (ADR-024, in scope) a write into the host's real Claude config.
-  if [[ -f "${HOME}/.claude/.credentials.json" ]]; then
-    _UP_RUN_ARGS+=(-v "${HOME}/.claude/.credentials.json:/home/agent/.claude/.credentials.json")
-  else
-    log "Warning: ${HOME}/.claude/.credentials.json not found — skipping mount (fine if you are not using Claude Code in this cage)"
-  fi
+  # rip-cage-ely4.7.17: the OAuth credential-file health check and the
+  # read-write Claude credentials-file mount that used to live here are
+  # DELETED, no fallback (ADR-031 D1/D5(a)). The Claude login now reaches the
+  # guest only as a placeholder ($MSB_CCTOK) that msb substitutes on the wire
+  # toward api.anthropic.com -- there is no file to health-check or mount.
+  # The host Claude config file (~/.claude.json) is unaffected: it is a plain
+  # read-only mount line in the cage config, not a credential, and continues
+  # to ride in via share/rip-cage/cage.yaml.template unchanged.
 
   # Symlink-follow mount synthesis (rip-cage-c1p.2 / D1-D4 FIRM).
   # Whitelist of rip-cage-managed dotfile mount roots to scan for absolute
@@ -1251,6 +1223,50 @@ _up_check_network_policy() {
   echo "             allow:" >&2
   echo "               - \"api.anthropic.com:tcp:443\"" >&2
   echo "       (see share/rip-cage/cage.yaml.template for the full floor list). There is no opt-out flag." >&2
+  echo "       Refusing before any msb call, so no cage is created (ADR-001 fail-loud)." >&2
+  return 1
+}
+
+
+# _up_check_cctok_secret CONF
+#
+# rip-cage-ely4.7.17: when CONF declares the `secrets: CCTOK` binding (the
+# msb --secret non-possession bridge for the Claude login, ADR-031 D1/D5(a)),
+# refuse before any msb call unless CCTOK is already resolvable -- either the
+# operator exported the host env var CCTOK themselves, or
+# _auth_cctok_check (cli/auth.sh) finds a valid secrets/CCTOK file. Reuses
+# that ONE check and its ONE fail message (_auth_cctok_fail_message) so `rc
+# auth` and `rc up` never disagree about what "valid" means or how to fix it.
+#
+# Runs under --dry-run too, deliberately: this check is a host-side file stat
+# plus a shape check on bytes rc already owns -- unlike the deleted keychain
+# extraction, it is not a side effect, so skipping it under --dry-run would
+# make the preview lie about a launch that is about to fail loud (same
+# argv-fidelity guarantee _up_build_msb_create_argv documents for the create
+# command itself).
+#
+# A cage config that does not declare the CCTOK secret at all (no `secrets:`
+# block, or one that omits CCTOK) is unaffected -- this check only fires for
+# the one binding this bead's bridge is about.
+_up_check_cctok_secret() {
+  local _conf="$1"
+  [[ -n "$_conf" && -r "$_conf" ]] || return 0
+  command -v yq &>/dev/null || return 0
+
+  local _declares_cctok
+  _declares_cctok=$(yq -r '.secrets // {} | has("CCTOK")' "$_conf" 2>/dev/null) || _declares_cctok="false"
+  [[ "$_declares_cctok" == "true" ]] || return 0
+
+  # Operator already exported it (same precedence _up_prepare_conf_secret_env
+  # honors below): leave it alone, msb will read the live env var at boot.
+  [[ -n "${CCTOK:-}" ]] && return 0
+
+  if _auth_cctok_check; then
+    return 0
+  fi
+
+  echo "Error: cage config ${_conf} declares the CCTOK secret, but no valid token is available." >&2
+  _auth_cctok_fail_message "$_AUTH_CCTOK_REASON" | sed 's/^/       /' >&2
   echo "       Refusing before any msb call, so no cage is created (ADR-001 fail-loud)." >&2
   return 1
 }
@@ -2276,6 +2292,15 @@ cmd_up() {
 
   if ! _protected_paths_conf_outside_mounts "$_UP_CAGE_CONF"; then
     [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage config ${_UP_CAGE_CONF} resolves inside a tree it mounts" "CAGE_CONFIG_INSIDE_MOUNT"
+    exit 1
+  fi
+
+  # rip-cage-ely4.7.17: the CCTOK non-possession bridge -- refused here, same
+  # before-any-msb-call floor, when the config declares the secret and no
+  # valid token is available yet (see _up_check_cctok_secret for why this
+  # runs under --dry-run too).
+  if ! _up_check_cctok_secret "$_UP_CAGE_CONF"; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage config ${_UP_CAGE_CONF} declares the CCTOK secret but no valid token is available -- run 'rc auth'" "AUTH_CCTOK_INVALID"
     exit 1
   fi
 

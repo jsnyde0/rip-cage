@@ -129,7 +129,7 @@ A `secrets:` entry binds a credential **name** to the hosts it may be injected t
 
 **The `env:` line is what makes the binding reach the tool.** Claude Code reads a fixed variable name, so it gets the placeholder under that name.
 
-> **This block does not by itself put the Claude login in non-possession.** `rc up` still finds your keychain login and mounts `~/.claude/.credentials.json`, and that mount is what Claude Code actually reads. The block above takes effect only for a token **you** place at `~/.config/rip-cage/secrets/CCTOK`. Bridging the two is `rip-cage-ely4.7.17`, charted and not shipped — [auth.md](auth.md) has both postures side by side.
+> **This is the same `CCTOK` binding Claude Code's own login uses.** Put the `claude setup-token` value at `~/.config/rip-cage/secrets/CCTOK` — see [auth.md](auth.md) for the token and the `rc auth` check.
 
 **Where the host variable comes from.** `rc up` reads the value from `$XDG_CONFIG_HOME/rip-cage/secrets/<NAME>` when that file exists and exports it for the launch — so an unattended run needs no pre-export. Otherwise export it yourself, or msb fails loud naming it. That directory is host-side, outside every cage mount, the same location class as the protected-paths list.
 
@@ -162,7 +162,6 @@ The config is the whole project config, but a few things are computed from the h
 | `--name` | Derived from the project path |
 | `--log-level trace` | What the denied-host fix-hint mines |
 | `--replace` | A per-launch decision, not a property of the cage |
-| The keychain credential extraction | Reaches the macOS keychain |
 | Read-only parent mounts for skill symlinks | Computed by walking the host filesystem |
 | The protected-paths covers | Computed against a host-side list, per mount tree |
 

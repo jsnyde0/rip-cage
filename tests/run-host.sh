@@ -169,6 +169,7 @@ NEEDS_CONTAINER=(
   "test-pi-auth-mount.sh"    # calls rc up to create a live container; inspects container env + mounts
   "test-pi-cage-context.sh"  # calls rc up to create a live container; inspects CLAUDE.md inside cage
   "test-claude-concurrency.sh" # requires a live rip-cage container with Claude auth (ANTHROPIC_API_KEY or OAuth)
+  "test-auth-secret-live.sh"  # rip-cage-ely4.7.17: boots one scratch cage from the shipped template; needs msb + the host CCTOK secrets file
   "test-claude-json-seed-synthesis.sh" # rip-cage-vwka: spins its own real cages via rc up (non-possession + possession) to verify R4 seed synthesis; requires docker + msb + a pre-built rip-cage image
   # test-multiplexer-lifecycle.sh, test-agent-mail-concurrent.sh and
   # test-multiplexer-agent-e2e.sh: GONE with the manifest corpus they built
@@ -760,7 +761,8 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-bd-wrapper.sh"
   run_test "${SCRIPT_DIR}/test-code-review-fixes.sh"
   run_test "${SCRIPT_DIR}/test-dg6.2.sh"
-  run_test "${SCRIPT_DIR}/test-auth-refresh.sh"
+  run_test "${SCRIPT_DIR}/test-auth-secret.sh"   # rip-cage-ely4.7.17: msb --secret CCTOK non-possession bridge — rc auth's no-prompt check + rc up's pre-msb-call refusal, host-only, no live cage needed
+  run_test "${SCRIPT_DIR}/test-auth-secret-live.sh"   # rip-cage-ely4.7.17: container-tier half — template cage holds only the $MSB_CCTOK placeholder, no credentials file, claude -p green (NEEDS_CONTAINER; SKIPs without the host CCTOK file)
   run_test "${SCRIPT_DIR}/test-pi-install.sh"
   run_test "${SCRIPT_DIR}/test-pi-auth-mount.sh"
   run_test "${SCRIPT_DIR}/test-pi-cage-context.sh"
@@ -782,7 +784,6 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-doctor-transcript-persistence.sh"   # rip-cage-aa4t: rc doctor transcript-persistence probe — stubbed msb, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-claude-bypass-preaccept.sh"         # rip-cage-k8vi: claude-session-wrapper pre-accepts bypassPermissionsModeAccepted in the writable per-session .claude.json — real wrapper on host via RC_REAL_CLAUDE_BIN stub, host-only, no live cage
   run_test "${SCRIPT_DIR}/test-denial-visibility.sh"     # rip-cage-jlu4: denial-visibility disambiguation (DNS-denial vs secret-violation) — stubbed msb, host-only, no live cage needed
-  run_test "${SCRIPT_DIR}/test-extract-credentials.sh"   # rip-cage-towm: keychain-extraction warning gated on no-usable-existing-creds — security shim + sandboxed HOME, host-only
   run_test "${SCRIPT_DIR}/test-doctor-runnability.sh"    # rip-cage-2cks: rc doctor cwd-floor + workspace-resolution live-cage checks (NEEDS_CONTAINER; guards rip-cage-0rng + rip-cage-aq70; schema-error sub-case additionally gated behind RC_DOCTOR_STALE_BD_IMAGE, self-skips visibly otherwise)
   run_test "${SCRIPT_DIR}/test-floor-probe.sh"          # rip-cage-ely4.12 / rip-cage-ely4.15: the fail-closed floor probe's contract against real images — the stock base boots and rc test reports every floor line; a USER-root extension and a chmod-o+w-guard extension each refuse the boot naming the property (NEEDS_CONTAINER, self-skips without docker+msb or on a base image predating the probe)
   run_test "${SCRIPT_DIR}/test-boot-descriptor.sh"      # rip-cage-ely4.11: the boot descriptor's contract in a LIVE cage — a declared daemon starts + health-checks + is a true no-op on re-init; a missing required field fails the boot naming it (NEEDS_CONTAINER, self-skips without docker+msb)

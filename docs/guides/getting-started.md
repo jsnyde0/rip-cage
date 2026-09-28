@@ -1,6 +1,6 @@
 # Getting Started
 
-Your first caged session, end to end. Assumes `rc` is installed, Docker is running, and msb is installed (see the [README](../../README.md#quick-start)).
+Your first caged session, end to end. Assumes `rc` is installed, Docker is running, and msb is installed (see the [README](../../README.md#quick-start)). Also assumes a `claude setup-token` value is already saved at `~/.config/rip-cage/secrets/CCTOK` — [auth.md](../reference/auth.md) has the one-time steps if you haven't done that yet.
 
 There are three steps, and the first two happen once per project.
 
@@ -46,7 +46,7 @@ Your shell prompt changes — you are inside the microVM now. Type `claude` (or 
 
 ## What `rc up` just did
 
-1. Found your Claude login in the macOS keychain, so the cage starts authenticated.
+1. Read your `claude setup-token` value from `~/.config/rip-cage/secrets/CCTOK` and bound it to `api.anthropic.com` via msb `--secret`, so the cage starts authenticated with the token never entering the guest.
 2. Read the shipped protected-paths list and refused — or covered — any credential location your config would have exposed.
 3. Created a libkrun microVM from your image, with your project mounted at `/workspace`. **File changes sync both ways, live.** No git push, no rebuild.
 4. Ran init inside the cage, which runs the floor probe before anything else.
@@ -91,7 +91,7 @@ This runs against **your** image, not a reference image someone else built. The 
 | Recreate a running cage against the current config | `rc up --replace <path>` |
 | Find out why something is blocked | `rc doctor <cage>` |
 | Prove the cage holds | `rc test <cage>` |
-| Refresh expired credentials | `rc auth refresh` |
+| Check auth is set up | `rc auth` |
 | Remove a cage and its volumes | `rc destroy <cage>` |
 
 That is the whole daily loop. To shell into a running cage, list what is running, or stop one, use msb directly — the [`cage-ops`](../../.claude/skills/cage-ops/SKILL.md) skill has the one-liners.

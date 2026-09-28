@@ -165,7 +165,6 @@ NP_UP_OUT="${NP_WS_ROOT}/np-up.out"
 # needs.
 NP_CONF=$(HOME="$NP_HOME" cage_conf_for "$NP_WS")
 HOME="$NP_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_HOME" \
-  RC_SKIP_KEYCHAIN_EXTRACTION=1 \
   ANTHROPIC_API_KEY="" \
   RC_CAGE_CONF="$NP_CONF" \
   RIP_CAGE_EGRESS=off \
@@ -236,7 +235,6 @@ if [[ "$NP_LIVE" == "true" ]]; then
   msb stop "$NP_NAME" >/dev/null 2>&1
   NP_RESUME_OUT="${NP_WS_ROOT}/np-resume.out"
   HOME="$NP_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_HOME" \
-    RC_SKIP_KEYCHAIN_EXTRACTION=1 \
     ANTHROPIC_API_KEY="" \
     RC_CAGE_CONF="$NP_CONF" \
     RIP_CAGE_EGRESS=off \
@@ -322,7 +320,6 @@ PC_UP_OUT="${PC_WS_ROOT}/pc-up.out"
 # generator carries the mount line only when the file is there to mount.
 PC_CONF=$(HOME="$PC_HOME" cage_conf_for "$PC_WS")
 HOME="$PC_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_HOME" \
-  RC_SKIP_KEYCHAIN_EXTRACTION=1 \
   ANTHROPIC_API_KEY=sk-test-vwka-pc \
   RC_CAGE_CONF="$PC_CONF" \
   RIP_CAGE_EGRESS=off \

@@ -75,7 +75,6 @@ if [[ ! -f "${SESSION_DIR}/.claude.json" ]]; then
   # per-config-dir, so it is a single-writer surface, not a shared input (R2, rip-cage-p1p).
   # Each session gets its own (Claude creates it on demand).
   for _asset in \
-    .credentials.json \
     settings.json \
     CLAUDE.md \
     skills \

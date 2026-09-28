@@ -27,8 +27,9 @@ GM_CASES=(
   destroy_dry_run_absent
   destroy_dry_run_running_json
   doctor_host
-  auth_refresh_human
-  auth_refresh_json
+  auth_missing_human
+  auth_missing_json
+  auth_ok_human
 )
 
 # --- usage / unknown-verb / flags / version --------------------------------
@@ -185,8 +186,24 @@ case_doctor_host() { gm_capture doctor --host; }
 # case_allowlist_add_skip_existing / case_allowlist_show_effective
 # golden-master cases that lived here are gone with it.
 
-# --- auth refresh (non-macOS path; lib/fake-bin/uname always reports
-# Linux -- see rip-cage-5fsy in .claude/verification.md) ------------------------
+# --- rc auth: the msb --secret CCTOK non-possession check (rip-cage-ely4.7.17)
+# `rc auth refresh` and the keychain-extraction it drove are retired, no
+# fallback (ADR-031 D1/D5(a)) -- case_auth_refresh_human/_json are gone with
+# it. `rc auth` now only checks $XDG_CONFIG_HOME/rip-cage/secrets/CCTOK
+# (never a keychain, never a prompt), so these cases pin the two verdicts a
+# host-side stat + shape check can reach: absent (the fresh sandbox's
+# default) and a well-shaped 0600 file. -----------------------------------
 
-case_auth_refresh_human() { gm_capture auth refresh; }
-case_auth_refresh_json() { gm_capture --output json auth refresh; }
+case_auth_missing_human() { gm_capture auth; }
+case_auth_missing_json() { gm_capture --output json auth; }
+
+case_auth_ok_human() {
+  # A dummy setup-token-shaped value -- never a real token (this harness
+  # never reads one; see RULING 2026-09-28 point 4 on rip-cage-ely4.7.17).
+  # 110 chars total ("sk-ant-oat" + 100), comfortably above
+  # _AUTH_CCTOK_MIN_LEN (80, cli/auth.sh, fix round 1 finding 2).
+  mkdir -p "${GM_XDG}/rip-cage/secrets"
+  printf '%s' "sk-ant-oat0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" > "${GM_XDG}/rip-cage/secrets/CCTOK"
+  chmod 600 "${GM_XDG}/rip-cage/secrets/CCTOK"
+  gm_capture auth
+}

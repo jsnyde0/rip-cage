@@ -135,9 +135,10 @@ cage-ops; this skill owns the file it edits.
 
 ## What rc adds that no config file can hold
 
-`--name`, `--log-level trace`, `--replace`, the keychain→`--secret` credential
-bridge, the read-only parent mounts computed from your skill symlinks, and the
-protected-path covers. Everything else belongs in this file.
+`--name`, `--log-level trace`, `--replace`, reading and exporting the CCTOK
+setup-token for msb `--secret`, the read-only parent mounts computed from your
+skill symlinks, and the protected-path covers. Everything else belongs in this
+file.
 
 ## Two things never to do
 

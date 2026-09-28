@@ -10,7 +10,7 @@ Twelve verbs were deleted in the same pass. Each one's successor — an msb one-
 |---|---|
 | `rc up [path] [options]` | Create or resume the cage for `path` (default `.`), run init, attach |
 | `rc build [--file PATH]` | Build the image from one host-side Dockerfile, then load it into msb's cache |
-| `rc auth refresh` | Re-pull the Claude login from the host keychain and re-apply it |
+| `rc auth` | No-prompt check that the CCTOK setup-token file exists, is 0600, and is well-shaped |
 | `rc doctor [name]` · `rc doctor --host` | Per-cage diagnostic (labels + live probes) · host daemon/runtime liveness |
 | `rc test [name]` | Run the proving suite inside a cage (`--host`, `--e2e`, `--e2e-security` for the other tiers) |
 | `rc destroy <name>` | Remove the cage and the named volumes `rc` created for it |
@@ -32,7 +32,7 @@ rc up [path] [--conf FILE] [--replace] [--no-reload] [--port PORT] [--env-file F
       [--cpus N] [--memory SIZE] [--pids-limit N] [--new] [--session NAME]
 ```
 
-`rc up` does the things no config file can hold: it pulls the Claude login from the keychain and binds it to msb `--secret`, computes read-only parent mounts for your skill symlinks, runs the protected-paths check, and then calls `msb create --conf <file> --name <cage> --log-level trace`.
+`rc up` does the things no config file can hold: it reads the CCTOK setup-token from `$XDG_CONFIG_HOME/rip-cage/secrets/CCTOK` and exports it for msb's `--secret`, computes read-only parent mounts for your skill symlinks, runs the protected-paths check, and then calls `msb create --conf <file> --name <cage> --log-level trace`.
 
 | Flag | Description |
 |---|---|

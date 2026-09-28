@@ -33,7 +33,7 @@ Worked recipes live in [`examples/`](../../examples/README.md), outside the bina
 ### Setup
 | File | What it covers |
 |---|---|
-| [auth.md](auth.md) | OAuth token extraction (macOS keychain / Linux), API-key fallback, pi's providers, how the credential reaches the cage without entering it |
+| [auth.md](auth.md) | The `CCTOK` `--secret` bridge for Claude Code, the `ANTHROPIC_API_KEY` possession fallback, pi's providers |
 | [whats-in-the-box.md](whats-in-the-box.md) | What the base image carries, the cage user model, sudo scope |
 | [cli-reference.md](cli-reference.md) | The six verbs — `up`, `auth`, `doctor`, `build`, `test`, `destroy` — their flags and JSON output |
 

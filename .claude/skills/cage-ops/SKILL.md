@@ -7,8 +7,8 @@ description: "Run and troubleshoot a live rip-cage cage: start, resume, shell in
 
 Invoke this when a cage exists and something about running it needs doing or
 fixing: starting and resuming it, getting a shell in it, reading why a request
-failed, adding a denied host and getting back to work, refreshing expired
-credentials, or answering "what replaced `rc <verb>`?". You act on the HOST —
+failed, adding a denied host and getting back to work, checking auth is set up,
+or answering "what replaced `rc <verb>`?". You act on the HOST —
 a caged agent cannot do any of this for itself, and the parts it cannot do are
 the point, not an obstacle.
 
@@ -152,20 +152,19 @@ a paused container.
 ## Auth
 
 ```bash
-rc auth refresh
+rc auth
 ```
 
-On macOS, re-extracts Claude credentials from the keychain; running cages pick
-the change up on the next API call. On Linux there is no keychain — update
-`~/.claude/.credentials.json` directly and the bind mount carries it straight
-through.
+A no-prompt check that the CCTOK setup-token file exists, is 0600, and is
+well-shaped. It never prompts, never reads a keychain, never mounts a
+credentials file. On failure it names the file and prints the one-time human
+step: `claude setup-token`, save the value, `chmod 600`. Full diagnosis:
+[`recipes/auth-trouble.md`](recipes/auth-trouble.md).
 
-`rc up` warns before launch when the token is expired or expiring within ten
-minutes. Full diagnosis: [`recipes/auth-trouble.md`](recipes/auth-trouble.md).
-
-A cage whose config uses a `secrets:` entry holds only the placeholder
-`$MSB_<NAME>`, never the token. "The token is not in the cage" is the posture,
-not a bug to fix.
+Claude's login rides msb `--secret` — the guest holds only the placeholder
+`$MSB_CCTOK`, never the token. "The token is not in the cage" is the posture,
+not a bug to fix. A changed token needs `rc up --replace <project>`; a running
+cage does not pick it up live.
 
 ## Recipes
 

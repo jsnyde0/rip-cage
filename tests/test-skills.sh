@@ -33,7 +33,7 @@ source "${_TS_DIR}/_agent-readability.sh"
 
 # In-cage detection (rip-cage-dovx). /etc/rip-cage/release is the repo-wide
 # canonical in-cage sentinel (rc:54 itself hard-exits on it, ADR-002 D14 /
-# rip-cage-r5f9; test-auth-refresh.sh, test-rc-allowlist.sh gate the same
+# rip-cage-r5f9; other host tests gate the same
 # way, and the broken-symlink check below already used this exact test
 # before this variable existed).
 _TS_IN_CAGE=false

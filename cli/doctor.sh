@@ -180,7 +180,9 @@ _doctor_bd_version_compare() {
 # mounts (was a Docker bind mount pre-cutover; same class of mount shape). A
 # host atomic-rename (write tmp + rename over — the standard safe-rewrite
 # idiom, e.g. a host Claude Code session rewriting
-# ~/.claude/.credentials.json) severing the inode a single-file bind mount
+# ~/.claude.json — the one single-file credential-adjacent mount left after
+# rip-cage-ely4.7.17 retired the mounted-credentials-file possession
+# mount) severing the inode a single-file bind mount
 # tracks — the mount listing (`docker inspect` pre-cutover; `msb inspect`
 # now, see `_msb_inspect_json` below) keeps showing the mount, but the
 # in-cage destination path goes ENOENT (dead handle) — is CONFIRMED for the
@@ -217,10 +219,10 @@ _doctor_bd_version_compare() {
 # source to give an honest, differentiated diagnosis instead of always
 # claiming atomic-rename.
 #
-# Enumerates ALL bind mounts on the container (not hardcoded to
-# .credentials.json — a second single-file mount, ~/.claude.json, exists
-# under possession today and non-possession is adding another). Prints one
-# line per finding:
+# Enumerates ALL bind mounts on the container (not hardcoded to any one
+# path — ~/.claude.json is the current single-file mount example; the
+# read-write Claude credentials-file mount this once also covered was
+# retired, no fallback, by rip-cage-ely4.7.17). Prints one line per finding:
 #   "HEALTHY <dst>"            — in-cage destination resolves. Reported
 #                                regardless of host source state (missing,
 #                                socket, or regular file all count as
@@ -241,10 +243,10 @@ _doctor_bd_version_compare() {
 #                                sibling's existence.
 #   "DEAD <dst>"               — destination dead; host source IS a regular
 #                                file; NO usable seed sibling found. The
-#                                classic atomic-rename hazard, actionable
-#                                (e.g. .credentials.json, where the live mount
-#                                IS the refresh channel — no seed convention
-#                                covers it).
+#                                classic atomic-rename hazard, actionable —
+#                                any single-file mount whose live handle is
+#                                the only update channel and that carries no
+#                                init-time seed convention lands here.
 #   "DEAD_OTHER <dst> <src>"   — destination dead; host source exists but is
 #                                NOT a regular file (socket, FIFO, etc.).
 #                                NOT the atomic-rename hazard (that requires
@@ -378,48 +380,45 @@ _doctor_format_dead_mounts() {
 
 # _doctor_format_auth_probe <name>
 #
-# rip-cage-ebdd: posture-aware auth probe. A cage running the credential
-# non-possession posture (auth.per_tool.claude: none — agent holds a
-# placeholder token, a composed mediator injects the real secret on egress)
-# has neither a mounted credentials file nor ANTHROPIC_API_KEY, and the
-# original probe cried FAIL on it despite the cage being perfectly healthy.
-# Recognizes the posture via, in order:
-#   1. Existing credentials file / ANTHROPIC_API_KEY (today's healthy paths,
-#      unchanged).
-#   2. The rc.auth.credential-mounts.claude=none container label (stamped at
-#      create time, cli/up.sh:'rc.auth.credential-mounts.claude=') — host-side `docker inspect`, cheap and not
-#      forgeable by an in-cage agent. Checked before the env var per the
-#      scoping review (label preferred, env second).
-#   3. CLAUDE_CODE_OAUTH_TOKEN present in-cage — mirrors the check
-#      tests/test-safety-stack.sh already uses (~line 187) via docker exec,
-#      for cages that recognize the posture through the env var alone (e.g.
-#      pre-label containers).
-# A cage with NEITHER credentials NOR a recognized posture still FAILs
-# exactly as before. Kept as its own pure/testable helper (same idiom as
-# _doctor_format_dead_mounts) so it's unit-testable without a live cage.
+# rip-cage-ely4.7.17: the possession path (a mounted Claude credentials file,
+# and the rc.auth.credential-mounts.claude=none label that used to flag a cage
+# which deliberately skipped that mount) is retired, no fallback — ADR-031
+# D1/D5(a) non-possession is the only mechanism now, so there is no
+# credentials file left to probe and no "none" posture left to distinguish
+# from a healthy default. In-cage auth is exactly one of two env vars:
+#   1. CLAUDE_CODE_OAUTH_TOKEN — the msb --secret-injected placeholder for the
+#      CCTOK binding (mirrors the check tests/test-safety-stack.sh already
+#      uses via docker exec, ~line 187).
+#   2. ANTHROPIC_API_KEY — the alternate API-key flow.
+# A cage with neither set FAILs. Kept as its own pure/testable helper (same
+# idiom as _doctor_format_dead_mounts) so it's unit-testable without a live
+# cage.
 _doctor_format_auth_probe() {
   local name="$1"
-  if _msb_exec "$name" -- test -s /home/agent/.claude/.credentials.json >/dev/null 2>&1; then
-    echo "OK — ~/.claude/.credentials.json present"
+  # shellcheck disable=SC2016 # deliberately single-quoted: expands inside the GUEST shell, not the host
+  if _msb_exec "$name" -- sh -c 'test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"' >/dev/null 2>&1; then
+    echo "OK — CLAUDE_CODE_OAUTH_TOKEN present (msb --secret-injected, non-possession)"
     return
   fi
   # shellcheck disable=SC2016 # deliberately single-quoted: expands inside the GUEST shell, not the host
   if _msb_exec "$name" -- sh -c 'test -n "${ANTHROPIC_API_KEY:-}"' >/dev/null 2>&1; then
-    echo "OK — ANTHROPIC_API_KEY set (no OAuth creds)"
+    echo "OK — ANTHROPIC_API_KEY set (no OAuth token)"
     return
   fi
-  local _cred_mounts_claude_label
-  _cred_mounts_claude_label=$(_msb_label "$name" "rc.auth.credential-mounts.claude" || true)
-  if [[ "$_cred_mounts_claude_label" == "none" ]]; then
-    echo "OK — non-possession posture (claude credentials deliberately not mounted; rc.auth.credential-mounts.claude=none)"
-    return
+  echo "FAIL — no CLAUDE_CODE_OAUTH_TOKEN and no ANTHROPIC_API_KEY in-cage"
+}
+
+# _doctor_format_host_auth_probe — the host-side counterpart to
+# _doctor_format_auth_probe: what would `rc auth` say right now? Reuses
+# _auth_cctok_check (cli/auth.sh) directly rather than shelling out to `rc
+# auth`, so doctor's probe and the live verb never drift. Never prints the
+# token value — same guardrail _auth_cctok_check itself carries.
+_doctor_format_host_auth_probe() {
+  if _auth_cctok_check; then
+    echo "OK — $(_auth_cctok_file) (0600, setup-token-shaped)"
+  else
+    echo "FAIL — $(_auth_cctok_fail_message "$_AUTH_CCTOK_REASON" | head -1)"
   fi
-  # shellcheck disable=SC2016 # deliberately single-quoted: expands inside the GUEST shell, not the host
-  if _msb_exec "$name" -- sh -c 'test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}"' >/dev/null 2>&1; then
-    echo "OK — non-possession posture (CLAUDE_CODE_OAUTH_TOKEN present; msb --secret-injected auth)"
-    return
-  fi
-  echo "FAIL — no credentials and no ANTHROPIC_API_KEY"
 }
 
 
@@ -568,6 +567,12 @@ cmd_doctor() {
   local running=0
   [[ "$state" == "running" ]] && running=1
 
+  # Host-side auth verdict: what would `rc auth` say right now? Host-side, so
+  # it needs no running container — computed unconditionally, unlike the
+  # live in-cage probes below (rip-cage-ely4.7.17).
+  local host_auth_probe
+  host_auth_probe=$(_doctor_format_host_auth_probe)
+
   # Live probes (only when running). Each probe returns a status string and detail.
   local beads_probe="not running, no live probe"
   local auth_probe="not running, no live probe"
@@ -603,15 +608,15 @@ cmd_doctor() {
       beads_probe="WARN — port_file=${port_file_exists} dolt_running=${dolt_running} port='${port_val}'"
     fi
 
-    # Auth probe: credentials file presence + nonzero, or a recognized
-    # non-possession posture (rip-cage-ebdd — see _doctor_format_auth_probe).
+    # Auth probe: CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY present in-cage
+    # (rip-cage-ely4.7.17 — see _doctor_format_auth_probe).
     auth_probe=$(_doctor_format_auth_probe "$name")
 
     # Dead-handle probe: generic sweep over ALL single-file bind mounts
-    # (rip-cage-uben). Distinct from auth_probe above — auth_probe's `test -s`
-    # would ALSO come back false on a severed .credentials.json handle,
-    # attributing the symptom to "no credentials" rather than the actual
-    # broken-mount cause; this probe names the real cause + repair directly.
+    # (rip-cage-uben). Distinct from auth_probe above — the two are unrelated
+    # since the possession-era single-file credentials mount was retired
+    # (rip-cage-ely4.7.17); this probe still matters for every OTHER
+    # single-file mount a cage carries (e.g. ~/.claude.json).
     dead_mounts_probe=$(_doctor_format_dead_mounts "$name" "$source_path")
 
     # Skills mount probe: count entries under ~/.claude/skills (symlink to
@@ -754,6 +759,7 @@ cmd_doctor() {
       --arg posture_probe "$posture_probe" \
       --arg beads_probe "$beads_probe" \
       --arg auth_probe "$auth_probe" \
+      --arg host_auth_probe "$host_auth_probe" \
       --arg dead_mounts_probe "$dead_mounts_probe" \
       --arg skills_probe "$skills_probe" \
       --arg cwd_probe "$cwd_probe" \
@@ -774,6 +780,7 @@ cmd_doctor() {
           posture: $posture_probe,
           beads_server: $beads_probe,
           auth: $auth_probe,
+          host_auth: $host_auth_probe,
           dead_mounts: $dead_mounts_probe,
           transcript_persistence: $transcript_persistence_probe,
           skills_mount: $skills_probe,
@@ -798,6 +805,7 @@ cmd_doctor() {
     echo "  posture        : $posture_probe"
     echo "  beads-server   : $beads_probe"
     echo "  auth           : $auth_probe"
+    echo "  auth (host)    : $host_auth_probe"
     echo "  dead-mounts    : $dead_mounts_probe"
     echo "  skills-mount   : $skills_probe"
     echo ""

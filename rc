@@ -19,7 +19,7 @@ fi
 # (rc:cli-module-sourcing below); and (2) under `bash -s --` piped-exec,
 # BASH_SOURCE is empty so this falls back to $0="bash" -- dirname "bash" is
 # ".", so SCRIPT_DIR resolves to the CALLER'S CWD, not rc's own directory.
-# Piped-exec callers (e.g. tests/test-auth-refresh.sh's run_rc) must cd to
+# Piped-exec callers (`bash -s -- <verb> < rc`) must cd to
 # the repo root themselves before piping if they need SCRIPT_DIR correct.
 # BASH_SOURCE[0] always names the file bash is currently reading (rc's own
 # path) when reading from a real file; it is empty when reading from stdin.
@@ -102,7 +102,7 @@ unset _rc_mod
 
 # When sourced (e.g., by tests), skip dispatch — expose functions only.
 # BASH_SOURCE[0] is the script file; $0 is the invoking shell when sourced.
-# When piped via `bash -s --` (test-auth-refresh.sh's run_rc, to bypass the
+# When piped via `bash -s --` (a test-harness pattern, to bypass the
 # /etc/rip-cage/release guard) BASH_SOURCE is empty — that's NOT sourced, so we fall
 # through to dispatch instead of trying to `return` at top-level.
 [[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "${0}" ]] && return 0

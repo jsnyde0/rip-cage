@@ -654,17 +654,16 @@ else
     exit 1
 fi
 
-# Check auth (warn only, do not fail)
-# CLAUDE_CODE_OAUTH_TOKEN is the auth path under credential non-possession
-# (auth.per_tool.claude: none — agent holds a placeholder, a composed mediator
-# injects the real secret on egress; rip-cage-73bz). Recognized additively here
-# to mirror rc test check 13's recognition set (tests/test-safety-stack.sh:187)
-# without replacing the existing credentials-file / ~/.claude.json / API-key
-# branches (rip-cage-df1c).
-if [ -f ~/.claude/.credentials.json ]; then
-  echo "[rip-cage] OAuth credentials found"
-elif [ ! -f ~/.claude.json ] && [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  echo "[rip-cage] WARNING: No auth found (~/.claude/.credentials.json missing, ANTHROPIC_API_KEY not set)" >&2
+# Check auth (warn only, do not fail — ADR-004 D3).
+# rip-cage-ely4.7.17: the possession path (a mounted Claude credentials file)
+# is retired, no fallback — ADR-031 D1/D5(a) non-possession is the only
+# mechanism now. CLAUDE_CODE_OAUTH_TOKEN carries the msb --secret placeholder
+# for the CCTOK binding (share/rip-cage/cage.yaml.template); ANTHROPIC_API_KEY
+# is the alternate API-key flow. Neither being set is the only "no auth" case
+# left to warn on — there is no credentials file to check for anymore.
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "[rip-cage] WARNING: No auth found (CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_API_KEY both unset)" >&2
+  echo "[rip-cage]   On the host: run 'rc auth' (checks \$XDG_CONFIG_HOME/rip-cage/secrets/CCTOK), or set ANTHROPIC_API_KEY" >&2
 fi
 
 # 10. Initialize beads

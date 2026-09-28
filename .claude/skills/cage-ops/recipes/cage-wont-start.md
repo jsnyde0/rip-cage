@@ -12,7 +12,7 @@ named in it.
 rc up --dry-run <project>
 ```
 
-`--dry-run` assembles the whole launch without touching msb or the keychain.
+`--dry-run` assembles the whole launch without creating a cage — it still calls read-only `msb` commands (state/label inspection) to decide what it WOULD do, it just never creates, resumes, or destroys anything.
 
 - **`--dry-run` also refuses** → the refusal is host-side: config resolution,
   a protected path, a multiplexer check, a network-policy check. Go to the

@@ -1,12 +1,12 @@
 # Recipe: the caged agent cannot authenticate
 
-Claude Code in the cage reports an auth failure, or `rc up` warned about an
-expired token. Three different things get called "auth" here, and the fix
-depends on which one it is.
+Claude Code in the cage reports an auth failure, or `rc up` refused to launch
+naming auth. Two mechanisms get called "auth" here, and the fix depends on
+which one this cage uses.
 
 ---
 
-## 1. Tell the three apart
+## 1. Tell them apart
 
 ```bash
 rc doctor <cage>
@@ -16,83 +16,63 @@ Read its auth probe line, then check which mechanism this cage uses:
 
 | This cage has | What that means | Section |
 |---|---|---|
-| a `secrets:` entry in its config | msb injects the token on the wire; the guest holds only `$MSB_<NAME>` | 2 |
-| a mounted `~/.claude/.credentials.json` | the cage reads the host's OAuth credentials directly | 3 |
-| `ANTHROPIC_API_KEY` in its environment | a plain API key | 4 |
+| the shipped `CCTOK` secret (or any `secrets:` entry) | msb injects the token on the wire; the guest holds only `$MSB_<NAME>` | 2 |
+| `ANTHROPIC_API_KEY` in its environment | a plain API key, real value in-cage | 3 |
 
 Check from inside:
 
 ```bash
-msb exec <cage> -- sh -c 'test -f /home/agent/.claude/.credentials.json && echo creds-mounted || echo no-creds'
 msb exec <cage> -- sh -c 'echo "${CLAUDE_CODE_OAUTH_TOKEN:-unset}"'
 ```
 
-A value of literally `$MSB_CCTOK` (or similar) is **correct** for a
-secrets-bound cage — that is the placeholder, and the real value is substituted
-on the wire. It is not a broken variable.
+A value of literally `$MSB_CCTOK` is **correct** — that is the placeholder,
+and the real value is substituted on the wire. Claude's login never mounts a
+credentials file into the cage.
 
 ---
 
-## 2. Secrets-bound cage
+## 2. The `CCTOK` secret (the Claude Code case)
 
-The token never enters the cage, so nothing inside it can be wrong. What can be
-wrong is host-side.
+The token never enters the cage, so nothing inside it can be wrong. What can
+be wrong is host-side.
 
 ```bash
-ls -l ~/.config/rip-cage/secrets/           # the value rc bridges from
+rc auth
 ```
 
-- **Missing file, and the variable is not exported** → msb fails the boot
-  naming the variable. Write the value to
-  `~/.config/rip-cage/secrets/<NAME>`, mode 600.
-- **Stale value** → replace the file's contents, then `rc up --replace
-  <project>`.
-- **Requests reach the API but are rejected** → the value is wrong, or bound to
-  hosts that do not include the one being called. Check the entry's `allow:`
-  list in the config.
+This is the same no-prompt check `rc up` runs before booting a cage whose
+config declares `CCTOK`.
+
+- **`rc auth` fails, naming the file** → it is missing, not 0600, or not
+  setup-token-shaped. Run `claude setup-token`, save the printed value to
+  `~/.config/rip-cage/secrets/CCTOK`, `chmod 600`.
+- **`rc auth` passes but requests are rejected** → the value is stale or
+  belongs to a different account. Get a fresh `claude setup-token`, overwrite
+  the file, then `rc up --replace <project>` — a running cage does not pick up
+  a changed file on its own.
+- **Requests reach the API but are rejected for a reason unrelated to the
+  token shape** → check the secret's `allow:` list in the config actually
+  names `api.anthropic.com`.
 
 *Done when:* an actual request from inside the cage succeeds — not that the
-file exists.
+file exists. Full mechanism: [`auth.md`](../../../../docs/reference/auth.md).
 
 ---
 
-## 3. Mounted host credentials (the common Claude Code case)
-
-```bash
-rc auth refresh
-```
-
-On **macOS** this re-extracts the OAuth credentials from the keychain. Running
-cages pick the new value up on their next API call — no recreate needed, the
-file is a bind mount.
-
-If it fails: the host is not logged in. Run `claude auth login` on the HOST
-first, then `rc auth refresh` again.
-
-On **Linux** there is no keychain and `rc auth refresh` is a no-op that says
-so. Update `~/.claude/.credentials.json` on the host directly; the mount carries
-it straight through.
-
-`rc up` warns at launch when the token is already expired, or expires within
-ten minutes. That warning is harmless if this cage does not run Claude Code.
-
-*Done when:* `rc doctor <cage>` reports the auth probe OK, and a real request
-from the cage succeeds.
-
----
-
-## 4. API key
+## 3. API key
 
 ```bash
 msb exec <cage> -- sh -c 'echo "${ANTHROPIC_API_KEY:0:7}..."'
 ```
 
 Empty means it never reached the cage: it comes in through the config's `env:`
-block or `--env-file`, not from your host shell. Fix that and recreate.
+block or `--env-file`, not from your host shell. Fix that and recreate. This
+path is possession — the real key is in the guest — by design; it is the
+alternative to the Claude login, not a bug.
 
 ---
 
-## 5. Onboarding screens instead of an auth error
+## 4. Onboarding screens instead of an auth error
 
 Interactive `claude` in the cage asks for a theme or shows a login wall, rather
 than failing with an auth message.
@@ -114,23 +94,24 @@ msb exec <cage> -- sh -c 'ls -l /home/agent/.claude/.claude.json.seed'
 
 ---
 
-## 6. Two accounts, wrong one
+## 5. Two accounts, wrong one
 
-The macOS keychain holds one logged-in Claude identity at a time, so
-`rc auth refresh` refreshes whichever you are currently logged in as — it
-cannot serve two cages under two accounts.
+A cage's config names exactly one secret (`CCTOK` by default), so switching
+which account is active means overwriting that name's host-side file and
+recreating — see [`auth.md`](../../../../docs/reference/auth.md#switching-accounts)
+and the [multi-account rotation guide](../../../../docs/guides/multi-account-rotation.md).
 
-For genuinely parallel accounts, give each cage its own `secrets:` name and its
-own host-side value file. That is the **cage-config** skill,
-`recipes/multi-account.md`.
+For genuinely parallel accounts running at the same time, give each cage its
+own secret name and its own host-side value file. That is the **cage-config**
+skill, `recipes/multi-account.md`.
 
 ---
 
 ## What is not an auth problem
 
-- **`$MSB_<NAME>` as the variable's value** — correct for a secrets-bound cage.
-- **`.credentials.json` absent inside a secrets-bound cage** — correct. The
-  posture is that the cage never holds the token.
+- **`$MSB_CCTOK` as the variable's value** — correct, the placeholder.
+- **No Claude credentials file in the guest** — correct. Claude's login
+  never mounts one under either mechanism above.
 - **A request failing with connection refused rather than 401** — that is
   egress, not auth. `api.anthropic.com` must be on the allowlist. See
   [`denied-host.md`](denied-host.md).

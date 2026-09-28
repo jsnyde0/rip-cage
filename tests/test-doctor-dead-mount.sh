@@ -855,17 +855,23 @@ rm -rf "${D10_STUB_DIR}"
 rm -f "$D10_HOST_FILE"
 
 # ---------------------------------------------------------------------------
-# A1: rc.auth.credential-mounts.claude=none label present -> OK, non-
-# possession posture named informatively (rip-cage-ebdd).
+# A1: the rc.auth.credential-mounts.claude=none label is no longer consulted
+# at all (rip-cage-ely4.7.17 retired the credentials-file branch AND the
+# label-recognition branch from _doctor_format_auth_probe -- ADR-031 D1/D5(a)
+# non-possession is the only mechanism now, and in-cage auth is exactly
+# CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY, nothing else). This USED to
+# pin "label present -> OK" (rip-cage-ebdd); it now pins the opposite --
+# the label alone, with neither env var set in-cage, must NOT produce OK,
+# proving the probe no longer trusts a label a prompt-injected agent could
+# never forge anyway but that also no longer reflects anything real.
 # ---------------------------------------------------------------------------
 echo ""
-echo "-- A1: auth probe, non-possession label -> OK not FAIL --"
+echo "-- A1: auth probe ignores the retired non-possession label -- FAIL not OK --"
 
 A1_STUB_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rc-dm-a1-stub-XXXXXX")
 cat > "${A1_STUB_DIR}/msb" <<'STUB'
 #!/usr/bin/env bash
 case " $* " in
-  *"test -s /home/agent/.claude/.credentials.json"*) exit 1 ;;
   *"ANTHROPIC_API_KEY"*) exit 1 ;;
   *" inspect "*) echo '{"config":{"labels":{"rc.auth.credential-mounts.claude":"none"}}}'; exit 0 ;;
   *"CLAUDE_CODE_OAUTH_TOKEN"*) exit 1 ;;
@@ -884,20 +890,15 @@ A1_FMT=$(PATH="${A1_STUB_DIR}:$PATH" bash -c "
   _doctor_format_auth_probe 'a1-cage'
 ")
 
-if [[ "$A1_FMT" == OK* ]]; then
-  pass "A1a auth probe reports OK when rc.auth.credential-mounts.claude=none label is present"
+if [[ "$A1_FMT" == FAIL* ]]; then
+  pass "A1a auth probe FAILs even when the retired non-possession label is present (label is inert)"
 else
-  fail "A1a auth probe reports OK for the non-possession label" "got: $A1_FMT"
+  fail "A1a auth probe still trusts the retired label" "got: $A1_FMT"
 fi
-if [[ "$A1_FMT" == *"non-possession"* ]]; then
-  pass "A1b auth probe names the non-possession posture informatively"
+if [[ "$A1_FMT" != *"non-possession"* ]]; then
+  pass "A1b auth probe no longer names a label-derived non-possession posture"
 else
-  fail "A1b auth probe names the non-possession posture" "got: $A1_FMT"
-fi
-if [[ "$A1_FMT" != *FAIL* ]]; then
-  pass "A1c auth probe contains no FAIL wording"
-else
-  fail "A1c auth probe contains no FAIL wording" "got: $A1_FMT"
+  fail "A1b auth probe still references the retired label posture" "got: $A1_FMT"
 fi
 rm -rf "${A1_STUB_DIR}"
 

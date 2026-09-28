@@ -22,7 +22,7 @@ The tiers are cumulative in effort, not in obligation: a project can live happil
 
 ## The Class-A recipe (Tier 2)
 
-> **This page is about credentials YOU nominate.** Claude Code's own login is **not** one of them today: `rc auth` finds it in your keychain and `rc up` mounts the file, which is possession. Wiring it through `--secret` is charted as `rip-cage-ely4.7.17`, not shipped — see [auth.md](auth.md) for the two postures and [ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D1's realized-vs-charted note.
+> **This page is about credentials YOU nominate.** Claude Code's own login already rides `--secret` — one shipped `CCTOK` binding, not something you configure. See [auth.md](auth.md) for that one mechanism; this page is the recipe for a project credential you add yourself.
 
 **What "Class A" means:** a secret is *wire-bearer* if it is sent **verbatim** toward a known host — an API key in an `Authorization` header, a PAT used as a git password, a bearer token. That's the property msb's `--secret` mechanism substitutes: a literal placeholder string in the guest, the real bytes only on the TLS-intercepted wire toward the one host the credential is bound to ([ADR-029 D5](../decisions/ADR-029-msb-migration.md)).
 
