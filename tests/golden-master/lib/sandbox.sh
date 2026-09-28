@@ -86,13 +86,16 @@ gm_sandbox_reset() {
   # fixture with the schema that defined it.
   #
   # Outside the workspace it mounts: rc refuses a config that resolves inside a
-  # tree that same config mounts (ADR-031 D5(a)).
+  # tree that same config mounts (ADR-031 D5(a)). It carries the template's two
+  # Claude-session lines, which the config owns since rip-cage-mxr8.
   mkdir -p "${GM_XDG}/rip-cage/projects"
   cat > "${GM_XDG}/rip-cage/projects/$(basename "$GM_ROOT")-workspace.yaml" <<YAML
 image: rip-cage:latest
 workdir: /workspace
 mounts:
   - "${GM_WS}:/workspace"
+  - "${GM_HOME}/.claude/projects:/home/agent/.claude/projects"
+  - "${GM_HOME}/.claude/sessions:/home/agent/.claude/sessions"
 network:
   policy: none
   allow:

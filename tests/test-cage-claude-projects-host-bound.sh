@@ -3,9 +3,9 @@
 # _cage_claude_projects_host_bound (cli/lib/msb_runtime.sh), the pre-reload
 # transcript-persistence predicate (rip-cage-aa4t).
 #
-# `rc reload` cold-recreates a cage (stop -> remove -> cmd_up). On a
-# genuinely-old cage created by a pre-2026-07-08 `rc` (current `rc up`
-# always host-binds ~/.claude/projects -- cli/up.sh:999), the guest's
+# `rc up --replace` cold-recreates a cage (stop -> remove -> create). On a
+# cage whose config lacks the template's ~/.claude/projects mount (rc appends
+# none since rip-cage-mxr8), or one created by a pre-2026-07-08 `rc`, the guest's
 # caged-claude conversation transcripts live only on the ephemeral rootfs
 # overlay and are DESTROYED by the recreate. This predicate distinguishes
 # "host-bound" (persistence survives the recreate) from "not host-bound"

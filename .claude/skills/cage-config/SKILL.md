@@ -77,7 +77,9 @@ only when you launch, not when you write the file:
 
 Adding an allowlist host recreates the cage. The host mounts of
 `~/.claude/projects` and `~/.claude/sessions` are what make the running Claude
-session come back rather than vanish with it. Named volumes (`rc-state-*`,
+session come back rather than vanish with it. **The config owns these two
+lines; rc does not add them.** Delete them and a recreate loses the session
+(`rc up` warns, naming the line to restore). Named volumes (`rc-state-*`,
 `rc-history-*`, `rc-mise-cache`) survive too. The guest's own scratch does not.
 
 Full list and what each one buys:
@@ -142,9 +144,14 @@ cage-ops; this skill owns the file it edits.
 ## What rc adds that no config file can hold
 
 `--name`, `--log-level trace`, `--replace`, reading and exporting the CCTOK
-setup-token for msb `--secret`, the read-only parent mounts computed from your
-skill symlinks, and the protected-path covers. Everything else belongs in this
-file.
+setup-token for msb `--secret`, the host skills projection, the read-only
+parent mounts computed from your skill symlinks, and the protected-path covers.
+Everything else belongs in this file.
+
+**Skills arrive through rc's projection, never a config line.** rc mounts
+`~/.claude/skills` read-only at `/home/agent/.rc-context/skills` and init
+symlinks `~/.claude/skills` to it. A config must not mount `~/.claude/skills`
+itself: `rc up` warns and init skips the symlink.
 
 ## Two things never to do
 

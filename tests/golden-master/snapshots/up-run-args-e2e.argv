@@ -30,10 +30,6 @@ PI_CODING_AGENT_DIR=/home/agent/.pi/agent
 <TEST_HOME>/.pi/agent/auth.json:/home/agent/.pi/agent/auth.json
 -e
 CAGE_HOST_ADDR=host.microsandbox.internal
--v
-<TEST_HOME>/.claude/projects:/home/agent/.claude/projects
--v
-<TEST_HOME>/.claude/sessions:/home/agent/.claude/sessions
 -e
 RC_HOST_PROJECT_KEY=<TEST_HOME_SLUG>-workspace
 --cpus=2

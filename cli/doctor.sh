@@ -447,8 +447,9 @@ _doctor_format_host_auth_probe() {
 #
 # rip-cage-aa4t: reports whether this cage's ~/.claude/projects is
 # host-bound, via _cage_claude_projects_host_bound (cli/lib/msb_runtime.sh).
-# Current `rc up` always host-binds this mount (cli/up.sh:999) -- a "not
-# host-bound" result names a genuinely-old cage predating that change.
+# Since rip-cage-mxr8 the cage CONFIG declares this mount (the shipped
+# template carries it; rc appends nothing) -- a "not host-bound" result names
+# a cage whose config lacks the line, or an old cage predating it.
 # WARN, never FAIL: this is a legacy/edge state, not a broken cage -- the
 # cage itself is otherwise fine, it just cannot survive a cold-recreate
 # (`rc up --replace`) without losing in-flight caged-claude conversation
@@ -465,7 +466,7 @@ _doctor_format_transcript_persistence_probe() {
       echo "OK — ~/.claude/projects is host-bound (conversations persist across a recreate)"
       ;;
     1)
-      echo "WARN — ~/.claude/projects is NOT host-bound on this (legacy) cage; recreate via 'rc up --replace' to gain host session persistence — that recreate warns loudly first, because it would lose any in-flight caged-claude conversations on this cage"
+      echo "WARN — ~/.claude/projects is NOT host-bound on this cage; add the shipped template's ~/.claude/projects and ~/.claude/sessions mount lines to its config, then 'rc up --replace' to gain host session persistence — that recreate warns loudly first, because it would lose any in-flight caged-claude conversations on this cage"
       ;;
     *)
       echo "INFO — could not determine host-bind status for ~/.claude/projects (msb inspect check failed)"

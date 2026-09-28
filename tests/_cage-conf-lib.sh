@@ -44,6 +44,21 @@ _cage_conf_claude_json_line() {
   printf '  - "%s/.claude.json:/home/agent/.claude.json:ro"\n' "$_home"
 }
 
+# _cage_conf_claude_session_lines
+#
+# Echo the template's two Claude-session mount lines (~/.claude/projects and
+# ~/.claude/sessions). Since rip-cage-mxr8 the config owns them and rc appends
+# neither, so a fixture without them boots a cage whose sessions do not
+# persist, and every rc up on it warns. rc up seeds both host dirs before
+# msb create, so the bind sources always exist. Same HOME-at-call-time rule
+# as _cage_conf_claude_json_line.
+_cage_conf_claude_session_lines() {
+  local _home
+  _home=$(cd "$HOME" 2>/dev/null && pwd -P) || _home="$HOME"
+  printf '  - "%s/.claude/projects:/home/agent/.claude/projects"\n' "$_home"
+  printf '  - "%s/.claude/sessions:/home/agent/.claude/sessions"\n' "$_home"
+}
+
 # cage_conf_for <project-dir> [image-ref] [host ...]
 #
 # Write a minimal-but-real cage config for PROJECT-DIR and echo its path.
@@ -98,6 +113,7 @@ image: ${_image}
 workdir: /workspace
 mounts:
   - "${_proj}:/workspace"
+$(_cage_conf_claude_session_lines)
 $(_cage_conf_claude_json_line)
 network:
   policy: none
@@ -167,6 +183,7 @@ mounts:
   - named: "rc-history-${_name}"
     target: /commandhistory
     create: ensure-exists
+$(_cage_conf_claude_session_lines)
 $(_cage_conf_claude_json_line)
 network:
   policy: none

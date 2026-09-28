@@ -15,7 +15,9 @@
 #
 # WHAT rc ADDS AT LAUNCH, because no config file can hold it: --name,
 # --log-level trace, --replace, the CCTOK host-file -> --secret credential bridge, the
-# read-only parent mounts computed from your skill symlinks, and the
+# host skills projection (~/.claude/skills mounted read-only at
+# /home/agent/.rc-context/skills, which init symlinks into ~/.claude/skills),
+# the read-only parent mounts computed from your skill symlinks, and the
 # protected-paths covers. Everything else belongs here.
 #
 # Every host path must be ABSOLUTE and must not traverse a symlink: msb does
@@ -40,13 +42,13 @@ mounts:
 
   # THE TWO LINES THAT MAKE A CLAUDE SESSION SURVIVE A COLD RECREATE.
   # Adding a host to the allowlist below recreates the cage; without these
-  # mounts the running session is gone with it.
+  # mounts the running session is gone with it. rc does not add them for you
+  # (it warns at `rc up` when they are missing).
+  #
+  # Host skills need NO line here: rc projects ~/.claude/skills itself (see
+  # WHAT rc ADDS above). Do not mount ~/.claude/skills in this file.
   - "<ABSOLUTE_PATH_TO_YOUR_HOME>/.claude/projects:/home/agent/.claude/projects"
   - "<ABSOLUTE_PATH_TO_YOUR_HOME>/.claude/sessions:/home/agent/.claude/sessions"
-
-  # Host skills, read-only. rc adds the extra read-only parent mounts that any
-  # SYMLINKED skill target needs; this line covers the skills directory itself.
-  - "<ABSOLUTE_PATH_TO_YOUR_HOME>/.claude/skills:/home/agent/.claude/skills:ro"
 
   # Your host Claude config, READ-ONLY. Claude Code in the cage needs to read
   # it once — init copies it to a seed file under ~/.claude at boot, and the

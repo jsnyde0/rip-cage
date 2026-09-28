@@ -545,11 +545,11 @@ _msb_secret_violations_from_trace_log() {
 #
 # rip-cage-aa4t: predicate for the pre-reload transcript-persistence guard.
 # `rc up --replace` cold-recreates a cage (stop -> remove -> create); the guest's
-# ephemeral rootfs overlay is destroyed by that recreate. Current `rc up`
-# always host-binds ~/.claude/projects (cli/up.sh:999), so caged-claude
-# conversation transcripts survive a recreate -- but a cage created by a
-# pre-2026-07-08 `rc` predates that mount and keeps its transcripts ONLY on
-# the doomed overlay. This predicate distinguishes that legacy state from
+# ephemeral rootfs overlay is destroyed by that recreate. A cage whose
+# config mounts ~/.claude/projects (the shipped template's line; since
+# rip-cage-mxr8 rc appends none itself) keeps caged-claude conversation
+# transcripts across a recreate -- but a config without that line, or a cage
+# created by a pre-2026-07-08 `rc`, keeps them ONLY on the doomed overlay. This predicate distinguishes that legacy state from
 # the current one by reading the same `msb inspect NAME --format json`
 # `.config.mounts[]` shape _doctor_dead_file_mounts already reads (`host`/
 # `guest` fields; only `type == "Bind"` entries carry `host` at all).

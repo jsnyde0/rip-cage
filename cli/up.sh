@@ -892,15 +892,17 @@ _up_prepare_docker_mounts() {
   fi
 
   # Claude session persistence to host (rip-cage-dn2)
-  # Bind-mount host ~/.claude/projects and ~/.claude/sessions so JSONL session
-  # logs survive container destroy and are visible to host tools (cass etc.).
-  # The -workspace project key is unified with the host's encoded path key
-  # inside init-rip-cage.sh, using RC_HOST_PROJECT_KEY below.
-  # Dir-seed must happen before this mount (rip-cage-xuy8, ADR-029 D4
-  # resume-path corollary) — see _seed_claude_home_dirs above.
+  # THE CONFIG OWNS THE TWO MOUNTS (rip-cage-mxr8, ADR-031 D2/D3). The shipped
+  # template declares ~/.claude/projects and ~/.claude/sessions in its mounts:
+  # list; rc used to append the same pair here too, and msb refuses two mounts
+  # on one guest path, so a template config could not boot. A mount line is
+  # exactly what a config holds, so rc appends nothing. What stays rc-side is
+  # the host preparation no config can express: seeding the two dirs so the
+  # config's mount sources exist (rip-cage-xuy8, ADR-029 D4), the per-project
+  # key dir, and RC_HOST_PROJECT_KEY, which init-rip-cage.sh uses to unify the
+  # -workspace project key with the host's encoded path key.
+  # _up_warn_claude_home_mounts names the lines when a config lacks them.
   _seed_claude_home_dirs "${HOME}/.claude"
-  _UP_RUN_ARGS+=(-v "${HOME}/.claude/projects:/home/agent/.claude/projects")
-  _UP_RUN_ARGS+=(-v "${HOME}/.claude/sessions:/home/agent/.claude/sessions")
   local _host_project_key
   _host_project_key=$(printf '%s' "$_path" | tr '/.' '-')
   mkdir -p "${HOME}/.claude/projects/${_host_project_key}"
@@ -1171,8 +1173,9 @@ _up_converge_needed() {
 # passed; that flag retired with the verb. The loud line is what the operator
 # actually needed; the refusal made an operation they had already named by hand
 # require a second flag to complete, which is the interruption shape ADR-031 D3
-# is removing. Current `rc up` always host-binds ~/.claude/projects, so this
-# only ever fires for genuinely old cages.
+# is removing. Since rip-cage-mxr8 the config, not rc, declares the
+# ~/.claude/projects host-bind, so this fires for old cages AND for any cage
+# whose config omits the template's two session lines.
 #
 # A check that cannot reach msb says so and stays quiet about the rest — a
 # transient inspect hiccup must not produce a scary line about data loss.
@@ -1339,6 +1342,58 @@ _up_check_cctok_secret() {
 }
 
 
+# _up_warn_claude_home_mounts CONF
+#
+# rip-cage-mxr8: the Claude-home mounts are split between the config and rc,
+# and a config on the wrong side of that split gets ONE line per miss, before
+# any msb call. Warns, never refuses: both cases still boot.
+#
+#   projects / sessions -- the CONFIG owns them (ADR-031 D2/D3); rc appends
+#     neither. A config without them boots, but a cold recreate (every
+#     allowlist edit is one) loses the running Claude session. The warning
+#     names the exact template line to add.
+#   skills -- RC owns it: rc mounts the host skills dir at
+#     /home/agent/.rc-context/skills and init-rip-cage.sh replaces
+#     ~/.claude/skills with a symlink to it (ADR-027 D4). No config line can
+#     express the symlink half. A config that still mounts ~/.claude/skills
+#     itself (the pre-mxr8 template did) sits a mountpoint where init wants the
+#     symlink; init now leaves such a mount in place rather than fail, and this
+#     warning names the line to delete.
+#
+# Reads the config with yq, a pure read, so it runs under --dry-run too. No
+# yq or no readable config: silent, same as the checks above.
+_up_warn_claude_home_mounts() {
+  local _conf="$1"
+  [[ -n "$_conf" && -r "$_conf" ]] || return 0
+  command -v yq &>/dev/null || return 0
+
+  local _targets="" _entry _guest
+  while IFS= read -r _entry; do
+    [[ -n "$_entry" ]] || continue
+    _guest="${_entry#*:}"
+    _guest="${_guest%%:*}"
+    _guest="${_guest%/}"
+    _targets+="${_guest}"$'\n'
+  done < <(yq -r '.mounts // [] | .[] | select(tag == "!!str")' "$_conf" 2>/dev/null)
+  while IFS= read -r _guest; do
+    [[ -n "$_guest" ]] && _targets+="${_guest%/}"$'\n'
+  done < <(yq -r '.mounts // [] | .[] | select(tag == "!!map") | .target // ""' "$_conf" 2>/dev/null)
+
+  # The hint names a resolved HOME: msb does not follow a host-side symlink in
+  # a bind source, so a line built from an unresolved HOME could fail at boot.
+  local _home _sub
+  _home=$(cd "$HOME" 2>/dev/null && pwd -P) || _home="$HOME"
+  for _sub in projects sessions; do
+    if ! grep -qxF "/home/agent/.claude/${_sub}" <<<"$_targets"; then
+      echo "Warning: cage config ${_conf} does not mount ~/.claude/${_sub}, so Claude sessions will not survive a cage recreate. Add this line to its mounts: (the shipped template carries it): - \"${_home}/.claude/${_sub}:/home/agent/.claude/${_sub}\"" >&2
+    fi
+  done
+  if grep -qxF "/home/agent/.claude/skills" <<<"$_targets"; then
+    echo "Warning: cage config ${_conf} mounts ~/.claude/skills itself. rc already projects host skills (via /home/agent/.rc-context/skills and an init-time symlink); delete that mounts: line. Until then init leaves the config's mount in place and skips the symlink, so relatively-symlinked skills may not resolve." >&2
+  fi
+  return 0
+}
+
 _up_warn_transcript_loss() {
   local _name="$1"
   local _tl_rc=0
@@ -1346,7 +1401,7 @@ _up_warn_transcript_loss() {
   case "$_tl_rc" in
     0) return 0 ;;
     1)
-      log "WARNING: ~/.claude/projects is NOT host-bound on ${_name} (a legacy cage) — this recreate discards the guest's ephemeral overlay, so any in-flight caged-claude conversation transcripts on it are LOST. The recreated cage gains host session persistence going forward."
+      log "WARNING: ~/.claude/projects is NOT host-bound on ${_name} (its config lacks the mount, or the cage predates it) — this recreate discards the guest's ephemeral overlay, so any in-flight caged-claude conversation transcripts on it are LOST. The recreated cage persists sessions to the host only if its config mounts ~/.claude/projects and ~/.claude/sessions (the two shipped-template lines; rc up warns when they are missing)."
       ;;
     *)
       log "WARNING: could not determine whether ~/.claude/projects is host-bound on ${_name} (msb inspect check failed) — proceeding with the recreate without the transcript-loss check."
@@ -2381,6 +2436,9 @@ cmd_up() {
     exit 1
   fi
 
+  # rip-cage-mxr8: warn-only, before any msb call; see the function header.
+  _up_warn_claude_home_mounts "$_UP_CAGE_CONF"
+
   # The covers this produces are appended to the create argv; a refusal here
   # exits non-zero with nothing spawned.
   local _covers_out
@@ -2753,8 +2811,6 @@ cmd_up() {
           echo "Would mount ${_dry_agent_tdir} -> ${_dry_agent_tdir}:ro (agent symlink target)"
         done < <(_collect_symlink_parents "${HOME}/.claude/agents")
       fi
-      echo "Would mount ~/.claude/projects -> /home/agent/.claude/projects (sessions persist to host, rip-cage-dn2)"
-      echo "Would mount ~/.claude/sessions -> /home/agent/.claude/sessions"
       local _dry_host_key
       _dry_host_key=$(printf '%s' "$path" | tr '/.' '-')
       echo "Would set RC_HOST_PROJECT_KEY=${_dry_host_key} (unifies -workspace sessions with host project key)"

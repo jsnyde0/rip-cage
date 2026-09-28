@@ -31,7 +31,6 @@ reason.
 | `<project>:/workspace` | your code | the cage has nothing to work on |
 | `<home>/.claude/projects` | Claude Code transcripts, per project | the session cannot resume — the conversation is gone |
 | `<home>/.claude/sessions` | session index and state | same |
-| `<home>/.claude/skills:ro` | host skills, read-only | the in-cage agent sees no skills |
 | `<home>/.claude.json:ro` | the host Claude config | in-cage Claude has no config to seed from |
 | `rc-state-<cage>` → `/home/agent/.claude-state` | cage-local agent state | state resets each recreate |
 | `rc-history-<cage>` → `/commandhistory` | shell history | history resets each recreate |
@@ -39,16 +38,21 @@ reason.
 
 **The two Claude session mounts are the ones people drop and regret.** They are
 what makes "add a host, recreate, keep working" a two-minute interruption
-instead of a lost session. The template flags them for that reason.
+instead of a lost session. The template flags them for that reason. rc does
+not add them for you; `rc up` warns, naming the line, when a config lacks one.
+
+**Skills are not in this list.** rc projects `~/.claude/skills` itself: it
+mounts the host dir read-only at `/home/agent/.rc-context/skills`, and init
+symlinks `~/.claude/skills` to it. A config that mounts `~/.claude/skills` too
+sits a mountpoint where that symlink goes; `rc up` warns and init leaves the
+mount in place, so relatively-symlinked skills may not resolve. Delete the line.
 
 ---
 
 ## Read-only where read-only is enough
 
-Two lines are `:ro` deliberately:
+One line is `:ro` deliberately (rc's own skills projection is read-only too):
 
-- **`~/.claude/skills`** — the cage reads your skills; it has no business
-  rewriting them.
 - **`~/.claude.json`** — the host Claude config. In-cage Claude only needs to
   READ it: init snapshots it to a seed file under `~/.claude` at boot and the
   agent works from that copy. Read-write would hand an agent that followed
@@ -94,6 +98,8 @@ package after every recreate, that package belongs in the **image** — see the
 
 `rc` computes a few read-only mounts you do not write:
 
+- **The skills projection.** Host `~/.claude/skills` mounted read-only at
+  `/home/agent/.rc-context/skills`; init symlinks `~/.claude/skills` to it.
 - **Skill-symlink parents.** A skill stored as a symlink into another repo would
   be a broken symlink inside the cage, so `rc` mounts each symlink target's
   parent directory read-only at its host-absolute path. A symlink that is
@@ -103,4 +109,4 @@ package after every recreate, that package belongs in the **image** — see the
   tree gets covered — an empty read-only file, or an empty tmpfs for a
   directory. See [`share/rip-cage/protected-paths`](../../../../share/rip-cage/protected-paths).
 
-Neither is a place to add your own mounts. Yours go in the config.
+None is a place to add your own mounts. Yours go in the config.

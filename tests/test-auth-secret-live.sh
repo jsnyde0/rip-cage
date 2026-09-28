@@ -101,16 +101,9 @@ NAME=$(bash -c "source '${RC}' 2>/dev/null; container_name '$WS'")
 
 mkdir -p "${XDG_CONFIG_HOME}/rip-cage/projects" "${XDG_CONFIG_HOME}/rip-cage/secrets"
 CONF="${XDG_CONFIG_HOME}/rip-cage/projects/${NAME}.yaml"
-# WORKAROUND (rip-cage-mxr8): the template's ~/.claude/projects,
-# ~/.claude/sessions and ~/.claude/skills mount lines collide with mounts rc up
-# already generates (msb refuses two mounts on one guest path; init cannot
-# replace a read-only skills mount with its symlink). Drop those three lines
-# until mxr8 lands; every auth-relevant line (secrets, env, egress) stays
-# verbatim.
-sed -e '\#/.claude/projects:/home/agent/.claude/projects"#d' \
-    -e '\#/.claude/sessions:/home/agent/.claude/sessions"#d' \
-    -e '\#/.claude/skills:/home/agent/.claude/skills:ro"#d' \
-    -e "s#<ABSOLUTE_PATH_TO_YOUR_PROJECT>#${WS}#g" \
+# The shipped template VERBATIM, placeholders filled (rip-cage-mxr8 removed the
+# workaround that dropped three colliding mount lines here).
+sed -e "s#<ABSOLUTE_PATH_TO_YOUR_PROJECT>#${WS}#g" \
     -e "s#<ABSOLUTE_PATH_TO_YOUR_HOME>#${HOME}#g" \
     -e "s#<CAGE-NAME>#${NAME}#g" \
     -e "s#^image: rip-cage:latest#image: ${IMAGE}#" \
@@ -145,6 +138,13 @@ else
   fail "rc up did not produce a running cage (exit ${up_rc})" "log tail: $(tail -5 "$UP_LOG" | tr '\n' ' ')"
   exit 1
 fi
+
+# M1-M3 (rip-cage-mxr8): the template boots with init exit 0, rc's skills
+# projection is the symlink, and no Claude-home mount warning fired.
+if [[ $up_rc -eq 0 ]]; then pass "M1 rc up (init included) exit 0 on the template config"; else fail "M1 rc up exit ${up_rc}" "log tail: $(tail -5 "$UP_LOG" | tr '\n' ' ')"; fi
+skills_link=$(gexec 30 readlink /home/agent/.claude/skills 2>/dev/null)
+if [[ "$skills_link" == "/home/agent/.rc-context/skills" ]]; then pass "M2 ~/.claude/skills -> ${skills_link}"; else fail "M2 ~/.claude/skills is not the rc projection symlink" "readlink=${skills_link:-<none>}"; fi
+if grep -q "does not mount ~/.claude\|mounts ~/.claude/skills itself" "$UP_LOG"; then fail "M3 rc up warned about Claude-home mounts on the template" "$(grep 'Warning: cage config' "$UP_LOG" | head -2 | tr '\n' ' ')"; else pass "M3 no Claude-home mount warning on the template"; fi
 
 # L1
 gexec 30 test -e /home/agent/.claude/.credentials.json >/dev/null 2>&1
@@ -192,6 +192,29 @@ elif [[ $cl_rc -eq 0 && -s "$CL_OUT" ]]; then
   pass "L4 claude -p exit 0, output: $(head -c 200 "$CL_OUT" | tr '\n' ' ')"
 else
   fail "L4 claude -p exit ${cl_rc}" "output: $(head -c 400 "$CL_OUT" | tr '\n' ' ')"
+fi
+
+# M4 (rip-cage-mxr8): a PRE-mxr8 config -- no session lines, the old skills
+# line still present -- boots, and rc up names both problems before msb
+# instead of init failing. Same cage name, recreated via --replace.
+LEGACY_CONF="${T}/legacy.yaml"
+sed -e '\#/.claude/projects:/home/agent/.claude/projects"#d' \
+    -e '\#/.claude/sessions:/home/agent/.claude/sessions"#d' \
+    -e "s#^  - \"${WS}:/workspace\"#&\\
+  - \"${HOME}/.claude/skills:/home/agent/.claude/skills:ro\"#" \
+    "$CONF" > "$LEGACY_CONF"
+if grep -qF "${HOME}/.claude/skills:/home/agent/.claude/skills:ro" "$LEGACY_CONF"; then
+  cp "$LEGACY_CONF" "$CONF"
+  LEG_LOG="${T}/up-legacy.log"
+  "$RC" up --replace "$WS" < /dev/null > "$LEG_LOG" 2>&1
+  leg_rc=$?
+  if [[ $leg_rc -eq 0 ]]; then pass "M4a legacy config boots, rc up exit 0"; else fail "M4a legacy config rc up exit ${leg_rc}" "log tail: $(tail -5 "$LEG_LOG" | tr '\n' ' ')"; fi
+  if grep -q "does not mount ~/.claude/projects" "$LEG_LOG" && grep -q "does not mount ~/.claude/sessions" "$LEG_LOG"; then pass "M4b rc up names both missing session lines"; else fail "M4b missing-session-line warning absent"; fi
+  if grep -q "mounts ~/.claude/skills itself" "$LEG_LOG"; then pass "M4c rc up names the legacy skills line"; else fail "M4c legacy skills-line warning absent"; fi
+  # shellcheck disable=SC2016  # awk program runs in the guest
+  if gexec 30 awk '$5 == "/home/agent/.claude/skills" { f=1 } END { exit !f }' /proc/self/mountinfo >/dev/null 2>&1; then pass "M4d init left the config's skills mount in place"; else fail "M4d ~/.claude/skills is not the config mount after init"; fi
+else
+  fail "M4 could not build the legacy config fixture"
 fi
 
 echo ""

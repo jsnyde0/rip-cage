@@ -287,6 +287,16 @@ fi
 # 3. Link skills and commands from host (staged via .rc-context/)
 for _rc_asset in skills commands agents; do
   if [ -d "/home/agent/.rc-context/${_rc_asset}" ]; then
+    # A cage config that mounts ~/.claude/<asset> itself (the pre-rip-cage-mxr8
+    # template did, for skills) puts a mountpoint here. rm -rf cannot remove a
+    # mountpoint, and on a writable mount it would delete the HOST's files.
+    # Leave the config's mount in place and skip the symlink; rc up already
+    # warned naming the config line to delete.
+    # /proc/mounts field 2, same predicate as _is_mountpoint below.
+    if awk -v p="/home/agent/.claude/${_rc_asset}" '$2 == p { found=1 } END { exit !found }' /proc/mounts 2>/dev/null; then
+      echo "[rip-cage] WARNING: ~/.claude/${_rc_asset} is mounted by the cage config; leaving it in place (delete that mounts: line so rc's projection links it)"
+      continue
+    fi
     # Remove any real directory that may exist — ln -sfn would nest inside it otherwise
     if [ -d ~/.claude/"${_rc_asset}" ] && [ ! -L ~/.claude/"${_rc_asset}" ]; then
       rm -rf ~/.claude/"${_rc_asset}"
@@ -357,8 +367,9 @@ unset _pi_ext_stage
 # encoded project key (passed in via RC_HOST_PROJECT_KEY) to unify history
 # with sessions started outside the cage.
 #
-# Legacy fallback: when no bind mount is present (e.g. older `rc up` from
-# a pre-dn2 binary), fall back to the .claude-state Docker volume.
+# Fallback: when no bind mount is present (the cage config omits the
+# template's ~/.claude/projects line -- rc appends none since rip-cage-mxr8 --
+# or a cage from a pre-dn2 rc), fall back to the .claude-state volume.
 _is_mountpoint() {
   # mountpoint(1) isn't guaranteed installed; /proc/mounts is.
   awk -v p="$1" '$2 == p { found=1; exit } END { exit !found }' /proc/mounts

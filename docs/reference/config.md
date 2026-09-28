@@ -68,14 +68,13 @@ mounts:
   - "/Users/you/.claude/projects:/home/agent/.claude/projects"
   - "/Users/you/.claude/sessions:/home/agent/.claude/sessions"
 
-  # Host skills, read-only.
-  - "/Users/you/.claude/skills:/home/agent/.claude/skills:ro"
-
   # Host Claude config, READ-ONLY. See below.
   - "/Users/you/.claude.json:/home/agent/.claude.json:ro"
 ```
 
-**The session mounts are not optional if you care about continuity.** Adding a host to the allowlist recreates the cage; without `~/.claude/projects` and `~/.claude/sessions` on the host, the running conversation goes with it.
+**The session mounts are not optional if you care about continuity.** Adding a host to the allowlist recreates the cage; without `~/.claude/projects` and `~/.claude/sessions` on the host, the running conversation goes with it. The config owns these two lines; `rc` adds neither, and `rc up` warns when one is missing.
+
+**Host skills need no line.** `rc` projects `~/.claude/skills` itself (read-only at `/home/agent/.rc-context/skills`, symlinked into `~/.claude/skills` by init). Mounting `~/.claude/skills` from the config puts a mountpoint where that symlink goes; `rc up` warns and init leaves the mount in place.
 
 **`~/.claude.json` is `:ro` on purpose.** Init snapshots it to a seed file at boot and the in-cage agent works from the copy. Read-write would hand a prompt-injected agent a write into the `mcpServers` and `hooks` that your **host** Claude later executes ([ADR-024](../decisions/ADR-024-prompt-injection-threat-model.md)). Drop the line entirely if you do not run Claude Code in this cage.
 

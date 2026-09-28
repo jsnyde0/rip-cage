@@ -761,6 +761,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-bd-wrapper.sh"
   run_test "${SCRIPT_DIR}/test-code-review-fixes.sh"
   run_test "${SCRIPT_DIR}/test-dg6.2.sh"
+  run_test "${SCRIPT_DIR}/test-claude-home-mounts.sh"   # rip-cage-mxr8: config owns ~/.claude/projects+sessions, rc owns the skills projection; template dry-run names each guest path once; fake docker+msb shims, host-only
   run_test "${SCRIPT_DIR}/test-auth-secret.sh"   # rip-cage-ely4.7.17: msb --secret CCTOK non-possession bridge — rc auth's no-prompt check + rc up's pre-msb-call refusal, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-auth-secret-live.sh"   # rip-cage-ely4.7.17: container-tier half — template cage holds only the $MSB_CCTOK placeholder, no credentials file, claude -p green (NEEDS_CONTAINER; SKIPs without the host CCTOK file)
   run_test "${SCRIPT_DIR}/test-pi-install.sh"

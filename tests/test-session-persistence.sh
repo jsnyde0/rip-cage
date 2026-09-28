@@ -77,15 +77,16 @@ DRY_OUT=$(RC_CAGE_CONF="$(cage_conf_for "$DRY_PROJECT")" "$RC" --dry-run up "$DR
 DRY_PROJECT_RESOLVED=$(cd "$DRY_PROJECT" && pwd -P)
 EXPECTED_DRY_KEY=$(printf '%s' "$DRY_PROJECT_RESOLVED" | tr '/.' '-')
 
-if echo "$DRY_OUT" | grep -q "~/.claude/projects -> /home/agent/.claude/projects"; then
-  check "dry-run advertises projects bind-mount" pass
+# rip-cage-mxr8: the CONFIG owns the projects/sessions mounts (cage_conf_for
+# writes the template's two lines); rc appends neither and warns when a config
+# lacks one. No warning here means the fixture config carries both.
+# The "Would run:" argv line is required too, so an rc that errored out before
+# the plan (DRY_OUT is captured with || true) cannot pass by printing nothing.
+if echo "$DRY_OUT" | grep -q "^Would run: msb create" \
+    && ! echo "$DRY_OUT" | grep -q "does not mount ~/.claude/projects\|does not mount ~/.claude/sessions"; then
+  check "dry-run: plan printed, fixture config carries the projects/sessions mounts (no warning)" pass
 else
-  check "dry-run advertises projects bind-mount" fail
-fi
-if echo "$DRY_OUT" | grep -q "~/.claude/sessions -> /home/agent/.claude/sessions"; then
-  check "dry-run advertises sessions bind-mount" pass
-else
-  check "dry-run advertises sessions bind-mount" fail
+  check "dry-run: plan printed, fixture config carries the projects/sessions mounts (no warning)" fail
 fi
 if echo "$DRY_OUT" | grep -q "RC_HOST_PROJECT_KEY=$EXPECTED_DRY_KEY"; then
   check "dry-run sets RC_HOST_PROJECT_KEY=$EXPECTED_DRY_KEY" pass
