@@ -226,23 +226,67 @@ _up_detect_worktree() {
   local resolved_git_dir
   resolved_git_dir=$(realpath "$main_git_dir" 2>/dev/null) || true
 
-  # The allowed-roots containment check that used to gate this retired with the
-  # guard (ADR-031 D2). What still has to hold is that the path resolved: a
-  # worktree pointing at a .git/ that does not exist leaves git broken inside.
-  if [[ -n "$resolved_git_dir" && -d "$resolved_git_dir" ]] && _mount_src_exposes_secrets_dir "$resolved_git_dir"; then
-    # rip-cage-ely4.7.17: the gitdir line is workspace content (ADR-024 scope);
-    # its grandparent is mounted read-write, so it must never expose the
-    # CCTOK secrets dir. The general hostile-gitdir hole is rip-cage-qyer.
-    echo "Warning: skipping worktree mount ${resolved_git_dir} — it contains $(_protected_paths_secrets_dir) (the host CCTOK secrets dir never rides into a cage); git will not work inside" >&2
-    wt_error="main .git/ at ${resolved_git_dir} contains the rip-cage secrets dir"
-  elif [[ -n "$resolved_git_dir" && -d "$resolved_git_dir" ]]; then
-    wt_detected=true
-    wt_main_git="$resolved_git_dir"
-    log "Worktree detected: ${wt_name} (main .git/ at ${wt_main_git})"
-  else
+  if [[ -z "$resolved_git_dir" || ! -d "$resolved_git_dir" ]]; then
     log "Warning: worktree's main .git/ at $main_git_dir could not be resolved — git will not work"
     wt_error="main .git/ at $main_git_dir could not be resolved"
+    return 0
   fi
+
+  # rip-cage-qyer: VALIDITY BEFORE A READ-WRITE MOUNT. The gitdir line is
+  # workspace content (ADR-024 scope) and its grandparent is mounted
+  # read-write, so `gitdir: ~/.ssh/worktrees/x` used to hand the cage a
+  # writable ~/.ssh. The allowed-roots containment that once gated this
+  # retired with ADR-031 D2. The main .git dir is mounted only when ALL hold:
+  #   1. it does not contain the CCTOK secrets dir (rip-cage-ely4.7.17);
+  #   2. it is not a protected path (share/rip-cage/protected-paths);
+  #   3. it is a git dir: HEAD, objects/ and refs/;
+  #   4. it is not the workspace itself or inside it: the workspace is
+  #      writable, so a planted HEAD/objects/refs/backlink there would remount
+  #      it at /workspace/.git-main, beyond the reach of the protected-path
+  #      covers rc lays over the workspace mount (rip-cage-qyer review);
+  #   5. its worktrees/<name>/gitdir points back at THIS workspace's .git.
+  # Any miss: one Warning naming the path and the failed condition, wt_error
+  # set, and the cage boots WITHOUT the mount (git broken inside, cage up).
+  # Warn-and-skip, never refuse: a stale or hand-edited worktree file is a
+  # common accident, not a reason to block the run (RULING on rip-cage-qyer).
+  local _wt_reason="" _pp_match _backlink _backlink_resolved _own_git _ws_resolved
+  _ws_resolved=$(realpath "$_path" 2>/dev/null) || _ws_resolved="$_path"
+  if _mount_src_exposes_secrets_dir "$resolved_git_dir"; then
+    _wt_reason="it contains $(_protected_paths_secrets_dir) (the host CCTOK secrets dir never rides into a cage)"
+  elif _pp_match=$(_protected_paths_path_match "$resolved_git_dir"); then
+    _wt_reason="it matches protected path '${_pp_match}'"
+  elif [[ ! -f "${resolved_git_dir}/HEAD" || ! -d "${resolved_git_dir}/objects" || ! -d "${resolved_git_dir}/refs" ]]; then
+    _wt_reason="it is not a git dir (needs HEAD, objects/ and refs/)"
+  elif [[ "$resolved_git_dir" == "$_ws_resolved" || "$resolved_git_dir" == "$_ws_resolved"/* ]]; then
+    _wt_reason="it is inside the workspace itself (a planted git dir)"
+  elif [[ ! -f "${resolved_git_dir}/worktrees/${wt_name}/gitdir" ]]; then
+    _wt_reason="it has no worktrees/${wt_name}/gitdir entry"
+  else
+    # `|| _backlink=""`: an unreadable file must warn-and-skip below, not
+    # trip set -e and abort rc up.
+    _backlink=$(head -n 1 "${resolved_git_dir}/worktrees/${wt_name}/gitdir" 2>/dev/null) || _backlink=""
+    if [[ -z "$_backlink" ]]; then
+      _wt_reason="its worktrees/${wt_name}/gitdir is empty or unreadable"
+    else
+      # git writes this absolute by default, relative under worktree.useRelativePaths.
+      [[ "$_backlink" != /* ]] && _backlink="${resolved_git_dir}/worktrees/${wt_name}/${_backlink}"
+      _backlink_resolved=$(realpath "$_backlink" 2>/dev/null) || _backlink_resolved=""
+      _own_git=$(realpath "${_path}/.git" 2>/dev/null) || _own_git=""
+      if [[ -z "$_backlink_resolved" || "$_backlink_resolved" != "$_own_git" ]]; then
+        _wt_reason="its worktrees/${wt_name}/gitdir points at ${_backlink}, not this workspace's .git"
+      fi
+    fi
+  fi
+
+  if [[ -n "$_wt_reason" ]]; then
+    echo "Warning: skipping worktree mount ${resolved_git_dir} — ${_wt_reason}; git will not work inside" >&2
+    wt_error="main .git/ at ${resolved_git_dir}: ${_wt_reason}"
+    return 0
+  fi
+
+  wt_detected=true
+  wt_main_git="$resolved_git_dir"
+  log "Worktree detected: ${wt_name} (main .git/ at ${wt_main_git})"
 }
 
 
