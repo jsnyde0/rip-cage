@@ -1,6 +1,6 @@
 ---
 name: cage-image
-description: "Extend the rip-cage base image with your own Dockerfile and boot-descriptor fragment. Use when a cage needs a tool, language runtime, database, multiplexer (tmux, herdr), or command guard that the base image does not have; when `rc build` fails or refuses; or when the human says 'add <tool> to the cage', 'the cage needs <X>', 'build a custom cage image'. Do NOT use for the per-project config file of mounts, secrets and egress (that is cage-config) or for running a cage (that is cage-ops)."
+description: "Extend the rip-cage base image: Dockerfile plus boot-descriptor fragment for a tool, runtime, database, multiplexer or guard. Use when the cage needs <X> or `rc build` refuses. Not the config (cage-config) or running it (cage-ops)."
 ---
 
 # cage-image

@@ -1,6 +1,6 @@
 ---
 name: cage-config
-description: "Write or repair the one config file a rip-cage cage launches from — a native microsandbox config at ~/.config/rip-cage/projects/<cage>.yaml. Use when setting up a cage for a project, when `rc up` refuses with CAGE_CONFIG_MISSING, when a host must be added to the egress allowlist, when a mount or secret needs declaring, or when the human says 'set up a cage here', 'configure the cage', 'add <host> to the allowlist'. Do NOT use for building the image (that is cage-image) or for running and troubleshooting a live cage (that is cage-ops)."
+description: "Write or repair a project's rip-cage config: mounts, secrets, egress allowlist. Use on CAGE_CONFIG_MISSING or to allow a host. Not the image (cage-image) or a live cage (cage-ops)."
 ---
 
 # cage-config

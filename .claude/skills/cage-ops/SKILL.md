@@ -1,6 +1,6 @@
 ---
 name: cage-ops
-description: "Run and troubleshoot a live rip-cage cage: start, resume, recreate, shell in, read its logs, fix a denied egress host, fix auth. Use when a caged agent reports something blocked or failing — 'pip is failing', 'git push hangs', 'curl gets connection refused', 'the agent says it cannot reach X' — when a cage will not start or resume, when credentials expired, or when someone asks for an rc verb that no longer exists (rc ls, rc exec, rc down, rc attach, rc reload, rc allowlist, rc config). Do NOT use for writing the config file (that is cage-config) or building the image (that is cage-image)."
+description: "Run and troubleshoot a live rip-cage cage: start, resume, shell in, read logs, fix a denied host or expired auth, retired rc verbs. Use when a caged agent reports something blocked. Not the config (cage-config) or the image (cage-image)."
 ---
 
 # cage-ops
