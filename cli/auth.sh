@@ -43,11 +43,34 @@ _auth_cctok_file() {
 }
 
 # _auth_file_mode FILE — echo FILE's permission bits as a bare octal string
-# ("600"), portable across BSD stat (macOS) and GNU stat (Linux). Echoes
+# ("600"), portable across GNU stat (Linux) and BSD stat (macOS). Echoes
 # nothing and returns non-zero if stat is unavailable or FILE vanished
 # between the caller's existence check and this call.
+#
+# rip-cage-ely4.7.17 fix round 3, finding 1: GNU coreutils' `stat -f` is a
+# DIFFERENT flag from BSD's -- "-f" means "report the FILESYSTEM, not the
+# file" on GNU, so `stat -f '%Lp' FILE` there prints filesystem status to
+# STDOUT and still exits 1 (wrong output, not a clean failure). The old
+# `stat -f ... || stat -c ...` one-liner ran both on GNU (the `||` only
+# short-circuits on the first's exit code) and its stdout was the
+# CONCATENATION of the filesystem-status junk AND the real "600" -- which
+# never string-equals "600", so `rc auth` and `rc up`'s gate failed on every
+# Linux host. Each branch below is captured SEPARATELY and only returned on
+# its OWN success, so the two invocations' stdout can never mix. GNU's -c
+# form is tried first (this is the common case, Linux); BSD's `stat -c`
+# fails fast with empty stdout and a non-zero exit, so the `&&` falls
+# through to the BSD -f form cleanly.
 _auth_file_mode() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  local _mode
+  if _mode=$(stat -c '%a' "$1" 2>/dev/null) && [[ -n "$_mode" ]]; then
+    printf '%s' "$_mode"
+    return 0
+  fi
+  if _mode=$(stat -f '%Lp' "$1" 2>/dev/null) && [[ -n "$_mode" ]]; then
+    printf '%s' "$_mode"
+    return 0
+  fi
+  return 1
 }
 
 # _auth_cctok_check — verify the CCTOK secret file: exists, is a regular

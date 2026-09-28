@@ -408,12 +408,33 @@ _doctor_format_auth_probe() {
   echo "FAIL — no CLAUDE_CODE_OAUTH_TOKEN and no ANTHROPIC_API_KEY in-cage"
 }
 
-# _doctor_format_host_auth_probe — the host-side counterpart to
+# _doctor_format_host_auth_probe NAME — the host-side counterpart to
 # _doctor_format_auth_probe: what would `rc auth` say right now? Reuses
 # _auth_cctok_check (cli/auth.sh) directly rather than shelling out to `rc
 # auth`, so doctor's probe and the live verb never drift. Never prints the
 # token value — same guardrail _auth_cctok_check itself carries.
+#
+# rip-cage-ely4.7.17 fix round 3, finding 3: computed ONLY when NAME's own
+# cage config declares the CCTOK secret. An ANTHROPIC_API_KEY cage has no
+# reason to ever hold a secrets/CCTOK file, so probing the host file
+# unconditionally reported FAIL for every one of them — a false positive on a
+# cage that is working exactly as configured. The config path comes from the
+# `rc.cage-conf` label `rc up` stamps at create time (cli/up.sh:3042); a cage
+# predating that label, or one whose config no longer resolves, can't be
+# affirmatively shown to declare CCTOK, so it reads n/a rather than guessing.
 _doctor_format_host_auth_probe() {
+  local name="$1"
+  local _conf _declares
+  _conf=$(_msb_label "$name" "rc.cage-conf" 2>/dev/null || true)
+  if [[ -z "${_conf}" || ! -r "${_conf}" ]] || ! command -v yq &>/dev/null; then
+    echo "n/a — config declares no CCTOK secret"
+    return
+  fi
+  _declares=$(yq -r '.secrets // {} | has("CCTOK")' "${_conf}" 2>/dev/null) || _declares="false"
+  if [[ "${_declares}" != "true" ]]; then
+    echo "n/a — config declares no CCTOK secret"
+    return
+  fi
   if _auth_cctok_check; then
     echo "OK — $(_auth_cctok_file) (0600, setup-token-shaped)"
   else
@@ -571,7 +592,7 @@ cmd_doctor() {
   # it needs no running container — computed unconditionally, unlike the
   # live in-cage probes below (rip-cage-ely4.7.17).
   local host_auth_probe
-  host_auth_probe=$(_doctor_format_host_auth_probe)
+  host_auth_probe=$(_doctor_format_host_auth_probe "$name")
 
   # Live probes (only when running). Each probe returns a status string and detail.
   local beads_probe="not running, no live probe"

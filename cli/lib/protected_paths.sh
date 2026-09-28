@@ -196,11 +196,24 @@ _protected_paths_conf_bind_mounts() {
 # treatment structurally rather than by a check: _protected_paths_resolve only
 # ever looks at rc's own install directory or the operator's host config
 # directory, never at a path derived from the cage config.
+#
+# rip-cage-ely4.7.17 fix round 3, finding 2: the CCTOK secrets directory
+# ($XDG_CONFIG_HOME/rip-cage/secrets, cli/up.sh:_up_prepare_conf_secret_env /
+# cli/auth.sh:_auth_cctok_file) is a FIFTH D5(a) input -- the host file msb
+# --secret reads the real CCTOK value from. Mounting it (or an ancestor of it)
+# into a cage would hand the guest the same value msb --secret exists to keep
+# non-possessed, so it gets the identical treatment as the config-inside-mount
+# check above: same before-any-msb-call loop over the config's own mounts,
+# same real-path resolution, same refuse-before-any-msb-call posture.
 # --------------------------------------------------------------------------
 _protected_paths_conf_outside_mounts() {
   local _conf="$1"
   local _conf_real
   _conf_real="$(cd "$(dirname "${_conf}")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "${_conf}")")" || _conf_real="${_conf}"
+
+  local _secrets_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/rip-cage/secrets"
+  local _secrets_real
+  _secrets_real="$(cd "${_secrets_dir}" 2>/dev/null && pwd -P)" || _secrets_real="${_secrets_dir}"
 
   local _mounts _host _guest _host_real
   _mounts="$(_protected_paths_conf_bind_mounts "${_conf}")" || return 1
@@ -211,6 +224,10 @@ _protected_paths_conf_outside_mounts() {
     _host_real="$(cd "${_host}" 2>/dev/null && pwd -P)" || continue
     if [[ "${_conf_real}" == "${_host_real}" || "${_conf_real}" == "${_host_real}"/* ]]; then
       echo "Error: the cage config ${_conf} sits inside ${_host}, which that same config mounts into the cage. Refusing to launch before any msb call: an agent inside the cage could edit the file that decides what the next cage mounts (ADR-031 D5(a)). Move the config to ${XDG_CONFIG_HOME:-${HOME}/.config}/rip-cage/projects/ and point rc at it there." >&2
+      return 1
+    fi
+    if [[ "${_secrets_real}" == "${_host_real}" || "${_secrets_real}" == "${_host_real}"/* ]]; then
+      echo "Error: the cage config ${_conf} mounts ${_host}, which is or contains ${_secrets_dir} -- the CCTOK secrets directory msb --secret reads the real token value from. Refusing to launch before any msb call: mounting it into the cage would hand the guest the same value msb --secret exists to keep non-possessed (ADR-031 D5(a)). Remove that mount line from ${_conf}." >&2
       return 1
     fi
   done <<< "${_mounts}"

@@ -2290,8 +2290,12 @@ cmd_up() {
     exit 1
   fi
 
+  # rip-cage-ely4.7.17 fix round 3, finding 2: this one check now refuses two
+  # things -- the config resolving inside its own mount, and a mount that is
+  # or contains the CCTOK secrets dir (ADR-031 D5(a)) -- see stderr (printed
+  # by _protected_paths_conf_outside_mounts itself) for which one fired.
   if ! _protected_paths_conf_outside_mounts "$_UP_CAGE_CONF"; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage config ${_UP_CAGE_CONF} resolves inside a tree it mounts" "CAGE_CONFIG_INSIDE_MOUNT"
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage config ${_UP_CAGE_CONF} mounts a location it must not (see stderr)" "CAGE_CONFIG_INSIDE_MOUNT"
     exit 1
   fi
 
@@ -2673,8 +2677,16 @@ cmd_up() {
       # prints something the real launch would not do is not possible by
       # construction — not a second rendering that can drift from the first.
       #
-      # _UP_DRY_RUN_NO_SIDE_EFFECTS keeps the mount preparation read-only:
-      # --dry-run must never reach the macOS keychain.
+      # _UP_DRY_RUN_NO_SIDE_EFFECTS keeps the mount preparation read-only.
+      # STALE CLAIM FIXED (rip-cage-ely4.7.17 fix round 3, finding 4): this
+      # used to say "--dry-run must never reach the macOS keychain" -- that
+      # guard's subject, the keychain-extraction possession path, is deleted
+      # (rip-cage-ely4.7.17; see the retirement note in _up_prepare_docker_mounts
+      # above). This flag has no consumer left in this file for that reason,
+      # but stays set here so a future host-side side effect added to
+      # _up_prepare_docker_mounts / _up_prepare_environment must opt IN to
+      # running under --dry-run (fail-closed default) rather than silently
+      # start running under the dry-run preview.
       if [[ "$would_action" == "would_create" || "$would_action" == "would_converge" ]]; then
         local _UP_RUN_ARGS=()
         local _UP_DRY_RUN_NO_SIDE_EFFECTS=1

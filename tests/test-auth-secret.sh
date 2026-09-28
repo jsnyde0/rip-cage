@@ -505,6 +505,160 @@ else
 fi
 rm -rf "$HOME_F2" "$FAKE_BIN_F2" "$CALL_LOG_F2"
 
+# =============================================================================
+# (h)/(i) rip-cage-ely4.7.17 fix round 3, finding 1: _auth_file_mode
+# (cli/auth.sh) must not concatenate a GNU `stat -f` failure's stdout with the
+# GNU `stat -c` fallback's stdout. A fake `stat` on PATH stands in for each
+# platform's real binary -- `rc auth` must accept a 0600 file under BOTH.
+# =============================================================================
+
+# _fake_stat_gnu <bindir> -- GNU coreutils shape: `-f FORMAT FILE` is "report
+# the FILESYSTEM", not the file, so a file-mode format string like '%Lp'
+# prints filesystem-status junk to stdout and still exits 1. `-c '%a' FILE`
+# is the real GNU file-mode query and succeeds.
+_fake_stat_gnu() {
+  cat > "${1}/stat" <<'STUBEOF'
+#!/usr/bin/env bash
+case "$1" in
+  -f)
+    echo "1234567890 512 4096 65535 0 0 0 some junk filesystem status"
+    exit 1
+    ;;
+  -c)
+    if [[ "$2" == "%a" ]]; then
+      # Real mode is always 0600 in this test's fixtures.
+      echo "600"
+      exit 0
+    fi
+    exit 1
+    ;;
+  *) exit 1 ;;
+esac
+STUBEOF
+  chmod +x "${1}/stat"
+}
+
+# _fake_stat_bsd <bindir> -- BSD/macOS shape: `-f '%Lp' FILE` succeeds; `-c`
+# is not a BSD stat flag at all and errors with empty stdout.
+_fake_stat_bsd() {
+  cat > "${1}/stat" <<'STUBEOF'
+#!/usr/bin/env bash
+case "$1" in
+  -f)
+    if [[ "$2" == "%Lp" ]]; then
+      echo "600"
+      exit 0
+    fi
+    exit 1
+    ;;
+  -c)
+    exit 1
+    ;;
+  *) exit 1 ;;
+esac
+STUBEOF
+  chmod +x "${1}/stat"
+}
+
+echo ""
+echo "=== Test (h): rc auth passes on a 0600 file under a GNU-shaped fake stat ==="
+HOME_H=$(_fresh_home)
+_write_cctok "$HOME_H" 600 "$DUMMY_TOKEN"
+STAT_BIN_H=$(mktemp -d /private/tmp/rc-auth-secret-fakestat-XXXXXX)
+_fake_stat_gnu "$STAT_BIN_H"
+out_h=$(HOME="$HOME_H" XDG_CONFIG_HOME="${HOME_H}/.config" PATH="${STAT_BIN_H}:${PATH}" bash "$RC" auth 2>&1)
+rc_h=$?
+if [[ $rc_h -eq 0 ]]; then
+  pass "(h) rc auth exits 0 on a 0600 file under a GNU-shaped fake stat"
+else
+  fail "(h) rc auth exited $rc_h on a 0600 file under a GNU-shaped fake stat: $out_h"
+fi
+rm -rf "$HOME_H" "$STAT_BIN_H"
+
+echo ""
+echo "=== Test (i): rc auth passes on a 0600 file under a BSD-shaped fake stat ==="
+HOME_I=$(_fresh_home)
+_write_cctok "$HOME_I" 600 "$DUMMY_TOKEN"
+STAT_BIN_I=$(mktemp -d /private/tmp/rc-auth-secret-fakestat-XXXXXX)
+_fake_stat_bsd "$STAT_BIN_I"
+out_i=$(HOME="$HOME_I" XDG_CONFIG_HOME="${HOME_I}/.config" PATH="${STAT_BIN_I}:${PATH}" bash "$RC" auth 2>&1)
+rc_i=$?
+if [[ $rc_i -eq 0 ]]; then
+  pass "(i) rc auth exits 0 on a 0600 file under a BSD-shaped fake stat"
+else
+  fail "(i) rc auth exited $rc_i on a 0600 file under a BSD-shaped fake stat: $out_i"
+fi
+rm -rf "$HOME_I" "$STAT_BIN_I"
+
+# =============================================================================
+# (j)/(k) rip-cage-ely4.7.17 fix round 3, finding 2: `rc up` refuses when a
+# mount source equals or contains $XDG_CONFIG_HOME/rip-cage/secrets
+# (_protected_paths_conf_outside_mounts, cli/lib/protected_paths.sh) -- that
+# directory holds the CCTOK host file msb --secret reads, and D5(a) requires
+# it stay outside every cage mount.
+# =============================================================================
+echo ""
+echo "=== Test (j): rc up refuses a config mounting XDG_CONFIG_HOME (secrets dir ancestor) ==="
+HOME_J=$(_fresh_home)
+PROJ_J="${HOME_J}/proj"
+mkdir -p "$PROJ_J" "${HOME_J}/.config"
+git -C "$PROJ_J" init -q >/dev/null 2>&1
+CONF_J="${HOME_J}/cage.yaml"
+cat > "$CONF_J" <<CONF
+image: rip-cage:latest
+workdir: /workspace
+mounts:
+  - "${PROJ_J}:/workspace"
+  - "${HOME_J}/.config:/home/agent/.config-leak:ro"
+network:
+  policy: none
+  allow:
+    - "api.anthropic.com:tcp:443"
+CONF
+CALL_LOG_J=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
+FAKE_BIN_J=$(_fake_runtime_bin "$CALL_LOG_J")
+out_j=$(HOME="$HOME_J" XDG_CONFIG_HOME="${HOME_J}/.config" RC_CAGE_CONF="$CONF_J" PATH="${FAKE_BIN_J}:${PATH}" bash "$RC" up --dry-run "$PROJ_J" 2>&1)
+rc_j=$?
+if [[ $rc_j -ne 0 ]]; then
+  pass "(j) rc up refuses a config mounting the secrets dir's parent"
+else
+  fail "(j) rc up exited 0 despite mounting the secrets dir's parent: $out_j"
+fi
+if echo "$out_j" | grep -qF "${HOME_J}/.config/rip-cage/secrets"; then
+  pass "(j) the refusal names the secrets dir"
+else
+  fail "(j) the refusal did not name the secrets dir: $out_j"
+fi
+if [[ -s "$CALL_LOG_J" ]] && grep -Eq '^(docker (pull|tag|save)|msb (load|create))\b' "$CALL_LOG_J"; then
+  fail "(j) the call log shows a provisioning call despite the refusal: $(cat "$CALL_LOG_J")"
+else
+  pass "(j) the call log holds no docker pull/tag/save or msb load/create call (refused before any msb call)"
+fi
+rm -rf "$HOME_J" "$FAKE_BIN_J" "$CALL_LOG_J"
+
+echo ""
+echo "=== Test (k): rc up with an unrelated mount is NOT refused by the secrets-dir check ==="
+HOME_K=$(_fresh_home)
+PROJ_K="${HOME_K}/proj"
+mkdir -p "$PROJ_K"
+git -C "$PROJ_K" init -q >/dev/null 2>&1
+CONF_K=$(_plain_conf "$HOME_K" "$PROJ_K")
+CALL_LOG_K=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
+FAKE_BIN_K=$(_fake_runtime_bin "$CALL_LOG_K")
+out_k=$(HOME="$HOME_K" XDG_CONFIG_HOME="${HOME_K}/.config" RC_CAGE_CONF="$CONF_K" PATH="${FAKE_BIN_K}:${PATH}" bash "$RC" up --dry-run "$PROJ_K" 2>&1)
+rc_k=$?
+if [[ $rc_k -eq 0 ]]; then
+  pass "(k) rc up with an unrelated mount is not refused"
+else
+  fail "(k) rc up with an unrelated mount was refused: $out_k"
+fi
+if echo "$out_k" | grep -qi "secrets"; then
+  fail "(k) an unrelated mount unexpectedly triggered the secrets-dir refusal wording: $out_k"
+else
+  pass "(k) no secrets-dir refusal wording on an unrelated mount"
+fi
+rm -rf "$HOME_K" "$FAKE_BIN_K" "$CALL_LOG_K"
+
 
 echo ""
 echo "======================================"

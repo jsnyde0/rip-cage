@@ -16,7 +16,14 @@
 # prints, logs or echoes its content. Source file: RC_LIVE_CCTOK_SRC, default
 # ~/.config/rip-cage/secrets/CCTOK. Absent -> SKIP (no token, nothing to prove).
 #
-# Image: RC_IMAGE (default rip-cage:latest). Build a scratch tag with
+# Image: RC_IMAGE, REQUIRED to be an explicit scratch tag, never
+# rip-cage:latest (rip-cage-ely4.7.17 fix round 3, finding 4). `rc up`'s
+# image-present branch still takes the image-absent (pull+tag+load) path when
+# the LOCAL tag's org.opencontainers.image.version label doesn't match rc's
+# own VERSION file (_image_is_current, cli/build.sh) -- not just when the tag
+# is missing entirely. That is exactly the shape of this bead's own INCIDENT
+# note: a real non-dry-run rc up reached that branch and re-tagged the
+# operator's production rip-cage:latest. Build a scratch tag with
 # `RC_IMAGE=<tag> rc build --file cage/Dockerfile` to prove an unreleased tree.
 #
 # NEEDS_CONTAINER (registered in tests/run-host.sh).
@@ -37,12 +44,27 @@ if [[ ! -f "$CCTOK_SRC" ]]; then
   echo "SKIP: no host CCTOK secrets file at ${CCTOK_SRC} (run 'claude setup-token', save it there, chmod 600)"
   exit 0
 fi
+# rip-cage-ely4.7.17 fix round 3, finding 4: never run against rip-cage:latest
+# at all -- the operator's production tag is exactly what an earlier round's
+# INCIDENT rewrote. Before any rc call.
+if [[ -z "${RC_IMAGE:-}" || "$RC_IMAGE" == "rip-cage:latest" ]]; then
+  echo "SKIP: RC_IMAGE must be set to an explicit scratch tag other than rip-cage:latest -- this proof never runs rc up against the operator's production tag. Build one: RC_IMAGE=<tag> rc build --file cage/Dockerfile"
+  exit 0
+fi
 command -v msb >/dev/null 2>&1 || { echo "SKIP: msb not on PATH"; exit 0; }
 msb image inspect "$IMAGE" --format json >/dev/null 2>&1 || { echo "SKIP: image ${IMAGE} not in msb's cache"; exit 0; }
 # rc up's image-absent branch pulls and re-tags. Require the image locally in
 # docker too, and pin rc to the same tag, so this test can never trigger a pull
 # or touch an image it did not name.
 docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "SKIP: image ${IMAGE} not in docker's store (refusing to let rc up pull)"; exit 0; }
+# rc up ALSO takes that same pull+tag path when the tag EXISTS but carries a
+# stale version label -- reuse rc's OWN _image_is_current (cli/build.sh),
+# sourced rather than re-implemented, same idiom as container_name below, so
+# this guard can never drift from the check rc up itself makes.
+if ! ( RC_IMAGE="$IMAGE" bash -c "source '${RC}' 2>/dev/null; _image_is_current" ); then
+  echo "SKIP: ${IMAGE} is not current per rc's own _image_is_current check (org.opencontainers.image.version label doesn't match rc's VERSION file) -- rc up would take the image-absent branch and pull/tag/load onto it. Build a fresh scratch tag: RC_IMAGE=${IMAGE} rc build --file cage/Dockerfile"
+  exit 0
+fi
 export RC_IMAGE="$IMAGE"
 
 # macOS: msb does not follow a host-side symlink in a mount source, and /tmp is
