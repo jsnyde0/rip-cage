@@ -194,6 +194,14 @@ else
   fail "L4 claude -p exit ${cl_rc}" "output: $(head -c 400 "$CL_OUT" | tr '\n' ' ')"
 fi
 
+# E1-E2 (rip-cage-q146): the template leaves network.strict at msb's default
+# (true on 0.7.3+). A host allowed by name WITHOUT a secret of its own still
+# connects (the CCTOK binding turns TLS interception on), and default-deny
+# still holds for a name the list does not carry.
+e1_code=$(gexec 30 curl -sS -m 15 -o /dev/null -w '%{http_code}' https://github.com 2>&1)
+if [[ "$e1_code" == "200" ]]; then pass "E1 github.com (allowed, no secret) -> HTTP 200 under the template's strict default"; else fail "E1 github.com under the template" "got: ${e1_code}"; fi
+if gexec 30 getent hosts example.com >/dev/null 2>&1; then fail "E2 example.com (not allowed) RESOLVES -- default-deny is off"; else pass "E2 example.com (not allowed) does not resolve"; fi
+
 # M4 (rip-cage-mxr8): a PRE-mxr8 config -- no session lines, the old skills
 # line still present -- boots, and rc up names both problems before msb
 # instead of init failing. Same cage name, recreated via --replace.

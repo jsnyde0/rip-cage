@@ -53,6 +53,10 @@ msb exec <cage> -- sh -c 'curl -sS -m 5 https://<host>/ -o /dev/null -w "%{http_
 - **Name does not resolve** → the host is not on the allowlist. Add it.
 - **Name resolves, connect fails immediately** → the host IS allowed but the
   PORT is not. Check the entry: `"<host>:tcp:443"` allows 443 and nothing else.
+- **Name resolves, connects, then the TLS handshake is cut** (`curl: (35) TLS
+  connect error ... unexpected eof`) → msb 0.7.3+ strict mode: the config
+  binds no secret and does not set `network.strict`. Add `strict: false` under
+  `network:`, then `rc up --replace`.
 - **It hangs rather than failing fast** → suspect an msb older than 0.6.10,
   which fake-accepted a denied connect. Check `msb --version`.
 

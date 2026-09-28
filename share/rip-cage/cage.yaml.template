@@ -118,6 +118,12 @@ env:
 # prints the exact line to add here. Add it, then `rc up --replace <project>`.
 network:
   policy: none
+  # msb 0.7.3+ runs `strict` on by default: an HTTPS host allowed by name is
+  # checked against the request's real authority, which needs TLS interception,
+  # and msb intercepts while a secret is bound (the CCTOK entry above). Keep
+  # both and strict works as is. If you drop every secrets: entry, add
+  # `strict: false` here, or every name below fails at the TLS handshake;
+  # that opts out of the authority check, back to msb 0.6.x behaviour.
   allow:
     # Claude Code itself. Without this the agent cannot talk to anything.
     - "api.anthropic.com:tcp:443"

@@ -139,6 +139,7 @@ env:
   CLAUDE_CODE_OAUTH_TOKEN: "\$MSB_CCTOK"
 network:
   policy: none
+  strict: false
   allow:
     - "api.anthropic.com:tcp:443"
 CONF
@@ -156,6 +157,7 @@ mounts:
   - "${_proj}:/workspace"
 network:
   policy: none
+  strict: false
   allow:
     - "api.anthropic.com:tcp:443"
 CONF
@@ -616,6 +618,7 @@ mounts:
   - "${_extra_host}:${_extra_guest}:ro"
 network:
   policy: none
+  strict: false
   allow:
     - "api.anthropic.com:tcp:443"
 CONF

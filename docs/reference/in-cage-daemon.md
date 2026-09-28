@@ -73,7 +73,9 @@ USER agent
 
 `rc-boot-merge` appends your daemons and multiplexers and replaces a `tools[]`
 entry of the same name. **End on `USER agent`** — an extension that ends on root
-boots a root shell with every mount stranded, silently (measured, msb 0.6.18).
+would boot a root shell with every mount stranded; the floor probe refuses that
+boot instead, naming `runtime-user` and `agent-home` (measured, msb 0.7.3,
+`tests/test-floor-probe.sh` F2).
 
 ## The `exec` prefix on `start`
 

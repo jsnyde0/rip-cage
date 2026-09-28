@@ -694,7 +694,7 @@ cmd_doctor() {
 
     local _bd_leg _bd_state="skip" _bd_out _bd_rc=0
     if [[ "$_has_beads" -eq 1 ]]; then
-      _bd_out=$(msb exec -w /workspace "$name" -- bd status 2>&1) || _bd_rc=$?
+      _bd_out=$(msb exec -w /workspace "$name" -- bd status 2>&1 </dev/null) || _bd_rc=$?
       if [[ "$_bd_rc" -eq 0 ]]; then
         _bd_state="ok"
         _bd_leg="bd status OK"
@@ -708,7 +708,7 @@ cmd_doctor() {
 
     local _git_leg _git_state="skip" _git_out _git_rc=0
     if [[ "$_has_git" -eq 1 ]]; then
-      _git_out=$(msb exec -w /workspace "$name" -- git status 2>&1) || _git_rc=$?
+      _git_out=$(msb exec -w /workspace "$name" -- git status 2>&1 </dev/null) || _git_rc=$?
       if [[ "$_git_rc" -eq 0 ]]; then
         _git_state="ok"
         _git_leg="git status OK"

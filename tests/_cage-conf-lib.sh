@@ -76,6 +76,10 @@ _cage_conf_claude_session_lines() {
 # default-deny at the VM boundary and this config is the only thing that opens
 # it (ADR-031 D2), so a case that skips this fails on a DNS deny rather than on
 # its own subject. Default when none are passed: api.anthropic.com alone.
+# Both helpers write `strict: false`: they bind no secret, and msb 0.7.3+
+# defaults strict to true, which then fails every hostname-allowed HTTPS call
+# (rip-cage-q146). The shipped template binds CCTOK and leaves strict at the
+# default; tests/test-auth-secret-live.sh E1-E2 cover that shape.
 # Pass "" for IMAGE-REF to take the default image and still supply hosts.
 cage_conf_for() {
   local _proj
@@ -117,6 +121,7 @@ $(_cage_conf_claude_session_lines)
 $(_cage_conf_claude_json_line)
 network:
   policy: none
+  strict: false
   allow:
 CAGE_CONF
   local _h
@@ -187,6 +192,7 @@ $(_cage_conf_claude_session_lines)
 $(_cage_conf_claude_json_line)
 network:
   policy: none
+  strict: false
   allow:
 CAGE_CONF
   local _h

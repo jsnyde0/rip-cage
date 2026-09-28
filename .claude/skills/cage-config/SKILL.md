@@ -131,7 +131,10 @@ yourself before `rc up`, or msb fails loud naming it.
 `network.policy: none` is msb's default-DENY. Only the hosts under
 `network.allow` leave the cage, and each entry names its port:
 `"<host>:tcp:443"`. A bare host would open every port; `host:443` without the
-protocol is rejected at create.
+protocol is rejected at create. A config with no `secrets:` entry also needs
+`strict: false` under `network:`: msb 0.7.3+ defaults strict on, and without a
+bound secret every name in the list fails at the TLS handshake. The template
+binds CCTOK, so it needs no line. `rc up` warns on the breaking shape.
 
 The template's list is the starting set, with each entry's reason beside it.
 For which hosts a coding agent actually needs and why, see

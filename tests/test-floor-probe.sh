@@ -130,11 +130,24 @@ STOCK_CONF=$(cage_conf_for "$WORK/stock-proj" "$BASE_TAG")
 # under msb's DNS default-deny an unlisted host does not resolve — so without
 # this line F1 would report a red `rc test` that says nothing about the image.
 echo '    - "github.com:tcp:443"' >> "$STOCK_CONF"
+# `rc test` checks that a Claude login reaches the guest. Since
+# rip-cage-ely4.7.17 the only path is the template's CCTOK --secret binding,
+# so the stock cage carries it too, fed a fake setup-token-shaped value: the
+# check reads the guest's placeholder, and nothing here calls the API.
+cat >> "$STOCK_CONF" <<'STOCK_SECRET'
+secrets:
+  CCTOK:
+    allow:
+      - "api.anthropic.com"
+env:
+  CLAUDE_CODE_OAUTH_TOKEN: "$MSB_CCTOK"
+STOCK_SECRET
 STOCK_CAGE="$(basename "$(dirname "$WORK/stock-proj")")-stock-proj"
 scratch_cage_register "$STOCK_CAGE"
 LIVE_CAGE="$STOCK_CAGE"
 STOCK_RC=0
-RC_CAGE_CONF="$STOCK_CONF" "$RC" up "$WORK/stock-proj" </dev/null >"${WORK}/stock-up.log" 2>&1 || STOCK_RC=$?
+CCTOK="sk-ant-oat01-$(printf 'x%.0s' $(seq 1 90))" RC_CAGE_CONF="$STOCK_CONF" \
+  "$RC" up "$WORK/stock-proj" </dev/null >"${WORK}/stock-up.log" 2>&1 || STOCK_RC=$?
 
 if [[ "$STOCK_RC" -eq 0 ]]; then
   pass "rc up exited 0 on the stock base"

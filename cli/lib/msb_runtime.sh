@@ -415,10 +415,14 @@ _msb_warn_image_layer_drift() {
 
 # _msb_exec NAME ARGS... -- run a real command in a running sandbox
 # non-interactively (msb-side counterpart to `docker exec NAME ARGS...`).
-# stdout/stderr pass through; exit code propagates.
+# stdout/stderr pass through; exit code propagates. stdin is closed: no
+# caller feeds one, and msb exec does not return until its stdin hits EOF
+# when that stdin is a pipe or socket, even after the guest command exits
+# (measured on msb 0.7.3, rip-cage-q146; a tty is unaffected) -- so an
+# agent's shell or a test harness running rc doctor/test/up hung forever.
 _msb_exec() {
   local name="$1"; shift
-  msb exec "$name" "$@"
+  msb exec "$name" "$@" </dev/null
 }
 
 

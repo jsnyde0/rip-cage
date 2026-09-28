@@ -36,7 +36,7 @@ Each line is a direction, not a plan. None has a bead tree yet.
 - **A known-good msb pin plus a compatibility gate.** Every egress fact rip-cage documents is measured against one msb version; nothing today catches an upstream change that moves them.
 - **A black-box recorder recipe.** Capture what an unattended cage did, for the morning after.
 
-**Not planned: a Composefile.** msb 0.6.18 has no `msb compose` — six reserved keys and one reverted attempt — and sandboxes cannot reach each other by name. A second sandbox per project (a browser or database sidecar) would be rip-cage's to compose, and is parked until a project needs one.
+**Not planned: a Composefile.** msb has no `msb compose` (still absent in 0.7.3) — six reserved keys and one reverted attempt — and sandboxes cannot reach each other by name. A second sandbox per project (a browser or database sidecar) would be rip-cage's to compose, and is parked until a project needs one.
 
 ---
 

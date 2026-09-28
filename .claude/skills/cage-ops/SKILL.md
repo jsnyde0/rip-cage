@@ -97,7 +97,7 @@ Worked end to end: [`recipes/denied-host.md`](recipes/denied-host.md).
 So `none observed` from `rc doctor` means "no DNS-stage denial has been
 logged", never "nothing has been blocked".
 
-(Measured on msb 0.6.18. On msb before 0.6.10 a denied connect was
+(Measured on msb 0.7.3. On msb before 0.6.10 a denied connect was
 fake-accepted and hung delivering zero bytes — if a cage HANGS rather than
 failing fast, check the msb version.)
 

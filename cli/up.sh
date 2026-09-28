@@ -1331,7 +1331,22 @@ _up_check_network_policy() {
     _policy=$(yq -r '.network.policy // ""' "$_conf" 2>/dev/null) || _policy=""
     [[ "$_policy" == "null" ]] && _policy=""
   fi
-  [[ "$_policy" == "none" ]] && return 0
+  if [[ "$_policy" == "none" ]]; then
+    # rip-cage-q146: msb 0.7.3 flipped network.strict's default to true.
+    # Strict mode checks a hostname-allowed HTTPS request's real authority,
+    # which needs TLS interception; msb intercepts while a secret is bound.
+    # Measured on 0.7.3: the template (CCTOK bound) works under strict, and
+    # the same config with no secrets loses every allowed HTTPS host at the
+    # handshake. Warn on that shape only, naming the line; msb 0.6.18+
+    # accepts the key.
+    local _strict _nsecrets
+    _strict=$(yq -r '.network.strict' "$_conf" 2>/dev/null) || _strict=""
+    _nsecrets=$(yq -r '.secrets // {} | length' "$_conf" 2>/dev/null) || _nsecrets=""
+    if [[ ( "$_strict" == "null" || -z "$_strict" ) && "$_nsecrets" == "0" ]]; then
+      echo "Warning: cage config ${_conf} binds no secret and does not set network.strict. msb 0.7.3+ defaults strict to true, which then refuses HTTPS to every hostname in network.allow at the TLS handshake. Add this line under network: strict: false (opts out of msb's request-authority check)" >&2
+    fi
+    return 0
+  fi
 
   local _seen="(absent)"
   [[ -n "$_policy" ]] && _seen="'${_policy}'"

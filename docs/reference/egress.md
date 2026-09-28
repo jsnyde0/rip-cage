@@ -16,6 +16,18 @@ network:
 
 `policy: none` **is** msb's deny-everything-not-listed. `rc up` refuses, before any msb call, a config that does not declare it.
 
+### Strict hostname checking (msb 0.7.3+)
+
+msb 0.7.3 turned `network.strict` on by default. Under it, an HTTPS request to a host allowed by **name** is checked against the request's real authority (the `Host` inside the TLS session), not just the name the guest put in SNI. That check needs TLS interception, and msb intercepts while the config binds a secret.
+
+Measured on 0.7.3:
+
+- **The template works as shipped.** Its CCTOK secret turns interception on, so every allowed name connects under strict.
+- **A config with no `secrets:` entry breaks.** Every allowed HTTPS host fails at the handshake: `curl: (35) TLS connect error ... unexpected eof`. The trace log carries `TCP egress denied by strict hostname policy sni="<host>"` at debug level; `rc doctor` does not mine it yet.
+- **`strict: false` under `network:` fixes that shape**, and default-deny still holds: unlisted names do not resolve, raw IPs do not connect. It is not free: without strict, a name-allowed connection is trusted on the guest's SNI, which leaves room for domain fronting through a CDN the allowed host shares. That is msb 0.6.x behaviour.
+
+`rc up` warns, naming the line, when a config binds no secret and does not set `strict`. msb accepts the key from 0.6.18 on; older msb refuses a config that carries it.
+
 **The config's `allow` list is the only source.** The tools manifest used to union its own egress declarations into this set; that union is gone with the manifest ([ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D4), so what an operator reads in the config is exactly what msb enforces. The curated defaults every coding agent needs ship in the config template rather than being merged in behind your back.
 
 `rc` never emits `--net-default`. That flag **replaces** the allow list a `--conf` file carries, which is how every cage once briefly ended up reaching nothing.
@@ -38,11 +50,12 @@ What replaces it is a **curated default list** in the shipped config template (t
 
 ### 1. Something is blocked
 
-From inside the cage it looks like the host is down, not like a clean refusal. Measured on msb 0.6.18:
+From inside the cage it looks like the host is down, not like a clean refusal. Measured on msb 0.7.3:
 
 | Denial | Client-side symptom | Logged? |
 |---|---|---|
 | A denied **domain** | DNS resolution fails — `curl: (6) Could not resolve host` | **Yes**, at trace level |
+| An allowed domain, **no secret bound, `strict` unset** | TLS handshake cut — `curl: (35) TLS connect error` | Yes, at debug level (`denied by strict hostname policy`); see [strict](#strict-hostname-checking-msb-073) |
 | A denied **IP** | TCP connect fails within a couple of milliseconds — `curl: (7) Failed to connect` | No, at any verbosity |
 | An allowed domain on a **denied port** | Dropped at the NIC; connection refused | No, at any verbosity |
 
@@ -98,7 +111,7 @@ If the failing domain is **already** in `network.allow` and does not appear unde
 
 Check the port on that host's entry. There is no log line to find and no fix-hint to mine for this class; it is an msb-side gap, tracked in `rip-cage-ffmc`.
 
-The old way of telling the two apart is gone. Through msb 0.6.9 a full host denial hung while a wrong-port denial refused instantly, so an instant refusal told you which case you were in. As of 0.6.18 both refuse instantly.
+The old way of telling the two apart is gone. Through msb 0.6.9 a full host denial hung while a wrong-port denial refused instantly, so an instant refusal told you which case you were in. Since 0.6.18 both refuse instantly (re-measured on 0.7.3).
 
 ---
 

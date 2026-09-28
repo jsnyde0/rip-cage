@@ -99,7 +99,13 @@ git -C "$FIXTURE_WS" commit --allow-empty -q -m "init"
 # ---------------------------------------------------------------------------
 echo "-- D1: correct fresh cage --"
 
-UP_OUT=$("$RC" up "$FIXTURE_WS" 2>&1) || { echo "$UP_OUT"; fail "D1 rc up succeeds" "rc up exited non-zero"; }
+# rc up launches from one config file per project (ADR-031 D2); without one
+# it refuses. The shared fixture writes it beside the workspace, never under
+# the operator's real ~/.config.
+# shellcheck source=tests/_cage-conf-lib.sh
+source "${SCRIPT_DIR}/_cage-conf-lib.sh"
+D1_CONF=$(cage_conf_for "$FIXTURE_WS" "${RC_IMAGE:-}")
+UP_OUT=$(RC_CAGE_CONF="$D1_CONF" "$RC" up "$FIXTURE_WS" 2>&1 </dev/null) || { echo "$UP_OUT"; fail "D1 rc up succeeds" "rc up exited non-zero"; }
 CORRECT_CAGE=$(echo "$UP_OUT" | grep -oE 'Container [^ ]+ is running' | awk '{print $2}' | head -1)
 if [[ -z "$CORRECT_CAGE" ]]; then
   fail "D1 determine correct-cage container name" "could not parse from: $UP_OUT"

@@ -21,7 +21,7 @@ network:
     - "api.anthropic.com:443"         # REJECTED at create — no protocol
 ```
 
-Measured on msb 0.6.18:
+Measured on msb 0.7.3:
 
 - `host:tcp:443` — resolves AND connects. This is the form to write.
 - a bare `host` — records a rule for all ports. Not what you meant.
@@ -82,7 +82,7 @@ That loop belongs to the **cage-ops** skill; this page is the file it edits.
   surfaces client-side as an immediate connection refused. If a host is on the
   list and still fails, check the PORT in the entry before anything else.
 
-(Measured on msb 0.6.18. Older msb versions — before 0.6.10 — fake-accepted the
+(Measured on msb 0.7.3. Older msb versions — before 0.6.10 — fake-accepted the
 connect and hung delivering zero bytes, which is a much worse failure. If a
 cage hangs rather than failing fast, check the msb version.)
 

@@ -98,6 +98,7 @@ mounts:
   - "${GM_HOME}/.claude/sessions:/home/agent/.claude/sessions"
 network:
   policy: none
+  strict: false
   allow:
     - "api.anthropic.com:tcp:443"
 YAML
