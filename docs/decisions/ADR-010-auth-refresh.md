@@ -1,6 +1,8 @@
 # ADR-010: Credential Hot-Swap via `rc auth refresh`
 
-**Status:** Proposed
+**Status:** Retired in place (2026-09-28, `rip-cage-ely4.7.17`, landed at `fe2fd73`) — prior: Proposed
+
+> **Retired, 2026-09-28 ([ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D1/D3, `rip-cage-ely4.7.17`).** The Claude login now reaches the cage only through msb `--secret`, from a long-lived `claude setup-token` value in the host secrets file. There is nothing left to hot-swap: the keychain extraction (D2), the in-place credentials-file write (D4) and `rc auth refresh` (D1) are deleted, with no possession fallback. `rc auth` survives as a no-prompt check of that secrets file, re-warranted under ADR-031 D3. Switching accounts is replacing the file and `rc up --replace`. Everything below is the historical record.
 
 > **Migration status (ADR-029, 2026-07-10):** This ADR is evolved by [ADR-029](ADR-029-msb-migration.md) D5 — the refresh target shifts under credential non-possession, and D4's own invalidation predicate fires (a different file-sharing backend). **The msb cutover has landed (S1-S14, branch `wave/s13-docs` off `msb-cutover`) — this ADR is NOT retired.** `rc auth refresh` and the keychain-extraction/in-place-write mechanism it describes remain **current, shipped behavior** for the default (`auth.credential_mounts: real`) possession-mode posture — msb didn't change how Claude's own OAuth token reaches the cage by default, only what an *opt-in* non-possession posture looks like (D5). See [ADR-029](ADR-029-msb-migration.md) for the migration decisions.
 
@@ -17,6 +19,8 @@ The current workaround is `rc destroy` + `rc up`, which destroys the Claude Code
 ## Decisions
 
 ### D1: `rc auth refresh` command
+
+**RETIRED 2026-09-28 per [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D1/D3 (`rip-cage-ely4.7.17`, `fe2fd73`):** `rc auth refresh` is deleted with the possession path it refreshed; see the Status note. The 2026-09-15 disposition below is superseded in place.
 
 **HONORED, not evolved — 2026-09-15, [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D3** (human-ratified in-pane, `rip-cage-ely4` sittings 1–2, 2026-09-14/15): `rc auth` **survives the thinning to six verbs, on function.** It was reviewed against [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D3's rule — a verb exists only where plain shell plus a skill cannot do the job identically every run — and passes on both legs: reaching the macOS keychain is not a shell one-liner, and re-applying a refreshed token to an **existing** cage without recreating it by hand is a distinct action an unattended agent needs. The alternative of folding it into `rc doctor` was considered and rejected: `doctor` is diagnostic, and hiding a mutating operation inside a read-only-sounding verb is the wrong seam. The **target** of the refresh still shifts under non-possession per [ADR-029](ADR-029-msb-migration.md) D5 — that earlier evolution is unchanged by this one.
 

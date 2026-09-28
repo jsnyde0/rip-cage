@@ -83,6 +83,8 @@ These are defaults, not hard caps. A user building a large project can override 
 
 **Firmness: FLEXIBLE**
 
+> **Evolved 2026-09-28 (`rip-cage-ely4.7.17`, landed at `fe2fd73`, per [ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D1).** The credentials file this check parsed is gone — the Claude login rides msb `--secret` from a long-lived `claude setup-token` value — so the host-side expiry warning is deleted. The warn-not-fail principle survives in the in-cage init warning (no `CLAUDE_CODE_OAUTH_TOKEN` and no `ANTHROPIC_API_KEY`). The host-side check is now `rc up`'s pre-msb gate on the secrets file, which refuses rather than warns: a cage booted with a missing token cannot authenticate at all.
+
 Before `docker run` in `cmd_up`, parse `~/.claude/.credentials.json` for token expiry. If the token expires in less than 10 minutes, print a warning to stderr. If the token is already expired, print a stronger warning. Do not block container start.
 
 Implementation notes:

@@ -58,7 +58,7 @@ ADR-002-rip-cage-containers.md|D3|lifecycle verbs: down deleted, destroy kept
 ADR-003-agent-friendly-cli.md|D3|allowed-roots guard deleted (mounts are explicit lines)
 ADR-003-agent-friendly-cli.md|D5|rc schema retires with the rip-cage config schema
 ADR-009-ux-overhaul.md|D7|first-run interactive prompt deleted (agent-first)
-ADR-010-auth-refresh.md|D1|HONORED -- rc auth survives on live secret refresh
+ADR-010-auth-refresh.md|D1|RETIRED -- rc auth refresh deleted; rc auth survives as the secrets-file check
 ADR-023-secret-path-mount-denylist.md|D2|patterns move to the shipped protected-paths list
 ADR-025-host-adoptable-dcg-policy.md|D1|transport note only: DCG policy rides the recipe's own mount
 ADR-027-agent-substrate-projection.md|D4|launch-wrapper mechanism moves to base image + descriptor
