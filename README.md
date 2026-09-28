@@ -29,7 +29,7 @@ Rip cage is the **virtual machine** row: a full operating system with its own ke
 
 ## Quick start
 
-**1. Install.** macOS or Linux. You need Docker (to build the image) and msb (to run it), with Claude Code already authenticated on your host.
+**1. Install.** macOS or Linux. You need Docker (to build the image) and msb (to run it). Once, save a long-lived Claude token for the cage: run `claude setup-token`, put the printed token in `~/.config/rip-cage/secrets/CCTOK`, `chmod 600` it. `rc auth` checks it; [Auth](docs/reference/auth.md) has the detail.
 
 ```bash
 brew install jsnyde0/rip-cage/rip-cage

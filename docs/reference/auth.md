@@ -1,6 +1,6 @@
 # Auth
 
-Rip cage uses the login you already have. No API key required.
+Rip cage runs Claude Code on your subscription through one long-lived token you save once on the host. No API key required.
 
 **Claude Code's login reaches the cage through exactly one mechanism: msb `--secret`.** The guest never holds the real token — only a placeholder, substituted on the wire toward `api.anthropic.com`. There is no possession path and no fallback. `rc doctor <cage>`'s `auth` probe confirms a live cage is authenticated.
 
@@ -65,7 +65,7 @@ A cage already running does not pick this up live — the value is read once, at
   auth (host)    : OK — /path/to/secrets/CCTOK (0600, setup-token-shaped)
 ```
 
-`auth` is the in-cage probe: OK when `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is present in-cage, FAIL otherwise (needs a live cage). `auth (host)` is the host-side counterpart added alongside this bridge — it runs the same `rc auth` check doctor never needs a cage for, so a walk-away run can be diagnosed before anything boots (JSON: `probes.host_auth`, next to `probes.auth`).
+`auth` is the in-cage probe: OK when `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is present in-cage, FAIL otherwise (needs a live cage). `auth (host)` is the host-side counterpart: the same check `rc auth` runs, reported only when the cage's config declares a `CCTOK` secret (`n/a` otherwise, so an API-key cage never shows FAIL). JSON: `probes.host_auth`, next to `probes.auth`. `rc doctor` needs an existing cage; before anything boots, run `rc auth` directly.
 
 ---
 

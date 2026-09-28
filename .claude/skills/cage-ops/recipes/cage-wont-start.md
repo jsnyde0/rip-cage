@@ -12,7 +12,7 @@ named in it.
 rc up --dry-run <project>
 ```
 
-`--dry-run` assembles the whole launch without creating a cage — it still calls read-only `msb` commands (state/label inspection) to decide what it WOULD do, it just never creates, resumes, or destroys anything.
+`--dry-run` assembles the whole launch without creating, resuming, or destroying a cage. It still talks to msb to decide what it WOULD do, and today that includes re-syncing msb's copy of the image when it drifted from docker's — so it is not free of side effects on the image store.
 
 - **`--dry-run` also refuses** → the refusal is host-side: config resolution,
   a protected path, a multiplexer check, a network-policy check. Go to the

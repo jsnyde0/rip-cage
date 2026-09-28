@@ -14,7 +14,7 @@
 # the session mounts and the allowlist. One file, lists complete.
 #
 # WHAT rc ADDS AT LAUNCH, because no config file can hold it: --name,
-# --log-level trace, --replace, the keychain -> --secret credential bridge, the
+# --log-level trace, --replace, the CCTOK host-file -> --secret credential bridge, the
 # read-only parent mounts computed from your skill symlinks, and the
 # protected-paths covers. Everything else belongs here.
 #
