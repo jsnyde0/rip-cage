@@ -38,6 +38,8 @@ chmod 600 ~/.config/rip-cage/secrets/CCTOK
 
 `rc up` reads that file and exports it for msb, so an unattended run needs no pre-export.
 
+A cage config mount that equals or contains `$XDG_CONFIG_HOME/rip-cage/secrets` is refused before any msb call (`SECRETS_DIR_INSIDE_MOUNT`), and one of rc's own skill/agent/pi-substrate symlink-parent mounts that would contain it is skipped with a stderr warning instead — either way, the file above never rides into a cage as a mounted directory.
+
 ### `rc auth`
 
 ```bash

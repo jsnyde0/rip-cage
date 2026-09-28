@@ -184,6 +184,69 @@ _protected_paths_conf_bind_mounts() {
 }
 
 # --------------------------------------------------------------------------
+# _protected_paths_secrets_dir
+#
+# Echo the CCTOK secrets directory path ($XDG_CONFIG_HOME/rip-cage/secrets),
+# unresolved. The single source of that expression: every refusal/warning
+# message that names the directory, and _mount_src_exposes_secrets_dir below,
+# all call this rather than repeating the expression, so the path a message
+# names and the path the predicate tested can never drift apart.
+# --------------------------------------------------------------------------
+_protected_paths_secrets_dir() {
+  printf '%s\n' "${XDG_CONFIG_HOME:-${HOME}/.config}/rip-cage/secrets"
+}
+
+# --------------------------------------------------------------------------
+# _mount_src_exposes_secrets_dir HOST_SRC
+#
+# ONE predicate for "does mounting HOST_SRC into a cage expose the CCTOK
+# secrets directory" ($XDG_CONFIG_HOME/rip-cage/secrets -- the host file msb
+# --secret reads the real CCTOK value from, cli/up.sh:_up_prepare_conf_secret_env
+# / cli/auth.sh:_auth_cctok_file). True (exit 0) only when BOTH hold:
+#   1. The secrets directory EXISTS. A nonexistent directory is always
+#      false -- an unresolved fallback path would otherwise prefix-match
+#      every ancestor of a directory that has never been created (e.g.
+#      refusing an API-key-only user's plain `~/.config` mount for a tool
+#      like nvim, naming a directory that isn't even there, with no way
+#      past it -- rip-cage-ely4.7.17 fix round 4, the over-broad half of
+#      the defect this predicate replaces).
+#   2. HOST_SRC, resolved with the same real-path resolution used
+#      throughout this file, equals the secrets directory or is an
+#      ancestor of it (the secrets directory sits inside the tree
+#      HOST_SRC would mount).
+#
+# Called at EVERY mount site that can expose the secrets dir -- the config's
+# own mounts AND every rc-generated mount whose source can resolve to $HOME,
+# $XDG_CONFIG_HOME, or an ancestor of either (skill/agent symlink-parent
+# mounts, the symlink-follow synthesis mount, pi substrate mounts, beads
+# redirect mounts -- see cli/up.sh call sites). One predicate, one existence
+# rule, one ancestor rule: the too-narrow half of the defect this predicate
+# replaces was exactly that only the config-mount site had ANY secrets-dir
+# check, leaving rc's own generated mounts (e.g. a skill symlink whose target
+# lives under $HOME/.config) able to expose the same directory unchecked.
+# --------------------------------------------------------------------------
+_mount_src_exposes_secrets_dir() {
+  local _host_src="$1"
+  local _secrets_dir
+  _secrets_dir="$(_protected_paths_secrets_dir)"
+
+  # Rule 1: nonexistent secrets dir -> always false, no exceptions.
+  [[ -d "${_secrets_dir}" ]] || return 1
+
+  local _secrets_real
+  _secrets_real="$(cd "${_secrets_dir}" 2>/dev/null && pwd -P)" || return 1
+
+  # Rule 2: HOST_SRC must itself resolve to an existing directory to be
+  # comparable to the secrets dir at all -- a file mount source can never
+  # equal or be an ancestor of a directory.
+  [[ -n "${_host_src}" ]] || return 1
+  local _host_real
+  _host_real="$(cd "${_host_src}" 2>/dev/null && pwd -P)" || return 1
+
+  [[ "${_secrets_real}" == "${_host_real}" || "${_secrets_real}" == "${_host_real}"/* ]]
+}
+
+# --------------------------------------------------------------------------
 # _protected_paths_conf_outside_mounts CONF_FILE
 #
 # Refuse (non-zero, reason on stderr) when the cage config file itself resolves
@@ -197,23 +260,18 @@ _protected_paths_conf_bind_mounts() {
 # ever looks at rc's own install directory or the operator's host config
 # directory, never at a path derived from the cage config.
 #
-# rip-cage-ely4.7.17 fix round 3, finding 2: the CCTOK secrets directory
-# ($XDG_CONFIG_HOME/rip-cage/secrets, cli/up.sh:_up_prepare_conf_secret_env /
-# cli/auth.sh:_auth_cctok_file) is a FIFTH D5(a) input -- the host file msb
-# --secret reads the real CCTOK value from. Mounting it (or an ancestor of it)
-# into a cage would hand the guest the same value msb --secret exists to keep
-# non-possessed, so it gets the identical treatment as the config-inside-mount
-# check above: same before-any-msb-call loop over the config's own mounts,
-# same real-path resolution, same refuse-before-any-msb-call posture.
+# rip-cage-ely4.7.17 fix round 4: the CCTOK secrets directory (the fifth D5(a)
+# input) moved OUT of this function into its own
+# _protected_paths_conf_secrets_dir_mount below, with its own JSON error code
+# (SECRETS_DIR_INSIDE_MOUNT, cli/up.sh) -- fix round 3 folded it in here under
+# the shared CAGE_CONFIG_INSIDE_MOUNT code, which meant a caller could not
+# tell the two refusals apart. This function is back to checking only the
+# config-location case, its original scope.
 # --------------------------------------------------------------------------
 _protected_paths_conf_outside_mounts() {
   local _conf="$1"
   local _conf_real
   _conf_real="$(cd "$(dirname "${_conf}")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "${_conf}")")" || _conf_real="${_conf}"
-
-  local _secrets_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/rip-cage/secrets"
-  local _secrets_real
-  _secrets_real="$(cd "${_secrets_dir}" 2>/dev/null && pwd -P)" || _secrets_real="${_secrets_dir}"
 
   local _mounts _host _guest _host_real
   _mounts="$(_protected_paths_conf_bind_mounts "${_conf}")" || return 1
@@ -226,7 +284,40 @@ _protected_paths_conf_outside_mounts() {
       echo "Error: the cage config ${_conf} sits inside ${_host}, which that same config mounts into the cage. Refusing to launch before any msb call: an agent inside the cage could edit the file that decides what the next cage mounts (ADR-031 D5(a)). Move the config to ${XDG_CONFIG_HOME:-${HOME}/.config}/rip-cage/projects/ and point rc at it there." >&2
       return 1
     fi
-    if [[ "${_secrets_real}" == "${_host_real}" || "${_secrets_real}" == "${_host_real}"/* ]]; then
+  done <<< "${_mounts}"
+  return 0
+}
+
+# --------------------------------------------------------------------------
+# _protected_paths_conf_secrets_dir_mount CONF_FILE
+#
+# Refuse (non-zero, reason on stderr) when a mount declared in the cage
+# config equals or contains the CCTOK secrets directory
+# ($XDG_CONFIG_HOME/rip-cage/secrets) -- the fifth D5(a) composition input
+# (ADR-031 D5(a); see _mount_src_exposes_secrets_dir above for the predicate
+# and the over-broad/too-narrow history it replaces). Own JSON error code
+# (SECRETS_DIR_INSIDE_MOUNT, cli/up.sh) -- kept out of
+# _protected_paths_conf_outside_mounts's CAGE_CONFIG_INSIDE_MOUNT so a caller
+# can tell "the config sits inside its own mount" apart from "a mount exposes
+# the secrets dir" (rip-cage-ely4.7.17 fix round 4).
+#
+# Same before-any-msb-call loop over the config's own mounts as the function
+# above; the predicate's own existence check means this returns 0 (no
+# refusal) whenever the secrets directory has never been created -- an
+# API-key-only user's plain `~/.config` mount is never touched.
+# --------------------------------------------------------------------------
+_protected_paths_conf_secrets_dir_mount() {
+  local _conf="$1"
+  local _secrets_dir
+  _secrets_dir="$(_protected_paths_secrets_dir)"
+
+  local _mounts _host _guest
+  _mounts="$(_protected_paths_conf_bind_mounts "${_conf}")" || return 1
+  [[ -z "${_mounts}" ]] && return 0
+
+  while IFS=$'\t' read -r _host _guest; do
+    [[ -z "${_host}" ]] && continue
+    if _mount_src_exposes_secrets_dir "${_host}"; then
       echo "Error: the cage config ${_conf} mounts ${_host}, which is or contains ${_secrets_dir} -- the CCTOK secrets directory msb --secret reads the real token value from. Refusing to launch before any msb call: mounting it into the cage would hand the guest the same value msb --secret exists to keep non-possessed (ADR-031 D5(a)). Remove that mount line from ${_conf}." >&2
       return 1
     fi

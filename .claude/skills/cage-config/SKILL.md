@@ -58,14 +58,20 @@ Read the template for the syntax; this is what each section is FOR.
 | `network:` | which hosts the cage may reach | the agent stalls on a denied host mid-task |
 | `workdir:`, `cpus:`, `memory:` | where it lands, how big it is | nothing subtle |
 
-Two mount rules bite in practice, both stated in the template and both worth
-repeating because they fail at BOOT rather than at validation:
+Three mount rules bite in practice, all worth repeating because they surface
+only when you launch, not when you write the file:
 
 - **Absolute paths only, with no symlink in them.** msb does not follow a
   host-side symlink in a bind source. On macOS `/tmp` and `/var` are symlinks —
   write `/private/tmp/...`. Resolve with `cd <path> && pwd -P`.
 - **A source that does not exist fails the boot.** Do not declare a mount
   "just in case"; declare it when the host file is there.
+- **A mount that equals or contains `$XDG_CONFIG_HOME/rip-cage/secrets`
+  (the CCTOK non-possession bridge's host file, see
+  [`docs/reference/auth.md`](../../../docs/reference/auth.md)) is refused
+  before any msb call** — remove that mount line rather than narrowing it.
+  One of rc's own skill/agent/pi-substrate symlink-parent mounts that would
+  contain it is skipped instead, with a stderr warning naming the mount.
 
 ## The mounts that make a session survive a recreate
 

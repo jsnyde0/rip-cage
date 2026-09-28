@@ -229,7 +229,13 @@ _up_detect_worktree() {
   # The allowed-roots containment check that used to gate this retired with the
   # guard (ADR-031 D2). What still has to hold is that the path resolved: a
   # worktree pointing at a .git/ that does not exist leaves git broken inside.
-  if [[ -n "$resolved_git_dir" && -d "$resolved_git_dir" ]]; then
+  if [[ -n "$resolved_git_dir" && -d "$resolved_git_dir" ]] && _mount_src_exposes_secrets_dir "$resolved_git_dir"; then
+    # rip-cage-ely4.7.17: the gitdir line is workspace content (ADR-024 scope);
+    # its grandparent is mounted read-write, so it must never expose the
+    # CCTOK secrets dir. The general hostile-gitdir hole is rip-cage-qyer.
+    echo "Warning: skipping worktree mount ${resolved_git_dir} — it contains $(_protected_paths_secrets_dir) (the host CCTOK secrets dir never rides into a cage); git will not work inside" >&2
+    wt_error="main .git/ at ${resolved_git_dir} contains the rip-cage secrets dir"
+  elif [[ -n "$resolved_git_dir" && -d "$resolved_git_dir" ]]; then
     wt_detected=true
     wt_main_git="$resolved_git_dir"
     log "Worktree detected: ${wt_name} (main .git/ at ${wt_main_git})"
@@ -395,6 +401,13 @@ _symlink_follow_fingerprint() {
       if _protected_paths_path_match "$mount_src" >/dev/null 2>&1; then
         continue
       fi
+      # rip-cage-ely4.7.17 fix round 4: identical predicate to the mount
+      # loop's own secrets-dir check (label-lock, same rule as the
+      # protected-path-skip exclusion immediately above) -- the fingerprint
+      # must never diverge from what the loop actually mounts.
+      if _mount_src_exposes_secrets_dir "$mount_src"; then
+        continue
+      fi
       lines+="${link} → ${mount_src} (${mode})"$'\n'
     done < <(_collect_dangling_symlinks "$pi_root" "$on_dangling" 2>/dev/null || true)
   fi
@@ -553,6 +566,16 @@ _up_prepare_docker_mounts() {
         echo "Warning: skipping skill symlink mount ${_asset_tdir} — it is a protected path ('${_skill_pat}', see the protected-paths list)" >&2
         continue
       fi
+      # rip-cage-ely4.7.17 fix round 4: a skill symlink's target parent is
+      # computed from the host filesystem, not read from the cage config, so
+      # the config-mount secrets-dir check never saw it -- the "too narrow"
+      # half of that round's defect. Same predicate, warn-and-skip posture
+      # (ADR-023 D6) rather than a hard refusal: this is the same
+      # best-effort decoration surface as the protected-paths check above.
+      if _mount_src_exposes_secrets_dir "$_asset_tdir"; then
+        echo "Warning: skipping skill symlink mount ${_asset_tdir} — it contains $(_protected_paths_secrets_dir), the CCTOK secrets directory msb --secret reads the real token value from; mounting it would hand the guest that value (ADR-031 D5(a))" >&2
+        continue
+      fi
       _UP_RUN_ARGS+=(-v "${_asset_tdir}:${_asset_tdir}:ro")
     done < <(_collect_symlink_parents "${HOME}/.claude/skills")
   fi
@@ -565,6 +588,12 @@ _up_prepare_docker_mounts() {
     while IFS= read -r _agent_tdir; do
       if _agent_pat=$(_protected_paths_path_match "$_agent_tdir"); then
         echo "Warning: skipping agent symlink mount ${_agent_tdir} — it is a protected path ('${_agent_pat}', see the protected-paths list)" >&2
+        continue
+      fi
+      # rip-cage-ely4.7.17 fix round 4: same predicate as the skill loop
+      # above -- see that comment.
+      if _mount_src_exposes_secrets_dir "$_agent_tdir"; then
+        echo "Warning: skipping agent symlink mount ${_agent_tdir} — it contains $(_protected_paths_secrets_dir), the CCTOK secrets directory msb --secret reads the real token value from; mounting it would hand the guest that value (ADR-031 D5(a))" >&2
         continue
       fi
       _UP_RUN_ARGS+=(-v "${_agent_tdir}:${_agent_tdir}:ro")
@@ -704,6 +733,17 @@ _up_prepare_docker_mounts() {
         echo "Warning: skipping symlink-follow mount ${_sfl_mount_src} — it is a protected path ('${_sfl_denied_pat}', see the protected-paths list)" >&2
         continue
       fi
+      # rip-cage-ely4.7.17 fix round 4: the symlink-follow mount source is
+      # computed from the host filesystem (an arbitrary symlink target under
+      # the scan roots), same risk class as the skill/agent symlink-parent
+      # mounts above -- audited in per the brief's "audit the rest of
+      # _up_prepare_docker_mounts" ask. Mirror this same check into
+      # _symlink_follow_fingerprint below (label-lock: the fingerprint must
+      # reflect exactly what this loop actually mounts).
+      if _mount_src_exposes_secrets_dir "$_sfl_mount_src"; then
+        echo "Warning: skipping symlink-follow mount ${_sfl_mount_src} — it contains $(_protected_paths_secrets_dir), the CCTOK secrets directory msb --secret reads the real token value from; mounting it would hand the guest that value (ADR-031 D5(a))" >&2
+        continue
+      fi
 
       # Mount spec (mode).
       local _sfl_mode_suffix=""
@@ -791,6 +831,15 @@ _up_prepare_docker_mounts() {
       # ADR-023 denylist: warn-and-skip on match
       if _pi_pat=$(_protected_paths_path_match "${_pi_host_real}"); then
         echo "Warning: skipping pi substrate mount ${_pi_host_real} — it is a protected path ('${_pi_pat}', see the protected-paths list)" >&2
+        continue
+      fi
+      # rip-cage-ely4.7.17 fix round 4: _pi_host_real is realpath-resolved,
+      # so a substrate entry that is itself a symlink (dotpi's own idiom,
+      # per the comment above) can point anywhere -- same risk class as the
+      # skill/agent symlink-parent mounts, audited in per the brief's
+      # "audit the rest of _up_prepare_docker_mounts" ask.
+      if _mount_src_exposes_secrets_dir "${_pi_host_real}"; then
+        echo "Warning: skipping pi substrate mount ${_pi_host_real} — it contains $(_protected_paths_secrets_dir), the CCTOK secrets directory msb --secret reads the real token value from; mounting it would hand the guest that value (ADR-031 D5(a))" >&2
         continue
       fi
       _UP_RUN_ARGS+=(-v "${_pi_host_real}:/home/agent/.rc-context/${_pi_cage_name}:ro")
@@ -935,6 +984,18 @@ _up_prepare_environment() {
           _emit_denylist_denial "$resolved_beads" "${_beads_pat}"
           exit 1
         fi
+        # rip-cage-ely4.7.17 fix round 4: .beads/redirect is workspace
+        # content (ADR-024 prompt-injection threat model) and this
+        # resolution has no ".."-traversal rejection, only an absolute-path
+        # one -- a redirect target with enough "../" segments can realpath
+        # outside the project tree, including into $HOME or
+        # $XDG_CONFIG_HOME. Same predicate, same hard refusal as the
+        # denylist check just above (this is the fifth D5(a) input, not a
+        # best-effort decoration surface).
+        if _mount_src_exposes_secrets_dir "$resolved_beads"; then
+          echo "Error: .beads/redirect (${beads_dir}/redirect) resolves to ${resolved_beads}, which is or contains $(_protected_paths_secrets_dir) -- the CCTOK secrets directory msb --secret reads the real token value from. Refusing to mount it into the cage (ADR-031 D5(a))." >&2
+          exit 1
+        fi
         log "Beads: resolved redirect → $resolved_beads"
         beads_dir="$resolved_beads"
         # Mount the real .beads/ over the worktree's redirect
@@ -967,6 +1028,12 @@ _up_prepare_environment() {
       log "Warning: worktree auto-redirect — main repo .beads/ not found at $main_beads_dir; bd will fail inside the container (see wrapper diagnostic)"
     elif _wt_beads_pat=$(_protected_paths_path_match "$resolved_main_beads"); then
       log "Warning: worktree auto-redirect — main repo .beads/ at $resolved_main_beads is a protected path ('${_wt_beads_pat}'); refusing to mount"
+    elif _mount_src_exposes_secrets_dir "$resolved_main_beads"; then
+      # rip-cage-ely4.7.17 fix round 4: same predicate as the explicit
+      # redirect branch above; this branch's own posture is warn-and-skip
+      # (main_beads_dir is derived from the main repo's own git structure,
+      # not raw workspace content), so it stays a warning, not exit 1.
+      log "Warning: worktree auto-redirect — main repo .beads/ at $resolved_main_beads contains $(_protected_paths_secrets_dir), the CCTOK secrets directory; refusing to mount"
     else
       log "Beads: worktree has no runtime data — auto-redirecting to main repo .beads/ ($resolved_main_beads)"
       beads_dir="$resolved_main_beads"
@@ -2290,12 +2357,18 @@ cmd_up() {
     exit 1
   fi
 
-  # rip-cage-ely4.7.17 fix round 3, finding 2: this one check now refuses two
-  # things -- the config resolving inside its own mount, and a mount that is
-  # or contains the CCTOK secrets dir (ADR-031 D5(a)) -- see stderr (printed
-  # by _protected_paths_conf_outside_mounts itself) for which one fired.
+  # rip-cage-ely4.7.17 fix round 4: this used to be one combined check
+  # (fix round 3) sharing CAGE_CONFIG_INSIDE_MOUNT for two different
+  # refusals; split back into two calls with their own JSON error codes so a
+  # caller can tell "the config sits inside its own mount" apart from "a
+  # mount exposes the CCTOK secrets dir".
   if ! _protected_paths_conf_outside_mounts "$_UP_CAGE_CONF"; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage config ${_UP_CAGE_CONF} mounts a location it must not (see stderr)" "CAGE_CONFIG_INSIDE_MOUNT"
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage config ${_UP_CAGE_CONF} sits inside a location it mounts into the cage (see stderr)" "CAGE_CONFIG_INSIDE_MOUNT"
+    exit 1
+  fi
+
+  if ! _protected_paths_conf_secrets_dir_mount "$_UP_CAGE_CONF"; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage config ${_UP_CAGE_CONF} mounts the CCTOK secrets directory (see stderr)" "SECRETS_DIR_INSIDE_MOUNT"
     exit 1
   fi
 
@@ -2648,6 +2721,16 @@ cmd_up() {
             echo "Warning: skipping skill symlink mount ${_dry_tdir} — it is a protected path ('${_dry_skill_pat}', see the protected-paths list)" >&2
             continue
           fi
+          # rip-cage-ely4.7.17 fix round 4: mirror the real mount loop's
+          # secrets-dir predicate here too -- this preview block computes its
+          # own copy of the decision (the real loop above runs silently,
+          # >/dev/null 2>&1, when building the actual dry-run argv), so
+          # without this the preview would print "Would mount" for a source
+          # the real launch skips.
+          if _mount_src_exposes_secrets_dir "$_dry_tdir"; then
+            echo "Warning: skipping skill symlink mount ${_dry_tdir} — it contains $(_protected_paths_secrets_dir), the CCTOK secrets directory msb --secret reads the real token value from; mounting it would hand the guest that value (ADR-031 D5(a))" >&2
+            continue
+          fi
           echo "Would mount ${_dry_tdir} -> ${_dry_tdir}:ro (skill symlink target)"
         done < <(_collect_symlink_parents "${HOME}/.claude/skills")
       fi
@@ -2659,6 +2742,12 @@ cmd_up() {
           local _dry_agent_pat
           if _dry_agent_pat=$(_protected_paths_path_match "$_dry_agent_tdir"); then
             echo "Warning: skipping agent symlink mount ${_dry_agent_tdir} — it is a protected path ('${_dry_agent_pat}', see the protected-paths list)" >&2
+            continue
+          fi
+          # rip-cage-ely4.7.17 fix round 4: same mirroring as the skill
+          # preview loop above -- see that comment.
+          if _mount_src_exposes_secrets_dir "$_dry_agent_tdir"; then
+            echo "Warning: skipping agent symlink mount ${_dry_agent_tdir} — it contains $(_protected_paths_secrets_dir), the CCTOK secrets directory msb --secret reads the real token value from; mounting it would hand the guest that value (ADR-031 D5(a))" >&2
             continue
           fi
           echo "Would mount ${_dry_agent_tdir} -> ${_dry_agent_tdir}:ro (agent symlink target)"

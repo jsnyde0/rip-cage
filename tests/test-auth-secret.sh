@@ -591,43 +591,62 @@ fi
 rm -rf "$HOME_I" "$STAT_BIN_I"
 
 # =============================================================================
-# (j)/(k) rip-cage-ely4.7.17 fix round 3, finding 2: `rc up` refuses when a
-# mount source equals or contains $XDG_CONFIG_HOME/rip-cage/secrets
-# (_protected_paths_conf_outside_mounts, cli/lib/protected_paths.sh) -- that
-# directory holds the CCTOK host file msb --secret reads, and D5(a) requires
-# it stay outside every cage mount.
+# (j)/(j2)/(k) rip-cage-ely4.7.17 fix round 4: ONE predicate,
+# _mount_src_exposes_secrets_dir (cli/lib/protected_paths.sh), for "does this
+# mount source equal or contain $XDG_CONFIG_HOME/rip-cage/secrets" -- true
+# only when that directory EXISTS. Fix round 3's version had no existence
+# check (over-broad: refused a plain ~/.config mount even when the secrets
+# dir had never been created) -- (j) now creates the dir first, and (j2) is
+# the new negative control proving the directory's absence changes the
+# verdict. The refusal now carries its own JSON error code
+# (SECRETS_DIR_INSIDE_MOUNT, distinct from CAGE_CONFIG_INSIDE_MOUNT).
 # =============================================================================
-echo ""
-echo "=== Test (j): rc up refuses a config mounting XDG_CONFIG_HOME (secrets dir ancestor) ==="
-HOME_J=$(_fresh_home)
-PROJ_J="${HOME_J}/proj"
-mkdir -p "$PROJ_J" "${HOME_J}/.config"
-git -C "$PROJ_J" init -q >/dev/null 2>&1
-CONF_J="${HOME_J}/cage.yaml"
-cat > "$CONF_J" <<CONF
+
+# _conf_with_extra_mount <home> <proj> <extra-host> <extra-guest> -- a plain
+# (no CCTOK) cage config with one extra mount line beyond the workspace, for
+# probing an arbitrary host path directly. Same no-secret shape as
+# _plain_conf.
+_conf_with_extra_mount() {
+  local _home="$1" _proj="$2" _extra_host="$3" _extra_guest="$4" _conf="${1}/cage.yaml"
+  cat > "$_conf" <<CONF
 image: rip-cage:latest
 workdir: /workspace
 mounts:
-  - "${PROJ_J}:/workspace"
-  - "${HOME_J}/.config:/home/agent/.config-leak:ro"
+  - "${_proj}:/workspace"
+  - "${_extra_host}:${_extra_guest}:ro"
 network:
   policy: none
   allow:
     - "api.anthropic.com:tcp:443"
 CONF
+  printf '%s\n' "$_conf"
+}
+
+echo ""
+echo "=== Test (j): rc up refuses a config mounting XDG_CONFIG_HOME when the secrets dir EXISTS ==="
+HOME_J=$(_fresh_home)
+PROJ_J="${HOME_J}/proj"
+mkdir -p "$PROJ_J" "${HOME_J}/.config/rip-cage/secrets"
+git -C "$PROJ_J" init -q >/dev/null 2>&1
+CONF_J=$(_conf_with_extra_mount "$HOME_J" "$PROJ_J" "${HOME_J}/.config" "/home/agent/.config-leak")
 CALL_LOG_J=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
 FAKE_BIN_J=$(_fake_runtime_bin "$CALL_LOG_J")
-out_j=$(HOME="$HOME_J" XDG_CONFIG_HOME="${HOME_J}/.config" RC_CAGE_CONF="$CONF_J" PATH="${FAKE_BIN_J}:${PATH}" bash "$RC" up --dry-run "$PROJ_J" 2>&1)
+out_j=$(HOME="$HOME_J" XDG_CONFIG_HOME="${HOME_J}/.config" RC_CAGE_CONF="$CONF_J" PATH="${FAKE_BIN_J}:${PATH}" bash "$RC" --output json up --dry-run "$PROJ_J" 2>&1)
 rc_j=$?
 if [[ $rc_j -ne 0 ]]; then
-  pass "(j) rc up refuses a config mounting the secrets dir's parent"
+  pass "(j) rc up refuses a config mounting the secrets dir's parent when the dir exists"
 else
-  fail "(j) rc up exited 0 despite mounting the secrets dir's parent: $out_j"
+  fail "(j) rc up exited 0 despite mounting the secrets dir's parent (dir exists): $out_j"
 fi
 if echo "$out_j" | grep -qF "${HOME_J}/.config/rip-cage/secrets"; then
   pass "(j) the refusal names the secrets dir"
 else
   fail "(j) the refusal did not name the secrets dir: $out_j"
+fi
+if echo "$out_j" | grep -q '"code":"SECRETS_DIR_INSIDE_MOUNT"' || echo "$out_j" | grep -q 'SECRETS_DIR_INSIDE_MOUNT'; then
+  pass "(j) the JSON error carries its own SECRETS_DIR_INSIDE_MOUNT code"
+else
+  fail "(j) the JSON error did not carry SECRETS_DIR_INSIDE_MOUNT: $out_j"
 fi
 if [[ -s "$CALL_LOG_J" ]] && grep -Eq '^(docker (pull|tag|save)|msb (load|create))\b' "$CALL_LOG_J"; then
   fail "(j) the call log shows a provisioning call despite the refusal: $(cat "$CALL_LOG_J")"
@@ -635,6 +654,38 @@ else
   pass "(j) the call log holds no docker pull/tag/save or msb load/create call (refused before any msb call)"
 fi
 rm -rf "$HOME_J" "$FAKE_BIN_J" "$CALL_LOG_J"
+
+echo ""
+echo "=== Test (j2): the SAME mount is NOT refused when the secrets dir is ABSENT ==="
+HOME_J2=$(_fresh_home)
+PROJ_J2="${HOME_J2}/proj"
+mkdir -p "$PROJ_J2" "${HOME_J2}/.config"
+git -C "$PROJ_J2" init -q >/dev/null 2>&1
+# No secrets/ subdir created, and no CCTOK block in the config -- this is the
+# API-key-only user's plain "~/.config for nvim" case the over-broad half of
+# the old check refused with no way past it.
+CONF_J2=$(_conf_with_extra_mount "$HOME_J2" "$PROJ_J2" "${HOME_J2}/.config" "/home/agent/.config-leak")
+CALL_LOG_J2=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
+FAKE_BIN_J2=$(_fake_runtime_bin "$CALL_LOG_J2")
+out_j2=$(HOME="$HOME_J2" XDG_CONFIG_HOME="${HOME_J2}/.config" RC_CAGE_CONF="$CONF_J2" PATH="${FAKE_BIN_J2}:${PATH}" bash "$RC" up --dry-run "$PROJ_J2" 2>&1)
+rc_j2=$?
+argv_line_j2=$(printf '%s\n' "$out_j2" | grep '^Would run: msb create' || true)
+if [[ $rc_j2 -eq 0 && -n "$argv_line_j2" ]]; then
+  pass "(j2) rc up --dry-run reaches argv assembly when the secrets dir does not exist"
+else
+  fail "(j2) rc up --dry-run did not reach argv assembly (exit=$rc_j2): $out_j2"
+fi
+if echo "$out_j2" | grep -q "SECRETS_DIR_INSIDE_MOUNT"; then
+  fail "(j2) the secrets-dir refusal fired despite the directory not existing: $out_j2"
+else
+  pass "(j2) no secrets-dir refusal when the directory does not exist"
+fi
+if [[ -s "$CALL_LOG_J2" ]] && grep -Eq '^(docker (pull|tag|save)|msb (load|create))\b' "$CALL_LOG_J2"; then
+  fail "(j2) the call log shows a provisioning call from --dry-run: $(cat "$CALL_LOG_J2")"
+else
+  pass "(j2) the call log holds no docker pull/tag/save or msb load/create call"
+fi
+rm -rf "$HOME_J2" "$FAKE_BIN_J2" "$CALL_LOG_J2"
 
 echo ""
 echo "=== Test (k): rc up with an unrelated mount is NOT refused by the secrets-dir check ==="
@@ -659,6 +710,112 @@ else
 fi
 rm -rf "$HOME_K" "$FAKE_BIN_K" "$CALL_LOG_K"
 
+# =============================================================================
+# (l)/(l2) rip-cage-ely4.7.17 fix round 4: the too-narrow half of the defect
+# -- rc's OWN generated mounts (a skill symlink target's parent dir, mounted
+# by _collect_symlink_parents / the skill loop in _up_prepare_docker_mounts)
+# were never checked against the secrets dir at all, config-mount-only check
+# or not. Same predicate, warn-and-skip posture (ADR-023 D6), applied here.
+# =============================================================================
+echo ""
+echo "=== Test (l): a skill symlink whose target's parent is XDG_CONFIG_HOME is skipped when secrets EXISTS ==="
+HOME_L=$(_fresh_home)
+PROJ_L="${HOME_L}/proj"
+mkdir -p "$PROJ_L" "${HOME_L}/.claude/skills" "${HOME_L}/.config/skill-target" "${HOME_L}/.config/rip-cage/secrets"
+git -C "$PROJ_L" init -q >/dev/null 2>&1
+ln -s "${HOME_L}/.config/skill-target" "${HOME_L}/.claude/skills/my-skill"
+CONF_L=$(_plain_conf "$HOME_L" "$PROJ_L")
+CALL_LOG_L=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
+FAKE_BIN_L=$(_fake_runtime_bin "$CALL_LOG_L")
+out_l=$(HOME="$HOME_L" XDG_CONFIG_HOME="${HOME_L}/.config" RC_CAGE_CONF="$CONF_L" PATH="${FAKE_BIN_L}:${PATH}" bash "$RC" up --dry-run "$PROJ_L" 2>&1)
+rc_l=$?
+argv_line_l=$(printf '%s\n' "$out_l" | grep '^Would run: msb create' || true)
+if [[ $rc_l -eq 0 && -n "$argv_line_l" ]]; then
+  pass "(l) rc up --dry-run still reaches argv assembly (warn-and-skip, not a refusal)"
+else
+  fail "(l) rc up --dry-run did not reach argv assembly (exit=$rc_l): $out_l"
+fi
+if printf '%s\n' "$argv_line_l" | grep -qF "${HOME_L}/.config:"; then
+  fail "(l) the msb create argv still carries the skill symlink parent mount: $argv_line_l"
+else
+  pass "(l) the msb create argv does NOT carry the skill symlink parent mount"
+fi
+if echo "$out_l" | grep -q "skipping skill symlink mount ${HOME_L}/.config" && echo "$out_l" | grep -qF "$(printf '%s' "${HOME_L}/.config/rip-cage/secrets")"; then
+  pass "(l) stderr carries the skip warning naming the mount and the secrets dir"
+else
+  fail "(l) stderr did not carry the expected skip warning: $out_l"
+fi
+if [[ -s "$CALL_LOG_L" ]] && grep -Eq '^(docker (pull|tag|save)|msb (load|create))\b' "$CALL_LOG_L"; then
+  fail "(l) the call log shows a provisioning call from --dry-run: $(cat "$CALL_LOG_L")"
+else
+  pass "(l) the call log holds no docker pull/tag/save or msb load/create call"
+fi
+rm -rf "$HOME_L" "$FAKE_BIN_L" "$CALL_LOG_L"
+
+echo ""
+echo "=== Test (l2): the SAME skill symlink mount IS present when secrets is ABSENT ==="
+HOME_L2=$(_fresh_home)
+PROJ_L2="${HOME_L2}/proj"
+mkdir -p "$PROJ_L2" "${HOME_L2}/.claude/skills" "${HOME_L2}/.config/skill-target"
+git -C "$PROJ_L2" init -q >/dev/null 2>&1
+ln -s "${HOME_L2}/.config/skill-target" "${HOME_L2}/.claude/skills/my-skill"
+CONF_L2=$(_plain_conf "$HOME_L2" "$PROJ_L2")
+CALL_LOG_L2=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
+FAKE_BIN_L2=$(_fake_runtime_bin "$CALL_LOG_L2")
+out_l2=$(HOME="$HOME_L2" XDG_CONFIG_HOME="${HOME_L2}/.config" RC_CAGE_CONF="$CONF_L2" PATH="${FAKE_BIN_L2}:${PATH}" bash "$RC" up --dry-run "$PROJ_L2" 2>&1)
+rc_l2=$?
+argv_line_l2=$(printf '%s\n' "$out_l2" | grep '^Would run: msb create' || true)
+if [[ $rc_l2 -eq 0 && -n "$argv_line_l2" ]]; then
+  pass "(l2) rc up --dry-run reaches argv assembly"
+else
+  fail "(l2) rc up --dry-run did not reach argv assembly (exit=$rc_l2): $out_l2"
+fi
+if printf '%s\n' "$argv_line_l2" | grep -qF "${HOME_L2}/.config:"; then
+  pass "(l2) the msb create argv carries the skill symlink parent mount when secrets is absent"
+else
+  fail "(l2) the msb create argv did not carry the skill symlink parent mount: $argv_line_l2"
+fi
+if echo "$out_l2" | grep -q "skipping skill symlink mount"; then
+  fail "(l2) an unexpected skip warning fired despite the secrets dir not existing: $out_l2"
+else
+  pass "(l2) no skip warning when the secrets dir does not exist"
+fi
+rm -rf "$HOME_L2" "$FAKE_BIN_L2" "$CALL_LOG_L2"
+
+
+echo ""
+# (m) rip-cage-ely4.7.17: the worktree mount's source is dirname(dirname(gitdir))
+# from the workspace .git FILE (workspace content), mounted read-write. It must
+# never be a dir containing the secrets dir. General hostile-gitdir hole:
+# rip-cage-qyer.
+echo "=== Test (m): a worktree gitdir whose main .git would be XDG_CONFIG_HOME is skipped when secrets EXISTS ==="
+HOME_M=$(_fresh_home)
+PROJ_M="${HOME_M}/proj"
+mkdir -p "$PROJ_M" "${HOME_M}/.config/worktrees/wt1" "${HOME_M}/.config/rip-cage/secrets"
+echo "gitdir: ${HOME_M}/.config/worktrees/wt1" > "${PROJ_M}/.git"
+CONF_M=$(_plain_conf "$HOME_M" "$PROJ_M")
+CALL_LOG_M=$(mktemp /private/tmp/rc-auth-secret-calllog-XXXXXX)
+FAKE_BIN_M=$(_fake_runtime_bin "$CALL_LOG_M")
+out_m=$(HOME="$HOME_M" XDG_CONFIG_HOME="${HOME_M}/.config" RC_CAGE_CONF="$CONF_M" PATH="${FAKE_BIN_M}:${PATH}" bash "$RC" up --dry-run "$PROJ_M" 2>&1)
+argv_line_m=$(printf '%s\n' "$out_m" | grep '^Would run: msb create' || true)
+if [[ -z "$argv_line_m" ]]; then
+  fail "(m) rc up --dry-run did not reach argv assembly: $out_m"
+elif printf '%s\n' "$argv_line_m" | grep -q '/workspace/.git-main'; then
+  fail "(m) the msb create argv carries the worktree mount over the secrets dir: $argv_line_m"
+else
+  pass "(m) the msb create argv carries NO /workspace/.git-main mount"
+fi
+if echo "$out_m" | grep -q "skipping worktree mount"; then
+  pass "(m) stderr names the skipped worktree mount"
+else
+  fail "(m) stderr did not carry the worktree skip warning: $out_m"
+fi
+if [[ -s "$CALL_LOG_M" ]] && grep -Eq '^(docker (pull|tag|save)|msb (load|create))\b' "$CALL_LOG_M"; then
+  fail "(m) the call log shows a provisioning call from --dry-run: $(cat "$CALL_LOG_M")"
+else
+  pass "(m) the call log holds no docker pull/tag/save or msb load/create call"
+fi
+rm -rf "$HOME_M" "$FAKE_BIN_M" "$CALL_LOG_M"
 
 echo ""
 echo "======================================"
