@@ -284,6 +284,25 @@ else
   echo "[rip-cage] No home CLAUDE.md (skipped)"
 fi
 
+# _rc_mount_holding PATH: prints the nearest mountpoint at PATH or at one of
+# its ancestors below "/", and returns 0; returns 1 when none is. A path under
+# such a mount may be a HOST directory, and init must never delete or replace
+# one (rip-cage-f08b). /proc/mounts field 2, same predicate as _is_mountpoint
+# below.
+_rc_mount_holding() {
+  local _p="$1"
+  while [ -n "$_p" ] && [ "$_p" != "/" ]; do
+    if awk -v p="$_p" '$2 == p { found=1 } END { exit !found }' /proc/mounts 2>/dev/null; then
+      printf '%s\n' "$_p"
+      return 0
+    fi
+    # A relative path has no "/" left to strip; stop rather than spin.
+    [ "${_p%/*}" != "$_p" ] || break
+    _p="${_p%/*}"
+  done
+  return 1
+}
+
 # 3. Link skills and commands from host (staged via .rc-context/)
 for _rc_asset in skills commands agents; do
   if [ -d "/home/agent/.rc-context/${_rc_asset}" ]; then
@@ -292,9 +311,14 @@ for _rc_asset in skills commands agents; do
     # mountpoint, and on a writable mount it would delete the HOST's files.
     # Leave the config's mount in place and skip the symlink; rc up already
     # warned naming the config line to delete.
-    # /proc/mounts field 2, same predicate as _is_mountpoint below.
-    if awk -v p="/home/agent/.claude/${_rc_asset}" '$2 == p { found=1 } END { exit !found }' /proc/mounts 2>/dev/null; then
-      echo "[rip-cage] WARNING: ~/.claude/${_rc_asset} is mounted by the cage config; leaving it in place (delete that mounts: line so rc's projection links it)"
+    # A config that mounts a PARENT (the whole ~/.claude, read-write) makes
+    # ~/.claude/<asset> a plain host directory inside that mount: same rule.
+    if _rc_mount="$(_rc_mount_holding "/home/agent/.claude/${_rc_asset}")"; then
+      if [ "$_rc_mount" = "/home/agent/.claude/${_rc_asset}" ]; then
+        echo "[rip-cage] WARNING: ~/.claude/${_rc_asset} is mounted by the cage config; leaving it in place (delete that mounts: line so rc's projection links it)"
+      else
+        echo "[rip-cage] WARNING: ~/.claude/${_rc_asset} sits inside the cage-config mount ${_rc_mount}; leaving it in place, rc's ${_rc_asset} projection skipped"
+      fi
       continue
     fi
     # Remove any real directory that may exist — ln -sfn would nest inside it otherwise
@@ -305,7 +329,7 @@ for _rc_asset in skills commands agents; do
     echo "[rip-cage] ${_rc_asset} linked from host"
   fi
 done
-unset _rc_asset
+unset _rc_asset _rc_mount
 
 # BASE-INFRA (pi, rip-cage-p35a.3 audit): 3b. Link pi substrate assets from
 # host (staged via .rc-context/pi-*)
@@ -330,6 +354,12 @@ for _pi_substrate in "pi-skills:skills" "pi-prompts:prompts" "pi-roles:roles" "p
   _pi_stage="/home/agent/.rc-context/${_pi_substrate%%:*}"
   _pi_dest="${PI_CODING_AGENT_DIR:-/home/agent/.pi/agent}/${_pi_substrate##*:}"
   if [ -e "${_pi_stage}" ] || [ -L "${_pi_stage}" ]; then
+    # Same rule as step 3 (rip-cage-f08b): a dest at or under a mount may be
+    # the host's own file; leave it alone rather than delete it.
+    if _pi_mount="$(_rc_mount_holding "${_pi_dest}")"; then
+      echo "[rip-cage] WARNING: pi ${_pi_dest} sits inside the cage-config mount ${_pi_mount}; leaving it in place, rc's pi ${_pi_substrate##*:} projection skipped"
+      continue
+    fi
     # Remove any real dir/file that exists — ln -sfn would nest inside a dir otherwise
     if [ -e "${_pi_dest}" ] && [ ! -L "${_pi_dest}" ]; then
       echo "[rip-cage] pi: removing pre-existing real dir/file ${_pi_dest} before linking" >&2
@@ -340,7 +370,7 @@ for _pi_substrate in "pi-skills:skills" "pi-prompts:prompts" "pi-roles:roles" "p
     echo "[rip-cage] pi ${_pi_substrate##*:} linked from host"
   fi
 done
-unset _pi_substrate _pi_stage _pi_dest
+unset _pi_substrate _pi_stage _pi_dest _pi_mount
 
 # BASE-INFRA (pi, rip-cage-p35a.3 audit): host-mount-coupled, stays in base init.
 # This block only ECHOES the presence of an rc-up-projected ro extension mount

@@ -170,6 +170,7 @@ NEEDS_CONTAINER=(
   "test-pi-cage-context.sh"  # calls rc up to create a live container; inspects CLAUDE.md inside cage
   "test-claude-concurrency.sh" # requires a live rip-cage container with Claude auth (ANTHROPIC_API_KEY or OAuth)
   "test-auth-secret-live.sh"  # rip-cage-ely4.7.17: boots one scratch cage from the shipped template; needs msb + the host CCTOK secrets file
+  "test-init-mount-guard-live.sh"  # rip-cage-f08b: boots one scratch cage twice (template, then whole ~/.claude mounted rw); needs msb + a scratch RC_IMAGE
   "test-claude-json-seed-synthesis.sh" # rip-cage-vwka: spins its own real cages via rc up (non-possession + possession) to verify R4 seed synthesis; requires docker + msb + a pre-built rip-cage image
   # test-multiplexer-lifecycle.sh, test-agent-mail-concurrent.sh and
   # test-multiplexer-agent-e2e.sh: GONE with the manifest corpus they built
@@ -766,6 +767,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-claude-home-mounts.sh"   # rip-cage-mxr8: config owns ~/.claude/projects+sessions, rc owns the skills projection; template dry-run names each guest path once; fake docker+msb shims, host-only
   run_test "${SCRIPT_DIR}/test-auth-secret.sh"   # rip-cage-ely4.7.17: msb --secret CCTOK non-possession bridge — rc auth's no-prompt check + rc up's pre-msb-call refusal, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-auth-secret-live.sh"   # rip-cage-ely4.7.17: container-tier half — template cage holds only the $MSB_CCTOK placeholder, no credentials file, claude -p green (NEEDS_CONTAINER; SKIPs without the host CCTOK file)
+  run_test "${SCRIPT_DIR}/test-init-mount-guard-live.sh"   # rip-cage-f08b: init never deletes a host dir inside a cage-config mount — whole ~/.claude rw keeps its skills sentinel, template still gets the symlink (NEEDS_CONTAINER; SKIPs without a scratch RC_IMAGE)
   run_test "${SCRIPT_DIR}/test-pi-install.sh"
   run_test "${SCRIPT_DIR}/test-pi-auth-mount.sh"
   run_test "${SCRIPT_DIR}/test-pi-cage-context.sh"
