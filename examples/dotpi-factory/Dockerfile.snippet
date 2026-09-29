@@ -1,0 +1,31 @@
+# dotpi factory — paste into your own Dockerfile, between FROM and USER agent,
+# AFTER the examples/herdr and examples/claude snippets (this recipe builds on
+# both: dotpi's seat tooling drives herdr, and a caged claude needs the session
+# wrapper).
+#
+# No dotpi code enters the image. The five CLIs are symlinks into the dotpi
+# checkout's scripts/ dir, which your cage config mounts read-only at the SAME
+# cage-side path (see README). A host edit to dotpi reaches the cage live.
+#
+# DOTPI_DIR is where that mount lands inside the cage: your host checkout's path
+# relative to your host home, placed under /home/agent. It must match the
+# mounts in your config, because ~/.claude/skills links into dotpi/agent by
+# RELATIVE symlinks, which resolve against the cage home. Change the default if
+# your checkout lives elsewhere.
+#
+# USER root is required for /usr/local/bin. Switch BACK to agent at the end of
+# your Dockerfile — an extension that ends on root boots a root shell with every
+# mount stranded (measured, rip-cage-ely4.16).
+
+USER root
+ARG DOTPI_DIR=/home/agent/code/personal/dotpi
+RUN for t in grants seat mail dispatch pacemaker; do ln -sf "${DOTPI_DIR}/scripts/${t}" "/usr/local/bin/${t}"; done
+
+# Factory state lives in the cage, never on the host: the registry, the mail
+# store, pacemaker state, seat briefs. Created agent-owned here so the named
+# volumes the config mounts over them start writable by the agent.
+RUN for d in .grants .dotpi-mail .pacemaker .dotpi; do install -d -o agent -g agent "/home/agent/${d}"; done
+
+COPY boot-fragment.json /tmp/dotpi-factory-boot.json
+RUN rc-boot-merge /tmp/dotpi-factory-boot.json && rm -f /tmp/dotpi-factory-boot.json
+USER agent

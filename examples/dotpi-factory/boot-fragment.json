@@ -1,0 +1,9 @@
+{
+  "_readme": [
+    "dotpi-factory declares no daemon yet. The factory clock (dotpi's pacemaker serve, run under the boot",
+    "supervisor) arrives once dotpi-7o2q lands. Adding it is one entry in daemons[] below:",
+    "name, start (exec the server so the recorded pid is the one that serves), health. Decide then whether",
+    "the timer state it writes under ~/.timer needs a named volume of its own."
+  ],
+  "daemons": []
+}
