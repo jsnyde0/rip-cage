@@ -297,13 +297,21 @@ _build_warn_stale_containers() {
   # nothing (rc-managed or not) to warn about.
   [[ -z "$_names_json" || "$_names_json" == "[]" ]] && return 0
 
-  local _bwsc_name _bwsc_src _bwsc_digest
+  local _bwsc_name _bwsc_src _bwsc_digest _bwsc_conf
   while IFS= read -r _bwsc_name; do
     [[ -z "$_bwsc_name" ]] && continue
     _bwsc_src=$(_msb_label "$_bwsc_name" "rc.source.path" 2>/dev/null || true)
     # NOTHING TO CHECK: no rc.source.path label means this sandbox isn't
     # rc-managed at all — it's not this function's concern either way.
     [[ -z "$_bwsc_src" ]] && continue
+
+    # NOTHING TO CHECK (rip-cage-m1yc): a composed cage's config `image:` names
+    # its own tag, and this build does not touch that tag — comparing it against
+    # $IMAGE would warn falsely. Only cages whose config resolves to $IMAGE (an
+    # `image:` line naming it, or none) are in this sweep. An unreadable config
+    # falls back to $IMAGE, so such a cage is still compared.
+    _bwsc_conf=$(_msb_label "$_bwsc_name" "rc.cage-conf" 2>/dev/null || true)
+    [[ "$(_up_conf_image "$_bwsc_conf")" != "$IMAGE" ]] && continue
 
     if [[ "$_bwsc_digest_unknown" -eq 1 ]]; then
       echo "Warning: image provenance for container '${_bwsc_name}' could not be determined — the just-built image's digest could not be read from msb's local image cache (empty msb image index, or the digest lookup failed); run 'msb image list' to check, then re-run 'rc build' to refresh this warning." >&2
@@ -330,7 +338,7 @@ _build_warn_stale_containers() {
       continue
     fi
     if [[ "$_bwsc_digest" != "$_just_built_digest" ]]; then
-      echo "Warning: container '${_bwsc_name}' was created from a different image than the one just built — rc up will refuse to resume it (rc up --replace <its workspace> moves it onto the current image; named volumes and host mounts survive, the guest's ephemeral overlay does not); if a cage was intentionally pinned via RC_IMAGE, ignore this for it." >&2
+      echo "Warning: container '${_bwsc_name}' was created from a different image than the one just built ($IMAGE), which its config names — once stopped, rc up will refuse to resume it (a running one only warns); rc up --replace <its workspace> moves it onto the current image; named volumes and host mounts survive, the guest's ephemeral overlay does not. If a cage was intentionally pinned via RC_IMAGE, ignore this for it." >&2
     fi
   done < <(jq -r '.[].name' <<<"$_names_json" 2>/dev/null)
 }

@@ -540,6 +540,60 @@ rm -rf "${_t4_stub_dir}"
 teardown_sandbox
 
 # ===========================================================================
+# T4b (rip-cage-m1yc) — the post-build sweep skips a composed cage: its
+# config `image:` names its own tag, which this build did not touch, so a
+# digest mismatch against $IMAGE is not drift. A default cage (config names
+# rip-cage:latest) with the same mismatching digest IS still warned.
+# ===========================================================================
+setup_sandbox
+_t4b_stub_dir=$(mktemp -d "${TMPDIR:-/tmp}/rc-t4b-stub-XXXXXX")
+# cage_conf_for writes one fixed path per project, so lay the two configs by hand.
+_t4b_conf_composed="${_t4b_stub_dir}/composed.yaml"; printf 'image: fiab-spike:latest\n' > "$_t4b_conf_composed"
+_t4b_conf_default="${_t4b_stub_dir}/default.yaml"; printf 'image: rip-cage:latest\n' > "$_t4b_conf_default"
+cat > "${_t4b_stub_dir}/msb" <<STUB
+#!/usr/bin/env bash
+set -u
+case "\${1:-} \${2:-}" in
+  "image list")
+    jq -nc --arg dig "${IMG_A}" '[{reference: "rip-cage:latest", digest: \$dig}]'
+    exit 0
+    ;;
+  "list "*|"list")
+    jq -nc '[{name: "composed-cage"}, {name: "default-cage"}]'
+    exit 0
+    ;;
+esac
+case "\${1:-}" in
+  inspect)
+    case "\${2:-}" in
+      composed-cage)
+        jq -nc --arg dig "${IMG_B}" --arg c "${_t4b_conf_composed}" '{config: {manifest_digest: \$dig, labels: {"rc.source.path": "/p/one", "rc.cage-conf": \$c}}}'
+        ;;
+      default-cage)
+        jq -nc --arg dig "${IMG_B}" --arg c "${_t4b_conf_default}" '{config: {manifest_digest: \$dig, labels: {"rc.source.path": "/p/two", "rc.cage-conf": \$c}}}'
+        ;;
+      *) exit 1 ;;
+    esac
+    exit 0
+    ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "${_t4b_stub_dir}/msb"
+_t4b_err=$(PATH="${_t4b_stub_dir}:$PATH" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" bash -c "
+  source '$RC' 2>/dev/null
+  IMAGE='rip-cage:latest'
+  _build_warn_stale_containers
+" 2>&1 >/dev/null)
+if grep -qF "'default-cage'" <<<"$_t4b_err" && ! grep -qF "composed-cage" <<<"$_t4b_err"; then
+  pass T4b "post-build sweep: default cage warned, composed cage (config image: fiab-spike:latest) not warned"
+else
+  fail T4b "composed-cage skip in stale-container sweep" "(stderr=$_t4b_err)"
+fi
+rm -rf "${_t4b_stub_dir}"
+teardown_sandbox
+
+# ===========================================================================
 # T5 — current image ($IMAGE) absent at resume -> abort loud (rc build /
 # RC_IMAGE / destroy remedies), NOT fail-open (D-f, revised R1). No msb
 # start reached.
@@ -747,6 +801,19 @@ if [[ "$RC_EXIT" -eq 0 ]] \
   pass T9d "running custom-tag cage -> warning names both tags and the RC_IMAGE escape, still proceeds"
 else
   fail T9d "running custom-tag drift warning" "(exit=$RC_EXIT stderr=$RC_ERR)"
+fi
+teardown_sandbox
+
+# T9e (rip-cage-m1yc) — running cage, expected tag sourced from the config's
+# image: line (RC_IMAGE unset): the warning names the config as the source.
+setup_sandbox
+DRIFT_CONF_IMAGE="fiab-spike:latest" DRIFT_CURRENT_REF="fiab-spike:latest" DRIFT_STORED_REF="fiab-spike:latest" \
+  run_rc_up "running" "$IMG_A" "$IMG_B" "human" "false"
+if [[ "$RC_EXIT" -eq 0 ]] \
+   && grep -qF "compared against 'fiab-spike:latest' (${SHORT_B}), from this cage's config image: line" <<<"$RC_ERR"; then
+  pass T9e "running cage + config image: fiab-spike:latest, tag rebuilt -> warns naming the config as the expected tag's source, still proceeds"
+else
+  fail T9e "running config-tag drift warning" "(exit=$RC_EXIT stderr=$RC_ERR)"
 fi
 teardown_sandbox
 
