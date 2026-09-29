@@ -53,6 +53,7 @@
     "defaultMode": "bypassPermissions"
   },
   "skipAutoPermissionPrompt": true,
+  "skipDangerousModePermissionPrompt": true,
   "mcpServers": {
     "meta-skill": {
       "type": "stdio",

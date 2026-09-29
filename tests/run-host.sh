@@ -173,6 +173,7 @@ NEEDS_CONTAINER=(
   "test-pi-cage-context.sh"  # calls rc up to create a live container; inspects CLAUDE.md inside cage
   "test-claude-concurrency.sh" # requires a live rip-cage container with Claude auth (ANTHROPIC_API_KEY or OAuth)
   "test-auth-secret-live.sh"  # rip-cage-ely4.7.17: boots one scratch cage from the shipped template; needs msb + the host CCTOK secrets file
+  "test-claude-unattended-start-live.sh"  # rip-cage-jimf: boots one scratch cage from the template (create + resume) and drives interactive claude in a pty; needs msb + a scratch RC_IMAGE
   "test-init-mount-guard-live.sh"  # rip-cage-f08b: boots one scratch cage twice (template, then whole ~/.claude mounted rw); needs msb + a scratch RC_IMAGE
   "test-claude-json-seed-synthesis.sh" # rip-cage-vwka: spins its own real cages via rc up (non-possession + possession) to verify R4 seed synthesis; requires docker + msb + a pre-built rip-cage image
   # test-multiplexer-lifecycle.sh, test-agent-mail-concurrent.sh and
@@ -784,6 +785,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-msb-exec-stdin.sh"   # rip-cage-q146: non-interactive msb exec closes stdin (msb 0.7.3 waits for stdin EOF on a pipe/socket, which hung rc doctor under an agent shell); fake msb, host-only
   run_test "${SCRIPT_DIR}/test-auth-secret.sh"   # rip-cage-ely4.7.17: msb --secret CCTOK non-possession bridge — rc auth's no-prompt check + rc up's pre-msb-call refusal, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-auth-secret-live.sh"   # rip-cage-ely4.7.17: container-tier half — template cage holds only the $MSB_CCTOK placeholder, no credentials file, claude -p green (NEEDS_CONTAINER; SKIPs without the host CCTOK file)
+  run_test "${SCRIPT_DIR}/test-claude-unattended-start-live.sh"   # rip-cage-jimf: base-image claude reaches its prompt unattended past the bypass accept dialog, on create and on resume of a template cage, host ~/.claude.json still ro; its auto-mode-nudge check bites only under real auth (NEEDS_CONTAINER; SKIPs without a scratch RC_IMAGE)
   run_test "${SCRIPT_DIR}/test-init-mount-guard-live.sh"   # rip-cage-f08b: init never deletes a host dir inside a cage-config mount — whole ~/.claude rw keeps its skills sentinel, template still gets the symlink (NEEDS_CONTAINER; SKIPs without a scratch RC_IMAGE)
   run_test "${SCRIPT_DIR}/test-pi-install.sh"
   run_test "${SCRIPT_DIR}/test-pi-auth-mount.sh"
@@ -805,7 +807,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-cage-claude-projects-host-bound.sh" # rip-cage-aa4t: _cage_claude_projects_host_bound predicate — stubbed msb, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-doctor-transcript-persistence.sh"   # rip-cage-aa4t: rc doctor transcript-persistence probe — stubbed msb, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-doctor-host-auth-scope.sh"          # rip-cage-ely4.7.17 fix round 3, finding 3: rc doctor's host_auth probe reads n/a for a cage whose config declares no CCTOK secret, never FAIL — stubbed msb, host-only, no live cage needed
-  run_test "${SCRIPT_DIR}/test-claude-bypass-preaccept.sh"         # rip-cage-k8vi: claude-session-wrapper pre-accepts bypassPermissionsModeAccepted in the writable per-session .claude.json — real wrapper on host via RC_REAL_CLAUDE_BIN stub, host-only, no live cage
+  run_test "${SCRIPT_DIR}/test-claude-recipe-bypass-preaccept.sh"  # rip-cage-k8vi / rip-cage-jimf: the examples/claude RECIPE's session wrapper (and its cage/substrate twin) seeds hasSeenAutoDefaultNudge into the writable per-session .claude.json, injects --dangerously-skip-permissions, and carries the floor's skipDangerousModePermissionPrompt via the settings.json symlink — real wrapper on host, REAL_CLAUDE sed-patched to a stub, no live cage
   run_test "${SCRIPT_DIR}/test-denial-visibility.sh"     # rip-cage-jlu4: denial-visibility disambiguation (DNS-denial vs secret-violation) — stubbed msb, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-doctor-runnability.sh"    # rip-cage-2cks: rc doctor cwd-floor + workspace-resolution live-cage checks (NEEDS_CONTAINER; guards rip-cage-0rng + rip-cage-aq70; schema-error sub-case additionally gated behind RC_DOCTOR_STALE_BD_IMAGE, self-skips visibly otherwise)
   run_test "${SCRIPT_DIR}/test-floor-probe.sh"          # rip-cage-ely4.12 / rip-cage-ely4.15: the fail-closed floor probe's contract against real images — the stock base boots and rc test reports every floor line; a USER-root extension and a chmod-o+w-guard extension each refuse the boot naming the property (NEEDS_CONTAINER, self-skips without docker+msb or on a base image predating the probe)

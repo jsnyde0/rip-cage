@@ -650,10 +650,13 @@ fi
 unset _cage_host_addr _cage_probe_status _RC_HOST_BRIDGE_STATUS _rc_settings_cage_local
 
 # R4: Snapshot ~/.claude.json → ~/.claude/.claude.json.seed (rip-cage-p1p)
-# MUST run BEFORE the first `claude` invocation below — when the claude-recipe is
-# composed (/usr/local/bin/claude wrapper present), the wrapper seeds the default
-# session from this snapshot, so it has to exist before `claude --version`.
-# If the claude-recipe is not composed, the snapshot is taken but unused (benign).
+# MUST run BEFORE the first `claude` invocation below — when the examples/claude
+# recipe is composed (its boot.json launch entry routes /usr/bin/claude, the
+# generic tool-launch-wrapper, through the recipe's session wrapper), that wrapper
+# seeds the default session from this snapshot, so it has to exist before
+# `claude --version`. If the recipe is not composed, the snapshot is taken but
+# unused (benign); the base image clears the bypass accept dialog through
+# settings.json instead (rip-cage-jimf).
 # ~/.claude.json is a single-file virtiofs bind mount. An atomic temp+rename
 # rewrite on the host (any Claude run on the host) BREAKS the container's mount
 # handle — the container then sees ENOENT while the host file is intact. The

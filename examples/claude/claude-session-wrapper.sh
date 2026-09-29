@@ -115,36 +115,39 @@ if [[ ! -f "${SESSION_DIR}/.claude.json" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Pre-accept the bypass-permissions disclaimer (rip-cage-k8vi).
+# Pre-answer the auto-mode nudge (rip-cage-jimf; replaces rip-cage-k8vi's
+# bypassPermissionsModeAccepted seed, which Claude Code 2.1.284 ignores).
 #
-# bypassPermissions is already the cage's DECLARED policy (cage/agent/
-# settings.json permissions.defaultMode=bypassPermissions). Claude still gates a
-# one-time "Bypass Permissions mode" accept dialog on the global config field
-# `bypassPermissionsModeAccepted` in $CLAUDE_CONFIG_DIR/.claude.json. Because the
-# host ~/.claude.json is a READ-ONLY virtiofs mount, an in-session accept can
-# never persist, so the dialog reappears on EVERY cold boot/recreate — blocking
-# every restored/spawned agent pane until a human accepts per pane (defeats
-# walk-away autonomy). The per-session ${SESSION_DIR}/.claude.json is a WRITABLE
-# copy (NOT the ro mount), so pre-seeding the acceptance here only re-affirms
-# declared policy — it is not a weakening of the ro posture, and not an
-# auto-approver watching panes. Runs every invocation (OUTSIDE the seed-once
-# block above) so an already-seeded session dir that survives a resume is
-# retrofitted too. Fully guarded: a jq/write failure must never block the claude
-# launch — worst case degrades to the pre-existing dialog, never a broken exec.
+# Under this recipe claude reads CLAUDE_CONFIG_DIR=${SESSION_DIR}. Two startup
+# dialogs stop an unattended spawn there:
+#   1. the bypass-permissions accept dialog -- cleared by
+#      skipDangerousModePermissionPrompt in cage/agent/settings.json, which
+#      reaches this dir through the settings.json symlink above;
+#   2. "Make auto mode your default permission mode?" -- answered HERE, not by
+#      the floor (the base image leaves it open). Answering it writes
+#      hasSeenAutoDefaultNudge:true to $CLAUDE_CONFIG_DIR/.claude.json. The
+#      host ~/.claude.json is a READ-ONLY mount, so the answer can never
+#      persist there; the per-session .claude.json is a WRITABLE copy, so it is
+#      seeded here (zkwx spike, brain:rip-cage mail 2026-09-29: with both,
+#      `herdr agent start --kind claude` reached the prompt unattended).
+# Runs every invocation (OUTSIDE the seed-once block above) so an already-seeded
+# session dir that survives a resume is retrofitted too. Fully guarded: a
+# jq/write failure must never block the claude launch -- worst case degrades to
+# the dialog, never a broken exec.
 {
-  _rc_bypass_json="${SESSION_DIR}/.claude.json"
-  if command -v jq >/dev/null 2>&1 && [[ -f "$_rc_bypass_json" ]] \
-     && [[ "$(jq -r '.bypassPermissionsModeAccepted // false' "$_rc_bypass_json" 2>/dev/null)" != "true" ]]; then
-    _rc_bypass_tmp="${_rc_bypass_json}.k8vi.tmp"
-    if jq '.bypassPermissionsModeAccepted = true' "$_rc_bypass_json" > "$_rc_bypass_tmp" 2>/dev/null \
-       && [[ -s "$_rc_bypass_tmp" ]]; then
-      mv -f "$_rc_bypass_tmp" "$_rc_bypass_json"
+  _rc_nudge_json="${SESSION_DIR}/.claude.json"
+  if command -v jq >/dev/null 2>&1 && [[ -f "$_rc_nudge_json" ]] \
+     && [[ "$(jq -r '.hasSeenAutoDefaultNudge // false' "$_rc_nudge_json" 2>/dev/null)" != "true" ]]; then
+    _rc_nudge_tmp="${_rc_nudge_json}.jimf.tmp"
+    if jq '.hasSeenAutoDefaultNudge = true' "$_rc_nudge_json" > "$_rc_nudge_tmp" 2>/dev/null \
+       && [[ -s "$_rc_nudge_tmp" ]]; then
+      mv -f "$_rc_nudge_tmp" "$_rc_nudge_json"
     else
-      rm -f "$_rc_bypass_tmp"
+      rm -f "$_rc_nudge_tmp"
     fi
   fi
 } || true
-unset _rc_bypass_json _rc_bypass_tmp 2>/dev/null || true
+unset _rc_nudge_json _rc_nudge_tmp 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Env hygiene (rip-cage-46s5, S4 spike trap): an inherited
@@ -163,18 +166,18 @@ unset CLAUDE_CODE_CHILD_SESSION
 #
 # bypassPermissions is already the cage's DECLARED policy (cage/agent/
 # settings.json permissions.defaultMode=bypassPermissions). Claude still gates a
-# one-time "Bypass Permissions mode" accept dialog on the global field
-# bypassPermissionsModeAccepted — which cannot persist (host ~/.claude.json is a
-# ro virtiofs mount) and, observed live (rip-cage-k8vi), is NOT reliably honored
-# from the per-session config for the interactive dialog. Passing
+# one-time "Bypass Permissions mode" accept dialog; the global field
+# bypassPermissionsModeAccepted that once answered it cannot persist (host
+# ~/.claude.json is a ro mount) and is not honored by Claude Code 2.1.284
+# (rip-cage-jimf). The floor's skipDangerousModePermissionPrompt is the
+# measured answer; this flag is a second layer, not separately measured. Passing
 # --dangerously-skip-permissions states at argv what the cage already declares,
 # suppressing the dialog HYPOTHESIS-INDEPENDENTLY: it works whether the field is
 # read from the per-session config or not, and whether a launcher goes through
 # CLAUDE_CONFIG_DIR or not. This wrapper is the single PATH chokepoint every
 # launch resolves through (herdr agent start/restore drives the pane shell so
 # `claude` -> this wrapper; human `claude`; scripted-attach `claude --resume`).
-# The per-session field-seed above stays as belt-and-suspenders for wrapper-path
-# launches. Idempotent: only prepend when absent, so an explicit caller flag is
+# Idempotent: only prepend when absent, so an explicit caller flag is
 # never doubled. (bypassPermissions being declared policy, this is alignment,
 # not a new grant.)
 _rc_skip_flag="--dangerously-skip-permissions"

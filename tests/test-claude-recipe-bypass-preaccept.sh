@@ -1,39 +1,36 @@
 #!/usr/bin/env bash
-# tests/test-claude-bypass-preaccept.sh -- HOST-ONLY unit test for the
-# bypass-permissions disclaimer pre-acceptance in the claude session wrapper
-# (cage/substrate/claude-session-wrapper.sh, rip-cage-k8vi).
+# tests/test-claude-recipe-bypass-preaccept.sh -- HOST-ONLY unit test for the
+# startup-dialog pre-answers in the examples/claude recipe's session wrapper
+# (examples/claude/claude-session-wrapper.sh; rip-cage-k8vi, rip-cage-jimf).
 #
-# WHY: bypassPermissions is already the cage's DECLARED policy
-# (cage/agent/settings.json permissions.defaultMode=bypassPermissions). Claude
-# still gates a one-time "Bypass Permissions mode" accept dialog on the global
-# config field `bypassPermissionsModeAccepted` in $CLAUDE_CONFIG_DIR/.claude.json.
-# The host ~/.claude.json is a READ-ONLY virtiofs mount, so an in-session accept
-# can never persist -> the dialog reappears on EVERY cold boot, blocking every
-# restored/spawned agent pane until a human accepts per pane (defeats walk-away
-# autonomy). The wrapper seeds the acceptance into the WRITABLE per-session copy
-# before exec-ing claude. This is alignment with declared policy, not a
-# weakening of the ro mount posture.
+# SCOPE: this is the RECIPE's unit test. The wrapper reaches an image only
+# when an operator composes examples/claude; the base image never runs it.
+# What the BASE image does at claude startup is proven on a built image by
+# tests/test-claude-unattended-start-live.sh (rip-cage-jimf). A second pass
+# runs the same cases against the unshipped cage/substrate twin.
 #
-# This test drives the real wrapper on the HOST (no container) by:
-#   - copying the canonical wrapper to a tmp file and sed-patching REAL_CLAUDE to
-#     a harmless env-dumping stub (the same idiom as test-herdr-roster-resume-
-#     recipe.sh T1 / test-claude-json-seed-synthesis.sh V4-V5 — /usr/bin/claude
-#     does not exist off-image), so no production test-seam is needed.
-#   - RC_P1P_JSON_BASE=<fixture>     -> wrapper seeds the session .claude.json from it
-# and asserts on the resulting ${SESSION_DIR}/.claude.json.
+# WHY: under the recipe claude reads CLAUDE_CONFIG_DIR=~/.claude-sessions/<id>.
+# Two startup dialogs stop an unattended spawn there: the bypass-permissions
+# accept dialog (cleared by skipDangerousModePermissionPrompt in the floor's
+# settings.json, which the wrapper symlinks into the session dir) and the
+# "make auto mode your default?" nudge (answered by hasSeenAutoDefaultNudge in
+# the session's WRITABLE .claude.json -- the host ~/.claude.json is read-only,
+# so the answer can never persist there).
+#
+# This test drives the real wrapper on the HOST (no container) by copying it
+# to a tmp file and sed-patching REAL_CLAUDE to an argv-recording stub, with
+# RC_P1P_JSON_BASE=<fixture> as the seed source.
 #
 # Cases:
-#   C1  positive sentinel   -- the fixture does NOT carry the field (proves the
-#                              test would catch a no-op; the bug's own precondition)
-#   C2  fresh seed          -- a fresh session dir gets bypassPermissionsModeAccepted=true
+#   C1  positive sentinel   -- the fixture does NOT carry hasSeenAutoDefaultNudge
+#   C2  fresh seed          -- a fresh session dir gets hasSeenAutoDefaultNudge=true
 #   C3  content preserved   -- an unrelated fixture key survives the field-set
-#                              (the set must not clobber the seeded config)
-#   C4  retrofit resume     -- a PRE-EXISTING session .claude.json WITHOUT the field
-#                              (wrapper skips re-seeding) still gets the field set,
-#                              proving the every-invocation retrofit covers resumes
-#   C5  idempotent          -- a second wrapper run leaves valid JSON, field still true
-#
-# Host-only: no docker/msb, no live cage. Wired into run-host.sh default tier.
+#   C4  retrofit resume     -- a PRE-EXISTING session .claude.json without the
+#                              field still gets it (every-invocation retrofit)
+#   C5  idempotent          -- a second run leaves valid JSON, field still true
+#   C6/C7 argv flag         -- --dangerously-skip-permissions injected, never doubled
+#   C8  floor key reaches   -- the session dir's settings.json resolves to the
+#                              floor file, carrying skipDangerousModePermissionPrompt
 #
 # Hard rules (repo lessons): FAILURES counter + exit $FAILURES; every absence
 # assertion gated on a positive sentinel; no "fail via prose + exit 0".
@@ -41,14 +38,15 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WRAPPER="${SCRIPT_DIR}/../cage/substrate/claude-session-wrapper.sh"
+WRAPPER="${RC_WRAPPER_UNDER_TEST:-${SCRIPT_DIR}/../examples/claude/claude-session-wrapper.sh}"
+FLOOR_SETTINGS="${SCRIPT_DIR}/../cage/agent/settings.json"
 
 FAILURES=0
 TOTAL=0
 pass() { TOTAL=$((TOTAL + 1)); echo "PASS  [$TOTAL] $1"; }
 fail() { TOTAL=$((TOTAL + 1)); FAILURES=$((FAILURES + 1)); echo "FAIL  [$TOTAL] $1${2:+ -- $2}"; }
 
-echo "=== test-claude-bypass-preaccept.sh ==="
+echo "=== test-claude-recipe-bypass-preaccept.sh (${WRAPPER#"${SCRIPT_DIR}/../"}) ==="
 
 # ---------------------------------------------------------------------------
 # Guards: jq is required (the wrapper's field-set uses it); the wrapper exists.
@@ -66,6 +64,7 @@ fi
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/rc-k8vi-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/.claude"
+cp "$FLOOR_SETTINGS" "$WORK/.claude/settings.json"
 
 # A harmless real-claude stub (never touches the network); the patched wrapper's
 # final `exec` lands here so the invocation exits cleanly. It records the argv it
@@ -79,7 +78,7 @@ chmod +x "$STUB_CLAUDE"
 # untouched), matching the sibling tests' idiom.
 WRAPPER_UNDER_TEST="$WORK/wrapper-under-test.sh"
 cp "$WRAPPER" "$WRAPPER_UNDER_TEST"
-sed -i.bak "s#^REAL_CLAUDE=/usr/bin/claude#REAL_CLAUDE=${STUB_CLAUDE}#" "$WRAPPER_UNDER_TEST"
+sed -i.bak "s#^REAL_CLAUDE=.*#REAL_CLAUDE=${STUB_CLAUDE}#" "$WRAPPER_UNDER_TEST"
 chmod +x "$WRAPPER_UNDER_TEST"
 if ! grep -q "^REAL_CLAUDE=${STUB_CLAUDE}$" "$WRAPPER_UNDER_TEST"; then
   fail "setup: REAL_CLAUDE patch did not match (wrapper's REAL_CLAUDE line changed shape?)" ""
@@ -87,7 +86,7 @@ if ! grep -q "^REAL_CLAUDE=${STUB_CLAUDE}$" "$WRAPPER_UNDER_TEST"; then
   exit "$FAILURES"
 fi
 
-# Fixture seed: a minimal .claude.json WITHOUT bypassPermissionsModeAccepted,
+# Fixture seed: a minimal .claude.json WITHOUT hasSeenAutoDefaultNudge,
 # plus an unrelated sentinel key we assert survives.
 FIXTURE="$WORK/fixture.claude.json"
 cat > "$FIXTURE" <<'EOF'
@@ -107,13 +106,13 @@ run_wrapper() {
   "$WRAPPER_UNDER_TEST" "${_args[@]}" >/dev/null 2>&1
 }
 
-field_of() { jq -r '.bypassPermissionsModeAccepted // "ABSENT"' "$1" 2>/dev/null; }
+field_of() { jq -r '.hasSeenAutoDefaultNudge // "ABSENT"' "$1" 2>/dev/null; }
 
 # ---------------------------------------------------------------------------
 # C1: positive sentinel -- the fixture must NOT already carry the field.
 # ---------------------------------------------------------------------------
 if [[ "$(field_of "$FIXTURE")" == "ABSENT" ]]; then
-  pass "C1 fixture lacks bypassPermissionsModeAccepted (positive sentinel: test can catch a no-op)"
+  pass "C1 fixture lacks hasSeenAutoDefaultNudge (positive sentinel: test can catch a no-op)"
 else
   fail "C1 fixture already has the field -- test is vacuous" "got: $(field_of "$FIXTURE")"
 fi
@@ -125,7 +124,7 @@ run_wrapper "fresh"
 FRESH_JSON="$WORK/.claude-sessions/fresh/.claude.json"
 if [[ -f "$FRESH_JSON" ]]; then
   if [[ "$(field_of "$FRESH_JSON")" == "true" ]]; then
-    pass "C2 fresh session .claude.json has bypassPermissionsModeAccepted=true"
+    pass "C2 fresh session .claude.json has hasSeenAutoDefaultNudge=true"
   else
     fail "C2 fresh session .claude.json field not true" "got: $(field_of "$FRESH_JSON")"
   fi
@@ -201,6 +200,28 @@ else
   fail "C7 flag doubled or missing (count=$_flag_count)" "stub argv: $(tr '\n' ' ' < "$STUB_ARGS" 2>/dev/null)"
 fi
 
+# ---------------------------------------------------------------------------
+# C8: the floor's dialog-1 key reaches the session dir. The wrapper symlinks
+# ~/.claude/settings.json into the session dir; claude reads it from there.
+# Positive sentinel first: the floor file itself must carry the key.
+# ---------------------------------------------------------------------------
+if [[ "$(jq -r '.skipDangerousModePermissionPrompt // false' "$FLOOR_SETTINGS" 2>/dev/null)" != "true" ]]; then
+  fail "C8 cage/agent/settings.json lacks skipDangerousModePermissionPrompt=true" "$FLOOR_SETTINGS"
+elif [[ "$(jq -r '.skipDangerousModePermissionPrompt // false' "$WORK/.claude-sessions/fresh/settings.json" 2>/dev/null)" == "true" ]]; then
+  pass "C8 session settings.json carries the floor's skipDangerousModePermissionPrompt=true"
+else
+  fail "C8 session settings.json does not carry skipDangerousModePermissionPrompt" "$(ls -l "$WORK/.claude-sessions/fresh/settings.json" 2>&1)"
+fi
+
 echo ""
-echo "=== test-claude-bypass-preaccept.sh complete: $((TOTAL - FAILURES))/$TOTAL passed ==="
+echo "=== test-claude-recipe-bypass-preaccept.sh complete: $((TOTAL - FAILURES))/$TOTAL passed ==="
+
+# Second pass: the cage/substrate twin gets the same cases.
+if [[ -z "${RC_WRAPPER_UNDER_TEST:-}" ]]; then
+  # The child SKIPs (exit 0) on a missing file; name that as a failure here.
+  [[ -f "${SCRIPT_DIR}/../cage/substrate/claude-session-wrapper.sh" ]] \
+    || { echo "FAIL  cage/substrate/claude-session-wrapper.sh missing -- twin pass cannot run"; FAILURES=$((FAILURES + 1)); }
+  RC_WRAPPER_UNDER_TEST="${SCRIPT_DIR}/../cage/substrate/claude-session-wrapper.sh" bash "$0"
+  FAILURES=$((FAILURES + $?))
+fi
 exit "$FAILURES"
