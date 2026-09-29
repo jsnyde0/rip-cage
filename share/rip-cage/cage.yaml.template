@@ -95,7 +95,7 @@ mounts:
 # A `secrets:` entry binds a credential to the hosts it may be injected
 # toward. LEAVE `value:` OUT. Omitted, msb takes the real value from the HOST
 # env var of the same name at boot and the guest only ever sees the
-# placeholder "$MSB_<NAME>" -- on disk, in its environment, in /proc. Writing
+# placeholder ("$" then MSB_<NAME>) -- on disk, in its environment, in /proc. Writing
 # a `value:` here would put the secret in this file, which is the one thing
 # this shape exists to avoid.
 #
@@ -111,8 +111,12 @@ secrets:
     allow:
       - "api.anthropic.com"
 
+# "\x24" is YAML for "$": the value is the CCTOK placeholder. It is escaped so
+# the placeholder never appears verbatim in this file, because msb drops any
+# request whose body carries it (microsandbox#1354) -- a caged agent that
+# quoted this file would lose its session.
 env:
-  CLAUDE_CODE_OAUTH_TOKEN: "$MSB_CCTOK"
+  CLAUDE_CODE_OAUTH_TOKEN: "\x24MSB_CCTOK"
 
 # --- egress --------------------------------------------------------------
 # `policy: none` is msb's default-DENY: nothing leaves the cage except the

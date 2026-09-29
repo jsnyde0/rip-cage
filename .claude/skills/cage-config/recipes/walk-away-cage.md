@@ -61,7 +61,7 @@ template's default.
 ## 4. Credentials: the cage holds a placeholder, not a token
 
 Keep the `secrets:` entry with **no `value:`**. msb injects the real value on
-the wire toward the hosts you named; the guest holds only `$MSB_<NAME>`. An
+the wire toward the hosts you named; the guest holds only `$` + `MSB_<NAME>`. An
 unattended agent that follows injected instructions cannot exfiltrate a token
 it never had.
 

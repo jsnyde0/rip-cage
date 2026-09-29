@@ -16,7 +16,7 @@ Read its auth probe line, then check which mechanism this cage uses:
 
 | This cage has | What that means | Section |
 |---|---|---|
-| the shipped `CCTOK` secret (or any `secrets:` entry) | msb injects the token on the wire; the guest holds only `$MSB_<NAME>` | 2 |
+| the shipped `CCTOK` secret (or any `secrets:` entry) | msb injects the token on the wire; the guest holds only `$` + `MSB_<NAME>` | 2 |
 | `ANTHROPIC_API_KEY` in its environment | a plain API key, real value in-cage | 3 |
 
 Check from inside:
@@ -25,7 +25,7 @@ Check from inside:
 msb exec <cage> -- sh -c 'echo "${CLAUDE_CODE_OAUTH_TOKEN:-unset}"'
 ```
 
-A value of literally `$MSB_CCTOK` is **correct** — that is the placeholder,
+A value of `$` followed by `MSB_CCTOK` is **correct** — that is the placeholder,
 and the real value is substituted on the wire. Claude's login never mounts a
 credentials file into the cage.
 
@@ -109,7 +109,7 @@ skill, `recipes/multi-account.md`.
 
 ## What is not an auth problem
 
-- **`$MSB_CCTOK` as the variable's value** — correct, the placeholder.
+- **`$` + `MSB_CCTOK` as the variable's value** — correct, the placeholder.
 - **No Claude credentials file in the guest** — correct. Claude's login
   never mounts one under either mechanism above.
 - **A request failing with connection refused rather than 401** — that is

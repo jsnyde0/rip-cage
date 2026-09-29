@@ -37,8 +37,11 @@ The recipe has three pieces, and all three live in the cage config ([config.md](
 Say a project calls `api.example-service.com` with a bearer token its own code reads from `SERVICE_API_KEY`.
 
 ```bash
-# <project>/.env — committed to the repo; NOT the real key
-SERVICE_API_KEY=$MSB_SERVICE_KEY
+# <project>/.env — committed to the repo; NOT the real key. The value is the
+# placeholder, "$" followed by MSB_SERVICE_KEY, written out in the real file.
+# This doc never spells it: msb drops a request body that carries it (auth.md),
+# so an in-cage agent that quotes this .env loses its session the same way.
+SERVICE_API_KEY=<the placeholder>
 ```
 
 ```yaml
@@ -49,7 +52,7 @@ secrets:
       - "api.example-service.com"   # single-host binding, enforced
 
 env:
-  SERVICE_API_KEY: "$MSB_SERVICE_KEY"   # the guest var the project's own code reads
+  SERVICE_API_KEY: "\x24MSB_SERVICE_KEY"   # the guest var the project's own code reads
 
 network:
   policy: none
@@ -67,7 +70,7 @@ rc up ~/code/my-project
 
 `rc up` reads that file and exports `SERVICE_KEY` for the launch, so an unattended run needs no pre-export. The directory is host-side, outside every cage mount, the same location class as the protected-paths list.
 
-Inside the cage, the project's own code reads `SERVICE_API_KEY` and sees only `$MSB_SERVICE_KEY` — in the env, in `/proc/self/environ`, in the `.env` file on disk, and in the cage config at rest. When that code makes an HTTPS request to `api.example-service.com`, msb's TLS-intercepting proxy substitutes the real key on the wire; a request toward any *other* host carrying the placeholder is block-and-logged, not substituted. This is exactly the mechanism [ADR-029 D5](../decisions/ADR-029-msb-migration.md) already ships for Claude Code's own OAuth token, generalized to a project's credential — no `rc`/`cli` code changes, pure config.
+Inside the cage, the project's own code reads `SERVICE_API_KEY` and sees only `$` + `MSB_SERVICE_KEY` — in the env, in `/proc/self/environ`, in the `.env` file on disk, and in the cage config at rest. When that code makes an HTTPS request to `api.example-service.com`, msb's TLS-intercepting proxy substitutes the real key on the wire; a request toward any *other* host carrying the placeholder is block-and-logged, not substituted. This is exactly the mechanism [ADR-029 D5](../decisions/ADR-029-msb-migration.md) already ships for Claude Code's own OAuth token, generalized to a project's credential — no `rc`/`cli` code changes, pure config.
 
 **This is validated end-to-end, not theoretical.** `history/2026-07-26-secret-posture-spikes.md` S2 ran exactly this shape with a sentinel credential (`SPIKE_TOKEN`) bound to `httpbingo.org`: the guest env, `/proc/self/environ`, the on-disk `.env`, and the at-rest `msb inspect` config all held only the placeholder throughout; an echo endpoint confirmed the real sentinel value appeared on the wire toward the bound host and nowhere else on the guest filesystem. S3 is the matching negative control: the same placeholder sent toward a different, allowlisted-but-*unbound* host (`example.com`) was block-and-logged by msb's violation guard, not substituted — confirmed via the host-side `secret violation: placeholder detected for disallowed host` log line, not just an assumption that the deny worked.
 
@@ -114,7 +117,7 @@ A credential that lands in either dead zone is Class B2 (static key material) in
 This was **observed live, not hypothesized**, in spike S2 (`history/2026-07-26-secret-posture-spikes.md`): the echo endpoint at the bound host reflected the substituted real sentinel value back in its HTTP response body, and the guest process could read it from the response. Two properties make this worse than a one-off leak:
 
 - **msb does no response scrubbing.** Nothing strips a reflected real value out of an inbound response before the guest sees it — the substitution is one-directional (outbound placeholder→real), not a round-trip masking of the credential wherever it appears.
-- **The violation guard is placeholder-keyed, so it's blind to a reflected real value.** The guard that blocks-and-logs a placeholder sent toward an unbound host (validated in S3) keys on the *placeholder string* appearing outbound. Once the real value has been reflected into the guest and the guest re-sends it — verbatim, no longer as `$MSB_...` — that outbound traffic looks like any other legitimate byte stream to the guard. A reflected-then-re-exfiltrated credential rides straight through to any allowlisted host with no guard firing.
+- **The violation guard is placeholder-keyed, so it's blind to a reflected real value.** The guard that blocks-and-logs a placeholder sent toward an unbound host (validated in S3) keys on the *placeholder string* appearing outbound. Once the real value has been reflected into the guest and the guest re-sends it — verbatim, no longer as `$` + `MSB_...` — that outbound traffic looks like any other legitimate byte stream to the guard. A reflected-then-re-exfiltrated credential rides straight through to any allowlisted host with no guard firing.
 
 This is **prompt-injection-relevant** ([ADR-024](../decisions/ADR-024-prompt-injection-threat-model.md)): an injected agent doesn't need to defeat the substitution mechanism at all — it only needs to induce the bound host (or something that looks like it, e.g. an error page or debug endpoint on that host) to echo the credential back, then have the guest forward that now-plaintext value onward. The wire substitution did its job; the residual is entirely in what happens to the credential *after* it's back inside the guest.
 

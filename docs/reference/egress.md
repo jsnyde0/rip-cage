@@ -130,7 +130,7 @@ secrets:
       - "github.com"
 
 env:
-  GH_TOKEN: "$MSB_GH_TOKEN"       # what git sees: the placeholder
+  GH_TOKEN: "\x24MSB_GH_TOKEN"       # what git sees: the placeholder
 
 network:
   policy: none

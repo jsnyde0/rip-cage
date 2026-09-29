@@ -119,10 +119,12 @@ secrets:
       - "api.anthropic.com"
 
 env:
-  CLAUDE_CODE_OAUTH_TOKEN: "$MSB_CCTOK"
+  CLAUDE_CODE_OAUTH_TOKEN: "\x24MSB_CCTOK"
 ```
 
-A `secrets:` entry binds a credential **name** to the hosts it may be injected toward. msb substitutes the real value on the wire toward those hosts only; the guest holds the literal string `$MSB_<NAME>` — on disk, in its environment, in `/proc`, and in the config at rest.
+`"\x24"` is YAML for `$`, inside double quotes only; the value is the CCTOK placeholder, escaped so it never appears verbatim ([auth.md](auth.md#the-one-mechanism) says why). Writing `$` there works too.
+
+A `secrets:` entry binds a credential **name** to the hosts it may be injected toward. msb substitutes the real value on the wire toward those hosts only; the guest holds the placeholder, `$` followed by `MSB_<NAME>` — on disk, in its environment, in `/proc`, and in the config at rest.
 
 **Leave `value:` out.** msb's schema has the field, and filling it would put the secret in a file you edit — the one thing this shape exists to avoid. Omitted, msb resolves the value from the **host environment variable of the same name** at boot.
 

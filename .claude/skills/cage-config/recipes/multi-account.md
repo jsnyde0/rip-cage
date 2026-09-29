@@ -42,11 +42,11 @@ secrets:
       - "api.anthropic.com"
 
 env:
-  CLAUDE_CODE_OAUTH_TOKEN: "$MSB_CCTOK_WORK"
+  CLAUDE_CODE_OAUTH_TOKEN: "\x24MSB_CCTOK_WORK"   # \x24 is "$" (double quotes only)
 ```
 
 and in the other cage, `CCTOK_PERSONAL` bound the same way (`env:
-CLAUDE_CODE_OAUTH_TOKEN: "$MSB_CCTOK_PERSONAL"`). Both leave `value:` out. The
+CLAUDE_CODE_OAUTH_TOKEN: "\x24MSB_CCTOK_PERSONAL"`). Both leave `value:` out. The
 `env:` line is not optional — without it the secret is injected on the wire
 but never lands in `CLAUDE_CODE_OAUTH_TOKEN` for Claude Code to read.
 
@@ -58,7 +58,7 @@ Host-side, one file per name:
 ```
 
 `rc` reads the one its config names and bridges only that one. The guest sees
-`$MSB_CCTOK_WORK` — a placeholder — and nothing about the other account exists
+`$` + `MSB_CCTOK_WORK` — a placeholder — and nothing about the other account exists
 in its environment, on its disk, or in `/proc`.
 
 **`rc auth` and the `rc up` pre-check only ever check the literal secret name

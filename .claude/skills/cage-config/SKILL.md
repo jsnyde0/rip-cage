@@ -118,7 +118,7 @@ protected-paths list. The template's mounts block shows the line shape.
 A `secrets:` entry binds a credential name to the hosts it may be injected
 toward, and **leaves `value:` out**. msb then takes the real value from the
 host environment at boot; the guest only ever sees the placeholder
-`$MSB_<NAME>` — on disk, in its environment, in `/proc`. Writing a `value:`
+`$` + `MSB_<NAME>` — on disk, in its environment, in `/proc`. Writing a `value:`
 here would put the secret in this file, which is the one thing the shape exists
 to avoid.
 

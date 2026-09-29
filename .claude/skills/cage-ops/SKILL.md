@@ -162,7 +162,7 @@ step: `claude setup-token`, save the value, `chmod 600`. Full diagnosis:
 [`recipes/auth-trouble.md`](recipes/auth-trouble.md).
 
 Claude's login rides msb `--secret` — the guest holds only the placeholder
-`$MSB_CCTOK`, never the token. "The token is not in the cage" is the posture,
+`$` + `MSB_CCTOK`, never the token. "The token is not in the cage" is the posture,
 not a bug to fix. A changed token needs `rc up --replace <project>`; a running
 cage does not pick it up live.
 

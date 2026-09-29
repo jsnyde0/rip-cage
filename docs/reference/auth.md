@@ -19,10 +19,12 @@ secrets:
       - "api.anthropic.com"
 
 env:
-  CLAUDE_CODE_OAUTH_TOKEN: "$MSB_CCTOK"
+  CLAUDE_CODE_OAUTH_TOKEN: "\x24MSB_CCTOK"
 ```
 
-msb injects the real value on the wire toward `api.anthropic.com` only; the guest holds the literal string `$MSB_CCTOK` — on disk, in its environment, in `/proc`. `init-rip-cage.sh` reads only what the config mounted; it never touches a keychain, and there is no Claude credentials file in the guest.
+msb injects the real value on the wire toward `api.anthropic.com` only; the guest holds the placeholder, `$` + `MSB_CCTOK` — on disk, in its environment, in `/proc`. The config writes it as `"\x24MSB_CCTOK"`, which YAML decodes to the same string (measured on msb 0.7.4).
+
+**The placeholder is never spelled verbatim in `docs/reference/`, the README, the template or the skills.** msb drops any request whose body carries a bound secret's placeholder as a leak ([superradcompany/microsandbox#1354](https://github.com/superradcompany/microsandbox/issues/1354), fix unmerged). A caged agent that read such a doc and quoted it would send the placeholder in its next model call, and every call after it, and lose the session. So the prose says `$` + `MSB_<NAME>` and the YAML says `\x24`. `tests/test-no-verbatim-placeholder.sh` holds that line; drop it once upstream #1354 ships. `init-rip-cage.sh` reads only what the config mounted; it never touches a keychain, and there is no Claude credentials file in the guest.
 
 ### msb version floor
 
