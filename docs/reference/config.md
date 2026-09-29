@@ -146,7 +146,9 @@ network:
     - "github.com:tcp:443"
 ```
 
-`policy: none` is msb's default-**deny**: nothing leaves the cage except the hosts listed. Each entry uses the `<host>:tcp:443` form — name the port; a bare host records every port. On msb 0.7.3+ a config that binds no secret also needs `strict: false`, or every name-allowed HTTPS host fails at the handshake ([egress.md](egress.md#strict-hostname-checking-msb-073)).
+`policy: none` is msb's default-**deny**: nothing leaves the cage except the hosts listed. Each entry uses the `<target>:tcp:443` form — name the port; a bare target opens every port.
+
+The target takes any kind msb's rule grammar names (`msb create --help`, under `--net-rule`, "Target kinds"): a domain (`"github.com:tcp:443"`), a domain suffix (`"*.githubusercontent.com:tcp:443"`), an IP or CIDR (`"149.154.160.0/20:tcp:443"`) for a service with no name to allow, or a group (`"private:tcp:5432"`). An IP-allowed target on port 443 meets msb's TLS proxy while a secret is bound; see [egress.md](egress.md#strict-hostname-checking-msb-073). On msb 0.7.3+ a config that binds no secret also needs `strict: false`, or every name-allowed HTTPS host fails at the handshake ([egress.md](egress.md#strict-hostname-checking-msb-073)).
 
 The full repair loop when something is denied, and what the denial does and does not log, is [egress.md](egress.md).
 

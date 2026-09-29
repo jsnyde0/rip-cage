@@ -131,10 +131,16 @@ yourself before `rc up`, or msb fails loud naming it.
 `network.policy: none` is msb's default-DENY. Only the hosts under
 `network.allow` leave the cage, and each entry names its port:
 `"<host>:tcp:443"`. A bare host would open every port; `host:443` without the
-protocol is rejected at create. A config with no `secrets:` entry also needs
-`strict: false` under `network:`: msb 0.7.3+ defaults strict on, and without a
-bound secret every name in the list fails at the TLS handshake. The template
-binds CCTOK, so it needs no line. `rc up` warns on the breaking shape.
+protocol is rejected at create. The target can be any kind msb's rule grammar
+names (`msb create --help`, `--net-rule`): a domain (`github.com`), a suffix
+(`*.githubusercontent.com`), an IP or CIDR (`149.154.160.0/20`) for a service
+that has no name, or a group (`private`). A config with no `secrets:` entry
+also needs `strict: false` under `network:`: msb 0.7.3+ defaults strict on,
+and without a bound secret every name in the list fails at the TLS handshake.
+The template binds CCTOK, so it needs no line. `rc up` warns on the breaking shape. While
+a secret is bound, a non-TLS stream or a bare-IP HTTPS call to an IP allowed
+on port 443 connects, then stalls, strict on or off
+([`docs/reference/egress.md`](../../../docs/reference/egress.md#strict-hostname-checking-msb-073)).
 
 The template's list is the starting set, with each entry's reason beside it.
 For which hosts a coding agent actually needs and why, see
