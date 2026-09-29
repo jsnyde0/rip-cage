@@ -8,7 +8,8 @@
 # seeds the session dir before exec-ing the real Claude binary.
 #
 # Resolution precedence (D4, updated rip-cage-1f59.4 — multiplexer-agnostic):
-#   1. Explicit CLAUDE_CONFIG_DIR env var — use as-is.
+#   1. Explicit CLAUDE_CONFIG_DIR env var — use as-is (the image default, /home/agent/.claude
+#      or $HOME/.claude, is not explicit: it falls through to 2-4).
 #   2. Inside tmux ($TMUX set) — derive handle from session name.
 #   3. Inside herdr ($HERDR_SESSION set) — derive handle from HERDR_SESSION env var.
 #   4. Else — use ~/.claude-sessions/default (headless / no-multiplexer fallback).
@@ -45,7 +46,19 @@ fi
 # ---------------------------------------------------------------------------
 # Resolve the config dir handle (multiplexer-agnostic, rip-cage-1f59.4)
 # ---------------------------------------------------------------------------
-if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
+# The base image sets CLAUDE_CONFIG_DIR=/home/agent/.claude as a default (Dockerfile
+# ENV, rip-cage-jimf.9) so claude reads its writable .claude.json there. That default
+# is not a caller's explicit choice: a value equal to the literal image value or to
+# $HOME/.claude (slashes normalized on both sides) falls through to Cases 2-4, so the
+# per-session dirs keep winning under this recipe. Any other value is Case 1.
+_rc_norm() {
+  local _p="$1"
+  while [[ "$_p" == *//* ]]; do _p="${_p//\/\//\/}"; done
+  while [[ "$_p" == */ && "$_p" != "/" ]]; do _p="${_p%/}"; done
+  printf '%s' "$_p"
+}
+_rc_cfg="$(_rc_norm "${CLAUDE_CONFIG_DIR:-}")"
+if [[ -n "$_rc_cfg" && "$_rc_cfg" != "$(_rc_norm "$CLAUDE_BASE")" && "$_rc_cfg" != "/home/agent/.claude" ]]; then
   # Case 1: caller set it explicitly — use it directly
   SESSION_DIR="$CLAUDE_CONFIG_DIR"
 elif [[ -n "${TMUX:-}" ]]; then

@@ -61,7 +61,7 @@ entry to PATH ahead of this one.
 
 ## Session-dir resolution and seeding (carried over verbatim — hard-won)
 
-- **Resolution precedence:** an explicit `CLAUDE_CONFIG_DIR` wins; else inside
+- **Resolution precedence:** an explicit `CLAUDE_CONFIG_DIR` wins (the base image's own default, `/home/agent/.claude` or `$HOME/.claude`, does not count as explicit); else inside
   tmux the session name derives the handle; else inside herdr `$HERDR_SESSION`
   derives it; else it falls back to `~/.claude-sessions/default` (headless / no
   multiplexer). Multiplexer-agnostic by construction — same wrapper regardless

@@ -76,7 +76,17 @@ mounts:
 
 **Host skills need no line.** `rc` projects `~/.claude/skills` itself (read-only at `/home/agent/.rc-context/skills`, symlinked into `~/.claude/skills` by init). Mounting `~/.claude/skills` from the config puts a mountpoint where that symlink goes; `rc up` warns and init leaves the mount in place.
 
-**`~/.claude.json` is `:ro` on purpose.** Init snapshots it to a seed file at boot and the in-cage agent works from the copy. Read-write would hand a prompt-injected agent a write into the `mcpServers` and `hooks` that your **host** Claude later executes ([ADR-024](../decisions/ADR-024-prompt-injection-threat-model.md)). Drop the line entirely if you do not run Claude Code in this cage.
+**`~/.claude.json` is `:ro` on purpose.** Init snapshots it to a seed file (`~/.claude/.claude.json.seed`) at every boot. Read-write would hand a prompt-injected agent a write into the `mcpServers` and `hooks` that your **host** Claude later executes ([ADR-024](../decisions/ADR-024-prompt-injection-threat-model.md)). Drop the line entirely if you do not run Claude Code in this cage. What claude does with the seed depends on the shape:
+
+- **Base image, no recipe.** The image sets `CLAUDE_CONFIG_DIR=/home/agent/.claude`, and init writes `~/.claude/.claude.json` from the seed plus `hasSeenAutoDefaultNudge: true` on every boot (rip-cage-jimf.9). The in-cage claude reads and writes that copy, never the mount. Cost: edits you make to the host `~/.claude.json` (new MCP servers, settings) reach the cage at its next boot only, and state claude wrote into the in-cage copy (a trust answer, for example) is rebuilt from the seed on each boot.
+- **With the `examples/claude` recipe.** Its session wrapper treats the image default as unset and uses `~/.claude-sessions/<handle>`, seeded once from the seed and then owned by that session dir. Init's `~/.claude/.claude.json` is unused there, and host edits do not arrive at boot; they reach a session dir only when it is created.
+- **Whole `~/.claude` mounted read-write** (instead of the two session lines). Init writes nothing into that mount (it is your host dir), so claude, pointed at `/home/agent/.claude`, finds no `.claude.json` there unless your host `~/.claude` already has one. It then starts unconfigured (onboarding) and creates the file in your host `~/.claude`. Init prints a WARNING naming this. Remedy, one more line in the cage config's `mounts:`, nested inside the directory mount:
+
+  ```yaml
+    - "/Users/you/.claude.json:/home/agent/.claude/.claude.json:ro"
+  ```
+
+  msb 0.7.4 accepts the nested file mount; the guest reads your host file at that path, read-only (`tests/test-init-mount-guard-live.sh` G14-G17). The nudge flag then has no writable home in this shape, so the auto-mode nudge may show.
 
 ### Named volumes
 

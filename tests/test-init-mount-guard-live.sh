@@ -18,6 +18,12 @@
 #          .claude.json.seed lands on the host, host projects/ and sessions/
 #          gain no legacy-volume link, and init printed a skip line for each
 #          of the five.
+#   G12-G13 (rip-cage-jimf.9) same boot: claude is pointed at ~/.claude by the
+#          image ENV; that dir being the host's own with no .claude.json, init
+#          prints a WARNING naming the remedy mount line and writes nothing.
+#   G14-G17 the remedy: the host ~/.claude.json mounted read-only NESTED at
+#          /home/agent/.claude/.claude.json is readable in the guest (marker),
+#          read-only, and silences the warning.
 #
 # No real credential is used: the config's CCTOK secret gets a fake value of
 # the setup-token shape, enough for msb to boot. Nothing here calls the API.
@@ -163,6 +169,38 @@ else
     fi
   done
   if [[ $_g11_ok -eq 1 ]]; then pass "G11 host ~/.claude/projects and sessions untouched (no legacy-volume link)"; else fail "G11 init linked into host ~/.claude/projects or sessions" "$(ls -la "${HOME}/.claude/projects" "${HOME}/.claude/sessions" 2>&1 | tr '\n' ' ')"; fi
+
+  # --- G12-G13: rip-cage-jimf.9 -- the image points claude at ~/.claude; with
+  # that dir being the operator's own mount and holding no .claude.json, init
+  # writes nothing there and must WARN with the remedy line.
+  if grep -qF "/home/agent/.claude/.claude.json is absent and ~/.claude is a cage-config mount" "$W_LOG" \
+     && grep -qF '/home/agent/.claude/.claude.json:ro' "$W_LOG"; then
+    pass "G12 init warned that claude has no .claude.json in the whole-~/.claude shape, naming the remedy mount line"
+  else
+    fail "G12 no jimf.9 warning in the whole-~/.claude shape" "WARNING lines: $(grep -F 'WARNING' "$W_LOG" | head -5 | tr '\n' ' ')"
+  fi
+  if [[ ! -e "${HOME}/.claude/.claude.json" ]]; then pass "G13 init wrote no .claude.json into the host ~/.claude"; else fail "G13 host ~/.claude/.claude.json appeared after init"; fi
+
+  # --- G14-G17: the remedy -- the host ~/.claude.json mounted read-only NESTED
+  # inside the directory mount. The marker proves the guest file is the host's.
+  printf '{"jimf9Marker": "nested", "hasCompletedOnboarding": true}\n' > "${HOME}/.claude.json"
+  REM_CONF="${T}/whole-claude-remedy.yaml"
+  sed -e "s#^  - \"${HOME}/.claude:/home/agent/.claude\"#&\\
+  - \"${HOME}/.claude.json:/home/agent/.claude/.claude.json:ro\"#" "$WHOLE_CONF" > "$REM_CONF"
+  if ! grep -qF "\"${HOME}/.claude.json:/home/agent/.claude/.claude.json:ro\"" "$REM_CONF"; then
+    fail "G14 could not build the remedy config fixture"
+  else
+    cp "$REM_CONF" "$CONF"
+    R_LOG="${T}/up-remedy.log"
+    "$RC" up --replace "$WS" < /dev/null > "$R_LOG" 2>&1
+    r_rc=$?
+    if [[ $r_rc -eq 0 ]]; then pass "G14 remedy config (nested ro .claude.json mount): rc up exit 0"; else fail "G14 remedy rc up exit ${r_rc}" "log tail: $(tail -5 "$R_LOG" | tr '\n' ' ')"; fi
+    _g15=$(gexec 30 jq -r '.jimf9Marker' /home/agent/.claude/.claude.json 2>/dev/null | tr -d '\r\n')
+    if [[ "$_g15" == "nested" ]]; then pass "G15 guest ~/.claude/.claude.json is the host file (marker read through the nested mount)"; else fail "G15 nested mount not readable in the guest" "marker='${_g15}'"; fi
+    _g16=$(gexec 30 sh -c 'if echo x >> /home/agent/.claude/.claude.json 2>/dev/null; then echo WROTE; else echo REFUSED; fi' 2>/dev/null | tr -d '\r\n')
+    if [[ "$_g16" == "REFUSED" ]]; then pass "G16 the nested .claude.json is read-only in the guest"; else fail "G16 nested .claude.json writable in the guest" "$_g16"; fi
+    if ! grep -qF "is absent and ~/.claude is a cage-config mount" "$R_LOG"; then pass "G17 no jimf.9 warning once the remedy line is present"; else fail "G17 warning still printed with the remedy mount"; fi
+  fi
 fi
 
 echo ""

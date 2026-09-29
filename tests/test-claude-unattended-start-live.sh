@@ -15,17 +15,31 @@
 #   U1/U6  rc up exit 0
 #   U2/U7  positive sentinel: the probe captured claude's own screen
 #   U3/U8  no bypass-permissions accept dialog ("Yes, I accept")
-#   U4/U9  no "make auto mode your default?" nudge
+#   U4/U9  no "make auto mode your default?" nudge (screen leg) AND the
+#          mechanism leg, which bites under the fake token: in the guest
+#          CLAUDE_CONFIG_DIR is /home/agent/.claude (image ENV) and
+#          /home/agent/.claude/.claude.json carries hasSeenAutoDefaultNudge:true
+#          (init writes it from the seed on every boot; rip-cage-jimf.9)
 #   U5/U10 the prompt rendered (the bypass-permissions status line)
 #   U11    the host ~/.claude.json is still read-only in the guest
 #   U12    control: the same probe against a config dir whose settings.json
 #          is the cage's minus skipDangerousModePermissionPrompt DOES show the
 #          accept dialog -- proves U3/U8 can catch it
+#   U13    control through the image ENV: with the /workspace trust entry
+#          removed from the writable ~/.claude/.claude.json only (the host file
+#          still trusts it), the inherited-env claude DOES render the
+#          workspace-trust dialog -- proves claude reads
+#          $CLAUDE_CONFIG_DIR/.claude.json (the file init writes), not
+#          /home/agent/.claude.json. The file is restored afterwards.
 #
-# No real credential: the CCTOK secret is a fake of the setup-token shape;
-# nothing here reaches the API. LIMIT, measured 2026-09-29: the auto-mode
-# nudge renders only under a real login, so under the fake token U4/U9 cannot
-# fire -- they pass vacuously here and bite only on a real-auth run. Probe transcripts land in $RC_JIMF_LOG_DIR
+# No real credential by default: the CCTOK secret is a fake of the setup-token
+# shape; nothing here reaches the API. LIMIT, measured 2026-09-29: the auto-mode
+# nudge renders only under a real login, so under the fake token the SCREEN leg
+# of U4/U9 cannot fire (it passes vacuously); the mechanism leg and U13 are what
+# bite here. Opt-in real-auth run: RC_JIMF_CCTOK_FILE=<path to a setup-token
+# file> copies that file in as the CCTOK secret (never printed, never logged;
+# the probe screens land in $RC_JIMF_LOG_DIR and carry no token). Then the
+# screen leg bites. Probe transcripts land in $RC_JIMF_LOG_DIR
 # (default: the temp dir, removed at exit) for the ship-record.
 #
 # Image: RC_IMAGE, REQUIRED to be an explicit scratch tag, never
@@ -96,7 +110,17 @@ if ! grep -qF "\"${HOME}/.claude.json:/home/agent/.claude.json:ro\"" "$CONF"; th
   echo "FATAL: the template no longer mounts ~/.claude.json read-only; this test's premise moved"
   exit 1
 fi
-( umask 077; printf 'sk-ant-oat01-%s' "$(printf 'x%.0s' $(seq 1 90))" > "${XDG_CONFIG_HOME}/rip-cage/secrets/CCTOK" )
+if [[ -n "${RC_JIMF_CCTOK_FILE:-}" ]]; then
+  # Opt-in real-auth seam: the file is copied, never read into the session or echoed.
+  [[ -f "$RC_JIMF_CCTOK_FILE" ]] || { echo "FATAL: RC_JIMF_CCTOK_FILE is not a file"; exit 1; }
+  ( umask 077; cp "$RC_JIMF_CCTOK_FILE" "${XDG_CONFIG_HOME}/rip-cage/secrets/CCTOK" )
+  _auth_note=" (real token)"
+  echo "auth=real-token-file (screen leg bites)"
+else
+  ( umask 077; printf 'sk-ant-oat01-%s' "$(printf 'x%.0s' $(seq 1 90))" > "${XDG_CONFIG_HOME}/rip-cage/secrets/CCTOK" )
+  _auth_note=" (vacuous under the fake token -- see LIMIT)"
+  echo "auth=fake-token (screen leg of the nudge check is vacuous)"
+fi
 
 # shellcheck source=tests/_scratch-cage-lib.sh
 source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
@@ -119,7 +143,15 @@ probe_boot() {
   # probe captured claude's own screen.
   if grep -qE "Claude Code|Bypass Permissions mode|bypass permissions on" "$_out"; then pass "${_sen} ${_label}: probe captured claude's screen ($(wc -c < "$_out" | tr -d ' ') bytes)"; else fail "${_sen} ${_label}: probe captured no claude output" "$(head -c 300 "$_out" | tr '\n' ' ')"; return; fi
   if grep -qF "Yes, I accept" "$_out"; then fail "${_acc} ${_label}: bypass-permissions accept dialog appeared" "$_out"; else pass "${_acc} ${_label}: no bypass-permissions accept dialog"; fi
-  if grep -qiE "auto mode your default" "$_out"; then fail "${_nud} ${_label}: 'make auto mode your default?' nudge appeared" "$_out"; else pass "${_nud} ${_label}: no auto-mode-default nudge (vacuous under the fake token -- see LIMIT)"; fi
+  local _cd _nf
+  _cd=$(gexec 30 printenv CLAUDE_CONFIG_DIR 2>/dev/null | tr -d '\r\n')
+  _nf=$(gexec 30 jq -r '.hasSeenAutoDefaultNudge' /home/agent/.claude/.claude.json 2>/dev/null | tr -d '\r\n')
+  if [[ "$_cd" == "/home/agent/.claude" && "$_nf" == "true" ]]; then
+    pass "${_nud}m ${_label}: mechanism -- CLAUDE_CONFIG_DIR=${_cd}, ~/.claude/.claude.json hasSeenAutoDefaultNudge=true"
+  else
+    fail "${_nud}m ${_label}: mechanism leg" "CLAUDE_CONFIG_DIR='${_cd}' hasSeenAutoDefaultNudge='${_nf}'"
+  fi
+  if grep -qiE "auto mode your default" "$_out"; then fail "${_nud} ${_label}: 'make auto mode your default?' nudge appeared" "$_out"; else pass "${_nud} ${_label}: no auto-mode-default nudge on screen${_auth_note}"; fi
   if grep -qiE "bypass permissions on" "$_out"; then pass "${_pr} ${_label}: prompt rendered (bypass permissions on)"; else fail "${_pr} ${_label}: prompt status line not seen" "$_out"; fi
 }
 
@@ -156,6 +188,31 @@ if grep -qF "Yes, I accept" "$CTRL"; then
   pass "U12 control: with skipDangerousModePermissionPrompt absent, the accept dialog appears"
 else
   fail "U12 control: the probe did not catch the accept dialog with the key absent -- U3/U8 prove nothing" "$CTRL"
+fi
+
+# --- U13: control -- claude, with the IMAGE's inherited env, reads
+# /home/agent/.claude/.claude.json ------------------------------------------
+# The host file (mounted at /home/agent/.claude.json) still trusts /workspace.
+# Temporarily drop the trust entry from the WRITABLE ~/.claude/.claude.json only,
+# run the probe with the inherited environment (no CLAUDE_CONFIG_DIR override),
+# expect the workspace-trust dialog, restore. If claude read the host mount
+# instead, /workspace would stay trusted and no dialog would render. The
+# edited file is checked non-empty and still carrying the nudge flag before
+# the probe runs, so an empty/garbled file cannot produce the dialog by itself.
+CTRL2="${LOG_DIR}/probe-control-trust.txt"
+_u13_prep=$(gexec 30 sh -c 'cd /home/agent/.claude && cp .claude.json /tmp/jimf-cj.bak && jq "del(.projects[\"/workspace\"])" .claude.json > /tmp/jimf-cj.new && jq -e ".hasSeenAutoDefaultNudge == true and ((.projects // {}) | has(\"/workspace\") | not)" /tmp/jimf-cj.new >/dev/null && cp /tmp/jimf-cj.new .claude.json && echo PREPPED' 2>/dev/null | tr -d '\r\n')
+if [[ "$_u13_prep" != "PREPPED" ]]; then
+  fail "U13 control: could not prepare the trust-less ~/.claude/.claude.json in the guest" "prep=${_u13_prep:-<none>}"
+else
+  gexec 60 python3 -c "$(cat "$PROBE")" 25 /workspace > "$CTRL2" 2>&1
+  gexec 30 sh -c 'cp /tmp/jimf-cj.bak /home/agent/.claude/.claude.json' >/dev/null 2>&1
+  if ! grep -qE "Claude Code|Bypass Permissions mode|bypass permissions on" "$CTRL2"; then
+    fail "U13 control: probe captured no claude screen (no positive sentinel)" "$(head -c 200 "$CTRL2" | tr '\n' ' ')"
+  elif grep -qiE "trust this folder|Quick safety check|trust the files" "$CTRL2"; then
+    pass "U13 control: with the trust entry gone from ~/.claude/.claude.json (host file still trusts), the inherited-env claude renders the trust dialog -- it reads \$CLAUDE_CONFIG_DIR/.claude.json"
+  else
+    fail "U13 control: no workspace-trust dialog with the trust entry removed from ~/.claude/.claude.json" "$CTRL2"
+  fi
 fi
 
 echo ""

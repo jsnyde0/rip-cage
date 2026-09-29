@@ -55,14 +55,16 @@ mounts:
   - "<ABSOLUTE_PATH_TO_YOUR_HOME>/.claude/projects:/home/agent/.claude/projects"
   - "<ABSOLUTE_PATH_TO_YOUR_HOME>/.claude/sessions:/home/agent/.claude/sessions"
 
-  # Your host Claude config, READ-ONLY. Claude Code in the cage needs to read
-  # it once — init copies it to a seed file under ~/.claude at boot, and the
-  # in-cage agent works from that copy, so the host file is never written from
-  # inside. Read-write here would give an agent that followed injected
-  # instructions (ADR-024) a way to edit the config your HOST Claude later
-  # executes — mcpServers and hooks live in this file. Drop the line entirely
-  # if you do not run Claude Code in this cage; msb fails the boot if the path
-  # does not exist.
+  # Your host Claude config, READ-ONLY. Init snapshots it to a seed file under
+  # ~/.claude at every boot. On the base image claude (CLAUDE_CONFIG_DIR=
+  # ~/.claude) then works from a writable copy of that seed, so the host file is
+  # never written from inside and host edits reach the cage at boot only; with
+  # the examples/claude recipe, each session dir is seeded once instead
+  # (docs/reference/config.md). Read-write here would give an agent that followed
+  # injected instructions (ADR-024) a way to edit the config your HOST Claude
+  # later executes — mcpServers and hooks live in this file. Drop the line
+  # entirely if you do not run Claude Code in this cage; msb fails the boot if
+  # the path does not exist.
   - "<ABSOLUTE_PATH_TO_YOUR_HOME>/.claude.json:/home/agent/.claude.json:ro"
 
   # --- named volumes (map form) ------------------------------------------

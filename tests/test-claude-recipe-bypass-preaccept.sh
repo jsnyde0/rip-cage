@@ -29,6 +29,8 @@
 #                              field still gets it (every-invocation retrofit)
 #   C5  idempotent          -- a second run leaves valid JSON, field still true
 #   C6/C7 argv flag         -- --dangerously-skip-permissions injected, never doubled
+#   C9/C10 image-default CLAUDE_CONFIG_DIR (=~/.claude) is not "explicit"; a
+#                              different explicit value still is (rip-cage-jimf.9)
 #   C8  floor key reaches   -- the session dir's settings.json resolves to the
 #                              floor file, carrying skipDangerousModePermissionPrompt
 #
@@ -211,6 +213,55 @@ elif [[ "$(jq -r '.skipDangerousModePermissionPrompt // false' "$WORK/.claude-se
   pass "C8 session settings.json carries the floor's skipDangerousModePermissionPrompt=true"
 else
   fail "C8 session settings.json does not carry skipDangerousModePermissionPrompt" "$(ls -l "$WORK/.claude-sessions/fresh/settings.json" 2>&1)"
+fi
+
+# ---------------------------------------------------------------------------
+# C9/C10: the base image's default CLAUDE_CONFIG_DIR (=$HOME/.claude, Dockerfile
+# ENV, rip-cage-jimf.9) must NOT count as an explicit caller choice: the wrapper
+# still derives the per-session dir (here: from HERDR_SESSION), and never
+# adopts ~/.claude itself as its session dir. C10: a genuinely different
+# explicit value is still honored (Case 1 intact).
+# ---------------------------------------------------------------------------
+_ENVDUMP="$WORK/env-dump.txt"
+printf '#!/usr/bin/env bash\nprintf "%%s" "${CLAUDE_CONFIG_DIR:-UNSET}" > "%s"\n' "$_ENVDUMP" > "$STUB_CLAUDE"
+HOME="$WORK" RC_P1P_JSON_BASE="$FIXTURE" CLAUDE_CONFIG_DIR="$WORK/.claude" \
+  TMUX="" HERDR_SESSION="imgdefault" "$WRAPPER_UNDER_TEST" --version >/dev/null 2>&1
+if [[ "$(cat "$_ENVDUMP" 2>/dev/null)" == "$WORK/.claude-sessions/imgdefault" ]]; then
+  pass "C9 image-default CLAUDE_CONFIG_DIR (=~/.claude) is not explicit: per-session dir still wins"
+else
+  fail "C9 wrapper adopted the image-default CLAUDE_CONFIG_DIR as its session dir" "got: $(cat "$_ENVDUMP" 2>/dev/null)"
+fi
+HOME="$WORK" RC_P1P_JSON_BASE="$FIXTURE" CLAUDE_CONFIG_DIR="$WORK/explicit-dir" \
+  TMUX="" HERDR_SESSION="imgdefault" "$WRAPPER_UNDER_TEST" --version >/dev/null 2>&1
+if [[ "$(cat "$_ENVDUMP" 2>/dev/null)" == "$WORK/explicit-dir" ]]; then
+  pass "C10 a non-default explicit CLAUDE_CONFIG_DIR is still honored (Case 1 intact)"
+else
+  fail "C10 explicit CLAUDE_CONFIG_DIR not honored" "got: $(cat "$_ENVDUMP" 2>/dev/null)"
+fi
+
+# C11/C12: the guard is slash-robust and also accepts the literal image value
+# (the image ENV is /home/agent/.claude whatever $HOME is): a trailing-slash
+# value and a double-slash HOME both still count as the default.
+HOME="$WORK" RC_P1P_JSON_BASE="$FIXTURE" CLAUDE_CONFIG_DIR="$WORK/.claude/" \
+  TMUX="" HERDR_SESSION="imgdefault2" "$WRAPPER_UNDER_TEST" --version >/dev/null 2>&1
+if [[ "$(cat "$_ENVDUMP" 2>/dev/null)" == "$WORK/.claude-sessions/imgdefault2" ]]; then
+  pass "C11 trailing-slash image-default CLAUDE_CONFIG_DIR is not explicit"
+else
+  fail "C11 trailing-slash default adopted as session dir" "got: $(cat "$_ENVDUMP" 2>/dev/null)"
+fi
+HOME="$WORK/" RC_P1P_JSON_BASE="$FIXTURE" CLAUDE_CONFIG_DIR="$WORK/.claude" \
+  TMUX="" HERDR_SESSION="imgdefault3" "$WRAPPER_UNDER_TEST" --version >/dev/null 2>&1
+if [[ "$(cat "$_ENVDUMP" 2>/dev/null)" == "$WORK//.claude-sessions/imgdefault3" || "$(cat "$_ENVDUMP" 2>/dev/null)" == "$WORK/.claude-sessions/imgdefault3" ]]; then
+  pass "C12 trailing-slash HOME does not defeat the guard"
+else
+  fail "C12 trailing-slash HOME defeated the guard" "got: $(cat "$_ENVDUMP" 2>/dev/null)"
+fi
+HOME="$WORK" RC_P1P_JSON_BASE="$FIXTURE" CLAUDE_CONFIG_DIR="/home/agent/.claude" \
+  TMUX="" HERDR_SESSION="imgdefault4" "$WRAPPER_UNDER_TEST" --version >/dev/null 2>&1
+if [[ "$(cat "$_ENVDUMP" 2>/dev/null)" == "$WORK/.claude-sessions/imgdefault4" ]]; then
+  pass "C13 literal image value /home/agent/.claude is not explicit even when \$HOME differs"
+else
+  fail "C13 literal image value adopted" "got: $(cat "$_ENVDUMP" 2>/dev/null)"
 fi
 
 echo ""

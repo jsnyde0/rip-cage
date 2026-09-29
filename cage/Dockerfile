@@ -25,6 +25,10 @@ ENV TERM=xterm-256color
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 ENV MISE_TRUSTED_CONFIG_PATHS=/workspace
+# claude reads its global config from $CLAUDE_CONFIG_DIR/.claude.json. Pointing it at
+# the default dir moves that file off the host's read-only ~/.claude.json mount onto
+# init's writable copy (rip-cage-jimf.9); settings.json, projects/, sessions/ stay put.
+ENV CLAUDE_CONFIG_DIR=/home/agent/.claude
 
 # System packages
 # iptables/ip6tables-legacy + dnsutils were installed for the in-cage egress
