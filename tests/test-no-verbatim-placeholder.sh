@@ -12,9 +12,12 @@ set -uo pipefail
 # `$` + `MSB_<NAME>`; YAML writes "\x24MSB_<NAME>", which decodes to the same
 # value (measured on msb 0.7.4).
 #
-# Scope: docs/reference, README.md, share/, .claude/skills -- the text a caged
-# agent is pointed at. History docs, ADRs, cli/ comments and tests/ are judged
-# on the bead, not guarded here.
+# Scope: docs/reference, README.md, share/, .claude/skills, examples/ -- the
+# text a caged agent is pointed at (examples/ ships in the same mounted
+# checkout; this replaces the per-recipe check test-dotpi-factory-recipe.sh
+# T7 used to carry). The YAML escape "\x24MSB_<NAME>" is the sanctioned form
+# and does not match the needle. History docs, ADRs, cli/ comments and tests/
+# are judged on the bead, not guarded here.
 #
 # Remove this test when upstream #1354 ships in rip-cage's msb floor.
 
@@ -24,7 +27,7 @@ REPO_ROOT="${SCRIPT_DIR}/.."
 # Built from parts so this file does not itself carry the string.
 NEEDLE='$'"MSB_"
 
-PATHS=(docs/reference README.md share .claude/skills)
+PATHS=(docs/reference README.md share .claude/skills examples)
 for _p in "${PATHS[@]}"; do
   if [[ ! -e "${REPO_ROOT}/${_p}" ]]; then
     echo "FAIL: guarded path ${_p} is missing -- update PATHS, or this test checks nothing"
@@ -39,7 +42,7 @@ if [[ "$_rc" -gt 1 ]]; then
   exit 1
 fi
 if [[ "$_rc" -eq 1 ]]; then
-  echo "PASS: no verbatim msb placeholder in docs/reference, README.md, share/, .claude/skills"
+  echo "PASS: no verbatim msb placeholder in docs/reference, README.md, share/, .claude/skills, examples/"
   exit 0
 fi
 # shellcheck disable=SC2016  # literal backticks and dollar, printed as-is

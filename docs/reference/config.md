@@ -105,7 +105,7 @@ mounts:
     create: ensure-exists
 ```
 
-`create: ensure-exists` makes the volume during `msb create`, so a fresh machine needs no setup step. The per-cage volumes carry the cage name; the mise cache is deliberately shared across cages. These survive a recreate, and `rc destroy` removes them — `msb remove` alone would orphan them.
+`create: ensure-exists` makes the volume during `msb create`, so a fresh machine needs no setup step. The per-cage volumes carry the cage name; the mise cache is deliberately shared across cages. These survive a recreate. `rc destroy` removes only the two per-cage volumes, `rc-state-<cage-name>` and `rc-history-<cage-name>` (`msb remove` alone would orphan them); every other named volume — the shared `rc-mise-cache`, or any your config adds — outlives it: list with `msb volume list`, remove with `msb volume remove <name>`.
 
 ### Secret covers
 

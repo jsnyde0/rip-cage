@@ -7,8 +7,9 @@
 # dotpi code copied in), the snippet ending on USER agent, the boot fragment
 # merging cleanly and declaring the clock as one pacemaker serve daemon and no
 # tick loop, the README's config lines
-# agreeing with the snippet's state dirs and DOTPI_DIR, the reach-in facts, and
-# the absence of the literal secret placeholder (rip-cage-ureo). No docker/msb
+# agreeing with the snippet's state dirs and DOTPI_DIR, and the reach-in facts
+# (the secret-placeholder check lives in test-no-verbatim-placeholder.sh,
+# which covers examples/). No docker/msb
 # needed. The live leg (herdr version, CLIs from host msb exec, a grant row
 # surviving rc up --replace) is recorded on the bead's ship-record.
 #
@@ -222,25 +223,23 @@ else
   fail "T5 README keep-off instruction" "one of: restart: always / disarm pauses until the respawn / keep the clock off / supervisor pidfile / serve --help is missing"
 fi
 
-# --- T6: reach-in facts, socket path derived from the herdr recipe ------------
+# --- T6: reach-in facts, socket and log paths derived from the herdr recipe --
 herdr_sock=$(jq -r '.multiplexers[0].start' "$HERDR_BOOT" | sed -n 's/^export HERDR_SOCKET_PATH=\([^;]*\);.*/\1/p')
 if [[ -n "$herdr_sock" ]] && grep -qF "export HERDR_SOCKET_PATH=${herdr_sock};" "$README"; then
   pass "T6 README exports the herdr recipe's socket path ($herdr_sock)"
 else
   fail "T6 README exports the herdr recipe's socket path" "herdr='${herdr_sock}'"
 fi
+herdr_log=$(jq -r '.multiplexers[0].start' "$HERDR_BOOT" | sed -n 's/.*herdr server > \([^ ]*\) 2>&1.*/\1/p')
+if [[ -n "$herdr_log" ]] && grep -qF "\`${herdr_log}\`" "$README"; then
+  pass "T6 README names the herdr recipe's server log path ($herdr_log)"
+else
+  fail "T6 README names the herdr recipe's server log path" "herdr='${herdr_log}'"
+fi
 if grep -qE "msb exec <cage> -- bash -lc '.*' < /dev/null" "$README"; then
   pass "T6 README closes stdin on host-side msb exec"
 else
   fail "T6 README closes stdin on host-side msb exec" "no '< /dev/null' reach-in example"
-fi
-
-# --- T7: no literal secret placeholder (rip-cage-ureo) -----------------------
-# shellcheck disable=SC2016 # the literal placeholder text is the target, not an expansion
-if grep -qE '\$MSB_|\$\{MSB_' "$RECIPE"/*; then
-  fail "T7 no literal secret placeholder in the recipe" "found a \$MSB_ token"
-else
-  pass "T7 no literal secret placeholder in the recipe"
 fi
 
 echo ""
