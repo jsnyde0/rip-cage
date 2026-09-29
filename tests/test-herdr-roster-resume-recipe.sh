@@ -399,6 +399,67 @@ STUB
 }
 test_t10_pi_ext_dir
 
+# =============================================================================
+# T11 -- the start hook hands 'herdr server' the agent user's login shell as
+# SHELL (rip-cage-f0rl). herdr 0.9.0 picks a new pane's shell as
+# terminal.default_shell, then $SHELL, then /bin/sh; init runs the hook with no
+# SHELL, so without this every pane is /bin/sh and ~/.zshrc never runs.
+# The expected shell is read from cage/Dockerfile's 'useradd ... -s <shell>
+# agent' line (the base image's own fact), served by a stub getent.
+# Method: run the UNMODIFIED start string under sh with stub herdr/getent/
+# python3 on PATH; only its /tmp/ paths are rewritten into this test's scratch dir.
+# SHELL is unset first: macOS /bin/sh is bash, which fills SHELL in from passwd;
+# the cage's /bin/sh is dash, which does not.
+# =============================================================================
+echo ""
+echo "--- T11: start hook exports the agent's login shell as SHELL before herdr server ---"
+
+test_t11_login_shell() {
+  local work stubs start_hook out login_shell got
+  work="${TMPROOT}/t11"
+  stubs="${work}/bin"
+  mkdir -p "$stubs" "${work}/tmp" "${work}/home"
+  login_shell=$(sed -n 's/.*useradd .* -s \([^ ]*\) agent.*/\1/p' "${REPO_ROOT}/cage/Dockerfile" | head -1)
+  if [[ -z "$login_shell" ]]; then
+    fail "T11: could not read the agent login shell from cage/Dockerfile's useradd line"
+    return
+  fi
+  # perl, not sh: a bash-as-sh stub would fill SHELL in itself.
+  cat > "${stubs}/herdr" <<STUB
+#!/usr/bin/perl
+if ((\$ARGV[0] // "") eq "server") { open(my \$f, ">", "${work}/server-shell") or die; print \$f (\$ENV{SHELL} // "<unset>"); }
+exit 0;
+STUB
+  cat > "${stubs}/getent" <<STUB
+#!/bin/sh
+[ "\$1" = passwd ] && [ -n "\$2" ] && [ ! -f "${work}/no-entry" ] && echo "\$2:x:1000:1000::/home/agent:${login_shell}" && exit 0
+exit 2
+STUB
+  printf '#!/bin/sh\nexit 0\n' > "${stubs}/python3"
+  chmod +x "${stubs}/herdr" "${stubs}/getent" "${stubs}/python3"
+  start_hook=$(hook start)
+  start_hook=${start_hook//\/tmp\//${work}/tmp/}
+
+  out=$(env -i PATH="${stubs}:/usr/bin:/bin" HOME="${work}/home" sh -c "unset SHELL; $start_hook" 2>&1)
+  got=$(cat "${work}/server-shell" 2>/dev/null)
+  if [[ "$got" == "$login_shell" ]]; then
+    pass "T11a: herdr server starts with SHELL=${login_shell} (the agent's login shell) from an env with no SHELL"
+  else
+    fail "T11a: herdr server saw SHELL='${got}', want '${login_shell}'" "$out"
+  fi
+
+  rm -f "${work}/server-shell"
+  touch "${work}/no-entry"
+  out=$(env -i PATH="${stubs}:/usr/bin:/bin" HOME="${work}/home" sh -c "unset SHELL; $start_hook" 2>&1)
+  got=$(cat "${work}/server-shell" 2>/dev/null)
+  if [[ "$got" == "<unset>" ]]; then
+    pass "T11b: no passwd entry leaves SHELL unset (herdr's own fallback) and herdr server still starts"
+  else
+    fail "T11b: with no passwd entry herdr server saw SHELL='${got}', want it unset" "$out"
+  fi
+}
+test_t11_login_shell
+
 echo ""
 if (( FAILURES > 0 )); then
   echo "=== test-herdr-roster-resume-recipe.sh: ${FAILURES}/${TOTAL} failure(s) ==="

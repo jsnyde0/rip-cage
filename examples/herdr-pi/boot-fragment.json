@@ -1,12 +1,14 @@
 {
   "_readme": [
     "multiplexers[0] (herdr) is a byte-identical twin of examples/herdr/boot-fragment.json's entry;",
-    "this recipe drops that merge, so this copy is the one that boots. Edit both; tests/test-herdr-roster-resume-recipe.sh T9 checks it."
+    "this recipe drops that merge, so this copy is the one that boots. Edit both; tests/test-herdr-roster-resume-recipe.sh T9 checks it.",
+    "The start hook exports SHELL as the running user's login shell from passwd (the base image sets the agent's),",
+    "because herdr gives a new pane terminal.default_shell, then $SHELL, then /bin/sh, and init passes no SHELL (rip-cage-f0rl)."
   ],
   "multiplexers": [
     {
       "name": "herdr",
-      "start": "export HERDR_SOCKET_PATH=/tmp/rip-cage-herdr.sock; mkdir -p \"${HOME}/.config/herdr\" && { [ -d /workspace ] && export HERDR_STARTUP_CWD=/workspace || true; } && herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 & echo \"[rip-cage] herdr server started (PID=$!)\" && sleep 1 && for _agent in pi claude; do if command -v \"${_agent}\" > /dev/null 2>&1; then if [ \"${_agent}\" = pi ]; then _rc_pi_ext_dir=\"${PI_CODING_AGENT_DIR:-/home/agent/.pi/agent}/extensions\"; mkdir -p \"$_rc_pi_ext_dir\" || echo \"[rip-cage] WARNING: could not create ${_rc_pi_ext_dir} (herdr integration install pi needs it, rip-cage-fwp3)\" >&2; fi; _out=$(herdr integration install \"${_agent}\" 2>&1); _rc=$?; if [ \"$_rc\" -eq 0 ]; then echo \"[rip-cage] herdr integration installed: ${_agent}\"; else echo \"[rip-cage] WARNING: herdr integration install ${_agent} failed (exit=${_rc}): ${_out}\" >&2; fi; fi; done && python3 /usr/local/bin/herdr-scripted-attach.py --wait-seconds 15 > /tmp/rip-cage-herdr-scripted-attach.log 2>&1 || echo \"[rip-cage] WARNING: herdr scripted-attach exited non-zero -- roster restore may not have been triggered (see /tmp/rip-cage-herdr-scripted-attach.log)\" >&2",
+      "start": "export HERDR_SOCKET_PATH=/tmp/rip-cage-herdr.sock; _rc_login_shell=$(getent passwd \"$(id -un)\" | cut -d: -f7); [ -n \"$_rc_login_shell\" ] && export SHELL=\"$_rc_login_shell\"; mkdir -p \"${HOME}/.config/herdr\" && { [ -d /workspace ] && export HERDR_STARTUP_CWD=/workspace || true; } && herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 & echo \"[rip-cage] herdr server started (PID=$!)\" && sleep 1 && for _agent in pi claude; do if command -v \"${_agent}\" > /dev/null 2>&1; then if [ \"${_agent}\" = pi ]; then _rc_pi_ext_dir=\"${PI_CODING_AGENT_DIR:-/home/agent/.pi/agent}/extensions\"; mkdir -p \"$_rc_pi_ext_dir\" || echo \"[rip-cage] WARNING: could not create ${_rc_pi_ext_dir} (herdr integration install pi needs it, rip-cage-fwp3)\" >&2; fi; _out=$(herdr integration install \"${_agent}\" 2>&1); _rc=$?; if [ \"$_rc\" -eq 0 ]; then echo \"[rip-cage] herdr integration installed: ${_agent}\"; else echo \"[rip-cage] WARNING: herdr integration install ${_agent} failed (exit=${_rc}): ${_out}\" >&2; fi; fi; done && python3 /usr/local/bin/herdr-scripted-attach.py --wait-seconds 15 > /tmp/rip-cage-herdr-scripted-attach.log 2>&1 || echo \"[rip-cage] WARNING: herdr scripted-attach exited non-zero -- roster restore may not have been triggered (see /tmp/rip-cage-herdr-scripted-attach.log)\" >&2",
       "attach": "export HERDR_SOCKET_PATH=/tmp/rip-cage-herdr.sock; exec herdr"
     }
   ],
