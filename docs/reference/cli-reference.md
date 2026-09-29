@@ -63,7 +63,7 @@ If msb cannot express the cover for an entry, `rc up` refuses rather than procee
 
 ### Multiplexer sessions
 
-`RC_MULTIPLEXER` selects a multiplexer; the image's boot descriptor must declare it, or `rc up` refuses before any msb call and names what the image does declare. The default is `none`: one shell process per `rc up`, and more agents means more cages.
+`RC_MULTIPLEXER` selects a multiplexer; the image's boot descriptor must declare it, or `rc up` refuses before any msb call and names what the image does declare. The default is `none`: one shell process per `rc up`, and more agents means more cages. The value is **fixed when the cage is created**: an `rc up` on an existing cage with a different `RC_MULTIPLEXER` refuses and names the recreate, `RC_MULTIPLEXER=<name> rc up --replace <path>`; unset, it keeps the stored value.
 
 With a multiplexer that supports sessions, `--new` skips the picker and creates an auto-named session; `--session NAME` attaches `NAME` or creates it. Non-TTY invocations skip the picker entirely.
 

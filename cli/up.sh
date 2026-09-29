@@ -2798,6 +2798,30 @@ cmd_up() {
     _inspect_exit=1
   fi
 
+  # rip-cage-1yqa: the multiplexer is fixed at create. rc stamps RC_MULTIPLEXER
+  # into the cage env and the rc.session.multiplexer label at `msb create`;
+  # every later rc up reads the label. An RC_MULTIPLEXER set now that differs
+  # from it used to be a silent no-op, so refuse it, before any start/exec,
+  # and name the recreate that applies it. Unset keeps the stored value.
+  # Refused on the stopped path too: `msb start` takes no env, so a resume
+  # boots with the create-time value (msb 0.7.4, `msb start --help`).
+  if [[ -n "${RC_MULTIPLEXER:-}" ]] \
+      && { [[ "$state" == "running" ]] || [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; }; then
+    local _stored_mux
+    _stored_mux=$(_container_multiplexer "$name")
+    if [[ "$RC_MULTIPLEXER" != "$_stored_mux" ]]; then
+      if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        json_error "Cage ${name} was created with multiplexer '${_stored_mux}'; RC_MULTIPLEXER='${RC_MULTIPLEXER}' is fixed at create and cannot apply to an existing cage. Run: RC_MULTIPLEXER=${RC_MULTIPLEXER} rc up --replace ${path} (named volumes and host mounts survive, only the guest's ephemeral overlay does not); or unset RC_MULTIPLEXER to keep '${_stored_mux}'." "MULTIPLEXER_FIXED_AT_CREATE"
+      fi
+      echo "Error: cage ${name} was created with multiplexer '${_stored_mux}', but RC_MULTIPLEXER is '${RC_MULTIPLEXER}'." >&2
+      echo "       The multiplexer is fixed when the cage is created; an existing cage cannot switch." >&2
+      echo "       To recreate it with '${RC_MULTIPLEXER}' (named volumes and host mounts survive, only the guest's ephemeral overlay does not):" >&2
+      echo "         RC_MULTIPLEXER=${RC_MULTIPLEXER} rc up --replace ${path}" >&2
+      echo "       Or unset RC_MULTIPLEXER to resume with '${_stored_mux}'." >&2
+      exit 1
+    fi
+  fi
+
   if [[ "$DRY_RUN" == "true" ]]; then
     local would_action
     if [[ "$state" == "running" ]]; then
