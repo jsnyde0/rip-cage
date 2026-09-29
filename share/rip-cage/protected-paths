@@ -16,7 +16,10 @@
 #       to launch, before any msb call;
 #   (b) a listed path found INSIDE a mounted tree is auto-covered — a file with
 #       an empty read-only file mount, a directory with an empty tmpfs mount —
-#       so the cage sees the name but none of the content;
+#       so the cage sees the name but none of the content. A listed FILE inside
+#       a READ-ONLY mount cannot be covered (msb cannot create the cover's
+#       mount point there, and the boot dies), so `rc up` refuses that config
+#       instead, naming the file: narrow the mount so the file sits outside it;
 #   (c) if this file cannot be read, `rc up` aborts before any msb call. There
 #       is no fail-open path and no opt-out.
 #

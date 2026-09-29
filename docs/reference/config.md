@@ -186,6 +186,7 @@ The config is the whole project config, but a few things are computed from the h
 
 - **refuses to launch** a config that mounts a listed path directly;
 - **covers** any listed path found inside a mounted tree (an empty read-only file over a file, an empty tmpfs over a directory);
+- **refuses to launch** when a listed *file* sits inside a *read-only* mount, naming the file and the mount. msb cannot create a file cover inside a read-only mount, and the cage would die at boot. Narrow the mount so the file sits outside it (`examples/dotpi-factory` mounts `dotpi/scripts` and `dotpi/agent`, not the whole checkout), or move the file. A listed directory inside a read-only mount is still covered;
 - **aborts** if the list is unreadable.
 
 You do not declare this, and a cage config cannot point at the list. It is operator-editable *configuration* — `$RC_PROTECTED_PATHS`, then `$XDG_CONFIG_HOME/rip-cage/protected-paths`, then the copy shipped beside `rc` — but it is not part of a cage's composition ([ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D2/D5d, [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md)).

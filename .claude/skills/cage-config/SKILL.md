@@ -108,7 +108,8 @@ refusal, and the name you added appears in your copy.
 The protected-paths list covers well-known names. A secret file specific to
 this project (`config/local-secrets.toml`, a `.env` the agent has no business
 reading) is yours to cover: mount an empty read-only file over it. The cage
-sees the name and zero bytes.
+sees the name and zero bytes. The file must sit inside a read-write mount:
+msb cannot create a file cover inside a read-only mount, and the boot dies.
 
 These are belt and braces — declare a cover for a name NOT on the
 protected-paths list. The template's mounts block shows the line shape.

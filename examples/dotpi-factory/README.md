@@ -109,9 +109,9 @@ mounts:
 ```
 
 **Mount only `scripts/` and `agent/`, never the whole checkout.** A read-only
-mount of the whole checkout fails the boot: rc's protected-paths rule covers
-the checkout's `.env`, and that cover cannot bind inside a read-only mount
-(rip-cage-dnwv).
+mount of the whole checkout is refused at `rc up`: the checkout holds a
+protected `.env`, and rc cannot cover a protected file inside a read-only
+mount (rip-cage-dnwv).
 
 **Why the named volumes.** The factory writes its grant registry to
 `~/.grants`, its mail store to `~/.dotpi-mail`, pacemaker state to

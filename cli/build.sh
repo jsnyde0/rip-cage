@@ -55,7 +55,7 @@ _build_cage_config_paths() {
 # is a refusal, not a pass.
 _build_dockerfile_outside_cage_mounts() {
   local _df_real="$1"
-  local _conf _mounts _host _guest _host_real
+  local _conf _mounts _host _guest _mode _host_real
 
   while IFS= read -r _conf; do
     [[ -z "$_conf" ]] && continue
@@ -64,7 +64,7 @@ _build_dockerfile_outside_cage_mounts() {
       return 1
     fi
     [[ -z "$_mounts" ]] && continue
-    while IFS=$'\t' read -r _host _guest; do
+    while IFS=$'\t' read -r _host _guest _mode; do
       [[ -z "$_host" ]] && continue
       _host_real="$(cd "$_host" 2>/dev/null && pwd -P)" || continue
       if [[ "$_df_real" == "$_host_real" || "$_df_real" == "$_host_real"/* ]]; then

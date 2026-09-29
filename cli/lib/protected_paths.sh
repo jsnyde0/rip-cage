@@ -9,7 +9,8 @@
 # empty tmpfs mount over a directory -- so the guest sees the name and none of
 # the content; (c) ABORTS before any msb call if the list file is unreadable.
 # If a cover cannot be expressed for an entry, `rc up` refuses rather than
-# launching uncovered. Fail closed, never fail open. There is no opt-out.
+# launching uncovered -- a listed FILE inside a read-only mount is one such
+# case (rip-cage-dnwv). Fail closed, never fail open. There is no opt-out.
 #
 # WHERE THE LIST LIVES (ADR-031 D5(a), amended 2026-09-15 by rip-cage-ely4.9).
 # The list file is a COMPOSITION INPUT alongside the Dockerfile, the boot
@@ -152,10 +153,11 @@ _protected_paths_path_match() {
 # --------------------------------------------------------------------------
 # _protected_paths_conf_bind_mounts CONF_FILE
 #
-# Echo one TAB-separated "HOST<TAB>GUEST" row per BIND mount declared in the
-# native msb config. Both declaration forms are read:
-#   - string form: "HOST:GUEST[:opts]"
-#   - map form:    { bind: HOST, target: GUEST, ... }
+# Echo one TAB-separated "HOST<TAB>GUEST<TAB>MODE" row per BIND mount declared
+# in the native msb config, MODE being "ro" or "rw". Both declaration forms are
+# read:
+#   - string form: "HOST:GUEST[:opts]"                 (":ro" -> ro)
+#   - map form:    { bind: HOST, target: GUEST, ... }   (readonly: true -> ro)
 # Named-volume and tmpfs entries have no host path, so they carry nothing to
 # protect and are skipped.
 # --------------------------------------------------------------------------
@@ -174,9 +176,10 @@ _protected_paths_conf_bind_mounts() {
     .[]?
     | if type == "string" then
         (sub(":(ro|rw)$"; "")) as $t
-        | [ ($t | split(":")[0]), ($t | split(":")[1:] | join(":")) ]
+        | [ ($t | split(":")[0]), ($t | split(":")[1:] | join(":")),
+            (if test(":ro$") then "ro" else "rw" end) ]
       elif type == "object" and (.bind // null) != null then
-        [ .bind, (.target // "") ]
+        [ .bind, (.target // ""), (if .readonly == true then "ro" else "rw" end) ]
       else empty end
     | select(.[0] != "" and .[1] != "")
     | @tsv
@@ -273,11 +276,11 @@ _protected_paths_conf_outside_mounts() {
   local _conf_real
   _conf_real="$(cd "$(dirname "${_conf}")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "${_conf}")")" || _conf_real="${_conf}"
 
-  local _mounts _host _guest _host_real
+  local _mounts _host _guest _mode _host_real
   _mounts="$(_protected_paths_conf_bind_mounts "${_conf}")" || return 1
   [[ -z "${_mounts}" ]] && return 0
 
-  while IFS=$'\t' read -r _host _guest; do
+  while IFS=$'\t' read -r _host _guest _mode; do
     [[ -z "${_host}" ]] && continue
     _host_real="$(cd "${_host}" 2>/dev/null && pwd -P)" || continue
     if [[ "${_conf_real}" == "${_host_real}" || "${_conf_real}" == "${_host_real}"/* ]]; then
@@ -311,11 +314,11 @@ _protected_paths_conf_secrets_dir_mount() {
   local _secrets_dir
   _secrets_dir="$(_protected_paths_secrets_dir)"
 
-  local _mounts _host _guest
+  local _mounts _host _guest _mode
   _mounts="$(_protected_paths_conf_bind_mounts "${_conf}")" || return 1
   [[ -z "${_mounts}" ]] && return 0
 
-  while IFS=$'\t' read -r _host _guest; do
+  while IFS=$'\t' read -r _host _guest _mode; do
     [[ -z "${_host}" ]] && continue
     if _mount_src_exposes_secrets_dir "${_host}"; then
       echo "Error: the cage config ${_conf} mounts ${_host}, which is or contains ${_secrets_dir} -- the CCTOK secrets directory msb --secret reads the real token value from. Refusing to launch before any msb call: mounting it into the cage would hand the guest the same value msb --secret exists to keep non-possessed (ADR-031 D5(a)). Remove that mount line from ${_conf}." >&2
@@ -393,10 +396,10 @@ _protected_paths_enforce() {
   done <<< "${_entries}"
 
   local _breadcrumb=""
-  local _host _guest _real _component _found _rel _guest_target
+  local _host _guest _mode _real _component _found _rel _guest_target
   local -a _covers=()
 
-  while IFS=$'\t' read -r _host _guest; do
+  while IFS=$'\t' read -r _host _guest _mode; do
     [[ -z "${_host}" ]] && continue
 
     # --- (a) refuse a DIRECT mount of a listed path ------------------------
@@ -451,6 +454,16 @@ _protected_paths_enforce() {
         # A regular file is shadowed by an empty read-only file mount. A tmpfs
         # cannot do this job: msb creates a tmpfs target as a DIRECTORY, so a
         # tmpfs over an existing file aborts the boot (measured, ely4.16 Q7).
+        #
+        # Inside a READ-ONLY mount the file cover is inexpressible: msb must
+        # create the bind target in the ro share, and agentd dies at boot
+        # ("failed to create bind target ...: Read-only file system", measured
+        # on msb 0.7.4, rip-cage-dnwv). A directory cover over an existing dir
+        # boots fine there, so only the file case refuses.
+        if [[ "${_mode}" == "ro" ]]; then
+          echo "Error: the cage config ${_conf} has the read-only mount ${_host}:${_guest}, and that tree holds the protected file ${_found}. rc covers a protected file with an empty file mount, and msb cannot create that mount inside a read-only mount — the cage would die at boot. Refusing to launch before any msb call (ADR-031 D2, fail closed). Narrow the mount to the subdirectories the cage needs, so ${_found} stays outside it (examples/dotpi-factory mounts dotpi/scripts and dotpi/agent, not the whole checkout), or move the file out of the mounted tree." >&2
+          return 1
+        fi
         if [[ -z "${_breadcrumb}" ]]; then
           _breadcrumb="$(_protected_paths_breadcrumb)" || return 1
         fi
