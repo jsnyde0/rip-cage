@@ -18,7 +18,8 @@
 #   M1c same on a RUNNING cage -> refused, no msb exec
 #   M1d stopped cage whose config CHANGED (stored rc.cage-conf-sha stale, so
 #       the converge recreate is due) + RC_MULTIPLEXER=fakemux -> refused, no
-#       msb start/exec/create. Before f35a9d5 the converge recreate carried
+#       msb start/exec/create. M1 covers the no-stored-hash branch; M1d adds
+#       the stale-hash converge branch. Before f35a9d5 the converge recreate carried
 #       the new value; that path now needs --replace (review, rip-cage-1yqa).
 #   M1e control for M1d: same stale hash, RC_MULTIPLEXER unset -> the
 #       converge recreate runs (msb remove + create), so M1d's fixture really
@@ -173,7 +174,6 @@ if [[ "$RC_EXIT" -ne 0 ]] && no_start_or_exec \
 else
   fail M1d "converge-path mismatch refusal" "exit=$RC_EXIT log=$(tr '\n' ';' <"$RC_LOG") stderr=$RC_ERR"
 fi
-rm -f "${RC_LOG}.removed"
 teardown_ws
 
 # --- M1e: control -- same fixture, RC_MULTIPLEXER unset -> converge runs ----

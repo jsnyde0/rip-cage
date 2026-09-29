@@ -65,8 +65,10 @@ before any msb call, when it names a multiplexer this image's descriptor does
 not declare. A typo fails loudly at launch instead of silently dropping you
 into a plain shell that is not the session you asked for.
 
-`session.multiplexer: none` — no multiplexer started — is the default. A cage
-does not need one.
+A new cage whose image declares exactly one multiplexer starts with it when
+`RC_MULTIPLEXER` is unset; with none or several declared, it starts with none —
+no multiplexer, a plain shell. `RC_MULTIPLEXER=none` opts out. A cage does not
+need one.
 
 **Diagnosing:** `rc up` lands you in a plain shell → either no multiplexer was
 requested, or `attach` failed. Run the `attach` command by hand inside the cage

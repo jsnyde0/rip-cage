@@ -192,7 +192,7 @@ You do not declare this, and a cage config cannot point at the list. It is opera
 
 ## Choosing a multiplexer
 
-`RC_MULTIPLEXER` selects one, and the image's boot descriptor must declare it — otherwise `rc up` refuses before any msb call and names what the image does declare. The default is `none`. Which multiplexer, and whether one at all, is composition, not config ([ADR-005 D12](../decisions/ADR-005-ecosystem-tools.md)); see [`cage-image`](../../.claude/skills/cage-image/SKILL.md).
+`RC_MULTIPLEXER` selects one, and the image's boot descriptor must declare it — otherwise `rc up` refuses before any msb call and names what the image does declare. Unset, a new cage takes the one multiplexer the image declares, or `none` when it declares zero or several. Which multiplexer, and whether one at all, is composition, not config ([ADR-005 D12](../decisions/ADR-005-ecosystem-tools.md)); see [`cage-image`](../../.claude/skills/cage-image/SKILL.md).
 
 ---
 

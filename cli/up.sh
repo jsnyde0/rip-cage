@@ -1228,6 +1228,58 @@ _up_converge_needed() {
 #
 # A check that cannot reach msb says so and stays quiet about the rest — a
 # transient inspect hiccup must not produce a scary line about data loss.
+# _up_conf_image CONF — the image reference msb will boot: the cage config's
+# own `image:` key (ADR-031 D2: rc passes no image argument), else $IMAGE.
+_up_conf_image() {
+  local _conf="$1" _img=""
+  if [[ -n "$_conf" && -r "$_conf" ]]; then
+    _img=$(yq -r '.image // ""' "$_conf" 2>/dev/null) || _img=""
+    [[ "$_img" == "null" ]] && _img=""
+  fi
+  echo "${_img:-$IMAGE}"
+}
+
+# _up_read_boot_descriptor IMG — print the image's /etc/rip-cage/boot.json;
+# non-zero when the image cannot be read. A throwaway container, not docker in
+# the runtime path (see _up_check_multiplexer_available).
+_up_read_boot_descriptor() {
+  # rip-cage-47gy: this read runs under --dry-run too, where a plain
+  # `docker run` of an absent image would PULL it. Under --dry-run only,
+  # --pull never makes absent read as "cannot read"; the real path keeps
+  # docker's default pull.
+  local -a _mux_pull=()
+  [[ "${DRY_RUN:-}" == "true" ]] && _mux_pull=(--pull never)
+  docker run --rm ${_mux_pull[@]+"${_mux_pull[@]}"} --entrypoint sh "$1" -c 'cat /etc/rip-cage/boot.json' 2>/dev/null
+}
+
+# _up_default_multiplexer CONF
+#
+# rip-cage-sfo3: the multiplexer a NEW cage gets when RC_MULTIPLEXER is unset.
+# Prints the sole name the image's boot descriptor declares in multiplexers[],
+# or "none" when it declares zero or several (several: a stderr line names
+# them, since rc will not guess which one the operator meant). An unreadable
+# image also prints "none" — the create that follows reports that failure
+# itself. rc names no multiplexer here: the default is whatever the
+# operator composed into the image (ADR-005 D12 FIRM).
+_up_default_multiplexer() {
+  local _img _desc _names
+  _img=$(_up_conf_image "$1")
+  if ! _desc=$(_up_read_boot_descriptor "$_img") \
+      || ! _names=$(jq -r '(.multiplexers // [])[].name' <<<"$_desc" 2>/dev/null); then
+    echo none; return 0
+  fi
+  local _count
+  _count=$(grep -c . <<<"$_names")
+  if [[ "$_count" -eq 1 ]]; then
+    echo "$_names"
+  elif [[ "$_count" -gt 1 ]]; then
+    echo "note: image '${_img}' declares several multiplexers ($(paste -sd, - <<<"$_names" | sed 's/,/, /g')); starting with none. Pick one with RC_MULTIPLEXER=<name> rc up --replace <path>." >&2
+    echo none
+  else
+    echo none
+  fi
+}
+
 # _up_check_multiplexer_available CONF
 #
 # rip-cage-ely4.7.2: refuse, before any msb call, when $RC_MULTIPLEXER names a
@@ -1259,29 +1311,17 @@ _up_converge_needed() {
 # exist. rc names no multiplexer itself, here or anywhere: it compares the name
 # it was handed against the set the image declares (ADR-005 D12 FIRM).
 #
-# RC_MULTIPLEXER=none — the default, and what almost every cage runs — costs
-# nothing: the function returns before reading anything. A probe on every
-# launch for a feature almost nobody uses is its own kind of wrong.
+# RC_MULTIPLEXER unset or none costs nothing here: the function returns before
+# reading anything. (Unset, the create path reads the descriptor once for its
+# default — _up_default_multiplexer — but only when a cage is being created.)
 _up_check_multiplexer_available() {
   local _conf="$1"
   local _mux="${RC_MULTIPLEXER:-none}"
   [[ -z "$_mux" || "$_mux" == "none" ]] && return 0
 
-  local _img=""
-  if [[ -n "$_conf" && -r "$_conf" ]]; then
-    _img=$(yq -r '.image // ""' "$_conf" 2>/dev/null) || _img=""
-    [[ "$_img" == "null" ]] && _img=""
-  fi
-  [[ -z "$_img" ]] && _img="$IMAGE"
-
-  local _desc=""
-  # rip-cage-47gy: this read runs under --dry-run too, where a plain
-  # `docker run` of an absent image would PULL it. Under --dry-run only,
-  # --pull never makes absent read as "cannot read" (the branch below); the
-  # real path keeps docker's default pull.
-  local -a _mux_pull=()
-  [[ "${DRY_RUN:-}" == "true" ]] && _mux_pull=(--pull never)
-  if ! _desc=$(docker run --rm ${_mux_pull[@]+"${_mux_pull[@]}"} --entrypoint sh "$_img" -c 'cat /etc/rip-cage/boot.json' 2>/dev/null); then
+  local _img _desc=""
+  _img=$(_up_conf_image "$_conf")
+  if ! _desc=$(_up_read_boot_descriptor "$_img"); then
     # Cannot read the image, so cannot tell. Fail closed: an operator who asked
     # for a multiplexer by name gets told to build the image that would carry
     # it, rather than a cage that boots and then cannot attach.
@@ -3106,12 +3146,19 @@ cmd_up() {
         # absent and unverifiable are not.
         _up_resolve_resume_image_drift_stopped "$name" "$path" "true"
         _up_warn_transcript_loss "$name"
+        local _up_conv_mux
+        _up_conv_mux=$(_container_multiplexer "$name")
         log "Converging ${name}: cold-recreating against the current cage config (ADR-031 D3). Host mounts and named volumes survive; only the guest's ephemeral rootfs scratch is lost."
         _msb_stop_graceful "$name" 2>/dev/null || true
         _msb_remove "$name"
         # Exported, not just set: the recreate re-enters cmd_up, and under
         # --output json it does so in a subshell.
         export _UP_CONVERGE_DONE=true
+        # rip-cage-1yqa/sfo3: the recreate keeps the stored multiplexer (read
+        # into _up_conv_mux before the remove). The create path uses it when
+        # RC_MULTIPLEXER is unset, so a converge never flips a cage's value —
+        # neither to the image's default nor back to none.
+        export _UP_CONVERGE_MUX="$_up_conv_mux"
         # Cage now absent -> the recursive cmd_up takes the create path (which
         # rebaselines the config-applied snapshot) and, in a TTY, attaches.
         # rip-cage-tsf2.9 (review F2): forward THIS invocation's own runtime
@@ -3386,12 +3433,18 @@ cmd_up() {
   # rc.session.multiplexer label (for attach helpers + rc ls). The provider
   # contract is unchanged; rc names no multiplexer, it forwards the name it
   # is given (ADR-005 D12).
-  # session.multiplexer retired with the schema (ADR-031 D2). "none" was its
-  # default and stays the default: a plain shell, no multiplexer started.
-  # $RC_MULTIPLEXER selects a provider for a caller that wants one; the
-  # provider contract itself is unchanged (ADR-005 D12 — rc names no
-  # multiplexer, it only forwards the name it is given).
-  local _rc_multiplexer="${RC_MULTIPLEXER:-none}"
+  # session.multiplexer retired with the schema (ADR-031 D2).
+  # $RC_MULTIPLEXER selects a provider by name, "none" included. Unset, a
+  # converge recreate keeps the cage's stored value (_UP_CONVERGE_MUX: the
+  # multiplexer is fixed at create, rip-cage-1yqa), and a fresh create takes
+  # the sole multiplexer the image declares, else none (rip-cage-sfo3,
+  # _up_default_multiplexer). rc names none of them (ADR-005 D12).
+  local _rc_multiplexer="${RC_MULTIPLEXER:-${_UP_CONVERGE_MUX:-}}"
+  if [[ -z "$_rc_multiplexer" ]]; then
+    _rc_multiplexer=$(_up_default_multiplexer "$_UP_CAGE_CONF")
+    [[ "$_rc_multiplexer" != "none" ]] && \
+      log "multiplexer: ${_rc_multiplexer} (the only one the image's boot descriptor declares; RC_MULTIPLEXER=none rc up --replace for a plain shell)"
+  fi
   _UP_RUN_ARGS+=(-e "RC_MULTIPLEXER=${_rc_multiplexer}")
   _UP_RUN_ARGS+=(--label "rc.session.multiplexer=${_rc_multiplexer}")
   log "session.multiplexer: ${_rc_multiplexer}"
