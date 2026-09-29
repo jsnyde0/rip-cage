@@ -10,16 +10,16 @@
 #  (2) The pane is correctly sized (no ~4-col headless wrap) when
 #      dimensions are set explicitly.
 #
-# HONESTY NOTE (mirrors rip-cage-rj68/S6's test-msb-lifecycle-cockpit-
-# reregistration.sh): the rip-cage:latest image available in this
-# environment was NOT built with the herdr MULTIPLEXER manifest entry
-# baked in. This test sideloads the SAME pinned herdr binary (URL + sha256)
-# examples/herdr/manifest-fragment.yaml's TOOL entry uses -- a real herdr
-# binary, checksum-verified, not a stub. The rc-build-integration path
-# (tools.yaml -> Dockerfile -> baked image) is already covered by
-# S6/rj68 + examples/herdr; this test's job is the socket-API DRIVE
-# mechanics dotpi-3bi's drover/herdr automation depends on
-# (docs/2026-07-07-microvm-spike-findings.md §8a/§8a-follow-up).
+# IMAGE UNDER TEST (rip-cage-8jg5.1): the test drives the herdr the image
+# itself carries -- built from examples/herdr/Dockerfile.snippet -- and never
+# installs its own. It asserts the in-cage `herdr --version` equals the
+# snippet's pinned release, so a stale cached image (rip-cage-i3wv) fails
+# loudly instead of passing on an old herdr. Build one with:
+#   printf 'FROM rip-cage:latest\n' > Dockerfile; cat examples/herdr/Dockerfile.snippet >> Dockerfile
+#   (plus boot-fragment.json + scripted-attach.py beside it)
+#   RC_IMAGE=<tag> ./rc build --file Dockerfile
+# then run with RC_TEST_IMAGE=<tag>. The guest gets no network at all: the
+# drive path below is guest-local only.
 #
 # DESIGN FINDING (Fable ruling 4 -- the denied-TCP limit is a design
 # finding, not a thing to test around): this entire drive path is
@@ -34,20 +34,26 @@
 #
 # Session-scoped socket path (epic gotcha 1) and explicit pane sizing via
 # a host-driven sized PTY into `msb exec -t` (epic gotcha 2) are both
-# exercised for real. Gotcha 2's proof is a CONTENT DIFFERENTIAL: the
-# identical wide token is run through pane run/read once before the sized
-# client attaches (asserted WRAPPED) and once after (asserted the SAME
-# token now reads back as one UNWRAPPED line) -- not a `pane layout`
-# dimension self-report alone, and not a bare "pane exists" liveness check.
+# exercised for real. Gotcha 2's proof is a DIFFERENTIAL against the
+# unsized baseline: the pane's layout is recorded before the sized client
+# attaches and must change to the sized figures after, and the same wide
+# token must read back as one UNWRAPPED line post-sizing. herdr up to 0.7.x
+# also hard-wrapped that token pre-sizing (the original gotcha); herdr 0.9.0
+# no longer does (measured, rip-cage-8jg5.1), so the pre-sizing wrap is
+# reported, not asserted.
 #
-# NEEDS_MSB + a pre-built rip-cage:latest image + live network path to
-# github.com (to fetch the herdr binary) + python3 (host-side PTY sizer).
-# Self-skips otherwise.
+# NEEDS_MSB + a pre-built image carrying herdr (RC_TEST_IMAGE, default
+# rip-cage:latest) + python3 (host-side PTY sizer). Self-skips otherwise,
+# including when the image has no herdr at all. RC_TEST_MEMORY caps the
+# guest (default 1G).
 
 set -uo pipefail
 
 MSB_BIN="$(command -v msb || true)"
-IMAGE="rip-cage:latest"
+IMAGE="${RC_TEST_IMAGE:-rip-cage:latest}"
+MEMORY="${RC_TEST_MEMORY:-1G}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SNIPPET="${SCRIPT_DIR}/../examples/herdr/Dockerfile.snippet"
 SESSION="dotpi3bi"
 PANE="w1:p1"
 FAILURES=0
@@ -77,35 +83,29 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "=== SETUP: create cage, sideload herdr, start a NAMED-SESSION headless server ==="
-if ! msb create "$IMAGE" --name "$NAME" \
-    --net-default deny --net-rule "allow@github.com:tcp:443,allow@*.githubusercontent.com:tcp:443,allow@objects.githubusercontent.com:tcp:443" \
-    >/dev/null 2>&1; then
+EXPECTED_VERSION=$(sed -n 's#.*releases/download/v\([0-9][0-9.]*\)/herdr-linux.*#\1#p' "$SNIPPET" | head -1)
+if [[ -z "$EXPECTED_VERSION" ]]; then
+  echo "FAIL: could not read the pinned herdr version from ${SNIPPET}"
+  exit 1
+fi
+
+echo "=== SETUP: create cage from ${IMAGE}, check its baked herdr, start a NAMED-SESSION headless server ==="
+if ! msb create "$IMAGE" --name "$NAME" --memory "$MEMORY" --net-default deny >/dev/null 2>&1; then
   fail "setup: msb create failed"
   echo ""
   echo "=== test-msb-factory-socket-api-drive.sh: ${FAILURES}/${TOTAL} failure(s) (aborting) ==="
   exit 1
 fi
 
-# Sideload herdr: same pinned URL/checksum examples/herdr/manifest-fragment.yaml's TOOL entry uses.
-SIDELOAD=$(mktemp)
-cat > "$SIDELOAD" <<'SCRIPT'
-set -e
-ARCH=$(uname -m)
-if [ "$ARCH" = "aarch64" ]; then TARGET=aarch64; EXPECTED_SHA=77407959c514c25c870bbcc6d2a2c86fef5b5701ed0c7c37745d7412e8563d72; else TARGET=x86_64; EXPECTED_SHA=ad2a5d480a4e04609a9dd30a19ec07854578df6b5f0ea9299246963baf40363b; fi
-curl -fsSL "https://github.com/ogulcancelik/herdr/releases/download/v0.7.0/herdr-linux-${TARGET}" -o /tmp/herdr
-echo "${EXPECTED_SHA}  /tmp/herdr" | sha256sum -c -
-install -m 755 /tmp/herdr /usr/local/bin/herdr
-rm -f /tmp/herdr
-SCRIPT
-msb copy "$SIDELOAD" "${NAME}:/tmp/herdr-sideload.sh" >/dev/null 2>&1
-SIDELOAD_OUT=$(msb exec "$NAME" -u root -- sh /tmp/herdr-sideload.sh 2>&1)
-SIDELOAD_RC=$?
-rm -f "$SIDELOAD"
-if [[ "$SIDELOAD_RC" -eq 0 ]]; then
-  pass "setup: herdr sideloaded (pinned URL, checksum verified against the real manifest-fragment.yaml value)"
+if ! msb exec "$NAME" -- sh -c 'command -v herdr' </dev/null >/dev/null 2>&1; then
+  echo "SKIP: ${IMAGE} carries no herdr -- build an image from examples/herdr/Dockerfile.snippet and set RC_TEST_IMAGE -- skipping $(basename "$0")"
+  exit 0
+fi
+VERSION_OUT=$(msb exec "$NAME" -- herdr --version </dev/null 2>&1)
+if [[ "$VERSION_OUT" == "herdr ${EXPECTED_VERSION}" ]]; then
+  pass "setup: in-cage herdr --version reads '${VERSION_OUT}', the pin in examples/herdr/Dockerfile.snippet"
 else
-  fail "setup: herdr sideload failed" "$SIDELOAD_OUT"
+  fail "setup: in-cage herdr is not the snippet's pin v${EXPECTED_VERSION} (stale image? rip-cage-i3wv)" "$VERSION_OUT"
   echo ""
   echo "=== test-msb-factory-socket-api-drive.sh: ${FAILURES}/${TOTAL} failure(s) (aborting) ==="
   exit 1
@@ -154,15 +154,18 @@ else
 fi
 
 echo ""
-echo "=== GOTCHA 2 baseline: BEFORE explicit sizing, a long line wraps at the narrow headless default ==="
+echo "=== GOTCHA 2 baseline: record the unsized pane's layout and whether a long line wraps BEFORE explicit sizing ==="
+UNSIZED_LAYOUT=$(msb exec "$NAME" -- herdr --session "$SESSION" pane layout --pane "$PANE" </dev/null 2>&1)
 UNSIZED_TOKEN="UNSIZED-$$-0123456789012345678901234567890123456789012345678901234567890123456789"
 msb exec "$NAME" -- herdr --session "$SESSION" pane run "$PANE" "printf '%s\n' '${UNSIZED_TOKEN}'" >/dev/null 2>&1
 sleep 1
 UNSIZED_READ=$(msb exec "$NAME" -- herdr --session "$SESSION" pane read "$PANE" --source visible 2>&1)
 if echo "$UNSIZED_READ" | grep -qF "$UNSIZED_TOKEN"; then
-  fail "GOTCHA2 baseline: expected the unsized token to be WRAPPED (not present as one contiguous substring) pre-sizing -- sizing differential would be meaningless" "$UNSIZED_READ"
+  WRAPPED_BEFORE=no
+  echo "INFO  GOTCHA2 baseline: the unsized token does NOT wrap pre-sizing on this herdr (the narrow headless default is gone); unsized layout: ${UNSIZED_LAYOUT}"
 else
-  pass "GOTCHA2 baseline: the unsized token is hard-wrapped pre-sizing, as the headless-default gotcha predicts"
+  WRAPPED_BEFORE=yes
+  echo "INFO  GOTCHA2 baseline: the unsized token is hard-wrapped pre-sizing (the narrow headless default); unsized layout: ${UNSIZED_LAYOUT}"
 fi
 
 echo ""
@@ -200,26 +203,27 @@ for _ in $(seq 1 15); do
   sleep 1
 done
 
-# Secondary signal only: the layout self-report. The load-bearing proof is the
-# content differential below (SAME wide token, wrapped pre-sizing above, now
-# read back unwrapped) -- a dimension self-report alone doesn't prove `pane
-# read` output actually stopped wrapping.
-if [[ -n "$SIZED" ]]; then
-  pass "GOTCHA2 fix (secondary signal): pane layout reports width=94 height=39 (matches the epic spike's own sized-attach figures, not the ~4-col/narrow headless default)"
+# The layout must reach the sized figures AND differ from the unsized
+# baseline -- otherwise the sized client proved nothing. The content check
+# below then shows `pane read` output is unwrapped at that size.
+if [[ -n "$SIZED" ]] && echo "$UNSIZED_LAYOUT" | grep -q '"width":94' && echo "$UNSIZED_LAYOUT" | grep -q '"height":39'; then
+  fail "GOTCHA2 fix: the unsized pane already reported width=94 height=39 -- the sized client changed nothing measurable" "unsized: ${UNSIZED_LAYOUT}"
+elif [[ -n "$SIZED" ]]; then
+  pass "GOTCHA2 fix: pane layout moved from the unsized baseline to width=94 height=39 (the epic spike's own sized-attach figures)"
 else
   fail "GOTCHA2 fix (secondary signal): pane never reported the expected sized dimensions" "last layout: ${LAYOUT:-<none>}"
 fi
 
 echo ""
-echo "=== GOTCHA 2 fix -- CONTENT DIFFERENTIAL: the SAME wide token that WRAPPED pre-sizing above now reads back as ONE UNWRAPPED line post-sizing ==="
+echo "=== GOTCHA 2 fix -- CONTENT: the SAME wide token reads back as ONE UNWRAPPED line post-sizing ==="
 msb exec "$NAME" -- herdr --session "$SESSION" pane run "$PANE" "printf '%s\n' '${UNSIZED_TOKEN}'" >/dev/null 2>&1
 sleep 1
 RESIZED_READ=$(msb exec "$NAME" -- herdr --session "$SESSION" pane read "$PANE" --source visible 2>&1)
 rm -f "$SIZER"
 if echo "$RESIZED_READ" | grep -qF "$UNSIZED_TOKEN"; then
-  pass "GOTCHA2 fix (content differential): the identical token that wrapped pre-sizing (GOTCHA2 baseline above) now reads back as ONE CONTIGUOUS UNWRAPPED line post-sizing -- a genuine wrapped-before/unwrapped-after proof, not a dimension self-report"
+  pass "GOTCHA2 fix (content): the identical token reads back as ONE CONTIGUOUS UNWRAPPED line post-sizing (wrapped pre-sizing: ${WRAPPED_BEFORE})"
 else
-  fail "GOTCHA2 fix (content differential): expected the same token that wrapped pre-sizing to read back UNWRAPPED (as one contiguous substring) post-sizing" "$RESIZED_READ"
+  fail "GOTCHA2 fix (content): expected the token to read back UNWRAPPED (as one contiguous substring) post-sizing" "$RESIZED_READ"
 fi
 
 echo ""

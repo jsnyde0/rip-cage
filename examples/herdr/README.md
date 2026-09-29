@@ -17,6 +17,15 @@ it exists.
 | `boot-fragment.json` | the provider declaration, merged into the image's boot descriptor at build time |
 | `scripted-attach.py` | a headless PTY client that triggers herdr's native roster restore (see below) |
 
+## Version
+
+The snippet pins **herdr v0.9.0**, sha256-checked per architecture. dotpi's seat
+tooling needs herdr 0.8.2 or later. To bump: take the new `herdr-linux-aarch64`
+and `herdr-linux-x86_64` digests from the GitHub release, replace the version
+and both checksums in `Dockerfile.snippet`, rebuild, and run
+`RC_TEST_IMAGE=<your image> tests/test-msb-factory-socket-api-drive.sh` — it
+asserts the in-cage `herdr --version` equals the snippet's pin.
+
 ## Use it
 
 1. Write your own Dockerfile somewhere the cage cannot reach — outside every
@@ -108,14 +117,19 @@ until then, it adds a bounded ~15s to boot whenever `RC_MULTIPLEXER=herdr`.
 
 ## herdr CLI control surface
 
-Inside the cage (or via `msb exec`):
+Inside the cage (or via `msb exec <cage> -- ... </dev/null`, with
+`HERDR_SOCKET_PATH=/tmp/rip-cage-herdr.sock` exported in the guest command):
 
 ```bash
-herdr agent start <name> -- pi ...   # start an agent under herdr supervision
-herdr agent list                      # list agents + semantic status
-herdr pane <name>                     # open a pane
-herdr workspace <name>                # switch workspace
+herdr workspace create --label <label> --cwd /workspace   # new workspace; prints its pane id
+herdr pane run <pane-id> "<command>"                      # run a command in a pane
+herdr pane read <pane-id> --source visible                # read back what the pane shows
+herdr agent start <name> --kind pi --pane <pane-id> -- ...  # start an agent under supervision
+herdr agent list                                          # agents + semantic status
 ```
+
+`herdr --help` inside the cage is the full surface; the lines above are the ones
+a driving agent reaches for first.
 
 `start`'s integration-install loop runs `herdr integration install <agent>`
 for whichever of `pi`/`claude` are present on PATH, so `herdr agent list`

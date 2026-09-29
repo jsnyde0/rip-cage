@@ -6,15 +6,15 @@
 # BACK to agent at the end of your Dockerfile — an extension that ends on root
 # boots a root shell with every mount stranded (measured, rip-cage-ely4.16).
 #
-# Pinned release: github.com/ogulcancelik/herdr v0.7.5. Prebuilt binaries:
+# Pinned release: github.com/ogulcancelik/herdr v0.9.0. Prebuilt binaries:
 # herdr-linux-x86_64, herdr-linux-aarch64. SHA-256 checksums independently
 # verified against the GitHub release API's asset digest field.
 
 USER root
 RUN ARCH=$(uname -m) \
-    && if [ "$ARCH" = "aarch64" ]; then TARGET=aarch64; EXPECTED_SHA=32e763a1499a6b694b1d708e4f062b743be1da9f34fcfa4d212d6db6fe09a8b9; \
-       else TARGET=x86_64; EXPECTED_SHA=3dc83288073e4c2d3c679a30e7be97bcca9141c6fd17dbbb9219142e95c59253; fi \
-    && curl -fsSL "https://github.com/ogulcancelik/herdr/releases/download/v0.7.5/herdr-linux-${TARGET}" -o /tmp/herdr \
+    && if [ "$ARCH" = "aarch64" ]; then TARGET=aarch64; EXPECTED_SHA=9c8db20fb7e7427b138d5367113f1621ffd319f2f65d6f009e2594029115f0d2; \
+       else TARGET=x86_64; EXPECTED_SHA=4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f; fi \
+    && curl -fsSL "https://github.com/ogulcancelik/herdr/releases/download/v0.9.0/herdr-linux-${TARGET}" -o /tmp/herdr \
     && echo "${EXPECTED_SHA}  /tmp/herdr" | sha256sum -c - \
     && install -m 755 /tmp/herdr /usr/local/bin/herdr \
     && rm -f /tmp/herdr
