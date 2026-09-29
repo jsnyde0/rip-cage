@@ -1163,11 +1163,11 @@ fi
 # directly with HERDR_SESSION set on the docker-exec env (proving the
 # wrapper's OWN derivation branch, cage/substrate/claude-session-wrapper.sh
 # case 3). This step instead drives an interactive zsh (`zsh -ic`, sources
-# ~/.zshrc) with HERDR_SESSION set, proving the OTHER code path — the zshrc
-# snippet at cage/agent/zshrc:170-176 that exports CLAUDE_CONFIG_DIR into a
-# live shell's environment (what an actual herdr session's shell would
-# inherit) — then confirms `claude` inside that shell seeds the same
-# HERDR_SESSION-derived config dir.
+# ~/.zshrc) with HERDR_SESSION set — what a zsh pane in a named herdr session
+# runs — and confirms `claude` inside that shell still seeds the
+# HERDR_SESSION-derived config dir. Since rip-cage-r0jh the zshrc leaves
+# CLAUDE_CONFIG_DIR at the image default, so this proves the recipe's
+# wrapper derives the dir from the live shell's env on its own.
 MUX_HERDR_LIVE_SESSION="mux-test-herdr-live"
 cexec rm -rf "${MUX_TEST_BASE}/${MUX_HERDR_LIVE_SESSION}"
 
@@ -1181,9 +1181,9 @@ _mux_herdr_live_out=$(msb exec \
 if ! echo "$_mux_herdr_live_out" | grep -q "MUX_HERDR_LIVE_DONE_$$"; then
   fail "Step 7b: herdr live-shell sentinel not detected — zsh -ic (zshrc sourcing) failed" "$(echo "$_mux_herdr_live_out" | head -5)"
 elif cexec test -f "${MUX_TEST_BASE}/${MUX_HERDR_LIVE_SESSION}/.claude.json"; then
-  pass "Step 7b: herdr live-shell (zshrc export) → CLAUDE_CONFIG_DIR=~/.claude-sessions/${MUX_HERDR_LIVE_SESSION} (seeded via zshrc-derived HERDR_SESSION)"
+  pass "Step 7b: herdr live-shell (zsh -ic) → CLAUDE_CONFIG_DIR=~/.claude-sessions/${MUX_HERDR_LIVE_SESSION} (wrapper-derived from HERDR_SESSION)"
 else
-  fail "Step 7b: herdr live-shell — ~/.claude-sessions/${MUX_HERDR_LIVE_SESSION}/.claude.json not found (zshrc export or wrapper broken)"
+  fail "Step 7b: herdr live-shell — ~/.claude-sessions/${MUX_HERDR_LIVE_SESSION}/.claude.json not found (wrapper herdr-branch broken under zsh -ic)"
 fi
 
 cexec rm -rf "${MUX_TEST_BASE}/${MUX_HERDR_LIVE_SESSION}"

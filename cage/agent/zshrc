@@ -55,31 +55,25 @@ command -v /usr/local/bin/mise >/dev/null 2>&1 && eval "$(/usr/local/bin/mise ac
 # read are no longer written; git in cages authenticates over HTTPS + msb
 # `--secret` instead (ADR-029 D3, rip-cage-f1qo S5).
 
-# rip-cage-p1p: Per-session Claude config isolation + per-agent git author.
-# Multiplexer-agnostic (rip-cage-1f59.4): derive the session handle from
-# whichever multiplexer is active (tmux or herdr) and:
-#   (a) Set CLAUDE_CONFIG_DIR so the claude wrapper picks up the right session dir.
-#       (The wrapper also derives this, but setting it here ensures any direct
-#        claude invocation in this shell inherits it without relying on a runtime query.)
-#   (b) Set GIT_AUTHOR_NAME / GIT_COMMITTER_NAME = session handle so git log
-#       attributes commits to the agent session (D5). Email stays unchanged.
-#
-# Three-way logic (mirrors claude-session-wrapper.sh resolution precedence):
+# rip-cage-p1p: per-agent git author. Multiplexer-agnostic (rip-cage-1f59.4):
+# derive the session handle from whichever multiplexer is active and set
+# GIT_AUTHOR_NAME / GIT_COMMITTER_NAME to it, so git log attributes commits to
+# the agent session (D5). Email stays unchanged.
 #   - tmux ($TMUX set): derive from tmux session name
-#   - herdr ($HERDR_SESSION set): derive from HERDR_SESSION env var
-#   - else (none/headless): no override — wrapper uses 'default' fallback
+#   - herdr ($HERDR_SESSION set; herdr sets it for named sessions only)
+#   - else (none/headless): no override
+# CLAUDE_CONFIG_DIR is deliberately left alone (rip-cage-r0jh): the base image
+# has ONE claude config dir, /home/agent/.claude, which init seeds every boot.
+# Per-session dirs are the examples/claude recipe's business; its wrapper
+# derives and seeds them itself.
 if [[ -n "${TMUX:-}" ]]; then
   _rc_session_handle=$(tmux display-message -p '#S' 2>/dev/null || true)
   if [[ -n "$_rc_session_handle" ]]; then
-    export CLAUDE_CONFIG_DIR="${HOME}/.claude-sessions/${_rc_session_handle}"
     export GIT_AUTHOR_NAME="$_rc_session_handle"
     export GIT_COMMITTER_NAME="$_rc_session_handle"
   fi
   unset _rc_session_handle
 elif [[ -n "${HERDR_SESSION:-}" ]]; then
-  # herdr session: derive config dir from HERDR_SESSION env var
-  # (herdr src/session.rs: SESSION_ENV_VAR="HERDR_SESSION"; set for named sessions)
-  export CLAUDE_CONFIG_DIR="${HOME}/.claude-sessions/${HERDR_SESSION}"
   export GIT_AUTHOR_NAME="${HERDR_SESSION}"
   export GIT_COMMITTER_NAME="${HERDR_SESSION}"
 fi
