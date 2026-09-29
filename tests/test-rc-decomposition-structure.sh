@@ -390,7 +390,10 @@ echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 
 # Bumped 123 -> 125 by rip-cage-mssj: 2 ADDED, 0 removed.
 #   ADDED (cli/lib/msb_runtime.sh, 2): _msb_version_verdict and
 #     check_msb_floor (rc up's msb version floor, RC_MSB_MIN_VERSION).
-EXPECTED_FN_COUNT=125
+# Bumped 125 -> 127 by rip-cage-i3wv: 2 ADDED, 0 removed.
+#   ADDED (cli/up.sh, 2): _up_sandbox_image_ref and _up_drift_describe (the
+#     image-drift messages name the cage's stored tag and the tag compared).
+EXPECTED_FN_COUNT=127
 _actual_fn_count=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh 2>/dev/null | wc -l | tr -d ' ')
 
 if [[ "$_actual_fn_count" -eq "$EXPECTED_FN_COUNT" ]]; then
