@@ -89,9 +89,15 @@ fail() { printf 'FAIL: %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
 # sandboxes invisible to docker ps/exec/cp/stop -- cage resolution, exec,
 # stdin-file transfer, and stop/resume below are rewired onto the msb-native
 # surface (canonical pattern: /tmp/msb-port-canonical.md). `docker image
-# inspect rip-cage:latest` stays: it is an image-level check (the image is
+# inspect <image>` stays: it is an image-level check (the image is
 # still `docker build`-produced), not a cage-runtime check.
+#
+# Image under test (rip-cage-1r5u): the exported RC_IMAGE when set (the
+# stamp gate's scratch tag), else rip-cage:latest. Every cage config below
+# names it, so the cages rc creates and the image rc resolves on resume are
+# the same one.
 # ---------------------------------------------------------------------------
+TEST_IMAGE="${RC_IMAGE:-rip-cage:latest}"
 if ! command -v docker >/dev/null 2>&1; then
   echo "SKIP: docker not available"
   exit 0
@@ -100,12 +106,13 @@ if ! command -v msb >/dev/null 2>&1; then
   echo "SKIP: msb not available"
   exit 0
 fi
-if ! docker image inspect rip-cage:latest >/dev/null 2>&1; then
-  echo "SKIP: rip-cage:latest not built — run ./rc build first"
+if ! docker image inspect "$TEST_IMAGE" >/dev/null 2>&1; then
+  echo "SKIP: ${TEST_IMAGE} not built — run ./rc build first"
   exit 0
 fi
 
 echo "=== test-claude-json-seed-synthesis.sh ==="
+echo "image under test: ${TEST_IMAGE}"
 
 NP_HOME=""; NP_WS_ROOT=""; NP_NAME=""
 PC_HOME=""; PC_WS_ROOT=""; PC_NAME=""
@@ -163,7 +170,7 @@ NP_UP_OUT="${NP_WS_ROOT}/np-up.out"
 # of the `rc up` call below hides it behind bash's assignment ordering. This
 # HOME has no such file, so the cage boots without the mount — the input V1
 # needs.
-NP_CONF=$(HOME="$NP_HOME" cage_conf_for "$NP_WS")
+NP_CONF=$(HOME="$NP_HOME" cage_conf_for "$NP_WS" "$TEST_IMAGE")
 HOME="$NP_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_HOME" \
   ANTHROPIC_API_KEY="" \
   RC_CAGE_CONF="$NP_CONF" \
@@ -318,7 +325,7 @@ printf '%s' "$PC_SENTINEL" > "${PC_HOME}/.claude.json"
 PC_UP_OUT="${PC_WS_ROOT}/pc-up.out"
 # Fixture written FIRST, then the config generated against that HOME: the
 # generator carries the mount line only when the file is there to mount.
-PC_CONF=$(HOME="$PC_HOME" cage_conf_for "$PC_WS")
+PC_CONF=$(HOME="$PC_HOME" cage_conf_for "$PC_WS" "$TEST_IMAGE")
 HOME="$PC_HOME" DOCKER_CONFIG="$RC_TEST_REAL_DOCKER_CONFIG" MSB_HOME="$REAL_MSB_HOME" \
   ANTHROPIC_API_KEY=sk-test-vwka-pc \
   RC_CAGE_CONF="$PC_CONF" \

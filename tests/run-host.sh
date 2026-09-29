@@ -152,6 +152,9 @@ SKIPPED_TESTS=()
 
 # Tests that REQUIRE a running rip-cage container or live API key.
 # Each entry carries a one-line comment explaining why.
+# RC_IMAGE forwarding (rip-cage-1r5u): run_test and run_pytest pass an exported
+# RC_IMAGE unchanged only to files listed here and unset it for every other file,
+# so a host-tier test behaves the same whatever the operator exported.
 NEEDS_CONTAINER=(
   # test-agent-cli.sh: RETIRED with the verbs it tested (rip-cage-ely4.7.3 /
   # ADR-031 D3). Its subject was the agent-facing CLI contract, and six of its
@@ -613,7 +616,13 @@ run_test() {
   # capturing the pipefail-adjusted exit status of the test body itself --
   # tee always succeeds, so pipefail (from `set -euo pipefail` at file top)
   # surfaces bash's exit code here, not tee's.
-  bash "$test_file" | tee "$out_file" || rc=$?
+  # RC_IMAGE forwarding (rip-cage-1r5u): only a NEEDS_CONTAINER file inherits
+  # the operator's RC_IMAGE. See the rule above NEEDS_CONTAINER.
+  if _is_needs_container "$test_file"; then
+    bash "$test_file" | tee "$out_file" || rc=$?
+  else
+    ( unset RC_IMAGE; exec bash "$test_file" ) | tee "$out_file" || rc=$?
+  fi
   t1=$(date +%s)
 
   if [[ "$rc" -ne 0 ]]; then
@@ -705,7 +714,12 @@ run_pytest() {
   t0=$(date +%s)
   out_file="$(mktemp "${TMPDIR:-/tmp}/rh-test-out.XXXXXX")"
   rc=0
-  uv run "$@" | tee "$out_file" || rc=$?
+  # Same RC_IMAGE forwarding rule as run_test (rip-cage-1r5u).
+  if _is_needs_container "$test_file"; then
+    uv run "$@" | tee "$out_file" || rc=$?
+  else
+    ( unset RC_IMAGE; exec uv run "$@" ) | tee "$out_file" || rc=$?
+  fi
   t1=$(date +%s)
 
   if [[ "$rc" -ne 0 ]]; then
