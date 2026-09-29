@@ -1316,8 +1316,13 @@ _up_default_multiplexer() {
 # RC_MULTIPLEXER unset or none costs nothing here: the function returns before
 # reading anything. (Unset, the create path reads the descriptor once for its
 # default — _up_default_multiplexer — but only when a cage is being created.)
+#
+# rip-cage-7njt: an optional second argument "stored" checks the multiplexer a
+# converge recreate would KEEP ($RC_MULTIPLEXER, set by the caller to the stored
+# rc.session.multiplexer) and words the refusal for that case, ending in the
+# same --replace hint 1yqa's refusal uses.
 _up_check_multiplexer_available() {
-  local _conf="$1"
+  local _conf="$1" _kind="${2:-}" _path="${3:-<path>}"
   local _mux="${RC_MULTIPLEXER:-none}"
   [[ -z "$_mux" || "$_mux" == "none" ]] && return 0
 
@@ -1339,6 +1344,13 @@ _up_check_multiplexer_available() {
     return 0
   fi
 
+  if [[ "$_kind" == "stored" ]]; then
+    echo "Error: cage was created with multiplexer '${_mux}', but image '${_img}' no longer declares it — its boot descriptor declares: ${_declared:-(none)}." >&2
+    echo "       A converge would recreate the cage with '${_mux}' and attach would fail on the missing hook." >&2
+    echo "       Recreate it with a multiplexer the image declares (or none): RC_MULTIPLEXER=<name|none> rc up --replace ${_path}" >&2
+    echo "       Refusing before any stop/remove/create, so the existing cage is untouched (ADR-001 fail-loud)." >&2
+    return 1
+  fi
   echo "Error: multiplexer '${_mux}' was requested via RC_MULTIPLEXER, but image '${_img}' does not declare it — its boot descriptor declares: ${_declared:-(none)}." >&2
   echo "       Add a multiplexers[] entry for '${_mux}' to the descriptor fragment your Dockerfile merges (see examples/${_mux}/), then run: rc build --file <your Dockerfile>" >&2
   echo "       Refusing before any msb call, so no cage is created (ADR-001 fail-loud)." >&2
@@ -3183,6 +3195,12 @@ cmd_up() {
         _up_warn_transcript_loss "$name"
         local _up_conv_mux
         _up_conv_mux=$(_container_multiplexer "$name")
+        # rip-cage-7njt: the recreate keeps the stored multiplexer, so the
+        # rebuilt image must still declare it; refuse before stop/remove.
+        if ! RC_MULTIPLEXER="$_up_conv_mux" _up_check_multiplexer_available "$_UP_CAGE_CONF" stored "$path"; then
+          [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Cage ${name} was created with multiplexer '${_up_conv_mux}', which the image no longer declares — run: RC_MULTIPLEXER=<name|none> rc up --replace ${path}" "MULTIPLEXER_NOT_IN_IMAGE"
+          exit 1
+        fi
         log "Converging ${name}: cold-recreating against the current cage config (ADR-031 D3). Host mounts and named volumes survive; only the guest's ephemeral rootfs scratch is lost."
         _msb_stop_graceful "$name" 2>/dev/null || true
         _msb_remove "$name"

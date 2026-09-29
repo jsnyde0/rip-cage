@@ -24,6 +24,9 @@
 #   D7  rc up --replace of a cage labelled none, one declared, unset ->
 #       recreate keeps none (only an explicit RC_MULTIPLEXER=<x> changes it)
 #   D8  rc up --replace of a cage labelled fakemux, unset -> keeps fakemux
+#   D9  converge of a cage labelled fakemux on an image declaring none ->
+#       refused before any stop/remove/start/exec/create (rip-cage-7njt), the
+#       message names the stored value, the declared set and the --replace hint
 
 set -uo pipefail
 
@@ -206,6 +209,20 @@ if [[ -n "$CREATE" ]] && creates_with fakemux; then
   pass D8 "--replace of a cage labelled fakemux, unset -> keeps fakemux"
 else
   fail D8 "--replace keeps stored fakemux" "exit=$RC_EXIT create=[$CREATE] out=$RC_ALL"
+fi
+teardown_ws
+
+# --- D9: converge, stored mux no longer declared -> refuse -----------------
+setup_ws
+(unset RC_MULTIPLEXER; MUX_CONF_SHA=stale-sha run_up exited fakemux "$ZERO"; save
+ # any mutating msb verb (or exec beyond the descriptor read) is a failure
+ grep -E '^(stop|remove|start|create|run)( |$)|^exec ' "$RC_LOG" | grep -v boot.json >"${TEST_HOME}/mut" || true); load
+if [[ "$RC_EXIT" != 0 && -z "$CREATE" && ! -s "${TEST_HOME}/mut" ]] \
+   && grep -qF "fakemux" <<<"$RC_ALL" && grep -qF "(none)" <<<"$RC_ALL" \
+   && grep -qF "rc up --replace" <<<"$RC_ALL"; then
+  pass D9 "converge of a cage labelled fakemux, image declares none -> refused before any msb stop/remove/start/exec/create, with the --replace hint"
+else
+  fail D9 "converge refuses a stored mux the image dropped" "exit=$RC_EXIT create=[$CREATE] mut=[$(cat "${TEST_HOME}/mut" 2>/dev/null)] out=$RC_ALL"
 fi
 teardown_ws
 
