@@ -1,9 +1,17 @@
 {
   "_readme": [
-    "dotpi-factory declares no daemon yet. The factory clock (dotpi's pacemaker serve, run under the boot",
-    "supervisor) arrives once dotpi-7o2q lands. Adding it is one entry in daemons[] below:",
-    "name, start (exec the server so the recorded pid is the one that serves), health. Decide then whether",
-    "the timer state it writes under ~/.timer needs a named volume of its own."
+    "daemons[0] is the factory clock: dotpi's `pacemaker serve --every 60` (see `pacemaker serve --help`).",
+    "init starts it once per boot and never restarts it (rip-cage-vpxk tracks a restart policy).",
+    "Every tick reads the seat roster through herdr, so serve needs HERDR_SOCKET_PATH, herdr's own env var.",
+    "The start command reads it at runtime from the cage's composed boot descriptor (whichever multiplexer",
+    "start sets it) rather than naming another recipe's path (ADR-027 D4). None found: it warns and runs anyway.",
+    "health asks the clock itself: `pacemaker status` reports arm.armed=true while serve holds its pidfile lock."
   ],
-  "daemons": []
+  "daemons": [
+    {
+      "name": "dotpi-pacemaker",
+      "start": "_rc_sock=$(jq -r '.multiplexers[]?.start // empty' \"${RC_BOOT_DESCRIPTOR:-/etc/rip-cage/boot.json}\" 2>/dev/null | sed -n 's/.*HERDR_SOCKET_PATH=\\([^; ]*\\).*/\\1/p' | head -n 1); if [ -n \"$_rc_sock\" ]; then export HERDR_SOCKET_PATH=\"$_rc_sock\"; else echo '[rip-cage] WARNING: no HERDR_SOCKET_PATH in the composed boot descriptor; pacemaker ticks will record server_not_running until one exists' >&2; fi; exec pacemaker serve --every 60",
+      "health": "pacemaker status 2>/dev/null | jq -e '.arm.armed == true' >/dev/null"
+    }
+  ]
 }

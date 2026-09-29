@@ -13,7 +13,7 @@ nothing about this directory; it is a recipe you compose.
 | file | what it is |
 |---|---|
 | `Dockerfile.snippet` | the lines to paste into your own Dockerfile: CLI symlinks, state dirs, the boot-fragment merge |
-| `boot-fragment.json` | the boot-descriptor fragment; declares no daemon yet (see [No clock yet](#no-clock-yet)) |
+| `boot-fragment.json` | the boot-descriptor fragment; declares one daemon, the factory clock (see [The clock](#the-clock)) |
 
 No dotpi code is copied into the image. `grants`, `seat`, `mail`, `dispatch`
 and `pacemaker` in `/usr/local/bin` are symlinks into the dotpi checkout's
@@ -100,6 +100,9 @@ mounts:
   - named: "dotpi-pacemaker-<CAGE-NAME>"
     target: /home/agent/.pacemaker
     create: ensure-exists
+  - named: "dotpi-timer-<CAGE-NAME>"
+    target: /home/agent/.timer
+    create: ensure-exists
   - named: "dotpi-home-<CAGE-NAME>"
     target: /home/agent/.dotpi
     create: ensure-exists
@@ -112,7 +115,8 @@ the checkout's `.env`, and that cover cannot bind inside a read-only mount
 
 **Why the named volumes.** The factory writes its grant registry to
 `~/.grants`, its mail store to `~/.dotpi-mail`, pacemaker state to
-`~/.pacemaker`, and seat briefs to `~/.dotpi`. Without these lines they live on
+`~/.pacemaker`, the clock's timer state and pidfile to `~/.timer`, and seat
+briefs to `~/.dotpi`. Without these lines they live on
 the cage's ephemeral overlay, and `rc up --replace` wipes them. That is the
 command you run after every egress fix, so the factory would lose its registry
 each time you widen the allowlist. Named volumes survive it. They also keep
@@ -151,10 +155,45 @@ Everything below runs on the host.
 Panes herdr starts inside the cage inherit the variable from the server, so
 seats working inside the cage need nothing extra.
 
-## No clock yet
+## The clock
 
-The clock daemon arrives once dotpi-7o2q lands; until then, the caged factory
-wakes only when someone reaches in from the host and wakes a seat.
+The boot fragment declares one daemon: `pacemaker serve --every 60`, the
+factory's clock, ticking once a minute. Every boot starts it, so a caged seat
+on the clock gets its pulses without anyone reaching in. A cage has no
+launchd or systemd, so the pacemaker runs on its supervised adapter;
+`pacemaker serve --help` says what that means.
+
+**rip-cage starts the clock once per boot and never restarts it.** If serve
+stops, the clock stays off until the next boot: `rc up` on a stopped cage, or
+`rc up --replace`. It stops on a TERM, on `pacemaker disarm`, when its state
+file is deleted, and at its lease bound.
+
+- **To pause the clock**, run `pacemaker disarm` in the cage. That pause lasts
+  only until the next boot starts serve again.
+- **To keep the clock off**, remove the daemon from your copy of
+  `boot-fragment.json` and rebuild.
+- **To see whether it is running**, reach in and read the arm:
+
+  ```bash
+  msb exec <cage> -- bash -lc 'export HERDR_SOCKET_PATH=/tmp/rip-cage-herdr.sock; pacemaker status' < /dev/null
+  ```
+
+  Without the export, `status` reports a `registry_error` of its own; that is
+  your shell missing herdr's socket and says nothing about the clock.
+  `arm.armed` is `true` while serve runs; `false` means the clock is off.
+  `last_tick.error` set means a tick ran and failed, so a recent tick time on
+  its own does not prove the clock works.
+
+**The clock needs herdr's socket.** Every tick reads the seat roster through
+herdr. The daemon finds herdr's socket by reading `HERDR_SOCKET_PATH` out of
+the cage's composed boot descriptor, `/etc/rip-cage/boot.json`, when it starts;
+it never names another recipe's path. With no multiplexer setting that
+variable, it logs a warning to `/tmp/rip-cage-daemon-dotpi-pacemaker.log` and
+runs anyway, and every tick records `server_not_running`.
+
+The first tick after boot may also record `server_not_running`, because the
+clock can start before herdr's server is listening. Any tick after herdr is up
+must be clean. If it is not, check that log.
 
 ## Troubleshooting
 

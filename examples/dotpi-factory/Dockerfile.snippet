@@ -22,9 +22,10 @@ ARG DOTPI_DIR=/home/agent/code/personal/dotpi
 RUN for t in grants seat mail dispatch pacemaker; do ln -sf "${DOTPI_DIR}/scripts/${t}" "/usr/local/bin/${t}"; done
 
 # Factory state lives in the cage, never on the host: the registry, the mail
-# store, pacemaker state, seat briefs. Created agent-owned here so the named
-# volumes the config mounts over them start writable by the agent.
-RUN for d in .grants .dotpi-mail .pacemaker .dotpi; do install -d -o agent -g agent "/home/agent/${d}"; done
+# store, pacemaker state, the clock's timer state (~/.timer), seat briefs.
+# Created agent-owned here so the named volumes the config mounts over them
+# start writable by the agent.
+RUN for d in .grants .dotpi-mail .pacemaker .timer .dotpi; do install -d -o agent -g agent "/home/agent/${d}"; done
 
 COPY boot-fragment.json /tmp/dotpi-factory-boot.json
 RUN rc-boot-merge /tmp/dotpi-factory-boot.json && rm -f /tmp/dotpi-factory-boot.json

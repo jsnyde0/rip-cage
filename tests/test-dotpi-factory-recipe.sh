@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # tests/test-dotpi-factory-recipe.sh -- host-only structure tests for the
-# examples/dotpi-factory recipe (rip-cage-8jg5.2).
+# examples/dotpi-factory recipe (rip-cage-8jg5.2; the clock, rip-cage-8jg5.5).
 #
 # Reads the recipe as it ships: Dockerfile.snippet, boot-fragment.json and
 # README.md. Covers the five CLI symlinks into the ro-mounted checkout (no
 # dotpi code copied in), the snippet ending on USER agent, the boot fragment
-# merging cleanly and declaring no clock loop, the README's config lines
+# merging cleanly and declaring the clock as one pacemaker serve daemon and no
+# tick loop, the README's config lines
 # agreeing with the snippet's state dirs and DOTPI_DIR, the reach-in facts, and
 # the absence of the literal secret placeholder (rip-cage-ureo). No docker/msb
 # needed. The live leg (herdr version, CLIs from host msb exec, a grant row
@@ -73,21 +74,65 @@ fi
 last_user=$(grep -E '^USER ' "$SNIPPET" | tail -1)
 if [[ "$last_user" == "USER agent" ]]; then pass "T3 snippet ends on USER agent"; else fail "T3 snippet ends on USER agent" "last is '${last_user}'"; fi
 
-# --- T4: the boot fragment merges, declares daemons[], and carries no clock loop
+# --- T4: the boot fragment merges, declares the clock as ONE serve daemon, and
+# carries no tick loop (rip-cage-8jg5.5; root D4, ADR-027 D4)
 if jq -e '.daemons | type == "array"' "$BOOT" >/dev/null 2>&1; then
   pass "T4 boot fragment is JSON with a daemons[] seam"
 else
   fail "T4 boot fragment is JSON with a daemons[] seam" "jq check failed"
 fi
-if jq -r '[.daemons[]?, .multiplexers[]?, .tools[]?] | map(tostring) | join("\n")' "$BOOT" | grep -qE 'pacemaker +tick|while +sleep'; then
+serve_count=$(jq '[.daemons[]? | select(.start | test("pacemaker +serve"))] | length' "$BOOT" 2>/dev/null)
+daemon_count=$(jq '.daemons | length' "$BOOT" 2>/dev/null)
+if [[ "$serve_count" == 1 && "$daemon_count" == 1 ]]; then
+  pass "T4 exactly one daemon, and it runs pacemaker serve"
+else
+  fail "T4 exactly one daemon, and it runs pacemaker serve" "daemons=${daemon_count} serve=${serve_count}"
+fi
+if jq -e '.daemons[0] | (.name | length > 0) and (.health | length > 0) and (.start | test("--every +60"))' "$BOOT" >/dev/null 2>&1; then
+  pass "T4 the serve daemon has a name, a health check, and ticks every 60s"
+else
+  fail "T4 the serve daemon has a name, a health check, and ticks every 60s" "$(jq -c '.daemons[0]' "$BOOT" 2>/dev/null)"
+fi
+if jq -r '[.daemons[]?, .multiplexers[]?, .tools[]?] | map(tostring) | join("\n")' "$BOOT" | grep -qE 'pacemaker +tick([^s]|$)|while +sleep'; then
   fail "T4 no clock loop in the boot fragment" "a tick loop is declared (root D4 / ADR-027 D4)"
 else
   pass "T4 no clock loop in the boot fragment"
 fi
-if grep -qiE 'pacemaker +tick|while +sleep|until .*sleep|cron|profile\.d' "$SNIPPET"; then
+if grep -qiE 'pacemaker +tick([^s]|$)|while +sleep|until .*sleep|cron|profile\.d' "$SNIPPET"; then
   fail "T4 no clock loop baked by the snippet" "a tick loop, cron or profile.d hook is in the snippet"
 else
   pass "T4 no clock loop baked by the snippet"
+fi
+# The serve daemon derives herdr's socket from the COMPOSED descriptor at
+# runtime (brain ruling (iv) on rip-cage-8jg5.5; ADR-027 D4 FIRM: no
+# cross-recipe path literal). Run the real start string against a descriptor
+# composed from base + herdr + this recipe, with a stub pacemaker on PATH.
+if grep -qF 'rip-cage-herdr.sock' "$BOOT" "$SNIPPET"; then
+  fail "T4 no herdr socket literal in the recipe's runtime files" "found in boot-fragment.json or Dockerfile.snippet"
+else
+  pass "T4 no herdr socket literal in the recipe's runtime files"
+fi
+mkdir -p "${TMPROOT}/stub"
+# shellcheck disable=SC2016 # the stub expands these when it runs, not here
+printf '#!/bin/sh\necho "SOCK=${HERDR_SOCKET_PATH:-} ARGS=$*"\n' > "${TMPROOT}/stub/pacemaker"
+chmod +x "${TMPROOT}/stub/pacemaker"
+serve_start=$(jq -r '.daemons[0].start // ""' "$BOOT")
+cp "$BASE_BOOT" "${TMPROOT}/composed.json"
+RC_BOOT_DESCRIPTOR="${TMPROOT}/composed.json" sh "$BOOT_MERGE" "$HERDR_BOOT" >/dev/null 2>&1
+RC_BOOT_DESCRIPTOR="${TMPROOT}/composed.json" sh "$BOOT_MERGE" "$BOOT" >/dev/null 2>&1
+composed_out=$(env -u HERDR_SOCKET_PATH RC_BOOT_DESCRIPTOR="${TMPROOT}/composed.json" PATH="${TMPROOT}/stub:${PATH}" bash -c "$serve_start" 2>&1)
+composed_sock=$(printf '%s\n' "$composed_out" | sed -n 's/^SOCK=\([^ ]*\) ARGS=.*/\1/p')
+if [[ "$composed_sock" == /* ]] && [[ "$composed_out" == *"ARGS=serve --every 60"* ]]; then
+  pass "T4 serve start derives an absolute HERDR_SOCKET_PATH from the composed descriptor ($composed_sock) and execs serve --every 60"
+else
+  fail "T4 serve start derives HERDR_SOCKET_PATH from the composed descriptor" "got '${composed_out}'"
+fi
+cp "$BASE_BOOT" "${TMPROOT}/bare.json"
+bare_out=$(env -u HERDR_SOCKET_PATH RC_BOOT_DESCRIPTOR="${TMPROOT}/bare.json" PATH="${TMPROOT}/stub:${PATH}" bash -c "$serve_start" 2>&1)
+if [[ "$bare_out" == *"WARNING: no HERDR_SOCKET_PATH"* && "$bare_out" == *"SOCK= ARGS=serve --every 60"* ]]; then
+  pass "T4 without herdr composed, serve start warns and still execs serve"
+else
+  fail "T4 without herdr composed, serve start warns and still execs serve" "got '${bare_out}'"
 fi
 cp "$BASE_BOOT" "${TMPROOT}/boot.json"
 if RC_BOOT_DESCRIPTOR="${TMPROOT}/boot.json" sh "$BOOT_MERGE" "$BOOT" >/dev/null 2>&1 \
@@ -129,6 +174,23 @@ if grep -qE '^ +- "<DOTPI>:' "$README"; then
   fail "T5 README never mounts the whole checkout" "a whole-checkout line is present (rip-cage-dnwv)"
 else
   pass "T5 README never mounts the whole checkout"
+fi
+
+# --- T5b: the timer state dir is on a named volume; README says how to keep the clock off
+if [[ " $state_dirs " == *" .timer "* ]]; then
+  pass "T5 snippet creates ~/.timer agent-owned (the supervised pidfile's dir)"
+else
+  fail "T5 snippet creates ~/.timer agent-owned" "state dirs: '${state_dirs}'"
+fi
+# rip-cage starts daemons once per boot and never restarts them (rip-cage-vpxk
+# tracks a restart policy); the README must say so, and how to keep the clock off.
+if grep -qiE 'once per boot and never restarts' "$README" \
+   && grep -qiE 'disarm.*paus' "$README" \
+   && grep -qiE 'keep the clock off' "$README" \
+   && grep -qF 'pacemaker serve --help' "$README"; then
+  pass "T5 README: clock starts once per boot, disarm only pauses, how to keep it off, cites serve --help"
+else
+  fail "T5 README keep-off instruction" "one of: once-per-boot / disarm pauses / keep the clock off / serve --help is missing"
 fi
 
 # --- T6: reach-in facts, socket path derived from the herdr recipe ------------
