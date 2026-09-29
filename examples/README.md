@@ -27,6 +27,7 @@ exception: one interactive shell, nobody to supervise.
 |---|---|
 | [compose-walk-away-cage.md](compose-walk-away-cage.md) | Walk-away/headless multi-agent delta: herdr (supervisor multiplexer) + herdr-pi (status extension) recipes, and the pi provider/model pin (closes the headless-throttle footgun). Credential non-possession is a cage-config `secrets:` declaration, not a composed mediator. |
 | [examples/dotpi-3bi/](dotpi-3bi/) | Factory socket-API drive delta on top of `examples/herdr/`: how a host-side orchestrator drives a cage's herdr pane via `pane run`/`pane read` (not interactive attach) — session-scoped socket path + explicit pane sizing, the two headless-herdr gotchas. See [dotpi-3bi/README.md](dotpi-3bi/README.md). |
+| [examples/dotpi-factory/](dotpi-factory/) | A cage that hosts a whole dotpi factory, on top of `examples/herdr/` + `examples/claude/`: the dotpi CLIs as symlinks into a read-only mount of the host checkout, factory state (registry, mail, briefs) cage-local on named volumes that survive `rc up --replace`, and the host reach-in facts. No clock yet. See [dotpi-factory/README.md](dotpi-factory/README.md). |
 
 ---
 
