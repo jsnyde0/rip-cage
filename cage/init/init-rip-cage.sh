@@ -54,9 +54,235 @@ _rc_probe_host_bridge() {
   printf '%s\n' "host.microsandbox.internal"
 }
 
+# THE DAEMON BLOCK (section 12 calls _rc_start_daemons; rip-cage-vpxk moved it
+# above the sourcing guard so a host test can drive it against a fake
+# descriptor). Pidfiles and logs live in RC_DAEMON_RUN_DIR — /tmp in a cage;
+# only the host test sets it.
+
+# _rc_boot_require <entry_json> <field> <kind> <index>
+# Print the field's value, or fail the boot loud naming the missing field.
+_rc_boot_require() {
+  _rbr_val=$(jq -r --arg f "$2" '.[$f] // ""' <<<"$1" 2>/dev/null)
+  if [ -z "$_rbr_val" ] || [ "$_rbr_val" = "null" ]; then
+    echo "[rip-cage] ERROR: boot descriptor ${_rc_boot_descriptor}: ${3}[${4}] is missing required field '${2}' (ADR-001 fail-loud). Fix the descriptor fragment your Dockerfile merged in, rebuild the image, and recreate the cage." >&2
+    exit 1
+  fi
+  printf '%s' "$_rbr_val"
+  unset _rbr_val
+}
+
+# _rc_daemon_stop_supervisor — TERM the recorded supervisor (its trap takes the
+# daemon down with it) and forget it. Uses the per-daemon globals set below.
+# The pid is killed only if it was recorded during THIS kernel boot: should /tmp
+# outlive a stop/resume, a stale pid may name an unrelated process by now.
+_rc_daemon_stop_supervisor() {
+  if [[ -f "$_rc_daemon_supfile" ]]; then
+    if [[ "$(cat "${_rc_daemon_supfile%.pid}.boot" 2>/dev/null)" == "$(_rc_boot_id)" ]]; then
+      kill "$(cat "$_rc_daemon_supfile" 2>/dev/null)" 2>/dev/null || true
+    fi
+    rm -f "$_rc_daemon_supfile" "${_rc_daemon_supfile%.pid}.boot"
+  fi
+}
+
+# _rc_boot_id — the kernel's per-boot id; empty off Linux (the host test).
+_rc_boot_id() {
+  cat /proc/sys/kernel/random/boot_id 2>/dev/null || true
+}
+
+# _rc_daemon_supervise <name> <start> <pidfile> <log> <verdict_file>
+# The restart: always loop (rip-cage-vpxk). Runs as a backgrounded subshell
+# whose own PID init records in <name>.supervisor.pid. The daemon is ITS child,
+# so `wait` returns the real exit code — nothing in a cage reaps orphans, so a
+# supervisor that merely polled a pid would watch a zombie forever (rip-cage-893l).
+# It re-runs start only once init has written "armed" to the verdict file, i.e.
+# after the FIRST start passed its health check; a daemon that fails that check
+# keeps today's fail-warn path and is never respawned, so a misconfigured one
+# does not spin. Fixed 5s backoff, no exponential machinery. TERM stops the loop
+# and the daemon with it — the one way to keep a supervised daemon off.
+_rc_daemon_supervise() {
+  local _name="$1" _start="$2" _pidfile="$3" _log="$4" _verdict="$5"
+  local _child="" _code _waited
+  # Always runs backgrounded, so this reaches only the supervisor's own
+  # subshell. Under errexit a backgrounded eval reports 1, not the daemon's code.
+  set +e
+  trap '[ -n "$_child" ] && kill "$_child" 2>/dev/null; exit 0' TERM
+  while :; do
+    eval "$_start" >>"$_log" 2>&1 &
+    _child=$!
+    echo "$_child" > "$_pidfile" 2>/dev/null || true
+    _code=0
+    wait "$_child" || _code=$?
+    # init decides the verdict within its bounded health loop (~20s at most).
+    _waited=0
+    while [ ! -f "$_verdict" ] && [ "$_waited" -lt 60 ]; do
+      sleep 1 & wait $!
+      _waited=$((_waited + 1))
+    done
+    [ "$(cat "$_verdict" 2>/dev/null)" = "armed" ] || exit 0
+    echo "[rip-cage] WARNING: daemon '${_name}' exited (code ${_code}); restarting (restart: always)" >>"$_log"
+    # Backgrounded sleep so a TERM lands now, not after the backoff.
+    sleep 5 & wait $!
+  done
+}
+
+# _rc_start_daemons <descriptor>
+# For each daemons[] entry:
+#   1. Create state_dir (container-local, ADR-019 D1 extensions pattern).
+#   2. Idempotency: if PID file exists and process is alive, SKIP (true no-op —
+#      NOT kill-and-restart, which would false-green a "one binder" idempotency
+#      check; assert PID is UNCHANGED between first and second init run).
+#   3. Start the daemon's `start` command in the background — directly, or under
+#      _rc_daemon_supervise when the entry says restart: always.
+#   4. Run the `health` check with a timeout (bd memory rip-cage-validate-hung-daemon).
+#   5. FAIL-WARN on health failure — cage still starts (ADR-005 D10 / ADR-001
+#      asymmetry: safety floor fails-closed, user daemon fails-warn).
+_rc_start_daemons() {
+  local _rc_run_dir="${RC_DAEMON_RUN_DIR:-/tmp}"
+  _rc_daemon_count=$(jq '(.daemons // []) | length' "$1" 2>/dev/null || echo "0")
+  for (( _rc_di=0; _rc_di<_rc_daemon_count; _rc_di++ )); do
+    _rc_daemon_entry=$(jq -c ".daemons[${_rc_di}]" "$1" 2>/dev/null)
+    # name/start/health are REQUIRED: a daemon declaration missing one of them
+    # is a composition error, not a runtime hiccup, so it fails the boot loud
+    # rather than being skipped with a warning the operator scrolls past
+    # (ADR-031 D4). state_dir and restart stay optional.
+    _rc_daemon_name=$(_rc_boot_require "$_rc_daemon_entry" "name" "daemons" "$_rc_di") || exit 1
+    _rc_daemon_start=$(_rc_boot_require "$_rc_daemon_entry" "start" "daemons" "$_rc_di") || exit 1
+    _rc_daemon_health=$(_rc_boot_require "$_rc_daemon_entry" "health" "daemons" "$_rc_di") || exit 1
+    _rc_daemon_state_dir=$(jq -r '.state_dir // ""' <<<"$_rc_daemon_entry" 2>/dev/null)
+    # restart: always | never, default never. Anything else is a typo that would
+    # otherwise silently mean "never" — fail loud like a missing required field.
+    _rc_daemon_restart=$(jq -r '.restart // "never"' <<<"$_rc_daemon_entry" 2>/dev/null)
+    case "$_rc_daemon_restart" in
+      always|never) ;;
+      *)
+        echo "[rip-cage] ERROR: boot descriptor ${_rc_boot_descriptor}: daemons[${_rc_di}] field 'restart' is '${_rc_daemon_restart}'; expected always or never (ADR-001 fail-loud). Fix the descriptor fragment your Dockerfile merged in, rebuild the image, and recreate the cage." >&2
+        exit 1
+        ;;
+    esac
+    _rc_daemon_pidfile="${_rc_run_dir}/rip-cage-daemon-${_rc_daemon_name}.pid"
+    _rc_daemon_log="${_rc_run_dir}/rip-cage-daemon-${_rc_daemon_name}.log"
+    _rc_daemon_supfile="${_rc_run_dir}/rip-cage-daemon-${_rc_daemon_name}.supervisor.pid"
+    _rc_daemon_verdict="${_rc_run_dir}/rip-cage-daemon-${_rc_daemon_name}.verdict"
+
+    # Create state_dir (container-local; mkdir -p is idempotent).
+    if [[ -n "$_rc_daemon_state_dir" ]]; then
+      mkdir -p "$_rc_daemon_state_dir" 2>/dev/null || true
+    fi
+
+    # Idempotency: if the PID file names a process that is still SERVING, skip.
+    # This is a TRUE no-op (PID unchanged) — not kill-and-restart.
+    #
+    # `kill -0` ALONE IS NOT A LIVENESS CHECK HERE (rip-cage-893l, measured in a live
+    # cage). Nothing inside a cage reaps orphans — msb's PID 1 leaves an exited daemon
+    # in state Z indefinitely — and `kill -0` on a zombie SUCCEEDS. Trusting it alone
+    # made a dead daemon report "already running" forever while its port answered
+    # nothing, and ADR-005 D10's fail-warn never fired: strictly worse than a visible
+    # crash. PID reuse is the same bug by another route. So the PID is only a cheap
+    # pre-filter; the entry's own `health` command is the authority, since that is the
+    # liveness signal the boot descriptor requires every daemon to declare.
+    if [[ -f "$_rc_daemon_pidfile" ]]; then
+      _rc_existing_pid=$(cat "$_rc_daemon_pidfile" 2>/dev/null || echo "")
+      if [[ -n "$_rc_existing_pid" ]] && kill -0 "$_rc_existing_pid" 2>/dev/null; then
+        # Recorded process exists (or is an unreaped zombie). Ask the daemon itself.
+        # Two attempts: one transient probe blip must not cost a healthy daemon a
+        # restart, and a restart is the expensive wrong answer here (see below).
+        _rc_skip_health_ok=0
+        for _rc_skip_attempt in 1 2; do
+          if timeout 5 bash -c "$_rc_daemon_health" >/dev/null 2>&1; then
+            _rc_skip_health_ok=1
+            break
+          fi
+          sleep 1
+        done
+        if [[ "$_rc_skip_health_ok" -eq 1 ]]; then
+          echo "[rip-cage] daemon '${_rc_daemon_name}' already running (PID=$_rc_existing_pid) — skipping (idempotent no-op)"
+          unset _rc_existing_pid _rc_skip_health_ok _rc_skip_attempt
+          continue
+        fi
+        # Recorded PID exists but the daemon is not serving: a zombie, a wedged
+        # process, or a reused PID belonging to something else entirely.
+        echo "[rip-cage] daemon '${_rc_daemon_name}' recorded PID=$_rc_existing_pid exists but failed its health check — treating as dead and restarting (rip-cage-893l)" >&2
+        # Terminate it before restarting, or a merely-wedged (not dead) daemon would
+        # still hold the port and we would start a SECOND binder — the exact thing
+        # ADR-005 D8's "a re-run spawns no second binder" forbids. A zombie ignores
+        # this harmlessly; it is already dead.
+        # A supervisor goes first, or it would respawn what we are about to kill.
+        _rc_daemon_stop_supervisor
+        kill "$_rc_existing_pid" 2>/dev/null || true
+        unset _rc_skip_health_ok _rc_skip_attempt
+      fi
+      # Stale PID file (process gone, zombie, or unhealthy) — remove and restart.
+      rm -f "$_rc_daemon_pidfile"
+      unset _rc_existing_pid
+    fi
+
+    # Nothing is serving: a supervisor still alive from an earlier init run of
+    # this boot (between respawns) must not start a second binder beside ours.
+    _rc_daemon_stop_supervisor
+    rm -f "$_rc_daemon_verdict"
+
+    # Start daemon in background; capture PID.
+    # Use eval to handle the start command string correctly (may have flags/args).
+    # Write PID file immediately so the idempotency guard is set before we check health.
+    # Guard with || true: PID write failure (e.g. /tmp full) must NOT abort init
+    # under set -e — a user daemon failing to write its PID file is fail-WARN,
+    # not fail-CLOSED (ADR-005 D10 / ADR-001 asymmetry).
+    if [[ "$_rc_daemon_restart" == "always" ]]; then
+      # The supervisor starts the daemon and writes its pidfile. All three fds
+      # point away from init's stream, so the supervisor never holds init open.
+      rm -f "$_rc_daemon_pidfile"
+      : > "$_rc_daemon_log" 2>/dev/null || true
+      # shellcheck disable=SC2094 # the log path is an argument, not a read
+      _rc_daemon_supervise "$_rc_daemon_name" "$_rc_daemon_start" "$_rc_daemon_pidfile" \
+        "$_rc_daemon_log" "$_rc_daemon_verdict" </dev/null >>"$_rc_daemon_log" 2>&1 &
+      echo "$!" > "$_rc_daemon_supfile" 2>/dev/null || true
+      _rc_boot_id > "${_rc_daemon_supfile%.pid}.boot" 2>/dev/null || true
+      for _rc_sup_wait in 1 2 3 4 5 6 7 8 9 10; do
+        [[ -s "$_rc_daemon_pidfile" ]] && break
+        sleep 0.2
+      done
+      _rc_daemon_pid=$(cat "$_rc_daemon_pidfile" 2>/dev/null || echo "?")
+      echo "[rip-cage] daemon '${_rc_daemon_name}' started (PID=$_rc_daemon_pid, restart: always)"
+    else
+      eval "$_rc_daemon_start" >"$_rc_daemon_log" 2>&1 &
+      _rc_daemon_pid=$!
+      echo "$_rc_daemon_pid" > "$_rc_daemon_pidfile" 2>/dev/null || true
+      echo "[rip-cage] daemon '${_rc_daemon_name}' started (PID=$_rc_daemon_pid)"
+    fi
+
+    # Health check with timeout (bd memory rip-cage-validate-hung-daemon):
+    # A wedged daemon must NOT hang the init script. Use `timeout` (coreutils).
+    # Retry a few times to allow the daemon a moment to bind its port.
+    _rc_daemon_health_ok=0
+    for _rc_health_attempt in 1 2 3; do
+      sleep 1
+      if timeout 5 bash -c "$_rc_daemon_health" >/dev/null 2>&1; then
+        _rc_daemon_health_ok=1
+        break
+      fi
+    done
+
+    if [[ "$_rc_daemon_health_ok" -eq 1 ]]; then
+      echo "[rip-cage] daemon '${_rc_daemon_name}' health OK (PID=$_rc_daemon_pid)"
+      # Arms the supervisor's respawn loop (restart: always only).
+      if [[ "$_rc_daemon_restart" == "always" ]]; then echo armed > "$_rc_daemon_verdict" 2>/dev/null || true; fi
+    else
+      # FAIL-WARN: cage still starts — do NOT abort (ADR-005 D10 / ADR-001 asymmetry).
+      echo "[rip-cage] WARNING: daemon '${_rc_daemon_name}' health check FAILED (PID=$_rc_daemon_pid) — cage continues without it." >&2
+      # A failed FIRST check never arms the respawn loop: no spinning.
+      if [[ "$_rc_daemon_restart" == "always" ]]; then echo disarmed > "$_rc_daemon_verdict" 2>/dev/null || true; fi
+    fi
+
+    unset _rc_daemon_health_ok _rc_health_attempt _rc_daemon_pid _rc_sup_wait
+    unset _rc_daemon_entry _rc_daemon_name _rc_daemon_start _rc_daemon_health _rc_daemon_state_dir _rc_daemon_pidfile
+    unset _rc_daemon_restart _rc_daemon_log _rc_daemon_supfile _rc_daemon_verdict
+  done
+  unset _rc_di _rc_daemon_count
+}
+
 # Sourcing guard: when a host test sources this file with RC_INIT_LIB_ONLY
 # set, stop here -- before any of the imperative init work below runs -- so
-# only the two function definitions above get loaded. Chosen over extracting
+# only the function definitions above get loaded. Chosen over extracting
 # a sourced sibling file because the Dockerfile COPYs this script alone into
 # the image (cage/Dockerfile:148); a sibling file would need its own COPY
 # line to reach the same path in the baked image, whereas this guard needs no
@@ -151,17 +377,6 @@ fi
 # =============================================================================
 _rc_boot_descriptor="${RC_BOOT_DESCRIPTOR:-/etc/rip-cage/boot.json}"
 
-# _rc_boot_require <entry_json> <field> <kind> <index>
-# Print the field's value, or fail the boot loud naming the missing field.
-_rc_boot_require() {
-  _rbr_val=$(jq -r --arg f "$2" '.[$f] // ""' <<<"$1" 2>/dev/null)
-  if [ -z "$_rbr_val" ] || [ "$_rbr_val" = "null" ]; then
-    echo "[rip-cage] ERROR: boot descriptor ${_rc_boot_descriptor}: ${3}[${4}] is missing required field '${2}' (ADR-001 fail-loud). Fix the descriptor fragment your Dockerfile merged in, rebuild the image, and recreate the cage." >&2
-    exit 1
-  fi
-  printf '%s' "$_rbr_val"
-  unset _rbr_val
-}
 
 if [ -f "$_rc_boot_descriptor" ] && ! jq -e . "$_rc_boot_descriptor" >/dev/null 2>&1; then
   echo "[rip-cage] ERROR: boot descriptor ${_rc_boot_descriptor} is not valid JSON (ADR-001 fail-loud). A Dockerfile that edits it by hand should use rc-boot-merge instead." >&2
@@ -835,117 +1050,13 @@ unset _rc_mux
 # descriptor by rip-cage-ely4.11)
 #
 # Read daemons[] from the boot descriptor (see the block above section 11).
-# For each daemon entry:
-#   1. Create state_dir (container-local, ADR-019 D1 extensions pattern).
-#   2. Idempotency: if PID file exists and process is alive, SKIP (true no-op —
-#      NOT kill-and-restart, which would false-green a "one binder" idempotency
-#      check; assert PID is UNCHANGED between first and second init run).
-#   3. Start the daemon's `start` command in the background.
-#   4. Run the `health` check with a timeout (bd memory rip-cage-validate-hung-daemon).
-#   5. FAIL-WARN on health failure — cage still starts (ADR-005 D10 / ADR-001
-#      asymmetry: safety floor fails-closed, user daemon fails-warn).
+# The per-entry steps live on _rc_start_daemons, near the top of this file.
 #
-# Supervisor model: init-script-start (NOT host-exec), fork+PID-parse+fail-warn.
+# Supervisor model: init-script-start (NOT host-exec), fork+PID-parse+fail-warn;
+# an entry with restart: always gets a supervising subshell (rip-cage-vpxk).
 # PID file: /tmp/rip-cage-daemon-<name>.pid (transient, cage-lifetime).
 if [[ -f "$_rc_boot_descriptor" ]] && command -v jq >/dev/null 2>&1; then
-  _rc_daemon_count=$(jq '(.daemons // []) | length' "$_rc_boot_descriptor" 2>/dev/null || echo "0")
-  for (( _rc_di=0; _rc_di<_rc_daemon_count; _rc_di++ )); do
-    _rc_daemon_entry=$(jq -c ".daemons[${_rc_di}]" "$_rc_boot_descriptor" 2>/dev/null)
-    # name/start/health are REQUIRED: a daemon declaration missing one of them
-    # is a composition error, not a runtime hiccup, so it fails the boot loud
-    # rather than being skipped with a warning the operator scrolls past
-    # (ADR-031 D4). state_dir stays optional.
-    _rc_daemon_name=$(_rc_boot_require "$_rc_daemon_entry" "name" "daemons" "$_rc_di") || exit 1
-    _rc_daemon_start=$(_rc_boot_require "$_rc_daemon_entry" "start" "daemons" "$_rc_di") || exit 1
-    _rc_daemon_health=$(_rc_boot_require "$_rc_daemon_entry" "health" "daemons" "$_rc_di") || exit 1
-    _rc_daemon_state_dir=$(jq -r '.state_dir // ""' <<<"$_rc_daemon_entry" 2>/dev/null)
-    _rc_daemon_pidfile="/tmp/rip-cage-daemon-${_rc_daemon_name}.pid"
-
-    # Create state_dir (container-local; mkdir -p is idempotent).
-    if [[ -n "$_rc_daemon_state_dir" ]]; then
-      mkdir -p "$_rc_daemon_state_dir" 2>/dev/null || true
-    fi
-
-    # Idempotency: if the PID file names a process that is still SERVING, skip.
-    # This is a TRUE no-op (PID unchanged) — not kill-and-restart.
-    #
-    # `kill -0` ALONE IS NOT A LIVENESS CHECK HERE (rip-cage-893l, measured in a live
-    # cage). Nothing inside a cage reaps orphans — msb's PID 1 leaves an exited daemon
-    # in state Z indefinitely — and `kill -0` on a zombie SUCCEEDS. Trusting it alone
-    # made a dead daemon report "already running" forever while its port answered
-    # nothing, and ADR-005 D10's fail-warn never fired: strictly worse than a visible
-    # crash. PID reuse is the same bug by another route. So the PID is only a cheap
-    # pre-filter; the entry's own `health` command is the authority, since that is the
-    # liveness signal the boot descriptor requires every daemon to declare.
-    if [[ -f "$_rc_daemon_pidfile" ]]; then
-      _rc_existing_pid=$(cat "$_rc_daemon_pidfile" 2>/dev/null || echo "")
-      if [[ -n "$_rc_existing_pid" ]] && kill -0 "$_rc_existing_pid" 2>/dev/null; then
-        # Recorded process exists (or is an unreaped zombie). Ask the daemon itself.
-        # Two attempts: one transient probe blip must not cost a healthy daemon a
-        # restart, and a restart is the expensive wrong answer here (see below).
-        _rc_skip_health_ok=0
-        for _rc_skip_attempt in 1 2; do
-          if timeout 5 bash -c "$_rc_daemon_health" >/dev/null 2>&1; then
-            _rc_skip_health_ok=1
-            break
-          fi
-          sleep 1
-        done
-        if [[ "$_rc_skip_health_ok" -eq 1 ]]; then
-          echo "[rip-cage] daemon '${_rc_daemon_name}' already running (PID=$_rc_existing_pid) — skipping (idempotent no-op)"
-          unset _rc_existing_pid _rc_skip_health_ok _rc_skip_attempt
-          continue
-        fi
-        # Recorded PID exists but the daemon is not serving: a zombie, a wedged
-        # process, or a reused PID belonging to something else entirely.
-        echo "[rip-cage] daemon '${_rc_daemon_name}' recorded PID=$_rc_existing_pid exists but failed its health check — treating as dead and restarting (rip-cage-893l)" >&2
-        # Terminate it before restarting, or a merely-wedged (not dead) daemon would
-        # still hold the port and we would start a SECOND binder — the exact thing
-        # ADR-005 D8's "a re-run spawns no second binder" forbids. A zombie ignores
-        # this harmlessly; it is already dead.
-        kill "$_rc_existing_pid" 2>/dev/null || true
-        unset _rc_skip_health_ok _rc_skip_attempt
-      fi
-      # Stale PID file (process gone, zombie, or unhealthy) — remove and restart.
-      rm -f "$_rc_daemon_pidfile"
-      unset _rc_existing_pid
-    fi
-
-    # Start daemon in background; capture PID.
-    # Use eval to handle the start command string correctly (may have flags/args).
-    eval "$_rc_daemon_start" >/tmp/rip-cage-daemon-"${_rc_daemon_name}".log 2>&1 &
-    _rc_daemon_pid=$!
-
-    # Write PID file immediately so the idempotency guard is set before we check health.
-    # Guard with || true: PID write failure (e.g. /tmp full) must NOT abort init
-    # under set -e — a user daemon failing to write its PID file is fail-WARN,
-    # not fail-CLOSED (ADR-005 D10 / ADR-001 asymmetry).
-    echo "$_rc_daemon_pid" > "$_rc_daemon_pidfile" 2>/dev/null || true
-    echo "[rip-cage] daemon '${_rc_daemon_name}' started (PID=$_rc_daemon_pid)"
-
-    # Health check with timeout (bd memory rip-cage-validate-hung-daemon):
-    # A wedged daemon must NOT hang the init script. Use `timeout` (coreutils).
-    # Retry a few times to allow the daemon a moment to bind its port.
-    _rc_daemon_health_ok=0
-    for _rc_health_attempt in 1 2 3; do
-      sleep 1
-      if timeout 5 bash -c "$_rc_daemon_health" >/dev/null 2>&1; then
-        _rc_daemon_health_ok=1
-        break
-      fi
-    done
-
-    if [[ "$_rc_daemon_health_ok" -eq 1 ]]; then
-      echo "[rip-cage] daemon '${_rc_daemon_name}' health OK (PID=$_rc_daemon_pid)"
-    else
-      # FAIL-WARN: cage still starts — do NOT abort (ADR-005 D10 / ADR-001 asymmetry).
-      echo "[rip-cage] WARNING: daemon '${_rc_daemon_name}' health check FAILED (PID=$_rc_daemon_pid) — cage continues without it." >&2
-    fi
-
-    unset _rc_daemon_health_ok _rc_health_attempt _rc_daemon_pid
-    unset _rc_daemon_entry _rc_daemon_name _rc_daemon_start _rc_daemon_health _rc_daemon_state_dir _rc_daemon_pidfile
-  done
-  unset _rc_di _rc_daemon_count
+  _rc_start_daemons "$_rc_boot_descriptor"
 fi
 unset _rc_boot_descriptor
 

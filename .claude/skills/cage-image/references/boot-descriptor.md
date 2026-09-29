@@ -45,6 +45,13 @@ up?".
    asks the service (connect to the socket, run `SELECT 1`), not one that reads
    a pidfile.
 
+**A daemon that exits stays dead until the next boot, unless its entry sets
+`restart: always`.** Then init runs `start` again 5 seconds after each exit,
+logging a WARNING with the exit code to `/tmp/rip-cage-daemon-<name>.log`. The
+restarts begin only after the first start passes `health`. To stop a daemon
+that restarts, kill the pid in `/tmp/rip-cage-daemon-<name>.supervisor.pid`,
+not the daemon's own pid.
+
 **Diagnosing:** init runs `health` at boot and warns on failure — read the
 `rc up` output for `[rip-cage] daemon` lines, then run the `health` command
 yourself inside the cage. "Alive but not serving" is case 2 above; "dead but

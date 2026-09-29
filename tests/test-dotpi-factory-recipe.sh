@@ -93,6 +93,13 @@ if jq -e '.daemons[0] | (.name | length > 0) and (.health | length > 0) and (.st
 else
   fail "T4 the serve daemon has a name, a health check, and ticks every 60s" "$(jq -c '.daemons[0]' "$BOOT" 2>/dev/null)"
 fi
+# serve exits on TERM, disarm, state-file delete and its lease bound, and
+# expects a re-spawn: the recipe opts into init's restart policy (rip-cage-vpxk).
+if jq -e '.daemons[0].restart == "always"' "$BOOT" >/dev/null 2>&1; then
+  pass "T4 the serve daemon opts into restart: always"
+else
+  fail "T4 the serve daemon opts into restart: always" "restart=$(jq -c '.daemons[0].restart' "$BOOT" 2>/dev/null)"
+fi
 if jq -r '[.daemons[]?, .multiplexers[]?, .tools[]?] | map(tostring) | join("\n")' "$BOOT" | grep -qE 'pacemaker +tick([^s]|$)|while +sleep'; then
   fail "T4 no clock loop in the boot fragment" "a tick loop is declared (root D4 / ADR-027 D4)"
 else
@@ -202,15 +209,17 @@ if [[ " $state_dirs " == *" .timer "* ]]; then
 else
   fail "T5 snippet creates ~/.timer agent-owned" "state dirs: '${state_dirs}'"
 fi
-# rip-cage starts daemons once per boot and never restarts them (rip-cage-vpxk
-# tracks a restart policy); the README must say so, and how to keep the clock off.
-if grep -qiE 'once per boot and never restarts' "$README" \
-   && grep -qiE 'disarm.*paus' "$README" \
+# Under restart: always (rip-cage-vpxk) init re-spawns serve after it exits, so
+# disarm only pauses the clock until the respawn, and keeping it off means
+# stopping the supervisor. The README must say all three.
+if grep -qF 'restart: always' "$README" \
+   && grep -qF 'pacemaker disarm' "$README" && grep -qiE 'until the respawn' "$README" \
    && grep -qiE 'keep the clock off' "$README" \
+   && grep -qF '/tmp/rip-cage-daemon-dotpi-pacemaker.supervisor.pid' "$README" \
    && grep -qF 'pacemaker serve --help' "$README"; then
-  pass "T5 README: clock starts once per boot, disarm only pauses, how to keep it off, cites serve --help"
+  pass "T5 README: restart: always, disarm pauses until the respawn, keep it off via the supervisor, cites serve --help"
 else
-  fail "T5 README keep-off instruction" "one of: once-per-boot / disarm pauses / keep the clock off / serve --help is missing"
+  fail "T5 README keep-off instruction" "one of: restart: always / disarm pauses until the respawn / keep the clock off / supervisor pidfile / serve --help is missing"
 fi
 
 # --- T6: reach-in facts, socket path derived from the herdr recipe ------------

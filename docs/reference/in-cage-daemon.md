@@ -30,7 +30,7 @@ Three lifecycle rules, straight from ADR-005:
 **`/etc/rip-cage/boot.json`** — one declarative JSON file inside the image, read
 by init at boot (ADR-031 D4). Three optional top-level arrays; a required field
 missing makes init exit non-zero naming the field and the entry:
-`daemons[]` (`name`, `start`, `health` required, `state_dir` optional),
+`daemons[]` (`name`, `start`, `health` required, `state_dir`/`restart` optional),
 `multiplexers[]` (`name`, `start`, `attach` required, `exec`/`new_session`/`teardown` optional),
 `tools[]` (`name` required, `launch`/`init` optional). Every value is a shell
 command string run with `sh -c`. The file's own `_readme` key is the schema's
@@ -57,6 +57,14 @@ A daemon entry, in the fragment your Dockerfile merges in:
 - **`health`** — a cheap probe. Init runs it with `timeout 5`, up to 3 attempts
   a second apart, so a wedged daemon cannot hang cage start. This is the
   **liveness authority**, not the pid; see the zombie note below.
+- **`restart`** — `always` or `never` (the default). `never` starts the daemon
+  once per boot. `always` restarts it after each exit, but only once the first
+  start has passed `health`, so a daemon that is broken from the start never
+  loops. Init waits 5 seconds, then runs `start` again and writes
+  `WARNING: daemon '<name>' exited (code N); restarting (restart: always)` to
+  `/tmp/rip-cage-daemon-<name>.log`. To stop it until the next boot, kill the
+  pid in `/tmp/rip-cage-daemon-<name>.supervisor.pid`; that stops the daemon
+  too. Any other value fails the boot, naming the field.
 - **`state_dir`** — absolute path for the daemon's state. Pre-create it in your
   Dockerfile (root `mkdir -p` then `chown agent:agent`) so init, running as the
   agent, needs no write on the parent. **State is cage-lifetime** — wiped on

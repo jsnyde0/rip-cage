@@ -163,14 +163,24 @@ on the clock gets its pulses without anyone reaching in. A cage has no
 launchd or systemd, so the pacemaker runs on its supervised adapter;
 `pacemaker serve --help` says what that means.
 
-**rip-cage starts the clock once per boot and never restarts it.** If serve
-stops, the clock stays off until the next boot: `rc up` on a stopped cage, or
-`rc up --replace`. It stops on a TERM, on `pacemaker disarm`, when its state
-file is deleted, and at its lease bound.
+**The daemon entry sets `restart: always`, so init restarts the clock.** serve
+stops on a TERM, on `pacemaker disarm`, when its state file is deleted, and at
+its lease bound. Each time, init starts it again 5 seconds later and writes a
+`WARNING: daemon 'dotpi-pacemaker' exited (code N); restarting` line to
+`/tmp/rip-cage-daemon-dotpi-pacemaker.log`.
 
 - **To pause the clock**, run `pacemaker disarm` in the cage. That pause lasts
-  only until the next boot starts serve again.
-- **To keep the clock off**, remove the daemon from your copy of
+  only until the respawn, about 5 seconds.
+- **To keep the clock off until the next boot**, stop its supervisor. That
+  stops serve with it:
+
+  ```bash
+  msb exec <cage> -- sh -c 'kill "$(cat /tmp/rip-cage-daemon-dotpi-pacemaker.supervisor.pid)"' < /dev/null
+  ```
+
+  The next boot (`rc up` on a stopped cage, or `rc up --replace`) starts the
+  clock again.
+- **To keep the clock off for good**, remove the daemon from your copy of
   `boot-fragment.json` and rebuild.
 - **To see whether it is running**, reach in and read the arm:
 
