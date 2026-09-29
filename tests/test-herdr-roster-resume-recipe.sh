@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
-# tests/test-herdr-roster-resume-recipe.sh -- host-only unit/composition tests
-# for the herdr roster-resume recipe (rip-cage-46s5, ADR-029 D8).
+# tests/test-herdr-roster-resume-recipe.sh -- host-only composition tests for
+# the herdr recipe's roster-resume pieces (rip-cage-46s5, ADR-029 D8).
 #
-# Scope: recipe/composition-level pieces only -- durable state mount, socket
-# relocation, scripted-attach helper, pin bump, CLAUDE_CODE_CHILD_SESSION env
-# hygiene. All host-only (no docker/msb required) so this runs fast in every
-# session. The live in-cage e2e (reload -> roster restored, N sessions,
-# codewords recovered) is the bead's DEFERRED harness target -- it needs a
-# booted msb cage and is NOT this file's job (see bead rip-cage-46s5 Harness
-# target / docs/2026-07-27-roster-resume-design.md).
+# Reads the recipe as it ships today: examples/herdr/Dockerfile.snippet,
+# boot-fragment.json, scripted-attach.py and README.md. Covers the herdr pin,
+# the durable state mount, socket relocation, the scripted-attach helper, and
+# the CLAUDE_CODE_CHILD_SESSION scrub in the claude session wrapper. No
+# docker/msb needed. The live leg (a herdr boot on the pinned release) is
+# tests/test-msb-lifecycle-cockpit-reregistration.sh.
+#
+# History (rip-cage-8jg5.1, 2026-09-29): T3-T8 used to read
+# examples/herdr/manifest-fragment.yaml, deleted with the manifest (ADR-031
+# D4); they now read the snippet and boot fragment. T2 (the two claude
+# wrapper copies stay byte-identical) is retired: the copies now differ on
+# purpose -- the base-image copy execs /usr/local/lib/rip-cage/bin/claude-real
+# behind the boot descriptor's tool-launch wrapper, the recipe copy sits at
+# /usr/local/bin/claude (rip-cage-jimf.9). tests/test-claude-recipe-bypass-
+# preaccept.sh covers both copies' behaviour.
 #
 # Positive-sentinel discipline: every failure increments FAILURES; script
 # exits non-zero if FAILURES > 0.
@@ -17,10 +25,13 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
-RC="${REPO_ROOT}/rc"
 WRAPPER_EXAMPLES="${REPO_ROOT}/examples/claude/claude-session-wrapper.sh"
 WRAPPER_SUBSTRATE="${REPO_ROOT}/cage/substrate/claude-session-wrapper.sh"
-HERDR_FRAGMENT="${REPO_ROOT}/examples/herdr/manifest-fragment.yaml"
+HERDR_SNIPPET="${REPO_ROOT}/examples/herdr/Dockerfile.snippet"
+HERDR_BOOT="${REPO_ROOT}/examples/herdr/boot-fragment.json"
+HERDR_README="${REPO_ROOT}/examples/herdr/README.md"
+HERDR_ATTACH_SCRIPT="${REPO_ROOT}/examples/herdr/scripted-attach.py"
+BAKED_ATTACH_PATH="/usr/local/bin/herdr-scripted-attach.py"
 
 FAILURES=0
 TOTAL=0
@@ -43,7 +54,8 @@ echo ""
 # every claude invocation (herdr resume, -p one-shots, direct calls) -- scrub
 # it there so no spawn path needs its own special case.
 #
-# Method: copy the UNMODIFIED canonical wrapper to a tmp file, patch ONLY
+# Both copies (examples/claude and cage/substrate) are checked.
+# Method: copy the UNMODIFIED wrapper to a tmp file, patch ONLY
 # REAL_CLAUDE to point at a stub that dumps its env to a file (same technique
 # as tests/test-claude-json-seed-synthesis.sh V4/V5), run it with
 # CLAUDE_CODE_CHILD_SESSION pre-set in the invoking env, and assert the stub
@@ -52,8 +64,9 @@ echo ""
 echo "--- T1: CLAUDE_CODE_CHILD_SESSION scrub ---"
 
 test_t1_scrub() {
+  local label="$1" wrapper="$2"
   local work stub_out
-  work="${TMPROOT}/t1"
+  work="${TMPROOT}/t1-${label}"
   mkdir -p "$work"
   stub_out="${work}/env-seen.txt"
 
@@ -65,8 +78,8 @@ STUB
   chmod +x "${work}/stub-claude"
 
   # Copy the canonical wrapper, patch only REAL_CLAUDE (source untouched).
-  cp "$WRAPPER_EXAMPLES" "${work}/wrapper-under-test.sh"
-  sed -i.bak "s#^REAL_CLAUDE=/usr/bin/claude#REAL_CLAUDE=${work}/stub-claude#" "${work}/wrapper-under-test.sh"
+  cp "$wrapper" "${work}/wrapper-under-test.sh"
+  sed -i.bak "s#^REAL_CLAUDE=.*#REAL_CLAUDE=${work}/stub-claude#" "${work}/wrapper-under-test.sh"
   chmod +x "${work}/wrapper-under-test.sh"
 
   local fake_home
@@ -78,205 +91,126 @@ STUB
   local rc=$?
 
   if [[ "$rc" -ne 0 ]]; then
-    fail "T1: patched wrapper invocation failed (exit $rc)" "$(cat "${work}/run.out")"
+    fail "T1 (${label}): patched wrapper invocation failed (exit $rc)" "$(cat "${work}/run.out")"
     return
   fi
   if [[ ! -f "$stub_out" ]]; then
-    fail "T1: stub-claude never ran (no env dump produced)" "$(cat "${work}/run.out")"
+    fail "T1 (${label}): stub-claude never ran (no env dump produced)" "$(cat "${work}/run.out")"
     return
   fi
   if grep -q '^CLAUDE_CODE_CHILD_SESSION=' "$stub_out"; then
-    fail "T1: CLAUDE_CODE_CHILD_SESSION reached the exec'd claude binary -- wrapper must scrub it" "$(cat "$stub_out")"
+    fail "T1 (${label}): CLAUDE_CODE_CHILD_SESSION reached the exec'd claude binary -- wrapper must scrub it" "$(cat "$stub_out")"
   else
-    pass "T1: CLAUDE_CODE_CHILD_SESSION is scrubbed before exec (absent from the exec'd env)"
+    pass "T1 (${label}): CLAUDE_CODE_CHILD_SESSION is scrubbed before exec (absent from the exec'd env)"
   fi
 }
-test_t1_scrub
+test_t1_scrub examples "$WRAPPER_EXAMPLES"
+test_t1_scrub substrate "$WRAPPER_SUBSTRATE"
+
+# The herdr multiplexer's hooks, read from the boot fragment.
+hook() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["multiplexers"][0][sys.argv[2]])' "$HERDR_BOOT" "$1" 2>/dev/null; }
 
 # =============================================================================
-# T2 -- the two wrapper copies stay byte-identical (structural regression
-# guard: examples/claude/claude-session-wrapper.sh is the recipe copy,
-# cage/substrate/claude-session-wrapper.sh is its sibling; the bead requires
-# both edited in lockstep).
+# T3 -- durable state mount: the README tells the operator to mount a per-cage
+# host directory at /home/agent/.config/herdr, read-write (herdr writes
+# session.json continuously). The mount lives in the cage config, not the
+# image, so the README line is the recipe's whole contract for it.
 # =============================================================================
 echo ""
-echo "--- T2: wrapper copies stay byte-identical ---"
-
-test_t2_wrappers_identical() {
-  if [[ ! -f "$WRAPPER_EXAMPLES" ]]; then
-    fail "T2: examples/claude/claude-session-wrapper.sh missing"
-    return
-  fi
-  if [[ ! -f "$WRAPPER_SUBSTRATE" ]]; then
-    fail "T2: cage/substrate/claude-session-wrapper.sh missing"
-    return
-  fi
-  if diff -q "$WRAPPER_EXAMPLES" "$WRAPPER_SUBSTRATE" >/dev/null 2>&1; then
-    pass "T2: examples/claude and cage/substrate wrapper copies are byte-identical"
-  else
-    fail "T2: wrapper copies have diverged" "$(diff "$WRAPPER_EXAMPLES" "$WRAPPER_SUBSTRATE" | head -20)"
-  fi
-}
-test_t2_wrappers_identical
-
-# =============================================================================
-# T3 -- durable state mount: examples/herdr/manifest-fragment.yaml declares a
-# mounts: entry projecting a per-cage HOST DIRECTORY at guest path
-# /home/agent/.config/herdr, mode rw (herdr writes session.json continuously).
-#
-# NOTE: mounts: is only valid on TOOL-archetype entries (MULTIPLEXER strict-
-# parse rejects unknown top-level fields) -- must land on the herdr-bin TOOL
-# entry, not the herdr MULTIPLEXER entry.
-# =============================================================================
-echo ""
-echo "--- T3: durable state mount (herdr-bin TOOL entry) ---"
+echo "--- T3: durable state mount documented ---"
 
 test_t3_durable_mount() {
-  if [[ ! -f "$HERDR_FRAGMENT" ]]; then
-    fail "T3: ${HERDR_FRAGMENT} missing"
-    return
-  fi
-  local dest_count dest_val mode_val
-  dest_count=$(yq -o=json '.tools[] | select(.name == "herdr-bin") | .mounts | length' "$HERDR_FRAGMENT" 2>/dev/null)
-  if [[ -z "$dest_count" || "$dest_count" -eq 0 ]]; then
-    fail "T3: herdr-bin TOOL entry has no mounts: declared"
-    return
-  fi
-  dest_val=$(yq -o=json '.tools[] | select(.name == "herdr-bin") | .mounts[] | select(.dest == "/home/agent/.config/herdr") | .dest' "$HERDR_FRAGMENT" 2>/dev/null | tr -d '"')
-  if [[ "$dest_val" == "/home/agent/.config/herdr" ]]; then
-    pass "T3a: herdr-bin mounts a durable host dir at guest dest /home/agent/.config/herdr"
+  local line
+  line=$(grep -E '^[[:space:]]*- "[^"]*:/home/agent/\.config/herdr"' "$HERDR_README" | head -1)
+  if [[ -n "$line" ]]; then
+    pass "T3a: README's mounts: line puts a host dir at /home/agent/.config/herdr"
   else
-    fail "T3a: no mounts[] entry with dest /home/agent/.config/herdr found"
+    fail "T3a: README has no mounts: line ending in :/home/agent/.config/herdr"
     return
   fi
-  mode_val=$(yq -o=json '.tools[] | select(.name == "herdr-bin") | .mounts[] | select(.dest == "/home/agent/.config/herdr") | .mode' "$HERDR_FRAGMENT" 2>/dev/null | tr -d '"')
-  if [[ "$mode_val" == "rw" ]]; then
-    pass "T3b: durable state mount is mode rw (herdr writes session.json continuously)"
+  if echo "$line" | grep -q ':ro"'; then
+    fail "T3b: the durable state mount is :ro -- herdr writes session.json continuously"
   else
-    fail "T3b: durable state mount mode is '${mode_val}', expected 'rw'"
+    pass "T3b: the durable state mount is read-write (no :ro suffix)"
   fi
 }
 test_t3_durable_mount
 
 # =============================================================================
-# T4 -- the fragment still strict-parse validates end to end (_manifest_validate).
+# T4 -- the boot fragment parses and declares the herdr multiplexer with the
+# two required hooks.
 # =============================================================================
 echo ""
-echo "--- T4: fragment strict-parse validates ---"
+echo "--- T4: boot fragment declares the herdr multiplexer ---"
 
-test_t4_fragment_validates() {
-  local test_home stderr_file exit_code out
-  test_home=$(mktemp -d "${TMPROOT}/rc-herdr-fragment-XXXXXX")
-  mkdir -p "${test_home}/.config/rip-cage"
-  stderr_file=$(mktemp)
-  exit_code=0
-  out=$(HOME="$test_home" XDG_CONFIG_HOME="${test_home}/.config" \
-    bash -c "source '${RC}'; _manifest_validate '${HERDR_FRAGMENT}'" \
-    2>"$stderr_file") || exit_code=$?
-  if [[ "$exit_code" -eq 0 ]]; then
-    pass "T4: examples/herdr/manifest-fragment.yaml strict-parse validates"
+test_t4_boot_fragment() {
+  local name
+  name=$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1]))["multiplexers"][0]; assert m["start"] and m["attach"]; print(m["name"])' "$HERDR_BOOT" 2>&1)
+  if [[ "$name" == "herdr" ]]; then
+    pass "T4: boot-fragment.json parses; multiplexers[0] is herdr with start + attach"
   else
-    fail "T4: strict-parse FAILED: exit=${exit_code} stderr='$(cat "$stderr_file")' stdout='${out}'"
+    fail "T4: boot-fragment.json does not declare herdr with start + attach" "$name"
   fi
-  rm -f "$stderr_file"
 }
-test_t4_fragment_validates
+test_t4_boot_fragment
 
 # =============================================================================
-# T5 -- pin bump v0.7.0 -> v0.7.5 (latest stable at design time, verified
-# present on github.com/ogulcancelik/herdr/releases). Both arch binaries'
-# sha256 checksums independently verified (downloaded + `sha256sum`, matches
-# the GitHub release API's asset digest field). No "validated" label carried
-# forward — restore behavior was S4-validated on 0.7.4/0.7.3-era binaries;
-# this bead's own in-cage e2e (deferred) re-validates the bumped pin.
+# T5 -- the pin: v0.9.0, both linux sha256 digests (release API digest,
+# cross-checked by downloading both assets, rip-cage-8jg5.1). dotpi's seat
+# needs herdr >= 0.8.2. No stale 0.7.x reference left in the snippet.
 # =============================================================================
 echo ""
-echo "--- T5: pin bump v0.7.0 -> v0.7.5 ---"
+echo "--- T5: herdr pin is v0.9.0 with both sha256 digests ---"
 
-test_t5_pin_bump() {
-  if [[ ! -f "$HERDR_FRAGMENT" ]]; then
-    fail "T5: ${HERDR_FRAGMENT} missing"
-    return
-  fi
-  local version_pin install_cmd
-  version_pin=$(yq -o=json '.tools[] | select(.name == "herdr-bin") | .version_pin' "$HERDR_FRAGMENT" 2>/dev/null | tr -d '"')
-  if [[ "$version_pin" == "v0.7.5" ]]; then
-    pass "T5a: herdr-bin version_pin is v0.7.5"
+test_t5_pin() {
+  if grep -q "releases/download/v0.9.0/herdr-linux-" "$HERDR_SNIPPET"; then
+    pass "T5a: snippet downloads from the v0.9.0 release"
   else
-    fail "T5a: herdr-bin version_pin is '${version_pin}', expected v0.7.5"
+    fail "T5a: snippet does not download releases/download/v0.9.0/"
   fi
-
-  install_cmd=$(yq -o=json '.tools[] | select(.name == "herdr-bin") | .install_cmd' "$HERDR_FRAGMENT" 2>/dev/null | tr -d '"')
-  if echo "$install_cmd" | grep -q "releases/download/v0.7.5/"; then
-    pass "T5b: install_cmd downloads from the v0.7.5 release"
+  local expected_aarch64="9c8db20fb7e7427b138d5367113f1621ffd319f2f65d6f009e2594029115f0d2"
+  local expected_x86_64="4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f"
+  if grep -qF "$expected_aarch64" "$HERDR_SNIPPET" && grep -qF "$expected_x86_64" "$HERDR_SNIPPET"; then
+    pass "T5b: snippet carries both verified sha256 digests"
   else
-    fail "T5b: install_cmd does not reference releases/download/v0.7.5/. Got: '${install_cmd:0:150}'"
+    fail "T5b: snippet is missing an expected sha256 (aarch64 ${expected_aarch64:0:12}..., x86_64 ${expected_x86_64:0:12}...)"
   fi
-
-  # Independently-verified sha256 (downloaded both assets, ran sha256sum locally,
-  # cross-checked against the GitHub release API's asset digest field).
-  local expected_aarch64="32e763a1499a6b694b1d708e4f062b743be1da9f34fcfa4d212d6db6fe09a8b9"
-  local expected_x86_64="3dc83288073e4c2d3c679a30e7be97bcca9141c6fd17dbbb9219142e95c59253"
-  if echo "$install_cmd" | grep -qF "$expected_aarch64"; then
-    pass "T5c: install_cmd carries the independently-verified aarch64 sha256"
+  if grep -q "sha256sum -c" "$HERDR_SNIPPET"; then
+    pass "T5c: snippet checks the digest before installing"
   else
-    fail "T5c: install_cmd missing expected aarch64 sha256 ${expected_aarch64}"
+    fail "T5c: snippet never runs sha256sum -c"
   fi
-  if echo "$install_cmd" | grep -qF "$expected_x86_64"; then
-    pass "T5d: install_cmd carries the independently-verified x86_64 sha256"
+  if grep -qE 'v0\.7\.[0-9]' "$HERDR_SNIPPET"; then
+    fail "T5d: snippet still references a v0.7.x release"
   else
-    fail "T5d: install_cmd missing expected x86_64 sha256 ${expected_x86_64}"
-  fi
-
-  # No stale v0.7.0 references left behind (regression guard).
-  if echo "$install_cmd" | grep -q "v0.7.0"; then
-    fail "T5e: install_cmd still references the old v0.7.0 pin"
-  else
-    pass "T5e: install_cmd carries no stale v0.7.0 reference"
+    pass "T5d: snippet carries no stale v0.7.x reference"
   fi
 }
-test_t5_pin_bump
+test_t5_pin
 
 # =============================================================================
 # T6 -- HERDR_SOCKET_PATH relocation (rip-cage-46s5 decision 2 / S4 spike).
-# The live server+client unix sockets must NOT land on the durable host mount
-# (/home/agent/.config/herdr) -- only the hardcoded, host-mount-safe files
-# (session.json, session-history.json, logs) belong there (S4: HERDR_SOCKET_PATH
-# relocates both server and client sockets; session.json et al are NOT
-# relocatable by any env var, S4 finding). The start hook must export
-# HERDR_SOCKET_PATH to a guest-local path (e.g. under /tmp) BEFORE starting the
-# herdr server.
+# The live sockets must NOT land on the durable host mount
+# (/home/agent/.config/herdr). The start hook exports HERDR_SOCKET_PATH to a
+# guest-local path BEFORE starting the herdr server.
 # =============================================================================
 echo ""
 echo "--- T6: HERDR_SOCKET_PATH relocation in the start hook ---"
 
 test_t6_socket_relocation() {
-  if [[ ! -f "$HERDR_FRAGMENT" ]]; then
-    fail "T6: ${HERDR_FRAGMENT} missing"
-    return
-  fi
   local start_hook
-  start_hook=$(yq -o=json '.tools[] | select(.name == "herdr") | .hooks.start' "$HERDR_FRAGMENT" 2>/dev/null | tr -d '"')
-
+  start_hook=$(hook start)
   if echo "$start_hook" | grep -q "HERDR_SOCKET_PATH"; then
     pass "T6a: start hook exports HERDR_SOCKET_PATH"
   else
     fail "T6a: start hook does not reference HERDR_SOCKET_PATH"
     return
   fi
-
-  # The relocated socket must NOT sit under the durable mount dir -- that
-  # would defeat the whole point (sockets are a live-process concept, not
-  # continuously-durable state; putting them on the mount is at best inert
-  # and at worst risks a stale-socket collision across a cold-recreate).
   if echo "$start_hook" | grep -qE '\.config/herdr[^"'"'"']*herdr\.sock'; then
     fail "T6b: relocated socket path still lands under ~/.config/herdr (the durable mount) -- must be guest-local (e.g. /tmp)"
   else
     pass "T6b: relocated socket path is NOT under ~/.config/herdr"
   fi
-
-  # Ordering: HERDR_SOCKET_PATH must be set BEFORE 'herdr server' starts, else
-  # the server binds its default (mounted) socket path before the override lands.
   local sock_pos server_pos
   sock_pos=$(echo "$start_hook" | grep -bo "HERDR_SOCKET_PATH" | head -1 | cut -d: -f1)
   server_pos=$(echo "$start_hook" | grep -bo "herdr server" | head -1 | cut -d: -f1)
@@ -289,115 +223,65 @@ test_t6_socket_relocation() {
 test_t6_socket_relocation
 
 # =============================================================================
-# T7 -- scripted-attach.py is baked into the image (herdr-bin TOOL entry) and
-# invoked from the start hook AFTER the server + integration-install loop
-# (rip-cage-46s5 decision 2). The baked blob must match the CURRENT source
-# file byte-for-byte (regression guard against "edited the script, forgot to
-# regenerate the fragment").
+# T7 -- scripted-attach.py is baked root-owned 0755 by the snippet and invoked
+# from the start hook AFTER the integration-install loop (rip-cage-46s5
+# decision 2).
 # =============================================================================
 echo ""
 echo "--- T7: scripted-attach.py baked + invoked from the start hook ---"
 
-HERDR_ATTACH_SCRIPT="${REPO_ROOT}/examples/herdr/scripted-attach.py"
-BAKED_ATTACH_PATH="/usr/local/bin/herdr-scripted-attach.py"
-
 test_t7_scripted_attach_wired() {
-  if [[ ! -f "$HERDR_FRAGMENT" ]]; then
-    fail "T7: ${HERDR_FRAGMENT} missing"
-    return
-  fi
   if [[ ! -f "$HERDR_ATTACH_SCRIPT" ]]; then
     fail "T7: ${HERDR_ATTACH_SCRIPT} missing"
     return
   fi
-
-  local install_cmd
-  install_cmd=$(yq -o=json '.tools[] | select(.name == "herdr-bin") | .install_cmd' "$HERDR_FRAGMENT" 2>/dev/null | tr -d '"')
-
-  if echo "$install_cmd" | grep -qF "$BAKED_ATTACH_PATH"; then
-    pass "T7a: herdr-bin install_cmd bakes scripted-attach.py at ${BAKED_ATTACH_PATH}"
+  if grep -qE "^COPY scripted-attach\.py ${BAKED_ATTACH_PATH}\$" "$HERDR_SNIPPET"; then
+    pass "T7a: snippet COPYs scripted-attach.py to ${BAKED_ATTACH_PATH}"
   else
-    fail "T7a: herdr-bin install_cmd does not reference ${BAKED_ATTACH_PATH}"
-    return
+    fail "T7a: snippet does not COPY scripted-attach.py to ${BAKED_ATTACH_PATH}"
   fi
-
-  # Extract the base64 blob piped into `base64 -d > BAKED_ATTACH_PATH` and
-  # confirm it decodes to the CURRENT source file, byte-for-byte. Path is
-  # unquoted in install_cmd (matches the existing convention just above it:
-  # `install -m 755 /tmp/herdr /usr/local/bin/herdr` is unquoted too).
-  local extracted_b64 decoded expected
-  extracted_b64=$(echo "$install_cmd" | grep -oE "echo '[A-Za-z0-9+/=]+' \\| base64 -d > ${BAKED_ATTACH_PATH//\//\\/}" | grep -oE "'[A-Za-z0-9+/=]+'" | head -1 | tr -d "'")
-  if [[ -z "$extracted_b64" ]]; then
-    fail "T7b: could not extract the baked base64 blob for ${BAKED_ATTACH_PATH} from install_cmd"
+  if grep -qF "chown root:root ${BAKED_ATTACH_PATH}" "$HERDR_SNIPPET" && grep -qF "chmod 0755 ${BAKED_ATTACH_PATH}" "$HERDR_SNIPPET"; then
+    pass "T7b: baked scripted-attach.py is root-owned and 0755 (agent can run, not replace)"
   else
-    decoded=$(printf '%s' "$extracted_b64" | base64 -d 2>/dev/null)
-    expected=$(cat "$HERDR_ATTACH_SCRIPT")
-    if [[ "$decoded" == "$expected" ]]; then
-      pass "T7b: baked scripted-attach.py blob matches the current source file byte-for-byte"
-    else
-      fail "T7b: baked blob does NOT match examples/herdr/scripted-attach.py -- fragment is stale, regenerate it"
-    fi
+    fail "T7b: snippet does not chown root:root + chmod 0755 ${BAKED_ATTACH_PATH}"
   fi
-
-  if echo "$install_cmd" | grep -qE "chmod (0)?755 ${BAKED_ATTACH_PATH//\//\\/}"; then
-    pass "T7c: baked scripted-attach.py is chmod 0755 (agent-executable)"
-  else
-    fail "T7c: install_cmd does not chmod 0755 ${BAKED_ATTACH_PATH}"
-  fi
-
-  # Invocation: the start hook must invoke the baked script AFTER the
-  # integration-install loop ('done' closes that for loop).
   local start_hook loop_pos invoke_pos
-  start_hook=$(yq -o=json '.tools[] | select(.name == "herdr") | .hooks.start' "$HERDR_FRAGMENT" 2>/dev/null | tr -d '"')
+  start_hook=$(hook start)
   if echo "$start_hook" | grep -qF "$BAKED_ATTACH_PATH"; then
-    pass "T7d: start hook invokes the baked scripted-attach.py"
+    pass "T7c: start hook invokes the baked scripted-attach.py"
   else
-    fail "T7d: start hook does not invoke ${BAKED_ATTACH_PATH}"
+    fail "T7c: start hook does not invoke ${BAKED_ATTACH_PATH}"
     return
   fi
   loop_pos=$(echo "$start_hook" | grep -bo "; done" | head -1 | cut -d: -f1)
   invoke_pos=$(echo "$start_hook" | grep -bo "$BAKED_ATTACH_PATH" | head -1 | cut -d: -f1)
   if [[ -n "$loop_pos" && -n "$invoke_pos" && "$invoke_pos" -gt "$loop_pos" ]]; then
-    pass "T7e: scripted-attach invocation is ordered AFTER the integration-install loop"
+    pass "T7d: scripted-attach invocation is ordered AFTER the integration-install loop"
   else
-    fail "T7e: scripted-attach invocation is not ordered after the integration-install loop"
+    fail "T7d: scripted-attach invocation is not ordered after the integration-install loop"
   fi
 }
 test_t7_scripted_attach_wired
 
 # =============================================================================
-# T8 -- attach hook must export the SAME relocated HERDR_SOCKET_PATH as the
-# start hook (rip-cage-vjuv). The start hook (T6) relocates the herdr control
-# socket to a guest-local path under /tmp so it survives off the durable host
-# mount. 'rc attach' dispatches the attach hook in a FRESH 'msb exec' process
-# that does NOT inherit the start hook's exported environment -- a bare
-# 'herdr' attach hook falls back to herdr's default (mounted, now-empty)
-# socket path and fails with 'Error: Os NotFound'. Confirmed live: `msb exec
-# code-personal -- herdr agent list` -> NotFound; with
-# HERDR_SOCKET_PATH=/tmp/rip-cage-herdr.sock exported first -> works.
+# T8 -- the attach hook exports the SAME relocated HERDR_SOCKET_PATH as the
+# start hook (rip-cage-vjuv): attach runs in a fresh `msb exec` that does not
+# inherit start's env, and a bare `herdr` falls back to the default socket
+# path and fails with 'Error: Os NotFound'.
 # =============================================================================
 echo ""
 echo "--- T8: attach hook exports the same relocated HERDR_SOCKET_PATH ---"
 
 test_t8_attach_hook_socket_relocation() {
-  if [[ ! -f "$HERDR_FRAGMENT" ]]; then
-    fail "T8: ${HERDR_FRAGMENT} missing"
-    return
-  fi
   local start_hook attach_hook start_sock attach_sock
-  start_hook=$(yq -o=json '.tools[] | select(.name == "herdr") | .hooks.start' "$HERDR_FRAGMENT" 2>/dev/null | tr -d '"')
-  attach_hook=$(yq -o=json '.tools[] | select(.name == "herdr") | .hooks.attach' "$HERDR_FRAGMENT" 2>/dev/null | tr -d '"')
-
+  start_hook=$(hook start)
+  attach_hook=$(hook attach)
   if echo "$attach_hook" | grep -q "HERDR_SOCKET_PATH"; then
     pass "T8a: attach hook exports HERDR_SOCKET_PATH"
   else
-    fail "T8a: attach hook does not reference HERDR_SOCKET_PATH -- 'rc attach' runs in a fresh msb exec that does not inherit the start hook's env, so a bare 'herdr' attach falls back to the default (mounted, empty) socket path and fails with 'Error: Os NotFound'"
+    fail "T8a: attach hook does not reference HERDR_SOCKET_PATH"
     return
   fi
-
-  # The attach hook's relocated socket path must match the start hook's
-  # relocated socket path EXACTLY -- otherwise the client dials a different
-  # socket than the server bound.
   start_sock=$(echo "$start_hook" | grep -oE '/tmp/[A-Za-z0-9._-]*herdr[A-Za-z0-9._-]*\.sock' | head -1)
   attach_sock=$(echo "$attach_hook" | grep -oE '/tmp/[A-Za-z0-9._-]*herdr[A-Za-z0-9._-]*\.sock' | head -1)
   if [[ -z "$start_sock" ]]; then
@@ -409,8 +293,6 @@ test_t8_attach_hook_socket_relocation() {
   else
     fail "T8b: attach hook socket path ('${attach_sock}') does not match start hook socket path ('${start_sock}')"
   fi
-
-  # attach still ultimately execs herdr (does not accidentally drop the CLI call).
   if echo "$attach_hook" | grep -qE '(^|[^A-Za-z0-9_-])herdr([^A-Za-z0-9_-]|$)'; then
     pass "T8c: attach hook still invokes herdr"
   else

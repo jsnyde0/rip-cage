@@ -20,7 +20,10 @@ it exists.
 ## Version
 
 The snippet pins **herdr v0.9.0**, sha256-checked per architecture. dotpi's seat
-tooling needs herdr 0.8.2 or later. To bump: take the new `herdr-linux-aarch64`
+tooling needs herdr 0.8.2 or later; 0.9.0 is the release rip-cage has proven in
+a cage (2026-09-29): socket-API drive, the boot hook's integration install, and
+attach. One change from 0.7.x you can see: a headless pane now starts 120x40
+instead of wrapping long lines at a narrow default. To bump: take the new `herdr-linux-aarch64`
 and `herdr-linux-x86_64` digests from the GitHub release, replace the version
 and both checksums in `Dockerfile.snippet`, rebuild, and run
 `RC_TEST_IMAGE=<your image> tests/test-msb-factory-socket-api-drive.sh` — it
@@ -134,7 +137,9 @@ a driving agent reaches for first.
 `start`'s integration-install loop runs `herdr integration install <agent>`
 for whichever of `pi`/`claude` are present on PATH, so `herdr agent list`
 reports real semantic status (`working`/`blocked`/`idle`) via the integration
-path rather than the screen-detection fallback.
+path rather than the screen-detection fallback. herdr's pi install needs
+`~/.pi/agent/extensions` to exist and the base image does not create it, so the
+loop creates it first.
 
 ## Troubleshooting
 

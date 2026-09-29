@@ -1,50 +1,61 @@
 #!/usr/bin/env bash
 # tests/test-msb-lifecycle-cockpit-reregistration.sh -- effect-based proof
 # for bead rip-cage-rj68 (S6) criterion 3: "After resume, cockpit/herdr
-# state is re-registered."
+# state is re-registered." Since rip-cage-8jg5.1 it is also the live proof
+# of the examples/herdr recipe's boot hooks on the pinned herdr release.
 #
-# HONESTY NOTE (per the bead's explicit instruction on interactive/heavy
-# criteria): the rip-cage:latest image available in THIS environment was
-# NOT built with the herdr MULTIPLEXER manifest entry baked in (confirmed
-# live: no /etc/rip-cage/multiplexers/ directory, no herdr binary). A full
-# herdr-baked image requires `rc build` against a tools.yaml declaring
-# examples/herdr/manifest-fragment.yaml's TOOL+MULTIPLEXER entries, which
-# was judged out of scope for this bead's time budget (real Docker image
-# build). Consequently:
-#   - VERIFIED here, for real: rc's OWN `_up_init_container` function
-#     (the exact function cli/up.sh's create AND resume paths call) really
-#     dispatches to a real herdr server start hook and produces a real,
-#     freshly-registered herdr control socket + session file -- proven
-#     across a genuine graceful-stop/start (fresh kernel boot) cycle, using
-#     a herdr binary sideloaded via the SAME pinned URL/checksum the real
-#     manifest-fragment.yaml TOOL entry uses (not a mock/stub), and the
-#     SAME hook script content the real MULTIPLEXER entry bakes.
-#   - NOT VERIFIED here: the full config-driven path (`session.multiplexer:
-#     herdr` in .rip-cage.yaml selected THROUGH rc up's config validator,
-#     which requires the image's rc.multiplexers label to declare herdr as
-#     baked -- correctly refused against this environment's non-herdr
-#     image). NOT VERIFIED: interactive pane usability (attaching a real
-#     TTY to the herdr TUI) -- no interactive terminal in this harness.
-#     Say this plainly rather than fabricate a green for either.
+# IMAGE UNDER TEST: an image built from examples/herdr/Dockerfile.snippet
+# (RC_TEST_IMAGE, default rip-cage:latest). The test drives the herdr the
+# image carries and the multiplexers[] entry the snippet merged into the
+# image's boot descriptor -- it installs nothing of its own. Build one with:
+#   printf 'FROM rip-cage:latest\n' > Dockerfile; cat examples/herdr/Dockerfile.snippet >> Dockerfile
+#   (plus boot-fragment.json + scripted-attach.py beside it)
+#   RC_IMAGE=<tag> ./rc build --file Dockerfile
 #
-# NEEDS_MSB + a pre-built rip-cage:latest image + live network path to
-# github.com (to fetch the herdr binary, mirroring the real TOOL entry's
-# own build-time-only egress need). Self-skips otherwise.
+# What it proves, in order:
+#   - in-cage `herdr --version` equals the snippet's pin (a stale cached
+#     image fails here, rip-cage-i3wv);
+#   - rc's own _up_init_container (the function cli/up.sh's create AND resume
+#     paths call) runs init-rip-cage.sh, which runs the descriptor's herdr
+#     `start`: server up on the relocated socket, `herdr integration install`
+#     succeeds for every agent on PATH, scripted-attach exits clean;
+#   - the descriptor's `attach` command attaches a client under a PTY and
+#     stays attached (no 'Os NotFound' socket miss);
+#   - after a graceful stop/start (fresh kernel boot) the old server is gone
+#     and a re-run of _up_init_container registers a NEW one.
+# NOT exercised: `rc up` end to end (cage config, mounts, secrets) and a
+# human at the attached TUI.
+#
+# NEEDS_MSB + an image carrying herdr + python3 (host-side PTY). Self-skips
+# otherwise. The guest gets no network. RC_TEST_MEMORY caps it (default 1G).
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
-IMAGE="rip-cage:latest"
+SNIPPET="${REPO_ROOT}/examples/herdr/Dockerfile.snippet"
+IMAGE="${RC_TEST_IMAGE:-rip-cage:latest}"
+MEMORY="${RC_TEST_MEMORY:-1G}"
+SOCK=/tmp/rip-cage-herdr.sock
 FAILURES=0
 TOTAL=0
 
 pass() { TOTAL=$((TOTAL + 1)); echo "PASS  [$TOTAL] $1"; }
 fail() { TOTAL=$((TOTAL + 1)); echo "FAIL  [$TOTAL] $1 -- ${2:-}"; FAILURES=$((FAILURES + 1)); }
+abort() {
+  echo ""
+  echo "=== test-msb-lifecycle-cockpit-reregistration.sh: ${FAILURES}/${TOTAL} failure(s) (aborting) ==="
+  exit 1
+}
 
-if ! command -v msb >/dev/null 2>&1; then
+MSB_BIN="$(command -v msb || true)"
+if [[ -z "$MSB_BIN" ]]; then
   echo "SKIP: msb not available -- skipping $(basename "$0")"
+  exit 0
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "SKIP: python3 not available (needed for the host-side attach PTY) -- skipping $(basename "$0")"
   exit 0
 fi
 if ! msb image list --format json 2>/dev/null | grep -qF "$IMAGE"; then
@@ -52,106 +63,140 @@ if ! msb image list --format json 2>/dev/null | grep -qF "$IMAGE"; then
   exit 0
 fi
 
+EXPECTED_VERSION=$(sed -n 's#.*releases/download/v\([0-9][0-9.]*\)/herdr-linux.*#\1#p' "$SNIPPET" | head -1)
+if [[ -z "$EXPECTED_VERSION" ]]; then
+  echo "FAIL: could not read the pinned herdr version from ${SNIPPET}"
+  exit 1
+fi
+
 NAME="cockpit-reg-$$"
-cleanup() { msb remove --force "$NAME" >/dev/null 2>&1 || true; }
+WORK=$(mktemp -d)
+ATTACH_PID=""
+cleanup() {
+  [[ -n "$ATTACH_PID" ]] && kill "$ATTACH_PID" >/dev/null 2>&1
+  msb remove --force "$NAME" >/dev/null 2>&1 || true
+  rm -f "$WORK"/*
+  rmdir "$WORK" 2>/dev/null
+}
 trap cleanup EXIT
 
-if ! msb create "$IMAGE" --name "$NAME" \
-    --net-default deny --net-rule "allow@github.com:tcp:443,allow@*.githubusercontent.com:tcp:443,allow@objects.githubusercontent.com:tcp:443" \
-    >/dev/null 2>&1; then
+# RC_MULTIPLEXER must be a GUEST env var (init-rip-cage.sh reads
+# `${RC_MULTIPLEXER:-none}`); a real `rc up` bakes it at create time via -e.
+if ! msb create "$IMAGE" --name "$NAME" --memory "$MEMORY" --net-default deny \
+    -e RC_MULTIPLEXER=herdr >/dev/null 2>&1; then
   fail "setup: msb create failed"
-  echo ""
-  echo "=== test-msb-lifecycle-cockpit-reregistration.sh: ${FAILURES}/${TOTAL} failure(s) (aborting) ==="
-  exit 1
+  abort
 fi
 
-if ! msb image list --format json 2>/dev/null | grep -qF "$IMAGE"; then :; fi
-if msb exec "$NAME" -- command -v herdr >/dev/null 2>&1; then
-  fail "unexpected: herdr already present in ${IMAGE} -- sideload precondition invalid, update this test's honesty framing"
+if ! msb exec "$NAME" -- sh -c 'command -v herdr' </dev/null >/dev/null 2>&1; then
+  echo "SKIP: ${IMAGE} carries no herdr -- build an image from examples/herdr/Dockerfile.snippet and set RC_TEST_IMAGE -- skipping $(basename "$0")"
+  exit 0
 fi
-
-# RC_MULTIPLEXER must be a GUEST env var (what init-rip-cage.sh reads via
-# `${RC_MULTIPLEXER:-none}`) -- a real `rc up` bakes it at `msb create`
-# time via -e. Setting it in the HOST shell before calling a bash function
-# has no effect on `msb exec`'s guest environment (msb execs do not
-# inherit the caller's host env); `msb modify --env --restart` is the
-# live-sandbox equivalent of having baked it at create time (env changes
-# require an explicit --restart/--next-start apply policy -- confirmed
-# live; a bare `msb modify --env` alone is REJECTED, not silently queued).
-MODIFY_OUT=$(msb modify "$NAME" --env RC_MULTIPLEXER=herdr --restart 2>&1)
-MODIFY_RC=$?
-if [[ "$MODIFY_RC" -ne 0 ]]; then
-  fail "setup: msb modify --env --restart failed" "$MODIFY_OUT"
-  echo ""
-  echo "=== test-msb-lifecycle-cockpit-reregistration.sh: ${FAILURES}/${TOTAL} failure(s) (aborting) ==="
-  exit 1
-fi
-
-# Sideload herdr, exactly the pinned URL + checksum examples/herdr/manifest-fragment.yaml's TOOL entry uses.
-SIDELOAD=$(mktemp)
-cat > "$SIDELOAD" <<'SCRIPT'
-set -e
-ARCH=$(uname -m)
-if [ "$ARCH" = "aarch64" ]; then TARGET=aarch64; EXPECTED_SHA=77407959c514c25c870bbcc6d2a2c86fef5b5701ed0c7c37745d7412e8563d72; else TARGET=x86_64; EXPECTED_SHA=ad2a5d480a4e04609a9dd30a19ec07854578df6b5f0ea9299246963baf40363b; fi
-curl -fsSL "https://github.com/ogulcancelik/herdr/releases/download/v0.7.0/herdr-linux-${TARGET}" -o /tmp/herdr
-echo "${EXPECTED_SHA}  /tmp/herdr" | sha256sum -c -
-install -m 755 /tmp/herdr /usr/local/bin/herdr
-rm -f /tmp/herdr
-mkdir -p /etc/rip-cage/multiplexers/herdr
-cat > /etc/rip-cage/multiplexers/herdr/start <<'HOOK'
-mkdir -p "${HOME}/.config/herdr"
-[ -d /workspace ] && export HERDR_STARTUP_CWD=/workspace
-herdr server > /tmp/rip-cage-mux-herdr.log 2>&1 &
-echo "[rip-cage] herdr server started (PID=$!)"
-HOOK
-printf '%s\n' 'herdr' > /etc/rip-cage/multiplexers/herdr/attach
-chmod +x /etc/rip-cage/multiplexers/herdr/start /etc/rip-cage/multiplexers/herdr/attach
-SCRIPT
-msb copy "$SIDELOAD" "${NAME}:/tmp/herdr-sideload.sh" >/dev/null 2>&1
-SIDELOAD_OUT=$(msb exec "$NAME" -u root -- sh /tmp/herdr-sideload.sh 2>&1)
-SIDELOAD_RC=$?
-rm -f "$SIDELOAD"
-if [[ "$SIDELOAD_RC" -eq 0 ]]; then
-  pass "setup: herdr sideloaded (pinned URL, checksum verified against the real manifest-fragment.yaml value)"
+VERSION_OUT=$(msb exec "$NAME" -- herdr --version </dev/null 2>&1)
+if [[ "$VERSION_OUT" == "herdr ${EXPECTED_VERSION}" ]]; then
+  pass "setup: in-cage herdr --version reads '${VERSION_OUT}', the pin in examples/herdr/Dockerfile.snippet"
 else
-  fail "setup: herdr sideload failed" "$SIDELOAD_OUT"
-  echo ""
-  echo "=== test-msb-lifecycle-cockpit-reregistration.sh: ${FAILURES}/${TOTAL} failure(s) (aborting) ==="
-  exit 1
+  fail "setup: in-cage herdr is not the snippet's pin v${EXPECTED_VERSION} (stale image? rip-cage-i3wv)" "$VERSION_OUT"
+  abort
 fi
+
+# server_pid -> pid of the running herdr server, or empty.
+server_pid() { msb exec "$NAME" -- pgrep -f 'herdr server' </dev/null 2>/dev/null | head -1; }
+# server_running -> "yes" when the server answers on the relocated socket.
+server_running() {
+  msb exec "$NAME" -- sh -c "HERDR_SOCKET_PATH=${SOCK} herdr status server --json" </dev/null 2>/dev/null \
+    | grep -q '"running":true' && echo yes
+}
 
 # shellcheck source=/dev/null
 source "$RC" 2>/dev/null
 
 echo ""
-echo "=== FIRST-BOOT: rc's own _up_init_container dispatches to a real herdr start ==="
+echo "=== FIRST-BOOT: rc's own _up_init_container runs the descriptor's herdr start hook ==="
 _UP_INIT_OK=""
-_up_init_container "$NAME" >/tmp/cockpit-init1.out 2>&1
+_up_init_container "$NAME" </dev/null >"$WORK/init1.out" 2>&1
 if [[ "$_UP_INIT_OK" == "true" ]]; then
   pass "FIRST-BOOT: _up_init_container reports success"
 else
-  fail "FIRST-BOOT: _up_init_container reported failure" "$(cat /tmp/cockpit-init1.out)"
+  fail "FIRST-BOOT: _up_init_container reported failure" "$(cat "$WORK/init1.out")"
 fi
-if grep -q "session.multiplexer=herdr: start hook completed" /tmp/cockpit-init1.out; then
-  pass "FIRST-BOOT: init-rip-cage.sh's own log confirms the herdr start hook ran"
+if grep -q "multiplexer=herdr: start command completed" "$WORK/init1.out"; then
+  pass "FIRST-BOOT: init-rip-cage.sh's own log confirms the herdr start command ran"
 else
-  fail "FIRST-BOOT: expected the herdr start-hook completion line" "$(cat /tmp/cockpit-init1.out)"
+  fail "FIRST-BOOT: expected the herdr start-command completion line" "$(cat "$WORK/init1.out")"
 fi
-PID1=$(msb exec "$NAME" -- pgrep -f 'herdr server' 2>/dev/null | head -1)
-SOCK1=$(msb exec "$NAME" -- sh -c 'test -S ~/.config/herdr/herdr.sock && echo present' 2>/dev/null)
-if [[ -n "$PID1" && "$SOCK1" == "present" ]]; then
-  pass "FIRST-BOOT: a REAL herdr server process (pid ${PID1}) and control socket exist in-guest"
+# shellcheck disable=SC2016  # expands in the guest shell, on purpose
+AGENTS=$(msb exec "$NAME" -- sh -c 'for a in pi claude; do command -v "$a" >/dev/null 2>&1 && echo "$a"; done' </dev/null 2>/dev/null)
+if [[ -z "$AGENTS" ]]; then
+  fail "FIRST-BOOT: neither pi nor claude is on the image's PATH -- the integration-install leg has nothing to install"
+fi
+for _agent in $AGENTS; do
+  if grep -q "herdr integration installed: ${_agent}" "$WORK/init1.out"; then
+    pass "FIRST-BOOT: herdr integration install ${_agent} succeeded"
+  else
+    fail "FIRST-BOOT: expected 'herdr integration installed: ${_agent}'" "$(grep -i 'integration' "$WORK/init1.out")"
+  fi
+done
+if grep -q "WARNING: herdr" "$WORK/init1.out"; then
+  fail "FIRST-BOOT: the start hook logged a herdr WARNING" "$(grep 'WARNING: herdr' "$WORK/init1.out")"
 else
-  fail "FIRST-BOOT: expected a real herdr process + socket" "pid='${PID1}' sock='${SOCK1}'"
+  pass "FIRST-BOOT: no herdr WARNING from the start hook (integration installs and scripted-attach exited clean)"
+fi
+PID1=$(server_pid)
+if [[ -n "$PID1" && "$(server_running)" == "yes" ]]; then
+  pass "FIRST-BOOT: a real herdr server (pid ${PID1}) answers on the relocated socket ${SOCK}"
+else
+  fail "FIRST-BOOT: expected a herdr server answering on ${SOCK}" "pid='${PID1}' log: $(msb exec "$NAME" -- cat /tmp/rip-cage-mux-herdr.log </dev/null 2>&1 | tail -5)"
+fi
+
+echo ""
+echo "=== ATTACH: the descriptor's attach command attaches a client under a PTY ==="
+ATTACH_CMD=$(msb exec "$NAME" -- sh -c 'jq -r ".multiplexers[] | select(.name == \"herdr\") | .attach" /etc/rip-cage/boot.json' </dev/null 2>/dev/null)
+if [[ -z "$ATTACH_CMD" ]]; then
+  fail "ATTACH: could not read the herdr attach command from the image's boot descriptor" \
+    "$(msb exec "$NAME" -- ls /etc/rip-cage </dev/null 2>&1)"
+else
+  cat > "$WORK/attach.py" <<'PYEOF'
+import fcntl, os, pty, select, struct, subprocess, sys, termios, time
+msb, name, cmd, out_path = sys.argv[1:5]
+master_fd, slave_fd = pty.openpty()
+fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+proc = subprocess.Popen([msb, "exec", "-t", name, "--", "sh", "-c", cmd],
+                        stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, start_new_session=True)
+os.close(slave_fd)
+buf = b""
+deadline = time.time() + 6
+while time.time() < deadline:
+    r, _, _ = select.select([master_fd], [], [], 0.2)
+    if r:
+        try:
+            buf += os.read(master_fd, 65536)
+        except OSError:
+            break
+alive = proc.poll() is None
+open(out_path, "wb").write(buf)
+print("alive" if alive else "exited:%s" % proc.returncode)
+proc.terminate()
+try:
+    proc.wait(timeout=5)
+except Exception:
+    proc.kill()
+PYEOF
+  ATTACH_STATE=$(python3 "$WORK/attach.py" "$MSB_BIN" "$NAME" "$ATTACH_CMD" "$WORK/attach.out" 2>&1)
+  if [[ "$ATTACH_STATE" == "alive" ]] && ! grep -aq "NotFound\|Error" "$WORK/attach.out" && [[ -s "$WORK/attach.out" ]]; then
+    pass "ATTACH: the attach command held a client attached for 6s and drew output ($(wc -c <"$WORK/attach.out" | tr -d ' ') bytes), no socket error"
+  else
+    fail "ATTACH: expected the attach client to stay attached with no error" "state='${ATTACH_STATE}' output: $(tr -cd '[:print:]\n' <"$WORK/attach.out" | tail -c 400)"
+  fi
 fi
 
 echo ""
 echo "=== RESUME: graceful stop + start (fresh kernel boot) loses the old registration ==="
 msb stop "$NAME" >/dev/null 2>&1
 msb start "$NAME" >/dev/null 2>&1
-PID_GONE=$(msb exec "$NAME" -- pgrep -f 'herdr server' 2>/dev/null || true)
+PID_GONE=$(server_pid)
 if [[ -z "$PID_GONE" ]]; then
-  pass "RESUME setup: the pre-resume herdr process is genuinely gone after the fresh boot (proves this isn't a no-op restart)"
+  pass "RESUME setup: the pre-resume herdr process is gone after the fresh boot (proves this isn't a no-op restart)"
 else
   fail "RESUME setup: expected no herdr process immediately post-resume" "got pid '${PID_GONE}'"
 fi
@@ -159,28 +204,23 @@ fi
 echo ""
 echo "=== RE-REGISTER: _up_init_container re-run on resume produces a NEW, real herdr registration ==="
 _UP_INIT_OK=""
-_up_init_container "$NAME" >/tmp/cockpit-init2.out 2>&1
+_up_init_container "$NAME" </dev/null >"$WORK/init2.out" 2>&1
 if [[ "$_UP_INIT_OK" == "true" ]]; then
   pass "RE-REGISTER: post-resume _up_init_container reports success"
 else
-  fail "RE-REGISTER: post-resume _up_init_container reported failure" "$(cat /tmp/cockpit-init2.out)"
+  fail "RE-REGISTER: post-resume _up_init_container reported failure" "$(cat "$WORK/init2.out")"
 fi
-PID2=$(msb exec "$NAME" -- pgrep -f 'herdr server' 2>/dev/null | head -1)
-SOCK2=$(msb exec "$NAME" -- sh -c 'test -S ~/.config/herdr/herdr.sock && echo present' 2>/dev/null)
-if [[ -n "$PID2" && "$SOCK2" == "present" ]]; then
-  pass "RE-REGISTER: a NEW real herdr server process (pid ${PID2}) and control socket exist post-resume"
+PID2=$(server_pid)
+if [[ -n "$PID2" && "$(server_running)" == "yes" ]]; then
+  pass "RE-REGISTER: a real herdr server (pid ${PID2}) answers on ${SOCK} post-resume"
 else
-  fail "RE-REGISTER: expected a real post-resume herdr process + socket" "pid='${PID2}' sock='${SOCK2}'"
+  fail "RE-REGISTER: expected a post-resume herdr server answering on ${SOCK}" "pid='${PID2}'"
 fi
-if [[ -n "$PID1" && -n "$PID2" && "$PID1" != "$PID2" ]]; then
-  pass "RE-REGISTER: the post-resume herdr process is a GENUINELY NEW process (pid ${PID1} -> ${PID2}, not the same one surviving)"
-else
-  fail "RE-REGISTER: expected a distinct PID pre/post resume" "pid1=${PID1} pid2=${PID2}"
-fi
-
-rm -f /tmp/cockpit-init1.out /tmp/cockpit-init2.out
+# A fresh boot restarts pid numbering, so equal pids are possible in
+# principle; the RESUME check above (no server before re-init) is what proves
+# PID2 is a new process. A differing pid is corroboration, not the proof.
+echo "INFO  pid before resume ${PID1:-<none>}, after re-init ${PID2:-<none>}"
 
 echo ""
 echo "=== test-msb-lifecycle-cockpit-reregistration.sh: ${FAILURES}/${TOTAL} failure(s) ==="
-echo "NOTE: interactive pane usability and the full config-driven (rc up + .rip-cage.yaml session.multiplexer) path were NOT exercised -- see this file's header for exactly why."
 [[ "$FAILURES" -eq 0 ]]

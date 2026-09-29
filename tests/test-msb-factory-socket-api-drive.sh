@@ -39,8 +39,9 @@
 # attaches and must change to the sized figures after, and the same wide
 # token must read back as one UNWRAPPED line post-sizing. herdr up to 0.7.x
 # also hard-wrapped that token pre-sizing (the original gotcha); herdr 0.9.0
-# no longer does (measured, rip-cage-8jg5.1), so the pre-sizing wrap is
-# reported, not asserted.
+# no longer does -- its unsized headless pane reads 120x40 (measured
+# 2026-09-29, rip-cage-8jg5.1) -- so the pre-sizing wrap is reported, not
+# asserted.
 #
 # NEEDS_MSB + a pre-built image carrying herdr (RC_TEST_IMAGE, default
 # rip-cage:latest) + python3 (host-side PTY sizer). Self-skips otherwise,
@@ -58,6 +59,17 @@ SESSION="dotpi3bi"
 PANE="w1:p1"
 FAILURES=0
 TOTAL=0
+
+# pane_dims <pane-layout-json> -> "WIDTHxHEIGHT" of the pane's rect, or empty
+# when the input is not a parseable layout (an error string, say).
+pane_dims() {
+  python3 -c 'import json,sys
+try:
+    r = json.loads(sys.stdin.read())["result"]["layout"]["panes"][0]["rect"]
+    print("%dx%d" % (r["width"], r["height"]))
+except Exception:
+    pass' <<<"$1"
+}
 
 pass() { TOTAL=$((TOTAL + 1)); echo "PASS  [$TOTAL] $1"; }
 fail() { TOTAL=$((TOTAL + 1)); echo "FAIL  [$TOTAL] $1 -- ${2:-}"; FAILURES=$((FAILURES + 1)); }
@@ -156,6 +168,12 @@ fi
 echo ""
 echo "=== GOTCHA 2 baseline: record the unsized pane's layout and whether a long line wraps BEFORE explicit sizing ==="
 UNSIZED_LAYOUT=$(msb exec "$NAME" -- herdr --session "$SESSION" pane layout --pane "$PANE" </dev/null 2>&1)
+UNSIZED_DIMS=$(pane_dims "$UNSIZED_LAYOUT")
+if [[ -n "$UNSIZED_DIMS" ]]; then
+  pass "GOTCHA2 baseline: the unsized pane's layout parses (${UNSIZED_DIMS})"
+else
+  fail "GOTCHA2 baseline: pane layout did not return a parseable layout -- no baseline to measure sizing against" "$UNSIZED_LAYOUT"
+fi
 UNSIZED_TOKEN="UNSIZED-$$-0123456789012345678901234567890123456789012345678901234567890123456789"
 msb exec "$NAME" -- herdr --session "$SESSION" pane run "$PANE" "printf '%s\n' '${UNSIZED_TOKEN}'" >/dev/null 2>&1
 sleep 1
@@ -193,25 +211,22 @@ PYEOF
 python3 "$SIZER" &
 SIZER_PID=$!
 
-SIZED=""
+SIZED_DIMS=""
 for _ in $(seq 1 15); do
-  LAYOUT=$(msb exec "$NAME" -- herdr --session "$SESSION" pane layout --pane "$PANE" 2>/dev/null)
-  if echo "$LAYOUT" | grep -q '"width":94' && echo "$LAYOUT" | grep -q '"height":39'; then
-    SIZED="$LAYOUT"
-    break
-  fi
+  LAYOUT=$(msb exec "$NAME" -- herdr --session "$SESSION" pane layout --pane "$PANE" </dev/null 2>/dev/null)
+  SIZED_DIMS=$(pane_dims "$LAYOUT")
+  [[ "$SIZED_DIMS" == "94x39" ]] && break
   sleep 1
 done
 
-# The layout must reach the sized figures AND differ from the unsized
-# baseline -- otherwise the sized client proved nothing. The content check
-# below then shows `pane read` output is unwrapped at that size.
-if [[ -n "$SIZED" ]] && echo "$UNSIZED_LAYOUT" | grep -q '"width":94' && echo "$UNSIZED_LAYOUT" | grep -q '"height":39'; then
-  fail "GOTCHA2 fix: the unsized pane already reported width=94 height=39 -- the sized client changed nothing measurable" "unsized: ${UNSIZED_LAYOUT}"
-elif [[ -n "$SIZED" ]]; then
-  pass "GOTCHA2 fix: pane layout moved from the unsized baseline to width=94 height=39 (the epic spike's own sized-attach figures)"
+# The layout must reach the sized figures (the epic spike's own sized-attach
+# numbers) AND differ from the parsed unsized baseline -- otherwise the sized
+# client proved nothing. The content check below then shows `pane read`
+# output is unwrapped at that size.
+if [[ "$SIZED_DIMS" == "94x39" && -n "$UNSIZED_DIMS" && "$UNSIZED_DIMS" != "$SIZED_DIMS" ]]; then
+  pass "GOTCHA2 fix: pane layout moved from the unsized baseline ${UNSIZED_DIMS} to ${SIZED_DIMS} under the sized client"
 else
-  fail "GOTCHA2 fix (secondary signal): pane never reported the expected sized dimensions" "last layout: ${LAYOUT:-<none>}"
+  fail "GOTCHA2 fix: expected the pane to move from a parsed unsized baseline to 94x39" "unsized: '${UNSIZED_DIMS}', sized: '${SIZED_DIMS}', last layout: ${LAYOUT:-<none>}"
 fi
 
 echo ""
