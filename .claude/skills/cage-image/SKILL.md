@@ -12,6 +12,24 @@ that a human can read before `rc build` runs. You do not run `rc build` on a
 shared host without saying so first — it moves the image tag every cage boots
 from.
 
+## Start here: the walk-away composition
+
+**A cage that runs agents gets the walk-away composition by default** — and
+running agents unattended is what a cage is for. That is base + herdr (the
+supervisor multiplexer) + herdr-pi (pi's status extension) + a pinned pi
+provider/model, walked through in
+[`examples/compose-walk-away-cage.md`](../../../examples/compose-walk-away-cage.md).
+Follow that recipe: it names the fragments and their order, and you read each
+fragment fresh from its own directory rather than from a copy.
+
+**Base-only is the exception:** one interactive shell with a human at the
+keyboard, nothing to supervise. Choose it on purpose, not because it is the
+first file you found.
+
+*Done when:* plain `rc up <project>` attaches you to a herdr pane. herdr is the
+only multiplexer the image declares, so a new cage picks it with no
+`RC_MULTIPLEXER` set ([cli-reference](../../../docs/reference/cli-reference.md)).
+
 ## The whole model in four lines
 
 1. Your Dockerfile starts `FROM ghcr.io/jsnyde0/rip-cage:latest`.
@@ -24,7 +42,8 @@ from.
 There is no manifest, no tool registry, and no schema to satisfy. The
 Dockerfile IS the composition ([ADR-031](../../../docs/decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D4).
 
-**Start from [`examples/base/Dockerfile.snippet`](../../../examples/base/Dockerfile.snippet)** —
+**Every Dockerfile, walk-away included, is built on
+[`examples/base/Dockerfile.snippet`](../../../examples/base/Dockerfile.snippet)** —
 it is a complete working Dockerfile that adds nothing, with the two rules that
 bite spelled out in its own comments. Read it before writing anything.
 
@@ -113,6 +132,7 @@ replaced went stale.
 
 | Want | Recipe |
 |---|---|
+| **agents running unattended — the default** | [`examples/compose-walk-away-cage.md`](../../../examples/compose-walk-away-cage.md) |
 | the smallest complete Dockerfile | [`examples/base/`](../../../examples/base/) |
 | a tmux session that survives detach | [`examples/tmux/`](../../../examples/tmux/) |
 | a headless agent supervisor | [`examples/herdr/`](../../../examples/herdr/) |
@@ -125,7 +145,7 @@ replaced went stale.
 
 [`examples/README.md`](../../../examples/README.md) is the index, and the
 `examples/compose-*.md` files are longer walk-throughs that wire several
-recipes together.
+recipes together; the walk-away one is where to start.
 
 Guided paths through them:
 

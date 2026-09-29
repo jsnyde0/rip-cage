@@ -51,7 +51,9 @@ it exists.
 
    `RC_MULTIPLEXER` at launch is what selects the provider. (It replaced
    `session.multiplexer` in `.rip-cage.yaml`, which retired with the layered
-   rip-cage config schema — ADR-031 D2.)
+   rip-cage config schema — ADR-031 D2.) The env var is optional when tmux is
+   the only multiplexer the image declares: plain `rc up` picks it for a new
+   cage.
 
 ## The provider contract
 

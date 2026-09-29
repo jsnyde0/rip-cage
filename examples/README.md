@@ -13,6 +13,23 @@ catalog and [examples/base/](base/) for the smallest complete starting point.
 
 ---
 
+## Whole-cage composition recipes — start here
+
+Recipes that compose a full cage shape spanning multiple recipes at once —
+read fresh each time rather than copied from a pre-built manifest, since there
+is no manifest file for a delta to drift out of sync with.
+
+**A cage that runs agents starts from the walk-away composition** — the
+default for any unattended run. Base-only ([examples/base/](base/)) is the
+exception: one interactive shell, nobody to supervise.
+
+| Recipe | What it provides |
+|---|---|
+| [compose-walk-away-cage.md](compose-walk-away-cage.md) | Walk-away/headless multi-agent delta: herdr (supervisor multiplexer) + herdr-pi (status extension) recipes, and the pi provider/model pin (closes the headless-throttle footgun). Credential non-possession is a cage-config `secrets:` declaration, not a composed mediator. |
+| [examples/dotpi-3bi/](dotpi-3bi/) | Factory socket-API drive delta on top of `examples/herdr/`: how a host-side orchestrator drives a cage's herdr pane via `pane run`/`pane read` (not interactive attach) — session-scoped socket path + explicit pane sizing, the two headless-herdr gotchas. See [dotpi-3bi/README.md](dotpi-3bi/README.md). |
+
+---
+
 ## Guard recipes
 
 These recipes compose on top of the containment floor to block classes of
@@ -35,8 +52,9 @@ surface left to guard.
 ## Multiplexer recipes
 
 Multiplexers provide the terminal session layer (persistence, attach/detach)
-above the containment floor. Selected at launch with `RC_MULTIPLEXER=<name>`,
-not a config file field. Each provider needs a `multiplexers[]` boot-descriptor
+above the containment floor. A new cage takes the one multiplexer its image
+declares; `RC_MULTIPLEXER=<name>` at launch picks among several (not a config
+file field). Each provider needs a `multiplexers[]` boot-descriptor
 entry (`start`/`attach`, plus optional `exec`/`new_session`/`teardown`).
 
 | Recipe | What it provides |
@@ -110,16 +128,3 @@ the same tool automatically.
 | Recipe | What it provides |
 |---|---|
 | [examples/herdr-pi/](herdr-pi/) | The canonical composition worked example: herdr's pi semantic-status extension loaded alongside the DCG guard in one combined `launch` string, plus the herdr multiplexer. See [herdr-pi/README.md](herdr-pi/README.md). |
-
----
-
-## Whole-cage composition recipes
-
-Recipes that compose a full cage shape spanning multiple recipes at once —
-read fresh each time rather than copied from a pre-built manifest, since there
-is no manifest file for a delta to drift out of sync with.
-
-| Recipe | What it provides |
-|---|---|
-| [compose-walk-away-cage.md](compose-walk-away-cage.md) | Walk-away/headless multi-agent delta: herdr (supervisor multiplexer) + herdr-pi (status extension) recipes, and the pi provider/model pin (closes the headless-throttle footgun). Credential non-possession is a cage-config `secrets:` declaration, not a composed mediator. |
-| [examples/dotpi-3bi/](dotpi-3bi/) | Factory socket-API drive delta on top of `examples/herdr/`: how a host-side orchestrator drives a cage's herdr pane via `pane run`/`pane read` (not interactive attach) — session-scoped socket path + explicit pane sizing, the two headless-herdr gotchas. See [dotpi-3bi/README.md](dotpi-3bi/README.md). |
