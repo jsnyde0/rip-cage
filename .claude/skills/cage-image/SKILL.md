@@ -141,7 +141,6 @@ replaced went stale.
 | the Claude Code session wrapper | [`examples/claude/`](../../../examples/claude/) |
 | the pi coding agent | [`examples/pi/`](../../../examples/pi/) |
 | herdr's pi extension alongside DCG | [`examples/herdr-pi/`](../../../examples/herdr-pi/) |
-| an egress mediator add-on | [`examples/mitmproxy/`](../../../examples/mitmproxy/) |
 
 [`examples/README.md`](../../../examples/README.md) is the index, and the
 `examples/compose-*.md` files are longer walk-throughs that wire several
