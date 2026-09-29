@@ -2173,9 +2173,12 @@ _up_build_egress_config_json() {
 # sandbox already booted successfully once before with it present). A
 # resume happening in a fresh `rc up` process therefore needs the SAME
 # Fold-b preflight (fail loud, name the var, before touching msb) and the
-# SAME secret-env export _up_start_container runs at create time — this is
-# that same two-step, factored out so create and resume share one source
-# of truth rather than drifting.
+# SAME secret-env exports _up_start_container runs at create time. The
+# steps are repeated there inline, not shared: when adding a secret source,
+# add it to BOTH (rip-cage-l18a was the conf `secrets:` block missing here).
+#
+# It also covers the cage config's `secrets:` block: after the egress-config
+# export it calls _up_prepare_conf_secret_env on $_UP_CAGE_CONF (rip-cage-l18a).
 #
 # Returns non-zero (preflight failure already printed to stderr by
 # _msb_flags_preflight_secret_env) when a credential's source_env is unset
@@ -2188,6 +2191,11 @@ _up_prepare_resume_secrets() {
     return 1
   fi
   _msb_flags_prepare_secret_env "$_urs_cfg"
+  # rip-cage-l18a: the cage config's own `secrets:` block (the shipped CCTOK
+  # login) is re-resolved by msb at start time too; export it from the
+  # host-side secrets files, same order as _up_start_container. Runs in this
+  # shell (no subshell) so the exports reach `msb start`.
+  _up_prepare_conf_secret_env "${_UP_CAGE_CONF}"
   return 0
 }
 

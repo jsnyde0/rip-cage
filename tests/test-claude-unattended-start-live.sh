@@ -129,9 +129,6 @@ probe_boot create U1 U2 U3 U4 U5 "${LOG_DIR}/up-create.log"
 
 # --- boot 2: stop, then resume (a fresh kernel boot under msb) ------------
 perl -e 'alarm shift; exec @ARGV' 120 msb stop "$NAME" > "${LOG_DIR}/stop.log" 2>&1
-# rip-cage-l18a: rc up's resume branch does not source CCTOK from the secrets
-# file the way create does. Set the fake value in this shell until that lands.
-CCTOK=$(cat "${XDG_CONFIG_HOME}/rip-cage/secrets/CCTOK"); export CCTOK
 "$RC" up "$WS" < /dev/null > "${LOG_DIR}/up-resume.log" 2>&1; echo $? > "${LOG_DIR}/up-resume.log.rc"
 probe_boot resume U6 U7 U8 U9 U10 "${LOG_DIR}/up-resume.log"
 
