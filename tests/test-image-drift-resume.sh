@@ -138,7 +138,7 @@ printf '%s\n' "${1:-}" >> "${DRIFT_LOG}"
 
 case "${1:-}" in
   --version)
-    echo "microsandbox 0.6.4 (fake)"
+    echo "microsandbox 0.7.4 (fake)"
     exit 0
     ;;
   inspect)

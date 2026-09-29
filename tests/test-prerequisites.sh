@@ -126,7 +126,7 @@ cat > "${T2_BIN}/msb" <<'T2_SHIM'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${T2_LOG}"
 case "${1:-}" in
-  --version) echo "msb 0.6.18-test-shim"; exit 0 ;;
+  --version) echo "msb 0.7.4-test-shim"; exit 0 ;;
 esac
 : > "${T2_SENTINEL}"
 echo "test shim: msb was invoked with: $*" >&2

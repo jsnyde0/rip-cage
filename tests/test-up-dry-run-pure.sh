@@ -70,7 +70,7 @@ cat > "${BIN}/msb" <<FAKEEOF
 #!/usr/bin/env bash
 echo "msb \$*" >> "${CALL_LOG}"
 case "\${1:-}" in
-  --version) echo "msb 0.6.18"; exit 0 ;;
+  --version) echo "msb 0.7.4"; exit 0 ;;
   load) cat >/dev/null; touch "${LOADED}"; exit 0 ;;
   image)
     case "\${2:-}" in

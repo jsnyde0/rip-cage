@@ -24,6 +24,10 @@ env:
 
 msb injects the real value on the wire toward `api.anthropic.com` only; the guest holds the literal string `$MSB_CCTOK` — on disk, in its environment, in `/proc`. `init-rip-cage.sh` reads only what the config mounted; it never touches a keychain, and there is no Claude credentials file in the guest.
 
+### msb version floor
+
+rip-cage needs **msb 0.7.4 or newer**. On msb 0.7.3 the `--secret` substitution drops any TLS request whose body contains a `%` — the guest sees `unexpected eof` and claude reports `API Error: Connection dropped (ECONNRESET)` — and claude's real requests always carry one, so a CCTOK-bound cage cannot make a single model call ([superradcompany/microsandbox#1664](https://github.com/superradcompany/microsandbox/issues/1664), fixed in 0.7.4). `rc up` refuses an older msb and names the upgrade, `msb update`, which restarts running cages. `rc doctor --host` shows the installed version against the floor. The floor is one constant, `RC_MSB_MIN_VERSION` in `cli/lib/msb_runtime.sh`.
+
 ### The token, and where it lives
 
 The credential is the **long-lived** token from `claude setup-token`, not the short-lived access token a keychain login holds. A keychain token refreshes through a refresh-token flow that a static placeholder swap cannot carry — there is no refresh request to intercept, so it cannot work here.

@@ -178,10 +178,14 @@ fi
 # real `docker build` (image build stays docker; msb only consumes the built
 # image via the best-effort, self-skipping `msb load` step in
 # `_build_msb_load` — no hard check_msb needed there).
+#
+# rip-cage-mssj: `up` alone also checks the msb version floor
+# (check_msb_floor, cli/lib/msb_runtime.sh); the other verbs stay usable on
+# an older msb so an operator can still inspect and remove cages.
 case "${1:-}" in
   build) check_docker ;;
   destroy|test) check_msb ;;
-  up) check_docker; check_msb ;;
+  up) check_docker; check_msb; check_msb_floor ;;
   doctor)
     if [[ "${2:-}" != "--host" ]]; then
       check_msb

@@ -61,7 +61,7 @@ cat > "${STUB_DIR}/msb" <<'STUB'
 #!/usr/bin/env bash
 case " $* " in
   *" --version"*)
-    echo "msb 0.0.0-stub"
+    echo "msb 0.7.4-stub"
     exit 0
     ;;
   *" inspect "*"--format json"*)

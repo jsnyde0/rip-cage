@@ -79,7 +79,7 @@ cat > "${FAKE_BIN}/msb" <<'FAKEEOF'
 #!/usr/bin/env bash
 case "${1:-}" in
   --version)
-    echo "msb 0.0.0-fake"
+    echo "msb 0.7.4-fake"
     exit 0
     ;;
   inspect)

@@ -46,12 +46,12 @@ _doctor_host() {
   if ! _msb_path=$(command -v msb 2>/dev/null); then
     _msb_installed=0
   fi
-  local _msb_rc=0 _msb_status
+  local _msb_rc=0 _msb_status _msb_version_raw=""
   if [[ "$_msb_installed" -eq 0 ]]; then
     _msb_rc=127
     _msb_status="FAIL — msb CLI not installed"
   else
-    _run_with_timeout "$_msb_t" msb --version >/dev/null 2>&1 || _msb_rc=$?
+    _msb_version_raw=$(_run_with_timeout "$_msb_t" msb --version 2>/dev/null) || _msb_rc=$?
     if [[ "$_msb_rc" -eq 0 ]]; then
       _msb_status="OK — reachable within ${_msb_t}s"
     elif [[ "$_msb_rc" -eq 124 ]]; then
@@ -59,6 +59,29 @@ _doctor_host() {
     else
       _msb_status="FAIL — msb --version exited $_msb_rc"
     fi
+  fi
+
+  # rip-cage-mssj: installed msb version against the floor `rc up` enforces.
+  local _msb_version="" _msb_version_status _msb_floor_bad=0
+  if [[ "$_msb_rc" -ne 0 ]]; then
+    _msb_version_status="n/a — msb not reachable (floor ${RC_MSB_MIN_VERSION})"
+  else
+    local _verdict
+    _verdict=$(_msb_version_verdict "$_msb_version_raw")
+    case "$_verdict" in
+      ok\ *)
+        _msb_version="${_verdict#* }"
+        _msb_version_status="OK — ${_msb_version} (floor ${RC_MSB_MIN_VERSION})"
+        ;;
+      below\ *)
+        _msb_version="${_verdict#* }"
+        _msb_floor_bad=1
+        _msb_version_status="FAIL — ${_msb_version} is below the floor ${RC_MSB_MIN_VERSION}; rc up refuses (${RC_MSB_FLOOR_ISSUE})"
+        ;;
+      *)
+        _msb_version_status="WARNING — could not read a version from 'msb --version' (floor ${RC_MSB_MIN_VERSION})"
+        ;;
+    esac
   fi
 
   # rip-cage-j86: prerequisite checks — yq and global config (non-fatal; surface
@@ -94,15 +117,18 @@ _doctor_host() {
       --arg msb "$_msb_status" \
       --argjson msb_rc "$_msb_rc" \
       --arg msb_path "${_msb_path:-}" \
+      --arg msb_version "$_msb_version" \
+      --arg msb_floor "$RC_MSB_MIN_VERSION" \
       --arg yq "$_yq_status" \
       --arg global_config "$_global_cfg_status" \
-      '{scope: $scope, daemon: $daemon, docker_info_rc: $rc, timeout_seconds: $timeout, docker_path: $docker_path, msb: $msb, msb_rc: $msb_rc, msb_path: $msb_path, yq: $yq, global_config: $global_config}'
+      '{scope: $scope, daemon: $daemon, docker_info_rc: $rc, timeout_seconds: $timeout, docker_path: $docker_path, msb: $msb, msb_rc: $msb_rc, msb_path: $msb_path, msb_version: $msb_version, msb_floor: $msb_floor, yq: $yq, global_config: $global_config}'
   else
     printf "Scope:        host (daemon/runtime liveness)\n"
     printf "Docker path:  %s\n" "${_docker_path:-<not installed>}"
     printf "Daemon:       %s\n" "$_daemon_status"
     printf "msb path:     %s\n" "${_msb_path:-<not installed>}"
     printf "msb:          %s\n" "$_msb_status"
+    printf "msb version:  %s\n" "$_msb_version_status"
     printf "yq:           %s\n" "$_yq_status"
     printf "Global config: %s\n" "$_global_cfg_status"
     if [[ "$_docker_installed" -eq 0 ]]; then
@@ -114,9 +140,11 @@ _doctor_host() {
       printf "\nRemedy: install msb — https://github.com/microsandbox/microsandbox\n"
     elif [[ "$_msb_rc" -ne 0 ]]; then
       printf "\nRemedy: msb is unresponsive — check the msb agent process, then retry.\n"
+    elif [[ "$_msb_floor_bad" -eq 1 ]]; then
+      printf "\nRemedy: 'msb update' (it restarts running cages).\n"
     fi
   fi
-  if [[ "$_rc" -ne 0 || "$_msb_rc" -ne 0 ]]; then
+  if [[ "$_rc" -ne 0 || "$_msb_rc" -ne 0 || "$_msb_floor_bad" -eq 1 ]]; then
     exit 1
   fi
 }

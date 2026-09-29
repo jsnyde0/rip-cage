@@ -92,7 +92,7 @@ mkdir -p "$MIXED_STUB_DIR"
 cat > "${MIXED_STUB_DIR}/msb" <<STUB
 #!/usr/bin/env bash
 case "\${1:-}" in
-  --version) echo "msb 0.0.0-stub"; exit 0 ;;
+  --version) echo "msb 0.7.4-stub"; exit 0 ;;
   logs) cat <<'LOG'
 ${MIXED_LOG_JSON}
 LOG
@@ -148,7 +148,7 @@ mkdir -p "$EMPTY_STUB_DIR"
 cat > "${EMPTY_STUB_DIR}/msb" <<'STUB'
 #!/usr/bin/env bash
 case "${1:-}" in
-  --version) echo "msb 0.0.0-stub"; exit 0 ;;
+  --version) echo "msb 0.7.4-stub"; exit 0 ;;
   logs) exit 0 ;;
 esac
 echo "stub: unhandled msb args: $*" >&2

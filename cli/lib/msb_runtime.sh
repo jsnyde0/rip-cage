@@ -36,7 +36,7 @@ check_msb() {
   fi
   local _preflight_timeout="${RC_MSB_PREFLIGHT_TIMEOUT:-5}"
   local _rc=0
-  _run_with_timeout "$_preflight_timeout" msb --version >/dev/null 2>&1 || _rc=$?
+  _RC_MSB_VERSION_RAW=$(_run_with_timeout "$_preflight_timeout" msb --version 2>/dev/null) || _rc=$?
   if [[ "$_rc" -eq 0 ]]; then
     return 0
   fi
@@ -48,6 +48,64 @@ check_msb() {
   fi
   if [[ "${OUTPUT_FORMAT:-human}" == "json" ]]; then
     json_error "$_msg" "MSB_UNREACHABLE"
+  fi
+  echo "Error: $_msg" >&2
+  exit 1
+}
+
+
+# RC_MSB_MIN_VERSION -- the one msb version floor (rip-cage-mssj). Read by
+# check_msb_floor (the `rc up` preflight) and by `rc doctor --host`. msb 0.7.3's
+# --secret substitution drops any TLS request whose body contains '%'
+# (superradcompany/microsandbox#1664, fixed in 0.7.4), and claude's real
+# requests always carry one, so a CCTOK-bound cage cannot make model calls.
+RC_MSB_MIN_VERSION="0.7.4"
+RC_MSB_FLOOR_ISSUE="superradcompany/microsandbox#1664"
+
+
+# _msb_version_verdict RAW -- compares the x.y.z in a `msb --version` string
+# against RC_MSB_MIN_VERSION. Echoes "ok <ver>", "below <ver>", or "unknown"
+# when RAW carries no x.y.z. The first x.y.z wins and any suffix is ignored,
+# so a "0.7.4-rc1" pre-release reads as 0.7.4.
+_msb_version_verdict() {
+  local _ver
+  _ver=$(printf '%s\n' "$1" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1) || true
+  if [[ -z "$_ver" ]]; then
+    echo "unknown"
+    return 0
+  fi
+  local _a _b _i
+  IFS=. read -r -a _a <<<"$_ver"
+  IFS=. read -r -a _b <<<"$RC_MSB_MIN_VERSION"
+  for _i in 0 1 2; do
+    if (( 10#${_a[$_i]} > 10#${_b[$_i]} )); then echo "ok $_ver"; return 0; fi
+    if (( 10#${_a[$_i]} < 10#${_b[$_i]} )); then echo "below $_ver"; return 0; fi
+  done
+  echo "ok $_ver"
+}
+
+
+# check_msb_floor -- `rc up`'s version floor; runs after check_msb, reading
+# the version string check_msb captured. Below the floor it refuses: the
+# shipped template binds CCTOK, and on such an msb every claude model call
+# dies mid-session as a bare connection reset, long after the operator walked
+# away. One `msb update` clears it. A version string rc cannot parse warns
+# and proceeds — an unfamiliar format is not evidence of an old msb. Only
+# `rc up` checks the floor: destroy, test and doctor stay usable on any msb.
+check_msb_floor() {
+  local _verdict _ver
+  _verdict=$(_msb_version_verdict "${_RC_MSB_VERSION_RAW:-}")
+  _ver="${_verdict#* }"
+  case "$_verdict" in
+    ok\ *) return 0 ;;
+    unknown)
+      echo "Warning: could not read an msb version from 'msb --version'; rip-cage needs msb >= ${RC_MSB_MIN_VERSION} (${RC_MSB_FLOOR_ISSUE})." >&2
+      return 0
+      ;;
+  esac
+  local _msg="msb ${_ver} is below rip-cage's floor ${RC_MSB_MIN_VERSION}: its secret substitution drops any request whose body contains '%', so in-cage claude cannot make model calls (${RC_MSB_FLOOR_ISSUE}). Upgrade with 'msb update' (it restarts running cages)."
+  if [[ "${OUTPUT_FORMAT:-human}" == "json" ]]; then
+    json_error "$_msg" "MSB_BELOW_FLOOR"
   fi
   echo "Error: $_msg" >&2
   exit 1

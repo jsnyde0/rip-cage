@@ -18,7 +18,7 @@ network:
 
 ### Strict hostname checking (msb 0.7.3+)
 
-msb 0.7.3 turned `network.strict` on by default. Under it, an HTTPS request to a host allowed by **name** is checked against the request's real authority (the `Host` inside the TLS session), not just the name the guest put in SNI. That check needs TLS interception, and msb intercepts while the config binds a secret.
+msb 0.7.3 turned `network.strict` on by default. (rip-cage's msb floor is 0.7.4; see [auth.md](auth.md#msb-version-floor). The 0.7.3 measurements below were not re-run on 0.7.4.) Under it, an HTTPS request to a host allowed by **name** is checked against the request's real authority (the `Host` inside the TLS session), not just the name the guest put in SNI. That check needs TLS interception, and msb intercepts while the config binds a secret.
 
 Measured on 0.7.3:
 

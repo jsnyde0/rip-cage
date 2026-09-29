@@ -1288,7 +1288,7 @@ cat > "${E49_BIN}/msb" <<'E49_SHIM'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${E49_LOG}"
 case "${1:-}" in
-  --version) echo "msb 0.6.18-test-shim"; exit 0 ;;
+  --version) echo "msb 0.7.4-test-shim"; exit 0 ;;
 esac
 : > "${E49_SENTINEL}"
 echo "test shim: msb was invoked with: $*" >&2
@@ -1495,7 +1495,7 @@ cat > "${T61_BIN}/msb" <<'T61_SHIM'
 #!/usr/bin/env bash
 printf '%s\n' "${1:-}" >> "${T61_LOG}"
 case "${1:-}" in
-  --version) echo "msb 0.6.18-test-shim"; exit 0 ;;
+  --version) echo "msb 0.7.4-test-shim"; exit 0 ;;
   inspect)
     cat <<JSON
 {"status":"Stopped","config":{"manifest_digest":"sha256:t61matchingdigest","labels":{"rc.source.path":"${T61_PROJ}","rc.cage-conf-sha":"${T61_CONF_SHA}"}}}
@@ -1725,7 +1725,7 @@ cat > "${T63_BIN}/msb" <<'T63_SHIM'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${T63_LOG}"
 case "${1:-}" in
-  --version) echo "msb 0.6.18-test-shim"; exit 0 ;;
+  --version) echo "msb 0.7.4-test-shim"; exit 0 ;;
   image) [[ "${2:-}" == "list" ]] && { echo "[{\"reference\":\"${RC_IMAGE}\"}]"; exit 0; } ;;
   create) : > "${T63_CREATED}" ;;
 esac
@@ -1881,7 +1881,7 @@ cat > "${DG_DIR}/msb" <<DG_STUB
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "${DG_LOG}"
 case "\$1" in
-  --version) echo 'msb 0.0.0-dg-stub'; exit 0 ;;
+  --version) echo 'msb 0.7.4-dg-stub'; exit 0 ;;
   list)
     printf '%s\n' '[{"name":"${DG_CAGE}"}]'
     exit 0 ;;

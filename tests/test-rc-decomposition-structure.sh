@@ -387,7 +387,10 @@ echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 
 #   ADDED (cli/up.sh, 1): _up_warn_claude_home_mounts (warn-only, before any
 #     msb call, when a config lacks the ~/.claude/projects|sessions lines it
 #     now owns, or still mounts ~/.claude/skills, which rc projects itself).
-EXPECTED_FN_COUNT=123
+# Bumped 123 -> 125 by rip-cage-mssj: 2 ADDED, 0 removed.
+#   ADDED (cli/lib/msb_runtime.sh, 2): _msb_version_verdict and
+#     check_msb_floor (rc up's msb version floor, RC_MSB_MIN_VERSION).
+EXPECTED_FN_COUNT=125
 _actual_fn_count=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh 2>/dev/null | wc -l | tr -d ' ')
 
 if [[ "$_actual_fn_count" -eq "$EXPECTED_FN_COUNT" ]]; then
@@ -617,7 +620,7 @@ _g2_proj="${_unrelated_cwd}/proj"
 mkdir -p "$_g2_proj" "${_unrelated_cwd}/bin"
 cat > "${_unrelated_cwd}/bin/msb" <<'G2_SHIM'
 #!/usr/bin/env bash
-case "${1:-}" in --version) echo "msb 0.6.18-test-shim"; exit 0 ;; esac
+case "${1:-}" in --version) echo "msb 0.7.4-test-shim"; exit 0 ;; esac
 exit 1
 G2_SHIM
 chmod +x "${_unrelated_cwd}/bin/msb"

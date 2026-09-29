@@ -32,7 +32,7 @@ rc up [path] [--conf FILE] [--replace] [--no-reload] [--port PORT] [--env-file F
       [--cpus N] [--memory SIZE] [--pids-limit N] [--new] [--session NAME]
 ```
 
-`rc up` does the things no config file can hold: it reads the CCTOK setup-token from `$XDG_CONFIG_HOME/rip-cage/secrets/CCTOK` and exports it for msb's `--secret`, computes read-only parent mounts for your skill symlinks, runs the protected-paths check, and then calls `msb create --conf <file> --name <cage> --log-level trace`.
+`rc up` does the things no config file can hold: it reads the CCTOK setup-token from `$XDG_CONFIG_HOME/rip-cage/secrets/CCTOK` and exports it for msb's `--secret`, computes read-only parent mounts for your skill symlinks, runs the protected-paths check, and then calls `msb create --conf <file> --name <cage> --log-level trace`. Before any of that it refuses an msb older than 0.7.4, the floor `RC_MSB_MIN_VERSION` in `cli/lib/msb_runtime.sh` (see [auth.md](auth.md#msb-version-floor)); `rc doctor --host` reports the installed version against it.
 
 | Flag | Description |
 |---|---|
@@ -150,6 +150,8 @@ A separate emitter with no overlapping keys.
 | `msb` | string | msb reachability, prefixed `OK —` / `FAIL —`. |
 | `msb_rc` | number | Exit code of the `msb --version` probe. `0` means reachable. |
 | `msb_path` | string | Resolved path to `msb`; empty string if not installed. |
+| `msb_version` | string | The x.y.z read from `msb --version`; empty string if unreachable or unreadable. |
+| `msb_floor` | string | The minimum msb version `rc up` accepts (`0.7.4`). A `msb_version` below it makes the command exit non-zero. |
 | `yq` | string | `yq` prerequisite status — resolved path, or an install hint (mikefarah's `yq`, not apt's incompatible one). |
 | `global_config` | string | **Protected-paths list status**, despite the legacy key name: the resolved path, or an error saying every `rc up` will refuse to launch. |
 

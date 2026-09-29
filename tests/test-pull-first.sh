@@ -57,7 +57,7 @@ chmod +x "$FAKE_BIN/docker"
 cat > "$FAKE_BIN/msb" <<'FAKEEOF'
 #!/usr/bin/env bash
 case "${1:-}" in
-  --version) echo "msb 0.0.0-fake"; exit 0 ;;
+  --version) echo "msb 0.7.4-fake"; exit 0 ;;
   inspect) exit 1 ;;
   *) exit 0 ;;
 esac
