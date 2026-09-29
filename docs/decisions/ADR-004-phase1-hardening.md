@@ -51,6 +51,8 @@ Note: `no-db: true` in `.beads/config.yaml` is vestigial — bd parses it but ig
 
 **Firmness: FLEXIBLE**
 
+**Evolved 2026-09-29 (rip-cage-g3ey):** the defaults now live in the project's cage config — the shipped template carries `cpus: 2` / `memory: 4G` ([ADR-031](ADR-031-opinionated-distribution-of-microsandbox.md) D2: the config owns everything rc cannot compute). `rc up` passes `--cpus`/`--memory` to msb only when the operator gives them on the command line, because msb's flag beats `--conf` and an rc default would silently replace the config's values. `msb create` has no PID limit and no swap limit: `rc up --pids-limit` is accepted and ignored, and rc passes no `--memory-swap`. The Docker-era text below is kept for the rationale.
+
 Add default resource limits to `docker run` in `cmd_up`:
 
 - `--cpus=2`

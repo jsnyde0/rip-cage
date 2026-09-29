@@ -20,9 +20,9 @@ Commands:
     --no-reload         Resume a stopped cage as-is instead of converging it
     --port PORT         Expose a port
     --env-file FILE     Load env vars from file
-    --cpus N            CPU limit (default: 2)
-    --memory SIZE       Memory limit (default: 4g)
-    --pids-limit N      PID limit (default: 500)
+    --cpus N            Override the config's cpus: for this launch
+    --memory SIZE       Override the config's memory: for this launch
+    --pids-limit N      Accepted and ignored (msb has no create-time PID limit)
     --new               Always start a new multiplexer session (auto-named; invokes new_session hook)
     --session NAME      Forward NAME to the multiplexer attach hook as $1
   destroy <name>                                Remove container and volumes (no prompt, no flags)

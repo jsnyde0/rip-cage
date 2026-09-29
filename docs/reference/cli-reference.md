@@ -39,7 +39,8 @@ rc up [path] [--conf FILE] [--replace] [--no-reload] [--port PORT] [--env-file F
 | `--conf FILE` | The native msb config to launch with. Default `~/.config/rip-cage/projects/<cage>.yaml`; `$RC_CAGE_CONF` sits between the two. Must resolve outside every mount the config declares. |
 | `--replace` | Graceful-stop and recreate a **running** cage against the current config. A running cage is never recreated implicitly, because that kills the live session. |
 | `--no-reload` | Resume a **stopped** cage as-is rather than converging it on the current config. |
-| `--port`, `--env-file`, `--cpus`, `--memory`, `--pids-limit` | Runtime overrides layered onto the config's own values. |
+| `--port`, `--env-file`, `--cpus`, `--memory` | Runtime overrides layered onto the config's own values, passed only when given. |
+| `--pids-limit` | Accepted and ignored: `msb create` has no PID limit. |
 | `--new` / `--session NAME` | Multiplexer session selection; see below. Mutually exclusive (exit 2 if both). |
 | `--allow-risky-mount <resolved-path>` | One-shot: let one protected path past the mount refusal for this invocation. Takes the **resolved** (realpath) form, which the error message prints. Repeatable. |
 

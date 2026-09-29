@@ -32,7 +32,5 @@ PI_CODING_AGENT_DIR=/home/agent/.pi/agent
 CAGE_HOST_ADDR=host.microsandbox.internal
 -e
 RC_HOST_PROJECT_KEY=<TEST_HOME_SLUG>-workspace
---cpus=2
---memory=4g
 --label
 rc.egress.config-override=false

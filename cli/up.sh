@@ -976,9 +976,9 @@ _up_prepare_docker_mounts() {
 #   $1  path          — validated workspace path
 #   $2  port          — optional host port to expose (pass "" to skip)
 #   $3  env_file      — optional path to env file   (pass "" to skip)
-#   $4  rc_cpus       — CPU limit
-#   $5  rc_memory     — memory limit
-#   $6  rc_pids_limit — PID limit
+#   $4  rc_cpus       — CPU override, or "" to leave the config's cpus: alone
+#   $5  rc_memory     — memory override, or "" to leave the config's memory: alone
+#   $6  rc_pids_limit — PID limit, or "" (inert under msb: dropped by the translator)
 _up_prepare_environment() {
   local _path="$1" _port="$2" _env_file="$3" _rc_cpus="$4" _rc_memory="$5" _rc_pids_limit="$6"
 
@@ -1001,8 +1001,13 @@ _up_prepare_environment() {
     _UP_RUN_ARGS+=(--env-file "$_env_file")
   fi
 
-  # Resource limits (D2)
-  _UP_RUN_ARGS+=(--cpus="$_rc_cpus" --memory="$_rc_memory" --memory-swap="$_rc_memory" --pids-limit="$_rc_pids_limit")
+  # Resource overrides, only when the operator gave them on the rc up command
+  # line (rip-cage-g3ey). msb's --cpus/--memory flags beat the --conf file, so
+  # an unconditional default here would silently replace the config's cpus:/
+  # memory: lines (ADR-031 D2: the config owns everything rc cannot compute).
+  [[ -n "$_rc_cpus" ]] && _UP_RUN_ARGS+=(--cpus="$_rc_cpus")
+  [[ -n "$_rc_memory" ]] && _UP_RUN_ARGS+=(--memory="$_rc_memory")
+  [[ -n "$_rc_pids_limit" ]] && _UP_RUN_ARGS+=(--pids-limit="$_rc_pids_limit")
 
   # Enable host.docker.internal on Linux Docker Engine (no-op on macOS where it exists natively)
   _UP_RUN_ARGS+=(--add-host=host.docker.internal:host-gateway)
@@ -2381,7 +2386,8 @@ Continuing anyway — bd calls inside the container will fail until resolved."
 
 cmd_up() {
   local path="" port="" env_file=""
-  local rc_cpus="2" rc_memory="4g" rc_pids_limit="500"
+  # Empty = not given: the cage config's cpus:/memory: apply (rip-cage-g3ey).
+  local rc_cpus="" rc_memory="" rc_pids_limit=""
   # Multi-session flags: --new calls the new_session hook for a new auto-named session;
   # --session <name> forwards NAME to the attach hook.  Mutually exclusive.
   local rc_up_new_session="" rc_up_session_name=""
@@ -3049,13 +3055,15 @@ cmd_up() {
         # silently downgrade an explicitly-sized converge. --reload/--no-reload
         # themselves are NOT forwarded (the recreate hits the create path, so
         # there is no drift to converge and no recursion). Note: this recovers
-        # the CURRENT invocation's flags only; a cage's ORIGINAL create-time
-        # resources are not stored anywhere rc can read back, so a bare `rc up`
-        # still recreates at defaults — the same property `rc reload` has.
+        # the CURRENT invocation's flags only, and only those actually given
+        # (rip-cage-g3ey): a bare `rc up` recreates with the config's own
+        # cpus:/memory:, never an rc default.
         local _conv_args=()
         [[ -n "$port" ]] && _conv_args+=(--port "$port")
         [[ -n "$env_file" ]] && _conv_args+=(--env-file "$env_file")
-        _conv_args+=(--cpus "$rc_cpus" --memory "$rc_memory" --pids-limit "$rc_pids_limit")
+        [[ -n "$rc_cpus" ]] && _conv_args+=(--cpus "$rc_cpus")
+        [[ -n "$rc_memory" ]] && _conv_args+=(--memory "$rc_memory")
+        [[ -n "$rc_pids_limit" ]] && _conv_args+=(--pids-limit "$rc_pids_limit")
         [[ -n "$rc_up_new_session" ]] && _conv_args+=(--new)
         [[ -n "$rc_up_session_name" ]] && _conv_args+=(--session "$rc_up_session_name")
         [[ -n "$rc_allow_config_override" ]] && _conv_args+=(--allow-config-override)
@@ -3063,7 +3071,8 @@ cmd_up() {
         for _conv_rm in "${RC_ALLOW_RISKY_MOUNT[@]+"${RC_ALLOW_RISKY_MOUNT[@]}"}"; do
           _conv_args+=(--allow-risky-mount "$_conv_rm")
         done
-        cmd_up "${_conv_args[@]}" "$path"
+        # bash 3.2 + set -u: a bare converge leaves _conv_args empty (ADR-008 D5).
+        cmd_up ${_conv_args[@]+"${_conv_args[@]}"} "$path"
         return
     fi
     # else: the config is unchanged since this cage was created (or the

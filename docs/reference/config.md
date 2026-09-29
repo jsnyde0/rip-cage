@@ -41,7 +41,7 @@ labels:
 
 `image:` selects the image — `rc` passes no image argument. Point it at your own `FROM rip-cage:latest` extension when you have one; `RC_IMAGE` is a test-only override.
 
-`rc up`'s `--cpus`, `--memory` and `--pids-limit` flags override the config's values for one launch.
+`cpus:` and `memory:` are what the cage gets. `rc up` passes `--cpus`/`--memory` to msb only when you give them on its command line, and then they override the config for that launch (msb's flag beats `--conf`); without them rc passes neither. `--pids-limit` is accepted and ignored: `msb create` has no PID limit.
 
 ---
 

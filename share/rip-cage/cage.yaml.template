@@ -26,6 +26,8 @@
 
 # --- image and resources -----------------------------------------------
 # `image:` selects the image. rc does not pass an image argument.
+# `cpus:` and `memory:` are what the cage gets: rc passes --cpus/--memory to
+# msb only when you give them on the `rc up` command line, for that launch.
 image: rip-cage:latest
 cpus: 2
 memory: 4G
