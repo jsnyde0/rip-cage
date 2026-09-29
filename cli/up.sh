@@ -1700,6 +1700,36 @@ _up_init_container() {
 }
 
 
+# _up_sandbox_image_ref NAME (rip-cage-i3wv) — the image TAG msb recorded at
+# create (`.config.image.Oci.reference`), or empty when msb does not report
+# one. The drift messages below name it next to the tag rc compared against
+# ($IMAGE), so a cage created from a custom tag and resumed without RC_IMAGE
+# is told which tag it came from, not just two bare digests.
+_up_sandbox_image_ref() {
+  _msb_inspect_json "$1" | jq -r '.config.image.Oci.reference // empty' 2>/dev/null
+}
+
+# _up_drift_describe NAME PATH — sets the two message fragments the drift
+# messages share (call it after _msb_image_drift_status, whose
+# _RC_IMAGE_DRIFT_STORED it reads):
+#   _RC_IMAGE_DRIFT_CREATED_FROM  "'<tag>' (<short digest>)", or the bare
+#                                 short digest when msb names no tag
+#   _RC_IMAGE_DRIFT_PIN_TAG       the RC_IMAGE value that resumes the cage on
+#                                 its own image: its real tag when that differs
+#                                 from $IMAGE, else the <original image> placeholder
+_up_drift_describe() {
+  local _name="$1" _path="$2" _ref
+  _ref=$(_up_sandbox_image_ref "$_name" || true)
+  _RC_IMAGE_DRIFT_CREATED_FROM="$_RC_IMAGE_DRIFT_STORED"
+  [[ -n "$_ref" ]] && _RC_IMAGE_DRIFT_CREATED_FROM="'${_ref}' (${_RC_IMAGE_DRIFT_STORED})"
+  if [[ -n "$_ref" && "$_ref" != "$IMAGE" ]]; then
+    _RC_IMAGE_DRIFT_PIN_TAG="$_ref"
+  else
+    _RC_IMAGE_DRIFT_PIN_TAG="<original image>"
+  fi
+}
+
+
 # _up_resolve_resume_image_drift_stopped (rip-cage-jnvb / D-b, D-f) — abort
 # loud BEFORE msb start when the stopped container's pinned image drifted
 # from (or the current image is missing relative to) $IMAGE. Slotted with the
@@ -1743,18 +1773,21 @@ _up_resolve_resume_image_drift_stopped() {
     exit 1
   fi
 
+  _up_drift_describe "$_name" "$_path"
+  local _created_from="$_RC_IMAGE_DRIFT_CREATED_FROM" _pin_tag="$_RC_IMAGE_DRIFT_PIN_TAG"
+
   if [[ "$_status" -eq 2 ]]; then
     # rip-cage-syzk (point 3): reachable from the same stranded-cage incident
     # as the stale-image abort below, so it must name the volume cost of the
     # rc destroy remedy too (R11).
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-      json_error "Current image '${IMAGE}' not found — cannot verify container ${_name} is compatible with it. Run: rc build (then retry rc up ${_path}), or re-run with the RC_IMAGE this cage was created from, or rc destroy ${_name} && rc up ${_path} (deletes this cage's rc-state-${_name} and rc-history-${_name} volumes)." "RESUME_IMAGE_NOT_FOUND"
+      json_error "Current image '${IMAGE}' not found — cannot verify container ${_name} (created from ${_created_from}) is compatible with it. Run: rc build (then retry rc up ${_path}), or re-run with the RC_IMAGE this cage was created from (RC_IMAGE=${_pin_tag} rc up ${_path}), or rc destroy ${_name} && rc up ${_path} (deletes this cage's rc-state-${_name} and rc-history-${_name} volumes)." "RESUME_IMAGE_NOT_FOUND"
     fi
-    echo "Error: current image '${IMAGE}' not found — cannot verify container ${_name} is compatible with it." >&2
+    echo "Error: current image '${IMAGE}' not found — cannot verify container ${_name} (created from ${_created_from}) is compatible with it." >&2
     echo "       Resuming would risk running mismatched resume logic against this container's filesystem (ADR-001: no safe default when compatibility is unverifiable)." >&2
     echo "       Options:" >&2
     echo "         rc build                                    (build the image, then retry: rc up ${_path})" >&2
-    echo "         RC_IMAGE=<original image> rc up ${_path}    (if this cage was created from a custom-pinned image)" >&2
+    echo "         RC_IMAGE=${_pin_tag} rc up ${_path}    (if this cage was created from a custom-pinned image)" >&2
     echo "         rc destroy ${_name} && rc up ${_path}        (recreate from scratch — deletes this cage's rc-state-${_name} and rc-history-${_name} volumes)" >&2
     exit 1
   fi
@@ -1771,15 +1804,15 @@ _up_resolve_resume_image_drift_stopped() {
   # plain `rc up` invocation: with the original image there is no drift, so a
   # recreate would be work for nothing.
   if [[ "$OUTPUT_FORMAT" == "json" ]]; then
-    json_error "Container ${_name} was created from image ${_RC_IMAGE_DRIFT_STORED} but the current image ${IMAGE} is ${_RC_IMAGE_DRIFT_CURRENT} — rc up refuses to blind-resume a container pinned to a stale image. Run: rc up --replace ${_path} (moves the cage onto the current image; named volumes and host mounts survive, only the guest's ephemeral overlay does not); or if this cage was intentionally created from a custom image, re-run rc up with the same RC_IMAGE it was created with." "IMAGE_DRIFT_STALE_CONTAINER"
+    json_error "Container ${_name} was created from image ${_created_from} but rc compared it against '${IMAGE}' (${_RC_IMAGE_DRIFT_CURRENT}) — rc up refuses to blind-resume a container pinned to a stale image. Run: rc up --replace ${_path} (moves the cage onto '${IMAGE}'; named volumes and host mounts survive, only the guest's ephemeral overlay does not); or if this cage was intentionally created from a custom image, re-run rc up with the same RC_IMAGE it was created with." "IMAGE_DRIFT_STALE_CONTAINER"
   fi
-  echo "Error: container ${_name} was created from image ${_RC_IMAGE_DRIFT_STORED}, but the current image ${IMAGE} is ${_RC_IMAGE_DRIFT_CURRENT}." >&2
+  echo "Error: container ${_name} was created from image ${_created_from}, but rc compared it against '${IMAGE}' (${_RC_IMAGE_DRIFT_CURRENT}) — RC_IMAGE, or rip-cage:latest when unset." >&2
   echo "       rc up refuses to blind-resume a container pinned to a stale image — a rebuilt image's resume logic (e.g. mediator init) can crash against this container's older filesystem." >&2
   echo "       Run:" >&2
   echo "         rc up --replace ${_path}" >&2
   echo "       (moves the cage onto the current image; named volumes rc-state-${_name}/rc-history-${_name} and host mounts survive -- only the guest's ephemeral overlay does not)" >&2
   echo "       If this cage was intentionally created from a custom-pinned image, re-run rc up with the same RC_IMAGE it was created with instead:" >&2
-  echo "         RC_IMAGE=<original image> rc up ${_path}" >&2
+  echo "         RC_IMAGE=${_pin_tag} rc up ${_path}" >&2
   exit 1
 }
 
@@ -1820,7 +1853,8 @@ _up_resolve_resume_image_drift_running() {
   # (ADR-029 D4), so its own image drift has no in-place repair. rip-cage-ely4.10
   # repoints the remedy off the retired `rc down && rc reload` pair onto the one
   # verb that now names the recreate out loud.
-  echo "Warning: container ${_name} is running an older image (created from ${_RC_IMAGE_DRIFT_STORED}, current is ${_RC_IMAGE_DRIFT_CURRENT}) — the last 'rc build' will not apply until: rc up --replace ${_path} (or re-run with the RC_IMAGE this cage was created with, if intentionally pinned)." >&2
+  _up_drift_describe "$_name" "$_path"
+  echo "Warning: container ${_name} is running an older image (created from ${_RC_IMAGE_DRIFT_CREATED_FROM}, compared against '${IMAGE}' (${_RC_IMAGE_DRIFT_CURRENT})) — the last 'rc build' will not apply until: rc up --replace ${_path} (or, if intentionally pinned, re-run with the RC_IMAGE this cage was created with: RC_IMAGE=${_RC_IMAGE_DRIFT_PIN_TAG} rc up ${_path})." >&2
   return 0
 }
 

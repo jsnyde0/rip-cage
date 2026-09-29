@@ -494,7 +494,16 @@ _build_msb_load() {
   # real `msb load` and it reported success. From here on, msb NOT holding
   # $IMAGE is a genuine "the load did not land" -- see rip-cage-528o's
   # status-3 branch in _msb_warn_image_layer_drift.
+  #
+  # rip-cage-i3wv: a plain `msb load --tag` onto an existing tag REPLACES it
+  # (measured on msb 0.7.4: digest and layer diff_ids advance, a fresh
+  # sandbox boots the new content, running and stopped sandboxes keep
+  # theirs). Do not add `msb image rm` first -- without --force it refuses
+  # while any cage uses the tag. msb's image `created_at` is the cache
+  # entry's time and never advances on a reload; judge a refresh by digest
+  # or diff_ids, which _msb_warn_image_layer_drift does right after this.
   _RC_MSB_LOAD_SUCCEEDED=1
+  log "Loaded ${IMAGE} into msb's image cache (replaces the previous image under that tag; running cages keep theirs)."
   return 0
 }
 

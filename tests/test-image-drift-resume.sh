@@ -169,8 +169,10 @@ case "${1:-}" in
     # resolution -- e.g. R7's status-2/3 exits actually happen even earlier,
     # at the running-gate, so they don't need this to be a real directory --
     # gets a directory that genuinely exists).
-    jq -nc --arg status "$_status" --arg digest "${DRIFT_STORED_IMAGE:-}" --arg ws "${DRIFT_WORKSPACE:-}" \
-      '{status: $status, config: {manifest_digest: $digest, labels: {"rc.source.path": $ws}}}'
+    # rip-cage-i3wv: DRIFT_STORED_REF, when set, is the tag msb recorded at
+    # create (.config.image.Oci.reference) -- the drift messages name it.
+    jq -nc --arg status "$_status" --arg digest "${DRIFT_STORED_IMAGE:-}" --arg ws "${DRIFT_WORKSPACE:-}" --arg ref "${DRIFT_STORED_REF:-}" \
+      '{status: $status, config: ({manifest_digest: $digest, labels: {"rc.source.path": $ws}} + (if $ref == "" then {} else {image: {Oci: {reference: $ref}}} end))}'
     exit 0
     ;;
   image)
@@ -178,7 +180,7 @@ case "${1:-}" in
       if [[ -z "${DRIFT_CURRENT_IMAGE:-}" ]]; then
         echo "[]"
       else
-        jq -nc --arg dig "${DRIFT_CURRENT_IMAGE}" '[{reference: "rip-cage:latest", digest: $dig}]'
+        jq -nc --arg dig "${DRIFT_CURRENT_IMAGE}" --arg ref "${DRIFT_CURRENT_REF:-rip-cage:latest}" '[{reference: $ref, digest: $dig}]'
       fi
       exit 0
     fi
@@ -688,6 +690,61 @@ if [[ "$_t8b_ok" == "true" ]]; then
   pass T8b "divergent layer diff_ids -> loud image-layer-drift warning through REAL cmd_up, exit 0"
 else
   fail T8b "rc up layer-drift wiring" "$_t8b_reason (exit=$RC_EXIT stderr=$RC_ERR)"
+fi
+teardown_sandbox
+
+# ===========================================================================
+# T9 (rip-cage-i3wv A3) — a cage created from a custom tag. The drift
+# messages name the tag the cage came from AND the tag rc compared against,
+# and the RC_IMAGE escape names the cage's real tag instead of a placeholder.
+# With RC_IMAGE set to that tag, the compare runs against it.
+# ===========================================================================
+setup_sandbox
+DRIFT_STORED_REF="fiab-spike:latest" run_rc_up "exited" "$IMG_A" "$IMG_B" "human" "false"
+_t9_ok=true _t9_reason=""
+[[ "$RC_EXIT" -ne 0 ]] || { _t9_ok=false; _t9_reason="expected a non-zero abort"; }
+grep -qF "created from image 'fiab-spike:latest' (${SHORT_A})" <<<"$RC_ERR" \
+  || { _t9_ok=false; _t9_reason="${_t9_reason:+$_t9_reason; }does not name the stored tag with its digest"; }
+grep -qF "compared it against 'rip-cage:latest' (${SHORT_B})" <<<"$RC_ERR" \
+  || { _t9_ok=false; _t9_reason="${_t9_reason:+$_t9_reason; }does not name the tag it compared against"; }
+grep -qF "RC_IMAGE=fiab-spike:latest rc up /" <<<"$RC_ERR" \
+  || { _t9_ok=false; _t9_reason="${_t9_reason:+$_t9_reason; }escape does not name the cage's real tag"; }
+if [[ "$_t9_ok" == "true" ]]; then
+  pass T9 "stopped custom-tag cage resumed without RC_IMAGE -> names both tags and the exact RC_IMAGE escape"
+else
+  fail T9 "custom-tag drift message" "$_t9_reason (exit=$RC_EXIT stderr=$RC_ERR)"
+fi
+teardown_sandbox
+
+setup_sandbox
+RC_IMAGE="fiab-spike:latest" DRIFT_CURRENT_REF="fiab-spike:latest" DRIFT_STORED_REF="fiab-spike:latest" \
+  run_rc_up "exited" "$IMG_A" "$IMG_A" "human" "false"
+if grep -qx "start" "$RC_LOG"; then
+  pass T9b "RC_IMAGE set to the cage's own tag, same digest -> compared against that tag, resume proceeds"
+else
+  fail T9b "RC_IMAGE-pinned resume" "msb start not reached (exit=$RC_EXIT stderr=$RC_ERR)"
+fi
+teardown_sandbox
+
+setup_sandbox
+RC_IMAGE="fiab-spike:latest" DRIFT_CURRENT_REF="fiab-spike:latest" DRIFT_STORED_REF="fiab-spike:latest" \
+  run_rc_up "exited" "$IMG_A" "$IMG_B" "human" "false"
+if grep -qF "compared it against 'fiab-spike:latest' (${SHORT_B})" <<<"$RC_ERR" \
+   && grep -qF "RC_IMAGE=<original image> rc up" <<<"$RC_ERR"; then
+  pass T9c "same custom tag rebuilt -> names 'fiab-spike:latest' as the compare target; the RC_IMAGE hint stays"
+else
+  fail T9c "same-tag drift message" "(exit=$RC_EXIT stderr=$RC_ERR)"
+fi
+teardown_sandbox
+
+setup_sandbox
+DRIFT_STORED_REF="fiab-spike:latest" run_rc_up "running" "$IMG_A" "$IMG_B" "human" "false"
+if [[ "$RC_EXIT" -eq 0 ]] \
+   && grep -qF "created from 'fiab-spike:latest' (${SHORT_A}), compared against 'rip-cage:latest' (${SHORT_B})" <<<"$RC_ERR" \
+   && grep -qF "RC_IMAGE=fiab-spike:latest rc up /" <<<"$RC_ERR"; then
+  pass T9d "running custom-tag cage -> warning names both tags and the RC_IMAGE escape, still proceeds"
+else
+  fail T9d "running custom-tag drift warning" "(exit=$RC_EXIT stderr=$RC_ERR)"
 fi
 teardown_sandbox
 

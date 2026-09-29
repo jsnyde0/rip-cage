@@ -629,6 +629,72 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# T12 (rip-cage-i3wv A2): same-tag rebuild -- msb's cache ALREADY holds
+# $IMAGE. The refresh is a plain `msb load --tag $IMAGE -i <tar>`: measured
+# on msb 0.7.4, that replaces the tag's content (digest and diff_ids
+# advance). No `msb image rm` first -- it refuses without --force while a
+# cage uses the tag. The successful load is announced, so an operator can
+# see the refresh happened.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T12: tag already in msb's cache -> plain msb load --tag, no image rm, load announced ==="
+: > "$CALL_LOG"
+_t12_rc=0
+_t12_out=$(PATH="$FAKE_BIN:$PATH" RC_TEST_CALL_LOG="$CALL_LOG" MSB_LOAD_EXIT=0 \
+  RC_TEST_MSB_IMAGE_LIST='[{"reference":"fiab-spike:latest"}]' \
+  bash -c "source '${RC}' 2>/dev/null; IMAGE=fiab-spike:latest; _build_msb_load" 2>&1) || _t12_rc=$?
+if [[ "$_t12_rc" -eq 0 ]] && grep -qE "^msb load --tag fiab-spike:latest -i " "$CALL_LOG"; then
+  pass "T12: msb load --tag fiab-spike:latest -i <tar> issued for an already-cached tag"
+else
+  fail "T12: expected 'msb load --tag fiab-spike:latest -i' and exit 0 (rc=$_t12_rc)" "$(cat "$CALL_LOG")"
+fi
+if grep -qE "^msb image (rm|remove)" "$CALL_LOG"; then
+  fail "T12b: rc build must not remove the cached tag before loading" "$(cat "$CALL_LOG")"
+else
+  pass "T12b: no msb image rm before the load"
+fi
+if grep -qF "Loaded fiab-spike:latest into msb's image cache" <<<"$_t12_out"; then
+  pass "T12c: the successful load is announced, naming the tag"
+else
+  fail "T12c: expected a 'Loaded fiab-spike:latest into msb's image cache' line" "$_t12_out"
+fi
+
+# ---------------------------------------------------------------------------
+# T13 (rip-cage-i3wv A2): the load reports success but msb's cache still
+# holds the PREVIOUS build's layers (the stale-cache symptom). The post-load
+# drift check must say so -- the existing different-layer-content warning,
+# never silence.
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== T13: load reported success, msb still holds the old layers -> drift warning fires ==="
+: > "$CALL_LOG"
+_t13_rc=0
+_t13_out=$(PATH="$FAKE_BIN:$PATH" RC_TEST_CALL_LOG="$CALL_LOG" MSB_LOAD_EXIT=0 \
+  RC_TEST_DOCKER_IMAGE_LAYERS='["sha256:aaaaaa","sha256:newnew"]' \
+  RC_TEST_MSB_IMAGE_INSPECT='{"layers":[{"diff_id":"sha256:aaaaaa"},{"diff_id":"sha256:oldold"}]}' \
+  bash -c "source '${RC}' 2>/dev/null; IMAGE=fiab-spike:latest; _build_msb_load; _msb_warn_image_layer_drift" 2>&1) || _t13_rc=$?
+if grep -qF "msb's cached 'fiab-spike:latest' image has different layer content" <<<"$_t13_out"; then
+  pass "T13: the stale-cache drift warning fires, naming the tag"
+else
+  fail "T13: expected the different-layer-content warning" "$_t13_out"
+fi
+if [[ "$_t13_rc" -eq 0 ]]; then
+  pass "T13b: advisory only -- still returns 0"
+else
+  fail "T13b: expected exit 0, got $_t13_rc" "$_t13_out"
+fi
+# Negative control: same layers on both sides -> no drift warning.
+_t13c_out=$(PATH="$FAKE_BIN:$PATH" RC_TEST_CALL_LOG="$CALL_LOG" MSB_LOAD_EXIT=0 \
+  RC_TEST_DOCKER_IMAGE_LAYERS='["sha256:aaaaaa","sha256:newnew"]' \
+  RC_TEST_MSB_IMAGE_INSPECT='{"layers":[{"diff_id":"sha256:aaaaaa"},{"diff_id":"sha256:newnew"}]}' \
+  bash -c "source '${RC}' 2>/dev/null; IMAGE=fiab-spike:latest; _build_msb_load; _msb_warn_image_layer_drift" 2>&1)
+if grep -qi "warning" <<<"$_t13c_out"; then
+  fail "T13c: a load that did land must not warn" "$_t13c_out"
+else
+  pass "T13c: negative control -- matching layers, no warning"
+fi
+
+# ---------------------------------------------------------------------------
 # T4: structural wiring check -- cmd_build's body actually calls _build_msb_load
 #
 # rip-cage-zqjz.2: captured into a variable FIRST, rather than piped straight

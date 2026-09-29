@@ -77,6 +77,8 @@ rc build [--file PATH]
 
 Runs `docker build`, then loads the result into msb's image cache. Those are two separate stores, and **cages boot from msb's** — a bare `docker build` leaves cages running the old image. Both `rc build` and an auto-provisioning `rc up` run the load step and compare the stores afterward, warning loudly (and, on the `rc up` already-present branch, resyncing) when they disagree.
 
+A rebuild under the same tag **replaces msb's cached image in place** (measured on msb 0.7.4): new cages boot the new build, while existing cages keep the image they were created from until `rc up --replace`. Judge a refresh by `msb image inspect <tag> --format json`'s `digest` or `layers[].diff_id`, never its `created_at` — that is when the cache entry first appeared, and a reload does not move it.
+
 `--file PATH` names the Dockerfile. Default is rip-cage's own base Dockerfile. The path **must resolve outside every cage mount** — fail-closed, no opt-out, because a caged agent that could point `rc build` at a path it controls has written its own image.
 
 **`rc build` takes exactly one input.** Docker receives a fixed argv — `-f <path> --build-arg RC_VERSION=<version> -t <tag> <context>` — and nothing else. Any other caller flag, including `-t`, is rejected before any docker call. Set `RC_IMAGE` to build under a different tag.
