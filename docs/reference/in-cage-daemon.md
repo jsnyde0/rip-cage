@@ -62,9 +62,16 @@ A daemon entry, in the fragment your Dockerfile merges in:
   start has passed `health`, so a daemon that is broken from the start never
   loops. Init waits 5 seconds, then runs `start` again and writes
   `WARNING: daemon '<name>' exited (code N); restarting (restart: always)` to
-  `/tmp/rip-cage-daemon-<name>.log`. To stop it until the next boot, kill the
-  pid in `/tmp/rip-cage-daemon-<name>.supervisor.pid`; that stops the daemon
-  too. Any other value fails the boot, naming the field.
+  `/tmp/rip-cage-daemon-<name>.log`. There is no give-up: a daemon that dies
+  instantly writes that line every 5 seconds until the next init run, so watch
+  the log size. To stop it until the next boot, kill the pid in
+  `/tmp/rip-cage-daemon-<name>.supervisor.pid`. With an `exec`-prefixed start
+  that stops the daemon too; without `exec` it kills only the wrapper shell and
+  the server survives as an orphan. Any other value fails the boot, naming the
+  field.
+  Every `/tmp/rip-cage-daemon-*` path on this page sits under
+  `RC_DAEMON_RUN_DIR`, default `/tmp`. It is a test knob for the host test;
+  setting it in an image moves every one of those paths.
 - **`state_dir`** — absolute path for the daemon's state. Pre-create it in your
   Dockerfile (root `mkdir -p` then `chown agent:agent`) so init, running as the
   agent, needs no write on the parent. **State is cage-lifetime** — wiped on
@@ -124,9 +131,11 @@ entry's own `health` command before deciding a daemon is already running
 (`rip-cage-893l`). A recorded pid that exists but fails its health check is
 treated as dead: init terminates it and restarts, rather than skipping.
 
-The blast radius is bounded by where the pid file lives:
-`/tmp/rip-cage-daemon-<name>.pid` is wiped by the fresh kernel boot every msb
-resume performs, so a stale skip never survives a resume.
+A pid file that outlives a resume cannot do harm. Every msb resume is a fresh
+kernel boot, so a pid recorded before it may name an unrelated process now. A
+stale daemon pid is only a pre-filter: `health` decides. A stale supervisor pid
+is never signalled, because init kills a supervisor only when the kernel boot
+id recorded beside its pid (`<name>.supervisor.boot`) matches the current boot.
 
 Nothing enforces the `exec` prefix, deliberately. The false-healthy case above is
 indifferent to the start shape, so a syntax rule would gate the wrong thing while

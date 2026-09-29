@@ -97,15 +97,22 @@ _rc_boot_id() {
 # It re-runs start only once init has written "armed" to the verdict file, i.e.
 # after the FIRST start passed its health check; a daemon that fails that check
 # keeps today's fail-warn path and is never respawned, so a misconfigured one
-# does not spin. Fixed 5s backoff, no exponential machinery. TERM stops the loop
-# and the daemon with it — the one way to keep a supervised daemon off.
+# does not spin. Fixed 5s backoff, no exponential machinery, no give-up: a
+# daemon that dies instantly logs a WARNING every 5s until the next init run.
+# TERM stops the loop and kills the recorded daemon pid — with an exec-prefixed
+# start that is the server; without exec it is only the wrapper shell.
+# Every exit removes the supervisor's own pidfile (if it still names this
+# supervisor), so a later init run never TERMs a reused pid.
 _rc_daemon_supervise() {
   local _name="$1" _start="$2" _pidfile="$3" _log="$4" _verdict="$5"
-  local _child="" _code _waited
+  local _supfile="${3%.pid}.supervisor.pid"
+  local _child="" _code _waited _self
   # Always runs backgrounded, so this reaches only the supervisor's own
   # subshell. Under errexit a backgrounded eval reports 1, not the daemon's code.
   set +e
-  trap '[ -n "$_child" ] && kill "$_child" 2>/dev/null; exit 0' TERM
+  # This subshell's pid, without bash-4 $BASHPID: sh's parent is us.
+  _self=$(exec sh -c 'echo $PPID')
+  trap '[ -n "$_child" ] && kill "$_child" 2>/dev/null; _rc_daemon_supervise_exit' TERM
   while :; do
     eval "$_start" >>"$_log" 2>&1 &
     _child=$!
@@ -118,11 +125,20 @@ _rc_daemon_supervise() {
       sleep 1 & wait $!
       _waited=$((_waited + 1))
     done
-    [ "$(cat "$_verdict" 2>/dev/null)" = "armed" ] || exit 0
+    [ "$(cat "$_verdict" 2>/dev/null)" = "armed" ] || _rc_daemon_supervise_exit
     echo "[rip-cage] WARNING: daemon '${_name}' exited (code ${_code}); restarting (restart: always)" >>"$_log"
     # Backgrounded sleep so a TERM lands now, not after the backoff.
     sleep 5 & wait $!
   done
+}
+
+# _rc_daemon_supervise_exit — the supervisor's one way out. Reads the
+# supervisor's locals (_supfile, _self) by bash's dynamic scope.
+_rc_daemon_supervise_exit() {
+  if [ "$(cat "$_supfile" 2>/dev/null)" = "$_self" ]; then
+    rm -f "$_supfile" "${_supfile%.pid}.boot"
+  fi
+  exit 0
 }
 
 # _rc_start_daemons <descriptor>
@@ -138,6 +154,9 @@ _rc_daemon_supervise() {
 #      asymmetry: safety floor fails-closed, user daemon fails-warn).
 _rc_start_daemons() {
   local _rc_run_dir="${RC_DAEMON_RUN_DIR:-/tmp}"
+  # Error messages here and in _rc_boot_require name the descriptor argued in,
+  # never a global a caller may not have set (set -u).
+  local _rc_boot_descriptor="$1"
   _rc_daemon_count=$(jq '(.daemons // []) | length' "$1" 2>/dev/null || echo "0")
   for (( _rc_di=0; _rc_di<_rc_daemon_count; _rc_di++ )); do
     _rc_daemon_entry=$(jq -c ".daemons[${_rc_di}]" "$1" 2>/dev/null)

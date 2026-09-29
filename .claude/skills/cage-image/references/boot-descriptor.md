@@ -50,7 +50,10 @@ up?".
 logging a WARNING with the exit code to `/tmp/rip-cage-daemon-<name>.log`. The
 restarts begin only after the first start passes `health`. To stop a daemon
 that restarts, kill the pid in `/tmp/rip-cage-daemon-<name>.supervisor.pid`,
-not the daemon's own pid.
+not the daemon's own pid. That stops the daemon too only when `start` is
+`exec`-prefixed; without `exec` it kills the wrapper shell and the server
+survives as an orphan. A daemon that dies instantly logs a WARNING every 5
+seconds until the next init run.
 
 **Diagnosing:** init runs `health` at boot and warns on failure — read the
 `rc up` output for `[rip-cage] daemon` lines, then run the `health` command

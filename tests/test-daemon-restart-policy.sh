@@ -25,6 +25,8 @@
 #       leaving two respawning the same daemon
 #   D6  stopping the supervisor (its pidfile) stops the respawns
 #   D7  an unknown restart value fails the boot loud, naming the field
+#   D10 a supervisor that exits on its own (disarmed) removes its own pidfile,
+#       so a later init run cannot TERM a reused pid
 #   D8  rc-boot-merge carries the restart field through untouched
 
 set -uo pipefail
@@ -164,6 +166,13 @@ sleep 7
 [ "$(count unhealthy)" -eq 1 ] && pass "D4 restart: always with a failed first health check: exactly 1 start" \
   || fail "D4 restart: always with a failed first health check: exactly 1 start" "starts=$(count unhealthy)"
 
+# D10: 'unhealthy' was disarmed; its supervisor exited and took its pidfile.
+if [ ! -f "${RUN}/rip-cage-daemon-unhealthy.supervisor.pid" ]; then
+  pass "D10 a disarmed supervisor removed its own pidfile"
+else
+  fail "D10 a disarmed supervisor removed its own pidfile" "still there: $(cat "${RUN}/rip-cage-daemon-unhealthy.supervisor.pid")"
+fi
+
 # D6: stop the supervisor; the respawns stop.
 sup_pid=$(cat "${RUN}/rip-cage-daemon-always.supervisor.pid" 2>/dev/null || echo "")
 if [ -n "$sup_pid" ] && kill "$sup_pid" 2>/dev/null; then
@@ -182,13 +191,14 @@ fi
 # D7: an unknown value is a composition error.
 jq -n '{daemons: [{name: "typo", restart: "sometimes", start: "true", health: "true"}]}' > "${W}/bad.json"
 # shellcheck disable=SC2016
+# Under set -u, with no global _rc_boot_descriptor: the message must name $1.
 bad_out=$(bash -c '
+  set -u
   export PATH="$1/bin:$PATH" RC_DAEMON_RUN_DIR="$2"
   RC_INIT_LIB_ONLY=1 source "$3"
-  _rc_boot_descriptor="$4"
   _rc_start_daemons "$4"
 ' _ "$W" "$RUN" "$INIT_SCRIPT" "${W}/bad.json" 2>&1); bad_rc=$?
-if [ "$bad_rc" -ne 0 ] && grep -q "daemons\[0\].*restart" <<<"$bad_out"; then
+if [ "$bad_rc" -ne 0 ] && grep -qF "${W}/bad.json: daemons[0] field 'restart'" <<<"$bad_out"; then
   pass "D7 an unknown restart value fails the boot naming daemons[0] and the field"
 else
   fail "D7 an unknown restart value fails the boot naming daemons[0] and the field" "rc=${bad_rc} out=${bad_out}"
