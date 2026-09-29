@@ -1239,16 +1239,16 @@ _up_conf_image() {
   echo "${_img:-$IMAGE}"
 }
 
-# _up_read_boot_descriptor IMG — print the image's /etc/rip-cage/boot.json;
+# _up_read_boot_descriptor IMG [never] — print the image's /etc/rip-cage/boot.json;
 # non-zero when the image cannot be read. A throwaway container, not docker in
 # the runtime path (see _up_check_multiplexer_available).
 _up_read_boot_descriptor() {
   # rip-cage-47gy: this read runs under --dry-run too, where a plain
-  # `docker run` of an absent image would PULL it. Under --dry-run only,
-  # --pull never makes absent read as "cannot read"; the real path keeps
-  # docker's default pull.
+  # `docker run` of an absent image would PULL it. Under --dry-run, or when the
+  # caller passes "never" as $2, --pull never makes absent read as "cannot
+  # read"; otherwise docker's default pull applies.
   local -a _mux_pull=()
-  [[ "${DRY_RUN:-}" == "true" ]] && _mux_pull=(--pull never)
+  [[ "${DRY_RUN:-}" == "true" || "${2:-}" == "never" ]] && _mux_pull=(--pull never)
   docker run --rm ${_mux_pull[@]+"${_mux_pull[@]}"} --entrypoint sh "$1" -c 'cat /etc/rip-cage/boot.json' 2>/dev/null
 }
 
@@ -1264,12 +1264,14 @@ _up_read_boot_descriptor() {
 _up_default_multiplexer() {
   local _img _desc _names
   _img=$(_up_conf_image "$1")
-  if ! _desc=$(_up_read_boot_descriptor "$_img") \
-      || ! _names=$(jq -r '(.multiplexers // [])[].name' <<<"$_desc" 2>/dev/null); then
+  # --pull never: an unreadable image already means none, so this read never
+  # fetches from a registry (an msb-only image would otherwise cost a pull).
+  if ! _desc=$(_up_read_boot_descriptor "$_img" never) \
+      || ! _names=$(jq -r '(.multiplexers // [])[].name | select(. != null and . != "")' <<<"$_desc" 2>/dev/null); then
     echo none; return 0
   fi
   local _count
-  _count=$(grep -c . <<<"$_names")
+  _count=$(grep -c . <<<"$_names" || true)
   if [[ "$_count" -eq 1 ]]; then
     echo "$_names"
   elif [[ "$_count" -gt 1 ]]; then
@@ -2825,6 +2827,10 @@ cmd_up() {
       # must pass to complete an operation they already asked for by name is
       # exactly the human-in-the-loop shape this CLI is shedding.
       _up_warn_transcript_loss "$name"
+      # rip-cage-sfo3: unset RC_MULTIPLEXER keeps the stored multiplexer
+      # through --replace, as through converge; only an explicit
+      # RC_MULTIPLEXER=<x> changes it (what 1yqa's refusal tells the operator).
+      _UP_KEEP_MUX=$(_container_multiplexer "$name")
       log "Recreating ${_replace_state_word} cage ${name} (--replace): graceful stop, remove, create against the current config."
       _msb_stop_graceful "$name"
       _msb_remove "$name"
@@ -3158,7 +3164,7 @@ cmd_up() {
         # into _up_conv_mux before the remove). The create path uses it when
         # RC_MULTIPLEXER is unset, so a converge never flips a cage's value —
         # neither to the image's default nor back to none.
-        export _UP_CONVERGE_MUX="$_up_conv_mux"
+        export _UP_KEEP_MUX="$_up_conv_mux"
         # Cage now absent -> the recursive cmd_up takes the create path (which
         # rebaselines the config-applied snapshot) and, in a TTY, attaches.
         # rip-cage-tsf2.9 (review F2): forward THIS invocation's own runtime
@@ -3435,11 +3441,11 @@ cmd_up() {
   # is given (ADR-005 D12).
   # session.multiplexer retired with the schema (ADR-031 D2).
   # $RC_MULTIPLEXER selects a provider by name, "none" included. Unset, a
-  # converge recreate keeps the cage's stored value (_UP_CONVERGE_MUX: the
-  # multiplexer is fixed at create, rip-cage-1yqa), and a fresh create takes
+  # converge or --replace recreate keeps the cage's stored value (_UP_KEEP_MUX:
+  # the multiplexer is fixed at create, rip-cage-1yqa), and a fresh create takes
   # the sole multiplexer the image declares, else none (rip-cage-sfo3,
   # _up_default_multiplexer). rc names none of them (ADR-005 D12).
-  local _rc_multiplexer="${RC_MULTIPLEXER:-${_UP_CONVERGE_MUX:-}}"
+  local _rc_multiplexer="${RC_MULTIPLEXER:-${_UP_KEEP_MUX:-}}"
   if [[ -z "$_rc_multiplexer" ]]; then
     _rc_multiplexer=$(_up_default_multiplexer "$_UP_CAGE_CONF")
     [[ "$_rc_multiplexer" != "none" ]] && \

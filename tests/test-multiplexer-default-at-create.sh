@@ -21,6 +21,9 @@
 #       fixed at create (rip-cage-1yqa), the default never flips a cage
 #   D6  converge recreate of a cage labelled fakemux, unset -> recreate keeps
 #       fakemux
+#   D7  rc up --replace of a cage labelled none, one declared, unset ->
+#       recreate keeps none (only an explicit RC_MULTIPLEXER=<x> changes it)
+#   D8  rc up --replace of a cage labelled fakemux, unset -> keeps fakemux
 
 set -uo pipefail
 
@@ -183,6 +186,26 @@ if [[ -n "$CREATE" ]] && creates_with fakemux; then
   pass D6 "converge recreate of a cage labelled fakemux, unset -> keeps fakemux"
 else
   fail D6 "converge keeps stored fakemux" "exit=$RC_EXIT create=[$CREATE] out=$RC_ALL"
+fi
+teardown_ws
+
+# --- D7: --replace of a none cage keeps none -------------------------------
+setup_ws
+(unset RC_MULTIPLEXER; run_up exited none "$ONE" --replace; save); load
+if [[ -n "$CREATE" ]] && creates_with none; then
+  pass D7 "--replace of a cage labelled none, one declared, unset -> keeps none"
+else
+  fail D7 "--replace keeps stored none" "exit=$RC_EXIT create=[$CREATE] out=$RC_ALL"
+fi
+teardown_ws
+
+# --- D8: --replace of a fakemux cage keeps fakemux -------------------------
+setup_ws
+(unset RC_MULTIPLEXER; run_up exited fakemux "$TWO" --replace; save); load
+if [[ -n "$CREATE" ]] && creates_with fakemux; then
+  pass D8 "--replace of a cage labelled fakemux, unset -> keeps fakemux"
+else
+  fail D8 "--replace keeps stored fakemux" "exit=$RC_EXIT create=[$CREATE] out=$RC_ALL"
 fi
 teardown_ws
 
