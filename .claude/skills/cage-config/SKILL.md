@@ -141,6 +141,9 @@ The template binds CCTOK, so it needs no line. `rc up` warns on the breaking sha
 a secret is bound, a non-TLS stream or a bare-IP HTTPS call to an IP allowed
 on port 443 connects, then stalls, strict on or off
 ([`docs/reference/egress.md`](../../../docs/reference/egress.md#strict-hostname-checking-msb-073)).
+The same section carries the measured port-80 recipe for a non-TLS, IP-only
+protocol under a bound secret: the CIDR allowed on `tcp:80`, and the client
+pinned to port 80.
 
 The template's list is the starting set, with each entry's reason beside it.
 For which hosts a coding agent actually needs and why, see
