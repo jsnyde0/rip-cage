@@ -27,6 +27,10 @@ Extensions merge into it at BUILD time with `rc-boot-merge`. `rip-cage` never
 edits it for you: appending your fragment is mechanical, deciding what to
 declare is yours.
 
+A fragment may carry its own `_readme` key to document itself (its twin,
+its reason). `rc-boot-merge` drops it: only the three arrays merge, and the
+descriptor keeps the base `_readme`.
+
 ---
 
 ## `daemons[]` — something runs for the cage's life

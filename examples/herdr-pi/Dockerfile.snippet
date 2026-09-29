@@ -9,9 +9,12 @@
 # `COPY boot-fragment.json ... / RUN rc-boot-merge ...` pair each of those
 # snippets ends with. This recipe's own boot-fragment.json below is the ONE
 # merge that declares both the herdr multiplexer AND pi's combined launch
-# line — running the other two recipes' own merges first is harmless (this
-# one's merge replaces "pi" wholesale and re-declares "herdr" idempotently)
-# but is wasted work. See README for why `rc-boot-merge` cannot combine two
+# line. Running the other two recipes' own merges first is wasted work and
+# only conditionally harmless: this merge replaces "pi" wholesale, but
+# rc-boot-merge APPENDS multiplexers, so the descriptor ends with two "herdr"
+# entries and init takes the first — harmless only while the two recipes'
+# herdr entries stay byte-identical (tests/test-herdr-roster-resume-recipe.sh
+# T9 pins that). See README for why `rc-boot-merge` cannot combine two
 # fragments' `launch` values for the same tool on its own.
 
 USER root

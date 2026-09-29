@@ -102,6 +102,17 @@ to a **non-colliding** cage path (e.g. `/home/agent/.config/herdr-host`) and
 point `HERDR_SOCKET_PATH` at that path — never at the cage-local
 `~/.config/herdr`.
 
+## Pane shell: the start hook exports `SHELL` from passwd
+
+This recipe's herdr `start` hook is the byte-identical twin of
+`examples/herdr`'s, so it exports the agent's login shell (read from passwd)
+as `SHELL` before `herdr server` — otherwise every pane opens `/bin/sh`. A
+`terminal.default_shell` baked into an image-side `~/.config/herdr/config.toml`
+is no substitute: the per-cage `~/.config/herdr` mount the roster needs
+masks it. Full reasoning:
+`examples/herdr/README.md`, "Three things worth knowing before you change
+this" (rip-cage-f0rl).
+
 ## Upgrading herdr
 
 1. Update the pinned version and checksums in

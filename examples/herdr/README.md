@@ -102,7 +102,7 @@ falls back to `attach`).
 | `start` | init, at every cage boot. Must be idempotent — a resume re-runs init. |
 | `attach` | `rc up` on a running cage. Receives `--session NAME` as `$1`; herdr's hook ignores it (its sessions are addressed by `--session` on the `herdr` CLI itself, not by this positional arg). |
 
-## Two things worth knowing before you change this
+## Three things worth knowing before you change this
 
 **The socket path must be exported before the server backgrounds, in the
 parent shell, not inside the backgrounded job.** `start`'s command is one
@@ -128,6 +128,16 @@ detach — only the *scripted client* dies. Harmless on a genuinely fresh cage
 with no prior roster (it just attaches the default pane's normal shell, waits,
 detaches). This retires once herdr ships a headless restore-on-start trigger;
 until then, it adds a bounded ~15s to boot whenever herdr is the multiplexer.
+
+**The start hook exports `SHELL` from passwd before `herdr server`.** herdr
+picks a new pane's shell from `terminal.default_shell`, then `$SHELL`, then
+`/bin/sh`. Init runs the hook with no `SHELL` set, so without the export every
+pane would open `/bin/sh` instead of the agent's login shell (zsh plus the base
+zshrc). The hook reads the running user's login shell with `getent passwd` —
+the base image owns that value, the recipe names no shell. Baking
+`terminal.default_shell` into an image-side `~/.config/herdr/config.toml`
+would not work: the `~/.config/herdr` host mount above, required for roster
+persistence, masks whatever the image put at that path (rip-cage-f0rl).
 
 ## herdr CLI control surface
 

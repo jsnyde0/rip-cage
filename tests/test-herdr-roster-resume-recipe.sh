@@ -170,7 +170,7 @@ echo "--- T5: herdr pin read from the snippet, with two sha256 digests checked b
 test_t5_pin() {
   local url_ver comment_ver
   url_ver=$(sed -n 's#.*releases/download/v\([0-9][0-9.]*\)/herdr-linux.*#\1#p' "$HERDR_SNIPPET" | head -1)
-  comment_ver=$(sed -n 's#^\# Pinned release: .* v\([0-9][0-9.]*\)\..*#\1#p' "$HERDR_SNIPPET" | head -1)
+  comment_ver=$(sed -n 's#^\# Pinned release: .* v\([0-9][0-9.]*[0-9]\).*#\1#p' "$HERDR_SNIPPET" | head -1)
   if [[ -n "$url_ver" && "$url_ver" == "$comment_ver" ]]; then
     pass "T5a: download URL and 'Pinned release' comment both name v${url_ver}"
   else

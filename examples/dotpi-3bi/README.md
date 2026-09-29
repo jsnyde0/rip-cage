@@ -50,19 +50,22 @@ msb exec <cage> -- herdr --session dotpi3bi pane list
 A bare `herdr status` (no `--session`) against a session-scoped server falsely reports "not
 running" — it's checking the wrong socket, not a real liveness failure.
 
-## Gotcha 2 — headless pane width defaults narrow
+## Gotcha 2 — headless pane sizing is still explicit
 
-A freshly created pane (`herdr workspace create` over the socket API) starts at whatever
-narrow width the headless server defaults to until a client has sized it (observed 54 cols in
-this recipe's validation run, ~4 cols in the original spike on an older herdr build — the
-exact number drifts by version, the *shape* of the gotcha does not). `pane read --source
-visible` hard-wraps at that width, corrupting anything wider than a few dozen characters.
+A freshly created pane (`herdr workspace create` over the socket API) starts at whatever size
+the headless server defaults to until a client has sized it. On older herdr builds that default
+was narrow (~4 cols in the original spike, 54 cols in this recipe's first validation run) and
+`pane read --source visible` hard-wrapped at that width, corrupting anything wider than a few
+dozen characters. herdr 0.9.0's unsized headless pane reads 120x40 (measured 2026-09-29,
+`tests/test-msb-factory-socket-api-drive.sh`), so the default is no longer narrow — but it is
+still the server's default, not a size you chose, and it drifts by version. Size the pane
+explicitly whenever a reader depends on its width.
 
 **Fix: attach one explicitly-sized client and hold it attached.** `herdr pane resize` is
 directional-only (relative to an existing layout, not an absolute size) — there is no
 socket-API call to set absolute pane dimensions. The only way to size a headless pane is a
 real sized terminal attach, held open for as long as the pane needs to stay sized (dimensions
-revert to the narrow default once the sizing client detaches — verified live, not assumed).
+revert to the server's unsized default once the sizing client detaches — verified live, not assumed).
 `msb exec -t` propagates real PTY dimensions end-to-end (host PTY size → guest `stty size` →
 herdr's attached-client sizing), including live resize. Drive it from a host-side PTY of a
 known size (Python `pty.openpty()` + `TIOCSWINSZ`, since a live interactive attach blocks a
@@ -79,7 +82,7 @@ proc = subprocess.Popen(
 os.close(slave_fd)
 # hold `proc` running for the cage's operating lifetime (or at minimum for
 # as long as sized pane reads are needed) -- terminating it reverts the pane
-# to the narrow headless default.
+# to the unsized headless default.
 ```
 
 At 40×120 this sizes the pane to 94×39 usable (120 total − 26-col herdr sidebar chrome = 94;
