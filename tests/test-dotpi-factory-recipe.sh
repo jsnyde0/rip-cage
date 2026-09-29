@@ -120,7 +120,24 @@ serve_start=$(jq -r '.daemons[0].start // ""' "$BOOT")
 cp "$BASE_BOOT" "${TMPROOT}/composed.json"
 RC_BOOT_DESCRIPTOR="${TMPROOT}/composed.json" sh "$BOOT_MERGE" "$HERDR_BOOT" >/dev/null 2>&1
 RC_BOOT_DESCRIPTOR="${TMPROOT}/composed.json" sh "$BOOT_MERGE" "$BOOT" >/dev/null 2>&1
-composed_out=$(env -u HERDR_SOCKET_PATH RC_BOOT_DESCRIPTOR="${TMPROOT}/composed.json" PATH="${TMPROOT}/stub:${PATH}" bash -c "$serve_start" 2>&1)
+# Bounded: a start string that blocks (a tick loop, a wait) must FAIL, not hang
+# the suite. No timeout binary on macOS hosts, so perl's alarm -- but the
+# repo's one-line `alarm shift; exec @ARGV` kills only bash: a blocking child
+# (`sleep 60` in a tick loop) keeps the $(...) pipe open until it exits. So run
+# the start string in its own process group and SIGKILL the whole group; exit
+# 142 (128+SIGALRM) on the alarm.
+run_start_bounded() {
+  # shellcheck disable=SC2016 # the perl program is single-quoted on purpose
+  env -u HERDR_SOCKET_PATH RC_BOOT_DESCRIPTOR="$1" PATH="${TMPROOT}/stub:${PATH}" \
+    perl -e '$t = shift; $p = fork; if (!$p) { setpgrp(0, 0); exec @ARGV; exit 127 }
+             $SIG{ALRM} = sub { kill "KILL", -$p; exit 142 }; alarm $t;
+             waitpid($p, 0); exit(($? & 127) ? 128 + ($? & 127) : $? >> 8)' \
+    10 bash -c "$serve_start" 2>&1
+}
+composed_out=$(run_start_bounded "${TMPROOT}/composed.json"); composed_rc=$?
+if [[ "$composed_rc" -eq 142 ]]; then
+  fail "T4 serve start returns within 10s (composed descriptor)" "alarm fired: the start string blocks: ${serve_start}"
+fi
 composed_sock=$(printf '%s\n' "$composed_out" | sed -n 's/^SOCK=\([^ ]*\) ARGS=.*/\1/p')
 if [[ "$composed_sock" == /* ]] && [[ "$composed_out" == *"ARGS=serve --every 60"* ]]; then
   pass "T4 serve start derives an absolute HERDR_SOCKET_PATH from the composed descriptor ($composed_sock) and execs serve --every 60"
@@ -128,7 +145,10 @@ else
   fail "T4 serve start derives HERDR_SOCKET_PATH from the composed descriptor" "got '${composed_out}'"
 fi
 cp "$BASE_BOOT" "${TMPROOT}/bare.json"
-bare_out=$(env -u HERDR_SOCKET_PATH RC_BOOT_DESCRIPTOR="${TMPROOT}/bare.json" PATH="${TMPROOT}/stub:${PATH}" bash -c "$serve_start" 2>&1)
+bare_out=$(run_start_bounded "${TMPROOT}/bare.json"); bare_rc=$?
+if [[ "$bare_rc" -eq 142 ]]; then
+  fail "T4 serve start returns within 10s (bare descriptor)" "alarm fired: the start string blocks: ${serve_start}"
+fi
 if [[ "$bare_out" == *"WARNING: no HERDR_SOCKET_PATH"* && "$bare_out" == *"SOCK= ARGS=serve --every 60"* ]]; then
   pass "T4 without herdr composed, serve start warns and still execs serve"
 else
