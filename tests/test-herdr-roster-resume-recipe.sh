@@ -3,9 +3,11 @@
 # the herdr recipe's roster-resume pieces (rip-cage-46s5, ADR-029 D8).
 #
 # Reads the recipe as it ships today: examples/herdr/Dockerfile.snippet,
-# boot-fragment.json, scripted-attach.py and README.md. Covers the herdr pin,
-# the durable state mount, socket relocation, the scripted-attach helper, and
-# the CLAUDE_CODE_CHILD_SESSION scrub in the claude session wrapper. No
+# boot-fragment.json, scripted-attach.py and README.md. Covers the herdr pin
+# (read from the snippet, never hardcoded here), the durable state mount,
+# socket relocation, the scripted-attach helper, the herdr-pi twin of the
+# multiplexer entry, pi's extension dir in the start hook, and the
+# CLAUDE_CODE_CHILD_SESSION scrub in the claude session wrapper. No
 # docker/msb needed. The live leg (a herdr boot on the pinned release) is
 # tests/test-msb-lifecycle-cockpit-reregistration.sh.
 #
@@ -155,35 +157,49 @@ test_t4_boot_fragment() {
 test_t4_boot_fragment
 
 # =============================================================================
-# T5 -- the pin: v0.9.0, both linux sha256 digests (release API digest,
-# cross-checked by downloading both assets, rip-cage-8jg5.1). dotpi's seat
-# needs herdr >= 0.8.2. No stale 0.7.x reference left in the snippet.
+# T5 -- the pin, derived from the snippet rather than hardcoded here, so a
+# bump edits only the snippet (rip-cage-8jg5.1 round 3). The download URL and
+# the "Pinned release" comment name the same version, which is at least the
+# 0.8.2 floor dotpi's seat needs; each architecture carries a 64-hex sha256,
+# the two are distinct, and sha256sum -c runs before install. No stale 0.7.x
+# reference left in the snippet.
 # =============================================================================
 echo ""
-echo "--- T5: herdr pin is v0.9.0 with both sha256 digests ---"
+echo "--- T5: herdr pin read from the snippet, with two sha256 digests checked before install ---"
 
 test_t5_pin() {
-  if grep -q "releases/download/v0.9.0/herdr-linux-" "$HERDR_SNIPPET"; then
-    pass "T5a: snippet downloads from the v0.9.0 release"
+  local url_ver comment_ver
+  url_ver=$(sed -n 's#.*releases/download/v\([0-9][0-9.]*\)/herdr-linux.*#\1#p' "$HERDR_SNIPPET" | head -1)
+  comment_ver=$(sed -n 's#^\# Pinned release: .* v\([0-9][0-9.]*\)\..*#\1#p' "$HERDR_SNIPPET" | head -1)
+  if [[ -n "$url_ver" && "$url_ver" == "$comment_ver" ]]; then
+    pass "T5a: download URL and 'Pinned release' comment both name v${url_ver}"
   else
-    fail "T5a: snippet does not download releases/download/v0.9.0/"
+    fail "T5a: pinned version unreadable or inconsistent" "url='${url_ver}' comment='${comment_ver}'"
   fi
-  local expected_aarch64="9c8db20fb7e7427b138d5367113f1621ffd319f2f65d6f009e2594029115f0d2"
-  local expected_x86_64="4fa1a01158dd8043da92d31b270780b0dcc10603038d9b61cac4d81ab63fb71f"
-  if grep -qF "$expected_aarch64" "$HERDR_SNIPPET" && grep -qF "$expected_x86_64" "$HERDR_SNIPPET"; then
-    pass "T5b: snippet carries both verified sha256 digests"
+  if [[ -n "$url_ver" ]] && [[ "$(printf '0.8.2\n%s\n' "$url_ver" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" == "0.8.2" ]]; then
+    pass "T5b: v${url_ver} meets the 0.8.2 floor"
   else
-    fail "T5b: snippet is missing an expected sha256 (aarch64 ${expected_aarch64:0:12}..., x86_64 ${expected_x86_64:0:12}...)"
+    fail "T5b: pinned version '${url_ver}' is below the 0.8.2 floor dotpi's seat needs"
   fi
-  if grep -q "sha256sum -c" "$HERDR_SNIPPET"; then
-    pass "T5c: snippet checks the digest before installing"
+  local digests
+  digests=$(grep -oE 'EXPECTED_SHA=[^;[:space:]]*' "$HERDR_SNIPPET" | cut -d= -f2)
+  if [[ "$(echo "$digests" | grep -cE '^[0-9a-f]{64}$')" -eq 2 && "$(echo "$digests" | sort -u | wc -l | tr -d ' ')" -eq 2 ]]; then
+    pass "T5c: two EXPECTED_SHA digests, each 64 hex, distinct"
   else
-    fail "T5c: snippet never runs sha256sum -c"
+    fail "T5c: expected two distinct 64-hex EXPECTED_SHA digests" "$(echo "$digests" | tr '\n' ' ')"
+  fi
+  local check_pos install_pos
+  check_pos=$(grep -n "sha256sum -c" "$HERDR_SNIPPET" | head -1 | cut -d: -f1)
+  install_pos=$(grep -n "install -m 755 /tmp/herdr" "$HERDR_SNIPPET" | head -1 | cut -d: -f1)
+  if [[ -n "$check_pos" && -n "$install_pos" && "$check_pos" -lt "$install_pos" ]]; then
+    pass "T5d: sha256sum -c runs before the binary is installed"
+  else
+    fail "T5d: sha256sum -c missing or not ordered before 'install -m 755 /tmp/herdr'"
   fi
   if grep -qE 'v0\.7\.[0-9]' "$HERDR_SNIPPET"; then
-    fail "T5d: snippet still references a v0.7.x release"
+    fail "T5e: snippet still references a v0.7.x release"
   else
-    pass "T5d: snippet carries no stale v0.7.x reference"
+    pass "T5e: snippet carries no stale v0.7.x reference"
   fi
 }
 test_t5_pin
@@ -300,6 +316,88 @@ test_t8_attach_hook_socket_relocation() {
   fi
 }
 test_t8_attach_hook_socket_relocation
+
+# =============================================================================
+# T9 -- examples/herdr-pi re-declares the herdr multiplexer, and its snippet
+# tells the operator to DROP herdr's own merge, so the composed cage boots
+# herdr-pi's copy. The two multiplexer entries must stay byte-identical, and
+# each fragment says so in its _readme key (rip-cage-8jg5.1 round 3, I1).
+# =============================================================================
+echo ""
+echo "--- T9: herdr and herdr-pi declare byte-identical herdr multiplexers ---"
+
+HERDR_PI_BOOT="${REPO_ROOT}/examples/herdr-pi/boot-fragment.json"
+
+test_t9_twins() {
+  if python3 - "$HERDR_BOOT" "$HERDR_PI_BOOT" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))["multiplexers"][0]
+b = json.load(open(sys.argv[2]))["multiplexers"][0]
+sys.exit(0 if a == b and a["start"] == b["start"] and a["attach"] == b["attach"] else 1)
+PY
+  then
+    pass "T9a: examples/herdr-pi's herdr multiplexer (start + attach) is byte-identical to examples/herdr's"
+  else
+    fail "T9a: examples/herdr-pi/boot-fragment.json's herdr multiplexer differs from examples/herdr's -- edit both"
+  fi
+  local f
+  for f in "$HERDR_BOOT" "$HERDR_PI_BOOT"; do
+    if python3 -c 'import json,sys; r=" ".join(json.load(open(sys.argv[1])).get("_readme", [])); sys.exit(0 if "twin" in r and "byte-identical" in r else 1)' "$f" 2>/dev/null; then
+      pass "T9b: ${f#"${REPO_ROOT}"/} names its twin in _readme"
+    else
+      fail "T9b: ${f#"${REPO_ROOT}"/} has no _readme saying the herdr entry is a byte-identical twin"
+    fi
+  done
+}
+test_t9_twins
+
+# =============================================================================
+# T10 -- the start hook creates pi's extension dir before 'herdr integration
+# install pi' (herdr refuses with 'extension directory not found' otherwise,
+# rip-cage-fwp3), honouring PI_CODING_AGENT_DIR like examples/pi's init hook,
+# and a failed mkdir is a visible WARNING, not a silent '|| true'.
+# Method: run the UNMODIFIED start string under sh with stub herdr/pi/python3
+# on PATH; only its /tmp/ paths are rewritten into this test's scratch dir.
+# =============================================================================
+echo ""
+echo "--- T10: start hook creates pi's extension dir before the pi integration install ---"
+
+test_t10_pi_ext_dir() {
+  local work stubs start_hook out
+  work="${TMPROOT}/t10"
+  stubs="${work}/bin"
+  mkdir -p "$stubs" "${work}/tmp" "${work}/home"
+  cat > "${stubs}/herdr" <<'STUB'
+#!/bin/sh
+if [ "$1" = integration ] && [ "$2" = install ] && [ "$3" = pi ]; then
+  [ -d "${PI_CODING_AGENT_DIR:-/home/agent/.pi/agent}/extensions" ] || { echo "extension directory not found"; exit 1; }
+fi
+exit 0
+STUB
+  printf '#!/bin/sh\nexit 0\n' > "${stubs}/pi"
+  printf '#!/bin/sh\nexit 0\n' > "${stubs}/python3"
+  chmod +x "${stubs}/herdr" "${stubs}/pi" "${stubs}/python3"
+  start_hook=$(hook start)
+  start_hook=${start_hook//\/tmp\//${work}/tmp/}
+
+  out=$(env -i PATH="${stubs}:/usr/bin:/bin" HOME="${work}/home" PI_CODING_AGENT_DIR="${work}/pi-agent" sh -c "$start_hook" 2>&1)
+  if [[ -d "${work}/pi-agent/extensions" ]] && echo "$out" | grep -qF "herdr integration installed: pi"; then
+    pass "T10a: extension dir created under PI_CODING_AGENT_DIR; pi integration installed"
+  else
+    fail "T10a: expected ${work}/pi-agent/extensions and 'integration installed: pi'" "$out"
+  fi
+
+  mkdir -p "${work}/ro"
+  chmod 0555 "${work}/ro"
+  out=$(env -i PATH="${stubs}:/usr/bin:/bin" HOME="${work}/home" PI_CODING_AGENT_DIR="${work}/ro/pi-agent" sh -c "$start_hook" 2>&1)
+  chmod 0755 "${work}/ro"
+  if echo "$out" | grep -qF "[rip-cage] WARNING: could not create ${work}/ro/pi-agent/extensions"; then
+    pass "T10b: an uncreatable extension dir prints a visible [rip-cage] WARNING naming it"
+  else
+    fail "T10b: expected '[rip-cage] WARNING: could not create ${work}/ro/pi-agent/extensions'" "$out"
+  fi
+}
+test_t10_pi_ext_dir
 
 echo ""
 if (( FAILURES > 0 )); then

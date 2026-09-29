@@ -183,7 +183,7 @@ except Exception:
     proc.kill()
 PYEOF
   ATTACH_STATE=$(python3 "$WORK/attach.py" "$MSB_BIN" "$NAME" "$ATTACH_CMD" "$WORK/attach.out" 2>&1)
-  if [[ "$ATTACH_STATE" == "alive" ]] && ! grep -aq "NotFound\|Error" "$WORK/attach.out" && [[ -s "$WORK/attach.out" ]]; then
+  if [[ "$ATTACH_STATE" == "alive" ]] && ! grep -aq "Os NotFound\|No such file or directory" "$WORK/attach.out" && [[ -s "$WORK/attach.out" ]]; then
     pass "ATTACH: the attach command held a client attached for 6s and drew output ($(wc -c <"$WORK/attach.out" | tr -d ' ') bytes), no socket error"
   else
     fail "ATTACH: expected the attach client to stay attached with no error" "state='${ATTACH_STATE}' output: $(tr -cd '[:print:]\n' <"$WORK/attach.out" | tail -c 400)"

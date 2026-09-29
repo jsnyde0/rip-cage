@@ -30,7 +30,7 @@ snippet's merge stepping on the other's — silently loses one of the two.
 | file | what it is |
 |---|---|
 | `Dockerfile.snippet` | generates herdr's pi extension at build time, then runs the ONE merge that matters |
-| `boot-fragment.json` | the combined fragment: the herdr multiplexer entry AND pi's `launch` with BOTH `-e` flags |
+| `boot-fragment.json` | the combined fragment: the herdr multiplexer entry (a byte-identical twin of `examples/herdr`'s; edit both) AND pi's `launch` with BOTH `-e` flags |
 
 ## How to compose
 

@@ -23,11 +23,19 @@ The snippet pins **herdr v0.9.0**, sha256-checked per architecture. dotpi's seat
 tooling needs herdr 0.8.2 or later; 0.9.0 is the release rip-cage has proven in
 a cage (2026-09-29): socket-API drive, the boot hook's integration install, and
 attach. One change from 0.7.x you can see: a headless pane now starts 120x40
-instead of wrapping long lines at a narrow default. To bump: take the new `herdr-linux-aarch64`
-and `herdr-linux-x86_64` digests from the GitHub release, replace the version
-and both checksums in `Dockerfile.snippet`, rebuild, and run
-`RC_TEST_IMAGE=<your image> tests/test-msb-factory-socket-api-drive.sh` — it
-asserts the in-cage `herdr --version` equals the snippet's pin.
+instead of wrapping long lines at a narrow default.
+
+To bump: take the new `herdr-linux-aarch64` and `herdr-linux-x86_64` digests
+from the GitHub release, replace the version (URL and `Pinned release` comment)
+and both checksums in `Dockerfile.snippet`, and rebuild. Then run, against your
+image:
+
+- `tests/test-herdr-roster-resume-recipe.sh` — host-only; reads the pin from
+  the snippet and checks the digests' shape.
+- `RC_TEST_IMAGE=<your image> tests/test-msb-factory-socket-api-drive.sh` —
+  asserts the in-cage `herdr --version` equals the snippet's pin.
+- `tests/test-msb-lifecycle-cockpit-reregistration.sh` — boots the start hook
+  on your image: integration install, attach, re-registration on resume.
 
 ## Use it
 
@@ -56,6 +64,9 @@ asserts the in-cage `herdr --version` equals the snippet's pin.
    ```bash
    RC_MULTIPLEXER=herdr rc up
    ```
+
+   Plain `rc up` also picks herdr when it is the only multiplexer the image
+   declares; name it when the image declares more than one.
 
 ## The durable state mount (required for restart survival)
 
@@ -116,7 +127,7 @@ on a full buffer, then detaches it. Restored pane processes survive that
 detach — only the *scripted client* dies. Harmless on a genuinely fresh cage
 with no prior roster (it just attaches the default pane's normal shell, waits,
 detaches). This retires once herdr ships a headless restore-on-start trigger;
-until then, it adds a bounded ~15s to boot whenever `RC_MULTIPLEXER=herdr`.
+until then, it adds a bounded ~15s to boot whenever herdr is the multiplexer.
 
 ## herdr CLI control surface
 
@@ -138,8 +149,14 @@ a driving agent reaches for first.
 for whichever of `pi`/`claude` are present on PATH, so `herdr agent list`
 reports real semantic status (`working`/`blocked`/`idle`) via the integration
 path rather than the screen-detection fallback. herdr's pi install needs
-`~/.pi/agent/extensions` to exist and the base image does not create it, so the
-loop creates it first.
+`${PI_CODING_AGENT_DIR:-~/.pi/agent}/extensions` to exist. examples/pi's
+boot-fragment init hook creates it (rip-cage-p35a.3); this loop also creates it,
+so the herdr recipe works standalone, and prints a `[rip-cage] WARNING` if it
+cannot.
+
+`examples/herdr-pi/boot-fragment.json` carries a byte-identical copy of this
+multiplexer entry, and a cage composed with herdr-pi boots that copy. Edit both;
+`tests/test-herdr-roster-resume-recipe.sh` checks they match.
 
 ## Troubleshooting
 
