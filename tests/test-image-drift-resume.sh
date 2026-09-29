@@ -298,6 +298,8 @@ _expected_container_name() {
 # transiently while the earlier state-check `msb inspect` call still
 # succeeds — see DRIFT_CONTAINER_INSPECT_FAIL above for the call-count
 # translation).
+# DRIFT_CONF_IMAGE, when set, is the cage config's own `image:` line
+# (rip-cage-80c8); unset keeps cage_conf_for's rip-cage:latest.
 # Sets RC_OUT, RC_ERR, RC_EXIT, RC_LOG (path to the msb-call log, fresh
 # per invocation).
 RC_OUT="" RC_ERR="" RC_EXIT=0 RC_LOG=""
@@ -317,7 +319,7 @@ run_rc_up() {
   set +e
   PATH="${STUB_DIR}:${PATH}" \
     HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    RC_CAGE_CONF="$(cage_conf_for "$TEST_WS")" \
+    RC_CAGE_CONF="$(cage_conf_for "$TEST_WS" "${DRIFT_CONF_IMAGE:-}")" \
     DRIFT_LOG="$RC_LOG" DRIFT_STATE="$_state" \
     DRIFT_STORED_IMAGE="$_stored" DRIFT_CURRENT_IMAGE="$_current" \
     DRIFT_CONTAINER_INSPECT_FAIL="$_inspect_fail" \
@@ -745,6 +747,72 @@ if [[ "$RC_EXIT" -eq 0 ]] \
   pass T9d "running custom-tag cage -> warning names both tags and the RC_IMAGE escape, still proceeds"
 else
   fail T9d "running custom-tag drift warning" "(exit=$RC_EXIT stderr=$RC_ERR)"
+fi
+teardown_sandbox
+
+# ===========================================================================
+# T10 (rip-cage-80c8) — the expected image resolves RC_IMAGE, else the cage
+# config's own image: line, else rip-cage:latest. A composed cage's config
+# names its composed tag; plain `rc up` (RC_IMAGE unset) must compare the
+# stopped cage against THAT tag and resume, not refuse against rip-cage:latest.
+# ===========================================================================
+setup_sandbox
+DRIFT_CONF_IMAGE="fiab-spike:latest" DRIFT_CURRENT_REF="fiab-spike:latest" DRIFT_STORED_REF="fiab-spike:latest" \
+  run_rc_up "exited" "$IMG_A" "$IMG_A" "human" "false"
+if grep -qx "start" "$RC_LOG"; then
+  pass T10a "stopped cage + config image: fiab-spike:latest + RC_IMAGE unset -> compared against the config's tag, resume proceeds"
+else
+  fail T10a "config-image resume" "msb start not reached (exit=$RC_EXIT stderr=$RC_ERR)"
+fi
+teardown_sandbox
+
+setup_sandbox
+RC_IMAGE="other-tag:dev" DRIFT_CONF_IMAGE="fiab-spike:latest" DRIFT_CURRENT_REF="other-tag:dev" DRIFT_STORED_REF="fiab-spike:latest" \
+  run_rc_up "exited" "$IMG_A" "$IMG_B" "human" "false"
+_t10b_ok=true _t10b_reason=""
+[[ "$RC_EXIT" -ne 0 ]] || { _t10b_ok=false; _t10b_reason="expected a non-zero abort"; }
+grep -qx "start" "$RC_LOG" && { _t10b_ok=false; _t10b_reason="${_t10b_reason:+$_t10b_reason; }msb start was reached"; }
+grep -qF "created from image 'fiab-spike:latest' (${SHORT_A})" <<<"$RC_ERR" \
+  || { _t10b_ok=false; _t10b_reason="${_t10b_reason:+$_t10b_reason; }does not name the cage's stored tag"; }
+grep -qF "compared it against 'other-tag:dev' (${SHORT_B}) — from RC_IMAGE" <<<"$RC_ERR" \
+  || { _t10b_ok=false; _t10b_reason="${_t10b_reason:+$_t10b_reason; }does not name RC_IMAGE's tag as the compare target and its source"; }
+if [[ "$_t10b_ok" == "true" ]]; then
+  pass T10b "stopped cage + config image: fiab-spike:latest + RC_IMAGE=other-tag:dev -> refuses, naming both tags and RC_IMAGE as the source"
+else
+  fail T10b "RC_IMAGE-over-config refusal" "$_t10b_reason (exit=$RC_EXIT stderr=$RC_ERR)"
+fi
+teardown_sandbox
+
+# T10c — rip-cage-i3wv's contract survives: the config's own tag rebuilt
+# (stored digest A, msb's current fiab-spike:latest is B) still refuses, and
+# names the config as the source of the expected tag.
+setup_sandbox
+DRIFT_CONF_IMAGE="fiab-spike:latest" DRIFT_CURRENT_REF="fiab-spike:latest" DRIFT_STORED_REF="fiab-spike:latest" \
+  run_rc_up "exited" "$IMG_A" "$IMG_B" "human" "false"
+if [[ "$RC_EXIT" -ne 0 ]] && ! grep -qx "start" "$RC_LOG" \
+   && grep -qF "compared it against 'fiab-spike:latest' (${SHORT_B}) — from this cage's config image: line" <<<"$RC_ERR"; then
+  pass T10c "config's own tag rebuilt -> still refuses, names the config as the expected tag's source"
+else
+  fail T10c "config-tag stale refusal" "(exit=$RC_EXIT stderr=$RC_ERR)"
+fi
+teardown_sandbox
+
+# T10d — no RC_IMAGE, config names no image: the default is named as such.
+setup_sandbox
+RC_LOG=$(mktemp "${TMPDIR:-/tmp}/rc-drift-log-XXXXXX")
+_t10d_conf=$(cage_conf_for "$TEST_WS")
+sed -i.bak '/^image:/d' "$_t10d_conf" && rm -f "${_t10d_conf}.bak"
+set +e
+_t10d_err=$(PATH="${STUB_DIR}:${PATH}" HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
+  RC_CAGE_CONF="$_t10d_conf" DRIFT_LOG="$RC_LOG" DRIFT_STATE="exited" \
+  DRIFT_STORED_IMAGE="$IMG_A" DRIFT_CURRENT_IMAGE="$IMG_B" DRIFT_WORKSPACE="$TEST_WS" \
+  "$RC" up "$TEST_WS" 2>&1 >/dev/null < /dev/null)
+_t10d_exit=$?
+if [[ "$_t10d_exit" -ne 0 ]] \
+   && grep -qF "compared it against 'rip-cage:latest' (${SHORT_B}) — the default" <<<"$_t10d_err"; then
+  pass T10d "config with no image: line + RC_IMAGE unset -> compared against rip-cage:latest, named as the default"
+else
+  fail T10d "default-source refusal" "(exit=$_t10d_exit stderr=$_t10d_err)"
 fi
 teardown_sandbox
 

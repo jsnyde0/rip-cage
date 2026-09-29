@@ -397,7 +397,10 @@ echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 
 #   ADDED (cli/up.sh, 3): _up_conf_image and _up_read_boot_descriptor (split
 #     out of _up_check_multiplexer_available so both readers share them) and
 #     _up_default_multiplexer (a new cage's default: the sole declared one).
-EXPECTED_FN_COUNT=130
+# Bumped 130 -> 131 by rip-cage-80c8: 1 ADDED, 0 removed.
+#   ADDED (cli/up.sh, 1): _up_expected_image (the resume image check's
+#     expected tag: RC_IMAGE, else the config's image:, else rip-cage:latest).
+EXPECTED_FN_COUNT=131
 _actual_fn_count=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh 2>/dev/null | wc -l | tr -d ' ')
 
 if [[ "$_actual_fn_count" -eq "$EXPECTED_FN_COUNT" ]]; then

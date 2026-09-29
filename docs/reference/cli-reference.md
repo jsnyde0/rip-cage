@@ -51,6 +51,10 @@ rc up [path] [--conf FILE] [--replace] [--no-reload] [--port PORT] [--env-file F
 
 Either way the recreate is cold: it is a fresh kernel boot, not a resumed process tree. **Host mounts and named volumes survive** — so your Claude session resumes, because `~/.claude/projects` and `~/.claude/sessions` are mounts. **The guest's ephemeral rootfs overlay does not** — an `apt-get install` you ran at runtime and never baked into the image is gone.
 
+### The image check on resume
+
+Before it starts an existing cage, `rc up` checks the cage's image against an **expected tag**: `RC_IMAGE` if set, else the cage config's own `image:` line, else `rip-cage:latest`. So a cage built from a composed image resumes on a plain `rc up`, because its config names that image. If the cage was created from an older build of that tag, a stopped cage refuses and a running one warns; both messages name the cage's tag, the expected tag, and which of the three supplied it. `rc up --replace` moves the cage onto the current build.
+
 ### The protected-paths refusal
 
 Before any msb call, `rc up` reads `share/rip-cage/protected-paths` — a shipped list of known credential locations — and:

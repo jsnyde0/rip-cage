@@ -268,9 +268,11 @@ _msb_short_image_id() {
 # _UP_IMAGE_DRIFT_STORED/_CURRENT by rip-cage-syzk's move).
 # Returns: 0 = match, 1 = mismatch, 2 = current image ($IMAGE) not found,
 #          3 = msb inspect failed for the CONTAINER itself.
-# Parameters: $1 name
+# Parameters: $1 name, $2 expected image tag (optional, default $IMAGE;
+#   rip-cage-80c8: cli/up.sh passes RC_IMAGE, else the cage config's image:,
+#   else rip-cage:latest -- see _up_expected_image)
 _msb_image_drift_status() {
-  local _name="$1"
+  local _name="$1" _expected="${2:-}"
   local _stored_image
   if ! _stored_image=$(_msb_sandbox_image_digest "$_name"); then
     _RC_IMAGE_DRIFT_STORED=""
@@ -286,7 +288,8 @@ _msb_image_drift_status() {
   # SC2153's heuristic false-positives on below; the pre-move code (cli/up.sh,
   # no local `image` var in that file) never triggered it.
   # shellcheck disable=SC2153
-  if ! _current_image=$(_msb_current_image_digest "$IMAGE"); then
+  [[ -n "$_expected" ]] || _expected="$IMAGE"
+  if ! _current_image=$(_msb_current_image_digest "$_expected"); then
     _RC_IMAGE_DRIFT_CURRENT=""
     return 2
   fi
