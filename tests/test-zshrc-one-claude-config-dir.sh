@@ -18,8 +18,10 @@
 # stub `tmux` on PATH that answers `display-message -p '#S'`.
 #   Z1  herdr named session ($HERDR_SESSION)   -> CLAUDE_CONFIG_DIR unchanged
 #   Z2  tmux ($TMUX + session name)            -> CLAUDE_CONFIG_DIR unchanged
-#   Z3  no multiplexer                         -> CLAUDE_CONFIG_DIR unchanged
-#   Z4  per-agent git author still derives from the handle (herdr, tmux)
+#   Z3  no multiplexer                         -> CLAUDE_CONFIG_DIR unchanged,
+#                                                 git author/committer unset
+#   Z4  herdr: GIT_AUTHOR_NAME and GIT_COMMITTER_NAME = $HERDR_SESSION
+#   Z5  tmux:  GIT_AUTHOR_NAME and GIT_COMMITTER_NAME = tmux session name
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -40,23 +42,28 @@ mkdir -p "$T/home" "$T/bin"
 printf '#!/bin/sh\n[ "$1" = display-message ] && echo tmux-sess\n' > "$T/bin/tmux"
 chmod +x "$T/bin/tmux"
 
-# run_zshrc <env assignments...> -> prints "<CLAUDE_CONFIG_DIR>|<GIT_AUTHOR_NAME>"
+# run_zshrc <env assignments...>
+#   -> prints "<CLAUDE_CONFIG_DIR>|<GIT_AUTHOR_NAME>|<GIT_COMMITTER_NAME>"
 run_zshrc() {
   env -i HOME="$T/home" PATH="$T/bin:/usr/bin:/bin" TERM=xterm-256color \
     CLAUDE_CONFIG_DIR="$IMAGE_CFG" "$@" \
-    zsh -f -c "source '$ZSHRC' >/dev/null 2>&1; print -r -- \"\${CLAUDE_CONFIG_DIR:-UNSET}|\${GIT_AUTHOR_NAME:-UNSET}\"" 2>/dev/null
+    zsh -f -c "source '$ZSHRC' >/dev/null 2>&1; print -r -- \"\${CLAUDE_CONFIG_DIR:-UNSET}|\${GIT_AUTHOR_NAME:-UNSET}|\${GIT_COMMITTER_NAME:-UNSET}\"" 2>/dev/null
 }
 
-out=$(run_zshrc HERDR_SESSION=herdr-sess)
-if [[ "${out%%|*}" == "$IMAGE_CFG" ]]; then pass "Z1 herdr named session: CLAUDE_CONFIG_DIR stays ${IMAGE_CFG}"; else fail "Z1 herdr named session diverged CLAUDE_CONFIG_DIR" "got '${out%%|*}'"; fi
-if [[ "${out##*|}" == "herdr-sess" ]]; then pass "Z4 herdr: GIT_AUTHOR_NAME=herdr-sess"; else fail "Z4 herdr: GIT_AUTHOR_NAME not derived" "got '${out##*|}'"; fi
+# check_case <id-cfg> <id-git> <label> <want-git> <env assignments...>
+check_case() {
+  local _idc="$1" _idg="$2" _label="$3" _want="$4" _out _cfg _git
+  shift 4
+  _out=$(run_zshrc "$@")
+  _cfg="${_out%%|*}"
+  _git="${_out#*|}"
+  if [[ "$_cfg" == "$IMAGE_CFG" ]]; then pass "${_idc} ${_label}: CLAUDE_CONFIG_DIR stays ${IMAGE_CFG}"; else fail "${_idc} ${_label}: CLAUDE_CONFIG_DIR changed" "got '${_cfg}'"; fi
+  if [[ "$_git" == "${_want}|${_want}" ]]; then pass "${_idg} ${_label}: GIT_AUTHOR_NAME and GIT_COMMITTER_NAME = ${_want}"; else fail "${_idg} ${_label}: git author/committer" "want '${_want}|${_want}', got '${_git}'"; fi
+}
 
-out=$(run_zshrc TMUX=/tmp/tmux-1000/default,1,0)
-if [[ "${out%%|*}" == "$IMAGE_CFG" ]]; then pass "Z2 tmux: CLAUDE_CONFIG_DIR stays ${IMAGE_CFG}"; else fail "Z2 tmux diverged CLAUDE_CONFIG_DIR" "got '${out%%|*}'"; fi
-if [[ "${out##*|}" == "tmux-sess" ]]; then pass "Z4 tmux: GIT_AUTHOR_NAME=tmux-sess"; else fail "Z4 tmux: GIT_AUTHOR_NAME not derived" "got '${out##*|}'"; fi
-
-out=$(run_zshrc)
-if [[ "${out%%|*}" == "$IMAGE_CFG" ]]; then pass "Z3 no multiplexer: CLAUDE_CONFIG_DIR stays ${IMAGE_CFG}"; else fail "Z3 no multiplexer changed CLAUDE_CONFIG_DIR" "got '${out%%|*}'"; fi
+check_case Z1 Z4 "herdr named session" herdr-sess HERDR_SESSION=herdr-sess
+check_case Z2 Z5 "tmux" tmux-sess TMUX=/tmp/tmux-1000/default,1,0
+check_case Z3 Z3 "no multiplexer" UNSET
 
 echo "=== test-zshrc-one-claude-config-dir.sh: ${FAILS} failure(s) ==="
 [[ "$FAILS" -eq 0 ]]

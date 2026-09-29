@@ -818,8 +818,8 @@ fi
 # Step 6: Git-author proof
 # tmux was un-baked from the image (commit af7a1ce); herdr is the new default
 # multiplexer. Mirrors Step 7c's herdr mechanism: set HERDR_SESSION directly
-# (no live multiplexer session needed — the zshrc snippet at
-# cage/agent/zshrc:170-176 reads HERDR_SESSION straight from the env) and
+# (no live multiplexer session needed — the git-author snippet in
+# cage/agent/zshrc reads HERDR_SESSION straight from the env) and
 # drive the commit through an interactive zsh (`zsh -ic`), which sources
 # ~/.zshrc and so picks up GIT_AUTHOR_NAME/GIT_COMMITTER_NAME=<handle>.
 # Single synchronous docker exec — no send-keys/capture-pane polling needed
@@ -1092,18 +1092,17 @@ fi
 # via the identity env vars directly (no full cage up required):
 #
 #   7a. none (no multiplexer identity)     → CLAUDE_CONFIG_DIR = ~/.claude-sessions/default
-#   7b. herdr live-shell ($HERDR_SESSION,  → CLAUDE_CONFIG_DIR = ~/.claude-sessions/<HERDR_SESSION>
-#       via zshrc export in an interactive   (zshrc snippet's export branch, live shell)
-#       shell)
+#   7b. herdr live zsh shell (zshrc       → CLAUDE_CONFIG_DIR = ~/.claude-sessions/<HERDR_SESSION>
+#       sourced, $HERDR_SESSION set)          (wrapper derives from $HERDR_SESSION)
 #   7c. herdr direct ($HERDR_SESSION set   → CLAUDE_CONFIG_DIR = ~/.claude-sessions/<HERDR_SESSION>
 #       on the wrapper invocation)            (wrapper's own derivation branch)
 #       GATING: must PASS, not skip (D7 RESOLVED by rip-cage-1f59.5: HERDR_SESSION confirmed)
 #
 # tmux was un-baked from the image (commit af7a1ce); herdr is the new default
 # multiplexer, so 7b — originally the tmux live-session variant — is
-# re-pointed to herdr (rip-cage-7atw.4). 7b and 7c intentionally exercise two
-# different code paths (see the comment above 7b) rather than duplicating
-# each other's mechanism.
+# re-pointed to herdr (rip-cage-7atw.4). 7b and 7c exercise the same wrapper
+# branch through different invocation surfaces: 7b guards against the zshrc
+# shadowing the wrapper's derivation (rip-cage-r0jh).
 #
 # Method: invoke the wrapper via --version (cheap, triggers seeding) with the
 # identity env vars manipulated, then read the seeded session dirs to confirm.
@@ -1159,10 +1158,9 @@ fi
 # tmux was un-baked from the image (commit af7a1ce); herdr is the new default
 # multiplexer, so this step is re-pointed to herdr (mirrors Step 6 and Step 7c).
 #
-# Distinct from Step 7c: 7c invokes the claude-session-wrapper.sh binary
-# directly with HERDR_SESSION set on the docker-exec env (proving the
-# wrapper's OWN derivation branch, cage/substrate/claude-session-wrapper.sh
-# case 3). This step instead drives an interactive zsh (`zsh -ic`, sources
+# Same wrapper branch as Step 7c (claude-session-wrapper.sh case 3), different
+# invocation surface: 7c invokes the wrapper directly with HERDR_SESSION set on
+# the exec env. This step instead drives an interactive zsh (`zsh -ic`, sources
 # ~/.zshrc) with HERDR_SESSION set — what a zsh pane in a named herdr session
 # runs — and confirms `claude` inside that shell still seeds the
 # HERDR_SESSION-derived config dir. Since rip-cage-r0jh the zshrc leaves
