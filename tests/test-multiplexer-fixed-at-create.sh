@@ -16,6 +16,13 @@
 #       no msb start/exec, stderr names 'none' and the --replace command
 #   M1b same, --output json -> stable code MULTIPLEXER_FIXED_AT_CREATE
 #   M1c same on a RUNNING cage -> refused, no msb exec
+#   M1d stopped cage whose config CHANGED (stored rc.cage-conf-sha stale, so
+#       the converge recreate is due) + RC_MULTIPLEXER=fakemux -> refused, no
+#       msb start/exec/create. Before f35a9d5 the converge recreate carried
+#       the new value; that path now needs --replace (review, rip-cage-1yqa).
+#   M1e control for M1d: same stale hash, RC_MULTIPLEXER unset -> the
+#       converge recreate runs (msb remove + create), so M1d's fixture really
+#       reaches the converge branch
 #   M2  running cage labelled fakemux, RC_MULTIPLEXER unset -> proceeds,
 #       reports multiplexer=fakemux (today's behaviour)
 #   M2b RC_MULTIPLEXER equal to the stored label -> proceeds
@@ -43,7 +50,8 @@ cleanup() { rm -rf "$STUB_DIR" "${TEST_HOME:-}"; }
 trap cleanup EXIT
 
 # Fake msb. MUX_STATE: exited|running|absent. MUX_LABEL: the cage's stored
-# rc.session.multiplexer. After `remove`, the cage reads absent (--replace).
+# rc.session.multiplexer. MUX_CONF_SHA, when set, is the stored
+# rc.cage-conf-sha. After `remove`, the cage reads absent (--replace).
 cat > "${STUB_DIR}/msb" <<'STUB'
 #!/usr/bin/env bash
 set -u
@@ -56,7 +64,9 @@ case "${1:-}" in
     fi
     _status="Stopped"; [[ "${MUX_STATE:-}" == "running" ]] && _status="Running"
     jq -nc --arg status "$_status" --arg ws "${MUX_WORKSPACE:-}" --arg mux "${MUX_LABEL:-none}" \
-      '{status: $status, config: {manifest_digest: "sha256:aaaa", labels: {"rc.source.path": $ws, "rc.session.multiplexer": $mux}}}'
+      --arg sha "${MUX_CONF_SHA:-}" \
+      '{status: $status, config: {manifest_digest: "sha256:aaaa", labels: ({"rc.source.path": $ws, "rc.session.multiplexer": $mux}
+        + (if $sha == "" then {} else {"rc.cage-conf-sha": $sha} end))}}'
     exit 0
     ;;
   image)
@@ -149,6 +159,30 @@ if [[ "$RC_EXIT" -ne 0 ]] && no_start_or_exec \
   pass M1c "running cage labelled none + RC_MULTIPLEXER=fakemux -> refused, no exec"
 else
   fail M1c "running mismatch refusal" "exit=$RC_EXIT log=$(tr '\n' ';' <"$RC_LOG") stderr=$RC_ERR"
+fi
+teardown_ws
+
+# --- M1d: stopped + changed config (converge due) + differing value -------
+setup_ws
+MUX_CONF_SHA=stale-sha RC_MULTIPLEXER=fakemux run_up exited none
+if [[ "$RC_EXIT" -ne 0 ]] && no_start_or_exec \
+   && ! grep -qE '^remove( |$)' "$RC_LOG" \
+   && grep -qF "created with multiplexer 'none'" <<<"$RC_ERR" \
+   && grep -qF "RC_MULTIPLEXER=fakemux rc up --replace /" <<<"$RC_ERR"; then
+  pass M1d "stopped cage with a changed config + RC_MULTIPLEXER=fakemux -> refused before converge, no remove/start/exec/create"
+else
+  fail M1d "converge-path mismatch refusal" "exit=$RC_EXIT log=$(tr '\n' ';' <"$RC_LOG") stderr=$RC_ERR"
+fi
+rm -f "${RC_LOG}.removed"
+teardown_ws
+
+# --- M1e: control -- same fixture, RC_MULTIPLEXER unset -> converge runs ----
+setup_ws
+(unset RC_MULTIPLEXER; MUX_CONF_SHA=stale-sha run_up exited none; cp "$RC_LOG" "${TEST_HOME}/log"; rm -f "${RC_LOG}.removed")
+if grep -qE '^remove( |$)' "${TEST_HOME}/log" && grep -qE '^create( |$)' "${TEST_HOME}/log"; then
+  pass M1e "control: stale config hash, RC_MULTIPLEXER unset -> converge recreate runs (remove + create)"
+else
+  fail M1e "converge control" "log=$(tr '\n' ';' <"${TEST_HOME}/log")"
 fi
 teardown_ws
 
