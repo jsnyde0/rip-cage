@@ -30,6 +30,8 @@ RC="${SCRIPT_DIR}/../rc"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
 # shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
+# shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_cage-conf-lib.sh"
 
 FAILURES=0
@@ -59,7 +61,8 @@ fi
 # points this at a scratch base tag instead, which is how the descriptor gets
 # proven BEFORE the human decides to rebuild rip-cage:latest itself.
 BASE_TAG="${RC_BOOTDESC_BASE_TAG:-rip-cage:latest}"
-WORK=$(mktemp -d)
+# rip-cage-znws: short scratch root, so the cage name (last two path parts) is rc-t-*
+WORK=$(_host_scratch_mktemp_d bootdesc)
 BUILT_TAGS=()
 LIVE_CAGE=""
 

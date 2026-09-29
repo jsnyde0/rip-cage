@@ -45,12 +45,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REAL_LIB="${SCRIPT_DIR}/_scratch-cage-lib.sh"
 
 # Point the persisted cage registry at a throwaway file (rip-cage-sygz.2).
-# Several cases below register INVENTED names ("case6-cage", "case7-cage")
-# against stub `rc` binaries. Those names would otherwise land in the real
-# registry, and Case 7's stub destroy fails on purpose, so its line survives
-# the run forever. The cross-run sweep then reports a refusal for a cage that
-# never existed, on every single run. Scoping the file keeps the harness from
-# polluting its own evidence.
+# Several cases below register made-up rc-t-* names against stub `rc`
+# binaries (conforming since rip-cage-znws, so the lib persists them). Those
+# names would otherwise land in the real registry, and Case 7's stub destroy
+# fails on purpose, so its line survives the run forever. The cross-run sweep
+# then reports a refusal for a cage that never existed, on every single run.
+# Scoping the file keeps the harness from polluting its own evidence.
 export RC_TEST_CAGE_REGISTRY="${TMPDIR:-/tmp}/rc-cleanup-test-registry.$$"
 trap 'rm -f "$RC_TEST_CAGE_REGISTRY"' EXIT
 
@@ -192,7 +192,7 @@ C1_WS=$(make_scratch_workspace)
 # Case 1a: Normal exit — subprocess sources lib, registers, exits normally.
 C1A_WS="${C1_WS}/case1a"
 mkdir -p "$C1A_WS"
-C1A_NAME="rip-cage-cleanup-test-1a-$$"
+C1A_NAME="rc-t-cleanup-test-1a-$$"
 # Create the fixture container with the label pointing to this workspace.
 create_fixture_container "$C1A_NAME" "$C1A_WS"
 
@@ -222,7 +222,7 @@ fi
 # Case 1b: SIGTERM mid-run — subprocess registers, then we SIGTERM it.
 C1B_WS="${C1_WS}/case1b"
 mkdir -p "$C1B_WS"
-C1B_NAME="rip-cage-cleanup-test-1b-$$"
+C1B_NAME="rc-t-cleanup-test-1b-$$"
 create_fixture_container "$C1B_NAME" "$C1B_WS"
 
 # Run a subprocess that sources the lib, registers, then sleeps (simulating work).
@@ -266,7 +266,7 @@ echo "--- Case 2: D2 sweep reaps daemon-death residue ---"
 
 # Case 2a: dir still exists.
 C2A_WS=$(make_scratch_workspace)
-C2A_NAME="rip-cage-cleanup-test-2a-$$"
+C2A_NAME="rc-t-cleanup-test-2a-$$"
 create_fixture_container "$C2A_NAME" "$C2A_WS"
 
 _warn_out=$(run_warn "$TEST_TEMP_ROOT" 2>&1)
@@ -288,7 +288,7 @@ rm -rf "$C2A_WS"
 # realpath'd temp root WITHOUT realpath-ing the label.  If it were to realpath
 # the label, BSD realpath would return empty on the missing path → silent miss.
 C2B_WS=$(make_scratch_workspace)
-C2B_NAME="rip-cage-cleanup-test-2b-$$"
+C2B_NAME="rc-t-cleanup-test-2b-$$"
 create_fixture_container "$C2B_NAME" "$C2B_WS"
 # DELETE the workspace dir before running the warn detector.
 rm -rf "$C2B_WS"
@@ -318,7 +318,7 @@ echo "--- Case 3: Positive controls (discriminator safety) ---"
 
 # Case 3a: container labeled outside the temp root.
 C3A_OUTSIDE="/usr/local/share/rip-cage-test-positive-control-$$"
-C3A_NAME="rip-cage-cleanup-test-3a-$$"
+C3A_NAME="rc-t-cleanup-test-3a-$$"
 # Create fixture with label outside temp root.
 msb create -n "$C3A_NAME" alpine \
   --label "rc.source.path=${C3A_OUTSIDE}" \
@@ -369,7 +369,7 @@ echo "--- Case 4: macOS realpath form (/private/var/folders/...) ---"
 C4_REALPATH_ROOT=$(realpath "${TMPDIR:-/tmp}" 2>/dev/null || echo "${TMPDIR:-/tmp}")
 C4_WS="${C4_REALPATH_ROOT}/rip-cage-cleanup-test-4-$$"
 mkdir -p "$C4_WS"
-C4_NAME="rip-cage-cleanup-test-4-$$"
+C4_NAME="rc-t-cleanup-test-4-$$"
 # Create fixture with the label set to the ALREADY-realpath'd form (as rc does at cage creation).
 create_fixture_container "$C4_NAME" "$C4_WS"
 
@@ -396,7 +396,7 @@ echo ""
 echo "--- Case 5: Trap composition (pre-existing EXIT trap + scratch cleanup) ---"
 
 C5_WS=$(make_scratch_workspace)
-C5_NAME="rip-cage-cleanup-test-5-$$"
+C5_NAME="rc-t-cleanup-test-5-$$"
 create_fixture_container "$C5_NAME" "$C5_WS"
 
 # Sentinel file: written by the pre-existing trap.
@@ -460,7 +460,7 @@ bash -c "
   MARKERS='${C6_MARKERS}'
   trap 'echo PRIOR >> \"\$MARKERS\"' EXIT
   source '${REAL_LIB}'
-  scratch_cage_register 'case6-cage'
+  scratch_cage_register 'rc-t-case6-cage'
   exit 0
 " >/dev/null 2>&1
 
@@ -486,7 +486,7 @@ echo "--- Case 7: SEAM 2 — a failed destroy is reported loud, never fail-close
 
 C7_STUB_DIR=$(mktemp -d)
 mkdir -p "${C7_STUB_DIR}/nested"
-C7_NAME="case7-cage"
+C7_NAME="rc-t-case7-cage"
 
 # Fake `rc`: `destroy <name>` always fails, loudly, on its own stderr.
 cat > "${C7_STUB_DIR}/rc" <<'STUBEOF'

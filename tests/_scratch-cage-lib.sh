@@ -67,6 +67,13 @@ _scratch_cage_registry_path() {
   echo "${RC_TEST_CAGE_REGISTRY:-${RC_TEST_TMPDIR:-${HOME}/.cache/rc-t}/created-cages}"
 }
 
+# REGISTRY CLEANUP (rip-cage-znws, 2026-09-29): scratch_cage_register now
+# refuses to persist a name that fails _scratch_cage_name_is_ours, and refuses
+# an empty/"null" name outright, both loudly and naming the calling test. A
+# one-shot cleanup the same day removed the stale non-conforming lines
+# (tmp.*-proj, rc-reload-live-*, "null", ...) from ~/.cache/rc-t/created-cages
+# (backup: created-cages.bak) so the sweep stops printing its refusal per run.
+#
 # _scratch_cage_registry_add <name> — append one name. Best-effort: a
 # registry that cannot be written must never fail a test (it only costs the
 # foreign-cage discrimination, which every consumer treats as "skip", never
@@ -225,13 +232,21 @@ _scratch_cage_cleanup() {
 # EXIT/INT/TERM trap.
 scratch_cage_register() {
   local _cname="$1"
-  if [[ -z "$_cname" ]]; then
-    echo "_scratch-cage-lib.sh: scratch_cage_register requires a container name" >&2
+  local _caller="${BASH_SOURCE[1]:-$0}"
+  if [[ -z "$_cname" || "$_cname" == "null" ]]; then
+    echo "_scratch-cage-lib.sh: ERROR: ${_caller} called scratch_cage_register with an empty/null cage name ('${_cname}') -- a failed name read (jq null?); nothing registered, this cage will not be cleaned up" >&2
     return 1
   fi
 
   _SCRATCH_CAGE_NAMES+=("$_cname")
-  _scratch_cage_registry_add "$_cname"
+  # rip-cage-znws: fail at the source. A name the sweep would refuse is not
+  # persisted (the in-process array above still tracks it, so the exit trap
+  # still destroys it); the caller is named so the test can be fixed.
+  if _scratch_cage_name_is_ours "$_cname"; then
+    _scratch_cage_registry_add "$_cname"
+  else
+    echo "_scratch-cage-lib.sh: ERROR: ${_caller} registered cage '${_cname}', which is not a harness scratch name (rc-t-* / T-tmp.*); NOT persisted to the registry, so a SIGKILL cannot be recovered for it. Put the test workspace under the short scratch root (_host_scratch_mktemp_d in tests/_host-sandbox-lib.sh)." >&2
+  fi
 
   if [[ "$_SCRATCH_CAGE_TRAP_ARMED" -eq 1 ]]; then
     return 0

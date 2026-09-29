@@ -39,6 +39,8 @@ RC="${SCRIPT_DIR}/../rc"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
 # shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
+# shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_cage-conf-lib.sh"
 
 FAILURES=0
@@ -70,7 +72,8 @@ if ! docker run --rm --entrypoint sh "$BASE_TAG" \
   exit 0
 fi
 
-WORK=$(mktemp -d)
+# rip-cage-znws: short scratch root, so the cage name (last two path parts) is rc-t-*
+WORK=$(_host_scratch_mktemp_d floor)
 BUILT_TAGS=()
 LIVE_CAGE=""
 

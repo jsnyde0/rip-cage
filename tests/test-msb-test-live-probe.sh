@@ -73,7 +73,10 @@ source "${SCRIPT_DIR}/_cage-conf-lib.sh"
 
 # Resolve the sandbox root: msb does not follow a host-side symlink in a bind
 # source, and on macOS $TMPDIR lives under /var, itself a symlink.
-TEST_HOME=$(mktemp -d "${TMPDIR:-/tmp}/rc-test-live-probe-XXXXXX")
+# rip-cage-znws: short scratch root, so the cage name is rc-t-*.
+# shellcheck source=tests/_host-sandbox-lib.sh
+source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
+TEST_HOME=$(_host_scratch_mktemp_d live-probe)
 TEST_HOME=$(cd "$TEST_HOME" && pwd -P)
 WS="${TEST_HOME}/workspace"
 mkdir -p "${TEST_HOME}/.config/rip-cage" "$WS"
@@ -126,7 +129,11 @@ if [[ "$CR_RC" -ne 0 ]]; then
   echo "=== test-msb-test-live-probe.sh: ${FAILURES}/${TOTAL} failure(s) (aborting) ==="
   exit 1
 fi
-CAGE_NAME=$(echo "$CR_OUT" | tail -1 | jq -r '.name' 2>/dev/null)
+CAGE_NAME=$(echo "$CR_OUT" | tail -1 | jq -r '.name // empty' 2>/dev/null)
+if [[ -z "$CAGE_NAME" ]]; then
+  fail "setup: rc up JSON carried no .name" "$CR_OUT"
+  exit 1
+fi
 scratch_cage_register "$CAGE_NAME"
 pass "setup: rc up created a real running msb sandbox ${CAGE_NAME}"
 
