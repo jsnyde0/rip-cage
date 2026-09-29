@@ -116,6 +116,8 @@ mounts:
   - "/Users/you/.config/rip-cage/empty:/workspace/config/local-secrets.toml:ro"
 ```
 
+The covered file must sit inside a **read-write** mount. msb cannot create a file cover inside a read-only mount, and the cage dies at boot.
+
 These are **belt and braces**: the protected-paths rule already covers the well-known names automatically (see below). Write a line here for a secret whose name is *not* on that list and is specific to this project. This is Tier 1 of the [secret posture gradient](secret-posture.md).
 
 ---

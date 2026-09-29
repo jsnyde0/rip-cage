@@ -36,6 +36,8 @@ T=$(mktemp -d /private/tmp/rc-pp-ro-XXXXXX)
 trap 'rm -rf "$T"' EXIT
 
 export RC_PROTECTED_PATHS="${REPO_ROOT}/share/rip-cage/protected-paths"
+# Pinned: R3 plants .env two levels down and relies on the default depth.
+export RC_PROTECTED_SCAN_DEPTH=2
 export HOME="${T}/home"   # the cover breadcrumb lands under $HOME/.cache/rc
 mkdir -p "$HOME"
 # shellcheck source=cli/lib/protected_paths.sh
@@ -67,6 +69,25 @@ conf "$T/r2.yaml" "  - bind: $T/envtree
     readonly: true"
 run "$T/r2.yaml"
 if [[ $_rc -ne 0 ]] && printf '%s' "$_err" | grep -qF "$T/envtree/.env"; then pass "R2 map-form readonly mount holding .env is refused, naming the file"; else fail "R2 map-form readonly not refused (rc $_rc, out: $_out, err: $_err)"; fi
+
+# --- R4: any readonly value but absent/false is ro (fail closed) -----------
+for _ro in '"yes"' '"true"' 'yes'; do
+  conf "$T/r4.yaml" "  - bind: $T/envtree
+    target: /mnt/p
+    readonly: ${_ro}"
+  run "$T/r4.yaml"
+  if [[ $_rc -ne 0 ]]; then pass "R4 map-form readonly: ${_ro} classifies as ro and is refused"; else fail "R4 readonly: ${_ro} classified rw (out: $_out)"; fi
+done
+conf "$T/r4f.yaml" "  - bind: $T/envtree
+    target: /mnt/p
+    readonly: false"
+run "$T/r4f.yaml"
+if [[ $_rc -eq 0 ]] && printf '%s\n' "$_out" | grep -q -- ":/mnt/p/.env:ro$"; then pass "R4 map-form readonly: false stays rw and gets a file cover"; else fail "R4 readonly: false (rc $_rc, out: $_out, err: $_err)"; fi
+
+# --- R5: rc's message names no recipe (ADR-005 D12) ------------------------
+conf "$T/r5.yaml" "  - \"$T/envtree:/mnt/p:ro\""
+run "$T/r5.yaml"
+if printf '%s' "$_err" | grep -q 'dotpi'; then fail "R5 refusal names a specific recipe inside cli/ (err: $_err)"; else pass "R5 refusal names no specific recipe"; fi
 
 # --- R3 --------------------------------------------------------------------
 conf "$T/r3.yaml" "  - \"$T/deeptree:/mnt/p:ro\""

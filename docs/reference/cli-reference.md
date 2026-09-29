@@ -61,6 +61,7 @@ Before any msb call, `rc up` reads `share/rip-cage/protected-paths` — a shippe
 
 - **refuses to launch** a config that mounts a listed path directly;
 - **covers** any listed path found inside a mounted tree (an empty read-only file over a file, an empty tmpfs over a directory);
+- **refuses to launch** when a listed *file* sits inside a *read-only* mount, naming the file and the mount — msb cannot create a file cover there and the cage would die at boot. Narrow the mount so the file sits outside it; a listed directory inside a read-only mount is still covered;
 - **aborts** if the list itself is unreadable.
 
 If msb cannot express the cover for an entry, `rc up` refuses rather than proceeding. Fail closed, never fail open ([ADR-031](../decisions/ADR-031-opinionated-distribution-of-microsandbox.md) D2/D5, [ADR-023](../decisions/ADR-023-secret-path-mount-denylist.md)). The list is operator-editable, resolved from `$RC_PROTECTED_PATHS`, then `$XDG_CONFIG_HOME/rip-cage/protected-paths`, then the copy shipped beside `rc` — never from a path any cage config can point at.

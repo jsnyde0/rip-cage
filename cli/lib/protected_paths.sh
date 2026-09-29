@@ -157,7 +157,8 @@ _protected_paths_path_match() {
 # in the native msb config, MODE being "ro" or "rw". Both declaration forms are
 # read:
 #   - string form: "HOST:GUEST[:opts]"                 (":ro" -> ro)
-#   - map form:    { bind: HOST, target: GUEST, ... }   (readonly: true -> ro)
+#   - map form:    { bind: HOST, target: GUEST, ... }   (any readonly value but
+#                  absent/false -> ro: "yes" or "true" fail closed, not open)
 # Named-volume and tmpfs entries have no host path, so they carry nothing to
 # protect and are skipped.
 # --------------------------------------------------------------------------
@@ -179,7 +180,7 @@ _protected_paths_conf_bind_mounts() {
         | [ ($t | split(":")[0]), ($t | split(":")[1:] | join(":")),
             (if test(":ro$") then "ro" else "rw" end) ]
       elif type == "object" and (.bind // null) != null then
-        [ .bind, (.target // ""), (if .readonly == true then "ro" else "rw" end) ]
+        [ .bind, (.target // ""), (if (.readonly // false) != false then "ro" else "rw" end) ]
       else empty end
     | select(.[0] != "" and .[1] != "")
     | @tsv
@@ -461,7 +462,7 @@ _protected_paths_enforce() {
         # on msb 0.7.4, rip-cage-dnwv). A directory cover over an existing dir
         # boots fine there, so only the file case refuses.
         if [[ "${_mode}" == "ro" ]]; then
-          echo "Error: the cage config ${_conf} has the read-only mount ${_host}:${_guest}, and that tree holds the protected file ${_found}. rc covers a protected file with an empty file mount, and msb cannot create that mount inside a read-only mount — the cage would die at boot. Refusing to launch before any msb call (ADR-031 D2, fail closed). Narrow the mount to the subdirectories the cage needs, so ${_found} stays outside it (examples/dotpi-factory mounts dotpi/scripts and dotpi/agent, not the whole checkout), or move the file out of the mounted tree." >&2
+          echo "Error: the cage config ${_conf} has the read-only mount ${_host}:${_guest}, and that tree holds the protected file ${_found}. rc covers a protected file with an empty file mount, and msb cannot create that mount inside a read-only mount — the cage would die at boot. Refusing to launch before any msb call (ADR-031 D2, fail closed). Narrow the mount to the subdirectories the cage needs, so ${_found} stays outside it (examples/ has a recipe that mounts subdirectories rather than a whole checkout), or move the file out of the mounted tree." >&2
           return 1
         fi
         if [[ -z "${_breadcrumb}" ]]; then

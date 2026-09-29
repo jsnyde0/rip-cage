@@ -50,16 +50,21 @@ fi
 # shellcheck source=tests/_scratch-cage-lib.sh
 source "${SCRIPT_DIR}/_scratch-cage-lib.sh"
 
-# /private/tmp, never /tmp: msb does not follow a host-side symlink in a mount
-# source, and /tmp is one on macOS.
+# shellcheck source=tests/_host-sandbox-lib.sh
+source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
+
+# The WORKSPACE comes from the short scratch root, so the cage name rc derives
+# from it is rc-t-* -- the only shape _scratch_cage_name_is_ours will sweep
+# after a SIGKILL. The fixtures live apart from it under /private/tmp (never
+# /tmp: msb does not follow a host-side symlink in a mount source).
+WS=$(_host_scratch_mktemp_d dnwv)
 T=$(mktemp -d /private/tmp/rc-dnwv-live-XXXXXX)
-cleanup() { rm -rf "$T"; }
+cleanup() { rm -rf "$T" "$WS"; }
 trap cleanup EXIT
 
-WS="${T}/ws"
 RO="${T}/ro-src"
 MARKER="RC_DNWV_MARKER_$$"
-mkdir -p "$WS" "$RO" "${T}/xdg"
+mkdir -p "$RO" "${T}/xdg"
 printf '%s\n' "$MARKER" > "${RO}/.env"
 printf 'visible\n' > "${RO}/visible.txt"
 
