@@ -30,7 +30,16 @@
 #          still trusts it), the inherited-env claude DOES render the
 #          workspace-trust dialog -- proves claude reads
 #          $CLAUDE_CONFIG_DIR/.claude.json (the file init writes), not
-#          /home/agent/.claude.json. The file is restored afterwards.
+#          /home/agent/.claude.json. The file is restored afterwards. The
+#          prep first asserts the pre-edit file HAD the /workspace key, so the
+#          delete is a real edit.
+#   U14    third boot (stop + resume) with the /workspace trust key removed
+#          from the HOST ~/.claude.json (a fresh user's shape): init still seeds
+#          projects["/workspace"].hasTrustDialogAccepted into the writable
+#          ~/.claude/.claude.json (mechanism leg, with the host file confirmed
+#          trust-less), and the probe shows claude's screen with no
+#          workspace-trust dialog (rip-cage-7812). Red if init's seed step
+#          drops the trust answer.
 #
 # No real credential by default: the CCTOK secret is a fake of the setup-token
 # shape; nothing here reaches the API. LIMIT, measured 2026-09-29: the auto-mode
@@ -202,7 +211,7 @@ fi
 # edited file is checked non-empty and still carrying the nudge flag before
 # the probe runs, so an empty/garbled file cannot produce the dialog by itself.
 CTRL2="${LOG_DIR}/probe-control-trust.txt"
-_u13_prep=$(gexec 30 sh -c 'cd /home/agent/.claude && cp .claude.json /tmp/jimf-cj.bak && jq "del(.projects[\"/workspace\"])" .claude.json > /tmp/jimf-cj.new && jq -e ".hasSeenAutoDefaultNudge == true and ((.projects // {}) | has(\"/workspace\") | not)" /tmp/jimf-cj.new >/dev/null && cp /tmp/jimf-cj.new .claude.json && echo PREPPED' 2>/dev/null | tr -d '\r\n')
+_u13_prep=$(gexec 30 sh -c 'cd /home/agent/.claude && jq -e ".projects | has(\"/workspace\")" .claude.json >/dev/null && cp .claude.json /tmp/jimf-cj.bak && jq "del(.projects[\"/workspace\"])" .claude.json > /tmp/jimf-cj.new && jq -e ".hasSeenAutoDefaultNudge == true and ((.projects // {}) | has(\"/workspace\") | not)" /tmp/jimf-cj.new >/dev/null && cp /tmp/jimf-cj.new .claude.json && echo PREPPED' 2>/dev/null | tr -d '\r\n')
 if [[ "$_u13_prep" != "PREPPED" ]]; then
   fail "U13 control: could not prepare the trust-less ~/.claude/.claude.json in the guest" "prep=${_u13_prep:-<none>}"
 else
@@ -214,6 +223,35 @@ else
     pass "U13 control: with the trust entry gone from ~/.claude/.claude.json (host file still trusts), the inherited-env claude renders the trust dialog -- it reads \$CLAUDE_CONFIG_DIR/.claude.json"
   else
     fail "U13 control: no workspace-trust dialog with the trust entry removed from ~/.claude/.claude.json" "$CTRL2"
+  fi
+fi
+
+# --- U14: a host seed WITHOUT the /workspace trust key -- boot 3 -----------
+# A fresh user's ~/.claude.json never trusted /workspace. Drop the key from the
+# host file (this test's own temp file; the guest sees it read-only), stop,
+# resume -- init re-snapshots the seed and must seed the trust answer itself.
+jq 'del(.projects["/workspace"])' "$HOME/.claude.json" > "${T}/cj-notrust.json" \
+  && mv -f "${T}/cj-notrust.json" "$HOME/.claude.json"
+perl -e 'alarm shift; exec @ARGV' 120 msb stop "$NAME" > "${LOG_DIR}/stop-notrust.log" 2>&1
+"$RC" up "$WS" < /dev/null > "${LOG_DIR}/up-notrust.log" 2>&1; _u14_rc=$?
+if [[ "$_u14_rc" -ne 0 ]]; then
+  fail "U14 no-trust seed: rc up exit ${_u14_rc}" "log tail: $(tail -5 "${LOG_DIR}/up-notrust.log" | tr '\n' ' ')"
+else
+  _u14_host=$(gexec 30 jq -c '(.projects // {}) | has("/workspace")' /home/agent/.claude.json 2>/dev/null | tr -d '\r\n')
+  _u14_seed=$(gexec 30 jq -c '.projects["/workspace"].hasTrustDialogAccepted' /home/agent/.claude/.claude.json 2>/dev/null | tr -d '\r\n')
+  if [[ "$_u14_host" == "false" && "$_u14_seed" == "true" ]]; then
+    pass "U14m no-trust seed: mechanism -- host ~/.claude.json has no /workspace key, ~/.claude/.claude.json has /workspace hasTrustDialogAccepted=true"
+  else
+    fail "U14m no-trust seed: mechanism leg" "host has /workspace='${_u14_host}' guest trust='${_u14_seed}'"
+  fi
+  CTRL3="${LOG_DIR}/probe-notrust.txt"
+  gexec 60 python3 -c "$(cat "$PROBE")" 25 /workspace > "$CTRL3" 2>&1
+  if ! grep -qE "Claude Code|Bypass Permissions mode|bypass permissions on" "$CTRL3"; then
+    fail "U14 no-trust seed: probe captured no claude screen (no positive sentinel)" "$(head -c 200 "$CTRL3" | tr '\n' ' ')"
+  elif grep -qiE "trust this folder|Quick safety check|trust the files" "$CTRL3"; then
+    fail "U14 no-trust seed: the workspace-trust dialog rendered -- init did not seed the /workspace trust answer" "$CTRL3"
+  else
+    pass "U14 no-trust seed: claude's screen ($(wc -c < "$CTRL3" | tr -d ' ') bytes) shows no workspace-trust dialog"
   fi
 fi
 

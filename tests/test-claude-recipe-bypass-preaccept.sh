@@ -31,6 +31,9 @@
 #   C6/C7 argv flag         -- --dangerously-skip-permissions injected, never doubled
 #   C9/C10 image-default CLAUDE_CONFIG_DIR (=~/.claude) is not "explicit"; a
 #                              different explicit value still is (rip-cage-jimf.9)
+#   C11-C13 the same guard is slash-robust (trailing-slash value, trailing-slash
+#                              HOME) and accepts the literal image value
+#                              /home/agent/.claude whatever $HOME is
 #   C8  floor key reaches   -- the session dir's settings.json resolves to the
 #                              floor file, carrying skipDangerousModePermissionPrompt
 #
@@ -239,7 +242,7 @@ else
   fail "C10 explicit CLAUDE_CONFIG_DIR not honored" "got: $(cat "$_ENVDUMP" 2>/dev/null)"
 fi
 
-# C11/C12: the guard is slash-robust and also accepts the literal image value
+# C11-C13: the guard is slash-robust and also accepts the literal image value
 # (the image ENV is /home/agent/.claude whatever $HOME is): a trailing-slash
 # value and a double-slash HOME both still count as the default.
 HOME="$WORK" RC_P1P_JSON_BASE="$FIXTURE" CLAUDE_CONFIG_DIR="$WORK/.claude/" \

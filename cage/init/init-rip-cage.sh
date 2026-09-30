@@ -931,27 +931,34 @@ fi
 # R4b: writable global config for claude (rip-cage-jimf.9). The image sets
 # CLAUDE_CONFIG_DIR=/home/agent/.claude, so claude reads ~/.claude/.claude.json --
 # NOT the host's read-only ~/.claude.json mount (ADR-019 D3: never mutated here).
-# Build it from the seed plus hasSeenAutoDefaultNudge:true (suppresses the "Make auto
-# mode your default permission mode?" nudge, which a ro config can never persist).
+# Build it from the seed plus two startup answers, both of which a ro config can
+# never persist: hasSeenAutoDefaultNudge:true (the "Make auto mode your default
+# permission mode?" nudge) and projects["/workspace"].hasTrustDialogAccepted:true
+# (the workspace-trust dialog, which a host seed without that key would otherwise
+# show on every boot; rip-cage-7812, ADR-024 accepts the /workspace key collapse).
 # Rewritten on EVERY boot (create and resume) so host ~/.claude.json edits reach the
 # cage at boot -- and only at boot. Must precede the first `claude` call below.
-# jq failure must not break boot or drop onboarding: fall back to the seed verbatim.
+# jq or mktemp failure must not break boot or drop onboarding: fall back to the
+# seed verbatim, or leave the file as it is.
 if _rc_leave_mounted /home/agent/.claude/.claude.json; then
   # ~/.claude is the operator's own mount (or holds this file): init writes nothing
   # there (ADR-019 D3). The image points claude at this dir, so an absent
-  # .claude.json means claude starts unconfigured (onboarding) and creates one in
-  # the HOST dir. Say so, with the operator-side remedy.
+  # .claude.json means claude starts unconfigured (onboarding). Say so, with the
+  # operator-side remedy.
   if [ ! -s /home/agent/.claude/.claude.json ]; then
-    echo "[rip-cage] WARNING: /home/agent/.claude/.claude.json is absent and ~/.claude is a cage-config mount, so claude (CLAUDE_CONFIG_DIR=/home/agent/.claude) starts unconfigured and writes a new .claude.json into that host dir. Remedy, in this cage's config mounts: - \"<YOUR_HOME>/.claude.json:/home/agent/.claude/.claude.json:ro\" (rip-cage-jimf.9)" >&2
+    echo "[rip-cage] WARNING: /home/agent/.claude/.claude.json is absent and ~/.claude is a cage-config mount, so claude (CLAUDE_CONFIG_DIR=/home/agent/.claude) starts unconfigured (onboarding). Remedy: in this cage's config mounts, mount the .claude.json from your host home read-only at the guest path /home/agent/.claude/.claude.json (rip-cage-jimf.9)" >&2
   fi
 elif [ -s ~/.claude/.claude.json.seed ]; then
-  _rc_cj_tmp="$(mktemp ~/.claude/.claude.json.XXXXXX)"
-  if jq '.hasSeenAutoDefaultNudge = true' ~/.claude/.claude.json.seed > "$_rc_cj_tmp" 2>/dev/null && [ -s "$_rc_cj_tmp" ]; then
-    mv -f "$_rc_cj_tmp" ~/.claude/.claude.json
-    echo "[rip-cage] Wrote ~/.claude/.claude.json from the seed + hasSeenAutoDefaultNudge (claude's config, rip-cage-jimf.9)"
+  if _rc_cj_tmp="$(mktemp ~/.claude/.claude.json.XXXXXX)"; then
+    if jq '.hasSeenAutoDefaultNudge = true | .projects["/workspace"].hasTrustDialogAccepted = true' ~/.claude/.claude.json.seed > "$_rc_cj_tmp" 2>/dev/null && [ -s "$_rc_cj_tmp" ]; then
+      mv -f "$_rc_cj_tmp" ~/.claude/.claude.json
+      echo "[rip-cage] Wrote ~/.claude/.claude.json from the seed + hasSeenAutoDefaultNudge + /workspace trust (claude's config, rip-cage-jimf.9, rip-cage-7812)"
+    else
+      echo "[rip-cage] WARNING: could not add hasSeenAutoDefaultNudge and the /workspace trust to the seed (jq failed); copying the seed verbatim -- the auto-mode nudge and the workspace-trust dialog may show" >&2
+      cp ~/.claude/.claude.json.seed "$_rc_cj_tmp" && mv -f "$_rc_cj_tmp" ~/.claude/.claude.json || rm -f "$_rc_cj_tmp"
+    fi
   else
-    echo "[rip-cage] WARNING: could not add hasSeenAutoDefaultNudge to the seed (jq failed); copying the seed verbatim -- the auto-mode nudge may show" >&2
-    cp ~/.claude/.claude.json.seed "$_rc_cj_tmp" && mv -f "$_rc_cj_tmp" ~/.claude/.claude.json || rm -f "$_rc_cj_tmp"
+    echo "[rip-cage] WARNING: mktemp failed in ~/.claude; ~/.claude/.claude.json not rewritten this boot -- the auto-mode nudge and the workspace-trust dialog may show" >&2
   fi
   unset _rc_cj_tmp
 fi
