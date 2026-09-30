@@ -104,6 +104,7 @@ fi
 
 # --- R2 multiplexer env from the descriptor ------------------------------------
 want=$(jq -r '.multiplexers[] | select(.name=="herdr") | .attach' "$HERDR_BOOT" | sed -n 's/.*HERDR_SOCKET_PATH=\([^; ]*\).*/\1/p')
+# shellcheck disable=SC2016  # expanded by the inner sh at call time
 reach herdr "$HERDR_BOOT" sh -c 'printf %s "${HERDR_SOCKET_PATH-unset}"'
 got=$(cat "${T}/out")
 if [[ -n "$want" && "$got" == "$want" ]]; then
@@ -111,6 +112,7 @@ if [[ -n "$want" && "$got" == "$want" ]]; then
 else
   fail "R2 exports the recipe's socket path" "want '$want' got '$got'"
 fi
+# shellcheck disable=SC2016  # expanded by the inner sh at call time
 reach herdr "${T}/other.json" sh -c 'printf "%s|%s|%s|%s|%s|%s|%s" "${HERDR_SOCKET_PATH-unset}" "${OTHER_VAR-unset}" "${SHELL-unset}" "${DECOY_VAR-unset}" "${TICK_VAR-unset}" "${QUOTE_VAR-unset}" "${SLASH_VAR-unset}"'
 got=$(cat "${T}/out")
 if [[ "$got" == "/private/tmp/elsewhere.sock|1|${SHELL-unset}|unset|unset|unset|unset" ]]; then
@@ -118,12 +120,14 @@ if [[ "$got" == "/private/tmp/elsewhere.sock|1|${SHELL-unset}|unset|unset|unset|
 else
   fail "R2 descriptor-driven, not hardcoded" "got '$got'"
 fi
+# shellcheck disable=SC2016  # expanded by the inner sh at call time
 reach none "$HERDR_BOOT" sh -c 'printf %s "${HERDR_SOCKET_PATH-unset}"'
 if [[ "$(cat "${T}/out")" == unset && ! -s "${T}/err" ]]; then
   pass "R2 RC_MULTIPLEXER=none exports nothing and says nothing"
 else
   fail "R2 no multiplexer" "out '$(cat "${T}/out")' err '$(cat "${T}/err")'"
 fi
+# shellcheck disable=SC2016  # expanded by the inner sh at call time
 reach herdr "${T}/missing.json" sh -c 'printf %s "${HERDR_SOCKET_PATH-unset}"'
 if [[ $rc -eq 0 && "$(cat "${T}/out")" == unset ]] && grep -q unreadable "${T}/err"; then
   pass "R2 unreadable descriptor: warns on stderr, still runs the command"
@@ -132,7 +136,9 @@ else
 fi
 
 # --- R3 argv verbatim ---------------------------------------------------------
+# shellcheck disable=SC2016  # literal $ args: the test proves they pass through unexpanded
 reach herdr "$HERDR_BOOT" printf '[%s]\n' 'a b' "c'd" '$HOME' '' '*' 'x"y' '-n'
+# shellcheck disable=SC2016  # same literal args, printed locally as the expected value
 expected=$(printf '[%s]\n' 'a b' "c'd" '$HOME' '' '*' 'x"y' '-n')
 if [[ "$(cat "${T}/out")" == "$expected" ]]; then
   pass "R3 argv passed verbatim"

@@ -254,11 +254,12 @@ large text files in host-mounted paths like `/workspace`.** It prints
 
 The cause is an msb bug. Linux and macOS number the "find the next hole" and
 "find the next data" file queries the other way round, and msb's macOS file
-sharing passes the guest's number through unchanged, so each query gets the
-other's answer. After its first read (about 96 KiB), GNU grep asks where the
-next hole is; the swapped query answers "right here", so grep decides the file
-is sparse, hence has NUL bytes, hence is binary. Files smaller than that first
-read are never asked about, so they are fine. Upstream:
+sharing (virtiofs, the layer behind every host mount) passes the guest's
+number through unchanged, so each query gets the other's answer. After its
+first read (about 96 KiB), GNU grep asks where the next hole is; the swapped
+query answers "right here", so grep decides the file is sparse, hence has NUL
+bytes, hence is binary. Files smaller than that first read are never asked
+about, so they are fine. Upstream:
 [superradcompany/microsandbox#1683](https://github.com/superradcompany/microsandbox/issues/1683)
 (open; rip-cage reproduced it on msb 0.7.4). On a Linux host both sides
 number the queries the same way, so it should not occur there (not

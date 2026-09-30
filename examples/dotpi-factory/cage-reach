@@ -12,6 +12,7 @@
 # Before the command runs, the guest exports the env of the multiplexer the cage
 # was created with: the literal `export NAME=VALUE` lines in that multiplexer's
 # attach and start hooks, read at run time from the cage's own boot descriptor.
+# Only those two hooks are read; exec, new_session and teardown are not consulted.
 # Exports whose value is computed ($, quotes, backticks) are skipped. With no
 # multiplexer, nothing is exported. No multiplexer is named here (ADR-027 D4).
 #
