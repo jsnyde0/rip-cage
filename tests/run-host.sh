@@ -173,6 +173,7 @@ NEEDS_CONTAINER=(
   "test-pi-cage-context.sh"  # calls rc up to create a live container; inspects CLAUDE.md inside cage
   "test-claude-concurrency.sh" # requires a live rip-cage container with Claude auth (ANTHROPIC_API_KEY or OAuth)
   "test-auth-secret-live.sh"  # rip-cage-ely4.7.17: boots one scratch cage from the shipped template; needs msb + the host CCTOK secrets file
+  "test-claude-headless-live.sh"  # rip-cage-2dyy: execs claude -p into an existing running cage named by RC_HEADLESS_CAGE (read + exec only); needs msb + an authed cage; SKIPs without RC_HEADLESS_CAGE
   "test-claude-unattended-start-live.sh"  # rip-cage-jimf: boots one scratch cage from the template (create + resume) and drives interactive claude in a pty; needs msb + a scratch RC_IMAGE
   "test-init-mount-guard-live.sh"  # rip-cage-f08b: boots one scratch cage twice (template, then whole ~/.claude mounted rw); needs msb + a scratch RC_IMAGE
   "test-claude-json-seed-synthesis.sh" # rip-cage-vwka: spins its own real cages via rc up (non-possession + possession) to verify R4 seed synthesis; requires docker + msb + a pre-built rip-cage image
@@ -790,6 +791,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-no-verbatim-placeholder.sh"   # rip-cage-ureo: no msb secret placeholder spelled verbatim in docs/reference, README.md, share/, .claude/skills (msb drops a body carrying it, upstream #1354); host-only static grep
   run_test "${SCRIPT_DIR}/test-auth-secret.sh"   # rip-cage-ely4.7.17: msb --secret CCTOK non-possession bridge — rc auth's no-prompt check + rc up's pre-msb-call refusal, host-only, no live cage needed
   run_test "${SCRIPT_DIR}/test-auth-secret-live.sh"   # rip-cage-ely4.7.17: container-tier half — template cage holds only the $MSB_CCTOK placeholder, no credentials file, claude -p green (NEEDS_CONTAINER; SKIPs without the host CCTOK file)
+  run_test "${SCRIPT_DIR}/test-claude-headless-live.sh"   # rip-cage-2dyy: msb exec with an open stdin never starts the guest command (the "claude -p hangs, exit 124, empty output" symptom); claude -p with stdin closed returns non-empty within RC_HEADLESS_BOUND (NEEDS_CONTAINER; SKIPs without RC_HEADLESS_CAGE)
   run_test "${SCRIPT_DIR}/test-claude-unattended-start-live.sh"   # rip-cage-jimf: base-image claude reaches its prompt unattended past the bypass accept dialog, on create and on resume of a template cage, host ~/.claude.json still ro; rip-cage-jimf.9: the auto-mode nudge is pre-answered in claude's writable config (mechanism legs + U13 bite under the fake token, the on-screen nudge leg only under real auth via RC_JIMF_CCTOK_FILE) (NEEDS_CONTAINER; SKIPs without a scratch RC_IMAGE)
   run_test "${SCRIPT_DIR}/test-init-mount-guard-live.sh"   # rip-cage-f08b: init never deletes a host dir inside a cage-config mount — whole ~/.claude rw keeps its skills sentinel, template still gets the symlink (NEEDS_CONTAINER; SKIPs without a scratch RC_IMAGE)
   run_test "${SCRIPT_DIR}/test-pi-install.sh"

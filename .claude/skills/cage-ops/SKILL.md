@@ -179,12 +179,19 @@ you come and read them. (Design from rip-cage-8jg5; its first real run,
 rip-cage-8jg5.4, used steps 1-4 as written.)
 
 1. **Reach in with stdin closed.** Every command you run in the child's cage
-   goes through `msb exec`, with `< /dev/null` on the end — without it the
-   call hangs waiting for input:
+   goes through `msb exec`, with `< /dev/null` on the end. Without it, msb
+   does not start the command until your stdin reaches end-of-file — which an
+   agent's shell or a harness pipe never does. You see no output at all, and a
+   timeout reports exit 124 with nothing printed, which looks like the command
+   hung (measured on msb 0.7.4, rip-cage-2dyy; `tests/test-claude-headless-live.sh`
+   H1 fails if msb changes this):
 
    ```bash
    msb exec <cage> -- <cmd> < /dev/null
    ```
+
+   Headless `claude -p` through this path returns, but can take minutes; the
+   bound to give it is in [`examples/claude/`](../../../examples/claude/README.md#headless-claude--p-from-the-host).
 
    If the command needs environment the image's boot sets up (a multiplexer
    socket path, say), export it inside the command:

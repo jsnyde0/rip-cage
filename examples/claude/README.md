@@ -92,6 +92,30 @@ Claude Code's root-owned `managed-settings.json`. Compose it too if you want
 destructive Bash commands blocked. Without it, Bash calls run unguarded and
 print no hook error.
 
+## Headless `claude -p` from the host
+
+Run it with stdin closed and a bound of minutes, not seconds:
+
+```bash
+msb exec <cage> -- bash -lc 'claude -p "<prompt>" --output-format text' < /dev/null
+```
+
+- **Stdin closed is required.** Without `< /dev/null`, msb never starts the
+  command (cage-ops step 1). Exit 124 with empty output means this, not a
+  claude hang.
+- **Give it five minutes.** In one cage (2 vCPUs, host at 6% free memory),
+  the same one-word `claude -p` took 6 s to 3.5 min within an hour, and every
+  run returned `ok` when given the time (rip-cage-2dyy). A plain CPU loop in
+  the cage swung 4x over the same window, so host load sets the pace. A
+  30–60 s timeout will kill runs that were about to succeed.
+- **The workspace's SessionStart hooks run first.** Claude runs them before
+  the first API call, even under `-p`. A hook running `bd prime` took about
+  20 s per call in that cage, and there were two. A run that needs no hook
+  context can skip them: add `--settings '{"disableAllHooks":true}'`.
+
+`tests/test-claude-headless-live.sh` checks both halves against a running
+cage: `RC_HEADLESS_CAGE=<cage> bash tests/test-claude-headless-live.sh`.
+
 ## Swapping in a different launch behavior
 
 Nothing here is claude-specific except the wrapper's own logic. A different
