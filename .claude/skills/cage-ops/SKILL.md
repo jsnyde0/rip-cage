@@ -245,6 +245,41 @@ rip-cage-8jg5.4, used steps 1-4 as written.)
 - [`references/what-survives.md`](references/what-survives.md) — recreate,
   resume and destroy, and what each one costs.
 
+## grep says "binary file matches" on a text file (macOS host)
+
+**On a macOS host, `grep` inside a cage can silently drop matching lines from
+large text files in host-mounted paths like `/workspace`.** It prints
+`grep: <file>: binary file matches` on stderr instead of the lines, and exits
+0. A caller that reads only stdout sees nothing and concludes "not found".
+
+The cause is an msb bug. Linux and macOS number the "find the next hole" and
+"find the next data" file queries the other way round, and msb's macOS file
+sharing passes the guest's number through unchanged, so each query gets the
+other's answer. GNU grep asks where the first hole is, is told "at byte 0", and
+guesses the file is binary. It only asks for files bigger than its first read
+(about 96 KiB), so smaller files are fine. Upstream:
+[superradcompany/microsandbox#1683](https://github.com/superradcompany/microsandbox/issues/1683)
+(open; rip-cage reproduced it on msb 0.7.4). Linux hosts number the queries
+the same way and are not affected. `cp`, `cp --sparse=always` and `tar -S`
+copy these files correctly (measured, rip-cage-j1fl).
+
+**Inside the cage, grep text trees with `-a`** (`--binary-files=text`):
+`grep -rna <pattern> /workspace/src`. It prints the lines grep would have
+dropped. It also prints matches inside real binaries as raw bytes, so narrow
+the path or add `--exclude-dir=__pycache__` rather than grepping everything.
+rip-cage ships no grep wrapper (ADR-005 D12); an operator who wants one adds it
+in their own Dockerfile.
+
+**Probe** whether a cage still has the bug, against any file over 96 KiB on a
+host mount:
+
+```bash
+msb exec <cage> -- python3 -c 'import os,sys; fd=os.open(sys.argv[1],os.O_RDONLY); print(os.fstat(fd).st_size, os.lseek(fd,0,os.SEEK_DATA), os.lseek(fd,0,os.SEEK_HOLE))' /workspace/<big-text-file> < /dev/null
+```
+
+Fixed prints `<size> 0 <size>`: data starts at 0, the only hole is at the end.
+The bug prints `<size> <size> 0`. Done when you know which one this cage has.
+
 ## microsandbox itself
 
 `rc` is a thin wrapper; the runtime is microsandbox. For msb's own surface

@@ -19,6 +19,12 @@ or Linux). This section tells you where things are and how to reach them from
 - `/workspace` is the only host path mounted in. Everything outside `/workspace`
   is cage-local (ephemeral, lost on `rc destroy`).
 - Cage `$HOME` is `/home/agent` — agent-local, not the user's real home.
+- On a macOS host, `grep` on a `/workspace` file bigger than about 96 KiB can
+  print `binary file matches` on stderr instead of the matching lines, and
+  exit 0. It is an msb bug, not a binary file
+  (superradcompany/microsandbox#1683). Grep text with `-a`, e.g.
+  `grep -rna <pattern> /workspace/src --exclude-dir=__pycache__`, so a miss
+  is a real miss.
 
 ### Networking
 
