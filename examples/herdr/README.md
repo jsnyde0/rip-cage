@@ -89,6 +89,12 @@ read and write the same `session.json` and corrupt each other's roster. A real
 host path is also a bonus: it gives host-side visibility into `session.json`
 for diagnostics without exec-ing into the cage.
 
+**Skip the first-run modal: put `onboarding = false` in that directory's
+`config.toml`** (`<ABSOLUTE_HOST_DIR>/herdr-<cage-name>/config.toml`, host-side).
+Without it, a fresh cage's `rc up` attach opens on herdr's onboarding screen
+until someone presses Enter once. This is your composition: rc and init never
+write herdr's config.
+
 ## The provider contract
 
 A `multiplexers[]` entry declares shell commands, run with `sh -c` inside the
