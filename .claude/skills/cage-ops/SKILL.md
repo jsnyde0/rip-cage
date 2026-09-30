@@ -193,8 +193,11 @@ rip-cage-8jg5.4, used steps 1-4 as written.)
    it. A multiplexer's variables are the `export` lines in its `start` and
    `attach` hooks — read them with
    `msb exec <cage> -- jq '.multiplexers' /etc/rip-cage/boot.json < /dev/null`,
-   or in the composed recipe's README. Done when the command's exit code and
-   output come back to you.
+   or in the composed recipe's README. The dotpi-factory recipe ships this
+   step as one command, `examples/dotpi-factory/cage-reach <cage> -- <argv...>`:
+   stdin closed, the multiplexer's exports read from the descriptor, the
+   inner exit code returned. Its README gives the `reach` line for a grant
+   row. Done when the command's exit code and output come back to you.
 2. **Start the child from inside.** Run your own tooling's start or dispatch
    command in the cage through step 1, so the child's task, state and mailbox
    all live cage-side. Done when that command exits 0 and the child's seat

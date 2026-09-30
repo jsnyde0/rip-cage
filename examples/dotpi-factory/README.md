@@ -14,6 +14,7 @@ nothing about this directory; it is a recipe you compose.
 |---|---|
 | `Dockerfile.snippet` | the lines to paste into your own Dockerfile: CLI symlinks, state dirs, the boot-fragment merge |
 | `boot-fragment.json` | the boot-descriptor fragment; declares one daemon, the factory clock (see [The clock](#the-clock)) |
+| `cage-reach` | host-side wrapper that runs one command in the cage (see [The reach wrapper](#the-reach-wrapper)); not copied into the image |
 
 No dotpi code is copied into the image. `grants`, `seat`, `mail`, `dispatch`
 and `pacemaker` in `/usr/local/bin` are symlinks into the dotpi checkout's
@@ -132,6 +133,41 @@ of their own.
 ## Reaching in from the host
 
 Everything below runs on the host.
+
+### The reach wrapper
+
+`cage-reach` in this directory runs one command inside the cage and returns.
+Use it wherever a host-side tool reaches in:
+
+```bash
+examples/dotpi-factory/cage-reach <cage> -- <argv...>
+```
+
+The contract (agreed with dotpi for its grant-row `reach` section, dotpi-5nuz):
+
+- It runs `<argv...>` inside `<cage>` through `msb exec`, with stdin closed.
+- Before the command runs, it exports the env of the multiplexer the cage was
+  created with. It reads that env from the cage's own boot descriptor at run
+  time: the `export NAME=VALUE` lines in the multiplexer's `attach` and `start`
+  hooks whose value is a literal. It names no multiplexer itself. With none, it
+  exports nothing.
+- `<argv...>` arrives verbatim: no shell re-parses it.
+- stdout and stderr pass through. It exits with the inner command's status,
+  or 2 with a usage line when the `--` is missing.
+- It is never interactive. Attaching a terminal is a different path.
+
+**The reach line for a caged child's grant row** is the wrapper's absolute host
+path, the cage name, and `--`:
+
+```json
+["<abs path to cage-reach>", "<cage>", "--"]
+```
+
+For example, `["/Users/me/code/rip-cage/examples/dotpi-factory/cage-reach", "personal-myproj", "--"]`.
+Copy the script somewhere stable first if you would rather not point at a
+rip-cage checkout.
+
+The bullets below are what the wrapper does for you, for a hand-typed call.
 
 - **Close stdin on every `msb exec`.** A host-side `msb exec` with an open stdin
   waits for input that never comes. End each call with `< /dev/null`:

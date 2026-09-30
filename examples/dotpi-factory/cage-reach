@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# cage-reach -- run one command inside a rip-cage cage from the host, never
+# interactively (rip-cage-8jg5.8, the rip-cage side of dotpi-5nuz).
+#
+#   cage-reach <cage> -- <argv...>
+#
+# A parent's tools put ["<abs path to cage-reach>", "<cage>", "--"] in front of
+# every command they run for a caged child. The command runs via `msb exec`
+# with stdin closed (an open stdin makes msb wait for EOF forever). stdout and
+# stderr pass through, and cage-reach exits with the inner command's status.
+#
+# Before the command runs, the guest exports the env of the multiplexer the cage
+# was created with: the literal `export NAME=VALUE` lines in that multiplexer's
+# attach and start hooks, read at run time from the cage's own boot descriptor.
+# Exports whose value is computed ($, quotes, backticks) are skipped. With no
+# multiplexer, nothing is exported. No multiplexer is named here (ADR-027 D4).
+#
+# Attaching to a terminal is a different path (rip-cage-8jg5.7), not this one.
+
+set -euo pipefail
+
+usage() { echo "usage: cage-reach <cage> -- <argv...>" >&2; }
+
+if [[ $# -lt 3 || "$2" != "--" ]]; then
+  usage
+  exit 2
+fi
+cage=$1
+shift 2
+
+# Runs inside the cage, as `bash -c "$guest" cage-reach <argv...>`.
+guest=$(cat <<'GUEST'
+_rc_desc=${RC_BOOT_DESCRIPTOR:-/etc/rip-cage/boot.json}
+_rc_mux=${RC_MULTIPLEXER:-none}
+if [ "$_rc_mux" != none ]; then
+  if [ -r "$_rc_desc" ]; then
+    while IFS= read -r _rc_kv; do
+      [ -n "$_rc_kv" ] && export "$_rc_kv"
+    done < <(jq -r --arg m "$_rc_mux" '.multiplexers[]? | select(.name == $m) | (.attach // ""), (.start // "")' "$_rc_desc" \
+      | grep -oE 'export [A-Za-z_][A-Za-z0-9_]*=[^;[:space:]&|]*' \
+      | grep -vE '[$"`'"'"'\\]' \
+      | sed 's/^export //' \
+      | awk -F= '!seen[$1]++')
+  else
+    echo "cage-reach: multiplexer '$_rc_mux' set but $_rc_desc is unreadable; running without its env" >&2
+  fi
+fi
+unset _rc_desc _rc_mux _rc_kv
+exec "$@"
+GUEST
+)
+
+exec msb exec "$cage" -- bash -c "$guest" cage-reach "$@" < /dev/null
