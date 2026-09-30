@@ -21,7 +21,6 @@
 #   S16  rc reload refuses loud when mounts.symlinks.* differs (C5-equivalent)
 #   S17  ADR-021 D5 invariant: both configs absent, no dangling symlinks vs
 #        with dangling symlinks → label set differs only in rc.symlink-follow-fingerprint
-#   S18  cage-claude.md negative invariant: bead B does NOT modify cage-claude.md
 #   S24  Reserved-path collision under on_dangling=skip → skipped, exit 0, warning
 #        (rip-cage-hcdn: on_dangling=skip actually unblocks a reserved-path symlink)
 #   S25  Broken symlink chain under on_dangling=skip → collector skips, exit 0,
@@ -34,7 +33,6 @@
 # translation of the original docker-inspect-stub idiom from
 # test-rc-reload.sh).
 # Tests S17 requires Docker (conditional).
-# S18 is a static git-diff check.
 #
 # ADRs: ADR-001 D1 (fail-loud), ADR-019 D1 (auth.json sub-mount preserved, hhh.12),
 #       ADR-021 D2/D3/D5 (schema/merge/versioning), ADR-022 D6 (rc reload)
@@ -59,17 +57,18 @@ unset RC_CONFIG_GLOBAL
 # longer exists is the ability to VARY it per project.
 #
 # That split is the whole rule for this file:
-#   KEPT (14)      the observable survives with the retired default, and the
+#   KEPT (13)      the observable survives with the retired default, and the
 #                  case never needed the knob: S1-S5 (collector units),
-#                  S8/S11/S13 (the three surviving defaults), S14, S15*, S18,
+#                  S8/S11/S13 (the three surviving defaults), S14, S15*,
 #                  S21, S23, S25, Sadr019.
 #   RESCOPED (3)   the observable survives but the fixture drove it through a
 #                  deleted surface: S20/S22/S22b now rely on the shipped list
 #                  (.aws is on it) and, for S22b, on RC_PROTECTED_PATHS
 #                  pointing at a list that omits it.
-#   RETIRED (8)    the case only varied a deleted knob: S6, S7, S10, S12, S16,
+#   RETIRED (9)    the case only varied a deleted knob: S6, S7, S10, S12, S16,
 #                  S24, S-SCHEMA, and S19 -- each says so at its own banner,
-#                  with what replaced it or what coverage was lost.
+#                  with what replaced it or what coverage was lost. S18 guarded
+#                  a file rip-cage-hb4w deleted, and says so at its banner.
 #   SKIPPED (1)    S17, on its own pre-existing precondition.
 #
 # Two fixtures were re-homed ABOVE the cases while doing this: _print_mounts'

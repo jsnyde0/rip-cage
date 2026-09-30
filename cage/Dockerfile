@@ -168,11 +168,12 @@ COPY tests/test-safety-stack.sh /usr/local/lib/rip-cage/test-safety-stack.sh
 COPY tests/_safety-stack-assert-lib.sh /usr/local/lib/rip-cage/_safety-stack-assert-lib.sh
 COPY tests/run-recipe-smokes.sh /usr/local/lib/rip-cage/run-recipe-smokes.sh
 COPY cage/agent/settings.json /etc/rip-cage/settings.json
-# CC managed-settings floor-lock, cage-claude.md, and cage-pi.md are provisioned by
-# composable recipes (examples/claude/, examples/pi/): each recipe's Dockerfile.snippet
-# COPYs its own file under USER root. Un-baked from base image per rip-cage-wlwc.2.2
-# (ADR-005 D12; floor-lock preserved: the snippet writes chown root:root, parent dir
-# root-owned — ADR-027 D3). The recipe dir holds the only copy (rip-cage-hb4w).
+# cage-claude.md, cage-pi.md and the CC managed-settings floor-lock are provisioned
+# by composable recipes — examples/claude/, examples/pi/ and examples/dcg/
+# respectively: each recipe's Dockerfile.snippet COPYs its own file under USER root.
+# Un-baked from base image per rip-cage-wlwc.2.2 (ADR-005 D12; floor-lock preserved:
+# the snippet writes chown root:root, parent dir root-owned — ADR-027 D3). The
+# recipe dir holds the only copy of each (rip-cage-hb4w).
 # Boot descriptor (ADR-031 D4) — the one declarative file init reads at boot,
 # at the fixed path /etc/rip-cage/boot.json. Root-owned and not agent-writable:
 # it declares what starts inside the cage, so an agent that could edit it could
@@ -204,11 +205,11 @@ RUN chmod +x /usr/local/bin/init-rip-cage.sh \
     /usr/local/lib/rip-cage/test-bd-roundtrip.sh \
     /usr/local/lib/rip-cage/run-recipe-smokes.sh
 
-# Pi's dcg-gate.ts guard is provisioned by the composable examples/dcg recipe via
-# install_cmd (runs as root before USER agent) at its OWN separate root-owned load
+# Pi's dcg-gate.ts guard is provisioned by the composable examples/dcg recipe (its
+# Dockerfile.snippet COPYs it under USER root) at its OWN separate root-owned load
 # path /etc/rip-cage/pi/dcg-gate.ts — NOT inside the agent's extensions/ dir, which
-# is agent-owned (olen retired per ADR-027 D1/D3; the guard loads via assembled
-# launch_args: --no-extensions -e <path>). Relocated from pi recipe to dcg recipe
+# is agent-owned (olen retired per ADR-027 D1/D3; the guard loads via the recipe's
+# boot-fragment tools[].launch: pi-real -e <path>). Relocated from pi recipe to dcg recipe
 # per rip-cage-l72i.1 (ADR-027 D4): pi recipe no longer names dcg (ADR-005 D12).
 # Un-baked from base image per rip-cage-wlwc.2.2 (ADR-005 D12).
 
@@ -227,8 +228,8 @@ RUN mkdir -p /home/agent/.config/mise \
        > /home/agent/.config/mise/config.toml
 COPY --chown=agent:agent cage/agent/zshrc /home/agent/.zshrc
 # Pi cage-pi.md is provisioned by the examples/pi recipe: examples/pi/Dockerfile.snippet
-# COPYs examples/pi/cage-pi.md under USER root. The pi launch shim and guard
-# wiring are assembled by rc build from manifest launch_args (rip-cage-l72i.1).
+# COPYs examples/pi/cage-pi.md under USER root. Pi's launch command comes from the
+# boot descriptor's tools[].launch (see the per-tool launch wrappers above).
 # (rip-cage-wlwc.2.2: un-baked from base image per ADR-005 D12)
 
 # Version label — baked in at build time so rc up can detect stale local images.
