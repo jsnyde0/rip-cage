@@ -901,7 +901,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-symlink-follow.sh"       # symlink-follow scanner + fingerprint + denylist gating (unsets RC_CONFIG_GLOBAL)
   run_test "${SCRIPT_DIR}/test-image-drift-resume.sh"    # rip-cage-jnvb: rc up image-ID drift guard on resume — full-rc-through-fake-docker-shim T1-T6, host-only, no live container needed
   run_test "${SCRIPT_DIR}/test-multiplexer-fixed-at-create.sh"    # rip-cage-1yqa: RC_MULTIPLEXER differing from an existing cage's stored multiplexer is refused with the --replace hint; --replace applies it
-  run_test "${SCRIPT_DIR}/test-multiplexer-default-at-create.sh"  # rip-cage-sfo3: unset RC_MULTIPLEXER at create takes the image's sole declared multiplexer; zero/several -> none; converge keeps the stored value
+  run_test "${SCRIPT_DIR}/test-multiplexer-default-at-create.sh"  # rip-cage-sfo3: unset RC_MULTIPLEXER at create takes the image's sole declared multiplexer; zero/several -> none; converge keeps the stored value; a recreate that keeps a value other than the image's sole declared one logs a note (rip-cage-kaqe)
   run_test "${SCRIPT_DIR}/test-doctor-json-doc.sh"       # rip-cage-bbjn: rc doctor --output json top-level field set derived from cli/doctor.sh vs documented in docs/reference/cli-reference.md, both directions, host-only static check
   run_test "${SCRIPT_DIR}/test-adr-evolution-notes.sh"  # rip-cage-ely4.8: every decision ADR-031 evolves/honors/retires cites ADR-031 in place, and INDEX.md lists it; host-only static check over docs/decisions/
   # Container-tier (NEEDS_CONTAINER above; self-skip under --host-only, run on full invocation):

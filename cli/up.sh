@@ -3497,6 +3497,18 @@ cmd_up() {
     _rc_multiplexer=$(_up_default_multiplexer "$_UP_CAGE_CONF")
     [[ "$_rc_multiplexer" != "none" ]] && \
       log "multiplexer: ${_rc_multiplexer} (the only one the image's boot descriptor declares; RC_MULTIPLEXER=none rc up --replace for a plain shell)"
+  elif [[ -z "${RC_MULTIPLEXER:-}" ]]; then
+    # rip-cage-kaqe: a recreate kept the stored value. When the image declares
+    # exactly one multiplexer and it is not that value, the cage boots without
+    # it and nothing else says so -- note it and name the switch. Warning
+    # only: the stored value still wins (sfo3). Several or zero declared reads
+    # as none here, so no note (stderr dropped: the several-declared line is
+    # the create default's, not this note's).
+    local _img_sole_mux
+    _img_sole_mux=$(_up_default_multiplexer "$_UP_CAGE_CONF" 2>/dev/null)
+    if [[ "$_img_sole_mux" != "none" && "$_img_sole_mux" != "$_rc_multiplexer" ]]; then
+      log "note: this cage keeps multiplexer '${_rc_multiplexer}' from its creation, but its image declares only '${_img_sole_mux}'; to switch: RC_MULTIPLEXER=${_img_sole_mux} rc up --replace ${path}"
+    fi
   fi
   _UP_RUN_ARGS+=(-e "RC_MULTIPLEXER=${_rc_multiplexer}")
   _UP_RUN_ARGS+=(--label "rc.session.multiplexer=${_rc_multiplexer}")

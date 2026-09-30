@@ -27,6 +27,14 @@
 #   D9  converge of a cage labelled fakemux on an image declaring none ->
 #       refused before any stop/remove/start/exec/create (rip-cage-7njt), the
 #       message names the stored value, the declared set and the --replace hint
+#   D10 rc up --replace of a cage labelled none, one declared, unset -> keeps
+#       none AND prints one note naming none, fakemux and
+#       RC_MULTIPLEXER=fakemux rc up --replace <path> (rip-cage-kaqe)
+#   D11 rc up --replace of a cage labelled fakemux, one declared (the same) ->
+#       no note
+#   D12 converge recreate of a cage labelled none, one declared -> the same note
+#   D13 rc up --replace of a cage labelled fakemux, two declared -> no note
+#       (several declared: no single one to name)
 
 set -uo pipefail
 
@@ -223,6 +231,48 @@ if [[ "$RC_EXIT" != 0 && -z "$CREATE" && ! -s "${TEST_HOME}/mut" ]] \
   pass D9 "converge of a cage labelled fakemux, image declares none -> refused before any msb stop/remove/start/exec/create, with the --replace hint"
 else
   fail D9 "converge refuses a stored mux the image dropped" "exit=$RC_EXIT create=[$CREATE] mut=[$(cat "${TEST_HOME}/mut" 2>/dev/null)] out=$RC_ALL"
+fi
+teardown_ws
+
+# --- D10-D13: the kept-multiplexer note (rip-cage-kaqe) --------------------
+NOTE_RE="keeps multiplexer '"
+setup_ws
+(unset RC_MULTIPLEXER; run_up exited none "$ONE" --replace; save); load
+if [[ -n "$CREATE" ]] && creates_with none \
+   && [[ $(grep -c "$NOTE_RE" <<<"$RC_ALL") -eq 1 ]] \
+   && grep -qF "keeps multiplexer 'none'" <<<"$RC_ALL" \
+   && grep -qF "declares only 'fakemux'" <<<"$RC_ALL" \
+   && grep -qF "RC_MULTIPLEXER=fakemux rc up --replace ${TEST_WS}" <<<"$RC_ALL"; then
+  pass D10 "--replace, stored none, one declared -> keeps none and one note names none, fakemux and the --replace remedy"
+else
+  fail D10 "kept-multiplexer note on --replace" "exit=$RC_EXIT create=[$CREATE] out=$RC_ALL"
+fi
+teardown_ws
+
+setup_ws
+(unset RC_MULTIPLEXER; run_up exited fakemux "$ONE" --replace; save); load
+if [[ -n "$CREATE" ]] && creates_with fakemux && ! grep -q "$NOTE_RE" <<<"$RC_ALL"; then
+  pass D11 "--replace, stored fakemux = the one declared -> no note"
+else
+  fail D11 "no note when stored matches the declared one" "exit=$RC_EXIT create=[$CREATE] out=$RC_ALL"
+fi
+teardown_ws
+
+setup_ws
+(unset RC_MULTIPLEXER; MUX_CONF_SHA=stale-sha run_up exited none "$ONE"; save); load
+if [[ -n "$CREATE" ]] && creates_with none && grep -qF "RC_MULTIPLEXER=fakemux rc up --replace" <<<"$RC_ALL"; then
+  pass D12 "converge recreate, stored none, one declared -> keeps none and prints the note"
+else
+  fail D12 "kept-multiplexer note on converge" "exit=$RC_EXIT create=[$CREATE] out=$RC_ALL"
+fi
+teardown_ws
+
+setup_ws
+(unset RC_MULTIPLEXER; run_up exited fakemux "$TWO" --replace; save); load
+if [[ -n "$CREATE" ]] && creates_with fakemux && ! grep -q "$NOTE_RE" <<<"$RC_ALL"; then
+  pass D13 "--replace, two declared -> no note (no single declared one)"
+else
+  fail D13 "no note when several declared" "exit=$RC_EXIT create=[$CREATE] out=$RC_ALL"
 fi
 teardown_ws
 
