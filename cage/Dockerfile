@@ -169,9 +169,10 @@ COPY tests/_safety-stack-assert-lib.sh /usr/local/lib/rip-cage/_safety-stack-ass
 COPY tests/run-recipe-smokes.sh /usr/local/lib/rip-cage/run-recipe-smokes.sh
 COPY cage/agent/settings.json /etc/rip-cage/settings.json
 # CC managed-settings floor-lock, cage-claude.md, and cage-pi.md are provisioned by
-# composable recipes (examples/claude/, examples/pi/) via root-owned install_cmd.
-# Un-baked from base image per rip-cage-wlwc.2.2 (ADR-005 D12; floor-lock preserved:
-# install_cmd runs as root, writes chown root:root, parent dir root-owned — ADR-027 D3).
+# composable recipes (examples/claude/, examples/pi/): each recipe's Dockerfile.snippet
+# COPYs its own file under USER root. Un-baked from base image per rip-cage-wlwc.2.2
+# (ADR-005 D12; floor-lock preserved: the snippet writes chown root:root, parent dir
+# root-owned — ADR-027 D3). The recipe dir holds the only copy (rip-cage-hb4w).
 # Boot descriptor (ADR-031 D4) — the one declarative file init reads at boot,
 # at the fixed path /etc/rip-cage/boot.json. Root-owned and not agent-writable:
 # it declares what starts inside the cage, so an agent that could edit it could
@@ -225,8 +226,8 @@ RUN mkdir -p /home/agent/.config/mise \
     && printf '[settings]\nidiomatic_version_file_enable_tools = ["node", "yarn"]\n' \
        > /home/agent/.config/mise/config.toml
 COPY --chown=agent:agent cage/agent/zshrc /home/agent/.zshrc
-# Pi cage-pi.md is provisioned by examples/pi recipe (install_cmd runs in root context
-# before USER agent). See examples/pi/build-fragment.sh. The pi launch shim and guard
+# Pi cage-pi.md is provisioned by the examples/pi recipe: examples/pi/Dockerfile.snippet
+# COPYs examples/pi/cage-pi.md under USER root. The pi launch shim and guard
 # wiring are assembled by rc build from manifest launch_args (rip-cage-l72i.1).
 # (rip-cage-wlwc.2.2: un-baked from base image per ADR-005 D12)
 

@@ -721,26 +721,11 @@ test_s17_d5_label_invariant() {
 }
 
 # ---------------------------------------------------------------------------
-# S18: cage-claude.md negative invariant — bead B does NOT modify cage-claude.md
-# (acc 24)
-# ---------------------------------------------------------------------------
-test_s18_cage_claude_md_unchanged() {
-  local last_cage_mod
-  last_cage_mod=$(git -C "$REPO_ROOT" log --oneline -- cage/agent/cage-claude.md 2>/dev/null | head -1 || true)
-  if [[ -z "$last_cage_mod" ]]; then
-    pass "18" "cage-claude.md negative invariant: file has no modifications in git log"
-    return
-  fi
-
-  # Check if cage-claude.md has any uncommitted changes
-  local cage_status
-  cage_status=$(git -C "$REPO_ROOT" status --porcelain -- cage/agent/cage-claude.md 2>/dev/null || true)
-  if [[ -z "$cage_status" ]]; then
-    pass "18" "cage-claude.md negative invariant: no uncommitted changes to cage-claude.md in bead B"
-  else
-    fail "18" "cage-claude.md should not be modified by bead B" "status: $cage_status"
-  fi
-}
+# S18: RETIRED by rip-cage-hb4w.
+#
+# It asserted bead B left cage/agent/cage-claude.md unmodified. That file was an
+# unreferenced duplicate of examples/claude/cage-claude.md (the recipe COPYs its
+# own) and is deleted, so the check could no longer fail.
 
 # ---------------------------------------------------------------------------
 # S-SCHEMA: RETIRED by rip-cage-ely4.9.
@@ -1008,7 +993,6 @@ test_s13_scope_file
 test_s14_fhs_reserved_collision
 test_s15_fingerprint_deterministic
 test_s17_d5_label_invariant
-test_s18_cage_claude_md_unchanged
 test_s_adr019_pi_mount_preserved
 test_s20_denylist_blocks_aws_symlink_target
 test_s21_denylist_allows_non_matching_target
