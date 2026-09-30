@@ -4,7 +4,8 @@
 #
 #   cage-reach <cage> -- <argv...>
 #
-# A parent's tools put ["<abs path to cage-reach>", "<cage>", "--"] in front of
+# A parent's tools put {"argv": ["<abs path to cage-reach>", "<cage>", "--"]} on the
+# grant row as its reach section and prepend that argv in front of
 # every command they run for a caged child. The command runs via `msb exec`
 # with stdin closed (an open stdin makes msb wait for EOF forever). stdout and
 # stderr pass through, and cage-reach exits with the inner command's status.

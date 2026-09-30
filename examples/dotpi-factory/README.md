@@ -160,14 +160,16 @@ The contract (agreed with dotpi for its grant-row `reach` section, dotpi-5nuz):
   or 2 with a usage line when the `--` or the command after it is missing.
 - It is never interactive. Attaching a terminal is a different path.
 
-**The reach line for a caged child's grant row** is the wrapper's absolute host
-path, the cage name, and `--`:
+**The reach section for a caged child's grant row** is a JSON object whose
+`argv` is the wrapper's absolute host path, the cage name, and `--` (a registry
+config section must be an object; a bare list is refused as
+`config_section_invalid`):
 
 ```json
-["<abs path to cage-reach>", "<cage>", "--"]
+{"argv": ["<abs path to cage-reach>", "<cage>", "--"]}
 ```
 
-For example, `["/Users/me/code/rip-cage/examples/dotpi-factory/cage-reach", "personal-myproj", "--"]`.
+For example, `{"argv": ["/Users/me/code/rip-cage/examples/dotpi-factory/cage-reach", "personal-myproj", "--"]}`.
 Copy the script somewhere stable first if you would rather not point at a
 rip-cage checkout.
 

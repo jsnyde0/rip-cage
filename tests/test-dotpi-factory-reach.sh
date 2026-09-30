@@ -182,7 +182,7 @@ if grep -v '^#' "$REACH" | grep -qiE 'herdr|tmux|zellij|HERDR_SOCKET'; then
 else
   pass "R6 wrapper code names no multiplexer (ADR-027 D4)"
 fi
-if grep -qF 'cage-reach <cage> -- <argv...>' "$README" && grep -qF '["<abs path to cage-reach>", "<cage>", "--"]' "$README"; then
+if grep -qF 'cage-reach <cage> -- <argv...>' "$README" && grep -qF '{"argv": ["<abs path to cage-reach>", "<cage>", "--"]}' "$README"; then
   pass "R6 README states the invocation and the reach line"
 else
   fail "R6 README contract" "invocation or reach line missing"
