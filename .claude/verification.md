@@ -197,13 +197,13 @@ All follow the same PASS/FAIL/TOTAL convention; grep for `FAIL` in output.
 - **Less useful when:** the failure is deterministic — reproduce in a test harness instead
 
 ### Headless Claude dispatch inside the cage (`claude -p`)
-- **What it is:** Claude Code ships inside the rip-cage image at `/usr/bin/claude`. Running `claude -p "<prompt>"` (with optional `--model sonnet`, `--debug`, `--debug-file /tmp/claude-debug.log`) produces a non-interactive completion — you can invoke it from the host via `docker exec` and get stdout back. Subagent dispatch, tool calls, and hook interactions all work.
-- **Command:** `docker exec -w /workspace <container> claude -p --model sonnet --debug --debug-file /tmp/claude-debug.log "<prompt>"`
-- **Speed:** seconds to minutes depending on the prompt
+- **What it is:** Claude Code ships inside the rip-cage image at `/usr/bin/claude`. Running `claude -p "<prompt>"` (with optional `--model sonnet`, `--debug`, `--debug-file /tmp/claude-debug.log`) produces a non-interactive completion — you can invoke it from the host via `msb exec` and get stdout back. Subagent dispatch, tool calls, and hook interactions all work.
+- **Command:** `msb exec <cage> -- bash -lc 'cd /workspace; claude -p --debug-file /tmp/claude-debug.log "<prompt>"' < /dev/null` — stdin closed or msb never starts it; shape, bound and timings in [`examples/claude/README.md`](../examples/claude/README.md#headless-claude--p-from-the-host), live check `tests/test-claude-headless-live.sh`
+- **Speed:** seconds to minutes; the same one-word prompt measured 6 s to 8.3 min in one cage under load (rip-cage-2dyy)
 - **Catches:** behaviors that require a real Claude Code session in the cage — subagent dispatch success/failure, MCP tool discovery, CA-trust propagation to forked node procs, hook firing order, settings.json actually being loaded, auth token usage path
-- **Useful when:** you're debugging a *runtime* behavior that no test script covers (e.g. "subagents fail fast with 0 tokens"), or you want to confirm a fix from the host without bouncing work back to the user's interactive session. Pair with `docker exec <c> tail -f ~/.claude/logs/*.log` in another shell to watch what the caged agent sees.
+- **Useful when:** you're debugging a *runtime* behavior that no test script covers (e.g. "subagents fail fast with 0 tokens"), or you want to confirm a fix from the host without bouncing work back to the user's interactive session. Pair with `msb exec <cage> -- tail -f /tmp/claude-debug.log < /dev/null` in another shell to watch what the caged agent sees.
 - **Less useful when:** the failure is deterministic at the env/config level — a shellcheck or `rc test` check is faster. Also costs tokens, so don't reach for it when a cheaper signal exists.
-- **Gotcha:** `claude -p` counts against the credentials mounted into the container, so authenticated subscription state matters. Confirm with `cat ~/.claude/.credentials.json | jq '.claudeAiOauth.expiresAt'` before blaming a bug.
+- **Gotcha:** auth rides the CCTOK msb secret, not a mounted credentials file; `rc auth` checks it before you blame a bug.
 - **Why this matters:** without this, a host-side agent investigating an in-cage Claude Code bug can only inspect *static* state (env vars, files, mounts) and then hand the "push the button" step back to the user. With `claude -p`, the host agent can close the loop itself — run the repro, read the debug log, and confirm or refute a hypothesis in one session. It turns the cage from an opaque box into an observable subprocess.
 
 ### Headless pi dispatch inside the cage (`pi -p`) — guard LOAD+FIRE proof
@@ -298,7 +298,7 @@ When no existing mechanism fits, build one of these:
 - **Minimal repro workspace.** `mktemp -d` a staging dir, `git init`, `rc up $dir`, exercise. The E2E test uses this pattern (staging under `/var/folders/.../rc/e2e-test` for deterministic container names).
 - **Python test (rare).** Only `test_skill_server.py` is pytest-based. If testing the MCP skill shim, extend that file; everything else should be shell.
 - **Dry-run.** Most `rc` subcommands accept `--dry-run` for previewing without side effects. Good for verifying argument parsing without launching containers.
-- **End-to-end repro via `claude -p`.** When debugging an in-cage Claude Code behavior (subagent dispatch, MCP tools, hooks at runtime), use the "Headless Claude dispatch" mechanism above instead of handing the repro back to the user. The host agent can close the loop itself: `rc up` a scratch workspace → `rc exec <cage> -- claude -p ...` → read `/tmp/claude-debug.log`. Pair with `rc up`'s `--cpus`/`--memory`, or a widened/narrowed `network.allowed_hosts` (edit `.rip-cage.yaml` + `rc reload`), to A/B-isolate the variable under suspicion. (`--no-forward-ssh` and the in-cage proxy-toggle are gone with the ssh cluster / mediator.)
+- **End-to-end repro via `claude -p`.** When debugging an in-cage Claude Code behavior (subagent dispatch, MCP tools, hooks at runtime), use the "Headless Claude dispatch" mechanism above instead of handing the repro back to the user. The host agent can close the loop itself: `rc up` a scratch workspace → `msb exec <cage> -- bash -lc 'claude -p ...' < /dev/null` → read `/tmp/claude-debug.log`. Pair with `rc up`'s `--cpus`/`--memory`, or a widened/narrowed `network.allowed_hosts` (edit `.rip-cage.yaml` + `rc reload`), to A/B-isolate the variable under suspicion. (`--no-forward-ssh` and the in-cage proxy-toggle are gone with the ssh cluster / mediator.)
 
 ---
 

@@ -100,14 +100,19 @@ Run it with stdin closed and a bound of minutes, not seconds:
 msb exec <cage> -- bash -lc 'claude -p "<prompt>" --output-format text' < /dev/null
 ```
 
-- **Stdin closed is required.** Without `< /dev/null`, msb never starts the
-  command (cage-ops step 1). Exit 124 with empty output means this, not a
-  claude hang.
-- **Give it five minutes.** In one cage (2 vCPUs, host at 6% free memory),
-  the same one-word `claude -p` took 6 s to 3.5 min within an hour, and every
-  run returned `ok` when given the time (rip-cage-2dyy). A plain CPU loop in
-  the cage swung 4x over the same window, so host load sets the pace. A
-  30–60 s timeout will kill runs that were about to succeed.
+- **Stdin closed is required.** When stdin is a pipe or socket (an agent's
+  shell, a harness), msb waits for it to reach end-of-file before it starts
+  the command (cage-ops step 1). If the caller never closes it, a timeout
+  reports exit 124 with empty output.
+- **Give it ten minutes.** In one cage (2 vCPUs, host at 6% free memory),
+  the same one-word `claude -p` took 6 s to 8.3 min over two hours, and every
+  run returned `ok` when given the time (rip-cage-2dyy). That cage also held
+  two resident interactive claude sessions; while "idle", they sampled at up to
+  97% and 64% of the two vCPUs. A plain CPU loop in the cage varied 4x within
+  one minute. Load inside the cage and on the host is most of the spread. A
+  30–60 s timeout will kill runs that were about to succeed — and that also
+  shows as exit 124 with empty output. So with stdin already closed, a 124
+  means the bound was too short.
 - **The workspace's SessionStart hooks run first.** Claude runs them before
   the first API call, even under `-p`. A hook running `bd prime` took about
   20 s per call in that cage, and there were two. A run that needs no hook

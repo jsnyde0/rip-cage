@@ -179,9 +179,9 @@ you come and read them. (Design from rip-cage-8jg5; its first real run,
 rip-cage-8jg5.4, used steps 1-4 as written.)
 
 1. **Reach in with stdin closed.** Every command you run in the child's cage
-   goes through `msb exec`, with `< /dev/null` on the end. Without it, msb
-   does not start the command until your stdin reaches end-of-file — which an
-   agent's shell or a harness pipe never does. You see no output at all, and a
+   goes through `msb exec`, with `< /dev/null` on the end. When your stdin is
+   a pipe or socket, msb does not start the command until it reaches
+   end-of-file — which an agent's shell or a harness pipe never does. You see no output at all, and a
    timeout reports exit 124 with nothing printed, which looks like the command
    hung (measured on msb 0.7.4, rip-cage-2dyy; `tests/test-claude-headless-live.sh`
    H1 fails if msb changes this):
