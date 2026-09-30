@@ -53,9 +53,11 @@ bead `rip-cage-tun0`.
 
 The first boot bootstraps the cluster before the server listens: `initdb`, then a
 socket-only start to create the `test` database and role, then a stop. Under host
-RAM pressure that can outlast the 18 seconds, and init prints
+RAM pressure that can outlast that window (about 17 s for this hook: three
+attempts of 1 s + 4.5 s), and init prints
 `WARNING: daemon 'postgres-pgvector' health check FAILED … cage continues without it`.
-The daemon is still running: `restart` is `never`, so init neither kills nor
+The daemon is still running: `restart` defaults to `never` (this fragment declares
+none), so init neither kills nor
 respawns it, and it becomes healthy once that bootstrap finishes. Confirm from the
 host (`< /dev/null` keeps `msb exec` from waiting on stdin — see the cage-ops skill):
 
