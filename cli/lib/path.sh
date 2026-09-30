@@ -16,6 +16,11 @@
 # directory for the guard to catch — and the mount-side floor that DOES still
 # matter is the protected-paths rule (cli/lib/protected_paths.sh), which reads
 # the real mount list rather than one path argument.
+# The argument is a project DIRECTORY, never a cage name: an operator who
+# passes the cage name reads a bare "does not exist" as "no such cage"
+# (rip-cage-i23v). Appended to both PATH_NOT_FOUND branches below.
+_RC_PATH_ARG_HINT="rc up takes a project directory (rc up [--replace] <dir>), or no argument for the current directory; the cage name is derived from the directory, not given."
+
 validate_path() {
   local raw_path="$1"
 
@@ -32,13 +37,13 @@ validate_path() {
   # unlike BSD realpath which fails. The -e check covers both platforms.
   local resolved
   if [[ ! -e "$raw_path" ]]; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Path does not exist: $raw_path" "PATH_NOT_FOUND"
-    echo "Error: $raw_path does not exist" >&2
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Path does not exist: $raw_path. $_RC_PATH_ARG_HINT" "PATH_NOT_FOUND"
+    echo "Error: $raw_path does not exist. $_RC_PATH_ARG_HINT" >&2
     exit 1
   fi
   if ! resolved=$(realpath "$raw_path" 2>/dev/null); then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Path does not exist: $raw_path" "PATH_NOT_FOUND"
-    echo "Error: $raw_path does not exist" >&2
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Path does not exist: $raw_path. $_RC_PATH_ARG_HINT" "PATH_NOT_FOUND"
+    echo "Error: $raw_path does not exist. $_RC_PATH_ARG_HINT" >&2
     exit 1
   fi
 

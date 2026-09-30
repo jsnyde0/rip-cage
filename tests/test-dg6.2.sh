@@ -62,6 +62,55 @@ else
   fail "rc up did not reject non-existent path. Got: $nonexist_err"
 fi
 
+# --- Test 5b/5c/5d: both PATH_NOT_FOUND branches say the argument is a
+# project directory, not a cage name (rip-cage-i23v). An operator who ran
+# `rc up --replace personal-switch-berlin` read a bare "does not exist" as
+# "no such cage". The hint must survive on BOTH branches: the -e miss, and
+# the realpath miss (forced here with a failing realpath shim on PATH).
+_i23v_hint_ok() {
+  printf '%s' "$1" | grep -q "takes a project directory" \
+    && printf '%s' "$1" | grep -q "no argument for the current directory" \
+    && printf '%s' "$1" | grep -q "cage name is derived from the directory"
+}
+echo ""
+echo "=== Test 5b: -e miss names the project-directory form and the no-arg default ==="
+_t5b_err=$("$RC" up personal-switch-berlin-does-not-exist-xyz 2>&1) || true
+if _i23v_hint_ok "$_t5b_err"; then
+  pass "-e miss hints rc up takes a project directory (rip-cage-i23v)"
+else
+  fail "-e miss lacks the project-directory hint. Got: $_t5b_err"
+fi
+
+echo ""
+echo "=== Test 5c: realpath miss names the project-directory form and the no-arg default ==="
+_t5c_shim=$(mktemp -d)
+_t5c_dir=$(mktemp -d)
+printf '#!/bin/sh\nexit 1\n' > "$_t5c_shim/realpath"
+chmod +x "$_t5c_shim/realpath"
+_t5c_err=$(PATH="$_t5c_shim:$PATH" "$RC" up "$_t5c_dir" 2>&1) || true
+if printf '%s' "$_t5c_err" | grep -q "does not exist" && _i23v_hint_ok "$_t5c_err"; then
+  pass "realpath miss hints rc up takes a project directory (rip-cage-i23v)"
+else
+  fail "realpath miss lacks the project-directory hint. Got: $_t5c_err"
+fi
+
+echo ""
+echo "=== Test 5d: --output json keeps PATH_NOT_FOUND and its message prefix ==="
+_t5d_json=$("$RC" --output json up /tmp/does-not-exist-xyz123 2>/dev/null) || true
+if printf '%s' "$_t5d_json" | jq -e '.code == "PATH_NOT_FOUND" and (.error | startswith("Path does not exist: /tmp/does-not-exist-xyz123"))' >/dev/null 2>&1; then
+  pass "json PATH_NOT_FOUND code and message prefix unchanged"
+else
+  fail "json PATH_NOT_FOUND shape changed. Got: $_t5d_json"
+fi
+_t5d_json2=$(PATH="$_t5c_shim:$PATH" "$RC" --output json up "$_t5c_dir" 2>/dev/null) || true
+if printf '%s' "$_t5d_json2" | jq -e '.code == "PATH_NOT_FOUND" and (.error | startswith("Path does not exist: "))' >/dev/null 2>&1; then
+  pass "json PATH_NOT_FOUND code and prefix unchanged on the realpath-miss branch"
+else
+  fail "json realpath-miss shape changed. Got: $_t5d_json2"
+fi
+rm -f "$_t5c_shim/realpath"
+rmdir "$_t5c_shim" "$_t5c_dir"
+
 # --- Test 6: validate_path rejects non-directory (file) ---
 echo ""
 echo "=== Test 6: rc up rejects non-directory path ==="

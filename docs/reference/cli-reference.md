@@ -32,6 +32,8 @@ rc up [path] [--conf FILE] [--replace] [--no-reload] [--port PORT] [--env-file F
       [--cpus N] [--memory SIZE] [--pids-limit N] [--new] [--session NAME]
 ```
 
+`path` is the **project directory**, and defaults to `.` (the current directory). It is never a cage name: the cage name is derived from the directory (see [Cage names](#cage-names)).
+
 `rc up` does the things no config file can hold: it reads the CCTOK setup-token from `$XDG_CONFIG_HOME/rip-cage/secrets/CCTOK` and exports it for msb's `--secret`, computes read-only parent mounts for your skill symlinks, runs the protected-paths check, and then calls `msb create --conf <file> --name <cage> --log-level trace`. Before any of that it refuses an msb older than 0.7.4, the floor `RC_MSB_MIN_VERSION` in `cli/lib/msb_runtime.sh` (see [auth.md](auth.md#msb-version-floor)); `rc doctor --host` reports the installed version against it.
 
 | Flag | Description |
