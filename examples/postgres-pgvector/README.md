@@ -48,21 +48,24 @@ Init gives every daemon's `health` about 18 seconds in total: up to 3 attempts, 
 second apart, each killed after 5 seconds
 ([docs/reference/in-cage-daemon.md](../../docs/reference/in-cage-daemon.md)).
 This recipe's hook polls `pg_isready` every 0.25s for 4.5s per attempt, just inside
-that cap. A daemon cannot extend the bound; a per-daemon one is `rip-cage-tun0`.
+that cap. A daemon cannot extend the bound today; a per-daemon bound is the open
+bead `rip-cage-tun0`.
 
-The first boot runs `initdb` before the server listens. Under host RAM pressure that
-can outlast the 18 seconds, and init prints
+The first boot bootstraps the cluster before the server listens: `initdb`, then a
+socket-only start to create the `test` database and role, then a stop. Under host
+RAM pressure that can outlast the 18 seconds, and init prints
 `WARNING: daemon 'postgres-pgvector' health check FAILED … cage continues without it`.
 The daemon is still running: `restart` is `never`, so init neither kills nor
-respawns it, and it becomes healthy once `initdb` finishes. Confirm from the host:
+respawns it, and it becomes healthy once that bootstrap finishes. Confirm from the
+host (`< /dev/null` keeps `msb exec` from waiting on stdin — see the cage-ops skill):
 
 ```bash
-msb exec <cage> -- /usr/lib/postgresql/17/bin/pg_isready -h 127.0.0.1 -p 5432
+msb exec <cage> -- /usr/lib/postgresql/17/bin/pg_isready -h 127.0.0.1 -p 5432 < /dev/null
 ```
 
 `127.0.0.1:5432 - accepting connections` means the cluster is up. If it still says
 `no response` after a few minutes, read `/tmp/rip-cage-daemon-postgres-pgvector.log`
-in the cage. Later boots skip `initdb` and pass well inside the bound.
+in the cage. Later boots skip the bootstrap and pass well inside the bound.
 
 ## Connecting from the project under test
 
