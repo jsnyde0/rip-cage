@@ -30,6 +30,7 @@
 #   C3  content preserved   -- an unrelated fixture key survives the field-set
 #   C4  retrofit resume     -- a PRE-EXISTING session .claude.json without the
 #                              field still gets it (every-invocation retrofit)
+#   C4b retrofit preserves  -- that pre-existing file's other keys survive
 #   C14 trust seed          -- a fresh session dir also gets
 #                              projects["/workspace"].hasTrustDialogAccepted=true
 #   C15 trust retrofit      -- a session file with the nudge answer but no trust

@@ -913,7 +913,9 @@ unset _cage_host_addr _cage_probe_status _RC_HOST_BRIDGE_STATUS _rc_settings_cag
 # mount broke). Deliberately minimal and non-credential-shaped: no
 # oauthAccount / claudeAiOauth fields. Proven sufficient 2026-07-06:
 # {"hasCompletedOnboarding": true, "theme": "dark"} makes interactive claude
-# skip theme+login and land on workspace-trust -> prompt -> model round-trip.
+# skip theme+login. It no longer lands on workspace-trust: R4b below adds the
+# /workspace trust answer to what claude reads, so claude reaches the prompt
+# (rip-cage-7812).
 if _rc_leave_mounted /home/agent/.claude/.claude.json.seed; then
   :
 elif [ -f ~/.claude.json ] && [ -s ~/.claude.json ]; then

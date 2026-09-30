@@ -239,10 +239,14 @@ if [[ "$_u14_rc" -ne 0 ]]; then
 else
   _u14_host=$(gexec 30 jq -c '(.projects // {}) | has("/workspace")' /home/agent/.claude.json 2>/dev/null | tr -d '\r\n')
   _u14_seed=$(gexec 30 jq -c '.projects["/workspace"].hasTrustDialogAccepted' /home/agent/.claude/.claude.json 2>/dev/null | tr -d '\r\n')
-  if [[ "$_u14_host" == "false" && "$_u14_seed" == "true" ]]; then
-    pass "U14m no-trust seed: mechanism -- host ~/.claude.json has no /workspace key, ~/.claude/.claude.json has /workspace hasTrustDialogAccepted=true"
+  # Pinned to THIS boot: init's R4b success line must be in this rc up's own
+  # log, so a copy left from an earlier boot cannot pass the leg.
+  _u14_wrote=no
+  grep -qF "Wrote ~/.claude/.claude.json from the seed" "${LOG_DIR}/up-notrust.log" && _u14_wrote=yes
+  if [[ "$_u14_host" == "false" && "$_u14_seed" == "true" && "$_u14_wrote" == "yes" ]]; then
+    pass "U14m no-trust seed: mechanism -- host ~/.claude.json has no /workspace key; this boot's init rewrote ~/.claude/.claude.json with /workspace hasTrustDialogAccepted=true"
   else
-    fail "U14m no-trust seed: mechanism leg" "host has /workspace='${_u14_host}' guest trust='${_u14_seed}'"
+    fail "U14m no-trust seed: mechanism leg" "host has /workspace='${_u14_host}' guest trust='${_u14_seed}' rewritten-this-boot='${_u14_wrote}'"
   fi
   CTRL3="${LOG_DIR}/probe-notrust.txt"
   gexec 60 python3 -c "$(cat "$PROBE")" 25 /workspace > "$CTRL3" 2>&1
