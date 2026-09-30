@@ -142,7 +142,11 @@ fi
 #      host ~/.claude.json is a READ-ONLY mount, so the answer can never
 #      persist there; the per-session .claude.json is a WRITABLE copy, so it is
 #      seeded here (zkwx spike, brain:rip-cage mail 2026-09-29: with both,
-#      `herdr agent start --kind claude` reached the prompt unattended).
+#      `herdr agent start --kind claude` reached the prompt unattended);
+#   3. the workspace-trust dialog for /workspace -- answered HERE too, by
+#      projects["/workspace"].hasTrustDialogAccepted:true, the same key init
+#      seeds on the base image (rip-cage-7812). A host ~/.claude.json without
+#      it would otherwise stop every session here (rip-cage-ik49).
 # Runs every invocation (OUTSIDE the seed-once block above) so an already-seeded
 # session dir that survives a resume is retrofitted too. Fully guarded: a
 # jq/write failure must never block the claude launch -- worst case degrades to
@@ -150,9 +154,9 @@ fi
 {
   _rc_nudge_json="${SESSION_DIR}/.claude.json"
   if command -v jq >/dev/null 2>&1 && [[ -f "$_rc_nudge_json" ]] \
-     && [[ "$(jq -r '.hasSeenAutoDefaultNudge // false' "$_rc_nudge_json" 2>/dev/null)" != "true" ]]; then
+     && [[ "$(jq -r '(.hasSeenAutoDefaultNudge == true) and (.projects["/workspace"].hasTrustDialogAccepted == true)' "$_rc_nudge_json" 2>/dev/null)" != "true" ]]; then
     _rc_nudge_tmp="${_rc_nudge_json}.jimf.tmp"
-    if jq '.hasSeenAutoDefaultNudge = true' "$_rc_nudge_json" > "$_rc_nudge_tmp" 2>/dev/null \
+    if jq '.hasSeenAutoDefaultNudge = true | .projects["/workspace"].hasTrustDialogAccepted = true' "$_rc_nudge_json" > "$_rc_nudge_tmp" 2>/dev/null \
        && [[ -s "$_rc_nudge_tmp" ]]; then
       mv -f "$_rc_nudge_tmp" "$_rc_nudge_json"
     else

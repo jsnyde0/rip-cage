@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tests/test-claude-recipe-bypass-preaccept.sh -- HOST-ONLY unit test for the
 # startup-dialog pre-answers in the examples/claude recipe's session wrapper
-# (examples/claude/claude-session-wrapper.sh; rip-cage-k8vi, rip-cage-jimf).
+# (examples/claude/claude-session-wrapper.sh; rip-cage-k8vi, rip-cage-jimf,
+# rip-cage-ik49).
 #
 # SCOPE: this is the RECIPE's unit test. The wrapper reaches an image only
 # when an operator composes examples/claude; the base image never runs it.
@@ -13,9 +14,10 @@
 # Two startup dialogs stop an unattended spawn there: the bypass-permissions
 # accept dialog (cleared by skipDangerousModePermissionPrompt in the floor's
 # settings.json, which the wrapper symlinks into the session dir) and the
-# "make auto mode your default?" nudge (answered by hasSeenAutoDefaultNudge in
+# "make auto mode your default?" nudge and the /workspace trust dialog (answered
+# by hasSeenAutoDefaultNudge and projects["/workspace"].hasTrustDialogAccepted in
 # the session's WRITABLE .claude.json -- the host ~/.claude.json is read-only,
-# so the answer can never persist there).
+# so the answers can never persist there).
 #
 # This test drives the real wrapper on the HOST (no container) by copying it
 # to a tmp file and sed-patching REAL_CLAUDE to an argv-recording stub, with
@@ -23,10 +25,15 @@
 #
 # Cases:
 #   C1  positive sentinel   -- the fixture does NOT carry hasSeenAutoDefaultNudge
+#   C1b positive sentinel   -- the fixture does NOT carry the /workspace trust key
 #   C2  fresh seed          -- a fresh session dir gets hasSeenAutoDefaultNudge=true
 #   C3  content preserved   -- an unrelated fixture key survives the field-set
 #   C4  retrofit resume     -- a PRE-EXISTING session .claude.json without the
 #                              field still gets it (every-invocation retrofit)
+#   C14 trust seed          -- a fresh session dir also gets
+#                              projects["/workspace"].hasTrustDialogAccepted=true
+#   C15 trust retrofit      -- a session file with the nudge answer but no trust
+#                              key still gets it; other projects entries survive
 #   C5  idempotent          -- a second run leaves valid JSON, field still true
 #   C6/C7 argv flag         -- --dangerously-skip-permissions injected, never doubled
 #   C9/C10 image-default CLAUDE_CONFIG_DIR (=~/.claude) is not "explicit"; a
@@ -112,6 +119,7 @@ run_wrapper() {
 }
 
 field_of() { jq -r '.hasSeenAutoDefaultNudge // "ABSENT"' "$1" 2>/dev/null; }
+trust_of() { jq -r '.projects["/workspace"].hasTrustDialogAccepted // "ABSENT"' "$1" 2>/dev/null; }
 
 # ---------------------------------------------------------------------------
 # C1: positive sentinel -- the fixture must NOT already carry the field.
@@ -120,6 +128,11 @@ if [[ "$(field_of "$FIXTURE")" == "ABSENT" ]]; then
   pass "C1 fixture lacks hasSeenAutoDefaultNudge (positive sentinel: test can catch a no-op)"
 else
   fail "C1 fixture already has the field -- test is vacuous" "got: $(field_of "$FIXTURE")"
+fi
+if [[ "$(trust_of "$FIXTURE")" == "ABSENT" ]]; then
+  pass "C1b fixture lacks the /workspace trust key (positive sentinel for C14/C15)"
+else
+  fail "C1b fixture already has the /workspace trust key -- C14/C15 are vacuous" "got: $(trust_of "$FIXTURE")"
 fi
 
 # ---------------------------------------------------------------------------
@@ -167,6 +180,27 @@ if [[ "$(field_of "$RESUME_DIR/.claude.json")" == "ABSENT" ]]; then
   fi
 else
   fail "C4 setup broken -- pre-existing file already had the field" ""
+fi
+
+# ---------------------------------------------------------------------------
+# C14: the fresh seed also answers the workspace-trust dialog (rip-cage-ik49).
+# C15: a pre-existing session file that already has the nudge answer but no
+# trust key is still retrofitted -- the skip condition checks BOTH keys.
+# ---------------------------------------------------------------------------
+if [[ "$(trust_of "$FRESH_JSON")" == "true" ]]; then
+  pass "C14 fresh session .claude.json has projects[\"/workspace\"].hasTrustDialogAccepted=true"
+else
+  fail "C14 fresh session .claude.json lacks the /workspace trust key" "got: $(trust_of "$FRESH_JSON")"
+fi
+TRUST_DIR="$WORK/.claude-sessions/trustonly"
+mkdir -p "$TRUST_DIR"
+echo '{"hasSeenAutoDefaultNudge": true, "projects": {"/other": {"x": 1}}}' > "$TRUST_DIR/.claude.json"
+run_wrapper "trustonly"
+if [[ "$(trust_of "$TRUST_DIR/.claude.json")" == "true" ]] \
+   && [[ "$(jq -r '.projects["/other"].x // "GONE"' "$TRUST_DIR/.claude.json" 2>/dev/null)" == "1" ]]; then
+  pass "C15 nudge-already-set session retrofitted with the trust key, other projects kept"
+else
+  fail "C15 nudge-already-set session not retrofitted (or other projects lost)" "$(cat "$TRUST_DIR/.claude.json" 2>/dev/null)"
 fi
 
 # ---------------------------------------------------------------------------
