@@ -253,7 +253,9 @@ a host herdr pane every `ctrl+b` you mean for it is pressed twice.
   mode (seen on the whole-cage view) until you run `reset`.
 - **One client per agent.** A second attach to the same agent fails with
   `already has an attached client; retry with --takeover`; `--takeover`
-  takes it over. Different agents attach side by side in separate panes.
+  takes it over. That failure line is prefixed `herdr: server shut down:`,
+  but the in-cage server stays up (spike-measured, pid unchanged); only your
+  attach client exited. Different agents attach side by side in separate panes.
 - **Mark the pane as caged.** Whoever opens the pane labels it
   `herdr pane rename <host-pane> "cage:<cage>/<agent>"` (optionally also
   `herdr pane report-metadata <host-pane> --source <you> --display-agent "cage:<cage>"`).

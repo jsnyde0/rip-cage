@@ -93,8 +93,9 @@ for diagnostics without exec-ing into the cage.
 `config.toml`** (`<ABSOLUTE_HOST_DIR>/herdr-<cage-name>/config.toml`, host-side).
 Without it, a fresh cage's `rc up` attach opens on herdr's onboarding screen
 until someone presses Enter once. The modal is decided when the in-cage herdr
-server starts, so the line takes effect at the cage's next boot (`rc up` on a
-stopped cage, or `rc up --replace`), not on a cage already showing it. This is
+server starts, so the line is expected to take effect at the cage's next boot
+(`rc up` on a stopped cage, or `rc up --replace`), not on a cage already showing
+it (inferred from the modal being server-side; not measured in a cage). This is
 your composition: rc and init never write herdr's config.
 
 ## The provider contract
