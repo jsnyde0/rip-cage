@@ -275,6 +275,7 @@ scratch_cage_register() {
   if _scratch_cage_name_is_ours "$_cname"; then
     _scratch_cage_registry_add "$_cname"
   else
+    # mktemp-ok(rip-cage-znws): the XXXXXX-<subdir> below is prose naming a cage-name shape, not a mktemp template.
     echo "_scratch-cage-lib.sh: ERROR: ${_caller} registered cage '${_cname}', which is not a harness scratch name (rc-t-* / <root-basename>-<hint>.XXXXXX for a bare mktemp dir, <hint>.XXXXXX-<subdir>, <hint>-XXXXXX-<subdir>, or T-tmp.*); NOT persisted to the registry, so a SIGKILL cannot be recovered for it. Hand rc up a _host_scratch_mktemp_d dir (tests/_host-sandbox-lib.sh) or a direct subdir of one — not a deeper path, and not a name of your own." >&2
   fi
 
