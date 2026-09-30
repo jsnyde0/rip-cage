@@ -368,7 +368,10 @@ fi
 echo ""
 echo "--- E1c: RC_MULTIPLEXER preflight discriminates a declared mux from an unknown one ---"
 
-FM_TMP=$(mktemp -d)
+# Explicit template (BSD mktemp ignores TMPDIR without one): the workspace is a
+# direct subdir, so the cage name is "fm.XXXXXX-fakemux-workspace", a shape the
+# scratch-cage registry guard accepts on every platform (rip-cage-znws).
+FM_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm.XXXXXX")
 FM_TMP=$(cd "$FM_TMP" && pwd -P)
 mkdir -p "${FM_TMP}/fakemux-workspace"
 git -C "${FM_TMP}/fakemux-workspace" init -q 2>/dev/null

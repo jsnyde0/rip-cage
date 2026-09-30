@@ -11,11 +11,13 @@
 #   G2  empty name           -> loud, return 1, registry empty
 #   G3  literal "null"       -> loud, return 1, registry empty
 #   G4  conforming names     -> persisted verbatim, no complaint
-#   G5  <hint>.XXXXXX-<subdir>, hint dir under the scratch root -> persisted
-#   G6  same shape, no such hint dir -> refused
-#   G7  the sweep guard itself: hint-dir shape ours, foreign names not
-#   G8  the dash-template shape (<hint>-XXXXXX-<subdir>) ours only with its dir
+#   G5  <hint>.XXXXXX-<subdir> -> persisted
+#   G6  MONOTONE: a name persisted while its mktemp dir existed is still
+#       accepted by the sweep after that dir is removed (pure string guard)
+#   G7  the sweep guard itself: mktemp shape ours, foreign names not
+#   G8  the dash-template shape (<hint>-XXXXXX-<subdir>) ours; bare dash dir not
 #   G9  HOME re-pointed after _host-sandbox-lib.sh: source-time root still used
+#   G10 custom RC_TEST_TMPDIR root: bare mktemp-dir name <rootbasename>-<hint>.XXXXXX ours
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,9 +46,9 @@ DRV
 }
 
 R1="${WORK}/r1"
-out=$(reg_call "$R1" "tmp.abc123-stock-proj")
+out=$(reg_call "$R1" "code-personal")
 if [[ ! -s "$R1" ]]; then pass "G1: non-conforming name not written to registry"; else fail "G1: registry written" "$(cat "$R1")"; fi
-if grep -q "fake-caller-test.sh" <<<"$out" && grep -q "tmp.abc123-stock-proj" <<<"$out"; then
+if grep -q "fake-caller-test.sh" <<<"$out" && grep -q "code-personal" <<<"$out"; then
   pass "G1: refusal is loud and names the calling test + the name"
 else fail "G1: message" "$out"; fi
 if grep -q "TRACKED=1" <<<"$out"; then pass "G1: name still tracked in-process for trap cleanup"; else fail "G1: tracking" "$out"; fi
@@ -71,37 +73,44 @@ else fail "G4" "$(cat "$R4" 2>&1); $out"; fi
 
 # G5-G7: a workspace that is a SUBDIRECTORY of a _host_scratch_mktemp_d dir
 # yields "<hint>.XXXXXX-<subdir>" (container_name = parent-basename +
-# basename). Accepted only when <hint>.XXXXXX is a real dir under the scratch
-# root (RC_TEST_TMPDIR here), so the shape alone never reaches a foreign cage.
+# basename). The guard is a pure string predicate: no dir need exist.
 ROOT="${WORK}/root"; mkdir -p "${ROOT}/floor.AbC123" "${ROOT}/live-probe.XyZ789"
 R5="${WORK}/r5"
 out=$(RC_TEST_TMPDIR="$ROOT" reg_call "$R5" "floor.AbC123-stock-proj"; RC_TEST_TMPDIR="$ROOT" reg_call "$R5" "live-probe.XyZ789-workspace")
 if [[ "$(cat "$R5" 2>/dev/null)" == $'floor.AbC123-stock-proj\nlive-probe.XyZ789-workspace' ]] && ! grep -q "ERROR" <<<"$out"; then
-  pass "G5: <hint>.XXXXXX-<subdir> names whose hint dir is under the scratch root are persisted, no complaint"
+  pass "G5: <hint>.XXXXXX-<subdir> names are persisted, no complaint"
 else fail "G5" "$(cat "$R5" 2>&1); $out"; fi
 
-R6="${WORK}/r6"
-out=$(RC_TEST_TMPDIR="$ROOT" reg_call "$R6" "gone.QqQ111-workspace")
-if [[ ! -s "$R6" ]] && grep -q "ERROR" <<<"$out"; then
-  pass "G6: the same shape with no such dir under the scratch root is refused"
-else fail "G6" "$(cat "$R6" 2>&1); $out"; fi
+# G6 (monotonicity): register while the mktemp dir exists, remove the dir,
+# then run the SWEEP (msb stubbed: the cage "does not exist", so an accepted
+# line is dropped silently and a refused one is kept and named on stderr).
+R6="${WORK}/r6"; mkdir -p "${ROOT}/mono.MnO123"
+RC_TEST_TMPDIR="$ROOT" reg_call "$R6" "mono.MnO123-workspace" >/dev/null
+rmdir "${ROOT}/mono.MnO123"
+STUB="${WORK}/stubbin"; mkdir -p "$STUB"
+printf '#!/bin/sh\nexit 1\n' > "${STUB}/msb"; chmod +x "${STUB}/msb"
+g6err=$(PATH="${STUB}:${PATH}" RC_TEST_CAGE_REGISTRY="$R6" RC_TEST_TMPDIR="$ROOT" bash -c "SCRIPT_DIR='${SCRIPT_DIR}'; source '${SCRIPT_DIR}/_scratch-cage-lib.sh'; trap - EXIT INT TERM; scratch_cage_sweep_registry" 2>&1)
+if [[ -z "$g6err" ]] && [[ ! -s "$R6" ]]; then
+  pass "G6: a persisted name is still accepted by the sweep after its mktemp dir is gone (no REFUSING, line dropped)"
+else fail "G6" "err=$g6err reg=$(cat "$R6" 2>&1)"; fi
 
 R7="${WORK}/r7"
 RC_TEST_CAGE_REGISTRY="$R7" RC_TEST_TMPDIR="$ROOT" bash -c "SCRIPT_DIR='${SCRIPT_DIR}'; source '${SCRIPT_DIR}/_scratch-cage-lib.sh'; trap - EXIT INT TERM
   _scratch_cage_name_is_ours floor.AbC123-stock-proj && echo OURS1
   _scratch_cage_name_is_ours code-personal || echo FOREIGN1
-  _scratch_cage_name_is_ours ../floor.AbC123-x || echo FOREIGN2" > "${WORK}/g7.out" 2>&1
-if grep -q OURS1 "${WORK}/g7.out" && grep -q FOREIGN1 "${WORK}/g7.out" && grep -q FOREIGN2 "${WORK}/g7.out"; then
-  pass "G7: the sweep's guard accepts the hint-dir shape and still rejects foreign names"
+  _scratch_cage_name_is_ours ../floor.AbC123-x || echo FOREIGN2
+  _scratch_cage_name_is_ours null || echo FOREIGN5
+  _scratch_cage_name_is_ours .floor.AbC123-x || echo FOREIGN6" > "${WORK}/g7.out" 2>&1
+if grep -q OURS1 "${WORK}/g7.out" && grep -q FOREIGN1 "${WORK}/g7.out" && grep -q FOREIGN2 "${WORK}/g7.out" && grep -q FOREIGN5 "${WORK}/g7.out" && grep -q FOREIGN6 "${WORK}/g7.out"; then
+  pass "G7: the sweep's guard accepts the mktemp shape and still rejects foreign, null and dot-led names"
 else fail "G7" "$(cat "${WORK}/g7.out")"; fi
 
 mkdir -p "${ROOT}/rc-lifecycle-cr-Ab12Cd"
 RC_TEST_CAGE_REGISTRY="${WORK}/r8" RC_TEST_TMPDIR="$ROOT" bash -c "SCRIPT_DIR='${SCRIPT_DIR}'; source '${SCRIPT_DIR}/_scratch-cage-lib.sh'; trap - EXIT INT TERM
   _scratch_cage_name_is_ours rc-lifecycle-cr-Ab12Cd-workspace && echo OURS2
-  _scratch_cage_name_is_ours rc-lifecycle-cr-Ab12Cd || echo FOREIGN3
-  _scratch_cage_name_is_ours rc-lifecycle-cr-Zz99Zz-workspace || echo FOREIGN4" > "${WORK}/g8.out" 2>&1
-if grep -q OURS2 "${WORK}/g8.out" && grep -q FOREIGN3 "${WORK}/g8.out" && grep -q FOREIGN4 "${WORK}/g8.out"; then
-  pass "G8: a \$TMPDIR/<hint>-XXXXXX dash-template dir's subdir is ours; the bare dir name and a missing dir are not"
+  _scratch_cage_name_is_ours rc-lifecycle-cr-Ab12Cd || echo FOREIGN3" > "${WORK}/g8.out" 2>&1
+if grep -q OURS2 "${WORK}/g8.out" && grep -q FOREIGN3 "${WORK}/g8.out"; then
+  pass "G8: a \$TMPDIR/<hint>-XXXXXX dash-template dir's subdir is ours; the bare dir name is not"
 else fail "G8" "$(cat "${WORK}/g8.out")"; fi
 
 # G9: a live test sources _host-sandbox-lib.sh, then re-points HOME at a fake
@@ -117,6 +126,15 @@ _g9_reg=$(cd "${WORK}/realhome/.cache/rc-t" 2>/dev/null && pwd -P)/created-cages
 if grep -qE '^g9\.[A-Za-z0-9]{6}-ws$' "$_g9_reg" 2>/dev/null && [[ ! -e "${WORK}/fakehome/.cache/rc-t/created-cages" ]] && ! grep -q ERROR "${WORK}/g9.out"; then
   pass "G9: after HOME is re-pointed, a <hint>.XXXXXX-ws name persists to the source-time scratch root's registry"
 else fail "G9" "$(cat "${WORK}/g9.out"; cat "$_g9_reg" 2>&1)"; fi
+
+# G10: RC_TEST_TMPDIR names a root whose basename is not rc-t. A bare
+# mktemp-dir workspace there yields "<rootbasename>-<hint>.XXXXXX".
+CROOT="${WORK}/customscratch"; mkdir -p "${CROOT}/g10.AbCdEf"
+R10="${WORK}/r10"
+out=$(RC_TEST_TMPDIR="$CROOT" reg_call "$R10" "customscratch-g10.AbCdEf")
+if [[ "$(cat "$R10" 2>/dev/null)" == "customscratch-g10.AbCdEf" ]] && ! grep -q ERROR <<<"$out"; then
+  pass "G10: bare mktemp-dir name under a custom-basename RC_TEST_TMPDIR root is persisted"
+else fail "G10" "$(cat "$R10" 2>&1); $out"; fi
 
 echo ""
 echo "=== Summary: $FAILURES/$TOTAL failed ==="

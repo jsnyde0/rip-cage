@@ -121,9 +121,10 @@ _scratch_cage_registry_remove() {
 #   1. NAMES COME ONLY FROM THE REGISTRY FILE. No enumeration, no glob, no
 #      computed name. A foreign cage cannot enter the file, because only
 #      scratch_cage_register writes it.
-#   2. A NAME MUST HAVE A HARNESS SCRATCH SHAPE. Guard 1 alone trusts the
-#      file; this one does not, so a corrupted or hand-edited registry still
-#      cannot reach an operator cage.
+#   2. A NAME MUST HAVE A HARNESS SCRATCH SHAPE. A pure string check against
+#      a corrupted or hand-edited registry file. It is NOT what protects an
+#      operator cage (guard 1 is: only scratch_cage_register writes the file);
+#      a name that merely looks like a scratch shape passes it.
 # Only neu7.9's TEMPORAL qualifier is relaxed, from "created this run" to
 # "created by a run of this harness".
 #
@@ -132,31 +133,35 @@ _scratch_cage_registry_remove() {
 # of its workspace path (cli/lib/container.sh:container_name), and a test
 # workspace is always under a mktemp dir in the short scratch root
 # (~/.cache/rc-t/<hint>.XXXXXX, from _host_scratch_mktemp_d):
-#   - the mktemp dir itself        -> "rc-t-<hint>.XXXXXX"
+#   - the mktemp dir itself        -> "<root-basename>-<hint>.XXXXXX" (the
+#     root basename is rc-t by default, whatever RC_TEST_TMPDIR names else)
 #   - a direct subdir of it        -> "<hint>.XXXXXX-<subdir>" (or a caller's
-#     own "$TMPDIR/<hint>-XXXXXX" template: "<hint>-XXXXXX-<subdir>") —
-#     accepted only when that mktemp dir exists under the scratch root, so the
-#     shape alone never reaches an operator cage (rip-cage-znws, option b)
+#     own "$TMPDIR/<hint>-XXXXXX" template: "<hint>-XXXXXX-<subdir>")
 #   - the macOS per-user temp dir fallback (.../T/tmp.XXXXXX) -> "T-tmp.XXXXXX"
-#
+# A PURE STRING predicate: no filesystem read, so registration and the sweep
+# give the same answer forever (a name accepted once is never refused later
+# because a workspace was deleted). Refuses empty, "null", any "/", a leading
+# ".", and every name that fits none of the shapes.
 # KNOWN, DELIBERATE GAP: a test that registers a name of its own invention
 # (tests/spike-uuh9-port443.sh names its cages "spike-uuh9-*") fails this
 # guard and is refused rather than swept. That is the fail-safe direction —
 # the cost is one cage the operator destroys by hand, against a class of bug
 # whose last instance cost the human their own cage.
 _scratch_cage_name_is_ours() {
-  case "$1" in
-    rc-t-*|T-tmp.*) return 0 ;;
+  local _n="$1" _rb _head _rest _acc=""
+  [[ -z "$_n" || "$_n" == "null" || "$_n" == */* || "$_n" == .* ]] && return 1
+  case "$_n" in
+    rc-t-?*|T-tmp.?*) return 0 ;;
   esac
+  _rb=$(basename "$(_scratch_cage_root)")
+  [[ -n "$_rb" && "$_n" == "${_rb}-"?* ]] && return 0
   # "<mktemp dir>-<subdir>": try each "-" split; the head must end in mktemp's
-  # six-char suffix after a "." or "-" and exist as a dir under the root.
-  local _root _head _rest="$1" _acc=""
-  _root=$(_scratch_cage_root)
-  [[ "$1" == */* || "$1" == .* ]] && return 1
+  # six-char suffix after a "." or "-".
+  _rest="$_n"
   while [[ "$_rest" == *-* ]]; do
     _head="${_acc}${_rest%%-*}"
     _rest="${_rest#*-}"
-    if [[ -n "$_rest" && "$_head" =~ [.-][A-Za-z0-9]{6}$ && -d "${_root}/${_head}" ]]; then
+    if [[ -n "$_rest" && "$_head" =~ [.-][A-Za-z0-9]{6}$ ]]; then
       return 0
     fi
     _acc="${_head}-"
@@ -270,7 +275,7 @@ scratch_cage_register() {
   if _scratch_cage_name_is_ours "$_cname"; then
     _scratch_cage_registry_add "$_cname"
   else
-    echo "_scratch-cage-lib.sh: ERROR: ${_caller} registered cage '${_cname}', which is not a harness scratch name (rc-t-<hint>.XXXXXX, <hint>.XXXXXX-<subdir> with that dir under the scratch root, or T-tmp.*); NOT persisted to the registry, so a SIGKILL cannot be recovered for it. Hand rc up a _host_scratch_mktemp_d dir (tests/_host-sandbox-lib.sh) or a direct subdir of one — not a deeper path, and not a name of your own." >&2
+    echo "_scratch-cage-lib.sh: ERROR: ${_caller} registered cage '${_cname}', which is not a harness scratch name (rc-t-* / <root-basename>-<hint>.XXXXXX for a bare mktemp dir, <hint>.XXXXXX-<subdir>, <hint>-XXXXXX-<subdir>, or T-tmp.*); NOT persisted to the registry, so a SIGKILL cannot be recovered for it. Hand rc up a _host_scratch_mktemp_d dir (tests/_host-sandbox-lib.sh) or a direct subdir of one — not a deeper path, and not a name of your own." >&2
   fi
 
   if [[ "$_SCRATCH_CAGE_TRAP_ARMED" -eq 1 ]]; then

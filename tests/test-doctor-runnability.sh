@@ -66,9 +66,13 @@ TOTAL=0
 pass() { TOTAL=$((TOTAL + 1)); echo "PASS  [$TOTAL] $1"; }
 fail() { TOTAL=$((TOTAL + 1)); FAILURES=$((FAILURES + 1)); echo "FAIL  [$TOTAL] $1 -- $2"; }
 
-DOCTOR_TMP=$(mktemp -d)
+# The short scratch root (rip-cage-znws): the fixture workspace below is a
+# DIRECT subdir of this mktemp dir, so rc names its cage "doctor.XXXXXX-correct",
+# a shape the scratch-cage registry guard accepts.
+# shellcheck source=tests/_host-sandbox-lib.sh
+source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
+DOCTOR_TMP=$(_host_scratch_mktemp_d doctor)
 DOCTOR_TMP=$(realpath "$DOCTOR_TMP")
-mkdir -p "${DOCTOR_TMP}/rc-doctor"
 export RC_ALLOWED_ROOTS="${DOCTOR_TMP}"
 
 trap 'rm -rf "$DOCTOR_TMP"' EXIT
@@ -85,7 +89,7 @@ echo ""
 # the correct cage (D1) and the schema-error cage (D3) -- same store, two
 # different bd binaries reading it.
 # ---------------------------------------------------------------------------
-FIXTURE_WS="${DOCTOR_TMP}/rc-doctor/correct"
+FIXTURE_WS="${DOCTOR_TMP}/correct"
 mkdir -p "$FIXTURE_WS"
 git -C "$FIXTURE_WS" init -q
 git -C "$FIXTURE_WS" config user.email "doctor-test@example.com"
@@ -149,7 +153,7 @@ fi
 echo ""
 echo "-- D2: cwd forced to /home/agent --"
 
-CWD_BROKEN_CAGE="rc-doctor-cwdbroken-$$"
+CWD_BROKEN_CAGE="rc-t-doctor-cwdbroken-$$"
 "$RC" destroy "$CWD_BROKEN_CAGE" > /dev/null 2>&1 || true
 if msb create --name "$CWD_BROKEN_CAGE" \
     --label "rc.source.path=${FIXTURE_WS}" \
@@ -176,7 +180,7 @@ echo ""
 echo "-- D3: stale-bd schema-error cage (gated) --"
 
 if [[ -n "${RC_DOCTOR_STALE_BD_IMAGE:-}" ]] && docker image inspect "$RC_DOCTOR_STALE_BD_IMAGE" > /dev/null 2>&1; then
-  SCHEMA_ERR_CAGE="rc-doctor-schemaerr-$$"
+  SCHEMA_ERR_CAGE="rc-t-doctor-schemaerr-$$"
   "$RC" destroy "$SCHEMA_ERR_CAGE" > /dev/null 2>&1 || true
   # msb-port note (rip-cage-neu7.14, Batch E): $RC_DOCTOR_STALE_BD_IMAGE is a
   # raw `docker build` artifact that never went through `rc build`, so
