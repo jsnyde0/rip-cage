@@ -16,7 +16,7 @@
 #       path, and a second descriptor's different path (not hardcoded); a
 #       computed export (SHELL="$...") is skipped; RC_MULTIPLEXER=none exports
 #       nothing
-#   R3  argv passed verbatim (spaces, quotes, $, empty arg, glob)
+#   R3  argv passed verbatim (spaces, quotes, $, empty arg, glob, a leading -)
 #   R4  inner exit status propagated; stdout and stderr stay separate
 #   R5  usage refusal without `--`, msb never called
 #   R6  static: executable, bash -n clean, names no multiplexer, README states
@@ -64,7 +64,7 @@ chmod +x "${T}/bin/msb"
 # A second descriptor with another socket path and a computed export.
 cat > "${T}/other.json" <<'EOF'
 { "multiplexers": [
-  { "name": "herdr", "start": "export SHELL=\"$x\"; export OTHER_VAR=1 && run", "attach": "export HERDR_SOCKET_PATH=/private/tmp/elsewhere.sock; exec herdr" },
+  { "name": "herdr", "start": "export SHELL=\"$x\"; export OTHER_VAR=1 && export HERDR_SOCKET_PATH=/start/loses.sock; export TICK_VAR=a`b`; export QUOTE_VAR=it's; export SLASH_VAR=a\\b; run", "attach": "export HERDR_SOCKET_PATH=/private/tmp/elsewhere.sock; exec herdr" },
   { "name": "decoy", "start": "export DECOY_VAR=bad; true", "attach": "true" }
 ] }
 EOF
@@ -111,10 +111,10 @@ if [[ -n "$want" && "$got" == "$want" ]]; then
 else
   fail "R2 exports the recipe's socket path" "want '$want' got '$got'"
 fi
-reach herdr "${T}/other.json" sh -c 'printf "%s|%s|%s|%s" "${HERDR_SOCKET_PATH-unset}" "${OTHER_VAR-unset}" "${SHELL-unset}" "${DECOY_VAR-unset}"'
+reach herdr "${T}/other.json" sh -c 'printf "%s|%s|%s|%s|%s|%s|%s" "${HERDR_SOCKET_PATH-unset}" "${OTHER_VAR-unset}" "${SHELL-unset}" "${DECOY_VAR-unset}" "${TICK_VAR-unset}" "${QUOTE_VAR-unset}" "${SLASH_VAR-unset}"'
 got=$(cat "${T}/out")
-if [[ "$got" == "/private/tmp/elsewhere.sock|1|${SHELL-unset}|unset" ]]; then
-  pass "R2 a different descriptor gives its own value; computed export skipped; other multiplexers ignored"
+if [[ "$got" == "/private/tmp/elsewhere.sock|1|${SHELL-unset}|unset|unset|unset|unset" ]]; then
+  pass "R2 a different descriptor gives its own value; attach beats start for the same name; computed or quoted exports (\$, backtick, quote, backslash) skipped; other multiplexers ignored"
 else
   fail "R2 descriptor-driven, not hardcoded" "got '$got'"
 fi
@@ -138,6 +138,17 @@ if [[ "$(cat "${T}/out")" == "$expected" ]]; then
   pass "R3 argv passed verbatim"
 else
   fail "R3 argv passed verbatim" "got '$(cat "${T}/out")'"
+fi
+
+# argv[0] that looks like an option still runs as the command, never as an
+# option of the guest's exec (-a NAME would swallow it; -c would clear the env).
+printf '#!/bin/sh\necho "dash-a ran: $*"\n' > "${T}/bin/-a"
+chmod +x "${T}/bin/-a"
+reach herdr "$HERDR_BOOT" -a hello
+if [[ "$(cat "${T}/out")" == "dash-a ran: hello" ]]; then
+  pass "R3 an argv[0] starting with - runs as the command"
+else
+  fail "R3 an argv[0] starting with - runs as the command" "out '$(cat "${T}/out")' rc=$rc"
 fi
 
 # --- R4 exit status, stdout/stderr ---------------------------------------------

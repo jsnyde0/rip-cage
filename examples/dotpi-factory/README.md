@@ -149,11 +149,13 @@ The contract (agreed with dotpi for its grant-row `reach` section, dotpi-5nuz):
 - Before the command runs, it exports the env of the multiplexer the cage was
   created with. It reads that env from the cage's own boot descriptor at run
   time: the `export NAME=VALUE` lines in the multiplexer's `attach` and `start`
-  hooks whose value is a literal. It names no multiplexer itself. With none, it
-  exports nothing.
+  hooks whose value is a literal, the attach hook's value winning a name both
+  set. It reads the text, not the control flow: an export behind an `if` or
+  `&&` in a hook is exported too. It names no multiplexer itself. With none,
+  it exports nothing.
 - `<argv...>` arrives verbatim: no shell re-parses it.
 - stdout and stderr pass through. It exits with the inner command's status,
-  or 2 with a usage line when the `--` is missing.
+  or 2 with a usage line when the `--` or the command after it is missing.
 - It is never interactive. Attaching a terminal is a different path.
 
 **The reach line for a caged child's grant row** is the wrapper's absolute host

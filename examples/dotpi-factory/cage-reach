@@ -46,7 +46,7 @@ if [ "$_rc_mux" != none ]; then
   fi
 fi
 unset _rc_desc _rc_mux _rc_kv
-exec "$@"
+exec -- "$@"
 GUEST
 )
 
