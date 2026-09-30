@@ -46,12 +46,17 @@ set -u
 # (`/var/folders/<32-char>/T/`) violates both properties and red-lines every
 # cage-creating suite arm on msb >= 0.6.9:
 #
-#   SHORT     msb derives a per-sandbox Unix socket path from the workspace
-#             and MSB_HOME paths and refuses to create the sandbox when the
-#             shortest derived path exceeds the platform's 104-byte AF_UNIX
-#             limit ("sandbox runtime socket path is too long", upstream
-#             v0.6.9 / commit e0c0f9ba). A macOS mktemp root spends ~60 of
-#             those 104 bytes before the test appends anything.
+#   SHORT     msb refuses to create a sandbox whose runtime socket path
+#             exceeds the platform's 104-byte AF_UNIX limit ("sandbox
+#             runtime socket path is too long", upstream v0.6.9 / commit
+#             e0c0f9ba). Measured on msb 0.7.4 (rip-cage-0gav): the socket is
+#             $MSB_HOME/run/agent/<first 32 hex of sha256(sandbox name)>.sock,
+#             beside a .control.sock and $MSB_HOME/run/sandboxes/<first 24
+#             hex>/agent.sock. The workspace path does not enter it; only
+#             MSB_HOME's length varies. MSB_HOME defaults to
+#             $HOME/.microsandbox, so a test that fakes HOME under a macOS
+#             mktemp root (~60 bytes spent before the test appends anything)
+#             without pinning MSB_HOME still overruns it.
 #   SYMLINK-  msb >= 0.6.16 rejects any `-v` whose HOST source path traverses
 #   FREE      a symlink, failing guest boot with `mount <tag>: Not a directory
 #             (os error 20)`. `/var` is a symlink to `/private/var`, so every
@@ -66,8 +71,8 @@ _HOST_SCRATCH_ROOT=""
 # An operator (or a CI runner with its own short tmp root) overrides the
 # choice explicitly via RC_TEST_TMPDIR; there is deliberately no heuristic
 # that "keeps a TMPDIR that looks short enough", because the 104-byte budget
-# is spent by paths this lib cannot see (MSB_HOME, the sandbox name, the
-# per-test workspace subpath).
+# is spent by a path this lib cannot see (MSB_HOME, which follows a faked
+# HOME unless the test pins it).
 _host_scratch_root_setup() {
   local _root="${RC_TEST_TMPDIR:-${HOME}/.cache/rc-t}"
   mkdir -p "$_root" 2>/dev/null || return 0

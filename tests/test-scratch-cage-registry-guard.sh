@@ -74,7 +74,7 @@ else fail "G4" "$(cat "$R4" 2>&1); $out"; fi
 # G5-G7: a workspace that is a SUBDIRECTORY of a _host_scratch_mktemp_d dir
 # yields "<hint>.XXXXXX-<subdir>" (container_name = parent-basename +
 # basename). The guard is a pure string predicate: no dir need exist.
-ROOT="${WORK}/root"; mkdir -p "${ROOT}/floor.AbC123" "${ROOT}/live-probe.XyZ789"
+ROOT="${WORK}/root"
 R5="${WORK}/r5"
 out=$(RC_TEST_TMPDIR="$ROOT" reg_call "$R5" "floor.AbC123-stock-proj"; RC_TEST_TMPDIR="$ROOT" reg_call "$R5" "live-probe.XyZ789-workspace")
 if [[ "$(cat "$R5" 2>/dev/null)" == $'floor.AbC123-stock-proj\nlive-probe.XyZ789-workspace' ]] && ! grep -q "ERROR" <<<"$out"; then
@@ -105,7 +105,6 @@ if grep -q OURS1 "${WORK}/g7.out" && grep -q FOREIGN1 "${WORK}/g7.out" && grep -
   pass "G7: the sweep's guard accepts the mktemp shape and still rejects foreign, null and dot-led names"
 else fail "G7" "$(cat "${WORK}/g7.out")"; fi
 
-mkdir -p "${ROOT}/rc-lifecycle-cr-Ab12Cd"
 RC_TEST_CAGE_REGISTRY="${WORK}/r8" RC_TEST_TMPDIR="$ROOT" bash -c "SCRIPT_DIR='${SCRIPT_DIR}'; source '${SCRIPT_DIR}/_scratch-cage-lib.sh'; trap - EXIT INT TERM
   _scratch_cage_name_is_ours rc-lifecycle-cr-Ab12Cd-workspace && echo OURS2
   _scratch_cage_name_is_ours rc-lifecycle-cr-Ab12Cd || echo FOREIGN3" > "${WORK}/g8.out" 2>&1
@@ -129,7 +128,7 @@ else fail "G9" "$(cat "${WORK}/g9.out"; cat "$_g9_reg" 2>&1)"; fi
 
 # G10: RC_TEST_TMPDIR names a root whose basename is not rc-t. A bare
 # mktemp-dir workspace there yields "<rootbasename>-<hint>.XXXXXX".
-CROOT="${WORK}/customscratch"; mkdir -p "${CROOT}/g10.AbCdEf"
+CROOT="${WORK}/customscratch"
 R10="${WORK}/r10"
 out=$(RC_TEST_TMPDIR="$CROOT" reg_call "$R10" "customscratch-g10.AbCdEf")
 if [[ "$(cat "$R10" 2>/dev/null)" == "customscratch-g10.AbCdEf" ]] && ! grep -q ERROR <<<"$out"; then
