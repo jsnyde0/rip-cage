@@ -213,7 +213,10 @@ fi
 # PRECONDITION: is the claude-recipe composed into this image at all?
 #
 # managed-settings.json is NOT baked into the floor image (ADR-005 D12 /
-# ADR-027 D3) -- it ships via the opt-in examples/claude recipe's install_cmd.
+# ADR-027 D3) -- it ships via the opt-in examples/dcg recipe (rip-cage-mctw
+# moved it there from examples/claude). This probe drives claude through the
+# claude-recipe wrapper, so it needs BOTH recipes: the wrapper check below, then
+# the dcg-guard check after it.
 # Under a plain './rc build' with the in-repo floor-only manifest, the file is
 # LEGITIMATELY absent, and the old FATAL-on-absent below is simply wrong for
 # that case (rip-cage-7atw.22 item 1).
@@ -275,6 +278,20 @@ if ! cexec test -x /usr/local/bin/claude; then
   echo "SKIP: NOTE (rip-cage-pow0): this SKIP exits 0 and tests/run-host.sh's suite ledger cannot"
   echo "SKIP: currently distinguish a SKIP from a PASS at the TOTALS line -- read this stdout"
   echo "SKIP: marker directly, don't infer composition status from a green suite run."
+  echo "############################################################"
+  exit 0
+fi
+
+# Same independent-signal rule for the dcg recipe: key on the guard wrapper it
+# installs, never on managed-settings.json itself (the artifact under test).
+if ! cexec test -x /usr/local/lib/rip-cage/bin/dcg-guard; then
+  echo ""
+  echo "############################################################"
+  echo "### SKIP SKIP SKIP: dcg recipe NOT composed into this image"
+  echo "############################################################"
+  echo "SKIP: /usr/local/lib/rip-cage/bin/dcg-guard is absent, so managed-settings.json (which the"
+  echo "SKIP: dcg recipe installs beside it) is legitimately absent too. See examples/dcg/README.md."
+  echo "SKIP: NOTE (rip-cage-pow0): this SKIP exits 0; read this marker, not the TOTALS line."
   echo "############################################################"
   exit 0
 fi

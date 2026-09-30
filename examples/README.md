@@ -40,7 +40,7 @@ containment still holds. ([ADR-025](../docs/decisions/ADR-025-host-adoptable-dcg
 
 | Recipe | What it provides |
 |---|---|
-| [examples/dcg/](dcg/) | DCG (Destructive Command Guard) — builds the `dcg` binary from source (Rust builder stage) and bakes the guard wrapper engine + cage config + pi guard extension (`dcg-gate.ts`). See [dcg/README.md](dcg/README.md). |
+| [examples/dcg/](dcg/) | DCG (Destructive Command Guard) — builds the `dcg` binary from source (Rust builder stage) and bakes the guard wrapper engine + cage config + pi guard extension (`dcg-gate.ts`) + the Claude Code `managed-settings.json` hook. See [dcg/README.md](dcg/README.md). |
 
 `examples/ssh-bypass/` (the ssh host-key-override guard) is **deleted, not
 just undocumented** — it retired wholesale with the ssh cluster
@@ -114,7 +114,7 @@ base image already installs (`claude`, `pi`).
 
 | Recipe | What it provides |
 |---|---|
-| [examples/claude/](claude/) | Claude Code session-isolation wrapper + DCG floor-lock via root-owned `managed-settings.json`. See [claude/README.md](claude/README.md). |
+| [examples/claude/](claude/) | Claude Code session-isolation wrapper. See [claude/README.md](claude/README.md). |
 | [examples/pi/](pi/) | pi cage-topology doc + the extensions-dir boot hook herdr's integration install needs. Running pi with no guard and no launch wrapping needs nothing composed at all — see [pi/README.md](pi/README.md). |
 
 ---

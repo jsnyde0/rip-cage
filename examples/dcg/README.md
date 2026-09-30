@@ -16,6 +16,7 @@ Nothing in `rc` names it; this directory is a recipe you compose.
 |---|---|
 | `Dockerfile.snippet` | the lines to paste into your own Dockerfile — a builder stage plus a wiring block |
 | `boot-fragment.json` | the `tools[].launch` declaration that loads the guard into pi's launch, merged at build time |
+| `managed-settings.json` | the Claude Code floor-lock — a `PreToolUse` hook calling `dcg-guard`, which Claude Code merges un-suppressibly |
 | `build-dcg-from-source.sh` | the from-source build script, run inside the isolated builder stage |
 | `dcg-guard` | the wrapper engine — pins config, strips override variables, execs the binary |
 | `config.toml` | the cage-owned DCG config |
@@ -79,9 +80,9 @@ that hole.
 
 **Never invoke `/usr/local/bin/dcg` directly from a hook** — always go through
 `dcg-guard`. Without this recipe composed, a hook that calls `dcg-guard`
-directly finds no binary and fails open (non-blocking) — see
-[`examples/claude/README.md`](../claude/README.md) for that coupling on the
-Claude Code side.
+directly finds no binary and fails open (non-blocking), printing a hook error
+on every call. That is why this recipe, not an agent recipe, ships each
+agent's hook wiring.
 
 ## pi wiring: OPEN by default, LOCKED opt-in (ADR-027 D1/D4)
 
@@ -115,11 +116,16 @@ tradeoff is acceptable for your threat model.
 
 ## Claude Code wiring
 
-Claude Code reaches the guard through a different mechanism — a root-owned
-`managed-settings.json` `PreToolUse` hook, not `tools[].launch`. Compose
-[`examples/claude/`](../claude/) for that; its recipe calls `dcg-guard`
-unconditionally, so composing DCG alongside it is what makes the hook actually
-block instead of failing open.
+Claude Code reaches the guard through a different mechanism — a `PreToolUse`
+hook in `/etc/claude-code/managed-settings.json`, not `tools[].launch`. That is
+Claude Code's managed-settings path: it merges un-suppressibly ahead of user and
+project settings, and `PreToolUse` is deny-wins. The file and its parent dir are
+root-owned, so the in-cage agent cannot edit or unregister the hook. This recipe
+installs it, so composing DCG alone guards the base image's `claude`. Composing
+[`examples/claude/`](../claude/) as well changes nothing here: its session
+wrapper runs the same binary, which reads the same managed settings. If another
+recipe also ships a `managed-settings.json`, the later `COPY` wins — merge both
+hook lists into one file in your own Dockerfile directory.
 
 ## Composing with another pi launch extension (e.g. herdr)
 

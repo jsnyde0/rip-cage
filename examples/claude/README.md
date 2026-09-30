@@ -1,14 +1,14 @@
-# claude recipe — session isolation + DCG floor-lock
+# claude recipe — session isolation
 
 Gives every `claude` invocation its own config directory (so parallel sessions
 under different multiplexer panes never clobber each other's `.claude.json`),
-pre-accepts the bypass-permissions dialog the cage already declares as policy,
-and bakes a managed-settings hook the in-cage agent cannot edit or unregister.
+and pre-accepts the bypass-permissions dialog the cage already declares as
+policy.
 
 Not floor, never on by default (ADR-005 D12 FIRM). rip-cage's own code names no
 agent recipe; this directory is a recipe you compose, and nothing in `rc` knows
 it exists. The `claude` binary itself ships in the base image (`npm install`) —
-this recipe adds session isolation and the guard slot on top of it.
+this recipe adds session isolation on top of it.
 
 ## What is in here
 
@@ -17,7 +17,6 @@ this recipe adds session isolation and the guard slot on top of it.
 | `Dockerfile.snippet` | the lines to paste into your own Dockerfile |
 | `boot-fragment.json` | the `tools[].launch` declaration, merged into the image's boot descriptor at build time |
 | `claude-session-wrapper.sh` | the launch command: resolves `CLAUDE_CONFIG_DIR`, seeds the session dir, exec's the real binary |
-| `managed-settings.json` | the DCG floor-lock — a `PreToolUse` hook Claude Code merges un-suppressibly |
 | `cage-claude.md` | the cage-topology doc, surfaced via a reference in `~/.claude/CLAUDE.md` |
 
 ## Use it
@@ -31,8 +30,8 @@ this recipe adds session isolation and the guard slot on top of it.
    # ...paste Dockerfile.snippet here...
    ```
 
-   Copy `claude-session-wrapper.sh`, `managed-settings.json`, `cage-claude.md`
-   and `boot-fragment.json` next to it — the `COPY` lines read from the build
+   Copy `claude-session-wrapper.sh`, `cage-claude.md` and `boot-fragment.json`
+   next to it — the `COPY` lines read from the build
    context, which is that Dockerfile's own directory.
 
 2. Build and point your cage config's `image:` key at the result:
@@ -85,15 +84,13 @@ entry to PATH ahead of this one.
   in-session accept can never persist there, and the dialog would otherwise
   block every restored/spawned pane on every cold boot.
 
-## DCG floor-lock
+## Destructive-command guard
 
-`managed-settings.json` is baked to `/etc/claude-code/managed-settings.json` —
-Claude Code's managed-settings path, which merges un-suppressibly ahead of
-user/project settings, with `PreToolUse` deny-wins. The hook calls
-`/usr/local/lib/rip-cage/bin/dcg-guard` for every Bash tool call. Compose the
-[`examples/dcg/`](../dcg/) recipe too for that binary to exist — without it,
-`dcg-guard` errors and fails open (non-blocking), documented in
-[`examples/dcg/README.md`](../dcg/README.md).
+This recipe wires no guard hook. A guard recipe ships its own Claude Code hook
+beside the binary that hook calls — [`examples/dcg/`](../dcg/) does, through
+Claude Code's root-owned `managed-settings.json`. Compose it too if you want
+destructive Bash commands blocked. Without it, Bash calls run unguarded and
+print no hook error.
 
 ## Swapping in a different launch behavior
 

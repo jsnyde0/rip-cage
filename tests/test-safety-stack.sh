@@ -100,7 +100,7 @@ fi
 #         layer and the agent could remove it (self-disable vector open).
 #
 # Composable recipe note (rip-cage-wlwc.2.2): managed-settings.json is provisioned by the
-# examples/claude recipe, NOT baked into the base image. A cage built from the bare in-repo
+# examples/dcg recipe (examples/claude until rip-cage-mctw), NOT baked into the base image. A cage built from the bare in-repo
 # default manifest has no managed-settings.json — that is the EXPECTED state for a minimal
 # cage, not an error.
 #
@@ -143,7 +143,7 @@ else
       "managed-settings.json ABSENT but PreToolUse hooks found in agent-writable settings.json — hooks live in agent-writable layer (self-disable vector open)"
   else
     TOTAL=$((TOTAL + 1))
-    echo "INFO  [$TOTAL] managed-settings.json absent — CC floor-lock is a composable recipe (examples/claude), not composed in this cage; no hooks in agent-writable settings.json (self-disable vector not applicable)"
+    echo "INFO  [$TOTAL] managed-settings.json absent — CC floor-lock is a composable recipe (examples/dcg), not composed in this cage; no hooks in agent-writable settings.json (self-disable vector not applicable)"
   fi
   unset _ms8_agent_hooks
 fi
