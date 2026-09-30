@@ -229,7 +229,8 @@ RUN mkdir -p /home/agent/.config/mise \
 COPY --chown=agent:agent cage/agent/zshrc /home/agent/.zshrc
 # Pi cage-pi.md is provisioned by the examples/pi recipe: examples/pi/Dockerfile.snippet
 # COPYs examples/pi/cage-pi.md under USER root. Pi's launch command comes from the
-# boot descriptor's tools[].launch (see the per-tool launch wrappers above).
+# per-tool launch wrapper above: the boot descriptor's tools[].launch when a recipe
+# declares one (examples/dcg does), else the real binary directly.
 # (rip-cage-wlwc.2.2: un-baked from base image per ADR-005 D12)
 
 # Version label — baked in at build time so rc up can detect stale local images.
