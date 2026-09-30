@@ -132,6 +132,8 @@ fi
 CAGE_NAME=$(echo "$CR_OUT" | tail -1 | jq -r '.name // empty' 2>/dev/null)
 if [[ -z "$CAGE_NAME" ]]; then
   fail "setup: rc up JSON carried no .name" "$CR_OUT"
+  echo ""
+  echo "=== test-msb-test-live-probe.sh: ${FAILURES}/${TOTAL} failure(s) (aborting) ==="
   exit 1
 fi
 scratch_cage_register "$CAGE_NAME"

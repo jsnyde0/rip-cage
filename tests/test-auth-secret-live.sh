@@ -67,11 +67,12 @@ if ! ( RC_IMAGE="$IMAGE" bash -c "source '${RC}' 2>/dev/null; _image_is_current"
 fi
 export RC_IMAGE="$IMAGE"
 
-# macOS: msb does not follow a host-side symlink in a mount source, and /tmp is
-# one; write under /private/tmp.
-_tmp_root=/tmp
-[[ -d /private/tmp ]] && _tmp_root=/private/tmp
-T=$(mktemp -d "${_tmp_root}/rc-live-auth.XXXXXX")
+# The short scratch root (symlink-resolved: msb does not follow a host-side
+# symlink in a mount source), so the cage name is "rc-live-auth.XXXXXX-<subdir>",
+# a shape the scratch-cage registry persists and sweeps (rip-cage-znws).
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
+T=$(_host_scratch_mktemp_d rc-live-auth)
 T=$(cd "$T" && pwd -P)
 
 cleanup_tmp() {
