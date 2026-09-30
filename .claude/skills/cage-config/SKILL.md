@@ -56,7 +56,11 @@ Read the template for the syntax; this is what each section is FOR.
 | `mounts:` | every host path the cage can see | a session dies on recreate, or a secret is readable |
 | `secrets:` | credentials the guest never holds | the token lands on disk inside the cage |
 | `network:` | which hosts the cage may reach | the agent stalls on a denied host mid-task |
-| `workdir:`, `cpus:`, `memory:` | where it lands, how big it is | nothing subtle |
+| `workdir:`, `cpus:`, `memory:` | where it lands, how big it is | `memory:` is a ceiling, not a reservation: the host backs it lazily and never hands it back while the cage runs, so size it to what the host can spare (the template's `memory:` comment has the rest) |
+
+**Not in this file: the multiplexer.** Which multiplexer a cage runs is
+declared by the image's boot descriptor and picked at create by
+`RC_MULTIPLEXER`. For that, read [`cage-image`](../cage-image/SKILL.md).
 
 Three mount rules bite in practice, all worth repeating because they surface
 only when you launch, not when you write the file:
