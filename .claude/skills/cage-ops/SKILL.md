@@ -255,13 +255,15 @@ large text files in host-mounted paths like `/workspace`.** It prints
 The cause is an msb bug. Linux and macOS number the "find the next hole" and
 "find the next data" file queries the other way round, and msb's macOS file
 sharing passes the guest's number through unchanged, so each query gets the
-other's answer. GNU grep asks where the first hole is, is told "at byte 0", and
-guesses the file is binary. It only asks for files bigger than its first read
-(about 96 KiB), so smaller files are fine. Upstream:
+other's answer. After its first read (about 96 KiB), GNU grep asks where the
+next hole is; the swapped query answers "right here", so grep decides the file
+is sparse, hence has NUL bytes, hence is binary. Files smaller than that first
+read are never asked about, so they are fine. Upstream:
 [superradcompany/microsandbox#1683](https://github.com/superradcompany/microsandbox/issues/1683)
-(open; rip-cage reproduced it on msb 0.7.4). Linux hosts number the queries
-the same way and are not affected. `cp`, `cp --sparse=always` and `tar -S`
-copy these files correctly (measured, rip-cage-j1fl).
+(open; rip-cage reproduced it on msb 0.7.4). On a Linux host both sides
+number the queries the same way, so it should not occur there (not
+measured). `cp`, `cp --sparse=always` and `tar -S` copy these files correctly
+(measured, rip-cage-j1fl).
 
 **Inside the cage, grep text trees with `-a`** (`--binary-files=text`):
 `grep -rna <pattern> /workspace/src`. It prints the lines grep would have
