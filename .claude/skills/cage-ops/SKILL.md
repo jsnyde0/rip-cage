@@ -239,17 +239,18 @@ msb exec -t <cage> -- bash -c 'export HERDR_SOCKET_PATH=/tmp/rip-cage-herdr.sock
 ```
 
 The socket path comes from the multiplexer's `start` hook (step 1 says where
-to read it). The pane shows only that agent's terminal: no inner herdr
-sidebar, so no prefix clash and no first-run modal. Typing and backspace
-reach the agent's prompt.
+to read it). The pane shows only that agent's terminal, with no inner herdr
+sidebar and no first-run modal. Typing and backspace reach the agent's
+prompt. The attach client still listens for herdr's `ctrl+b` prefix, so from
+a host herdr pane every `ctrl+b` you mean for it is pressed twice.
 
 - **Detach with `ctrl+b ctrl+b q` from a host herdr pane.** The host herdr
   eats the first `ctrl+b` and passes one through; the attach client detaches
   on `ctrl+b q`. A single `ctrl+b q` detaches your *host* herdr client
   instead, and the caged attach keeps running in that pane. Outside a host
-  herdr, plain `ctrl+b q` detaches. A detach restores the terminal; killing
-  the `msb exec` client instead leaves the pane in keyboard/alt-screen mode
-  until you run `reset`.
+  herdr, plain `ctrl+b q` detaches. A detach restores the terminal. Killing
+  the `msb exec` client instead can leave the pane in keyboard/alt-screen
+  mode (seen on the whole-cage view) until you run `reset`.
 - **One client per agent.** A second attach to the same agent fails with
   `already has an attached client; retry with --takeover`; `--takeover`
   takes it over. Different agents attach side by side in separate panes.
@@ -262,11 +263,12 @@ reach the agent's prompt.
   not reach the caged agent.
 
 **The whole-cage view is `rc up <dir>`**: the inner herdr with every caged
-agent in its sidebar, the cage's hostname as the pane's title. Two caveats.
-Press the prefix twice (`ctrl+b ctrl+b <key>`) to reach the inner herdr; a
-single one goes to the host's. And a fresh cage opens on herdr's first-run
-modal until someone presses Enter once, which writes `config.toml` into the
-mounted herdr dir; the operator can skip it with the `onboarding = false`
+agent in its sidebar, and `<cage hostname>: <workspace>` as the pane's
+title. Two caveats. Press the prefix twice (`ctrl+b ctrl+b <key>`) to reach
+the inner herdr; a single one goes to the host's. And a fresh cage opens on herdr's first-run
+modal until someone presses Enter once, which is expected to make herdr
+write its `config.toml` into the mounted herdr dir (not observed: no one
+pressed it). The operator can skip the modal with the `onboarding = false`
 line in the herdr recipe's README. Evidence for this block: the notes on
 rip-cage-8jg5.7 (spike) and rip-cage-8jg5.9 (re-check).
 

@@ -92,8 +92,10 @@ for diagnostics without exec-ing into the cage.
 **Skip the first-run modal: put `onboarding = false` in that directory's
 `config.toml`** (`<ABSOLUTE_HOST_DIR>/herdr-<cage-name>/config.toml`, host-side).
 Without it, a fresh cage's `rc up` attach opens on herdr's onboarding screen
-until someone presses Enter once. This is your composition: rc and init never
-write herdr's config.
+until someone presses Enter once. The modal is decided when the in-cage herdr
+server starts, so the line takes effect at the cage's next boot (`rc up` on a
+stopped cage, or `rc up --replace`), not on a cage already showing it. This is
+your composition: rc and init never write herdr's config.
 
 ## The provider contract
 
