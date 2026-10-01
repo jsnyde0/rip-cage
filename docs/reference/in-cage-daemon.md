@@ -54,9 +54,16 @@ A daemon entry, in the fragment your Dockerfile merges in:
 - **`start`** — the launch command, run in the background at init. Make it
   headless (`--no-tui` or equivalent); stdout is not a TTY. **Prefix the real
   server with `exec`** — see below for what that buys.
-- **`health`** — a cheap probe. Init runs it with `timeout 5`, up to 3 attempts
-  a second apart, so a wedged daemon cannot hang cage start. This is the
-  **liveness authority**, not the pid; see the zombie note below.
+- **`health`** — a cheap probe. Without `health_timeout`, init runs it with
+  `timeout 5`, up to 3 attempts a second apart (at most ~18 s), so a wedged
+  daemon cannot hang cage start. This is the **liveness authority**, not the
+  pid; see the zombie note below.
+- **`health_timeout`** — optional positive integer, seconds; anything else fails
+  the boot. It replaces the 3-attempt loop with a time budget: init sleeps 1 s,
+  runs `health` under `timeout 5` (clipped to the budget left), and repeats until
+  `health` passes or N seconds have passed, so the whole wait is at most N. A
+  daemon that is genuinely broken holds init up for the full N before the
+  WARNING. Declare it for a daemon with a slow first boot.
 - **`restart`** — `always` or `never` (the default). `never` starts the daemon
   once per boot. `always` restarts it after each exit, but only once the first
   start has passed `health`, so a daemon that is broken from the start never

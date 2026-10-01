@@ -178,6 +178,14 @@ _rc_start_daemons() {
         exit 1
         ;;
     esac
+    # health_timeout: optional positive integer seconds bounding the whole health
+    # phase. Absent keeps the default 3-attempt loop. Anything else is a typo that
+    # would otherwise silently mean "default" — fail loud like restart.
+    _rc_daemon_health_timeout=$(jq -r 'if has("health_timeout") then (.health_timeout | tostring) else "" end' <<<"$_rc_daemon_entry" 2>/dev/null)
+    if [[ -n "$_rc_daemon_health_timeout" && ! "$_rc_daemon_health_timeout" =~ ^[1-9][0-9]*$ ]]; then
+      echo "[rip-cage] ERROR: boot descriptor ${_rc_boot_descriptor}: daemons[${_rc_di}] field 'health_timeout' is '${_rc_daemon_health_timeout}'; expected a positive integer number of seconds (ADR-001 fail-loud). Fix the descriptor fragment your Dockerfile merged in, rebuild the image, and recreate the cage." >&2
+      exit 1
+    fi
     _rc_daemon_pidfile="${_rc_run_dir}/rip-cage-daemon-${_rc_daemon_name}.pid"
     _rc_daemon_log="${_rc_run_dir}/rip-cage-daemon-${_rc_daemon_name}.log"
     _rc_daemon_supfile="${_rc_run_dir}/rip-cage-daemon-${_rc_daemon_name}.supervisor.pid"
@@ -273,13 +281,31 @@ _rc_start_daemons() {
     # A wedged daemon must NOT hang the init script. Use `timeout` (coreutils).
     # Retry a few times to allow the daemon a moment to bind its port.
     _rc_daemon_health_ok=0
-    for _rc_health_attempt in 1 2 3; do
-      sleep 1
-      if timeout 5 bash -c "$_rc_daemon_health" >/dev/null 2>&1; then
-        _rc_daemon_health_ok=1
-        break
-      fi
-    done
+    if [[ -z "$_rc_daemon_health_timeout" ]]; then
+      for _rc_health_attempt in 1 2 3; do
+        sleep 1
+        if timeout 5 bash -c "$_rc_daemon_health" >/dev/null 2>&1; then
+          _rc_daemon_health_ok=1
+          break
+        fi
+      done
+    else
+      # Declared bound: same spacing (sleep 1, then one attempt under timeout 5),
+      # repeated until health passes or the budget is spent; the last attempt is
+      # clipped to the remaining budget so the wait never exceeds N (+ 1 s sleep).
+      _rc_health_start=$SECONDS
+      while :; do
+        _rc_health_left=$(( _rc_daemon_health_timeout - (SECONDS - _rc_health_start) ))
+        (( _rc_health_left > 0 )) || break
+        sleep 1
+        _rc_health_left=$(( _rc_daemon_health_timeout - (SECONDS - _rc_health_start) ))
+        (( _rc_health_left > 0 )) || break
+        if timeout "$(( _rc_health_left < 5 ? _rc_health_left : 5 ))" bash -c "$_rc_daemon_health" >/dev/null 2>&1; then
+          _rc_daemon_health_ok=1
+          break
+        fi
+      done
+    fi
 
     if [[ "$_rc_daemon_health_ok" -eq 1 ]]; then
       echo "[rip-cage] daemon '${_rc_daemon_name}' health OK (PID=$_rc_daemon_pid)"
@@ -292,7 +318,7 @@ _rc_start_daemons() {
       if [[ "$_rc_daemon_restart" == "always" ]]; then echo disarmed > "$_rc_daemon_verdict" 2>/dev/null || true; fi
     fi
 
-    unset _rc_daemon_health_ok _rc_health_attempt _rc_daemon_pid _rc_sup_wait
+    unset _rc_daemon_health_ok _rc_health_attempt _rc_health_start _rc_health_left _rc_daemon_health_timeout _rc_daemon_pid _rc_sup_wait
     unset _rc_daemon_entry _rc_daemon_name _rc_daemon_start _rc_daemon_health _rc_daemon_state_dir _rc_daemon_pidfile
     unset _rc_daemon_restart _rc_daemon_log _rc_daemon_supfile _rc_daemon_verdict
   done

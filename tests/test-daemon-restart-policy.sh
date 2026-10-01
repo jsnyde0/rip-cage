@@ -28,6 +28,8 @@
 #   D10 a supervisor that exits on its own (disarmed) removes its own pidfile,
 #       so a later init run cannot TERM a reused pid
 #   D8  rc-boot-merge carries the restart field through untouched
+#   T1-T4 optional health_timeout (rip-cage-tun0): bounded vs default, invalid
+#       values fail loud, merge carries it
 
 set -uo pipefail
 
@@ -211,6 +213,67 @@ if RC_BOOT_DESCRIPTOR="${W}/base.json" sh "$BOOT_MERGE" "${W}/boot.json" >/dev/n
   pass "D8 rc-boot-merge carries restart through untouched"
 else
   fail "D8 rc-boot-merge carries restart through untouched" "$(jq -c '.daemons' "${W}/base.json" 2>/dev/null)"
+fi
+
+# T1/T2 (rip-cage-tun0): optional health_timeout bounds the health phase. One
+# init run, two daemons whose hook turns healthy ~8s after start (past the
+# default 3-attempt loop, which gives up at ~3s on a fast-failing hook).
+# 'bounded' declares health_timeout: 20 and must pass; 'unbounded' declares
+# nothing and must WARN. Clock: ~8s + ~3s.
+cat > "${W}/bin/slow-start" <<'EOF'
+#!/bin/sh
+sleep 8
+touch "$1"
+exec sleep 60
+EOF
+chmod +x "${W}/bin/slow-start"
+jq -n --arg s "${W}/bin/slow-start" --arg w "$W" '{
+  daemons: [
+    { name: "bounded",   health_timeout: 20, start: "exec \($s) \($w)/bounded.ready",   health: "test -f \($w)/bounded.ready" },
+    { name: "unbounded",                     start: "exec \($s) \($w)/unbounded.ready", health: "test -f \($w)/unbounded.ready" }
+  ]
+}' > "${W}/slow.json"
+# shellcheck disable=SC2016
+slow_out=$(bash -c '
+  export PATH="$1/bin:$PATH" RC_DAEMON_RUN_DIR="$2"
+  RC_INIT_LIB_ONLY=1 source "$3"
+  _rc_start_daemons "$4"
+' _ "$W" "$RUN" "$INIT_SCRIPT" "${W}/slow.json" 2>&1)
+if grep -q "daemon 'bounded' health OK" <<<"$slow_out"; then
+  pass "T1 a slow-healthy daemon with health_timeout: 20 passes health"
+else
+  fail "T1 a slow-healthy daemon with health_timeout: 20 passes health" "$slow_out"
+fi
+if grep -q "WARNING: daemon 'unbounded' health check FAILED" <<<"$slow_out"; then
+  pass "T2 the same daemon with no health_timeout still WARNs (default envelope unchanged)"
+else
+  fail "T2 the same daemon with no health_timeout still WARNs (default envelope unchanged)" "$slow_out"
+fi
+
+# T3: an invalid health_timeout fails the boot loud, naming the field.
+for _bad in '"soon"' 0 -5 1.5; do
+  jq -n --argjson v "$_bad" '{daemons: [{name: "t", health_timeout: $v, start: "true", health: "true"}]}' > "${W}/badt.json"
+  # shellcheck disable=SC2016
+  t3_out=$(bash -c '
+    set -u
+    export PATH="$1/bin:$PATH" RC_DAEMON_RUN_DIR="$2"
+    RC_INIT_LIB_ONLY=1 source "$3"
+    _rc_start_daemons "$4"
+  ' _ "$W" "$RUN" "$INIT_SCRIPT" "${W}/badt.json" 2>&1); t3_rc=$?
+  if [ "$t3_rc" -ne 0 ] && grep -qF "${W}/badt.json: daemons[0] field 'health_timeout'" <<<"$t3_out"; then
+    pass "T3 health_timeout ${_bad} fails the boot naming daemons[0] and the field"
+  else
+    fail "T3 health_timeout ${_bad} fails the boot naming daemons[0] and the field" "rc=${t3_rc} out=${t3_out}"
+  fi
+done
+
+# T4: rc-boot-merge carries health_timeout through.
+printf '{"daemons":[],"multiplexers":[],"tools":[]}\n' > "${W}/base2.json"
+if RC_BOOT_DESCRIPTOR="${W}/base2.json" sh "$BOOT_MERGE" "${W}/slow.json" >/dev/null 2>&1 \
+   && jq -e '.daemons[0].health_timeout == 20 and (.daemons[1] | has("health_timeout") | not)' "${W}/base2.json" >/dev/null; then
+  pass "T4 rc-boot-merge carries health_timeout through untouched"
+else
+  fail "T4 rc-boot-merge carries health_timeout through untouched" "$(jq -c '.daemons' "${W}/base2.json" 2>/dev/null)"
 fi
 
 echo ""

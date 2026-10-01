@@ -42,32 +42,24 @@ Not floor, never on by default (ADR-005 D12 FIRM). Nothing in `rc` names it.
 **This recipe needs no egress and no config edit.** The cluster binds loopback
 inside one cage's network namespace, so it adds no host to any allowlist.
 
-## A health WARNING on first boot can be benign
-
-Init gives every daemon's `health` about 18 seconds in total: up to 3 attempts, a
-second apart, each killed after 5 seconds
-([docs/reference/in-cage-daemon.md](../../docs/reference/in-cage-daemon.md)).
-This recipe's hook polls `pg_isready` every 0.25s for 4.5s per attempt, just inside
-that cap. A daemon cannot extend the bound today; a per-daemon bound is the open
-bead `rip-cage-tun0`.
+## First-boot bound
 
 The first boot bootstraps the cluster before the server listens: `initdb`, then a
 socket-only start to create the `test` database and role, then a stop. Under host
-RAM pressure that can outlast that window (about 17 s for this hook: three
-attempts of 1 s + 4.5 s), and init prints
-`WARNING: daemon 'postgres-pgvector' health check FAILED … cage continues without it`.
-The daemon is still running: `restart` defaults to `never` (this fragment declares
-none), so init neither kills nor
-respawns it, and it becomes healthy once that bootstrap finishes. Confirm from the
-host (`< /dev/null` keeps `msb exec` from waiting on stdin — see the cage-ops skill):
+RAM pressure that can take minutes, so the fragment declares `"health_timeout": 180`
+([docs/reference/in-cage-daemon.md](../../docs/reference/in-cage-daemon.md)): init
+retries the health hook for up to 180 s before it would WARN. The cost: a genuinely
+broken postgres holds init up to 180 s before the
+`WARNING: daemon 'postgres-pgvector' health check FAILED` line. Later boots skip the
+bootstrap and pass within seconds. To confirm from the host (`< /dev/null` keeps
+`msb exec` from waiting on stdin, see the cage-ops skill):
 
 ```bash
 msb exec <cage> -- /usr/lib/postgresql/17/bin/pg_isready -h 127.0.0.1 -p 5432 < /dev/null
 ```
 
-`127.0.0.1:5432 - accepting connections` means the cluster is up. If it still says
-`no response` after a few minutes, read `/tmp/rip-cage-daemon-postgres-pgvector.log`
-in the cage. Later boots skip the bootstrap and pass well inside the bound.
+`127.0.0.1:5432 - accepting connections` means the cluster is up. If it says
+`no response`, read `/tmp/rip-cage-daemon-postgres-pgvector.log` in the cage.
 
 ## Connecting from the project under test
 
