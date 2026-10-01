@@ -30,7 +30,7 @@ Three lifecycle rules, straight from ADR-005:
 **`/etc/rip-cage/boot.json`** — one declarative JSON file inside the image, read
 by init at boot (ADR-031 D4). Three optional top-level arrays; a required field
 missing makes init exit non-zero naming the field and the entry:
-`daemons[]` (`name`, `start`, `health` required, `state_dir`/`restart` optional),
+`daemons[]` (`name`, `start`, `health` required, `state_dir`/`restart`/`health_timeout` optional),
 `multiplexers[]` (`name`, `start`, `attach` required, `exec`/`new_session`/`teardown` optional),
 `tools[]` (`name` required, `launch`/`init` optional). Every value is a shell
 command string run with `sh -c`. The file's own `_readme` key is the schema's
@@ -58,12 +58,17 @@ A daemon entry, in the fragment your Dockerfile merges in:
   `timeout 5`, up to 3 attempts a second apart (at most ~18 s), so a wedged
   daemon cannot hang cage start. This is the **liveness authority**, not the
   pid; see the zombie note below.
-- **`health_timeout`** — optional positive integer, seconds; anything else fails
-  the boot. It replaces the 3-attempt loop with a time budget: init sleeps 1 s,
-  runs `health` under `timeout 5` (clipped to the budget left), and repeats until
-  `health` passes or N seconds have passed, so the whole wait is at most N. A
-  daemon that is genuinely broken holds init up for the full N before the
-  WARNING. Declare it for a daemon with a slow first boot.
+- **`health_timeout`** — optional JSON number, a positive integer of seconds; a
+  string (`"180"`), 0, a negative or a fraction fails the boot. It replaces the
+  3-attempt loop with a time budget: init sleeps 1 s, runs `health` under
+  `timeout 5` clipped to the budget left, and repeats until `health` passes or N
+  seconds have passed. The first attempt always runs, so the whole wait is at
+  most N + 1 s. A daemon that is genuinely broken holds init up for about N
+  seconds before the WARNING. Declare it for a daemon with a slow first boot.
+  **Limit:** the bound covers the first start only. A second init run in the
+  same boot (a re-run, a second agent) probes a recorded daemon twice under
+  `timeout 5` and restarts it if both fail, even if it is still inside its
+  declared bound — do not re-run init while a slow first boot is in progress.
 - **`restart`** — `always` or `never` (the default). `never` starts the daemon
   once per boot. `always` restarts it after each exit, but only once the first
   start has passed `health`, so a daemon that is broken from the start never

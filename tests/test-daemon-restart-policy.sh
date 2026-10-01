@@ -28,7 +28,7 @@
 #   D10 a supervisor that exits on its own (disarmed) removes its own pidfile,
 #       so a later init run cannot TERM a reused pid
 #   D8  rc-boot-merge carries the restart field through untouched
-#   T1-T4 optional health_timeout (rip-cage-tun0): bounded vs default, invalid
+#   T1-T6 optional health_timeout (rip-cage-tun0): bounded vs default, invalid
 #       values fail loud, merge carries it
 
 set -uo pipefail
@@ -62,9 +62,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# macOS hosts have no coreutils timeout; init's health loop calls it.
+# macOS hosts have no coreutils timeout; init's health loop calls it. The shim
+# honours the duration (SIGALRM after N whole seconds, as init only passes
+# integers), so T6 can pin the per-attempt clip on either host.
 if ! command -v timeout >/dev/null 2>&1; then
-  printf '#!/bin/sh\nshift\nexec "$@"\n' > "${W}/bin/timeout"
+  printf '#!/bin/sh\nexec perl -e '"'"'alarm shift; exec @ARGV or exit 127'"'"' "$@"\n' > "${W}/bin/timeout"
   chmod +x "${W}/bin/timeout"
 fi
 
@@ -251,7 +253,7 @@ else
 fi
 
 # T3: an invalid health_timeout fails the boot loud, naming the field.
-for _bad in '"soon"' 0 -5 1.5; do
+for _bad in '"soon"' '"180"' 0 -5 1.5; do
   jq -n --argjson v "$_bad" '{daemons: [{name: "t", health_timeout: $v, start: "true", health: "true"}]}' > "${W}/badt.json"
   # shellcheck disable=SC2016
   t3_out=$(bash -c '
@@ -266,6 +268,47 @@ for _bad in '"soon"' 0 -5 1.5; do
     fail "T3 health_timeout ${_bad} fails the boot naming daemons[0] and the field" "rc=${t3_rc} out=${t3_out}"
   fi
 done
+
+# T5 (stamp review, rip-cage-tun0): a small bound still runs the hook at least
+# once. Before the fix, health_timeout 1 ran it zero times and 2 ran it 0 or 1.
+# T6: the per-attempt timeout is clipped to the budget left. A hook that hangs
+# 30 s under health_timeout 3 must give up by about 3 s (sleep 1 + a 2 s
+# attempt); unclipped it would take 6 s (sleep 1 + timeout 5). Bound asserted:
+# N + 1 s, the documented worst case, with whole-second clock reads.
+jq -n --arg w "$W" '{
+  daemons: [
+    { name: "n1",   health_timeout: 1, start: "exec sleep 60", health: "echo x >> \($w)/n1.attempts; false" },
+    { name: "n2",   health_timeout: 2, start: "exec sleep 60", health: "echo x >> \($w)/n2.attempts; false" },
+    { name: "clip", health_timeout: 3, start: "exec sleep 60", health: "sleep 30" }
+  ]
+}' > "${W}/small.json"
+for _d in n1 n2 clip; do
+  jq --arg d "$_d" '{daemons: [.daemons[] | select(.name == $d)]}' "${W}/small.json" > "${W}/small-${_d}.json"
+  _t0=$(date +%s)
+  # shellcheck disable=SC2016
+  bash -c '
+    export PATH="$1/bin:$PATH" RC_DAEMON_RUN_DIR="$2"
+    RC_INIT_LIB_ONLY=1 source "$3"
+    _rc_start_daemons "$4"
+  ' _ "$W" "$RUN" "$INIT_SCRIPT" "${W}/small-${_d}.json" >/dev/null 2>&1
+  echo $(( $(date +%s) - _t0 )) > "${W}/${_d}.elapsed"
+done
+for _d in n1 n2; do
+  _n=$(wc -l < "${W}/${_d}.attempts" 2>/dev/null | tr -d ' ')
+  _lim=$(( ${_d#n} + 1 ))
+  _el=$(cat "${W}/${_d}.elapsed")
+  if [ "${_n:-0}" -ge 1 ] && [ "$_el" -le "$_lim" ]; then
+    pass "T5 health_timeout ${_d#n} runs the hook at least once (${_n} attempts) within N + 1 s (${_el}s)"
+  else
+    fail "T5 health_timeout ${_d#n} runs the hook at least once within N + 1 s" "attempts=${_n:-0} elapsed=${_el}s"
+  fi
+done
+elapsed_clip=$(cat "${W}/clip.elapsed")
+if [ "$elapsed_clip" -le 4 ]; then
+  pass "T6 a hanging hook under health_timeout 3 gives up in ${elapsed_clip}s (attempt clipped to the budget)"
+else
+  fail "T6 a hanging hook under health_timeout 3 gives up within N + 1 s" "elapsed=${elapsed_clip}s (unclipped would be ~6s)"
+fi
 
 # T4: rc-boot-merge carries health_timeout through.
 printf '{"daemons":[],"multiplexers":[],"tools":[]}\n' > "${W}/base2.json"

@@ -62,9 +62,10 @@ seconds until the next init run.
 **A daemon with a slow first boot declares `health_timeout`** (seconds). By
 default init gives `health` about 18 seconds and then WARNs; a daemon that
 initialises state on first boot (a database's `initdb`) can lose that race and
-be healthy minutes later. `health_timeout: N` makes init keep retrying for up
-to N seconds instead. The cost: a genuinely broken daemon holds init for the
-full N before the WARNING. Semantics: `docs/reference/in-cage-daemon.md`.
+be healthy minutes later. `health_timeout: N` (a JSON number, not a string)
+makes init keep retrying for up to about N seconds instead. The cost: a
+genuinely broken daemon holds init for about N seconds before the WARNING.
+Semantics and limits: `docs/reference/in-cage-daemon.md`.
 
 **Diagnosing:** init runs `health` at boot and warns on failure — read the
 `rc up` output for `[rip-cage] daemon` lines, then run the `health` command
