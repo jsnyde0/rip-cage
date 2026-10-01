@@ -59,6 +59,13 @@ not the daemon's own pid. That stops the daemon too only when `start` is
 survives as an orphan. A daemon that dies instantly logs a WARNING every 5
 seconds until the next init run.
 
+**A daemon with a slow first boot declares `health_timeout`** (seconds). By
+default init gives `health` about 18 seconds and then WARNs; a daemon that
+initialises state on first boot (a database's `initdb`) can lose that race and
+be healthy minutes later. `health_timeout: N` makes init keep retrying for up
+to N seconds instead. The cost: a genuinely broken daemon holds init for the
+full N before the WARNING. Semantics: `docs/reference/in-cage-daemon.md`.
+
 **Diagnosing:** init runs `health` at boot and warns on failure — read the
 `rc up` output for `[rip-cage] daemon` lines, then run the `health` command
 yourself inside the cage. "Alive but not serving" is case 2 above; "dead but
