@@ -990,7 +990,9 @@ elif [ -s ~/.claude/.claude.json.seed ]; then
       echo "[rip-cage] Wrote ~/.claude/.claude.json from the seed + hasSeenAutoDefaultNudge + /workspace trust (claude's config, rip-cage-jimf.9, rip-cage-7812)"
     else
       echo "[rip-cage] WARNING: could not add hasSeenAutoDefaultNudge and the /workspace trust to the seed (jq failed); copying the seed verbatim -- the auto-mode nudge and the workspace-trust dialog may show" >&2
-      cp ~/.claude/.claude.json.seed "$_rc_cj_tmp" && mv -f "$_rc_cj_tmp" ~/.claude/.claude.json || rm -f "$_rc_cj_tmp"
+      if ! { cp ~/.claude/.claude.json.seed "$_rc_cj_tmp" && mv -f "$_rc_cj_tmp" ~/.claude/.claude.json; }; then
+        rm -f "$_rc_cj_tmp"
+      fi
     fi
   else
     echo "[rip-cage] WARNING: mktemp failed in ~/.claude; ~/.claude/.claude.json not rewritten this boot -- the auto-mode nudge and the workspace-trust dialog may show" >&2
