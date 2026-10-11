@@ -29,8 +29,6 @@ class RipCage < Formula
   def install
     libexec.install Dir["*"]
     bin.install_symlink libexec/"rc"
-    zsh_completion.install libexec/"completions/_rc" => "_rc"
-    bash_completion.install libexec/"completions/rc.bash" => "rc"
   end
 
   test do
