@@ -508,7 +508,7 @@ _check_lfs_stubs() {
 # of the msb migration epic rip-cage-tsf2).
 #
 # ADR-029 D4 resume-path corollary / rip-cage-1ujn footgun: the in-guest
-# claude-session-wrapper.sh (cage/substrate/claude-session-wrapper.sh) only
+# claude-session-wrapper.sh (examples/claude/claude-session-wrapper.sh) only
 # symlinks ~/.claude/projects and ~/.claude/sessions into its per-session
 # config dir IF those dirs already exist in the mounted claude-home at
 # wrapper-run time. If either is absent on first boot, the wrapper instead
