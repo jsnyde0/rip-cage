@@ -19,12 +19,15 @@
 #
 # THE RULE (keyed on the CAUSE -- a write reaching a path under the REAL,
 # unsandboxed $HOME -- never on a surface shape like "the string .pi
-# appears"): a WRITE-shaped operation (output redirection, mv, rm -f/-r,
-# tee, ln -s) that targets a path derived from literal ${HOME}/.pi or
-# $HOME/.pi (directly, or via a same-file variable chased up to 3 levels of
-# indirection) is a LEAK unless the file assigns HOME itself (a sandbox
-# override, `HOME=...` or `export HOME=...`) at a line number STRICTLY
-# BEFORE the risky derivation. A read-only use (existence check, cat,
+# appears"): a WRITE-shaped operation (output redirection, mv, rm with or
+# without flags, tee, ln -s) that targets a path derived from literal
+# ${HOME}/.pi, $HOME/.pi or ~/.pi (directly, or via a same-file variable
+# chased up to 3 levels of indirection) is a LEAK unless the file assigns
+# HOME itself (a sandbox override, a bare `HOME=...` statement or
+# `export HOME=...`) at a line number STRICTLY BEFORE the risky derivation.
+# A `HOME=` inside a comment, or a per-command prefix (`HOME=x cmd ...`,
+# which sets HOME for that one command only), is NOT an override
+# (rip-cage-b8kd.8.2). A read-only use (existence check, cat,
 # python open() for read, realpath, grep) is never flagged -- this guard
 # only recognizes a fixed WRITE-operator vocabulary, so
 # test-agent-mail-concurrent.sh / test-pi-e2e.sh / test-multiplexer-agent-e2e.sh
@@ -51,15 +54,17 @@ fail() { echo "FAIL: $1"; [[ -n "${2:-}" ]] && echo "  $2"; FAILURES=$((FAILURES
 
 echo "=== test-real-home-pi-write-guard.sh ==="
 
-# scan_dir_for_leaks <dir> -- populates the WRITE_LEAKS array (global) with
+# scan_dir_for_leaks <dir> [exclude-basename] -- populates the WRITE_LEAKS array (global) with
 # one "relpath:line: trimmed-text" entry per offending write found in
 # <dir>/*.sh that targets a real, unsandboxed $HOME/.pi path.
 scan_dir_for_leaks() {
   local dir="$1"
+  local exclude="${2:-}"
   WRITE_LEAKS=()
   local f
   for f in "$dir"/*.sh; do
     [[ -f "$f" ]] || continue
+    [[ -n "$exclude" && "$(basename "$f")" == "$exclude" ]] && continue
     _scan_one_file "$f"
   done
 }
@@ -73,10 +78,36 @@ scan_dir_for_leaks() {
 # still fine -- that is a handful of processes per file, not per line.
 _RE_COMMENT='^[[:space:]]*#'
 _RE_ASSIGN='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)='
-_RE_HOME_PI='\$\{?HOME\}?/\.pi'
+_RE_HOME_PI='(\$\{?HOME\}?|~)/\.pi'
 _RE_MV_TEE='(^|[;&|({`])[[:space:]]*(mv|tee)[[:space:]]'
-_RE_RM_F='(^|[;&|({`])[[:space:]]*rm[[:space:]]+-[a-zA-Z]*[fF]'
+# Any rm is a write: `rm -r`, `rm -f`, `rm -rf` and a bare `rm` all delete
+# (rip-cage-b8kd.8.2 -- the first draft required an f/F flag).
+_RE_RM='(^|[;&|({`])[[:space:]]*rm[[:space:]]'
 _RE_LN_S='(^|[;&|({`])[[:space:]]*ln[[:space:]]+-[a-zA-Z]*s'
+
+# A HOME override statement: `HOME=<value>` at statement start whose value
+# is followed only by end of line, a separator or a comment -- never by
+# another word (that is a per-command prefix) -- or any `export HOME=`.
+_RE_HOME_STMT='(^|[;&|({`])[[:space:]]*(export[[:space:]]+)?HOME='
+_RE_HOME_VALUE_END='^("[^"]*"|'"'"'[^'"'"']*'"'"'|\$\([^)]*\)|[^[:space:];&|"'"'"'#]+)*[[:space:]]*($|[;&|)#])'
+
+# _home_override_line <file> -- prints the line number of the earliest real
+# HOME override in <file>, or 999999999 when there is none.
+_home_override_line() {
+  local f="$1" lineno line rest
+  while IFS=: read -r lineno line; do
+    [[ "$line" =~ $_RE_COMMENT ]] && continue
+    [[ "$line" =~ $_RE_HOME_STMT ]] || continue
+    if [[ -n "${BASH_REMATCH[2]}" ]]; then
+      echo "$lineno"; return
+    fi
+    rest="${line#*"${BASH_REMATCH[0]}"}"
+    if [[ "$rest" =~ $_RE_HOME_VALUE_END ]]; then
+      echo "$lineno"; return
+    fi
+  done < <(grep -nE "$_RE_HOME_STMT" "$f" 2>/dev/null)
+  echo 999999999
+}
 
 _scan_one_file() {
   local f="$1"
@@ -87,8 +118,7 @@ _scan_one_file() {
   # 999999999 means "never overridden" -- nothing in the file can be
   # sandboxed, so every literal ${HOME}/.pi derivation/use is risky. ---
   local home_override_line
-  home_override_line=$(grep -nE '(^|[;&|({`])[[:space:]]*(export[[:space:]]+)?HOME=' "$f" 2>/dev/null | head -1 | cut -d: -f1)
-  [[ -z "$home_override_line" ]] && home_override_line=999999999
+  home_override_line=$(_home_override_line "$f")
 
   # --- Root risky-var derivations: VAR=...${HOME}/.pi... or $HOME/.pi,
   # tagged with the line number of that literal derivation (the line whose
@@ -101,7 +131,7 @@ _scan_one_file() {
     [[ "$line" =~ $_RE_ASSIGN ]] || continue
     var="${BASH_REMATCH[1]}"
     [[ -z "${risky_line[$var]:-}" ]] && risky_line["$var"]="$lineno"
-  done < <(grep -nE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=.*\$\{?HOME\}?/\.pi' "$f" 2>/dev/null)
+  done < <(grep -nE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=.*(\$\{?HOME\}?|~)/\.pi' "$f" 2>/dev/null)
 
   # --- Propagate through same-file variable chains (up to 3 hops -- covers
   # every real shape seen so far: PI_AGENT_DIR -> AGENTS_MD_PATH, and a
@@ -167,10 +197,10 @@ _scan_one_file() {
       done
     fi
 
-    # mv / rm -f|-r / tee / ln -s -- these take the risky path as a direct
+    # mv / rm / tee / ln -s -- these take the risky path as a direct
     # positional argument (no redirection ambiguity), so any occurrence
     # anywhere on the line counts.
-    if [[ "$line" =~ $_RE_MV_TEE ]] || [[ "$line" =~ $_RE_RM_F ]] || [[ "$line" =~ $_RE_LN_S ]]; then
+    if [[ "$line" =~ $_RE_MV_TEE ]] || [[ "$line" =~ $_RE_RM ]] || [[ "$line" =~ $_RE_LN_S ]]; then
       if [[ "$line" =~ $_RE_HOME_PI ]] && [[ "$lineno" -le "$home_override_line" ]]; then
         flagged=1
       fi
@@ -299,9 +329,40 @@ AGENTS_MD_PATH="${PI_AGENT_DIR}/AGENTS.md"
 AGENTS_MTIME=$(stat -f '%m' "$AGENTS_MD_PATH" 2>/dev/null || stat -c '%Y' "$AGENTS_MD_PATH" 2>/dev/null || true)
 FIXEOF
 
+# 1j. LEAKING: the only HOME= is in a comment, then a recursive rm with no
+# -f (rip-cage-b8kd.8.2: a commented HOME= used to sandbox the whole file,
+# and rm -r without f never matched).
+cat > "${FIXTURE_DIR}/test-fixture-leaking-comment-home-rm-r.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+# HOME=/tmp/sandbox would make this safe, but it is only a comment.
+rm -r ~/.pi/agent
+FIXEOF
+
+# 1k. LEAKING: HOME= only as a per-command prefix -- it sandboxes that one
+# command, not the rm after it.
+cat > "${FIXTURE_DIR}/test-fixture-leaking-prefix-home.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+HOME="/tmp/sandbox" \
+  bash -c true
+HOME=/tmp/sandbox env | grep -q HOME
+rm "${HOME}/.pi/agent/AGENTS.md"
+FIXEOF
+
+# 1l. CLEAN: a real HOME=$tmp statement and export before the rm -r.
+cat > "${FIXTURE_DIR}/test-fixture-clean-home-export-rm-r.sh" <<'FIXEOF'
+#!/usr/bin/env bash
+set -uo pipefail
+tmp=$(mktemp -d)
+HOME="$tmp"; export HOME
+rm -r ~/.pi/agent
+FIXEOF
+
 scan_dir_for_leaks "$FIXTURE_DIR"
 
 _direct_flagged=0 _chained_flagged=0 _mv_flagged=0 _inline_flagged=0
+_comment_rm_flagged=0 _prefix_flagged=0
 _clean_flagged=""
 for _entry in "${WRITE_LEAKS[@]+"${WRITE_LEAKS[@]}"}"; do
   case "$_entry" in
@@ -309,6 +370,8 @@ for _entry in "${WRITE_LEAKS[@]+"${WRITE_LEAKS[@]}"}"; do
     test-fixture-leaking-chained.sh:*) _chained_flagged=1 ;;
     test-fixture-leaking-mv.sh:*) _mv_flagged=1 ;;
     test-fixture-leaking-inline.sh:*) _inline_flagged=1 ;;
+    test-fixture-leaking-comment-home-rm-r.sh:*) _comment_rm_flagged=1 ;;
+    test-fixture-leaking-prefix-home.sh:*) _prefix_flagged=1 ;;
     test-fixture-clean-*|test-fixture-prose-only.sh:*) _clean_flagged="${_clean_flagged}${_entry}; " ;;
   esac
 done
@@ -337,6 +400,18 @@ else
   fail "negative control: inline literal write escaped detection"
 fi
 
+if [[ "$_comment_rm_flagged" -eq 1 ]]; then
+  pass "negative control: a commented-out HOME= does not sandbox a later rm -r ~/.pi"
+else
+  fail "negative control: rm -r ~/.pi after a comment-only HOME= escaped detection"
+fi
+
+if [[ "$_prefix_flagged" -eq 1 ]]; then
+  pass "negative control: a per-command HOME=x prefix does not sandbox a later rm of \${HOME}/.pi"
+else
+  fail "negative control: a per-command HOME= prefix was taken as a file-wide sandbox"
+fi
+
 if [[ -z "$_clean_flagged" ]]; then
   pass "positive controls: sandboxed / read-only / differently-named-var / prose-only fixtures are all correctly left clean"
 else
@@ -352,7 +427,12 @@ trap - EXIT
 echo ""
 echo "--- Case 2: live scan of tests/*.sh for unsandboxed \$HOME/.pi writes ---"
 
-scan_dir_for_leaks "$SCRIPT_DIR"
+# RC_HOME_PI_GUARD_SCAN_DIR aims the live scan at another directory -- the
+# positive control for this guard itself: aimed at a scratch dir holding a
+# planted leak, the whole test must exit non-zero naming it. Default: tests/.
+# This file is excluded: its Case 1 fixtures are quoted heredoc text written
+# into a mktemp dir, and they leak on purpose.
+scan_dir_for_leaks "${RC_HOME_PI_GUARD_SCAN_DIR:-$SCRIPT_DIR}" "$(basename "${BASH_SOURCE[0]}")"
 
 if [[ "${#WRITE_LEAKS[@]}" -eq 0 ]]; then
   pass "live scan: zero unsandboxed \$HOME/.pi write(s) found under tests/*.sh"
