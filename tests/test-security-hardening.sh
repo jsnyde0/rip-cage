@@ -133,43 +133,55 @@ else
       fi
     done < <(msb list --format json 2>/dev/null | jq -r '.[] | select(.status == "Running") | .name' 2>/dev/null)
   fi
-  # A pinned cage is the operator asserting it exists and runs: FAIL, not SKIP.
-  _pinned_status=""
+  # A pinned cage is the operator asserting it is the subject: every reason
+  # the runtime assertions cannot run is a FAIL naming the cage. SKIP is only
+  # for the unpinned no-cage case (and host-only, above).
+  _pinned_status="" _not_run_reason=""
   if [[ -n "${RC_TEST_CAGE:-}" ]]; then
     _pinned_status=$(msb inspect "$CONTAINER" --format json 2>/dev/null | jq -r '.status // empty' 2>/dev/null || true)
   fi
   if [[ -n "${RC_TEST_CAGE:-}" && "$_pinned_status" != "Running" ]]; then
-    fail "runtime: pinned RC_TEST_CAGE=$CONTAINER is ${_pinned_status:-absent (msb inspect failed)}, not Running"
+    _not_run_reason="is ${_pinned_status:-absent (msb inspect failed)}, not Running"
   elif [[ -z "$CONTAINER" ]]; then
     echo "  SKIP: no running rip-cage container"
-  elif ! msb exec "$CONTAINER" -- which sudo </dev/null >/dev/null 2>&1; then
-    echo "  SKIP: container $CONTAINER not fully initialized (no sudo)"
   else
+    _sudo_path=$(msb exec "$CONTAINER" -- which sudo </dev/null 2>/dev/null) && _sudo_rc=0 || _sudo_rc=$?
     CONTAINER_IMAGE=$(msb inspect "$CONTAINER" --format json 2>/dev/null | jq -r '.config.manifest_digest // empty' 2>/dev/null)
     LATEST_IMAGE=$(msb image list --format json 2>/dev/null | jq -r '.[] | select(.reference == "rip-cage:latest") | .digest' 2>/dev/null | head -1)
-    echo "  Testing against container: $CONTAINER"
-    if [[ -n "$LATEST_IMAGE" ]] && [[ "$CONTAINER_IMAGE" != "$LATEST_IMAGE" ]]; then
-      echo "  SKIP: container does not run msb's current rip-cage:latest (rebuild with: rc build && rc up --replace)"
+    if [[ "$_sudo_rc" -ne 0 ]]; then
+      _not_run_reason="msb exec 'which sudo' exited $_sudo_rc (exec failed, or no sudo)"
+    elif [[ -z "$_sudo_path" ]]; then
+      _not_run_reason="has no sudo (not fully initialized)"
+    elif [[ -n "$LATEST_IMAGE" ]] && [[ "$CONTAINER_IMAGE" != "$LATEST_IMAGE" ]]; then
+      _not_run_reason="does not run msb's current rip-cage:latest (image ${CONTAINER_IMAGE:-unknown} vs ${LATEST_IMAGE}; rebuild with: rc build && rc up --replace)"
+    fi
+  fi
+  if [[ -n "$_not_run_reason" ]]; then
+    if [[ -n "${RC_TEST_CAGE:-}" ]]; then
+      fail "runtime: pinned RC_TEST_CAGE=$CONTAINER $_not_run_reason"
     else
-      # Should be denied: chown on a path outside the NOPASSWD allowlist (sudoers
-      # denies by path, so the file need not exist; /usr/local/bin/dcg is the
-      # opt-in guard binary the base image no longer ships).
-      # Denial manifests as either an explicit sudoers rejection or a password
-      # prompt (since the path is outside the NOPASSWD allowlist). Either way
-      # sudo exits non-zero without performing the chown — use -n (non-interactive)
-      # so a password prompt is surfaced as a clean refusal rather than hanging.
-      dcg_out=$(msb exec "$CONTAINER" -- sudo -n chown agent:agent /usr/local/bin/dcg </dev/null 2>&1) && dcg_rc=0 || dcg_rc=$?
-      if [[ "$dcg_rc" -ne 0 ]] && echo "$dcg_out" | grep -qi 'not allowed\|sorry\|permission\|password\|terminal'; then
-        pass "runtime: sudo chown on /usr/local/bin/dcg denied"
-      else
-        fail "runtime: sudo chown on /usr/local/bin/dcg was NOT denied (rc=$dcg_rc, out=$dcg_out)"
-      fi
-      # Should succeed: chown on allowed path
-      if msb exec "$CONTAINER" -- sudo -n chown agent:agent /home/agent/.claude </dev/null 2>/dev/null; then
-        pass "runtime: sudo chown on /home/agent/.claude allowed"
-      else
-        fail "runtime: sudo chown on /home/agent/.claude denied"
-      fi
+      echo "  SKIP: container $CONTAINER $_not_run_reason"
+    fi
+  elif [[ -n "$CONTAINER" ]]; then
+    echo "  Testing against container: $CONTAINER"
+    # Should be denied: chown on a path outside the NOPASSWD allowlist (sudoers
+    # denies by path, so the file need not exist; /usr/local/bin/dcg is the
+    # opt-in guard binary the base image no longer ships).
+    # Denial manifests as either an explicit sudoers rejection or a password
+    # prompt (since the path is outside the NOPASSWD allowlist). Either way
+    # sudo exits non-zero without performing the chown — use -n (non-interactive)
+    # so a password prompt is surfaced as a clean refusal rather than hanging.
+    dcg_out=$(msb exec "$CONTAINER" -- sudo -n chown agent:agent /usr/local/bin/dcg </dev/null 2>&1) && dcg_rc=0 || dcg_rc=$?
+    if [[ "$dcg_rc" -ne 0 ]] && echo "$dcg_out" | grep -qi 'not allowed\|sorry\|permission\|password\|terminal'; then
+      pass "runtime: sudo chown on /usr/local/bin/dcg denied"
+    else
+      fail "runtime: sudo chown on /usr/local/bin/dcg was NOT denied (rc=$dcg_rc, out=$dcg_out)"
+    fi
+    # Should succeed: chown on allowed path
+    if msb exec "$CONTAINER" -- sudo -n chown agent:agent /home/agent/.claude </dev/null 2>/dev/null; then
+      pass "runtime: sudo chown on /home/agent/.claude allowed"
+    else
+      fail "runtime: sudo chown on /home/agent/.claude denied"
     fi
   fi
 fi
