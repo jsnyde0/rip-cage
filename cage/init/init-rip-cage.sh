@@ -822,11 +822,13 @@ if [ "${PI_CODING_AGENT_DIR:-}" = "/home/agent/.pi/agent" ]; then
         echo "[rip-cage] ERROR: pi wrapper at ${_pi_launch} has mode ${_pi_wrapper_mode} (group/other-writable) — agent could rewrite it to bypass the DCG guard extension load (rip-cage-sn1h)" >&2
         exit 1
       fi
-      _pi_desc="${RC_BOOT_DESCRIPTOR:-/etc/rip-cage/boot.json}"
+      # Literal path, never ${RC_BOOT_DESCRIPTOR}: the wrapper reads this fixed file, so an
+      # env override here would verify a descriptor pi never reads.
+      _pi_desc=/etc/rip-cage/boot.json
       _pi_loads_gate=$(jq -r '((((.tools // []) | map(select(.name == "pi")) | first | .launch) // "") | [splits("\\s+")]) as $w | any(range(0; ($w | length) - 1); $w[.] == "-e" and $w[. + 1] == "/etc/rip-cage/pi/dcg-gate.ts")' "${_pi_desc}" 2>/dev/null || true)
       if [ "${_pi_loads_gate}" != "true" ]; then
         _pi_launch_cmd=$(jq -r '((.tools // []) | map(select(.name == "pi")) | first | .launch) // ""' "${_pi_desc}" 2>/dev/null || true)
-        echo "[rip-cage] ERROR: ${_pi_desc} tools[pi].launch ('${_pi_launch_cmd}') does not carry '-e /etc/rip-cage/pi/dcg-gate.ts' — pi would launch without the DCG guard extension (rip-cage-sn1h). Merge examples/dcg/boot-fragment.json last, or keep that pair in your own pi launch line." >&2
+        echo "[rip-cage] ERROR: ${_pi_desc} tools[pi].launch ('${_pi_launch_cmd}') does not carry '-e /etc/rip-cage/pi/dcg-gate.ts' — pi would launch without the DCG guard extension (rip-cage-sn1h). Keep that pair in your own pi launch line." >&2
         exit 1
       fi
       echo "[rip-cage] pi-cage guard verified (dcg-gate.ts + /etc/rip-cage/pi root-owned; dcg-guard present; pi at ${_pi_launch} is the root-owned, not group/other-writable launch wrapper; ${_pi_desc} tools[pi].launch carries -e /etc/rip-cage/pi/dcg-gate.ts)"
