@@ -1,5 +1,7 @@
 # Target repo layout + `rc` decomposition (refactor plan)
 
+> **Retirement note (2026-10-16, rip-cage-b8kd.4.2/.4.3):** a dated plan, kept as history. The `cage/egress/`, `cage/guards/dcg/` and `cage/substrate/claude-session-wrapper.sh` paths it maps were deleted; the egress engine is gone (msb owns egress) and the dcg, tmux and claude-wrapper recipes live only under `examples/`.
+
 **Status: DRAFT (rev.2 — two adversarial-review rounds folded in 2026-07-08; round 1 = F1–F7 below,
 round 2 = enumeration fixes in checklist item 2 + 4).** For sign-off before any file moves.
 Isolation-agnostic:

@@ -880,7 +880,7 @@ rm -rf "$TEST_DIR_T22"
 # --- Test 28: tmux.conf contains remain-on-exit setting ---
 echo ""
 echo "=== Test 28: tmux.conf has remain-on-exit on ==="
-if grep -q "remain-on-exit on" "${REPO_ROOT}/cage/agent/tmux.conf"; then
+if grep -q "remain-on-exit on" "${REPO_ROOT}/examples/tmux/tmux.conf"; then
   pass "tmux.conf contains 'remain-on-exit on'"
 else
   fail "tmux.conf missing 'remain-on-exit on'"
@@ -889,7 +889,7 @@ fi
 # --- Test 29: tmux.conf contains pane-died hook ---
 echo ""
 echo "=== Test 29: tmux.conf has pane-died hook ==="
-if grep -q "pane-died" "${REPO_ROOT}/cage/agent/tmux.conf"; then
+if grep -q "pane-died" "${REPO_ROOT}/examples/tmux/tmux.conf"; then
   pass "tmux.conf contains pane-died hook"
 else
   fail "tmux.conf missing pane-died hook"
