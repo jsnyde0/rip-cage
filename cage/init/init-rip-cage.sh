@@ -754,9 +754,9 @@ fi
 echo "[rip-cage] Hooks verified"
 # 5b. Verify pi-cage guard (dcg-gate.ts extension) — when dcg IS composed AND guard recipe is present.
 # PI_CODING_AGENT_DIR=/home/agent/.pi/agent is set unconditionally by rc up for ALL cages.
-# Post-rip-cage-wlwc.2.2: dcg-gate.ts is provisioned by the examples/pi recipe (install_cmd),
-# NOT baked into the base image. When dcg IS composed but the pi recipe is the NO-GUARD variant
-# (dcg-gate.ts absent), that is a valid user choice — warn-only, do not fail.
+# Post-rip-cage-wlwc.2.2: dcg-gate.ts is provisioned by the examples/dcg recipe (its
+# Dockerfile.snippet), NOT baked into the base image. When dcg IS composed but dcg-gate.ts is
+# absent, that is a valid user choice — warn-only, do not fail.
 # When dcg IS composed AND dcg-gate.ts IS present: all checks are fail-closed (ADR-001, ADR-024).
 # Ownership assertion (ADR-027 D1/D3, olen retired): guard wiring lives on its OWN
 # separate root-owned load path /etc/rip-cage/pi/dcg-gate.ts — NOT inside extensions/.
@@ -768,16 +768,16 @@ if [ "${PI_CODING_AGENT_DIR:-}" = "/home/agent/.pi/agent" ]; then
     if [ ! -f /etc/rip-cage/pi/dcg-gate.ts ]; then
       # dcg is composed but dcg-gate.ts is absent — user chose the no-guard pi recipe variant.
       # This is intentional and valid per ADR-027 D1/D3 (rc never forces the guard).
-      echo "[rip-cage] INFO: DCG composed but dcg-gate.ts absent — pi running without command guard (no-guard recipe variant; examples/pi/manifest-fragment-no-guard.yaml)"
+      echo "[rip-cage] INFO: DCG composed but dcg-gate.ts absent — pi running without command guard (no-guard composition; see examples/pi/README.md)"
     else
       _dcg_gate_owner=$(stat -c '%U' /etc/rip-cage/pi/dcg-gate.ts 2>/dev/null || true)
       if [ "${_dcg_gate_owner}" != "root" ]; then
-        echo "[rip-cage] ERROR: /etc/rip-cage/pi/dcg-gate.ts is owned by '${_dcg_gate_owner}' (expected root) — guard is agent-writable and self-disablable; recipe install_cmd must chown root:root (ADR-027 D1/D3)" >&2
+        echo "[rip-cage] ERROR: /etc/rip-cage/pi/dcg-gate.ts is owned by '${_dcg_gate_owner}' (expected root) — guard is agent-writable and self-disablable; recipe Dockerfile must chown root:root (ADR-027 D1/D3)" >&2
         exit 1
       fi
       _dcg_pi_dir_owner=$(stat -c '%U' /etc/rip-cage/pi 2>/dev/null || true)
       if [ "${_dcg_pi_dir_owner}" != "root" ]; then
-        echo "[rip-cage] ERROR: /etc/rip-cage/pi dir is owned by '${_dcg_pi_dir_owner}' (expected root) — agent can replace guard file via dir write; recipe install_cmd must chown root:root (ADR-027 D1/D3, unix-dir-ownership)" >&2
+        echo "[rip-cage] ERROR: /etc/rip-cage/pi dir is owned by '${_dcg_pi_dir_owner}' (expected root) — agent can replace guard file via dir write; recipe Dockerfile must chown root:root (ADR-027 D1/D3, unix-dir-ownership)" >&2
         exit 1
       fi
       unset _dcg_gate_owner _dcg_pi_dir_owner
@@ -785,25 +785,42 @@ if [ "${PI_CODING_AGENT_DIR:-}" = "/home/agent/.pi/agent" ]; then
         echo "[rip-cage] ERROR: dcg-guard wrapper missing — pi-cage guard cannot function (rip-cage-bl1)" >&2
         exit 1
       fi
-      # rip-cage-sn1h: pi launch wrapper must be present at /usr/local/bin/pi (intercepts every
-      # pi call, adds -e <dcg-gate> so the DCG guard extension loads on every launch).
-      # OPEN by default (ADR-027 D1/D4, FIRM 2026-07-02; rip-cage-p35a.1): the wrapper does NOT
+      # rip-cage-sn1h: pi must launch through the base image's tool-launch-wrapper, the seam
+      # that execs the boot descriptor's tools[pi].launch — where the dcg recipe's boot fragment
+      # adds -e <dcg-gate>. The wrapper sits wherever npm installed pi (cage/Dockerfile copies it
+      # to $(command -v pi); on this image that is /usr/bin/pi), so resolve the path here rather
+      # than naming a directory (rip-cage-lli5). Shadowing via an earlier PATH entry in the
+      # agent's interactive shell is the floor probe's path-resolution check, which ran above.
+      # The launch line's content is the operator's composition and is not policed here
+      # (ADR-027 D4 residual (c)).
+      # OPEN by default (ADR-027 D1/D4, FIRM 2026-07-02; rip-cage-p35a.1): the launch does NOT
       # add --no-extensions — pi's own extension auto-discovery paths (/workspace/.pi/extensions/,
       # ~/.pi/agent/extensions/) stay live even with DCG composed. The accepted residual
       # ("vector-b": a prompt-injected pi writing a bypass extension into an auto-loaded path)
       # is knowingly accepted in this default; --no-extensions is a documented LOCKED opt-in
       # (see examples/dcg/README.md), not something this check enforces.
-      # Ownership: must be root-owned so the agent cannot swap it for an unwrapped pi call.
-      if [ ! -x /usr/local/bin/pi ]; then
-        echo "[rip-cage] ERROR: pi launch wrapper missing at /usr/local/bin/pi — pi would launch without the DCG guard extension load (rip-cage-sn1h)" >&2
+      # Ownership + mode: root-owned and not group/other-writable, so the agent cannot swap it
+      # for an unwrapped pi call.
+      _pi_launch=$(command -v pi 2>/dev/null || true)
+      if [ -z "${_pi_launch}" ] || [ ! -x "${_pi_launch}" ]; then
+        echo "[rip-cage] ERROR: pi launch wrapper missing — 'pi' is not on PATH as an executable, so pi would launch without the DCG guard extension load (rip-cage-sn1h)" >&2
         exit 1
       fi
-      _pi_wrapper_owner=$(stat -c '%U' /usr/local/bin/pi 2>/dev/null || true)
+      if ! cmp -s "${_pi_launch}" /usr/local/lib/rip-cage/tool-launch-wrapper; then
+        echo "[rip-cage] ERROR: pi at ${_pi_launch} is not the base image's launch wrapper (/usr/local/lib/rip-cage/tool-launch-wrapper) — pi would launch without the DCG guard extension load (rip-cage-sn1h)" >&2
+        exit 1
+      fi
+      _pi_wrapper_owner=$(stat -L -c '%U' "${_pi_launch}" 2>/dev/null || true)
       if [ "${_pi_wrapper_owner}" != "root" ]; then
-        echo "[rip-cage] ERROR: pi wrapper at /usr/local/bin/pi is owned by '${_pi_wrapper_owner}' (expected root) — agent could replace it to bypass the DCG guard extension load (rip-cage-sn1h)" >&2
+        echo "[rip-cage] ERROR: pi wrapper at ${_pi_launch} is owned by '${_pi_wrapper_owner}' (expected root) — agent could replace it to bypass the DCG guard extension load (rip-cage-sn1h)" >&2
         exit 1
       fi
-      unset _pi_wrapper_owner
+      _pi_wrapper_mode=$(stat -L -c '%a' "${_pi_launch}" 2>/dev/null || echo 7777)
+      if [ $(( 0${_pi_wrapper_mode} & 022 )) -ne 0 ]; then
+        echo "[rip-cage] ERROR: pi wrapper at ${_pi_launch} has mode ${_pi_wrapper_mode} (group/other-writable) — agent could rewrite it to bypass the DCG guard extension load (rip-cage-sn1h)" >&2
+        exit 1
+      fi
+      unset _pi_launch _pi_wrapper_owner _pi_wrapper_mode
       echo "[rip-cage] pi-cage guard verified (dcg-gate.ts + dcg-guard + pi-wrapper all present, root-owned)"
     fi
   fi

@@ -10,14 +10,16 @@
 # auto-loaded path), not a regression. See examples/dcg/README.md for the
 # documented LOCKED opt-in variant that still closes this bypass.
 #
-# This probe therefore SELF-SKIPS unless the composed cage's pi wrapper actually
-# carries --no-extensions (i.e. the operator opted INTO the locked variant). It is
+# This probe therefore SELF-SKIPS unless the composed cage's pi launch line (boot
+# descriptor tools[pi].launch) actually carries --no-extensions (i.e. the operator opted INTO the locked variant). It is
 # NOT part of the default-posture safety contract; it exists to validate the locked
 # opt-in still works correctly when someone composes it.
 #
-# Confirms that a LOCKED pi launch wrapper (/usr/local/bin/pi) closes the
-# workspace-path extension auto-discovery bypass by adding --no-extensions
-# -e <dcg-gate> to every pi call.
+# Confirms that a LOCKED pi launch closes the workspace-path extension
+# auto-discovery bypass by adding --no-extensions -e <dcg-gate> to every pi call.
+# The base image's tool-launch-wrapper sits at $(command -v pi) and execs the boot
+# descriptor's tools[pi].launch; the LOCKED knob lives in that launch line
+# (examples/dcg/README.md), not in the wrapper file (rip-cage-lli5, rip-cage-b8kd.21).
 #
 # This probe verifies TWO things (LOCKED variant only):
 #   (a) /workspace/.pi/extensions/evil.ts is NOT loaded by the wrapper (auto-discovery disabled)
@@ -25,7 +27,7 @@
 #
 # Non-negotiable guardrails wired in (repo scars):
 #   POSITIVE CONTROL: prove evil.ts CAN be detected when explicitly loaded, so absence
-#     is meaningful (not vacuous). Uses /usr/bin/pi directly + explicit -e.
+#     is meaningful (not vacuous). Uses pi-real directly + explicit -e.
 #     (auth-precondition-presence-not-validity-silent-timeout)
 #   EFFECT not presence: DCG denial is tested via dcg-guard effect (DENIED output),
 #     not merely by checking wrapper exists or config presence.
@@ -53,6 +55,9 @@ TOTAL=0
 PROBE_SUFFIX=$$
 EVIL_TS_PATH="/workspace/.pi/extensions/evil.ts"
 PI_SESSION_DIR="/tmp/pi-no-ext-probe-${PROBE_SUFFIX}"
+PI_REAL="/usr/local/lib/rip-cage/bin/pi-real"
+TOOL_WRAPPER="/usr/local/lib/rip-cage/tool-launch-wrapper"
+BOOT_DESCRIPTOR="/etc/rip-cage/boot.json"
 
 pass() {
   TOTAL=$((TOTAL + 1))
@@ -131,12 +136,22 @@ if ! cexec bash -c 'command -v pi >/dev/null 2>&1'; then
 fi
 
 # ---------------------------------------------------------------------------
-# Guard: LOCKED-VARIANT-ONLY. Self-skip unless the composed pi wrapper actually
+# Guard: LOCKED-VARIANT-ONLY. Self-skip unless the composed pi launch actually
 # carries --no-extensions (rip-cage-p35a.1 / ADR-027 D1: open is the shipped
 # default; --no-extensions is a documented opt-in, not something every cage has).
+# The launch line is the boot descriptor's tools[pi].launch, which the wrapper at
+# $(command -v pi) execs.
 # ---------------------------------------------------------------------------
-if ! cexec grep -q -- '--no-extensions' /usr/local/bin/pi 2>/dev/null; then
-  echo "SKIP: pi wrapper does NOT carry --no-extensions — cage is on the OPEN default"
+PI_LAUNCH=$(cexec bash -c 'command -v pi' 2>/dev/null || true)
+# A failed read is a FAIL, not a SKIP: a skip on a read error would hide a LOCKED cage.
+if ! PI_LAUNCH_CMD=$(cexec jq -r '((.tools // []) | map(select(.name == "pi")) | first | .launch) // ""' "$BOOT_DESCRIPTOR" 2>/dev/null); then
+  echo "FAIL: could not read tools[pi].launch from ${BOOT_DESCRIPTOR} in $CONTAINER — cannot tell OPEN from LOCKED"
+  exit 1
+fi
+# Whole-word match: the launch is a plain sh -c string, so split on whitespace.
+_launch_has() { [[ " $PI_LAUNCH_CMD " == *" $1 "* ]]; }
+if ! _launch_has --no-extensions; then
+  echo "SKIP: pi launch does NOT carry --no-extensions — cage is on the OPEN default"
   echo "      posture (ADR-027 D1, FIRM). This probe only applies to cages that opted"
   echo "      into the LOCKED variant (examples/dcg/README.md). Not a regression."
   exit 0
@@ -157,40 +172,37 @@ _cleanup_probe() {
 # ---------------------------------------------------------------------------
 echo "-- Section S: Structural checks --"
 
-# S1: pi wrapper present at /usr/local/bin/pi
-if cexec test -x /usr/local/bin/pi; then
-  pass "S1: pi wrapper present and executable at /usr/local/bin/pi"
+# S1: pi resolves to the base image's launch wrapper
+if [[ -n "$PI_LAUNCH" ]] && cexec test -x "$PI_LAUNCH" && cexec cmp -s "$PI_LAUNCH" "$TOOL_WRAPPER"; then
+  pass "S1: pi at ${PI_LAUNCH} is the base image's launch wrapper"
 else
-  fail "S1: pi wrapper MISSING or not executable at /usr/local/bin/pi" \
-    "expected: examples/pi recipe install_cmd writes the wrapper to /usr/local/bin/pi (rip-cage-sn1h)"
+  fail "S1: pi at '${PI_LAUNCH:-nothing}' is MISSING, not executable, or not the launch wrapper" \
+    "expected: cage/Dockerfile copies ${TOOL_WRAPPER} to \$(command -v pi) (rip-cage-sn1h)"
 fi
 
-# S2: wrapper contains --no-extensions flag
-if cexec grep -q -- '--no-extensions' /usr/local/bin/pi 2>/dev/null; then
-  pass "S2: wrapper contains --no-extensions flag"
+# S2: launch line contains --no-extensions flag
+if _launch_has --no-extensions; then
+  pass "S2: pi launch contains --no-extensions flag"
 else
-  fail "S2: wrapper does NOT contain --no-extensions flag" \
-    "$(cexec cat /usr/local/bin/pi 2>/dev/null | head -5)"
+  fail "S2: pi launch does NOT contain --no-extensions flag" "$PI_LAUNCH_CMD"
 fi
 
-# S3: wrapper contains explicit -e <dcg-gate.ts>
-if cexec grep -q 'dcg-gate.ts' /usr/local/bin/pi 2>/dev/null; then
-  pass "S3: wrapper contains explicit -e dcg-gate.ts path"
+# S3: launch line contains explicit -e <dcg-gate.ts>
+if _launch_has "-e /etc/rip-cage/pi/dcg-gate.ts"; then
+  pass "S3: pi launch contains explicit -e dcg-gate.ts path"
 else
-  fail "S3: wrapper does NOT contain explicit -e dcg-gate.ts path" \
-    "$(cexec cat /usr/local/bin/pi 2>/dev/null | head -10)"
+  fail "S3: pi launch does NOT contain explicit -e dcg-gate.ts path" "$PI_LAUNCH_CMD"
 fi
 
-# S4: wrapper invokes the real pi binary
-if cexec grep -q '/usr/bin/pi' /usr/local/bin/pi 2>/dev/null; then
-  pass "S4: wrapper invokes real pi at /usr/bin/pi"
+# S4: launch line invokes the real pi binary
+if [[ "${PI_LAUNCH_CMD%% *}" == "$PI_REAL" ]] && cexec test -x "$PI_REAL"; then
+  pass "S4: pi launch invokes real pi at ${PI_REAL}"
 else
-  fail "S4: wrapper does NOT reference /usr/bin/pi" \
-    "$(cexec cat /usr/local/bin/pi 2>/dev/null | head -10)"
+  fail "S4: pi launch does NOT invoke an executable ${PI_REAL}" "$PI_LAUNCH_CMD"
 fi
 
 # S5: wrapper is root-owned (agent cannot replace it to bypass --no-extensions)
-_wrapper_owner=$(cexec stat -c '%U' /usr/local/bin/pi 2>/dev/null || true)
+_wrapper_owner=$(cexec stat -L -c '%U' "${PI_LAUNCH:-/nonexistent}" 2>/dev/null || true)
 if [[ "$_wrapper_owner" == "root" ]]; then
   pass "S5: wrapper is root-owned (agent cannot replace it)"
 else
@@ -205,7 +217,7 @@ if cexec test -f /etc/rip-cage/pi/dcg-gate.ts; then
   pass "S6a: dcg-gate.ts present at /etc/rip-cage/pi/dcg-gate.ts"
 else
   fail "S6a: dcg-gate.ts MISSING at /etc/rip-cage/pi/dcg-gate.ts" \
-    "recipe regression: examples/pi install_cmd must write the guard to /etc/rip-cage/pi/dcg-gate.ts"
+    "recipe regression: examples/dcg/Dockerfile.snippet must install the guard at /etc/rip-cage/pi/dcg-gate.ts"
 fi
 
 _dcg_owner=$(cexec stat -c '%U' /etc/rip-cage/pi/dcg-gate.ts 2>/dev/null || true)
@@ -227,13 +239,14 @@ echo ""
 #   stderr on load. If auto-discovery were still enabled, it would appear in
 #   pi's output when run from /workspace (since pi scans <cwd>/.pi/extensions/).
 #
-# POSITIVE CONTROL (E1): call /usr/bin/pi DIRECTLY with -e evil.ts to confirm
+# POSITIVE CONTROL (E1): call pi-real DIRECTLY with -e evil.ts to confirm
 #   evil.ts CAN be detected (the "EVIL_EXT_LOADED" marker appears in output).
 #   This makes absence in E2 meaningful — not a vacuous test.
 #
-# MAIN ASSERTION (E2): call `pi` via the WRAPPER (which adds --no-extensions)
-#   and confirm "EVIL_EXT_LOADED" does NOT appear. The wrapper's --no-extensions
-#   disables auto-discovery so /workspace/.pi/extensions/evil.ts is not loaded.
+# MAIN ASSERTION (E2): call `pi` via the WRAPPER (which execs the LOCKED launch
+#   line, carrying --no-extensions) and confirm "EVIL_EXT_LOADED" does NOT appear.
+#   --no-extensions disables auto-discovery so /workspace/.pi/extensions/evil.ts
+#   is not loaded. pi must also exit 0, so an absent marker means pi ran.
 # ---------------------------------------------------------------------------
 echo "-- Section E: Evil extension NOT loaded via wrapper --"
 
@@ -262,7 +275,7 @@ fi
 # Create session dir for pi to use
 cexec mkdir -p "$PI_SESSION_DIR"
 
-# E1: POSITIVE CONTROL — call /usr/bin/pi DIRECTLY with explicit -e evil.ts.
+# E1: POSITIVE CONTROL — call pi-real DIRECTLY with explicit -e evil.ts.
 # evil.ts should be loaded (EVIL_EXT_LOADED appears). Proves detection works.
 POS_OUT=$(mktemp)
 run_with_timeout 30 "$POS_OUT" \
@@ -272,7 +285,7 @@ run_with_timeout 30 "$POS_OUT" \
     -w /workspace \
     "$CONTAINER" \
     -- \
-    /usr/bin/pi \
+    "$PI_REAL" \
       --no-session \
       --session-dir "$PI_SESSION_DIR" \
       --no-extensions \
@@ -295,7 +308,7 @@ else
   exit $FAILURES
 fi
 
-# E2: MAIN ASSERTION — call `pi` via the WRAPPER (which adds --no-extensions -e dcg-gate.ts).
+# E2: MAIN ASSERTION — call `pi` via the WRAPPER (its launch line adds --no-extensions -e dcg-gate.ts).
 # evil.ts in /workspace/.pi/extensions/ must NOT be loaded (no EVIL_EXT_LOADED in output).
 MAIN_OUT=$(mktemp)
 run_with_timeout 30 "$MAIN_OUT" \
@@ -305,7 +318,7 @@ run_with_timeout 30 "$MAIN_OUT" \
     -w /workspace \
     "$CONTAINER" \
     -- \
-    /usr/local/bin/pi \
+    "$PI_LAUNCH" \
       --session-dir "$PI_SESSION_DIR" \
       --help
 
@@ -315,6 +328,9 @@ rm -f "$MAIN_OUT"
 
 if [[ $MAIN_EXIT -eq 124 ]]; then
   fail "E2: pi --help via wrapper TIMED OUT (30s)" "wrapper may be broken or pi hangs"
+elif [[ $MAIN_EXIT -ne 0 ]]; then
+  fail "E2: pi --help via wrapper exited $MAIN_EXIT — pi did not run, so marker absence proves nothing" \
+    "$(echo "$MAIN_CONTENT" | head -5)"
 elif echo "$MAIN_CONTENT" | grep -q 'EVIL_EXT_LOADED'; then
   fail "E2: EVIL_EXT_LOADED found in wrapper output — evil.ts WAS loaded despite --no-extensions" \
     "/workspace/.pi/extensions/ auto-discovery bypass is still open (rip-cage-sn1h not fixed)"
