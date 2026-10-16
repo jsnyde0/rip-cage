@@ -11,8 +11,10 @@
 # backend, so these replace their docker-backed equivalents at every call site
 # those modules touch; they do not coexist with them there.
 #
-# `docker.sh` stays live only for `rc build` (check_docker; the image is still
-# built with `docker build`) -- see the dispatcher in rc.
+# `docker.sh` stays live because the image is still built and inspected with
+# docker: the rc dispatcher runs check_docker for `rc build` and `rc up` (cli/up.sh
+# reads the local image with `docker image inspect` and `docker run`), and its
+# _run_with_timeout wraps check_msb below and cli/doctor.sh's runtime probes.
 
 
 # check_msb -- verifies the msb CLI is installed and responsive (msb-side

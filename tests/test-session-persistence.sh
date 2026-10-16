@@ -209,8 +209,10 @@ else
   check "session file survives rc destroy" fail "lost $HOST_PROJECTS_DIR/dn2-probe.jsonl"
 fi
 
-# Don't clear CONTAINER_NAME from CREATED_CAGES — the trap cleanup re-attempts
-# `rc destroy` on it, which is an idempotent no-op once already destroyed.
+# CONTAINER_NAME stays in CREATED_CAGES, so the CLEANUP trap re-runs
+# `rc destroy` on it. With the cage and its volumes already gone, that call
+# refuses ("container ... not found", exit 2) and CLEANUP prints a
+# "WARNING: failed to destroy" line to stderr; the test verdict is unaffected.
 rm -f "$UP_OUT"
 
 echo ""

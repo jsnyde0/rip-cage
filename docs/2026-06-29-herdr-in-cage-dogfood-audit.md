@@ -6,7 +6,7 @@
 
 > **Evidence discipline:** Claims marked **[verified]** were observed directly via `rc exec` against a live cage (`personal-resume`, built from this repo's `rc build`, image `rip-cage:latest`, 2026-06-29). Claims marked **[source]** come from reading repo files. Claims marked **[inferred — verify]** are second-hand or deduced and should be checked before acting.
 
-> **Retired pointers (2026-10-16):** this report predates the msb era. At HEAD `rc exec` and `rc down` are gone (live verbs: `up`, `auth`, `doctor`, `build`, `test`, `destroy`; see `rc --help`), the global `tools.yaml` and `.rip-cage.yaml` (`session.multiplexer`) are replaced by the per-project msb config at `~/.config/rip-cage/projects/<cage>.yaml`, and `examples/herdr/manifest-fragment.yaml` is now `examples/herdr/boot-fragment.json`. Read the commands below as history.
+> **Retired pointers (2026-10-16):** this report predates the msb era. At HEAD `rc exec` and `rc down` are gone (live verbs: `up`, `auth`, `doctor`, `build`, `test`, `destroy`; see `rc --help`), the global `tools.yaml` is gone (an image's tools are composed by its Dockerfile plus a boot fragment, ADR-031 D4), the multiplexer is chosen by `RC_MULTIPLEXER` at `rc up` rather than `.rip-cage.yaml`'s `session.multiplexer`, `examples/herdr/manifest-fragment.yaml` is now `examples/herdr/boot-fragment.json`, and pi's launch wrapper is `$(command -v pi)` (`/usr/bin/pi` on the base image), loading the guard `/etc/rip-cage/pi/dcg-gate.ts` per `/etc/rip-cage/boot.json` — not `/usr/local/bin/pi` loading it from `extensions/`, as the [verified] claims below record. Read the commands below as history.
 
 ---
 

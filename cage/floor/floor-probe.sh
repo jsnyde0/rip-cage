@@ -57,7 +57,7 @@
 #                            listed at _rc_floor_guard_paths below.
 #   bd-wrapper               /usr/local/bin/bd is a script and /usr/local/bin/bd-real
 #                            exists executable — the indirection ADR-007 D2's
-#                            dolt-server block depends on. the `COPY --from=go-builder ... bd-real` /
+#                            dolt-server block depends on. Guards the `COPY --from=go-builder ... bd-real` /
 #                            `COPY cage/substrate/bd-wrapper.sh ... bd` lines in cage/Dockerfile.
 #   path-resolution <name>   The floor's wrappers RESOLVE to the floor's own
 #                            files in the INTERACTIVE shell's PATH. Presence is
@@ -251,8 +251,8 @@ fi
 #   /etc/rip-cage/settings.json      `COPY cage/agent/settings.json`: the settings template init copies each boot
 #   /usr/local/bin/bd                `COPY ...bd-wrapper.sh`: the bd wrapper (see bd-wrapper below)
 #   /usr/local/bin/bd-real           `COPY --from=go-builder`: the real binary the wrapper defers to
-#   /usr/local/bin/init-rip-cage.sh  this probe's own caller
-#   /usr/local/lib/rip-cage/floor-probe.sh     this probe itself
+#   /usr/local/bin/init-rip-cage.sh  `COPY cage/init/init-rip-cage.sh`: this probe's own caller
+#   /usr/local/lib/rip-cage/floor-probe.sh     `COPY cage/floor/floor-probe.sh`: this probe itself
 #
 # Paths a composed recipe provisions — checked only when present, because a
 # minimal cage has none of them and that is a valid cage, not a broken one.

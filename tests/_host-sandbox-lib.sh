@@ -3,9 +3,10 @@
 #
 # Bare per-file test runs are non-hermetic: only the full-suite driver
 # (tests/run-host.sh) previously built the config sandbox described below,
-# which points XDG_CONFIG_HOME at a scratch dir so a host-side test never
-# reads the developer's real ~/.config/rip-cage/ (rc build's containment check
-# and the protected-paths resolver both read that dir). This is the single
+# which points XDG_CONFIG_HOME at a scratch dir so a host-side test does not
+# read the developer's real ~/.config/rip-cage/ (rc build's containment check
+# and the protected-paths resolver both read that dir) — unless the caller
+# already set XDG_CONFIG_HOME, which passes through unchanged. This is the single
 # seam extracted so both run-host.sh AND a single-file wrapper
 # (tests/run-one.sh) build the identical sandbox.
 #
