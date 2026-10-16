@@ -18,8 +18,13 @@ class RipCage < Formula
       provide. Install msb 0.7.4 or newer yourself (`msb update` upgrades it);
       `rc up` refuses an older msb.
 
-      Docker is needed only to build the agent image (`rc build`), which
-      loads it into msb. msb, not Docker, runs the cage.
+      Docker provisions the agent image only; msb, not Docker, runs the cage.
+      On first `rc up`, the pre-built image is pulled from GHCR (~30s) with
+      docker and loaded into msb. If the pull fails, rc falls back to a local
+      docker build (5-10 min). `rc build` rebuilds locally on demand.
+
+      To always build locally (e.g. for Dockerfile development):
+        export RIP_CAGE_IMAGE_REGISTRY=""
 
       Quick start: https://github.com/jsnyde0/rip-cage#quick-start
     EOS
