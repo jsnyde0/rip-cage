@@ -79,8 +79,11 @@ USER_GLOBAL_SETTINGS_BACKUP="/tmp/probe-user-global-settings-backup-${PROBE_SUFF
 MANAGED_SETTINGS=/etc/claude-code/managed-settings.json
 MANAGED_SETTINGS_BACKUP="/root/probe-managed-settings-backup-${PROBE_SUFFIX}.json"
 MANAGED_SETTINGS_PRE_SHA=""
-# Set just before the probe writes its sentinel: cleanup restores or removes
-# managed-settings.json only when the probe has touched it.
+# What the pre-flight saw before the probe touched anything: present | absent.
+# Cleanup's remove-only branch keys on "absent", never on an empty hash.
+MANAGED_SETTINGS_SHIPPED=""
+# Set just before the probe writes its sentinel, and only after a verified
+# backup: cleanup restores or removes managed-settings.json only when touched.
 MANAGED_SETTINGS_TOUCHED=false
 PROBE_CLEANED=false
 
@@ -103,6 +106,9 @@ info() {
 # Usage: run_with_timeout <seconds> <outfile> <command...>
 # Sets global RWT_EXIT to the exit code (124 = timeout).
 RWT_EXIT=0
+# PIDs of the in-flight command and its watchdog, for the INT/TERM handler.
+RWT_CMD_PID=""
+RWT_WATCHDOG_PID=""
 run_with_timeout() {
   local timeout_secs="$1" outfile="$2"
   shift 2
@@ -111,10 +117,12 @@ run_with_timeout() {
   # Run command in background, capturing output to file
   "$@" >"$outfile" 2>&1 &
   local cmd_pid=$!
+  RWT_CMD_PID=$cmd_pid
 
   # Start a watchdog in the background that kills the command after timeout_secs
   ( sleep "$timeout_secs" && kill "$cmd_pid" 2>/dev/null ) &
   local watchdog_pid=$!
+  RWT_WATCHDOG_PID=$watchdog_pid
 
   # Wait for the command to finish
   wait "$cmd_pid" 2>/dev/null && RWT_EXIT=$? || RWT_EXIT=$?
@@ -122,6 +130,8 @@ run_with_timeout() {
   # Kill the watchdog (it may have already fired)
   kill "$watchdog_pid" 2>/dev/null || true
   wait "$watchdog_pid" 2>/dev/null || true
+  RWT_CMD_PID=""
+  RWT_WATCHDOG_PID=""
 
   # If command was killed (exit code 143 = SIGTERM, or 130 = SIGINT from kill),
   # or if the kill happened cleanly (128+signal), report as timeout (exit 124).
@@ -135,6 +145,8 @@ run_with_timeout() {
 _cleanup_probe() {
   [[ "$PROBE_CLEANED" == "true" ]] && return 0
   PROBE_CLEANED=true
+  # A second Ctrl-C must not cut the restore short.
+  trap '' INT TERM
   # Best-effort: ignore errors during cleanup
   cexec rm -rf "$PROBE_SESSION_DIR" 2>/dev/null || true
   cexec rm -f "$HOOK_CALLED_WITNESS" "$BASH_EXECUTED_FILE" 2>/dev/null || true
@@ -164,8 +176,9 @@ _cleanup_probe() {
   # Restore the shipped managed-settings.json byte-identical, or remove the
   # probe's sentinel copy when the image shipped none.
   if [[ "$MANAGED_SETTINGS_TOUCHED" != "true" ]]; then
-    :
-  elif [[ -n "$MANAGED_SETTINGS_PRE_SHA" ]]; then
+    # Never touched the shipped file; drop a backup a failed pre-flight may have left.
+    cexec_root rm -f "$MANAGED_SETTINGS_BACKUP" 2>/dev/null || true
+  elif [[ "$MANAGED_SETTINGS_SHIPPED" == "present" ]]; then
     cexec_root cp -p "$MANAGED_SETTINGS_BACKUP" "$MANAGED_SETTINGS" 2>/dev/null || true
     cexec_root rm -f "$MANAGED_SETTINGS_BACKUP" 2>/dev/null || true
     local post_sha
@@ -178,7 +191,7 @@ _cleanup_probe() {
       fail "Shipped $MANAGED_SETTINGS NOT restored byte-identical" \
         "pre=$MANAGED_SETTINGS_PRE_SHA post=${post_sha:-<absent>}"
     fi
-  else
+  elif [[ "$MANAGED_SETTINGS_SHIPPED" == "absent" ]]; then
     cexec_root rm -f "$MANAGED_SETTINGS" 2>/dev/null || true
   fi
   info "Probe cleanup complete"
@@ -411,9 +424,18 @@ echo "-- Probe setup --"
 
 # From here on the probe mutates the cage: restore on every exit path,
 # including SIGINT/SIGTERM, a set -u abort, or a dead msb exec (rip-cage-b8kd.7.2).
+# On INT/TERM, stop the in-flight claude call and its watchdog first, so no
+# probe-launched process outlives the run.
+# SC2329 disabled: invoked from the INT/TERM traps below.
+# shellcheck disable=SC2329
+_on_signal() {
+  [[ -n "$RWT_CMD_PID" ]] && kill "$RWT_CMD_PID" 2>/dev/null
+  [[ -n "$RWT_WATCHDOG_PID" ]] && kill "$RWT_WATCHDOG_PID" 2>/dev/null
+  exit "$1"
+}
 trap '_cleanup_probe' EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap '_on_signal 130' INT
+trap '_on_signal 143' TERM
 
 # Create probe session dir
 cexec mkdir -p "$PROBE_SESSION_DIR"
@@ -494,10 +516,39 @@ echo "-- Creating /etc/claude-code/managed-settings.json (root) --"
 
 cexec_root mkdir -p /etc/claude-code
 
-if cexec_root test -f "$MANAGED_SETTINGS"; then
-  cexec_root cp -p "$MANAGED_SETTINGS" "$MANAGED_SETTINGS_BACKUP"
-  MANAGED_SETTINGS_PRE_SHA=$(cexec_root sha256sum "$MANAGED_SETTINGS" | awk '{print $1}')
-  info "Backed up shipped $MANAGED_SETTINGS (sha256 $MANAGED_SETTINGS_PRE_SHA)"
+# Never overwrite what cannot be restored: the sentinel is written only after
+# the pre-flight state is known and, for a shipped file, its backup is verified.
+# SC2016 disabled: $1 expands inside the container.
+# shellcheck disable=SC2016
+MANAGED_SETTINGS_SHIPPED=$(cexec_root sh -c 'if [ -f "$1" ]; then echo present; elif [ ! -e "$1" ]; then echo absent; fi' _ "$MANAGED_SETTINGS")
+_backup_err=""
+case "$MANAGED_SETTINGS_SHIPPED" in
+  present)
+    if ! cexec_root cp -p "$MANAGED_SETTINGS" "$MANAGED_SETTINGS_BACKUP"; then
+      _backup_err="cp -p to $MANAGED_SETTINGS_BACKUP failed"
+    else
+      MANAGED_SETTINGS_PRE_SHA=$(cexec_root sha256sum "$MANAGED_SETTINGS" | awk '{print $1}')
+      _backup_sha=$(cexec_root sha256sum "$MANAGED_SETTINGS_BACKUP" | awk '{print $1}')
+      if [[ ! "$MANAGED_SETTINGS_PRE_SHA" =~ ^[0-9a-f]{64}$ ]]; then
+        _backup_err="sha256 of the shipped file unreadable (got '${MANAGED_SETTINGS_PRE_SHA}')"
+      elif [[ "$_backup_sha" != "$MANAGED_SETTINGS_PRE_SHA" ]]; then
+        _backup_err="backup sha256 '${_backup_sha}' != shipped '${MANAGED_SETTINGS_PRE_SHA}'"
+      fi
+    fi
+    ;;
+  absent) ;;
+  *) _backup_err="cannot tell whether $MANAGED_SETTINGS exists (pre-flight got '${MANAGED_SETTINGS_SHIPPED}')" ;;
+esac
+if [[ -n "$_backup_err" ]]; then
+  fail "Backup of shipped $MANAGED_SETTINGS NOT verified — sentinel not written" "$_backup_err"
+  echo ""
+  echo "FATAL: refusing to overwrite a managed-settings.json the probe cannot restore."
+  exit "$FAILURES"
+fi
+if [[ "$MANAGED_SETTINGS_SHIPPED" == "present" ]]; then
+  info "Backed up shipped $MANAGED_SETTINGS (sha256 $MANAGED_SETTINGS_PRE_SHA, backup verified)"
+else
+  info "$MANAGED_SETTINGS absent before the probe — cleanup will remove the sentinel copy"
 fi
 
 # Write managed-settings.json with the sentinel hook
