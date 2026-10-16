@@ -39,7 +39,7 @@ set -euo pipefail
 PGDATA=/var/lib/rip-cage-daemon/postgres-pgvector
 PGBIN=/usr/lib/postgresql/17/bin
 PGPORT=5432
-PGDB=test
+PGDB="test"
 PGSUPERUSER=postgres
 
 log() { echo "[postgres-pgvector] $*"; }
