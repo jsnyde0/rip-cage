@@ -25,14 +25,20 @@
 # value is ignored with one stderr note. rc's own boot-time readers (init, the
 # floor probe, rc-boot-merge) still honour the variable; they never run under
 # the agent's shell.
+#
+# The same channel can prepend to PATH ([env] _.path), so every command this
+# wrapper runs is named by absolute path or is a shell builtin: jq and sh as the
+# image installs them, and no basename. A descriptor jq cannot read REFUSES the
+# launch rather than falling back to the unguarded real binary.
 set -eu
 
-_tool=$(basename "$0")
+_tool=${0##*/}
 _real="/usr/local/lib/rip-cage/bin/${_tool}-real"
 _desc="/etc/rip-cage/boot.json"
+_jq="/usr/bin/jq"
 
 if [ -n "${RC_BOOT_DESCRIPTOR:-}" ] && [ "$RC_BOOT_DESCRIPTOR" != "$_desc" ]; then
-  echo "[rip-cage] note: ${_tool} launch wrapper ignores RC_BOOT_DESCRIPTOR=${RC_BOOT_DESCRIPTOR} and reads ${_desc} (rip-cage-5ndd)" >&2
+  printf '%s\n' "[rip-cage] note: ${_tool} launch wrapper ignores RC_BOOT_DESCRIPTOR=${RC_BOOT_DESCRIPTOR} and reads ${_desc} (rip-cage-5ndd)" >&2
 fi
 
 if [ ! -x "$_real" ]; then
@@ -41,12 +47,16 @@ if [ ! -x "$_real" ]; then
 fi
 
 _launch=""
-if [ -f "$_desc" ] && command -v jq >/dev/null 2>&1; then
-  _launch=$(jq -r --arg n "$_tool" '((.tools // []) | map(select(.name == $n)) | first | .launch) // ""' "$_desc" 2>/dev/null || echo "")
+if [ -f "$_desc" ]; then
+  # shellcheck disable=SC2016 # $n is a jq variable, bound by --arg
+  if ! _launch=$("$_jq" -r --arg n "$_tool" '((.tools // []) | map(select(.name == $n)) | first | .launch) // ""' "$_desc" 2>/dev/null); then
+    printf '%s\n' "[rip-cage] ERROR: ${_tool} launch wrapper could not read ${_desc} with ${_jq}; refusing to launch ${_tool} without its declared launch line. (rip-cage-5ndd)" >&2
+    exit 1
+  fi
 fi
 
 if [ -n "$_launch" ]; then
-  exec sh -c "${_launch} \"\$@\"" "$_tool" "$@"
+  exec /bin/sh -c "${_launch} \"\$@\"" "$_tool" "$@"
 fi
 
 exec "$_real" "$@"
