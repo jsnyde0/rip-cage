@@ -166,9 +166,14 @@ TEST_HOME=""
 SCRATCH=""
 
 cleanup() {
+  local _rc=$?
   [[ -n "${TEST_HOME:-}" && -d "$TEST_HOME" ]] && rm -rf "$TEST_HOME"
   [[ -n "${SCRATCH:-}" && -d "$SCRATCH" ]] && rm -rf "$SCRATCH"
-  rm -f /tmp/spike-uuh9-*.err /tmp/spike-uuh9-*.out
+  # Diagnostics survive a failed run: the workflow uploads /tmp/spike-uuh9-*
+  # as an artifact after this trap has fired.
+  if [[ "$_rc" -eq 0 ]]; then
+    rm -f /tmp/spike-uuh9-*.err /tmp/spike-uuh9-*.out
+  fi
 }
 trap cleanup EXIT
 

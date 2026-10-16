@@ -70,12 +70,6 @@ jobs:
           ls -la /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
 
-      - name: Install yq (mikefarah v4, required by rc build's manifest chain)
-        run: |
-          sudo curl -fsSL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
-          sudo chmod +x /usr/local/bin/yq
-          yq --version
-
       - name: Install msb (microsandbox CLI)
         # Official install script (see microsandbox/microsandbox README) --
         # installs to ~/.local/bin, which isn't on PATH for non-login shells
