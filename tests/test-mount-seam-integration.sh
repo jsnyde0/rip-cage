@@ -542,15 +542,12 @@ test_se_tier2_composed_cage_suite() {
     fail "SE1 claude: managed-settings.json NOT root-owned (file=${ms_owner} dir=${ms_dir_owner}) — ownership check failed"
   fi
 
-  # pi: pi wrapper active (executable at /usr/local/bin/pi) + /etc/rip-cage/pi dcg-gate exists.
-  local pi_active pi_dcg_gate
-  pi_active=$(docker exec "$se_container" test -x /usr/local/bin/pi 2>/dev/null && echo "yes" || echo "no")
+  # pi: /etc/rip-cage/pi dcg-gate exists. The SE1 pi-wrapper check (test -x
+  # /usr/local/bin/pi over docker exec) retired 2026-10-16 (rip-cage-kmsw):
+  # nothing installs that path, and no cage is a docker container any more.
+  # The live check is init's sn1h guard: $(command -v pi) + boot.json tools[pi].launch.
+  local pi_dcg_gate
   pi_dcg_gate=$(docker exec "$se_container" test -f /etc/rip-cage/pi/dcg-gate.ts 2>/dev/null && echo "yes" || echo "no")
-  if [[ "$pi_active" == "yes" ]]; then
-    pass "SE1 pi: pi wrapper active at /usr/local/bin/pi — pi recipe present"
-  else
-    fail "SE1 pi: pi wrapper NOT active — pi recipe missing from default image"
-  fi
   if [[ "$pi_dcg_gate" == "yes" ]]; then
     pass "SE1 pi: /etc/rip-cage/pi/dcg-gate.ts present — pi dcg-gate wired"
   else
@@ -638,15 +635,8 @@ test_se_tier2_composed_cage_suite() {
   echo ""
   echo "--- SE4: No-guard-pi smoke (pi wrapper has no built-in command guard) ---"
 
-  # pi wrapper is present but the dcg-guard comes from the dcg recipe, not pi itself.
-  # Verify pi wrapper is executable.
-  local pi_exe
-  pi_exe=$(docker exec "$se_container" test -x /usr/local/bin/pi 2>/dev/null && echo "yes" || echo "no")
-  if [[ "$pi_exe" == "yes" ]]; then
-    pass "SE4 pi: pi wrapper executable — pi recipe present"
-  else
-    fail "SE4 pi: pi wrapper NOT executable — pi recipe missing"
-  fi
+  # The SE4 pi-wrapper-executable check (test -x /usr/local/bin/pi over docker
+  # exec) retired 2026-10-16 (rip-cage-kmsw), for the same reason as SE1's.
 
   # -----------------------------------------------------------------
   # SE5 — assert-present end-to-end

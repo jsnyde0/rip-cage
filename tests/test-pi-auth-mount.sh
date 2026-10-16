@@ -429,8 +429,8 @@ printf '{"fake":true}\n' > "$PI_AGENT_DIR/auth.json"
 # Test 9: the agent's pi extensions/ dir is correct, agent-owned, and writable
 #
 # Post-wlwc.4 (olen retirement, ADR-019 D8 / ADR-027 D1/D3) the DCG guard does
-# NOT live in this dir. The root-owned wrapper (/usr/local/bin/pi) loads the
-# guard explicitly via -e /etc/rip-cage/pi/dcg-gate.ts on its OWN separate
+# NOT live in this dir. The root-owned launch wrapper ($(command -v pi), /usr/bin/pi on this image) loads
+# the guard explicitly via boot.json tools[pi].launch (-e /etc/rip-cage/pi/dcg-gate.ts) on its OWN separate
 # root-owned path — a workspace/extensions write cannot shadow it either way.
 # /home/agent/.pi/agent/extensions/ is therefore NOT a guard path — it is the
 # agent's own writable extension space (ADR-027 rw self-improvement). OPEN by

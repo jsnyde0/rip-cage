@@ -69,12 +69,10 @@ Compose [`examples/dcg/`](../dcg/) alongside this recipe. Its own
 binary plus `-e <dcg-gate.ts>`) — merge DCG's fragment **after** this one so its
 `launch` value is what survives (`rc-boot-merge` replaces a `tools[]` entry by
 name; the last fragment merged for a given tool name wins wholesale, it does
-not combine fields). This recipe's `init` hook still applies underneath: tools[]
-replace-by-name replaces the merged JSON object for `pi`, so if you want both
-`init` (this recipe) and `launch` (DCG) on the same `pi` entry, either merge
-DCG's fragment second in the same Dockerfile (DCG's own fragment also declares
-`init` — read [`examples/dcg/boot-fragment.json`](../dcg/boot-fragment.json))
-or write one fragment yourself carrying both fields. See
+not combine fields). DCG's fragment declares only `launch`, not `init`
+([`examples/dcg/boot-fragment.json`](../dcg/boot-fragment.json)), so merging it
+second **replaces** this recipe's `pi` entry and drops its `init` hook. To keep
+both `init` (this recipe) and `launch` (DCG) on the `pi` entry, write one fragment yourself carrying both fields. See
 [`examples/dcg/README.md`](../dcg/README.md) for the OPEN/LOCKED posture choice.
 
 ## Adding herdr's semantic-status extension

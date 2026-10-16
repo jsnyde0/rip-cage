@@ -313,12 +313,7 @@ test_8_shim_steps_with_guard() {
     return
   fi
 
-  # Must contain a RUN step that writes /usr/local/bin/pi
-  if printf '%s' "$shim_steps" | grep -q '/usr/local/bin/pi'; then
-    pass "(8a) shim Dockerfile step writes /usr/local/bin/pi"
-  else
-    fail "(8a) shim Dockerfile step does NOT write /usr/local/bin/pi"
-  fi
+  # 8a retired 2026-10-16 (rip-cage-kmsw): the manifest path and its pi shim writer are gone; pi's wrapper is $(command -v pi) per boot.json tools[pi].launch
 
   # Must set root:root 0755
   if printf '%s' "$shim_steps" | grep -q 'chown root:root'; then
