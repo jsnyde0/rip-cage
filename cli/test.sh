@@ -197,7 +197,7 @@ ${output}"
     done <<< "$output"
     jq -nc --arg name "$name" --argjson checks "$checks" --arg overall "$overall" \
       '{name: $name, checks: $checks, overall: $overall}'
-    # Exit status agrees with .overall, same as the text branch's return below.
+    # Exit status agrees with .overall: any FAIL line, parsed or synthetic, fails it.
     [[ "$overall" == "pass" ]] || return 1
   else
     echo "$preflight_line"

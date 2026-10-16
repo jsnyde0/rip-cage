@@ -24,7 +24,10 @@ FAIL=0
 # Same `PASS  [n] name — detail` shape as tests/test-safety-stack.sh's check(),
 # because `rc test --output json` parses only that shape; a colon form vanishes.
 ok()   { PASS=$((PASS + 1)); echo "PASS  [$((PASS + FAIL))] pgvector: $*"; }
-bad()  { FAIL=$((FAIL + 1)); echo "FAIL  [$((PASS + FAIL))] pgvector: $*"; }
+# bad() folds a multi-line message (psql errors carry DETAIL/HINT lines) onto one line:
+# the parser reads one PASS/FAIL line per check, so an unprefixed continuation line
+# would drop out of the JSON detail.
+bad()  { FAIL=$((FAIL + 1)); local msg="$*"; echo "FAIL  [$((PASS + FAIL))] pgvector: ${msg//$'\n'/ | }"; }
 
 psql_super() { "$PGBIN/psql" -h "$PGHOST" -p "$PGPORT" -U "$PGSUPERUSER" -d postgres "$@"; }
 psql_smoke() { "$PGBIN/psql" -h "$PGHOST" -p "$PGPORT" -U "$PGSUPERUSER" -d "$SMOKE_DB" "$@"; }
