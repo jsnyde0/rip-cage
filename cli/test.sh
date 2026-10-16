@@ -128,29 +128,34 @@ cmd_test() {
     # it first: when the image's floor is broken, that is the finding, and every
     # later suite's result is downstream of it. Same file, same PASS/FAIL line
     # shape, so the parser below needs no special case.
-    local floor_missing_line
+    local floor_missing_line suites=()
+    output=""
     if floor_missing_line=$(_test_floor_probe_missing_line "$name"); then
-      output=$(_msb_exec "$name" -- bash -c \
-        '/usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-bd-roundtrip.sh' 2>&1) || true
-      output="${floor_missing_line}
-${output}"
+      output="$floor_missing_line"
     else
-      output=$(_msb_exec "$name" -- bash -c \
-        '/usr/local/lib/rip-cage/floor-probe.sh; /usr/local/lib/rip-cage/test-safety-stack.sh; /usr/local/lib/rip-cage/test-skills.sh; /usr/local/lib/rip-cage/test-bd-roundtrip.sh' 2>&1) || true
+      suites+=(floor-probe.sh)
     fi
-    # run-recipe-smokes.sh: run separately to capture non-zero exit AND stdout.
-    # Its per-smoke PASS/FAIL lines are parsed by the loop below; additionally,
-    # a non-zero runner exit injects a synthetic FAIL line so the JSON overall
-    # goes "fail" even if stdout parsing sees only passing lines (anti-swallow).
-    local smokes_output smokes_rc
-    smokes_rc=0
-    smokes_output=$(_msb_exec "$name" -- /usr/local/lib/rip-cage/run-recipe-smokes.sh 2>&1) || smokes_rc=$?
-    if [[ "$smokes_rc" -ne 0 ]]; then
-      smokes_output="${smokes_output}
-FAIL  [0] run-recipe-smokes: runner exited ${smokes_rc} (one or more recipe smoke tests failed)"
-    fi
-    output="${output}
-${smokes_output}"
+    suites+=(test-safety-stack.sh test-skills.sh test-bd-roundtrip.sh run-recipe-smokes.sh)
+    # Each suite runs on its own so its exit status is captured: a suite that
+    # crashes without printing a FAIL line would otherwise parse as green. A
+    # non-zero exit injects a synthetic FAIL line so the JSON overall goes
+    # "fail" even when stdout parsing sees only passing lines (anti-swallow).
+    local suite suite_output suite_rc
+    for suite in "${suites[@]}"; do
+      suite_rc=0
+      suite_output=$(_msb_exec "$name" -- "/usr/local/lib/rip-cage/${suite}" 2>&1) || suite_rc=$?
+      output="${output}
+${suite_output}"
+      if [[ "$suite_rc" -ne 0 ]]; then
+        if [[ "$suite" == "run-recipe-smokes.sh" ]]; then
+          output="${output}
+FAIL  [0] run-recipe-smokes: runner exited ${suite_rc} (one or more recipe smoke tests failed)"
+        else
+          output="${output}
+FAIL  [0] ${suite%.sh}: suite exited ${suite_rc} — a suite that exits non-zero failed, whether or not it printed a FAIL line"
+        fi
+      fi
+    done
     # Prepend host-side preflight line so the parse loop handles it uniformly
     output="${preflight_line}
 ${output}"
@@ -174,13 +179,15 @@ ${output}"
     done <<< "$output"
     jq -nc --arg name "$name" --argjson checks "$checks" --arg overall "$overall" \
       '{name: $name, checks: $checks, overall: $overall}'
+    # Exit status agrees with .overall, same as the text branch's return below.
+    [[ "$overall" == "pass" ]] || return 1
   else
     echo "$preflight_line"
     # Collect each suite's exit status and run all five unconditionally --
     # rc runs `set -euo pipefail`, so a bare (unguarded) call here would
     # abort this function on the first suite that exits non-zero, and
     # later suites (in particular run-recipe-smokes.sh) would never run.
-    # Mirrors the json branch above, which already gets this right.
+    # Mirrors the json branch above, which runs each suite on its own too.
     local overall_rc=0 suite_rc
     local floor_missing_line
     if floor_missing_line=$(_test_floor_probe_missing_line "$name"); then

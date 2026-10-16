@@ -21,8 +21,10 @@ SMOKE_DB=rc_pgvector_smoke
 PASS=0
 FAIL=0
 
-ok()   { echo "PASS: $*"; PASS=$((PASS + 1)); }
-bad()  { echo "FAIL: $*"; FAIL=$((FAIL + 1)); }
+# Same `PASS  [n] name — detail` shape as tests/test-safety-stack.sh's check(),
+# because `rc test --output json` parses only that shape; a colon form vanishes.
+ok()   { PASS=$((PASS + 1)); echo "PASS  [$((PASS + FAIL))] pgvector: $*"; }
+bad()  { FAIL=$((FAIL + 1)); echo "FAIL  [$((PASS + FAIL))] pgvector: $*"; }
 
 psql_super() { "$PGBIN/psql" -h "$PGHOST" -p "$PGPORT" -U "$PGSUPERUSER" -d postgres "$@"; }
 psql_smoke() { "$PGBIN/psql" -h "$PGHOST" -p "$PGPORT" -U "$PGSUPERUSER" -d "$SMOKE_DB" "$@"; }
