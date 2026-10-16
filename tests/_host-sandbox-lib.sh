@@ -2,18 +2,15 @@
 # tests/_host-sandbox-lib.sh — shared host-test config sandbox (rip-cage-w3lq).
 #
 # Bare per-file test runs are non-hermetic: only the full-suite driver
-# (tests/run-host.sh) previously built the benign config sandbox described
-# below. A promoted global config (e.g. a real ~/.config/rip-cage/config.yaml
-# with network.egress.mediator set to something other than "none", requiring
-# egress to be on) is silently picked up by any host-side test that does not
-# sandbox its own RC_CONFIG_GLOBAL/XDG_CONFIG_HOME, and can break a test that
-# forces egress=off or otherwise depends on the "no config" default. This is
-# the single seam extracted so both run-host.sh AND a single-file wrapper
+# (tests/run-host.sh) previously built the config sandbox described below,
+# which points XDG_CONFIG_HOME at a scratch dir so a host-side test never
+# reads the developer's real ~/.config/rip-cage/ (rc build's containment check
+# and the protected-paths resolver both read that dir). This is the single
+# seam extracted so both run-host.sh AND a single-file wrapper
 # (tests/run-one.sh) build the identical sandbox.
 #
-# Extracted verbatim (same fixture content, same env-var precedence, same
-# "do not export RC_MANIFEST_GLOBAL" isolation contract) from
-# tests/run-host.sh circa rip-cage-w3lq.
+# Extracted from tests/run-host.sh circa rip-cage-w3lq (same env-var
+# precedence).
 #
 # Usage (source, then call):
 #   # shellcheck source=tests/_host-sandbox-lib.sh

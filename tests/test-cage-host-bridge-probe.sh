@@ -51,8 +51,9 @@ fail() { TOTAL=$((TOTAL + 1)); FAILURES=$((FAILURES + 1)); echo "FAIL  [$TOTAL] 
 echo "=== cage-host-bridge-probe unit tests ==="
 
 # Source ONLY the function definitions -- RC_INIT_LIB_ONLY makes
-# init-rip-cage.sh return right after defining _rc_host_bridge_resolves /
-# _rc_probe_host_bridge, before any of its imperative init work runs.
+# init-rip-cage.sh return right after defining its helper functions (the
+# host-bridge probe, _rc_host_bridge_resolves / _rc_probe_host_bridge, among
+# them), before any of its imperative init work runs.
 # shellcheck source=cage/init/init-rip-cage.sh
 RC_INIT_LIB_ONLY=1 source "$INIT_SCRIPT"
 

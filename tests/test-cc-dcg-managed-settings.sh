@@ -192,9 +192,9 @@ echo "-- Step 0: Structural assertions --"
 # LIVENESS PROBE: prove the cexec channel itself works before interpreting
 # ANY predicate result below as "file absent" (rip-cage-7atw.22 review F7).
 #
-# `cexec` is `rc exec`, which returns non-zero for reasons that have NOTHING
-# to do with the guest filesystem: the cage isn't running, cage-name
-# resolution failed, or msb exec itself errored (cli/attach_exec.sh). Without
+# `cexec` is `msb exec`, which returns non-zero for reasons that have NOTHING
+# to do with the guest filesystem: the cage isn't running, the cage name
+# does not resolve, or msb exec itself errored. Without
 # this probe, a non-zero composition probe below is
 # AMBIGUOUS between "the probe ran and the wrapper is absent" (real SKIP) and
 # "the probe never ran at all" (broken harness invocation) -- and the old code
@@ -250,13 +250,10 @@ fi
 # intact), this probe would SKIP even though the floor-lock is actually fine
 # -- a missed run, not a false GREEN on a real regression.
 #
-# SECOND residual, NOT fixable from inside this file (rip-cage-pow0, filed
-# separately -- do not attempt to solve it here): tests/run-host.sh's suite
-# ledger records any exit-0 as PASS and cannot distinguish a genuine pass from
-# this SKIP. At TOTALS level, under the repo's default floor-only build, this
-# probe currently contributes a silent PASS forever. The "SKIP:" marker below
-# is made maximally loud/greppable on stdout as the only mitigation available
-# from this file; the ledger-level fix belongs to rip-cage-pow0.
+# The suite ledger (tests/run-host.sh, rip-cage-pow0) records an exit-0 run
+# whose stdout has a column-0 "SKIP" line and no "PASS" line as SKIP, not PASS.
+# The "SKIP:" markers below are what it keys on, and they are also loud and
+# greppable on stdout.
 CLAUDE_BIN=$(cexec bash -c 'command -v claude' 2>/dev/null || true)
 # A failed read is a FAIL, not a SKIP: a skip on a read error would hide a composed cage.
 if ! CLAUDE_LAUNCH_CMD=$(cexec jq -r '((.tools // []) | map(select(.name == "claude")) | first | .launch) // ""' "$BOOT_DESCRIPTOR" 2>/dev/null); then
@@ -273,9 +270,8 @@ if [[ -z "$CLAUDE_LAUNCH_CMD" ]]; then
   echo "SKIP: ADR-027 D3 -- the DCG floor-lock is an opt-in recipe, not part of the floor image)."
   echo "SKIP: This probe only applies when the claude-recipe is composed into the image"
   echo "SKIP: './rc build' builds. See examples/claude/README.md to opt in."
-  echo "SKIP: NOTE (rip-cage-pow0): this SKIP exits 0 and tests/run-host.sh's suite ledger cannot"
-  echo "SKIP: currently distinguish a SKIP from a PASS at the TOTALS line -- read this stdout"
-  echo "SKIP: marker directly, don't infer composition status from a green suite run."
+  echo "SKIP: NOTE (rip-cage-pow0): this SKIP exits 0; tests/run-host.sh's suite ledger records it"
+  echo "SKIP: as SKIP, not PASS -- read the ledger's SKIP row, not a bare exit code."
   echo "############################################################"
   exit 0
 fi
@@ -296,7 +292,7 @@ if ! cexec test -x /usr/local/lib/rip-cage/bin/dcg-guard; then
   echo "############################################################"
   echo "SKIP: /usr/local/lib/rip-cage/bin/dcg-guard is absent, so managed-settings.json (which the"
   echo "SKIP: dcg recipe installs beside it) is legitimately absent too. See examples/dcg/README.md."
-  echo "SKIP: NOTE (rip-cage-pow0): this SKIP exits 0; read this marker, not the TOTALS line."
+  echo "SKIP: NOTE (rip-cage-pow0): this SKIP exits 0; tests/run-host.sh's ledger records it as SKIP."
   echo "############################################################"
   exit 0
 fi

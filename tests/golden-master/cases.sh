@@ -66,10 +66,9 @@ case_build_bundled() {
 
 
 # --- up --dry-run --output json: all 8 container states --------------------
-# Image present+current for every state (see cases.sh comment above --
-# cli/up.sh:_up_json_output's `warning`-omitting would_create+image-absent branch is the only
-# state where image-absence changes the JSON *shape*; a dedicated case below
-# covers that combination explicitly).
+# Image present+current for every state; the would_create+image-absent
+# combination is covered explicitly by a dedicated case below,
+# case_up_dry_run_json_absent_create_image_absent.
 
 _gm_up_dry_run_state() {
   local state="$1" ws

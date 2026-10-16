@@ -2,12 +2,10 @@
 # tests/run-one.sh — hermetic single-test-file wrapper (rip-cage-w3lq).
 #
 # Bare per-file test runs (`bash tests/test-foo.sh`) are non-hermetic: only
-# the full-suite driver (tests/run-host.sh) builds the benign config sandbox
-# that neutralizes a promoted global config (e.g. a real
-# ~/.config/rip-cage/config.yaml with network.egress.mediator set to
-# something other than "none"). A test that forces egress=off, or otherwise
-# assumes "no config"/"benign config" defaults, can silently misbehave when
-# run bare on a machine with a promoted global. This wrapper builds the SAME
+# the full-suite driver (tests/run-host.sh) builds the config sandbox that
+# points XDG_CONFIG_HOME at a scratch dir, so a test run bare reads the
+# developer's real ~/.config/rip-cage/ (rc build's containment check and the
+# protected-paths resolver both read it). This wrapper builds the SAME
 # sandbox tests/run-host.sh does (via the shared tests/_host-sandbox-lib.sh)
 # around exactly ONE test file, so a single-file red/green cycle is as
 # trustworthy as a full-suite run.

@@ -46,8 +46,8 @@ CONTAINER_NAME=""
 HOST_PROJECTS_DIR=""
 
 # Register-array cleanup shape (incident-hardened, rip-cage-neu7.12): every
-# cage this test creates is tracked here and destroyed via `rc destroy
-# --force` -- never enumerated/pattern-matched (see /tmp/msb-port-canonical.md).
+# cage this test creates is tracked here and destroyed via `rc destroy`
+# -- never enumerated/pattern-matched (see /tmp/msb-port-canonical.md).
 CREATED_CAGES=()
 _track() { CREATED_CAGES+=("$1"); }
 
@@ -210,7 +210,7 @@ else
 fi
 
 # Don't clear CONTAINER_NAME from CREATED_CAGES — the trap cleanup re-attempts
-# `rc destroy --force` on it, which is an idempotent no-op once already destroyed.
+# `rc destroy` on it, which is an idempotent no-op once already destroyed.
 rm -f "$UP_OUT"
 
 echo ""

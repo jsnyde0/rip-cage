@@ -19,14 +19,14 @@
 #
 # Pre-conditions: docker available (image build only); rip-cage:latest built;
 # a running msb cage exists (name passed as RC_TEST_CONTAINER or auto-detected
-# via `rc ls --output json`).
+# from the running msb sandboxes via tests/_cage-lookup-lib.sh).
 #
 # Wired into tests/run-host.sh as NEEDS_CONTAINER per ADR-013.
 #
 # Hard rules (repo lessons):
 #   - FAILURES counter + exit $FAILURES at end; no "fail via prose + exit 0".
 #   - Every absence assertion is gated on a positive sentinel (both runs exited 0).
-#   - set -e is fine here; run-host.sh driver loop does not propagate set -e.
+#   - No set -e (see `set -uo pipefail` below): the FAILURES counter is the verdict.
 
 set -uo pipefail
 

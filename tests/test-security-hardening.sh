@@ -134,8 +134,9 @@ else
     done < <(msb list --format json 2>/dev/null | jq -r '.[] | select(.status == "Running") | .name' 2>/dev/null)
   fi
   # A pinned cage is the operator asserting it is the subject: every reason
-  # the runtime assertions cannot run is a FAIL naming the cage. SKIP is only
-  # for the unpinned no-cage case (and host-only, above).
+  # the runtime assertions cannot run is a FAIL naming the cage. Unpinned, every
+  # not-run reason is a SKIP: no running cage, exec failure, no sudo, stale
+  # image (and host-only, above).
   _pinned_status="" _not_run_reason=""
   if [[ -n "${RC_TEST_CAGE:-}" ]]; then
     _pinned_status=$(msb inspect "$CONTAINER" --format json 2>/dev/null | jq -r '.status // empty' 2>/dev/null || true)

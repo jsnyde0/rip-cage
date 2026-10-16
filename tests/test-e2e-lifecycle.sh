@@ -330,7 +330,6 @@ mkdir -p "${E2E_TMP}/rc"
 TEST_WS="${E2E_TMP}/rc/e2e-test"
 mkdir -p "$TEST_WS"
 
-
 # THE CAGE CONFIG (rip-cage-ely4.7.3). Without one, `rc up` refuses with
 # CAGE_CONFIG_MISSING before touching msb (ADR-031 D2) -- no cage boots, and
 # every check after this one fails on a missing cage rather than on its own
@@ -705,8 +704,7 @@ fi
 # IMPORTANT: the temp HOME means rc up will create fresh config dirs under it. The isolated
 # XDG_CONFIG_HOME/RC_CONFIG_GLOBAL from the a5dk setup above are already exported and take
 # precedence over any $HOME-derived default, so this case still reads the benign fixture, not
-# a real ~/.config/rip-cage/config.yaml under the temp HOME. The workspace is still inside
-# AUTH_TMP.  The pi-seed creates <tmphome>/.pi/agent/auth.json —
+# a real ~/.config/rip-cage/config.yaml under the temp HOME. The pi-seed creates <tmphome>/.pi/agent/auth.json —
 # that is expected and fine.
 _aws5="${AUTH_TMP}/rc-auth/case5"
 _ac5_out="${AUTH_TMP}/case5-up.out"

@@ -40,7 +40,7 @@
 # Coverage:
 #   D1  dead handle: mount listed, host source still a regular file, in-cage
 #       destination dead -> FAIL line naming the destination path + repair
-#       hint ("rc down ... && rc up ...") + the raw helper reports exit 0
+#       hint ("rc up --replace") + the raw helper reports exit 0
 #       (probe failures never abort `rc doctor` itself — matches existing
 #       convention: cmd_doctor only exits non-zero on container-not-found).
 #   D2  healthy single-file mount -> no FAIL false positive (OK line).
@@ -80,8 +80,8 @@
 # Also tests a THIRD pure helper (rip-cage-ebdd, posture-aware auth probe),
 # co-located here because it shares the same msb-stub idiom:
 #   _doctor_format_auth_probe <name> -- doctor-probe auth display string
-#   A1  rc.auth.credential-mounts.claude=none label present -> OK, posture
-#       named informatively (non-possession), not FAIL.
+#   A1  rc.auth.credential-mounts.claude=none label present, neither auth
+#       env var in-cage -> still FAIL (the label is inert, no longer consulted).
 #   A2  CLAUDE_CODE_OAUTH_TOKEN present in-cage, no recognized label -> OK,
 #       posture named informatively, not FAIL.
 #   A3  no label, no CLAUDE_CODE_OAUTH_TOKEN, no credentials file, no

@@ -37,11 +37,10 @@ case "${1:-}" in
     fi
     # msb's status vocabulary: Running/Stopped (cli/lib/msb_runtime.sh's
     # _msb_sandbox_state maps these onto the docker "running"/"exited"
-    # vocabulary this shim's GM_DOCKER_STATE already speaks -- paused/
-    # restarting/removing/dead have no msb analogue, so they're echoed
-    # through as-is and _msb_sandbox_state's own `unknown` catch-all
-    # applies, matching the "container state we can't classify" branches
-    # cmd_up's CONTAINER_STATE_UNSUPPORTED error path exercises).
+    # vocabulary this shim's GM_DOCKER_STATE already speaks -- any other
+    # value (paused/restarting/removing/dead have no msb analogue) is
+    # echoed through as-is, _msb_sandbox_state maps it to `unknown`, and
+    # cmd_up's single catch-all arm fails loud with CONTAINER_STATE_UNSUPPORTED).
     case "${GM_DOCKER_STATE:-}" in
       running) _status="Running" ;;
       exited) _status="Stopped" ;;
