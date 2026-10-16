@@ -1035,51 +1035,14 @@ _up_prepare_environment() {
       local resolved_beads
       resolved_beads=$(realpath "${_path}/${redirect_target}" 2>/dev/null || true)
       if [[ -n "$resolved_beads" && -d "$resolved_beads" ]]; then
-        # rip-cage-p4ss.1: VALIDITY BEFORE A READ-WRITE MOUNT, the same shape
-        # as the worktree gitdir check (_up_detect_worktree). The raw-string
-        # checks above leave "../../.claude" through, and the target is
-        # mounted rw at /workspace/.beads -- host ~/.claude hooks or
-        # ~/.pi/agent extensions writable from the guest. Mounted only when:
-        #   1. its realpath carries no control characters (msb argv is one
-        #      token per line, so a newline would inject mount tokens);
-        #   2. it is a beads dir: named .beads and holding metadata.json;
-        #   3. it is not inside a $HOME dotdir, and no ancestor of ~/.claude
-        #      or ~/.pi.
-        # Any miss is a hard refusal, like the protected-path check below.
-        local _redir_reason="" _home_real
-        _home_real=$(realpath "$HOME" 2>/dev/null) || _home_real="$HOME"
-        if [[ "$resolved_beads" =~ [[:cntrl:]] ]]; then
-          _redir_reason="its resolved path contains control characters"
-        elif [[ "$(basename "$resolved_beads")" != ".beads" || ! -f "${resolved_beads}/metadata.json" ]]; then
-          _redir_reason="${resolved_beads} is not a .beads dir (needs the name .beads and a metadata.json)"
-        elif [[ "$resolved_beads" == "${_home_real}"/.* ]]; then
-          _redir_reason="${resolved_beads} is inside a home dotdir"
-        elif [[ "${_home_real}/.claude" == "$resolved_beads"/* || "${_home_real}/.pi" == "$resolved_beads"/* ]]; then
-          _redir_reason="${resolved_beads} is an ancestor of ~/.claude or ~/.pi"
-        fi
+        # VALIDITY BEFORE A READ-WRITE MOUNT: the target is mounted rw at
+        # /workspace/.beads, so _beads_redirect_refusal (cli/lib/protected_paths.sh,
+        # shared with rc test's beads-host check) must find nothing to refuse.
+        # Any reason is a hard refusal before any msb call.
+        local _redir_reason
+        _redir_reason=$(_beads_redirect_refusal "$resolved_beads")
         if [[ -n "$_redir_reason" ]]; then
           echo "Error: .beads/redirect (${beads_dir}/redirect) is refused: ${_redir_reason}. rc mounts a redirect target read-write into the cage, so it must be a real beads dir outside your home dotdirs. Refusing to launch before any msb call (ADR-024). Point the redirect at the main repo's .beads, or delete it." >&2
-          exit 1
-        fi
-        # Validate resolved path is under an allowed root (ADR-003 D3)
-        # The allowed-roots gate that used to wrap this is gone with the guard
-        # itself (ADR-031 D2); the protected-paths check is what still refuses a
-        # redirect aimed at a credential store.
-        local _beads_pat
-        if _beads_pat=$(_protected_paths_path_match "$resolved_beads"); then
-          _emit_denylist_denial "$resolved_beads" "${_beads_pat}"
-          exit 1
-        fi
-        # rip-cage-ely4.7.17 fix round 4: .beads/redirect is workspace
-        # content (ADR-024 prompt-injection threat model) and this
-        # resolution has no ".."-traversal rejection, only an absolute-path
-        # one -- a redirect target with enough "../" segments can realpath
-        # outside the project tree, including into $HOME or
-        # $XDG_CONFIG_HOME. Same predicate, same hard refusal as the
-        # denylist check just above (this is the fifth D5(a) input, not a
-        # best-effort decoration surface).
-        if _mount_src_exposes_secrets_dir "$resolved_beads"; then
-          echo "Error: .beads/redirect (${beads_dir}/redirect) resolves to ${resolved_beads}, which is or contains $(_protected_paths_secrets_dir) -- the CCTOK secrets directory msb --secret reads the real token value from. Refusing to mount it into the cage (ADR-031 D5(a))." >&2
           exit 1
         fi
         log "Beads: resolved redirect → $resolved_beads"

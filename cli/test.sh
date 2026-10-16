@@ -76,27 +76,11 @@ cmd_test() {
       local redirect_target
       redirect_target=$(cat "${preflight_beads_dir}/redirect")
       if [[ "$redirect_target" != /* ]] && [[ ! "$redirect_target" =~ [[:cntrl:]] ]]; then
-        local resolved_redirect redirect_refusal="" home_real denied_pat
+        local resolved_redirect redirect_refusal
         resolved_redirect=$(realpath "${ws_source}/${redirect_target}" 2>/dev/null || true)
         if [[ -n "$resolved_redirect" && -d "$resolved_redirect" ]]; then
-          # Same predicates, order and wording as cli/up.sh's redirect branch:
-          # the rip-cage-p4ss.1 validity checks, then the protected-paths rule,
-          # then the CCTOK secrets dir. A copy because up.sh keeps them inline
-          # -- change both together.
-          home_real=$(realpath "$HOME" 2>/dev/null) || home_real="$HOME"
-          if [[ "$resolved_redirect" =~ [[:cntrl:]] ]]; then
-            redirect_refusal="its resolved path contains control characters"
-          elif [[ "$(basename "$resolved_redirect")" != ".beads" || ! -f "${resolved_redirect}/metadata.json" ]]; then
-            redirect_refusal="${resolved_redirect} is not a .beads dir (needs the name .beads and a metadata.json)"
-          elif [[ "$resolved_redirect" == "${home_real}"/.* ]]; then
-            redirect_refusal="${resolved_redirect} is inside a home dotdir"
-          elif [[ "${home_real}/.claude" == "$resolved_redirect"/* || "${home_real}/.pi" == "$resolved_redirect"/* ]]; then
-            redirect_refusal="${resolved_redirect} is an ancestor of ~/.claude or ~/.pi"
-          elif denied_pat=$(_protected_paths_path_match "$resolved_redirect"); then
-            redirect_refusal="${resolved_redirect} matched secret-path denylist pattern '${denied_pat}'"
-          elif _mount_src_exposes_secrets_dir "$resolved_redirect"; then
-            redirect_refusal="${resolved_redirect} is or contains $(_protected_paths_secrets_dir), the CCTOK secrets directory"
-          fi
+          # The rule rc up refuses to launch on, from its one home.
+          redirect_refusal=$(_beads_redirect_refusal "$resolved_redirect")
           if [[ -n "$redirect_refusal" ]]; then
             preflight_skip_line="FAIL [0] beads-host-dolt — .beads/redirect (${preflight_beads_dir}/redirect) is refused: ${redirect_refusal}. rc up refuses to launch with it; point the redirect at the main repo's .beads, or delete it."
           else

@@ -251,6 +251,44 @@ _mount_src_exposes_secrets_dir() {
 }
 
 # --------------------------------------------------------------------------
+# _beads_redirect_refusal RESOLVED_TARGET
+#
+# The one home of the .beads/redirect refusal rule. RESOLVED_TARGET is the
+# realpath of an explicit redirect that resolved to an existing directory.
+# Echo why rc refuses to mount it, or nothing when it may be mounted. Always
+# returns 0; the caller frames the reason (rc up refuses to launch, rc test
+# reports a FAIL line).
+#
+# The target would be mounted READ-WRITE at /workspace/.beads, and the
+# redirect file is workspace content (ADR-024), so "../../.claude" must never
+# reach host ~/.claude hooks. Checked in this order, first hit wins:
+#   1. the realpath carries no control characters (msb argv is one token per
+#      line, so a newline would inject mount tokens) -- rip-cage-p4ss.1;
+#   2. it is a beads dir: named .beads and holding metadata.json;
+#   3. it is not inside a $HOME dotdir, and no ancestor of ~/.claude or ~/.pi;
+#   4. no component matches the protected-paths list;
+#   5. it does not expose the CCTOK secrets dir (ADR-031 D5(a)).
+# --------------------------------------------------------------------------
+_beads_redirect_refusal() {
+  local _target="$1" _home_real _pat
+  _home_real=$(realpath "$HOME" 2>/dev/null) || _home_real="$HOME"
+  if [[ "$_target" =~ [[:cntrl:]] ]]; then
+    echo "its resolved path contains control characters"
+  elif [[ "$(basename "$_target")" != ".beads" || ! -f "${_target}/metadata.json" ]]; then
+    echo "${_target} is not a .beads dir (needs the name .beads and a metadata.json)"
+  elif [[ "$_target" == "${_home_real}"/.* ]]; then
+    echo "${_target} is inside a home dotdir"
+  elif [[ "${_home_real}/.claude" == "$_target"/* || "${_home_real}/.pi" == "$_target"/* ]]; then
+    echo "${_target} is an ancestor of ~/.claude or ~/.pi"
+  elif _pat=$(_protected_paths_path_match "$_target"); then
+    echo "${_target} matched secret-path denylist pattern '${_pat}'"
+  elif _mount_src_exposes_secrets_dir "$_target"; then
+    echo "${_target} is or contains $(_protected_paths_secrets_dir) -- the CCTOK secrets directory msb --secret reads the real token value from"
+  fi
+  return 0
+}
+
+# --------------------------------------------------------------------------
 # _protected_paths_conf_outside_mounts CONF_FILE
 #
 # Refuse (non-zero, reason on stderr) when the cage config file itself resolves
