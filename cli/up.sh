@@ -3430,10 +3430,12 @@ cmd_up() {
   # are globals (not `local`) so _up_prepare_docker_mounts can read them below.
   # The global label stays unchanged (byte-identical to today); the two
   # per-tool labels are emitted unconditionally alongside it (D5a) so resume
-  # can detect a per-tool mount-shape flip. The claude one is now a constant:
-  # its switch went with the mount it gated (rip-cage-ely4.7.10), and readers
-  # of the label — cli/doctor.sh, the cc-managed-settings probes — keep the
-  # value they already expect.
+  # can detect a per-tool mount-shape flip. The claude one is the constant
+  # "none": its switch went with the mount it gated (rip-cage-ely4.7.10), so
+  # no Claude credentials file is ever mounted and the label says so. Readers
+  # that gate possession-only checks on it (test-claude-concurrency.sh, the
+  # cc-managed-settings probes) take "none" as non-possession; cli/doctor.sh
+  # no longer reads it (rip-cage-b8kd.45).
   _UP_CREDENTIAL_MOUNTS="real"
   _UP_CRED_MOUNTS_PI="real"
   # auth.credential_mounts / auth.per_tool retired with the schema
@@ -3443,7 +3445,7 @@ cmd_up() {
   # on the wire and the guest holds only the placeholder, which is a stronger
   # posture than suppressing the mount ever was (ADR-029 D3/D5).
   _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts=${_UP_CREDENTIAL_MOUNTS}")
-  _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts.claude=real")
+  _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts.claude=none")
   _UP_RUN_ARGS+=(--label "rc.auth.credential-mounts.pi=${_UP_CRED_MOUNTS_PI}")
 
   # The rc.config-mode and rc.config-loaded labels are gone with the file they

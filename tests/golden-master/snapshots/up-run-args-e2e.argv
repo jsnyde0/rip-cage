@@ -9,7 +9,7 @@ rc.source.path=<TEST_HOME>/workspace
 --label
 rc.auth.credential-mounts=real
 --label
-rc.auth.credential-mounts.claude=real
+rc.auth.credential-mounts.claude=none
 --label
 rc.auth.credential-mounts.pi=real
 --label
