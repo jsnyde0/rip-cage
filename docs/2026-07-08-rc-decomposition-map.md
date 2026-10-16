@@ -70,7 +70,7 @@ pass** — keep the whole up constellation in one `cli/up.sh`.
    reference, not return. Split them across files and one helper that `local`-shadows or fails to
    re-declare an array = silent behavior change. **Keep the entire up-block in one file.** Other
    cross-file globals: `OUTPUT_FORMAT` (111 refs), `DRY_RUN` (shim→up/destroy/reload),
-   **`RC_VALIDATE_WARNING` written by `validate_path` [lib/path] and read by `cmd_up`** (classic
+   **`RC_VALIDATE_WARNING` written by `validate_path` [lib/path] and read by `cmd_up`** *(retired: reader deleted in `c7b47e7`, writer in `50e336a`)* (classic
    write→read trap), `WS_CONFIG_HOSTILE_*`, `IMAGE`/`RIP_CAGE_IMAGE_REGISTRY`/`RC_VERSION`.
 2. **Cross-verb helpers → MUST be lib/, not a verb module.** `_load_effective_config` (41 sites:
    build-denylist/up/reload/allowlist); `_manifest_check_ioc_egress` (build/up/reload); the
@@ -104,7 +104,7 @@ invoked as the verb), setup **~0 direct**.
 6. **up↔reload seam** (`_up_reload_*` up-defined/reload-consumed) — exactly where a source-order split
    regresses; needs an explicit seam test.
 7. **`RC_VALIDATE_WARNING` write→read seam** (validate_path → up json output) — assert it propagates
-   end-to-end after the path/up split.
+   end-to-end after the path/up split. *(Retired: reader deleted in `c7b47e7`, writer in `50e336a`; no such seam at HEAD.)*
 
 **Caveat:** internal-helper "tested by name" is presence-based (overcounts — a name in a comment
 counts). Every one of the 193 names appears somewhere in `tests/`, which is NOT the same as

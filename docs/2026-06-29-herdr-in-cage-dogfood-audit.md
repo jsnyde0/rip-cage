@@ -6,6 +6,8 @@
 
 > **Evidence discipline:** Claims marked **[verified]** were observed directly via `rc exec` against a live cage (`personal-resume`, built from this repo's `rc build`, image `rip-cage:latest`, 2026-06-29). Claims marked **[source]** come from reading repo files. Claims marked **[inferred — verify]** are second-hand or deduced and should be checked before acting.
 
+> **Retired pointers (2026-10-16):** this report predates the msb era. At HEAD `rc exec` and `rc down` are gone (live verbs: `up`, `auth`, `doctor`, `build`, `test`, `destroy`; see `rc --help`), the global `tools.yaml` and `.rip-cage.yaml` (`session.multiplexer`) are replaced by the per-project msb config at `~/.config/rip-cage/projects/<cage>.yaml`, and `examples/herdr/manifest-fragment.yaml` is now `examples/herdr/boot-fragment.json`. Read the commands below as history.
+
 ---
 
 ## 0. What was done (the dogfood)

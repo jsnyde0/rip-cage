@@ -92,6 +92,8 @@ summary and never assembles the argv. TWO tests, both load-bearing:
 (fails loud if the lift-to-lib-vs-depend-on-up.sh boundary is unresolved). Behavioral: `rc reload <name>`
 against a docker-exec shim, assert `_up_resolve_egress_rules` ran (writes per-cage egress cache, rc:3748+).
 
+> **Retired (2026-10-16):** `RC_VALIDATE_WARNING` and `test-up-validate-warning-seam.sh` no longer exist; the reader was deleted in `c7b47e7` after the allowed-roots guard left (`50e336a`), so nothing writes or reads this seam at HEAD.
+
 **(iii) `RC_VALIDATE_WARNING` write→read seam.** `validate_path` (→lib/path) writes it; `_up_json_output`
 reads it into JSON `warning`. **Reachability preconditions (F3):** the rc:4542 write is env-file-gated
 (rc:4534 `[[ -n "$env_file" ]]`) and NOT hit by a no-env-file dry-run — only the rc:601 write fires, so
@@ -128,7 +130,7 @@ spurious `exit 3` that inverts the test's conclusion.
 `generate-dockerfile` (`test-generate-dockerfile.sh`), `setup` (`test-rc-setup.sh`, incl. idempotency),
 `attach`/`exec` error-path matrix (extend existing), `manifest reconcile` verb
 (`test-manifest-reconcile-verb.sh`, incl. backup-before-overwrite), `install` (`test-rc-install.sh`),
-up↔reload seam (§3ii), `RC_VALIDATE_WARNING` seam (§3iii). All container-free except live attach/exec
+up↔reload seam (§3ii), `RC_VALIDATE_WARNING` seam (§3iii; retired, see the note at §3iii). All container-free except live attach/exec
 bodies and the reload behavioral case (docker-exec shim).
 
 ## 5. Boundary validation (confirm the lib-vs-module cut — the map's cut is a PROPOSAL)

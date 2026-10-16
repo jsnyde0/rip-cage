@@ -113,7 +113,7 @@ cage/iptables; NC=no is strict denylist membership only.
 | test-security-hardening.sh | dot-env symlink + allowed-roots + denylist (host-side path validation; no real docker) | :22-26 symlink-outside-roots | no | yes | no |
 | test-skill-manifest-author.sh | repo-shipped skill well-formed + cm example passes _manifest_validate (host-only) | :2-6 "skill is well-formed" | no | yes | no |
 | test-symlink-follow.sh | mounts.symlinks scanner + denylist gating (ADR-023; host-side; mount-arg synth re-platforms — note) | :5-10 "_collect_dangling_symlinks" | **yes** | yes | no |
-| test-up-validate-warning-seam.sh | RC_VALIDATE_WARNING write-to-read seam (host-side validate_path to json) | :2-5 "validate_path to _up_json_output seam" | no | yes | no |
+| test-up-validate-warning-seam.sh | RC_VALIDATE_WARNING write-to-read seam (host-side validate_path to json) [retired: file deleted; reader gone in c7b47e7] | :2-5 "validate_path to _up_json_output seam" | no | yes | no |
 | test-workspace-trust.sh | workspace settings.json base-URL redirect validator (ADR-024 injection defense, host-side) | :2,:11 "base-URL redirect validator; no Docker" | no | yes | no |
 | test-worktree-support.sh | git worktree detection (host-side source grep over cli/up.sh) | :6-9 "worktree-detection source" | no | yes | no |
 | test_skill_server.py | skill-server.py MCP shim units (KEEP §B: skill substrate) | :3 "skill-server.py - MCP shim" | no | yes | no |

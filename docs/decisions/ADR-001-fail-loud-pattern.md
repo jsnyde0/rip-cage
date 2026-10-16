@@ -22,10 +22,12 @@ This pattern is borrowed from Mapular's ADR-001 (fail-loud error handling), whic
 
 Specific behaviors:
 
-- **Legacy containers** (missing `rc.egress` label on resume) — error out with a message pointing to `rc destroy && rc up`. Do not guess the intended egress mode.
-- **Image/script drift** — if an expected script is absent inside the container, surface the underlying `docker exec` error verbatim rather than swallowing it.
-- **Unknown states** — `docker inspect` returning an unexpected status, or a label with an unrecognized value, must abort with a clear message, not default silently. This applies to `cmd_up`'s state switch: `paused`, `restarting`, `removing`, and `dead` must fail loud with actionable hints, not fall through to the "create new container" branch where they produce a confusing name-conflict error.
-- **Inventory surfaces name the problem** — listing commands (`cmd_ls`) must annotate containers that would fail loud on resume (missing or invalid `rc.egress` label) rather than rendering a blank column. Operators should not have to probe via `rc up` to discover that a container is legacy.
+- **Legacy containers** — *retired.* This bullet required a missing `rc.egress` label on resume to error out; the label and its mode check were deleted with the in-cage egress engine (`cae1811`), and msb's default-deny egress is set by the project config, not a cage label. The general rule (a missing or unrecognized label aborts rather than defaults) lives on in the *Unknown states* bullet below.
+- **Image/script drift** — if an expected script is absent inside the container, surface the underlying exec error verbatim rather than swallowing it.
+- **Unknown states** — a sandbox state the launcher does not recognise, or a label with an unrecognized value, must abort with a clear message, not default silently. This applies to `cmd_up`'s state switch: msb reports only Running or Stopped, `_msb_sandbox_state` maps anything else to `unknown`, and the switch's catch-all arm fails loud (`CONTAINER_STATE_UNSUPPORTED`) with the `msb inspect` and `rc destroy && rc up` hints rather than falling through to the create branch.
+
+  > **Evolved 2026-10-16 (rip-cage-b8kd.24.3, removed in `755b2a3`).** This bullet used to name Docker container states (`paused`, `restarting`, `removing`, `dead`, `created`) with a dedicated fail-loud branch each. Under msb those states cannot be emitted, so the branches were unreachable and were deleted; the single catch-all arm carries the fail-loud guarantee.
+- **Inventory surfaces name the problem** — *retired with `rc ls`* (the CLI thinned to six verbs in `1caeddd`). The intent survives in `rc doctor`, which names a cage's problems rather than rendering a blank field.
 - **Errors are actionable** — every fail-loud message includes the concrete command the user should run next.
 
 ### Exceptions
