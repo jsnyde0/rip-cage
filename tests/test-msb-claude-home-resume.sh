@@ -37,7 +37,8 @@
 # Builds two disposable scratch claude homes (mktemp -d) seeded with minimal
 # non-token claude.json fields. Auth rides msb --secret CCTOK, the one shipped
 # auth mechanism (docs/reference/auth.md): the guest holds only $MSB_CCTOK.
-# Both scratch homes are verified to sit outside the real ~/.claude.
+# At the end, every real ~/.claude file changed during the run is read back for
+# the planted codewords, and both scratch homes are verified to sit outside it.
 #
 # NEEDS_CONTAINER + NEEDS_MSB + a resolvable CCTOK (the host env var, or the
 # secrets/CCTOK file `rc auth` checks). Manual-only live run. Self-skips (exit 0, SKIP: ...) when any prerequisite is missing --
@@ -98,12 +99,14 @@ SBX_A="xuy8-resume-a-$$"
 SBX_B="xuy8-resume-b-$$"
 SCRATCH_A=""
 SCRATCH_B=""
+SAFETY_STAMP=""
 
 cleanup() {
   msb remove -f "$SBX_A" >/dev/null 2>&1 || true
   msb remove -f "$SBX_B" >/dev/null 2>&1 || true
   [[ -n "$SCRATCH_A" ]] && rm -rf "$SCRATCH_A"
   [[ -n "$SCRATCH_B" ]] && rm -rf "$SCRATCH_B"
+  [[ -n "$SAFETY_STAMP" ]] && rm -f "$SAFETY_STAMP"
 }
 trap cleanup EXIT
 
@@ -134,6 +137,11 @@ NET_RULES=(
 
 CODEWORD_A="XUY8POSITIVE-$$-${RANDOM}"
 CODEWORD_B="XUY8NEGATIVE-$$-${RANDOM}"
+
+# SAFETY baseline: every file under the real ~/.claude modified after this
+# stamp is read back at the end for the planted codewords. The host's own
+# Claude sessions may write there meanwhile; only a codeword hit is a leak.
+SAFETY_STAMP=$(mktemp)
 
 # ===========================================================================
 # SCENARIO A -- fix present: _seed_claude_home_dirs pre-creates projects/
@@ -268,9 +276,21 @@ else
 fi
 
 # ===========================================================================
-# Safety: real host ~/.claude was never touched.
+# Safety: real host ~/.claude never received any cage-side session state.
 # ===========================================================================
 echo ""
+if [[ -d "${HOME}/.claude" ]]; then
+  SAFETY_CHANGED=$(find "${HOME}/.claude" -type f -newer "$SAFETY_STAMP" 2>/dev/null | wc -l | tr -d ' ')
+  SAFETY_HITS=$(find "${HOME}/.claude" -type f -newer "$SAFETY_STAMP" -print0 2>/dev/null \
+    | xargs -0 grep -lF -e "$CODEWORD_A" -e "$CODEWORD_B" 2>/dev/null)
+  if [[ -z "$SAFETY_HITS" ]]; then
+    pass "SAFETY: no planted codeword reached the real ~/.claude (${SAFETY_CHANGED} file(s) there changed during the run; none carries one)"
+  else
+    fail "SAFETY: a planted codeword reached the real ~/.claude" "$SAFETY_HITS"
+  fi
+else
+  pass "SAFETY: no real ~/.claude exists on this host, so none was written"
+fi
 REAL_CLAUDE_DIR=$(cd "${HOME}/.claude" 2>/dev/null && pwd -P)
 _SAFE=1
 for _s in "$SCRATCH_A" "$SCRATCH_B"; do
