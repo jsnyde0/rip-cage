@@ -34,9 +34,11 @@ Usage:
   scripted-attach.py [--wait-seconds N] [-- herdr-args...]
 
 Exit status: 0 once the client has been attached, waited on, and detached.
-Non-zero only if the pty/exec setup itself fails (never for "restore hasn't
-happened yet" -- this script has no way to observe herdr's internal restore
-state; it only provides the client-attach trigger S4 proved is necessary).
+Non-zero if the client could not start or exited non-zero on its own before
+the wait window ended (the exec-failure case exits 127); never for "restore
+hasn't happened yet" -- this script has no way to observe herdr's internal
+restore state; it only provides the client-attach trigger S4 proved is
+necessary.
 """
 import fcntl
 import os
@@ -79,11 +81,9 @@ def main(argv):
 
     pid, fd = pty.fork()
     if pid == 0:
-        # Child: exec the real herdr TUI client under the new pty. Any exec
-        # failure exits the child immediately; the parent's read loop below
-        # sees EOF/OSError and moves on to the detach step (fail-soft: this
-        # script cannot itself confirm herdr's restore fired, only that it
-        # provided the attach trigger).
+        # Child: exec the real herdr TUI client under the new pty. An exec
+        # failure exits the child with 127; the parent's read loop below sees
+        # EOF/OSError, reaps the child, and returns its non-zero status.
         try:
             os.execvp(client_args[0], client_args)
         finally:
@@ -114,6 +114,7 @@ def main(argv):
     # tests/test-herdr-scripted-attach.sh T4 against a silent stub client).
     # select() with an explicit timeout is what actually bounds the wait.
     deadline = time.time() + wait_seconds
+    client_gone = False
     while True:
         remaining = deadline - time.time()
         if remaining <= 0:
@@ -125,9 +126,27 @@ def main(argv):
         try:
             chunk = os.read(fd, 4096)
             if not chunk:
+                client_gone = True
                 break
         except OSError:
+            client_gone = True
             break
+
+    # The client ended on its own before the wait window did: its exit status
+    # is the answer. A failed exec (127) or a client crash must reach the boot
+    # hook's warning, not vanish.
+    if client_gone:
+        _, status = os.waitpid(pid, 0)
+        code = os.waitstatus_to_exitcode(status)
+        if code != 0:
+            print(
+                f"[herdr-scripted-attach] ERROR: client {client_args[0]!r} "
+                f"exited early with status {code}",
+                file=sys.stderr,
+            )
+            return code if code > 0 else 1
+        print("[herdr-scripted-attach] client exited 0 before detach", file=sys.stderr)
+        return 0
 
     # Detach: terminate the scripted client. Restored pane processes survive
     # this detach (S4 spike finding) -- only the CLIENT dies, never the panes

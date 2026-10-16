@@ -12,10 +12,10 @@
 
 set -uo pipefail
 
-PGBIN="${RC_PG_BIN:-/usr/lib/postgresql/17/bin}"
+PGBIN=/usr/lib/postgresql/17/bin
 PGHOST=127.0.0.1
-PGPORT="${RC_PG_PORT:-5432}"
-PGSUPERUSER="${RC_PG_SUPERUSER:-postgres}"
+PGPORT=5432
+PGSUPERUSER=postgres
 SMOKE_DB=rc_pgvector_smoke
 
 PASS=0
@@ -55,10 +55,10 @@ fi
 # ---------------------------------------------------------------------------
 # 3. The bootstrap database the launcher creates exists.
 # ---------------------------------------------------------------------------
-if psql_super -tAc "SELECT 1 FROM pg_database WHERE datname='${RC_PG_DB:-test}';" | grep -q '^1$'; then
-  ok "bootstrap database '${RC_PG_DB:-test}' exists"
+if psql_super -tAc "SELECT 1 FROM pg_database WHERE datname='test';" | grep -q '^1$'; then
+  ok "bootstrap database 'test' exists"
 else
-  bad "bootstrap database '${RC_PG_DB:-test}' missing"
+  bad "bootstrap database 'test' missing"
 fi
 
 # ---------------------------------------------------------------------------

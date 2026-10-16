@@ -34,11 +34,13 @@
 
 set -euo pipefail
 
-PGDATA="${RC_PG_DATA:-/var/lib/rip-cage-daemon/postgres-pgvector}"
-PGBIN="${RC_PG_BIN:-/usr/lib/postgresql/17/bin}"
-PGPORT="${RC_PG_PORT:-5432}"
-PGDB="${RC_PG_DB:-test}"
-PGSUPERUSER="${RC_PG_SUPERUSER:-postgres}"
+# Fixed values, not overrides: the boot descriptor's health probe and smoke.sh hardcode
+# the same port, user, database and paths, so a changed value here would desync them.
+PGDATA=/var/lib/rip-cage-daemon/postgres-pgvector
+PGBIN=/usr/lib/postgresql/17/bin
+PGPORT=5432
+PGDB=test
+PGSUPERUSER=postgres
 
 log() { echo "[postgres-pgvector] $*"; }
 
