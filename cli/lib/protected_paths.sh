@@ -403,6 +403,12 @@ _protected_paths_enforce() {
   while IFS=$'\t' read -r _host _guest _mode; do
     [[ -z "${_host}" ]] && continue
 
+    # Normalise the source's trailing slashes (rip-cage-rsh9.3): leg (b) strips
+    # "${_host}/" off each finding, and a source written proj/ or proj// made
+    # that pattern never match, so every cover was silently skipped.
+    while [[ "${_host}" == */ && "${_host}" != "/" ]]; do _host="${_host%/}"; done
+    local _prefix="${_host%/}/"
+
     # --- (a) refuse a DIRECT mount of a listed path ------------------------
     # Component-equals against the resolved host path, so a symlink pointing
     # at ~/.ssh is caught as surely as the literal path. rc refuses before any
@@ -436,8 +442,13 @@ _protected_paths_enforce() {
 
     while IFS= read -r _found; do
       [[ -z "${_found}" ]] && continue
-      _rel="${_found#"${_host}"/}"
-      [[ "${_rel}" == "${_found}" ]] && continue   # not under the mount; skip
+      _rel="${_found#"${_prefix}"}"
+      if [[ "${_rel}" == "${_found}" ]]; then
+        # find walked ${_host}, so every finding is under it. A strip failure
+        # means the cover target is unknown: refuse, never skip (fail closed).
+        echo "Error: the cage config ${_conf} mounts ${_host}, and rc found the protected path ${_found} but could not place it under that mount to cover it. Refusing to launch rather than leaving it exposed (ADR-031 D2, fail closed). Check that mount line's source path." >&2
+        return 1
+      fi
 
       _skip=false
       for _ancestor in ${_dir_covered[@]+"${_dir_covered[@]}"}; do

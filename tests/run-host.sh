@@ -780,6 +780,7 @@ _run_all_tests() {
   run_test "${SCRIPT_DIR}/test-code-review-fixes.sh"
   run_test "${SCRIPT_DIR}/test-dg6.2.sh"
   run_test "${SCRIPT_DIR}/test-protected-paths-ro-mount.sh"   # rip-cage-dnwv: a protected FILE inside a read-only mount is refused naming the file and mount (msb cannot bind a file cover there); dir covers and rw covers unchanged; sources protected_paths.sh, host-only
+  run_test "${SCRIPT_DIR}/test-protected-paths-trailing-slash.sh"   # rip-cage-rsh9.3: proj, proj/ and proj// mount sources emit identical protected-path covers, and a cover-target strip failure refuses instead of skipping; sources protected_paths.sh, host-only
   run_test "${SCRIPT_DIR}/test-worktree-gitdir-validity.sh"   # rip-cage-qyer: a workspace .git file's gitdir mounts its main .git rw only if it is a real git dir, not protected, and links back to this workspace; else warn-and-skip; fake docker+msb, host-only
   run_test "${SCRIPT_DIR}/test-up-dry-run-pure.sh"   # rip-cage-47gy: rc up --dry-run never saves/loads/creates even when docker and msb disagree; positive control + scratch-copy red check; fake docker+msb, host-only
   run_test "${SCRIPT_DIR}/test-up-resource-flags.sh"   # rip-cage-g3ey: config cpus:/memory: reach msb; rc passes --cpus/--memory only when given, create + converge paths; fake docker+msb, host-only
