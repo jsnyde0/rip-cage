@@ -113,36 +113,50 @@ if echo "$SUDOERS_LINE" | grep -q 'npm install'; then
   fail "sudoers still contains npm install"
 fi
 
-# --- Test 5: Runtime sudoers verification (requires running container) ---
+# --- Test 5: Runtime sudoers verification (requires a running cage) ---
+# Cages are msb sandboxes: find one with msb and drive it with `msb exec`.
+# RC_TEST_CAGE pins the cage; otherwise the first RUNNING sandbox carrying
+# rc's rc.source.path label is used. Skipped under --host-only (RC_HOST_ONLY),
+# which must not exec into whatever cage happens to be up on the host.
 echo ""
-echo "-- Test 5: runtime sudoers denies unsafe chown (skip if no container) --"
-CONTAINER=$(docker ps --filter label=rc.source.path --format '{{.Names}}' 2>/dev/null | head -1)
-if [[ -z "$CONTAINER" ]]; then
-  echo "  SKIP: no running rip-cage container"
+echo "-- Test 5: runtime sudoers denies unsafe chown (skip if no running cage) --"
+if [[ -n "${RC_HOST_ONLY:-}" ]]; then
+  echo "  SKIP (host-only): runtime sudoers check needs a live cage"
 else
-  # Verify the container is properly initialized (has sudo)
-  if ! docker exec "$CONTAINER" which sudo >/dev/null 2>&1; then
+  CONTAINER="${RC_TEST_CAGE:-}"
+  if [[ -z "$CONTAINER" ]] && command -v msb >/dev/null 2>&1; then
+    while IFS= read -r _sbx; do
+      [[ -z "$_sbx" ]] && continue
+      if [[ -n "$(msb inspect "$_sbx" --format json 2>/dev/null | jq -r '.config.labels["rc.source.path"] // empty' 2>/dev/null)" ]]; then
+        CONTAINER="$_sbx"
+        break
+      fi
+    done < <(msb list --format json 2>/dev/null | jq -r '.[] | select(.status == "Running") | .name' 2>/dev/null)
+  fi
+  if [[ -z "$CONTAINER" ]]; then
+    echo "  SKIP: no running rip-cage container"
+  elif ! msb exec "$CONTAINER" -- which sudo >/dev/null 2>&1; then
     echo "  SKIP: container $CONTAINER not fully initialized (no sudo)"
   else
-    CONTAINER_IMAGE=$(docker inspect "$CONTAINER" --format '{{.Image}}' 2>/dev/null)
-    LATEST_IMAGE=$(docker image inspect rip-cage:latest --format '{{.Id}}' 2>/dev/null)
+    CONTAINER_IMAGE=$(msb inspect "$CONTAINER" --format json 2>/dev/null | jq -r '.config.manifest_digest // empty' 2>/dev/null)
+    LATEST_IMAGE=$(msb image list --format json 2>/dev/null | jq -r '.[] | select(.reference == "rip-cage:latest") | .digest' 2>/dev/null | head -1)
     echo "  Testing against container: $CONTAINER"
     if [[ -n "$LATEST_IMAGE" ]] && [[ "$CONTAINER_IMAGE" != "$LATEST_IMAGE" ]]; then
-      echo "  SKIP: container uses stale image (rebuild with: rc destroy && rc up)"
+      echo "  SKIP: container does not run msb's current rip-cage:latest (rebuild with: rc build && rc up --replace)"
     else
       # Should be denied: chown on safety-stack binary.
       # Denial manifests as either an explicit sudoers rejection or a password
       # prompt (since the path is outside the NOPASSWD allowlist). Either way
       # sudo exits non-zero without performing the chown — use -n (non-interactive)
       # so a password prompt is surfaced as a clean refusal rather than hanging.
-      dcg_out=$(docker exec "$CONTAINER" sudo -n chown agent:agent /usr/local/bin/dcg 2>&1) && dcg_rc=0 || dcg_rc=$?
+      dcg_out=$(msb exec "$CONTAINER" -- sudo -n chown agent:agent /usr/local/bin/dcg 2>&1) && dcg_rc=0 || dcg_rc=$?
       if [[ "$dcg_rc" -ne 0 ]] && echo "$dcg_out" | grep -qi 'not allowed\|sorry\|permission\|password\|terminal'; then
         pass "runtime: sudo chown on /usr/local/bin/dcg denied"
       else
         fail "runtime: sudo chown on /usr/local/bin/dcg was NOT denied (rc=$dcg_rc, out=$dcg_out)"
       fi
       # Should succeed: chown on allowed path
-      if docker exec "$CONTAINER" sudo chown agent:agent /home/agent/.claude 2>/dev/null; then
+      if msb exec "$CONTAINER" -- sudo -n chown agent:agent /home/agent/.claude 2>/dev/null; then
         pass "runtime: sudo chown on /home/agent/.claude allowed"
       else
         fail "runtime: sudo chown on /home/agent/.claude denied"
