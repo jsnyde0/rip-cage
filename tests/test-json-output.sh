@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-if ! command -v docker > /dev/null 2>&1; then
-  echo "SKIP: Docker not available -- skipping $(basename "$0")"
-  exit 0
-fi
 set -uo pipefail
 
 # Tests for --output json flag on the rc CLI
@@ -89,7 +85,12 @@ echo "=== Test 8: check_docker emits DOCKER_DAEMON_UNREACHABLE in JSON ==="
 # Use `rc doctor --host` (which is bounded by RC_DOCKER_PREFLIGHT_TIMEOUT) as
 # the precondition probe — a direct `docker info` here would hang against a
 # wedged daemon, defeating the very class of bug this test guards against.
-if ! "$RC" --output json doctor --host >/dev/null 2>&1; then
+# Needs a real docker CLI whose daemon is down: without the CLI, check_docker
+# emits DOCKER_NOT_INSTALLED instead, so docker's absence skips this case only.
+# (T9 runs against its own fake-docker shim and needs no real docker.)
+if ! command -v docker >/dev/null 2>&1; then
+  echo "SKIP: docker CLI not installed, cannot test DOCKER_DAEMON_UNREACHABLE path"
+elif ! "$RC" --output json doctor --host >/dev/null 2>&1; then
   up_docker_err=$("$RC" --output json up /tmp 2>&1) || true
   if echo "$up_docker_err" | jq -e '.code == "DOCKER_DAEMON_UNREACHABLE"' >/dev/null 2>&1; then
     pass "daemon-unreachable returns JSON error with DOCKER_DAEMON_UNREACHABLE code"

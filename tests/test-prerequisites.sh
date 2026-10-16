@@ -314,7 +314,10 @@ chmod +x "$FAKE_MSB_BIN/msb"
 # Both need an arg, but the msb check runs first.
 for cmd in destroy test; do
   output=$(PATH="$FAKE_MSB_BIN:$PATH" "$RC" $cmd 2>&1 || true)
-  if echo "$output" | grep -qi "msb"; then
+  # Exact check_msb message for a reachable-but-failing msb
+  # (cli/lib/msb_runtime.sh:43; fake msb above exits 1). A bare "msb" grep also
+  # matched cli/lib/container.sh's later "(is msb running?)" error.
+  if echo "$output" | grep -qF "Error: msb is not reachable (msb --version exited 1)."; then
     pass "msb check for 'rc $cmd'"
   else
     fail "msb check for 'rc $cmd'" "$output"

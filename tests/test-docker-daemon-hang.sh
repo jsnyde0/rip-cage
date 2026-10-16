@@ -121,20 +121,20 @@ fi
 echo ""
 echo "=== Test 3: rc doctor --host (human) against wedged daemon ==="
 output=$(PATH="$HANG_BIN:$PATH" "$RC" doctor --host 2>&1 || true)
-if echo "$output" | grep -qi "daemon"; then
-  pass "doctor --host: output mentions 'daemon'"
+# Pin the exact lines cli/doctor.sh prints for a wedged daemon. The "Scope:"
+# line (doctor.sh:126) mentions "daemon" unconditionally, so a bare word grep
+# passes even when no daemon check ran.
+# RC_DOCKER_PREFLIGHT_TIMEOUT=1 above -> ${_t} is 1.
+daemon_line=$(echo "$output" | grep '^Daemon:' || true)
+if [[ "$daemon_line" == "Daemon:       FAIL — daemon unresponsive (no reply within 1s; likely wedged)" ]]; then
+  pass "doctor --host: Daemon line is 'FAIL — daemon unresponsive (no reply within 1s; likely wedged)' (cli/doctor.sh:38,128)"
 else
-  fail "doctor --host: should mention 'daemon'" "$output"
+  fail "doctor --host: Daemon line should be the wedged-daemon FAIL status" "$daemon_line"
 fi
-if echo "$output" | grep -qi "FAIL"; then
-  pass "doctor --host: explicitly marks FAIL"
+if echo "$output" | grep -qxF "Remedy: 'orb restart' (OrbStack) or restart Docker Desktop, then retry."; then
+  pass "doctor --host: includes the docker-daemon Remedy line (cli/doctor.sh:137)"
 else
-  fail "doctor --host: should mark FAIL on wedge" "$output"
-fi
-if echo "$output" | grep -qi "remedy"; then
-  pass "doctor --host: includes actionable Remedy line"
-else
-  fail "doctor --host: should include Remedy line" "$output"
+  fail "doctor --host: should include the docker-daemon Remedy line" "$output"
 fi
 
 # -----------------------------------------------
