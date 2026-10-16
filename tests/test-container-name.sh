@@ -238,8 +238,7 @@ test_t2_disambiguation_fires() {
 }
 
 # ===========================================================================
-# T3 — per-cage state volumes are KEYED ON THE CAGE NAME, so two colliding
-# projects cannot share them.
+# T3 — every named volume is KEYED ON THE CAGE NAME, so no two cages share one.
 #
 # RE-POINTED TWICE by rip-cage-ely4.9, and the second move is the honest one.
 # This case used to read volume flags out of _up_prepare_docker_mounts. rc no
@@ -253,10 +252,14 @@ test_t2_disambiguation_fires() {
 # So the assertion lands on the shipped template, which is where the keying
 # decision now lives. This is NOT a restatement of T2: T2 proves rc derives
 # distinct NAMES, and this proves the template spends those names on the
-# volumes, which is the step that makes the state actually separate. The
-# regression it catches is real and quiet — a template edit that hardcodes
-# `rc-state-cage` would give every project one shared state volume, and
-# nothing else in the suite would notice.
+# volumes, which is the step that makes the state actually separate.
+#
+# The mise toolchain cache joined the keyed set with rip-cage-p4ss.2 (ADR-015
+# D2 evolved): one writable cache shared by every cage let any cage replace a
+# tool binary that every later cage ran. The check renders the template for two
+# cage names, the way an operator fills it in, and requires the two rendered
+# volume sets to be disjoint — so a template edit that reintroduces ANY shared
+# volume (rc-mise-cache, or a new one) fails here, not just the three named.
 # ===========================================================================
 test_t3_distinct_state_history_volumes() {
   local template="${REPO_ROOT}/share/rip-cage/cage.yaml.template"
@@ -269,17 +272,20 @@ test_t3_distinct_state_history_volumes() {
   local state_keyed history_keyed mise_keyed
   state_keyed=$(grep -c 'named: "rc-state-<CAGE-NAME>"' "$template" || true)
   history_keyed=$(grep -c 'named: "rc-history-<CAGE-NAME>"' "$template" || true)
-  # rc-mise-cache is deliberately NOT keyed: a package cache is safe to share
-  # across cages and re-downloading it per project is pure waste. Asserting its
-  # ABSENCE from the keyed set is what stops this check from passing by a blanket
-  # "every volume has a placeholder" rule that would miss the real distinction.
   mise_keyed=$(grep -c 'named: "rc-mise-cache-<CAGE-NAME>"' "$template" || true)
 
-  if [[ "$state_keyed" -gt 0 && "$history_keyed" -gt 0 && "$mise_keyed" -eq 0 ]]; then
-    pass "T3" "template keys rc-state/rc-history on the cage name; rc-mise-cache stays shared"
+  # Render for two cages and collect each one's named volumes.
+  local vols_a vols_b shared
+  vols_a=$(sed 's#<CAGE-NAME>#proj-a#g' "$template" | sed -n 's/^ *- named: "\(.*\)"$/\1/p' | sort -u)
+  vols_b=$(sed 's#<CAGE-NAME>#proj-b#g' "$template" | sed -n 's/^ *- named: "\(.*\)"$/\1/p' | sort -u)
+  shared=$(comm -12 <(printf '%s\n' "$vols_a") <(printf '%s\n' "$vols_b") | tr '\n' ' ')
+
+  if [[ "$state_keyed" -gt 0 && "$history_keyed" -gt 0 && "$mise_keyed" -gt 0 \
+        && -n "$vols_a" && -z "${shared// /}" ]]; then
+    pass "T3" "template keys rc-state/rc-history/rc-mise-cache on the cage name; two rendered cages share no volume"
   else
     fail "T3" "per-cage volume keying in the shipped template" \
-      "state_keyed=$state_keyed history_keyed=$history_keyed mise_keyed=$mise_keyed template=$template"
+      "state_keyed=$state_keyed history_keyed=$history_keyed mise_keyed=$mise_keyed shared='${shared}' template=$template"
   fi
 }
 

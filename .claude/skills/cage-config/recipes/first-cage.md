@@ -57,8 +57,9 @@ Now fill in every `<ANGLE-BRACKET>` placeholder. There are two kinds:
   on macOS a `/tmp` or `/var` path is one.
 - **`<ABSOLUTE_PATH_TO_YOUR_HOME>`** → `echo $HOME`. It appears on several
   lines; replace all of them.
-- **`<CAGE-NAME>`** → the `$CAGE` value, in the two per-cage named volumes.
-  `rc-mise-cache` is deliberately shared across cages — leave it alone.
+- **`<CAGE-NAME>`** → the `$CAGE` value, in all three named volumes. The mise
+  cache is per cage too: a shared one would let one cage swap a tool binary
+  every other cage runs (ADR-015 D2).
 
 Then make two decisions the template cannot make for you:
 

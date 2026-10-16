@@ -84,7 +84,7 @@ Adding an allowlist host recreates the cage. The host mounts of
 session come back rather than vanish with it. **The config owns these two
 lines; rc does not add them.** Delete them and a recreate loses the session
 (`rc up` warns, naming the line to restore). Named volumes (`rc-state-*`,
-`rc-history-*`, `rc-mise-cache`) survive too. The guest's own scratch does not.
+`rc-history-*`, `rc-mise-cache-*`) survive too. The guest's own scratch does not.
 
 Full list and what each one buys:
 [`references/mount-set.md`](references/mount-set.md).

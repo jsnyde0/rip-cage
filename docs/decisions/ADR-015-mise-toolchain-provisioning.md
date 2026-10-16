@@ -31,7 +31,7 @@ Mise (formerly `rtx`) is installed into the base image as a single binary at `/u
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **Mise as plumbing (this decision)** | Reads standard project files; zero per-project rip-cage config for common cases; shared cache; multi-language | One more pinned dependency in the image; not a solution for non-runtime needs (apt packages) |
+| **Mise as plumbing (this decision)** | Reads standard project files; zero per-project rip-cage config for common cases; cached installs (per cage, D2); multi-language | One more pinned dependency in the image; not a solution for non-runtime needs (apt packages) |
 | Bake all toolchains into the image | Zero runtime cost; offline-friendly | Bloat (100s of MB per language × versions); one version per language is wrong for most projects; doesn't scale |
 | `.rip-cage/bootstrap.sh` per project | Maximally flexible; covers apt + arbitrary binaries | Auto-executes on every `rc up` before agent runs; no shared caching without per-project work; duplicative; new trust-boundary risk |
 | asdf | Same ecosystem; long-standing | Shell-plugin architecture (slower activation, bash/zsh-only); mise supersedes it for our use |
@@ -41,28 +41,31 @@ Mise (formerly `rtx`) is installed into the base image as a single binary at `/u
 
 **What would invalidate this:** Mise going unmaintained (unlikely near-term; ~20k stars, active jdx stewardship); or a sustained pattern of projects needing non-runtime provisioning (apt packages, custom binaries) that dwarfs the runtime case — at which point Option 2 (`bootstrap.sh`) becomes the primary mechanism and mise becomes secondary. Revisit.
 
-### D2: Shared Docker named volume for the mise data dir
+### D2: One mise cache volume per cage
 
 **Firmness: FIRM**
 
-A single `rc-mise-cache` named volume is mounted at `/home/agent/.local/share/mise` in every rip-cage container, across every project on the host. Toolchain downloads are paid once per (tool, version) and reused forever.
+> **Evolved 2026-10-16 (rip-cage-p4ss.2, human ruling via brain:rip-cage).** This decision used to be ONE `rc-mise-cache` volume shared read-write by every cage on the host and kept past `rc destroy`. The isolation review (`docs/2026-10-03-isolation-boundary-review.md`) showed that shared volume is a persistent cross-cage channel: any cage — including one steered by injected instructions (ADR-024) — can replace `installs/<tool>/<v>/bin/<tool>` or a shim, and every later cage of every project puts it on its PATH. It survived destroy, recreate and image rebuild, outside every per-project mount and the protected-paths check. Confirmed live: under the shared name, a second cage saw a file the first planted (`tests/test-mise-cache-isolation-live.sh`, run red against the old template). "Content-addressable, so sharing is safe" held only for honest writers. Accepted cost: each cage pays its own first download, and disk grows per cage.
 
-- Volume name: `rc-mise-cache` (literal, not `${container}`-suffixed — unlike `rc-state-${name}` and `rc-history-${name}`).
-- Populated by mise on first use; keyed by content (tool + version).
-- **Not** deleted by `rc destroy`. `rc destroy` is per-container; the cache is host-scoped. Manual reset via `docker volume rm rc-mise-cache` when needed.
+Each cage gets its own mise data volume, `rc-mise-cache-<cage>`, mounted at `/home/agent/.local/share/mise`. No writable tool cache is shared between cages.
 
-**Rationale:** Without a shared cache, every container pays the download cost independently and the overall pattern is slower than the status quo `npx --yes`. The content-addressable nature of the mise install dir makes sharing safe — two containers installing node@22.11.0 produce byte-identical trees. Named volume (rather than bind-mount) keeps it on the Docker side, avoids host FS pollution, and doesn't require user-visible paths.
+- Declared in the cage config (`share/rip-cage/cage.yaml.template`), keyed on the cage name exactly like `rc-state-<cage>` and `rc-history-<cage>`: the operator substitutes `<CAGE-NAME>` once for all three.
+- Populated by mise on first use in that cage. It survives stop, resume and `rc up --replace`, so a download is paid once per (cage, tool, version).
+- **Deleted by `rc destroy`** with the cage's other two volumes. A config still naming the old shared `rc-mise-cache` keeps booting; `rc destroy` never touches that shared volume. After renaming the line, remove it with `msb volume remove rc-mise-cache`.
+
+**Rationale:** The cache exists so that an `rc up` does not pay 30s–2min of downloads. Per-cage keeps that for the common loop — one project, many resumes and recreates — and gives up only cross-project reuse, which is exactly the sharing that let one cage's write become another cage's code.
 
 **Alternatives considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
-| **Shared named volume, host-scoped (this decision)** | One download per (tool, version); survives container destroy; no host FS pollution | Requires manual reset for corruption; growth unbounded without GC |
-| Per-container named volume (pattern of `rc-state-${name}`) | Trivial cleanup | Repeats every download per container; defeats the point |
-| Bind-mount to `~/.cache/rip-cage-mise` on host | Visible in host FS; trivial inspection | Platform-coupled perms (Docker Desktop on macOS = slow); noise in host HOME |
-| No cache, fresh install per container | Simplest | Every `rc up` takes 30s-2min; the failure mode we're supposedly fixing |
+| **Per-cage named volume (this decision)** | No cross-cage write path; reaped with the cage; same keying as the other two volumes | Every cage pays its own first download; disk per cage |
+| Shared read-write named volume, host-scoped (the pre-2026-10-16 decision) | One download per (tool, version), host-wide | Persistent cross-cage compromise channel; survives destroy |
+| Shared volume, read-only at runtime, populated at build time | Cross-project reuse with no write path | Needs a build-time populate step per tool set; a runtime `mise install` of an undeclared version fails |
+| `mise --locked` checksum verification on use | Keeps the share | Covers only tools with lockfile checksums; shims and plugins stay writable |
+| No cache, fresh install per boot | Simplest | Every `rc up` takes 30s–2min |
 
-**What would invalidate this:** Disk pressure on the host such that the unbounded cache becomes a problem. Mitigation then is `rc mise-cache-gc` / manual `docker volume rm` with a rebuild policy. Not worth pre-building.
+**What would invalidate this:** Per-cage download time or disk use becoming a sustained complaint. The next step then is the read-only, build-time-populated shared cache — never a writable share.
 
 ### D3: `init-rip-cage.sh` runs `mise install` when workspace declares a toolchain
 
@@ -122,7 +125,5 @@ If it's added later, the shape should be:
 
 ## Deferred
 
-- **`rc mise-cache-gc` command.** A convenience to prune stale versions from `rc-mise-cache`. Not needed until disk pressure becomes a real complaint.
 - **Offline / air-gapped mode.** The cache enables offline reuse of already-downloaded versions, but there's no pre-seed mechanism for workstations that never had internet. Edge case; tracked separately if it ever matters.
-- **Per-project override of the shared cache.** Some teams may want per-project mise caches for isolation. Possible via an `rc up --mise-cache=<name>` flag later; not worth pre-building.
 - **Non-runtime provisioning (apt, custom binaries).** See D5 — deferred to a future `bootstrap.sh` ADR if demand materializes.

@@ -96,10 +96,11 @@ This is the tool for "the config says X, is the cage actually X?".
 
 Named volumes are separate objects with their own lifecycle. **`msb remove`
 does not delete them** — that is why `rc destroy` removes the sandbox and then
-deletes `rc-state-<cage>` and `rc-history-<cage>` explicitly.
+deletes `rc-state-<cage>`, `rc-history-<cage>` and `rc-mise-cache-<cage>`
+explicitly.
 
-`rc-mise-cache` is deliberately shared across cages; do not delete it to clean
-up after one.
+An older config may still name one shared `rc-mise-cache`. Rename that line to
+`rc-mise-cache-<cage>`, then `msb volume remove rc-mise-cache` (ADR-015 D2).
 
 ---
 

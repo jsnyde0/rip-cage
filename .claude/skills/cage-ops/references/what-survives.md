@@ -34,8 +34,7 @@ live-mutation path, so there is no hot reload to reach for.
 | the workspace | it is a host mount |
 | the Claude session | the `~/.claude/projects` and `~/.claude/sessions` mounts |
 | host skills, the host Claude config | mounts, read-only |
-| `rc-state-<cage>`, `rc-history-<cage>` | named volumes outlive the sandbox |
-| `rc-mise-cache` | named volume, shared across cages |
+| `rc-state-<cage>`, `rc-history-<cage>`, `rc-mise-cache-<cage>` | named volumes outlive the sandbox |
 
 **Lost:** the guest's own ephemeral rootfs scratch. In practice: a package you
 `apt-get install`ed at runtime that was never baked into the image and sits on
@@ -81,7 +80,7 @@ deleted the only cage on a machine, volumes and all.
 | Will destroy lose my Claude conversation? | No — transcripts live on host mounts |
 | Will destroy lose my shell history? | Yes — that volume goes |
 | Can I hot-reload a network rule? | No. `rc up --replace` is the only path |
-| Is `rc-mise-cache` safe to delete? | It is shared; every cage re-downloads its toolchains |
+| Will destroy lose my installed toolchains? | Yes — `rc-mise-cache-<cage>` goes with the cage |
 
 ---
 

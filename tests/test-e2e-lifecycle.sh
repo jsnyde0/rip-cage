@@ -296,7 +296,7 @@ CLEANUP() {
   [[ -n "$DCG_TMP"  ]] && rm -rf "$DCG_TMP"
   [[ -n "$MISE_TMP" ]] && rm -rf "$MISE_TMP"
   [[ -n "$GLOBAL_CFG_TMP" ]] && rm -rf "$GLOBAL_CFG_TMP"
-  # NOTE: do NOT remove rc-mise-cache -- it is host-scoped (ADR-015 D2)
+  # Per-cage rc-mise-cache-<cage> volumes go with `rc destroy` (ADR-015 D2).
 }
 trap CLEANUP EXIT
 
@@ -1146,7 +1146,7 @@ fi
 #
 # Each sub-test spins up a dedicated cage so the workspace's tool-version files
 # (not the main TEST_WS) drive mise.
-# The rc-mise-cache volume is host-scoped (ADR-015 D2) — not cleaned up here.
+# Each cage carries its own rc-mise-cache-<cage> volume (ADR-015 D2); rc destroy reaps it.
 #
 # msb-native finding (not present in the docker-era version): under Docker,
 # these sub-tests passed `RIP_CAGE_EGRESS=off`, which disabled ALL egress
@@ -1171,21 +1171,25 @@ MISE_TMP=$(_host_scratch_mktemp_d mise)
 MISE_TMP_RESOLVED=$(realpath "$MISE_TMP")
 mkdir -p "${MISE_TMP}/rc-mise"
 
-# _mise_conf_for <workspace> <host...> -- cage_conf_for plus the shared mise
+# _mise_conf_for <workspace> <host...> -- cage_conf_for plus the per-cage mise
 # cache volume the shipped template carries (share/rip-cage/cage.yaml.template:
-# named rc-mise-cache at /home/agent/.local/share/mise, host-scoped by design,
-# ADR-015 D2). The bare fixture declares no named volumes, so check 27's whole
-# subject -- a second cage reusing the first's downloads -- had nothing to hit.
+# named rc-mise-cache-<cage> at /home/agent/.local/share/mise, ADR-015 D2 as
+# evolved by rip-cage-p4ss.2). The bare fixture declares no named volumes, so
+# check 27's whole subject -- a second cage NOT seeing the first's cache -- had
+# nothing to hit. The cage name comes from rc's own container_name(), as
+# tests/_cage-conf-lib.sh does, so `rc destroy` reaps exactly this volume.
 # Inserted after the workspace mount line rather than duplicating the template
 # here, so the fixture keeps tracking cage_conf_for.
 _mise_conf_for() {
   local _mw="$1"; shift
-  local _mc
+  local _mc _mname
+  _mname=$(bash -c "source '${RC}' 2>/dev/null; container_name \"\$(cd '$_mw' && pwd -P)\"") || return 1
+  [[ -n "$_mname" ]] || return 1
   _mc=$(cage_conf_for "$_mw" "$IMAGE" "$@") || return 1
-  awk '
+  awk -v vol="rc-mise-cache-${_mname}" '
     { print }
     /:\/workspace"$/ && !done {
-      print "  - named: \"rc-mise-cache\""
+      print "  - named: \"" vol "\""
       print "    target: /home/agent/.local/share/mise"
       print "    create: ensure-exists"
       done = 1
@@ -1229,24 +1233,20 @@ else
   fi
 fi
 
-# Check 27: mise cache reuse — re-run mise install against the same workspace on
-# a fresh container; cache hit should be fast (<5000ms). Warn-only on slow hit.
-if [[ -n "$_nvmrc_container" ]]; then
-  _d_out=$("$RC" destroy "$_nvmrc_container" 2>&1)
-  _d_rc=$?
-  if [[ "$_d_rc" -ne 0 ]]; then
-    echo "WARNING: failed to destroy '$_nvmrc_container' (exit ${_d_rc}): ${_d_out}" >&2
-  fi
+# Check 27: mise cache isolation (rip-cage-p4ss.2, ADR-015 D2 evolved) -- cage A
+# plants a file in its mise data dir; a second cage B, up while A still
+# stands, must not see it. A shared writable cache is the cross-cage channel
+# this closes: whatever A drops there, B would put on its PATH.
+_plant_ok=0
+if [[ -n "$_nvmrc_container" ]] \
+    && msb exec "$_nvmrc_container" -- bash -c 'touch ~/.local/share/mise/PLANT-p4ss2' >/dev/null 2>&1; then
+  _plant_ok=1
 fi
 
 _cache_ws="${MISE_TMP}/rc-mise/cache-test"
 mkdir -p "$_cache_ws"
 printf '20.18.0\n' > "${_cache_ws}/.nvmrc"
 git -C "$_cache_ws" init > /dev/null 2>&1
-# Same allowlist as the nvmrc workspace above -- without it, a real cache
-# miss would fail CLOSED on a DNS deny fast enough to slip under the
-# <5000ms threshold, making this check a false positive (fast failure
-# mistaken for a fast cache hit).
 RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${DCG_TMP_RESOLVED}:${MISE_TMP_RESOLVED}" \
   RC_CAGE_CONF="$(_mise_conf_for "$_cache_ws" nodejs.org mise-versions.jdx.dev)" \
   "$RC" up "$_cache_ws" < /dev/null > /tmp/rc-e2e-mise-cache-up.out 2>&1 || true
@@ -1254,26 +1254,31 @@ _cache_resolved=$(realpath "$_cache_ws")
 _cache_container=$(_find_cage_by_source_path "$_cache_resolved")
 _track_cage "$_cache_container"
 
-if [[ -z "$_cache_container" ]]; then
-  check "mise: cache reuse — second install fast (<5000ms) (ADR-015 D2)" "fail" \
+if [[ "$_plant_ok" -ne 1 ]]; then
+  check "mise: a second cage does not see the first cage's mise cache (ADR-015 D2)" "fail" \
+    "could not plant in cage A '${_nvmrc_container:-<none>}'"
+elif [[ -z "$_cache_container" ]]; then
+  check "mise: a second cage does not see the first cage's mise cache (ADR-015 D2)" "fail" \
     "container did not start (see /tmp/rc-e2e-mise-cache-up.out)"
 else
-  mise_elapsed=$(msb exec "$_cache_container" -- bash -c \
-    'start=$(date +%s%3N); cd /workspace && mise install >/dev/null 2>&1; end=$(date +%s%3N); echo $((end - start))' 2>/dev/null || echo "9999")
-  if [[ "$mise_elapsed" -lt 5000 ]]; then
-    check "mise: cache reuse — second install fast (<5000ms) (ADR-015 D2)" "pass" \
-      "elapsed=${mise_elapsed}ms"
+  _plant_seen=$(msb exec "$_cache_container" -- bash -c \
+    'test -e ~/.local/share/mise/PLANT-p4ss2 && echo seen || echo absent' 2>/dev/null | tail -1)
+  if [[ "$_plant_seen" == "absent" ]]; then
+    check "mise: a second cage does not see the first cage's mise cache (ADR-015 D2)" "pass" \
+      "PLANT in ${_nvmrc_container} absent in ${_cache_container}"
   else
-    # Warn-only: cache volumes may not be present in all CI environments.
-    check "mise: cache reuse — second install fast (<5000ms) (ADR-015 D2)" "pass" \
-      "WARN: slow cache hit ${mise_elapsed}ms (>5000ms threshold; cache volume may be absent)"
-  fi
-  _d_out=$("$RC" destroy "$_cache_container" 2>&1)
-  _d_rc=$?
-  if [[ "$_d_rc" -ne 0 ]]; then
-    echo "WARNING: failed to destroy '$_cache_container' (exit ${_d_rc}): ${_d_out}" >&2
+    check "mise: a second cage does not see the first cage's mise cache (ADR-015 D2)" "fail" \
+      "cage B ${_cache_container} reported '${_plant_seen:-<empty>}' for cage A's PLANT"
   fi
 fi
+for _mc_cage in "$_nvmrc_container" "$_cache_container"; do
+  [[ -n "$_mc_cage" ]] || continue
+  _d_out=$("$RC" destroy "$_mc_cage" 2>&1)
+  _d_rc=$?
+  if [[ "$_d_rc" -ne 0 ]]; then
+    echo "WARNING: failed to destroy '$_mc_cage' (exit ${_d_rc}): ${_d_out}" >&2
+  fi
+done
 
 # Check 28: mise provisions yarn via packageManager field in package.json (ADR-015 D3)
 _yarn_ws="${MISE_TMP}/rc-mise/yarn-test"

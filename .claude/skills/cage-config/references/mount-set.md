@@ -34,7 +34,7 @@ reason.
 | `<home>/.claude.json:ro` | the host Claude config | in-cage Claude has no config to seed from |
 | `rc-state-<cage>` → `/home/agent/.claude-state` | cage-local agent state | state resets each recreate |
 | `rc-history-<cage>` → `/commandhistory` | shell history | history resets each recreate |
-| `rc-mise-cache` → `/home/agent/.local/share/mise` | toolchain cache, **shared across cages** | every cage re-downloads its runtimes |
+| `rc-mise-cache-<cage>` → `/home/agent/.local/share/mise` | toolchain cache, per cage | runtimes re-download each recreate |
 
 **The two Claude session mounts are the ones people drop and regret.** They are
 what makes "add a host, recreate, keep working" a two-minute interruption

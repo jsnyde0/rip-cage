@@ -17,11 +17,11 @@
 #
 # msb behavioral fact (migration spike): `msb remove` has NO volume-
 # deletion flag -- a cage's named volumes (rc-state-<name>,
-# rc-history-<name>) SURVIVE `msb remove` alone. `cmd_destroy`'s destroy
-# policy (mirroring the pre-migration docker behavior it replaces, which
-# explicitly ran `docker volume rm` per volume) therefore ALSO calls the
-# distinct `_msb_volume_remove` primitive per volume -- never assumes
-# removing the sandbox cleans its volumes.
+# rc-history-<name>, rc-mise-cache-<name>) SURVIVE `msb remove` alone.
+# `cmd_destroy`'s destroy policy (mirroring the pre-migration docker
+# behavior it replaces, which explicitly ran `docker volume rm` per volume)
+# therefore ALSO calls the distinct `_msb_volume_remove` primitive per
+# volume -- never assumes removing the sandbox cleans its volumes.
 
 
 # THE CONFIRM PROMPT AND `--force` ARE BOTH GONE (ADR-031 D3, ruled
@@ -78,7 +78,8 @@ cmd_destroy() {
     # nothing to destroy. Fail loud here (before any confirmation/dry-run
     # prompt), same as the original "container not found" short-circuit.
     if ! msb volume inspect "rc-state-${name}" >/dev/null 2>&1 \
-        && ! msb volume inspect "rc-history-${name}" >/dev/null 2>&1; then
+        && ! msb volume inspect "rc-history-${name}" >/dev/null 2>&1 \
+        && ! msb volume inspect "rc-mise-cache-${name}" >/dev/null 2>&1; then
       [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container not found: $name" "CONTAINER_NOT_FOUND"
       # Same refusal shape as an unresolvable name (rip-cage-ely4.7.13): say
       # which cages are still standing, so a typo reads as a typo rather than
@@ -96,11 +97,11 @@ cmd_destroy() {
   if [[ "$DRY_RUN" == "true" ]]; then
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       jq -nc --arg name "$name" --arg action "would_destroy" --argjson dry_run true \
-        --arg vol1 "rc-state-$name" --arg vol2 "rc-history-$name" \
-        '{dry_run: $dry_run, name: $name, action: $action, volumes_removed: [$vol1, $vol2]}'
+        --arg vol1 "rc-state-$name" --arg vol2 "rc-history-$name" --arg vol3 "rc-mise-cache-$name" \
+        '{dry_run: $dry_run, name: $name, action: $action, volumes_removed: [$vol1, $vol2, $vol3]}'
     else
       echo "Would remove container $name"
-      echo "Would remove volumes: rc-state-$name, rc-history-$name"
+      echo "Would remove volumes: rc-state-$name, rc-history-$name, rc-mise-cache-$name"
     fi
     return 0
   fi
@@ -119,11 +120,13 @@ cmd_destroy() {
   fi
   # `msb remove` (above) does NOT delete named volumes (no volume-deletion
   # flag on that command — a separate finding from the migration spike, see
-  # this file's own header comment). Explicitly delete this cage's two
+  # this file's own header comment). Explicitly delete this cage's three
   # named volumes via the distinct `msb volume remove` primitive, mirroring
-  # the pre-migration docker destroy policy this replaces.
+  # the pre-migration docker destroy policy this replaces. A cage whose config
+  # still names the old shared rc-mise-cache just warns that its own
+  # rc-mise-cache-<name> was not found; the shared volume is never touched.
   local volumes_removed=()
-  for vol in "rc-state-${name}" "rc-history-${name}"; do
+  for vol in "rc-state-${name}" "rc-history-${name}" "rc-mise-cache-${name}"; do
     if [[ "$OUTPUT_FORMAT" == "json" ]]; then
       if _msb_volume_remove "$vol" >/dev/null 2>/dev/null; then
         volumes_removed+=("$vol")

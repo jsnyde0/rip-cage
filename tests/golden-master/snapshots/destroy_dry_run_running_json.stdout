@@ -1,1 +1,1 @@
-{"dry_run":true,"name":"some-cage","action":"would_destroy","volumes_removed":["rc-state-some-cage","rc-history-some-cage"]}
+{"dry_run":true,"name":"some-cage","action":"would_destroy","volumes_removed":["rc-state-some-cage","rc-history-some-cage","rc-mise-cache-some-cage"]}

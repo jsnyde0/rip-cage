@@ -100,12 +100,12 @@ mounts:
   - named: "rc-history-<cage-name>"
     target: /commandhistory
     create: ensure-exists
-  - named: "rc-mise-cache"
+  - named: "rc-mise-cache-<cage-name>"
     target: /home/agent/.local/share/mise
     create: ensure-exists
 ```
 
-`create: ensure-exists` makes the volume during `msb create`, so a fresh machine needs no setup step. The per-cage volumes carry the cage name; the mise cache is deliberately shared across cages. These survive a recreate. `rc destroy` removes only the two per-cage volumes, `rc-state-<cage-name>` and `rc-history-<cage-name>` (`msb remove` alone would orphan them); every other named volume — the shared `rc-mise-cache`, or any your config adds — outlives it: list with `msb volume list`, remove with `msb volume remove <name>`.
+`create: ensure-exists` makes the volume during `msb create`, so a fresh machine needs no setup step. All three volumes carry the cage name; no writable cache is shared between cages ([ADR-015](../decisions/ADR-015-mise-toolchain-provisioning.md) D2). They survive a recreate. `rc destroy` removes exactly these three, `rc-state-<cage-name>`, `rc-history-<cage-name>` and `rc-mise-cache-<cage-name>` (`msb remove` alone would orphan them); every other named volume your config adds outlives it: list with `msb volume list`, remove with `msb volume remove <name>`. An older config naming one shared `rc-mise-cache`: rename the line, then `msb volume remove rc-mise-cache`.
 
 ### Secret covers
 

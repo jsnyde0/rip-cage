@@ -70,15 +70,16 @@ mounts:
   # --- named volumes (map form) ------------------------------------------
   # State msb owns rather than the host filesystem. `create: ensure-exists`
   # makes the volume during `msb create`, so a fresh machine needs no setup.
-  # Substitute your cage name for <CAGE-NAME> in the two per-cage volumes;
-  # rc-mise-cache is deliberately shared across cages.
+  # Substitute your cage name for <CAGE-NAME> in all three volumes. The mise
+  # toolchain cache is per cage too: a cache shared between cages would let one
+  # cage replace a tool binary that every other cage then runs (ADR-015 D2).
   - named: "rc-state-<CAGE-NAME>"
     target: /home/agent/.claude-state
     create: ensure-exists
   - named: "rc-history-<CAGE-NAME>"
     target: /commandhistory
     create: ensure-exists
-  - named: "rc-mise-cache"
+  - named: "rc-mise-cache-<CAGE-NAME>"
     target: /home/agent/.local/share/mise
     create: ensure-exists
 
