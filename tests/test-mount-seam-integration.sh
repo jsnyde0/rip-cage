@@ -497,7 +497,7 @@ test_se_tier2_composed_cage_suite() {
   pass "SE build: manifest/default-tools.yaml build succeeded — fresh+cold composed image"
 
   # Bring up the cage.
-  local se_ws_base se_ws se_ws_resolved
+  local se_ws_base se_ws
   se_ws_base=$(mktemp -d "${TMPDIR:-/tmp}/rc-se-XXXXXX")
   _SE_TMPDIRS+=("$se_ws_base")
   mkdir -p "${se_ws_base}/rc"
@@ -507,12 +507,10 @@ test_se_tier2_composed_cage_suite() {
   git -C "$se_ws" init --quiet 2>/dev/null || true
   git -C "$se_ws" config user.email "test@example.com" 2>/dev/null || true
   git -C "$se_ws" config user.name "Test" 2>/dev/null || true
-  se_ws_resolved=$(realpath "$se_ws_base")
 
   local se_container se_up_out se_up_rc
   se_up_rc=0
-  se_up_out=$(RC_ALLOWED_ROOTS="$se_ws_resolved" \
-    RC_MANIFEST_GLOBAL="${se_manifest_home}/.config/rip-cage/tools.yaml" \
+  se_up_out=$(RC_MANIFEST_GLOBAL="${se_manifest_home}/.config/rip-cage/tools.yaml" \
     RC_IMAGE="$_SE_IMAGE_TAG" \
     "${RC}" --output json up "$se_ws" 2>&1) || se_up_rc=$?
 

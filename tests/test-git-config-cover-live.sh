@@ -62,7 +62,6 @@ mkdir -p "$HOME/.claude/projects" "$HOME/.claude/sessions" "$HOME/.claude/skills
 echo '{}' > "$HOME/.claude.json"
 [[ -e "${REAL_HOME}/.docker" ]] && ln -sfn "${REAL_HOME}/.docker" "${HOME}/.docker"
 unset CCTOK
-export RC_ALLOWED_ROOTS="$T"
 
 WS="${T}/ws"; OTHER="${T}/other"; REMOTE="${T}/remote.git"
 for _r in "$WS" "$OTHER"; do

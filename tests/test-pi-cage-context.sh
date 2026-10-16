@@ -211,7 +211,7 @@ TEST_WS=$(mktemp -d)
 # ---- Bring up the container ----
 echo ""
 echo "=== Bringing up container (rc up) ==="
-RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
+RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS" </dev/null >/dev/null 2>&1 || true
 
 CONTAINER=$(_resolve_container "$TEST_WS")
 if [[ -z "$CONTAINER" ]]; then
@@ -338,7 +338,7 @@ if [[ -d "$PI_AGENT_DIR" ]]; then
 fi
 
 TEST_WS2=$(mktemp -d)
-RC_ALLOWED_ROOTS="$TEST_WS2" RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS2" </dev/null >/dev/null 2>&1 || true
+RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS2" </dev/null >/dev/null 2>&1 || true
 
 # Restore the pi agent dir immediately after rc up
 if [[ -d "$PI_AGENT_BACKUP_TMP" ]]; then

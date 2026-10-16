@@ -77,7 +77,7 @@ export GIT_CONFIG_GLOBAL
 
 # shellcheck disable=SC2120 # "$@" is a deliberate general-purpose passthrough (unused by this file's current call sites)
 run_rc_up() {
-  XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_ALLOWED_ROOTS="$WS" GIT_CONFIG_GLOBAL="$GIT_CONFIG_GLOBAL" \
+  XDG_CONFIG_HOME="${TEST_HOME}/.config" GIT_CONFIG_GLOBAL="$GIT_CONFIG_GLOBAL" \
     "$RC" --output json up "$WS" "$@"
 }
 

@@ -4,7 +4,7 @@
 #
 # Mirrors tests/run-host.sh's driver-level sandbox idiom (RC_CONFIG_GLOBAL /
 # XDG_CONFIG_HOME pointing at a fixture config+manifest pair) and the
-# per-test HOME/XDG_CONFIG_HOME/RC_ALLOWED_ROOTS sandbox used throughout
+# per-test HOME/XDG_CONFIG_HOME sandbox used throughout
 # tests/test-credential-mounts.sh and tests/test-image-drift-resume.sh.
 #
 # Fixed scratch root (NOT mktemp): a golden master must be byte-identical
@@ -107,7 +107,7 @@ YAML
 # gm_capture VERB [ARGS...] — invoke the real `rc` under the sandbox env +
 # content-keyed docker/uname shims, writing stdout/stderr/exit into
 # GM_OUT/GM_ERR/GM_EXIT (globals, overwritten each call). stdin is /dev/null
-# unless GM_STDIN names a file. RC_ALLOWED_ROOTS defaults to GM_WS.
+# unless GM_STDIN names a file.
 GM_OUT="" GM_ERR="" GM_EXIT=0
 gm_capture() {
   local _outfile _errfile
@@ -155,7 +155,6 @@ gm_capture() {
   for _leak_var in $(compgen -e 2>/dev/null | grep -E '^(RC_|RIP_CAGE_)' || true); do
     _env_unset+=(-u "$_leak_var")
   done
-  _env+=("RC_ALLOWED_ROOTS=${GM_ALLOWED_ROOTS:-$GM_WS}")
   [[ -n "${GM_SHELL_OVERRIDE+x}" ]] && _env+=("SHELL=${GM_SHELL_OVERRIDE}")
   [[ -n "${GM_CONFIG_GLOBAL:-}" ]] && _env+=("RC_CONFIG_GLOBAL=${GM_CONFIG_GLOBAL}")
   # Forward every currently-set GM_DOCKER_*/GM_MSB_* configuration var to

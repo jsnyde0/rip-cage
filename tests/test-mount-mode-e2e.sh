@@ -165,7 +165,7 @@ _spin_up_cage() {
   up_log=$(mktemp)
   # The per-cage HOME / XDG override existed only to isolate the fixture
   # manifest, and goes with it -- and so does the MSB_HOME workaround, which
-  # existed only to undo that override. RC_ALLOWED_ROOTS goes too: ADR-031 D2
+  # existed only to undo that override. The allowed-roots variable goes too: ADR-031 D2
   # deleted the allowed-roots guard. What the cage mounts is in --conf now.
   RC_CAGE_CONF="$conf" "${RC}" up "${ws}" </dev/null >"$up_log" 2>&1 || true
 

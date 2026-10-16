@@ -130,7 +130,6 @@ test_A_pi_mounts_emitted() {
   mount_args=$(
     HOME="$TEST_HOME" \
     XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    RC_ALLOWED_ROOTS="${TEST_WS}" \
     bash -c "
       source '$RC' 2>/dev/null
       _UP_RUN_ARGS=()
@@ -219,7 +218,6 @@ YAML
   mount_args=$(
     HOME="$TEST_HOME" \
     XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    RC_ALLOWED_ROOTS="${TEST_WS}" \
     bash -c "
       source '$RC' 2>/dev/null
       _UP_RUN_ARGS=()
@@ -347,7 +345,6 @@ test_B_pi_denylist_warn_and_skip() {
     HOME="$resolved_home" \
     XDG_CONFIG_HOME="${resolved_home}/.config" \
     RC_CONFIG_GLOBAL="${resolved_home}/.config/rip-cage/config.yaml" \
-    RC_ALLOWED_ROOTS="${TEST_WS}" \
     bash -c "
       source '$RC' 2>/dev/null
       _UP_RUN_ARGS=()
@@ -509,7 +506,6 @@ test_G_system_md_absent_graceful() {
   mount_args=$(
     HOME="$TEST_HOME" \
     XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    RC_ALLOWED_ROOTS="${TEST_WS}" \
     bash -c "
       source '$RC' 2>/dev/null
       _UP_RUN_ARGS=()
@@ -552,7 +548,6 @@ test_H_system_md_present_emits_mount() {
   mount_args=$(
     HOME="$TEST_HOME" \
     XDG_CONFIG_HOME="${TEST_HOME}/.config" \
-    RC_ALLOWED_ROOTS="${TEST_WS}" \
     bash -c "
       source '$RC' 2>/dev/null
       _UP_RUN_ARGS=()

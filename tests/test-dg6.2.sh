@@ -35,7 +35,7 @@ fi
 # =============================================
 
 # --- Tests 2, 3, 4: RETIRED with the allowed-roots guard (rip-cage-ely4.9) ---
-# They asserted that `rc up` warns when RC_ALLOWED_ROOTS is unset, rejects a
+# They asserted that `rc up` warns when the allowed-roots variable is unset, rejects a
 # path outside the roots, and rejects a /code-evil prefix attack against
 # /code. ADR-031 D2 deletes the guard: every mount is an explicit line in the
 # project's own config now, authored host-side, so there is no surrounding
@@ -55,7 +55,7 @@ fi
 # --- Test 5: validate_path rejects non-existent path ---
 echo ""
 echo "=== Test 5: rc up rejects non-existent path ==="
-nonexist_err=$(RC_ALLOWED_ROOTS=/tmp "$RC" up /tmp/does-not-exist-xyz123 2>&1) || true
+nonexist_err=$("$RC" up /tmp/does-not-exist-xyz123 2>&1) || true
 if echo "$nonexist_err" | grep -q "does not exist"; then
   pass "rc up rejects non-existent path"
 else
@@ -115,7 +115,7 @@ rmdir "$_t5c_shim" "$_t5c_dir"
 echo ""
 echo "=== Test 6: rc up rejects non-directory path ==="
 temp_file=$(mktemp)
-file_err=$(RC_ALLOWED_ROOTS=/tmp "$RC" up "$temp_file" 2>&1) || true
+file_err=$("$RC" up "$temp_file" 2>&1) || true
 if echo "$file_err" | grep -q "not a directory"; then
   pass "rc up rejects non-directory path"
 else
@@ -127,7 +127,7 @@ rm -f "$temp_file"
 echo ""
 echo "=== Test 7: rc up rejects control characters in path ==="
 # Use printf to embed a control char in the argument
-ctrl_err=$(RC_ALLOWED_ROOTS=/tmp "$RC" up $'/tmp/bad\x01dir' 2>&1) || true
+ctrl_err=$("$RC" up $'/tmp/bad\x01dir' 2>&1) || true
 if echo "$ctrl_err" | grep -q "control characters"; then
   pass "rc up rejects control characters"
 else
@@ -204,7 +204,7 @@ rmdir "$dryrun_dir2" 2>/dev/null || true
 # --- Test 12: rc destroy --dry-run with non-existent container fails ---
 echo ""
 echo "=== Test 12: rc destroy --dry-run with non-existent container errors ==="
-destroy_err=$(RC_ALLOWED_ROOTS=/tmp "$RC" --dry-run destroy nonexistent-container-xyz 2>&1) || true
+destroy_err=$("$RC" --dry-run destroy nonexistent-container-xyz 2>&1) || true
 if echo "$destroy_err" | grep -qi "not found\|error"; then
   pass "--dry-run destroy errors on non-existent container"
 else
@@ -234,7 +234,7 @@ else
 fi
 
 # --- Test 15: RETIRED (rip-cage-ely4.14) ---
-# Asserted that AGENTS.md told a calling agent to set RC_ALLOWED_ROOTS before
+# Asserted that AGENTS.md told a calling agent to set the allowed-roots variable before
 # rc up. The allowed-roots guard is deleted (ADR-031 D2: there is nothing left
 # to guard once every mount is an explicit line in the cage config), so the
 # variable is read by nothing. The assertion had inverted into a control that
@@ -251,23 +251,39 @@ else
 fi
 
 # --- Test 17: RETIRED with the allowed-roots warning (rip-cage-ely4.9) ---
-# It asserted that an unset RC_ALLOWED_ROOTS produces a stderr warning naming
+# It asserted that an unset allowed-roots variable produces a stderr warning naming
 # the variable. The variable is inert and the warning is gone (ADR-031 D2):
 # there is no implicit root grant left to warn about, because there are no
 # implicit mounts left to grant.
 
-# --- Test 18: --output json --env-file outside workspace does not fail with 'outside allowed roots' ---
+# --- Test 18: --env-file outside the workspace passes env-file validation ---
+# rc up refuses only a missing or non-regular env file ("Validate env-file
+# early" in cli/up.sh); where the file sits relative to the workspace does not
+# matter. A cage config is needed to reach that check at all -- without one,
+# rc up refuses with CAGE_CONFIG_MISSING first. The missing-file case proves
+# the check runs on this path, so the accepted case cannot pass by an earlier
+# refusal.
 echo ""
-echo "=== Test 18: rc up with --env-file outside workspace succeeds path validation ==="
+echo "=== Test 18: rc up --env-file outside workspace is accepted; a missing one is refused ==="
 env_ws_dir=$(mktemp -d)
 env_file_dir=$(mktemp -d)
 env_file_path="${env_file_dir}/test.env"
 printf "TEST_VAR=hello\n" > "$env_file_path"
-env_file_err=$(RC_CONFIG=/dev/null env -u RC_ALLOWED_ROOTS "$RC" --output json up "$env_ws_dir" --env-file "$env_file_path" 2>&1) || true
-if echo "$env_file_err" | grep -q "outside allowed roots"; then
-  fail "rc up --env-file got 'outside allowed roots' error. Got: $env_file_err"
+env_conf=$(cage_conf_for "$env_ws_dir")
+env_missing_rc=0
+env_missing_out=$(RC_CAGE_CONF="$env_conf" "$RC" --dry-run --output json up "$env_ws_dir" --env-file "${env_file_dir}/missing.env" 2>&1) || env_missing_rc=$?
+if [[ "$env_missing_rc" -ne 0 ]] && echo "$env_missing_out" | grep -q "env file not found"; then
+  pass "rc up refuses a missing --env-file with 'env file not found'"
 else
-  pass "rc up --env-file outside workspace did not fail with 'outside allowed roots'"
+  fail "rc up did not refuse a missing --env-file (exit=$env_missing_rc). Got: $env_missing_out"
+fi
+env_file_rc=0
+env_file_out=$(RC_CAGE_CONF="$env_conf" "$RC" --dry-run --output json up "$env_ws_dir" --env-file "$env_file_path" 2>&1) || env_file_rc=$?
+if [[ "$env_file_rc" -eq 0 ]] && ! echo "$env_file_out" | grep -q "env file not found" \
+   && echo "$env_file_out" | jq -e '.dry_run == true' >/dev/null 2>&1; then
+  pass "rc up --env-file outside workspace passes validation and reaches the dry run"
+else
+  fail "rc up --env-file outside workspace was refused (exit=$env_file_rc). Got: $env_file_out"
 fi
 rm -f "$env_file_path"
 rmdir "$env_file_dir" 2>/dev/null || true

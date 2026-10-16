@@ -50,7 +50,7 @@ check "Distinguishes worktrees from submodules via /worktrees/ path" \
   "$(grep_check '"/worktrees/"')"
 
 # Test 5 (RETIRED, rip-cage-ely4.9 / ADR-003-agent-friendly-cli.md D3): used to
-# assert cmd_up validated the main .git dir against RC_ALLOWED_ROOTS via
+# assert cmd_up validated the main .git dir against the allowed roots via
 # _path_under_allowed_roots. That guard is deleted whole (mounts are explicit
 # lines now) -- cli/up.sh's resolved_git_dir is realpath'd and used directly,
 # with no allowed-roots check left to assert on.
@@ -202,7 +202,7 @@ check "Auto-redirect checks for absence of embeddeddolt/ dir" \
 
 # Test 28 (RETIRED, rip-cage-ely4.9 / ADR-003-agent-friendly-cli.md D3): used
 # to assert the auto-redirect path validated resolved_main_beads against
-# RC_ALLOWED_ROOTS via _path_under_allowed_roots. Both the guard and the
+# the allowed roots via _path_under_allowed_roots. Both the guard and the
 # function are deleted whole -- nothing left to assert on.
 
 # Test 29: Auto-redirect uses the same mount mechanism as explicit redirect
@@ -218,7 +218,7 @@ check "Auto-redirect warns when main .beads/ not found" \
   "$(awk '/Resolve beads redirect/,/Determine beads storage mode/' "$RC_FILE" | grep -qE 'Warning.*main repo .beads.*not found' && echo true || echo false)"
 
 # Test 29d (RETIRED, rip-cage-ely4.9 / ADR-003-agent-friendly-cli.md D3): used
-# to assert a "Warning...outside RC_ALLOWED_ROOTS" log line existed for the
+# to assert a "Warning...outside the allowed roots" log line existed for the
 # auto-redirect path. The allowed-roots guard (and its warning text) is
 # deleted whole -- only the "main repo .beads/ not found" warning (Test 29c,
 # above) remains.

@@ -860,7 +860,7 @@ rm -rf "$TEST_DIR_T22"
 
 # --- Tests 23 + 24: RETIRED with the allowed-roots picker (rip-cage-ely4.9) ---
 # Both asserted that `rc up` never shows the interactive "Pick [" prompt the
-# allowed-roots guard used to raise when RC_ALLOWED_ROOTS was unset. ADR-031 D2
+# allowed-roots guard used to raise when the allowed-roots variable was unset. ADR-031 D2
 # deletes that guard: every mount is an explicit line in the project's own
 # config, so there is no root to pick and no prompt to suppress. Keeping the
 # assertions would have been worse than deleting them — with the producing code

@@ -330,9 +330,6 @@ mkdir -p "${E2E_TMP}/rc"
 TEST_WS="${E2E_TMP}/rc/e2e-test"
 mkdir -p "$TEST_WS"
 
-# RC_ALLOWED_ROOTS must cover the resolved parent (macOS /var -> /private/var).
-E2E_TMP_RESOLVED=$(realpath "$E2E_TMP")
-export RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}"
 
 # THE CAGE CONFIG (rip-cage-ely4.7.3). Without one, `rc up` refuses with
 # CAGE_CONFIG_MISSING before touching msb (ADR-031 D2) -- no cage boots, and
@@ -546,7 +543,6 @@ fi
 # Cases 2 and 3 differ only in pi auth state; since the warn-block ignores pi auth (D2 FIRM),
 # both produce the same Claude-warn outcome — we verify this is intentional.
 AUTH_TMP=$(_host_scratch_mktemp_d auth)
-AUTH_TMP_RESOLVED=$(realpath "$AUTH_TMP")
 
 # Each case gets its own workspace to avoid container-name collisions.
 # Pattern: parent "rc-auth", base "caseN" → container "rc-auth-caseN"
@@ -562,8 +558,7 @@ _aws1="${AUTH_TMP}/rc-auth/case1"
 _ac1_out="${AUTH_TMP}/case1-up.out"
 mkdir -p "$_aws1"
 git -C "$_aws1" init > /dev/null 2>&1
-RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
-  ANTHROPIC_API_KEY=sk-test-case1 \
+ANTHROPIC_API_KEY=sk-test-case1 \
   RC_CAGE_CONF="$(cage_conf_for "$_aws1" "$IMAGE")" \
   "$RC" up "$_aws1" </dev/null >"$_ac1_out" 2>&1 || true
 _ac1_name=$(_find_cage_by_source_path "$(realpath "$_aws1")")
@@ -609,8 +604,7 @@ _aws2="${AUTH_TMP}/rc-auth/case2"
 _ac2_out="${AUTH_TMP}/case2-up.out"
 mkdir -p "$_aws2"
 git -C "$_aws2" init > /dev/null 2>&1
-RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
-  ANTHROPIC_API_KEY="" \
+ANTHROPIC_API_KEY="" \
   RC_CAGE_CONF="$(cage_conf_for "$_aws2" "$IMAGE")" \
   "$RC" up "$_aws2" </dev/null >"$_ac2_out" 2>&1 || true
 _ac2_name=$(_find_cage_by_source_path "$(realpath "$_aws2")")
@@ -645,8 +639,7 @@ _aws3="${AUTH_TMP}/rc-auth/case3"
 _ac3_out="${AUTH_TMP}/case3-up.out"
 mkdir -p "$_aws3"
 git -C "$_aws3" init > /dev/null 2>&1
-RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
-  ANTHROPIC_API_KEY="" \
+ANTHROPIC_API_KEY="" \
   RC_CAGE_CONF="$(cage_conf_for "$_aws3" "$IMAGE")" \
   "$RC" up "$_aws3" </dev/null >"$_ac3_out" 2>&1 || true
 _ac3_name=$(_find_cage_by_source_path "$(realpath "$_aws3")")
@@ -677,8 +670,7 @@ _aws4="${AUTH_TMP}/rc-auth/case4"
 _ac4_out="${AUTH_TMP}/case4-up.out"
 mkdir -p "$_aws4"
 git -C "$_aws4" init > /dev/null 2>&1
-RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
-  ANTHROPIC_API_KEY=sk-test-case4 \
+ANTHROPIC_API_KEY=sk-test-case4 \
   RC_CAGE_CONF="$(cage_conf_for "$_aws4" "$IMAGE")" \
   "$RC" up "$_aws4" </dev/null >"$_ac4_out" 2>&1 || true
 _ac4_name=$(_find_cage_by_source_path "$(realpath "$_aws4")")
@@ -714,7 +706,7 @@ fi
 # XDG_CONFIG_HOME/RC_CONFIG_GLOBAL from the a5dk setup above are already exported and take
 # precedence over any $HOME-derived default, so this case still reads the benign fixture, not
 # a real ~/.config/rip-cage/config.yaml under the temp HOME. The workspace is still inside
-# AUTH_TMP (covered by RC_ALLOWED_ROOTS).  The pi-seed creates <tmphome>/.pi/agent/auth.json —
+# AUTH_TMP.  The pi-seed creates <tmphome>/.pi/agent/auth.json —
 # that is expected and fine.
 _aws5="${AUTH_TMP}/rc-auth/case5"
 _ac5_out="${AUTH_TMP}/case5-up.out"
@@ -725,7 +717,6 @@ git -C "$_aws5" init > /dev/null 2>&1
 HOME="$_ac5_home" \
   MSB_HOME="$REAL_MSB_HOME" \
   ANTHROPIC_API_KEY="" \
-  RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
   RC_CAGE_CONF="$(cage_conf_for "$_aws5" "$IMAGE")" \
   "$RC" up "$_aws5" </dev/null >"$_ac5_out" 2>&1 || true
 _ac5_name=$(_find_cage_by_source_path "$(realpath "$_aws5")")
@@ -769,7 +760,6 @@ chmod 600 "$_ac6_envfile"
 HOME="$_ac6_home" \
   MSB_HOME="$REAL_MSB_HOME" \
   ANTHROPIC_API_KEY="" \
-  RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${AUTH_TMP_RESOLVED}" \
   RC_CAGE_CONF="$(cage_conf_for "$_aws6" "$IMAGE")" \
   "$RC" up "$_aws6" --env-file "$_ac6_envfile" </dev/null >"$_ac6_out" 2>&1 || true
 _ac6_name=$(_find_cage_by_source_path "$(realpath "$_aws6")")
@@ -793,9 +783,6 @@ else
   fi
 fi
 rm -rf "$_ac6_home"
-
-# Restore RC_ALLOWED_ROOTS to the primary e2e root (subsequent checks use E2E_TMP_RESOLVED).
-export RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}"
 
 # -----------------------------------------------------------------------------
 # Lifecycle — stop/resume
@@ -939,8 +926,6 @@ mkdir -p "${E2E_TMP2}/rc"
 COLLIDE_WS="${E2E_TMP2}/rc/e2e-test"
 mkdir -p "$COLLIDE_WS"
 git -C "$COLLIDE_WS" init > /dev/null 2>&1
-E2E_TMP2_RESOLVED=$(realpath "$E2E_TMP2")
-export RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}"
 
 # Re-up the primary workspace so there's something to collide against.
 "$RC" up "$TEST_WS" < /dev/null > /dev/null 2>&1 || true
@@ -1054,10 +1039,8 @@ destructive_patterns:
     explanation: "This rule exists solely for E2E regression testing of the rc up -> RO-mount -> dcg-guard chain (rip-cage-hhh.13)."
 RULEFILE
 
-DCG_TMP_RESOLVED=$(realpath "$DCG_TMP")
 _dcg_ws_resolved=$(realpath "$_dcg_ws")
-RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${DCG_TMP_RESOLVED}" \
-  RC_CAGE_CONF="$(cage_conf_for "$_dcg_ws" "$IMAGE")" \
+RC_CAGE_CONF="$(cage_conf_for "$_dcg_ws" "$IMAGE")" \
   "$RC" up "$_dcg_ws" < /dev/null > /tmp/rc-e2e-dcg-up.out 2>&1 || true
 _dcg_container=$(_find_cage_by_source_path "$_dcg_ws_resolved")
 _track_cage "$_dcg_container"
@@ -1168,7 +1151,6 @@ fi
 # -----------------------------------------------------------------------------
 
 MISE_TMP=$(_host_scratch_mktemp_d mise)
-MISE_TMP_RESOLVED=$(realpath "$MISE_TMP")
 mkdir -p "${MISE_TMP}/rc-mise"
 
 # _mise_conf_for <workspace> <host...> -- cage_conf_for plus the per-cage mise
@@ -1203,8 +1185,7 @@ _nvmrc_ws="${MISE_TMP}/rc-mise/nvmrc-test"
 mkdir -p "$_nvmrc_ws"
 printf '20.18.0\n' > "${_nvmrc_ws}/.nvmrc"
 git -C "$_nvmrc_ws" init > /dev/null 2>&1
-RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${DCG_TMP_RESOLVED}:${MISE_TMP_RESOLVED}" \
-  RC_CAGE_CONF="$(_mise_conf_for "$_nvmrc_ws" nodejs.org mise-versions.jdx.dev)" \
+RC_CAGE_CONF="$(_mise_conf_for "$_nvmrc_ws" nodejs.org mise-versions.jdx.dev)" \
   "$RC" up "$_nvmrc_ws" < /dev/null > /tmp/rc-e2e-mise-nvmrc-up.out 2>&1 || true
 _nvmrc_resolved=$(realpath "$_nvmrc_ws")
 _nvmrc_container=$(_find_cage_by_source_path "$_nvmrc_resolved")
@@ -1247,8 +1228,7 @@ _cache_ws="${MISE_TMP}/rc-mise/cache-test"
 mkdir -p "$_cache_ws"
 printf '20.18.0\n' > "${_cache_ws}/.nvmrc"
 git -C "$_cache_ws" init > /dev/null 2>&1
-RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${DCG_TMP_RESOLVED}:${MISE_TMP_RESOLVED}" \
-  RC_CAGE_CONF="$(_mise_conf_for "$_cache_ws" nodejs.org mise-versions.jdx.dev)" \
+RC_CAGE_CONF="$(_mise_conf_for "$_cache_ws" nodejs.org mise-versions.jdx.dev)" \
   "$RC" up "$_cache_ws" < /dev/null > /tmp/rc-e2e-mise-cache-up.out 2>&1 || true
 _cache_resolved=$(realpath "$_cache_ws")
 _cache_container=$(_find_cage_by_source_path "$_cache_resolved")
@@ -1296,8 +1276,7 @@ git -C "$_yarn_ws" init > /dev/null 2>&1
 # classic.yarnpkg.com, with mise-versions.jdx.dev consulted for version
 # resolution (all four discovered live via the trace-log deny-miner
 # against a real cage -- see the section header above).
-RC_ALLOWED_ROOTS="${E2E_TMP_RESOLVED}:${E2E_TMP2_RESOLVED}:${DCG_TMP_RESOLVED}:${MISE_TMP_RESOLVED}" \
-  RC_CAGE_CONF="$(_mise_conf_for "$_yarn_ws" \
+RC_CAGE_CONF="$(_mise_conf_for "$_yarn_ws" \
       nodejs.org classic.yarnpkg.com mise-versions.jdx.dev \
       release-assets.githubusercontent.com github.com api.github.com \
       codeload.github.com objects.githubusercontent.com)" \

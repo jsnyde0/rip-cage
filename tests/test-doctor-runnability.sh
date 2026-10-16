@@ -93,7 +93,6 @@ fail() { TOTAL=$((TOTAL + 1)); FAILURES=$((FAILURES + 1)); echo "FAIL  [$TOTAL] 
 source "${SCRIPT_DIR}/_host-sandbox-lib.sh"
 DOCTOR_TMP=$(_host_scratch_mktemp_d doctor)
 DOCTOR_TMP=$(realpath "$DOCTOR_TMP")
-export RC_ALLOWED_ROOTS="${DOCTOR_TMP}"
 
 trap 'rm -rf "$DOCTOR_TMP"' EXIT
 

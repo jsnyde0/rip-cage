@@ -78,7 +78,6 @@ WS="${T}/ws"
 mkdir -p "$WS"
 git -C "$WS" init -q
 echo "# init mount guard proof" > "$WS/README"
-export RC_ALLOWED_ROOTS="$T"
 
 NAME=$(bash -c "source '${RC}' 2>/dev/null; container_name '$WS'")
 [[ -n "$NAME" ]] || { echo "FATAL: could not derive cage name"; exit 1; }

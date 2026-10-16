@@ -206,7 +206,7 @@ mkdir -p "${TEST_HOME}/.config/rip-cage"
 TEST_WS="${TEST_HOME}/workspace"
 mkdir -p "$TEST_WS"
 
-HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_ALLOWED_ROOTS="$TEST_WS" \
+HOME="$TEST_HOME" XDG_CONFIG_HOME="${TEST_HOME}/.config" \
   bash "$RC" up --dry-run "$TEST_WS" >/dev/null 2>&1 || true
 
 SEEDED_CFG="${TEST_HOME}/.config/rip-cage/config.yaml"

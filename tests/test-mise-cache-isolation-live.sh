@@ -59,7 +59,6 @@ mkdir -p "$HOME/.claude/projects" "$HOME/.claude/sessions" "$HOME/.claude/skills
 echo '{}' > "$HOME/.claude.json"
 [[ -e "${REAL_HOME}/.docker" ]] && ln -sfn "${REAL_HOME}/.docker" "${HOME}/.docker"
 unset CCTOK
-export RC_ALLOWED_ROOTS="$T"
 
 mkdir -p "${XDG_CONFIG_HOME}/rip-cage/projects" "${XDG_CONFIG_HOME}/rip-cage/secrets"
 # A fake value of the setup-token shape: msb needs the env var to boot.

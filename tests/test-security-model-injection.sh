@@ -164,7 +164,6 @@ trap CLEANUP EXIT
 echo "=== B6: Hostile .claude/settings.json -> rc up refuses ==="
 
 B6_TMP=$(mktemp -d)
-B6_TMP_REAL=$(realpath "$B6_TMP")
 mkdir -p "${B6_TMP}/rc-sec-inj"
 B6_WS="${B6_TMP}/rc-sec-inj/hostile"
 mkdir -p "${B6_WS}/.claude"
@@ -195,7 +194,6 @@ B6_CONF=$(cage_conf_for "$B6_WS")
 b6_stderr=""
 b6_exit=0
 b6_stderr=$(
-  RC_ALLOWED_ROOTS="${B6_TMP_REAL}" \
   XDG_CONFIG_HOME="${B6_TMP}/.config" \
   RC_CAGE_CONF="$B6_CONF" \
   "$RC" up --dry-run "$B6_WS" 2>&1 >/dev/null
@@ -214,7 +212,6 @@ fi
 
 b6_override_exit=0
 b6_override_stderr=$(
-  RC_ALLOWED_ROOTS="${B6_TMP_REAL}" \
   XDG_CONFIG_HOME="${B6_TMP}/.config" \
   RC_CAGE_CONF="$B6_CONF" \
   "$RC" up --dry-run --allow-config-override "$B6_WS" 2>&1 >/dev/null
@@ -275,7 +272,7 @@ if [[ -z "$CAGE_CONF" || ! -f "$CAGE_CONF" ]]; then
 fi
 
 run_rc() {
-  XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_ALLOWED_ROOTS="$WS" "$RC" --output json "$@"
+  XDG_CONFIG_HOME="${TEST_HOME}/.config" "$RC" --output json "$@"
 }
 
 echo "-- Starting cage via real 'rc up' ($WS) --"

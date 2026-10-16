@@ -77,7 +77,7 @@ fi
 # Step 2: Create temp project and start container
 TEST_WS=$(mktemp -d)
 echo "# pi e2e test" > "$TEST_WS/README"
-RC_ALLOWED_ROOTS="$TEST_WS" RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS" \
+RIP_CAGE_EGRESS=off "$RC" up "$TEST_WS" \
   </dev/null >/dev/null 2>&1 || true
 CONTAINER=$(_resolve_container)
 if [[ -z "$CONTAINER" ]]; then

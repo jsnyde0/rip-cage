@@ -93,7 +93,7 @@ git -C "$WS" add README.md
 git -C "$WS" -c user.name="scratch" -c user.email="scratch@example.invalid" commit -q -m "initial"
 
 run_rc_up() {
-  XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_ALLOWED_ROOTS="$WS" "$RC" "$@"
+  XDG_CONFIG_HOME="${TEST_HOME}/.config" "$RC" "$@"
 }
 
 write_config_mode() {
@@ -236,7 +236,7 @@ EOF
 write_config_mode_rw_b
 
 run_rc_up_b() {
-  XDG_CONFIG_HOME="${TEST_HOME}/.config" RC_ALLOWED_ROOTS="$WS_B" "$RC" "$@"
+  XDG_CONFIG_HOME="${TEST_HOME}/.config" "$RC" "$@"
 }
 
 CRB_OUT=$(run_rc_up_b --output json up "$WS_B" 2>&1)
