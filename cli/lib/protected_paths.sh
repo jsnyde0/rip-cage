@@ -494,3 +494,85 @@ _protected_paths_enforce() {
   fi
   return 0
 }
+
+# --------------------------------------------------------------------------
+# _git_exec_covers CONF_FILE
+#
+# ADR-002 D11 (evolved 2026-10-16, rip-cage-rsh9.2). A guest that can write a
+# repo's .git/config can name a command the HOST runs: core.fsmonitor fires on
+# the host's next `git status` or IDE refresh, and filter drivers, `!` aliases,
+# core.hooksPath and core.sshCommand do the same on other verbs. So for every
+# git repo inside a read-write bind mount of the cage config -- not only the
+# `rc up` argument -- this prints mounts that make the exec-bearing parts
+# read-only:
+#
+#   <repo>/.git          rw, over itself -- a PIN: a mount point cannot be
+#                        renamed, so `mv .git elsewhere && git init` fails
+#                        (measured: EBUSY) instead of handing the host a
+#                        fresh .git/config the guest wrote
+#   <repo>/.git/config   ro
+#   <repo>/.git/info     ro, when present
+#   <repo>/.git/hooks    ro, when present
+#
+# and the same four for each submodule gitdir under .git/modules (the host's
+# `git status` recurses into submodules and reads their config). Repos are
+# found to $RC_PROTECTED_SCAN_DEPTH (default 2), the same latency bound the
+# protected-paths scan uses. Read-only mounts are skipped: they already are.
+#
+# Prints msb argv tokens, one per line, for _UP_PROTECTED_COVERS.
+#
+# COSTS, accepted by the human ruling: in-cage git cannot write repo config, so
+# `git push -u`, `--set-upstream-to` and `--track` push or branch but record
+# no upstream (git prints "could not write config file", exits 0), `git remote
+# add` fails, and a repo-local `git config` fails. The image's system gitconfig
+# sets push.default=current so a bare `git push` still works.
+#
+# NOT COVERED: a repo the guest creates after launch (`git init sub`), and any
+# repo deeper than the scan depth. Like every cover, a guest root can umount it
+# (see this file's header). Follow-up: rip-cage-rsh9.14.
+# --------------------------------------------------------------------------
+_git_exec_covers() {
+  local _conf="$1"
+  local _depth="${RC_PROTECTED_SCAN_DEPTH:-2}"
+  local _mounts
+  _mounts="$(_protected_paths_conf_bind_mounts "${_conf}")" || return 1
+  [[ -z "${_mounts}" ]] && return 0
+
+  local _host _guest _mode _gitdir _rel _sub
+  while IFS=$'\t' read -r _host _guest _mode; do
+    [[ -z "${_host}" ]] && continue
+    [[ "${_mode}" == "ro" ]] && continue
+    while [[ "${_host}" == */ && "${_host}" != "/" ]]; do _host="${_host%/}"; done
+    [[ -d "${_host}" ]] || continue
+
+    while IFS= read -r _gitdir; do
+      [[ -z "${_gitdir}" ]] && continue
+      _rel="${_gitdir#"${_host}/"}"
+      if [[ "${_rel}" == "${_gitdir}" ]]; then
+        echo "Error: the cage config ${_conf} mounts ${_host}, and rc found the git dir ${_gitdir} but could not place it under that mount to cover its config. Refusing to launch rather than leaving it writable (ADR-002 D11, fail closed)." >&2
+        return 1
+      fi
+      _git_exec_covers_one "${_gitdir}" "${_guest%/}/${_rel}"
+      # Submodule gitdirs: .git/modules/<name>[/<name>...]/config.
+      if [[ -d "${_gitdir}/modules" ]]; then
+        while IFS= read -r _sub; do
+          [[ -z "${_sub}" ]] && continue
+          _sub="$(dirname "${_sub}")"
+          _git_exec_covers_one "${_sub}" "${_guest%/}/${_sub#"${_host}/"}"
+        done < <(find "${_gitdir}/modules" -mindepth 2 -maxdepth 4 -type f -name config -print 2>/dev/null | LC_ALL=C sort)
+      fi
+    done < <(find "${_host}" -maxdepth "${_depth}" -type d -name .git -print -prune 2>/dev/null | LC_ALL=C sort)
+  done <<< "${_mounts}"
+  return 0
+}
+
+# _git_exec_covers_one HOST_GITDIR GUEST_GITDIR -- the pin plus the ro covers
+# for one gitdir (see _git_exec_covers).
+_git_exec_covers_one() {
+  local _h="$1" _g="$2"
+  printf '%s\n' -v "${_h}:${_g}"
+  [[ -f "${_h}/config" ]] && printf '%s\n' -v "${_h}/config:${_g}/config:ro"
+  [[ -d "${_h}/info" ]] && printf '%s\n' -v "${_h}/info:${_g}/info:ro"
+  [[ -d "${_h}/hooks" ]] && printf '%s\n' -v "${_h}/hooks:${_g}/hooks:ro"
+  return 0
+}

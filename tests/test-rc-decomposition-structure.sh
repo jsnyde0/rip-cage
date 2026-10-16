@@ -400,7 +400,11 @@ echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 
 # Bumped 130 -> 131 by rip-cage-80c8: 1 ADDED, 0 removed.
 #   ADDED (cli/up.sh, 1): _up_expected_image (the resume image check's
 #     expected tag: RC_IMAGE, else the config's image:, else rip-cage:latest).
-EXPECTED_FN_COUNT=131
+# Bumped 131 -> 133 by rip-cage-rsh9.2: 2 ADDED, 0 removed.
+#   ADDED (cli/lib/protected_paths.sh, 2): _git_exec_covers and
+#     _git_exec_covers_one (ADR-002 D11: .git pin + config/info/hooks ro for
+#     every repo in a rw config mount).
+EXPECTED_FN_COUNT=133
 _actual_fn_count=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh 2>/dev/null | wc -l | tr -d ' ')
 
 if [[ "$_actual_fn_count" -eq "$EXPECTED_FN_COUNT" ]]; then

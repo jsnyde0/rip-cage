@@ -17,8 +17,11 @@
 # --log-level trace, --replace, the CCTOK host-file -> --secret credential bridge, the
 # host skills projection (~/.claude/skills mounted read-only at
 # /home/agent/.rc-context/skills, which init symlinks into ~/.claude/skills),
-# the read-only parent mounts computed from your skill symlinks, and the
-# protected-paths covers. Everything else belongs here.
+# the read-only parent mounts computed from your skill symlinks, the
+# protected-paths covers, and the git covers: every repo in a read-write mount
+# below gets .git/config, .git/info and .git/hooks read-only, so the cage
+# cannot write a command your host's git runs (ADR-002 D11). Everything else
+# belongs here.
 #
 # Every host path must be ABSOLUTE and must not traverse a symlink: msb does
 # not follow a host-side symlink in a bind source, and the mount fails at boot

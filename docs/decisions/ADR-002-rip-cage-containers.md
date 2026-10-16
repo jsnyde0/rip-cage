@@ -295,30 +295,30 @@ The base image includes `bd` CLI and Dolt, enabling beads-based issue tracking i
 
 **What would invalidate this:** Beads replaced by a different issue tracking system. bd publishes pre-built binaries (remove Go builder stage).
 
-### D11: Deny `.git/hooks` writes in bind-mount mode
+### D11: The git exec surface of every mounted repo is read-only
 
 > [ADR-029 D2: EVOLVED — the rationale holds unchanged; the `:ro` sub-mount enforcement mechanism re-implements in msb mount syntax (scoped macOS/HVF per ADR-029 D6 until Linux/KVM reconfirmation). This is a named surviving floor item in ADR-029 D2's new welded-containment-floor enumeration (the `.git/hooks` read-only weld).]
+>
+> **Evolved 2026-10-16 (rip-cage-rsh9.2, human ruling via brain:rip-cage, option 1).** This decision used to cover `.git/hooks` only, for the `rc up` argument only, and listed `core.hooksPath` as an accepted "multi-step, deliberate" risk. The composed-posture review (`docs/2026-10-03-composed-posture-review.md`) showed the writable `.git/config` is wider than that and single-step: `git config core.fsmonitor <cmd>` makes the host's next `git status` or IDE refresh run `<cmd>` on the host, and filter drivers, `!` aliases, `core.sshCommand` and `core.hooksPath` do the same on other verbs. Under ADR-024's steered-agent threat model, one injected line does it. A second repo mounted by the config got no cover at all. The fallback — a launch-time scan for exec-bearing keys — was rejected: it leaves the window open for the whole session.
 
 **Firmness: FIRM**
 
-**Added:** 2026-03-26 (review finding)
-**Amended 2026-04-02:** Under `bypassPermissions` (D5), deny rules are documentation-only. For worktree containers, `.git-main/hooks/` is protected by a read-only sub-mount (D4). The deny rules in settings.json remain as documentation of intent.
-**Amended 2026-04-09:** Extended read-only sub-mount to bind-mount mode. In-container testing confirmed that Python `open()` via Bash tool bypasses settings.json deny rules — physical mount enforcement is required for both paths. See [design doc](../2026-04-09-git-hooks-ro-bind-mount-design.md).
+**Added:** 2026-03-26 (review finding). **Amended** 2026-04-02 and 2026-04-09 (read-only sub-mounts for worktree and bind-mount modes; [design doc](../2026-04-09-git-hooks-ro-bind-mount-design.md)). **Evolved** 2026-10-16 (above).
 
-In bind-mount mode, `/workspace` IS the host filesystem. An agent writing to `.git/hooks/` creates scripts that execute on the host with full privileges when the user runs git commands — a container escape via the project's own git hooks. Settings.json denies `Write(.git/hooks/*)` and `Edit(.git/hooks/*)`.
+`/workspace`, and every other read-write mount in the cage config, IS the host filesystem. A guest that writes a repo's hooks or config writes commands the host's git runs with the operator's privileges. So `rc up` makes those parts of every repo it finds read-only, before any msb call (`_git_exec_covers`, `cli/lib/protected_paths.sh`):
 
-**Both bind-mount and worktree modes now use read-only sub-mounts for physical enforcement:**
+- **Which repos:** every `.git` directory inside a read-write bind mount of the cage config, to `RC_PROTECTED_SCAN_DEPTH` (default 2) — not only the `rc up` argument — plus each submodule gitdir under `.git/modules`. Read-only mounts are skipped; they already are.
+- **What, per repo:** `.git` mounted read-write over itself — a **pin**: a mount point cannot be renamed, so `mv .git away && git init` fails with EBUSY instead of handing the host a fresh config — then `.git/config`, `.git/info` and `.git/hooks` read-only on top.
+- **Worktree mode:** rc mounts the main `.git` at `/workspace/.git-main` (itself a mount point) with its `hooks`, `config` and `info` read-only.
+- **Image default:** `/etc/gitconfig` sets `push.default=current` and `remote.pushDefault=origin`, so a bare `git push` works with no recorded upstream.
 
-- **Bind-mount mode:** `-v ${path}/.git/hooks:/workspace/.git/hooks:ro` — added after the workspace mount. Only applied when `${path}/.git/hooks` exists (i.e., the project is a git repo). The devcontainer.json template includes an equivalent mount entry.
-- **Worktree mode:** `-v .../hooks:/workspace/.git-main/hooks:ro` — unchanged from D4 amendment.
+**Accepted costs** (measured live in a cage, msb 0.7.8): in-cage git cannot write repo config. `git push -u`, `git branch --set-upstream-to` and `checkout --track` push or branch but record no upstream — git prints `could not write config file .git/config: Device or resource busy` and exits 0 — so there is no ahead/behind tracking, and `git pull` needs explicit arguments. `git remote add` fails; add remotes host-side. A repo-local `git config` fails; `--global` works. Writes under `.git/info` fail (`info/exclude`, `info/sparse-checkout`; `git gc` warns once about `info/refs` and exits 0). `.gitattributes` stays writable: an attribute only selects a driver, and the driver's command lives in the config this decision covers.
 
-Docker processes sub-mounts after parent mounts, so the `:ro` overlay on hooks physically prevents modification regardless of permission mode, Python filesystem access, or any other code path. Note: this enforces the *default* hooks path only — `core.hooksPath` redirect is an accepted risk (see design doc).
+**Not covered:** a repo the guest creates after launch (`git init sub` inside a mount), and repos deeper than the scan depth — the host's git or IDE may still run commands from such a repo's config. Like every rc cover, a guest root can unmount it (passwordless sudo, D12): this stops the accident and the injected instruction, not the motivated attacker. The revisit for a cleaner fix that keeps upstream tracking and `git remote add` is `rip-cage-rsh9.14`.
 
-**Rationale:** The design doc's Known Limitations section identified this vector. The Write/Edit tools have no PreToolUse hooks in the container (container boundary is the protection for most paths), but `.git/hooks/` is special — it bridges back to the host via git's hook execution. Under `bypassPermissions` mode (D5), deny rules are not enforced by the permission system — they serve as documentation of intent only. The read-only sub-mount is the enforcement mechanism for both paths. Clone mode (Phase 2) eliminates this vector entirely since the container filesystem is isolated.
+**Rationale:** A read-only mount is the mechanism the hooks cover already used. It is enforced below every tool and closes the gap for the whole session. Settings.json still denies `Write(.git/hooks/*)` and `Edit(.git/hooks/*)` as documentation of intent; under `bypassPermissions` (D5) the mounts are the enforcement.
 
-**Accepted risks (container-as-boundary):** In-container testing (2026-04-09) confirmed these vectors are possible but accepted under D5's container-as-boundary principle: (1) command substitution (`$(...)`, backticks), (2) Python `os.system()`/`subprocess` for non-destructive commands, (3) reading container-local files like `/etc/passwd`, (4) `core.hooksPath` redirect via `.git/config` — a multi-step container escape that cannot be blocked without making `.git/config` read-only (which breaks git operations). The container IS the safety boundary, not the in-container classifier. DCG still catches known-destructive patterns (e.g., `rm -rf`) even inside Python strings via content scanning.
-
-**What would invalidate this:** Legitimate need for agents to modify git hooks inside the container (e.g., setting up pre-commit linting). In that case, use `core.hooksPath` pointing to a container-only directory instead.
+**What would invalidate this:** The accepted costs blocking everyday agent work — then rsh9.14's revisit, never a writable `.git/config`.
 
 ### D12: Scoped sudo, not blanket NOPASSWD
 

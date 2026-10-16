@@ -373,11 +373,37 @@ else
   check "Python write to .git/hooks blocked (D11)" "pass" "no .git/hooks directory (skipped)"
 fi
 
-# 35. KNOWN accepted risk: core.hooksPath redirect is a documented accepted risk
-# An agent can redirect git hooks via `git config core.hooksPath` to a writable path.
-# This is accepted: multi-step, deliberate, and consistent with container-as-boundary (D5).
-# See: docs/2026-04-09-git-hooks-ro-bind-mount-design.md — Accepted Risks section.
-check "KNOWN: core.hooksPath redirect is accepted risk (see design doc)" "pass" "documented in D11 design"
+# 35. D11 (evolved 2026-10-16, rip-cage-rsh9.2): .git/config is read-only, so
+# the guest cannot write a key that names a command the HOST's git runs
+# (core.fsmonitor, core.hooksPath, filter drivers, `!` aliases). This used to
+# be an unconditional "KNOWN accepted risk" pass for core.hooksPath.
+_d11_git_dir=""
+[[ -d /workspace/.git ]] && _d11_git_dir=/workspace/.git
+[[ -d /workspace/.git-main ]] && _d11_git_dir=/workspace/.git-main
+if [[ -n "$_d11_git_dir" && -f "${_d11_git_dir}/config" ]]; then
+  _d11_before=$(cksum < "${_d11_git_dir}/config")
+  _d11_rc=0; _d11_out=$(git -C /workspace config core.fsmonitor 'touch /tmp/rsh9-2-fsmonitor' 2>&1) || _d11_rc=$?
+  _d11_hp_rc=0; _d11_hp=$(git -C /workspace config core.hooksPath /tmp 2>&1) || _d11_hp_rc=$?
+  _d11_after=$(cksum < "${_d11_git_dir}/config")
+  if [[ "$_d11_rc" -ne 0 && "$_d11_hp_rc" -ne 0 && "$_d11_before" == "$_d11_after" ]]; then
+    check ".git/config is read-only: core.fsmonitor and core.hooksPath writes refused (D11)" "pass"
+  else
+    check ".git/config is read-only: core.fsmonitor and core.hooksPath writes refused (D11)" "fail" \
+      "fsmonitor rc=${_d11_rc} (${_d11_out}); hooksPath rc=${_d11_hp_rc} (${_d11_hp}); config changed: $([[ "$_d11_before" == "$_d11_after" ]] && echo no || echo yes)"
+  fi
+  # The .git dir is a mount point, so it cannot be renamed away and replaced
+  # by a fresh one carrying a config the guest wrote.
+  if [[ "$_d11_git_dir" == /workspace/.git ]]; then
+    if mv /workspace/.git /workspace/.git-d11-probe 2>/dev/null; then
+      mv /workspace/.git-d11-probe /workspace/.git 2>/dev/null || true
+      check ".git cannot be renamed away (D11 pin)" "fail" "mv /workspace/.git succeeded (moved back)"
+    else
+      check ".git cannot be renamed away (D11 pin)" "pass"
+    fi
+  fi
+else
+  check ".git/config is read-only (D11)" "pass" "no git dir under /workspace (skipped)"
+fi
 
 if [[ -d /workspace/.git-main ]]; then
   echo ""

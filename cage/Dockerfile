@@ -159,6 +159,13 @@ RUN : > /etc/rip-cage/release \
     && chown root:root /etc/rip-cage/release \
     && chmod 0444 /etc/rip-cage/release
 
+# ADR-002 D11: rc mounts each repo's .git/config read-only, so `git push -u`
+# pushes but records no upstream. push.default=current lets a bare `git push`
+# push the branch to its same-named remote branch anyway (rip-cage-rsh9.2).
+# System level, so an agent's own ~/.gitconfig can still override it.
+RUN git config --system push.default current \
+    && git config --system remote.pushDefault origin
+
 # Copy rip-cage files — stable files first (fewer cache busts), frequently-edited last
 RUN mkdir -p /etc/ssh/ssh_config.d
 COPY cage/guards/ssh/known_hosts.github /etc/ssh/ssh_known_hosts

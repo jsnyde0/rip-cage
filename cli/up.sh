@@ -562,11 +562,10 @@ _up_prepare_docker_mounts() {
   # in-tree policy file left to shadow read-only, and no mask list for rc to
   # read. What rc still generates here is only what no config file can hold:
   # mounts computed from the host filesystem at launch.
-  # D11: .git/hooks read-only — physical enforcement against container escape
-  # Worktree mode handles hooks separately (see worktree mount block below)
-  if [[ "$wt_detected" != "true" ]] && [[ -d "${_path}/.git/hooks" ]]; then
-    _UP_RUN_ARGS+=(-v "${_path}/.git/hooks:/workspace/.git/hooks:ro")
-  fi
+  # D11: a repo's .git/hooks, .git/config and .git/info are read-only. For a
+  # repo inside a config mount that is _git_exec_covers (cli/lib/
+  # protected_paths.sh), which covers every repo the config mounts, not only
+  # this one. Worktree mode mounts the main .git itself, so its covers are here.
 
   # Git worktree mounts: fix .git pointer so git works inside the container
   if [[ "$wt_detected" == "true" ]]; then
@@ -576,6 +575,8 @@ _up_prepare_docker_mounts() {
     _UP_RUN_ARGS+=(-v "${wt_main_git}:/workspace/.git-main:delegated")
     _UP_RUN_ARGS+=(-v "${gitfile}:/workspace/.git:ro")
     _UP_RUN_ARGS+=(-v "${wt_main_git}/hooks:/workspace/.git-main/hooks:ro")
+    _UP_RUN_ARGS+=(-v "${wt_main_git}/config:/workspace/.git-main/config:ro")
+    [[ -d "${wt_main_git}/info" ]] && _UP_RUN_ARGS+=(-v "${wt_main_git}/info:/workspace/.git-main/info:ro")
     log "Worktree: mounted main .git/ and corrected .git pointer for ${wt_name}"
   fi
 
@@ -2129,7 +2130,7 @@ _up_resolve_resume_symlink_fingerprint() {
 # physical path. Two cases are deliberately left alone:
 #
 #   NAMED VOLUMES — a SRC with no leading `/` is an msb volume name
-#     (rc-state-*, rc-history-*, rc-mise-cache), not a host path.
+#     (rc-state-*, rc-history-*, rc-mise-cache-*), not a host path.
 #   SRC == DST — the symlink-follow projection (cli/up.sh's `_sfl_mount_src`)
 #     and the skill-source parent mounts deliberately mount a host-absolute
 #     path AT THAT SAME PATH inside the cage, because in-cage symlinks
@@ -2676,6 +2677,20 @@ cmd_up() {
     done <<< "$_covers_out"
   fi
 
+  # ADR-002 D11: every repo in a rw config mount gets its .git pinned and its
+  # config, info and hooks read-only, so a guest cannot write a command the
+  # host's git runs (rip-cage-rsh9.2). Same before-any-msb-call floor.
+  local _git_covers_out
+  if ! _git_covers_out=$(_git_exec_covers "$_UP_CAGE_CONF"); then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Git config cover refused the cage config ${_UP_CAGE_CONF}" "GIT_COVER_REFUSED"
+    exit 1
+  fi
+  if [[ -n "$_git_covers_out" ]]; then
+    while IFS= read -r _cover_line; do
+      _UP_PROTECTED_COVERS+=("$_cover_line")
+    done <<< "$_git_covers_out"
+  fi
+
   # LFS advisory: warn if the project uses git-lfs and has unmaterialized
   # pointer stubs. rip-cage cannot fetch blobs (ADR-014); user must run
   # `git lfs pull` on the host. Observation-only — does not mutate.
@@ -2842,14 +2857,19 @@ cmd_up() {
   _up_detect_worktree "$path"
 
   # D11: compute git_hooks_ro for JSON output
-  # true when .git/hooks is mounted read-only:
+  # true when the workspace's .git/hooks is mounted read-only:
   #   - worktree mode always mounts hooks ro (via .git-main/hooks:ro)
-  #   - bind-mount mode mounts ro when .git/hooks dir exists
+  #   - otherwise only when _git_exec_covers emitted the cover, i.e. the
+  #     config really mounts this repo rw at /workspace (rip-cage-rsh9.2: the
+  #     field used to say true off the rc up argument alone)
   local git_hooks_ro=false
   if [[ "$wt_detected" == "true" ]]; then
     git_hooks_ro=true
-  elif [[ -d "${path}/.git/hooks" ]]; then
-    git_hooks_ro=true
+  else
+    local _ghr_tok
+    for _ghr_tok in ${_UP_PROTECTED_COVERS[@]+"${_UP_PROTECTED_COVERS[@]}"}; do
+      [[ "$_ghr_tok" == *":/workspace/.git/hooks:ro" ]] && { git_hooks_ro=true; break; }
+    done
   fi
 
   # Check container state — distinguish "container absent" from "inspect failed".
@@ -3033,10 +3053,14 @@ cmd_up() {
       if [[ "$wt_detected" == "true" ]]; then
         echo "Would mount worktree main .git/ ($wt_main_git) -> /workspace/.git-main (writable)"
         echo "Would mount corrected .git pointer -> /workspace/.git:ro"
-        echo "Would mount hooks -> /workspace/.git-main/hooks:ro"
-      elif [[ -d "${path}/.git/hooks" ]]; then
-        echo "Would mount .git/hooks -> /workspace/.git/hooks:ro (D11)"
+        echo "Would mount hooks, config, info -> /workspace/.git-main/{hooks,config,info}:ro (D11)"
       fi
+      local _dry_gc
+      for _dry_gc in ${_UP_PROTECTED_COVERS[@]+"${_UP_PROTECTED_COVERS[@]}"}; do
+        case "$_dry_gc" in
+          *"/.git/config:ro"|*"/.git/info:ro"|*"/.git/hooks:ro") echo "Would mount ${_dry_gc} (D11)" ;;
+        esac
+      done
       if [[ -d "${HOME}/.claude/skills" ]]; then
         echo "Would mount ~/.claude/skills -> /home/agent/.rc-context/skills:ro"
         local _dry_tdir
