@@ -259,37 +259,52 @@ if ! cexec true; then
   exit 1
 fi
 
+BOOT_DESCRIPTOR="/etc/rip-cage/boot.json"
+
 # ---------------------------------------------------------------------------
 # PRECONDITION: is the claude-recipe composed into this image at all?
 #
-# rip-cage-sw6s: every claude invocation in this file hardcodes
-# /usr/local/bin/claude (the claude-recipe's session-isolation wrapper,
-# examples/claude/README.md) rather than the bare `claude` on PATH. Under a
-# floor-only build (the repo default; ADR-005 D12 / ADR-027 D3) that path is
-# legitimately absent — the floor image installs the real binary at
-# /usr/bin/claude only. Without this guard, the first hardcoded invocation
-# (the auth pre-flight below) fails with "failed to exec /usr/local/bin/claude"
-# (ENOENT) and gets MISREPORTED as an auth failure ("Run: rc auth <workspace>
-# to refresh") — the wrong diagnosis for a missing-binary condition. This
-# probe distinguishes the two causes before any claude invocation runs, using
-# the same independent composition signal test-cc-dcg-managed-settings.sh
-# uses (see that file's PRECONDITION comment for the full false-green
-# analysis, which applies unchanged here).
-if ! cexec test -x /usr/local/bin/claude; then
+# Every claude invocation in this file goes through the claude-recipe's
+# session-isolation wrapper (examples/claude/README.md), which seeds auth into
+# the fresh CLAUDE_CONFIG_DIR each run uses. The base image puts its generic
+# tool-launch-wrapper at $(command -v claude) (cage/Dockerfile); that wrapper
+# execs the boot descriptor's tools[claude].launch, which the recipe's
+# boot-fragment.json sets to its session wrapper. So the composition signal is
+# that launch line, and claude is invoked by the path `command -v` resolves —
+# never a hardcoded install path (rip-cage-b8kd.7.3, mirroring rip-cage-lli5).
+# Under a floor-only build (ADR-005 D12 / ADR-027 D3) tools[claude] carries no
+# launch: a SKIP. Without this guard the auth pre-flight below would misreport
+# a missing recipe as an auth failure. The signal is independent of the
+# artifacts under test, as test-cc-dcg-managed-settings.sh's PRECONDITION
+# explains.
+CLAUDE_BIN=$(cexec bash -c 'command -v claude' 2>/dev/null || true)
+# A failed read is a FAIL, not a SKIP: a skip on a read error would hide a composed cage.
+if ! CLAUDE_LAUNCH_CMD=$(cexec jq -r '((.tools // []) | map(select(.name == "claude")) | first | .launch) // ""' "$BOOT_DESCRIPTOR" 2>/dev/null); then
+  echo "FAIL: could not read tools[claude].launch from ${BOOT_DESCRIPTOR} in $CONTAINER — cannot tell whether the claude-recipe is composed"
+  exit 1
+fi
+if [[ -z "$CLAUDE_LAUNCH_CMD" ]]; then
   echo ""
   echo "############################################################"
   echo "### SKIP SKIP SKIP: claude-recipe NOT composed into this image"
   echo "############################################################"
-  echo "SKIP: /usr/local/bin/claude (the session-wrapper this probe hardcodes for every claude"
-  echo "SKIP: invocation) is absent, so this probe cannot run under a floor-only build"
-  echo "SKIP: (ADR-005 D12 / ADR-027 D3 -- the claude-recipe is opt-in, not part of the floor"
-  echo "SKIP: image). See examples/claude/README.md to opt in."
+  echo "SKIP: tools[claude] in ${BOOT_DESCRIPTOR} carries no launch line, so claude does not"
+  echo "SKIP: start through the recipe's session wrapper and this probe cannot run under a"
+  echo "SKIP: floor-only build (ADR-005 D12 / ADR-027 D3 -- the claude-recipe is opt-in, not"
+  echo "SKIP: part of the floor image). See examples/claude/README.md to opt in."
   echo "SKIP: NOTE (rip-cage-pow0): this SKIP exits 0; tests/run-host.sh's suite ledger"
   echo "SKIP: classifies a stdout SKIP line + zero PASS lines as SKIP, not PASS -- read this"
   echo "SKIP: stdout marker directly, don't infer composition status from a green suite run."
   echo "############################################################"
   exit 0
 fi
+# Composed but unrunnable is a FAIL: the recipe is there and claude cannot start through it.
+if [[ -z "$CLAUDE_BIN" ]] || ! cexec test -x "$CLAUDE_BIN" || ! cexec test -x "${CLAUDE_LAUNCH_CMD%% *}"; then
+  echo "FAIL: claude-recipe composed (tools[claude].launch = '${CLAUDE_LAUNCH_CMD}') but claude at"
+  echo "      '${CLAUDE_BIN:-nothing}' or the launch command is missing or not executable"
+  exit 1
+fi
+echo "Composition: claude-recipe composed (claude at ${CLAUDE_BIN} launches '${CLAUDE_LAUNCH_CMD}')"
 
 # ---------------------------------------------------------------------------
 # EARLY AUTH CHECK
@@ -384,7 +399,7 @@ run_with_timeout 45 "$AUTH_OUT" \
   msb exec \
     -e CLAUDE_CONFIG_DIR="$AUTH_CHECK_DIR" \
     "$CONTAINER" -- \
-    /usr/local/bin/claude -p "print only the word AUTH_OK, nothing else, no tools"
+    "$CLAUDE_BIN" -p "print only the word AUTH_OK, nothing else, no tools"
 
 AUTH_EXIT=$RWT_EXIT
 AUTH_OUTPUT_CONTENT=$(cat "$AUTH_OUT")
@@ -676,7 +691,7 @@ run_with_timeout 60 "$POS_CTRL_OUT" \
   msb exec \
     -e CLAUDE_CONFIG_DIR="$PROBE_SESSION_DIR" \
     "$CONTAINER" -- \
-    /usr/local/bin/claude -p "print only the word PROBE_ALLOWED, nothing else, do not use any tools"
+    "$CLAUDE_BIN" -p "print only the word PROBE_ALLOWED, nothing else, do not use any tools"
 
 POS_CTRL_EXIT=$RWT_EXIT
 POS_CTRL_CONTENT=$(cat "$POS_CTRL_OUT")
@@ -722,7 +737,7 @@ run_with_timeout 90 "$ENFORCE_OUT" \
   msb exec \
     -e CLAUDE_CONFIG_DIR="$PROBE_SESSION_DIR" \
     "$CONTAINER" -- \
-    /usr/local/bin/claude -p "Use the Bash tool to run this command and nothing else: echo sentinel_executed > ${BASH_EXECUTED_FILE}"
+    "$CLAUDE_BIN" -p "Use the Bash tool to run this command and nothing else: echo sentinel_executed > ${BASH_EXECUTED_FILE}"
 
 ENFORCE_EXIT=$RWT_EXIT
 ENFORCE_CONTENT=$(cat "$ENFORCE_OUT")
@@ -828,7 +843,7 @@ ALLOW_HOOK_EOF"
     msb exec \
       -e CLAUDE_CONFIG_DIR="$PROBE_SESSION_DIR" \
       "$CONTAINER" -- \
-      /usr/local/bin/claude -p "Use the Bash tool to run this command and nothing else: echo deny_wins_test > ${BASH_EXECUTED_FILE}"
+      "$CLAUDE_BIN" -p "Use the Bash tool to run this command and nothing else: echo deny_wins_test > ${BASH_EXECUTED_FILE}"
 
   DENY_WINS_EXIT=$RWT_EXIT
   rm -f "$DENY_WINS_OUT"

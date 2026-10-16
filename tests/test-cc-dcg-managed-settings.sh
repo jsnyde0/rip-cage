@@ -179,6 +179,7 @@ echo ""
 # ---------------------------------------------------------------------------
 cexec()      { msb exec "$CONTAINER" -- "$@"; }
 cexec_root() { msb exec -u root "$CONTAINER" -- "$@"; }
+BOOT_DESCRIPTOR="/etc/rip-cage/boot.json"
 
 # ---------------------------------------------------------------------------
 # STEP 0: STRUCTURAL ASSERTIONS
@@ -194,7 +195,7 @@ echo "-- Step 0: Structural assertions --"
 # `cexec` is `rc exec`, which returns non-zero for reasons that have NOTHING
 # to do with the guest filesystem: the cage isn't running, cage-name
 # resolution failed, or msb exec itself errored (cli/attach_exec.sh). Without
-# this probe, `cexec test -x /usr/local/bin/claude` returning non-zero is
+# this probe, a non-zero composition probe below is
 # AMBIGUOUS between "the probe ran and the wrapper is absent" (real SKIP) and
 # "the probe never ran at all" (broken harness invocation) -- and the old code
 # silently folded the second case into a clean-looking skip. Fail loud, not
@@ -215,11 +216,10 @@ fi
 # managed-settings.json is NOT baked into the floor image (ADR-005 D12 /
 # ADR-027 D3) -- it ships via the opt-in examples/dcg recipe (rip-cage-mctw
 # moved it there from examples/claude). This probe drives claude through the
-# claude-recipe wrapper, so it needs BOTH recipes: the wrapper check below, then
-# the dcg-guard check after it.
-# Under a plain './rc build' with the in-repo floor-only manifest, the file is
-# LEGITIMATELY absent, and the old FATAL-on-absent below is simply wrong for
-# that case (rip-cage-7atw.22 item 1).
+# claude-recipe's session wrapper, so it needs BOTH recipes: the launch check
+# below, then the dcg-guard check after it.
+# Under a floor-only build the file is LEGITIMATELY absent, and a FATAL on
+# absence is simply wrong for that case (rip-cage-7atw.22 item 1).
 #
 # The trap: gating the skip on managed-settings.json itself (the artifact the
 # assertions below are ABOUT) would collapse two different states into one --
@@ -228,35 +228,27 @@ fi
 # fail loud). A skip keyed on the asserted artifact turns the second into a
 # silent pass.
 #
-# Independent signal used instead: /usr/local/bin/claude, the session-
-# isolation wrapper the SAME recipe provisions (examples/claude/README.md).
-# It is NOT written by the floor Dockerfile -- the floor npm-installs the real
-# binary at /usr/bin/claude; only the claude-recipe's install_cmd
-# (manifest/default-tools.yaml:91) writes a wrapper to /usr/local/bin/claude
-# (which precedes /usr/bin/claude on PATH). So its presence is a reliable
-# COMPOSITION signal -- "was this recipe's install_cmd run at build time" --
-# without being the artifact under test. It is NOT a tamper-resistance claim:
-# the agent holds a NOPASSWD sudo grant for /usr/bin/dpkg (cage/Dockerfile:110),
-# an unrestricted root write primitive, so a motivated in-cage adversary could
-# forge or remove both this wrapper and managed-settings.json. That adversary
-# is explicitly out of this project's threat model (CLAUDE.md: accidents and
-# prompt-injection, not a motivated adversary) -- this signal targets
-# accidental/config-drift absence, not tamper detection.
+# Independent signal used instead: the boot descriptor's tools[claude].launch,
+# which the SAME recipe's boot-fragment.json sets to its session-isolation
+# wrapper (examples/claude/README.md). The base image puts its generic
+# tool-launch-wrapper at $(command -v claude) (cage/Dockerfile); that wrapper
+# execs the launch line, so claude is invoked below by the path `command -v`
+# resolves -- never a hardcoded install path (rip-cage-b8kd.7.3, mirroring
+# rip-cage-lli5). A floor-only build leaves tools[claude] without a launch.
+# So the launch line is a reliable COMPOSITION signal -- "was this recipe
+# merged at build time" -- without being the artifact under test. It is NOT a
+# tamper-resistance claim: the agent holds a NOPASSWD sudo grant for
+# /usr/bin/dpkg (cage/Dockerfile), an unrestricted root write primitive, so a
+# motivated in-cage adversary could forge or remove both the descriptor entry
+# and managed-settings.json. That adversary is explicitly out of this
+# project's threat model (CLAUDE.md: accidents and prompt-injection, not a
+# motivated adversary) -- this signal targets accidental/config-drift
+# absence, not tamper detection.
 #
-# Residual false-green window (named, not papered over): the wrapper and
-# managed-settings.json are written by the SAME install_cmd RUN step, which is
-# a single '&&' chain -- if that step failed at BUILD time, the whole `docker
-# build` would have failed and there would be no image to test at all, so
-# "recipe composed but install_cmd partially failed" cannot occur for a live
-# image. The residual gap is the opposite direction: if something removes
-# ONLY /usr/local/bin/claude from a live cage (leaving managed-settings.json
+# Residual false-green window (named, not papered over): if something removes
+# ONLY tools[claude].launch from a live cage (leaving managed-settings.json
 # intact), this probe would SKIP even though the floor-lock is actually fine
-# -- a missed run, not a false GREEN on a real regression. No clean signal
-# fully independent of the recipe's own install_cmd exists today (no generic
-# per-TOOL "composed" image label -- only rc.multiplexers exists, for the
-# MULTIPLEXER archetype; and /etc/rip-cage/safety-stack-asserted is only
-# populated for manifest entries carrying required:true, which claude-recipe
-# does not set in manifest/default-tools.yaml today).
+# -- a missed run, not a false GREEN on a real regression.
 #
 # SECOND residual, NOT fixable from inside this file (rip-cage-pow0, filed
 # separately -- do not attempt to solve it here): tests/run-host.sh's suite
@@ -265,22 +257,35 @@ fi
 # probe currently contributes a silent PASS forever. The "SKIP:" marker below
 # is made maximally loud/greppable on stdout as the only mitigation available
 # from this file; the ledger-level fix belongs to rip-cage-pow0.
-if ! cexec test -x /usr/local/bin/claude; then
+CLAUDE_BIN=$(cexec bash -c 'command -v claude' 2>/dev/null || true)
+# A failed read is a FAIL, not a SKIP: a skip on a read error would hide a composed cage.
+if ! CLAUDE_LAUNCH_CMD=$(cexec jq -r '((.tools // []) | map(select(.name == "claude")) | first | .launch) // ""' "$BOOT_DESCRIPTOR" 2>/dev/null); then
+  echo "FAIL: could not read tools[claude].launch from ${BOOT_DESCRIPTOR} in $CONTAINER — cannot tell whether the claude-recipe is composed"
+  exit 1
+fi
+if [[ -z "$CLAUDE_LAUNCH_CMD" ]]; then
   echo ""
   echo "############################################################"
   echo "### SKIP SKIP SKIP: claude-recipe NOT composed into this image"
   echo "############################################################"
-  echo "SKIP: /usr/local/bin/claude (the session-wrapper the recipe provisions) is absent, so"
-  echo "SKIP: managed-settings.json is legitimately absent too (ADR-005 D12 / ADR-027 D3 -- the"
-  echo "SKIP: DCG floor-lock is an opt-in recipe, not part of the floor image)."
-  echo "SKIP: This probe only applies when the claude-recipe is composed into the manifest used"
-  echo "SKIP: for './rc build'. See examples/claude/README.md to opt in."
+  echo "SKIP: tools[claude] in ${BOOT_DESCRIPTOR} carries no launch line (the session wrapper the"
+  echo "SKIP: recipe wires), so managed-settings.json is legitimately absent too (ADR-005 D12 /"
+  echo "SKIP: ADR-027 D3 -- the DCG floor-lock is an opt-in recipe, not part of the floor image)."
+  echo "SKIP: This probe only applies when the claude-recipe is composed into the image"
+  echo "SKIP: './rc build' builds. See examples/claude/README.md to opt in."
   echo "SKIP: NOTE (rip-cage-pow0): this SKIP exits 0 and tests/run-host.sh's suite ledger cannot"
   echo "SKIP: currently distinguish a SKIP from a PASS at the TOTALS line -- read this stdout"
   echo "SKIP: marker directly, don't infer composition status from a green suite run."
   echo "############################################################"
   exit 0
 fi
+# Composed but unrunnable is a FAIL: the recipe is there and claude cannot start through it.
+if [[ -z "$CLAUDE_BIN" ]] || ! cexec test -x "$CLAUDE_BIN" || ! cexec test -x "${CLAUDE_LAUNCH_CMD%% *}"; then
+  echo "FAIL: claude-recipe composed (tools[claude].launch = '${CLAUDE_LAUNCH_CMD}') but claude at"
+  echo "      '${CLAUDE_BIN:-nothing}' or the launch command is missing or not executable"
+  exit 1
+fi
+echo "Composition: claude-recipe composed (claude at ${CLAUDE_BIN} launches '${CLAUDE_LAUNCH_CMD}')"
 
 # Same independent-signal rule for the dcg recipe: key on the guard wrapper it
 # installs, never on managed-settings.json itself (the artifact under test).
@@ -435,7 +440,7 @@ run_with_timeout 45 "$AUTH_OUT" \
   msb exec \
     -e CLAUDE_CONFIG_DIR="$AUTH_CHECK_DIR" \
     "$CONTAINER" -- \
-    /usr/local/bin/claude -p "print only the word AUTH_OK, nothing else, no tools"
+    "$CLAUDE_BIN" -p "print only the word AUTH_OK, nothing else, no tools"
 
 AUTH_EXIT=$RWT_EXIT
 AUTH_OUTPUT_CONTENT=$(cat "$AUTH_OUT")
@@ -622,7 +627,7 @@ run_with_timeout 60 "$POS_CTRL_OUT" \
   msb exec \
     -e CLAUDE_CONFIG_DIR="$PROBE_SESSION_DIR" \
     "$CONTAINER" -- \
-    /usr/local/bin/claude -p "print only the phrase PROBE_DCG_ALLOWED, nothing else, do not use any tools"
+    "$CLAUDE_BIN" -p "print only the phrase PROBE_DCG_ALLOWED, nothing else, do not use any tools"
 
 POS_CTRL_EXIT=$RWT_EXIT
 POS_CTRL_CONTENT=$(cat "$POS_CTRL_OUT")
@@ -668,7 +673,7 @@ run_with_timeout 90 "$BASH_CTRL_OUT" \
   msb exec \
     -e CLAUDE_CONFIG_DIR="$PROBE_SESSION_DIR" \
     "$CONTAINER" -- \
-    /usr/local/bin/claude -p "Use the Bash tool to run exactly this command and nothing else: touch ${BASH_ALLOWED_WITNESS}"
+    "$CLAUDE_BIN" -p "Use the Bash tool to run exactly this command and nothing else: touch ${BASH_ALLOWED_WITNESS}"
 
 BASH_CTRL_EXIT=$RWT_EXIT
 BASH_CTRL_CONTENT=$(cat "$BASH_CTRL_OUT")
@@ -754,7 +759,7 @@ run_with_timeout 90 "$DESTRUCTIVE_OUT" \
   msb exec \
     -e CLAUDE_CONFIG_DIR="$PROBE_SESSION_DIR" \
     "$CONTAINER" -- \
-    /usr/local/bin/claude -p "$(cat "$DESTRUCTIVE_PROMPT_FILE")"
+    "$CLAUDE_BIN" -p "$(cat "$DESTRUCTIVE_PROMPT_FILE")"
 
 DESTRUCTIVE_EXIT=$RWT_EXIT
 DESTRUCTIVE_CONTENT=$(cat "$DESTRUCTIVE_OUT")

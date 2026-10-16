@@ -81,6 +81,10 @@ echo "Container: $CONTAINER"
 # Run a command inside the container as agent user
 cexec() { msb exec "$CONTAINER" -- "$@"; }
 
+CLAUDE_REAL="/usr/local/lib/rip-cage/bin/claude-real"
+TOOL_WRAPPER="/usr/local/lib/rip-cage/tool-launch-wrapper"
+BOOT_DESCRIPTOR="/etc/rip-cage/boot.json"
+
 # Snapshot the list of files directly under ~/.claude (not recursing into subdirs
 # we explicitly symlink like projects/sessions — those aren't session-written).
 # Returns sorted list of filenames.
@@ -107,25 +111,29 @@ _sticky_miss_detected() {
 # COMPOSITION PROBE (rip-cage-sw6s): is the claude-recipe composed into this
 # image at all?
 #
-# Several steps below hardcode /usr/local/bin/claude — the claude-recipe's
-# session-isolation wrapper (examples/claude/README.md) — to specifically
-# exercise ITS derivation/seeding logic (Step 0, Step 3a/3b/3c's seed-by-copy
-# fixture invocations, Step 7's multiplexer-derivation proof). Under a
-# floor-only build (the repo default; ADR-005 D12 / ADR-027 D3) that path is
-# legitimately absent: the floor image installs the real binary at
-# /usr/bin/claude only. Empirically confirmed (rip-cage-sw6s): the OTHER
-# steps in this file (1, 2's file/inode checks, 4, 5, 5b, 6, the negative
-# control) invoke the bare `claude` (PATH-resolved) or /usr/bin/claude
-# directly and run correctly with no wrapper at all — CLAUDE_CONFIG_DIR
-# isolation and the R4 snapshot seed are native/floor mechanisms, not
-# wrapper-only. So this probe gates ONLY the wrapper-specific steps, not the
-# whole file (a blanket file-level SKIP would silently drop real,
-# host-valid coverage — see tests/run-host.sh's SKIP classifier: a file
+# Several steps below exercise the claude-recipe's session-isolation wrapper
+# (examples/claude/README.md) — ITS derivation/seeding logic (Step 0, Step
+# 3a/3b/3c's seed-by-copy fixture invocations, Step 7's multiplexer-derivation
+# proof). The base image puts its generic tool-launch-wrapper at
+# $(command -v claude) (cage/Dockerfile) and moves the real binary to
+# ${CLAUDE_REAL}; the wrapper execs the boot descriptor's tools[claude].launch,
+# which the recipe's boot-fragment.json sets to its session wrapper. So the
+# composition signal is that launch line, and these steps invoke claude by the
+# path `command -v` resolves — never a hardcoded install path
+# (rip-cage-b8kd.7.3, mirroring rip-cage-lli5). Under a floor-only build (the
+# repo default; ADR-005 D12 / ADR-027 D3) tools[claude] carries no launch and
+# claude execs the real binary directly. Empirically confirmed (rip-cage-sw6s):
+# the OTHER steps in this file (1, 2's file/inode checks, 4, 5, 5b, 6) invoke
+# the bare `claude` and run correctly with no session wrapper at all —
+# CLAUDE_CONFIG_DIR isolation and the R4 snapshot seed are native/floor
+# mechanisms, not wrapper-only. So this probe gates ONLY the wrapper-specific
+# steps, not the whole file (a blanket file-level SKIP would silently drop
+# real, host-valid coverage — see tests/run-host.sh's SKIP classifier: a file
 # with genuinely-passing checks must ledger PASS, not SKIP).
 #
 # Liveness-probe-first, same as test-cc-dcg-managed-settings.sh's
-# PRECONDITION block: `cexec test -x ...` returning non-zero is otherwise
-# ambiguous between "ran, wrapper absent" and "never ran, channel broken".
+# PRECONDITION block: a non-zero probe is otherwise ambiguous between "ran,
+# recipe absent" and "never ran, channel broken".
 if ! cexec true; then
   echo ""
   echo "FATAL: cannot exec into container '$CONTAINER' — the probe channel itself is broken."
@@ -134,14 +142,20 @@ if ! cexec true; then
   echo "  Check: msb list   /   rc doctor $CONTAINER"
   exit 1
 fi
+CLAUDE_BIN=$(cexec bash -c 'command -v claude' 2>/dev/null || true)
+# A failed read is a FAIL, not a SKIP: a skip on a read error would hide a composed cage.
+if ! CLAUDE_LAUNCH_CMD=$(cexec jq -r '((.tools // []) | map(select(.name == "claude")) | first | .launch) // ""' "$BOOT_DESCRIPTOR" 2>/dev/null); then
+  echo "FAIL: could not read tools[claude].launch from ${BOOT_DESCRIPTOR} in $CONTAINER — cannot tell whether the claude-recipe is composed"
+  exit 1
+fi
 COMPOSED=false
-if cexec test -x /usr/local/bin/claude; then
+if [[ -n "$CLAUDE_LAUNCH_CMD" ]]; then
   COMPOSED=true
 fi
 if [[ "$COMPOSED" == "true" ]]; then
-  echo "Composition: claude-recipe composed (/usr/local/bin/claude present)"
+  echo "Composition: claude-recipe composed (tools[claude].launch = '${CLAUDE_LAUNCH_CMD}', claude at ${CLAUDE_BIN:-nothing})"
 else
-  echo "Composition: claude-recipe NOT composed (/usr/local/bin/claude absent — floor-only build, ADR-005 D12 / ADR-027 D3)"
+  echo "Composition: claude-recipe NOT composed (tools[claude].launch unset — floor-only build, ADR-005 D12 / ADR-027 D3)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -178,18 +192,23 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 0: Ensure the claude wrapper is in place
+# Step 0: Ensure claude starts through the recipe's session wrapper
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== Step 0: claude wrapper on PATH ==="
+echo "=== Step 0: claude launches through the session wrapper ==="
 if [[ "$COMPOSED" != "true" ]]; then
-  echo "SKIP: Step 0 — claude-recipe not composed (/usr/local/bin/claude absent); nothing to assert on PATH precedence"
+  echo "SKIP: Step 0 — claude-recipe not composed (tools[claude].launch unset); nothing to assert on the launch path"
 else
-  WRAPPER_PATH=$(cexec which claude)
-  if [[ "$WRAPPER_PATH" == "/usr/local/bin/claude" ]]; then
-    pass "claude wrapper is at /usr/local/bin/claude (precedes /usr/bin/claude)"
+  if [[ -n "$CLAUDE_BIN" ]] && cexec test -x "$CLAUDE_BIN" && cexec cmp -s "$CLAUDE_BIN" "$TOOL_WRAPPER"; then
+    pass "claude at ${CLAUDE_BIN} is the base image's launch wrapper"
   else
-    fail "claude wrapper not at /usr/local/bin/claude" "which claude = $WRAPPER_PATH"
+    fail "claude at '${CLAUDE_BIN:-nothing}' is MISSING, not executable, or not the launch wrapper" \
+      "expected: cage/Dockerfile copies ${TOOL_WRAPPER} to \$(command -v claude)"
+  fi
+  if cexec test -x "${CLAUDE_LAUNCH_CMD%% *}"; then
+    pass "tools[claude].launch command ${CLAUDE_LAUNCH_CMD%% *} is executable"
+  else
+    fail "tools[claude].launch command '${CLAUDE_LAUNCH_CMD%% *}' is missing or not executable" "$CLAUDE_LAUNCH_CMD"
   fi
 fi
 
@@ -213,7 +232,7 @@ fi
 # ---------------------------------------------------------------------------
 # WHAT THE PREREQUISITE ACTUALLY IS. Every step below runs claude with its own
 # CLAUDE_CONFIG_DIR — a FRESH per-session dir. Seeding auth into such a dir is
-# the claude-recipe wrapper's job (/usr/local/bin/claude), and that recipe is
+# the claude-recipe's session wrapper's job (tools[claude].launch), and that recipe is
 # composed, not baked (ADR-005 D12). Without it the per-session agents come
 # back "Not logged in" however healthy the cage's own credentials are, which is
 # why a credential-posture read is the wrong gate: a minimal cage reads as
@@ -224,7 +243,7 @@ if [[ "$COMPOSED" != "true" ]]; then
   echo ""
   echo "SKIP (NEEDS_RECIPE): the live-agent steps need the claude-recipe composed."
   echo "  Every step below runs claude under a fresh CLAUDE_CONFIG_DIR, and it is the"
-  echo "  recipe wrapper at /usr/local/bin/claude that seeds auth into a new session"
+  echo "  recipe session wrapper (tools[claude].launch) that seeds auth into a new session"
   echo "  dir. It is absent here (floor-only cage), so each agent would return"
   echo "  'Not logged in' — a missing prerequisite, not a concurrency defect."
   echo "  Compose examples/claude into the cage image to run these."
@@ -435,7 +454,7 @@ else
       # rip-cage-sw6s: seeding a fresh session here is the claude-recipe
       # wrapper's OWN mechanism (examples/claude/claude-session-wrapper.sh
       # copies the R4 snapshot into a fresh CLAUDE_CONFIG_DIR) — the
-      # hardcoded /usr/local/bin/claude invocation below only exists to
+      # claude invocation below only exists to
       # trigger it. Without the recipe composed, that invocation fails to
       # exec entirely (ENOENT) and every downstream assertion would read a
       # never-created session file, misreporting a missing-binary condition
@@ -444,7 +463,7 @@ else
       # floor-level (R4, cage/init/init-rip-cage.sh) and already ran
       # unconditionally above.
       if [[ "$COMPOSED" != "true" ]]; then
-        echo "SKIP: Step 3a session-seed assertion — claude-recipe not composed (/usr/local/bin/claude absent); base-snapshot oauthAccount check above already ran"
+        echo "SKIP: Step 3a session-seed assertion — claude-recipe not composed (tools[claude].launch unset); base-snapshot oauthAccount check above already ran"
       else
         # Seed a fresh session using the wrapper WITHOUT RC_P1P_JSON_BASE override,
         # so it uses the snapshot (R4 path — ~/.claude/.claude.json.seed).
@@ -452,7 +471,7 @@ else
         msb exec \
           -e CLAUDE_CONFIG_DIR="$MCP_SEED_DIR" \
           "$CONTAINER" -- \
-          /usr/local/bin/claude --version >/dev/null 2>&1 || true
+          "$CLAUDE_BIN" --version >/dev/null 2>&1 || true
 
         # Assert oauthAccount is present in the seeded session
         _session_oauth=$(cexec bash -c "jq -r 'if .oauthAccount then \"present\" else \"absent\" end' '${MCP_SEED_DIR}/.claude.json' 2>/dev/null" || echo "jq-failed")
@@ -517,11 +536,11 @@ if [[ "$_sentinel_in_fixture" != "$MCP_SENTINEL_KEY" ]]; then
 elif [[ "$COMPOSED" != "true" ]]; then
   # rip-cage-sw6s: the seed-by-copy step this assertion is ABOUT is the
   # claude-recipe wrapper's own mechanism, triggered here only via the
-  # hardcoded /usr/local/bin/claude invocation below. Without the recipe
+  # claude invocation below. Without the recipe
   # composed that exec fails (ENOENT) before any seeding happens, which
   # would otherwise misreport a missing-binary condition as "seed-by-copy
   # broken".
-  echo "SKIP: Step 3b — claude-recipe not composed (/usr/local/bin/claude absent); sentinel fixture created above but seed-by-copy cannot run"
+  echo "SKIP: Step 3b — claude-recipe not composed (tools[claude].launch unset); sentinel fixture created above but seed-by-copy cannot run"
 else
   # Seed a fresh session dir with RC_P1P_JSON_BASE pointing at the fixture
   cexec rm -rf "$MCP_SENTINEL_DIR"
@@ -529,7 +548,7 @@ else
     -e CLAUDE_CONFIG_DIR="$MCP_SENTINEL_DIR" \
     -e RC_P1P_JSON_BASE="$MCP_FIXTURE" \
     "$CONTAINER" -- \
-    /usr/local/bin/claude --version >/dev/null 2>&1 || true
+    "$CLAUDE_BIN" --version >/dev/null 2>&1 || true
 
   # Assert the sentinel survived the copy into the session dir
   _sentinel_in_session=$(cexec bash -c "jq -r '.mcpServers | keys[] | select(. == \"$MCP_SENTINEL_KEY\")' '${MCP_SENTINEL_DIR}/.claude.json' 2>/dev/null" || true)
@@ -604,11 +623,11 @@ else
   elif [[ "$COMPOSED" != "true" ]]; then
     # rip-cage-sw6s: the seed-from-snapshot behavior this guard is ABOUT is
     # the claude-recipe wrapper's own mechanism, triggered here only via the
-    # hardcoded /usr/local/bin/claude invocation below. Without the recipe
+    # claude invocation below. Without the recipe
     # composed that exec fails (ENOENT) before any seeding happens, which
     # would otherwise misreport a missing-binary condition as "wrapper may
     # have fallen to live mount".
-    echo "SKIP: Step 3c — claude-recipe not composed (/usr/local/bin/claude absent); guard-key injection into snapshot above already ran"
+    echo "SKIP: Step 3c — claude-recipe not composed (tools[claude].launch unset); guard-key injection into snapshot above already ran"
     # Restore the original clean snapshot (without guard key)
     cexec cp "$R4_ORIGINAL_BACKUP" /home/agent/.claude/.claude.json.seed
   else
@@ -619,7 +638,7 @@ else
     msb exec \
       -e CLAUDE_CONFIG_DIR="$R4_GUARD_DIR" \
       "$CONTAINER" -- \
-      /usr/local/bin/claude --version >/dev/null 2>&1 || true
+      "$CLAUDE_BIN" --version >/dev/null 2>&1 || true
 
     # Assert: session .claude.json exists and is non-empty
     _r4_session_nonempty=$(cexec bash -c "[ -s '${R4_GUARD_DIR}/.claude.json' ] && echo yes || echo no")
@@ -910,7 +929,7 @@ cexec rm -rf "$GIT_TEST_DIR"
 # reproduction — labeled as such throughout.
 #
 # The shared dir is seeded with a backups/ entry (the documented sticky-miss trigger:
-# .claude.json absent + backup present = loop). Both processes use the REAL /usr/bin/claude
+# .claude.json absent + backup present = loop). Both processes use the REAL ${CLAUDE_REAL}
 # binary — NOT the wrapper, which would fix the dir.
 #
 # Hard assertion: FAILURES++ unless the mechanism-specific clobber evidence is
@@ -1011,14 +1030,14 @@ else
     msb exec \
       -e CLAUDE_CONFIG_DIR="$SHARED_DIR" \
       "$CONTAINER" -- \
-      timeout 30 /usr/bin/claude -p "print the word READY and nothing else" \
+      timeout 30 "$CLAUDE_REAL" -p "print the word READY and nothing else" \
       >"$OUT_NEG_X" 2>&1 &
     PID_NEG_X=$!
 
     msb exec \
       -e CLAUDE_CONFIG_DIR="$SHARED_DIR" \
       "$CONTAINER" -- \
-      timeout 30 /usr/bin/claude -p "print the word READY and nothing else" \
+      timeout 30 "$CLAUDE_REAL" -p "print the word READY and nothing else" \
       >"$OUT_NEG_Y" 2>&1 &
     PID_NEG_Y=$!
 
@@ -1115,14 +1134,14 @@ if [[ "$COMPOSED" != "true" ]]; then
   # rip-cage-sw6s: Step 7 in its entirety unit-tests the claude-recipe
   # wrapper's OWN three-way CLAUDE_CONFIG_DIR derivation logic (examples/
   # claude/claude-session-wrapper.sh) — every sub-step (7a/7b/7c) invokes
-  # the hardcoded /usr/local/bin/claude path specifically to exercise that
+  # the resolved claude (launching the session wrapper) specifically to exercise that
   # code, not the native CLI. There is no derivation logic to prove without
-  # the wrapper composed; a floor-only /usr/bin/claude has no such
+  # the wrapper composed; a floor-only claude execs the real binary, with no such
   # derivation branches at all. (7c's header note "must PASS, not skip"
   # refers to a resolved D7 ambiguity about HERDR_SESSION support once the
   # recipe IS composed — it is not a claim that this step must run
   # regardless of composition.)
-  echo "SKIP: Step 7 (7a/7b/7c) — claude-recipe not composed (/usr/local/bin/claude absent); this step unit-tests the wrapper's own derivation logic, which does not exist without it"
+  echo "SKIP: Step 7 (7a/7b/7c) — claude-recipe not composed (tools[claude].launch unset); this step unit-tests the wrapper's own derivation logic, which does not exist without it"
 else
 
 MUX_TEST_BASE=/home/agent/.claude-sessions
@@ -1146,7 +1165,7 @@ msb exec -u agent \
   -e TMUX="" \
   -e HERDR_SESSION="" \
   "$CONTAINER" -- \
-  /usr/local/bin/claude --version >/dev/null 2>&1 || true
+  "$CLAUDE_BIN" --version >/dev/null 2>&1 || true
 
 if cexec test -f "${MUX_TEST_BASE}/default/.claude.json"; then
   pass "Step 7a: none multiplexer → CLAUDE_CONFIG_DIR=~/.claude-sessions/default (seeded)"
@@ -1174,7 +1193,7 @@ _mux_herdr_live_out=$(msb exec \
   -e TMUX="" \
   -u agent \
   "$CONTAINER" -- \
-  zsh -ic "/usr/local/bin/claude --version > /dev/null 2>&1; echo MUX_HERDR_LIVE_DONE_$$" 2>&1)
+  zsh -ic "${CLAUDE_BIN} --version > /dev/null 2>&1; echo MUX_HERDR_LIVE_DONE_$$" 2>&1)
 
 if ! echo "$_mux_herdr_live_out" | grep -q "MUX_HERDR_LIVE_DONE_$$"; then
   fail "Step 7b: herdr live-shell sentinel not detected — zsh -ic (zshrc sourcing) failed" "$(echo "$_mux_herdr_live_out" | head -5)"
@@ -1196,7 +1215,7 @@ msb exec -u agent \
   -e TMUX="" \
   -e HERDR_SESSION="$HERDR_TEST_SESSION" \
   "$CONTAINER" -- \
-  /usr/local/bin/claude --version >/dev/null 2>&1 || true
+  "$CLAUDE_BIN" --version >/dev/null 2>&1 || true
 
 if cexec test -f "${MUX_TEST_BASE}/${HERDR_TEST_SESSION}/.claude.json"; then
   pass "Step 7c (GATING): herdr multiplexer → CLAUDE_CONFIG_DIR=~/.claude-sessions/${HERDR_TEST_SESSION} (derived from HERDR_SESSION)"
