@@ -70,7 +70,12 @@ Commands:
     --replace           Graceful-stop and recreate a RUNNING cage against the
                         current config. A running cage is never recreated
                         implicitly; a STOPPED cage converges on a plain 'rc up'.
+    --reload            Explicit synonym for the default converge on a STOPPED cage;
+                        on a RUNNING cage it only prints a notice (use --replace)
     --no-reload         Resume a stopped cage as-is instead of converging it
+    --allow-config-override
+                        Warn instead of refusing when the workspace
+                        .claude/settings.json sets a base-URL redirect
     --port PORT         Expose a port
     --env-file FILE     Load env vars from file
     --cpus N            Override the config's cpus: for this launch
