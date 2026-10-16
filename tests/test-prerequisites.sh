@@ -81,7 +81,7 @@ echo "=== Test 1: Missing jq gives helpful error for --output json ==="
 # `rc ls` was this case's original subject; it retired with the six-verb
 # thinning (rip-cage-ely4.10). `rc doctor` sits behind the same check_jq
 # preflight arm, so the assertion is unchanged.
-output=$(RC_ALLOWED_ROOTS="$HOME" PATH="$NOJQ_BIN" "$RC" doctor --output json 2>&1 || true)
+output=$(PATH="$NOJQ_BIN" "$RC" doctor --output json 2>&1 || true)
 if echo "$output" | grep -qi "jq"; then
   pass "missing jq: error mentions 'jq'"
 else
@@ -243,7 +243,7 @@ echo "=== Test 3: Docker daemon not running gives helpful error ==="
 # build`'s dispatch runs check_docker first (rc:195), which calls `docker
 # info` and exits loud on that failure BEFORE cmd_build ever reaches a real
 # `docker build`. This is Test 3's whole point.
-output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" build 2>&1 || true)
+output=$(PATH="$FAKE_BIN:$PATH" "$RC" build 2>&1 || true)
 if echo "$output" | grep -qi "docker"; then
   pass "docker not running: error mentions 'docker'"
 else
@@ -271,7 +271,7 @@ exit 1
 FAKEMSB
 chmod +x "$FAKE_MSB_BIN/msb"
 
-output=$(PATH="$FAKE_MSB_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" destroy 2>&1 || true)
+output=$(PATH="$FAKE_MSB_BIN:$PATH" "$RC" destroy 2>&1 || true)
 if echo "$output" | grep -qi "msb"; then
   pass "msb not reachable: error mentions 'msb'"
 else
@@ -296,7 +296,7 @@ echo "=== Test 4: Docker check runs for build; msb check runs for the msb-rewire
 # rip-cage-d2bo kind-1 (harmless): same $FAKE_BIN/docker shim as Test 3 above
 # -- `docker info` exits 1, check_docker (rc:195) exits loud on that BEFORE
 # cmd_build ever reaches a real `docker build`.
-output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" build 2>&1 || true)
+output=$(PATH="$FAKE_BIN:$PATH" "$RC" build 2>&1 || true)
 if echo "$output" | grep -qi "docker"; then
   pass "docker check for 'rc build'"
 else
@@ -313,7 +313,7 @@ chmod +x "$FAKE_MSB_BIN/msb"
 
 # Both need an arg, but the msb check runs first.
 for cmd in destroy test; do
-  output=$(PATH="$FAKE_MSB_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" $cmd 2>&1 || true)
+  output=$(PATH="$FAKE_MSB_BIN:$PATH" "$RC" $cmd 2>&1 || true)
   if echo "$output" | grep -qi "msb"; then
     pass "msb check for 'rc $cmd'"
   else
@@ -336,7 +336,7 @@ rm -rf "$FAKE_MSB_BIN"
 echo ""
 echo "=== Test 5: a verb needing neither runtime does not require docker ==="
 
-output=$(PATH="$FAKE_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" --version 2>&1 || true)
+output=$(PATH="$FAKE_BIN:$PATH" "$RC" --version 2>&1 || true)
 if echo "$output" | grep -q '^rc version '; then
   pass "rc --version works without docker daemon"
 else

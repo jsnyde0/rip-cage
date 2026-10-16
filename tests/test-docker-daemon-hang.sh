@@ -84,7 +84,7 @@ export RC_MSB_PREFLIGHT_TIMEOUT=1
 echo ""
 echo "=== Test 1: rc destroy --output json against wedged msb ==="
 start=$(date +%s)
-output=$(PATH="$MSB_HANG_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" --output json destroy 2>&1 || true)
+output=$(PATH="$MSB_HANG_BIN:$PATH" "$RC" --output json destroy 2>&1 || true)
 elapsed=$(( $(date +%s) - start ))
 
 if echo "$output" | grep -q '"code":"MSB_UNREACHABLE"'; then
@@ -108,7 +108,7 @@ fi
 # -----------------------------------------------
 echo ""
 echo "=== Test 2: rc test --output json against wedged msb ==="
-output=$(PATH="$MSB_HANG_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" --output json test 2>&1 || true)
+output=$(PATH="$MSB_HANG_BIN:$PATH" "$RC" --output json test 2>&1 || true)
 if echo "$output" | grep -q '"code":"MSB_UNREACHABLE"'; then
   pass "wedged msb (test): JSON error code is MSB_UNREACHABLE"
 else
@@ -120,7 +120,7 @@ fi
 # -----------------------------------------------
 echo ""
 echo "=== Test 3: rc doctor --host (human) against wedged daemon ==="
-output=$(PATH="$HANG_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" doctor --host 2>&1 || true)
+output=$(PATH="$HANG_BIN:$PATH" "$RC" doctor --host 2>&1 || true)
 if echo "$output" | grep -qi "daemon"; then
   pass "doctor --host: output mentions 'daemon'"
 else
@@ -142,7 +142,7 @@ fi
 # -----------------------------------------------
 echo ""
 echo "=== Test 4: rc doctor --host JSON against wedged daemon ==="
-output=$(PATH="$HANG_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" --output json doctor --host 2>&1 || true)
+output=$(PATH="$HANG_BIN:$PATH" "$RC" --output json doctor --host 2>&1 || true)
 if echo "$output" | jq -e '.scope == "host"' >/dev/null 2>&1; then
   pass "doctor --host JSON: scope=host"
 else
@@ -165,7 +165,7 @@ fi
 # -----------------------------------------------
 echo ""
 echo "=== Test 5: rc doctor --host against rejecting daemon (rc=1, not 124) ==="
-output=$(PATH="$DEAD_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" --output json doctor --host 2>&1 || true)
+output=$(PATH="$DEAD_BIN:$PATH" "$RC" --output json doctor --host 2>&1 || true)
 if echo "$output" | jq -e '.docker_info_rc == 1' >/dev/null 2>&1; then
   pass "doctor --host: rejected daemon reports rc=1 (distinct from wedge)"
 else
@@ -179,7 +179,7 @@ fi
 # -----------------------------------------------
 echo ""
 echo "=== Test 6: rc doctor --host emits diagnostic (not preflight error) ==="
-output=$(PATH="$HANG_BIN:$PATH" RC_ALLOWED_ROOTS="$HOME" "$RC" doctor --host 2>&1 || true)
+output=$(PATH="$HANG_BIN:$PATH" "$RC" doctor --host 2>&1 || true)
 if echo "$output" | grep -q "Scope:"; then
   pass "doctor --host: bypasses preflight, prints Scope: line"
 else
