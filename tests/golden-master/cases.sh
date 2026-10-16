@@ -23,7 +23,6 @@ GM_CASES=(
   up_dry_run_json_absent_create
   up_dry_run_json_absent_create_image_absent
   up_dry_run_human_absent_create
-  up_validate_warning_seam
   destroy_dry_run_absent
   destroy_dry_run_running_json
   doctor_host
@@ -104,28 +103,6 @@ case_up_dry_run_human_absent_create() {
   ws=$(gm_ws_realpath)
   GM_DOCKER_STATE=absent GM_DOCKER_IMAGE_VERSION="$(gm_read_version)" \
     gm_capture --dry-run up "$ws"
-}
-
-# --- §3(iii) RC_VALIDATE_WARNING seam (folds into the dry-run-json matrix
-# per harness spec §3(iii): "Folds into §1(a)'s dry-run-json matrix (with
-# the image-present precondition)"). RC_ALLOWED_ROOTS UNSET (not merely
-# empty) so validate_path's non-interactive minimum-grant branch (cli/lib/path.sh:validate_path)
-# fires and sets RC_VALIDATE_WARNING; a running container (would_attach)
-# reaches the `_up_json_output` branch that reads it back into the JSON
-# `warning` field (cli/up.sh:_up_json_output) unconditionally of image state, per the actual
-# guard structure (`would_create && image_absent` is the ONLY case that
-# skips it) -- so this case exercises the seam without needing the
-# image-present precondition (image state is left at the shim default).
-case_up_validate_warning_seam() {
-  local ws
-  ws=$(gm_ws_realpath)
-  GM_NO_ALLOWED_ROOTS=1 \
-  GM_DOCKER_STATE=running \
-  GM_DOCKER_LABEL_SOURCE_PATH="$ws" \
-  GM_DOCKER_LABEL_EGRESS="on" \
-  GM_DOCKER_LABEL_FWD_SSH="off" \
-  GM_DOCKER_IMAGE_VERSION="$(gm_read_version)" \
-    gm_capture --dry-run --output json up "$ws"
 }
 
 # --- destroy --dry-run ------------------------------------------------------

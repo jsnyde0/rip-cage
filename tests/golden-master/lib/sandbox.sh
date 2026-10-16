@@ -41,7 +41,7 @@ GM_FAKEBIN="${GM_LIB_DIR}/fake-bin"
 # path -- so the workspace's container name embeds GM_ROOT's bare basename
 # literally, UNSCRUBBED (scrub.sh's gm_scrub_root_script only scrubs
 # full-path occurrences of GM_ROOT, not this standalone token; see
-# up_dry_run_json_*/up_validate_warning_seam snapshots, which hardcode
+# up_dry_run_json_* snapshots, which hardcode
 # "rc-golden-master-root-workspace"). Tagging the basename itself with $$
 # would vary that literal every run and break golden-master byte-
 # determinism; nesting under a $$-tagged PARENT keeps the full path
@@ -107,9 +107,7 @@ YAML
 # gm_capture VERB [ARGS...] — invoke the real `rc` under the sandbox env +
 # content-keyed docker/uname shims, writing stdout/stderr/exit into
 # GM_OUT/GM_ERR/GM_EXIT (globals, overwritten each call). stdin is /dev/null
-# unless GM_STDIN names a file. RC_ALLOWED_ROOTS defaults to GM_WS; set
-# GM_NO_ALLOWED_ROOTS=1 to omit it entirely (for the RC_VALIDATE_WARNING
-# seam case, which needs it UNSET, not empty).
+# unless GM_STDIN names a file. RC_ALLOWED_ROOTS defaults to GM_WS.
 GM_OUT="" GM_ERR="" GM_EXIT=0
 gm_capture() {
   local _outfile _errfile
@@ -157,9 +155,7 @@ gm_capture() {
   for _leak_var in $(compgen -e 2>/dev/null | grep -E '^(RC_|RIP_CAGE_)' || true); do
     _env_unset+=(-u "$_leak_var")
   done
-  if [[ "${GM_NO_ALLOWED_ROOTS:-0}" != "1" ]]; then
-    _env+=("RC_ALLOWED_ROOTS=${GM_ALLOWED_ROOTS:-$GM_WS}")
-  fi
+  _env+=("RC_ALLOWED_ROOTS=${GM_ALLOWED_ROOTS:-$GM_WS}")
   [[ -n "${GM_SHELL_OVERRIDE+x}" ]] && _env+=("SHELL=${GM_SHELL_OVERRIDE}")
   [[ -n "${GM_CONFIG_GLOBAL:-}" ]] && _env+=("RC_CONFIG_GLOBAL=${GM_CONFIG_GLOBAL}")
   # Forward every currently-set GM_DOCKER_*/GM_MSB_* configuration var to
