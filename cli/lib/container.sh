@@ -108,17 +108,10 @@ _rc_destroy_refuse() {
 
 
 # rip-cage-rj68 (S6, ADR-029 D1 hard cutover): resolve_name/verify_rc_container/
-# _container_multiplexer are shared by cli/up.sh, cli/reload.sh, cli/doctor.sh
-# (all rewritten onto msb by this bead) AND by cli/attach_exec.sh,
-# cli/down_destroy.sh, cli/allowlist.sh, cli/ls.sh (NOT in this bead's
-# scope, still docker-only elsewhere in those files). D1 is a hard cutover,
-# not a dual backend, so these three functions move onto msb wholesale —
-# they cannot serve both an msb-backed and a docker-backed caller at once.
-# Known, flagged consequence: the not-in-scope verbs above cannot resolve/
-# verify/multiplex an msb-created cage after this change (they already
-# could not drive one via their own direct `docker exec`/`docker inspect`
-# calls either — this does not newly break a working path, it makes an
-# already-broken one fail at a different, earlier point). Follow-up child.
+# _container_multiplexer are shared by cli/up.sh, cli/doctor.sh, cli/test.sh
+# and cli/down_destroy.sh, and run on msb wholesale. D1 is a hard cutover, not
+# a dual backend, so these functions cannot serve both an msb-backed and a
+# docker-backed caller at once.
 resolve_name() {
   local name="${1:-}"
   if [[ -n "$name" ]]; then
@@ -246,9 +239,7 @@ _container_mux_hook_cmd() {
 # State.StartedAt for uptime display — it changes on start/stop
 # transitions; not a byte-identical semantic to docker's, an honest
 # approximation, per cli/doctor.sh's original rip-cage-rj68/S6 comment
-# this helper was extracted from). Shared by cli/doctor.sh (its original
-# home) and cli/ls.sh (rip-cage-tsf2.1) — a genuine >=2-module cross-
-# cutting helper, not a single-caller convenience.
+# this helper was extracted from). Its caller is cli/doctor.sh.
 #
 # "—" for not-running (msb exposes only ONE transition timestamp, unlike
 # docker's separate "Up X"/"Exited (code) X ago" vocabulary — a never-
@@ -282,20 +273,13 @@ _rc_uptime_from_state() {
 # rc.source.path label points at a host directory that no longer exists.
 # Echoes ONE "Fix-hint: ..." line naming the missing path and the destroy
 # remedy when it doesn't, echoes nothing and returns 1 when the path is
-# present OR the label itself is unset (nothing to check). Same underlying
-# "label missing or path gone" condition cli/reload.sh:112-114 and
-# cli/allowlist.sh:107-109 already abort loud on, but phrased as a
-# diagnostic "Fix-hint:" (the doctor.sh/reload.sh established prefix for a
-# repair suggestion, not an abort) and naming the actual path — those two
-# sites deliberately don't, since bead rip-cage-uod6 asks this hint to name
-# the missing path explicitly. SOURCE_PATH is optional: pass the caller's
-# already-resolved label (cmd_doctor already has it) to skip a second `msb
-# inspect` round-trip; omit it (or pass "") to have this helper resolve it
-# itself (cmd_exec's ENOENT path, which has no reason to have read the label
-# yet).
+# present OR the label itself is unset (nothing to check). SOURCE_PATH is
+# optional: pass the caller's already-resolved label (cmd_doctor already has
+# it) to skip a second `msb inspect` round-trip; omit it (or pass "") to have
+# this helper resolve it itself.
 #
-# Charted from rip-cage-54q3's root cause and shared by cmd_doctor's host-
-# workspace check and cmd_exec's ENOENT-shaped-failure hint (rip-cage-uod6):
+# Charted from rip-cage-54q3's root cause, used by cmd_doctor's host-workspace
+# check (rip-cage-uod6):
 # a deleted host workspace leaves /workspace a dead virtiofs mount, and msb
 # chdir()s into Workdir=/workspace before spawning, so the raw exec error
 # reports ENOENT against the *program* name -- misleading. This hint names

@@ -260,7 +260,7 @@ _doctor_bd_version_compare() {
 #                                a non-empty destination-sibling seed snapshot
 #                                exists in-cage at <dirname(dst)>/.claude/
 #                                <basename(dst)>.seed (rip-cage-i7s9: matches
-#                                init-rip-cage.sh:576-580's R4 naming
+#                                init-rip-cage.sh's R4 naming
 #                                convention). Benign by design: init snapshots
 #                                the mount once at container start (while the
 #                                handle was intact) and all runtime consumers
@@ -319,8 +319,8 @@ _doctor_dead_file_mounts() {
     # Destination is dead. Only now classify by host source state.
     if [[ -f "$src" ]]; then
       # rip-cage-i7s9: before crying DEAD, check for a non-empty destination-
-      # sibling seed snapshot (the naming convention init-rip-cage.sh:576-580
-      # R4 writes: <dirname(dst)>/.claude/<basename(dst)>.seed). If present,
+      # sibling seed snapshot (the naming convention init-rip-cage.sh's
+      # R4 snapshot step writes: <dirname(dst)>/.claude/<basename(dst)>.seed). If present,
       # the dead live handle is benign — init already snapshotted it once
       # while intact, and runtime consumers read the snapshot, not the live
       # mount. Generic classifier: not keyed on any specific mount path.
@@ -447,7 +447,7 @@ _doctor_format_auth_probe() {
 # reason to ever hold a secrets/CCTOK file, so probing the host file
 # unconditionally reported FAIL for every one of them — a false positive on a
 # cage that is working exactly as configured. The config path comes from the
-# `rc.cage-conf` label `rc up` stamps at create time (cli/up.sh:3042); a cage
+# `rc.cage-conf` label `rc up` stamps at create time (the `--label rc.cage-conf=` line in cli/up.sh); a cage
 # predating that label, or one whose config no longer resolves, can't be
 # affirmatively shown to declare CCTOK, so it reads n/a rather than guessing.
 _doctor_format_host_auth_probe() {
@@ -481,8 +481,8 @@ _doctor_format_host_auth_probe() {
 # WARN, never FAIL: this is a legacy/edge state, not a broken cage -- the
 # cage itself is otherwise fine, it just cannot survive a cold-recreate
 # (`rc up --replace`) without losing in-flight caged-claude conversation
-# transcripts (rip-cage-reload.sh's pre-reload guard refuses that path by
-# default; --allow-transcript-loss overrides it). A "couldn't check"
+# transcripts (cli/up.sh's _up_warn_transcript_loss warns about that path
+# and proceeds). A "couldn't check"
 # result (msb inspect itself failed) is reported as INFO, not WARN -- a
 # transient inspect hiccup must not read as "this cage lost persistence".
 _doctor_format_transcript_persistence_probe() {
@@ -534,9 +534,9 @@ _doctor_format_posture_probe() {
   fi
 
   # rip-cage-jlu4: secret-violation clause — a SEPARATE mined list,
-  # presented as a WARNING, never routed through the allowlist classifier
-  # above (see the function-header comment: allowlisting a caught
-  # exfil-attempt host would defeat the guard that just blocked it).
+  # presented as a WARNING, never folded into the denied-domain fix-hint
+  # above (allowlisting a caught exfil-attempt host would defeat the guard
+  # that just blocked it; see _msb_secret_violations_from_trace_log's header).
   local violations violation_clause=""
   violations=$(_msb_secret_violations_from_trace_log "$name" 2>/dev/null)
   local status_prefix="OK"
@@ -554,7 +554,7 @@ _doctor_format_posture_probe() {
   # rip-cage-ffmc: static note, ALWAYS present. msb logs nothing at the
   # TCP-connect stage for this class -- no trace-log line exists to key
   # a proactive fix-hint off of, per
-  # _msb_denied_domains_from_trace_log's header, cli/lib/msb_runtime.sh:215-219.
+  # _msb_denied_domains_from_trace_log's header in cli/lib/msb_runtime.sh.
   # True on both msb 0.6.4 and 0.6.18 -- this is a log-visibility gap, not
   # a client-symptom fact. A port-scoped denial against an already-ALLOWED
   # domain is therefore invisible to the miner above. Through msb 0.6.9
@@ -595,8 +595,7 @@ cmd_doctor() {
   # check, so it runs unconditionally here (works on stopped cages too,
   # unlike the live exec-based probes below which only run when running).
   # Empty when the path exists or the label is unset — nothing printed in
-  # that case (negative-control requirement: a healthy cage prints neither
-  # this hint nor cmd_exec's).
+  # that case (negative-control requirement: a healthy cage prints no hint).
   local source_path_missing_hint
   source_path_missing_hint=$(_rc_source_path_missing_hint "$name" "$source_path" || true)
   # updated_at is the closest msb-side counterpart to docker's
@@ -786,7 +785,7 @@ cmd_doctor() {
 
   # Uptime (humanized) — derive from updated_at ISO timestamp (msb's closest
   # counterpart to docker's State.StartedAt — see the field-read comment
-  # above). Shared with cli/ls.sh (rip-cage-tsf2.1) via
+  # above). Derived via
   # cli/lib/container.sh's _rc_uptime_from_state.
   local uptime
   uptime=$(_rc_uptime_from_state "$running" "$updated_at")

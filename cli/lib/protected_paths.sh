@@ -120,13 +120,17 @@ _protected_paths_load() {
 # return 0; otherwise echo nothing and return 1. Matching is component-equals,
 # never substring (ADR-023 D4's rule, kept).
 #
-# This is the single-path form, for the generated mounts rc computes from the
-# host filesystem rather than reads from the cage config -- today, the
-# read-only parent mounts behind a symlinked skill or agent. Those keep
-# ADR-023 D6's warn-and-skip treatment: they are a best-effort decoration
-# surface, so a protected parent drops out of the mount set with a warning
-# rather than failing the launch. The config's own mount list is the strict
-# surface; that is _protected_paths_enforce.
+# This is the single-path form, for paths rc computes from the host filesystem
+# rather than reads from the cage config. Callers split by what a hit means:
+#   - generated best-effort mounts (the read-only parent mounts behind a
+#     symlinked skill or agent, the worktree auto-redirect to the main repo's
+#     .beads, and similar): ADR-023 D6's warn-and-skip, so a protected parent
+#     drops out of the mount set with a warning rather than failing the launch;
+#   - a target the workspace or operator names (an explicit .beads/redirect,
+#     via _beads_redirect_refusal below; an --env-file path or an env-file
+#     pointer, via _emit_denylist_denial in cli/up.sh): a hard refusal.
+# The config's own mount list is the strict surface; that is
+# _protected_paths_enforce.
 # --------------------------------------------------------------------------
 _protected_paths_path_match() {
   local _path="$1"

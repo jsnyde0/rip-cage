@@ -5,20 +5,14 @@
 #
 # This module is the msb-side counterpart to cli/lib/docker.sh, providing the
 # same class of primitive (state read, label read, exec, create, stop/start)
-# for the lifecycle-verb code paths this bead rewires (cli/up.sh's create/
-# resume, cli/reload.sh, cli/doctor.sh, and the shared resolve_name/
-# verify_rc_container/_container_multiplexer helpers in cli/lib/container.sh
-# — ADR-029 D1 is a hard cutover, not a dual backend, so these replace their
-# docker-backed equivalents at every call site those modules touch; they do
-# not coexist with them there).
+# for the lifecycle-verb code paths (cli/up.sh's create/resume, cli/doctor.sh,
+# and the shared resolve_name/verify_rc_container/_container_multiplexer
+# helpers in cli/lib/container.sh) -- ADR-029 D1 is a hard cutover, not a dual
+# backend, so these replace their docker-backed equivalents at every call site
+# those modules touch; they do not coexist with them there.
 #
-# `docker.sh` itself is untouched and stays live for the verb modules NOT in
-# this bead's scope (cli/attach_exec.sh, cli/down_destroy.sh, cli/allowlist.sh,
-# cli/build.sh, cli/manifest.sh, cli/ls.sh's live probes, cli/test.sh) — a
-# known, flagged gap: a cage created via the new `rc up` is an msb sandbox,
-# not a docker container, so those still-docker verbs cannot currently drive
-# it. Out of S6's stated scope (create/resume/reload/doctor); left for a
-# follow-up child.
+# `docker.sh` stays live only for `rc build` (check_docker; the image is still
+# built with `docker build`) -- see the dispatcher in rc.
 
 
 # check_msb -- verifies the msb CLI is installed and responsive (msb-side
@@ -203,11 +197,7 @@ _msb_short_image_id() {
 }
 
 
-# _msb_image_drift_status (rip-cage-jnvb / D-a; moved here from cli/up.sh by
-# rip-cage-syzk so cli/reload.sh can share it too --
-# tests/test-rc-decomposition-structure.sh:286-298 asserts cmd_up is the
-# ONLY cli/up.sh function cli/reload.sh may reference, so reload cannot call
-# an up.sh-resident comparator) — compare the image ID a sandbox is pinned
+# _msb_image_drift_status (rip-cage-jnvb / D-a) — compare the image ID a sandbox is pinned
 # to (msb inspect, _msb_sandbox_image_digest) against the currently resolved
 # $IMAGE (honors $IMAGE/RC_IMAGE, rc:'RC_IMAGE:-rip-cage:latest' — never hardcode rip-cage:latest).
 # Both formats always return a sha256:... ID (reviewer-confirmed: no "<no
@@ -224,14 +214,11 @@ _msb_short_image_id() {
 # does NOT catch "rc script updated without rebuild" (same image ID,
 # different resume logic) — that adjacent class is rip-cage-h2hl.
 #
-# Single-sourced comparator behind THREE thin per-caller wrappers (mirrors
+# Single-sourced comparator behind TWO thin per-caller wrappers (mirrors
 # the mode-arg-or-thin-wrappers guidance in the design):
 #   cli/up.sh _up_resolve_resume_image_drift_stopped — abort loud, before msb start
 #   cli/up.sh _up_resolve_resume_image_drift_running — warn-only, proceed
-#   cli/reload.sh cmd_reload's not-running branch (rip-cage-syzk) — a stopped
-#     cage's mismatch (status 1) is a NEW recreate trigger; status 0/2/3 all
-#     exit 2 (never a recreate) -- the comparator itself has no opinion on
-#     this, exactly like the two cli/up.sh wrappers.
+# The comparator itself has no opinion on what a status means to a caller.
 #
 # This comparator NEVER calls exit/json_error itself (post-review M2
 # hardening) — the abort-vs-warn-vs-recreate decision belongs entirely to
@@ -372,7 +359,7 @@ _msb_image_layer_drift_status() {
 # path with "_pull_or_build already re-provisions and ends in
 # _build_msb_load, so there is nothing to warn about there". That claim was
 # FALSE at the time: _build_msb_load was invoked from exactly two places —
-# cli/build.sh:560 and :592, both inside cmd_build. On the image-absent path
+# cmd_build's two `_build_msb_load || true` call sites. On the image-absent path
 # _pull_or_build delegated to _pull_or_build_local, which ran `docker
 # build`, ran the two root-owned validators, and returned — it never
 # converted the result into msb's cache. So `rc up`'s auto-provisioning
@@ -380,7 +367,7 @@ _msb_image_layer_drift_status() {
 # unreachable from that path by construction (`_RC_MSB_LOAD_SUCCEEDED` was
 # never set there, so the status-3 branch below was permanently inert on
 # `rc up`). That gap was filed separately as rip-cage-0v47 (which also owned
-# the same false claim mirrored at cli/up.sh:2468-2469 and :2480).
+# the same false claim mirrored in cli/up.sh's rc up image-absent block).
 #
 # CLOSED (rip-cage-0v47): `rc up`'s new-container provisioning block
 # (cli/up.sh, immediately after a successful `_pull_or_build`) now calls
@@ -517,7 +504,7 @@ _msb_stop_graceful() {
 # dump" (the raw JSONL line is a Rust-debug-formatted log record embedded
 # in a `"d":"..."` field; a caller consuming it wants a domain name, not a
 # log line to re-parse itself). Consumed by cli/doctor.sh's posture probe
-# and referenced by cli/reload.sh's repair-loop guidance.
+# (the retired `rc reload` repair-loop guidance also consumed it).
 #
 # Only TCP/DNS-stage domain denials are covered (the sole channel the
 # 2026-07-09 spike found actually logged at any verbosity — the
@@ -533,8 +520,8 @@ _msb_stop_graceful() {
 # real dispatch context (rc's shim) runs under `set -euo pipefail`; without
 # the `|| true` guard below, pipefail propagates that non-zero through the
 # whole pipe, and an unguarded `x=$(_msb_denied_domains_from_trace_log
-# ...)` assignment at either call site (cli/reload.sh's cmd_reload,
-# cli/doctor.sh's posture probe) then aborts the CALLER under errexit --
+# ...)` assignment at a call site (cli/doctor.sh's posture
+# probe) then aborts the CALLER under errexit --
 # violating this function's own "never errors" contract above (proven live
 # by tests/test-msb-runtime.sh R7 against a real sandbox with zero
 # denials). The guard absorbs only the expected zero-match case; a genuine
@@ -566,11 +553,10 @@ _msb_denied_domains_from_trace_log() {
 # _msb_denied_domains_from_trace_log's output -- precisely so a consumer
 # can't conflate the two. In-guest, a secret-violation failure is
 # observationally identical to an ordinary denied-host failure (spike S3's
-# nuance); a caller that naively `rc allowlist add`s a mined
-# secret-violation host would CONVERT A CAUGHT EXFIL ATTEMPT INTO AN
-# ALLOWED ONE. Consumers (cli/doctor.sh's posture probe, cli/reload.sh's
-# dry-run fix-hint) MUST present this list as a WARNING and MUST NEVER
-# emit an allowlist suggestion for any host it contains.
+# nuance); a caller that naively added a mined
+# secret-violation host to network.allow would CONVERT A CAUGHT EXFIL ATTEMPT INTO AN
+# ALLOWED ONE. Consumer (cli/doctor.sh's posture probe) MUST present this list as a
+# WARNING and MUST NEVER emit an allowlist suggestion for any host it contains.
 #
 # Echoes the disallowed destination host (the line's `host=` field), one
 # per line, deduplicated, in first-seen order. Empty (never errors) when
@@ -590,7 +576,7 @@ _msb_secret_violations_from_trace_log() {
 
 # _cage_claude_projects_host_bound NAME
 #
-# rip-cage-aa4t: predicate for the pre-reload transcript-persistence guard.
+# rip-cage-aa4t: predicate for the `rc up --replace` transcript-persistence warning.
 # `rc up --replace` cold-recreates a cage (stop -> remove -> create); the guest's
 # ephemeral rootfs overlay is destroyed by that recreate. A cage whose
 # config mounts ~/.claude/projects (the shipped template's line; since
@@ -608,7 +594,7 @@ _msb_secret_violations_from_trace_log() {
 #        transcript-loss-risk state this bead guards against)
 #   2 -- COULDN'T CHECK (msb inspect itself failed, e.g. cage gone or
 #        unresponsive) -- deliberately DISTINCT from 1 so callers (the
-#        reload guard, the doctor probe) can warn-and-proceed instead of
+#        `rc up --replace` warning, the doctor probe) can warn-and-proceed instead of
 #        spuriously refusing/failing on a transient inspect hiccup.
 _cage_claude_projects_host_bound() {
   local name="$1"

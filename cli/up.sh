@@ -196,7 +196,8 @@ _up_detect_worktree() {
   fi
 
   # Only handle worktrees, not submodules (.git/modules/<name>)
-  # Note: validate_path() does similar allowed-roots checking — see Security section
+  # Note: validate_path() (cli/lib/path.sh) no longer does allowed-roots checking —
+  # the guard retired with ADR-031 D2; the protected-paths rule is the mount floor.
   if [[ -z "$host_gitdir" || "$host_gitdir" != *"/worktrees/"* ]]; then
     [[ -n "$host_gitdir" ]] && log "Skipping non-worktree .git file (submodule or other)"
     return 0
@@ -1124,44 +1125,6 @@ _up_prepare_environment() {
 }
 
 
-# _up_start_container — create the msb sandbox with the prepared
-# _UP_RUN_ARGS (rip-cage-rj68, S6 — REWRITTEN onto msb; was `docker run`).
-#
-# The mount/env-building body that produces _UP_RUN_ARGS
-# (_up_prepare_docker_mounts, _up_prepare_environment, DCG, manifest
-# mounts) is UNCHANGED by this bead — still docker -v/-e/--label/--workdir
-# shape. This function is the one seam where that shape gets: (a)
-# translated to msb flags (_up_translate_docker_args_to_msb), and (b)
-# joined with the net-rule/secret/tls flags S2's generator produces from
-# the NEW auth.credentials config surface (_up_build_egress_config_json ->
-# _msb_flags_generate) — "create moves onto S2's generator flags" per the
-# bead design.
-#
-# Fold b (source_env preflight) gates this BEFORE any msb invocation: a
-# credential whose source_env is unset/empty in the host env aborts loud
-# here, naming the var, rather than silently booting a cage carrying an
-# empty secret.
-#
-# `--log-level trace` is always passed (criterion 5, D2's deny-visibility
-# re-home): cages boot with trace logging on by default so the DNS-denial
-# `domain=` log line is available for the repair loop's fix-hint (see
-# _reload_denied_domains_from_trace_log in cli/reload.sh).
-#
-# Globals read: _UP_RUN_ARGS, OUTPUT_FORMAT, IMAGE
-# Parameters: $1 name — container name; $2 path — validated workspace path
-#             (for the egress-config JSON build)
-# Returns non-zero on failure (human mode); JSON mode calls json_error,
-# which exits internally and never returns.
-# _up_resolve_conf PATH NAME
-#
-# Echo the native msb config file rc will launch with. Precedence, first hit
-# wins: `rc up --conf <path>`, then $RC_CAGE_CONF, then
-# $XDG_CONFIG_HOME/rip-cage/projects/<NAME>.yaml. Fails loud, naming exactly
-# what to copy, when nothing resolves -- there is no implicit default cage.
-#
-# ADR-031 D2/D5(a): wherever it comes from, the file must sit OUTSIDE every
-# mount it declares. That is _protected_paths_conf_outside_mounts, called from
-# cmd_up before any msb call.
 # _up_cage_conf_sha CONF -- content hash of the cage config, or "" if unreadable.
 _up_cage_conf_sha() {
   local _conf="$1"
@@ -1537,6 +1500,16 @@ _up_warn_transcript_loss() {
 }
 
 
+# _up_resolve_conf PATH NAME
+#
+# Echo the native msb config file rc will launch with. Precedence, first hit
+# wins: `rc up --conf <path>`, then $RC_CAGE_CONF, then
+# $XDG_CONFIG_HOME/rip-cage/projects/<NAME>.yaml. Fails loud, naming exactly
+# what to copy, when nothing resolves -- there is no implicit default cage.
+#
+# ADR-031 D2/D5(a): wherever it comes from, the file must sit OUTSIDE every
+# mount it declares. That is _protected_paths_conf_outside_mounts, called from
+# cmd_up before any msb call.
 _up_resolve_conf() {
   local _path="$1" _name="$2"
 
@@ -1647,6 +1620,31 @@ _up_build_msb_create_argv() {
 }
 
 
+# _up_start_container NAME PATH — create the msb sandbox with the prepared
+# _UP_RUN_ARGS (rip-cage-rj68, S6 — REWRITTEN onto msb; was `docker run`).
+#
+# _UP_RUN_ARGS is produced by _up_prepare_docker_mounts and
+# _up_prepare_environment and is still docker -v/-e/--label shape. This
+# function translates it to msb flags (_up_translate_docker_args_to_msb),
+# joins it with the egress/secret flags (_up_build_egress_config_json ->
+# _msb_flags_generate), and runs the `msb create` argv that
+# _up_build_msb_create_argv assembles.
+#
+# The secret-source preflight (_msb_flags_preflight_secret_env) gates this
+# BEFORE any msb invocation: a credential whose source_env is unset/empty in
+# the host env aborts loud here, naming the var, rather than silently booting
+# a cage carrying an empty secret.
+#
+# `--log-level trace` is always passed (added by _up_build_msb_create_argv):
+# cages boot with trace logging on so the DNS-denial `domain=` log line is
+# available for the fix-hint `rc doctor` mines (via
+# _msb_denied_domains_from_trace_log).
+#
+# Globals read: _UP_RUN_ARGS, OUTPUT_FORMAT, IMAGE
+# Parameters: $1 name — container name; $2 path — validated workspace path
+#             (for the egress-config JSON build)
+# Returns non-zero on failure (human mode); JSON mode calls json_error,
+# which exits internally and never returns.
 _up_start_container() {
   local _name="$1" _path="$2"
 
@@ -2751,14 +2749,14 @@ cmd_up() {
   if [[ "$_image_absent" == false && "${DRY_RUN:-}" != "true" ]]; then
     # rip-cage-7yvy (RULING 2026-09-05, brain:rip-cage, option (a)): this
     # branch only reaches "present" because _image_absent's own probe above
-    # already required msb to list $IMAGE BY NAME (cli/up.sh:2474-2478) --
+    # already required msb to list $IMAGE BY NAME (the probe above) --
     # exactly the presence-by-reference gap this bead exists to close: a
     # name match here can still hide DIFFERENT layer content. Call the
     # comparator ONCE, ourselves, to decide whether an auto-resync is owed
     # (status 1). The SECOND call inside _msb_warn_image_layer_drift just
     # below is deliberate, not duplicated work -- it re-checks AFTER the
     # resync attempt (same after-the-load ordering rip-cage-7bs3/0v47
-    # already enforce at cli/build.sh:561 and cli/up.sh:2988 below), so ITS
+    # already enforce in cmd_build and in the image-absent block below), so ITS
     # status-1/status-3 branches report the POST-resync state: a load that
     # failed, or reported success but didn't verifiably land, falls through
     # to that existing loud status-3/528o warning on its own -- never a
@@ -3201,10 +3199,10 @@ cmd_up() {
     # (anchored on ADR-021 D4a/D5) is preserved for everything else:
     # non-eligible/mount-shape drift is left to the guards below (never
     # double-handled — review F4). RC_UP_CONVERGE is RETIRED — no longer read.
-    # Runs the SAME cold-recreate mechanic cmd_reload uses (graceful stop -> remove
-    # -> recreate), but recurses cmd_up in the CURRENT output format so an
-    # interactive `rc up` still attaches after the cage comes back (cmd_reload
-    # forces json because it must NOT attach; up must).
+    # Runs the cold-recreate mechanic the retired `rc reload` used (graceful
+    # stop -> remove -> recreate), but recurses cmd_up in the CURRENT output
+    # format so an interactive `rc up` still attaches after the cage comes
+    # back (the reload verb forced json because it must NOT attach; up must).
     if [[ -z "$rc_up_no_reload" ]] && _up_converge_needed "$name" "$_UP_CAGE_CONF"; then
         # Same split as the dry-run mirror above: stale is converge-able,
         # absent and unverifiable are not.
@@ -3386,11 +3384,11 @@ cmd_up() {
     # rather than inside _pull_or_build_local so it dominates BOTH legs, not
     # just the local-build one -- a GHCR-pulled image is exactly as absent
     # from msb's cache as a built one. Best-effort, following cmd_build's own
-    # idiom (cli/build.sh:560, :592): its exit code is deliberately not
+    # idiom (the `_build_msb_load || true` calls in cmd_build): its exit code is deliberately not
     # propagated into rc up's own.
     _build_msb_load || true
     # rip-cage-0v47: AFTER _build_msb_load, never before -- same ordering
-    # rip-cage-7bs3 already enforces at cli/build.sh:561 (pre-load, msb's
+    # rip-cage-7bs3 already enforces in cmd_build (pre-load, msb's
     # cache still holds whatever it held before, so a pre-load compare is
     # divergent by construction). This is the image-ABSENT counterpart to the
     # image-PRESENT emitter call below -- a deliberate posture change

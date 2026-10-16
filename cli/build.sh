@@ -255,15 +255,15 @@ cmd_build() {
 # warn about) or "cannot check" (the data needed to answer the question is
 # missing/unreadable — must emit, naming the affected cage(s) and why).
 #
-# The caller-side `[[ "$_bt_tag_set" -eq 0 ]] &&` guard at cli/build.sh:556
-# and :582 (skip this whole function on a custom-tag build) was also
+# The caller-side `[[ -z "${RC_IMAGE:-}" ]] &&` guard in cmd_build
+# (skip this whole function on a custom-tag build) was also
 # classified during this bead's sweep and deliberately LEFT ALONE — it is
 # rip-cage-fo4z F7's scope guard, not an early return inside this function,
 # and out of this bead's scope.
 _build_warn_stale_containers() {
   # NOTHING TO CHECK: msb isn't installed at all, so no msb-backed rc cage
   # could exist to warn about (matches _build_msb_load's own precedent,
-  # cli/build.sh:673 `command -v msb >/dev/null 2>&1 || return 0` — without
+  # `command -v msb >/dev/null 2>&1 || return 0` — without
   # this carve-out, every build on a Docker-only host would emit a spurious
   # "cannot determine" warning below).
   command -v msb >/dev/null 2>&1 || return 0
