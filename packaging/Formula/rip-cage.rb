@@ -1,5 +1,5 @@
 class RipCage < Formula
-  desc "Docker sandbox for Claude Code agents with a safety stack"
+  desc "Tested microsandbox (msb) distribution for running Claude Code with permissions off"
   homepage "https://github.com/jsnyde0/rip-cage"
   url "https://github.com/jsnyde0/rip-cage/archive/refs/tags/v0.13.1.tar.gz"
   # PLACEHOLDER — updated post-tag by packaging/scripts/update-formula-sha.sh.
@@ -14,13 +14,12 @@ class RipCage < Formula
 
   def caveats
     <<~EOS
-      rip-cage needs Docker (or OrbStack) installed and running.
+      rip-cage runs cages on microsandbox (msb), which Homebrew does not
+      provide. Install msb 0.7.4 or newer yourself (`msb update` upgrades it);
+      `rc up` refuses an older msb.
 
-      On first `rc up`, the pre-built image is pulled from GHCR (~30s).
-      If GHCR is unreachable, rc falls back to a local docker build (5-10 min).
-
-      To always build locally (e.g. for Dockerfile development):
-        export RIP_CAGE_IMAGE_REGISTRY=""
+      Docker is needed only to build the agent image (`rc build`), which
+      loads it into msb. msb, not Docker, runs the cage.
 
       Quick start: https://github.com/jsnyde0/rip-cage#quick-start
     EOS
