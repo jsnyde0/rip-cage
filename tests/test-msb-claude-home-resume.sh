@@ -10,7 +10,7 @@
 #
 # S6's rc resume verb does not exist yet, so this drives `msb` DIRECTLY,
 # exactly as instructed. It exercises the ACTUAL shipped
-# claude-session-wrapper.sh (cage/substrate/claude-session-wrapper.sh) --
+# claude-session-wrapper.sh (examples/claude/claude-session-wrapper.sh) --
 # mounted and invoked as-is, not reimplemented -- and the ACTUAL shipped
 # _seed_claude_home_dirs() (cli/up.sh, sourced from `rc`) for the fix side.
 #
@@ -25,7 +25,7 @@
 #   its projects/sessions dirs are NOT pre-created (mirrors the exact
 #   pre-rip-cage-xuy8 footgun). The wrapper only symlinks
 #   ~/.claude/projects|sessions into its per-session config dir when they
-#   ALREADY EXIST at wrapper-run time (cage/substrate/claude-session-wrapper.sh);
+#   ALREADY EXIST at wrapper-run time (examples/claude/claude-session-wrapper.sh);
 #   absent, it seeds fresh copies in the guest's EPHEMERAL per-session dir
 #   instead. That state is NOT on the virtiofs host mount, so a cold
 #   `--replace` recreate (which discards guest overlay writes, per
@@ -34,13 +34,13 @@
 #   codeword.
 #
 # SAFETY (mirrors rip-cage-1ujn): NEVER mounts or writes the real ~/.claude.
-# Builds two disposable scratch claude homes (mktemp -d), seeds credentials
-# by copying (never printing) the real .credentials.json + minimal
-# non-token claude.json fields. Real ~/.claude is verified untouched
-# (mtime unchanged) at the end.
+# Builds two disposable scratch claude homes (mktemp -d) seeded with minimal
+# non-token claude.json fields. Auth rides msb --secret CCTOK, the one shipped
+# auth mechanism (docs/reference/auth.md): the guest holds only $MSB_CCTOK.
+# Both scratch homes are verified to sit outside the real ~/.claude.
 #
-# NEEDS_CONTAINER + NEEDS_MSB + a real, authenticated host Claude Code
-# session. Self-skips (exit 0, SKIP: ...) when any prerequisite is missing --
+# NEEDS_CONTAINER + NEEDS_MSB + a resolvable CCTOK (the host env var, or the
+# secrets/CCTOK file `rc auth` checks). Manual-only live run. Self-skips (exit 0, SKIP: ...) when any prerequisite is missing --
 # never fakes a PASS.
 
 set -uo pipefail
@@ -48,7 +48,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 RC="${REPO_ROOT}/rc"
-WRAPPER_SRC="${REPO_ROOT}/cage/substrate/claude-session-wrapper.sh"
+WRAPPER_SRC="${REPO_ROOT}/examples/claude/claude-session-wrapper.sh"
 IMAGE="rip-cage:latest"
 FAILURES=0
 TOTAL=0
@@ -76,10 +76,15 @@ if ! msb image list --format json 2>/dev/null | grep -qF "$IMAGE"; then
   echo "SKIP: ${IMAGE} not loaded into msb -- skipping $(basename "$0") (run: rc build, which msb-loads it)"
   exit 0
 fi
-if [[ ! -s "${HOME}/.claude/.credentials.json" ]]; then
-  echo "SKIP: no host ~/.claude/.credentials.json (host claude not authed) -- skipping $(basename "$0")"
-  exit 0
+if [[ -z "${CCTOK:-}" ]]; then
+  CCTOK_FILE="$(bash -c "source '${RC}'; _protected_paths_secrets_dir" 2>/dev/null)/CCTOK"
+  if [[ ! -s "$CCTOK_FILE" ]]; then
+    echo "SKIP: no CCTOK (host env var unset, ${CCTOK_FILE} absent; see docs/reference/auth.md) -- skipping $(basename "$0")"
+    exit 0
+  fi
+  CCTOK="$(<"$CCTOK_FILE")"
 fi
+export CCTOK
 if [[ ! -f "$WRAPPER_SRC" ]]; then
   echo "SKIP: ${WRAPPER_SRC} missing -- skipping $(basename "$0")"
   exit 0
@@ -88,8 +93,6 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "SKIP: jq not available -- skipping $(basename "$0")"
   exit 0
 fi
-
-REAL_CLAUDE_MTIME_BEFORE=$(stat -f "%m" "${HOME}/.claude/.credentials.json" 2>/dev/null || stat -c "%Y" "${HOME}/.claude/.credentials.json" 2>/dev/null)
 
 SBX_A="xuy8-resume-a-$$"
 SBX_B="xuy8-resume-b-$$"
@@ -113,8 +116,6 @@ trap cleanup EXIT
 _build_scratch_claude_home() {
   local _base="$1"
   mkdir -p "${_base}/claude-dir"
-  cp "${HOME}/.claude/.credentials.json" "${_base}/claude-dir/.credentials.json"
-  chmod 600 "${_base}/claude-dir/.credentials.json"
   if [[ -f "${HOME}/.claude.json" ]]; then
     jq -c '{hasCompletedOnboarding, oauthAccount}' "${HOME}/.claude.json" > "${_base}/claude.json"
   else
@@ -127,6 +128,8 @@ NET_RULES=(
   --net-rule "allow@api.anthropic.com:tcp:443"
   --net-rule "allow@mcp-proxy.anthropic.com:tcp:443"
   --net-rule "allow@http-intake.logs.us5.datadoghq.com:tcp:443"
+  --secret "CCTOK@api.anthropic.com"
+  -e "CLAUDE_CODE_OAUTH_TOKEN=\$MSB_CCTOK"
 )
 
 CODEWORD_A="XUY8POSITIVE-$$-${RANDOM}"
@@ -268,11 +271,16 @@ fi
 # Safety: real host ~/.claude was never touched.
 # ===========================================================================
 echo ""
-REAL_CLAUDE_MTIME_AFTER=$(stat -f "%m" "${HOME}/.claude/.credentials.json" 2>/dev/null || stat -c "%Y" "${HOME}/.claude/.credentials.json" 2>/dev/null)
-if [[ "$REAL_CLAUDE_MTIME_BEFORE" == "$REAL_CLAUDE_MTIME_AFTER" ]]; then
-  pass "SAFETY: real ~/.claude/.credentials.json mtime unchanged (never touched)"
+REAL_CLAUDE_DIR=$(cd "${HOME}/.claude" 2>/dev/null && pwd -P)
+_SAFE=1
+for _s in "$SCRATCH_A" "$SCRATCH_B"; do
+  _s_real=$(cd "$_s" && pwd -P)
+  [[ -n "$REAL_CLAUDE_DIR" && "$_s_real/" == "$REAL_CLAUDE_DIR/"* ]] && _SAFE=0
+done
+if [[ "$_SAFE" -eq 1 ]]; then
+  pass "SAFETY: both mounted claude homes are scratch dirs outside the real ~/.claude"
 else
-  fail "SAFETY: real ~/.claude/.credentials.json mtime CHANGED" "before=${REAL_CLAUDE_MTIME_BEFORE} after=${REAL_CLAUDE_MTIME_AFTER}"
+  fail "SAFETY: a mounted claude home sits inside the real ~/.claude" "A=${SCRATCH_A} B=${SCRATCH_B}"
 fi
 
 echo ""

@@ -7,8 +7,7 @@
 # SCOPE: this is the RECIPE's unit test. The wrapper reaches an image only
 # when an operator composes examples/claude; the base image never runs it.
 # What the BASE image does at claude startup is proven on a built image by
-# tests/test-claude-unattended-start-live.sh (rip-cage-jimf). A second pass
-# runs the same cases against the unshipped cage/substrate twin.
+# tests/test-claude-unattended-start-live.sh (rip-cage-jimf).
 #
 # WHY: under the recipe claude reads CLAUDE_CONFIG_DIR=~/.claude-sessions/<id>.
 # Two startup dialogs stop an unattended spawn there: the bypass-permissions
@@ -304,13 +303,4 @@ fi
 
 echo ""
 echo "=== test-claude-recipe-bypass-preaccept.sh complete: $((TOTAL - FAILURES))/$TOTAL passed ==="
-
-# Second pass: the cage/substrate twin gets the same cases.
-if [[ -z "${RC_WRAPPER_UNDER_TEST:-}" ]]; then
-  # The child SKIPs (exit 0) on a missing file; name that as a failure here.
-  [[ -f "${SCRIPT_DIR}/../cage/substrate/claude-session-wrapper.sh" ]] \
-    || { echo "FAIL  cage/substrate/claude-session-wrapper.sh missing -- twin pass cannot run"; FAILURES=$((FAILURES + 1)); }
-  RC_WRAPPER_UNDER_TEST="${SCRIPT_DIR}/../cage/substrate/claude-session-wrapper.sh" bash "$0"
-  FAILURES=$((FAILURES + $?))
-fi
 exit "$FAILURES"

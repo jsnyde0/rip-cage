@@ -14,11 +14,8 @@
 # History (rip-cage-8jg5.1, 2026-09-29): T3-T8 used to read
 # examples/herdr/manifest-fragment.yaml, deleted with the manifest (ADR-031
 # D4); they now read the snippet and boot fragment. T2 (the two claude
-# wrapper copies stay byte-identical) is retired: the copies now differ on
-# purpose -- the base-image copy execs /usr/local/lib/rip-cage/bin/claude-real
-# behind the boot descriptor's tool-launch wrapper, the recipe copy sits at
-# /usr/local/bin/claude (rip-cage-jimf.9). tests/test-claude-recipe-bypass-
-# preaccept.sh covers both copies' behaviour.
+# wrapper copies stay byte-identical) is retired: the cage/substrate copy is
+# deleted (rip-cage-b8kd.4.2), so examples/claude holds the one wrapper.
 #
 # Positive-sentinel discipline: every failure increments FAILURES; script
 # exits non-zero if FAILURES > 0.
@@ -28,7 +25,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/.."
 WRAPPER_EXAMPLES="${REPO_ROOT}/examples/claude/claude-session-wrapper.sh"
-WRAPPER_SUBSTRATE="${REPO_ROOT}/cage/substrate/claude-session-wrapper.sh"
 HERDR_SNIPPET="${REPO_ROOT}/examples/herdr/Dockerfile.snippet"
 HERDR_BOOT="${REPO_ROOT}/examples/herdr/boot-fragment.json"
 HERDR_README="${REPO_ROOT}/examples/herdr/README.md"
@@ -107,7 +103,6 @@ STUB
   fi
 }
 test_t1_scrub examples "$WRAPPER_EXAMPLES"
-test_t1_scrub substrate "$WRAPPER_SUBSTRATE"
 
 # The herdr multiplexer's hooks, read from the boot fragment.
 hook() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["multiplexers"][0][sys.argv[2]])' "$HERDR_BOOT" "$1" 2>/dev/null; }
