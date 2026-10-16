@@ -364,3 +364,10 @@ Per the ratified agent-first refactoring principles (dotpi-2114 notes; charter a
 - **Gate files (fail-closed):** ALL `tests/test-*.sh` (139 files), `Makefile` (BASH_SCRIPTS + lint/test targets), `tests/run-host.sh`, `tests/golden-master/**`.
 - **D3 conformance:** hermetic subset conforms (stable CLI boundary, deterministic, <2min total). Not covered vs full CI: docker image build, full host suite (network-fetched deps), container/e2e tiers. Known gap: `make lint` shellchecks only 50/139 test files (~180 findings in the rest, 108 of them SC2329 indirect-invocation notes; coverage bead filed 2026-08-09).
 - **Green-at-dispatch:** checked by the dispatching brain; result recorded on the dispatched bead.
+- **Test-subject rule (human ruling 2026-10-16, option B on rip-cage-b8kd; a reading of dotpi ADR-006 D3 clause 2):** when a bead's SUBJECT is a broken gate file (the defect lives in the test itself), the granting brain may grant a worker or driver an edit licence over it. Conditions, all required:
+  1. The brain names the exact licensed file(s) in the grant package and on the bead before dispatch; every other gate file stays untouchable, and the seat raises rather than widening the list mid-task.
+  2. The gate command's own legs (`tests/test-prerequisites.sh`, `tests/test-docker-daemon-hang.sh`, `tests/test-json-output.sh`, the `Makefile` lint list) are never licensed; a bead whose subject is one of them stays brain-edited (with the residue label) or parks for the human.
+  3. Positive control in the ship-record: the fixed test fails against a mutated or reverted subject and passes against the real code, both runs pasted verbatim.
+  4. The gate command stays green on the final commit.
+  5. Residue label `gate-edit:granted` plus a one-line reason on the bead, sweepable on return.
+  Done when a stamping brain has checked conditions 1–5 on the bead.
