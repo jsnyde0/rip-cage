@@ -145,21 +145,34 @@ fi
 # treats the whole pipeline as failed even though the pattern was found.
 cmd_up_slice=$(awk '/^cmd_up\(\)/,/^}/' "$RC_SRC")
 
-# Static: all four unsupported states have explicit elif branches (scoped to cmd_up)
-for state in paused restarting removing dead; do
-  if grep -q "\"$state\"" <<<"$cmd_up_slice"; then
-    pass "cmd_up has explicit branch for state: $state"
-  else
-    fail "cmd_up missing explicit branch for state: $state"
-  fi
-done
-
-# Static: CONTAINER_STATE_UNSUPPORTED appears at least 8 times (four states × two paths: dry-run + real)
-state_unsupported_count=$(grep -c '"CONTAINER_STATE_UNSUPPORTED"' <<<"$cmd_up_slice" || true)
-if [[ "$state_unsupported_count" -ge 8 ]]; then
-  pass "CONTAINER_STATE_UNSUPPORTED referenced >= 8 times in cmd_up ($state_unsupported_count)"
+# Static: cmd_up branches only on states the msb runtime can report. Docker's
+# paused/restarting/removing/dead/created never come back from
+# _msb_sandbox_state; any other msb status maps to "unknown" and lands in the
+# catch-all arm (rip-cage-b8kd.24.3). The emittable set is read from the
+# function's own echo lines, so a new msb state added there needs no edit here.
+msb_state_slice=$(awk '/^_msb_sandbox_state\(\)/,/^}/' "$RC_SRC")
+emittable_states=$(grep -oE 'echo "[a-z]+"' <<<"$msb_state_slice" | sed -E 's/echo "(.*)"/\1/' | sort -u | tr '\n' ' ' || true)
+compared_states=$(grep -oE '"\$state" [!=]= "[a-z]+"' <<<"$cmd_up_slice" | sed -E 's/.*"([a-z]+)"$/\1/' | sort -u || true)
+if [[ -z "$emittable_states" || -z "$compared_states" ]]; then
+  fail "could not read state literals (emittable='$emittable_states' compared='$compared_states')"
 else
-  fail "CONTAINER_STATE_UNSUPPORTED only referenced $state_unsupported_count times in cmd_up; expected >= 8 (four states × two paths)"
+  unreachable_states=""
+  for state in $compared_states; do
+    [[ " $emittable_states " == *" $state "* ]] || unreachable_states+="$state "
+  done
+  if [[ -z "$unreachable_states" ]]; then
+    pass "cmd_up compares only states _msb_sandbox_state emits (${emittable_states% })"
+  else
+    fail "cmd_up branches on state(s) _msb_sandbox_state never emits: ${unreachable_states% } (emits: ${emittable_states% })"
+  fi
+fi
+
+# Static: both cmd_up paths (dry-run + real) keep the catch-all fail-loud arm
+state_unsupported_count=$(grep -c '"CONTAINER_STATE_UNSUPPORTED"' <<<"$cmd_up_slice" || true)
+if [[ "$state_unsupported_count" -ge 2 ]]; then
+  pass "CONTAINER_STATE_UNSUPPORTED catch-all present on both cmd_up paths ($state_unsupported_count)"
+else
+  fail "CONTAINER_STATE_UNSUPPORTED only referenced $state_unsupported_count times in cmd_up; expected >= 2 (dry-run + real catch-all)"
 fi
 
 # The two cmd_ls egress-normalization assertions that lived here -- "legacy"

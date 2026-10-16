@@ -2913,7 +2913,7 @@ cmd_up() {
   # gone, --replace has to be, or the hard-stop would name no remedy at all.
   # Under --dry-run this is announced and NOT performed.
   if [[ "${_UP_MSB_REPLACE:-false}" == "true" ]] \
-      && { [[ "$state" == "running" ]] || [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; }; then
+      && { [[ "$state" == "running" ]] || [[ "$state" == "exited" ]]; }; then
     local _replace_state_word="running"
     [[ "$state" != "running" ]] && _replace_state_word="stopped"
     if [[ "$DRY_RUN" == "true" ]]; then
@@ -2953,7 +2953,7 @@ cmd_up() {
   # Refused on the stopped path too: `msb start` takes no env, so a resume
   # boots with the create-time value (msb 0.7.4, `msb start --help`).
   if [[ -n "${RC_MULTIPLEXER:-}" ]] \
-      && { [[ "$state" == "running" ]] || [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; }; then
+      && { [[ "$state" == "running" ]] || [[ "$state" == "exited" ]]; }; then
     local _stored_mux
     _stored_mux=$(_container_multiplexer "$name")
     if [[ "$RC_MULTIPLEXER" != "$_stored_mux" ]]; then
@@ -2980,7 +2980,7 @@ cmd_up() {
       _up_resolve_resume_symlink_fingerprint "$name" "$path"
       # rip-cage-3y9g: RESUME-GUARDS-DRY-RUN-RUNNING END
       would_action="would_attach"
-    elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
+    elif [[ "$state" == "exited" ]]; then
       # Surface legacy/invalid-label conditions in dry-run so planners see the
       # same hard stop the actual resume would hit (ADR-001).
       # rip-cage-jnvb / D-b: image-ID drift hard-stop surfaced here too —
@@ -3016,20 +3016,6 @@ cmd_up() {
     elif [[ "$_inspect_exit" -ne 0 ]]; then
       # msb inspect failed → container is absent; create new.
       would_action="would_create"
-    elif [[ "$state" == "paused" ]]; then
-      # msb has no pause/restarting/removing/dead concept — unreachable
-      # under msb (_msb_sandbox_state never returns these); kept defensive.
-      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is paused. Inspect manually: msb inspect $name -- then retry: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-      echo "Error: Container $name is paused. Inspect manually: msb inspect $name -- then retry: rc up $path" >&2; return 1
-    elif [[ "$state" == "restarting" ]]; then
-      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is restarting. Wait, or run: msb stop $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-      echo "Error: Container $name is restarting. Wait, or run: msb stop $name && rc up $path" >&2; return 1
-    elif [[ "$state" == "removing" ]]; then
-      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is being removed. Wait, then run: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-      echo "Error: Container $name is being removed. Wait, then run: rc up $path" >&2; return 1
-    elif [[ "$state" == "dead" ]]; then
-      [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is dead. Run: rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-      echo "Error: Container $name is dead. Run: rc destroy $name && rc up $path" >&2; return 1
     else
       # Unrecognized state (allowlist exhausted) — fail loud per ADR-001.
       # Reachable under msb (_msb_sandbox_state's "unknown" fallback).
@@ -3235,7 +3221,7 @@ cmd_up() {
         ;;
     esac
     return
-  elif [[ "$state" == "exited" ]] || [[ "$state" == "created" ]]; then
+  elif [[ "$state" == "exited" ]]; then
     # rip-cage-y0u0: converge-on-up is DEFAULT-ON for a STOPPED cage with
     # eligible config drift (flipped from tsf2.9's opt-in --reload/RC_UP_CONVERGE
     # after a soak period — human sign-off 2026-07-21). Unless --no-reload opts
@@ -3404,27 +3390,6 @@ cmd_up() {
     return
   elif [[ "$_inspect_exit" -ne 0 ]]; then
     : # container absent — fall through to "New container" block below
-  elif [[ "$state" == "paused" ]]; then
-    # rip-cage-rj68 (S6): msb has no pause/restarting/removing/dead concept
-    # — _msb_sandbox_state never returns these; these branches are
-    # unreachable under msb (kept for defensive completeness / a future msb
-    # state this bead did not anticipate) and their remedy text is
-    # necessarily generic rather than msb-specific.
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is paused. Inspect manually: msb inspect $name -- then retry: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-    echo "Error: Container $name is paused. Inspect manually: msb inspect $name -- then retry: rc up $path" >&2
-    return 1
-  elif [[ "$state" == "restarting" ]]; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is restarting. Wait, or run: msb stop $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-    echo "Error: Container $name is restarting. Wait, or run: msb stop $name && rc up $path" >&2
-    return 1
-  elif [[ "$state" == "removing" ]]; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is being removed. Wait, then run: rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-    echo "Error: Container $name is being removed. Wait, then run: rc up $path" >&2
-    return 1
-  elif [[ "$state" == "dead" ]]; then
-    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Container $name is dead. Run: rc destroy $name && rc up $path" "CONTAINER_STATE_UNSUPPORTED"
-    echo "Error: Container $name is dead. Run: rc destroy $name && rc up $path" >&2
-    return 1
   else
     # Unrecognized state (allowlist exhausted) — fail loud per ADR-001. This
     # IS reachable under msb (_msb_sandbox_state's "unknown" fallback for
@@ -3435,7 +3400,7 @@ cmd_up() {
   fi
 
   # New container — provision image now if absent/stale (ADR-008 D6).
-  # All other state paths (running/exited/paused/dead/etc.) never need a fresh image
+  # All other state paths (running/exited/unknown) never need a fresh image
   # and must NOT trigger a pull/build (ADR-001: fail fast, no wasteful side-effects).
   if [[ "$_image_absent" == "true" ]]; then
     if ! _pull_or_build; then
