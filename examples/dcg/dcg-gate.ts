@@ -46,7 +46,7 @@ const DCG_GUARD = "/usr/local/lib/rip-cage/bin/dcg-guard";
  * Known acceptable gap: a custom extension that registers a NEW exec-capable tool (not
  * replacing "bash") with a different field name (e.g. "script", "cmd") would pass through
  * unguarded here. This gap is bounded by the guard-parity re-verify check in
- * tests/test-pi-dcg-gate.sh (section 5, rip-cage-9yg0), which fires FAIL in rc test when
+ * examples/dcg/smoke.sh (the DCG-PI-PARITY-5a/5b/5c checks, rip-cage-9yg0), which fires FAIL in rc test when
  * a non-"command" exec field appears in the installed pi dist — catching drift before it
  * reaches a running cage. The live-fire proof (F2) uses the non-bash tool name path
  * to verify the tool_name="bash" pinning guards it.

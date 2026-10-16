@@ -24,7 +24,8 @@
 # home belongs in test-safety-stack.sh, not here.
 #
 # KEEPING THIS IN STEP WITH THE IMAGE (ADR-031 D5(b)'s own invalidation cue).
-# Every check names the cage/Dockerfile line it guards. Add a floor property to
+# Every check names the cage/Dockerfile construct it guards (cited by a greppable
+# anchor, not a line number -- line numbers rot). Add a floor property to
 # the Dockerfile, add its check here in the same change — a floor property the
 # probe does not know about is a containment gap that survives a green
 # `rc test`, which is exactly the drift this file exists to make visible.
@@ -32,19 +33,21 @@
 # THE CHECK LIST — property, why it is floor, and what it guards:
 #
 #   runtime-user             The cage runs as the image's floor user, not root
-#                            and not some other user. cage/Dockerfile:127-128
-#                            (useradd agent, uid 1000) + :197 (USER agent).
+#                            and not some other user. cage/Dockerfile's
+#                            `useradd -m -u 1000 ... agent` RUN + its `USER agent` line.
 #                            A `USER root` extension boots SILENTLY today
 #                            (measured, rip-cage-ely4.16 Q2).
 #   agent-home               $HOME is the floor user's passwd home. Same
-#                            Dockerfile lines, plus :202/:207 which pre-create
+#                            Dockerfile constructs, plus the `RUN mkdir -p
+#                            /home/agent/.claude ...` line that pre-creates
 #                            the mount targets under it. This is the check that
 #                            names the REAL damage of a changed USER: every host
 #                            mount stays stranded at /home/agent while the shell
 #                            reads an empty config from somewhere else. It
 #                            catches `USER <anyone>`, not only `USER root`.
 #   sudo-scope               The agent's effective sudo grant is exactly the one
-#                            baked at cage/Dockerfile:129-130 — no wildcard, and
+#                            baked by the `/etc/sudoers.d/agent`
+#                            line in the same RUN as `useradd` in cage/Dockerfile — no wildcard, and
 #                            nothing a second /etc/sudoers.d file added.
 #   guard-file <path>        Each root-owned floor artifact is root-owned AND
 #                            carries no group/other write bit. Owner alone is
@@ -54,7 +57,8 @@
 #                            listed at _rc_floor_guard_paths below.
 #   bd-wrapper               /usr/local/bin/bd is a script and /usr/local/bin/bd-real
 #                            exists executable — the indirection ADR-007 D2's
-#                            dolt-server block depends on. cage/Dockerfile:83-85.
+#                            dolt-server block depends on. the `COPY --from=go-builder ... bd-real` /
+#                            `COPY cage/substrate/bd-wrapper.sh ... bd` lines in cage/Dockerfile.
 #   path-resolution <name>   The floor's wrappers RESOLVE to the floor's own
 #                            files in the INTERACTIVE shell's PATH. Presence is
 #                            not enough and the exec PATH is not the right PATH:
@@ -63,16 +67,19 @@
 #                            ~/.local/bin (which cage/agent/zshrc prepends, and
 #                            which does not exist in the base image) outranks
 #                            everything (measured, rip-cage-ely4.16 Q3).
-#                            cage/Dockerfile:84 (bd) and :115-124 (the generic
-#                            launch wrapper). The tool names come from the boot
+#                            the `bd-wrapper.sh` COPY (bd) and the
+#                            `tool-launch-wrapper` COPY + RUN loop (the generic
+#                            launch wrapper) in cage/Dockerfile. The tool names come from the boot
 #                            descriptor, so this file names no tool (ADR-005 D12).
 #   git-hooks-deny           The baked settings template still denies writes to
-#                            .git/hooks. cage/Dockerfile:162. Init copies this
+#                            .git/hooks. The `COPY cage/agent/settings.json
+#                            /etc/rip-cage/settings.json` line in cage/Dockerfile. Init copies this
 #                            template into the agent's home on EVERY boot and
 #                            every resume, so an agent-editable template is a
 #                            live vector, not a build-time one.
 #   ssh-host-key-pin         The image-baked system-path github.com host key is
-#                            still pinned. cage/Dockerfile:155-158. ADR-029 D3
+#                            still pinned. the `ssh_known_hosts` COPY + chmod lines in
+#                            cage/Dockerfile. ADR-029 D3
 #                            retired the ssh CLUSTER — agent forwarding, the
 #                            host+key allowlist, the per-cage filtered
 #                            known_hosts mount — and git now authenticates over
@@ -87,15 +94,17 @@
 #                            and StrictHostKeyChecking only delivers it against
 #                            a pinned key. See the dated note on ADR-029 D3.
 #   python3                  python3 is present — the skill-server.py MCP shim
-#                            is dead without it. cage/Dockerfile:32.
+#                            is dead without it. Guards the python3 entry in the
+#                            apt-get package list in cage/Dockerfile.
 #                            (Lifted out of init section 5.)
 #   mise-trusted-path        MISE_TRUSTED_CONFIG_PATHS is still /workspace.
-#                            cage/Dockerfile:23. Widening it lets mise
+#                            Guards the `ENV MISE_TRUSTED_CONFIG_PATHS=/workspace` line in
+#                            cage/Dockerfile. Widening it lets mise
 #                            auto-trust config outside the workspace.
 #
 # DELIBERATELY NOT CHECKED, so a later reader does not "fix" the omission:
 #
-#   /etc/rip-cage/cage-env   Agent-writable BY DESIGN (cage/Dockerfile:138-141)
+#   /etc/rip-cage/cage-env   Agent-writable BY DESIGN (the `: > /etc/rip-cage/cage-env` RUN in cage/Dockerfile)
 #                            — the ADR-016 D2 preflight probe writes it without
 #                            a sudoers entry. It is not a guard file.
 #   ~/.claude/settings.json  The RUNTIME copy init lays down each boot. The
@@ -150,7 +159,8 @@ check() {
 echo "=== Rip Cage floor probe (ADR-031 D5b) ==="
 
 # ---------------------------------------------------------------------------
-# runtime-user + agent-home (cage/Dockerfile:127-128, :197, :202, :207)
+# runtime-user + agent-home (cage/Dockerfile: the `useradd` RUN, `USER agent`,
+# and the `mkdir -p /home/agent/.claude ...` RUN)
 # ---------------------------------------------------------------------------
 # The floor user is read out of /etc/passwd rather than assumed, so the two
 # checks below compare the image against itself: who is running, versus who the
@@ -179,7 +189,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# sudo-scope (cage/Dockerfile:129-130)
+# sudo-scope (cage/Dockerfile: the `/etc/sudoers.d/agent` line in the `useradd` RUN)
 # ---------------------------------------------------------------------------
 # The authority here is `sudo -n -l` — the grant that ACTUALLY applies, from
 # every file under /etc/sudoers.d. A second drop-in an extension added shows up
@@ -187,8 +197,8 @@ fi
 # 0440 root:root the agent cannot read it anyway (by design), and reading it
 # would only tell us about one of the files that feed the grant.
 #
-# WHY THE EXPECTED LIST IS LITERAL HERE. It is the grant baked at
-# cage/Dockerfile:129. This file is root-owned 0555, so the literal cannot be
+# WHY THE EXPECTED LIST IS LITERAL HERE. It is the grant baked by the
+# `/etc/sudoers.d/agent` line in cage/Dockerfile. This file is root-owned 0555, so the literal cannot be
 # edited from inside the cage, and `tests/test-dockerfile-sudoers.sh` asserts
 # host-side that this list and that Dockerfile line still say the same thing —
 # so the two cannot drift apart without a red host suite. Change one, change
@@ -235,13 +245,13 @@ fi
 # mode half is the bug this closes: `chmod o+w` on a root-owned file leaves it
 # agent-writable while the old owner-only check stayed green.
 #
-# Paths present in every cage (with the cage/Dockerfile line each guards):
-#   /etc/rip-cage/release            :150-152  the unforgeable "inside a cage" marker
-#   /etc/rip-cage/boot.json          :173-177  declares what STARTS inside the cage
-#   /etc/rip-cage/settings.json      :162      the settings template init copies each boot
-#   /usr/local/bin/bd                :84       the bd wrapper (see bd-wrapper below)
-#   /usr/local/bin/bd-real           :83       the real binary the wrapper defers to
-#   /usr/local/bin/init-rip-cage.sh  :178,:183 this probe's own caller
+# Paths present in every cage (with the cage/Dockerfile construct each guards):
+#   /etc/rip-cage/release            `: > /etc/rip-cage/release` RUN: the unforgeable "inside a cage" marker
+#   /etc/rip-cage/boot.json          `COPY cage/boot/boot.json`: declares what STARTS inside the cage
+#   /etc/rip-cage/settings.json      `COPY cage/agent/settings.json`: the settings template init copies each boot
+#   /usr/local/bin/bd                `COPY ...bd-wrapper.sh`: the bd wrapper (see bd-wrapper below)
+#   /usr/local/bin/bd-real           `COPY --from=go-builder`: the real binary the wrapper defers to
+#   /usr/local/bin/init-rip-cage.sh  this probe's own caller
 #   /usr/local/lib/rip-cage/floor-probe.sh     this probe itself
 #
 # Paths a composed recipe provisions — checked only when present, because a
@@ -299,7 +309,7 @@ for _rc_floor_p in "${_rc_floor_guard_optional[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# bd-wrapper (cage/Dockerfile:83-85)
+# bd-wrapper (cage/Dockerfile: the bd-real / bd-wrapper.sh COPY lines)
 # ---------------------------------------------------------------------------
 # The indirection itself, not the wrapper's policy: `rc test`'s
 # test-safety-stack.sh still exercises what the wrapper BLOCKS. Ownership and
@@ -314,7 +324,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# path-resolution <name> (cage/Dockerfile:84, :115-124)
+# path-resolution <name> (cage/Dockerfile: bd-wrapper.sh COPY; tool-launch-wrapper COPY + RUN loop)
 # ---------------------------------------------------------------------------
 # Resolution happens in the INTERACTIVE shell, which is where the agent's
 # commands actually run and whose PATH differs from this script's (the login
@@ -364,7 +374,7 @@ if [ -f "$_rc_floor_wrapper" ] && [ -f "$_rc_floor_descriptor" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# git-hooks-deny (cage/Dockerfile:162)
+# git-hooks-deny (cage/Dockerfile: `COPY cage/agent/settings.json /etc/rip-cage/settings.json`)
 # ---------------------------------------------------------------------------
 _rc_floor_settings=/etc/rip-cage/settings.json
 if jq -e '.permissions.deny[]? | select(startswith("Write(.git/hooks"))' "$_rc_floor_settings" >/dev/null 2>&1; then
@@ -375,7 +385,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# ssh-host-key-pin (cage/Dockerfile:155-158)
+# ssh-host-key-pin (cage/Dockerfile: the `ssh_known_hosts` COPY + chmod lines)
 # ---------------------------------------------------------------------------
 # Presence of a pin, not which key it is — see the "deliberately not checked"
 # note on the fingerprint above. The two files' ownership and mode are covered
@@ -388,7 +398,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# python3 (cage/Dockerfile:32) — lifted out of init section 5.
+# python3 (cage/Dockerfile: the python3 entry in the apt-get package list) — lifted out of init section 5.
 # ---------------------------------------------------------------------------
 if command -v python3 >/dev/null 2>&1; then
   check "python3" "pass" "$(command -v python3)"
@@ -397,7 +407,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# mise-trusted-path (cage/Dockerfile:23)
+# mise-trusted-path (cage/Dockerfile: `ENV MISE_TRUSTED_CONFIG_PATHS=/workspace`)
 # ---------------------------------------------------------------------------
 if [ "${MISE_TRUSTED_CONFIG_PATHS:-}" = "/workspace" ]; then
   check "mise-trusted-path" "pass" "/workspace"

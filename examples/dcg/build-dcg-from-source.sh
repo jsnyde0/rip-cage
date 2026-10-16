@@ -1,13 +1,13 @@
 #!/bin/sh
-# DCG (Destructive Command Guard) from-source build script for the rip-cage manifest mechanism.
-# This script runs INSIDE an isolated Docker builder stage (rip-cage-buuo.2 / ADR-005 D6).
-# Builder image: see the builder-stage FROM line in examples/dcg/Dockerfile.snippet.
+# DCG (Destructive Command Guard) from-source build script for the rip-cage dcg recipe.
+# This script runs INSIDE the isolated `dcg-builder` stage of examples/dcg/Dockerfile.snippet,
+# which COPYs it to /rc-build/build.sh and runs it (builder image: that stage's FROM line).
 #
 # Arch-adaptive: cargo install with --locked builds a native binary for the build-host
 # architecture (arm64 on arm64, amd64 on amd64).
 #
 # Pinned tag: v0.4.0 — matches the tag previously used by the Dockerfile rust-builder stage.
-# Output: /usr/local/cargo/bin/dcg → copied to /usr/local/bin/dcg by the manifest mechanism.
+# Output: /usr/local/cargo/bin/dcg → copied into the runtime image by the snippet's `COPY --from=dcg-builder` line.
 
 set -eu
 
@@ -26,7 +26,7 @@ cargo install \
   --locked \
   destructive_command_guard
 
-# Move binary to the output path expected by manifest build_source.output_path
+# Move binary to the output path the snippet's `COPY --from=dcg-builder` reads
 mv /usr/local/cargo/bin/dcg /usr/local/bin/dcg
 
 echo "[build-dcg-from-source] done: $(ls -lh /usr/local/bin/dcg)"

@@ -23,7 +23,7 @@ jobs:
         run: make lint
 
   # ---------------------------------------------------------------------------
-  # Job 2: Build — verify multi-stage Dockerfile compiles (Go + Rust + Debian)
+  # Job 2: Build — verify multi-stage Dockerfile compiles (Go builder + Debian runtime)
   # ---------------------------------------------------------------------------
   build:
     name: Build (docker build)
@@ -46,11 +46,8 @@ jobs:
   # duplicate step needed here.
   #
   # Tests excluded via NEEDS_CONTAINER denylist (see tests/run-host.sh):
-  #   - test-agent-cli.sh      full rc up / rc attach / rc destroy flow
-  #   - test-pi-e2e.sh         requires pi credentials + running container
-  #   - test-pi-install.sh     requires pre-built rip-cage:latest image
-  #   - test-pi-auth-mount.sh  inspects container env + mounts (live cage)
-  #   - test-pi-cage-context.sh inspects CLAUDE.md inside live cage
+  # The authoritative list is the NEEDS_CONTAINER array in tests/run-host.sh;
+  # it is not copied here, so it cannot drift.
   #
   # Full integration tests need Docker-in-Docker or a self-hosted runner.
   # They are tracked in the backlog (rip-cage-rat follow-up).
