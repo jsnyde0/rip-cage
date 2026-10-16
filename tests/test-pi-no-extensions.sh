@@ -113,7 +113,17 @@ fi
 # ---------------------------------------------------------------------------
 CONTAINER="${RC_TEST_CONTAINER:-}"
 if [[ -z "$CONTAINER" ]]; then
-  CONTAINER=$(cage_names_running | head -1)
+  # Section E writes /workspace/.pi/extensions/evil.ts into the cage, so never
+  # guess between cages: on a shared host the first one may be another seat's.
+  _running=$(cage_names_running)
+  _running_count=$(printf '%s' "$_running" | grep -c . || true)
+  if [[ "$_running_count" -gt 1 ]]; then
+    echo "SKIP: ${_running_count} sandboxes are running and this probe writes into the cage's /workspace;"
+    echo "      pin the target with RC_TEST_CONTAINER=<name>"
+    exit 0
+  fi
+  CONTAINER="$_running"
+  unset _running _running_count
 fi
 if [[ -z "$CONTAINER" ]]; then
   echo "SKIP: no running rip-cage container found; pass RC_TEST_CONTAINER=<name> or start one with rc up"
