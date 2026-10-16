@@ -19,8 +19,9 @@
 # /home/agent/.rc-context/skills, which init symlinks into ~/.claude/skills),
 # the read-only parent mounts computed from your skill symlinks, the
 # protected-paths covers, and the git covers: every repo in a read-write mount
-# below gets .git/config, .git/info and .git/hooks read-only, so the cage
-# cannot write a command your host's git runs (ADR-002 D11). Everything else
+# below gets the git config files, pointers and hooks that exist at launch
+# read-only, so the cage cannot rewrite a command your host's git runs from
+# them (ADR-002 D11, which lists what stays open). Everything else
 # belongs here.
 #
 # Every host path must be ABSOLUTE and must not traverse a symlink: msb does

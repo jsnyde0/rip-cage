@@ -404,7 +404,10 @@ echo "=== (b) Function-count invariant (measured pre-split count: 193, current: 
 #   ADDED (cli/lib/protected_paths.sh, 2): _git_exec_covers and
 #     _git_exec_covers_one (ADR-002 D11: .git pin + config/info/hooks ro for
 #     every repo in a rw config mount).
-EXPECTED_FN_COUNT=133
+# Bumped 133 -> 135 by rip-cage-rsh9.2 revise: 2 ADDED, 0 removed.
+#   ADDED (cli/lib/protected_paths.sh, 2): _git_exec_ro_covers (the ro covers
+#     of one gitdir, shared with worktree mode) and _git_under_ro_target.
+EXPECTED_FN_COUNT=135
 _actual_fn_count=$(grep -hoE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$RC" "${REPO_ROOT}"/cli/*.sh "${REPO_ROOT}"/cli/lib/*.sh 2>/dev/null | wc -l | tr -d ' ')
 
 if [[ "$_actual_fn_count" -eq "$EXPECTED_FN_COUNT" ]]; then

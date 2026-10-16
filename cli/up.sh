@@ -562,7 +562,7 @@ _up_prepare_docker_mounts() {
   # in-tree policy file left to shadow read-only, and no mask list for rc to
   # read. What rc still generates here is only what no config file can hold:
   # mounts computed from the host filesystem at launch.
-  # D11: a repo's .git/hooks, .git/config and .git/info are read-only. For a
+  # D11: a repo's config sources, pointer files and hooks are read-only. For a
   # repo inside a config mount that is _git_exec_covers (cli/lib/
   # protected_paths.sh), which covers every repo the config mounts, not only
   # this one. Worktree mode mounts the main .git itself, so its covers are here.
@@ -574,9 +574,21 @@ _up_prepare_docker_mounts() {
     (umask 077; echo "gitdir: /workspace/.git-main/worktrees/${wt_name}" > "$gitfile")
     _UP_RUN_ARGS+=(-v "${wt_main_git}:/workspace/.git-main:delegated")
     _UP_RUN_ARGS+=(-v "${gitfile}:/workspace/.git:ro")
-    _UP_RUN_ARGS+=(-v "${wt_main_git}/hooks:/workspace/.git-main/hooks:ro")
-    _UP_RUN_ARGS+=(-v "${wt_main_git}/config:/workspace/.git-main/config:ro")
-    [[ -d "${wt_main_git}/info" ]] && _UP_RUN_ARGS+=(-v "${wt_main_git}/info:/workspace/.git-main/info:ro")
+    local _wt_covers _wt_line _i _kept=()
+    _wt_covers=$(_git_exec_ro_covers "${wt_main_git}" /workspace/.git-main) || exit 1
+    while IFS= read -r _wt_line; do
+      [[ -n "$_wt_line" ]] && _UP_RUN_ARGS+=("$_wt_line")
+    done <<< "$_wt_covers"
+    # _git_exec_covers covered the host's /workspace/.git gitfile; rc's own
+    # gitfile above replaces it, so drop that cover (covers mount last).
+    for ((_i = 0; _i < ${#_UP_PROTECTED_COVERS[@]}; _i++)); do
+      if [[ "${_UP_PROTECTED_COVERS[_i]}" == "-v" && "${_UP_PROTECTED_COVERS[_i+1]:-}" == *":/workspace/.git:ro" ]]; then
+        _i=$((_i + 1))
+        continue
+      fi
+      _kept+=("${_UP_PROTECTED_COVERS[_i]}")
+    done
+    _UP_PROTECTED_COVERS=("${_kept[@]+"${_kept[@]}"}")
     log "Worktree: mounted main .git/ and corrected .git pointer for ${wt_name}"
   fi
 
@@ -2855,15 +2867,21 @@ cmd_up() {
   # Git worktree: fix .git pointer for container (the .git file contains host-absolute paths)
   local wt_detected wt_name wt_main_git wt_error
   _up_detect_worktree "$path"
+  # D11: worktree mode covers the main .git rc mounts itself. Refuse here,
+  # where stderr is visible; the dry-run mount preview below silences it.
+  if [[ "$wt_detected" == "true" ]] && ! _git_exec_ro_covers "${wt_main_git}" /workspace/.git-main >/dev/null; then
+    [[ "$OUTPUT_FORMAT" == "json" ]] && json_error "Git config cover refused the worktree's main .git ${wt_main_git}" "GIT_COVER_REFUSED"
+    exit 1
+  fi
 
   # D11: compute git_hooks_ro for JSON output
   # true when the workspace's .git/hooks is mounted read-only:
-  #   - worktree mode always mounts hooks ro (via .git-main/hooks:ro)
+  #   - worktree mode mounts hooks ro (via .git-main/hooks:ro) when present
   #   - otherwise only when _git_exec_covers emitted the cover, i.e. the
   #     config really mounts this repo rw at /workspace (rip-cage-rsh9.2: the
   #     field used to say true off the rc up argument alone)
   local git_hooks_ro=false
-  if [[ "$wt_detected" == "true" ]]; then
+  if [[ "$wt_detected" == "true" && -d "${wt_main_git}/hooks" ]]; then
     git_hooks_ro=true
   else
     local _ghr_tok

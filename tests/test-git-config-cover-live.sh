@@ -16,6 +16,8 @@
 #   C6  a second commit, then a bare `git push`, lands too (image
 #       push.default=current)
 #   C7  the in-cage safety-stack D11 checks pass
+#   C8  `git config --worktree core.fsmonitor` fails in /other, which uses
+#       extensions.worktreeConfig; host config.worktree unchanged
 #
 # No real credential is used (fake CCTOK of the setup-token shape).
 #
@@ -70,8 +72,13 @@ for _r in "$WS" "$OTHER"; do
 done
 git init -q --bare "$REMOTE"
 git -C "$WS" remote add origin /remote
+# /other uses per-worktree config, as `git sparse-checkout` sets it up: git
+# reads .git/config.worktree too, a second config source (C8).
+git -C "$OTHER" config extensions.worktreeConfig true
+git -C "$OTHER" config --worktree rc.test host
 WS_CFG_BEFORE=$(cksum < "${WS}/.git/config")
 OTHER_CFG_BEFORE=$(cksum < "${OTHER}/.git/config")
+OTHER_WTCFG_BEFORE=$(cksum < "${OTHER}/.git/config.worktree")
 
 NAME=$(bash -c "source '${RC}' 2>/dev/null; container_name '$WS'")
 [[ -n "$NAME" ]] || { echo "FATAL: could not derive cage name"; exit 1; }
@@ -113,6 +120,15 @@ for _pair in "C2:/workspace:${WS}:${WS_CFG_BEFORE}" "C3:/other:${OTHER}:${OTHER_
     fail "${_id} ${_gdir}: core.fsmonitor write" "out='${out}' host config changed: $([[ "$after" == "$_before" ]] && echo no || echo yes)"
   fi
 done
+
+out=$(g 30 "git -C /other config --worktree core.fsmonitor 'touch /tmp/rsh92' 2>&1; echo rc=\$?")
+after=$(cksum < "${OTHER}/.git/config.worktree")
+if [[ "$out" != *"rc=0"* && "$after" == "$OTHER_WTCFG_BEFORE" ]] \
+    && ! git -C "$OTHER" config --get core.fsmonitor >/dev/null; then
+  pass "C8 /other: git config --worktree core.fsmonitor refused, host config.worktree unchanged ($(head -1 <<<"$out"))"
+else
+  fail "C8 /other: config.worktree write" "out='${out}' host config.worktree changed: $([[ "$after" == "$OTHER_WTCFG_BEFORE" ]] && echo no || echo yes)"
+fi
 
 out=$(g 30 "mv /workspace/.git /workspace/.git-moved 2>&1; echo rc=\$?")
 if [[ "$out" != *"rc=0"* && -d "${WS}/.git" && ! -e "${WS}/.git-moved" ]]; then

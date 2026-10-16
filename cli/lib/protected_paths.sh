@@ -510,14 +510,17 @@ _protected_paths_enforce() {
 #                        renamed, so `mv .git elsewhere && git init` fails
 #                        (measured: EBUSY) instead of handing the host a
 #                        fresh .git/config the guest wrote
-#   <repo>/.git/config   ro
-#   <repo>/.git/info     ro, when present
-#   <repo>/.git/hooks    ro, when present
+#   <repo>/.git/...      ro: every config source and pointer file git reads
+#                        that exists at launch (_git_exec_ro_covers)
 #
-# and the same four for each submodule gitdir under .git/modules (the host's
-# `git status` recurses into submodules and reads their config). Repos are
-# found to $RC_PROTECTED_SCAN_DEPTH (default 2), the same latency bound the
-# protected-paths scan uses. Read-only mounts are skipped: they already are.
+# and the same for each submodule gitdir under .git/modules (the host's `git
+# status` recurses into submodules and reads their config). A `.git` FILE -- a
+# submodule's or linked worktree's `gitdir:` pointer -- is mounted ro over
+# itself, so it cannot be repointed at a gitdir the guest wrote; besides the
+# scan, each repo's .gitmodules names where those files sit. Repos are found to
+# $RC_PROTECTED_SCAN_DEPTH (default 2), the same latency bound the
+# protected-paths scan uses. Read-only mounts are skipped, and so is anything
+# under a read-only mount's target: a rw pin there would re-expose it.
 #
 # Prints msb argv tokens, one per line, for _UP_PROTECTED_COVERS.
 #
@@ -527,9 +530,13 @@ _protected_paths_enforce() {
 # add` fails, and a repo-local `git config` fails. The image's system gitconfig
 # sets push.default=current so a bare `git push` still works.
 #
-# NOT COVERED: a repo the guest creates after launch (`git init sub`), and any
-# repo deeper than the scan depth. Like every cover, a guest root can umount it
-# (see this file's header). Follow-up: rip-cage-rsh9.14.
+# NOT COVERED: msb can only cover a path that exists, and the pinned .git stays
+# writable, so a file git honours that is ABSENT at launch can be created:
+# .git/commondir (redirects the whole config to a dir the guest wrote),
+# .git/hooks or .git/info when missing. Also a repo or submodule the guest
+# creates after launch, and any repo deeper than the scan depth. Like every
+# cover, a guest root can umount it (see this file's header). Follow-up:
+# rip-cage-rsh9.14.
 # --------------------------------------------------------------------------
 _git_exec_covers() {
   local _conf="$1"
@@ -538,41 +545,129 @@ _git_exec_covers() {
   _mounts="$(_protected_paths_conf_bind_mounts "${_conf}")" || return 1
   [[ -z "${_mounts}" ]] && return 0
 
-  local _host _guest _mode _gitdir _rel _sub
+  # Guest targets of the read-only mounts: nothing under one gets a cover.
+  local _ro_targets="" _host _guest _mode
+  while IFS=$'\t' read -r _host _guest _mode; do
+    [[ "${_mode}" == "ro" && -n "${_guest}" ]] && _ro_targets+="${_guest%/}"$'\n'
+  done <<< "${_mounts}"
+
+  local _entry _rel _g _sub _gitfiles _root _p _queue
   while IFS=$'\t' read -r _host _guest _mode; do
     [[ -z "${_host}" ]] && continue
     [[ "${_mode}" == "ro" ]] && continue
     while [[ "${_host}" == */ && "${_host}" != "/" ]]; do _host="${_host%/}"; done
     [[ -d "${_host}" ]] || continue
 
-    while IFS= read -r _gitdir; do
-      [[ -z "${_gitdir}" ]] && continue
-      _rel="${_gitdir#"${_host}/"}"
-      if [[ "${_rel}" == "${_gitdir}" ]]; then
-        echo "Error: the cage config ${_conf} mounts ${_host}, and rc found the git dir ${_gitdir} but could not place it under that mount to cover its config. Refusing to launch rather than leaving it writable (ADR-002 D11, fail closed)." >&2
+    _gitfiles=""
+    _queue=""
+    while IFS= read -r _entry; do
+      [[ -z "${_entry}" ]] && continue
+      _rel="${_entry#"${_host}/"}"
+      if [[ "${_rel}" == "${_entry}" ]]; then
+        echo "Error: the cage config ${_conf} mounts ${_host}, and rc found the git dir ${_entry} but could not place it under that mount to cover its config. Refusing to launch rather than leaving it writable (ADR-002 D11, fail closed)." >&2
         return 1
       fi
-      _git_exec_covers_one "${_gitdir}" "${_guest%/}/${_rel}"
-      # Submodule gitdirs: .git/modules/<name>[/<name>...]/config.
-      if [[ -d "${_gitdir}/modules" ]]; then
+      _g="${_guest%/}/${_rel}"
+      _git_under_ro_target "${_g}" "${_ro_targets}" && continue
+      _queue+="$(dirname "${_entry}")"$'\n'
+      if [[ -f "${_entry}" ]]; then
+        _gitfiles+="${_entry}"$'\t'"${_g}"$'\n'
+        continue
+      fi
+      [[ -d "${_entry}" ]] || continue
+      _git_exec_covers_one "${_entry}" "${_g}" || return 1
+      # Submodule gitdirs, at any nesting: a dir under .git/modules holding a
+      # config beside HEAD and objects (a branch named `config` is a file
+      # under refs/, with no HEAD beside it).
+      if [[ -d "${_entry}/modules" ]]; then
         while IFS= read -r _sub; do
           [[ -z "${_sub}" ]] && continue
           _sub="$(dirname "${_sub}")"
-          _git_exec_covers_one "${_sub}" "${_guest%/}/${_sub#"${_host}/"}"
-        done < <(find "${_gitdir}/modules" -mindepth 2 -maxdepth 4 -type f -name config -print 2>/dev/null | LC_ALL=C sort)
+          [[ -f "${_sub}/HEAD" && -d "${_sub}/objects" ]] || continue
+          _git_exec_covers_one "${_sub}" "${_g}${_sub#"${_entry}"}" || return 1
+        done < <(find "${_entry}/modules" -name objects -prune -o -type f -name config -print 2>/dev/null | LC_ALL=C sort)
       fi
-    done < <(find "${_host}" -maxdepth "${_depth}" -type d -name .git -print -prune 2>/dev/null | LC_ALL=C sort)
+    done < <(find "${_host}" -maxdepth "${_depth}" -name .git -print -prune 2>/dev/null | LC_ALL=C sort)
+
+    # Submodule .git files the scan depth missed: each repo's .gitmodules
+    # names their paths. Walked as a queue so nested submodules are found.
+    while [[ -n "${_queue}" ]]; do
+      _root="${_queue%%$'\n'*}"
+      _queue="${_queue#*$'\n'}"
+      [[ -f "${_root}/.gitmodules" ]] || continue
+      while IFS= read -r _p; do
+        [[ -z "${_p}" ]] && continue
+        _entry="${_root}/${_p}/.git"
+        [[ -f "${_entry}" ]] || continue
+        _rel="${_entry#"${_host}/"}"
+        [[ "${_rel}" == "${_entry}" ]] && continue
+        _g="${_guest%/}/${_rel}"
+        _git_under_ro_target "${_g}" "${_ro_targets}" && continue
+        _gitfiles+="${_entry}"$'\t'"${_g}"$'\n'
+        _queue+="${_root}/${_p}"$'\n'
+      done < <(git config -f "${_root}/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null | cut -d' ' -f2-)
+    done
+
+    while IFS=$'\t' read -r _entry _g; do
+      [[ -n "${_entry}" ]] && printf '%s\n' -v "${_entry}:${_g}:ro"
+    done < <(printf '%s' "${_gitfiles}" | LC_ALL=C sort -u)
   done <<< "${_mounts}"
   return 0
+}
+
+# _git_under_ro_target GUEST_PATH RO_TARGETS -- true when GUEST_PATH is at or
+# under one of RO_TARGETS (newline-separated guest paths).
+_git_under_ro_target() {
+  local _t
+  while IFS= read -r _t; do
+    [[ -n "${_t}" && ( "$1" == "${_t}" || "$1" == "${_t}/"* ) ]] && return 0
+  done <<< "$2"
+  return 1
 }
 
 # _git_exec_covers_one HOST_GITDIR GUEST_GITDIR -- the pin plus the ro covers
 # for one gitdir (see _git_exec_covers).
 _git_exec_covers_one() {
-  local _h="$1" _g="$2"
-  printf '%s\n' -v "${_h}:${_g}"
+  printf '%s\n' -v "$1:$2"
+  _git_exec_ro_covers "$1" "$2"
+}
+
+# _git_exec_ro_covers HOST_GITDIR GUEST_GITDIR -- ro mounts over every config
+# source and pointer file git reads in one gitdir, when present:
+#   config, config.worktree      the config this gitdir's git runs
+#   commondir                    redirects that config to another gitdir
+#   info/, hooks/                hooks are executed by git
+#   worktrees/*/commondir,       the same two, per linked worktree
+#   worktrees/*/config.worktree
+# config.worktree is read only under extensions.worktreeConfig=true; then a
+# missing one could be created, so this refuses rather than leave it open.
+# Worktree mode calls this for the main .git rc mounts itself (cli/up.sh).
+_git_exec_ro_covers() {
+  local _h="$1" _g="$2" _wtc="" _missing="" _w _n
+  [[ "$(git config -f "${_h}/config" --bool extensions.worktreeConfig 2>/dev/null)" == "true" ]] && _wtc=1
   [[ -f "${_h}/config" ]] && printf '%s\n' -v "${_h}/config:${_g}/config:ro"
+  if [[ -f "${_h}/config.worktree" ]]; then
+    printf '%s\n' -v "${_h}/config.worktree:${_g}/config.worktree:ro"
+  elif [[ -n "${_wtc}" ]]; then
+    _missing+=" ${_h}/config.worktree"
+  fi
+  [[ -f "${_h}/commondir" ]] && printf '%s\n' -v "${_h}/commondir:${_g}/commondir:ro"
   [[ -d "${_h}/info" ]] && printf '%s\n' -v "${_h}/info:${_g}/info:ro"
   [[ -d "${_h}/hooks" ]] && printf '%s\n' -v "${_h}/hooks:${_g}/hooks:ro"
+  for _w in "${_h}"/worktrees/*/; do
+    [[ -d "${_w}" ]] || continue
+    _w="${_w%/}"
+    _n="${_w##*/}"
+    [[ -f "${_w}/commondir" ]] && printf '%s\n' -v "${_w}/commondir:${_g}/worktrees/${_n}/commondir:ro"
+    if [[ -f "${_w}/config.worktree" ]]; then
+      printf '%s\n' -v "${_w}/config.worktree:${_g}/worktrees/${_n}/config.worktree:ro"
+    elif [[ -n "${_wtc}" ]]; then
+      _missing+=" ${_w}/config.worktree"
+    fi
+  done
+  if [[ -n "${_missing}" ]]; then
+    echo "Error: ${_h}/config sets extensions.worktreeConfig=true, so git also reads config.worktree, and these do not exist:${_missing}. A guest could create one and set a key the host's git runs, and rc can only make a file that exists read-only. Create them empty on the host (touch${_missing}) and rerun. Refusing to launch rather than leaving them writable (ADR-002 D11, fail closed)." >&2
+    return 1
+  fi
   return 0
 }
