@@ -17,11 +17,23 @@
 #
 # Resolution is by ABSOLUTE PATH, never PATH order: an extension that prepends to
 # PATH must not be able to shadow the real binary out from under the wrapper.
+#
+# The descriptor path is FIXED, never read from the caller's environment
+# (rip-cage-5ndd). The agent's shell auto-trusts a workspace .mise.toml, whose
+# [env] can set RC_BOOT_DESCRIPTOR to a missing or hostile file and so launch the
+# tool without its guard -- the ADR-024 workspace-file channel. A caller-set
+# value is ignored with one stderr note. rc's own boot-time readers (init, the
+# floor probe, rc-boot-merge) still honour the variable; they never run under
+# the agent's shell.
 set -eu
 
 _tool=$(basename "$0")
 _real="/usr/local/lib/rip-cage/bin/${_tool}-real"
-_desc="${RC_BOOT_DESCRIPTOR:-/etc/rip-cage/boot.json}"
+_desc="/etc/rip-cage/boot.json"
+
+if [ -n "${RC_BOOT_DESCRIPTOR:-}" ] && [ "$RC_BOOT_DESCRIPTOR" != "$_desc" ]; then
+  echo "[rip-cage] note: ${_tool} launch wrapper ignores RC_BOOT_DESCRIPTOR=${RC_BOOT_DESCRIPTOR} and reads ${_desc} (rip-cage-5ndd)" >&2
+fi
 
 if [ ! -x "$_real" ]; then
   echo "[rip-cage] ERROR: ${_tool} launch wrapper found no real binary at ${_real} — the base image moves each agent binary there and puts this wrapper at its original name. (ADR-031 D4)" >&2
