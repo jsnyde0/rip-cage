@@ -222,8 +222,9 @@ _protected_paths_secrets_dir() {
 # Called at EVERY mount site that can expose the secrets dir -- the config's
 # own mounts AND every rc-generated mount whose source can resolve to $HOME,
 # $XDG_CONFIG_HOME, or an ancestor of either (skill/agent symlink-parent
-# mounts, the symlink-follow synthesis mount, pi substrate mounts, beads
-# redirect mounts -- see cli/up.sh call sites). One predicate, one existence
+# mounts, the symlink-follow synthesis mount and pi substrate mounts -- see the
+# cli/up.sh call sites; the beads redirect mount is checked through
+# _beads_redirect_refusal below). One predicate, one existence
 # rule, one ancestor rule: the too-narrow half of the defect this predicate
 # replaces was exactly that only the config-mount site had ANY secrets-dir
 # check, leaving rc's own generated mounts (e.g. a skill symlink whose target
@@ -255,9 +256,15 @@ _mount_src_exposes_secrets_dir() {
 #
 # The one home of the .beads/redirect refusal rule. RESOLVED_TARGET is the
 # realpath of an explicit redirect that resolved to an existing directory.
-# Echo why rc refuses to mount it, or nothing when it may be mounted. Always
-# returns 0; the caller frames the reason (rc up refuses to launch, rc test
-# reports a FAIL line).
+# Echo why rc refuses to mount it, or nothing when it may be mounted; the
+# caller frames the reason (rc up refuses to launch, rc test reports a FAIL
+# line). The exit status says which advice fits, so callers test it with
+# `reason=$(_beads_redirect_refusal "$t") || status=$?` (rc runs set -e):
+#   0  nothing to refuse, nothing echoed;
+#   1  not a mountable beads dir -- the caller's "point the redirect at the
+#      main repo's .beads, or delete it" advice applies;
+#   2  a real beads dir under a protected path -- the reason carries its own
+#      advice, because pointing at the main repo's .beads is no fix there.
 #
 # The target would be mounted READ-WRITE at /workspace/.beads, and the
 # redirect file is workspace content (ADR-024), so "../../.claude" must never
@@ -270,7 +277,7 @@ _mount_src_exposes_secrets_dir() {
 #   5. it does not expose the CCTOK secrets dir (ADR-031 D5(a)).
 # --------------------------------------------------------------------------
 _beads_redirect_refusal() {
-  local _target="$1" _home_real _pat
+  local _target="$1" _home_real _pat _list
   _home_real=$(realpath "$HOME" 2>/dev/null) || _home_real="$HOME"
   if [[ "$_target" =~ [[:cntrl:]] ]]; then
     echo "its resolved path contains control characters"
@@ -281,11 +288,16 @@ _beads_redirect_refusal() {
   elif [[ "${_home_real}/.claude" == "$_target"/* || "${_home_real}/.pi" == "$_target"/* ]]; then
     echo "${_target} is an ancestor of ~/.claude or ~/.pi"
   elif _pat=$(_protected_paths_path_match "$_target"); then
-    echo "${_target} matched secret-path denylist pattern '${_pat}'"
+    _list=$(_protected_paths_resolve 2>/dev/null) || _list="your protected-paths list"
+    echo "${_target} matched secret-path denylist pattern '${_pat}' in the protected-paths list this run read, ${_list}. If that tree holds no secret, remove or change the '${_pat}' line there; otherwise point the redirect at a .beads outside every protected path, or delete it"
+    return 2
   elif _mount_src_exposes_secrets_dir "$_target"; then
-    echo "${_target} is or contains $(_protected_paths_secrets_dir) -- the CCTOK secrets directory msb --secret reads the real token value from"
+    echo "${_target} is or contains $(_protected_paths_secrets_dir) -- the CCTOK secrets directory msb --secret reads the real token value from, which no cage mount may expose (ADR-031 D5(a)). Point the redirect at a .beads that does not contain it, or delete it"
+    return 2
+  else
+    return 0
   fi
-  return 0
+  return 1
 }
 
 # --------------------------------------------------------------------------

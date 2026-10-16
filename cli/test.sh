@@ -76,13 +76,16 @@ cmd_test() {
       local redirect_target
       redirect_target=$(cat "${preflight_beads_dir}/redirect")
       if [[ "$redirect_target" != /* ]] && [[ ! "$redirect_target" =~ [[:cntrl:]] ]]; then
-        local resolved_redirect redirect_refusal
+        local resolved_redirect redirect_refusal redirect_status=0
         resolved_redirect=$(realpath "${ws_source}/${redirect_target}" 2>/dev/null || true)
         if [[ -n "$resolved_redirect" && -d "$resolved_redirect" ]]; then
-          # The rule rc up refuses to launch on, from its one home.
-          redirect_refusal=$(_beads_redirect_refusal "$resolved_redirect")
-          if [[ -n "$redirect_refusal" ]]; then
+          # The rule rc up refuses to launch on, from its one home; status 2
+          # reasons carry their own advice.
+          redirect_refusal=$(_beads_redirect_refusal "$resolved_redirect") || redirect_status=$?
+          if [[ "$redirect_status" -eq 1 ]]; then
             preflight_skip_line="FAIL [0] beads-host-dolt — .beads/redirect (${preflight_beads_dir}/redirect) is refused: ${redirect_refusal}. rc up refuses to launch with it; point the redirect at the main repo's .beads, or delete it."
+          elif [[ "$redirect_status" -ne 0 ]]; then
+            preflight_skip_line="FAIL [0] beads-host-dolt — .beads/redirect (${preflight_beads_dir}/redirect) is refused: ${redirect_refusal}. rc up refuses to launch with it."
           else
             preflight_beads_dir="$resolved_redirect"
           fi

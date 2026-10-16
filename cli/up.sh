@@ -1038,11 +1038,15 @@ _up_prepare_environment() {
         # VALIDITY BEFORE A READ-WRITE MOUNT: the target is mounted rw at
         # /workspace/.beads, so _beads_redirect_refusal (cli/lib/protected_paths.sh,
         # shared with rc test's beads-host check) must find nothing to refuse.
-        # Any reason is a hard refusal before any msb call.
-        local _redir_reason
-        _redir_reason=$(_beads_redirect_refusal "$resolved_beads")
-        if [[ -n "$_redir_reason" ]]; then
+        # Any reason is a hard refusal before any msb call; status 2 reasons
+        # carry their own advice.
+        local _redir_reason _redir_status=0
+        _redir_reason=$(_beads_redirect_refusal "$resolved_beads") || _redir_status=$?
+        if [[ "$_redir_status" -eq 1 ]]; then
           echo "Error: .beads/redirect (${beads_dir}/redirect) is refused: ${_redir_reason}. rc mounts a redirect target read-write into the cage, so it must be a real beads dir outside your home dotdirs. Refusing to launch before any msb call (ADR-024). Point the redirect at the main repo's .beads, or delete it." >&2
+          exit 1
+        elif [[ "$_redir_status" -ne 0 ]]; then
+          echo "Error: .beads/redirect (${beads_dir}/redirect) is refused: ${_redir_reason}. Refusing to launch before any msb call (ADR-024)." >&2
           exit 1
         fi
         log "Beads: resolved redirect → $resolved_beads"
