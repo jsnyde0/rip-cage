@@ -1026,6 +1026,32 @@ _up_prepare_environment() {
       local resolved_beads
       resolved_beads=$(realpath "${_path}/${redirect_target}" 2>/dev/null || true)
       if [[ -n "$resolved_beads" && -d "$resolved_beads" ]]; then
+        # rip-cage-p4ss.1: VALIDITY BEFORE A READ-WRITE MOUNT, the same shape
+        # as the worktree gitdir check (_up_detect_worktree). The raw-string
+        # checks above leave "../../.claude" through, and the target is
+        # mounted rw at /workspace/.beads -- host ~/.claude hooks or
+        # ~/.pi/agent extensions writable from the guest. Mounted only when:
+        #   1. its realpath carries no control characters (msb argv is one
+        #      token per line, so a newline would inject mount tokens);
+        #   2. it is a beads dir: named .beads and holding metadata.json;
+        #   3. it is not inside a $HOME dotdir, and no ancestor of ~/.claude
+        #      or ~/.pi.
+        # Any miss is a hard refusal, like the protected-path check below.
+        local _redir_reason="" _home_real
+        _home_real=$(realpath "$HOME" 2>/dev/null) || _home_real="$HOME"
+        if [[ "$resolved_beads" =~ [[:cntrl:]] ]]; then
+          _redir_reason="its resolved path contains control characters"
+        elif [[ "$(basename "$resolved_beads")" != ".beads" || ! -f "${resolved_beads}/metadata.json" ]]; then
+          _redir_reason="${resolved_beads} is not a .beads dir (needs the name .beads and a metadata.json)"
+        elif [[ "$resolved_beads" == "${_home_real}"/.* ]]; then
+          _redir_reason="${resolved_beads} is inside a home dotdir"
+        elif [[ "${_home_real}/.claude" == "$resolved_beads"/* || "${_home_real}/.pi" == "$resolved_beads"/* ]]; then
+          _redir_reason="${resolved_beads} is an ancestor of ~/.claude or ~/.pi"
+        fi
+        if [[ -n "$_redir_reason" ]]; then
+          echo "Error: .beads/redirect (${beads_dir}/redirect) is refused: ${_redir_reason}. rc mounts a redirect target read-write into the cage, so it must be a real beads dir outside your home dotdirs. Refusing to launch before any msb call (ADR-024). Point the redirect at the main repo's .beads, or delete it." >&2
+          exit 1
+        fi
         # Validate resolved path is under an allowed root (ADR-003 D3)
         # The allowed-roots gate that used to wrap this is gone with the guard
         # itself (ADR-031 D2); the protected-paths check is what still refuses a
