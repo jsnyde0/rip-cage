@@ -43,7 +43,20 @@
 # build`, so it also needs the same docker-save -> msb-load conversion `rc
 # build` does for the real image (cli/build.sh's _build_msb_load) before
 # `msb create` can see it -- ported below, still gated the same way.
+#
+# Image: RC_IMAGE, REQUIRED to be an explicit scratch tag, never rip-cage:latest
+# (rip-cage-b8kd.8.3, the same rule tests/test-auth-secret-live.sh holds). D1
+# runs a real `rc up`, and rc up can pull and re-tag the image it names -- an
+# unset RC_IMAGE names the operator's production tag. The refusal is a FAIL,
+# not a SKIP, and comes before every other check, so it holds on any host.
+# Under `tests/run-host.sh --host-only` this file never runs (NEEDS_CONTAINER):
+# run-host prints its own "SKIP (needs container)" line instead.
 set -uo pipefail
+
+if [[ -z "${RC_IMAGE:-}" || "$RC_IMAGE" == "rip-cage:latest" ]]; then
+  echo "FAIL: RC_IMAGE must be an explicit scratch tag other than rip-cage:latest (got '${RC_IMAGE:-}') -- this test runs a real rc up and never does so against the operator's production tag. Build one: RC_IMAGE=<tag> rc build --file cage/Dockerfile"
+  exit 1
+fi
 
 if ! command -v docker > /dev/null 2>&1; then
   echo "SKIP: Docker not available -- skipping $(basename "$0")"

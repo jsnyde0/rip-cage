@@ -39,6 +39,12 @@
 #       assignment; every other reference is a read, `"$BACKUP_VERSION_FILE"`,
 #       with no `=` immediately after the name).
 #
+# A MISSING SUBJECT IS A FAILURE, NOT A PASS (rip-cage-b8kd.8.3). Both checks
+# above read "clean" when there is nothing to read, so a moved or deleted
+# subject file, or a renamed BACKUP_VERSION_FILE, used to pass silently. Case 2
+# now requires each named file to exist and (b)'s assignment line to be found
+# before it trusts the clean result.
+#
 # NEGATIVE CONTROL (Case 1 below): a guard with no proof it can fail is
 # worthless. Case 1 writes throwaway fixtures with the OFFENDING and FIXED
 # shapes into a temp dir and asserts the detector reds on the offending one
@@ -74,6 +80,19 @@ check_backup_version_file_unique() {
   assign_line=$(grep -n 'BACKUP_VERSION_FILE=' "$f" 2>/dev/null | head -1)
   [[ -z "$assign_line" ]] && return 0
   echo "$assign_line" | grep -qF '$$'
+}
+
+# require_subject <file> -- returns 0 if the named subject file exists, 1 if
+# it is gone (a moved or deleted subject must never scan as clean).
+require_subject() {
+  [[ -f "$1" ]]
+}
+
+# require_backup_version_assignment <file> -- returns 0 if <file> still holds
+# a BACKUP_VERSION_FILE= assignment, 1 if none is found (renamed or removed:
+# check (b) would otherwise have nothing to check and read clean).
+require_backup_version_assignment() {
+  grep -q 'BACKUP_VERSION_FILE=' "$1" 2>/dev/null
 }
 
 # ============================================================================
@@ -135,6 +154,22 @@ else
   fail "negative control: BACKUP_VERSION_FILE detector" "offending fixture flagged=$_offending_b_flagged (want 1) clean fixture flagged=$_clean_b_flagged (want 0)"
 fi
 
+cat > "${FIXTURE_DIR}/renamed-rc-commands.sh" <<'FIXEOF'
+BACKUP_FILE="${REPO_ROOT}/VERSION.t20bak"
+FIXEOF
+
+if ! require_subject "${FIXTURE_DIR}/no-such-subject.sh" && require_subject "${FIXTURE_DIR}/clean-selfcheck.sh"; then
+  pass "negative control: a missing subject file is caught (it no longer reads as clean)"
+else
+  fail "negative control: missing-subject check" "a nonexistent path must fail require_subject and an existing one must pass"
+fi
+
+if ! require_backup_version_assignment "${FIXTURE_DIR}/renamed-rc-commands.sh" && require_backup_version_assignment "${FIXTURE_DIR}/clean-rc-commands.sh"; then
+  pass "negative control: a renamed BACKUP_VERSION_FILE assignment is caught (it no longer reads as clean)"
+else
+  fail "negative control: missing-assignment check" "a file without BACKUP_VERSION_FILE= must fail and one with it must pass"
+fi
+
 rm -rf "$FIXTURE_DIR"
 trap - EXIT
 
@@ -144,8 +179,23 @@ trap - EXIT
 echo ""
 echo "--- Case 2: live scan of the two rip-cage-k13u sites ---"
 
-SELF_CHECK_SH="${SCRIPT_DIR}/golden-master/self-check.sh"
-RC_COMMANDS_SH="${SCRIPT_DIR}/test-rc-commands.sh"
+# RC_SCRATCH_GUARD_SELF_CHECK / RC_SCRATCH_GUARD_RC_COMMANDS repoint the two
+# subjects -- the positive control for this guard itself: aimed at a
+# nonexistent path, the whole test must exit non-zero naming it.
+SELF_CHECK_SH="${RC_SCRATCH_GUARD_SELF_CHECK:-${SCRIPT_DIR}/golden-master/self-check.sh}"
+RC_COMMANDS_SH="${RC_SCRATCH_GUARD_RC_COMMANDS:-${SCRIPT_DIR}/test-rc-commands.sh}"
+
+for _subject in "$SELF_CHECK_SH" "$RC_COMMANDS_SH"; do
+  if require_subject "$_subject"; then
+    pass "subject present: ${_subject}"
+  else
+    fail "subject missing: ${_subject}" "this guard names that file as a rip-cage-k13u site; a moved or deleted subject cannot be scanned, so it fails rather than reading clean. Re-point the guard at the file's new home, or re-decide the site."
+  fi
+done
+
+if [[ -f "$RC_COMMANDS_SH" ]] && ! require_backup_version_assignment "$RC_COMMANDS_SH"; then
+  fail "no BACKUP_VERSION_FILE= assignment in ${RC_COMMANDS_SH}" "check (b) has nothing to check: the variable was renamed or removed. Re-point the guard at the new name, or re-decide the site."
+fi
 
 if check_selfcheck_underscrub_path "$SELF_CHECK_SH"; then
   pass "tests/golden-master/self-check.sh does not contain the fixed shared path /tmp/rc-gm-selfcheck-underscrub.diff"
