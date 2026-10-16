@@ -126,10 +126,6 @@ _up_json_output() {
 
   local jq_filter='{name: $name, action: $action, source_path: $source_path, name_disambiguated: $name_disambiguated'
 
-  if [[ -n "${RC_VALIDATE_WARNING:-}" ]]; then
-    jq_args+=(--arg warning "$RC_VALIDATE_WARNING")
-    jq_filter+=', warning: $warning'
-  fi
   if [[ -n "$_dry_run" ]]; then
     jq_args+=(--argjson dry_run true)
     jq_filter+=', dry_run: $dry_run'
