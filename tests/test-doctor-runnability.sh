@@ -5,7 +5,8 @@
 #
 # NEEDS_CONTAINER: spins real cages via `rc up` + `msb create` (rip-cage-neu7.14,
 # Batch E msb port -- was `docker run -d --name`). Self-skips (SKIP, exit 0)
-# when docker, msb, or host `bd` is unavailable.
+# when RC_IMAGE is unset or empty, or when docker, msb, or host `bd` is
+# unavailable. RC_IMAGE=rip-cage:latest is refused (FAIL, exit 1).
 #
 # Coverage:
 #   D1  correct fresh cage: cwd probe is OK, workspace-resolution probe is OK
@@ -44,17 +45,23 @@
 # build` does for the real image (cli/build.sh's _build_msb_load) before
 # `msb create` can see it -- ported below, still gated the same way.
 #
-# Image: RC_IMAGE, REQUIRED to be an explicit scratch tag, never rip-cage:latest
-# (rip-cage-b8kd.8.3, the same rule tests/test-auth-secret-live.sh holds). D1
-# runs a real `rc up`, and rc up can pull and re-tag the image it names -- an
-# unset RC_IMAGE names the operator's production tag. The refusal is a FAIL,
-# not a SKIP, and comes before every other check, so it holds on any host.
-# Under `tests/run-host.sh --host-only` this file never runs (NEEDS_CONTAINER):
-# run-host prints its own "SKIP (needs container)" line instead.
+# Image: RC_IMAGE, an explicit scratch tag, never rip-cage:latest
+# (rip-cage-b8kd.8.3, the rule tests/test-auth-secret-live.sh holds). D1 runs
+# a real `rc up` and D2 a real `msb create`, both on RC_IMAGE, and rc up can
+# pull and re-tag the image it names. Both checks below come before any rc
+# up or msb create:
+#   * unset or empty -> SKIP, exit 0. A host with no scratch image is the
+#     normal state, like a host with no docker; a full run-host records SKIP.
+#   * rip-cage:latest -> FAIL, exit 1. Asking for the production tag is
+#     refused loudly.
 set -uo pipefail
 
-if [[ -z "${RC_IMAGE:-}" || "$RC_IMAGE" == "rip-cage:latest" ]]; then
-  echo "FAIL: RC_IMAGE must be an explicit scratch tag other than rip-cage:latest (got '${RC_IMAGE:-}') -- this test runs a real rc up and never does so against the operator's production tag. Build one: RC_IMAGE=<tag> rc build --file cage/Dockerfile"
+if [[ -z "${RC_IMAGE:-}" ]]; then
+  echo "SKIP: RC_IMAGE is unset or empty -- this test boots real cages and needs an explicit scratch tag other than rip-cage:latest. Build one: RC_IMAGE=<tag> rc build --file cage/Dockerfile"
+  exit 0
+fi
+if [[ "$RC_IMAGE" == "rip-cage:latest" ]]; then
+  echo "FAIL: RC_IMAGE=rip-cage:latest is the operator's production tag -- this test never boots a cage on it. Build a scratch tag: RC_IMAGE=<tag> rc build --file cage/Dockerfile"
   exit 1
 fi
 
@@ -121,7 +128,7 @@ echo "-- D1: correct fresh cage --"
 # the operator's real ~/.config.
 # shellcheck source=tests/_cage-conf-lib.sh
 source "${SCRIPT_DIR}/_cage-conf-lib.sh"
-D1_CONF=$(cage_conf_for "$FIXTURE_WS" "${RC_IMAGE:-}")
+D1_CONF=$(cage_conf_for "$FIXTURE_WS" "$RC_IMAGE")
 UP_OUT=$(RC_CAGE_CONF="$D1_CONF" "$RC" up "$FIXTURE_WS" 2>&1 </dev/null) || { echo "$UP_OUT"; fail "D1 rc up succeeds" "rc up exited non-zero"; }
 CORRECT_CAGE=$(echo "$UP_OUT" | grep -oE 'Container [^ ]+ is running' | awk '{print $2}' | head -1)
 if [[ -z "$CORRECT_CAGE" ]]; then
@@ -154,7 +161,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # D2: WorkingDir forced to /home/agent -- cwd probe FAILS loud.
-# Reuses the same rip-cage:latest image + fixture workspace as D1, but bypasses
+# Reuses the same RC_IMAGE scratch image + fixture workspace as D1, but bypasses
 # `rc up` to force the broken WorkingDir directly (mirrors the bead's fixture
 # recipe: a sandbox from the image with its workdir overridden). msb-port
 # note (rip-cage-neu7.14, Batch E): `docker run -d --name X --workdir Y
@@ -172,7 +179,7 @@ if msb create --name "$CWD_BROKEN_CAGE" \
     --label "rc.source.path=${FIXTURE_WS}" \
     --workdir /home/agent \
     -v "${FIXTURE_WS}:/workspace" \
-    rip-cage:latest > /dev/null 2>&1; then
+    "$RC_IMAGE" > /dev/null 2>&1; then
   scratch_cage_register "$CWD_BROKEN_CAGE"
   D2_JSON=$("$RC" --output json doctor "$CWD_BROKEN_CAGE" 2>&1) || true
   d2_cwd=$(echo "$D2_JSON" | jq -r '.probes.cwd // empty' 2>/dev/null)
@@ -182,7 +189,7 @@ if msb create --name "$CWD_BROKEN_CAGE" \
     fail "D2 cwd probe FAILS loud on /home/agent-workdir cage" "got: $d2_cwd"
   fi
 else
-  fail "D2 create cwd-broken cage" "msb create failed (is rip-cage:latest built + msb-loaded? run ./rc build)"
+  fail "D2 create cwd-broken cage" "msb create failed (is ${RC_IMAGE} built + msb-loaded? run RC_IMAGE=${RC_IMAGE} ./rc build)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -197,7 +204,7 @@ if [[ -n "${RC_DOCTOR_STALE_BD_IMAGE:-}" ]] && docker image inspect "$RC_DOCTOR_
   "$RC" destroy "$SCHEMA_ERR_CAGE" > /dev/null 2>&1 || true
   # msb-port note (rip-cage-neu7.14, Batch E): $RC_DOCTOR_STALE_BD_IMAGE is a
   # raw `docker build` artifact that never went through `rc build`, so
-  # unlike rip-cage:latest it is NOT yet in msb's own local image cache --
+  # unlike RC_IMAGE it is NOT yet in msb's own local image cache --
   # `msb create` cannot see a docker-daemon-only image. Convert it the same
   # way rc build does for the real image (cli/build.sh's _build_msb_load:
   # docker save -> msb load --tag) before creating the fixture cage.
