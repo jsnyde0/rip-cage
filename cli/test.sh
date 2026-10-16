@@ -66,25 +66,42 @@ cmd_test() {
   local preflight_skip_line=""  # if set, skip _bd_host_preflight and use this line
   if [[ -n "$ws_source" ]]; then
     preflight_beads_dir="${ws_source}/.beads"
-    # Mirror D6 semantics (cli/up.sh:_up_detect_worktree): check for
-    # .beads/redirect first, then fall back to worktree auto-redirect. The
-    # allowed-roots guard that used to gate the fallback retired with
-    # ADR-031 D2; the protected-paths rule is what still refuses a redirect
-    # aimed at a credential store.
+    # Mirror cli/up.sh's beads resolution, so this check probes the .beads dir
+    # the cage actually mounts: .beads/redirect first, then the worktree
+    # auto-redirect (ADR-007 D6). Where up.sh ignores a redirect with a warning
+    # (absolute path, control chars, target does not resolve), it keeps the
+    # workspace's own .beads, and so does this. Where up.sh refuses to launch,
+    # this reports the same reason as a FAIL.
     if [[ -f "${preflight_beads_dir}/redirect" ]]; then
       local redirect_target
       redirect_target=$(cat "${preflight_beads_dir}/redirect")
-      if [[ "$redirect_target" == /* ]] || [[ "$redirect_target" =~ [[:cntrl:]] ]]; then
-        # Absolute path or control chars — treat as outside allowed roots
-        preflight_skip_line="PASS [0] beads-host-dolt — beads_dir outside allowed roots (skipped)"
-      else
-        local resolved_redirect
+      if [[ "$redirect_target" != /* ]] && [[ ! "$redirect_target" =~ [[:cntrl:]] ]]; then
+        local resolved_redirect redirect_refusal="" home_real denied_pat
         resolved_redirect=$(realpath "${ws_source}/${redirect_target}" 2>/dev/null || true)
-        if [[ -n "$resolved_redirect" && -d "$resolved_redirect" ]] \
-           && _path_under_allowed_roots "$resolved_redirect"; then
-          preflight_beads_dir="$resolved_redirect"
-        else
-          preflight_skip_line="PASS [0] beads-host-dolt — beads_dir outside allowed roots (skipped)"
+        if [[ -n "$resolved_redirect" && -d "$resolved_redirect" ]]; then
+          # Same predicates, order and wording as cli/up.sh's redirect branch:
+          # the rip-cage-p4ss.1 validity checks, then the protected-paths rule,
+          # then the CCTOK secrets dir. A copy because up.sh keeps them inline
+          # -- change both together.
+          home_real=$(realpath "$HOME" 2>/dev/null) || home_real="$HOME"
+          if [[ "$resolved_redirect" =~ [[:cntrl:]] ]]; then
+            redirect_refusal="its resolved path contains control characters"
+          elif [[ "$(basename "$resolved_redirect")" != ".beads" || ! -f "${resolved_redirect}/metadata.json" ]]; then
+            redirect_refusal="${resolved_redirect} is not a .beads dir (needs the name .beads and a metadata.json)"
+          elif [[ "$resolved_redirect" == "${home_real}"/.* ]]; then
+            redirect_refusal="${resolved_redirect} is inside a home dotdir"
+          elif [[ "${home_real}/.claude" == "$resolved_redirect"/* || "${home_real}/.pi" == "$resolved_redirect"/* ]]; then
+            redirect_refusal="${resolved_redirect} is an ancestor of ~/.claude or ~/.pi"
+          elif denied_pat=$(_protected_paths_path_match "$resolved_redirect"); then
+            redirect_refusal="${resolved_redirect} matched secret-path denylist pattern '${denied_pat}'"
+          elif _mount_src_exposes_secrets_dir "$resolved_redirect"; then
+            redirect_refusal="${resolved_redirect} is or contains $(_protected_paths_secrets_dir), the CCTOK secrets directory"
+          fi
+          if [[ -n "$redirect_refusal" ]]; then
+            preflight_skip_line="FAIL [0] beads-host-dolt — .beads/redirect (${preflight_beads_dir}/redirect) is refused: ${redirect_refusal}. rc up refuses to launch with it; point the redirect at the main repo's .beads, or delete it."
+          else
+            preflight_beads_dir="$resolved_redirect"
+          fi
         fi
       fi
     elif [[ -f "${ws_source}/.git" ]]; then
@@ -99,11 +116,12 @@ cmd_test() {
         local main_repo_root="${wt_common_git%/.git}"
         local resolved_main_beads
         resolved_main_beads=$(realpath "${main_repo_root}/.beads" 2>/dev/null || true)
+        # up.sh's posture here is warn-and-skip, not refuse: a missing or
+        # protected main-repo .beads leaves the worktree's own .beads mounted.
         if [[ -n "$resolved_main_beads" && -d "$resolved_main_beads" ]] \
-           && _path_under_allowed_roots "$resolved_main_beads"; then
+           && ! _protected_paths_path_match "$resolved_main_beads" >/dev/null \
+           && ! _mount_src_exposes_secrets_dir "$resolved_main_beads"; then
           preflight_beads_dir="$resolved_main_beads"
-        else
-          preflight_skip_line="PASS [0] beads-host-dolt — beads_dir outside allowed roots (skipped)"
         fi
       fi
     fi
