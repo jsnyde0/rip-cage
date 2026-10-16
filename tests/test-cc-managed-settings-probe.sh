@@ -79,6 +79,10 @@ USER_GLOBAL_SETTINGS_BACKUP="/tmp/probe-user-global-settings-backup-${PROBE_SUFF
 MANAGED_SETTINGS=/etc/claude-code/managed-settings.json
 MANAGED_SETTINGS_BACKUP="/root/probe-managed-settings-backup-${PROBE_SUFFIX}.json"
 MANAGED_SETTINGS_PRE_SHA=""
+# Set just before the probe writes its sentinel: cleanup restores or removes
+# managed-settings.json only when the probe has touched it.
+MANAGED_SETTINGS_TOUCHED=false
+PROBE_CLEANED=false
 
 pass() {
   TOTAL=$((TOTAL + 1))
@@ -127,7 +131,10 @@ run_with_timeout() {
 }
 
 # Cleanup: remove probe artifacts from the container
+# Idempotent: runs from the EXIT trap and from the scripted exit paths.
 _cleanup_probe() {
+  [[ "$PROBE_CLEANED" == "true" ]] && return 0
+  PROBE_CLEANED=true
   # Best-effort: ignore errors during cleanup
   cexec rm -rf "$PROBE_SESSION_DIR" 2>/dev/null || true
   cexec rm -f "$HOOK_CALLED_WITNESS" "$BASH_EXECUTED_FILE" 2>/dev/null || true
@@ -156,7 +163,9 @@ _cleanup_probe() {
 
   # Restore the shipped managed-settings.json byte-identical, or remove the
   # probe's sentinel copy when the image shipped none.
-  if [[ -n "$MANAGED_SETTINGS_PRE_SHA" ]]; then
+  if [[ "$MANAGED_SETTINGS_TOUCHED" != "true" ]]; then
+    :
+  elif [[ -n "$MANAGED_SETTINGS_PRE_SHA" ]]; then
     cexec_root cp -p "$MANAGED_SETTINGS_BACKUP" "$MANAGED_SETTINGS" 2>/dev/null || true
     cexec_root rm -f "$MANAGED_SETTINGS_BACKUP" 2>/dev/null || true
     local post_sha
@@ -400,6 +409,12 @@ echo ""
 
 echo "-- Probe setup --"
 
+# From here on the probe mutates the cage: restore on every exit path,
+# including SIGINT/SIGTERM, a set -u abort, or a dead msb exec (rip-cage-b8kd.7.2).
+trap '_cleanup_probe' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # Create probe session dir
 cexec mkdir -p "$PROBE_SESSION_DIR"
 
@@ -486,6 +501,7 @@ if cexec_root test -f "$MANAGED_SETTINGS"; then
 fi
 
 # Write managed-settings.json with the sentinel hook
+MANAGED_SETTINGS_TOUCHED=true
 # Using a heredoc passed to bash avoids quoting issues with the hook path
 cexec_root bash -c "cat > /etc/claude-code/managed-settings.json << MANAGED_EOF
 {
@@ -813,7 +829,16 @@ echo "=== D8 CC Managed-Settings Probe VERDICT ==="
 echo "=========================================="
 echo ""
 
-if [[ "$ENFORCEMENT_GREEN" == "true" && "$DENY_WINS_GREEN" == "true" ]]; then
+# GREEN needs every assertion to have passed, not only sections 2 and 3: a
+# failed strip check ([4]) or restore check means the result proves nothing.
+if [[ "$FAILURES" -gt 0 && "$ENFORCEMENT_GREEN" == "true" && "$DENY_WINS_GREEN" == "true" ]]; then
+  echo "VERDICT: RED ($FAILURES assertion(s) failed — see FAIL lines above)"
+  echo ""
+  echo "  Sections 2 and 3 reported enforcement and deny-wins, but another assertion"
+  echo "  failed (e.g. an agent-writable hook layer was not cleared, or the shipped"
+  echo "  managed-settings.json was not restored). The enforcement result cannot be"
+  echo "  attributed to the managed layer alone; fix the failure and re-run."
+elif [[ "$ENFORCEMENT_GREEN" == "true" && "$DENY_WINS_GREEN" == "true" ]]; then
   echo "VERDICT: GREEN"
   echo ""
   echo "  /etc/claude-code/managed-settings.json IS enforced on the shipped claude binary:"
