@@ -35,7 +35,7 @@
 #   - The ssh cluster (checks 18a-18h in a still-earlier version) — already
 #     removed pre-this-port per ADR-029 D3 (rip-cage-f1qo S5); nothing left
 #     to re-express.
-#   - The raw "docker start, snapshot tmux clients, docker stop" probe that
+#   - The raw "docker start, snapshot multiplexer clients, docker stop" probe that
 #     used to precede the real resume check: msb re-resolves EVERY --secret
 #     binding from the host env at `msb start` time (confirmed live —
 #     `msb start <cage>` on a cage with no `--secret` env pre-set errors
@@ -44,10 +44,10 @@
 #     `_up_prepare_resume_secrets` preflight is not a viable msb-native
 #     substitute for "docker start". The regression this guarded (rc up
 #     must not launch a new multiplexer client on an ALREADY-RUNNING cage
-#     under non-TTY stdin) is re-expressed instead as a before/after tmux
-#     snapshot bracketing the SECOND (idempotent, already-running) "$RC" up
-#     call at the end of the resume section — same guarded behavior, msb-
-#     native mechanism.
+#     under non-TTY stdin) is asserted on rc's own output instead: the
+#     SECOND (idempotent, already-running) "$RC" up call at the end of the
+#     resume section must exit 0 and print the "is running" attach hint
+#     (Check 16; the image ships no multiplexer, rip-cage-b8kd.24.7).
 #
 # NEEDS_CONTAINER (docker -- rc up's image-provisioning preflight) +
 # NEEDS_MSB + a pre-loaded rip-cage:latest msb image. Self-skips (exit 0,
@@ -843,23 +843,30 @@ else
 fi
 
 # Check 16: Resume TTY guard (regression guard for 2026-04-20 fix #3).
-# The fix prevents rc up from launching tmux attach when stdin is not a TTY.
-# Re-expressed msb-natively (see file header: bare `msb start` cannot stand
-# in for the old "docker start" pre-snapshot, since msb re-resolves every
-# --secret binding from the host env at start time and errors without it).
-# Compares tmux client count immediately before vs after the SECOND
-# (idempotent, cage-already-running) "$RC up" call below — the same
-# regression this guarded (no new multiplexer client on a non-TTY resume of
-# an already-running cage).
-tmux_clients_before=$(msb exec "$CONTAINER_NAME" -- sh -c 'tmux list-clients 2>/dev/null | wc -l' 2>/dev/null | tr -d '[:space:]' || echo 0)
-"$RC" up "$TEST_WS" < /dev/null > /dev/null 2>&1 || true
-tmux_clients_after=$(msb exec "$CONTAINER_NAME" -- sh -c 'tmux list-clients 2>/dev/null | wc -l' 2>/dev/null | tr -d '[:space:]' || echo 0)
-if [[ "${tmux_clients_after:-0}" -le "${tmux_clients_before:-0}" ]]; then
-  check "resume TTY guard (no tmux attach on non-TTY stdin)" "pass" \
-    "before=$tmux_clients_before after=$tmux_clients_after"
+# On an already-running cage with stdin not a TTY, the SECOND (idempotent)
+# "$RC" up must take the non-interactive branch: print the "is running" line
+# and return, never open an interactive session (_msb_exec_interactive). The
+# image ships no multiplexer, so this asserts rc's own output, not a client
+# count (rip-cage-b8kd.24.7). A broken guard hangs on the interactive exec
+# rather than failing, so the call is bounded (it returns in ~1s when healthy).
+tty_guard_err="$(_host_scratch_mktemp_d ttyguard)/stderr"
+"$RC" up "$TEST_WS" < /dev/null > /dev/null 2> "$tty_guard_err" &
+tty_guard_pid=$!
+for _ in $(seq 1 60); do kill -0 "$tty_guard_pid" 2>/dev/null || break; sleep 1; done
+tty_guard_rc=0
+if kill -0 "$tty_guard_pid" 2>/dev/null; then
+  pkill -TERM -P "$tty_guard_pid" 2>/dev/null || true
+  kill -TERM "$tty_guard_pid" 2>/dev/null || true
+  wait "$tty_guard_pid" 2>/dev/null || true
+  tty_guard_rc=124
 else
-  check "resume TTY guard (no tmux attach on non-TTY stdin)" "fail" \
-    "before=$tmux_clients_before after=$tmux_clients_after"
+  wait "$tty_guard_pid" || tty_guard_rc=$?
+fi
+if [[ "$tty_guard_rc" -eq 0 ]] && grep -qF "Container $CONTAINER_NAME is running (multiplexer=" "$tty_guard_err"; then
+  check "resume TTY guard (non-TTY rc up on a running cage prints the attach hint, opens no session)" "pass"
+else
+  check "resume TTY guard (non-TTY rc up on a running cage prints the attach hint, opens no session)" "fail" \
+    "rc=$tty_guard_rc (124 = still running after 60s, i.e. it opened a session) stderr_tail=$(tail -3 "$tty_guard_err" | tr '\n' ';')"
 fi
 
 # Check 17: CA ABSENCE guard (pure SNI router has no CA — rip-cage-ta1o.1 regression guard)
