@@ -72,6 +72,13 @@ WS_CLAUDE_SETTINGS_BACKUP="/tmp/probe-ws-claude-settings-backup-${PROBE_SUFFIX}.
 WS_SETTINGS_LOCAL_BACKUP="/tmp/probe-settings-local-backup-${PROBE_SUFFIX}.json"
 # FIX-2: track the user-global settings.json backup path
 USER_GLOBAL_SETTINGS_BACKUP="/tmp/probe-user-global-settings-backup-${PROBE_SUFFIX}.json"
+# rip-cage-b8kd.7.2: the probe overwrites the image's shipped
+# /etc/claude-code/managed-settings.json with its sentinel; back it up (root-only
+# dir) and restore it byte-identical, so tests run after this one (run-host.sh
+# orders test-cc-dcg-managed-settings.sh next) see the shipped file.
+MANAGED_SETTINGS=/etc/claude-code/managed-settings.json
+MANAGED_SETTINGS_BACKUP="/root/probe-managed-settings-backup-${PROBE_SUFFIX}.json"
+MANAGED_SETTINGS_PRE_SHA=""
 
 pass() {
   TOTAL=$((TOTAL + 1))
@@ -140,15 +147,31 @@ _cleanup_probe() {
     info "Restored /workspace/.claude/settings.json"
   fi
 
-  # Restore settings.local.json if we backed it up
+  # Restore /workspace/.claude/settings.local.json if we backed it up
   if cexec test -f "$WS_SETTINGS_LOCAL_BACKUP" 2>/dev/null; then
-    cexec cp "$WS_SETTINGS_LOCAL_BACKUP" /workspace/settings.local.json 2>/dev/null || true
+    cexec cp "$WS_SETTINGS_LOCAL_BACKUP" /workspace/.claude/settings.local.json 2>/dev/null || true
     cexec rm -f "$WS_SETTINGS_LOCAL_BACKUP" 2>/dev/null || true
-    info "Restored /workspace/settings.local.json"
+    info "Restored /workspace/.claude/settings.local.json"
   fi
 
-  # Remove managed-settings.json created by the probe
-  cexec_root rm -f /etc/claude-code/managed-settings.json 2>/dev/null || true
+  # Restore the shipped managed-settings.json byte-identical, or remove the
+  # probe's sentinel copy when the image shipped none.
+  if [[ -n "$MANAGED_SETTINGS_PRE_SHA" ]]; then
+    cexec_root cp -p "$MANAGED_SETTINGS_BACKUP" "$MANAGED_SETTINGS" 2>/dev/null || true
+    cexec_root rm -f "$MANAGED_SETTINGS_BACKUP" 2>/dev/null || true
+    local post_sha
+    post_sha=$(cexec_root sha256sum "$MANAGED_SETTINGS" 2>/dev/null | awk '{print $1}')
+    info "managed-settings.json sha256 pre-probe:  $MANAGED_SETTINGS_PRE_SHA"
+    info "managed-settings.json sha256 post-probe: ${post_sha:-<absent>}"
+    if [[ "$post_sha" == "$MANAGED_SETTINGS_PRE_SHA" ]]; then
+      pass "Shipped $MANAGED_SETTINGS restored byte-identical"
+    else
+      fail "Shipped $MANAGED_SETTINGS NOT restored byte-identical" \
+        "pre=$MANAGED_SETTINGS_PRE_SHA post=${post_sha:-<absent>}"
+    fi
+  else
+    cexec_root rm -f "$MANAGED_SETTINGS" 2>/dev/null || true
+  fi
   info "Probe cleanup complete"
 }
 
@@ -456,6 +479,12 @@ echo "-- Creating /etc/claude-code/managed-settings.json (root) --"
 
 cexec_root mkdir -p /etc/claude-code
 
+if cexec_root test -f "$MANAGED_SETTINGS"; then
+  cexec_root cp -p "$MANAGED_SETTINGS" "$MANAGED_SETTINGS_BACKUP"
+  MANAGED_SETTINGS_PRE_SHA=$(cexec_root sha256sum "$MANAGED_SETTINGS" | awk '{print $1}')
+  info "Backed up shipped $MANAGED_SETTINGS (sha256 $MANAGED_SETTINGS_PRE_SHA)"
+fi
+
 # Write managed-settings.json with the sentinel hook
 # Using a heredoc passed to bash avoids quoting issues with the hook path
 cexec_root bash -c "cat > /etc/claude-code/managed-settings.json << MANAGED_EOF
@@ -522,10 +551,6 @@ else
   info "FIX-2: /home/agent/.claude/settings.json absent — no strip needed"
 fi
 
-# Verify the user-global layer is now hook-free (diagnostic)
-USER_GLOBAL_HOOKS=$(cexec bash -c 'jq -r ".hooks.PreToolUse // [] | length" /home/agent/.claude/settings.json 2>/dev/null || echo "0"')
-info "FIX-2 verification: /home/agent/.claude/settings.json PreToolUse hooks after strip: $USER_GLOBAL_HOOKS"
-
 # Back up and clear /workspace/.claude/settings.json (project-level hook layer)
 if cexec test -f /workspace/.claude/settings.json 2>/dev/null; then
   cexec cp /workspace/.claude/settings.json "$WS_CLAUDE_SETTINGS_BACKUP"
@@ -533,14 +558,31 @@ if cexec test -f /workspace/.claude/settings.json 2>/dev/null; then
   info "Cleared /workspace/.claude/settings.json (backed up)"
 fi
 
-# Back up and clear settings.local.json (workspace-local hook layer)
-if cexec test -f /workspace/settings.local.json 2>/dev/null; then
-  cexec cp /workspace/settings.local.json "$WS_SETTINGS_LOCAL_BACKUP"
-  cexec bash -c 'printf "{}\n" > /workspace/settings.local.json'
-  info "Cleared /workspace/settings.local.json (backed up)"
+# Back up and clear /workspace/.claude/settings.local.json (project-local hook layer).
+# Claude Code reads project-local settings from <project>/.claude/settings.local.json,
+# not <project>/settings.local.json -- "Settings files and precedence",
+# https://code.claude.com/docs/en/settings (rip-cage-b8kd.7.1).
+if cexec test -f /workspace/.claude/settings.local.json 2>/dev/null; then
+  cexec cp /workspace/.claude/settings.local.json "$WS_SETTINGS_LOCAL_BACKUP"
+  cexec bash -c 'printf "{}\n" > /workspace/.claude/settings.local.json'
+  info "Cleared /workspace/.claude/settings.local.json (backed up)"
 fi
 
-pass "All agent-writable hook layers cleared for probe run (including user-global ~/.claude/settings.json)"
+# Assert every layer this block names is hook-free: an absent file counts as
+# clear; an unparseable one does not (rip-cage-b8kd.7.2).
+HOOK_LAYERS_DIRTY=""
+for _layer in /home/agent/.claude/settings.json /workspace/.claude/settings.json /workspace/.claude/settings.local.json; do
+  # SC2016 disabled: single quotes intentional — jq program, not a shell expansion.
+  # shellcheck disable=SC2016
+  _n=$(cexec bash -c 'if [[ ! -e "$1" ]]; then echo 0; else jq -r "[(.hooks // {})[] | length] | add // 0" "$1" 2>/dev/null || echo unparseable; fi' _ "$_layer")
+  info "Hook entries in $_layer after strip: ${_n:-<no output>}"
+  [[ "$_n" == "0" ]] || HOOK_LAYERS_DIRTY+=" ${_layer}=${_n:-<no output>}"
+done
+if [[ -z "$HOOK_LAYERS_DIRTY" ]]; then
+  pass "All agent-writable hook layers cleared for probe run (including user-global ~/.claude/settings.json)"
+else
+  fail "Agent-writable hook layers NOT cleared for probe run" "non-empty:${HOOK_LAYERS_DIRTY}"
+fi
 
 # Diagnostic: confirm the probe session settings.json is NOT a symlink to the global one
 SETTINGS_IS_SYMLINK=$(cexec bash -c "test -L ${PROBE_SESSION_DIR}/settings.json && echo 'yes' || echo 'no'")

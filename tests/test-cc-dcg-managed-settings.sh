@@ -3,7 +3,7 @@
 #
 # REGRESSION PROBE: proves the production guarantee of the CC floor-lock:
 #   With the DCG hook removed from EVERY agent-writable settings layer
-#   (~/.claude/settings.json, /workspace/.claude/settings.json, settings.local.json),
+#   (~/.claude/settings.json, /workspace/.claude/settings.json, /workspace/.claude/settings.local.json),
 #   a KNOWN-DCG-BLOCKED command is STILL denied — proving the managed layer
 #   (/etc/claude-code/managed-settings.json, root-owned, baked into image) enforces,
 #   NOT a residual agent-layer hook.
@@ -16,7 +16,7 @@
 #      wrapper SKIPS symlink seeding). Verify the strip is REAL:
 #        (a) probe session settings.json is NOT a symlink
 #        (b) PreToolUse hook count in ALL agent-writable layers is 0
-#        (c) /workspace/settings.local.json has 0 PreToolUse hooks (third agent-writable layer)
+#        (c) /workspace/.claude/settings.local.json has 0 PreToolUse hooks (third agent-writable layer)
 #   3. POSITIVE CONTROL: benign claude -p (no tools) returns PROBE_DCG_ALLOWED.
 #      A test that only checks "denied" can pass vacuously if the agent never ran.
 #   4. BASH POSITIVE CONTROL: prove Claude USES the Bash tool (benign command allowed).
@@ -130,11 +130,11 @@ _cleanup_probe() {
     info "Restored /workspace/.claude/settings.json"
   fi
 
-  # Restore settings.local.json
+  # Restore /workspace/.claude/settings.local.json
   if cexec test -f "$WS_SETTINGS_LOCAL_BACKUP" 2>/dev/null; then
-    cexec cp "$WS_SETTINGS_LOCAL_BACKUP" /workspace/settings.local.json 2>/dev/null || true
+    cexec cp "$WS_SETTINGS_LOCAL_BACKUP" /workspace/.claude/settings.local.json 2>/dev/null || true
     cexec rm -f "$WS_SETTINGS_LOCAL_BACKUP" 2>/dev/null || true
-    info "Restored /workspace/settings.local.json"
+    info "Restored /workspace/.claude/settings.local.json"
   fi
 
   info "Probe cleanup complete"
@@ -551,11 +551,14 @@ if cexec test -f /workspace/.claude/settings.json 2>/dev/null; then
   info "Cleared /workspace/.claude/settings.json (backed up)"
 fi
 
-# Back up and clear settings.local.json (workspace-local)
-if cexec test -f /workspace/settings.local.json 2>/dev/null; then
-  cexec cp /workspace/settings.local.json "$WS_SETTINGS_LOCAL_BACKUP"
-  cexec bash -c 'printf "{}\n" > /workspace/settings.local.json'
-  info "Cleared /workspace/settings.local.json (backed up)"
+# Back up and clear /workspace/.claude/settings.local.json (project-local).
+# Claude Code reads project-local settings from <project>/.claude/settings.local.json,
+# not <project>/settings.local.json -- "Settings files and precedence",
+# https://code.claude.com/docs/en/settings (rip-cage-b8kd.7.1).
+if cexec test -f /workspace/.claude/settings.local.json 2>/dev/null; then
+  cexec cp /workspace/.claude/settings.local.json "$WS_SETTINGS_LOCAL_BACKUP"
+  cexec bash -c 'printf "{}\n" > /workspace/.claude/settings.local.json'
+  info "Cleared /workspace/.claude/settings.local.json (backed up)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -592,16 +595,16 @@ else
     "The wrapper symlink target still has hooks — strip is not complete"
 fi
 
-# (d) PreToolUse hook count in /workspace/settings.local.json must be 0
-# FIX (rip-cage-r9n4 gap 2): the header claims ALL layers verified; settings.local.json
+# (d) PreToolUse hook count in /workspace/.claude/settings.local.json must be 0
+# FIX (rip-cage-r9n4 gap 2): the header claims ALL layers verified; /workspace/.claude/settings.local.json
 # is the third agent-writable layer (workspace-local) and was previously only cleared
 # but never VERIFIED. An agent that wrote hooks there AFTER strip would be invisible.
-WS_LOCAL_HOOKS=$(cexec bash -c 'jq -r ".hooks.PreToolUse // [] | length" /workspace/settings.local.json 2>/dev/null || echo "0"')
+WS_LOCAL_HOOKS=$(cexec bash -c 'jq -r ".hooks.PreToolUse // [] | length" /workspace/.claude/settings.local.json 2>/dev/null || echo "0"')
 if [[ "$WS_LOCAL_HOOKS" == "0" ]]; then
-  pass "Strip verification (d): /workspace/settings.local.json has 0 PreToolUse hooks (third agent-writable layer clean)"
+  pass "Strip verification (d): /workspace/.claude/settings.local.json has 0 PreToolUse hooks (third agent-writable layer clean)"
 else
-  fail "Strip verification (d): /workspace/settings.local.json has $WS_LOCAL_HOOKS PreToolUse hooks (expected 0)" \
-    "The workspace-local settings.local.json still has hooks — strip is not complete"
+  fail "Strip verification (d): /workspace/.claude/settings.local.json has $WS_LOCAL_HOOKS PreToolUse hooks (expected 0)" \
+    "The workspace-local /workspace/.claude/settings.local.json still has hooks — strip is not complete"
 fi
 
 echo ""
@@ -841,7 +844,7 @@ if [[ $FAILURES -eq 0 ]]; then
   echo "        - probe session settings.json is NOT a symlink (wrapper seeding defeated)"
   echo "        - 0 PreToolUse hooks in probe session settings.json"
   echo "        - 0 PreToolUse hooks in /home/agent/.claude/settings.json (symlink target)"
-  echo "        - 0 PreToolUse hooks in /workspace/settings.local.json (third layer)"
+  echo "        - 0 PreToolUse hooks in /workspace/.claude/settings.local.json (third layer)"
   echo "    (d) Text positive control: agent ran and responded (no tools)"
   echo "    (e) Bash positive control: Claude USES Bash + DCG ALLOWS benign commands"
   echo "        (proves Section 2 denial is not vacuous — Claude does call Bash)"
