@@ -261,7 +261,7 @@ _rc_uptime_from_state() {
   if [[ "$_running" -eq 1 && -n "$_updated_at" ]]; then
     local started_epoch now_epoch diff
     started_epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%S" "${_updated_at%%.*}" +%s 2>/dev/null \
-      || date -d "$_updated_at" +%s 2>/dev/null || echo 0)
+      || date -u -d "$_updated_at" +%s 2>/dev/null || echo 0)
     now_epoch=$(date +%s)
     if [[ "$started_epoch" -gt 0 ]]; then
       diff=$((now_epoch - started_epoch))
