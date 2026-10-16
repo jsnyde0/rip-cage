@@ -65,7 +65,7 @@
 #
 # Coverage:
 #   T1  no tests/ file `docker tag`s anything ONTO rip-cage:latest
-#   T2  no tests/ file `docker build -t rip-cage:latest`
+#   T2  no tests/ file `docker build -t rip-cage:latest` (or -tX, --tag X, --tag=X)
 #   T3  NEGATIVE CONTROL: the same scanner, pointed at a planted fixture that
 #       does both, finds both (so T1/T2 are not vacuous)
 #   T4  rip-cage:latest as a READ source (`docker tag rip-cage:latest <other>`)
@@ -109,7 +109,7 @@ _ALLOWLIST=""
 # Prints one "file:line:text" per offending line. Two patterns, each written so
 # the production tag must be the DESTINATION:
 #   docker tag <source> rip-cage:latest   (2nd positional = destination)
-#   docker build ... -t rip-cage:latest
+#   docker build ... -t|--tag|--tag= rip-cage:latest
 # Comment-only lines are dropped first, so the prose above -- and every file's
 # own rationale -- never trips its own guard.
 _scan_writes() {
@@ -127,16 +127,23 @@ _scan_writes() {
     # `docker image tag` and `docker image build` are the same commands under
     # docker's newer management-verb spelling; a scan that only knows the
     # short form is one rename away from blind (rip-cage-ely4.7.9).
+    # The build flag has the same problem: `-t X`, `-tX`, `--tag X` and
+    # `--tag=X` are one write, and a scan that knows only `-t X` passes the
+    # other three (rip-cage-b8kd.8.1).
     grep -nE \
       -e "docker[[:space:]]+(image[[:space:]]+)?tag[[:space:]]+[^[:space:]]+[[:space:]]+[\"']?${PROD_TAG}" \
-      -e "docker[[:space:]]+(image[[:space:]]+)?build[^#]*-t[[:space:]]+[\"']?${PROD_TAG}" \
+      -e "docker[[:space:]]+(image[[:space:]]+)?build[^#]*(-t[[:space:]]*|--tag([[:space:]]+|=))[\"']?${PROD_TAG}" \
       "$_f" 2>/dev/null \
       | grep -vE '^[0-9]+:[[:space:]]*#' \
       | sed "s|^|${_base}:|"
   done
 }
 
-HITS=$(_scan_writes "$SCRIPT_DIR" "$SELF" 1)
+# RC_TAG_GUARD_SCAN_DIR points T1/T2 at another directory -- the positive
+# control for this guard itself: aimed at a scratch dir holding a planted
+# write, the whole test must exit non-zero naming the file. Default: tests/.
+SCAN_DIR="${RC_TAG_GUARD_SCAN_DIR:-$SCRIPT_DIR}"
+HITS=$(_scan_writes "$SCAN_DIR" "$SELF" 1)
 
 echo "=== T1/T2: no un-allowlisted tests/ file writes ${PROD_TAG} ==="
 t1=$(echo "$HITS" | grep -E "docker[[:space:]]+tag" || true)
@@ -148,9 +155,9 @@ fi
 
 t2=$(echo "$HITS" | grep -E "docker[[:space:]]+build" || true)
 if [[ -z "$t2" ]]; then
-  pass "T2: nothing 'docker build -t ${PROD_TAG}'s"
+  pass "T2: nothing 'docker build -t/--tag ${PROD_TAG}'s"
 else
-  fail "T2: a test writes the production tag via docker build -t" "$t2"
+  fail "T2: a test writes the production tag via docker build -t/--tag" "$t2"
 fi
 
 echo ""
@@ -162,6 +169,9 @@ cat > "${PLANT}/test-planted-violation.sh" <<PLANTEOF
 docker tag "\$STUB" ${PROD_TAG}
 docker build -q -t ${PROD_TAG} - < Dockerfile
 docker image tag "\$STUB" ${PROD_TAG}
+docker build --tag ${PROD_TAG} .
+docker build --tag=${PROD_TAG} .
+docker build -t${PROD_TAG} .
 PLANTEOF
 PLANT_HITS=$(_scan_writes "$PLANT" "$SELF" 1)
 
@@ -183,13 +193,22 @@ if echo "$PLANT_HITS" | grep -qE "docker[[:space:]]+image[[:space:]]+tag"; then
 else
   fail "T3d: scanner missed a planted 'docker image tag ... ${PROD_TAG}'" "$PLANT_HITS"
 fi
-# Three planted writes, one planted comment. The count is asserted exactly so
+# rip-cage-b8kd.8.1: the long and glued build-flag spellings are the same write.
+for _spelling in "--tag ${PROD_TAG}" "--tag=${PROD_TAG}" "-t${PROD_TAG}"; do
+  if echo "$PLANT_HITS" | grep -qF -- "docker build ${_spelling} ."; then
+    pass "T3e: the 'docker build ${_spelling}' spelling is detected"
+  else
+    fail "T3e: scanner missed a planted 'docker build ${_spelling}'" "$PLANT_HITS"
+  fi
+done
+# Six planted writes, one planted comment. The count is asserted exactly so
 # an over-broad scanner that starts counting the comment line shows up here
-# rather than as a mysterious red in T1/T2 (third write added ely4.7.9).
-if [[ "$(echo "$PLANT_HITS" | grep -c . )" -eq 3 ]]; then
-  pass "T3c: exactly 3 hits — the comment line naming the same shape was not counted"
+# rather than as a mysterious red in T1/T2 (third write added ely4.7.9; the
+# three build-flag spellings b8kd.8.1).
+if [[ "$(echo "$PLANT_HITS" | grep -c . )" -eq 6 ]]; then
+  pass "T3c: exactly 6 hits — the comment line naming the same shape was not counted"
 else
-  fail "T3c: expected exactly 3 hits, got $(echo "$PLANT_HITS" | grep -c .)" "$PLANT_HITS"
+  fail "T3c: expected exactly 6 hits, got $(echo "$PLANT_HITS" | grep -c .)" "$PLANT_HITS"
 fi
 
 echo ""
