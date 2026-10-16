@@ -247,7 +247,10 @@ rm -rf "$FAKE_MSB_DIR"
 echo ""
 echo "=== Test 9: skill symlink resolution in rc up --dry-run ==="
 SYMLINK_SKILLS_DIR=$(mktemp -d)
-SYMLINK_TARGET_DIR=$(mktemp -d)
+# The target must sit OUTSIDE $HOME. A bare `mktemp -d` cannot promise that:
+# run-host.sh points TMPDIR at ~/.cache/rc-t, and GNU mktemp honours it
+# (BSD mktemp ignores TMPDIR without a template). Pin /tmp (rip-cage-m3ka).
+SYMLINK_TARGET_DIR=$(mktemp -d /tmp/rc-t9-outside.XXXXXX)
 # Create a real skill directory (non-symlink) — should not produce extra mount
 mkdir -p "${SYMLINK_SKILLS_DIR}/real-skill"
 # Create a symlinked skill pointing to the target dir
