@@ -31,29 +31,6 @@ _run_with_timeout() {
 }
 
 
-# _docker_call SECS DOCKER_ARGS... — invoke `docker DOCKER_ARGS...` with a
-# bounded timeout (B per-call defense in depth). On timeout, fails loud with
-# DOCKER_DAEMON_UNREACHABLE so an agent or human sees a clear error rather than
-# a hung interactive session. Honors OUTPUT_FORMAT. stdout passes through.
-#
-# When NOT to use: long-running by design (image pulls, interactive sessions,
-# in-container test scripts). Leave those alone.
-_docker_call() {
-  local secs=$1; shift
-  local _rc=0
-  _run_with_timeout "$secs" docker "$@" || _rc=$?
-  if [[ "$_rc" -eq 124 ]]; then
-    local _msg="Docker call timed out after ${secs}s: 'docker $*'. Daemon may have wedged mid-call. Try: 'orb restart' (OrbStack) or restart Docker Desktop."
-    if [[ "${OUTPUT_FORMAT:-human}" == "json" ]]; then
-      json_error "$_msg" "DOCKER_DAEMON_UNREACHABLE"
-    fi
-    echo "Error: $_msg" >&2
-    exit 1
-  fi
-  return "$_rc"
-}
-
-
 # check_docker — verifies docker is installed and the daemon is responsive.
 #
 # A wedged daemon (e.g. OrbStack VM stuck mid-boot — socket file present but

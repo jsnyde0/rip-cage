@@ -112,24 +112,6 @@ check_msb_floor() {
 }
 
 
-# _msb_call SECS ARGS... -- invoke `msb ARGS...` with a bounded timeout
-# (msb-side counterpart to docker.sh's _docker_call). stdout passes through.
-_msb_call() {
-  local secs=$1; shift
-  local _rc=0
-  _run_with_timeout "$secs" msb "$@" || _rc=$?
-  if [[ "$_rc" -eq 124 ]]; then
-    local _msg="msb call timed out after ${secs}s: 'msb $*'."
-    if [[ "${OUTPUT_FORMAT:-human}" == "json" ]]; then
-      json_error "$_msg" "MSB_UNREACHABLE"
-    fi
-    echo "Error: $_msg" >&2
-    exit 1
-  fi
-  return "$_rc"
-}
-
-
 # _msb_inspect_json NAME -- raw `msb inspect NAME --format json` output on
 # stdout. Returns non-zero (no output) when the sandbox does not exist —
 # every reader below (_msb_sandbox_state, _msb_label, _msb_exists) composes
